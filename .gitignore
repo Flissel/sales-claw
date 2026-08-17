@@ -1,0 +1,15 @@
+# Secrets
+.env
+*.env
+!.env.example
+
+# Sicherungen und Betriebsartefakte
+backups/
+*.tar
+*.tar.gz
+credentials-sicherung-*/
+
+# Betriebssystem
+Thumbs.db
+desktop.ini
+.DS_Store
