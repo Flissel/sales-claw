@@ -68,9 +68,20 @@ try {
     }
 
     $manifest = [ordered]@{
-        erzeugt            = (Get-Date).ToUniversalTime().ToString('o')
-        container_gestoppt = ($liefVorher -and -not $OhneStopp)
-        archive            = [ordered]@{}
+        erzeugt = (Get-Date).ToUniversalTime().ToString('o')
+        # Das Feld beantwortet: "War der Container waehrend des tar-Laufs
+        # garantiert still?" — nicht: "Haben WIR ihn gestoppt?"
+        #
+        # Der Unterschied ist nicht akademisch. War der Container beim Aufruf
+        # bereits gestoppt, ist das die konsistenteste Sicherung ueberhaupt.
+        # Die naheliegende Formel ($liefVorher -and -not $OhneStopp) haette
+        # dafuer `false` geschrieben und beim Wiederherstellen eine sachlich
+        # falsche Warnung ausgeloest — ausgerechnet fuer den besten Fall.
+        #
+        # Unsicher ist genau eine Lage: der Container lief und wir haben ihn
+        # auf ausdruecklichen Wunsch nicht gestoppt.
+        container_gestoppt = -not ($liefVorher -and $OhneStopp)
+        archive = [ordered]@{}
     }
 
     foreach ($paar in @(@($StateVolume,'state'), @($KeysVolume,'keys'))) {

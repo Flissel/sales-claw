@@ -28,17 +28,29 @@ Legt `<Ziel>/sales-claw-<zeitstempel>/` an mit:
   war der Lauf unvollständig, und `restore-state.ps1` lehnt die Sicherung ab.
 
 **Der Container wird für die Dauer des tar-Laufs gestoppt** und danach wieder
-gestartet (Begründung unten, „Härtung (Fix-Runde 4)"). Die Ausfallzeit liegt
-bei wenigen Sekunden. `-OhneStopp` unterdrückt das, warnt dafür deutlich und
-setzt `container_gestoppt: false` im Manifest — worauf `restore-state.ps1`
-später erneut warnt.
+gestartet (Begründung unten, „Härtung (Fix-Runde 4)"). `-OhneStopp`
+unterdrückt das und warnt dafür deutlich.
+
+`container_gestoppt` beantwortet **„war der Container während des tar-Laufs
+garantiert still?"** — nicht „haben wir ihn gestoppt?". Drei Lagen, alle
+gemessen (Report, „Fix-Runde 5"):
+
+| Lage beim Aufruf | `container_gestoppt` | Warnung beim Wiederherstellen |
+|---|---|---|
+| Container lief, Skript hat ihn gestoppt | `true` | keine |
+| Container lief, `-OhneStopp` | `false` | rot |
+| Container war schon gestoppt | `true` | keine |
+
+Die dritte Lage ist der Grund für die Formulierung: eine Sicherung aus einem
+Wartungsfenster ist die konsistenteste überhaupt und darf nicht als
+„bei laufendem Container entstanden" gemeldet werden.
 
 Gibt den vollen Pfad des Sicherungsordners auf stdout aus, Exit `0`.
 
 ### `scripts/restore-state.ps1`
 
 ```powershell
-pwsh -File scripts/restore-state.ps1 -Quelle backups/sales-claw-20260817-174858
+pwsh -File scripts/restore-state.ps1 -Quelle backups/sales-claw-<zeitstempel>
 ```
 
 Voraussetzung: der Container muss **gestoppt** sein (`docker compose down`).
@@ -51,9 +63,53 @@ Manifest, bricht es ab, ohne ein Volume anzufassen. Erst wenn beide Archive
 bestehen, leert es die Ziel-Volumes und spielt die tar-Archive ein.
 Anschließend `docker compose up -d`.
 
-**Sicherungen aus der Zeit vor Fix-Runde 4 enthalten kein `MANIFEST.json` und
-werden abgelehnt.** Das ist Absicht: für sie gibt es keine Sollwerte, also
-lässt sich nicht feststellen, ob sie noch das sind, was gesichert wurde.
+## Was die Umstellung kostet
+
+Zwei Folgen, die man vorher wissen sollte — beide sind gewollt, aber keine ist
+kostenlos.
+
+### 1. Jede Sicherung kostet Ausfallzeit — gemessen rund 3,5 Sekunden
+
+Der tar-Lauf findet bei gestopptem Container statt. Gemessen an einem realen
+Lauf (`docker inspect`): Stopp `17:49:03.237Z`, Wiederanlauf `17:49:06.697Z` —
+**3,46 s**, danach `docker compose ps` wieder `Up … (healthy)` (Healthcheck
+`start_period` von 60 s eingerechnet dauert es rund 35 s bis `healthy`).
+
+Bei einem geplanten täglichen Lauf ist das unerheblich, aber es ist kein
+Nulltarif mehr: der Gateway ist in diesem Fenster nicht erreichbar, und eine
+offene WhatsApp-Verbindung wird getrennt und neu aufgebaut. Den Termin
+deshalb außerhalb der Geschäftszeiten legen.
+
+Wenn Verfügbarkeit ausnahmsweise vorgeht, gibt es `-OhneStopp`. Die Sicherung
+ist dann **ausdrücklich crash-inkonsistent**: das tar läuft über aktive
+Schreibvorgänge im Session-Store, das Archiv ist strukturell einwandfrei und
+kann trotzdem eine tote WhatsApp-Sitzung enthalten. Das Manifest hält das mit
+`container_gestoppt: false` fest, und `restore-state.ps1` warnt beim
+Zurückspielen rot. `-OhneStopp` ist ein Notbehelf, kein Betriebsmodus.
+
+### 2. Sicherungen ohne `MANIFEST.json` sind nicht mehr wiederherstellbar
+
+`restore-state.ps1` bricht ab, wenn das Manifest fehlt:
+
+```
+Kein MANIFEST.json in '…'. Die Sicherung ist unvollstaendig oder stammt aus
+einer aelteren Fassung — nichts wurde angefasst.
+```
+
+Das betrifft **alle Sicherungen aus früheren Läufen** (im Repo: die fünf
+Ordner `backups/sales-claw-20260817-174858` bis `…-183900`) und jeden Lauf,
+der mittendrin abbrach — das Manifest wird zuletzt geschrieben, sein Fehlen
+ist genau diese Kennzeichnung.
+
+Das ist Absicht: Ohne Sollwerte lässt sich nicht feststellen, ob ein Archiv
+noch das ist, was gesichert wurde (siehe „Härtung (Fix-Runde 4)"), und
+ungeprüft ein Volume zu leeren ist genau das, was hier nicht passieren soll.
+Die alten Ordner werden trotzdem nicht gelöscht — wer sie aufhebt, muss aber
+wissen, dass sie nur noch **von Hand** verwendbar sind (`docker run --rm -v
+sales-claw-state:/ziel -v <ordner>:/quelle:ro alpine:3.20 tar -xf
+/quelle/state.tar -C /ziel`), ohne jede Prüfung und damit auf eigenes Risiko.
+Der empfohlene Weg ist, einmal neu zu sichern und die alten Ordner als
+historisch zu betrachten.
 
 ## Warum zwei Sicherungswege
 
@@ -394,6 +450,38 @@ Exception: … tar fuer Volume sales-claw-state fehlgeschlagen
 abgebrochene Lauf hinterließ **kein** `MANIFEST.json` — die unvollständige
 Sicherung ist damit als solche gekennzeichnet und wird beim Wiederherstellen
 abgelehnt.
+
+## Härtung (Fix-Runde 5) — `container_gestoppt` sagt jetzt das Richtige
+
+Die Fassung aus Fix-Runde 4 berechnete das Feld als
+`($liefVorher -and -not $OhneStopp)` — also „haben **wir** ihn gestoppt?".
+War der Container beim Aufruf **schon gestoppt** (Sicherung aus einem
+Wartungsfenster, direkt nach `docker compose down`), schrieb das `false` — und
+`restore-state.ps1` warnte rot „Diese Sicherung entstand bei laufendem
+Container", ausgerechnet für die konsistenteste Sicherung überhaupt. Eine
+Warnung, die im besten Fall falsch anschlägt, gewöhnt den Betreiber daran, sie
+zu ignorieren; genau dieser Warnung soll er aber später glauben, wenn es um
+eine tote WhatsApp-Sitzung geht.
+
+Die Frage ist nicht „haben wir gestoppt?", sondern „war der Container während
+des tar-Laufs garantiert still?". Unsicher ist genau **eine** Lage: der
+Container lief und wurde auf ausdrücklichen Wunsch nicht gestoppt.
+
+```powershell
+container_gestoppt = -not ($liefVorher -and $OhneStopp)
+```
+
+Alle drei Lagen gemessen, mit dem tatsächlichen Wert im erzeugten Manifest und
+dem Verhalten beim Zurückspielen (volle Ausgaben im Report, „Fix-Runde 5"):
+
+| Lage | `container_gestoppt` | Warnung beim Restore |
+|---|---|---|
+| lief, Skript hat gestoppt (`Stoppe …`/`Starte …`) | `true` | keine |
+| lief, `-OhneStopp` (keine Stopp-Zeilen) | `false` | rot |
+| war schon gestoppt (`docker compose down` vorher) | `true` | keine |
+
+Die dritte Zeile ist die korrigierte: sie lieferte vorher `false` und eine
+falsche Warnung.
 
 ## Warum beide Volumes zusammengehören (Spec §5)
 
