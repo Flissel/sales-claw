@@ -116,6 +116,11 @@ Ist der Status nach zwei Minuten noch nicht `healthy` oder steht dort
 `Restarting`, dann fehlt dem Container in aller Regel seine Konfiguration —
 weiter bei „Diagnose" und `05_DISASTER_RECOVERY.md`, Fall 2.
 
+Gemessene Zeiten bis `healthy` (Task 9, mit geladenem WhatsApp-Plugin): 21–23 s
+nach `down`/`up`, aber **98 s** nach `docker compose restart` — dort baut der
+Kanal seine Web-Verbindung parallel zum Hochlauf auf. Zwei Minuten Geduld sind
+also wirklich die Grenze, nicht 35 s.
+
 ## Stoppen
 
 ```powershell
@@ -165,17 +170,36 @@ openclaw --container sales-claw channels logs
 
 ## Kanalstatus
 
+**Immer `--json`, und immer über `channelOrder`** — nie über den Fließtext:
+
 ```powershell
-openclaw --container sales-claw channels status
+openclaw --container sales-claw channels status --json
 ```
 
-Zeigt die konfigurierten Kanäle und ihren Anmeldezustand. Das ist der Befehl,
-mit dem sich beantworten lässt, ob die WhatsApp-Kopplung steht — ohne eine
-Nachricht zu senden.
+Maßgeblich sind vier Felder:
 
-Tiefer, mit aktiven Prüfungen:
+| Feld | Soll | Bedeutung |
+|---|---|---|
+| `channelOrder` | enthält `whatsapp` | Ein geladenes Plugin **besitzt** den Kanal. Der positive Anker — ohne ihn ist alles Weitere wertlos |
+| `channels.whatsapp.statusState` | `linked` | Gekoppelt. `qr`/Pairing-Zustände fallen hier durch |
+| `channels.whatsapp.connected` | `true` | Verbindung steht gerade |
+| `channels.whatsapp.lastDisconnect.loggedOut` | `false` oder `null` | Serverseitige Abmeldung — **der Wert zählt, nicht das Vorkommen des Wortes** |
+
+Warum das so pedantisch steht: siehe „Warum Kriterium 2 nicht per Textsuche
+geprüft wird". Beide naheliegenden Textprüfungen sind gemessen falsch — die eine
+meldete Grün ohne Kanal, die andere Rot am gesunden Kanal.
+
+**Direkt nach einem Neustart Geduld:** Der Kanal baut erst seine
+Web-Verbindung auf; `channels status` brauchte dabei gemessen 14,9 s und lief in
+den 10-s-Timeout der CLI (`Gateway not reachable: gateway timeout after
+10000ms`). Das ist **kein** Kanalfehler. Erst `healthy` abwarten, dann noch
+einmal abfragen. `scripts/smoke-test.ps1` versucht es aus demselben Grund
+genau zweimal.
+
+Klartextfassung (zum Mitlesen, nicht zum Prüfen) und tiefere Sonde:
 
 ```powershell
+openclaw --container sales-claw channels status
 openclaw --container sales-claw channels status --probe
 ```
 
@@ -275,6 +299,25 @@ openclaw --container sales-claw channels status --json
 # "channelOrder": []  -> kein Plugin besitzt den Kanal
 ```
 
+**Und die Gegenprobe gehört auf Felder, nicht auf den Wortlaut des JSON.** Die
+erste Fassung dieser Gegenprobe suchte im serialisierten JSON nach
+`logged.?out|not.?connected|disconnected|needsPairing|pairing|"qr"`. Sobald der
+Kanal existiert, meldet sie **Rot am gesunden Kanal**: das Muster trifft den
+Feld*namen* `loggedOut` in `lastDisconnect` — dessen Wert `false` ist, also der
+Beweis des Gegenteils. Gemessen in Task 9 an einem Kanal mit
+`statusState: "linked"`, `connected: true`.
+
+Damit ist die Lehre nicht „Textsuche zu lasch" und auch nicht „Textsuche zu
+streng", sondern: **ein Textmuster kann Feldname und Feldwert nicht
+unterscheiden.** Eine Zustandsprüfung muss den Wert lesen. `smoke-test.ps1`
+wertet deshalb `statusState`, `linked`, `connected` und
+`lastDisconnect.loggedOut` einzeln aus.
+
+Ein kurzer Reconnect direkt nach dem Start (`status 408`, `reconnectAttempts: 1`,
+`loggedOut: false`) ist normal und heilt sich selbst; er kann die Prüfung für
+wenige Sekunden auf `connected: false` schicken. Dann wiederholen — **nicht**
+neu koppeln.
+
 ### Kriterium 3 — Neustart-Festigkeit
 
 ```powershell
@@ -293,14 +336,39 @@ docker run --rm -v sales-claw-state:/state:ro alpine:3.20 sh -c `
     'find /state/credentials/whatsapp -type f | sort | xargs sha256sum | sha256sum'
 ```
 
+**Seit der Kanal lebt, ist diese Prüfsumme kein Fixwert mehr.** Eine aktive
+Baileys-Sitzung schreibt im Betrieb in `credentials/whatsapp` — beim ersten
+Laden unter 2026.7.1 wanderte die Bytesumme von 1 977 634 auf 1 977 639, bei
+unveränderten 8003 Dateien. Das ist der erwartete Beleg dafür, dass die Sitzung
+benutzt wird, kein Schaden. Aussagekräftig ist die Prüfsumme deshalb nur noch
+als Vergleich **unmittelbar vor und nach** einem Neustart, nicht gegen einen in
+einem älteren Bericht notierten Wert.
+
 ### Kriterium 2 von Hand — der Selbst-Chat
 
 Erst sinnvoll, **wenn Kriterium 2a grün ist**. Solange kein Plugin den Kanal
 besitzt, kann keine Nachricht ankommen, und ein ausbleibender Umlauf beweist
-nichts.
+nichts. Seit Task 9 ist er grün.
 
-Vom Telefon eine Nachricht an die eigene Nummer senden (`selfChatMode`), zum
-Beispiel `ping sales-claw`, und mitlesen:
+**Von welchem Gerät gesendet werden muss.** Das verknüpfte WhatsApp-Konto (Feld
+`channels.whatsapp.self.e164` in `channels status --json`) ist **eine andere
+Nummer** als der einzige Eintrag in `channels.whatsapp.allowFrom`. Der Plan ging
+davon aus, beide seien dieselbe. Praktisch heißt das:
+
+- Der Selbst-Chat („Nachricht an mich selbst") funktioniert nur vom
+  **verknüpften** Gerät aus. Er wird zugelassen, weil das Plugin den Absender
+  dynamisch zulässt, wenn er mit dem verknüpften Konto identisch ist
+  (`maybeSamePhoneDmAllowFrom`) — die Allowlist muss dafür nicht angepasst
+  werden.
+- Eine Nachricht von der Nummer aus der Allowlist ist **kein** Selbst-Chat,
+  sondern eine normale Direktnachricht. Sie wird ebenfalls zugelassen, weil die
+  Nummer in `allowFrom` steht.
+- Beide Nummern kommen also durch. Ob das gewollt ist, entscheidet der
+  Betreiber; `docs/01_OVERVIEW.md` sagt „ausschließlich mit der Nummer des
+  Betreibers".
+
+Vom verknüpften Telefon eine Nachricht an die eigene Nummer senden
+(`selfChatMode`), zum Beispiel `ping sales-claw`, und mitlesen:
 
 ```powershell
 docker compose logs -f sales-claw
@@ -339,23 +407,44 @@ docker compose exec sales-claw sh -lc 'test -n "$OPENROUTER_API_KEY" && echo ges
 
 ### Stand der Abnahme
 
+Stand nach Task 9:
+
 | Kriterium | Stand |
 |---|---|
 | 1 Start / healthy | erfüllt |
-| 2 Kopplung | **offen** — kein WhatsApp-Plugin im Container, Kanal nicht registriert |
-| 3 Neustart | erfüllt, soweit ohne Kanal prüfbar: Container und Kopplungsdateien überstehen `down`/`up` unverändert |
-| 4 Versionssprung | Version im Container ist 2026.7.1; die Kopplung selbst ist damit **nicht** erprobt, weil sie mangels Plugin nie geladen wurde |
+| 2 Kopplung | **Kanal erfüllt** — `channelOrder` führt `whatsapp`, `statusState: linked`, `connected: true`, kein QR. Der Selbst-Chat-Umlauf bleibt von Hand zu führen |
+| 3 Neustart | erfüllt — Kanal, Plugin und Kopplungsdateien überstehen `down`/`up`; Plugin und Workspace liegen im Volume |
+| 4 Versionssprung | **erfüllt** — die aus 2026.5.18 übernommenen Credentials tragen unter 2026.7.1: der Kanal meldet sich ohne Neukopplung als `linked` |
 | 5 Restore | offen (Task 6) |
 | 6 Keine Kollateralschäden | erfüllt |
 
+### Das Kanal-Plugin nach einem Neuaufbau aus frischem Volume
+
 Das WhatsApp-Plugin ist ein **externes** Plugin (`clawhub:@openclaw/whatsapp`)
-und im Image `2026.7.1-slim` nicht enthalten; `plugins list` führt es nicht,
-im Dateisystem des Containers existiert es nicht. Die Installation ist ein
-Eingriff, der beim ersten Laden eine echte WhatsApp-Sitzung auf den
-Credentials des Betreibers öffnet — sie gehört deshalb **nicht** in einen
-unbeaufsichtigten Lauf, sondern an den Anfang eines Termins, an dem der
-Betreiber danebensitzt und der Anmelde-Trigger der lokalen Aufgabe
-nachweislich aus ist (siehe oben).
+und in keinem der beiden Images enthalten — `-slim` und Nicht-Slim sind identisch
+groß. Installiert wird es **ins Volume**
+(`/home/node/.openclaw/extensions/whatsapp`); es übersteht damit `down`/`up` und
+wird von einem Restore mit zurückgespielt. Erneut nötig ist der Schritt nur,
+wenn `sales-claw-state` neu aufgebaut wird:
+
+```powershell
+docker compose exec -e npm_config_cache=/tmp/.npm sales-claw `
+    openclaw plugins install clawhub:@openclaw/whatsapp
+docker compose restart sales-claw
+openclaw --container sales-claw plugins doctor      # erwartet: keine Install-Tree-Probleme
+openclaw --container sales-claw channels status --json
+```
+
+`npm_config_cache=/tmp/.npm` ist zwingend — ohne beschreibbaren Cache entsteht
+eine Installationsspur auf einen Pfad außerhalb des Containers, und das Ergebnis
+ist `openKeyedStore is only available for trusted plugins`
+(`05_DISASTER_RECOVERY.md`, Fall 4).
+
+**Die Installation ist kein Routineschritt.** Beim ersten Laden öffnet sie eine
+echte WhatsApp-Sitzung auf den Credentials des Betreibers. Sie gehört deshalb
+nicht in einen unbeaufsichtigten Lauf, sondern an den Anfang eines Termins, an
+dem der Anmelde-Trigger der lokalen Aufgabe nachweislich aus und der lokale
+Gateway gestoppt ist (Port 18793 frei, siehe oben).
 
 ## Dateiablage
 

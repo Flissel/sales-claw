@@ -8,7 +8,7 @@
   "agents": {
     "defaults": {
       "model": { "primary": "openrouter/free" },
-      "workspace": "/home/node/workspace"
+      "workspace": "/home/node/.openclaw/workspace"
     },
     "list": [{ "id": "main" }]
   },

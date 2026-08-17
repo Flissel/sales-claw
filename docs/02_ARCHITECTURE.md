@@ -40,6 +40,9 @@ aktiv (Spec §10).
 `config/openclaw.json` konfiguriert, aber noch nicht angebunden — das ist
 beabsichtigt, WhatsApp-Kopplung ist Gegenstand eines späteren Tasks.
 
+**Stand Task 9:** Das Plugin ist nachinstalliert, der Kanal ist angebunden. Wie
+das zusammenhängt, steht im Abschnitt „Das Kanal-Plugin steckt nicht im Image".
+
 ### Warum zwei Volumes
 
 `/home/node/.openclaw` enthält Konfiguration, Agenten, `credentials/` und `memory/`.
@@ -64,6 +67,66 @@ zusammen gesichert und zusammen zurückgespielt.
 | Logging | `json-file`, `max-size=10m`, `max-file=3` | Auf `C:` war der Platz bereits zweimal knapp |
 | Healthcheck | `CMD openclaw health` gegen den Gateway-Port | Erreicht `healthy` unabhängig vom Modellschlüssel — `openclaw health` prüft nur den Gateway-Prozess (Event-Loop, Agenten, Sessions), nicht das Modell. Mit leerem `OPENAI_API_KEY` (siehe Secrets) trotzdem `healthy` |
 | Zeitzone | `TZ=Europe/Berlin` | Termin- und Digest-Logik in späteren Stufen hängt daran |
+
+## Das Kanal-Plugin steckt nicht im Image (Task 9)
+
+`ghcr.io/openclaw/openclaw` bringt **kein** WhatsApp-Plugin mit. WhatsApp ist ein
+externes Plugin und wird über ClawHub nachinstalliert:
+
+```bash
+docker compose exec -e npm_config_cache=/tmp/.npm sales-claw \
+    openclaw plugins install clawhub:@openclaw/whatsapp
+```
+
+Drei Punkte, die man sonst teuer wieder herausfindet:
+
+1. **`-slim` ändert daran nichts.** Die naheliegende Vermutung, die
+   Nicht-Slim-Variante enthalte die Kanal-Plugins, ist falsch: `2026.7.1` und
+   `2026.7.1-slim` sind identisch groß (26 Layer, 345,2 MB). Der Unterschied
+   betrifft `browser`/Chromium, nicht die Kanäle. Ein Imagewechsel kostet einen
+   Neustart und bringt nichts.
+2. **Die Installation landet im Volume, nicht im Image.** Gemessener Zielpfad ist
+   `/home/node/.openclaw/extensions/whatsapp` — also unterhalb von
+   `/home/node/.openclaw` und damit auf `sales-claw-state`. Sie übersteht
+   `docker compose down && up` und wird von einem Restore mit zurückgespielt. Sie
+   muss nicht im Image, im Dockerfile oder in `docker-compose.yml` verankert
+   werden. Umgekehrt gilt: Wer das Volume neu aufbaut, muss das Plugin erneut
+   installieren — der Schritt gehört deshalb in den Runbook-Ablauf für einen
+   Neuaufbau aus frischem Volume.
+3. **`npm_config_cache=/tmp/.npm` ist kein Zierrat.** Ohne beschreibbaren
+   npm-Cache bricht die Installation ab oder hinterlässt eine Installationsspur
+   auf einen Pfad, den es im Container nicht gibt — Folgefehler ist dann
+   `openKeyedStore is only available for trusted plugins`
+   (`docs/05_DISASTER_RECOVERY.md`, Fall 4).
+
+Nach der Installation lädt der Gateway drei statt zwei Plugins
+(`http server listening (3 plugins: memory-core, openrouter, whatsapp)`) und der
+Kanal erscheint in `channels status --json` unter `channelOrder`.
+
+## Der Agenten-Workspace muss im Volume liegen (Task 9)
+
+`agents.defaults.workspace` stand auf `/home/node/workspace`. Gemountet sind aber
+nur `/home/node/.openclaw` und `/home/node/.config/openclaw` — der Pfad lag damit
+in der Schreibschicht des Containers und starb mit ihm, während die zugehörige
+Attestierung unter `/home/node/.openclaw/workspace-attestations/` im Volume
+überlebte. Nach jedem `docker compose down && up` fand OpenClaw eine Attestierung
+ohne Workspace und verweigerte **jeden** Agentenlauf:
+
+```
+WorkspaceVanishedError: OpenClaw workspace appears to have disappeared after a
+recent initialization: /home/node/workspace. Refusing to reseed BOOTSTRAP.md over
+a recently attested workspace.
+```
+
+Das Fehlerbild ist tückisch, weil der Container dabei `healthy` bleibt und der
+Kanal Nachrichten annimmt: Eine Nachricht käme an, aber keine Antwort zurück.
+
+`config/openclaw.json` setzt deshalb `agents.defaults.workspace` auf
+`/home/node/.openclaw/workspace` — ein Pfad im Volume. Dort seedet OpenClaw
+`AGENTS.md`, `SOUL.md`, `IDENTITY.md`, `USER.md`, `TOOLS.md`, `HEARTBEAT.md` und
+`BOOTSTRAP.md`, und diese Dateien überleben den Neustart gemeinsam mit ihrer
+Attestierung. Ein leeres Verzeichnis anzulegen genügt **nicht** — es gilt weiter
+als verschwunden.
 
 ### Secrets
 

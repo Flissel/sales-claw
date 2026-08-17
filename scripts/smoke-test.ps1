@@ -66,9 +66,21 @@ Write-Host "== Abnahme sales-claw ==" -ForegroundColor Cyan
 # Einmal abfragen, beide Kanal-Pruefungen bewerten denselben Schnappschuss.
 # Zwei getrennte Abfragen koennten sich widersprechen, und ein Widerspruch
 # zwischen zwei Zeilen desselben Berichts ist schlechter als ein klares Nein.
-$script:KanalJson = Get-JsonAusAusgabe (
-    openclaw --container $Container channels status --json 2>&1 | Out-String
-)
+#
+# Ein zweiter Versuch, aber nicht mehr: Unmittelbar nach einem Neustart baut
+# der WhatsApp-Kanal erst seine Web-Verbindung auf; 'channels status' brauchte
+# dabei gemessen 14,9 s und lief in den 10-s-Timeout der CLI. Die Antwort ist
+# dann kein JSON, und beide Kanal-Pruefungen meldeten Rot, obwohl der Kanal
+# gesund hochkam. Mehr als ein Nachschlag waere Vertuschung: haelt der Timeout
+# an, ist das ein Befund und kein Messfehler.
+$script:KanalJson = $null
+foreach ($versuch in 1..2) {
+    $script:KanalJson = Get-JsonAusAusgabe (
+        openclaw --container $Container channels status --json 2>&1 | Out-String
+    )
+    if ($script:KanalJson) { break }
+    if ($versuch -lt 2) { Start-Sleep -Seconds 10 }
+}
 
 Pruefe "Kriterium 1: Container laeuft und ist healthy" {
     (docker inspect --format '{{.State.Health.Status}}' $Container 2>$null) -eq 'healthy'
@@ -96,12 +108,25 @@ Pruefe "Kriterium 2: WhatsApp-Kanal verbunden (kein QR, kein logout)" {
     # bewerten. Erst danach die Gegenprobe auf Abmelde- und Pairing-Zustaende.
     # Bewusst in dieser Reihenfolge — ein fehlender Kanal enthaelt naemlich
     # auch keine negativen Marker und wuerde eine reine Gegenprobe bestehen.
+    #
+    # Gegenprobe auf FELDERN, nicht auf dem Wortlaut. Die frueher hier
+    # stehende Regex ('logged.?out|...') gegen das serialisierte JSON meldete
+    # am gesunden Kanal Rot: sie traf den Feld-NAMEN "loggedOut" in
+    # lastDisconnect — dessen Wert 'false' ist, also der Beweis des Gegenteils.
+    # Gemessen in Task 9 an einem Kanal mit statusState=linked, connected=true.
+    # Ein Textmuster kann Feldname und Feldwert nicht unterscheiden; eine
+    # Zustandspruefung muss den Wert lesen.
     if (-not $script:KanalJson) { return $false }
     if (-not ([string[]]$script:KanalJson.channelOrder -contains 'whatsapp')) { return $false }
-    $wa = $script:KanalJson.channels.whatsapp | ConvertTo-Json -Depth 8 -Compress
+    $wa = $script:KanalJson.channels.whatsapp
     if (-not $wa) { return $false }
-    $wa -notmatch 'logged.?out|not.?connected|disconnected|needsPairing|pairing|"qr"'
-} "Kopplung nicht verbunden. NICHT neu koppeln — erst docs/05_DISASTER_RECOVERY.md lesen; ein zweiter Kopplungsversuch meldet das verknuepfte Geraet ab."
+    if ($wa.statusState -ne 'linked') { return $false }   # QR/Pairing faellt hier durch
+    if ($wa.linked      -ne $true)    { return $false }
+    if ($wa.connected   -ne $true)    { return $false }
+    # Eine serverseitige Abmeldung steht als Wert in lastDisconnect.loggedOut.
+    if ($wa.lastDisconnect -and $wa.lastDisconnect.loggedOut -eq $true) { return $false }
+    $true
+} "Kopplung nicht verbunden. NICHT neu koppeln — erst docs/05_DISASTER_RECOVERY.md lesen; ein zweiter Kopplungsversuch meldet das verknuepfte Geraet ab. Direkt nach dem Start kann ein kurzer Reconnect laufen (connected=false); dann nach ein paar Sekunden wiederholen."
 
 Pruefe "Kriterium 6: openclaw-festival gehoert nicht zu unserem Compose-Projekt" {
     # Existiert er nicht, kann nichts kollidieren. Existiert er, darf er nicht
