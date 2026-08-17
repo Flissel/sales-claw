@@ -81,11 +81,17 @@ werden dort nie von PowerShell aufgerufen.
 **Dateien:**
 - Neu: `C:\Users\User\Desktop\Sabine\sales-claw\.gitignore`
 - Neu: `C:\Users\User\Desktop\Sabine\sales-claw\.env.example`
+- Neu: `C:\Users\User\Desktop\Sabine\sales-claw\scripts\lib\ports.ps1`
 - Neu: `C:\Users\User\Desktop\Sabine\sales-claw\scripts\preflight.ps1`
 - Neu: `C:\Users\User\Desktop\Sabine\sales-claw\docs\01_OVERVIEW.md`
 
 **Schnittstellen:**
 - Konsumiert: nichts.
+- Produziert: `scripts/lib/ports.ps1` — stellt `Test-PortFrei -Port <int>` bereit,
+  gibt `$true` zurück, wenn auf dem Port **kein** Listener aktiv ist, und wirft bei
+  echten Abfragefehlern. Wird von `preflight.ps1` (Task 1),
+  `stop-local-openclaw.ps1` und `migrate-credentials.ps1` (Task 4) sowie
+  `smoke-test.ps1` (Task 5) per Dot-Sourcing eingebunden.
 - Produziert: `scripts/preflight.ps1` — Exit-Code `0` wenn alle Prüfungen bestehen,
   `1` sonst. Gibt je Prüfung eine Zeile `[OK] …` oder `[FEHLER] …` aus. Parameter:
   `-GatewayPort <int>` (Vorgabe `18894`), `-MinFreeGb <int>` (Vorgabe `5`).
@@ -97,7 +103,8 @@ werden dort nie von PowerShell aufgerufen.
 # Secrets
 .env
 *.env
-!.env.example
+# .env.example passt auf keins der Muster oben (es endet nicht auf ".env")
+# und bleibt damit versioniert. Eine !-Negation waere hier wirkungslos.
 
 # Sicherungen und Betriebsartefakte
 backups/
@@ -126,6 +133,31 @@ OPENAI_API_KEY=sk-...
 TZ=Europe/Berlin
 ```
 
+- [ ] **Schritt 2b: `scripts/lib/ports.ps1` schreiben**
+
+```powershell
+#requires -Version 7
+<#
+.SYNOPSIS
+  Gemeinsame Port-Pruefung fuer alle Skripte dieses Repos.
+.NOTES
+  Bewusst NICHT Get-NetTCPConnection: das Cmdlet meldet "kein Treffer" als
+  Fehler. Mit -ErrorAction SilentlyContinue laesst sich dann ein freier Port
+  nicht mehr von einem ausgefallenen Cmdlet unterscheiden — beide liefern
+  $null, beide werden zu "frei". GetActiveTcpListeners liefert stattdessen
+  eine Liste; ein echter Ausfall wirft und wird vom Aufrufer als Fehler
+  gewertet statt als Entwarnung.
+#>
+
+function Test-PortFrei {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][int]$Port)
+
+    $listener = [System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners()
+    return -not ($listener | Where-Object { $_.Port -eq $Port })
+}
+```
+
 - [ ] **Schritt 3: `scripts/preflight.ps1` schreiben**
 
 ```powershell
@@ -145,6 +177,8 @@ param(
 
 $ErrorActionPreference = 'Continue'
 $script:Fehler = 0
+
+. (Join-Path $PSScriptRoot 'lib\ports.ps1')
 
 function Pruefe {
     param([string]$Name, [scriptblock]$Test, [string]$Hinweis = '')
@@ -171,7 +205,7 @@ Pruefe "Docker-Daemon erreichbar" {
 } "Docker Desktop starten."
 
 Pruefe "Gateway-Port $GatewayPort ist frei" {
-    -not (Get-NetTCPConnection -LocalPort $GatewayPort -State Listen -ErrorAction SilentlyContinue)
+    Test-PortFrei -Port $GatewayPort
 } "Anderen Port wählen oder belegenden Prozess beenden."
 
 Pruefe "mindestens $MinFreeGb GB frei auf C:" {
@@ -193,10 +227,21 @@ Pruefe "Image-Tag in der Registry abrufbar" {
     $LASTEXITCODE -eq 0
 } "Netzwerk prüfen oder Tag korrigieren."
 
-Pruefe "openclaw-festival unberührt (darf nicht von uns verwaltet werden)" {
-    $eigene = docker ps -a --filter "name=sales-claw" --format '{{.Names}}'
-    $eigene -notcontains 'openclaw-festival'
-} "Namenskollision — Abbruch."
+Pruefe "kein fremder Container belegt den Namen sales-claw" {
+    # Exakter Filter. Docker filtert sonst per Teilzeichenkette, wodurch die
+    # Pruefung Container mitzaehlt, die uns nichts angehen.
+    -not (docker ps -a --filter "name=^sales-claw$" --format '{{.Names}}')
+} "Es existiert bereits ein Container namens sales-claw — Namenskollision klaeren, bevor irgendetwas gestartet wird."
+
+Pruefe "openclaw-festival gehoert nicht zu unserem Compose-Projekt" {
+    # Das ist die reale Gefahr: traegt ein fremder Container unser
+    # Compose-Projektlabel, raeumt ihn ein 'docker compose down' in diesem
+    # Verzeichnis mit ab. Existiert er nicht, kann nichts kollidieren.
+    $festival = docker ps -a --filter "name=^openclaw-festival$" --format '{{.Names}}'
+    if (-not $festival) { return $true }
+    $projekt = docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' openclaw-festival
+    $projekt -ne 'sales-claw'
+} "openclaw-festival traegt unser Compose-Projektlabel — 'docker compose down' wuerde ihn mit abraeumen."
 
 Write-Host ""
 if ($script:Fehler -gt 0) {
@@ -272,7 +317,7 @@ Der Container spricht ausschließlich mit der Nummer des Betreibers (Selbst-Chat
 - [ ] **Schritt 7: Committen**
 
 ```bash
-git add .gitignore .env.example scripts/preflight.ps1 docs/01_OVERVIEW.md
+git add .gitignore .env.example scripts/lib/ports.ps1 scripts/preflight.ps1 docs/01_OVERVIEW.md
 git commit -m "feat(preflight): Repo-Gerüst und Voraussetzungsprüfung"
 ```
 
@@ -810,6 +855,8 @@ param([int]$LokalerPort = 18793)
 
 $ErrorActionPreference = 'Continue'
 
+. (Join-Path $PSScriptRoot 'lib\ports.ps1')
+
 Write-Host "Dienststatus vorher:"
 openclaw daemon status 2>&1 | Write-Host
 
@@ -818,11 +865,16 @@ openclaw daemon stop 2>&1 | Write-Host
 
 Start-Sleep -Seconds 3
 
-$listener = Get-NetTCPConnection -LocalPort $LokalerPort -State Listen -ErrorAction SilentlyContinue
-if ($listener) {
-    Write-Host "Port $LokalerPort lauscht weiterhin (PID $($listener.OwningProcess))." -ForegroundColor Red
-    Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)" |
-        Select-Object ProcessId, CommandLine | Format-List
+# Die Entscheidung faellt ueber Test-PortFrei — dort wird ein Abfragefehler
+# geworfen statt als "frei" durchgewinkt. Get-NetTCPConnection kommt nur noch
+# fuer die Diagnose zum Einsatz, wenn ohnehin feststeht, dass etwas lauscht.
+if (-not (Test-PortFrei -Port $LokalerPort)) {
+    Write-Host "Port $LokalerPort lauscht weiterhin." -ForegroundColor Red
+    $listener = Get-NetTCPConnection -LocalPort $LokalerPort -State Listen -ErrorAction SilentlyContinue
+    if ($listener) {
+        Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)" |
+            Select-Object ProcessId, CommandLine | Format-List
+    }
     Write-Host "Nicht selbst beenden — Ursache klaeren und dem Betreiber vorlegen." -ForegroundColor Yellow
     exit 1
 }
@@ -874,10 +926,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+. (Join-Path $PSScriptRoot 'lib\ports.ps1')
+
 $quelle = Join-Path $LokalerZustand 'credentials\whatsapp'
 if (-not (Test-Path $quelle)) { throw "Keine WhatsApp-Kopplung unter $quelle" }
 
-if (Get-NetTCPConnection -LocalPort $LokalerPort -State Listen -ErrorAction SilentlyContinue) {
+if (-not (Test-PortFrei -Port $LokalerPort)) {
     throw "Lokaler Gateway lauscht noch auf $LokalerPort. Erst stop-local-openclaw.ps1 ausfuehren."
 }
 if (docker ps --filter "name=$Container" --format '{{.Names}}' | Where-Object { $_ -eq $Container }) {
@@ -995,6 +1049,8 @@ param(
 $ErrorActionPreference = 'Continue'
 $script:Fehler = 0
 
+. (Join-Path $PSScriptRoot 'lib\ports.ps1')
+
 function Pruefe {
     param([string]$Name, [scriptblock]$Test)
     try {
@@ -1013,7 +1069,7 @@ Pruefe "Kriterium 1: Container laeuft und ist healthy" {
 }
 
 Pruefe "Kriterium 1b: Gateway lauscht auf 127.0.0.1:$Port" {
-    [bool](Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
+    -not (Test-PortFrei -Port $Port)
 }
 
 Pruefe "Kriterium 2: WhatsApp-Kanal verbunden" {
@@ -1021,13 +1077,16 @@ Pruefe "Kriterium 2: WhatsApp-Kanal verbunden" {
     $status -match 'whatsapp' -and $status -notmatch 'logged.?out|disconnected'
 }
 
-Pruefe "Kriterium 6: openclaw-festival unveraendert" {
-    $festival = docker ps -a --filter "name=openclaw-festival" --format '{{.Names}}'
-    -not $festival -or ($festival -notcontains $Container)
+Pruefe "Kriterium 6: openclaw-festival gehoert nicht zu unserem Compose-Projekt" {
+    # Existiert er nicht, kann nichts kollidieren. Existiert er, darf er nicht
+    # unser Projektlabel tragen — sonst raeumt 'docker compose down' ihn mit ab.
+    $festival = docker ps -a --filter "name=^openclaw-festival$" --format '{{.Names}}'
+    if (-not $festival) { return $true }
+    (docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' openclaw-festival) -ne 'sales-claw'
 }
 
 Pruefe "Kriterium 6b: lokaler Gateway steht (Port 18793 frei)" {
-    -not (Get-NetTCPConnection -LocalPort 18793 -State Listen -ErrorAction SilentlyContinue)
+    Test-PortFrei -Port 18793
 }
 
 Write-Host ""
