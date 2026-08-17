@@ -233,6 +233,130 @@ nicht mehr von einem ausgefallenen Cmdlet zu unterscheiden — beide liefern
 `$null`, beide würden zu „frei". Bei der Frage „darf ich jetzt die Credentials
 anfassen?" ist das der Unterschied zwischen einer Prüfung und einem Ratespiel.
 
+## Abnahme
+
+Die sechs Kriterien aus Spec §9. Vier davon prüft `scripts/smoke-test.ps1`
+selbst, zwei brauchen einen Menschen oder einen eigenen Ablauf.
+
+```powershell
+pwsh -File scripts/smoke-test.ps1
+# Exit 0 = alle automatisch prüfbaren Kriterien erfüllt, Exit 1 = mindestens eines nicht
+```
+
+| # | Kriterium | Wie geprüft | Befehl |
+|---|---|---|---|
+| 1 | Start, Healthcheck `healthy` | automatisch | `docker inspect --format '{{.State.Health.Status}}' sales-claw` |
+| 1b | Gateway lauscht auf 18894 | automatisch | `Test-PortFrei -Port 18894` → muss `False` sein |
+| 2a | Gateway **kennt** den Kanal whatsapp | automatisch | `openclaw --container sales-claw channels status --json` |
+| 2 | Kopplung verbunden | automatisch (Vorprüfung) | dieselbe JSON-Ausgabe |
+| 2 | Selbst-Chat: Nachricht rein, Antwort raus | **von Hand** | siehe unten |
+| 3 | Neustart-Festigkeit | halbautomatisch | Skript vor **und** nach `down`/`up` |
+| 4 | Versionssprung 2026.5.18 → 2026.7.1 | einmalig | `docker compose exec sales-claw openclaw --version` |
+| 5 | Restore-Roundtrip | eigener Ablauf | `docs/04_BACKUP_RESTORE.md`, Task 6 |
+| 6 | Keine Kollateralschäden | automatisch | Projektlabel von `openclaw-festival`, Port 18793 frei |
+
+### Warum Kriterium 2 nicht per Textsuche geprüft wird
+
+Naheliegend wäre, den Klartext von `channels status` nach `whatsapp` zu
+durchsuchen und das Fehlen von `logged out` als Entwarnung zu werten. **Das
+liefert ein falsches Grün.** Ist das WhatsApp-Plugin gar nicht installiert,
+enthält die Ausgabe trotzdem das Wort `whatsapp` — nämlich im Warnblock
+`plugin not installed: whatsapp` — und mangels Kanal auch kein `logged out`.
+Beide Teilbedingungen sind erfüllt, der Kanal existiert nicht. Gemessen am
+2026.7.1-Container: der Ausdruck liefert `True`, während `channels status`
+überhaupt keinen Kanal auflistet.
+
+`--json` beantwortet die Frage stattdessen positiv: `channelOrder` führt nur
+Kanäle, die ein geladenes Plugin tatsächlich besitzt. Erst wenn `whatsapp`
+dort steht, wird auf Abmelde- und Pairing-Zustände gegengeprüft.
+
+```powershell
+openclaw --container sales-claw channels status --json
+# "channelOrder": []  -> kein Plugin besitzt den Kanal
+```
+
+### Kriterium 3 — Neustart-Festigkeit
+
+```powershell
+pwsh -File scripts/smoke-test.ps1        # vorher
+docker compose down
+docker compose up -d                     # bis healthy warten
+pwsh -File scripts/smoke-test.ps1        # nachher: gleiches Ergebnis
+```
+
+Ein neuer QR-Code darf dabei **nicht** erscheinen. Zusätzlich lässt sich
+belegen, dass die Kopplung die Runde unverändert überstanden hat — gleiche
+Dateizahl, gleiche Aggregat-Prüfsumme vor und nach dem Neustart:
+
+```powershell
+docker run --rm -v sales-claw-state:/state:ro alpine:3.20 sh -c `
+    'find /state/credentials/whatsapp -type f | sort | xargs sha256sum | sha256sum'
+```
+
+### Kriterium 2 von Hand — der Selbst-Chat
+
+Erst sinnvoll, **wenn Kriterium 2a grün ist**. Solange kein Plugin den Kanal
+besitzt, kann keine Nachricht ankommen, und ein ausbleibender Umlauf beweist
+nichts.
+
+Vom Telefon eine Nachricht an die eigene Nummer senden (`selfChatMode`), zum
+Beispiel `ping sales-claw`, und mitlesen:
+
+```powershell
+docker compose logs -f sales-claw
+```
+
+Erwartet: die eingehende Nachricht im Log **und** eine Antwort im WhatsApp-Chat.
+
+### Antwortet das Modell?
+
+Kommt die Nachricht an, bleibt die Antwort aber aus, liegt es meist am Modell,
+nicht am Kanal. Diese drei Befehle trennen die beiden Fälle — **ohne**
+`--deliver`, es geht also keine Nachricht nach WhatsApp hinaus:
+
+```powershell
+docker compose exec sales-claw openclaw infer model providers
+# erwartet: {"provider":"openrouter", ... "configured":true,"selected":true}
+
+docker compose exec sales-claw openclaw config get agents.defaults.model.primary
+# erwartet: openrouter/free
+
+docker compose exec sales-claw openclaw infer model run --prompt "Antworte ausschliesslich mit dem Wort: pong" --json
+# erwartet: "ok": true und "text": "pong"
+```
+
+`infer model run` ist hier bewusst der Weg und nicht `openclaw agent`: es
+braucht keinen Agent-Workspace und prüft damit genau eine Sache — ob der
+Modellschlüssel trägt. Schlägt es mit einem Rate-Limit fehl, ist das kein
+Konfigurationsfehler; einmal wiederholen.
+
+Der Schlüssel kommt aus `.env` als `OPENROUTER_API_KEY`. Ob er im Container
+ankommt (ohne den Wert auszugeben):
+
+```powershell
+docker compose exec sales-claw sh -lc 'test -n "$OPENROUTER_API_KEY" && echo gesetzt || echo fehlt'
+```
+
+### Stand der Abnahme
+
+| Kriterium | Stand |
+|---|---|
+| 1 Start / healthy | erfüllt |
+| 2 Kopplung | **offen** — kein WhatsApp-Plugin im Container, Kanal nicht registriert |
+| 3 Neustart | erfüllt, soweit ohne Kanal prüfbar: Container und Kopplungsdateien überstehen `down`/`up` unverändert |
+| 4 Versionssprung | Version im Container ist 2026.7.1; die Kopplung selbst ist damit **nicht** erprobt, weil sie mangels Plugin nie geladen wurde |
+| 5 Restore | offen (Task 6) |
+| 6 Keine Kollateralschäden | erfüllt |
+
+Das WhatsApp-Plugin ist ein **externes** Plugin (`clawhub:@openclaw/whatsapp`)
+und im Image `2026.7.1-slim` nicht enthalten; `plugins list` führt es nicht,
+im Dateisystem des Containers existiert es nicht. Die Installation ist ein
+Eingriff, der beim ersten Laden eine echte WhatsApp-Sitzung auf den
+Credentials des Betreibers öffnet — sie gehört deshalb **nicht** in einen
+unbeaufsichtigten Lauf, sondern an den Anfang eines Termins, an dem der
+Betreiber danebensitzt und der Anmelde-Trigger der lokalen Aufgabe
+nachweislich aus ist (siehe oben).
+
 ## Dateiablage
 
 | Was | Wo |
