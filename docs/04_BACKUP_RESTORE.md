@@ -33,9 +33,11 @@ pwsh -File scripts/restore-state.ps1 -Quelle backups/sales-claw-20260817-174858
 
 Voraussetzung: der Container muss **gestoppt** sein (`docker compose down`).
 Das Skript prüft das selbst und bricht mit Fehler ab, wenn er noch läuft —
-damit niemand versehentlich in ein offenes Volume schreibt. Es leert beide
-Ziel-Volumes vollständig und spielt die tar-Archive aus der Quelle ein.
-Anschließend `docker compose up -d`.
+damit niemand versehentlich in ein offenes Volume schreibt. Bevor überhaupt
+ein Volume angefasst wird, prüft das Skript **beide** Archive vollständig
+(siehe „Archivprüfung vor dem Schreiben" unten). Erst danach leert es beide
+Ziel-Volumes und spielt die tar-Archive aus der Quelle ein. Anschließend
+`docker compose up -d`.
 
 ## Warum zwei Sicherungswege
 
@@ -55,6 +57,69 @@ Beim Testlauf für diesen Task lief `openclaw backup create` fehlerfrei
 Container unter `/app/...-openclaw-backup.tar.gz` und wird vom Skript
 bewusst nicht aus dem Container kopiert — nur das Log wird gesichert. Für den
 eigentlichen Restore ist ohnehin das tar-Archiv der Volumes maßgeblich.
+
+## Härtung (Fix-Runde 1)
+
+Ein Review der ersten Fassung ergab zwei Befunde. Beide stammten aus dem
+ursprünglichen Brief-Code, nicht aus einer eigenmächtigen Abweichung — sie
+sind hier trotzdem als Verhalten der jetzigen Skripte dokumentiert, weil sie
+den Betrieb betreffen.
+
+### Archivprüfung vor dem Schreiben (Befund 1, kritisch)
+
+Vorher prüfte `restore-state.ps1` nur, ob `state.tar`/`keys.tar` **existieren**
+(`Test-Path`). Eine abgebrochene Kopie, eine volle Platte oder ein
+dazwischenfunkender Virenscanner hinterlassen aber eine Datei, die existiert
+und trotzdem nichts taugt. Da Leeren und Entpacken in derselben Kommandokette
+liefen, wäre das Zielvolume schon geleert gewesen, bevor ein Entpack-Fehler
+auffiel — bei zwei Volumes nacheinander sogar ein asymmetrischer Halbausfall
+möglich: Volume 1 überschrieben, Volume 2 nur noch geleert.
+
+Jetzt prüft das Skript **beide** Archive vollständig, bevor es **irgendein**
+Volume berührt: Datei vorhanden, Größe > 0 Byte, mit `tar -tf` lesbar,
+mindestens ein Eintrag. Schlägt eine der beiden Prüfungen fehl, bricht das
+Skript ab, bevor die Schreibschleife überhaupt beginnt — auch wenn das erste
+Archiv bereits als gültig bestätigt wurde.
+
+Belegt mit drei absichtlich kaputten Sicherungen (volle Ausgaben und
+Prüfsummen-Vergleich in
+`.superpowers/sdd/2026-08-17-sales-claw-fundament/task-3-report.md`,
+Abschnitt „Fix-Runde 1"):
+
+1. **Der eigentliche Zielfall:** `state.tar` gültig, `keys.tar` mit 0 Byte.
+   Ausgabe: `geprueft: state.tar (3591680 Byte, 40 Eintraege)`, danach Abbruch
+   mit `Leer: keys.tar hat 0 Byte — nichts wurde angefasst.` Trotz bereits
+   bestätigt gültigem `state.tar` blieben **beide** Volumes unverändert
+   (SHA-256 von `openclaw.json` vor und nach dem Versuch identisch, Keys-Volume
+   weiterhin leer — per read-only-Mount kontrolliert, ohne den Container zu
+   starten).
+2. `state.tar` mit 0 Byte (der im Review wörtlich genannte Fall): Abbruch mit
+   `Leer: state.tar hat 0 Byte — nichts wurde angefasst.`
+3. `state.tar` nicht leer, aber kein gültiges tar (Textmüll): Abbruch mit
+   `Ohne Eintraege: state.tar — nichts wurde angefasst.` — deckt den
+   Prüfpfad ab, der nicht über die Größe, sondern über den Archivinhalt geht.
+
+### Namensschutz (Befund 2, wichtig)
+
+Beide Skripte lehnen jetzt jeden Volume-Namen ab, der nicht dem Muster
+`sales-claw-[a-z]+` entspricht — geprüft ganz am Anfang, vor jedem
+Docker-Befehl. Grund: die Volume-Namen kommen aus Parametern ohne
+Beschränkung; ein Tippfehler beim Aufruf hätte sonst ein fremdes Volume
+treffen können. Auf dieser Maschine liegt `openclaw-festival-state` direkt
+daneben — ein fremdes Vorhaben, das nie Ziel eines Aufrufs sein darf.
+
+Getestet mit erfundenen Namen (`test-fremd-volume`, `test-fremd-volume-2`),
+**nie** mit einem real existierenden Volume: Aufruf mit `-StateVolume
+test-fremd-volume` bzw. `-KeysVolume test-fremd-volume-2` bricht bei beiden
+Skripten sofort ab mit `Verweigert: '<name>' gehoert nicht zu diesem Projekt.
+Erlaubt sind nur Namen der Form sales-claw-*.`
+
+### Stiller Fehlschlag bei `openclaw backup create` (Befund 3, geringfügig)
+
+`backup-state.ps1` prüft jetzt den Exit-Code von `openclaw backup create`.
+Bei Fehlschlag bricht das Skript **nicht** ab (die tar-Archive sind der
+maßgebliche Sicherungsweg und bereits geschrieben), gibt aber eine deutliche
+Warnung aus, damit ein fehlendes semantisches Archiv nicht unbemerkt bleibt.
 
 ## Warum beide Volumes zusammengehören (Spec §5)
 
@@ -93,6 +158,12 @@ Ablauf und tatsächliche Ausgaben stehen vollständig in
    (`models.providers.openrouter.models`) stimmten vor und nach dem Restore
    überein. Werte selbst wurden zu keinem Zeitpunkt ausgegeben.
 6. Markierungsdatei danach wieder entfernt (Aufräumen, kein Produktionsartefakt).
+
+Nach der Härtung (Fix-Runde 1) wurde dieser Zyklus mit den gehärteten Skripten
+und einer neuen Markierung (`markierung-task3-fix1`) erneut komplett gefahren:
+gleiches Ergebnis — Verlust nach dem Löschen, vollständige Wiederherstellung
+inkl. identischer `openclaw.json`-Prüfsumme, `docker compose ps` wieder
+`healthy`. Die Verschärfung hat den Normalfall nicht beeinträchtigt.
 
 Die zu diesem Zeitpunkt im Volume liegende WhatsApp-Konfiguration ist reine
 Policy (`enabled`, `dmPolicy`, `allowFrom`, …) — noch **keine** Kopplung
