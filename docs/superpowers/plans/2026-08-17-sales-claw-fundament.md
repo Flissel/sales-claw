@@ -2243,3 +2243,166 @@ ClawHub ins Volume installiert wird, und dass `-slim` daran nichts ändert.
 git add config/openclaw.json docs/02_ARCHITECTURE.md docs/03_RUNBOOK.md
 git commit -m "feat(kanal): WhatsApp-Plugin nachruesten, Workspace ins Volume verlegen"
 ```
+
+---
+
+## Task 10: Härtungsrunde — geparkte Befunde abarbeiten
+
+Sammelt die Befunde, die in den Reviews von Task 3 und Task 4 mit Begründung
+geparkt wurden. **Muss vor Task 6 abgeschlossen sein** — dort laufen die Skripte
+zum ersten Mal gegen die echte Kopplung.
+
+**Dateien:**
+- Ändern: `scripts/backup-state.ps1`, `scripts/restore-state.ps1`,
+  `scripts/migrate-credentials.ps1`, `scripts/stop-local-openclaw.ps1`
+- Ändern: `docs/03_RUNBOOK.md`, `docs/04_BACKUP_RESTORE.md`,
+  `docs/05_DISASTER_RECOVERY.md`
+
+### Befund H1 — `docker start` im `finally` wird nicht geprüft
+
+`backup-state.ps1` meldet Exit `0`, auch wenn der Wiederanlauf scheitert. Ein
+geplanter Lauf ließe den Bot unten und den Aufrufer im Glauben, alles sei gut.
+
+```powershell
+    if ($liefVorher -and -not $OhneStopp) {
+        Write-Host "Starte $Container wieder…" -ForegroundColor Yellow
+        docker start $Container | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "FEHLER: '$Container' liess sich nicht wieder starten (Code $LASTEXITCODE). Die Sicherung ist vollstaendig, der Dienst laeuft aber NICHT." -ForegroundColor Red
+        } else {
+            $status = docker inspect --format '{{.State.Status}}' $Container
+            if ($status -ne 'running') {
+                Write-Host "FEHLER: '$Container' meldet nach dem Start Status '$status'." -ForegroundColor Red
+            }
+        }
+    }
+```
+
+Die Meldung „Starte … wieder" belegte bisher nur die Absicht, nicht das Ergebnis.
+
+### Befund H2 — `-OhneStopp`-Warnung folgt der Formel nicht
+
+Der Zweig hängt allein an `$OhneStopp` und warnt auch, wenn der Container gar
+nicht lief — während das Manifest korrekt `container_gestoppt: true` schreibt.
+
+```powershell
+    } elseif ($OhneStopp -and $liefVorher) {
+```
+
+### Befund H3 — `docker stop` Exit 0 heißt nicht „sauber beendet"
+
+`docker stop` sendet SIGTERM, wartet, tötet dann — und liefert in beiden Fällen
+`0`. Ein getöteter Prozess hinterlässt genau den zerrissenen Session-Store, den
+der Stopp verhindern soll. Nach dem Stopp den Exit-Code des Containers lesen und
+ins Manifest schreiben:
+
+```powershell
+        docker stop -t 30 $Container | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Container liess sich nicht stoppen — abgebrochen, nichts gesichert." }
+        $stopCode = docker inspect --format '{{.State.ExitCode}}' $Container
+        if ($stopCode -eq '137') {
+            Write-Host "WARNUNG: '$Container' wurde nach Zeitablauf getoetet (ExitCode 137). Der Session-Store kann mitten im Schreiben erwischt worden sein." -ForegroundColor Red
+        }
+```
+
+`$stopCode` als Feld `stop_exit_code` ins Manifest aufnehmen, und in
+`restore-state.ps1` beim Wiederherstellen warnen, wenn er `137` ist.
+
+### Befund H4 — kein Trockenlauf
+
+Ob eine Sicherung taugt, erfährt man derzeit erst im Moment des Bedarfs. Ein
+Schalter, der nach der Prüfschleife aussteigt, kostet drei Zeilen:
+
+```powershell
+param(
+    [Parameter(Mandatory)][string]$Quelle,
+    [string]$StateVolume = 'sales-claw-state',
+    [string]$KeysVolume  = 'sales-claw-keys',
+    [string]$Container   = 'sales-claw',
+    [switch]$NurPruefen
+)
+```
+
+Direkt vor `Write-Host "Beide Archive stimmen mit dem Manifest ueberein…"`:
+
+```powershell
+if ($NurPruefen) {
+    Write-Host "Nur-Pruefen: beide Archive sind in Ordnung. Es wurde nichts veraendert." -ForegroundColor Green
+    exit 0
+}
+```
+
+### Befund H5 — `migrate-credentials.ps1` ist ungehärtet
+
+Drei Mängel, die in `backup-state.ps1`/`restore-state.ps1` längst behoben sind.
+Das Skript mountet schreibend und führt `chown -R` aus.
+
+**(a) Erlaubnisliste ergänzen**, direkt nach `$ErrorActionPreference`:
+
+```powershell
+if ($StateVolume -cne 'sales-claw-state') {
+    throw "Verweigert: '$StateVolume' ist nicht das Zustands-Volume dieses Projekts."
+}
+if ($Container -cne 'sales-claw') {
+    throw "Verweigert: '$Container' ist nicht der Container dieses Projekts."
+}
+```
+
+**(b) Rechte setzen, nicht nur Eigentümer.** Die Credentials liegen mit `0777` im
+Volume, während OpenClaws eigene sensible Pfade `0700`/`0600` haben. Kein reales
+Risiko in dieser Aufstellung — das Volume liegt in der Docker-Desktop-VM, uid 1000
+besitzt die Dateien ohnehin —, aber die Rechte wandern beim Umzug auf die
+Proxmox-VM mit, wo andere UIDs existieren:
+
+```powershell
+    sh -c 'mkdir -p /state/credentials && cp -a /quelle/whatsapp /state/credentials/ && chown -R 1000:1000 /state/credentials && find /state/credentials -type d -exec chmod 700 {} + && find /state/credentials -type f -exec chmod 600 {} +'
+```
+
+**(c) Erfolgsprüfung, die etwas prüft.** `test -d` meldet auch dann Erfolg, wenn
+das Verzeichnis leer ist oder die Kopie abbrach. Stattdessen Dateizahl von Quelle
+und Ziel vergleichen:
+
+```powershell
+$sollAnzahl = (Get-ChildItem -Recurse -File $quelle).Count
+$istAnzahl = docker run --rm -v "${StateVolume}:/state:ro" alpine:3.20 `
+    sh -c 'find /state/credentials/whatsapp -type f | wc -l'
+if ([int]$istAnzahl.Trim() -ne $sollAnzahl) {
+    throw "Uebernahme unvollstaendig: $($istAnzahl.Trim()) von $sollAnzahl Dateien im Volume."
+}
+Write-Host "Uebernahme geprueft: $sollAnzahl Dateien."
+```
+
+### Befund H6 — Dokumentation
+
+1. **`docs/03_RUNBOOK.md`:** Der Abschnitt zum Anmelde-Trigger empfiehlt eine
+   Prüfung „bevor der Container gestartet wird". Das trug nicht, solange
+   `restart: unless-stopped` galt — beide Starts erfolgen automatisch, es gibt
+   kein Zeitfenster. Aktuellen Stand festhalten: Trigger ist deaktiviert,
+   Container steht auf `restart: "no"` für den Demo-Betrieb, und **beide
+   Bedingungen hängen zusammen**.
+2. **`docs/05_DISASTER_RECOVERY.md`:** Der fest verdrahtete Ordnername
+   `credentials-sicherung-20260817-212343` führt nach der nächsten Migration eine
+   veraltete Sitzung zurück. Durch einen Platzhalter mit Auswahlkriterium ersetzen.
+3. **Ebenda:** Den Versionssprung benennen — die Credentials stammen aus einer
+   2026.5.18-Installation, der Container läuft 2026.7.1. Dass das trägt, ist seit
+   Task 9 belegt und gehört dorthin.
+4. **`docs/04_BACKUP_RESTORE.md`:** Zwei Grenzen festhalten, die niemand aus dem
+   Code liest — `openclaw backup create` legt sein Archiv auf der Schreibschicht
+   des Containers ab und stirbt mit dem `docker compose down`, das die
+   Wiederherstellung selbst verlangt; es gibt also genau **eine** wiederherstellbare
+   Kopie, auf einer Maschine. Und: es gibt keine Sperre gegen Parallelläufe.
+
+### Nachweise
+
+- [ ] H1: Wiederanlauf scheitern lassen (Container zwischen Stopp und Start
+      umbenennen oder entfernen) — erwartet: rote Fehlermeldung statt stiller Erfolg.
+- [ ] H2: `-OhneStopp` bei gestopptem Container — erwartet: **keine** Warnung.
+- [ ] H3: Manifest enthält `stop_exit_code`; regulärer Lauf ergibt `0`.
+- [ ] H4: `-NurPruefen` gegen eine gute und eine manipulierte Sicherung —
+      erwartet: einmal grün, einmal Abbruch, **beide Male Volumes unverändert**.
+- [ ] H5a: Aufruf mit erfundenem Volumenamen wird abgelehnt.
+- [ ] H5b: `ls -la` im Volume zeigt `700`/`600` statt `777`.
+- [ ] H5c: Erfolgsprüfung schlägt an, wenn Dateizahlen abweichen (mit einer
+      künstlich unvollständigen Quelle nachweisen, **nicht** an den echten
+      Credentials).
+- [ ] Committen.
