@@ -441,8 +441,15 @@ services:
       start_period: 60s
 
 volumes:
+  # Das `name:`-Feld ist Pflicht, nicht Kosmetik: ohne es stellt Compose dem
+  # Volume den Projektnamen voran (`sales-claw_sales-claw-state`). Die
+  # Sicherungs- und Wiederherstellungsskripte greifen jedoch per
+  # `docker run -v sales-claw-state:/…` auf die literalen Namen zu — ohne
+  # `name:` liefen gemountetes und gesichertes Volume auseinander.
   sales-claw-state:
+    name: sales-claw-state
   sales-claw-keys:
+    name: sales-claw-keys
 ```
 
 - [ ] **Schritt 3: `scripts/seed-volume.ps1` schreiben**
@@ -530,11 +537,32 @@ Log ansehen:
 docker compose logs --tail 40 sales-claw
 ```
 
-- [ ] **Schritt 5: Grün — Saat einspielen und neu starten**
+- [ ] **Schritt 5: Grün — Saat einspielen, Token setzen, dann starten**
+
+**Die Reihenfolge ist zwingend.** `bind: lan` mit `auth.mode: token` und *ohne*
+gesetzten Token lässt den Gateway beim Start abbrechen (`Refusing to bind gateway to
+lan without auth.`) und in eine Neustartschleife gehen. Ein `docker compose exec`
+trifft dann nie einen laufenden Container (`Container … is restarting`) — der Token
+muss also gesetzt sein, **bevor** der Dauerdienst startet.
 
 ```bash
 docker compose down
 pwsh -File scripts/seed-volume.ps1
+```
+
+Token über einen Einweg-Container erzeugen, der auf denselben Volumes arbeitet, aber
+keine Ports veröffentlicht und sich danach selbst entfernt:
+
+```bash
+docker compose run --rm --entrypoint sh sales-claw -lc 'openclaw config set gateway.auth.token "$(head -c 24 /dev/urandom | od -An -tx1 | tr -d " \n")"'
+```
+
+24 zufällige Bytes ergeben 48 Hex-Zeichen, also 192 Bit Entropie. Der Token landet
+ausschließlich im Volume `sales-claw-state`, nie in einer versionierten Datei.
+
+Jetzt erst den Dauerdienst starten:
+
+```bash
 docker compose up -d
 ```
 
@@ -546,22 +574,14 @@ docker compose ps
 
 Erwartet: `Up … (healthy)`.
 
-- [ ] **Schritt 6: Gateway-Token im Container erzeugen**
-
-Der Token ist ein Geheimnis, gehört also nicht ins Repository. Er wird im Container
-erzeugt und lebt nur im Volume:
-
-```bash
-docker compose exec sales-claw sh -lc 'openclaw config set gateway.auth.token "$(head -c 24 /dev/urandom | od -An -tx1 | tr -d " \n")"'
-```
-
-Prüfen, dass er gesetzt ist (Ausgabe ist der Token — nicht in Dokumente kopieren):
+- [ ] **Schritt 6: Token verifizieren**
 
 ```bash
 docker compose exec sales-claw openclaw config get gateway.auth.token
 ```
 
-Erwartet: eine 48-stellige Hex-Zeichenkette.
+Erwartet: eine 48-stellige Hex-Zeichenkette. **Die Ausgabe ist ein Geheimnis** — nicht
+in Berichte, Dokumente oder Commit-Nachrichten kopieren.
 
 - [ ] **Schritt 7: Tatsächlichen Gateway-Port verifizieren**
 
