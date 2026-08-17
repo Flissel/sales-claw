@@ -1,9 +1,26 @@
 #requires -Version 7
 <#
 .SYNOPSIS
-  Stellt beide Volumes aus einer Sicherung wieder her.
+  Stellt beide Volumes aus einer Sicherung wieder her — nachdem sie gegen
+  das Manifest geprueft wurden.
 .NOTES
   Der Container muss gestoppt sein. Vorhandene Volume-Inhalte werden geleert.
+
+  Warum ein Manifest: Eine Pruefung ohne Sollwert kann nur feststellen, ob
+  sich ein Archiv entpacken laesst — nicht, ob es noch das ist, was gesichert
+  wurde. Drei Fassungen dieses Skripts sind daran gescheitert. Diese
+  Korruptionsarten bestehen jede reine Entpack-Pruefung, empirisch belegt:
+
+    • Trunkierung genau auf tar-Blockgrenze — busybox-tar liest das als
+      regulaeres Archivende und meldet Erfolg. Bei einem 40-Eintrag-Archiv
+      passierten 5 von 31 clustergenauen Abschnitten unentdeckt.
+    • Nullgefuellte Datei — entpackt fehlerfrei zu null Eintraegen und
+      sieht damit aus wie ein legitim leeres Volume.
+    • Bitfaeule im Nutzdatenbereich — tar prueft Header, nicht Inhalte.
+
+  Eine Pruefsumme gegen einen beim Sichern festgehaltenen Sollwert schliesst
+  alle drei auf einmal, und das fehlende Manifest kennzeichnet zugleich einen
+  abgebrochenen Sicherungslauf.
 #>
 [CmdletBinding()]
 param(
@@ -16,67 +33,92 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # ---------------------------------------------------------------------------
-# Namensschutz. Dieses Skript LOESCHT Volume-Inhalte. Ein Tippfehler im
-# Parameter wuerde sonst ein fremdes Volume treffen — auf dieser Maschine
-# liegen fremde Volumes direkt daneben.
+# Erlaubnisliste statt Muster. Dieses Skript LOESCHT Volume-Inhalte. Ein
+# formtreuer Tippfehler ('sales-claw-stat') passt auf ein Muster, meint aber
+# ein anderes Volume — das Skript legte es still an und meldete Erfolg,
+# waehrend das echte Volume unberuehrt blieb. Ein falscher Erfolg ist bei
+# einer Wiederherstellung fast so schlimm wie ein Datenverlust.
+#
+# Auch der Containername wird geprueft: ohne das macht ein Tippfehler dort
+# die Laufend-Pruefung weiter unten wirkungslos.
 # ---------------------------------------------------------------------------
+$ERLAUBTE_VOLUMES = @('sales-claw-state', 'sales-claw-keys')
 foreach ($v in @($StateVolume, $KeysVolume)) {
-    # -cnotmatch: gross-/kleinschreibungsempfindlich. Das vorgabemaessige
-    # -notmatch liesse 'SALES-CLAW-STATE' durch — Docker-Volumenamen sind aber
-    # gross-/kleinschreibungsempfindlich, das waere ein anderes Volume.
-    if ($v -cnotmatch '^sales-claw-[a-z]+$') {
-        throw "Verweigert: '$v' gehoert nicht zu diesem Projekt. Erlaubt sind nur Namen der Form sales-claw-*."
+    if ($v -cnotin $ERLAUBTE_VOLUMES) {
+        throw "Verweigert: '$v' ist keines der Volumes dieses Projekts ($($ERLAUBTE_VOLUMES -join ', '))."
     }
 }
+if ($Container -cne 'sales-claw') {
+    throw "Verweigert: '$Container' ist nicht der Container dieses Projekts."
+}
 
-if (docker ps --filter "name=$Container" --format '{{.Names}}' | Where-Object { $_ -eq $Container }) {
+if (docker ps --filter "name=^$Container$" --format '{{.Names}}') {
     throw "Container '$Container' laeuft. Erst 'docker compose down' ausfuehren."
 }
 
 $quelleVoll = (Resolve-Path $Quelle).Path
 
 # ---------------------------------------------------------------------------
-# BEIDE Archive vollstaendig pruefen, BEVOR irgendein Volume angefasst wird.
-#
-# Existenz allein genuegt nicht: eine abgebrochene Kopie, eine volle Platte
-# oder ein dazwischenfunkender Virenscanner hinterlassen eine Datei, die da
-# ist und trotzdem nichts taugt. Wuerde erst beim Entpacken auffallen — dann
-# ist das Zielvolume aber schon geleert. Bei zwei Volumes entstuende sogar ein
-# halber Zustand: eines ueberschrieben, eines leer.
+# Das Manifest ist Pflicht. Sein Fehlen bedeutet: abgebrochener oder alter
+# Sicherungslauf. Beides ist kein Grund, Volumes zu leeren.
+# ---------------------------------------------------------------------------
+$manifestPfad = Join-Path $quelleVoll 'MANIFEST.json'
+if (-not (Test-Path $manifestPfad)) {
+    throw "Kein MANIFEST.json in '$quelleVoll'. Die Sicherung ist unvollstaendig oder stammt aus einer aelteren Fassung — nichts wurde angefasst."
+}
+$manifest = Get-Content -Raw -Encoding UTF8 $manifestPfad | ConvertFrom-Json
+
+if (-not $manifest.container_gestoppt) {
+    Write-Host "WARNUNG: Diese Sicherung entstand bei laufendem Container. Eine darin enthaltene WhatsApp-Sitzung kann unbrauchbar sein, auch wenn saemtliche Pruefungen bestehen." -ForegroundColor Red
+}
+
+# ---------------------------------------------------------------------------
+# BEIDE Archive gegen das Manifest pruefen, BEVOR irgendein Volume angefasst
+# wird. Bei zwei Volumes entstuende sonst ein halber Zustand: eines
+# ueberschrieben, eines geleert.
 # ---------------------------------------------------------------------------
 foreach ($paar in @(@($StateVolume,'state'), @($KeysVolume,'keys'))) {
     $vol, $name = $paar
-    $pfad = Join-Path $quelleVoll "$name.tar"
-    if (-not (Test-Path $pfad)) { throw "Fehlt in der Sicherung: $name.tar — nichts wurde angefasst." }
-    $groesse = (Get-Item $pfad).Length
-    if ($groesse -eq 0) { throw "Leer: $name.tar hat 0 Byte — nichts wurde angefasst." }
-    # Probeweise VOLLSTAENDIG entpacken, in ein Wegwerf-Verzeichnis im
-    # Container. Ein blosses `tar -tf` genuegt nicht: ein abgeschnittenes
-    # Archiv laesst sich oft noch auflisten, aber nicht entpacken. Und der
-    # Exit-Code einer Pipe (`tar -tf | wc -l`) ist der des LETZTEN Glieds —
-    # also der von `wc`, das immer 0 liefert. Busybox-sh kennt kein pipefail.
-    # Genau daran ist die erste Fassung dieser Pruefung gescheitert.
-    #
-    # Die `&&`-Kette sorgt dafuer, dass ein Fehler von `tar` den Exit-Code
-    # bestimmt: bei Misserfolg laeuft `find` gar nicht erst an.
-    $eintraege = docker run --rm -v "${quelleVoll}:/quelle:ro" alpine:3.20 `
-        sh -c "mkdir -p /probe && tar -xf /quelle/$name.tar -C /probe && find /probe -mindepth 1 | wc -l"
-    if ($LASTEXITCODE -ne 0) { throw "Beschaedigt: $name.tar laesst sich nicht entpacken — nichts wurde angefasst." }
+    $datei = "$name.tar"
+    $pfad  = Join-Path $quelleVoll $datei
 
-    # Ein leeres Archiv ist KEIN Defekt. `sales-claw-keys` ist seit
-    # Projektbeginn leer, und ein leeres Volume ist ein gueltiger Zustand.
-    # Hier abzubrechen wuerde eine voellig intakte Sicherung fuer unbrauchbar
-    # erklaeren — ein Schutz, der mehr kaputtmacht als er verhindert. Die
-    # Unversehrtheit ist durch das erfolgreiche Entpacken oben bereits belegt;
-    # die Eintragszahl ist Information, kein Kriterium.
-    $anzahl = [int]$eintraege.Trim()
-    if ($anzahl -lt 1) {
-        Write-Host "HINWEIS: $name.tar ist unversehrt, aber leer — das Volume enthielt nichts." -ForegroundColor Yellow
+    if (-not (Test-Path $pfad)) { throw "Fehlt in der Sicherung: $datei — nichts wurde angefasst." }
+
+    $soll = $manifest.archive.$name
+    if (-not $soll) { throw "Das Manifest kennt '$name' nicht — nichts wurde angefasst." }
+
+    $groesse = (Get-Item $pfad).Length
+    if ($groesse -ne $soll.bytes) {
+        throw "Groesse weicht ab fuer $datei — Soll $($soll.bytes) Byte, Ist $groesse. Nichts wurde angefasst."
     }
-    Write-Host "probeweise entpackt: $name.tar ($groesse Byte, $anzahl Eintraege)"
+
+    $ist = (Get-FileHash -Algorithm SHA256 -Path $pfad).Hash.ToLower()
+    if ($ist -cne $soll.sha256.ToLower()) {
+        throw "Pruefsumme weicht ab fuer $datei. Die Datei hat sich seit der Sicherung veraendert — nichts wurde angefasst."
+    }
+
+    # Zweite Verteidigungslinie: probeweise vollstaendig entpacken. Faengt den
+    # Fall ab, dass das Archiv schon beim Sichern beschaedigt war und das
+    # Manifest die Beschaedigung mitbeurkundet hat.
+    $eintraege = docker run --rm -v "${quelleVoll}:/quelle:ro" alpine:3.20 `
+        sh -c "mkdir -p /probe && tar -xf /quelle/$datei -C /probe && find /probe -mindepth 1 | wc -l"
+    if ($LASTEXITCODE -ne 0) { throw "Beschaedigt: $datei laesst sich nicht entpacken — nichts wurde angefasst." }
+
+    $anzahl = [int]$eintraege.Trim()
+    if ($anzahl -ne $soll.eintraege) {
+        throw "Eintragszahl weicht ab fuer $datei — Soll $($soll.eintraege), Ist $anzahl. Nichts wurde angefasst."
+    }
+
+    if ($anzahl -eq 0) {
+        # Zulaessig, solange das Manifest es so festhaelt: ein leeres Volume
+        # ist ein gueltiger Zustand. Ohne den Manifest-Abgleich waere dieser
+        # Fall nicht von einer nullgefuellten Datei zu unterscheiden.
+        Write-Host "HINWEIS: $datei ist leer — das Volume enthielt beim Sichern nichts. Vom Manifest bestaetigt." -ForegroundColor Yellow
+    }
+    Write-Host "geprueft: $datei (Groesse, Pruefsumme und $anzahl Eintraege stimmen mit dem Manifest ueberein)"
 }
 
-Write-Host "Beide Archive in Ordnung. Jetzt erst werden die Volumes geleert." -ForegroundColor Yellow
+Write-Host "Beide Archive stimmen mit dem Manifest ueberein. Jetzt erst werden die Volumes geleert." -ForegroundColor Yellow
 
 foreach ($paar in @(@($StateVolume,'state'), @($KeysVolume,'keys'))) {
     $vol, $name = $paar

@@ -14,6 +14,7 @@ Wertvolles verloren geht, falls das Skript einen Fehler hat.
 ```powershell
 pwsh -File scripts/backup-state.ps1
 # optional: pwsh -File scripts/backup-state.ps1 -Ziel D:\anderer\ordner
+# nur im Notfall: pwsh -File scripts/backup-state.ps1 -OhneStopp
 ```
 
 Legt `<Ziel>/sales-claw-<zeitstempel>/` an mit:
@@ -22,6 +23,15 @@ Legt `<Ziel>/sales-claw-<zeitstempel>/` an mit:
 - `keys.tar` — wortgetreues tar-Archiv des Volumes `sales-claw-keys`
 - `openclaw-backup/create.log` — Log von `openclaw backup create`, ausgeführt
   im laufenden Container (nur wenn der Container läuft)
+- `MANIFEST.json` — die Sollwerte je Archiv (`sha256`, `bytes`, `eintraege`)
+  plus `container_gestoppt`. **Wird zuletzt geschrieben**: fehlt die Datei,
+  war der Lauf unvollständig, und `restore-state.ps1` lehnt die Sicherung ab.
+
+**Der Container wird für die Dauer des tar-Laufs gestoppt** und danach wieder
+gestartet (Begründung unten, „Härtung (Fix-Runde 4)"). Die Ausfallzeit liegt
+bei wenigen Sekunden. `-OhneStopp` unterdrückt das, warnt dafür deutlich und
+setzt `container_gestoppt: false` im Manifest — worauf `restore-state.ps1`
+später erneut warnt.
 
 Gibt den vollen Pfad des Sicherungsordners auf stdout aus, Exit `0`.
 
@@ -34,10 +44,16 @@ pwsh -File scripts/restore-state.ps1 -Quelle backups/sales-claw-20260817-174858
 Voraussetzung: der Container muss **gestoppt** sein (`docker compose down`).
 Das Skript prüft das selbst und bricht mit Fehler ab, wenn er noch läuft —
 damit niemand versehentlich in ein offenes Volume schreibt. Bevor überhaupt
-ein Volume angefasst wird, prüft das Skript **beide** Archive vollständig
-(siehe „Archivprüfung vor dem Schreiben" unten). Erst danach leert es beide
-Ziel-Volumes und spielt die tar-Archive aus der Quelle ein. Anschließend
-`docker compose up -d`.
+ein Volume angefasst wird, gleicht das Skript **beide** Archive gegen
+`MANIFEST.json` ab — Größe, SHA-256 und Eintragszahl — und entpackt sie
+zusätzlich probeweise (siehe „Härtung (Fix-Runde 4)" unten). Fehlt das
+Manifest, bricht es ab, ohne ein Volume anzufassen. Erst wenn beide Archive
+bestehen, leert es die Ziel-Volumes und spielt die tar-Archive ein.
+Anschließend `docker compose up -d`.
+
+**Sicherungen aus der Zeit vor Fix-Runde 4 enthalten kein `MANIFEST.json` und
+werden abgelehnt.** Das ist Absicht: für sie gibt es keine Sollwerte, also
+lässt sich nicht feststellen, ob sie noch das sind, was gesichert wurde.
 
 ## Warum zwei Sicherungswege
 
@@ -255,6 +271,130 @@ beiden Fällen bit-identisch zur Baseline (SHA-256-Vergleich, siehe Report).
 Die Lockerung aus Fix-Runde 3 betrifft ausschließlich den Fall „leer, aber
 unversehrt" — Beschädigung wird weiterhin zuverlässig erkannt.
 
+## Härtung (Fix-Runde 4) — Manifest mit Sollwerten und Container-Stopp
+
+Drei Fassungen der Archivprüfung (Fix-Runde 1 bis 3) sind an derselben Sache
+gescheitert: Sie fragten **„lässt sich das entpacken"** statt **„ist das noch
+das, was gesichert wurde"**. Ohne einen beim Sichern festgehaltenen Sollwert
+kann eine Prüfung das prinzipiell nicht beantworten.
+
+### Was jede reine Entpack-Prüfung durchlässt — an diesem Projekt gemessen
+
+Alle drei Fälle wurden an der echten `state.tar` dieses Projekts
+(1 539 584 Byte, 39 Einträge) reproduziert; volle Ausgaben im Report,
+Abschnitt „Fix-Runde 4":
+
+1. **Trunkierung auf tar-Blockgrenze.** Busybox-`tar` liest eine an einer
+   Blockgrenze abgeschnittene Datei als reguläres Archivende und meldet
+   Erfolg. Gemessen: **24 von 24** geprüften Header-Blockgrenzen lieferten
+   `tar -xf` Exit `0` — von 0 bis 38 Einträgen. Die Fix-Runde-3-Prüfung hätte
+   jede einzelne davon durchgewunken.
+2. **Nullgefüllte Datei.** Eine `state.tar` aus 1 539 584 Nullbytes — also mit
+   **exakt der Größe der echten Sicherung** — entpackt fehlerfrei zu null
+   Einträgen. Mit Fix-Runde 3 hätte das den gelben Hinweis „unversehrt, aber
+   leer" ausgelöst und die Volumes **geleert**, ohne etwas zurückzuspielen.
+3. **Bitfäule im Nutzdatenbereich.** `tar` prüft Header-Prüfsummen, nicht
+   Dateiinhalte. Ein einziges gekipptes Bit in den Nutzdaten (Offset 1 205 760,
+   `0x6D` → `0x4D`, Größe unverändert) entpackte mit Exit `0` und **39
+   Einträgen — dem exakten Manifest-Sollwert**. Die Markierungsdatei kam dabei
+   als `Markierung-task3-fix4` statt `markierung-task3-fix4` heraus: still
+   verfälschte Nutzdaten, von jeder Entpack-Prüfung als in Ordnung gemeldet.
+
+### Die Korrektur: Sollwerte beim Sichern, Abgleich beim Wiederherstellen
+
+`backup-state.ps1` schreibt `MANIFEST.json` mit `sha256`, `bytes` und
+`eintraege` je Archiv — **zuletzt**, sodass sein Fehlen einen abgebrochenen
+Lauf kennzeichnet. `restore-state.ps1` gleicht beide Archive dagegen ab,
+bevor es irgendein Volume berührt, und entpackt sie zusätzlich probeweise
+(zweite Verteidigungslinie für den Fall, dass ein Archiv schon beim Sichern
+beschädigt war und das Manifest die Beschädigung mitbeurkundet hat).
+
+Belegt mit fünf Fehlerfällen, jeder mit Volume-Fingerabdruck vor und nach dem
+Versuch (`find . -type f | sort | xargs sha256sum | sha256sum`), alle
+unverändert:
+
+| Fall | Erkennt | Meldung |
+|---|---|---|
+| `MANIFEST.json` fehlt | Manifest-Pflicht | `Kein MANIFEST.json … nichts wurde angefasst.` |
+| 1 Bit gekippt, Größe gleich | **nur** SHA-256 | `Pruefsumme weicht ab fuer state.tar …` |
+| Trunkierung auf Blockgrenze | Größe | `Groesse weicht ab fuer state.tar — Soll 1539584 Byte, Ist 1536512.` |
+| `state.tar` nullgefüllt, Größe gleich | **nur** SHA-256 | `Pruefsumme weicht ab fuer state.tar …` |
+| `keys.tar` nullgefüllt (Größe **und** Eintragszahl stimmen) | **nur** SHA-256 | `geprueft: state.tar (…)`, danach `Pruefsumme weicht ab fuer keys.tar …` |
+
+Der letzte Fall belegt zugleich, dass die Reihenfolge aus Befund 1 erhalten
+bleibt: `state.tar` wurde als gültig bestätigt, geschrieben wurde trotzdem
+nichts.
+
+### Namensschutz: Erlaubnisliste statt Muster (ersetzt Fix-Runde 1/2)
+
+Das Muster `^sales-claw-[a-z]+$` aus Fix-Runde 1/2 ist durch eine
+ausdrückliche Erlaubnisliste ersetzt: `sales-claw-state` und
+`sales-claw-keys`, sonst nichts. Grund: ein formtreuer Tippfehler
+(`sales-claw-stat`) passt auf das Muster, meint aber ein anderes Volume —
+`restore-state.ps1` legte es still an und meldete Erfolg, während das echte
+Volume unberührt blieb. Zusätzlich wird jetzt auch der **Containername**
+geprüft; ohne das macht ein Tippfehler dort die Laufend-Prüfung wirkungslos.
+
+### Der Befund, der schwerer wiegt als jede Archivprüfung: tar über laufende Schreibvorgänge
+
+Die bisherige Sicherung tarrte die Volumes, **während der Container lief**.
+Der Session-Store — dort liegt die WhatsApp-Kopplung — wird im Betrieb
+geschrieben. Ein tar über laufende Schreibvorgänge liefert ein strukturell
+einwandfreies Archiv mit einem Zustand mitten im Schreiben: Prüfsumme,
+Größe, Eintragszahl und Entpackprobe stimmen alle, und die zurückgespielte
+Sitzung ist trotzdem tot. Keine Archivprüfung der Welt kann das bemerken,
+weil das Archiv nicht beschädigt ist — es bildet nur einen Zustand ab, den es
+so nie gab.
+
+OpenClaws eigenes `backup create` zieht dieselbe Konsequenz und meldet bei
+jedem Lauf:
+
+```
+Backup skipped 5 volatile files (live sessions, cron logs, queues, sockets, pid/tmp).
+```
+
+Unser wortgetreues tar würde genau diese Dateien mitnehmen. Deshalb stoppt
+`backup-state.ps1` den Container jetzt für die Dauer des tar-Laufs:
+
+```
+Stoppe sales-claw fuer die Dauer der Sicherung…
+gesichert: sales-claw-state -> state.tar (1539584 Byte, 39 Eintraege)
+gesichert: sales-claw-keys -> keys.tar (1536 Byte, 0 Eintraege)
+MANIFEST.json geschrieben — Sicherung vollstaendig.
+Starte sales-claw wieder…
+```
+
+Gemessene Ausfallzeit: `docker inspect` meldete Stopp um `17:49:03.237Z` und
+Wiederanlauf um `17:49:06.697Z` — **3,5 Sekunden**, `docker compose ps`
+danach wieder `Up … (healthy)`. Das Manifest hält `container_gestoppt: true`
+fest.
+
+`-OhneStopp` bleibt für Notfälle vorhanden, warnt aber laut und setzt
+`container_gestoppt: false`; `restore-state.ps1` warnt dann beim Zurückspielen
+erneut (`WARNUNG: Diese Sicherung entstand bei laufendem Container …`) — beides
+gemessen, siehe Report.
+
+### Der `finally`-Block: der Container kommt auch nach einem Fehlschlag zurück
+
+Ein Sicherungsskript, das den Container stoppt, darf ihn nicht gestoppt
+zurücklassen, wenn es mittendrin scheitert. Der Wiederanlauf steht deshalb in
+einem `finally`-Block. Belegt mit einer Sicherung, die **nach** dem Stopp
+fehlschlug (Ziel auf einem Laufwerk, das Windows anlegen kann, Docker aber
+nicht mounten):
+
+```
+Stoppe sales-claw fuer die Dauer der Sicherung…
+docker: Error response from daemon: mkdir Q:\backup: The system cannot find the path specified.
+Starte sales-claw wieder…
+Exception: … tar fuer Volume sales-claw-state fehlgeschlagen
+```
+
+`docker inspect` bestätigte Stopp (`17:50:39.507Z`) **und** Wiederanlauf
+(`17:50:40.141Z`); `docker compose ps` danach wieder `Up … (healthy)`. Der
+abgebrochene Lauf hinterließ **kein** `MANIFEST.json` — die unvollständige
+Sicherung ist damit als solche gekennzeichnet und wird beim Wiederherstellen
+abgelehnt.
+
 ## Warum beide Volumes zusammengehören (Spec §5)
 
 `docs/02_ARCHITECTURE.md` (Abschnitt „Warum zwei Volumes") hält fest:
@@ -316,6 +456,16 @@ Hinweis auf das leere `keys.tar`, `docker compose ps` wieder `healthy`,
 Markierung und `openclaw.json`-Prüfsumme (inkl. Token-Länge und
 OpenRouter-Katalogeintrag) vollständig intakt.
 
+Nach Fix-Runde 4 (Manifest und Container-Stopp) erneut vollständig gefahren,
+Markierung `markierung-task3-fix4`: Sicherung mit gestopptem Container
+(`container_gestoppt: true`), beide Volumes gelöscht — Markierung weg,
+`openclaw.json` weg, Container in der Neustart-Schleife (`Restarting (78)`) —,
+danach Wiederherstellung mit Manifest-Abgleich (`geprueft: state.tar
+(Groesse, Pruefsumme und 39 Eintraege stimmen mit dem Manifest ueberein)`),
+`docker compose ps` wieder `Up … (healthy)`, Markierung zurück,
+`openclaw.json`-Prüfsumme identisch (`6f089752…`), Gateway-Token-Länge 48,
+OpenRouter-Katalogeintrag 1 — alles unverändert.
+
 Die zu diesem Zeitpunkt im Volume liegende WhatsApp-Konfiguration ist reine
 Policy (`enabled`, `dmPolicy`, `allowFrom`, …) — noch **keine** Kopplung
 (keine Session, kein QR-Pairing). Sie wurde beim Test nicht verändert und ist
@@ -326,7 +476,11 @@ nicht Gegenstand dieses Tasks.
 `scripts/backup-state.ps1` ohne Parameter aufrufen (Standardziel
 `backups/` im Repo, bereits gitignored) — z. B. über die Windows-Aufgaben­planung
 oder ein äquivalentes Scheduling auf der Ziel-VM, einmal täglich außerhalb
-der Geschäftszeiten. Aufbewahrung z. B. 7 tägliche + 4 wöchentliche Archive;
+der Geschäftszeiten. **Der Lauf stoppt den Container für wenige Sekunden**
+(gemessen 3,5 s) — das ist der Preis für eine Sicherung, die die
+WhatsApp-Sitzung tatsächlich überlebt, und der Grund, den Termin außerhalb
+der Geschäftszeiten zu legen. `-OhneStopp` ist kein Betriebsmodus, sondern
+ein Notbehelf. Aufbewahrung z. B. 7 tägliche + 4 wöchentliche Archive;
 Löschung älterer Sicherungsordner ist bewusst **nicht** Teil dieses Skripts
 und sollte separat (Cron/Aufgabenplanung mit Alters-Filter) erfolgen, damit
 `backup-state.ps1` selbst niemals löschend wirkt. Sicherungsordner enthalten

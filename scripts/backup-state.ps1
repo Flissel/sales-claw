@@ -1,34 +1,44 @@
 #requires -Version 7
 <#
 .SYNOPSIS
-  Sichert beide Volumes als tar-Archive und zusätzlich OpenClaws eigenes,
-  verifizierbares Backup-Archiv.
+  Sichert beide Volumes als tar-Archive, schreibt ein Manifest mit Sollwerten
+  und legt zusaetzlich OpenClaws eigenes Backup-Archiv ab.
 .NOTES
-  Zwei Wege mit Absicht: das tar-Archiv ist wortgetreu, das OpenClaw-Archiv
-  kennt die Semantik (Konfiguration, Credentials, Sessions, Workspaces) und
-  lässt sich mit `openclaw backup verify` prüfen.
+  Der Container wird fuer die Dauer des tar-Laufs GESTOPPT. Grund: der
+  Session-Store — dort liegt die WhatsApp-Kopplung — wird im Betrieb
+  geschrieben. Ein tar ueber laufende Schreibvorgaenge liefert ein
+  strukturell einwandfreies Archiv mit einem Zustand mitten im Schreiben.
+  Die zurueckgespielte Sitzung ist dann tot, ohne dass irgendeine
+  Archivpruefung das bemerken koennte. OpenClaws eigenes `backup create`
+  ueberspringt aus demselben Grund fuenf fluechtige Dateien ("live sessions,
+  cron logs, queues, sockets, pid/tmp") — unser tar wuerde sie mitnehmen.
+
+  Das MANIFEST wird ZULETZT geschrieben. Sein Fehlen ist die Kennzeichnung
+  eines abgebrochenen Laufs: eine Sicherung ohne Manifest gilt als
+  unvollstaendig und wird beim Wiederherstellen abgelehnt.
 #>
 [CmdletBinding()]
 param(
     [string]$Ziel        = "$PSScriptRoot\..\backups",
     [string]$StateVolume = 'sales-claw-state',
     [string]$KeysVolume  = 'sales-claw-keys',
-    [string]$Container   = 'sales-claw'
+    [string]$Container   = 'sales-claw',
+    [switch]$OhneStopp
 )
 
 $ErrorActionPreference = 'Stop'
 
-# Namensschutz, spiegelbildlich zum Wiederherstellungsskript. Hier wird nur
-# lesend gemountet (:ro), das Risiko ist also kleiner — aber ein Skript, das
-# gegen echte Kopplungsdaten laeuft, soll gar nicht erst auf fremde Volumes
-# zeigen koennen.
+# Ausdrueckliche Erlaubnisliste statt Muster. Ein formtreuer Tippfehler
+# ('sales-claw-stat') passt auf ein Muster, meint aber ein anderes Volume.
+# Dieses Projekt hat genau zwei Volumes und genau einen Container.
+$ERLAUBTE_VOLUMES = @('sales-claw-state', 'sales-claw-keys')
 foreach ($v in @($StateVolume, $KeysVolume)) {
-    # -cnotmatch: gross-/kleinschreibungsempfindlich. Das vorgabemaessige
-    # -notmatch liesse 'SALES-CLAW-STATE' durch — Docker-Volumenamen sind aber
-    # gross-/kleinschreibungsempfindlich, das waere ein anderes Volume.
-    if ($v -cnotmatch '^sales-claw-[a-z]+$') {
-        throw "Verweigert: '$v' gehoert nicht zu diesem Projekt. Erlaubt sind nur Namen der Form sales-claw-*."
+    if ($v -cnotin $ERLAUBTE_VOLUMES) {
+        throw "Verweigert: '$v' ist keines der Volumes dieses Projekts ($($ERLAUBTE_VOLUMES -join ', '))."
     }
+}
+if ($Container -cne 'sales-claw') {
+    throw "Verweigert: '$Container' ist nicht der Container dieses Projekts."
 }
 
 $zeitstempel = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -36,29 +46,68 @@ $ordner = Join-Path $Ziel "sales-claw-$zeitstempel"
 New-Item -ItemType Directory -Force -Path $ordner | Out-Null
 $ordnerVoll = (Resolve-Path $ordner).Path
 
-foreach ($paar in @(@($StateVolume,'state'), @($KeysVolume,'keys'))) {
-    $vol, $name = $paar
-    docker run --rm -v "${vol}:/quelle:ro" -v "${ordnerVoll}:/ziel" alpine:3.20 `
-        tar -cf "/ziel/$name.tar" -C /quelle .
-    if ($LASTEXITCODE -ne 0) { throw "tar für Volume $vol fehlgeschlagen" }
-    Write-Host "gesichert: $vol -> $name.tar"
+$liefVorher = [bool](docker ps --filter "name=^$Container$" --format '{{.Names}}')
+
+# OpenClaws semantisches Archiv zuerst — es braucht einen laufenden Container.
+if ($liefVorher) {
+    New-Item -ItemType Directory -Force -Path (Join-Path $ordnerVoll 'openclaw-backup') | Out-Null
+    docker exec $Container openclaw backup create 2>&1 |
+        Tee-Object -FilePath (Join-Path $ordnerVoll 'openclaw-backup\create.log')
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "WARNUNG: 'openclaw backup create' endete mit Code $LASTEXITCODE. Die tar-Archive sind massgeblich; das semantische Archiv fehlt. Siehe create.log." -ForegroundColor Yellow
+    }
 }
 
-# OpenClaws eigenes Archiv, nur wenn der Container läuft.
-$laeuft = docker ps --filter "name=$Container" --format '{{.Names}}'
-if ($laeuft -contains $Container) {
-    New-Item -ItemType Directory -Force -Path (Join-Path $ordnerVoll 'openclaw-backup') | Out-Null
-    docker exec $Container openclaw backup create 2>&1 | Tee-Object -FilePath (Join-Path $ordnerVoll 'openclaw-backup\create.log')
-    if ($LASTEXITCODE -ne 0) {
-        # Kein Abbruch: die tar-Archive sind der massgebliche Sicherungsweg.
-        # Aber still schlucken darf man einen Fehlschlag nicht — wer spaeter
-        # eine Wiederherstellung braucht, muss wissen, was fehlt.
-        Write-Host "WARNUNG: 'openclaw backup create' endete mit Code $LASTEXITCODE. Die tar-Archive sind vorhanden; das semantische Archiv fehlt. Siehe create.log." -ForegroundColor Yellow
-    } else {
-        Write-Host "OpenClaw-Backup erstellt (Pfad siehe create.log)."
+try {
+    if ($liefVorher -and -not $OhneStopp) {
+        Write-Host "Stoppe $Container fuer die Dauer der Sicherung…" -ForegroundColor Yellow
+        docker stop $Container | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Container liess sich nicht stoppen — abgebrochen, nichts gesichert." }
+    } elseif ($OhneStopp) {
+        Write-Host "WARNUNG: -OhneStopp gesetzt. Die Sicherung ist crash-inkonsistent. Eine darin enthaltene WhatsApp-Sitzung kann unbrauchbar sein, obwohl alle Pruefungen bestehen." -ForegroundColor Red
     }
-} else {
-    Write-Host "Container laeuft nicht — OpenClaw-eigenes Backup uebersprungen." -ForegroundColor Yellow
+
+    $manifest = [ordered]@{
+        erzeugt            = (Get-Date).ToUniversalTime().ToString('o')
+        container_gestoppt = ($liefVorher -and -not $OhneStopp)
+        archive            = [ordered]@{}
+    }
+
+    foreach ($paar in @(@($StateVolume,'state'), @($KeysVolume,'keys'))) {
+        $vol, $name = $paar
+        docker run --rm -v "${vol}:/quelle:ro" -v "${ordnerVoll}:/ziel" alpine:3.20 `
+            tar -cf "/ziel/$name.tar" -C /quelle .
+        if ($LASTEXITCODE -ne 0) { throw "tar fuer Volume $vol fehlgeschlagen" }
+
+        $pfad = Join-Path $ordnerVoll "$name.tar"
+
+        # Eintragszahl mit GENAU demselben Verfahren ermitteln, das die
+        # Wiederherstellung benutzt — sonst sind Soll und Ist nicht
+        # vergleichbar (`tar -tf` zaehlt den './'-Eintrag mit, `find
+        # -mindepth 1` nicht).
+        $eintraege = docker run --rm -v "${ordnerVoll}:/quelle:ro" alpine:3.20 `
+            sh -c "mkdir -p /probe && tar -xf /quelle/$name.tar -C /probe && find /probe -mindepth 1 | wc -l"
+        if ($LASTEXITCODE -ne 0) { throw "Das eben erzeugte $name.tar laesst sich nicht entpacken — Sicherung abgebrochen." }
+
+        $manifest.archive[$name] = [ordered]@{
+            datei     = "$name.tar"
+            sha256    = (Get-FileHash -Algorithm SHA256 -Path $pfad).Hash.ToLower()
+            bytes     = (Get-Item $pfad).Length
+            eintraege = [int]$eintraege.Trim()
+        }
+        Write-Host "gesichert: $vol -> $name.tar ($($manifest.archive[$name].bytes) Byte, $($manifest.archive[$name].eintraege) Eintraege)"
+    }
+
+    # ZULETZT. Die Existenz dieser Datei bedeutet: der Lauf ist vollstaendig.
+    $manifest | ConvertTo-Json -Depth 5 |
+        Set-Content -Path (Join-Path $ordnerVoll 'MANIFEST.json') -Encoding utf8
+    Write-Host "MANIFEST.json geschrieben — Sicherung vollstaendig." -ForegroundColor Green
+}
+finally {
+    if ($liefVorher -and -not $OhneStopp) {
+        Write-Host "Starte $Container wieder…" -ForegroundColor Yellow
+        docker start $Container | Out-Null
+    }
 }
 
 Write-Host $ordnerVoll
