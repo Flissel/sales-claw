@@ -1637,3 +1637,191 @@ Container `sales-claw`, Port `18894` und die Skript-Parameter (`-Quelle`, `-Ziel
 `-GatewayPort`, `-Container`) sind über alle Tasks hinweg identisch. Die
 Sicherungsdateinamen `state.tar` / `keys.tar` werden in Task 3 erzeugt und in Task 3
 und 6 unter demselben Namen gelesen.
+
+---
+
+## Task 8: Modellanbieter auf OpenRouter umstellen
+
+Nachträglich eingefügt auf Vorgabe des Betreibers. **Muss vor Task 5 laufen** — dort
+wird zum ersten Mal eine echte Antwort erzeugt. Die Nummer folgt der Reihenfolge des
+Einfügens, nicht der Ausführung; das Ledger hält die tatsächliche Reihenfolge fest.
+
+**Hintergrund:** Auf dem vorhandenen OpenAI-Schlüssel liegt kein Guthaben. Bis ein
+eigener Schlüssel existiert, läuft der Rauchtest über OpenRouters kostenlose Modelle.
+OpenClaw hat dafür einen **nativen Provider** — kein Umweg über `OPENAI_BASE_URL`, und
+die Randbedingung „kein lokales Modell" bleibt unberührt, weil OpenRouter gehostet ist.
+
+**Dateien:**
+- Neu: `scripts/seed-env.ps1`
+- Ändern: `.env.example`
+- Ändern: `config/openclaw.json`
+- Ändern: `docs/02_ARCHITECTURE.md`
+
+**Schnittstellen:**
+- Konsumiert: laufender Container `sales-claw` aus Task 2.
+- Produziert: `scripts/seed-env.ps1` → schreibt `.env` mit `OPENROUTER_API_KEY`,
+  `OPENAI_API_KEY` und `TZ`; Exit `0`. **Gibt niemals einen Schlüsselwert aus**,
+  sondern nur „uebernommen" oder „NICHT gefunden".
+
+- [ ] **Schritt 1: `scripts/seed-env.ps1` schreiben**
+
+```powershell
+#requires -Version 7
+<#
+.SYNOPSIS
+  Uebernimmt vorhandene API-Schluessel aus der lokalen OpenClaw-Konfiguration
+  in die .env dieses Projekts.
+.NOTES
+  Schluesselwerte werden NIE ausgegeben — weder auf die Konsole, noch in ein
+  Log, noch in eine Fehlermeldung. Das Skript meldet ausschliesslich, ob ein
+  Schluessel gefunden wurde.
+#>
+[CmdletBinding()]
+param(
+    [string]$Quelle = "$env:USERPROFILE\.openclaw\openclaw.json",
+    [string]$Ziel   = "$PSScriptRoot\..\.env"
+)
+
+$ErrorActionPreference = 'Stop'
+
+if (-not (Test-Path $Quelle)) { throw "Quelle nicht gefunden: $Quelle" }
+$cfg = Get-Content -Raw -Encoding UTF8 $Quelle | ConvertFrom-Json
+
+# Den OpenRouter-Schluessel am Praefix erkennen, nicht am Ablageort: in dieser
+# Installation liegt er unter einem Skill-Eintrag, dessen Name ihn nicht
+# erwarten laesst. Das Praefix ist das verlaessliche Merkmal.
+$openrouter = $null
+foreach ($e in $cfg.skills.entries.PSObject.Properties) {
+    if ($e.Value.apiKey -is [string] -and $e.Value.apiKey.StartsWith('sk-or-v1-')) {
+        $openrouter = $e.Value.apiKey
+        break
+    }
+}
+$openai = $cfg.env.OPENAI_API_KEY
+
+$zeilen = @(
+    '# Erzeugt von scripts/seed-env.ps1. Enthaelt Geheimnisse — nicht versionieren.',
+    'TZ=Europe/Berlin',
+    "OPENROUTER_API_KEY=$openrouter",
+    "OPENAI_API_KEY=$openai"
+)
+$zielVoll = [System.IO.Path]::GetFullPath($Ziel)
+Set-Content -Path $zielVoll -Value $zeilen -Encoding utf8
+
+# Vererbte Rechte entfernen, nur der aktuelle Benutzer darf lesen und schreiben.
+icacls $zielVoll /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
+
+Write-Host ("OPENROUTER_API_KEY: " + $(if ($openrouter) { 'uebernommen' } else { 'NICHT gefunden' }))
+Write-Host ("OPENAI_API_KEY:     " + $(if ($openai)     { 'uebernommen' } else { 'NICHT gefunden' }))
+Write-Host "Geschrieben nach $zielVoll"
+exit 0
+```
+
+- [ ] **Schritt 2: `.env.example` um OpenRouter ergänzen**
+
+Ersetze den Abschnitt zum Modellanbieter durch:
+
+```bash
+# ---------------------------------------------------------------------------
+# Modellanbieter. Der Agent im Container liest diese Variablen aus der
+# Umgebung, NICHT aus config/openclaw.json — siehe Spec §7 "Secrets".
+#
+# Bis ein eigener, guthabengedeckter Schluessel existiert, laeuft der
+# Rauchtest ueber OpenRouters kostenlose Modelle.
+# ---------------------------------------------------------------------------
+OPENROUTER_API_KEY=sk-or-v1-...
+OPENAI_API_KEY=
+
+# ---------------------------------------------------------------------------
+# OPENAI_BASE_URL wird bewusst NICHT gesetzt. Ein lokal laufendes Modell ist
+# fuer dieses Projekt ausgeschlossen — die Maschine traegt es nicht. Zeigt
+# diese Variable je auf einen lokalen Endpunkt, ist das ein Fehler, keine
+# Option. OpenRouter braucht sie nicht: OpenClaw hat einen eigenen Provider.
+# ---------------------------------------------------------------------------
+```
+
+- [ ] **Schritt 3: Primärmodell in `config/openclaw.json` umstellen**
+
+```json
+"model": { "primary": "openrouter/free" }
+```
+
+`openrouter/free` routet automatisch über die kostenlosen Modelle und ist dadurch
+unempfindlich gegen das Rate-Limit eines einzelnen. Das ist eine **bewusste Ausnahme**
+von der Pin-Regel dieses Projekts und gilt nur, solange niemand mit echten Kunden
+spricht. Sobald echte Beratungsgespräche laufen, wird hier ein bezahltes, gepinntes
+Modell eingetragen.
+
+- [ ] **Schritt 4: Rot — nachweisen, dass der Schlüssel noch fehlt**
+
+```bash
+docker compose exec sales-claw sh -lc 'test -n "$OPENROUTER_API_KEY" && echo gesetzt || echo fehlt'
+```
+
+Erwartet: `fehlt`.
+
+- [ ] **Schritt 5: Grün — Schlüssel übernehmen und Container neu starten**
+
+```bash
+pwsh -File scripts/seed-env.ps1
+```
+
+Erwartet: `OPENROUTER_API_KEY: uebernommen`. Meldet es `NICHT gefunden`, ist das ein
+echter Befund — melden, statt einen Schlüssel von anderswo zu beschaffen.
+
+```bash
+docker compose down
+pwsh -File scripts/seed-volume.ps1
+docker compose up -d
+```
+
+Warten, dann:
+
+```bash
+docker compose exec sales-claw sh -lc 'test -n "$OPENROUTER_API_KEY" && echo gesetzt || echo fehlt'
+```
+
+Erwartet: `gesetzt`. **Den Wert selbst nicht ausgeben.**
+
+- [ ] **Schritt 6: Provider und Modell verifizieren**
+
+```bash
+docker compose exec sales-claw openclaw infer model providers
+```
+
+Erwartet: `openrouter` erscheint in der Liste.
+
+```bash
+docker compose exec sales-claw openclaw config get agents.defaults.model.primary
+```
+
+Erwartet: `openrouter/free`.
+
+- [ ] **Schritt 7: Echte Antwort erzeugen — ohne dass etwas nach außen geht**
+
+```bash
+docker compose exec sales-claw openclaw agent -m "Antworte ausschliesslich mit dem Wort: pong" --json
+```
+
+Erwartet: eine JSON-Antwort, die `pong` enthält. **`--deliver` wird bewusst
+weggelassen** — ohne dieses Flag geht keine Nachricht an WhatsApp oder einen anderen
+Kanal hinaus. Geprüft wird das Modell, nicht der Versandweg.
+
+Scheitert der Aufruf an einem Rate-Limit, ist das kein Umsetzungsfehler — kostenlose
+Modelle haben Tageskontingente. Ausgabe festhalten, erneut versuchen, und wenn es
+bestehen bleibt, melden.
+
+- [ ] **Schritt 8: `docs/02_ARCHITECTURE.md` um „Modellanbieter" ergänzen**
+
+Inhalt: der native OpenRouter-Provider und warum kein `OPENAI_BASE_URL` nötig ist; die
+Begründung für `openrouter/free` als bewusste Ausnahme von der Pin-Regel; der Hinweis,
+dass das Free-Tier-Kontingent mit anderen Nutzern desselben Schlüssels geteilt wird;
+und die ausdrückliche Feststellung, dass ein kostenloses, automatisch geroutetes
+Modell für echte Beratungsgespräche nicht geeignet ist.
+
+- [ ] **Schritt 9: Committen**
+
+```bash
+git add scripts/seed-env.ps1 .env.example config/openclaw.json docs/02_ARCHITECTURE.md
+git commit -m "feat(modell): auf OpenRouter umstellen, Rauchtest ueber kostenlose Modelle"
+```
