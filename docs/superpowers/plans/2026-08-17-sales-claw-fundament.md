@@ -738,9 +738,20 @@ try {
     }
 
     $manifest = [ordered]@{
-        erzeugt            = (Get-Date).ToUniversalTime().ToString('o')
-        container_gestoppt = ($liefVorher -and -not $OhneStopp)
-        archive            = [ordered]@{}
+        erzeugt = (Get-Date).ToUniversalTime().ToString('o')
+        # Das Feld beantwortet: "War der Container waehrend des tar-Laufs
+        # garantiert still?" — nicht: "Haben WIR ihn gestoppt?"
+        #
+        # Der Unterschied ist nicht akademisch. War der Container beim Aufruf
+        # bereits gestoppt, ist das die konsistenteste Sicherung ueberhaupt.
+        # Die naheliegende Formel ($liefVorher -and -not $OhneStopp) haette
+        # dafuer `false` geschrieben und beim Wiederherstellen eine sachlich
+        # falsche Warnung ausgeloest — ausgerechnet fuer den besten Fall.
+        #
+        # Unsicher ist genau eine Lage: der Container lief und wir haben ihn
+        # auf ausdruecklichen Wunsch nicht gestoppt.
+        container_gestoppt = -not ($liefVorher -and $OhneStopp)
+        archive = [ordered]@{}
     }
 
     foreach ($paar in @(@($StateVolume,'state'), @($KeysVolume,'keys'))) {
@@ -1023,8 +1034,31 @@ docker run --rm -v "${PWD}/backups:/b:ro" alpine:3.20 sh -c 'cat /b/*/MANIFEST.j
 Erwartet: `"container_gestoppt": true`.
 
 Zusätzlich prüfen, dass der Container auch dann wieder startet, wenn die
-Sicherung mittendrin scheitert — etwa mit einem ungültigen `-Ziel`. Der
-`finally`-Block ist genau dafür da; ohne diesen Nachweis ist er unbelegt.
+Sicherung **nach dem Stopp** scheitert. Der `finally`-Block ist genau dafür da;
+ohne diesen Nachweis ist er unbelegt.
+
+**Ein ungültiges `-Ziel` taugt dafür nicht** — es scheitert bereits an
+`Join-Path`, also vor dem `try`-Block und vor `docker stop`. Der Test wäre grün
+und würde nichts belegen. Brauchbar ist ein Pfad, den Windows anlegen und Docker
+nicht mounten kann, etwa ein per `subst` erzeugtes Laufwerk (danach wieder
+lösen). Belege den Wiederanlauf über `docker inspect` — `StartedAt` muss nach
+`FinishedAt` liegen, und `Starte sales-claw wieder…` muss vor der Fehlermeldung
+erscheinen.
+
+- [ ] **Schritt 6d: Was die Umstellung kostet, dokumentieren**
+
+Zwei Folgen gehören in `docs/04_BACKUP_RESTORE.md`, weil sie sonst jemanden
+unvorbereitet treffen:
+
+1. **Jede Sicherung kostet Ausfallzeit** — gemessen rund 3,5 Sekunden. Bei einem
+   geplanten täglichen Lauf ist das unerheblich, aber es ist kein Nulltarif mehr.
+   `-OhneStopp` gibt es für den Fall, dass Verfügbarkeit vorgeht; die Sicherung
+   ist dann ausdrücklich crash-inkonsistent und das Manifest hält das fest.
+2. **Sicherungen ohne `MANIFEST.json` sind nicht mehr wiederherstellbar.** Alle
+   Sicherungen aus früheren Läufen fallen darunter. Das ist beabsichtigt — eine
+   Sicherung ohne Sollwerte lässt sich nicht prüfen, und ungeprüft löschen wollen
+   wir nicht. Wer alte Ordner aufhebt, sollte wissen, dass sie nur noch von Hand
+   verwendbar sind.
 
 - [ ] **Schritt 7: Markierung entfernen**
 
