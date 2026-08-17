@@ -35,6 +35,15 @@ Diese gelten für **jede** Aufgabe. Werte wörtlich aus der Spec
 - Logging `json-file` mit `max-size: 10m`, `max-file: 3`.
 - `TZ=Europe/Berlin`.
 - `plugins.allow: ["whatsapp"]` — discord, telegram, voice-call, browser bleiben aus.
+- **Kein lokales Modell.** Weder im Container noch auf dem Host darf eine
+  Modell-Laufzeit gestartet werden (Ollama, vLLM, llama.cpp, LM Studio o. ä.). Das
+  Modell wird ausschließlich über die API des Anbieters angesprochen. Begründung: Die
+  Maschine trägt bereits 23 Container; eine lokale Modell-Laufzeit legt sie lahm. Auf
+  der VM musste das Ollama-Plugin aus demselben Grund ausdrücklich abgeschaltet
+  werden (Koordinations-Board, 2026-08-04). `plugins.allow` schließt es implizit aus;
+  zusätzlich steht `ollama` explizit auf `enabled: false`, damit die Absicht auch bei
+  einer späteren Änderung von `plugins.allow` sichtbar bleibt. `OPENAI_BASE_URL` darf
+  nicht auf einen lokalen Endpunkt zeigen.
 - `memory-core` aktiv, `openclaw-supermemory` **nicht** geladen.
 - **Keine Secrets in `config/openclaw.json` im Repository.** API-Schlüssel kommen über
   `.env` → `env_file`; der Gateway-Token wird im Container erzeugt und liegt nur im
@@ -131,6 +140,12 @@ OPENAI_API_KEY=sk-...
 # Zeitzone des Containers. Termin- und Digest-Logik späterer Stufen hängt daran.
 # ---------------------------------------------------------------------------
 TZ=Europe/Berlin
+
+# ---------------------------------------------------------------------------
+# OPENAI_BASE_URL wird bewusst NICHT gesetzt. Ein lokal laufendes Modell ist
+# für dieses Projekt ausgeschlossen — die Maschine trägt es nicht. Zeigt diese
+# Variable je auf einen lokalen Endpunkt, ist das ein Fehler, keine Option.
+# ---------------------------------------------------------------------------
 ```
 
 - [ ] **Schritt 2b: `scripts/lib/ports.ps1` schreiben**
@@ -378,7 +393,8 @@ Bewusst minimal. Keine Secrets, kein Gateway-Token — der entsteht in Schritt 6
       "discord": { "enabled": false },
       "telegram": { "enabled": false },
       "voice-call": { "enabled": false },
-      "browser": { "enabled": false }
+      "browser": { "enabled": false },
+      "ollama": { "enabled": false }
     }
   },
   "tools": {
