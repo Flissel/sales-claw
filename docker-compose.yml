@@ -4,22 +4,19 @@ services:
   sales-claw:
     image: ghcr.io/openclaw/openclaw:2026.7.1-slim
     container_name: sales-claw
-    # VORÜBERGEHEND "no" statt "unless-stopped".
+    # Voraussetzung für "unless-stopped": Der Anmelde-Trigger der Windows-
+    # Aufgabe \OpenClaw Gateway ist deaktiviert (2026-08-17 durch den
+    # Betreiber, verifiziert: MSFT_TaskLogonTrigger Enabled=False).
     #
-    # Grund: Die Windows-Aufgabe \OpenClaw Gateway hat einen aktiven
-    # Anmelde-Trigger und startet den lokalen Gateway bei jeder Anmeldung auf
-    # denselben WhatsApp-Credentials, die inzwischen auch in diesem Volume
-    # liegen. Mit "unless-stopped" käme bei einer Anmeldung zusätzlich dieser
-    # Container hoch — zwei gleichzeitige Baileys-Sitzungen melden das
-    # verknüpfte Gerät ab. Eine "prüfe vor dem Start"-Anweisung im Runbook
-    # hilft dagegen nicht, weil beide Starts automatisch erfolgen.
+    # Warum das zusammenhängt: Der lokale Gateway und dieser Container teilen
+    # sich dieselben WhatsApp-Credentials. Kämen bei einer Anmeldung beide von
+    # selbst hoch, meldeten zwei gleichzeitige Baileys-Sitzungen das verknüpfte
+    # Gerät ab. Solange der Trigger aus ist, startet nur dieser Container.
     #
-    # ZURÜCKSETZEN auf "unless-stopped", sobald der Anmelde-Trigger
-    # deaktiviert ist (braucht Administratorrechte):
-    #   $t = Get-ScheduledTask -TaskName 'OpenClaw Gateway'
-    #   foreach ($tr in $t.Triggers) { $tr.Enabled = $false }
-    #   Set-ScheduledTask -TaskName 'OpenClaw Gateway' -Trigger $t.Triggers
-    restart: "no"
+    # Wird der Trigger je wieder aktiviert, muss diese Zeile zurück auf "no" —
+    # eine "prüfe vor dem Start"-Anweisung im Runbook hilft nicht, weil dann
+    # beide Starts automatisch erfolgen und es kein Zeitfenster dafür gibt.
+    restart: unless-stopped
     env_file:
       - .env
     environment:
