@@ -4,19 +4,23 @@ services:
   sales-claw:
     image: ghcr.io/openclaw/openclaw:2026.7.1-slim
     container_name: sales-claw
-    # Voraussetzung für "unless-stopped": Der Anmelde-Trigger der Windows-
-    # Aufgabe \OpenClaw Gateway ist deaktiviert (2026-08-17 durch den
-    # Betreiber, verifiziert: MSFT_TaskLogonTrigger Enabled=False).
+    # DEMO-BETRIEB: bewusst "no", nicht "unless-stopped".
     #
-    # Warum das zusammenhängt: Der lokale Gateway und dieser Container teilen
-    # sich dieselben WhatsApp-Credentials. Kämen bei einer Anmeldung beide von
-    # selbst hoch, meldeten zwei gleichzeitige Baileys-Sitzungen das verknüpfte
-    # Gerät ab. Solange der Trigger aus ist, startet nur dieser Container.
+    # Der Container hängt an der persönlichen WhatsApp-Nummer des Betreibers
+    # und `channels.whatsapp.selfChatMode` steht auf true — er beantwortet
+    # also jede Nachricht, die der Betreiber sich selbst schreibt. Das ist für
+    # die Vorführung gewollt, im Alltag aber unerwünscht: der Selbst-Chat
+    # dient vielen als Notizzettel, und jede Notiz bekäme eine Antwort.
     #
-    # Wird der Trigger je wieder aktiviert, muss diese Zeile zurück auf "no" —
-    # eine "prüfe vor dem Start"-Anweisung im Runbook hilft nicht, weil dann
-    # beide Starts automatisch erfolgen und es kein Zeitfenster dafür gibt.
-    restart: unless-stopped
+    # Mit "no" läuft der Container nur, solange er ausdrücklich gestartet
+    # wurde, und ist nach einem Neustart des Rechners wieder aus.
+    #
+    # Auf "unless-stopped" umstellen, sobald sales-claw eine eigene Nummer hat
+    # und dauerhaft bedienen soll. Voraussetzung dafür bleibt, dass der
+    # Anmelde-Trigger der Windows-Aufgabe \OpenClaw Gateway deaktiviert ist
+    # (aktuell: Enabled=False) — sonst kämen bei einer Anmeldung zwei
+    # Baileys-Sitzungen auf denselben Credentials hoch.
+    restart: "no"
     env_file:
       - .env
     environment:
