@@ -15,6 +15,8 @@ param(
 $ErrorActionPreference = 'Continue'
 $script:Fehler = 0
 
+. (Join-Path $PSScriptRoot 'lib\ports.ps1')
+
 function Pruefe {
     param([string]$Name, [scriptblock]$Test, [string]$Hinweis = '')
     try {
@@ -40,7 +42,7 @@ Pruefe "Docker-Daemon erreichbar" {
 } "Docker Desktop starten."
 
 Pruefe "Gateway-Port $GatewayPort ist frei" {
-    -not (Get-NetTCPConnection -LocalPort $GatewayPort -State Listen -ErrorAction SilentlyContinue)
+    Test-PortFrei -Port $GatewayPort
 } "Anderen Port wählen oder belegenden Prozess beenden."
 
 Pruefe "mindestens $MinFreeGb GB frei auf C:" {
@@ -62,10 +64,21 @@ Pruefe "Image-Tag in der Registry abrufbar" {
     $LASTEXITCODE -eq 0
 } "Netzwerk prüfen oder Tag korrigieren."
 
-Pruefe "openclaw-festival unberührt (darf nicht von uns verwaltet werden)" {
-    $eigene = docker ps -a --filter "name=sales-claw" --format '{{.Names}}'
-    $eigene -notcontains 'openclaw-festival'
-} "Namenskollision — Abbruch."
+Pruefe "kein fremder Container belegt den Namen sales-claw" {
+    # Exakter Filter. Docker filtert sonst per Teilzeichenkette, wodurch die
+    # Pruefung Container mitzaehlt, die uns nichts angehen.
+    -not (docker ps -a --filter "name=^sales-claw$" --format '{{.Names}}')
+} "Es existiert bereits ein Container namens sales-claw — Namenskollision klaeren, bevor irgendetwas gestartet wird."
+
+Pruefe "openclaw-festival gehoert nicht zu unserem Compose-Projekt" {
+    # Das ist die reale Gefahr: traegt ein fremder Container unser
+    # Compose-Projektlabel, raeumt ihn ein 'docker compose down' in diesem
+    # Verzeichnis mit ab. Existiert er nicht, kann nichts kollidieren.
+    $festival = docker ps -a --filter "name=^openclaw-festival$" --format '{{.Names}}'
+    if (-not $festival) { return $true }
+    $projekt = docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' openclaw-festival
+    $projekt -ne 'sales-claw'
+} "openclaw-festival traegt unser Compose-Projektlabel — 'docker compose down' wuerde ihn mit abraeumen."
 
 Write-Host ""
 if ($script:Fehler -gt 0) {

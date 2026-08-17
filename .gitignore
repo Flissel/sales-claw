@@ -1,7 +1,8 @@
 # Secrets
 .env
 *.env
-!.env.example
+# .env.example passt auf keins der Muster oben (es endet nicht auf ".env")
+# und bleibt damit versioniert. Eine !-Negation waere hier wirkungslos.
 
 # Sicherungen und Betriebsartefakte
 backups/
