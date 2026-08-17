@@ -680,6 +680,16 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Namensschutz, spiegelbildlich zum Wiederherstellungsskript. Hier wird nur
+# lesend gemountet (:ro), das Risiko ist also kleiner — aber ein Skript, das
+# gegen echte Kopplungsdaten laeuft, soll gar nicht erst auf fremde Volumes
+# zeigen koennen.
+foreach ($v in @($StateVolume, $KeysVolume)) {
+    if ($v -notmatch '^sales-claw-[a-z]+$') {
+        throw "Verweigert: '$v' gehoert nicht zu diesem Projekt. Erlaubt sind nur Namen der Form sales-claw-*."
+    }
+}
+
 $zeitstempel = Get-Date -Format 'yyyyMMdd-HHmmss'
 $ordner = Join-Path $Ziel "sales-claw-$zeitstempel"
 New-Item -ItemType Directory -Force -Path $ordner | Out-Null
@@ -698,7 +708,14 @@ $laeuft = docker ps --filter "name=$Container" --format '{{.Names}}'
 if ($laeuft -contains $Container) {
     New-Item -ItemType Directory -Force -Path (Join-Path $ordnerVoll 'openclaw-backup') | Out-Null
     docker exec $Container openclaw backup create 2>&1 | Tee-Object -FilePath (Join-Path $ordnerVoll 'openclaw-backup\create.log')
-    Write-Host "OpenClaw-Backup erstellt (Pfad siehe create.log)."
+    if ($LASTEXITCODE -ne 0) {
+        # Kein Abbruch: die tar-Archive sind der massgebliche Sicherungsweg.
+        # Aber still schlucken darf man einen Fehlschlag nicht — wer spaeter
+        # eine Wiederherstellung braucht, muss wissen, was fehlt.
+        Write-Host "WARNUNG: 'openclaw backup create' endete mit Code $LASTEXITCODE. Die tar-Archive sind vorhanden; das semantische Archiv fehlt. Siehe create.log." -ForegroundColor Yellow
+    } else {
+        Write-Host "OpenClaw-Backup erstellt (Pfad siehe create.log)."
+    }
 } else {
     Write-Host "Container laeuft nicht — OpenClaw-eigenes Backup uebersprungen." -ForegroundColor Yellow
 }
@@ -727,14 +744,48 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$quelleVoll = (Resolve-Path $Quelle).Path
-foreach ($n in @('state.tar','keys.tar')) {
-    if (-not (Test-Path (Join-Path $quelleVoll $n))) { throw "Fehlt in der Sicherung: $n" }
+# ---------------------------------------------------------------------------
+# Namensschutz. Dieses Skript LOESCHT Volume-Inhalte. Ein Tippfehler im
+# Parameter wuerde sonst ein fremdes Volume treffen — auf dieser Maschine
+# liegen fremde Volumes direkt daneben.
+# ---------------------------------------------------------------------------
+foreach ($v in @($StateVolume, $KeysVolume)) {
+    if ($v -notmatch '^sales-claw-[a-z]+$') {
+        throw "Verweigert: '$v' gehoert nicht zu diesem Projekt. Erlaubt sind nur Namen der Form sales-claw-*."
+    }
 }
 
 if (docker ps --filter "name=$Container" --format '{{.Names}}' | Where-Object { $_ -eq $Container }) {
     throw "Container '$Container' laeuft. Erst 'docker compose down' ausfuehren."
 }
+
+$quelleVoll = (Resolve-Path $Quelle).Path
+
+# ---------------------------------------------------------------------------
+# BEIDE Archive vollstaendig pruefen, BEVOR irgendein Volume angefasst wird.
+#
+# Existenz allein genuegt nicht: eine abgebrochene Kopie, eine volle Platte
+# oder ein dazwischenfunkender Virenscanner hinterlassen eine Datei, die da
+# ist und trotzdem nichts taugt. Wuerde erst beim Entpacken auffallen — dann
+# ist das Zielvolume aber schon geleert. Bei zwei Volumes entstuende sogar ein
+# halber Zustand: eines ueberschrieben, eines leer.
+# ---------------------------------------------------------------------------
+foreach ($paar in @(@($StateVolume,'state'), @($KeysVolume,'keys'))) {
+    $vol, $name = $paar
+    $pfad = Join-Path $quelleVoll "$name.tar"
+    if (-not (Test-Path $pfad)) { throw "Fehlt in der Sicherung: $name.tar — nichts wurde angefasst." }
+    $groesse = (Get-Item $pfad).Length
+    if ($groesse -eq 0) { throw "Leer: $name.tar hat 0 Byte — nichts wurde angefasst." }
+    # tar -tf listet den Inhalt, ohne zu entpacken. Schlaegt es fehl oder
+    # liefert null Eintraege, ist das Archiv unbrauchbar.
+    $eintraege = docker run --rm -v "${quelleVoll}:/quelle:ro" alpine:3.20 `
+        sh -c "tar -tf /quelle/$name.tar 2>/dev/null | wc -l"
+    if ($LASTEXITCODE -ne 0) { throw "Beschaedigt: $name.tar laesst sich nicht lesen — nichts wurde angefasst." }
+    if ([int]$eintraege.Trim() -lt 1) { throw "Ohne Eintraege: $name.tar — nichts wurde angefasst." }
+    Write-Host "geprueft: $name.tar ($groesse Byte, $($eintraege.Trim()) Eintraege)"
+}
+
+Write-Host "Beide Archive in Ordnung. Jetzt erst werden die Volumes geleert." -ForegroundColor Yellow
 
 foreach ($paar in @(@($StateVolume,'state'), @($KeysVolume,'keys'))) {
     $vol, $name = $paar
@@ -1268,6 +1319,42 @@ Erwartet: Exit `0`.
 
 Wie Task 5 Schritt 4: Nachricht senden, Antwort erhalten. Erst damit ist bewiesen,
 dass nicht nur der Status „verbunden" meldet, sondern der Kanal wirklich trägt.
+
+- [ ] **Schritt 5b: Schlüssel-Volume mit Inhalt nachweisen**
+
+Bis Task 3 war `sales-claw-keys` leer, sein Wiederherstellungsweg also nur
+leer-zu-leer geprüft — ein Nulltest, kein Beweis. Prüfe zuerst, ob dort inzwischen
+etwas liegt:
+
+```bash
+docker compose exec sales-claw sh -lc 'ls -A /home/node/.config/openclaw | wc -l'
+```
+
+**Ist das Ergebnis `0`**, bleibt das Volume leer und dieser Schritt entfällt; halte in
+`docs/04_BACKUP_RESTORE.md` fest, dass der Weg für dieses Volume weiterhin unbewiesen
+ist.
+
+**Ist das Ergebnis größer als `0`**, ist der Roundtrip eigens zu belegen:
+
+```bash
+docker compose exec sales-claw sh -lc 'echo "markierung-keys" > /home/node/.config/openclaw/PROBE.txt'
+```
+
+Dann Sicherung, Löschen beider Volumes, Wiederherstellung wie in Schritt 2 bis 4 —
+und danach:
+
+```bash
+docker compose exec sales-claw sh -lc 'cat /home/node/.config/openclaw/PROBE.txt'
+```
+
+Erwartet: `markierung-keys`. Zusätzlich prüfen, dass die Dateirechte der echten
+Schlüsseldateien den Roundtrip überstanden haben:
+
+```bash
+docker compose exec sales-claw sh -lc 'ls -la /home/node/.config/openclaw'
+```
+
+Markierung anschließend entfernen.
 
 - [ ] **Schritt 6: Zwischensicherung aufräumen**
 

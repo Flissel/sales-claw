@@ -165,10 +165,26 @@ aktiv (§10).
 
 ### Warum zwei Volumes
 
-`/home/node/.openclaw` enthält Konfiguration, Agenten, `credentials/` und `memory/`.
-`/home/node/.config/openclaw` enthält die Verschlüsselungsschlüssel. Wer nur das
-erste sichert, hat beim Restore verschlüsselte Daten ohne Schlüssel. Beide gehören
-zusammen gesichert und zusammen zurückgespielt.
+`/home/node/.openclaw` enthält Konfiguration, Agenten, `credentials/`, `identity/`,
+`state/` und `memory/`.
+
+**Korrektur gegenüber der ersten Fassung dieses Dokuments (gemessen am 2026-08-17):**
+Hier stand ursprünglich, `/home/node/.config/openclaw` enthalte die
+Verschlüsselungsschlüssel, und wer nur das erste Volume sichere, habe beim Restore
+verschlüsselte Daten ohne Schlüssel. **Das trifft für diese Version nicht zu.** Am
+laufenden Container gemessen ist `/home/node/.config/openclaw` leer (0 Byte); der
+gesamte Zustand einschließlich `identity/` liegt in `/home/node/.openclaw` (3,56 MB).
+Die ursprüngliche Aussage stammte aus der Dokumentation und war nicht nachgeprüft.
+
+Beide Volumes werden trotzdem gesichert und zusammen zurückgespielt — das kostet
+nichts und deckt den Fall ab, dass OpenClaw den zweiten Pfad in einer späteren
+Version doch belegt. Die Begründung ist aber Vorsorge, nicht Notwendigkeit: **der
+Beweis einer Wiederherstellung hängt allein am State-Volume.** Dort liegt später auch
+`credentials/whatsapp`.
+
+Solange das zweite Volume leer ist, ist sein Wiederherstellungsweg nur leer-zu-leer
+geprüft — also nicht bewiesen. Sobald dort erstmals Inhalt entsteht, ist eine eigene
+Rot/Grün-Runde fällig (§9, Kriterium 5b).
 
 ### Instanz-Zuschnitt: eigene Instanz statt Sammelinstanz
 
@@ -329,6 +345,11 @@ heißt: Befehl ausgeführt, Ausgabe gesehen, nicht „sollte funktionieren".
 5. **Restore.** Backup ziehen, beide Volumes löschen, Restore einspielen — die
    Kopplung überlebt. *Dies ist das wichtigste Kriterium: der Restore-Vorgang **ist**
    die Migrationsprobe. Ist er grün, ist der Umzug auf die VM risikoarm.*
+5b. **Restore des Schlüssel-Volumes mit Inhalt.** Solange `sales-claw-keys` leer ist,
+   beweist Kriterium 5 für dieses Volume nichts — leer zu leer ist ein Nulltest.
+   Sobald dort erstmals Inhalt liegt, ist der Roundtrip mit einer Markierungsdatei
+   **innerhalb** `/home/node/.config/openclaw` eigens nachzuweisen, bevor sich
+   irgendjemand auf ihn verlässt.
 6. **Keine Kollateralschäden.** `openclaw-festival` und die 23 laufenden Container
    sind unberührt; die lokale OpenClaw-Installation ist per dokumentiertem Rückweg
    wiederherstellbar.
