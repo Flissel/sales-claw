@@ -21,7 +21,10 @@ $ErrorActionPreference = 'Stop'
 # liegen fremde Volumes direkt daneben.
 # ---------------------------------------------------------------------------
 foreach ($v in @($StateVolume, $KeysVolume)) {
-    if ($v -notmatch '^sales-claw-[a-z]+$') {
+    # -cnotmatch: gross-/kleinschreibungsempfindlich. Das vorgabemaessige
+    # -notmatch liesse 'SALES-CLAW-STATE' durch — Docker-Volumenamen sind aber
+    # gross-/kleinschreibungsempfindlich, das waere ein anderes Volume.
+    if ($v -cnotmatch '^sales-claw-[a-z]+$') {
         throw "Verweigert: '$v' gehoert nicht zu diesem Projekt. Erlaubt sind nur Namen der Form sales-claw-*."
     }
 }
@@ -47,13 +50,20 @@ foreach ($paar in @(@($StateVolume,'state'), @($KeysVolume,'keys'))) {
     if (-not (Test-Path $pfad)) { throw "Fehlt in der Sicherung: $name.tar — nichts wurde angefasst." }
     $groesse = (Get-Item $pfad).Length
     if ($groesse -eq 0) { throw "Leer: $name.tar hat 0 Byte — nichts wurde angefasst." }
-    # tar -tf listet den Inhalt, ohne zu entpacken. Schlaegt es fehl oder
-    # liefert null Eintraege, ist das Archiv unbrauchbar.
+    # Probeweise VOLLSTAENDIG entpacken, in ein Wegwerf-Verzeichnis im
+    # Container. Ein blosses `tar -tf` genuegt nicht: ein abgeschnittenes
+    # Archiv laesst sich oft noch auflisten, aber nicht entpacken. Und der
+    # Exit-Code einer Pipe (`tar -tf | wc -l`) ist der des LETZTEN Glieds —
+    # also der von `wc`, das immer 0 liefert. Busybox-sh kennt kein pipefail.
+    # Genau daran ist die erste Fassung dieser Pruefung gescheitert.
+    #
+    # Die `&&`-Kette sorgt dafuer, dass ein Fehler von `tar` den Exit-Code
+    # bestimmt: bei Misserfolg laeuft `find` gar nicht erst an.
     $eintraege = docker run --rm -v "${quelleVoll}:/quelle:ro" alpine:3.20 `
-        sh -c "tar -tf /quelle/$name.tar 2>/dev/null | wc -l"
-    if ($LASTEXITCODE -ne 0) { throw "Beschaedigt: $name.tar laesst sich nicht lesen — nichts wurde angefasst." }
+        sh -c "mkdir -p /probe && tar -xf /quelle/$name.tar -C /probe && find /probe -mindepth 1 | wc -l"
+    if ($LASTEXITCODE -ne 0) { throw "Beschaedigt: $name.tar laesst sich nicht entpacken — nichts wurde angefasst." }
     if ([int]$eintraege.Trim() -lt 1) { throw "Ohne Eintraege: $name.tar — nichts wurde angefasst." }
-    Write-Host "geprueft: $name.tar ($groesse Byte, $($eintraege.Trim()) Eintraege)"
+    Write-Host "probeweise entpackt: $name.tar ($groesse Byte, $($eintraege.Trim()) Eintraege)"
 }
 
 Write-Host "Beide Archive in Ordnung. Jetzt erst werden die Volumes geleert." -ForegroundColor Yellow

@@ -23,7 +23,10 @@ $ErrorActionPreference = 'Stop'
 # gegen echte Kopplungsdaten laeuft, soll gar nicht erst auf fremde Volumes
 # zeigen koennen.
 foreach ($v in @($StateVolume, $KeysVolume)) {
-    if ($v -notmatch '^sales-claw-[a-z]+$') {
+    # -cnotmatch: gross-/kleinschreibungsempfindlich. Das vorgabemaessige
+    # -notmatch liesse 'SALES-CLAW-STATE' durch — Docker-Volumenamen sind aber
+    # gross-/kleinschreibungsempfindlich, das waere ein anderes Volume.
+    if ($v -cnotmatch '^sales-claw-[a-z]+$') {
         throw "Verweigert: '$v' gehoert nicht zu diesem Projekt. Erlaubt sind nur Namen der Form sales-claw-*."
     }
 }

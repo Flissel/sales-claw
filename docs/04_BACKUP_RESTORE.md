@@ -76,10 +76,12 @@ auffiel — bei zwei Volumes nacheinander sogar ein asymmetrischer Halbausfall
 möglich: Volume 1 überschrieben, Volume 2 nur noch geleert.
 
 Jetzt prüft das Skript **beide** Archive vollständig, bevor es **irgendein**
-Volume berührt: Datei vorhanden, Größe > 0 Byte, mit `tar -tf` lesbar,
-mindestens ein Eintrag. Schlägt eine der beiden Prüfungen fehl, bricht das
-Skript ab, bevor die Schreibschleife überhaupt beginnt — auch wenn das erste
-Archiv bereits als gültig bestätigt wurde.
+Volume berührt: Datei vorhanden, Größe > 0 Byte, probeweise **vollständig
+entpackt** in ein Wegwerf-Verzeichnis im Container, mindestens ein Eintrag
+danach vorhanden (siehe „Härtung (Fix-Runde 2)" unten — die erste Fassung
+prüfte nur mit `tar -tf`, das reicht nicht). Schlägt eine der beiden Prüfungen
+fehl, bricht das Skript ab, bevor die Schreibschleife überhaupt beginnt — auch
+wenn das erste Archiv bereits als gültig bestätigt wurde.
 
 Belegt mit drei absichtlich kaputten Sicherungen (volle Ausgaben und
 Prüfsummen-Vergleich in
@@ -120,6 +122,84 @@ Erlaubt sind nur Namen der Form sales-claw-*.`
 Bei Fehlschlag bricht das Skript **nicht** ab (die tar-Archive sind der
 maßgebliche Sicherungsweg und bereits geschrieben), gibt aber eine deutliche
 Warnung aus, damit ein fehlendes semantisches Archiv nicht unbemerkt bleibt.
+
+## Härtung (Fix-Runde 2)
+
+Eine Nachprüfung der Fix-Runde-1-Härtung ergab, dass Befund 1 **nicht**
+tatsächlich behoben war — nur anders formuliert.
+
+### Die Archivprüfung aus Fix-Runde 1 war wirkungslos gegen Trunkierung
+
+Der Code aus Fix-Runde 1 prüfte so:
+
+```sh
+tar -tf /quelle/$name.tar 2>/dev/null | wc -l
+```
+
+Der Exit-Code einer Pipe in einer POSIX-Shell ist der Exit-Code des
+**letzten** Glieds — hier `wc -l`, das immer `0` liefert, egal was `tar`
+gemacht hat. Busybox-`sh` im `alpine:3.20`-Image kennt kein `pipefail`. Ein
+**abgeschnittenes** Archiv lässt sich mit `tar -tf` oft noch teilweise
+auflisten (die gelesenen Header sind ja intakt), scheitert aber beim
+tatsächlichen Entpacken mit `tar: short read`. Die Prüfung aus Fix-Runde 1
+hätte ein solches Archiv als „geprueft: N Eintraege" durchgewunken — und
+damit Vertrauen suggeriert, das nicht gerechtfertigt war.
+
+**Belegt** (volle Ausgaben in
+`.superpowers/sdd/2026-08-17-sales-claw-fundament/task-3-report.md`,
+Abschnitt „Fix-Runde 2"): eine echte `state.tar` wurde auf die ersten 16 KB
+abgeschnitten. Die alte Prüfung (`tar -tf | wc -l`) lieferte `4` Einträge bei
+Pipe-Exit-Code `0` — wäre also durchgegangen. Der tatsächliche
+Entpackversuch (`tar -xf`) auf derselben Datei scheiterte mit
+`tar: short read`, Exit-Code `1`. Das ist exakt die Lücke: Auflisten ≠
+Entpacken-Können.
+
+### Die neue Prüfung: probeweise vollständig entpacken
+
+```sh
+mkdir -p /probe && tar -xf /quelle/$name.tar -C /probe && find /probe -mindepth 1 | wc -l
+```
+
+Die `&&`-Kette sorgt dafür, dass ein Fehlschlag von `tar` den Exit-Code des
+gesamten Befehls bestimmt — `find` läuft dann gar nicht erst an. Das prüft,
+was tatsächlich zählt: lässt sich das Archiv entpacken, nicht nur auflisten.
+
+Gegen dieselbe trunkierte `state.tar` bricht `restore-state.ps1` jetzt korrekt
+ab: `Beschaedigt: state.tar laesst sich nicht entpacken — nichts wurde
+angefasst.` Der asymmetrische Fall aus Befund 1 wurde mit Trunkierung
+(statt 0 Byte) erneut geprüft: gültiges `state.tar`, auf 256 Byte
+abgeschnittenes `keys.tar` — `state.tar` wurde probeweise entpackt und als
+gültig bestätigt, danach Abbruch bei `keys.tar` (`invalid tar magic`), **bevor**
+die Schreibschleife begann. Beide Volumes blieben in beiden Fällen
+bit-identisch zur Baseline (SHA-256-Vergleich, siehe Report).
+
+### Betrieblicher Nebenbefund: echte Leer-Archive fallen jetzt durch
+
+Die neue Prüfung zieht eine Konsequenz, die in Fix-Runde 1 nicht auffiel:
+`find /probe -mindepth 1` zählt nur Einträge **unterhalb** des
+Entpack-Ziels — ein Archiv, dessen einziger Eintrag das Wurzelverzeichnis
+selbst ist (wie `keys.tar`, solange das Keys-Volume noch keine echten
+Schlüssel enthält), liefert danach `0` und wird als „Ohne Eintraege"
+abgelehnt. Die alte `tar -tf`-Zählung hatte diesen Wurzel-Eintrag noch
+mitgezählt (`1 Eintraege`) und wäre durchgegangen.
+
+Praktisch bedeutet das: solange `sales-claw-keys` inhaltlich leer ist (Stand
+Task 2 — noch keine WhatsApp-Kopplung, keine Schlüssel), lässt sich aus einem
+in diesem Zustand erzeugten Backup **nicht** restaurieren, ohne dass im
+Keys-Volume mindestens eine echte Datei liegt. Für den Nachweis in
+Fix-Runde 2 wurde deshalb — genau wie mit `PROBE.txt` im State-Volume —
+zusätzlich eine Wegwerf-Markierung `PROBE_KEYS.txt` ins Keys-Volume gelegt,
+vor der Sicherung geschrieben und nach der Verifikation wieder entfernt. Das
+ist kein Skriptfehler, sondern eine Verschärfung mit echtem Kollateraleffekt
+auf den aktuellen (leeren) Projektzustand — sobald reale Schlüssel im Volume
+liegen, verschwindet der Effekt von selbst.
+
+### Namensschutz: gross-/kleinschreibungsempfindlich
+
+`-notmatch` ist in PowerShell standardmäßig gross-/kleinschreibungsunempfindlich
+und hätte `SALES-CLAW-STATE` durchgelassen — für Docker ein anderer,
+tatsächlich nicht existierender Volume-Name. Beide Skripte verwenden jetzt
+`-cnotmatch` (case-sensitive) für den Namensschutz.
 
 ## Warum beide Volumes zusammengehören (Spec §5)
 
@@ -164,6 +244,14 @@ und einer neuen Markierung (`markierung-task3-fix1`) erneut komplett gefahren:
 gleiches Ergebnis — Verlust nach dem Löschen, vollständige Wiederherstellung
 inkl. identischer `openclaw.json`-Prüfsumme, `docker compose ps` wieder
 `healthy`. Die Verschärfung hat den Normalfall nicht beeinträchtigt.
+
+Nach Fix-Runde 2 (Entpack-Probe statt Auflisten) erneut gefahren, diesmal mit
+Markierungen in **beiden** Volumes (`markierung-task3-fix2` in
+`sales-claw-state`, `markierung-keys-fix2` in `sales-claw-keys` — siehe
+betrieblichen Nebenbefund oben, warum das für diesen Lauf nötig war). Gleiches
+Ergebnis: beide Markierungen weg nach dem Löschen, beide zurück nach dem
+Restore, `openclaw.json`-Prüfsumme identisch, `docker compose ps` wieder
+`healthy`. Beide Markierungen danach entfernt.
 
 Die zu diesem Zeitpunkt im Volume liegende WhatsApp-Konfiguration ist reine
 Policy (`enabled`, `dmPolicy`, `allowFrom`, …) — noch **keine** Kopplung
