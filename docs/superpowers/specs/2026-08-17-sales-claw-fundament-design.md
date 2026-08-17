@@ -1,4 +1,4 @@
-# sales-openclaw — Stufe 1: Fundament
+# sales-claw — Stufe 1: Fundament
 
 **Datum:** 2026-08-17
 **Status:** Entwurf zur Freigabe
@@ -12,25 +12,56 @@ Wissensdatenbank über Kontakte aufbaut, eine Bedarfsanalyse führt, Dokumente u
 Verträge verwaltet und der Assistentin eine Zusammenfassung ihrer offenen Aktionen
 liefert.
 
-Kanal und Agentenlaufzeit stellt **OpenClaw**. Die Betriebs-Infrastruktur wird aus
-`Flissel/hotel-feltzinger` übernommen — einem produktiv gehärteten Sync-Dienst mit
-Container-, Reverse-Proxy-, fail2ban-, systemd- und Provisionierungs-Setup sowie
-einer vollständigen Betriebsdokumentation.
+Kanal und Agentenlaufzeit stellt **OpenClaw**.
+
+`sales-claw` ist ein eigenständiges, privates Repository. Es entsteht nicht als
+GitHub-Fork — der Betreiber ist Eigentümer beider Quell-Repositories, und GitHub
+forkt nicht in denselben Account. Stattdessen zieht es gezielt heraus, was es braucht:
+
+| Quelle | Was übernommen wird |
+|---|---|
+| `Flissel/hotel-feltzinger` | Betriebs-Infrastruktur: Container-Topologie, Loopback-Bindung, Reverse-Proxy, fail2ban, systemd, Provisionierung, Env-Handling, Betriebsdokumentation |
+| `Flissel/aisalesorgcore` | Fachliches Fundament: Supabase-Schema (`leads`, `activities`, `deals`, `drafts`, `runs`, `personas`) und das Approval-Gate |
+
+Beide Quell-Repositories bleiben unberührt und dienen als Referenz. Sie liegen
+lokal unter `../hotel-feltzinger` und `../aisalesorgcore`.
 
 ### Einordnung in das Gesamtvorhaben
 
 | Stufe | Inhalt | Status |
 |---|---|---|
 | **1 — Fundament** | OpenClaw containerisiert, Hotel-Infra drumherum | **dieses Dokument** |
-| 2 — Sales-Core | Datenmodell + MCP-Werkzeuge (Kontakt, Profil, Präferenzen, Aktivitäten) | offen |
-| 3 — Bedarfsanalyse | Geführter Fragenkatalog über WhatsApp, Sende-Kill-Switch | offen |
+| 2 — Sales-Core | Datenmodell + MCP-Werkzeuge (Kontakt, Profil, Präferenzen, Aktivitäten) | offen — erbt großteils aus `aisalesorgcore` |
+| 3 — Bedarfsanalyse | Geführter Fragenkatalog über WhatsApp, Sende-Kill-Switch | offen — Approval-Gate erbt aus `aisalesorgcore` |
 | 4 — Dokumente & Verträge | Ablage, Auslesen, Retrieval für akkurate Antworten | offen |
 | 5 — Digest | Benachrichtigung und Zusammenfassung offener Aktionen | offen |
+
+### Was `aisalesorgcore` für die späteren Stufen bereits löst
+
+Der Fund verändert Stufe 2 bis 4 erheblich — dort war ein Datenmodell „von Grund auf"
+geplant, das dort bereits existiert und produktionsnäher ist:
+
+- **`activities`** — Audit-Log jeder Aktion mit `actor` ∈ `agent`/`human`/`cron`. Das ist
+  wörtlich die Anforderung „Übersicht über das, was man alles mit den Kunden getan hat".
+- **`drafts`** — ausgehende Inhalte mit `channel` einschließlich `whatsapp` und Status
+  `pending → approved → sent`. Zusammen mit `REQUIRE_APPROVAL=true` als Vorgabe ist das
+  exakt das Muster „KI schlägt vor, Mensch sendet" — bereits gebaut.
+- **`leads.consent_status`** — rechtliches Gate vor automatisiertem Kontakt.
+- **`personas`** mit pgvector — Grundlage für „Präferenzen evaluieren".
+
+Umgekehrt fehlt `aisalesorgcore` genau das, was OpenClaw mitbringt: `TODO.md` führt den
+WhatsApp-**Eingangs**kanal unter P3 als offen. Die beiden ergänzen sich also sauber —
+OpenClaw als Kanal und Gesprächspartner, das Schema als Datenhaltung und Approval-Gate.
+
+**Nicht übernommen wird der 42-Agenten-Swarm.** Das Repository bewertet sich in
+`TODO.md` selbst als „für den Lead-Prozess überdimensioniert und an den falschen
+Stellen frei" und nennt ein Zielbild von 10–15 Agenten. Für einen einzelnen
+Vertriebsarbeitsplatz ist auch das noch zu groß.
 
 ## 2. Ziel dieser Stufe
 
 Ein zweiter, vollständig von der bestehenden Installation getrennter
-OpenClaw-Container namens **`sales-openclaw`**, der zunächst lokal auf Docker Desktop
+OpenClaw-Container namens **`sales-claw`**, der zunächst lokal auf Docker Desktop
 läuft und an der WhatsApp-Nummer des Betreibers hängt (+49 160 344 9761).
 
 Alles, was den Container ausmacht — Image-Version, Zustand, Secrets, Netzwerk,
@@ -111,15 +142,15 @@ WhatsApp (Baileys, verknüpftes Gerät)
         │
         ▼
 ┌───────────────────────────────────────────────┐
-│ Container  sales-openclaw                     │
+│ Container  sales-claw                     │
 │ ghcr.io/openclaw/openclaw:2026.7.1-slim       │
 │                                               │
 │   Gateway  ──►  Agent (openai/gpt-5.5)        │
 │      │                                        │
-│      ├── Volume  sales-openclaw-state         │
+│      ├── Volume  sales-claw-state         │
 │      │     → /home/node/.openclaw             │
 │      │       (Config, credentials/, memory/)  │
-│      └── Volume  sales-openclaw-keys          │
+│      └── Volume  sales-claw-keys          │
 │            → /home/node/.config/openclaw      │
 │              (Verschlüsselungsschlüssel)      │
 └───────────────────────────────────────────────┘
@@ -141,7 +172,7 @@ zusammen gesichert und zusammen zurückgespielt.
 
 ### Instanz-Zuschnitt: eigene Instanz statt Sammelinstanz
 
-`sales-openclaw` läuft als eigenständige Instanz neben `openclaw-festival` und der
+`sales-claw` läuft als eigenständige Instanz neben `openclaw-festival` und der
 persönlichen lokalen Installation. Begründung, nach Gewicht geordnet:
 
 1. **Eine Instanz ist eine Vertrauensdomäne.** Der Sandbox-Befund vom 2026-08-04
@@ -184,15 +215,15 @@ gegebenenfalls als eigene Agenten, aber nicht als weitere Container.
 
 ## 6. Repository-Layout
 
-Neues, eigenständiges Repository `sales-openclaw` (zunächst lokal, ohne Remote).
+Neues, eigenständiges Repository `sales-claw` (zunächst lokal, ohne Remote).
 Die Infrastrukturdateien werden aus dem Hotel-Repo übernommen und angepasst; der
 Hotel-Clone bleibt unter `../hotel-feltzinger` als Referenz für Stufe 2 liegen, wo
 sein TypeScript-Gerüst (`lib/env`, `logger`, `retry`, `health`, `idempotency`,
 Fastify-Server) tatsächlich gebraucht wird.
 
 ```text
-sales-openclaw/
-├── docker-compose.yml              # Dienst `sales-openclaw` (Volumes, Netz, Healthcheck,
+sales-claw/
+├── docker-compose.yml              # Dienst `sales-claw` (Volumes, Netz, Healthcheck,
 │                                   # Logging) plus Einweg-Dienst `openclaw-cli` für
 │                                   # `docker compose run --rm openclaw-cli …`
 ├── docker-compose.proxmox.yml      # Override für den VM-Betrieb
@@ -201,11 +232,11 @@ sales-openclaw/
 ├── config/
 │   └── openclaw.json               # Basis-Konfiguration, ohne Secrets
 ├── deploy/                         # erst für die VM relevant
-│   ├── nginx/sales-openclaw.conf
+│   ├── nginx/sales-claw.conf
 │   ├── nginx/limits.conf
-│   ├── fail2ban/sales-openclaw.local
-│   ├── fail2ban/sales-openclaw-filter.conf
-│   ├── systemd/sales-openclaw.service
+│   ├── fail2ban/sales-claw.local
+│   ├── fail2ban/sales-claw-filter.conf
+│   ├── systemd/sales-claw.service
 │   └── provision.sh
 ├── scripts/
 │   ├── backup-state.ps1  /  backup-state.sh
@@ -229,7 +260,7 @@ sales-openclaw/
 |---|---|---|
 | Image | `ghcr.io/openclaw/openclaw:2026.7.1-slim` | Gepinnt statt `latest`. Ein stiller Versionssprung beim Neustart ist genau das, was eine WhatsApp-Kopplung zerlegt. Das Hotel-Repo pinnt aus demselben Grund `tsx@4.19.0` |
 | Variante | `-slim` | `browser`-Plugin bleibt aus; kein Chromium im Image |
-| Container-Name | `sales-openclaw` | Vom Betreiber vorgegeben |
+| Container-Name | `sales-claw` | Vom Betreiber vorgegeben |
 | Gateway-Port | **18894**, ausdrücklich nicht 18793 | 18793 ist von der bestehenden lokalen Installation belegt. Der Doku-Wert (18789) widerspricht ihr ohnehin — welcher Port im Container tatsächlich lauscht, wird bei der Umsetzung am laufenden Container verifiziert und der Wert hier gegebenenfalls korrigiert |
 | Port-Veröffentlichung | `127.0.0.1:18894:18894` | Muster aus dem Hotel-Repo. Der Gateway hält WhatsApp-Session und API-Schlüssel und darf nie direkt aus dem Netz erreichbar sein |
 | Neustart | `restart: unless-stopped` | Wie bei `openclaw-festival` |
@@ -270,7 +301,7 @@ Ablauf (`scripts/migrate-credentials.ps1`):
    `credentials-sicherung-<zeitstempel>` kopieren. Auf der VM wurde genau so
    verfahren; das ist der Rückweg.
 2. Lokalen OpenClaw-Dienst stoppen (Daemon/Gateway), Stillstand verifizieren.
-3. Volume `sales-openclaw-state` anlegen und `credentials/whatsapp` hineinkopieren.
+3. Volume `sales-claw-state` anlegen und `credentials/whatsapp` hineinkopieren.
 4. Container starten, Kopplung prüfen.
 5. Rückweg dokumentiert: Sicherung zurückspielen, lokalen Dienst wieder starten.
 
@@ -286,7 +317,7 @@ eintreten — er steht trotzdem im Runbook, weil die Diagnose sonst Stunden kost
 Stufe 1 gilt als erledigt, wenn alle sechs Punkte nachgewiesen sind — nachgewiesen
 heißt: Befehl ausgeführt, Ausgabe gesehen, nicht „sollte funktionieren".
 
-1. **Start.** `docker compose up -d` bringt `sales-openclaw` hoch, Healthcheck meldet
+1. **Start.** `docker compose up -d` bringt `sales-claw` hoch, Healthcheck meldet
    `healthy`.
 2. **Kopplung.** WhatsApp ist verbunden; im Selbst-Chat geht eine Nachricht rein und
    eine Antwort raus.
@@ -315,7 +346,7 @@ als Override plus `docs/07_PROXMOX_MIGRATION.md` mit den bekannten Stolpersteine
   sonst den falschen Daemon.
 - **Plugin-Neuinstallation** mit `npm_config_cache=/tmp/.npm` (siehe §8).
 - **Erreichbarkeit:** `openclaw-festival` hängt an einem Cloudflare-*Quick*-Tunnel,
-  dessen URL sich bei jedem Neustart ändert. Für `sales-openclaw` ist zu entscheiden,
+  dessen URL sich bei jedem Neustart ändert. Für `sales-claw` ist zu entscheiden,
   ob überhaupt externe Erreichbarkeit nötig ist. Falls ja, greift die Hotel-Infra
   (nginx + Certbot + fail2ban + ufw); ein Named Tunnel wäre die Alternative und
   braucht einen Cloudflare-Login.
@@ -353,9 +384,26 @@ mit echten Kundendaten geklärt sein:
 4. **MCP-Server.** `secondbrain`, `brain-dispatch` und `rowboat-ui` zeigen auf
    Windows-Pfade und funktionieren im Container nicht. Pro Server ist zu entscheiden:
    mitcontainern, über Netzwerk erreichbar machen, oder weglassen. Gehört zu Stufe 2.
-5. **Repository-Ziel.** `sales-openclaw` ist zunächst ein lokales Repository ohne
-   Remote. Ein echter GitHub-Fork des Hotel-Repos ist nicht möglich, weil der Betreiber
-   dessen Eigentümer ist; Alternativen wären die Organisation `vibemind-space`, der
-   Zweitaccount `Vibemind-LAB` oder ein eigenständiges Repository.
-6. **Gateway-Port.** Doku (18789) und lokale Konfiguration (18793) widersprechen sich.
+5. **Gateway-Port.** Doku (18789) und lokale Konfiguration (18793) widersprechen sich.
    Bei der Umsetzung am laufenden Container zu verifizieren.
+
+### Aus `aisalesorgcore` mitgeerbte Vorbehalte
+
+Diese Punkte betreffen Stufe 2 und später, gehören aber schon hier festgehalten, weil
+sie sonst beim Übernehmen des Schemas unbemerkt mitwandern. Sie stammen aus der
+Selbstkritik des Quell-Repositories (`TODO.md`, Abschnitt 1):
+
+6. **Mock-Werkzeuge, die echt aussehen.** `enrich_contact`, `fetch_linkedin_profile`
+   und `analyze_intent_signals` liefern erfundene Daten in plausibler Form. Das
+   Quell-Repository markiert das selbst als gefährlich, weil Agenten darauf
+   Entscheidungen bauen. Bei der Übernahme entweder echt anbinden oder unübersehbar
+   als Mock kennzeichnen — nicht stillschweigend mitnehmen.
+7. **`crm_*`-Werkzeuge sind Attrappen.** Die größte Funktionslücke des Quell-Repos.
+   Das Supabase-Schema ist die Lösung dafür, aber die Verdrahtung fehlt.
+8. **Prompt-Injection-Fläche.** Angereicherte Fremddaten — und in unserem Fall
+   ausdrücklich auch eingehende Kundennachrichten und hochgeladene Dokumente — fließen
+   in Prompts von Agenten, die senden dürfen. Sende- und Analyse-Rechte gehören
+   getrennt. Für eine App, die Kundennachrichten beantwortet, ist das kein
+   Randthema, sondern die Hauptangriffsfläche.
+9. **`claude_code` auf fast allen Agenten.** Vom Quell-Repository selbst als falsch
+   bewertet. Kommt nicht mit.
