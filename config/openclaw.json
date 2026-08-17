@@ -1,0 +1,42 @@
+{
+  "gateway": {
+    "port": 18894,
+    "mode": "local",
+    "bind": "lan",
+    "auth": { "mode": "token" }
+  },
+  "agents": {
+    "defaults": {
+      "model": { "primary": "openai/gpt-5.5" },
+      "workspace": "/home/node/workspace"
+    },
+    "list": [{ "id": "main" }]
+  },
+  "channels": {
+    "whatsapp": {
+      "enabled": true,
+      "dmPolicy": "allowlist",
+      "selfChatMode": true,
+      "allowFrom": ["+491603449761"],
+      "groupPolicy": "disabled",
+      "mediaMaxMb": 50
+    }
+  },
+  "plugins": {
+    "allow": ["whatsapp"],
+    "slots": { "memory": "memory-core" },
+    "entries": {
+      "whatsapp": { "enabled": true },
+      "memory-core": { "enabled": true },
+      "openclaw-supermemory": { "enabled": false },
+      "discord": { "enabled": false },
+      "telegram": { "enabled": false },
+      "voice-call": { "enabled": false },
+      "browser": { "enabled": false },
+      "ollama": { "enabled": false }
+    }
+  },
+  "tools": {
+    "web": { "search": { "enabled": false }, "fetch": { "enabled": false } }
+  }
+}

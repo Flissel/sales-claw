@@ -1,0 +1,37 @@
+# Lokaler Betrieb auf Docker Desktop. Für die Proxmox-VM zusätzlich
+# docker-compose.proxmox.yml als Override verwenden (siehe docs/07).
+services:
+  sales-claw:
+    image: ghcr.io/openclaw/openclaw:2026.7.1-slim
+    container_name: sales-claw
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - OPENCLAW_STATE_DIR=/home/node/.openclaw
+    volumes:
+      - sales-claw-state:/home/node/.openclaw
+      - sales-claw-keys:/home/node/.config/openclaw
+    ports:
+      # Nur Loopback. Der Gateway hält WhatsApp-Session und Modellschlüssel.
+      - "127.0.0.1:18894:18894"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "openclaw", "health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  # Explizite name:-Angabe, sonst prefixt Compose mit dem Projektnamen
+  # (hier "sales-claw" -> "sales-claw_sales-claw-state"), was den in den
+  # Randbedingungen geforderten literalen Volume-Namen verfehlt.
+  sales-claw-state:
+    name: sales-claw-state
+  sales-claw-keys:
+    name: sales-claw-keys
