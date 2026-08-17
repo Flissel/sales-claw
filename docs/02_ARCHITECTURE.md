@@ -73,6 +73,49 @@ Schlüssel für `sales-claw` wird erst ab Task 5 benötigt und vom Betreiber sep
 angelegt). Der Gateway-Token entsteht im Container und liegt ausschließlich im
 Volume `sales-claw-state`, nie im Repository.
 
+## Modellanbieter (Task 8)
+
+Bis ein eigener, guthabengedeckter Schlüssel für `sales-claw` existiert, läuft der
+Rauchtest über OpenRouter statt über OpenAI.
+
+**Nativer Provider, kein `OPENAI_BASE_URL`.** OpenClaw hat OpenRouter als eigenen,
+first-class Provider eingebaut (Modellreferenz `openrouter/<modell>`, Schlüssel über
+`OPENROUTER_API_KEY`). Ein Umweg über `OPENAI_BASE_URL` — der auf einen OpenAI-
+kompatiblen Endpunkt zeigen würde — ist deshalb nicht nötig. Das ist auch mit der
+Randbedingung „kein lokales Modell" vereinbar: `OPENAI_BASE_URL` bleibt ungesetzt,
+und OpenRouter ist ein gehosteter Dienst, keine lokale Laufzeit.
+
+**`openrouter/free` als bewusste Ausnahme von der Pin-Regel.** `agents.defaults.model.primary`
+steht auf `openrouter/free` statt auf ein einzelnes, gepinntes Modell. OpenRouters
+„Free Models Router" wählt automatisch unter mehreren kostenlosen Modellen, wodurch
+der Rauchtest nicht am Tageskontingent eines einzelnen Modells hängt. Das
+widerspricht der sonstigen Pin-Regel dieses Projekts ausdrücklich — die Ausnahme gilt
+**nur für die Fundament-Stufe**, solange niemand mit echten Kunden spricht. Sobald
+echte Beratungsgespräche laufen, wird hier ein bezahltes, einzeln gepinntes Modell
+eingetragen.
+
+**Damit die Referenz `openrouter/free` überhaupt auflöst**, muss zusätzlich zu
+`agents.defaults.model.primary` ein passender Katalogeintrag unter
+`models.providers.openrouter.models` existieren — der statische, im Image
+mitgelieferte Modellkatalog kennt „Free Models Router" nicht von sich aus (er taucht
+nur im Live-Scan von `openclaw models scan` auf, nicht in `openclaw infer model list`).
+Ohne diesen Eintrag bricht `openclaw agent` mit `FailoverError: Unknown model` ab.
+`config/openclaw.json` enthält den Eintrag deshalb explizit; das ist eine Ergänzung
+über die ursprünglich vorgesehene Ein-Zeilen-Änderung hinaus.
+
+**Geteiltes Kontingent.** Das Freikontingent von OpenRouters kostenlosen Modellen wird
+pro Schlüssel global geteilt — nicht nur mit anderen Anfragen dieses Projekts, sondern
+mit jeder Anwendung, die denselben `OPENROUTER_API_KEY` verwendet. Rate-Limits können
+deshalb auch durch fremde Last auf demselben Schlüssel entstehen, nicht nur durch
+`sales-claw` selbst.
+
+**Nicht geeignet für echte Beratungsgespräche.** `openrouter/free` routet automatisch
+und ohne Kontrolle darüber, welches konkrete Modell eine gegebene Anfrage beantwortet;
+Qualität, Kontextverhalten und Verfügbarkeit schwanken zwischen den darunterliegenden
+Modellen. Für reale Kundengespräche ist das ausdrücklich **nicht** geeignet — dafür ist
+ein bezahltes, einzeln ausgewähltes und gepinntes Modell vorgesehen, sobald ein
+guthabengedeckter Schlüssel vorliegt.
+
 ## Reale Abweichungen vom in Task 2 unterstellten Ablauf
 
 Diese zwei Punkte hat der Task-2-Brief nicht vorhergesehen. Beide sind bei der
