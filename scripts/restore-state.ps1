@@ -62,8 +62,18 @@ foreach ($paar in @(@($StateVolume,'state'), @($KeysVolume,'keys'))) {
     $eintraege = docker run --rm -v "${quelleVoll}:/quelle:ro" alpine:3.20 `
         sh -c "mkdir -p /probe && tar -xf /quelle/$name.tar -C /probe && find /probe -mindepth 1 | wc -l"
     if ($LASTEXITCODE -ne 0) { throw "Beschaedigt: $name.tar laesst sich nicht entpacken — nichts wurde angefasst." }
-    if ([int]$eintraege.Trim() -lt 1) { throw "Ohne Eintraege: $name.tar — nichts wurde angefasst." }
-    Write-Host "probeweise entpackt: $name.tar ($groesse Byte, $($eintraege.Trim()) Eintraege)"
+
+    # Ein leeres Archiv ist KEIN Defekt. `sales-claw-keys` ist seit
+    # Projektbeginn leer, und ein leeres Volume ist ein gueltiger Zustand.
+    # Hier abzubrechen wuerde eine voellig intakte Sicherung fuer unbrauchbar
+    # erklaeren — ein Schutz, der mehr kaputtmacht als er verhindert. Die
+    # Unversehrtheit ist durch das erfolgreiche Entpacken oben bereits belegt;
+    # die Eintragszahl ist Information, kein Kriterium.
+    $anzahl = [int]$eintraege.Trim()
+    if ($anzahl -lt 1) {
+        Write-Host "HINWEIS: $name.tar ist unversehrt, aber leer — das Volume enthielt nichts." -ForegroundColor Yellow
+    }
+    Write-Host "probeweise entpackt: $name.tar ($groesse Byte, $anzahl Eintraege)"
 }
 
 Write-Host "Beide Archive in Ordnung. Jetzt erst werden die Volumes geleert." -ForegroundColor Yellow

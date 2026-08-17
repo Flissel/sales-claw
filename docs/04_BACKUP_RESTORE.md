@@ -173,26 +173,17 @@ gültig bestätigt, danach Abbruch bei `keys.tar` (`invalid tar magic`), **bevor
 die Schreibschleife begann. Beide Volumes blieben in beiden Fällen
 bit-identisch zur Baseline (SHA-256-Vergleich, siehe Report).
 
-### Betrieblicher Nebenbefund: echte Leer-Archive fallen jetzt durch
+### Betrieblicher Nebenbefund aus Fix-Runde 2 — inzwischen behoben (siehe Fix-Runde 3)
 
-Die neue Prüfung zieht eine Konsequenz, die in Fix-Runde 1 nicht auffiel:
+Die Fix-Runde-2-Prüfung zog eine Konsequenz, die dort nicht auffiel:
 `find /probe -mindepth 1` zählt nur Einträge **unterhalb** des
 Entpack-Ziels — ein Archiv, dessen einziger Eintrag das Wurzelverzeichnis
 selbst ist (wie `keys.tar`, solange das Keys-Volume noch keine echten
-Schlüssel enthält), liefert danach `0` und wird als „Ohne Eintraege"
-abgelehnt. Die alte `tar -tf`-Zählung hatte diesen Wurzel-Eintrag noch
-mitgezählt (`1 Eintraege`) und wäre durchgegangen.
-
-Praktisch bedeutet das: solange `sales-claw-keys` inhaltlich leer ist (Stand
-Task 2 — noch keine WhatsApp-Kopplung, keine Schlüssel), lässt sich aus einem
-in diesem Zustand erzeugten Backup **nicht** restaurieren, ohne dass im
-Keys-Volume mindestens eine echte Datei liegt. Für den Nachweis in
-Fix-Runde 2 wurde deshalb — genau wie mit `PROBE.txt` im State-Volume —
-zusätzlich eine Wegwerf-Markierung `PROBE_KEYS.txt` ins Keys-Volume gelegt,
-vor der Sicherung geschrieben und nach der Verifikation wieder entfernt. Das
-ist kein Skriptfehler, sondern eine Verschärfung mit echtem Kollateraleffekt
-auf den aktuellen (leeren) Projektzustand — sobald reale Schlüssel im Volume
-liegen, verschwindet der Effekt von selbst.
+Schlüssel enthält), lieferte danach `0` und wurde als „Ohne Eintraege"
+**abgelehnt** — ein Abbruch, obwohl nichts beschädigt war. Dieses Verhalten
+ist mit Fix-Runde 3 korrigiert (siehe unten): ein leeres, aber unversehrtes
+Archiv ist jetzt zulässig. Der Abschnitt bleibt hier stehen, weil er den
+Fehler dokumentiert, der zu Fix-Runde 3 geführt hat.
 
 ### Namensschutz: gross-/kleinschreibungsempfindlich
 
@@ -200,6 +191,69 @@ liegen, verschwindet der Effekt von selbst.
 und hätte `SALES-CLAW-STATE` durchgelassen — für Docker ein anderer,
 tatsächlich nicht existierender Volume-Name. Beide Skripte verwenden jetzt
 `-cnotmatch` (case-sensitive) für den Namensschutz.
+
+## Härtung (Fix-Runde 3)
+
+Eine Nachprüfung von Fix-Runde 2 ergab: das Bedenken, das im Fix-Runde-2-Bericht
+gemeldet wurde, war kein Randfall, sondern ein echter Defekt. Die Prüfung
+brach bei null Einträgen ab (`Ohne Eintraege: $name.tar — nichts wurde
+angefasst.`) — aber ein leeres Volume ist ein **gültiger Zustand**, kein
+Defekt. `sales-claw-keys` ist seit Projektbeginn leer. Mit der
+Fix-Runde-2-Fassung hätte ein Restore aus einer völlig intakten Sicherung
+grundsätzlich fehlschlagen müssen, solange das Keys-Volume leer ist — ein
+Schutz, der unversehrte Sicherungen pauschal für unbrauchbar erklärt, richtet
+mehr Schaden an als die Lücke, die er schließen sollte.
+
+### Die Korrektur: Eintragszahl ist Information, kein Kriterium
+
+Die Unversehrtheit ist bereits durch das erfolgreiche probeweise Entpacken
+belegt (siehe Fix-Runde 2). Bei null Einträgen gibt das Skript jetzt einen
+gelben Hinweis aus, bricht aber **nicht** ab:
+
+```powershell
+$anzahl = [int]$eintraege.Trim()
+if ($anzahl -lt 1) {
+    Write-Host "HINWEIS: $name.tar ist unversehrt, aber leer — das Volume enthielt nichts." -ForegroundColor Yellow
+}
+Write-Host "probeweise entpackt: $name.tar ($groesse Byte, $anzahl Eintraege)"
+```
+
+Der Beschädigt-Fall (`$LASTEXITCODE -ne 0` von `tar -xf`) bleibt unverändert
+ein Abbruch — nur die künstliche Untergrenze „mindestens 1 Eintrag" ist
+entfallen.
+
+### Nachweis 1: der zuletzt fehlschlagende Fall läuft jetzt durch
+
+Sicherung erzeugt, während `sales-claw-keys` leer war, beide Volumes gelöscht,
+wiederhergestellt (volle Ausgaben in
+`.superpowers/sdd/2026-08-17-sales-claw-fundament/task-3-report.md`,
+Abschnitt „Fix-Runde 3"):
+
+```
+probeweise entpackt: state.tar (1782272 Byte, 39 Eintraege)
+HINWEIS: keys.tar ist unversehrt, aber leer - das Volume enthielt nichts.
+probeweise entpackt: keys.tar (1536 Byte, 0 Eintraege)
+Beide Archive in Ordnung. Jetzt erst werden die Volumes geleert.
+wiederhergestellt: state.tar -> sales-claw-state
+wiederhergestellt: keys.tar -> sales-claw-keys
+Wiederherstellung abgeschlossen.
+```
+
+Exit `0`, `docker compose ps` danach `healthy`, Markierung und
+`openclaw.json`-Prüfsumme (inkl. Gateway-Token-Länge und
+OpenRouter-Katalogeintrag) vollständig wiederhergestellt. Genau dieser Ablauf
+war mit der Fix-Runde-2-Fassung nicht möglich.
+
+### Nachweis 2: Trunkierungsschutz aus Fix-Runde 2 bleibt erhalten
+
+Dieselben zwei Trunkierungsfälle aus Fix-Runde 2 gegen die neue Fassung
+wiederholt: eine auf 16 KB abgeschnittene `state.tar` (isoliert) und dieselbe
+Datei zusammen mit einem auf 256 Byte abgeschnittenen `keys.tar`
+(asymmetrisch). Beide brechen weiterhin mit `Beschaedigt: ... laesst sich
+nicht entpacken — nichts wurde angefasst.` ab, beide Volumes blieben in
+beiden Fällen bit-identisch zur Baseline (SHA-256-Vergleich, siehe Report).
+Die Lockerung aus Fix-Runde 3 betrifft ausschließlich den Fall „leer, aber
+unversehrt" — Beschädigung wird weiterhin zuverlässig erkannt.
 
 ## Warum beide Volumes zusammengehören (Spec §5)
 
@@ -252,6 +306,15 @@ betrieblichen Nebenbefund oben, warum das für diesen Lauf nötig war). Gleiches
 Ergebnis: beide Markierungen weg nach dem Löschen, beide zurück nach dem
 Restore, `openclaw.json`-Prüfsumme identisch, `docker compose ps` wieder
 `healthy`. Beide Markierungen danach entfernt.
+
+Nach Fix-Runde 3 (leeres Archiv zulässig) erneut gefahren — diesmal mit
+**leerem** `sales-claw-keys` (dem Normalzustand des Projekts, ohne
+künstliche Markierung dort), um genau den Fall zu belegen, der mit
+Fix-Runde 2 gescheitert wäre: Markierung `markierung-task3-fix3` in
+`sales-claw-state`, Sicherung, Löschung, Wiederherstellung mit gelbem
+Hinweis auf das leere `keys.tar`, `docker compose ps` wieder `healthy`,
+Markierung und `openclaw.json`-Prüfsumme (inkl. Token-Länge und
+OpenRouter-Katalogeintrag) vollständig intakt.
 
 Die zu diesem Zeitpunkt im Volume liegende WhatsApp-Konfiguration ist reine
 Policy (`enabled`, `dmPolicy`, `allowFrom`, …) — noch **keine** Kopplung
