@@ -35,6 +35,51 @@ Daraus folgt die Reihenfolge-Regel für jeden Eingriff, der beide Seiten berühr
 
 Diese Reihenfolge umzudrehen kostet die Kopplung. Sie ist kein Vorschlag.
 
+### ⚠ Offener Punkt: die lokale Installation startet sich beim Anmelden selbst
+
+Der lokale Gateway läuft nicht als freier Prozess, sondern als
+**Windows-Aufgabe `\OpenClaw Gateway`** — und diese Aufgabe hat einen
+**aktiven Anmelde-Trigger**:
+
+```powershell
+Get-ScheduledTask -TaskName 'OpenClaw Gateway' |
+    ForEach-Object { $_.Triggers } |
+    Select-Object @{n='Typ';e={$_.CimClass.CimClassName}}, Enabled
+# MSFT_TaskLogonTrigger   True
+```
+
+`openclaw daemon stop` beendet den **laufenden** Task, entfernt aber den
+Trigger nicht. Stand heute ist die Aufgabe `Ready` (gestoppt) — **bei der
+nächsten Windows-Anmeldung startet sie von selbst wieder**, mit denselben
+Credentials, die inzwischen auch im Volume `sales-claw-state` liegen.
+
+Läuft in diesem Moment der Container, ist das exakt der Doppelbetrieb aus der
+Regel oben: zwei Baileys-Sitzungen auf denselben Session-Dateien, und die
+Kopplung ist weg.
+
+**Das ist bewusst nicht eigenmächtig geändert worden** — den Autostart einer
+produktiv genutzten Installation abzuschalten ist eine Entscheidung des
+Betreibers. Er muss sie aber treffen, bevor der Container dauerhaft läuft.
+Zur Auswahl stehen:
+
+```powershell
+# Variante A: nur den Trigger abschalten, Aufgabe bleibt bestehen
+Disable-ScheduledTask -TaskName 'OpenClaw Gateway'
+
+# Variante B: den Dienst regulär deinstallieren (OpenClaws eigener Weg)
+openclaw daemon uninstall
+```
+
+Bis dahin gilt: **nach jeder Windows-Anmeldung zuerst prüfen**, ob der lokale
+Gateway wieder läuft, bevor der Container gestartet wird.
+
+```powershell
+pwsh -Command ". ./scripts/lib/ports.ps1; Test-PortFrei -Port 18793"   # muss True sein
+```
+
+Ist er hochgekommen: `pwsh -File scripts/stop-local-openclaw.ps1`, und erst
+danach `docker compose up -d`.
+
 ### Was in diesem Zusammenhang niemals getan wird
 
 - **Kein `openclaw daemon start` auf dem Host, solange der Container läuft.**
