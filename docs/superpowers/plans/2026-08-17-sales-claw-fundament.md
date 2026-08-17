@@ -2113,3 +2113,133 @@ Modell für echte Beratungsgespräche nicht geeignet ist.
 git add scripts/seed-env.ps1 .env.example config/openclaw.json docs/02_ARCHITECTURE.md
 git commit -m "feat(modell): auf OpenRouter umstellen, Rauchtest ueber kostenlose Modelle"
 ```
+
+---
+
+## Task 9: WhatsApp-Kanal nachrüsten und Workspace persistent machen
+
+Entstanden aus Task 5, der an zwei Stellen blockierte, die dieser Plan nicht kannte.
+**Muss vor Task 5 abgeschlossen sein** — Task 5 kann seinen Kern ohne diesen Task
+nicht prüfen.
+
+**Zwei Befunde, beide Planfehler:**
+
+1. **Das Image enthält das WhatsApp-Plugin nicht.** `clawhub:@openclaw/whatsapp` ist
+   ein externes Plugin. Ohne es ist `channelOrder` leer, der Gateway meldet
+   `no-channel-owner`, und die übernommenen Credentials werden nie geladen. Ein
+   Wechsel auf die Nicht-Slim-Variante hilft nicht: `2026.7.1` und `2026.7.1-slim`
+   sind identisch groß (26 Layer, 345,2 MB) — die Unterscheidung betrifft nicht die
+   Kanal-Plugins.
+2. **`agents.defaults.workspace` zeigt auf `/home/node/workspace`** — das liegt auf
+   keinem Volume und stirbt mit dem Container, während die Attestierung im Volume
+   überlebt. Nach jedem `down`/`up` verweigert OpenClaw jeden Agentenlauf mit
+   `WorkspaceVanishedError`. Eine Nachricht käme an, aber keine Antwort zurück.
+
+**Dateien:**
+- Ändern: `config/openclaw.json`
+- Ändern: `docs/02_ARCHITECTURE.md`, `docs/03_RUNBOOK.md`
+
+**Schnittstellen:**
+- Konsumiert: Container und Volumes aus Task 2, Credentials aus Task 4.
+- Produziert: einen Container, in dem `openclaw channels status --json` den Eintrag
+  `whatsapp` in `channelOrder` führt und ein Agentenlauf ohne
+  `WorkspaceVanishedError` durchläuft.
+
+**Rückweg griffbereit halten:** `docs/05_DISASTER_RECOVERY.md` Fall 3. Schritt 3
+dieses Tasks ist der eigentliche Moment der Wahrheit — dort zeigt sich, ob die aus
+2026.5.18 übernommenen Credentials unter 2026.7.1 tragen.
+
+- [ ] **Schritt 1: Workspace auf einen Pfad im Volume umstellen**
+
+Im Volume existiert bereits `/home/node/.openclaw/workspace`. Diesen Pfad verwenden:
+
+```bash
+docker compose exec sales-claw openclaw config set agents.defaults.workspace /home/node/.openclaw/workspace
+docker compose exec sales-claw openclaw config get agents.defaults.workspace
+```
+
+Erwartet: `/home/node/.openclaw/workspace`.
+
+Dieselbe Änderung in `config/openclaw.json` im Repository nachziehen, damit ein
+Neuaufbau aus frischem Volume reproduzierbar bleibt.
+
+- [ ] **Schritt 2: Rot — `WorkspaceVanishedError` reproduzieren, dann widerlegen**
+
+Vor der Umstellung, nach einem `down`/`up`:
+
+```bash
+docker compose exec sales-claw openclaw agent --agent main -m "test" --json
+```
+
+Erwartet **vor** Schritt 1: Fehler `WorkspaceVanishedError`. Tritt er nicht auf, ist
+die Diagnose aus Task 5 hier nicht reproduzierbar — dann festhalten und melden statt
+weiterzumachen.
+
+Nach Schritt 1 und einem erneuten `down`/`up` derselbe Befehl. Erwartet: ein
+Agentenlauf ohne diesen Fehler.
+
+- [ ] **Schritt 3: WhatsApp-Plugin installieren**
+
+```bash
+docker compose exec -e npm_config_cache=/tmp/.npm sales-claw openclaw plugins install clawhub:@openclaw/whatsapp
+```
+
+`npm_config_cache=/tmp/.npm` ist kein Zierrat: Ohne beschreibbaren npm-Cache schlägt
+die Installation fehl, und eine unter falschem Pfad angelegte Installationsspur führt
+später zu `openKeyedStore is only available for trusted plugins` — genau das ist beim
+Umzug des Festival-Bots passiert (Koordinations-Board, 2026-08-04).
+
+Die Installation landet unter `/home/node/.openclaw/npm/node_modules/@openclaw/whatsapp`,
+also **auf dem Volume** — sie überlebt Neustarts und Wiederherstellungen.
+
+```bash
+docker compose exec sales-claw openclaw plugins list
+docker compose exec sales-claw openclaw plugins doctor
+```
+
+Erwartet: `whatsapp` erscheint als installiert, `plugins doctor` meldet keine
+Ladeprobleme.
+
+- [ ] **Schritt 4: Kanal verifizieren — mit positivem Anker**
+
+```bash
+docker compose restart sales-claw
+docker compose exec sales-claw openclaw channels status --json
+```
+
+**Prüfe `channelOrder`, nicht den Fließtext.** Die ursprüngliche Prüfung
+(`$status -match 'whatsapp' -and $status -notmatch 'logged.?out|disconnected'`)
+meldete nachweislich `True`, obwohl kein Kanal existierte: das Wort `whatsapp` stand
+im Warnblock `plugin not installed: whatsapp`, und ein Abmelde-Marker fehlte, weil es
+nichts gab, das einen Zustand melden konnte. Einer Prüfung ohne positiven Anker ist
+nicht zu trauen.
+
+Erwartet: `channelOrder` enthält `whatsapp`, und der Kanal meldet sich als verbunden.
+
+**Erscheint stattdessen ein QR-Code oder „logged out", ist die Übernahme der
+Credentials über den Versionssprung gescheitert. Halte an und melde.** Nicht neu
+koppeln, nicht ausloggen — der Rückweg steht bereit.
+
+- [ ] **Schritt 5: Neustart-Festigkeit erneut prüfen**
+
+```bash
+docker compose down && docker compose up -d
+docker compose exec sales-claw openclaw channels status --json
+```
+
+Erwartet: `channelOrder` enthält weiterhin `whatsapp`, kein neuer QR-Code — und die
+Plugin-Installation ist noch da, weil sie im Volume liegt.
+
+- [ ] **Schritt 6: Dokumentation nachziehen**
+
+`docs/02_ARCHITECTURE.md`: dass das Kanal-Plugin nicht im Image steckt, sondern per
+ClawHub ins Volume installiert wird, und dass `-slim` daran nichts ändert.
+`docs/03_RUNBOOK.md`: die Kanalprüfung über `channels status --json` und
+`channelOrder` statt über Fließtext, mit der Begründung aus Schritt 4.
+
+- [ ] **Schritt 7: Committen**
+
+```bash
+git add config/openclaw.json docs/02_ARCHITECTURE.md docs/03_RUNBOOK.md
+git commit -m "feat(kanal): WhatsApp-Plugin nachruesten, Workspace ins Volume verlegen"
+```
