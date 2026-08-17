@@ -139,6 +139,49 @@ aktiv (§10).
 erste sichert, hat beim Restore verschlüsselte Daten ohne Schlüssel. Beide gehören
 zusammen gesichert und zusammen zurückgespielt.
 
+### Instanz-Zuschnitt: eigene Instanz statt Sammelinstanz
+
+`sales-openclaw` läuft als eigenständige Instanz neben `openclaw-festival` und der
+persönlichen lokalen Installation. Begründung, nach Gewicht geordnet:
+
+1. **Eine Instanz ist eine Vertrauensdomäne.** Der Sandbox-Befund vom 2026-08-04
+   (§4.4) zeigt, dass ein Agent die Konfiguration seiner eigenen Instanz lesen kann.
+   Alles, was in einer Instanz konfiguriert ist, ist für jeden Agenten dieser Instanz
+   erreichbar. Kundenfinanzdaten und Festival-Organisation in derselben Instanz wären
+   damit dieselbe Vertrauensdomäne — bei DSGVO-relevanten Vermögensdaten nicht
+   vertretbar.
+2. **Eine Nummer, eine Instanz.** Baileys koppelt eine WhatsApp-Nummer an eine
+   Instanz. Sobald die Zielnutzerin ihre eigene Nummer einbringt (§12.3), ist die
+   Trennung technisch erzwungen — nicht mehr eine Frage des Geschmacks.
+3. **Kontext ist Antwortqualität.** Die Anforderung lautet „akkurat antworten". Ein
+   Gedächtnis, das Festival-Logistik und Kundenberatung vermischt, verschlechtert
+   Antworten spürbar.
+4. **Getrennte Update-Zyklen.** OpenClaw veröffentlicht nahezu täglich. Pro Instanz
+   gepinnt lässt sich eine aktualisieren, ohne alle WhatsApp-Kopplungen gleichzeitig
+   zu riskieren.
+5. **Übergabbarkeit.** Wandert die Sales-App später zur Zielnutzerin oder zu
+   MH Consulting, ist eine eigene Instanz ein abtrennbares Paket. Eine Sammelinstanz
+   wäre unteilbar.
+
+**Kosten, ehrlich beziffert:** pro Instanz ein Container, ein Volume-Paar, ein
+Backup-Job, ein Port, ein Image-Pin, ein Update-Zyklus. Auf einer Maschine mit 23
+laufenden Containern fällt das nicht ins Gewicht.
+
+#### Regel für künftige Zuschnitte
+
+> **Neue Instanz**, wenn sich Nummer, Datenklasse oder Eigentümer ändert.
+> **Neuer Agent** innerhalb der Instanz, wenn sich nur die Aufgabe ändert.
+
+OpenClaw unterstützt mehrere Agenten je Instanz (`agents.list`, eigener Workspace und
+eigenes Modell je Agent). Das trennt **Kontext**, nach dem Sandbox-Befund aber
+ausdrücklich **nicht** Secrets und Prozess. Die Agentengrenze ist eine Ordnungs-, keine
+Sicherheitsgrenze — wer sie für letzteres hält, baut auf einer Annahme, die auf dieser
+Maschine bereits widerlegt wurde.
+
+Für die Stufen 2 bis 5 folgt daraus: Bedarfsanalyse, Dokumentenverwaltung und Digest
+teilen Nummer, Kundendaten und Eigentümer. Sie gehören in **diese** Instanz —
+gegebenenfalls als eigene Agenten, aber nicht als weitere Container.
+
 ## 6. Repository-Layout
 
 Neues, eigenständiges Repository `sales-openclaw` (zunächst lokal, ohne Remote).
