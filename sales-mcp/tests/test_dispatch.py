@@ -263,24 +263,76 @@ def test_at_draft_wird_failed_und_geht_nie_an_openwa():
     assert akt[0]["n"] == 0
 
 
+# --- Fix-Runde 1: blanke Ziffernfolgen brauchen den 49-Praefix ------------
+#
+# Dieselbe Falle wie die Amtsnull, eine Ebene tiefer: eine blanke Ziffernfolge
+# wurde akzeptiert unter der ANNAHME, sie bringe ihre Landesvorwahl mit —
+# ungeprueft. `1701234567` ist eine deutsche Mobilnummer, der `+49` und die
+# fuehrende `0` fehlen. Gelesen wurde sie als US-Vorwahl 1 + 701 (ein realer
+# Vorwahlbereich in North Dakota): stille Zustellung an eine falsche reale
+# Person. Blank vertrauen wir nur noch `49…`.
+
 @pytest.mark.parametrize("roh", [
-    "491701234567",        # 12 Stellen — reicht
-    "4917012345",          # 10 Stellen — Untergrenze
+    "491701234567",        # 12 Stellen — 49 + deutsche Mobilnummer
+    "49891234567890",      # 14 Stellen
+    "49123456789",         # 11 Stellen — Untergrenze
 ])
-def test_blanke_ziffernfolge_ab_zehn_stellen_ist_zustellbar(roh):
+def test_blanke_ziffernfolge_mit_49_ist_zustellbar(roh):
     chat_id, fehler = dispatch.normalisiere_empfaenger(roh)
     assert fehler is None
     assert chat_id == f"{roh}@c.us"
 
 
 @pytest.mark.parametrize("roh", [
-    "491701234",           # 9 Stellen, ohne + und ohne 00 — zu unsicher
-    "12345678",
+    "1701234567",          # DER BEFUND: DE-Mobil ohne +49, gelesen als US 1+701
+    "436641234567",        # AT muss +43 ausschreiben
+    "12025550143",         # US muss +1 ausschreiben
+    "4917012345",          # 49, aber nur 10 Stellen
+    "491701234",           # 49, aber nur 9 Stellen
+    "12345678",            # gar keine erkennbare Vorwahl
+    "4917012345678901",    # 16 Stellen — jenseits von E.164
 ])
-def test_blanke_ziffernfolge_unter_zehn_stellen_wird_abgelehnt(roh):
+def test_blanke_ziffernfolge_ohne_49_praefix_wird_abgelehnt(roh):
     chat_id, fehler = dispatch.normalisiere_empfaenger(roh)
     assert chat_id is None
-    assert fehler == nummern.FEHLER_UNZUSTELLBAR
+    assert fehler in (nummern.FEHLER_VORWAHL_UNBEKANNT,
+                      nummern.FEHLER_UNZUSTELLBAR)
+
+
+@pytest.mark.parametrize("roh", [
+    "1701234567",
+    "436641234567",
+    "12025550143",
+    "4917012345",
+    "12345678",
+])
+def test_blanke_ziffernfolge_nennt_die_fehlende_vorwahl(roh):
+    """Der Fehlertext muss sagen, was zu tun ist — er landet in drafts.error
+    und wird dem Betreiber vorgelesen."""
+    _chat_id, fehler = dispatch.normalisiere_empfaenger(roh)
+    assert fehler == nummern.FEHLER_VORWAHL_UNBEKANNT
+    assert fehler == ("Landesvorwahl nicht erkennbar — Empfaenger mit "
+                      "+Vorwahl erfassen")
+
+
+def test_deutsche_mobilnummer_ohne_vorwahl_wird_nie_amerikanisch():
+    """Regressionsprobe zum Befund der Fix-Runde."""
+    chat_id, fehler = dispatch.normalisiere_empfaenger("1701234567")
+    assert chat_id is None
+    assert fehler is not None
+
+
+def test_ausgeschriebene_vorwahl_bleibt_von_der_49_regel_unberuehrt():
+    """Die 49-Bedingung gilt NUR fuer blanke Folgen. Wer `+`/`00` schreibt,
+    nennt seine Vorwahl ausdruecklich und wird nicht auf Deutschland
+    eingeengt."""
+    for roh, erwartet in (("+436641234567", "436641234567@c.us"),
+                          ("0043 664 1234567", "436641234567@c.us"),
+                          ("+1 202 555 0143", "12025550143@c.us"),
+                          ("+49 (0)170 1234567", "491701234567@c.us")):
+        chat_id, fehler = dispatch.normalisiere_empfaenger(roh)
+        assert fehler is None, roh
+        assert chat_id == erwartet
 
 
 def test_dispatcher_und_server_teilen_dieselbe_normalisierung():

@@ -16,8 +16,13 @@ Zustellbar ist nur eine Nummer, die ihre Landesvorwahl selbst mitbringt:
 
     +<landesvorwahl><nummer>     ->  <ziffern>@c.us
     00<landesvorwahl><nummer>    ->  <ziffern>@c.us
-    <landesvorwahl><nummer>      ->  <ziffern>@c.us   (>= 10 Stellen, keine
-                                                       fuehrende 0)
+    49<nummer>                   ->  <ziffern>@c.us   (11–15 Stellen)
+
+Blank, also ohne `+` und ohne `00`, wird ausschliesslich `49…` vertraut —
+die einzige Vorwahl, die dieser Einsatz (deutscher Finanzvertrieb) ohne
+ausdrueckliches Zeichen annehmen darf. `1701234567` waere sonst als US-Nummer
+1+701 durchgegangen, statt als die deutsche Mobilnummer, die sie ist. Details
+bei BLANK_PRAEFIX.
 
 Eine mit `0` beginnende Nummer OHNE `00` ist nationale Schreibweise und wird
 zurueckgewiesen. Bis Stufe 3 galt hier eine „Amtsnull-Regel": `0…` wurde als
@@ -46,14 +51,29 @@ import re
 _TRENNER = re.compile(r"[\s\-./() ‑]")
 _NUMMER = re.compile(r"(\+|00)?\d{8,15}\Z")
 
-# Ohne + und ohne 00 muss die Ziffernfolge lang genug sein, um glaubhaft eine
-# Landesvorwahl zu enthalten. Kuerzeres ist eher ein Fragment als eine Nummer.
-MINDESTLAENGE_OHNE_PRAEFIX = 10
+# Blanke Ziffernfolgen (ohne + und ohne 00): NUR mit 49-Praefix und 11–15
+# Stellen, also `49` + deutsche Rufnummer.
+#
+# Bis zur Fix-Runde reichte hier "mindestens 10 Stellen" unter der ANNAHME,
+# eine so lange Folge bringe ihre Landesvorwahl schon mit — geprueft wurde das
+# nie. `1701234567` ist eine deutsche Mobilnummer, der `+49` und die fuehrende
+# `0` fehlen; gelesen wurde sie als US-Vorwahl 1 + 701, ein realer
+# Vorwahlbereich in North Dakota. Dieselbe Klasse Fehler wie die Amtsnull-Regel,
+# nur eine Ebene tiefer: aus einer unvollstaendigen Angabe wurde stillschweigend
+# eine gueltige fremde Nummer.
+#
+# In diesem Einsatz (deutscher Finanzvertrieb) ist `49…` die einzige Vorwahl,
+# der wir ohne ausdrueckliches `+` vertrauen. Jede andere Nummer muss ihre
+# Vorwahl ausdruecklich mitbringen.
+BLANK_PRAEFIX = "49"
+BLANK_MIN, BLANK_MAX = 11, 15
 
 FEHLER_UNZUSTELLBAR = "kein zustellbarer Empfaenger"
 FEHLER_NATIONALE_SCHREIBWEISE = (
     "Empfaenger ohne Landesvorwahl ('0…') — mit +Vorwahl erfassen, "
     "nationaler Schreibweise wird nicht vertraut")
+FEHLER_VORWAHL_UNBEKANNT = (
+    "Landesvorwahl nicht erkennbar — Empfaenger mit +Vorwahl erfassen")
 
 
 def normalisiere_empfaenger(recipient):
@@ -77,8 +97,10 @@ def normalisiere_empfaenger(recipient):
     elif kern.startswith("0"):
         return None, FEHLER_NATIONALE_SCHREIBWEISE
     else:
-        if len(kern) < MINDESTLAENGE_OHNE_PRAEFIX:
-            return None, FEHLER_UNZUSTELLBAR
+        # Blank: nur `49` + deutsche Rufnummer. Siehe BLANK_PRAEFIX oben.
+        if not (kern.startswith(BLANK_PRAEFIX)
+                and BLANK_MIN <= len(kern) <= BLANK_MAX):
+            return None, FEHLER_VORWAHL_UNBEKANNT
         ziffern = kern
 
     if ziffern.startswith("490"):        # Amtsnull hinter ausgeschriebener 49
