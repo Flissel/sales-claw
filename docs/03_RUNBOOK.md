@@ -1084,3 +1084,28 @@ docker inspect sales-claw --format '{{range .Mounts}}{{.Type}} {{.Name}} -> {{.D
 Alle vier enthalten Schlüssel und Sitzungsdaten im Klartext. Sie sind
 gitignored, und das muss so bleiben — Zugriff auf diese Pfade entsprechend
 einschränken.
+
+## Medien anhängen (Stufe 4, F4)
+
+Dateien per Explorer nach `sales-claw\media\` legen — **kein Neustart
+nötig**, der Bind ist live. Zugelassen: `pdf, jpg, jpeg, png, mp3, ogg`,
+höchstens 15 MB, nicht leer. Im Chat zeigt `medien_liste`, was anhängbar
+ist; ein Entwurf mit Anhang entsteht wie jeder andere (`pending`) und geht
+erst nach Freigabe raus — Text und Anhang in **einer** Nachricht (der Text
+ist die Bildunterschrift, deshalb bei Anhängen höchstens 1024 Zeichen; das
+Werkzeug lehnt Längeres schon beim Erstellen ab).
+
+Zwei Regeln aus der Konstruktion:
+
+* **Die Datei muss bis zur Zustellung liegen bleiben.** Gelöscht zwischen
+  Freigabe und Versand ⇒ Entwurf wird `failed` (ohne Anhang geht nichts
+  raus). Datei wieder hinlegen, dann `entwurf_erneut_freigeben`.
+* **Nicht austauschen zwischen Freigabe und Versand.** Freigegeben ist der
+  Name, nicht der Inhalt (Restrisiko-Begründung in `docs/02`, Stufe 4) —
+  wer eine Datei ändern will, legt sie neu ab und erstellt einen neuen
+  Entwurf.
+
+`media/` ist **unversioniert** (bis auf `.gitkeep`): dort liegen
+perspektivisch Kundenunterlagen, die in kein Repo gehören. Die drei
+Muster-PDFs der Demo sind lokale Artefakte; bei einem Umzug den Ordner von
+Hand mitnehmen oder neu befüllen.

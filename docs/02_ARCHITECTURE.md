@@ -751,3 +751,41 @@ deshalb: Isolation über den **laufenden** Container prüfen (`docker exec …
 test -n "$VAR"`, nie den Wert ausgeben), nicht über die aufgelöste
 Compose-Konfiguration. `docker compose config` bleibt in diesem Repo
 gesperrt.
+
+## Architektur (Stufe 4, F4): Medien durch die Freigabe-Queue
+
+Anhänge nehmen exakt denselben Weg wie Text: `entwurf_erstellen` legt den
+Entwurf mit `media_ref` (nur der Dateiname, nie ein Pfad) als `pending` an,
+ein Mensch gibt frei, der Dispatcher versendet — **ein** OpenWA-Aufruf je
+Entwurf, der Text reist als Bildunterschrift mit (gemessen: `send-image`/
+`send-audio`/`send-document` nehmen dasselbe DTO `{chatId, base64, mimetype,
+filename, caption}`; Grenzen 1024 Zeichen Caption, 25 MB Rumpf → Dateigrenze
+15 MB mit ~20 % Marge). Es gibt keinen zweiten Sendepfad und keinen
+Medien-Sonderweg am Claim vorbei.
+
+Die Prüfregel lebt in **einem** Modul (`sales-mcp/medien.py`) und läuft
+**beidseitig**: beim Erstellen und unmittelbar vor dem Senden erneut — der
+Medienordner ist ein Host-Bind, zwischen Freigabe und Zustellung kann eine
+Datei verschwinden, und dann scheitert der Entwurf (`failed`), statt ohne
+Anhang rauszugehen. Reihenfolge der Prüfung ist Absicht: Name (Traversal in
+beiden Pfadkonventionen, NUL), dann Endungs-Whitelist, dann erst das
+Dateisystem (Symlink-Auflösung per `realpath`, Größe, Lesbarkeit) — ein
+Traversal-Versuch berührt nie einen Pfad außerhalb, auch nicht lesend.
+`medien_liste` filtert über dieselbe Kette: die Liste verspricht nichts,
+was die Prüfung ablehnt.
+
+Der Ordner ist an `sales-mcp` und `sales-dispatch` **read-only** gebunden
+(`rw=false`, per `touch`-Probe belegt); der Agent-Container hat keinen
+Media-Bind — Dateiinhalte verlassen das System ausschließlich über den
+Dispatcher, hinter dem Claim. Review-Verdikt (Commit `675421e`, geprüft
+adversarial): **„Versand ohne Freigabe möglich: NEIN."**
+
+**Dokumentiertes Restrisiko (Review-Befund B1):** Freigegeben wird der
+Datei**name**, nicht der Datei**inhalt**. Wer die Datei zwischen Freigabe
+und Zustellung unter gleichem Namen austauscht, versendet den neuen Inhalt.
+Das Bedrohungsmodell ist der eigene Ordner des Betreibers auf seinem
+eigenen Host — wer dort schreiben kann, kann ohnehin alles. Bewusst
+akzeptiert statt gelöst; falls das Modell später kippt (mehrere Bediener,
+Netzfreigabe auf `media/`), ist die vorgesehene Lösung ein
+Inhalts-Fingerabdruck (sha256 bei Erstellung in die `freigabe`-Aktivität,
+Vergleich im Dispatcher) — ohne DDL machbar.
