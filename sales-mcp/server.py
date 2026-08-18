@@ -150,10 +150,107 @@ def profil_aktualisieren(lead_id: str, feld: str, wert: str) -> str:
     return _json({"gesetzt": {feld: wert}})
 
 
-# ── Task 3 ergänzt: bedarf_speichern, bedarf_offen, entwurf_erstellen, digest ──
+@_gesichert
+def bedarf_speichern(lead_id: str, frage_id: str, antwort: str) -> str:
+    """Antwort auf eine Leitfaden-Frage strukturiert ablegen. frage_id muss
+    aus bedarf_offen stammen."""
+    if frage_id not in ALLE_FRAGEN:
+        return _json({"fehler": f"Unbekannte frage_id '{frage_id}'. "
+                                f"Gueltig: {sorted(ALLE_FRAGEN)}"})
+    eintrag = {"antwort": antwort, "at": _jetzt()}
+    # Verschachteltes jsonb_set — zwingend. Ein einfaches
+    # jsonb_set(enrichment, '{bedarf,frage_id}', ..., true) legt den fehlenden
+    # Zwischenknoten 'bedarf' NICHT an (create_missing erzeugt nur das letzte
+    # Pfadelement) und ist auf frischen Kontakten ein stiller No-op. Exakt
+    # dieser Fehler steckte in profil_aktualisieren und wurde in Task 2
+    # empirisch belegt und behoben — dieses Muster spiegelt den Fix.
+    zeilen = _q(
+        "update leads set enrichment = jsonb_set(enrichment, '{bedarf}', "
+        "jsonb_set(coalesce(enrichment->'bedarf', '{}'::jsonb), %s, %s::jsonb, true), "
+        "true) where id = %s returning id",
+        ([frage_id], json.dumps(eintrag, ensure_ascii=False), lead_id))
+    if not zeilen:
+        return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
+    if frage_id == "consent_kontakt":
+        ja = antwort.strip().lower().startswith(("ja", "gern", "ok", "einverstanden"))
+        _q("update leads set consent_status = %s where id = %s returning id",
+           ("opt_in" if ja else "unknown", lead_id))
+    _q("insert into activities (lead_id, type, payload) values (%s,'bedarf',%s) "
+       "returning id",
+       (lead_id, json.dumps({"frage_id": frage_id, "antwort": antwort},
+                            ensure_ascii=False)))
+    return _json({"gespeichert": frage_id})
+
+
+@_gesichert
+def bedarf_offen(lead_id: str) -> str:
+    """Welche Leitfaden-Fragen sind noch offen? Vor jeder Frage aufrufen und
+    nur Fehlendes fragen — nie etwas doppelt."""
+    leads = _q("select enrichment from leads where id = %s", (lead_id,))
+    if not leads:
+        return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
+    beantwortet = set((leads[0]["enrichment"] or {}).get("bedarf", {}))
+    offen = [{"gruppe": g["titel"],
+              "fragen": [f for f in g["fragen"] if f["id"] not in beantwortet]}
+             for g in LEITFADEN["gruppen"]]
+    offen = [g for g in offen if g["fragen"]]
+    return _json({"anzahl_offen": sum(len(g["fragen"]) for g in offen),
+                  "offen": offen})
+
+
+@_gesichert
+def entwurf_erstellen(lead_id: str, kanal: str, text: str,
+                      betreff: str = "") -> str:
+    """Beispiel-Nachricht in die Entwurfs-Queue legen. Kanaele: whatsapp,
+    linkedin, email. Es wird NICHTS versendet — der Entwurf bleibt 'pending';
+    den Versand uebernimmt spaeter eine andere App."""
+    if kanal not in ("whatsapp", "linkedin", "email"):
+        return _json({"fehler": f"Unzulaessiger Kanal '{kanal}'. "
+                                f"Erlaubt: whatsapp, linkedin, email"})
+    leads = _q("select name, phone, email from leads where id = %s", (lead_id,))
+    if not leads:
+        return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
+    empfaenger = (leads[0]["phone"] if kanal == "whatsapp" else
+                  leads[0]["email"] if kanal == "email" else leads[0]["name"])
+    zeilen = _q(
+        "insert into drafts (lead_id, channel, recipient, subject, body) "
+        "values (%s, %s, %s, nullif(%s,''), %s) returning id, status",
+        (lead_id, kanal, empfaenger or leads[0]["name"], betreff, text))
+    return _json({"draft_id": zeilen[0]["id"], "status": zeilen[0]["status"],
+                  "hinweis": "Nicht versendet — wartet in der Queue."})
+
+
+@_gesichert
+def digest() -> str:
+    """Zusammenfassung: offene Entwuerfe, unvollstaendige Bedarfsanalysen,
+    letzte Aktivitaeten (48 h)."""
+    entwuerfe = _q("select d.id, d.channel, l.name, d.created_at from drafts d "
+                   "left join leads l on l.id = d.lead_id "
+                   "where d.status = 'pending' order by d.created_at desc")
+    unvollstaendig = _q(
+        "select id, name from leads where status not in ('won','lost') "
+        "order by updated_at desc limit 20")
+    offen_je_lead = []
+    for lead in unvollstaendig:
+        o = json.loads(bedarf_offen(str(lead["id"])))
+        if "anzahl_offen" in o and o["anzahl_offen"] > 0:
+            offen_je_lead.append({"lead_id": lead["id"], "name": lead["name"],
+                                  "offene_fragen": o["anzahl_offen"]})
+    letzte = _q("select a.type, a.payload, a.created_at, l.name "
+                "from activities a left join leads l on l.id = a.lead_id "
+                "where a.created_at > now() - interval '48 hours' "
+                "order by a.created_at desc limit 20")
+    return _json({"anzahl_entwuerfe": len(entwuerfe),
+                  "offene_entwuerfe": [
+                      {"draft_id": e["id"], "kanal": e["channel"],
+                       "kontakt": e["name"]} for e in entwuerfe],
+                  "unvollstaendige_bedarfsanalysen": offen_je_lead,
+                  "letzte_aktivitaeten": letzte})
+
 
 for _fn in (kontakt_suchen, kontakt_anlegen, aktivitaet_loggen,
-            profil_lesen, profil_aktualisieren):
+            profil_lesen, profil_aktualisieren, bedarf_speichern,
+            bedarf_offen, entwurf_erstellen, digest):
     mcp.tool()(_fn)
 
 if __name__ == "__main__":

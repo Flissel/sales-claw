@@ -54,3 +54,49 @@ def test_profil_aktualisieren_ist_kumulativ():
 def test_unbekannte_lead_id_gibt_fehlertext():
     kaputt = json.loads(server.profil_lesen("00000000-0000-0000-0000-000000000000"))
     assert "fehler" in kaputt
+
+
+def test_bedarf_speichern_und_offene_schrumpfen():
+    lead = _anlegen()["lead_id"]
+    vorher = json.loads(server.bedarf_offen(lead))
+    server.bedarf_speichern(lead, "alter", "34")
+    nachher = json.loads(server.bedarf_offen(lead))
+    assert vorher["anzahl_offen"] - nachher["anzahl_offen"] == 1
+    profil = json.loads(server.profil_lesen(lead))
+    assert profil["bedarf"]["alter"]["antwort"] == "34"
+
+
+def test_bedarf_unbekannte_frage_wird_abgelehnt():
+    lead = _anlegen()["lead_id"]
+    kaputt = json.loads(server.bedarf_speichern(lead, "schuhgroesse", "44"))
+    assert "fehler" in kaputt
+
+
+def test_consent_frage_setzt_consent_status():
+    lead = _anlegen()["lead_id"]
+    server.bedarf_speichern(lead, "consent_kontakt", "ja, gerne")
+    profil = json.loads(server.profil_lesen(lead))
+    assert profil["consent"] == "opt_in"
+
+
+def test_entwurf_bleibt_pending():
+    lead = _anlegen()["lead_id"]
+    e = json.loads(server.entwurf_erstellen(lead, "linkedin",
+                                            "Hallo Herr Testperson, ..."))
+    assert e["status"] == "pending"
+    zeilen = server._q("select status, channel from drafts")
+    assert zeilen == [{"status": "pending", "channel": "linkedin"}]
+
+
+def test_entwurf_unzulaessiger_kanal():
+    lead = _anlegen()["lead_id"]
+    kaputt = json.loads(server.entwurf_erstellen(lead, "brieftaube", "x"))
+    assert "fehler" in kaputt
+
+
+def test_digest_nennt_offene_entwuerfe():
+    lead = _anlegen()["lead_id"]
+    server.entwurf_erstellen(lead, "whatsapp", "Follow-up-Text")
+    d = json.loads(server.digest())
+    assert d["offene_entwuerfe"][0]["kanal"] == "whatsapp"
+    assert d["anzahl_entwuerfe"] == 1
