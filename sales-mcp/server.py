@@ -1,6 +1,6 @@
 """sales-mcp — Werkzeugdienst des sales-claw-Prototyps.
 
-Achtzehn deutsche Werkzeuge über MCP (streamable-http). Kein Send-Werkzeug:
+Zwanzig deutsche Werkzeuge über MCP (streamable-http). Kein Send-Werkzeug:
 Entwürfe enden als drafts(status='pending') und werden über die
 Freigabe-Werkzeuge nach 'approved'/'rejected' bewegt — den tatsächlichen
 Versand macht ausschliesslich der Dispatcher (WhatsApp) bzw. quittiert der
@@ -9,6 +9,12 @@ es protokolliert nur einen bereits erfolgten Handversand; Stufe-3-Plan
 Grundsatzentscheidung 1+3). entwurf_erneut_freigeben ist der Retry-Weg für
 einen an OpenWA gescheiterten WhatsApp-Entwurf (failed -> approved) — mit
 einer Schutzkante gegen Doppelversand, siehe dort.
+
+Die beiden jüngsten Werkzeuge (marktanalyse, b2b_leads) sprechen als einzige
+mit einem kostenpflichtigen Fremddienst (Apify, Free-Plan mit $5 Monatsbudget)
+und legen Kontakte OHNE Einwilligung an — beides steht unten bei ihnen und in
+recherche.py ausführlich; die Regel „Recherche-Leads werden nie automatisch
+angeschrieben" ist eine Rechtsfrage (UWG), keine Stilfrage.
 """
 import functools
 import json
@@ -41,6 +47,10 @@ from nummern import normalisiere_empfaenger
 # ein Anhang überhaupt in einen Entwurf darf — und im Dispatcher ein zweites
 # Mal, unmittelbar vor dem Senden. Import statt Kopie (siehe medien.py).
 import medien
+# Die Apify-Anbindung (Stufe 5). Ebenfalls ein eigenes Modul, und ebenfalls
+# eines ohne Rückimport: recherche.py kennt weder Datenbank noch Werkzeuge,
+# nur HTTP, Normalisierung und Markdown (Begründung im Moduldocstring).
+import recherche
 
 SCHEMA = os.environ.get("SALES_DB_SCHEMA", "sales")
 if SCHEMA not in ("sales", "sales_test"):
@@ -434,8 +444,18 @@ def digest() -> str:
     entwuerfe = _q("select d.id, d.channel, l.name, d.created_at from drafts d "
                    "left join leads l on l.id = d.lead_id "
                    "where d.status = 'pending' order by d.created_at desc")
+    # Recherche- und Systemkontakte bleiben hier draussen (Stufe 5). Eine
+    # „unvollstaendige Bedarfsanalyse" setzt ein Gespraech voraus; ein frisch
+    # recherchierter Firmeneintrag hat nie eines gefuehrt. Gemessen nach der
+    # ersten b2b_leads-Runde: 6 der 13 Zeilen in diesem Block waren
+    # Recherche-Treffer und der Sammelkontakt — je mit 21 offenen Fragen, ganz
+    # oben, weil sie die juengsten Kontakte sind. Das haette den Morgen-Digest
+    # (F2) genau um die Kontakte gebracht, um die es geht. Sichtbar bleiben
+    # Recherche-Kontakte ueber kontakt_suchen und die recherche-Aktivitaeten am
+    # Sammelkontakt.
     unvollstaendig = _q(
         "select id, name from leads where status not in ('won','lost') "
+        "and coalesce(source, '') not in ('recherche', 'system') "
         "order by updated_at desc limit 20")
     offen_je_lead = []
     for lead in unvollstaendig:
@@ -662,12 +682,172 @@ def entwurf_erneut_freigeben(draft_id: str, bestaetigt: bool = False) -> str:
     return _json({"draft_id": z["id"], "status": "approved"})
 
 
+# ---------------------------------------------------------------------------
+# Recherche (Stufe 5) — Markt- und Firmendaten aus Google Maps über Apify.
+#
+# Der Aussenweg (HTTP, Preismodell, Normalisierung, Report-Markdown) steht in
+# recherche.py; hier bleibt nur, was Datenbank oder Werkzeugschicht braucht.
+# Beide Werkzeuge kosten bei jedem Aufruf echtes Geld (Free-Plan, $5 im Monat)
+# — deshalb das harte `limit` und die Kostenzeile in jeder Antwort.
+# ---------------------------------------------------------------------------
+
+def _recherche_loggen(werkzeug: str, nutzlast: dict):
+    """`activities`-Zeile am Sammel-Lead — oder ein Hinweis, warum nicht.
+
+    Diese Funktion wirft NIE. Zum Zeitpunkt des Aufrufs ist der Apify-Lauf
+    bezahlt und der Report geschrieben; ein fehlender Sammel-Lead oder ein
+    Datenbankfehler darf dieses Ergebnis nicht in eine Fehlermeldung
+    verwandeln. Er soll nur nicht stillschweigend verschwinden — deshalb der
+    Hinweis in der Antwort.
+    """
+    if not recherche.RECHERCHE_LEAD_ID:
+        return ("Nicht protokolliert: RECHERCHE_LEAD_ID ist nicht gesetzt "
+                "(Sammel-Lead 'RECHERCHE (Sammelkontakt)' in .env eintragen).")
+    try:
+        _q("insert into activities (lead_id, type, payload) "
+           "values (%s, 'recherche', %s) returning id",
+           (recherche.RECHERCHE_LEAD_ID, _json({"werkzeug": werkzeug, **nutzlast})))
+    except psycopg.Error as e:
+        return (f"Nicht protokolliert: Datenbankfehler ({e.sqlstate}) beim "
+                f"Schreiben der Recherche-Aktivität.")
+    return None
+
+
+def _ohne_none(objekt: dict) -> dict:
+    """Hinweisfelder, die None sind, gehören nicht in die Antwort."""
+    return {k: v for k, v in objekt.items() if v is not None}
+
+
+@_gesichert
+def marktanalyse(thema: str, region: str = "Regensburg", limit: int = 20) -> str:
+    """Wettbewerber zu einem Thema in einer Region erheben und als
+    Markdown-Report ablegen. Quelle sind oeffentliche Google-Maps-Firmendaten
+    (Name, Adresse, Telefon, Website, Kategorie, Bewertung) — KEINE
+    Personendaten.
+
+    Beispiele fuer `thema`: "Versicherungsmakler", "Finanzberatung",
+    "Steuerberater". `region` ist eine Freitextangabe wie "Regensburg" oder
+    "Regensburg, Deutschland". `limit` ist die Obergrenze der Treffer;
+    Vorgabe 20, mehr als 50 wird stillschweigend auf 50 gekappt — jeder
+    Treffer kostet Guthaben.
+
+    Zurueck kommen der Pfad des Reports unter /reports und eine Kurzfassung
+    in fuenf Zeilen; gib die Kurzfassung wieder und nenne den Pfad, damit der
+    Betreiber den Report wiederfindet. Zweimal dasselbe Thema am selben Tag
+    ueberschreibt den Report (`ueberschrieben: true` sagt es).
+
+    Dieses Werkzeug legt KEINE Kontakte an — dafuer gibt es b2b_leads."""
+    ergebnis, fehler = recherche.suche(thema, region, limit)
+    if fehler:
+        return _json({"fehler": fehler})
+    treffer = ergebnis["treffer"]
+    if not treffer:
+        _recherche_loggen("marktanalyse", {"thema": ergebnis["thema"],
+                                           "region": ergebnis["region"],
+                                           "limit": ergebnis["limit"],
+                                           "treffer": 0})
+        return _json({"treffer": 0, "hinweis": (
+            f"Google Maps liefert zu '{ergebnis['thema']}' in "
+            f"'{ergebnis['region']}' keine Treffer. Kein Report geschrieben — "
+            f"anderen Suchbegriff oder groessere Region versuchen.")})
+    inhalt = recherche.markt_report(ergebnis["thema"], ergebnis["region"],
+                                    treffer, ergebnis["limit"],
+                                    kosten=ergebnis["kosten_usd"])
+    pfad, ueberschrieben, schreibfehler = None, False, None
+    try:
+        pfad, ueberschrieben = recherche.report_schreiben(
+            recherche.report_name(ergebnis["thema"], ergebnis["region"]), inhalt)
+    except (OSError, ValueError) as e:
+        # Der Lauf ist bezahlt und die Zahlen stehen — sie gehen nicht
+        # verloren, nur weil der Reportordner fehlt. Die Kurzfassung kommt
+        # trotzdem zurueck, mit dem Grund daneben.
+        schreibfehler = (f"Report konnte nicht abgelegt werden "
+                         f"({type(e).__name__}: {e}) — liegt der Bind "
+                         f"./reports:/reports am Container an?")
+    hinweis = _recherche_loggen("marktanalyse", {
+        "thema": ergebnis["thema"], "region": ergebnis["region"],
+        "limit": ergebnis["limit"], "treffer": len(treffer),
+        "report": pfad, "kosten_usd": ergebnis["kosten_usd"]})
+    return _json(_ohne_none({
+        "report": pfad, "ueberschrieben": ueberschrieben,
+        "treffer": len(treffer), "kosten_usd": ergebnis["kosten_usd"],
+        "kurzfassung": recherche.kurzfassung(ergebnis["thema"],
+                                             ergebnis["region"], treffer),
+        "fehler": schreibfehler, "protokoll": hinweis}))
+
+
+@_gesichert
+def b2b_leads(branche: str, region: str = "Regensburg", limit: int = 20) -> str:
+    """Firmen einer Branche in einer Region recherchieren und die mit
+    Telefonnummer als Kontakte anlegen (source='recherche'). Quelle sind
+    oeffentliche Google-Maps-Firmendaten — KEINE Personendaten. Aufhaenger
+    fuer das B2B-Gespraech ist die betriebliche Altersvorsorge.
+
+    `limit` wie bei marktanalyse: Vorgabe 20, ueber 50 wird gekappt, jeder
+    Treffer kostet Guthaben. Treffer ohne Telefonnummer werden NICHT angelegt
+    (ohne Kanal kein Nutzen) und nur in der Antwort genannt. Firmen, deren
+    Nummer schon im CRM steht, werden uebersprungen (Dedup wie in
+    kontakt_anlegen).
+
+    WICHTIG — diese Kontakte haben KEINE Einwilligung (consent 'unknown').
+    Schlage fuer sie NIE einen WhatsApp-Entwurf vor und schreibe sie nie an;
+    werbliche Kaltansprache per Messenger waere ein UWG-Verstoss. Erlaubt
+    sind Textentwuerfe fuer LinkedIn oder Brief, die der Betreiber selbst von
+    Hand versendet."""
+    ergebnis, fehler = recherche.suche(branche, region, limit)
+    if fehler:
+        return _json({"fehler": fehler})
+    treffer = ergebnis["treffer"]
+    angelegt, dubletten, ohne_nummer, fehlgeschlagen = [], [], [], []
+    for t in treffer:
+        if not t["telefon"]:
+            ohne_nummer.append(t["name"])
+            continue
+        # Ausdruecklich ueber das bestehende Werkzeug, nicht ueber ein eigenes
+        # INSERT: nur so greift die Dedup-Kante aus kontakt_anlegen (gleiche
+        # normalisierte Nummer -> kein zweiter Lead), und nur so gilt fuer
+        # Recherche-Kontakte dieselbe Regel wie fuer alle anderen.
+        antwort = json.loads(kontakt_anlegen(
+            name=t["name"], phone=t["telefon"], source="recherche",
+            notes=recherche.lead_notiz(t, ergebnis["thema"], ergebnis["region"])))
+        if "fehler" in antwort:
+            fehlgeschlagen.append(t["name"])
+        elif antwort.get("angelegt"):
+            # `company` fuellt kontakt_anlegen nicht — es kennt nur Personen.
+            # Bei einem Firmenkontakt ist der Name die Firma, und die Spalte
+            # soll das auch sagen; ein Nachtrag statt einer neuen Signatur am
+            # meistgenutzten Werkzeug des Hauses.
+            _q("update leads set company = %s where id = %s returning id",
+               (t["name"], antwort["lead_id"]))
+            angelegt.append(t["name"])
+        else:
+            dubletten.append(t["name"])
+    zaehler = {"treffer_gesamt": len(treffer), "angelegt": len(angelegt),
+               "uebersprungen_dublette": len(dubletten),
+               "ohne_nummer": len(ohne_nummer)}
+    if fehlgeschlagen:
+        zaehler["nicht_angelegt_fehler"] = len(fehlgeschlagen)
+    hinweis = _recherche_loggen("b2b_leads", {
+        "branche": ergebnis["thema"], "region": ergebnis["region"],
+        "limit": ergebnis["limit"], "kosten_usd": ergebnis["kosten_usd"],
+        **zaehler})
+    return _json(_ohne_none({
+        **zaehler, "kosten_usd": ergebnis["kosten_usd"],
+        "erste_namen": angelegt[:5],
+        "ohne_nummer_namen": ohne_nummer[:10],
+        "protokoll": hinweis,
+        "hinweis": ("Recherche-Kontakte ohne Einwilligung (consent 'unknown'): "
+                    "nicht per WhatsApp anschreiben, keine Kalt-Entwuerfe "
+                    "vorschlagen. Erstkontakt macht der Betreiber selbst.")}))
+
+
 WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              aktivitaet_loggen, wiedervorlage_setzen, wiedervorlage_erledigt,
              profil_lesen, profil_aktualisieren,
              bedarf_speichern, bedarf_offen, entwurf_erstellen, medien_liste,
              digest, entwuerfe_offen, entwurf_freigeben, entwurf_ablehnen,
-             entwurf_manuell_gesendet, entwurf_erneut_freigeben)
+             entwurf_manuell_gesendet, entwurf_erneut_freigeben,
+             marktanalyse, b2b_leads)
 
 for _fn in WERKZEUGE:
     mcp.tool()(_fn)

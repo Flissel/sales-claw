@@ -1,0 +1,4 @@
+# Reportordner (Stufe 5). Ziel des beschreibbaren Binds ./reports:/reports an
+# sales-mcp; hier landen die Markdown-Reports von marktanalyse. Der Ordner ist
+# versioniert (diese Datei), sein Inhalt nicht (.gitignore) — Reports sind
+# Arbeitsergebnisse, kein Quellcode, und koennen Firmendaten Dritter enthalten.

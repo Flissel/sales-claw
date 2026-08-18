@@ -27,6 +27,15 @@ openwa-qr.txt
 media/*
 !media/.gitkeep
 
+# Reportordner (Stufe 5, R1): Ergebnisse von `marktanalyse`. Sie bestehen aus
+# Firmendaten Dritter (Name, Adresse, Telefon, Bewertung) — Arbeitsergebnisse
+# fuer den Betreiber, kein Quellcode, und nichts, was in ein Repo gehoert.
+# Gleiches `verzeichnis/*` + Negation wie bei media/, aus demselben Grund:
+# sonst bliebe .gitkeep nicht versioniert und Compose legte den Ordner in
+# einem frischen Klon als Root-owned Leerverzeichnis an.
+reports/*
+!reports/.gitkeep
+
 # Python-Bytecode (entsteht beim Testlauf im Container, der /app mountet)
 __pycache__/
 *.pyc

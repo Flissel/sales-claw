@@ -670,13 +670,16 @@ def test_kontakt_aktualisieren_signatur_ueberlebt_den_dekorator():
     assert list(parameter) == ["lead_id", "feld", "wert"]
 
 
-def test_achtzehn_werkzeuge_registriert():
+def test_zwanzig_werkzeuge_registriert():
     namen = {fn.__name__ for fn in server.WERKZEUGE}
-    assert len(namen) == 18
+    assert len(namen) == 20
     assert "kontakt_aktualisieren" in namen
     assert "wiedervorlage_setzen" in namen
     assert "wiedervorlage_erledigt" in namen
     assert "medien_liste" in namen
+    # Stufe 5 — Recherche. Vertragstests dazu in tests/test_recherche.py.
+    assert "marktanalyse" in namen
+    assert "b2b_leads" in namen
 
 
 # ---------------------------------------------------------------------------

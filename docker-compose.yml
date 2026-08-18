@@ -102,8 +102,27 @@ services:
     # Ein Host-Bind statt eines benannten Volumes, weil genau das der Weg ist,
     # auf dem der Betreiber Dateien hineinbekommt (Datei-Explorer, nicht
     # `docker cp`).
+    #
+    # Der Reportordner (Stufe 5, R1) — und das einzige beschreibbare Bind im
+    # ganzen Stack. `marktanalyse` legt hier ihre Markdown-Reports ab
+    # (/reports/<thema>-<region>-<datum>.md).
+    #
+    # Warum überhaupt auf den Host und nicht in ein benanntes Volume: der
+    # Report ist ein Arbeitsergebnis für einen Menschen. Er soll ihn im
+    # Datei-Explorer öffnen, per Mail weiterreichen und aufheben können, ohne
+    # `docker cp` zu lernen. Und er muss den Neustart eines Prototyp-Containers
+    # überleben, für den `restart: "no"` gilt.
+    #
+    # Warum NUR an sales-mcp und warum schreibbar: nur der Werkzeugdienst
+    # erzeugt Reports. Dispatcher und Inbox haben hier nichts zu suchen — der
+    # eine versendet, der andere nimmt entgegen; ein Schreibrecht, das niemand
+    # braucht, wird auch nicht vergeben. Der Medienordner darüber bleibt
+    # unverändert `:ro`: was rausgehen kann, legt ausschliesslich ein Mensch ab
+    # (Begründung dort) — die beiden Ordner haben genau gegenläufige
+    # Datenrichtungen und deshalb gegenläufige Rechte.
     volumes:
       - ./media:/media:ro
+      - ./reports:/reports
     # Kein ports:-Eintrag — nur im Compose-Netz erreichbar. Der Dienst kennt
     # die Kundendaten-DB; er hat auf dem Host nichts verloren.
     logging:
