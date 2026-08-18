@@ -16,9 +16,9 @@ starten.** Nie umgekehrt, nie gleichzeitig.
 
 | Rückweg | Pfad | Enthält |
 |---|---|---|
-| OpenClaw-Archiv der lokalen Installation | `2026-08-17T19-16-40.033Z-openclaw-backup.tar.gz` (Repo-Wurzel) | vollständiger Host-Zustand inkl. `credentials/whatsapp` (8003 Dateien), mit `openclaw backup verify` geprüft |
-| Rohkopie vor dem Stopp | `credentials-sicherung-host-20260817-211935/` | `credentials/` des Hosts, im laufenden Betrieb kopiert |
-| Rohkopie nach dem Stopp | `credentials-sicherung-20260817-212343/` | `credentials/` des Hosts, **stillgelegt** kopiert — der belastbarere der beiden |
+| OpenClaw-Archiv der lokalen Installation | `*-openclaw-backup.tar.gz` (Repo-Wurzel) | vollständiger Host-Zustand inkl. `credentials/whatsapp`, mit `openclaw backup verify` geprüft |
+| Rohkopie **im laufenden Betrieb** | `credentials-sicherung-host-<zeitstempel>/` | `credentials/` des Hosts, kopiert während der Gateway lief |
+| Rohkopie **nach dem Stopp** | `credentials-sicherung-<zeitstempel>/` | `credentials/` des Hosts, stillgelegt kopiert — der belastbarere der beiden |
 | Volume-Sicherungen | `backups/sales-claw-<zeitstempel>/` | `state.tar`, `keys.tar`, `MANIFEST.json` |
 
 Alle vier sind gitignored und enthalten Sitzungsdaten im Klartext.
@@ -27,6 +27,48 @@ Alle vier sind gitignored und enthalten Sitzungsdaten im Klartext.
 Kopplung betrifft.** Eine im laufenden Betrieb erstellte Kopie kann eine
 halb geschriebene Session-Datei enthalten — strukturell fehlerfrei, inhaltlich
 tot, und keine Prüfung bemerkt das.
+
+### Welche Rohkopie — das Auswahlkriterium, nicht ein Ordnername
+
+Hier stand bisher ein fest verdrahteter Ordnername. Das trägt genau bis zur
+nächsten Migration: `migrate-credentials.ps1` legt bei **jedem** Lauf eine
+neue Rohkopie an, und ein hier eingemeißelter Name führte danach still eine
+**veraltete Sitzung** zurück — mit dem Fehlerbild von Fall 1, aber ohne dessen
+Ursache. Deshalb ein Kriterium statt eines Namens:
+
+1. **Ohne `-host-` im Namen.** Die `-host-`-Kopien entstanden im laufenden
+   Betrieb; die anderen legt `migrate-credentials.ps1` an, nachdem
+   `stop-local-openclaw.ps1` den Stillstand nachgewiesen hat.
+2. **Die jüngste davon.** Der Zeitstempel im Namen sortiert alphabetisch
+   richtig.
+
+```powershell
+$rohkopie = Get-ChildItem . -Directory -Filter 'credentials-sicherung-*' |
+    Where-Object { $_.Name -notlike 'credentials-sicherung-host-*' } |
+    Sort-Object Name -Descending | Select-Object -First 1
+$rohkopie.FullName
+(Get-ChildItem -Recurse -File -Force (Join-Path $rohkopie.FullName 'whatsapp')).Count
+```
+
+**Vor dem Verwenden die Dateizahl ansehen** und mit der im Volume vergleichen
+(Befehl im Runbook, Abschnitt „Zustand nachsehen"). Weichen sie stark ab, ist
+die Kopie älter als der letzte Stand — dann bewusst entscheiden, nicht
+kopieren und hoffen.
+
+### Der Versionssprung, der dabei mitspielt
+
+Die Credentials in allen genannten Rückwegen stammen aus der **lokalen
+Installation 2026.5.18**; der Container läuft **2026.7.1**. Dass eine
+2026.5.18-Sitzung unter 2026.7.1 trägt, ist **belegt** (Task 9): der Kanal
+meldete sich nach der Übernahme ohne Neukopplung als `linked`, es erschien
+kein QR-Code, und die Kopplung überstand `down`/`up`.
+
+Belegt ist damit die Richtung **5.18 → 7.1**. Die Gegenrichtung — eine unter
+2026.7.1 weitergeschriebene Sitzung zurück in die 2026.5.18-Installation, also
+genau das, was Fall 3 tut — ist **nicht** belegt. Sie ist plausibel, weil das
+Baileys-Sitzungsformat dazwischen unverändert schien, aber niemand hat es
+geprüft. Wer Fall 3 geht, behält die Rohkopie deshalb und wirft sie nicht weg,
+sobald der lokale Gateway läuft.
 
 ---
 
@@ -103,7 +145,21 @@ Läufen vor Fix-Runde 4 (Begründung in `docs/04_BACKUP_RESTORE.md`).
 
 Warnt das Skript mit `Diese Sicherung entstand bei laufendem Container`, dann
 kann die enthaltene WhatsApp-Sitzung tot sein, obwohl alle Prüfungen bestehen.
-Wenn möglich eine Sicherung mit `container_gestoppt: true` wählen.
+Wenn möglich eine Sicherung mit `container_gestoppt: true` wählen. Dieselbe
+Überlegung gilt bei `stop_exit_code 137`: dann wurde der Container beim Sichern
+nach Fristablauf getötet, und der Session-Store kann mitten im Schreiben
+erwischt worden sein.
+
+**Die Sicherung lässt sich vorab prüfen, ohne etwas anzufassen** — und das ist
+der bessere Zeitpunkt als der Ernstfall:
+
+```powershell
+pwsh -File scripts/restore-state.ps1 -Quelle backups\sales-claw-<zeitstempel> -NurPruefen
+```
+
+Das fährt denselben Manifest-Abgleich und dieselbe Entpackprobe wie ein echtes
+Restore, steigt danach aber aus, bevor ein Volume angefasst wird. Der Container
+darf dabei laufen. Im Notfall ist so schon bekannt, welche Sicherung trägt.
 
 ---
 
@@ -130,30 +186,47 @@ pwsh -Command ". ./scripts/lib/ports.ps1; Test-PortFrei -Port 18894"   # muss Tr
 $ziel = "$env:USERPROFILE\.openclaw\credentials\whatsapp"
 if (Test-Path $ziel) { Rename-Item $ziel "whatsapp-alt-$(Get-Date -Format yyyyMMdd-HHmmss)" }
 
-# 3. Credentials zurückspielen (bevorzugt die im Stillstand erstellte Rohkopie)
-Copy-Item -Recurse `
-    'credentials-sicherung-20260817-212343\whatsapp' `
-    "$env:USERPROFILE\.openclaw\credentials\whatsapp"
+# 3. Rohkopie auswählen — Kriterium, kein fester Name (siehe oben):
+#    jüngster credentials-sicherung-*-Ordner OHNE '-host-' im Namen.
+$rohkopie = Get-ChildItem . -Directory -Filter 'credentials-sicherung-*' |
+    Where-Object { $_.Name -notlike 'credentials-sicherung-host-*' } |
+    Sort-Object Name -Descending | Select-Object -First 1
+$quelle = Join-Path $rohkopie.FullName 'whatsapp'
+$quelle          # ansehen und bestätigen, bevor es weitergeht
 
-# 4. Gegenprobe: Dateizahl muss zur Sicherung passen
+# 4. Credentials zurückspielen
+Copy-Item -Recurse $quelle "$env:USERPROFILE\.openclaw\credentials\whatsapp"
+
+# 5. Gegenprobe: Dateizahl muss zur Rohkopie passen
 (Get-ChildItem -Recurse -File -Force $ziel).Count
-(Get-ChildItem -Recurse -File -Force 'credentials-sicherung-20260817-212343\whatsapp').Count
+(Get-ChildItem -Recurse -File -Force $quelle).Count
 
-# 5. ERST JETZT den lokalen Gateway starten
+# 6. ERST JETZT den lokalen Gateway starten
 openclaw daemon start
 
-# 6. Nachweisen, dass er wirklich läuft
+# 7. Nachweisen, dass er wirklich läuft
 pwsh -Command ". ./scripts/lib/ports.ps1; Test-PortFrei -Port 18793"   # muss False sein
 Get-NetTCPConnection -LocalPort 18793 -State Listen | Select-Object LocalPort, OwningProcess
 openclaw daemon status
 openclaw channels status
 ```
 
+**Der Anmelde-Trigger gehört zu dieser Entscheidung.** Er ist deaktiviert
+(`03_RUNBOOK.md`, „Anmelde-Trigger und Neustart-Regel"), der lokale Gateway
+kommt also nach einer Windows-Anmeldung nicht von selbst hoch. Für einen
+einmaligen Rückweg ist das richtig so: `openclaw daemon start` genügt. Soll
+die lokale Installation den Betrieb **dauerhaft** tragen, wird der Trigger
+wieder eingeschaltet — und dann muss der Container auf `restart: "no"` stehen
+bleiben und unten sein. Immer nur eine der beiden Seiten startet automatisch;
+beide gleichzeitig ist Fall 1.
+
 Muss statt einzelner Credentials der **komplette** Host-Zustand zurück, führt
 der Weg über das geprüfte OpenClaw-Archiv:
 
 ```powershell
-openclaw backup verify 2026-08-17T19-16-40.033Z-openclaw-backup.tar.gz
+$archiv = Get-ChildItem . -Filter '*-openclaw-backup.tar.gz' |
+    Sort-Object Name -Descending | Select-Object -First 1
+openclaw backup verify $archiv.Name
 ```
 
 Das Archiv liegt unter `payload/windows/...` und enthält `state: ~\.openclaw`

@@ -35,50 +35,65 @@ Daraus folgt die Reihenfolge-Regel für jeden Eingriff, der beide Seiten berühr
 
 Diese Reihenfolge umzudrehen kostet die Kopplung. Sie ist kein Vorschlag.
 
-### ⚠ Offener Punkt: die lokale Installation startet sich beim Anmelden selbst
+### Anmelde-Trigger und Neustart-Regel — Stand und Zusammenhang
 
 Der lokale Gateway läuft nicht als freier Prozess, sondern als
-**Windows-Aufgabe `\OpenClaw Gateway`** — und diese Aufgabe hat einen
-**aktiven Anmelde-Trigger**:
+**Windows-Aufgabe `\OpenClaw Gateway`**. Deren Anmelde-Trigger ist
+inzwischen **deaktiviert**:
 
 ```powershell
 Get-ScheduledTask -TaskName 'OpenClaw Gateway' |
     ForEach-Object { $_.Triggers } |
     Select-Object @{n='Typ';e={$_.CimClass.CimClassName}}, Enabled
-# MSFT_TaskLogonTrigger   True
+# MSFT_TaskLogonTrigger   False
 ```
 
-`openclaw daemon stop` beendet den **laufenden** Task, entfernt aber den
-Trigger nicht. Stand heute ist die Aufgabe `Ready` (gestoppt) — **bei der
-nächsten Windows-Anmeldung startet sie von selbst wieder**, mit denselben
-Credentials, die inzwischen auch im Volume `sales-claw-state` liegen.
+Die Aufgabe selbst existiert weiter und steht auf `Ready`. Sie startet aber
+nicht mehr von allein, wenn sich jemand an Windows anmeldet.
 
-Läuft in diesem Moment der Container, ist das exakt der Doppelbetrieb aus der
-Regel oben: zwei Baileys-Sitzungen auf denselben Session-Dateien, und die
-Kopplung ist weg.
+**Der Container steht auf `restart: "no"`** (Begründung in
+`docker-compose.yml`: Demo-Betrieb an der persönlichen Nummer des Betreibers).
+Beide Einstellungen gehören zusammen:
 
-**Das ist bewusst nicht eigenmächtig geändert worden** — den Autostart einer
-produktiv genutzten Installation abzuschalten ist eine Entscheidung des
-Betreibers. Er muss sie aber treffen, bevor der Container dauerhaft läuft.
-Zur Auswahl stehen:
+| Kommt nach einer Windows-Anmeldung von selbst hoch? | lokale Aufgabe | Container |
+|---|---|---|
+| | nein — Trigger `Enabled=False` | nein — `restart: "no"` |
+
+Nach einer Anmeldung läuft also **keine** der beiden Instanzen. Wer eine
+braucht, startet sie bewusst, und genau dieser bewusste Schritt ist die
+Stelle, an der die Reihenfolge-Regel oben greift.
+
+**Warum die frühere Empfehlung nicht trug.** Hier stand bisher, man solle
+„nach jeder Windows-Anmeldung zuerst prüfen, ob der lokale Gateway wieder
+läuft, bevor der Container gestartet wird". Das setzte voraus, dass der
+Container-Start ein von Hand gesetzter Zeitpunkt ist. Solange
+`restart: unless-stopped` galt, war er das nicht: Aufgabe und Container kamen
+**beide automatisch** hoch, in nicht festgelegter Reihenfolge und ohne
+Zeitfenster dazwischen. Es gab keinen Moment, in dem jemand die Prüfung hätte
+ausführen können. Ein Ratschlag, der ein Zeitfenster voraussetzt, das es nicht
+gibt, ist kein Schutz — er sieht nur wie einer aus.
+
+**Was daraus für die Umstellung folgt.** `restart: "no"` ist eine
+Demo-Einstellung. Sobald `sales-claw` eine eigene Nummer hat und dauerhaft
+bedienen soll, wird daraus `unless-stopped`. Dann startet der Container
+automatisch — **und dann ist der deaktivierte Anmelde-Trigger keine
+Bequemlichkeit mehr, sondern Voraussetzung.** Wird er wieder eingeschaltet,
+während der Container auf `unless-stopped` steht, kommen nach der nächsten
+Anmeldung zwei Baileys-Sitzungen auf denselben Credentials hoch, und die
+Kopplung ist weg (`05_DISASTER_RECOVERY.md`, Fall 1). Die beiden Schalter
+dürfen deshalb nie einzeln umgelegt werden.
+
+Der Stand lässt sich jederzeit ohne Eingriff nachsehen:
 
 ```powershell
-# Variante A: nur den Trigger abschalten, Aufgabe bleibt bestehen
-Disable-ScheduledTask -TaskName 'OpenClaw Gateway'
-
-# Variante B: den Dienst regulär deinstallieren (OpenClaws eigener Weg)
-openclaw daemon uninstall
+Get-ScheduledTask -TaskName 'OpenClaw Gateway' |
+    ForEach-Object { $_.Triggers } | Select-Object Enabled    # erwartet: False
+pwsh -Command ". ./scripts/lib/ports.ps1; Test-PortFrei -Port 18793"   # erwartet: True
 ```
 
-Bis dahin gilt: **nach jeder Windows-Anmeldung zuerst prüfen**, ob der lokale
-Gateway wieder läuft, bevor der Container gestartet wird.
-
-```powershell
-pwsh -Command ". ./scripts/lib/ports.ps1; Test-PortFrei -Port 18793"   # muss True sein
-```
-
-Ist er hochgekommen: `pwsh -File scripts/stop-local-openclaw.ps1`, und erst
-danach `docker compose up -d`.
+Ist der lokale Gateway wider Erwarten doch hochgekommen (Port 18793 belegt),
+gilt weiterhin: `pwsh -File scripts/stop-local-openclaw.ps1`, und erst danach
+`docker compose up -d`.
 
 ### Was in diesem Zusammenhang niemals getan wird
 
@@ -233,11 +248,40 @@ im Container (2026.7.1), nicht die des Host-CLI (2026.5.18).
 pwsh -File scripts/backup-state.ps1
 ```
 
-**Der Lauf stoppt den Container für wenige Sekunden** (gemessen 3,5 s) und
-startet ihn danach wieder — das ist beabsichtigt, weil ein `tar` über laufende
-Schreibvorgänge im Session-Store eine strukturell einwandfreie Sicherung mit
-einer toten WhatsApp-Sitzung erzeugen kann. Vollständige Begründung, Manifest,
-Aufbewahrung und der empfohlene tägliche Termin: `docs/04_BACKUP_RESTORE.md`.
+**Der Lauf stoppt den Container** und startet ihn danach wieder — das ist
+beabsichtigt, weil ein `tar` über laufende Schreibvorgänge im Session-Store
+eine strukturell einwandfreie Sicherung mit einer toten WhatsApp-Sitzung
+erzeugen kann. Vollständige Begründung, Manifest, Aufbewahrung und der
+empfohlene tägliche Termin: `docs/04_BACKUP_RESTORE.md`.
+
+**Die Ausfallzeit ist mit dem Volume gewachsen: gemessen 42 s** (Task 10, bei
+12 045 Einträgen und 87,8 MB `state.tar`). Die früher hier genannten 3,5 s
+stammen aus einem Volume mit 39 Einträgen, vor Kopplung und Kanal-Plugin —
+diese Zahl ist überholt und war nie eine Eigenschaft des Skripts, sondern
+eine des Datenbestands. Den täglichen Termin entsprechend außerhalb der
+Geschäftszeiten legen.
+
+Exit-Codes des Skripts:
+
+| Code | Bedeutung |
+|---|---|
+| `0` | Sicherung vollständig **und** Container läuft wieder |
+| `1` | Sicherung fehlgeschlagen (Ausnahme) — es gibt kein `MANIFEST.json` |
+| `2` | Sicherung vollständig, **aber der Wiederanlauf ist gescheitert** — der Dienst ist unten und braucht einen Menschen |
+
+Ein geplanter Lauf muss auf den Exit-Code hören, nicht auf die Bildschirmfarbe.
+
+**Eine vorhandene Sicherung prüfen, ohne etwas zu verändern** — der Container
+darf dabei laufen:
+
+```powershell
+pwsh -File scripts/restore-state.ps1 -Quelle backups\sales-claw-<zeitstempel> -NurPruefen
+```
+
+Läuft die Prüfschleife durch (Manifest-Abgleich und Entpackprobe beider
+Archive), steigt das Skript mit Exit `0` aus, **bevor** ein Volume angefasst
+wird. So stellt sich die Tauglichkeit einer Sicherung heraus, solange sie noch
+niemand braucht.
 
 ## Zustand nachsehen, ohne etwas anzufassen
 
@@ -343,6 +387,12 @@ unveränderten 8003 Dateien. Das ist der erwartete Beleg dafür, dass die Sitzun
 benutzt wird, kein Schaden. Aussagekräftig ist die Prüfsumme deshalb nur noch
 als Vergleich **unmittelbar vor und nach** einem Neustart, nicht gegen einen in
 einem älteren Bericht notierten Wert.
+
+**Auch die Dateizahl ist inzwischen kein Fixwert mehr.** In Task 10 stieg sie
+im laufenden Betrieb innerhalb weniger Minuten von 8003 auf 8011, ohne dass
+irgendetwas eingegriffen hätte — die Sitzung legt im Normalbetrieb neue
+Session-Dateien an. Ein Zuwachs ist also kein Befund. Ein **Rückgang** wäre
+einer.
 
 ### Kriterium 2 von Hand — der Selbst-Chat
 

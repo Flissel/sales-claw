@@ -48,6 +48,16 @@ $ordnerVoll = (Resolve-Path $ordner).Path
 
 $liefVorher = [bool](docker ps --filter "name=^$Container$" --format '{{.Names}}')
 
+# Exit-Code des Containers nach unserem Stopp. Bleibt $null, wenn wir gar nicht
+# gestoppt haben (Container lief nicht, oder -OhneStopp) — dann gibt es keinen
+# Stopp, ueber dessen Sauberkeit sich etwas aussagen liesse.
+$stopCode = $null
+
+# Wird gesetzt, wenn der Wiederanlauf im finally-Block scheitert. Ohne das
+# meldete das Skript Exit 0, obwohl der Dienst unten bleibt — ein geplanter
+# Lauf haette den Ausfall nicht bemerkt (nur die rote Zeile im Protokoll).
+$wiederanlaufFehler = $false
+
 # OpenClaws semantisches Archiv zuerst — es braucht einen laufenden Container.
 if ($liefVorher) {
     New-Item -ItemType Directory -Force -Path (Join-Path $ordnerVoll 'openclaw-backup') | Out-Null
@@ -61,9 +71,18 @@ if ($liefVorher) {
 try {
     if ($liefVorher -and -not $OhneStopp) {
         Write-Host "Stoppe $Container fuer die Dauer der Sicherung…" -ForegroundColor Yellow
-        docker stop $Container | Out-Null
+        # `docker stop` liefert auch dann 0, wenn der Container nach Ablauf der
+        # Frist getoetet wurde (SIGKILL). Genau dieser Fall hinterlaesst den
+        # zerrissenen Session-Store, den der Stopp verhindern soll — also wird
+        # nach dem Stopp der Exit-Code des Containers gelesen, nicht der von
+        # `docker stop`. -t 30 gibt dem Gateway Zeit, sich sauber zu beenden.
+        docker stop -t 30 $Container | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Container liess sich nicht stoppen — abgebrochen, nichts gesichert." }
-    } elseif ($OhneStopp) {
+        $stopCode = docker inspect --format '{{.State.ExitCode}}' $Container
+        if ($stopCode -eq '137') {
+            Write-Host "WARNUNG: '$Container' wurde nach Zeitablauf getoetet (ExitCode 137). Der Session-Store kann mitten im Schreiben erwischt worden sein." -ForegroundColor Red
+        }
+    } elseif ($OhneStopp -and $liefVorher) {
         Write-Host "WARNUNG: -OhneStopp gesetzt. Die Sicherung ist crash-inkonsistent. Eine darin enthaltene WhatsApp-Sitzung kann unbrauchbar sein, obwohl alle Pruefungen bestehen." -ForegroundColor Red
     }
 
@@ -81,6 +100,13 @@ try {
         # Unsicher ist genau eine Lage: der Container lief und wir haben ihn
         # auf ausdruecklichen Wunsch nicht gestoppt.
         container_gestoppt = -not ($liefVorher -and $OhneStopp)
+        # Exit-Code, mit dem der Container auf unseren Stopp hin geendet ist.
+        # 0 = sauber beendet. 137 = nach Fristablauf getoetet, der Session-Store
+        # kann mitten im Schreiben erwischt worden sein — `restore-state.ps1`
+        # warnt dann beim Zurueckspielen. `null` = wir haben nicht gestoppt
+        # (Container lief nicht, oder -OhneStopp); dann gibt es keinen Stopp zu
+        # beurteilen, und `container_gestoppt` allein traegt die Aussage.
+        stop_exit_code = $(if ($null -ne $stopCode) { [int]($stopCode.Trim()) } else { $null })
         archive = [ordered]@{}
     }
 
@@ -118,8 +144,28 @@ finally {
     if ($liefVorher -and -not $OhneStopp) {
         Write-Host "Starte $Container wieder…" -ForegroundColor Yellow
         docker start $Container | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "FEHLER: '$Container' liess sich nicht wieder starten (Code $LASTEXITCODE). Die Sicherung ist vollstaendig, der Dienst laeuft aber NICHT." -ForegroundColor Red
+            $wiederanlaufFehler = $true
+        } else {
+            $status = docker inspect --format '{{.State.Status}}' $Container
+            if ($status -ne 'running') {
+                Write-Host "FEHLER: '$Container' meldet nach dem Start Status '$status'." -ForegroundColor Red
+                $wiederanlaufFehler = $true
+            }
+        }
     }
 }
 
 Write-Host $ordnerVoll
+
+# Exit-Codes: 0 = Sicherung vollstaendig und Dienst laeuft. 1 = Sicherung
+# fehlgeschlagen (Ausnahme, PowerShell-Standard). 2 = Sicherung vollstaendig,
+# aber der Wiederanlauf ist gescheitert.
+#
+# Ohne diese Unterscheidung stuende die rote Zeile aus dem finally-Block nur im
+# Protokoll: ein geplanter Lauf entscheidet ueber den Exit-Code, nicht ueber die
+# Farbe. Genau daran haengt der Befund — der Bot bliebe unten, der Aufrufer
+# meldete Erfolg.
+if ($wiederanlaufFehler) { exit 2 }
 exit 0

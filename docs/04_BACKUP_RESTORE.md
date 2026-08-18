@@ -24,8 +24,9 @@ Legt `<Ziel>/sales-claw-<zeitstempel>/` an mit:
 - `openclaw-backup/create.log` — Log von `openclaw backup create`, ausgeführt
   im laufenden Container (nur wenn der Container läuft)
 - `MANIFEST.json` — die Sollwerte je Archiv (`sha256`, `bytes`, `eintraege`)
-  plus `container_gestoppt`. **Wird zuletzt geschrieben**: fehlt die Datei,
-  war der Lauf unvollständig, und `restore-state.ps1` lehnt die Sicherung ab.
+  plus `container_gestoppt` und `stop_exit_code`. **Wird zuletzt geschrieben**:
+  fehlt die Datei, war der Lauf unvollständig, und `restore-state.ps1` lehnt
+  die Sicherung ab.
 
 **Der Container wird für die Dauer des tar-Laufs gestoppt** und danach wieder
 gestartet (Begründung unten, „Härtung (Fix-Runde 4)"). `-OhneStopp`
@@ -51,6 +52,9 @@ Gibt den vollen Pfad des Sicherungsordners auf stdout aus, Exit `0`.
 
 ```powershell
 pwsh -File scripts/restore-state.ps1 -Quelle backups/sales-claw-<zeitstempel>
+
+# nur prüfen, nichts verändern — Container darf dabei laufen:
+pwsh -File scripts/restore-state.ps1 -Quelle backups/sales-claw-<zeitstempel> -NurPruefen
 ```
 
 Voraussetzung: der Container muss **gestoppt** sein (`docker compose down`).
@@ -68,17 +72,26 @@ Anschließend `docker compose up -d`.
 Zwei Folgen, die man vorher wissen sollte — beide sind gewollt, aber keine ist
 kostenlos.
 
-### 1. Jede Sicherung kostet Ausfallzeit — gemessen rund 3,5 Sekunden
+### 1. Jede Sicherung kostet Ausfallzeit — gemessen 42 Sekunden
 
 Der tar-Lauf findet bei gestopptem Container statt. Gemessen an einem realen
-Lauf (`docker inspect`): Stopp `17:49:03.237Z`, Wiederanlauf `17:49:06.697Z` —
-**3,46 s**, danach `docker compose ps` wieder `Up … (healthy)` (Healthcheck
-`start_period` von 60 s eingerechnet dauert es rund 35 s bis `healthy`).
+Lauf in Task 10 (`docker inspect`): Stopp `08:05:03.018Z`, Wiederanlauf
+`08:05:45.070Z` — **42,05 s**, danach `docker compose ps` wieder
+`Up … (healthy)`.
 
-Bei einem geplanten täglichen Lauf ist das unerheblich, aber es ist kein
-Nulltarif mehr: der Gateway ist in diesem Fenster nicht erreichbar, und eine
-offene WhatsApp-Verbindung wird getrennt und neu aufgebaut. Den Termin
-deshalb außerhalb der Geschäftszeiten legen.
+**Diese Zahl war früher 3,5 s, und die Differenz ist keine Verschlechterung
+des Skripts, sondern das Wachstum des Volumes.** Der 3,5-s-Wert stammt aus
+Fix-Runde 4, als `state.tar` 39 Einträge und 1,5 MB hatte — vor der
+übernommenen Kopplung und vor dem Kanal-Plugin. Der Task-10-Lauf sicherte
+**12 045 Einträge und 87,8 MB**. Die Ausfallzeit wächst mit dem Datenbestand
+weiter; wer sie plant, misst sie am aktuellen Volume, statt eine Zahl aus
+einem alten Bericht zu übernehmen.
+
+Bei einem geplanten nächtlichen Lauf ist das vertretbar, aber es ist kein
+Nulltarif: der Gateway ist in diesem Fenster nicht erreichbar, und eine offene
+WhatsApp-Verbindung wird getrennt und neu aufgebaut. Den Termin deshalb
+außerhalb der Geschäftszeiten legen — und bei einer Vorführung nicht
+nebenher sichern.
 
 Wenn Verfügbarkeit ausnahmsweise vorgeht, gibt es `-OhneStopp`. Die Sicherung
 ist dann **ausdrücklich crash-inkonsistent**: das tar läuft über aktive
@@ -483,6 +496,150 @@ dem Verhalten beim Zurückspielen (volle Ausgaben im Report, „Fix-Runde 5"):
 Die dritte Zeile ist die korrigierte: sie lieferte vorher `false` und eine
 falsche Warnung.
 
+## Härtung (Fix-Runde 6) — Wiederanlauf, Stopp-Qualität, Trockenlauf
+
+Vier Befunde aus den Reviews von Task 3 und 4, in Task 10 nachgeholt. Alle
+vier haben dieselbe Form: **eine Meldung belegte eine Absicht, nicht ein
+Ergebnis.**
+
+### Der Wiederanlauf wird jetzt geprüft — und schlägt auf den Exit-Code durch
+
+Der `finally`-Block rief `docker start` auf und sah nicht nach, ob er wirkte.
+Ein geplanter Lauf hätte den Bot unten gelassen und Exit `0` gemeldet. Jetzt
+werden beide Möglichkeiten geprüft: der Exit-Code von `docker start` **und**
+der Status danach — denn ein Container kann starten und sofort wieder
+aussteigen.
+
+Neu ist ein eigener Exit-Code, weil die rote Zeile allein den Befund nicht
+schließt: ein Zeitplan entscheidet über den Exit-Code, nicht über die Farbe.
+
+| Code | Bedeutung |
+|---|---|
+| `0` | Sicherung vollständig und Container läuft wieder |
+| `1` | Sicherung fehlgeschlagen (Ausnahme) — es entsteht kein `MANIFEST.json` |
+| `2` | Sicherung vollständig, Wiederanlauf gescheitert — der Dienst ist unten |
+
+Gemessen an zwei Fehlerlagen (volle Ausgaben im Task-10-Report): der Container
+existiert nicht mehr (`docker start` liefert Code 1) und der Container startet,
+ist aber sofort wieder `exited`. Beide Male rote Meldung und Exit `2`; der
+reguläre Lauf ergibt weiterhin Exit `0` ohne Meldung.
+
+### `-OhneStopp` warnt nur noch, wenn die Warnung stimmt
+
+Der Zweig hing allein an `-OhneStopp` und warnte „die Sicherung ist
+crash-inkonsistent" auch dann, wenn der Container beim Aufruf gar nicht lief —
+während das Manifest daneben korrekt `container_gestoppt: true` schrieb. Zwei
+Aussagen über dieselbe Sicherung, die sich widersprachen. Die Bedingung lautet
+jetzt `$OhneStopp -and $liefVorher` und deckt sich damit mit der Formel des
+Manifests aus Fix-Runde 5.
+
+### `docker stop` Exit `0` heißt nicht „sauber beendet"
+
+`docker stop` sendet SIGTERM, wartet, tötet dann — und liefert in beiden
+Fällen `0`. Der getötete Fall hinterlässt genau den zerrissenen Session-Store,
+den der Stopp verhindern soll. Maßgeblich ist deshalb nicht der Exit-Code von
+`docker stop`, sondern der des **Containers**:
+
+```powershell
+docker stop -t 30 $Container | Out-Null
+$stopCode = docker inspect --format '{{.State.ExitCode}}' $Container
+```
+
+Die Frist steht auf 30 s statt der voreingestellten 10 s. Der Wert landet als
+`stop_exit_code` im Manifest; `restore-state.ps1` warnt beim Zurückspielen,
+wenn dort `137` (SIGKILL) steht. Regulärer Lauf in Task 10: `0`.
+
+`stop_exit_code` ist `null`, wenn das Skript gar nicht gestoppt hat — weil der
+Container schon stand oder weil `-OhneStopp` gesetzt war. Dann gibt es keinen
+Stopp zu beurteilen, und `container_gestoppt` allein trägt die Aussage.
+Manifeste aus Läufen vor Fix-Runde 6 kennen das Feld nicht; sie werden
+unverändert akzeptiert und lösen keine Warnung aus.
+
+### `-NurPruefen`: die Sicherung prüfen, bevor man sie braucht
+
+Ob eine Sicherung taugt, stellte sich bisher erst im Ernstfall heraus.
+`restore-state.ps1 -NurPruefen` fährt die vollständige Prüfschleife —
+Manifest-Abgleich über Größe, SHA-256 und Eintragszahl, dazu die Entpackprobe
+beider Archive — und steigt danach mit Exit `0` aus, **bevor** die
+Schreibschleife beginnt.
+
+**Der Container darf dabei laufen.** Die Laufend-Prüfung, die vor jedem echten
+Restore steht, ist für den Trockenlauf ausgesetzt: `-NurPruefen` mountet
+überhaupt kein Volume, sondern nur den Sicherungsordner read-only. Müsste man
+für die Prüfung den Bot stoppen, würde die Prüfung im Alltag nicht stattfinden
+— und ein Schutz, den niemand ausführt, ist keiner.
+
+Gemessen in Task 10 gegen dieselbe Sicherung, einmal unverändert und einmal
+als Kopie mit **einem gekippten Byte** bei unveränderter Dateigröße:
+
+```
+geprueft: state.tar (Groesse, Pruefsumme und 12045 Eintraege stimmen mit dem Manifest ueberein)
+HINWEIS: keys.tar ist leer — das Volume enthielt beim Sichern nichts. Vom Manifest bestaetigt.
+geprueft: keys.tar (Groesse, Pruefsumme und 0 Eintraege stimmen mit dem Manifest ueberein)
+Nur-Pruefen: beide Archive sind in Ordnung. Es wurde nichts veraendert.      -> Exit 0
+
+Pruefsumme weicht ab fuer state.tar. Die Datei hat sich seit der Sicherung
+veraendert — nichts wurde angefasst.                                        -> Exit 1
+```
+
+Beide Läufe ließen die Volumes unangetastet (Dateizahlen und
+`openclaw.json`-Prüfsumme vor und nach dem Versuch identisch). Manipuliert
+wurde ausschließlich eine **Kopie** der Sicherung, nie der Sicherungsordner
+selbst.
+
+## Zwei Grenzen, die man aus dem Code nicht liest
+
+Beide betreffen den Ernstfall und stehen deshalb hier und nicht in einer
+Fußnote.
+
+### 1. Es gibt genau **eine** wiederherstellbare Kopie, und die liegt auf einer Maschine
+
+`openclaw backup create` legt sein Archiv **auf der Schreibschicht des
+Containers** ab, nicht in einem Volume. Nachgemessen in Task 10:
+
+```
+Backup archive: /app/2026-08-18T10-04-59.795+02-00-openclaw-backup.tar.gz
+
+docker inspect --format '{{range .Mounts}}…' sales-claw
+# volume sales-claw-keys  -> /home/node/.config/openclaw
+# volume sales-claw-state -> /home/node/.openclaw
+```
+
+`/app` ist in dieser Liste nicht enthalten — es liegt im overlay-Dateisystem
+des Containers. **Der erste Schritt jeder Wiederherstellung ist
+`docker compose down`, und genau der entfernt den Container mitsamt dieser
+Schreibschicht.** Das semantische Archiv ist also ausgerechnet dann weg, wenn
+man es bräuchte; `backup-state.ps1` sichert deshalb bewusst nur sein Log.
+
+Damit bleibt als tatsächlich wiederherstellbarer Rückweg **allein** der
+Sicherungsordner unter `backups/` — und der liegt auf derselben Maschine wie
+die Volumes, die er absichern soll. Ein Plattendefekt, ein verschlüsselnder
+Schädling oder ein verlorenes Notebook nimmt beide zusammen mit. Solange keine
+Kopie auf ein zweites Medium geht, ist die Sicherungslage genau **eine**
+Kopie, nicht zwei. Das ist keine Empfehlung, sondern der Stand: wer eine
+zweite Kopie will, muss den Sicherungsordner selbst wegtragen — die Skripte
+tun es nicht.
+
+### 2. Es gibt keine Sperre gegen Parallelläufe
+
+Weder `backup-state.ps1` noch `restore-state.ps1` nehmen ein Schloss. Nichts
+hindert einen geplanten Lauf daran, gleichzeitig mit einem von Hand
+gestarteten zu laufen, und die Folgen sind nicht harmlos:
+
+- Zwei Sicherungsläufe stoppen und starten denselben Container. Der
+  Wiederanlauf des einen kann den Container mitten in den tar-Lauf des anderen
+  hinein starten — das Ergebnis ist genau die crash-inkonsistente Sicherung,
+  gegen die der Stopp eingeführt wurde, nur ohne die Warnung von `-OhneStopp`.
+- Ein Sicherungslauf parallel zu einer Wiederherstellung liest die Volumes,
+  während sie geleert und neu befüllt werden.
+- Die Ordnernamen haben Sekundenauflösung; zwei im selben Moment gestartete
+  Läufe schreiben in denselben Ordner.
+
+Praktisch heißt das: **immer nur ein Lauf gleichzeitig**, und einen geplanten
+Termin nicht in ein Wartungsfenster legen. Eine Sperre wäre die richtige
+Lösung; sie ist bewusst noch nicht gebaut und hier festgehalten, damit die
+Lücke nicht unbemerkt bleibt.
+
 ## Warum beide Volumes zusammengehören (Spec §5)
 
 `docs/02_ARCHITECTURE.md` (Abschnitt „Warum zwei Volumes") hält fest:
@@ -564,11 +721,18 @@ nicht Gegenstand dieses Tasks.
 `scripts/backup-state.ps1` ohne Parameter aufrufen (Standardziel
 `backups/` im Repo, bereits gitignored) — z. B. über die Windows-Aufgaben­planung
 oder ein äquivalentes Scheduling auf der Ziel-VM, einmal täglich außerhalb
-der Geschäftszeiten. **Der Lauf stoppt den Container für wenige Sekunden**
-(gemessen 3,5 s) — das ist der Preis für eine Sicherung, die die
-WhatsApp-Sitzung tatsächlich überlebt, und der Grund, den Termin außerhalb
-der Geschäftszeiten zu legen. `-OhneStopp` ist kein Betriebsmodus, sondern
-ein Notbehelf. Aufbewahrung z. B. 7 tägliche + 4 wöchentliche Archive;
+der Geschäftszeiten. **Der Lauf stoppt den Container** (gemessen 42 s beim
+aktuellen Volume, Tendenz steigend) — das ist der Preis für eine Sicherung,
+die die WhatsApp-Sitzung tatsächlich überlebt, und der Grund, den Termin
+außerhalb der Geschäftszeiten zu legen. `-OhneStopp` ist kein Betriebsmodus,
+sondern ein Notbehelf.
+
+**Der Zeitplan muss den Exit-Code auswerten**, sonst ist die Härtung aus
+Fix-Runde 6 wirkungslos: `2` bedeutet, dass die Sicherung zwar vollständig
+ist, der Container aber unten blieb. Ergänzend empfiehlt sich ein zweiter,
+harmloser Termin, der die jüngste Sicherung mit
+`restore-state.ps1 -NurPruefen` gegenprüft — er stoppt nichts und verändert
+nichts. Aufbewahrung z. B. 7 tägliche + 4 wöchentliche Archive;
 Löschung älterer Sicherungsordner ist bewusst **nicht** Teil dieses Skripts
 und sollte separat (Cron/Aufgabenplanung mit Alters-Filter) erfolgen, damit
 `backup-state.ps1` selbst niemals löschend wirkt. Sicherungsordner enthalten
