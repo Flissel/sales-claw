@@ -496,6 +496,184 @@ nicht in einen unbeaufsichtigten Lauf, sondern an den Anfang eines Termins, an
 dem der Anmelde-Trigger der lokalen Aufgabe nachweislich aus und der lokale
 Gateway gestoppt ist (Port 18793 frei, siehe oben).
 
+## Stufe 2: sales-mcp und die Datenbank
+
+Ergänzt den Alltagsbetrieb um den zweiten Container (`sales-mcp`) und die
+VM-Datenbank. Architektur, Werkzeugliste und Rechtematrix stehen in
+`docs/02_ARCHITECTURE.md`, Abschnitt „Architektur (Stufe 2)".
+
+### Start und Stopp beider Container
+
+`sales-claw` und `sales-mcp` stehen im selben `docker-compose.yml` und
+starten/stoppen zusammen:
+
+```powershell
+docker compose up -d
+docker compose ps
+# erwartet: sales-claw ... (healthy), sales-mcp ... Up
+docker compose down
+```
+
+`sales-mcp` steht wie `sales-claw` auf `restart: "no"` (Demo-Betrieb, dieselbe
+Begründung — siehe Kommentar in `docker-compose.yml`) und hat **keinen**
+`HEALTHCHECK`; sein Startzustand wird über die Logs geprüft (siehe unten), nicht
+über die Health-Spalte von `docker compose ps`.
+
+Nur `sales-mcp` betreffen, ohne `sales-claw` anzufassen:
+
+```powershell
+docker compose up -d sales-mcp
+docker compose stop sales-mcp
+```
+
+### sales-mcp-Logs
+
+```powershell
+docker compose logs -f sales-mcp
+```
+
+Sauberer Start sieht so aus (gemessen, Task 4):
+
+```
+sales-mcp  | INFO:     Started server process [1]
+sales-mcp  | INFO:     Waiting for application startup.
+sales-mcp  | StreamableHTTP session manager started
+sales-mcp  | INFO:     Application startup complete.
+sales-mcp  | INFO:     Uvicorn running on http://0.0.0.0:8765 (Press CTRL+C to quit)
+```
+
+Kein `ports:`-Eintrag für `sales-mcp` — der Dienst ist absichtlich nicht vom Host
+aus erreichbar; nur `docker compose exec`/`logs` sowie der Aufruf aus `sales-claw`
+im Compose-Netz funktionieren.
+
+### psql-Gegenproben
+
+**Die DSN gehört niemals in eine Kommandozeile (argv).** Wer eine DSN direkt in
+`docker run ... psql "$dsn"` einsetzt, schreibt sie in die Prozessliste des Hosts —
+sichtbar für jeden, der Kommandozeilen auslesen kann. Das in den Task-Berichten
+durchgehend verwendete Muster, hier wörtlich übernommen: DSN als
+Host-Umgebungsvariable setzen, **ohne Wert** an den Container durchreichen,
+Auflösung erst in der Container-Shell:
+
+```bash
+export SALES_DSN=$(grep '^SALES_DB_URL=' .env | sed 's/^SALES_DB_URL=//')
+docker run --rm -e SALES_DSN -i postgres:17-alpine sh -c \
+  'psql "$SALES_DSN" -c "select name, source, created_at from sales.leads order by created_at desc limit 5;"'
+unset SALES_DSN
+```
+
+Wichtig für die Sicherheit dieses Musters: `-e SALES_DSN` **ohne** `=wert` reicht
+die bereits gesetzte Host-Variable unverändert durch — der eigentliche
+DSN-Wert taucht dadurch in keiner sichtbaren Kommandozeile auf, weder auf dem Host
+noch im Container (`sh -c '...'` ist einfach gequotet, `$SALES_DSN` wird erst *im*
+Container aufgelöst). `.env` selbst wird an keiner Stelle mit `cat` oder
+`Get-Content` ausgegeben, nur die eine `SALES_DB_URL`-Zeile maschinell extrahiert;
+die Variable danach wieder aus der Umgebung entfernen (`unset` bzw. unter
+PowerShell `Remove-Item Env:SALES_DSN`).
+
+Für den SQLSTATE-Nachweis der Append-only-Garantie (nicht nur der Fehlertext,
+sondern der Code `42501`) braucht `psql` zusätzlich `\set VERBOSITY verbose` **vor**
+der SQL-Anweisung, über stdin zugeführt — mit reinem `-c` zeigt psql den Code nicht
+an (Task 1, Schritt 6). Der so tatsächlich beobachtete Fehlertext steht in
+`docs/02_ARCHITECTURE.md`, Abschnitt „Datenbank: Schema `sales`/`sales_test` und die
+Rechtematrix".
+
+### Leitfaden ändern
+
+`sales-mcp/leitfaden.yaml` bearbeiten, dann:
+
+```powershell
+docker compose build sales-mcp
+docker compose up -d sales-mcp
+```
+
+**`sales-claw` muss dafür nicht neu gestartet werden.** Der Leitfaden lebt
+ausschließlich im `sales-mcp`-Image (zur Modulladezeit aus der Datei gelesen); ein
+Rebuild und Austausch von `sales-mcp` lässt `sales-claw` unberührt — belegt in
+Fix-Runde 1 (Task 3): `sales-claw`s `StartedAt` war vor und nach einem
+`sales-mcp`-Rebuild identisch.
+
+### Agent-Regeln ändern (`AGENTS.md`)
+
+`config/workspace/AGENTS.md` bearbeiten, dann direkt ins laufende Volume kopieren —
+es gibt keinen Build-Schritt dafür:
+
+```powershell
+docker compose cp config/workspace/AGENTS.md sales-claw:/home/node/.openclaw/workspace/AGENTS.md
+```
+
+**Kein Neustart von `sales-claw` nötig** — verifiziert (Task 5) über zwei
+Agentenläufe mit frischem `--session-key` direkt nach dem Kopieren:
+`injectedWorkspaceFiles` zeigte die neue Datei vollständig geladen
+(`rawChars == injectedChars`, `truncated: false`). Zum Prüfen, ob die Datei
+tatsächlich angekommen ist:
+
+```powershell
+docker compose exec sales-claw sh -lc 'md5sum /home/node/.openclaw/workspace/AGENTS.md'
+```
+
+und lokal vergleichen. **Bekannte Nebenwirkung:** `docker compose cp` setzt
+Owner/Rechte der kopierten Datei auf `root:root`/`rwxr-xr-x` statt
+`node:node`/`rw-r--r--` wie die übrigen Workspace-Dateien. Funktional unkritisch —
+der `node`-Prozess kann über das „other"-Read-Bit weiterhin lesen (geprüft) —, aber
+für spätere Audits vermerkt.
+
+### Testsuite
+
+```powershell
+docker build -t sales-mcp:dev sales-mcp
+docker run --rm --env-file .env -e SALES_DB_SCHEMA=sales_test sales-mcp:dev python -m pytest -q
+```
+
+**`python -m pytest`, nicht `pytest -q` direkt.** Ohne `conftest.py`/`__init__.py`
+setzt pytests Standard-Importmodus nur das Verzeichnis der Testdatei
+(`/app/tests`) auf `sys.path`, nicht das Arbeitsverzeichnis `/app`, in dem
+`server.py` liegt — `pytest -q` allein scheitert deshalb mit
+`ModuleNotFoundError: No module named 'server'`, obwohl die Datei existiert
+(Task 2, Befund 3). `python -m pytest` stellt das Arbeitsverzeichnis voran auf
+`sys.path`.
+
+**Ausschließlich gegen `sales_test`** (`SALES_DB_SCHEMA=sales_test`) —
+`db/provision.sql` sagt es wörtlich: „Die Testsuite darf NIE gegen `sales` laufen."
+Der Schema-Wächter in `server.py` bricht bei jedem anderen Wert als
+`sales`/`sales_test` sofort mit `SystemExit` ab, noch vor jedem DB-Zugriff.
+
+### Modellwahl im Demo-Betrieb: openrouter/free bleibt
+
+Betreiberentscheidung (Kostenpräferenz, Prototyp ohne echte Kunden):
+`agents.defaults.model.primary` bleibt auf `openrouter/free`, trotz drei
+gemessener Schwächen aus den Tasks 3–5:
+
+- **Schwankende Antwortzeiten.** Gemessene Laufzeiten reichten von 34 s
+  (Fix-Runde 1, Task 3) über 152,6 s und 453,5 s (Task 5, zwei Proben) bis zu
+  einem vollständigen 600-s-Provider-Timeout (Task 4, erster Smoke-Versuch).
+- **Sitzungs-Verheddern.** Die fortlaufende `main`-Sitzung akkumuliert Text aus
+  früheren fehlgeschlagenen Werkzeugaufrufen; das Modell kann sich daran
+  festbeißen, statt einen frischen Versuch zu starten — im genannten
+  600-s-Timeout-Fall rief es laut `toolSummary` **kein einziges Mal** ein
+  Werkzeug auf.
+- **Inkonsistente Regeltreue.** Dieselbe Verbotsregel (keine Produktempfehlung,
+  Verweis an die Beraterin), zwei Läufe kurz hintereinander: Ein Lauf riss die
+  Verweisregel im Antworttext (kündigte stattdessen an, selbst eine
+  „ETF-Strategie" zu entwickeln — bei korrekt geloggtem `offener_punkt` im
+  Hintergrund), der nächste befolgte dieselbe Regel proaktiv und korrekt
+  (Task 5, Proben 1 und 2).
+
+**Gegenmittel im Demo-Betrieb:** eine frische, eindeutige `--session-key` statt der
+fortlaufenden `main`-Sitzung verwenden, bei auffälligem Verhalten wiederholen:
+
+```powershell
+docker compose exec sales-claw openclaw agent --agent main `
+    --session-key "agent:main:<eindeutige-bezeichnung>" `
+    -m "..." --json
+```
+
+Kein `--deliver` in Diagnose-/Testläufen, damit keine Testnachricht tatsächlich
+über WhatsApp hinausgeht. Vor einer Vorführung bei MH Consulting die Modellfrage
+erneut stellen — die Ausnahme von der sonstigen Pin-Regel gilt ausdrücklich nur für
+den Prototyp ohne echte Kundengespräche (`docs/02_ARCHITECTURE.md`, Abschnitt
+„Modellanbieter").
+
 ## Dateiablage
 
 | Was | Wo |
