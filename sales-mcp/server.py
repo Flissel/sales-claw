@@ -275,7 +275,13 @@ def wiedervorlage_erledigt(lead_id: str, aktivitaets_id: str) -> str:
 @_gesichert
 def profil_lesen(lead_id: str) -> str:
     """Kundenprofil samt der letzten Aktivitaeten lesen. Zu Gespraechsbeginn
-    aufrufen, damit nichts doppelt gefragt wird."""
+    aufrufen, damit nichts doppelt gefragt wird.
+
+    Bei Firmenkontakten steht unter `firma` ausserdem, was `firma_anreichern`
+    von der Firmenwebsite gelesen hat — mit dem VOLLTEXT der gelesenen Seiten
+    und dem `stand` (Datum des Abrufs). Das ist die Gespraechsvorbereitung
+    fuer den bAV-Erstkontakt; ist der Stand alt, `firma_anreichern` erneut
+    aufrufen (es kostet nichts)."""
     leads = _q("select id, name, status, consent_status, enrichment, notes "
                "from leads where id = %s", (lead_id,))
     if not leads:
@@ -287,6 +293,10 @@ def profil_lesen(lead_id: str) -> str:
                   "status": leads[0]["status"],
                   "consent": leads[0]["consent_status"],
                   "profil": e.get("profil", {}), "bedarf": e.get("bedarf", {}),
+                  # Ohne diese Zeile waere der Hinweis von firma_anreichern
+                  # („profil_lesen zeigt den Volltext") schlicht falsch: der
+                  # firma-Knoten laege in enrichment und wuerde nie angezeigt.
+                  "firma": e.get("firma", {}),
                   "notes": leads[0]["notes"], "aktivitaeten": akt})
 
 
@@ -917,6 +927,113 @@ def b2b_leads(branche: str, region: str = "Regensburg", limit: int = 20) -> str:
                     "vorschlagen. Erstkontakt macht der Betreiber selbst.")}))
 
 
+# Die DSGVO-Linie dieses Werkzeugs ist Konstruktion, nicht Prompt: der Text
+# unten wird zurueckgegeben, BEVOR irgendetwas abgerufen wird. Ein Werkzeug,
+# das die Regel nur in seinem Docstring traegt, haengt an der Tagesform des
+# Modells; dieses hier kann eine Person gar nicht recherchieren.
+FEHLER_NUR_FIRMENKONTAKTE = (
+    "firma_anreichern arbeitet ausschliesslich fuer Firmenkontakte — dieser "
+    "Kontakt hat keinen Firmeneintrag (Feld 'company' ist leer). Kundendaten "
+    "kommen aus der Bedarfsanalyse, nicht aus dem Netz. Es wurde nichts "
+    "abgerufen.")
+
+
+@_gesichert
+def firma_anreichern(lead_id: str, website: str = "") -> str:
+    """Oeffentliche Firmendaten von der WEBSITE EINES FIRMENKONTAKTS lesen —
+    Gespraechsvorbereitung fuer den bAV-Erstkontakt (Betriebsgroesse, Inhaber
+    laut Impressum, seit wann am Markt, Leistungen).
+
+    NUR FUER FIRMENKONTAKTE. Hat der Kontakt kein Feld `company`, bricht das
+    Werkzeug ab, ohne irgendetwas abzurufen — das ist keine Einstellung,
+    sondern eingebaut. Fuer Kundinnen und Kunden gibt es dieses Werkzeug
+    nicht: was ueber sie bekannt ist, stammt aus dem Gespraech
+    (`bedarf_speichern`, `profil_aktualisieren`), niemals aus dem Netz.
+
+    Gelesen werden die Startseite und bis zu vier Unterseiten DERSELBEN
+    Website (Impressum, Ueber uns, Kontakt, Leistungen). `website` ist
+    optional: ohne Angabe nimmt das Werkzeug die zuletzt gespeicherte Adresse
+    und sonst die „Website: …"-Zeile aus den Notizen des Kontakts.
+
+    Der Abruf kostet nichts (kein Fremddienst, keine Guthaben) — er dauert
+    aber ein paar Sekunden. Zurueck kommen fuenf Zeilen Zusammenfassung; den
+    vollstaendigen Text der gelesenen Seiten zeigt `profil_lesen` unter
+    `firma`. Ein zweiter Aufruf ersetzt den gespeicherten Stand."""
+    leads = _q("select id, name, company, notes, enrichment from leads "
+               "where id = %s", (lead_id,))
+    if not leads:
+        return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
+    lead = leads[0]
+    # Die Kante VOR jeder Adressermittlung und erst recht vor jedem HTTP.
+    if not (lead["company"] or "").strip():
+        return _json({"fehler": FEHLER_NUR_FIRMENKONTAKTE})
+
+    vorhanden = (lead["enrichment"] or {}).get("firma")
+    gespeichert = (vorhanden or {}).get("website", "") if isinstance(vorhanden, dict) else ""
+    adresse = ((website or "").strip() or gespeichert
+               or recherche.website_aus_notiz(lead["notes"]))
+    if not adresse:
+        return _json({"fehler": (
+            f"Fuer '{lead['name']}' ist keine Website hinterlegt — weder als "
+            f"Parameter, noch im Profil, noch als 'Website: …' in den Notizen. "
+            f"Die Adresse mit firma_anreichern(lead_id, website='https://…') "
+            f"uebergeben. Es wurde nichts abgerufen.")})
+
+    daten, fehler = recherche.firma_daten(adresse)
+    if fehler:
+        return _json({"fehler": fehler})
+
+    knoten = {"website": daten["website"], "seiten": daten["seiten"],
+              "hinweise": daten["hinweise"], "stand": date.today().isoformat()}
+    # EIN jsonb_set genuegt hier — und das ist kein Vergessen des Musters aus
+    # profil_aktualisieren/bedarf_speichern, sondern sein Kern: `create_missing`
+    # legt nur das LETZTE Pfadelement an, wenn dessen Elternobjekt existiert.
+    # Dort ist der Pfad zweistufig ('{profil,feld}'), das Elternobjekt `profil`
+    # fehlt auf frischen Kontakten, deshalb die Verschachtelung. Hier ist der
+    # Pfad einstufig ('{firma}'); Elternobjekt ist die Wurzel, und die ist laut
+    # db/provision.sql `not null default '{}'::jsonb`, existiert also immer.
+    # Empirisch gegen sales_test geprueft, nicht abgeleitet.
+    zeilen = _q(
+        "update leads set enrichment = jsonb_set(enrichment, '{firma}', "
+        "%s::jsonb, true), updated_at = now() where id = %s returning id",
+        (_json(knoten), lead_id))
+    if not zeilen:
+        return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
+
+    nutzlast = {"website": daten["website"],
+                "seiten_anzahl": daten["seiten_anzahl"],
+                "kosten_usd": daten["kosten_usd"]}
+    # Zwei Protokollorte, und beide haben ihren Grund: die Aktivitaet AM LEAD
+    # macht in dessen Historie sichtbar, dass und wann recherchiert wurde
+    # (`profil_lesen` zeigt sie) — der Sammelkontakt sammelt daneben alle
+    # Recherche-Laeufe des Hauses an einer Stelle, wie bei marktanalyse und
+    # b2b_leads. Der Lauf ist zu diesem Zeitpunkt getan; ein Protokollfehler
+    # darf sein Ergebnis nicht in eine Fehlermeldung verwandeln.
+    try:
+        _q("insert into activities (lead_id, type, payload) "
+           "values (%s, 'recherche', %s) returning id",
+           (lead_id, _json({"werkzeug": "firma_anreichern", **nutzlast})))
+    except psycopg.Error:
+        pass
+    hinweis = _recherche_loggen("firma_anreichern",
+                                {"lead_id": str(lead_id), "name": lead["name"],
+                                 **nutzlast})
+    nicht_gelesen = [n["url"] for n in daten["nicht_gelesen"]]
+    return _json(_ohne_none({
+        "lead_id": lead["id"], "firma": lead["name"],
+        "website": daten["website"], "seiten_anzahl": daten["seiten_anzahl"],
+        "gelesene_seiten": [{"url": s["url"], "typ": s["typ"]}
+                            for s in daten["seiten"]],
+        "nicht_gelesen": nicht_gelesen or None,
+        "kosten_usd": daten["kosten_usd"],
+        "kurzfassung": recherche.firma_kurzfassung(lead["name"], daten),
+        "protokoll": hinweis,
+        "hinweis": ("Gib die fuenf Zeilen wieder. Den vollstaendigen Text der "
+                    "gelesenen Seiten zeigt profil_lesen(lead_id) unter "
+                    "'firma' — dort steht, was im Erstgespraech verwendbar "
+                    "ist. Der Abruf kostete nichts.")}))
+
+
 WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              aktivitaet_loggen, wiedervorlage_setzen, wiedervorlage_erledigt,
              profil_lesen, profil_aktualisieren,
@@ -924,7 +1041,7 @@ WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              post_entwurf_erstellen, medien_liste,
              digest, entwuerfe_offen, entwurf_freigeben, entwurf_ablehnen,
              entwurf_manuell_gesendet, entwurf_erneut_freigeben,
-             marktanalyse, b2b_leads)
+             marktanalyse, b2b_leads, firma_anreichern)
 
 for _fn in WERKZEUGE:
     mcp.tool()(_fn)

@@ -66,6 +66,68 @@ bekommt deshalb `phoneUnformatted` in `leads.phone` — dieselbe Nummer, die
 spaeter die Dedup-Kante in `kontakt_anlegen` sieht. Die Anzeigeform wandert
 nur in den Report, wo ein Mensch sie liest.
 
+FIRMEN-ANREICHERUNG (Stufe 6): GEMESSEN, DANN GEGEN APIFY ENTSCHIEDEN
+---------------------------------------------------------------------
+`firma_daten` unten holt die Website eines bestehenden Firmenkontakts
+SELBST per urllib — ohne Apify, ohne Token, ohne Kosten. Das ist eine
+Entscheidung nach Messung, keine Bequemlichkeit.
+
+Gemessen wurden beide vom Auftrag genannten Actors (GET /v2/acts/<id>,
+je HTTP 200):
+
+    apify~website-content-crawler  id aYG0l9s7dbB7j3gbS, oeffentlich,
+        nicht deprecated, 2,42 Mio. Laeufe/30 T. **pricingInfos: FEHLT**
+        defaultRunOptions: memoryMbytes 8192, timeoutSecs 360000 (100 h)
+        Defaults im Input-Schema: maxCrawlPages 9999999, maxCrawlDepth 20,
+        maxResults 9999999, crawlerType "playwright:adaptive" (Browser!)
+        required: startUrls, proxyConfiguration
+
+    apify~cheerio-scraper          id YrQuEkowkNCLdk4j2, oeffentlich,
+        nicht deprecated. **pricingInfos: FEHLT**
+        defaultRunOptions: memoryMbytes 1024, timeoutSecs 3600
+        required: startUrls, **pageFunction**, proxyConfiguration
+
+Das fehlende `pricingInfos` ist der ganze Befund. `compass~crawler-google-places`
+(oben) TRAEGT es und ist PAY_PER_EVENT — nur deshalb greift dort der
+Query-Parameter `maxTotalChargeUsd`, ein serverseitig erzwungener
+Dollar-Deckel. Beide Kandidaten hier haben kein Ereignis-Preismodell; sie
+werden ueber Plattformverbrauch abgerechnet. Der Tarif des Kontos, ebenfalls
+gemessen (GET /v2/users/me -> plan.planPricing.chargeableServiceUnitPricesUsd):
+
+    ACTOR_COMPUTE_UNITS  $0.2 je CU (1 CU = 1 GB-Stunde), Plan FREE,
+    $5 Monatsguthaben, Stand des Zyklus 2026-08-18..2026-09-17: $0.061.
+
+Fuer ein CU-Modell gibt es KEINEN Dollar-Deckel — `maxTotalChargeUsd` ist ein
+Parameter des Ereignismodells und bliebe hier wirkungslos. Die einzige
+Obergrenze waere das Produkt `memory x timeout`, also zwei Query-Parameter,
+die beide richtig gesetzt sein muessen: bei den Vorgabewerten des
+Website-Content-Crawlers waeren das 8 GB x 100 h = 800 CU = $160 je Lauf —
+das 32-fache des Monatsguthabens aus einem einzigen vergessenen Parameter.
+Ein Deckel, den der Aufrufer selbst zusammenrechnen muss, ist genau die
+Sorte Kostenkontrolle, die dieses Modul an anderer Stelle (siehe
+`_lauf_deckel`) ausdruecklich nicht akzeptiert.
+
+Dagegen die Messung des Direkt-Wegs, gegen die vier echten Lead-Websites aus
+der bestehenden Recherche (schlichter GET, User-Agent gesetzt, 20 s Timeout):
+
+    pfeifer-haustechnik.de        HTTP 200, 1,41 s,  26 KB, Impressum-Link da
+    koller-ht.de                  HTTP 200, 1,27 s,  81 KB, Impressum-Link da
+    klimaservice-regensburg.de    HTTP 200, 0,37 s, 426 KB, Impressum-Link da
+    markuskuehner.de              HTTP 200, 0,38 s,  71 KB, Impressum-Link da
+
+Vier von vier lieferten statisches HTML mit lesbarem Text (1 937 bis 8 855
+Zeichen) und einem Impressum-Link auf der Startseite. Kein Browser noetig,
+kein Proxy, keine Wartezeit auf einen Actor-Start — und $0.00 je Lauf.
+Das ist der Kern der Entscheidung: ein deutsches Impressum ist gesetzlich
+vorgeschrieben (§ 5 DDG) und steht bei Handwerksbetrieben dieser Groesse als
+statisches HTML im Netz. Dafuer einen Browser-Actor ohne Dollar-Deckel gegen
+ein $5-Guthaben laufen zu lassen, waere Aufwand ohne Gegenwert.
+
+Preis der Entscheidung, ehrlich benannt: rein per JavaScript aufgebaute
+Seiten liefern hier keinen Text, und wer uns aussperrt (Bot-Schutz), bleibt
+ausgesperrt. Beides wird gemeldet, nicht umgangen — umgangen wuerde es auch
+mit Apify nur gegen Geld.
+
 DASS SIE NIE ANGESCHRIEBEN WERDEN, IST EINE REGEL, KEIN ZUFALL
 --------------------------------------------------------------
 Recherche-Leads entstehen mit `consent_status='unknown'` und
@@ -77,14 +139,17 @@ durch den Dispatcher —, die Regel steht zusaetzlich in AGENTS.md
 ("Recherche").
 """
 import http.client
+import ipaddress
 import json
 import os
 import re
+import socket
 import urllib.error
 import urllib.parse
 import urllib.request
 from collections import Counter
 from datetime import date
+from html.parser import HTMLParser
 
 # Modulattribute statt Konstanten im Code: die Testsuite biegt `APIFY_BASIS`
 # auf einen lokalen HTTP-Stub und `REPORT_VERZEICHNIS` auf ein tmp-Verzeichnis
@@ -433,6 +498,27 @@ def lead_notiz(t: dict, thema: str, region: str, tag=None) -> str:
     return " | ".join(teile)
 
 
+# Genau die Zeile, die `lead_notiz` oben schreibt — deshalb steht der Leser
+# direkt unter dem Schreiber. Wer das Format dort aendert, sieht hier, was
+# sonst stillschweigend aufhoert zu funktionieren. Kein Datenbankwissen: die
+# Funktion bekommt eine Zeichenkette, nicht eine Zeile aus `leads`.
+_RE_NOTIZ_WEBSITE = re.compile(r"Website:\s*([^|\n]+)", re.I)
+
+# Was `lead_notiz` schreibt, wenn es keine Website gab ("Website: keine") —
+# und was Menschen sonst noch in dieses Feld tippen.
+_KEINE_WEBSITE = {"keine", "keine website", "unbekannt", "-", "--", "—", "n/a",
+                  "nichts", "none", "null"}
+
+
+def website_aus_notiz(notes: str) -> str:
+    """`notes` -> Website-Adresse oder "" — der Umkehrschluss zu `lead_notiz`."""
+    treffer = _RE_NOTIZ_WEBSITE.search(notes or "")
+    if not treffer:
+        return ""
+    wert = treffer.group(1).strip().strip(",;.")
+    return "" if wert.lower() in _KEINE_WEBSITE else wert
+
+
 def _auffaelligkeiten(treffer: list) -> list:
     """Nur, was sich aus den Daten ausrechnen laesst — keine Deutung.
 
@@ -542,3 +628,494 @@ def kurzfassung(thema: str, region: str, treffer: list) -> list:
         f"Ohne eigene Website: {sum(1 for t in treffer if not t['website'])} "
         f"von {n} — moeglicher Anknuepfungspunkt.",
     ]
+
+
+# ---------------------------------------------------------------------------
+# Firmen-Anreicherung (Stufe 6) — die Website eines bestehenden
+# Firmenkontakts selbst lesen. Warum ohne Apify: siehe Moduldocstring.
+# ---------------------------------------------------------------------------
+
+# Obergrenze der Seiten je Firma. Fuenf, weil der Auftrag es so setzt, und
+# weil mehr nichts brachte: Startseite + Impressum + Ueber-uns + Kontakt sind
+# das, was ein Handwerksbetrieb an Text ueberhaupt hat.
+FIRMA_MAX_SEITEN = 5
+
+# Je Seite eine eigene Uhr — anders als beim Actor-Lauf gibt es hier nichts,
+# was nach einem Abbruch weiterliefe und Geld kostete; der Timeout schuetzt
+# nur davor, dass ein haengender Server das Werkzeug blockiert.
+FIRMA_TIMEOUT_S = float(os.environ.get("FIRMA_TIMEOUT_S", "20"))
+
+# Gekuerzter Text je Seite. Der Volltext einer Handwerker-Startseite lag in
+# der Messung bei 1 937 bis 8 855 Zeichen; 2 000 je Seite reichen fuer die
+# Gespraechsvorbereitung und halten `leads.enrichment` klein.
+FIRMA_TEXT_MAX = 2000
+
+# Leseobergrenze in Bytes, VOR dem Dekodieren. Ohne sie koennte eine einzige
+# Seite (oder ein als text/html ausgeliefertes Grossobjekt) den Speicher des
+# Containers fuellen. Die groesste gemessene echte Seite hatte 426 KB.
+FIRMA_BYTES_MAX = 3_000_000
+
+# Ein sprechender User-Agent statt python-urllib: wer in seinem Serverlog
+# nachsieht, wer da liest, soll es beantwortet bekommen. Manche Server
+# weisen den Vorgabe-Agent von urllib ausserdem rundheraus ab.
+FIRMA_USER_AGENT = os.environ.get(
+    "FIRMA_USER_AGENT",
+    "Mozilla/5.0 (compatible; sales-claw/1.0; Firmenrecherche)")
+
+# Der Direkt-Weg kostet nichts — die Null steht trotzdem in jeder Rueckgabe,
+# an derselben Stelle, an der marktanalyse/b2b_leads ihre Kosten nennen.
+# Ein Werkzeug, das die Kostenzeile einfach weglaesst, waere im Betrieb nicht
+# von einem zu unterscheiden, das sie vergessen hat.
+FIRMA_KOSTEN_USD = 0.0
+
+# Nur fuer die Testsuite: der Stub laeuft auf 127.0.0.1, und genau dorthin
+# laesst `_ziel_erlaubt` im Betrieb nicht. Gleiches Muster wie APIFY_BASIS —
+# ein Modulattribut, das die Suite umbiegt (monkeypatch), keine Abschwaechung
+# der Kante selbst. Der Vorgabewert ist und bleibt False.
+FIRMA_PRIVATE_ZIELE_ERLAUBT = os.environ.get("FIRMA_PRIVATE_ZIELE", "") == "1"
+
+# Seitentypen in Bearbeitungsreihenfolge — die erste passende Regel gewinnt.
+# Impressum zuerst, weil dort steht, was den Erstkontakt traegt (Inhaber,
+# Rechtsform, Registereintrag); danach die Selbstbeschreibung, dann Kontakt,
+# zuletzt das Leistungsangebot.
+_SEITEN_TYPEN = (
+    ("impressum", re.compile(r"impressum|imprint|anbieterkennzeichnung", re.I)),
+    ("ueber_uns", re.compile(
+        r"ueber-?uns|über-?uns|about|unternehmen|philosophie|betrieb|"
+        r"historie|geschichte|team|wir-?ueber", re.I)),
+    ("kontakt", re.compile(r"kontakt|contact|anfahrt", re.I)),
+    ("leistungen", re.compile(
+        r"leistung|service|angebot|kompetenz|produkt|referenz|gewerke", re.I)),
+)
+
+_NICHT_HOLBAR = re.compile(r"^\s*(mailto:|tel:|javascript:|data:|#)", re.I)
+
+
+class _ZielAbgewiesen(Exception):
+    """Eine Weiterleitung zeigte aus dem oeffentlichen Netz heraus.
+
+    Eigene Klasse statt HTTPError: der Fall ist kein Fehler des fremden
+    Servers, sondern unsere eigene Kante — und er darf nicht in der
+    HTTP-Fehlerabbildung landen, die von Serverstoerungen spricht.
+    """
+
+
+def _ziel_erlaubt(url: str):
+    """Darf diese Adresse abgerufen werden? -> (True, None) | (False, grund).
+
+    Die Adresse stammt NICHT vom Betreiber allein: sie kommt im Regelfall aus
+    `leads.notes`, dort aus einem Google-Maps-Datensatz — also aus einer
+    fremden Quelle, die ein Dritter befuellt hat. Ein Eintrag mit
+    `http://127.0.0.1:8765/` oder einer Adresse im Docker-Netz wuerde diesen
+    Container gegen seine eigenen Dienste laufen lassen (SSRF); im selben Netz
+    haengen Postgres und der MCP-Port. Deshalb wird der Hostname aufgeloest und
+    JEDE Antwort geprueft, nicht nur die Schreibweise der URL.
+    """
+    teile = urllib.parse.urlsplit(url)
+    if teile.scheme not in ("http", "https"):
+        return False, (f"nur http/https werden abgerufen, hier steht "
+                       f"'{teile.scheme or 'kein Schema'}'.")
+    try:
+        gastgeber = teile.hostname
+        port = teile.port or (443 if teile.scheme == "https" else 80)
+    except ValueError as e:
+        # urlsplit prueft den Port erst beim Zugriff (z. B. ":abc").
+        return False, f"Adresse nicht lesbar ({type(e).__name__}: {e})."
+    if not gastgeber:
+        return False, "die Adresse nennt keinen Hostnamen."
+    if FIRMA_PRIVATE_ZIELE_ERLAUBT:
+        return True, None
+    try:
+        infos = socket.getaddrinfo(gastgeber, port, proto=socket.IPPROTO_TCP)
+    except (socket.gaierror, UnicodeError, ValueError, OSError) as e:
+        return False, (f"der Hostname '{gastgeber}' ist nicht aufloesbar "
+                       f"({type(e).__name__}).")
+    for info in infos:
+        try:
+            adresse = ipaddress.ip_address(info[4][0].split("%", 1)[0])
+        except ValueError:
+            return False, f"unlesbare IP-Adresse zu '{gastgeber}'."
+        if (adresse.is_private or adresse.is_loopback or adresse.is_link_local
+                or adresse.is_reserved or adresse.is_multicast
+                or adresse.is_unspecified):
+            return False, (f"'{gastgeber}' zeigt auf {adresse} — eine Adresse "
+                           f"im privaten Netz. Abgerufen werden nur oeffentlich "
+                           f"erreichbare Firmenwebsites.")
+    return True, None
+
+
+class _GepruefteWeiterleitung(urllib.request.HTTPRedirectHandler):
+    """Prueft JEDEN Weiterleitungssprung, nicht nur die Startadresse.
+
+    Ohne das waere `_ziel_erlaubt` wirkungslos: eine oeffentlich erreichbare
+    Seite darf mit HTTP 302 auf `http://127.0.0.1/` zeigen, und urllib folgt
+    von sich aus. Die Pruefung gehoert deshalb an jeden Sprung.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        erlaubt, grund = _ziel_erlaubt(newurl)
+        if not erlaubt:
+            raise _ZielAbgewiesen(f"Weiterleitung abgewiesen — {grund}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+class _SeitenLeser(HTMLParser):
+    """HTML -> Titel, sichtbarer Text, Links. Absichtlich anspruchslos.
+
+    Kein BeautifulSoup, kein lxml: die Aufgabe ist „Fliesstext und
+    Verweise aus statischem HTML", dafuer reicht die Standardbibliothek.
+    `script`/`style` und Verwandte werden gezaehlt statt bloss erkannt —
+    verschachtelte oder unsauber geschlossene Tags gibt es auf echten Seiten
+    reichlich, und ein einzelnes Flag waere danach dauerhaft verstellt.
+    """
+
+    # `head` steht hier bewusst NICHT drin, obwohl es verlockend waere: der
+    # Titel liegt darin, und ein stummes `head` haette ihn mitverschluckt
+    # (im Test aufgefallen — die Startseite „trug keinen Titel", obwohl sie
+    # einen hat). Was in `head` sonst Text traegt, ist ohnehin erfasst:
+    # `script` und `style` stehen unten, `meta`/`link` haben keinen Inhalt.
+    _STUMM = frozenset(("script", "style", "noscript", "template", "svg",
+                        "iframe"))
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.titel = ""
+        self.links = []
+        self._teile = []
+        self._stumm = 0
+        self._im_titel = False
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self._STUMM:
+            self._stumm += 1
+        elif tag == "title":
+            self._im_titel = True
+        elif tag == "a":
+            for name, wert in attrs:
+                if name == "href" and wert:
+                    self.links.append(wert)
+                    break
+
+    def handle_endtag(self, tag):
+        if tag in self._STUMM:
+            self._stumm = max(0, self._stumm - 1)
+        elif tag == "title":
+            self._im_titel = False
+
+    def handle_data(self, daten):
+        if self._stumm:
+            return
+        if self._im_titel:
+            self.titel += daten
+            return
+        gestutzt = daten.strip()
+        if gestutzt:
+            self._teile.append(gestutzt)
+
+    @property
+    def text(self) -> str:
+        return re.sub(r"\s+", " ", " ".join(self._teile)).strip()
+
+
+def _seitentyp(url: str, titel: str) -> str:
+    """URL- und Titel-Heuristik -> impressum | ueber_uns | kontakt |
+    leistungen | sonstige. Die URL zaehlt mehr als der Titel: sie ist vom
+    Betreiber der Seite bewusst vergeben, der Titel oft nur Werbetext."""
+    pfad = urllib.parse.urlsplit(url).path
+    for name, muster in _SEITEN_TYPEN:
+        if muster.search(pfad):
+            return name
+    for name, muster in _SEITEN_TYPEN:
+        if muster.search(titel or ""):
+            return name
+    return "sonstige"
+
+
+def _gleiche_firma(basis: str, kandidat: str) -> bool:
+    """Bleibt der Verweis auf der Website der Firma?
+
+    Ohne diese Kante wuerde der erste Facebook- oder Herstellerlink der
+    Startseite mitgelesen — Daten, die nicht der Firma gehoeren, in einem
+    Werkzeug, dessen ganze Rechtfertigung „die eigene Website des
+    Firmenkontakts" ist. `www.` wird auf beiden Seiten abgeschnitten, weil
+    Seiten regelmaessig zwischen beiden Schreibweisen springen (gemessen:
+    www.koller-ht.de leitet auf koller-ht.de).
+    """
+    def kern(u):
+        gastgeber = (urllib.parse.urlsplit(u).hostname or "").lower()
+        return gastgeber[4:] if gastgeber.startswith("www.") else gastgeber
+    return bool(kern(basis)) and kern(basis) == kern(kandidat)
+
+
+def _schluessel(url: str) -> str:
+    """Vergleichsform einer Adresse — ohne Fragment, ohne Schluss-Schraegstrich
+    und ohne www., damit dieselbe Seite nicht zweimal geholt wird."""
+    t = urllib.parse.urlsplit(url)
+    gastgeber = (t.hostname or "").lower()
+    if gastgeber.startswith("www."):
+        gastgeber = gastgeber[4:]
+    return f"{gastgeber}{(t.path or '/').rstrip('/') or '/'}?{t.query}"
+
+
+def _fehler_seite_http(url: str, e: urllib.error.HTTPError) -> str:
+    """HTTP-Fehler einer Firmenwebsite -> Satz fuer den Betreiber.
+
+    Bewusst NICHT `_fehler_http`: das spricht von Apify-Token und
+    Monatsguthaben. Hier antwortet der Webserver eines Handwerksbetriebs,
+    und die einzig sinnvolle Auskunft ist, ob die Seite weg ist (404), uns
+    aussperrt (403/429) oder gerade streikt (5xx).
+    """
+    if e.code == 404:
+        return (f"{url} antwortet mit HTTP 404 — die Seite gibt es unter "
+                f"dieser Adresse nicht (mehr). Website im Kontakt pruefen.")
+    if e.code in (401, 403, 429):
+        return (f"{url} verweigert den Abruf (HTTP {e.code}) — die Seite "
+                f"sperrt automatisierte Zugriffe aus. Diese Firma muss von "
+                f"Hand angesehen werden; es wird nichts umgangen.")
+    if 400 <= e.code < 500:
+        return f"{url} weist den Abruf ab (HTTP {e.code})."
+    return (f"{url} meldet eine Serverstoerung (HTTP {e.code}) — spaeter "
+            f"erneut versuchen.")
+
+
+def _hole_seite(url: str):
+    """Eine Seite -> (seite, None) | (None, fehlertext). Wirft nie.
+
+    `seite` = {"url", "typ", "titel", "text", "status", "bytes"}.
+
+    Die Request-Konstruktion steht VOLLSTAENDIG im try — dieselbe Lehre wie
+    in `_lauf` (Review-Befund T1): eine Adresse ohne Schema laesst urlopen
+    einen ValueError werfen, ein Steuerzeichen im Pfad eine InvalidURL
+    (http.client.HTTPException, weder URLError noch OSError). Beide nennen
+    die volle URL. Ausserhalb des try entkaemen sie ungefiltert; hier faengt
+    sie die letzte Klausel, und `_ohne_token` filtert. Dass in einer
+    Website-URL normalerweise kein Apify-Token steckt, ist dabei kein
+    Argument, es wegzulassen: die Filterung kostet nichts und gilt im ganzen
+    Modul einheitlich.
+    """
+    try:
+        anfrage = urllib.request.Request(url, headers={
+            "User-Agent": FIRMA_USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml,text/plain;q=0.8",
+            "Accept-Language": "de-DE,de;q=0.9",
+        })
+        oeffner = urllib.request.build_opener(_GepruefteWeiterleitung)
+        with oeffner.open(anfrage, timeout=FIRMA_TIMEOUT_S) as antwort:
+            status = getattr(antwort, "status", 200)
+            kopf = antwort.headers
+            roh = antwort.read(FIRMA_BYTES_MAX)
+            endgueltig = antwort.geturl()
+    except _ZielAbgewiesen as e:
+        return None, _ohne_token(f"{url}: {e}")
+    except urllib.error.HTTPError as e:
+        return None, _ohne_token(_fehler_seite_http(url, e))
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        return None, _ohne_token(
+            f"{url} ist nicht erreichbar ({type(e).__name__}: {e}) — "
+            f"Adresse pruefen oder spaeter erneut versuchen.")
+    except (ValueError, http.client.HTTPException) as e:
+        return None, _ohne_token(
+            f"Abruf von {url} nicht konstruierbar ({type(e).__name__}: {e}).")
+
+    art = (kopf.get("Content-Type") or "").lower()
+    if art and not ("html" in art or "text/plain" in art or "xml" in art):
+        return None, (f"{endgueltig} liefert '{art.split(';')[0]}' statt einer "
+                      f"Webseite — daraus wird hier kein Text gelesen.")
+    zeichensatz = kopf.get_content_charset() or "utf-8"
+    try:
+        inhalt = roh.decode(zeichensatz, "replace")
+    except (LookupError, UnicodeDecodeError):
+        # Unbekannt benannter Zeichensatz (es gibt Server, die Fantasienamen
+        # schicken) — utf-8 mit Ersatzzeichen ist hier besser als kein Text.
+        inhalt = roh.decode("utf-8", "replace")
+    leser = _SeitenLeser()
+    try:
+        leser.feed(inhalt)
+        leser.close()
+    except Exception:                   # noqa: BLE001 — Rest zaehlt, nicht der Fehler
+        # HTMLParser ist nachsichtig, aber nicht unfehlbar. Was bis zum
+        # Abbruch gelesen wurde, ist brauchbar und geht nicht verloren.
+        pass
+    titel = re.sub(r"\s+", " ", leser.titel).strip()
+    return {"url": endgueltig, "typ": _seitentyp(endgueltig, titel),
+            "titel": titel[:200], "text": leser.text[:FIRMA_TEXT_MAX],
+            "status": status, "bytes": len(roh),
+            "_links": leser.links}, None
+
+
+def _unterseiten(start: dict) -> list:
+    """Verweise der Startseite -> Kandidaten, nach Seitentyp sortiert.
+
+    Zurueck kommen nur Adressen auf derselben Firmen-Website, die einem der
+    gesuchten Typen entsprechen — es wird NICHT die ganze Seite durchkrochen.
+    Sortiert nach der Reihenfolge in `_SEITEN_TYPEN`: Impressum zuerst.
+    """
+    rang = {name: i for i, (name, _) in enumerate(_SEITEN_TYPEN)}
+    gesehen = {_schluessel(start["url"])}
+    kandidaten = []
+    for verweis in start.get("_links", []):
+        if _NICHT_HOLBAR.match(verweis or ""):
+            continue
+        try:
+            voll = urllib.parse.urljoin(start["url"], verweis.strip())
+        except ValueError:
+            continue
+        voll = urllib.parse.urldefrag(voll)[0]
+        if not _gleiche_firma(start["url"], voll):
+            continue
+        typ = _seitentyp(voll, "")
+        if typ == "sonstige":
+            continue
+        s = _schluessel(voll)
+        if s in gesehen:
+            continue
+        gesehen.add(s)
+        kandidaten.append((rang[typ], len(kandidaten), voll))
+    kandidaten.sort()
+    return [url for _, _, url in kandidaten]
+
+
+# Fakten, die sich aus dem Text ABLESEN lassen — keine Deutung, keine
+# Schaetzung. Dieselbe Zurueckhaltung wie in `_auffaelligkeiten`: was der
+# Betreiber im Gespraech verwendet, muss er im mitgelieferten Volltext
+# nachlesen koennen. Deshalb heissen sie „Hinweise" und nicht „Firmendaten".
+_RE_JAHR = re.compile(
+    r"(?:seit|gegr[uü]ndet|gegruendet|besteht\s+seit|familienbetrieb\s+seit)"
+    r"(?:\s+dem\s+Jahr|\s+im\s+Jahr)?\s+(\d{4})", re.I)
+# Umlaute UND ihre Umschreibung: im Netz stehen beide Schreibweisen
+# („Geschäftsführer" auf den meisten Seiten, „Geschaeftsfuehrer" auf aelteren
+# oder umlautscheuen). Eine Regel, die nur die eine kennt, findet die halbe
+# Wirklichkeit nicht — im Test aufgefallen.
+_RE_VERTRETUNG = re.compile(
+    r"(?:Gesch(?:ä|ae)ftsf(?:ü|ue)hr(?:er|erin|ung)|Inhaber(?:in)?"
+    r"|Firmeninhaber|Vertreten\s+durch|Vertretungsberechtigt(?:er)?)"
+    r"\s*(?:ist|sind)?\s*[:\-–]?\s*([A-ZÄÖÜ][^|·•\n;]{2,60})")
+_RE_MITARBEITER = re.compile(
+    r"(\d{1,4})\s*(?:Mitarbeiter|Besch[äa]ftigte|Kolleg|Angestellte|"
+    r"Mitarbeitende)", re.I)
+_RE_HANDELSREGISTER = re.compile(r"(HRA|HRB)\s*[:\-]?\s*(\d{1,7})", re.I)
+
+
+def _firma_hinweise(seiten: list) -> dict:
+    """Die vier Angaben des Auftrags, soweit sie woertlich dastehen."""
+    # Impressum zuerst befragen: dort ist die Vertretung eine Pflichtangabe
+    # (§ 5 DDG) und steht in fester Form, waehrend die Startseite denselben
+    # Namen oft nur im Werbetext streift.
+    geordnet = sorted(seiten, key=lambda s: 0 if s["typ"] == "impressum" else 1)
+    ganzer = " ".join(s["text"] for s in geordnet)
+    hinweise = {}
+
+    m = _RE_VERTRETUNG.search(ganzer)
+    if m:
+        name = re.sub(r"\s+", " ", m.group(1)).strip(" .,:-–")
+        # Ein Treffer, der schon wieder in die naechste Pflichtangabe
+        # hineinlaeuft ("... Musterstrasse 1 Telefon"), ist keiner.
+        name = re.split(r"\s+(?:Telefon|Tel\.|E-?Mail|Registergericht|"
+                        r"Umsatzsteuer|USt|Sitz|Anschrift)\b", name)[0].strip()
+        if 2 < len(name) <= 60:
+            hinweise["vertretung"] = name
+
+    heuer = date.today().year
+    jahre = [int(j) for j in _RE_JAHR.findall(ganzer) if 1700 <= int(j) <= heuer]
+    if jahre:
+        hinweise["seit_jahr"] = min(jahre)
+
+    zahlen = [int(z) for z in _RE_MITARBEITER.findall(ganzer) if 0 < int(z) < 5000]
+    if zahlen:
+        hinweise["mitarbeiter_genannt"] = max(zahlen)
+
+    hr = _RE_HANDELSREGISTER.search(ganzer)
+    if hr:
+        hinweise["handelsregister"] = f"{hr.group(1).upper()} {hr.group(2)}"
+    return hinweise
+
+
+def firma_daten(website_url: str, max_seiten: int = FIRMA_MAX_SEITEN):
+    """Firmenwebsite lesen -> (daten, None) | (None, fehlertext).
+
+    `daten` = {"website", "seiten": [{url, typ, titel, text, status, bytes}],
+    "seiten_anzahl", "nicht_gelesen": [...], "hinweise": {...},
+    "kosten_usd": 0.0}.
+
+    Gelesen werden die Startseite und, nach Typ sortiert, bis zu vier
+    Unterseiten derselben Website (Impressum, Ueber uns, Kontakt,
+    Leistungen). Scheitert die STARTSEITE, ist das ein Fehler; scheitert eine
+    Unterseite, steht sie unter `nicht_gelesen` und der Rest kommt trotzdem
+    zurueck — dieselbe Haltung wie beim Report in `marktanalyse`: ein
+    Teilergebnis ist besser als eine Fehlermeldung.
+    """
+    url = (website_url or "").strip()
+    if not url:
+        return None, ("Keine Website angegeben — ohne Adresse gibt es nichts "
+                      "zu lesen.")
+    if "://" not in url:
+        # Google Maps liefert Adressen gelegentlich ohne Schema.
+        url = "https://" + url.lstrip("/")
+    erlaubt, grund = _ziel_erlaubt(url)
+    if not erlaubt:
+        return None, f"'{url}' wird nicht abgerufen: {grund}"
+    try:
+        deckel = max(1, min(int(max_seiten), FIRMA_MAX_SEITEN))
+    except (TypeError, ValueError):
+        deckel = FIRMA_MAX_SEITEN
+
+    start, fehler = _hole_seite(url)
+    if fehler:
+        return None, fehler
+    seiten, nicht_gelesen = [start], []
+    for kandidat in _unterseiten(start):
+        if len(seiten) >= deckel:
+            break
+        erlaubt, grund = _ziel_erlaubt(kandidat)
+        if not erlaubt:
+            nicht_gelesen.append({"url": kandidat, "grund": grund})
+            continue
+        seite, fehler = _hole_seite(kandidat)
+        if fehler:
+            nicht_gelesen.append({"url": kandidat, "grund": fehler})
+            continue
+        seiten.append(seite)
+    for seite in seiten:
+        seite.pop("_links", None)       # Arbeitsdaten, nichts fuer die Ablage
+    return {"website": start["url"], "seiten": seiten,
+            "seiten_anzahl": len(seiten), "nicht_gelesen": nicht_gelesen,
+            "hinweise": _firma_hinweise(seiten),
+            "kosten_usd": FIRMA_KOSTEN_USD}, None
+
+
+def firma_kurzfassung(name: str, daten: dict) -> list:
+    """Fuenf Zeilen fuer den Chat — was fuer den bAV-Erstkontakt zaehlt.
+
+    Was nicht dasteht, wird als „nicht gefunden" gemeldet und nicht geraten.
+    Ein erfundener Inhabername waere im Erstgespraech schlimmer als gar
+    keiner.
+    """
+    seiten = daten.get("seiten") or []
+    hinweise = daten.get("hinweise") or {}
+    typen = [s["typ"] for s in seiten]
+    gefunden = ", ".join(dict.fromkeys(typen)) or "keine"
+    start = seiten[0] if seiten else {}
+
+    vertretung = hinweise.get("vertretung")
+    jahr = hinweise.get("seit_jahr")
+    leute = hinweise.get("mitarbeiter_genannt")
+    register = hinweise.get("handelsregister")
+
+    zeilen = [
+        f"{name}: {len(seiten)} Seite(n) von {daten.get('website', '—')} "
+        f"gelesen ({gefunden}).",
+        (f"Inhaber/Geschaeftsfuehrung laut Impressum: {vertretung}."
+         if vertretung else
+         "Inhaber/Geschaeftsfuehrung: im Text nicht gefunden — im Impressum "
+         "selbst nachsehen."),
+        (f"Am Markt seit {jahr} (rund {date.today().year - jahr} Jahre)."
+         if jahr else "Gruendungsjahr: nicht gefunden."),
+        (f"Betriebsgroesse: {leute} Mitarbeitende genannt."
+         if leute else
+         ("Mitarbeiterzahl nicht genannt"
+          + (f"; Handelsregister {register}." if register else
+             " — Betriebsgroesse im Gespraech erfragen."))),
+        (f"Auftritt: \"{start.get('titel')}\"." if start.get("titel") else
+         "Die Startseite traegt keinen Titel."),
+    ]
+    return zeilen
