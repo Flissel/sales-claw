@@ -10,6 +10,13 @@ backups/
 *.tar.gz
 credentials-sicherung-*/
 
+# OpenWA (Stufe 3): flacher Upstream-Klon wird nicht versioniert, nur unsere
+# eigene docker-compose.openwa.yml im Repo-Wurzelverzeichnis. Der QR-Code fuer
+# das Betreiber-Pairing ist ein Betriebsartefakt, kein Quellcode.
+openwa/
+openwa-qr.png
+openwa-qr.txt
+
 # Betriebssystem
 Thumbs.db
 desktop.ini

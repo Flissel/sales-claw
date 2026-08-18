@@ -1,0 +1,95 @@
+# OpenWA (Stufe 3, T1) — eigenes Compose-File, getrennt vom Haupt-Stack
+# (docker-compose.yml), damit Upstream-Updates trivial bleiben: `openwa/upstream`
+# ist ein flacher, gitignorierter Klon von https://github.com/rmyndharis/OpenWA;
+# nur diese Datei hier ist versioniert.
+#
+# Start: docker compose -f docker-compose.openwa.yml up -d --build
+#
+# Grundsatzentscheidungen (siehe docs/superpowers/plans/2026-08-18-sales-claw-stufe3-versand.md):
+#   1. Kein MCP: MCP_ENABLED bleibt ungesetzt. Nur der Dispatcher (T3) sendet,
+#      und der liest ausschliesslich drafts.status='approved'.
+#   2. Diese Instanz wird NIE mit der persoenlichen Nummer des Betreibers
+#      gepairt. Bis zum QR-Scan (Betreiber-Aktion, nicht Teil dieses Laufs)
+#      ist "Session nicht verbunden" der erwartete Normalzustand.
+#   4. Engine whatsapp-web.js (laut OpenWA-Doku/Capability-Matrix das
+#      ausgereiftere, sperr-risikoaermere Engine der beiden). Rate-Limiter an.
+#      Docker-Socket-Proxy bewusst NICHT uebernommen — deren README/SECURITY.md
+#      beschreiben das Weglassen des `docker-proxy`-Dienstes als vorgesehenen
+#      Weg, wenn die eingebaute Container-Orchestrierung (Dashboard >
+#      Infrastructure) nicht genutzt wird; ohne DOCKER_HOST-Var und ohne
+#      gemountetes Docker-Socket meldet DockerService "Docker unavailable"
+#      und degradiert kontrolliert, statt zu crashen.
+services:
+  openwa:
+    build:
+      context: ./openwa/upstream
+      dockerfile: Dockerfile
+    container_name: openwa
+    # Demo-Betrieb wie der Rest des Stacks: laeuft nur nach ausdruecklichem Start.
+    restart: "no"
+    stop_grace_period: 45s
+    environment:
+      - NODE_ENV=production
+      - PORT=2785
+      # --- Datenbank: SQLite (gemessen aus openwa/upstream/.env.example und
+      # .env.minimal — DATABASE_TYPE=sqlite ist der Zero-Config-Pfad; keine
+      # externe Postgres-Instanz noetig). DATABASE_SYNCHRONIZE bleibt bewusst
+      # ungesetzt (Default false): app.module.ts setzt fuer SQLite dann
+      # migrationsRun=true, die Data-DB-Tabellen entstehen also ueber
+      # TypeORM-Migrationen statt Auto-Sync — das ist der von .env.example
+      # empfohlene Produktionspfad ("Set false in production!"), nicht der
+      # Dev-Pfad aus .env.minimal. Die main-DB (api_keys/audit_logs) synced
+      # weiterhin per Default (MAIN_DATABASE_SYNCHRONIZE default true), das
+      # ist der dokumentierte Zero-Config-Erststart fuer den Auth-Teil.
+      - DATABASE_TYPE=sqlite
+      # --- Engine: whatsapp-web.js (Grundsatzentscheidung 4).
+      - ENGINE_TYPE=whatsapp-web.js
+      - AUTO_START_SESSIONS=false
+      # --- Rate-Limiter an (Grundsatzentscheidung 4). Die "medium"-Stufe ist
+      # laut .env.example die auf der API tatsaechlich erzwungene; Werte hier
+      # explizit gesetzt (== Anwendungsdefault) um die Entscheidung sichtbar
+      # zu machen statt sie implizit dem Default zu ueberlassen.
+      - RATE_LIMIT_MEDIUM_TTL=60000
+      - RATE_LIMIT_MEDIUM_LIMIT=100
+      # --- API-Key: API_MASTER_KEY bleibt ABSICHTLICH ungesetzt. Gemessener
+      # Provisionierungsweg (openwa/upstream/docs/06-api-specification.md
+      # §"API-Key Lifecycle" + .env.example "SECURITY"-Abschnitt): OpenWA
+      # generiert beim allerersten Boot automatisch einen kryptographisch
+      # zufaelligen Admin-Key, schreibt ihn nach /app/data/.api-key (Volume,
+      # siehe unten) und gibt ihn einmalig im Startup-Log aus. Kein manuelles
+      # Anlegen noetig.
+      # --- Kein MCP_ENABLED-Eintrag (Grundsatzentscheidung 1 — Var bleibt
+      # ungesetzt, nicht nur "false").
+      # --- Kein DOCKER_HOST — Docker-Socket-Proxy von OpenWA bewusst nicht
+      # uebernommen (siehe Kommentar oben).
+    volumes:
+      - openwa-data:/app/data
+    ports:
+      # Nur Loopback. Dashboard/API tragen den API-Key und (nach Pairing)
+      # WhatsApp-Sessiondaten.
+      - "127.0.0.1:2785:2785"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      # Selbe Prüfung wie in openwa/upstream/docker-compose.yml (openwa-api-
+      # Dienst): node statt curl, weil das image kein curl garantiert.
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "require('http').get('http://localhost:2785/api/health/ready', (r) => process.exit(r.statusCode === 200 ? 0 : 1))",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  # Expliziter name:, sonst prefixt Compose mit dem Projektnamen (vgl.
+  # docker-compose.yml).
+  openwa-data:
+    name: openwa-data
