@@ -102,8 +102,18 @@ Erwartet: eine Datenbankliste; den Namen der Datenbank notieren, in der die
 -- Eingriff in bestehende Schemata, keine pg_hba-Änderung.
 \set ON_ERROR_STOP on
 
-create extension if not exists vector;
-create extension if not exists pgcrypto;
+-- Extensions werden auf einer geteilten Instanz NICHT automatisch
+-- installiert — das Skript prueft nur, dass sie vorliegen. Fehlen sie,
+-- ist das eine bewusste Admin-Entscheidung ausserhalb dieses Skripts.
+do $$
+begin
+  if not exists (select 1 from pg_extension where extname = 'vector') then
+    raise exception 'Extension "vector" fehlt. Als Admin installieren: create extension vector with schema public;';
+  end if;
+  if not exists (select 1 from pg_extension where extname = 'pgcrypto') then
+    raise exception 'Extension "pgcrypto" fehlt. Als Admin installieren: create extension pgcrypto with schema extensions;';
+  end if;
+end $$;
 
 -- Rolle ohne DDL. Das Passwort setzt der Anwender NACH dem Einspielen per
 -- gesondertem ALTER ROLE über stdin — nie in diesem Skript, nie im Repo.
@@ -231,36 +241,79 @@ Lokal in PowerShell ein Passwort erzeugen und **ohne es anzuzeigen** sowohl in
 `.env` schreiben als auch auf der VM setzen:
 
 ```powershell
-$pw = -join ((48..57)+(97..122)+(65..90) | Get-Random -Count 40 | ForEach-Object {[char]$_})
-Add-Content -Path .env -Value "SALES_DB_URL=postgresql://sales_app:$pw@192.168.178.65:54322/<name>"
+# CSPRNG mit Zuruecklegen. NICHT `Get-Random -Count 40`: das zieht aus 62
+# Elementen ohne Zuruecklegen (40 zwingend verschiedene Zeichen) und ist
+# ausserdem kein kryptografischer Generator.
+$alpha = [char[]]'0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'
+$pw = -join (1..40 | ForEach-Object { $alpha[[System.Security.Cryptography.RandomNumberGenerator]::GetInt32($alpha.Length)] })
+
+# NICHT `Add-Content`: die Datei endet u. U. ohne Zeilenumbruch, dann klebt die
+# neue Zeile an den letzten Wert (zerstoert stillschweigend einen API-Key).
+# Darum explizit mit fuehrendem Umbruch anhaengen, Stil der Datei uebernehmen.
+$p   = '.env'
+$raw = [System.IO.File]::ReadAllText($p)
+if ($raw -match 'SALES_DB_URL=') { throw 'SALES_DB_URL steht bereits in .env' }
+$nl  = if ($raw -match "`r`n") { "`r`n" } else { "`n" }
+[System.IO.File]::AppendAllText($p,
+  $nl + "SALES_DB_URL=postgresql://sales_app:$pw@192.168.178.65:54322/<name>" + $nl,
+  (New-Object System.Text.UTF8Encoding $false))
+
 "alter role sales_app password '$pw';" | ssh offload-vm "docker exec -i debian-supabase-db-1 psql -U supabase_admin -d <name>"
-Remove-Variable pw
+Remove-Variable pw, raw
 ```
+
+Vorher pruefen, dass `log_statement` = `none` ist (`select name, setting from
+pg_settings where name = 'log_statement'`) — sonst landet das `ALTER ROLE
+… PASSWORD` im Klartext im Server-Log. Das Passwort ist rein alphanumerisch,
+damit es in der DSN keine Prozentkodierung braucht.
 
 - [ ] **Schritt 6: Rot/Grün als `sales_app` von dieser Maschine**
 
 Über einen Wegwerf-psql-Container (kein Host-Postgres nötig; DSN kommt aus
-`.env`, wird nicht ausgegeben):
+`.env`, wird nicht ausgegeben).
+
+Drei Regeln, die den Unterschied machen:
+
+1. **DSN nie in argv.** `psql "$dsn"` schriebe Passwort in die Kommandozeile des
+   lokalen `docker.exe`, sichtbar für jeden Prozess, der Kommandozeilen liest —
+   genau das, was Schritt 5 für die VM-Seite verbietet. Stattdessen als
+   Umgebungsvariable setzen und mit `-e SALES_DSN` **ohne Wert** durchreichen
+   (Durchreichung statt Zuweisung), Auflösung erst in der Container-Shell.
+2. **`\set VERBOSITY verbose`**, sonst druckt psql nur
+   `ERROR: permission denied for table activities` — **ohne** den Code. Der
+   geforderte Nachweis „SQLSTATE 42501" wäre gar nicht führbar. Dazu
+   `\set ON_ERROR_STOP on`, damit der Fehlschlag auch am Exitcode hängt.
+3. **Kein Backslash-Escaping im JSON-Literal.** `\"` ist in PowerShell keine
+   Maskierung (dort maskiert der Backtick); die Backslashes blieben im Argument
+   stehen. Darum einfach gequotete PowerShell-Zeichenkette mit verdoppelten
+   SQL-Quotes.
 
 ```powershell
-$dsn = (Get-Content .env | Where-Object { $_ -match '^SALES_DB_URL=' }) -replace '^SALES_DB_URL=',''
-docker run --rm -i -e PGCONNECT_TIMEOUT=8 postgres:17-alpine psql "$dsn" -c "insert into sales.leads (name, source) values ('Provisionsprobe','manual') returning id;"
-docker run --rm -i postgres:17-alpine psql "$dsn" -c "insert into sales.activities (lead_id, type, payload) select id, 'note', '{\"inhalt\":\"probe\"}'::jsonb from sales.leads where name='Provisionsprobe';"
-docker run --rm -i postgres:17-alpine psql "$dsn" -c "update sales.activities set type='geaendert';"
+$env:SALES_DSN = ((Get-Content .env | Where-Object { $_ -match '^SALES_DB_URL=' }) -replace '^SALES_DB_URL=','')
+$env:PGCONNECT_TIMEOUT = '8'
+$pre = "\set VERBOSITY verbose`n\set ON_ERROR_STOP on`n"
+function Probe($sql) { ($pre + $sql) | docker run --rm -i -e PGCONNECT_TIMEOUT -e SALES_DSN postgres:17-alpine sh -c 'exec psql "$SALES_DSN"'; "EXIT: $LASTEXITCODE" }
+
+Probe 'insert into sales.leads (name, source) values (''Provisionsprobe'',''manual'') returning id;'
+Probe 'insert into sales.activities (lead_id, type, payload) select id, ''note'', ''{"inhalt":"probe"}''::jsonb from sales.leads where name=''Provisionsprobe'';'
+Probe 'update sales.activities set type=''geaendert'';'
 ```
 
-Erwartet: Insert 1 und 2 gelingen; das **UPDATE scheitert mit SQLSTATE 42501**
-(`permission denied`). Das ist der Nachweis der Append-only-Garantie —
-Abnahmekriterium 2 der Spec. Zusätzlich:
+Erwartet: Insert 1 und 2 gelingen (Exit 0); das **UPDATE scheitert mit SQLSTATE
+42501** — wörtlich `ERROR:  42501: permission denied for table activities`,
+Exit 3. Das ist der Nachweis der Append-only-Garantie — Abnahmekriterium 2 der
+Spec. Sinnvolle Zugabe, weil das DDL im Kommentar auch „DELETE (nirgends)"
+verspricht: `Probe 'delete from sales.activities;'` muss ebenfalls 42501 geben.
+Zusätzlich:
 
 ```powershell
-docker run --rm -i postgres:17-alpine psql "$dsn" -c "truncate sales_test.leads cascade;"
-docker run --rm -i postgres:17-alpine psql "$dsn" -c "create table sales.hack (id int);"
+Probe 'truncate sales_test.leads cascade;'
+Probe 'create table sales.hack (id int);'
 ```
 
 Erwartet: TRUNCATE im Testschema gelingt; das CREATE TABLE **scheitert** (kein
-DDL für `sales_app`). Probezeile wieder entfernen — als Admin, denn `sales_app`
-darf nicht löschen:
+DDL für `sales_app`) mit `ERROR:  42501: permission denied for schema sales`.
+Probezeile wieder entfernen — als Admin, denn `sales_app` darf nicht löschen:
 
 ```bash
 ssh offload-vm "docker exec debian-supabase-db-1 psql -U supabase_admin -d <name> -c \"delete from sales.leads where name='Provisionsprobe'\""

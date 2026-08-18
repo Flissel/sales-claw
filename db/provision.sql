@@ -4,8 +4,18 @@
 -- Eingriff in bestehende Schemata, keine pg_hba-Änderung.
 \set ON_ERROR_STOP on
 
-create extension if not exists vector;
-create extension if not exists pgcrypto;
+-- Extensions werden auf einer geteilten Instanz NICHT automatisch
+-- installiert — das Skript prueft nur, dass sie vorliegen. Fehlen sie,
+-- ist das eine bewusste Admin-Entscheidung ausserhalb dieses Skripts.
+do $$
+begin
+  if not exists (select 1 from pg_extension where extname = 'vector') then
+    raise exception 'Extension "vector" fehlt. Als Admin installieren: create extension vector with schema public;';
+  end if;
+  if not exists (select 1 from pg_extension where extname = 'pgcrypto') then
+    raise exception 'Extension "pgcrypto" fehlt. Als Admin installieren: create extension pgcrypto with schema extensions;';
+  end if;
+end $$;
 
 -- Rolle ohne DDL. Das Passwort setzt der Anwender NACH dem Einspielen per
 -- gesondertem ALTER ROLE über stdin — nie in diesem Skript, nie im Repo.
