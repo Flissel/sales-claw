@@ -816,9 +816,15 @@ def b2b_leads(branche: str, region: str = "Regensburg", limit: int = 20) -> str:
             # `company` fuellt kontakt_anlegen nicht — es kennt nur Personen.
             # Bei einem Firmenkontakt ist der Name die Firma, und die Spalte
             # soll das auch sagen; ein Nachtrag statt einer neuen Signatur am
-            # meistgenutzten Werkzeug des Hauses.
-            _q("update leads set company = %s where id = %s returning id",
-               (t["name"], antwort["lead_id"]))
+            # meistgenutzten Werkzeug des Hauses. Der Nachtrag ist Kosmetik
+            # und deshalb abgesichert: ein DB-Fehler hier darf nicht die
+            # Schleife eines BEZAHLTEN Apify-Laufs abreissen — der Lead
+            # existiert ja bereits, ihm fehlt nur die Spalte.
+            try:
+                _q("update leads set company = %s where id = %s returning id",
+                   (t["name"], antwort["lead_id"]))
+            except psycopg.Error:
+                pass
             angelegt.append(t["name"])
         else:
             dubletten.append(t["name"])

@@ -519,3 +519,59 @@ def test_beide_werkzeuge_sind_registriert():
     namen = [f.__name__ for f in server.WERKZEUGE]
     assert "marktanalyse" in namen and "b2b_leads" in namen
     assert len(namen) == len(set(namen)) == 20
+
+# ---------------------------------------------------------------------------
+# Nachbesserungen aus dem Stufe-5-Review (Befunde T1, B2, D2)
+# ---------------------------------------------------------------------------
+
+def test_kaputte_basis_url_leakt_den_token_nicht(monkeypatch):
+    """T1: eine Basis-URL ohne Schema laesst urlopen einen ValueError werfen,
+    dessen Meldung die volle URL SAMT Token traegt. Vor der Nachbesserung
+    entkam er ungefiltert aus _lauf — jetzt wird er zum Fehlertext, und
+    _ohne_token filtert."""
+    monkeypatch.setenv("APIFY_TOKEN", "apify_api_GEHEIM")
+    monkeypatch.setattr(recherche, "APIFY_BASIS", "api.apify.com/v2")  # kein http://
+    antwort = _markt(thema="Versicherungsmakler", region="Regensburg")
+    assert "fehler" in antwort
+    assert "apify_api_GEHEIM" not in antwort["fehler"]
+    assert "nicht konstruierbar" in antwort["fehler"]
+
+
+def test_steuerzeichen_im_actor_leaken_den_token_nicht(monkeypatch):
+    """T1, zweiter gemessener Weg: InvalidURL (http.client) ist weder URLError
+    noch OSError und nennt Pfad und Query inklusive Token."""
+    monkeypatch.setenv("APIFY_TOKEN", "apify_api_GEHEIM")
+    monkeypatch.setattr(recherche, "ACTOR", "boese\nzeile")
+    antwort = _markt(thema="Versicherungsmakler", region="Regensburg")
+    assert "fehler" in antwort
+    assert "apify_api_GEHEIM" not in antwort["fehler"]
+
+
+@pytest.mark.parametrize("lauf,http,erwartet", [
+    (150, 180.0, 150),   # Vorgabe: bleibt
+    (240, 180.0, 150),   # der .env.example-Fehlkonfig-Fall: gekappt
+    (9999, 180.0, 150),  # beliebig gross: gekappt
+    (60, 180.0, 60),     # kleiner geht immer
+    (150, 20.0, 1),      # absurdes HTTP-Timeout: Deckel bleibt > 0
+])
+def test_lauf_deckel_erzwingt_die_reihenfolge(lauf, http, erwartet):
+    """B2: LAUF < HTTP ist die Kern-Invariante des Moduls („bezahlt, aber
+    nichts bekommen" ausgeschlossen) — Konstruktion, nicht Konvention."""
+    assert recherche._lauf_deckel(lauf, http) == erwartet
+
+
+def test_dublette_laesst_den_bestandslead_unangetastet():
+    """D2: das company-Nachtrags-UPDATE darf nur den FRISCH angelegten Lead
+    treffen. Eine Mutation, die es auch im Dublettenfall ausfuehrt, wuerde
+    einen fremden Bestandslead ueberschreiben — dieser Test beisst dann."""
+    server.kontakt_anlegen(name="Alpha Ansprechpartner",
+                           phone="0049 941 1234567", source="whatsapp")
+    STUB.antworte_mit([_ort("Alpha GmbH")])
+    antwort = _b2b(branche="Handwerksbetrieb", region="Regensburg")
+    assert antwort["uebersprungen_dublette"] == 1
+    # Suche ueber den Namen: kontakt_anlegen speichert die Nummer in der
+    # Schreibweise des Aufrufers, die Dedup-Kante vergleicht normalisiert.
+    bestand = server._q("select company, source from leads "
+                        "where name = 'Alpha Ansprechpartner'")[0]
+    assert bestand["company"] is None
+    assert bestand["source"] == "whatsapp"

@@ -76,6 +76,7 @@ rausgehen — versendet wird ausschliesslich aus `drafts(status='approved')`
 durch den Dispatcher —, die Regel steht zusaetzlich in AGENTS.md
 ("Recherche").
 """
+import http.client
 import json
 import os
 import re
@@ -109,7 +110,21 @@ ACTOR = os.environ.get("APIFY_ACTOR", "compass~crawler-google-places")
 # sah 120 s HTTP-Timeout vor; 150/180 lassen dieser Schaetzung Luft nach oben,
 # ohne Apifys eigene Grenze fuer den sync-Endpunkt (300 s) zu beruehren.
 HTTP_TIMEOUT_S = float(os.environ.get("APIFY_TIMEOUT_S", "180"))
-LAUF_TIMEOUT_S = int(os.environ.get("APIFY_LAUF_TIMEOUT_S", "150"))
+
+
+def _lauf_deckel(lauf: int, http: float) -> int:
+    """Erzwingt die Reihenfolge LAUF < HTTP (mindestens 30 s Abstand).
+
+    Die Reihenfolge oben ist keine Bitte: wer per Umgebung LAUF ueber HTTP
+    stellt, stellt genau den teuren Fehler her, den dieses Modul ausschliessen
+    will — Review-Befund B2, deshalb erzwungen statt nur kommentiert.
+    Untergrenze 1 s: ein Deckel von 0 hiesse fuer Apify "kein Deckel".
+    """
+    return max(1, min(lauf, int(http) - 30))
+
+
+LAUF_TIMEOUT_S = _lauf_deckel(
+    int(os.environ.get("APIFY_LAUF_TIMEOUT_S", "150")), HTTP_TIMEOUT_S)
 
 # Harte Budgetgrenze je Lauf (Query-Parameter `maxTotalChargeUsd`). Apify
 # erlaubt fuer diesen Actor keinen kleineren Wert als 0.5
@@ -272,13 +287,19 @@ def _lauf(eingabe: dict):
     })
     # Der Token reist im Query-String — so sieht es die Apify-API-Konvention
     # vor. Er steht damit NICHT in argv (kein Aufruf ueber die Kommandozeile)
-    # und wird nirgends geloggt; der einzige Ort, an dem er auftauchen
-    # koennte, waere ein Fehlertext — dagegen steht `_ohne_token`.
-    url = f"{APIFY_BASIS}/acts/{ACTOR}/run-sync-get-dataset-items?{frage}"
-    anfrage = urllib.request.Request(
-        url, data=json.dumps(eingabe).encode("utf-8"), method="POST",
-        headers={"Content-Type": "application/json", "Accept": "application/json"})
+    # und wird nirgends geloggt. URL-Konstruktion und Request stehen IM try —
+    # dieselbe Lehre wie in dispatch.py (T5a): eine Basis-URL ohne Schema oder
+    # ein Steuerzeichen im Actor-Namen wirft ValueError bzw. InvalidURL, und
+    # deren Meldung traegt die volle URL SAMT Token. Ausserhalb des try
+    # entkaeme sie ungefiltert an den Aufrufer (Review-Befund T1, im Container
+    # reproduziert); hier unten faengt sie die letzte except-Klausel und
+    # `_ohne_token` filtert.
     try:
+        url = f"{APIFY_BASIS}/acts/{ACTOR}/run-sync-get-dataset-items?{frage}"
+        anfrage = urllib.request.Request(
+            url, data=json.dumps(eingabe).encode("utf-8"), method="POST",
+            headers={"Content-Type": "application/json",
+                     "Accept": "application/json"})
         with urllib.request.urlopen(anfrage, timeout=HTTP_TIMEOUT_S) as antwort:
             roh = antwort.read()
     except urllib.error.HTTPError as e:      # muss vor URLError stehen
@@ -289,6 +310,12 @@ def _lauf(eingabe: dict):
             f"({type(e).__name__}: {e}). Der Lauf kann bei Apify weitergelaufen "
             f"sein und Guthaben verbraucht haben — vor einem zweiten Versuch "
             f"kurz auf console.apify.com nachsehen.")
+    except (ValueError, http.client.HTTPException) as e:
+        # ValueError: urlopen bei URL ohne Schema. InvalidURL (Unterklasse von
+        # HTTPException) bei Steuerzeichen im Pfad. Beide nennen die URL.
+        return None, _ohne_token(
+            f"Apify-Aufruf nicht konstruierbar ({type(e).__name__}: {e}). "
+            f"APIFY_BASIS und APIFY_ACTOR in der Umgebung pruefen.")
     try:
         daten = json.loads(roh.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
