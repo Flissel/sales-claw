@@ -17,6 +17,10 @@ openwa/
 openwa-qr.png
 openwa-qr.txt
 
+# Python-Bytecode (entsteht beim Testlauf im Container, der /app mountet)
+__pycache__/
+*.pyc
+
 # Betriebssystem
 Thumbs.db
 desktop.ini

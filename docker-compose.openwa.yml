@@ -19,6 +19,16 @@
 #      Infrastructure) nicht genutzt wird; ohne DOCKER_HOST-Var und ohne
 #      gemountetes Docker-Socket meldet DockerService "Docker unavailable"
 #      und degradiert kontrolliert, statt zu crashen.
+#
+# Projektname explizit gepinnt (Stufe 3, T3) — identisch zu docker-compose.yml.
+# Beide Dateien liegen im selben Verzeichnis und teilten sich den impliziten,
+# vom Verzeichnisnamen abgeleiteten Projektnamen bereits; damit auch das
+# Default-Netz "sales-claw_default", in dem `openwa` unter genau diesem
+# DNS-Namen erreichbar ist. Der Dispatcher (Dienst sales-dispatch in
+# docker-compose.yml) nutzt das. Der explizite Name haelt die Kopplung fest,
+# statt sie vom Verzeichnisnamen abhaengig zu lassen.
+name: sales-claw
+
 services:
   openwa:
     build:
