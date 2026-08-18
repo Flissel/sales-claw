@@ -5,8 +5,24 @@ import os
 
 import pytest
 
-os.environ.setdefault("SALES_DB_SCHEMA", "sales_test")
-import server  # noqa: E402  — liest SALES_DB_SCHEMA beim Import
+# HART, nicht setdefault (T5a): eine von aussen gesetzte SALES_DB_SCHEMA=sales
+# wuerde die autouse-Fixture unten auf die echten Kundendaten loslassen. Der
+# Schutz muss konstruktiv sein, nicht von der Disziplin des Aufrufers abhaengen.
+os.environ["SALES_DB_SCHEMA"] = "sales_test"
+import nummern  # noqa: E402
+import server  # noqa: E402
+
+
+@pytest.fixture(scope="session", autouse=True)
+def schema_wache():
+    """Zweiter Riegel: was oben gesetzt wurde, muss auch angekommen sein.
+
+    `server.SCHEMA` wird beim Import ausgewertet und steuert den search_path
+    des Verbindungspools. Stimmt er nicht, bricht die Suite ab, BEVOR die
+    erste Fixture etwas truncatet."""
+    assert server.SCHEMA == "sales_test", (
+        f"Testsuite laeuft gegen Schema '{server.SCHEMA}' — erlaubt ist nur "
+        f"'sales_test'.")
 
 
 @pytest.fixture(autouse=True)
@@ -410,3 +426,240 @@ def test_erneut_freigeben_werkzeug_signatur_ueberlebt_den_dekorator():
     assert "draft_id" in parameter
     assert "bestaetigt" in parameter
     assert parameter["bestaetigt"].default is False
+
+
+# ---------------------------------------------------------------------------
+# T5a — entwuerfe_offen zeigt die Freigabe-Grundlage
+#
+# T4 fand live: fehlgeschlagene Entwuerfe tauchen nirgends auf, die angezeigte
+# draft_id war gekuerzt und damit werkzeuguntauglich, und niemand sah, an
+# WELCHE Nummer ein Entwurf tatsaechlich ginge. Wer freigibt, muss beides
+# sehen: die Zielnummer und den Einwilligungsstand.
+# ---------------------------------------------------------------------------
+
+def _lead_mit(name="Max Testperson", phone="+491701234567"):
+    return server._q(
+        "insert into leads (name, phone, source) values (%s, %s, 'whatsapp') "
+        "returning id", (name, phone))[0]["id"]
+
+
+def _eintrag(ergebnis, block, draft_id):
+    return next(e for e in ergebnis[block] if e["draft_id"] == draft_id)
+
+
+def test_entwuerfe_offen_zeigt_zielnummer_und_consent_im_pending_block():
+    lead = _lead_mit(phone="+49 170 1234567")
+    draft = _entwurf(lead, "whatsapp", "Text")
+
+    eintrag = _eintrag(json.loads(server.entwuerfe_offen()), "entwuerfe", draft)
+
+    assert eintrag["empfaenger"] == "+49 170 1234567"      # roh, wie erfasst
+    assert eintrag["zielnummer"] == "491701234567@c.us"    # normalisiert
+    assert eintrag["consent"] == "unknown"
+    assert "hinweis" not in eintrag
+
+
+def test_entwuerfe_offen_meldet_nicht_zustellbare_nummer_im_pending_block():
+    lead = _lead_mit(phone="0664 1234567")                 # AT, national
+    draft = _entwurf(lead, "whatsapp", "Text")
+
+    eintrag = _eintrag(json.loads(server.entwuerfe_offen()), "entwuerfe", draft)
+
+    assert eintrag["zielnummer"] is None
+    assert eintrag["hinweis"] == "nicht zustellbar"
+
+
+def test_entwuerfe_offen_zeigt_vollstaendige_uuid():
+    lead = _anlegen()["lead_id"]
+    draft = _entwurf(lead, "whatsapp", "Text")
+
+    eintrag = _eintrag(json.loads(server.entwuerfe_offen()), "entwuerfe", draft)
+
+    assert str(eintrag["draft_id"]) == str(draft)
+    assert len(str(eintrag["draft_id"])) == 36
+
+
+def test_entwuerfe_offen_listet_fehlgeschlagene_in_eigenem_block():
+    lead = _lead_mit(phone="+491701234567")
+    draft = _entwurf(lead, "whatsapp", "Text")
+    server.entwurf_freigeben(draft)
+    _als_failed_markieren(draft, "OpenWA HTTP 409: Session is not connected.")
+
+    ergebnis = json.loads(server.entwuerfe_offen())
+
+    assert draft not in {e["draft_id"] for e in ergebnis["entwuerfe"]}
+    eintrag = _eintrag(ergebnis, "fehlgeschlagen", draft)
+    assert str(eintrag["draft_id"]) == str(draft)
+    assert eintrag["kanal"] == "whatsapp"
+    assert eintrag["empfaenger"] == "+491701234567"
+    assert eintrag["zielnummer"] == "491701234567@c.us"
+    assert eintrag["consent"] == "unknown"
+    assert eintrag["fehler"] == "OpenWA HTTP 409: Session is not connected."
+
+
+def test_fehlgeschlagen_block_kuerzt_den_fehlertext_auf_120_zeichen():
+    lead = _lead_mit()
+    draft = _entwurf(lead, "whatsapp", "Text")
+    server.entwurf_freigeben(draft)
+    _als_failed_markieren(draft, "y" * 250)
+
+    eintrag = _eintrag(json.loads(server.entwuerfe_offen()),
+                       "fehlgeschlagen", draft)
+
+    assert len(eintrag["fehler"]) == 120
+
+
+def test_fehlgeschlagen_block_zeigt_die_claim_marke_ungeschoent():
+    """Ein Entwurf, der die Zustellungs-Marke traegt, muss auffindbar sein —
+    sonst weiss niemand, dass er da ist."""
+    lead = _lead_mit()
+    draft = _entwurf(lead, "whatsapp", "Text")
+    server.entwurf_freigeben(draft)
+    _als_failed_markieren(draft, _CLAIM_MARKE)
+
+    eintrag = _eintrag(json.loads(server.entwuerfe_offen()),
+                       "fehlgeschlagen", draft)
+
+    assert eintrag["fehler"].startswith("in Zustellung")
+
+
+def test_fehlgeschlagen_block_zeigt_unzustellbare_nummer_als_null():
+    lead = _lead_mit(phone="0664 1234567")
+    draft = _entwurf(lead, "whatsapp", "Text")
+    server.entwurf_freigeben(draft)
+    _als_failed_markieren(draft, "Empfaenger ohne Landesvorwahl")
+
+    eintrag = _eintrag(json.loads(server.entwuerfe_offen()),
+                       "fehlgeschlagen", draft)
+
+    assert eintrag["zielnummer"] is None
+    assert eintrag["hinweis"] == "nicht zustellbar"
+
+
+def test_entwuerfe_offen_bleibt_leer_wenn_nichts_anliegt():
+    ergebnis = json.loads(server.entwuerfe_offen())
+    assert ergebnis["entwuerfe"] == []
+    assert ergebnis["fehlgeschlagen"] == []
+
+
+def test_entwuerfe_offen_nutzt_dieselbe_normalisierung_wie_der_dispatcher():
+    assert server.normalisiere_empfaenger is nummern.normalisiere_empfaenger
+
+
+# ---------------------------------------------------------------------------
+# T5a — kontakt_aktualisieren
+#
+# T4-Befund: „Anna Beispiel" hatte keine Telefonnummer, und es gab kein
+# Werkzeug, sie nachzutragen — `profil_aktualisieren` schreibt nur nach
+# `enrichment`, nicht in die Spalte `phone`, die der Dispatcher liest.
+# ---------------------------------------------------------------------------
+
+def _lead_spalten(lead_id):
+    return server._q("select name, phone, email from leads where id = %s",
+                     (lead_id,))[0]
+
+
+def test_kontakt_aktualisieren_traegt_telefonnummer_nach():
+    lead = server._q("insert into leads (name, source) values "
+                     "('Anna Beispiel', 'whatsapp') returning id")[0]["id"]
+    assert _lead_spalten(lead)["phone"] is None
+
+    ok = json.loads(server.kontakt_aktualisieren(lead, "phone", "+491701234567"))
+
+    assert ok["gesetzt"] == {"phone": "+491701234567"}
+    assert _lead_spalten(lead)["phone"] == "+491701234567"
+
+
+@pytest.mark.parametrize("feld, wert", [
+    ("phone", "+436641234567"),
+    ("email", "anna@example.com"),
+    ("name", "Anna Beispiel-Neu"),
+])
+def test_kontakt_aktualisieren_erlaubt_genau_drei_felder(feld, wert):
+    lead = _anlegen()["lead_id"]
+    ok = json.loads(server.kontakt_aktualisieren(lead, feld, wert))
+    assert "fehler" not in ok
+    assert _lead_spalten(lead)[feld] == wert
+
+
+@pytest.mark.parametrize("feld", [
+    "enrichment",          # der im Brief genannte Fall
+    "consent_status",      # Einwilligung wird nie per Freitext gesetzt
+    "status",
+    "score",
+    "id",
+    "notes",
+    "phone; drop table leads",
+    "PHONE",               # Whitelist ist buchstabengenau
+    "",
+])
+def test_kontakt_aktualisieren_lehnt_jedes_andere_feld_ab(feld):
+    lead = _anlegen()["lead_id"]
+    vorher = _lead_spalten(lead)
+
+    kaputt = json.loads(server.kontakt_aktualisieren(lead, feld, "boese"))
+
+    assert "fehler" in kaputt
+    assert "phone" in kaputt["fehler"]      # nennt die erlaubten Felder
+    assert _lead_spalten(lead) == vorher    # nichts angefasst
+
+
+def test_kontakt_aktualisieren_loggt_korrektur_mit_vorher_und_nachher():
+    lead = _anlegen()["lead_id"]            # legt mit phone='+490000000001' an
+    server.kontakt_aktualisieren(lead, "phone", "+491701234567")
+
+    akt = server._q(
+        "select payload from activities where lead_id = %s and type = 'korrektur'",
+        (lead,))
+    assert len(akt) == 1
+    assert akt[0]["payload"]["feld"] == "phone"
+    assert akt[0]["payload"]["wert"] == "+491701234567"
+    assert akt[0]["payload"]["vorher"] == "+490000000001"
+
+
+def test_kontakt_aktualisieren_lehnt_leeren_namen_ab():
+    lead = _anlegen()["lead_id"]
+    kaputt = json.loads(server.kontakt_aktualisieren(lead, "name", "   "))
+    assert "fehler" in kaputt
+    assert _lead_spalten(lead)["name"] == "Max Testperson"
+
+
+def test_kontakt_aktualisieren_leert_telefonnummer_bei_leerem_wert():
+    lead = _anlegen()["lead_id"]
+    ok = json.loads(server.kontakt_aktualisieren(lead, "phone", ""))
+    assert "fehler" not in ok
+    assert _lead_spalten(lead)["phone"] is None
+
+
+def test_kontakt_aktualisieren_unbekannte_lead_id_gibt_fehlertext():
+    kaputt = json.loads(server.kontakt_aktualisieren(
+        "00000000-0000-0000-0000-000000000000", "phone", "+491701234567"))
+    assert "fehler" in kaputt
+
+
+def test_kontakt_aktualisieren_schliesst_den_t4_befund():
+    """Der ganze Grund fuer dieses Werkzeug: eine nachgetragene Nummer muss
+    den Entwurf zustellbar machen."""
+    lead = server._q("insert into leads (name, source) values "
+                     "('Anna Beispiel', 'whatsapp') returning id")[0]["id"]
+    draft = _entwurf(lead, "whatsapp", "Text")      # faellt auf den Namen zurueck
+    vorher = _eintrag(json.loads(server.entwuerfe_offen()), "entwuerfe", draft)
+    assert vorher["zielnummer"] is None
+
+    server.kontakt_aktualisieren(lead, "phone", "+491701234567")
+    neu = _entwurf(lead, "whatsapp", "Text")        # neuer Entwurf, neue Nummer
+
+    nachher = _eintrag(json.loads(server.entwuerfe_offen()), "entwuerfe", neu)
+    assert nachher["zielnummer"] == "491701234567@c.us"
+
+
+def test_kontakt_aktualisieren_signatur_ueberlebt_den_dekorator():
+    import inspect
+    parameter = inspect.signature(server.kontakt_aktualisieren).parameters
+    assert list(parameter) == ["lead_id", "feld", "wert"]
+
+
+def test_fuenfzehn_werkzeuge_registriert():
+    namen = {fn.__name__ for fn in server.WERKZEUGE}
+    assert len(namen) == 15
+    assert "kontakt_aktualisieren" in namen

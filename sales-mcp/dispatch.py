@@ -56,7 +56,6 @@ Vertriebsnachricht soll jemand hinschauen, bevor sie doch noch rausgeht.
 import json
 import logging
 import os
-import re
 import signal
 import socket
 import sys
@@ -68,6 +67,7 @@ import uuid
 import psycopg
 
 import server
+from nummern import normalisiere_empfaenger
 from server import _jetzt
 
 # --- Konfiguration (Modulkonstanten, damit Tests sie umbiegen koennen) ------
@@ -82,6 +82,19 @@ STAPEL = 5                 # Entwuerfe je Runde (Plan T3)
 FEHLER_MAXLAENGE = 300     # drafts.error wird hart gekuerzt
 CLAIM_PRAEFIX = "in Zustellung seit "
 
+# Pause zwischen zwei tatsaechlichen Sendungen einer Runde (T5a). Fuenf
+# Nachrichten im selben Sekundenbruchteil sind fuer WhatsApp das Muster eines
+# Bots, nicht das eines Menschen — und der Stapel steht ohnehin nicht unter
+# Zeitdruck. Gewartet wird nur gegenueber OpenWA: ein Entwurf, der die
+# Empfaengerpruefung gar nicht besteht, hat das Netz nie beruehrt und haelt
+# den Rest deshalb nicht auf. `_STOPP.wait` statt `time.sleep`, damit ein
+# SIGTERM die Pause sofort beendet.
+_SENDE_PAUSE_VORGABE = 1.0
+SENDE_PAUSE_S = float(os.environ.get("DISPATCH_SENDE_PAUSE_S",
+                                     _SENDE_PAUSE_VORGABE))
+# Ausgaenge, nach denen tatsaechlich ein HTTP-Aufruf stattgefunden hat.
+_NETZ_AUSGAENGE = frozenset(("gesendet", "fehler", "gesendet_ohne_buchung"))
+
 LOG = logging.getLogger("sales-dispatch")
 _STOPP = threading.Event()
 
@@ -94,48 +107,13 @@ class VersandFehler(Exception):
 # Empfaenger
 # ---------------------------------------------------------------------------
 
-# Trenner, die in notierten Telefonnummern ueblich sind. Alles andere macht
-# den Empfaenger unzustellbar — wir raten nicht.
-_TRENNER = re.compile(r"[\s\-./() ‑]")
-_NUMMER = re.compile(r"(\+|00)?\d{8,15}\Z")
-
-
-def normalisiere_empfaenger(recipient):
-    """`recipient` -> ("49…@c.us", None) oder (None, Fehlertext).
-
-    Der bekannte Befund aus Stufe 2 (entwurf_erstellen faellt auf den
-    Kontaktnamen zurueck, wenn keine Telefonnummer hinterlegt ist) wird hier
-    zur harten Pruefung: nur etwas, das als Ganzes eine Telefonnummer ist,
-    wird zugestellt. Mischformen wie "Herr Mueller 0170 1234567" werden
-    bewusst NICHT auseinandergenommen — bei einer Nachricht an einen echten
-    Menschen ist Raten die teurere Option als eine Rueckfrage.
-
-    Autonome Festlegung (Betrieb ist durchgehend deutsch): eine fuehrende
-    Amtsnull ohne Landesvorwahl wird als deutsche Nummer gelesen
-    (0170… -> 49170…), ebenso der Einschub "(0)" und eine Amtsnull direkt
-    hinter der 49. Andere Landesvorwahlen bleiben unangetastet.
-    """
-    roh = (recipient or "").strip()
-    if not roh:
-        return None, "kein zustellbarer Empfaenger"
-    kern = _TRENNER.sub("", roh.replace("(0)", ""))
-    if not _NUMMER.fullmatch(kern):
-        return None, "kein zustellbarer Empfaenger"
-
-    if kern.startswith("+"):
-        ziffern = kern[1:]
-    elif kern.startswith("00"):
-        ziffern = kern[2:]
-    elif kern.startswith("0"):
-        ziffern = "49" + kern[1:]          # deutsche Amtsnull
-    else:
-        ziffern = kern
-    if ziffern.startswith("490"):          # Amtsnull hinter der Landesvorwahl
-        ziffern = "49" + ziffern[3:]
-
-    if not 8 <= len(ziffern) <= 15:
-        return None, "kein zustellbarer Empfaenger"
-    return f"{ziffern}@c.us", None
+# `normalisiere_empfaenger` lebt seit T5a in `nummern.py` und wird von dort
+# importiert (oben). Der Grund ist keine Aufraeumlust: `entwuerfe_offen` in
+# server.py zeigt dem Betreiber VOR der Freigabe an, an welche Nummer ein
+# Entwurf ginge — diese Anzeige und dieser Versand duerfen nie zwei
+# verschiedene Regeln benutzen, sonst gibt jemand etwas anderes frei als das,
+# was passiert. Der Name bleibt im Modul-Namensraum sichtbar
+# (`dispatch.normalisiere_empfaenger`), Aufrufer und Tests bleiben unveraendert.
 
 
 def _maskiert(chat_id: str) -> str:
@@ -184,12 +162,29 @@ def _als_gesendet_buchen(draft_id, marke) -> bool:
         (draft_id, marke)))
 
 
-def _als_fehler_buchen(draft_id, marke, text) -> None:
-    """Marke durch den echten Fehlertext ersetzen; status bleibt 'failed'."""
-    server._q(
+def _als_fehler_buchen(draft_id, marke, text) -> bool:
+    """Marke durch den echten Fehlertext ersetzen; status bleibt 'failed'.
+
+    Die Rueckgabe wird ausgewertet, weil ihr Ausbleiben teuer ist: greift das
+    UPDATE nicht (die Marke steht nicht mehr da — jemand hat den Entwurf
+    nebenher erneut freigegeben, oder ein zweiter Dispatcher war am Werk),
+    dann behaelt der Entwurf die Marke „in Zustellung seit …". Fuer einen
+    Menschen sieht er dann aus wie ein haengender Versand, und
+    `entwurf_erneut_freigeben` verweigert die erneute Freigabe dauerhaft ohne
+    `bestaetigt=True` — der echte Grund waere nirgends aufgeschrieben.
+    Deshalb LOG.critical statt stillschweigend weiterlaufen.
+    """
+    gebucht = bool(server._q(
         "update drafts set error = %s "
         "where id = %s and status = 'failed' and error = %s returning id",
-        (text[:FEHLER_MAXLAENGE], draft_id, marke))
+        (text[:FEHLER_MAXLAENGE], draft_id, marke)))
+    if not gebucht:
+        LOG.critical(
+            "draft=%s Fehlergrund NICHT gebucht — der eigene Claim steht nicht "
+            "mehr in der Zeile. Der Entwurf traegt weiter die Marke "
+            "'in Zustellung' und braucht einen Menschen. Grund war: %s",
+            draft_id, _einzeilig(text))
+    return gebucht
 
 
 def _versand_loggen(geclaimt, chat_id) -> None:
@@ -212,15 +207,22 @@ def _einzeilig(text: str) -> str:
 
 def sende_text(chat_id: str, text: str) -> None:
     """POST /api/sessions/{id}/messages/send-text. Wirft VersandFehler."""
-    ziel = (f"{OPENWA_URL.rstrip('/')}/api/sessions/{OPENWA_SESSION_ID}"
-            f"/messages/send-text")
-    anfrage = urllib.request.Request(
-        ziel, method="POST",
-        data=json.dumps({"chatId": chat_id, "text": text}).encode("utf-8"),
-        headers={"Content-Type": "application/json",
-                 "Accept": "application/json",
-                 "X-API-Key": OPENWA_API_KEY})
     try:
+        # Der Request wird INNERHALB des try gebaut (T5a). `Request(...)`
+        # wirft schon beim Konstruieren ValueError("unknown url type"), wenn
+        # OPENWA_URL kein brauchbares Schema hat — eine vertippte Compose-Zeile
+        # riss so die ganze Schleife ab, statt eine Fehlerbuchung zu erzeugen.
+        # Der Dispatcher darf an einer Fehlkonfiguration nicht sterben: der
+        # Entwurf ist zu diesem Zeitpunkt bereits geclaimt und bliebe sonst
+        # ohne jeden Grund im Zustand „in Zustellung" liegen.
+        ziel = (f"{OPENWA_URL.rstrip('/')}/api/sessions/{OPENWA_SESSION_ID}"
+                f"/messages/send-text")
+        anfrage = urllib.request.Request(
+            ziel, method="POST",
+            data=json.dumps({"chatId": chat_id, "text": text}).encode("utf-8"),
+            headers={"Content-Type": "application/json",
+                     "Accept": "application/json",
+                     "X-API-Key": OPENWA_API_KEY})
         with urllib.request.urlopen(anfrage, timeout=HTTP_TIMEOUT_S) as antwort:
             antwort.read()
     except urllib.error.HTTPError as e:   # muss vor URLError stehen
@@ -294,14 +296,23 @@ def verarbeite_draft(draft_id) -> str:
 
 
 def eine_runde() -> dict:
-    """Bis zu STAPEL freigegebene WhatsApp-Entwuerfe, aelteste zuerst."""
+    """Bis zu STAPEL freigegebene WhatsApp-Entwuerfe, aelteste zuerst.
+
+    Zwischen zwei tatsaechlichen Sendungen liegt SENDE_PAUSE_S (siehe dort).
+    Nach einem Entwurf, der OpenWA gar nicht erreicht hat — uebersprungen oder
+    unzustellbar —, wird nicht gewartet: die Pause gilt dem Empfaengerdienst,
+    nicht der Datenbank.
+    """
     zeilen = server._q(
         "select id from drafts where status = 'approved' and channel = 'whatsapp' "
         "order by created_at limit %s", (STAPEL,))
     bilanz = {}
+    letzter_ausgang = None
     for z in zeilen:
-        ausgang = verarbeite_draft(z["id"])
-        bilanz[ausgang] = bilanz.get(ausgang, 0) + 1
+        if letzter_ausgang in _NETZ_AUSGAENGE and SENDE_PAUSE_S > 0:
+            _STOPP.wait(SENDE_PAUSE_S)      # unterbrechbar durch SIGTERM
+        letzter_ausgang = verarbeite_draft(z["id"])
+        bilanz[letzter_ausgang] = bilanz.get(letzter_ausgang, 0) + 1
     return bilanz
 
 
@@ -348,9 +359,9 @@ def main() -> int:
             signal.signal(sig, _stoppen)
         except ValueError:
             pass    # nicht im Hauptthread (Tests) — dann eben ohne Handler
-    LOG.info("Start: schema=%s openwa=%s session=%s intervall=%gs once=%s",
-             server.SCHEMA, OPENWA_URL, OPENWA_SESSION_ID,
-             DISPATCH_INTERVAL_S, DISPATCH_ONCE)
+    LOG.info("Start: schema=%s openwa=%s session=%s intervall=%gs pause=%gs "
+             "once=%s", server.SCHEMA, OPENWA_URL, OPENWA_SESSION_ID,
+             DISPATCH_INTERVAL_S, SENDE_PAUSE_S, DISPATCH_ONCE)
 
     while not _STOPP.is_set():
         try:

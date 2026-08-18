@@ -34,9 +34,33 @@ services:
     # (aktuell: Enabled=False) — sonst kämen bei einer Anmeldung zwei
     # Baileys-Sitzungen auf denselben Credentials hoch.
     restart: "no"
-    env_file:
-      - .env
+    # KEIN env_file: .env — bewusst, und bewusst nicht bequem (Stufe 3, T5a).
+    #
+    # `.env` enthält OPENWA_API_KEY und SALES_DB_URL. Über `env_file: .env`
+    # erbte der Agent-Container beide, obwohl er beide nicht braucht: er
+    # versendet nichts (das tut ausschliesslich sales-dispatch) und spricht
+    # die Datenbank nur über sales-mcp an. Geerbt bekam er damit die
+    # Fähigkeit, das Freigabe-Gate zu umgehen — ein `curl` gegen OpenWA
+    # sendet WhatsApp-Nachrichten ohne jeden Umweg über `drafts`, ein `psql`
+    # mit der DSN setzt `status='approved'` selbst. Das Gate soll die
+    # Datenbank sein (Grundsatzentscheidung 1); mit den Schlüsseln im
+    # Agent-Container ist es nur noch so stark wie die Exec-Freigabeliste des
+    # Gateways. Eine Zeitbombe, weil sie erst beim nächsten regulären
+    # Recreate scharf wird — der laufende Container hat die Variablen aus
+    # seinem Erzeugungszeitpunkt, sichtbar wird die Änderung also erst dann.
+    #
+    # Deshalb hier eine ausdrückliche Liste statt einer Vererbung: was der
+    # Agent braucht, steht namentlich da. Kommt etwas dazu, muss es jemand
+    # hinschreiben — und dabei kurz überlegen, ob es hier hingehört.
+    # Die Werte kommen weiterhin aus `.env`, aber über Compose-Interpolation
+    # (`${...}`), die nur die genannten Namen auflöst.
+    #
+    # sales-mcp und sales-dispatch behalten `env_file: .env`: sie SIND die
+    # Vertrauensdomäne für diese Geheimnisse — der eine hält die Kundendaten-DB,
+    # der andere ist die einzige Komponente, die versenden darf.
     environment:
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - TZ=${TZ:-Europe/Berlin}
       - OPENCLAW_STATE_DIR=/home/node/.openclaw
     volumes:
       - sales-claw-state:/home/node/.openclaw

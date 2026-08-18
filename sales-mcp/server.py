@@ -1,6 +1,6 @@
 """sales-mcp — Werkzeugdienst des sales-claw-Prototyps.
 
-Vierzehn deutsche Werkzeuge über MCP (streamable-http). Kein Send-Werkzeug:
+Fünfzehn deutsche Werkzeuge über MCP (streamable-http). Kein Send-Werkzeug:
 Entwürfe enden als drafts(status='pending') und werden über die
 Freigabe-Werkzeuge nach 'approved'/'rejected' bewegt — den tatsächlichen
 Versand macht ausschliesslich der Dispatcher (WhatsApp) bzw. quittiert der
@@ -29,6 +29,13 @@ import yaml
 from mcp.server.mcpserver import MCPServer
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
+
+# Dieselbe Funktion, die der Dispatcher zum Versenden benutzt (nummern.py).
+# entwuerfe_offen zeigt damit die Nummer an, an die tatsächlich zugestellt
+# würde — Anzeige und Versand können nicht auseinanderlaufen. Ein eigenes
+# Modul, weil `import dispatch` hier ein Zirkelimport wäre (dispatch.py
+# importiert server.py).
+from nummern import normalisiere_empfaenger
 
 SCHEMA = os.environ.get("SALES_DB_SCHEMA", "sales")
 if SCHEMA not in ("sales", "sales_test"):
@@ -112,6 +119,45 @@ def kontakt_anlegen(name: str, email: str = "", phone: str = "",
         "values (%s, nullif(%s,''), nullif(%s,''), %s, nullif(%s,'')) "
         "returning id", (name, email, phone, source, notes))
     return _json({"lead_id": zeilen[0]["id"], "angelegt": True})
+
+
+# Stammdatenfelder, die korrigiert werden duerfen — buchstabengenau und
+# abschliessend. Die Whitelist ist nicht Komfort, sondern die einzige Sicherung:
+# psycopg kann Spaltennamen nicht als Parameter binden, der Name geht also per
+# f-String in die Query. Wird hier je etwas gelockert, ist es eine
+# SQL-Injection. Ausdruecklich NICHT enthalten: `consent_status` (Einwilligung
+# entsteht aus einer Antwort des Kontakts, siehe bedarf_speichern, nicht aus
+# einem Freitextaufruf), `status`, `score*`, `enrichment` (dafuer gibt es
+# profil_aktualisieren) und `id`.
+KONTAKT_FELDER = ("phone", "email", "name")
+
+
+@_gesichert
+def kontakt_aktualisieren(lead_id: str, feld: str, wert: str) -> str:
+    """Stammdaten eines bestehenden Kontakts korrigieren oder nachtragen.
+    Erlaubt sind ausschliesslich die Felder phone, email und name — etwa um
+    eine fehlende Telefonnummer zu ergaenzen, ohne die ein WhatsApp-Entwurf
+    nicht zugestellt werden kann. Telefonnummern immer MIT Landesvorwahl
+    erfassen (+49…/+43…): einer national geschriebenen Nummer (0170…) wird
+    nicht vertraut, sie gilt als nicht zustellbar. Profilangaben gehoeren
+    nach profil_aktualisieren, nicht hierher."""
+    if feld not in KONTAKT_FELDER:
+        return _json({"fehler": f"Unzulaessiges Feld '{feld}'. Erlaubt: "
+                                f"{', '.join(KONTAKT_FELDER)}. Profilangaben "
+                                f"gehoeren nach profil_aktualisieren, die "
+                                f"Einwilligung nach bedarf_speichern."})
+    if feld == "name" and not wert.strip():
+        return _json({"fehler": "Ein Kontakt ohne Namen ist nicht vorgesehen."})
+    vorhanden = _q(f"select {feld} as alt from leads where id = %s", (lead_id,))
+    if not vorhanden:
+        return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
+    _q(f"update leads set {feld} = nullif(%s,''), updated_at = now() "
+       "where id = %s returning id", (wert.strip(), lead_id))
+    _q("insert into activities (lead_id, type, payload) "
+       "values (%s, 'korrektur', %s) returning id",
+       (lead_id, _json({"feld": feld, "vorher": vorhanden[0]["alt"],
+                        "wert": wert.strip()})))
+    return _json({"gesetzt": {feld: wert.strip()}})
 
 
 @_gesichert
@@ -261,22 +307,73 @@ def digest() -> str:
                   "letzte_aktivitaeten": letzte})
 
 
+# Fehlgeschlagene Entwuerfe werden nie automatisch wiederholt und sammeln sich
+# deshalb an. Die Liste bleibt gedeckelt, damit ein Aufruf die Antwort nicht
+# unbegrenzt aufblaeht; `anzahl_fehlgeschlagen` nennt die tatsaechliche Zahl,
+# damit nichts stillschweigend verschwindet.
+FEHLGESCHLAGEN_MAX = 20
+FEHLER_KURZ = 120
+
+
+def _zielangabe(kanal: str, empfaenger: str) -> dict:
+    """Wohin ginge dieser Entwurf wirklich? — dieselbe Antwort wie im Versand.
+
+    Nur WhatsApp wird ueber eine Nummer zugestellt. LinkedIn und E-Mail
+    bekommen deshalb `zielnummer: null` ohne Warnhinweis: ein LinkedIn-Entwurf
+    als „nicht zustellbar" zu kennzeichnen waere schlicht falsch, er geht ueber
+    den Handversand raus.
+    """
+    if kanal != "whatsapp":
+        return {"zielnummer": None}
+    chat_id, _fehler = normalisiere_empfaenger(empfaenger)
+    if chat_id is None:
+        return {"zielnummer": None, "hinweis": "nicht zustellbar"}
+    return {"zielnummer": chat_id}
+
+
 @_gesichert
 def entwuerfe_offen() -> str:
-    """Alle Entwuerfe, die auf eine Betreiber-Entscheidung warten: offene
-    Freigaben (status='pending') sowie freigegebene LinkedIn-Entwuerfe, die
-    noch auf den Handversand warten (status='approved', kanal='linkedin').
-    Vor jeder Freigabe-Entscheidung aufrufen."""
+    """Alle Entwuerfe, die auf den Betreiber warten. Zwei Bloecke:
+
+    `entwuerfe` — offene Freigaben (status='pending') sowie freigegebene
+    LinkedIn-Entwuerfe, die noch auf den Handversand warten.
+    `fehlgeschlagen` — Entwuerfe, deren Zustellung gescheitert ist, je mit
+    Fehlergrund; sie werden NIE von selbst wiederholt und brauchen eine
+    ausdrueckliche erneute Freigabe.
+
+    Je Eintrag steht neben dem roh erfassten `empfaenger` die `zielnummer`,
+    an die tatsaechlich zugestellt wuerde (null + hinweis, wenn die Nummer
+    nicht zustellbar ist), und der `consent`-Stand des Kontakts. draft_id ist
+    immer die vollstaendige UUID — Werkzeuge brauchen sie so. Vor jeder
+    Freigabe-Entscheidung aufrufen."""
     zeilen = _q(
-        "select d.id, d.channel, d.recipient, d.status, d.body, l.name "
+        "select d.id, d.channel, d.recipient, d.status, d.body, "
+        "       l.name, l.consent_status "
         "from drafts d left join leads l on l.id = d.lead_id "
         "where d.status = 'pending' "
         "   or (d.status = 'approved' and d.channel = 'linkedin') "
         "order by d.created_at desc")
-    return _json({"entwuerfe": [
-        {"draft_id": z["id"], "kanal": z["channel"], "empfaenger": z["recipient"],
-         "status": z["status"], "text": (z["body"] or "")[:200],
-         "kontakt": z["name"]} for z in zeilen]})
+    gescheitert = _q(
+        "select d.id, d.channel, d.recipient, d.error, "
+        "       l.name, l.consent_status "
+        "from drafts d left join leads l on l.id = d.lead_id "
+        "where d.status = 'failed' order by d.created_at desc limit %s",
+        (FEHLGESCHLAGEN_MAX,))
+    anzahl = _q("select count(*) as n from drafts where status = 'failed'")
+    return _json({
+        "entwuerfe": [
+            {"draft_id": z["id"], "kanal": z["channel"],
+             "empfaenger": z["recipient"], "status": z["status"],
+             "text": (z["body"] or "")[:200], "kontakt": z["name"],
+             "consent": z["consent_status"],
+             **_zielangabe(z["channel"], z["recipient"])} for z in zeilen],
+        "anzahl_fehlgeschlagen": anzahl[0]["n"],
+        "fehlgeschlagen": [
+            {"draft_id": z["id"], "kanal": z["channel"],
+             "empfaenger": z["recipient"], "kontakt": z["name"],
+             "consent": z["consent_status"],
+             "fehler": (z["error"] or "")[:FEHLER_KURZ],
+             **_zielangabe(z["channel"], z["recipient"])} for z in gescheitert]})
 
 
 def _entwurf_status_fehler(draft_id, erwarteter_status: str) -> str:
@@ -397,11 +494,13 @@ def entwurf_erneut_freigeben(draft_id: str, bestaetigt: bool = False) -> str:
     return _json({"draft_id": z["id"], "status": "approved"})
 
 
-for _fn in (kontakt_suchen, kontakt_anlegen, aktivitaet_loggen,
-            profil_lesen, profil_aktualisieren, bedarf_speichern,
-            bedarf_offen, entwurf_erstellen, digest, entwuerfe_offen,
-            entwurf_freigeben, entwurf_ablehnen, entwurf_manuell_gesendet,
-            entwurf_erneut_freigeben):
+WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
+             aktivitaet_loggen, profil_lesen, profil_aktualisieren,
+             bedarf_speichern, bedarf_offen, entwurf_erstellen, digest,
+             entwuerfe_offen, entwurf_freigeben, entwurf_ablehnen,
+             entwurf_manuell_gesendet, entwurf_erneut_freigeben)
+
+for _fn in WERKZEUGE:
     mcp.tool()(_fn)
 
 if __name__ == "__main__":
