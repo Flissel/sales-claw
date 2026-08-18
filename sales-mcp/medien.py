@@ -80,6 +80,11 @@ def _reiner_dateiname(name: str) -> bool:
         return False
     if "/" in name or "\\" in name or ":" in name:
         return False
+    if "\x00" in name:
+        # Ein NUL-Byte wuerde erst unten in realpath() als ValueError platzen —
+        # `pruefe` verspricht aber (None, fehler) statt einer Ausnahme. Hier
+        # abgefangen, bevor irgendetwas das Dateisystem beruehrt.
+        return False
     if name.startswith("."):
         # Auch `..foo` und versteckte Dateien bleiben draussen: der Ordner ist
         # eine Ablage fuer Unterlagen, nichts davon heisst legitim `.irgendwas`.
@@ -145,7 +150,11 @@ def pruefe(name: str):
         if not os.access(ziel, os.R_OK):
             return None, f"Datei '{basis}' ist nicht lesbar."
         groesse = os.path.getsize(ziel)
-    except OSError as e:
+    except (OSError, ValueError) as e:
+        # ValueError als zweite Linie: os-Funktionen werfen ihn u. a. bei
+        # eingebettetem NUL — die Namenspruefung oben faengt das frueher ab,
+        # aber dieses Versprechen (`(None, fehler)`, nie eine Ausnahme) soll
+        # nicht an der Reihenfolge zweier Pruefungen haengen.
         return None, f"Medienordner nicht lesbar ({type(e).__name__})."
     if groesse == 0:
         return None, f"Datei '{basis}' ist leer (0 Bytes)."
@@ -165,14 +174,16 @@ def lies(basis: str) -> bytes:
 def liste():
     """Anhaengbare Dateien im Medienordner: [(name, groesse_bytes)], sortiert.
 
-    Gefiltert auf die Whitelist — was nicht angehaengt werden kann, taucht auch
-    nicht als Angebot auf. Wirft OSError, wenn der Ordner fehlt.
+    Gefiltert ueber DIESELBE Pruefung, die `entwurf_erstellen` anwendet — die
+    Liste ist ein Versprechen ("genau diese Namen nimmt entwurf_erstellen"),
+    also darf sie nichts anbieten, was die Pruefung dann ablehnt: versteckte
+    Dateien, leere, zu grosse, nach draussen zeigende Symlinks. Ein blosser
+    Whitelist-Filter hatte genau diese Luecke. Wirft OSError, wenn der Ordner
+    fehlt.
     """
     eintraege = []
     for name in sorted(os.listdir(wurzel())):
-        if os.path.splitext(name)[1].lower() not in ERLAUBT:
-            continue
-        voll = os.path.join(wurzel(), name)
-        if os.path.isfile(voll):
-            eintraege.append((name, os.path.getsize(voll)))
+        basis, fehler = pruefe(name)
+        if fehler is None:
+            eintraege.append((basis, os.path.getsize(pfad(basis))))
     return eintraege

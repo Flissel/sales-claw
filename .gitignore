@@ -17,6 +17,16 @@ openwa/
 openwa-qr.png
 openwa-qr.txt
 
+# Medienordner (Stufe 4, F4): Ablage fuer Unterlagen, die der Betreiber an
+# Entwuerfe haengt — dort liegen perspektivisch Kundendokumente ("angebot-
+# mueller.pdf"), und die gehoeren in kein Repo, schon gar kein oeffentliches.
+# `media/*` statt `media/`, weil ein ignoriertes VERZEICHNIS keine Negation
+# fuer seinen Inhalt mehr zulaesst — so bleibt .gitkeep versioniert und der
+# Ordner existiert auch in einem frischen Klon (Compose legt ihn sonst als
+# Root-owned Leerverzeichnis an).
+media/*
+!media/.gitkeep
+
 # Python-Bytecode (entsteht beim Testlauf im Container, der /app mountet)
 __pycache__/
 *.pyc

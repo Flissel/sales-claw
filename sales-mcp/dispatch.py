@@ -371,8 +371,11 @@ def verarbeite_draft(draft_id) -> str:
                      draft_id)
         return "gesendet_ohne_buchung"
 
+    # Der Dateiname bleibt aus dem Containerlog heraus — er traegt denselben
+    # Personenbezug wie eine Telefonnummer ("angebot-mueller-2026.pdf"). Wer
+    # wissen will, WAS anhing, findet es in der versand-Aktivitaet in der DB.
     LOG.info("draft=%s gesendet an %s%s", draft_id, _maskiert(chat_id),
-             f" (Anhang {basis})" if basis else "")
+             " (mit Anhang)" if basis else "")
     return "gesendet"
 
 
