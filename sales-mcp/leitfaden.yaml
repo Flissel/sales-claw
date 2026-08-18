@@ -3,6 +3,12 @@
 # MH Consulting (Spec §5). Struktur ist bindend, Inhalte sind austauschbar.
 version: 1
 gruppen:
+  - id: anlass
+    titel: "Anlass & Interesse"
+    fragen:
+      - { id: anlass, frage: "Was hat Sie zu uns geführt — gibt es einen konkreten Anlass?" }
+      - { id: interesse, frage: "Welches Thema interessiert Sie am meisten: Vermögensaufbau und Geldanlage, eine Finanzierung (z. B. Immobilie), Absicherung — oder geht es um Ihr Unternehmen? Oder interessieren Sie sich für eine Karriere bei uns?" }
+      - { id: selbststaendig_b2b, frage: "Falls Sie selbstständig sind: Interessiert Sie auch Beratung für Ihr Unternehmen?" }
   - id: lebenssituation
     titel: Lebenssituation
     fragen:
@@ -39,6 +45,11 @@ gruppen:
     fragen:
       - { id: risiko,     frage: "Wie würden Sie sich einschätzen — eher sicherheitsorientiert oder renditeorientiert?" }
       - { id: erfahrung,  frage: "Welche Erfahrungen haben Sie mit Geldanlagen?" }
+  - id: termin
+    titel: Terminvereinbarung
+    fragen:
+      - { id: termin_bereitschaft, frage: "Wären Sie offen für ein kostenloses Erstgespräch mit unserer Beraterin?" }
+      - { id: termin_praeferenz,   frage: "Wann passt es Ihnen am besten — eher vormittags, nachmittags oder abends? Video oder vor Ort?" }
   - id: consent
     titel: Einwilligung
     fragen:

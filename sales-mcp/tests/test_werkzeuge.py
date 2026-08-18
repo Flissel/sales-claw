@@ -82,6 +82,15 @@ def test_bedarf_speichern_und_offene_schrumpfen():
     assert profil["bedarf"]["alter"]["antwort"] == "34"
 
 
+def test_leitfaden_reihenfolge_anlass_zuerst_termin_vor_consent():
+    """Verkäufer-Ausrichtung (Stufe 4): 'anlass' steht ganz vorn, 'termin'
+    kommt vor 'consent'. Bestehende Gruppen/frage_ids bleiben unangetastet —
+    diese Prüfung geht ausschließlich über die Reihenfolge der Gruppen-ids."""
+    ids = [g["id"] for g in server.LEITFADEN["gruppen"]]
+    assert ids[0] == "anlass"
+    assert ids.index("termin") < ids.index("consent")
+
+
 def test_bedarf_unbekannte_frage_wird_abgelehnt():
     lead = _anlegen()["lead_id"]
     kaputt = json.loads(server.bedarf_speichern(lead, "schuhgroesse", "44"))
