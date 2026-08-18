@@ -728,10 +728,17 @@ def bedarf_speichern(lead_id: str, frage_id: str, antwort: str) -> str:
         return _json({"fehler": f"Unbekannte frage_id '{frage_id}'. "
                                 f"Gueltig: {sorted(ALLE_FRAGEN)}"})
     eintrag = {"antwort": antwort, "at": _jetzt()}
+    # Verschachteltes jsonb_set — zwingend. Ein einfaches
+    # jsonb_set(enrichment, '{bedarf,frage_id}', ..., true) legt den fehlenden
+    # Zwischenknoten 'bedarf' NICHT an (create_missing erzeugt nur das letzte
+    # Pfadelement) und ist auf frischen Kontakten ein stiller No-op. Exakt
+    # dieser Fehler steckte in profil_aktualisieren und wurde in Task 2
+    # empirisch belegt und behoben — dieses Muster spiegelt den Fix.
     zeilen = _q(
-        "update leads set enrichment = jsonb_set(enrichment, %s, %s::jsonb, true) "
-        "where id = %s returning id",
-        (["bedarf", frage_id], json.dumps(eintrag, ensure_ascii=False), lead_id))
+        "update leads set enrichment = jsonb_set(enrichment, '{bedarf}', "
+        "jsonb_set(coalesce(enrichment->'bedarf', '{}'::jsonb), %s, %s::jsonb, true), "
+        "true) where id = %s returning id",
+        ([frage_id], json.dumps(eintrag, ensure_ascii=False), lead_id))
     if not zeilen:
         return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
     if frage_id == "consent_kontakt":
