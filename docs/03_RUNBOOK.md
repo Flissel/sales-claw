@@ -954,6 +954,123 @@ nachziehen (`PUT /api/sessions/{id}/webhooks/{webhookId}` mit dem neuen
 als wachsender Fehlversuchszähler im `sales-inbox`-Log und als
 `webhook_delivery_failed` bei OpenWA.
 
+## Morgen-Digest
+
+Werktags (Mo–Fr) 08:00 Europe/Berlin stellt der Agent unaufgefordert einen
+kompakten Digest (offene Entwürfe, fällige Wiedervorlagen, unvollständige
+Bedarfsanalysen — `digest()` aus Stufe 2/F3) in den WhatsApp-Chat des
+Betreibers zu. **Kein neuer Versandweg:** OpenWA ist nicht beteiligt, die
+Nachricht geht über denselben Antwortkanal, über den der Bot ohnehin
+antwortet; das Freigabe-Gate der `drafts`-Tabelle bleibt unberührt.
+
+**Mechanik: nativer `openclaw cron` (Gateway-Scheduler), keine eigene
+Infrastruktur.** Gemessen über `openclaw cron --help` — der Container bringt
+Cron bereits mit, kein Fallback-Skript nötig.
+
+Job-Details (Stand F2):
+
+| Feld | Wert |
+|---|---|
+| Job-ID | `221a69d7-4b52-471c-92e4-f86a42005b8e` |
+| Name | `morgen-digest` |
+| Schedule | `0 8 * * 1-5` @ `Europe/Berlin` (Mo–Fr 08:00 = 06:00 UTC im Sommer) |
+| Session | `isolated` (frischer Kontext je Lauf, kein Vermischen mit dem laufenden Chat — das eigene `cron.md`-Beispiel für „Morning brief" nutzt dasselbe Muster) |
+| Agent | `main` |
+| Zustellung | `announce -> whatsapp:+491603449761` |
+
+### Wichtiger Messbefund: Zustellung braucht die `allowFrom`-Nummer, nicht `self.e164`
+
+Ein erster Versuch, an `+491749708452` zuzustellen (das ist `self.e164` aus
+`openclaw channels status --json` — die verknüpfte Nummer, über die der
+Selbst-Chat läuft), schlug **hart fehl**, nicht nur als Warnung:
+
+```
+Target "+491749708452" is not listed in the configured WhatsApp allowFrom policy.
+```
+
+Befund: Der Selbst-Chat-Sonderfall (`maybeSamePhoneDmAllowFrom`, siehe
+„Kriterium 2 von Hand" oben) gilt nur für **eingehende** Nachrichten von der
+verknüpften Nummer. Für **ausgehende** Cron-/Announce-Zustellung prüft
+OpenClaw das Ziel strikt gegen die konfigurierte
+`channels.whatsapp.default.allowFrom`-Liste. Zustellbares Ziel ist also die
+dort gelistete Nummer (`+491603449761`) — dieselbe Nummer, die laut
+Stufe-1-Runbook auch normale Direktnachrichten an den Bot schicken darf. Der
+Job wurde entsprechend auf dieses Ziel korrigiert (`openclaw cron edit ...
+--to "+491603449761"`).
+
+### Probelauf — belegt
+
+```powershell
+docker compose exec sales-claw openclaw cron run 221a69d7-4b52-471c-92e4-f86a42005b8e --wait --wait-timeout 5m
+```
+
+Dritter Versuch erfolgreich (`"status": "ok"`, `"delivered": true`,
+`"deliveryStatus": "delivered"`) — der erste scheiterte an der oben
+beschriebenen `allowFrom`-Prüfung (vor der Korrektur), der zweite an einem
+transienten `openrouter/free`-Fehler (`FailoverError: ... inference
+generation failed` — bekannte Schwäche, siehe „Modellwahl im Demo-Betrieb"
+oben; kein Konfigurationsfehler, einfach wiederholen). Log-Beleg der
+tatsächlichen WhatsApp-Zustellung:
+
+```
+sales-claw | [whatsapp] Sending message -> sha256:775db645c879
+sales-claw | [whatsapp] Sent message 3EB0332F532A532946C9F0 -> sha256:775db645c879 (220ms)
+```
+
+Zugestellter Text (vom Agenten aus `digest()` erzeugt, kompakt gemäß der
+bestehenden AGENTS.md-Digest-Regel):
+
+```
+Morgen-Digest:
+- 3 Entwürfe zur Freigabe (2 WhatsApp: Lisa Probekunde, 1 LinkedIn: Lisa Probekunde)
+- 8 offene Bedarfsanalysen (Lisa Probekunde: 20+ Fragen)
+- Keine fälligen Wiedervorlagen
+```
+
+### Zeitpunkt ändern
+
+```powershell
+docker compose exec sales-claw openclaw cron edit 221a69d7-4b52-471c-92e4-f86a42005b8e --cron "0 7 * * 1-5" --tz "Europe/Berlin"
+```
+
+### Abschalten / wieder aktivieren
+
+```powershell
+docker compose exec sales-claw openclaw cron disable 221a69d7-4b52-471c-92e4-f86a42005b8e
+docker compose exec sales-claw openclaw cron enable 221a69d7-4b52-471c-92e4-f86a42005b8e
+```
+
+`disable` behält die Job-Definition (kein `rm`) — nur der Scheduler pausiert
+sie.
+
+### Nachsehen
+
+```powershell
+docker compose exec sales-claw openclaw cron list
+docker compose exec sales-claw openclaw cron show 221a69d7-4b52-471c-92e4-f86a42005b8e
+docker compose exec sales-claw openclaw cron runs --id 221a69d7-4b52-471c-92e4-f86a42005b8e --limit 10
+```
+
+### Persistenz — kein Repo-Artefakt, sondern eine Zeile im Volume
+
+Die Job-Definition liegt **nicht** im Repo, sondern als Zeile in der
+SQLite-Zustandsdatenbank des Gateways:
+
+```
+/home/node/.openclaw/state/openclaw.sqlite   (Tabelle cron_jobs, Zeile job_id=221a69d7-…)
+```
+
+Das ist derselbe Pfad wie `openclaw cron status` als `sqlitePath` meldet, und
+derselbe Mountpunkt, dessen Neustart-Festigkeit in Stufe 1 nachgewiesen
+wurde („Kriterium 3" oben). `sales-claw` wurde für diesen F2-Nachweis
+bewusst **nicht** neu gestartet (laufender Betreiber-Chat, siehe „Die Regel,
+die über allen anderen steht") — der Beleg stützt sich auf den Speicherort:
+
+```powershell
+docker inspect sales-claw --format '{{range .Mounts}}{{.Type}} {{.Name}} -> {{.Destination}}{{"\n"}}{{end}}'
+# volume sales-claw-state -> /home/node/.openclaw
+```
+
 ## Dateiablage
 
 | Was | Wo |
