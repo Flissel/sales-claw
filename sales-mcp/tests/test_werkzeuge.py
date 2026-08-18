@@ -2,6 +2,7 @@
 `sales.activities` ist append-only und ließe sich nicht zurücksetzen."""
 import json
 import os
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -34,8 +35,8 @@ def saubere_tabellen():
     yield
 
 
-def _anlegen(name="Max Testperson"):
-    return json.loads(server.kontakt_anlegen(name=name, phone="+490000000001"))
+def _anlegen(name="Max Testperson", phone="+490000000001"):
+    return json.loads(server.kontakt_anlegen(name=name, phone=phone))
 
 
 def test_kontakt_anlegen_und_suchen():
@@ -668,7 +669,214 @@ def test_kontakt_aktualisieren_signatur_ueberlebt_den_dekorator():
     assert list(parameter) == ["lead_id", "feld", "wert"]
 
 
-def test_fuenfzehn_werkzeuge_registriert():
+def test_siebzehn_werkzeuge_registriert():
     namen = {fn.__name__ for fn in server.WERKZEUGE}
-    assert len(namen) == 15
+    assert len(namen) == 17
     assert "kontakt_aktualisieren" in namen
+    assert "wiedervorlage_setzen" in namen
+    assert "wiedervorlage_erledigt" in namen
+
+
+# ---------------------------------------------------------------------------
+# F3 — Wiedervorlagen (ohne DDL, append-only: offen = wiedervorlage OHNE
+# zugehoeriges Gegen-Ereignis wiedervorlage_erledigt)
+# ---------------------------------------------------------------------------
+
+def _heute() -> date:
+    return datetime.now(timezone.utc).date()
+
+
+def _wiedervorlage(lead_id, tage_versetzt=1, notiz="Rueckruf vereinbaren"):
+    faellig = (_heute() + timedelta(days=tage_versetzt)).isoformat()
+    return json.loads(server.wiedervorlage_setzen(lead_id, faellig, notiz))
+
+
+def _faellig_am_setzen(aktivitaets_id, datum: date):
+    """Faelligkeit direkt herbeifuehren — ein Zustand, den das Werkzeug selbst
+    (das Vergangenheitsdaten ablehnt) nie herstellen wuerde. Gleiches Muster
+    wie _als_failed_markieren oben: per SQL simulieren, was in der Zukunft zu
+    Gegenwart wird."""
+    server._q(
+        "update activities set payload = jsonb_set(payload, '{faellig_am}', "
+        "%s::jsonb) where id = %s", (json.dumps(datum.isoformat()), aktivitaets_id))
+
+
+def test_wiedervorlage_setzen_liefert_aktivitaets_id_und_speichert_payload():
+    lead = _anlegen()["lead_id"]
+    ok = _wiedervorlage(lead, tage_versetzt=3, notiz="Rueckruf zum Angebot")
+    assert "fehler" not in ok
+    assert ok["aktivitaets_id"]
+    akt = server._q("select type, payload from activities where id = %s",
+                    (ok["aktivitaets_id"],))[0]
+    assert akt["type"] == "wiedervorlage"
+    assert akt["payload"]["notiz"] == "Rueckruf zum Angebot"
+    assert akt["payload"]["faellig_am"] == (_heute() + timedelta(days=3)).isoformat()
+
+
+def test_wiedervorlage_setzen_lehnt_vergangenheitsdatum_ab_und_schreibt_nichts():
+    lead = _anlegen()["lead_id"]
+    gestern = (_heute() - timedelta(days=1)).isoformat()
+    kaputt = json.loads(server.wiedervorlage_setzen(lead, gestern, "x"))
+    assert "fehler" in kaputt
+    anzahl = server._q(
+        "select count(*) as n from activities where type = 'wiedervorlage'")[0]["n"]
+    assert anzahl == 0
+
+
+def test_wiedervorlage_setzen_erlaubt_heute():
+    lead = _anlegen()["lead_id"]
+    ok = json.loads(server.wiedervorlage_setzen(lead, _heute().isoformat(), "x"))
+    assert "fehler" not in ok
+
+
+def test_wiedervorlage_setzen_lehnt_unlesbares_datum_ab():
+    lead = _anlegen()["lead_id"]
+    kaputt = json.loads(server.wiedervorlage_setzen(lead, "31.12.2026", "x"))
+    assert "fehler" in kaputt
+
+
+def test_wiedervorlage_erscheint_im_digest_erst_ab_faelligkeit_nicht_davor():
+    lead = _anlegen(name="Faellig Testperson")["lead_id"]
+    ok = _wiedervorlage(lead, tage_versetzt=1, notiz="Notiz A")
+
+    vor_faelligkeit = json.loads(server.digest())
+    assert ok["aktivitaets_id"] not in {
+        e["aktivitaets_id"] for e in vor_faelligkeit["faellige_wiedervorlagen"]}
+
+    _faellig_am_setzen(ok["aktivitaets_id"], _heute())
+
+    nach_faelligkeit = json.loads(server.digest())
+    eintrag = next(e for e in nach_faelligkeit["faellige_wiedervorlagen"]
+                   if e["aktivitaets_id"] == ok["aktivitaets_id"])
+    assert eintrag["kontakt"] == "Faellig Testperson"
+    assert eintrag["notiz"] == "Notiz A"
+
+
+def test_wiedervorlage_erledigt_entfernt_sie_aus_dem_digest():
+    lead = _anlegen()["lead_id"]
+    ok = json.loads(server.wiedervorlage_setzen(lead, _heute().isoformat(), "Notiz B"))
+    vor = json.loads(server.digest())
+    assert any(e["aktivitaets_id"] == ok["aktivitaets_id"]
+               for e in vor["faellige_wiedervorlagen"])
+
+    erledigt = json.loads(server.wiedervorlage_erledigt(lead, ok["aktivitaets_id"]))
+    assert "fehler" not in erledigt
+
+    nach = json.loads(server.digest())
+    assert all(e["aktivitaets_id"] != ok["aktivitaets_id"]
+               for e in nach["faellige_wiedervorlagen"])
+
+
+def test_wiedervorlage_erledigt_schreibt_gegenereignis_append_only():
+    lead = _anlegen()["lead_id"]
+    ok = json.loads(server.wiedervorlage_setzen(lead, _heute().isoformat(), "Notiz C"))
+    vorher = server._q("select type, payload from activities where id = %s",
+                       (ok["aktivitaets_id"],))[0]
+
+    server.wiedervorlage_erledigt(lead, ok["aktivitaets_id"])
+
+    nachher = server._q("select type, payload from activities where id = %s",
+                        (ok["aktivitaets_id"],))[0]
+    assert nachher == vorher                       # Originalzeile unveraendert
+
+    gegenereignis = server._q(
+        "select payload from activities where lead_id = %s "
+        "and type = 'wiedervorlage_erledigt'", (lead,))
+    assert len(gegenereignis) == 1
+    assert gegenereignis[0]["payload"]["wiedervorlage_id"] == str(ok["aktivitaets_id"])
+
+
+def test_wiedervorlage_erledigt_auf_fremde_aktivitaets_id_schlaegt_fehl_und_schreibt_nichts():
+    lead_a = _anlegen(name="Person Eins", phone="+491701111111")["lead_id"]
+    lead_b = _anlegen(name="Person Zwei", phone="+491702222222")["lead_id"]
+    ok = json.loads(server.wiedervorlage_setzen(lead_a, _heute().isoformat(), "Notiz D"))
+    vor = server._q("select count(*) as n from activities")[0]["n"]
+
+    kaputt = json.loads(server.wiedervorlage_erledigt(lead_b, ok["aktivitaets_id"]))
+
+    assert "fehler" in kaputt
+    nach = server._q("select count(*) as n from activities")[0]["n"]
+    assert nach == vor
+
+
+def test_wiedervorlage_erledigt_auf_unbekannte_aktivitaets_id_schlaegt_fehl():
+    lead = _anlegen()["lead_id"]
+    kaputt = json.loads(server.wiedervorlage_erledigt(
+        lead, "00000000-0000-0000-0000-000000000000"))
+    assert "fehler" in kaputt
+
+
+def test_wiedervorlage_erledigt_auf_falschen_aktivitaetstyp_schlaegt_fehl_und_schreibt_nichts():
+    lead = _anlegen()["lead_id"]
+    server.aktivitaet_loggen(lead, "notiz", "kein Wiedervorlage-Ereignis")
+    fremde_akt = server._q(
+        "select id from activities where lead_id = %s and type = 'notiz'", (lead,))[0]["id"]
+    vor = server._q("select count(*) as n from activities")[0]["n"]
+
+    kaputt = json.loads(server.wiedervorlage_erledigt(lead, fremde_akt))
+
+    assert "fehler" in kaputt
+    nach = server._q("select count(*) as n from activities")[0]["n"]
+    assert nach == vor
+
+
+def test_digest_faellige_wiedervorlagen_leer_wenn_nichts_ansteht():
+    d = json.loads(server.digest())
+    assert d["faellige_wiedervorlagen"] == []
+
+
+def test_wiedervorlage_werkzeuge_signaturen_ueberleben_den_dekorator():
+    import inspect
+    setzen = inspect.signature(server.wiedervorlage_setzen).parameters
+    assert list(setzen) == ["lead_id", "faellig_am", "notiz"]
+    erledigt = inspect.signature(server.wiedervorlage_erledigt).parameters
+    assert list(erledigt) == ["lead_id", "aktivitaets_id"]
+
+
+# ---------------------------------------------------------------------------
+# F3 (Demo-Befund B1) — Dedup-Kante in kontakt_anlegen: dieselbe normalisierte
+# Telefonnummer (unabhaengig von der Schreibweise) -> bestehenden Lead
+# zurueckgeben statt neu anlegen. Ohne (normalisierbare) Telefonnummer bleibt
+# das bisherige Verhalten unveraendert: Namens-Dubletten sind legitim.
+# ---------------------------------------------------------------------------
+
+def test_kontakt_anlegen_erkennt_gleiche_nummer_in_anderer_schreibweise():
+    erster = _anlegen(name="Lisa Probekunde", phone="+491701234567")
+    assert erster["angelegt"] is True
+
+    zweiter = json.loads(server.kontakt_anlegen(
+        name="Lisa Probekunde", phone="00491701234567"))
+
+    assert zweiter["angelegt"] is False
+    assert zweiter["lead_id"] == erster["lead_id"]
+    assert zweiter["hinweis"] == "Kontakt mit dieser Nummer existiert bereits"
+    anzahl = server._q("select count(*) as n from leads")[0]["n"]
+    assert anzahl == 1
+
+
+def test_kontakt_anlegen_ohne_nummer_erlaubt_weiterhin_namensdubletten():
+    erster = json.loads(server.kontakt_anlegen(name="Max Mueller"))
+    zweiter = json.loads(server.kontakt_anlegen(name="Max Mueller"))
+
+    assert erster["angelegt"] is True
+    assert zweiter["angelegt"] is True
+    assert erster["lead_id"] != zweiter["lead_id"]
+    anzahl = server._q("select count(*) as n from leads")[0]["n"]
+    assert anzahl == 2
+
+
+def test_kontakt_anlegen_verschiedene_nummern_bleiben_getrennt():
+    a = _anlegen(name="Person A", phone="+491701111111")
+    b = _anlegen(name="Person B", phone="+491702222222")
+    assert a["angelegt"] is True
+    assert b["angelegt"] is True
+    assert a["lead_id"] != b["lead_id"]
+
+
+def test_kontakt_anlegen_unzustellbare_nummer_bleibt_weiterhin_neu_anlegbar():
+    # Nationale Schreibweise ("0170…") kann normalisiere_empfaenger nicht
+    # deuten -> kein Vergleich moeglich -> Verhalten wie ohne Telefonnummer.
+    a = json.loads(server.kontakt_anlegen(name="Person C", phone="0170 1234567"))
+    b = json.loads(server.kontakt_anlegen(name="Person D", phone="0170 1234567"))
+    assert a["angelegt"] is True
+    assert b["angelegt"] is True

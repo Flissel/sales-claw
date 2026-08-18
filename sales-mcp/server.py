@@ -1,6 +1,6 @@
 """sales-mcp — Werkzeugdienst des sales-claw-Prototyps.
 
-Fünfzehn deutsche Werkzeuge über MCP (streamable-http). Kein Send-Werkzeug:
+Siebzehn deutsche Werkzeuge über MCP (streamable-http). Kein Send-Werkzeug:
 Entwürfe enden als drafts(status='pending') und werden über die
 Freigabe-Werkzeuge nach 'approved'/'rejected' bewegt — den tatsächlichen
 Versand macht ausschliesslich der Dispatcher (WhatsApp) bzw. quittiert der
@@ -13,7 +13,7 @@ einer Schutzkante gegen Doppelversand, siehe dort.
 import functools
 import json
 import os
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import psycopg
@@ -110,10 +110,55 @@ def kontakt_suchen(text: str) -> str:
          "consent": z["consent_status"]} for z in zeilen]})
 
 
+# Demo-Befund B1 (docs/06_DEMO_ABNAHME.md): der Agent legte "Lisa Probekunde"
+# im Durchspiel doppelt an, entgegen der Regel "erst suchen, dann anlegen"
+# (Modellvarianz). Die Kante gehoert deshalb in die Werkzeugschicht, nicht ins
+# Modellverhalten (Projektprinzip) — kontakt_anlegen prueft selbst, bevor es
+# einfuegt.
+def _lead_mit_gleicher_nummer(chat_id: str):
+    """Bestehender Lead mit dieser normalisierten Nummer, oder None.
+
+    Gleiches Muster wie inbox.py:lead_zu_nummer — ein eigenes, kleines
+    Duplikat statt eines Imports, denn inbox.py importiert bereits server.py
+    ("import server"); ein Ruecksimport waere ein Zirkelimport (siehe die
+    Begruendung oben bei nummern.py). SQL-Vorfilter ueber die letzten acht
+    Ziffern (Schreibweisen unterscheiden sich vorne: '+49…', '0049…', nie
+    hinten), die eigentliche Entscheidung faellt danach ueber
+    normalisiere_empfaenger auf BEIDEN Seiten — derselben Funktion, die auch
+    den Versand steuert.
+    """
+    ziffern = chat_id.split("@", 1)[0]
+    schwanz = ziffern[-8:] if len(ziffern) >= 8 else ziffern
+    zeilen = _q(
+        "select id, phone from leads where phone is not null "
+        "and regexp_replace(phone, '[^0-9]', '', 'g') like %s "
+        "order by updated_at desc limit 500", (f"%{schwanz}",))
+    treffer = [z for z in zeilen
+               if normalisiere_empfaenger(z["phone"])[0] == chat_id]
+    return treffer[0] if treffer else None
+
+
 @_gesichert
 def kontakt_anlegen(name: str, email: str = "", phone: str = "",
                     source: str = "whatsapp", notes: str = "") -> str:
-    """Neuen Kontakt anlegen. Nur verwenden, wenn kontakt_suchen leer war."""
+    """Neuen Kontakt anlegen. Nur verwenden, wenn kontakt_suchen leer war.
+
+    Dedup-Kante (Demo-Befund B1): traegt phone eine Nummer, die normalisiert
+    (nummern.py) bereits zu einem bestehenden Lead gehoert — gleich in
+    welcher Schreibweise (+49… vs. 0049… vs. …) —, wird KEIN zweiter Lead
+    angelegt; zurueck kommt die bestehende lead_id mit angelegt=false. Ohne
+    Telefonnummer, oder mit einer, die sich nicht normalisieren laesst
+    (z. B. nationale Schreibweise), bleibt das bisherige Verhalten
+    unveraendert: Namens-Dubletten sind legitim, zwei Max Mueller gibt es
+    wirklich."""
+    if phone.strip():
+        chat_id, _fehler = normalisiere_empfaenger(phone)
+        if chat_id is not None:
+            bestehend = _lead_mit_gleicher_nummer(chat_id)
+            if bestehend is not None:
+                return _json({
+                    "lead_id": bestehend["id"], "angelegt": False,
+                    "hinweis": "Kontakt mit dieser Nummer existiert bereits"})
     zeilen = _q(
         "insert into leads (name, email, phone, source, notes) "
         "values (%s, nullif(%s,''), nullif(%s,''), %s, nullif(%s,'')) "
@@ -168,6 +213,48 @@ def aktivitaet_loggen(lead_id: str, typ: str, inhalt: str) -> str:
        "returning id", (lead_id, typ, json.dumps({"inhalt": inhalt},
                                                  ensure_ascii=False)))
     return _json({"geloggt": True})
+
+
+@_gesichert
+def wiedervorlage_setzen(lead_id: str, faellig_am: str, notiz: str) -> str:
+    """Wiedervorlage fuer einen Kontakt setzen — erscheint ab Faelligkeit im
+    Digest (Block faellige_wiedervorlagen), bis sie mit
+    wiedervorlage_erledigt quittiert wird. faellig_am als ISO-Datum
+    (YYYY-MM-DD), nicht in der Vergangenheit."""
+    try:
+        datum = date.fromisoformat(faellig_am.strip())
+    except (ValueError, AttributeError):
+        return _json({"fehler": f"Ungueltiges Datum '{faellig_am}' — "
+                                f"erwartet ISO-Format YYYY-MM-DD."})
+    heute = datetime.now(timezone.utc).date()
+    if datum < heute:
+        return _json({"fehler": f"faellig_am {datum.isoformat()} liegt in "
+                                f"der Vergangenheit (heute: {heute.isoformat()})."})
+    zeilen = _q(
+        "insert into activities (lead_id, type, payload) values (%s, "
+        "'wiedervorlage', %s) returning id",
+        (lead_id, _json({"faellig_am": datum.isoformat(), "notiz": notiz})))
+    return _json({"aktivitaets_id": zeilen[0]["id"], "faellig_am": datum.isoformat()})
+
+
+@_gesichert
+def wiedervorlage_erledigt(lead_id: str, aktivitaets_id: str) -> str:
+    """Eine offene Wiedervorlage quittieren. Append-only: es wird NICHTS
+    geaendert, stattdessen ein Gegen-Ereignis geschrieben — offen bleibt eine
+    Wiedervorlage genau solange, wie kein Gegen-Ereignis auf sie verweist.
+    aktivitaets_id muss eine bestehende wiedervorlage-Aktivitaet DIESES Leads
+    sein (z. B. aus wiedervorlage_setzen oder dem
+    faellige_wiedervorlagen-Block von digest())."""
+    zeilen = _q(
+        "select id from activities where id = %s and lead_id = %s "
+        "and type = 'wiedervorlage'", (aktivitaets_id, lead_id))
+    if not zeilen:
+        return _json({"fehler": f"Keine Wiedervorlage mit aktivitaets_id "
+                                f"{aktivitaets_id} bei lead_id {lead_id}."})
+    _q("insert into activities (lead_id, type, payload) values (%s, "
+       "'wiedervorlage_erledigt', %s) returning id",
+       (lead_id, _json({"wiedervorlage_id": str(aktivitaets_id)})))
+    return _json({"erledigt": True, "wiedervorlage_id": str(aktivitaets_id)})
 
 
 @_gesichert
@@ -282,7 +369,7 @@ def entwurf_erstellen(lead_id: str, kanal: str, text: str,
 @_gesichert
 def digest() -> str:
     """Zusammenfassung: offene Entwuerfe, unvollstaendige Bedarfsanalysen,
-    letzte Aktivitaeten (48 h)."""
+    faellige Wiedervorlagen, letzte Aktivitaeten (48 h)."""
     entwuerfe = _q("select d.id, d.channel, l.name, d.created_at from drafts d "
                    "left join leads l on l.id = d.lead_id "
                    "where d.status = 'pending' order by d.created_at desc")
@@ -295,6 +382,19 @@ def digest() -> str:
         if "anzahl_offen" in o and o["anzahl_offen"] > 0:
             offen_je_lead.append({"lead_id": lead["id"], "name": lead["name"],
                                   "offene_fragen": o["anzahl_offen"]})
+    # Offen = wiedervorlage-Aktivitaet, faellig (faellig_am <= heute), OHNE
+    # zugehoeriges Gegen-Ereignis wiedervorlage_erledigt (append-only, siehe
+    # dort). LIMIT wie bei den anderen Digest-Bloecken: eine Deckelung, damit
+    # eine Antwort nicht unbegrenzt waechst.
+    wiedervorlagen = _q(
+        "select w.id, w.lead_id, w.payload, l.name from activities w "
+        "left join leads l on l.id = w.lead_id "
+        "where w.type = 'wiedervorlage' "
+        "and (w.payload->>'faellig_am')::date <= current_date "
+        "and not exists (select 1 from activities e where "
+        "e.type = 'wiedervorlage_erledigt' "
+        "and e.payload->>'wiedervorlage_id' = w.id::text) "
+        "order by (w.payload->>'faellig_am')::date asc limit 50")
     letzte = _q("select a.type, a.payload, a.created_at, l.name "
                 "from activities a left join leads l on l.id = a.lead_id "
                 "where a.created_at > now() - interval '48 hours' "
@@ -304,6 +404,12 @@ def digest() -> str:
                       {"draft_id": e["id"], "kanal": e["channel"],
                        "kontakt": e["name"]} for e in entwuerfe],
                   "unvollstaendige_bedarfsanalysen": offen_je_lead,
+                  "faellige_wiedervorlagen": [
+                      {"aktivitaets_id": w["id"], "lead_id": w["lead_id"],
+                       "kontakt": w["name"],
+                       "notiz": (w["payload"] or {}).get("notiz"),
+                       "faellig_am": (w["payload"] or {}).get("faellig_am")}
+                      for w in wiedervorlagen],
                   "letzte_aktivitaeten": letzte})
 
 
@@ -495,7 +601,8 @@ def entwurf_erneut_freigeben(draft_id: str, bestaetigt: bool = False) -> str:
 
 
 WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
-             aktivitaet_loggen, profil_lesen, profil_aktualisieren,
+             aktivitaet_loggen, wiedervorlage_setzen, wiedervorlage_erledigt,
+             profil_lesen, profil_aktualisieren,
              bedarf_speichern, bedarf_offen, entwurf_erstellen, digest,
              entwuerfe_offen, entwurf_freigeben, entwurf_ablehnen,
              entwurf_manuell_gesendet, entwurf_erneut_freigeben)
