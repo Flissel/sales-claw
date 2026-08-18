@@ -1109,3 +1109,18 @@ Zwei Regeln aus der Konstruktion:
 perspektivisch Kundenunterlagen, die in kein Repo gehören. Die drei
 Muster-PDFs der Demo sind lokale Artefakte; bei einem Umzug den Ordner von
 Hand mitnehmen oder neu befüllen.
+
+## LinkedIn-Posts (Stufe 6)
+
+Im Chat: „Entwirf mir einen Post zum Thema Quereinstieg" →
+`post_entwurf_erstellen` legt ihn als LinkedIn-Entwurf in die Queue
+(Betreff `Post: <thema>`, Empfänger `eigenes-profil`, Sammelkontakt
+„LINKEDIN (Eigenes Profil)"). Nach der Freigabe: Text von linkedin.com
+selbst posten (kopieren, ggf. Bild aus `media\` mit hochladen), dann im
+Chat mit `entwurf_manuell_gesendet` quittieren.
+
+**Warum kein Auto-Posting:** LinkedIn verbietet automatisierte Nutzung
+über Bots — Kontosperr-Risiko. Der saubere Ausbauweg wäre die offizielle
+Posts-API (OAuth-Scope `w_member_social`, eigene LinkedIn-Developer-App
+nötig) — bewusst nicht gebaut, solange der Handversand reicht. Nachrichten
+an Personen bleiben in jedem Fall Handversand.

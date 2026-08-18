@@ -518,7 +518,7 @@ def test_werkzeug_signaturen_ueberleben_den_dekorator():
 def test_beide_werkzeuge_sind_registriert():
     namen = [f.__name__ for f in server.WERKZEUGE]
     assert "marktanalyse" in namen and "b2b_leads" in namen
-    assert len(namen) == len(set(namen)) == 20
+    assert len(namen) == len(set(namen)) == 21
 
 # ---------------------------------------------------------------------------
 # Nachbesserungen aus dem Stufe-5-Review (Befunde T1, B2, D2)

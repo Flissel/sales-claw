@@ -411,6 +411,76 @@ def entwurf_erstellen(lead_id: str, kanal: str, text: str,
                   "hinweis": "Nicht versendet — wartet in der Queue."})
 
 
+# Sammelkontakt "LINKEDIN (Eigenes Profil)" — an ihm haengen Post-Entwuerfe
+# und ihre Aktivitaeten. Gleiches Muster wie INBOX_UNBEKANNT_LEAD_ID und
+# RECHERCHE_LEAD_ID: die UUID kommt aus der Umgebung, die Tests biegen das
+# Modulattribut um. Ein eigener Sammelkontakt, weil ein Post keinen
+# Empfaenger hat — er gehoert zu keinem Kunden, und an einem Kundenlead
+# wuerde er dessen Historie verfaelschen.
+LINKEDIN_POST_LEAD_ID = os.environ.get("LINKEDIN_POST_LEAD_ID", "").strip()
+
+# Gemessene LinkedIn-Grenze fuer Post-Texte: 3000 Zeichen. Ein laengerer
+# Text wuerde erst beim Einfuegen auf linkedin.com auffallen — nach der
+# Freigabe, also am schlechtesten Zeitpunkt (dieselbe Begruendung wie bei
+# CAPTION_MAXLAENGE in medien.py).
+POST_MAXLAENGE = 3000
+
+
+@_gesichert
+def post_entwurf_erstellen(thema: str, text: str, medien_datei: str = "") -> str:
+    """LinkedIn-POST (eigenes Profil, kein Empfaenger) in die Freigabe-Queue
+    legen — fuer die zwei Schienen des Hauses: Karriere-/Partner-Recruiting
+    und bAV-/B2B-Sichtbarkeit. Es wird NICHTS automatisch gepostet: nach der
+    Freigabe postet der Betreiber den Text VON HAND auf linkedin.com und
+    quittiert mit entwurf_manuell_gesendet (LinkedIn verbietet automatisierte
+    Nutzung; der Handversand ist der regelkonforme Weg).
+
+    `thema` wird zum Betreff ("Post: <thema>") — daran erkennt die
+    Freigabe-Anzeige einen Post. `medien_datei` (Dateiname aus medien_liste)
+    ist ein Merkposten, welches Bild/PDF der Betreiber mit anhaengen will.
+    Hoechstens 3000 Zeichen (LinkedIn-Grenze). Kein Kundenname, keine
+    Kundendaten und keine Produkt-/Tarifempfehlung im Text — auch ein Post
+    ist keine Beratung."""
+    if not (thema or "").strip():
+        return _json({"fehler": "Kein Thema angegeben."})
+    if not (text or "").strip():
+        return _json({"fehler": "Kein Text angegeben."})
+    if len(text) > POST_MAXLAENGE:
+        return _json({"fehler": (
+            f"LinkedIn-Posts duerfen hoechstens {POST_MAXLAENGE} Zeichen "
+            f"haben, hier sind es {len(text)}. Kuerzen — oder auf zwei "
+            f"Posts aufteilen.")})
+    if not LINKEDIN_POST_LEAD_ID:
+        return _json({"fehler": (
+            "LINKEDIN_POST_LEAD_ID ist nicht gesetzt (.env) — der "
+            "Sammelkontakt 'LINKEDIN (Eigenes Profil)' fehlt. Ohne ihn "
+            "entsteht kein Post-Entwurf, sonst hinge er an keinem Kontakt.")})
+    sammel = _q("select id from leads where id = %s", (LINKEDIN_POST_LEAD_ID,))
+    if not sammel:
+        return _json({"fehler": (
+            f"Der Sammelkontakt {LINKEDIN_POST_LEAD_ID} existiert nicht in "
+            f"der Datenbank — LINKEDIN_POST_LEAD_ID in der .env pruefen.")})
+    basis = None
+    if (medien_datei or "").strip():
+        basis, fehler = medien.pruefe(medien_datei)
+        if fehler:
+            return _json({"fehler": fehler})
+    # recipient ist NOT NULL — 'eigenes-profil' sagt, wohin der Post gehoert,
+    # und ist fuer den Dispatcher bedeutungslos: der fasst channel='linkedin'
+    # ohnehin nie an, Posts nehmen denselben Handversand-Weg wie
+    # LinkedIn-Nachrichten (freigeben -> von Hand -> manuell_gesendet).
+    zeilen = _q(
+        "insert into drafts (lead_id, channel, recipient, subject, body, "
+        "media_ref) values (%s, 'linkedin', 'eigenes-profil', %s, %s, %s) "
+        "returning id, status",
+        (LINKEDIN_POST_LEAD_ID, f"Post: {thema.strip()}", text, basis))
+    return _json({"draft_id": zeilen[0]["id"], "status": zeilen[0]["status"],
+                  "medien_datei": basis,
+                  "hinweis": ("Nicht gepostet — wartet auf Freigabe. Nach der "
+                              "Freigabe von Hand posten und mit "
+                              "entwurf_manuell_gesendet quittieren.")})
+
+
 @_gesichert
 def medien_liste() -> str:
     """Welche Unterlagen liegen zum Anhaengen bereit? Nennt Name und Groesse
@@ -850,7 +920,8 @@ def b2b_leads(branche: str, region: str = "Regensburg", limit: int = 20) -> str:
 WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              aktivitaet_loggen, wiedervorlage_setzen, wiedervorlage_erledigt,
              profil_lesen, profil_aktualisieren,
-             bedarf_speichern, bedarf_offen, entwurf_erstellen, medien_liste,
+             bedarf_speichern, bedarf_offen, entwurf_erstellen,
+             post_entwurf_erstellen, medien_liste,
              digest, entwuerfe_offen, entwurf_freigeben, entwurf_ablehnen,
              entwurf_manuell_gesendet, entwurf_erneut_freigeben,
              marktanalyse, b2b_leads)
