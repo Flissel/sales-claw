@@ -1,12 +1,14 @@
 """sales-mcp — Werkzeugdienst des sales-claw-Prototyps.
 
-Dreizehn deutsche Werkzeuge über MCP (streamable-http). Kein Send-Werkzeug:
+Vierzehn deutsche Werkzeuge über MCP (streamable-http). Kein Send-Werkzeug:
 Entwürfe enden als drafts(status='pending') und werden über die
 Freigabe-Werkzeuge nach 'approved'/'rejected' bewegt — den tatsächlichen
 Versand macht ausschliesslich der Dispatcher (WhatsApp) bzw. quittiert der
 Betreiber selbst (LinkedIn, entwurf_manuell_gesendet versendet nichts,
 es protokolliert nur einen bereits erfolgten Handversand; Stufe-3-Plan
-Grundsatzentscheidung 1+3).
+Grundsatzentscheidung 1+3). entwurf_erneut_freigeben ist der Retry-Weg für
+einen an OpenWA gescheiterten WhatsApp-Entwurf (failed -> approved) — mit
+einer Schutzkante gegen Doppelversand, siehe dort.
 """
 import functools
 import json
@@ -347,10 +349,59 @@ def entwurf_manuell_gesendet(draft_id: str) -> str:
     return _json({"draft_id": z["id"], "status": "sent"})
 
 
+# Praefix der Dispatcher-Claim-Marke (dispatch.py: CLAIM_PRAEFIX =
+# "in Zustellung seit ..."). Kein Import von dispatch.py hier — dispatch.py
+# importiert bereits server.py ("import server"), ein Ruecksimport waere ein
+# Zirkelimport. server.py kennt deshalb nur das Textmuster, nicht das Modul.
+_CLAIM_MARKE_PRAEFIX = "in Zustellung"
+
+
+@_gesichert
+def entwurf_erneut_freigeben(draft_id: str, bestaetigt: bool = False) -> str:
+    """Einen an der Zustellung gescheiterten Entwurf erneut freigeben
+    (failed -> approved). Nur fuer den Betreiber, nur der Retry-Weg fuer
+    WhatsApp-Entwuerfe, die der Dispatcher als 'failed' markiert hat — der
+    Dispatcher versucht sie danach in der naechsten Runde erneut.
+
+    SCHUTZKANTE gegen Doppelversand: beginnt der aktuelle error-Text mit
+    'in Zustellung' (die Claim-Marke des Dispatchers, gesetzt VOR dem
+    eigentlichen Sendeversuch), kann ein Absturz zwischen Claim und Buchung
+    bedeuten, dass die Nachricht BEREITS ZUGESTELLT wurde. Ohne
+    bestaetigt=True wird der Aufruf in diesem Fall verweigert und der Status
+    bleibt unveraendert; mit bestaetigt=True laeuft der Uebergang trotzdem."""
+    zeilen = _q(
+        "update drafts set status = 'approved', approved_by = 'betreiber', "
+        "approved_at = now(), error = null "
+        "where id = %s and status = 'failed' "
+        "and (%s or error is null or error not like %s) "
+        "returning id, lead_id, channel",
+        (draft_id, bool(bestaetigt), f"{_CLAIM_MARKE_PRAEFIX}%"))
+    if not zeilen:
+        vorhanden = _q("select status, error from drafts where id = %s", (draft_id,))
+        if not vorhanden:
+            return _json({"fehler": f"Kein Entwurf mit draft_id {draft_id}."})
+        status, error = vorhanden[0]["status"], vorhanden[0]["error"] or ""
+        if status == "failed" and not bestaetigt and error.startswith(_CLAIM_MARKE_PRAEFIX):
+            return _json({"fehler": (
+                "Verweigert: dieser Entwurf traegt die Zustellungs-Marke des "
+                "Dispatchers — ein Absturz zwischen Claim und Buchung kann "
+                "bedeuten, dass die Nachricht BEREITS ZUGESTELLT wurde. Nur "
+                "mit bestaetigt=True erneut freigeben, wenn das Risiko eines "
+                f"Doppelversands ausdruecklich akzeptiert wird. error: {error}")})
+        return _entwurf_status_fehler(draft_id, "failed")
+    z = zeilen[0]
+    _q("insert into activities (lead_id, type, payload) values (%s, 'freigabe', %s) "
+       "returning id",
+       (z["lead_id"], _json({"draft_id": str(z["id"]), "kanal": z["channel"],
+                             "erneut": True})))
+    return _json({"draft_id": z["id"], "status": "approved"})
+
+
 for _fn in (kontakt_suchen, kontakt_anlegen, aktivitaet_loggen,
             profil_lesen, profil_aktualisieren, bedarf_speichern,
             bedarf_offen, entwurf_erstellen, digest, entwuerfe_offen,
-            entwurf_freigeben, entwurf_ablehnen, entwurf_manuell_gesendet):
+            entwurf_freigeben, entwurf_ablehnen, entwurf_manuell_gesendet,
+            entwurf_erneut_freigeben):
     mcp.tool()(_fn)
 
 if __name__ == "__main__":

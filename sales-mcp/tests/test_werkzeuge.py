@@ -119,7 +119,7 @@ def _entwurf(lead_id, kanal="whatsapp", text="Text"):
 
 def _zeile(draft_id):
     zeilen = server._q(
-        "select status, channel, approved_by, approved_at, sent_at "
+        "select status, channel, approved_by, approved_at, sent_at, error "
         "from drafts where id = %s", (draft_id,))
     return zeilen[0]
 
@@ -284,3 +284,129 @@ def test_entwuerfe_offen_kuerzt_text_und_zeigt_kontaktnamen():
     assert eintrag["kanal"] == "whatsapp"
     assert eintrag["status"] == "pending"
     assert eintrag["empfaenger"]
+
+
+# ---------------------------------------------------------------------------
+# T4 — entwurf_erneut_freigeben (failed -> approved, Doppelversand-Schutz)
+#
+# Ein "failed"-Entwurf mit der Dispatcher-Claim-Marke im error-Feld
+# ("in Zustellung seit ...") wird hier direkt per SQL erzeugt statt ueber den
+# Dispatcher selbst (dispatch.py hat eine eigene, unabhaengige Testsuite in
+# test_dispatch.py) -- server.py kennt nur das Textmuster, nicht dispatch.py
+# (Zirkelimport waere sonst die Folge: dispatch.py importiert server).
+# ---------------------------------------------------------------------------
+
+_CLAIM_MARKE = "in Zustellung seit 2026-08-18T12:00:00+00:00 (dispatcher aaaa1111)"
+
+
+def _als_failed_markieren(draft_id, error):
+    server._q("update drafts set status = 'failed', error = %s where id = %s",
+              (error, draft_id))
+
+
+def test_erneut_freigeben_failed_wird_approved():
+    lead = _anlegen()["lead_id"]
+    draft = _entwurf(lead, "whatsapp")
+    server.entwurf_freigeben(draft)
+    _als_failed_markieren(draft, "OpenWA HTTP 409: Session is not connected.")
+    ok = json.loads(server.entwurf_erneut_freigeben(draft))
+    assert ok["status"] == "approved"
+    zeile = _zeile(draft)
+    assert zeile["status"] == "approved"
+    assert zeile["approved_by"] == "betreiber"
+    assert zeile["approved_at"] is not None
+    assert zeile["error"] is None
+
+
+def test_erneut_freigeben_loggt_aktivitaet_mit_erneut_true():
+    lead = _anlegen()["lead_id"]
+    draft = _entwurf(lead, "whatsapp")
+    server.entwurf_freigeben(draft)
+    _als_failed_markieren(draft, "OpenWA HTTP 409: Session is not connected.")
+    server.entwurf_erneut_freigeben(draft)
+    akt = server._q(
+        "select payload from activities where lead_id = %s and type = 'freigabe' "
+        "order by created_at desc limit 1", (lead,))
+    assert akt[0]["payload"]["erneut"] is True
+    assert akt[0]["payload"]["draft_id"] == str(draft)
+    assert akt[0]["payload"]["kanal"] == "whatsapp"
+
+
+def test_erneut_freigeben_pending_bleibt_unberuehrt():
+    lead = _anlegen()["lead_id"]
+    draft = _entwurf(lead, "whatsapp")  # bleibt pending
+    vor = _zeile(draft)
+    kaputt = json.loads(server.entwurf_erneut_freigeben(draft))
+    assert "fehler" in kaputt
+    assert _zeile(draft) == vor
+
+
+def test_erneut_freigeben_approved_bleibt_unberuehrt():
+    lead = _anlegen()["lead_id"]
+    draft = _entwurf(lead, "whatsapp")
+    server.entwurf_freigeben(draft)
+    vor = _zeile(draft)
+    kaputt = json.loads(server.entwurf_erneut_freigeben(draft))
+    assert "fehler" in kaputt
+    assert _zeile(draft) == vor
+
+
+def test_erneut_freigeben_sent_bleibt_unberuehrt():
+    lead = _anlegen()["lead_id"]
+    draft = _entwurf(lead, "linkedin")
+    server.entwurf_freigeben(draft)
+    server.entwurf_manuell_gesendet(draft)
+    vor = _zeile(draft)
+    kaputt = json.loads(server.entwurf_erneut_freigeben(draft))
+    assert "fehler" in kaputt
+    assert _zeile(draft) == vor
+
+
+def test_erneut_freigeben_claim_marke_ohne_bestaetigt_wird_verweigert():
+    lead = _anlegen()["lead_id"]
+    draft = _entwurf(lead, "whatsapp")
+    server.entwurf_freigeben(draft)
+    _als_failed_markieren(draft, _CLAIM_MARKE)
+    vor = _zeile(draft)
+    kaputt = json.loads(server.entwurf_erneut_freigeben(draft))
+    assert "fehler" in kaputt
+    assert _CLAIM_MARKE in kaputt["fehler"]
+    assert _zeile(draft) == vor
+
+
+def test_erneut_freigeben_claim_marke_ohne_bestaetigt_explizit_false_wird_verweigert():
+    lead = _anlegen()["lead_id"]
+    draft = _entwurf(lead, "whatsapp")
+    server.entwurf_freigeben(draft)
+    _als_failed_markieren(draft, _CLAIM_MARKE)
+    vor = _zeile(draft)
+    kaputt = json.loads(server.entwurf_erneut_freigeben(draft, bestaetigt=False))
+    assert "fehler" in kaputt
+    assert _zeile(draft) == vor
+
+
+def test_erneut_freigeben_claim_marke_mit_bestaetigt_wird_approved():
+    lead = _anlegen()["lead_id"]
+    draft = _entwurf(lead, "whatsapp")
+    server.entwurf_freigeben(draft)
+    _als_failed_markieren(draft, _CLAIM_MARKE)
+    ok = json.loads(server.entwurf_erneut_freigeben(draft, bestaetigt=True))
+    assert ok["status"] == "approved"
+    zeile = _zeile(draft)
+    assert zeile["status"] == "approved"
+    assert zeile["approved_by"] == "betreiber"
+    assert zeile["error"] is None
+
+
+def test_erneut_freigeben_unbekannte_draft_id_gibt_fehlertext():
+    kaputt = json.loads(
+        server.entwurf_erneut_freigeben("00000000-0000-0000-0000-000000000000"))
+    assert "fehler" in kaputt
+
+
+def test_erneut_freigeben_werkzeug_signatur_ueberlebt_den_dekorator():
+    import inspect
+    parameter = inspect.signature(server.entwurf_erneut_freigeben).parameters
+    assert "draft_id" in parameter
+    assert "bestaetigt" in parameter
+    assert parameter["bestaetigt"].default is False
