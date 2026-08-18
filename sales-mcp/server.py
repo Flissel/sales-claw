@@ -1,8 +1,12 @@
 """sales-mcp — Werkzeugdienst des sales-claw-Prototyps.
 
-Neun deutsche Werkzeuge über MCP (streamable-http). Kein Send-Werkzeug:
-Entwürfe enden als drafts(status='pending') — der Versand gehört einer
-anderen App (Spec §1, Produktgrenze).
+Dreizehn deutsche Werkzeuge über MCP (streamable-http). Kein Send-Werkzeug:
+Entwürfe enden als drafts(status='pending') und werden über die
+Freigabe-Werkzeuge nach 'approved'/'rejected' bewegt — den tatsächlichen
+Versand macht ausschliesslich der Dispatcher (WhatsApp) bzw. quittiert der
+Betreiber selbst (LinkedIn, entwurf_manuell_gesendet versendet nichts,
+es protokolliert nur einen bereits erfolgten Handversand; Stufe-3-Plan
+Grundsatzentscheidung 1+3).
 """
 import functools
 import json
@@ -255,9 +259,98 @@ def digest() -> str:
                   "letzte_aktivitaeten": letzte})
 
 
+@_gesichert
+def entwuerfe_offen() -> str:
+    """Alle Entwuerfe, die auf eine Betreiber-Entscheidung warten: offene
+    Freigaben (status='pending') sowie freigegebene LinkedIn-Entwuerfe, die
+    noch auf den Handversand warten (status='approved', kanal='linkedin').
+    Vor jeder Freigabe-Entscheidung aufrufen."""
+    zeilen = _q(
+        "select d.id, d.channel, d.recipient, d.status, d.body, l.name "
+        "from drafts d left join leads l on l.id = d.lead_id "
+        "where d.status = 'pending' "
+        "   or (d.status = 'approved' and d.channel = 'linkedin') "
+        "order by d.created_at desc")
+    return _json({"entwuerfe": [
+        {"draft_id": z["id"], "kanal": z["channel"], "empfaenger": z["recipient"],
+         "status": z["status"], "text": (z["body"] or "")[:200],
+         "kontakt": z["name"]} for z in zeilen]})
+
+
+def _entwurf_status_fehler(draft_id, erwarteter_status: str) -> str:
+    """Baut die Fehlermeldung, wenn ein Statuswechsel am Ausgangsstatus
+    scheitert: unbekannte draft_id vs. falscher tatsaechlicher Status."""
+    zeilen = _q("select status from drafts where id = %s", (draft_id,))
+    if not zeilen:
+        return _json({"fehler": f"Kein Entwurf mit draft_id {draft_id}."})
+    return _json({"fehler": f"Entwurf {draft_id} hat Status "
+                            f"'{zeilen[0]['status']}', erwartet '{erwarteter_status}'."})
+
+
+@_gesichert
+def entwurf_freigeben(draft_id: str) -> str:
+    """Entwurf freigeben (pending -> approved). Nur fuer den Betreiber. Setzt
+    approved_by/approved_at und protokolliert die Freigabe. Freigibt NICHT
+    fuer bereits freigegebene/abgelehnte/versendete Entwuerfe."""
+    zeilen = _q(
+        "update drafts set status = 'approved', approved_by = 'betreiber', "
+        "approved_at = now() where id = %s and status = 'pending' "
+        "returning id, lead_id, channel", (draft_id,))
+    if not zeilen:
+        return _entwurf_status_fehler(draft_id, "pending")
+    z = zeilen[0]
+    _q("insert into activities (lead_id, type, payload) values (%s, 'freigabe', %s) "
+       "returning id",
+       (z["lead_id"], _json({"draft_id": str(z["id"]), "kanal": z["channel"]})))
+    return _json({"draft_id": z["id"], "status": "approved"})
+
+
+@_gesichert
+def entwurf_ablehnen(draft_id: str) -> str:
+    """Entwurf ablehnen (pending -> rejected). Nur fuer den Betreiber.
+    Protokolliert die Ablehnung. Lehnt NICHT bereits freigegebene/abgelehnte/
+    versendete Entwuerfe ab."""
+    zeilen = _q(
+        "update drafts set status = 'rejected' where id = %s and status = 'pending' "
+        "returning id, lead_id, channel", (draft_id,))
+    if not zeilen:
+        return _entwurf_status_fehler(draft_id, "pending")
+    z = zeilen[0]
+    _q("insert into activities (lead_id, type, payload) values (%s, 'ablehnung', %s) "
+       "returning id",
+       (z["lead_id"], _json({"draft_id": str(z["id"]), "kanal": z["channel"]})))
+    return _json({"draft_id": z["id"], "status": "rejected"})
+
+
+@_gesichert
+def entwurf_manuell_gesendet(draft_id: str) -> str:
+    """Quittiert einen bereits von Hand versendeten LinkedIn-Entwurf
+    (approved -> sent). Versendet NICHTS selbst — nur fuer LinkedIn, WhatsApp
+    versendet automatisch der Dispatcher. Nur nach tatsaechlichem
+    Handversand aufrufen."""
+    zeilen = _q(
+        "update drafts set status = 'sent', sent_at = now() "
+        "where id = %s and status = 'approved' and channel = 'linkedin' "
+        "returning id, lead_id, channel", (draft_id,))
+    if not zeilen:
+        vorhanden = _q("select status, channel from drafts where id = %s", (draft_id,))
+        if not vorhanden:
+            return _json({"fehler": f"Kein Entwurf mit draft_id {draft_id}."})
+        if vorhanden[0]["channel"] != "linkedin":
+            return _json({"fehler": "nur für LinkedIn — WhatsApp versendet der Dispatcher"})
+        return _entwurf_status_fehler(draft_id, "approved")
+    z = zeilen[0]
+    _q("insert into activities (lead_id, type, payload) values (%s, 'versand', %s) "
+       "returning id",
+       (z["lead_id"], _json({"draft_id": str(z["id"]), "kanal": z["channel"],
+                             "weg": "manuell"})))
+    return _json({"draft_id": z["id"], "status": "sent"})
+
+
 for _fn in (kontakt_suchen, kontakt_anlegen, aktivitaet_loggen,
             profil_lesen, profil_aktualisieren, bedarf_speichern,
-            bedarf_offen, entwurf_erstellen, digest):
+            bedarf_offen, entwurf_erstellen, digest, entwuerfe_offen,
+            entwurf_freigeben, entwurf_ablehnen, entwurf_manuell_gesendet):
     mcp.tool()(_fn)
 
 if __name__ == "__main__":

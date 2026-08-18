@@ -106,3 +106,181 @@ def test_werkzeug_signaturen_ueberleben_den_dekorator():
     import inspect
     assert "name" in inspect.signature(server.kontakt_anlegen).parameters
     assert "frage_id" in inspect.signature(server.bedarf_speichern).parameters
+
+
+# ---------------------------------------------------------------------------
+# T2 — Freigabe-Werkzeuge (entwuerfe_offen, entwurf_freigeben,
+# entwurf_ablehnen, entwurf_manuell_gesendet)
+# ---------------------------------------------------------------------------
+
+def _entwurf(lead_id, kanal="whatsapp", text="Text"):
+    return json.loads(server.entwurf_erstellen(lead_id, kanal, text))["draft_id"]
+
+
+def _zeile(draft_id):
+    zeilen = server._q(
+        "select status, channel, approved_by, approved_at, sent_at "
+        "from drafts where id = %s", (draft_id,))
+    return zeilen[0]
+
+
+# --- entwurf_freigeben ---
+
+def test_freigeben_pending_wird_approved():
+    lead = _anlegen()["lead_id"]
+    draft = _entwurf(lead, "whatsapp")
+    ok = json.loads(server.entwurf_freigeben(draft))
+    assert ok["status"] == "approved"
+    zeile = _zeile(draft)
+    assert zeile["status"] == "approved"
+    assert zeile["approved_by"] == "betreiber"
+    assert zeile["approved_at"] is not None
+
+
+def test_freigeben_loggt_aktivitaet():
+    lead = _anlegen()["lead_id"]
+    draft = _entwurf(lead, "whatsapp")
+    server.entwurf_freigeben(draft)
+    akt = server._q(
+        "select payload from activities where lead_id = %s and type = 'freigabe'",
+        (lead,))
+    assert len(akt) == 1
+    assert akt[0]["payload"]["kanal"] == "whatsapp"
+    assert akt[0]["payload"]["draft_id"] == str(draft)
+
+
+def test_freigeben_eines_bereits_freigegebenen_schlaegt_fehl_und_aendert_nichts():
+    lead = _anlegen()["lead_id"]
+    draft = _entwurf(lead, "whatsapp")
+    server.entwurf_freigeben(draft)
+    vor = _zeile(draft)
+    kaputt = json.loads(server.entwurf_freigeben(draft))
+    assert "fehler" in kaputt
+    assert _zeile(draft) == vor
+
+
+def test_freigeben_unbekannte_draft_id_gibt_fehlertext():
+    kaputt = json.loads(
+        server.entwurf_freigeben("00000000-0000-0000-0000-000000000000"))
+    assert "fehler" in kaputt
+
+
+# --- entwurf_ablehnen ---
+
+def test_ablehnen_pending_wird_rejected():
+    lead = _anlegen()["lead_id"]
+    draft = _entwurf(lead, "email")
+    ok = json.loads(server.entwurf_ablehnen(draft))
+    assert ok["status"] == "rejected"
+    assert _zeile(draft)["status"] == "rejected"
+
+
+def test_ablehnen_loggt_aktivitaet():
+    lead = _anlegen()["lead_id"]
+    draft = _entwurf(lead, "email")
+    server.entwurf_ablehnen(draft)
+    akt = server._q(
+        "select payload from activities where lead_id = %s and type = 'ablehnung'",
+        (lead,))
+    assert len(akt) == 1
+    assert akt[0]["payload"]["draft_id"] == str(draft)
+
+
+def test_ablehnen_eines_bereits_abgelehnten_schlaegt_fehl_und_aendert_nichts():
+    lead = _anlegen()["lead_id"]
+    draft = _entwurf(lead, "email")
+    server.entwurf_ablehnen(draft)
+    vor = _zeile(draft)
+    kaputt = json.loads(server.entwurf_ablehnen(draft))
+    assert "fehler" in kaputt
+    assert _zeile(draft) == vor
+
+
+def test_ablehnen_unbekannte_draft_id_gibt_fehlertext():
+    kaputt = json.loads(
+        server.entwurf_ablehnen("00000000-0000-0000-0000-000000000000"))
+    assert "fehler" in kaputt
+
+
+# --- entwurf_manuell_gesendet ---
+
+def test_manuell_gesendet_approved_linkedin_wird_sent():
+    lead = _anlegen()["lead_id"]
+    draft = _entwurf(lead, "linkedin")
+    server.entwurf_freigeben(draft)
+    ok = json.loads(server.entwurf_manuell_gesendet(draft))
+    assert ok["status"] == "sent"
+    zeile = _zeile(draft)
+    assert zeile["status"] == "sent"
+    assert zeile["sent_at"] is not None
+
+
+def test_manuell_gesendet_loggt_aktivitaet_mit_weg_manuell():
+    lead = _anlegen()["lead_id"]
+    draft = _entwurf(lead, "linkedin")
+    server.entwurf_freigeben(draft)
+    server.entwurf_manuell_gesendet(draft)
+    akt = server._q(
+        "select payload from activities where lead_id = %s and type = 'versand'",
+        (lead,))
+    assert len(akt) == 1
+    assert akt[0]["payload"]["weg"] == "manuell"
+    assert akt[0]["payload"]["kanal"] == "linkedin"
+
+
+def test_manuell_gesendet_auf_whatsapp_draft_schlaegt_fehl_und_aendert_nichts():
+    lead = _anlegen()["lead_id"]
+    draft = _entwurf(lead, "whatsapp")
+    server.entwurf_freigeben(draft)
+    vor = _zeile(draft)
+    kaputt = json.loads(server.entwurf_manuell_gesendet(draft))
+    assert kaputt["fehler"] == "nur für LinkedIn — WhatsApp versendet der Dispatcher"
+    assert _zeile(draft) == vor
+
+
+def test_manuell_gesendet_auf_pending_linkedin_schlaegt_fehl_und_aendert_nichts():
+    lead = _anlegen()["lead_id"]
+    draft = _entwurf(lead, "linkedin")  # bleibt pending, nicht freigegeben
+    vor = _zeile(draft)
+    kaputt = json.loads(server.entwurf_manuell_gesendet(draft))
+    assert "fehler" in kaputt
+    assert _zeile(draft) == vor
+
+
+def test_manuell_gesendet_unbekannte_draft_id_gibt_fehlertext():
+    kaputt = json.loads(
+        server.entwurf_manuell_gesendet("00000000-0000-0000-0000-000000000000"))
+    assert "fehler" in kaputt
+
+
+# --- entwuerfe_offen ---
+
+def test_entwuerfe_offen_zeigt_pending_und_approved_linkedin_nicht_approved_whatsapp_nicht_sent():
+    lead = _anlegen()["lead_id"]
+    d_pending_wa = _entwurf(lead, "whatsapp", "Text A")
+    d_approved_li = _entwurf(lead, "linkedin", "Text B")
+    server.entwurf_freigeben(d_approved_li)
+    d_approved_wa = _entwurf(lead, "whatsapp", "Text C")
+    server.entwurf_freigeben(d_approved_wa)
+    d_sent_li = _entwurf(lead, "linkedin", "Text D")
+    server.entwurf_freigeben(d_sent_li)
+    server.entwurf_manuell_gesendet(d_sent_li)
+
+    ergebnis = json.loads(server.entwuerfe_offen())
+    ids = {e["draft_id"] for e in ergebnis["entwuerfe"]}
+    assert ids == {d_pending_wa, d_approved_li}
+    assert d_approved_wa not in ids
+    assert d_sent_li not in ids
+
+
+def test_entwuerfe_offen_kuerzt_text_und_zeigt_kontaktnamen():
+    lead = _anlegen(name="Lange Testperson")["lead_id"]
+    langer_text = "x" * 300
+    draft = _entwurf(lead, "whatsapp", langer_text)
+    ergebnis = json.loads(server.entwuerfe_offen())
+    eintrag = next(e for e in ergebnis["entwuerfe"] if e["draft_id"] == draft)
+    assert len(eintrag["text"]) == 200
+    assert eintrag["kontakt"] == "Lange Testperson"
+    assert eintrag["kanal"] == "whatsapp"
+    assert eintrag["status"] == "pending"
+    assert eintrag["empfaenger"]
