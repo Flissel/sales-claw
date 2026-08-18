@@ -629,38 +629,65 @@ Zustellbar ist nur eine Nummer, die ihre Landesvorwahl **selbst mitbringt**
 |---|---|
 | `+<vorwahl><nummer>` | `<ziffern>@c.us` |
 | `00<vorwahl><nummer>` | `<ziffern>@c.us` |
-| `<vorwahl><nummer>`, ≥ 10 Stellen, keine führende 0 | `<ziffern>@c.us` |
+| `49<nummer>` — blank, ohne `+`/`00`, 11–15 Stellen | `<ziffern>@c.us` |
+| blanke Ziffernfolge ohne `49`-Präfix (kein `+`, kein `00`) | **failed** — `Landesvorwahl nicht erkennbar — Empfaenger mit +Vorwahl erfassen` |
 | `0…` ohne `00` (nationale Schreibweise) | **failed** — `Empfaenger ohne Landesvorwahl ('0…') — mit +Vorwahl erfassen, nationaler Schreibweise wird nicht vertraut` |
 | Name, E-Mail, Mischform, zu kurz/lang, leer | **failed** — `kein zustellbarer Empfaenger` |
 
-**Die Geschichte dahinter.** Bis zur Batch-Review (T2+T3) galt eine
-bequemere „Amtsnull-Regel": eine führende `0` ohne Landesvorwahl wurde als
-**deutsche** Nummer gelesen (`0170…` → `49170…`) — naheliegend, weil das die
-mit Abstand häufigste Schreibweise ist, die ein Betreiber oder Kunde nennt.
-Die Review deckte den Preis auf: Die Regel griff für **jede** national
-geschriebene Nummer, auch für eine österreichische (`0664 1234567` →
-`496641234567@c.us`) — eine wohlgeformte, echte deutsche Mobilnummer eines
-am Vorgang gänzlich unbeteiligten Menschen. Eine Vertriebsnachricht wäre
-dorthin gegangen, und der Versand hätte `sent` gemeldet, ohne dass irgendwo
-ein Fehler sichtbar geworden wäre.
+**Zwei Befunde derselben Klasse — beide durch Review, keiner durch eigenen
+Vorschlag.** Bis zur Batch-Review (T2+T3) galt eine bequemere
+„Amtsnull-Regel": eine führende `0` ohne Landesvorwahl wurde als
+**deutsche** Nummer gelesen (`0170…` → `49170…`) — naheliegend, weil das
+die mit Abstand häufigste Schreibweise ist, die ein Betreiber oder Kunde
+nennt. Die Review deckte den Preis auf: Die Regel griff für **jede**
+national geschriebene Nummer, auch für eine österreichische
+(`0664 1234567` → `496641234567@c.us`) — eine wohlgeformte, echte deutsche
+Mobilnummer eines am Vorgang gänzlich unbeteiligten Menschen. Eine
+Vertriebsnachricht wäre dorthin gegangen, und der Versand hätte `sent`
+gemeldet, ohne dass irgendwo ein Fehler sichtbar geworden wäre. T5a hat
+diese Regel entfernt: eine führende `0` ohne `00` wird seither ausnahmslos
+zurückgewiesen (`FEHLER_NATIONALE_SCHREIBWEISE`).
 
-T5a hat die Regel deshalb verschärft: Eine Nummer ohne `+`/`00`-Präfix wird
-seither zurückgewiesen, statt sie zu erraten. Zwei Teile der alten
-Behandlung sind bewusst geblieben, weil ihr Wegfall eine **neue**
-Fehlzustellung erzeugt hätte statt eine zu verhindern: der Einschub `(0)`
-(`+49 (0)170…`, die übliche, ausdrückliche Notation für „Amtsnull hier
-weglassen") wird entfernt, und eine Amtsnull direkt hinter einer bereits
-**ausgeschriebenen** `49` wird gestrichen (`+49 0170…` → `49170…`) — dort
-steht die Landesvorwahl schon da, es kann also nichts verwechselt werden.
-Beides betrifft ausschließlich Eingaben, die bereits eine Landesvorwahl
-nennen; die `49`-Sonderregel ist bewusst nicht auf andere Vorwahlen
-übertragen (`+43 0664…` bleibt unkorrigiert und scheitert sichtbar bei
-OpenWA statt jemanden Falschen zu erreichen).
+**Ein zweiter, gleichartiger Befund folgte in der Fix-Runde nach T5b**
+(Commit `63c8978`, Review-Fund): T5a hatte die Prüfung auf blanke
+Ziffernfolgen — Eingaben **ohne** `+`, **ohne** `00` und **ohne** führende
+`0` — auf „mindestens 10 Stellen" verkürzt, unter der unausgesprochenen
+Annahme, eine so lange Folge bringe ihre Landesvorwahl schon selbst mit.
+Geprüft wurde das nie. Live belegt: `1701234567` ist eine deutsche
+Mobilnummer ohne `+49` und ohne führende `0` — gelesen wurde sie jedoch als
+US-Vorwahl `1` + `701`, ein realer, existierender Vorwahlbereich in North
+Dakota. Genau dieselbe Fehlerklasse wie die Amtsnull-Falle, nur eine Ebene
+tiefer: aus einer unvollständigen Eingabe wurde still eine wohlgeformte
+**fremde** Nummer, und der Versand hätte auch hier `sent` gemeldet, ohne
+sichtbaren Fehler.
+
+**Die daraus resultierende, jetzt gültige Regel:** Eine blanke Ziffernfolge
+(ohne `+`, ohne `00`) ist nur noch zustellbar, wenn sie mit `49` beginnt
+und 11–15 Stellen lang ist — `49` ist die einzige Landesvorwahl, der dieser
+Einsatz (deutscher Finanzvertrieb) ohne ausdrückliches `+`/`00`-Zeichen
+vertraut. Jede andere blanke Ziffernfolge liefert `failed` mit
+`Landesvorwahl nicht erkennbar — Empfaenger mit +Vorwahl erfassen`, statt
+geraten zu werden. Die Lehre aus beiden Funden zusammen: **nur explizit
+markierte Landesvorwahlen (`+`/`00`) werden über alle Präfixe hinweg
+vertraut; ohne dieses Zeichen vertraut das System ausschließlich der einen
+Vorwahl, die im Einsatzland gilt (`49`) — nirgends sonst wird aus einer
+"lang genug aussehenden" Ziffernfolge eine Landesvorwahl unterstellt.**
+
+Zwei Teile der ursprünglichen Amtsnull-Behandlung sind bewusst geblieben,
+weil ihr Wegfall eine **neue** Fehlzustellung erzeugt hätte statt eine zu
+verhindern: der Einschub `(0)` (`+49 (0)170…`, die übliche, ausdrückliche
+Notation für „Amtsnull hier weglassen") wird entfernt, und eine Amtsnull
+direkt hinter einer bereits **ausgeschriebenen** `49` wird gestrichen
+(`+49 0170…` → `49170…`) — dort steht die Landesvorwahl schon da, es kann
+also nichts verwechselt werden. Beides betrifft ausschließlich Eingaben,
+die bereits eine Landesvorwahl nennen; die `49`-Sonderregel ist bewusst
+nicht auf andere Vorwahlen übertragen (`+43 0664…` bleibt unkorrigiert und
+scheitert sichtbar bei OpenWA statt jemanden Falschen zu erreichen).
 
 Mutationsprobe (alte Amtsnull-Regel testweise zurückgebaut): genau elf
 Tests brechen, angeführt vom AT-Fall
 (`assert '496641234567@c.us' is None` schlägt fehl, weil die alte Regel
-wieder eine Nummer liefert) — die neue Regel trägt das Gewicht, das ihr
+wieder eine Nummer liefert) — die Regel trägt das Gewicht, das ihr
 zugeschrieben wird.
 
 `nummern.py` ist ein eigenständiges, abhängigkeitsfreies Modul, das sowohl
