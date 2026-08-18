@@ -43,6 +43,21 @@ services:
       retries: 3
       start_period: 60s
 
+  sales-mcp:
+    build: ./sales-mcp
+    container_name: sales-mcp
+    # Wie sales-claw im Demo-Betrieb: laeuft nur nach ausdruecklichem Start.
+    restart: "no"
+    env_file:
+      - .env
+    # Kein ports:-Eintrag — nur im Compose-Netz erreichbar. Der Dienst kennt
+    # die Kundendaten-DB; er hat auf dem Host nichts verloren.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   # Explizite name:-Angabe, sonst prefixt Compose mit dem Projektnamen
   # (hier "sales-claw" -> "sales-claw_sales-claw-state"), was den in den
