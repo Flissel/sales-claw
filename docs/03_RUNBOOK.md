@@ -865,6 +865,95 @@ für die dedizierte `openwa`-Nummer ab dem QR-Pairing
 - **Nicht an Nummern senden, die nie zuerst geschrieben haben** — deckt
   sich mit der ohnehin bestehenden Consent-Erwartung des Prototyps.
 
+## Stufe 4: Eingehende Kundenantworten (`sales-inbox`)
+
+Die Gegenrichtung des Dispatchers. OpenWA stellt das Ereignis
+`message.received` der Session `sales` an `http://sales-inbox:8790/webhook`
+zu; jede angenommene Nachricht wird zu einer `activities`-Zeile vom Typ
+`kundenantwort` beim passenden Kontakt. **Es wird nichts versendet und kein
+`drafts`-Satz angefasst** — das Freigabe-Gate bleibt unberührt.
+
+```powershell
+docker compose up -d sales-inbox
+docker compose logs -f sales-inbox
+# Startzeile nennt Schema, Bind-Adresse, Pfad und Sammel-Lead.
+```
+
+Der Dienst hat **keinen Host-Port** — er ist ausschließlich im Compose-Netz
+erreichbar. Ohne `INBOX_WEBHOOK_SECRET` (≥ 16 Zeichen) und ohne
+`INBOX_UNBEKANNT_LEAD_ID` startet er nicht, sondern beendet sich mit Exit 2
+und einer Zeile, die sagt warum.
+
+### Was der Eingang annimmt und was nicht
+
+| Fall | Antwort | Wirkung |
+|---|---|---|
+| Signatur ungültig oder fehlt | `401` | nichts geschrieben, Fehlversuchszähler im Log |
+| Rumpf > 1,06 MB | `413` | Rumpf wird nicht gelesen |
+| `fromMe: true` | `200 verworfen` | eigene Nachricht |
+| Gruppe/Broadcast (`@g.us`, `isGroup`) | `200 verworfen` | kein Kundendialog |
+| anderes Ereignis als `message.received` | `200 verworfen` | — |
+| bekannte `message_id` schon gespeichert | `200 doppelt` | Dedup gegen OpenWA-Wiederholungen |
+| Absender im CRM | `200 gespeichert` | Aktivität beim Kontakt |
+| Absender unbekannt | `200 gespeichert` | Aktivität am Sammel-Lead „Unbekannte Eingänge" |
+| Datenbank weg | `503` | OpenWA wiederholt (`retryCount`, Default 3) |
+
+Absender werden über `nummern.py` normalisiert — dieselbe Regel wie im
+Versand. Unbekannte Absender werden **nicht** automatisch als Kontakt
+angelegt (Spam-Schutz); wer aufgenommen werden soll, wird vom Betreiber
+ausdrücklich benannt.
+
+### Webhook registrieren — und warum er es (noch) nicht ist
+
+**Stand F1: der Webhook ist NICHT registriert.** OpenWA prüft die
+Webhook-URL schon bei der Registrierung gegen einen SSRF-Filter und weist
+jede private Adresse ab. Das Compose-Netz liegt auf `192.168.144.0/20`,
+`sales-inbox` also mittendrin — gemessen:
+
+```
+POST /api/sessions/{id}/webhooks  {"url":"http://sales-inbox:8790/webhook",…}
+-> 400 {"message":"Destination address is not allowed"}
+```
+
+Die vorgesehene Ausnahme ist `SSRF_ALLOWED_HOSTS=sales-inbox`. Die Zeile
+steht bereits in `docker-compose.openwa.yml`, **wirkt aber erst nach einem
+Recreate von `openwa`** — der in F1 bewusst unterblieben ist. Der Weg, wenn
+der Betreiber ihn gehen will (Reihenfolge einhalten):
+
+```powershell
+# 1. openwa neu erzeugen — NIEMALS mit --remove-orphans
+docker compose -f docker-compose.openwa.yml up -d openwa
+docker compose -f docker-compose.openwa.yml logs --tail 50 openwa
+# 2. Kanalstatus prüfen, BEVOR weitergemacht wird: Session muss wieder
+#    verbunden sein (die Kopplung liegt im Volume openwa-data).
+# 3. Webhook registrieren (Schlüssel und Geheimnis nur maschinell in
+#    Variablen, nie anzeigen):
+$w = @{}; foreach ($z in [IO.File]::ReadAllLines('.env')) {
+  if ($z -match '^\s*([A-Z0-9_]+)\s*=\s*(.*)$') { $w[$Matches[1]] = $Matches[2].Trim() } }
+$rumpf = @{ url = 'http://sales-inbox:8790/webhook'
+            events = @('message.received')
+            secret = $w['INBOX_WEBHOOK_SECRET']
+            filters = @{ conditions = @(@{ field='fromMe'; operator='is'; value=$false }) }
+            retryCount = 3 } | ConvertTo-Json -Depth 6
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:2785/api/sessions/$($w['OPENWA_SESSION_ID'])/webhooks" `
+  -Headers @{ 'X-API-Key' = $w['OPENWA_API_KEY']; 'Content-Type' = 'application/json' } -Body $rumpf
+# 4. Gegenprobe (die Antwort enthält das Geheimnis NICHT — by design):
+Invoke-RestMethod -Uri "http://127.0.0.1:2785/api/sessions/$($w['OPENWA_SESSION_ID'])/webhooks" `
+  -Headers @{ 'X-API-Key' = $w['OPENWA_API_KEY'] }
+```
+
+Der Filter `fromMe is false` ist eine zweite, serverseitige Schicht vor der
+Prüfung im Eingang selbst — beide bleiben.
+
+### Geheimnis wechseln
+
+`INBOX_WEBHOOK_SECRET` in `.env` ersetzen, `sales-inbox` neu erzeugen
+(`docker compose up -d sales-inbox`) **und** den registrierten Webhook
+nachziehen (`PUT /api/sessions/{id}/webhooks/{webhookId}` mit dem neuen
+`secret`). Wird nur eine Seite gewechselt, kommt nichts mehr an — sichtbar
+als wachsender Fehlversuchszähler im `sales-inbox`-Log und als
+`webhook_delivery_failed` bei OpenWA.
+
 ## Dateiablage
 
 | Was | Wo |

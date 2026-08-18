@@ -68,6 +68,30 @@ services:
       # zufaelligen Admin-Key, schreibt ihn nach /app/data/.api-key (Volume,
       # siehe unten) und gibt ihn einmalig im Startup-Log aus. Kein manuelles
       # Anlegen noetig.
+      # --- SSRF-Ausnahme fuer den EIGENEN Webhook-Empfaenger (Stufe 4, F1).
+      #
+      # NICHT AKTIV IM LAUFENDEN CONTAINER. Diese Zeile wirkt erst beim
+      # naechsten bewussten Recreate von openwa; im F1-Lauf wurde openwa
+      # ausdruecklich nicht neu gestartet.
+      #
+      # Gemessen (src/common/security/ssrf-guard.ts + webhook.service.ts
+      # validateWebhookUrl): OpenWA prueft die Webhook-URL schon BEI DER
+      # REGISTRIERUNG gegen einen SSRF-Blocklist-Filter und weist alles ab,
+      # was auf eine private Adresse aufloest — 10/8, 127/8, 172.16/12,
+      # 192.168/16 und mehr. Das Compose-Netz dieses Projekts liegt auf
+      # 192.168.144.0/20, `sales-inbox` also mittendrin. Belegt: POST
+      # /api/sessions/{id}/webhooks mit http://sales-inbox:8790/webhook ->
+      # 400 {"message":"Destination address is not allowed"}. Das ist kein
+      # Fehler von OpenWA, sondern genau der Schutz, den man will — er kennt
+      # nur eine vorgesehene Ausnahme: SSRF_ALLOWED_HOSTS, eine
+      # kommagetrennte Liste von Hostnamen, die den Block umgehen duerfen
+      # (die Doku nennt ausdruecklich den Fall "a sidecar webhook receiver").
+      # WEBHOOK_SSRF_PROTECT=false waere die grobe Variante und bleibt aus:
+      # sie haebe den Schutz fuer JEDES Ziel auf.
+      #
+      # Nach dem Recreate muss der Webhook einmal registriert werden (siehe
+      # docs/03_RUNBOOK.md, Abschnitt „Eingehende Kundenantworten").
+      - SSRF_ALLOWED_HOSTS=sales-inbox
       # --- Kein MCP_ENABLED-Eintrag (Grundsatzentscheidung 1 — Var bleibt
       # ungesetzt, nicht nur "false").
       # --- Kein DOCKER_HOST — Docker-Socket-Proxy von OpenWA bewusst nicht

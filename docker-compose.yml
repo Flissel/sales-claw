@@ -138,6 +138,43 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Der Eingang (Stufe 4, F1) — die Gegenrichtung des Dispatchers: OpenWA
+  # stellt hier `message.received` der Session `sales` zu, jede angenommene
+  # Nachricht wird zu einer `activities`-Zeile vom Typ `kundenantwort`.
+  # Gleicher Build-Kontext und gleiches Image wie sales-mcp, nur ein anderes
+  # Kommando (sales-mcp/inbox.py).
+  #
+  # Er ist der ERSTE von aussen erreichbare Endpunkt dieses Systems. Deshalb:
+  #   * Jede Anfrage wird per HMAC-SHA256 gegen INBOX_WEBHOOK_SECRET geprueft,
+  #     BEVOR irgendetwas geparst oder geschrieben wird (gemessenes Verfahren:
+  #     openwa/upstream/src/modules/webhook/webhook-delivery.service.ts,
+  #     Header `X-OpenWA-Signature`, Wert `sha256=<hex>` ueber den rohen Rumpf).
+  #     Ohne gesetztes Geheimnis startet der Dienst nicht.
+  #   * KEIN ports:-Eintrag. Erreichbar ist er ausschliesslich im Compose-Netz
+  #     unter http://sales-inbox:8790/webhook — auf dem Host hat ein Endpunkt,
+  #     der in die Kundendatenbank schreibt, nichts verloren.
+  #   * Er versendet nichts und aendert keine `drafts`. Das Freigabe-Gate
+  #     (Grundsatzentscheidung 1) bleibt unberuehrt.
+  sales-inbox:
+    build: ./sales-mcp
+    image: sales-claw-sales-mcp:local
+    container_name: sales-inbox
+    command: python inbox.py
+    # Demo-Betrieb wie der restliche Stack.
+    restart: "no"
+    env_file:
+      - .env
+    environment:
+      # Port im Compose-Netz, explizit statt implizit per Default.
+      - INBOX_PORT=8790
+      # INBOX_WEBHOOK_SECRET und INBOX_UNBEKANNT_LEAD_ID kommen aus .env.
+    stop_grace_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   # Explizite name:-Angabe, sonst prefixt Compose mit dem Projektnamen
   # (hier "sales-claw" -> "sales-claw_sales-claw-state"), was den in den
