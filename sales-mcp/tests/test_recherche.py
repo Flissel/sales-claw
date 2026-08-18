@@ -520,8 +520,9 @@ def test_beide_werkzeuge_sind_registriert():
     assert "marktanalyse" in namen and "b2b_leads" in namen
     # Stufe 6: firma_anreichern kam dazu (tests/test_firma_anreichern.py).
     assert "firma_anreichern" in namen
-    # Stufe 7: vertrag_speichern und vertraege_ablaufend (test_vertraege.py).
-    assert len(namen) == len(set(namen)) == 24
+    # Stufe 7: vertrag_speichern und vertraege_ablaufend (test_vertraege.py)
+    # sowie wochenbericht (test_wochenbericht.py).
+    assert len(namen) == len(set(namen)) == 25
 
 # ---------------------------------------------------------------------------
 # Nachbesserungen aus dem Stufe-5-Review (Befunde T1, B2, D2)

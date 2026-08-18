@@ -1071,6 +1071,55 @@ docker inspect sales-claw --format '{{range .Mounts}}{{.Type}} {{.Name}} -> {{.D
 # volume sales-claw-state -> /home/node/.openclaw
 ```
 
+## Wochenbericht (Stufe 7) — Zahlen lesen, Cron optional
+
+`wochenbericht` liefert die Steuerungszahlen der **letzten 7 Tage**: neue
+Kontakte je Quelle, Bedarfsantworten, Versand je Kanal, Wiedervorlagen
+(neu/erledigt), Recherche-Kosten in USD — dazu zwei Zahlen mit anderem
+Zeitbegriff: offene Entwürfe **jetzt** (Bestand) und Verträge mit Ablauf in
+den **nächsten** 30 Tagen (Blick nach vorn). Das Werkzeug **liest nur**: kein
+Versand, kein neuer Egress-Pfad, keine Statusänderung — das Freigabe-Gate der
+`drafts`-Tabelle ist nicht beteiligt.
+
+Im Chat genügt „Wie war die Woche?" bzw. „Ruf wochenbericht auf". Die Antwort
+enthält neben den Einzelfeldern ein Feld `text` — den fertigen Mehrzeiler, den
+man unverändert weitergeben kann.
+
+### Freitags automatisch bekommen (optional — bewusst NICHT angelegt)
+
+Ob der Bericht von selbst kommt, entscheidet der Betreiber; dieser Abschnitt
+ist die Anleitung, kein Zustand. Mechanik identisch zum
+[Morgen-Digest](#morgen-digest) oben (nativer `openclaw cron`, `isolated`
+Session, `announce`-Zustellung — kein neuer Weg nach draußen).
+
+Vorschlag: Freitag 16:00 Europe/Berlin, also `0 16 * * 5`.
+
+```powershell
+docker compose exec sales-claw openclaw cron add --name "wochenbericht" --description "Freitags 16:00 Europe/Berlin: Steuerungszahlen der Woche in den Betreiber-Chat (Stufe 7)." --agent main --session isolated --cron "0 16 * * 5" --tz "Europe/Berlin" --announce --channel whatsapp --to "<Zielnummer>" --message "Ruf wochenbericht auf und liefere NUR dessen text-Feld — unveraendert, ohne Kommentar und ohne eigene Bewertung."
+```
+
+**`<Zielnummer>` nicht raten, sondern vom Digest-Job abschreiben** — dieselbe
+Nummer, dieselbe `allowFrom`-Prüfung (siehe „Wichtiger Messbefund" oben):
+
+```powershell
+docker compose exec sales-claw openclaw cron show 221a69d7-4b52-471c-92e4-f86a42005b8e --json
+# -> delivery.to ist das gesuchte Ziel
+```
+
+Gemessen am 2026-08-19 stand dort `+491749708452` bei `lastDeliveryStatus:
+delivered` — also **nicht** die `+491603449761`, die der Digest-Abschnitt oben
+als Korrekturziel nennt. Welche der beiden Nummern gilt, entscheidet die
+aktuelle `allowFrom`-Konfiguration, nicht dieser Text; deshalb der Umweg über
+`cron show`.
+
+Prüfen, ändern, abschalten: dieselben Kommandos wie beim Digest
+(`openclaw cron list` / `run --wait` / `edit` / `disable`), nur mit der Job-ID,
+die `cron add` ausgibt. Ein Probelauf vor dem ersten Freitag ist billig:
+
+```powershell
+docker compose exec sales-claw openclaw cron run <job-id> --wait --wait-timeout 5m
+```
+
 ## Dateiablage
 
 | Was | Wo |

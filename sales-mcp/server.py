@@ -693,6 +693,73 @@ def digest() -> str:
                   "letzte_aktivitaeten": letzte})
 
 
+@_gesichert
+def wochenbericht() -> str:
+    """Die Steuerungszahlen der letzten 7 Tage — freitags lesen (oder per
+    Cron bekommen): was kam rein, was ging raus, was blieb liegen. Nur
+    Lesezugriffe, versendet nichts."""
+    # `seit` wird in den SQL-Text interpoliert statt gebunden. Das ist hier
+    # kein Injection-Risiko, und der Grund ist strukturell, nicht
+    # „vertrauenswuerdig gemeint": der String ist ein Literal in dieser
+    # Funktion, und `wochenbericht()` nimmt UEBERHAUPT KEIN Argument
+    # entgegen — es gibt also keinen Aufrufweg, ueber den ein Agent, ein
+    # Kunde oder eine Datenbankzeile diesen Text beeinflussen koennte.
+    # Interpoliert wird er nur, weil sechs Abfragen dieselbe Fenstergrenze
+    # brauchen und sie genau EINMAL dastehen soll. Wird der Zeitraum je
+    # parametrisierbar (z. B. `wochenbericht(tage: int)`), ist die
+    # Interpolation SOFORT durch eine Bindung zu ersetzen
+    # (`created_at >= now() - %s::interval`) — in allen sechs Abfragen.
+    seit = "now() - interval '7 days'"
+    neue = _q(f"select coalesce(source,'unbekannt') as s, count(*) as n "
+              f"from leads where created_at >= {seit} group by s")
+    bedarf = _q(f"select count(*) as antworten, "
+                f"count(distinct lead_id) as kontakte "
+                f"from activities where type='bedarf' and created_at >= {seit}")
+    versand = _q(f"select channel, count(*) as n from drafts "
+                 f"where sent_at >= {seit} group by channel")
+    wv = _q(f"select type, count(*) as n from activities "
+            f"where type in ('wiedervorlage','wiedervorlage_erledigt') "
+            f"and created_at >= {seit} group by type")
+    # Zwei Zahlen mit ABSICHTLICH anderem Zeitbegriff: offene Entwuerfe sind
+    # ein Bestand (was liegt JETZT zur Freigabe, egal wie alt), ablaufende
+    # Vertraege schauen nach vorn. Beide gehoeren in den Wochenblick, aber
+    # keine von beiden ins 7-Tage-Fenster.
+    offen = _q("select count(*) as n from drafts where status='pending'")
+    kosten = _q(f"select coalesce(sum((payload->>'kosten_usd')::numeric),0) as k "
+                f"from activities where type='recherche' "
+                f"and payload ? 'kosten_usd' and created_at >= {seit}")
+    ablaufend = json.loads(vertraege_ablaufend(tage=30))
+    wv_map = {z["type"]: z["n"] for z in wv}
+    daten = {
+        "zeitraum": "letzte 7 Tage",
+        "neue_leads": {z["s"]: z["n"] for z in neue},
+        "bedarf": dict(bedarf[0]),
+        "versand": {z["channel"]: z["n"] for z in versand},
+        "wiedervorlagen": {"neu": wv_map.get("wiedervorlage", 0),
+                           "erledigt": wv_map.get("wiedervorlage_erledigt", 0)},
+        "entwuerfe_offen_jetzt": offen[0]["n"],
+        "recherche_kosten_usd": round(float(kosten[0]["k"]), 2),
+        "vertraege_ablaufend_30": ablaufend["anzahl"],
+    }
+    # `text` ist die eigentliche Lieferform: der Cron-Lauf soll NUR dieses
+    # Feld weitergeben, damit der Betreiber einen Mehrzeiler bekommt und kein
+    # JSON. Die Einzelfelder bleiben trotzdem stehen — wer nachrechnen will,
+    # soll nicht den Fliesstext parsen muessen.
+    zeilen = [f"Wochenbericht ({daten['zeitraum']}):",
+              f"- Neue Kontakte: "
+              f"{sum(daten['neue_leads'].values())} ({daten['neue_leads']})",
+              f"- Bedarfsantworten: {daten['bedarf']['antworten']} "
+              f"von {daten['bedarf']['kontakte']} Kontakten",
+              f"- Versendet: {daten['versand'] or 'nichts'}",
+              f"- Wiedervorlagen: {daten['wiedervorlagen']['neu']} neu, "
+              f"{daten['wiedervorlagen']['erledigt']} erledigt",
+              f"- Offene Entwuerfe jetzt: {daten['entwuerfe_offen_jetzt']}",
+              f"- Recherche-Kosten: ${daten['recherche_kosten_usd']}",
+              f"- Vertraege mit Ablauf in 30 Tagen: "
+              f"{daten['vertraege_ablaufend_30']}"]
+    return _json({**daten, "text": "\n".join(zeilen)})
+
+
 # Fehlgeschlagene Entwuerfe werden nie automatisch wiederholt und sammeln sich
 # deshalb an. Die Liste bleibt gedeckelt, damit ein Aufruf die Antwort nicht
 # unbegrenzt aufblaeht; `anzahl_fehlgeschlagen` nennt die tatsaechliche Zahl,
@@ -1171,7 +1238,8 @@ WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              profil_lesen, profil_aktualisieren,
              bedarf_speichern, bedarf_offen, entwurf_erstellen,
              post_entwurf_erstellen, medien_liste,
-             digest, entwuerfe_offen, entwurf_freigeben, entwurf_ablehnen,
+             digest, wochenbericht,
+             entwuerfe_offen, entwurf_freigeben, entwurf_ablehnen,
              entwurf_manuell_gesendet, entwurf_erneut_freigeben,
              marktanalyse, b2b_leads, firma_anreichern)
 
