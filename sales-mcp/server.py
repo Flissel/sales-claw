@@ -19,7 +19,7 @@ angeschrieben" ist eine Rechtsfrage (UWG), keine Stilfrage.
 import functools
 import json
 import os
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import psycopg
@@ -245,11 +245,8 @@ def wiedervorlage_setzen(lead_id: str, faellig_am: str, notiz: str) -> str:
     if datum < heute:
         return _json({"fehler": f"faellig_am {datum.isoformat()} liegt in "
                                 f"der Vergangenheit (heute: {heute.isoformat()})."})
-    zeilen = _q(
-        "insert into activities (lead_id, type, payload) values (%s, "
-        "'wiedervorlage', %s) returning id",
-        (lead_id, _json({"faellig_am": datum.isoformat(), "notiz": notiz})))
-    return _json({"aktivitaets_id": zeilen[0]["id"], "faellig_am": datum.isoformat()})
+    return _json({"aktivitaets_id": _wiedervorlage_anlegen(lead_id, datum, notiz),
+                  "faellig_am": datum.isoformat()})
 
 
 @_gesichert
@@ -270,6 +267,124 @@ def wiedervorlage_erledigt(lead_id: str, aktivitaets_id: str) -> str:
        "'wiedervorlage_erledigt', %s) returning id",
        (lead_id, _json({"wiedervorlage_id": str(aktivitaets_id)})))
     return _json({"erledigt": True, "wiedervorlage_id": str(aktivitaets_id)})
+
+
+# ---------------------------------------------------------------------------
+# Vertraege (Stufe 7) — Bestandspflege ohne DDL.
+#
+# Ein Vertrag ist eine vom Kunden GENANNTE Tatsache: Dokumentation seiner
+# Angabe, keine Bewertung und keine Empfehlung (§34d bleibt unberuehrt, siehe
+# AGENTS.md „Verbote"). Er liegt als Element in leads.enrichment.vertraege,
+# einem jsonb-Array — kein neues Schema, kein DDL (sales_app kann keines).
+# Der eigentliche Nutzen ist die Wiedervorlage: das Ablaufdatum ist der beste
+# Terminanlass im Bestand, und er soll nicht davon abhaengen, dass jemand
+# daran denkt.
+# ---------------------------------------------------------------------------
+
+WIEDERVORLAGE_VORLAUF_TAGE = 90
+
+
+def _wiedervorlage_anlegen(lead_id, faellig: date, notiz: str) -> str:
+    """Interner Kern von wiedervorlage_setzen — auch vertrag_speichern legt
+    darueber an, damit es genau EIN Insert-Muster gibt."""
+    zeilen = _q(
+        "insert into activities (lead_id, type, payload) values (%s, "
+        "'wiedervorlage', %s) returning id",
+        (lead_id, _json({"faellig_am": faellig.isoformat(), "notiz": notiz})))
+    return str(zeilen[0]["id"])
+
+
+@_gesichert
+def vertrag_speichern(lead_id: str, sparte: str, ablauf: str = "",
+                      gesellschaft: str = "", notiz: str = "") -> str:
+    """Einen vom Kunden GENANNTEN Vertrag am Kontakt festhalten —
+    Dokumentation, keine Beratung. Mit `ablauf` (ISO YYYY-MM-DD) entsteht
+    automatisch eine Wiedervorlage 90 Tage vor Ablauf (nie in der
+    Vergangenheit; liegt der Ablauf selbst zurueck, nur ein Hinweis) —
+    der beste Terminanlass im Bestand entsteht damit von selbst."""
+    if not (sparte or "").strip():
+        return _json({"fehler": "Keine Sparte angegeben."})
+    datum = None
+    if (ablauf or "").strip():
+        try:
+            datum = date.fromisoformat(ablauf.strip())
+        except ValueError:
+            return _json({"fehler": f"Ungueltiges Datum '{ablauf}' — "
+                                    f"erwartet ISO-Format YYYY-MM-DD."})
+    vertrag = {k: v for k, v in {
+        "sparte": sparte.strip(), "gesellschaft": gesellschaft.strip(),
+        "ablauf": datum.isoformat() if datum else "",
+        "notiz": notiz.strip(),
+        "erfasst": datetime.now(timezone.utc).date().isoformat(),
+    }.items() if v}
+    # EIN jsonb_set genuegt, obwohl profil_aktualisieren/bedarf_speichern
+    # verschachteln muessen: `create_missing` legt nur das LETZTE Pfadelement
+    # an, wenn dessen Elternobjekt existiert. Dort ist der Pfad zweistufig
+    # ('{profil,feld}') und das Elternobjekt fehlt auf frischen Kontakten;
+    # hier ist er einstufig ('{vertraege}') und das Elternobjekt ist die
+    # Wurzel, laut db/provision.sql `not null default '{}'::jsonb`. Der
+    # coalesce-Append haengt AN, statt zu ersetzen — ein Kontakt hat mehrere
+    # Vertraege, und der zweite darf den ersten nicht loeschen.
+    zeilen = _q(
+        "update leads set enrichment = jsonb_set(enrichment, '{vertraege}', "
+        "coalesce(enrichment->'vertraege', '[]'::jsonb) || %s::jsonb, true), "
+        "updated_at = now() where id = %s returning id", (_json(vertrag), lead_id))
+    if not zeilen:
+        return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
+    heute = datetime.now(timezone.utc).date()
+    wiedervorlage, hinweis = None, None
+    if datum and datum < heute:
+        hinweis = (f"Ablauf {datum.isoformat()} liegt in der Vergangenheit — "
+                   f"keine Wiedervorlage angelegt.")
+    elif datum:
+        faellig = max(heute, datum - timedelta(days=WIEDERVORLAGE_VORLAUF_TAGE))
+        wv_id = _wiedervorlage_anlegen(
+            lead_id, faellig,
+            f"Vertragsablauf {vertrag['sparte']} am {datum.isoformat()}")
+        wiedervorlage = {"aktivitaets_id": wv_id,
+                         "faellig_am": faellig.isoformat()}
+    # `wiedervorlage` bleibt IMMER stehen, auch als null — sie ist der Zweck
+    # dieses Werkzeugs, und „kein Schluessel" waere fuer den Aufrufer nicht
+    # von „Schluessel vergessen" zu unterscheiden. _ohne_none greift nur auf
+    # `hinweis`, also genau auf das Hinweisfeld, fuer das es gedacht ist.
+    return _json({"vertrag": vertrag, "wiedervorlage": wiedervorlage,
+                  **_ohne_none({"hinweis": hinweis})})
+
+
+@_gesichert
+def vertraege_ablaufend(tage: int = 90) -> str:
+    """Welche Vertraege laufen in den naechsten `tage` Tagen ab? Quelle fuer
+    proaktive Bestandsarbeit und den Wochenbericht."""
+    try:
+        fenster = max(1, min(int(tage), 365))
+    except (TypeError, ValueError):
+        fenster = 90
+    # `jsonb_array_elements` wirft bei einem Nicht-Array ("cannot extract
+    # elements from a scalar") — EIN kaputter Kontakt wuerde die ganze Liste
+    # scheitern lassen. Die Wache steht deshalb im Argument selbst, nicht als
+    # WHERE-Bedingung.
+    #
+    # Gemessen gegen sales_test (vertraege als "kein-array", 42, null und als
+    # Objekt, gemischt mit gueltigen Zeilen): die WHERE-Variante des Plans
+    # laeuft ebenfalls fehlerfrei — EXPLAIN zeigt, warum, naemlich
+    # "Seq Scan on leads / Filter: jsonb_typeof(...) = 'array'" VOR dem
+    # Function Scan. Das ist aber eine Eigenschaft der gewaehlten Planform,
+    # keine Zusicherung: der Aufruf in der FROM-Liste ist ein implizites
+    # LATERAL, und ob die Bedingung am Basis-Scan haengen bleibt, entscheidet
+    # der Planer. `case ... else '[]'` braucht diese Entscheidung nicht —
+    # das Argument ist dann nie etwas anderes als ein Array.
+    zeilen = _q(
+        "select l.id as lead_id, l.name, v->>'sparte' as sparte, "
+        "       v->>'ablauf' as ablauf "
+        "from leads l, jsonb_array_elements("
+        "       case when jsonb_typeof(l.enrichment->'vertraege') = 'array' "
+        "            then l.enrichment->'vertraege' else '[]'::jsonb end) v "
+        "where v->>'ablauf' <> '' "
+        "  and (v->>'ablauf')::date "
+        "      between current_date and current_date + %s "
+        "order by (v->>'ablauf')::date", (fenster,))
+    return _json({"anzahl": len(zeilen), "fenster_tage": fenster,
+                  "vertraege": zeilen})
 
 
 @_gesichert
@@ -293,6 +408,10 @@ def profil_lesen(lead_id: str) -> str:
                   "status": leads[0]["status"],
                   "consent": leads[0]["consent_status"],
                   "profil": e.get("profil", {}), "bedarf": e.get("bedarf", {}),
+                  # Die vom Kunden genannten Vertraege (vertrag_speichern) —
+                  # ohne diese Zeile laege der Bestand zwar in enrichment,
+                  # tauchte aber in keiner Gespraechsvorbereitung auf.
+                  "vertraege": e.get("vertraege", []),
                   # Ohne diese Zeile waere der Hinweis von firma_anreichern
                   # („profil_lesen zeigt den Volltext") schlicht falsch: der
                   # firma-Knoten laege in enrichment und wuerde nie angezeigt.
@@ -1036,6 +1155,7 @@ def firma_anreichern(lead_id: str, website: str = "") -> str:
 
 WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              aktivitaet_loggen, wiedervorlage_setzen, wiedervorlage_erledigt,
+             vertrag_speichern, vertraege_ablaufend,
              profil_lesen, profil_aktualisieren,
              bedarf_speichern, bedarf_offen, entwurf_erstellen,
              post_entwurf_erstellen, medien_liste,
