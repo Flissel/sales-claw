@@ -237,3 +237,16 @@ gegengeprüft, nicht nur Chatverlauf gelesen.
    unabhängig von Stufe 2 nachholbar.
 5. **Embedding/Wissensbasis**: `personas` bleibt leer, bis eine kuratierte
    Wissensbasis (Stufe 4) und ein Embedding-Weg entschieden sind.
+6. **Consent-Heuristik härten (vor Stufe 3 zwingend).** `bedarf_speichern`
+   erkennt Einwilligung per Präfix-Match („ja", „gern", „ok", „einverstanden").
+   Empirisch belegt (Task-3-Review): „Ja, aber bitte nicht per WhatsApp",
+   „Jain", „ja nicht" werden **fälschlich als `opt_in`** gewertet. Im
+   Prototyp folgenlos (nichts wird versendet, keine echten Kunden) — vor dem
+   ersten Echtkontakt muss die Erkennung Negationen verstehen oder die
+   Normalisierung an das Modell ausgelagert werden. Consent ist im
+   Finanzvertrieb kein kosmetisches Feld; die Hotel-Lehre (793 Mails) gilt.
+7. **Entwurfs-Empfänger vor Versand-App-Anbindung klären.** Ein
+   WhatsApp-/E-Mail-Entwurf ohne hinterlegte Nummer/Adresse fällt auf den
+   Namen als `recipient` zurück. Die spätere Versand-App muss damit rechnen —
+   oder `entwurf_erstellen` lehnt kanalunpassende Empfänger ab, sobald echte
+   Zustellung existiert.
