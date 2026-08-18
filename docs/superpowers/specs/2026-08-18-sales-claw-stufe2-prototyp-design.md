@@ -231,7 +231,15 @@ gegengeprüft, nicht nur Chatverlauf gelesen.
    Betreiber-Nummer im Demo-Betrieb (`restart: "no"`); vor jedem Einsatz mit
    Dritten braucht es die eigene Nummer (Stufe-1-Erkenntnis, unverändert).
 3. **Versand-App**: liest später `drafts` — Schnittstelle ist die Tabelle;
-   wer sie baut und wann, ist offen.
+   wer sie baut und wann, ist offen. **Kandidat (geprüft 2026-08-18):**
+   [OpenWA](https://github.com/rmyndharis/OpenWA) — selbstgehostetes
+   WhatsApp-REST-Gateway (Multi-Session, Webhooks mit HMAC, Rate-Limiter).
+   Einordnung: für eine Pilot-Phase mit dedizierter Nummer geeignet, und der
+   `whatsapp-web.js`-Motor gilt als sperr-risikoärmer als Baileys; die eigene
+   Compliance-Doku von OpenWA erklärt es für Finanz-/EU-regulierte Umgebungen
+   aber ausdrücklich für „not approved" und verweist auf Metas offizielle
+   Cloud API — für den Echtbetrieb bei MH Consulting bleibt der offizielle
+   Weg gesetzt.
 4. **Stufe-1-Rest**: Task 6 (Wiederherstellungsprobe, jetzt mit ~42 s
    Wartungsfenster) und Task 7 (Serverartefakte) bleiben offen und sind
    unabhängig von Stufe 2 nachholbar.

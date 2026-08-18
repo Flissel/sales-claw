@@ -497,6 +497,7 @@ Neun deutsche Werkzeuge über MCP (streamable-http). Kein Send-Werkzeug:
 Entwürfe enden als drafts(status='pending') — der Versand gehört einer
 anderen App (Spec §1, Produktgrenze).
 """
+import functools
 import json
 import os
 from datetime import datetime, timezone
@@ -545,7 +546,15 @@ def _json(obj) -> str:
 
 
 def _gesichert(fn):
-    """DB-Ausfall wird zur definierten Meldung, nie zum Traceback (Spec §4)."""
+    """DB-Ausfall wird zur definierten Meldung, nie zum Traceback (Spec §4).
+
+    functools.wraps ist hier KEIN Stil, sondern Funktionsvoraussetzung: die
+    MCP-Registrierung baut das Werkzeug-Schema aus inspect.signature(). Ein
+    Wrapper, der nur __name__/__doc__ kopiert, liefert (*a, **kw) — das
+    Schema ist dann leer und KEIN Agent kann irgendein Werkzeug aufrufen.
+    Genau so in Task 4 passiert: Anbindung stand, jeder Aufruf scheiterte.
+    """
+    @functools.wraps(fn)
     def innen(*a, **kw):
         try:
             return fn(*a, **kw)
@@ -554,8 +563,6 @@ def _gesichert(fn):
         except psycopg.Error as e:
             return _json({"fehler": f"Datenbankfehler ({e.sqlstate}): "
                                     f"{str(e).splitlines()[0][:200]}"})
-    innen.__name__ = fn.__name__
-    innen.__doc__ = fn.__doc__
     return innen
 
 
