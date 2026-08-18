@@ -91,6 +91,19 @@ services:
     restart: "no"
     env_file:
       - .env
+    # Der Medienordner (Stufe 4, F4). Hier liegen die Unterlagen, die der
+    # Betreiber an Entwürfe hängen kann; `medien_liste` liest genau dieses
+    # Verzeichnis und `entwurf_erstellen` prüft eine Datei gegen es, bevor ein
+    # Entwurf entsteht.
+    #
+    # `:ro` ist nicht Vorsicht, sondern Aussage: weder Werkzeugdienst noch
+    # Dispatcher haben je einen Grund, in diesen Ordner zu schreiben. Was
+    # versendet werden kann, legt ausschliesslich ein Mensch auf dem Host ab.
+    # Ein Host-Bind statt eines benannten Volumes, weil genau das der Weg ist,
+    # auf dem der Betreiber Dateien hineinbekommt (Datei-Explorer, nicht
+    # `docker cp`).
+    volumes:
+      - ./media:/media:ro
     # Kein ports:-Eintrag — nur im Compose-Netz erreichbar. Der Dienst kennt
     # die Kundendaten-DB; er hat auf dem Host nichts verloren.
     logging:
@@ -128,6 +141,12 @@ services:
       # Schleifentakt aus dem Plan (T3), explizit statt implizit per Default.
       - DISPATCH_INTERVAL_S=10
       # OPENWA_SESSION_ID und OPENWA_API_KEY kommen aus .env.
+    # Derselbe Medienordner wie an sales-mcp, ebenfalls read-only (Begründung
+    # dort). Der Dispatcher liest eine angehängte Datei unmittelbar vor dem
+    # Senden erneut — sie kann seit der Freigabe verschwunden sein, und dann
+    # scheitert der Entwurf, statt ohne Anhang rauszugehen.
+    volumes:
+      - ./media:/media:ro
     # Ein laufender Versand darf nicht per SIGKILL zerrissen werden: der
     # Dispatcher beendet nach SIGTERM die laufende Runde (HTTP-Timeout 30 s)
     # und geht dann. 45 s Gnadenfrist decken das ab.

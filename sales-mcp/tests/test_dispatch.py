@@ -6,6 +6,7 @@ vergebenen Port; `dispatch.OPENWA_URL/SESSION_ID/API_KEY` werden auf ihn
 umgebogen. Es geht in diesen Tests zu keinem Zeitpunkt eine echte
 WhatsApp-Nachricht raus.
 """
+import base64
 import json
 import logging
 import os
@@ -22,6 +23,7 @@ import pytest
 # nicht von der Disziplin des Aufrufers abhaengen.
 os.environ["SALES_DB_SCHEMA"] = "sales_test"
 import dispatch  # noqa: E402  — liest SALES_DB_SCHEMA ueber server beim Import
+import medien  # noqa: E402
 import nummern  # noqa: E402
 import server  # noqa: E402
 
@@ -700,3 +702,185 @@ def test_main_bricht_ohne_konfiguration_ab(monkeypatch):
     assert dispatch.main() != 0
     assert _zeile(draft)["status"] == "approved"   # nichts angefasst
     assert STUB.aufrufe == []
+
+
+# ---------------------------------------------------------------------------
+# F4 — Medien-Versand. Gemessen an der OpenWA-Quelle (siehe Kopf von
+# medien.py): ein Aufruf je Entwurf, Nutzlast base64 + mimetype + filename,
+# der Entwurfstext reist als `caption` mit.
+#
+# Der Medienordner ist auch hier ein tmp-Pfad, nie der echte Bind.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def medienordner(tmp_path, monkeypatch):
+    monkeypatch.setattr(medien, "MEDIA_VERZEICHNIS", str(tmp_path))
+    (tmp_path / "checkliste.pdf").write_bytes(b"%PDF-1.4 Testinhalt")
+    return tmp_path
+
+
+def _medien_draft(lead_id, datei, recipient="+491701234567",
+                  body="Die Checkliste vorab."):
+    return server._q(
+        "insert into drafts (lead_id, channel, recipient, body, media_ref, "
+        "status, approved_by, approved_at) values (%s, 'whatsapp', %s, %s, %s, "
+        "'approved', 'betreiber', now()) returning id",
+        (lead_id, recipient, body, datei))[0]["id"]
+
+
+def test_pdf_geht_als_dokument_mit_base64_nutzlast(medienordner):
+    lead = _lead()
+    draft = _medien_draft(lead, "checkliste.pdf")
+
+    dispatch.eine_runde()
+
+    assert len(STUB.aufrufe) == 1          # genau EIN Send je Entwurf
+    aufruf = STUB.aufrufe[0]
+    assert aufruf["pfad"] == "/api/sessions/stub-session/messages/send-document"
+    assert aufruf["api_key"] == "stub-key"
+    nutzlast = aufruf["json"]
+    assert nutzlast["chatId"] == "491701234567@c.us"
+    assert nutzlast["mimetype"] == "application/pdf"
+    assert nutzlast["filename"] == "checkliste.pdf"
+    assert nutzlast["caption"] == "Die Checkliste vorab."
+    assert base64.b64decode(nutzlast["base64"]) == b"%PDF-1.4 Testinhalt"
+    assert "url" not in nutzlast           # base64 statt URL, gemessen
+    assert "text" not in nutzlast
+
+    zeile = _zeile(draft)
+    assert zeile["status"] == "sent"
+    assert zeile["sent_at"] is not None
+    assert zeile["error"] is None
+    akt = server._q("select payload from activities where lead_id = %s "
+                    "and type = 'versand'", (lead,))
+    assert len(akt) == 1
+    assert akt[0]["payload"]["draft_id"] == str(draft)
+
+
+@pytest.mark.parametrize("datei, endpunkt, mimetype", [
+    ("checkliste.pdf", "send-document", "application/pdf"),
+    ("foto.jpg", "send-image", "image/jpeg"),
+    ("foto.jpeg", "send-image", "image/jpeg"),
+    ("grafik.png", "send-image", "image/png"),
+    ("ansage.mp3", "send-audio", "audio/mpeg"),
+    ("ansage.ogg", "send-audio", "audio/ogg"),
+])
+def test_endpunkt_und_mimetype_folgen_der_endung(medienordner, datei,
+                                                 endpunkt, mimetype):
+    (medienordner / datei).write_bytes(b"inhalt")
+    _medien_draft(_lead(), datei)
+
+    dispatch.eine_runde()
+
+    assert len(STUB.aufrufe) == 1
+    assert STUB.aufrufe[0]["pfad"].endswith(f"/messages/{endpunkt}")
+    assert STUB.aufrufe[0]["json"]["mimetype"] == mimetype
+
+
+def test_audio_wird_nicht_als_sprachnachricht_gesendet(medienordner):
+    """`ptt` bliebe die Mikrofon-Blase — ein Anhang ist eine Datei."""
+    (medienordner / "ansage.mp3").write_bytes(b"inhalt")
+    _medien_draft(_lead(), "ansage.mp3")
+
+    dispatch.eine_runde()
+
+    assert "ptt" not in STUB.aufrufe[0]["json"]
+
+
+def test_geloeschte_datei_wird_failed_ohne_jeden_http_aufruf(medienordner):
+    """Zwischen Freigabe und Zustellung kann die Datei verschwinden. Dann
+    scheitert der Entwurf — und wird NICHT als reiner Text zugestellt."""
+    lead = _lead()
+    draft = _medien_draft(lead, "checkliste.pdf")
+    (medienordner / "checkliste.pdf").unlink()
+
+    dispatch.eine_runde()
+
+    assert STUB.aufrufe == []               # kein Text-Ersatzversand
+    zeile = _zeile(draft)
+    assert zeile["status"] == "failed"
+    assert zeile["sent_at"] is None
+    assert "checkliste.pdf" in zeile["error"]
+    assert not zeile["error"].startswith(dispatch.CLAIM_PRAEFIX)
+    akt = server._q("select count(*) as n from activities where type = 'versand'")
+    assert akt[0]["n"] == 0
+
+
+def test_datei_ausserhalb_des_ordners_wird_nie_gelesen(medienordner, tmp_path):
+    """Zweite Verteidigungslinie: selbst wenn eine Pfadangabe auf anderem Weg
+    in `media_ref` geraet (Altbestand, direkter DB-Zugriff), liest der
+    Dispatcher sie nicht — er bucht sie als Fehler."""
+    fremd = tmp_path.parent / "geheim.pdf"
+    fremd.write_bytes(b"%PDF-1.4 nicht fuer den Versand")
+    draft = _medien_draft(_lead(), f"../{fremd.name}")
+
+    dispatch.eine_runde()
+
+    assert STUB.aufrufe == []
+    zeile = _zeile(draft)
+    assert zeile["status"] == "failed"
+    assert zeile["sent_at"] is None
+
+
+def test_zu_grosse_datei_wird_vor_dem_senden_abgefangen(medienordner,
+                                                        monkeypatch):
+    monkeypatch.setattr(medien, "MAX_BYTES", 1024)
+    (medienordner / "gross.pdf").write_bytes(b"x" * 2048)
+    draft = _medien_draft(_lead(), "gross.pdf")
+
+    dispatch.eine_runde()
+
+    assert STUB.aufrufe == []
+    assert _zeile(draft)["status"] == "failed"
+
+
+def test_http_fehler_beim_medienversand_wird_sauber_gebucht(medienordner):
+    draft = _medien_draft(_lead(), "checkliste.pdf")
+    STUB.status = 413
+    STUB.rumpf = b'{"message":"Payload Too Large"}'
+
+    dispatch.eine_runde()
+
+    zeile = _zeile(draft)
+    assert zeile["status"] == "failed"
+    assert "413" in zeile["error"]
+    assert zeile["sent_at"] is None
+
+
+def test_textentwurf_ohne_medien_ref_geht_weiterhin_an_send_text(medienordner):
+    """Regression: der Textweg bleibt exakt, wie er war."""
+    draft = _draft(_lead(), "+491701234567")
+
+    dispatch.eine_runde()
+
+    assert len(STUB.aufrufe) == 1
+    assert STUB.aufrufe[0]["pfad"] == \
+        "/api/sessions/stub-session/messages/send-text"
+    assert STUB.aufrufe[0]["json"] == {"chatId": "491701234567@c.us",
+                                       "text": "Hallo Herr Testperson!"}
+    assert _zeile(draft)["status"] == "sent"
+
+
+def test_unzustellbare_nummer_schlaegt_vor_dem_dateizugriff_fehl(medienordner):
+    """Die Empfaengerpruefung bleibt die erste Huerde — ein Medien-Entwurf an
+    eine unzustellbare Nummer beruehrt weder Datei noch Netz."""
+    draft = _medien_draft(_lead(phone="0664 1234567"), "checkliste.pdf",
+                          recipient="0664 1234567")
+
+    dispatch.eine_runde()
+
+    assert STUB.aufrufe == []
+    assert _zeile(draft)["error"] == nummern.FEHLER_NATIONALE_SCHREIBWEISE
+
+
+def test_gemischter_stapel_trennt_text_und_medien(medienordner):
+    lead = _lead()
+    text_draft = _draft(lead, "+491701234567")
+    medien_draft = _medien_draft(lead, "checkliste.pdf")
+
+    dispatch.eine_runde()
+
+    pfade = sorted(a["pfad"].rsplit("/", 1)[-1] for a in STUB.aufrufe)
+    assert pfade == ["send-document", "send-text"]
+    assert _zeile(text_draft)["status"] == "sent"
+    assert _zeile(medien_draft)["status"] == "sent"

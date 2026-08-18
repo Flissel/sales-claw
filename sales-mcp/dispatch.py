@@ -48,11 +48,22 @@ status='failed' mit error='in Zustellung seit <UTC-Zeitstempel>
 „in Zustellung", mit Zeitpunkt. Steht er laenger so da, ist der Dispatcher
 waehrend genau dieses Versands gestorben.
 
+MEDIEN-ENTWUERFE (Stufe 4, F4)
+------------------------------
+Traegt ein Entwurf ein `media_ref`, geht er ueber den Media-Endpunkt von
+OpenWA raus (Endung -> send-document/send-image/send-audio, Nutzlast base64,
+Text als Bildunterschrift) — EIN Aufruf, wie beim Text. Die Datei wird
+unmittelbar vor dem Senden erneut gegen `medien.pruefe` gehalten; faellt sie
+durch (typisch: seit der Freigabe geloescht), wird der Entwurf mit klarem
+Grund fehlgeschlagen gebucht. Ein Ersatzversand als reiner Text findet
+ausdruecklich NICHT statt: freigegeben wurde eine Nachricht mit Unterlage.
+
 KEIN RETRY. Ein fehlgeschlagener Entwurf bleibt 'failed' — weder in dieser
 noch in einer spaeteren Runde wird er erneut probiert. Der Weg zurueck
 fuehrt ueber einen Menschen, der neu freigibt. Das ist Absicht: bei einer
 Vertriebsnachricht soll jemand hinschauen, bevor sie doch noch rausgeht.
 """
+import base64
 import json
 import logging
 import os
@@ -66,6 +77,7 @@ import uuid
 
 import psycopg
 
+import medien
 import server
 from nummern import normalisiere_empfaenger
 from server import _jetzt
@@ -145,7 +157,8 @@ def claim(draft_id):
     zeilen = server._q(
         "update drafts set status = 'failed', error = %s "
         "where id = %s and status = 'approved' and channel = 'whatsapp' "
-        "returning id, lead_id, recipient, subject, body", (marke, draft_id))
+        "returning id, lead_id, recipient, subject, body, media_ref",
+        (marke, draft_id))
     if not zeilen:
         return None
     geclaimt = dict(zeilen[0])
@@ -187,14 +200,19 @@ def _als_fehler_buchen(draft_id, marke, text) -> bool:
     return gebucht
 
 
-def _versand_loggen(geclaimt, chat_id) -> None:
+def _versand_loggen(geclaimt, chat_id, basis=None) -> None:
+    # `medien_datei` steht nur dann im Payload, wenn wirklich ein Anhang mitging
+    # — die Historie soll zeigen, was beim Empfaenger ankam, nicht nur dass
+    # etwas ankam. Ein zusaetzlicher Schluessel, kein geaenderter: bestehende
+    # Auswertungen lesen weiter, was sie kennen.
+    inhalt = {"draft_id": str(geclaimt["id"]), "kanal": "whatsapp",
+              "weg": "dispatcher", "chat_id": chat_id}
+    if basis:
+        inhalt["medien_datei"] = basis
     server._q(
         "insert into activities (lead_id, type, payload) "
         "values (%s, 'versand', %s) returning id",
-        (geclaimt["lead_id"],
-         json.dumps({"draft_id": str(geclaimt["id"]), "kanal": "whatsapp",
-                     "weg": "dispatcher", "chat_id": chat_id},
-                    ensure_ascii=False)))
+        (geclaimt["lead_id"], json.dumps(inhalt, ensure_ascii=False)))
 
 
 # ---------------------------------------------------------------------------
@@ -205,8 +223,14 @@ def _einzeilig(text: str) -> str:
     return " ".join((text or "").split())[:FEHLER_MAXLAENGE]
 
 
-def sende_text(chat_id: str, text: str) -> None:
-    """POST /api/sessions/{id}/messages/send-text. Wirft VersandFehler."""
+def _senden(endpunkt: str, nutzlast: dict) -> None:
+    """POST /api/sessions/{id}/messages/{endpunkt}. Wirft VersandFehler.
+
+    Ein gemeinsamer Weg fuer Text und Medien: die Abbildung der Ausfaelle auf
+    lesbare Fehlertexte (und damit auf `drafts.error`) darf nicht in zwei
+    Fassungen existieren, sonst liest der Betreiber je nach Entwurfsart andere
+    Gruende fuer denselben Ausfall.
+    """
     try:
         # Der Request wird INNERHALB des try gebaut (T5a). `Request(...)`
         # wirft schon beim Konstruieren ValueError("unknown url type"), wenn
@@ -216,10 +240,10 @@ def sende_text(chat_id: str, text: str) -> None:
         # Entwurf ist zu diesem Zeitpunkt bereits geclaimt und bliebe sonst
         # ohne jeden Grund im Zustand „in Zustellung" liegen.
         ziel = (f"{OPENWA_URL.rstrip('/')}/api/sessions/{OPENWA_SESSION_ID}"
-                f"/messages/send-text")
+                f"/messages/{endpunkt}")
         anfrage = urllib.request.Request(
             ziel, method="POST",
-            data=json.dumps({"chatId": chat_id, "text": text}).encode("utf-8"),
+            data=json.dumps(nutzlast).encode("utf-8"),
             headers={"Content-Type": "application/json",
                      "Accept": "application/json",
                      "X-API-Key": OPENWA_API_KEY})
@@ -246,6 +270,41 @@ def sende_text(chat_id: str, text: str) -> None:
             f"Versandfehler {type(e).__name__}: {_einzeilig(str(e))}") from None
 
 
+def sende_text(chat_id: str, text: str) -> None:
+    """Reiner Text — der Weg jedes Entwurfs ohne Anhang."""
+    _senden("send-text", {"chatId": chat_id, "text": text})
+
+
+def sende_medium(chat_id: str, text: str, basis: str) -> None:
+    """Anhang + Text in EINER Nachricht. Wirft VersandFehler.
+
+    Gemessen an der OpenWA-Quelle (Herleitung im Kopf von medien.py): der
+    Endpunkt folgt der Endung (pdf -> send-document, jpg/jpeg/png ->
+    send-image, mp3/ogg -> send-audio), die Datei reist als `base64` mit
+    zwingendem `mimetype`, der Dateiname als `filename`, und der Entwurfstext
+    als `caption`. Deshalb genau EIN Aufruf je Entwurf — kein zweiter Send mit
+    dem Text, denn zwei Nachrichten waeren beim Empfaenger etwas anderes als
+    die eine, die der Betreiber freigegeben hat.
+
+    Die Datei wird hier gelesen, nicht frueher: zwischen Pruefung und Lesen
+    liegt ein Wimpernschlag, aber ein Fehlschlag genau darin (Datei in der
+    Sekunde geloescht) muss dieselbe saubere Fehlerbuchung ergeben wie jeder
+    andere Ausfall.
+    """
+    endpunkt, mimetype = medien.endpunkt_und_typ(basis)
+    try:
+        rohdaten = medien.lies(basis)
+    except OSError as e:
+        raise VersandFehler(
+            f"Anhang '{basis}' nicht lesbar ({type(e).__name__}) — "
+            f"nichts gesendet.") from None
+    _senden(endpunkt, {"chatId": chat_id,
+                       "base64": base64.b64encode(rohdaten).decode("ascii"),
+                       "mimetype": mimetype,
+                       "filename": basis,
+                       "caption": text})
+
+
 # ---------------------------------------------------------------------------
 # Schleife
 # ---------------------------------------------------------------------------
@@ -265,9 +324,30 @@ def verarbeite_draft(draft_id) -> str:
         LOG.info("draft=%s nicht zugestellt (%s)", draft_id, fehler)
         return "unzustellbar"
 
+    # Der Anhang wird HIER erneut geprueft, obwohl entwurf_erstellen ihn schon
+    # geprueft hat: zwischen Erstellung, Freigabe und Zustellung koennen
+    # Minuten liegen, und /media ist ein Host-Bind, in dem der Betreiber
+    # jederzeit aufraeumt. Faellt die Pruefung jetzt durch, wird der Entwurf
+    # fehlgeschlagen gebucht — es geht ausdruecklich KEIN Ersatzversand als
+    # reiner Text raus: freigegeben wurde eine Nachricht MIT Unterlage, und
+    # was der Empfaenger bekommt, muss das sein, was ein Mensch freigegeben
+    # hat. Dieselbe Funktion wie in server.py (medien.py), damit Anzeige,
+    # Freigabe und Versand nie auseinanderlaufen.
+    basis = None
+    if geclaimt["media_ref"]:
+        basis, medienfehler = medien.pruefe(geclaimt["media_ref"])
+        if medienfehler:
+            _als_fehler_buchen(draft_id, marke,
+                               f"Anhang nicht versandfaehig: {medienfehler}")
+            LOG.info("draft=%s nicht zugestellt (%s)", draft_id, medienfehler)
+            return "anhang_fehlt"
+
     try:
         # Betreff wird bewusst nicht mitgesendet: WhatsApp kennt keinen.
-        sende_text(chat_id, geclaimt["body"])
+        if basis:
+            sende_medium(chat_id, geclaimt["body"], basis)
+        else:
+            sende_text(chat_id, geclaimt["body"])
     except VersandFehler as e:
         _als_fehler_buchen(draft_id, marke, str(e))
         LOG.info("draft=%s fehlgeschlagen an %s (%s)", draft_id,
@@ -277,7 +357,7 @@ def verarbeite_draft(draft_id) -> str:
     try:
         gebucht = _als_gesendet_buchen(draft_id, marke)
         if gebucht:
-            _versand_loggen(geclaimt, chat_id)
+            _versand_loggen(geclaimt, chat_id, basis)
     except psycopg.Error as e:
         gebucht = False
         LOG.critical("draft=%s GESENDET, Buchung scheiterte: %s", draft_id,
@@ -291,7 +371,8 @@ def verarbeite_draft(draft_id) -> str:
                      draft_id)
         return "gesendet_ohne_buchung"
 
-    LOG.info("draft=%s gesendet an %s", draft_id, _maskiert(chat_id))
+    LOG.info("draft=%s gesendet an %s%s", draft_id, _maskiert(chat_id),
+             f" (Anhang {basis})" if basis else "")
     return "gesendet"
 
 

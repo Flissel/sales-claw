@@ -1,6 +1,6 @@
 """sales-mcp — Werkzeugdienst des sales-claw-Prototyps.
 
-Siebzehn deutsche Werkzeuge über MCP (streamable-http). Kein Send-Werkzeug:
+Achtzehn deutsche Werkzeuge über MCP (streamable-http). Kein Send-Werkzeug:
 Entwürfe enden als drafts(status='pending') und werden über die
 Freigabe-Werkzeuge nach 'approved'/'rejected' bewegt — den tatsächlichen
 Versand macht ausschliesslich der Dispatcher (WhatsApp) bzw. quittiert der
@@ -36,6 +36,11 @@ from psycopg_pool import ConnectionPool
 # Modul, weil `import dispatch` hier ein Zirkelimport wäre (dispatch.py
 # importiert server.py).
 from nummern import normalisiere_empfaenger
+
+# Aus demselben Grund ein eigenes Modul: `medien.pruefe` entscheidet hier, ob
+# ein Anhang überhaupt in einen Entwurf darf — und im Dispatcher ein zweites
+# Mal, unmittelbar vor dem Senden. Import statt Kopie (siehe medien.py).
+import medien
 
 SCHEMA = os.environ.get("SALES_DB_SCHEMA", "sales")
 if SCHEMA not in ("sales", "sales_test"):
@@ -346,24 +351,80 @@ def bedarf_offen(lead_id: str) -> str:
 
 @_gesichert
 def entwurf_erstellen(lead_id: str, kanal: str, text: str,
-                      betreff: str = "") -> str:
+                      betreff: str = "", medien_datei: str = "") -> str:
     """Beispiel-Nachricht in die Entwurfs-Queue legen. Kanaele: whatsapp,
     linkedin, email. Es wird NICHTS versendet — der Entwurf bleibt 'pending';
-    den Versand uebernimmt spaeter eine andere App."""
+    den Versand uebernimmt spaeter eine andere App.
+
+    `medien_datei` haengt optional eine Unterlage an: der blosse Dateiname
+    einer Datei aus dem Medienordner (medien_liste zeigt, was dort liegt) —
+    ohne jede Pfadangabe, Endung pdf/jpg/jpeg/png/mp3/ogg, hoechstens 15 MB.
+    Passt etwas davon nicht, entsteht KEIN Entwurf und der Grund kommt als
+    Fehlertext zurueck. Bei WhatsApp geht der Anhang zusammen mit dem Text in
+    EINER Nachricht raus (der Text wird zur Bildunterschrift und darf deshalb
+    hoechstens 1024 Zeichen haben); bei linkedin/email ist der Dateiname nur
+    ein Merkposten fuer den Handversand — dort verschickt niemand automatisch
+    etwas."""
     if kanal not in ("whatsapp", "linkedin", "email"):
         return _json({"fehler": f"Unzulaessiger Kanal '{kanal}'. "
                                 f"Erlaubt: whatsapp, linkedin, email"})
     leads = _q("select name, phone, email from leads where id = %s", (lead_id,))
     if not leads:
         return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
+    # Der Anhang wird VOR dem Insert geprueft: ein Entwurf, dessen Anhang nicht
+    # zustellbar ist, soll gar nicht erst in der Freigabe-Queue auftauchen.
+    basis = None
+    if (medien_datei or "").strip():
+        basis, fehler = medien.pruefe(medien_datei)
+        if fehler:
+            return _json({"fehler": fehler})
+        # Gemessene Grenze des Media-Endpunkts (medien.py, Kopf): die
+        # Bildunterschrift darf 1024 Zeichen haben, reiner Text 4096. Ein
+        # laengerer Text wuerde erst beim Zustellen mit HTTP 400 auffallen —
+        # also nach der Freigabe durch den Betreiber, was der schlechteste
+        # Zeitpunkt dafuer ist.
+        if kanal == "whatsapp" and len(text) > medien.CAPTION_MAXLAENGE:
+            return _json({"fehler": (
+                f"Mit Anhang darf der Text hoechstens "
+                f"{medien.CAPTION_MAXLAENGE} Zeichen haben (er reist als "
+                f"Bildunterschrift mit), hier sind es {len(text)}. Entweder "
+                f"kuerzen oder den Anhang weglassen.")})
     empfaenger = (leads[0]["phone"] if kanal == "whatsapp" else
                   leads[0]["email"] if kanal == "email" else leads[0]["name"])
     zeilen = _q(
-        "insert into drafts (lead_id, channel, recipient, subject, body) "
-        "values (%s, %s, %s, nullif(%s,''), %s) returning id, status",
-        (lead_id, kanal, empfaenger or leads[0]["name"], betreff, text))
+        "insert into drafts (lead_id, channel, recipient, subject, body, "
+        "media_ref) values (%s, %s, %s, nullif(%s,''), %s, %s) "
+        "returning id, status",
+        (lead_id, kanal, empfaenger or leads[0]["name"], betreff, text, basis))
     return _json({"draft_id": zeilen[0]["id"], "status": zeilen[0]["status"],
+                  "medien_datei": basis,
                   "hinweis": "Nicht versendet — wartet in der Queue."})
+
+
+@_gesichert
+def medien_liste() -> str:
+    """Welche Unterlagen liegen zum Anhaengen bereit? Nennt Name und Groesse
+    jeder Datei im Medienordner. Genau diese Namen nimmt
+    entwurf_erstellen(..., medien_datei='<name>'). Dateien mit einer nicht
+    versendbaren Endung tauchen nicht auf (erlaubt sind pdf, jpg, jpeg, png,
+    mp3, ogg)."""
+    try:
+        eintraege = medien.liste()
+    except OSError as e:
+        return _json({"fehler": f"Medienordner nicht lesbar "
+                                f"({type(e).__name__}) — liegt der Ordner "
+                                f"{medien.MEDIA_VERZEICHNIS} am Container an?"})
+    return _json({"anzahl": len(eintraege),
+                  "dateien": [{"name": name, "groesse_bytes": groesse,
+                               "groesse": _lesbare_groesse(groesse)}
+                              for name, groesse in eintraege]})
+
+
+def _lesbare_groesse(bytes_: int) -> str:
+    """Damit der Betreiber eine Zahl hoert, die er einordnen kann."""
+    if bytes_ >= 1048576:
+        return f"{bytes_ / 1048576:.1f} MB".replace(".", ",")
+    return f"{bytes_ / 1024:.0f} KB"
 
 
 @_gesichert
@@ -449,18 +510,19 @@ def entwuerfe_offen() -> str:
 
     Je Eintrag steht neben dem roh erfassten `empfaenger` die `zielnummer`,
     an die tatsaechlich zugestellt wuerde (null + hinweis, wenn die Nummer
-    nicht zustellbar ist), und der `consent`-Stand des Kontakts. draft_id ist
-    immer die vollstaendige UUID — Werkzeuge brauchen sie so. Vor jeder
-    Freigabe-Entscheidung aufrufen."""
+    nicht zustellbar ist), der `consent`-Stand des Kontakts und
+    `medien_datei` — der Anhang, der mitginge (null, wenn keiner dranhaengt).
+    draft_id ist immer die vollstaendige UUID — Werkzeuge brauchen sie so.
+    Vor jeder Freigabe-Entscheidung aufrufen."""
     zeilen = _q(
-        "select d.id, d.channel, d.recipient, d.status, d.body, "
+        "select d.id, d.channel, d.recipient, d.status, d.body, d.media_ref, "
         "       l.name, l.consent_status "
         "from drafts d left join leads l on l.id = d.lead_id "
         "where d.status = 'pending' "
         "   or (d.status = 'approved' and d.channel = 'linkedin') "
         "order by d.created_at desc")
     gescheitert = _q(
-        "select d.id, d.channel, d.recipient, d.error, "
+        "select d.id, d.channel, d.recipient, d.error, d.media_ref, "
         "       l.name, l.consent_status "
         "from drafts d left join leads l on l.id = d.lead_id "
         "where d.status = 'failed' order by d.created_at desc limit %s",
@@ -471,13 +533,13 @@ def entwuerfe_offen() -> str:
             {"draft_id": z["id"], "kanal": z["channel"],
              "empfaenger": z["recipient"], "status": z["status"],
              "text": (z["body"] or "")[:200], "kontakt": z["name"],
-             "consent": z["consent_status"],
+             "consent": z["consent_status"], "medien_datei": z["media_ref"],
              **_zielangabe(z["channel"], z["recipient"])} for z in zeilen],
         "anzahl_fehlgeschlagen": anzahl[0]["n"],
         "fehlgeschlagen": [
             {"draft_id": z["id"], "kanal": z["channel"],
              "empfaenger": z["recipient"], "kontakt": z["name"],
-             "consent": z["consent_status"],
+             "consent": z["consent_status"], "medien_datei": z["media_ref"],
              "fehler": (z["error"] or "")[:FEHLER_KURZ],
              **_zielangabe(z["channel"], z["recipient"])} for z in gescheitert]})
 
@@ -603,8 +665,8 @@ def entwurf_erneut_freigeben(draft_id: str, bestaetigt: bool = False) -> str:
 WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              aktivitaet_loggen, wiedervorlage_setzen, wiedervorlage_erledigt,
              profil_lesen, profil_aktualisieren,
-             bedarf_speichern, bedarf_offen, entwurf_erstellen, digest,
-             entwuerfe_offen, entwurf_freigeben, entwurf_ablehnen,
+             bedarf_speichern, bedarf_offen, entwurf_erstellen, medien_liste,
+             digest, entwuerfe_offen, entwurf_freigeben, entwurf_ablehnen,
              entwurf_manuell_gesendet, entwurf_erneut_freigeben)
 
 for _fn in WERKZEUGE:

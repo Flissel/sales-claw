@@ -1,0 +1,178 @@
+"""Medien-Anhaenge fuer Entwuerfe — eine Regel fuer Werkzeug und Versand.
+
+Warum ein eigenes Modul und kein Code in server.py (gleiche Begruendung wie
+`nummern.py`): `entwurf_erstellen` prueft eine Datei, BEVOR ein Entwurf
+entsteht — der Dispatcher prueft sie ERNEUT unmittelbar vor dem Senden. Zwischen
+Erstellung, Freigabe und Zustellung koennen Minuten liegen, und der Medienordner
+ist ein Host-Bind: der Betreiber kann eine Datei dort jederzeit loeschen oder
+austauschen. Beide Seiten muessen exakt dieselbe Regel anwenden, sonst gibt
+jemand etwas frei, das der Versand anders bewertet. Ein Import statt zweier
+Kopien; `dispatch.py` importiert `server.py`, ein Rueckimport waere ein
+Zirkelimport.
+
+GEMESSEN (openwa/upstream, ENGINE_TYPE=whatsapp-web.js) — daraus folgen die
+Konstanten unten:
+
+* Endpunkte: `POST /api/sessions/{id}/messages/send-image|send-audio|
+  send-document` (message.controller.ts). Alle drei nehmen dasselbe DTO
+  `SendMediaMessageDto` (dto/send-message.dto.ts).
+* Nutzlast: `{chatId, base64, mimetype, filename, caption}`. `base64` ist
+  blankes Base64 oder eine `data:`-URI; `mimetype` ist PFLICHT, sobald `base64`
+  gesetzt ist (`buildMediaInput`: BadRequest "mimetype is required when using
+  base64 data"). `filename` wird nur bei Dokumenten gerendert (ohne Namen
+  heisst der Anhang beim Empfaenger "file"). `caption` gilt fuer alle
+  Media-Endpunkte (wwebjs-messaging.ts `sendMediaMessage` reicht sie
+  unveraendert an `client.sendMessage` weiter) — deshalb genuegt EIN Aufruf je
+  Entwurf, der Text reist als Bildunterschrift mit.
+* Grenzen: `caption` hoechstens 1024 Zeichen (`@MaxLength(1024)` im DTO, Text
+  waere 4096); Base64-Nutzlast hoechstens 50 MiB (`assertBase64WithinMediaCap`,
+  Vorgabe MEDIA_DOWNLOAD_MAX_BYTES); Rumpf je Anfrage hoechstens 25 MB
+  (`resolveBodyLimit`-Vorgabe, im Log des laufenden openwa bestaetigt:
+  "Request body caps: 25mb per request"). Base64 blaeht um 4/3 auf — die
+  25-MB-Schranke deckelt eine Datei also faktisch bei ~18,7 MB. MAX_BYTES = 15
+  MB liegt bewusst darunter.
+* `ptt` (Sprachnachricht) wird NICHT gesetzt: ein Anhang aus dem Medienordner
+  ist eine Datei, keine aufgenommene Sprachnachricht.
+"""
+import os
+
+# Ueberschreibbar fuer die Testsuite (die Tests biegen das Modulattribut auf ein
+# tmp-Verzeichnis um) und fuer einen abweichenden Mount. Im Betrieb ist es der
+# Host-Bind `./media:/media:ro` an sales-mcp und sales-dispatch — read-only,
+# damit weder Werkzeugdienst noch Dispatcher je in den Ordner schreiben koennen.
+MEDIA_VERZEICHNIS = os.environ.get("MEDIA_DIR", "/media")
+
+# 15 MB. Siehe Moduldocstring: OpenWA wuerde erst bei ~18,7 MB abriegeln, aber
+# eine WhatsApp-Nachricht ist kein Dateiserver, und die Schranke soll sprechen,
+# bevor der Empfaengerdienst es tut.
+MAX_BYTES = 15 * 1024 * 1024
+
+# Whitelist: Endung -> (OpenWA-Endpunkt, MIME-Typ). Was hier nicht steht, wird
+# nicht angehaengt — keine Herleitung aus dem Dateiinhalt, keine Ausnahmen.
+ERLAUBT = {
+    ".pdf":  ("send-document", "application/pdf"),
+    ".jpg":  ("send-image",    "image/jpeg"),
+    ".jpeg": ("send-image",    "image/jpeg"),
+    ".png":  ("send-image",    "image/png"),
+    ".mp3":  ("send-audio",    "audio/mpeg"),
+    ".ogg":  ("send-audio",    "audio/ogg"),
+}
+
+# Gemessene Obergrenze der Bildunterschrift (DTO `@MaxLength(1024)`). Ein
+# laengerer Text wuerde am Endpunkt mit HTTP 400 abprallen — das faellt lieber
+# beim Erstellen des Entwurfs auf als beim Zustellen eines freigegebenen.
+CAPTION_MAXLAENGE = 1024
+
+
+def _reiner_dateiname(name: str) -> bool:
+    """Ist das nur ein Dateiname — kein Pfad, in keiner Konvention?
+
+    `os.path.basename` allein genuegt hier NICHT: im Linux-Container ist der
+    Backslash kein Trennzeichen, `..\\windows\\system.ini` ist fuer basename ein
+    voellig normaler Dateiname und kaeme unveraendert durch. Der Medienordner
+    wird aber von einem Windows-Host befuellt, Eingaben in beiden Schreibweisen
+    sind also zu erwarten. Deshalb wird gegen BEIDE Trennzeichen geprueft,
+    bevor irgendetwas das Dateisystem beruehrt — und der Doppelpunkt gleich
+    mit, der die laufwerksrelative Windows-Form (`C:datei.pdf`) traegt und in
+    einem legitimen Dateinamen aus diesem Ordner ohnehin nicht vorkommen kann.
+    """
+    if not name or name in (".", ".."):
+        return False
+    if "/" in name or "\\" in name or ":" in name:
+        return False
+    if name.startswith("."):
+        # Auch `..foo` und versteckte Dateien bleiben draussen: der Ordner ist
+        # eine Ablage fuer Unterlagen, nichts davon heisst legitim `.irgendwas`.
+        return False
+    return name == os.path.basename(name)
+
+
+def wurzel() -> str:
+    """Aufgeloester Medienordner. Zur Aufrufzeit gelesen, damit die Tests
+    `MEDIA_VERZEICHNIS` umbiegen koennen."""
+    return os.path.realpath(MEDIA_VERZEICHNIS)
+
+
+def pfad(basis: str) -> str:
+    """Vollstaendiger Pfad einer bereits geprueften Datei."""
+    return os.path.join(wurzel(), basis)
+
+
+def endpunkt_und_typ(basis: str):
+    """(OpenWA-Endpunkt, MIME-Typ) zur Endung. Nur fuer gepruefte Namen."""
+    return ERLAUBT[os.path.splitext(basis)[1].lower()]
+
+
+def pruefe(name: str):
+    """Darf diese Datei an einen Entwurf? -> (basisname, None) | (None, fehler).
+
+    Die Reihenfolge ist Absicht: erst der Name (ohne jeden Dateizugriff), dann
+    die Endung, dann das Dateisystem. Ein Traversal-Versuch beruehrt so nie
+    einen Pfad ausserhalb des Ordners — auch nicht lesend.
+    """
+    roh = (name or "").strip()
+    if not roh:
+        return None, "Kein Dateiname angegeben."
+    if not _reiner_dateiname(roh):
+        return None, (
+            f"'{roh}' ist kein reiner Dateiname. Erlaubt ist ausschliesslich "
+            f"der Name einer Datei aus dem Medienordner, ohne jede Pfadangabe "
+            f"(kein '/', kein '\\', kein '..'). medien_liste() zeigt, was da "
+            f"liegt.")
+    # `basename` ist nach der Pruefung oben ein No-op — es steht hier trotzdem,
+    # weil der Wert von hier aus in `drafts.media_ref` und spaeter in einen
+    # Dateizugriff geht: die Erzwingung soll an der Stelle stehen, an der der
+    # Name die Funktion verlaesst, nicht nur in einer vorgelagerten Pruefung.
+    basis = os.path.basename(roh)
+    endung = os.path.splitext(basis)[1].lower()
+    if endung not in ERLAUBT:
+        return None, (
+            f"Endung '{endung or '(keine)'}' ist nicht zugelassen. Erlaubt: "
+            f"{', '.join(sorted(ERLAUBT))}.")
+
+    ziel = os.path.join(wurzel(), basis)
+    try:
+        # Ein Symlink im Ordner, der nach draussen zeigt, waere der letzte Weg
+        # aus dem Verzeichnis heraus — realpath loest ihn auf, der Vergleich
+        # faengt ihn ab. (Der Bind kommt von einem Windows-Host und kennt das
+        # praktisch nicht; die Kante kostet eine Zeile.)
+        if not os.path.realpath(ziel).startswith(wurzel() + os.sep):
+            return None, (f"'{basis}' zeigt aus dem Medienordner heraus und "
+                          f"wird nicht angehaengt.")
+        if not os.path.isfile(ziel):
+            return None, (f"Datei '{basis}' liegt nicht im Medienordner. "
+                          f"medien_liste() zeigt, was verfuegbar ist.")
+        if not os.access(ziel, os.R_OK):
+            return None, f"Datei '{basis}' ist nicht lesbar."
+        groesse = os.path.getsize(ziel)
+    except OSError as e:
+        return None, f"Medienordner nicht lesbar ({type(e).__name__})."
+    if groesse == 0:
+        return None, f"Datei '{basis}' ist leer (0 Bytes)."
+    if groesse > MAX_BYTES:
+        return None, (f"Datei '{basis}' ist {groesse / 1048576:.1f} MB gross — "
+                      f"erlaubt sind hoechstens {MAX_BYTES // 1048576} MB.")
+    return basis, None
+
+
+def lies(basis: str) -> bytes:
+    """Inhalt einer geprueften Datei. Wirft OSError, wenn sie inzwischen weg
+    ist — der Aufrufer (Dispatcher) macht daraus eine Fehlerbuchung."""
+    with open(pfad(basis), "rb") as f:
+        return f.read()
+
+
+def liste():
+    """Anhaengbare Dateien im Medienordner: [(name, groesse_bytes)], sortiert.
+
+    Gefiltert auf die Whitelist — was nicht angehaengt werden kann, taucht auch
+    nicht als Angebot auf. Wirft OSError, wenn der Ordner fehlt.
+    """
+    eintraege = []
+    for name in sorted(os.listdir(wurzel())):
+        if os.path.splitext(name)[1].lower() not in ERLAUBT:
+            continue
+        voll = os.path.join(wurzel(), name)
+        if os.path.isfile(voll):
+            eintraege.append((name, os.path.getsize(voll)))
+    return eintraege

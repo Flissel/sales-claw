@@ -10,6 +10,7 @@ import pytest
 # wuerde die autouse-Fixture unten auf die echten Kundendaten loslassen. Der
 # Schutz muss konstruktiv sein, nicht von der Disziplin des Aufrufers abhaengen.
 os.environ["SALES_DB_SCHEMA"] = "sales_test"
+import medien  # noqa: E402
 import nummern  # noqa: E402
 import server  # noqa: E402
 
@@ -669,12 +670,13 @@ def test_kontakt_aktualisieren_signatur_ueberlebt_den_dekorator():
     assert list(parameter) == ["lead_id", "feld", "wert"]
 
 
-def test_siebzehn_werkzeuge_registriert():
+def test_achtzehn_werkzeuge_registriert():
     namen = {fn.__name__ for fn in server.WERKZEUGE}
-    assert len(namen) == 17
+    assert len(namen) == 18
     assert "kontakt_aktualisieren" in namen
     assert "wiedervorlage_setzen" in namen
     assert "wiedervorlage_erledigt" in namen
+    assert "medien_liste" in namen
 
 
 # ---------------------------------------------------------------------------
@@ -880,3 +882,235 @@ def test_kontakt_anlegen_unzustellbare_nummer_bleibt_weiterhin_neu_anlegbar():
     b = json.loads(server.kontakt_anlegen(name="Person D", phone="0170 1234567"))
     assert a["angelegt"] is True
     assert b["angelegt"] is True
+
+
+# ---------------------------------------------------------------------------
+# F4 — Medien-Entwuerfe: Haertung in entwurf_erstellen, Anzeige in
+# entwuerfe_offen, medien_liste. Der Medienordner ist im Test ein tmp-Pfad
+# (`medien.MEDIA_VERZEICHNIS` wird umgebogen) — nie der echte Bind.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def medienordner(tmp_path, monkeypatch):
+    """Frischer Medienordner mit einer gueltigen PDF-Datei."""
+    monkeypatch.setattr(medien, "MEDIA_VERZEICHNIS", str(tmp_path))
+    (tmp_path / "checkliste.pdf").write_bytes(b"%PDF-1.4 Testinhalt")
+    return tmp_path
+
+
+def _anzahl_drafts():
+    return server._q("select count(*) as n from drafts")[0]["n"]
+
+
+def test_entwurf_ohne_medien_datei_bleibt_unveraendert(medienordner):
+    """Regression: der bestehende Weg darf sich nicht bewegen."""
+    lead = _anlegen()["lead_id"]
+    neu = json.loads(server.entwurf_erstellen(lead, "whatsapp", "Hallo!"))
+    assert neu["status"] == "pending"
+    zeile = server._q("select media_ref from drafts where id = %s",
+                      (neu["draft_id"],))[0]
+    assert zeile["media_ref"] is None
+
+
+def test_entwurf_mit_gueltiger_pdf_setzt_media_ref(medienordner):
+    lead = _anlegen()["lead_id"]
+    neu = json.loads(server.entwurf_erstellen(
+        lead, "whatsapp", "Die Checkliste vorab.",
+        medien_datei="checkliste.pdf"))
+    assert "fehler" not in neu
+    assert neu["medien_datei"] == "checkliste.pdf"
+    zeile = server._q("select media_ref from drafts where id = %s",
+                      (neu["draft_id"],))[0]
+    assert zeile["media_ref"] == "checkliste.pdf"
+
+
+@pytest.mark.parametrize("boesartig", [
+    "../../etc/passwd",
+    "../checkliste.pdf",
+    "..\\windows\\system.ini",
+    "..\\..\\checkliste.pdf",
+    "/etc/passwd",
+    "/media/checkliste.pdf",
+    "C:\\media\\checkliste.pdf",
+    "unterordner/checkliste.pdf",
+    # Ohne fuehrende Punkte: fuer diesen Fall traegt AUSSCHLIESSLICH die
+    # Backslash-Regel — `basename` laesst ihn im Linux-Container unveraendert
+    # durch, und er beginnt nicht mit '.'.
+    "unterordner\\checkliste.pdf",
+    "..",
+    ".",
+])
+def test_pfadangaben_werden_abgelehnt_und_erzeugen_keinen_entwurf(
+        medienordner, boesartig):
+    """Pfad-Traversal: kein Draft, sprechender Fehlertext, nichts angefasst."""
+    lead = _anlegen()["lead_id"]
+    antwort = json.loads(server.entwurf_erstellen(
+        lead, "whatsapp", "Anbei.", medien_datei=boesartig))
+    assert "fehler" in antwort
+    assert "draft_id" not in antwort
+    assert _anzahl_drafts() == 0
+
+
+@pytest.mark.parametrize("boesartig", [
+    "../checkliste.pdf",
+    "..\\checkliste.pdf",
+    "..\\windows\\system.ini",
+    "/etc/passwd",
+    "C:\\media\\checkliste.pdf",
+    "unterordner/checkliste.pdf",
+    # Ohne fuehrende Punkte: fuer diesen Fall traegt AUSSCHLIESSLICH die
+    # Backslash-Regel — `basename` laesst ihn im Linux-Container unveraendert
+    # durch, und er beginnt nicht mit '.'.
+    "unterordner\\checkliste.pdf",
+])
+def test_grund_der_ablehnung_ist_die_pfadangabe_nicht_die_fehlende_datei(
+        medienordner, boesartig):
+    """Schaerft die Abwehr: eine Pfadangabe muss AN DER PFADANGABE scheitern,
+    nicht zufaellig daran, dass unter diesem Namen nichts im Ordner liegt.
+
+    Der Unterschied ist nicht kosmetisch. Eine Abwehr, die den Namen still auf
+    `os.path.basename` kuerzt, wuerde `../checkliste.pdf` klaglos als
+    `checkliste.pdf` annehmen — der Betreiber haette eine Datei ausserhalb
+    gemeint und bekaeme wortlos eine andere angehaengt. Und im
+    Linux-Container ist '\\' kein Trennzeichen: `..\\windows\\system.ini`
+    ueberlebt `basename` unveraendert und flaeche sonst erst durch die
+    Endungspruefung."""
+    basis, fehler = medien.pruefe(boesartig)
+    assert basis is None
+    assert "kein reiner Dateiname" in fehler
+
+
+def test_traversal_auf_eine_existierende_datei_ausserhalb_wird_abgelehnt(
+        tmp_path, monkeypatch):
+    """Die scharfe Probe: die Zieldatei EXISTIERT wirklich, liegt aber eine
+    Ebene ueber dem Medienordner. Eine Abwehr, die nur ueber die
+    Existenzpruefung liefe, wuerde hier durchlassen."""
+    ordner = tmp_path / "media"
+    ordner.mkdir()
+    (tmp_path / "geheim.pdf").write_bytes(b"%PDF-1.4 nicht fuer den Versand")
+    monkeypatch.setattr(medien, "MEDIA_VERZEICHNIS", str(ordner))
+    lead = _anlegen()["lead_id"]
+
+    antwort = json.loads(server.entwurf_erstellen(
+        lead, "whatsapp", "Anbei.", medien_datei="../geheim.pdf"))
+
+    assert "fehler" in antwort
+    assert _anzahl_drafts() == 0
+
+
+@pytest.mark.parametrize("name", [
+    "notizen.txt", "skript.sh", "archiv.zip", "tabelle.xlsx", "ohneendung",
+    "doppel.pdf.exe",
+])
+def test_unerlaubte_endung_wird_abgelehnt(medienordner, name):
+    (medienordner / name).write_bytes(b"egal")
+    lead = _anlegen()["lead_id"]
+    antwort = json.loads(server.entwurf_erstellen(
+        lead, "whatsapp", "Anbei.", medien_datei=name))
+    assert "fehler" in antwort
+    assert _anzahl_drafts() == 0
+
+
+def test_fehlende_datei_wird_abgelehnt(medienordner):
+    lead = _anlegen()["lead_id"]
+    antwort = json.loads(server.entwurf_erstellen(
+        lead, "whatsapp", "Anbei.", medien_datei="gibtsnicht.pdf"))
+    assert "fehler" in antwort
+    assert "gibtsnicht.pdf" in antwort["fehler"]
+    assert _anzahl_drafts() == 0
+
+
+def test_leere_datei_wird_abgelehnt(medienordner):
+    (medienordner / "leer.pdf").write_bytes(b"")
+    lead = _anlegen()["lead_id"]
+    antwort = json.loads(server.entwurf_erstellen(
+        lead, "whatsapp", "Anbei.", medien_datei="leer.pdf"))
+    assert "fehler" in antwort
+    assert _anzahl_drafts() == 0
+
+
+def test_zu_grosse_datei_wird_abgelehnt(medienordner, monkeypatch):
+    monkeypatch.setattr(medien, "MAX_BYTES", 1024)
+    (medienordner / "gross.pdf").write_bytes(b"x" * 2048)
+    lead = _anlegen()["lead_id"]
+    antwort = json.loads(server.entwurf_erstellen(
+        lead, "whatsapp", "Anbei.", medien_datei="gross.pdf"))
+    assert "fehler" in antwort
+    assert _anzahl_drafts() == 0
+
+
+def test_echte_groessengrenze_ist_15_mb():
+    """Die Zahl selbst ist eine Zusage an den Betreiber, kein Detail."""
+    assert medien.MAX_BYTES == 15 * 1024 * 1024
+
+
+def test_zu_langer_text_mit_anhang_wird_abgelehnt(medienordner):
+    """Gemessen: der Media-Endpunkt deckelt die Bildunterschrift bei 1024
+    Zeichen (Text allein duerfte 4096). Ein Entwurf, der daran scheitern
+    wuerde, entsteht gar nicht erst."""
+    lead = _anlegen()["lead_id"]
+    antwort = json.loads(server.entwurf_erstellen(
+        lead, "whatsapp", "x" * 1025, medien_datei="checkliste.pdf"))
+    assert "fehler" in antwort
+    assert "1024" in antwort["fehler"]
+    assert _anzahl_drafts() == 0
+
+
+def test_langer_text_ohne_anhang_bleibt_erlaubt(medienordner):
+    """Die Caption-Grenze gilt nur mit Anhang — reiner Text darf laenger."""
+    lead = _anlegen()["lead_id"]
+    antwort = json.loads(server.entwurf_erstellen(lead, "whatsapp", "x" * 1025))
+    assert "fehler" not in antwort
+
+
+def test_entwuerfe_offen_zeigt_medien_datei(medienordner):
+    lead = _anlegen()["lead_id"]
+    mit = json.loads(server.entwurf_erstellen(
+        lead, "whatsapp", "Anbei.", medien_datei="checkliste.pdf"))
+    ohne = json.loads(server.entwurf_erstellen(lead, "whatsapp", "Nur Text."))
+
+    offen = json.loads(server.entwuerfe_offen())
+    je_id = {e["draft_id"]: e for e in offen["entwuerfe"]}
+    assert je_id[mit["draft_id"]]["medien_datei"] == "checkliste.pdf"
+    assert je_id[ohne["draft_id"]]["medien_datei"] is None
+
+
+def test_entwuerfe_offen_zeigt_medien_datei_auch_im_fehlgeschlagen_block(
+        medienordner):
+    lead = _anlegen()["lead_id"]
+    neu = json.loads(server.entwurf_erstellen(
+        lead, "whatsapp", "Anbei.", medien_datei="checkliste.pdf"))
+    server._q("update drafts set status = 'failed', error = 'Datei weg' "
+              "where id = %s returning id", (neu["draft_id"],))
+
+    offen = json.loads(server.entwuerfe_offen())
+    assert offen["fehlgeschlagen"][0]["medien_datei"] == "checkliste.pdf"
+
+
+def test_medien_liste_nennt_namen_und_groesse(medienordner):
+    (medienordner / "bild.jpg").write_bytes(b"x" * 100)
+    (medienordner / "notiz.txt").write_bytes(b"x" * 50)
+
+    liste = json.loads(server.medien_liste())
+
+    namen = [d["name"] for d in liste["dateien"]]
+    assert namen == ["bild.jpg", "checkliste.pdf"]     # .txt faellt raus
+    assert liste["anzahl"] == 2
+    je_name = {d["name"]: d for d in liste["dateien"]}
+    assert je_name["bild.jpg"]["groesse_bytes"] == 100
+
+
+def test_medien_liste_ohne_ordner_gibt_fehlertext_statt_traceback(monkeypatch):
+    monkeypatch.setattr(medien, "MEDIA_VERZEICHNIS", "/gibt/es/nicht")
+    antwort = json.loads(server.medien_liste())
+    assert "fehler" in antwort
+
+
+def test_medien_werkzeuge_signaturen_ueberleben_den_dekorator():
+    import inspect
+    erstellen = inspect.signature(server.entwurf_erstellen).parameters
+    assert list(erstellen) == ["lead_id", "kanal", "text", "betreff",
+                               "medien_datei"]
+    assert erstellen["medien_datei"].default == ""
+    assert list(inspect.signature(server.medien_liste).parameters) == []
+    assert server.medien_liste in server.WERKZEUGE
