@@ -100,3 +100,9 @@ def test_digest_nennt_offene_entwuerfe():
     d = json.loads(server.digest())
     assert d["offene_entwuerfe"][0]["kanal"] == "whatsapp"
     assert d["anzahl_entwuerfe"] == 1
+
+
+def test_werkzeug_signaturen_ueberleben_den_dekorator():
+    import inspect
+    assert "name" in inspect.signature(server.kontakt_anlegen).parameters
+    assert "frage_id" in inspect.signature(server.bedarf_speichern).parameters
