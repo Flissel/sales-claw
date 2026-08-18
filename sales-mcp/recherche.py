@@ -144,6 +144,7 @@ import json
 import os
 import re
 import socket
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -645,6 +646,13 @@ FIRMA_MAX_SEITEN = 5
 # nur davor, dass ein haengender Server das Werkzeug blockiert.
 FIRMA_TIMEOUT_S = float(os.environ.get("FIRMA_TIMEOUT_S", "20"))
 
+# ... und EINE Uhr fuer den ganzen Lauf (Review-Befund R3): 5 Seiten x 20 s
+# waeren sonst 100 Sekunden, in denen der Agent scheinbar haengt — und der
+# Timeout je Socket-Operation haelt einen troepfelnden Server nicht auf.
+# Ist das Budget verbraucht, kommen die restlichen Seiten als
+# `nicht_gelesen` zurueck statt gar nichts.
+FIRMA_ZEITBUDGET_S = float(os.environ.get("FIRMA_ZEITBUDGET_S", "60"))
+
 # Gekuerzter Text je Seite. Der Volltext einer Handwerker-Startseite lag in
 # der Messung bei 1 937 bis 8 855 Zeichen; 2 000 je Seite reichen fuer die
 # Gespraechsvorbereitung und halten `leads.enrichment` klein.
@@ -680,9 +688,13 @@ FIRMA_PRIVATE_ZIELE_ERLAUBT = os.environ.get("FIRMA_PRIVATE_ZIELE", "") == "1"
 # zuletzt das Leistungsangebot.
 _SEITEN_TYPEN = (
     ("impressum", re.compile(r"impressum|imprint|anbieterkennzeichnung", re.I)),
+    # `team` steht hier bewusst NICHT (Review-Befund G1): eine Team-Seite ist
+    # eine Namensliste von Beschaeftigten — Personendaten, die dieses
+    # Werkzeug ausdruecklich nicht erhebt. Was es an Personenbezug gibt, ist
+    # allein der Name der Vertretung aus der Impressumspflicht.
     ("ueber_uns", re.compile(
         r"ueber-?uns|über-?uns|about|unternehmen|philosophie|betrieb|"
-        r"historie|geschichte|team|wir-?ueber", re.I)),
+        r"historie|geschichte|wir-?ueber", re.I)),
     ("kontakt", re.compile(r"kontakt|contact|anfahrt", re.I)),
     ("leistungen", re.compile(
         r"leistung|service|angebot|kompetenz|produkt|referenz|gewerke", re.I)),
@@ -710,8 +722,24 @@ def _ziel_erlaubt(url: str):
     Container gegen seine eigenen Dienste laufen lassen (SSRF); im selben Netz
     haengen Postgres und der MCP-Port. Deshalb wird der Hostname aufgeloest und
     JEDE Antwort geprueft, nicht nur die Schreibweise der URL.
+
+    DEKLARIERTES RESTRISIKO — DNS-Rebinding (Review-Befund S1): aufgeloest
+    wird hier EINMAL; den Verbindungsaufbau macht urllib spaeter mit einer
+    EIGENEN Aufloesung. Ein Angreifer mit eigenem Nameserver kann zwischen
+    beiden Antworten wechseln (oeffentlich -> privat). Die Abwehr braeuchte
+    IP-Pinning im Verbindungsaufbau (eigene HTTPConnection, Host-Header und
+    SNI von Hand) — gemessen am Bedrohungsraum dieses Werkzeugs
+    (Firmen-Websites aus Google Maps, vom Betreiber je Lead beauftragt, kein
+    unbeaufsichtigter Massenlauf) steht der Aufwand in keinem Verhaeltnis.
+    Bewusst getragen, nicht uebersehen.
     """
-    teile = urllib.parse.urlsplit(url)
+    try:
+        teile = urllib.parse.urlsplit(url)
+    except ValueError as e:
+        # urlsplit selbst wirft bei kaputten IPv6-Literalen ("http://[::1").
+        # Ausserhalb eines try verliesse das als Traceback das Werkzeug —
+        # exakt die T1-Lehre aus dem Stufe-5-Review, hier Befund S4.
+        return False, f"Adresse nicht lesbar ({type(e).__name__}: {e})."
     if teile.scheme not in ("http", "https"):
         return False, (f"nur http/https werden abgerufen, hier steht "
                        f"'{teile.scheme or 'kein Schema'}'.")
@@ -719,12 +747,18 @@ def _ziel_erlaubt(url: str):
         gastgeber = teile.hostname
         port = teile.port or (443 if teile.scheme == "https" else 80)
     except ValueError as e:
-        # urlsplit prueft den Port erst beim Zugriff (z. B. ":abc").
+        # urlsplit prueft Port und Host-Syntax erst beim Zugriff (":abc").
         return False, f"Adresse nicht lesbar ({type(e).__name__}: {e})."
     if not gastgeber:
         return False, "die Adresse nennt keinen Hostnamen."
     if FIRMA_PRIVATE_ZIELE_ERLAUBT:
         return True, None
+    if port not in (80, 443):
+        # Firmenwebsites antworten auf 80/443. Alles andere ist ein DIENST
+        # (5432, 22, 6379, ...), den dieses Werkzeug nichts angeht — auch
+        # nicht auf oeffentlichen Adressen (Review-Befund S3).
+        return False, (f"Port {port} wird nicht abgerufen — Firmenwebsites "
+                       f"antworten auf 80 oder 443.")
     try:
         infos = socket.getaddrinfo(gastgeber, port, proto=socket.IPPROTO_TCP)
     except (socket.gaierror, UnicodeError, ValueError, OSError) as e:
@@ -735,12 +769,16 @@ def _ziel_erlaubt(url: str):
             adresse = ipaddress.ip_address(info[4][0].split("%", 1)[0])
         except ValueError:
             return False, f"unlesbare IP-Adresse zu '{gastgeber}'."
-        if (adresse.is_private or adresse.is_loopback or adresse.is_link_local
-                or adresse.is_reserved or adresse.is_multicast
-                or adresse.is_unspecified):
-            return False, (f"'{gastgeber}' zeigt auf {adresse} — eine Adresse "
-                           f"im privaten Netz. Abgerufen werden nur oeffentlich "
-                           f"erreichbare Firmenwebsites.")
+        # `not is_global` statt einer Positivliste einzelner Flags: die Liste
+        # (is_private, is_loopback, ...) liess 100.64.0.0/10 durch — CGNAT,
+        # u. a. Tailscale-Netze, und in Python 3.12 ausdruecklich NICHT
+        # is_private (gh-113171). is_global stellt die Frage, um die es hier
+        # wirklich geht: oeffentlich geroutet, ja oder nein
+        # (Review-Befund S2).
+        if not adresse.is_global:
+            return False, (f"'{gastgeber}' zeigt auf {adresse} — keine "
+                           f"oeffentlich geroutete Adresse. Abgerufen werden "
+                           f"nur oeffentlich erreichbare Firmenwebsites.")
     return True, None
 
 
@@ -874,6 +912,14 @@ def _fehler_seite_http(url: str, e: urllib.error.HTTPError) -> str:
                 f"Hand angesehen werden; es wird nichts umgangen.")
     if 400 <= e.code < 500:
         return f"{url} weist den Abruf ab (HTTP {e.code})."
+    if 300 <= e.code < 400:
+        # Hierher kommt eine Weiterleitung, der NICHT gefolgt wurde — etwa
+        # weil urllib das Zielschema ablehnt (file:, ftp:). Ohne den Zweig
+        # hiesse eine Sicherheitsabweisung "Serverstoerung, spaeter erneut
+        # versuchen" (Review-Befund S5).
+        return (f"{url} leitet weiter (HTTP {e.code}), aber dem Ziel wird "
+                f"nicht gefolgt (unzulaessiges Schema oder Ziel) — diese "
+                f"Firma von Hand ansehen.")
     return (f"{url} meldet eine Serverstoerung (HTTP {e.code}) — spaeter "
             f"erneut versuchen.")
 
@@ -921,7 +967,24 @@ def _hole_seite(url: str):
     if art and not ("html" in art or "text/plain" in art or "xml" in art):
         return None, (f"{endgueltig} liefert '{art.split(';')[0]}' statt einer "
                       f"Webseite — daraus wird hier kein Text gelesen.")
-    zeichensatz = kopf.get_content_charset() or "utf-8"
+    if not art and (b"\x00" in roh[:1024] or roh.startswith(b"%PDF-")):
+        # Ohne Content-Type-Header griff die Pruefung oben nicht und
+        # Binaerdaten landeten als "Text" in der Ablage (Review-Befund R2).
+        return None, (f"{endgueltig} liefert Binaerdaten ohne Content-Type — "
+                      f"daraus wird hier kein Text gelesen.")
+    zeichensatz = kopf.get_content_charset()
+    if not zeichensatz:
+        # Aeltere Handwerker-Seiten liefern ISO-8859-1 OHNE charset im
+        # Header und nennen ihn nur im <meta>. utf-8/replace macht daraus
+        # Ersatzzeichen — und "Geschäftsführer" wird fuer die Hinweis-Regex
+        # unauffindbar, obwohl er dasteht (Review-Befund R1, gemessen).
+        # latin-1 dekodiert jedes Byte verlustfrei — gut genug zum Suchen.
+        kopfstueck = roh[:4096].decode("latin-1", "replace")
+        m = (re.search(r'<meta[^>]+charset=["\']?\s*([A-Za-z0-9_.\-]+)',
+                       kopfstueck, re.I)
+             or re.search(r'<\?xml[^>]+encoding=["\']([A-Za-z0-9_.\-]+)',
+                          kopfstueck, re.I))
+        zeichensatz = m.group(1) if m else "utf-8"
     try:
         inhalt = roh.decode(zeichensatz, "replace")
     except (LookupError, UnicodeDecodeError):
@@ -958,15 +1021,19 @@ def _unterseiten(start: dict) -> list:
             continue
         try:
             voll = urllib.parse.urljoin(start["url"], verweis.strip())
+            voll = urllib.parse.urldefrag(voll)[0]
+            if not _gleiche_firma(start["url"], voll):
+                continue
+            typ = _seitentyp(voll, "")
+            if typ == "sonstige":
+                continue
+            s = _schluessel(voll)
         except ValueError:
+            # Ein kaputter Verweis der fremden Seite ("http://[::1", wirres
+            # IPv6-Literal) laesst urldefrag/urlsplit einen ValueError werfen
+            # — ein fremder Link darf das Werkzeug nicht zum Absturz bringen
+            # (Review-Befund S4, zweite Fundstelle).
             continue
-        voll = urllib.parse.urldefrag(voll)[0]
-        if not _gleiche_firma(start["url"], voll):
-            continue
-        typ = _seitentyp(voll, "")
-        if typ == "sonstige":
-            continue
-        s = _schluessel(voll)
         if s in gesehen:
             continue
         gesehen.add(s)
@@ -975,10 +1042,14 @@ def _unterseiten(start: dict) -> list:
     return [url for _, _, url in kandidaten]
 
 
-# Fakten, die sich aus dem Text ABLESEN lassen — keine Deutung, keine
-# Schaetzung. Dieselbe Zurueckhaltung wie in `_auffaelligkeiten`: was der
-# Betreiber im Gespraech verwendet, muss er im mitgelieferten Volltext
-# nachlesen koennen. Deshalb heissen sie „Hinweise" und nicht „Firmendaten".
+# Fakten, die sich aus dem Text ABLESEN lassen. Frueher stand hier min()/
+# max() ueber alle Treffer aller Seiten — das WAR eine Deutung, und eine
+# falsche dazu: "seit 1985 verbaute Anlagen" (Werbetext) gewann gegen
+# "besteht seit 2004" (Review-Befund H1, gemessen). Jetzt gilt: genau EIN
+# eindeutiger Treffer -> Hinweis; mehrere verschiedene -> Kandidatenliste,
+# und die Kurzfassung sagt ausdruecklich "uneindeutig". Was der Betreiber im
+# Gespraech verwendet, muss er im mitgelieferten Volltext nachlesen koennen —
+# deshalb heissen sie „Hinweise" und nicht „Firmendaten".
 _RE_JAHR = re.compile(
     r"(?:seit|gegr[uü]ndet|gegruendet|besteht\s+seit|familienbetrieb\s+seit)"
     r"(?:\s+dem\s+Jahr|\s+im\s+Jahr)?\s+(\d{4})", re.I)
@@ -1016,13 +1087,19 @@ def _firma_hinweise(seiten: list) -> dict:
             hinweise["vertretung"] = name
 
     heuer = date.today().year
-    jahre = [int(j) for j in _RE_JAHR.findall(ganzer) if 1700 <= int(j) <= heuer]
-    if jahre:
-        hinweise["seit_jahr"] = min(jahre)
+    jahre = sorted({int(j) for j in _RE_JAHR.findall(ganzer)
+                    if 1700 <= int(j) <= heuer})
+    if len(jahre) == 1:
+        hinweise["seit_jahr"] = jahre[0]
+    elif jahre:
+        hinweise["seit_jahr_kandidaten"] = jahre
 
-    zahlen = [int(z) for z in _RE_MITARBEITER.findall(ganzer) if 0 < int(z) < 5000]
-    if zahlen:
-        hinweise["mitarbeiter_genannt"] = max(zahlen)
+    zahlen = sorted({int(z) for z in _RE_MITARBEITER.findall(ganzer)
+                     if 0 < int(z) < 5000})
+    if len(zahlen) == 1:
+        hinweise["mitarbeiter_genannt"] = zahlen[0]
+    elif zahlen:
+        hinweise["mitarbeiter_kandidaten"] = zahlen
 
     hr = _RE_HANDELSREGISTER.search(ganzer)
     if hr:
@@ -1059,6 +1136,7 @@ def firma_daten(website_url: str, max_seiten: int = FIRMA_MAX_SEITEN):
     except (TypeError, ValueError):
         deckel = FIRMA_MAX_SEITEN
 
+    beginn = time.monotonic()
     start, fehler = _hole_seite(url)
     if fehler:
         return None, fehler
@@ -1066,6 +1144,13 @@ def firma_daten(website_url: str, max_seiten: int = FIRMA_MAX_SEITEN):
     for kandidat in _unterseiten(start):
         if len(seiten) >= deckel:
             break
+        if time.monotonic() - beginn > FIRMA_ZEITBUDGET_S:
+            # Gesamtbudget statt nur Einzel-Timeouts (Review-Befund R3):
+            # was nicht mehr drankam, steht ausdruecklich in nicht_gelesen.
+            nicht_gelesen.append({"url": kandidat, "grund": (
+                f"Gesamt-Zeitbudget ({FIRMA_ZEITBUDGET_S:.0f} s) erschoepft "
+                f"— nicht mehr abgerufen.")})
+            continue
         erlaubt, grund = _ziel_erlaubt(kandidat)
         if not erlaubt:
             nicht_gelesen.append({"url": kandidat, "grund": grund})
@@ -1098,23 +1183,36 @@ def firma_kurzfassung(name: str, daten: dict) -> list:
 
     vertretung = hinweise.get("vertretung")
     jahr = hinweise.get("seit_jahr")
+    jahr_mehrere = hinweise.get("seit_jahr_kandidaten")
     leute = hinweise.get("mitarbeiter_genannt")
+    leute_mehrere = hinweise.get("mitarbeiter_kandidaten")
     register = hinweise.get("handelsregister")
 
+    # Jede Zeile mit Herkunft ("laut Website") und ohne Selbstsicherheit, die
+    # der Text nicht hergibt — eine falsche Zahl im Erstgespraech ist
+    # schlimmer als keine (Review-Befund H1).
     zeilen = [
         f"{name}: {len(seiten)} Seite(n) von {daten.get('website', '—')} "
         f"gelesen ({gefunden}).",
-        (f"Inhaber/Geschaeftsfuehrung laut Impressum: {vertretung}."
+        (f"Inhaber/Geschaeftsfuehrung laut Website: {vertretung} — im "
+         f"Impressum gegenpruefen."
          if vertretung else
          "Inhaber/Geschaeftsfuehrung: im Text nicht gefunden — im Impressum "
          "selbst nachsehen."),
-        (f"Am Markt seit {jahr} (rund {date.today().year - jahr} Jahre)."
-         if jahr else "Gruendungsjahr: nicht gefunden."),
-        (f"Betriebsgroesse: {leute} Mitarbeitende genannt."
+        (f"Laut Website am Markt seit {jahr} "
+         f"(rund {date.today().year - jahr} Jahre)."
+         if jahr else
+         (f"Jahresangaben uneindeutig "
+          f"({', '.join(str(j) for j in jahr_mehrere)}) — im Volltext "
+          f"pruefen." if jahr_mehrere else "Gruendungsjahr: nicht gefunden.")),
+        (f"Betriebsgroesse: laut Website {leute} Mitarbeitende."
          if leute else
-         ("Mitarbeiterzahl nicht genannt"
-          + (f"; Handelsregister {register}." if register else
-             " — Betriebsgroesse im Gespraech erfragen."))),
+         (f"Mitarbeiterzahlen uneindeutig "
+          f"({', '.join(str(z) for z in leute_mehrere)}) — im Volltext "
+          f"pruefen." if leute_mehrere else
+          ("Mitarbeiterzahl nicht genannt"
+           + (f"; Handelsregister {register}." if register else
+              " — Betriebsgroesse im Gespraech erfragen.")))),
         (f"Auftritt: \"{start.get('titel')}\"." if start.get("titel") else
          "Die Startseite traegt keinen Titel."),
     ]

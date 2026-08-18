@@ -100,8 +100,11 @@ beantwortet „was laeuft demnaechst ab?".
 Drei Werkzeuge holen **oeffentliche Firmendaten**. Zwei davon (`marktanalyse`,
 `b2b_leads`) fragen Google Maps nach Name, Adresse, Telefon, Website,
 Kategorie und Bewertung; das dritte (`firma_anreichern`) liest die Website
-eines Firmenkontakts, den es schon gibt. Keine Personendaten, keine
-Privatkontakte — das ist die Grenze, nicht der Anfang einer Diskussion.
+eines Firmenkontakts, den es schon gibt. **Keine Recherche ueber
+Privatpersonen oder Privatkontakte** — das ist die Grenze, nicht der Anfang
+einer Diskussion. Der einzige Personenbezug, der dabei entsteht, ist der
+Name der Firmen-Vertretung aus dem Impressum (gesetzliche Pflichtangabe);
+Team-Seiten werden nicht gelesen, Beschaeftigte nicht erfasst.
 
 - `marktanalyse(thema, region='Regensburg', limit=20)` — Wettbewerbsbild zu
   einem Thema („Versicherungsmakler", „Finanzberatung", „Steuerberater").

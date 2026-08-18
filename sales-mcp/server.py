@@ -1070,9 +1070,16 @@ def firma_anreichern(lead_id: str, website: str = "") -> str:
     (`bedarf_speichern`, `profil_aktualisieren`), niemals aus dem Netz.
 
     Gelesen werden die Startseite und bis zu vier Unterseiten DERSELBEN
-    Website (Impressum, Ueber uns, Kontakt, Leistungen). `website` ist
-    optional: ohne Angabe nimmt das Werkzeug die zuletzt gespeicherte Adresse
-    und sonst die „Website: …"-Zeile aus den Notizen des Kontakts.
+    Website (Impressum, Ueber uns, Kontakt, Leistungen — Team-Seiten
+    ausdruecklich nicht: Beschaeftigtenlisten sind Personendaten). Der
+    einzige Personenbezug, der entsteht, ist der Name der Vertretung aus dem
+    Impressum — eine gesetzliche Pflichtangabe der Firma selbst. `website`
+    ist optional: ohne Angabe nimmt das Werkzeug die zuletzt gespeicherte
+    Adresse und sonst die „Website: …"-Zeile aus den Notizen. Wird sie
+    angegeben, muss sie die Website DIESER FIRMA sein — das Werkzeug prueft
+    den Kontakttyp, nicht die Zugehoerigkeit der Adresse; wer hier die Seite
+    eines Dritten eintraegt, recherchiert einen Dritten, und dafuer ist das
+    Werkzeug nicht da.
 
     Der Abruf kostet nichts (kein Fremddienst, keine Guthaben) — er dauert
     aber ein paar Sekunden. Zurueck kommen fuenf Zeilen Zusammenfassung; den
@@ -1102,8 +1109,13 @@ def firma_anreichern(lead_id: str, website: str = "") -> str:
     if fehler:
         return _json({"fehler": fehler})
 
+    # `nicht_gelesen` wandert MIT in die Ablage: wer das Profil spaeter liest,
+    # soll wissen, welche Seiten fehlten (Abweisung, Zeitbudget) — sonst
+    # liest sich ein Teilergebnis wie ein vollstaendiges.
     knoten = {"website": daten["website"], "seiten": daten["seiten"],
-              "hinweise": daten["hinweise"], "stand": date.today().isoformat()}
+              "hinweise": daten["hinweise"],
+              "nicht_gelesen": daten["nicht_gelesen"],
+              "stand": date.today().isoformat()}
     # EIN jsonb_set genuegt hier — und das ist kein Vergessen des Musters aus
     # profil_aktualisieren/bedarf_speichern, sondern sein Kern: `create_missing`
     # legt nur das LETZTE Pfadelement an, wenn dessen Elternobjekt existiert.

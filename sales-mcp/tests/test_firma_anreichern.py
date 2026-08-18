@@ -465,7 +465,11 @@ def test_private_adressen_werden_abgewiesen(monkeypatch):
     monkeypatch.setattr(recherche, "FIRMA_PRIVATE_ZIELE_ERLAUBT", False)
     lead = _firmenlead()
     antwort = _anreichern(lead_id=lead)
-    assert "privaten Netz" in antwort["fehler"]
+    # Der Stub laeuft auf 127.0.0.1:<zufallsport> — im Vorgabezustand greift
+    # je nach Adresse die Port-Kante (kein 80/443) oder die
+    # is_global-Pruefung. Beides ist dieselbe Abweisung.
+    assert "wird nicht abgerufen" in antwort["fehler"]
+    assert ("geroutete" in antwort["fehler"] or "Port" in antwort["fehler"])
     assert STUB.pfade == [], "Es darf nicht einmal verbunden werden."
 
 
@@ -490,7 +494,9 @@ def test_ziel_pruefung_weist_private_adressen_ab(adresse, monkeypatch):
     Metadaten-Dienst der grossen Cloud-Anbieter, das klassische SSRF-Ziel."""
     monkeypatch.setattr(recherche, "FIRMA_PRIVATE_ZIELE_ERLAUBT", False)
     erlaubt, grund = recherche._ziel_erlaubt(adresse)
-    assert not erlaubt and "privaten Netz" in grund
+    # "keine oeffentlich geroutete Adresse" (is_global-Pruefung) oder die
+    # Port-Kante (127.0.0.1:8765) — beides weist ab, bevor verbunden wird.
+    assert not erlaubt and ("geroutete" in grund or "Port" in grund)
 
 
 def test_weiterleitung_ins_private_netz_wird_abgewiesen(monkeypatch):
@@ -503,7 +509,7 @@ def test_weiterleitung_ins_private_netz_wird_abgewiesen(monkeypatch):
     with pytest.raises(recherche._ZielAbgewiesen) as fehler:
         pruefer.redirect_request(None, None, 302, "Found", {},
                                  "http://127.0.0.1:8765/")
-    assert "privaten Netz" in str(fehler.value)
+    assert ("geroutete" in str(fehler.value) or "Port" in str(fehler.value))
 
 
 def test_vertretung_auch_in_umschriebener_schreibweise():
@@ -585,3 +591,146 @@ def test_werkzeug_ist_registriert():
     assert server.firma_anreichern in server.WERKZEUGE
     namen = [f.__name__ for f in server.WERKZEUGE]
     assert namen.count("firma_anreichern") == 1
+
+
+# ---------------------------------------------------------------------------
+# Nachbesserungen aus dem Review (Befunde S2/S3/S4, R1, G1, H1 + E2E-Redirect)
+# ---------------------------------------------------------------------------
+
+def test_kaputtes_ipv6_literal_gibt_fehlertext_statt_traceback():
+    """S4: urlsplit wirft bei 'http://[::1' einen ValueError — vor der
+    Nachbesserung verliess er firma_daten als Traceback."""
+    lead = _firmenlead()
+    antwort = _anreichern(lead_id=lead, website="http://[::1")
+    assert "fehler" in antwort
+    assert "nicht lesbar" in antwort["fehler"]
+    assert STUB.pfade == []
+
+
+def test_kaputter_verweis_auf_der_seite_stuerzt_nicht_ab(monkeypatch):
+    """S4, zweite Fundstelle: ein wirrer Link im HTML der FREMDEN Seite darf
+    das Werkzeug nicht abbrechen — er wird uebersprungen."""
+    seite = _html("Kaputt", '<a href="http://[::1">defekt</a>'
+                            '<a href="/impressum/">Impressum</a>')
+    monkeypatch.setitem(_SEITEN, "/kaputt", seite)
+    daten, fehler = recherche.firma_daten(STUB_BASIS + "/kaputt")
+    assert fehler is None
+    assert any("/impressum" in s["url"] for s in daten["seiten"])
+
+
+@pytest.mark.parametrize("ziel,grund_teil", [
+    ("http://100.64.0.1/", "geroutete"),          # CGNAT — S2
+    ("http://192.0.2.1/", "geroutete"),           # TEST-NET — nur is_global
+    ("http://example.com:5432/", "Port 5432"),    # Dienstport — S3
+    ("http://example.com:22/", "Port 22"),
+])
+def test_nicht_globale_ziele_und_dienstports_werden_abgewiesen(
+        monkeypatch, ziel, grund_teil):
+    monkeypatch.setattr(recherche, "FIRMA_PRIVATE_ZIELE_ERLAUBT", False)
+    erlaubt, grund = recherche._ziel_erlaubt(ziel)
+    assert erlaubt is False
+    assert grund_teil in grund
+
+
+def test_latin1_impressum_ohne_header_charset_verliert_den_fund_nicht(monkeypatch):
+    """R1: aeltere Seiten liefern ISO-8859-1 ohne charset im Header und
+    nennen ihn nur im <meta>. Vorher: Mojibake, kein Vertretungs-Fund."""
+    rumpf = ("<!doctype html><html><head>"
+             '<meta charset="iso-8859-1"><title>Impressum</title></head>'
+             "<body><p>Geschäftsführer: Jörg Müller</p>"
+             "</body></html>").encode("iso-8859-1")
+
+    def antworte(handler):
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/html")   # KEIN charset
+        handler.send_header("Content-Length", str(len(rumpf)))
+        handler.end_headers()
+        handler.wfile.write(rumpf)
+
+    urspruenglich = _Handler.do_GET
+
+    def do_get(handler):
+        if handler.path == "/latin1":
+            with STUB.sperre:
+                STUB.aufrufe.append(handler.path)
+            antworte(handler)
+        else:
+            urspruenglich(handler)
+
+    monkeypatch.setattr(_Handler, "do_GET", do_get)
+    seite, fehler = recherche._hole_seite(STUB_BASIS + "/latin1")
+    assert fehler is None
+    assert "Geschäftsführer: Jörg Müller" in seite["text"]
+    hinweise = recherche._firma_hinweise([seite])
+    assert hinweise["vertretung"] == "Jörg Müller"
+
+
+def test_team_seite_wird_nicht_gelesen():
+    """G1: eine Team-Seite ist eine Namensliste von Beschaeftigten —
+    Personendaten, die dieses Werkzeug nicht erhebt. Der Link liegt auf der
+    Stub-Startseite bereit; er darf nicht abgerufen werden."""
+    lead = _firmenlead()
+    antwort = _anreichern(lead_id=lead)
+    assert "fehler" not in antwort
+    assert all("/team" not in p for p in STUB.pfade), STUB.pfade
+    typen = {s["typ"] for s in _enrichment(lead)["firma"]["seiten"]}
+    assert "leistungen" in typen           # der Nachruecker fuer team
+
+
+def test_mehrdeutige_jahresangaben_werden_nicht_zur_falschen_zahl(monkeypatch):
+    """H1: 'seit 1985 verbaute Anlagen' (Werbetext) gegen 'besteht seit
+    2004' — vorher gewann min() und die Kurzfassung behauptete 1985."""
+    seite = {"url": "https://x.de/", "typ": "ueber_uns", "titel": "x",
+             "text": ("Wir arbeiten seit 1985 verbaute Anlagen auf und "
+                      "unser Betrieb besteht seit 2004."),
+             "status": 200, "bytes": 1}
+    hinweise = recherche._firma_hinweise([seite])
+    assert "seit_jahr" not in hinweise
+    assert hinweise["seit_jahr_kandidaten"] == [1985, 2004]
+    zeilen = recherche.firma_kurzfassung("X GmbH", {
+        "website": "https://x.de/", "seiten": [seite], "hinweise": hinweise})
+    assert any("uneindeutig (1985, 2004)" in z for z in zeilen)
+    assert not any("Am Markt" in z and "1985" in z for z in zeilen)
+
+
+def test_eindeutige_angaben_werden_mit_herkunft_genannt():
+    """H1, Gegenprobe: ein eindeutiger Fund bleibt ein Fund — aber die
+    Kurzfassung nennt die Herkunft ('laut Website')."""
+    lead = _firmenlead()
+    antwort = _anreichern(lead_id=lead)
+    zusammen = " ".join(antwort["kurzfassung"])
+    assert "Laut Website am Markt seit 1998" in zusammen
+    assert "laut Website 24 Mitarbeitende" in zusammen
+
+
+def test_weiterleitung_wird_im_echten_opener_abgefangen(monkeypatch):
+    """E2E-Luecke aus dem Review: der bisherige Test rief redirect_request
+    direkt auf — hier laeuft der Sprung durch build_opener/oeffner.open, und
+    die Abweisung muss als Fehlertext ankommen, nicht als Ausnahme."""
+    echt = recherche._ziel_erlaubt
+
+    def waechter(url):
+        if "boese.invalid" in url:
+            return False, "Testziel gesperrt."
+        return echt(url)
+
+    monkeypatch.setattr(recherche, "_ziel_erlaubt", waechter)
+    STUB.weiterleitung = ("/", "http://boese.invalid/")
+    daten, fehler = recherche.firma_daten(STUB_BASIS + "/")
+    assert daten is None
+    assert "Weiterleitung abgewiesen" in fehler
+    assert STUB.pfade == ["/"], "dem Sprungziel darf nie nachgegangen werden"
+
+
+def test_zweiter_lauf_ersetzt_den_stand_vollstaendig(monkeypatch):
+    """Review-Restpunkt: jsonb_set ersetzt den Knoten — ein Schluessel aus
+    Lauf 1 darf Lauf 2 nicht ueberleben."""
+    lead = _firmenlead()
+    _anreichern(lead_id=lead)
+    server._q("update leads set enrichment = jsonb_set(enrichment, "
+              "'{firma,marker_aus_lauf_1}', '\"bleibt nicht\"'::jsonb, true) "
+              "where id = %s returning id", (lead,))
+    _anreichern(lead_id=lead)
+    firma = _enrichment(lead)["firma"]
+    assert "marker_aus_lauf_1" not in firma
+    assert "nicht_gelesen" in firma        # neuer Bestandteil der Ablage
