@@ -7,7 +7,7 @@ gruppen:
     titel: "Anlass & Interesse"
     fragen:
       - { id: anlass, frage: "Was hat Sie zu uns geführt — gibt es einen konkreten Anlass?" }
-      - { id: interesse, frage: "Welches Thema interessiert Sie am meisten: Vermögensaufbau und Geldanlage, eine Finanzierung (z. B. Immobilie), Absicherung — oder geht es um Ihr Unternehmen? Oder interessieren Sie sich für eine Karriere bei uns?" }
+      - { id: interesse, frage: "Welches Thema beschäftigt Sie am meisten: Absicherung Ihrer Arbeitskraft (Berufsunfähigkeit), private Altersvorsorge, Absicherung der Familie (Risikoleben), betriebliche Vorsorge für Ihre Firma — oder interessieren Sie sich für eine Karriere bei uns?" }
       - { id: selbststaendig_b2b, frage: "Falls Sie selbstständig sind: Interessiert Sie auch Beratung für Ihr Unternehmen?" }
   - id: lebenssituation
     titel: Lebenssituation
