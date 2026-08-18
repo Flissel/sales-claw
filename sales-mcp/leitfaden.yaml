@@ -1,0 +1,45 @@
+# Bedarfsanalyse-Leitfaden — Privatkunden-Finanzvertrieb.
+# PLATZHALTER aus Branchenwissen: der fachliche Feinschliff braucht Input von
+# MH Consulting (Spec §5). Struktur ist bindend, Inhalte sind austauschbar.
+version: 1
+gruppen:
+  - id: lebenssituation
+    titel: Lebenssituation
+    fragen:
+      - { id: alter,         frage: "Darf ich fragen, wie alt Sie sind?" }
+      - { id: familienstand, frage: "Wie ist Ihre familiäre Situation — ledig, Partnerschaft, Kinder?" }
+      - { id: beruf,         frage: "Was machen Sie beruflich — angestellt oder selbstständig?" }
+  - id: einkommen
+    titel: Einkommen & Haushalt
+    fragen:
+      - { id: netto,      frage: "In welcher Größenordnung liegt Ihr monatliches Nettoeinkommen?" }
+      - { id: sparquote,  frage: "Wie viel können Sie im Monat ungefähr zurücklegen?" }
+  - id: bestehendes
+    titel: Bestehende Verträge
+    fragen:
+      - { id: versicherungen, frage: "Welche Versicherungen haben Sie bereits?" }
+      - { id: anlagen,        frage: "Haben Sie schon Geldanlagen — Sparbuch, Depot, Bausparer?" }
+  - id: absicherung
+    titel: Absicherung
+    fragen:
+      - { id: bu,          frage: "Ist Ihre Arbeitskraft abgesichert, etwa durch eine Berufsunfähigkeitsversicherung?" }
+      - { id: haftpflicht, frage: "Haben Sie eine private Haftpflichtversicherung?" }
+  - id: vorsorge
+    titel: Altersvorsorge
+    fragen:
+      - { id: renteninfo, frage: "Kennen Sie Ihre zu erwartende gesetzliche Rente (Renteninformation)?" }
+      - { id: privat,     frage: "Sorgen Sie privat oder über den Arbeitgeber fürs Alter vor?" }
+  - id: ziele
+    titel: Ziele & Horizont
+    fragen:
+      - { id: ziele,    frage: "Was möchten Sie finanziell erreichen — und bis wann?" }
+      - { id: prio,     frage: "Was davon ist Ihnen am wichtigsten?" }
+  - id: risiko
+    titel: Risikoneigung
+    fragen:
+      - { id: risiko,     frage: "Wie würden Sie sich einschätzen — eher sicherheitsorientiert oder renditeorientiert?" }
+      - { id: erfahrung,  frage: "Welche Erfahrungen haben Sie mit Geldanlagen?" }
+  - id: consent
+    titel: Einwilligung
+    fragen:
+      - { id: consent_kontakt, frage: "Dürfen wir Sie zu passenden Themen aktiv kontaktieren?" }
