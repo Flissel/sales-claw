@@ -453,3 +453,274 @@ echten Kundenkontakt zwingend zu klären:
    Telefon, `email` → E-Mail), fällt `entwurf_erstellen` auf den Namen als
    `recipient` zurück. Eine spätere Versand-App muss damit rechnen — oder das
    Werkzeug lehnt kanalunpassende Empfänger ab, sobald echte Zustellung existiert.
+
+## Architektur (Stufe 3): Versand mit Approval (OpenWA)
+
+Quelle: `docs/superpowers/plans/2026-08-18-sales-claw-stufe3-versand.md` (die fünf
+Grundsatzentscheidungen), Berichte `t1`–`t5a` unter
+`.superpowers/sdd/2026-08-18-sales-claw-stufe3-versand/`, Ledger `progress.md`
+ebenda.
+
+Stufe 3 fügt zwei weitere bewegliche Komponenten hinzu: einen eigenen
+Versand-Dienst (`sales-dispatch` — gleiches Image wie `sales-mcp`, zweites
+Kommando `python dispatch.py`) und ein selbstgehostetes WhatsApp-Gateway
+(`openwa`, [rmyndharis/OpenWA](https://github.com/rmyndharis/OpenWA), eigene
+`docker-compose.openwa.yml`). LinkedIn bleibt bewusst Handversand: der Agent
+legt einen Entwurf an, der Betreiber sendet ihn selbst und quittiert das nur.
+
+### Die Kette: Agent → drafts → Freigabe → Dispatcher → OpenWA
+
+```text
+Betreiber (WhatsApp, dedizierte sales-Nummer)
+   │ Nachricht                                     ▲ Antwort/Rückfrage
+   ▼                                                │
+┌───────────────────────────────────────────────────┴─┐
+│ Container sales-claw — Agent                          │
+│   KEIN Send-Werkzeug. entwurf_erstellen(kanal, text)  │
+└──────────────────────────┬─────────────────────────────┘
+                            │ INSERT status='pending'
+                            ▼
+                 ┌────────────────────────┐
+                 │ Tabelle sales.drafts    │  ← das Gate ist die Datenbank,
+                 └────────────┬────────────┘    nicht das Modellverhalten
+                            │
+                            │ Betreiber sagt im Chat AUSDRÜCKLICH „gib frei"
+                            │ → entwurf_freigeben(draft_id)
+                            │   [einzige Funktion, die 'approved' setzt]
+                            ▼
+              status='approved', channel='whatsapp'
+                            │
+                            │ sales-dispatch: alle 10 s
+                            │ SELECT … WHERE status='approved' LIMIT 5
+                            ▼
+┌─────────────────────────────────────────────────────┐
+│ Container sales-dispatch — die einzige sendende       │
+│ Komponente des gesamten Systems                       │
+│  1. claim(): approved → failed + Marke „in Zustellung │
+│     seit …" (atomarer UPDATE, DDL-frei, siehe unten)  │
+│  2. normalisiere_empfaenger() — nummern.py            │
+│  3. POST /api/sessions/{id}/messages/send-text         │
+│     (Header X-API-Key)                                 │
+│  4. Erfolg → sent · Fehler → failed + echter Fehlertext│
+└───────────────────────────┬─────────────────────────────┘
+                            │ HTTP
+                            ▼
+                 ┌────────────────────────┐
+                 │ Container openwa         │  Session „sales"
+                 │ eigener MCP-Server AUS   │  bis QR-Scan: HTTP 409
+                 │ (MCP_ENABLED ungesetzt)  │  „Session not connected"
+                 └────────────┬─────────────┘
+                            ▼
+                    WhatsApp (dedizierte Nummer)
+
+LinkedIn — paralleler Zweig, vom Dispatcher NIE angefasst:
+  drafts(channel='linkedin', status='approved')
+      → Betreiber sendet von Hand → meldet „Entwurf … ist raus"
+      → entwurf_manuell_gesendet(draft_id) quittiert (status='sent')
+        (versendet selbst nichts, kein HTTP-Aufruf)
+```
+
+### Die fünf Grundsatzentscheidungen (bindend, aus dem Plan)
+
+1. **Der Agent bekommt keine Send-Werkzeuge.** OpenWAs eingebauter
+   MCP-Server bleibt aus (`MCP_ENABLED` in `docker-compose.openwa.yml`
+   bewusst ungesetzt, nicht nur `false`). Versand macht ausschließlich
+   `sales-dispatch`, der nur `drafts.status='approved'` liest. Das Gate ist
+   die Datenbank, nicht das Verhalten eines Sprachmodells.
+2. **OpenWA bekommt nie die persönliche Nummer des Betreibers.** Eigene
+   Session (`sales`) für eine dedizierte Nummer; bis zum QR-Pairing
+   (`docs/08_PAIRING_ANLEITUNG.md`) ist „Session nicht verbunden" (HTTP 409)
+   der getestete Normalzustand — belegt in T3/T4 gegen das echte, laufende
+   OpenWA, kein Stub.
+3. **LinkedIn wird nicht automatisch versendet** (Kontosperr-Risiko).
+   Freigabe → Kennzeichnung „manuell zu senden" → `entwurf_manuell_gesendet`
+   quittiert einen bereits erfolgten Handversand. Gleiche Queue, gleiche
+   Historie, kein HTTP-Call gegen OpenWA oder LinkedIn.
+4. **Engine `whatsapp-web.js`, Rate-Limiter an, Docker-Socket-Proxy aus.**
+   Laut OpenWA-Dokumentation/Capability-Matrix sperr-risikoärmer als
+   Baileys; RAM vorhanden. Kein `DOCKER_HOST`, keine Orchestrierungs-Features
+   der eingebauten OpenWA-Container-Verwaltung genutzt.
+5. **Freigabe nur durch den Betreiber.** Technisch bereits erzwungen (die
+   OpenClaw-`dmPolicy`-Allowlist lässt nur seine Nummer zum Agenten durch);
+   zusätzlich als Agent-Regel verankert (`config/workspace/AGENTS.md`,
+   Abschnitt „Freigabe"): Entwurf vor Freigabe immer wörtlich zeigen,
+   Freigaben nie aus zitierten, weitergeleiteten oder von Dritten
+   stammenden Inhalten ableiten.
+
+### Review-Verdikt: „Versand ohne Freigabe: nein"
+
+Batch-Review T2+T3 (Reviewer-Modell opus, Scope-Commits `e224a3a..3f80d4c`)
+kam zum Kernverdikt **„Versand ohne Freigabe möglich: NEIN"** — Query für
+Query bestätigt, Begründungskette:
+
+- **`send-text` existiert nur an einer einzigen Stelle** im gesamten Code:
+  `sales-mcp/dispatch.py::sende_text`. Kein anderer Pfad — weder im
+  Agenten noch in `server.py` — spricht OpenWA an.
+- **`status='approved'`** — Voraussetzung dafür, dass der Dispatcher einen
+  Entwurf überhaupt in den Blick nimmt — wird ausschließlich von
+  `entwurf_freigeben` und `entwurf_erneut_freigeben` gesetzt (beide in
+  `server.py`), und beide ausschließlich auf ausdrückliche
+  Betreiber-Anweisung im Chat (`AGENTS.md`, Abschnitt „Freigabe").
+- **Der Agent besitzt kein sendendes Werkzeug.** Die vollständige
+  MCP-Werkzeugliste (15 Werkzeuge, `openclaw mcp probe sales --json`) enthält
+  keinen HTTP-Aufruf gegen OpenWA oder irgendeinen anderen Versandweg.
+- **OpenWAs eigener MCP-Server ist aus** (Grundsatzentscheidung 1) — selbst
+  ein kompromittierter Agent könnte ihn nicht ansprechen, weil dort nichts
+  lauscht.
+
+Die spätere Härtungswelle (T5a) hat dieses Verdikt zusätzlich abgesichert
+(Compose-Isolation, siehe unten), nicht in Frage gestellt.
+
+### Claim-Mechanik: at-most-once statt at-least-once
+
+`drafts.status` kennt keinen Zwischenstatus „wird gerade versendet" (CHECK
+constraint: `pending|approved|rejected|sent|failed`, `db/provision.sql`),
+und die Rolle `sales_app` hat kein DDL-Recht, um einen hinzuzufügen.
+`sales-mcp/dispatch.py` löst das ohne Schemaänderung: Der Claim ist ein
+atomarer UPDATE `approved → failed`, der eine lesbare Marke ins
+`error`-Feld schreibt:
+
+```sql
+update drafts set status='failed',
+       error='in Zustellung seit <UTC> (dispatcher <token>)'
+ where id=%s and status='approved' and channel='whatsapp'
+ returning id, lead_id, recipient, subject, body;
+```
+
+Zwei nebenläufige Dispatcher können denselben Entwurf nie beide gewinnen:
+der zweite UPDATE sieht nach dem Commit des ersten `status='failed'` und
+liefert null Zeilen (READ COMMITTED + Zeilensperre). Buchung von Erfolg und
+Fehler läuft ausschließlich gegen die **eigene** Marke (`error = <exakte
+Marke>` in der WHERE-Klausel) — ein Dispatcher löst nie den Claim eines
+anderen auf.
+
+**Bewusst at-most-once, nicht at-least-once.** Die naheliegende Alternative
+— `select … for update skip locked` mit einer über den HTTP-Aufruf hinweg
+offen gehaltenen Transaktion — wurde geprüft und verworfen: Sie liefert
+at-least-once. Ein Absturz *nach* erfolgreichem Senden, aber vor dem
+Commit, gäbe die Zeile wieder als `approved` frei, und die nächste Runde
+schickt dieselbe Vertriebsnachricht ein zweites Mal an einen echten
+Menschen. Der Claim ist deshalb **vor** dem Senden committet: Stirbt der
+Prozess mitten im Versand, bleibt der Entwurf als `failed` mit der Marke
+liegen und wird **nie** automatisch erneut versucht — ein liegengebliebener
+Entwurf ist das kleinere Übel als ein Doppelversand.
+
+**Dokumentierter Restfall.** Ein Absturz zwischen erfolgreichem Senden und
+der Buchung auf `sent` (`_als_gesendet_buchen`) ist die eine Lücke, die
+diese Konstruktion strukturell nicht schließen kann: Die Nachricht ist beim
+Empfänger angekommen, aber der Entwurf trägt weiter die Claim-Marke. Für
+genau diesen Fall verweigert `entwurf_erneut_freigeben` eine erneute
+Freigabe, solange der `error`-Text mit „in Zustellung" beginnt — nur mit dem
+ausdrücklichen Parameter `bestaetigt=True` lässt sich das überschreiben,
+nachdem der Betreiber vor dem Risiko eines Doppelversands gewarnt wurde
+(`server.py`, Schutzkante über `_CLAIM_MARKE_PRAEFIX`; Ablauf im Runbook,
+Abschnitt „Stufe 3"). Der Absturz-Fall selbst ist nur unit-/mutationsgetestet
+(`sales-mcp/tests/test_dispatch.py`), nicht live gegen einen echten
+Prozessabsturz erzwungen — das ließe sich nur durch ein absichtliches
+Kill-mitten-im-Senden nachstellen, was gegen den laufenden Container ein
+unnötiges Risiko wäre und deshalb unterblieben ist.
+
+### Nummern-Regeln (`sales-mcp/nummern.py`) und die Amtsnull-Geschichte
+
+Zustellbar ist nur eine Nummer, die ihre Landesvorwahl **selbst mitbringt**
+— es wird nicht geraten:
+
+| Eingabe (nach Bereinigung) | Ergebnis |
+|---|---|
+| `+<vorwahl><nummer>` | `<ziffern>@c.us` |
+| `00<vorwahl><nummer>` | `<ziffern>@c.us` |
+| `<vorwahl><nummer>`, ≥ 10 Stellen, keine führende 0 | `<ziffern>@c.us` |
+| `0…` ohne `00` (nationale Schreibweise) | **failed** — `Empfaenger ohne Landesvorwahl ('0…') — mit +Vorwahl erfassen, nationaler Schreibweise wird nicht vertraut` |
+| Name, E-Mail, Mischform, zu kurz/lang, leer | **failed** — `kein zustellbarer Empfaenger` |
+
+**Die Geschichte dahinter.** Bis zur Batch-Review (T2+T3) galt eine
+bequemere „Amtsnull-Regel": eine führende `0` ohne Landesvorwahl wurde als
+**deutsche** Nummer gelesen (`0170…` → `49170…`) — naheliegend, weil das die
+mit Abstand häufigste Schreibweise ist, die ein Betreiber oder Kunde nennt.
+Die Review deckte den Preis auf: Die Regel griff für **jede** national
+geschriebene Nummer, auch für eine österreichische (`0664 1234567` →
+`496641234567@c.us`) — eine wohlgeformte, echte deutsche Mobilnummer eines
+am Vorgang gänzlich unbeteiligten Menschen. Eine Vertriebsnachricht wäre
+dorthin gegangen, und der Versand hätte `sent` gemeldet, ohne dass irgendwo
+ein Fehler sichtbar geworden wäre.
+
+T5a hat die Regel deshalb verschärft: Eine Nummer ohne `+`/`00`-Präfix wird
+seither zurückgewiesen, statt sie zu erraten. Zwei Teile der alten
+Behandlung sind bewusst geblieben, weil ihr Wegfall eine **neue**
+Fehlzustellung erzeugt hätte statt eine zu verhindern: der Einschub `(0)`
+(`+49 (0)170…`, die übliche, ausdrückliche Notation für „Amtsnull hier
+weglassen") wird entfernt, und eine Amtsnull direkt hinter einer bereits
+**ausgeschriebenen** `49` wird gestrichen (`+49 0170…` → `49170…`) — dort
+steht die Landesvorwahl schon da, es kann also nichts verwechselt werden.
+Beides betrifft ausschließlich Eingaben, die bereits eine Landesvorwahl
+nennen; die `49`-Sonderregel ist bewusst nicht auf andere Vorwahlen
+übertragen (`+43 0664…` bleibt unkorrigiert und scheitert sichtbar bei
+OpenWA statt jemanden Falschen zu erreichen).
+
+Mutationsprobe (alte Amtsnull-Regel testweise zurückgebaut): genau elf
+Tests brechen, angeführt vom AT-Fall
+(`assert '496641234567@c.us' is None` schlägt fehl, weil die alte Regel
+wieder eine Nummer liefert) — die neue Regel trägt das Gewicht, das ihr
+zugeschrieben wird.
+
+`nummern.py` ist ein eigenständiges, abhängigkeitsfreies Modul, das sowohl
+`dispatch.py` (entscheidet, wohin tatsächlich zugestellt wird) als auch
+`server.py` (`entwuerfe_offen` zeigt die `zielnummer` vor der Freigabe an)
+importieren — ein Test hält fest, dass beide **dieselbe** Funktion benutzen
+(`dispatch.normalisiere_empfaenger is nummern.normalisiere_empfaenger`),
+damit eine Freigabe nie die Freigabe für etwas anderes ist als das, was
+tatsächlich passiert.
+
+### Compose-Isolation: Der Agent-Container erbt keine Versand-Secrets
+
+`docker-compose.yml`, Dienst `sales-claw`, hatte ursprünglich
+`env_file: .env` — und erbte damit `OPENWA_API_KEY` und `SALES_DB_URL`,
+obwohl der Agent keines von beidem braucht (er versendet nichts, spricht
+die Datenbank nur über `sales-mcp` an). Mit diesen Schlüsseln im
+Agent-Container hätte ein `curl` gegen OpenWA WhatsApp-Nachrichten ohne
+jeden Umweg über `drafts` versendet, und ein `psql` mit der DSN hätte
+`status='approved'` selbst setzen können — das Freigabe-Gate wäre nur noch
+so stark wie die Exec-Freigabeliste des Gateways gewesen, nicht mehr die
+Datenbank (Grundsatzentscheidung 1 unterlaufen). Batch-Review-Befund, mit
+T5a behoben: `sales-claw` bekommt jetzt eine ausdrückliche, benannte
+`environment:`-Liste statt der Vererbung über `env_file`:
+
+```yaml
+environment:
+  - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+  - TZ=${TZ:-Europe/Berlin}
+  - OPENCLAW_STATE_DIR=/home/node/.openclaw
+```
+
+`sales-mcp` und `sales-dispatch` behalten `env_file: .env`: sie **sind** die
+Vertrauensdomäne für diese Geheimnisse — der eine hält die Kundendaten-DB,
+der andere ist die einzige Komponente, die versenden darf.
+
+**Wichtig: der Fix war bis zum nächsten Recreate inert.** Ein laufender
+Container behält die Umgebungsvariablen seines Erzeugungszeitpunkts; die
+Änderung in `docker-compose.yml` allein hat nichts sofort bewirkt. **Scharf
+seit dem tatsächlichen Recreate von `sales-claw` am 2026-08-18, gemessen
+14:16:25 UTC** (`docker inspect sales-claw --format '{{.State.StartedAt}}'`
+→ `2026-08-18T14:16:25…Z`). Verifiziert danach, ohne einen Wert auszugeben:
+
+```
+$ docker exec sales-claw sh -lc \
+    'test -n "$OPENWA_API_KEY" && echo gesetzt || echo fehlt; \
+     test -n "$SALES_DB_URL"  && echo gesetzt || echo fehlt'
+fehlt
+fehlt
+```
+
+`OPENROUTER_API_KEY` bleibt gesetzt (der Agent braucht ihn fürs Modell); der
+Kanal (WhatsApp-Kopplung aus Stufe 1/2, `linked`/`connected`) überlebte den
+Recreate unverändert.
+
+**Nicht verwendet zur Verifikation: `docker compose config`.** Der Befehl
+inlined `env_file`-Inhalte in seine Ausgabe — genau das führte in T5a zu
+einem gemeldeten Secret-Vorfall (ein Schlüssel unbekannten Namens landete
+im Sitzungsprotokoll eines Subagenten, außerhalb jeder Datei/jedes
+Commits). Für diese Dokumentation wie für jede künftige Prüfung gilt
+deshalb: Isolation über den **laufenden** Container prüfen (`docker exec …
+test -n "$VAR"`, nie den Wert ausgeben), nicht über die aufgelöste
+Compose-Konfiguration. `docker compose config` bleibt in diesem Repo
+gesperrt.

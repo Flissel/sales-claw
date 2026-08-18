@@ -674,6 +674,197 @@ erneut stellen — die Ausnahme von der sonstigen Pin-Regel gilt ausdrücklich n
 den Prototyp ohne echte Kundengespräche (`docs/02_ARCHITECTURE.md`, Abschnitt
 „Modellanbieter").
 
+## Stufe 3: Versand mit Approval
+
+Ergänzt den Alltagsbetrieb um zwei weitere Container: `openwa`
+(WhatsApp-Gateway) und `sales-dispatch` (der einzige Dienst, der
+tatsächlich versendet). Architektur, die fünf Grundsatzentscheidungen,
+Claim-Mechanik und Nummern-Regeln stehen in `docs/02_ARCHITECTURE.md`,
+Abschnitt „Architektur (Stufe 3)". Pairing-Anleitung: siehe
+`docs/08_PAIRING_ANLEITUNG.md`.
+
+### Start und Stopp aller vier Container
+
+Zwei Compose-Dateien, ein gemeinsames Projekt (`name: sales-claw`, explizit
+in beiden Dateien gepinnt — dadurch teilen sich alle vier Container
+dasselbe Netz, und `openwa` ist unter dem DNS-Namen `openwa` erreichbar):
+
+```powershell
+# Hauptstack: sales-claw, sales-mcp, sales-dispatch
+docker compose up -d
+docker compose ps
+# erwartet: sales-claw (healthy), sales-mcp Up, sales-dispatch Up
+
+# OpenWA — eigene Compose-Datei, gleiches Projekt
+docker compose -f docker-compose.openwa.yml up -d --build
+docker compose -f docker-compose.openwa.yml ps
+# erwartet: openwa (healthy)
+```
+
+Stoppen:
+
+```powershell
+docker compose down
+docker compose -f docker-compose.openwa.yml down
+```
+
+**`--remove-orphans` ist in diesem Repo TABU — in JEDER Form, mit JEDER
+Compose-Datei.** Weil beide Compose-Dateien dasselbe Projekt teilen, meldet
+jeder Befehl mit der Hauptdatei „Found orphan containers ([openwa])" — das
+ist harmlos und erwartet, solange nichts weiter passiert. Mit
+`--remove-orphans` würde genau dieser als „verwaist" gemeldete
+`openwa`-Container entfernt — inklusive seiner laufenden
+Session-Verbindung. Ob eine im Volume `openwa-data` gespeicherte Pairing
+das automatisch übersteht, ist **nicht geprüft** — genau deshalb gilt die
+Regel kategorisch und ungetestet: `--remove-orphans` wird auf diesem Stack
+nie verwendet, auch nicht „nur um die Warnung loszuwerden". Umgekehrt gilt
+dasselbe für `docker-compose.openwa.yml`: ein Befehl damit meldet
+`sales-claw`, `sales-mcp` und `sales-dispatch` als verwaist.
+
+Nur einen der vier Dienste betreffen:
+
+```powershell
+docker compose up -d sales-dispatch
+docker compose stop sales-dispatch
+docker compose logs -f sales-dispatch
+docker compose -f docker-compose.openwa.yml logs -f openwa
+```
+
+`sales-dispatch` hat wie `sales-mcp` keinen `HEALTHCHECK` — Startzustand
+über die Logs prüfen (Startzeile nennt Schema, OpenWA-URL, Session,
+Intervall, Pause). `openwa` hat einen Healthcheck gegen
+`/api/health/ready`.
+
+### Status eines Entwurfs lesen
+
+Über den Agenten: „zeig die Entwürfe" → `entwuerfe_offen()` liefert zwei
+Blöcke — `entwuerfe` (offene Freigaben: `pending` sowie freigegebene
+LinkedIn-Entwürfe, die auf Handversand warten) und `fehlgeschlagen` (bis zu
+20 Einträge, `anzahl_fehlgeschlagen` nennt die tatsächliche Zahl daneben).
+Fünf mögliche `status`-Werte in `drafts` (CHECK constraint,
+`db/provision.sql`):
+
+| Status | Bedeutung |
+|---|---|
+| `pending` | Entwurf erstellt, wartet auf Freigabe/Ablehnung |
+| `approved` | Freigegeben — WhatsApp: wird vom Dispatcher binnen ~10 s abgeholt; LinkedIn: wartet auf Handversand |
+| `failed` | Zustellung gescheitert **oder** gerade unterwegs — `error` unterscheidet, siehe unten |
+| `sent` | Zugestellt (WhatsApp: Dispatcher-Erfolg) oder quittiert (LinkedIn: `entwurf_manuell_gesendet`) |
+| `rejected` | Vom Betreiber abgelehnt |
+
+**`failed` mit der Marke „in Zustellung seit …" ist ein Zwischenzustand,
+kein Endzustand.** Der Dispatcher setzt diese Marke **vor** dem
+Sendeversuch (der Claim, `docs/02_ARCHITECTURE.md`, Abschnitt
+„Claim-Mechanik"). Steht sie noch da, wenn `entwuerfe_offen` erneut
+abgefragt wird, ist entweder der Versand gerade unterwegs (Sekunden) —
+oder der Dispatcher ist **genau während dieses Versands gestorben**. Im
+zweiten Fall ist unklar, ob die Nachricht den Empfänger schon erreicht
+hat. Deshalb verweigert `entwurf_erneut_freigeben` eine erneute Freigabe,
+solange `error` mit „in Zustellung" beginnt, **ohne** den zusätzlichen
+Parameter `bestaetigt=True` — und der Agent ist angewiesen
+(`config/workspace/AGENTS.md`), in diesem Fall ausdrücklich vor einem
+möglichen Doppelversand zu warnen und eine zweite, ausdrückliche
+Bestätigung einzuholen, bevor er
+`entwurf_erneut_freigeben(draft_id, bestaetigt=True)` aufruft.
+**Re-Approve eines hängenden Claims also nur mit dieser Bestätigung** —
+nie automatisch, nie „einfach nochmal freigeben".
+
+Jeder andere `failed`-Fehlertext (z. B. `kein zustellbarer Empfaenger`,
+die Nummern-Härtung aus `docs/02_ARCHITECTURE.md`, oder ein echtes
+`OpenWA HTTP 409: …`) ist ein abgeschlossener Fehlschlag ohne
+Doppelversand-Risiko — Re-Approve funktioniert dort ohne `bestaetigt`,
+verlangt aber trotzdem eine ausdrückliche Betreiber-Anweisung.
+
+### Freigabe-Ablauf (Betreibersicht)
+
+1. „Zeig die Entwürfe" → der Agent listet über `entwuerfe_offen`: die
+   **vollständige** draft_id, Kanal, Empfänger, Zielnummer (die
+   tatsächliche Chat-ID, oder `null` mit dem Hinweis „nicht zustellbar"),
+   Einwilligungsstand, Textanfang.
+2. Für einen konkreten Entwurf: „Gib den Entwurf für … frei." Der Agent
+   zeigt den **vollständigen** Text wörtlich und fragt zurück: „Diesen
+   Text an … freigeben?" — er gibt nichts frei, bevor diese Rückfrage
+   bestätigt wurde (`AGENTS.md`, Abschnitt „Freigabe").
+3. Nach der Bestätigung: `entwurf_freigeben(draft_id)` →
+   `status='approved'`.
+   - **WhatsApp:** der Agent sagt ausdrücklich, dass der Dispatcher
+     automatisch übernimmt. Die Schleife läuft alle 10 s
+     (`DISPATCH_INTERVAL_S`) — Zustellung oder Fehlschlag stehen binnen
+     weniger Sekunden bis knapp über 10 s in `drafts`.
+   - **LinkedIn:** siehe unten.
+
+### LinkedIn-Ablauf (Handversand)
+
+1. Freigabe wie oben — der Agent weist ausdrücklich darauf hin, dass der
+   Betreiber **selbst** senden muss (kein automatischer Versand, keine
+   API-Anbindung, Grundsatzentscheidung 3).
+2. Betreiber sendet die Nachricht von Hand über LinkedIn.
+3. Betreiber meldet das dem Agenten zurück (z. B. „Entwurf … ist raus").
+4. **Erst danach** ruft der Agent `entwurf_manuell_gesendet(draft_id)`
+   auf — quittiert `status='sent'`, versendet selbst nichts. Funktioniert
+   ausschließlich für `channel='linkedin'` **und** nur aus `approved`;
+   jeder andere Kanal liefert den Fehlertext „nur für LinkedIn — WhatsApp
+   versendet der Dispatcher".
+
+### `DISPATCH_ONCE` — Testmodus
+
+`sales-dispatch` läuft normalerweise als Dauerschleife (alle
+`DISPATCH_INTERVAL_S`, Vorgabe 10 s). Für einen einzelnen, kontrollierten
+Testlauf statt der Dauerschleife:
+
+```powershell
+docker compose run --rm -e SALES_DB_SCHEMA=sales_test -e DISPATCH_ONCE=1 sales-dispatch
+```
+
+Eine Runde (bis zu 5 Entwürfe, `STAPEL` in `dispatch.py`), dann Exit 0.
+**`SALES_DB_SCHEMA=sales_test` nicht vergessen** — sonst läuft der Testlauf
+gegen die echten Kundendaten in `sales`. Genau dieser Weg wurde in T3/T5a
+für den Live-Beleg gegen das echte, ungepairte OpenWA verwendet (Ergebnis:
+HTTP 409 → `failed`, dokumentiert in `docs/02_ARCHITECTURE.md`).
+
+### psql-Gegenproben für `drafts`
+
+Gleiches Muster wie in Stufe 2 (Abschnitt oben) — DSN nur als
+Host-Umgebungsvariable, **ohne Wert** an den Container durchgereicht:
+
+```bash
+export SALES_DSN=$(grep '^SALES_DB_URL=' .env | sed 's/^SALES_DB_URL=//')
+docker run --rm -e SALES_DSN -i postgres:17-alpine sh -c \
+  'psql "$SALES_DSN" -c "select id, channel, status, recipient, left(error,60) as error from sales.drafts order by created_at desc limit 10;"'
+unset SALES_DSN
+```
+
+`.env` wird dabei nicht gelesen oder ausgegeben — nur die eine
+`SALES_DB_URL`-Zeile maschinell extrahiert (vollständige Begründung des
+Musters: Abschnitt „psql-Gegenproben" oben, Stufe 2).
+
+### Warmup-Regeln für frische Nummern
+
+Aus OpenWAs eigener Risiko-Dokumentation (Upstream-Repo,
+`docs/16-risk-management.md` und `docs/12-troubleshooting-faq.md`) — gilt
+für die dedizierte `openwa`-Nummer ab dem QR-Pairing
+(`docs/08_PAIRING_ANLEITUNG.md`):
+
+- **Erst menschlich verhalten.** Ein bis zwei Wochen normale Nutzung
+  (Nachrichten auch empfangen und beantworten, nicht nur senden), bevor
+  Vertriebsvolumen über die Nummer läuft.
+- **Nicht am ersten Tag senden.** Eine frisch verknüpfte Nummer, die
+  sofort bulk-artige Nachrichten verschickt, ist genau das Muster, das
+  WhatsApps Spam-Erkennung sucht.
+- **Wenige Nachrichten pro Minute, nicht mehr.** OpenWAs eigene
+  Empfehlung nennt grob 100–200 Nachrichten/Tag als Obergrenze für neue
+  Nummern und rät zu zufälligen Pausen zwischen Sendungen sowie dazu,
+  keine identischen Textbausteine an viele Empfänger zu schicken.
+  `sales-dispatch` hat dafür `SENDE_PAUSE_S` (Vorgabe 1 s zwischen zwei
+  tatsächlichen Sendungen einer Runde, einstellbar über
+  `DISPATCH_SENDE_PAUSE_S`) — das ist eine Mindestbremse, **kein**
+  Rate-Limit im eigentlichen Sinn: kein Tages- oder Stunden-Deckel auf
+  unserer Seite. OpenWAs eigener Rate-Limiter (100 Anfragen/60 s) greift
+  als zweite Schicht davor. Für Demo-Volumen ausreichend, vor echtem
+  Volumenbetrieb ausbaufähig.
+- **Nicht an Nummern senden, die nie zuerst geschrieben haben** — deckt
+  sich mit der ohnehin bestehenden Consent-Erwartung des Prototyps.
+
 ## Dateiablage
 
 | Was | Wo |
