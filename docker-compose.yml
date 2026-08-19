@@ -240,12 +240,25 @@ services:
     # Mails an echte Menschen schickt, startet nicht von selbst mit dem
     # Rechner mit.
     restart: "no"
-    env_file:
-      - .env
+    # KEIN env_file — dieselbe T5a-Ueberlegung wie beim Agent-Container
+    # (siehe dort, ausfuehrlich): sales-mail braucht die Kundendaten-DB und
+    # die SMTP-Zugangsdaten, sonst nichts. Ueber env_file erbte er auch
+    # OPENWA_API_KEY, APIFY_TOKEN, INBOX_WEBHOOK_SECRET und CALDAV_* — und
+    # der fruehere Kommentar an dieser Stelle BEHAUPTETE die Trennung
+    # („CALDAV_* liest der Werkzeugdienst, nicht dieser hier"), waehrend die
+    # env_file-Zeile drei Zeilen darueber sie unterlief (Review-Befund H3).
+    # Jetzt stellt die namentliche Liste sie her; die Werte kommen weiter
+    # aus .env, ueber Compose-Interpolation der genannten Namen.
     environment:
+      - SALES_DB_URL=${SALES_DB_URL}
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORT=${SMTP_PASSWORT:-}
+      - EMAIL_ABSENDER=${EMAIL_ABSENDER:-}
+      - TZ=${TZ:-Europe/Berlin}
       # Schleifentakt explizit statt implizit per Default — wie beim
-      # Dispatcher. SMTP_HOST/PORT/USER/PASSWORT und EMAIL_ABSENDER kommen
-      # aus .env; CALDAV_* liest der Werkzeugdienst, nicht dieser hier.
+      # Dispatcher.
       - MAIL_INTERVAL_S=10
     # Ein laufender Versand darf nicht per SIGKILL zerrissen werden: der
     # Dienst beendet nach SIGTERM die laufende Runde (SMTP-Timeout 30 s) und

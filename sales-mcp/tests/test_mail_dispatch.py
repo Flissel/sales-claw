@@ -762,3 +762,42 @@ def test_keine_pause_hinter_einem_unzustellbaren_entwurf(monkeypatch):
 
     assert STUB.mails == []
     assert gedauert < 2.0
+
+
+# ---------------------------------------------------------------------------
+# Nachbesserungen aus dem Stufe-9-Review (Befunde H1, H2)
+# ---------------------------------------------------------------------------
+
+def test_kaputte_nachrichtenkonstruktion_toetet_den_dienst_nicht(monkeypatch):
+    """H1: nachricht_bauen liegt ausserhalb von sendens eigenem Fangnetz —
+    ein unerwarteter Konstruktionsfehler muss zur regulaeren Fehlerbuchung
+    werden, nicht zum Prozesstod (restart 'no' liesse den Dienst sonst
+    unten, den Entwurf mit Claim-Marke liegen)."""
+    draft = _draft(_lead())
+
+    def _kaputt(*_a, **_kw):
+        raise ValueError("Header values may not contain linefeed characters")
+
+    monkeypatch.setattr(mail_dispatch, "nachricht_bauen", _kaputt)
+    ergebnis = mail_dispatch.eine_runde()
+    assert ergebnis.get("fehler", 0) == 1
+    zeile = _zeile(draft)
+    assert zeile["status"] == "failed"
+    assert "nicht konstruierbar" in zeile["error"]
+    assert "ValueError" in zeile["error"]
+    assert STUB.mails == []          # nichts ging raus
+
+
+def test_auch_die_base64_form_des_passworts_wird_gefiltert():
+    """H2: auf der Leitung reist das Passwort base64-kodiert (AUTH LOGIN:
+    allein; AUTH PLAIN: als NUL-User-NUL-Passwort-Block) — ein spiegelnder
+    Gateway gaebe genau diese Darstellung zurueck, nicht den Klartext."""
+    import base64 as b64
+    allein = b64.b64encode(b"STUB-GEHEIMNIS").decode()
+    block = b64.b64encode(
+        b"\x00stub-user@example.org\x00STUB-GEHEIMNIS").decode()
+    text = f"535 mirror {allein} und {block} ende"
+    gefiltert = mail_dispatch._ohne_geheimnis(text)
+    assert allein not in gefiltert
+    assert block not in gefiltert
+    assert gefiltert.count("***") >= 2

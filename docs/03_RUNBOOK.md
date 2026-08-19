@@ -811,8 +811,8 @@ verlangt aber trotzdem eine ausdrückliche Betreiber-Anweisung.
 4. **Erst danach** ruft der Agent `entwurf_manuell_gesendet(draft_id)`
    auf — quittiert `status='sent'`, versendet selbst nichts. Funktioniert
    ausschließlich für `channel='linkedin'` **und** nur aus `approved`;
-   jeder andere Kanal liefert den Fehlertext „nur für LinkedIn — WhatsApp
-   versendet der Dispatcher".
+   jeder andere Kanal liefert den Fehlertext „nur fuer LinkedIn — WhatsApp
+   und E-Mail versenden die Dispatcher-Dienste".
 
 ### `DISPATCH_ONCE` — Testmodus
 
@@ -1453,8 +1453,11 @@ unangetastet liegen, bis der Kanal steht.
 * **Keine Anhänge.** Er versendet reinen Text. Ein E-Mail-Entwurf mit
   `media_ref` wird `failed` gebucht — es geht dann **nichts** raus, auch
   kein Text ohne die Unterlage. Freigegeben war eine Nachricht *mit*
-  Unterlage. Wer eine Datei per Mail schicken will, sendet von Hand und
-  quittiert mit `entwurf_manuell_gesendet`.
+  Unterlage. Wer eine Datei per Mail schicken will, sendet sie von Hand
+  aus dem Mailprogramm; der Entwurf bleibt dann als `failed` (Grund:
+  Anhang) dokumentiert. **`entwurf_manuell_gesendet` gilt NUR für
+  LinkedIn** — für E-Mail-Entwürfe lehnt es ab (frühere Fassungen dieses
+  Absatzes empfahlen genau das; das war eine Sackgasse, Review-Befund S2).
 * **Kein Retry.** Ein `failed`-Entwurf bleibt liegen, bis ein Mensch ihn mit
   `entwurf_erneut_freigeben` neu freigibt — wie bei WhatsApp.
 * **Kein unverschlüsselter Weg.** Es gibt genau zwei Ausgänge (implizites

@@ -261,7 +261,8 @@ def test_manuell_gesendet_auf_whatsapp_draft_schlaegt_fehl_und_aendert_nichts():
     server.entwurf_freigeben(draft)
     vor = _zeile(draft)
     kaputt = json.loads(server.entwurf_manuell_gesendet(draft))
-    assert kaputt["fehler"] == "nur für LinkedIn — WhatsApp versendet der Dispatcher"
+    assert kaputt["fehler"] == ("nur fuer LinkedIn — WhatsApp und E-Mail "
+                                "versenden die Dispatcher-Dienste")
     assert _zeile(draft) == vor
 
 

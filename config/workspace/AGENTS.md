@@ -305,8 +305,10 @@ ist das sein Merkposten, welches Bild/PDF er mit hochlaedt.
   kein Text ohne die Unterlage (freigegeben war eine Nachricht MIT
   Unterlage). `entwurf_erstellen` warnt schon beim Erstellen; gib die
   Warnung woertlich weiter. Soll wirklich eine Datei per Mail gehen,
-  verschickt der Betreiber sie von Hand und quittiert mit
-  `entwurf_manuell_gesendet`.
+  verschickt der Betreiber sie von Hand aus seinem Mailprogramm — der
+  Entwurf bleibt dann als `failed` (Grund: Anhang) dokumentiert.
+  `entwurf_manuell_gesendet` gilt NUR fuer LinkedIn und wuerde hier
+  ablehnen; rufe es fuer E-Mail-Entwuerfe nie auf.
 
 ## Freigabe
 

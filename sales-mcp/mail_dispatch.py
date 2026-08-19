@@ -63,6 +63,7 @@ Gateways, manche Auth-Fehlertexte). Jeder Fehlertext geht deshalb durch
 `_ohne_geheimnis` — dieselbe Klasse wie `_ohne_token` in recherche.py —,
 bevor er in `drafts.error`, in den Chat oder ins Log geraet.
 """
+import base64
 import json
 import logging
 import os
@@ -127,7 +128,18 @@ def _ohne_geheimnis(text: str) -> str:
     """
     if not SMTP_PASSWORT:
         return text
-    return text.replace(SMTP_PASSWORT, "***")
+    # Auch die kodierten Formen (Review-Befund H2): auf der Leitung reist
+    # das Passwort als Base64 — allein (AUTH LOGIN) oder als
+    # \0user\0passwort-Block (AUTH PLAIN). Ein spiegelnder Gateway gaebe
+    # genau diese Darstellung zurueck, nicht den Klartext. Der
+    # CalDAV-Zwilling (kalender.py) filtert aus demselben Grund zwei Formen.
+    text = text.replace(SMTP_PASSWORT, "***")
+    text = text.replace(base64.b64encode(
+        SMTP_PASSWORT.encode("utf-8")).decode("ascii"), "***")
+    text = text.replace(base64.b64encode(
+        f"\0{SMTP_USER}\0{SMTP_PASSWORT}".encode("utf-8")).decode("ascii"),
+        "***")
+    return text
 
 
 def _maskiert(adresse: str) -> str:
@@ -321,8 +333,11 @@ def verarbeite_draft(draft_id) -> str:
     if geclaimt["media_ref"]:
         grund = (f"Anhang '{geclaimt['media_ref']}' — der E-Mail-Versand "
                  f"schickt nur Text. Es ging NICHTS raus (auch kein Text "
-                 f"ohne Anhang). Von Hand senden und mit "
-                 f"entwurf_manuell_gesendet quittieren.")
+                 f"ohne Anhang). Ohne Anhang neu erstellen und freigeben — "
+                 f"oder die Unterlage von Hand aus dem Mailprogramm "
+                 f"schicken; dieser Entwurf bleibt dann als failed "
+                 f"dokumentiert (entwurf_manuell_gesendet gilt NUR fuer "
+                 f"LinkedIn).")
         _als_fehler_buchen(draft_id, marke, grund)
         LOG.info("draft=%s nicht zugestellt (Anhang, kein Ersatzversand)",
                  draft_id)
@@ -334,6 +349,20 @@ def verarbeite_draft(draft_id) -> str:
         _als_fehler_buchen(draft_id, marke, str(e))
         LOG.info("draft=%s fehlgeschlagen an %s (%s)", draft_id,
                  _maskiert(adresse), _einzeilig(str(e)))
+        return "fehler"
+    except Exception as e:                  # noqa: BLE001 — bewusst breit
+        # Review-Befund H1: `nachricht_bauen` liegt ausserhalb von `senden`s
+        # eigenem Fangnetz. Ein Header-ValueError (heute durch die
+        # Adress-/Betreffpruefung unerreichbar, aber Konstruktions- statt
+        # Verhaltensgarantie) risse sonst den Dienst ab (restart "no") und
+        # liesse den Entwurf mit Claim-Marke liegen. Hier wird er zur
+        # regulaeren Fehlerbuchung — dieselbe T1/T5a-Lehre wie ueberall.
+        grund = _ohne_geheimnis(f"Nachricht nicht konstruierbar "
+                                f"({type(e).__name__}: "
+                                f"{_einzeilig(str(e))[:200]})")
+        _als_fehler_buchen(draft_id, marke, grund)
+        LOG.info("draft=%s nicht konstruierbar (%s)", draft_id,
+                 type(e).__name__)
         return "fehler"
 
     try:

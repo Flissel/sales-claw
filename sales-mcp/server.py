@@ -784,8 +784,10 @@ def entwurf_erstellen(lead_id: str, kanal: str, text: str,
         hinweis += (f" ACHTUNG: E-Mails gehen als reiner Text raus — dieser "
                     f"Entwurf traegt den Anhang '{basis}' und wird deshalb "
                     f"beim Versand fehlschlagen. Entweder ohne Anhang neu "
-                    f"erstellen oder die Mail von Hand senden und mit "
-                    f"entwurf_manuell_gesendet quittieren.")
+                    f"erstellen — oder die Unterlage von Hand aus dem "
+                    f"Mailprogramm schicken; der Entwurf bleibt dann als "
+                    f"failed dokumentiert (entwurf_manuell_gesendet gilt "
+                    f"NUR fuer LinkedIn).")
     return _json({"draft_id": zeilen[0]["id"], "status": zeilen[0]["status"],
                   "medien_datei": basis, "hinweis": hinweis})
 
@@ -1330,6 +1332,11 @@ def entwuerfe_offen() -> str:
     Fehlergrund; sie werden NIE von selbst wiederholt und brauchen eine
     ausdrueckliche erneute Freigabe.
 
+    Je Eintrag steht die Zustelladresse des Kanals: `zielnummer` bei
+    WhatsApp (die Nummer, an die tatsaechlich zugestellt wuerde),
+    `zieladresse` bei E-Mail (dieselbe Pruefung, mit der sales-mail
+    sendet) — beide null mit Hinweis, wenn unzustellbar.
+
     Je Eintrag steht neben dem roh erfassten `empfaenger` die `zielnummer`,
     an die tatsaechlich zugestellt wuerde (null + hinweis, wenn die Nummer
     nicht zustellbar ist), der `consent`-Stand des Kontakts und
@@ -1414,9 +1421,9 @@ def entwurf_ablehnen(draft_id: str) -> str:
 @_gesichert
 def entwurf_manuell_gesendet(draft_id: str) -> str:
     """Quittiert einen bereits von Hand versendeten LinkedIn-Entwurf
-    (approved -> sent). Versendet NICHTS selbst — nur fuer LinkedIn, WhatsApp
-    versendet automatisch der Dispatcher. Nur nach tatsaechlichem
-    Handversand aufrufen."""
+    (approved -> sent). Versendet NICHTS selbst — nur fuer LinkedIn:
+    WhatsApp und E-Mail versenden die Dispatcher-Dienste automatisch. Nur
+    nach tatsaechlichem Handversand aufrufen."""
     zeilen = _q(
         "update drafts set status = 'sent', sent_at = now() "
         "where id = %s and status = 'approved' and channel = 'linkedin' "
@@ -1426,7 +1433,9 @@ def entwurf_manuell_gesendet(draft_id: str) -> str:
         if not vorhanden:
             return _json({"fehler": f"Kein Entwurf mit draft_id {draft_id}."})
         if vorhanden[0]["channel"] != "linkedin":
-            return _json({"fehler": "nur für LinkedIn — WhatsApp versendet der Dispatcher"})
+            return _json({"fehler": ("nur fuer LinkedIn — WhatsApp und "
+                                     "E-Mail versenden die "
+                                     "Dispatcher-Dienste")})
         return _entwurf_status_fehler(draft_id, "approved")
     z = zeilen[0]
     _q("insert into activities (lead_id, type, payload) values (%s, 'versand', %s) "
