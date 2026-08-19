@@ -16,6 +16,12 @@ Sie läuft als Container neben der persönlichen lokalen Installation und neben
 Keine Fachlogik, kein Datenmodell, keine Bedarfsanalyse, keine Antworten an Dritte.
 Der Container spricht ausschließlich mit der Nummer des Betreibers (Selbst-Chat).
 
+*Stand 19.08.2026: Der letzte Satz beschreibt die Stufe 1, nicht mehr den
+Endzustand — seit dem Auto-Betrieb spricht der Agent zusätzlich mit
+Kontakten, die der Betreiber ausdrücklich freigegeben und per
+`scripts/sync-allowlist.ps1` in die Allowlist übernommen hat
+(Runbook „Auto-Betrieb").*
+
 ## Einstiegspunkte
 
 | Ich will … | … dann |

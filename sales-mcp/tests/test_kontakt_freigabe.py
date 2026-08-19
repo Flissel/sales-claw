@@ -131,6 +131,65 @@ def test_freigeben_ist_idempotent():
     assert ok["whatsapp_freigabe"] is True
 
 
+def test_freigabe_und_entzug_nennen_den_allowlist_sync():
+    """Auto-Betrieb haengt an der Allowlist im OpenClaw-Volume — beide
+    Werkzeuge muessen den Betreiber auf den Sync hinweisen (der Agent gibt
+    den hinweis woertlich weiter). Beim Entzug ist der Hinweis
+    sicherheitsrelevant: bis zum Sync hoert der Agent weiter mit."""
+    lead = _anlegen()
+    frei = json.loads(server.kontakt_freigeben(lead))
+    assert frei["hinweis"] == server.FREIGABE_HINWEIS
+    assert "sync-allowlist.ps1" in frei["hinweis"]
+    entzug = json.loads(server.kontakt_freigabe_entziehen(lead))
+    assert entzug["hinweis"] == server.ENTZUG_HINWEIS
+    assert "WEITER" in entzug["hinweis"]
+
+
+# ---------------------------------------------------------------------------
+# kontakte_freigegeben — der Sollzustand, den sync-allowlist.ps1 uebertraegt
+# ---------------------------------------------------------------------------
+
+def test_kontakte_freigegeben_listet_nur_freigegebene_mit_zielnummer():
+    """Die Liste ist der Sollzustand der Allowlist: nur freigegebene
+    Kontakte, je mit der Nummer in E.164 — derselben Normalisierung, mit
+    der auch zugestellt wird (0049 -> +49)."""
+    frei = _anlegen(name="Frei Gegeben", phone="00491701234567")
+    server.kontakt_freigeben(frei)
+    _anlegen(name="Nicht Frei", phone="+491702222222")
+    entzogen = _anlegen(name="Wieder Entzogen", phone="+491703333333")
+    server.kontakt_freigeben(entzogen)
+    server.kontakt_freigabe_entziehen(entzogen)
+
+    liste = json.loads(server.kontakte_freigegeben())
+    assert liste["anzahl"] == 1
+    eintrag = liste["kontakte"][0]
+    assert eintrag["lead_id"] == frei
+    assert eintrag["nummer"] == "+491701234567"
+    assert "hinweis" not in eintrag
+    assert "sync-allowlist.ps1" in liste["hinweis"]
+
+
+def test_kontakte_freigegeben_nennt_unzustellbare_nummern():
+    """Ein freigegebener Kontakt ohne zustellbare Nummer kann nicht in die
+    Allowlist — die Liste sagt es, statt ihn stumm wegzulassen."""
+    ohne = _anlegen(name="Ohne Nummer", phone="")
+    server.kontakt_freigeben(ohne)
+    national = _anlegen(name="Nationale Nummer", phone="01704444444")
+    server.kontakt_freigeben(national)
+
+    liste = json.loads(server.kontakte_freigegeben())
+    assert liste["anzahl"] == 2
+    for eintrag in liste["kontakte"]:
+        assert eintrag["nummer"] is None
+        assert "Allowlist" in eintrag["hinweis"]
+
+
+def test_kontakte_freigegeben_leer_ohne_freigaben():
+    _anlegen()
+    liste = json.loads(server.kontakte_freigegeben())
+    assert liste["anzahl"] == 0 and liste["kontakte"] == []
+
+
 def test_freigabe_ueberschreibt_kein_anderes_enrichment():
     """jsonb_set darf nur den eigenen Schluessel anfassen — Profil, Bedarf
     und Bestand bleiben stehen."""

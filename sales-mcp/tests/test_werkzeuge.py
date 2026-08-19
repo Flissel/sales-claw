@@ -688,14 +688,15 @@ def test_kontakt_aktualisieren_signatur_ueberlebt_den_dekorator():
     assert list(parameter) == ["lead_id", "feld", "wert"]
 
 
-def test_dreissig_werkzeuge_registriert():
+def test_einunddreissig_werkzeuge_registriert():
     namen = {fn.__name__ for fn in server.WERKZEUGE}
-    assert len(namen) == 30
+    assert len(namen) == 31
     assert "kontakt_aktualisieren" in namen
-    # Kontakt-Freigabe fuer WhatsApp. Vertragstests dazu in
+    # Kontakt-Freigabe fuer WhatsApp und Auto-Betrieb. Vertragstests dazu in
     # tests/test_kontakt_freigabe.py.
     assert "kontakt_freigeben" in namen
     assert "kontakt_freigabe_entziehen" in namen
+    assert "kontakte_freigegeben" in namen
     assert "wiedervorlage_setzen" in namen
     assert "wiedervorlage_erledigt" in namen
     assert "medien_liste" in namen

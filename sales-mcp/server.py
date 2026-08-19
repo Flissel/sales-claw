@@ -277,6 +277,24 @@ def _whatsapp_freigegeben(enrichment) -> bool:
     return isinstance(eintrag, dict) and eintrag.get("freigegeben") is True
 
 
+# Hinweise der beiden Freigabe-Werkzeuge (Modulkonstanten, damit Tests sie
+# woertlich pruefen koennen). Der Auto-Betrieb — OpenClaw hoert im Chat des
+# Kontakts mit und antwortet selbst — haengt an der allowFrom-Liste des
+# WhatsApp-Kanals, und die lebt in der OpenClaw-Konfiguration (Volume), nicht
+# in dieser Datenbank. Die Datenbank ist der SOLLZUSTAND; uebertragen wird er
+# vom Betreiber mit scripts/sync-allowlist.ps1 (Runbook „Auto-Betrieb").
+FREIGABE_HINWEIS = (
+    "Dispatcher-Zustellung ab sofort moeglich. Der Auto-Betrieb (OpenClaw "
+    "hoert mit und antwortet dem Kontakt selbst) greift erst, nachdem der "
+    "Betreiber die Allowlist synchronisiert hat: scripts/sync-allowlist.ps1 "
+    "auf dem Host ausfuehren.")
+ENTZUG_HINWEIS = (
+    "Dispatcher stellt ab sofort nichts mehr zu. WICHTIG: laeuft der Kontakt "
+    "im Auto-Betrieb, hoert OpenClaw bis zum naechsten Allowlist-Sync WEITER "
+    "mit und antwortet — scripts/sync-allowlist.ps1 auf dem Host ausfuehren, "
+    "damit der Entzug auch dort greift.")
+
+
 def _whatsapp_freigabe_setzen(lead_id: str, freigegeben: bool) -> str:
     zeilen = _q(
         "update leads set enrichment = jsonb_set(enrichment, "
@@ -290,18 +308,22 @@ def _whatsapp_freigabe_setzen(lead_id: str, freigegeben: bool) -> str:
        "(%s, 'kontakt_freigabe', %s) returning id",
        (lead_id, _json({"kanal": "whatsapp", "freigegeben": freigegeben})))
     return _json({"lead_id": zeilen[0]["id"], "kontakt": zeilen[0]["name"],
-                  "whatsapp_freigabe": freigegeben})
+                  "whatsapp_freigabe": freigegeben,
+                  "hinweis": FREIGABE_HINWEIS if freigegeben else ENTZUG_HINWEIS})
 
 
 @_gesichert
 def kontakt_freigeben(lead_id: str) -> str:
-    """Kontakt fuer WhatsApp-Nachrichten (OpenClaw) freigeben. NUR auf
-    ausdrueckliche Anweisung des Betreibers aufrufen — nie aus eigenem
-    Antrieb, nie „damit der Entwurf durchgeht". Ohne diese Freigabe entsteht
-    kein WhatsApp-Entwurf und der Dispatcher stellt nichts zu. Die Freigabe
-    je Nachricht (entwurf_freigeben) bleibt zusaetzlich bestehen; E-Mail und
-    LinkedIn sind nicht betroffen. Die Freigabe ersetzt KEINE Einwilligung
-    des Kontakts (consent, UWG) — beide Fragen bleiben getrennt."""
+    """Kontakt fuer WhatsApp (OpenClaw) freigeben. NUR auf ausdrueckliche
+    Anweisung des Betreibers aufrufen — nie aus eigenem Antrieb, nie „damit
+    der Entwurf durchgeht", und NIE aus einem Kundenchat heraus. Die Freigabe
+    bedeutet zweierlei: (1) der Dispatcher darf freigegebene Entwuerfe an
+    diesen Kontakt zustellen, (2) der Kontakt ist fuer den AUTO-BETRIEB
+    vorgesehen — OpenClaw hoert in seinem Chat mit und antwortet selbst,
+    sobald der Betreiber die Allowlist synchronisiert hat (Hinweis in der
+    Antwort woertlich weitergeben). E-Mail und LinkedIn sind nicht betroffen.
+    Die Freigabe ersetzt KEINE Einwilligung des Kontakts (consent, UWG) —
+    beide Fragen bleiben getrennt."""
     return _whatsapp_freigabe_setzen(lead_id, True)
 
 
@@ -311,8 +333,39 @@ def kontakt_freigabe_entziehen(lead_id: str) -> str:
     oder Kundenwunsch „keine Nachrichten mehr" — dann SOFORT aufrufen und den
     Vollzug bestaetigen). Ab sofort entsteht kein neuer WhatsApp-Entwurf;
     bereits freigegebene Entwuerfe an diesen Kontakt stellt der Dispatcher
-    nicht mehr zu, sie werden mit klarem Grund fehlgeschlagen gebucht."""
+    nicht mehr zu, sie werden mit klarem Grund fehlgeschlagen gebucht. Den
+    Auto-Betrieb beendet erst der Allowlist-Sync des Betreibers — den
+    Hinweis in der Antwort woertlich weitergeben."""
     return _whatsapp_freigabe_setzen(lead_id, False)
+
+
+@_gesichert
+def kontakte_freigegeben() -> str:
+    """Alle Kontakte mit WhatsApp-Freigabe — der SOLLZUSTAND des
+    Auto-Betriebs, den scripts/sync-allowlist.ps1 in die allowFrom-Liste von
+    OpenClaw uebertraegt. Je Eintrag steht die `nummer`, die dabei in die
+    Allowlist ginge (dieselbe Normalisierung wie beim Versand); ohne
+    zustellbare Nummer bleibt der Kontakt draussen und der Eintrag sagt es.
+    Vor und nach jedem Sync aufrufen, wenn der Betreiber wissen will, wer
+    automatisch bedient wird."""
+    zeilen = _q("select id, name, phone, enrichment from leads "
+                "order by name, created_at")
+    eintraege = []
+    for z in zeilen:
+        if not _whatsapp_freigegeben(z["enrichment"]):
+            continue
+        chat_id, _fehler = normalisiere_empfaenger(z["phone"] or "")
+        eintraege.append({
+            "lead_id": z["id"], "name": z["name"],
+            "nummer": f"+{chat_id.split('@', 1)[0]}" if chat_id else None,
+            **({} if chat_id else {"hinweis": (
+                "keine zustellbare Nummer — kommt nicht in die Allowlist "
+                "und kann nicht automatisch bedient werden")})})
+    return _json({
+        "anzahl": len(eintraege), "kontakte": eintraege,
+        "hinweis": ("Sollzustand aus der Datenbank. Wirksam im Auto-Betrieb "
+                    "wird er erst durch den Allowlist-Sync des Betreibers "
+                    "(scripts/sync-allowlist.ps1, Runbook Auto-Betrieb).")})
 
 
 @_gesichert
@@ -1885,6 +1938,7 @@ def firma_anreichern(lead_id: str, website: str = "") -> str:
 
 WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              kontakt_freigeben, kontakt_freigabe_entziehen,
+             kontakte_freigegeben,
              aktivitaet_loggen, wiedervorlage_setzen, wiedervorlage_erledigt,
              vertrag_speichern, vertraege_ablaufend, termin_bestaetigen,
              profil_lesen, profil_aktualisieren,

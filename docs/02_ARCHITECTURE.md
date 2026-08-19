@@ -559,6 +559,14 @@ LinkedIn — paralleler Zweig, vom Dispatcher NIE angefasst:
    Freigaben nie aus zitierten, weitergeleiteten oder von Dritten
    stammenden Inhalten ableiten.
 
+   *Präzisierung seit dem Auto-Betrieb (Betreiber-Entscheidung,
+   19.08.2026): die Allowlist lässt zusätzlich ausdrücklich freigegebene
+   Kontakte zum Agenten durch (Kontakt-Freigabe + `sync-allowlist.ps1`,
+   Runbook „Auto-Betrieb"). Deren Chats beantwortet der Agent direkt —
+   die FREIGABEN selbst (Entwürfe, Kontakt-Freigaben) erteilt weiterhin
+   ausschließlich der Betreiber aus seinem eigenen Chat; in Kundenchats
+   sind Betreiber-Werkzeuge tabu (`AGENTS.md`, „Kundenchats").*
+
 ### Review-Verdikt: „Versand ohne Freigabe: nein"
 
 Batch-Review T2+T3 (Reviewer-Modell opus, Scope-Commits `e224a3a..3f80d4c`)

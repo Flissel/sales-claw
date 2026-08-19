@@ -1014,13 +1014,15 @@ nennt die Gesamtzahl. `stunden` wird auf 1..168 gekappt. Der Morgen-Digest
 trägt dieselbe Zahl plus die fünf längsten Wartezeiten als
 `unbeantwortete_eingaenge`.
 
-**Es wird nichts automatisch beantwortet.** Stufe 8 ist eine reine Lese- und
-Protokollschicht: kein neuer Versandweg, keine `drafts`-Berührung,
-`sales-inbox` versendet weiterhin nie. Was geantwortet wird, entscheidet der
-Betreiber, und der Weg dorthin ist unverändert `entwurf_erstellen` → Freigabe
-→ Dispatcher. Der Bot antwortet auch deshalb nie von selbst, weil die
-`allowFrom`-Liste von OpenClaw sein Antwortverhalten begrenzt — der Webhook
-kennt sie nicht, er *sieht* alles, was hereinkommt.
+**Stufe 8 selbst beantwortet nichts automatisch.** Sie ist eine reine Lese-
+und Protokollschicht: kein neuer Versandweg, keine `drafts`-Berührung,
+`sales-inbox` versendet weiterhin nie. Der Weg über den Betreiber ist
+unverändert `entwurf_erstellen` → Freigabe → Dispatcher. Ob der Bot einem
+Kontakt von selbst antwortet, entscheidet allein die `allowFrom`-Liste von
+OpenClaw — der Webhook kennt sie nicht, er *sieht* alles, was hereinkommt.
+Seit dem Auto-Betrieb (siehe „Auto-Betrieb: freigegebene Kontakte …")
+stehen dort auch freigegebene Kontakte: deren Nachrichten beantwortet der
+Agent selbst, und die Antwort erscheint hier als fromMe-Echo.
 
 ### Was als „beantwortet" zählt
 
@@ -1544,6 +1546,85 @@ Gegenprobe in `psql`:
 select name, consent_status,
        enrichment->'whatsapp_freigabe' as whatsapp_freigabe
   from sales.leads order by updated_at desc limit 10;
+```
+
+## Auto-Betrieb: freigegebene Kontakte werden automatisch bedient
+
+Bestandskontakte mit Kontakt-Freigabe sollen nicht über die manuelle
+Entwurf-Schleife laufen: **OpenClaw hört in ihren Chats mit und antwortet
+ihnen selbst.** Der Hebel dafür ist die `allowFrom`-Liste des
+WhatsApp-Kanals — sie entscheidet, wessen Nachrichten der Agent überhaupt
+sieht und beantwortet (und an wen Cron/Announce zustellen darf, siehe
+„Zustellung braucht die `allowFrom`-Nummer"). Bisher stand dort nur die
+Betreiber-Nummer; der Auto-Betrieb trägt die freigegebenen Kontakte nach.
+
+**Die Datenbank ist der Sollzustand, das Volume die Wirkung.** Freigaben
+werden im Chat erteilt (`kontakt_freigeben`) und entzogen
+(`kontakt_freigabe_entziehen`); `kontakte_freigegeben()` zeigt den
+Sollzustand samt der Nummern, die in die Allowlist gingen. Übertragen wird
+er ausschließlich vom Betreiber auf dem Host:
+
+```powershell
+# Vorschau: was käme dazu, was flöge raus — ohne etwas zu ändern
+.\scripts\sync-allowlist.ps1 -WhatIf
+
+# Abgleich ausführen (schreibt ins Volume und startet sales-claw neu)
+.\scripts\sync-allowlist.ps1
+```
+
+Der Abgleich ist konservativ: Einträge, die zu keinem Lead gehören
+(Betreiber-Nummer, verknüpfte Nummer), bleiben immer stehen; eine leere
+Liste wird nie geschrieben; ohne Änderung wird nichts geschrieben und
+nichts neu gestartet. Beide Konfigurationsformen werden unterstützt
+(`channels.whatsapp.allowFrom` aus der Saat,
+`channels.whatsapp.default.allowFrom` aus dem Live-Nachtrag).
+
+**Was sich im Auto-Betrieb ändert — und was nicht:**
+
+* Antworten an freigegebene Kontakte gehen **ohne Entwurf und ohne Freigabe
+  je Nachricht** raus — die Antwort des Agenten im Kundenchat ist die
+  Nachricht. Das ist der Sinn der Stufe und eine bewusste
+  Betreiber-Entscheidung (19.08.2026); für alle anderen bleibt „Versand
+  ohne Freigabe: nein" unverändert bestehen.
+* **Ausgehende Initiative bleibt beim alten Weg**: Erstansprache, Anhänge,
+  Termin-ICS laufen weiter über `entwurf_erstellen` → Freigabe → Dispatcher
+  (der Dispatcher prüft die Kontakt-Freigabe ohnehin).
+* **Das Protokoll läuft weiter von selbst**: der OpenWA-Webhook sieht alle
+  eingehenden Nachrichten (`sales-inbox`), und die Antworten des Agenten
+  erscheinen als fromMe-Echos — Posteingang und Digest bleiben korrekt.
+* Die Verhaltensregeln für Kundenchats stehen in `AGENTS.md`
+  („Kundenchats (Auto-Betrieb)"): Betreiber-Werkzeuge sind dort tabu,
+  keine Daten anderer Kontakte, keine Produktaussagen (§34d GewO), keine
+  Initiative.
+
+**Not-Aus.** Einzelner Kontakt: `kontakt_freigabe_entziehen` im Chat und
+danach `sync-allowlist.ps1` — WICHTIG: bis zum Sync hört der Agent weiter
+mit und antwortet. Alles auf einmal: `docker compose stop sales-claw`
+(Kundenchats verstummen sofort; Webhook/Protokoll läuft weiter, solange
+`sales-inbox` und `openwa` stehen).
+
+**Grenzen, ehrlich benannt:**
+
+* Die Kundenchat-Regeln sind **Modellverhalten**, nicht Werkzeugschicht:
+  `sales-mcp` sieht nicht, aus welchem Chat ein Werkzeugaufruf kommt. Ein
+  Kunde, der den Agenten zu einem Betreiber-Werkzeug überredet
+  (Prompt-Injection), wird durch Regeln, Protokoll (`activities`) und die
+  bestehenden DB-Gates gebremst — nicht durch eine harte Kante je Chat.
+  Wer das härter will, braucht einen zweiten Agenten mit reduziertem
+  Werkzeugsatz für Kundenchats (offener Punkt).
+* Das Gedächtnis (`memory-core`) ist je Agent, nicht je Chat — der Agent
+  darf Wissen aus Betreiber-Gesprächen nie in Kundenchats ausbreiten
+  (Regel in AGENTS.md), technisch getrennt ist es nicht.
+* Jede Kundennachricht ist ein Modellaufruf (Kosten/Modellwahl wie beim
+  Digest: `anthropic/claude-sonnet-5`, Fallback `openrouter/free`).
+
+Gegenprobe nach jedem Sync:
+
+```powershell
+docker run --rm -v sales-claw-state:/state:ro alpine:3.20 sh -c "cat /state/openclaw.json" |
+  ConvertFrom-Json | ForEach-Object { $_.channels.whatsapp } |
+  ForEach-Object { if ($_.default) { $_.default.allowFrom } else { $_.allowFrom } }
+# erwartet: Betreiber-Nummer(n) + genau die Nummern aus kontakte_freigegeben()
 ```
 
 ## Newsletter-Status (Stufe 9)

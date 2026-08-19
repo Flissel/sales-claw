@@ -523,10 +523,10 @@ def test_beide_werkzeuge_sind_registriert():
     # Stufe 7: vertrag_speichern und vertraege_ablaufend (test_vertraege.py),
     # wochenbericht (test_wochenbericht.py) und uebergabe_erstellen
     # (test_uebergabe.py). Stufe 8: posteingang (test_posteingang.py).
-    # Stufe 9: termin_bestaetigen (test_termin.py). Dazu die Kontakt-Freigabe:
-    # kontakt_freigeben und kontakt_freigabe_entziehen
-    # (test_kontakt_freigabe.py).
-    assert len(namen) == len(set(namen)) == 30
+    # Stufe 9: termin_bestaetigen (test_termin.py). Dazu die Kontakt-Freigabe
+    # und der Auto-Betrieb: kontakt_freigeben, kontakt_freigabe_entziehen,
+    # kontakte_freigegeben (test_kontakt_freigabe.py).
+    assert len(namen) == len(set(namen)) == 31
 
 # ---------------------------------------------------------------------------
 # Nachbesserungen aus dem Stufe-5-Review (Befunde T1, B2, D2)
