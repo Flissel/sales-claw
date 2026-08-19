@@ -7,6 +7,13 @@ eines Sprachmodells (Stufe-3-Plan, Grundsatzentscheidung 1). LinkedIn wird
 NIE angefasst (Grundsatzentscheidung 3) — `channel='whatsapp'` steht in
 jeder Query, auch im Claim.
 
+Zusaetzlich zur Freigabe je Nachricht gilt die KONTAKT-FREIGABE (server.py,
+`kontakt_freigeben`): zugestellt wird nur an Kontakte, die der Betreiber
+ausdruecklich fuer WhatsApp freigegeben hat. Die Pruefung laeuft nach dem
+Claim, vor jedem Netzkontakt (`_kontakt_freigabe_fehlt`) — mit derselben
+Funktion, die auch Anzeige und Entwurf benutzen. Faellt sie durch, wird der
+Entwurf mit klarem Grund fehlgeschlagen gebucht; es geht nichts raus.
+
 Geteilt mit `server.py` (gleiches Image, gleicher Build-Kontext): der
 Verbindungspool, der Query-Helfer `_q` und vor allem die Schema-Whitelist —
 `import server` laesst denselben `SystemExit` fliegen, wenn jemand
@@ -309,6 +316,29 @@ def sende_medium(chat_id: str, text: str, basis: str) -> None:
 # Schleife
 # ---------------------------------------------------------------------------
 
+def _kontakt_freigabe_fehlt(lead_id):
+    """Fehlertext, wenn der Kontakt nicht fuer WhatsApp freigegeben ist —
+    sonst None.
+
+    Dieselbe Funktion wie in der Freigabe-Anzeige und beim Entwurf
+    (server._whatsapp_freigegeben) — Anzeige, Entwurf und Versand duerfen
+    nie verschiedene Regeln benutzen (dasselbe Prinzip wie bei nummern.py).
+    Die Pruefung laeuft HIER erneut, obwohl entwurf_erstellen sie schon
+    hatte: zwischen Erstellung, Freigabe und Zustellung koennen Minuten
+    liegen, und kontakt_freigabe_entziehen muss auch einen bereits
+    freigegebenen Entwurf noch stoppen. Fail-closed: ein Entwurf ohne
+    Kontakt (lead_id null, Kontakt geloescht) wird nicht zugestellt —
+    niemand koennte ihn freigegeben haben."""
+    if lead_id is None:
+        return ("Kontakt-Freigabe nicht pruefbar — Entwurf ohne Kontakt "
+                "(lead geloescht?). Nicht zugestellt.")
+    zeilen = server._q("select enrichment from leads where id = %s", (lead_id,))
+    if not zeilen or not server._whatsapp_freigegeben(zeilen[0]["enrichment"]):
+        return ("Kontakt nicht fuer WhatsApp freigegeben — erst "
+                "kontakt_freigeben(lead_id), dann entwurf_erneut_freigeben.")
+    return None
+
+
 def verarbeite_draft(draft_id) -> str:
     """Ein Entwurf: claimen, pruefen, senden, buchen. Gibt den Ausgang zurueck."""
     geclaimt = claim(draft_id)
@@ -317,6 +347,12 @@ def verarbeite_draft(draft_id) -> str:
                  draft_id)
         return "uebersprungen"
     marke = geclaimt["marke"]
+
+    freigabe_fehler = _kontakt_freigabe_fehlt(geclaimt["lead_id"])
+    if freigabe_fehler:
+        _als_fehler_buchen(draft_id, marke, freigabe_fehler)
+        LOG.info("draft=%s nicht zugestellt (%s)", draft_id, freigabe_fehler)
+        return "kontakt_nicht_freigegeben"
 
     chat_id, fehler = normalisiere_empfaenger(geclaimt["recipient"])
     if fehler:

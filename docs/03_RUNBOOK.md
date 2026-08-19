@@ -1502,6 +1502,50 @@ ist der Dienst zwischen Claim und Buchung gestorben — dann gilt dieselbe
 Doppelversand-Warnung wie bei WhatsApp (`entwurf_erneut_freigeben` verweigert
 ohne `bestaetigt=True`).
 
+## Kontakt-Freigabe (WhatsApp)
+
+WhatsApp-Nachrichten bekommen nur Kontakte, die der Betreiber **ausdrücklich
+dafür freigegeben** hat — ein Gate *vor* dem Nachrichten-Gate, durchgesetzt
+in der Werkzeugschicht und im Dispatcher, nicht im Modellverhalten:
+
+* Ohne Kontakt-Freigabe verweigert `entwurf_erstellen(kanal='whatsapp')`
+  den Entwurf mit klarem Fehlertext — es entsteht nichts in der Queue.
+* `sales-dispatch` prüft **erneut nach dem Claim, vor jedem Netzkontakt**
+  (mit derselben Funktion, die auch die Anzeige benutzt): ein Entzug
+  zwischen Nachrichten-Freigabe und Zustellung greift noch, der Entwurf
+  wird mit Grund `Kontakt nicht fuer WhatsApp freigegeben …` fehlgeschlagen
+  gebucht. Fail-closed: auch ein Entwurf ohne Kontakt (Lead gelöscht) wird
+  nie zugestellt.
+* Erteilt wird die Freigabe im Chat: `kontakt_freigeben(lead_id)` — der
+  Assistent ruft das Werkzeug **nur auf ausdrückliche Anweisung** auf
+  (Agent-Regeln, Abschnitt „Kontakt-Freigabe"). Entzogen wird sie mit
+  `kontakt_freigabe_entziehen(lead_id)`. Beides landet als
+  `kontakt_freigabe`-Aktivität im Protokoll.
+* Sichtbar ist der Stand überall, wo entschieden wird: `kontakt_suchen`,
+  `profil_lesen` und je WhatsApp-Entwurf in `entwuerfe_offen`
+  (`whatsapp_freigabe`; bei E-Mail/LinkedIn steht `null` — die Kanäle
+  kennen dieses Gate nicht).
+
+Gespeichert wird ohne DDL als Schlüssel `whatsapp_freigabe` direkt unter
+`leads.enrichment` — bewusst **nicht** unter `enrichment->profil`, wo
+`profil_aktualisieren` per Freitext schreibt: eine Freigabe, die das Modell
+selbst setzen könnte, wäre keine. **Bestandskontakte gelten damit als nicht
+freigegeben**, bis der Betreiber sie einmalig freigibt; ein danach erneut
+freigegebener Entwurf (`entwurf_erneut_freigeben`) wird normal zugestellt.
+
+Er ist **von `consent_status` getrennt** — in beide Richtungen: `consent`
+ist die Einwilligung des Kontakts (UWG), die Kontakt-Freigabe die
+Entscheidung des Betreibers, den Versandweg zu öffnen. Keins wird je aus
+dem anderen abgeleitet.
+
+Gegenprobe in `psql`:
+
+```sql
+select name, consent_status,
+       enrichment->'whatsapp_freigabe' as whatsapp_freigabe
+  from sales.leads order by updated_at desc limit 10;
+```
+
 ## Newsletter-Status (Stufe 9)
 
 Kein eigenes Werkzeug und kein neues Feld: der Verteiler-Status ist ein

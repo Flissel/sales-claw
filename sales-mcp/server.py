@@ -136,13 +136,15 @@ def kontakt_suchen(text: str) -> str:
     """Kontakt per Name, E-Mail oder Telefonnummer finden. Immer zuerst
     aufrufen, bevor ein Kontakt neu angelegt wird."""
     zeilen = _q(
-        "select id, name, status, consent_status from leads "
+        "select id, name, status, consent_status, enrichment from leads "
         "where name ilike %s or email ilike %s or phone ilike %s "
         "order by updated_at desc limit 10",
         (f"%{text}%", f"%{text}%", f"%{text}%"))
     return _json({"kontakte": [
         {"lead_id": z["id"], "name": z["name"], "status": z["status"],
-         "consent": z["consent_status"]} for z in zeilen]})
+         "consent": z["consent_status"],
+         "whatsapp_freigabe": _whatsapp_freigegeben(z["enrichment"])}
+        for z in zeilen]})
 
 
 # Demo-Befund B1 (docs/06_DEMO_ABNAHME.md): der Agent legte "Lisa Probekunde"
@@ -238,6 +240,79 @@ def kontakt_aktualisieren(lead_id: str, feld: str, wert: str) -> str:
        (lead_id, _json({"feld": feld, "vorher": vorhanden[0]["alt"],
                         "wert": wert.strip()})))
     return _json({"gesetzt": {feld: wert.strip()}})
+
+
+# ---------------------------------------------------------------------------
+# Kontakt-Freigabe fuer WhatsApp (OpenClaw) — das Gate VOR dem Nachrichten-Gate.
+#
+# Die Freigabe je Nachricht (entwurf_freigeben) sagt, DASS dieser eine Text
+# raus darf. Sie sagte bisher nichts darueber, ob der KONTAKT ueberhaupt per
+# WhatsApp angeschrieben werden soll — das stand nur in den Agent-Regeln, also
+# im Modellverhalten. Die Kante gehoert in die Werkzeugschicht (Projektprinzip,
+# siehe kontakt_anlegen/B1): ohne ausdrueckliche Kontakt-Freigabe des
+# Betreibers entsteht kein WhatsApp-Entwurf (entwurf_erstellen), und der
+# Dispatcher stellt nichts zu (dispatch.verarbeite_draft prueft mit GENAU
+# derselben Funktion _whatsapp_freigegeben — Anzeige, Entwurf und Versand
+# duerfen nie verschiedene Regeln benutzen, siehe nummern.py).
+#
+# Gespeichert wird ohne DDL (die Rolle sales_app hat keins) als Schluessel
+# `whatsapp_freigabe` DIREKT unter enrichment — bewusst NICHT unter
+# enrichment->profil: dort schreibt profil_aktualisieren per Freitext, und
+# eine Freigabe, die das Modell selbst setzen kann, waere keine. Die beiden
+# Werkzeuge hier sind der einzige Schreibweg.
+#
+# Getrennt von consent_status: consent sagt, ob der KONTAKT einverstanden ist
+# (seine Antwort, bedarf_speichern 'consent_kontakt'); whatsapp_freigabe sagt,
+# ob der BETREIBER den Versandweg oeffnet. Keins ersetzt das andere, keins
+# wird je aus dem anderen abgeleitet — dieselbe Trennung wie beim
+# Newsletter-Status (AGENTS.md).
+# ---------------------------------------------------------------------------
+
+def _whatsapp_freigegeben(enrichment) -> bool:
+    """True NUR bei ausdruecklicher, nicht entzogener Betreiber-Freigabe.
+
+    Alles andere — fehlender Schluessel (Bestandskontakte), entzogene
+    Freigabe, kaputter Wert — zaehlt als nicht freigegeben (fail-closed)."""
+    eintrag = (enrichment or {}).get("whatsapp_freigabe")
+    return isinstance(eintrag, dict) and eintrag.get("freigegeben") is True
+
+
+def _whatsapp_freigabe_setzen(lead_id: str, freigegeben: bool) -> str:
+    zeilen = _q(
+        "update leads set enrichment = jsonb_set(enrichment, "
+        "'{whatsapp_freigabe}', %s::jsonb, true) where id = %s "
+        "returning id, name",
+        (json.dumps({"freigegeben": freigegeben, "at": _jetzt(),
+                     "durch": "betreiber"}), lead_id))
+    if not zeilen:
+        return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
+    _q("insert into activities (lead_id, type, payload) values "
+       "(%s, 'kontakt_freigabe', %s) returning id",
+       (lead_id, _json({"kanal": "whatsapp", "freigegeben": freigegeben})))
+    return _json({"lead_id": zeilen[0]["id"], "kontakt": zeilen[0]["name"],
+                  "whatsapp_freigabe": freigegeben})
+
+
+@_gesichert
+def kontakt_freigeben(lead_id: str) -> str:
+    """Kontakt fuer WhatsApp-Nachrichten (OpenClaw) freigeben. NUR auf
+    ausdrueckliche Anweisung des Betreibers aufrufen — nie aus eigenem
+    Antrieb, nie „damit der Entwurf durchgeht". Ohne diese Freigabe entsteht
+    kein WhatsApp-Entwurf und der Dispatcher stellt nichts zu. Die Freigabe
+    je Nachricht (entwurf_freigeben) bleibt zusaetzlich bestehen; E-Mail und
+    LinkedIn sind nicht betroffen. Die Freigabe ersetzt KEINE Einwilligung
+    des Kontakts (consent, UWG) — beide Fragen bleiben getrennt."""
+    return _whatsapp_freigabe_setzen(lead_id, True)
+
+
+@_gesichert
+def kontakt_freigabe_entziehen(lead_id: str) -> str:
+    """WhatsApp-Freigabe eines Kontakts entziehen (Betreiber-Entscheidung
+    oder Kundenwunsch „keine Nachrichten mehr" — dann SOFORT aufrufen und den
+    Vollzug bestaetigen). Ab sofort entsteht kein neuer WhatsApp-Entwurf;
+    bereits freigegebene Entwuerfe an diesen Kontakt stellt der Dispatcher
+    nicht mehr zu, sie werden mit klarem Grund fehlgeschlagen gebucht."""
+    return _whatsapp_freigabe_setzen(lead_id, False)
 
 
 @_gesichert
@@ -641,6 +716,9 @@ def profil_lesen(lead_id: str) -> str:
     return _json({"lead_id": leads[0]["id"], "name": leads[0]["name"],
                   "status": leads[0]["status"],
                   "consent": leads[0]["consent_status"],
+                  # Getrennt vom consent (siehe Kontakt-Freigabe oben): sagt,
+                  # ob der Betreiber den WhatsApp-Versandweg geoeffnet hat.
+                  "whatsapp_freigabe": _whatsapp_freigegeben(e),
                   "profil": e.get("profil", {}), "bedarf": e.get("bedarf", {}),
                   # Die vom Kunden genannten Vertraege (vertrag_speichern) —
                   # ohne diese Zeile laege der Bestand zwar in enrichment,
@@ -747,9 +825,21 @@ def entwurf_erstellen(lead_id: str, kanal: str, text: str,
     if kanal not in ("whatsapp", "linkedin", "email"):
         return _json({"fehler": f"Unzulaessiger Kanal '{kanal}'. "
                                 f"Erlaubt: whatsapp, linkedin, email"})
-    leads = _q("select name, phone, email from leads where id = %s", (lead_id,))
+    leads = _q("select name, phone, email, enrichment from leads where id = %s",
+               (lead_id,))
     if not leads:
         return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
+    # Kontakt-Freigabe VOR dem Insert (frueh sagen statt spaet scheitern,
+    # dieselbe Begruendung wie bei CAPTION_MAXLAENGE): ein WhatsApp-Entwurf
+    # fuer einen nicht freigegebenen Kontakt soll gar nicht erst in der
+    # Freigabe-Queue auftauchen. Der Dispatcher prueft beim Zustellen erneut
+    # — das hier ist die fruehe Rueckmeldung, dort ist das harte Gate.
+    if kanal == "whatsapp" and not _whatsapp_freigegeben(leads[0]["enrichment"]):
+        return _json({"fehler": (
+            "Kontakt ist nicht fuer WhatsApp freigegeben — es entsteht kein "
+            "Entwurf. Die Freigabe erteilt ausschliesslich der Betreiber "
+            "(kontakt_freigeben(lead_id)); frag ihn, statt sie selbst zu "
+            "setzen. E-Mail und LinkedIn stehen weiter offen.")})
     # Der Anhang wird VOR dem Insert geprueft: ein Entwurf, dessen Anhang nicht
     # zustellbar ist, soll gar nicht erst in der Freigabe-Queue auftauchen.
     basis = None
@@ -1322,6 +1412,16 @@ def _zielangabe(kanal: str, empfaenger: str) -> dict:
     return {"zielnummer": chat_id}
 
 
+def _whatsapp_freigabe_anzeige(zeile):
+    """Kontakt-Freigabe fuer die Freigabe-Anzeige: True/False bei WhatsApp
+    (dieselbe Funktion, mit der der Dispatcher entscheidet), None bei den
+    anderen Kanaelen — E-Mail und LinkedIn kennen dieses Gate nicht, ein
+    False dort waere eine falsche Warnung."""
+    if zeile["channel"] != "whatsapp":
+        return None
+    return _whatsapp_freigegeben(zeile["enrichment"])
+
+
 @_gesichert
 def entwuerfe_offen() -> str:
     """Alle Entwuerfe, die auf den Betreiber warten. Zwei Bloecke:
@@ -1341,18 +1441,21 @@ def entwuerfe_offen() -> str:
     an die tatsaechlich zugestellt wuerde (null + hinweis, wenn die Nummer
     nicht zustellbar ist), der `consent`-Stand des Kontakts und
     `medien_datei` — der Anhang, der mitginge (null, wenn keiner dranhaengt).
-    draft_id ist immer die vollstaendige UUID — Werkzeuge brauchen sie so.
-    Vor jeder Freigabe-Entscheidung aufrufen."""
+    Bei WhatsApp-Entwuerfen steht zusaetzlich `whatsapp_freigabe`: hat der
+    Betreiber den Kontakt fuer WhatsApp freigegeben (kontakt_freigeben)?
+    Steht dort false, wird der Dispatcher NICHT zustellen — auch nicht nach
+    einer Nachrichten-Freigabe. draft_id ist immer die vollstaendige UUID —
+    Werkzeuge brauchen sie so. Vor jeder Freigabe-Entscheidung aufrufen."""
     zeilen = _q(
         "select d.id, d.channel, d.recipient, d.status, d.body, d.media_ref, "
-        "       l.name, l.consent_status "
+        "       l.name, l.consent_status, l.enrichment "
         "from drafts d left join leads l on l.id = d.lead_id "
         "where d.status = 'pending' "
         "   or (d.status = 'approved' and d.channel = 'linkedin') "
         "order by d.created_at desc")
     gescheitert = _q(
         "select d.id, d.channel, d.recipient, d.error, d.media_ref, "
-        "       l.name, l.consent_status "
+        "       l.name, l.consent_status, l.enrichment "
         "from drafts d left join leads l on l.id = d.lead_id "
         "where d.status = 'failed' order by d.created_at desc limit %s",
         (FEHLGESCHLAGEN_MAX,))
@@ -1363,12 +1466,14 @@ def entwuerfe_offen() -> str:
              "empfaenger": z["recipient"], "status": z["status"],
              "text": (z["body"] or "")[:200], "kontakt": z["name"],
              "consent": z["consent_status"], "medien_datei": z["media_ref"],
+             "whatsapp_freigabe": _whatsapp_freigabe_anzeige(z),
              **_zielangabe(z["channel"], z["recipient"])} for z in zeilen],
         "anzahl_fehlgeschlagen": anzahl[0]["n"],
         "fehlgeschlagen": [
             {"draft_id": z["id"], "kanal": z["channel"],
              "empfaenger": z["recipient"], "kontakt": z["name"],
              "consent": z["consent_status"], "medien_datei": z["media_ref"],
+             "whatsapp_freigabe": _whatsapp_freigabe_anzeige(z),
              "fehler": (z["error"] or "")[:FEHLER_KURZ],
              **_zielangabe(z["channel"], z["recipient"])} for z in gescheitert]})
 
@@ -1779,6 +1884,7 @@ def firma_anreichern(lead_id: str, website: str = "") -> str:
 
 
 WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
+             kontakt_freigeben, kontakt_freigabe_entziehen,
              aktivitaet_loggen, wiedervorlage_setzen, wiedervorlage_erledigt,
              vertrag_speichern, vertraege_ablaufend, termin_bestaetigen,
              profil_lesen, profil_aktualisieren,

@@ -210,10 +210,13 @@ class _Mitschnitt(logging.Handler):
 # ---------------------------------------------------------------------------
 
 def _lead(name="Max Testperson", email="max@example.com"):
+    # Mit gesetzter Kontakt-Freigabe (WhatsApp-Gate, test_kontakt_freigabe.py)
+    # — ein Test unten erstellt zum Gegenlesen auch einen WhatsApp-Entwurf.
     return server._q(
-        "insert into leads (name, email, phone, source) values "
-        "(%s, %s, '+491701234567', 'whatsapp') returning id",
-        (name, email))[0]["id"]
+        "insert into leads (name, email, phone, source, enrichment) values "
+        "(%s, %s, '+491701234567', 'whatsapp', "
+        "'{\"whatsapp_freigabe\": {\"freigegeben\": true}}'::jsonb) "
+        "returning id", (name, email))[0]["id"]
 
 
 def _draft(lead_id, recipient="max@example.com", kanal="email",

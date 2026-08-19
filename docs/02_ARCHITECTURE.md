@@ -507,10 +507,13 @@ Betreiber (WhatsApp, dedizierte sales-Nummer)
 │ Komponente des gesamten Systems                       │
 │  1. claim(): approved → failed + Marke „in Zustellung │
 │     seit …" (atomarer UPDATE, DDL-frei, siehe unten)  │
-│  2. normalisiere_empfaenger() — nummern.py            │
-│  3. POST /api/sessions/{id}/messages/send-text         │
+│  2. Kontakt-Freigabe? leads.enrichment→               │
+│     whatsapp_freigabe (kontakt_freigeben, Runbook)     │
+│     — fehlt/entzogen → failed mit Grund, kein Netz     │
+│  3. normalisiere_empfaenger() — nummern.py            │
+│  4. POST /api/sessions/{id}/messages/send-text         │
 │     (Header X-API-Key)                                 │
-│  4. Erfolg → sent · Fehler → failed + echter Fehlertext│
+│  5. Erfolg → sent · Fehler → failed + echter Fehlertext│
 └───────────────────────────┬─────────────────────────────┘
                             │ HTTP
                             ▼

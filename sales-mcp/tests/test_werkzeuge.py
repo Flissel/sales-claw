@@ -36,8 +36,24 @@ def saubere_tabellen():
     yield
 
 
+def _wa_freigeben(lead_id):
+    """Kontakt-Freigabe direkt in enrichment setzen — ohne den Werkzeugweg.
+
+    Die Werkzeuge selbst (kontakt_freigeben, kontakt_freigabe_entziehen) und
+    das Gate prueft tests/test_kontakt_freigabe.py; hier geht es nur darum,
+    das Gate zu oeffnen, damit die uebrigen Vertragstests ihr eigentliches
+    Thema testen — ohne zusaetzliche kontakt_freigabe-Aktivitaeten im
+    Protokoll."""
+    server._q(
+        "update leads set enrichment = jsonb_set(enrichment, "
+        "'{whatsapp_freigabe}', '{\"freigegeben\": true}'::jsonb, true) "
+        "where id = %s returning id", (lead_id,))
+
+
 def _anlegen(name="Max Testperson", phone="+490000000001"):
-    return json.loads(server.kontakt_anlegen(name=name, phone=phone))
+    neu = json.loads(server.kontakt_anlegen(name=name, phone=phone))
+    _wa_freigeben(neu["lead_id"])
+    return neu
 
 
 def test_kontakt_anlegen_und_suchen():
@@ -141,6 +157,7 @@ def test_werkzeug_signaturen_ueberleben_den_dekorator():
 # ---------------------------------------------------------------------------
 
 def _entwurf(lead_id, kanal="whatsapp", text="Text"):
+    _wa_freigeben(lead_id)      # idempotent — auch fuer per SQL angelegte Leads
     return json.loads(server.entwurf_erstellen(lead_id, kanal, text))["draft_id"]
 
 
@@ -671,10 +688,14 @@ def test_kontakt_aktualisieren_signatur_ueberlebt_den_dekorator():
     assert list(parameter) == ["lead_id", "feld", "wert"]
 
 
-def test_achtundzwanzig_werkzeuge_registriert():
+def test_dreissig_werkzeuge_registriert():
     namen = {fn.__name__ for fn in server.WERKZEUGE}
-    assert len(namen) == 28
+    assert len(namen) == 30
     assert "kontakt_aktualisieren" in namen
+    # Kontakt-Freigabe fuer WhatsApp. Vertragstests dazu in
+    # tests/test_kontakt_freigabe.py.
+    assert "kontakt_freigeben" in namen
+    assert "kontakt_freigabe_entziehen" in namen
     assert "wiedervorlage_setzen" in namen
     assert "wiedervorlage_erledigt" in namen
     assert "medien_liste" in namen

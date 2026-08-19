@@ -157,8 +157,14 @@ class _Mitschnitt(logging.Handler):
 # ---------------------------------------------------------------------------
 
 def _lead(name="Max Testperson", phone="+491701234567"):
+    # Mit gesetzter Kontakt-Freigabe: diese Suite testet die Zustellmechanik
+    # HINTER dem Gate. Das Gate selbst (nicht freigegebene Kontakte, Entzug
+    # zwischen Freigabe und Zustellung, Entwurf ohne Kontakt) prueft
+    # tests/test_kontakt_freigabe.py.
     return server._q(
-        "insert into leads (name, phone, source) values (%s, %s, 'whatsapp') "
+        "insert into leads (name, phone, source, enrichment) values "
+        "(%s, %s, 'whatsapp', "
+        "'{\"whatsapp_freigabe\": {\"freigegeben\": true}}'::jsonb) "
         "returning id", (name, phone))[0]["id"]
 
 
