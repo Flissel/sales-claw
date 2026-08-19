@@ -152,14 +152,23 @@ kompatiblen Endpunkt zeigen würde — ist deshalb nicht nötig. Das ist auch mi
 Randbedingung „kein lokales Modell" vereinbar: `OPENAI_BASE_URL` bleibt ungesetzt,
 und OpenRouter ist ein gehosteter Dienst, keine lokale Laufzeit.
 
-**`openrouter/free` als bewusste Ausnahme von der Pin-Regel.** `agents.defaults.model.primary`
-steht auf `openrouter/free` statt auf ein einzelnes, gepinntes Modell. OpenRouters
-„Free Models Router" wählt automatisch unter mehreren kostenlosen Modellen, wodurch
-der Rauchtest nicht am Tageskontingent eines einzelnen Modells hängt. Das
-widerspricht der sonstigen Pin-Regel dieses Projekts ausdrücklich — die Ausnahme gilt
-**nur für die Fundament-Stufe**, solange niemand mit echten Kunden spricht. Sobald
-echte Beratungsgespräche laufen, wird hier ein bezahltes, einzeln gepinntes Modell
-eingetragen.
+**Primärmodell: `anthropic/claude-sonnet-5`, gepinnt (seit 19.08.2026).**
+`agents.defaults.model.primary` steht auf einem einzeln gepinnten Claude-Modell;
+authentifiziert wird nicht per API-Schlüssel, sondern über ein Abo-Token aus dem
+Claude-Abo des Betreibers (Auth-Profil `anthropic:manual`, Einrichtung und
+Token-Lage: `docs/03_RUNBOOK.md`, Abschnitt „Modellwahl"). Damit ist die
+Pin-Regel des Projekts wieder erfüllt. Für Produktivbetrieb mit Dritten ist
+weiterhin ein API-Schlüssel mit eigener Abrechnung vorgesehen — ein
+persönliches Abo darf nicht Backend für Dritte sein.
+
+**`openrouter/free` als Fallback — die frühere Pin-Ausnahme, jetzt Reserve.**
+In der Fundament-Stufe war `openrouter/free` das Primärmodell (bewusste Ausnahme
+von der Pin-Regel: OpenRouters „Free Models Router" wählt automatisch unter
+mehreren kostenlosen Modellen, wodurch der Rauchtest nicht am Tageskontingent
+eines einzelnen Modells hing). Seit 19.08.2026 steht er nur noch in
+`agents.defaults.model.fallbacks`: Ist das Abo-Kontingent erschöpft, antwortet
+der Agent weiter — mit den unten dokumentierten Qualitätsschwankungen statt gar
+nicht. Das Freigabe-Gate ist davon unabhängig.
 
 **Damit die Referenz `openrouter/free` überhaupt auflöst**, muss zusätzlich zu
 `agents.defaults.model.primary` ein passender Katalogeintrag unter
@@ -176,12 +185,12 @@ mit jeder Anwendung, die denselben `OPENROUTER_API_KEY` verwendet. Rate-Limits k
 deshalb auch durch fremde Last auf demselben Schlüssel entstehen, nicht nur durch
 `sales-claw` selbst.
 
-**Nicht geeignet für echte Beratungsgespräche.** `openrouter/free` routet automatisch
-und ohne Kontrolle darüber, welches konkrete Modell eine gegebene Anfrage beantwortet;
-Qualität, Kontextverhalten und Verfügbarkeit schwanken zwischen den darunterliegenden
-Modellen. Für reale Kundengespräche ist das ausdrücklich **nicht** geeignet — dafür ist
-ein bezahltes, einzeln ausgewähltes und gepinntes Modell vorgesehen, sobald ein
-guthabengedeckter Schlüssel vorliegt.
+**Der Fallback ist nicht für echte Beratungsgespräche geeignet.** `openrouter/free`
+routet automatisch und ohne Kontrolle darüber, welches konkrete Modell eine gegebene
+Anfrage beantwortet; Qualität, Kontextverhalten und Verfügbarkeit schwanken zwischen
+den darunterliegenden Modellen. Greift der Fallback während eines realen
+Kundengesprächs, ist das an der Antwortqualität erkennbar — Entwürfe aus solchen
+Phasen vor der Freigabe besonders kritisch lesen.
 
 ## Reale Abweichungen vom in Task 2 unterstellten Ablauf
 

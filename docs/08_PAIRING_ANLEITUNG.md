@@ -167,10 +167,11 @@ Schwalls, keine identischen Textbausteine an viele Empfänger.
   (`DISPATCH_SENDE_PAUSE_S`), kein Tages- oder Stunden-Deckel auf unserer
   Seite. Für den Demo-Betrieb akzeptiert, vor echtem Volumenbetrieb
   ausbaufähig (`docs/03_RUNBOOK.md`, Abschnitt „Warmup-Regeln").
-- **`openrouter/free`-Schwankung.** Der Agent nutzt weiterhin das
-  kostenlose, nicht gepinnte OpenRouter-Modell
-  (`docs/02_ARCHITECTURE.md`, Abschnitt „Modellanbieter"); Antwortzeiten
-  und Regeltreue schwanken gemessen erheblich (34 s bis zu einem
-  600-s-Timeout in früheren Tasks). Bei Auffälligkeiten während der
-  Prüfschritte oben: frischer Session-Key, wiederholen
-  (`docs/03_RUNBOOK.md`, Abschnitt „Modellwahl im Demo-Betrieb").
+- **Fallback-Schwankung.** Primärmodell ist seit 19.08.2026
+  `anthropic/claude-sonnet-5` (Abo-Token); nur wenn dessen Kontingent
+  erschöpft ist, greift `openrouter/free` als Fallback
+  (`docs/02_ARCHITECTURE.md`, Abschnitt „Modellanbieter"). Im
+  Fallback-Fall schwanken Antwortzeiten und Regeltreue gemessen erheblich
+  (34 s bis zu einem 600-s-Timeout in früheren Tasks). Bei
+  Auffälligkeiten während der Prüfschritte oben: frischer Session-Key,
+  wiederholen (`docs/03_RUNBOOK.md`, Abschnitt „Modellwahl").

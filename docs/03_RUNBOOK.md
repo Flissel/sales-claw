@@ -433,11 +433,12 @@ nicht am Kanal. Diese drei Befehle trennen die beiden Fälle — **ohne**
 `--deliver`, es geht also keine Nachricht nach WhatsApp hinaus:
 
 ```powershell
-docker compose exec sales-claw openclaw infer model providers
-# erwartet: {"provider":"openrouter", ... "configured":true,"selected":true}
-
 docker compose exec sales-claw openclaw config get agents.defaults.model.primary
-# erwartet: openrouter/free
+# erwartet: anthropic/claude-sonnet-5
+
+docker compose exec sales-claw openclaw models status --status-plain
+# erwartet u.a.: Default anthropic/claude-sonnet-5, Fallbacks openrouter/free,
+#                Providers w/ OAuth/tokens: anthropic (Profil anthropic:manual)
 
 docker compose exec sales-claw openclaw infer model run --prompt "Antworte ausschliesslich mit dem Wort: pong" --json
 # erwartet: "ok": true und "text": "pong"
@@ -445,11 +446,11 @@ docker compose exec sales-claw openclaw infer model run --prompt "Antworte aussc
 
 `infer model run` ist hier bewusst der Weg und nicht `openclaw agent`: es
 braucht keinen Agent-Workspace und prüft damit genau eine Sache — ob der
-Modellschlüssel trägt. Schlägt es mit einem Rate-Limit fehl, ist das kein
+Modellzugang trägt. Schlägt es mit einem Rate-Limit fehl, ist das kein
 Konfigurationsfehler; einmal wiederholen.
 
-Der Schlüssel kommt aus `.env` als `OPENROUTER_API_KEY`. Ob er im Container
-ankommt (ohne den Wert auszugeben):
+Der OpenRouter-Schlüssel (nur noch Fallback) kommt aus `.env` als
+`OPENROUTER_API_KEY`. Ob er im Container ankommt (ohne den Wert auszugeben):
 
 ```powershell
 docker compose exec sales-claw sh -lc 'test -n "$OPENROUTER_API_KEY" && echo gesetzt || echo fehlt'
@@ -638,11 +639,37 @@ setzt pytests Standard-Importmodus nur das Verzeichnis der Testdatei
 Der Schema-Wächter in `server.py` bricht bei jedem anderen Wert als
 `sales`/`sales_test` sofort mit `SystemExit` ab, noch vor jedem DB-Zugriff.
 
-### Modellwahl im Demo-Betrieb: openrouter/free bleibt
+### Modellwahl: Claude Sonnet 5 über Abo-Token (seit 19.08.2026)
 
-Betreiberentscheidung (Kostenpräferenz, Prototyp ohne echte Kunden):
-`agents.defaults.model.primary` bleibt auf `openrouter/free`, trotz drei
-gemessener Schwächen aus den Tasks 3–5:
+Betreiberentscheidung vom 19.08.2026: `agents.defaults.model.primary` steht auf
+`anthropic/claude-sonnet-5`, `openrouter/free` bleibt als Fallback dahinter
+(Antwortfähigkeit bei erschöpftem Abo-Kontingent, um den Preis der unten
+dokumentierten Schwächen). Live geprüft: `executionTrace` mit
+`winnerProvider: anthropic`, `winnerModel: claude-sonnet-5`, `fallbackUsed: false`.
+
+**Auth-Weg:** Kein API-Schlüssel, sondern ein Abo-Token aus dem Claude-Abo des
+Betreibers. Einrichtung/Erneuerung (z. B. nach Token-Ablauf):
+
+1. Auf dem Host `claude setup-token` ausführen (Claude-Code-CLI, öffnet den
+   Browser, druckt ein Token `sk-ant-oat01-…`).
+2. `docker exec -it sales-claw openclaw models auth paste-token --provider anthropic`
+   und das Token dort einfügen. Das Token nie in Chats, Logs oder Argv.
+
+**Wo das Token liegt:** im Auth-Store
+`~/.openclaw/agents/main/agent/openclaw-agent.sqlite` innerhalb des Volumes
+`sales-claw-state` — **nicht** im Repo. Konsequenzen: (a) Volume-Backups
+enthalten das Token, Backup-Dateien also wie Secrets behandeln; (b) eine
+Neu-Provisionierung nur aus `config/openclaw.json` bringt das Token nicht mit —
+nach frischem Aufsetzen die zwei Schritte oben wiederholen.
+
+**Geteiltes Kontingent:** Das Abo-Token zehrt vom selben Kontingent wie die
+Claude-Code-Sessions des Betreibers. Lange Entwicklungsläufe und der Bot
+konkurrieren um dasselbe Budget; für Produktivbetrieb mit Dritten ist ein
+API-Schlüssel mit eigener Abrechnung vorgesehen, ein persönliches Abo darf
+nicht Backend für Dritte sein.
+
+**Zum Fallback `openrouter/free`** — drei gemessene Schwächen aus den
+Tasks 3–5, weshalb er nur noch Reserve ist:
 
 - **Schwankende Antwortzeiten.** Gemessene Laufzeiten reichten von 34 s
   (Fix-Runde 1, Task 3) über 152,6 s und 453,5 s (Task 5, zwei Proben) bis zu
@@ -669,10 +696,9 @@ docker compose exec sales-claw openclaw agent --agent main `
 ```
 
 Kein `--deliver` in Diagnose-/Testläufen, damit keine Testnachricht tatsächlich
-über WhatsApp hinausgeht. Vor einer Vorführung bei MH Consulting die Modellfrage
-erneut stellen — die Ausnahme von der sonstigen Pin-Regel gilt ausdrücklich nur für
-den Prototyp ohne echte Kundengespräche (`docs/02_ARCHITECTURE.md`, Abschnitt
-„Modellanbieter").
+über WhatsApp hinausgeht. Das Primärmodell ist seit 19.08.2026 gepinnt
+(`anthropic/claude-sonnet-5`); die frühere Pin-Ausnahme betrifft nur noch den
+Fallback (`docs/02_ARCHITECTURE.md`, Abschnitt „Modellanbieter").
 
 ## Stufe 3: Versand mit Approval
 
