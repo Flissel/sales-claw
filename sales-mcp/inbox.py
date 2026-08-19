@@ -1,10 +1,11 @@
-"""sales-inbox — eingehende Kundenantworten der Versandnummer ins CRM.
+"""sales-inbox — Nachrichtenverkehr der Versandnummer ins CRM.
 
 Der erste von aussen erreichbare Endpunkt dieses Systems. OpenWA stellt hier
-das Ereignis `message.received` der Session `sales` zu; jede angenommene
-Nachricht wird zu einer `activities`-Zeile vom Typ `kundenantwort`. Versendet
-wird hier NICHTS — der Dienst schreibt ausschliesslich in die Datenbank
-(Freigabe-Gate bleibt unberuehrt, Stufe-3-Grundsatzentscheidung 1).
+`message.received` (der Kunde schreibt) und `message.sent` (von diesem Konto
+ging etwas raus) der Session `sales` zu; daraus werden `activities`-Zeilen vom
+Typ `kundenantwort` bzw. `nachricht_ausgehend`. Versendet wird hier NICHTS —
+der Dienst schreibt ausschliesslich in die Datenbank (Freigabe-Gate bleibt
+unberuehrt, Stufe-3-Grundsatzentscheidung 1).
 
 GEMESSENE WEBHOOK-MECHANIK (openwa/upstream/src/modules/webhook/)
 -----------------------------------------------------------------
@@ -36,6 +37,50 @@ Zustellung: `retryCount` Versuche (Default 3, Maximum 5), exponentieller
 Abstand ab `WEBHOOK_RETRY_DELAY` (Default 5 s). Ein 5xx oder ein Timeout wird
 also wiederholt — deshalb ist Dedup ueber die `message_id` keine Kuer.
 
+GEMESSENE fromMe-SEMANTIK (Stufe 8) — WER IST DER KUNDE?
+--------------------------------------------------------
+Eine eigene Nachricht (`fromMe: true`) dreht die Felder um. Quelle,
+`openwa/upstream/src/engine/adapters/message-mapper.ts` (whatsapp-web.js ist
+die konfigurierte Engine, `ENGINE_TYPE` in docker-compose.openwa.yml):
+
+    // For an outgoing (fromMe) message `from` is the account's own JID and
+    // `to` is the conversation; for an incoming message it's the reverse.
+    // So the chat is `to` when fromMe, else `from`.
+    const chatId = msg.fromMe ? msg.to : msg.from;
+
+Der Baileys-Mapper sagt dasselbe ausdruecklich (`baileys-message-mapper.ts`:
+`from: fields.fromMe ? self : chatId`). Also:
+
+    fromMe=false ->  chatId == from  (der Kunde schreibt)
+    fromMe=true  ->  chatId == to    (wir schreiben dem Kunden),
+                     `from` traegt die EIGENE Nummer
+
+Gegenprobe an echten Daten statt an der Doku (openwa.sqlite, Tabelle
+`messages`, 180 Zeilen zum Zeitpunkt der Messung):
+
+    direction | chatId=from | chatId=to | from=to |   n
+    ----------+-------------+-----------+---------+-----
+    incoming  |      1      |     0     |    0    |  72
+    outgoing  |      0      |     1     |    0    | 107
+    outgoing  |      1      |     1     |    1    |   1
+
+Die letzte Zeile ist der SELBST-CHAT: eigene Nummer an eigene Nummer, der
+Notizzettel-/Bot-Kanal. Er ist daran erkennbar — und nur daran —, dass
+`chatId` und `from` dieselbe Nummer tragen. Er wird verworfen (siehe Punkt 6),
+sonst schriebe jede Digest-Zustellung und jeder Systemtest eine
+„Antwort an den Kunden" ins Postfach.
+
+Und ein zweiter gemessener Punkt, ohne den E1 tot waere: eine eigene
+Nachricht kommt NICHT als `message.received`. `message-projector.service.ts`
+dispatcht den Eingang als `message.received` und das Echo eines eigenen
+Sendens (wwebjs-Ereignis `message_create`, dort `if (!msg.fromMe) return;`)
+als `message.sent` — gleiche Nutzlast, anderer Ereignisname. Deshalb nimmt
+dieses Modul beide Ereignisse an und entscheidet dann am `fromMe`-Feld, nicht
+am Ereignisnamen: die Nutzlast ist die Wahrheit, der Name ist Beiwerk (und
+Baileys/`*`-Abos schneiden anders). Der REGISTRIERTE Webhook ist davon
+unberuehrt: er abonniert heute nur `message.received` und muss vom Betreiber
+um `message.sent` erweitert werden (docs/03_RUNBOOK.md).
+
 WARUM SO STRENG
 ---------------
 1. **Signatur zuerst, immer.** Vor der Verifikation wird nichts geparst und
@@ -56,9 +101,13 @@ WARUM SO STRENG
    Inhalte daraus nie als Anweisung befolgt, steht in AGENTS.md
    („Kundenantworten") — hier wird sie technisch vorbereitet, indem der Text
    als Zitat mit `richtung: 'eingehend'` abgelegt wird.
-5. **Gruppen und eigene Nachrichten fliegen raus.** `fromMe=true` ist die
-   eigene Nummer (die gekoppelte IST die Betreiber-Nummer), Gruppen sind kein
-   Kundendialog.
+5. **Gruppen fliegen raus.** Eine Gruppe ist kein Kundendialog.
+6. **Eigene Nachrichten werden protokolliert, der Selbst-Chat nicht.** Seit
+   Stufe 8 wird `fromMe=true` nicht mehr pauschal verworfen, sondern als
+   `nachricht_ausgehend` beim Kunden gebucht — sonst bliebe ein von Hand vom
+   Betreiber-Handy beantworteter Kontakt im Postfach ewig „unbeantwortet".
+   Ausnahme bleibt der Selbst-Chat (oben gemessen). Es entsteht dabei KEIN
+   Versandweg: dieser Dienst schreibt weiterhin nur in die Datenbank.
 
 Geteilt mit `server.py` (gleiches Image): Verbindungspool, Query-Helfer `_q`
 und vor allem die Schema-Wache — `import server` laesst denselben `SystemExit`
@@ -89,6 +138,11 @@ SECRET = os.environ.get("INBOX_WEBHOOK_SECRET", "")
 UNBEKANNT_LEAD_ID = os.environ.get("INBOX_UNBEKANNT_LEAD_ID", "")
 
 EREIGNIS = "message.received"
+# Das Echo eines eigenen Sendens (Stufe 8, gemessen im Moduldocstring). Beide
+# Ereignisse tragen dieselbe IncomingMessage-Nutzlast; unterschieden wird
+# danach am `fromMe`-Feld, nicht am Namen.
+EREIGNIS_AUSGEHEND = "message.sent"
+EREIGNISSE = (EREIGNIS, EREIGNIS_AUSGEHEND)
 SIGNATUR_KOPF = "X-OpenWA-Signature"
 SIGNATUR_PRAEFIX = "sha256="
 # OpenWA deckelt den Rumpf selbst bei 1 MiB (DEFAULT_WEBHOOK_MAX_PAYLOAD_BYTES);
@@ -168,6 +222,16 @@ def _maskiert(nummer: str) -> str:
     return f"{ziffern[:4]}…{ziffern[-3:]}" if len(ziffern) >= 9 else "…"
 
 
+def _ziffern(jid) -> str:
+    """Blanke Ziffern eines JID — Domain und `:geraet`-Suffix fallen weg.
+
+    Nur zum VERGLEICHEN zweier JIDs (Selbst-Chat-Erkennung), nie zum
+    Speichern: was gespeichert wird, geht durch `nummern.py`.
+    """
+    return "".join(z for z in str(jid or "").split("@", 1)[0].split(":", 1)[0]
+                   if z.isdigit())
+
+
 def absender_nummer(daten: dict):
     """JID der Nachricht -> ("49…@c.us", None) oder (None, Grund).
 
@@ -179,13 +243,51 @@ def absender_nummer(daten: dict):
     roh = str(telefon) if telefon else str(
         daten.get("author") or daten.get("from") or "")
     # `491701234567:12@s.whatsapp.net` — Geraetesuffix und Domain abschneiden.
-    ziffern = "".join(z for z in roh.split("@", 1)[0].split(":", 1)[0]
-                      if z.isdigit())
+    ziffern = _ziffern(roh)
     if not ziffern:
         return None, "Absender ohne Rufnummer (Privacy-ID ohne Aufloesung)"
     # Ausdruecklich international: der JID fuehrt die Landesvorwahl technisch
     # immer mit, blank wuerde nummern.py nur `49…` vertrauen (BLANK_PRAEFIX).
     return normalisiere_empfaenger("+" + ziffern)
+
+
+def empfaenger_nummer(daten: dict):
+    """Bei einer EIGENEN Nachricht: der Chat, in dem sie steht -> Kundennummer.
+
+    Gegenstueck zu `absender_nummer`, und bewusst eine eigene Funktion: bei
+    `fromMe` traegt `from` die eigene Nummer, der Kunde steht in `chatId`
+    (== `to`; gemessen, siehe Moduldocstring). Wer hier `absender_nummer`
+    benutzte, buchte jede eigene Antwort auf die eigene Nummer.
+    """
+    ziffern = _ziffern(daten.get("chatId") or daten.get("to"))
+    if not ziffern:
+        return None, "Chat ohne Rufnummer (Privacy-ID ohne Aufloesung)"
+    return normalisiere_empfaenger("+" + ziffern)
+
+
+def selbst_chat_grund(daten: dict):
+    """Verwerfungsgrund, wenn diese eigene Nachricht im Selbst-Chat steht.
+
+    Der Selbst-Chat ist der Notizzettel-/Bot-Kanal des Betreibers: dort landen
+    Digest-Zustellungen und Systemtests. Er ist kein Kundenverkehr, und wuerde
+    er als `nachricht_ausgehend` gebucht, flutete jede Digest-Zustellung das
+    Postfach. Erkennungsregel GEMESSEN (Quelle + echte Daten im
+    Moduldocstring): bei `fromMe` traegt `from` die eigene Nummer und `chatId`
+    den Chat — sind beide dieselbe Nummer, schreibt das Konto an sich selbst.
+
+    Ist eine der beiden Seiten nicht lesbar, wird ebenfalls verworfen. Das ist
+    die bewusste Richtung des Zweifels: eine verpasste Antwort laesst einen
+    Kontakt laenger als noetig „unbeantwortet" aussehen (sichtbar, harmlos),
+    ein faelschlich gebuchter Selbst-Chat verstopft das Postfach mit dem
+    eigenen Bot-Verkehr (unsichtbar, schaedlich).
+    """
+    chat = _ziffern(daten.get("chatId") or daten.get("to"))
+    eigen = _ziffern(daten.get("from"))
+    if not chat or not eigen:
+        return "eigene Nachricht ohne lesbare Chat-/Absenderkennung"
+    if chat == eigen:
+        return "Selbst-Chat (Notizzettel-/Bot-Kanal), kein Kundenverkehr"
+    return None
 
 
 def _ist_gruppe(daten: dict) -> bool:
@@ -221,22 +323,35 @@ def lead_zu_nummer(chat_id: str):
     return treffer[0] if treffer else None
 
 
+# Beide Richtungen teilen sich den Dedup-Raum: eine WhatsApp-message_id ist
+# eindeutig, und eine Wiederholung soll auch dann greifen, wenn OpenWA
+# dasselbe Ereignis einmal als `message.received` und einmal als
+# `message.sent` zustellte (ein `*`-Abo oder ein Engine-Wechsel machen das
+# moeglich). Zwei getrennte Pruefungen liessen genau diese Zeile doppelt.
+PROTOKOLL_TYPEN = ("kundenantwort", "nachricht_ausgehend")
+
+
 def bereits_gespeichert(message_id: str) -> bool:
     return bool(server._q(
-        "select id from activities where type = 'kundenantwort' "
-        "and payload->>'message_id' = %s limit 1", (message_id,)))
+        "select id from activities where type = any(%s) "
+        "and payload->>'message_id' = %s limit 1",
+        (list(PROTOKOLL_TYPEN), message_id)))
 
 
-def speichern(lead_id: str, nutzlast: dict) -> str:
-    """Append-only: eine `kundenantwort`-Zeile, actor='human'.
+def speichern(lead_id: str, nutzlast: dict, typ: str = "kundenantwort",
+              actor: str = "human") -> str:
+    """Append-only: eine Protokollzeile in `activities`.
 
-    `actor='human'` und nicht der Default 'agent': die Zeile haelt fest, was
-    ein Mensch geschrieben hat, nicht was die Assistenz getan hat.
+    Eingehend ist `actor='human'` und nicht der Default 'agent': die Zeile
+    haelt fest, was ein Mensch geschrieben hat, nicht was die Assistenz getan
+    hat. Ausgehend steht 'agent' (siehe `_ausgehend`) — abweichend vom Plan,
+    der 'system' vorsah: `activities_actor_check` erlaubt nur
+    ('agent','human','cron'), und DDL ist in dieser Stufe verboten.
     """
     return str(server._q(
         "insert into activities (lead_id, type, payload, actor) "
-        "values (%s, 'kundenantwort', %s, 'human') returning id",
-        (lead_id, json.dumps(nutzlast, ensure_ascii=False)))[0]["id"])
+        "values (%s, %s, %s, %s) returning id",
+        (lead_id, typ, json.dumps(nutzlast, ensure_ascii=False), actor))[0]["id"])
 
 
 # ---------------------------------------------------------------------------
@@ -270,14 +385,12 @@ def verarbeite(roh: bytes, signatur):
     if not isinstance(umschlag, dict):
         return 400, {"fehler": "unerwartete Rumpfform"}
 
-    if umschlag.get("event") != EREIGNIS:
+    if umschlag.get("event") not in EREIGNISSE:
         return 200, {"verworfen": f"Ereignis {umschlag.get('event')!r}"}
     daten = umschlag.get("data")
     if not isinstance(daten, dict):
         return 400, {"fehler": "Ereignis ohne data"}
 
-    if daten.get("fromMe") is True:
-        return 200, {"verworfen": "fromMe — eigene Nachricht"}
     if _ist_gruppe(daten):
         return 200, {"verworfen": "Gruppen-/Broadcast-Nachricht"}
 
@@ -288,22 +401,96 @@ def verarbeite(roh: bytes, signatur):
                     "nicht dedupbar, verworfen.")
         return 400, {"fehler": "ohne message_id"}
 
+    # Entschieden wird am `fromMe`-Feld, NICHT am Ereignisnamen: die Nutzlast
+    # ist die Wahrheit (Moduldocstring), und ein `*`-Abo oder ein anderer
+    # Engine-Adapter kann dieselbe Nachricht unter anderem Namen zustellen.
+    if daten.get("fromMe") is True:
+        return _ausgehend(daten, message_id)
+    return _eingehend(daten, message_id)
+
+
+def _eingehend(daten: dict, message_id: str):
+    """Der Kunde hat geschrieben -> `kundenantwort`, actor='human'."""
     chat_id, nummern_fehler = absender_nummer(daten)
-    text = str(daten.get("body") or "")
     nutzlast = {
+        **_textteil(daten, message_id),
+        "richtung": "eingehend",
+        "absender": chat_id or str(daten.get("from") or ""),
+        "unbekannter_absender": False,
+    }
+    return _buchen("kundenantwort", "human", chat_id, nummern_fehler, nutzlast,
+                   "unbekannter_absender", str(daten.get("from")))
+
+
+def _ausgehend(daten: dict, message_id: str):
+    """Von diesem Konto ging etwas raus -> `nachricht_ausgehend`, actor='agent'.
+
+    Zweck (Stufe 8): das Postfach soll nur zeigen, was WIRKLICH offen ist. Ohne
+    diese Zeile bliebe ein Kontakt, den der Betreiber von seinem Handy aus
+    beantwortet hat, fuer immer „unbeantwortet".
+
+    ZWEI ABSICHTLICHE DOPPELUNGEN, beide gewollt:
+
+    1. Es wird nicht unterschieden, WER gesendet hat — der Betreiber vom Handy
+       oder das Webhook-Echo eines Dispatcher-Versands. Das ist an der Nutzlast
+       auch nicht entscheidbar, und fuer den Zweck egal: beides heisst „im Chat
+       des Kontakts steht eine Antwort". Deshalb `weg: "unbekannt"` statt einer
+       erfundenen Herkunft.
+    2. Zu einem Dispatcher-Versand steht damit zweierlei in der Historie:
+       `versand` (vom Dispatcher: „das System hat zugestellt", Teil des
+       Gate-Protokolls, traegt die draft_id) und `nachricht_ausgehend` (von
+       hier: „im Chat steht eine Antwort", Postfach-Wahrheit). Zwei Fragen,
+       zwei Ereignisse — die Zeilen werden ausdruecklich NICHT zusammengelegt,
+       weil ihre Abwesenheit jeweils etwas anderes bedeutet: fehlt `versand`,
+       hat das System nichts zugestellt; fehlt `nachricht_ausgehend`, ist im
+       Chat nichts angekommen.
+
+    `actor='agent'` statt des im Plan genannten 'system': die Wache
+    `activities_actor_check` laesst nur ('agent','human','cron') zu und DDL ist
+    verboten. 'agent' ist der Spaltendefault und heisst hier, was 'system'
+    heissen sollte — kein Mensch hat diese Zeile ins CRM getippt.
+    """
+    grund = selbst_chat_grund(daten)
+    if grund:
+        LOG.info("Eigene Nachricht verworfen: %s", grund)
+        return 200, {"verworfen": grund}
+
+    chat_id, nummern_fehler = empfaenger_nummer(daten)
+    nutzlast = {
+        **_textteil(daten, message_id),
+        "richtung": "ausgehend",
+        "empfaenger": chat_id or str(daten.get("chatId")
+                                     or daten.get("to") or ""),
+        "weg": "unbekannt",
+        "unbekannter_empfaenger": False,
+    }
+    return _buchen("nachricht_ausgehend", "agent", chat_id, nummern_fehler,
+                   nutzlast, "unbekannter_empfaenger",
+                   str(daten.get("chatId") or daten.get("to")))
+
+
+def _textteil(daten: dict, message_id: str) -> dict:
+    """Die Felder, die beide Richtungen gleich fuehren."""
+    text = str(daten.get("body") or "")
+    return {
         "text": text[:TEXT_MAXLAENGE],
         "gekuerzt": len(text) > TEXT_MAXLAENGE,
         "message_id": message_id,
-        "richtung": "eingehend",
-        "absender": chat_id or str(daten.get("from") or ""),
         "nachrichtentyp": str(daten.get("type") or "unknown"),
         "gesendet_am": _gesendet_am(daten.get("timestamp")),
-        "unbekannter_absender": False,
     }
 
+
+def _buchen(typ: str, actor: str, chat_id, nummern_fehler, nutzlast: dict,
+            unbekannt_schluessel: str, roh_gegenstelle: str):
+    """Dedup, Lead-Zuordnung und Insert unter der Schreibsperre.
+
+    Eine Stelle fuer beide Richtungen: die Dedup-Pruefung und der
+    Sammelkontakt-Rueckfall sollen nicht zweimal dastehen und auseinanderlaufen.
+    """
     try:
         with _SCHREIBSPERRE:
-            if bereits_gespeichert(message_id):
+            if bereits_gespeichert(nutzlast["message_id"]):
                 LOG.info("Wiederholte Zustellung — schon gespeichert.")
                 return 200, {"doppelt": True}
 
@@ -311,17 +498,17 @@ def verarbeite(roh: bytes, signatur):
             if lead is None:
                 if not UNBEKANNT_LEAD_ID:
                     LOG.critical(
-                        "Unbekannter Absender %s, aber INBOX_UNBEKANNT_LEAD_ID "
+                        "Unbekannte Gegenstelle %s, aber INBOX_UNBEKANNT_LEAD_ID "
                         "ist nicht gesetzt — nichts gespeichert, 503. Grund der "
-                        "Nummernpruefung: %s", _maskiert(str(daten.get("from"))),
+                        "Nummernpruefung: %s", _maskiert(roh_gegenstelle),
                         nummern_fehler or "kein Kontakt mit dieser Nummer")
                     return 503, {"fehler": "Sammel-Lead nicht konfiguriert"}
-                nutzlast["unbekannter_absender"] = True
+                nutzlast[unbekannt_schluessel] = True
                 lead_id = UNBEKANNT_LEAD_ID
             else:
                 lead_id = str(lead["id"])
 
-            akt_id = speichern(lead_id, nutzlast)
+            akt_id = speichern(lead_id, nutzlast, typ, actor)
     except psycopg.OperationalError:
         LOG.error("Datenbank nicht erreichbar — nichts gespeichert, 503 "
                   "(OpenWA wiederholt).")
@@ -330,11 +517,12 @@ def verarbeite(roh: bytes, signatur):
         LOG.error("Datenbankfehler (%s) — nichts gespeichert, 503.", e.sqlstate)
         return 503, {"fehler": "Datenbankfehler"}
 
-    LOG.info("Kundenantwort gespeichert: lead=%s absender=%s typ=%s "
-             "zeichen=%d unbekannt=%s", lead_id, _maskiert(nutzlast["absender"]),
+    LOG.info("%s gespeichert: lead=%s gegenstelle=%s typ=%s zeichen=%d "
+             "unbekannt=%s", typ, lead_id,
+             _maskiert(nutzlast.get("absender") or nutzlast.get("empfaenger")),
              nutzlast["nachrichtentyp"], len(nutzlast["text"]),
-             nutzlast["unbekannter_absender"])
-    return 200, {"gespeichert": True, "aktivitaet_id": akt_id}
+             nutzlast[unbekannt_schluessel])
+    return 200, {"gespeichert": True, "aktivitaet_id": akt_id, "typ": typ}
 
 
 # ---------------------------------------------------------------------------

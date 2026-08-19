@@ -522,8 +522,8 @@ def test_beide_werkzeuge_sind_registriert():
     assert "firma_anreichern" in namen
     # Stufe 7: vertrag_speichern und vertraege_ablaufend (test_vertraege.py),
     # wochenbericht (test_wochenbericht.py) und uebergabe_erstellen
-    # (test_uebergabe.py).
-    assert len(namen) == len(set(namen)) == 26
+    # (test_uebergabe.py). Stufe 8: posteingang (test_posteingang.py).
+    assert len(namen) == len(set(namen)) == 27
 
 # ---------------------------------------------------------------------------
 # Nachbesserungen aus dem Stufe-5-Review (Befunde T1, B2, D2)

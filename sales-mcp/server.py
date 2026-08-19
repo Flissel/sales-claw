@@ -691,10 +691,130 @@ def _lesbare_groesse(bytes_: int) -> str:
     return f"{bytes_ / 1024:.0f} KB"
 
 
+# ---------------------------------------------------------------------------
+# Support-Posteingang (Stufe 8) — die Unbeantwortet-Sicht.
+#
+# Reine Lese-/Protokollschicht: `posteingang` zeigt, wer geschrieben und noch
+# keine Antwort bekommen hat. Es wird NICHTS automatisch beantwortet, kein
+# `drafts`-Satz angefasst und kein Versandweg geoeffnet — das Freigabe-Gate
+# (Grundsatzentscheidung 1) bleibt unberuehrt. Ob und was geantwortet wird,
+# entscheidet der Betreiber, und der Weg dorthin ist unveraendert
+# entwurf_erstellen -> Freigabe -> Dispatcher.
+# ---------------------------------------------------------------------------
+
+# Der Sammelkontakt „Unbekannte Eingaenge" aus inbox.py — dieselbe .env-Variable,
+# hier nur gelesen. Gleiches Muster wie LINKEDIN_POST_LEAD_ID: die UUID kommt
+# aus der Umgebung, Tests biegen das Modulattribut um. Ohne sie funktioniert
+# `posteingang` weiter, kann die Unbekannten dann aber nicht mehr nach
+# Absendernummer trennen (siehe unten).
+UNBEKANNT_LEAD_ID = os.environ.get("INBOX_UNBEKANNT_LEAD_ID", "").strip()
+
+# Fenstergrenzen: unter einer Stunde ist die Sicht sinnlos, ueber einer Woche
+# ist sie kein Postfach mehr, sondern eine Historie (dafuer gibt es
+# profil_lesen). Gekappt statt abgelehnt, damit ein vertippter Aufruf eine
+# Antwort bekommt und keine Fehlermeldung.
+POSTEINGANG_STUNDEN_MIN = 1
+POSTEINGANG_STUNDEN_MAX = 168
+POSTEINGANG_LIMIT = 25
+POSTEINGANG_TEXT_MAX = 160
+# Was als Antwort zaehlt. `versand` = der Dispatcher hat zugestellt (Gate-
+# Protokoll), `nachricht_ausgehend` = im Chat des Kontakts steht eine Antwort
+# (vom Betreiber-Handy oder als Echo eines Versands, inbox.py `_ausgehend`).
+# Beide beenden das Warten, aus unterschiedlichen Gruenden — deshalb beide.
+ANTWORT_TYPEN = ("versand", "nachricht_ausgehend")
+
+
+@_gesichert
+def posteingang(stunden: int = 48) -> str:
+    """Support-Postfach: wer hat geschrieben und noch KEINE Antwort bekommen?
+
+    Zeigt je Kontakt die juengste Kundennachricht im Zeitfenster, sofern
+    danach nichts mehr rausging. Aelteste zuerst — wer am laengsten wartet,
+    steht oben. `stunden` wird auf 1..168 gekappt (Vorgabe 48). Hoechstens 25
+    Eintraege; `anzahl_unbeantwortet` nennt die Gesamtzahl.
+
+    Nachrichten von Nummern, die nicht im CRM stehen, haengen alle am
+    Sammelkontakt „Unbekannte Eingaenge" — dort zaehlt JEDE Absendernummer als
+    eigener Eintrag und steht als `absender` daneben, denn dort identifiziert
+    die Nummer den Menschen. Will der Betreiber so jemanden aufnehmen:
+    `kontakt_anlegen` mit genau dieser Nummer, dann routen kuenftige
+    Nachrichten von selbst.
+
+    Nur Lesezugriff: versendet nichts, beantwortet nichts, aendert nichts."""
+    try:
+        fenster = int(stunden)
+    except (TypeError, ValueError):
+        fenster = 48
+    fenster = max(POSTEINGANG_STUNDEN_MIN, min(POSTEINGANG_STUNDEN_MAX, fenster))
+
+    # `distinct on (lead_id, gruppe)` liefert je Gruppe die juengste
+    # Kundennachricht. `gruppe` ist NULL fuer einen echten Kontakt (dort ist
+    # der Lead die Person) und traegt beim Sammelkontakt die Absendernummer —
+    # sonst wuerde eine Antwort an EINEN Unbekannten alle Unbekannten als
+    # beantwortet gelten lassen. Aus demselben Grund prueft die
+    # not-exists-Wache dort zusaetzlich, dass die ausgehende Zeile DIESE
+    # Nummer meint (`empfaenger` bei nachricht_ausgehend, `chat_id` bei
+    # versand).
+    zeilen = _q(
+        "with fenster as ("
+        "  select a.lead_id, a.created_at, a.payload,"
+        "         case when %(sammel)s <> '' and a.lead_id::text = %(sammel)s"
+        "              then a.payload->>'absender' end as gruppe"
+        "    from activities a"
+        "   where a.type = 'kundenantwort'"
+        "     and a.created_at > now() - make_interval(hours => %(stunden)s)),"
+        " juengste as ("
+        "  select distinct on (lead_id, gruppe)"
+        "         lead_id, gruppe, created_at, payload"
+        "    from fenster order by lead_id, gruppe, created_at desc)"
+        "select j.lead_id, j.gruppe, j.created_at, j.payload,"
+        "       l.name as kontakt, count(*) over () as gesamt,"
+        "       extract(epoch from (now() - j.created_at)) / 3600 as wartet_h"
+        "  from juengste j left join leads l on l.id = j.lead_id"
+        " where not exists ("
+        "        select 1 from activities b"
+        "         where b.lead_id = j.lead_id"
+        "           and b.type = any(%(antworten)s)"
+        "           and b.created_at > j.created_at"
+        "           and (j.gruppe is null"
+        "                or coalesce(b.payload->>'empfaenger',"
+        "                            b.payload->>'chat_id') = j.gruppe))"
+        " order by j.created_at asc limit %(limit)s",
+        {"sammel": UNBEKANNT_LEAD_ID, "stunden": fenster,
+         "antworten": list(ANTWORT_TYPEN), "limit": POSTEINGANG_LIMIT})
+
+    eintraege = []
+    for z in zeilen:
+        nutzlast = z["payload"] or {}
+        text = " ".join(str(nutzlast.get("text") or "").split())
+        eintrag = {"lead_id": z["lead_id"], "kontakt": z["kontakt"],
+                   "text_kurz": (text[:POSTEINGANG_TEXT_MAX] + "…"
+                                 if len(text) > POSTEINGANG_TEXT_MAX else text),
+                   "wartet_seit": z["created_at"],
+                   "wartet_stunden": round(float(z["wartet_h"]), 1)}
+        # `absender` steht NUR beim Sammelkontakt: bei einem echten Kontakt
+        # sagt der Name mehr als die Nummer, und die Nummer stuende dann
+        # doppelt in jeder Antwortzeile.
+        if z["gruppe"]:
+            eintrag["absender"] = z["gruppe"]
+        eintraege.append(eintrag)
+
+    antwort = {"fenster_stunden": fenster,
+               "anzahl_unbeantwortet": zeilen[0]["gesamt"] if zeilen else 0,
+               "angezeigt": len(eintraege), "eintraege": eintraege}
+    if any("absender" in e for e in eintraege):
+        antwort["hinweis"] = (
+            "Eintraege mit 'absender' kommen von Nummern, die nicht im CRM "
+            "stehen. Aufnehmen geht nur auf ausdruecklichen Wunsch des "
+            "Betreibers: kontakt_anlegen mit genau dieser Nummer.")
+    return _json(antwort)
+
+
 @_gesichert
 def digest() -> str:
     """Zusammenfassung: offene Entwuerfe, unvollstaendige Bedarfsanalysen,
-    faellige Wiedervorlagen, letzte Aktivitaeten (48 h)."""
+    faellige Wiedervorlagen, unbeantwortete Eingaenge, letzte Aktivitaeten
+    (48 h)."""
     entwuerfe = _q("select d.id, d.channel, l.name, d.created_at from drafts d "
                    "left join leads l on l.id = d.lead_id "
                    "where d.status = 'pending' order by d.created_at desc")
@@ -734,6 +854,20 @@ def digest() -> str:
                 "from activities a left join leads l on l.id = a.lead_id "
                 "where a.created_at > now() - interval '48 hours' "
                 "order by a.created_at desc limit 20")
+    # Der Support-Ueberblick im Morgen-Digest (Stufe 8). Dasselbe 48-h-Fenster
+    # wie „letzte Aktivitaeten", aber eine andere Frage: dort steht, was
+    # passiert IST, hier, was noch AUSSTEHT. Fuenf Eintraege, nicht 25 — der
+    # Digest ist eine Ansage, keine Liste; die ganze Sicht zeigt `posteingang`.
+    # `.get` mit Rueckfall wie im Wochenbericht (Befund B1): eine Teilquelle
+    # darf den Digest nie als Ganzes umreissen.
+    posten = json.loads(posteingang(stunden=48))
+    unbeantwortet = {
+        "anzahl": posten.get("anzahl_unbeantwortet"),
+        "eintraege": [{"lead_id": e["lead_id"], "kontakt": e["kontakt"],
+                       **({"absender": e["absender"]} if "absender" in e else {}),
+                       "wartet_stunden": e["wartet_stunden"]}
+                      for e in posten.get("eintraege", [])[:5]],
+    }
     return _json({"anzahl_entwuerfe": len(entwuerfe),
                   "offene_entwuerfe": [
                       {"draft_id": e["id"], "kanal": e["channel"],
@@ -745,6 +879,7 @@ def digest() -> str:
                        "notiz": (w["payload"] or {}).get("notiz"),
                        "faellig_am": (w["payload"] or {}).get("faellig_am")}
                       for w in wiedervorlagen],
+                  "unbeantwortete_eingaenge": unbeantwortet,
                   "letzte_aktivitaeten": letzte})
 
 
@@ -1432,7 +1567,7 @@ WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              profil_lesen, profil_aktualisieren,
              bedarf_speichern, bedarf_offen, entwurf_erstellen,
              post_entwurf_erstellen, medien_liste,
-             digest, wochenbericht, uebergabe_erstellen,
+             posteingang, digest, wochenbericht, uebergabe_erstellen,
              entwuerfe_offen, entwurf_freigeben, entwurf_ablehnen,
              entwurf_manuell_gesendet, entwurf_erneut_freigeben,
              marktanalyse, b2b_leads, firma_anreichern)

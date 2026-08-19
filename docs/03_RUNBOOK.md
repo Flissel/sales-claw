@@ -867,11 +867,13 @@ für die dedizierte `openwa`-Nummer ab dem QR-Pairing
 
 ## Stufe 4: Eingehende Kundenantworten (`sales-inbox`)
 
-Die Gegenrichtung des Dispatchers. OpenWA stellt das Ereignis
-`message.received` der Session `sales` an `http://sales-inbox:8790/webhook`
-zu; jede angenommene Nachricht wird zu einer `activities`-Zeile vom Typ
-`kundenantwort` beim passenden Kontakt. **Es wird nichts versendet und kein
-`drafts`-Satz angefasst** — das Freigabe-Gate bleibt unberührt.
+Die Gegenrichtung des Dispatchers. OpenWA stellt die Ereignisse
+`message.received` (der Kunde schreibt) und — seit Stufe 8 — `message.sent`
+(von diesem Konto ging etwas raus) der Session `sales` an
+`http://sales-inbox:8790/webhook` zu; jede angenommene Nachricht wird zu einer
+`activities`-Zeile vom Typ `kundenantwort` bzw. `nachricht_ausgehend` beim
+passenden Kontakt. **Es wird nichts versendet und kein `drafts`-Satz
+angefasst** — das Freigabe-Gate bleibt unberührt.
 
 ```powershell
 docker compose up -d sales-inbox
@@ -890,9 +892,10 @@ und einer Zeile, die sagt warum.
 |---|---|---|
 | Signatur ungültig oder fehlt | `401` | nichts geschrieben, Fehlversuchszähler im Log |
 | Rumpf > 1,06 MB | `413` | Rumpf wird nicht gelesen |
-| `fromMe: true` | `200 verworfen` | eigene Nachricht |
+| `fromMe: true`, Selbst-Chat (`chatId` == `from`) | `200 verworfen` | Notizzettel-/Bot-Kanal |
+| `fromMe: true`, Kundenchat | `200 gespeichert` | Aktivität `nachricht_ausgehend` (Stufe 8) |
 | Gruppe/Broadcast (`@g.us`, `isGroup`) | `200 verworfen` | kein Kundendialog |
-| anderes Ereignis als `message.received` | `200 verworfen` | — |
+| anderes Ereignis als `message.received`/`message.sent` | `200 verworfen` | — |
 | bekannte `message_id` schon gespeichert | `200 doppelt` | Dedup gegen OpenWA-Wiederholungen |
 | Absender im CRM | `200 gespeichert` | Aktivität beim Kontakt |
 | Absender unbekannt | `200 gespeichert` | Aktivität am Sammel-Lead „Unbekannte Eingänge" |
@@ -903,9 +906,19 @@ Versand. Unbekannte Absender werden **nicht** automatisch als Kontakt
 angelegt (Spam-Schutz); wer aufgenommen werden soll, wird vom Betreiber
 ausdrücklich benannt.
 
-### Webhook registrieren — und warum er es (noch) nicht ist
+### Webhook registrieren
 
-**Stand F1: der Webhook ist NICHT registriert.** OpenWA prüft die
+**Stand 19.08.2026 (gemessen in `openwa.sqlite`, Tabelle `webhooks`): der
+Webhook IST registriert und liefert** — `http://sales-inbox:8790/webhook`,
+`events = ["message.received"]`, `active = 1`, `filters = NULL`,
+`lastTriggeredAt` desselben Vormittags. Der ältere Absatz „Stand F1: NICHT
+registriert" ist damit überholt; er beschrieb den Zustand vor dem
+`openwa`-Recreate. **Offen für Stufe 8:** das Abo umfasst `message.sent`
+nicht — die ausgehenden Echos (`nachricht_ausgehend`) kommen also noch nicht
+an, siehe „Support-Posteingang" weiter unten.
+
+Der ursprüngliche Befund und der Weg, falls neu registriert werden muss:
+OpenWA prüft die
 Webhook-URL schon bei der Registrierung gegen einen SSRF-Filter und weist
 jede private Adresse ab. Das Compose-Netz liegt auf `192.168.144.0/20`,
 `sales-inbox` also mittendrin — gemessen:
@@ -931,9 +944,8 @@ docker compose -f docker-compose.openwa.yml logs --tail 50 openwa
 $w = @{}; foreach ($z in [IO.File]::ReadAllLines('.env')) {
   if ($z -match '^\s*([A-Z0-9_]+)\s*=\s*(.*)$') { $w[$Matches[1]] = $Matches[2].Trim() } }
 $rumpf = @{ url = 'http://sales-inbox:8790/webhook'
-            events = @('message.received')
+            events = @('message.received', 'message.sent')
             secret = $w['INBOX_WEBHOOK_SECRET']
-            filters = @{ conditions = @(@{ field='fromMe'; operator='is'; value=$false }) }
             retryCount = 3 } | ConvertTo-Json -Depth 6
 Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:2785/api/sessions/$($w['OPENWA_SESSION_ID'])/webhooks" `
   -Headers @{ 'X-API-Key' = $w['OPENWA_API_KEY']; 'Content-Type' = 'application/json' } -Body $rumpf
@@ -942,8 +954,12 @@ Invoke-RestMethod -Uri "http://127.0.0.1:2785/api/sessions/$($w['OPENWA_SESSION_
   -Headers @{ 'X-API-Key' = $w['OPENWA_API_KEY'] }
 ```
 
-Der Filter `fromMe is false` ist eine zweite, serverseitige Schicht vor der
-Prüfung im Eingang selbst — beide bleiben.
+**Kein `fromMe is false`-Filter mehr.** Die frühere Fassung dieses Abschnitts
+empfahl ihn als zweite, serverseitige Schicht. Seit Stufe 8 wäre er genau
+falsch: er filterte die eigenen Antworten weg, die den Posteingang erst
+aufräumen. Gemessen ist er ohnehin nie gesetzt worden (`filters = NULL`).
+Der Selbst-Chat wird stattdessen im Eingang selbst verworfen, an einer
+gemessenen Regel (`chatId` == `from`, siehe Modulkopf von `inbox.py`).
 
 ### Geheimnis wechseln
 
@@ -953,6 +969,100 @@ nachziehen (`PUT /api/sessions/{id}/webhooks/{webhookId}` mit dem neuen
 `secret`). Wird nur eine Seite gewechselt, kommt nichts mehr an — sichtbar
 als wachsender Fehlversuchszähler im `sales-inbox`-Log und als
 `webhook_delivery_failed` bei OpenWA.
+
+## Stufe 8: Support-Posteingang
+
+Die Frage, die das Werkzeug beantwortet, ist genau eine: **wer hat
+geschrieben und noch keine Antwort bekommen?** `posteingang(stunden=48)` zeigt
+je Kontakt die jüngste Kundennachricht im Fenster, sofern danach nichts mehr
+rausging — älteste zuerst, höchstens 25 Einträge, `anzahl_unbeantwortet`
+nennt die Gesamtzahl. `stunden` wird auf 1..168 gekappt. Der Morgen-Digest
+trägt dieselbe Zahl plus die fünf längsten Wartezeiten als
+`unbeantwortete_eingaenge`.
+
+**Es wird nichts automatisch beantwortet.** Stufe 8 ist eine reine Lese- und
+Protokollschicht: kein neuer Versandweg, keine `drafts`-Berührung,
+`sales-inbox` versendet weiterhin nie. Was geantwortet wird, entscheidet der
+Betreiber, und der Weg dorthin ist unverändert `entwurf_erstellen` → Freigabe
+→ Dispatcher. Der Bot antwortet auch deshalb nie von selbst, weil die
+`allowFrom`-Liste von OpenClaw sein Antwortverhalten begrenzt — der Webhook
+kennt sie nicht, er *sieht* alles, was hereinkommt.
+
+### Was als „beantwortet" zählt
+
+Zwei Ereignisse, zwei Fragen — beide beenden das Warten:
+
+| Aktivität | Wer schreibt sie | Bedeutung |
+|---|---|---|
+| `versand` | `sales-dispatch` | das System hat zugestellt (Gate-Protokoll, trägt die `draft_id`) |
+| `nachricht_ausgehend` | `sales-inbox` (Stufe 8) | im Chat des Kontakts steht eine Antwort |
+
+Die zweite Zeile ist der Grund, warum ein vom **Handy** beantworteter Kontakt
+nicht ewig im Postfach steht. Sie entsteht aus dem OpenWA-Ereignis
+`message.sent` (das Echo eines eigenen Sendens) und wird **nicht** danach
+unterschieden, ob der Betreiber selbst getippt oder der Dispatcher gesendet
+hat — an der Nutzlast ist das nicht entscheidbar, und für die Frage „wartet da
+noch jemand?" ist es egal. Zu einem Dispatcher-Versand stehen deshalb beide
+Zeilen in der Historie; das ist Absicht, keine Dopplung aus Versehen.
+
+**Der Selbst-Chat fliegt raus.** Schreibt die gekoppelte Nummer an sich selbst
+(Notizzettel, Bot-Kanal, Systemtests), entsteht keine Aktivität. Erkannt wird
+das an `chatId == from` — gemessen an OpenWAs Mapper
+(`engine/adapters/message-mapper.ts`: `chatId = msg.fromMe ? msg.to : msg.from`)
+und an den echten Zeilen in `openwa.sqlite`. Ohne diese Ausnahme flutete jede
+Digest-Zustellung das Postfach.
+
+### Betreiberaktion: `message.sent` abonnieren
+
+Der registrierte Webhook hört heute nur auf `message.received`. Bis das Abo
+erweitert ist, bleibt `nachricht_ausgehend` leer und ein von Hand
+beantworteter Kontakt steht weiter im Posteingang (der Code ist fertig und
+nimmt das Ereignis an — es kommt nur nicht):
+
+```powershell
+# Schlüssel nur maschinell in Variablen, nie anzeigen.
+$w = @{}; foreach ($z in [IO.File]::ReadAllLines('.env')) {
+  if ($z -match '^\s*([A-Z0-9_]+)\s*=\s*(.*)$') { $w[$Matches[1]] = $Matches[2].Trim() } }
+$k = @{ 'X-API-Key' = $w['OPENWA_API_KEY'] }
+$s = $w['OPENWA_SESSION_ID']
+$id = (Invoke-RestMethod -Uri "http://127.0.0.1:2785/api/sessions/$s/webhooks" -Headers $k)[0].id
+Invoke-RestMethod -Method Put -Uri "http://127.0.0.1:2785/api/sessions/$s/webhooks/$id" `
+  -Headers ($k + @{ 'Content-Type' = 'application/json' }) `
+  -Body (@{ events = @('message.received','message.sent') } | ConvertTo-Json)
+```
+
+Ein `PUT` nur mit `events` lässt das Geheimnis unangetastet (gemessen:
+`webhook.service.ts` schreibt `secret` nur, wenn das Feld im Rumpf steht).
+
+### Unbekannte triagieren
+
+Nachrichten von Nummern, die nicht im CRM stehen, hängen alle am
+Sammelkontakt „Unbekannte Eingänge" (`INBOX_UNBEKANNT_LEAD_ID`). Im
+Posteingang zählt dort **jede Absendernummer als eigener Eintrag** und steht
+als `absender` daneben — mehrere Unbekannte teilen sich einen Lead, und eine
+Antwort an einen von ihnen darf die anderen nicht als erledigt gelten lassen
+(die Prüfung vergleicht dort zusätzlich die Nummer).
+
+Aufnehmen geht nur auf ausdrücklichen Wunsch: `kontakt_anlegen` mit genau der
+angezeigten Nummer, dann routen künftige Nachrichten von selbst
+(`lead_zu_nummer`). **Alte Zeilen werden nicht umgehängt** — `activities` ist
+append-only, und ein Werkzeug dafür gibt es bewusst nicht. Die Historie des
+neuen Kontakts beginnt also mit seiner nächsten Nachricht; was vorher kam,
+bleibt am Sammelkontakt (`profil_lesen` zeigt es dort).
+
+### Bekannte Einschränkung: LID-Adressierung
+
+Gemessen am 19.08.2026: WhatsApp adressiert die Chats dieser Session seit dem
+18.08. abends fast durchgehend als `@lid` (Privacy-ID) statt `@c.us`
+(Rufnummer) — 176 von 180 Nachrichtenzeilen in `openwa.sqlite`. Eine `@lid`
+ist keine Rufnummer, `lead_zu_nummer` findet damit keinen Kontakt, und alle 66
+bisherigen `kundenantwort`-Zeilen hängen deshalb am Sammelkontakt, auch die
+von bekannten Kontakten. Das ist ein Befund an der Stufe-4-Zuordnung, nicht am
+Posteingang — für ihn heißt es nur, dass die Sammelkontakt-Gruppierung nach
+`absender` derzeit der Normalfall ist und nicht die Ausnahme. Die
+LID-Auflösung (OpenWA führt dafür eine Tabelle `lid_mappings`, und die
+Nutzlast kann `senderPhone` tragen) gehört auf die Liste, bevor der
+Posteingang über die Demo hinaus tragen soll.
 
 ## Morgen-Digest
 

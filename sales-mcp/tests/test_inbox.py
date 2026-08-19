@@ -106,10 +106,19 @@ def _sammel_lead():
     return lead
 
 
+# Die eigene (gekoppelte) Nummer und die des Kunden. Bei `fromMe` traegt
+# `from` die EIGENE und `chatId` (== `to`) die des Kunden — gemessen an
+# openwa/upstream/src/engine/adapters/message-mapper.ts und an den echten
+# Zeilen der openwa-Datenbank (Tabelle `messages`), siehe Moduldocstring von
+# inbox.py. Genau diese Umkehr bilden die Stubs unten ab.
+EIGENE = "4915100000000@c.us"
+KUNDE = "491701234567@c.us"
+
+
 def _ereignis(**felder):
     """Ein `message.received`-Umschlag in der gemessenen OpenWA-Form."""
-    daten = {"id": "wa-nachricht-1", "from": "491701234567@c.us",
-             "to": "4915100000000@c.us", "chatId": "491701234567@c.us",
+    daten = {"id": "wa-nachricht-1", "from": KUNDE,
+             "to": EIGENE, "chatId": KUNDE,
              "body": "Hallo, passt Donnerstag?", "type": "text",
              "timestamp": 1770000000, "fromMe": False, "isGroup": False,
              "kind": "individual"}
@@ -118,6 +127,25 @@ def _ereignis(**felder):
             "timestamp": "2026-08-18T20:00:00.000Z",
             "sessionId": "stub-session", "idempotencyKey": "idem-1",
             "deliveryId": "lieferung-1", "data": daten}
+
+
+def _echo(**felder):
+    """Ein `message.sent`-Umschlag: von diesem Konto ging etwas raus.
+
+    OpenWA dispatcht eigene Sendungen NICHT als `message.received`, sondern
+    als `message.sent` (message-projector.service.ts: der Eingangspfad
+    dispatcht `message.received`, `handleOwnSendEcho` dispatcht
+    `message.sent`); die Nutzlast ist dieselbe IncomingMessage.
+    """
+    daten = {"id": "wa-echo-1", "from": EIGENE, "to": KUNDE, "chatId": KUNDE,
+             "body": "Donnerstag 15 Uhr passt, bis dann!", "type": "text",
+             "timestamp": 1770000100, "fromMe": True, "isGroup": False,
+             "kind": "individual"}
+    daten.update(felder)
+    return {"event": "message.sent",
+            "timestamp": "2026-08-18T20:05:00.000Z",
+            "sessionId": "stub-session", "idempotencyKey": "idem-echo-1",
+            "deliveryId": "lieferung-2", "data": daten}
 
 
 def _signiere(roh: bytes, geheimnis: str = GEHEIMNIS) -> str:
@@ -232,16 +260,135 @@ def test_fehlversuche_werden_gezaehlt_und_ohne_inhalt_geloggt():
 
 
 # ---------------------------------------------------------------------------
-# Verwerfen: fromMe, Gruppen, fremde Ereignisse
+# Eigene Nachrichten (Stufe 8): Kundenchat wird protokolliert, Selbst-Chat
+# nicht. Ohne diese Zeilen bliebe ein vom Handy beantworteter Kontakt im
+# Postfach ewig „unbeantwortet"; mit dem Selbst-Chat drin flutete jede
+# Digest-Zustellung dasselbe Postfach.
 # ---------------------------------------------------------------------------
 
-def test_frommme_wird_verworfen():
+def test_eigene_antwort_an_kunden_wird_als_nachricht_ausgehend_gebucht():
+    lead = _lead()
+    status, antwort = _post(_echo())
+    assert status == 200, antwort
+    assert antwort["gespeichert"] is True
+    assert _aktivitaeten("kundenantwort") == []
+    zeilen = _aktivitaeten("nachricht_ausgehend")
+    assert len(zeilen) == 1
+    assert str(zeilen[0]["lead_id"]) == lead
+    nutzlast = zeilen[0]["payload"]
+    assert nutzlast["richtung"] == "ausgehend"
+    assert nutzlast["empfaenger"] == KUNDE
+    assert nutzlast["message_id"] == "wa-echo-1"
+    assert nutzlast["text"] == "Donnerstag 15 Uhr passt, bis dann!"
+    assert nutzlast["unbekannter_empfaenger"] is False
+    # Herkunft ist an der Nutzlast nicht entscheidbar (Betreiber-Handy ODER
+    # Echo eines Dispatcher-Versands) — und wird deshalb nicht erfunden.
+    assert nutzlast["weg"] == "unbekannt"
+
+
+def test_ausgehende_zeile_wird_nicht_als_mensch_gebucht():
+    """`activities_actor_check` laesst nur ('agent','human','cron') zu — das im
+    Plan genannte 'system' ist ohne DDL nicht speicherbar. 'human' waere
+    falsch: bei einem Dispatcher-Echo hat kein Mensch getippt."""
     _lead()
-    status, antwort = _post(_ereignis(fromMe=True))
+    _post(_echo())
+    assert _aktivitaeten("nachricht_ausgehend")[0]["actor"] == "agent"
+
+
+def test_selbst_chat_wird_verworfen():
+    """Der Notizzettel-/Bot-Kanal: eigene Nummer an eigene Nummer. Gemessen
+    ist er genau daran erkennbar, dass `chatId` und `from` dieselbe Nummer
+    tragen (in der echten openwa-Datenbank die einzige Zeile mit
+    from == to == chatId)."""
+    _lead()
+    status, antwort = _post(_echo(**{"to": EIGENE, "chatId": EIGENE}))
+    assert status == 200
+    assert "Selbst-Chat" in antwort["verworfen"]
+    assert _aktivitaeten("nachricht_ausgehend") == []
+    assert _aktivitaeten("kundenantwort") == []
+
+
+def test_eigene_nachricht_ohne_lesbare_kennung_wird_verworfen():
+    """Im Zweifel verwerfen: ein faelschlich gebuchter Selbst-Chat verstopft
+    das Postfach, eine verpasste Antwort laesst nur einen Kontakt laenger
+    unbeantwortet aussehen."""
+    _lead()
+    status, antwort = _post(_echo(**{"from": ""}))
     assert status == 200
     assert antwort["verworfen"]
-    assert _aktivitaeten() == []
+    assert _aktivitaeten("nachricht_ausgehend") == []
 
+
+def test_wiederholtes_echo_wird_nur_einmal_gespeichert():
+    _lead()
+    erst = _post(_echo())
+    zweit = _post(_echo())
+    assert erst[0] == 200 and zweit[0] == 200
+    assert zweit[1].get("doppelt") is True
+    assert len(_aktivitaeten("nachricht_ausgehend")) == 1
+
+
+def test_echo_an_unbekannten_empfaenger_landet_im_sammel_lead():
+    bekannt = _lead()
+    sammel = _sammel_lead()
+    status, _ = _post(_echo(**{"to": "4915199999999@c.us",
+                               "chatId": "4915199999999@c.us"}))
+    assert status == 200
+    zeilen = _aktivitaeten("nachricht_ausgehend")
+    assert len(zeilen) == 1
+    assert str(zeilen[0]["lead_id"]) == sammel != bekannt
+    assert zeilen[0]["payload"]["unbekannter_empfaenger"] is True
+    assert zeilen[0]["payload"]["empfaenger"] == "4915199999999@c.us"
+
+
+def test_eigene_nachricht_wird_am_frommme_erkannt_nicht_am_ereignisnamen():
+    """Die Nutzlast ist die Wahrheit, der Ereignisname ist Beiwerk: ein
+    `*`-Abo oder ein anderer Engine-Adapter kann dieselbe Nachricht unter
+    anderem Namen zustellen."""
+    lead = _lead()
+    umschlag = _echo()
+    umschlag["event"] = "message.received"
+    status, _ = _post(umschlag)
+    assert status == 200
+    zeilen = _aktivitaeten("nachricht_ausgehend")
+    assert len(zeilen) == 1 and str(zeilen[0]["lead_id"]) == lead
+
+
+def test_eigene_nachricht_wird_dem_kunden_zugeordnet_nicht_der_eigenen_nummer():
+    """Der Kern der gemessenen Umkehr: `absender_nummer` (die auf `from`
+    schaut) haette diese Zeile auf die EIGENE Nummer gebucht."""
+    kunde = _lead(name="Kundin", phone="+49 170 1234567")
+    _lead(name="Eigene Versandnummer", phone="+49 151 00000000")
+    _post(_echo())
+    assert str(_aktivitaeten("nachricht_ausgehend")[0]["lead_id"]) == kunde
+
+
+def test_gruppenecho_wird_verworfen():
+    _lead()
+    status, antwort = _post(_echo(
+        isGroup=True, chatId="120363000000000000@g.us",
+        **{"to": "120363000000000000@g.us"}))
+    assert status == 200
+    assert antwort["verworfen"]
+    assert _aktivitaeten("nachricht_ausgehend") == []
+
+
+def test_eingang_fasst_auch_bei_eigenen_nachrichten_keine_entwuerfe_an():
+    """Gate-Invariante: dieser Dienst schreibt nur Protokollzeilen. Er
+    versendet nichts und bewegt keinen `drafts`-Satz — auch nicht, seit er
+    ausgehende Nachrichten kennt."""
+    lead = _lead()
+    server._q("insert into drafts (lead_id, channel, recipient, body, status) "
+              "values (%s,'whatsapp','+491701234567','x','pending')", (lead,))
+    _post(_echo())
+    _post(_ereignis())
+    zeilen = server._q("select status from drafts")
+    assert [z["status"] for z in zeilen] == ["pending"]
+
+
+# ---------------------------------------------------------------------------
+# Verwerfen: Gruppen, fremde Ereignisse
+# ---------------------------------------------------------------------------
 
 def test_gruppennachricht_wird_verworfen():
     _lead()
