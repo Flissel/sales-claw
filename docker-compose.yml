@@ -271,6 +271,56 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Die Freigabe-Oberflaeche (Stufe 10) — der siebte Container, und der
+  # einzige mit einem Host-Port neben dem Gateway. Gleicher Build-Kontext und
+  # gleiches Image wie sales-mcp, nur ein anderes Kommando (sales-mcp/ui.py).
+  #
+  # Lesen: Entwuerfe, Kontakte, Posteingang, Wiedervorlagen. Schreiben:
+  # AUSSCHLIESSLICH die drei Freigabe-Uebergaenge mit den SQL-Bedingungen der
+  # Chat-Werkzeuge (approved_by='betreiber-ui' als Audit-Unterschied). Das
+  # Freigabe-Gate bleibt die Datenbank (Grundsatzentscheidung 1) — dieses UI
+  # ist nur ein zweiter Bedienweg dafuer, kein neuer Versandweg.
+  #
+  # Sicherheitsmodell (ausfuehrlich im Kopf von ui.py):
+  #   * Port NUR auf 127.0.0.1 — die Vertrauensgrenze ist der Rechner des
+  #     Betreibers, wie beim Gateway-Port 18894. Im Container bindet der
+  #     Dienst auf 0.0.0.0 (anders waere er durchs Portmapping nicht
+  #     erreichbar); die Loopback-Grenze setzt DIESES Mapping. Nicht ins
+  #     Internet stellen.
+  #   * CSRF-Boot-Token und Host-Header-Pruefung im Dienst selbst — Loopback
+  #     allein schuetzt nicht vor dem Browser des Betreibers (Details ui.py).
+  #
+  # "unless-stopped" statt des "no" der uebrigen Dienste — bewusst: dieses UI
+  # versendet nichts und schreibt nur, was ein Mensch anklickt. Es darf nach
+  # einem Neustart wieder da sein, ohne dass damit (wie bei Dispatcher oder
+  # Agent) von selbst Nachrichten an echte Menschen moeglich wuerden.
+  sales-ui:
+    build: ./sales-mcp
+    image: sales-claw-sales-mcp:local
+    container_name: sales-ui
+    command: python ui.py
+    restart: unless-stopped
+    # KEIN env_file — dieselbe T5a-Ueberlegung wie bei sales-claw und
+    # sales-mail (siehe dort): das UI braucht die Kundendaten-DB, sonst
+    # nichts. Ueber env_file erbte es OPENWA_API_KEY, APIFY_TOKEN,
+    # INBOX_WEBHOOK_SECRET, SMTP_* und CALDAV_* — lauter Schluessel, mit
+    # denen ein kompromittierter Web-Dienst das Gate umgehen koennte.
+    environment:
+      - SALES_DB_URL=${SALES_DB_URL}
+      # Ausdruecklich 'sales', nicht interpoliert: die Oberflaeche zeigt und
+      # schaltet die ECHTEN Entwuerfe. sales_test gehoert der Testsuite.
+      - SALES_DB_SCHEMA=sales
+      - TZ=${TZ:-Europe/Berlin}
+      - UI_PORT=8791
+    ports:
+      # Nur Loopback (Begruendung oben und in ui.py).
+      - "127.0.0.1:8791:8791"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   # Explizite name:-Angabe, sonst prefixt Compose mit dem Projektnamen
   # (hier "sales-claw" -> "sales-claw_sales-claw-state"), was den in den
