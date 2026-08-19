@@ -1551,12 +1551,68 @@ select name, consent_status,
 ## Auto-Betrieb: freigegebene Kontakte werden automatisch bedient
 
 Bestandskontakte mit Kontakt-Freigabe sollen nicht über die manuelle
-Entwurf-Schleife laufen: **OpenClaw hört in ihren Chats mit und antwortet
-ihnen selbst.** Der Hebel dafür ist die `allowFrom`-Liste des
-WhatsApp-Kanals — sie entscheidet, wessen Nachrichten der Agent überhaupt
-sieht und beantwortet (und an wen Cron/Announce zustellen darf, siehe
-„Zustellung braucht die `allowFrom`-Nummer"). Bisher stand dort nur die
-Betreiber-Nummer; der Auto-Betrieb trägt die freigegebenen Kontakte nach.
+Entwurf-Schleife laufen — sie werden automatisch bedient. Der Auto-Betrieb
+hat **zwei Spuren für zwei verschiedene WhatsApp-Konten**, denn OpenClaw
+und OpenWA hängen an unterschiedlichen Nummern (Pairing-Anleitung, §1):
+
+1. **Die Kunden-Nummer (OpenWA) — Dienst `sales-auto`.** Kunden schreiben
+   an die dedizierte Versandnummer; deren Chats sieht OpenClaw nicht.
+   `sales-auto` schließt die Lücke über die Wege, die es schon gibt:
+   OpenWA-Webhook → `sales-inbox` → `activities('kundenantwort')` →
+   `sales-auto` erzeugt die Antwort (Anthropic-API, Regeln im
+   Moduldocstring/`SYSTEM_PROMPT` von `sales-mcp/auto.py`) → Entwurf mit
+   `status='approved'`, `approved_by='auto-betrieb'` → **zugestellt wird
+   wie immer nur von `sales-dispatch`**, der die Kontakt-Freigabe erneut
+   prüft. Kein neuer Versandweg, kein zweites Pairing, kein
+   Sitzungskonflikt.
+2. **OpenClaws eigene Nummer — Allowlist-Sync.** Wer an das Konto
+   schreibt, an dem der Agent selbst hängt, wird vom Agenten direkt
+   beantwortet, sobald seine Nummer in `channels.whatsapp.allowFrom`
+   steht (sie entscheidet, wessen Nachrichten der Agent sieht — und an
+   wen Cron/Announce zustellen darf, siehe „Zustellung braucht die
+   `allowFrom`-Nummer").
+
+### Spur 1: `sales-auto` (Kunden-Nummer über OpenWA)
+
+Einschalten: `ANTHROPIC_API_KEY` in `.env` setzen (`.env.example` erklärt
+die übrigen `AUTO_*`-Regler), dann `docker compose up -d sales-auto`.
+Ausschalten: `docker compose stop sales-auto` — nichts anderes ist nötig,
+der Dienst hält keinen Zustand außerhalb der Datenbank.
+
+Was der Dienst tut — und was nicht:
+
+* Beantwortet wird die **jüngste unbeantwortete Kundennachricht** je
+  Kontakt (dieselbe Frage wie im `posteingang`), und nur für Kontakte mit
+  Kontakt-Freigabe. Sammelkontakte (Unbekannte Eingänge, RECHERCHE,
+  LINKEDIN) sind ausdrücklich ausgeschlossen.
+* **Sammelfenster** (`AUTO_SAMMELFENSTER_S`, Vorgabe 90 s): geantwortet
+  wird erst, wenn die jüngste Nachricht so alt ist — wer dreimal schnell
+  hintereinander tippt, bekommt EINE Antwort auf alles.
+* **Höchstens ein Versuch je Kundennachricht** (at-most-once, wie beim
+  Dispatcher): der Anspruch ist die `auto_antwort`-Aktivität, die in einer
+  Transaktion mit dem Entwurf entsteht. Endgültig Gescheitertes (Modell
+  verweigert, unbrauchbare Antwort, keine zustellbare Nummer) wird mit
+  `fehler` verbucht und nie wiederholt — der Eintrag bleibt im
+  `posteingang` sichtbar und gehört dann einem Menschen. Transiente
+  Fehler (Netz, 429, 5xx) lassen keinen Anspruch zurück, die nächste
+  Runde versucht es erneut.
+* **Signale an den Betreiber** als `offener_punkt`: äußert der Kunde einen
+  Stopp-Wunsch, bestätigt die Auto-Antwort nur noch kurz und der offene
+  Punkt fordert `kontakt_freigabe_entziehen` an; gehört ein Anliegen zur
+  Beraterin (§34d), steht auch das dort.
+* Die Antworten selbst stehen wie jede Zustellung in `drafts` (mit
+  `approved_by='auto-betrieb'` als Audit-Unterschied) und im
+  Aktivitätenprotokoll — nichts läuft am CRM vorbei.
+
+Gegenprobe in `psql`:
+
+```sql
+select left(body, 60) as text, status, approved_by, sent_at
+  from sales.drafts where approved_by = 'auto-betrieb'
+ order by created_at desc limit 10;
+```
+
+### Spur 2: Allowlist-Sync (OpenClaws eigene Nummer)
 
 **Die Datenbank ist der Sollzustand, das Volume die Wirkung.** Freigaben
 werden im Chat erteilt (`kontakt_freigeben`) und entzogen
@@ -1581,11 +1637,11 @@ nichts neu gestartet. Beide Konfigurationsformen werden unterstützt
 
 **Was sich im Auto-Betrieb ändert — und was nicht:**
 
-* Antworten an freigegebene Kontakte gehen **ohne Entwurf und ohne Freigabe
-  je Nachricht** raus — die Antwort des Agenten im Kundenchat ist die
-  Nachricht. Das ist der Sinn der Stufe und eine bewusste
-  Betreiber-Entscheidung (19.08.2026); für alle anderen bleibt „Versand
-  ohne Freigabe: nein" unverändert bestehen.
+* Antworten an freigegebene Kontakte gehen **ohne Freigabe je Nachricht**
+  raus — auf Spur 1 als auto-approved Entwurf durch den Dispatcher, auf
+  Spur 2 direkt als Agenten-Antwort im Chat. Das ist der Sinn der Stufe
+  und eine bewusste Betreiber-Entscheidung (19.08.2026); für alle anderen
+  bleibt „Versand ohne Freigabe: nein" unverändert bestehen.
 * **Ausgehende Initiative bleibt beim alten Weg**: Erstansprache, Anhänge,
   Termin-ICS laufen weiter über `entwurf_erstellen` → Freigabe → Dispatcher
   (der Dispatcher prüft die Kontakt-Freigabe ohnehin).

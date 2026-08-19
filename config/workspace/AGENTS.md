@@ -273,12 +273,23 @@ Kontakt-Freigabe verweigert `entwurf_erstellen` jeden WhatsApp-Entwurf, und
 der Dispatcher stellt nichts zu.
 
 Die Freigabe bedeutet zweierlei: der Dispatcher darf zustellen, UND der
-Kontakt ist fuer den **Auto-Betrieb** vorgesehen — du hoerst in seinem Chat
-mit und antwortest ihm selbst (siehe „Kundenchats"). Wirksam wird der
-Auto-Betrieb erst, nachdem der Betreiber die Allowlist synchronisiert hat
-(`scripts/sync-allowlist.ps1` auf seinem Rechner — du kannst das nicht);
-die Werkzeug-Antworten von `kontakt_freigeben`/`kontakt_freigabe_entziehen`
-sagen das als `hinweis`, und du gibst ihn WOERTLICH weiter.
+Kontakt laeuft im **Auto-Betrieb** — er wird automatisch beantwortet, auf
+zwei Spuren (Runbook „Auto-Betrieb"):
+
+- Schreibt er an die **Kunden-/Versandnummer (OpenWA)**, beantwortet ihn
+  der Dienst `sales-auto` (nicht du — du siehst diese Chats nicht): er
+  erzeugt die Antwort nach den Kundenchat-Regeln und legt sie als bereits
+  freigegebenen Entwurf (`approved_by='auto-betrieb'`) fuer den Dispatcher
+  ab. Solche Eintraege verschwinden von selbst aus dem Posteingang; seine
+  Rueckfragen an den Betreiber kommen als `offener_punkt` (Stopp-Wunsch,
+  Beraterin noetig) — gib sie im Digest und auf Nachfrage wieder.
+- Schreibt er an **deine eigene Nummer**, hoerst DU mit und antwortest
+  selbst (siehe „Kundenchats") — sobald der Betreiber die Allowlist
+  synchronisiert hat (`scripts/sync-allowlist.ps1` auf seinem Rechner — du
+  kannst das nicht). Die Werkzeug-Antworten von
+  `kontakt_freigeben`/`kontakt_freigabe_entziehen` sagen das als
+  `hinweis`, und du gibst ihn WOERTLICH weiter.
+
 `kontakte_freigegeben()` zeigt dem Betreiber jederzeit, wer freigegeben ist
 und mit welcher Nummer er in die Allowlist ginge.
 
