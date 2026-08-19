@@ -998,6 +998,20 @@ Stufe-1-Runbook auch normale Direktnachrichten an den Bot schicken darf. Der
 Job wurde entsprechend auf dieses Ziel korrigiert (`openclaw cron edit ...
 --to "+491603449761"`).
 
+**Nachtrag (später am selben Abend — aktueller Zustand):** Der Betreiber
+wollte keine Benachrichtigungen an die Zweitnummer. Die Kern-Aussage des
+Messbefunds wurde deshalb als Lösung benutzt statt umgangen:
+`channels.whatsapp.default.allowFrom` ist um `+491749708452` erweitert und
+der Job per `openclaw cron edit ... --to "+491749708452"` auf den
+Selbst-Chat zurückgestellt; seither stellt er dorthin zu
+(`lastDeliveryStatus: "delivered"`, am laufenden Job abgelesen). Der
+Messbefund selbst bleibt gültig — zustellbar ist, was in `allowFrom` steht;
+die verknüpfte Nummer stand dort anfangs schlicht nicht drin. Die Absätze
+darunter (Probelauf an die Zweitnummer) sind Protokoll dieses Abends, kein
+Soll-Zustand: das aktuelle Ziel eines Crons liest man immer mit
+`openclaw cron show <id> --json` am laufenden Job ab, nie aus diesem
+Dokument.
+
 ### Probelauf — belegt
 
 ```powershell
