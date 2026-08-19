@@ -1484,3 +1484,25 @@ Vollzug; auf `ja` geht er ausschließlich nach ausdrücklicher Zustimmung.
 Er ist **von `consent_status` getrennt** und darf nie daraus abgeleitet
 werden: `consent` sagt, ob der Kontakt überhaupt per WhatsApp angesprochen
 werden darf, `newsletter` nur, ob er im Werbeverteiler steht.
+
+## Testläufe sind Ein-Läufer-Betrieb
+
+Die Suite arbeitet mit truncate-Fixtures auf dem GETEILTEN Schema
+`sales_test` — zwei gleichzeitige Läufe (zweite Session, Task-Chip,
+Wegwerf-Container nach dem alten Stufe-2-Muster) zerlegen sich gegenseitig
+mit Fremdschlüssel-Fehlern, die wie echte Testfehler aussehen und keine
+sind. Gemessen am 19.08.2026: zwei Agenten-Sessions hielten sich
+wechselseitig stundenlang für „einen Fremdprozess auf sales_test".
+
+Regeln daraus:
+
+1. **Vor jedem Suite-Lauf einmal nachsehen, ob schon einer läuft** —
+   lesend, ohne Werte auszugeben:
+   `docker exec sales-mcp python -c "import os,psycopg;
+   c=psycopg.connect(os.environ['SALES_DB_URL']);
+   print(c.execute(\"select count(*) from pg_stat_activity where query
+   ilike '%sales_test%' and pid<>pg_backend_pid()\").fetchone())"`
+2. **Parallele Sessions claimen Testläufe im Koordinations-Board**
+   (`002_Koordination_Live.md`) — wie es die nav-Session vorbildlich tat.
+3. Rote Läufe, die AUSSCHLIESSLICH aus `ForeignKeyViolation`/verschwundenen
+   Zeilen bestehen, zuerst als Kollision verdächtigen, nicht als Code-Fehler.
