@@ -120,7 +120,7 @@ def test_leerer_bericht_bleibt_lesbar():
     assert b["recherche_kosten_usd"] == 0.0
     assert b["entwuerfe_offen_jetzt"] == 0
     assert b["vertraege_ablaufend_30"] == 0
-    assert "Neue Kontakte: 0" in b["text"]
+    assert "Neue Kontakte im Gespraech: 0" in b["text"]
     assert "nichts" in b["text"]
 
 
@@ -128,3 +128,42 @@ def test_signatur_ueberlebt_den_dekorator_und_werkzeug_ist_registriert():
     import inspect
     assert list(inspect.signature(server.wochenbericht).parameters) == []
     assert server.wochenbericht in server.WERKZEUGE
+
+
+# ---------------------------------------------------------------------------
+# Nachbesserungen aus dem Abschluss-Review (Befunde B1, B2, B7)
+# ---------------------------------------------------------------------------
+
+def test_kaputte_fremddaten_kippen_den_bericht_nicht():
+    """B1+B2: weder eine handgeschriebene recherche-Zeile mit
+    nicht-numerischem kosten_usd (jsonb_typeof-Wache) noch ein Vertrag mit
+    kaputtem Datum (frueher ::date-Wurf in vertraege_ablaufend) duerfen den
+    ganzen Wochenbericht zur Fehlermeldung oder zum Traceback machen."""
+    lead = _lead()
+    server._q("insert into activities (lead_id, type, payload) values "
+              "(%s, 'recherche', %s) returning id",
+              (lead, json.dumps({"kosten_usd": "gratis?"})))
+    server._q("update leads set enrichment = jsonb_set(enrichment, "
+              "'{vertraege}', %s::jsonb, true) where id = %s returning id",
+              ('[{"sparte": "KFZ", "ablauf": "31.12.2027"}]', lead))
+    b = json.loads(server.wochenbericht())
+    assert "fehler" not in b
+    assert b["recherche_kosten_usd"] == 0.0
+    assert b["vertraege_ablaufend_30"] == 0
+    assert "Wochenbericht" in b["text"]
+
+
+def test_recherche_kontakte_zaehlen_nicht_als_gespraechskontakte():
+    """B7: die Schlagzahl, die der Betreiber liest, sind Kontakte mit
+    Gespraechspotenzial — ein b2b_leads-Lauf steht in der Aufschluesselung,
+    blaeht aber nicht die Kopfzahl auf (die Digest-Entscheidung wird nicht
+    unkommentiert umgekehrt)."""
+    _lead()
+    server._q("insert into leads (name, source) values "
+              "('Recherche GmbH', 'recherche') returning id")
+    server._q("insert into leads (name, source) values "
+              "('SAMMEL', 'system') returning id")
+    b = json.loads(server.wochenbericht())
+    assert b["neue_leads_im_gespraech"] == 1
+    assert b["neue_leads"] == {"whatsapp": 1, "recherche": 1, "system": 1}
+    assert "Neue Kontakte im Gespraech: 1 (alle Quellen: 3" in b["text"]

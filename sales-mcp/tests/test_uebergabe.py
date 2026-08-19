@@ -105,7 +105,7 @@ def test_leere_abschnitte_bleiben_lesbar_und_ohne_bewertung():
     text = antwort["text"]
     assert antwort["offene_punkte_anzahl"] == 0
     for abschnitt in ("## Profil", "## Bedarfsanalyse", "## Vertraege",
-                      "## Offene Punkte", "## Letzte Aktivitaeten"):
+                      "## Fragen des Kunden", "## Letzte Aktivitaeten"):
         assert abschnitt in text
     assert "(leer)" in text and "(keine genannt)" in text and "(keine)" in text
     assert "KEINE Beratung" in text
@@ -169,3 +169,43 @@ def test_signatur_ueberlebt_den_dekorator_und_werkzeug_ist_registriert():
     assert list(inspect.signature(server.uebergabe_erstellen).parameters) == [
         "lead_id"]
     assert server.uebergabe_erstellen in server.WERKZEUGE
+
+
+# ---------------------------------------------------------------------------
+# Nachbesserungen aus dem Abschluss-Review (Befunde B5, B6, B10)
+# ---------------------------------------------------------------------------
+
+def test_fehlgeformtes_enrichment_bricht_die_uebergabe_nicht():
+    """B5: derselbe Fremddatenknoten, den vertraege_ablaufend absichert,
+    darf auch hier keinen Traceback ausloesen — String statt Objekt,
+    Array mit Nicht-Objekten, alles nur leere Abschnitte."""
+    lead = _lead()
+    server._q("update leads set enrichment = %s::jsonb where id = %s "
+              "returning id",
+              ('{"profil": "kaputt", "bedarf": 42, '
+               '"vertraege": ["nur-string", 7]}', lead))
+    antwort = json.loads(server.uebergabe_erstellen(str(lead)))
+    assert "text" in antwort
+    assert "- (leer)" in antwort["text"]
+    assert "- (keine genannt)" in antwort["text"]
+
+
+def test_zweite_uebergabe_meldet_das_ueberschreiben():
+    """B6: die Uebergabe ist nicht identisch rekonstruierbar (Aktivitaeten
+    gedeckelt, Profil ueberschreibt in-place) — ein Overwrite am selben Tag
+    muss gemeldet werden, wie report_schreiben es zusagt."""
+    lead = _lead()
+    erste = json.loads(server.uebergabe_erstellen(str(lead)))
+    assert erste["ueberschrieben"] is False
+    zweite = json.loads(server.uebergabe_erstellen(str(lead)))
+    assert zweite["ueberschrieben"] is True
+
+
+def test_bedarf_zeile_traegt_den_fragetext_nicht_die_id():
+    """B10: die Beraterin liest den Fragetext aus dem Leitfaden — eine
+    interne frage_id sagt einem Menschen nichts. Unbekannte ids fallen auf
+    die id zurueck."""
+    fragetext = server.ALLE_FRAGEN["netto"]["frage"]
+    zeile = server._bedarf_zeile("netto", {"antwort": "3800"})
+    assert fragetext in zeile and "3800" in zeile
+    assert server._bedarf_zeile("erfundene_id", "x") == "- erfundene_id: x"

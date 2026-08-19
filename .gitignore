@@ -27,9 +27,12 @@ openwa-qr.txt
 media/*
 !media/.gitkeep
 
-# Reportordner (Stufe 5, R1): Ergebnisse von `marktanalyse`. Sie bestehen aus
-# Firmendaten Dritter (Name, Adresse, Telefon, Bewertung) — Arbeitsergebnisse
-# fuer den Betreiber, kein Quellcode, und nichts, was in ein Repo gehoert.
+# Reportordner (Stufe 5, R1; erweitert Stufe 7): Ergebnisse von
+# `marktanalyse` (Firmendaten Dritter) UND seit Stufe 7 die
+# Beraterin-Uebergaben (`uebergabe_erstellen`) — letztere enthalten
+# personenbezogene KUNDENDATEN (Name, Telefon, Consent, Einkommensangaben).
+# Erst recht nichts fuer ein Repo; der Host-Bind ./reports gehoert in die
+# Zugriffs- und Loeschueberlegungen des Betreibers (docs/03).
 # Gleiches `verzeichnis/*` + Negation wie bei media/, aus demselben Grund:
 # sonst bliebe .gitkeep nicht versioniert und Compose legte den Ordner in
 # einem frischen Klon als Root-owned Leerverzeichnis an.

@@ -131,3 +131,65 @@ def test_signaturen_ueberleben_den_dekorator():
     assert list(inspect.signature(server.vertraege_ablaufend).parameters) == ["tage"]
     assert server.vertrag_speichern in server.WERKZEUGE
     assert server.vertraege_ablaufend in server.WERKZEUGE
+
+
+# ---------------------------------------------------------------------------
+# Nachbesserungen aus dem Abschluss-Review (Befunde B1, B2, B3, B8)
+# ---------------------------------------------------------------------------
+
+def test_fremddaten_kippen_vertraege_ablaufend_nicht():
+    """B1+B2: EINE kaputte Zeile irgendwo in leads darf das Werkzeug nicht
+    fuer alle Kontakte unbrauchbar machen — weder ein Nicht-Array-Knoten
+    (case-Wache), noch Nicht-Objekt-Elemente, noch ein nicht-datumsfoermiger
+    ablauf (der fruehere ::date-Cast warf SQLSTATE 22007/22008)."""
+    gut = _lead()
+    server.vertrag_speichern(
+        lead_id=str(gut), sparte="BU",
+        ablauf=(_heute() + timedelta(days=30)).isoformat())
+    kaputte = ['"kein-array"',
+               '[42, "nur-string", null]',
+               '[{"sparte": "KFZ", "ablauf": "31.12.2027"}]',
+               '[{"sparte": "Hausrat", "ablauf": "2027-13-45"}]',
+               '[{"sparte": "Reise", "ablauf": "nicht-datum"}]']
+    for knoten in kaputte:
+        kaputt_lead = _lead()
+        server._q("update leads set enrichment = jsonb_set(enrichment, "
+                  "'{vertraege}', %s::jsonb, true) where id = %s returning id",
+                  (knoten, kaputt_lead))
+    antwort = json.loads(server.vertraege_ablaufend(tage=90))
+    assert "fehler" not in antwort
+    assert antwort["anzahl"] == 1
+    assert antwort["vertraege"][0]["sparte"] == "BU"
+
+
+def test_identischer_vertrag_wird_nicht_doppelt_angelegt():
+    """B3 — dasselbe Gesetz wie die Dedup-Kante in kontakt_anlegen: ein
+    Modell, das denselben Vertrag im Verlauf erneut nennt, darf keinen
+    zweiten Eintrag und vor allem keine ZWEITE Wiedervorlage erzeugen."""
+    lead = _lead()
+    ablauf = (_heute() + timedelta(days=200)).isoformat()
+    erst = json.loads(server.vertrag_speichern(
+        lead_id=str(lead), sparte="BU", gesellschaft="Beispiel AG",
+        ablauf=ablauf))
+    assert erst["angelegt"] is True
+    zweit = json.loads(server.vertrag_speichern(
+        lead_id=str(lead), sparte="  bu ", gesellschaft="BEISPIEL AG",
+        ablauf=ablauf, notiz="andere Notiz aendert den Vertrag nicht"))
+    assert zweit["angelegt"] is False
+    assert zweit["wiedervorlage"] is None
+    e = server._q("select enrichment from leads where id = %s",
+                  (lead,))[0]["enrichment"]
+    assert len(e["vertraege"]) == 1
+    assert server._q("select count(*) as n from activities "
+                     "where type='wiedervorlage'")[0]["n"] == 1
+    dritt = json.loads(server.vertrag_speichern(
+        lead_id=str(lead), sparte="BU", gesellschaft="Beispiel AG",
+        ablauf=(_heute() + timedelta(days=400)).isoformat()))
+    assert dritt["angelegt"] is True
+
+
+def test_db_session_rechnet_utc():
+    """B8: die Uebereinstimmung von current_date (DB) und
+    datetime.now(timezone.utc).date() (Python) war eine Umgebungseigenschaft
+    — jetzt ist sie per Pool-Option zugesichert, und dieser Test haelt sie."""
+    assert server._q("show timezone")[0]["TimeZone"] == "UTC"

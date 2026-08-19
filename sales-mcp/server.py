@@ -64,9 +64,16 @@ LEITFADEN = yaml.safe_load(
 ALLE_FRAGEN = {f["id"]: {"frage": f["frage"], "gruppe": g["titel"]}
                for g in LEITFADEN["gruppen"] for f in g["fragen"]}
 
+# TimeZone=UTC ist festgenagelt, nicht geerbt (Review-Befund B8): die
+# Python-Schicht rechnet durchgehend datetime.now(timezone.utc), und jede
+# current_date-Bedingung in digest()/wochenbericht() muss auf DERSELBEN
+# Basis stehen. Bisher stimmte das nur, weil der Server-Default UTC ist und
+# PGTZ nicht gesetzt war — eine Umgebungseigenschaft. Jetzt ist es eine
+# Zusicherung dieser Verbindung (Test: show timezone in test_vertraege.py).
 pool = ConnectionPool(
     os.environ["SALES_DB_URL"], min_size=1, max_size=4, open=True,
-    kwargs={"row_factory": dict_row, "options": f"-c search_path={SCHEMA}"})
+    kwargs={"row_factory": dict_row,
+            "options": f"-c search_path={SCHEMA} -c TimeZone=UTC"})
 
 DB_FEHLER = ("Datenbank nicht erreichbar — Protokoll und Profil werden gerade "
              "NICHT gespeichert. Sag das dem Gespraechspartner ausdruecklich "
@@ -320,6 +327,31 @@ def vertrag_speichern(lead_id: str, sparte: str, ablauf: str = "",
         "notiz": notiz.strip(),
         "erfasst": datetime.now(timezone.utc).date().isoformat(),
     }.items() if v}
+
+    # Dubletten-Kante (Review-Befund B3) — dasselbe Gesetz wie bei
+    # kontakt_anlegen: die Kante gehoert in die Werkzeugschicht, nicht ins
+    # Modellverhalten. Ein gespraechiges Modell, das denselben Vertrag im
+    # Verlauf erneut nennt, haengte sonst einen zweiten Array-Eintrag an und
+    # legte eine ZWEITE Wiedervorlage an — und jede will einzeln erledigt
+    # werden. Gleich sind zwei Vertraege, wenn Sparte, Gesellschaft und
+    # Ablauf uebereinstimmen; die Notiz unterscheidet nicht (sie aendert
+    # nicht, WELCHER Vertrag gemeint ist).
+    def _kern(v):
+        return (str(v.get("sparte", "")).strip().lower(),
+                str(v.get("gesellschaft", "")).strip().lower(),
+                str(v.get("ablauf", "")))
+    bestand = _q("select enrichment->'vertraege' as v from leads "
+                 "where id = %s", (lead_id,))
+    if not bestand:
+        return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
+    vorhandene = bestand[0]["v"] if isinstance(bestand[0]["v"], list) else []
+    if any(isinstance(v, dict) and _kern(v) == _kern(vertrag)
+           for v in vorhandene):
+        return _json({"vertrag": vertrag, "angelegt": False,
+                      "wiedervorlage": None,
+                      "hinweis": ("Identischer Vertrag (Sparte/Gesellschaft/"
+                                  "Ablauf) ist bereits erfasst — nichts "
+                                  "angelegt, keine zweite Wiedervorlage.")})
     # EIN jsonb_set genuegt, obwohl profil_aktualisieren/bedarf_speichern
     # verschachteln muessen: `create_missing` legt nur das LETZTE Pfadelement
     # an, wenn dessen Elternobjekt existiert. Dort ist der Pfad zweistufig
@@ -350,7 +382,8 @@ def vertrag_speichern(lead_id: str, sparte: str, ablauf: str = "",
     # dieses Werkzeugs, und „kein Schluessel" waere fuer den Aufrufer nicht
     # von „Schluessel vergessen" zu unterscheiden. _ohne_none greift nur auf
     # `hinweis`, also genau auf das Hinweisfeld, fuer das es gedacht ist.
-    return _json({"vertrag": vertrag, "wiedervorlage": wiedervorlage,
+    return _json({"vertrag": vertrag, "angelegt": True,
+                  "wiedervorlage": wiedervorlage,
                   **_ohne_none({"hinweis": hinweis})})
 
 
@@ -376,18 +409,37 @@ def vertraege_ablaufend(tage: int = 90) -> str:
     # LATERAL, und ob die Bedingung am Basis-Scan haengen bleibt, entscheidet
     # der Planer. `case ... else '[]'` braucht diese Entscheidung nicht —
     # das Argument ist dann nie etwas anderes als ein Array.
+    # Das Datum wird in PYTHON gefiltert, nicht per ::date im SQL: der Cast
+    # wirft bei jedem nicht-datumsfoermigen `ablauf` (SQLSTATE 22007/22008),
+    # und EINE solche Fremddatenzeile irgendwo in leads machte das Werkzeug
+    # fuer ALLE Kontakte unbrauchbar — und riss den Wochenbericht mit
+    # (Review-Befund B1; gemessen mit "nicht-datum", "31.12.2027",
+    # "2027-13-45"). Ein Regex-Vorfilter reichte nicht: "2027-02-31"
+    # passiert ihn und wirft trotzdem. date.fromisoformat entscheidet
+    # abschliessend; Unlesbares wird uebergangen statt geworfen. Das
+    # jsonb_typeof(v)='object' daneben faengt Array-Elemente, die keine
+    # Objekte sind — dieselbe Fremddatenklasse, eine Ebene tiefer.
     zeilen = _q(
         "select l.id as lead_id, l.name, v->>'sparte' as sparte, "
         "       v->>'ablauf' as ablauf "
         "from leads l, jsonb_array_elements("
         "       case when jsonb_typeof(l.enrichment->'vertraege') = 'array' "
         "            then l.enrichment->'vertraege' else '[]'::jsonb end) v "
-        "where v->>'ablauf' <> '' "
-        "  and (v->>'ablauf')::date "
-        "      between current_date and current_date + %s "
-        "order by (v->>'ablauf')::date", (fenster,))
-    return _json({"anzahl": len(zeilen), "fenster_tage": fenster,
-                  "vertraege": zeilen})
+        "where jsonb_typeof(v) = 'object' "
+        "  and coalesce(v->>'ablauf', '') <> ''")
+    heute = datetime.now(timezone.utc).date()
+    treffer = []
+    for z in zeilen:
+        try:
+            ablauf = date.fromisoformat(z["ablauf"])
+        except (TypeError, ValueError):
+            continue
+        if heute <= ablauf <= heute + timedelta(days=fenster):
+            treffer.append(z)
+    # ISO-Datumsstrings sortieren lexikografisch chronologisch.
+    treffer.sort(key=lambda z: z["ablauf"])
+    return _json({"anzahl": len(treffer), "fenster_tage": fenster,
+                  "vertraege": treffer})
 
 
 @_gesichert
@@ -737,26 +789,41 @@ def wochenbericht() -> str:
                 # gleiche Haertung wie die case-Wache in vertraege_ablaufend).
                 f"and jsonb_typeof(payload->'kosten_usd') = 'number' "
                 f"and created_at >= {seit}")
-    ablaufend = json.loads(vertraege_ablaufend(tage=30))
+    # .get mit Rueckfall: eine Teilquelle darf den Bericht nie als Ganzes
+    # umreissen (Review-Befund B1) — liefert vertraege_ablaufend wider
+    # Erwarten einen Fehler, steht hier None, und die Textzeile sagt
+    # "unbekannt" statt dass ein KeyError als Traceback entweicht.
+    ablaufend = json.loads(vertraege_ablaufend(tage=30)).get("anzahl")
     wv_map = {z["type"]: z["n"] for z in wv}
+    alle_neuen = {z["s"]: z["n"] for z in neue}
+    # digest() schliesst recherche/system aus dem Bedarfsblock aus — mit
+    # gemessener Begruendung (siehe dort). Der Wochenbericht ZAEHLT sie
+    # bewusst mit (ein b2b_leads-Lauf IST Wochenleistung), aber die
+    # Schlagzahl, die der Betreiber liest, sind die Kontakte mit
+    # Gespraechspotenzial — sonst meldete eine Recherche-Woche "20 neue
+    # Kontakte", ohne dass ein Mensch geschrieben haette (Review-Befund B7:
+    # keine unkommentierte Umkehr der Digest-Entscheidung).
+    im_gespraech = sum(n for s, n in alle_neuen.items()
+                       if s not in ("recherche", "system"))
     daten = {
         "zeitraum": "letzte 7 Tage",
-        "neue_leads": {z["s"]: z["n"] for z in neue},
+        "neue_leads": alle_neuen,
+        "neue_leads_im_gespraech": im_gespraech,
         "bedarf": dict(bedarf[0]),
         "versand": {z["channel"]: z["n"] for z in versand},
         "wiedervorlagen": {"neu": wv_map.get("wiedervorlage", 0),
                            "erledigt": wv_map.get("wiedervorlage_erledigt", 0)},
         "entwuerfe_offen_jetzt": offen[0]["n"],
         "recherche_kosten_usd": round(float(kosten[0]["k"]), 2),
-        "vertraege_ablaufend_30": ablaufend["anzahl"],
+        "vertraege_ablaufend_30": ablaufend,
     }
     # `text` ist die eigentliche Lieferform: der Cron-Lauf soll NUR dieses
     # Feld weitergeben, damit der Betreiber einen Mehrzeiler bekommt und kein
     # JSON. Die Einzelfelder bleiben trotzdem stehen — wer nachrechnen will,
     # soll nicht den Fliesstext parsen muessen.
     zeilen = [f"Wochenbericht ({daten['zeitraum']}):",
-              f"- Neue Kontakte: "
-              f"{sum(daten['neue_leads'].values())} ({daten['neue_leads']})",
+              f"- Neue Kontakte im Gespraech: {im_gespraech} "
+              f"(alle Quellen: {sum(alle_neuen.values())} — {alle_neuen})",
               f"- Bedarfsantworten: {daten['bedarf']['antworten']} "
               f"von {daten['bedarf']['kontakte']} Kontakten",
               f"- Versendet: {daten['versand'] or 'nichts'}",
@@ -765,7 +832,7 @@ def wochenbericht() -> str:
               f"- Offene Entwuerfe jetzt: {daten['entwuerfe_offen_jetzt']}",
               f"- Recherche-Kosten: ${daten['recherche_kosten_usd']}",
               f"- Vertraege mit Ablauf in 30 Tagen: "
-              f"{daten['vertraege_ablaufend_30']}"]
+              f"{'unbekannt' if ablaufend is None else ablaufend}"]
     return _json({**daten, "text": "\n".join(zeilen)})
 
 
@@ -790,23 +857,43 @@ def _bedarf_zeile(frage_id: str, eintrag) -> str:
     Eintraege koennen ein blosser String sein; die werden unveraendert
     uebernommen, statt zu werfen.
     """
+    # Die Beraterin liest den FRAGETEXT aus dem Leitfaden, nicht die interne
+    # frage_id ("netto" sagt einem Menschen nichts) — Review-Befund B10.
+    # Unbekannte ids (alte Leitfaden-Staende) fallen auf die id zurueck.
+    beschriftung = ALLE_FRAGEN.get(frage_id, {}).get("frage", frage_id)
     if isinstance(eintrag, dict):
-        return f"- {frage_id}: {eintrag.get('antwort', eintrag)}"
-    return f"- {frage_id}: {eintrag}"
+        return f"- {beschriftung}: {eintrag.get('antwort', eintrag)}"
+    return f"- {beschriftung}: {eintrag}"
 
 
 @_gesichert
 def uebergabe_erstellen(lead_id: str) -> str:
-    """Strukturierte Uebergabe eines Kontakts an die Beraterin — alles, was
-    §34d-relevante Beratung braucht, aus dem Bestand: Profil, beantworteter
-    Bedarf, Vertraege, offene Punkte, letzte Aktivitaeten. Schreibt die
-    Markdown-Fassung nach /reports und gibt den Volltext zurueck. Versendet
-    NICHTS — weitergeben tut sie der Betreiber."""
+    """Strukturierte Uebergabe eines Kontakts an die Beraterin: Profil,
+    beantworteter Bedarf, Vertraege, offene Kundenfragen, letzte
+    Aktivitaeten — als Markdown nach /reports und als Volltext zurueck.
+
+    Die Uebergabe STELLT ZUSAMMEN und BEWERTET NICHTS: keine
+    Lueckenanalyse, keine Empfehlung, kein Produktvergleich — Einschaetzung
+    ist §34d-Gebiet und gehoert der lizenzierten Beraterin (dieser Satz
+    steht hier und nicht nur im Modulkommentar, weil DIESER Text die
+    Werkzeugbeschreibung ist, die das Modell sieht). Versendet wird NICHTS —
+    weitergeben tut sie der Betreiber. Eine zweite Uebergabe am selben Tag
+    ueberschreibt die Datei; `ueberschrieben: true` sagt es."""
     leads = _q("select name, phone, consent_status, enrichment, notes "
                "from leads where id = %s", (lead_id,))
     if not leads:
         return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
     l, e = leads[0], leads[0]["enrichment"] or {}
+    # Fremddaten-Wachen (Review-Befund B5): enrichment kann von aelteren
+    # Staenden oder von Hand befuellt sein — ein falsch geformter Knoten
+    # (String statt Objekt, Array mit Nicht-Objekten) darf die Uebergabe
+    # nicht als Traceback beenden. Dieselbe Fremddatenklasse, die
+    # vertraege_ablaufend bereits abfaengt — hier symmetrisch.
+    profil = e.get("profil") if isinstance(e.get("profil"), dict) else {}
+    bedarf = e.get("bedarf") if isinstance(e.get("bedarf"), dict) else {}
+    roh_vertraege = e.get("vertraege")
+    vertraege = ([v for v in roh_vertraege if isinstance(v, dict)]
+                 if isinstance(roh_vertraege, list) else [])
     offene = _q("select payload, created_at from activities "
                 "where lead_id = %s and type = 'offener_punkt' "
                 "order by created_at", (lead_id,))
@@ -817,19 +904,21 @@ def uebergabe_erstellen(lead_id: str) -> str:
     zeilen = [f"# Uebergabe: {l['name']}", "",
               f"Stand {heute} · Consent: {l['consent_status']} · "
               f"Telefon: {l['phone'] or '—'}", "", "## Profil"]
-    zeilen += [f"- {k}: {v}" for k, v in (e.get("profil") or {}).items()] \
-        or ["- (leer)"]
+    zeilen += [f"- {k}: {v}" for k, v in profil.items()] or ["- (leer)"]
     zeilen += ["", "## Bedarfsanalyse (Angaben des Kunden)"]
-    zeilen += [_bedarf_zeile(k, v)
-               for k, v in (e.get("bedarf") or {}).items()] or ["- (leer)"]
+    zeilen += [_bedarf_zeile(k, v) for k, v in bedarf.items()] or ["- (leer)"]
     zeilen += ["", "## Vertraege (vom Kunden genannt)"]
     # Feldnamen wie von vertrag_speichern geschrieben (sparte/gesellschaft/
     # ablauf). `gesellschaft` und `ablauf` sind dort optional und fehlen dann
     # ganz — deshalb die Vorgaben statt eines KeyError.
     zeilen += [f"- {v.get('sparte','?')} ({v.get('gesellschaft','?')}), "
                f"Ablauf {v.get('ablauf','unbekannt')}"
-               for v in (e.get("vertraege") or [])] or ["- (keine genannt)"]
-    zeilen += ["", "## Offene Punkte fuer die Beratung"]
+               for v in vertraege] or ["- (keine genannt)"]
+    # "Fragen des Kunden", nicht "Beratungsbedarf": unter offener_punkt wird
+    # die FRAGE protokolliert, nie eine eigene Einschaetzung — die Ueberschrift
+    # soll das auch dann sagen, wenn ein Modell sich nicht daran hielt
+    # (Review-Befund B11; die AGENTS-Regel steht daneben).
+    zeilen += ["", "## Fragen des Kunden an die Beraterin (offene Punkte)"]
     zeilen += [f"- {(p['payload'] or {}).get('inhalt', p['payload'])}"
                for p in offene] or ["- (keine)"]
     zeilen += ["", "## Letzte Aktivitaeten"]
@@ -842,9 +931,13 @@ def uebergabe_erstellen(lead_id: str) -> str:
     # [a-z0-9-]) und danach durch die Einbettungspruefung in
     # `report_schreiben`. Dasselbe zweistufige Muster wie bei marktanalyse.
     name = f"uebergabe-{recherche.slug(l['name'])}-{heute}.md"
-    pfad, schreibfehler = None, None
+    pfad, ueberschrieben, schreibfehler = None, False, None
     try:
-        pfad, _ueberschrieben = recherche.report_schreiben(name, text)
+        # `ueberschrieben` wird DURCHGEREICHT (Review-Befund B6): die
+        # Uebergabe ist nicht identisch rekonstruierbar (Aktivitaeten auf 10
+        # gedeckelt, Profil/Bedarf ueberschreiben in-place) — ein stiller
+        # Overwrite widersprach der ausdruecklichen Zusage in recherche.py.
+        pfad, ueberschrieben = recherche.report_schreiben(name, text)
     except (OSError, ValueError) as ex:
         # Wie bei marktanalyse: die Zusammenstellung ist fertig und gehoert in
         # den Chat, auch wenn der Reportordner fehlt. Sie geht nicht verloren,
@@ -856,8 +949,8 @@ def uebergabe_erstellen(lead_id: str) -> str:
     _q("insert into activities (lead_id, type, payload) values "
        "(%s, 'uebergabe', %s) returning id",
        (lead_id, _json({"pfad": pfad, "offene_punkte": len(offene)})))
-    return _json(_ohne_none({"pfad": pfad, "fehler": schreibfehler,
-                             "text": text,
+    return _json(_ohne_none({"pfad": pfad, "ueberschrieben": ueberschrieben,
+                             "fehler": schreibfehler, "text": text,
                              "offene_punkte_anzahl": len(offene)}))
 
 
