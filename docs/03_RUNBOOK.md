@@ -1514,6 +1514,44 @@ Er ist **von `consent_status` getrennt** und darf nie daraus abgeleitet
 werden: `consent` sagt, ob der Kontakt überhaupt per WhatsApp angesprochen
 werden darf, `newsletter` nur, ob er im Werbeverteiler steht.
 
+## Freigabe-Oberfläche (sales-ui, Stufe 10)
+
+Ein lokales Web-UI als eigener Container: Entwürfe sehen und freigeben,
+Kontakte samt Verlauf/Bedarf/Verträgen, Posteingang und offene
+Wiedervorlagen — ohne den Chat zu bemühen.
+
+```powershell
+# Start (Rest des Stacks bleibt unberührt)
+docker compose up -d sales-ui
+# dann im Browser: http://127.0.0.1:8791
+```
+
+**Was es kann und was nicht:** Lesen; schreiben ausschließlich die drei
+Freigabe-Aktionen (freigeben, ablehnen, erneut freigeben) mit exakt den
+SQL-Bedingungen der Chat-Werkzeuge, als `approved_by='betreiber-ui'` im Audit
+unterscheidbar. Kein Editieren, kein Löschen, kein Anlegen, kein Versand.
+Ein Entwurf mit der Zustellungs-Marke „in Zustellung …" (möglicher
+Doppelversand) wird im UI **grundsätzlich nicht** erneut freigegeben — dieser
+Weg bleibt bewusst dem Chat vorbehalten
+(`entwurf_erneut_freigeben(draft_id, bestaetigt=True)`).
+
+**Sicherheitsmodell** (ausführlich im Kopf von `sales-mcp/ui.py`):
+
+* Erreichbar **nur über Loopback** — das Compose-Portmapping ist
+  `127.0.0.1:8791:8791`, wie beim Gateway-Port 18894. Der Dienst bindet im
+  Container auf 0.0.0.0; die Grenze setzt das Mapping.
+* **CSRF-Boot-Token** in jedem Formular (fremde Webseiten können auf
+  127.0.0.1 POSTen), **Host-Header-Prüfung** gegen DNS-Rebinding (nur
+  `127.0.0.1:8791`/`localhost:8791`, sonst 421), **`html.escape` auf allen
+  Fremddaten**, kein JavaScript, CSP `default-src 'none'`.
+* `restart: unless-stopped` — bewusst anders als der restliche Stack: das UI
+  versendet nichts und schreibt nur, was ein Mensch anklickt.
+
+**Ausdrücklich: nicht ins Internet stellen.** Keine Authentifizierung über
+die 127.0.0.1-Grenze hinaus. Ein öffentliches Read-only-Deployment (etwa
+Vercel) wäre eine eigene, bewusste Folge-Entscheidung — nicht Teil dieser
+Stufe.
+
 ## Testläufe sind Ein-Läufer-Betrieb
 
 Die Suite arbeitet mit truncate-Fixtures auf dem GETEILTEN Schema
