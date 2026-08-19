@@ -105,8 +105,28 @@ def _zeit(dt) -> str:
 # Wachen: Host-Header und Antwort-Koepfe (ein Middleware fuer beides)
 # ---------------------------------------------------------------------------
 
+# `frame-ancestors 'none'` (und der aeltere Zwilling `X-Frame-Options: DENY`)
+# sperren das Einbetten in einen fremden Iframe. Ohne das waere das CSRF-Token
+# per Clickjacking umgehbar: eine boesartige Seite rahmt 127.0.0.1:8791 (Host-
+# Wache passiert, echter Host stimmt), legt ein unsichtbares Overlay ueber den
+# Freigeben-Knopf, und der Klick postet MIT dem legitimen, in der gerahmten
+# Seite stehenden Token. `default-src 'none'` deckt `frame-ancestors` laut Spec
+# NICHT ab (kein Fallback) — es muss ausdruecklich dabeistehen.
 _CSP = ("default-src 'none'; style-src 'unsafe-inline'; "
-        "form-action 'self'; base-uri 'none'")
+        "form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+
+
+def _mit_koepfen(send):
+    """Legt die Schutz-Koepfe auf jede Antwort — auch auf die Host-Fehlerseite."""
+    async def send_mit_koepfen(nachricht):
+        if nachricht["type"] == "http.response.start":
+            koepfe = MutableHeaders(scope=nachricht)
+            koepfe["Content-Security-Policy"] = _CSP
+            koepfe["X-Content-Type-Options"] = "nosniff"
+            koepfe["Referrer-Policy"] = "no-referrer"
+            koepfe["X-Frame-Options"] = "DENY"
+        await send(nachricht)
+    return send_mit_koepfen
 
 
 class HostWache:
@@ -120,6 +140,9 @@ class HostWache:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
+        # Die Schutz-Koepfe gelten fuer BEIDE Pfade — auch die 421-Fehlerseite
+        # bei fremdem Host darf nicht rahmbar sein.
+        send = _mit_koepfen(send)
         host = Headers(scope=scope).get("host", "")
         if host not in ERLAUBTE_HOSTS:
             antwort = _fehlerseite(
@@ -130,15 +153,7 @@ class HostWache:
             await antwort(scope, receive, send)
             return
 
-        async def send_mit_koepfen(nachricht):
-            if nachricht["type"] == "http.response.start":
-                koepfe = MutableHeaders(scope=nachricht)
-                koepfe["Content-Security-Policy"] = _CSP
-                koepfe["X-Content-Type-Options"] = "nosniff"
-                koepfe["Referrer-Policy"] = "no-referrer"
-            await send(nachricht)
-
-        await self.app(scope, receive, send_mit_koepfen)
+        await self.app(scope, receive, send)
 
 
 def _csrf_ok(form) -> bool:
@@ -371,11 +386,16 @@ async def _aktions_vorspann(request):
 
 
 def _freigabe_loggen(z, erneut: bool = False) -> None:
-    nutzlast = {"draft_id": str(z["id"]), "kanal": z["channel"]}
+    # actor='human': die Freigabe kam von einem Menschen an der Oberflaeche.
+    # Ohne das stuende sie im append-only-Log als 'agent' (Spalten-Default) und
+    # waere von einer Agenten-Freigabe nicht zu unterscheiden — die Herkunft im
+    # eigentlichen Audit-Trail waere falsch. `weg='ui'` haelt zusaetzlich fest,
+    # ueber welche Oberflaeche (drafts.approved_by trennt das nur bei Freigaben).
+    nutzlast = {"draft_id": str(z["id"]), "kanal": z["channel"], "weg": "ui"}
     if erneut:
         nutzlast["erneut"] = True
-    server._q("insert into activities (lead_id, type, payload) "
-              "values (%s, 'freigabe', %s) returning id",
+    server._q("insert into activities (lead_id, type, payload, actor) "
+              "values (%s, 'freigabe', %s, 'human') returning id",
               (z["lead_id"], server._json(nutzlast)))
 
 
@@ -407,10 +427,12 @@ async def aktion_ablehnen(request):
     if not zeilen:
         return _statusfehler(draft_id, "pending")
     z = zeilen[0]
-    server._q("insert into activities (lead_id, type, payload) "
-              "values (%s, 'ablehnung', %s) returning id",
+    # actor='human' — dieselbe Begruendung wie in _freigabe_loggen.
+    server._q("insert into activities (lead_id, type, payload, actor) "
+              "values (%s, 'ablehnung', %s, 'human') returning id",
               (z["lead_id"], server._json({"draft_id": str(z["id"]),
-                                           "kanal": z["channel"]})))
+                                           "kanal": z["channel"],
+                                           "weg": "ui"})))
     return RedirectResponse("/", status_code=303)
 
 
@@ -499,7 +521,10 @@ def _offene_wiedervorlagen(lead_id=None):
         "and not exists (select 1 from activities e where "
         "e.type = 'wiedervorlage_erledigt' "
         "and e.payload->>'wiedervorlage_id' = w.id::text) "
-        "order by (w.payload->>'faellig_am')::date asc nulls last limit %s",
+        # Textsortierung statt ::date: ISO-Daten (YYYY-MM-DD) sortieren als Text
+        # chronologisch, und ein einziger nicht-datumsfoermiger Wert kann so
+        # nicht die ganze Seite auf 503 werfen (der Cast wuerfe psycopg.Error).
+        "order by (w.payload->>'faellig_am') asc nulls last limit %s",
         params)
 
 

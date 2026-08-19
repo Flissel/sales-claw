@@ -1544,6 +1544,17 @@ Weg bleibt bewusst dem Chat vorbehalten
   127.0.0.1 POSTen), **Host-Header-Prüfung** gegen DNS-Rebinding (nur
   `127.0.0.1:8791`/`localhost:8791`, sonst 421), **`html.escape` auf allen
   Fremddaten**, kein JavaScript, CSP `default-src 'none'`.
+* **`frame-ancestors 'none'` + `X-Frame-Options: DENY`** (auf jeder Antwort,
+  auch der 421-Fehlerseite) — ohne das wäre das CSRF-Token per **Clickjacking**
+  umgehbar: eine fremde Seite rahmt die UI (Host-Wache passiert, echter Host
+  stimmt), legt ein unsichtbares Overlay über den Freigeben-Knopf, und der
+  Klick postet mit dem legitimen Token aus der gerahmten Seite. Befund aus dem
+  Stufe-10-Review, behoben.
+* **UI-Freigaben stehen im Audit als `actor='human'`** (nicht `'agent'`, der
+  Spalten-Default), Payload zusätzlich `weg='ui'`. Sonst wäre eine vom Menschen
+  am UI ausgelöste Freigabe im append-only-Log von einer Agenten-Freigabe nicht
+  zu unterscheiden. Zweiter Review-Befund, behoben. (`drafts.approved_by` trennt
+  das nur bei Freigaben, nicht bei Ablehnungen.)
 * `restart: unless-stopped` — bewusst anders als der restliche Stack: das UI
   versendet nichts und schreibt nur, was ein Mensch anklickt.
 

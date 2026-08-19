@@ -79,7 +79,7 @@ def _zeile(draft_id):
 
 
 def _aktivitaeten(typ):
-    return server._q("select payload from activities where type = %s "
+    return server._q("select payload, actor from activities where type = %s "
                      "order by created_at", (typ,))
 
 
@@ -176,6 +176,48 @@ def test_seiten_kommen_ohne_javascript_aus(pfad):
     assert "<script" not in seite.text
 
 
+def test_fremddaten_brechen_nicht_aus_attribut_kontext_aus():
+    """Ein Anfuehrungszeichen in einem Wert, der in ein value="…"/href="…"
+    landet, darf das Attribut nicht schliessen. Sichert html.escape(quote=True)
+    gegen eine Regression auf quote=False, die die reinen Element-Tests
+    (oben) NICHT faengt."""
+    lead = _lead(name='Anna"><script>alert(1)</script>')
+    _entwurf(lead, empfaenger='+49"><img src=x onerror=alert(2)>')
+    seite = _get("/").text
+    assert '"><script' not in seite
+    assert '"><img' not in seite
+    assert "&quot;&gt;" in seite  # das Zeichen ist da, aber escaped
+    liste = _get("/kontakte").text
+    assert '"><script' not in liste
+
+
+# ---------------------------------------------------------------------------
+# Schutz-Koepfe: Framing (Clickjacking) und Sniffing sind gesperrt
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("pfad", ["/", "/kontakte", "/posteingang",
+                                  "/wiedervorlagen"])
+def test_schutzkoepfe_auf_jeder_seite(pfad):
+    """Ohne frame-ancestors/X-Frame-Options waere das CSRF-Token per
+    Clickjacking umgehbar (fremde Seite rahmt die UI, Overlay ueber den
+    Freigeben-Knopf)."""
+    r = _get(pfad)
+    assert r.status_code == 200
+    csp = r.headers["content-security-policy"]
+    assert "frame-ancestors 'none'" in csp
+    assert r.headers["x-frame-options"] == "DENY"
+    assert r.headers["x-content-type-options"] == "nosniff"
+    assert r.headers["referrer-policy"] == "no-referrer"
+
+
+def test_schutzkoepfe_auch_auf_der_host_fehlerseite():
+    # Die 421-Abweisung bei fremdem Host darf ebenfalls nicht rahmbar sein.
+    r = _get("/", host="boese.example")
+    assert r.status_code == 421
+    assert "frame-ancestors 'none'" in r.headers["content-security-policy"]
+    assert r.headers["x-frame-options"] == "DENY"
+
+
 # ---------------------------------------------------------------------------
 # Freigeben: nur pending -> approved, approved_by='betreiber-ui'
 # ---------------------------------------------------------------------------
@@ -193,6 +235,21 @@ def test_freigeben_pending_wird_approved_mit_betreiber_ui():
     assert len(freigaben) == 1
     assert freigaben[0]["payload"]["draft_id"] == draft
     assert freigaben[0]["payload"]["kanal"] == "whatsapp"
+    # Herkunft: ein Mensch am UI, nicht der Agent — sonst waere die Freigabe im
+    # append-only-Log falsch attribuiert.
+    assert freigaben[0]["actor"] == "human"
+    assert freigaben[0]["payload"]["weg"] == "ui"
+
+
+def test_ablehnen_wird_als_human_geloggt():
+    lead = _lead()
+    draft = _entwurf(lead)
+    r = _post("/aktion/ablehnen", {"draft_id": draft, "csrf": ui.CSRF_TOKEN})
+    assert r.status_code == 303
+    ablehnungen = _aktivitaeten("ablehnung")
+    assert len(ablehnungen) == 1
+    assert ablehnungen[0]["actor"] == "human"
+    assert ablehnungen[0]["payload"]["weg"] == "ui"
 
 
 @pytest.mark.parametrize("status, approved_by", [
