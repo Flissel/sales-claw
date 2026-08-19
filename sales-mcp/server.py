@@ -1,6 +1,9 @@
 """sales-mcp — Werkzeugdienst des sales-claw-Prototyps.
 
-Zwanzig deutsche Werkzeuge über MCP (streamable-http). Kein Send-Werkzeug:
+Die deutschen Werkzeuge des Hauses über MCP (streamable-http) — wie viele
+es sind, sagt das WERKZEUGE-Tupel am Dateiende, nicht dieser Satz (er stand
+zweimal veraltet da, bei „zwanzig", als es 22 und dann 26 waren).
+Kein Send-Werkzeug:
 Entwürfe enden als drafts(status='pending') und werden über die
 Freigabe-Werkzeuge nach 'approved'/'rejected' bewegt — den tatsächlichen
 Versand macht ausschliesslich der Dispatcher (WhatsApp) bzw. quittiert der
@@ -727,7 +730,13 @@ def wochenbericht() -> str:
     offen = _q("select count(*) as n from drafts where status='pending'")
     kosten = _q(f"select coalesce(sum((payload->>'kosten_usd')::numeric),0) as k "
                 f"from activities where type='recherche' "
-                f"and payload ? 'kosten_usd' and created_at >= {seit}")
+                # jsonb_typeof statt `?`: prueft Existenz UND Typ in einem —
+                # eine handgeschriebene recherche-Zeile mit nicht-numerischem
+                # kosten_usd liesse sonst ::numeric werfen und den ganzen
+                # Wochenbericht zur Fehlermeldung werden (Task-2-Bedenken,
+                # gleiche Haertung wie die case-Wache in vertraege_ablaufend).
+                f"and jsonb_typeof(payload->'kosten_usd') = 'number' "
+                f"and created_at >= {seit}")
     ablaufend = json.loads(vertraege_ablaufend(tage=30))
     wv_map = {z["type"]: z["n"] for z in wv}
     daten = {
