@@ -602,3 +602,36 @@ def test_datenbankausfall_gibt_503(monkeypatch):
     monkeypatch.setattr(server, "_q", kaputt)
     status, _ = _post(_ereignis())
     assert status == 503
+
+
+# ---------------------------------------------------------------------------
+# Nachbesserungen aus dem Stufe-8-Review (Befunde M2, N1)
+# ---------------------------------------------------------------------------
+
+def test_message_sent_ohne_fromme_wird_als_widerspruch_verworfen():
+    """M2: ein Sende-Echo ohne fromMe=true darf NICHT als Kundenantwort der
+    eigenen Nummer gebucht werden — sonst fuellte ein abweichender Adapter
+    das Postfach mit den eigenen Sendungen."""
+    _lead()
+    status, antwort = _post(_echo(fromMe=False))
+    assert status == 200
+    assert "Widerspruch" in antwort["verworfen"]
+    assert _aktivitaeten() == []
+    assert _aktivitaeten("nachricht_ausgehend") == []
+
+
+def test_gleiche_message_id_ueber_beide_richtungen_bucht_nur_einmal():
+    """N1: das Dedup ist typuebergreifend begruendet (inbox.py) — hier der
+    Beweis: dieselbe message_id einmal eingehend, einmal als Echo ergibt
+    genau EINE Zeile, die zweite Zustellung wird als Duplikat quittiert."""
+    _lead()
+    status, erste = _post(_ereignis(id="wa-doppelt-1"))
+    assert status == 200 and erste["gespeichert"] is True
+    status, zweite = _post(_echo(id="wa-doppelt-1"))
+    assert status == 200
+    assert zweite.get("gespeichert") is not True
+    alle = server._q(
+        "select type from activities where payload->>'message_id' = %s",
+        ("wa-doppelt-1",))
+    assert len(alle) == 1
+    assert alle[0]["type"] == "kundenantwort"

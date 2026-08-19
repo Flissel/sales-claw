@@ -1014,10 +1014,10 @@ Digest-Zustellung das Postfach.
 
 ### Betreiberaktion: `message.sent` abonnieren
 
-Der registrierte Webhook hört heute nur auf `message.received`. Bis das Abo
-erweitert ist, bleibt `nachricht_ausgehend` leer und ein von Hand
-beantworteter Kontakt steht weiter im Posteingang (der Code ist fertig und
-nimmt das Ereignis an — es kommt nur nicht):
+**Erledigt am 19.08.2026:** Webhook `96d8cb08…` abonniert seit dem Stufe-8-
+Abschluss beide Ereignisse (`message.received`, `message.sent`, per
+Gegenprobe verifiziert, `active=true`). Das Kommando bleibt hier fuer den
+Wiederholungsfall (Webhook neu registriert, Secret gewechselt) stehen:
 
 ```powershell
 # Schlüssel nur maschinell in Variablen, nie anzeigen.
@@ -1059,10 +1059,30 @@ ist keine Rufnummer, `lead_zu_nummer` findet damit keinen Kontakt, und alle 66
 bisherigen `kundenantwort`-Zeilen hängen deshalb am Sammelkontakt, auch die
 von bekannten Kontakten. Das ist ein Befund an der Stufe-4-Zuordnung, nicht am
 Posteingang — für ihn heißt es nur, dass die Sammelkontakt-Gruppierung nach
-`absender` derzeit der Normalfall ist und nicht die Ausnahme. Die
-LID-Auflösung (OpenWA führt dafür eine Tabelle `lid_mappings`, und die
-Nutzlast kann `senderPhone` tragen) gehört auf die Liste, bevor der
-Posteingang über die Demo hinaus tragen soll.
+`absender` derzeit der Normalfall ist und nicht die Ausnahme.
+
+**Zwei Konsequenzen, die man kennen muss (Review-Befunde H1/M1):**
+
+1. **Die angezeigte „Nummer" ist eine Attrappe.** Die LID-Ziffern laufen
+   durch dieselbe Normalisierung wie echte Nummern und kommen als
+   `183…@c.us` heraus — im Posteingang **nicht unterscheidbar** von einer
+   Rufnummer (gemessen: 9 von 9 Live-Einträgen tragen 14–15-stellige
+   Pseudonummern mit ungültiger Landesvorwahl). Deshalb: **niemals**
+   `kontakt_anlegen` mit einer angezeigten Posteingang-Kennung, ohne die
+   echte Rufnummer zu kennen — der Kontakt wäre unzustellbarer Datenmüll,
+   den der Dispatcher später anzuwählen versucht. Die AGENTS-Regel sagt
+   dem Agenten dasselbe.
+2. **Die naheliegende Abhilfe hat einen Nebeneffekt.** OpenWAs
+   `RESOLVE_LID_TO_PHONE` (Feature-Flag, heute aus) löst nur die
+   **Eingangsrichtung** auf (`senderPhone` entsteht nur bei
+   `!fromMe`-Nachrichten, gemessen an message-projector.service.ts:230).
+   Eingehende `absender` würden zu echten Nummern, ausgehende `empfaenger`
+   blieben LIDs — die absenderscharfe Beantwortet-Prüfung am Sammelkontakt
+   fände dann nie mehr ein Paar, und `nachricht_ausgehend` räumte dort
+   nichts mehr ab. Die LID-Auflösung gehört deshalb als EIGENE Aufgabe
+   geplant (beide Richtungen konsistent, `lid_mappings`-Tabelle als
+   Quelle), bevor der Posteingang über die Demo hinaus tragen soll — nicht
+   als schneller Flag-Flip.
 
 ## Morgen-Digest
 

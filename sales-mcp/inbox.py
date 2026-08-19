@@ -406,6 +406,14 @@ def verarbeite(roh: bytes, signatur):
     # Engine-Adapter kann dieselbe Nachricht unter anderem Namen zustellen.
     if daten.get("fromMe") is True:
         return _ausgehend(daten, message_id)
+    if umschlag.get("event") == "message.sent":
+        # Widerspruch: ein Sende-Echo OHNE fromMe=true. Als Eingang gelesen
+        # wuerde daraus eine "kundenantwort" von der EIGENEN Nummer — das
+        # Postfach fuellte sich mit den eigenen Sendungen als unbeantworteten
+        # Kundeneingaengen (Review-Befund M2). Heute setzt der Mapper fromMe
+        # immer; die Wache faengt den Tag, an dem das nicht mehr stimmt.
+        return 200, {"verworfen": "message.sent ohne fromMe=true — "
+                                  "Widerspruch, nicht gebucht"}
     return _eingehend(daten, message_id)
 
 
