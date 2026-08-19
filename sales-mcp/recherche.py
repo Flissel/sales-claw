@@ -812,8 +812,16 @@ class _SeitenLeser(HTMLParser):
     # (im Test aufgefallen — die Startseite „trug keinen Titel", obwohl sie
     # einen hat). Was in `head` sonst Text traegt, ist ohnehin erfasst:
     # `script` und `style` stehen unten, `meta`/`link` haben keinen Inhalt.
+    #
+    # `nav` ist stumm: der Menueblock steht auf jeder Unterseite identisch
+    # (Live-Messung pfeifer-haustechnik.de: rund 450 Zeichen, ~22 % von
+    # FIRMA_TEXT_MAX je Seite). Die Links darin sammelt handle_starttag
+    # weiterhin — die Link-Sammlung prueft den Stumm-Zaehler nicht.
+    # `header`/`footer` bleiben bewusst draussen: im Footer deutscher
+    # KMU-Seiten stehen regelmaessig genau die Angaben, die _firma_hinweise
+    # sucht (Anschrift, Telefon, „seit 19xx", teils der Inhaber).
     _STUMM = frozenset(("script", "style", "noscript", "template", "svg",
-                        "iframe"))
+                        "iframe", "nav"))
 
     def __init__(self):
         super().__init__(convert_charrefs=True)

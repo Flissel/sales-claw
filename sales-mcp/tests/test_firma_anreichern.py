@@ -365,6 +365,22 @@ def test_skript_und_stil_landen_nicht_im_text():
     assert "Heizung, Sanitaer und Klima" in volltext
 
 
+def test_navigationstext_landet_nicht_im_text():
+    """Der Menueblock steht auf jeder Unterseite identisch (Live-Messung
+    pfeifer-haustechnik.de: rund 450 Zeichen, ~22 % von FIRMA_TEXT_MAX je
+    Seite) und traegt nichts, was _firma_hinweise sucht. Die Links aus <nav>
+    muessen aber weiter verfolgt werden — sonst faende das Werkzeug keine
+    Unterseiten mehr."""
+    lead = _firmenlead()
+    antwort = _anreichern(lead_id=lead)
+    seiten = _enrichment(lead)["firma"]["seiten"]
+    start = next(s for s in seiten if s["url"].rstrip("/") == STUB_BASIS)
+    assert "nach oben" not in start["text"]              # Ankertext aus <nav>
+    assert "Anrufen" not in start["text"]
+    assert "Heizung, Sanitaer und Klima" in start["text"]  # <body> bleibt
+    assert antwort["seiten_anzahl"] == 5                 # <nav>-Links verfolgt
+
+
 def test_profil_lesen_zeigt_den_volltext_unter_firma():
     """Das Werkzeug verspricht in seiner Antwort, profil_lesen zeige den
     Volltext — dieser Test haelt das Versprechen ueberpruefbar."""
