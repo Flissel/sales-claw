@@ -56,6 +56,36 @@ thema='Erstgespraech', ort='')`:
   anpassen (Fehlertexte zählen `sorted(ERLAUBT)` dynamisch auf — Tests,
   die die Liste wörtlich zitieren, nachziehen).
 
+### G1b — CalDAV-Eintrag (optional aktiv, gleiche Inert-Bauart wie G2)
+
+Der Betreiber nutzt Namecheap PrivateEmail; dessen CalDAV-Server ist
+`dav.privateemail.com` (gemessen am Konfigurationsdialog des Anbieters,
+Konto `felix@vibemind.space`). Damit kann `termin_bestaetigen` den Termin
+ZUSAETZLICH direkt in den echten Kalender schreiben:
+
+- Konfiguration aus `.env`: `CALDAV_URL` (Kalender-Kollektion, z. B.
+  `https://dav.privateemail.com/dav.php/calendars/<user>/<kalender>/`),
+  `CALDAV_USER`, `CALDAV_PASSWORT`. FEHLT eine der drei → das Werkzeug
+  erzeugt nur die ICS-Datei und sagt im `hinweis`, dass kein Kalender
+  konfiguriert ist. Kein Fehler, keine Ueberraschung.
+- Push per HTTP `PUT <CALDAV_URL><uid>.ics` (urllib, Basic-Auth,
+  `Content-Type: text/calendar`, Timeout 20 s, If-None-Match: * gegen
+  stilles Ueberschreiben eines fremden Eintrags). 201/204 = eingetragen;
+  alles andere → sprechender Fehlertext in der Rueckgabe (`kalender`:
+  eingetragen/fehlgeschlagen+Grund), die ICS-Datei entsteht TROTZDEM.
+- MESSEN ZUERST: die exakte Kollektions-URL beim ersten Live-Versuch per
+  PROPFIND ermitteln bzw. dokumentieren, welche URL der Betreiber aus dem
+  Panel kopieren muss (Thunderbird-Link im Anbieter-Dialog). Zugangsdaten
+  nie in argv/Logs; Fehlerrumpf durch denselben Geheimnisfilter wie SMTP.
+- Egress-Hinweis fuers Review: das ist ein NEUER ausgehender HTTP-Pfad —
+  Ziel ausschliesslich die konfigurierte CALDAV_URL aus `.env`
+  (Betreiber-Konfiguration, kein Fremddaten-Ziel; KEINE URL aus
+  Lead-/Kundendaten). Kein Bezug zu drafts/Freigabe: ein Kalendereintrag
+  ist Selbstorganisation des Betreibers, keine Kundenkommunikation.
+- Tests: Stub-HTTP-Server (Muster vorhanden), unkonfiguriert→nur Datei,
+  201→eingetragen, 401/5xx→Fehlertext + Datei bleibt, Geheimnis nie im
+  Fehlertext.
+
 ### G2 — E-Mail-Versand (`sales-mcp/mail_dispatch.py` + Compose-Dienst `sales-mail`)
 
 Der Zwilling des WhatsApp-Dispatchers, gleiche Konstruktion:
