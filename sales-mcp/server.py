@@ -760,6 +760,98 @@ def wochenbericht() -> str:
     return _json({**daten, "text": "\n".join(zeilen)})
 
 
+# ---------------------------------------------------------------------------
+# Beraterin-Uebergabe (Stufe 7) — die Naht zwischen Assistent und Beratung.
+#
+# Das Werkzeug STELLT ZUSAMMEN, was der Kunde selbst gesagt hat, und BEWERTET
+# nichts: keine Luecken-Analyse, keine Empfehlung, kein Produktvergleich.
+# Genau diese Grenze ist §34d GewO (siehe AGENTS.md „Verbote") — die
+# Zusammenstellung darf der Assistent, die Einschaetzung gehoert der
+# lizenzierten Beraterin. Versendet wird dabei nichts: der Text geht als
+# Markdown nach /reports und als Antwort in den Chat, weitergeben tut ihn der
+# Betreiber. Damit entsteht KEIN neuer Egress-Pfad (Gate-Invariante).
+# ---------------------------------------------------------------------------
+
+def _bedarf_zeile(frage_id: str, eintrag) -> str:
+    """Eine Bedarfsantwort als Uebergabe-Zeile.
+
+    `bedarf_speichern` legt pro Frage ein Objekt {"antwort": ..., "at": ...}
+    ab. In der Uebergabe steht die ANTWORT, nicht das Rohobjekt — die
+    Beraterin liest den Text, kein JSON. Aeltere oder von Hand gesetzte
+    Eintraege koennen ein blosser String sein; die werden unveraendert
+    uebernommen, statt zu werfen.
+    """
+    if isinstance(eintrag, dict):
+        return f"- {frage_id}: {eintrag.get('antwort', eintrag)}"
+    return f"- {frage_id}: {eintrag}"
+
+
+@_gesichert
+def uebergabe_erstellen(lead_id: str) -> str:
+    """Strukturierte Uebergabe eines Kontakts an die Beraterin — alles, was
+    §34d-relevante Beratung braucht, aus dem Bestand: Profil, beantworteter
+    Bedarf, Vertraege, offene Punkte, letzte Aktivitaeten. Schreibt die
+    Markdown-Fassung nach /reports und gibt den Volltext zurueck. Versendet
+    NICHTS — weitergeben tut sie der Betreiber."""
+    leads = _q("select name, phone, consent_status, enrichment, notes "
+               "from leads where id = %s", (lead_id,))
+    if not leads:
+        return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
+    l, e = leads[0], leads[0]["enrichment"] or {}
+    offene = _q("select payload, created_at from activities "
+                "where lead_id = %s and type = 'offener_punkt' "
+                "order by created_at", (lead_id,))
+    letzte = _q("select type, payload, created_at from activities "
+                "where lead_id = %s order by created_at desc limit 10",
+                (lead_id,))
+    heute = datetime.now(timezone.utc).date().isoformat()
+    zeilen = [f"# Uebergabe: {l['name']}", "",
+              f"Stand {heute} · Consent: {l['consent_status']} · "
+              f"Telefon: {l['phone'] or '—'}", "", "## Profil"]
+    zeilen += [f"- {k}: {v}" for k, v in (e.get("profil") or {}).items()] \
+        or ["- (leer)"]
+    zeilen += ["", "## Bedarfsanalyse (Angaben des Kunden)"]
+    zeilen += [_bedarf_zeile(k, v)
+               for k, v in (e.get("bedarf") or {}).items()] or ["- (leer)"]
+    zeilen += ["", "## Vertraege (vom Kunden genannt)"]
+    # Feldnamen wie von vertrag_speichern geschrieben (sparte/gesellschaft/
+    # ablauf). `gesellschaft` und `ablauf` sind dort optional und fehlen dann
+    # ganz — deshalb die Vorgaben statt eines KeyError.
+    zeilen += [f"- {v.get('sparte','?')} ({v.get('gesellschaft','?')}), "
+               f"Ablauf {v.get('ablauf','unbekannt')}"
+               for v in (e.get("vertraege") or [])] or ["- (keine genannt)"]
+    zeilen += ["", "## Offene Punkte fuer die Beratung"]
+    zeilen += [f"- {(p['payload'] or {}).get('inhalt', p['payload'])}"
+               for p in offene] or ["- (keine)"]
+    zeilen += ["", "## Letzte Aktivitaeten"]
+    zeilen += [f"- {a['created_at']:%Y-%m-%d} {a['type']}" for a in letzte] \
+        or ["- (keine)"]
+    zeilen += ["", "---", "Erstellt vom Assistenten. KEINE Beratung, keine "
+               "Produktbewertung — reine Zusammenstellung der Kundenangaben."]
+    text = "\n".join(zeilen)
+    # Der Kundenname geht in einen Dateinamen — also durch `slug` (Whitelist
+    # [a-z0-9-]) und danach durch die Einbettungspruefung in
+    # `report_schreiben`. Dasselbe zweistufige Muster wie bei marktanalyse.
+    name = f"uebergabe-{recherche.slug(l['name'])}-{heute}.md"
+    pfad, schreibfehler = None, None
+    try:
+        pfad, _ueberschrieben = recherche.report_schreiben(name, text)
+    except (OSError, ValueError) as ex:
+        # Wie bei marktanalyse: die Zusammenstellung ist fertig und gehoert in
+        # den Chat, auch wenn der Reportordner fehlt. Sie geht nicht verloren,
+        # nur weil ein Bind nicht anliegt.
+        schreibfehler = (f"Uebergabe konnte nicht abgelegt werden "
+                         f"({type(ex).__name__}: {ex}) — liegt der Bind "
+                         f"./reports:/reports am Container an? Der Text unten "
+                         f"ist vollstaendig.")
+    _q("insert into activities (lead_id, type, payload) values "
+       "(%s, 'uebergabe', %s) returning id",
+       (lead_id, _json({"pfad": pfad, "offene_punkte": len(offene)})))
+    return _json(_ohne_none({"pfad": pfad, "fehler": schreibfehler,
+                             "text": text,
+                             "offene_punkte_anzahl": len(offene)}))
+
+
 # Fehlgeschlagene Entwuerfe werden nie automatisch wiederholt und sammeln sich
 # deshalb an. Die Liste bleibt gedeckelt, damit ein Aufruf die Antwort nicht
 # unbegrenzt aufblaeht; `anzahl_fehlgeschlagen` nennt die tatsaechliche Zahl,
@@ -1238,7 +1330,7 @@ WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              profil_lesen, profil_aktualisieren,
              bedarf_speichern, bedarf_offen, entwurf_erstellen,
              post_entwurf_erstellen, medien_liste,
-             digest, wochenbericht,
+             digest, wochenbericht, uebergabe_erstellen,
              entwuerfe_offen, entwurf_freigeben, entwurf_ablehnen,
              entwurf_manuell_gesendet, entwurf_erneut_freigeben,
              marktanalyse, b2b_leads, firma_anreichern)

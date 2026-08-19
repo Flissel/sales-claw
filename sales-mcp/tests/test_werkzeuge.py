@@ -670,9 +670,9 @@ def test_kontakt_aktualisieren_signatur_ueberlebt_den_dekorator():
     assert list(parameter) == ["lead_id", "feld", "wert"]
 
 
-def test_fuenfundzwanzig_werkzeuge_registriert():
+def test_sechsundzwanzig_werkzeuge_registriert():
     namen = {fn.__name__ for fn in server.WERKZEUGE}
-    assert len(namen) == 25
+    assert len(namen) == 26
     assert "kontakt_aktualisieren" in namen
     assert "wiedervorlage_setzen" in namen
     assert "wiedervorlage_erledigt" in namen
@@ -689,6 +689,8 @@ def test_fuenfundzwanzig_werkzeuge_registriert():
     assert "vertraege_ablaufend" in namen
     # Stufe 7 — Wochenbericht. Vertragstests in tests/test_wochenbericht.py.
     assert "wochenbericht" in namen
+    # Stufe 7 — Beraterin-Uebergabe. Vertragstests in tests/test_uebergabe.py.
+    assert "uebergabe_erstellen" in namen
 
 
 # ---------------------------------------------------------------------------
