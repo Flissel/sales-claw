@@ -56,6 +56,14 @@ ERLAUBT = {
     ".png":  ("send-image",    "image/png"),
     ".mp3":  ("send-audio",    "audio/mpeg"),
     ".ogg":  ("send-audio",    "audio/ogg"),
+    # Stufe 9: Kalendereinladungen. `termin_bestaetigen` legt sie nach
+    # /reports ab (der einzige beschreibbare Bind) — wer eine davon
+    # mitschicken will, kopiert sie von Hand nach `media\`. Der Weg ueber
+    # den Menschen bleibt, `media/` bleibt `:ro`; hier steht nur, dass die
+    # Endung ueberhaupt anhaengbar IST. `send-document` mit dem
+    # registrierten MIME-Typ `text/calendar` (RFC 5545 §8.1): WhatsApp
+    # zeigt sie als Datei, Mail-Programme als Termin.
+    ".ics":  ("send-document", "text/calendar"),
 }
 
 # Gemessene Obergrenze der Bildunterschrift (DTO `@MaxLength(1024)`). Ein

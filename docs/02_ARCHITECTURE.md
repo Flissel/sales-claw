@@ -789,3 +789,129 @@ akzeptiert statt gelöst; falls das Modell später kippt (mehrere Bediener,
 Netzfreigabe auf `media/`), ist die vorgesehene Lösung ein
 Inhalts-Fingerabdruck (sha256 bei Erstellung in die `freigabe`-Aktivität,
 Vergleich im Dispatcher) — ohne DDL machbar.
+
+## Architektur (Stufe 9): E-Mail-Zwilling, Termine, ICS
+
+### `sales-mail` — derselbe Bau, anderer Kanal
+
+`sales-mcp/mail_dispatch.py` ist der Zwilling von `dispatch.py`. Er liest
+ausschließlich `drafts(status='approved', channel='email')` und stellt über
+SMTP zu. Die Kanaltrennung steht in jeder Query — `channel = 'email'` hier,
+`channel = 'whatsapp'` dort —, und beide Dienste greifen deshalb nie nach
+demselben Entwurf (Test in beide Richtungen: `test_mail_dispatch.py`).
+
+Claim-Marke, Erfolgs- und Fehlerbuchung werden **importiert, nicht
+kopiert** (`dispatch._claim_marke`, `_als_gesendet_buchen`,
+`_als_fehler_buchen`). Das ist keine Sparsamkeit: `entwurf_erneut_freigeben`
+erkennt einen hängengebliebenen Versand daran, dass `drafts.error` mit
+`CLAIM_PRAEFIX` („in Zustellung seit …") beginnt. Eine zweite, ähnliche
+Marke hätte diese Schutzkante gegen Doppelversand für E-Mail-Entwürfe still
+ausgehebelt. Importrichtung `mail_dispatch → dispatch → server`, kein
+Zirkel.
+
+Eigen ist nur, was kanalspezifisch ist: der Claim mit `channel='email'`, die
+Empfängerprüfung (`mailadresse.py` statt `nummern.py`) und der Versandweg
+(`smtplib` statt OpenWA-HTTP). `mailadresse.py` existiert aus demselben
+Grund wie `nummern.py`: `entwuerfe_offen` zeigt dem Betreiber vor der
+Freigabe die `zieladresse` an, die `sales-mail` dann tatsächlich anspricht —
+Anzeige und Versand dürfen nie zwei verschiedene Regeln benutzen.
+
+Die Adressprüfung ist eine **Whitelist**, keine RFC-5322-Grammatik. Der
+Empfänger geht in den `To:`-Kopf einer echten Mail; ein `\r`/`\n` darin ist
+eine Kopfzeilen-Injektion, ein Komma macht aus einem Empfänger still zwei —
+also einen zweiten, ungenannten Empfänger einer freigegebenen Nachricht. Aus
+demselben Grund wird der Betreff (er stammt aus einem Sprachmodell) vor dem
+Setzen von Umbrüchen und Steuerzeichen befreit.
+
+**TLS entscheidet der Port**, und einen blanken Ausgang gibt es nicht: 465 →
+implizites TLS (`SMTP_SSL`), alles andere → `STARTTLS`, jeweils mit
+`ssl.create_default_context()` (Zertifikats- und Hostnamen-Prüfung). Der
+konfigurierte Anbieter (PrivateEmail) spricht 465; der Stufe-9-Plan hatte
+nur 587/STARTTLS vorgesehen — gebaut sind beide.
+
+**Keine Anhänge, und deshalb auch kein stiller Versand ohne sie.** Diese
+Fassung schickt `text/plain`. Trägt ein Entwurf ein `media_ref`, wird er
+ausdrücklich `failed` gebucht statt ohne die Unterlage zugestellt. Der Plan
+sah vor, `media_ref` bei E-Mail „wie bisher als Merkposten zu ignorieren" —
+das galt, solange E-Mail ein reiner Handversand-Kanal war. Seit dieser Stufe
+geht die Mail automatisch raus, und dann ist Ignorieren genau der Fehler,
+den der WhatsApp-Weg ausdrücklich nicht macht: *freigegeben wurde eine
+Nachricht MIT Unterlage.* `entwurf_erstellen` warnt bereits beim Erstellen.
+
+**Gemessener Fallstrick (Testbefund):** ohne ausdrückliches
+`cte="quoted-printable"` wählt `EmailMessage.set_content` für kurze Texte
+mit Umlauten die Transfer-Kodierung `8bit` (`policy.default` hat
+`cte_type='8bit'`). Die Verbindung handelt aber kein 8BITMIME aus; `smtplib`
+serialisiert den Rumpf dann mit ASCII-Ersatzzeichen, und beim Empfänger
+steht „Gr??e" statt „Grüße". Quoted-Printable ist überall 7-bit-sicher.
+
+### Termine: `termin_bestaetigen`, ICS und der optionale Kalender
+
+Das Werkzeug **hält fest**, worauf sich zwei Menschen mündlich geeinigt
+haben. Es lädt niemanden ein, fragt keinen Kalender nach freien Zeiten und
+versendet nichts: es schreibt eine ICS-Datei nach `/reports`, legt — falls
+konfiguriert — denselben Termin per CalDAV in den Kalender des Betreibers,
+erzeugt eine Wiedervorlage „Terminerinnerung" am Vortag und gibt einen
+fertigen Bestätigungstext zurück. Ob daraus eine Nachricht wird, entscheidet
+der Betreiber über `entwurf_erstellen` und die Freigabe — **das Gate bleibt
+unberührt, es entsteht kein zweiter Egress-Pfad zum Kunden.**
+
+Die Erinnerung erinnert den **Betreiber** (Digest), nicht den Kunden. Eine
+automatische Kundenerinnerung wäre genau der Weg am Gate vorbei, den es hier
+nicht gibt.
+
+ICS-Erzeugung und CalDAV liegen in `sales-mcp/kalender.py` — ein Modul ohne
+Datenbank und ohne Rückimport, wie `recherche.py`. Der ICS-Text ist damit
+ohne DB testbar, und der einzige neue ausgehende Pfad dieser Stufe steht an
+einer Stelle, an der man ihn ansehen kann. Gegen die Norm gebaut und per
+Textzusicherungen geprüft (ein Kalenderprogramm gibt es im Container nicht):
+CRLF-Zeilenenden, Faltung auf 75 **Oktette** (ein „ü" sind zwei Bytes, und
+Umlaute in Kundennamen sind der Normalfall), maskierte TEXT-Werte nach
+§3.3.11, und ein eingebetteter **VTIMEZONE**-Block zur `TZID`-Referenz —
+ohne ihn lehnen Outlook-Varianten die Referenz ab. Der Block steht fest im
+Modul statt aus `zoneinfo` abgeleitet: die Datei soll beim Empfänger
+dasselbe bedeuten wie bei uns, unabhängig von der tzdata-Fassung eines
+Containers.
+
+Die `DESCRIPTION` ist bewusst nichtssagend, und der Grund ist nicht Stil:
+die Datei kann beim Kunden landen. Bedarfsangaben oder Notizen hätten dort
+nichts verloren.
+
+Die Datei entsteht in `/reports`, nicht in `/media`. `media/` bleibt für
+alle Container `:ro` — was versendet werden kann, legt ausschließlich ein
+Mensch ab. Wer eine Einladung mitschicken will, kopiert sie von Hand nach
+`media\`; dafür steht `.ics` seit dieser Stufe in der Anhang-Whitelist
+(`send-document`, `text/calendar`).
+
+**CalDAV ist ein neuer ausgehender HTTP-Pfad** — und ausdrücklich einer ohne
+Fremddatenbezug: Ziel ist ausschließlich die konfigurierte `CALDAV_URL` aus
+der `.env`, nie eine Adresse aus Lead- oder Kundendaten. Ohne die drei
+`CALDAV_*`-Werte ist der Weg inert (nur die Datei entsteht). `PUT` mit
+`If-None-Match: *` heißt „nur anlegen, nie überschreiben": unter derselben
+UID (eine uuid4) läge sonst ein fremder Termin, und den still zu ersetzen
+wäre Datenverlust im Kalender eines Menschen. Ein Tippfehler in der URL kann
+kein `file:`-PUT werden (Schema-Whitelist), Zugangsdaten reisen im
+Authorization-Header statt in der URL, und jeder Fehlertext läuft durch
+denselben Geheimnisfilter wie beim SMTP-Weg.
+
+**Die WAF-Kante (gemessen 2026-08-19).** `dav.privateemail.com` steht hinter
+einer Web Application Firewall, die Anfragen mit der **Vorgabe-Kennung von
+urllib** pauschal mit HTTP 403 beantwortet — unabhängig von den
+Zugangsdaten. Ein früherer Messdurchgang las dieses 403 als „das
+App-Passwort deckt DAV nicht ab"; falsch — es deckt DAV, und es ist dasselbe
+Passwort wie für SMTP.
+
+Siebenmal dieselbe PROPFIND-Anfrage, nur der `User-Agent` verschieden:
+`Python-urllib/3.12` (bzw. gar kein Header) → **403**; `python-requests`,
+`curl/8.5.0`, `sales-claw/1.0 (CalDAV)`, ein Mozilla-Präfix und sogar das
+einzelne Zeichen `X` → **207**. Gesperrt ist also genau diese eine Kennung,
+nicht „Nicht-Browser".
+
+Der `User-Agent` in `kalender.py` ist damit **Funktion, nicht Kosmetik**:
+fällt er weg, ist der Kalenderweg tot, und der Fehlertext deutet auf ein
+Zugangsproblem, das es nicht gibt. Ein Test hält ihn fest. Weil jede eigene
+Kennung genügt, steht dort die **sprechende Kennung des Hauses** in
+derselben Form wie `FIRMA_USER_AGENT` — und ausdrücklich nicht die eines
+fremden Kalenderprogramms: eine fremde Produktkennung vorzutäuschen hätte
+hier keinen Gegenwert, und wer im Serverlog nachsieht, wer da schreibt, soll
+es beantwortet bekommen.

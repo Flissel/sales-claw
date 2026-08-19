@@ -22,6 +22,7 @@ angeschrieben" ist eine Rechtsfrage (UWG), keine Stilfrage.
 import functools
 import json
 import os
+import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -54,6 +55,15 @@ import medien
 # eines ohne Rückimport: recherche.py kennt weder Datenbank noch Werkzeuge,
 # nur HTTP, Normalisierung und Markdown (Begründung im Moduldocstring).
 import recherche
+# Termine (Stufe 9): ICS-Text und der optionale CalDAV-Eintrag. Wieder ein
+# Modul ohne Datenbank und ohne Rückimport — und der einzige Ort, an dem
+# der neue ausgehende Pfad dieser Stufe steht.
+import kalender
+# Und aus demselben Grund wie `nummern.py` (Anzeige und Versand dürfen nie
+# zwei verschiedene Regeln benutzen): die Prüfung einer E-Mail-Adresse.
+# `entwuerfe_offen` zeigt damit die Adresse an, an die sales-mail
+# tatsächlich zustellen würde.
+import mailadresse
 
 SCHEMA = os.environ.get("SALES_DB_SCHEMA", "sales")
 if SCHEMA not in ("sales", "sales_test"):
@@ -442,6 +452,175 @@ def vertraege_ablaufend(tage: int = 90) -> str:
                   "vertraege": treffer})
 
 
+# ---------------------------------------------------------------------------
+# Termine (Stufe 9, G1) — der Kalendereintrag zum vereinbarten Gespraech.
+#
+# Das Werkzeug HAELT FEST, worauf sich zwei Menschen muendlich geeinigt
+# haben. Es lädt niemanden ein, es versendet nichts und es fragt keinen
+# Kalender nach freien Zeiten: es erzeugt eine ICS-Datei in /reports, legt
+# — auf Wunsch — denselben Termin in den Kalender des Betreibers und
+# schreibt eine Wiedervorlage fuer den Vortag. Der Bestaetigungstext kommt
+# als TEXT zurueck; ob daraus eine Nachricht wird, entscheidet der
+# Betreiber ueber `entwurf_erstellen` und die Freigabe wie bei jedem
+# anderen Text auch. Das Freigabe-Gate bleibt damit unberuehrt.
+#
+# Warum die Wiedervorlage automatisch entsteht (und die Erinnerung NICHT):
+# der haeufigste Grund fuer einen geplatzten Termin ist, dass niemand mehr
+# daran gedacht hat. Die Wiedervorlage taucht im Digest auf und erinnert
+# den BETREIBER — die Erinnerungs-NACHRICHT an den Kunden entsteht wie
+# jede andere Nachricht: als Entwurf, mit Freigabe. Eine automatische
+# Kundenerinnerung waere ein zweiter Egress-Pfad am Gate vorbei.
+# ---------------------------------------------------------------------------
+
+TERMIN_DAUER_MIN = 15
+TERMIN_DAUER_MAX = 480
+TERMIN_DAUER_VORGABE = 60
+# `thema` und `ort` landen in SUMMARY/LOCATION der ICS und im
+# Bestaetigungstext. Freitext ohne Deckel waere in beiden ein Problem —
+# gekappt statt abgelehnt, wie `recherche.kappe_limit`: eine zu lange
+# Angabe ist ein Schaetzfehler, kein Bedienfehler.
+TERMIN_TEXT_MAXLAENGE = 120
+TERMIN_ERINNERUNG_TAGE = 1
+
+WOCHENTAGE = ("Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag",
+              "Samstag", "Sonntag")
+
+
+def _termin_dauer(dauer) -> int:
+    """Wunsch -> erlaubte Dauer. Kappung, kein Fehler (siehe oben)."""
+    try:
+        return max(TERMIN_DAUER_MIN, min(int(dauer), TERMIN_DAUER_MAX))
+    except (TypeError, ValueError):
+        return TERMIN_DAUER_VORGABE
+
+
+@_gesichert
+def termin_bestaetigen(lead_id: str, datum: str, uhrzeit: str,
+                       dauer_minuten: int = TERMIN_DAUER_VORGABE,
+                       thema: str = "Erstgespraech", ort: str = "") -> str:
+    """Einen muendlich vereinbarten Termin festhalten: Kalenderdatei (.ics)
+    nach /reports, Eintrag im Kalender des Betreibers (falls konfiguriert),
+    automatische Wiedervorlage „Terminerinnerung" am Vortag und ein
+    fertiger, kurzer Bestaetigungstext.
+
+    `datum` ISO (YYYY-MM-DD, nicht in der Vergangenheit), `uhrzeit` als
+    HH:MM in ORTSZEIT (Europe/Berlin), `dauer_minuten` 15–480 (wird
+    gekappt), `thema`/`ort` kurzer Freitext.
+
+    Es wird NICHTS versendet: der `bestaetigungstext` ist ein Vorschlag,
+    aus dem der Betreiber auf Zuruf ueber `entwurf_erstellen` eine
+    Nachricht machen kann — mit Freigabe wie immer. Die ICS-Datei liegt in
+    `reports\\`; soll sie an eine Nachricht, kopiert der Betreiber sie von
+    Hand nach `media\\` (dort legt nur ein Mensch ab). Ein zweiter Termin
+    mit demselben Kontakt am selben Tag ueberschreibt die Datei —
+    `ueberschrieben: true` sagt es."""
+    leads = _q("select name from leads where id = %s", (lead_id,))
+    if not leads:
+        return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
+    name = leads[0]["name"]
+
+    try:
+        tag = date.fromisoformat((datum or "").strip())
+    except ValueError:
+        return _json({"fehler": f"Ungueltiges Datum '{datum}' — erwartet "
+                                f"ISO-Format YYYY-MM-DD."})
+    try:
+        zeit = datetime.strptime((uhrzeit or "").strip(), "%H:%M").time()
+    except ValueError:
+        return _json({"fehler": f"Ungueltige Uhrzeit '{uhrzeit}' — erwartet "
+                                f"HH:MM (24-Stunden-Form, z. B. 14:30)."})
+    heute = datetime.now(timezone.utc).date()
+    if tag < heute:
+        return _json({"fehler": f"Der Termin {tag.isoformat()} liegt in der "
+                                f"Vergangenheit — es wurde nichts angelegt."})
+
+    dauer = _termin_dauer(dauer_minuten)
+    thema_kurz = (thema or "").strip()[:TERMIN_TEXT_MAXLAENGE] or "Termin"
+    ort_kurz = (ort or "").strip()[:TERMIN_TEXT_MAXLAENGE]
+    beginn = datetime.combine(tag, zeit)
+    uid = f"{uuid.uuid4()}@sales-claw"
+    ics_text = kalender.ics(uid, beginn, dauer, f"{thema_kurz} — {name}",
+                            ort=ort_kurz)
+
+    # Der Kundenname geht in einen Dateinamen — also durch `slug` (Whitelist
+    # [a-z0-9-]) und danach durch die Einbettungspruefung in
+    # `report_schreiben`. Dasselbe zweistufige Muster wie bei der Uebergabe.
+    dateiname = f"termin-{recherche.slug(name)}-{tag.isoformat()}.ics"
+    pfad, ueberschrieben, schreibfehler = None, False, None
+    try:
+        pfad, ueberschrieben = recherche.report_schreiben(dateiname, ics_text)
+    except (OSError, ValueError) as ex:
+        # Wie bei der Uebergabe: der Termin ist vereinbart, und daran haengt
+        # die Wiedervorlage. Ein fehlender Reportordner darf das nicht
+        # kassieren — er kostet nur die Datei.
+        schreibfehler = (f"Die Kalenderdatei konnte nicht abgelegt werden "
+                         f"({type(ex).__name__}: {ex}) — liegt der Bind "
+                         f"./reports:/reports am Container an? Termin und "
+                         f"Wiedervorlage stehen trotzdem.")
+
+    # Kalender-Eintrag (G1b). Unabhaengig von der Datei: der eine Weg darf
+    # den anderen nicht mitreissen.
+    zustand, grund = kalender.eintragen(uid, ics_text)
+    kalender_stand = {kalender.NICHT_KONFIGURIERT: "nicht konfiguriert",
+                      kalender.EINGETRAGEN: "eingetragen"}.get(
+        zustand, f"fehlgeschlagen: {grund}")
+
+    faellig = max(heute, tag - timedelta(days=TERMIN_ERINNERUNG_TAGE))
+    wv_id = _wiedervorlage_anlegen(
+        lead_id, faellig,
+        f"Terminerinnerung: {thema_kurz} mit {name} am {tag.isoformat()} "
+        f"um {zeit:%H:%M}")
+
+    _q("insert into activities (lead_id, type, payload) values "
+       "(%s, 'termin', %s) returning id",
+       (lead_id, _json({"datum": tag.isoformat(), "uhrzeit": f"{zeit:%H:%M}",
+                        "dauer_minuten": dauer, "thema": thema_kurz,
+                        "ort": ort_kurz, "pfad": pfad, "uid": uid,
+                        "kalender": kalender_stand})))
+
+    hinweis = (f"Die Kalenderdatei liegt in reports\\{dateiname}. Zum "
+               f"Mitsenden kopiert der Betreiber sie von Hand nach media\\ "
+               f"und haengt sie mit entwurf_erstellen(..., medien_datei="
+               f"'{dateiname}') an.")
+    if zustand == kalender.NICHT_KONFIGURIERT:
+        hinweis += (" Ein Kalender ist nicht konfiguriert (CALDAV_URL, "
+                    "CALDAV_USER, CALDAV_PASSWORT in der .env) — es entstand "
+                    "nur die Datei.")
+    return _json(_ohne_none({
+        "pfad": pfad, "ueberschrieben": ueberschrieben,
+        "fehler": schreibfehler,
+        "termin": {"datum": tag.isoformat(), "uhrzeit": f"{zeit:%H:%M}",
+                   "dauer_minuten": dauer, "thema": thema_kurz,
+                   "ort": ort_kurz or None},
+        "kalender": kalender_stand,
+        "bestaetigungstext": _bestaetigungstext(beginn, dauer, thema_kurz,
+                                                ort_kurz),
+        # Bleibt IMMER stehen, auch wenn sie auf heute faellt — sie ist der
+        # eigentliche Zweck dieses Werkzeugs (gleiche Zusage wie bei
+        # vertrag_speichern).
+        "wiedervorlage": {"aktivitaets_id": wv_id,
+                          "faellig_am": faellig.isoformat()},
+        "hinweis": hinweis}))
+
+
+def _bestaetigungstext(beginn: datetime, dauer: int, thema: str,
+                       ort: str) -> str:
+    """Der fertige, kurze Text fuer die Bestaetigung an den Kunden.
+
+    Bewusst ohne Produkt-, Tarif- oder Konditionsaussage (§34d, siehe
+    AGENTS.md „Verbote") und ohne jede Bedarfsangabe: er geht im Zweifel
+    woertlich an den Kunden. Gesiezt, weil ungefragt niemand geduzt wird.
+    """
+    wochentag = WOCHENTAGE[beginn.weekday()]
+    zeilen = [f"Ihr Termin steht: {wochentag}, {beginn:%d.%m.%Y} um "
+              f"{beginn:%H:%M} Uhr ({thema})."]
+    if ort:
+        zeilen.append(f"Ort: {ort}.")
+    zeilen.append(f"Eingeplant sind {dauer} Minuten. Falls etwas "
+                  f"dazwischenkommt, sagen Sie einfach kurz Bescheid.")
+    return " ".join(zeilen)
+
+
 @_gesichert
 def profil_lesen(lead_id: str) -> str:
     """Kundenprofil samt der letzten Aktivitaeten lesen. Zu Gespraechsbeginn
@@ -552,13 +731,19 @@ def entwurf_erstellen(lead_id: str, kanal: str, text: str,
 
     `medien_datei` haengt optional eine Unterlage an: der blosse Dateiname
     einer Datei aus dem Medienordner (medien_liste zeigt, was dort liegt) —
-    ohne jede Pfadangabe, Endung pdf/jpg/jpeg/png/mp3/ogg, hoechstens 15 MB.
-    Passt etwas davon nicht, entsteht KEIN Entwurf und der Grund kommt als
-    Fehlertext zurueck. Bei WhatsApp geht der Anhang zusammen mit dem Text in
-    EINER Nachricht raus (der Text wird zur Bildunterschrift und darf deshalb
-    hoechstens 1024 Zeichen haben); bei linkedin/email ist der Dateiname nur
-    ein Merkposten fuer den Handversand — dort verschickt niemand automatisch
-    etwas."""
+    ohne jede Pfadangabe, Endung pdf/jpg/jpeg/png/mp3/ogg/ics, hoechstens
+    15 MB. Passt etwas davon nicht, entsteht KEIN Entwurf und der Grund
+    kommt als Fehlertext zurueck. Bei WhatsApp geht der Anhang zusammen mit
+    dem Text in EINER Nachricht raus (der Text wird zur Bildunterschrift und
+    darf deshalb hoechstens 1024 Zeichen haben); bei linkedin ist der
+    Dateiname nur ein Merkposten fuer den Handversand.
+
+    BEI E-MAIL GEHEN ANHAENGE NICHT MIT: sales-mail versendet in dieser
+    Fassung reinen Text. Ein E-Mail-Entwurf MIT `medien_datei` wird beim
+    Versand ausdruecklich fehlgeschlagen gebucht, statt ohne die Unterlage
+    rauszugehen — freigegeben wurde eine Nachricht MIT Unterlage. Wer eine
+    Datei per Mail schicken will, sendet sie von Hand und quittiert mit
+    entwurf_manuell_gesendet."""
     if kanal not in ("whatsapp", "linkedin", "email"):
         return _json({"fehler": f"Unzulaessiger Kanal '{kanal}'. "
                                 f"Erlaubt: whatsapp, linkedin, email"})
@@ -590,9 +775,19 @@ def entwurf_erstellen(lead_id: str, kanal: str, text: str,
         "media_ref) values (%s, %s, %s, nullif(%s,''), %s, %s) "
         "returning id, status",
         (lead_id, kanal, empfaenger or leads[0]["name"], betreff, text, basis))
+    hinweis = "Nicht versendet — wartet in der Queue."
+    if basis and kanal == "email":
+        # Frueh sagen statt spaet scheitern: sales-mail bucht einen
+        # E-Mail-Entwurf mit Anhang fehlgeschlagen (er ginge sonst ohne die
+        # Unterlage raus, die jemand freigegeben hat). Das soll der Betreiber
+        # beim Erstellen erfahren, nicht erst nach der Freigabe.
+        hinweis += (f" ACHTUNG: E-Mails gehen als reiner Text raus — dieser "
+                    f"Entwurf traegt den Anhang '{basis}' und wird deshalb "
+                    f"beim Versand fehlschlagen. Entweder ohne Anhang neu "
+                    f"erstellen oder die Mail von Hand senden und mit "
+                    f"entwurf_manuell_gesendet quittieren.")
     return _json({"draft_id": zeilen[0]["id"], "status": zeilen[0]["status"],
-                  "medien_datei": basis,
-                  "hinweis": "Nicht versendet — wartet in der Queue."})
+                  "medien_datei": basis, "hinweis": hinweis})
 
 
 # Sammelkontakt "LINKEDIN (Eigenes Profil)" — an ihm haengen Post-Entwuerfe
@@ -671,7 +866,7 @@ def medien_liste() -> str:
     jeder Datei im Medienordner. Genau diese Namen nimmt
     entwurf_erstellen(..., medien_datei='<name>'). Dateien mit einer nicht
     versendbaren Endung tauchen nicht auf (erlaubt sind pdf, jpg, jpeg, png,
-    mp3, ogg)."""
+    mp3, ogg, ics)."""
     try:
         eintraege = medien.liste()
     except OSError as e:
@@ -1100,11 +1295,23 @@ FEHLER_KURZ = 120
 def _zielangabe(kanal: str, empfaenger: str) -> dict:
     """Wohin ginge dieser Entwurf wirklich? — dieselbe Antwort wie im Versand.
 
-    Nur WhatsApp wird ueber eine Nummer zugestellt. LinkedIn und E-Mail
-    bekommen deshalb `zielnummer: null` ohne Warnhinweis: ein LinkedIn-Entwurf
-    als „nicht zustellbar" zu kennzeichnen waere schlicht falsch, er geht ueber
-    den Handversand raus.
+    Zugestellt wird ueber zwei Wege, und beide werden hier mit GENAU der
+    Funktion beurteilt, die auch versendet: WhatsApp ueber eine Nummer
+    (`nummern.normalisiere_empfaenger`, sales-dispatch) und E-Mail ueber
+    eine Adresse (`mailadresse.pruefe`, sales-mail). Wer freigibt, muss das
+    Ziel sehen — seit Stufe 9 geht eine E-Mail automatisch raus, sie ist
+    also kein Merkposten mehr.
+
+    LinkedIn behaelt `zielnummer: null` ohne Warnhinweis: einen
+    LinkedIn-Entwurf als „nicht zustellbar" zu kennzeichnen waere schlicht
+    falsch, er geht ueber den Handversand raus.
     """
+    if kanal == "email":
+        adresse, _fehler = mailadresse.pruefe(empfaenger)
+        if adresse is None:
+            return {"zielnummer": None, "zieladresse": None,
+                    "hinweis": "nicht zustellbar"}
+        return {"zielnummer": None, "zieladresse": adresse}
     if kanal != "whatsapp":
         return {"zielnummer": None}
     chat_id, _fehler = normalisiere_empfaenger(empfaenger)
@@ -1239,12 +1446,13 @@ _CLAIM_MARKE_PRAEFIX = "in Zustellung"
 @_gesichert
 def entwurf_erneut_freigeben(draft_id: str, bestaetigt: bool = False) -> str:
     """Einen an der Zustellung gescheiterten Entwurf erneut freigeben
-    (failed -> approved). Nur fuer den Betreiber, nur der Retry-Weg fuer
-    WhatsApp-Entwuerfe, die der Dispatcher als 'failed' markiert hat — der
-    Dispatcher versucht sie danach in der naechsten Runde erneut.
+    (failed -> approved). Nur fuer den Betreiber, und nur der Retry-Weg fuer
+    die automatisch zugestellten Kanaele — WhatsApp (sales-dispatch) und
+    E-Mail (sales-mail). Der zustaendige Dienst versucht den Entwurf danach
+    in der naechsten Runde erneut.
 
     SCHUTZKANTE gegen Doppelversand: beginnt der aktuelle error-Text mit
-    'in Zustellung' (die Claim-Marke des Dispatchers, gesetzt VOR dem
+    'in Zustellung' (die Claim-Marke der Dispatcher, gesetzt VOR dem
     eigentlichen Sendeversuch), kann ein Absturz zwischen Claim und Buchung
     bedeuten, dass die Nachricht BEREITS ZUGESTELLT wurde. Ohne
     bestaetigt=True wird der Aufruf in diesem Fall verweigert und der Status
@@ -1563,7 +1771,7 @@ def firma_anreichern(lead_id: str, website: str = "") -> str:
 
 WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              aktivitaet_loggen, wiedervorlage_setzen, wiedervorlage_erledigt,
-             vertrag_speichern, vertraege_ablaufend,
+             vertrag_speichern, vertraege_ablaufend, termin_bestaetigen,
              profil_lesen, profil_aktualisieren,
              bedarf_speichern, bedarf_offen, entwurf_erstellen,
              post_entwurf_erstellen, medien_liste,

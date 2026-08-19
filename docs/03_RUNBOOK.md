@@ -689,11 +689,19 @@ Zwei Compose-Dateien, ein gemeinsames Projekt (`name: sales-claw`, explizit
 in beiden Dateien gepinnt — dadurch teilen sich alle vier Container
 dasselbe Netz, und `openwa` ist unter dem DNS-Namen `openwa` erreichbar):
 
+> **Stand Stufe 9:** der Hauptstack trägt inzwischen sechs Dienste —
+> `sales-claw`, `sales-mcp`, `sales-dispatch`, `sales-inbox` (Stufe 4) und
+> `sales-mail` (Stufe 9), dazu `openwa` aus der zweiten Compose-Datei. Die
+> Abschnittsüberschrift stammt aus Stufe 3; alles darunter (gemeinsames
+> Projekt, `--remove-orphans`-Verbot, Einzeldienst-Befehle) gilt
+> unverändert und für alle.
+
 ```powershell
-# Hauptstack: sales-claw, sales-mcp, sales-dispatch
+# Hauptstack: sales-claw, sales-mcp, sales-dispatch, sales-inbox, sales-mail
 docker compose up -d
 docker compose ps
-# erwartet: sales-claw (healthy), sales-mcp Up, sales-dispatch Up
+# erwartet: sales-claw (healthy), sales-mcp/sales-dispatch/sales-inbox/
+#           sales-mail jeweils Up
 
 # OpenWA — eigene Compose-Datei, gleiches Projekt
 docker compose -f docker-compose.openwa.yml up -d --build
@@ -1281,8 +1289,9 @@ einschränken.
 ## Medien anhängen (Stufe 4, F4)
 
 Dateien per Explorer nach `sales-claw\media\` legen — **kein Neustart
-nötig**, der Bind ist live. Zugelassen: `pdf, jpg, jpeg, png, mp3, ogg`,
-höchstens 15 MB, nicht leer. Im Chat zeigt `medien_liste`, was anhängbar
+nötig**, der Bind ist live. Zugelassen: `pdf, jpg, jpeg, png, mp3, ogg` und
+seit Stufe 9 `ics` (Kalendereinladungen aus `termin_bestaetigen`, siehe
+„Termine & ICS"), höchstens 15 MB, nicht leer. Im Chat zeigt `medien_liste`, was anhängbar
 ist; ein Entwurf mit Anhang entsteht wie jeder andere (`pending`) und geht
 erst nach Freigabe raus — Text und Anhang in **einer** Nachricht (der Text
 ist die Bildunterschrift, deshalb bei Anhängen höchstens 1024 Zeichen; das
@@ -1317,3 +1326,161 @@ Chat mit `entwurf_manuell_gesendet` quittieren.
 Posts-API (OAuth-Scope `w_member_social`, eigene LinkedIn-Developer-App
 nötig) — bewusst nicht gebaut, solange der Handversand reicht. Nachrichten
 an Personen bleiben in jedem Fall Handversand.
+
+## Termine & ICS (Stufe 9)
+
+Im Chat: „Frau Beispiel nimmt Mittwoch 14:30" → `termin_bestaetigen` hält
+den Termin fest. Es passiert dabei **kein Versand** — das Werkzeug schreibt
+eine Datei, legt eine Wiedervorlage an und liefert einen Textvorschlag.
+
+```powershell
+# Was entstanden ist:
+Get-ChildItem .\reports\termin-*.ics | Select-Object -Last 3
+```
+
+Zurück kommen vier Dinge:
+
+| Feld | Bedeutung |
+|---|---|
+| `pfad` | `reports\termin-<name>-<datum>.ics` (RFC 5545, VTIMEZONE Europe/Berlin) |
+| `wiedervorlage` | „Terminerinnerung" am **Vortag**, taucht im Digest auf |
+| `bestaetigungstext` | fertiger Text für den Kunden — **Vorschlag**, keine Nachricht |
+| `kalender` | `eingetragen` / `nicht konfiguriert` / `fehlgeschlagen: …` |
+
+**Die ICS mitschicken — der Weg über die Hand.** Die Datei entsteht in
+`reports\`, versendbar ist nur, was in `media\` liegt (`media/` ist für alle
+Container read-only, damit ausschließlich ein Mensch dort ablegt). Also:
+
+```powershell
+Copy-Item .\reports\termin-anna-beispiel-2026-08-26.ics .\media\
+# danach im Chat: entwurf_erstellen(..., medien_datei='termin-anna-beispiel-2026-08-26.ics')
+```
+
+`.ics` steht seit Stufe 9 in der Anhang-Whitelist (`send-document`,
+`text/calendar`). Kein Neustart nötig, der Bind ist live.
+
+**Ein zweiter Termin am selben Tag mit demselben Kontakt überschreibt die
+Datei** (`ueberschrieben: true`). Wurde der erste bereits in den Kalender
+eingetragen, bleibt er dort stehen — die UID ist je Aufruf neu. Alten
+Eintrag dann von Hand löschen.
+
+### Kalender-Eintrag (CalDAV) einrichten — Betreiberaktion
+
+Optional. Ohne `CALDAV_URL`, `CALDAV_USER`, `CALDAV_PASSWORT` in der `.env`
+entsteht nur die Datei, und das Werkzeug sagt es im Hinweis. Eingetragen
+wird per `PUT` mit `If-None-Match: *` („nur anlegen, nie überschreiben").
+
+`CALDAV_URL` muss auf eine **Kalender-Kollektion** zeigen, nicht auf die
+Serverwurzel — also auf die Adresse, die das Panel des Anbieters für
+Thunderbird nennt:
+
+```
+https://<host>/dav.php/calendars/<benutzer>/<kalender>/
+```
+
+**Die WAF sperrt die urllib-Vorgabekennung — ein eigener User-Agent ist
+Pflicht (gemessen 2026-08-19, Namecheap PrivateEmail).**
+
+`dav.privateemail.com` steht hinter einer Web Application Firewall.
+Anfragen mit der **Vorgabe-Kennung von urllib** beantwortet sie pauschal mit
+**HTTP 403** — unabhängig von den Zugangsdaten. Ein früherer Messdurchgang
+las dieses 403 als „das App-Passwort deckt DAV nicht ab"; **das war
+falsch.** Siebenmal dieselbe PROPFIND-Anfrage auf `/dav.php/`, dieselben
+Zugangsdaten, nur der `User-Agent` verschieden:
+
+| `User-Agent` | Antwort |
+|---|---|
+| (keiner → `Python-urllib/3.12`) | **403** |
+| `Python-urllib/3.12` | **403** |
+| `python-requests/2.32` | 207 |
+| `curl/8.5.0` | 207 |
+| `sales-claw/1.0 (CalDAV)` | 207 |
+| `Mozilla/5.0 (compatible; sales-claw/1.0; CalDAV)` | 207 |
+| `X` | 207 |
+
+Die Regel ist damit genau bestimmt: gesperrt ist **diese eine Kennung**,
+nicht „Nicht-Browser". Jede eigene Kennung genügt — sogar ein einzelnes
+Zeichen. `kalender.py` sendet deshalb die **sprechende Kennung des Hauses**
+(`Mozilla/5.0 (compatible; sales-claw/1.0; CalDAV)`, Form wie
+`FIRMA_USER_AGENT`) und gibt sich **nicht** als fremdes Kalenderprogramm
+aus: wer im Serverlog nachsieht, wer da schreibt, soll es beantwortet
+bekommen. Über `CALDAV_USER_AGENT` umstellbar; ein Test nagelt den Header
+fest.
+
+**Fällt der Header weg, ist der Kalenderweg tot** — und der Fehlertext
+deutet dann auf ein Zugangsproblem, das es nicht gibt.
+
+Das App-Passwort deckt DAV also **doch** ab; es ist dasselbe wie für SMTP.
+Die Kollektions-URL wurde per PROPFIND (Depth 1) ermittelt — maßgeblich ist
+die, deren `resourcetype` `calendar` enthält, nicht die Sammel-URL darüber.
+
+## E-Mail-Versand einrichten (Stufe 9)
+
+Der Dienst `sales-mail` ist der Zwilling von `sales-dispatch`: er liest
+**ausschließlich** `drafts(status='approved', channel='email')`. Ohne
+Freigabe geht nichts raus — dieselbe Konstruktion, dasselbe Gate.
+
+```powershell
+# Start (alle Dienste des Hauptstacks)
+docker compose up -d sales-mcp sales-dispatch sales-inbox sales-mail
+docker compose logs --tail 20 sales-mail
+# erwartet: "Start: schema=sales smtp=<host>:465 tls=implizit (SSL) ...
+#            warte auf freigegebene E-Mail-Entwuerfe."
+```
+
+**Zugangsdaten sind Betreiberaktion — niemals erfinden.** In die `.env`:
+
+| Variable | Bemerkung |
+|---|---|
+| `SMTP_HOST` | z. B. `mail.privateemail.com`, GMX: `mail.gmx.net` |
+| `SMTP_PORT` | **465** = implizites TLS, **587** = STARTTLS. Der Port entscheidet. |
+| `SMTP_USER` | Postfachbenutzer |
+| `SMTP_PASSWORT` | **Geheimnis.** Bei den meisten Anbietern ein App-Passwort. |
+| `EMAIL_ABSENDER` | Absenderadresse; muss zum Postfach passen (SPF/DMARC) |
+
+Nach jeder Änderung an der `.env` muss der Container **neu erzeugt** werden
+(`docker compose up -d sales-mail`) — Compose wertet `env_file` beim
+Erzeugen aus, nicht beim Start. Ein laufender Container behält die Werte
+seines Erzeugungszeitpunkts.
+
+**Fehlt ein Wert, beendet sich der Dienst mit Exit 0** und einer Zeile
+„E-Mail-Kanal nicht eingerichtet — … fehlt in der Umgebung". Das ist kein
+Ausfall, sondern der inerte Zustand: freigegebene E-Mail-Entwürfe bleiben
+unangetastet liegen, bis der Kanal steht.
+
+**Was der Dienst NICHT tut:**
+
+* **Keine Anhänge.** Er versendet reinen Text. Ein E-Mail-Entwurf mit
+  `media_ref` wird `failed` gebucht — es geht dann **nichts** raus, auch
+  kein Text ohne die Unterlage. Freigegeben war eine Nachricht *mit*
+  Unterlage. Wer eine Datei per Mail schicken will, sendet von Hand und
+  quittiert mit `entwurf_manuell_gesendet`.
+* **Kein Retry.** Ein `failed`-Entwurf bleibt liegen, bis ein Mensch ihn mit
+  `entwurf_erneut_freigeben` neu freigibt — wie bei WhatsApp.
+* **Kein unverschlüsselter Weg.** Es gibt genau zwei Ausgänge (implizites
+  TLS und STARTTLS), beide mit Zertifikats- und Hostnamen-Prüfung.
+
+Gegenprobe in `psql` (Muster wie bei `drafts` in Stufe 3):
+
+```sql
+select id, status, left(error, 80) as fehler, sent_at
+  from sales.drafts where channel = 'email' order by created_at desc limit 5;
+```
+
+`in Zustellung seit …` im Fehlerfeld ist **kein** Fehler, sondern die
+Claim-Marke: der Entwurf ist gerade unterwegs. Steht sie dort minutenlang,
+ist der Dienst zwischen Claim und Buchung gestorben — dann gilt dieselbe
+Doppelversand-Warnung wie bei WhatsApp (`entwurf_erneut_freigeben` verweigert
+ohne `bestaetigt=True`).
+
+## Newsletter-Status (Stufe 9)
+
+Kein eigenes Werkzeug und kein neues Feld: der Verteiler-Status ist ein
+Profilfeld, `profil_aktualisieren(lead_id, 'newsletter', 'ja'|'nein')`, und
+steht in `profil_lesen` unter `profil`. Auf Kundenwunsch („tragen Sie mich
+aus") setzt der Assistent ihn **sofort** auf `nein` und bestätigt den
+Vollzug; auf `ja` geht er ausschließlich nach ausdrücklicher Zustimmung.
+
+Er ist **von `consent_status` getrennt** und darf nie daraus abgeleitet
+werden: `consent` sagt, ob der Kontakt überhaupt per WhatsApp angesprochen
+werden darf, `newsletter` nur, ob er im Werbeverteiler steht.

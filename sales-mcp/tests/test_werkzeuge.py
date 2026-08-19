@@ -670,9 +670,9 @@ def test_kontakt_aktualisieren_signatur_ueberlebt_den_dekorator():
     assert list(parameter) == ["lead_id", "feld", "wert"]
 
 
-def test_siebenundzwanzig_werkzeuge_registriert():
+def test_achtundzwanzig_werkzeuge_registriert():
     namen = {fn.__name__ for fn in server.WERKZEUGE}
-    assert len(namen) == 27
+    assert len(namen) == 28
     assert "kontakt_aktualisieren" in namen
     assert "wiedervorlage_setzen" in namen
     assert "wiedervorlage_erledigt" in namen
@@ -693,6 +693,10 @@ def test_siebenundzwanzig_werkzeuge_registriert():
     assert "uebergabe_erstellen" in namen
     # Stufe 8 — Support-Posteingang. Vertragstests in tests/test_posteingang.py.
     assert "posteingang" in namen
+    # Stufe 9 — Termine/ICS. Vertragstests in tests/test_termin.py.
+    # sales-mail ist KEIN Werkzeug: der E-Mail-Versand ist ein Dienst hinter
+    # dem Freigabe-Gate, kein Werkzeug in der Hand des Modells.
+    assert "termin_bestaetigen" in namen
 
 
 # ---------------------------------------------------------------------------

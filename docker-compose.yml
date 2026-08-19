@@ -213,6 +213,51 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Der Zwilling des Dispatchers für den Kanal E-Mail (Stufe 9, G2).
+  # Gleicher Build-Kontext, gleiches Image, nur ein anderes Kommando
+  # (sales-mcp/mail_dispatch.py).
+  #
+  # Er liest ausschliesslich drafts(status='approved', channel='email') und
+  # benutzt dieselben Claim-/Buchungshelfer wie sales-dispatch (Import, keine
+  # Kopie). Das Freigabe-Gate ist auch hier die Datenbank
+  # (Grundsatzentscheidung 1) — es gibt keinen Weg, auf dem eine E-Mail ohne
+  # `approved` hinausgeht.
+  #
+  # KEIN volumes:-Eintrag, und das ist eine Aussage: dieser Dienst versendet
+  # reinen Text. Er hat im Medienordner nichts zu suchen, und der
+  # Reportordner geht ihn erst recht nichts an. Trägt ein E-Mail-Entwurf
+  # trotzdem einen Anhang, wird er fehlgeschlagen gebucht statt ohne die
+  # Unterlage zugestellt (Begründung im Kopf von mail_dispatch.py).
+  #
+  # Ohne SMTP-Zugangsdaten in der .env beendet er sich beim Start mit einer
+  # klaren Logzeile und Exit 0 — der Kanal ist dann gebaut, aber inert.
+  sales-mail:
+    build: ./sales-mcp
+    image: sales-claw-sales-mcp:local
+    container_name: sales-mail
+    command: python mail_dispatch.py
+    # Demo-Betrieb wie der restliche Stack. Bewusst "no": ein Dienst, der
+    # Mails an echte Menschen schickt, startet nicht von selbst mit dem
+    # Rechner mit.
+    restart: "no"
+    env_file:
+      - .env
+    environment:
+      # Schleifentakt explizit statt implizit per Default — wie beim
+      # Dispatcher. SMTP_HOST/PORT/USER/PASSWORT und EMAIL_ABSENDER kommen
+      # aus .env; CALDAV_* liest der Werkzeugdienst, nicht dieser hier.
+      - MAIL_INTERVAL_S=10
+    # Ein laufender Versand darf nicht per SIGKILL zerrissen werden: der
+    # Dienst beendet nach SIGTERM die laufende Runde (SMTP-Timeout 30 s) und
+    # geht dann. 45 s Gnadenfrist decken das ab — dieselbe Rechnung wie bei
+    # sales-dispatch.
+    stop_grace_period: 45s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   # Explizite name:-Angabe, sonst prefixt Compose mit dem Projektnamen
   # (hier "sales-claw" -> "sales-claw_sales-claw-state"), was den in den
