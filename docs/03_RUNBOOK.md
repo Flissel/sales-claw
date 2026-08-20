@@ -1120,6 +1120,28 @@ Posteingang — für ihn heißt es nur, dass die Sammelkontakt-Gruppierung nach
    Quelle), bevor der Posteingang über die Demo hinaus tragen soll — nicht
    als schneller Flag-Flip.
 
+**Nachtrag 19.08.2026 — die Quelle für beide Richtungen existiert bereits.**
+Gemessen an den mitgelieferten OpenWA-Quellen und der laufenden Datenbank:
+
+* `openwa/upstream/src/engine/identity/lid-mapping.entity.ts` definiert die
+  Tabelle **`lid_mappings`** (`lid` → `phone`, nullable für gecachte
+  Negativtreffer) auf der `data`-Verbindung, also in
+  `/app/data/openwa.sqlite` — **global und sitzungsübergreifend**, nicht
+  per Session. Sie trägt ausdrücklich einen Index auf `phone`
+  („reverse lookup: phone → lids"), ist also **für beide Richtungen
+  gebaut**. Damit entfällt der Grund, eine eigene Mapping-Tabelle zu
+  erfinden; die Aufgabe verschiebt sich auf „Mappings vollständig bekommen
+  und nach Postgres spiegeln".
+* Die konfigurierte Engine kann auflösen:
+  `whatsapp-web-js.adapter.ts:568 resolveContactPhone(contactId)`.
+* **Deckung am 19.08.2026: 3 von 16 CRM-Absendern** (`lid_mappings` hatte
+  4 aufgelöste Zeilen, davon 3 mit Treffer im CRM: Sophie
+  `183096603361451`→`491729186846`, Moritz Baumann
+  `207446954004697`→`4915228528926`, Christine
+  `44199592386700`→`4915208874679`). Die Tabelle füllt sich nur bei Bedarf,
+  solange das Flag aus ist — die übrigen 13 Absender der Messung waren
+  Mock-/Testdaten.
+
 ## Morgen-Digest
 
 Werktags (Mo–Fr) 08:00 Europe/Berlin stellt der Agent unaufgefordert einen
@@ -1552,8 +1574,26 @@ select name, consent_status,
 
 Bestandskontakte mit Kontakt-Freigabe sollen nicht über die manuelle
 Entwurf-Schleife laufen — sie werden automatisch bedient. Der Auto-Betrieb
-hat **zwei Spuren für zwei verschiedene WhatsApp-Konten**, denn OpenClaw
-und OpenWA hängen an unterschiedlichen Nummern (Pairing-Anleitung, §1):
+hat **zwei Spuren für zwei WhatsApp-Konten**:
+
+> ⚠️ **Stand 19.08.2026: die beiden Konten sind dasselbe Konto.** Gemessen
+> (`GET /api/sessions/{id}` und `openclaw channels status`): die OpenWA-Session
+> `sales` und OpenClaw hängen **beide** an `491749708452` („FlissiMacFly") —
+> als zwei verknüpfte Geräte desselben WhatsApp-Kontos. Die dedizierte
+> Versandnummer, die dieser Abschnitt ursprünglich unterstellte, existiert
+> noch nicht.
+>
+> **Konsequenz: Spur 1 nicht einschalten.** Bei gleicher Nummer sieht eine
+> eingehende Kundennachricht **beide** Wege — der Agent (über sein
+> WhatsApp-Plugin) und `sales-inbox` (über den OpenWA-Webhook). Antwortet
+> `sales-auto` zusätzlich, reden zwei Systeme mit demselben Kunden. Der
+> at-most-once-Anspruch von `sales-auto` schützt nur gegen doppelte
+> *Auto*-Antworten, nicht gegen die Kombination Agent + Auto-Dienst; ob die
+> Beantwortet-Prüfung das Rennen zuverlässig gewinnt, ist **nicht gemessen**.
+> Praktisch ist der Dienst ohnehin inert, solange `ANTHROPIC_API_KEY` fehlt —
+> **also den Schlüssel nicht setzen**, bis die Versandnummer getrennt ist.
+> Bis dahin trägt Spur 2 den Auto-Betrieb allein (sie braucht keinen
+> API-Schlüssel, sondern nutzt das Abo-Token des Agenten).
 
 1. **Die Kunden-Nummer (OpenWA) — Dienst `sales-auto`.** Kunden schreiben
    an die dedizierte Versandnummer; deren Chats sieht OpenClaw nicht.
@@ -1573,6 +1613,11 @@ und OpenWA hängen an unterschiedlichen Nummern (Pairing-Anleitung, §1):
    `allowFrom`-Nummer").
 
 ### Spur 1: `sales-auto` (Kunden-Nummer über OpenWA)
+
+> **Derzeit nicht einschalten** — siehe den Warnkasten oben: solange OpenClaw
+> und OpenWA an derselben Nummer hängen, konkurriert dieser Dienst mit dem
+> Agenten um dieselbe Kundennachricht. Der Abschnitt beschreibt den Betrieb
+> ab dem Zeitpunkt, an dem eine eigene Versandnummer gepairt ist.
 
 Einschalten: `ANTHROPIC_API_KEY` in `.env` setzen (`.env.example` erklärt
 die übrigen `AUTO_*`-Regler), dann `docker compose up -d sales-auto`.
