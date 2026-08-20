@@ -3,22 +3,43 @@
     "port": 18894,
     "mode": "local",
     "bind": "lan",
-    "auth": { "mode": "token" }
+    "auth": {
+      "mode": "token"
+    }
   },
   "agents": {
     "defaults": {
       "model": {
         "primary": "anthropic/claude-sonnet-5",
-        "fallbacks": ["openrouter/free"]
+        "fallbacks": [
+          "openrouter/free"
+        ]
       },
       "workspace": "/home/node/.openclaw/workspace"
     },
-    "list": [{ "id": "main" }]
+    "list": [
+      {
+        "id": "main"
+      }
+    ]
   },
   "models": {
     "providers": {
       "openrouter": {
-        "models": [{ "id": "openrouter/free", "name": "openrouter/free" }]
+        "models": [
+          {
+            "id": "openrouter/free",
+            "name": "openrouter/free"
+          }
+        ]
+      },
+      "anthropic": {
+        "models": [
+          {
+            "id": "claude-sonnet-5",
+            "name": "claude-sonnet-5"
+          }
+        ]
       }
     }
   },
@@ -27,26 +48,58 @@
       "enabled": true,
       "dmPolicy": "allowlist",
       "selfChatMode": true,
-      "allowFrom": ["+491603449761"],
+      "allowFrom": [
+        "+491603449761"
+      ],
       "groupPolicy": "disabled",
       "mediaMaxMb": 50
     }
   },
   "plugins": {
-    "allow": ["whatsapp"],
-    "slots": { "memory": "memory-core" },
+    "allow": [
+      "whatsapp"
+    ],
+    "slots": {
+      "memory": "memory-core"
+    },
     "entries": {
-      "whatsapp": { "enabled": true },
-      "memory-core": { "enabled": true },
-      "openclaw-supermemory": { "enabled": false },
-      "discord": { "enabled": false },
-      "telegram": { "enabled": false },
-      "voice-call": { "enabled": false },
-      "browser": { "enabled": false },
-      "ollama": { "enabled": false }
+      "whatsapp": {
+        "enabled": true
+      },
+      "memory-core": {
+        "enabled": true
+      },
+      "openclaw-supermemory": {
+        "enabled": false
+      },
+      "discord": {
+        "enabled": false
+      },
+      "telegram": {
+        "enabled": false
+      },
+      "voice-call": {
+        "enabled": false
+      },
+      "browser": {
+        "enabled": false
+      },
+      "ollama": {
+        "enabled": false
+      }
     }
   },
   "tools": {
-    "web": { "search": { "enabled": false }, "fetch": { "enabled": false } }
+    "web": {
+      "search": {
+        "enabled": false
+      },
+      "fetch": {
+        "enabled": false
+      }
+    }
+  },
+  "session": {
+    "dmScope": "per-channel-peer"
   }
 }
