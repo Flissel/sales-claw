@@ -49,7 +49,8 @@
       "dmPolicy": "allowlist",
       "selfChatMode": true,
       "allowFrom": [
-        "+491603449761"
+        "+491603449761",
+        "+491749708452"
       ],
       "groupPolicy": "disabled",
       "mediaMaxMb": 50

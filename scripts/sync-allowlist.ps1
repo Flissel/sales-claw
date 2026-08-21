@@ -1,6 +1,22 @@
 #requires -Version 7
 <#
 .SYNOPSIS
+  ⚠️ NICHT MEHR AUSFUEHREN (Betreiber-Entscheidung 20.08.2026).
+
+  Dieses Skript traegt freigegebene Kontakte in `channels.whatsapp.allowFrom`
+  ein — und genau das schaltet die automatische Antwort des Agenten an diese
+  Kontakte WIEDER EIN. Der Betreiber hat den Auto-Betrieb am 20.08.2026
+  abgeschaltet: eingehende Nachrichten werden nur noch erfasst und
+  eingeordnet, geantwortet wird ausschliesslich ueber
+  entwurf_erstellen -> Freigabe -> Dispatcher.
+
+  `allowFrom` steht deshalb bewusst nur auf den Betreiber-Nummern. Wer den
+  Auto-Betrieb wieder will, entscheidet das bewusst — und liest vorher
+  docs/superpowers/plans/2026-08-20-sales-claw-stufe11-einordnung.md sowie
+  den Runbook-Abschnitt „Auto-Betrieb".
+#>
+<#
+.SYNOPSIS
   Überträgt die Kontakt-Freigaben aus der Datenbank in die allowFrom-Liste
   des OpenClaw-WhatsApp-Kanals (Auto-Betrieb, Runbook „Auto-Betrieb").
 .DESCRIPTION
