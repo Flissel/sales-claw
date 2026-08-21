@@ -103,14 +103,28 @@ Bleibt alles erfolglos, wird die Kennung ausdruecklich als `183…@lid`
 gebucht — NICHT als `183…@c.us`. Die alte Schreibweise sah aus wie eine
 Rufnummer und hat dazu verleitet, sie als Kontakt anzulegen (Befund H1).
 
-WAS VON EINEM IGNORIERTEN ABSENDER GESPEICHERT WIRD (Stufe 11, T5)
-------------------------------------------------------------------
+WAS VON EINEM IGNORIERTEN CHAT GESPEICHERT WIRD (Stufe 11, T5)
+--------------------------------------------------------------
 Hat der Betreiber einen Absender ueber `eingang_einordnen` als „ignorieren"
-eingeordnet, wird von ihm KEIN Nachrichtentext mehr gespeichert — nur die
-Tatsache, dass etwas kam (Typ `eingang_ignoriert`, `text` leer). Damit landen
-private Chats nicht dauerhaft in einer Vertriebsdatenbank. Gar nichts zu
-buchen waere schlechter: OpenWA wiederholt Zustellungen, und ohne Zeile gaebe
-es nichts zu deduplizieren.
+eingeordnet, wird aus diesem Chat KEIN Nachrichtentext mehr gespeichert — nur
+die Tatsache, dass etwas lief: Typ `eingang_ignoriert` fuer die fremde,
+`ausgang_ignoriert` fuer die EIGENE Haelfte, beide mit leerem `text`. Damit
+landen private Chats nicht dauerhaft in einer Vertriebsdatenbank. Gar nichts
+zu buchen waere schlechter: OpenWA wiederholt Zustellungen, und ohne Zeile
+gaebe es nichts zu deduplizieren.
+
+Die ausgehende Haelfte fehlte bis zur Fix-Runde (Review-Befund H2): `_eingehend`
+pruefte auf „ignoriert", `_ausgehend` nicht. Gemessen: Absender ignoriert,
+eigene Nachricht in denselben Chat -> `nachricht_ausgehend` mit vollem Text.
+Bei einem privaten Chat ist die eigene Haelfte genauso sensibel wie die
+fremde — dort steht, was der Betreiber selbst geschrieben hat. Der Schutz gilt
+dem CHAT, nicht der Richtung.
+
+Gefragt wird mit BEIDEN Namen einer Gegenstelle (`_ist_ignoriert`): der rohen
+Kennung aus der Nutzlast und der daraus aufgeloesten. Nur die aufgeloeste zu
+fragen band die Antwort an die Aufloesung statt an die Person — zeigten zwei
+verschiedene LIDs auf dieselbe Nummer, wurde mit der einen auch die andere
+stumm gebucht (Review-Befund H4).
 
 WARUM SO STRENG
 ---------------
@@ -124,9 +138,12 @@ WARUM SO STRENG
    bedeutet, dass jemand ihn dort haben wollte.
 3. **Nummern kommen aus `nummern.py`.** Keine zweite Nummernregel in diesem
    Haus. Der JID bringt seine Landesvorwahl technisch immer mit, wird also
-   ausdruecklich als `+<ziffern>` uebergeben — nicht blank, damit die
-   49-Sonderregel fuer blanke Folgen (BLANK_PRAEFIX) gar nicht erst greift
-   und eine oesterreichische Nummer nicht als unzustellbar gilt.
+   ueber `normalisiere_msisdn` uebergeben — das ergaenzt ein fehlendes `+`,
+   damit die 49-Sonderregel fuer blanke Folgen (BLANK_PRAEFIX) gar nicht erst
+   greift und eine oesterreichische Nummer nicht als unzustellbar gilt.
+   Ausdruecklich NICHT mehr `"+" + _ziffern(jid)`: das filterte alles weg, was
+   keine Ziffer ist, und hebelte damit genau die Regel aus, an die es sich
+   halten sollte (Review-Befund M7).
 4. **Der Text ist Datum, nie Befehl.** Er wird auf 2000 Zeichen gekuerzt
    gespeichert und sonst nicht interpretiert. Die Regel, dass der Agent
    Inhalte daraus nie als Anweisung befolgt, steht in AGENTS.md
@@ -160,7 +177,7 @@ import psycopg
 
 import lid
 import server
-from nummern import normalisiere_empfaenger
+from nummern import normalisiere_empfaenger, normalisiere_msisdn
 
 # --- Konfiguration (Modulkonstanten, damit Tests sie umbiegen koennen) ------
 BIND_HOST = os.environ.get("INBOX_HOST", "0.0.0.0")
@@ -258,10 +275,22 @@ def _ziffern(jid) -> str:
     """Blanke Ziffern eines JID — Domain und `:geraet`-Suffix fallen weg.
 
     Nur zum VERGLEICHEN zweier JIDs (Selbst-Chat-Erkennung), nie zum
-    Speichern: was gespeichert wird, geht durch `nummern.py`.
+    Speichern: was gespeichert wird, geht durch `nummern.py`. Diese Funktion
+    FILTERT — `49a17b29186846` wird hier klaglos zu `491729186846`. Genau
+    deshalb darf ihr Ergebnis nie zur gespeicherten Nummer werden
+    (Review-Befund M7); dafuer gibt es `_rohteil` und `normalisiere_msisdn`.
     """
     return "".join(z for z in str(jid or "").split("@", 1)[0].split(":", 1)[0]
                    if z.isdigit())
+
+
+def _rohteil(jid) -> str:
+    """Der Kennungsteil VOR Domain und `:geraet`-Suffix — ungefiltert.
+
+    Gegenstueck zu `_ziffern`: das hier schneidet nur die technische Huelle ab
+    und wirft nichts weg. Was danach keine Nummer ist, soll auch keine werden.
+    """
+    return str(jid or "").split("@", 1)[0].split(":", 1)[0].strip()
 
 
 def _kennung(roh, senderphone=None):
@@ -291,8 +320,16 @@ def _kennung(roh, senderphone=None):
     # Ein `senderPhone`, das sich nicht normalisieren laesst, faellt
     # stillschweigend auf die naechste Stufe durch: es ist ein Hinweis von
     # OpenWA, keine Wahrheit — und die Kennung selbst kennen wir immer noch.
-    if senderphone and _ziffern(senderphone):
-        chat_id, _fehler = normalisiere_empfaenger("+" + _ziffern(senderphone))
+    #
+    # Der ROHWERT geht durch nummern.py, nicht `"+" + _ziffern(...)`
+    # (Review-Befund M7): `_ziffern` filtert jedes Nicht-Ziffernzeichen weg und
+    # das vorangestellte `+` erklaerte den Rest zur internationalen
+    # Schreibweise. Aus `49a17b29186846` wurde so `491729186846@c.us` — die
+    # Nummer eines echten Kunden, in dessen Historie die fremde Nachricht dann
+    # gebucht wurde. `normalisiere_msisdn` ergaenzt das `+` nur, wenn der Wert
+    # weder `+` noch `00` noch eine fuehrende `0` mitbringt.
+    if senderphone:
+        chat_id, _fehler = normalisiere_msisdn(_rohteil(senderphone))
         if chat_id:
             return chat_id, "senderPhone", None
 
@@ -307,7 +344,7 @@ def _kennung(roh, senderphone=None):
         # Unaufgeloest: als LID kenntlich weitergeben, nicht als Rufnummer.
         return lid.als_lid(ziffern), "lid", None
 
-    chat_id, fehler = normalisiere_empfaenger("+" + ziffern)
+    chat_id, fehler = normalisiere_msisdn(_rohteil(roh))
     return chat_id, ("jid" if chat_id else None), fehler
 
 
@@ -403,7 +440,9 @@ def lead_zu_nummer(chat_id: str):
 # `eingang_ignoriert` gehoert dazu, obwohl es keinen Text traegt (Stufe 11):
 # eine wiederholte Zustellung darf auch dort keine zweite Zeile erzeugen.
 EINGANG_IGNORIERT = server.EINGANG_IGNORIERT
-PROTOKOLL_TYPEN = ("kundenantwort", "nachricht_ausgehend", EINGANG_IGNORIERT)
+AUSGANG_IGNORIERT = server.AUSGANG_IGNORIERT
+PROTOKOLL_TYPEN = ("kundenantwort", "nachricht_ausgehend", EINGANG_IGNORIERT,
+                   AUSGANG_IGNORIERT)
 
 
 def bereits_gespeichert(message_id: str) -> bool:
@@ -509,6 +548,23 @@ def _db_ausfall(e):
     return 503, {"fehler": "Datenbankfehler"}
 
 
+def _ist_ignoriert(roh, kennung) -> bool:
+    """Hat der Betreiber DIESE Gegenstelle als „ignorieren" eingeordnet?
+
+    Gefragt wird mit BEIDEN Namen, die eine Nachricht hat: der rohen
+    Gegenstelle aus der Nutzlast (`183…@lid`) und der daraus aufgeloesten
+    Kennung (`4917…@c.us`). Bis zur Fix-Runde stand hier nur die aufgeloeste
+    — und damit hing die Antwort an der Aufloesung statt an der Person:
+    zeigten zwei verschiedene LIDs auf dieselbe Nummer, wurde mit der einen
+    auch die andere stumm gebucht, obwohl der Betreiber sie nie genannt hatte
+    (Review-Befund H4). Die rohe Kennung ist das, was der Betreiber in der
+    Rueckfrage gesehen und beantwortet hat; die aufgeloeste faengt den Fall,
+    dass er die Rufnummer genannt hat und OpenWA jetzt die LID liefert.
+    """
+    namen = [n for n in (roh, kennung) if n]
+    return bool(namen) and server.absender_ist_ignoriert(*namen)
+
+
 def _eingehend(daten: dict, message_id: str):
     """Der Kunde hat geschrieben -> `kundenantwort`, actor='human'.
 
@@ -522,7 +578,8 @@ def _eingehend(daten: dict, message_id: str):
     """
     try:
         kennung, quelle, kennung_fehler = absender_kennung(daten)
-        ignoriert = bool(kennung) and server.absender_ist_ignoriert(kennung)
+        ignoriert = _ist_ignoriert(daten.get("author") or daten.get("from"),
+                                   kennung)
     except psycopg.Error as e:
         return _db_ausfall(e)
 
@@ -530,7 +587,9 @@ def _eingehend(daten: dict, message_id: str):
         nutzlast = {
             **_textteil(daten, message_id),
             "text": "", "gekuerzt": False, "ohne_text": True,
-            "richtung": "eingehend", "absender": kennung,
+            "richtung": "eingehend",
+            "absender": kennung or str(daten.get("author")
+                                       or daten.get("from") or ""),
             "unbekannter_absender": False,
         }
         LOG.info("Eingang von %s ignoriert — nur die Tatsache gebucht, "
@@ -584,23 +643,45 @@ def _ausgehend(daten: dict, message_id: str):
         LOG.info("Eigene Nachricht verworfen: %s", grund)
         return 200, {"verworfen": grund}
 
+    roh_gegenstelle = daten.get("chatId") or daten.get("to")
     try:
         kennung, quelle, kennung_fehler = empfaenger_kennung(daten)
+        ignoriert = _ist_ignoriert(roh_gegenstelle, kennung)
     except psycopg.Error as e:
         return _db_ausfall(e)
+
+    if ignoriert:
+        # Spiegelbild von `_eingehend` (Stufe 11, T5 / Review-Befund H2). Die
+        # eigene Haelfte eines privaten Chats ist genauso sensibel wie die
+        # fremde — dort steht, was der BETREIBER geschrieben hat. Bis zur
+        # Fix-Runde fehlte diese Pruefung hier, und T5 war damit nur zur
+        # Haelfte eingeloest: der Kunde wurde geschuetzt, der Betreiber nicht.
+        # Wie beim Eingang wird die Tatsache gebucht statt verworfen, sonst
+        # brächte jeder Wiederholungsversuch von OpenWA dieselbe Zeile erneut.
+        nutzlast = {
+            **_textteil(daten, message_id),
+            "text": "", "gekuerzt": False, "ohne_text": True,
+            "richtung": "ausgehend",
+            "empfaenger": kennung or str(roh_gegenstelle or ""),
+            "weg": "unbekannt", "unbekannter_empfaenger": False,
+        }
+        LOG.info("Ausgang an %s ignoriert — nur die Tatsache gebucht, "
+                 "kein Text.", _maskiert(kennung))
+        return _buchen(AUSGANG_IGNORIERT, "agent", kennung, kennung_fehler,
+                       nutzlast, "unbekannter_empfaenger",
+                       str(roh_gegenstelle))
+
     nutzlast = {
         **_textteil(daten, message_id),
         "richtung": "ausgehend",
-        "empfaenger": kennung or str(daten.get("chatId")
-                                     or daten.get("to") or ""),
+        "empfaenger": kennung or str(roh_gegenstelle or ""),
         "weg": "unbekannt",
         "unbekannter_empfaenger": False,
     }
     if quelle:
         nutzlast["kennung_quelle"] = quelle
     return _buchen("nachricht_ausgehend", "agent", kennung, kennung_fehler,
-                   nutzlast, "unbekannter_empfaenger",
-                   str(daten.get("chatId") or daten.get("to")))
+                   nutzlast, "unbekannter_empfaenger", str(roh_gegenstelle))
 
 
 def _textteil(daten: dict, message_id: str) -> dict:

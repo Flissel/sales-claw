@@ -177,6 +177,31 @@ def test_blanke_msisdn_laeuft_durch_nummern_py():
     assert lid.aufloesen("44199592386700@lid").telefon == "4315208874679@c.us"
 
 
+# Review-Befund M7: `normalisiere_empfaenger("+" + ziffern(roh))` hat
+# nummern.py ausgehebelt. `ziffern()` filtert alles weg, was keine Ziffer ist,
+# und das vorangestellte `+` erklaerte das Ergebnis zur internationalen
+# Schreibweise — aus jeder der folgenden Eingaben wurde klaglos eine
+# „gueltige" Chat-ID. Der Rohwert geht jetzt unveraendert durch nummern.py.
+@pytest.mark.parametrize("geliefert", [
+    "0170123456",       # nationale Schreibweise, ohne Landesvorwahl
+    "000000000000",     # eine Landesvorwahl beginnt nie mit 0
+    "49a17b29186846",   # Buchstaben — wurden stillschweigend weggefiltert
+])
+def test_unsaubere_msisdn_wird_verworfen_statt_zurechtgebogen(geliefert):
+    STUB.antworten["183096603361451"] = (200, geliefert)
+    ergebnis = lid.aufloesen("183096603361451@lid")
+    assert ergebnis.telefon == ""
+    assert ergebnis.typ == lid.TYP_UNAUFLOESBAR
+    assert ergebnis.transient is False
+
+
+def test_msisdn_mit_00_praefix_wird_gelesen_statt_einbetoniert():
+    """`"+" + "004917612345678"` ergab `004917612345678@c.us` — eine Chat-ID,
+    die es nicht gibt. Mit `00` bringt die Nummer ihre Vorwahl schon mit."""
+    STUB.antworten["183096603361451"] = (200, "004917612345678")
+    assert lid.aufloesen("183096603361451@lid").telefon == "4917612345678@c.us"
+
+
 def test_phone_null_ist_ein_echtes_negativergebnis():
     STUB.antworten["999888777666555"] = (200, None)
     ergebnis = lid.aufloesen("999888777666555@lid")
@@ -203,11 +228,31 @@ def test_nicht_bereite_engine_ist_transient(code):
     assert lid.aufloesen("183096603361451@lid").transient is True
 
 
-def test_404_bleibt_ein_negativergebnis():
-    STUB.antworten["183096603361451"] = (404, None)
+# Review-Befund H1. Bis zur Fix-Runde stand hier
+# `test_404_bleibt_ein_negativergebnis` und ZEMENTIERTE genau den Fehler:
+# 401/403/404/410 wurden zu `unaufloesbar` gespeichert, und die
+# Kandidatenabfrage in `absender_aufloesen` fragt gespeicherte Kennungen nie
+# wieder. Ein rotierter API-Schluessel oder eine umbenannte Route verbrannte so
+# bis zu 25 Kennungen in EINEM Lauf — dauerhaft. Die Regel ist umgedreht: ein
+# Negativergebnis entsteht ausschliesslich bei HTTP 200 + `phone: null`.
+@pytest.mark.parametrize("code", [401, 403, 404, 410, 418, 405])
+def test_jeder_http_fehler_ist_transient_und_kein_befund_ueber_die_kennung(code):
+    STUB.antworten["183096603361451"] = (code, None)
     ergebnis = lid.aufloesen("183096603361451@lid")
-    assert ergebnis.transient is False
-    assert ergebnis.typ == lid.TYP_UNAUFLOESBAR
+    assert ergebnis.transient is True
+    assert ergebnis.typ == ""
+    assert str(code) in ergebnis.grund
+
+
+@pytest.mark.parametrize("code", [401, 404, 410])
+def test_ein_http_fehler_bricht_den_lauf_ab_wie_ein_429(code):
+    """Anders als bei 429 lief `mehrere` bisher weiter — ein rotierter
+    Schluessel hat damit die ganze Runde abgeraeumt statt sie anzuhalten."""
+    STUB.vorgabe = (code, None)
+    ergebnisse = list(lid.mehrere(["111111111111111@lid",
+                                   "222222222222222@lid"], pause=0))
+    assert len(ergebnisse) == 1
+    assert ergebnisse[0][1].transient is True
 
 
 def test_gruppe_beruehrt_das_netz_nie():

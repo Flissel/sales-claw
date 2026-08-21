@@ -50,6 +50,21 @@ Quelle openwa/upstream/src/modules/contact/contact.controller.ts:157)
    `lid_mappings` stehen** (gemessen an `187853296390180@lid` ->
    `4917670794980`). Er fragt die Engine aktiv — die SQLite-Tabelle im
    openwa-Container ist also nicht die Obergrenze der Deckung.
+6. **EIN NEGATIVERGEBNIS ENTSTEHT AUSSCHLIESSLICH BEI `HTTP 200` +
+   `phone: null`.** Jeder andere HTTP-Ausgang ist transient und bricht den
+   Lauf ab wie ein 429. Bis zur Fix-Runde galt die umgekehrte Regel: eine
+   Liste `TRANSIENTE_CODES` nannte 429/400/409/5xx, ALLES andere wurde als
+   `unaufloesbar` gespeichert — und die Kandidatenabfrage in
+   `absender_aufloesen` fragt gespeicherte Kennungen nie wieder. Gemessen im
+   Review: 401/403/404/410 brannten sich als Negativergebnis ein. Ein
+   rotierter API-Schluessel (401), ein entzogenes Recht (403) oder eine
+   umbenannte Route (404) verbrennt so bis zu 25 Kennungen in EINEM Lauf,
+   dauerhaft — und anders als bei 429 lief `mehrere()` nicht einmal auf einen
+   Abbruch, sondern raeumte die ganze Runde ab. Eine Liste, die aufzaehlen
+   muss, was harmlos ist, hat diese Klasse Fehler eingebaut: jeder Code, der
+   nicht draufsteht, ist teuer. Die Umkehr braucht keine Liste. Der Preis ist
+   sichtbar und billig — eine echte Kennung, die dauerhaft 404 lieferte,
+   wuerde jeden Lauf erneut anhalten statt still zu verschwinden.
 
 GRUPPEN WERDEN NICHT GEFRAGT
 ---------------------------
@@ -70,7 +85,7 @@ import urllib.request
 from typing import NamedTuple
 from urllib.parse import quote
 
-from nummern import normalisiere_empfaenger
+from nummern import normalisiere_msisdn
 
 # --- Konfiguration (Modulkonstanten, damit Tests sie umbiegen koennen) ------
 # Dieselben Variablen wie im Dispatcher — es gibt genau ein OpenWA und genau
@@ -92,10 +107,9 @@ GRUPPEN_SUFFIXE = ("@g.us", "@broadcast", "@newsletter")
 GRUPPEN_ZIFFERN_AB = 17
 SESSION_BEREIT = "ready"
 
-# HTTP-Ausgaenge, die ueber die KENNUNG nichts aussagen, sondern ueber den
-# Moment: Rate-Limit, nicht bereite Engine, kaputtes Gateway. Sie duerfen nie
-# zu einem gespeicherten Negativergebnis werden.
-TRANSIENTE_CODES = frozenset((400, 408, 409, 425, 429, 500, 502, 503, 504))
+# EIN Negativergebnis entsteht ausschliesslich bei HTTP 200 + `phone: null`
+# (Punkt 6 im Kopf). Es gibt deshalb bewusst KEINE Liste „transienter Codes"
+# mehr: jeder HTTP-Fehler ist transient.
 
 TYP_RUFNUMMER = "rufnummer"
 TYP_GRUPPE = "gruppe"
@@ -114,7 +128,7 @@ class Ergebnis(NamedTuple):
     spaeter erneut fragen. `typ` ist dann None.
     """
     telefon: str            # normalisiert, "49…@c.us" — oder ""
-    roh: str                # blanke MSISDN von OpenWA — oder ""
+    roh: str                # `phone` von OpenWA, unveraendert — oder ""
     typ: str                # rufnummer | gruppe | unaufloesbar — oder ""
     grund: str              # menschenlesbarer Grund — oder ""
     transient: bool
@@ -189,8 +203,11 @@ def _hole(pfad: str):
             detail = e.read().decode("utf-8", "replace")
         except Exception:                    # noqa: BLE001 — Detail ist Beiwerk
             detail = ""
+        # JEDER HTTP-Fehler ist transient (Punkt 6 im Kopf) — auch 401/403/
+        # 404/410. Ein Statuscode sagt etwas ueber die Verbindung, den
+        # Schluessel oder die Route, nicht ueber die Kennung.
         return None, (f"OpenWA HTTP {e.code}: {_ohne_schluessel(detail)}"
-                      .strip()), e.code in TRANSIENTE_CODES
+                      .strip()), True
     except socket.timeout:                   # ab 3.10 identisch mit TimeoutError
         return None, f"OpenWA Zeitueberschreitung nach {HTTP_TIMEOUT_S:g} s", True
     except urllib.error.URLError as e:
@@ -268,12 +285,19 @@ def aufloesen(kennung) -> Ergebnis:
         return Ergebnis("", "", TYP_UNAUFLOESBAR,
                         "OpenWA konnte die Kennung nicht aufloesen "
                         "(phone: null)", False)
-    # Blanke MSISDN (Punkt 2 im Kopf) — ausdruecklich als `+<ziffern>`.
-    telefon, fehler = normalisiere_empfaenger("+" + ziffern(roh))
+    # Blanke MSISDN (Punkt 2 im Kopf). Der ROHWERT geht durch nummern.py, nicht
+    # `"+" + ziffern(roh)`: das filterte jedes Nicht-Ziffernzeichen weg und
+    # erklaerte den Rest zur internationalen Schreibweise — aus
+    # `49a17b29186846` wurde so die Nummer eines echten Kunden (Befund M7).
+    wert = str(roh).strip()[:FEHLER_MAXLAENGE]
+    telefon, fehler = normalisiere_msisdn(wert)
     if fehler:
-        return Ergebnis("", str(roh), TYP_UNAUFLOESBAR,
-                        f"OpenWA lieferte '{ziffern(roh)}': {fehler}", False)
-    return Ergebnis(telefon, ziffern(roh), TYP_RUFNUMMER, "", False)
+        # Kein transienter Ausgang: OpenWA hat mit 200 geantwortet und sich
+        # festgelegt. Der Wert ist morgen derselbe — ein Abbruch des Laufes
+        # wuerde jede folgende Kennung mitnehmen, ohne dass sich etwas aendert.
+        return Ergebnis("", wert, TYP_UNAUFLOESBAR,
+                        f"OpenWA lieferte '{wert}': {fehler}", False)
+    return Ergebnis(telefon, wert, TYP_RUFNUMMER, "", False)
 
 
 def mehrere(kennungen, pause=None):

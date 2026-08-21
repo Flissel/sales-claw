@@ -33,8 +33,17 @@ notierte Nummer, auch fuer die oesterreichische `0664 1234567`, aus der so
 deutschen Menschen, an den eine Vertriebsnachricht gegangen waere. Eine
 Rueckfrage ist billiger als eine Nachricht an den Falschen.
 
+Und nach dem Abtrennen von `+`/`00` darf keine `0` mehr vorne stehen: eine
+Landesvorwahl beginnt nie mit 0 (E.164 §2.2). `+0…`, `00 0…` und
+`000000000000` sind damit keine Nummern. Bis zur Fix-Runde zu Review-Befund
+M7 wurde `000000000000` klaglos zu `0000000000@c.us`.
+
 Mischformen wie „Herr Mueller 0170 1234567" werden weiterhin nicht
 auseinandergenommen — nur etwas, das als GANZES eine Nummer ist, zaehlt.
+
+Fuer Werte, die kein Mensch getippt hat (JID-Ziffern, OpenWAs `phone`), gibt
+es `normalisiere_msisdn` — dieselbe Regel, nur mit der Erlaubnis, das fehlende
+`+` zu ergaenzen. Siehe dort.
 
 Was bewusst bleibt: der Einschub „(0)" (`+49 (0)170 …`) ist keine Ratung,
 sondern die uebliche, ausdrueckliche Notation fuer „Amtsnull hier weglassen",
@@ -74,6 +83,8 @@ FEHLER_NATIONALE_SCHREIBWEISE = (
     "nationaler Schreibweise wird nicht vertraut")
 FEHLER_VORWAHL_UNBEKANNT = (
     "Landesvorwahl nicht erkennbar — Empfaenger mit +Vorwahl erfassen")
+FEHLER_VORWAHL_NULL = (
+    "Landesvorwahl beginnt mit 0 — die gibt es nicht (E.164)")
 
 
 def normalisiere_empfaenger(recipient):
@@ -106,9 +117,53 @@ def normalisiere_empfaenger(recipient):
     if ziffern.startswith("490"):        # Amtsnull hinter ausgeschriebener 49
         ziffern = "49" + ziffern[3:]
 
+    # Eine Landesvorwahl beginnt nie mit 0 (E.164 §2.2). `00 0…` und `+0…`
+    # sind damit keine Nummern, sondern Muell — und wurden bis zur Fix-Runde
+    # klaglos zu einer Chat-ID (`000000000000` -> `0000000000@c.us`, gemessen
+    # im Review zu Befund M7). Die Pruefung steht NACH der 490-Regel, sonst
+    # fiele `+49 0170 …` darunter, wo die Vorwahl ausgeschrieben danebensteht.
+    if ziffern.startswith("0"):
+        return None, FEHLER_VORWAHL_NULL
+
     if not 8 <= len(ziffern) <= 15:      # E.164
         return None, FEHLER_UNZUSTELLBAR
     return f"{ziffern}@c.us", None
+
+
+def normalisiere_msisdn(roh):
+    """Wie `normalisiere_empfaenger`, aber fuer TECHNISCH gelieferte Werte.
+
+    Gemeint sind Werte, die kein Mensch getippt hat: der Ziffernteil eines
+    WhatsApp-JID (`491701234567:12@s.whatsapp.net`) und OpenWAs `phone`-Feld
+    (blanke MSISDN, `491729186846`). Sie bringen ihre Landesvorwahl technisch
+    immer mit, tragen aber kein `+` — deshalb wird eines vorangestellt, damit
+    die 49-Sonderregel fuer blanke Folgen (BLANK_PRAEFIX) gar nicht erst
+    greift und eine oesterreichische Nummer nicht als unzustellbar gilt.
+
+    DER UNTERSCHIED ZU FRUEHER (Review-Befund M7). An drei Stellen stand
+    `normalisiere_empfaenger("+" + ziffern(roh))`. `ziffern()` wirft jedes
+    Zeichen weg, das keine Ziffer ist, und das vorangestellte `+` erklaerte
+    das Ergebnis zur internationalen Schreibweise — damit war dieses Modul
+    ausgehebelt. Gemessen wurden so gespeichert:
+
+        '0170123456'      -> 0170123456@c.us       (nationale Schreibweise)
+        '004917612345678' -> 004917612345678@c.us  (00 einbetoniert)
+        '000000000000'    -> 000000000000@c.us     (Vorwahl 0)
+        '49a17b29186846'  -> 491729186846@c.us     (= die Nummer eines
+                                                     ECHTEN Kunden)
+
+    Die Regel hier: das `+` kommt nur davor, wenn der Wert weder `+` noch
+    `00` noch eine fuehrende `0` mitbringt. Alles Weitere entscheidet
+    `normalisiere_empfaenger` — es gibt weiterhin genau eine Nummernregel in
+    diesem Haus. Ein Wert mit Zeichen, die dort nicht als Trenner gelten
+    (Buchstaben etwa), wird VERWORFEN statt stillschweigend gefiltert.
+    """
+    wert = str(roh or "").strip()
+    if not wert:
+        return None, FEHLER_UNZUSTELLBAR
+    if not wert.startswith(("+", "00", "0")):
+        wert = "+" + wert
+    return normalisiere_empfaenger(wert)
 
 
 def zielnummer(recipient):

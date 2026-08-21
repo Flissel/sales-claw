@@ -23,6 +23,7 @@ import threading
 import urllib.error
 import urllib.request
 
+import psycopg
 import pytest
 
 # HART, nicht setdefault (wie test_dispatch/test_inbox): eine von aussen
@@ -38,6 +39,10 @@ EIGENE = "4915100000000@c.us"
 # Die gemessene LID von Sophie und ihre gemessene Rufnummer (Plan T1).
 SOPHIE_LID = "183096603361451@lid"
 SOPHIE_NUMMER = "491729186846@c.us"
+# Ein ZWEITER Mensch mit einer eigenen LID. Zeigen beide auf dieselbe Nummer,
+# hat `_kanon` sie bis zur Fix-Runde zu einer einzigen Identitaet kollabiert
+# (Review-Befund H4) — Person B war im Posteingang nie sichtbar.
+ZWEITE_LID = "222096603361451@lid"
 
 URL = ""
 
@@ -272,15 +277,26 @@ def test_die_alte_attrappe_183_at_c_us_loest_ebenfalls_auf():
     assert _posteingang()["anzahl_unbeantwortet"] == 0
 
 
-def test_zwei_schreibweisen_desselben_menschen_sind_ein_eintrag():
+def test_zwei_schreibweisen_bleiben_zwei_zeilen_und_eine_antwort_raeumt_beide():
+    """Bis zur Fix-Runde stand hier
+    `test_zwei_schreibweisen_desselben_menschen_sind_ein_eintrag` und pinnte,
+    dass `_kanon` beide Schreibweisen zu EINEM Eintrag verschmilzt. Bequem —
+    aber dieselbe Verschmelzung kollabierte auch zwei FREMDE Identitaeten,
+    sobald zwei LIDs auf dieselbe Nummer zeigten (Review-Befund H4). Die
+    GRUPPIERUNG arbeitet deshalb auf den rohen Kennungsziffern: zwei
+    Schreibweisen sind zwei Zeilen. Die BEANTWORTET-Pruefung verschmilzt
+    weiterhin (T3) — eine Antwort raeumt beide Zeilen ab, der Betreiber muss
+    also nicht zweimal antworten."""
     sammel = _sammel()
     _zuordnung()
     _kundenantwort(sammel, SOPHIE_LID, text="Erste", vor_stunden=5)
     _kundenantwort(sammel, SOPHIE_NUMMER, text="Zweite", vor_stunden=2)
     p = _posteingang()
-    assert p["anzahl_unbeantwortet"] == 1
-    assert p["eintraege"][0]["absender"] == SOPHIE_NUMMER
-    assert p["eintraege"][0]["text_kurz"] == "Zweite"
+    assert p["anzahl_unbeantwortet"] == 2
+    assert [e["absender"] for e in p["eintraege"]] == [SOPHIE_LID,
+                                                       SOPHIE_NUMMER]
+    _antwort_raus(sammel, SOPHIE_NUMMER, vor_stunden=0)
+    assert _posteingang()["anzahl_unbeantwortet"] == 0
 
 
 def test_eine_antwort_an_einen_unbekannten_raeumt_die_anderen_nicht_ab():
@@ -541,12 +557,375 @@ def test_ignorierte_eingaenge_tauchen_im_posteingang_nicht_auf():
 
 
 # ---------------------------------------------------------------------------
+# H2 — die EIGENE Haelfte eines ignorierten Chats ist genauso sensibel
+#
+# `_ausgehend` hatte keine Ignoriert-Pruefung; nur `_eingehend`. Gemessen:
+# Absender ignoriert -> eigene Nachricht in denselben Chat -> volle
+# `nachricht_ausgehend` mit Text in `activities`. Damit war die Zusage aus T5
+# („von einem ignorierten Absender wird kein Text mehr gespeichert") nur zur
+# Haelfte eingeloest — bei einem privaten Chat schreibt der Betreiber selbst
+# das Private.
+# ---------------------------------------------------------------------------
+
+def test_vom_ignorierten_chat_bleibt_auch_die_eigene_haelfte_ohne_text():
+    sammel = _sammel()
+    _einordnen(absender=SOPHIE_LID, entscheidung="ignorieren")
+    status, antwort = _ausgang(text="Bis Samstag beim Grillen, Gruss an Anna!")
+    assert status == 200 and antwort["typ"] == server.AUSGANG_IGNORIERT
+    zeilen = _zeilen(server.AUSGANG_IGNORIERT)
+    assert len(zeilen) == 1
+    nutzlast = zeilen[0]["payload"]
+    assert nutzlast["text"] == "" and nutzlast["ohne_text"] is True
+    assert nutzlast["richtung"] == "ausgehend"
+    assert nutzlast["empfaenger"] == SOPHIE_LID
+    assert nutzlast["message_id"] == "wa-echo-1"
+    assert str(zeilen[0]["lead_id"]) == sammel
+    assert _zeilen("nachricht_ausgehend") == []
+    # Der Text steht auch sonst nirgends.
+    assert "Grillen" not in json.dumps(
+        [z["payload"] for z in _zeilen()], ensure_ascii=False)
+
+
+def test_der_textlose_ausgang_bleibt_dedupbar():
+    """Gegenstueck zu `eingang_ignoriert`: OpenWA wiederholt Zustellungen,
+    deshalb wird die Tatsache gebucht statt die Nachricht zu verwerfen."""
+    _sammel()
+    _einordnen(absender=SOPHIE_LID, entscheidung="ignorieren")
+    _ausgang()
+    status, antwort = _ausgang()
+    assert status == 200 and antwort.get("doppelt") is True
+    assert len(_zeilen(server.AUSGANG_IGNORIERT)) == 1
+    assert server.AUSGANG_IGNORIERT in inbox.PROTOKOLL_TYPEN
+
+
+def test_ein_nicht_ignorierter_ausgang_behaelt_seinen_text():
+    _sammel()
+    _ausgang(text="Donnerstag 15 Uhr passt.")
+    assert _zeilen("nachricht_ausgehend")[0]["payload"]["text"] == \
+        "Donnerstag 15 Uhr passt."
+
+
+def test_der_selbst_chat_bleibt_verworfen_auch_wenn_ignoriert_wird():
+    """Die Reihenfolge bleibt: Selbst-Chat zuerst, dann die Ignoriert-Frage —
+    sonst buchte jede Digest-Zustellung eine Zeile ins Postfach."""
+    _sammel()
+    _einordnen(absender=EIGENE, entscheidung="ignorieren")
+    status, antwort = _ausgang(gegenstelle=EIGENE)
+    assert status == 200 and "verworfen" in antwort
+    assert _zeilen(server.AUSGANG_IGNORIERT) == []
+
+
+# ---------------------------------------------------------------------------
+# H3 — `ignorieren` kennt eine Grenze
+#
+# Gemessen: ein echter Lead liess sich ignorieren; danach verschwand er aus
+# posteingang UND digest, und seine Folgenachricht („Ich habe den Vertrag
+# unterschrieben") wurde textlos an seinem EIGENEN Lead gebucht. Der zitierte
+# Kundentext geht ueber `_rueckfrage_text` in den Agentenkontext — eine
+# Kundennachricht „ignoriere bitte +4917…" waere damit ein realer Hebel auf
+# eine schwer ruecknehmbare Handlung. Muster der Kante wie bei
+# `entwurf_erneut_freigeben`: verweigern, ausser mit bestaetigt=True.
+# ---------------------------------------------------------------------------
+
+def test_ignorieren_eines_echten_leads_wird_ohne_bestaetigung_verweigert():
+    lead = _lead()
+    sammel = _sammel()
+    _kundenantwort(sammel, SOPHIE_NUMMER, vor_stunden=5)
+    antwort = _einordnen(absender=SOPHIE_NUMMER, entscheidung="ignorieren")
+    assert "fehler" in antwort and "bestaetigt" in antwort["fehler"]
+    assert str(antwort["gehoert_zu"]["lead_id"]) == lead
+    assert antwort["gehoert_zu"]["kontakt"] == "Sophie Beispiel"
+    assert server.absender_ist_ignoriert(SOPHIE_NUMMER) is False
+    assert _posteingang()["anzahl_unbeantwortet"] == 1
+    assert _zeilen(server.ABSENDER_IGNORIERT) == []
+
+
+def test_auch_ueber_die_zuordnung_ist_ein_lead_geschuetzt():
+    """Die LID zeigt auf die Nummer eines echten Leads — dieselbe Kante, sonst
+    liesse sich der Schutz mit der unaufgeloesten Kennung umgehen."""
+    lead = _lead()
+    _sammel()
+    _zuordnung()
+    antwort = _einordnen(absender=SOPHIE_LID, entscheidung="ignorieren")
+    assert "fehler" in antwort
+    assert str(antwort["gehoert_zu"]["lead_id"]) == lead
+
+
+def test_ignorieren_eines_echten_leads_geht_mit_bestaetigung_und_ist_erklaerbar():
+    lead = _lead()
+    sammel = _sammel()
+    _kundenantwort(sammel, SOPHIE_NUMMER, vor_stunden=5)
+    antwort = _einordnen(absender=SOPHIE_NUMMER, entscheidung="ignorieren",
+                         bestaetigt=True)
+    assert antwort["ignoriert"] == SOPHIE_NUMMER
+    assert server.absender_ist_ignoriert(SOPHIE_NUMMER) is True
+    assert _posteingang()["anzahl_unbeantwortet"] == 0
+    # Das Gegen-Ereignis steht ZUSAETZLICH am betroffenen Lead: sonst waere im
+    # Verlauf des Kontakts nicht erklaerbar, warum er verstummt ist.
+    am_lead = [z for z in _zeilen(server.ABSENDER_IGNORIERT)
+               if str(z["lead_id"]) == lead]
+    assert len(am_lead) == 1
+    assert am_lead[0]["payload"]["absender"] == SOPHIE_NUMMER
+
+
+def test_beachten_holt_einen_lead_ohne_bestaetigung_zurueck():
+    """Die Kante steht nur vor der schwer ruecknehmbaren Richtung."""
+    lead = _lead()
+    sammel = _sammel()
+    _kundenantwort(sammel, SOPHIE_NUMMER, vor_stunden=5)
+    _einordnen(absender=SOPHIE_NUMMER, entscheidung="ignorieren",
+               bestaetigt=True)
+    antwort = _einordnen(absender=SOPHIE_NUMMER, entscheidung="beachten")
+    assert antwort["beachtet"] == SOPHIE_NUMMER
+    assert _posteingang()["anzahl_unbeantwortet"] == 1
+    assert [str(z["lead_id"]) for z in _zeilen(server.ABSENDER_BEACHTET)
+            if str(z["lead_id"]) == lead]
+
+
+def test_eine_kennung_ohne_lead_bleibt_ohne_bestaetigung_ignorierbar():
+    sammel = _sammel()
+    _kundenantwort(sammel, SOPHIE_LID, vor_stunden=5)
+    assert "ignoriert" in _einordnen(absender=SOPHIE_LID,
+                                     entscheidung="ignorieren")
+
+
+# ---------------------------------------------------------------------------
+# H4 — `_kanon` kollabierte fremde Identitaeten
+#
+# Gemessen: zwei verschiedene LIDs, beide auf dieselbe Nummer gemappt -> EIN
+# Posteingangseintrag, EINE Rueckfrage; `ignorieren` der einen liess auch die
+# andere verschwinden, deren naechste Nachricht wurde textlos gebucht. Person B
+# war nie sichtbar. `_kanon` gilt seitdem nur noch dort, wo Verschmelzen
+# gewollt ist: in der T3-Beantwortet-Pruefung.
+# ---------------------------------------------------------------------------
+
+def _zwei_lids_eine_nummer(sammel):
+    _zuordnung(SOPHIE_LID, SOPHIE_NUMMER)
+    _zuordnung(ZWEITE_LID, SOPHIE_NUMMER)
+    _kundenantwort(sammel, SOPHIE_LID, text="A schreibt", vor_stunden=5)
+    _kundenantwort(sammel, ZWEITE_LID, text="B schreibt", vor_stunden=4)
+
+
+def test_zwei_lids_auf_dieselbe_nummer_bleiben_zwei_eintraege():
+    sammel = _sammel()
+    _zwei_lids_eine_nummer(sammel)
+    p = _posteingang()
+    assert p["anzahl_unbeantwortet"] == 2
+    assert [e["absender"] for e in p["eintraege"]] == [SOPHIE_LID, ZWEITE_LID]
+
+
+def test_dieselben_ziffern_in_zwei_domains_bleiben_eine_zeile():
+    """Gruppiert wird auf den ZIFFERN, nicht auf der ganzen Zeichenkette:
+    die Altlast `183…@c.us` (die Attrappe aus Befund H1) und `183…@lid` sind
+    dieselbe Kennung, die Domain ist Anzeige. Sonst haette der H4-Fix die
+    Migrationsphase mit Doppelzeilen zugestellt."""
+    sammel = _sammel()
+    _kundenantwort(sammel, "183096603361451@c.us", text="Alt", vor_stunden=5)
+    _kundenantwort(sammel, SOPHIE_LID, text="Neu", vor_stunden=2)
+    p = _posteingang()
+    assert p["anzahl_unbeantwortet"] == 1
+    assert p["eintraege"][0]["absender"] == SOPHIE_LID   # juengste Schreibweise
+    assert p["eintraege"][0]["text_kurz"] == "Neu"
+    assert len(_einordnen()["neu"]) == 1
+
+
+def test_zwei_lids_auf_dieselbe_nummer_bekommen_zwei_rueckfragen():
+    sammel = _sammel()
+    _zwei_lids_eine_nummer(sammel)
+    antwort = _einordnen()
+    assert sorted(e["absender"] for e in antwort["neu"]) == sorted(
+        [SOPHIE_LID, ZWEITE_LID])
+
+
+def test_ignorieren_der_einen_lid_laesst_die_andere_stehen():
+    sammel = _sammel()
+    _zwei_lids_eine_nummer(sammel)
+    _einordnen(absender=SOPHIE_LID, entscheidung="ignorieren")
+    p = _posteingang()
+    assert [e["absender"] for e in p["eintraege"]] == [ZWEITE_LID]
+    assert [e["absender"] for e in _einordnen()["neu"]] == [ZWEITE_LID]
+
+
+def test_die_nachricht_der_zweiten_lid_behaelt_ihren_text():
+    """Der Buchungspfad fragt die ROHE Kennung. Sonst wurde B textlos gebucht,
+    weil A ignoriert war und beide auf dieselbe Nummer zeigten."""
+    _sammel()
+    _zuordnung(SOPHIE_LID, SOPHIE_NUMMER)
+    _zuordnung(ZWEITE_LID, SOPHIE_NUMMER)
+    _einordnen(absender=SOPHIE_LID, entscheidung="ignorieren")
+    status, _ = _eingang(absender=ZWEITE_LID, text="Ich bin jemand anderes")
+    assert status == 200
+    assert _zeilen("kundenantwort")[0]["payload"]["text"] == \
+        "Ich bin jemand anderes"
+    assert _zeilen(server.EINGANG_IGNORIERT) == []
+
+
+def test_absender_ist_ignoriert_und_der_buchungspfad_sagen_dasselbe():
+    """Zweiter Teil des Befunds: `absender_ist_ignoriert('222…@lid')` lieferte
+    False, waehrend der Buchungspfad B als ignoriert behandelte. Und die
+    Bruecke Nummer->LID traegt nur, wenn GENAU EINE LID Anspruch erhebt."""
+    _sammel()
+    _zuordnung(SOPHIE_LID, SOPHIE_NUMMER)
+    _zuordnung(ZWEITE_LID, SOPHIE_NUMMER)
+    _einordnen(absender=SOPHIE_LID, entscheidung="ignorieren")
+    assert server.absender_ist_ignoriert(SOPHIE_LID) is True
+    assert server.absender_ist_ignoriert(ZWEITE_LID) is False
+    assert server.absender_ist_ignoriert(SOPHIE_NUMMER) is False
+
+
+def test_ignorieren_speichert_die_genannte_kennung_nicht_die_nummer_dahinter():
+    """Sonst hiesse „ignoriere 183…@lid" in der Datenbank „ignoriere jeden,
+    der auf 4917… zeigt" — und traefe damit auch Person B."""
+    _sammel()
+    _zuordnung()
+    antwort = _einordnen(absender=SOPHIE_LID, entscheidung="ignorieren")
+    assert antwort["ignoriert"] == SOPHIE_LID
+    assert _zeilen(server.ABSENDER_IGNORIERT)[0]["payload"]["absender"] == \
+        SOPHIE_LID
+
+
+# ---------------------------------------------------------------------------
+# M7 — der Rohwert geht durch nummern.py, statt an ihm vorbei
+# ---------------------------------------------------------------------------
+
+def test_eine_jid_mit_buchstaben_landet_nicht_im_verlauf_eines_fremden():
+    """`"+" + _ziffern("49a17b29186846@c.us")` ergab genau Sophies Nummer —
+    eine unsaubere Kennung buchte in die Historie eines echten Kunden."""
+    lead = _lead()
+    sammel = _sammel()
+    status, _ = _eingang(absender="49a17b29186846@c.us")
+    assert status == 200
+    zeile = _zeilen("kundenantwort")[0]
+    assert str(zeile["lead_id"]) == sammel != lead
+    assert zeile["payload"]["unbekannter_absender"] is True
+
+
+def test_eine_jid_in_nationaler_schreibweise_wird_nicht_zurechtgebogen():
+    """`"+0170123456"` lief als internationale Schreibweise durch und ergab die
+    Chat-ID `0170123456@c.us` — eine Nummer, die es nicht gibt. Sichtbar wird
+    das an `kennung_quelle`: es steht nur, wenn nummern.py zugestimmt hat."""
+    _sammel()
+    status, _ = _eingang(absender="0170123456@c.us")
+    assert status == 200
+    nutzlast = _zeilen("kundenantwort")[0]["payload"]
+    assert nutzlast["unbekannter_absender"] is True
+    assert "kennung_quelle" not in nutzlast
+
+
+def test_ein_unsauberes_senderphone_faellt_auf_die_naechste_stufe_durch():
+    """Es ist ein Hinweis von OpenWA, keine Wahrheit — und die Kennung selbst
+    kennen wir immer noch."""
+    sammel = _sammel()
+    status, _ = _eingang(senderPhone="49a17b29186846")
+    assert status == 200
+    zeile = _zeilen("kundenantwort")[0]
+    assert str(zeile["lead_id"]) == sammel
+    assert zeile["payload"]["absender"] == SOPHIE_LID
+    assert zeile["payload"]["kennung_quelle"] == "lid"
+
+
+# ---------------------------------------------------------------------------
+# M8 / M10 / N14
+# ---------------------------------------------------------------------------
+
+def test_ein_fehler_beim_einordnen_macht_nicht_den_ganzen_digest_kaputt(
+        monkeypatch):
+    """`_einzuordnende()` war die einzige ungesicherte Teilquelle des Digests
+    (Review-Befund M8) — ein Fehler dort machte den GANZEN Digest zur
+    Fehlermeldung. Gleiche Haertung wie beim Posteingang darueber."""
+    sammel = _sammel()
+    _kundenantwort(sammel, SOPHIE_LID)
+
+    def kaputt(*_a, **_kw):
+        raise psycopg.errors.UndefinedColumn("payload->>'absender' fehlt")
+
+    monkeypatch.setattr(server, "_einzuordnende", kaputt)
+    antwort = json.loads(server.digest())
+    assert "fehler" not in antwort
+    assert antwort["unbekannte_absender"]["anzahl_neu"] is None
+    assert "nicht lesbar" in antwort["unbekannte_absender"]["hinweis"].lower()
+    assert antwort["unbeantwortete_eingaenge"]["anzahl"] == 1
+
+
+def _in_einer_transaktion(zeilen):
+    """Mehrere activities-Zeilen in EINER Transaktion — sie tragen damit
+    denselben `created_at` (`now()` ist Transaktionszeit)."""
+    with server.pool.connection() as conn:
+        with conn.cursor() as cur:
+            for typ, nutzlast in zeilen:
+                cur.execute(
+                    "insert into activities (lead_id, type, payload, actor) "
+                    "values (%s, %s, %s, 'agent')",
+                    (server.UNBEKANNT_LEAD_ID or None, typ,
+                     json.dumps(nutzlast)))
+
+
+def test_zwei_zuordnungen_einer_transaktion_sind_entscheidbar():
+    """Review-Befund M10: `order by created_at desc` ohne zweites Kriterium —
+    zwei Zeilen einer Transaktion sind ununterscheidbar und „juengste gewinnt"
+    ist ein Muenzwurf. Entschieden wird ueber den GESCHRIEBENEN Zeitstempel."""
+    _sammel()
+    _in_einer_transaktion([
+        (server.LID_ZUORDNUNG,
+         {"lid": "183096603361451", "telefon": "4915199999991@c.us",
+          "quelle": "test", "typ": "rufnummer",
+          "gesehen_am": "2026-08-20T10:00:00+00:00"}),
+        (server.LID_ZUORDNUNG,
+         {"lid": "183096603361451", "telefon": SOPHIE_NUMMER,
+          "quelle": "test", "typ": "rufnummer",
+          "gesehen_am": "2026-08-20T11:00:00+00:00"}),
+    ])
+    assert server.lid_telefon(SOPHIE_LID) == SOPHIE_NUMMER
+
+
+def test_zwei_absender_ereignisse_einer_transaktion_sind_entscheidbar():
+    sammel = _sammel()
+    _kundenantwort(sammel, SOPHIE_LID, vor_stunden=5)
+    _in_einer_transaktion([
+        (server.ABSENDER_BEACHTET,
+         {"absender": SOPHIE_LID, "gesetzt_am": "2026-08-20T10:00:00+00:00"}),
+        (server.ABSENDER_IGNORIERT,
+         {"absender": SOPHIE_LID, "gesetzt_am": "2026-08-20T11:00:00+00:00"}),
+    ])
+    assert server.absender_ist_ignoriert(SOPHIE_LID) is True
+    assert _posteingang()["anzahl_unbeantwortet"] == 0
+
+
+@pytest.mark.parametrize("eingabe, erwartet", [
+    ("+491701234567", "491701234567@c.us"),
+    ("+49 170 1234567", "491701234567@c.us"),
+    ("0049 170 1234567", "491701234567@c.us"),
+    ("491701234567@c.us", "491701234567@c.us"),
+    ("491701234567:12@s.whatsapp.net", "491701234567@c.us"),
+    ("183096603361451@lid", "183096603361451@lid"),
+    # Blanke Ziffern ohne Domain: nummern.py entscheidet, und dort gilt
+    # `49…` als deutsche Nummer, alles andere bringt seine Vorwahl nicht mit.
+    ("183096603361451", "183096603361451@lid"),
+    ("", ""),
+])
+def test_lid_kanonisch_etikettiert_nur_echte_lids_als_lid(eingabe, erwartet):
+    """Review-Befund N14: `lid_kanonisch('+491701234567')` lieferte
+    `491701234567@lid` — an eine echte Rufnummer klebte die UI damit
+    „LID-Pseudo-Kennung, keine Rufnummer"."""
+    assert server.lid_kanonisch(eingabe) == erwartet
+
+
+def test_lid_kanonisch_loest_weiterhin_auf_wenn_eine_zuordnung_dasteht():
+    _sammel()
+    _zuordnung()
+    assert server.lid_kanonisch(SOPHIE_LID) == SOPHIE_NUMMER
+
+
+# ---------------------------------------------------------------------------
 # Registrierung
 # ---------------------------------------------------------------------------
 
 def test_signatur_ueberlebt_den_dekorator_und_werkzeug_ist_registriert():
     import inspect
     parameter = inspect.signature(server.eingang_einordnen).parameters
-    assert list(parameter) == ["absender", "entscheidung", "lead_id", "telefon"]
-    assert all(p.default == "" for p in parameter.values())
+    assert list(parameter) == ["absender", "entscheidung", "lead_id",
+                               "telefon", "bestaetigt"]
+    assert all(p.default == "" for name, p in parameter.items()
+               if name != "bestaetigt")
+    assert parameter["bestaetigt"].default is False
     assert server.eingang_einordnen in server.WERKZEUGE
