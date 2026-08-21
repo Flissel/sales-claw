@@ -35,7 +35,52 @@ freigegebenen Kontakt".
 
 ## Aufgaben
 
-### T1 — Mappings verfügbar machen
+### T1 — Mappings verfügbar machen  ✅ ENTSCHIEDEN (live gemessen 20.08.)
+
+**Weg 1 gewinnt: OpenWA hat einen HTTP-Endpunkt.** Kein Volume-Mount, keine
+Kopplung an ein fremdes DB-Schema. Gemessene Fakten — der Implementierer muss
+davon nichts erneut herausfinden:
+
+```
+GET /api/sessions/{OPENWA_SESSION_ID}/contacts/{kennung}/phone
+Header: X-Api-Key: {OPENWA_API_KEY}
+Antwort 200: {"contactId": "183096603361451@lid", "phone": "491729186846"}
+             phone ist null, wenn die Engine nicht aufloesen kann.
+```
+
+* **Das `@lid`-Suffix ist Pflicht und muss URL-kodiert werden** (`%40lid`).
+  Gemessen: `183096603361451@lid` → `491729186846`, dieselbe Kennung **ohne**
+  Suffix → `phone: null`. Eine Implementierung, die nur die Ziffern schickt,
+  bekommt stillschweigend Nullen zurück und haelt das faelschlich fuer
+  „nicht aufloesbar".
+* **`phone` kommt als blanke MSISDN-Ziffern ohne `+`** (`491729186846`) —
+  vor dem Vergleich mit `leads.phone` durch `nummern.py` normalisieren, wie
+  ueberall sonst.
+* **Rate-Limit: HTTP 429 nach etwa 10 Abfragen in Folge.** In der
+  Deckungsmessung liefen 10 Abfragen durch, die restlichen 6 liefen in 429.
+  Der Abgleich braucht deshalb eine Drossel (Pause zwischen Abfragen,
+  Backoff bei 429) und muss 429 als **transient** behandeln — niemals als
+  „nicht aufloesbar" speichern, sonst brennt sich ein Rate-Limit als
+  Negativergebnis in die Zuordnung ein.
+* **Die Session muss `ready` sein**, sonst antwortet der ganze
+  contacts-Zweig mit HTTP 400 (gemessen bei `disconnected`). Der Abgleich
+  prueft den Sessionstatus zuerst und bricht mit klarer Meldung ab, statt
+  400er als Negativtreffer zu deuten.
+* **Der Endpunkt loest auch Kennungen auf, die noch nicht in OpenWAs
+  `lid_mappings` stehen** (gemessen an `187853296390180@lid` →
+  `4917670794980`, vorher nicht in der Tabelle). Er fragt die Engine aktiv.
+
+**Gemessene Deckung am 20.08.: 10 von 16 CRM-Absendern** (Rest: 429, nicht
+geprueft). Darunter Sophie (139 Nachrichten), Christine, Moritz Baumann und
+`178645557625028` → `+491603449761`, die **Zweitnummer des Betreibers**.
+`120363421499541820` ist eine Gruppen-Kennung (18-stellig) und wird
+voraussichtlich nie eine Rufnummer liefern — solche Faelle gehoeren als
+`typ='gruppe'` vermerkt, nicht als Fehlschlag wiederholt.
+
+*(Der urspruenglich erwogene zweite Weg — Read-only-Mount von
+`openwa.sqlite` — entfaellt damit.)*
+
+<details><summary>Urspruengliche Abwaegung (historisch)</summary>
 
 Entscheidung zwischen zwei Wegen, **vor der Umsetzung messen**:
 
@@ -52,6 +97,8 @@ Entscheidung zwischen zwei Wegen, **vor der Umsetzung messen**:
 Ergebnis in beiden Fällen: eine Tabelle `sales.lid_zuordnung`
 (`lid` PK, `telefon`, `quelle`, `gesehen_am`) — die Spiegelung in Postgres,
 damit `inbox.py` und die Werkzeuge ohne Container-Grenze arbeiten.
+
+</details>
 
 ### T2 — Eingehende Nachrichten auflösen
 
