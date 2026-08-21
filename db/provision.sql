@@ -123,3 +123,27 @@ grant select, insert, update on sales.personas to sales_app;
 -- zwischen Tests zurück. Die Testsuite darf NIE gegen `sales` laufen.
 grant select, insert, update, delete, truncate
   on all tables in schema sales_test to sales_app;
+
+-- ---------------------------------------------------------------------------
+-- Stufe 11 (Einordnung eingehender Absender): KEINE neue Tabelle. Bewusst.
+--
+-- Der Plan sah `sales.lid_zuordnung` (lid, telefon, quelle, gesehen_am) vor.
+-- Umgesetzt wurde sie NICHT — die Zuordnungen liegen als Aktivitätstypen in
+-- `activities`: `lid_zuordnung`, `absender_rueckfrage`, `absender_ignoriert`,
+-- `absender_beachtet`, `eingang_ignoriert` (siehe sales-mcp/server.py).
+-- Drei Gründe, hier notiert, damit niemand die Tabelle später „nachträgt":
+--
+--   1. `sales_app` hat kein DDL. Eine neue Tabelle wäre Admin-Arbeit in
+--      BEIDEN Schemata; bis dahin wäre die ganze Stufe tot.
+--   2. Der `grant … on all tables in schema sales_test` oben ist eine
+--      MOMENTAUFNAHME. Eine später ergänzte Tabelle trägt ihn nicht, und die
+--      Testsuite bräche mit 42501 an einer Stelle, die wie ein Testfehler
+--      aussieht und keiner ist.
+--   3. `activities` ist append-only — genau das verlangt die Stufe („kein
+--      DELETE, ein Gegen-Ereignis"). Eine Zuordnung ist ein Ereignis mit
+--      Zeitpunkt und Herkunft, kein Stammdatum: dass eine Kennung heute zu
+--      einer Nummer auflöst und morgen zu einer anderen, ist Historie.
+--
+-- Gelesen wird deshalb überall „jüngste Zeile gewinnt", wie bei
+-- wiedervorlage/wiedervorlage_erledigt. Es ist an diesem Skript nichts zu tun.
+-- ---------------------------------------------------------------------------

@@ -688,9 +688,9 @@ def test_kontakt_aktualisieren_signatur_ueberlebt_den_dekorator():
     assert list(parameter) == ["lead_id", "feld", "wert"]
 
 
-def test_einunddreissig_werkzeuge_registriert():
+def test_dreiunddreissig_werkzeuge_registriert():
     namen = {fn.__name__ for fn in server.WERKZEUGE}
-    assert len(namen) == 31
+    assert len(namen) == 33
     assert "kontakt_aktualisieren" in namen
     # Kontakt-Freigabe fuer WhatsApp und Auto-Betrieb. Vertragstests dazu in
     # tests/test_kontakt_freigabe.py.
@@ -720,6 +720,12 @@ def test_einunddreissig_werkzeuge_registriert():
     # sales-mail ist KEIN Werkzeug: der E-Mail-Versand ist ein Dienst hinter
     # dem Freigabe-Gate, kein Werkzeug in der Hand des Modells.
     assert "termin_bestaetigen" in namen
+    # Stufe 11 — Einordnung eingehender Absender. Vertragstests in
+    # tests/test_einordnung.py und tests/test_lid.py. Beide versenden nichts:
+    # `absender_aufloesen` stellt eine Frage an den eigenen OpenWA-Container,
+    # `eingang_einordnen` fasst nur die Datenbank an.
+    assert "eingang_einordnen" in namen
+    assert "absender_aufloesen" in namen
 
 
 # ---------------------------------------------------------------------------

@@ -1097,28 +1097,37 @@ von bekannten Kontakten. Das ist ein Befund an der Stufe-4-Zuordnung, nicht am
 Posteingang — für ihn heißt es nur, dass die Sammelkontakt-Gruppierung nach
 `absender` derzeit der Normalfall ist und nicht die Ausnahme.
 
+> **Stand 21.08.2026: beide Konsequenzen unten sind mit Stufe 11 erledigt**
+> (Abschnitt „Stufe 11: Eingehende Nachrichten einordnen"). Sie stehen hier
+> weiter, weil sie erklären, *warum* die Lösung so aussieht, wie sie aussieht
+> — und was zurückkäme, wenn jemand einen der beiden Teile ausbaut.
+
 **Zwei Konsequenzen, die man kennen muss (Review-Befunde H1/M1):**
 
-1. **Die angezeigte „Nummer" ist eine Attrappe.** Die LID-Ziffern laufen
-   durch dieselbe Normalisierung wie echte Nummern und kommen als
+1. **Die angezeigte „Nummer" war eine Attrappe.** Die LID-Ziffern liefen
+   durch dieselbe Normalisierung wie echte Nummern und kamen als
    `183…@c.us` heraus — im Posteingang **nicht unterscheidbar** von einer
-   Rufnummer (gemessen: 9 von 9 Live-Einträgen tragen 14–15-stellige
-   Pseudonummern mit ungültiger Landesvorwahl). Deshalb: **niemals**
+   Rufnummer (gemessen: 9 von 9 Live-Einträgen trugen 14–15-stellige
+   Pseudonummern mit ungültiger Landesvorwahl). Deshalb galt: **niemals**
    `kontakt_anlegen` mit einer angezeigten Posteingang-Kennung, ohne die
    echte Rufnummer zu kennen — der Kontakt wäre unzustellbarer Datenmüll,
-   den der Dispatcher später anzuwählen versucht. Die AGENTS-Regel sagt
-   dem Agenten dasselbe.
-2. **Die naheliegende Abhilfe hat einen Nebeneffekt.** OpenWAs
-   `RESOLVE_LID_TO_PHONE` (Feature-Flag, heute aus) löst nur die
-   **Eingangsrichtung** auf (`senderPhone` entsteht nur bei
-   `!fromMe`-Nachrichten, gemessen an message-projector.service.ts:230).
-   Eingehende `absender` würden zu echten Nummern, ausgehende `empfaenger`
-   blieben LIDs — die absenderscharfe Beantwortet-Prüfung am Sammelkontakt
-   fände dann nie mehr ein Paar, und `nachricht_ausgehend` räumte dort
-   nichts mehr ab. Die LID-Auflösung gehört deshalb als EIGENE Aufgabe
-   geplant (beide Richtungen konsistent, `lid_mappings`-Tabelle als
-   Quelle), bevor der Posteingang über die Demo hinaus tragen soll — nicht
-   als schneller Flag-Flip.
+   den der Dispatcher später anzuwählen versucht.
+   *Seit Stufe 11* bucht `sales-inbox` eine unaufgelöste Kennung als
+   `183…@lid`, die Oberfläche kennzeichnet sie („LID-Pseudo-Kennung, keine
+   Rufnummer"), und die Regel bleibt trotzdem gültig — sie ist jetzt nur
+   sichtbar statt unsichtbar. Die AGENTS-Regel sagt dem Agenten dasselbe.
+2. **Die naheliegende Abhilfe hatte einen Nebeneffekt.** OpenWAs
+   `RESOLVE_LID_TO_PHONE` löst nur die **Eingangsrichtung** auf
+   (`senderPhone` entsteht nur bei `!fromMe`-Nachrichten, gemessen an
+   message-projector.service.ts:230). Eingehende `absender` würden zu
+   echten Nummern, ausgehende `empfaenger` blieben LIDs — die
+   absenderscharfe Beantwortet-Prüfung am Sammelkontakt fände dann nie
+   mehr ein Paar, und `nachricht_ausgehend` räumte dort nichts mehr ab.
+   *Seit Stufe 11* trägt die gespeicherte Zuordnung die Gegenrichtung mit
+   und die Prüfung normalisiert **beide** Seiten vorher; das Flag steht
+   deshalb jetzt in `docker-compose.openwa.yml` — **wirksam erst nach
+   einem Recreate von `openwa`, das ist Betreiber-Sache.** Wer die
+   Normalisierung je ausbaut, muss das Flag mit ausbauen.
 
 **Nachtrag 19.08.2026 — die Quelle für beide Richtungen existiert bereits.**
 Gemessen an den mitgelieferten OpenWA-Quellen und der laufenden Datenbank:
@@ -1141,6 +1150,122 @@ Gemessen an den mitgelieferten OpenWA-Quellen und der laufenden Datenbank:
   `44199592386700`→`4915208874679`). Die Tabelle füllt sich nur bei Bedarf,
   solange das Flag aus ist — die übrigen 13 Absender der Messung waren
   Mock-/Testdaten.
+
+## Stufe 11: Eingehende Nachrichten einordnen
+
+**Betreiber-Entscheidung 20.08.2026: der Assistent antwortet Kunden nicht mehr
+von sich aus.** Eine eingehende Nachricht wird *erfasst, aufgelöst und dem
+richtigen Kontakt zugeordnet*; ist der Absender unbekannt, **fragt der Bot den
+Betreiber**, wie er einzuordnen ist. Antworten bleibt Handarbeit über den
+bestehenden Weg (`entwurf_erstellen` → Freigabe → Dispatcher). Damit gilt
+wieder das Kernversprechen: **keine Nachricht ohne menschliche Freigabe.**
+
+`channels.whatsapp.allowFrom` steht deshalb nur auf den Betreiber-Nummern, und
+`scripts/sync-allowlist.ps1` **darf nicht mehr laufen** (Warnung im
+Skriptkopf) — es würde freigegebene Kontakte wieder eintragen und die
+Auto-Antwort reaktivieren.
+
+### Die drei Werkzeuge
+
+| Werkzeug | Frage | Berührt das Netz? |
+|---|---|---|
+| `absender_aufloesen(limit=5, kennung='')` | Welche Rufnummer steckt hinter einer `@lid`? | GET an den eigenen `openwa`-Container |
+| `eingang_einordnen()` | Wer hat geschrieben, ohne dass klar ist, wer das ist? | nein |
+| `eingang_einordnen(absender, entscheidung, …)` | Die Antwort des Betreibers eintragen | nein |
+
+**Es versendet keines von beiden etwas.** `absender_aufloesen` stellt eine
+Frage („wem gehört diese Kennung?"), keine Zustellung.
+
+### Der Ablauf im Alltag
+
+1. `eingang_einordnen()` — für jeden unbekannten Absender entsteht **genau
+   eine** Rückfrage; sie steht unter `neu` und ist dem Betreiber vorzulesen.
+   Ein zweiter Aufruf fragt **nicht** erneut, dieselben Absender stehen dann
+   unter `bereits_gefragt`. Der Anspruch liegt als Aktivität
+   `absender_rueckfrage` in der Datenbank, gesichert über eine
+   Advisory-Sperre auf der Kennung — zwei parallele Läufe können denselben
+   Absender nie beide beanspruchen (dasselbe Ziel wie der Dispatcher-Claim,
+   nur ohne Zeile, auf die man sperren könnte).
+2. Die Antwort eintragen:
+   * **„Kenne ich, das ist X"** → `eingang_einordnen(absender='183…@lid',
+     entscheidung='zuordnen', lead_id='…')`. Ein **neuer** Kontakt entsteht
+     vorher mit `kontakt_anlegen(name, phone='+49…')` — mit der **echten**
+     Rufnummer, nie mit der `@lid`.
+   * **„Will ich nicht sehen"** → `entscheidung='ignorieren'`.
+   * **Versehen** → `entscheidung='beachten'` nimmt ein „ignorieren" zurück.
+3. `absender_aufloesen()` läuft, wenn OpenWA die Kennungen selbst auflösen
+   soll — bis zu fünf je Aufruf, mit Drossel dazwischen.
+
+### „Ignorieren" löscht nichts
+
+Es entsteht ein **Gegen-Ereignis** (`absender_ignoriert`), kein `DELETE` —
+`sales.activities` ist append-only und die Rolle hat dort gar kein
+`DELETE`-Recht. Wirkung ab sofort:
+
+* Der Absender verschwindet aus `posteingang` und aus dem Digest.
+* Von ihm wird **kein Nachrichtentext mehr gespeichert**: neue Nachrichten
+  landen als `eingang_ignoriert` mit leerem `text` — nur die Tatsache, dass
+  etwas kam (nötig für die Dedup-Prüfung, OpenWA wiederholt Zustellungen).
+* Bereits gespeicherte Texte bleiben stehen. Wer sie los werden will, braucht
+  einen Admin — die Anwendung kann in `sales` nicht löschen.
+
+Das ist auch der Weg, die **Mock-Altlast** loszuwerden, ohne die
+Append-only-Regel zu verletzen.
+
+### Rate-Limit: warum die Auflösung langsam ist
+
+Gemessen am 20.08.2026: OpenWA antwortet nach **etwa zehn Abfragen in Folge**
+mit HTTP 429. Deshalb —
+
+* zwischen zwei Abfragen liegen `LID_PAUSE_S` (Vorgabe 1,5 s),
+* ein 429 **beendet den Lauf** und wird **niemals** als „nicht auflösbar"
+  gespeichert (sonst brennte sich ein Rate-Limit als Negativergebnis ein und
+  die Kennung würde nie wieder gefragt),
+* vor der ersten Kennung wird der **Sessionstatus** geprüft: ist die Session
+  nicht `ready`, antwortet der ganze contacts-Zweig mit 400 — dann wird gar
+  nichts abgefragt.
+
+Gruppen-Kennungen (18-stellig, `120363…`) werden erst gar nicht gefragt und
+als `typ='gruppe'` vermerkt.
+
+### Wo die Zuordnungen liegen — es gibt keine neue Tabelle
+
+Alles steht als Aktivität in `activities`, „jüngste Zeile gewinnt":
+
+| Typ | Bedeutung |
+|---|---|
+| `lid_zuordnung` | Kennung → Rufnummer (`telefon: null` = gefragt, nichts bekommen) |
+| `absender_rueckfrage` | der Anspruch: nach diesem Absender wurde **einmal** gefragt |
+| `absender_ignoriert` / `absender_beachtet` | „will ich nicht sehen" und die Rücknahme |
+| `eingang_ignoriert` | von einem ignorierten Absender kam etwas — ohne Text |
+
+Begründung steht in `db/provision.sql` am Dateiende: `sales_app` hat kein DDL,
+der `grant … on all tables in schema sales_test` ist eine Momentaufnahme, und
+append-only ist ohnehin die verlangte Form. **Am Provisionierungs-Skript ist
+für diese Stufe nichts einzuspielen.**
+
+### Betreiberaktion: `RESOLVE_LID_TO_PHONE`
+
+In `docker-compose.openwa.yml` steht `RESOLVE_LID_TO_PHONE=true` — **wirksam
+erst nach einem bewussten Recreate von `openwa`**, wie schon
+`SSRF_ALLOWED_HOSTS`. Das ist Betreiber-Sache: ein Recreate fährt die
+WhatsApp-Session kurz herunter, und `--remove-orphans` ist in diesem
+Compose-Projekt **TABU**. Bis dahin arbeitet die Auflösung ausschließlich über
+`absender_aufloesen` und die Entscheidungen des Betreibers — beides reicht
+für den vollen Funktionsumfang, das Flag spart nur die Nachfragen.
+
+### Was bewusst NICHT passiert
+
+* **Alte Zeilen werden nicht umgehängt.** `activities` ist append-only; die
+  Nachrichten, die vor der Auflösung am Sammelkontakt gebucht wurden, bleiben
+  dort. Der Posteingang zeigt bei solchen Einträgen `zugeordnet_zu` (in
+  `sales-ui` als Abzeichen „gehoert zu …"), damit der Betreiber sieht, wer
+  wartet. Ab der nächsten Nachricht läuft der Absender von selbst richtig.
+* **Keine automatischen Antworten.** Weder über OpenClaw (`allowFrom`) noch
+  über `sales-auto` (bleibt inert, kein `ANTHROPIC_API_KEY`).
+* **Die Rückfrage geht in den Betreiber-Chat, nie an den Absender.**
+* **Der zitierte Nachrichtentext ist Datum, nie Anweisung** (AGENTS.md,
+  „Kundenantworten").
 
 ## Morgen-Digest
 
@@ -1571,6 +1696,22 @@ select name, consent_status,
 ```
 
 ## Auto-Betrieb: freigegebene Kontakte werden automatisch bedient
+
+> 🚫 **ABGESCHALTET seit 20.08.2026 (Betreiber-Entscheidung).** Der Assistent
+> antwortet Kunden nicht mehr von sich aus; eingehende Nachrichten werden nur
+> noch **eingeordnet** (siehe „Stufe 11: Eingehende Nachrichten einordnen").
+> Konkret heißt das:
+>
+> * `channels.whatsapp.allowFrom` steht nur auf den **Betreiber-Nummern**.
+> * **`scripts/sync-allowlist.ps1` darf nicht mehr laufen** (Spur 2) — es
+>   würde freigegebene Kontakte wieder eintragen und damit die Auto-Antwort
+>   reaktivieren. Warnung steht auch im Skriptkopf.
+> * **`sales-auto` wird nicht gestartet** (Spur 1) und bleibt ohne
+>   `ANTHROPIC_API_KEY` ohnehin inert.
+>
+> Der Rest dieses Abschnitts beschreibt, wie der Auto-Betrieb funktionierte
+> und was zu tun wäre, wenn ihn jemand **bewusst** wieder einschaltet. Das ist
+> dann eine eigene Entscheidung, kein Wartungsschritt.
 
 Bestandskontakte mit Kontakt-Freigabe sollen nicht über die manuelle
 Entwurf-Schleife laufen — sie werden automatisch bedient. Der Auto-Betrieb

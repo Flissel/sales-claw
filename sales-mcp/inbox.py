@@ -81,6 +81,37 @@ Baileys/`*`-Abos schneiden anders). Der REGISTRIERTE Webhook ist davon
 unberuehrt: er abonniert heute nur `message.received` und muss vom Betreiber
 um `message.sent` erweitert werden (docs/03_RUNBOOK.md).
 
+WER HAT GESCHRIEBEN — DIE REIHENFOLGE (Stufe 11, T2)
+----------------------------------------------------
+WhatsApp adressiert die Chats dieser Session seit dem 18.08.2026 fast
+durchgehend als `@lid` (Privacy-ID) statt `@c.us` (Rufnummer). Eine `@lid` ist
+KEINE Rufnummer. Aufgeloest wird deshalb in genau dieser Reihenfolge
+(`_kennung`), jede Stufe nur, wenn die vorige nichts hergab:
+
+    senderPhone (OpenWA)  ->  gespeicherte Zuordnung  ->  Sammelkontakt
+
+`senderPhone` entsteht nur, wenn OpenWAs `RESOLVE_LID_TO_PHONE` an ist, und
+nur in der EINGANGSRICHTUNG (message-projector.service.ts, `!fromMe`-Zweig).
+Die zweite Stufe — `server.lid_telefon`, gespeist aus `absender_aufloesen`
+und den Entscheidungen des Betreibers — traegt deshalb die AUSGANGSRICHTUNG
+mit. Ohne sie waere das Flag ein Schuss ins Knie: eingehende `absender`
+wuerden Rufnummern, ausgehende `empfaenger` blieben LIDs, und die
+absenderscharfe Beantwortet-Pruefung faende nie mehr ein Paar (Review-Befund
+M1, docs/03_RUNBOOK.md).
+
+Bleibt alles erfolglos, wird die Kennung ausdruecklich als `183…@lid`
+gebucht — NICHT als `183…@c.us`. Die alte Schreibweise sah aus wie eine
+Rufnummer und hat dazu verleitet, sie als Kontakt anzulegen (Befund H1).
+
+WAS VON EINEM IGNORIERTEN ABSENDER GESPEICHERT WIRD (Stufe 11, T5)
+------------------------------------------------------------------
+Hat der Betreiber einen Absender ueber `eingang_einordnen` als „ignorieren"
+eingeordnet, wird von ihm KEIN Nachrichtentext mehr gespeichert — nur die
+Tatsache, dass etwas kam (Typ `eingang_ignoriert`, `text` leer). Damit landen
+private Chats nicht dauerhaft in einer Vertriebsdatenbank. Gar nichts zu
+buchen waere schlechter: OpenWA wiederholt Zustellungen, und ohne Zeile gaebe
+es nichts zu deduplizieren.
+
 WARUM SO STRENG
 ---------------
 1. **Signatur zuerst, immer.** Vor der Verifikation wird nichts geparst und
@@ -127,6 +158,7 @@ from urllib.parse import urlsplit
 
 import psycopg
 
+import lid
 import server
 from nummern import normalisiere_empfaenger
 
@@ -232,37 +264,77 @@ def _ziffern(jid) -> str:
                    if z.isdigit())
 
 
-def absender_nummer(daten: dict):
-    """JID der Nachricht -> ("49…@c.us", None) oder (None, Grund).
+def _kennung(roh, senderphone=None):
+    """Rohe Gegenstelle -> (Kennung, Quelle, Grund). DIE Reihenfolge (T2).
 
-    `senderPhone` schlaegt den JID, wenn es dasteht: bei einem `@lid`-Absender
-    (Privacy-ID) ist der JID keine Rufnummer, die aufgeloeste Nummer schon.
-    Der Rest ist bewusst duenn — die Regel selbst liegt in `nummern.py`.
+    Drei Stufen, in genau dieser Reihenfolge — jede spaetere greift nur, wenn
+    die vorige nichts hergab:
+
+    1. **`senderPhone`** (OpenWA hat selbst aufgeloest). Steht nur bei
+       eingehenden Nachrichten und nur, wenn `RESOLVE_LID_TO_PHONE` an ist
+       (gemessen: message-projector.service.ts setzt es im `!fromMe`-Zweig).
+    2. **Die gespeicherte Zuordnung** (`server.lid_telefon`) — was ein
+       frueherer `absender_aufloesen`-Lauf oder der Betreiber selbst
+       eingetragen hat. Das ist die Gegenrichtung, ohne die Punkt 1 die
+       Beantwortet-Pruefung zerlegen wuerde (Review-Befund M1).
+    3. **Die Kennung selbst**, unaufgeloest — und dann ausdruecklich als
+       `183…@lid`, NICHT als `183…@c.us`. Eine LID ist keine Rufnummer; sie
+       als solche auszugeben hat schon einmal dazu verleitet, sie als Kontakt
+       anzulegen (Review-Befund H1). Der Sammelkontakt faengt sie auf.
+
+    Eine Gegenstelle OHNE `@lid`-Domain (`…@c.us`, `…@s.whatsapp.net`, mit
+    oder ohne `:geraet`-Suffix) ist eine echte Rufnummer und laeuft direkt
+    durch `nummern.py` — ausdruecklich als `+<ziffern>`, damit die
+    49-Sonderregel fuer blanke Folgen (BLANK_PRAEFIX) nicht greift und eine
+    oesterreichische Nummer nicht als unzustellbar gilt.
     """
-    telefon = daten.get("senderPhone")
-    roh = str(telefon) if telefon else str(
-        daten.get("author") or daten.get("from") or "")
-    # `491701234567:12@s.whatsapp.net` — Geraetesuffix und Domain abschneiden.
+    # Ein `senderPhone`, das sich nicht normalisieren laesst, faellt
+    # stillschweigend auf die naechste Stufe durch: es ist ein Hinweis von
+    # OpenWA, keine Wahrheit — und die Kennung selbst kennen wir immer noch.
+    if senderphone and _ziffern(senderphone):
+        chat_id, _fehler = normalisiere_empfaenger("+" + _ziffern(senderphone))
+        if chat_id:
+            return chat_id, "senderPhone", None
+
     ziffern = _ziffern(roh)
     if not ziffern:
-        return None, "Absender ohne Rufnummer (Privacy-ID ohne Aufloesung)"
-    # Ausdruecklich international: der JID fuehrt die Landesvorwahl technisch
-    # immer mit, blank wuerde nummern.py nur `49…` vertrauen (BLANK_PRAEFIX).
-    return normalisiere_empfaenger("+" + ziffern)
+        return None, None, "Gegenstelle ohne lesbare Kennung"
+
+    if lid.ist_lid(roh):
+        telefon = server.lid_telefon(ziffern)
+        if telefon:
+            return telefon, "zuordnung", None
+        # Unaufgeloest: als LID kenntlich weitergeben, nicht als Rufnummer.
+        return lid.als_lid(ziffern), "lid", None
+
+    chat_id, fehler = normalisiere_empfaenger("+" + ziffern)
+    return chat_id, ("jid" if chat_id else None), fehler
 
 
-def empfaenger_nummer(daten: dict):
-    """Bei einer EIGENEN Nachricht: der Chat, in dem sie steht -> Kundennummer.
+def absender_kennung(daten: dict):
+    """Wer hat geschrieben -> (Kennung, Quelle, Grund).
 
-    Gegenstueck zu `absender_nummer`, und bewusst eine eigene Funktion: bei
-    `fromMe` traegt `from` die eigene Nummer, der Kunde steht in `chatId`
-    (== `to`; gemessen, siehe Moduldocstring). Wer hier `absender_nummer`
-    benutzte, buchte jede eigene Antwort auf die eigene Nummer.
+    Die Kennung ist entweder eine Rufnummer (`49…@c.us`) oder eine
+    unaufgeloeste Privacy-ID (`183…@lid`). Bei Gruppen-Nachrichten steht der
+    Teilnehmer in `author`, sonst in `from`.
     """
-    ziffern = _ziffern(daten.get("chatId") or daten.get("to"))
-    if not ziffern:
-        return None, "Chat ohne Rufnummer (Privacy-ID ohne Aufloesung)"
-    return normalisiere_empfaenger("+" + ziffern)
+    return _kennung(daten.get("author") or daten.get("from"),
+                    daten.get("senderPhone"))
+
+
+def empfaenger_kennung(daten: dict):
+    """Bei einer EIGENEN Nachricht: der Chat, in dem sie steht -> Gegenstelle.
+
+    Gegenstueck zu `absender_kennung`, und bewusst eine eigene Funktion: bei
+    `fromMe` traegt `from` die eigene Nummer, der Kunde steht in `chatId`
+    (== `to`; gemessen, siehe Moduldocstring). Wer hier `absender_kennung`
+    benutzte, buchte jede eigene Antwort auf die eigene Nummer.
+
+    `senderPhone` wird hier NICHT gelesen: es entsteht nur im
+    `!fromMe`-Zweig — die ausgehende Richtung kommt ueber die gespeicherte
+    Zuordnung zum selben Ergebnis (T3).
+    """
+    return _kennung(daten.get("chatId") or daten.get("to"))
 
 
 def selbst_chat_grund(daten: dict):
@@ -328,7 +400,10 @@ def lead_zu_nummer(chat_id: str):
 # dasselbe Ereignis einmal als `message.received` und einmal als
 # `message.sent` zustellte (ein `*`-Abo oder ein Engine-Wechsel machen das
 # moeglich). Zwei getrennte Pruefungen liessen genau diese Zeile doppelt.
-PROTOKOLL_TYPEN = ("kundenantwort", "nachricht_ausgehend")
+# `eingang_ignoriert` gehoert dazu, obwohl es keinen Text traegt (Stufe 11):
+# eine wiederholte Zustellung darf auch dort keine zweite Zeile erzeugen.
+EINGANG_IGNORIERT = server.EINGANG_IGNORIERT
+PROTOKOLL_TYPEN = ("kundenantwort", "nachricht_ausgehend", EINGANG_IGNORIERT)
 
 
 def bereits_gespeichert(message_id: str) -> bool:
@@ -417,16 +492,62 @@ def verarbeite(roh: bytes, signatur):
     return _eingehend(daten, message_id)
 
 
+def _db_ausfall(e):
+    """Datenbankfehler -> (503, Grund). EINE Stelle fuer alle DB-Beruehrungen.
+
+    503 und nicht 500: OpenWA wiederholt bei 5xx (Moduldocstring), die
+    Nachricht geht also nicht verloren. Ein Traceback dagegen beendet die
+    Verbindung und der Aufrufer bekommt gar keine Antwort — genau das ist
+    passiert, als die Aufloesung des Absenders (Stufe 11) eine zweite
+    Datenbank-Beruehrung VOR den Insert legte, ohne sie mitzusichern.
+    """
+    if isinstance(e, psycopg.OperationalError):
+        LOG.error("Datenbank nicht erreichbar — nichts gespeichert, 503 "
+                  "(OpenWA wiederholt).")
+        return 503, {"fehler": "Datenbank nicht erreichbar"}
+    LOG.error("Datenbankfehler (%s) — nichts gespeichert, 503.", e.sqlstate)
+    return 503, {"fehler": "Datenbankfehler"}
+
+
 def _eingehend(daten: dict, message_id: str):
-    """Der Kunde hat geschrieben -> `kundenantwort`, actor='human'."""
-    chat_id, nummern_fehler = absender_nummer(daten)
+    """Der Kunde hat geschrieben -> `kundenantwort`, actor='human'.
+
+    AUSNAHME (Stufe 11, T5): hat der Betreiber diesen Absender als
+    „ignorieren" eingeordnet, wird nur noch die TATSACHE gebucht — Typ
+    `eingang_ignoriert`, ohne ein Zeichen Nachrichtentext. Damit landen
+    private Freundschaftschats nicht dauerhaft in der Vertriebsdatenbank, und
+    die Zeile bleibt trotzdem dedupbar (OpenWA wiederholt Zustellungen).
+    Gar nichts zu buchen waere die schlechtere Wahl: dieselbe Nachricht kaeme
+    dann bei jedem Wiederholungsversuch erneut an.
+    """
+    try:
+        kennung, quelle, kennung_fehler = absender_kennung(daten)
+        ignoriert = bool(kennung) and server.absender_ist_ignoriert(kennung)
+    except psycopg.Error as e:
+        return _db_ausfall(e)
+
+    if ignoriert:
+        nutzlast = {
+            **_textteil(daten, message_id),
+            "text": "", "gekuerzt": False, "ohne_text": True,
+            "richtung": "eingehend", "absender": kennung,
+            "unbekannter_absender": False,
+        }
+        LOG.info("Eingang von %s ignoriert — nur die Tatsache gebucht, "
+                 "kein Text.", _maskiert(kennung))
+        return _buchen(EINGANG_IGNORIERT, "human", kennung, kennung_fehler,
+                       nutzlast, "unbekannter_absender",
+                       str(daten.get("from")))
+
     nutzlast = {
         **_textteil(daten, message_id),
         "richtung": "eingehend",
-        "absender": chat_id or str(daten.get("from") or ""),
+        "absender": kennung or str(daten.get("from") or ""),
         "unbekannter_absender": False,
     }
-    return _buchen("kundenantwort", "human", chat_id, nummern_fehler, nutzlast,
+    if quelle:
+        nutzlast["kennung_quelle"] = quelle
+    return _buchen("kundenantwort", "human", kennung, kennung_fehler, nutzlast,
                    "unbekannter_absender", str(daten.get("from")))
 
 
@@ -463,16 +584,21 @@ def _ausgehend(daten: dict, message_id: str):
         LOG.info("Eigene Nachricht verworfen: %s", grund)
         return 200, {"verworfen": grund}
 
-    chat_id, nummern_fehler = empfaenger_nummer(daten)
+    try:
+        kennung, quelle, kennung_fehler = empfaenger_kennung(daten)
+    except psycopg.Error as e:
+        return _db_ausfall(e)
     nutzlast = {
         **_textteil(daten, message_id),
         "richtung": "ausgehend",
-        "empfaenger": chat_id or str(daten.get("chatId")
+        "empfaenger": kennung or str(daten.get("chatId")
                                      or daten.get("to") or ""),
         "weg": "unbekannt",
         "unbekannter_empfaenger": False,
     }
-    return _buchen("nachricht_ausgehend", "agent", chat_id, nummern_fehler,
+    if quelle:
+        nutzlast["kennung_quelle"] = quelle
+    return _buchen("nachricht_ausgehend", "agent", kennung, kennung_fehler,
                    nutzlast, "unbekannter_empfaenger",
                    str(daten.get("chatId") or daten.get("to")))
 
@@ -517,13 +643,8 @@ def _buchen(typ: str, actor: str, chat_id, nummern_fehler, nutzlast: dict,
                 lead_id = str(lead["id"])
 
             akt_id = speichern(lead_id, nutzlast, typ, actor)
-    except psycopg.OperationalError:
-        LOG.error("Datenbank nicht erreichbar — nichts gespeichert, 503 "
-                  "(OpenWA wiederholt).")
-        return 503, {"fehler": "Datenbank nicht erreichbar"}
     except psycopg.Error as e:
-        LOG.error("Datenbankfehler (%s) — nichts gespeichert, 503.", e.sqlstate)
-        return 503, {"fehler": "Datenbankfehler"}
+        return _db_ausfall(e)
 
     LOG.info("%s gespeichert: lead=%s gegenstelle=%s typ=%s zeichen=%d "
              "unbekannt=%s", typ, lead_id,

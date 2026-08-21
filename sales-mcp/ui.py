@@ -654,6 +654,14 @@ async def posteingang(request):
             # solche kennzeichnen, sonst tippt jemand sie als Nummer ab.
             lid = (' <span class="badge lid">LID-Pseudo-Kennung, keine '
                    'Rufnummer</span>' if "@lid" in str(e["absender"]) else "")
+            # Stufe 11: die Kennung ist aufgeloest und gehoert einem Kontakt.
+            # Die alten Zeilen bleiben am Sammelkontakt (activities ist
+            # append-only) — der Betreiber soll trotzdem sehen, WER wartet.
+            if "zugeordnet_zu" in e:
+                lid += (f' <span class="badge">gehoert zu '
+                        f'<a href="/kontakte/{_e(e["zugeordnet_zu"])}">'
+                        f'{_e(e.get("zugeordnet_name") or "Kontakt")}</a>'
+                        f'</span>')
             absender = f'<div class="meta">Absender: {_e(e["absender"])}{lid}</div>'
         teile.append(
             f'<div class="karte"><b><a href="/kontakte/{_e(e["lead_id"])}">'

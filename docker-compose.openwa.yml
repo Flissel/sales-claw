@@ -92,6 +92,26 @@ services:
       # Nach dem Recreate muss der Webhook einmal registriert werden (siehe
       # docs/03_RUNBOOK.md, Abschnitt „Eingehende Kundenantworten").
       - SSRF_ALLOWED_HOSTS=sales-inbox
+      # --- LID-Aufloesung in der Eingangsrichtung (Stufe 11, T2).
+      #
+      # NICHT AKTIV IM LAUFENDEN CONTAINER — wie SSRF_ALLOWED_HOSTS wirkt
+      # diese Zeile erst beim naechsten bewussten Recreate von openwa. Das ist
+      # Betreiber-Sache: ein Recreate faehrt die WhatsApp-Session kurz runter,
+      # und `--remove-orphans` ist in diesem Compose-Projekt TABU.
+      #
+      # Was es tut: OpenWA loest bei EINGEHENDEN Nachrichten die `@lid` auf
+      # und legt die Rufnummer als `senderPhone` in die Webhook-Nutzlast
+      # (gemessen: message-projector.service.ts, `!fromMe`-Zweig). Genau das
+      # ist Stufe 1 der Reihenfolge in sales-mcp/inbox.py.
+      #
+      # Der frueher notierte Einwand — das Flag loese NUR die Eingangsrichtung
+      # auf und zerlege damit die absenderscharfe Beantwortet-Pruefung
+      # (Review-Befund M1, docs/03_RUNBOOK.md) — ist mit Stufe 11 erledigt:
+      # die Ausgangsrichtung laeuft ueber dieselbe gespeicherte Zuordnung
+      # (server.lid_telefon), und die Pruefung normalisiert beide Seiten
+      # vorher (server._kanon). Ohne diese Stufe waere der Flag-Flip ein
+      # Rueckschritt gewesen; mit ihr ist er der vorgesehene Weg.
+      - RESOLVE_LID_TO_PHONE=true
       # --- Kein MCP_ENABLED-Eintrag (Grundsatzentscheidung 1 — Var bleibt
       # ungesetzt, nicht nur "false").
       # --- Kein DOCKER_HOST — Docker-Socket-Proxy von OpenWA bewusst nicht

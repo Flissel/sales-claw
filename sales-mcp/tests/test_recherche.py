@@ -525,8 +525,10 @@ def test_beide_werkzeuge_sind_registriert():
     # (test_uebergabe.py). Stufe 8: posteingang (test_posteingang.py).
     # Stufe 9: termin_bestaetigen (test_termin.py). Dazu die Kontakt-Freigabe
     # und der Auto-Betrieb: kontakt_freigeben, kontakt_freigabe_entziehen,
-    # kontakte_freigegeben (test_kontakt_freigabe.py).
-    assert len(namen) == len(set(namen)) == 31
+    # kontakte_freigegeben (test_kontakt_freigabe.py). Stufe 11:
+    # eingang_einordnen und absender_aufloesen (test_einordnung.py,
+    # test_lid.py).
+    assert len(namen) == len(set(namen)) == 33
 
 # ---------------------------------------------------------------------------
 # Nachbesserungen aus dem Stufe-5-Review (Befunde T1, B2, D2)
