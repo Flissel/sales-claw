@@ -175,7 +175,19 @@ import server
 BIND_HOST = os.environ.get("UI_HOST", "0.0.0.0")
 PORT = int(os.environ.get("UI_PORT", "8791"))
 # Nur diese Host-Header werden bedient (DNS-Rebinding, Moduldocstring).
-ERLAUBTE_HOSTS = (f"127.0.0.1:{PORT}", f"localhost:{PORT}")
+# UI_EXTRA_HOSTS traegt zusaetzliche Adressen nach, kommagetrennt und OHNE
+# Port (der wird angehaengt) — gedacht fuer genau einen Fall: den Zugriff vom
+# eigenen Handy ueber ein privates Netz (Tailscale). Die Liste ist eine
+# Erlaubnis, KEIN Schutz: wer den Port erreicht, kann den Host-Header
+# faelschen. Der eigentliche Schutz ist das Compose-Portmapping, das den Port
+# an genau die Loopback- und Tailscale-Adresse bindet und NICHT an 0.0.0.0 —
+# sonst laege die Oberflaeche im normalen WLAN offen, wo sie ohne Anmeldung
+# jedem Geraet Kundendaten zeigte.
+_EXTRA = [h.strip() for h in os.environ.get("UI_EXTRA_HOSTS", "").split(",")
+          if h.strip()]
+ERLAUBTE_HOSTS = tuple(
+    [f"127.0.0.1:{PORT}", f"localhost:{PORT}"]
+    + [f"{h}:{PORT}" for h in _EXTRA])
 # Boot-Token: lebt genau so lange wie der Prozess. Kein Persistieren, keine
 # Sessions — es gibt genau einen Betreiber, und ein Neustart der Seite im
 # Browser holt das frische Token von selbst (es steht in jedem Formular).
@@ -262,9 +274,10 @@ class HostWache:
         if host not in ERLAUBTE_HOSTS:
             antwort = _fehlerseite(
                 421, "Falscher Host",
-                "Diese Oberflaeche antwortet nur auf 127.0.0.1 bzw. "
-                "localhost. Anfragen unter fremdem Namen (DNS-Rebinding) "
-                "werden nicht bedient.")
+                "Diese Oberflaeche antwortet nur auf 127.0.0.1, localhost "
+                "und die ausdruecklich erlaubten Adressen (UI_EXTRA_HOSTS). "
+                "Anfragen unter fremdem Namen (DNS-Rebinding) werden nicht "
+                "bedient.")
             await antwort(scope, receive, send)
             return
 

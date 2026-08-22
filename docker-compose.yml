@@ -362,9 +362,25 @@ services:
       # lead_id, die auf jeder Kontaktseite steht — die T5a-Ueberlegung oben
       # (keine Schluessel ins UI) bleibt davon unberuehrt.
       - INBOX_UNBEKANNT_LEAD_ID=${INBOX_UNBEKANNT_LEAD_ID:-}
+      # Zusaetzlich erlaubte Host-Header, kommagetrennt ohne Port — fuer den
+      # Zugriff vom eigenen Handy ueber Tailscale. Leer lassen heisst: nur
+      # Loopback, wie in Stufe 10.
+      - UI_EXTRA_HOSTS=${UI_TAILSCALE_IP:-}
     ports:
-      # Nur Loopback (Begruendung oben und in ui.py).
+      # Loopback IMMER. Die zweite Zeile bindet den Port zusaetzlich an die
+      # Tailscale-Adresse dieses Rechners — ausdruecklich NICHT an 0.0.0.0:
+      # die Oberflaeche kennt keine Anmeldung, im normalen WLAN stuende sie
+      # jedem Geraet offen. Ueber Tailscale kommt nur heran, wer im privaten
+      # Netz des Betreibers angemeldet ist.
+      #
+      # FALLE: laeuft Tailscale nicht, existiert die Adresse nicht und der
+      # Container startet mit „cannot assign requested address" NICHT. Das ist
+      # gewollt — lieber eine Oberflaeche, die fehlt, als eine, die im
+      # falschen Netz haengt. Ohne gesetzte UI_TAILSCALE_IP faellt die Zeile
+      # auf Loopback zurueck und ist damit wirkungslos (doppeltes Mapping
+      # derselben Adresse ist erlaubt).
       - "127.0.0.1:8791:8791"
+      - "${UI_TAILSCALE_IP:-127.0.0.1}:8791:8791"
     logging:
       driver: json-file
       options:
