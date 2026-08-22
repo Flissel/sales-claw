@@ -2010,8 +2010,10 @@ docker compose up -d sales-ui
 **Was es kann und was nicht:** Lesen; schreiben ausschließlich (a) die drei
 Freigabe-Aktionen (freigeben, ablehnen, erneut freigeben) mit exakt den
 SQL-Bedingungen der Chat-Werkzeuge, als `approved_by='betreiber-ui'` im Audit
-unterscheidbar, und (b) die Einordnung unbekannter Absender (siehe
-„Einordnungs-Seite" unten). Kein Editieren, kein Löschen, kein Versand.
+unterscheidbar, (b) die Einordnung unbekannter Absender (siehe
+„Einordnungs-Seite" unten) und (c) die Kontaktpflege — Stammdaten korrigieren
+und Kontakte archivieren bzw. wiederherstellen (siehe „Kontaktpflege" unten).
+**Kein Löschen, kein Versand.**
 Ein Entwurf mit der Zustellungs-Marke „in Zustellung …" (möglicher
 Doppelversand) wird im UI **grundsätzlich nicht** erneut freigegeben — dieser
 Weg bleibt bewusst dem Chat vorbehalten
@@ -2069,6 +2071,109 @@ und darf nie als `phone` eines Kontakts landen (Review-Befund H1). Die Seite
 sagt das und nennt den Weg: erst im Chat `absender_aufloesen(kennung=…)`,
 danach hier anlegen oder zuordnen. Ist die Nummer bereits bekannt (gespeicherte
 Zuordnung), geht „Neu anlegen" auch für eine `@lid`.
+
+### Kontaktpflege `/kontakte/{id}` — bearbeiten und archivieren (Betreiber-Wunsch 21.08.2026)
+
+**Bearbeiten.** Auf der Kontaktseite steht ein Formular mit genau den Feldern,
+die `kontakt_aktualisieren` erlaubt: **`name`, `phone`, `email`** — mehr nicht.
+Die Oberfläche hält dafür keine eigene Liste, sie liest `server.KONTAKT_FELDER`
+und ruft je geändertem Feld das Werkzeug auf (kein eigenes SQL). Damit erbt sie
+dessen Whitelist und dessen Protokoll.
+
+Ausdrücklich **nicht** änderbar und ausdrücklich kein Versehen:
+
+| Feld | Warum nicht hier |
+|---|---|
+| `consent_status` | Die Einwilligung entsteht aus einer **Antwort des Kontakts** (`bedarf_speichern(..., 'consent_kontakt', …)`), nicht aus einem Formularfeld. Ein Klick des Betreibers ist keine Einwilligung (UWG). |
+| `status` | Vertriebsstand; er entsteht aus dem Verlauf, nicht aus einer Korrektur. |
+| `enrichment` (Profil, Bedarf, Verträge, Freigaben) | Dafür gibt es `profil_aktualisieren`, `vertrag_speichern`, `kontakt_freigeben`. Ein Freitextfeld darüber wäre der Weg, die WhatsApp-Freigabe beiläufig zu setzen. |
+
+Werte werden **vor dem ersten Schreibversuch vollständig geprüft** — mit
+denselben Modulen, die über Zustellbarkeit entscheiden (`nummern.py`,
+`mailadresse.py`). Scheitert ein Feld, wird **gar nichts** geschrieben (ein
+Formular trägt drei Felder; halb angewandt wäre schlimmer als abgelehnt). Die
+Oberfläche ist damit an dieser Stelle **strenger** als das Chat-Werkzeug, das
+eine national geschriebene Nummer (`0170…`) klaglos speichert — strenger ist
+erlaubt, lockerer nie. Ein leeres Feld löscht die Angabe; beim Namen nicht
+(ein Kontakt ohne Namen ist nicht vorgesehen).
+
+**Die Telefonnummer ist heikel** und die Oberfläche sagt es beim Speichern:
+sie ist der Schlüssel, über den eingehende Nachrichten zugeordnet werden.
+Nachrichten von der **alten** Nummer landen danach beim Sammelkontakt
+„Unbekannte Eingänge" und müssen unter `/einordnung` neu zugeordnet werden;
+ausgehende Entwürfe gehen an die **neue**. Bereits gebuchte Zeilen bleiben, wo
+sie sind (`activities` ist append-only). Läuft der Kontakt im Auto-Betrieb,
+greift die Änderung dort erst nach `scripts/sync-allowlist.ps1`.
+
+**Protokoll.** Jede Änderung steht doppelt im Verlauf, und das ist Absicht: das
+Werkzeug schreibt je Feld eine `korrektur`-Zeile mit **vorher/nachher** (mit
+dem Spalten-Default `actor='agent'`, den es nicht überschreiben kann), die
+Oberfläche schreibt daneben **genau eine** Herkunftszeile mit `actor='human'`
+und `weg='ui'`. Ohne die wäre eine Korrektur des Menschen im append-only-Log
+von einer Agenten-Korrektur nicht zu unterscheiden; nachtragen lässt sie sich
+nicht, weil es auf `activities` kein UPDATE gibt.
+
+**Archivieren statt Löschen.** Ein Kontakt lässt sich aus den Standardansichten
+nehmen: er verschwindet aus der **Kontaktliste**, aus dem **Posteingang** und
+aus der **Zuordnungsauswahl** von `/einordnung`. Über den Schalter „auch
+archivierte zeigen" (`/kontakte?archiv=1`) bleibt er sichtbar, über seine
+Adresse jederzeit erreichbar, und „Wiederherstellen" holt ihn zurück.
+
+* **Zwei Schritte, wie beim Ignorieren eines echten Kontakts.** Der erste POST
+  schreibt **nichts** — er zeigt eine Warnseite mit dem Namen, der Anzahl der
+  Aktivitäten und den offenen Entwürfen. Erst der zweite POST auf eine eigene
+  Route wirkt, und er trägt den **Namen**, den der Betreiber gelesen hat; heißt
+  der Kontakt beim Eintreffen anders, wird nichts getan (409).
+* **Archivieren hält keinen Versand an.** Freigegebene Entwürfe stellt der
+  Dispatcher weiter zu, die WhatsApp-Freigabe bleibt bestehen. Wer das nicht
+  will: Entwürfe ablehnen und `kontakt_freigabe_entziehen`. Die Warnseite sagt
+  es, wenn freigegebene Entwürfe anhängen.
+* **Der Sammelkontakt lässt sich nicht archivieren** — an ihm hängt jede
+  Nachricht einer noch unbekannten Nummer; archiviert wäre der Posteingang für
+  Unbekannte blind.
+* Gespeichert wird das Merkmal als Schlüssel `archiviert` direkt unter
+  `leads.enrichment` (Muster `whatsapp_freigabe`). **Kein DDL, kein neuer
+  Status:** die Rolle `sales_app` darf kein DDL, und der CHECK auf
+  `leads.status` kennt nur `new/researched/qualified/contacted/replied/meeting/
+  won/lost`. Selbst mit DDL wäre `status` der falsche Ort — er trägt den
+  Vertriebsstand, ein Archivmerkmal darin löschte die Information, warum der
+  Kontakt zuletzt so dastand.
+* Im Chat gibt es dieselbe Möglichkeit: `kontakt_archivieren(lead_id)` und
+  `kontakt_wiederherstellen(lead_id)`. Das ist Absicht — die Oberfläche darf
+  nichts können, was die Chat-Werkzeuge nicht auch können. `kontakt_suchen` und
+  `profil_lesen` nennen den Stand als `archiviert`; **gesucht** werden
+  archivierte Kontakte weiterhin, sonst legte der nächste Griff eine Dublette an.
+  Die Werkzeugliste ist damit 35 Werkzeuge lang (vorher 33).
+* **Die beiden neuen Chat-Werkzeuge stehen erst nach einem Neustart von
+  `sales-mcp` zur Verfügung** (`docker compose up -d --build sales-mcp`) — die
+  Werkzeugliste entsteht beim Prozessstart. Das Ausrollen der Oberfläche
+  (`docker compose up -d --build sales-ui`) ändert daran nichts und lässt den
+  laufenden MCP-Container bewusst in Ruhe; der Posteingang-Filter für
+  archivierte Kontakte greift im Chat also ebenfalls erst nach diesem Neustart.
+  **Bis dahin sehen Chat und Oberfläche verschieden:** ein in der Oberfläche
+  archivierter Kontakt steht im `posteingang`/`digest` des Chats weiter drin.
+  Kein Datenschaden, aber eine Verwirrungsquelle — wer archiviert, rollt beide
+  Container aus.
+
+**Warum es kein Löschen gibt — und auch nicht geben wird.** Der Auftrag nennt
+es nicht, und baubar wäre es ohnehin nicht:
+
+1. **Kein DELETE-Recht.** `sales_app` hat im Produktionsschema `sales` auf
+   keiner Tabelle DELETE (`db/provision.sql`: „Bewusst NICHT vergeben: DELETE
+   (nirgends)"). Ein Löschknopf endete dort mit SQLSTATE 42501. Dass er im
+   Testschema `sales_test` durchliefe, sagt **nichts**: dort hat die Rolle
+   volle Rechte, weil die truncate-Fixture sie braucht.
+2. **`ON DELETE CASCADE` auf `activities`.** Ein gelöschter Kontakt nähme seine
+   gesamte Historie mit — jede Nachricht, jede Freigabe, jede Einordnung. Die
+   append-only-Garantie (kein UPDATE, kein DELETE auf `activities`) wäre über
+   diesen Umweg ausgehebelt, und zwar unbemerkt: es fehlen nur Zeilen, und
+   keine davon erzählt, dass sie fehlt.
+3. **Ein echtes Löschen ist ein Admin-Eingriff.** Ein DSGVO-Löschbegehren wird
+   bewusst und außerhalb dieser Anwendung ausgeführt: mit Sicherung davor
+   (`docs/04_BACKUP_RESTORE.md`), mit Protokoll daneben, von einer Rolle, die
+   das Recht dafür hat (`supabase_admin`). Es gehört nicht hinter einen Knopf,
+   der aussieht wie „Zeile weg". Fragt jemand im Chat danach, sagen die
+   Werkzeuge dasselbe und bieten das Archivieren an.
 
 **Neue Umgebungsvariable am Container:** `sales-ui` bekommt seit dieser
 Änderung `INBOX_UNBEKANNT_LEAD_ID` (dieselbe wie `sales-inbox`, hier nur

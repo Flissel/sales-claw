@@ -688,15 +688,21 @@ def test_kontakt_aktualisieren_signatur_ueberlebt_den_dekorator():
     assert list(parameter) == ["lead_id", "feld", "wert"]
 
 
-def test_dreiunddreissig_werkzeuge_registriert():
+def test_fuenfunddreissig_werkzeuge_registriert():
     namen = {fn.__name__ for fn in server.WERKZEUGE}
-    assert len(namen) == 33
+    assert len(namen) == 35
     assert "kontakt_aktualisieren" in namen
     # Kontakt-Freigabe fuer WhatsApp und Auto-Betrieb. Vertragstests dazu in
     # tests/test_kontakt_freigabe.py.
     assert "kontakt_freigeben" in namen
     assert "kontakt_freigabe_entziehen" in namen
     assert "kontakte_freigegeben" in namen
+    # Archivieren statt Loeschen (21.08.2026). Es gibt bewusst KEIN
+    # Loesch-Werkzeug: kein DELETE-Recht auf `sales`, und `activities` haengt
+    # mit ON DELETE CASCADE am Kontakt. Vertragstests in tests/test_ui.py.
+    assert "kontakt_archivieren" in namen
+    assert "kontakt_wiederherstellen" in namen
+    assert not [n for n in namen if "loesch" in n or "delete" in n]
     assert "wiedervorlage_setzen" in namen
     assert "wiedervorlage_erledigt" in namen
     assert "medien_liste" in namen

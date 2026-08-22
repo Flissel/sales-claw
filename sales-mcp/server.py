@@ -147,7 +147,12 @@ def kontakt_suchen(text: str) -> str:
     return _json({"kontakte": [
         {"lead_id": z["id"], "name": z["name"], "status": z["status"],
          "consent": z["consent_status"],
-         "whatsapp_freigabe": _whatsapp_freigegeben(z["enrichment"])}
+         "whatsapp_freigabe": _whatsapp_freigegeben(z["enrichment"]),
+         # Archivierte Kontakte werden hier ABSICHTLICH mitgesucht und nur
+         # gekennzeichnet: „archiviert" heisst unsichtbar in den Listen, nicht
+         # unauffindbar — sonst legte der naechste Griff einen zweiten Kontakt
+         # zur selben Person an (Demo-Befund B1).
+         "archiviert": _archiviert(z["enrichment"])}
         for z in zeilen]})
 
 
@@ -370,6 +375,139 @@ def kontakte_freigegeben() -> str:
         "hinweis": ("Sollzustand aus der Datenbank. Wirksam im Auto-Betrieb "
                     "wird er erst durch den Allowlist-Sync des Betreibers "
                     "(scripts/sync-allowlist.ps1, Runbook Auto-Betrieb).")})
+
+
+# ---------------------------------------------------------------------------
+# Archivieren STATT Loeschen (Betreiber-Wunsch 21.08.2026)
+#
+# Ein Kontakt soll aus den Standardansichten verschwinden koennen, ohne dass
+# etwas verloren geht. Geloescht wird dafuer nichts — jeder der drei Gruende
+# allein genuegt schon:
+#
+#   1. `sales_app` hat auf `sales` KEIN DELETE-Recht (db/provision.sql:
+#      „Bewusst NICHT vergeben: DELETE (nirgends)"). Ein Loeschweg im Code
+#      waere ein Weg, der in Produktion mit 42501 endet — im Testschema
+#      liefe er durch, weil dort die truncate-Fixture volle Rechte braucht.
+#      Aus dem Testschema darf nichts abgeleitet werden.
+#   2. `activities.lead_id` steht auf ON DELETE CASCADE. Ein geloeschter
+#      Kontakt naehme seine gesamte Historie mit, und die append-only-Garantie
+#      auf `activities` (kein UPDATE, kein DELETE) waere ueber diesen Umweg
+#      ausgehebelt — sie ist aber der Grund, warum das Protokoll etwas wert
+#      ist.
+#   3. Ein echtes Loeschen (DSGVO-Auskunft, Loeschbegehren) ist ein bewusster
+#      Admin-Eingriff mit Sicherung davor und Protokoll daneben, kein Knopf
+#      in einer Oberflaeche.
+#
+# Gespeichert wird das Merkmal wie `whatsapp_freigabe`: als Schluessel
+# `archiviert` DIREKT unter `enrichment`. Ein Status-Wert kam nicht in Frage:
+# der CHECK auf `leads.status` kennt nur new/researched/qualified/contacted/
+# replied/meeting/won/lost, und `sales_app` hat kein DDL, um ihn zu erweitern
+# (dieselbe Lage wie bei den Vertraegen und der Freigabe). Selbst mit DDL waere
+# `status` der falsche Ort — er traegt den VERTRIEBSSTAND, und ein
+# Archivmerkmal darin loeschte die Information, warum der Kontakt zuletzt so
+# dastand. `kontakt_aktualisieren` kann `status` ohnehin nicht setzen
+# (KONTAKT_FELDER).
+# ---------------------------------------------------------------------------
+
+ARCHIV_SCHLUESSEL = "archiviert"
+
+ARCHIV_HINWEIS = (
+    "Archiviert heisst NUR: aus Kontaktliste, Posteingang und Zuordnungs"
+    "auswahl verschwunden. Geloescht wurde nichts — der Verlauf ist "
+    "vollzaehlig, und kontakt_wiederherstellen(lead_id) macht es rueckgaengig. "
+    "Den VERSAND haelt es NICHT an: bereits freigegebene Entwuerfe stellt der "
+    "Dispatcher weiter zu, und die WhatsApp-Freigabe bleibt bestehen. Dafuer "
+    "gibt es entwurf_ablehnen und kontakt_freigabe_entziehen.")
+WIEDERHERSTELLUNG_HINWEIS = (
+    "Der Kontakt steht wieder in Kontaktliste, Posteingang und Zuordnungs"
+    "auswahl. Es war nie etwas geloescht.")
+
+
+def _archiviert(enrichment) -> bool:
+    """True NUR bei ausdruecklich gesetztem Archivmerkmal.
+
+    Spiegelbild zu `_whatsapp_freigegeben` — aber mit umgekehrter
+    Fehlerrichtung, und das ist Absicht: dort zaehlt „unklar" als NICHT
+    freigegeben (fail-closed, es geht um Versand an einen Menschen), hier als
+    NICHT archiviert (fail-open, es geht um Sichtbarkeit). Ein kaputter Wert
+    darf einen Kontakt nie unsichtbar machen.
+    """
+    eintrag = (enrichment or {}).get(ARCHIV_SCHLUESSEL)
+    return isinstance(eintrag, dict) and eintrag.get("archiviert") is True
+
+
+def _archiv_sql(spalte: str) -> str:
+    """SQL-Ausdruck mit GENAU der Antwort von `_archiviert(...)` in Python.
+
+    Filter und Anzeige duerfen nie verschiedene Regeln benutzen (dieselbe
+    Ueberlegung wie bei nummern.py). Die `jsonb_typeof`-Pruefung steht
+    ausdruecklich davor: ohne sie zaehlte auch die ZEICHENKETTE "true" als
+    archiviert, waehrend Python (`is True`) sie nicht zaehlt.
+
+    Das `coalesce` steht INNEN, damit kein Aufrufer es vergessen kann: fehlt
+    der Schluessel (jeder Bestandskontakt) oder fehlt die Lead-Zeile ganz
+    (left join), ist der Ausdruck sonst NULL — und ein `not NULL` in einer
+    WHERE-Bedingung wirft die Zeile still hinaus, statt sie zu behalten. Genau
+    die falsche Richtung: unklar heisst hier „nicht archiviert".
+
+    `spalte` wird in den SQL-Text interpoliert — kein Injection-Risiko, und
+    zwar strukturell wie bei `_kanon`: uebergeben werden ausschliesslich
+    Spaltenausdruecke, die als Literale in diesem Repository stehen.
+    """
+    return (f"coalesce(jsonb_typeof({spalte} -> '{ARCHIV_SCHLUESSEL}' -> "
+            f"'archiviert') = 'boolean' and ({spalte} -> "
+            f"'{ARCHIV_SCHLUESSEL}' ->> 'archiviert') = 'true', false)")
+
+
+def _archiv_setzen(lead_id: str, archiviert: bool) -> str:
+    zeilen = _q(
+        "update leads set enrichment = jsonb_set(enrichment, %s, %s::jsonb, "
+        "true) where id = %s returning id, name",
+        ([ARCHIV_SCHLUESSEL],
+         json.dumps({"archiviert": archiviert, "at": _jetzt(),
+                     "durch": "betreiber"}), lead_id))
+    if not zeilen:
+        return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
+    # Das Gegenstueck zum fehlenden DELETE: jede Archivierung und jede
+    # Wiederherstellung ist ein EREIGNIS im append-only-Protokoll, kein
+    # stiller Zustandswechsel. Wer spaeter fragt „warum steht der nicht mehr
+    # in der Liste?", findet die Antwort im Verlauf des Kontakts.
+    _q("insert into activities (lead_id, type, payload) values "
+       "(%s, 'kontakt_archiviert', %s) returning id",
+       (lead_id, _json({"archiviert": archiviert})))
+    return _json({"lead_id": zeilen[0]["id"], "kontakt": zeilen[0]["name"],
+                  "archiviert": archiviert,
+                  "hinweis": (ARCHIV_HINWEIS if archiviert
+                              else WIEDERHERSTELLUNG_HINWEIS)})
+
+
+@_gesichert
+def kontakt_archivieren(lead_id: str) -> str:
+    """Kontakt archivieren — er verschwindet aus Kontaktliste, Posteingang und
+    der Zuordnungsauswahl, bleibt aber vollstaendig erhalten. NUR auf
+    ausdrueckliche Anweisung des Betreibers aufrufen.
+
+    Es gibt bewusst KEIN Loeschen: die Rolle hat kein DELETE-Recht, und
+    `activities` haengt mit ON DELETE CASCADE am Kontakt — ein Loeschen naehme
+    die gesamte Historie mit. Ein echtes Loeschbegehren (DSGVO) ist ein
+    Admin-Eingriff ausserhalb dieser Werkzeuge; sag das dem Betreiber, statt
+    es zu umgehen. Den Versand haelt Archivieren NICHT an (Hinweis in der
+    Antwort woertlich weitergeben)."""
+    if UNBEKANNT_LEAD_ID and str(lead_id) == str(UNBEKANNT_LEAD_ID):
+        return _json({"fehler": (
+            "Der Sammelkontakt 'Unbekannte Eingaenge' laesst sich nicht "
+            "archivieren — an ihm haengt jede Nachricht von einer Nummer, die "
+            "noch keinem Kontakt gehoert. Archiviert waere der Posteingang "
+            "fuer Unbekannte blind.")})
+    return _archiv_setzen(lead_id, True)
+
+
+@_gesichert
+def kontakt_wiederherstellen(lead_id: str) -> str:
+    """Einen archivierten Kontakt wieder sichtbar machen. Gegen-Ereignis zum
+    Archivieren — es gibt nichts wiederherzustellen ausser der Sichtbarkeit,
+    denn geloescht war nie etwas."""
+    return _archiv_setzen(lead_id, False)
 
 
 @_gesichert
@@ -776,6 +914,11 @@ def profil_lesen(lead_id: str) -> str:
                   # Getrennt vom consent (siehe Kontakt-Freigabe oben): sagt,
                   # ob der Betreiber den WhatsApp-Versandweg geoeffnet hat.
                   "whatsapp_freigabe": _whatsapp_freigegeben(e),
+                  # Archiviert = aus den Listen genommen, nichts geloescht
+                  # (siehe kontakt_archivieren). Steht hier, damit ein
+                  # Gespraech nicht ahnungslos mit einem Kontakt weitergeht,
+                  # den der Betreiber weggeraeumt hat.
+                  "archiviert": _archiviert(e),
                   "profil": e.get("profil", {}), "bedarf": e.get("bedarf", {}),
                   # Die vom Kunden genannten Vertraege (vertrag_speichern) —
                   # ohne diese Zeile laege der Bestand zwar in enrichment,
@@ -1336,6 +1479,12 @@ def posteingang(stunden: int = 48) -> str:
         "        select 1 from ignoriert i"
         "         where i.kennung = j.kennung"
         "           and i.letzter = '" + ABSENDER_IGNORIERT + "')"
+        # Archivierte Kontakte stehen hier nicht mehr (Betreiber-Wunsch
+        # 21.08.2026). Der Filter sitzt im WERKZEUG und nicht in der
+        # Oberflaeche, damit Chat und UI dieselbe Liste sehen — und weil
+        # `anzahl_unbeantwortet` sonst Eintraege zaehlte, die niemand mehr
+        # sieht (`count(*) over ()` wird nach dem WHERE berechnet).
+        "   and not " + _archiv_sql("l.enrichment") +
         "   and not exists ("
         "        select 1 from activities b"
         "         where b.lead_id = j.lead_id"
@@ -2779,6 +2928,10 @@ def firma_anreichern(lead_id: str, website: str = "") -> str:
 WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              kontakt_freigeben, kontakt_freigabe_entziehen,
              kontakte_freigegeben,
+             # Archivieren statt Loeschen — als CHAT-Werkzeuge, nicht nur in
+             # der Oberflaeche: sales-ui darf grundsaetzlich nichts koennen,
+             # was die Chat-Werkzeuge nicht auch koennen (ui.py, Kopf).
+             kontakt_archivieren, kontakt_wiederherstellen,
              aktivitaet_loggen, wiedervorlage_setzen, wiedervorlage_erledigt,
              vertrag_speichern, vertraege_ablaufend, termin_bestaetigen,
              profil_lesen, profil_aktualisieren,

@@ -527,8 +527,10 @@ def test_beide_werkzeuge_sind_registriert():
     # und der Auto-Betrieb: kontakt_freigeben, kontakt_freigabe_entziehen,
     # kontakte_freigegeben (test_kontakt_freigabe.py). Stufe 11:
     # eingang_einordnen und absender_aufloesen (test_einordnung.py,
-    # test_lid.py).
-    assert len(namen) == len(set(namen)) == 33
+    # test_lid.py). Kontaktpflege 21.08.2026: kontakt_archivieren und
+    # kontakt_wiederherstellen (test_ui.py) — ein Loesch-Werkzeug gibt es
+    # bewusst nicht, siehe dort.
+    assert len(namen) == len(set(namen)) == 35
 
 # ---------------------------------------------------------------------------
 # Nachbesserungen aus dem Stufe-5-Review (Befunde T1, B2, D2)

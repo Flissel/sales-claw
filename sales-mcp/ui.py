@@ -2,7 +2,7 @@
 
 Der siebte Container: ein server-seitig gerendertes Web-UI fuer den Betreiber.
 LESEN darf es Entwuerfe, Kontakte, Posteingang, Wiedervorlagen und die offenen
-Absender-Einordnungen. SCHREIBEN kann es zweierlei, und nichts sonst:
+Absender-Einordnungen. SCHREIBEN kann es dreierlei, und nichts sonst:
 
 1. die drei Freigabe-Uebergaenge — freigeben (pending->approved), ablehnen
    (pending->rejected), erneut freigeben (failed->approved) — mit EXAKT den
@@ -15,11 +15,47 @@ Absender-Einordnungen. SCHREIBEN kann es zweierlei, und nichts sonst:
    ausschliesslich server.eingang_einordnen() bzw. server.kontakt_anlegen()
    auf und baut KEINE eigene Abfrage: die Schutzkante H3 (ein echter Kontakt
    laesst sich nicht beilaeufig stummschalten) sitzt in diesen Werkzeugen und
-   wird dadurch geerbt statt nachgebaut.
+   wird dadurch geerbt statt nachgebaut;
+3. die Kontaktpflege (Betreiber-Wunsch 21.08.2026, Seite /kontakte/{id}) —
+   Stammdaten korrigieren und Kontakte archivieren bzw. wiederherstellen.
+   Auch hier ruft das UI ausschliesslich die Chat-Werkzeuge auf
+   (server.kontakt_aktualisieren, server.kontakt_archivieren,
+   server.kontakt_wiederherstellen) und baut KEIN eigenes SQL: die Feld-
+   Whitelist (server.KONTAKT_FELDER — phone, email, name; ausdruecklich NICHT
+   status/consent_status/enrichment) und das Archivmerkmal in `enrichment`
+   sollen genau einmal existieren.
 
-Kein Editieren, kein Loeschen, kein Versand. Das UI kann konstruktiv nichts,
-was die Chat-Werkzeuge nicht auch koennen — es kann weniger (siehe Marken-Fall
-und Lead-Fall unten).
+Kein Loeschen, kein Versand. Das UI kann konstruktiv nichts, was die
+Chat-Werkzeuge nicht auch koennen — es kann weniger (siehe Marken-Fall und
+Lead-Fall unten).
+
+WARUM ES KEIN LOESCHEN GIBT — UND AUCH NICHT GEBEN WIRD
+-------------------------------------------------------
+Der Auftrag „Kontakte bearbeiten und archivieren" nennt das Loeschen
+ausdruecklich NICHT, und es waere auch nicht baubar:
+
+* Die Rolle `sales_app` hat im Produktionsschema `sales` KEIN DELETE-Recht —
+  auf keiner Tabelle (db/provision.sql: „Bewusst NICHT vergeben: DELETE
+  (nirgends)"). Ein Loeschknopf endete dort mit SQLSTATE 42501. Dass er im
+  Testschema `sales_test` durchliefe, sagt nichts: dort hat die Rolle volle
+  Rechte, weil die truncate-Fixture sie braucht.
+* `activities.lead_id` verweist mit ON DELETE CASCADE auf `leads`. Ein
+  geloeschter Kontakt naehme seine gesamte Historie mit — jede Nachricht, jede
+  Freigabe, jede Einordnung. Die append-only-Garantie auf `activities` (kein
+  UPDATE, kein DELETE) waere ueber diesen Umweg ausgehebelt, und zwar
+  unbemerkt, weil nur die Zeilen fehlen und nichts davon erzaehlt.
+* Ein echtes Loeschen (DSGVO-Loeschbegehren) ist deshalb ein bewusster
+  Admin-Eingriff ausserhalb dieser Anwendung: mit Sicherung davor, mit
+  Protokoll daneben, von einer Rolle, die das Recht dafuer hat. Er gehoert
+  nicht hinter einen Knopf, der aussieht wie „Zeile weg".
+
+Statt zu loeschen wird ARCHIVIERT: ein Merkmal in `leads.enrichment`
+(Schluessel `archiviert`, Muster `whatsapp_freigabe` — die Rolle hat kein DDL,
+und der CHECK auf `leads.status` kennt keinen Archiv-Wert). Archivierte
+Kontakte verschwinden aus Kontaktliste, Posteingang und Zuordnungsauswahl,
+bleiben aber ueber „auch archivierte zeigen" erreichbar und jederzeit
+wiederherstellbar — ein Gegen-Ereignis, kein DELETE, wie schon bei
+wiedervorlage_erledigt und absender_beachtet.
 
 WARUM DIE EINORDNUNG IN DIE OBERFLAECHE GEHOERT (Betreiber-Wunsch 21.08.2026)
 -----------------------------------------------------------------------------
@@ -79,6 +115,24 @@ SICHERHEITSMODELL (Demo-Umfang, bewusst dokumentiert)
   beim Marken-Fall verweigert das UI aber nicht ganz — der Betreiber sieht
   hier, anders als im Chat, den vollen Namen des betroffenen Kontakts, und
   genau das macht die Entscheidung an dieser Stelle verantwortbar.
+* Archiv-Fall der Kontaktpflege: dasselbe Zweischritt-Muster wie beim
+  Lead-Fall. Der erste POST auf `/kontakte/archivieren` SCHREIBT NICHTS — er
+  zeigt eine Warnseite mit Namen, Anzahl der Aktivitaeten und offenen
+  Entwuerfen des Kontakts. Erst der zweite, ausdrueckliche POST auf eine
+  eigene Route wirkt, und er traegt in einem eigenen Hidden-Feld den NAMEN,
+  den der Betreiber auf der Warnseite gelesen hat; stimmt der beim Eintreffen
+  nicht mehr, wird nichts getan (409). Grund fuer den zweiten Schritt: die
+  Zahlen auf der Warnseite („43 Aktivitaeten, 2 offene Entwuerfe") sind das
+  Einzige, was den Unterschied zwischen „Karteileiche" und „laufender Vorgang"
+  sichtbar macht — und Archivieren nimmt den Kontakt aus dem Posteingang, also
+  aus genau der Ansicht, in der man ihn wiederfinden wuerde.
+* Stammdaten-Aenderungen werden VOR dem ersten Schreibversuch vollstaendig
+  geprueft (alle Felder), damit ein abgelehntes Feld die anderen nicht halb
+  angewandt zuruecklaesst. Geprueft wird mit denselben Modulen, die ueber
+  Zustellbarkeit entscheiden (nummern.py, mailadresse.py) — kein dritter
+  Regelsatz. Das UI ist damit an dieser Stelle STRENGER als das Chat-Werkzeug
+  (das eine nationale Nummer klaglos speichert); strenger ist erlaubt, lockerer
+  nie.
 * Kein Netzzugriff aus der Oberflaeche: `absender_aufloesen()` (GET an den
   eigenen openwa-Container) bleibt Chat-Sache. Es kostet Rate-Limit-Budget —
   OpenWA macht nach etwa zehn Abfragen in Folge mit 429 dicht — und gehoert
@@ -140,6 +194,15 @@ PAYLOAD_KURZ = 300      # Payload-Vorschau im Kontakt-Verlauf
 EINORDNUNG_TEXT_MAX = 400
 EINORDNUNG_NAME_MAX = 120   # Namensfeld beim Anlegen aus der Einordnung
 EINORDNUNG_VERLAUF_MAX = 25  # bereits entschiedene Absender im Verlauf
+# Laengste zulaessige Eingabe je Stammdatenfeld. Gedeckelt wird VOR der
+# Pruefung: was danach noch als Nummer oder Adresse durchgeht, ist auch
+# vollstaendig — und ein Name, den ein Formular auf 200 Zeichen kuerzt, ist
+# kein Name mehr, sondern ein Einfuegeversuch.
+KONTAKT_FELD_MAX = 200
+# Anzeigenamen der Felder aus server.KONTAKT_FELDER. Die LISTE der Felder
+# steht bewusst NICHT hier — sie kommt aus server.py, sonst haette die
+# Oberflaeche eine zweite, stillschweigend veraltende Whitelist.
+KONTAKT_FELD_TITEL = {"name": "Name", "phone": "Telefon", "email": "E-Mail"}
 
 LOG = logging.getLogger("sales-ui")
 
@@ -546,22 +609,40 @@ async def aktion_erneut_freigeben(request):
 
 @_gesichert_seite
 async def kontakte(request):
+    # Archivierte bleiben draussen, solange der Schalter nicht gesetzt ist.
+    # Gefiltert wird in SQL (server._archiv_sql — dieselbe Regel wie
+    # server._archiviert in Python), damit KONTAKTE_MAX die SICHTBAREN
+    # Kontakte deckelt und nicht die geladenen: sonst verdraengte ein Archiv
+    # von 500 Karteileichen die lebenden Kontakte aus der Liste.
+    archiv_zeigen = request.query_params.get("archiv") == "1"
+    bedingung = "" if archiv_zeigen else (
+        "where not " + server._archiv_sql("l.enrichment") + " ")
     zeilen = server._q(
-        "select l.id, l.name, l.status, l.consent_status, "
+        "select l.id, l.name, l.status, l.consent_status, l.enrichment, "
         "       (select max(a.created_at) from activities a "
         "         where a.lead_id = l.id) as letzte "
-        "from leads l order by letzte desc nulls last, l.name asc limit %s",
+        "from leads l " + bedingung +
+        "order by letzte desc nulls last, l.name asc limit %s",
         (KONTAKTE_MAX,))
-    rumpf = ["<table><tr><th>Name</th><th>Status</th><th>Consent</th>"
+    schalter = (
+        '<p class="meta"><a href="/kontakte">nur aktive zeigen</a> — '
+        'archivierte Kontakte sind mitgelistet.</p>' if archiv_zeigen else
+        '<p class="meta"><a href="/kontakte?archiv=1">auch archivierte '
+        'zeigen</a></p>')
+    rumpf = [schalter,
+             "<table><tr><th>Name</th><th>Status</th><th>Consent</th>"
              "<th>Letzte Aktivitaet</th></tr>"]
     for z in zeilen:
+        marke = (' <span class="badge">archiviert</span>'
+                 if server._archiviert(z["enrichment"]) else "")
         rumpf.append(
             f'<tr><td><a href="/kontakte/{_e(z["id"])}">{_e(z["name"])}</a>'
-            f'</td><td>{_e(z["status"])}</td><td>{_e(z["consent_status"])}'
+            f'{marke}</td><td>{_e(z["status"])}</td>'
+            f'<td>{_e(z["consent_status"])}'
             f"</td><td>{_zeit(z['letzte'])}</td></tr>")
     rumpf.append("</table>")
     if not zeilen:
-        rumpf = ["<p>Keine Kontakte.</p>"]
+        rumpf = [schalter, "<p>Keine Kontakte.</p>"]
     return _seite(f"Kontakte ({len(zeilen)})", "".join(rumpf))
 
 
@@ -602,6 +683,347 @@ def _wiedervorlagen_tabelle(zeilen, mit_kontakt: bool = True) -> str:
     return "".join(rumpf) if zeilen else "<p>Keine offenen Wiedervorlagen.</p>"
 
 
+# ---------------------------------------------------------------------------
+# Kontaktpflege (Betreiber-Wunsch 21.08.2026): bearbeiten und archivieren.
+#
+# Beides laeuft ueber die Chat-Werkzeuge (server.kontakt_aktualisieren,
+# server.kontakt_archivieren, server.kontakt_wiederherstellen) — kein eigenes
+# SQL, damit Feld-Whitelist, Protokollierung und das Archivmerkmal genau
+# einmal existieren. Geloescht wird NICHTS; warum, steht im Moduldocstring.
+# ---------------------------------------------------------------------------
+
+def _kontakt_feld_reihenfolge() -> list:
+    """server.KONTAKT_FELDER, nur in Lesereihenfolge gebracht.
+
+    Die Menge bleibt die des Werkzeugs — ein dort ergaenztes Feld taucht hier
+    von selbst auf (hinten), und ein dort entferntes verschwindet. Nur die
+    ANORDNUNG ist Sache der Oberflaeche: `KONTAKT_FELDER` ist nach Wichtigkeit
+    fuer den Versand sortiert (phone zuerst), ein Formular liest sich nach dem
+    Namen zuerst.
+    """
+    vorne = [f for f in ("name", "phone", "email") if f in server.KONTAKT_FELDER]
+    return vorne + [f for f in server.KONTAKT_FELDER if f not in vorne]
+
+
+def _kontakt_formular(lead) -> str:
+    """Das Bearbeiten-Formular — GENAU die Felder, die das Werkzeug erlaubt.
+
+    `value="…"` ist Attributkontext: `_e` escaped mit quote=True, sonst
+    schloesse ein Anfuehrungszeichen im Namen das Attribut und der Rest der
+    Zeile waere Markup (dieselbe Kante wie bei den Hidden-Feldern der
+    Einordnung).
+    """
+    felder = "".join(
+        f'<p><label>{_e(KONTAKT_FELD_TITEL.get(feld, feld))}<br>'
+        f'<input type="text" name="{_e(feld)}" '
+        f'maxlength="{KONTAKT_FELD_MAX}" value="{_e(lead[feld])}"></label></p>'
+        for feld in _kontakt_feld_reihenfolge())
+    return (
+        f'<h2>Stammdaten bearbeiten</h2>'
+        f'<div class="karte"><form method="post" action="/kontakte/bearbeiten">'
+        f'<input type="hidden" name="lead_id" value="{_e(lead["id"])}">'
+        f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">{felder}'
+        f'<button class="primaer">Speichern</button></form>'
+        f'<p class="meta">Aenderbar sind nur diese Felder — Status, Consent '
+        f'und Profilangaben nicht: die Einwilligung entsteht aus einer Antwort '
+        f'des Kontakts (bedarf_speichern), Profilangaben gehoeren nach '
+        f'profil_aktualisieren. Ein leeres Feld loescht die Angabe (der Name '
+        f'nicht). Die <b>Telefonnummer</b> ist der Schluessel, ueber den '
+        f'eingehende Nachrichten diesem Kontakt zugeordnet werden — sie zu '
+        f'aendern verschiebt kuenftige Nachrichten der alten Nummer zum '
+        f'Sammelkontakt. Immer mit Landesvorwahl (+49…/+43…).</p></div>')
+
+
+def _kontakt_kennzahlen(lead_id):
+    """Was an diesem Kontakt haengt — die Zahlen der Warnseite."""
+    aktivitaeten = server._q(
+        "select count(*) as anzahl from activities where lead_id = %s",
+        (lead_id,))[0]["anzahl"]
+    entwuerfe = server._q(
+        "select status, count(*) as anzahl from drafts where lead_id = %s "
+        "and status in ('pending','approved','failed') group by status",
+        (lead_id,))
+    return aktivitaeten, {z["status"]: z["anzahl"] for z in entwuerfe}
+
+
+def _archiv_bereich(lead, archiviert: bool) -> str:
+    """Der Knopf am Fuss der Kontaktseite — archivieren oder zurueckholen.
+
+    Es gibt hier keinen Loeschen-Knopf, und das ist keine Auslassung: die
+    Begruendung steht im Moduldocstring und im Runbook.
+    """
+    verborgen = (f'<input type="hidden" name="lead_id" '
+                 f'value="{_e(lead["id"])}">'
+                 f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">')
+    if archiviert:
+        return (f'<h2>Archiv</h2><div class="karte">'
+                f'<form method="post" action="/kontakte/wiederherstellen">'
+                f'{verborgen}<button class="primaer">Wiederherstellen</button>'
+                f'</form><p class="meta">Holt den Kontakt zurueck in '
+                f'Kontaktliste, Posteingang und Zuordnungsauswahl. Ein '
+                f'Gegen-Ereignis, kein Zuruecknehmen — es war nie etwas '
+                f'geloescht.</p></div>')
+    return (f'<h2>Archiv</h2><div class="karte">'
+            f'<form method="post" action="/kontakte/archivieren">'
+            f'{verborgen}<button class="gefahr">Archivieren</button></form>'
+            f'<p class="meta">Nimmt den Kontakt aus Kontaktliste, Posteingang '
+            f'und Zuordnungsauswahl. Der naechste Schritt zeigt erst, was an '
+            f'ihm haengt. <b>Loeschen gibt es hier nicht</b> — die Rolle hat '
+            f'kein DELETE-Recht, und der Verlauf haengt mit ON DELETE CASCADE '
+            f'am Kontakt: ein Loeschen naehme die ganze Historie mit. Ein '
+            f'echtes Loeschbegehren ist ein Admin-Eingriff ausserhalb dieser '
+            f'Oberflaeche.</p></div>')
+
+
+async def _kontakt_vorspann(request):
+    """Gemeinsame Wache aller Kontakt-POSTs — Reihenfolge wie ueberall:
+    CSRF VOR der ersten Zeile Datenbank, dann die lead_id."""
+    form = await request.form()
+    if not _csrf_ok(form):
+        return None, None, _fehlerseite(
+            403, "CSRF-Token fehlt oder ist ungueltig",
+            "Keine Aktion ausgefuehrt. Die Seite neu laden und erneut "
+            "versuchen — das Token wechselt mit jedem Dienststart.")
+    roh = str(form.get("lead_id") or "").strip()
+    try:
+        lead_id = str(uuid.UUID(roh))
+    except ValueError:
+        return None, None, _fehlerseite(
+            400, "Unlesbare lead_id",
+            f"&#x27;{_e(roh)}&#x27; ist keine lead_id. Keine Aktion "
+            f"ausgefuehrt.")
+    return form, lead_id, None
+
+
+def _feld_pruefen(feld: str, wert: str):
+    """None = in Ordnung, sonst der Grund der Ablehnung (unescaped Text).
+
+    Geprueft wird mit GENAU den Modulen, die ueber Zustellbarkeit entscheiden
+    (nummern.py fuer den Dispatcher, mailadresse.py fuer sales-mail) — kein
+    dritter Regelsatz, der irgendwann anders urteilt als der Versand.
+
+    Das Chat-Werkzeug prueft an dieser Stelle NICHT (es speichert, was ihm
+    gesagt wird, und verlaesst sich auf den Agenten, der die Regel in AGENTS.md
+    liest). Die Oberflaeche ist hier also strenger — die erlaubte Richtung:
+    eine hier abgewiesene Nummer laesst sich im Chat weiterhin eintragen, wenn
+    der Betreiber das ausdruecklich will.
+    """
+    if feld == "name" and not wert:
+        return ("Ein Kontakt ohne Namen ist nicht vorgesehen — genau das sagt "
+                "auch kontakt_aktualisieren. Nichts geaendert.")
+    if not wert:
+        # Leeren ist erlaubt und heisst „Angabe entfaellt" (nullif im
+        # Werkzeug) — nur beim Namen nicht, siehe oben.
+        return None
+    if feld == "phone":
+        chat_id, fehler = server.normalisiere_empfaenger(wert)
+        if chat_id is None:
+            return (f"Telefonnummer nicht verwendbar ({fehler}). Erwartet wird "
+                    f"eine Nummer MIT Landesvorwahl (+49…/+43…); eine national "
+                    f"geschriebene Nummer (0170…, 0664…) wird nicht geraten, "
+                    f"weil daraus die Nummer eines Fremden entstehen kann. "
+                    f"Nichts geaendert.")
+    if feld == "email":
+        adresse, fehler = server.mailadresse.pruefe(wert)
+        if adresse is None:
+            return f"E-Mail-Adresse nicht verwendbar ({fehler}). Nichts geaendert."
+    return None
+
+
+def _kontakt_loggen(lead_id, typ: str, nutzlast: dict) -> None:
+    """Die Herkunftszeile jeder Schreibaktion dieser Oberflaeche.
+
+    Dieselbe Ueberlegung wie bei `_freigabe_loggen`: die Werkzeuge in server.py
+    protokollieren ihre Aenderung selbst, aber mit dem Spalten-Default
+    actor='agent' — im append-only-Log waere eine Korrektur des Menschen an
+    der Oberflaeche dann von einer Agenten-Korrektur nicht zu unterscheiden.
+    Nachtragen laesst sich das nicht (auf `activities` gibt es kein UPDATE),
+    und die Signatur der Werkzeuge ist Teil ihres MCP-Schemas — ein
+    `actor`-Argument dort waere ausserdem eine Herkunftsangabe, die ein Agent
+    selbst setzen koennte. Also steht daneben genau EINE Zeile mit
+    actor='human' und weg='ui'; die Detailzeilen des Werkzeugs (Feld, vorher,
+    nachher) bleiben unberuehrt daneben stehen.
+    """
+    server._q("insert into activities (lead_id, type, payload, actor) "
+              "values (%s, %s, %s, 'human') returning id",
+              (lead_id, typ, server._json({**nutzlast, "weg": "ui"})))
+
+
+@_gesichert_seite
+async def aktion_kontakt_bearbeiten(request):
+    form, lead_id, abbruch = await _kontakt_vorspann(request)
+    if abbruch:
+        return abbruch
+    leads = server._q(
+        "select id, name, email, phone from leads where id = %s", (lead_id,))
+    if not leads:
+        return _fehlerseite(404, "Unbekannter Kontakt",
+                            f"Kein Kontakt mit lead_id {_e(lead_id)}.")
+    lead = leads[0]
+
+    # Erst SAMMELN und PRUEFEN, dann schreiben. Ein Formular traegt mehrere
+    # Felder; scheiterte das dritte, stuenden die ersten beiden schon in der
+    # Datenbank und der Betreiber saehe nur „abgelehnt". Alles-oder-nichts
+    # geht ohne eigene Transaktion nicht (jeder Werkzeugaufruf hat seine
+    # eigene) — also faellt die Entscheidung, bevor die erste faellt.
+    aenderungen = {}
+    for feld in server.KONTAKT_FELDER:
+        if feld not in form:
+            continue          # nicht im Formular = unangetastet
+        neu = " ".join(str(form.get(feld) or "").split())[:KONTAKT_FELD_MAX]
+        if neu == str(lead[feld] or ""):
+            continue          # unveraendert: keine Zeile, kein Protokoll
+        fehler = _feld_pruefen(feld, neu)
+        if fehler:
+            return _fehlerseite(400, "Nicht gespeichert", _e(fehler))
+        aenderungen[feld] = neu
+    # Felder, die das Werkzeug NICHT erlaubt (status, consent_status, …),
+    # stehen nicht in server.KONTAKT_FELDER und werden hier deshalb gar nicht
+    # erst angesehen — mitgeschickt oder nicht.
+    if not aenderungen:
+        return RedirectResponse(f"/kontakte/{lead_id}", status_code=303)
+
+    gesetzt = []
+    for feld in server.KONTAKT_FELDER:
+        if feld not in aenderungen:
+            continue
+        antwort = json.loads(
+            server.kontakt_aktualisieren(lead_id=lead_id, feld=feld,
+                                         wert=aenderungen[feld]))
+        if "fehler" in antwort:
+            if gesetzt:
+                _kontakt_loggen(lead_id, "korrektur", {"felder": gesetzt})
+            return _fehlerseite(
+                400, "Nicht vollstaendig gespeichert",
+                f"{_e(antwort['fehler'])}"
+                + (f" Bereits gespeichert: {_e(', '.join(gesetzt))}."
+                   if gesetzt else " Nichts geaendert."))
+        gesetzt.append(feld)
+    _kontakt_loggen(lead_id, "korrektur", {"felder": gesetzt})
+    ziel = f"/kontakte/{lead_id}"
+    if "phone" in aenderungen:
+        # Der Hinweis, was eine neue Nummer bewirkt — er steht auf der
+        # Kontaktseite, damit er nach dem Umleiten (POST/Redirect/GET) nicht
+        # verlorengeht. Uebergeben wird nur die AUSWAHL, nie ein Text.
+        ziel += "?gespeichert=telefon"
+    return RedirectResponse(ziel, status_code=303)
+
+
+def _archiv_warnseite(lead) -> HTMLResponse:
+    """Der erste Schritt: zeigen, was an diesem Kontakt haengt — und NICHTS
+    schreiben. Muster und Begruendung wie bei `_ignorieren_warnseite`; das
+    Hidden-Feld traegt hier den NAMEN, den der Betreiber gelesen hat."""
+    aktivitaeten, entwuerfe = _kontakt_kennzahlen(lead["id"])
+    offen = sum(entwuerfe.values())
+    aufschluesselung = ", ".join(f"{anzahl}× {status}"
+                                 for status, anzahl in sorted(entwuerfe.items()))
+    versand = ""
+    if entwuerfe.get("approved"):
+        versand = ('<p><b>Achtung:</b> freigegebene Entwuerfe an diesen '
+                   'Kontakt stellt der Dispatcher weiter zu — Archivieren '
+                   'haelt keinen Versand an. Wer das will, lehnt die Entwuerfe '
+                   'ab (Freigabe-Inbox) und entzieht die WhatsApp-Freigabe '
+                   '(im Chat: kontakt_freigabe_entziehen).</p>')
+    return _seite(
+        "Archivieren bestaetigen",
+        f'<div class="warnung">Der Kontakt <b>{_e(lead["name"])}</b> soll '
+        f'archiviert werden. An ihm haengen <b>{_e(aktivitaeten)}</b> '
+        f'Aktivitaet(en) und <b>{_e(offen)}</b> offene Entwuerfe'
+        f'{" (" + _e(aufschluesselung) + ")" if aufschluesselung else ""}.'
+        f'<p>Archivieren nimmt ihn aus Kontaktliste, Posteingang und der '
+        f'Zuordnungsauswahl der Einordnung. <b>Geloescht wird nichts</b>: der '
+        f'Verlauf bleibt vollzaehlig, der Kontakt bleibt ueber „auch '
+        f'archivierte zeigen" erreichbar und laesst sich jederzeit '
+        f'wiederherstellen.</p>{versand}'
+        f'<p>Schreibt er spaeter erneut, steht seine Nachricht nicht mehr im '
+        f'Posteingang — also in genau der Ansicht, in der man ihn '
+        f'wiederfinden wuerde.</p></div>'
+        f'<form method="post" action="/kontakte/archivieren-bestaetigen">'
+        f'<input type="hidden" name="lead_id" value="{_e(lead["id"])}">'
+        f'<input type="hidden" name="name_bestaetigt" '
+        f'value="{_e(lead["name"])}">'
+        f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+        f'<button class="gefahr">Ja — {_e(lead["name"])} archivieren</button>'
+        f'</form>'
+        f'<p><a href="/kontakte/{_e(lead["id"])}">Abbrechen, nichts tun</a></p>',
+        status=409)
+
+
+def _kontakt_zeile(lead_id):
+    return server._q("select id, name, enrichment from leads where id = %s",
+                     (lead_id,))
+
+
+@_gesichert_seite
+async def aktion_kontakt_archivieren(request):
+    """Erster Schritt: NUR die Warnseite. Hier wird bewusst nichts
+    geschrieben — auch nicht „schon mal", auch nicht bei leerem Verlauf."""
+    _form, lead_id, abbruch = await _kontakt_vorspann(request)
+    if abbruch:
+        return abbruch
+    leads = _kontakt_zeile(lead_id)
+    if not leads:
+        return _fehlerseite(404, "Unbekannter Kontakt",
+                            f"Kein Kontakt mit lead_id {_e(lead_id)}.")
+    if server._archiviert(leads[0]["enrichment"]):
+        return _fehlerseite(
+            409, "Schon archiviert",
+            f"{_e(leads[0]['name'])} ist bereits archiviert. Nichts getan.")
+    return _archiv_warnseite(leads[0])
+
+
+@_gesichert_seite
+async def aktion_kontakt_archivieren_bestaetigen(request):
+    """Der ZWEITE, ausdrueckliche POST — mit erneuter Pruefung, dass es noch
+    derselbe Kontakt ist (wie bei ignorieren-bestaetigen)."""
+    form, lead_id, abbruch = await _kontakt_vorspann(request)
+    if abbruch:
+        return abbruch
+    bestaetigt_fuer = str(form.get("name_bestaetigt") or "")
+    if not bestaetigt_fuer:
+        return _fehlerseite(
+            400, "Bestaetigung fehlt",
+            "Ohne den auf der Warnseite gelesenen Namen wird nichts getan.")
+    leads = _kontakt_zeile(lead_id)
+    if not leads:
+        return _fehlerseite(404, "Unbekannter Kontakt",
+                            f"Kein Kontakt mit lead_id {_e(lead_id)}.")
+    lead = leads[0]
+    # Zwischen Warnseite und Klick kann sich die Lage geaendert haben (eine
+    # Umbenennung im Chat, ein zweiter Tab). Dann ist das Ja von eben kein Ja
+    # zu dem, was jetzt passieren wuerde — also lieber gar nichts.
+    if str(lead["name"] or "") != bestaetigt_fuer:
+        return _fehlerseite(
+            409, "Bestaetigung passt nicht mehr",
+            "Der Kontakt heisst inzwischen anders als auf der Warnseite. "
+            "Nichts wurde getan — die Seite neu laden und erneut ansehen.")
+    if server._archiviert(lead["enrichment"]):
+        return _fehlerseite(
+            409, "Schon archiviert",
+            f"{_e(lead['name'])} ist bereits archiviert. Nichts getan.")
+    antwort = json.loads(server.kontakt_archivieren(lead_id=lead_id))
+    if "fehler" in antwort:
+        return _fehlerseite(400, "Nicht archiviert", _e(antwort["fehler"]))
+    _kontakt_loggen(lead_id, "kontakt_archiviert", {"archiviert": True})
+    return RedirectResponse(f"/kontakte/{lead_id}", status_code=303)
+
+
+@_gesichert_seite
+async def aktion_kontakt_wiederherstellen(request):
+    """Einschrittig, und das mit Absicht: Zurueckholen macht sichtbar, was
+    unsichtbar war — der Fehler dieser Richtung kostet einen zweiten Klick,
+    nicht eine verschwundene Nachricht."""
+    _form, lead_id, abbruch = await _kontakt_vorspann(request)
+    if abbruch:
+        return abbruch
+    antwort = json.loads(server.kontakt_wiederherstellen(lead_id=lead_id))
+    if "fehler" in antwort:
+        return _fehlerseite(404, "Nicht wiederhergestellt",
+                            _e(antwort["fehler"]))
+    _kontakt_loggen(lead_id, "kontakt_archiviert", {"archiviert": False})
+    return RedirectResponse(f"/kontakte/{lead_id}", status_code=303)
+
+
 @_gesichert_seite
 async def kontakt_detail(request):
     roh = request.path_params["lead_id"]
@@ -619,6 +1041,7 @@ async def kontakt_detail(request):
                             f"Kein Kontakt mit lead_id {_e(lead_id)}.")
     lead = leads[0]
     anreicherung = lead["enrichment"] or {}
+    archiviert = server._archiviert(anreicherung)
 
     stammdaten = "".join(
         f"<tr><th>{_e(name)}</th><td>{_e(lead[feld])}</td></tr>"
@@ -627,8 +1050,32 @@ async def kontakt_detail(request):
                            ("Telefon", "phone"), ("Firma", "company"),
                            ("Titel", "title"), ("Quelle", "source"),
                            ("Notizen", "notes")))
-    teile = [f"<table>{stammdaten}<tr><th>Angelegt</th>"
-             f"<td>{_zeit(lead['created_at'])}</td></tr></table>"]
+    teile = []
+    if archiviert:
+        teile.append(
+            '<div class="hinweis">Dieser Kontakt ist <b>archiviert</b>: er '
+            'steht nicht in der Kontaktliste, nicht im Posteingang und nicht '
+            'in der Zuordnungsauswahl der Einordnung. Geloescht wurde nichts '
+            '— der Verlauf unten ist vollzaehlig.</div>')
+    # Der Hinweis nach einer Nummernaenderung. Die Seite liest aus dem
+    # Abfrageteil NUR, WELCHER der hier fest verdrahteten Hinweise gezeigt
+    # wird — der Text selbst kommt nie von dort (er waere sonst ein Fremddatum
+    # in der eigenen Seite, und eine praeparierte Verknuepfung koennte dem
+    # Betreiber Beliebiges in den Mund legen).
+    if request.query_params.get("gespeichert") == "telefon":
+        teile.append(
+            '<div class="warnung">Telefonnummer geaendert. Damit wechselt der '
+            'Schluessel, ueber den eingehende Nachrichten diesem Kontakt '
+            'zugeordnet werden: Nachrichten von der ALTEN Nummer landen ab '
+            'sofort beim Sammelkontakt „Unbekannte Eingaenge" und muessen '
+            'unter /einordnung neu zugeordnet werden; ausgehende Entwuerfe '
+            'gehen an die NEUE Nummer. Bereits gebuchte Zeilen im Verlauf '
+            'bleiben, wo sie sind (activities ist append-only). Laeuft der '
+            'Kontakt im Auto-Betrieb, greift die Aenderung dort erst nach '
+            'scripts/sync-allowlist.ps1.</div>')
+    teile.append(f"<table>{stammdaten}<tr><th>Angelegt</th>"
+                 f"<td>{_zeit(lead['created_at'])}</td></tr></table>")
+    teile.append(_kontakt_formular(lead))
 
     # Bedarfsstand: beantwortete Leitfaden-Fragen mit Wortlaut, offene als Zahl.
     bedarf = anreicherung.get("bedarf") or {}
@@ -685,6 +1132,7 @@ async def kontakt_detail(request):
     else:
         teile.append("<p>Noch keine Aktivitaeten.</p>")
 
+    teile.append(_archiv_bereich(lead, archiviert))
     return _seite(lead["name"] or "Kontakt", "".join(teile))
 
 
@@ -763,15 +1211,22 @@ def _kontakt_optionen() -> str:
     Der Sammelkontakt selbst steht nicht drin: ihm etwas zuzuordnen waere die
     Nicht-Entscheidung, und er hat ohnehin keine Rufnummer.
 
-    Ungefiltert (auch Kontakte ohne Telefonnummer): wer fehlt, ist nicht
+    Kontakte OHNE Telefonnummer stehen bewusst drin: wer fehlt, ist nicht
     waehlbar, und das waere hier der schlechtere Fehler — `eingang_einordnen`
-    sagt bei einem Kontakt ohne brauchbare Nummer selbst, was zu tun ist. Die
-    Seitengroesse ist beidseitig gedeckelt: hoechstens KONTAKTE_MAX Eintraege
-    je Feld, hoechstens EINORDNUNG_LIMIT Felder (server.EINORDNUNG_LIMIT).
+    sagt bei einem Kontakt ohne brauchbare Nummer selbst, was zu tun ist.
+    ARCHIVIERTE stehen bewusst NICHT drin: sie sind weggeraeumt, und eine
+    Zuordnung an sie holte sie durch die Hintertuer zurueck, ohne dass ihre
+    Nachrichten danach im Posteingang stuenden. Gefiltert in SQL, damit
+    KONTAKTE_MAX die waehlbaren deckelt (dieselbe Regel wie in Python:
+    server._archiv_sql spiegelt server._archiviert).
+    Die Seitengroesse ist beidseitig gedeckelt: hoechstens KONTAKTE_MAX
+    Eintraege je Feld, hoechstens EINORDNUNG_LIMIT Felder
+    (server.EINORDNUNG_LIMIT).
     """
     zeilen = server._q(
-        "select id, name from leads order by name asc limit %s",
-        (KONTAKTE_MAX,))
+        "select id, name from leads l where not "
+        + server._archiv_sql("l.enrichment") +
+        " order by name asc limit %s", (KONTAKTE_MAX,))
     return "".join(
         f'<option value="{_e(z["id"])}">{_e(z["name"])}</option>'
         for z in zeilen if str(z["id"]) != str(server.UNBEKANNT_LEAD_ID))
@@ -1066,6 +1521,19 @@ app = Starlette(routes=[
     Route("/aktion/erneut-freigeben", aktion_erneut_freigeben,
           methods=["POST"]),
     Route("/kontakte", kontakte),
+    # Die Pflege-Routen stehen VOR der Detailseite: `/kontakte/{lead_id}`
+    # faengt sonst `/kontakte/bearbeiten` als lead_id ab (Starlette entscheidet
+    # in Reihenfolge) und antwortete auf jeden POST mit 405.
+    Route("/kontakte/bearbeiten", aktion_kontakt_bearbeiten, methods=["POST"]),
+    Route("/kontakte/archivieren", aktion_kontakt_archivieren,
+          methods=["POST"]),
+    # Eigene Route fuer den zweiten Schritt, wie bei der Einordnung: der
+    # ausdrueckliche Klick haengt nicht als Feld an dem Formular, das ihn
+    # ausgeloest hat.
+    Route("/kontakte/archivieren-bestaetigen",
+          aktion_kontakt_archivieren_bestaetigen, methods=["POST"]),
+    Route("/kontakte/wiederherstellen", aktion_kontakt_wiederherstellen,
+          methods=["POST"]),
     Route("/kontakte/{lead_id}", kontakt_detail),
     Route("/posteingang", posteingang),
     Route("/einordnung", einordnung),

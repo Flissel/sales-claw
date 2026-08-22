@@ -959,3 +959,484 @@ def test_anlegen_legt_keinen_zweiten_kontakt_zur_selben_nummer_an(
     assert r.headers["location"] == f"/kontakte/{vorhanden}"
     assert server._q("select id from leads where name = %s",
                      ("Sophie Doppelt",)) == []
+
+
+# ---------------------------------------------------------------------------
+# Kontaktpflege (/kontakte/{id}): bearbeiten und archivieren
+#
+# Betreiber-Wunsch 21.08.2026. LOESCHEN ist ausdruecklich NICHT Teil davon und
+# wird auch nicht gebaut: `sales_app` hat auf `sales` kein DELETE-Recht, und
+# `activities.lead_id` haengt mit ON DELETE CASCADE am Kontakt — ein Loeschen
+# naehme die gesamte Historie mit und hebelte die append-only-Garantie ueber
+# den Umweg aus. Statt zu loeschen wird archiviert (Merkmal in
+# `leads.enrichment`, Muster `whatsapp_freigabe`), und das ist rueckgaengig zu
+# machen.
+#
+# Getestet wird wie beim Rest des UI vor allem die ABWEHR: ohne gueltiges
+# CSRF-Token und unter fremdem Host schreibt keine der vier Routen eine Zeile;
+# Stammdaten sind Fremddaten und stehen im Formular im ATTRIBUTKONTEXT
+# (value="…"); ein ungueltiger Wert laesst die Datenbank unberuehrt; und das
+# Archivieren verlangt — wie das Ignorieren eines echten Kontakts — einen
+# zweiten, ausdruecklichen Schritt.
+# ---------------------------------------------------------------------------
+
+KONTAKT_AKTIONEN = ["/kontakte/bearbeiten", "/kontakte/archivieren",
+                    "/kontakte/archivieren-bestaetigen",
+                    "/kontakte/wiederherstellen"]
+
+
+def _kontakt_daten(lead):
+    """Ein Formularsatz, der fuer JEDE der vier Routen vollstaendig waere —
+    damit ein 403/421 nachweislich am Token bzw. am Host haengt und nicht
+    daran, dass ein Feld fehlte."""
+    return {"lead_id": lead, "name": "Umbenannt Person",
+            "phone": "+491729999999", "email": "neu@example.de",
+            "name_bestaetigt": "Max Testperson"}
+
+
+def _stamm(lead):
+    return server._q("select name, email, phone, status, consent_status, "
+                     "enrichment from leads where id = %s", (lead,))[0]
+
+
+def _ist_archiviert(lead):
+    return server._archiviert(_stamm(lead)["enrichment"])
+
+
+def _unveraendert(lead):
+    """Stammdaten wie von _lead() angelegt, nicht archiviert, kein Protokoll."""
+    zeile = _stamm(lead)
+    return (zeile["name"] == "Max Testperson"
+            and zeile["phone"] == "+491701234567"
+            and zeile["email"] is None
+            and not server._archiviert(zeile["enrichment"])
+            and _aktivitaeten("korrektur") == []
+            and _aktivitaeten("kontakt_archiviert") == [])
+
+
+# --- Abwehr: CSRF und Host ---------------------------------------------------
+
+@pytest.mark.parametrize("pfad", KONTAKT_AKTIONEN)
+@pytest.mark.parametrize("token", [None, "gefaelscht"])
+def test_kontaktpflege_post_ohne_gueltiges_csrf_schreibt_nichts(pfad, token):
+    lead = _lead()
+    daten = _kontakt_daten(lead)
+    if token:
+        daten["csrf"] = token
+    r = _post(pfad, daten)
+    assert r.status_code == 403
+    assert _unveraendert(lead)
+
+
+@pytest.mark.parametrize("pfad", KONTAKT_AKTIONEN)
+def test_kontaktpflege_post_mit_fremdem_host_schreibt_nichts(pfad):
+    """DNS-Rebinding: selbst MIT erbeutetem Token darf unter fremdem Namen
+    nichts passieren — die Host-Wache laeuft vor jeder Route."""
+    lead = _lead()
+    daten = _kontakt_daten(lead)
+    daten["csrf"] = ui.CSRF_TOKEN
+    r = _post(pfad, daten, host="boese.example:8791")
+    assert r.status_code == 421
+    assert _unveraendert(lead)
+
+
+def test_kontaktpflege_csrf_token_steht_in_den_formularen():
+    lead = _lead()
+    seite = _get(f"/kontakte/{lead}").text
+    assert ui.CSRF_TOKEN in seite
+    for pfad in ("/kontakte/bearbeiten", "/kontakte/archivieren"):
+        assert f'action="{pfad}"' in seite
+
+
+# --- XSS: Stammdaten stehen im Formular im Attributkontext -------------------
+
+def test_kontaktdaten_brechen_nicht_aus_dem_formularfeld_aus():
+    """`value="…"` ist Attributkontext. Ein Anfuehrungszeichen im Namen darf
+    das Attribut nicht schliessen — sonst waere der Rest der Zeile Markup."""
+    lead = _lead(name='Anna"><script>alert(1)</script>',
+                 phone='+49"><img src=x onerror=alert(2)>')
+    seite = _get(f"/kontakte/{lead}").text
+    assert "<script" not in seite and "<img" not in seite
+    assert '"><script' not in seite and '"><img' not in seite
+    assert "&lt;script&gt;" in seite and "&quot;&gt;" in seite
+    # Auch in der Liste (dort steht der Name neben einem href).
+    liste = _get("/kontakte").text
+    assert '"><script' not in liste and "&lt;script&gt;" in liste
+
+
+# --- Bearbeiten --------------------------------------------------------------
+
+def test_bearbeiten_formular_bietet_genau_die_felder_des_werkzeugs():
+    """Die Oberflaeche haelt KEINE eigene Whitelist — sie liest
+    server.KONTAKT_FELDER. Status und Consent stehen bewusst nicht drin: die
+    Einwilligung entsteht aus einer Antwort des Kontakts (bedarf_speichern),
+    nicht aus einem Formularfeld."""
+    assert set(server.KONTAKT_FELDER) == {"phone", "email", "name"}
+    lead = _lead()
+    seite = _get(f"/kontakte/{lead}").text
+    for feld in server.KONTAKT_FELDER:
+        assert f'name="{feld}"' in seite
+    assert 'name="status"' not in seite
+    assert 'name="consent_status"' not in seite
+    assert 'name="enrichment"' not in seite
+
+
+def test_bearbeiten_aendert_genau_die_erlaubten_felder_und_protokolliert():
+    lead = _lead()
+    r = _post("/kontakte/bearbeiten",
+              {"lead_id": lead, "csrf": ui.CSRF_TOKEN,
+               "name": "Maxi Testperson", "phone": "+491729186846",
+               "email": "maxi@example.de",
+               # Mitgeschickt, aber nicht erlaubt: darf spurlos verpuffen.
+               "status": "won", "consent_status": "opt_in",
+               "enrichment": '{"boese": true}'})
+    assert r.status_code == 303
+    zeile = _stamm(lead)
+    assert zeile["name"] == "Maxi Testperson"
+    assert zeile["phone"] == "+491729186846"
+    assert zeile["email"] == "maxi@example.de"
+    # Genau das, was das Werkzeug nicht erlaubt, ist unveraendert geblieben.
+    assert zeile["status"] == "new"
+    assert zeile["consent_status"] == "unknown"
+    assert "boese" not in json.dumps(zeile["enrichment"])
+    # Protokoll: je Feld eine Zeile des Werkzeugs (mit vorher/nachher) plus
+    # GENAU EINE Herkunftszeile der Oberflaeche — actor='human', weg='ui'.
+    zeilen = _aktivitaeten("korrektur")
+    menschlich = [z for z in zeilen if z["actor"] == "human"]
+    assert len(menschlich) == 1
+    assert menschlich[0]["payload"]["weg"] == "ui"
+    assert sorted(menschlich[0]["payload"]["felder"]) == ["email", "name",
+                                                          "phone"]
+    werkzeug = [z for z in zeilen if z["actor"] != "human"]
+    assert len(werkzeug) == 3
+    assert {z["payload"]["feld"] for z in werkzeug} == {"name", "phone",
+                                                        "email"}
+    alt = [z for z in werkzeug if z["payload"]["feld"] == "name"][0]
+    assert alt["payload"]["vorher"] == "Max Testperson"
+
+
+def test_bearbeiten_ohne_aenderung_schreibt_keine_zeile():
+    """Ein Speichern ohne Aenderung ist kein Ereignis — sonst waere der
+    Verlauf nach einem Tag Blaettern voller leerer Korrekturen."""
+    lead = _lead()
+    r = _post("/kontakte/bearbeiten",
+              {"lead_id": lead, "csrf": ui.CSRF_TOKEN,
+               "name": "Max Testperson", "phone": "+491701234567",
+               "email": ""})
+    assert r.status_code == 303
+    assert _aktivitaeten("korrektur") == []
+
+
+def test_bearbeiten_lehnt_kaputte_nummer_ab_ohne_etwas_zu_aendern():
+    """Nationale Schreibweise (0170…) ist laut nummern.py nicht zustellbar.
+    Der Name im selben Formular darf davon NICHT halb angewandt werden."""
+    lead = _lead()
+    r = _post("/kontakte/bearbeiten",
+              {"lead_id": lead, "csrf": ui.CSRF_TOKEN,
+               "name": "Maxi Testperson", "phone": "0170 1234567",
+               "email": ""})
+    assert r.status_code == 400
+    assert "Landesvorwahl" in r.text
+    assert _unveraendert(lead)
+
+
+def test_bearbeiten_lehnt_kaputte_mailadresse_ab():
+    lead = _lead()
+    r = _post("/kontakte/bearbeiten",
+              {"lead_id": lead, "csrf": ui.CSRF_TOKEN,
+               "name": "Max Testperson", "phone": "+491701234567",
+               "email": "max@localhost"})
+    assert r.status_code == 400
+    assert _unveraendert(lead)
+
+
+def test_bearbeiten_lehnt_leeren_namen_ab():
+    lead = _lead()
+    r = _post("/kontakte/bearbeiten",
+              {"lead_id": lead, "csrf": ui.CSRF_TOKEN, "name": "   ",
+               "phone": "+491701234567", "email": ""})
+    assert r.status_code == 400
+    assert _unveraendert(lead)
+
+
+def test_bearbeiten_leert_ein_feld_aber_nie_den_namen():
+    lead = _lead()
+    server.kontakt_aktualisieren(lead_id=lead, feld="email",
+                                 wert="alt@example.de")
+    r = _post("/kontakte/bearbeiten",
+              {"lead_id": lead, "csrf": ui.CSRF_TOKEN,
+               "name": "Max Testperson", "phone": "+491701234567",
+               "email": ""})
+    assert r.status_code == 303
+    assert _stamm(lead)["email"] is None
+
+
+def test_bearbeiten_nennt_die_folgen_einer_neuen_telefonnummer():
+    """Die Nummer ist der Schluessel, ueber den eingehende Nachrichten
+    zugeordnet werden — das Werkzeug erlaubt die Aenderung, also sagt die
+    Oberflaeche beim Speichern, was sie bewirkt."""
+    lead = _lead()
+    r = _post("/kontakte/bearbeiten",
+              {"lead_id": lead, "csrf": ui.CSRF_TOKEN,
+               "name": "Max Testperson", "phone": "+491729186846",
+               "email": ""})
+    assert r.status_code == 303
+    assert r.headers["location"] == f"/kontakte/{lead}?gespeichert=telefon"
+    seite = _get(r.headers["location"]).text
+    assert "Telefonnummer geaendert" in seite
+    assert "Sammelkontakt" in seite
+    # Ohne den Abfrageteil steht der Hinweis NICHT auf der Seite.
+    assert "Telefonnummer geaendert" not in _get(f"/kontakte/{lead}").text
+
+
+def test_bearbeiten_unbekannter_kontakt_gibt_404():
+    r = _post("/kontakte/bearbeiten",
+              {"lead_id": "00000000-0000-0000-0000-000000000000",
+               "csrf": ui.CSRF_TOKEN, "name": "Wer auch immer"})
+    assert r.status_code == 404
+
+
+def test_bearbeiten_unlesbare_lead_id_gibt_400():
+    r = _post("/kontakte/bearbeiten",
+              {"lead_id": "keine-uuid", "csrf": ui.CSRF_TOKEN, "name": "X"})
+    assert r.status_code == 400
+
+
+# --- Archivieren: zwei Schritte, und kein DELETE ----------------------------
+
+def test_archivieren_erster_post_zeigt_nur_die_warnseite():
+    lead = _lead()
+    server._q("insert into activities (lead_id, type, payload) "
+              "values (%s, 'nachricht', %s) returning id",
+              (lead, json.dumps({"inhalt": "telefoniert"})))
+    _entwurf(lead, status="pending")
+    r = _post("/kontakte/archivieren", {"lead_id": lead,
+                                        "csrf": ui.CSRF_TOKEN})
+    assert r.status_code == 409
+    assert "Max Testperson" in r.text
+    assert "1</b> Aktivitaet(en)" in r.text
+    assert "1</b> offene Entwuerfe" in r.text
+    # Das eigene Formular des zweiten Schritts, mit eigenem Hidden-Feld.
+    assert 'action="/kontakte/archivieren-bestaetigen"' in r.text
+    assert 'name="name_bestaetigt" value="Max Testperson"' in r.text
+    # KEINE Zeile in der Datenbank.
+    assert _unveraendert(lead)
+
+
+def test_archivieren_zweiter_post_wirkt_und_wird_protokolliert():
+    lead = _lead()
+    r = _post("/kontakte/archivieren-bestaetigen",
+              {"lead_id": lead, "csrf": ui.CSRF_TOKEN,
+               "name_bestaetigt": "Max Testperson"})
+    assert r.status_code == 303
+    assert _ist_archiviert(lead) is True
+    zeilen = _aktivitaeten("kontakt_archiviert")
+    # Eine Zeile des Werkzeugs und eine Herkunftszeile der Oberflaeche.
+    assert len(zeilen) == 2
+    menschlich = [z for z in zeilen if z["actor"] == "human"]
+    assert len(menschlich) == 1
+    assert menschlich[0]["payload"] == {"archiviert": True, "weg": "ui"}
+
+
+def test_archivieren_bestaetigen_ohne_hidden_feld_wirkt_nicht():
+    lead = _lead()
+    r = _post("/kontakte/archivieren-bestaetigen",
+              {"lead_id": lead, "csrf": ui.CSRF_TOKEN})
+    assert r.status_code == 400
+    assert _unveraendert(lead)
+
+
+def test_archivieren_bestaetigen_fuer_einen_anderen_namen_wirkt_nicht():
+    """Die Bestaetigung gilt dem Kontakt, dessen Namen der Betreiber GELESEN
+    hat — wurde er zwischendurch umbenannt, wird nichts getan."""
+    lead = _lead()
+    r = _post("/kontakte/archivieren-bestaetigen",
+              {"lead_id": lead, "csrf": ui.CSRF_TOKEN,
+               "name_bestaetigt": "Jemand Anderes"})
+    assert r.status_code == 409
+    assert _unveraendert(lead)
+
+
+def test_archivieren_veraendert_keine_einzige_aktivitaet():
+    """Der Kern des „archivieren statt loeschen": die Historie bleibt
+    vollzaehlig. Ein DELETE naehme sie mit — activities haengt mit ON DELETE
+    CASCADE am Kontakt."""
+    lead = _lead()
+    for text in ("erstes Gespraech", "zweites Gespraech"):
+        server._q("insert into activities (lead_id, type, payload) "
+                  "values (%s, 'nachricht', %s) returning id",
+                  (lead, json.dumps({"inhalt": text})))
+    vorher = server._q("select id, type, payload, actor, created_at from "
+                       "activities where lead_id = %s order by created_at",
+                       (lead,))
+    assert len(vorher) == 2
+    r = _post("/kontakte/archivieren-bestaetigen",
+              {"lead_id": lead, "csrf": ui.CSRF_TOKEN,
+               "name_bestaetigt": "Max Testperson"})
+    assert r.status_code == 303
+    nachher = server._q("select id, type, payload, actor, created_at from "
+                        "activities where lead_id = %s and type = 'nachricht' "
+                        "order by created_at", (lead,))
+    assert nachher == vorher
+    # Der Verlauf auf der Kontaktseite zeigt sie weiterhin, alle beide.
+    seite = _get(f"/kontakte/{lead}").text
+    assert "erstes Gespraech" in seite and "zweites Gespraech" in seite
+    assert "archiviert" in seite
+
+
+def test_archivierter_kontakt_fehlt_in_der_liste_und_kommt_mit_schalter():
+    lead = _lead(name="Weggeraeumt Person")
+    _post("/kontakte/archivieren-bestaetigen",
+          {"lead_id": lead, "csrf": ui.CSRF_TOKEN,
+           "name_bestaetigt": "Weggeraeumt Person"})
+    liste = _get("/kontakte").text
+    assert "Weggeraeumt Person" not in liste
+    assert "auch archivierte zeigen" in liste
+    mit_archiv = _get("/kontakte?archiv=1").text
+    assert "Weggeraeumt Person" in mit_archiv
+    assert "archiviert" in mit_archiv
+    # Ueber die Adresse bleibt er erreichbar — nichts ist verschwunden.
+    assert _get(f"/kontakte/{lead}").status_code == 200
+
+
+def test_archivierter_kontakt_laesst_sich_wiederherstellen():
+    lead = _lead(name="Zurueck Person")
+    _post("/kontakte/archivieren-bestaetigen",
+          {"lead_id": lead, "csrf": ui.CSRF_TOKEN,
+           "name_bestaetigt": "Zurueck Person"})
+    assert _ist_archiviert(lead) is True
+    r = _post("/kontakte/wiederherstellen",
+              {"lead_id": lead, "csrf": ui.CSRF_TOKEN})
+    assert r.status_code == 303
+    assert _ist_archiviert(lead) is False
+    assert "Zurueck Person" in _get("/kontakte").text
+    # Gegen-Ereignis statt Zuruecknehmen: alle vier Zeilen stehen im Protokoll
+    # (je Schritt eine des Werkzeugs und eine der Oberflaeche).
+    zeilen = _aktivitaeten("kontakt_archiviert")
+    assert [z["payload"]["archiviert"] for z in zeilen] == [True, True,
+                                                            False, False]
+
+
+def test_archivierter_kontakt_fehlt_im_posteingang():
+    lead = _lead(name="Still Person")
+    _kundenantwort(lead, text="Meldet sich noch jemand?")
+    assert "Still Person" in _get("/posteingang").text
+    _post("/kontakte/archivieren-bestaetigen",
+          {"lead_id": lead, "csrf": ui.CSRF_TOKEN,
+           "name_bestaetigt": "Still Person"})
+    seite = _get("/posteingang").text
+    assert "Still Person" not in seite
+    assert "Meldet sich noch jemand?" not in seite
+    # Auch die Zahl stimmt — sonst zaehlte der Kopf Eintraege, die fehlen.
+    assert json.loads(server.posteingang())["anzahl_unbeantwortet"] == 0
+
+
+def test_archivierter_kontakt_fehlt_in_der_zuordnungsauswahl(
+        sammelkontakt_zurueck):
+    sammel = _sammel()
+    ziel = _lead(name="Sophie Beispiel", phone=SOPHIE_PHONE)
+    _kundenantwort(sammel, text="Wer bin ich?", absender=SOPHIE_LID)
+    assert f'<option value="{ziel}">' in _get("/einordnung").text
+    _post("/kontakte/archivieren-bestaetigen",
+          {"lead_id": ziel, "csrf": ui.CSRF_TOKEN,
+           "name_bestaetigt": "Sophie Beispiel"})
+    assert f'<option value="{ziel}">' not in _get("/einordnung").text
+
+
+def test_schon_archivierter_kontakt_wird_nicht_zweimal_archiviert():
+    lead = _lead()
+    _post("/kontakte/archivieren-bestaetigen",
+          {"lead_id": lead, "csrf": ui.CSRF_TOKEN,
+           "name_bestaetigt": "Max Testperson"})
+    r = _post("/kontakte/archivieren", {"lead_id": lead,
+                                        "csrf": ui.CSRF_TOKEN})
+    assert r.status_code == 409
+    assert len(_aktivitaeten("kontakt_archiviert")) == 2
+
+
+def test_sammelkontakt_laesst_sich_nicht_archivieren(sammelkontakt_zurueck):
+    """An ihm haengt jede Nachricht einer noch unbekannten Nummer — archiviert
+    waere der Posteingang fuer Unbekannte blind."""
+    sammel = _sammel()
+    r = _post("/kontakte/archivieren-bestaetigen",
+              {"lead_id": sammel, "csrf": ui.CSRF_TOKEN,
+               "name_bestaetigt": "Unbekannte Eingaenge"})
+    assert r.status_code == 400
+    assert _ist_archiviert(sammel) is False
+
+
+# --- Es gibt keinen Loeschweg, und das ist die Zusage ------------------------
+
+def test_die_oberflaeche_bietet_nirgends_ein_loeschen_an():
+    lead = _lead()
+    # Die Kontaktseite sagt ausdruecklich, dass es kein Loeschen gibt, und
+    # nennt den Grund — schweigen waere hier die schlechtere Antwort.
+    seite = _get(f"/kontakte/{lead}").text
+    assert "Loeschen gibt es hier nicht" in seite
+    assert "ON DELETE CASCADE" in seite
+    # Keine Route, die es doch taete — auf keiner Seite.
+    for pfad in ("/", "/kontakte", f"/kontakte/{lead}", "/posteingang",
+                 "/einordnung", "/wiedervorlagen"):
+        assert "/loeschen" not in _get(pfad).text
+    pfade = [getattr(r, "path", "") for r in ui.app.routes]
+    assert not [p for p in pfade if "loesch" in p or "delete" in p]
+    # Auch kein Chat-Werkzeug — sonst koennte der Agent, was die Oberflaeche
+    # bewusst nicht kann.
+    namen = {fn.__name__ for fn in server.WERKZEUGE}
+    assert not [n for n in namen if "loesch" in n or "delete" in n]
+
+
+def test_kontakt_aktualisieren_weist_status_und_consent_ab():
+    """Die Kante sitzt im Werkzeug (KONTAKT_FELDER) — das UI erbt sie, weil es
+    das Werkzeug ruft statt selbst zu schreiben."""
+    lead = _lead()
+    for feld, wert in (("status", "won"), ("consent_status", "opt_in"),
+                       ("enrichment", "{}"), ("id", "x")):
+        antwort = json.loads(server.kontakt_aktualisieren(
+            lead_id=lead, feld=feld, wert=wert))
+        assert "fehler" in antwort
+    zeile = _stamm(lead)
+    assert zeile["status"] == "new" and zeile["consent_status"] == "unknown"
+
+
+def test_archiv_werkzeug_meldet_einen_unbekannten_kontakt():
+    for werkzeug in (server.kontakt_archivieren, server.kontakt_wiederherstellen):
+        antwort = json.loads(werkzeug(
+            lead_id="00000000-0000-0000-0000-000000000000"))
+        assert "fehler" in antwort
+
+
+def test_archivmerkmal_faellt_bei_kaputten_werten_nach_sichtbar():
+    """fail-open, und zwar in Python UND in SQL mit derselben Antwort.
+
+    Ohne die `jsonb_typeof`-Pruefung in server._archiv_sql zaehlte die
+    ZEICHENKETTE "true" in SQL als archiviert, waehrend Python (`is True`) sie
+    nicht zaehlt — der Kontakt waere aus der Liste verschwunden, ohne dass die
+    Kontaktseite ihn als archiviert kennzeichnet. Ein kaputter Wert darf
+    niemanden unsichtbar machen.
+    """
+    kaputte = ('"true"', "true", '{"archiviert": "true"}',
+               '{"archiviert": 1}', "null", '{"anderes": true}')
+    for nummer, wert in enumerate(kaputte):
+        lead = _lead(name=f"Kaputt Person {nummer}")
+        server._q("update leads set enrichment = jsonb_set(enrichment, "
+                  "'{archiviert}', %s::jsonb, true) where id = %s returning id",
+                  (wert, lead))
+        assert server._archiviert(_stamm(lead)["enrichment"]) is False, wert
+        sichtbar = server._q(
+            "select id from leads l where l.id = %s and not "
+            + server._archiv_sql("l.enrichment"), (lead,))
+        assert len(sichtbar) == 1, wert
+        assert f"Kaputt Person {nummer}" in _get("/kontakte").text
+
+
+def test_archivmerkmal_greift_nur_beim_echten_wahrheitswert():
+    """Die Gegenprobe zum Test darueber: der ECHTE Wert wirkt in beiden Welten."""
+    lead = _lead(name="Echt Archiviert")
+    server._q("update leads set enrichment = jsonb_set(enrichment, "
+              "'{archiviert}', %s::jsonb, true) where id = %s returning id",
+              ('{"archiviert": true}', lead))
+    assert server._archiviert(_stamm(lead)["enrichment"]) is True
+    assert server._q("select id from leads l where l.id = %s and not "
+                     + server._archiv_sql("l.enrichment"), (lead,)) == []
+    assert "Echt Archiviert" not in _get("/kontakte").text
