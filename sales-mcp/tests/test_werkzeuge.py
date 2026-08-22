@@ -688,9 +688,9 @@ def test_kontakt_aktualisieren_signatur_ueberlebt_den_dekorator():
     assert list(parameter) == ["lead_id", "feld", "wert"]
 
 
-def test_fuenfunddreissig_werkzeuge_registriert():
+def test_neununddreissig_werkzeuge_registriert():
     namen = {fn.__name__ for fn in server.WERKZEUGE}
-    assert len(namen) == 35
+    assert len(namen) == 39
     assert "kontakt_aktualisieren" in namen
     # Kontakt-Freigabe fuer WhatsApp und Auto-Betrieb. Vertragstests dazu in
     # tests/test_kontakt_freigabe.py.
@@ -732,6 +732,17 @@ def test_fuenfunddreissig_werkzeuge_registriert():
     # `eingang_einordnen` fasst nur die Datenbank an.
     assert "eingang_einordnen" in namen
     assert "absender_aufloesen" in namen
+    # Betreiber-Wunsch 22.08.2026 — Entwuerfe endgueltig wegraeumen.
+    # Vertragstests in tests/test_verwerfen.py. Fuer `pending` gibt es
+    # bewusst KEIN zweites Werkzeug: das ist `entwurf_ablehnen`.
+    assert "entwurf_verwerfen" in namen
+    # Betreiber-Wunsch 22.08.2026 — lange Verlaeufe verdichten. Vertragstests
+    # in tests/test_chat_report.py. Keins der drei ruft ein Modell auf oder
+    # geht ins Netz: der Agent schreibt den Text, die Werkzeuge lesen und
+    # legen ab.
+    assert "chat_reports_faellig" in namen
+    assert "chat_verlauf" in namen
+    assert "chat_report_speichern" in namen
 
 
 # ---------------------------------------------------------------------------

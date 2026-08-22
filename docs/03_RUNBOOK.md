@@ -2007,17 +2007,20 @@ docker compose up -d sales-ui
 # dann im Browser: http://127.0.0.1:8791
 ```
 
-**Was es kann und was nicht:** Lesen; schreiben ausschließlich (a) die drei
-Freigabe-Aktionen (freigeben, ablehnen, erneut freigeben) mit exakt den
-SQL-Bedingungen der Chat-Werkzeuge, als `approved_by='betreiber-ui'` im Audit
-unterscheidbar, (b) die Einordnung unbekannter Absender (siehe
+**Was es kann und was nicht:** Lesen; schreiben ausschließlich (a) die vier
+Entwurfs-Aktionen (freigeben, ablehnen, erneut freigeben, **verwerfen**) mit
+exakt den SQL-Bedingungen der Chat-Werkzeuge, als `approved_by='betreiber-ui'`
+im Audit unterscheidbar, (b) die Einordnung unbekannter Absender (siehe
 „Einordnungs-Seite" unten) und (c) die Kontaktpflege — Stammdaten korrigieren
 und Kontakte archivieren bzw. wiederherstellen (siehe „Kontaktpflege" unten).
-**Kein Löschen, kein Versand.**
+**Kein Löschen, kein Versand.** Chat-Reports zeigt die Oberfläche nur an, sie
+schreibt keine (siehe „Chat-Reports" weiter unten).
 Ein Entwurf mit der Zustellungs-Marke „in Zustellung …" (möglicher
 Doppelversand) wird im UI **grundsätzlich nicht** erneut freigegeben — dieser
 Weg bleibt bewusst dem Chat vorbehalten
-(`entwurf_erneut_freigeben(draft_id, bestaetigt=True)`).
+(`entwurf_erneut_freigeben(draft_id, bestaetigt=True)`). Dieselbe Marke sperrt
+auch das Verwerfen, aus demselben Grund andersherum gelesen (siehe
+„Entwürfe verwerfen").
 
 ### Einordnungs-Seite `/einordnung` (Betreiber-Wunsch 21.08.2026)
 
@@ -2218,6 +2221,183 @@ Recreate. `--remove-orphans` bleibt TABU.
 die 127.0.0.1-Grenze hinaus. Ein öffentliches Read-only-Deployment (etwa
 Vercel) wäre eine eigene, bewusste Folge-Entscheidung — nicht Teil dieser
 Stufe.
+
+## Entwürfe verwerfen (Betreiber-Wunsch 22.08.2026)
+
+**Warum es das gibt.** Ein Entwurf hatte bis dahin keinen Ausgang außer dem
+Versand: `pending` ließ sich ablehnen, `failed` nur *erneut* freigeben (sonst
+lag er ewig), `approved` gar nicht mehr stoppen. Gemessen am 22.08.2026 im
+Schema `sales`: **drei `failed`-Entwürfe (WhatsApp) und ein `approved`
+(LinkedIn), alle vom 18.08.** — seit vier Tagen in der Liste. Der `approved`
+ist der lehrreiche Fall: es ist eine LinkedIn-**Direktnachricht**, und für die
+gibt es bewusst keinen Dispatcher (Stufe 3, Nr. 3) — ohne
+`entwurf_manuell_gesendet` bleibt so eine Zeile bis in alle Ewigkeit stehen.
+
+> Seit dem 22.08.2026 gibt es `sales-linkedin` (parallele Arbeit, eigener
+> Container, `restart: "no"`). Der greift **ausschließlich**
+> `recipient='eigenes-profil'`, also eigene Beiträge — Direktnachrichten
+> bleiben Handarbeit. Für das Verwerfen ändert sich nichts: der Dienst benutzt
+> `dispatch._claim_marke` (importiert, nicht nachgebaut), trägt also dieselbe
+> Zustellungs-Marke, und die Schutzkante unten greift damit auch dort.
+
+**Kein neuer Status, kein DDL.** Zielstatus ist `rejected` — den kennt der
+CHECK auf `drafts.status` seit Stufe 2 (`db/provision.sql`), und die Rolle
+`sales_app` hat kein DDL. Unterschieden wird deshalb nicht am Status, sondern
+an der Zeile im Protokoll:
+
+| Vorgang | Aktivitätstyp | Ausgangsstatus |
+|---|---|---|
+| Ablehnen (`entwurf_ablehnen`) | `ablehnung` | `pending` |
+| Verwerfen (`entwurf_verwerfen`) | `verwerfung` (+ `aus_status`) | `failed` / `approved` |
+
+Beide enden auf `rejected`. Nach dem Übergang sagt die Draft-Zeile selbst
+nicht mehr, ob sie gescheitert oder freigegeben war — das steht ausschließlich
+im `payload.aus_status` der `verwerfung`-Zeile, und `activities` ist
+append-only: nachtragen lässt es sich nie.
+
+**Was aus welchem Zustand geht:**
+
+| Zustand | Chat | Oberfläche |
+|---|---|---|
+| `pending` | `entwurf_ablehnen(draft_id)` — `entwurf_verwerfen` lehnt ab und verweist dorthin | Knopf **Ablehnen** im Block „Zur Freigabe" |
+| `failed` (ohne Marke) | `entwurf_verwerfen(draft_id)`, ohne Bestätigung | Knopf **Verwerfen**, ein Schritt |
+| `failed` (mit Claim-Marke) | nur `entwurf_verwerfen(draft_id, bestaetigt=True)` | verweigert, ausnahmslos |
+| `approved` (ohne Marke) | nur `entwurf_verwerfen(draft_id, bestaetigt=True)` | Knopf **Verwerfen**, **zweistufig** über eine Warnseite |
+| `approved` (mit Claim-Marke) | verweigert, auch mit `bestaetigt=True` | verweigert |
+| `sent` | niemals | kein Knopf |
+
+**Warum die Claim-Marke auch hier sperrt — und warum das eine bewusste
+Abweichung vom Auftrag ist.** Der Auftrag verlangte den Marken-Schutz nur für
+`approved`. In der Praxis sitzt die Marke aber fast immer auf `failed`: der
+Dispatcher claimt über den erlaubten Übergang `approved → failed` und schreibt
+die Marke dabei ins `error`-Feld (`sales-mcp/dispatch.py`, Moduldocstring).
+Für einen `failed`-Entwurf mit Marke gilt das „ging nachweislich nicht raus"
+also gerade **nicht**: er ist möglicherweise **schon beim Empfänger**, und ein
+`rejected` sähe danach aus wie „nie rausgegangen". Die Begründung, die im
+Auftrag steht, trifft damit genau den Zustand, den der Auftrag freigab. Umgesetzt ist
+deshalb der **strengere** Weg (Projektregel aus der Kontaktpflege: „strenger
+ist erlaubt, lockerer nie"): Marke auf `failed` ⇒ `bestaetigt=True` nötig.
+Umgekehrt ist die Marke auf `approved` ein Widerspruch in der Zeile selbst —
+dort gibt es gar keine Übernahme, auch nicht mit `bestaetigt=True`.
+
+**Warum das Verwerfen atomar gegen den Dispatcher ist.** Beide Zweige sind
+eigene UPDATEs, die ihren Ausgangsstatus im WHERE tragen. Claimt der
+Dispatcher dazwischen (`approved → failed`), trifft das UPDATE null Zeilen und
+es passiert nichts; claimt er danach, findet er `rejected` und überspringt.
+Kein Fenster, in dem beide gewinnen.
+
+**Zweistufig in der Oberfläche, und nur bei `approved`.** Der erste POST auf
+`/aktion/verwerfen` **schreibt nichts** — er zeigt eine Warnseite mit
+Empfänger, Kanal und Textanfang (400 Zeichen, escaped). Erst der zweite POST
+auf `/aktion/verwerfen-bestaetigen` wirkt, und er trägt in einem eigenen
+Hidden-Feld den **Empfänger**, den der Betreiber gelesen hat; stimmt der beim
+Eintreffen nicht mehr, wird nichts getan (409). Muster wie bei
+`ignorieren-bestaetigen` und `archivieren-bestaetigen`. Aus `failed` heraus
+genügt **ein** Schritt: der Entwurf ging nachweislich nicht raus, und
+Verwerfen versendet nichts — der Fehler dieser Richtung kostet einen
+Entwurfstext, keine ungewollte Zustellung.
+
+**Protokoll.** Im Chat schreibt das Werkzeug eine `verwerfung`-Zeile mit dem
+Spalten-Default `actor='agent'`; in der Oberfläche schreibt die Route sie
+selbst mit `actor='human'` und `weg='ui'` — dieselbe Begründung wie bei
+Freigabe und Ablehnung: eine vom Menschen ausgelöste Entscheidung darf im
+append-only-Log nicht wie eine Agenten-Entscheidung aussehen.
+
+**Gelöscht wird nichts.** Text, Empfänger und Verlauf bleiben stehen; nur der
+Status wechselt. Ein Löschen gibt es aus denselben Gründen nicht wie bei den
+Kontakten (kein DELETE-Recht, `ON DELETE CASCADE`, Admin-Eingriff).
+
+**Die Produktionszeilen bleiben unangetastet.** Die drei `failed` und der eine
+`approved` vom 18.08. wurden bei der Umsetzung **nicht** verworfen — das ist
+eine Betreiberentscheidung, kein Aufräumen nebenbei.
+
+## Chat-Reports: lange Verläufe verdichten (Betreiber-Wunsch 22.08.2026)
+
+**Warum es das gibt.** Gemessen am 22.08.2026 im Schema `sales`: 369
+`nachricht_ausgehend`, 352 `kundenantwort`, 11 `versand`. Ein einzelner
+Kontakt trägt weit über hundert davon — als Einzelzeilen ist das kein
+Gesprächsvorbereitungs-Material mehr, sondern ein Protokoll, das niemand liest.
+
+**Wer schreibt den Text: der Agent.** Die Werkzeuge rufen **kein Modell** auf,
+greifen **nicht ins Netz** und schicken dem Kunden **nichts**. Sie lesen und
+legen ab. Drei neue Chat-Werkzeuge:
+
+| Werkzeug | Was es tut |
+|---|---|
+| `chat_reports_faellig()` | Welche Kontakte haben ≥ 50 noch nicht zusammengefasste Nachrichten? Nur lesend. |
+| `chat_verlauf(lead_id, limit=200, alle=False)` | Die offenen Nachrichten, älteste zuerst, mit vollem Text — plus `bis_aktivitaet_id` als Grenzwert für den Report. Mit `alle=True` **auch die bereits zusammengefassten** (Nachlese; liefert dann `bis_aktivitaet_id: null`). Nur lesend. |
+| `chat_report_speichern(lead_id, zusammenfassung, bis_aktivitaet_id)` | Legt den vom Agenten geschriebenen Text als Aktivität `chat_report` ab. |
+
+Der Morgen-Digest nennt dasselbe unter `faellige_chat_reports` (Anzahl plus
+die fünf größten). Damit ist die Werkzeugliste **39 Werkzeuge** lang
+(vorher 35: +3 Chat-Report, +1 `entwurf_verwerfen`).
+
+**Die Schwelle steht als Konstante**, nicht als Zahl im SQL:
+`server.CHAT_REPORT_SCHWELLE = 50` (≥ 50 ist fällig, die Grenze zählt dazu).
+Ebenso `CHAT_NACHRICHT_TYPEN = ("kundenantwort", "nachricht_ausgehend",
+"versand")` — beide Richtungen des Chats; zählte nur eine, wäre die Schwelle
+in der Praxis doppelt so hoch wie beschrieben.
+
+**Wo die Zusammenfassungsgrenze liegt.** Im Payload der `chat_report`-Zeile,
+als **Paar** `(bis_zeitpunkt, bis_aktivitaet_id)` — nicht als Zeitstempel
+allein. `activities.created_at` ist die **Transaktionszeit**: zwei Zeilen
+derselben Transaktion tragen denselben Wert, und „alles bis \<Zeit\>" wäre
+dort ein Münzwurf (derselbe Befund M10 wie bei den LID-Zuordnungen).
+Verglichen wird überall das Tupel `(created_at, id)`, in genau der Ordnung, in
+der die Grenze gesetzt wurde. Gelesen wird „jüngster Report gewinnt"
+(`distinct on (lead_id)` über dieselbe Ordnung) — wie bei
+`wiedervorlage`/`wiedervorlage_erledigt`. **Keine neue Tabelle, keine neue
+Spalte, kein DDL.**
+
+**Append-only bleibt append-only.** Der Report ist eine **zusätzliche** Zeile.
+Keine Einzelnachricht wird gelöscht oder überschrieben (`sales.activities` hat
+weder DELETE noch UPDATE, `db/provision.sql`). Sie verschwinden nur aus der
+**Anzeige**: `profil_lesen` liefert `chat_reports` (ältester zuerst) und
+darunter nur noch die **nicht** abgedeckten Einzelzeilen; die Kontaktseite
+`/kontakte/{id}` zeigt dasselbe und sagt es ausdrücklich. Der Weg zurück zum
+Wortlaut ist `chat_verlauf(lead_id, alle=True)` — ohne ihn wäre „gelöscht ist
+nichts" eine Zusage ohne Einlösung, weil der Text hinter einem Report nur noch
+per `psql` erreichbar wäre.
+
+**Der Sammelkontakt bekommt keinen Report.** An „Unbekannte Eingänge" hängt
+jede Nachricht einer noch unbekannten Nummer — am 22.08.2026 waren das 675
+Zeilen von 16 verschiedenen Absendern. Das ist kein Chat, sondern ein Stapel
+fremder Chats; eine gemeinsame Zusammenfassung vermischte Menschen, die nichts
+miteinander zu tun haben. `chat_reports_faellig` listet ihn nicht, und
+`chat_report_speichern` lehnt ihn mit dem Verweis auf `eingang_einordnen` ab.
+Archivierte Kontakte bleiben aus demselben Grund draußen wie im Posteingang.
+
+**Ablauf im Alltag** (der Agent tut das, nicht der Betreiber):
+
+1. `digest()` → `faellige_chat_reports` nennt den Kontakt.
+2. `chat_verlauf(lead_id)` → offene Nachrichten plus `bis_aktivitaet_id`.
+3. Agent schreibt die Zusammenfassung (Anliegen, offene Punkte, vereinbarte
+   Schritte — **keine Bewertung**, §34d).
+4. `chat_report_speichern(lead_id, text, bis_aktivitaet_id=…)`.
+
+Steht `vollstaendig: false`, war der Verlauf länger als das Fenster (Vorgabe
+200, höchstens 500): nur das Gelieferte zusammenfassen, speichern, erneut
+aufrufen — die Grenze wandert mit.
+
+**Wachen im Werkzeug** (jede mit eigenem Test): leere und zu lange
+Zusammenfassungen werden abgelehnt (`CHAT_REPORT_MAXLAENGE = 4000`); eine
+Grenze, die einem anderen Kontakt gehört, auf keiner Nachricht liegt oder
+nicht hinter dem letzten Report liegt, wird abgelehnt; ohne offene Nachrichten
+gibt es nichts zusammenzufassen.
+
+**Die Oberfläche schreibt keine Reports.** Der Text entsteht im Sprachmodell
+des Agenten — eine Oberfläche ohne Modell hätte dafür nichts in der Hand. Sie
+zeigt sie nur, escaped wie jedes andere Fremddatum (ein Reporttext ist
+Agententext über Kundennachrichten).
+
+**Ausrollen.** Die vier neuen Werkzeuge (die drei Chat-Report-Werkzeuge und
+`entwurf_verwerfen`) stehen erst nach einem Neustart von `sales-mcp` zur
+Verfügung (`docker compose up -d --build sales-mcp`) — die Werkzeugliste
+entsteht beim Prozessstart. Die Oberfläche braucht
+`docker compose up -d --build sales-ui`. `AGENTS.md` muss der Betreiber
+zusätzlich per `docker compose cp` ins Volume legen, sonst kennt der Agent die
+neuen Werkzeuge nicht (kein Neustart nötig, siehe „Agent-Regeln ändern").
+`--remove-orphans` bleibt TABU.
 
 ## Testläufe sind Ein-Läufer-Betrieb
 

@@ -1,13 +1,15 @@
 """sales-ui — lokale Freigabe- und Datenansicht vor der Kundendatenbank (Stufe 10).
 
 Der siebte Container: ein server-seitig gerendertes Web-UI fuer den Betreiber.
-LESEN darf es Entwuerfe, Kontakte, Posteingang, Wiedervorlagen und die offenen
-Absender-Einordnungen. SCHREIBEN kann es dreierlei, und nichts sonst:
+LESEN darf es Entwuerfe, Kontakte samt Chat-Reports, Posteingang,
+Wiedervorlagen und die offenen Absender-Einordnungen. SCHREIBEN kann es
+dreierlei, und nichts sonst:
 
-1. die drei Freigabe-Uebergaenge — freigeben (pending->approved), ablehnen
-   (pending->rejected), erneut freigeben (failed->approved) — mit EXAKT den
-   SQL-Bedingungen der Chat-Werkzeuge aus server.py (entwurf_freigeben,
-   entwurf_ablehnen, entwurf_erneut_freigeben), nur mit
+1. die vier Entwurfs-Uebergaenge — freigeben (pending->approved), ablehnen
+   (pending->rejected), erneut freigeben (failed->approved) und verwerfen
+   (failed/approved->rejected) — mit EXAKT den SQL-Bedingungen der
+   Chat-Werkzeuge aus server.py (entwurf_freigeben, entwurf_ablehnen,
+   entwurf_erneut_freigeben, entwurf_verwerfen), nur mit
    approved_by='betreiber-ui', damit im Audit unterscheidbar bleibt, ueber
    welchen Weg freigegeben wurde;
 2. die Einordnung unbekannter Absender (Stufe 11, Seite /einordnung) —
@@ -115,6 +117,26 @@ SICHERHEITSMODELL (Demo-Umfang, bewusst dokumentiert)
   beim Marken-Fall verweigert das UI aber nicht ganz — der Betreiber sieht
   hier, anders als im Chat, den vollen Namen des betroffenen Kontakts, und
   genau das macht die Entscheidung an dieser Stelle verantwortbar.
+* Marken-Fall des Verwerfens (Betreiber-Wunsch 22.08.2026): dieselbe Marke,
+  andersherum gelesen. Beim erneuten Freigeben waere ein zweiter Versand der
+  Schaden, beim Verwerfen ein `rejected`, das eine moeglicherweise ERFOLGTE
+  Zustellung verdeckt — eine Luege in der Datenbank. Das UI verweigert deshalb
+  auch hier ausnahmslos; die ausdrueckliche Uebernahme bleibt dem Chat
+  (`entwurf_verwerfen(..., bestaetigt=True)`, und aus `approved` heraus gibt
+  es sie ueberhaupt nicht).
+* Verwerfen aus `approved`: Zweischritt-Muster wie beim Lead- und Archiv-Fall.
+  Der erste POST auf `/aktion/verwerfen` SCHREIBT NICHTS — er zeigt eine
+  Warnseite mit Empfaenger und Textanfang. Erst der zweite POST auf eine
+  eigene Route wirkt, und er traegt den EMPFAENGER, den der Betreiber gelesen
+  hat. Aus `failed` heraus genuegt EIN Schritt: der Entwurf ging nachweislich
+  nicht raus, und das Verwerfen versendet nichts — der Fehler dieser Richtung
+  kostet einen Entwurfstext, keine ungewollte Zustellung.
+* Chat-Reports schreibt die Oberflaeche NICHT, sie zeigt sie nur. Der Text
+  einer Zusammenfassung entsteht im Sprachmodell des Agenten
+  (`chat_report_speichern`); eine Oberflaeche ohne Modell haette dafuer nichts
+  in der Hand. Die von einem Report abgedeckten Einzelnachrichten fallen auf
+  der Kontaktseite aus dem Verlauf — geloescht ist nichts, `activities` bleibt
+  append-only, und die Seite sagt es ausdruecklich.
 * Archiv-Fall der Kontaktpflege: dasselbe Zweischritt-Muster wie beim
   Lead-Fall. Der erste POST auf `/kontakte/archivieren` SCHREIBT NICHTS — er
   zeigt eine Warnseite mit Namen, Anzahl der Aktivitaeten und offenen
@@ -724,6 +746,11 @@ async def inbox(request):
             f'<div class="aktionen">'
             f'{_formular("erneut-freigeben", z["id"], "Erneut freigeben", "",
                          checkbox="erneute Freigabe bestaetigen")}'
+            # Einschrittig, anders als beim freigegebenen Entwurf darunter:
+            # ein gescheiterter Entwurf ging nachweislich nicht raus, und
+            # verwerfen versendet nichts. Der Fehler dieser Richtung kostet
+            # einen Entwurfstext, nicht eine ungewollte Zustellung.
+            f'{_formular("verwerfen", z["id"], "Verwerfen", "gefahr")}'
             f"</div></div>")
 
     teile.append(f"<h2>Freigegeben ({len(freigegeben)})</h2>")
@@ -743,7 +770,13 @@ async def inbox(request):
             f'<div class="karte">{_entwurf_kopf(z, "approved")}'
             f'<div class="text">{_e(z["body"])}</div>'
             f'<div class="meta">freigegeben: {_e(z["approved_by"])} am '
-            f'{_zeit(z["approved_at"])}</div>{stand}</div>')
+            f'{_zeit(z["approved_at"])}</div>{stand}'
+            # ZWEISTUFIG: dieser Knopf fuehrt auf eine Warnseite und schreibt
+            # selbst nichts (aktion_verwerfen). Eine geltende Freigabe
+            # zurueckzunehmen ist keine Sache eines Daumens, der danebentrifft.
+            f'<div class="aktionen">'
+            f'{_formular("verwerfen", z["id"], "Verwerfen", "gefahr")}'
+            f'</div></div>')
 
     teile.append(f"<h2>Zuletzt gesendet (hoechstens {GESENDETE_MAX})</h2>")
     if not gesendet:
@@ -892,6 +925,208 @@ async def aktion_erneut_freigeben(request):
         return _statusfehler(draft_id, "failed")
     _freigabe_loggen(zeilen[0], erneut=True)
     return RedirectResponse("/", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# Verwerfen — der vierte Schreibweg (Betreiber-Wunsch 22.08.2026)
+#
+# Bis hierher gab es fuer einen Entwurf keinen Ausgang ausser dem Versand:
+# `failed` liess sich nur erneut freigeben, `approved` gar nicht mehr stoppen.
+# Beides sammelt sich sichtbar in dieser Inbox an.
+#
+# Das SQL spiegelt `server.entwurf_verwerfen` — wie bei den drei Aktionen
+# darueber und aus demselben Grund: die Protokollzeile soll `actor='human'`
+# tragen, und das kann nur schreiben, wer selbst schreibt (das Chat-Werkzeug
+# hat auf `activities.actor` den Spalten-Default 'agent' und kann ihn nicht
+# ueberschreiben). Was NICHT gespiegelt wird, ist die Bestaetigungs-Uebernahme
+# des Marken-Falls: `bestaetigt` bleibt hier ueberall implizit False.
+#
+# Zweistufig ist NUR der `approved`-Fall. Der Unterschied ist echt: ein
+# `failed`-Entwurf ging nachweislich nicht raus, ein `approved` ist eine
+# GELTENDE Freigabe, die der Dispatcher jederzeit nehmen darf. Muster wie bei
+# `ignorieren-bestaetigen` und `archivieren-bestaetigen` — erster POST
+# schreibt nichts, zweiter POST auf eigener Route, mit dem Wert, den der
+# Betreiber gelesen hat (hier: der Empfaenger).
+# ---------------------------------------------------------------------------
+
+VERWERFEN_TEXT_MAX = 400   # Textanfang auf der Warnseite
+
+_MARKE_SQL = " and (error is null or error not like %s)"
+
+
+def _verwerfen_loggen(z, aus_status: str) -> None:
+    # actor='human'/weg='ui' — dieselbe Begruendung wie in `_freigabe_loggen`.
+    # `aus_status` gehoert zwingend dazu: nach dem Uebergang traegt die Zeile
+    # `rejected` und sagt nicht mehr, ob sie gescheitert oder freigegeben war.
+    server._q("insert into activities (lead_id, type, payload, actor) "
+              "values (%s, 'verwerfung', %s, 'human') returning id",
+              (z["lead_id"], server._json({"draft_id": str(z["id"]),
+                                           "kanal": z["channel"],
+                                           "aus_status": aus_status,
+                                           "weg": "ui"})))
+
+
+def _marken_seite(error: str) -> HTMLResponse:
+    """Die Verweigerung des Marken-Falls — ausnahmslos, wie beim erneuten
+    Freigeben. Hier zaehlt sie andersherum: dort waere ein zweiter Versand der
+    Schaden, hier ein `rejected`, das eine erfolgte Zustellung verdeckt."""
+    return _fehlerseite(
+        409, "Verweigert: moeglicherweise bereits zugestellt",
+        "Dieser Entwurf traegt die Zustellungs-Marke des Dispatchers — ein "
+        "Absturz zwischen Claim und Buchung kann bedeuten, dass die Nachricht "
+        "BEREITS BEIM EMPFAENGER ist. Ihn zu verwerfen schriebe dann eine "
+        "Luege in die Datenbank: die Zeile saehe aus wie &#x27;nie "
+        "rausgegangen&#x27;. Diese Oberflaeche verwirft so einen Entwurf "
+        "grundsaetzlich nicht. Wer das ausdruecklich verantworten will, tut "
+        "das im Chat: entwurf_verwerfen(draft_id, bestaetigt=True). "
+        f"error: {_e(error)}")
+
+
+def _verwerfen_warnseite(z) -> HTMLResponse:
+    """Erster Schritt beim `approved`-Fall: zeigen, WAS da weggeraeumt wird —
+    Empfaenger und Textanfang — und NICHTS schreiben."""
+    text = str(z["body"] or "")
+    anfang = text[:VERWERFEN_TEXT_MAX] + ("…" if len(text) > VERWERFEN_TEXT_MAX else "")
+    anhang = (f'<p>Am Entwurf haengt der Anhang <b>{_e(z["media_ref"])}</b>.</p>'
+              if z.get("media_ref") else "")
+    return _seite(
+        "Verwerfen bestaetigen",
+        f'<div class="warnung">Dieser Entwurf ist <b>freigegeben</b> und '
+        f'wartet auf Zustellung an <b>{_e(z["recipient"])}</b>'
+        f'{" (" + _e(z["name"]) + ")" if z.get("name") else ""} '
+        f'ueber {_e(z["channel"])}.'
+        f'<p>Verwerfen nimmt eine Freigabe zurueck, die bereits gilt: der '
+        f'zustaendige Dispatcher duerfte diesen Entwurf jederzeit nehmen. '
+        f'Danach steht er auf <code>rejected</code> und geht nicht mehr raus. '
+        f'<b>Geloescht wird nichts</b> — Text und Verlauf bleiben '
+        f'vollzaehlig stehen.</p>{anhang}'
+        f'<p>Ist der Entwurf inzwischen in Zustellung gegangen, wird hier '
+        f'nichts getan (die Seite sagt es dann).</p></div>'
+        f'<div class="text">{_e(anfang)}</div>'
+        f'<div class="aktionen">'
+        f'<form class="aktion gefahr" method="post" '
+        f'action="/aktion/verwerfen-bestaetigen">'
+        f'<input type="hidden" name="draft_id" value="{_e(z["id"])}">'
+        f'<input type="hidden" name="empfaenger_bestaetigt" '
+        f'value="{_e(z["recipient"])}">'
+        f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+        f'<button class="gefahr">Ja — Entwurf an {_e(z["recipient"])} '
+        f'verwerfen</button></form></div>'
+        f'<p class="abbrechen"><a href="/">Abbrechen, nichts tun</a></p>',
+        status=409)
+
+
+def _entwurf_zeile(draft_id):
+    return server._q(
+        "select d.id, d.status, d.error, d.channel, d.recipient, d.body, "
+        "       d.media_ref, l.name "
+        "from drafts d left join leads l on l.id = d.lead_id "
+        "where d.id = %s", (draft_id,))
+
+
+@_gesichert_seite
+async def aktion_verwerfen(request):
+    """`failed` wird sofort verworfen, `approved` bekommt erst die Warnseite.
+
+    Zwischen dem Lesen hier und dem Schreiben unten kann sich der Status
+    aendern (der Dispatcher laeuft weiter). Das ist ungefaehrlich: das
+    UPDATE traegt den Ausgangsstatus im WHERE, trifft dann null Zeilen und
+    die Seite sagt, was wirklich los ist.
+    """
+    _form, draft_id, abbruch = await _aktions_vorspann(request)
+    if abbruch:
+        return abbruch
+    zeilen = _entwurf_zeile(draft_id)
+    if not zeilen:
+        return _fehlerseite(404, "Unbekannter Entwurf",
+                            f"Kein Entwurf mit draft_id {_e(draft_id)}.")
+    z = zeilen[0]
+    # Der Status zuerst: `pending` und `sent` haben je einen eigenen Grund und
+    # einen eigenen Satz dazu. Erst danach die Marke — sonst bekaeme ein
+    # gesendeter Entwurf, an dem aus irgendeinem Grund noch eine Marke haengt,
+    # die Marken-Seite statt der Wahrheit („ist zugestellt").
+    if z["status"] not in server.VERWERFBARE_STATUS:
+        return _verwerfen_statusfehler(z)
+    error = z["error"] or ""
+    if error.startswith(server._CLAIM_MARKE_PRAEFIX):
+        return _marken_seite(error)
+    if z["status"] == "approved":
+        return _verwerfen_warnseite(z)
+    # SQL wie server.entwurf_verwerfen (failed-Zweig) mit bestaetigt=False.
+    getroffen = server._q(
+        "update drafts set status = 'rejected' "
+        "where id = %s and status = 'failed'" + _MARKE_SQL +
+        " returning id, lead_id, channel",
+        (draft_id, f"{server._CLAIM_MARKE_PRAEFIX}%"))
+    if not getroffen:
+        return _statusfehler(draft_id, "failed")
+    _verwerfen_loggen(getroffen[0], "failed")
+    return RedirectResponse("/", status_code=303)
+
+
+@_gesichert_seite
+async def aktion_verwerfen_bestaetigen(request):
+    """Der ZWEITE, ausdrueckliche POST — nur fuer `approved`, und nur mit dem
+    Empfaenger, den der Betreiber auf der Warnseite gelesen hat."""
+    form, draft_id, abbruch = await _aktions_vorspann(request)
+    if abbruch:
+        return abbruch
+    bestaetigt_fuer = str(form.get("empfaenger_bestaetigt") or "")
+    if not bestaetigt_fuer:
+        return _fehlerseite(
+            400, "Bestaetigung fehlt",
+            "Ohne den auf der Warnseite gelesenen Empfaenger wird nichts "
+            "getan.")
+    zeilen = _entwurf_zeile(draft_id)
+    if not zeilen:
+        return _fehlerseite(404, "Unbekannter Entwurf",
+                            f"Kein Entwurf mit draft_id {_e(draft_id)}.")
+    z = zeilen[0]
+    # Zwischen Warnseite und Klick kann sich die Lage geaendert haben (eine
+    # korrigierte Nummer im Chat, ein zweiter Tab). Dann ist das Ja von eben
+    # kein Ja zu dem, was jetzt passieren wuerde — also lieber gar nichts.
+    if str(z["recipient"] or "") != bestaetigt_fuer:
+        return _fehlerseite(
+            409, "Bestaetigung passt nicht mehr",
+            "Der Entwurf geht inzwischen an einen anderen Empfaenger als auf "
+            "der Warnseite. Nichts wurde getan — die Seite neu laden und "
+            "erneut ansehen.")
+    if (z["error"] or "").startswith(server._CLAIM_MARKE_PRAEFIX):
+        return _marken_seite(z["error"])
+    # SQL wie server.entwurf_verwerfen (approved-Zweig). Die Marken-Klausel
+    # steht hier ZUSAETZLICH zur Pruefung oben: zwischen beiden kann der
+    # Dispatcher geclaimt haben, und dann darf dieses UPDATE nicht greifen.
+    getroffen = server._q(
+        "update drafts set status = 'rejected' "
+        "where id = %s and status = 'approved'" + _MARKE_SQL +
+        " returning id, lead_id, channel",
+        (draft_id, f"{server._CLAIM_MARKE_PRAEFIX}%"))
+    if not getroffen:
+        return _statusfehler(draft_id, "approved")
+    _verwerfen_loggen(getroffen[0], "approved")
+    return RedirectResponse("/", status_code=303)
+
+
+def _verwerfen_statusfehler(z) -> HTMLResponse:
+    """`pending` und `sent` haben je einen eigenen Grund — und `pending` hat
+    einen anderen Weg, der auf derselben Seite als Knopf steht."""
+    if z["status"] == "pending":
+        return _fehlerseite(
+            409, "Offener Entwurf — hier ist Ablehnen der Weg",
+            "Dieser Entwurf steht noch auf &#x27;pending&#x27;. Offene "
+            "Entwuerfe werden mit dem Knopf <b>Ablehnen</b> im Block "
+            "&#x27;Zur Freigabe&#x27; weggeraeumt — das ist derselbe Vorgang "
+            "(er endet ebenfalls auf &#x27;rejected&#x27;). Nichts getan.")
+    if z["status"] == "sent":
+        return _fehlerseite(
+            409, "Gesendet — bleibt stehen",
+            "Dieser Entwurf ist zugestellt. Die Zeile ist der Zustellnachweis "
+            "und wird nicht verworfen: was raus ist, ist raus. Nichts getan.")
+    return _fehlerseite(
+        409, "Keine Aktion ausgefuehrt",
+        f"Entwurf hat Status &#x27;{_e(z['status'])}&#x27; — verworfen wird "
+        f"nur aus &#x27;failed&#x27; oder &#x27;approved&#x27;. Der Entwurf "
+        f"blieb unveraendert.")
 
 
 # ---------------------------------------------------------------------------
@@ -1254,6 +1489,27 @@ def _archiv_warnseite(lead) -> HTMLResponse:
         status=409)
 
 
+def _chat_report_bereich(lead_id) -> str:
+    """Die Chat-Reports eines Kontakts, aeltester zuerst.
+
+    Die Oberflaeche SCHREIBT hier nichts: Reports entstehen im Chat
+    (`chat_report_speichern`), weil dort das Sprachmodell sitzt, das den Text
+    verfasst. Diese Seite zeigt sie nur — genau wie den Bedarfsstand.
+    """
+    reports = server._chat_reports(lead_id)
+    if not reports:
+        return ""
+    zeilen = []
+    for r in reports:
+        p = r["payload"] or {}
+        text = str(p.get("zusammenfassung") or "")
+        anzahl = p.get("anzahl")
+        zeilen.append([_zeit(r["created_at"]),
+                       _e(anzahl if anzahl is not None else ""), _e(text)])
+    return (f"<h2>Chat-Reports ({len(reports)})</h2>"
+            + _tabelle(["Wann", "Nachrichten", "Zusammenfassung"], zeilen))
+
+
 def _kontakt_zeile(lead_id):
     return server._q("select id, name, enrichment from leads where id = %s",
                      (lead_id,))
@@ -1409,13 +1665,36 @@ async def kontakt_detail(request):
     teile.append(_wiedervorlagen_tabelle(_offene_wiedervorlagen(lead_id),
                                          mit_kontakt=False))
 
+    # Chat-Reports ZUERST (Betreiber-Wunsch 22.08.2026): sie erzaehlen die
+    # Vorgeschichte, und die von ihnen abgedeckten Einzelnachrichten fallen
+    # unten aus dem Verlauf — sonst stuende derselbe Chat zweimal da. Der
+    # Reporttext ist AGENTENTEXT ueber Kundennachrichten und wird deshalb
+    # genauso escaped wie jedes andere Fremddatum auf dieser Seite.
+    teile.append(_chat_report_bereich(lead_id))
+
     # Verlauf chronologisch — die Payload als gekuerzte Vorschau, escaped:
     # jedes Feld darin kann Kundentext sein.
+    grenze_zeit, grenze_id = server._chat_grenze(lead_id)
     aktivitaeten = server._q(
         "select type, actor, payload, created_at from activities "
-        "where lead_id = %s order by created_at asc limit %s",
-        (lead_id, AKTIVITAETEN_MAX))
+        "where lead_id = %(lead)s and type <> %(report)s "
+        "and (not (type = any(%(typen)s)) "
+        "     or (created_at, id) > "
+        "        (coalesce(%(zeit)s::timestamptz, '-infinity'::timestamptz), "
+        "         coalesce(%(id)s::uuid, "
+        "                  '00000000-0000-0000-0000-000000000000'::uuid))) "
+        "order by created_at asc limit %(limit)s",
+        {"lead": lead_id, "report": server.CHAT_REPORT_TYP,
+         "typen": list(server.CHAT_NACHRICHT_TYPEN),
+         "zeit": grenze_zeit, "id": grenze_id, "limit": AKTIVITAETEN_MAX})
     teile.append(f"<h2>Verlauf ({len(aktivitaeten)})</h2>")
+    if grenze_zeit is not None:
+        teile.append(
+            '<div class="hinweis">Nachrichten, die ein Chat-Report oben '
+            'abdeckt, stehen hier nicht mehr. <b>Geloescht ist nichts</b> — '
+            'sie liegen vollzaehlig in der Datenbank; im Wortlaut zeigt sie '
+            'der Chat mit <code>chat_verlauf(lead_id, alle=True)</code>.'
+            '</div>')
     if aktivitaeten:
         zeilen = []
         for a in aktivitaeten:
@@ -1824,6 +2103,12 @@ app = Starlette(routes=[
     Route("/aktion/freigeben", aktion_freigeben, methods=["POST"]),
     Route("/aktion/ablehnen", aktion_ablehnen, methods=["POST"]),
     Route("/aktion/erneut-freigeben", aktion_erneut_freigeben,
+          methods=["POST"]),
+    Route("/aktion/verwerfen", aktion_verwerfen, methods=["POST"]),
+    # Eigene Route fuer den zweiten Schritt, wie bei Einordnung und
+    # Kontaktarchiv: der ausdrueckliche Klick haengt nicht als Feld an dem
+    # Formular, das ihn ausgeloest hat.
+    Route("/aktion/verwerfen-bestaetigen", aktion_verwerfen_bestaetigen,
           methods=["POST"]),
     Route("/kontakte", kontakte),
     # Die Pflege-Routen stehen VOR der Detailseite: `/kontakte/{lead_id}`

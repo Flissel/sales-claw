@@ -529,8 +529,10 @@ def test_beide_werkzeuge_sind_registriert():
     # eingang_einordnen und absender_aufloesen (test_einordnung.py,
     # test_lid.py). Kontaktpflege 21.08.2026: kontakt_archivieren und
     # kontakt_wiederherstellen (test_ui.py) — ein Loesch-Werkzeug gibt es
-    # bewusst nicht, siehe dort.
-    assert len(namen) == len(set(namen)) == 35
+    # bewusst nicht, siehe dort. Betreiber-Wuensche 22.08.2026:
+    # entwurf_verwerfen (test_verwerfen.py) sowie chat_reports_faellig,
+    # chat_verlauf und chat_report_speichern (test_chat_report.py).
+    assert len(namen) == len(set(namen)) == 39
 
 # ---------------------------------------------------------------------------
 # Nachbesserungen aus dem Stufe-5-Review (Befunde T1, B2, D2)

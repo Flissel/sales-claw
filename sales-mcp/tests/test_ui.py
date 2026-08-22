@@ -1,13 +1,15 @@
 """Vertragstests des Freigabe-Frontends `sales-ui` (Stufe 10) gegen sales_test.
 
-Das UI ist eine Lese-Sicht mit GENAU drei Schreibwegen — freigeben, ablehnen,
-erneut freigeben — deren SQL-Bedingungen die Werkzeuge aus server.py spiegeln
-(approved_by='betreiber-ui' als Audit-Unterschied). Getestet wird deshalb vor
-allem die ABWEHR: CSRF-Fehlen/-Fälschung und fremde Host-Header dürfen NIE
-eine Aktion auslösen, Fremddaten (Entwurfstexte, Namen, Fehlertexte) dürfen
-NIE roh in einer Seite landen, und jeder Statusübergang greift nur aus dem
-Zustand, aus dem auch das Chat-Werkzeug ihn erlaubt — inklusive der
-Doppelversand-Marken-Verweigerung bei der erneuten Freigabe.
+Das UI ist eine Lese-Sicht mit GENAU vier Schreibwegen auf `drafts` —
+freigeben, ablehnen, erneut freigeben, verwerfen — deren SQL-Bedingungen die
+Werkzeuge aus server.py spiegeln (approved_by='betreiber-ui' als
+Audit-Unterschied). Getestet wird deshalb vor allem die ABWEHR: CSRF-Fehlen/
+-Fälschung und fremde Host-Header dürfen NIE eine Aktion auslösen, Fremddaten
+(Entwurfstexte, Namen, Fehlertexte, Reporttexte) dürfen NIE roh in einer Seite
+landen, und jeder Statusübergang greift nur aus dem Zustand, aus dem auch das
+Chat-Werkzeug ihn erlaubt — inklusive der Marken-Verweigerung, die bei der
+erneuten Freigabe den Doppelversand und beim Verwerfen die verdeckte
+Zustellung verhindert.
 """
 import json
 import os
@@ -398,6 +400,192 @@ def test_unlesbare_draft_id_gibt_400():
 
 
 # ---------------------------------------------------------------------------
+# Verwerfen (Betreiber-Wunsch 22.08.2026): failed einschrittig, approved
+# zweistufig, Marken-Fall ausnahmslos verweigert
+#
+# Die Zweistufigkeit ist hier dieselbe wie bei `ignorieren-bestaetigen` und
+# `archivieren-bestaetigen`: erster POST schreibt NICHTS, zweiter POST auf
+# eigener Route traegt den Wert, den der Betreiber gelesen hat.
+# ---------------------------------------------------------------------------
+
+_VERWERF_MARKE = ("in Zustellung seit 2026-08-22T09:00:00+00:00 "
+                  "(dispatcher beef0001)")
+
+
+def _verwerfungen():
+    return server._q("select lead_id, payload, actor from activities "
+                     "where type = 'verwerfung' order by created_at")
+
+
+@pytest.mark.parametrize("pfad", ["/aktion/verwerfen",
+                                  "/aktion/verwerfen-bestaetigen"])
+def test_verwerfen_ohne_csrf_wird_abgewiesen_und_nichts_passiert(pfad):
+    lead = _lead()
+    draft = _entwurf(lead, status="failed", fehler="OpenWA 500")
+    r = _post(pfad, {"draft_id": draft, "empfaenger_bestaetigt": "+491701234567"})
+    assert r.status_code == 403
+    assert _zeile(draft)["status"] == "failed"
+    assert _verwerfungen() == []
+
+
+@pytest.mark.parametrize("pfad", ["/aktion/verwerfen",
+                                  "/aktion/verwerfen-bestaetigen"])
+def test_verwerfen_mit_falschem_csrf_wird_abgewiesen(pfad):
+    lead = _lead()
+    draft = _entwurf(lead, status="failed", fehler="OpenWA 500")
+    r = _post(pfad, {"draft_id": draft, "csrf": "gefaelscht",
+                     "empfaenger_bestaetigt": "+491701234567"})
+    assert r.status_code == 403
+    assert _zeile(draft)["status"] == "failed"
+
+
+def test_verwerfen_mit_fremdem_host_wird_trotz_gueltigem_token_abgewiesen():
+    lead = _lead()
+    draft = _entwurf(lead, status="failed", fehler="OpenWA 500")
+    r = _post("/aktion/verwerfen", {"draft_id": draft, "csrf": ui.CSRF_TOKEN},
+              host="boese.example:8791")
+    assert r.status_code == 421
+    assert _zeile(draft)["status"] == "failed"
+
+
+def test_verwerfen_knopf_steht_an_failed_und_approved_entwuerfen():
+    lead = _lead()
+    _entwurf(lead, status="failed", fehler="OpenWA 500")
+    _entwurf(lead, status="approved", approved_by="betreiber")
+    seite = _get("/").text
+    assert seite.count('action="/aktion/verwerfen"') == 2
+
+
+def test_verwerfen_knopf_steht_nicht_an_pending_und_gesendeten():
+    lead = _lead()
+    _entwurf(lead, status="pending")
+    server._q("update drafts set sent_at = now() where id = %s returning id",
+              (_entwurf(lead, status="sent"),))
+    seite = _get("/").text
+    assert 'action="/aktion/verwerfen"' not in seite
+
+
+def test_failed_wird_einschrittig_verworfen():
+    lead = _lead()
+    draft = _entwurf(lead, status="failed", fehler="OpenWA HTTP 500")
+    r = _post("/aktion/verwerfen", {"draft_id": draft, "csrf": ui.CSRF_TOKEN})
+    assert r.status_code == 303
+    assert _zeile(draft)["status"] == "rejected"
+    akt = _verwerfungen()
+    assert len(akt) == 1
+    # actor='human' und weg='ui' — sonst waere die Entscheidung eines
+    # Menschen im append-only-Log von einer Agenten-Entscheidung nicht zu
+    # unterscheiden, und nachtragen laesst sie sich nie.
+    assert akt[0]["actor"] == "human"
+    assert akt[0]["payload"]["weg"] == "ui"
+    assert akt[0]["payload"]["aus_status"] == "failed"
+    assert akt[0]["payload"]["draft_id"] == draft
+
+
+def test_approved_erster_post_zeigt_nur_die_warnseite_und_schreibt_nichts():
+    lead = _lead()
+    draft = _entwurf(lead, status="approved", approved_by="betreiber",
+                     text="Guten Tag, hier der vereinbarte Termin")
+    r = _post("/aktion/verwerfen", {"draft_id": draft, "csrf": ui.CSRF_TOKEN})
+    assert r.status_code == 409
+    assert "Guten Tag, hier der vereinbarte Termin" in r.text
+    assert "+491701234567" in r.text
+    assert 'action="/aktion/verwerfen-bestaetigen"' in r.text
+    assert _zeile(draft)["status"] == "approved"
+    assert _verwerfungen() == []
+
+
+def test_approved_zweiter_post_verwirft():
+    lead = _lead()
+    draft = _entwurf(lead, status="approved", approved_by="betreiber")
+    r = _post("/aktion/verwerfen-bestaetigen",
+              {"draft_id": draft, "csrf": ui.CSRF_TOKEN,
+               "empfaenger_bestaetigt": "+491701234567"})
+    assert r.status_code == 303
+    assert _zeile(draft)["status"] == "rejected"
+    akt = _verwerfungen()
+    assert akt[0]["actor"] == "human"
+    assert akt[0]["payload"]["aus_status"] == "approved"
+
+
+def test_approved_zweiter_post_ohne_bestaetigten_empfaenger_tut_nichts():
+    lead = _lead()
+    draft = _entwurf(lead, status="approved", approved_by="betreiber")
+    r = _post("/aktion/verwerfen-bestaetigen",
+              {"draft_id": draft, "csrf": ui.CSRF_TOKEN})
+    assert r.status_code == 400
+    assert _zeile(draft)["status"] == "approved"
+
+
+def test_approved_zweiter_post_mit_veraendertem_empfaenger_tut_nichts():
+    """Zwischen Warnseite und Klick kann sich die Lage geaendert haben. Dann
+    ist das Ja von eben kein Ja zu dem, was jetzt passieren wuerde."""
+    lead = _lead()
+    draft = _entwurf(lead, status="approved", approved_by="betreiber")
+    server._q("update drafts set recipient = '+491700000099' where id = %s "
+              "returning id", (draft,))
+    r = _post("/aktion/verwerfen-bestaetigen",
+              {"draft_id": draft, "csrf": ui.CSRF_TOKEN,
+               "empfaenger_bestaetigt": "+491701234567"})
+    assert r.status_code == 409
+    assert _zeile(draft)["status"] == "approved"
+    assert _verwerfungen() == []
+
+
+@pytest.mark.parametrize("pfad", ["/aktion/verwerfen",
+                                  "/aktion/verwerfen-bestaetigen"])
+def test_marken_fall_wird_ausnahmslos_verweigert(pfad):
+    """Dieselbe Marke wie beim erneuten Freigeben, andersherum gelesen: hier
+    waere ein `rejected` die Luege, die eine erfolgte Zustellung verdeckt.
+    Die Oberflaeche bietet die Uebernahme grundsaetzlich nicht an."""
+    for status in ("failed", "approved"):
+        lead = _lead()
+        draft = _entwurf(lead, status=status, fehler=_VERWERF_MARKE)
+        r = _post(pfad, {"draft_id": draft, "csrf": ui.CSRF_TOKEN,
+                         "empfaenger_bestaetigt": "+491701234567"})
+        assert r.status_code == 409, (pfad, status)
+        assert "bereits" in r.text
+        zeile = _zeile(draft)
+        assert zeile["status"] == status
+        assert zeile["error"] == _VERWERF_MARKE   # die Marke bleibt lesbar
+    assert _verwerfungen() == []
+
+
+def test_pending_verweist_auf_ablehnen_und_bleibt_unberuehrt():
+    lead = _lead()
+    draft = _entwurf(lead, status="pending")
+    r = _post("/aktion/verwerfen", {"draft_id": draft, "csrf": ui.CSRF_TOKEN})
+    assert r.status_code == 409
+    assert "Ablehnen" in r.text
+    assert _zeile(draft)["status"] == "pending"
+
+
+def test_sent_bleibt_stehen():
+    lead = _lead()
+    draft = _entwurf(lead, status="sent")
+    r = _post("/aktion/verwerfen", {"draft_id": draft, "csrf": ui.CSRF_TOKEN})
+    assert r.status_code == 409
+    assert _zeile(draft)["status"] == "sent"
+    assert _verwerfungen() == []
+
+
+def test_verwerfen_unbekannte_draft_id_gibt_404():
+    r = _post("/aktion/verwerfen",
+              {"draft_id": "00000000-0000-0000-0000-000000000000",
+               "csrf": ui.CSRF_TOKEN})
+    assert r.status_code == 404
+
+
+def test_verwerfen_warnseite_escaped_den_entwurfstext():
+    lead = _lead()
+    draft = _entwurf(lead, status="approved", approved_by="betreiber",
+                     text='<script>alert("weg")</script>')
+    r = _post("/aktion/verwerfen", {"draft_id": draft, "csrf": ui.CSRF_TOKEN})
+    assert "<script" not in r.text
+    assert "&lt;script&gt;" in r.text
+
+
+# ---------------------------------------------------------------------------
 # Freigabe-Inbox: Bloecke, LinkedIn-Sonderfall, Meta-Refresh
 # ---------------------------------------------------------------------------
 
@@ -458,6 +646,58 @@ def test_kontaktliste_und_detailseite():
 def test_unbekannter_kontakt_gibt_404():
     assert _get("/kontakte/00000000-0000-0000-0000-000000000000").status_code == 404
     assert _get("/kontakte/keine-uuid").status_code == 404
+
+
+# --- Chat-Reports auf der Kontaktseite (Betreiber-Wunsch 22.08.2026) --------
+#
+# Die Oberflaeche ZEIGT sie nur. Geschrieben werden Reports im Chat
+# (`chat_report_speichern`), weil dort das Sprachmodell sitzt, das den Text
+# verfasst — eine Oberflaeche ohne Modell haette dafuer nichts in der Hand.
+
+def _chat_nachrichten(lead, anzahl, ab_minute=1000, typ="kundenantwort",
+                      praefix="Zeile"):
+    """`praefix` unterscheidet die Stapel voneinander — ohne ihn hiesse die
+    erste Nachricht jedes Stapels „… 1", und ein Test, der „taucht nicht mehr
+    auf" prueft, fiele auf den gleichnamigen Text des naechsten Stapels
+    herein (genau so beim ersten Lauf passiert)."""
+    return [str(z["id"]) for z in server._q(
+        "insert into activities (lead_id, type, payload, created_at) "
+        "select %s, %s, jsonb_build_object('text', %s || ' ' || g), "
+        "       now() - make_interval(mins => %s - g) "
+        "  from generate_series(1, %s) g returning id",
+        (lead, typ, praefix, ab_minute, anzahl))]
+
+
+def test_kontaktseite_zeigt_reports_statt_der_abgedeckten_zeilen():
+    lead = _lead(name="Anna Beispiel")
+    _chat_nachrichten(lead, 6, ab_minute=1000, praefix="Frueher")
+    server.chat_report_speichern(lead, "Kundin fragt nach bAV, Termin offen.")
+    _chat_nachrichten(lead, 2, ab_minute=500, praefix="Danach")
+    seite = _get(f"/kontakte/{lead}").text
+    assert "Chat-Reports (1)" in seite
+    assert "Kundin fragt nach bAV, Termin offen." in seite
+    assert "Frueher 1" not in seite      # vom Report abgedeckt
+    assert "Danach 1" in seite           # danach eingegangen, also offen
+    assert "Geloescht ist nichts" in seite
+
+
+def test_kontaktseite_ohne_report_zeigt_den_verlauf_unveraendert():
+    lead = _lead(name="Anna Beispiel")
+    _chat_nachrichten(lead, 3)
+    seite = _get(f"/kontakte/{lead}").text
+    assert "Chat-Reports" not in seite
+    assert "Zeile 1" in seite
+
+
+def test_kontaktseite_escaped_den_reporttext():
+    """Der Reporttext ist Agententext ueber Kundennachrichten — also
+    Fremddatum wie jedes andere auf dieser Seite."""
+    lead = _lead(name="Anna Beispiel")
+    _chat_nachrichten(lead, 3)
+    server.chat_report_speichern(lead, '<script>alert("report")</script>')
+    seite = _get(f"/kontakte/{lead}").text
+    assert "<script" not in seite
+    assert "&lt;script&gt;" in seite
 
 
 # ---------------------------------------------------------------------------
@@ -1470,6 +1710,7 @@ ERLAUBTE_LABEL = {
     "Sparte", "Gesellschaft", "Ablauf",                     # Vertraege
     "Wann", "Typ", "Wer", "Inhalt",                         # Verlauf
     "Kennung", "Nachrichten", "Zuletzt",                    # Einordnung
+    "Zusammenfassung",                                      # Chat-Reports
 }
 
 
@@ -1488,7 +1729,7 @@ def _seitenarten():
     lead = _lead(name="Handy Testperson")
     _entwurf(lead, text="Pending-Text")
     _entwurf(lead, status="failed", fehler="OpenWA HTTP 500")
-    _entwurf(lead, status="approved", approved_by="betreiber")
+    freigegeben = _entwurf(lead, status="approved", approved_by="betreiber")
     server._q("update drafts set sent_at = now() where id = %s returning id",
               (_entwurf(lead, status="sent"),))
     _kundenantwort(lead)
@@ -1512,6 +1753,9 @@ def _seitenarten():
         ("ignorieren-warnung", _post("/einordnung/ignorieren",
                                      {"absender": SOPHIE_NUMMER,
                                       "csrf": ui.CSRF_TOKEN})),
+        ("verwerfen-warnung", _post("/aktion/verwerfen",
+                                    {"draft_id": freigegeben,
+                                     "csrf": ui.CSRF_TOKEN})),
         # Fehlerseiten: fehlendes Token, unbekannter Kontakt, fremder Host.
         ("403-csrf", _post("/aktion/freigeben", {"draft_id": lead})),
         ("404-kontakt",

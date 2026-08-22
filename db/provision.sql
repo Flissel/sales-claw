@@ -147,3 +147,30 @@ grant select, insert, update, delete, truncate
 -- Gelesen wird deshalb überall „jüngste Zeile gewinnt", wie bei
 -- wiedervorlage/wiedervorlage_erledigt. Es ist an diesem Skript nichts zu tun.
 -- ---------------------------------------------------------------------------
+
+-- ---------------------------------------------------------------------------
+-- Betreiber-Wünsche 22.08.2026 (Entwürfe verwerfen, Chat-Reports): ebenfalls
+-- KEIN DDL. Aus denselben drei Gründen wie oben — und mit denselben Folgen für
+-- den, der es später anders machen will.
+--
+-- * **Entwurf verwerfen** braucht keinen Status „verworfen": der CHECK auf
+--   `drafts.status` kennt `rejected` seit Stufe 2, und das ist der Zielwert.
+--   Unterschieden wird im Protokoll, nicht im Status — `ablehnung` (aus
+--   `pending`) gegen `verwerfung` (aus `failed`/`approved`, mit `aus_status`
+--   im Payload). Nach dem Übergang sagt die drafts-Zeile selbst nicht mehr,
+--   woher sie kam; nachtragen ginge nie, weil es auf `activities` kein UPDATE
+--   gibt.
+-- * **Chat-Report** braucht keine Tabelle und keine Spalte: er IST eine Zeile
+--   in `activities` (`type='chat_report'`), und die Zusammenfassungsgrenze
+--   steht in seinem Payload als Paar (`bis_zeitpunkt`, `bis_aktivitaet_id`).
+--   Das Paar und nicht der Zeitstempel allein, weil `created_at` die
+--   TRANSAKTIONSZEIT ist: zwei Zeilen derselben Transaktion tragen denselben
+--   Wert (Befund M10), und „alles bis <Zeit>" wäre dort ein Münzwurf.
+--   Gelesen wird wieder „jüngste Zeile gewinnt".
+--
+-- Append-only bleibt damit unangetastet: ein Report LÖSCHT nichts, er kommt
+-- dazu. Die zusammengefassten Einzelnachrichten bleiben vollzählig in
+-- `activities` und verschwinden ausschließlich aus der ANZEIGE
+-- (`profil_lesen`, Kontaktseite) — im Wortlaut stehen sie über
+-- `chat_verlauf(lead_id)`. Auch an diesem Skript ist nichts zu tun.
+-- ---------------------------------------------------------------------------
