@@ -1,15 +1,38 @@
 """sales-ui — lokale Freigabe- und Datenansicht vor der Kundendatenbank (Stufe 10).
 
 Der siebte Container: ein server-seitig gerendertes Web-UI fuer den Betreiber.
-LESEN darf es Entwuerfe, Kontakte, Posteingang und Wiedervorlagen. SCHREIBEN
-kann es ausschliesslich die drei Freigabe-Uebergaenge — freigeben
-(pending->approved), ablehnen (pending->rejected), erneut freigeben
-(failed->approved) — mit EXAKT den SQL-Bedingungen der Chat-Werkzeuge aus
-server.py (entwurf_freigeben, entwurf_ablehnen, entwurf_erneut_freigeben),
-nur mit approved_by='betreiber-ui', damit im Audit unterscheidbar bleibt,
-ueber welchen Weg freigegeben wurde. Kein Editieren, kein Loeschen, kein
-Anlegen, kein Versand: das UI kann konstruktiv nichts, was die Chat-Werkzeuge
-nicht auch koennen — es kann weniger (siehe Marken-Fall unten).
+LESEN darf es Entwuerfe, Kontakte, Posteingang, Wiedervorlagen und die offenen
+Absender-Einordnungen. SCHREIBEN kann es zweierlei, und nichts sonst:
+
+1. die drei Freigabe-Uebergaenge — freigeben (pending->approved), ablehnen
+   (pending->rejected), erneut freigeben (failed->approved) — mit EXAKT den
+   SQL-Bedingungen der Chat-Werkzeuge aus server.py (entwurf_freigeben,
+   entwurf_ablehnen, entwurf_erneut_freigeben), nur mit
+   approved_by='betreiber-ui', damit im Audit unterscheidbar bleibt, ueber
+   welchen Weg freigegeben wurde;
+2. die Einordnung unbekannter Absender (Stufe 11, Seite /einordnung) —
+   ignorieren, zuordnen, als neuen Kontakt anlegen. Dafuer ruft das UI
+   ausschliesslich server.eingang_einordnen() bzw. server.kontakt_anlegen()
+   auf und baut KEINE eigene Abfrage: die Schutzkante H3 (ein echter Kontakt
+   laesst sich nicht beilaeufig stummschalten) sitzt in diesen Werkzeugen und
+   wird dadurch geerbt statt nachgebaut.
+
+Kein Editieren, kein Loeschen, kein Versand. Das UI kann konstruktiv nichts,
+was die Chat-Werkzeuge nicht auch koennen — es kann weniger (siehe Marken-Fall
+und Lead-Fall unten).
+
+WARUM DIE EINORDNUNG IN DIE OBERFLAECHE GEHOERT (Betreiber-Wunsch 21.08.2026)
+-----------------------------------------------------------------------------
+Die Rueckfrage „wer ist das?" wurde bisher im WhatsApp-Chat beantwortet. Dort
+sieht der Betreiber nur das Zitat aus `_rueckfrage_text` (120 Zeichen) und muss
+Kennung und Entscheidung abtippen. Hier sieht er den Nachrichtentext lang genug,
+um ihn zu verstehen (EINORDNUNG_TEXT_MAX unten), sieht auf einen Blick, ob die
+Kennung schon einem Kontakt gehoert, und entscheidet je Absender mit einem
+Klick. Die Seite STELLT die Rueckfrage nicht — sie zeigt nur, was offen ist:
+gelesen wird ueber server._einzuordnende(), das ausdruecklich rein lesend ist.
+server.eingang_einordnen() OHNE Argumente wuerde beim Seitenaufruf den
+Rueckfrage-Anspruch beanspruchen (eine Aktivitaet je Absender) — ein GET, das
+schreibt, und der Chat bekaeme seine Frage nie zu stellen.
 
 SICHERHEITSMODELL (Demo-Umfang, bewusst dokumentiert)
 -----------------------------------------------------
@@ -42,6 +65,27 @@ SICHERHEITSMODELL (Demo-Umfang, bewusst dokumentiert)
   bleibt dem Chat vorbehalten (`entwurf_erneut_freigeben(...,
   bestaetigt=True)`), wo die Warnung im Wortlaut gelesen werden muss —
   eine Checkbox neben einem Button ist dafuer ein zu leiser Ort.
+* Lead-Fall des Ignorierens: derselbe Gedanke, eine Stufe milder. Das UI ruft
+  `eingang_einordnen(..., 'ignorieren')` IMMER erst mit bestaetigt=False.
+  Gehoert die Kennung einem Kontakt im CRM, verweigert das Werkzeug (Befund
+  H3: ein ignorierter Kontakt verschwindet aus Posteingang UND Digest, und von
+  seinen Nachrichten wird kein Wort mehr gespeichert). Die Verweigerung wird
+  zur WARNSEITE mit dem Namen des Kontakts und einem EIGENEN, zweiten Formular
+  — ein zweiter POST auf eine eigene Route, mit einem eigenen Hidden-Feld, das
+  die lead_id des gezeigten Kontakts traegt und beim Eintreffen erneut gegen
+  den aktuellen Stand geprueft wird. Bewusst KEINE vorangekreuzte Checkbox
+  neben dem Knopf: „ignorieren" ist hier nicht das Ende einer Zustellung,
+  sondern der Anfang eines Schweigens, das niemandem auffaellt. Anders als
+  beim Marken-Fall verweigert das UI aber nicht ganz — der Betreiber sieht
+  hier, anders als im Chat, den vollen Namen des betroffenen Kontakts, und
+  genau das macht die Entscheidung an dieser Stelle verantwortbar.
+* Kein Netzzugriff aus der Oberflaeche: `absender_aufloesen()` (GET an den
+  eigenen openwa-Container) bleibt Chat-Sache. Es kostet Rate-Limit-Budget —
+  OpenWA macht nach etwa zehn Abfragen in Folge mit 429 dicht — und gehoert
+  darum nicht hinter einen Web-Knopf, den man aus Neugier zweimal drueckt.
+  Folge: eine `@lid`, zu der noch keine Rufnummer bekannt ist, laesst sich
+  hier nicht als neuer Kontakt anlegen (eine LID ist keine Rufnummer); die
+  Seite sagt das und nennt den Weg.
 * Keine Secrets in Seiten oder Logs; kein Zugriffslog (die Zeile enthielte
   nur Pfade und sagt nichts, was die Seiten nicht besser sagen). Einzige
   Env-Eingaben: SALES_DB_URL (ueber server.py), SALES_DB_SCHEMA (Default
@@ -88,6 +132,14 @@ KONTAKTE_MAX = 500      # Kontaktliste
 AKTIVITAETEN_MAX = 200  # Verlauf je Kontakt
 WIEDERVORLAGEN_MAX = 200
 PAYLOAD_KURZ = 300      # Payload-Vorschau im Kontakt-Verlauf
+# Nachrichtentext je einzuordnendem Absender. Deutlich mehr als die 120 Zeichen
+# der Chat-Kurzfassung (server.EINORDNUNG_TEXT_MAX) — hier soll ein Mensch
+# entscheiden, nicht ein Agent zitieren —, aber gedeckelt: der Text ist
+# Fremddatum, und eine Seite, deren Laenge der Absender bestimmt, ist selbst
+# eine kleine Waffe.
+EINORDNUNG_TEXT_MAX = 400
+EINORDNUNG_NAME_MAX = 120   # Namensfeld beim Anlegen aus der Einordnung
+EINORDNUNG_VERLAUF_MAX = 25  # bereits entschiedene Absender im Verlauf
 
 LOG = logging.getLogger("sales-ui")
 
@@ -204,7 +256,11 @@ h1 { font-size: 1.3rem; } h2 { font-size: 1.05rem; margin-top: 2rem; }
 .fehler { color: #a01212; white-space: pre-wrap; }
 .hinweis { background: #fdf3d7; border: 1px solid #e0cf96; padding: .5rem .8rem;
            border-radius: 6px; }
+.warnung { background: #fbe4e4; border: 1px solid #cf9a9a; color: #6b1212;
+           padding: .5rem .8rem; border-radius: 6px; margin: .5rem 0; }
 form.aktion { display: inline-block; margin-right: .6rem; }
+select, input[type="text"] { padding: .3rem .4rem; border-radius: 5px;
+         border: 1px solid #8a8578; font-size: .9rem; max-width: 18rem; }
 button { padding: .35rem .9rem; border-radius: 5px; border: 1px solid #8a8578;
          background: #fff; cursor: pointer; font-weight: 600; }
 button.primaer { background: #1f7a4d; border-color: #1f7a4d; color: #fff; }
@@ -215,7 +271,8 @@ th, td { border: 1px solid #d8d4cc; padding: .4rem .6rem; text-align: left;
 """
 
 _NAV = (("/", "Freigaben"), ("/kontakte", "Kontakte"),
-        ("/posteingang", "Posteingang"), ("/wiedervorlagen", "Wiedervorlagen"))
+        ("/posteingang", "Posteingang"), ("/einordnung", "Einordnung"),
+        ("/wiedervorlagen", "Wiedervorlagen"))
 
 
 def _seite(titel: str, rumpf: str, status: int = 200,
@@ -673,6 +730,324 @@ async def posteingang(request):
     return _seite("Posteingang", "".join(teile))
 
 
+# ---------------------------------------------------------------------------
+# Einordnung unbekannter Absender (/einordnung) — „wer ist das?"
+#
+# Die Seite ist eine Sicht auf server._einzuordnende() und drei Knoepfe, die
+# server.eingang_einordnen() bzw. server.kontakt_anlegen() aufrufen. Eigenes
+# SQL gibt es hier bewusst nicht: die Kanten dieser Stufe (H3 — ein echter
+# Kontakt laesst sich nicht beilaeufig stummschalten; H4 — rohe Kennung vs.
+# aufgeloeste Nummer) sitzen in server.py und sollen genau EINMAL existieren.
+# ---------------------------------------------------------------------------
+
+def _lead_zur_kennung(absender):
+    """Gehoert diese Kennung einem Kontakt im CRM? — oder None.
+
+    GENAU die Pruefung, mit der `eingang_einordnen` das Ignorieren verweigert
+    (`lid_kanonisch` + `_lead_mit_gleicher_nummer`), damit Anzeige und
+    Verweigerung nie Verschiedenes behaupten. Sie steht zusaetzlich zu dem, was
+    `_einzuordnende` selbst schon sortiert: dessen `kanon` loest in SQL auf und
+    greift damit nur bei Kennungen MIT Domain — eine als blanke Ziffernfolge
+    oder als `…@s.whatsapp.net` gebuchte Kennung landete unter 'neu', obwohl
+    sie einem Kontakt gehoert. Hier faellt sie auf.
+    """
+    aufgeloest = server.lid_kanonisch(absender)
+    if not str(aufgeloest).endswith("@c.us"):
+        return None
+    return server._lead_mit_gleicher_nummer(aufgeloest)
+
+
+def _kontakt_optionen() -> str:
+    """Die Auswahlliste fuer 'zuordnen' — EINMAL gebaut, je Absender benutzt.
+
+    Der Sammelkontakt selbst steht nicht drin: ihm etwas zuzuordnen waere die
+    Nicht-Entscheidung, und er hat ohnehin keine Rufnummer.
+
+    Ungefiltert (auch Kontakte ohne Telefonnummer): wer fehlt, ist nicht
+    waehlbar, und das waere hier der schlechtere Fehler — `eingang_einordnen`
+    sagt bei einem Kontakt ohne brauchbare Nummer selbst, was zu tun ist. Die
+    Seitengroesse ist beidseitig gedeckelt: hoechstens KONTAKTE_MAX Eintraege
+    je Feld, hoechstens EINORDNUNG_LIMIT Felder (server.EINORDNUNG_LIMIT).
+    """
+    zeilen = server._q(
+        "select id, name from leads order by name asc limit %s",
+        (KONTAKTE_MAX,))
+    return "".join(
+        f'<option value="{_e(z["id"])}">{_e(z["name"])}</option>'
+        for z in zeilen if str(z["id"]) != str(server.UNBEKANNT_LEAD_ID))
+
+
+def _einordnung_kopf() -> str:
+    """Das Hidden-Feld, das in JEDEM Formular dieser Seite steht."""
+    return f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+
+
+def _einordnung_aktionen(absender, optionen: str) -> str:
+    """Die drei Knoepfe je Absender. `bestaetigt` kommt hier NIRGENDS vor —
+    der Lead-Fall bekommt eine eigene Seite mit eigenem Formular."""
+    verborgen = (f'<input type="hidden" name="absender" '
+                 f'value="{_e(absender)}">{_einordnung_kopf()}')
+    return (
+        f'<form class="aktion" method="post" action="/einordnung/zuordnen">'
+        f'{verborgen}<select name="lead_id">'
+        f'<option value="">— bestehender Kontakt —</option>{optionen}'
+        f'</select> <button class="primaer">Zuordnen</button></form>'
+        f'<form class="aktion" method="post" action="/einordnung/anlegen">'
+        f'{verborgen}<input type="text" name="name" '
+        f'maxlength="{EINORDNUNG_NAME_MAX}" placeholder="Name des Kontakts"> '
+        f'<button>Neu anlegen</button></form>'
+        f'<form class="aktion" method="post" action="/einordnung/ignorieren">'
+        f'{verborgen}<button class="gefahr">Ignorieren</button></form>')
+
+
+def _einordnung_karte(eintrag, optionen: str) -> str:
+    absender = eintrag["absender"]
+    lid_marke = (' <span class="badge lid">LID-Pseudo-Kennung, keine '
+                 'Rufnummer</span>' if "@lid" in str(absender) else "")
+    gefragt = (f' · im Chat gefragt am {_zeit(eintrag["gefragt_am"])}'
+               if eintrag.get("gefragt_am") else " · noch nicht gefragt")
+    betroffen = _lead_zur_kennung(absender)
+    warnung = ""
+    if betroffen is not None:
+        # Sichtbar, BEVOR jemand auf „Ignorieren" drueckt — nicht erst danach.
+        warnung = (f'<div class="warnung">Diese Kennung gehoert dem Kontakt '
+                   f'<a href="/kontakte/{_e(betroffen["id"])}">'
+                   f'<b>{_e(betroffen["name"])}</b></a>. Ignorieren nimmt ihn '
+                   f'aus Posteingang und Digest und speichert von seinen '
+                   f'Nachrichten kein Wort mehr — es braucht deshalb einen '
+                   f'zweiten, ausdruecklichen Schritt.</div>')
+    return (f'<div class="karte"><b>{_e(absender)}</b>{lid_marke}'
+            f'<div class="meta">{_e(eintrag["anzahl_nachrichten"])} '
+            f'Nachricht(en) · zuletzt {_zeit(eintrag["zuletzt"])}{gefragt}'
+            f'</div>{warnung}'
+            f'<div class="text">{_e(eintrag["text_kurz"])}</div>'
+            f'{_einordnung_aktionen(absender, optionen)}</div>')
+
+
+@_gesichert_seite
+async def einordnung(request):
+    # Rein lesend (Moduldocstring): eingang_einordnen() ohne Argumente wuerde
+    # beim Seitenaufruf den Rueckfrage-Anspruch beanspruchen. Aus demselben
+    # Grund traegt diese Seite KEINEN Meta-Refresh — er wuerde ausserdem ein
+    # halb getipptes Namensfeld unter den Fingern des Betreibers wegraeumen.
+    koerbe = server._einzuordnende(text_max=EINORDNUNG_TEXT_MAX)
+    # Im Chat sind 'neu' und 'bereits_gefragt' zwei Toepfe, weil dort die Frage
+    # GESTELLT wird und nicht zweimal gestellt werden darf. Hier wird sie nur
+    # gezeigt — also ist beides schlicht „wartet auf Entscheidung".
+    offen = koerbe["neu"] + koerbe["bereits_gefragt"]
+    offen.sort(key=lambda e: str(e["zuletzt"]), reverse=True)
+    optionen = _kontakt_optionen()
+
+    teile = [f"<h2>Wartet auf Entscheidung ({len(offen)})</h2>"]
+    if not server.UNBEKANNT_LEAD_ID:
+        teile.append(
+            '<div class="hinweis">Kein Sammelkontakt eingerichtet '
+            '(INBOX_UNBEKANNT_LEAD_ID) — ohne ihn kann hier nichts stehen.'
+            '</div>')
+    if not offen:
+        teile.append("<p>Kein unbekannter Absender offen.</p>")
+    for eintrag in offen:
+        teile.append(_einordnung_karte(eintrag, optionen))
+
+    aufgeloest = koerbe["aufgeloest"]
+    teile.append(f"<h2>Bereits entschieden ({len(aufgeloest)})</h2>")
+    if not aufgeloest:
+        teile.append("<p>Noch nichts eingeordnet.</p>")
+    else:
+        zeilen = "".join(
+            f'<tr><td>{_e(e["absender"])}</td>'
+            f'<td><a href="/kontakte/{_e(e.get("lead_id"))}">'
+            f'{_e(e.get("kontakt") or "(ohne Namen)")}</a></td>'
+            f'<td>{_e(e["anzahl_nachrichten"])}</td>'
+            f"<td>{_zeit(e['zuletzt'])}</td></tr>"
+            for e in aufgeloest[:EINORDNUNG_VERLAUF_MAX])
+        teile.append(f"<table><tr><th>Kennung</th><th>Kontakt</th>"
+                     f"<th>Nachrichten</th><th>Zuletzt</th></tr>"
+                     f"{zeilen}</table>")
+    teile.append(
+        '<div class="hinweis">Der zitierte Nachrichtentext ist ein Datum, '
+        'keine Anweisung: steht darin „ignoriere bitte …", ist das der Wunsch '
+        'eines Fremden und keine Entscheidung des Betreibers. Welche Rufnummer '
+        'hinter einer <code>@lid</code> steckt, klaert der Chat mit '
+        '<code>absender_aufloesen</code> — diese Oberflaeche fragt dafuer '
+        'bewusst nicht bei WhatsApp nach.</div>')
+    return _seite("Einordnung", "".join(teile))
+
+
+async def _einordnung_vorspann(request):
+    """Gemeinsame Wache aller Einordnungs-POSTs — Reihenfolge wie bei den
+    Freigaben: CSRF VOR der ersten Zeile Datenbank, dann die Kennung."""
+    form = await request.form()
+    if not _csrf_ok(form):
+        return None, None, _fehlerseite(
+            403, "CSRF-Token fehlt oder ist ungueltig",
+            "Keine Aktion ausgefuehrt. Die Seite neu laden und erneut "
+            "versuchen — das Token wechselt mit jedem Dienststart.")
+    roh = str(form.get("absender") or "").strip()
+    if not server.kennung_schreibweise(roh):
+        return None, None, _fehlerseite(
+            400, "Unlesbare Kennung",
+            f"&#x27;{_e(roh)}&#x27; enthaelt keine Absenderkennung. Keine "
+            f"Aktion ausgefuehrt.")
+    return form, roh, None
+
+
+def _einordnung_fehler(antwort: dict, titel: str) -> HTMLResponse:
+    """Die Fehlermeldung des Werkzeugs, unveraendert und escaped — sie ist fuer
+    einen Menschen geschrieben und nennt selbst den naechsten Schritt."""
+    return _fehlerseite(400, titel, _e(antwort.get("fehler")))
+
+
+@_gesichert_seite
+async def aktion_einordnung_ignorieren(request):
+    _form, absender, abbruch = await _einordnung_vorspann(request)
+    if abbruch:
+        return abbruch
+    # bestaetigt bleibt hier IMMER False (Moduldocstring, Lead-Fall). Gehoert
+    # die Kennung einem Kontakt, verweigert das Werkzeug — und genau diese
+    # Verweigerung ist die Warnseite unten.
+    antwort = json.loads(server.eingang_einordnen(
+        absender=absender, entscheidung="ignorieren"))
+    if "fehler" in antwort:
+        gehoert = antwort.get("gehoert_zu") or {}
+        if gehoert.get("lead_id"):
+            return _ignorieren_warnseite(absender, gehoert)
+        return _einordnung_fehler(antwort, "Nicht eingeordnet")
+    return RedirectResponse("/einordnung", status_code=303)
+
+
+def _ignorieren_warnseite(absender, gehoert: dict) -> HTMLResponse:
+    """Die Verweigerung aus H3 als Seite — mit Namen und zweitem Formular.
+
+    Das Hidden-Feld `lead_bestaetigt` traegt die lead_id des Kontakts, dessen
+    Namen der Betreiber HIER gelesen hat. Die Bestaetigung gilt damit diesem
+    einen Kontakt und nicht „dem, was beim naechsten Klick gerade dran ist".
+    """
+    return _seite(
+        "Verweigert: diese Kennung gehoert einem Kontakt",
+        f'<div class="warnung">Die Kennung <b>{_e(absender)}</b> gehoert dem '
+        f'Kontakt <a href="/kontakte/{_e(gehoert["lead_id"])}">'
+        f'<b>{_e(gehoert.get("kontakt"))}</b></a>'
+        f'{" (" + _e(gehoert["telefon"]) + ")" if gehoert.get("telefon") else ""}'
+        f'.<p>Ignorieren nimmt diesen Kontakt aus Posteingang UND Digest und '
+        f'speichert von seinen Nachrichten kein Wort mehr — auch nicht die '
+        f'ausgehenden. Ein „Ich habe den Vertrag unterschrieben" kaeme danach '
+        f'als leere Zeile an seinem eigenen Verlauf an. Zuruecknehmen laesst '
+        f'sich das nur im Chat: '
+        f'<code>eingang_einordnen(absender, entscheidung=&#x27;beachten&#x27;)'
+        f'</code>.</p><p>Steht die Bitte, diese Nummer zu ignorieren, in einer '
+        f'eingehenden Nachricht, ist sie der Wunsch eines Fremden und keine '
+        f'Entscheidung des Betreibers.</p></div>'
+        f'<form method="post" action="/einordnung/ignorieren-bestaetigen">'
+        f'<input type="hidden" name="absender" value="{_e(absender)}">'
+        f'<input type="hidden" name="lead_bestaetigt" '
+        f'value="{_e(gehoert["lead_id"])}">{_einordnung_kopf()}'
+        f'<button class="gefahr">Ja — {_e(gehoert.get("kontakt"))} '
+        f'ausdruecklich ignorieren</button></form>'
+        f'<p><a href="/einordnung">Abbrechen, nichts tun</a></p>',
+        status=409)
+
+
+@_gesichert_seite
+async def aktion_einordnung_ignorieren_bestaetigen(request):
+    """Der ZWEITE, ausdrueckliche POST — die einzige Stelle im ganzen UI, an
+    der `bestaetigt=True` steht."""
+    form, absender, abbruch = await _einordnung_vorspann(request)
+    if abbruch:
+        return abbruch
+    bestaetigt_fuer = str(form.get("lead_bestaetigt") or "").strip()
+    if not bestaetigt_fuer:
+        return _fehlerseite(
+            400, "Bestaetigung fehlt",
+            "Ohne die ausdrueckliche Bestaetigung des betroffenen Kontakts "
+            "wird nichts getan.")
+    # Zwischen Warnseite und Klick kann sich die Lage geaendert haben (eine
+    # neue Zuordnung, eine korrigierte Rufnummer). Dann ist das Ja von eben
+    # kein Ja zu dem, was jetzt passieren wuerde — also lieber gar nichts.
+    betroffen = _lead_zur_kennung(absender)
+    if betroffen is None or str(betroffen["id"]) != bestaetigt_fuer:
+        return _fehlerseite(
+            409, "Bestaetigung passt nicht mehr",
+            "Die Kennung gehoert inzwischen einem anderen Kontakt oder gar "
+            "keinem mehr. Nichts wurde getan — die Seite neu laden und erneut "
+            "ansehen.")
+    antwort = json.loads(server.eingang_einordnen(
+        absender=absender, entscheidung="ignorieren", bestaetigt=True))
+    if "fehler" in antwort:
+        return _einordnung_fehler(antwort, "Nicht eingeordnet")
+    return RedirectResponse("/einordnung", status_code=303)
+
+
+@_gesichert_seite
+async def aktion_einordnung_zuordnen(request):
+    form, absender, abbruch = await _einordnung_vorspann(request)
+    if abbruch:
+        return abbruch
+    roh = str(form.get("lead_id") or "").strip()
+    try:
+        lead_id = str(uuid.UUID(roh))
+    except ValueError:
+        return _fehlerseite(
+            400, "Kein Kontakt gewaehlt",
+            f"&#x27;{_e(roh)}&#x27; ist keine lead_id. Im Auswahlfeld einen "
+            f"Kontakt waehlen. Keine Aktion ausgefuehrt.")
+    antwort = json.loads(server.eingang_einordnen(
+        absender=absender, entscheidung="zuordnen", lead_id=lead_id))
+    if "fehler" in antwort:
+        return _einordnung_fehler(antwort, "Nicht zugeordnet")
+    return RedirectResponse("/einordnung", status_code=303)
+
+
+@_gesichert_seite
+async def aktion_einordnung_anlegen(request):
+    """Neuer Kontakt aus einer Einordnung heraus.
+
+    `eingang_einordnen` kennt fuer diesen Fall bewusst KEINE eigene
+    Entscheidung — sein Docstring nennt den Weg: „Soll ein NEUER Kontakt
+    entstehen: erst kontakt_anlegen(name, phone=…), dann hier zuordnen."
+    (ENTSCHEIDUNGEN sind nur zuordnen/ignorieren/beachten.) Genau das tut diese
+    Route — und den zweiten Schritt braucht sie nicht: sobald der neue Kontakt
+    die Rufnummer traegt, findet `_einzuordnende` ihn ueber
+    `_lead_mit_gleicher_nummer` von selbst, und der Absender steht beim
+    naechsten Aufruf unter 'aufgeloest'. Ein `zuordnen` obendrauf legte nur
+    eine Zuordnung Nummer->dieselbe Nummer an, die das Werkzeug zu Recht
+    zurueckweist.
+    """
+    form, absender, abbruch = await _einordnung_vorspann(request)
+    if abbruch:
+        return abbruch
+    name = " ".join(str(form.get("name") or "").split())[:EINORDNUNG_NAME_MAX]
+    if not name:
+        return _fehlerseite(
+            400, "Name fehlt",
+            "Ein Kontakt ohne Namen ist nicht vorgesehen. Keine Aktion "
+            "ausgefuehrt.")
+    # Welche Rufnummer bekommt der neue Kontakt? Die, unter der die Kennung im
+    # Haus gefuehrt wird (`lid_kanonisch`) — das ist bei `4917…@c.us` sie
+    # selbst und bei einer bereits aufgeloesten `183…@lid` die gespeicherte
+    # Nummer. Ist gar keine bekannt, wird NICHT angelegt: eine `@lid` ist
+    # WhatsApps Privacy-Kennung und keine Rufnummer, und sie als phone
+    # einzutragen hiesse, dem Dispatcher eine Fantasienummer zu geben.
+    aufgeloest = server.lid_kanonisch(absender)
+    if not str(aufgeloest).endswith("@c.us"):
+        return _fehlerseite(
+            400, "Kennung ist keine Rufnummer",
+            f"Zu {_e(absender)} ist keine Rufnummer bekannt — eine "
+            f"&#x27;@lid&#x27; ist WhatsApps Pseudo-Kennung und darf nie als "
+            f"Telefonnummer eines Kontakts eingetragen werden. Zuerst im Chat "
+            f"<code>absender_aufloesen(kennung=&#x27;{_e(absender)}&#x27;)"
+            f"</code> laufen lassen (diese Oberflaeche fragt bewusst nicht "
+            f"selbst bei WhatsApp nach), danach hier anlegen oder zuordnen. "
+            f"Kein Kontakt angelegt.")
+    antwort = json.loads(server.kontakt_anlegen(
+        name=name, phone="+" + server.lid.ziffern(aufgeloest),
+        source="whatsapp",
+        notes="aus der Einordnung eines unbekannten Absenders (sales-ui)"))
+    if "fehler" in antwort:
+        return _einordnung_fehler(antwort, "Kontakt nicht angelegt")
+    return RedirectResponse(f'/kontakte/{antwort["lead_id"]}', status_code=303)
+
+
 @_gesichert_seite
 async def wiedervorlagen(request):
     zeilen = _offene_wiedervorlagen()
@@ -693,6 +1068,16 @@ app = Starlette(routes=[
     Route("/kontakte", kontakte),
     Route("/kontakte/{lead_id}", kontakt_detail),
     Route("/posteingang", posteingang),
+    Route("/einordnung", einordnung),
+    Route("/einordnung/zuordnen", aktion_einordnung_zuordnen,
+          methods=["POST"]),
+    Route("/einordnung/anlegen", aktion_einordnung_anlegen, methods=["POST"]),
+    Route("/einordnung/ignorieren", aktion_einordnung_ignorieren,
+          methods=["POST"]),
+    # Eigene Route fuer den zweiten Schritt — der ausdrueckliche Klick soll
+    # nicht als Feld an demselben Formular haengen, das ihn ausgeloest hat.
+    Route("/einordnung/ignorieren-bestaetigen",
+          aktion_einordnung_ignorieren_bestaetigen, methods=["POST"]),
     Route("/wiedervorlagen", wiedervorlagen),
 ], middleware=[Middleware(HostWache)])
 

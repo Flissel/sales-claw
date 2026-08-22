@@ -1663,7 +1663,8 @@ def _absender_ereignis(typ: str, kennung: str, lead_id=None) -> list:
         [0]["id"]) for ziel in ziele]
 
 
-def _einzuordnende(limit: int = EINORDNUNG_LIMIT) -> dict:
+def _einzuordnende(limit: int = EINORDNUNG_LIMIT,
+                   text_max: int = EINORDNUNG_TEXT_MAX) -> dict:
     """Absenderkennungen am Sammelkontakt, aufgeteilt in drei Koerbe.
 
     `neu` — niemandem zugeordnet, noch nie gefragt.
@@ -1673,6 +1674,13 @@ def _einzuordnende(limit: int = EINORDNUNG_LIMIT) -> dict:
 
     Ignorierte Absender kommen in keinem der drei vor. Rein lesend — das
     Beanspruchen der Rueckfrage passiert in `eingang_einordnen`.
+
+    `text_max` ist einstellbar, weil zwei verschiedene Leser dieselbe Zeile
+    lesen. Im Chat ist der Nachrichtentext ein ZITAT im Agentenkontext und
+    gehoert kurz gehalten (Vorgabe EINORDNUNG_TEXT_MAX); in der Oberflaeche
+    (`ui.py`, Seite /einordnung) liest ihn ein Mensch, der auf seiner Grundlage
+    entscheiden soll — dort ist eine Kurzfassung, die mitten im Satz abbricht,
+    ein Entscheidungsfehler in spe. Gedeckelt bleibt er in beiden Faellen.
     """
     if not UNBEKANNT_LEAD_ID:
         return {"neu": [], "bereits_gefragt": [], "aufgeloest": []}
@@ -1713,12 +1721,13 @@ def _einzuordnende(limit: int = EINORDNUNG_LIMIT) -> dict:
         {"sammel": UNBEKANNT_LEAD_ID, "limit": max(1, int(limit))})
 
     koerbe = {"neu": [], "bereits_gefragt": [], "aufgeloest": []}
+    grenze = max(1, int(text_max))
     for z in zeilen:
         text = " ".join(str(z["text"] or "").split())
         eintrag = {"absender": z["anzeige"], "kennung": z["kennung"],
                    "anzahl_nachrichten": z["anzahl"], "zuletzt": z["zuletzt"],
-                   "text_kurz": (text[:EINORDNUNG_TEXT_MAX] + "…"
-                                 if len(text) > EINORDNUNG_TEXT_MAX else text)}
+                   "text_kurz": (text[:grenze] + "…"
+                                 if len(text) > grenze else text)}
         bekannt = (_lead_mit_gleicher_nummer(z["kanon"])
                    if str(z["kanon"] or "").endswith("@c.us") else None)
         if bekannt is not None:

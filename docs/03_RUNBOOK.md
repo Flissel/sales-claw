@@ -1998,8 +1998,8 @@ werden darf, `newsletter` nur, ob er im Werbeverteiler steht.
 ## Freigabe-Oberfläche (sales-ui, Stufe 10)
 
 Ein lokales Web-UI als eigener Container: Entwürfe sehen und freigeben,
-Kontakte samt Verlauf/Bedarf/Verträgen, Posteingang und offene
-Wiedervorlagen — ohne den Chat zu bemühen.
+Kontakte samt Verlauf/Bedarf/Verträgen, Posteingang, die Einordnung
+unbekannter Absender und offene Wiedervorlagen — ohne den Chat zu bemühen.
 
 ```powershell
 # Start (Rest des Stacks bleibt unberührt)
@@ -2007,14 +2007,84 @@ docker compose up -d sales-ui
 # dann im Browser: http://127.0.0.1:8791
 ```
 
-**Was es kann und was nicht:** Lesen; schreiben ausschließlich die drei
+**Was es kann und was nicht:** Lesen; schreiben ausschließlich (a) die drei
 Freigabe-Aktionen (freigeben, ablehnen, erneut freigeben) mit exakt den
 SQL-Bedingungen der Chat-Werkzeuge, als `approved_by='betreiber-ui'` im Audit
-unterscheidbar. Kein Editieren, kein Löschen, kein Anlegen, kein Versand.
+unterscheidbar, und (b) die Einordnung unbekannter Absender (siehe
+„Einordnungs-Seite" unten). Kein Editieren, kein Löschen, kein Versand.
 Ein Entwurf mit der Zustellungs-Marke „in Zustellung …" (möglicher
 Doppelversand) wird im UI **grundsätzlich nicht** erneut freigegeben — dieser
 Weg bleibt bewusst dem Chat vorbehalten
 (`entwurf_erneut_freigeben(draft_id, bestaetigt=True)`).
+
+### Einordnungs-Seite `/einordnung` (Betreiber-Wunsch 21.08.2026)
+
+**Warum sie existiert:** Die Rückfrage „wer ist das?" zu einem unbekannten
+Absender (Stufe 11) wurde bisher im WhatsApp-Chat beantwortet. Dort sieht der
+Betreiber nur ein 120-Zeichen-Zitat und muss Kennung und Entscheidung
+abtippen. Hier steht der Nachrichtentext lang genug, um ihn zu verstehen
+(400 Zeichen, html-escaped), daneben Kennung, Anzahl der Nachrichten und der
+Zeitpunkt der jüngsten — und je Absender drei Knöpfe.
+
+| Knopf | Was läuft | Ergebnis |
+|---|---|---|
+| **Zuordnen** (Auswahlfeld) | `eingang_einordnen(absender, 'zuordnen', lead_id=…)` | Aktivität `lid_zuordnung`, künftige Nachrichten laufen zum Kontakt |
+| **Neu anlegen** (Namensfeld) | `kontakt_anlegen(name, phone=…)` | neuer Kontakt mit der Rufnummer der Kennung |
+| **Ignorieren** | `eingang_einordnen(absender, 'ignorieren')` — **immer** ohne `bestaetigt` | Gegen-Ereignis `absender_ignoriert`, nichts wird gelöscht |
+
+`neu` und `bereits_gefragt` stehen zusammen unter „Wartet auf Entscheidung":
+im Chat sind das zwei Töpfe, weil die Frage dort *gestellt* wird und nur
+einmal gestellt werden darf — die Seite *zeigt* sie nur. Sie liest deshalb
+über `server._einzuordnende()` (ausdrücklich rein lesend) und **nicht** über
+`eingang_einordnen()` ohne Argumente: das würde bei jedem Seitenaufruf den
+Rückfrage-Anspruch beanspruchen — ein GET, das schreibt, und der Chat käme nie
+mehr dazu, den Betreiber zu fragen. Aus demselben Grund hat die Seite keinen
+Meta-Refresh (er würde außerdem ein halb getipptes Namensfeld wegräumen).
+Bereits eingeordnete Absender stehen darunter knapp als Verlauf.
+
+**Warum „Ignorieren" bei einem echten Kontakt einen zweiten Schritt verlangt.**
+Gehört die Kennung einem Kontakt im CRM, verweigert `eingang_einordnen` ohne
+`bestaetigt=True` (Review-Befund H3). Das UI setzt `bestaetigt=True`
+**niemals pauschal**: es ruft immer erst ohne, zeigt die Verweigerung als
+Warnseite mit dem **Namen des Kontakts** und bietet dort ein **eigenes,
+zweites Formular** auf einer eigenen Route
+(`/einordnung/ignorieren-bestaetigen`) mit einem eigenen Hidden-Feld
+`lead_bestaetigt`, das beim Eintreffen erneut gegen den aktuellen Stand
+geprüft wird. Kein vorangekreuztes Häkchen neben dem Knopf. Der Grund ist die
+Größenordnung des Fehlers: ein ignorierter Kontakt verschwindet aus
+Posteingang **und** Digest, und von seinen Nachrichten wird in **beiden**
+Richtungen kein Wort mehr gespeichert — ein „Ich habe den Vertrag
+unterschrieben" käme danach als leere Zeile an. Anders als beim Marken-Fall
+der erneuten Freigabe verweigert das UI hier nicht ganz: der Betreiber sieht
+an dieser Stelle, anders als im Chat, den vollen Namen des betroffenen
+Kontakts, und genau das macht die Entscheidung verantwortbar. Zurücknehmen
+geht nur im Chat (`entscheidung='beachten'`).
+
+**Was die Seite bewusst nicht tut:** Sie fragt nicht bei WhatsApp nach.
+`absender_aufloesen` kostet Rate-Limit-Budget (OpenWA macht nach etwa zehn
+Abfragen in Folge mit 429 dicht) und gehört nicht hinter einen Web-Knopf.
+Folge: eine `@lid`, zu der noch **keine** Rufnummer bekannt ist, lässt sich
+hier nicht als neuer Kontakt anlegen — eine LID ist WhatsApps Pseudo-Kennung
+und darf nie als `phone` eines Kontakts landen (Review-Befund H1). Die Seite
+sagt das und nennt den Weg: erst im Chat `absender_aufloesen(kennung=…)`,
+danach hier anlegen oder zuordnen. Ist die Nummer bereits bekannt (gespeicherte
+Zuordnung), geht „Neu anlegen" auch für eine `@lid`.
+
+**Neue Umgebungsvariable am Container:** `sales-ui` bekommt seit dieser
+Änderung `INBOX_UNBEKANNT_LEAD_ID` (dieselbe wie `sales-inbox`, hier nur
+gelesen). Ohne sie bliebe `/einordnung` dauerhaft leer; die Seite sagt in dem
+Fall ausdrücklich, dass kein Sammelkontakt eingerichtet ist. Nach dem Ziehen
+dieser Änderung deshalb einmal ausrollen:
+
+```powershell
+docker compose up -d --build sales-ui
+```
+
+`--build` ist nötig, weil `ui.py` im Image liegt; es baut das gemeinsame Image
+`sales-claw-sales-mcp:local` neu, **erzeugt aber nur `sales-ui` neu** — die
+laufenden Container von `sales-mcp`/`sales-inbox`/`sales-dispatch`/`sales-mail`
+bleiben unberührt und ziehen den neuen Stand erst bei ihrem nächsten regulären
+Recreate. `--remove-orphans` bleibt TABU.
 
 **Sicherheitsmodell** (ausführlich im Kopf von `sales-mcp/ui.py`):
 

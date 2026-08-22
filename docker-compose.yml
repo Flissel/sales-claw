@@ -316,9 +316,13 @@ services:
   #
   # Lesen: Entwuerfe, Kontakte, Posteingang, Wiedervorlagen. Schreiben:
   # AUSSCHLIESSLICH die drei Freigabe-Uebergaenge mit den SQL-Bedingungen der
-  # Chat-Werkzeuge (approved_by='betreiber-ui' als Audit-Unterschied). Das
-  # Freigabe-Gate bleibt die Datenbank (Grundsatzentscheidung 1) — dieses UI
-  # ist nur ein zweiter Bedienweg dafuer, kein neuer Versandweg.
+  # Chat-Werkzeuge (approved_by='betreiber-ui' als Audit-Unterschied) sowie —
+  # seit 21.08.2026 — die Einordnung unbekannter Absender (/einordnung), und
+  # zwar ueber die Werkzeuge server.eingang_einordnen()/kontakt_anlegen()
+  # selbst, nicht mit eigenem SQL. Das Freigabe-Gate bleibt die Datenbank
+  # (Grundsatzentscheidung 1) — dieses UI ist nur ein zweiter Bedienweg dafuer,
+  # kein neuer Versandweg. Es fragt auch niemanden im Netz: absender_aufloesen
+  # (GET an openwa, Rate-Limit-Budget) bleibt Chat-Sache.
   #
   # Sicherheitsmodell (ausfuehrlich im Kopf von ui.py):
   #   * Port NUR auf 127.0.0.1 — die Vertrauensgrenze ist der Rechner des
@@ -351,6 +355,13 @@ services:
       - SALES_DB_SCHEMA=sales
       - TZ=${TZ:-Europe/Berlin}
       - UI_PORT=8791
+      # Der Sammelkontakt „Unbekannte Eingaenge" — dieselbe Variable wie bei
+      # sales-inbox, hier nur GELESEN. Ohne sie findet server._einzuordnende()
+      # nichts und die Seite /einordnung (Stufe 11 in der Oberflaeche) bliebe
+      # dauerhaft leer, ohne dass jemand merkt warum. Kein Geheimnis: eine
+      # lead_id, die auf jeder Kontaktseite steht — die T5a-Ueberlegung oben
+      # (keine Schluessel ins UI) bleibt davon unberuehrt.
+      - INBOX_UNBEKANNT_LEAD_ID=${INBOX_UNBEKANNT_LEAD_ID:-}
     ports:
       # Nur Loopback (Begruendung oben und in ui.py).
       - "127.0.0.1:8791:8791"
