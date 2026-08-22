@@ -11,6 +11,7 @@ Doppelversand-Marken-Verweigerung bei der erneuten Freigabe.
 """
 import json
 import os
+import re
 
 import pytest
 
@@ -1440,3 +1441,353 @@ def test_archivmerkmal_greift_nur_beim_echten_wahrheitswert():
     assert server._q("select id from leads l where l.id = %s and not "
                      + server._archiv_sql("l.enrichment"), (lead,)) == []
     assert "Echt Archiviert" not in _get("/kontakte").text
+
+
+# ---------------------------------------------------------------------------
+# Handytauglich (Betreiber-Wunsch 22.08.2026)
+#
+# Der Betreiber erreicht die Oberflaeche seit dem Tailscale-Zugang vom iPhone.
+# Gebaut war sie fuer einen Desktop-Browser. Nachgezogen ist das in REINEM CSS
+# — und genau das ist der Grund, warum es hier Tests gibt: eine Media-Query
+# faellt lautlos aus, wenn jemand am Geruest arbeitet. Kein Test ersetzt den
+# Blick auf ein echtes Telefon; diese hier halten fest, was sich ueberhaupt
+# maschinell festhalten laesst.
+#
+# Die harten Randbedingungen stehen mit im Netz: KEIN JavaScript (die CSP sagt
+# `default-src 'none'`), keine externen Ressourcen, und die `data-label`, aus
+# denen die Handy-Ansicht ihre Spaltenbeschriftung baut, tragen ausschliesslich
+# eigenen Text — ein Kundenname im Attribut waere derselbe Ausbruch, gegen den
+# `html.escape(quote=True)` sonst ueberall steht.
+# ---------------------------------------------------------------------------
+
+# Jede Spaltenueberschrift, die `ui._tabelle` je in ein `data-label` schreibt.
+# Die Liste ist der eigentliche Test: steht dort eines Tages etwas anderes,
+# kommt es aus der Datenbank.
+ERLAUBTE_LABEL = {
+    "Name", "Status", "Consent", "Letzte Aktivitaet",       # /kontakte
+    "Kontakt", "Faellig am", "Notiz",                       # Wiedervorlagen
+    "Frage", "Antwort",                                     # Bedarfsstand
+    "Sparte", "Gesellschaft", "Ablauf",                     # Vertraege
+    "Wann", "Typ", "Wer", "Inhalt",                         # Verlauf
+    "Kennung", "Nachrichten", "Zuletzt",                    # Einordnung
+}
+
+
+def _seitenarten():
+    """Eine Antwort je SEITENART — Listen, Detail, Warn- und Fehlerseiten.
+
+    Alles laeuft durch dasselbe `ui._seite`. Die Liste ist trotzdem lang,
+    weil genau die Seiten, an die niemand denkt (die 421-Abweisung bei
+    fremdem Host, die Archiv-Warnung), diejenigen sind, auf denen eine
+    Regression am Geruest zuerst auffiele — und zuletzt gesucht wuerde.
+
+    Nur zusammen mit der Fixture `sammelkontakt_zurueck` benutzen: die
+    Ignorieren-Warnseite gibt es nur mit Sammelkontakt.
+    """
+    sammel = _sammel()
+    lead = _lead(name="Handy Testperson")
+    _entwurf(lead, text="Pending-Text")
+    _entwurf(lead, status="failed", fehler="OpenWA HTTP 500")
+    _entwurf(lead, status="approved", approved_by="betreiber")
+    server._q("update drafts set sent_at = now() where id = %s returning id",
+              (_entwurf(lead, status="sent"),))
+    _kundenantwort(lead)
+    server._q("insert into activities (lead_id, type, payload) "
+              "values (%s, 'wiedervorlage', %s) returning id",
+              (lead, json.dumps({"faellig_am": "2026-09-01",
+                                 "notiz": "Vertragsablauf pruefen"})))
+    # Fuer die Einordnung: ein Absender, der einem echten Kontakt gehoert —
+    # daraus entsteht unten die zweistufige Ignorieren-Warnseite.
+    _lead(name="Sophie Beispiel", phone=SOPHIE_PHONE)
+    _kundenantwort(sammel, text="Ich habe unterschrieben",
+                   absender=SOPHIE_NUMMER)
+
+    arten = [(pfad, _get(pfad)) for pfad in (
+        "/", "/kontakte", "/kontakte?archiv=1", f"/kontakte/{lead}",
+        "/posteingang", "/einordnung", "/wiedervorlagen")]
+    arten += [
+        # Warnseiten (409) — beide schreiben nichts, siehe die Tests oben.
+        ("archiv-warnung", _post("/kontakte/archivieren",
+                                 {"lead_id": lead, "csrf": ui.CSRF_TOKEN})),
+        ("ignorieren-warnung", _post("/einordnung/ignorieren",
+                                     {"absender": SOPHIE_NUMMER,
+                                      "csrf": ui.CSRF_TOKEN})),
+        # Fehlerseiten: fehlendes Token, unbekannter Kontakt, fremder Host.
+        ("403-csrf", _post("/aktion/freigeben", {"draft_id": lead})),
+        ("404-kontakt",
+         _get("/kontakte/00000000-0000-0000-0000-000000000000")),
+        ("421-host", _get("/", host="boese.example")),
+    ]
+    return arten
+
+
+def _eingabe_tag(seite: str, name: str) -> str:
+    """Das `<input …>` mit genau diesem name-Attribut.
+
+    Ueber die Reihenfolge der Attribute sagt der Test damit nichts — nur
+    darueber, WELCHE dranstehen.
+    """
+    treffer = [t for t in re.findall(r"<input[^>]*>", seite)
+               if f'name="{name}"' in t]
+    assert len(treffer) == 1, (name, treffer)
+    return treffer[0]
+
+
+# --- Der Bauplan der Seite: Viewport, kein JavaScript ------------------------
+
+def test_viewport_meta_steht_auf_jeder_seitenart(sammelkontakt_zurueck):
+    """Ohne diese Zeile legt Safari eine 980px breite Desktop-Leinwand an und
+    zoomt sie auf die Geraetebreite herunter: die Seite ist vollstaendig da
+    und vollstaendig unlesbar — und KEINE Media-Query greift, weil der
+    Browser sich fuer breit haelt. Sie ist die Voraussetzung fuer alles
+    andere in diesem Abschnitt, also wird sie auf jeder Seitenart geprueft."""
+    for name, antwort in _seitenarten():
+        assert ('<meta name="viewport" content="width=device-width, '
+                'initial-scale=1">') in antwort.text, name
+        # Sagt dem Browser, dass beide Themen bedient werden — sonst malt er
+        # Formularfelder und Bildlaufleisten hell in die dunkle Seite.
+        assert '<meta name="color-scheme" content="light dark">' in antwort.text
+
+
+def test_keine_seitenart_enthaelt_javascript(sammelkontakt_zurueck):
+    """Die Zusage aus dem Moduldocstring gilt weiter — auch nachdem die
+    Oberflaeche handytauglich wurde. Handytauglichkeit war ausdruecklich kein
+    Grund, Skripte einzufuehren: die CSP sagt `default-src 'none'`, und ein
+    Freigabe-Frontend ohne JavaScript ist eine Zusage, keine Bequemlichkeit."""
+    for name, antwort in _seitenarten():
+        assert "<script" not in antwort.text, name
+        assert "javascript:" not in antwort.text, name
+        assert "onclick" not in antwort.text, name
+
+
+def test_keine_seitenart_laedt_etwas_von_aussen(sammelkontakt_zurueck):
+    """Keine Fonts, keine CDNs, keine Bilder von fremden Rechnern: die CSP
+    verbietet sie (`default-src 'none'`), und der Rechner ist im Zweifel
+    offline. Eine Seite, die auf eine externe Schrift wartet, waere auf dem
+    Telefon des Betreibers eine Seite, die nicht kommt."""
+    for name, antwort in _seitenarten():
+        assert "https://" not in antwort.text, name
+        assert "http://" not in antwort.text, name
+        assert "@import" not in antwort.text, name
+        assert "<link" not in antwort.text, name
+
+
+# --- Das ausgelieferte CSS: schmale Schirme und dunkles Thema ---------------
+
+def test_media_query_fuer_schmale_schirme_wird_ausgeliefert():
+    """Nicht `ui._STIL` wird geprueft, sondern was im Browser ankommt — die
+    Konstante koennte gepflegt und trotzdem nicht eingebunden sein."""
+    seite = _get("/").text
+    assert "@media (max-width: 640px)" in seite
+    # Der gewaehlte Weg: Tabellenzeilen werden zu Karten, die
+    # Spaltenueberschrift wandert per ::before aus data-label vor die Zelle.
+    assert "content: attr(data-label)" in seite
+    assert ".tabelle thead { display: none; }" in seite
+
+
+def test_dunkles_thema_wird_ausgeliefert():
+    """Viele Leute haben das Telefon dauerhaft auf dunkel; eine gleissend
+    weisse Seite am Abend ist der Grund, sie nicht aufzumachen."""
+    seite = _get("/").text
+    assert "@media (prefers-color-scheme: dark)" in seite
+    # Farben stehen als Variablen — sonst kann der dunkle Satz sie gar nicht
+    # ueberschreiben, und die beiden Themen driften beim naechsten #fff
+    # auseinander.
+    assert "--flaeche:" in seite and "--schrift:" in seite
+    assert "background: var(--flaeche)" in seite
+    assert "color: var(--schrift)" in seite
+    # Auch die Warn- und Fehlerfarben — die sind sonst die ersten, die im
+    # dunklen Satz absaufen: einmal im hellen Satz, einmal im dunklen.
+    for name in ("--fehler:", "--fehler_flaeche:", "--hinweis_flaeche:",
+                 "--achtung:"):
+        assert seite.count(name) >= 2, name
+
+
+def test_touchziele_und_schriftgroesse_der_eingabefelder():
+    """44px ist die Untergrenze, unter der ein Daumen daneben trifft; 16px die
+    Schwelle, unter der iOS beim Fokussieren von selbst ins Feld zoomt und die
+    Seite verschoben zuruecklaesst. Beides ist hier kein Geschmack: ein
+    Fehlgriff neben „Freigeben" verschickt eine Nachricht."""
+    seite = _get("/").text
+    assert "min-height: 44px" in seite
+    assert "font-size: 16px" in seite
+
+
+def test_die_seite_selbst_scrollt_nie_waagerecht():
+    """Lange Zeichenketten ohne Leerzeichen (URLs, Base64, Kennungen) sind
+    Fremddaten und kommen vor. Sie brechen um; was sich nicht brechen laesst,
+    scrollt in seinem EIGENEN Kasten — nie die Seite."""
+    seite = _get("/").text
+    assert "overflow-wrap: anywhere" in seite
+    assert "html, body { overflow-x: hidden; }" in seite
+    assert ".tabelle { overflow-x: auto;" in seite
+
+
+def test_navigation_umbricht_statt_ueberzulaufen():
+    seite = _get("/").text
+    assert ("nav { background: var(--balken); display: flex; flex-wrap: wrap;"
+            in seite)
+
+
+# --- Tabellen: Spaltenueberschrift je Zelle, und NIE Fremddaten darin -------
+
+def test_jede_tabellenzelle_traegt_ihre_spaltenueberschrift():
+    """Der gewaehlte Ansatz steht und faellt damit: auf dem Handy ist die
+    Kopfzeile ausgeblendet, und ohne `data-label` an der Zelle stuenden dort
+    vier nackte Werte ohne Bedeutung."""
+    lead = _lead(name="Anna Beispiel")
+    server._q("insert into activities (lead_id, type, payload) "
+              "values (%s, 'wiedervorlage', %s) returning id",
+              (lead, json.dumps({"faellig_am": "2026-09-01",
+                                 "notiz": "Vertragsablauf pruefen"})))
+    for pfad, spalten in (("/kontakte", ["Name", "Status", "Consent",
+                                         "Letzte Aktivitaet"]),
+                          ("/wiedervorlagen", ["Kontakt", "Faellig am",
+                                               "Notiz"])):
+        seite = _get(pfad).text
+        for spalte in spalten:
+            assert f'data-label="{spalte}"' in seite, (pfad, spalte)
+
+
+def test_data_label_traegt_nie_fremddaten(sammelkontakt_zurueck):
+    """Die Beschriftung der Handy-Ansicht steht im ATTRIBUTKONTEXT. Dort darf
+    ausschliesslich eigener Text stehen: ein Kontaktname im `data-label` waere
+    genau der Ausbruch, den `html.escape(quote=True)` an jeder anderen Stelle
+    dieser Oberflaeche verhindert. Geprueft wird deshalb nicht, dass die
+    Fremddaten escaped sind, sondern dass sie dort GAR NICHT vorkommen — jedes
+    Label muss eine der Ueberschriften aus dem Code sein."""
+    boese = 'Anna"><script>alert(1)</script>'
+    lead = _lead(name=boese)
+    server._q("update leads set enrichment = %s where id = %s returning id",
+              (json.dumps({"vertraege": [{"sparte": boese,
+                                          "gesellschaft": boese,
+                                          "ablauf": boese}]}), lead))
+    server._q("insert into activities (lead_id, type, payload) "
+              "values (%s, 'wiedervorlage', %s) returning id",
+              (lead, json.dumps({"faellig_am": boese, "notiz": boese})))
+    _entwurf(lead, text=boese)
+    sammel = _sammel()
+    _kundenantwort(sammel, text=boese, absender=SOPHIE_NUMMER)
+    _lead(name=boese + " zwei", phone=SOPHIE_PHONE)
+
+    for pfad in ("/", "/kontakte", f"/kontakte/{lead}", "/posteingang",
+                 "/einordnung", "/wiedervorlagen"):
+        seite = _get(pfad).text
+        assert "<script" not in seite, pfad
+        assert '"><script' not in seite, pfad
+        gefunden = set(re.findall(r'data-label="([^"]*)"', seite))
+        assert gefunden <= ERLAUBTE_LABEL, (pfad, gefunden - ERLAUBTE_LABEL)
+
+
+# --- Formulare: die richtige Tastatur unter dem Finger ----------------------
+
+@pytest.mark.parametrize("feld, erwartet", [
+    # Eine Rufnummer auf der Buchstabentastatur einzugeben ist der Weg zum
+    # Zahlendreher — und ein Zahlendreher schickt die naechste Nachricht an
+    # einen Fremden.
+    ("phone", ('type="tel"', 'inputmode="tel"', 'autocomplete="tel"')),
+    ("email", ('type="email"', 'inputmode="email"', 'autocapitalize="none"')),
+    ("name", ('type="text"', 'autocapitalize="words"')),
+])
+def test_stammdatenfelder_schalten_die_passende_handytastatur(feld, erwartet):
+    lead = _lead()
+    tag = _eingabe_tag(_get(f"/kontakte/{lead}").text, feld)
+    for stueck in erwartet:
+        assert stueck in tag, (feld, tag)
+    # Die Laengenbegrenzung des Werkzeugs bleibt daneben stehen.
+    assert f'maxlength="{ui.KONTAKT_FELD_MAX}"' in tag
+
+
+def test_jedes_stammdatenfeld_hat_eine_tastatur_auch_ein_neues():
+    """Die Feldliste kommt aus `server.KONTAKT_FELDER`. Ein dort ergaenztes
+    Feld taucht in der Oberflaeche von selbst auf — es soll dann ein
+    gewoehnliches Textfeld sein und nicht ein `<input>` ohne `type`."""
+    lead = _lead()
+    seite = _get(f"/kontakte/{lead}").text
+    for feld in server.KONTAKT_FELDER:
+        assert "type=" in _eingabe_tag(seite, feld), feld
+    assert "type=" in ui.KONTAKT_FELD_EINGABE_STANDARD
+
+
+def test_namensfeld_der_einordnung_ist_ein_textfeld(sammelkontakt_zurueck):
+    sammel = _sammel()
+    _kundenantwort(sammel, text="Wer bin ich?", absender=SOPHIE_LID)
+    tag = _eingabe_tag(_get("/einordnung").text, "name")
+    assert 'type="text"' in tag
+    assert 'autocapitalize="words"' in tag
+    assert f'maxlength="{ui.EINORDNUNG_NAME_MAX}"' in tag
+
+
+# --- Abzeichen: das Wort traegt die Aussage, nicht die Farbe ----------------
+
+def test_jede_entwurfskarte_nennt_ihren_zustand_als_wort():
+    """Auf dem Telefon scrollt die Ueberschrift des Blocks („Fehlgeschlagen")
+    aus dem Bild, waehrend die Karten weiterlaufen — dann bliebe nur die Farbe
+    des Knopfes. Farbe allein traegt eine Unterscheidung nicht: Sehschwaeche,
+    Sonnenlicht, ein Abzeichen von 12px."""
+    lead = _lead()
+    _entwurf(lead, text="Pending-Text hier")
+    _entwurf(lead, status="failed", fehler="OpenWA HTTP 500")
+    _entwurf(lead, status="approved", approved_by="betreiber")
+    server._q("update drafts set sent_at = now() where id = %s returning id",
+              (_entwurf(lead, status="sent"),))
+    seite = _get("/").text
+    for zustand, wort in ui.ZUSTAND_TITEL.items():
+        assert f'<span class="badge zustand {zustand}">{wort}</span>' in seite
+
+
+def test_archiviert_und_lid_stehen_als_text_nicht_nur_als_farbe(
+        sammelkontakt_zurueck):
+    lead = _lead(name="Weggeraeumt Person")
+    _post("/kontakte/archivieren-bestaetigen",
+          {"lead_id": lead, "csrf": ui.CSRF_TOKEN,
+           "name_bestaetigt": "Weggeraeumt Person"})
+    liste = _get("/kontakte?archiv=1").text
+    assert '<span class="badge archiv">archiviert</span>' in liste
+    sammel = _sammel()
+    _kundenantwort(sammel, text="Wer bin ich?", absender=SOPHIE_LID)
+    for pfad in ("/posteingang", "/einordnung"):
+        assert "LID-Pseudo-Kennung, keine Rufnummer" in _get(pfad).text, pfad
+
+
+# --- Aktionen: getrennte Formulare, und Abstand fuer den Daumen -------------
+
+def test_freigeben_und_ablehnen_sind_getrennte_ziele():
+    """Sie stehen in EINEM Kasten, aber in ZWEI Formularen, und das
+    gefaehrliche traegt seine Klasse auch am Formular — daran haengt die
+    Media-Query, die es auf dem Handy abrueckt. Ein Fehlgriff verschickt hier
+    eine Nachricht oder verwirft einen Entwurf; beides ist endgueltig."""
+    lead = _lead()
+    _entwurf(lead)
+    seite = _get("/").text
+    assert '<div class="aktionen">' in seite
+    assert 'action="/aktion/freigeben"' in seite
+    assert 'action="/aktion/ablehnen"' in seite
+    assert '<form class="aktion gefahr"' in seite
+    assert ".aktionen form.aktion.gefahr { margin-top: .8rem; }" in seite
+    # Auf schmalen Schirmen stehen sie untereinander ueber die volle Breite.
+    assert (".aktionen { flex-direction: column; align-items: stretch; }"
+            in seite)
+
+
+def test_die_gefaehrlichen_knoepfe_tragen_ihre_klasse_am_formular(
+        sammelkontakt_zurueck):
+    """Ueberall dasselbe Muster: `ignorieren`, `archivieren` und die beiden
+    zweiten, ausdruecklichen Schritte."""
+    sammel = _sammel()
+    lead = _lead(name="Sophie Beispiel", phone=SOPHIE_PHONE)
+    # Zwei Absender: die @lid wartet noch auf eine Entscheidung (sie traegt
+    # die drei Knoepfe der Seite), die Rufnummer gehoert Sophie bereits — an
+    # ihr haengt unten die zweistufige Warnseite.
+    _kundenantwort(sammel, text="Wer bin ich?", absender=SOPHIE_LID)
+    _kundenantwort(sammel, text="Hallo", absender=SOPHIE_NUMMER)
+    assert '<form class="aktion gefahr"' in _get("/einordnung").text
+    assert '<form class="aktion gefahr"' in _get(f"/kontakte/{lead}").text
+    warnung = _post("/einordnung/ignorieren",
+                    {"absender": SOPHIE_NUMMER, "csrf": ui.CSRF_TOKEN})
+    assert warnung.status_code == 409
+    assert '<form class="aktion gefahr"' in warnung.text
+    archiv = _post("/kontakte/archivieren",
+                   {"lead_id": lead, "csrf": ui.CSRF_TOKEN})
+    assert archiv.status_code == 409
+    assert '<form class="aktion gefahr"' in archiv.text

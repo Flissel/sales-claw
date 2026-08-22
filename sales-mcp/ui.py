@@ -215,6 +215,21 @@ KONTAKT_FELD_MAX = 200
 # steht bewusst NICHT hier — sie kommt aus server.py, sonst haette die
 # Oberflaeche eine zweite, stillschweigend veraltende Whitelist.
 KONTAKT_FELD_TITEL = {"name": "Name", "phone": "Telefon", "email": "E-Mail"}
+# Welche Handytastatur ein Feld aufmacht. `type`/`inputmode` entscheiden auf
+# dem Telefon darueber, ob unter dem Finger Ziffern und ein Plus liegen oder
+# das Alphabet — eine Rufnummer auf der Buchstabentastatur einzugeben ist der
+# Weg zum Zahlendreher, und ein Zahlendreher schickt die naechste Nachricht an
+# einen Fremden. Die Werte sind EIGENE Zeichenketten und landen roh im Markup;
+# hier darf nie etwas hinein, das aus der Datenbank kommt.
+KONTAKT_FELD_EINGABE = {
+    "name": 'type="text" autocomplete="name" autocapitalize="words"',
+    "phone": 'type="tel" inputmode="tel" autocomplete="tel"',
+    "email": ('type="email" inputmode="email" autocomplete="email" '
+              'autocapitalize="none" spellcheck="false"'),
+}
+# Ein spaeter in server.KONTAKT_FELDER ergaenztes Feld erscheint als
+# gewoehnliches Textfeld, statt zu fehlen.
+KONTAKT_FELD_EINGABE_STANDARD = 'type="text"'
 
 LOG = logging.getLogger("sales-ui")
 
@@ -310,40 +325,223 @@ def _gesichert_seite(fn):
 
 # ---------------------------------------------------------------------------
 # HTML-Geruest (server-seitig, Inline-CSS, kein JavaScript)
+#
+# HANDYTAUGLICH (Betreiber-Wunsch 22.08.2026): der Betreiber erreicht die
+# Oberflaeche seit dem Tailscale-Zugang vom iPhone. Gebaut ist sie fuer einen
+# Desktop-Browser. Nachgezogen wird das in REINEM CSS — kein JavaScript (die
+# CSP sagt `default-src 'none'`, und eine Freigabeoberflaeche ohne Skripte ist
+# eine Zusage, keine Bequemlichkeit) und keine externen Ressourcen (Fonts,
+# CDNs; die CSP verbietet sie, und der Rechner ist im Zweifel offline).
+#
+# Vier Entscheidungen tragen den Rest:
+#
+# 1. FARBEN ALS VARIABLEN, dazu ein zweiter Satz unter
+#    `prefers-color-scheme: dark`. Ein Telefon steht abends dauerhaft auf
+#    dunkel; eine gleissend weisse Seite ist dort nicht nur unangenehm,
+#    sondern der Grund, sie nicht aufzumachen. Beide Saetze sind auf Kontrast
+#    geprueft (Text >= 4.5:1, Rahmen >= 3:1) — auch die Warn- und Fehlerfarben,
+#    die sonst gern die ersten sind, die im dunklen Satz absaufen.
+# 2. TABELLEN WERDEN AUF SCHMALEN SCHIRMEN ZU KARTEN. Unterhalb 640px stehen
+#    `tr`/`td` auf `display: block`, die Kopfzeile verschwindet und jede Zelle
+#    traegt ihre Spaltenueberschrift ueber `::before` aus `data-label`. Die
+#    Label kommen aus `_tabelle()` und sind IMMER eigener Text, nie Fremddaten
+#    (siehe dort) — ein Kundenname in einem Attribut waere genau die Kante,
+#    die `html.escape(quote=True)` sonst ueberall abdeckt.
+# 3. TOUCH-ZIELE >= 44px, und zwischen benachbarten Aktionen echter Abstand.
+#    Das ist hier kein Geschmack: neben „Freigeben" steht „Ablehnen", und ein
+#    Fehlgriff verschickt eine Nachricht bzw. verwirft einen Entwurf.
+# 4. DIE SEITE SCROLLT NIE WAAGERECHT. Fremddaten (Entwurfstexte, Kennungen,
+#    Payload-Vorschauen) enthalten URLs und Base64-Klumpen ohne Leerzeichen;
+#    `overflow-wrap: anywhere` bricht sie um, und was sich nicht brechen
+#    laesst, scrollt in seinem EIGENEN Kasten (`.tabelle`).
 # ---------------------------------------------------------------------------
 
 _STIL = """
-body { font-family: system-ui, sans-serif; margin: 0; background: #f5f4f0;
-       color: #1c1b18; }
+/* --- Farben. Heller Satz als Grundlage, dunkler als Ueberschreibung. ------
+   Namen statt Werte im Rest des Stils: eine Farbe wird genau einmal
+   entschieden und zweimal belegt, sonst driften helles und dunkles Thema
+   auseinander, sobald jemand irgendwo ein #fff nachtraegt. */
+:root {
+  color-scheme: light dark;
+  --grund: #f5f4f0; --flaeche: #ffffff; --kopfzeile: #f0eee8;
+  --schrift: #1c1b18; --gedaempft: #5c574c;
+  --linie: #d8d4cc; --linie_stark: #8a8578;
+  --balken: #2f2a24; --balken_schrift: #f5f4f0;
+  --verweis: #14507f;
+  --gut: #1a6b43; --gut_auf: #ffffff; --gut_text: #14603a;
+  --info: #1f5b7a; --info_auf: #ffffff;
+  --lila: #52447a; --lila_auf: #ffffff;
+  --achtung: #8a4b00; --achtung_auf: #ffffff;
+  --neutral: #5c574c; --neutral_auf: #ffffff;
+  --fehler: #a01212; --fehler_auf: #ffffff;
+  --fehler_flaeche: #fbe4e4; --fehler_linie: #b35a5a; --fehler_schrift: #6b1212;
+  --hinweis_flaeche: #fdf3d7; --hinweis_linie: #a8892e;
+  --hinweis_schrift: #4a3c10;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --grund: #171512; --flaeche: #221f1b; --kopfzeile: #2a2721;
+    --schrift: #ece8e0; --gedaempft: #b0a99c;
+    --linie: #3a352d; --linie_stark: #847d6e;
+    --balken: #0d0c0a; --balken_schrift: #ece8e0;
+    --verweis: #8cc0f0;
+    --gut: #5fc98f; --gut_auf: #0c2418; --gut_text: #6ad39b;
+    --info: #6fb6e0; --info_auf: #08202e;
+    --lila: #b09ce0; --lila_auf: #191030;
+    --achtung: #e0a35c; --achtung_auf: #2b1700;
+    --neutral: #a8a196; --neutral_auf: #1b1915;
+    --fehler: #ff8b8b; --fehler_auf: #2a0d0d;
+    --fehler_flaeche: #3a1c1c; --fehler_linie: #a86464;
+    --fehler_schrift: #ffc9c9;
+    --hinweis_flaeche: #33290f; --hinweis_linie: #9c8542;
+    --hinweis_schrift: #f2e2b4;
+  }
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+/* Kein Auto-Vergroessern beim Drehen ins Querformat (iOS). */
+html { -webkit-text-size-adjust: 100%; }
+/* `overflow-wrap: anywhere` steht bewusst GANZ OBEN und vererbt sich: jede
+   Zelle, jede Karte, jede Meta-Zeile kann Fremddaten tragen, und die Regel
+   verkleinert auch die Mindestbreite von Tabellenzellen — genau das, was eine
+   500 Zeichen lange URL sonst zur waagerechten Bildlaufleiste macht. */
+html, body { overflow-x: hidden; }
+body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+       margin: 0; background: var(--grund); color: var(--schrift);
+       font-size: 16px; line-height: 1.45; overflow-wrap: anywhere; }
 main { max-width: 62rem; margin: 0 auto; padding: 1rem 1rem 4rem; }
-nav { background: #2f2a24; padding: .6rem 1rem; }
-nav a { color: #f5f4f0; text-decoration: none; margin-right: 1.2rem;
-        font-weight: 600; }
-h1 { font-size: 1.3rem; } h2 { font-size: 1.05rem; margin-top: 2rem; }
-.karte { background: #fff; border: 1px solid #d8d4cc; border-radius: 6px;
-         padding: .8rem 1rem; margin: .7rem 0; }
+a { color: var(--verweis); }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+       font-size: .92em; }
+
+/* --- Navigation: umbricht, statt ueberzulaufen --------------------------- */
+nav { background: var(--balken); display: flex; flex-wrap: wrap;
+      gap: .15rem; padding: .3rem .5rem; }
+nav a { color: var(--balken_schrift); text-decoration: none; font-weight: 600;
+        display: flex; align-items: center; min-height: 44px;
+        padding: .5rem .8rem; border-radius: 6px; }
+
+h1 { font-size: 1.3rem; margin: .2rem 0 .8rem; }
+h2 { font-size: 1.05rem; margin-top: 2rem; }
+
+.karte { background: var(--flaeche); border: 1px solid var(--linie);
+         border-radius: 6px; padding: .8rem 1rem; margin: .7rem 0; }
 .karte .text { white-space: pre-wrap; margin: .5rem 0; }
-.meta { color: #6b6659; font-size: .85rem; }
-.badge { display: inline-block; padding: .1rem .5rem; border-radius: 4px;
-         font-size: .78rem; font-weight: 700; color: #fff;
-         background: #6b6659; margin-right: .4rem; }
-.badge.whatsapp { background: #1f7a4d; } .badge.email { background: #1f5b7a; }
-.badge.linkedin { background: #5b4d7a; } .badge.lid { background: #a35a00; }
-.fehler { color: #a01212; white-space: pre-wrap; }
-.hinweis { background: #fdf3d7; border: 1px solid #e0cf96; padding: .5rem .8rem;
+.meta { color: var(--gedaempft); font-size: .85rem; }
+
+/* --- Abzeichen: das Wort traegt die Aussage, die Farbe hilft nur ---------- */
+.badge { display: inline-block; padding: .15rem .5rem; border-radius: 4px;
+         font-size: .78rem; font-weight: 700; line-height: 1.6;
+         color: var(--neutral_auf); background: var(--neutral);
+         border: 1px solid transparent; margin: 0 .4rem .25rem 0; }
+.badge.whatsapp { background: var(--gut); color: var(--gut_auf);
+                  border-color: var(--gut); }
+.badge.email { background: var(--info); color: var(--info_auf);
+               border-color: var(--info); }
+.badge.linkedin { background: var(--lila); color: var(--lila_auf);
+                  border-color: var(--lila); }
+.badge.lid { background: var(--achtung); color: var(--achtung_auf);
+             border-color: var(--achtung); }
+/* Archiviert und die vier Entwurfszustaende tragen ihr Wort im HTML; Fuellung
+   gegen Umriss kommt als zweites, FARBUNABHAENGIGES Merkmal dazu — auf einem
+   sonnenbeschienenen Telefon ist ein Farbton kein Unterschied. */
+.badge.archiv { background: transparent; color: var(--schrift);
+                border: 1px dashed var(--linie_stark); }
+.badge.zustand.pending { background: var(--achtung); color: var(--achtung_auf);
+                         border-color: var(--achtung); }
+.badge.zustand.failed { background: var(--fehler); color: var(--fehler_auf);
+                        border-color: var(--fehler); }
+.badge.zustand.approved { background: transparent; color: var(--gut_text);
+                          border: 2px solid var(--gut_text); }
+.badge.zustand.sent { background: transparent; color: var(--gedaempft);
+                      border: 1px dashed var(--linie_stark); }
+
+.fehler { color: var(--fehler); white-space: pre-wrap; }
+.hinweis { background: var(--hinweis_flaeche);
+           border: 1px solid var(--hinweis_linie);
+           color: var(--hinweis_schrift); padding: .5rem .8rem;
            border-radius: 6px; }
-.warnung { background: #fbe4e4; border: 1px solid #cf9a9a; color: #6b1212;
+.hinweis a { color: inherit; }
+.warnung { background: var(--fehler_flaeche);
+           border: 1px solid var(--fehler_linie); color: var(--fehler_schrift);
            padding: .5rem .8rem; border-radius: 6px; margin: .5rem 0; }
-form.aktion { display: inline-block; margin-right: .6rem; }
-select, input[type="text"] { padding: .3rem .4rem; border-radius: 5px;
-         border: 1px solid #8a8578; font-size: .9rem; max-width: 18rem; }
-button { padding: .35rem .9rem; border-radius: 5px; border: 1px solid #8a8578;
-         background: #fff; cursor: pointer; font-weight: 600; }
-button.primaer { background: #1f7a4d; border-color: #1f7a4d; color: #fff; }
-button.gefahr { background: #fff; border-color: #a01212; color: #a01212; }
-table { border-collapse: collapse; width: 100%; background: #fff; }
-th, td { border: 1px solid #d8d4cc; padding: .4rem .6rem; text-align: left;
-         font-size: .9rem; vertical-align: top; }
+.warnung a { color: inherit; }
+
+/* --- Aktionen: 44px hoch, und mit Abstand zueinander --------------------- */
+.aktionen { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: .9rem; }
+form.aktion { display: flex; flex-wrap: wrap; align-items: center;
+              gap: .5rem; margin: 0; }
+label.haken { display: flex; align-items: center; gap: .5rem;
+              min-height: 44px; font-size: .95rem; }
+label.haken input[type="checkbox"] { width: 22px; height: 22px; flex: none; }
+label.feld { display: block; margin: .8rem 0; font-weight: 600; }
+/* Ein alleinstehender Verweis („Abbrechen, nichts tun", „auch archivierte
+   zeigen") ist auf dem Telefon genauso ein Ziel fuer einen Daumen wie ein
+   Knopf — als Textzeile von 16px Hoehe ist er keines. */
+p.abbrechen a, p.meta > a { display: inline-block; min-height: 44px;
+                            padding: .6rem .1rem; }
+button, input, select { font-family: inherit; }
+button { min-height: 44px; padding: .6rem 1.1rem; border-radius: 6px;
+         border: 1px solid var(--linie_stark); background: var(--flaeche);
+         color: var(--schrift); cursor: pointer; font-weight: 600;
+         font-size: 1rem; }
+button.primaer { background: var(--gut); border-color: var(--gut);
+                 color: var(--gut_auf); }
+button.gefahr { background: var(--flaeche); border-color: var(--fehler);
+                color: var(--fehler); border-width: 2px; }
+/* 16px ist die Schwelle: darunter zoomt iOS beim Fokussieren von selbst in
+   das Feld hinein und laesst die Seite verschoben zurueck. */
+select, input[type="text"], input[type="tel"], input[type="email"] {
+  min-height: 44px; padding: .5rem .6rem; border-radius: 6px;
+  border: 1px solid var(--linie_stark); background: var(--flaeche);
+  color: var(--schrift); font-size: 16px; width: 100%; max-width: 22rem; }
+
+/* --- Tabellen ------------------------------------------------------------
+   Auf dem Desktop bleibt es eine Tabelle; der Kasten drumherum scrollt
+   notfalls fuer sich, damit nie die SEITE waagerecht scrollt. */
+.tabelle { overflow-x: auto; margin: .7rem 0; }
+table { border-collapse: collapse; width: 100%; background: var(--flaeche); }
+th, td { border: 1px solid var(--linie); padding: .5rem .6rem;
+         text-align: left; font-size: .9rem; vertical-align: top; }
+thead th { background: var(--kopfzeile); }
+
+/* --- Schmale Schirme ----------------------------------------------------- */
+@media (max-width: 640px) {
+  main { padding: .8rem .7rem 4rem; }
+  .karte { padding: .7rem .8rem; }
+  /* Jede Zeile wird zu einer Karte, jede Zelle zu einer beschrifteten
+     Angabe. Vier Spalten nebeneinander sind auf 375px Breite kein Tisch
+     mehr, sondern ein Rest. */
+  .tabelle { overflow-x: visible; }
+  .tabelle thead { display: none; }
+  .tabelle table, .tabelle tbody, .tabelle tr, .tabelle th, .tabelle td {
+    display: block; width: auto; }
+  .tabelle table { border: 0; background: transparent; }
+  .tabelle tr { background: var(--flaeche); border: 1px solid var(--linie);
+                border-radius: 6px; margin: 0 0 .7rem; overflow: hidden; }
+  .tabelle th, .tabelle td { border: 0;
+                             border-bottom: 1px solid var(--linie);
+                             padding: .55rem .8rem; font-size: .95rem; }
+  .tabelle tr > *:last-child { border-bottom: 0; }
+  /* Die Spaltenueberschrift wandert vor die Zelle. `data-label` setzt
+     ausschliesslich `_tabelle()`, und zwar aus eigenem Text. */
+  .tabelle td[data-label]::before {
+    content: attr(data-label); display: block; font-weight: 700;
+    font-size: .72rem; letter-spacing: .04em; text-transform: uppercase;
+    color: var(--gedaempft); margin-bottom: .15rem; }
+  /* Aktionen untereinander und ueber die volle Breite: ein Daumen trifft
+     einen Streifen, keinen Punkt. */
+  .aktionen { flex-direction: column; align-items: stretch; }
+  .aktionen form.aktion { width: 100%; }
+  .aktionen form.aktion > button, .aktionen > button { width: 100%; }
+  .aktionen form.aktion > select, .aktionen form.aktion > input[type="text"] {
+    max-width: none; }
+  /* Der gefaehrliche Knopf rueckt zusaetzlich ab — „Ablehnen" darf nicht
+     dort liegen, wo der Daumen nach „Freigeben" noch nachwippt. */
+  .aktionen form.aktion.gefahr { margin-top: .8rem; }
+  select, input[type="text"], input[type="tel"], input[type="email"] {
+    max-width: none; }
+}
 """
 
 _NAV = (("/", "Freigaben"), ("/kontakte", "Kontakte"),
@@ -358,7 +556,15 @@ def _seite(titel: str, rumpf: str, status: int = 200,
     nav = "".join(f'<a href="{pfad}">{name}</a>' for pfad, name in _NAV)
     return HTMLResponse(
         f'<!doctype html><html lang="de"><head><meta charset="utf-8">'
+        # Ohne diese Zeile legt Safari eine 980px breite Desktop-Leinwand an
+        # und zoomt sie auf die Geraetebreite herunter: die Seite ist dann
+        # vollstaendig da und vollstaendig unlesbar, und keine Media-Query
+        # greift, weil der Browser sich fuer breit haelt.
         f'<meta name="viewport" content="width=device-width, initial-scale=1">'
+        # Sagt dem Browser, dass die Seite BEIDE Themen bedient — sonst malt
+        # er Formularfelder und Bildlaufleisten im dunklen Modus weiterhin
+        # hell in die dunkle Seite.
+        f'<meta name="color-scheme" content="light dark">'
         f"{auffrischen}<title>{_e(titel)} — sales-ui</title>"
         f"<style>{_STIL}</style></head><body>"
         f"<nav>{nav}</nav><main><h1>{_e(titel)}</h1>{rumpf}</main>"
@@ -367,12 +573,69 @@ def _seite(titel: str, rumpf: str, status: int = 200,
 
 def _fehlerseite(status: int, titel: str, text: str) -> HTMLResponse:
     return _seite(titel, f'<p class="fehler">{text}</p>'
-                         f'<p><a href="/">Zurueck zur Freigabe-Inbox</a></p>',
+                         f'<p class="abbrechen"><a href="/">Zurueck zur '
+                         f'Freigabe-Inbox</a></p>',
                   status=status)
 
 
 def _badge(kanal) -> str:
     return f'<span class="badge {_e(kanal)}">{_e(kanal)}</span>'
+
+
+# Der Entwurfszustand als WORT. Auf dem Handy scrollt die Ueberschrift des
+# Blocks („Fehlgeschlagen") aus dem Bild, waehrend die Karten weiterlaufen —
+# dann bliebe nur die Farbe des Knopfes, und Farbe allein traegt eine
+# Unterscheidung nicht (Sehschwaeche, Sonnenlicht, kleines Abzeichen).
+ZUSTAND_TITEL = {"pending": "zu pruefen", "failed": "fehlgeschlagen",
+                 "approved": "freigegeben", "sent": "gesendet"}
+
+
+def _zustand_badge(zustand: str) -> str:
+    """`zustand` ist IMMER ein Literal aus dieser Datei, nie eine DB-Spalte —
+    es steht in einem class-Attribut, und dort haben Fremddaten nichts zu
+    suchen. `_e` laeuft trotzdem drueber, damit die Regel auch dann haelt,
+    wenn hier spaeter jemand eine Spalte durchreicht."""
+    return (f'<span class="badge zustand {_e(zustand)}">'
+            f'{_e(ZUSTAND_TITEL.get(zustand, zustand))}</span>')
+
+
+def _tabelle(spalten, zeilen) -> str:
+    """Die EINE Tabellenform dieser Oberflaeche — breit auf dem Desktop,
+    gestapelte Karten auf dem Handy (Media-Query in `_STIL`).
+
+    `spalten` sind die Ueberschriften und stammen ausnahmslos aus dem Code
+    dieser Datei; sie landen zusaetzlich als `data-label` an jeder Zelle,
+    woraus die Media-Query die Beschriftung baut. Genau deshalb duerfen dort
+    NIE Fremddaten hinein: ein Kontaktname im Attributkontext waere die Kante,
+    gegen die `html.escape(quote=True)` sonst ueberall steht. `_e` laeuft
+    trotzdem ueber jedes Label — eine Zusage, die man pruefen kann, ist mehr
+    wert als eine, die man einhalten muss.
+
+    `zeilen` sind Listen FERTIGER Zellinhalte: escaped wird dort, wo die
+    Zelle entsteht (mal ist es blosser Text, mal ein Verweis mit escaptem
+    Namen darin), nicht hier — sonst waere das zweite Escapen sichtbar.
+    """
+    kopf = "".join(f"<th>{_e(s)}</th>" for s in spalten)
+    leib = []
+    for zeile in zeilen:
+        zellen = "".join(
+            f'<td data-label="{_e(spalten[i]) if i < len(spalten) else ""}">'
+            f"{inhalt}</td>" for i, inhalt in enumerate(zeile))
+        leib.append(f"<tr>{zellen}</tr>")
+    return (f'<div class="tabelle"><table><thead><tr>{kopf}</tr></thead>'
+            f"<tbody>{''.join(leib)}</tbody></table></div>")
+
+
+def _paar_tabelle(paare) -> str:
+    """Die zweite Form: Merkmal und Wert, ein Paar je Zeile (Stammdaten).
+
+    Sie braucht kein `data-label` — die Beschriftung steht schon als `th` in
+    der Zeile und wird auf schmalen Schirmen von derselben Media-Query zur
+    Zeile ueber dem Wert.
+    """
+    zeilen = "".join(f"<tr><th>{_e(name)}</th><td>{wert}</td></tr>"
+                     for name, wert in paare)
+    return f'<div class="tabelle"><table><tbody>{zeilen}</tbody></table></div>'
 
 
 # ---------------------------------------------------------------------------
@@ -381,20 +644,26 @@ def _badge(kanal) -> str:
 
 def _formular(aktion: str, draft_id, knopf: str, klasse: str = "",
               checkbox: str | None = None) -> str:
-    haken = (f'<label><input type="checkbox" name="bestaetigt" value="ja"> '
-             f'{checkbox}</label> ' if checkbox else "")
-    return (f'<form class="aktion" method="post" action="/aktion/{aktion}">'
+    """Die Knopfklasse steht ZUSAETZLICH am Formular: die Media-Query rueckt
+    den gefaehrlichen Knopf auf schmalen Schirmen ab, und das geht nur ueber
+    das Element, das die ganze Aktion umschliesst."""
+    haken = (f'<label class="haken">'
+             f'<input type="checkbox" name="bestaetigt" value="ja"> '
+             f'{checkbox}</label>' if checkbox else "")
+    return (f'<form class="aktion {klasse}" method="post" '
+            f'action="/aktion/{aktion}">'
             f'<input type="hidden" name="draft_id" value="{_e(draft_id)}">'
             f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
             f'{haken}<button class="{klasse}">{knopf}</button></form>')
 
 
-def _entwurf_kopf(z) -> str:
+def _entwurf_kopf(z, zustand: str) -> str:
     anhang = (f' · Anhang: <b>{_e(z["media_ref"])}</b>'
               if z.get("media_ref") else "")
     alter = (f' · Alter: {float(z["alter_h"]):.1f} h'
              if z.get("alter_h") is not None else "")
-    return (f'{_badge(z["channel"])}<b>{_e(z["name"] or "(ohne Kontakt)")}'
+    return (f'{_zustand_badge(zustand)}{_badge(z["channel"])}'
+            f'<b>{_e(z["name"] or "(ohne Kontakt)")}'
             f"</b> &rarr; {_e(z['recipient'])}"
             f'<div class="meta">consent: {_e(z.get("consent_status"))}'
             f"{anhang}{alter} · draft_id: {_e(z['id'])}</div>")
@@ -431,22 +700,31 @@ async def inbox(request):
     if not pending:
         teile.append("<p>Keine offenen Entwuerfe.</p>")
     for z in pending:
+        # „Freigeben" und „Ablehnen" stehen in EINEM `.aktionen`-Kasten: der
+        # haelt sie auf dem Desktop nebeneinander und stapelt sie auf dem
+        # Handy ueber die volle Breite, mit Abstand dazwischen. Ein Daumen,
+        # der das Falsche trifft, verwirft hier einen Entwurf oder gibt einen
+        # zum Versand frei — beides ist nicht zurueckzunehmen.
         teile.append(
-            f'<div class="karte">{_entwurf_kopf(z)}'
+            f'<div class="karte">{_entwurf_kopf(z, "pending")}'
             f'<div class="text">{_e(z["body"])}</div>'
+            f'<div class="aktionen">'
             f'{_formular("freigeben", z["id"], "Freigeben", "primaer")}'
-            f'{_formular("ablehnen", z["id"], "Ablehnen", "gefahr")}</div>')
+            f'{_formular("ablehnen", z["id"], "Ablehnen", "gefahr")}'
+            f"</div></div>")
 
     teile.append(f"<h2>Fehlgeschlagen ({len(gescheitert)})</h2>")
     if not gescheitert:
         teile.append("<p>Keine fehlgeschlagenen Entwuerfe.</p>")
     for z in gescheitert:
         teile.append(
-            f'<div class="karte">{_entwurf_kopf(z)}'
+            f'<div class="karte">{_entwurf_kopf(z, "failed")}'
             f'<div class="text">{_e(z["body"])}</div>'
             f'<div class="fehler">Fehler: {_e(z["error"])}</div>'
+            f'<div class="aktionen">'
             f'{_formular("erneut-freigeben", z["id"], "Erneut freigeben", "",
-                         checkbox="erneute Freigabe bestaetigen")}</div>')
+                         checkbox="erneute Freigabe bestaetigen")}'
+            f"</div></div>")
 
     teile.append(f"<h2>Freigegeben ({len(freigegeben)})</h2>")
     if not freigegeben:
@@ -462,7 +740,7 @@ async def inbox(request):
                      '(Versand uebernimmt der zustaendige Dienst '
                      'automatisch)</div>')
         teile.append(
-            f'<div class="karte">{_entwurf_kopf(z)}'
+            f'<div class="karte">{_entwurf_kopf(z, "approved")}'
             f'<div class="text">{_e(z["body"])}</div>'
             f'<div class="meta">freigegeben: {_e(z["approved_by"])} am '
             f'{_zeit(z["approved_at"])}</div>{stand}</div>')
@@ -472,7 +750,7 @@ async def inbox(request):
         teile.append("<p>Noch nichts gesendet.</p>")
     for z in gesendet:
         teile.append(
-            f'<div class="karte">{_entwurf_kopf(z)}'
+            f'<div class="karte">{_entwurf_kopf(z, "sent")}'
             f'<div class="text">{_e(z["body"])}</div>'
             f'<div class="meta">gesendet: {_zeit(z["sent_at"])}</div></div>')
 
@@ -642,18 +920,18 @@ async def kontakte(request):
         'archivierte Kontakte sind mitgelistet.</p>' if archiv_zeigen else
         '<p class="meta"><a href="/kontakte?archiv=1">auch archivierte '
         'zeigen</a></p>')
-    rumpf = [schalter,
-             "<table><tr><th>Name</th><th>Status</th><th>Consent</th>"
-             "<th>Letzte Aktivitaet</th></tr>"]
+    inhalt = []
     for z in zeilen:
-        marke = (' <span class="badge">archiviert</span>'
+        # `archiv` gibt dem Abzeichen einen gestrichelten Umriss statt einer
+        # zweiten Grauschattierung — neben dem Wort das zweite, von der Farbe
+        # unabhaengige Merkmal.
+        marke = (' <span class="badge archiv">archiviert</span>'
                  if server._archiviert(z["enrichment"]) else "")
-        rumpf.append(
-            f'<tr><td><a href="/kontakte/{_e(z["id"])}">{_e(z["name"])}</a>'
-            f'{marke}</td><td>{_e(z["status"])}</td>'
-            f'<td>{_e(z["consent_status"])}'
-            f"</td><td>{_zeit(z['letzte'])}</td></tr>")
-    rumpf.append("</table>")
+        inhalt.append([
+            f'<a href="/kontakte/{_e(z["id"])}">{_e(z["name"])}</a>{marke}',
+            _e(z["status"]), _e(z["consent_status"]), _zeit(z["letzte"])])
+    rumpf = [schalter, _tabelle(
+        ["Name", "Status", "Consent", "Letzte Aktivitaet"], inhalt)]
     if not zeilen:
         rumpf = [schalter, "<p>Keine Kontakte.</p>"]
     return _seite(f"Kontakte ({len(zeilen)})", "".join(rumpf))
@@ -681,19 +959,19 @@ def _offene_wiedervorlagen(lead_id=None):
 
 def _wiedervorlagen_tabelle(zeilen, mit_kontakt: bool = True) -> str:
     heute = date.today().isoformat()
-    kopf = "<th>Kontakt</th>" if mit_kontakt else ""
-    rumpf = [f"<table><tr>{kopf}<th>Faellig am</th><th>Notiz</th></tr>"]
+    spalten = (["Kontakt"] if mit_kontakt else []) + ["Faellig am", "Notiz"]
+    inhalt = []
     for z in zeilen:
         nutzlast = z["payload"] or {}
         faellig = str(nutzlast.get("faellig_am") or "")
         marke = " <b>(faellig)</b>" if faellig and faellig <= heute else ""
-        zelle = (f'<td><a href="/kontakte/{_e(z["lead_id"])}">'
-                 f'{_e(z["name"] or "(ohne Kontakt)")}</a></td>'
-                 if mit_kontakt else "")
-        rumpf.append(f"<tr>{zelle}<td>{_e(faellig)}{marke}</td>"
-                     f"<td>{_e(nutzlast.get('notiz'))}</td></tr>")
-    rumpf.append("</table>")
-    return "".join(rumpf) if zeilen else "<p>Keine offenen Wiedervorlagen.</p>"
+        zelle = ([f'<a href="/kontakte/{_e(z["lead_id"])}">'
+                  f'{_e(z["name"] or "(ohne Kontakt)")}</a>']
+                 if mit_kontakt else [])
+        inhalt.append(zelle + [f"{_e(faellig)}{marke}",
+                               _e(nutzlast.get("notiz"))])
+    return (_tabelle(spalten, inhalt) if zeilen
+            else "<p>Keine offenen Wiedervorlagen.</p>")
 
 
 # ---------------------------------------------------------------------------
@@ -725,10 +1003,17 @@ def _kontakt_formular(lead) -> str:
     schloesse ein Anfuehrungszeichen im Namen das Attribut und der Rest der
     Zeile waere Markup (dieselbe Kante wie bei den Hidden-Feldern der
     Einordnung).
+
+    `type`/`inputmode` je Feld kommen aus KONTAKT_FELD_EINGABE (dort
+    begruendet). Der `type="email"` bringt nebenbei die Browserpruefung mit —
+    sie ist LOCKERER als `mailadresse.pruefe` (`max@localhost` kaeme durch)
+    und ersetzt die serverseitige Pruefung deshalb nicht, sondern faengt nur
+    den Vertipper ab, bevor er eine Runde ueber das Netz macht.
     """
     felder = "".join(
-        f'<p><label>{_e(KONTAKT_FELD_TITEL.get(feld, feld))}<br>'
-        f'<input type="text" name="{_e(feld)}" '
+        f'<p><label class="feld">{_e(KONTAKT_FELD_TITEL.get(feld, feld))}<br>'
+        f'<input {KONTAKT_FELD_EINGABE.get(feld, KONTAKT_FELD_EINGABE_STANDARD)}'
+        f' name="{_e(feld)}" '
         f'maxlength="{KONTAKT_FELD_MAX}" value="{_e(lead[feld])}"></label></p>'
         for feld in _kontakt_feld_reihenfolge())
     return (
@@ -736,7 +1021,8 @@ def _kontakt_formular(lead) -> str:
         f'<div class="karte"><form method="post" action="/kontakte/bearbeiten">'
         f'<input type="hidden" name="lead_id" value="{_e(lead["id"])}">'
         f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">{felder}'
-        f'<button class="primaer">Speichern</button></form>'
+        f'<div class="aktionen">'
+        f'<button class="primaer">Speichern</button></div></form>'
         f'<p class="meta">Aenderbar sind nur diese Felder — Status, Consent '
         f'und Profilangaben nicht: die Einwilligung entsteht aus einer Antwort '
         f'des Kontakts (bedarf_speichern), Profilangaben gehoeren nach '
@@ -770,15 +1056,18 @@ def _archiv_bereich(lead, archiviert: bool) -> str:
                  f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">')
     if archiviert:
         return (f'<h2>Archiv</h2><div class="karte">'
-                f'<form method="post" action="/kontakte/wiederherstellen">'
+                f'<div class="aktionen"><form class="aktion" method="post" '
+                f'action="/kontakte/wiederherstellen">'
                 f'{verborgen}<button class="primaer">Wiederherstellen</button>'
-                f'</form><p class="meta">Holt den Kontakt zurueck in '
+                f'</form></div><p class="meta">Holt den Kontakt zurueck in '
                 f'Kontaktliste, Posteingang und Zuordnungsauswahl. Ein '
                 f'Gegen-Ereignis, kein Zuruecknehmen — es war nie etwas '
                 f'geloescht.</p></div>')
     return (f'<h2>Archiv</h2><div class="karte">'
-            f'<form method="post" action="/kontakte/archivieren">'
+            f'<div class="aktionen"><form class="aktion gefahr" method="post" '
+            f'action="/kontakte/archivieren">'
             f'{verborgen}<button class="gefahr">Archivieren</button></form>'
+            f'</div>'
             f'<p class="meta">Nimmt den Kontakt aus Kontaktliste, Posteingang '
             f'und Zuordnungsauswahl. Der naechste Schritt zeigt erst, was an '
             f'ihm haengt. <b>Loeschen gibt es hier nicht</b> — die Rolle hat '
@@ -951,14 +1240,17 @@ def _archiv_warnseite(lead) -> HTMLResponse:
         f'<p>Schreibt er spaeter erneut, steht seine Nachricht nicht mehr im '
         f'Posteingang — also in genau der Ansicht, in der man ihn '
         f'wiederfinden wuerde.</p></div>'
-        f'<form method="post" action="/kontakte/archivieren-bestaetigen">'
+        f'<div class="aktionen">'
+        f'<form class="aktion gefahr" method="post" '
+        f'action="/kontakte/archivieren-bestaetigen">'
         f'<input type="hidden" name="lead_id" value="{_e(lead["id"])}">'
         f'<input type="hidden" name="name_bestaetigt" '
         f'value="{_e(lead["name"])}">'
         f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
         f'<button class="gefahr">Ja — {_e(lead["name"])} archivieren</button>'
-        f'</form>'
-        f'<p><a href="/kontakte/{_e(lead["id"])}">Abbrechen, nichts tun</a></p>',
+        f'</form></div>'
+        f'<p class="abbrechen"><a href="/kontakte/{_e(lead["id"])}">'
+        f'Abbrechen, nichts tun</a></p>',
         status=409)
 
 
@@ -1056,13 +1348,12 @@ async def kontakt_detail(request):
     anreicherung = lead["enrichment"] or {}
     archiviert = server._archiviert(anreicherung)
 
-    stammdaten = "".join(
-        f"<tr><th>{_e(name)}</th><td>{_e(lead[feld])}</td></tr>"
-        for name, feld in (("Name", "name"), ("Status", "status"),
-                           ("Consent", "consent_status"), ("E-Mail", "email"),
-                           ("Telefon", "phone"), ("Firma", "company"),
-                           ("Titel", "title"), ("Quelle", "source"),
-                           ("Notizen", "notes")))
+    stammdaten = [(name, _e(lead[feld]))
+                  for name, feld in (("Name", "name"), ("Status", "status"),
+                                     ("Consent", "consent_status"),
+                                     ("E-Mail", "email"), ("Telefon", "phone"),
+                                     ("Firma", "company"), ("Titel", "title"),
+                                     ("Quelle", "source"), ("Notizen", "notes"))]
     teile = []
     if archiviert:
         teile.append(
@@ -1086,8 +1377,8 @@ async def kontakt_detail(request):
             'bleiben, wo sie sind (activities ist append-only). Laeuft der '
             'Kontakt im Auto-Betrieb, greift die Aenderung dort erst nach '
             'scripts/sync-allowlist.ps1.</div>')
-    teile.append(f"<table>{stammdaten}<tr><th>Angelegt</th>"
-                 f"<td>{_zeit(lead['created_at'])}</td></tr></table>")
+    teile.append(_paar_tabelle(
+        stammdaten + [("Angelegt", _zeit(lead["created_at"]))]))
     teile.append(_kontakt_formular(lead))
 
     # Bedarfsstand: beantwortete Leitfaden-Fragen mit Wortlaut, offene als Zahl.
@@ -1095,12 +1386,10 @@ async def kontakt_detail(request):
     teile.append(f"<h2>Bedarfsstand ({len(bedarf)} beantwortet, "
                  f"{max(len(server.ALLE_FRAGEN) - len(bedarf), 0)} offen)</h2>")
     if bedarf:
-        zeilen = "".join(
-            f"<tr><td>{_e(server.ALLE_FRAGEN.get(fid, {}).get('frage', fid))}"
-            f"</td><td>{_e((wert or {}).get('antwort') if isinstance(wert, dict) else wert)}"
-            f"</td></tr>" for fid, wert in sorted(bedarf.items()))
-        teile.append(f"<table><tr><th>Frage</th><th>Antwort</th></tr>"
-                     f"{zeilen}</table>")
+        teile.append(_tabelle(["Frage", "Antwort"], [
+            [_e(server.ALLE_FRAGEN.get(fid, {}).get("frage", fid)),
+             _e((wert or {}).get("antwort") if isinstance(wert, dict) else wert)]
+            for fid, wert in sorted(bedarf.items())]))
     else:
         teile.append("<p>Noch keine Antworten erfasst.</p>")
 
@@ -1110,13 +1399,9 @@ async def kontakt_detail(request):
     vertraege = vertraege if isinstance(vertraege, list) else []
     teile.append(f"<h2>Vertraege ({len(vertraege)})</h2>")
     if vertraege:
-        zeilen = "".join(
-            f"<tr><td>{_e(v.get('sparte'))}</td>"
-            f"<td>{_e(v.get('gesellschaft'))}</td>"
-            f"<td>{_e(v.get('ablauf'))}</td></tr>"
-            for v in vertraege if isinstance(v, dict))
-        teile.append(f"<table><tr><th>Sparte</th><th>Gesellschaft</th>"
-                     f"<th>Ablauf</th></tr>{zeilen}</table>")
+        teile.append(_tabelle(["Sparte", "Gesellschaft", "Ablauf"], [
+            [_e(v.get("sparte")), _e(v.get("gesellschaft")), _e(v.get("ablauf"))]
+            for v in vertraege if isinstance(v, dict)]))
     else:
         teile.append("<p>Keine Vertraege erfasst.</p>")
 
@@ -1137,11 +1422,9 @@ async def kontakt_detail(request):
             vorschau = json.dumps(a["payload"] or {}, ensure_ascii=False)
             if len(vorschau) > PAYLOAD_KURZ:
                 vorschau = vorschau[:PAYLOAD_KURZ] + "…"
-            zeilen.append(f"<tr><td>{_zeit(a['created_at'])}</td>"
-                          f"<td>{_e(a['type'])}</td><td>{_e(a['actor'])}</td>"
-                          f"<td>{_e(vorschau)}</td></tr>")
-        teile.append(f"<table><tr><th>Wann</th><th>Typ</th><th>Wer</th>"
-                     f"<th>Inhalt</th></tr>{''.join(zeilen)}</table>")
+            zeilen.append([_zeit(a["created_at"]), _e(a["type"]),
+                           _e(a["actor"]), _e(vorschau)])
+        teile.append(_tabelle(["Wann", "Typ", "Wer", "Inhalt"], zeilen))
     else:
         teile.append("<p>Noch keine Aktivitaeten.</p>")
 
@@ -1252,20 +1535,30 @@ def _einordnung_kopf() -> str:
 
 def _einordnung_aktionen(absender, optionen: str) -> str:
     """Die drei Knoepfe je Absender. `bestaetigt` kommt hier NIRGENDS vor —
-    der Lead-Fall bekommt eine eigene Seite mit eigenem Formular."""
+    der Lead-Fall bekommt eine eigene Seite mit eigenem Formular.
+
+    Die drei Formulare stehen in EINEM `.aktionen`-Kasten: nebeneinander auf
+    dem Desktop, untereinander und ueber die volle Breite auf dem Handy — und
+    „Ignorieren" (`gefahr`) rueckt dort zusaetzlich ab, weil es der Knopf ist,
+    dessen Fehlgriff niemandem auffaellt.
+    """
     verborgen = (f'<input type="hidden" name="absender" '
                  f'value="{_e(absender)}">{_einordnung_kopf()}')
     return (
+        f'<div class="aktionen">'
         f'<form class="aktion" method="post" action="/einordnung/zuordnen">'
         f'{verborgen}<select name="lead_id">'
         f'<option value="">— bestehender Kontakt —</option>{optionen}'
-        f'</select> <button class="primaer">Zuordnen</button></form>'
+        f'</select><button class="primaer">Zuordnen</button></form>'
         f'<form class="aktion" method="post" action="/einordnung/anlegen">'
-        f'{verborgen}<input type="text" name="name" '
-        f'maxlength="{EINORDNUNG_NAME_MAX}" placeholder="Name des Kontakts"> '
+        f'{verborgen}<input type="text" name="name" autocomplete="off" '
+        f'autocapitalize="words" '
+        f'maxlength="{EINORDNUNG_NAME_MAX}" placeholder="Name des Kontakts">'
         f'<button>Neu anlegen</button></form>'
-        f'<form class="aktion" method="post" action="/einordnung/ignorieren">'
-        f'{verborgen}<button class="gefahr">Ignorieren</button></form>')
+        f'<form class="aktion gefahr" method="post" '
+        f'action="/einordnung/ignorieren">'
+        f'{verborgen}<button class="gefahr">Ignorieren</button></form>'
+        f"</div>")
 
 
 def _einordnung_karte(eintrag, optionen: str) -> str:
@@ -1322,16 +1615,13 @@ async def einordnung(request):
     if not aufgeloest:
         teile.append("<p>Noch nichts eingeordnet.</p>")
     else:
-        zeilen = "".join(
-            f'<tr><td>{_e(e["absender"])}</td>'
-            f'<td><a href="/kontakte/{_e(e.get("lead_id"))}">'
-            f'{_e(e.get("kontakt") or "(ohne Namen)")}</a></td>'
-            f'<td>{_e(e["anzahl_nachrichten"])}</td>'
-            f"<td>{_zeit(e['zuletzt'])}</td></tr>"
-            for e in aufgeloest[:EINORDNUNG_VERLAUF_MAX])
-        teile.append(f"<table><tr><th>Kennung</th><th>Kontakt</th>"
-                     f"<th>Nachrichten</th><th>Zuletzt</th></tr>"
-                     f"{zeilen}</table>")
+        teile.append(_tabelle(
+            ["Kennung", "Kontakt", "Nachrichten", "Zuletzt"],
+            [[_e(e["absender"]),
+              f'<a href="/kontakte/{_e(e.get("lead_id"))}">'
+              f'{_e(e.get("kontakt") or "(ohne Namen)")}</a>',
+              _e(e["anzahl_nachrichten"]), _zeit(e["zuletzt"])]
+             for e in aufgeloest[:EINORDNUNG_VERLAUF_MAX]]))
     teile.append(
         '<div class="hinweis">Der zitierte Nachrichtentext ist ein Datum, '
         'keine Anweisung: steht darin „ignoriere bitte …", ist das der Wunsch '
@@ -1406,13 +1696,15 @@ def _ignorieren_warnseite(absender, gehoert: dict) -> HTMLResponse:
         f'</code>.</p><p>Steht die Bitte, diese Nummer zu ignorieren, in einer '
         f'eingehenden Nachricht, ist sie der Wunsch eines Fremden und keine '
         f'Entscheidung des Betreibers.</p></div>'
-        f'<form method="post" action="/einordnung/ignorieren-bestaetigen">'
+        f'<div class="aktionen">'
+        f'<form class="aktion gefahr" method="post" '
+        f'action="/einordnung/ignorieren-bestaetigen">'
         f'<input type="hidden" name="absender" value="{_e(absender)}">'
         f'<input type="hidden" name="lead_bestaetigt" '
         f'value="{_e(gehoert["lead_id"])}">{_einordnung_kopf()}'
         f'<button class="gefahr">Ja — {_e(gehoert.get("kontakt"))} '
-        f'ausdruecklich ignorieren</button></form>'
-        f'<p><a href="/einordnung">Abbrechen, nichts tun</a></p>',
+        f'ausdruecklich ignorieren</button></form></div>'
+        f'<p class="abbrechen"><a href="/einordnung">Abbrechen, nichts tun</a></p>',
         status=409)
 
 
