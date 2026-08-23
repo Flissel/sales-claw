@@ -94,6 +94,22 @@ COMPOSE_ASSIGNMENT = (
     'COMPOSE="docker compose -f docker-compose.yml '
     '-f docker-compose.openwa.yml -f docker-compose.proxmox.yml"'
 )
+PREFLIGHT_COMMAND = (
+    "python scripts/proxmox_preflight.py --host offload-vm "
+    "--min-free-gib 10 --ui-port 8791"
+)
+BACKUP_STATE_COMMAND = "scripts/backup-state.ps1"
+BACKUP_OPENWA_COMMAND = (
+    "scripts/backup-openwa.ps1 -StillgelegtLassen -Ziel $OpenwaBackup"
+)
+GLOBAL_OUTPUT_PROHIBITION = (
+    "Nachrichtentexte und sonstige Nachrichteninhalte, E-Mail-Adressen, "
+    "Telefonnummern, Tokens und Secretlaengen duerfen nie ausgegeben werden."
+)
+LINKEDIN_CORRELATION = (
+    "Genehmigter Draft, Betreiberfreigabe, Workerstart, Beitrags-URN, "
+    "DB-Status und Aktivitaetsbeleg muessen dieselbe Draft-ID referenzieren."
+)
 CORE_START = "$COMPOSE up -d openwa sales-mcp sales-inbox sales-ui"
 DISPATCH_START = "$COMPOSE up -d sales-dispatch"
 MAIL_START = "$COMPOSE up -d sales-mail"
@@ -107,6 +123,7 @@ def _phase_sections(text: str) -> dict[int, str]:
     )
     expected = tuple(enumerate(EXPECTED_PHASES, start=1))
     assert actual == expected
+    assert text.count("**Stop-Gate:**") == len(EXPECTED_PHASES)
 
     sections: dict[int, str] = {}
     for index, heading in enumerate(headings):
@@ -127,10 +144,63 @@ def _compose_starts(text: str) -> list[str]:
     return re.findall(r"^\$COMPOSE up -d[^\r\n]*$", text, flags=re.MULTILINE)
 
 
+def _raw_compose_starts(text: str) -> list[str]:
+    return re.findall(r"^docker compose up -d[^\r\n]*$", text, flags=re.MULTILINE)
+
+
 def _assert_exact_service_starts(text: str) -> None:
     starts = _compose_starts(text)
     assert starts == [CORE_START, DISPATCH_START, MAIL_START, LINKEDIN_START]
     assert "$COMPOSE up -d" not in starts
+    assert _raw_compose_starts(text) == []
+
+
+def _assert_exact_command_line(section: str, command: str) -> None:
+    lines = [line.strip() for line in section.splitlines()]
+    assert lines.count(command) == 1
+
+
+def _assert_required_commands(text: str) -> None:
+    phases = _phase_sections(text)
+    _assert_exact_command_line(phases[1], PREFLIGHT_COMMAND)
+    _assert_exact_command_line(phases[2], BACKUP_STATE_COMMAND)
+    _assert_exact_command_line(phases[2], BACKUP_OPENWA_COMMAND)
+
+
+def _assert_global_output_prohibition(text: str) -> None:
+    first_phase = PHASE_HEADING.search(text)
+    assert first_phase is not None
+    preamble = text[: first_phase.start()]
+    assert preamble.count(GLOBAL_OUTPUT_PROHIBITION) == 1
+
+
+def _assert_linkedin_action_contract(phase: str) -> None:
+    action, marker, remainder = phase.partition(
+        "Bei externer Veroeffentlichung ohne DB-Buchung"
+    )
+    assert marker
+    _assert_ordered(
+        action,
+        "bereits genehmigten Draft",
+        "Draft-ID",
+        "Medienname",
+        "explizite Betreiberfreigabe",
+        LINKEDIN_START,
+        "externe Beitrags-URN",
+        "DB-Status " + chr(96) + "sent" + chr(96),
+        "genau ein Aktivitaetsbeleg",
+        LINKEDIN_CORRELATION,
+    )
+    assert action.count(LINKEDIN_CORRELATION) == 1
+
+    failure = (marker + remainder).partition("**Stop-Gate:**")[0]
+    _assert_ordered(
+        failure,
+        "Bei externer Veroeffentlichung ohne DB-Buchung",
+        "Worker sofort stoppen",
+        "**kein erneuter Versand**",
+        "kein Retry",
+    )
 
 
 def _assert_count_before_start(
@@ -153,6 +223,14 @@ def _move_fragment_before(text: str, fragment: str, anchor: str) -> str:
 
 def test_runbook_has_exactly_thirteen_ordered_phases_with_stop_gates() -> None:
     _phase_sections(RUNBOOK.read_text(encoding="utf-8"))
+
+
+def test_runbook_uses_exact_preflight_and_backup_commands() -> None:
+    _assert_required_commands(RUNBOOK.read_text(encoding="utf-8"))
+
+
+def test_runbook_globally_forbids_sensitive_output() -> None:
+    _assert_global_output_prohibition(RUNBOOK.read_text(encoding="utf-8"))
 
 
 def test_runbook_compose_commands_are_exact_and_section_scoped() -> None:
@@ -212,27 +290,7 @@ def test_runbook_secret_gate_is_reconfirmed_separate_and_metadata_only() -> None
 
 def test_runbook_linkedin_action_and_failure_gates_are_ordered() -> None:
     phase = _phase_sections(RUNBOOK.read_text(encoding="utf-8"))[11]
-
-    _assert_ordered(
-        phase,
-        "bereits genehmigten Draft",
-        "Draft-ID",
-        "Medienname",
-        "explizite Betreiberfreigabe",
-        LINKEDIN_START,
-        "externe Beitrags-URN",
-        "DB-Status " + chr(96) + "sent" + chr(96),
-        "genau ein Aktivitaetsbeleg",
-    )
-    failure = phase[phase.index("Bei externer Veroeffentlichung ohne DB-Buchung") :]
-    failure = failure.partition("**Stop-Gate:**")[0]
-    _assert_ordered(
-        failure,
-        "Bei externer Veroeffentlichung ohne DB-Buchung",
-        "Worker sofort stoppen",
-        "**kein erneuter Versand**",
-        "kein Retry",
-    )
+    _assert_linkedin_action_contract(phase)
 
 
 def test_runbook_keeps_manual_services_stopped_and_openwa_exclusive() -> None:
@@ -247,6 +305,75 @@ def test_runbook_keeps_manual_services_stopped_and_openwa_exclusive() -> None:
         "Niemals beide OpenWA-Instanzen parallel",
     )
     assert "VM-OpenWA noch aktiv, darf Windows/OpenWA nicht starten" in phases[13]
+
+
+@pytest.mark.parametrize(
+    ("required", "replacement"),
+    (
+        (PREFLIGHT_COMMAND, ""),
+        (BACKUP_STATE_COMMAND, "scripts/backup-state.ps1 -OhneStopp"),
+        (
+            BACKUP_OPENWA_COMMAND,
+            "scripts/backup-openwa.ps1 -Ziel $OpenwaBackup",
+        ),
+    ),
+)
+def test_runbook_rejects_required_command_mutations(
+    required: str, replacement: str
+) -> None:
+    text = RUNBOOK.read_text(encoding="utf-8")
+    _assert_required_commands(text)
+    assert text.count(required) == 1
+
+    mutated = text.replace(required, replacement, 1)
+    with pytest.raises(AssertionError):
+        _assert_required_commands(mutated)
+
+
+def test_runbook_rejects_raw_docker_compose_start_mutation() -> None:
+    text = RUNBOOK.read_text(encoding="utf-8")
+    _assert_exact_service_starts(text)
+
+    mutated = text.replace(
+        CORE_START,
+        CORE_START + "\ndocker compose up -d sales-ui",
+        1,
+    )
+    with pytest.raises(AssertionError):
+        _assert_exact_service_starts(mutated)
+
+
+def test_runbook_rejects_extra_global_stop_gate_mutation() -> None:
+    text = RUNBOOK.read_text(encoding="utf-8")
+    _phase_sections(text)
+
+    mutated = text.replace(
+        "## 1. Preflight (read-only)",
+        "**Stop-Gate:** Ungebundenes Gate.\n\n## 1. Preflight (read-only)",
+        1,
+    )
+    with pytest.raises(AssertionError):
+        _phase_sections(mutated)
+
+
+def test_runbook_rejects_weakened_output_prohibition_mutation() -> None:
+    text = RUNBOOK.read_text(encoding="utf-8")
+    _assert_global_output_prohibition(text)
+
+    weakened = GLOBAL_OUTPUT_PROHIBITION.replace("nie ausgegeben", "ausgegeben")
+    mutated = text.replace(GLOBAL_OUTPUT_PROHIBITION, weakened, 1)
+    with pytest.raises(AssertionError):
+        _assert_global_output_prohibition(mutated)
+
+
+def test_runbook_rejects_wrong_draft_id_correlation_mutation() -> None:
+    phase = _phase_sections(RUNBOOK.read_text(encoding="utf-8"))[11]
+    _assert_linkedin_action_contract(phase)
+
+    wrong_id = LINKEDIN_CORRELATION.replace("dieselbe", "eine andere")
+    mutated = phase.replace(LINKEDIN_CORRELATION, wrong_id, 1)
+    with pytest.raises(AssertionError):
+        _assert_linkedin_action_contract(mutated)
 
 
 def test_runbook_rejects_count_after_dispatch_start_mutation() -> None:

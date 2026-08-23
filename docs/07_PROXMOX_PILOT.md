@@ -2,7 +2,7 @@
 
 Dieses Runbook ist ein einmaliger, operatorgefuehrter Cutover. Es ist kein Automatisierungsskript. Jede Phase endet mit einem Stop-Gate. Ein rotes Gate, ein unerwarteter Name, eine fehlende pruefbare Ausgabe oder eine nicht explizit erteilte Betreiberfreigabe bedeutet: **hier anhalten, nichts in der naechsten Phase ausfuehren.**
 
-Alle Inventar- und Statusausgaben zeigen ausschliesslich IDs, Status, Kanal und Anzahl. Nachrichtentexte, E-Mail-Adressen, Telefonnummern, Tokens und Secretlaengen duerfen nie ausgegeben werden.
+Alle Inventar- und Statusausgaben zeigen ausschliesslich IDs, Status, Kanal und Anzahl. Nachrichtentexte und sonstige Nachrichteninhalte, E-Mail-Adressen, Telefonnummern, Tokens und Secretlaengen duerfen nie ausgegeben werden.
 
 ## 1. Preflight (read-only)
 
@@ -151,6 +151,8 @@ $COMPOSE up -d sales-linkedin
 ```
 
 Nach diesem Start genau einen Beitrag pruefen: externe Beitrags-URN, DB-Status `sent` und genau ein Aktivitaetsbeleg, alle bezogen auf dieselbe Draft-ID.
+
+Genehmigter Draft, Betreiberfreigabe, Workerstart, Beitrags-URN, DB-Status und Aktivitaetsbeleg muessen dieselbe Draft-ID referenzieren.
 
 Bei externer Veroeffentlichung ohne DB-Buchung den Worker sofort stoppen, Artefakte sichern und **kein erneuter Versand**. Die Abweichung wird manuell untersucht; kein Retry, kein neuer Workerstart und kein zweiter Beitrag sind erlaubt.
 
