@@ -145,7 +145,11 @@ def _compose_starts(text: str) -> list[str]:
 
 
 def _raw_compose_starts(text: str) -> list[str]:
-    return re.findall(r"^docker compose up -d[^\r\n]*$", text, flags=re.MULTILINE)
+    return re.findall(
+        r"^[ \t]*docker compose up -d(?:[ \t]+[^\r\n]*)?$",
+        text,
+        flags=re.MULTILINE,
+    )
 
 
 def _assert_exact_service_starts(text: str) -> None:
@@ -337,6 +341,19 @@ def test_runbook_rejects_raw_docker_compose_start_mutation() -> None:
     mutated = text.replace(
         CORE_START,
         CORE_START + "\ndocker compose up -d sales-ui",
+        1,
+    )
+    with pytest.raises(AssertionError):
+        _assert_exact_service_starts(mutated)
+
+
+def test_runbook_rejects_indented_raw_compose_start_mutation() -> None:
+    text = RUNBOOK.read_text(encoding="utf-8")
+    _assert_exact_service_starts(text)
+
+    mutated = text.replace(
+        CORE_START,
+        CORE_START + "\n  docker compose up -d sales-ui",
         1,
     )
     with pytest.raises(AssertionError):
