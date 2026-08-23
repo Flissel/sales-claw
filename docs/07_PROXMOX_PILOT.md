@@ -138,17 +138,19 @@ SELECT count(*) AS approved_count FROM sales.drafts
 WHERE status = 'approved' AND channel = 'linkedin';
 ```
 
-Die Ausgabe ist die **approved-Queue nur als Anzahl** (LinkedIn); erst nach dem folgenden zusaetzlichen Gate:
-
-```bash
-$COMPOSE up -d sales-linkedin
-```
+Die Ausgabe ist die **approved-Queue nur als Anzahl** (LinkedIn). Der Start bleibt bis zum LinkedIn-Aktions-Gate in Phase 11 gesperrt; in dieser Phase wird kein LinkedIn-Worker gestartet.
 
 **Stop-Gate:** Fehlt die kanalspezifische Freigabe, ist die Anzahl unerwartet oder wird ein anderer Dienst vorgeschlagen, den einzelnen Worker nicht starten.
 
 ## 11. LinkedIn-Aktions-Gate
 
-Vor dem LinkedIn-Worker den bereits genehmigten Draft nur durch Draft-ID und, falls vorhanden, Medienname identifizieren; keinen Nachrichtentext und keine Kontaktinformation anzeigen. Die explizite Betreiberfreigabe wird mit dieser ID referenziert. Nach dem Worker-Start genau einen Beitrag pruefen: externe Beitrags-URN, DB-Status `sent` und genau ein Aktivitaetsbeleg, alle bezogen auf dieselbe Draft-ID.
+Vor dem LinkedIn-Worker den bereits genehmigten Draft nur durch Draft-ID und, falls vorhanden, Medienname identifizieren; keinen Nachrichtentext und keine Kontaktinformation anzeigen. Die explizite Betreiberfreigabe wird mit dieser ID referenziert. Erst danach starten:
+
+```bash
+$COMPOSE up -d sales-linkedin
+```
+
+Nach diesem Start genau einen Beitrag pruefen: externe Beitrags-URN, DB-Status `sent` und genau ein Aktivitaetsbeleg, alle bezogen auf dieselbe Draft-ID.
 
 Bei externer Veroeffentlichung ohne DB-Buchung den Worker sofort stoppen, Artefakte sichern und **kein erneuter Versand**. Die Abweichung wird manuell untersucht; kein Retry, kein neuer Workerstart und kein zweiter Beitrag sind erlaubt.
 

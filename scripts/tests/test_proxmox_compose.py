@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_FILES = (
@@ -69,26 +72,207 @@ def test_ui_has_only_loopback_and_tailscale_bindings() -> None:
     assert all(port["published"] == "8791" for port in ports)
 
 
-def test_runbook_contains_all_safety_gates() -> None:
-    text = RUNBOOK.read_text(encoding="utf-8")
-    required = (
-        "python scripts/proxmox_preflight.py --host offload-vm --min-free-gib 10 --ui-port 8791",
-        "scripts/backup-state.ps1",
-        "scripts/backup-openwa.ps1",
-        "chmod 600 .env",
-        "docker-compose.proxmox.yml",
-        "openwa sales-mcp sales-inbox sales-ui",
-        "sales-dispatch",
-        "sales-mail",
-        "sales-linkedin",
-        "sales-claw und sales-auto bleiben gestoppt",
+PHASE_HEADING = re.compile(
+    r"^## (?P<number>[0-9]+)\. (?P<title>[^\r\n]+)$", re.MULTILINE
+)
+EXPECTED_PHASES = (
+    "Preflight (read-only)",
+    "Lokale Backups",
+    "Lokale Stilllegung",
+    "Quellpaket",
+    "Secrets-Gate",
+    "Archiv-Transfer",
+    "Restore",
+    "Compose-Check",
+    "Core-Start",
+    "Dispatcher-Gates",
+    "LinkedIn-Aktions-Gate",
+    "Autostart-Abnahme",
+    "Rollback",
+)
+COMPOSE_ASSIGNMENT = (
+    'COMPOSE="docker compose -f docker-compose.yml '
+    '-f docker-compose.openwa.yml -f docker-compose.proxmox.yml"'
+)
+CORE_START = "$COMPOSE up -d openwa sales-mcp sales-inbox sales-ui"
+DISPATCH_START = "$COMPOSE up -d sales-dispatch"
+MAIL_START = "$COMPOSE up -d sales-mail"
+LINKEDIN_START = "$COMPOSE up -d sales-linkedin"
+
+
+def _phase_sections(text: str) -> dict[int, str]:
+    headings = list(PHASE_HEADING.finditer(text))
+    actual = tuple(
+        (int(match.group("number")), match.group("title")) for match in headings
     )
-    assert all(fragment in text for fragment in required)
-    assert "docker compose up -d" not in text
+    expected = tuple(enumerate(EXPECTED_PHASES, start=1))
+    assert actual == expected
+
+    sections: dict[int, str] = {}
+    for index, heading in enumerate(headings):
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
+        section = text[heading.end() : end]
+        assert section.count("**Stop-Gate:**") == 1
+        sections[int(heading.group("number"))] = section
+    return sections
 
 
-def test_runbook_requires_queue_inventory_before_each_dispatcher() -> None:
+def _assert_ordered(section: str, *fragments: str) -> None:
+    positions = [section.find(fragment) for fragment in fragments]
+    assert all(position >= 0 for position in positions)
+    assert positions == sorted(set(positions))
+
+
+def _compose_starts(text: str) -> list[str]:
+    return re.findall(r"^\$COMPOSE up -d[^\r\n]*$", text, flags=re.MULTILINE)
+
+
+def _assert_exact_service_starts(text: str) -> None:
+    starts = _compose_starts(text)
+    assert starts == [CORE_START, DISPATCH_START, MAIL_START, LINKEDIN_START]
+    assert "$COMPOSE up -d" not in starts
+
+
+def _assert_count_before_start(
+    section: str, channel: str, queue_label: str, start_command: str
+) -> None:
+    _assert_ordered(
+        section,
+        f"channel = '{channel}';",
+        queue_label,
+        start_command,
+    )
+
+
+def _move_fragment_before(text: str, fragment: str, anchor: str) -> str:
+    assert text.count(fragment) == 1
+    assert text.count(anchor) == 1
+    without_fragment = text.replace(fragment, "", 1)
+    return without_fragment.replace(anchor, f"{fragment}\n{anchor}", 1)
+
+
+def test_runbook_has_exactly_thirteen_ordered_phases_with_stop_gates() -> None:
+    _phase_sections(RUNBOOK.read_text(encoding="utf-8"))
+
+
+def test_runbook_compose_commands_are_exact_and_section_scoped() -> None:
     text = RUNBOOK.read_text(encoding="utf-8")
-    assert text.count("approved-Queue nur als Anzahl") >= 3
-    assert "LinkedIn-Aktions-Gate" in text
-    assert "kein erneuter Versand" in text
+    phases = _phase_sections(text)
+
+    assert text.count(COMPOSE_ASSIGNMENT) == 1
+    assert COMPOSE_ASSIGNMENT in phases[8]
+    _assert_exact_service_starts(text)
+    assert CORE_START in phases[9]
+    assert DISPATCH_START in phases[10]
+    assert MAIL_START in phases[10]
+    assert LINKEDIN_START not in phases[10]
+    assert LINKEDIN_START in phases[11]
+
+
+def test_runbook_counts_each_queue_before_its_individual_start() -> None:
+    text = RUNBOOK.read_text(encoding="utf-8")
+    phases = _phase_sections(text)
+
+    _assert_count_before_start(
+        phases[10],
+        "whatsapp",
+        "approved-Queue nur als Anzahl** (WhatsApp)",
+        DISPATCH_START,
+    )
+    _assert_count_before_start(
+        phases[10],
+        "email",
+        "approved-Queue nur als Anzahl** (E-Mail)",
+        MAIL_START,
+    )
+    _assert_ordered(
+        phases[10],
+        "channel = 'linkedin';",
+        "approved-Queue nur als Anzahl** (LinkedIn)",
+        "Der Start bleibt bis zum LinkedIn-Aktions-Gate in Phase 11 gesperrt",
+    )
+    assert LINKEDIN_START not in phases[10]
+    assert LINKEDIN_START in phases[11]
+
+
+def test_runbook_secret_gate_is_reconfirmed_separate_and_metadata_only() -> None:
+    phase = _phase_sections(RUNBOOK.read_text(encoding="utf-8"))[5]
+
+    _assert_ordered(
+        phase,
+        "**frische** Betreiberbestaetigung",
+        "separat per SCP",
+        "chmod 600 .env",
+        "test -s .env",
+        "stat -c '%a %n' .env",
+        "prueft nur Existenz/Nichtleerheit und Dateimodus",
+    )
+    assert "keinen Inhalt, Token oder Secretlaenge" in phase
+
+
+def test_runbook_linkedin_action_and_failure_gates_are_ordered() -> None:
+    phase = _phase_sections(RUNBOOK.read_text(encoding="utf-8"))[11]
+
+    _assert_ordered(
+        phase,
+        "bereits genehmigten Draft",
+        "Draft-ID",
+        "Medienname",
+        "explizite Betreiberfreigabe",
+        LINKEDIN_START,
+        "externe Beitrags-URN",
+        "DB-Status " + chr(96) + "sent" + chr(96),
+        "genau ein Aktivitaetsbeleg",
+    )
+    failure = phase[phase.index("Bei externer Veroeffentlichung ohne DB-Buchung") :]
+    failure = failure.partition("**Stop-Gate:**")[0]
+    _assert_ordered(
+        failure,
+        "Bei externer Veroeffentlichung ohne DB-Buchung",
+        "Worker sofort stoppen",
+        "**kein erneuter Versand**",
+        "kein Retry",
+    )
+
+
+def test_runbook_keeps_manual_services_stopped_and_openwa_exclusive() -> None:
+    phases = _phase_sections(RUNBOOK.read_text(encoding="utf-8"))
+
+    assert "sales-claw und sales-auto bleiben gestoppt" in phases[12]
+    _assert_ordered(
+        phases[13],
+        "alle VM-Projektcontainer vollstaendig stoppen",
+        "deren Stillstand per Namensliste nachweisen",
+        "Erst danach darf Windows/OpenWA wieder gestartet werden",
+        "Niemals beide OpenWA-Instanzen parallel",
+    )
+    assert "VM-OpenWA noch aktiv, darf Windows/OpenWA nicht starten" in phases[13]
+
+
+def test_runbook_rejects_count_after_dispatch_start_mutation() -> None:
+    text = RUNBOOK.read_text(encoding="utf-8")
+    phase = _phase_sections(text)[10]
+    _assert_count_before_start(
+        phase,
+        "email",
+        "approved-Queue nur als Anzahl** (E-Mail)",
+        MAIL_START,
+    )
+
+    mutated = _move_fragment_before(text, MAIL_START, "channel = 'email';")
+    with pytest.raises(AssertionError):
+        _assert_count_before_start(
+            _phase_sections(mutated)[10],
+            "email",
+            "approved-Queue nur als Anzahl** (E-Mail)",
+            MAIL_START,
+        )
+
+
+def test_runbook_rejects_bare_compose_start_mutation() -> None:
+    text = RUNBOOK.read_text(encoding="utf-8")
+    _assert_exact_service_starts(text)
+
+    mutated = text.replace(MAIL_START, "$COMPOSE up -d", 1)
+    with pytest.raises(AssertionError):
+        _assert_exact_service_starts(mutated)
