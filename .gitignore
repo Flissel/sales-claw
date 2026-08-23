@@ -9,6 +9,7 @@ backups/
 *.tar
 *.tar.gz
 credentials-sicherung-*/
+/artifacts/proxmox/
 
 # OpenWA (Stufe 3): flacher Upstream-Klon wird nicht versioniert, nur unsere
 # eigene docker-compose.openwa.yml im Repo-Wurzelverzeichnis. Der QR-Code fuer
