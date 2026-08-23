@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -28,6 +29,26 @@ def _workspace(tmp_path: Path) -> tuple[Path, Path]:
     (root / "sales-mcp").mkdir()
     (root / "sales-mcp" / "safe.py").write_text("safe", encoding="utf-8")
     return root, output
+
+
+def _write_valid_package_pair(archive_path: Path, manifest_path: Path, payload: bytes) -> None:
+    info = tarfile.TarInfo("sales-mcp/substituted.py")
+    info.size = len(payload)
+    with tarfile.open(archive_path, "w:gz") as archive:
+        archive.addfile(info, io.BytesIO(payload))
+    archive_bytes = archive_path.read_bytes()
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "archive": MODULE.ARCHIVE_NAME,
+                "archive_bytes": len(archive_bytes),
+                "archive_sha256": hashlib.sha256(archive_bytes).hexdigest(),
+                "files": [],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def _symlink_or_skip(link: Path, target: Path) -> None:
@@ -281,6 +302,54 @@ def test_output_directory_is_pinned_against_swap_to_external_symlink(
     assert external_manifest.read_bytes() == b"external manifest sentinel"
 
 
+def test_temp_artifacts_cannot_be_substituted_at_publication_seam(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, output = _workspace(tmp_path)
+    malicious_archive = tmp_path / "malicious.tar.gz"
+    malicious_manifest = tmp_path / "malicious.MANIFEST.json"
+    _write_valid_package_pair(malicious_archive, malicious_manifest, b"malicious sentinel")
+    malicious_archive_before = malicious_archive.read_bytes()
+    malicious_manifest_before = malicious_manifest.read_bytes()
+    created_temps: list[Path] = []
+    substitution_errors: list[OSError] = []
+    real_temp_file = MODULE._temp_file
+
+    def track_temp(path: Path):
+        artifact = real_temp_file(path)
+        temporary = artifact[1] if isinstance(artifact, tuple) else artifact.path
+        created_temps.append(temporary)
+        return artifact
+
+    def substitute(point: str, path: Path | None = None) -> None:
+        if point != "before_publication":
+            return
+        assert len(created_temps) == 2
+        for malicious, temporary in zip(
+            (malicious_archive, malicious_manifest), created_temps, strict=True
+        ):
+            try:
+                malicious.replace(temporary)
+            except OSError as error:
+                substitution_errors.append(error)
+
+    monkeypatch.setattr(MODULE, "_temp_file", track_temp)
+    monkeypatch.setattr(MODULE, "_inject_fault", substitute)
+
+    archive_path, manifest_path = build_package(root, output)
+
+    assert len(substitution_errors) == 2
+    assert malicious_archive.read_bytes() == malicious_archive_before
+    assert malicious_manifest.read_bytes() == malicious_manifest_before
+    with tarfile.open(archive_path, "r:gz") as archive:
+        assert archive.getnames() == ["sales-mcp/safe.py"]
+        archived = archive.extractfile("sales-mcp/safe.py")
+        assert archived is not None
+        assert archived.read() == b"safe"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["archive_sha256"] == hashlib.sha256(archive_path.read_bytes()).hexdigest()
+
+
 def test_failed_build_preserves_existing_archive_and_manifest_pair(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -313,6 +382,7 @@ def test_failed_build_preserves_existing_archive_and_manifest_pair(
         "old_manifest_moved",
         "new_archive_published",
         "new_manifest_published",
+        "before_journal_commit",
     ],
 )
 def test_interrupted_publication_recovers_old_authoritative_pair_before_new_work(
@@ -343,8 +413,8 @@ def test_interrupted_publication_recovers_old_authoritative_pair_before_new_work
     assert journal_path.is_file()
     monkeypatch.setattr(MODULE, "_inject_fault", lambda point, path=None: None)
 
-    def stop_before_new_temp(path: Path) -> tuple[int, Path]:
-        raise StopAfterRecovery(path)
+    def stop_before_new_temp(*args: object, **kwargs: object):
+        raise StopAfterRecovery(args, kwargs)
 
     monkeypatch.setattr(MODULE, "_temp_file", stop_before_new_temp)
     with pytest.raises(StopAfterRecovery):
@@ -356,6 +426,56 @@ def test_interrupted_publication_recovers_old_authoritative_pair_before_new_work
     assert recovered_manifest["archive_sha256"] == hashlib.sha256(archive_before).hexdigest()
     assert not journal_path.exists()
     assert {path.name for path in output.iterdir()} == {MODULE.ARCHIVE_NAME, MODULE.MANIFEST_NAME}
+
+
+def test_interruption_after_journal_commit_keeps_new_pair_and_cleans_idempotently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class SimulatedInterruption(BaseException):
+        pass
+
+    class StopAfterRecovery(Exception):
+        pass
+
+    root, output = _workspace(tmp_path)
+    archive_path, manifest_path = build_package(root, output)
+    old_archive = archive_path.read_bytes()
+    old_manifest = manifest_path.read_bytes()
+    (root / "sales-mcp" / "safe.py").write_text("committed new package", encoding="utf-8")
+
+    def interrupt(point: str, path: Path | None = None) -> None:
+        if point == "after_journal_commit":
+            raise SimulatedInterruption(point)
+
+    monkeypatch.setattr(MODULE, "_inject_fault", interrupt)
+
+    with pytest.raises(SimulatedInterruption, match="after_journal_commit"):
+        build_package(root, output)
+
+    committed_archive = archive_path.read_bytes()
+    committed_manifest = manifest_path.read_bytes()
+    assert committed_archive != old_archive
+    assert committed_manifest != old_manifest
+    committed_value = json.loads(committed_manifest)
+    assert committed_value["archive_sha256"] == hashlib.sha256(committed_archive).hexdigest()
+    assert not (output / MODULE.JOURNAL_NAME).exists()
+    assert any(path.name.startswith(".sales-claw-proxmox-source.DONE.") for path in output.iterdir())
+
+    monkeypatch.setattr(MODULE, "_inject_fault", lambda point, path=None: None)
+
+    def stop_before_new_temp(*args: object, **kwargs: object):
+        raise StopAfterRecovery(args, kwargs)
+
+    monkeypatch.setattr(MODULE, "_temp_file", stop_before_new_temp)
+    for _ in range(2):
+        with pytest.raises(StopAfterRecovery):
+            build_package(root, output)
+        assert archive_path.read_bytes() == committed_archive
+        assert manifest_path.read_bytes() == committed_manifest
+        assert {path.name for path in output.iterdir()} == {
+            MODULE.ARCHIVE_NAME,
+            MODULE.MANIFEST_NAME,
+        }
 
 
 def test_replaces_an_existing_published_pair(tmp_path: Path) -> None:
