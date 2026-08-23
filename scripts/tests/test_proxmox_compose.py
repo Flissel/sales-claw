@@ -11,6 +11,7 @@ COMPOSE_FILES = (
     ROOT / "docker-compose.openwa.yml",
     ROOT / "docker-compose.proxmox.yml",
 )
+RUNBOOK = ROOT / "docs" / "07_PROXMOX_PILOT.md"
 
 
 def rendered_config() -> dict[str, object]:
@@ -66,3 +67,28 @@ def test_ui_has_only_loopback_and_tailscale_bindings() -> None:
     host_ips = {port["host_ip"] for port in ports}
     assert host_ips == {"127.0.0.1", "100.64.0.10"}
     assert all(port["published"] == "8791" for port in ports)
+
+
+def test_runbook_contains_all_safety_gates() -> None:
+    text = RUNBOOK.read_text(encoding="utf-8")
+    required = (
+        "python scripts/proxmox_preflight.py --host offload-vm --min-free-gib 10 --ui-port 8791",
+        "scripts/backup-state.ps1",
+        "scripts/backup-openwa.ps1",
+        "chmod 600 .env",
+        "docker-compose.proxmox.yml",
+        "openwa sales-mcp sales-inbox sales-ui",
+        "sales-dispatch",
+        "sales-mail",
+        "sales-linkedin",
+        "sales-claw und sales-auto bleiben gestoppt",
+    )
+    assert all(fragment in text for fragment in required)
+    assert "docker compose up -d" not in text
+
+
+def test_runbook_requires_queue_inventory_before_each_dispatcher() -> None:
+    text = RUNBOOK.read_text(encoding="utf-8")
+    assert text.count("approved-Queue nur als Anzahl") >= 3
+    assert "LinkedIn-Aktions-Gate" in text
+    assert "kein erneuter Versand" in text
