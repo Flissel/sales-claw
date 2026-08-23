@@ -37,6 +37,15 @@ def _symlink_or_skip(link: Path, target: Path) -> None:
         pytest.skip(f"symlinks unavailable: {error}")
 
 
+def _require_directory_symlink_support(tmp_path: Path) -> None:
+    target = tmp_path / "symlink-probe-target"
+    link = tmp_path / "symlink-probe"
+    target.mkdir()
+    _symlink_or_skip(link, target)
+    link.unlink()
+    target.rmdir()
+
+
 def test_package_uses_allowlist_and_excludes_secrets(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     output = tmp_path / "out"
@@ -181,15 +190,12 @@ def test_source_swap_to_file_symlink_fails_before_publishing(tmp_path: Path, mon
     source_file = root / "sales-mcp" / "safe.py"
     external = tmp_path / "external.py"
     external.write_text("external", encoding="utf-8")
-    real_open = os.open
-
-    def swap_then_open(path: str | bytes | os.PathLike[str] | os.PathLike[bytes], flags: int, mode: int = 0o777) -> int:
-        if Path(path) == source_file and source_file.exists():
+    def swap_before_open(point: str, path: Path | None = None) -> None:
+        if point == "before_source_file_open" and path == source_file and source_file.exists():
             source_file.unlink()
             _symlink_or_skip(source_file, external)
-        return real_open(path, flags, mode)
 
-    monkeypatch.setattr(MODULE.os, "open", swap_then_open)
+    monkeypatch.setattr(MODULE, "_inject_fault", swap_before_open)
 
     with pytest.raises(ValueError, match="changed or is a symlink"):
         build_package(root, output)
@@ -198,33 +204,81 @@ def test_source_swap_to_file_symlink_fails_before_publishing(tmp_path: Path, mon
     assert not (output / MODULE.MANIFEST_NAME).exists()
 
 
-def test_source_intermediate_directory_swap_to_symlink_fails_before_reading(
+def test_source_directory_is_pinned_before_enumeration_and_external_content_is_not_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _require_directory_symlink_support(tmp_path)
     root, output = _workspace(tmp_path)
     nested = root / "sales-mcp" / "nested"
     nested.mkdir()
     source_file = nested / "safe.py"
-    source_file.write_text("safe", encoding="utf-8")
+    source_file.write_text("legitimate", encoding="utf-8")
     external_dir = tmp_path / "external-dir"
     external_dir.mkdir()
-    (external_dir / "safe.py").write_text("external", encoding="utf-8")
-    real_open = os.open
+    external_file = external_dir / "safe.py"
+    external_file.write_text("external sentinel", encoding="utf-8")
+    displaced = tmp_path / "displaced-nested"
+    swap_outcome: list[str | OSError] = []
 
-    def swap_then_open(path: str | bytes | os.PathLike[str] | os.PathLike[bytes], flags: int, mode: int = 0o777) -> int:
-        if Path(path) == source_file and nested.exists():
-            source_file.unlink()
-            nested.rmdir()
-            _symlink_or_skip(nested, external_dir)
-        return real_open(path, flags, mode)
+    def swap_before_enumeration(point: str, path: Path | None = None) -> None:
+        if point != "before_directory_enumeration" or path != nested:
+            return
+        try:
+            nested.rename(displaced)
+            nested.symlink_to(external_dir, target_is_directory=True)
+            swap_outcome.append("swapped")
+        except OSError as error:
+            swap_outcome.append(error)
 
-    monkeypatch.setattr(MODULE.os, "open", swap_then_open)
+    monkeypatch.setattr(MODULE, "_inject_fault", swap_before_enumeration)
 
-    with pytest.raises(ValueError, match="changed or is a symlink"):
-        build_package(root, output)
+    archive_path, _ = build_package(root, output)
 
-    assert not (output / MODULE.ARCHIVE_NAME).exists()
-    assert not (output / MODULE.MANIFEST_NAME).exists()
+    assert swap_outcome and isinstance(swap_outcome[0], OSError)
+    with tarfile.open(archive_path, "r:gz") as archive:
+        archived = archive.extractfile("sales-mcp/nested/safe.py")
+        assert archived is not None
+        assert archived.read() == b"legitimate"
+    assert external_file.read_text(encoding="utf-8") == "external sentinel"
+
+
+@pytest.mark.parametrize("fault_point", ["before_temp_creation", "before_publication"])
+def test_output_directory_is_pinned_against_swap_to_external_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault_point: str
+) -> None:
+    _require_directory_symlink_support(tmp_path)
+    root, output = _workspace(tmp_path)
+    output.mkdir()
+    external = tmp_path / "external-output"
+    external.mkdir()
+    external_archive = external / MODULE.ARCHIVE_NAME
+    external_manifest = external / MODULE.MANIFEST_NAME
+    external_archive.write_bytes(b"external archive sentinel")
+    external_manifest.write_bytes(b"external manifest sentinel")
+    displaced = tmp_path / "displaced-output"
+    swap_outcome: list[str | OSError] = []
+
+    def swap_output(point: str, path: Path | None = None) -> None:
+        if point != fault_point or path != output:
+            return
+        try:
+            output.rename(displaced)
+            output.symlink_to(external, target_is_directory=True)
+            for temporary in displaced.glob(".sales-claw-proxmox-*.tmp"):
+                temporary.replace(external / temporary.name)
+            swap_outcome.append("swapped")
+        except OSError as error:
+            swap_outcome.append(error)
+
+    monkeypatch.setattr(MODULE, "_inject_fault", swap_output)
+
+    archive_path, manifest_path = build_package(root, output)
+
+    assert swap_outcome and isinstance(swap_outcome[0], OSError)
+    assert archive_path.parent == output
+    assert manifest_path.parent == output
+    assert external_archive.read_bytes() == b"external archive sentinel"
+    assert external_manifest.read_bytes() == b"external manifest sentinel"
 
 
 def test_failed_build_preserves_existing_archive_and_manifest_pair(
@@ -237,21 +291,71 @@ def test_failed_build_preserves_existing_archive_and_manifest_pair(
     source_file = root / "sales-mcp" / "safe.py"
     external = tmp_path / "external.py"
     external.write_text("external", encoding="utf-8")
-    real_open = os.open
-
-    def swap_then_open(path: str | bytes | os.PathLike[str] | os.PathLike[bytes], flags: int, mode: int = 0o777) -> int:
-        if Path(path) == source_file and source_file.exists():
+    def swap_before_open(point: str, path: Path | None = None) -> None:
+        if point == "before_source_file_open" and path == source_file and source_file.exists():
             source_file.unlink()
             _symlink_or_skip(source_file, external)
-        return real_open(path, flags, mode)
 
-    monkeypatch.setattr(MODULE.os, "open", swap_then_open)
+    monkeypatch.setattr(MODULE, "_inject_fault", swap_before_open)
 
     with pytest.raises(ValueError, match="changed or is a symlink"):
         build_package(root, output)
 
     assert archive_path.read_bytes() == archive_before
     assert manifest_path.read_bytes() == manifest_before
+
+
+@pytest.mark.parametrize(
+    "fault_point",
+    [
+        "journal_durable",
+        "old_archive_moved",
+        "old_manifest_moved",
+        "new_archive_published",
+        "new_manifest_published",
+    ],
+)
+def test_interrupted_publication_recovers_old_authoritative_pair_before_new_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault_point: str
+) -> None:
+    class SimulatedInterruption(BaseException):
+        pass
+
+    class StopAfterRecovery(Exception):
+        pass
+
+    root, output = _workspace(tmp_path)
+    archive_path, manifest_path = build_package(root, output)
+    archive_before = archive_path.read_bytes()
+    manifest_before = manifest_path.read_bytes()
+    (root / "sales-mcp" / "safe.py").write_text("new package", encoding="utf-8")
+
+    def interrupt(point: str, path: Path | None = None) -> None:
+        if point == fault_point:
+            raise SimulatedInterruption(point)
+
+    monkeypatch.setattr(MODULE, "_inject_fault", interrupt)
+
+    with pytest.raises(SimulatedInterruption, match=fault_point):
+        build_package(root, output)
+
+    journal_path = output / ".sales-claw-proxmox-source.TRANSACTION.json"
+    assert journal_path.is_file()
+    monkeypatch.setattr(MODULE, "_inject_fault", lambda point, path=None: None)
+
+    def stop_before_new_temp(path: Path) -> tuple[int, Path]:
+        raise StopAfterRecovery(path)
+
+    monkeypatch.setattr(MODULE, "_temp_file", stop_before_new_temp)
+    with pytest.raises(StopAfterRecovery):
+        build_package(root, output)
+
+    assert archive_path.read_bytes() == archive_before
+    assert manifest_path.read_bytes() == manifest_before
+    recovered_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert recovered_manifest["archive_sha256"] == hashlib.sha256(archive_before).hexdigest()
+    assert not journal_path.exists()
+    assert {path.name for path in output.iterdir()} == {MODULE.ARCHIVE_NAME, MODULE.MANIFEST_NAME}
 
 
 def test_replaces_an_existing_published_pair(tmp_path: Path) -> None:
