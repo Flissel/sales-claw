@@ -1,0 +1,29 @@
+services:
+  openwa:
+    restart: unless-stopped
+    environment:
+      AUTO_START_SESSIONS: "true"
+
+  sales-mcp:
+    restart: unless-stopped
+
+  sales-ui:
+    restart: unless-stopped
+
+  sales-inbox:
+    restart: unless-stopped
+
+  sales-dispatch:
+    restart: unless-stopped
+
+  sales-mail:
+    restart: unless-stopped
+
+  sales-linkedin:
+    restart: unless-stopped
+
+  sales-claw:
+    restart: "no"
+
+  sales-auto:
+    restart: "no"
