@@ -11,6 +11,35 @@ import pytest
 
 
 VERIFY_SCRIPT = Path(__file__).resolve().parents[1] / "verify-openwa-backup.ps1"
+BACKUP_SCRIPT = Path(__file__).resolve().parents[1] / "backup-openwa.ps1"
+
+
+class FakeDocker:
+    def __init__(self, log_path: Path, state_path: Path) -> None:
+        self.log_path = log_path
+        self.state_path = state_path
+
+    def reset(self, *, running: bool, fail_verify: bool = False) -> None:
+        self.log_path.write_text("", encoding="utf-8")
+        self.state_path.write_text(
+            json.dumps(
+                {
+                    "running": running,
+                    "stopped_by_backup": False,
+                    "fail_verify": fail_verify,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def transcript(self) -> list[dict[str, object]]:
+        return [
+            json.loads(line)
+            for line in self.log_path.read_text(encoding="utf-8").splitlines()
+        ]
+
+    def state(self) -> dict[str, object]:
+        return json.loads(self.state_path.read_text(encoding="utf-8"))
 
 
 def _write_archive(path: Path) -> int:
@@ -55,12 +84,17 @@ def backup_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture(autouse=True)
-def isolated_docker_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def fake_docker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeDocker:
     docker_bin = tmp_path / "docker-bin"
     docker_bin.mkdir()
+    log_path = tmp_path / "docker-transcript.jsonl"
+    state_path = tmp_path / "docker-state.json"
     fake_script = docker_bin / "docker_fake.py"
     fake_script.write_text(
         """\
+import io
+import json
+import os
 import re
 import sys
 import tarfile
@@ -68,37 +102,175 @@ from pathlib import Path
 
 
 args = sys.argv[1:]
-if not args or args[0] != "run" or "alpine:3.20" not in args:
-    raise SystemExit(64)
+log_path = Path(os.environ["FAKE_DOCKER_LOG"])
+state_path = Path(os.environ["FAKE_DOCKER_STATE"])
+state = json.loads(state_path.read_text(encoding="utf-8"))
 
-mounts = [args[index + 1] for index, arg in enumerate(args[:-1]) if arg == "--mount"]
-source_mounts = [
-    re.fullmatch(r"type=bind,source=(.*),target=/quelle,readonly", mount)
-    for mount in mounts
+
+def record(event, **details):
+    entry = {"event": event, "argv": args, **details}
+    with log_path.open("a", encoding="utf-8") as log:
+        log.write(json.dumps(entry, sort_keys=True) + "\\n")
+
+
+def save_state():
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+
+def reject():
+    record("unexpected")
+    print("unexpected docker invocation", file=sys.stderr)
+    raise SystemExit(90)
+
+
+if args == ["version", "--format", "{{.Server.Version}}"]:
+    record("version")
+    print("27.0.0")
+    raise SystemExit(0)
+
+if args == ["volume", "inspect", "--format", "{{.Name}}", "openwa-data"]:
+    record("volume_inspect", volume="openwa-data")
+    print("openwa-data")
+    raise SystemExit(0)
+
+if args == [
+    "container",
+    "ls",
+    "--all",
+    "--filter",
+    "name=^openwa$",
+    "--format",
+    "{{.Names}}",
+]:
+    record("container_ls", container="openwa")
+    print("openwa")
+    raise SystemExit(0)
+
+if args == ["inspect", "--format", "{{.State.Running}}", "openwa"]:
+    record("inspect_running", container="openwa", running=state["running"])
+    print(str(state["running"]).lower())
+    raise SystemExit(0)
+
+if args == ["stop", "--time", "30", "openwa"]:
+    if not state["running"]:
+        reject()
+    state["running"] = False
+    state["stopped_by_backup"] = True
+    save_state()
+    record("stop", container="openwa")
+    print("openwa")
+    raise SystemExit(0)
+
+if args == ["inspect", "--format", "{{.State.ExitCode}}", "openwa"]:
+    if not state["stopped_by_backup"]:
+        reject()
+    record("inspect_exit_code", container="openwa")
+    print("0")
+    raise SystemExit(0)
+
+if args == ["start", "openwa"]:
+    state["running"] = True
+    state["stopped_by_backup"] = False
+    save_state()
+    record("start", container="openwa")
+    print("openwa")
+    raise SystemExit(0)
+
+archive_prefix = [
+    "run",
+    "--rm",
+    "--mount",
+    "type=volume,source=openwa-data,target=/quelle,readonly",
+    "--mount",
 ]
-matches = [match for match in source_mounts if match is not None]
-if len(matches) != 1:
-    raise SystemExit(65)
+archive_suffix = [
+    "alpine:3.20",
+    "tar",
+    "-cf",
+    "/ziel/openwa.tar",
+    "-C",
+    "/quelle",
+    ".",
+]
+if len(args) == 13 and args[:5] == archive_prefix and args[6:] == archive_suffix:
+    bind = re.fullmatch(r"type=bind,source=(.*),target=/ziel", args[5])
+    if bind is None:
+        reject()
+    target = Path(bind.group(1))
+    if not target.is_absolute() or not target.is_dir():
+        reject()
+    payload = b"temporary openwa backup fixture\\n"
+    with tarfile.open(target / "openwa.tar", "w") as archive:
+        entry = tarfile.TarInfo("session.json")
+        entry.size = len(payload)
+        entry.mode = 0o600
+        archive.addfile(entry, io.BytesIO(payload))
+    record(
+        "archive",
+        volume="openwa-data",
+        source_readonly=True,
+        target=str(target),
+        manifest_present=(target / "MANIFEST.json").exists(),
+    )
+    raise SystemExit(0)
 
-archive_path = Path(matches[0].group(1)) / "openwa.tar"
-try:
-    with tarfile.open(archive_path, "r") as archive:
-        entries = sum(member.isfile() for member in archive.getmembers())
-except (OSError, tarfile.TarError):
-    raise SystemExit(66)
+expected_verify_script = '''
+set -eu
+tar -tf /quelle/openwa.tar >/dev/null
+anzahl="$(tar -tvf /quelle/openwa.tar | awk 'substr($1, 1, 1) == "-" { n++ } END { print n + 0 }')"
+printf 'OPENWA_ENTRIES=%s\\\\n' "$anzahl"
+'''.strip()
+verify_prefix = ["run", "--rm", "--mount"]
+verify_suffix = ["alpine:3.20", "sh", "-c"]
+if len(args) == 8 and args[:3] == verify_prefix and args[4:7] == verify_suffix:
+    bind = re.fullmatch(
+        r"type=bind,source=(.*),target=/quelle,readonly", args[3]
+    )
+    command = args[7].replace("\\r\\n", "\\n").strip()
+    if bind is None or command != expected_verify_script:
+        reject()
+    source = Path(bind.group(1))
+    if not source.is_absolute() or not source.is_dir():
+        reject()
+    manifest_present = (source / "MANIFEST.json").exists()
+    record(
+        "verify",
+        image="alpine:3.20",
+        source=str(source),
+        source_readonly=True,
+        manifest_present=manifest_present,
+        exact_tar_command=True,
+    )
+    if state["fail_verify"] and manifest_present:
+        raise SystemExit(72)
+    try:
+        with tarfile.open(source / "openwa.tar", "r") as archive:
+            entries = sum(member.isfile() for member in archive.getmembers())
+    except (OSError, tarfile.TarError):
+        raise SystemExit(66)
+    print(f"OPENWA_ENTRIES={entries}")
+    raise SystemExit(0)
 
-print(f"OPENWA_ENTRIES={entries}")
+reject()
 """,
         encoding="utf-8",
     )
-    launcher = docker_bin / "docker.cmd"
-    launcher.write_bytes(
+    launcher = docker_bin / "docker.ps1"
+    powershell_python = sys.executable.replace("'", "''")
+    launcher.write_text(
         (
-            "@echo off\r\n"
-            f'"{sys.executable}" "%~dp0docker_fake.py" %*\r\n'
-        ).encode("utf-8")
+            f"$python = '{powershell_python}'\n"
+            "& $python (Join-Path $PSScriptRoot 'docker_fake.py') @args\n"
+            "exit $LASTEXITCODE\n"
+        ),
+        encoding="utf-8",
     )
     monkeypatch.setenv("PATH", f"{docker_bin}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("FAKE_DOCKER_LOG", str(log_path))
+    monkeypatch.setenv("FAKE_DOCKER_STATE", str(state_path))
+    harness = FakeDocker(log_path=log_path, state_path=state_path)
+    harness.reset(running=False)
+    return harness
 
 
 def _run_verifier(source: Path) -> subprocess.CompletedProcess[str]:
@@ -117,6 +289,27 @@ def _run_verifier(source: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _run_backup(
+    target: Path, *, leave_stopped: bool = False
+) -> subprocess.CompletedProcess[str]:
+    command = [
+        "pwsh",
+        "-NoProfile",
+        "-File",
+        str(BACKUP_SCRIPT),
+        "-Ziel",
+        str(target.resolve()),
+    ]
+    if leave_stopped:
+        command.append("-StillgelegtLassen")
+    return subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 def _read_manifest(backup_dir: Path) -> dict[str, object]:
     return json.loads((backup_dir / "MANIFEST.json").read_text(encoding="utf-8"))
 
@@ -127,7 +320,9 @@ def _write_manifest(backup_dir: Path, manifest: dict[str, object]) -> None:
     )
 
 
-def test_valid_backup_is_verified_with_metadata_only(backup_dir: Path) -> None:
+def test_valid_backup_is_verified_with_exact_read_only_alpine_command(
+    backup_dir: Path, fake_docker: FakeDocker
+) -> None:
     manifest = _read_manifest(backup_dir)
     archive = manifest["archive"]
     assert isinstance(archive, dict)
@@ -142,6 +337,11 @@ def test_valid_backup_is_verified_with_metadata_only(backup_dir: Path) -> None:
         f"Dateizahl: {archive['entries']}",
         f"SHA-256: {archive['sha256']}",
     ]
+    transcript = fake_docker.transcript()
+    assert [entry["event"] for entry in transcript] == ["verify"]
+    assert transcript[0]["image"] == "alpine:3.20"
+    assert transcript[0]["source_readonly"] is True
+    assert transcript[0]["exact_tar_command"] is True
 
 
 def test_changed_archive_bytes_are_rejected(backup_dir: Path) -> None:
@@ -219,3 +419,109 @@ def test_additional_archive_is_rejected(backup_dir: Path) -> None:
     result = _run_verifier(backup_dir)
 
     assert result.returncode != 0
+
+
+def _event_names(fake_docker: FakeDocker) -> list[object]:
+    return [entry["event"] for entry in fake_docker.transcript()]
+
+
+def _assert_exact_names(fake_docker: FakeDocker) -> None:
+    transcript = fake_docker.transcript()
+    assert {
+        entry["volume"] for entry in transcript if "volume" in entry
+    } == {"openwa-data"}
+    assert {
+        entry["container"] for entry in transcript if "container" in entry
+    } == {"openwa"}
+
+
+def test_backup_restarts_initially_running_openwa_after_verified_success(
+    tmp_path: Path, fake_docker: FakeDocker
+) -> None:
+    fake_docker.reset(running=True)
+    target = tmp_path / "running-success"
+
+    result = _run_backup(target)
+
+    assert result.returncode == 0, result.stderr
+    assert (target / "openwa.tar").is_file()
+    assert (target / "MANIFEST.json").is_file()
+    assert _event_names(fake_docker) == [
+        "version",
+        "volume_inspect",
+        "container_ls",
+        "inspect_running",
+        "stop",
+        "inspect_exit_code",
+        "archive",
+        "verify",
+        "verify",
+        "start",
+        "inspect_running",
+    ]
+    verify_events = [
+        entry for entry in fake_docker.transcript() if entry["event"] == "verify"
+    ]
+    assert [entry["manifest_present"] for entry in verify_events] == [False, True]
+    assert fake_docker.state()["running"] is True
+    _assert_exact_names(fake_docker)
+
+
+def test_backup_leaves_initially_running_openwa_stopped_when_requested(
+    tmp_path: Path, fake_docker: FakeDocker
+) -> None:
+    fake_docker.reset(running=True)
+    target = tmp_path / "leave-stopped"
+
+    result = _run_backup(target, leave_stopped=True)
+
+    assert result.returncode == 0, result.stderr
+    assert (target / "MANIFEST.json").is_file()
+    assert "stop" in _event_names(fake_docker)
+    assert "start" not in _event_names(fake_docker)
+    assert fake_docker.state()["running"] is False
+    _assert_exact_names(fake_docker)
+
+
+def test_backup_does_not_restart_initially_stopped_openwa(
+    tmp_path: Path, fake_docker: FakeDocker
+) -> None:
+    fake_docker.reset(running=False)
+    target = tmp_path / "already-stopped"
+
+    result = _run_backup(target)
+
+    assert result.returncode == 0, result.stderr
+    assert (target / "MANIFEST.json").is_file()
+    assert "stop" not in _event_names(fake_docker)
+    assert "start" not in _event_names(fake_docker)
+    assert fake_docker.state()["running"] is False
+    _assert_exact_names(fake_docker)
+
+
+def test_backup_verification_failure_removes_manifest_and_restarts_openwa(
+    tmp_path: Path, fake_docker: FakeDocker
+) -> None:
+    fake_docker.reset(running=True, fail_verify=True)
+    target = tmp_path / "verification-failure"
+
+    result = _run_backup(target)
+
+    assert result.returncode != 0
+    assert (target / "openwa.tar").is_file()
+    assert not (target / "MANIFEST.json").exists()
+    assert _event_names(fake_docker) == [
+        "version",
+        "volume_inspect",
+        "container_ls",
+        "inspect_running",
+        "stop",
+        "inspect_exit_code",
+        "archive",
+        "verify",
+        "verify",
+        "start",
+        "inspect_running",
+    ]
+    assert fake_docker.state()["running"] is True
+    _assert_exact_names(fake_docker)

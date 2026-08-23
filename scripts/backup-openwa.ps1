@@ -94,6 +94,7 @@ if (@(Get-ChildItem -LiteralPath $zielVoll -Force).Count -ne 0) {
 }
 
 $pruefAusgabe = @()
+$manifestPfad = $null
 try {
     if ($liefVorher) {
         $stoppAusgabe = @(& docker stop --time 30 $Container 2>&1)
@@ -150,6 +151,13 @@ try {
 
     $verifizierer = Join-Path $PSScriptRoot 'verify-openwa-backup.ps1'
     $pruefAusgabe = @(& $verifizierer -Quelle $zielVoll)
+}
+catch {
+    if ($null -ne $manifestPfad -and
+        (Test-Path -LiteralPath $manifestPfad -PathType Leaf)) {
+        Remove-Item -LiteralPath $manifestPfad -Force
+    }
+    throw
 }
 finally {
     if ($liefVorher -and -not $StillgelegtLassen) {
