@@ -1,13 +1,24 @@
 from __future__ import annotations
 
+import copy
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
+MODEL_ENV_NAMES = {
+    "ANTHROPIC_API_KEY",
+    "AUTO_MODELL",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "OPENAI_MODEL",
+    "OPENROUTER_API_KEY",
+}
 
 
 def _active_assignments(path: Path) -> list[tuple[str, str]]:
@@ -20,6 +31,28 @@ def _active_assignments(path: Path) -> list[tuple[str, str]]:
         assert separator == "=", f"Ungueltige aktive .env-Zeile: {raw_line!r}"
         assignments.append((name, value))
     return assignments
+
+
+def _assert_compose_model_environment(compose: dict[str, object]) -> None:
+    services = compose["services"]
+    claw_env = set(services["sales-claw"]["environment"])
+    auto_env = set(services["sales-auto"]["environment"])
+    claw_names = {item.partition("=")[0] for item in claw_env}
+    auto_names = {item.partition("=")[0] for item in auto_env}
+    assert "OPENAI_API_KEY=${OPENAI_API_KEY:-}" in claw_env
+    assert "OPENAI_API_KEY=${OPENAI_API_KEY:-}" in auto_env
+    assert "OPENAI_MODEL=${OPENAI_MODEL:-gpt-5.6-luna}" in auto_env
+    assert claw_names & MODEL_ENV_NAMES == {"OPENAI_API_KEY"}
+    assert auto_names & MODEL_ENV_NAMES == {"OPENAI_API_KEY", "OPENAI_MODEL"}
+
+
+def _assert_env_example_model_assignments(
+    assignments: list[tuple[str, str]],
+) -> None:
+    assert assignments.count(("OPENAI_API_KEY", "")) == 1
+    assert assignments.count(("OPENAI_MODEL", "gpt-5.6-luna")) == 1
+    names = {name for name, _ in assignments}
+    assert names & MODEL_ENV_NAMES == {"OPENAI_API_KEY", "OPENAI_MODEL"}
 
 
 def test_openclaw_uses_openai_without_fallbacks() -> None:
@@ -39,24 +72,46 @@ def test_openclaw_uses_openai_without_fallbacks() -> None:
 
 def test_compose_passes_only_openai_model_credentials() -> None:
     compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
-    claw_env = set(compose["services"]["sales-claw"]["environment"])
-    auto_env = set(compose["services"]["sales-auto"]["environment"])
-    assert "OPENAI_API_KEY=${OPENAI_API_KEY:-}" in claw_env
-    assert "OPENAI_API_KEY=${OPENAI_API_KEY:-}" in auto_env
-    assert "OPENAI_MODEL=${OPENAI_MODEL:-gpt-5.6-luna}" in auto_env
-    assert not any(
-        "ANTHROPIC" in item or "OPENROUTER" in item
-        for item in claw_env | auto_env
-    )
+    _assert_compose_model_environment(compose)
+
+
+@pytest.mark.parametrize(
+    ("service", "assignment"),
+    (
+        ("sales-claw", "OPENAI_BASE_URL=http://localhost:11434/v1"),
+        ("sales-auto", "AUTO_MODELL=legacy-model"),
+    ),
+)
+def test_compose_gate_rejects_forbidden_model_assignments(
+    service: str, assignment: str
+) -> None:
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    mutated = copy.deepcopy(compose)
+    mutated["services"][service]["environment"].append(assignment)
+
+    with pytest.raises(AssertionError):
+        _assert_compose_model_environment(mutated)
 
 
 def test_env_example_has_only_openai_model_assignments() -> None:
     assignments = _active_assignments(ROOT / ".env.example")
-    assert assignments.count(("OPENAI_API_KEY", "")) == 1
-    assert assignments.count(("OPENAI_MODEL", "gpt-5.6-luna")) == 1
-    names = {name for name, _ in assignments}
-    assert "OPENROUTER_API_KEY" not in names
-    assert "ANTHROPIC_API_KEY" not in names
+    _assert_env_example_model_assignments(assignments)
+
+
+@pytest.mark.parametrize(
+    "assignment",
+    (
+        ("OPENAI_BASE_URL", "http://localhost:11434/v1"),
+        ("AUTO_MODELL", "legacy-model"),
+    ),
+)
+def test_env_example_gate_rejects_forbidden_model_assignments(
+    assignment: tuple[str, str],
+) -> None:
+    assignments = _active_assignments(ROOT / ".env.example")
+
+    with pytest.raises(AssertionError):
+        _assert_env_example_model_assignments([*assignments, assignment])
 
 
 def test_seed_script_recovers_only_openai_credentials(tmp_path: Path) -> None:
@@ -110,3 +165,49 @@ def test_seed_script_recovers_only_openai_credentials(tmp_path: Path) -> None:
     assert "ANTHROPIC" not in output.upper()
     assert openai_key not in output
     assert legacy_openrouter_key not in output
+
+    acl_environment = os.environ.copy()
+    acl_environment["SEED_ACL_TARGET"] = str(target)
+    acl_completed = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-Command",
+            """
+$ErrorActionPreference = 'Stop'
+$acl = Get-Acl -LiteralPath $env:SEED_ACL_TARGET
+$currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$rules = @($acl.GetAccessRules(
+    $true,
+    $true,
+    [System.Security.Principal.SecurityIdentifier]
+) | ForEach-Object {
+    [pscustomobject]@{
+        identity = $_.IdentityReference.Value
+        inherited = $_.IsInherited
+        type = $_.AccessControlType.ToString()
+        canRead = (($_.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::Read) -eq [System.Security.AccessControl.FileSystemRights]::Read)
+        canWrite = (($_.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::Write) -eq [System.Security.AccessControl.FileSystemRights]::Write)
+    }
+})
+[pscustomobject]@{
+    protected = $acl.AreAccessRulesProtected
+    currentSid = $currentSid
+    rules = $rules
+} | ConvertTo-Json -Depth 4 -Compress
+""",
+        ],
+        env=acl_environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert acl_completed.returncode == 0, acl_completed.stderr
+    acl = json.loads(acl_completed.stdout)
+    assert acl["protected"] is True
+    assert acl["rules"]
+    assert all(rule["inherited"] is False for rule in acl["rules"])
+    allow_rules = [rule for rule in acl["rules"] if rule["type"] == "Allow"]
+    assert allow_rules
+    assert {rule["identity"] for rule in allow_rules} == {acl["currentSid"]}
+    assert any(rule["canRead"] and rule["canWrite"] for rule in allow_rules)
