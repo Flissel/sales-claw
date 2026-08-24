@@ -72,7 +72,21 @@ def _file_records(value: object) -> list[dict[str, object]]:
     return records
 
 
-def _manifest(manifest_blob: bytes, archive_blob: bytes) -> list[dict[str, object]]:
+def _commit_id(value: object, label: str) -> str:
+    if not isinstance(value, str) or len(value) not in (40, 64):
+        raise InstallError(f"{label} is invalid")
+    try:
+        int(value, 16)
+    except ValueError:
+        raise InstallError(f"{label} is invalid") from None
+    return value.lower()
+
+
+def _manifest(
+    manifest_blob: bytes,
+    archive_blob: bytes,
+    expected_commit: str,
+) -> list[dict[str, object]]:
     try:
         value = json.loads(manifest_blob.decode("utf-8-sig"))
     except (UnicodeDecodeError, json.JSONDecodeError):
@@ -81,6 +95,9 @@ def _manifest(manifest_blob: bytes, archive_blob: bytes) -> list[dict[str, objec
         raise InstallError("manifest is invalid")
     if value.get("archive") != ARCHIVE_NAME:
         raise InstallError("manifest archive name is invalid")
+    source_commit = _commit_id(value.get("source_commit"), "manifest source commit")
+    if source_commit != _commit_id(expected_commit, "expected source commit"):
+        raise InstallError("manifest source commit does not match reviewed commit")
     if type(value.get("archive_bytes")) is not int or value["archive_bytes"] != len(archive_blob):
         raise InstallError("manifest archive size does not match")
     digest = value.get("archive_sha256")
@@ -133,10 +150,16 @@ def _require_fresh_destination(destination: Path) -> None:
         raise InstallError("destination parent has the wrong owner")
 
 
-def install_package(archive_path: Path, manifest_path: Path, destination: Path) -> int:
+def install_package(
+    archive_path: Path,
+    manifest_path: Path,
+    destination: Path,
+    *,
+    expected_commit: str,
+) -> int:
     archive_blob = _regular_file_bytes(archive_path, "archive")
     manifest_blob = _regular_file_bytes(manifest_path, "manifest")
-    records = _manifest(manifest_blob, archive_blob)
+    records = _manifest(manifest_blob, archive_blob, expected_commit)
     members = _verified_members(archive_blob, records)
     _require_fresh_destination(destination)
 
@@ -169,6 +192,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Verify and install a Proxmox source package")
     parser.add_argument("--archive", required=True, type=Path)
     parser.add_argument("--manifest", required=True, type=Path)
+    parser.add_argument("--expected-commit", required=True)
     parser.add_argument("--destination", required=True, type=Path)
     return parser
 
@@ -176,7 +200,12 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> int:
     arguments = _parser().parse_args()
     try:
-        count = install_package(arguments.archive, arguments.manifest, arguments.destination)
+        count = install_package(
+            arguments.archive,
+            arguments.manifest,
+            arguments.destination,
+            expected_commit=arguments.expected_commit,
+        )
     except InstallError:
         print("source package: rejected")
         return 1

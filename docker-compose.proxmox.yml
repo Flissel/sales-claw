@@ -19,11 +19,6 @@ services:
   sales-mail:
     restart: unless-stopped
 
-  sales-linkedin:
-    # Bis Exact-ID-Ausfuehrung und ein nicht wiederholbarer Zustand fuer
-    # unklare externe Ergebnisse verhaltensgeprueft sind, kein Autostart.
-    restart: "no"
-
   sales-claw:
     restart: "no"
 

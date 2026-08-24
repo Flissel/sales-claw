@@ -9,8 +9,9 @@ import os
 import re
 import secrets
 import stat
+import subprocess
 import tarfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Iterator, Protocol
 
 if os.name == "nt":
@@ -27,7 +28,6 @@ ALLOWED_ROOT_DIRS = (
     "config",
     "db",
     "docs",
-    "media",
     "sales-mcp",
     "scripts",
     "openwa/upstream",
@@ -46,6 +46,7 @@ ARCHIVE_NAME = "sales-claw-proxmox-source.tar.gz"
 MANIFEST_NAME = "sales-claw-proxmox-source.MANIFEST.json"
 JOURNAL_NAME = ".sales-claw-proxmox-source.TRANSACTION.json"
 SECRET_SUFFIXES = (".pem", ".key", ".p12")
+SECRET_FILE_NAMES = frozenset({"credential.json", "credentials.json"})
 EXECUTABLE_FILES = frozenset(
     {
         "openwa/upstream/backup.sh",
@@ -53,6 +54,7 @@ EXECUTABLE_FILES = frozenset(
     }
 )
 CHUNK_SIZE = 1024 * 1024
+GIT_SCOPE = (*ALLOWED_ROOT_FILES, *ALLOWED_ROOT_DIRS)
 
 _GENERIC_READ = 0x80000000
 _GENERIC_WRITE = 0x40000000
@@ -324,6 +326,7 @@ def build_package(source_root: Path, output_dir: Path) -> tuple[Path, Path]:
     _require_secure_platform()
     source_root = _absolute_without_resolving(source_root)
     output_dir = _absolute_without_resolving(output_dir)
+    source_commit, reviewed_paths = _reviewed_source(source_root)
     source_tree = _SourceTree.open(source_root)
     output_chain: _PinnedChain | None = None
     archive_temp: _PinnedArtifact | None = None
@@ -337,7 +340,7 @@ def build_package(source_root: Path, output_dir: Path) -> tuple[Path, Path]:
         archive_temp = _temp_file(output_dir)
         manifest_temp = _temp_file(output_dir)
         records: list[dict[str, int | str]] = []
-        candidates = sorted(_iter_allowed_files(source_tree), key=lambda item: item.relative_path)
+        candidates = list(_iter_reviewed_files(source_tree, reviewed_paths))
         archive_handle = archive_temp.handle
         with tarfile.open(
             fileobj=archive_handle,
@@ -352,6 +355,9 @@ def build_package(source_root: Path, output_dir: Path) -> tuple[Path, Path]:
         archive_bytes = os.fstat(archive_handle.fileno()).st_size
         archive_handle.seek(0)
         archive_sha256 = _sha256_handle(archive_handle)
+        final_commit, final_paths = _reviewed_source(source_root)
+        if final_commit != source_commit or final_paths != reviewed_paths:
+            raise ValueError("package scope changed after reviewed commit verification")
         archive_path = output_dir / ARCHIVE_NAME
         manifest_path = output_dir / MANIFEST_NAME
         manifest = {
@@ -359,6 +365,7 @@ def build_package(source_root: Path, output_dir: Path) -> tuple[Path, Path]:
             "archive_bytes": archive_bytes,
             "archive_sha256": archive_sha256,
             "files": records,
+            "source_commit": source_commit,
         }
         manifest_handle = manifest_temp.handle
         manifest_handle.write(
@@ -462,81 +469,107 @@ def _windows_api_path(path: Path) -> str:
     return "\\\\?\\" + value
 
 
-def _iter_allowed_files(tree: _SourceTree) -> Iterator[_Candidate]:
-    for name in ALLOWED_ROOT_FILES:
-        candidate = _candidate(tree.root / name, tree.root)
-        if candidate is not None:
-            yield candidate
-    for relative_dir in ALLOWED_ROOT_DIRS:
-        pinned = _pin_relative_directory(tree, relative_dir)
-        if pinned is not None:
-            yield from _walk(tree, pinned)
-
-
-def _pin_relative_directory(tree: _SourceTree, relative_dir: str) -> _PinnedDirectory | None:
-    current = tree.root
-    pinned: _PinnedDirectory | None = None
-    for part in relative_dir.split("/"):
-        current /= part
-        if _is_rejected(current, tree.root):
-            return None
-        try:
-            entry = current.lstat()
-        except FileNotFoundError:
-            return None
-        except OSError as error:
-            raise ValueError(
-                f"source directory is unavailable: {current.relative_to(tree.root).as_posix()}"
-            ) from error
-        if _stat_is_reparse(entry) or not stat.S_ISDIR(entry.st_mode):
-            return None
-        relative_path = current.relative_to(tree.root).as_posix()
-        pinned = tree.pin_directory(current, _identity(entry), relative_path)
-    return pinned
-
-
-def _walk(tree: _SourceTree, directory: _PinnedDirectory) -> Iterator[_Candidate]:
-    _inject_fault("before_directory_enumeration", directory.path)
+def _git(source_root: Path, *arguments: str) -> bytes:
     try:
-        entries = sorted(os.scandir(directory.path), key=lambda item: item.name)
-    except OSError as error:
-        relative_path = directory.path.relative_to(tree.root).as_posix()
-        raise ValueError(f"source directory is unavailable: {relative_path}") from error
-    for entry in entries:
-        path = Path(entry.path)
+        completed = subprocess.run(
+            ["git", *arguments],
+            cwd=source_root,
+            capture_output=True,
+            check=False,
+            shell=False,
+        )
+    except OSError:
+        raise ValueError("reviewed Git source is unavailable") from None
+    if completed.returncode != 0:
+        raise ValueError("reviewed Git source is unavailable")
+    return completed.stdout
+
+
+def _reviewed_source(source_root: Path) -> tuple[str, tuple[str, ...]]:
+    top_level_raw = _git(source_root, "rev-parse", "--show-toplevel")
+    try:
+        top_level = Path(top_level_raw.decode("utf-8").strip())
+    except UnicodeDecodeError:
+        raise ValueError("reviewed Git source is unavailable") from None
+    if _absolute_without_resolving(top_level) != source_root:
+        raise ValueError("source must be the reviewed Git repository root")
+
+    commit_raw = _git(source_root, "rev-parse", "--verify", "HEAD^{commit}")
+    try:
+        commit = commit_raw.decode("ascii").strip().lower()
+    except UnicodeDecodeError:
+        raise ValueError("reviewed Git commit is invalid") from None
+    if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit) is None:
+        raise ValueError("reviewed Git commit is invalid")
+
+    status = _git(
+        source_root,
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        "--ignored=matching",
+        "--",
+        *GIT_SCOPE,
+    )
+    if status:
+        raise ValueError("package scope does not match the reviewed commit")
+
+    inventory_raw = _git(
+        source_root,
+        "ls-tree",
+        "-r",
+        "-z",
+        "--name-only",
+        commit,
+        "--",
+        *GIT_SCOPE,
+    )
+    try:
+        decoded_inventory = [
+            item.decode("utf-8") for item in inventory_raw.split(b"\0") if item
+        ]
+    except UnicodeDecodeError:
+        raise ValueError("reviewed Git inventory contains a non-UTF-8 path") from None
+    if len(decoded_inventory) != len(set(decoded_inventory)):
+        raise ValueError("reviewed Git inventory is not unique")
+    inventory = tuple(sorted(decoded_inventory))
+    return commit, inventory
+
+
+def _iter_reviewed_files(
+    tree: _SourceTree, reviewed_paths: tuple[str, ...]
+) -> Iterator[_Candidate]:
+    pinned_directories: set[str] = set()
+    for relative_path in reviewed_paths:
+        parsed = PurePosixPath(relative_path)
+        if parsed.is_absolute() or any(part in ("", ".", "..") for part in parsed.parts):
+            raise ValueError("reviewed Git inventory contains an unsafe path")
+        path = tree.root.joinpath(*parsed.parts)
         if _is_rejected(path, tree.root):
             continue
+        current = tree.root
+        for part in parsed.parts[:-1]:
+            current /= part
+            current_relative = current.relative_to(tree.root).as_posix()
+            if current_relative in pinned_directories:
+                continue
+            try:
+                directory_stat = current.lstat()
+            except OSError:
+                raise ValueError("tracked source directory is unavailable") from None
+            if _stat_is_reparse(directory_stat) or not stat.S_ISDIR(directory_stat.st_mode):
+                raise ValueError("tracked source directory is unsafe")
+            tree.pin_directory(current, _identity(directory_stat), current_relative)
+            pinned_directories.add(current_relative)
+            _inject_fault("before_directory_enumeration", current)
         try:
-            entry_stat = path.lstat()
-        except OSError as error:
-            relative_path = path.relative_to(tree.root).as_posix()
-            raise ValueError(f"source entry changed while scanning: {relative_path}") from error
-        if _stat_is_reparse(entry_stat):
-            continue
-        if stat.S_ISDIR(entry_stat.st_mode):
-            relative_path = path.relative_to(tree.root).as_posix()
-            child = tree.pin_directory(path, _identity(entry_stat), relative_path)
-            yield from _walk(tree, child)
-        elif stat.S_ISREG(entry_stat.st_mode):
-            yield _Candidate(
-                path.relative_to(tree.root).as_posix(),
-                path,
-                _identity(entry_stat),
-            )
-
-
-def _candidate(path: Path, root: Path) -> _Candidate | None:
-    if _is_rejected(path, root):
-        return None
-    try:
-        file_stat = path.lstat()
-    except FileNotFoundError:
-        return None
-    except OSError as error:
-        raise ValueError(f"source file is unavailable: {path.relative_to(root).as_posix()}") from error
-    if _stat_is_reparse(file_stat) or not stat.S_ISREG(file_stat.st_mode):
-        return None
-    return _Candidate(path.relative_to(root).as_posix(), path, _identity(file_stat))
+            file_stat = path.lstat()
+        except OSError:
+            raise ValueError("tracked source entry is unavailable") from None
+        if _stat_is_reparse(file_stat) or not stat.S_ISREG(file_stat.st_mode):
+            raise ValueError("tracked source entry is not a regular file")
+        yield _Candidate(relative_path, path, _identity(file_stat))
 
 
 def _stat_is_reparse(file_stat: os.stat_result) -> bool:
@@ -551,6 +584,8 @@ def _is_rejected(path: Path, root: Path) -> bool:
     return (
         any(part in EXCLUDED_PARTS or part.startswith("credentials-sicherung-") for part in parts)
         or parts[-1] == ".env"
+        or parts[-1].startswith(".env.")
+        or parts[-1] in SECRET_FILE_NAMES
         or parts[-1].endswith(SECRET_SUFFIXES)
     )
 

@@ -27,10 +27,43 @@ build_package = MODULE.build_package
 def _workspace(tmp_path: Path) -> tuple[Path, Path]:
     root = tmp_path / "repo"
     output = tmp_path / "out"
-    (root / ".git").mkdir(parents=True)
+    root.mkdir(parents=True)
+    _init_repository(root)
     (root / "sales-mcp").mkdir()
     (root / "sales-mcp" / "safe.py").write_text("safe", encoding="utf-8")
     return root, output
+
+
+def _git(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *arguments],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def _init_repository(root: Path) -> None:
+    initialized = _git(root, "init", "--quiet")
+    assert initialized.returncode == 0, initialized.stderr
+    assert _git(root, "config", "user.name", "Fixture").returncode == 0
+    assert _git(root, "config", "user.email", "fixture@example.invalid").returncode == 0
+
+
+def _commit_fixture(root: Path) -> str:
+    added = _git(root, "add", "--all")
+    assert added.returncode == 0, added.stderr
+    committed = _git(root, "commit", "--quiet", "--allow-empty", "-m", "fixture")
+    assert committed.returncode == 0, committed.stderr
+    resolved = _git(root, "rev-parse", "HEAD")
+    assert resolved.returncode == 0, resolved.stderr
+    return resolved.stdout.strip()
+
+
+def build_package(root: Path, output: Path) -> tuple[Path, Path]:
+    _commit_fixture(root)
+    return MODULE.build_package(root, output)
 
 
 def _write_valid_package_pair(archive_path: Path, manifest_path: Path, payload: bytes) -> None:
@@ -72,7 +105,8 @@ def _require_directory_symlink_support(tmp_path: Path) -> None:
 def test_package_uses_allowlist_and_excludes_secrets(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     output = tmp_path / "out"
-    (root / ".git").mkdir(parents=True)
+    root.mkdir(parents=True)
+    _init_repository(root)
     (root / "sales-mcp").mkdir()
     (root / "openwa" / "upstream").mkdir(parents=True)
     (root / "graphify-out").mkdir()
@@ -93,6 +127,84 @@ def test_package_uses_allowlist_and_excludes_secrets(tmp_path: Path) -> None:
     assert manifest["archive_sha256"]
     assert manifest["archive_bytes"] == archive_path.stat().st_size
     assert manifest["files"] == sorted(manifest["files"], key=lambda record: record["path"])
+    assert manifest["source_commit"] == _git(root, "rev-parse", "HEAD").stdout.strip()
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    (
+        "sales-mcp/customer-export.json",
+        "config/.env.production",
+        "scripts/credential.json",
+    ),
+)
+def test_package_rejects_untracked_files_inside_source_scope(
+    tmp_path: Path, relative_path: str
+) -> None:
+    root, output = _workspace(tmp_path)
+    _commit_fixture(root)
+    candidate = root / relative_path
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    candidate.write_text("controlled fixture", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="reviewed commit"):
+        MODULE.build_package(root, output)
+
+    assert not output.exists()
+
+
+def test_package_rejects_dirty_tracked_file_inside_source_scope(tmp_path: Path) -> None:
+    root, output = _workspace(tmp_path)
+    _commit_fixture(root)
+    (root / "sales-mcp" / "safe.py").write_text("dirty fixture", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="reviewed commit"):
+        MODULE.build_package(root, output)
+
+    assert not output.exists()
+
+
+def test_package_rejects_ignored_file_inside_source_scope(tmp_path: Path) -> None:
+    root, output = _workspace(tmp_path)
+    (root / ".gitignore").write_text("sales-mcp/ignored-customer.json\n", encoding="utf-8")
+    _commit_fixture(root)
+    (root / "sales-mcp" / "ignored-customer.json").write_text(
+        "controlled fixture", encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="reviewed commit"):
+        MODULE.build_package(root, output)
+
+    assert not output.exists()
+
+
+def test_package_excludes_tracked_customer_media_root(tmp_path: Path) -> None:
+    root, output = _workspace(tmp_path)
+    (root / "media").mkdir()
+    (root / "media" / "customer-document.pdf").write_bytes(b"controlled fixture")
+
+    archive_path, _ = build_package(root, output)
+
+    with tarfile.open(archive_path, "r:gz") as archive:
+        assert not any(name == "media" or name.startswith("media/") for name in archive.getnames())
+
+
+def test_package_excludes_tracked_nested_env_and_credential_variants(tmp_path: Path) -> None:
+    root, output = _workspace(tmp_path)
+    blocked = (
+        root / "config" / ".env.production",
+        root / "scripts" / "credentials.json",
+    )
+    for path in blocked:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("controlled fixture", encoding="utf-8")
+
+    archive_path, _ = build_package(root, output)
+
+    with tarfile.open(archive_path, "r:gz") as archive:
+        names = set(archive.getnames())
+    assert "config/.env.production" not in names
+    assert "scripts/credentials.json" not in names
 
 
 def test_package_excludes_customer_reports_and_preserves_only_required_executables(
@@ -125,8 +237,14 @@ def test_installer_verifies_pair_and_extracts_exact_manifest_inventory(
     (root / "config" / "pilot.json").write_text('{"safe": true}\n', encoding="utf-8")
     archive_path, manifest_path = build_package(root, output)
     destination = tmp_path / "installed"
+    expected_commit = json.loads(manifest_path.read_text(encoding="utf-8"))["source_commit"]
 
-    count = install_package(archive_path, manifest_path, destination)
+    count = install_package(
+        archive_path,
+        manifest_path,
+        destination,
+        expected_commit=expected_commit,
+    )
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert count == len(manifest["files"])
@@ -150,15 +268,98 @@ def test_installer_rejects_manifest_mismatch_without_leaving_destination(
     destination = tmp_path / "rejected"
 
     with pytest.raises(InstallError):
-        install_package(archive_path, manifest_path, destination)
+        install_package(
+            archive_path,
+            manifest_path,
+            destination,
+            expected_commit=manifest["source_commit"],
+        )
 
+    assert not destination.exists()
+
+
+def test_installer_rejects_wrong_reviewed_source_commit_without_destination(
+    tmp_path: Path,
+) -> None:
+    root, output = _workspace(tmp_path)
+    archive_path, manifest_path = build_package(root, output)
+    destination = tmp_path / "wrong-source"
+
+    with pytest.raises(InstallError, match="source commit"):
+        install_package(
+            archive_path,
+            manifest_path,
+            destination,
+            expected_commit="0" * 40,
+        )
+
+    assert not destination.exists()
+
+
+def test_trusted_installer_subprocess_rejects_duplicate_member_without_execution(
+    tmp_path: Path,
+) -> None:
+    archive_path = tmp_path / MODULE.ARCHIVE_NAME
+    manifest_path = tmp_path / MODULE.MANIFEST_NAME
+    destination = tmp_path / "destination"
+    executed = tmp_path / "archive-code-executed"
+    payload = f"from pathlib import Path\nPath({str(executed)!r}).write_text('bad')\n".encode()
+    records: list[dict[str, object]] = []
+    with tarfile.open(archive_path, "w:gz") as archive:
+        for _ in range(2):
+            member = tarfile.TarInfo("scripts/install_proxmox_package.py")
+            member.mode = 0o644
+            member.size = len(payload)
+            archive.addfile(member, io.BytesIO(payload))
+            records.append(
+                {
+                    "path": member.name,
+                    "bytes": len(payload),
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                }
+            )
+    archive_bytes = archive_path.read_bytes()
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "archive": MODULE.ARCHIVE_NAME,
+                "archive_bytes": len(archive_bytes),
+                "archive_sha256": hashlib.sha256(archive_bytes).hexdigest(),
+                "files": records,
+                "source_commit": "1" * 40,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(Path(__file__).resolve().parents[1] / "install_proxmox_package.py"),
+            "--archive",
+            str(archive_path),
+            "--manifest",
+            str(manifest_path),
+            "--expected-commit",
+            "1" * 40,
+            "--destination",
+            str(destination),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert not executed.exists()
     assert not destination.exists()
 
 
 def test_manifest_exactly_describes_sorted_archive_inventory(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     output = tmp_path / "out"
-    (root / ".git").mkdir(parents=True)
+    root.mkdir(parents=True)
+    _init_repository(root)
     (root / "config").mkdir()
     (root / "sales-mcp" / "nested").mkdir(parents=True)
     (root / "docker-compose.proxmox.yml").write_text("services: {}\n", encoding="utf-8")
@@ -194,15 +395,17 @@ def test_manifest_exactly_describes_sorted_archive_inventory(tmp_path: Path) -> 
     assert not any("credentials-sicherung-" in name for name in names)
 
 
-def test_package_requires_git_anchor_and_ignores_symlinks(tmp_path: Path) -> None:
+def test_package_requires_reviewed_git_repository_and_rejects_tracked_symlinks(
+    tmp_path: Path,
+) -> None:
     root = tmp_path / "repo"
     output = tmp_path / "out"
     root.mkdir()
 
-    with pytest.raises(ValueError, match="\\.git"):
-        build_package(root, output)
+    with pytest.raises(ValueError, match="reviewed Git"):
+        MODULE.build_package(root, output)
 
-    (root / ".git").mkdir()
+    _init_repository(root)
     (root / "sales-mcp").mkdir()
     (root / "sales-mcp" / "safe.py").write_text("safe", encoding="utf-8")
     external = tmp_path / "external.txt"
@@ -212,11 +415,8 @@ def test_package_requires_git_anchor_and_ignores_symlinks(tmp_path: Path) -> Non
     except OSError as error:
         pytest.skip(f"symlinks unavailable: {error}")
 
-    archive_path, _ = build_package(root, output)
-
-    with tarfile.open(archive_path, "r:gz") as archive:
-        names = archive.getnames()
-    assert names == ["sales-mcp/safe.py"]
+    with pytest.raises(ValueError, match="tracked source entry"):
+        build_package(root, output)
 
 
 def test_documented_scripts_package_import_resolves_local_builder() -> None:

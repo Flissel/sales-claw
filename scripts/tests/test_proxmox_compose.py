@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -18,7 +19,35 @@ RUNBOOK = ROOT / "docs" / "07_PROXMOX_PILOT.md"
 BINDING_GATE = ROOT / "scripts" / "check-compose-bindings.py"
 
 
-def rendered_config() -> dict[str, object]:
+def _committed_file(relative_path: str) -> str:
+    completed = subprocess.run(
+        ["git", "show", f"HEAD:{relative_path}"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return completed.stdout
+
+
+def rendered_config(tmp_path: Path) -> dict[str, object]:
+    compose_root = tmp_path / "committed-compose"
+    compose_root.mkdir()
+    (compose_root / "docker-compose.yml").write_text(
+        _committed_file("docker-compose.yml"), encoding="utf-8"
+    )
+    (compose_root / "docker-compose.openwa.yml").write_text(
+        _committed_file("docker-compose.openwa.yml"), encoding="utf-8"
+    )
+    shutil.copyfile(
+        ROOT / "docker-compose.proxmox.yml",
+        compose_root / "docker-compose.proxmox.yml",
+    )
+    (compose_root / ".env.example").write_text(
+        _committed_file(".env.example"), encoding="utf-8"
+    )
+    (compose_root / ".env").write_text("", encoding="utf-8")
     env = os.environ.copy()
     env.update(
         {
@@ -33,13 +62,13 @@ def rendered_config() -> dict[str, object]:
             "UI_TAILSCALE_IP": "100.64.0.10",
         }
     )
-    command = ["docker", "compose", "--env-file", str(ROOT / ".env.example")]
+    command = ["docker", "compose", "--env-file", str(compose_root / ".env.example")]
     for compose_file in COMPOSE_FILES:
-        command.extend(("-f", str(compose_file)))
+        command.extend(("-f", str(compose_root / compose_file.name)))
     command.extend(("config", "--format", "json"))
     completed = subprocess.run(
         command,
-        cwd=ROOT,
+        cwd=compose_root,
         env=env,
         text=True,
         capture_output=True,
@@ -49,8 +78,8 @@ def rendered_config() -> dict[str, object]:
     return json.loads(completed.stdout)
 
 
-def test_restart_matrix_is_fail_closed() -> None:
-    services = rendered_config()["services"]
+def test_clean_committed_compose_has_no_startable_linkedin_service(tmp_path: Path) -> None:
+    services = rendered_config(tmp_path)["services"]
     automatic = {
         "openwa",
         "sales-mcp",
@@ -62,12 +91,12 @@ def test_restart_matrix_is_fail_closed() -> None:
     assert all(services[name]["restart"] == "unless-stopped" for name in automatic)
     assert services["sales-claw"]["restart"] == "no"
     assert services["sales-auto"]["restart"] == "no"
-    assert services["sales-linkedin"]["restart"] == "no"
+    assert "sales-linkedin" not in services
     assert services["openwa"]["environment"]["AUTO_START_SESSIONS"] == "true"
 
 
-def test_ui_has_only_loopback_and_tailscale_bindings() -> None:
-    ports = rendered_config()["services"]["sales-ui"]["ports"]
+def test_ui_has_only_loopback_and_tailscale_bindings(tmp_path: Path) -> None:
+    ports = rendered_config(tmp_path)["services"]["sales-ui"]["ports"]
     host_ips = {port["host_ip"] for port in ports}
     assert host_ips == {"127.0.0.1", "100.64.0.10"}
     assert all(port["published"] == "8791" for port in ports)
@@ -323,12 +352,19 @@ def test_runbook_installs_and_verifies_source_before_secret_transfer() -> None:
     _assert_ordered(
         source_phase,
         "mktemp -d /home/debian/.sales-claw-staging.XXXXXX",
+        "$ReviewedSourceCommit = git rev-parse HEAD",
+        'git rev-parse "HEAD:$InstallerPfad"',
+        "git hash-object -- $InstallerPfad",
+        "Get-FileHash -Algorithm SHA256",
         "sales-claw-proxmox-source.MANIFEST.json",
         "sales-claw-proxmox-source.tar.gz",
+        'sha256sum "$REMOTE_STAGE/install_proxmox_package.py"',
         "jedes Archivmitglied gegen die Dateiliste im Manifest",
         "sicher entpacken",
         "/home/debian/sales-claw",
+        '--expected-commit "$EXPECTED_SOURCE_COMMIT"',
     )
+    assert "tar -xOf" not in source_phase
     assert "separat per SCP" not in source_phase
     assert "separat per SCP" in secret_phase
 
@@ -366,9 +402,26 @@ def test_runbook_trial_verifies_all_backups_and_checks_restored_state() -> None:
         phases[7],
         "probeweise vollstaendig entpacken",
         "exakt die drei benannten Volumes",
-        "Dateianzahl",
-        "SHA-256 der massgeblichen Konfigurationsdateien",
-        "vor jedem Dienststart",
+        "python3 scripts/verify-restored-state.py",
+        '--state-backup "$REMOTE_STATE_BACKUP"',
+        '--openwa-backup "$REMOTE_OPENWA_BACKUP"',
+        "SHA-256-Inventar aller regulaeren Dateien",
+        "--network none",
+        "Startpfad",
+        "Exit-Code `0` erlaubt Phase 8",
+    )
+
+
+def test_runbook_package_gate_requires_clean_reviewed_provenance_and_excludes_media() -> None:
+    phase = _phase_sections(RUNBOOK.read_text(encoding="utf-8"))[4]
+    _assert_ordered(
+        phase,
+        "getrackten",
+        "`HEAD`-Inventar",
+        "dirty, untracked oder ignored Datei",
+        "nicht paketierbar",
+        "`media/` ist kein Quellpaket-Bestandteil",
+        "eigene Datenfreigabe und einen getrennten Transfer",
     )
 
 

@@ -68,8 +68,15 @@ if (Test-Path -LiteralPath $Quellpaket) { throw "Stop-Gate: Ausgabe existiert." 
 python scripts/package_proxmox.py --source . --output $Quellpaket
 ```
 
-Das Paket enthaelt keine `.env`, keine Secrets, keine `reports/` und keine
-Kunden-PII. Nur `openwa/upstream/backup.sh` und
+Das Paket enthaelt keine `.env`-Varianten, keine benannten Credential-JSONs,
+keine Dateien mit den gesperrten Secret-Endungen, keine `reports/` und keine
+Kundenmedien. Es wird
+ausschliesslich aus dem geprueften, getrackten
+`HEAD`-Inventar erzeugt. Jede dirty, untracked oder ignored Datei innerhalb
+der Paket-Positivliste sperrt den Lauf; der aktuelle dirty Pilot-Checkout ist
+deshalb bis zu einem separat reviewten Commit absichtlich nicht paketierbar.
+`media/` ist kein Quellpaket-Bestandteil und braucht bei spaeterem Bedarf eine
+eigene Datenfreigabe und einen getrennten Transfer. Nur `openwa/upstream/backup.sh` und
 `openwa/upstream/restore.sh` erhalten Modus `0755`; alle anderen Dateien
 erhalten `0644`.
 
@@ -88,25 +95,49 @@ test "$(stat -c '%U:%G' "$REMOTE_STAGE")" = "debian:debian"
 chmod 700 "$REMOTE_STAGE"
 ```
 
-Nur `sales-claw-proxmox-source.MANIFEST.json` und danach
-`sales-claw-proxmox-source.tar.gz` per SCP in genau dieses Verzeichnis
-uebertragen. Auf der VM muss ein Python-3-Prueflauf ohne Inhaltsausgabe zuerst
+Der Installer wird **nicht** aus dem noch ungeprueften Archiv gelesen. Lokal
+seine Arbeitskopie zuerst mechanisch an den reviewten Commit binden und den
+separaten Transporthash festhalten:
+
+```powershell
+$InstallerPfad = "scripts/install_proxmox_package.py"
+$ReviewedSourceCommit = git rev-parse HEAD
+$ReviewedInstallerBlob = git rev-parse "HEAD:$InstallerPfad"
+$WorkingInstallerBlob = git hash-object -- $InstallerPfad
+if ($LASTEXITCODE -ne 0 -or $WorkingInstallerBlob -cne $ReviewedInstallerBlob) {
+  throw "Stop-Gate: Installer entspricht nicht HEAD."
+}
+$TrustedInstallerSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $InstallerPfad).Hash.ToLowerInvariant()
+```
+
+`sales-claw-proxmox-source.MANIFEST.json`,
+`sales-claw-proxmox-source.tar.gz` und diese separat gepinnte
+`install_proxmox_package.py` per SCP in genau das Staging-Verzeichnis
+uebertragen. Den 64-stelligen `$TrustedInstallerSha256` und den exakten
+`$ReviewedSourceCommit` als Metadaten ueber den bestehenden SSH-Kanal in
+`TRUSTED_INSTALLER_SHA256` und `EXPECTED_SOURCE_COMMIT` setzen. Den Installer
+**vor jeder Python-Ausfuehrung** pruefen:
+
+```bash
+test "$TRUSTED_INSTALLER_SHA256" = "$(sha256sum "$REMOTE_STAGE/install_proxmox_package.py" | cut -d ' ' -f 1)"
+```
+
+Erst der so unabhaengig vertraute Python-3-Prueflauf darf ohne Inhaltsausgabe
 Archivname, Bytezahl und SHA-256 pruefen, dann jedes Archivmitglied gegen die Dateiliste im Manifest
 abgleichen, absolute/`..`-Pfade, Links, Devices und unbekannte Modi ablehnen
 und erst danach in einen frischen Unterordner sicher entpacken. Anschliessend jede entpackte Datei erneut nach Bytezahl und SHA-256
 pruefen. Erst der vollstaendig gruene Baum wird ohne Glob nach
 `/home/debian/sales-claw` umbenannt; Eigentum bleibt `debian:debian`.
 
-Der dafuer getestete Installer liegt selbst im Archiv. Nur dieses eine benannte
-Mitglied wird zunaechst nach stdout gelesen; es schreibt dabei nichts. Danach
-verifiziert der Installer das gesamte im Arbeitsspeicher gepinnte Archiv und
-erzeugt den Zielbaum erst nach dem vollstaendigen Soll-Abgleich:
+Der vertrauenswuerdige Installer verifiziert das gesamte im Arbeitsspeicher
+gepinnte Archiv und erzeugt den Zielbaum erst nach dem vollstaendigen
+Soll-Abgleich:
 
 ```bash
-tar -xOf "$REMOTE_STAGE/sales-claw-proxmox-source.tar.gz" scripts/install_proxmox_package.py > "$REMOTE_STAGE/install_proxmox_package.py"
 python3 "$REMOTE_STAGE/install_proxmox_package.py" \
   --archive "$REMOTE_STAGE/sales-claw-proxmox-source.tar.gz" \
   --manifest "$REMOTE_STAGE/sales-claw-proxmox-source.MANIFEST.json" \
+  --expected-commit "$EXPECTED_SOURCE_COMMIT" \
   --destination "$REMOTE_STAGE/source"
 test "$(stat -c '%U:%G' "$REMOTE_STAGE/source")" = "debian:debian"
 mv -T "$REMOTE_STAGE/source" /home/debian/sales-claw
@@ -147,11 +178,23 @@ Remote alle drei Archive erneut gegen ihre Manifeste pruefen und probeweise voll
 jeweils gleichnamigen, verifizierten Archiv befuellen. Keine Globs oder
 praefixbasierten Treffer verwenden.
 
-Nach dem Restore die Dateianzahl jedes Volumes gegen seine Exportwerte sowie
-die SHA-256 der massgeblichen Konfigurationsdateien beziehungsweise einen
-vollstaendigen byteweisen Soll-/Ist-Vergleich gegen die Probeextraktion
-pruefen. Die Pruefung gibt nur `ok`/`failed` und Anzahlen aus. Dieser Nachweis
-liegt vor jedem Dienststart.
+Nach dem Restore den getesteten, fest auf diese drei Volumes begrenzten Helfer
+mit den zuvor festgehaltenen absoluten Backup-Pfaden ausfuehren:
+
+```bash
+python3 scripts/verify-restored-state.py \
+  --state-backup "$REMOTE_STATE_BACKUP" \
+  --openwa-backup "$REMOTE_OPENWA_BACKUP"
+```
+
+Der Helfer prueft die gepinnten Manifestwerte und Archivhashes, entpackt jedes
+Archiv vollstaendig in einem Wegwerfcontainer, mountet nur
+`sales-claw-state`, `sales-claw-keys` und `openwa-data` read-only und vergleicht
+deterministisch Dateianzahl sowie SHA-256-Inventar aller regulaeren Dateien.
+Das ist strenger als einzelne Key-Konfigurationshashes. Er nutzt
+`--network none`, gibt nur Volume-Status und Anzahlen aus und besitzt keinen
+Startpfad. Erst sein Exit-Code `0` erlaubt Phase 8; dieser Nachweis liegt vor
+jedem Dienststart.
 
 **Stop-Gate:** Vorherige Probe, Volume-Allowlist, Restore oder nachgelagerter
 Soll-/Ist-Vergleich rot: alle Dienste bleiben gestoppt; fremde Volumes bleiben

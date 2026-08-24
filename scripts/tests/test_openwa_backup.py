@@ -1,8 +1,10 @@
 import hashlib
+import importlib.util
 import io
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tarfile
@@ -13,6 +15,14 @@ import pytest
 VERIFY_SCRIPT = Path(__file__).resolve().parents[1] / "verify-openwa-backup.ps1"
 BACKUP_SCRIPT = Path(__file__).resolve().parents[1] / "backup-openwa.ps1"
 BACKUP_STATE_SCRIPT = Path(__file__).resolve().parents[1] / "backup-state.ps1"
+RESTORE_VERIFY_SCRIPT = Path(__file__).resolve().parents[1] / "verify-restored-state.py"
+RESTORE_SPEC = importlib.util.spec_from_file_location(
+    "verify_restored_state_under_test", RESTORE_VERIFY_SCRIPT
+)
+assert RESTORE_SPEC is not None and RESTORE_SPEC.loader is not None
+RESTORE_MODULE = importlib.util.module_from_spec(RESTORE_SPEC)
+sys.modules[RESTORE_SPEC.name] = RESTORE_MODULE
+RESTORE_SPEC.loader.exec_module(RESTORE_MODULE)
 
 
 class FakeDocker:
@@ -35,6 +45,7 @@ class FakeDocker:
                     "stopped_by_backup": False,
                     "fail_verify": fail_verify,
                     "state_stop_exit_code": state_stop_exit_code,
+                    "restore_mismatch_volume": None,
                 }
             ),
             encoding="utf-8",
@@ -48,6 +59,53 @@ class FakeDocker:
 
     def state(self) -> dict[str, object]:
         return json.loads(self.state_path.read_text(encoding="utf-8"))
+
+
+class GuardedRestoreRunner:
+    def __init__(self, mismatch_volume: str | None = None) -> None:
+        self.mismatch_volume = mismatch_volume
+        self.calls: list[list[str]] = []
+
+    def __call__(self, arguments: object) -> subprocess.CompletedProcess[str]:
+        assert isinstance(arguments, list)
+        assert all(isinstance(item, str) for item in arguments)
+        command = list(arguments)
+        if command[1] == "start" or "up" in command:
+            raise AssertionError("service start is forbidden")
+        assert command[:6] == ["docker", "run", "--rm", "--network", "none", "--mount"]
+        assert command[7] == "--mount"
+        assert command[9:12] == ["alpine:3.20", "sh", "-c"]
+        assert command[13] == "verify-restored-state"
+        assert command[15] in {"all", "files"}
+        assert command[16].isdigit()
+        assert "tar -xf" in command[12]
+        assert "sha256sum" in command[12]
+        assert "cmp -s" in command[12]
+        bind = re.fullmatch(
+            r"type=bind,source=(.*),target=/source,readonly", command[6]
+        )
+        volume = re.fullmatch(
+            r"type=volume,source=([^,]+),target=/actual,readonly", command[8]
+        )
+        assert bind is not None
+        assert Path(bind.group(1)).is_absolute()
+        assert volume is not None
+        volume_name = volume.group(1)
+        self.calls.append(command)
+        if self.mismatch_volume == volume_name:
+            return subprocess.CompletedProcess(
+                command,
+                73,
+                stdout="",
+                stderr="FAKE_CUSTOMER_SENTINEL",
+            )
+        count = int(command[16])
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=f"RESTORE_VERIFY expected_files={count} actual_files={count} status=ok\n",
+            stderr="",
+        )
 
 
 def _write_archive(path: Path) -> int:
@@ -87,6 +145,40 @@ def backup_dir(tmp_path: Path) -> Path:
     }
     (source / "MANIFEST.json").write_text(
         json.dumps(manifest), encoding="utf-8"
+    )
+    return source
+
+
+@pytest.fixture
+def state_backup_dir(tmp_path: Path) -> Path:
+    source = tmp_path / "state-backup"
+    source.mkdir()
+    archive_records: dict[str, dict[str, object]] = {}
+    for logical_name in ("state", "keys"):
+        archive_path = source / f"{logical_name}.tar"
+        payload = f"controlled {logical_name} fixture\n".encode()
+        with tarfile.open(archive_path, "w") as archive:
+            member = tarfile.TarInfo(f"{logical_name}.json")
+            member.mode = 0o600
+            member.size = len(payload)
+            archive.addfile(member, io.BytesIO(payload))
+        archive_bytes = archive_path.read_bytes()
+        archive_records[logical_name] = {
+            "datei": archive_path.name,
+            "bytes": len(archive_bytes),
+            "sha256": hashlib.sha256(archive_bytes).hexdigest(),
+            "eintraege": 1,
+        }
+    (source / "MANIFEST.json").write_text(
+        json.dumps(
+            {
+                "erzeugt": "2026-08-24T12:00:00Z",
+                "container_gestoppt": True,
+                "stop_exit_code": 0,
+                "archive": archive_records,
+            }
+        ),
+        encoding="utf-8",
     )
     return source
 
@@ -288,6 +380,69 @@ if len(args) == 8 and args[:3] == verify_prefix and args[4:7] == verify_suffix:
     print(f"OPENWA_ENTRIES={entries}")
     raise SystemExit(0)
 
+expected_restore_script = '''
+set -eu
+archive="$1"
+entry_kind="$2"
+manifest_entries="$3"
+mkdir -p /expected
+tar -xf "/source/$archive" -C /expected
+case "$entry_kind" in
+  all) extracted_entries="$(find /expected -mindepth 1 | wc -l)" ;;
+  files) extracted_entries="$(find /expected -type f | wc -l)" ;;
+  *) exit 64 ;;
+esac
+test "$extracted_entries" -eq "$manifest_entries"
+inventory() {
+  root="$1"
+  (cd "$root" && find . -type f -exec sha256sum {} \\; | LC_ALL=C sort)
+}
+inventory /expected > /tmp/expected.sha256
+inventory /actual > /tmp/actual.sha256
+expected_files="$(find /expected -type f | wc -l)"
+actual_files="$(find /actual -type f | wc -l)"
+test "$expected_files" -eq "$actual_files"
+cmp -s /tmp/expected.sha256 /tmp/actual.sha256
+printf 'RESTORE_VERIFY expected_files=%s actual_files=%s status=ok\\n' "$expected_files" "$actual_files"
+'''.strip()
+if (
+    len(args) == 16
+    and args[:5] == ["run", "--rm", "--network", "none", "--mount"]
+    and args[6] == "--mount"
+    and args[8:11] == ["alpine:3.20", "sh", "-c"]
+    and args[12] == "verify-restored-state"
+):
+    bind = re.fullmatch(r"type=bind,source=(.*),target=/source,readonly", args[5])
+    volume = re.fullmatch(r"type=volume,source=([^,]+),target=/actual,readonly", args[7])
+    command = args[11].replace("\\r\\n", "\\n").strip()
+    if (
+        bind is None
+        or volume is None
+        or command != expected_restore_script
+        or args[14] not in {"all", "files"}
+        or not args[15].isdigit()
+    ):
+        reject()
+    source = Path(bind.group(1))
+    volume_name = volume.group(1)
+    if not source.is_absolute() or not source.is_dir():
+        reject()
+    record(
+        "restore_verify",
+        volume=volume_name,
+        source=str(source),
+        source_readonly=True,
+        volume_readonly=True,
+        network="none",
+        exact_compare_command=True,
+    )
+    if state["restore_mismatch_volume"] == volume_name:
+        print("FAKE_CUSTOMER_SENTINEL", file=sys.stderr)
+        raise SystemExit(73)
+    count = int(args[15])
+    print(f"RESTORE_VERIFY expected_files={count} actual_files={count} status=ok")
+    raise SystemExit(0)
+
 reject()
 """,
         encoding="utf-8",
@@ -347,7 +502,9 @@ def _run_backup(
     )
 
 
-def _run_state_backup(target: Path) -> subprocess.CompletedProcess[str]:
+def _run_state_backup(
+    target: Path, *, timestamp: str = "20260824-120000"
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
             "pwsh",
@@ -356,6 +513,26 @@ def _run_state_backup(target: Path) -> subprocess.CompletedProcess[str]:
             str(BACKUP_STATE_SCRIPT),
             "-Ziel",
             str(target.resolve()),
+            "-Zeitstempel",
+            timestamp,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _run_restore_verifier(
+    state_source: Path, openwa_source: Path
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable,
+            str(RESTORE_VERIFY_SCRIPT),
+            "--state-backup",
+            str(state_source.resolve()),
+            "--openwa-backup",
+            str(openwa_source.resolve()),
         ],
         capture_output=True,
         text=True,
@@ -601,3 +778,129 @@ def test_state_backup_hard_stop_never_publishes_archives_or_manifest(
     assert list(target.rglob("state.tar")) == []
     assert list(target.rglob("keys.tar")) == []
     assert list(target.rglob("MANIFEST.json")) == []
+
+
+def test_state_backup_refuses_existing_exact_run_directory_without_docker(
+    tmp_path: Path, fake_docker: FakeDocker
+) -> None:
+    fake_docker.reset(running=True, state_stop_exit_code=137)
+    target = tmp_path / "state-collision"
+    run_dir = target / "sales-claw-20260824-120000"
+    run_dir.mkdir(parents=True)
+    stale = {
+        "state.tar": b"stale-state",
+        "keys.tar": b"stale-keys",
+        "MANIFEST.json": b'{"stale":true}',
+    }
+    for name, payload in stale.items():
+        (run_dir / name).write_bytes(payload)
+
+    result = _run_state_backup(target)
+
+    assert result.returncode != 0
+    assert "Zielordner existiert bereits oder ist ein Symlink" in result.stderr
+    assert fake_docker.transcript() == []
+    assert {name: (run_dir / name).read_bytes() for name in stale} == stale
+
+
+def test_state_backup_refuses_dangling_run_directory_symlink_without_docker(
+    tmp_path: Path, fake_docker: FakeDocker
+) -> None:
+    fake_docker.reset(running=True, state_stop_exit_code=137)
+    target = tmp_path / "state-dangling"
+    target.mkdir()
+    run_dir = target / "sales-claw-20260824-120000"
+    try:
+        run_dir.symlink_to(tmp_path / "missing-target", target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"symlinks unavailable: {error}")
+
+    result = _run_state_backup(target)
+
+    assert result.returncode != 0
+    assert "Zielordner existiert bereits oder ist ein Symlink" in result.stderr
+    assert fake_docker.transcript() == []
+    assert run_dir.is_symlink()
+
+
+def test_restored_state_verifier_uses_exact_read_only_volume_allowlist_and_no_start(
+    state_backup_dir: Path,
+    backup_dir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runner = GuardedRestoreRunner()
+
+    result = RESTORE_MODULE.main(
+        [
+            "--state-backup",
+            str(state_backup_dir),
+            "--openwa-backup",
+            str(backup_dir),
+        ],
+        run=runner,
+    )
+
+    output = capsys.readouterr()
+    assert result == 0
+    assert output.err == ""
+    assert output.out.splitlines() == [
+        "sales-claw-state: verified (1 files)",
+        "sales-claw-keys: verified (1 files)",
+        "openwa-data: verified (1 files)",
+    ]
+    assert len(runner.calls) == 3
+    assert [
+        re.fullmatch(
+            r"type=volume,source=([^,]+),target=/actual,readonly", call[8]
+        ).group(1)
+        for call in runner.calls
+    ] == [
+        "sales-claw-state",
+        "sales-claw-keys",
+        "openwa-data",
+    ]
+
+
+@pytest.mark.parametrize(
+    "mismatch_volume",
+    ("sales-claw-state", "sales-claw-keys", "openwa-data"),
+)
+def test_restored_state_verifier_fails_closed_on_any_volume_mismatch_without_leak(
+    state_backup_dir: Path,
+    backup_dir: Path,
+    mismatch_volume: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runner = GuardedRestoreRunner(mismatch_volume)
+
+    result = RESTORE_MODULE.main(
+        [
+            "--state-backup",
+            str(state_backup_dir),
+            "--openwa-backup",
+            str(backup_dir),
+        ],
+        run=runner,
+    )
+
+    output = capsys.readouterr()
+    assert result != 0
+    assert output.err.strip() == "restore verification: rejected"
+    assert "FAKE_CUSTOMER_SENTINEL" not in output.out + output.err
+    assert runner.calls
+
+
+def test_restored_state_verifier_rejects_manifest_hash_before_docker(
+    state_backup_dir: Path, backup_dir: Path, fake_docker: FakeDocker
+) -> None:
+    fake_docker.reset(running=False)
+    manifest_path = state_backup_dir / "MANIFEST.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["archive"]["state"]["sha256"] = "0" * 64
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = _run_restore_verifier(state_backup_dir, backup_dir)
+
+    assert result.returncode != 0
+    assert result.stderr.strip() == "restore verification: rejected"
+    assert fake_docker.transcript() == []

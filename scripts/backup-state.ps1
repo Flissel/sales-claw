@@ -23,6 +23,8 @@ param(
     [string]$StateVolume = 'sales-claw-state',
     [string]$KeysVolume  = 'sales-claw-keys',
     [string]$Container   = 'sales-claw',
+    [ValidatePattern('^\d{8}-\d{6}$')]
+    [string]$Zeitstempel = (Get-Date -Format 'yyyyMMdd-HHmmss'),
     [switch]$OhneStopp
 )
 
@@ -41,9 +43,15 @@ if ($Container -cne 'sales-claw') {
     throw "Verweigert: '$Container' ist nicht der Container dieses Projekts."
 }
 
-$zeitstempel = Get-Date -Format 'yyyyMMdd-HHmmss'
-$ordner = Join-Path $Ziel "sales-claw-$zeitstempel"
-New-Item -ItemType Directory -Force -Path $ordner | Out-Null
+$zielVoll = [System.IO.Path]::GetFullPath($Ziel)
+[void][System.IO.Directory]::CreateDirectory($zielVoll)
+$ordner = Join-Path $zielVoll "sales-claw-$Zeitstempel"
+try {
+    New-Item -ItemType Directory -Path $ordner -ErrorAction Stop | Out-Null
+}
+catch {
+    throw 'Zielordner existiert bereits oder ist ein Symlink. Es wird nichts wiederverwendet.'
+}
 $ordnerVoll = (Resolve-Path $ordner).Path
 
 $liefVorher = [bool](docker ps --filter "name=^$Container$" --format '{{.Names}}')
