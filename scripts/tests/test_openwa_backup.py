@@ -12,6 +12,7 @@ import pytest
 
 VERIFY_SCRIPT = Path(__file__).resolve().parents[1] / "verify-openwa-backup.ps1"
 BACKUP_SCRIPT = Path(__file__).resolve().parents[1] / "backup-openwa.ps1"
+BACKUP_STATE_SCRIPT = Path(__file__).resolve().parents[1] / "backup-state.ps1"
 
 
 class FakeDocker:
@@ -19,7 +20,13 @@ class FakeDocker:
         self.log_path = log_path
         self.state_path = state_path
 
-    def reset(self, *, running: bool, fail_verify: bool = False) -> None:
+    def reset(
+        self,
+        *,
+        running: bool,
+        fail_verify: bool = False,
+        state_stop_exit_code: int = 0,
+    ) -> None:
         self.log_path.write_text("", encoding="utf-8")
         self.state_path.write_text(
             json.dumps(
@@ -27,6 +34,7 @@ class FakeDocker:
                     "running": running,
                     "stopped_by_backup": False,
                     "fail_verify": fail_verify,
+                    "state_stop_exit_code": state_stop_exit_code,
                 }
             ),
             encoding="utf-8",
@@ -176,6 +184,34 @@ if args == ["start", "openwa"]:
     print("openwa")
     raise SystemExit(0)
 
+if args == ["ps", "--filter", "name=^sales-claw$", "--format", "{{.Names}}"]:
+    record("state_container_ps", container="sales-claw")
+    print("sales-claw")
+    raise SystemExit(0)
+
+if args == ["exec", "sales-claw", "openclaw", "backup", "create"]:
+    record("state_semantic_backup", container="sales-claw")
+    print("semantic backup fixture")
+    raise SystemExit(0)
+
+if args == ["stop", "-t", "30", "sales-claw"]:
+    record("state_stop", container="sales-claw")
+    raise SystemExit(0)
+
+if args == ["inspect", "--format", "{{.State.ExitCode}}", "sales-claw"]:
+    record("state_inspect_exit", container="sales-claw")
+    print(state["state_stop_exit_code"])
+    raise SystemExit(0)
+
+if args == ["start", "sales-claw"]:
+    record("state_start", container="sales-claw")
+    raise SystemExit(0)
+
+if args == ["inspect", "--format", "{{.State.Status}}", "sales-claw"]:
+    record("state_inspect_status", container="sales-claw")
+    print("running")
+    raise SystemExit(0)
+
 archive_prefix = [
     "run",
     "--rm",
@@ -216,8 +252,9 @@ if len(args) == 13 and args[:5] == archive_prefix and args[6:] == archive_suffix
 
 expected_verify_script = '''
 set -eu
-tar -tf /quelle/openwa.tar >/dev/null
-anzahl="$(tar -tvf /quelle/openwa.tar | awk 'substr($1, 1, 1) == "-" { n++ } END { print n + 0 }')"
+mkdir -p /probe
+tar -xf /quelle/openwa.tar -C /probe
+anzahl="$(find /probe -type f | wc -l)"
 printf 'OPENWA_ENTRIES=%s\\\\n' "$anzahl"
 '''.strip()
 verify_prefix = ["run", "--rm", "--mount"]
@@ -304,6 +341,22 @@ def _run_backup(
         command.append("-StillgelegtLassen")
     return subprocess.run(
         command,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _run_state_backup(target: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "pwsh",
+            "-NoProfile",
+            "-File",
+            str(BACKUP_STATE_SCRIPT),
+            "-Ziel",
+            str(target.resolve()),
+        ],
         capture_output=True,
         text=True,
         check=False,
@@ -525,3 +578,26 @@ def test_backup_verification_failure_removes_manifest_and_restarts_openwa(
     ]
     assert fake_docker.state()["running"] is True
     _assert_exact_names(fake_docker)
+
+
+def test_state_backup_hard_stop_never_publishes_archives_or_manifest(
+    tmp_path: Path, fake_docker: FakeDocker
+) -> None:
+    fake_docker.reset(running=True, state_stop_exit_code=137)
+    target = tmp_path / "state-hard-stop"
+
+    result = _run_state_backup(target)
+
+    assert result.returncode != 0
+    transcript = fake_docker.transcript()
+    assert [entry["event"] for entry in transcript] == [
+        "state_container_ps",
+        "state_semantic_backup",
+        "state_stop",
+        "state_inspect_exit",
+        "state_start",
+        "state_inspect_status",
+    ]
+    assert list(target.rglob("state.tar")) == []
+    assert list(target.rglob("keys.tar")) == []
+    assert list(target.rglob("MANIFEST.json")) == []

@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from scripts.install_proxmox_package import InstallError, install_package
+
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "package_proxmox.py"
 SPEC = importlib.util.spec_from_file_location("package_proxmox_under_test", MODULE_PATH)
@@ -93,6 +95,66 @@ def test_package_uses_allowlist_and_excludes_secrets(tmp_path: Path) -> None:
     assert manifest["files"] == sorted(manifest["files"], key=lambda record: record["path"])
 
 
+def test_package_excludes_customer_reports_and_preserves_only_required_executables(
+    tmp_path: Path,
+) -> None:
+    root, output = _workspace(tmp_path)
+    (root / "reports").mkdir()
+    (root / "reports" / "customer.md").write_text("customer PII", encoding="utf-8")
+    upstream = root / "openwa" / "upstream"
+    upstream.mkdir(parents=True)
+    for name in ("backup.sh", "restore.sh", "entrypoint.sh", "helper.sh"):
+        (upstream / name).write_text("#!/bin/sh\n", encoding="utf-8")
+
+    archive_path, _ = build_package(root, output)
+
+    with tarfile.open(archive_path, "r:gz") as archive:
+        members = {member.name: member for member in archive.getmembers()}
+    assert not any(name == "reports" or name.startswith("reports/") for name in members)
+    assert members["openwa/upstream/backup.sh"].mode == 0o755
+    assert members["openwa/upstream/restore.sh"].mode == 0o755
+    assert members["openwa/upstream/entrypoint.sh"].mode == 0o644
+    assert members["openwa/upstream/helper.sh"].mode == 0o644
+
+
+def test_installer_verifies_pair_and_extracts_exact_manifest_inventory(
+    tmp_path: Path,
+) -> None:
+    root, output = _workspace(tmp_path)
+    (root / "config").mkdir()
+    (root / "config" / "pilot.json").write_text('{"safe": true}\n', encoding="utf-8")
+    archive_path, manifest_path = build_package(root, output)
+    destination = tmp_path / "installed"
+
+    count = install_package(archive_path, manifest_path, destination)
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert count == len(manifest["files"])
+    extracted = sorted(
+        path.relative_to(destination).as_posix()
+        for path in destination.rglob("*")
+        if path.is_file()
+    )
+    assert extracted == [record["path"] for record in manifest["files"]]
+    assert (destination / "config" / "pilot.json").read_text(encoding="utf-8") == '{"safe": true}\n'
+
+
+def test_installer_rejects_manifest_mismatch_without_leaving_destination(
+    tmp_path: Path,
+) -> None:
+    root, output = _workspace(tmp_path)
+    archive_path, manifest_path = build_package(root, output)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"][0]["sha256"] = "0" * 64
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    destination = tmp_path / "rejected"
+
+    with pytest.raises(InstallError):
+        install_package(archive_path, manifest_path, destination)
+
+    assert not destination.exists()
+
+
 def test_manifest_exactly_describes_sorted_archive_inventory(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     output = tmp_path / "out"
@@ -172,6 +234,19 @@ def test_documented_scripts_package_import_resolves_local_builder() -> None:
 
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.strip() == "build_package"
+
+
+def test_timestamped_proxmox_artifact_directories_are_git_ignored() -> None:
+    root = Path(__file__).resolve().parents[2]
+    completed = subprocess.run(
+        ["git", "check-ignore", "--no-index", "artifacts/proxmox-20260824-120000/probe"],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_refuses_symlinked_archive_target_before_publishing_either_output(tmp_path: Path) -> None:

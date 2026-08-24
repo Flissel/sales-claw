@@ -80,7 +80,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Container liess sich nicht stoppen — abgebrochen, nichts gesichert." }
         $stopCode = docker inspect --format '{{.State.ExitCode}}' $Container
         if ($stopCode -eq '137') {
-            Write-Host "WARNUNG: '$Container' wurde nach Zeitablauf getoetet (ExitCode 137). Der Session-Store kann mitten im Schreiben erwischt worden sein." -ForegroundColor Red
+            throw "'$Container' wurde nach Zeitablauf getoetet (ExitCode 137). Es wird kein Backup-Manifest erzeugt."
         }
     } elseif ($OhneStopp -and $liefVorher) {
         Write-Host "WARNUNG: -OhneStopp gesetzt. Die Sicherung ist crash-inkonsistent. Eine darin enthaltene WhatsApp-Sitzung kann unbrauchbar sein, obwohl alle Pruefungen bestehen." -ForegroundColor Red

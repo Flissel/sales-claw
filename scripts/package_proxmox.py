@@ -28,7 +28,6 @@ ALLOWED_ROOT_DIRS = (
     "db",
     "docs",
     "media",
-    "reports",
     "sales-mcp",
     "scripts",
     "openwa/upstream",
@@ -47,6 +46,12 @@ ARCHIVE_NAME = "sales-claw-proxmox-source.tar.gz"
 MANIFEST_NAME = "sales-claw-proxmox-source.MANIFEST.json"
 JOURNAL_NAME = ".sales-claw-proxmox-source.TRANSACTION.json"
 SECRET_SUFFIXES = (".pem", ".key", ".p12")
+EXECUTABLE_FILES = frozenset(
+    {
+        "openwa/upstream/backup.sh",
+        "openwa/upstream/restore.sh",
+    }
+)
 CHUNK_SIZE = 1024 * 1024
 
 _GENERIC_READ = 0x80000000
@@ -554,7 +559,7 @@ def _add_regular_file(archive: tarfile.TarFile, candidate: _Candidate) -> dict[s
     with _open_verified(candidate) as handle:
         info = tarfile.TarInfo(candidate.relative_path)
         info.size = candidate.identity.size
-        info.mode = 0o644
+        info.mode = 0o755 if candidate.relative_path in EXECUTABLE_FILES else 0o644
         info.mtime = 0
         digest = hashlib.sha256()
         archive.addfile(info, _HashingReader(handle, digest))

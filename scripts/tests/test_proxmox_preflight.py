@@ -18,7 +18,7 @@ EXPECTED_COMMANDS = [
     "df -Pk / | awk 'NR==2 {print $4}'",
     "command -v tailscale >/dev/null && tailscale ip -4",
     "ss -H -ltn 'sport = :8791'",
-    "test ! -e /home/debian/sales-claw && echo absent",
+    "test ! -e /home/debian/sales-claw && test ! -L /home/debian/sales-claw && echo absent",
     "docker ps -a --format '{{.Names}}'",
     "docker volume ls --format '{{.Name}}'",
 ]
@@ -44,7 +44,7 @@ def healthy_answers(*, ui_port: int = 8791) -> dict[str, str]:
         "df -Pk / | awk 'NR==2 {print $4}'": "20971520\n",
         "command -v tailscale >/dev/null && tailscale ip -4": "100.64.0.10\n",
         f"ss -H -ltn 'sport = :{ui_port}'": "",
-        "test ! -e /home/debian/sales-claw && echo absent": "absent\n",
+        "test ! -e /home/debian/sales-claw && test ! -L /home/debian/sales-claw && echo absent": "absent\n",
         "docker ps -a --format '{{.Names}}'": "foreign-service\n",
         "docker volume ls --format '{{.Name}}'": "foreign-volume\n",
     }
@@ -105,7 +105,19 @@ def test_non_version_probe_text_fails_without_disclosure(command: str, label: st
     assert "REMOTE_SECRET_SENTINEL" not in str(captured.value)
 
 
-@pytest.mark.parametrize("tailscale_output", ["", "not-an-ip", "100.64.0.10\n100.64.0.11"])
+@pytest.mark.parametrize(
+    "tailscale_output",
+    [
+        "",
+        "not-an-ip",
+        "100.64.0.10\n100.64.0.11",
+        "0.0.0.0",
+        "127.0.0.1",
+        "10.0.0.10",
+        "192.168.178.65",
+        "203.0.113.10",
+    ],
+)
 def test_missing_or_invalid_tailscale_ipv4_fails_closed(tailscale_output: str) -> None:
     probe = with_answer(
         "command -v tailscale >/dev/null && tailscale ip -4",
@@ -138,7 +150,10 @@ def test_listener_on_requested_ui_port_fails_closed() -> None:
 
 
 def test_existing_target_path_fails_initial_cutover() -> None:
-    probe = with_answer("test ! -e /home/debian/sales-claw && echo absent", "")
+    probe = with_answer(
+        "test ! -e /home/debian/sales-claw && test ! -L /home/debian/sales-claw && echo absent",
+        "",
+    )
 
     with pytest.raises(PreflightError, match="target path"):
         evaluate(probe, min_free_gib=10, ui_port=8791)

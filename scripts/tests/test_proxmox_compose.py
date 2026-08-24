@@ -15,6 +15,7 @@ COMPOSE_FILES = (
     ROOT / "docker-compose.proxmox.yml",
 )
 RUNBOOK = ROOT / "docs" / "07_PROXMOX_PILOT.md"
+BINDING_GATE = ROOT / "scripts" / "check-compose-bindings.py"
 
 
 def rendered_config() -> dict[str, object]:
@@ -57,11 +58,11 @@ def test_restart_matrix_is_fail_closed() -> None:
         "sales-inbox",
         "sales-dispatch",
         "sales-mail",
-        "sales-linkedin",
     }
     assert all(services[name]["restart"] == "unless-stopped" for name in automatic)
     assert services["sales-claw"]["restart"] == "no"
     assert services["sales-auto"]["restart"] == "no"
+    assert services["sales-linkedin"]["restart"] == "no"
     assert services["openwa"]["environment"]["AUTO_START_SESSIONS"] == "true"
 
 
@@ -72,6 +73,45 @@ def test_ui_has_only_loopback_and_tailscale_bindings() -> None:
     assert all(port["published"] == "8791" for port in ports)
 
 
+def _run_binding_gate(
+    config: dict[str, object], expected: str
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["python", str(BINDING_GATE), "--expected-tailscale", expected],
+        input=json.dumps(config),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_binding_gate_accepts_only_loopback_plus_exact_tailscale_ip() -> None:
+    config = {
+        "services": {
+            "sales-ui": {
+                "environment": {"UI_EXTRA_HOSTS": "100.64.0.10"},
+                "ports": [
+                    {"host_ip": "127.0.0.1", "published": "8791", "target": 8791},
+                    {"host_ip": "100.64.0.10", "published": "8791", "target": 8791},
+                ],
+            }
+        },
+        "secret_sentinel": "must-not-leak",
+    }
+
+    accepted = _run_binding_gate(config, "100.64.0.10")
+    assert accepted.returncode == 0, accepted.stderr
+    assert accepted.stdout.strip() == "sales-ui bindings: verified"
+    assert "must-not-leak" not in accepted.stdout + accepted.stderr
+
+    for wrong_ip in ("0.0.0.0", "192.168.178.65", "100.64.0.11"):
+        mutated = json.loads(json.dumps(config))
+        mutated["services"]["sales-ui"]["ports"][1]["host_ip"] = wrong_ip
+        rejected = _run_binding_gate(mutated, "100.64.0.10")
+        assert rejected.returncode != 0
+        assert "must-not-leak" not in rejected.stdout + rejected.stderr
+
+
 PHASE_HEADING = re.compile(
     r"^## (?P<number>[0-9]+)\. (?P<title>[^\r\n]+)$", re.MULTILINE
 )
@@ -80,22 +120,22 @@ EXPECTED_PHASES = (
     "Lokale Backups",
     "Lokale Stilllegung",
     "Quellpaket",
-    "Secrets-Gate",
-    "Archiv-Transfer",
-    "Restore",
+    "Quelltransfer und Projektbaum",
+    "Secrets- und Archiv-Transfer",
+    "Verifikation und Restore",
     "Compose-Check",
     "Core-Start",
     "Dispatcher-Gates",
-    "LinkedIn-Aktions-Gate",
+    "LinkedIn-Sperrgate",
     "Autostart-Abnahme",
     "Rollback",
 )
 COMPOSE_ASSIGNMENT = (
-    'COMPOSE="docker compose -f docker-compose.yml '
+    'COMPOSE="docker compose --env-file .env --env-file .env.proxmox -f docker-compose.yml '
     '-f docker-compose.openwa.yml -f docker-compose.proxmox.yml"'
 )
 PREFLIGHT_COMMAND = (
-    "python scripts/proxmox_preflight.py --host offload-vm "
+    "$PreflightJson = python scripts/proxmox_preflight.py --host offload-vm "
     "--min-free-gib 10 --ui-port 8791"
 )
 BACKUP_STATE_COMMAND = "scripts/backup-state.ps1"
@@ -105,10 +145,6 @@ BACKUP_OPENWA_COMMAND = (
 GLOBAL_OUTPUT_PROHIBITION = (
     "Nachrichtentexte und sonstige Nachrichteninhalte, E-Mail-Adressen, "
     "Telefonnummern, Tokens und Secretlaengen duerfen nie ausgegeben werden."
-)
-LINKEDIN_CORRELATION = (
-    "Genehmigter Draft, Betreiberfreigabe, Workerstart, Beitrags-URN, "
-    "DB-Status und Aktivitaetsbeleg muessen dieselbe Draft-ID referenzieren."
 )
 CORE_START = "$COMPOSE up -d openwa sales-mcp sales-inbox sales-ui"
 DISPATCH_START = "$COMPOSE up -d sales-dispatch"
@@ -154,7 +190,7 @@ def _raw_compose_starts(text: str) -> list[str]:
 
 def _assert_exact_service_starts(text: str) -> None:
     starts = _compose_starts(text)
-    assert starts == [CORE_START, DISPATCH_START, MAIL_START, LINKEDIN_START]
+    assert starts == [CORE_START, DISPATCH_START, MAIL_START]
     assert "$COMPOSE up -d" not in starts
     assert _raw_compose_starts(text) == []
 
@@ -178,32 +214,14 @@ def _assert_global_output_prohibition(text: str) -> None:
     assert preamble.count(GLOBAL_OUTPUT_PROHIBITION) == 1
 
 
-def _assert_linkedin_action_contract(phase: str) -> None:
-    action, marker, remainder = phase.partition(
-        "Bei externer Veroeffentlichung ohne DB-Buchung"
-    )
-    assert marker
+def _assert_linkedin_blocked_contract(phase: str) -> None:
+    assert LINKEDIN_START not in phase
     _assert_ordered(
-        action,
-        "bereits genehmigten Draft",
-        "Draft-ID",
-        "Medienname",
-        "explizite Betreiberfreigabe",
-        LINKEDIN_START,
-        "externe Beitrags-URN",
-        "DB-Status " + chr(96) + "sent" + chr(96),
-        "genau ein Aktivitaetsbeleg",
-        LINKEDIN_CORRELATION,
-    )
-    assert action.count(LINKEDIN_CORRELATION) == 1
-
-    failure = (marker + remainder).partition("**Stop-Gate:**")[0]
-    _assert_ordered(
-        failure,
-        "Bei externer Veroeffentlichung ohne DB-Buchung",
-        "Worker sofort stoppen",
-        "**kein erneuter Versand**",
-        "kein Retry",
+        phase,
+        "sales-linkedin bleibt gestoppt",
+        "exakt eine Draft-ID",
+        "nicht wiederholbarer Zustand fuer unklare Veroeffentlichungsergebnisse",
+        "separat implementiert und verhaltensgeprueft",
     )
 
 
@@ -248,7 +266,7 @@ def test_runbook_compose_commands_are_exact_and_section_scoped() -> None:
     assert DISPATCH_START in phases[10]
     assert MAIL_START in phases[10]
     assert LINKEDIN_START not in phases[10]
-    assert LINKEDIN_START in phases[11]
+    assert LINKEDIN_START not in phases[11]
 
 
 def test_runbook_counts_each_queue_before_its_individual_start() -> None:
@@ -271,14 +289,14 @@ def test_runbook_counts_each_queue_before_its_individual_start() -> None:
         phases[10],
         "channel = 'linkedin';",
         "approved-Queue nur als Anzahl** (LinkedIn)",
-        "Der Start bleibt bis zum LinkedIn-Aktions-Gate in Phase 11 gesperrt",
+        "Der Start bleibt bis zum LinkedIn-Sperrgate in Phase 11 gesperrt",
     )
     assert LINKEDIN_START not in phases[10]
-    assert LINKEDIN_START in phases[11]
+    assert LINKEDIN_START not in phases[11]
 
 
 def test_runbook_secret_gate_is_reconfirmed_separate_and_metadata_only() -> None:
-    phase = _phase_sections(RUNBOOK.read_text(encoding="utf-8"))[5]
+    phase = _phase_sections(RUNBOOK.read_text(encoding="utf-8"))[6]
 
     _assert_ordered(
         phase,
@@ -292,9 +310,72 @@ def test_runbook_secret_gate_is_reconfirmed_separate_and_metadata_only() -> None
     assert "keinen Inhalt, Token oder Secretlaenge" in phase
 
 
-def test_runbook_linkedin_action_and_failure_gates_are_ordered() -> None:
+def test_runbook_linkedin_action_is_fail_closed_until_exact_id_runtime_exists() -> None:
     phase = _phase_sections(RUNBOOK.read_text(encoding="utf-8"))[11]
-    _assert_linkedin_action_contract(phase)
+    _assert_linkedin_blocked_contract(phase)
+
+
+def test_runbook_installs_and_verifies_source_before_secret_transfer() -> None:
+    phases = _phase_sections(RUNBOOK.read_text(encoding="utf-8"))
+    source_phase = phases[5]
+    secret_phase = phases[6]
+
+    _assert_ordered(
+        source_phase,
+        "mktemp -d /home/debian/.sales-claw-staging.XXXXXX",
+        "sales-claw-proxmox-source.MANIFEST.json",
+        "sales-claw-proxmox-source.tar.gz",
+        "jedes Archivmitglied gegen die Dateiliste im Manifest",
+        "sicher entpacken",
+        "/home/debian/sales-claw",
+    )
+    assert "separat per SCP" not in source_phase
+    assert "separat per SCP" in secret_phase
+
+
+def test_runbook_uses_vm_local_tailscale_override_and_verifies_final_bindings() -> None:
+    text = RUNBOOK.read_text(encoding="utf-8")
+    phases = _phase_sections(text)
+
+    _assert_ordered(
+        phases[1],
+        "$Preflight = $PreflightJson | ConvertFrom-Json",
+        "$VmTailscaleIp = $Preflight.tailscale_ipv4",
+    )
+    _assert_ordered(
+        phases[6],
+        "UI_TAILSCALE_IP=$VmTailscaleIp",
+        ".env.proxmox",
+    )
+    assert "--env-file .env --env-file .env.proxmox" in COMPOSE_ASSIGNMENT
+    _assert_ordered(
+        phases[8],
+        "$COMPOSE config --quiet",
+        "$COMPOSE config --format json",
+        "exakt `127.0.0.1` und `$VmTailscaleIp`",
+        "Wildcard-, LAN- oder abweichende Adresse",
+    )
+
+
+def test_runbook_trial_verifies_all_backups_and_checks_restored_state() -> None:
+    phases = _phase_sections(RUNBOOK.read_text(encoding="utf-8"))
+
+    assert "scripts/restore-state.ps1 -Quelle $StateBackup -NurPruefen" in phases[2]
+    assert "scripts/verify-openwa-backup.ps1 -Quelle $OpenwaBackup" in phases[2]
+    _assert_ordered(
+        phases[7],
+        "probeweise vollstaendig entpacken",
+        "exakt die drei benannten Volumes",
+        "Dateianzahl",
+        "SHA-256 der massgeblichen Konfigurationsdateien",
+        "vor jedem Dienststart",
+    )
+
+
+def test_runbook_uses_fresh_timestamped_package_output() -> None:
+    phase = _phase_sections(RUNBOOK.read_text(encoding="utf-8"))[4]
+    assert 'artifacts/proxmox-$(Get-Date -Format \'yyyyMMdd-HHmmss\')' in phase
+    assert '"artifacts/proxmox"' not in phase
 
 
 def test_runbook_keeps_manual_services_stopped_and_openwa_exclusive() -> None:
@@ -383,14 +464,13 @@ def test_runbook_rejects_weakened_output_prohibition_mutation() -> None:
         _assert_global_output_prohibition(mutated)
 
 
-def test_runbook_rejects_wrong_draft_id_correlation_mutation() -> None:
+def test_runbook_rejects_linkedin_start_mutation() -> None:
     phase = _phase_sections(RUNBOOK.read_text(encoding="utf-8"))[11]
-    _assert_linkedin_action_contract(phase)
+    _assert_linkedin_blocked_contract(phase)
 
-    wrong_id = LINKEDIN_CORRELATION.replace("dieselbe", "eine andere")
-    mutated = phase.replace(LINKEDIN_CORRELATION, wrong_id, 1)
+    mutated = phase + "\n" + LINKEDIN_START
     with pytest.raises(AssertionError):
-        _assert_linkedin_action_contract(mutated)
+        _assert_linkedin_blocked_contract(mutated)
 
 
 def test_runbook_rejects_count_after_dispatch_start_mutation() -> None:

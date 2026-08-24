@@ -25,10 +25,11 @@ function Get-NormaleDateienImArchiv {
         throw 'Docker ist nicht verfuegbar.'
     }
 
-    $pruefskript = @'
+$pruefskript = @'
 set -eu
-tar -tf /quelle/openwa.tar >/dev/null
-anzahl="$(tar -tvf /quelle/openwa.tar | awk 'substr($1, 1, 1) == "-" { n++ } END { print n + 0 }')"
+mkdir -p /probe
+tar -xf /quelle/openwa.tar -C /probe
+anzahl="$(find /probe -type f | wc -l)"
 printf 'OPENWA_ENTRIES=%s\n' "$anzahl"
 '@
 

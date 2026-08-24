@@ -13,6 +13,7 @@ Runner = Callable[[str], str]
 
 _HOST_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
 _VERSION_PATTERN = re.compile(r"[vV]?\d+(?:\.\d+)+(?:[-+][A-Za-z0-9.-]+)?")
+_TAILSCALE_IPV4_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 _TARGET_CONTAINERS = frozenset(
     {
         "sales-claw",
@@ -119,7 +120,7 @@ def evaluate(run_remote: Runner, *, min_free_gib: int, ui_port: int) -> Prefligh
         parsed_address = ipaddress.ip_address(tailscale_ipv4)
     except ValueError:
         raise PreflightError("Tailscale IPv4 probe returned invalid output") from None
-    if parsed_address.version != 4:
+    if parsed_address.version != 4 or parsed_address not in _TAILSCALE_IPV4_NETWORK:
         raise PreflightError("Tailscale IPv4 probe returned invalid output")
 
     port_output = _probe(
@@ -132,7 +133,7 @@ def evaluate(run_remote: Runner, *, min_free_gib: int, ui_port: int) -> Prefligh
 
     target_path_status = _probe(
         run_remote,
-        "test ! -e /home/debian/sales-claw && echo absent",
+        "test ! -e /home/debian/sales-claw && test ! -L /home/debian/sales-claw && echo absent",
         "target path",
     )
     if target_path_status != "absent":
