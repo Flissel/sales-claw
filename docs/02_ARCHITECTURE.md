@@ -21,7 +21,7 @@ WhatsApp (Baileys, verknüpftes Gerät)
 │ Container  sales-claw                          │
 │ ghcr.io/openclaw/openclaw:2026.7.1-slim        │
 │                                                 │
-│   Gateway  ──►  Agent (openai/gpt-5.5)         │
+│   Gateway  ──►  Agent (openai/gpt-5.6-terra)   │
 │      │                                         │
 │      ├── Volume  sales-claw-state              │
 │      │     → /home/node/.openclaw              │
@@ -103,9 +103,9 @@ Drei Punkte, die man sonst teuer wieder herausfindet:
    `openKeyedStore is only available for trusted plugins`
    (`docs/05_DISASTER_RECOVERY.md`, Fall 4).
 
-Nach der Installation lädt der Gateway drei statt zwei Plugins
-(`http server listening (3 plugins: memory-core, openrouter, whatsapp)`) und der
-Kanal erscheint in `channels status --json` unter `channelOrder`.
+Nach der Installation lädt der Gateway das Kanal-Plugin zusätzlich zu den
+bereits vorhandenen Komponenten, und der Kanal erscheint in
+`channels status --json` unter `channelOrder`.
 
 ## Der Agenten-Workspace muss im Volume liegen (Task 9)
 
@@ -134,63 +134,46 @@ als verschwunden.
 
 ### Secrets
 
-Wie in Spec §7 festgelegt: `config/openclaw.json` enthält keine Schlüssel.
-`OPENAI_API_KEY` kommt über `.env` (aktuell absichtlich leer — ein eigener
-Schlüssel für `sales-claw` wird erst ab Task 5 benötigt und vom Betreiber separat
-angelegt). Der Gateway-Token entsteht im Container und liegt ausschließlich im
-Volume `sales-claw-state`, nie im Repository.
+Wie in Spec §7 festgelegt: `config/openclaw.json` enthält keine Schlüssel. Der
+einzige Modellanbieter-Schlüssel in `.env` ist `OPENAI_API_KEY`; er darf nie in
+JSON, Logs oder Chat erscheinen. `OPENAI_MODEL` ist kein Geheimnis und steuert
+nur `sales-auto`. Der Gateway-Token entsteht im Container und liegt
+ausschließlich im Volume `sales-claw-state`, nie im Repository.
 
-## Modellanbieter (Task 8)
+## Modellanbieter: OpenAI-only (lokal implementiert am 24.08.2026)
 
-Bis ein eigener, guthabengedeckter Schlüssel für `sales-claw` existiert, läuft der
-Rauchtest über OpenRouter statt über OpenAI.
+ChatGPT-Abonnements und die API sind zwei getrennte Produkte mit getrennter
+Abrechnung. Ein ChatGPT Plus-/Pro-Abonnement stellt deshalb weder API-Guthaben
+noch einen API-Schlüssel für diesen Stack bereit. Vor einer Live-Aktivierung
+müssen API-Billing und ein eigener Projekt-Key separat eingerichtet sein
+([ChatGPT Plus](https://help.openai.com/en/articles/6950777-what-is-chatgpt-plus),
+[Trennung von ChatGPT-Abo und API](https://help.openai.com/en/articles/8156019-how-can-i-move-my-chatgpt-subscription-to-the-api)).
 
-**Nativer Provider, kein `OPENAI_BASE_URL`.** OpenClaw hat OpenRouter als eigenen,
-first-class Provider eingebaut (Modellreferenz `openrouter/<modell>`, Schlüssel über
-`OPENROUTER_API_KEY`). Ein Umweg über `OPENAI_BASE_URL` — der auf einen OpenAI-
-kompatiblen Endpunkt zeigen würde — ist deshalb nicht nötig. Das ist auch mit der
-Randbedingung „kein lokales Modell" vereinbar: `OPENAI_BASE_URL` bleibt ungesetzt,
-und OpenRouter ist ein gehosteter Dienst, keine lokale Laufzeit.
+**OpenClaw.** Die Repo-Saat `config/openclaw.json` setzt genau
+`openai/gpt-5.6-terra` als Primärmodell und eine leere Fallback-Liste. Der
+Container erhält dafür ausschließlich `OPENAI_API_KEY` als
+Modellanbieter-Credential. Es gibt keinen automatischen Wechsel zu einem anderen
+Provider oder Modell.
 
-**Primärmodell: `anthropic/claude-sonnet-5`, gepinnt (seit 19.08.2026).**
-`agents.defaults.model.primary` steht auf einem einzeln gepinnten Claude-Modell;
-authentifiziert wird nicht per API-Schlüssel, sondern über ein Abo-Token aus dem
-Claude-Abo des Betreibers (Auth-Profil `anthropic:manual`, Einrichtung und
-Token-Lage: `docs/03_RUNBOOK.md`, Abschnitt „Modellwahl"). Damit ist die
-Pin-Regel des Projekts wieder erfüllt. Für Produktivbetrieb mit Dritten ist
-weiterhin ein API-Schlüssel mit eigener Abrechnung vorgesehen — ein
-persönliches Abo darf nicht Backend für Dritte sein.
+**Auto-Responder.** `sales-auto` verwendet standardmäßig `gpt-5.6-luna` über
+`POST /v1/responses`. Jede Anfrage setzt `store=false` und verlangt ein striktes
+JSON-Schema. Prompt und Kundentext werden nicht geloggt; das Erfolgslog enthält
+nur Response-ID, Modellname und Token-Metadaten. Fehlender `OPENAI_API_KEY` oder
+fehlender `OPENAI_MODEL` beendet den Prozess vor der Verarbeitung mit Exit `2`.
+Die API-Verträge sind in der offiziellen Dokumentation zur
+[Responses-Erstellung](https://developers.openai.com/api/reference/cli/resources/responses/methods/create)
+und zu den [Modellen](https://developers.openai.com/api/docs/models) beschrieben.
 
-**`openrouter/free` als Fallback — die frühere Pin-Ausnahme, jetzt Reserve.**
-In der Fundament-Stufe war `openrouter/free` das Primärmodell (bewusste Ausnahme
-von der Pin-Regel: OpenRouters „Free Models Router" wählt automatisch unter
-mehreren kostenlosen Modellen, wodurch der Rauchtest nicht am Tageskontingent
-eines einzelnen Modells hing). Seit 19.08.2026 steht er nur noch in
-`agents.defaults.model.fallbacks`: Ist das Abo-Kontingent erschöpft, antwortet
-der Agent weiter — mit den unten dokumentierten Qualitätsschwankungen statt gar
-nicht. Das Freigabe-Gate ist davon unabhängig.
+**Repo-Saat ist nicht Live-State.** `scripts/seed-volume.ps1` kopiert die
+Repo-Datei nur, wenn im Volume noch keine `openclaw.json` liegt. Eine vorhandene
+Datei im Volume `sales-claw-state` wird ausdrücklich nicht überschrieben. Die
+Umstellung einer bereits laufenden Instanz einschließlich Sicherung, Änderung
+und Rückfallplan ist ein separates Betreiber-Gate und wurde in dieser Migration
+nicht ausgeführt.
 
-**Damit die Referenz `openrouter/free` überhaupt auflöst**, muss zusätzlich zu
-`agents.defaults.model.primary` ein passender Katalogeintrag unter
-`models.providers.openrouter.models` existieren — der statische, im Image
-mitgelieferte Modellkatalog kennt „Free Models Router" nicht von sich aus (er taucht
-nur im Live-Scan von `openclaw models scan` auf, nicht in `openclaw infer model list`).
-Ohne diesen Eintrag bricht `openclaw agent` mit `FailoverError: Unknown model` ab.
-`config/openclaw.json` enthält den Eintrag deshalb explizit; das ist eine Ergänzung
-über die ursprünglich vorgesehene Ein-Zeilen-Änderung hinaus.
-
-**Geteiltes Kontingent.** Das Freikontingent von OpenRouters kostenlosen Modellen wird
-pro Schlüssel global geteilt — nicht nur mit anderen Anfragen dieses Projekts, sondern
-mit jeder Anwendung, die denselben `OPENROUTER_API_KEY` verwendet. Rate-Limits können
-deshalb auch durch fremde Last auf demselben Schlüssel entstehen, nicht nur durch
-`sales-claw` selbst.
-
-**Der Fallback ist nicht für echte Beratungsgespräche geeignet.** `openrouter/free`
-routet automatisch und ohne Kontrolle darüber, welches konkrete Modell eine gegebene
-Anfrage beantwortet; Qualität, Kontextverhalten und Verfügbarkeit schwanken zwischen
-den darunterliegenden Modellen. Greift der Fallback während eines realen
-Kundengesprächs, ist das an der Antwortqualität erkennbar — Entwürfe aus solchen
-Phasen vor der Freigabe besonders kritisch lesen.
+**Kein Live-Claim.** Die Implementierung enthält keinen Smoke-Test gegen die
+echte OpenAI API. Weder Key-Gültigkeit, Abrechnung, Rate-Limits noch die Modelle
+in einer laufenden OpenClaw-Instanz wurden dadurch geprüft.
 
 ## Reale Abweichungen vom in Task 2 unterstellten Ablauf
 
@@ -734,7 +717,7 @@ T5a behoben: `sales-claw` bekommt jetzt eine ausdrückliche, benannte
 
 ```yaml
 environment:
-  - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+  - OPENAI_API_KEY=${OPENAI_API_KEY:-}
   - TZ=${TZ:-Europe/Berlin}
   - OPENCLAW_STATE_DIR=/home/node/.openclaw
 ```
@@ -758,9 +741,9 @@ fehlt
 fehlt
 ```
 
-`OPENROUTER_API_KEY` bleibt gesetzt (der Agent braucht ihn fürs Modell); der
-Kanal (WhatsApp-Kopplung aus Stufe 1/2, `linked`/`connected`) überlebte den
-Recreate unverändert.
+Der Modellanbieter-Schlüssel bleibt auf `OPENAI_API_KEY` begrenzt. Die hier
+erhaltene historische Recreate-Messung belegt nur die Isolation der Versand- und
+Datenbank-Secrets; sie ist kein Beleg für eine OpenAI-Aktivierung.
 
 **Nicht verwendet zur Verifikation: `docker compose config`.** Der Befehl
 inlined `env_file`-Inhalte in seine Ausgabe — genau das führte in T5a zu

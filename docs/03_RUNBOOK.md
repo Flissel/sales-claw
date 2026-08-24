@@ -426,35 +426,22 @@ docker compose logs -f sales-claw
 
 Erwartet: die eingehende Nachricht im Log **und** eine Antwort im WhatsApp-Chat.
 
-### Antwortet das Modell?
+### Modell-Sollzustand und separates Live-Gate
 
-Kommt die Nachricht an, bleibt die Antwort aber aus, liegt es meist am Modell,
-nicht am Kanal. Diese drei Befehle trennen die beiden Fälle — **ohne**
-`--deliver`, es geht also keine Nachricht nach WhatsApp hinaus:
-
-```powershell
-docker compose exec sales-claw openclaw config get agents.defaults.model.primary
-# erwartet: anthropic/claude-sonnet-5
-
-docker compose exec sales-claw openclaw models status --status-plain
-# erwartet u.a.: Default anthropic/claude-sonnet-5, Fallbacks openrouter/free,
-#                Providers w/ OAuth/tokens: anthropic (Profil anthropic:manual)
-
-docker compose exec sales-claw openclaw infer model run --prompt "Antworte ausschliesslich mit dem Wort: pong" --json
-# erwartet: "ok": true und "text": "pong"
-```
-
-`infer model run` ist hier bewusst der Weg und nicht `openclaw agent`: es
-braucht keinen Agent-Workspace und prüft damit genau eine Sache — ob der
-Modellzugang trägt. Schlägt es mit einem Rate-Limit fehl, ist das kein
-Konfigurationsfehler; einmal wiederholen.
-
-Der OpenRouter-Schlüssel (nur noch Fallback) kommt aus `.env` als
-`OPENROUTER_API_KEY`. Ob er im Container ankommt (ohne den Wert auszugeben):
+Der lokal implementierte Sollzustand lässt sich ohne Container, Schlüssel oder
+Netzwerk aus der Repo-Saat lesen:
 
 ```powershell
-docker compose exec sales-claw sh -lc 'test -n "$OPENROUTER_API_KEY" && echo gesetzt || echo fehlt'
+$cfg = Get-Content -Raw config/openclaw.json | ConvertFrom-Json
+$cfg.agents.defaults.model
+# erwartet: primary = openai/gpt-5.6-terra; fallbacks = leere Liste
 ```
+
+Das beweist nur die Repo-Konfiguration. `scripts/seed-volume.ps1` überschreibt
+keine vorhandene `openclaw.json` im Volume; eine laufende Instanz kann daher
+weiter einen älteren Zustand tragen. Dessen Sicherung und Umstellung ist ein
+separat zu autorisierendes Betreiber-Gate. Ein echter OpenAI-Aufruf ist weder
+Teil dieser Implementierung noch ein Wartungsschritt dieses Abschnitts.
 
 ### Stand der Abnahme
 
@@ -639,66 +626,46 @@ setzt pytests Standard-Importmodus nur das Verzeichnis der Testdatei
 Der Schema-Wächter in `server.py` bricht bei jedem anderen Wert als
 `sales`/`sales_test` sofort mit `SystemExit` ab, noch vor jedem DB-Zugriff.
 
-### Modellwahl: Claude Sonnet 5 über Abo-Token (seit 19.08.2026)
+### Modellwahl: OpenAI-only (Repo-Stand 24.08.2026)
 
-Betreiberentscheidung vom 19.08.2026: `agents.defaults.model.primary` steht auf
-`anthropic/claude-sonnet-5`, `openrouter/free` bleibt als Fallback dahinter
-(Antwortfähigkeit bei erschöpftem Abo-Kontingent, um den Preis der unten
-dokumentierten Schwächen). Live geprüft: `executionTrace` mit
-`winnerProvider: anthropic`, `winnerModel: claude-sonnet-5`, `fallbackUsed: false`.
+`config/openclaw.json` setzt `agents.defaults.model.primary` auf
+`openai/gpt-5.6-terra` und `fallbacks` auf eine leere Liste. `sales-auto` erhält
+sein separat konfigurierbares Modell über `OPENAI_MODEL`; Vorgabe ist
+`gpt-5.6-luna`. Beide Pfade verwenden damit OpenAI, ohne automatischen
+Provider- oder Modellwechsel.
 
-**Auth-Weg:** Kein API-Schlüssel, sondern ein Abo-Token aus dem Claude-Abo des
-Betreibers. Einrichtung/Erneuerung (z. B. nach Token-Ablauf):
+**Abrechnung und Authentifizierung:** ChatGPT-Abonnements und API-Abrechnung sind
+getrennt. Plus/Pro stellt kein API-Guthaben für diesen Stack bereit
+([ChatGPT Plus](https://help.openai.com/en/articles/6950777-what-is-chatgpt-plus),
+[ChatGPT-Abo und API](https://help.openai.com/en/articles/8156019-how-can-i-move-my-chatgpt-subscription-to-the-api)).
+Für eine spätere Live-Aktivierung braucht der Betreiber deshalb API-Billing und
+einen eigenen Projekt-Key.
 
-1. Auf dem Host `claude setup-token` ausführen (Claude-Code-CLI, öffnet den
-   Browser, druckt ein Token `sk-ant-oat01-…`).
-2. `docker exec -it sales-claw openclaw models auth paste-token --provider anthropic`
-   und das Token dort einfügen. Das Token nie in Chats, Logs oder Argv.
+**Secret-Vertrag:** Der einzige Modellanbieter-Schlüssel in `.env` ist
+`OPENAI_API_KEY`. Schlüssel nie in JSON, Logs, Chat oder sichtbare
+Kommandozeilen kopieren. `OPENAI_MODEL=gpt-5.6-luna` ist kein Geheimnis und
+gilt nur für `sales-auto`.
 
-**Wo das Token liegt:** im Auth-Store
-`~/.openclaw/agents/main/agent/openclaw-agent.sqlite` innerhalb des Volumes
-`sales-claw-state` — **nicht** im Repo. Konsequenzen: (a) Volume-Backups
-enthalten das Token, Backup-Dateien also wie Secrets behandeln; (b) eine
-Neu-Provisionierung nur aus `config/openclaw.json` bringt das Token nicht mit —
-nach frischem Aufsetzen die zwei Schritte oben wiederholen.
+**Auto-Responder-Vertrag:** `sales-auto` ruft die Responses API mit
+`store=false` und strengem JSON-Schema auf. In Erfolgslogs landen nur
+Response-ID, Modell und Token-Metadaten, keine Prompts oder Kundentexte.
+Fehlt `OPENAI_API_KEY` oder `OPENAI_MODEL`, beendet sich der Prozess vor der
+Verarbeitung mit Exit `2`.
 
-**Geteiltes Kontingent:** Das Abo-Token zehrt vom selben Kontingent wie die
-Claude-Code-Sessions des Betreibers. Lange Entwicklungsläufe und der Bot
-konkurrieren um dasselbe Budget; für Produktivbetrieb mit Dritten ist ein
-API-Schlüssel mit eigener Abrechnung vorgesehen, ein persönliches Abo darf
-nicht Backend für Dritte sein.
+**Vorhandene Volumes:** `scripts/seed-volume.ps1` ist absichtlich idempotent.
+Liegt bereits `/home/node/.openclaw/openclaw.json` im Volume
+`sales-claw-state`, bleibt sie unverändert. Repo-Stand und Live-State sind daher
+nicht gleichzusetzen. Eine bestehende Instanz wird erst nach separater
+Freigabe, Backup und dokumentiertem Rückfallplan migriert.
 
-**Zum Fallback `openrouter/free`** — drei gemessene Schwächen aus den
-Tasks 3–5, weshalb er nur noch Reserve ist:
-
-- **Schwankende Antwortzeiten.** Gemessene Laufzeiten reichten von 34 s
-  (Fix-Runde 1, Task 3) über 152,6 s und 453,5 s (Task 5, zwei Proben) bis zu
-  einem vollständigen 600-s-Provider-Timeout (Task 4, erster Smoke-Versuch).
-- **Sitzungs-Verheddern.** Die fortlaufende `main`-Sitzung akkumuliert Text aus
-  früheren fehlgeschlagenen Werkzeugaufrufen; das Modell kann sich daran
-  festbeißen, statt einen frischen Versuch zu starten — im genannten
-  600-s-Timeout-Fall rief es laut `toolSummary` **kein einziges Mal** ein
-  Werkzeug auf.
-- **Inkonsistente Regeltreue.** Dieselbe Verbotsregel (keine Produktempfehlung,
-  Verweis an die Beraterin), zwei Läufe kurz hintereinander: Ein Lauf riss die
-  Verweisregel im Antworttext (kündigte stattdessen an, selbst eine
-  „ETF-Strategie" zu entwickeln — bei korrekt geloggtem `offener_punkt` im
-  Hintergrund), der nächste befolgte dieselbe Regel proaktiv und korrekt
-  (Task 5, Proben 1 und 2).
-
-**Gegenmittel im Demo-Betrieb:** eine frische, eindeutige `--session-key` statt der
-fortlaufenden `main`-Sitzung verwenden, bei auffälligem Verhalten wiederholen:
-
-```powershell
-docker compose exec sales-claw openclaw agent --agent main `
-    --session-key "agent:main:<eindeutige-bezeichnung>" `
-    -m "..." --json
-```
-
-Kein `--deliver` in Diagnose-/Testläufen, damit keine Testnachricht tatsächlich
-über WhatsApp hinausgeht. Das Primärmodell ist seit 19.08.2026 gepinnt
-(`anthropic/claude-sonnet-5`); die frühere Pin-Ausnahme betrifft nur noch den
-Fallback (`docs/02_ARCHITECTURE.md`, Abschnitt „Modellanbieter").
+**Nicht mit der lokalen Migration verifiziert:** echter API-Aufruf,
+Key-Gültigkeit, Kosten, Rate-Limits, Live-Modellauflösung, State-Migration,
+Containerstart, WhatsApp-Antwort, Deployment und Cutover. Der nächste einzelne
+Betreiber-Schritt ist: API-Billing und Projekt-Key einrichten und danach in
+einem separat autorisierten Lauf genau einen metadata-only OpenAI-Preflight
+ohne Kundeninhalt durchführen. Die technischen API-Verträge stehen in der
+[Responses-Referenz](https://developers.openai.com/api/reference/cli/resources/responses/methods/create)
+und der [Modellübersicht](https://developers.openai.com/api/docs/models).
 
 ## Stufe 3: Versand mit Approval
 
@@ -1302,7 +1269,7 @@ für den vollen Funktionsumfang, das Flag spart nur die Nachfragen.
   `sales-ui` als Abzeichen „gehoert zu …"), damit der Betreiber sieht, wer
   wartet. Ab der nächsten Nachricht läuft der Absender von selbst richtig.
 * **Keine automatischen Antworten.** Weder über OpenClaw (`allowFrom`) noch
-  über `sales-auto` (bleibt inert, kein `ANTHROPIC_API_KEY`).
+  über `sales-auto` (wird nicht gestartet).
 * **Die Rückfrage geht in den Betreiber-Chat, nie an den Absender.**
 * **Der zitierte Nachrichtentext ist Datum, nie Anweisung** (AGENTS.md,
   „Kundenantworten").
@@ -1447,11 +1414,10 @@ docker compose exec sales-claw openclaw cron run 221a69d7-4b52-471c-92e4-f86a420
 
 Dritter Versuch erfolgreich (`"status": "ok"`, `"delivered": true`,
 `"deliveryStatus": "delivered"`) — der erste scheiterte an der oben
-beschriebenen `allowFrom`-Prüfung (vor der Korrektur), der zweite an einem
-transienten `openrouter/free`-Fehler (`FailoverError: ... inference
-generation failed` — bekannte Schwäche, siehe „Modellwahl im Demo-Betrieb"
-oben; kein Konfigurationsfehler, einfach wiederholen). Log-Beleg der
-tatsächlichen WhatsApp-Zustellung:
+beschriebenen `allowFrom`-Prüfung (vor der Korrektur), der zweite am damaligen
+Modellanbieter. Dieser datierte Probelauf ist historischer Zustellbeleg, keine
+Anleitung für den aktuellen Modellpfad. Log-Beleg der tatsächlichen
+WhatsApp-Zustellung:
 
 ```
 sales-claw | [whatsapp] Sending message -> sha256:775db645c879
@@ -1820,8 +1786,9 @@ select name, consent_status,
 > * **`scripts/sync-allowlist.ps1` darf nicht mehr laufen** (Spur 2) — es
 >   würde freigegebene Kontakte wieder eintragen und damit die Auto-Antwort
 >   reaktivieren. Warnung steht auch im Skriptkopf.
-> * **`sales-auto` wird nicht gestartet** (Spur 1) und bleibt ohne
->   `ANTHROPIC_API_KEY` ohnehin inert.
+> * **`sales-auto` wird nicht gestartet** (Spur 1). Ohne
+>   `OPENAI_API_KEY` oder `OPENAI_MODEL` beendet er sich zusätzlich mit Exit
+>   `2`, bevor eine Nachricht verarbeitet wird.
 >
 > Der Rest dieses Abschnitts beschreibt, wie der Auto-Betrieb funktionierte
 > und was zu tun wäre, wenn ihn jemand **bewusst** wieder einschaltet. Das ist
@@ -1845,16 +1812,15 @@ hat **zwei Spuren für zwei WhatsApp-Konten**:
 > at-most-once-Anspruch von `sales-auto` schützt nur gegen doppelte
 > *Auto*-Antworten, nicht gegen die Kombination Agent + Auto-Dienst; ob die
 > Beantwortet-Prüfung das Rennen zuverlässig gewinnt, ist **nicht gemessen**.
-> Praktisch ist der Dienst ohnehin inert, solange `ANTHROPIC_API_KEY` fehlt —
-> **also den Schlüssel nicht setzen**, bis die Versandnummer getrennt ist.
-> Bis dahin trägt Spur 2 den Auto-Betrieb allein (sie braucht keinen
-> API-Schlüssel, sondern nutzt das Abo-Token des Agenten).
+> Das Provider-Gate ändert an diesem Betriebsverbot nichts: auch mit gültigem
+> Schlüssel **nicht starten**, bis die Versandnummer getrennt und der
+> Auto-Betrieb separat freigegeben ist. Bis dahin bleibt dieser Weg aus.
 
 1. **Die Kunden-Nummer (OpenWA) — Dienst `sales-auto`.** Kunden schreiben
    an die dedizierte Versandnummer; deren Chats sieht OpenClaw nicht.
    `sales-auto` schließt die Lücke über die Wege, die es schon gibt:
    OpenWA-Webhook → `sales-inbox` → `activities('kundenantwort')` →
-   `sales-auto` erzeugt die Antwort (Anthropic-API, Regeln im
+   `sales-auto` erzeugt die Antwort (OpenAI Responses API mit `store=false`, Regeln im
    Moduldocstring/`SYSTEM_PROMPT` von `sales-mcp/auto.py`) → Entwurf mit
    `status='approved'`, `approved_by='auto-betrieb'` → **zugestellt wird
    wie immer nur von `sales-dispatch`**, der die Kontakt-Freigabe erneut
@@ -1874,8 +1840,10 @@ hat **zwei Spuren für zwei WhatsApp-Konten**:
 > Agenten um dieselbe Kundennachricht. Der Abschnitt beschreibt den Betrieb
 > ab dem Zeitpunkt, an dem eine eigene Versandnummer gepairt ist.
 
-Einschalten: `ANTHROPIC_API_KEY` in `.env` setzen (`.env.example` erklärt
-die übrigen `AUTO_*`-Regler), dann `docker compose up -d sales-auto`.
+Einschalten setzt eine separate Betreiberfreigabe, getrennte Versandnummer und
+eingerichtete OpenAI-API-Abrechnung voraus. Danach `OPENAI_API_KEY` und
+`OPENAI_MODEL=gpt-5.6-luna` in `.env` setzen (`.env.example` erklärt die übrigen
+`AUTO_*`-Regler) und erst dann `docker compose up -d sales-auto`.
 Ausschalten: `docker compose stop sales-auto` — nichts anderes ist nötig,
 der Dienst hält keinen Zustand außerhalb der Datenbank.
 
@@ -1971,8 +1939,9 @@ mit und antwortet. Alles auf einmal: `docker compose stop sales-claw`
 * Das Gedächtnis (`memory-core`) ist je Agent, nicht je Chat — der Agent
   darf Wissen aus Betreiber-Gesprächen nie in Kundenchats ausbreiten
   (Regel in AGENTS.md), technisch getrennt ist es nicht.
-* Jede Kundennachricht ist ein Modellaufruf (Kosten/Modellwahl wie beim
-  Digest: `anthropic/claude-sonnet-5`, Fallback `openrouter/free`).
+* Jede Kundennachricht ist ein kostenpflichtiger Modellaufruf. `sales-auto`
+  verwendet `gpt-5.6-luna`; OpenClaw verwendet `openai/gpt-5.6-terra`. Für
+  beide ist kein Fallback konfiguriert.
 
 Gegenprobe nach jedem Sync:
 

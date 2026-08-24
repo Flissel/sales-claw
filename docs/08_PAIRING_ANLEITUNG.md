@@ -168,11 +168,10 @@ Schwalls, keine identischen Textbausteine an viele Empfänger.
   (`DISPATCH_SENDE_PAUSE_S`), kein Tages- oder Stunden-Deckel auf unserer
   Seite. Für den Demo-Betrieb akzeptiert, vor echtem Volumenbetrieb
   ausbaufähig (`docs/03_RUNBOOK.md`, Abschnitt „Warmup-Regeln").
-- **Fallback-Schwankung.** Primärmodell ist seit 19.08.2026
-  `anthropic/claude-sonnet-5` (Abo-Token); nur wenn dessen Kontingent
-  erschöpft ist, greift `openrouter/free` als Fallback
-  (`docs/02_ARCHITECTURE.md`, Abschnitt „Modellanbieter"). Im
-  Fallback-Fall schwanken Antwortzeiten und Regeltreue gemessen erheblich
-  (34 s bis zu einem 600-s-Timeout in früheren Tasks). Bei
-  Auffälligkeiten während der Prüfschritte oben: frischer Session-Key,
-  wiederholen (`docs/03_RUNBOOK.md`, Abschnitt „Modellwahl").
+- **Modellzugang ist ein separates Gate.** Die Repo-Saat setzt OpenClaw auf
+  `openai/gpt-5.6-terra` ohne Fallback. Ein vorhandenes
+  `sales-claw-state`-Volume wird dadurch nicht überschrieben. Pairing belegt
+  daher weder die aktive Modellkonfiguration noch API-Key, Billing,
+  Rate-Limits oder eine echte Modellantwort; diese Prüfung braucht eine
+  separat autorisierte State-Migration und einen eigenen OpenAI-Preflight
+  (`docs/03_RUNBOOK.md`, Abschnitt „Modellwahl").
