@@ -1,20 +1,22 @@
 """Vertragstests der Auto-Antwort-Bruecke (sales-auto) gegen sales_test.
 
-Der Modellaufruf ist gestubbt (auto._api_aufruf) — es geht in diesen Tests
-zu keinem Zeitpunkt eine Anfrage an die Anthropic-API raus, und versendet
-wird ohnehin nie (auto.py schreibt nur drafts/activities; die Zustellung
-gehoert sales-dispatch und dessen Tests).
+Der Modellaufruf ist gestubbt (auto.create_structured_response) — es geht in
+diesen Tests zu keinem Zeitpunkt eine Anfrage an die OpenAI-API raus, und
+versendet wird ohnehin nie (auto.py schreibt nur drafts/activities; die
+Zustellung gehoert sales-dispatch und dessen Tests).
 
 Wie test_werkzeuge.py: die Suite darf NIE gegen `sales` laufen.
 """
 import json
 import os
+import sys
 
 import pytest
 
 # HART, nicht setdefault (T5a): eine von aussen gesetzte SALES_DB_SCHEMA=sales
 # wuerde die autouse-Fixture unten auf die echten Kundendaten loslassen.
 os.environ["SALES_DB_SCHEMA"] = "sales_test"
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import auto  # noqa: E402
 import dispatch  # noqa: E402
 import server  # noqa: E402
@@ -65,16 +67,22 @@ def _kundenantwort(lead_id, text="Was kostet bei Ihnen eine Absicherung?",
 
 def _modell_ok(monkeypatch, antwort="Gern! Passt Ihnen Donnerstag 14 Uhr?",
                beraterin=False, stopp=False, begruendung=""):
-    """Stub: eine wohlgeformte Messages-API-Antwort mit dem JSON-Ergebnis."""
     aufrufe = []
 
-    def _stub(nutzlast):
-        aufrufe.append(nutzlast)
-        return {"stop_reason": "end_turn", "content": [
-            {"type": "text", "text": json.dumps({
-                "antwort": antwort, "beraterin_noetig": beraterin,
-                "stopp_wunsch": stopp, "begruendung": begruendung})}]}
-    monkeypatch.setattr(auto, "_api_aufruf", _stub)
+    def _stub(**kwargs):
+        aufrufe.append(kwargs)
+        return auto.OpenAIResult(
+            payload={"antwort": antwort,
+                     "beraterin_noetig": beraterin,
+                     "stopp_wunsch": stopp,
+                     "begruendung": begruendung},
+            response_id="resp_test",
+            input_tokens=20,
+            output_tokens=8,
+            total_tokens=28,
+        )
+
+    monkeypatch.setattr(auto, "create_structured_response", _stub)
     return aufrufe
 
 
@@ -184,12 +192,17 @@ def test_verlauf_und_profil_landen_im_modellauftrag(monkeypatch):
     _kundenantwort(lead, text="Wie sichere ich meinen Betrieb ab?",
                    vor_sekunden=0)
     auto.eine_runde()
-    auftrag = aufrufe[0]["messages"][0]["content"]
-    assert "Baeckermeisterin" in auftrag
-    assert "Kunde: Wie sichere ich meinen Betrieb ab?" in auftrag
-    assert "Wir: Guten Tag, Frau Beispiel!" in auftrag
-    assert aufrufe[0]["model"] == auto.AUTO_MODELL
-    assert aufrufe[0]["output_config"]["format"]["type"] == "json_schema"
+    aufruf = aufrufe[0]
+    assert aufruf["api_key"] == auto.OPENAI_API_KEY
+    assert aufruf["model"] == auto.OPENAI_MODEL
+    assert aufruf["instructions"] == auto.SYSTEM_PROMPT
+    assert "Baeckermeisterin" in aufruf["input_text"]
+    assert "Kunde: Wie sichere ich meinen Betrieb ab?" in aufruf["input_text"]
+    assert "Wir: Guten Tag, Frau Beispiel!" in aufruf["input_text"]
+    assert aufruf["schema_name"] == "auto_antwort"
+    assert aufruf["schema"] == auto.ANTWORT_SCHEMA
+    assert aufruf["max_output_tokens"] == 1500
+    assert aufruf["timeout_s"] == auto.HTTP_TIMEOUT_S
 
 
 # ---------------------------------------------------------------------------
@@ -226,10 +239,11 @@ def test_beraterin_noetig_erzeugt_offenen_punkt(monkeypatch):
 def test_endgueltiger_fehler_wird_verbucht_und_nie_wiederholt(monkeypatch):
     aufrufe = []
 
-    def _kaputt(nutzlast):
-        aufrufe.append(nutzlast)
-        raise auto.AutoFehler("Anthropic HTTP 400: kaputtes Schema")
-    monkeypatch.setattr(auto, "_api_aufruf", _kaputt)
+    def _kaputt(**kwargs):
+        aufrufe.append(kwargs)
+        raise auto.OpenAIPermanentError("OpenAI HTTP 400")
+
+    monkeypatch.setattr(auto, "create_structured_response", _kaputt)
     lead = _lead()
     _kundenantwort(lead)
     assert auto.eine_runde() == {"fehler_verbucht": 1}
@@ -245,15 +259,21 @@ def test_transienter_fehler_laesst_keinen_anspruch_zurueck(monkeypatch):
     darf es erneut versuchen, und dann klappt es."""
     versuche = []
 
-    def _erst_kaputt_dann_ok(nutzlast):
+    def _erst_kaputt_dann_ok(**kwargs):
         versuche.append(1)
         if len(versuche) == 1:
-            raise auto.AutoTransient("Anthropic HTTP 529: ueberlastet")
-        return {"stop_reason": "end_turn", "content": [
-            {"type": "text", "text": json.dumps({
-                "antwort": "Gern!", "beraterin_noetig": False,
-                "stopp_wunsch": False, "begruendung": ""})}]}
-    monkeypatch.setattr(auto, "_api_aufruf", _erst_kaputt_dann_ok)
+            raise auto.OpenAITransientError("OpenAI HTTP 429")
+        return auto.OpenAIResult(
+            payload={"antwort": "Gern!", "beraterin_noetig": False,
+                     "stopp_wunsch": False, "begruendung": ""},
+            response_id="resp_test",
+            input_tokens=20,
+            output_tokens=8,
+            total_tokens=28,
+        )
+
+    monkeypatch.setattr(auto, "create_structured_response",
+                        _erst_kaputt_dann_ok)
     lead = _lead()
     _kundenantwort(lead)
     assert auto.eine_runde() == {"aufgeschoben": 1}
@@ -261,18 +281,41 @@ def test_transienter_fehler_laesst_keinen_anspruch_zurueck(monkeypatch):
     assert auto.eine_runde() == {"beantwortet": 1}
 
 
-def test_refusal_und_kaputtes_json_sind_endgueltig(monkeypatch):
+def test_providerseitig_unbrauchbare_antwort_ist_endgueltig(monkeypatch):
+    def _unbrauchbar(**kwargs):
+        raise auto.OpenAIPermanentError("OpenAI response output is invalid")
+
+    monkeypatch.setattr(auto, "create_structured_response", _unbrauchbar)
     lead = _lead()
     _kundenantwort(lead)
-    monkeypatch.setattr(auto, "_api_aufruf",
-                        lambda n: {"stop_reason": "refusal", "content": []})
     assert auto.eine_runde() == {"fehler_verbucht": 1}
+    assert _drafts() == []
 
-    lead2 = _lead(name="Zweite Person", phone="+491702222222")
-    _kundenantwort(lead2, message_id="wamid-2")
-    monkeypatch.setattr(auto, "_api_aufruf", lambda n: {
-        "stop_reason": "end_turn",
-        "content": [{"type": "text", "text": "kein json"}]})
+
+@pytest.mark.parametrize("payload", [
+    {"beraterin_noetig": False, "stopp_wunsch": False, "begruendung": ""},
+    {"antwort": "Gern!", "stopp_wunsch": False, "begruendung": ""},
+    {"antwort": "Gern!", "beraterin_noetig": False, "begruendung": ""},
+    {"antwort": "Gern!", "beraterin_noetig": False,
+     "stopp_wunsch": False},
+    {"antwort": "Gern!", "beraterin_noetig": "false",
+     "stopp_wunsch": False, "begruendung": ""},
+    {"antwort": "Gern!", "beraterin_noetig": False,
+     "stopp_wunsch": 0, "begruendung": ""},
+    {"antwort": "Gern!", "beraterin_noetig": False,
+     "stopp_wunsch": False, "begruendung": None},
+    {"antwort": "Gern!", "beraterin_noetig": False,
+     "stopp_wunsch": False, "begruendung": "", "extra": True},
+], ids=["antwort-fehlt", "beraterin-fehlt", "stopp-fehlt",
+        "begruendung-fehlt", "beraterin-kein-bool", "stopp-kein-bool",
+        "begruendung-kein-string", "unbekannter-schluessel"])
+def test_unbrauchbare_payloads_erzeugen_keinen_entwurf(monkeypatch, payload):
+    monkeypatch.setattr(auto, "create_structured_response", lambda **kwargs: (
+        auto.OpenAIResult(payload=payload, response_id="resp_invalid",
+                          input_tokens=None, output_tokens=None,
+                          total_tokens=None)))
+    lead = _lead()
+    _kundenantwort(lead)
     assert auto.eine_runde() == {"fehler_verbucht": 1}
     assert _drafts() == []
 
@@ -293,6 +336,32 @@ def test_zu_lange_antwort_wird_nicht_gesendet(monkeypatch):
     _kundenantwort(lead)
     assert auto.eine_runde() == {"fehler_verbucht": 1}
     assert _drafts() == []
+
+
+@pytest.mark.parametrize("antwort", ["", "   "])
+def test_leere_antwort_wird_nicht_gesendet(monkeypatch, antwort):
+    _modell_ok(monkeypatch, antwort=antwort)
+    lead = _lead()
+    _kundenantwort(lead)
+    assert auto.eine_runde() == {"fehler_verbucht": 1}
+    assert _drafts() == []
+
+
+def test_main_meldet_fehlende_openai_variablen_in_reihenfolge(monkeypatch):
+    fehler = []
+    monkeypatch.setattr(auto, "_logging_einrichten", lambda: None)
+    monkeypatch.setattr(auto.LOG, "error",
+                        lambda meldung, *werte: fehler.append(meldung % werte))
+    monkeypatch.setattr(auto, "OPENAI_API_KEY", "")
+    monkeypatch.setattr(auto, "OPENAI_MODEL", "")
+    assert auto.main() == 2
+    assert "OPENAI_API_KEY" in fehler[-1]
+    assert "OPENAI_MODEL" not in fehler[-1]
+
+    monkeypatch.setattr(auto, "OPENAI_API_KEY", "test-key")
+    assert auto.main() == 2
+    assert "OPENAI_MODEL" in fehler[-1]
+    assert "OPENAI_API_KEY" not in fehler[-1]
 
 
 # ---------------------------------------------------------------------------
