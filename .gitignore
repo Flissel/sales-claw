@@ -45,6 +45,9 @@ reports/*
 __pycache__/
 *.pyc
 
+# Isolierte lokale Feature-Worktrees
+.worktrees/
+
 # Betriebssystem
 Thumbs.db
 desktop.ini
