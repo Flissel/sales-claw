@@ -169,9 +169,12 @@ Schwalls, keine identischen Textbausteine an viele Empfänger.
   Seite. Für den Demo-Betrieb akzeptiert, vor echtem Volumenbetrieb
   ausbaufähig (`docs/03_RUNBOOK.md`, Abschnitt „Warmup-Regeln").
 - **Modellzugang ist ein separates Gate.** Die Repo-Saat setzt OpenClaw auf
-  `openai/gpt-5.6-terra` ohne Fallback. Ein vorhandenes
+  die ChatGPT/Codex-Subscription-Route `openai/gpt-5.6-terra` ohne Fallback,
+  aktiviert und erlaubt dafür das `codex`-Plugin und reicht keinen
+  Platform-API-Key an `sales-claw`. Ein vorhandenes
   `sales-claw-state`-Volume wird dadurch nicht überschrieben. Pairing belegt
-  daher weder die aktive Modellkonfiguration noch API-Key, Billing,
-  Rate-Limits oder eine echte Modellantwort; diese Prüfung braucht eine
-  separat autorisierte State-Migration und einen eigenen OpenAI-Preflight
-  (`docs/03_RUNBOOK.md`, Abschnitt „Modellwahl").
+  daher weder die aktive Modellkonfiguration noch Codex-Anmeldung oder eine
+  echte Modellantwort; diese Prüfung braucht eine separat autorisierte
+  State-Migration. API-Key, Billing, Rate-Limits und der OpenAI-Preflight
+  betreffen getrennt den Dienst `sales-auto` (`docs/03_RUNBOOK.md`, Abschnitt
+  „Modellwahl").

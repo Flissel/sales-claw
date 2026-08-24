@@ -64,12 +64,12 @@ zusammen gesichert und zusammen zurückgespielt.
 | Gateway-Port (konfiguriert) | `18894` | `docker compose exec sales-claw openclaw config get gateway.port` → `18894` |
 | Gateway-Port (tatsächlich lauschend) | `0.0.0.0:18894` | Gemessen über `/proc/net/tcp` im Container (lokale Adresse `00000000:49CE`, Status `0A` = LISTEN; `49CE`hex = `18894`dez). **Keine Abweichung** zum konfigurierten Wert — Doku (18789) und lokale Installation (18793) widersprechen sich weiterhin, betreffen aber nicht diesen Container |
 | Host-seitige Erreichbarkeit | bestätigt | `openclaw --container sales-claw health` (vom Host) liefert Gateway-Event-Loop, Agent- und Heartbeat-Status ohne Verbindungsfehler |
-| Port-Veröffentlichung | `127.0.0.1:18894:18894` | Muster aus dem Hotel-Repo. Der Gateway hält WhatsApp-Session und API-Schlüssel und darf nie direkt aus dem Netz erreichbar sein |
+| Port-Veröffentlichung | `127.0.0.1:18894:18894` | Muster aus dem Hotel-Repo. Der Gateway hält WhatsApp-Session und Authentifizierungszustand und darf nie direkt aus dem Netz erreichbar sein |
 | Neustart | `restart: unless-stopped` | Wie bei `openclaw-festival` |
-| Plugins | `plugins.allow: ["whatsapp"]` | Minimale Ladefläche; discord, telegram, voice-call, browser bleiben aus. Im `-slim`-Image sind discord, voice-call und whatsapp derzeit nicht vorinstalliert (Config-Warnung beim Start, siehe unten) — Installation ist nicht Teil von Task 2 |
+| Plugins | `plugins.allow: ["codex", "whatsapp"]` | `codex` ist für den ChatGPT/Codex-Subscription-Harness ausdrücklich aktiviert und erlaubt; discord, telegram, voice-call und browser bleiben aus. Das WhatsApp-Plugin wird separat installiert (siehe unten) |
 | Speicher | `memory-core` aktiv (`memory/main.sqlite`), `openclaw-supermemory` **nicht** geladen | Supermemory ist ein externer Dienst; Kundendaten dorthin zu schicken ist eine Entscheidung für Stufe 2, keine Nebenwirkung von Stufe 1. Verifiziert im Startlog: `http server listening (1 plugin: memory-core; …)` |
 | Logging | `json-file`, `max-size=10m`, `max-file=3` | Auf `C:` war der Platz bereits zweimal knapp |
-| Healthcheck | `CMD openclaw health` gegen den Gateway-Port | Erreicht `healthy` unabhängig vom Modellschlüssel — `openclaw health` prüft nur den Gateway-Prozess (Event-Loop, Agenten, Sessions), nicht das Modell. Mit leerem `OPENAI_API_KEY` (siehe Secrets) trotzdem `healthy` |
+| Healthcheck | `CMD openclaw health` gegen den Gateway-Port | Prüft nur Gateway-Prozess, Event-Loop, Agenten und Sessions. `healthy` belegt weder eine Codex-Subscription-Anmeldung noch eine auflösbare oder antwortende Modellroute |
 | Zeitzone | `TZ=Europe/Berlin` | Termin- und Digest-Logik in späteren Stufen hängt daran |
 
 ## Das Kanal-Plugin steckt nicht im Image (Task 9)
@@ -134,32 +134,42 @@ als verschwunden.
 
 ### Secrets
 
-Wie in Spec §7 festgelegt: `config/openclaw.json` enthält keine Schlüssel. Der
-einzige Modellanbieter-Schlüssel in `.env` ist `OPENAI_API_KEY`; er darf nie in
-JSON, Logs oder Chat erscheinen. `OPENAI_MODEL` ist kein Geheimnis und steuert
-nur `sales-auto`. Der Gateway-Token entsteht im Container und liegt
-ausschließlich im Volume `sales-claw-state`, nie im Repository.
+`config/openclaw.json` enthält keine Schlüssel und `sales-claw` erhält kein
+`OPENAI_API_KEY`. Seine ChatGPT/Codex-Subscription-Authentifizierung gehört in
+den OpenClaw-State, nicht in die Compose-Umgebung. Der einzige
+Modellanbieter-Schlüssel in `.env` ist `OPENAI_API_KEY` für `sales-auto`; er darf
+nie in committed oder Ziel-Runtime-JSON, Logs oder Chat erscheinen.
+`OPENAI_MODEL` und `OPENAI_MAX_OUTPUT_TOKENS` sind keine Geheimnisse und steuern
+nur `sales-auto`. `scripts/seed-env.ps1` ist eine einmalige Legacy-Importausnahme:
+Es darf den Auto-Responder-Key aus einer alten OpenClaw-JSON übernehmen. Danach
+ist die Quelle sicher zu löschen oder zu archivieren; bei unklarer Exposition
+ist der importierte Key zu rotieren. Der Gateway-Token entsteht im Container
+und liegt ausschließlich im Volume `sales-claw-state`, nie im Repository.
 
 ## Modellanbieter: OpenAI-only (lokal implementiert am 24.08.2026)
 
-ChatGPT-Abonnements und die API sind zwei getrennte Produkte mit getrennter
-Abrechnung. Ein ChatGPT Plus-/Pro-Abonnement stellt deshalb weder API-Guthaben
-noch einen API-Schlüssel für diesen Stack bereit. Vor einer Live-Aktivierung
-müssen API-Billing und ein eigener Projekt-Key separat eingerichtet sein
+ChatGPT-Abonnements und die Platform API sind zwei getrennte Produkte mit
+getrennter Abrechnung. OpenClaw nutzt bewusst die ChatGPT/Codex-Subscription;
+dafür wird kein Platform-API-Key an `sales-claw` gereicht. `sales-auto` nutzt
+dagegen die Responses API und benötigt vor einer Live-Aktivierung separat
+eingerichtetes API-Billing und einen eigenen Projekt-Key
 ([ChatGPT Plus](https://help.openai.com/en/articles/6950777-what-is-chatgpt-plus),
 [Trennung von ChatGPT-Abo und API](https://help.openai.com/en/articles/8156019-how-can-i-move-my-chatgpt-subscription-to-the-api)).
 
 **OpenClaw.** Die Repo-Saat `config/openclaw.json` setzt genau
 `openai/gpt-5.6-terra` als Primärmodell und eine leere Fallback-Liste. Der
-Container erhält dafür ausschließlich `OPENAI_API_KEY` als
-Modellanbieter-Credential. Es gibt keinen automatischen Wechsel zu einem anderen
-Provider oder Modell.
+OpenAI-Provider ist ausdrücklich an `agentRuntime.id=codex` gebunden; das
+gebündelte `codex`-Plugin ist aktiviert und in der Plugin-Allowlist. Es gibt
+keinen eigenen Base-URL- oder Request-Override und keinen automatischen Wechsel
+zu einem anderen Provider, Modell oder Runtime-Harness.
 
 **Auto-Responder.** `sales-auto` verwendet standardmäßig `gpt-5.6-luna` über
 `POST /v1/responses`. Jede Anfrage setzt `store=false` und verlangt ein striktes
 JSON-Schema. Prompt und Kundentext werden nicht geloggt; das Erfolgslog enthält
-nur Response-ID, Modellname und Token-Metadaten. Fehlender `OPENAI_API_KEY` oder
-fehlender `OPENAI_MODEL` beendet den Prozess vor der Verarbeitung mit Exit `2`.
+nur Response-ID, Modellname und Token-Metadaten. Fehlender `OPENAI_API_KEY`,
+fehlender `OPENAI_MODEL` oder ein nicht ganzzahliges beziehungsweise außerhalb
+`1..10000` liegendes `OPENAI_MAX_OUTPUT_TOKENS` beendet den Prozess vor der
+Verarbeitung mit Exit `2`. Vorgabe des Ausgabe-Budgets ist `1500`.
 Die API-Verträge sind in der offiziellen Dokumentation zur
 [Responses-Erstellung](https://developers.openai.com/api/reference/cli/resources/responses/methods/create)
 und zu den [Modellen](https://developers.openai.com/api/docs/models) beschrieben.
@@ -717,7 +727,6 @@ T5a behoben: `sales-claw` bekommt jetzt eine ausdrückliche, benannte
 
 ```yaml
 environment:
-  - OPENAI_API_KEY=${OPENAI_API_KEY:-}
   - TZ=${TZ:-Europe/Berlin}
   - OPENCLAW_STATE_DIR=/home/node/.openclaw
 ```
@@ -741,9 +750,10 @@ fehlt
 fehlt
 ```
 
-Der Modellanbieter-Schlüssel bleibt auf `OPENAI_API_KEY` begrenzt. Die hier
+`sales-claw` erhält auch keinen Platform-Modellanbieter-Schlüssel. Die hier
 erhaltene historische Recreate-Messung belegt nur die Isolation der Versand- und
-Datenbank-Secrets; sie ist kein Beleg für eine OpenAI-Aktivierung.
+Datenbank-Secrets; sie ist kein Beleg für Codex-Authentifizierung oder eine
+OpenAI-Modellantwort.
 
 **Nicht verwendet zur Verifikation: `docker compose config`.** Der Befehl
 inlined `env_file`-Inhalte in seine Ausgabe — genau das führte in T5a zu

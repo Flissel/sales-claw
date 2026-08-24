@@ -183,6 +183,7 @@ def test_sammelkontakte_werden_nie_beantwortet(monkeypatch):
 
 
 def test_verlauf_und_profil_landen_im_modellauftrag(monkeypatch):
+    monkeypatch.setattr(auto, "OPENAI_MAX_OUTPUT_TOKENS", "2345")
     aufrufe = _modell_ok(monkeypatch)
     lead = _lead(name="Anna Beispiel")
     server.profil_aktualisieren(lead, "beruf", "Baeckermeisterin")
@@ -201,7 +202,7 @@ def test_verlauf_und_profil_landen_im_modellauftrag(monkeypatch):
     assert "Wir: Guten Tag, Frau Beispiel!" in aufruf["input_text"]
     assert aufruf["schema_name"] == "auto_antwort"
     assert aufruf["schema"] == auto.ANTWORT_SCHEMA
-    assert aufruf["max_output_tokens"] == 1500
+    assert aufruf["max_output_tokens"] == 2345
     assert aufruf["timeout_s"] == auto.HTTP_TIMEOUT_S
 
 
@@ -362,6 +363,34 @@ def test_main_meldet_fehlende_openai_variablen_in_reihenfolge(monkeypatch):
     assert auto.main() == 2
     assert "OPENAI_MODEL" in fehler[-1]
     assert "OPENAI_API_KEY" not in fehler[-1]
+
+
+@pytest.mark.parametrize(
+    "raw_value",
+    ["", "kein-int", "0", "-1", "10001"],
+    ids=["empty", "malformed", "zero", "negative", "over-safe-maximum"],
+)
+def test_main_rejects_invalid_openai_output_budget_before_processing(
+    monkeypatch, raw_value
+):
+    fehler = []
+    runden = []
+    monkeypatch.setattr(auto, "_logging_einrichten", lambda: None)
+    monkeypatch.setattr(
+        auto.LOG,
+        "error",
+        lambda meldung, *werte: fehler.append(meldung % werte),
+    )
+    monkeypatch.setattr(auto.LOG, "info", lambda *args: None)
+    monkeypatch.setattr(auto, "OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(auto, "OPENAI_MODEL", "gpt-5.6-luna")
+    monkeypatch.setattr(auto, "OPENAI_MAX_OUTPUT_TOKENS", raw_value, raising=False)
+    monkeypatch.setattr(auto, "AUTO_ONCE", True)
+    monkeypatch.setattr(auto, "eine_runde", lambda: runden.append(True) or {})
+
+    assert auto.main() == 2
+    assert runden == []
+    assert "OPENAI_MAX_OUTPUT_TOKENS" in fehler[-1]
 
 
 # ---------------------------------------------------------------------------

@@ -52,6 +52,76 @@ class FailingReadResponse:
         raise http.client.IncompleteRead(b"partial", 12)
 
 
+_DEFAULT_OUTPUT = object()
+
+
+def wire_response(
+    output_text: str = '{"antwort": "Gern!"}',
+    *,
+    output: object = _DEFAULT_OUTPUT,
+    status: str = "completed",
+    error: object | None = None,
+    usage: object = ...,
+) -> dict[str, object]:
+    """Official raw Responses wire shape, including a reasoning output item."""
+    if output is _DEFAULT_OUTPUT:
+        output = [
+            {
+                "id": "rs_test",
+                "type": "reasoning",
+                "summary": [],
+            },
+            {
+                "id": "msg_test",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": output_text,
+                        "annotations": [],
+                        "logprobs": [],
+                    }
+                ],
+            },
+        ]
+    if usage is ...:
+        usage = {
+            "input_tokens": 12,
+            "input_tokens_details": {"cached_tokens": 0},
+            "output_tokens": 4,
+            "output_tokens_details": {"reasoning_tokens": 1},
+            "total_tokens": 16,
+        }
+    return {
+        "id": "resp_test",
+        "object": "response",
+        "created_at": 1787600000,
+        "status": status,
+        "completed_at": 1787600001,
+        "error": error,
+        "incomplete_details": None,
+        "instructions": "Systemregeln",
+        "max_output_tokens": 1500,
+        "model": "gpt-5.6-luna",
+        "output": output,
+        "parallel_tool_calls": True,
+        "previous_response_id": None,
+        "reasoning": {"effort": "medium", "summary": None},
+        "store": False,
+        "temperature": None,
+        "text": {"format": {"type": "json_schema"}},
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": None,
+        "truncation": "disabled",
+        "usage": usage,
+        "user": None,
+        "metadata": {},
+    }
+
+
 def assert_no_sensitive_exception_data(error, *sensitive_values):
     visited = set()
 
@@ -107,14 +177,7 @@ def test_request_is_stateless_structured_and_openai_only(monkeypatch):
 
     def fake_urlopen(request, timeout):
         calls.append((request, timeout))
-        return FakeResponse({
-            "id": "resp_test",
-            "status": "completed",
-            "error": None,
-            "output_text": json.dumps({"antwort": "Gern!"}),
-            "usage": {"input_tokens": 12, "output_tokens": 4,
-                      "total_tokens": 16},
-        })
+        return FakeResponse(wire_response())
 
     monkeypatch.setattr(openai_provider.urllib.request, "urlopen", fake_urlopen)
     result = openai_provider.create_structured_response(
@@ -205,13 +268,13 @@ def test_http_error_does_not_retain_foreign_error_body(monkeypatch):
 
 
 def test_output_json_error_does_not_retain_customer_text(monkeypatch):
-    monkeypatch.setattr(openai_provider.urllib.request, "urlopen", lambda request, timeout: FakeResponse({
-        "id": "resp_test",
-        "status": "completed",
-        "error": None,
-        "output_text": "Kundenkontext test-key foreign-output",
-        "usage": {},
-    }))
+    monkeypatch.setattr(
+        openai_provider.urllib.request,
+        "urlopen",
+        lambda request, timeout: FakeResponse(
+            wire_response("Kundenkontext test-key foreign-output", usage={})
+        ),
+    )
     with pytest.raises(openai_provider.OpenAIPermanentError) as caught:
         call_provider()
     assert_no_sensitive_exception_data(
@@ -227,20 +290,17 @@ def test_invalid_api_response_json_is_permanent(monkeypatch, body):
     assert "not-json" not in str(caught.value)
 
 
-@pytest.mark.parametrize("payload", [
-    {"id": "resp_test", "status": "failed", "error": None,
-     "output_text": "{}", "usage": {}},
-    {"id": "resp_test", "status": "incomplete", "error": None,
-     "output_text": "{}", "usage": {}},
-    {"id": "resp_test", "status": "completed", "error": {"message": "secret"},
-     "output_text": "{}", "usage": {}},
-    {"id": "resp_test", "status": "completed", "error": None,
-     "output_text": "", "usage": {}},
-    {"id": "resp_test", "status": "completed", "error": None,
-     "output_text": "not-json", "usage": {}},
-    {"id": "resp_test", "status": "completed", "error": None,
-     "output_text": "[]", "usage": {}},
-])
+@pytest.mark.parametrize(
+    "payload",
+    [
+        wire_response(status="failed", usage={}),
+        wire_response(status="incomplete", usage={}),
+        wire_response(error={"message": "secret"}, usage={}),
+        wire_response("", usage={}),
+        wire_response("not-json", usage={}),
+        wire_response("[]", usage={}),
+    ],
+)
 def test_invalid_completed_response_is_permanent(monkeypatch, payload):
     monkeypatch.setattr(openai_provider.urllib.request, "urlopen",
                         lambda request, timeout: FakeResponse(payload))
@@ -257,15 +317,127 @@ def test_invalid_completed_response_is_permanent(monkeypatch, payload):
     ({"input_tokens": True, "output_tokens": "3", "total_tokens": 2}, (None, None, 2)),
 ])
 def test_missing_or_invalid_usage_is_exposed_as_none_metadata(monkeypatch, usage, expected):
-    monkeypatch.setattr(openai_provider.urllib.request, "urlopen", lambda request, timeout: FakeResponse({
-        "id": "resp_test",
-        "status": "completed",
-        "error": None,
-        "output_text": "{}",
-        "usage": usage,
-    }))
+    monkeypatch.setattr(
+        openai_provider.urllib.request,
+        "urlopen",
+        lambda request, timeout: FakeResponse(
+            wire_response("{}", usage=usage)
+        ),
+    )
     result = call_provider()
     assert (result.input_tokens, result.output_tokens, result.total_tokens) == expected
+
+
+def test_sdk_only_top_level_output_text_is_rejected(monkeypatch):
+    monkeypatch.setattr(
+        openai_provider.urllib.request,
+        "urlopen",
+        lambda request, timeout: FakeResponse(
+            {
+                "id": "resp_test",
+                "status": "completed",
+                "error": None,
+                "output_text": "{}",
+                "usage": {},
+            }
+        ),
+    )
+
+    with pytest.raises(openai_provider.OpenAIPermanentError):
+        call_provider()
+
+
+def test_refusal_content_is_rejected_without_retaining_refusal(monkeypatch):
+    refusal = "Kundenkontext test-key foreign-refusal"
+    output = [
+        {"id": "rs_test", "type": "reasoning", "summary": []},
+        {
+            "id": "msg_test",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [{"type": "refusal", "refusal": refusal}],
+        },
+    ]
+    monkeypatch.setattr(
+        openai_provider.urllib.request,
+        "urlopen",
+        lambda request, timeout: FakeResponse(wire_response(output=output)),
+    )
+
+    with pytest.raises(openai_provider.OpenAIPermanentError) as caught:
+        call_provider()
+    assert_no_sensitive_exception_data(
+        caught.value, "Kundenkontext", "test-key", "foreign-refusal"
+    )
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        [],
+        None,
+        [{"id": "call_test", "type": "function_call", "name": "unknown"}],
+        [
+            {
+                "id": "msg_test",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "reasoning_text", "text": "{}"}],
+            }
+        ],
+        [
+            {
+                "id": "msg_test",
+                "type": "message",
+                "status": "in_progress",
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": "{}",
+                        "annotations": [],
+                        "logprobs": [],
+                    }
+                ],
+            }
+        ],
+        [
+            {
+                "id": "msg_test",
+                "type": "message",
+                "status": "completed",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": "{}",
+                        "annotations": [],
+                        "logprobs": [],
+                    }
+                ],
+            }
+        ],
+    ],
+    ids=[
+        "empty-output",
+        "non-list-output",
+        "unknown-output-item",
+        "unknown-content-item",
+        "unfinished-message",
+        "non-assistant-message",
+    ],
+)
+def test_unknown_or_unusable_raw_output_is_rejected(monkeypatch, output):
+    monkeypatch.setattr(
+        openai_provider.urllib.request,
+        "urlopen",
+        lambda request, timeout: FakeResponse(wire_response(output=output)),
+    )
+
+    with pytest.raises(openai_provider.OpenAIPermanentError):
+        call_provider()
 
 
 @pytest.mark.parametrize("overrides", [

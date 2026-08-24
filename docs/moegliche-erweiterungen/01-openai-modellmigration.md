@@ -6,9 +6,11 @@
 
 Die Migration folgt dem Plan
 `docs/superpowers/plans/2026-08-24-sales-claw-openai-migration.md`. Die
-Repository-Konfiguration und die lokalen Verträge sind umgesetzt. Eine
-ChatGPT-Plus- oder Pro-Subscription enthält keine API-Nutzung; der Bot benötigt
-separat eingerichtetes API-Billing und einen eigenen Projekt-Key
+Repository-Konfiguration und die lokalen Verträge sind umgesetzt. OpenClaw
+verwendet die ChatGPT/Codex-Subscription; `sales-auto` verwendet davon getrennt
+die Platform API. Eine ChatGPT-Plus- oder Pro-Subscription enthält kein
+API-Guthaben, daher benötigt nur `sales-auto` separat eingerichtetes API-Billing
+und einen eigenen Projekt-Key
 ([ChatGPT Plus](https://help.openai.com/en/articles/6950777-what-is-chatgpt-plus),
 [ChatGPT-Abo und API](https://help.openai.com/en/articles/8156019-how-can-i-move-my-chatgpt-subscription-to-the-api)).
 
@@ -22,7 +24,9 @@ bleiben.
 ## Planentscheidung vom 24.08.2026
 
 - OpenClaw verwendet standardmäßig `openai/gpt-5.6-terra`, weil der
-  dialogorientierte Agent Qualität und Kosten ausbalancieren soll.
+  dialogorientierte Agent Qualität und Kosten ausbalancieren soll. Der
+  `codex`-Harness ist ausdrücklich aktiviert und erlaubt; `sales-claw` erhält
+  keinen Platform-API-Key.
 - Der volumenstärkere Auto-Responder verwendet standardmäßig
   `gpt-5.6-luna`.
 - Beide Modellnamen bleiben Konfiguration. Der Fachcode enthält keinen
@@ -40,19 +44,26 @@ bleiben.
 
 ## Sicherheitsgrenzen
 
-- Fehlender `OPENAI_API_KEY` oder `OPENAI_MODEL` beendet `sales-auto` mit
-  Exit `2`, bevor Nachrichten verarbeitet werden.
+- Fehlender `OPENAI_API_KEY`, fehlender `OPENAI_MODEL` oder ein ungültiges
+  `OPENAI_MAX_OUTPUT_TOKENS` beendet `sales-auto` mit Exit `2`, bevor
+  Nachrichten verarbeitet werden. Das Tokenbudget ist auf `1..10000` begrenzt
+  und wird pro Deployment mit Vorgabe `1500` gesetzt.
 - Ein Timeout erzeugt keinen zweiten, unkontrollierten Modellaufruf.
 - Modellantworten lösen nie direkt externe Aktionen aus; sie durchlaufen die
   vorhandenen Freigabe- und Versandverträge.
-- `OPENAI_API_KEY` liegt nur in `.env`, nie in JSON, Logs oder Chat.
+- `OPENAI_API_KEY` liegt in der Ziel-Runtime nur in `.env` und wird nur an
+  `sales-auto` gereicht, nie an `sales-claw` und nie in committed JSON, Logs
+  oder Chat. `scripts/seed-env.ps1` ist eine einmalige Legacy-Importausnahme aus
+  einer alten OpenClaw-JSON; die Quelle danach sicher löschen oder archivieren
+  und den Key bei unklarer Exposition rotieren.
 - Bestehende OpenClaw-State-Volumes werden von der Repo-Saat nicht
   überschrieben. Ihre Migration ist ein separates Betreiber-Gate.
 
 ## Akzeptanzkriterien
 
 - Auto-Responder-Verhaltenstests laufen gegen einen Fake-OpenAI-Transport.
-- OpenClaw ist auf `openai/gpt-5.6-terra` ohne Fallback konfiguriert.
+- OpenClaw ist auf `openai/gpt-5.6-terra` mit dem expliziten `codex`-Harness
+  ohne Fallback, Custom Base URL oder Platform-API-Key konfiguriert.
 - `sales-auto` ist auf `gpt-5.6-luna`, Responses API, `store=false` und
   Structured Output konfiguriert
   ([Responses API](https://developers.openai.com/api/reference/cli/resources/responses/methods/create),
@@ -63,9 +74,11 @@ bleiben.
 
 ## Noch nicht ausgeführt
 
-Kein echter OpenAI-Aufruf, keine API-Key-Prüfung, keine Kosten- oder
-Rate-Limit-Beobachtung, keine OpenClaw-State-Migration, kein Containerstart,
-keine WhatsApp-Antwort, kein Deployment und kein Cutover sind Teil der lokalen
-Implementierung. Der nächste einzelne Betreiber-Schritt ist, API-Billing und
-Projekt-Key einzurichten und anschließend in einem separat autorisierten Lauf
-genau einen metadata-only OpenAI-Preflight ohne Kundeninhalt auszuführen.
+Kein echter OpenAI-Aufruf, keine API-Key-Prüfung, keine Codex-Anmeldung, keine
+Kosten- oder Rate-Limit-Beobachtung, keine OpenClaw-State-Migration, kein
+Containerstart, keine WhatsApp-Antwort, kein Deployment und kein Cutover sind
+Teil der lokalen Implementierung. Der nächste einzelne Betreiber-Schritt für
+`sales-auto` ist, API-Billing und Projekt-Key einzurichten und anschließend in
+einem separat autorisierten Lauf genau einen metadata-only OpenAI-Preflight ohne
+Kundeninhalt auszuführen. Codex-Login und bestehender OpenClaw-State bleiben ein
+separates Betreiber-Gate.

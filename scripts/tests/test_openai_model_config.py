@@ -12,7 +12,6 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 SALES_CLAW_ENV_NAMES = {
-    "OPENAI_API_KEY",
     "OPENCLAW_STATE_DIR",
     "TZ",
 }
@@ -20,6 +19,7 @@ SALES_AUTO_ENV_NAMES = {
     "AUTO_INTERVAL_S",
     "AUTO_SAMMELFENSTER_S",
     "OPENAI_API_KEY",
+    "OPENAI_MAX_OUTPUT_TOKENS",
     "OPENAI_MODEL",
     "SALES_DB_URL",
     "TZ",
@@ -34,6 +34,7 @@ ENV_EXAMPLE_NAMES = {
     "LINKEDIN_PERSON_URN",
     "LINKEDIN_POST_LEAD_ID",
     "OPENAI_API_KEY",
+    "OPENAI_MAX_OUTPUT_TOKENS",
     "OPENAI_MODEL",
     "OPENWA_API_KEY",
     "OPENWA_SESSION_ID",
@@ -65,9 +66,10 @@ def _assert_compose_model_environment(compose: dict[str, object]) -> None:
     auto_env = set(services["sales-auto"]["environment"])
     claw_names = {item.partition("=")[0] for item in claw_env}
     auto_names = {item.partition("=")[0] for item in auto_env}
-    assert "OPENAI_API_KEY=${OPENAI_API_KEY:-}" in claw_env
+    assert not any(item.startswith("OPENAI_API_KEY=") for item in claw_env)
     assert "OPENAI_API_KEY=${OPENAI_API_KEY:-}" in auto_env
     assert "OPENAI_MODEL=${OPENAI_MODEL:-gpt-5.6-luna}" in auto_env
+    assert "OPENAI_MAX_OUTPUT_TOKENS=${OPENAI_MAX_OUTPUT_TOKENS:-1500}" in auto_env
     assert claw_names == SALES_CLAW_ENV_NAMES
     assert auto_names == SALES_AUTO_ENV_NAMES
 
@@ -77,23 +79,68 @@ def _assert_env_example_model_assignments(
 ) -> None:
     assert assignments.count(("OPENAI_API_KEY", "")) == 1
     assert assignments.count(("OPENAI_MODEL", "gpt-5.6-luna")) == 1
+    assert assignments.count(("OPENAI_MAX_OUTPUT_TOKENS", "1500")) == 1
     names = {name for name, _ in assignments}
     assert names == ENV_EXAMPLE_NAMES
 
 
-def test_openclaw_uses_openai_without_fallbacks() -> None:
-    config = json.loads((ROOT / "config/openclaw.json").read_text(encoding="utf-8"))
+def _assert_openclaw_subscription_route(config: dict[str, object]) -> None:
     model = config["agents"]["defaults"]["model"]
     assert model == {"primary": "openai/gpt-5.6-terra", "fallbacks": []}
     providers = config["models"]["providers"]
-    assert set(providers) == {"openai"}
-    assert providers["openai"]["models"] == [
-        {"id": "gpt-5.6-terra", "name": "gpt-5.6-terra"}
-    ]
+    assert providers == {"openai": {"agentRuntime": {"id": "codex"}}}
+    plugins = config["plugins"]
+    assert set(plugins["allow"]) == {"codex", "whatsapp"}
+    assert plugins["entries"]["codex"] == {"enabled": True}
     serialized = json.dumps(config)
     assert "anthropic" not in serialized.lower()
     assert "openrouter" not in serialized.lower()
     assert "api_key" not in serialized.lower()
+    assert "baseurl" not in serialized.lower()
+
+
+def test_openclaw_uses_codex_subscription_route_without_fallbacks() -> None:
+    config = json.loads((ROOT / "config/openclaw.json").read_text(encoding="utf-8"))
+    _assert_openclaw_subscription_route(config)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        lambda config: config["plugins"]["allow"].remove("codex"),
+        lambda config: config["plugins"]["entries"]["codex"].update(
+            {"enabled": False}
+        ),
+        lambda config: config["models"]["providers"]["openai"][
+            "agentRuntime"
+        ].update({"id": "openclaw"}),
+        lambda config: config["agents"]["defaults"]["model"]["fallbacks"].append(
+            "openai/gpt-5.6-luna"
+        ),
+        lambda config: config["models"]["providers"]["openai"].update(
+            {"baseUrl": "https://api.openai.com/v1"}
+        ),
+    ),
+    ids=(
+        "codex-not-allowed",
+        "codex-disabled",
+        "runtime-not-codex",
+        "fallback-added",
+        "custom-base-url-added",
+    ),
+)
+def test_openclaw_subscription_gate_rejects_route_mutations(mutation) -> None:
+    config = json.loads((ROOT / "config/openclaw.json").read_text(encoding="utf-8"))
+    mutated = copy.deepcopy(config)
+    mutated["models"]["providers"] = {
+        "openai": {"agentRuntime": {"id": "codex"}}
+    }
+    mutated["plugins"]["allow"] = ["codex", "whatsapp"]
+    mutated["plugins"]["entries"]["codex"] = {"enabled": True}
+    mutation(mutated)
+
+    with pytest.raises(AssertionError):
+        _assert_openclaw_subscription_route(mutated)
 
 
 def test_compose_passes_only_openai_model_credentials() -> None:
@@ -241,3 +288,49 @@ $rules = @($acl.GetAccessRules(
     assert allow_rules
     assert {rule["identity"] for rule in allow_rules} == {acl["currentSid"]}
     assert any(rule["canRead"] and rule["canWrite"] for rule in allow_rules)
+
+
+def test_seed_script_removes_target_when_acl_hardening_fails(
+    tmp_path: Path,
+) -> None:
+    powershell = shutil.which("pwsh")
+    assert powershell is not None, "PowerShell 7 ist fuer seed-env.ps1 erforderlich"
+
+    openai_key = "sk-test-acl-failure-key-must-not-be-printed"
+    source = tmp_path / "legacy-openclaw.json"
+    target = tmp_path / "generated.env"
+    source.write_text(
+        json.dumps({"env": {"OPENAI_API_KEY": openai_key}}),
+        encoding="utf-8",
+    )
+    shim_dir = tmp_path / "shim"
+    shim_dir.mkdir()
+    (shim_dir / "icacls.cmd").write_text(
+        "@echo off\r\nexit /b 5\r\n",
+        encoding="ascii",
+    )
+    environment = os.environ.copy()
+    environment["PATH"] = str(shim_dir) + os.pathsep + environment["PATH"]
+
+    completed = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-File",
+            str(ROOT / "scripts/seed-env.ps1"),
+            "-Quelle",
+            str(source),
+            "-Ziel",
+            str(target),
+        ],
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    output = completed.stdout + completed.stderr
+    assert completed.returncode != 0
+    assert not target.exists()
+    assert "Geschrieben nach" not in completed.stdout
+    assert openai_key not in output

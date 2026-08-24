@@ -24,12 +24,9 @@
   "models": {
     "providers": {
       "openai": {
-        "models": [
-          {
-            "id": "gpt-5.6-terra",
-            "name": "gpt-5.6-terra"
-          }
-        ]
+        "agentRuntime": {
+          "id": "codex"
+        }
       }
     }
   },
@@ -48,12 +45,16 @@
   },
   "plugins": {
     "allow": [
+      "codex",
       "whatsapp"
     ],
     "slots": {
       "memory": "memory-core"
     },
     "entries": {
+      "codex": {
+        "enabled": true
+      },
       "whatsapp": {
         "enabled": true
       },

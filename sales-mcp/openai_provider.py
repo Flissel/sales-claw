@@ -80,9 +80,35 @@ def _parse_response(body: bytes) -> OpenAIResult:
     if response.get("error") is not None:
         raise OpenAIPermanentError("OpenAI response contains an error")
 
-    output_text = response.get("output_text")
-    if not isinstance(output_text, str) or not output_text.strip():
+    output = response.get("output")
+    if not isinstance(output, list) or not output:
         raise OpenAIPermanentError("OpenAI response output is invalid")
+    text_parts: list[str] = []
+    saw_message = False
+    for item in output:
+        if not isinstance(item, dict):
+            raise OpenAIPermanentError("OpenAI response output is invalid")
+        item_type = item.get("type")
+        if item_type == "reasoning":
+            continue
+        if item_type != "message":
+            raise OpenAIPermanentError("OpenAI response output is invalid")
+        if item.get("status") != "completed" or item.get("role") != "assistant":
+            raise OpenAIPermanentError("OpenAI response output is invalid")
+        content = item.get("content")
+        if not isinstance(content, list) or not content:
+            raise OpenAIPermanentError("OpenAI response output is invalid")
+        saw_message = True
+        for part in content:
+            if not isinstance(part, dict) or part.get("type") != "output_text":
+                raise OpenAIPermanentError("OpenAI response output is invalid")
+            text = part.get("text")
+            if not isinstance(text, str) or not text:
+                raise OpenAIPermanentError("OpenAI response output is invalid")
+            text_parts.append(text)
+    if not saw_message or not text_parts:
+        raise OpenAIPermanentError("OpenAI response output is invalid")
+    output_text = "".join(text_parts)
     try:
         payload = json.loads(output_text)
     except json.JSONDecodeError:

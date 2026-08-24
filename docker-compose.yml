@@ -59,7 +59,6 @@ services:
     # Vertrauensdomäne für diese Geheimnisse — der eine hält die Kundendaten-DB,
     # der andere ist die einzige Komponente, die versenden darf.
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - TZ=${TZ:-Europe/Berlin}
       - OPENCLAW_STATE_DIR=/home/node/.openclaw
     volumes:
@@ -296,6 +295,7 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       # Kosteneffizientes OpenAI-Modell fuer den Auto-Betrieb.
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-5.6-luna}
+      - OPENAI_MAX_OUTPUT_TOKENS=${OPENAI_MAX_OUTPUT_TOKENS:-1500}
       # Sammelfenster: so alt muss die juengste Kundennachricht sein, bevor
       # geantwortet wird — mehrere schnelle Nachrichten bekommen EINE Antwort.
       - AUTO_SAMMELFENSTER_S=${AUTO_SAMMELFENSTER_S:-90}

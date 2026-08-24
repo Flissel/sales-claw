@@ -76,6 +76,9 @@ from nummern import normalisiere_empfaenger
 # --- Konfiguration (Modulkonstanten, damit Tests sie umbiegen koennen) ------
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "").strip()
+OPENAI_MAX_OUTPUT_TOKENS = os.environ.get(
+    "OPENAI_MAX_OUTPUT_TOKENS", "1500").strip()
+OPENAI_MAX_OUTPUT_TOKENS_SAFE_MAX = 10_000
 HTTP_TIMEOUT_S = float(os.environ.get("AUTO_TIMEOUT_S", "90"))
 AUTO_INTERVAL_S = float(os.environ.get("AUTO_INTERVAL_S", "20"))
 AUTO_ONCE = os.environ.get("AUTO_ONCE", "").strip().lower() in (
@@ -156,6 +159,16 @@ class AutoTransient(Exception):
     naechste Runde versucht es erneut. Es wurde nichts gesendet."""
 
 
+def _max_output_tokens() -> int:
+    try:
+        value = int(OPENAI_MAX_OUTPUT_TOKENS)
+    except (TypeError, ValueError):
+        raise AutoFehler("OPENAI_MAX_OUTPUT_TOKENS ist ungueltig") from None
+    if not 1 <= value <= OPENAI_MAX_OUTPUT_TOKENS_SAFE_MAX:
+        raise AutoFehler("OPENAI_MAX_OUTPUT_TOKENS ist ungueltig")
+    return value
+
+
 # ---------------------------------------------------------------------------
 # Kandidaten — die Posteingang-Frage, verschaerft
 # ---------------------------------------------------------------------------
@@ -232,6 +245,7 @@ def _profilblock(lead_id, name) -> str:
 
 def antwort_erzeugen(kandidat) -> dict:
     """Eine Antwort samt Signalen fuer diesen Lead. Wirft AutoFehler/-Transient."""
+    max_output_tokens = _max_output_tokens()
     verlauf = _verlauf(kandidat["lead_id"])
     profil = _profilblock(kandidat["lead_id"], kandidat["name"])
     auftrag = (
@@ -247,7 +261,7 @@ def antwort_erzeugen(kandidat) -> dict:
             input_text=auftrag,
             schema_name="auto_antwort",
             schema=ANTWORT_SCHEMA,
-            max_output_tokens=1500,
+            max_output_tokens=max_output_tokens,
             timeout_s=HTTP_TIMEOUT_S,
         )
     except OpenAITransientError as error:
@@ -423,6 +437,15 @@ def main() -> int:
         LOG.error("OPENAI_MODEL fehlt in der Umgebung — es wird nichts "
                   "beantwortet.")
         return 2
+    try:
+        max_output_tokens = _max_output_tokens()
+    except AutoFehler:
+        LOG.error(
+            "OPENAI_MAX_OUTPUT_TOKENS muss eine ganze Zahl zwischen 1 und %d "
+            "sein — es wird nichts beantwortet.",
+            OPENAI_MAX_OUTPUT_TOKENS_SAFE_MAX,
+        )
+        return 2
 
     _STOPP.clear()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -430,9 +453,16 @@ def main() -> int:
             signal.signal(sig, _stoppen)
         except ValueError:
             pass    # nicht im Hauptthread (Tests) — dann eben ohne Handler
-    LOG.info("Start: schema=%s modell=%s intervall=%gs sammelfenster=%ds "
-             "once=%s", server.SCHEMA, OPENAI_MODEL, AUTO_INTERVAL_S,
-             SAMMELFENSTER_S, AUTO_ONCE)
+    LOG.info(
+        "Start: schema=%s modell=%s max_output_tokens=%d intervall=%gs "
+        "sammelfenster=%ds once=%s",
+        server.SCHEMA,
+        OPENAI_MODEL,
+        max_output_tokens,
+        AUTO_INTERVAL_S,
+        SAMMELFENSTER_S,
+        AUTO_ONCE,
+    )
 
     while not _STOPP.is_set():
         try:

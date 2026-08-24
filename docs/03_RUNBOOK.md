@@ -629,28 +629,38 @@ Der Schema-Wächter in `server.py` bricht bei jedem anderen Wert als
 ### Modellwahl: OpenAI-only (Repo-Stand 24.08.2026)
 
 `config/openclaw.json` setzt `agents.defaults.model.primary` auf
-`openai/gpt-5.6-terra` und `fallbacks` auf eine leere Liste. `sales-auto` erhält
-sein separat konfigurierbares Modell über `OPENAI_MODEL`; Vorgabe ist
-`gpt-5.6-luna`. Beide Pfade verwenden damit OpenAI, ohne automatischen
-Provider- oder Modellwechsel.
+`openai/gpt-5.6-terra` und `fallbacks` auf eine leere Liste. Der Provider ist
+explizit an `agentRuntime.id=codex` gebunden; das `codex`-Plugin ist aktiviert
+und neben `whatsapp` in `plugins.allow` eingetragen. Dieser OpenClaw-Pfad nutzt
+die ChatGPT/Codex-Subscription und erhält keinen Platform-API-Key. `sales-auto`
+erhält sein separat konfigurierbares Platform-Modell über `OPENAI_MODEL`;
+Vorgabe ist `gpt-5.6-luna`. Beide Pfade haben keinen automatischen Provider-
+oder Modellwechsel.
 
-**Abrechnung und Authentifizierung:** ChatGPT-Abonnements und API-Abrechnung sind
-getrennt. Plus/Pro stellt kein API-Guthaben für diesen Stack bereit
+**Abrechnung und Authentifizierung:** ChatGPT-Abonnements und Platform-
+API-Abrechnung sind getrennt. Plus/Pro trägt die OpenClaw-Codex-Route, stellt
+aber kein API-Guthaben für `sales-auto` bereit
 ([ChatGPT Plus](https://help.openai.com/en/articles/6950777-what-is-chatgpt-plus),
 [ChatGPT-Abo und API](https://help.openai.com/en/articles/8156019-how-can-i-move-my-chatgpt-subscription-to-the-api)).
-Für eine spätere Live-Aktivierung braucht der Betreiber deshalb API-Billing und
-einen eigenen Projekt-Key.
+Für eine spätere Aktivierung von `sales-auto` braucht der Betreiber deshalb
+API-Billing und einen eigenen Projekt-Key. Die Codex-Anmeldung einer bestehenden
+OpenClaw-Instanz bleibt ein separates State-Migrations- und Betreiber-Gate.
 
 **Secret-Vertrag:** Der einzige Modellanbieter-Schlüssel in `.env` ist
-`OPENAI_API_KEY`. Schlüssel nie in JSON, Logs, Chat oder sichtbare
-Kommandozeilen kopieren. `OPENAI_MODEL=gpt-5.6-luna` ist kein Geheimnis und
-gilt nur für `sales-auto`.
+`OPENAI_API_KEY`, und ausschließlich `sales-auto` erhält ihn. Schlüssel nie in
+committed oder Ziel-Runtime-JSON, Logs, Chat oder sichtbare Kommandozeilen
+kopieren. `scripts/seed-env.ps1` ist nur für einen einmaligen Legacy-Import des
+Auto-Responder-Keys aus einer alten OpenClaw-JSON vorgesehen. Die Quelle danach
+sicher löschen oder archivieren und den Key bei unklarer Exposition rotieren.
+`OPENAI_MODEL=gpt-5.6-luna` und `OPENAI_MAX_OUTPUT_TOKENS=1500` sind keine
+Geheimnisse und gelten nur für `sales-auto`.
 
 **Auto-Responder-Vertrag:** `sales-auto` ruft die Responses API mit
 `store=false` und strengem JSON-Schema auf. In Erfolgslogs landen nur
 Response-ID, Modell und Token-Metadaten, keine Prompts oder Kundentexte.
 Fehlt `OPENAI_API_KEY` oder `OPENAI_MODEL`, beendet sich der Prozess vor der
-Verarbeitung mit Exit `2`.
+Verarbeitung mit Exit `2`. Dasselbe gilt, wenn `OPENAI_MAX_OUTPUT_TOKENS` keine
+ganze Zahl zwischen `1` und `10000` ist; der Compose-Standard ist `1500`.
 
 **Vorhandene Volumes:** `scripts/seed-volume.ps1` ist absichtlich idempotent.
 Liegt bereits `/home/node/.openclaw/openclaw.json` im Volume
@@ -660,10 +670,11 @@ Freigabe, Backup und dokumentiertem Rückfallplan migriert.
 
 **Nicht mit der lokalen Migration verifiziert:** echter API-Aufruf,
 Key-Gültigkeit, Kosten, Rate-Limits, Live-Modellauflösung, State-Migration,
-Containerstart, WhatsApp-Antwort, Deployment und Cutover. Der nächste einzelne
-Betreiber-Schritt ist: API-Billing und Projekt-Key einrichten und danach in
-einem separat autorisierten Lauf genau einen metadata-only OpenAI-Preflight
-ohne Kundeninhalt durchführen. Die technischen API-Verträge stehen in der
+Containerstart, WhatsApp-Antwort, Deployment und Cutover. Für `sales-auto` ist
+der nächste einzelne Betreiber-Schritt: API-Billing und Projekt-Key einrichten
+und danach in einem separat autorisierten Lauf genau einen metadata-only
+OpenAI-Preflight ohne Kundeninhalt durchführen. Codex-Login und Migration des
+bestehenden OpenClaw-State bleiben davon getrennt. Die technischen API-Verträge stehen in der
 [Responses-Referenz](https://developers.openai.com/api/reference/cli/resources/responses/methods/create)
 und der [Modellübersicht](https://developers.openai.com/api/docs/models).
 
@@ -1787,8 +1798,9 @@ select name, consent_status,
 >   würde freigegebene Kontakte wieder eintragen und damit die Auto-Antwort
 >   reaktivieren. Warnung steht auch im Skriptkopf.
 > * **`sales-auto` wird nicht gestartet** (Spur 1). Ohne
->   `OPENAI_API_KEY` oder `OPENAI_MODEL` beendet er sich zusätzlich mit Exit
->   `2`, bevor eine Nachricht verarbeitet wird.
+>   `OPENAI_API_KEY`, `OPENAI_MODEL` oder ein gültiges
+>   `OPENAI_MAX_OUTPUT_TOKENS` beendet er sich zusätzlich mit Exit `2`, bevor
+>   eine Nachricht verarbeitet wird.
 >
 > Der Rest dieses Abschnitts beschreibt, wie der Auto-Betrieb funktionierte
 > und was zu tun wäre, wenn ihn jemand **bewusst** wieder einschaltet. Das ist
@@ -1841,9 +1853,10 @@ hat **zwei Spuren für zwei WhatsApp-Konten**:
 > ab dem Zeitpunkt, an dem eine eigene Versandnummer gepairt ist.
 
 Einschalten setzt eine separate Betreiberfreigabe, getrennte Versandnummer und
-eingerichtete OpenAI-API-Abrechnung voraus. Danach `OPENAI_API_KEY` und
-`OPENAI_MODEL=gpt-5.6-luna` in `.env` setzen (`.env.example` erklärt die übrigen
-`AUTO_*`-Regler) und erst dann `docker compose up -d sales-auto`.
+eingerichtete OpenAI-API-Abrechnung voraus. Danach `OPENAI_API_KEY`,
+`OPENAI_MODEL=gpt-5.6-luna` und `OPENAI_MAX_OUTPUT_TOKENS=1500` in `.env` setzen
+(`.env.example` erklärt die übrigen `AUTO_*`-Regler) und erst dann
+`docker compose up -d sales-auto`.
 Ausschalten: `docker compose stop sales-auto` — nichts anderes ist nötig,
 der Dienst hält keinen Zustand außerhalb der Datenbank.
 
