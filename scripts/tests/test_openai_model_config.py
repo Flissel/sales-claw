@@ -11,13 +11,39 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-MODEL_ENV_NAMES = {
-    "ANTHROPIC_API_KEY",
-    "AUTO_MODELL",
+SALES_CLAW_ENV_NAMES = {
     "OPENAI_API_KEY",
-    "OPENAI_BASE_URL",
+    "OPENCLAW_STATE_DIR",
+    "TZ",
+}
+SALES_AUTO_ENV_NAMES = {
+    "AUTO_INTERVAL_S",
+    "AUTO_SAMMELFENSTER_S",
+    "OPENAI_API_KEY",
     "OPENAI_MODEL",
-    "OPENROUTER_API_KEY",
+    "SALES_DB_URL",
+    "TZ",
+}
+ENV_EXAMPLE_NAMES = {
+    "APIFY_TOKEN",
+    "EMAIL_ABSENDER",
+    "INBOX_UNBEKANNT_LEAD_ID",
+    "INBOX_WEBHOOK_SECRET",
+    "LINKEDIN_ACCESS_TOKEN",
+    "LINKEDIN_API_VERSION",
+    "LINKEDIN_PERSON_URN",
+    "LINKEDIN_POST_LEAD_ID",
+    "OPENAI_API_KEY",
+    "OPENAI_MODEL",
+    "OPENWA_API_KEY",
+    "OPENWA_SESSION_ID",
+    "RECHERCHE_LEAD_ID",
+    "SMTP_HOST",
+    "SMTP_PASSWORT",
+    "SMTP_PORT",
+    "SMTP_USER",
+    "TZ",
+    "UI_TAILSCALE_IP",
 }
 
 
@@ -42,8 +68,8 @@ def _assert_compose_model_environment(compose: dict[str, object]) -> None:
     assert "OPENAI_API_KEY=${OPENAI_API_KEY:-}" in claw_env
     assert "OPENAI_API_KEY=${OPENAI_API_KEY:-}" in auto_env
     assert "OPENAI_MODEL=${OPENAI_MODEL:-gpt-5.6-luna}" in auto_env
-    assert claw_names & MODEL_ENV_NAMES == {"OPENAI_API_KEY"}
-    assert auto_names & MODEL_ENV_NAMES == {"OPENAI_API_KEY", "OPENAI_MODEL"}
+    assert claw_names == SALES_CLAW_ENV_NAMES
+    assert auto_names == SALES_AUTO_ENV_NAMES
 
 
 def _assert_env_example_model_assignments(
@@ -52,7 +78,7 @@ def _assert_env_example_model_assignments(
     assert assignments.count(("OPENAI_API_KEY", "")) == 1
     assert assignments.count(("OPENAI_MODEL", "gpt-5.6-luna")) == 1
     names = {name for name, _ in assignments}
-    assert names & MODEL_ENV_NAMES == {"OPENAI_API_KEY", "OPENAI_MODEL"}
+    assert names == ENV_EXAMPLE_NAMES
 
 
 def test_openclaw_uses_openai_without_fallbacks() -> None:
@@ -80,6 +106,8 @@ def test_compose_passes_only_openai_model_credentials() -> None:
     (
         ("sales-claw", "OPENAI_BASE_URL=http://localhost:11434/v1"),
         ("sales-auto", "AUTO_MODELL=legacy-model"),
+        ("sales-claw", "OLLAMA_MODEL=local-model"),
+        ("sales-auto", "ACME_PROVIDER_MODEL=unreviewed-model"),
     ),
 )
 def test_compose_gate_rejects_forbidden_model_assignments(
@@ -103,6 +131,8 @@ def test_env_example_has_only_openai_model_assignments() -> None:
     (
         ("OPENAI_BASE_URL", "http://localhost:11434/v1"),
         ("AUTO_MODELL", "legacy-model"),
+        ("OLLAMA_MODEL", "local-model"),
+        ("ACME_PROVIDER_MODEL", "unreviewed-model"),
     ),
 )
 def test_env_example_gate_rejects_forbidden_model_assignments(
