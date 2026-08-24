@@ -62,16 +62,37 @@ class FakeDocker:
 
 
 class GuardedRestoreRunner:
-    def __init__(self, mismatch_volume: str | None = None) -> None:
+    def __init__(
+        self,
+        mismatch_volume: str | None = None,
+        *,
+        missing_volume: str | None = None,
+        probe_outputs: dict[str, str] | None = None,
+    ) -> None:
         self.mismatch_volume = mismatch_volume
+        self.missing_volume = missing_volume
+        self.probe_outputs = probe_outputs or {}
         self.calls: list[list[str]] = []
 
     def __call__(self, arguments: object) -> subprocess.CompletedProcess[str]:
         assert isinstance(arguments, list)
         assert all(isinstance(item, str) for item in arguments)
         command = list(arguments)
-        if command[1] == "start" or "up" in command:
-            raise AssertionError("service start is forbidden")
+        if command[1:3] == ["volume", "create"] or command[1] == "start" or "up" in command:
+            raise AssertionError("volume creation and service start are forbidden")
+        if command[:5] == ["docker", "volume", "inspect", "--format", "{{.Name}}"]:
+            assert len(command) == 6
+            volume_name = command[5]
+            assert volume_name in {"sales-claw-state", "sales-claw-keys", "openwa-data"}
+            self.calls.append(command)
+            if self.missing_volume == volume_name:
+                return subprocess.CompletedProcess(command, 1, stdout="", stderr="missing")
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=self.probe_outputs.get(volume_name, f"{volume_name}\n"),
+                stderr="",
+            )
         assert command[:6] == ["docker", "run", "--rm", "--network", "none", "--mount"]
         assert command[7] == "--mount"
         assert command[9:12] == ["alpine:3.20", "sh", "-c"]
@@ -848,16 +869,106 @@ def test_restored_state_verifier_uses_exact_read_only_volume_allowlist_and_no_st
         "sales-claw-keys: verified (1 files)",
         "openwa-data: verified (1 files)",
     ]
-    assert len(runner.calls) == 3
+    assert len(runner.calls) == 6
+    assert runner.calls[:3] == [
+        ["docker", "volume", "inspect", "--format", "{{.Name}}", volume]
+        for volume in ("sales-claw-state", "sales-claw-keys", "openwa-data")
+    ]
+    checker_calls = runner.calls[3:]
     assert [
         re.fullmatch(
             r"type=volume,source=([^,]+),target=/actual,readonly", call[8]
         ).group(1)
-        for call in runner.calls
+        for call in checker_calls
     ] == [
         "sales-claw-state",
         "sales-claw-keys",
         "openwa-data",
+    ]
+
+
+def _empty_restore_backups(state_source: Path, openwa_source: Path) -> None:
+    state_manifest = json.loads((state_source / "MANIFEST.json").read_text(encoding="utf-8"))
+    for logical_name in ("state", "keys"):
+        archive_path = state_source / f"{logical_name}.tar"
+        with tarfile.open(archive_path, "w"):
+            pass
+        archive_bytes = archive_path.read_bytes()
+        record = state_manifest["archive"][logical_name]
+        record["bytes"] = len(archive_bytes)
+        record["sha256"] = hashlib.sha256(archive_bytes).hexdigest()
+        record["eintraege"] = 0
+    (state_source / "MANIFEST.json").write_text(json.dumps(state_manifest), encoding="utf-8")
+
+    openwa_archive = openwa_source / "openwa.tar"
+    with tarfile.open(openwa_archive, "w"):
+        pass
+    openwa_bytes = openwa_archive.read_bytes()
+    openwa_manifest = json.loads((openwa_source / "MANIFEST.json").read_text(encoding="utf-8"))
+    openwa_manifest["archive"].update(
+        {
+            "bytes": len(openwa_bytes),
+            "sha256": hashlib.sha256(openwa_bytes).hexdigest(),
+            "entries": 0,
+        }
+    )
+    (openwa_source / "MANIFEST.json").write_text(json.dumps(openwa_manifest), encoding="utf-8")
+
+
+@pytest.mark.parametrize("missing_volume", ("sales-claw-state", "sales-claw-keys", "openwa-data"))
+@pytest.mark.parametrize("empty_backup", (False, True), ids=("nonempty-backup", "empty-backup"))
+def test_restored_state_verifier_rejects_each_missing_volume_before_any_checker_or_mutation(
+    state_backup_dir: Path,
+    backup_dir: Path,
+    missing_volume: str,
+    empty_backup: bool,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    if empty_backup:
+        _empty_restore_backups(state_backup_dir, backup_dir)
+    runner = GuardedRestoreRunner(missing_volume=missing_volume)
+
+    result = RESTORE_MODULE.main(
+        [
+            "--state-backup",
+            str(state_backup_dir),
+            "--openwa-backup",
+            str(backup_dir),
+        ],
+        run=runner,
+    )
+
+    output = capsys.readouterr()
+    assert result != 0
+    assert output.err.strip() == "restore verification: rejected"
+    assert runner.calls
+    assert all(call[1:3] == ["volume", "inspect"] for call in runner.calls)
+
+
+@pytest.mark.parametrize(
+    "probe_output",
+    ("", "sales-claw-state\nsales-claw-state\n", "wrong-volume\n", "sales-claw-state extra\n"),
+)
+def test_restored_state_verifier_rejects_malformed_or_ambiguous_volume_identity_before_checker(
+    state_backup_dir: Path,
+    backup_dir: Path,
+    probe_output: str,
+) -> None:
+    runner = GuardedRestoreRunner(probe_outputs={"sales-claw-state": probe_output})
+
+    result = RESTORE_MODULE.main(
+        [
+            "--state-backup",
+            str(state_backup_dir),
+            "--openwa-backup",
+            str(backup_dir),
+        ],
+        run=runner,
+    )
+
+    assert result != 0
+    assert runner.calls == [
+        ["docker", "volume", "inspect", "--format", "{{.Name}}", "sales-claw-state"]
     ]
 
 

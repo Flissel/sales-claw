@@ -346,13 +346,19 @@ def test_runbook_linkedin_action_is_fail_closed_until_exact_id_runtime_exists() 
 
 def test_runbook_installs_and_verifies_source_before_secret_transfer() -> None:
     phases = _phase_sections(RUNBOOK.read_text(encoding="utf-8"))
+    package_phase = phases[4]
     source_phase = phases[5]
     secret_phase = phases[6]
 
     _assert_ordered(
+        package_phase,
+        '$ReviewedSourceCommit = git rev-parse --verify "HEAD^{commit}"',
+        '$ReviewedOpenwaCommit = git -C openwa/upstream rev-parse --verify "HEAD^{commit}"',
+        '--nested-source "openwa/upstream=$ReviewedOpenwaCommit"',
+    )
+    _assert_ordered(
         source_phase,
         "mktemp -d /home/debian/.sales-claw-staging.XXXXXX",
-        "$ReviewedSourceCommit = git rev-parse HEAD",
         'git rev-parse "HEAD:$InstallerPfad"',
         "git hash-object -- $InstallerPfad",
         "Get-FileHash -Algorithm SHA256",
@@ -360,9 +366,12 @@ def test_runbook_installs_and_verifies_source_before_secret_transfer() -> None:
         "sales-claw-proxmox-source.tar.gz",
         'sha256sum "$REMOTE_STAGE/install_proxmox_package.py"',
         "jedes Archivmitglied gegen die Dateiliste im Manifest",
+        "beide vom Betreiber gelieferten Commit-Pins",
+        "kein archivgelieferter Code ausgefuehrt",
         "sicher entpacken",
         "/home/debian/sales-claw",
         '--expected-commit "$EXPECTED_SOURCE_COMMIT"',
+        '--expected-nested-source "openwa/upstream=$EXPECTED_OPENWA_COMMIT"',
     )
     assert "tar -xOf" not in source_phase
     assert "separat per SCP" not in source_phase
@@ -418,8 +427,10 @@ def test_runbook_package_gate_requires_clean_reviewed_provenance_and_excludes_me
         phase,
         "getrackten",
         "`HEAD`-Inventar",
+        "exakten `HEAD`-Baum",
         "dirty, untracked oder ignored Datei",
-        "nicht paketierbar",
+        "sauberer aeusserer Klon allein reicht",
+        "absichtlich paketgeschlossen",
         "`media/` ist kein Quellpaket-Bestandteil",
         "eigene Datenfreigabe und einen getrennten Transfer",
     )

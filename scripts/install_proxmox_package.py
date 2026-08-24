@@ -15,10 +15,15 @@ from collections.abc import Mapping, Sequence
 ARCHIVE_NAME = "sales-claw-proxmox-source.tar.gz"
 EXECUTABLE_FILES = frozenset(
     {
-        "openwa/upstream/backup.sh",
-        "openwa/upstream/restore.sh",
+        "openwa/upstream/scripts/backup.sh",
+        "openwa/upstream/scripts/restore.sh",
     }
 )
+NESTED_SOURCE_REQUIREMENTS = {
+    "openwa/upstream": frozenset(
+        {"Dockerfile", "scripts/backup.sh", "scripts/restore.sh"}
+    ),
+}
 
 
 class InstallError(ValueError):
@@ -82,10 +87,47 @@ def _commit_id(value: object, label: str) -> str:
     return value.lower()
 
 
+def _nested_source_records(
+    value: object,
+    expected_nested_commits: Mapping[str, str],
+) -> list[dict[str, str]]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise InstallError("manifest nested source inventory is invalid")
+    records: list[dict[str, str]] = []
+    for raw in value:
+        if not isinstance(raw, Mapping) or set(raw) != {"path", "commit"}:
+            raise InstallError("manifest nested source record is invalid")
+        records.append(
+            {
+                "path": _safe_path(raw["path"]),
+                "commit": _commit_id(raw["commit"], "manifest nested source commit"),
+            }
+        )
+    paths = [record["path"] for record in records]
+    if paths != sorted(paths) or len(paths) != len(set(paths)):
+        raise InstallError("manifest nested source inventory is not unique and sorted")
+
+    expected: list[dict[str, str]] = []
+    for path, commit in expected_nested_commits.items():
+        expected.append(
+            {
+                "path": _safe_path(path),
+                "commit": _commit_id(commit, "expected nested source commit"),
+            }
+        )
+    expected.sort(key=lambda record: record["path"])
+    if records != expected:
+        raise InstallError("manifest nested source commit does not match reviewed commit")
+    if set(paths) != set(NESTED_SOURCE_REQUIREMENTS):
+        raise InstallError("manifest nested source set is invalid")
+    return records
+
+
 def _manifest(
     manifest_blob: bytes,
     archive_blob: bytes,
     expected_commit: str,
+    expected_nested_commits: Mapping[str, str],
 ) -> list[dict[str, object]]:
     try:
         value = json.loads(manifest_blob.decode("utf-8-sig"))
@@ -103,7 +145,20 @@ def _manifest(
     digest = value.get("archive_sha256")
     if not isinstance(digest, str) or digest.lower() != hashlib.sha256(archive_blob).hexdigest():
         raise InstallError("manifest archive hash does not match")
-    return _file_records(value.get("files"))
+    records = _file_records(value.get("files"))
+    nested_sources = _nested_source_records(
+        value.get("nested_sources"),
+        expected_nested_commits,
+    )
+    paths = {str(record["path"]) for record in records}
+    for nested in nested_sources:
+        required = {
+            f"{nested['path']}/{relative_path}"
+            for relative_path in NESTED_SOURCE_REQUIREMENTS[nested["path"]]
+        }
+        if not required.issubset(paths):
+            raise InstallError("manifest nested source is missing required files")
+    return records
 
 
 def _verified_members(
@@ -156,10 +211,16 @@ def install_package(
     destination: Path,
     *,
     expected_commit: str,
+    expected_nested_commits: Mapping[str, str],
 ) -> int:
     archive_blob = _regular_file_bytes(archive_path, "archive")
     manifest_blob = _regular_file_bytes(manifest_path, "manifest")
-    records = _manifest(manifest_blob, archive_blob, expected_commit)
+    records = _manifest(
+        manifest_blob,
+        archive_blob,
+        expected_commit,
+        expected_nested_commits,
+    )
     members = _verified_members(archive_blob, records)
     _require_fresh_destination(destination)
 
@@ -193,18 +254,41 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--archive", required=True, type=Path)
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--expected-commit", required=True)
+    parser.add_argument(
+        "--expected-nested-source",
+        action="append",
+        type=_nested_source_argument,
+        required=True,
+        metavar="PATH=COMMIT",
+    )
     parser.add_argument("--destination", required=True, type=Path)
     return parser
 
 
+def _nested_source_argument(value: str) -> tuple[str, str]:
+    path, separator, commit = value.partition("=")
+    if not separator:
+        raise argparse.ArgumentTypeError("nested source must use PATH=COMMIT")
+    try:
+        return _safe_path(path), _commit_id(commit, "expected nested source commit")
+    except InstallError as error:
+        raise argparse.ArgumentTypeError(str(error)) from None
+
+
 def main() -> int:
     arguments = _parser().parse_args()
+    nested_pairs = arguments.expected_nested_source
+    expected_nested_commits = dict(nested_pairs)
+    if len(expected_nested_commits) != len(nested_pairs):
+        print("source package: rejected")
+        return 1
     try:
         count = install_package(
             arguments.archive,
             arguments.manifest,
             arguments.destination,
             expected_commit=arguments.expected_commit,
+            expected_nested_commits=expected_nested_commits,
         )
     except InstallError:
         print("source package: rejected")

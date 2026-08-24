@@ -22,6 +22,8 @@ MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
 build_package = MODULE.build_package
+OPENWA_SOURCE_PATH = "openwa/upstream"
+OPENWA_REQUIRED_FILES = ("Dockerfile", "scripts/backup.sh", "scripts/restore.sh")
 
 
 def _workspace(tmp_path: Path) -> tuple[Path, Path]:
@@ -29,8 +31,10 @@ def _workspace(tmp_path: Path) -> tuple[Path, Path]:
     output = tmp_path / "out"
     root.mkdir(parents=True)
     _init_repository(root)
+    (root / ".gitignore").write_text("openwa/\n", encoding="utf-8")
     (root / "sales-mcp").mkdir()
     (root / "sales-mcp" / "safe.py").write_text("safe", encoding="utf-8")
+    _init_openwa_repository(root)
     return root, output
 
 
@@ -61,9 +65,35 @@ def _commit_fixture(root: Path) -> str:
     return resolved.stdout.strip()
 
 
+def _init_openwa_repository(root: Path) -> str:
+    upstream = root / "openwa" / "upstream"
+    upstream.mkdir(parents=True)
+    _init_repository(upstream)
+    for name in (*OPENWA_REQUIRED_FILES, "package.json"):
+        path = upstream / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"controlled {name} fixture\n", encoding="utf-8")
+    return _commit_fixture(upstream)
+
+
+def _nested_commit(root: Path) -> str:
+    resolved = _git(root / "openwa" / "upstream", "rev-parse", "HEAD")
+    assert resolved.returncode == 0, resolved.stderr
+    return resolved.stdout.strip()
+
+
+def _build_current_package(root: Path, output: Path) -> tuple[Path, Path]:
+    return MODULE.build_package(
+        root,
+        output,
+        expected_nested_commits={OPENWA_SOURCE_PATH: _nested_commit(root)},
+    )
+
+
 def build_package(root: Path, output: Path) -> tuple[Path, Path]:
     _commit_fixture(root)
-    return MODULE.build_package(root, output)
+    _commit_fixture(root / "openwa" / "upstream")
+    return _build_current_package(root, output)
 
 
 def _write_valid_package_pair(archive_path: Path, manifest_path: Path, payload: bytes) -> None:
@@ -107,11 +137,11 @@ def test_package_uses_allowlist_and_excludes_secrets(tmp_path: Path) -> None:
     output = tmp_path / "out"
     root.mkdir(parents=True)
     _init_repository(root)
+    (root / ".gitignore").write_text("openwa/\n", encoding="utf-8")
     (root / "sales-mcp").mkdir()
-    (root / "openwa" / "upstream").mkdir(parents=True)
+    _init_openwa_repository(root)
     (root / "graphify-out").mkdir()
     (root / "sales-mcp" / "linkedin_dispatch.py").write_text("pilot", encoding="utf-8")
-    (root / "openwa" / "upstream" / "package.json").write_text("{}", encoding="utf-8")
     (root / ".env").write_text("SECRET=real", encoding="utf-8")
     (root / "graphify-out" / "graph.json").write_text("private", encoding="utf-8")
 
@@ -128,6 +158,86 @@ def test_package_uses_allowlist_and_excludes_secrets(tmp_path: Path) -> None:
     assert manifest["archive_bytes"] == archive_path.stat().st_size
     assert manifest["files"] == sorted(manifest["files"], key=lambda record: record["path"])
     assert manifest["source_commit"] == _git(root, "rev-parse", "HEAD").stdout.strip()
+    assert manifest["nested_sources"] == [
+        {"path": OPENWA_SOURCE_PATH, "commit": _nested_commit(root)}
+    ]
+
+
+def test_package_inventories_only_the_exact_pinned_nested_head_tree(tmp_path: Path) -> None:
+    root, output = _workspace(tmp_path)
+    nested = root / "openwa" / "upstream"
+    (nested / "tracked.txt").write_text("reviewed nested payload\n", encoding="utf-8")
+
+    archive_path, manifest_path = build_package(root, output)
+
+    with tarfile.open(archive_path, "r:gz") as archive:
+        names = archive.getnames()
+    assert "openwa/upstream/tracked.txt" in names
+    assert not any(name == ".git" or "/.git/" in name or name.startswith(".git/") for name in names)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["nested_sources"] == [
+        {"path": OPENWA_SOURCE_PATH, "commit": _nested_commit(root)}
+    ]
+
+
+@pytest.mark.parametrize("missing_name", OPENWA_REQUIRED_FILES)
+def test_package_rejects_nested_snapshot_missing_required_build_file(
+    tmp_path: Path, missing_name: str
+) -> None:
+    root, output = _workspace(tmp_path)
+    _commit_fixture(root)
+    nested = root / "openwa" / "upstream"
+    (nested / missing_name).unlink()
+    nested_commit = _commit_fixture(nested)
+
+    with pytest.raises(ValueError, match="required files"):
+        MODULE.build_package(
+            root,
+            output,
+            expected_nested_commits={OPENWA_SOURCE_PATH: nested_commit},
+        )
+
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("state_kind", ("dirty", "untracked", "ignored"))
+def test_package_rejects_dirty_untracked_or_ignored_nested_repository_state(
+    tmp_path: Path, state_kind: str
+) -> None:
+    root, output = _workspace(tmp_path)
+    _commit_fixture(root)
+    nested = root / "openwa" / "upstream"
+    if state_kind == "ignored":
+        (nested / ".gitignore").write_text("ignored-private.txt\n", encoding="utf-8")
+        nested_commit = _commit_fixture(nested)
+        (nested / "ignored-private.txt").write_text("private fixture\n", encoding="utf-8")
+    else:
+        nested_commit = _nested_commit(root)
+        target = nested / ("Dockerfile" if state_kind == "dirty" else "untracked.txt")
+        target.write_text("foreign working-tree fixture\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="nested source.*reviewed commit"):
+        MODULE.build_package(
+            root,
+            output,
+            expected_nested_commits={OPENWA_SOURCE_PATH: nested_commit},
+        )
+
+    assert not output.exists()
+
+
+def test_package_rejects_wrong_caller_pinned_nested_commit(tmp_path: Path) -> None:
+    root, output = _workspace(tmp_path)
+    _commit_fixture(root)
+
+    with pytest.raises(ValueError, match="nested source commit"):
+        MODULE.build_package(
+            root,
+            output,
+            expected_nested_commits={OPENWA_SOURCE_PATH: "0" * 40},
+        )
+
+    assert not output.exists()
 
 
 @pytest.mark.parametrize(
@@ -148,7 +258,7 @@ def test_package_rejects_untracked_files_inside_source_scope(
     candidate.write_text("controlled fixture", encoding="utf-8")
 
     with pytest.raises(ValueError, match="reviewed commit"):
-        MODULE.build_package(root, output)
+        _build_current_package(root, output)
 
     assert not output.exists()
 
@@ -159,7 +269,7 @@ def test_package_rejects_dirty_tracked_file_inside_source_scope(tmp_path: Path) 
     (root / "sales-mcp" / "safe.py").write_text("dirty fixture", encoding="utf-8")
 
     with pytest.raises(ValueError, match="reviewed commit"):
-        MODULE.build_package(root, output)
+        _build_current_package(root, output)
 
     assert not output.exists()
 
@@ -173,7 +283,7 @@ def test_package_rejects_ignored_file_inside_source_scope(tmp_path: Path) -> Non
     )
 
     with pytest.raises(ValueError, match="reviewed commit"):
-        MODULE.build_package(root, output)
+        _build_current_package(root, output)
 
     assert not output.exists()
 
@@ -214,8 +324,9 @@ def test_package_excludes_customer_reports_and_preserves_only_required_executabl
     (root / "reports").mkdir()
     (root / "reports" / "customer.md").write_text("customer PII", encoding="utf-8")
     upstream = root / "openwa" / "upstream"
-    upstream.mkdir(parents=True)
-    for name in ("backup.sh", "restore.sh", "entrypoint.sh", "helper.sh"):
+    upstream.mkdir(parents=True, exist_ok=True)
+    for name in ("scripts/backup.sh", "scripts/restore.sh", "entrypoint.sh", "helper.sh"):
+        (upstream / name).parent.mkdir(parents=True, exist_ok=True)
         (upstream / name).write_text("#!/bin/sh\n", encoding="utf-8")
 
     archive_path, _ = build_package(root, output)
@@ -223,8 +334,8 @@ def test_package_excludes_customer_reports_and_preserves_only_required_executabl
     with tarfile.open(archive_path, "r:gz") as archive:
         members = {member.name: member for member in archive.getmembers()}
     assert not any(name == "reports" or name.startswith("reports/") for name in members)
-    assert members["openwa/upstream/backup.sh"].mode == 0o755
-    assert members["openwa/upstream/restore.sh"].mode == 0o755
+    assert members["openwa/upstream/scripts/backup.sh"].mode == 0o755
+    assert members["openwa/upstream/scripts/restore.sh"].mode == 0o755
     assert members["openwa/upstream/entrypoint.sh"].mode == 0o644
     assert members["openwa/upstream/helper.sh"].mode == 0o644
 
@@ -244,6 +355,7 @@ def test_installer_verifies_pair_and_extracts_exact_manifest_inventory(
         manifest_path,
         destination,
         expected_commit=expected_commit,
+        expected_nested_commits={OPENWA_SOURCE_PATH: _nested_commit(root)},
     )
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -273,6 +385,7 @@ def test_installer_rejects_manifest_mismatch_without_leaving_destination(
             manifest_path,
             destination,
             expected_commit=manifest["source_commit"],
+            expected_nested_commits={OPENWA_SOURCE_PATH: _nested_commit(root)},
         )
 
     assert not destination.exists()
@@ -291,6 +404,27 @@ def test_installer_rejects_wrong_reviewed_source_commit_without_destination(
             manifest_path,
             destination,
             expected_commit="0" * 40,
+            expected_nested_commits={OPENWA_SOURCE_PATH: _nested_commit(root)},
+        )
+
+    assert not destination.exists()
+
+
+def test_installer_rejects_wrong_reviewed_nested_commit_without_destination(
+    tmp_path: Path,
+) -> None:
+    root, output = _workspace(tmp_path)
+    archive_path, manifest_path = build_package(root, output)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    destination = tmp_path / "wrong-nested-source"
+
+    with pytest.raises(InstallError, match="nested source commit"):
+        install_package(
+            archive_path,
+            manifest_path,
+            destination,
+            expected_commit=manifest["source_commit"],
+            expected_nested_commits={OPENWA_SOURCE_PATH: "0" * 40},
         )
 
     assert not destination.exists()
@@ -327,6 +461,9 @@ def test_trusted_installer_subprocess_rejects_duplicate_member_without_execution
                 "archive_sha256": hashlib.sha256(archive_bytes).hexdigest(),
                 "files": records,
                 "source_commit": "1" * 40,
+                "nested_sources": [
+                    {"path": OPENWA_SOURCE_PATH, "commit": "2" * 40}
+                ],
             }
         ),
         encoding="utf-8",
@@ -342,6 +479,8 @@ def test_trusted_installer_subprocess_rejects_duplicate_member_without_execution
             str(manifest_path),
             "--expected-commit",
             "1" * 40,
+            "--expected-nested-source",
+            f"{OPENWA_SOURCE_PATH}={'2' * 40}",
             "--destination",
             str(destination),
         ],
@@ -360,6 +499,8 @@ def test_manifest_exactly_describes_sorted_archive_inventory(tmp_path: Path) -> 
     output = tmp_path / "out"
     root.mkdir(parents=True)
     _init_repository(root)
+    (root / ".gitignore").write_text("openwa/\n", encoding="utf-8")
+    _init_openwa_repository(root)
     (root / "config").mkdir()
     (root / "sales-mcp" / "nested").mkdir(parents=True)
     (root / "docker-compose.proxmox.yml").write_text("services: {}\n", encoding="utf-8")
@@ -403,9 +544,15 @@ def test_package_requires_reviewed_git_repository_and_rejects_tracked_symlinks(
     root.mkdir()
 
     with pytest.raises(ValueError, match="reviewed Git"):
-        MODULE.build_package(root, output)
+        MODULE.build_package(
+            root,
+            output,
+            expected_nested_commits={OPENWA_SOURCE_PATH: "0" * 40},
+        )
 
     _init_repository(root)
+    (root / ".gitignore").write_text("openwa/\n", encoding="utf-8")
+    _init_openwa_repository(root)
     (root / "sales-mcp").mkdir()
     (root / "sales-mcp" / "safe.py").write_text("safe", encoding="utf-8")
     external = tmp_path / "external.txt"
@@ -617,7 +764,13 @@ def test_temp_artifacts_cannot_be_substituted_at_publication_seam(
     assert malicious_archive.read_bytes() == malicious_archive_before
     assert malicious_manifest.read_bytes() == malicious_manifest_before
     with tarfile.open(archive_path, "r:gz") as archive:
-        assert archive.getnames() == ["sales-mcp/safe.py"]
+        assert archive.getnames() == [
+            "openwa/upstream/Dockerfile",
+            "openwa/upstream/package.json",
+            "openwa/upstream/scripts/backup.sh",
+            "openwa/upstream/scripts/restore.sh",
+            "sales-mcp/safe.py",
+        ]
         archived = archive.extractfile("sales-mcp/safe.py")
         assert archived is not None
         assert archived.read() == b"safe"

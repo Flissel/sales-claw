@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 import ctypes
 from dataclasses import dataclass
 import hashlib
@@ -30,8 +31,12 @@ ALLOWED_ROOT_DIRS = (
     "docs",
     "sales-mcp",
     "scripts",
-    "openwa/upstream",
 )
+NESTED_SOURCE_REQUIREMENTS = {
+    "openwa/upstream": frozenset(
+        {"Dockerfile", "scripts/backup.sh", "scripts/restore.sh"}
+    ),
+}
 EXCLUDED_PARTS = {
     ".git",
     ".pytest_cache",
@@ -49,8 +54,8 @@ SECRET_SUFFIXES = (".pem", ".key", ".p12")
 SECRET_FILE_NAMES = frozenset({"credential.json", "credentials.json"})
 EXECUTABLE_FILES = frozenset(
     {
-        "openwa/upstream/backup.sh",
-        "openwa/upstream/restore.sh",
+        "openwa/upstream/scripts/backup.sh",
+        "openwa/upstream/scripts/restore.sh",
     }
 )
 CHUNK_SIZE = 1024 * 1024
@@ -201,6 +206,13 @@ class _Candidate:
     identity: _Identity
 
 
+@dataclass(frozen=True)
+class _ReviewedNestedSource:
+    path: str
+    commit: str
+    inventory: tuple[str, ...]
+
+
 @dataclass
 class _PinnedDirectory:
     path: Path
@@ -272,14 +284,17 @@ class _SourceTree:
             try:
                 git_stat = git_dir.lstat()
             except FileNotFoundError:
-                raise ValueError("source_root must contain a non-reparse .git directory") from None
-            if _stat_is_reparse(git_stat) or not stat.S_ISDIR(git_stat.st_mode):
-                raise ValueError("source_root must contain a non-reparse .git directory")
-            chain.pin_child(
-                git_dir,
-                _identity(git_stat),
-                "source_root .git directory changed or is a reparse point",
-            )
+                raise ValueError("source_root must contain non-reparse Git metadata") from None
+            if _stat_is_reparse(git_stat) or not (
+                stat.S_ISDIR(git_stat.st_mode) or stat.S_ISREG(git_stat.st_mode)
+            ):
+                raise ValueError("source_root must contain non-reparse Git metadata")
+            if stat.S_ISDIR(git_stat.st_mode):
+                chain.pin_child(
+                    git_dir,
+                    _identity(git_stat),
+                    "source_root .git directory changed or is a reparse point",
+                )
             return cls(root, chain)
         except BaseException:
             chain.close()
@@ -321,17 +336,33 @@ class _Digest(Protocol):
         ...
 
 
-def build_package(source_root: Path, output_dir: Path) -> tuple[Path, Path]:
+def build_package(
+    source_root: Path,
+    output_dir: Path,
+    *,
+    expected_nested_commits: Mapping[str, str],
+) -> tuple[Path, Path]:
     """Create a tar.gz and JSON manifest without following reparse points."""
     _require_secure_platform()
     source_root = _absolute_without_resolving(source_root)
     output_dir = _absolute_without_resolving(output_dir)
     source_commit, reviewed_paths = _reviewed_source(source_root)
+    reviewed_nested = _reviewed_nested_sources(source_root, expected_nested_commits)
     source_tree = _SourceTree.open(source_root)
+    nested_trees: list[tuple[_ReviewedNestedSource, _SourceTree]] = []
     output_chain: _PinnedChain | None = None
     archive_temp: _PinnedArtifact | None = None
     manifest_temp: _PinnedArtifact | None = None
     try:
+        for reviewed in reviewed_nested:
+            nested_trees.append(
+                (
+                    reviewed,
+                    _SourceTree.open(
+                        source_root.joinpath(*PurePosixPath(reviewed.path).parts)
+                    ),
+                )
+            )
         output_chain = _PinnedChain.open(output_dir, create=True, label="output_dir")
         _cleanup_committed_transactions(output_dir)
         _recover_interrupted_transaction(output_dir)
@@ -341,6 +372,15 @@ def build_package(source_root: Path, output_dir: Path) -> tuple[Path, Path]:
         manifest_temp = _temp_file(output_dir)
         records: list[dict[str, int | str]] = []
         candidates = list(_iter_reviewed_files(source_tree, reviewed_paths))
+        for reviewed, tree in nested_trees:
+            candidates.extend(
+                _iter_reviewed_files(
+                    tree,
+                    reviewed.inventory,
+                    archive_prefix=reviewed.path,
+                )
+            )
+        candidates.sort(key=lambda candidate: candidate.relative_path)
         archive_handle = archive_temp.handle
         with tarfile.open(
             fileobj=archive_handle,
@@ -358,6 +398,9 @@ def build_package(source_root: Path, output_dir: Path) -> tuple[Path, Path]:
         final_commit, final_paths = _reviewed_source(source_root)
         if final_commit != source_commit or final_paths != reviewed_paths:
             raise ValueError("package scope changed after reviewed commit verification")
+        final_nested = _reviewed_nested_sources(source_root, expected_nested_commits)
+        if final_nested != reviewed_nested:
+            raise ValueError("nested source changed after reviewed commit verification")
         archive_path = output_dir / ARCHIVE_NAME
         manifest_path = output_dir / MANIFEST_NAME
         manifest = {
@@ -365,6 +408,10 @@ def build_package(source_root: Path, output_dir: Path) -> tuple[Path, Path]:
             "archive_bytes": archive_bytes,
             "archive_sha256": archive_sha256,
             "files": records,
+            "nested_sources": [
+                {"path": reviewed.path, "commit": reviewed.commit}
+                for reviewed in reviewed_nested
+            ],
             "source_commit": source_commit,
         }
         manifest_handle = manifest_temp.handle
@@ -382,6 +429,8 @@ def build_package(source_root: Path, output_dir: Path) -> tuple[Path, Path]:
                 artifact.close()
                 if _valid_temp_name(artifact.path.name):
                     _remove_temp(artifact.path)
+        for _, tree in reversed(nested_trees):
+            tree.close()
         source_tree.close()
         if output_chain is not None:
             output_chain.close()
@@ -537,8 +586,114 @@ def _reviewed_source(source_root: Path) -> tuple[str, tuple[str, ...]]:
     return commit, inventory
 
 
+def _commit_id(value: object, label: str) -> str:
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", value) is None:
+        raise ValueError(f"{label} is invalid")
+    return value.lower()
+
+
+def _nested_git(source_root: Path, *arguments: str) -> bytes:
+    try:
+        return _git(source_root, *arguments)
+    except ValueError:
+        raise ValueError("nested source is not a reviewed Git worktree") from None
+
+
+def _reviewed_nested_sources(
+    source_root: Path,
+    expected_nested_commits: Mapping[str, str],
+) -> tuple[_ReviewedNestedSource, ...]:
+    if set(expected_nested_commits) != set(NESTED_SOURCE_REQUIREMENTS):
+        raise ValueError("expected nested source set is invalid")
+    reviewed: list[_ReviewedNestedSource] = []
+    for relative_path in sorted(NESTED_SOURCE_REQUIREMENTS):
+        parsed = PurePosixPath(relative_path)
+        if parsed.is_absolute() or any(part in ("", ".", "..") for part in parsed.parts):
+            raise ValueError("nested source path is unsafe")
+        nested_root = source_root.joinpath(*parsed.parts)
+        if _nested_git(nested_root, "rev-parse", "--is-inside-work-tree").strip() != b"true":
+            raise ValueError("nested source is not a reviewed Git worktree")
+        top_level_raw = _nested_git(nested_root, "rev-parse", "--show-toplevel")
+        try:
+            top_level = Path(top_level_raw.decode("utf-8").strip())
+        except UnicodeDecodeError:
+            raise ValueError("nested source is not a reviewed Git worktree") from None
+        if _absolute_without_resolving(top_level) != nested_root:
+            raise ValueError("nested source must be a reviewed Git worktree root")
+
+        commit_raw = _nested_git(nested_root, "rev-parse", "--verify", "HEAD^{commit}")
+        try:
+            commit = _commit_id(commit_raw.decode("ascii").strip(), "nested source commit")
+        except UnicodeDecodeError:
+            raise ValueError("nested source commit is invalid") from None
+        expected_commit = _commit_id(
+            expected_nested_commits[relative_path],
+            "expected nested source commit",
+        )
+        if commit != expected_commit:
+            raise ValueError("nested source commit does not match caller pin")
+
+        status = _nested_git(
+            nested_root,
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--ignored=matching",
+            "--",
+            ".",
+        )
+        if status:
+            raise ValueError("nested source scope does not match the reviewed commit")
+
+        inventory_raw = _nested_git(
+            nested_root,
+            "ls-tree",
+            "-r",
+            "-z",
+            "--full-tree",
+            commit,
+            "--",
+            ".",
+        )
+        inventory: list[str] = []
+        for raw_entry in inventory_raw.split(b"\0"):
+            if not raw_entry:
+                continue
+            try:
+                metadata, raw_path = raw_entry.split(b"\t", 1)
+                mode, object_type, _object_id = metadata.split(b" ", 2)
+                path = raw_path.decode("utf-8")
+            except (ValueError, UnicodeDecodeError):
+                raise ValueError("nested source inventory is invalid") from None
+            if object_type != b"blob" or mode not in (b"100644", b"100755"):
+                raise ValueError("nested source inventory contains a non-regular file")
+            parsed_path = PurePosixPath(path)
+            if parsed_path.is_absolute() or any(
+                part in ("", ".", "..", ".git") for part in parsed_path.parts
+            ):
+                raise ValueError("nested source inventory contains an unsafe path")
+            inventory.append(path)
+        if len(inventory) != len(set(inventory)):
+            raise ValueError("nested source inventory is not unique")
+        inventory.sort()
+        if not NESTED_SOURCE_REQUIREMENTS[relative_path].issubset(inventory):
+            raise ValueError("nested source snapshot is missing required files")
+        reviewed.append(
+            _ReviewedNestedSource(
+                path=relative_path,
+                commit=commit,
+                inventory=tuple(inventory),
+            )
+        )
+    return tuple(reviewed)
+
+
 def _iter_reviewed_files(
-    tree: _SourceTree, reviewed_paths: tuple[str, ...]
+    tree: _SourceTree,
+    reviewed_paths: tuple[str, ...],
+    *,
+    archive_prefix: str = "",
 ) -> Iterator[_Candidate]:
     pinned_directories: set[str] = set()
     for relative_path in reviewed_paths:
@@ -569,7 +724,8 @@ def _iter_reviewed_files(
             raise ValueError("tracked source entry is unavailable") from None
         if _stat_is_reparse(file_stat) or not stat.S_ISREG(file_stat.st_mode):
             raise ValueError("tracked source entry is not a regular file")
-        yield _Candidate(relative_path, path, _identity(file_stat))
+        archive_path = f"{archive_prefix}/{relative_path}" if archive_prefix else relative_path
+        yield _Candidate(archive_path, path, _identity(file_stat))
 
 
 def _stat_is_reparse(file_stat: os.stat_result) -> bool:
@@ -1192,14 +1348,48 @@ def _read_published_manifest(manifest_path: Path) -> dict[str, object]:
         output_chain.close()
 
 
+def _nested_source_argument(value: str) -> tuple[str, str]:
+    path, separator, commit = value.partition("=")
+    if not separator:
+        raise argparse.ArgumentTypeError("nested source must use PATH=COMMIT")
+    try:
+        return _safe_nested_source_path(path), _commit_id(commit, "nested source commit")
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from None
+
+
+def _safe_nested_source_path(value: object) -> str:
+    if not isinstance(value, str) or not value or "\\" in value:
+        raise ValueError("nested source path is unsafe")
+    parsed = PurePosixPath(value)
+    if parsed.is_absolute() or any(part in ("", ".", "..", ".git") for part in parsed.parts):
+        raise ValueError("nested source path is unsafe")
+    return value
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Create a safe Sales-Claw Proxmox source package."
     )
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--nested-source",
+        action="append",
+        type=_nested_source_argument,
+        required=True,
+        metavar="PATH=COMMIT",
+    )
     arguments = parser.parse_args()
-    archive_path, manifest_path = build_package(arguments.source, arguments.output)
+    nested_pairs = arguments.nested_source
+    expected_nested_commits = dict(nested_pairs)
+    if len(expected_nested_commits) != len(nested_pairs):
+        raise ValueError("nested source paths must be unique")
+    archive_path, manifest_path = build_package(
+        arguments.source,
+        arguments.output,
+        expected_nested_commits=expected_nested_commits,
+    )
     manifest = _read_published_manifest(manifest_path)
     files = manifest.get("files")
     if not isinstance(files, list):

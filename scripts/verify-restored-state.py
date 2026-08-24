@@ -250,6 +250,23 @@ def _verify_volume(evidence: VolumeEvidence, run: Runner) -> int:
     return actual
 
 
+def _require_existing_volume(volume: str, run: Runner) -> None:
+    completed = run(
+        [
+            "docker",
+            "volume",
+            "inspect",
+            "--format",
+            "{{.Name}}",
+            volume,
+        ]
+    )
+    if completed.returncode != 0 or not isinstance(completed.stdout, str):
+        raise RestoreVerificationError("restored volume is unavailable")
+    if completed.stdout.splitlines() != [volume]:
+        raise RestoreVerificationError("restored volume identity is invalid")
+
+
 def verify_restored_state(
     state_backup: Path,
     openwa_backup: Path,
@@ -257,6 +274,8 @@ def verify_restored_state(
     run: Runner = _default_runner,
 ) -> tuple[tuple[str, int], ...]:
     evidence = _load_evidence(state_backup, openwa_backup)
+    for item in evidence:
+        _require_existing_volume(item.volume, run)
     return tuple((item.volume, _verify_volume(item, run)) for item in evidence)
 
 

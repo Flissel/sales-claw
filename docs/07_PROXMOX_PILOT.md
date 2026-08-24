@@ -65,19 +65,36 @@ Jeder Cutover nutzt einen frischen, zeitgestempelten Ausgabeordner:
 ```powershell
 $Quellpaket = "artifacts/proxmox-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
 if (Test-Path -LiteralPath $Quellpaket) { throw "Stop-Gate: Ausgabe existiert." }
-python scripts/package_proxmox.py --source . --output $Quellpaket
+$ReviewedSourceCommit = git rev-parse --verify "HEAD^{commit}"
+$ReviewedOpenwaCommit = git -C openwa/upstream rev-parse --verify "HEAD^{commit}"
+if ($ReviewedSourceCommit -cnotmatch '^[0-9a-f]{40}([0-9a-f]{24})?$' -or
+    $ReviewedOpenwaCommit -cnotmatch '^[0-9a-f]{40}([0-9a-f]{24})?$') {
+  throw "Stop-Gate: Commit-Pin ist ungueltig."
+}
+python scripts/package_proxmox.py `
+  --source . `
+  --output $Quellpaket `
+  --nested-source "openwa/upstream=$ReviewedOpenwaCommit"
 ```
 
 Das Paket enthaelt keine `.env`-Varianten, keine benannten Credential-JSONs,
 keine Dateien mit den gesperrten Secret-Endungen, keine `reports/` und keine
 Kundenmedien. Es wird
-ausschliesslich aus dem geprueften, getrackten
-`HEAD`-Inventar erzeugt. Jede dirty, untracked oder ignored Datei innerhalb
-der Paket-Positivliste sperrt den Lauf; der aktuelle dirty Pilot-Checkout ist
-deshalb bis zu einem separat reviewten Commit absichtlich nicht paketierbar.
+ausschliesslich aus dem geprueften, getrackten `HEAD`-Inventar des aeusseren
+Repositories und dem exakten `HEAD`-Baum des separat gepinnten Git-Worktrees
+`openwa/upstream` erzeugt. Dessen Manifesteintrag bindet Pfad und vollen
+Commit. Nur regulaere Git-Blobs werden inventarisiert; `.git` sowie beliebige
+ignorierte oder ungetrackte Arbeitskopie-Inhalte bleiben ausserhalb. Jede
+dirty, untracked oder ignored Datei innerhalb eines der beiden Paketbereiche
+sperrt den Lauf. Ein sauberer aeusserer Klon allein reicht deshalb nicht: Auch
+das lokale OpenWA-Repository muss am gepinnten Commit vorhanden und vollstaendig
+sauber sein. Der aktuelle Pilot-Checkout ist wegen des fremd geaenderten
+`openwa/upstream/Dockerfile` absichtlich paketgeschlossen; hier wird kein
+erfolgreicher Paketlauf behauptet.
 `media/` ist kein Quellpaket-Bestandteil und braucht bei spaeterem Bedarf eine
-eigene Datenfreigabe und einen getrennten Transfer. Nur `openwa/upstream/backup.sh` und
-`openwa/upstream/restore.sh` erhalten Modus `0755`; alle anderen Dateien
+eigene Datenfreigabe und einen getrennten Transfer. Nur
+`openwa/upstream/scripts/backup.sh` und
+`openwa/upstream/scripts/restore.sh` erhalten Modus `0755`; alle anderen Dateien
 erhalten `0644`.
 
 **Stop-Gate:** Fehlendes Paar, unerwarteter Zusatz, Manifestabweichung oder
@@ -101,7 +118,6 @@ separaten Transporthash festhalten:
 
 ```powershell
 $InstallerPfad = "scripts/install_proxmox_package.py"
-$ReviewedSourceCommit = git rev-parse HEAD
 $ReviewedInstallerBlob = git rev-parse "HEAD:$InstallerPfad"
 $WorkingInstallerBlob = git hash-object -- $InstallerPfad
 if ($LASTEXITCODE -ne 0 -or $WorkingInstallerBlob -cne $ReviewedInstallerBlob) {
@@ -114,8 +130,9 @@ $TrustedInstallerSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $Installe
 `sales-claw-proxmox-source.tar.gz` und diese separat gepinnte
 `install_proxmox_package.py` per SCP in genau das Staging-Verzeichnis
 uebertragen. Den 64-stelligen `$TrustedInstallerSha256` und den exakten
-`$ReviewedSourceCommit` als Metadaten ueber den bestehenden SSH-Kanal in
-`TRUSTED_INSTALLER_SHA256` und `EXPECTED_SOURCE_COMMIT` setzen. Den Installer
+`$ReviewedSourceCommit` und `$ReviewedOpenwaCommit` als Metadaten ueber den
+bestehenden SSH-Kanal in `TRUSTED_INSTALLER_SHA256`,
+`EXPECTED_SOURCE_COMMIT` und `EXPECTED_OPENWA_COMMIT` setzen. Den Installer
 **vor jeder Python-Ausfuehrung** pruefen:
 
 ```bash
@@ -125,8 +142,12 @@ test "$TRUSTED_INSTALLER_SHA256" = "$(sha256sum "$REMOTE_STAGE/install_proxmox_p
 Erst der so unabhaengig vertraute Python-3-Prueflauf darf ohne Inhaltsausgabe
 Archivname, Bytezahl und SHA-256 pruefen, dann jedes Archivmitglied gegen die Dateiliste im Manifest
 abgleichen, absolute/`..`-Pfade, Links, Devices und unbekannte Modi ablehnen
-und erst danach in einen frischen Unterordner sicher entpacken. Anschliessend jede entpackte Datei erneut nach Bytezahl und SHA-256
-pruefen. Erst der vollstaendig gruene Baum wird ohne Glob nach
+und beide vom Betreiber gelieferten Commit-Pins gegen das Manifest pruefen.
+`openwa/upstream/Dockerfile`, `scripts/backup.sh` und `scripts/restore.sh` muessen im
+manifestierten Snapshot vorhanden sein. Vor Abschluss dieser Pruefungen wird
+kein archivgelieferter Code ausgefuehrt. Erst danach darf der Installer in
+einen frischen Unterordner sicher entpacken. Anschliessend prueft er jede
+entpackte Datei erneut nach Bytezahl und SHA-256. Erst der vollstaendig gruene Baum wird ohne Glob nach
 `/home/debian/sales-claw` umbenannt; Eigentum bleibt `debian:debian`.
 
 Der vertrauenswuerdige Installer verifiziert das gesamte im Arbeitsspeicher
@@ -138,6 +159,7 @@ python3 "$REMOTE_STAGE/install_proxmox_package.py" \
   --archive "$REMOTE_STAGE/sales-claw-proxmox-source.tar.gz" \
   --manifest "$REMOTE_STAGE/sales-claw-proxmox-source.MANIFEST.json" \
   --expected-commit "$EXPECTED_SOURCE_COMMIT" \
+  --expected-nested-source "openwa/upstream=$EXPECTED_OPENWA_COMMIT" \
   --destination "$REMOTE_STAGE/source"
 test "$(stat -c '%U:%G' "$REMOTE_STAGE/source")" = "debian:debian"
 mv -T "$REMOTE_STAGE/source" /home/debian/sales-claw
@@ -187,8 +209,12 @@ python3 scripts/verify-restored-state.py \
   --openwa-backup "$REMOTE_OPENWA_BACKUP"
 ```
 
-Der Helfer prueft die gepinnten Manifestwerte und Archivhashes, entpackt jedes
-Archiv vollstaendig in einem Wegwerfcontainer, mountet nur
+Der Helfer prueft die gepinnten Manifestwerte und Archivhashes. Vor dem ersten
+Wegwerfcontainer prueft er alle drei Volumes einzeln mit exakten
+`docker volume inspect`-Argumentarrays und akzeptiert je Probe nur genau den
+angeforderten Namen. Ein fehlendes, leeres, mehrdeutiges oder abweichendes
+Ergebnis beendet die Phase, ohne dass `docker run` ein Volume erzeugen kann.
+Erst danach entpackt er jedes Archiv vollstaendig in einem Wegwerfcontainer und mountet nur
 `sales-claw-state`, `sales-claw-keys` und `openwa-data` read-only und vergleicht
 deterministisch Dateianzahl sowie SHA-256-Inventar aller regulaeren Dateien.
 Das ist strenger als einzelne Key-Konfigurationshashes. Er nutzt
