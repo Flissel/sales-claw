@@ -59,7 +59,6 @@ services:
     # Vertrauensdomäne für diese Geheimnisse — der eine hält die Kundendaten-DB,
     # der andere ist die einzige Komponente, die versenden darf.
     environment:
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - TZ=${TZ:-Europe/Berlin}
       - OPENCLAW_STATE_DIR=/home/node/.openclaw
     volumes:
@@ -273,14 +272,14 @@ services:
 
   # Die Antwort-Bruecke des Auto-Betriebs (sales-mcp/auto.py, Moduldocstring
   # dort): beantwortet unbeantwortete Kundennachrichten von Kontakten MIT
-  # Kontakt-Freigabe selbst — Antwort per Anthropic-API erzeugen, Entwurf
+  # Kontakt-Freigabe selbst — Antwort per OpenAI-API erzeugen, Entwurf
   # mit status='approved' (approved_by='auto-betrieb') anlegen, zustellen
   # tut wie immer NUR sales-dispatch. Kein neuer Versandweg: dieser Dienst
   # spricht nie mit OpenWA, er schreibt nur drafts/activities.
   #
   # Bewusst "no" wie Dispatcher und Agent: ein Dienst, der von selbst
   # Nachrichten an echte Menschen auf den Weg bringt, startet nicht von
-  # selbst mit dem Rechner mit. Ohne ANTHROPIC_API_KEY beendet er sich mit
+  # selbst mit dem Rechner mit. Ohne OPENAI_API_KEY beendet er sich mit
   # klarer Meldung, statt still nichts zu tun. EINE Instanz genuegt; gegen
   # versehentliche zweite Instanzen sichert der Advisory-Lock je Lead.
   sales-auto:
@@ -293,9 +292,10 @@ services:
       - .env
     environment:
       - SALES_DB_URL=${SALES_DB_URL}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      # Dasselbe Primaermodell wie der Agent (config/openclaw.json).
-      - AUTO_MODELL=${AUTO_MODELL:-claude-sonnet-5}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      # Kosteneffizientes OpenAI-Modell fuer den Auto-Betrieb.
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-5.6-luna}
+      - OPENAI_MAX_OUTPUT_TOKENS=${OPENAI_MAX_OUTPUT_TOKENS:-1500}
       # Sammelfenster: so alt muss die juengste Kundennachricht sein, bevor
       # geantwortet wird — mehrere schnelle Nachrichten bekommen EINE Antwort.
       - AUTO_SAMMELFENSTER_S=${AUTO_SAMMELFENSTER_S:-90}

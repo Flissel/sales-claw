@@ -10,10 +10,8 @@
   "agents": {
     "defaults": {
       "model": {
-        "primary": "anthropic/claude-sonnet-5",
-        "fallbacks": [
-          "openrouter/free"
-        ]
+        "primary": "openai/gpt-5.6-terra",
+        "fallbacks": []
       },
       "workspace": "/home/node/.openclaw/workspace"
     },
@@ -25,21 +23,10 @@
   },
   "models": {
     "providers": {
-      "openrouter": {
-        "models": [
-          {
-            "id": "openrouter/free",
-            "name": "openrouter/free"
-          }
-        ]
-      },
-      "anthropic": {
-        "models": [
-          {
-            "id": "claude-sonnet-5",
-            "name": "claude-sonnet-5"
-          }
-        ]
+      "openai": {
+        "agentRuntime": {
+          "id": "codex"
+        }
       }
     }
   },
@@ -58,12 +45,16 @@
   },
   "plugins": {
     "allow": [
+      "codex",
       "whatsapp"
     ],
     "slots": {
       "memory": "memory-core"
     },
     "entries": {
+      "codex": {
+        "enabled": true
+      },
       "whatsapp": {
         "enabled": true
       },

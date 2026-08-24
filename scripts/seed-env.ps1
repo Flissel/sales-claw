@@ -1,9 +1,12 @@
 #requires -Version 7
 <#
 .SYNOPSIS
-  Uebernimmt vorhandene API-Schluessel aus der lokalen OpenClaw-Konfiguration
-  in die .env dieses Projekts.
+  Einmaliger Legacy-Import eines vorhandenen Auto-Responder-API-Schluessels aus
+  einer alten lokalen OpenClaw-Konfiguration in die .env dieses Projekts.
 .NOTES
+  Die aktuelle OpenClaw-Route nutzt die ChatGPT/Codex-Subscription und braucht
+  diesen Schluessel nicht. Nach erfolgreichem Import die Legacy-Quelle sicher
+  loeschen oder archivieren; bei unklarer Exposition den Schluessel rotieren.
   Schluesselwerte werden NIE ausgegeben — weder auf die Konsole, noch in ein
   Log, noch in eine Fehlermeldung. Das Skript meldet ausschliesslich, ob ein
   Schluessel gefunden wurde.
@@ -19,31 +22,33 @@ $ErrorActionPreference = 'Stop'
 if (-not (Test-Path $Quelle)) { throw "Quelle nicht gefunden: $Quelle" }
 $cfg = Get-Content -Raw -Encoding UTF8 $Quelle | ConvertFrom-Json
 
-# Den OpenRouter-Schluessel am Praefix erkennen, nicht am Ablageort: in dieser
-# Installation liegt er unter einem Skill-Eintrag, dessen Name ihn nicht
-# erwarten laesst. Das Praefix ist das verlaessliche Merkmal.
-$openrouter = $null
-foreach ($e in $cfg.skills.entries.PSObject.Properties) {
-    if ($e.Value.apiKey -is [string] -and $e.Value.apiKey.StartsWith('sk-or-v1-')) {
-        $openrouter = $e.Value.apiKey
-        break
-    }
-}
 $openai = $cfg.env.OPENAI_API_KEY
 
 $zeilen = @(
     '# Erzeugt von scripts/seed-env.ps1. Enthaelt Geheimnisse — nicht versionieren.',
     'TZ=Europe/Berlin',
-    "OPENROUTER_API_KEY=$openrouter",
-    "OPENAI_API_KEY=$openai"
+    "OPENAI_API_KEY=$openai",
+    'OPENAI_MODEL=gpt-5.6-luna'
 )
 $zielVoll = [System.IO.Path]::GetFullPath($Ziel)
 Set-Content -Path $zielVoll -Value $zeilen -Encoding utf8
 
 # Vererbte Rechte entfernen, nur der aktuelle Benutzer darf lesen und schreiben.
-icacls $zielVoll /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
+$aclExitCode = 1
+try {
+    & icacls $zielVoll /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
+    $aclExitCode = $LASTEXITCODE
+} catch {
+    $aclExitCode = 1
+}
+if ($aclExitCode -ne 0) {
+    Remove-Item -LiteralPath $zielVoll -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $zielVoll) {
+        throw 'Dateirechte konnten nicht sicher gesetzt werden; Zieldatei konnte nicht entfernt werden.'
+    }
+    throw 'Dateirechte konnten nicht sicher gesetzt werden; Zieldatei wurde entfernt.'
+}
 
-Write-Host ("OPENROUTER_API_KEY: " + $(if ($openrouter) { 'uebernommen' } else { 'NICHT gefunden' }))
 Write-Host ("OPENAI_API_KEY:     " + $(if ($openai)     { 'uebernommen' } else { 'NICHT gefunden' }))
 Write-Host "Geschrieben nach $zielVoll"
 exit 0

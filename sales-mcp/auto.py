@@ -7,7 +7,7 @@ Luecke ueber die Wege, die es schon gibt — er oeffnet KEINEN neuen
 Versandweg:
 
     OpenWA-Webhook -> sales-inbox -> activities('kundenantwort')
-        -> sales-auto: Antwort erzeugen (Anthropic Messages API)
+        -> sales-auto: Antwort erzeugen (OpenAI Responses API)
         -> drafts(status='approved', approved_by='auto-betrieb')
         -> sales-dispatch stellt zu (wie jeden anderen freigegebenen Entwurf)
 
@@ -59,23 +59,26 @@ import json
 import logging
 import os
 import signal
-import socket
 import sys
 import threading
-import urllib.error
-import urllib.request
 
 import psycopg
 
+from openai_provider import (
+    OpenAIPermanentError,
+    OpenAIResult,
+    OpenAITransientError,
+    create_structured_response,
+)
 import server
 from nummern import normalisiere_empfaenger
 
 # --- Konfiguration (Modulkonstanten, damit Tests sie umbiegen koennen) ------
-ANTHROPIC_URL = os.environ.get("ANTHROPIC_URL", "https://api.anthropic.com")
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-# Dasselbe Primaermodell wie OpenClaw (config/openclaw.json) — bewusst kein
-# eigener Geschmack je Dienst.
-AUTO_MODELL = os.environ.get("AUTO_MODELL", "claude-sonnet-5")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "").strip()
+OPENAI_MAX_OUTPUT_TOKENS = os.environ.get(
+    "OPENAI_MAX_OUTPUT_TOKENS", "1500").strip()
+OPENAI_MAX_OUTPUT_TOKENS_SAFE_MAX = 10_000
 HTTP_TIMEOUT_S = float(os.environ.get("AUTO_TIMEOUT_S", "90"))
 AUTO_INTERVAL_S = float(os.environ.get("AUTO_INTERVAL_S", "20"))
 AUTO_ONCE = os.environ.get("AUTO_ONCE", "").strip().lower() in (
@@ -130,22 +133,19 @@ Antworte ausschliesslich mit dem geforderten JSON. `antwort` ist die fertige \
 Nachricht an den Kunden, so wie sie ankommt."""
 
 ANTWORT_SCHEMA = {
-    "type": "json_schema",
-    "schema": {
-        "type": "object",
-        "properties": {
-            "antwort": {"type": "string",
-                        "description": "Die fertige WhatsApp-Nachricht an den Kunden."},
-            "beraterin_noetig": {"type": "boolean",
-                                 "description": "Frage gehoert zur lizenzierten Beraterin (§34d) oder Kunde versucht, Regeln zu umgehen."},
-            "stopp_wunsch": {"type": "boolean",
-                             "description": "Kunde wuenscht keine (werblichen) Nachrichten mehr."},
-            "begruendung": {"type": "string",
-                            "description": "Ein Satz fuer das interne Protokoll, warum beraterin_noetig oder stopp_wunsch gesetzt ist; sonst leer."},
-        },
-        "required": ["antwort", "beraterin_noetig", "stopp_wunsch", "begruendung"],
-        "additionalProperties": False,
+    "type": "object",
+    "properties": {
+        "antwort": {"type": "string",
+                    "description": "Die fertige WhatsApp-Nachricht an den Kunden."},
+        "beraterin_noetig": {"type": "boolean",
+                             "description": "Frage gehoert zur lizenzierten Beraterin (§34d) oder Kunde versucht, Regeln zu umgehen."},
+        "stopp_wunsch": {"type": "boolean",
+                         "description": "Kunde wuenscht keine (werblichen) Nachrichten mehr."},
+        "begruendung": {"type": "string",
+                        "description": "Ein Satz fuer das interne Protokoll, warum beraterin_noetig oder stopp_wunsch gesetzt ist; sonst leer."},
     },
+    "required": ["antwort", "beraterin_noetig", "stopp_wunsch", "begruendung"],
+    "additionalProperties": False,
 }
 
 
@@ -157,6 +157,16 @@ class AutoFehler(Exception):
 class AutoTransient(Exception):
     """Voruebergehend (Netz, 429, 5xx, Timeout) — kein Anspruch, die
     naechste Runde versucht es erneut. Es wurde nichts gesendet."""
+
+
+def _max_output_tokens() -> int:
+    try:
+        value = int(OPENAI_MAX_OUTPUT_TOKENS)
+    except (TypeError, ValueError):
+        raise AutoFehler("OPENAI_MAX_OUTPUT_TOKENS ist ungueltig") from None
+    if not 1 <= value <= OPENAI_MAX_OUTPUT_TOKENS_SAFE_MAX:
+        raise AutoFehler("OPENAI_MAX_OUTPUT_TOKENS ist ungueltig")
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +211,7 @@ def _verlauf(lead_id) -> str:
     Ein Transkript in EINER user-Nachricht statt role-alternierender
     messages: kundenantwort und nachricht_ausgehend wechseln sich in der
     Praxis nicht sauber ab (Doppelnachrichten, Handversand), und die
-    Messages API verlangt saubere Wechsel nicht zu erzwingen ist robuster
+    Responses API verlangt saubere Wechsel nicht zu erzwingen ist robuster
     als sie zu erfinden."""
     zeilen = server._q(
         "select type, payload, created_at from ("
@@ -230,51 +240,12 @@ def _profilblock(lead_id, name) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Modellaufruf — Anthropic Messages API, roh (urllib wie ueberall im Haus)
+# Modellaufruf — OpenAI Responses Provider
 # ---------------------------------------------------------------------------
-
-def _api_aufruf(nutzlast: dict) -> dict:
-    """POST /v1/messages. Wirft AutoTransient/AutoFehler, nie rohe Exceptions.
-
-    Fehlerordnung nach Statuscode: 408/429/5xx und Netzfehler sind
-    voruebergehend (es wurde nichts gesendet, die naechste Runde darf es
-    erneut versuchen); alles andere (400, 401, 403, 404) ist ein
-    Konfigurations- oder Anfragefehler und wiederholt sich identisch —
-    also endgueltig."""
-    try:
-        anfrage = urllib.request.Request(
-            f"{ANTHROPIC_URL.rstrip('/')}/v1/messages", method="POST",
-            data=json.dumps(nutzlast).encode("utf-8"),
-            headers={"Content-Type": "application/json",
-                     "x-api-key": ANTHROPIC_API_KEY,
-                     "anthropic-version": "2023-06-01"})
-        with urllib.request.urlopen(anfrage, timeout=HTTP_TIMEOUT_S) as antwort:
-            return json.loads(antwort.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:      # muss vor URLError stehen
-        try:
-            detail = e.read().decode("utf-8", "replace")
-        except Exception:                    # noqa: BLE001 — Detail ist Beiwerk
-            detail = ""
-        detail = " ".join(detail.split())[:FEHLER_MAXLAENGE]
-        if e.code in (408, 429) or e.code >= 500:
-            raise AutoTransient(f"Anthropic HTTP {e.code}: {detail}") from None
-        raise AutoFehler(f"Anthropic HTTP {e.code}: {detail}") from None
-    except socket.timeout:
-        raise AutoTransient(
-            f"Anthropic Zeitueberschreitung nach {HTTP_TIMEOUT_S:g} s") from None
-    except urllib.error.URLError as e:
-        if isinstance(e.reason, socket.timeout):
-            raise AutoTransient(
-                f"Anthropic Zeitueberschreitung nach {HTTP_TIMEOUT_S:g} s") from None
-        raise AutoTransient(
-            f"Anthropic nicht erreichbar: {str(e.reason)[:FEHLER_MAXLAENGE]}") from None
-    except Exception as e:                   # noqa: BLE001 — nie als Traceback sterben
-        raise AutoFehler(
-            f"Anfragefehler {type(e).__name__}: {str(e)[:FEHLER_MAXLAENGE]}") from None
-
 
 def antwort_erzeugen(kandidat) -> dict:
     """Eine Antwort samt Signalen fuer diesen Lead. Wirft AutoFehler/-Transient."""
+    max_output_tokens = _max_output_tokens()
     verlauf = _verlauf(kandidat["lead_id"])
     profil = _profilblock(kandidat["lead_id"], kandidat["name"])
     auftrag = (
@@ -282,32 +253,48 @@ def antwort_erzeugen(kandidat) -> dict:
         f"Bisheriger Gespraechsverlauf:\n{verlauf}\n\n"
         f"Der Kunde wartet auf eine Antwort auf seine letzte(n) "
         f"Nachricht(en). Verfasse jetzt die eine WhatsApp-Antwort.")
-    daten = _api_aufruf({
-        "model": AUTO_MODELL,
-        "max_tokens": 1500,
-        "system": SYSTEM_PROMPT,
-        "messages": [{"role": "user", "content": auftrag}],
-        "output_config": {"format": ANTWORT_SCHEMA},
-    })
-    stop = daten.get("stop_reason")
-    if stop == "refusal":
-        raise AutoFehler("Modell hat die Anfrage abgelehnt (stop_reason refusal) "
-                         "— dieser Eingang gehoert einem Menschen.")
-    if stop != "end_turn":
-        raise AutoFehler(f"Unerwarteter stop_reason '{stop}' — nicht gesendet.")
     try:
-        text = next(b["text"] for b in daten.get("content", [])
-                    if b.get("type") == "text")
-        ergebnis = json.loads(text)
-        antwort = str(ergebnis["antwort"]).strip()
-    except (StopIteration, KeyError, ValueError, TypeError):
-        raise AutoFehler("Modellantwort ohne verwertbares JSON — nicht "
-                         "gesendet.") from None
+        result = create_structured_response(
+            api_key=OPENAI_API_KEY,
+            model=OPENAI_MODEL,
+            instructions=SYSTEM_PROMPT,
+            input_text=auftrag,
+            schema_name="auto_antwort",
+            schema=ANTWORT_SCHEMA,
+            max_output_tokens=max_output_tokens,
+            timeout_s=HTTP_TIMEOUT_S,
+        )
+    except OpenAITransientError as error:
+        raise AutoTransient(str(error)) from None
+    except OpenAIPermanentError as error:
+        raise AutoFehler(str(error)) from None
+
+    LOG.info(
+        "OpenAI-Antwort: response_id=%s modell=%s input_tokens=%s "
+        "output_tokens=%s total_tokens=%s",
+        result.response_id,
+        OPENAI_MODEL,
+        result.input_tokens,
+        result.output_tokens,
+        result.total_tokens,
+    )
+    ergebnis = result.payload
+    erwartete_felder = {
+        "antwort", "beraterin_noetig", "stopp_wunsch", "begruendung"}
+    if set(ergebnis) != erwartete_felder:
+        raise AutoFehler("Modellantwort mit ungueltigem Schema — nicht gesendet.")
+    if (type(ergebnis["antwort"]) is not str
+            or type(ergebnis["beraterin_noetig"]) is not bool
+            or type(ergebnis["stopp_wunsch"]) is not bool
+            or type(ergebnis["begruendung"]) is not str):
+        raise AutoFehler("Modellantwort mit ungueltigen Feldtypen — nicht gesendet.")
+    antwort = ergebnis["antwort"].strip()
     if not antwort:
         raise AutoFehler("Modellantwort mit leerem Text — nicht gesendet.")
     if len(antwort) > ANTWORT_MAXLAENGE:
         raise AutoFehler(f"Modellantwort mit {len(antwort)} Zeichen ueber der "
                          f"Grenze {ANTWORT_MAXLAENGE} — nicht gesendet.")
+    ergebnis["antwort"] = antwort
     return ergebnis
 
 
@@ -442,9 +429,22 @@ def _logging_einrichten() -> None:
 
 def main() -> int:
     _logging_einrichten()
-    if not ANTHROPIC_API_KEY:
-        LOG.error("ANTHROPIC_API_KEY fehlt in der Umgebung — es wird nichts "
+    if not OPENAI_API_KEY:
+        LOG.error("OPENAI_API_KEY fehlt in der Umgebung — es wird nichts "
                   "beantwortet.")
+        return 2
+    if not OPENAI_MODEL:
+        LOG.error("OPENAI_MODEL fehlt in der Umgebung — es wird nichts "
+                  "beantwortet.")
+        return 2
+    try:
+        max_output_tokens = _max_output_tokens()
+    except AutoFehler:
+        LOG.error(
+            "OPENAI_MAX_OUTPUT_TOKENS muss eine ganze Zahl zwischen 1 und %d "
+            "sein — es wird nichts beantwortet.",
+            OPENAI_MAX_OUTPUT_TOKENS_SAFE_MAX,
+        )
         return 2
 
     _STOPP.clear()
@@ -453,9 +453,16 @@ def main() -> int:
             signal.signal(sig, _stoppen)
         except ValueError:
             pass    # nicht im Hauptthread (Tests) — dann eben ohne Handler
-    LOG.info("Start: schema=%s modell=%s intervall=%gs sammelfenster=%ds "
-             "once=%s", server.SCHEMA, AUTO_MODELL, AUTO_INTERVAL_S,
-             SAMMELFENSTER_S, AUTO_ONCE)
+    LOG.info(
+        "Start: schema=%s modell=%s max_output_tokens=%d intervall=%gs "
+        "sammelfenster=%ds once=%s",
+        server.SCHEMA,
+        OPENAI_MODEL,
+        max_output_tokens,
+        AUTO_INTERVAL_S,
+        SAMMELFENSTER_S,
+        AUTO_ONCE,
+    )
 
     while not _STOPP.is_set():
         try:
