@@ -52,7 +52,8 @@ def rendered_config(tmp_path: Path) -> dict[str, object]:
     env.update(
         {
             "SALES_DB_URL": "postgresql://pilot:pilot@db.invalid:5432/pilot",
-            "OPENROUTER_API_KEY": "test-only",
+            "OPENAI_API_KEY": "test-only",
+            "OPENAI_MODEL": "gpt-5.6-luna",
             "OPENWA_API_KEY": "test-only",
             "OPENWA_SESSION_ID": "00000000-0000-0000-0000-000000000000",
             "INBOX_WEBHOOK_SECRET": "test-only",
