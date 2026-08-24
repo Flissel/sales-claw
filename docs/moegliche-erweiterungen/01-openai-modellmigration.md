@@ -15,6 +15,17 @@ OpenAI wird der produktive Modellanbieter für OpenClaw und automatische
 Antworten. Es gibt zunächst keinen automatischen Anthropic-Fallback, damit
 Kosten, Fehlerbilder und Modellverhalten eindeutig bleiben.
 
+## Planentscheidung vom 24.08.2026
+
+- OpenClaw verwendet standardmäßig `openai/gpt-5.6-terra`, weil der
+  dialogorientierte Agent Qualität und Kosten ausbalancieren soll.
+- Der volumenstärkere Auto-Responder verwendet standardmäßig
+  `gpt-5.6-luna`.
+- Beide Modellnamen bleiben Konfiguration. Der Fachcode enthält keinen
+  stillen Ersatzwert und wechselt bei Fehlern nicht zu einem anderen Provider.
+- Modellaufrufe verwenden die OpenAI Responses API mit `store=false` und
+  strukturiertem JSON-Output.
+
 ## Geplanter Umfang
 
 - gemeinsame, testbare Modellanbieter-Schnittstelle,
