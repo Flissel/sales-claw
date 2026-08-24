@@ -27,8 +27,8 @@ bleiben.
   `gpt-5.6-luna`.
 - Beide Modellnamen bleiben Konfiguration. Der Fachcode enthält keinen
   stillen Ersatzwert und wechselt bei Fehlern nicht zu einem anderen Provider.
-- Modellaufrufe verwenden die OpenAI Responses API mit `store=false` und
-  strukturiertem JSON-Output.
+- Modellaufrufe des Auto-Responders verwenden die OpenAI Responses API mit
+  `store=false` und strukturiertem JSON-Output.
 
 ## Lokal umgesetzter Umfang
 
