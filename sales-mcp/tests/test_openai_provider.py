@@ -1,4 +1,5 @@
 import json
+import http.client
 import io
 import os
 import socket
@@ -38,6 +39,50 @@ class FakeRawResponse:
 
     def read(self) -> bytes:
         return self.body
+
+
+class FailingReadResponse:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def read(self) -> bytes:
+        raise http.client.IncompleteRead(b"partial", 12)
+
+
+def assert_no_sensitive_exception_data(error, *sensitive_values):
+    visited = set()
+
+    def inspect(value):
+        value_id = id(value)
+        if value_id in visited:
+            return
+        visited.add(value_id)
+        if isinstance(value, str):
+            for sensitive in sensitive_values:
+                assert sensitive not in value
+        elif isinstance(value, bytes):
+            decoded = value.decode("utf-8", errors="replace")
+            for sensitive in sensitive_values:
+                assert sensitive not in decoded
+        elif isinstance(value, io.BytesIO):
+            inspect(value.getvalue())
+        elif isinstance(value, BaseException):
+            inspect(value.__cause__)
+            inspect(value.__context__)
+            for attribute in vars(value).values():
+                inspect(attribute)
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                inspect(key)
+                inspect(item)
+        elif isinstance(value, (list, tuple, set)):
+            for item in value:
+                inspect(item)
+
+    inspect(error)
 
 
 def call_provider():
@@ -138,6 +183,39 @@ def test_timeout_is_transient(monkeypatch):
                         lambda request, timeout: (_ for _ in ()).throw(socket.timeout()))
     with pytest.raises(openai_provider.OpenAITransientError):
         call_provider()
+
+
+def test_response_read_failure_is_transient(monkeypatch):
+    monkeypatch.setattr(openai_provider.urllib.request, "urlopen",
+                        lambda request, timeout: FailingReadResponse())
+    with pytest.raises(openai_provider.OpenAITransientError):
+        call_provider()
+
+
+def test_http_error_does_not_retain_foreign_error_body(monkeypatch):
+    error = urllib.error.HTTPError(
+        "https://api.openai.com/v1/responses", 429, "failed", {},
+        io.BytesIO(b'{"error":{"message":"Kundenkontext test-key foreign-body"}}'))
+    monkeypatch.setattr(openai_provider.urllib.request, "urlopen",
+                        lambda request, timeout: (_ for _ in ()).throw(error))
+    with pytest.raises(openai_provider.OpenAITransientError) as caught:
+        call_provider()
+    assert_no_sensitive_exception_data(
+        caught.value, "Kundenkontext", "test-key", "foreign-body")
+
+
+def test_output_json_error_does_not_retain_customer_text(monkeypatch):
+    monkeypatch.setattr(openai_provider.urllib.request, "urlopen", lambda request, timeout: FakeResponse({
+        "id": "resp_test",
+        "status": "completed",
+        "error": None,
+        "output_text": "Kundenkontext test-key foreign-output",
+        "usage": {},
+    }))
+    with pytest.raises(openai_provider.OpenAIPermanentError) as caught:
+        call_provider()
+    assert_no_sensitive_exception_data(
+        caught.value, "Kundenkontext", "test-key", "foreign-output")
 
 
 @pytest.mark.parametrize("body", [b"not-json", b"[]"])

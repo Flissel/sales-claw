@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import http.client
 import json
 import socket
 import urllib.error
@@ -46,22 +47,31 @@ def _validate_request(
 
 
 def _read_response(request: urllib.request.Request, timeout_s: float) -> bytes:
+    http_status: int | None = None
+    transport_failed = False
     try:
         with urllib.request.urlopen(request, timeout=timeout_s) as response:
             return response.read()
     except urllib.error.HTTPError as error:
-        if error.code in (408, 429) or 500 <= error.code <= 599:
-            raise OpenAITransientError(f"OpenAI HTTP {error.code}") from error
-        raise OpenAIPermanentError(f"OpenAI HTTP {error.code}") from error
-    except (urllib.error.URLError, socket.timeout, TimeoutError) as error:
-        raise OpenAITransientError("OpenAI request failed") from error
+        http_status = error.code
+    except (urllib.error.URLError, socket.timeout, TimeoutError,
+            http.client.HTTPException, OSError):
+        transport_failed = True
+
+    if http_status is not None:
+        if http_status in (408, 429) or 500 <= http_status <= 599:
+            raise OpenAITransientError(f"OpenAI HTTP {http_status}") from None
+        raise OpenAIPermanentError(f"OpenAI HTTP {http_status}") from None
+    if transport_failed:
+        raise OpenAITransientError("OpenAI request failed") from None
+    raise OpenAITransientError("OpenAI request failed") from None
 
 
 def _parse_response(body: bytes) -> OpenAIResult:
     try:
         response = json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise OpenAIPermanentError("OpenAI response was not valid JSON") from error
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        response = None
 
     if not isinstance(response, dict):
         raise OpenAIPermanentError("OpenAI response object is invalid")
@@ -75,8 +85,8 @@ def _parse_response(body: bytes) -> OpenAIResult:
         raise OpenAIPermanentError("OpenAI response output is invalid")
     try:
         payload = json.loads(output_text)
-    except json.JSONDecodeError as error:
-        raise OpenAIPermanentError("OpenAI response output is invalid") from error
+    except json.JSONDecodeError:
+        payload = None
     if not isinstance(payload, dict):
         raise OpenAIPermanentError("OpenAI response output is invalid")
 
@@ -124,8 +134,10 @@ def create_structured_response(
     }
     try:
         data = json.dumps(body).encode("utf-8")
-    except (TypeError, ValueError) as error:
-        raise OpenAIPermanentError("OpenAI request is invalid") from error
+    except (TypeError, ValueError):
+        data = None
+    if data is None:
+        raise OpenAIPermanentError("OpenAI request is invalid")
     request = urllib.request.Request(
         OPENAI_RESPONSES_URL,
         data=data,
