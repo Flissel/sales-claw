@@ -688,10 +688,17 @@ def test_kontakt_aktualisieren_signatur_ueberlebt_den_dekorator():
     assert list(parameter) == ["lead_id", "feld", "wert"]
 
 
-def test_neununddreissig_werkzeuge_registriert():
+def test_zweiundvierzig_werkzeuge_registriert():
     namen = {fn.__name__ for fn in server.WERKZEUGE}
-    assert len(namen) == 39
+    assert len(namen) == 42
     assert "kontakt_aktualisieren" in namen
+    # Das Kontaktprofil (25.08.2026) mit EIGENEM Takt: Schwelle 5 statt der
+    # 50 des Chat-Reports, und ohne Nachrichten zu verstecken. Dazu der Weg
+    # fuer „jetzt bitte" aus der Oberflaeche. Vertragstests in
+    # tests/test_kontaktprofil.py.
+    assert "profile_faellig" in namen
+    assert "kontaktprofil_schreiben" in namen
+    assert "profil_anfordern" in namen
     # Kontakt-Freigabe fuer WhatsApp und Auto-Betrieb. Vertragstests dazu in
     # tests/test_kontakt_freigabe.py.
     assert "kontakt_freigeben" in namen

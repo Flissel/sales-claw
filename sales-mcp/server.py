@@ -975,7 +975,7 @@ def profil_lesen(lead_id: str) -> str:
                   # jemand wissen will, der diesen Kontakt aufschlaegt. In
                   # den Reports darunter steht es auch — dort aber je
                   # Fassung, also als Verlauf statt als Stand.
-                  "kontaktprofil": _juengstes_profil(reports),
+                  "kontaktprofil": _juengstes_profil(lead_id),
                   # Reports ZUERST — sie erzaehlen die Vorgeschichte, die
                   # `aktivitaeten` darunter nicht mehr enthaelt.
                   "chat_reports": [_chat_report_anzeige(r) for r in reports],
@@ -1678,6 +1678,28 @@ PROFIL_FRAGEN = {
     "aktuell": "Was ist gerade los?",
 }
 PROFIL_FELDER = tuple(PROFIL_FRAGEN)
+
+# EIGENE Zeilenart, eigene Grenze, eigener Ausloeser — und das ist eine
+# Korrektur an der ersten Fassung.
+#
+# Zuerst lag das Profil IM Chat-Report: ein Zaehler, eine Grenze, keine
+# Doppelung. Das war richtig gedacht und fuer 50 Nachrichten auch richtig.
+# Dann kam der Betreiber-Wunsch „lieber alle 5" — und daran zerbricht die
+# Verschmelzung, weil die beiden Dinge Verschiedenes TUN:
+#
+#   Report:  verdichtet einen langen Verlauf und VERSTECKT die abgedeckten
+#            Einzelnachrichten in der Anzeige. Selten richtig, bei 50.
+#   Profil:  eine Momentaufnahme, wer der Mensch ist. Versteckt NICHTS.
+#            Darf oft entstehen, bei 5.
+#
+# Bei gemeinsamer Grenze haette „alle 5" den Verlauf binnen eines Tages in
+# lauter Stummel verwandelt. Deshalb hat das Profil jetzt seine eigene
+# Grenze, und `_chat_offen_sql` (das Verstecken) fasst sie nicht an.
+PROFIL_TYP = "kontakt_profil"
+PROFIL_SCHWELLE = 5
+PROFIL_FAELLIG_LIMIT = 25
+PROFIL_ANGEFORDERT_TYP = "profil_angefordert"
+
 PROFIL_FELD_MAXLAENGE = 800
 # Links und Dateien aus dem Verlauf. Gedeckelt wie jede Liste hier.
 PROFIL_LISTE_MAX = 40
@@ -1825,19 +1847,186 @@ def _chat_report_anzeige(zeile) -> dict:
     return anzeige
 
 
-def _juengstes_profil(reports):
-    """Das Profil der juengsten Fassung, oder None.
+def _juengstes_profil(lead_id):
+    """Die juengste Profilfassung eines Kontakts, oder None.
 
-    `_chat_reports` liefert AELTESTER ZUERST — deshalb von hinten suchen.
-    Nicht jeder Report traegt ein Profil; gesucht ist das letzte, das eines
-    hat, nicht das letzte ueberhaupt.
+    Sieht an ZWEI Stellen nach und nimmt die neuere:
+
+    * `kontakt_profil`-Zeilen — der heutige Weg.
+    * Profile, die in einem `chat_report` eingebettet liegen — der Weg der
+      ersten Fassung. Es gibt davon echte Daten (Sophie, 25.08.2026), und
+      eine Wanderung dafuer waere mehr Risiko als der eine `union`-Zweig
+      hier. Sie verschwinden von selbst, sobald ein neues Profil entsteht.
     """
-    for zeile in reversed(reports):
-        p = (zeile["payload"] or {}).get("profil")
-        if p:
-            return {"stand_vom": zeile["created_at"],
-                    "aktivitaets_id": zeile["id"], **p}
-    return None
+    zeilen = _q(
+        "select id, created_at, payload->'profil' as profil from activities"
+        "  where lead_id = %(lead)s and type = %(report)s"
+        "    and payload->'profil' is not null"
+        " union all "
+        "select id, created_at, payload as profil from activities"
+        "  where lead_id = %(lead)s and type = %(profil)s"
+        " order by created_at desc, id desc limit 1",
+        {"lead": lead_id, "report": CHAT_REPORT_TYP, "profil": PROFIL_TYP})
+    if not zeilen:
+        return None
+    z = zeilen[0]
+    p = dict(z["profil"] or {})
+    # Buchhaltungsfelder gehoeren nicht in die Anzeige des Profils.
+    for schluessel in ("bis_zeitpunkt", "bis_aktivitaet_id", "anzahl",
+                       "auf_anforderung"):
+        p.pop(schluessel, None)
+    return {"stand_vom": z["created_at"], "aktivitaets_id": z["id"], **p}
+
+
+def _profil_grenze(lead_id):
+    """(bis_zeit, bis_id) des juengsten Profils, oder (None, None).
+
+    Getrennt von `_chat_grenze`: die Report-Grenze steuert das VERSTECKEN
+    von Nachrichten, diese hier nur, ab wo das naechste Profil zaehlt.
+    """
+    zeilen = _q(
+        "select (payload->>'bis_zeitpunkt')::timestamptz as bis_zeit,"
+        "       (payload->>'bis_aktivitaet_id')::uuid as bis_id"
+        "  from activities where lead_id = %s and type = %s"
+        "   and payload->>'bis_zeitpunkt' is not null"
+        "   and payload->>'bis_aktivitaet_id' is not null"
+        " order by (payload->>'bis_zeitpunkt')::timestamptz desc,"
+        "          (payload->>'bis_aktivitaet_id') desc limit 1",
+        (lead_id, PROFIL_TYP))
+    if not zeilen:
+        return None, None
+    return zeilen[0]["bis_zeit"], zeilen[0]["bis_id"]
+
+
+def _profil_grenze_bestimmen(lead_id, bis_aktivitaet_id):
+    """(bis_zeit, bis_id) fuer das neue Profil — oder eine Fehlermeldung.
+
+    Anders als beim Report gibt es hier KEINE Bedingung „echt hinter der
+    alten Grenze". Ein Profil darf denselben Bereich erneut betrachten: es
+    versteckt nichts, es beantwortet nur „wer ist das gerade". Wer es auf
+    Anforderung neu erzeugt, will oft genau das — dieselben Nachrichten,
+    frisch gelesen.
+    """
+    roh = str(bis_aktivitaet_id or "").strip()
+    if roh:
+        zeilen = _q("select id, created_at, type, lead_id from activities "
+                    "where id = %s", (roh,))
+        if not zeilen:
+            return _json({"fehler": f"Keine Aktivitaet mit id {roh}."})
+        z = zeilen[0]
+        if str(z["lead_id"]) != str(lead_id):
+            return _json({"fehler": (
+                f"Aktivitaet {roh} gehoert einem anderen Kontakt. Die Grenze "
+                f"muss aus dem chat_verlauf DIESES Kontakts stammen.")})
+        if z["type"] not in CHAT_NACHRICHT_TYPEN:
+            return _json({"fehler": (
+                f"Aktivitaet {roh} ist vom Typ '{z['type']}' und keine "
+                f"Nachricht. Als Grenze taugt nur eine Zeile aus "
+                f"chat_verlauf ({', '.join(CHAT_NACHRICHT_TYPEN)}).")})
+        return z["created_at"], z["id"]
+    zeilen = _q(
+        "select id, created_at from activities where lead_id = %s "
+        "and type = any(%s) order by created_at desc, id desc limit 1",
+        (lead_id, list(CHAT_NACHRICHT_TYPEN)))
+    if not zeilen:
+        return _json({"fehler": (
+            "Dieser Kontakt hat noch keine Nachricht — ohne Verlauf gibt es "
+            "nichts, woraus ein Profil entstehen koennte. Nichts "
+            "gespeichert.")})
+    return zeilen[0]["created_at"], zeilen[0]["id"]
+
+
+def _profil_ablegen(lead_id, profil, bis_zeit, bis_id, auf_anforderung=False):
+    """Eine Profilfassung als eigene `kontakt_profil`-Zeile ablegen.
+
+    Zaehlt mit, wie viele Nachrichten seit der vorigen Fassung dazukamen —
+    dieselbe Tupel-Ordnung wie ueberall hier, weil `created_at` die
+    Transaktionszeit ist und zwei Zeilen derselben Transaktion denselben
+    Wert tragen.
+    """
+    alt_zeit, alt_id = _profil_grenze(lead_id)
+    anzahl = _q(
+        "select count(*) as n from activities where lead_id = %s "
+        "and type = any(%s) "
+        "and (created_at, id) > (coalesce(%s::timestamptz, "
+        "                                 '-infinity'::timestamptz), "
+        "                        coalesce(%s::uuid, "
+        "                                 '00000000-0000-0000-0000-000000000000'::uuid)) "
+        "and (created_at, id) <= (%s::timestamptz, %s::uuid)",
+        (lead_id, list(CHAT_NACHRICHT_TYPEN), alt_zeit, alt_id,
+         bis_zeit, bis_id))[0]["n"]
+    nutzlast = dict(profil)
+    nutzlast.update({"anzahl": anzahl, "bis_aktivitaet_id": str(bis_id),
+                     "bis_zeitpunkt": bis_zeit.isoformat()})
+    if auf_anforderung:
+        nutzlast["auf_anforderung"] = True
+    return _q("insert into activities (lead_id, type, payload) "
+              "values (%s, %s, %s) returning id",
+              (lead_id, PROFIL_TYP, _json(nutzlast)))[0]["id"]
+
+
+# Die Grenze des juengsten Profils je Kontakt — dasselbe Muster wie
+# `_CHAT_GRENZE_CTE`, aber auf `kontakt_profil`. Bewusst getrennt: die
+# Report-Grenze versteckt Nachrichten, diese hier nicht.
+_PROFIL_GRENZE_CTE = (
+    " profil_grenze as ("
+    "  select distinct on (lead_id) lead_id,"
+    "         (payload->>'bis_zeitpunkt')::timestamptz as bis_zeit,"
+    "         (payload->>'bis_aktivitaet_id')::uuid as bis_id"
+    "    from activities"
+    "   where type = '" + PROFIL_TYP + "'"
+    "     and payload->>'bis_zeitpunkt' is not null"
+    "     and payload->>'bis_aktivitaet_id' is not null"
+    "   order by lead_id, (payload->>'bis_zeitpunkt')::timestamptz desc,"
+    "            (payload->>'bis_aktivitaet_id') desc)")
+
+
+def _profil_faellig(schwelle: int = None):
+    """Kontakte, deren Profil veraltet ist — nach Anzahl ODER auf Anforderung.
+
+    Zwei Wege in dieselbe Liste, weil der Betreiber beides wollte: „alle 5"
+    als Takt und „auf Zuruf" fuer den Fall, dass er JETZT wissen will, wer
+    da schreibt. Ein angefordertes Profil steht unabhaengig von der Anzahl
+    drin — sonst waere die Anforderung folgenlos, solange erst drei
+    Nachrichten da sind, und genau dann fragt man am ehesten.
+
+    Der Sammelkontakt bleibt draussen, aus demselben Grund wie beim Report:
+    an ihm haengen die Nachrichten vieler Fremder nebeneinander.
+    Archivierte ebenso — an weggeraeumten Kontakten arbeitet niemand.
+    """
+    grenze = PROFIL_SCHWELLE if schwelle is None else int(schwelle)
+    return _q(
+        "with" + _PROFIL_GRENZE_CTE + ","
+        " angefordert as ("
+        "  select a.lead_id, max(a.created_at) as wann from activities a"
+        "   left join profil_grenze g on g.lead_id = a.lead_id"
+        "   where a.type = %(anforderung)s"
+        "     and a.created_at > coalesce("
+        "          (select max(p.created_at) from activities p"
+        "            where p.lead_id = a.lead_id and p.type = %(profil)s),"
+        "          '-infinity'::timestamptz)"
+        "   group by a.lead_id)"
+        " select a.lead_id, l.name, count(*) as offen,"
+        "        max(a.created_at) as juengste,"
+        "        bool_or(x.wann is not null) as angefordert"
+        "   from activities a"
+        "   join leads l on l.id = a.lead_id"
+        "   left join profil_grenze g on g.lead_id = a.lead_id"
+        "   left join angefordert x on x.lead_id = a.lead_id"
+        "  where a.type = any(%(typen)s)"
+        "    and (a.created_at, a.id) > ("
+        "          coalesce(g.bis_zeit, '-infinity'::timestamptz),"
+        "          coalesce(g.bis_id,"
+        "                   '00000000-0000-0000-0000-000000000000'::uuid))"
+        "    and (%(sammel)s = '' or a.lead_id::text <> %(sammel)s)"
+        "    and not " + _archiv_sql("l.enrichment") +
+        "  group by a.lead_id, l.name"
+        " having count(*) >= %(schwelle)s or bool_or(x.wann is not null)"
+        "  order by bool_or(x.wann is not null) desc, count(*) desc, a.lead_id"
+        "  limit %(limit)s",
+        {"typen": list(CHAT_NACHRICHT_TYPEN), "sammel": UNBEKANNT_LEAD_ID,
+         "schwelle": grenze, "limit": PROFIL_FAELLIG_LIMIT,
+         "anforderung": PROFIL_ANGEFORDERT_TYP, "profil": PROFIL_TYP})
 
 
 def _chat_faellig(schwelle: int = None):
@@ -1899,6 +2088,131 @@ def chat_reports_faellig() -> str:
                                 "offene_nachrichten": z["offen"],
                                 "juengste": z["juengste"]} for z in zeilen],
                   "hinweis": CHAT_REPORT_HINWEIS})
+
+
+PROFIL_HINWEIS = (
+    "chat_verlauf(lead_id) lesen und mit kontaktprofil_schreiben(lead_id, "
+    "wer, beziehung, wichtig, aktuell, bis_aktivitaet_id=…) ablegen. Alle "
+    "vier Leitfragen oder keine; die vorige Fassung steht in profil_lesen "
+    "unter 'kontaktprofil'. Es geht dabei NICHTS an den Kunden, und es wird "
+    "keine Nachricht versteckt — anders als beim Chat-Report.")
+
+
+@_gesichert
+def profile_faellig() -> str:
+    """Welche Kontakte brauchen ein frisches Kontaktprofil?
+
+    Zwei Gruende, hier zu stehen, und beide zaehlen:
+
+    * seit der letzten Fassung sind mindestens PROFIL_SCHWELLE (5)
+      Nachrichten aufgelaufen, oder
+    * der Betreiber hat ausdruecklich eins angefordert (`angefordert: true`).
+      Das gilt UNABHAENGIG von der Anzahl — sonst waere die Anforderung
+      folgenlos, solange erst drei Nachrichten da sind, und genau dann fragt
+      man am ehesten.
+
+    Nicht zu verwechseln mit `chat_reports_faellig`: ein Report verdichtet
+    einen langen Verlauf und versteckt die abgedeckten Nachrichten in der
+    Anzeige (Schwelle 50). Ein Profil versteckt NICHTS, es beantwortet nur,
+    wer der Mensch gerade ist. Deshalb der viel kuerzere Takt.
+
+    Sammelkontakt und archivierte Kontakte stehen hier nie. Nur Lesezugriff."""
+    zeilen = _profil_faellig()
+    return _json({"schwelle": PROFIL_SCHWELLE,
+                  "anzahl": len(zeilen),
+                  "kontakte": [{"lead_id": z["lead_id"], "name": z["name"],
+                                "neue_nachrichten": z["offen"],
+                                "angefordert": bool(z["angefordert"]),
+                                "juengste": z["juengste"]} for z in zeilen],
+                  "hinweis": PROFIL_HINWEIS})
+
+
+@_gesichert
+def profil_anfordern(lead_id: str) -> str:
+    """Ein frisches Kontaktprofil anfordern — NUR auf Wunsch des Betreibers.
+
+    Erzeugt selbst kein Profil (dieses Werkzeug hat kein Sprachmodell), es
+    vermerkt die Bitte. Der Kontakt steht danach in `profile_faellig` mit
+    `angefordert: true`, unabhaengig davon, wie viele Nachrichten seither
+    aufgelaufen sind. Erledigt ist die Anforderung, sobald ein Profil
+    geschrieben wurde — es braucht kein Quittieren.
+
+    Es geht dabei NICHTS an den Kunden."""
+    leads = _q("select id, name from leads where id = %s", (lead_id,))
+    if not leads:
+        return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
+    if UNBEKANNT_LEAD_ID and str(lead_id) == str(UNBEKANNT_LEAD_ID):
+        return _json({"fehler": (
+            "Am Sammelkontakt haengen die Nachrichten vieler verschiedener "
+            "Fremder — ein gemeinsames Profil darueber vermischte Menschen, "
+            "die nichts miteinander zu tun haben. Erst einordnen "
+            "(eingang_einordnen), dann je Kontakt. Nichts angefordert.")})
+    neu = _q("insert into activities (lead_id, type, payload) "
+             "values (%s, %s, %s) returning id",
+             (lead_id, PROFIL_ANGEFORDERT_TYP, _json({})))[0]
+    return _json({"angefordert_fuer": leads[0]["name"],
+                  "aktivitaets_id": neu["id"],
+                  "hinweis": PROFIL_HINWEIS})
+
+
+@_gesichert
+def kontaktprofil_schreiben(lead_id: str, wer: str, beziehung: str,
+                            wichtig: str, aktuell: str,
+                            bis_aktivitaet_id: str = "",
+                            links: str = "", dateien: str = "") -> str:
+    """Ein SELBST GESCHRIEBENES Kontaktprofil ablegen — vier Leitfragen.
+
+      wer       — Wer ist der Mensch?
+      beziehung — In welcher Beziehung stehe ich zu ihm/ihr?
+      wichtig   — Was ist dem Menschen wichtig?
+      aktuell   — Was ist gerade los?
+
+    Alle vier oder keins: ein Profil mit einer leeren Stelle saehe aus wie
+    ein vollstaendiges mit einer Luecke. Dazu `links` und `dateien` — was im
+    Verlauf an URLs, PDFs und Anhaengen vorkam, je Eintrag eine Zeile.
+    Hoechstens 800 Zeichen je Leitfrage.
+
+    Dieses Werkzeug erzeugt nichts selbst und ruft kein Modell: den Text
+    schreibst du, nachdem du `chat_verlauf(lead_id)` gelesen hast.
+    `bis_aktivitaet_id` unveraendert von dort weitergeben — sie sagt, bis
+    wohin du gelesen hast.
+
+    Jeder Aufruf legt eine NEUE Fassung an; die vorige bleibt lesbar. Es
+    wird nichts ueberschrieben, nichts versteckt und nichts an den Kunden
+    geschickt. Was ein MENSCH als Profilfeld bestaetigt hat
+    (profil_aktualisieren), bleibt davon unberuehrt.
+
+    Es bleibt ein Protokoll: schreib, was aus den Nachrichten hervorgeht —
+    nicht, was du vermutest. „Wirkt zoegerlich" ist eine Bewertung, keine
+    Beobachtung, und gehoert nicht hinein."""
+    leads = _q("select id, name from leads where id = %s", (lead_id,))
+    if not leads:
+        return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
+    if UNBEKANNT_LEAD_ID and str(lead_id) == str(UNBEKANNT_LEAD_ID):
+        return _json({"fehler": (
+            "Am Sammelkontakt haengen die Nachrichten vieler verschiedener "
+            "Fremder — ein gemeinsames Profil darueber vermischte Menschen, "
+            "die nichts miteinander zu tun haben. Erst einordnen "
+            "(eingang_einordnen), dann je Kontakt. Nichts gespeichert.")})
+
+    profil, fehler = _profil_bauen(wer, beziehung, wichtig, aktuell,
+                                   links, dateien)
+    if fehler:
+        return fehler
+    if not profil:
+        return _json({"fehler": (
+            "Keine der vier Leitfragen beantwortet — es gibt nichts zu "
+            "speichern.")})
+
+    grenze = _profil_grenze_bestimmen(lead_id, bis_aktivitaet_id)
+    if isinstance(grenze, str):        # Fehlermeldung statt Grenze
+        return grenze
+    bis_zeit, bis_id = grenze
+    neu_id = _profil_ablegen(lead_id, profil, bis_zeit, bis_id)
+    return _json({"aktivitaets_id": neu_id, "kontakt": leads[0]["name"],
+                  "bis_zeitpunkt": bis_zeit.isoformat(),
+                  "hinweis": ("Gespeichert. Es ging nichts an den Kunden, "
+                              "und es wurde keine Nachricht versteckt.")})
 
 
 @_gesichert
@@ -2067,12 +2381,16 @@ def chat_report_speichern(lead_id: str, zusammenfassung: str,
     nutzlast = {"zusammenfassung": text, "anzahl": anzahl,
                 "bis_aktivitaet_id": str(bis_id),
                 "bis_zeitpunkt": bis_zeit.isoformat()}
-    if profil:
-        nutzlast["profil"] = profil
     neu = _q(
         "insert into activities (lead_id, type, payload) "
         "values (%s, %s, %s) returning id",
         (lead_id, CHAT_REPORT_TYP, _json(nutzlast)))[0]
+    # Das Profil kommt als EIGENE Zeile, nicht in die Report-Nutzlast: es
+    # hat seinen eigenen Takt (PROFIL_SCHWELLE) und darf keine Nachrichten
+    # verstecken. Beides in einem Aufruf zu erledigen bleibt bequem —
+    # abgelegt wird es trotzdem getrennt.
+    if profil:
+        _profil_ablegen(lead_id, profil, bis_zeit, bis_id)
     offen = _q(
         "with" + _CHAT_GRENZE_CTE +
         " select count(*) as n from activities a"
@@ -3707,6 +4025,11 @@ WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              # Lange Verlaeufe verdichten — der Agent schreibt den Text, die
              # Werkzeuge lesen und legen ab (Betreiber-Wunsch 22.08.2026).
              chat_reports_faellig, chat_verlauf, chat_report_speichern,
+             # Das Kontaktprofil hat einen EIGENEN, viel kuerzeren Takt
+             # (5 statt 50) und versteckt nichts — Begruendung bei
+             # PROFIL_TYP. `profil_anfordern` ist der Weg fuer „jetzt bitte",
+             # etwa aus der Oberflaeche heraus.
+             profile_faellig, kontaktprofil_schreiben, profil_anfordern,
              entwuerfe_offen, entwurf_freigeben, entwurf_ablehnen,
              entwurf_manuell_gesendet, entwurf_erneut_freigeben,
              # Entwuerfe endgueltig wegraeumen; `pending` bleibt bei

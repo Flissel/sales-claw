@@ -1558,10 +1558,16 @@ def _leads_mit_profil(lead_ids):
     ids = [str(x) for x in lead_ids if x]
     if not ids:
         return set()
+    # Zwei Quellen, wie in server._juengstes_profil: eigene
+    # `kontakt_profil`-Zeilen (heute) und Profile, die noch in einem
+    # Chat-Report eingebettet liegen (erste Fassung, echte Daten vorhanden).
     zeilen = server._q(
-        "select distinct lead_id from activities where type = %s "
-        "and lead_id = any(%s::uuid[]) and payload->'profil' is not null",
-        (server.CHAT_REPORT_TYP, ids))
+        "select distinct lead_id from activities"
+        " where lead_id = any(%(ids)s::uuid[])"
+        "   and ((type = %(report)s and payload->'profil' is not null)"
+        "        or type = %(profil)s)",
+        {"ids": ids, "report": server.CHAT_REPORT_TYP,
+         "profil": server.PROFIL_TYP})
     return {str(z["lead_id"]) for z in zeilen}
 
 
@@ -1572,6 +1578,25 @@ def _profil_zelle(lead_id, mit_profil) -> str:
     if str(lead_id) in mit_profil:
         return f'<a href="/kontakte/{_e(lead_id)}#profil">Profil</a>'
     return '<span class="meta">noch keins</span>'
+
+
+def _profil_knopf(lead_id) -> str:
+    """„Profil jetzt erzeugen" — genauer: anfordern.
+
+    Diese Oberflaeche hat kein Sprachmodell und kann selbst kein Profil
+    schreiben. Der Knopf vermerkt die Bitte; der Agent erledigt sie beim
+    naechsten Durchgang. Der Text sagt das auch, statt eine Sofortwirkung
+    zu versprechen, die nicht eintritt.
+    """
+    if _ist_sammelkontakt(lead_id):
+        return ""
+    return (f'<div class="aktionen"><form class="aktion" method="post" '
+            f'action="/kontakte/profil-anfordern">'
+            f'<input type="hidden" name="lead_id" value="{_e(lead_id)}">'
+            f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+            f'<button>Neues Profil anfordern</button></form></div>'
+            f'<p class="meta">Der Agent schreibt es beim naechsten '
+            f'Durchgang. Es geht dabei nichts an den Kunden.</p>')
 
 
 def _kontaktprofil_bereich(lead_id) -> str:
@@ -1585,12 +1610,13 @@ def _kontaktprofil_bereich(lead_id) -> str:
     Geschrieben wird hier nichts. Das Profil entsteht im Chat
     (`chat_report_speichern`), weil dort das Sprachmodell sitzt.
     """
-    profil = server._juengstes_profil(server._chat_reports(lead_id))
+    profil = server._juengstes_profil(lead_id)
     if not profil:
         return ('<h2 id="profil">Kontaktprofil</h2><div class="karte">'
-                '<p>Noch keins. Es entsteht im Chat, sobald genug '
-                'Nachrichten aufgelaufen sind — der Agent schreibt es beim '
-                'naechsten Chat-Report mit.</p></div>')
+                '<p>Noch keins. Es entsteht von selbst, sobald seit der '
+                f'letzten Fassung {server.PROFIL_SCHWELLE} Nachrichten '
+                'aufgelaufen sind — oder jetzt, auf Zuruf.</p>'
+                + _profil_knopf(lead_id) + '</div>')
     zeilen = [f'<h3>{_e(server.PROFIL_FRAGEN[feld])}</h3>'
               f'<p>{_e(profil.get(feld) or "—")}</p>'
               for feld in server.PROFIL_FELDER]
@@ -1608,7 +1634,7 @@ def _kontaktprofil_bereich(lead_id) -> str:
             f'<p class="meta">Stand vom {_zeit(profil.get("stand_vom"))} — '
             f'aus dem Nachrichtenverlauf erschlossen, nicht bestaetigt. '
             f'Bestaetigte Angaben stehen oben unter den Stammdaten.</p>'
-            f'</div>')
+            f'{_profil_knopf(lead_id)}</div>')
 
 
 def _chat_report_bereich(lead_id) -> str:
@@ -1705,6 +1731,24 @@ async def aktion_kontakt_wiederherstellen(request):
                             _e(antwort["fehler"]))
     _kontakt_loggen(lead_id, "kontakt_archiviert", {"archiviert": False})
     return RedirectResponse(f"/kontakte/{lead_id}", status_code=303)
+
+
+@_gesichert_seite
+async def aktion_profil_anfordern(request):
+    """Ein frisches Kontaktprofil anfordern.
+
+    Einschrittig und harmlos: es entsteht KEIN Profil — diese Oberflaeche
+    hat kein Sprachmodell. Vermerkt wird die Bitte; der Kontakt steht danach
+    in `profile_faellig` mit `angefordert: true`, und der Agent schreibt das
+    Profil beim naechsten Durchgang. Es geht nichts an den Kunden.
+    """
+    _form, lead_id, abbruch = await _kontakt_vorspann(request)
+    if abbruch:
+        return abbruch
+    antwort = json.loads(server.profil_anfordern(lead_id=lead_id))
+    if "fehler" in antwort:
+        return _fehlerseite(409, "Nicht angefordert", _e(antwort["fehler"]))
+    return RedirectResponse(f"/kontakte/{lead_id}#profil", status_code=303)
 
 
 @_gesichert_seite
@@ -2253,6 +2297,8 @@ app = Starlette(routes=[
     Route("/kontakte/archivieren-bestaetigen",
           aktion_kontakt_archivieren_bestaetigen, methods=["POST"]),
     Route("/kontakte/wiederherstellen", aktion_kontakt_wiederherstellen,
+          methods=["POST"]),
+    Route("/kontakte/profil-anfordern", aktion_profil_anfordern,
           methods=["POST"]),
     Route("/kontakte/{lead_id}", kontakt_detail),
     Route("/posteingang", posteingang),

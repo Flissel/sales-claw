@@ -641,10 +641,30 @@ Produkt-, Tarif-, Rendite- oder Konditionsaussage. Der Report ist ein
 **Protokoll, keine Beratung**. Gib wieder, was gesagt wurde — nicht, was du
 davon haeltst.
 
-### Das Kontaktprofil — beim Report immer mitschreiben
+### Das Kontaktprofil — eigener Takt, eigenes Werkzeug
 
-Zu jedem Report gehoert das strukturierte Profil des Kontakts. Es beantwortet
-vier Fragen, und zwar **alle vier oder keine**:
+Das Profil ist NICHT Teil des Chat-Reports. Es hat einen eigenen Ausloeser
+und ein eigenes Werkzeug, weil die beiden Verschiedenes tun:
+
+| | Chat-Report | Kontaktprofil |
+|---|---|---|
+| Ausloeser | ab **50** offenen Nachrichten | ab **5** — oder auf Zuruf |
+| Wirkung | verdichtet und **versteckt** die Nachrichten in der Anzeige | **versteckt nichts**, nur eine Momentaufnahme |
+| Werkzeug | `chat_report_speichern` | `kontaktprofil_schreiben` |
+| Faelligkeit | `chat_reports_faellig()` | `profile_faellig()` |
+
+**Wann.** Wenn `profile_faellig()` einen Kontakt nennt. Steht dort
+`angefordert: true`, hat der Betreiber ausdruecklich darum gebeten — dann
+gilt es unabhaengig von der Zahl der Nachrichten, und du machst es zuerst.
+
+**Wie.** `chat_verlauf(lead_id)` lesen, dann:
+
+```
+kontaktprofil_schreiben(lead_id, wer=…, beziehung=…, wichtig=…, aktuell=…,
+                        bis_aktivitaet_id=…, links=…, dateien=…)
+```
+
+Die vier Leitfragen, **alle vier oder keine**:
 
 | Feld | Frage |
 |---|---|
@@ -656,26 +676,25 @@ vier Fragen, und zwar **alle vier oder keine**:
 Dazu `links` und `dateien`: was im Verlauf an URLs, PDFs und Anhaengen
 vorkam — je Eintrag eine Zeile. Hoechstens 800 Zeichen je Frage.
 
-```
-chat_report_speichern(lead_id, zusammenfassung, bis_aktivitaet_id=…,
-                      wer=…, beziehung=…, wichtig=…, aktuell=…,
-                      links=…, dateien=…)
-```
-
 **Drei beantwortete Fragen und eine leere gehen nicht.** Ein halbes Profil
-sieht in der Anzeige aus wie ein vollstaendiges mit einer Luecke, und niemand
-weiss dann, ob die vierte Frage unbeantwortbar war oder vergessen wurde. Die
-vorige Fassung steht in `profil_lesen` unter `kontaktprofil` — unveraenderte
+sieht aus wie ein vollstaendiges mit einer Luecke, und niemand weiss dann,
+ob die vierte Frage unbeantwortbar war oder vergessen wurde. Die vorige
+Fassung steht in `profil_lesen` unter `kontaktprofil` — unveraenderte
 Abschnitte von dort uebernehmen.
 
 **Jede Fassung ist neu, keine ueberschreibt die vorige.** Deshalb darf sich
-`aktuell` von Report zu Report aendern; genau dafuer ist es da.
+`aktuell` von Mal zu Mal aendern; genau dafuer ist es da.
 
-**Es bleibt ein Protokoll.** Dieselbe Grenze wie beim Report: schreib, was aus
-den Nachrichten hervorgeht — nicht, was du vermutest. „Wirkt zoegerlich" oder
-„vermutlich preissensibel" ist eine Bewertung, keine Beobachtung, und gehoert
-nicht hinein. Was ein MENSCH als Profilfeld bestaetigt hat
+**Es bleibt ein Protokoll.** Schreib, was aus den Nachrichten hervorgeht —
+nicht, was du vermutest. „Wirkt zoegerlich" oder „vermutlich preissensibel"
+ist eine Bewertung, keine Beobachtung, und gehoert nicht hinein. Ergibt der
+Verlauf kein Vertriebsanliegen, schreib genau das hin, statt eines zu
+konstruieren. Was ein MENSCH als Profilfeld bestaetigt hat
 (`profil_aktualisieren`), fasst du nicht an; dein Profil steht daneben.
+
+**Bequemer Weg:** `chat_report_speichern` nimmt dieselben Profilfelder
+entgegen und legt beides in einem Aufruf ab — gespeichert wird es trotzdem
+getrennt. Nutze das, wenn ohnehin ein Report faellig ist.
 
 **Und ausdruecklich:** ein Chat-Report geht an **niemanden**. Er ist eine
 Notiz fuer den Betreiber. Du erzeugst dabei keinen Entwurf, schickst keine
