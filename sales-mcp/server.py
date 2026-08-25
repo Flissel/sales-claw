@@ -443,10 +443,23 @@ def kontakte_freigegeben() -> str:
 #   auto       — der Entwurf entsteht bereits freigegeben
 #                (approved_by='auto-betrieb'), der Dispatcher stellt zu.
 #
-# FAIL-CLOSED wie `_whatsapp_freigegeben`, nicht fail-open wie `_archiviert`:
-# ein fehlender Schluessel, ein kaputter Wert, ein unbekannter Name — alles
-# zaehlt als `manuell`. Bestandskontakte sind damit automatisch stumm, und
-# ein Tippfehler macht keinen Kontakt gespraechig.
+# VORGABE `halbauto` (Betreiberentscheidung 25.08.2026: „standart ist halb
+# automatic"). Vorher war es `manuell`, mit der Begruendung, dass
+# Bestandskontakte stumm sein sollen. Der Betreiber will es anders — und das
+# ist vertretbar, weil zwei Dinge weiter gelten:
+#
+#   * Ein Entwurf geht an NIEMANDEN. Er wartet auf eine Freigabe.
+#   * Ohne WhatsApp-Kontaktfreigabe entsteht ohnehin keiner
+#     (`entwurf_erstellen` prueft sie beim Anlegen).
+#
+# Die fail-closed-Grenze wandert damit von „ueberhaupt etwas tun" zu „ohne
+# menschlichen Blick rausschicken" — und dort steht sie dreifach: Stufe,
+# WhatsApp-Freigabe, Zustimmung des Kontakts.
+#
+# Was UNKLAR ist, zaehlt weiterhin als Vorgabe: fehlender Schluessel,
+# kaputter Wert, unbekannter Name. Ein Tippfehler macht damit keinen Kontakt
+# selbstaendiger, als er sein soll — `auto` erreicht man nur, indem man es
+# hinschreibt.
 #
 # `auto` ist die einzige Stufe, in der eine Nachricht ohne menschlichen Blick
 # an einen Menschen geht. Sie braucht deshalb ZWEI Voraussetzungen: die Stufe
@@ -632,7 +645,7 @@ def zustimmung_widerrufen(lead_id: str, grund: str = "") -> str:
 
 
 AUTONOMIE_SCHLUESSEL = "autonomie"
-AUTONOMIE_VORGABE = "manuell"
+AUTONOMIE_VORGABE = "halbauto"
 AUTONOMIE_STUFEN = ("ignorieren", "manuell", "halbauto", "auto")
 AUTONOMIE_TEXT = {
     "ignorieren": "Ignorieren — kein Wort wird gespeichert.",
@@ -679,8 +692,9 @@ def kontakt_autonomie_setzen(lead_id: str, stufe: str) -> str:
     Menschen geht.
 
       ignorieren — von diesem Chat wird kein Wort gespeichert.
-      manuell    — die Vorgabe. Nichts geschieht von selbst.
-      halbauto   — du schreibst Entwuerfe, freigeben tut ein Mensch.
+      manuell    — nichts geschieht von selbst.
+      halbauto   — DIE VORGABE. Du schreibst Entwuerfe, freigeben tut
+                   ein Mensch.
       auto       — Entwuerfe entstehen freigegeben und werden zugestellt.
 
     `auto` wirkt NUR zusammen mit der WhatsApp-Kontaktfreigabe. Fehlt die,

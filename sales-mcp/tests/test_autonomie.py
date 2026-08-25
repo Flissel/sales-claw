@@ -85,13 +85,19 @@ def _entwuerfe(lead):
 def test_die_vier_stufen_stehen_an_einer_stelle():
     assert server.AUTONOMIE_STUFEN == ("ignorieren", "manuell", "halbauto",
                                        "auto")
-    assert server.AUTONOMIE_VORGABE == "manuell"
+    assert server.AUTONOMIE_VORGABE == "halbauto"
     assert set(server.AUTONOMIE_TEXT) == set(server.AUTONOMIE_STUFEN)
 
 
-def test_vorgabe_ist_manuell():
-    """Bestandskontakte sind stumm, ohne dass jemand etwas tun muss."""
-    assert _stufe(_lead()) == "manuell"
+def test_vorgabe_ist_halbauto():
+    """Betreiberentscheidung 25.08.2026: „standart ist halb automatic".
+
+    Vorher war es `manuell`. Der Wechsel ist vertretbar, weil ein Entwurf
+    an NIEMANDEN geht und ohne WhatsApp-Freigabe ohnehin keiner entsteht.
+    Die fail-closed-Grenze liegt jetzt bei `auto` — dort dreifach.
+    """
+    assert _stufe(_lead()) == "halbauto"
+    assert server.AUTONOMIE_VORGABE == "halbauto"
 
 
 @pytest.mark.parametrize("kaputt", [
@@ -99,10 +105,14 @@ def test_vorgabe_ist_manuell():
     {"autonomie": {"stufe": "vollgas"}}, {"autonomie": {"stufe": None}},
     {"autonomie": []},
 ])
-def test_alles_unklare_zaehlt_als_manuell(kaputt):
-    """Fail-closed wie bei der WhatsApp-Freigabe — ein Tippfehler macht
-    keinen Kontakt gespraechig."""
-    assert server._autonomie(kaputt) == "manuell"
+def test_alles_unklare_zaehlt_als_vorgabe(kaputt):
+    """Ein Tippfehler macht keinen Kontakt selbstaendiger als vorgesehen.
+
+    `auto` erreicht man nur, indem man es hinschreibt — nie durch einen
+    kaputten Wert.
+    """
+    assert server._autonomie(kaputt) == server.AUTONOMIE_VORGABE
+    assert server._autonomie(kaputt) != "auto"
 
 
 @pytest.mark.parametrize("stufe", ["ignorieren", "manuell", "halbauto", "auto"])
@@ -118,7 +128,7 @@ def test_unbekannte_stufe_wird_abgelehnt():
     lead = _lead()
     antwort = json.loads(server.kontakt_autonomie_setzen(lead, "vollgas"))
     assert "fehler" in antwort
-    assert _stufe(lead) == "manuell"
+    assert _stufe(lead) == server.AUTONOMIE_VORGABE
 
 
 def test_setzen_wird_protokolliert():
@@ -153,7 +163,7 @@ def test_sammelkontakt_bekommt_keine_stufe(sammelkontakt_zurueck):
     server.UNBEKANNT_LEAD_ID = sammel
     antwort = json.loads(server.kontakt_autonomie_setzen(sammel, "auto"))
     assert "fehler" in antwort
-    assert _stufe(sammel) == "manuell"
+    assert _stufe(sammel) == server.AUTONOMIE_VORGABE
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +171,9 @@ def test_sammelkontakt_bekommt_keine_stufe(sammelkontakt_zurueck):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("stufe", ["manuell", "ignorieren"])
-def test_ohne_stufe_entsteht_kein_entwurf(stufe):
+def test_stumme_stufen_erzeugen_keinen_entwurf(stufe):
+    """Beide sind seit dem 25.08.2026 eine ABWEICHUNG von der Vorgabe —
+    wer sie setzt, will ausdruecklich Ruhe an diesem Kontakt."""
     lead = _lead()
     _freigeben(lead)
     server.kontakt_autonomie_setzen(lead, stufe)
@@ -225,18 +237,33 @@ def test_auto_ohne_whatsapp_freigabe_erzeugt_nichts():
     assert _entwuerfe(lead) == []
 
 
-def test_der_agent_kann_die_stufe_nicht_umgehen():
-    """Der Kern der Suite: kein Weg von 'manuell' zu einer Antwort."""
+def test_der_agent_erreicht_niemals_approved_von_selbst():
+    """Der Kern der Suite — praezisiert am 25.08.2026.
+
+    Vorher stand hier „kein Weg von 'manuell' zu einer Antwort". Seit die
+    Vorgabe `halbauto` ist, stimmt dieser Satz nicht mehr: ein Entwurf
+    ENTSTEHT jetzt von selbst. Die Aussage dahinter gilt aber unveraendert
+    und ist die eigentliche — der Agent bringt nichts an einen Menschen,
+    ohne dass ein Mensch es freigegeben hat.
+
+    Geprueft wird deshalb, was zaehlt: alles bleibt `pending`, solange
+    nicht ALLE DREI Tore offen sind.
+    """
     lead = _lead()
     _freigeben(lead)
-    # Ohne gesetzte Stufe steht der Kontakt auf manuell.
-    assert "fehler" in json.loads(server.antwort_entwerfen(lead, "Hallo"))
-    # Auch nicht ueber den Umweg eines gewoehnlichen Entwurfs mit
-    # anschliessender Selbstfreigabe: entwurf_erstellen legt 'pending' an,
-    # und freigeben kann nur ein Mensch (approved_by='betreiber').
-    json.loads(server.entwurf_erstellen(lead, "whatsapp", "Hallo"))
+    # Vorgabe halbauto: es entsteht ein Entwurf — aber nur ein Entwurf.
+    json.loads(server.antwort_entwerfen(lead, "Hallo"))
+    # Auch der gewoehnliche Weg legt nur 'pending' an.
+    json.loads(server.entwurf_erstellen(lead, "whatsapp", "Noch einer"))
+    # Und selbst mit Stufe `auto` bleibt es dabei, solange die Zustimmung
+    # des Kontakts fehlt.
+    server.kontakt_autonomie_setzen(lead, "auto")
+    json.loads(server.antwort_entwerfen(lead, "Und noch einer"))
+
     zeilen = _entwuerfe(lead)
-    assert len(zeilen) == 1 and zeilen[0]["status"] == "pending"
+    assert len(zeilen) == 3
+    assert all(z["status"] == "pending" for z in zeilen),         [z["status"] for z in zeilen]
+    assert all(z["approved_by"] is None for z in zeilen)
 
 
 # ---------------------------------------------------------------------------
