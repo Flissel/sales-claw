@@ -4008,6 +4008,98 @@ def firma_anreichern(lead_id: str, website: str = "") -> str:
                     "ist. Der Abruf kostete nichts.")}))
 
 
+KENNUNGEN_MAX = 60
+
+
+@_gesichert
+def kennungen_bericht() -> str:
+    """Welche Absender-Kennungen sind aufgetaucht — und was bleibt stabil?
+
+    Hintergrund: WhatsApp stellt auf LIDs um. Dieselbe Person erscheint mal
+    unter ihrer Rufnummer (`4915772882471@c.us`), mal unter einer LID
+    (`143151310344360`), die keinen Bezug zur Nummer hat. Welche Merkmale
+    dabei stabil bleiben, laesst sich nicht herleiten — dieser Bericht macht
+    es beobachtbar, damit die Zuordnung auf Bewiesenem steht statt auf
+    Plausiblem.
+
+    Drei Bloecke:
+
+    * `kennungen` — je gesehener Kennung: Anzahl, Zeitraum, aus welcher
+      Quelle sie kam (`senderPhone` = OpenWA hat selbst aufgeloest,
+      `zuordnung` = unsere Tabelle, `lid` = roh und unaufgeloest), welche
+      Anzeigenamen dazu auftraten und an welchem Kontakt sie haengt.
+    * `widersprueche` — dieselbe LID, die zu VERSCHIEDENEN Rufnummern
+      aufgeloest wurde. Das ist der gefaehrliche Fall: die spaetere
+      Zuordnung gewinnt, und wenn sie falsch ist, haengen fremde
+      Nachrichten an einem echten Verlauf.
+    * `senderphone` — wie oft OpenWA die Rufnummer selbst mitgeliefert hat.
+      Steht dort ueberall 0, greift die erste und beste Stufe der Kette
+      nicht, und jede Zuordnung haengt an unserer Tabelle.
+
+    Nur Lesezugriff; es wird nichts geaendert und nichts versendet."""
+    kennungen = _q(
+        "select a.payload->>'absender' as kennung,"
+        "       count(*) as anzahl,"
+        "       min(a.created_at) as zuerst, max(a.created_at) as zuletzt,"
+        "       array_remove(array_agg(distinct a.payload->>'kennung_quelle'),"
+        "                    null) as quellen,"
+        "       array_remove(array_agg(distinct a.payload->>'push_name'),"
+        "                    null) as namen,"
+        "       array_remove(array_agg(distinct a.payload->>'senderphone'),"
+        "                    null) as senderphone,"
+        "       max(l.name) as kontakt,"
+        "       bool_or(a.lead_id::text = %(sammel)s) as im_sammelkontakt"
+        "  from activities a left join leads l on l.id = a.lead_id"
+        " where a.payload->>'absender' is not null"
+        " group by 1 order by max(a.created_at) desc limit %(limit)s",
+        {"sammel": UNBEKANNT_LEAD_ID, "limit": KENNUNGEN_MAX})
+
+    # Dieselbe LID, zwei verschiedene Rufnummern — nach Zeit geordnet, damit
+    # sichtbar ist, welche gewonnen hat.
+    widersprueche = _q(
+        "select payload->>'lid' as lid,"
+        "       array_agg(payload->>'telefon' order by created_at) as ziele,"
+        "       array_agg(payload->>'quelle' order by created_at) as quellen,"
+        "       array_agg(created_at order by created_at) as wann"
+        "  from activities where type = 'lid_zuordnung'"
+        "   and payload->>'telefon' is not null"
+        " group by 1"
+        " having count(distinct payload->>'telefon') > 1")
+
+    phone = _q(
+        "select count(*) filter (where payload->>'senderphone' is not null)"
+        "         as mit,"
+        "       count(*) filter (where payload->>'senderphone' is null)"
+        "         as ohne"
+        "  from activities where payload->>'absender' is not null"
+        "   and payload ? 'senderphone'")
+    zahlen = phone[0] if phone else {"mit": 0, "ohne": 0}
+
+    return _json({
+        "kennungen": [
+            {"kennung": z["kennung"], "anzahl": z["anzahl"],
+             "zuerst": z["zuerst"], "zuletzt": z["zuletzt"],
+             "quellen": z["quellen"], "anzeigenamen": z["namen"],
+             "senderphone": z["senderphone"],
+             "kontakt": z["kontakt"],
+             "im_sammelkontakt": z["im_sammelkontakt"]}
+            for z in kennungen],
+        "widersprueche": [
+            {"lid": z["lid"], "ziele": z["ziele"], "quellen": z["quellen"],
+             "wann": z["wann"],
+             "gewonnen_hat": z["ziele"][-1] if z["ziele"] else None}
+            for z in widersprueche],
+        "senderphone": {"mit_nummer": zahlen["mit"],
+                        "ohne_nummer": zahlen["ohne"]},
+        "hinweis": (
+            "Kennungen ohne Kontakt und im Sammelkontakt gehoeren noch "
+            "niemandem — absender_aufloesen() fragt OpenWA nach der "
+            "Rufnummer, eingang_einordnen() ordnet sie einem Menschen zu. "
+            "Steht bei senderphone ueberall 0, liefert OpenWA die Nummer "
+            "nicht mit; dann pruefen, ob RESOLVE_LID_TO_PHONE im "
+            "openwa-Container wirklich greift.")})
+
+
 WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              kontakt_freigeben, kontakt_freigabe_entziehen,
              kontakte_freigegeben,
@@ -4021,6 +4113,9 @@ WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              bedarf_speichern, bedarf_offen, entwurf_erstellen,
              post_entwurf_erstellen, medien_liste,
              posteingang, eingang_einordnen, absender_aufloesen,
+             # Beobachtet, welche Absender-Merkmale stabil bleiben —
+             # Grundlage fuer exaktes Matching statt Raten.
+             kennungen_bericht,
              digest, wochenbericht, uebergabe_erstellen,
              # Lange Verlaeufe verdichten — der Agent schreibt den Text, die
              # Werkzeuge lesen und legen ab (Betreiber-Wunsch 22.08.2026).

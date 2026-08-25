@@ -565,6 +565,44 @@ def _ist_ignoriert(roh, kennung) -> bool:
     return bool(namen) and server.absender_ist_ignoriert(*namen)
 
 
+def _identitaetsfelder(daten: dict) -> dict:
+    """Woran sich ein Absender wiedererkennen laesst — ohne Inhalt.
+
+    WOZU. WhatsApp stellt auf LIDs um: dieselbe Person erscheint mal unter
+    ihrer Rufnummer (`4915772882471@c.us`), mal unter einer LID
+    (`143151310344360`), die keinerlei Bezug zur Nummer hat. Welche Felder
+    dabei STABIL bleiben, laesst sich nicht herleiten — man muss es
+    beobachten. Bisher haben wir je Nachricht nur `absender` und
+    `kennung_quelle` behalten; damit ist die Frage „was aendert sich, was
+    nicht" nicht beantwortbar.
+
+    WAS NICHT. Kein Nachrichtentext, keine Anhaenge, nichts ueber den
+    INHALT. Nur, unter welchen Merkmalen dieselbe Nachricht hereinkam.
+
+    UND NICHT BEI IGNORIERTEN ABSENDERN. Von denen wird ausdruecklich nur
+    die Tatsache gebucht, dass etwas lief (Stufe 11, T5) — ein `push_name`
+    waere dort genau der Personenbezug, den diese Regel fernhaelt.
+    """
+    felder = {}
+    push = str(daten.get("pushName") or daten.get("notifyName") or "").strip()
+    if push:
+        felder["push_name"] = push[:120]
+    if daten.get("isLidSender") is not None:
+        felder["ist_lid_absender"] = bool(daten.get("isLidSender"))
+    # Der WERT, nicht nur ob er da war: genau er ist der Schluessel zum
+    # exakten Matching. Hat er gegriffen, steht er ohnehin in `absender`;
+    # hat er NICHT gegriffen, ist er hier das Einzige, woran sich die LID
+    # spaeter ohne Rueckfrage bei OpenWA aufloesen laesst.
+    sender_phone = str(daten.get("senderPhone") or "").strip()
+    felder["senderphone"] = sender_phone or None
+    for feld, name in (("chatId", "chat_kennung"), ("author", "autor"),
+                       ("from", "roh_from")):
+        wert = str(daten.get(feld) or "").strip()
+        if wert:
+            felder[name] = wert[:80]
+    return felder
+
+
 def _eingehend(daten: dict, message_id: str):
     """Der Kunde hat geschrieben -> `kundenantwort`, actor='human'.
 
@@ -600,6 +638,7 @@ def _eingehend(daten: dict, message_id: str):
 
     nutzlast = {
         **_textteil(daten, message_id),
+        **_identitaetsfelder(daten),
         "richtung": "eingehend",
         "absender": kennung or str(daten.get("from") or ""),
         "unbekannter_absender": False,
