@@ -271,6 +271,57 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Der Versender fuer LinkedIn-BEITRAEGE (sales-mcp/linkedin_dispatch.py).
+  # Er veroeffentlicht freigegebene Beitraege ueber die offizielle
+  # LinkedIn-API auf dem Profil des Betreibers — Text, Bilder oder ein
+  # Video, je nachdem, was am Entwurf haengt.
+  #
+  # Er fasst AUSSCHLIESSLICH `recipient='eigenes-profil'` an. LinkedIn-
+  # DIREKTNACHRICHTEN an echte Menschen bleiben Handarbeit; die API kann
+  # sie fuer Privatprofile nicht versenden, und ein Versender, der sie
+  # dennoch griffe, stellte den Text einer privaten Ansprache oeffentlich
+  # aufs Profil. Die Klausel steht deshalb im Claim selbst (Kopf von
+  # linkedin_dispatch.py).
+  #
+  # Bewusst "no" wie bei allen Versendern: ein Dienst, der oeffentlich
+  # etwas unter dem Namen eines Menschen postet, startet nicht von selbst
+  # mit dem Rechner mit.
+  sales-linkedin:
+    build: ./sales-mcp
+    image: sales-claw-sales-mcp:local
+    container_name: sales-linkedin
+    command: python linkedin_dispatch.py
+    restart: "no"
+    # KEIN env_file — dieselbe Trennung wie bei sales-mail: dieser Dienst
+    # braucht die Kundendaten-DB, das LinkedIn-Token und den Medienordner,
+    # sonst nichts. Ueber env_file erbte er auch OPENWA_API_KEY, SMTP_*,
+    # ANTHROPIC_API_KEY und CALDAV_* — Zugangsdaten, mit denen er nichts zu
+    # tun hat.
+    environment:
+      - SALES_DB_URL=${SALES_DB_URL}
+      - LINKEDIN_ACCESS_TOKEN=${LINKEDIN_ACCESS_TOKEN:-}
+      - LINKEDIN_PERSON_URN=${LINKEDIN_PERSON_URN:-}
+      # Der Monatsstand der versionierten API LAEUFT AB (LinkedIn haelt rund
+      # zwoelf Staende aktiv und antwortet danach mit HTTP 426). Deshalb
+      # ueberschreibbar statt fest verdrahtet.
+      - LINKEDIN_API_VERSION=${LINKEDIN_API_VERSION:-202608}
+      - TZ=${TZ:-Europe/Berlin}
+      - LINKEDIN_INTERVAL_S=20
+    volumes:
+      # Read-only wie ueberall: was gepostet werden kann, legt ausschliesslich
+      # ein Mensch auf dem Host ab.
+      - ./media:/media:ro
+    # Ein laufender Video-Upload darf nicht per SIGKILL zerrissen werden —
+    # er laeuft abschnittweise und kann Minuten dauern (Upload-Timeout 300 s
+    # je Abschnitt). Grosszuegiger als bei den Zwillingen, aus genau diesem
+    # Grund.
+    stop_grace_period: 120s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   # Die Antwort-Bruecke des Auto-Betriebs (sales-mcp/auto.py, Moduldocstring
   # dort): beantwortet unbeantwortete Kundennachrichten von Kontakten MIT
   # Kontakt-Freigabe selbst — Antwort per Anthropic-API erzeugen, Entwurf

@@ -14,8 +14,10 @@ GEMESSEN (openwa/upstream, ENGINE_TYPE=whatsapp-web.js) — daraus folgen die
 Konstanten unten:
 
 * Endpunkte: `POST /api/sessions/{id}/messages/send-image|send-audio|
-  send-document` (message.controller.ts). Alle drei nehmen dasselbe DTO
-  `SendMediaMessageDto` (dto/send-message.dto.ts).
+  send-document|send-video` (message.controller.ts). Alle vier nehmen dasselbe
+  DTO `SendMediaMessageDto` (dto/send-message.dto.ts). Der Dienst kennt noch
+  send-text/-sticker/-voice/-location/-contact/-poll/-bulk/-template; die
+  stehen bewusst nicht in ERLAUBT.
 * Nutzlast: `{chatId, base64, mimetype, filename, caption}`. `base64` ist
   blankes Base64 oder eine `data:`-URI; `mimetype` ist PFLICHT, sobald `base64`
   gesetzt ist (`buildMediaInput`: BadRequest "mimetype is required when using
@@ -56,6 +58,13 @@ ERLAUBT = {
     ".png":  ("send-image",    "image/png"),
     ".mp3":  ("send-audio",    "audio/mpeg"),
     ".ogg":  ("send-audio",    "audio/ogg"),
+    # Video. Nachgesehen im laufenden Dienst, nicht angenommen:
+    # message.controller.js traegt `Post('send-video')` mit RequireRole
+    # OPERATOR und demselben `SendMediaMessageDto` wie send-image/-audio/
+    # -document. Nutzlast, Bildunterschrift und Groessengrenze gelten also
+    # unveraendert. Nur .mp4, kein .mov/.webm: mp4/H.264 ist das Einzige, was
+    # WhatsApp auf allen Endgeraeten ohne Umkodierung abspielt.
+    ".mp4":  ("send-video",    "video/mp4"),
     # Stufe 9: Kalendereinladungen. `termin_bestaetigen` legt sie nach
     # /reports ab (der einzige beschreibbare Bind) — wer eine davon
     # mitschicken will, kopiert sie von Hand nach `media\`. Der Weg ueber

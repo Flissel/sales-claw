@@ -1130,9 +1130,15 @@ def post_entwurf_erstellen(thema: str, text: str, medien_datei: str = "") -> str
     """LinkedIn-POST (eigenes Profil, kein Empfaenger) in die Freigabe-Queue
     legen — fuer die zwei Schienen des Hauses: Karriere-/Partner-Recruiting
     und bAV-/B2B-Sichtbarkeit. Es wird NICHTS automatisch gepostet: nach der
-    Freigabe postet der Betreiber den Text VON HAND auf linkedin.com und
-    quittiert mit entwurf_manuell_gesendet (LinkedIn verbietet automatisierte
-    Nutzung; der Handversand ist der regelkonforme Weg).
+    Freigabe veroeffentlicht der Dienst sales-linkedin den Beitrag ueber die
+    offizielle LinkedIn-API auf dem Profil des Betreibers — mit Text, Bild
+    oder Video, je nachdem, was an medien_datei haengt. Laeuft dieser Dienst
+    nicht, bleibt der freigegebene Beitrag liegen; dann postet der Betreiber
+    von Hand und quittiert mit entwurf_manuell_gesendet.
+
+    NUR fuer Beitraege. LinkedIn-DIREKTNACHRICHTEN an Menschen bleiben
+    Handversand: die API bietet fuer Privatprofile keinen Nachrichtenversand,
+    und sales-linkedin fasst sie ausdruecklich nicht an.
 
     `thema` wird zum Betreff ("Post: <thema>") — daran erkennt die
     Freigabe-Anzeige einen Post. `medien_datei` (Dateiname aus medien_liste)
@@ -1176,8 +1182,11 @@ def post_entwurf_erstellen(thema: str, text: str, medien_datei: str = "") -> str
     return _json({"draft_id": zeilen[0]["id"], "status": zeilen[0]["status"],
                   "medien_datei": basis,
                   "hinweis": ("Nicht gepostet — wartet auf Freigabe. Nach der "
-                              "Freigabe von Hand posten und mit "
-                              "entwurf_manuell_gesendet quittieren.")})
+                              "Freigabe veroeffentlicht sales-linkedin "
+                              "den Beitrag ueber die LinkedIn-API; "
+                              "laeuft der Dienst nicht, von Hand posten "
+                              "und mit entwurf_manuell_gesendet "
+                              "quittieren.")})
 
 
 @_gesichert
@@ -1186,7 +1195,7 @@ def medien_liste() -> str:
     jeder Datei im Medienordner. Genau diese Namen nimmt
     entwurf_erstellen(..., medien_datei='<name>'). Dateien mit einer nicht
     versendbaren Endung tauchen nicht auf (erlaubt sind pdf, jpg, jpeg, png,
-    mp3, ogg, ics)."""
+    mp3, ogg, ics, mp4)."""
     try:
         eintraege = medien.liste()
     except OSError as e:
