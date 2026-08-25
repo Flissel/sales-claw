@@ -532,7 +532,7 @@ def test_beide_werkzeuge_sind_registriert():
     # bewusst nicht, siehe dort. Betreiber-Wuensche 22.08.2026:
     # entwurf_verwerfen (test_verwerfen.py) sowie chat_reports_faellig,
     # chat_verlauf und chat_report_speichern (test_chat_report.py).
-    assert len(namen) == len(set(namen)) == 44
+    assert len(namen) == len(set(namen)) == 47
 
 # ---------------------------------------------------------------------------
 # Nachbesserungen aus dem Stufe-5-Review (Befunde T1, B2, D2)

@@ -1662,12 +1662,17 @@ async def kontakte(request):
         inhalt.append([
             f'<a href="/kontakte/{_e(z["id"])}">{_e(z["name"])}</a>{marke}',
             _e(z["status"]), _e(z["consent_status"]), _zeit(z["letzte"]),
+            # Am Sammelkontakt keine Stufe: er ist kein Mensch, und eine
+            # Stufe darauf liesse den Agenten allen Fremden antworten.
+            "" if sammel else _autonomie_waehler(
+                z["id"], server._autonomie(z["enrichment"]),
+                server._whatsapp_freigegeben(z["enrichment"])),
             # Kein Archiv-Knopf am Sammelkontakt: das Werkzeug lehnt es
             # ohnehin ab, und ein Knopf, der immer scheitert, ist eine Luege.
             "" if sammel else _archiv_knopf_zeile(z["id"], archiviert)])
     rumpf = [schalter, _tabelle(
-        ["Name", "Status", "Consent", "Letzte Aktivitaet", "Archiv"],
-        inhalt)]
+        ["Name", "Status", "Consent", "Letzte Aktivitaet", "Autonomie",
+         "Archiv"], inhalt)]
     if not zeilen:
         rumpf = [schalter, "<p>Keine Kontakte.</p>"]
     return _seite(f"Kontakte ({len(zeilen)})", "".join(rumpf))
@@ -2026,6 +2031,43 @@ def _ist_sammelkontakt(lead_id) -> bool:
         str(lead_id) == str(server.UNBEKANNT_LEAD_ID)
 
 
+def _autonomie_waehler(lead_id, stufe: str, freigegeben: bool) -> str:
+    """Die Autonomiestufe je Zeile — Auswahl plus Knopf, ohne JavaScript.
+
+    Ein `<select>`, das beim Wechseln von selbst abschickt, braucht ein
+    Skript; diese Oberflaeche hat keins und soll keins bekommen. Der
+    zusaetzliche Klick ist hier ohnehin richtig: „auto" heisst, dass
+    Nachrichten ohne menschlichen Blick an Menschen gehen.
+    """
+    optionen = "".join(
+        f'<option value="{_e(s)}"{" selected" if s == stufe else ""}>'
+        f'{_e(s)}</option>' for s in server.AUTONOMIE_STUFEN)
+    # „auto" ohne WhatsApp-Freigabe ist wirkungslos — das gehoert dahin, wo
+    # man es einstellt, nicht in eine Fehlermeldung hinterher.
+    warnung = ('<div class="meta"><b>ohne Wirkung</b> — keine '
+               'WhatsApp-Freigabe</div>'
+               if stufe == "auto" and not freigegeben else "")
+    return (f'<form class="aktion" method="post" '
+            f'action="/kontakte/autonomie">'
+            f'<input type="hidden" name="lead_id" value="{_e(lead_id)}">'
+            f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+            f'<select name="stufe" aria-label="Autonomiestufe">{optionen}'
+            f'</select> <button>Setzen</button></form>{warnung}')
+
+
+@_gesichert_seite
+async def aktion_kontakt_autonomie(request):
+    """Die Stufe setzen — ueber dasselbe Werkzeug wie der Chat."""
+    form, lead_id, abbruch = await _kontakt_vorspann(request)
+    if abbruch:
+        return abbruch
+    antwort = json.loads(server.kontakt_autonomie_setzen(
+        lead_id=lead_id, stufe=str(form.get("stufe") or "")))
+    if "fehler" in antwort:
+        return _fehlerseite(400, "Nicht gesetzt", _e(antwort["fehler"]))
+    return RedirectResponse("/kontakte", status_code=303)
+
+
 def _archiv_knopf_zeile(lead_id, archiviert: bool) -> str:
     """Archivieren bzw. Zurueckholen direkt aus der Kontaktuebersicht.
 
@@ -2367,20 +2409,72 @@ async def kontakt_detail(request):
             'der Chat mit <code>chat_verlauf(lead_id, alle=True)</code>.'
             '</div>')
     if aktivitaeten:
-        zeilen = []
-        for a in aktivitaeten:
-            vorschau = json.dumps(a["payload"] or {}, ensure_ascii=False)
-            if len(vorschau) > PAYLOAD_KURZ:
-                vorschau = vorschau[:PAYLOAD_KURZ] + "…"
-            zeilen.append([_zeit(a["created_at"]), _e(a["type"]),
-                           _e(a["actor"]), _e(vorschau)])
-        teile.append(_tabelle(["Wann", "Typ", "Wer", "Inhalt"], zeilen))
+        zeilen = [[_zeit(a["created_at"]), _verlauf_richtung(a),
+                   _verlauf_inhalt(a)] for a in aktivitaeten]
+        teile.append(_tabelle(["Wann", "Was", "Inhalt"], zeilen))
     else:
         teile.append("<p>Noch keine Aktivitaeten.</p>")
 
     teile.append(_wiedervorlage_formular(lead_id))
     teile.append(_archiv_bereich(lead, archiviert))
     return _seite(lead["name"] or "Kontakt", "".join(teile))
+
+
+# Wie eine Verlaufszeile heisst — statt der rohen Typnamen aus der
+# Datenbank. `nachricht_ausgehend` sagt einem Menschen nichts; „ich →" schon.
+VERLAUF_NAMEN = {
+    "kundenantwort": "&larr; Kunde",
+    "nachricht": "&larr; Kunde",
+    "nachricht_ausgehend": "&rarr; ich",
+    "versand": "&rarr; zugestellt",
+    "eingang_ignoriert": "&larr; ignoriert",
+    "ausgang_ignoriert": "&rarr; ignoriert",
+}
+# Felder, die im Verlauf NICHTS zu suchen haben: Maschinenkram, der die
+# Zeile unlesbar macht. Sie bleiben in der Datenbank, sie stehen hier nur
+# nicht im Weg.
+VERLAUF_TECHNISCH = ("text", "message_id", "gesendet_am", "gekuerzt",
+                     "richtung", "nachrichtentyp", "kennung_quelle",
+                     "unbekannter_absender", "unbekannter_empfaenger",
+                     "roh_from", "chat_kennung", "autor", "ist_lid_absender",
+                     "senderphone", "push_name", "weg", "ohne_text")
+
+
+def _verlauf_richtung(a) -> str:
+    """Die Zeile mit einem Wort benennen, das ein Mensch versteht."""
+    name = VERLAUF_NAMEN.get(a["type"])
+    if name:
+        return name
+    return f'<span class="meta">{_e(a["type"])}</span>'
+
+
+def _verlauf_inhalt(a) -> str:
+    """Der Nachrichtentext — und der Maschinenkram nur auf Wunsch.
+
+    Vorher stand hier die rohe JSON-Nutzlast, abgeschnitten nach ein paar
+    hundert Zeichen: `message_id`, `gesendet_am`, `kennung_quelle` und der
+    eigentliche Text in einer Zeile, in der man ihn suchen musste. Das war
+    eine Entwickleransicht in einer Betreiberoberflaeche.
+
+    Jetzt: der Text gross, alles Uebrige hinter einer Klappe. Es geht
+    nichts verloren — es steht nur nicht mehr im Weg.
+    """
+    last = a["payload"] or {}
+    text = str(last.get("text") or "").strip()
+    if not text and last.get("ohne_text"):
+        text = "(Text nicht gespeichert — Absender ist auf ignorieren)"
+    rest = {k: v for k, v in last.items()
+            if k not in VERLAUF_TECHNISCH and v not in (None, "", [], {})}
+    klappe = ""
+    if rest:
+        roh = json.dumps(rest, ensure_ascii=False, default=str)
+        if len(roh) > PAYLOAD_KURZ:
+            roh = roh[:PAYLOAD_KURZ] + "…"
+        klappe = (f'<details><summary class="meta">Details</summary>'
+                  f'<code>{_e(roh)}</code></details>')
+    if not text:
+        return klappe or '<span class="meta">—</span>'
+    return f'<div class="text">{_e(text)}</div>{klappe}'
 
 
 # ---------------------------------------------------------------------------
@@ -2798,6 +2892,8 @@ app = Starlette(routes=[
     # ausgeloest hat.
     Route("/kontakte/archivieren-bestaetigen",
           aktion_kontakt_archivieren_bestaetigen, methods=["POST"]),
+    Route("/kontakte/autonomie", aktion_kontakt_autonomie,
+          methods=["POST"]),
     Route("/kontakte/wiederherstellen", aktion_kontakt_wiederherstellen,
           methods=["POST"]),
     Route("/kontakte/profil-anfordern", aktion_profil_anfordern,

@@ -1731,12 +1731,13 @@ def test_archivmerkmal_greift_nur_beim_echten_wahrheitswert():
 ERLAUBTE_LABEL = {
     "Name", "Status", "Consent", "Letzte Aktivitaet",       # /kontakte
     "Archiv",   # /kontakte, Archiv-Knopf je Zeile
+    "Autonomie",   # /kontakte, Stufe je Zeile (25.08.2026)
     "Profil",   # /einordnung, Link zum Kontaktprofil
     "Quittieren",   # /wiedervorlagen, Erledigt-Knopf je Zeile
     "Kontakt", "Faellig am", "Notiz",                       # Wiedervorlagen
     "Frage", "Antwort",                                     # Bedarfsstand
     "Sparte", "Gesellschaft", "Ablauf",                     # Vertraege
-    "Wann", "Typ", "Wer", "Inhalt",                         # Verlauf
+    "Wann", "Was", "Inhalt",   # Verlauf (25.08.2026 lesbar gemacht)
     "Kennung", "Nachrichten", "Zuletzt",                    # Einordnung
     "Zusammenfassung",                                      # Chat-Reports
 }

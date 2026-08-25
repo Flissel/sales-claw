@@ -425,6 +425,127 @@ def kontakte_freigegeben() -> str:
 # (KONTAKT_FELDER).
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Autonomiestufe je Kontakt (Betreiber-Wunsch 25.08.2026)
+#
+# „in der Kontakt liste sollte die Autonomie bestimmt werden heisst auto fuer
+#  openclaw immer zurueckschreiben / fuer half auto entwuerfe basierend auf
+#  der gesprachshistory erstellen letzten 20 nachrichten sollte reichen von
+#  beiden … manuell und ignore fuer ignorieren."
+#
+# VIER STUFEN, und die Reihenfolge ist die der zunehmenden Selbstaendigkeit:
+#
+#   ignorieren — von diesem Chat wird kein Wort gespeichert, nur die
+#                Tatsache, dass etwas lief. Fuer private Verlaeufe.
+#   manuell    — DIE VORGABE. Nichts geschieht von selbst.
+#   halbauto   — der Agent SCHREIBT einen Entwurf (status 'pending'). Es
+#                geht nichts raus, bevor ein Mensch freigibt.
+#   auto       — der Entwurf entsteht bereits freigegeben
+#                (approved_by='auto-betrieb'), der Dispatcher stellt zu.
+#
+# FAIL-CLOSED wie `_whatsapp_freigegeben`, nicht fail-open wie `_archiviert`:
+# ein fehlender Schluessel, ein kaputter Wert, ein unbekannter Name — alles
+# zaehlt als `manuell`. Bestandskontakte sind damit automatisch stumm, und
+# ein Tippfehler macht keinen Kontakt gespraechig.
+#
+# `auto` ist die einzige Stufe, in der eine Nachricht ohne menschlichen Blick
+# an einen Menschen geht. Sie braucht deshalb ZWEI Voraussetzungen: die Stufe
+# UND die WhatsApp-Kontaktfreigabe (`kontakt_freigeben`). Die eine setzt der
+# Betreiber im Wissen, wie der Kontakt gefuehrt werden soll; die andere im
+# Wissen, dass er ueberhaupt angeschrieben werden darf. Beides ist eine
+# Entscheidung eines Menschen — der Agent kann keine davon selbst treffen.
+# ---------------------------------------------------------------------------
+
+AUTONOMIE_SCHLUESSEL = "autonomie"
+AUTONOMIE_VORGABE = "manuell"
+AUTONOMIE_STUFEN = ("ignorieren", "manuell", "halbauto", "auto")
+AUTONOMIE_TEXT = {
+    "ignorieren": "Ignorieren — kein Wort wird gespeichert.",
+    "manuell": "Manuell — nichts geschieht von selbst.",
+    "halbauto": ("Halbautomatisch — der Agent schreibt Entwuerfe, "
+                 "freigeben tut ein Mensch."),
+    "auto": ("Automatisch — Entwuerfe entstehen freigegeben und werden "
+             "zugestellt. Braucht zusaetzlich die WhatsApp-Freigabe."),
+}
+# Wie viel Verlauf der Agent fuer eine Antwort liest. Der Betreiber nannte
+# „letzten 20 nachrichten … von beiden" — also beide Richtungen zusammen,
+# nicht 20 je Seite.
+ANTWORT_VERLAUF = 20
+
+
+def _autonomie(enrichment) -> str:
+    """Die Stufe eines Kontakts. Alles Unklare ist `manuell` (fail-closed)."""
+    eintrag = (enrichment or {}).get(AUTONOMIE_SCHLUESSEL)
+    stufe = eintrag.get("stufe") if isinstance(eintrag, dict) else None
+    return stufe if stufe in AUTONOMIE_STUFEN else AUTONOMIE_VORGABE
+
+
+def _autonomie_sql(spalte: str = "l.enrichment") -> str:
+    """WHERE-Baustein: die Stufe als Text, mit derselben Vorgabe wie oben.
+
+    `spalte` wird interpoliert — kein Injection-Risiko, strukturell wie bei
+    `_archiv_sql`: uebergeben werden ausschliesslich Literale aus diesem
+    Repository.
+    """
+    erlaubt = ", ".join(f"'{s}'" for s in AUTONOMIE_STUFEN)
+    return (f"(case when {spalte}->'{AUTONOMIE_SCHLUESSEL}'->>'stufe' "
+            f"          in ({erlaubt}) "
+            f"     then {spalte}->'{AUTONOMIE_SCHLUESSEL}'->>'stufe' "
+            f"     else '{AUTONOMIE_VORGABE}' end)")
+
+
+@_gesichert
+def kontakt_autonomie_setzen(lead_id: str, stufe: str) -> str:
+    """Wie selbstaendig soll der Agent mit diesem Kontakt umgehen?
+
+    NUR auf ausdrueckliche Anweisung des Betreibers. Setz das nicht von
+    selbst und schlag es nicht vor, weil ein Gespraech gut laeuft — die
+    Stufe entscheidet, ob eine Nachricht ohne menschlichen Blick an einen
+    Menschen geht.
+
+      ignorieren — von diesem Chat wird kein Wort gespeichert.
+      manuell    — die Vorgabe. Nichts geschieht von selbst.
+      halbauto   — du schreibst Entwuerfe, freigeben tut ein Mensch.
+      auto       — Entwuerfe entstehen freigegeben und werden zugestellt.
+
+    `auto` wirkt NUR zusammen mit der WhatsApp-Kontaktfreigabe. Fehlt die,
+    bleibt der Kontakt stumm, auch wenn hier `auto` steht — die Antwort
+    sagt das dann ausdruecklich."""
+    roh = str(stufe or "").strip().lower()
+    if roh not in AUTONOMIE_STUFEN:
+        return _json({"fehler": (
+            f"Unbekannte Stufe '{stufe}'. Erlaubt: "
+            f"{', '.join(AUTONOMIE_STUFEN)}.")})
+    leads = _q("select id, name, enrichment from leads where id = %s",
+               (lead_id,))
+    if not leads:
+        return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
+    if UNBEKANNT_LEAD_ID and str(lead_id) == str(UNBEKANNT_LEAD_ID):
+        return _json({"fehler": (
+            "Am Sammelkontakt haengen die Nachrichten vieler verschiedener "
+            "Fremder — eine gemeinsame Autonomiestufe darueber liesse den "
+            "Agenten allen antworten. Erst einordnen (eingang_einordnen), "
+            "dann je Kontakt entscheiden. Nichts gesetzt.")})
+
+    vorher = _autonomie(leads[0]["enrichment"])
+    _q("update leads set enrichment = jsonb_set(enrichment, %s, %s::jsonb, "
+       "true), updated_at = now() where id = %s returning id",
+       ([AUTONOMIE_SCHLUESSEL], _json({"stufe": roh, "gesetzt_am": _jetzt()}),
+        lead_id))
+    _q("insert into activities (lead_id, type, payload) "
+       "values (%s, 'autonomie', %s) returning id",
+       (lead_id, _json({"stufe": roh, "vorher": vorher})))
+
+    antwort = {"kontakt": leads[0]["name"], "stufe": roh,
+               "bedeutet": AUTONOMIE_TEXT[roh]}
+    if roh == "auto" and not _whatsapp_freigegeben(leads[0]["enrichment"]):
+        antwort["achtung"] = (
+            "Dieser Kontakt hat KEINE WhatsApp-Freigabe. Solange die fehlt, "
+            "geht nichts raus — `auto` bleibt wirkungslos. Die Freigabe "
+            "erteilt ausschliesslich der Betreiber (kontakt_freigeben).")
+    return _json(antwort)
+
+
 ARCHIV_SCHLUESSEL = "archiviert"
 
 ARCHIV_HINWEIS = (
@@ -4092,6 +4213,118 @@ def entwurf_bearbeiten(draft_id: str, text: str, betreff: str = "",
                               "Freigabe — es ging nichts raus.")})
 
 
+@_gesichert
+def antworten_faellig(stunden: int = 48) -> str:
+    """Wer wartet auf eine Antwort — und darf der Agent sie schreiben?
+
+    Nimmt den Posteingang (unbeantwortete Kundennachrichten im Zeitfenster)
+    und behaelt nur die Kontakte, deren Autonomiestufe eine Antwort
+    ueberhaupt zulaesst:
+
+      halbauto — du schreibst einen Entwurf, ein Mensch gibt frei.
+      auto     — der Entwurf entsteht freigegeben und wird zugestellt.
+
+    `manuell` und `ignorieren` stehen hier NIE. Wer dort wartet, wartet auf
+    einen Menschen; das ist keine Aufgabe, die du dir nehmen darfst.
+
+    Ablauf je Eintrag: `chat_verlauf(lead_id, limit=20)` lesen — beide
+    Richtungen —, die Antwort SELBST schreiben, `antwort_entwerfen(lead_id,
+    text)` aufrufen. Der Sammelkontakt steht hier nie: dort haengen die
+    Nachrichten vieler Fremder.
+
+    Nur Lesezugriff."""
+    postfach = json.loads(posteingang(stunden))
+    if "fehler" in postfach:
+        return _json(postfach)
+    eintraege = postfach.get("eintraege", [])
+    lead_ids = [e.get("lead_id") for e in eintraege if e.get("lead_id")]
+    stufen = {}
+    if lead_ids:
+        for z in _q("select id, enrichment from leads where id = any(%s::uuid[])",
+                    ([str(x) for x in lead_ids],)):
+            stufen[str(z["id"])] = _autonomie(z["enrichment"])
+    faellig = []
+    for e in eintraege:
+        stufe = stufen.get(str(e.get("lead_id")), AUTONOMIE_VORGABE)
+        if stufe in ("halbauto", "auto"):
+            faellig.append({**e, "autonomie": stufe})
+    return _json({"fenster_stunden": postfach.get("fenster_stunden"),
+                  "anzahl": len(faellig),
+                  "uebersprungen_weil_manuell": len(eintraege) - len(faellig),
+                  "eintraege": faellig,
+                  "verlauf_limit": ANTWORT_VERLAUF,
+                  "hinweis": (
+                      f"chat_verlauf(lead_id, limit={ANTWORT_VERLAUF}) lesen "
+                      f"— beide Richtungen —, die Antwort SELBST schreiben, "
+                      f"dann antwort_entwerfen(lead_id, text). Bei 'auto' "
+                      f"geht sie danach ohne weitere Rueckfrage raus.")})
+
+
+@_gesichert
+def antwort_entwerfen(lead_id: str, text: str,
+                      medien_datei: str = "") -> str:
+    """Eine SELBST GESCHRIEBENE Antwort ablegen — die Stufe entscheidet, wohin.
+
+    Dieses Werkzeug formuliert nichts: den Text schreibst du, nachdem du
+    `chat_verlauf(lead_id)` gelesen hast.
+
+      halbauto — der Entwurf wird 'pending'. Es geht NICHTS raus, bevor ein
+                 Mensch freigibt.
+      auto     — der Entwurf entsteht freigegeben (approved_by=
+                 'auto-betrieb') und der Dispatcher stellt ihn zu.
+      manuell / ignorieren — verweigert. Nichts entsteht.
+
+    DU KANNST DIE STUFE NICHT SELBST SETZEN, und das ist der Kern: sie kommt
+    von einem Menschen (kontakt_autonomie_setzen). Ob eine Nachricht ohne
+    menschlichen Blick an einen Menschen geht, entscheidet niemals der
+    Agent — auch nicht, indem er sich auf ein gut laufendes Gespraech
+    beruft.
+
+    Der Kanal ist WhatsApp; die Kontaktfreigabe wird wie ueberall geprueft."""
+    leads = _q("select id, name, enrichment from leads where id = %s",
+               (lead_id,))
+    if not leads:
+        return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
+    if UNBEKANNT_LEAD_ID and str(lead_id) == str(UNBEKANNT_LEAD_ID):
+        return _json({"fehler": (
+            "Am Sammelkontakt haengen die Nachrichten vieler Fremder — eine "
+            "Antwort dorthin ginge an den Falschen. Erst einordnen.")})
+
+    stufe = _autonomie(leads[0]["enrichment"])
+    if stufe not in ("halbauto", "auto"):
+        return _json({"fehler": (
+            f"Kontakt steht auf '{stufe}' — {AUTONOMIE_TEXT[stufe]} Es "
+            f"entsteht kein Entwurf. Die Stufe setzt ausschliesslich der "
+            f"Betreiber (kontakt_autonomie_setzen); frag ihn, statt sie "
+            f"selbst zu aendern.")})
+
+    roh = entwurf_erstellen(lead_id, "whatsapp", text,
+                            medien_datei=medien_datei)
+    antwort = json.loads(roh)
+    if "fehler" in antwort:
+        return roh
+    if stufe == "halbauto":
+        return _json({**antwort, "autonomie": stufe,
+                      "hinweis": ("Entwurf liegt zur Freigabe. Es ging "
+                                  "nichts raus.")})
+
+    # auto: derselbe Uebergang wie in sales-auto, mit derselben Signatur im
+    # Protokoll — `approved_by='auto-betrieb'` macht in jeder Zeile
+    # sichtbar, dass hier kein Mensch geprueft hat.
+    draft_id = antwort["draft_id"]
+    _q("update drafts set status = 'approved', approved_by = 'auto-betrieb', "
+       "approved_at = now() where id = %s and status = 'pending' "
+       "returning id", (draft_id,))
+    _q("insert into activities (lead_id, type, payload) "
+       "values (%s, 'freigabe', %s) returning id",
+       (lead_id, _json({"draft_id": str(draft_id), "kanal": "whatsapp",
+                        "weg": "autonomie-auto"})))
+    return _json({**antwort, "status": "approved", "autonomie": stufe,
+                  "hinweis": ("Freigegeben, weil dieser Kontakt auf 'auto' "
+                              "steht. Der Dispatcher stellt zu — es hat "
+                              "kein Mensch daraufgesehen.")})
+
+
 KENNUNGEN_MAX = 60
 
 
@@ -4191,6 +4424,12 @@ WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              # der Oberflaeche: sales-ui darf grundsaetzlich nichts koennen,
              # was die Chat-Werkzeuge nicht auch koennen (ui.py, Kopf).
              kontakt_archivieren, kontakt_wiederherstellen,
+             # Wie selbstaendig der Agent je Kontakt sein darf
+             # (25.08.2026). Vorgabe manuell, fail-closed.
+             kontakt_autonomie_setzen,
+             # Antworten im Rahmen der Stufe — der Agent kann die
+             # Stufe nicht selbst setzen, nur in ihr handeln.
+             antworten_faellig, antwort_entwerfen,
              aktivitaet_loggen, wiedervorlage_setzen, wiedervorlage_erledigt,
              vertrag_speichern, vertraege_ablaufend, termin_bestaetigen,
              profil_lesen, profil_aktualisieren,

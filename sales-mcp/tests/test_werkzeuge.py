@@ -688,9 +688,15 @@ def test_kontakt_aktualisieren_signatur_ueberlebt_den_dekorator():
     assert list(parameter) == ["lead_id", "feld", "wert"]
 
 
-def test_vierundvierzig_werkzeuge_registriert():
+def test_siebenundvierzig_werkzeuge_registriert():
     namen = {fn.__name__ for fn in server.WERKZEUGE}
-    assert len(namen) == 44
+    assert len(namen) == 47
+    # Autonomiestufe je Kontakt (25.08.2026). Der Agent kann die Stufe
+    # NICHT setzen, nur in ihr handeln — Vertragstests in
+    # tests/test_autonomie.py.
+    assert "kontakt_autonomie_setzen" in namen
+    assert "antworten_faellig" in namen
+    assert "antwort_entwerfen" in namen
     # Entwuerfe vor der Freigabe korrigieren (25.08.2026). NUR pending:
     # Vertragstests dazu in tests/test_ui.py.
     assert "entwurf_bearbeiten" in namen
