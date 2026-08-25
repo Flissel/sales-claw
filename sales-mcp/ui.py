@@ -178,6 +178,7 @@ import html
 import json
 import logging
 import os
+import urllib.parse
 import secrets
 import sys
 import uuid
@@ -188,7 +189,7 @@ import uvicorn
 from starlette.applications import Starlette
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.middleware import Middleware
-from starlette.responses import HTMLResponse, RedirectResponse
+from starlette.responses import HTMLResponse, RedirectResponse, Response
 from starlette.routing import Route
 
 import server
@@ -276,8 +277,21 @@ def _zeit(dt) -> str:
 # Freigeben-Knopf, und der Klick postet MIT dem legitimen, in der gerahmten
 # Seite stehenden Token. `default-src 'none'` deckt `frame-ancestors` laut Spec
 # NICHT ab (kein Fallback) — es muss ausdruecklich dabeistehen.
-_CSP = ("default-src 'none'; style-src 'unsafe-inline'; "
-        "form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+# `img-src`/`media-src 'self'` seit 25.08.2026: die Medienseite zeigt Bilder
+# und spielt Videos ab, und mit `default-src 'none'` blockte der Browser
+# beides. Ausdruecklich NUR 'self' — es wird nichts von fremden Adressen
+# geladen. PDFs werden NICHT eingebettet, sondern verlinkt: ein PDF kann
+# JavaScript enthalten, und ein `object-src` dafuer waere ein deutlich
+# groesserer Schritt als ein Verweis.
+_CSP = ("default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; "
+        "media-src 'self'; form-action 'self'; base-uri 'none'; "
+        "frame-ancestors 'none'")
+
+# Die Richtlinie fuer die ausgelieferte Datei selbst — haerter als die
+# Seiten-Richtlinie: gar keine Quellen, und `sandbox` nimmt dem Inhalt
+# Skripte, Formulare und die eigene Herkunft. Was hier ausgeliefert wird,
+# hat ein Mensch hochgeladen; es soll trotzdem nichts ausfuehren koennen.
+_CSP_DATEI = "default-src 'none'; sandbox"
 
 
 def _mit_koepfen(send):
@@ -285,7 +299,13 @@ def _mit_koepfen(send):
     async def send_mit_koepfen(nachricht):
         if nachricht["type"] == "http.response.start":
             koepfe = MutableHeaders(scope=nachricht)
-            koepfe["Content-Security-Policy"] = _CSP
+            # Eine Antwort, die schon eine eigene Richtlinie traegt,
+            # behaelt sie: die Dateiauslieferung setzt eine HAERTERE
+            # (_CSP_DATEI). Die Zusicherung „jede Antwort ist
+            # geschuetzt" bleibt damit, sie wird nur nicht
+            # aufgeweicht.
+            if "content-security-policy" not in koepfe:
+                koepfe["Content-Security-Policy"] = _CSP
             koepfe["X-Content-Type-Options"] = "nosniff"
             koepfe["Referrer-Policy"] = "no-referrer"
             koepfe["X-Frame-Options"] = "DENY"
@@ -503,6 +523,12 @@ label.feld { display: block; margin: .8rem 0; font-weight: 600; }
 p.abbrechen a, p.meta > a { display: inline-block; min-height: 44px;
                             padding: .6rem .1rem; }
 button, input, select, textarea { font-family: inherit; }
+/* Vorschau in der Medienliste. Feste Hoehe statt fester Breite: die Zeile
+   soll gleich hoch bleiben, egal ob Hoch- oder Querformat. */
+.vorschau { max-width: 100%; max-height: 140px; height: auto;
+            border-radius: 6px; display: block; background: var(--grund); }
+video.vorschau { width: 240px; max-width: 100%; }
+audio { width: 100%; max-width: 240px; }
 /* Aufklappbare Freigabe-Karten (25.08.2026). `<details>` statt JavaScript:
    der Betreiber oeffnet mehrere Entwuerfe nebeneinander, vergleicht und
    entscheidet, ohne die Liste zu verlassen. Der Pfeil bleibt der native —
@@ -806,9 +832,18 @@ def _medien_tabelle():
     if not eintraege:
         return "<p>Noch keine Unterlagen.</p>"
     return _tabelle(
-        ["Datei", "Groesse"],
-        [[_e(name), _e(f"{groesse / 1048576:.2f} MB")]
+        ["Datei", "Groesse", "Ansicht", "Loeschen"],
+        [[_e(name), _e(f"{groesse / 1048576:.2f} MB"),
+          _medien_vorschau(name), _medien_loeschen_knopf(name)]
          for name, groesse in eintraege])
+
+
+def _medien_loeschen_knopf(name: str) -> str:
+    return (f'<form class="aktion gefahr" method="post" '
+            f'action="/medien/loeschen">'
+            f'<input type="hidden" name="name" value="{_e(name)}">'
+            f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+            f'<button class="gefahr">Loeschen</button></form>')
 
 
 def _medien_formular(vorbelegt_ueberschreiben: bool = False) -> str:
@@ -832,6 +867,171 @@ def _medien_formular(vorbelegt_ueberschreiben: bool = False) -> str:
         f'Die Datei steht danach im Chat unter <code>medien_liste()</code> '
         f'und laesst sich an Entwuerfe haengen. Sie geht dadurch an '
         f'niemanden — versendet wird erst mit einer Freigabe.</p></div>')
+
+
+# Welche Endung wie gezeigt wird. PDFs und Kalenderdateien werden NICHT
+# eingebettet, sondern verlinkt — ein PDF kann JavaScript enthalten, und ein
+# `object-src` dafuer waere ein deutlich groesserer Schritt als ein Verweis.
+MEDIEN_ANSICHT = {".jpg": "bild", ".jpeg": "bild", ".png": "bild",
+                  ".mp4": "video", ".mp3": "ton", ".ogg": "ton"}
+
+
+def _medien_vorschau(name: str) -> str:
+    """Bild zeigen, Video/Ton abspielen, alles andere verlinken.
+
+    `preload="none"` bei Video und Ton ist kein Detail: die Seite listet
+    sieben Produktvideos zu je fuenf Megabyte, und ohne das laedt der
+    Browser beim Oeffnen der Seite dreissig Megabyte, die niemand sehen
+    wollte — auf dem Handy ueber Mobilfunk.
+    """
+    endung = os.path.splitext(name)[1].lower()
+    quelle = "/medien/datei/" + urllib.parse.quote(name)
+    art = MEDIEN_ANSICHT.get(endung)
+    if art == "bild":
+        return (f'<a href="{_e(quelle)}" target="_blank" rel="noreferrer">'
+                f'<img src="{_e(quelle)}" alt="{_e(name)}" '
+                f'class="vorschau"></a>')
+    if art == "video":
+        return (f'<video class="vorschau" controls preload="none" '
+                f'src="{_e(quelle)}"></video>')
+    if art == "ton":
+        return (f'<audio controls preload="none" '
+                f'src="{_e(quelle)}"></audio>')
+    return (f'<a href="{_e(quelle)}" target="_blank" rel="noreferrer">'
+            f'Oeffnen</a>')
+
+
+@_gesichert_seite
+async def medien_datei(request):
+    """Eine Unterlage ausliefern — zum Ansehen, nicht zum Ausfuehren.
+
+    Der Name laeuft durch dieselbe Pruefung wie beim Versand
+    (`medien.pruefe`): reiner Dateiname, zugelassene Endung, im Ordner
+    vorhanden, kein Symlink nach draussen. Der MIME-Typ kommt aus der
+    Whitelist und wird NIE aus dem Inhalt erraten — zusammen mit dem
+    globalen `nosniff` schliesst das aus, dass eine Datei als etwas
+    anderes interpretiert wird, als ihre Endung verspricht.
+    """
+    roh = request.path_params["name"]
+    basis, fehler = server.medien.pruefe(roh)
+    if fehler:
+        return _fehlerseite(404, "Nicht gefunden", _e(fehler))
+    _endpunkt, mimetyp = server.medien.endpunkt_und_typ(basis)
+    try:
+        inhalt = server.medien.lies(basis)
+    except OSError as e:
+        return _fehlerseite(404, "Nicht lesbar",
+                            f"Datei nicht lesbar ({_e(type(e).__name__)}).")
+    return Response(
+        inhalt, media_type=mimetyp,
+        headers={
+            # Nur der Basisname, und der ist geprueft: keine Pfadangabe,
+            # kein Zeilenumbruch, also keine Kopfzeilen-Injektion.
+            "Content-Disposition": f'inline; filename="{basis}"',
+            "Content-Security-Policy": _CSP_DATEI,
+            # Nicht im Zwischenspeicher der Zwischenstationen: die Datei
+            # kann Kundenunterlagen enthalten.
+            "Cache-Control": "private, max-age=60"})
+
+
+def _medien_verweise(basis: str):
+    """Welche Entwuerfe haengen an dieser Datei? -> Zeilen mit Status.
+
+    Der Grund fuer die ganze Zweistufigkeit beim Loeschen: `drafts.media_ref`
+    haelt nur den NAMEN. Verschwindet die Datei, faellt es erst beim
+    Zustellen auf — und bei einem freigegebenen Entwurf ist das nach der
+    Entscheidung des Betreibers, also am schlechtesten Zeitpunkt.
+    """
+    return server._q(
+        "select d.id, d.status, d.channel, l.name from drafts d "
+        "left join leads l on l.id = d.lead_id "
+        "where d.media_ref = %s order by d.created_at", (basis,))
+
+
+def _medien_loeschen_warnseite(basis: str, verweise) -> HTMLResponse:
+    if verweise:
+        liste = "".join(
+            f'<li>{_e(z["status"])} · {_e(z["channel"])} · '
+            f'{_e(z["name"] or "(ohne Kontakt)")}</li>' for z in verweise)
+        hinweis = (f'<p><b>An dieser Datei haengen {len(verweise)} '
+                   f'Entwuerfe:</b></p><ul>{liste}</ul>'
+                   f'<p>Nach dem Loeschen scheitern sie beim Zustellen — '
+                   f'`drafts.media_ref` haelt nur den Namen, nicht die '
+                   f'Datei.</p>')
+    else:
+        hinweis = "<p>Kein Entwurf verweist auf diese Datei.</p>"
+    return _seite(
+        "Loeschen bestaetigen",
+        f'<h1>Loeschen bestaetigen</h1><div class="karte">'
+        f'<p>Datei: <b>{_e(basis)}</b></p>{hinweis}'
+        f'<p><b>Das ist ein echtes Loeschen.</b> Anders als beim Archivieren '
+        f'von Kontakten gibt es hier nichts zurueckzuholen — die Datei liegt '
+        f'danach nicht mehr im Medienordner.</p>'
+        f'<div class="aktionen">'
+        f'<form class="aktion gefahr" method="post" '
+        f'action="/medien/loeschen-bestaetigen">'
+        f'<input type="hidden" name="name" value="{_e(basis)}">'
+        f'<input type="hidden" name="name_bestaetigt" value="{_e(basis)}">'
+        f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+        f'<button class="gefahr">Ja — {_e(basis)} loeschen</button>'
+        f'</form></div>'
+        f'<p class="abbrechen"><a href="/medien">Abbrechen, nichts tun</a>'
+        f'</p></div>', status=409)
+
+
+@_gesichert_seite
+async def aktion_medien_loeschen(request):
+    """Erster Schritt: NUR die Warnseite. Hier wird nichts geloescht."""
+    form = await request.form()
+    if not _csrf_ok(form):
+        return _fehlerseite(403, "Abgewiesen",
+                            "Fehlende oder falsche CSRF-Marke.")
+    basis, fehler = server.medien.pruefe(str(form.get("name") or ""))
+    if fehler:
+        return _fehlerseite(404, "Nicht gefunden", _e(fehler))
+    return _medien_loeschen_warnseite(basis, _medien_verweise(basis))
+
+
+@_gesichert_seite
+async def aktion_medien_loeschen_bestaetigen(request):
+    """Der zweite, ausdrueckliche Schritt — mit erneuter Pruefung.
+
+    Ein FREIGEGEBENER Entwurf blockiert das Loeschen ganz, nicht nur mit
+    einer Warnung: der Dispatcher liest die Datei erst beim Zustellen und
+    kann das jeden Moment tun. Wer sie trotzdem los will, lehnt den Entwurf
+    vorher ab — dann ist die Entscheidung dokumentiert, statt aus einem
+    fehlenden Anhang zu folgen.
+    """
+    form = await request.form()
+    if not _csrf_ok(form):
+        return _fehlerseite(403, "Abgewiesen",
+                            "Fehlende oder falsche CSRF-Marke.")
+    basis, fehler = server.medien.pruefe(str(form.get("name") or ""))
+    if fehler:
+        return _fehlerseite(404, "Nicht gefunden", _e(fehler))
+    if str(form.get("name_bestaetigt") or "") != basis:
+        return _fehlerseite(400, "Bestaetigung fehlt", (
+            "Ohne den auf der Warnseite gelesenen Dateinamen wird nichts "
+            "geloescht."))
+
+    verweise = _medien_verweise(basis)
+    freigegeben = [z for z in verweise if z["status"] == "approved"]
+    if freigegeben:
+        return _fehlerseite(409, "Nicht geloescht", (
+            f"Auf '{_e(basis)}' verweisen {len(freigegeben)} FREIGEGEBENE "
+            f"Entwuerfe. Der Versender liest die Datei erst beim Zustellen "
+            f"und kann das jeden Moment tun — dann ginge eine Nachricht "
+            f"ohne ihre Unterlage raus oder scheiterte. Erst die Entwuerfe "
+            f"ablehnen, dann die Datei loeschen."))
+    try:
+        os.unlink(os.path.join(server.medien.wurzel(), basis))
+    except OSError as e:
+        return _fehlerseite(500, "Nicht geloescht", (
+            f"Datei nicht loeschbar ({_e(type(e).__name__)}). Haengt der "
+            f"Medienordner an diesem Dienst ohne `:ro`?"))
+    LOG.warning("Medien: %s geloescht (%d Entwuerfe verwiesen darauf)",
+                basis, len(verweise))
+    return RedirectResponse("/medien", status_code=303)
 
 
 @_gesichert_seite
@@ -2620,6 +2820,11 @@ app = Starlette(routes=[
     Route("/wiedervorlagen/erledigt", aktion_wiedervorlage_erledigt,
           methods=["POST"]),
     Route("/medien", medien),
+    Route("/medien/datei/{name}", medien_datei),
+    Route("/medien/loeschen", aktion_medien_loeschen,
+          methods=["POST"]),
+    Route("/medien/loeschen-bestaetigen",
+          aktion_medien_loeschen_bestaetigen, methods=["POST"]),
     Route("/medien/hochladen", aktion_medien_hochladen,
           methods=["POST"]),
 ], middleware=[Middleware(HostWache)])

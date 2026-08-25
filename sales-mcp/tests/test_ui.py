@@ -1608,21 +1608,46 @@ def test_sammelkontakt_laesst_sich_nicht_archivieren(sammelkontakt_zurueck):
 
 # --- Es gibt keinen Loeschweg, und das ist die Zusage ------------------------
 
-def test_die_oberflaeche_bietet_nirgends_ein_loeschen_an():
+def test_kontakte_und_verlauf_lassen_sich_nirgends_loeschen():
+    """Kein Loeschweg fuer DATENSAETZE — und das ist die Zusage.
+
+    PRAEZISIERT am 25.08.2026. Vorher pruefte dieser Test, dass es
+    UEBERHAUPT keine Route mit „loesch" gibt. Seit es die Medienseite gibt,
+    ist das zu grob: eine Datei auf der Platte ist etwas anderes als ein
+    Datensatz.
+
+    Der Grund fuer die Zusage gilt naemlich fuer Datensaetze, nicht fuer
+    Dateien: die Rolle hat auf `sales` kein DELETE-Recht, und `activities`
+    haengt mit ON DELETE CASCADE am Kontakt — ein geloeschter Kontakt naehme
+    die gesamte Historie mit. Eine Mediendatei hat keine Historie, sie ist
+    eine Kopie einer Unterlage, und der Betreiber hat sie selbst
+    hochgeladen. Sie loeschen zu koennen ist die Kehrseite davon, sie
+    hochladen zu koennen.
+
+    Geprueft wird deshalb jetzt genau das Versprechen, das gilt: keine
+    Route und kein Werkzeug loescht KONTAKTE oder VERLAUF.
+    """
     lead = _lead()
     # Die Kontaktseite sagt ausdruecklich, dass es kein Loeschen gibt, und
     # nennt den Grund — schweigen waere hier die schlechtere Antwort.
     seite = _get(f"/kontakte/{lead}").text
     assert "Loeschen gibt es hier nicht" in seite
     assert "ON DELETE CASCADE" in seite
-    # Keine Route, die es doch taete — auf keiner Seite.
+    # Auf den Datensatz-Seiten taucht kein Loeschweg auf. /medien steht
+    # bewusst NICHT in der Liste: dort geht es um Dateien.
     for pfad in ("/", "/kontakte", f"/kontakte/{lead}", "/posteingang",
                  "/einordnung", "/wiedervorlagen"):
         assert "/loeschen" not in _get(pfad).text
+    # Routen mit „loesch" gibt es nur unter /medien — nirgends fuer
+    # Kontakte, Entwuerfe oder Aktivitaeten.
     pfade = [getattr(r, "path", "") for r in ui.app.routes]
-    assert not [p for p in pfade if "loesch" in p or "delete" in p]
+    verdaechtig = [p for p in pfade
+                   if ("loesch" in p or "delete" in p)
+                   and not p.startswith("/medien/")]
+    assert not verdaechtig, verdaechtig
     # Auch kein Chat-Werkzeug — sonst koennte der Agent, was die Oberflaeche
-    # bewusst nicht kann.
+    # bewusst nicht kann. Hier bleibt die Zusage vollstaendig: der Agent
+    # loescht auch keine Dateien.
     namen = {fn.__name__ for fn in server.WERKZEUGE}
     assert not [n for n in namen if "loesch" in n or "delete" in n]
 
@@ -2454,3 +2479,114 @@ def test_wiedervorlage_ohne_csrf_ist_403():
                   "notiz": "x"}).status_code == 403
     assert server._q(
         "select id from activities where type = 'wiedervorlage'") == []
+
+
+# ---------------------------------------------------------------------------
+# Medien ansehen und loeschen (Betreiber-Wunsch 25.08.2026)
+#
+# „ich möchte noch eine möglichkeit die documente zu previewn oder die videos
+# abzuspielen und delete soll auch möglich sein."
+#
+# Zwei Kanten, die hier zaehlen: die Datei wird zum ANSEHEN ausgeliefert,
+# nicht zum Ausfuehren — und geloescht wird nichts, woran ein freigegebener
+# Entwurf haengt.
+# ---------------------------------------------------------------------------
+
+def test_bild_wird_eingebettet_video_abgespielt_pdf_verlinkt(medienordner):
+    for name in ("bild.png", "clip.mp4", "unterlage.pdf"):
+        (medienordner / name).write_bytes(b"x" * 64)
+    seite = _get("/medien").text
+    assert '<img src="/medien/datei/bild.png"' in seite
+    assert '<video class="vorschau" controls preload="none"' in seite
+    # PDF wird NICHT eingebettet — es kann JavaScript enthalten.
+    assert "unterlage.pdf" in seite
+    assert '<embed' not in seite and '<object' not in seite
+
+
+def test_csp_erlaubt_bilder_und_medien_nur_von_self():
+    kopf = _get("/medien").headers["content-security-policy"]
+    assert "img-src 'self'" in kopf
+    assert "media-src 'self'" in kopf
+    assert "default-src 'none'" in kopf
+
+
+def test_datei_wird_mit_dem_typ_der_whitelist_ausgeliefert(medienordner):
+    (medienordner / "bild.png").write_bytes(b"PNGDATEN")
+    antwort = _get("/medien/datei/bild.png")
+    assert antwort.status_code == 200
+    assert antwort.content == b"PNGDATEN"
+    assert antwort.headers["content-type"].startswith("image/png")
+    assert antwort.headers["x-content-type-options"] == "nosniff"
+
+
+def test_ausgelieferte_datei_traegt_die_haertere_richtlinie(medienordner):
+    (medienordner / "bild.png").write_bytes(b"x")
+    kopf = _get("/medien/datei/bild.png").headers["content-security-policy"]
+    assert "sandbox" in kopf
+    assert "default-src 'none'" in kopf
+
+
+def test_datei_mit_pfad_wird_nicht_ausgeliefert(medienordner):
+    assert _get("/medien/datei/..%2F..%2Fetc%2Fpasswd").status_code in (404, 400)
+
+
+def test_unbekannte_datei_ist_404(medienordner):
+    assert _get("/medien/datei/gibtsnicht.png").status_code == 404
+
+
+def test_loeschen_zeigt_erst_die_warnseite(medienordner):
+    (medienordner / "bild.png").write_bytes(b"x" * 64)
+    antwort = _post("/medien/loeschen",
+                    {"name": "bild.png", "csrf": ui.CSRF_TOKEN})
+    assert antwort.status_code == 409
+    assert "Loeschen bestaetigen" in antwort.text
+    assert (medienordner / "bild.png").is_file()      # nichts passiert
+
+
+def test_loeschen_nennt_die_haengenden_entwuerfe(medienordner):
+    (medienordner / "bild.png").write_bytes(b"x" * 64)
+    lead = _lead()
+    _entwurf(lead, status="pending")
+    server._q("update drafts set media_ref = %s where lead_id = %s",
+              ("bild.png", lead))
+    antwort = _post("/medien/loeschen",
+                    {"name": "bild.png", "csrf": ui.CSRF_TOKEN})
+    assert "haengen 1" in antwort.text or "haengen" in antwort.text
+
+
+def test_bestaetigtes_loeschen_entfernt_die_datei(medienordner):
+    (medienordner / "bild.png").write_bytes(b"x" * 64)
+    antwort = _post("/medien/loeschen-bestaetigen",
+                    {"name": "bild.png", "name_bestaetigt": "bild.png",
+                     "csrf": ui.CSRF_TOKEN})
+    assert antwort.status_code == 303
+    assert not (medienordner / "bild.png").exists()
+
+
+def test_ohne_gelesenen_namen_wird_nicht_geloescht(medienordner):
+    (medienordner / "bild.png").write_bytes(b"x" * 64)
+    antwort = _post("/medien/loeschen-bestaetigen",
+                    {"name": "bild.png", "csrf": ui.CSRF_TOKEN})
+    assert antwort.status_code == 400
+    assert (medienordner / "bild.png").is_file()
+
+
+def test_freigegebener_entwurf_blockiert_das_loeschen(medienordner):
+    """Der Versender liest die Datei erst beim Zustellen — jeden Moment."""
+    (medienordner / "bild.png").write_bytes(b"x" * 64)
+    lead = _lead()
+    _entwurf(lead, status="approved")
+    server._q("update drafts set media_ref = %s where lead_id = %s",
+              ("bild.png", lead))
+    antwort = _post("/medien/loeschen-bestaetigen",
+                    {"name": "bild.png", "name_bestaetigt": "bild.png",
+                     "csrf": ui.CSRF_TOKEN})
+    assert antwort.status_code == 409
+    assert (medienordner / "bild.png").is_file()
+
+
+def test_loeschen_ohne_csrf_ist_403(medienordner):
+    (medienordner / "bild.png").write_bytes(b"x" * 64)
+    assert _post("/medien/loeschen",
+                 {"name": "bild.png"}).status_code == 403
+    assert (medienordner / "bild.png").is_file()
