@@ -1810,6 +1810,78 @@ def _kontakt_kennzahlen(lead_id):
     return aktivitaeten, {z["status"]: z["anzahl"] for z in entwuerfe}
 
 
+def _whatsapp_freigabe_bereich(lead, freigegeben: bool) -> str:
+    """Die WhatsApp-Freigabe — bis 25.08.2026 gab es sie in der Oberflaeche
+    ueberhaupt nicht.
+
+    Das war eine Luecke mit Folgen: der Betreiber konnte in der
+    Kontaktliste `auto` einstellen, aber die Voraussetzung dafuer nirgends
+    setzen. Der Waehler sagte dann „ohne Wirkung", ohne einen Weg
+    anzubieten — dieselbe Art Sackgasse wie die Wiedervorlagen-Seite ohne
+    Anlege-Formular.
+
+    Bewusst ein eigener Abschnitt mit Erklaerung, nicht ein Schalter in der
+    Liste: das hier ist die Entscheidung, dass ein Programm einem Menschen
+    schreiben darf. Sie soll gelesen werden, nicht im Vorbeigehen
+    umgelegt.
+    """
+    verborgen = (f'<input type="hidden" name="lead_id" '
+                 f'value="{_e(lead["id"])}">'
+                 f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">')
+    if freigegeben:
+        return (
+            f'<h2 id="freigabe">WhatsApp-Freigabe</h2>'
+            f'<div class="karte">'
+            f'<p><b>Erteilt.</b> Der Dispatcher stellt freigegebene '
+            f'Entwuerfe an diesen Kontakt zu. Steht die Autonomiestufe auf '
+            f'<code>auto</code>, antwortet der Agent selbst.</p>'
+            f'<div class="aktionen"><form class="aktion gefahr" '
+            f'method="post" action="/kontakte/freigabe-entziehen">'
+            f'{verborgen}<button class="gefahr">Freigabe entziehen</button>'
+            f'</form></div>'
+            f'<p class="meta">Entziehen wirkt sofort: es entsteht kein '
+            f'neuer WhatsApp-Entwurf, und bereits freigegebene werden nicht '
+            f'mehr zugestellt, sondern mit klarem Grund fehlgeschlagen '
+            f'gebucht.</p></div>')
+    return (
+        f'<h2 id="freigabe">WhatsApp-Freigabe</h2>'
+        f'<div class="karte">'
+        f'<p><b>Nicht erteilt.</b> An diesen Kontakt geht ueber WhatsApp '
+        f'nichts raus — auch nicht, wenn die Autonomiestufe auf '
+        f'<code>auto</code> steht.</p>'
+        f'<div class="aktionen"><form class="aktion" method="post" '
+        f'action="/kontakte/freigeben">{verborgen}'
+        f'<button class="primaer">Fuer WhatsApp freigeben</button>'
+        f'</form></div>'
+        f'<p class="meta">Das ist die Entscheidung, dass ein Programm '
+        f'diesem Menschen schreiben darf. Sie ersetzt <b>keine '
+        f'Einwilligung des Kontakts</b> (consent, UWG) — das sind zwei '
+        f'verschiedene Fragen, und die andere steht oben bei den '
+        f'Stammdaten.</p></div>')
+
+
+@_gesichert_seite
+async def aktion_kontakt_freigeben(request):
+    form, lead_id, abbruch = await _kontakt_vorspann(request)
+    if abbruch:
+        return abbruch
+    antwort = json.loads(server.kontakt_freigeben(lead_id=lead_id))
+    if "fehler" in antwort:
+        return _fehlerseite(409, "Nicht freigegeben", _e(antwort["fehler"]))
+    return RedirectResponse(f"/kontakte/{lead_id}", status_code=303)
+
+
+@_gesichert_seite
+async def aktion_kontakt_freigabe_entziehen(request):
+    form, lead_id, abbruch = await _kontakt_vorspann(request)
+    if abbruch:
+        return abbruch
+    antwort = json.loads(server.kontakt_freigabe_entziehen(lead_id=lead_id))
+    if "fehler" in antwort:
+        return _fehlerseite(409, "Nicht entzogen", _e(antwort["fehler"]))
+    return RedirectResponse(f"/kontakte/{lead_id}", status_code=303)
+
+
 def _archiv_bereich(lead, archiviert: bool) -> str:
     """Der Knopf am Fuss der Kontaktseite — archivieren oder zurueckholen.
 
@@ -2044,8 +2116,13 @@ def _autonomie_waehler(lead_id, stufe: str, freigegeben: bool) -> str:
         f'{_e(s)}</option>' for s in server.AUTONOMIE_STUFEN)
     # „auto" ohne WhatsApp-Freigabe ist wirkungslos — das gehoert dahin, wo
     # man es einstellt, nicht in eine Fehlermeldung hinterher.
-    warnung = ('<div class="meta"><b>ohne Wirkung</b> — keine '
-               'WhatsApp-Freigabe</div>'
+    # Der Verweis gehoert dazu: eine Warnung, die nicht sagt, wo man es
+    # behebt, ist eine Sackgasse. Bis 25.08.2026 gab es den Weg in der
+    # Oberflaeche ueberhaupt nicht — nur diesen Satz.
+    warnung = (f'<div class="meta"><b>ohne Wirkung</b> — keine '
+               f'WhatsApp-Freigabe '
+               f'(<a href="/kontakte/{_e(lead_id)}#freigabe">erteilen</a>)'
+               f'</div>'
                if stufe == "auto" and not freigegeben else "")
     return (f'<form class="aktion" method="post" '
             f'action="/kontakte/autonomie">'
@@ -2415,6 +2492,8 @@ async def kontakt_detail(request):
     else:
         teile.append("<p>Noch keine Aktivitaeten.</p>")
 
+    teile.append(_whatsapp_freigabe_bereich(
+        lead, server._whatsapp_freigegeben(lead["enrichment"])))
     teile.append(_wiedervorlage_formular(lead_id))
     teile.append(_archiv_bereich(lead, archiviert))
     return _seite(lead["name"] or "Kontakt", "".join(teile))
@@ -2892,6 +2971,10 @@ app = Starlette(routes=[
     # ausgeloest hat.
     Route("/kontakte/archivieren-bestaetigen",
           aktion_kontakt_archivieren_bestaetigen, methods=["POST"]),
+    Route("/kontakte/freigeben", aktion_kontakt_freigeben,
+          methods=["POST"]),
+    Route("/kontakte/freigabe-entziehen",
+          aktion_kontakt_freigabe_entziehen, methods=["POST"]),
     Route("/kontakte/autonomie", aktion_kontakt_autonomie,
           methods=["POST"]),
     Route("/kontakte/wiederherstellen", aktion_kontakt_wiederherstellen,

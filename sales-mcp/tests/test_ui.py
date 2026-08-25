@@ -2591,3 +2591,58 @@ def test_loeschen_ohne_csrf_ist_403(medienordner):
     assert _post("/medien/loeschen",
                  {"name": "bild.png"}).status_code == 403
     assert (medienordner / "bild.png").is_file()
+
+
+# ---------------------------------------------------------------------------
+# WhatsApp-Freigabe in der Oberflaeche (25.08.2026)
+#
+# Sie fehlte: der Betreiber konnte in der Kontaktliste `auto` einstellen, aber
+# die Voraussetzung dafuer nirgends setzen. Der Waehler sagte „ohne Wirkung",
+# ohne einen Weg anzubieten — dieselbe Sackgasse wie die Wiedervorlagen-Seite
+# ohne Anlege-Formular.
+# ---------------------------------------------------------------------------
+
+def test_kontaktseite_zeigt_die_freigabe_und_den_weg():
+    lead = _lead()
+    seite = _get(f"/kontakte/{lead}").text
+    assert "WhatsApp-Freigabe" in seite
+    assert "Nicht erteilt" in seite
+    assert 'action="/kontakte/freigeben"' in seite
+
+
+def test_freigeben_und_entziehen_ueber_die_oberflaeche():
+    lead = _lead()
+    antwort = _post("/kontakte/freigeben",
+                    {"lead_id": lead, "csrf": ui.CSRF_TOKEN})
+    assert antwort.status_code == 303
+    z = server._q("select enrichment from leads where id = %s", (lead,))[0]
+    assert server._whatsapp_freigegeben(z["enrichment"]) is True
+
+    antwort = _post("/kontakte/freigabe-entziehen",
+                    {"lead_id": lead, "csrf": ui.CSRF_TOKEN})
+    assert antwort.status_code == 303
+    z = server._q("select enrichment from leads where id = %s", (lead,))[0]
+    assert server._whatsapp_freigegeben(z["enrichment"]) is False
+
+
+def test_freigabe_ohne_csrf_ist_403():
+    lead = _lead()
+    assert _post("/kontakte/freigeben", {"lead_id": lead}).status_code == 403
+    z = server._q("select enrichment from leads where id = %s", (lead,))[0]
+    assert server._whatsapp_freigegeben(z["enrichment"]) is False
+
+
+def test_auto_ohne_freigabe_verweist_auf_den_weg():
+    """Eine Warnung, die nicht sagt wo man es behebt, ist eine Sackgasse."""
+    lead = _lead()
+    server.kontakt_autonomie_setzen(lead, "auto")
+    seite = _get("/kontakte").text
+    assert "ohne Wirkung" in seite
+    assert f'href="/kontakte/{lead}#freigabe"' in seite
+
+
+def test_auto_mit_freigabe_warnt_nicht_mehr():
+    lead = _lead()
+    server.kontakt_freigeben(lead)
+    server.kontakt_autonomie_setzen(lead, "auto")
+    assert "ohne Wirkung" not in _get("/kontakte").text
