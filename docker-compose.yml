@@ -436,6 +436,21 @@ services:
       # Zugriff vom eigenen Handy ueber Tailscale. Leer lassen heisst: nur
       # Loopback, wie in Stufe 10.
       - UI_EXTRA_HOSTS=${UI_TAILSCALE_IP:-}
+    volumes:
+      # DER MEDIENORDNER — und hier OHNE `:ro`, als einziger Dienst im Stack.
+      #
+      # Das ist eine bewusste Aenderung an einem Grundsatz. Bisher war
+      # `media/` ueberall read-only, mit der Begruendung: „was versendet
+      # werden kann, legt ausschliesslich ein Mensch auf dem Host ab".
+      # Seit dem Betreiber-Wunsch vom 25.08.2026 gibt es dafuer eine Seite
+      # (/medien), und damit muss GENAU EIN Dienst schreiben duerfen.
+      #
+      # Der Grundsatz bleibt gewahrt, nur praeziser gefasst: es legt
+      # weiterhin ausschliesslich ein MENSCH etwas ab — nur ueber eine
+      # Seite hinter Host-Wache und CSRF-Marke statt ueber den
+      # Datei-Explorer. Der AGENT bekommt kein Schreibrecht: sales-mcp und
+      # sales-dispatch behalten `:ro`, und genau das ist der Punkt.
+      - ./media:/media
     ports:
       # Loopback IMMER. Die zweite Zeile bindet den Port zusaetzlich an die
       # Tailscale-Adresse dieses Rechners — ausdruecklich NICHT an 0.0.0.0:

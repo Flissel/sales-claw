@@ -181,6 +181,45 @@ def pruefe(name: str):
     return basis, None
 
 
+def pruefe_neuen_namen(name: str):
+    """Darf eine Datei DIESES Namens neu abgelegt werden? -> (basis, fehler).
+
+    Die Namenshaelfte von `pruefe`, ohne die Dateisystem-Haelfte: beim
+    Hochladen gibt es die Datei ja noch nicht. Bewusst dieselben zwei
+    Kanten in derselben Reihenfolge — reiner Name, dann Endung —, damit
+    nicht zwei Wahrheiten darueber entstehen, was ein zulaessiger
+    Medienname ist. Was hier durchkommt, muss `pruefe` anschliessend
+    ebenfalls durchlassen.
+    """
+    roh = (name or "").strip()
+    if not roh:
+        return None, "Kein Dateiname angegeben."
+    if not _reiner_dateiname(roh):
+        return None, (
+            f"'{roh}' ist kein reiner Dateiname. Erlaubt ist ausschliesslich "
+            f"ein Name ohne jede Pfadangabe (kein '/', kein '\\', kein '..').")
+    basis = os.path.basename(roh)
+    endung = os.path.splitext(basis)[1].lower()
+    if endung not in ERLAUBT:
+        return None, (
+            f"Endung '{endung or '(keine)'}' ist nicht zugelassen. Erlaubt: "
+            f"{', '.join(sorted(ERLAUBT))}.")
+    return basis, None
+
+
+def liegt_schon(basis: str) -> bool:
+    """Gibt es diese Datei bereits? Fuer die Rueckfrage vor dem Ueberschreiben.
+
+    Ein stilles Ueberschreiben waere hier der teuerste Fehler: die alte
+    Datei kann bereits an einem freigegebenen Entwurf haengen, und der
+    Dispatcher liest sie erst beim Zustellen.
+    """
+    try:
+        return os.path.isfile(os.path.join(wurzel(), basis))
+    except (OSError, ValueError):
+        return False
+
+
 def lies(basis: str) -> bytes:
     """Inhalt einer geprueften Datei. Wirft OSError, wenn sie inzwischen weg
     ist — der Aufrufer (Dispatcher) macht daraus eine Fehlerbuchung."""

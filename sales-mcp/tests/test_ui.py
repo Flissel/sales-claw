@@ -1707,6 +1707,7 @@ ERLAUBTE_LABEL = {
     "Name", "Status", "Consent", "Letzte Aktivitaet",       # /kontakte
     "Archiv",   # /kontakte, Archiv-Knopf je Zeile
     "Profil",   # /einordnung, Link zum Kontaktprofil
+    "Quittieren",   # /wiedervorlagen, Erledigt-Knopf je Zeile
     "Kontakt", "Faellig am", "Notiz",                       # Wiedervorlagen
     "Frage", "Antwort",                                     # Bedarfsstand
     "Sparte", "Gesellschaft", "Ablauf",                     # Vertraege
@@ -2285,3 +2286,171 @@ def test_bearbeiten_ohne_csrf_ist_403():
                  {"draft_id": d, "text": "Neu"}).status_code == 403
     assert server._q("select body from drafts where id = %s",
                      (d,))[0]["body"] == "Alter Text"
+
+
+# ---------------------------------------------------------------------------
+# Medien hochladen (Betreiber-Wunsch 25.08.2026)
+#
+# „there is no site where we have, like, the chance to upload media as
+# videos, PDFs, and something like that."
+#
+# Das ist die EINZIGE Stelle, an der Daten von aussen in den Versandvorrat
+# kommen. Entsprechend eng: derselbe Namensfilter, dieselbe Whitelist und
+# dieselbe Groessengrenze wie beim Versand — und kein stilles Ueberschreiben.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def medienordner(tmp_path, monkeypatch):
+    monkeypatch.setattr(server.medien, "MEDIA_VERZEICHNIS", str(tmp_path))
+    return tmp_path
+
+
+def _upload(name, inhalt=b"x" * 64, csrf=True, ueberschreiben=False):
+    daten = {"csrf": ui.CSRF_TOKEN} if csrf else {}
+    if ueberschreiben:
+        daten["ueberschreiben"] = "ja"
+    return CLIENT.post("/medien/hochladen", data=daten,
+                       files={"datei": (name, inhalt, "application/pdf")},
+                       headers={"host": HOST_OK}, follow_redirects=False)
+
+
+def test_medienseite_zeigt_liste_und_formular(medienordner):
+    (medienordner / "vorhanden.pdf").write_bytes(b"x" * 100)
+    seite = _get("/medien").text
+    assert "vorhanden.pdf" in seite
+    assert 'enctype="multipart/form-data"' in seite
+    assert "Hochladen" in seite
+
+
+def test_hochladen_legt_die_datei_ab(medienordner):
+    antwort = _upload("angebot.pdf", b"y" * 200)
+    assert antwort.status_code == 303
+    ziel = medienordner / "angebot.pdf"
+    assert ziel.is_file() and ziel.read_bytes() == b"y" * 200
+    # Kein Zwischenname bleibt liegen.
+    assert not (medienordner / "angebot.pdf.teil").exists()
+
+
+def test_unzulaessige_endung_wird_abgewiesen(medienordner):
+    antwort = _upload("schadcode.exe")
+    assert antwort.status_code == 400
+    assert not (medienordner / "schadcode.exe").exists()
+
+
+def test_pfad_im_dateinamen_wird_abgewiesen(medienordner):
+    antwort = _upload("..\\windows\\system.ini")
+    assert antwort.status_code == 400
+    assert list(medienordner.iterdir()) == []
+
+
+def test_zu_grosse_datei_wird_abgewiesen(medienordner, monkeypatch):
+    monkeypatch.setattr(server.medien, "MAX_BYTES", 1024)
+    antwort = _upload("gross.pdf", b"z" * 4096)
+    assert antwort.status_code == 413
+    assert not (medienordner / "gross.pdf").exists()
+    # Auch das Bruchstueck ist weg — sonst haelte der Dispatcher es spaeter
+    # fuer eine gueltige Unterlage.
+    assert list(medienordner.iterdir()) == []
+
+
+def test_leere_datei_wird_abgewiesen(medienordner):
+    assert _upload("leer.pdf", b"").status_code == 400
+    assert list(medienordner.iterdir()) == []
+
+
+def test_vorhandene_datei_wird_nicht_still_ersetzt(medienordner):
+    (medienordner / "angebot.pdf").write_bytes(b"ALT")
+    antwort = _upload("angebot.pdf", b"NEU")
+    assert antwort.status_code == 409
+    assert (medienordner / "angebot.pdf").read_bytes() == b"ALT"
+
+
+def test_ersetzen_geht_mit_ausdruecklichem_haken(medienordner):
+    (medienordner / "angebot.pdf").write_bytes(b"ALT")
+    antwort = _upload("angebot.pdf", b"NEU", ueberschreiben=True)
+    assert antwort.status_code == 303
+    assert (medienordner / "angebot.pdf").read_bytes() == b"NEU"
+
+
+def test_hochladen_ohne_csrf_ist_403(medienordner):
+    assert _upload("angebot.pdf", csrf=False).status_code == 403
+    assert list(medienordner.iterdir()) == []
+
+
+def test_hochgeladene_datei_besteht_die_versand_pruefung(medienordner):
+    """Was hier durchkommt, muss `medien.pruefe` anschliessend durchlassen —
+    sonst gaebe es zwei Wahrheiten darueber, was versendbar ist."""
+    _upload("angebot.pdf", b"y" * 200)
+    basis, fehler = server.medien.pruefe("angebot.pdf")
+    assert fehler is None and basis == "angebot.pdf"
+
+
+# ---------------------------------------------------------------------------
+# Wiedervorlagen anlegen und quittieren (Betreiber-Wunsch 25.08.2026)
+#
+# „und was sollte auf wiedervorlagen sein?" — die Seite war leer, weil es in
+# der Oberflaeche keinen Weg gab, eine anzulegen. Das konnte nur der Agent.
+# ---------------------------------------------------------------------------
+
+def _morgen():
+    from datetime import date, timedelta
+    return (date.today() + timedelta(days=1)).isoformat()
+
+
+def test_kontaktseite_hat_das_wiedervorlage_formular():
+    lead = _lead()
+    seite = _get(f"/kontakte/{lead}").text
+    assert 'action="/wiedervorlagen/setzen"' in seite
+    assert 'type="date"' in seite
+
+
+def test_wiedervorlage_anlegen_und_anzeigen():
+    lead = _lead(name="Sabrina Beispiel")
+    antwort = _post("/wiedervorlagen/setzen",
+                    {"lead_id": lead, "faellig_am": _morgen(),
+                     "notiz": "Rueckruf wegen des Angebots",
+                     "csrf": ui.CSRF_TOKEN})
+    assert antwort.status_code == 303
+    seite = _get("/wiedervorlagen").text
+    assert "Sabrina Beispiel" in seite
+    assert "Rueckruf wegen des Angebots" in seite
+
+
+def test_wiedervorlage_in_der_vergangenheit_wird_abgewiesen():
+    lead = _lead()
+    antwort = _post("/wiedervorlagen/setzen",
+                    {"lead_id": lead, "faellig_am": "2020-01-01",
+                     "notiz": "zu spaet", "csrf": ui.CSRF_TOKEN})
+    assert antwort.status_code == 400
+    assert server._q(
+        "select id from activities where type = 'wiedervorlage'") == []
+
+
+def test_wiedervorlage_quittieren_loescht_nichts():
+    """Append-only: erledigt heisst Gegen-Ereignis, nicht Loeschen."""
+    lead = _lead()
+    _post("/wiedervorlagen/setzen",
+          {"lead_id": lead, "faellig_am": _morgen(), "notiz": "Rueckruf",
+           "csrf": ui.CSRF_TOKEN})
+    offen = server._q(
+        "select id from activities where type = 'wiedervorlage'")
+    assert len(offen) == 1
+    antwort = _post("/wiedervorlagen/erledigt",
+                    {"lead_id": lead, "aktivitaets_id": str(offen[0]["id"]),
+                     "csrf": ui.CSRF_TOKEN})
+    assert antwort.status_code == 303
+    # Die Ursprungszeile steht noch — dazu kam eine zweite.
+    assert len(server._q(
+        "select id from activities where type = 'wiedervorlage'")) == 1
+    assert len(server._q(
+        "select id from activities where type = 'wiedervorlage_erledigt'")) == 1
+    assert "Keine offenen Wiedervorlagen" in _get("/wiedervorlagen").text
+
+
+def test_wiedervorlage_ohne_csrf_ist_403():
+    lead = _lead()
+    assert _post("/wiedervorlagen/setzen",
+                 {"lead_id": lead, "faellig_am": _morgen(),
+                  "notiz": "x"}).status_code == 403
+    assert server._q(
+        "select id from activities where type = 'wiedervorlage'") == []

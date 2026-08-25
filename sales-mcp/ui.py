@@ -592,7 +592,7 @@ thead th { background: var(--kopfzeile); }
 
 _NAV = (("/", "Freigaben"), ("/kontakte", "Kontakte"),
         ("/posteingang", "Posteingang"), ("/einordnung", "Einordnung"),
-        ("/wiedervorlagen", "Wiedervorlagen"))
+        ("/wiedervorlagen", "Wiedervorlagen"), ("/medien", "Medien"))
 
 
 def _seite(titel: str, rumpf: str, status: int = 200,
@@ -772,6 +772,201 @@ def _entwurf_bearbeiten_form(z, text: str) -> str:
         f'<p class="meta">Aendert nur den Entwurf — es geht nichts raus, und '
         f'die Freigabe bleibt ein eigener Schritt. Alter und neuer Text '
         f'werden protokolliert.</p></details>')
+
+
+# ---------------------------------------------------------------------------
+# Medien (Betreiber-Wunsch 25.08.2026): Unterlagen hochladen statt kopieren
+#
+# HIER AENDERT SICH EIN GRUNDSATZ, und das gehoert benannt. `media/` ist an
+# sales-mcp und sales-dispatch als `:ro` gebunden, mit der Begruendung: „was
+# versendet werden kann, legt ausschliesslich ein Mensch auf dem Host ab".
+# Eine Upload-Seite macht daraus die EINZIGE Tuer, durch die Daten von aussen
+# in den Versandvorrat kommen.
+#
+# Der Grundsatz bleibt trotzdem gewahrt, nur praeziser gefasst: es legt
+# weiterhin ausschliesslich ein MENSCH etwas ab — nur nicht mehr ueber den
+# Datei-Explorer, sondern ueber eine Seite, die hinter Host-Wache und
+# CSRF-Marke liegt. Der Agent bekommt kein Schreibrecht: `sales-mcp` und
+# `sales-dispatch` bleiben `:ro`, nur `sales-ui` darf schreiben.
+#
+# Geprueft wird gegen dieselbe Whitelist, dieselbe Groessengrenze und
+# denselben Namensfilter wie beim Versand (medien.py) — es gibt keine zweite
+# Wahrheit darueber, was eine zulaessige Unterlage ist.
+# ---------------------------------------------------------------------------
+
+MEDIEN_STUECK = 256 * 1024
+
+
+def _medien_tabelle():
+    try:
+        eintraege = server.medien.liste()
+    except OSError as e:
+        return (f'<p>Medienordner nicht lesbar ({_e(type(e).__name__)}) — '
+                f'liegt der Ordner am Container an?</p>')
+    if not eintraege:
+        return "<p>Noch keine Unterlagen.</p>"
+    return _tabelle(
+        ["Datei", "Groesse"],
+        [[_e(name), _e(f"{groesse / 1048576:.2f} MB")]
+         for name, groesse in eintraege])
+
+
+def _medien_formular(vorbelegt_ueberschreiben: bool = False) -> str:
+    haken = ('<label class="haken"><input type="checkbox" '
+             'name="ueberschreiben" value="ja"'
+             + (" checked" if vorbelegt_ueberschreiben else "")
+             + '> Vorhandene Datei gleichen Namens ersetzen</label>')
+    erlaubt = ", ".join(sorted(server.medien.ERLAUBT))
+    grenze = server.medien.MAX_BYTES // 1048576
+    return (
+        f'<h2>Hochladen</h2><div class="karte">'
+        f'<form method="post" action="/medien/hochladen" '
+        f'enctype="multipart/form-data">'
+        f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+        f'<p><label class="feld">Datei<br>'
+        f'<input type="file" name="datei" required></label></p>'
+        f'{haken}'
+        f'<div class="aktionen">'
+        f'<button class="primaer">Hochladen</button></div></form>'
+        f'<p class="meta">Erlaubt: {_e(erlaubt)}. Hoechstens {grenze} MB. '
+        f'Die Datei steht danach im Chat unter <code>medien_liste()</code> '
+        f'und laesst sich an Entwuerfe haengen. Sie geht dadurch an '
+        f'niemanden — versendet wird erst mit einer Freigabe.</p></div>')
+
+
+@_gesichert_seite
+async def medien(request):
+    return _seite("Medien", _medien_tabelle() + _medien_formular())
+
+
+@_gesichert_seite
+async def aktion_medien_hochladen(request):
+    """Eine Unterlage ablegen — die einzige Stelle, an der etwas hereinkommt.
+
+    Geschrieben wird erst unter einem Zwischennamen und dann umbenannt: ein
+    abgebrochener Upload soll keine halbe Datei hinterlassen, die der
+    Dispatcher spaeter fuer eine gueltige Unterlage haelt.
+    """
+    form = await request.form()
+    if not _csrf_ok(form):
+        return _fehlerseite(403, "Abgewiesen",
+                            "Fehlende oder falsche CSRF-Marke.")
+    datei = form.get("datei")
+    if datei is None or not getattr(datei, "filename", ""):
+        return _fehlerseite(400, "Keine Datei", "Es wurde nichts ausgewaehlt.")
+
+    basis, fehler = server.medien.pruefe_neuen_namen(datei.filename)
+    if fehler:
+        return _fehlerseite(400, "Nicht abgelegt", _e(fehler))
+    ueberschreiben = str(form.get("ueberschreiben") or "").strip() == "ja"
+    if server.medien.liegt_schon(basis) and not ueberschreiben:
+        return _fehlerseite(409, "Datei gibt es schon", (
+            f"'{_e(basis)}' liegt bereits im Medienordner. Sie kann an einem "
+            f"freigegebenen Entwurf haengen, den der Dispatcher erst beim "
+            f"Zustellen liest — deshalb wird hier nichts still ersetzt. Wer "
+            f"es trotzdem will, setzt den Haken „Vorhandene Datei gleichen "
+            f"Namens ersetzen“."))
+
+    wurzel = server.medien.wurzel()
+    ziel = os.path.join(wurzel, basis)
+    zwischen = os.path.join(wurzel, basis + ".teil")
+    geschrieben = 0
+    try:
+        with open(zwischen, "wb") as raus:
+            while True:
+                stueck = await datei.read(MEDIEN_STUECK)
+                if not stueck:
+                    break
+                geschrieben += len(stueck)
+                if geschrieben > server.medien.MAX_BYTES:
+                    raise ValueError("zu gross")
+                raus.write(stueck)
+        if geschrieben == 0:
+            raise ValueError("leer")
+        os.replace(zwischen, ziel)
+    except ValueError as e:
+        _aufraeumen(zwischen)
+        grenze = server.medien.MAX_BYTES // 1048576
+        return _fehlerseite(413 if "gross" in str(e) else 400,
+                            "Nicht abgelegt",
+                            f"Die Datei ist leer oder groesser als {grenze} MB."
+                            if "gross" in str(e) else "Die Datei ist leer.")
+    except OSError as e:
+        _aufraeumen(zwischen)
+        return _fehlerseite(500, "Nicht abgelegt", (
+            f"Der Medienordner ist nicht beschreibbar "
+            f"({_e(type(e).__name__)}). Haengt er an diesem Dienst ohne "
+            f"`:ro`?"))
+    LOG.info("Medien: %s abgelegt (%d Byte)", basis, geschrieben)
+    return RedirectResponse("/medien", status_code=303)
+
+
+def _aufraeumen(pfad: str) -> None:
+    try:
+        os.unlink(pfad)
+    except OSError:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Wiedervorlagen anlegen und quittieren (Betreiber-Wunsch 25.08.2026)
+#
+# „und was sollte auf wiedervorlagen sein?" — die Seite war leer, weil es in
+# der Oberflaeche gar keinen Weg gab, eine anzulegen: das konnte nur der
+# Agent im Chat. Eine Ansicht, die nur zeigt, was man anderswo erzeugen muss,
+# beantwortet die Frage „wofuer ist das?" nicht.
+#
+# Beides laeuft ueber die Chat-Werkzeuge (server.wiedervorlage_setzen,
+# server.wiedervorlage_erledigt) — kein zweiter Schreibweg, dieselbe
+# Datumspruefung, dasselbe Append-only: erledigt heisst Gegen-Ereignis, nicht
+# Loeschen.
+# ---------------------------------------------------------------------------
+
+def _wiedervorlage_formular(lead_id) -> str:
+    return (
+        f'<h2>Wiedervorlage</h2><div class="karte">'
+        f'<form method="post" action="/wiedervorlagen/setzen">'
+        f'<input type="hidden" name="lead_id" value="{_e(lead_id)}">'
+        f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+        f'<p><label class="feld">Faellig am<br>'
+        f'<input type="date" name="faellig_am" required></label></p>'
+        f'<p><label class="feld">Notiz<br>'
+        f'<input type="text" name="notiz" maxlength="300" required '
+        f'placeholder="Rueckruf wegen des Angebots"></label></p>'
+        f'<div class="aktionen">'
+        f'<button class="primaer">Merken</button></div></form>'
+        f'<p class="meta">Erscheint ab dem Faelligkeitstag im Digest und '
+        f'unter <a href="/wiedervorlagen">Wiedervorlagen</a>, bis sie '
+        f'quittiert wird. Es geht dabei nichts an den Kunden.</p></div>')
+
+
+@_gesichert_seite
+async def aktion_wiedervorlage_setzen(request):
+    form, lead_id, abbruch = await _kontakt_vorspann(request)
+    if abbruch:
+        return abbruch
+    antwort = json.loads(server.wiedervorlage_setzen(
+        lead_id=lead_id,
+        faellig_am=str(form.get("faellig_am") or ""),
+        notiz=str(form.get("notiz") or "")))
+    if "fehler" in antwort:
+        return _fehlerseite(400, "Nicht gemerkt", _e(antwort["fehler"]))
+    return RedirectResponse(f"/kontakte/{lead_id}", status_code=303)
+
+
+@_gesichert_seite
+async def aktion_wiedervorlage_erledigt(request):
+    """Quittieren — append-only: es entsteht ein Gegen-Ereignis, nichts wird
+    geloescht und nichts geaendert."""
+    form, lead_id, abbruch = await _kontakt_vorspann(request)
+    if abbruch:
+        return abbruch
+    antwort = json.loads(server.wiedervorlage_erledigt(
+        lead_id=lead_id,
+        aktivitaets_id=str(form.get("aktivitaets_id") or "")))
+    if "fehler" in antwort:
+        return _fehlerseite(409, "Nicht quittiert", _e(antwort["fehler"]))
+    return RedirectResponse("/wiedervorlagen", status_code=303)
 
 
 @_gesichert_seite
@@ -1309,10 +1504,19 @@ def _wiedervorlagen_tabelle(zeilen, mit_kontakt: bool = True) -> str:
         zelle = ([f'<a href="/kontakte/{_e(z["lead_id"])}">'
                   f'{_e(z["name"] or "(ohne Kontakt)")}</a>']
                  if mit_kontakt else [])
+        quittieren = (
+            f'<form class="aktion" method="post" '
+            f'action="/wiedervorlagen/erledigt">'
+            f'<input type="hidden" name="lead_id" value="{_e(z["lead_id"])}">'
+            f'<input type="hidden" name="aktivitaets_id" '
+            f'value="{_e(z["id"])}">'
+            f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+            f'<button>Erledigt</button></form>')
         inhalt.append(zelle + [f"{_e(faellig)}{marke}",
-                               _e(nutzlast.get("notiz"))])
-    return (_tabelle(spalten, inhalt) if zeilen
-            else "<p>Keine offenen Wiedervorlagen.</p>")
+                               _e(nutzlast.get("notiz")), quittieren])
+    return (_tabelle(spalten + ["Quittieren"], inhalt) if zeilen
+            else "<p>Keine offenen Wiedervorlagen. Eine anlegen: auf der "
+                 "Kontaktseite unter „Wiedervorlage“.</p>")
 
 
 # ---------------------------------------------------------------------------
@@ -1974,6 +2178,7 @@ async def kontakt_detail(request):
     else:
         teile.append("<p>Noch keine Aktivitaeten.</p>")
 
+    teile.append(_wiedervorlage_formular(lead_id))
     teile.append(_archiv_bereich(lead, archiviert))
     return _seite(lead["name"] or "Kontakt", "".join(teile))
 
@@ -2410,6 +2615,13 @@ app = Starlette(routes=[
     Route("/einordnung/ignorieren-bestaetigen",
           aktion_einordnung_ignorieren_bestaetigen, methods=["POST"]),
     Route("/wiedervorlagen", wiedervorlagen),
+    Route("/wiedervorlagen/setzen", aktion_wiedervorlage_setzen,
+          methods=["POST"]),
+    Route("/wiedervorlagen/erledigt", aktion_wiedervorlage_erledigt,
+          methods=["POST"]),
+    Route("/medien", medien),
+    Route("/medien/hochladen", aktion_medien_hochladen,
+          methods=["POST"]),
 ], middleware=[Middleware(HostWache)])
 
 
