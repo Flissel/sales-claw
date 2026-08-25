@@ -1,6 +1,9 @@
 # OpenAI als produktiver Modellanbieter
 
-**Status:** gewünschte Erweiterung, noch nicht implementiert
+**Status:** ZURÜCKGESTELLT bis zum Produktivbetrieb (Betreiberentscheidung
+vom 25.08.2026). Auf `feat/openai-migration` implementiert und getestet, aber
+nicht aktiviert; das Laufzeit-Volume steht weiter auf `anthropic/claude-sonnet-5`
+über ein Abo-Token. Begründung siehe [README](README.md).
 
 ## Ausgangslage
 
