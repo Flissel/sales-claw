@@ -1705,6 +1705,8 @@ def test_archivmerkmal_greift_nur_beim_echten_wahrheitswert():
 # kommt es aus der Datenbank.
 ERLAUBTE_LABEL = {
     "Name", "Status", "Consent", "Letzte Aktivitaet",       # /kontakte
+    "Archiv",   # /kontakte, Archiv-Knopf je Zeile
+    "Profil",   # /einordnung, Link zum Kontaktprofil
     "Kontakt", "Faellig am", "Notiz",                       # Wiedervorlagen
     "Frage", "Antwort",                                     # Bedarfsstand
     "Sparte", "Gesellschaft", "Ablauf",                     # Vertraege
@@ -2035,3 +2037,114 @@ def test_die_gefaehrlichen_knoepfe_tragen_ihre_klasse_am_formular(
                    {"lead_id": lead, "csrf": ui.CSRF_TOKEN})
     assert archiv.status_code == 409
     assert '<form class="aktion gefahr"' in archiv.text
+
+
+# ---------------------------------------------------------------------------
+# Kontaktprofil in der Oberflaeche (Betreiber-Wunsch 22.08.2026)
+#
+# Die Oberflaeche SCHREIBT hier nichts — Profile entstehen im Chat, weil dort
+# das Sprachmodell sitzt. Geprueft wird das Anzeigen, der Link von der
+# Einordnungsuebersicht und der Archiv-Knopf in der Kontaktliste.
+# ---------------------------------------------------------------------------
+
+VOLLES_PROFIL = {
+    "wer": "Selbstaendige Tischlerin, Mitte dreissig.",
+    "beziehung": "Seit dem Erstgespraech im Juli lose in Kontakt.",
+    "wichtig": "Kurze Wege, keine Vertreterbesuche.",
+    "aktuell": "Wartet auf Zahlen zur Betriebsabsicherung.",
+}
+
+
+def _profil_anlegen(lead, **abweichend):
+    felder = dict(VOLLES_PROFIL, **abweichend)
+    return json.loads(server.chat_report_speichern(
+        lead, zusammenfassung="Kurzer Verlauf, nichts Offenes.", **felder))
+
+
+def test_kontaktseite_zeigt_das_profil():
+    lead = _lead()
+    _kundenantwort(lead)
+    assert "fehler" not in _profil_anlegen(lead)
+    seite = _get(f"/kontakte/{lead}").text
+    assert "Kontaktprofil" in seite
+    for frage in server.PROFIL_FRAGEN.values():
+        assert frage in seite
+    for wert in VOLLES_PROFIL.values():
+        assert wert in seite
+
+
+def test_kontaktseite_ohne_profil_sagt_es():
+    lead = _lead()
+    seite = _get(f"/kontakte/{lead}").text
+    assert "Kontaktprofil" in seite
+    assert "Noch keins" in seite
+
+
+def test_profiltext_wird_escaped():
+    """Profiltext ist Modelltext ueber Kundennachrichten — also Fremddatum."""
+    lead = _lead()
+    _kundenantwort(lead)
+    _profil_anlegen(lead, wer='Anna"><script>alert(1)</script>')
+    seite = _get(f"/kontakte/{lead}").text
+    assert "<script" not in seite
+    assert "&lt;script" in seite
+
+
+def test_links_und_dateien_stehen_im_profil():
+    lead = _lead()
+    _kundenantwort(lead)
+    server.chat_report_speichern(
+        lead, zusammenfassung="Verlauf.", **VOLLES_PROFIL,
+        links="https://example.org/angebot", dateien="Angebot.pdf")
+    seite = _get(f"/kontakte/{lead}").text
+    assert "https://example.org/angebot" in seite
+    assert "Angebot.pdf" in seite
+
+
+def test_einordnung_verlinkt_das_profil(sammelkontakt_zurueck):
+    sammel = _sammel()
+    lead = _lead(name="Sophie Beispiel", phone=SOPHIE_PHONE)
+    _kundenantwort(sammel, absender=SOPHIE_NUMMER)
+    _kundenantwort(lead)
+    _profil_anlegen(lead)
+    seite = _get("/einordnung").text
+    assert "Profil" in seite
+    assert f'href="/kontakte/{lead}#profil"' in seite
+
+
+def test_einordnung_zeigt_fehlendes_profil_ehrlich(sammelkontakt_zurueck):
+    sammel = _sammel()
+    lead = _lead(name="Sophie Beispiel", phone=SOPHIE_PHONE)
+    _kundenantwort(sammel, absender=SOPHIE_NUMMER)
+    seite = _get("/einordnung").text
+    assert "noch keins" in seite
+    assert f'href="/kontakte/{lead}#profil"' not in seite
+
+
+def test_kontaktliste_hat_den_archiv_knopf():
+    lead = _lead()
+    seite = _get("/kontakte").text
+    assert "Archivieren" in seite
+    assert 'action="/kontakte/archivieren"' in seite
+    assert f'value="{lead}"' in seite
+
+
+def test_archivieren_aus_der_liste_schreibt_erst_nichts():
+    """Der erste POST zeigt die Warnseite — auch aus der Liste heraus.
+
+    409, nicht 200: dieser Schritt allein WIRKT nicht, er verlangt einen
+    zweiten. Der Statuscode sagt dasselbe wie die Seite.
+    """
+    lead = _lead()
+    antwort = _post("/kontakte/archivieren",
+                    {"lead_id": lead, "csrf": ui.CSRF_TOKEN})
+    assert antwort.status_code == 409
+    assert "Archivieren bestaetigen" in antwort.text
+    zeile = server._q("select enrichment from leads where id = %s", (lead,))[0]
+    assert not server._archiviert(zeile["enrichment"])
+
+
+def test_archivieren_aus_der_liste_ohne_csrf_ist_403():
+    lead = _lead()
+    antwort = _post("/kontakte/archivieren", {"lead_id": lead})
+    assert antwort.status_code == 403

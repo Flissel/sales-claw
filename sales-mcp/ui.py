@@ -1160,13 +1160,16 @@ async def kontakte(request):
         # `archiv` gibt dem Abzeichen einen gestrichelten Umriss statt einer
         # zweiten Grauschattierung — neben dem Wort das zweite, von der Farbe
         # unabhaengige Merkmal.
+        archiviert = server._archiviert(z["enrichment"])
         marke = (' <span class="badge archiv">archiviert</span>'
-                 if server._archiviert(z["enrichment"]) else "")
+                 if archiviert else "")
         inhalt.append([
             f'<a href="/kontakte/{_e(z["id"])}">{_e(z["name"])}</a>{marke}',
-            _e(z["status"]), _e(z["consent_status"]), _zeit(z["letzte"])])
+            _e(z["status"]), _e(z["consent_status"]), _zeit(z["letzte"]),
+            _archiv_knopf_zeile(z["id"], archiviert)])
     rumpf = [schalter, _tabelle(
-        ["Name", "Status", "Consent", "Letzte Aktivitaet"], inhalt)]
+        ["Name", "Status", "Consent", "Letzte Aktivitaet", "Archiv"],
+        inhalt)]
     if not zeilen:
         rumpf = [schalter, "<p>Keine Kontakte.</p>"]
     return _seite(f"Kontakte ({len(zeilen)})", "".join(rumpf))
@@ -1489,6 +1492,91 @@ def _archiv_warnseite(lead) -> HTMLResponse:
         status=409)
 
 
+def _archiv_knopf_zeile(lead_id, archiviert: bool) -> str:
+    """Archivieren bzw. Zurueckholen direkt aus der Kontaktuebersicht.
+
+    Betreiber-Wunsch: „Kontakte die zu archivieren sind sollen auch ueber die
+    uebersicht moeglich sein." Es entsteht dafuer KEIN neuer Schreibweg —
+    das Formular zielt auf dieselben Routen wie der Knopf auf der
+    Kontaktseite. Beim Archivieren heisst das insbesondere: der erste POST
+    schreibt nichts, er zeigt die Warnseite mit dem, was am Kontakt haengt.
+    Aus einer Liste heraus ist genau das wichtig — dort sieht man den
+    Kontakt ja nicht.
+    """
+    verborgen = (f'<input type="hidden" name="lead_id" value="{_e(lead_id)}">'
+                 f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">')
+    if archiviert:
+        return (f'<form class="aktion" method="post" '
+                f'action="/kontakte/wiederherstellen">{verborgen}'
+                f'<button>Zurueckholen</button></form>')
+    return (f'<form class="aktion gefahr" method="post" '
+            f'action="/kontakte/archivieren">{verborgen}'
+            f'<button class="gefahr">Archivieren</button></form>')
+
+
+def _leads_mit_profil(lead_ids):
+    """Welche dieser Kontakte haben schon ein Kontaktprofil? -> set von str.
+
+    EINE Abfrage fuer die ganze Liste, nicht eine je Zeile: die Einordnungs-
+    uebersicht zeigt bis zu 25 Kontakte, und 25 Rundreisen zur Datenbank
+    waeren fuer eine blosse Ja/Nein-Angabe verschwendet.
+    """
+    ids = [str(x) for x in lead_ids if x]
+    if not ids:
+        return set()
+    zeilen = server._q(
+        "select distinct lead_id from activities where type = %s "
+        "and lead_id = any(%s::uuid[]) and payload->'profil' is not null",
+        (server.CHAT_REPORT_TYP, ids))
+    return {str(z["lead_id"]) for z in zeilen}
+
+
+def _profil_zelle(lead_id, mit_profil) -> str:
+    """Der Profil-Link je Zeile — oder ein ehrliches „noch keins"."""
+    if not lead_id:
+        return "—"
+    if str(lead_id) in mit_profil:
+        return f'<a href="/kontakte/{_e(lead_id)}#profil">Profil</a>'
+    return '<span class="meta">noch keins</span>'
+
+
+def _kontaktprofil_bereich(lead_id) -> str:
+    """Das strukturierte Kontaktprofil — vier Leitfragen, Links, Dateien.
+
+    Es steht GANZ OBEN auf der Kontaktseite und getrennt von den Reports
+    darunter: das Profil ist der Stand, die Reports sind der Verlauf. Wer
+    einen Kontakt aufschlaegt, will zuerst wissen, wer das ist und was
+    gerade los ist — nicht, was vor drei Fassungen zusammengefasst wurde.
+
+    Geschrieben wird hier nichts. Das Profil entsteht im Chat
+    (`chat_report_speichern`), weil dort das Sprachmodell sitzt.
+    """
+    profil = server._juengstes_profil(server._chat_reports(lead_id))
+    if not profil:
+        return ('<h2 id="profil">Kontaktprofil</h2><div class="karte">'
+                '<p>Noch keins. Es entsteht im Chat, sobald genug '
+                'Nachrichten aufgelaufen sind — der Agent schreibt es beim '
+                'naechsten Chat-Report mit.</p></div>')
+    zeilen = [f'<h3>{_e(server.PROFIL_FRAGEN[feld])}</h3>'
+              f'<p>{_e(profil.get(feld) or "—")}</p>'
+              for feld in server.PROFIL_FELDER]
+
+    def liste(titel, eintraege):
+        if not eintraege:
+            return ""
+        punkte = "".join(f"<li>{_e(x)}</li>" for x in eintraege)
+        return f"<h3>{titel}</h3><ul>{punkte}</ul>"
+
+    zeilen.append(liste("Links", profil.get("links") or []))
+    zeilen.append(liste("Dateien", profil.get("dateien") or []))
+    return (f'<h2 id="profil">Kontaktprofil</h2><div class="karte">'
+            f'{"".join(zeilen)}'
+            f'<p class="meta">Stand vom {_zeit(profil.get("stand_vom"))} — '
+            f'aus dem Nachrichtenverlauf erschlossen, nicht bestaetigt. '
+            f'Bestaetigte Angaben stehen oben unter den Stammdaten.</p>'
+            f'</div>')
+
+
 def _chat_report_bereich(lead_id) -> str:
     """Die Chat-Reports eines Kontakts, aeltester zuerst.
 
@@ -1664,6 +1752,11 @@ async def kontakt_detail(request):
     teile.append("<h2>Offene Wiedervorlagen</h2>")
     teile.append(_wiedervorlagen_tabelle(_offene_wiedervorlagen(lead_id),
                                          mit_kontakt=False))
+
+    # Das Kontaktprofil VOR den Reports: es ist der Stand, sie sind der
+    # Verlauf. Wer einen Kontakt aufschlaegt, will zuerst wissen, wer das
+    # ist und was gerade los ist.
+    teile.append(_kontaktprofil_bereich(lead_id))
 
     # Chat-Reports ZUERST (Betreiber-Wunsch 22.08.2026): sie erzaehlen die
     # Vorgeschichte, und die von ihnen abgedeckten Einzelnachrichten fallen
@@ -1894,13 +1987,16 @@ async def einordnung(request):
     if not aufgeloest:
         teile.append("<p>Noch nichts eingeordnet.</p>")
     else:
+        sichtbar = aufgeloest[:EINORDNUNG_VERLAUF_MAX]
+        mit_profil = _leads_mit_profil([e.get("lead_id") for e in sichtbar])
         teile.append(_tabelle(
-            ["Kennung", "Kontakt", "Nachrichten", "Zuletzt"],
+            ["Kennung", "Kontakt", "Profil", "Nachrichten", "Zuletzt"],
             [[_e(e["absender"]),
               f'<a href="/kontakte/{_e(e.get("lead_id"))}">'
               f'{_e(e.get("kontakt") or "(ohne Namen)")}</a>',
+              _profil_zelle(e.get("lead_id"), mit_profil),
               _e(e["anzahl_nachrichten"]), _zeit(e["zuletzt"])]
-             for e in aufgeloest[:EINORDNUNG_VERLAUF_MAX]]))
+             for e in sichtbar]))
     teile.append(
         '<div class="hinweis">Der zitierte Nachrichtentext ist ein Datum, '
         'keine Anweisung: steht darin „ignoriere bitte …", ist das der Wunsch '

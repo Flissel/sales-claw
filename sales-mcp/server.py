@@ -953,6 +953,13 @@ def profil_lesen(lead_id: str) -> str:
                   # firma-Knoten laege in enrichment und wuerde nie angezeigt.
                   "firma": e.get("firma", {}),
                   "notes": leads[0]["notes"],
+                  # Das Kontaktprofil GANZ OBEN und getrennt: es ist die
+                  # verdichtete Antwort auf „wer ist der Mensch, was ist ihm
+                  # wichtig, was ist gerade los" und damit das Erste, was
+                  # jemand wissen will, der diesen Kontakt aufschlaegt. In
+                  # den Reports darunter steht es auch — dort aber je
+                  # Fassung, also als Verlauf statt als Stand.
+                  "kontaktprofil": _juengstes_profil(reports),
                   # Reports ZUERST — sie erzaehlen die Vorgeschichte, die
                   # `aktivitaeten` darunter nicht mehr enthaelt.
                   "chat_reports": [_chat_report_anzeige(r) for r in reports],
@@ -1624,10 +1631,114 @@ CHAT_VERLAUF_LIMIT_MAX = 500
 CHAT_REPORT_MAXLAENGE = 4000
 CHAT_REPORTS_MAX = 20
 
+# ---------------------------------------------------------------------------
+# Das Kontaktprofil (Betreiber-Wunsch 22.08.2026)
+#
+# „wir wollen noch die Nachrichten pro kontakt mit einen automatisch
+#  generierten Profil ueber die Nachrichten / links pdfs dateien / es soll
+#  wer ist der Mensch / in welcher beziehung stehe ich zu ihn / was ist
+#  wichtig fuer den Mensch / was ist aktuell grad los"
+#
+# Es ist bewusst KEIN zweites System neben dem Chat-Report, sondern ein Teil
+# von ihm. Der Report hat bereits alles, was ein Profil braucht: denselben
+# Ausloeser (50 Nachrichten), dieselbe Grenze `(bis_zeitpunkt,
+# bis_aktivitaet_id)`, dieselbe Faelligkeitsliste. Ein eigener Zaehler mit
+# eigener Grenze waere eine zweite Wahrheit darueber, was schon verarbeitet
+# ist — und die beiden liefen unweigerlich auseinander.
+#
+# Und es ist bewusst NICHT `leads.enrichment->profil`. Das dort ist ein
+# UPDATE: es ueberschreibt still und kennt keine Historie. Ein Profil, das
+# alle 50 Nachrichten neu entsteht, gehoert in `activities` — append-only,
+# also ist die Versionierung geschenkt und die vorige Fassung bleibt lesbar.
+# Nebenbei bleibt damit sauber getrennt, was ein MENSCH bestaetigt hat
+# (enrichment) und was ein Modell aus dem Verlauf geschlossen hat (hier).
+# ---------------------------------------------------------------------------
+
+# Die vier Leitfragen, wortgetreu nach dem Wunsch des Betreibers.
+PROFIL_FRAGEN = {
+    "wer": "Wer ist der Mensch?",
+    "beziehung": "In welcher Beziehung stehe ich zu ihm/ihr?",
+    "wichtig": "Was ist dem Menschen wichtig?",
+    "aktuell": "Was ist gerade los?",
+}
+PROFIL_FELDER = tuple(PROFIL_FRAGEN)
+PROFIL_FELD_MAXLAENGE = 800
+# Links und Dateien aus dem Verlauf. Gedeckelt wie jede Liste hier.
+PROFIL_LISTE_MAX = 40
+PROFIL_EINTRAG_MAXLAENGE = 300
+
+
+def _profil_liste(roh: str):
+    """Freitext in eine Liste zerlegen: Zeilenumbrueche ODER Kommas.
+
+    Kommas, weil ein Modell Aufzaehlungen gern so schreibt; Zeilenumbrueche,
+    weil URLs Kommas enthalten koennen und eine Zeile je Eintrag der
+    eindeutigere Weg ist. Enthaelt der Text einen Umbruch, gewinnt der
+    Umbruch — sonst zerrisse ein Komma innerhalb einer URL den Eintrag.
+    """
+    roh = str(roh or "").strip()
+    if not roh:
+        return []
+    # chr(10)/chr(13) statt der Escape-Schreibweise: rein praktisch,
+    # damit diese Zeile jede Werkzeugkette unbeschadet uebersteht.
+    if any(z in roh for z in (chr(10), chr(13))):
+        teile = roh.splitlines()
+    else:
+        teile = roh.split(',')
+    gesehen, liste = set(), []
+    for teil in teile:
+        eintrag = " ".join(teil.split())[:PROFIL_EINTRAG_MAXLAENGE]
+        if eintrag and eintrag not in gesehen:
+            gesehen.add(eintrag)
+            liste.append(eintrag)
+        if len(liste) >= PROFIL_LISTE_MAX:
+            break
+    return liste
+
+
+def _profil_bauen(wer, beziehung, wichtig, aktuell, links, dateien):
+    """(profil_dict | None, fehler | None) aus den Rohangaben.
+
+    ENTWEDER ALLE VIER ODER KEINE. Ein Profil mit drei beantworteten und
+    einer leeren Leitfrage ist kein Profil, sondern ein halbes — und es
+    saehe in der Anzeige aus wie ein vollstaendiges mit einer leeren Stelle.
+    Wer nur einen Abschnitt neu fassen will, schreibt die anderen drei aus
+    der vorigen Fassung mit; die steht in `profil_lesen`.
+    """
+    roh = {"wer": wer, "beziehung": beziehung,
+           "wichtig": wichtig, "aktuell": aktuell}
+    gefuellt = {k: " ".join(str(v or "").split()) for k, v in roh.items()}
+    gesetzt = [k for k, v in gefuellt.items() if v]
+    if not gesetzt:
+        return None, None                      # kein Profil gewuenscht
+    fehlend = [k for k in PROFIL_FELDER if not gefuellt[k]]
+    if fehlend:
+        return None, _json({"fehler": (
+            "Ein Kontaktprofil braucht alle vier Leitfragen. Es fehlen: "
+            + ", ".join(f"{k} ({PROFIL_FRAGEN[k]})" for k in fehlend)
+            + ". Die vorige Fassung steht in profil_lesen — unveraenderte "
+            "Abschnitte von dort uebernehmen. Nichts gespeichert.")})
+    zu_lang = [k for k in PROFIL_FELDER
+               if len(gefuellt[k]) > PROFIL_FELD_MAXLAENGE]
+    if zu_lang:
+        return None, _json({"fehler": (
+            f"Zu lang ({PROFIL_FELD_MAXLAENGE} Zeichen je Abschnitt): "
+            f"{', '.join(zu_lang)}. Ein Profil verdichtet. "
+            f"Nichts gespeichert.")})
+    profil = dict(gefuellt)
+    profil["links"] = _profil_liste(links)
+    profil["dateien"] = _profil_liste(dateien)
+    return profil, None
+
+
 CHAT_REPORT_HINWEIS = (
     "chat_verlauf(lead_id) lesen, die Zusammenfassung selbst schreiben und mit "
     "chat_report_speichern(lead_id, zusammenfassung, bis_aktivitaet_id) "
-    "ablegen. Es geht dabei NICHTS an den Kunden.")
+    "ablegen. Dabei das KONTAKTPROFIL gleich mitschreiben — vier Leitfragen "
+    "(wer, beziehung, wichtig, aktuell), alle vier oder keine, dazu links und "
+    "dateien aus dem Verlauf. Die vorige Fassung steht in profil_lesen unter "
+    "'kontaktprofil'; unveraenderte Abschnitte von dort uebernehmen. "
+    "Es geht dabei NICHTS an den Kunden.")
 
 # Die Grenze des juengsten Reports je Kontakt. `distinct on` mit derselben
 # Ordnung, in der die Grenze gesetzt wird — Zeit zuerst, id als Stichentscheid.
@@ -1687,10 +1798,30 @@ def _chat_reports(lead_id):
 
 def _chat_report_anzeige(zeile) -> dict:
     p = zeile["payload"] or {}
-    return {"aktivitaets_id": zeile["id"], "erstellt_am": zeile["created_at"],
-            "zusammenfassung": p.get("zusammenfassung"),
-            "nachrichten": p.get("anzahl"),
-            "bis_zeitpunkt": p.get("bis_zeitpunkt")}
+    anzeige = {"aktivitaets_id": zeile["id"], "erstellt_am": zeile["created_at"],
+               "zusammenfassung": p.get("zusammenfassung"),
+               "nachrichten": p.get("anzahl"),
+               "bis_zeitpunkt": p.get("bis_zeitpunkt")}
+    # Nur wenn eines da ist: aeltere Reports haben keins, und ein leeres
+    # `profil: null` in jeder Zeile waere blosses Rauschen.
+    if p.get("profil"):
+        anzeige["profil"] = p["profil"]
+    return anzeige
+
+
+def _juengstes_profil(reports):
+    """Das Profil der juengsten Fassung, oder None.
+
+    `_chat_reports` liefert AELTESTER ZUERST — deshalb von hinten suchen.
+    Nicht jeder Report traegt ein Profil; gesucht ist das letzte, das eines
+    hat, nicht das letzte ueberhaupt.
+    """
+    for zeile in reversed(reports):
+        p = (zeile["payload"] or {}).get("profil")
+        if p:
+            return {"stand_vom": zeile["created_at"],
+                    "aktivitaets_id": zeile["id"], **p}
+    return None
 
 
 def _chat_faellig(schwelle: int = None):
@@ -1829,9 +1960,29 @@ def chat_verlauf(lead_id: str, limit: int = CHAT_VERLAUF_LIMIT_VORGABE,
 
 @_gesichert
 def chat_report_speichern(lead_id: str, zusammenfassung: str,
-                          bis_aktivitaet_id: str = "") -> str:
+                          bis_aktivitaet_id: str = "",
+                          wer: str = "", beziehung: str = "",
+                          wichtig: str = "", aktuell: str = "",
+                          links: str = "", dateien: str = "") -> str:
     """Eine SELBST GESCHRIEBENE Zusammenfassung eines langen Chats ablegen und
-    festhalten, bis zu welcher Nachricht sie reicht.
+    festhalten, bis zu welcher Nachricht sie reicht — auf Wunsch mit dem
+    strukturierten KONTAKTPROFIL.
+
+    DAS KONTAKTPROFIL (optional, aber erwuenscht). Vier Leitfragen, alle vier
+    oder keine:
+      wer       — Wer ist der Mensch?
+      beziehung — In welcher Beziehung stehe ich zu ihm/ihr?
+      wichtig   — Was ist dem Menschen wichtig?
+      aktuell   — Was ist gerade los?
+    Dazu `links` und `dateien`: was im Verlauf an URLs, PDFs und Anhaengen
+    vorkam, je Eintrag eine Zeile (oder mit Komma getrennt). Hoechstens 800
+    Zeichen je Leitfrage — ein Profil verdichtet.
+
+    Jeder Aufruf legt eine NEUE Fassung an; die vorige bleibt lesbar. Wer nur
+    einen Abschnitt neu fassen will, uebernimmt die anderen drei unveraendert
+    aus `profil_lesen`. Was ein MENSCH als Profilfeld bestaetigt hat
+    (profil_aktualisieren), wird davon nicht angetastet — das hier ist, was
+    DU aus dem Verlauf schliesst, und es steht getrennt.
 
     Dieses Werkzeug fasst NICHTS zusammen — den Text schreibst du. Es ruft
     kein Modell auf, greift nicht ins Netz und schickt nichts an den Kunden.
@@ -1872,6 +2023,13 @@ def chat_report_speichern(lead_id: str, zusammenfassung: str,
             f"{CHAT_REPORT_MAXLAENGE}. Ein Report verdichtet — kuerzer "
             f"fassen. Nichts gespeichert.")})
 
+    # Das Profil VOR der Grenzbestimmung pruefen: schlaegt es fehl, soll
+    # nichts passiert sein — kein Report ohne das Profil, das mitgemeint war.
+    profil, profil_fehler = _profil_bauen(wer, beziehung, wichtig, aktuell,
+                                          links, dateien)
+    if profil_fehler:
+        return profil_fehler
+
     alt_zeit, alt_id = _chat_grenze(lead_id)
     grenze = _chat_grenze_bestimmen(lead_id, bis_aktivitaet_id, alt_zeit, alt_id)
     if isinstance(grenze, str):        # Fehlermeldung statt Grenze
@@ -1890,13 +2048,15 @@ def chat_report_speichern(lead_id: str, zusammenfassung: str,
         "and (created_at, id) <= (%s::timestamptz, %s::uuid)",
         (lead_id, list(CHAT_NACHRICHT_TYPEN), alt_zeit, alt_id,
          bis_zeit, bis_id))[0]["n"]
+    nutzlast = {"zusammenfassung": text, "anzahl": anzahl,
+                "bis_aktivitaet_id": str(bis_id),
+                "bis_zeitpunkt": bis_zeit.isoformat()}
+    if profil:
+        nutzlast["profil"] = profil
     neu = _q(
         "insert into activities (lead_id, type, payload) "
         "values (%s, %s, %s) returning id",
-        (lead_id, CHAT_REPORT_TYP,
-         _json({"zusammenfassung": text, "anzahl": anzahl,
-                "bis_aktivitaet_id": str(bis_id),
-                "bis_zeitpunkt": bis_zeit.isoformat()})))[0]
+        (lead_id, CHAT_REPORT_TYP, _json(nutzlast)))[0]
     offen = _q(
         "with" + _CHAT_GRENZE_CTE +
         " select count(*) as n from activities a"
