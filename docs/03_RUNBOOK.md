@@ -981,10 +981,10 @@ $rumpf = @{ url = 'http://sales-inbox:8790/webhook'
             events = @('message.received', 'message.sent')
             secret = $w['INBOX_WEBHOOK_SECRET']
             retryCount = 3 } | ConvertTo-Json -Depth 6
-Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:2785/api/sessions/$($w['OPENWA_SESSION_ID'])/webhooks" `
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:12785/api/sessions/$($w['OPENWA_SESSION_ID'])/webhooks" `
   -Headers @{ 'X-API-Key' = $w['OPENWA_API_KEY']; 'Content-Type' = 'application/json' } -Body $rumpf
 # 4. Gegenprobe (die Antwort enthält das Geheimnis NICHT — by design):
-Invoke-RestMethod -Uri "http://127.0.0.1:2785/api/sessions/$($w['OPENWA_SESSION_ID'])/webhooks" `
+Invoke-RestMethod -Uri "http://127.0.0.1:12785/api/sessions/$($w['OPENWA_SESSION_ID'])/webhooks" `
   -Headers @{ 'X-API-Key' = $w['OPENWA_API_KEY'] }
 ```
 
@@ -1061,8 +1061,8 @@ $w = @{}; foreach ($z in [IO.File]::ReadAllLines('.env')) {
   if ($z -match '^\s*([A-Z0-9_]+)\s*=\s*(.*)$') { $w[$Matches[1]] = $Matches[2].Trim() } }
 $k = @{ 'X-API-Key' = $w['OPENWA_API_KEY'] }
 $s = $w['OPENWA_SESSION_ID']
-$id = (Invoke-RestMethod -Uri "http://127.0.0.1:2785/api/sessions/$s/webhooks" -Headers $k)[0].id
-Invoke-RestMethod -Method Put -Uri "http://127.0.0.1:2785/api/sessions/$s/webhooks/$id" `
+$id = (Invoke-RestMethod -Uri "http://127.0.0.1:12785/api/sessions/$s/webhooks" -Headers $k)[0].id
+Invoke-RestMethod -Method Put -Uri "http://127.0.0.1:12785/api/sessions/$s/webhooks/$id" `
   -Headers ($k + @{ 'Content-Type' = 'application/json' }) `
   -Body (@{ events = @('message.received','message.sent') } | ConvertTo-Json)
 ```

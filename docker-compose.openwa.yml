@@ -121,7 +121,21 @@ services:
     ports:
       # Nur Loopback. Dashboard/API tragen den API-Key und (nach Pairing)
       # WhatsApp-Sessiondaten.
-      - "127.0.0.1:2785:2785"
+      # HOST-Port 12785, Container-Port bleibt 2785.
+      #
+      # GEMESSEN 25.08.2026: Windows hatte den TCP-Bereich 2701-2800
+      # reserviert (Hyper-V/WSL, `netsh interface ipv4 show
+      # excludedportrange protocol=tcp`). Docker konnte 2785 deshalb
+      # nicht binden — "a socket in a way forbidden by its access
+      # permissions" — obwohl NIEMAND darauf lauschte. Solche Bereiche
+      # verschieben sich nach jedem Neustart; genau daran ist der
+      # Gateway nach einem Rechnerneustart haengengeblieben.
+      #
+      # Die Dienste sind davon nicht betroffen: sie sprechen openwa
+      # ueber den Containernamen an (OPENWA_URL=http://openwa:2785),
+      # also am Host vorbei. Diese Bindung ist ausschliesslich fuer
+      # den Menschen da — Dashboard und QR-Kopplung.
+      - "127.0.0.1:12785:2785"
     logging:
       driver: json-file
       options:

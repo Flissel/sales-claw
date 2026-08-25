@@ -52,7 +52,7 @@ Muster wie bei der Datenbank-DSN in `docs/03_RUNBOOK.md`.
 $env:OPENWA_KEY = ((Select-String -Path .env -Pattern '^OPENWA_API_KEY=').Line -split '=', 2)[1]
 $env:OPENWA_SESSION = ((Select-String -Path .env -Pattern '^OPENWA_SESSION_ID=').Line -split '=', 2)[1]
 
-$antwort = Invoke-RestMethod -Uri "http://127.0.0.1:2785/api/sessions/$($env:OPENWA_SESSION)/qr" `
+$antwort = Invoke-RestMethod -Uri "http://127.0.0.1:12785/api/sessions/$($env:OPENWA_SESSION)/qr" `
     -Headers @{ "X-API-Key" = $env:OPENWA_KEY }
 $b64 = $antwort.qrCode -replace '^data:image/png;base64,', ''
 [IO.File]::WriteAllBytes("$PWD\openwa-qr.png", [Convert]::FromBase64String($b64))
@@ -71,7 +71,7 @@ Block oben dekodiert genau das und schreibt eine PNG-Datei.
 export OPENWA_KEY=$(grep '^OPENWA_API_KEY=' .env | cut -d= -f2-)
 export OPENWA_SESSION=$(grep '^OPENWA_SESSION_ID=' .env | cut -d= -f2-)
 curl -s -H "X-API-Key: $OPENWA_KEY" \
-  "http://127.0.0.1:2785/api/sessions/$OPENWA_SESSION/qr" \
+  "http://127.0.0.1:12785/api/sessions/$OPENWA_SESSION/qr" \
   | jq -r '.qrCode' | sed 's/^data:image\/png;base64,//' | base64 -d > openwa-qr.png
 unset OPENWA_KEY OPENWA_SESSION
 ```
@@ -97,7 +97,7 @@ action_required | failed`. Nach erfolgreichem Scan wird daraus `ready`:
 ```powershell
 $env:OPENWA_KEY = ((Select-String -Path .env -Pattern '^OPENWA_API_KEY=').Line -split '=', 2)[1]
 $env:OPENWA_SESSION = ((Select-String -Path .env -Pattern '^OPENWA_SESSION_ID=').Line -split '=', 2)[1]
-(Invoke-RestMethod -Uri "http://127.0.0.1:2785/api/sessions/$($env:OPENWA_SESSION)" `
+(Invoke-RestMethod -Uri "http://127.0.0.1:12785/api/sessions/$($env:OPENWA_SESSION)" `
     -Headers @{ "X-API-Key" = $env:OPENWA_KEY }).status
 # erwartet: ready
 Remove-Item Env:OPENWA_KEY, Env:OPENWA_SESSION
