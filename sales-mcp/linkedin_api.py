@@ -96,12 +96,26 @@ class LinkedInFehler(Exception):
     Inhalt) wird durch Wiederholen nicht besser und gehoert als
     fehlgeschlagen gebucht. Ein voruebergehender (Netz, 429, 5xx) darf
     liegenbleiben — die Entscheidung faellt aber im Dispatcher, nicht hier.
+
+    `ungewiss` ist die dritte und heikelste Unterscheidung: WISSEN WIR
+    UEBERHAUPT, OB ES PASSIERT IST? Eine Zeitueberschreitung heisst nicht
+    „nicht angekommen", sondern „keine Antwort gesehen" — die Anfrage kann
+    LinkedIn erreicht und der Beitrag entstanden sein, waehrend wir einen
+    Fehler buchen. Beim Hochladen ist das gleichgueltig (ein Upload
+    veroeffentlicht nichts). Beim Erstellen eines Beitrags ist es der
+    gefaehrlichste Fall ueberhaupt: ein Wiederholungslauf stellte einen
+    zweiten Beitrag auf ein oeffentliches Profil.
+
+    Eindeutig NICHT passiert ist es nur, wenn LinkedIn geantwortet hat und
+    die Antwort die Anfrage ablehnt (4xx ausser 408/429). Alles andere —
+    Netzfehler, Zeitueberschreitung, 5xx, 408 — ist ungewiss.
     """
 
-    def __init__(self, meldung, dauerhaft=True, status=None):
+    def __init__(self, meldung, dauerhaft=True, status=None, ungewiss=False):
         super().__init__(meldung)
         self.dauerhaft = dauerhaft
         self.status = status
+        self.ungewiss = ungewiss
 
 
 def _kopf(zusatz=None):
@@ -154,12 +168,27 @@ def _json_ruf(pfad, last, methode="POST"):
                 dauerhaft=True, status=401)
         # 429 und 5xx gehen vorbei, alles andere ist eine Aussage ueber die
         # Anfrage selbst und wird durch Wiederholen nicht richtiger.
+        #
+        # UNGEWISS ist etwas anderes als voruebergehend: bei 408 und 5xx hat
+        # LinkedIn die Anfrage bekommen und uns keine verwertbare Aussage
+        # ueber ihren Ausgang gegeben. Ein 4xx dagegen IST die Aussage — die
+        # Anfrage wurde abgelehnt, es ist nichts entstanden.
         raise LinkedInFehler(f"HTTP {e.code} bei {pfad}: {rumpf}",
                              dauerhaft=not (e.code == 429 or e.code >= 500),
-                             status=e.code)
+                             status=e.code,
+                             ungewiss=(e.code == 408 or e.code >= 500))
+    except TimeoutError as e:
+        # Der gefaehrlichste Ausgang: die Anfrage ist raus, die Antwort haben
+        # wir nie gesehen. „Zeitueberschreitung" heisst NICHT „nicht
+        # angekommen".
+        raise LinkedInFehler(
+            f"Zeitueberschreitung bei {pfad} nach {FRIST_JSON}s — ob LinkedIn "
+            f"die Anfrage ausgefuehrt hat, ist UNBEKANNT: {e}",
+            dauerhaft=False, ungewiss=True)
     except urllib.error.URLError as e:
+        # Auch hier: der Abbruch kann vor oder nach der Verarbeitung liegen.
         raise LinkedInFehler(f"LinkedIn nicht erreichbar: {e.reason}",
-                             dauerhaft=False)
+                             dauerhaft=False, ungewiss=True)
 
 
 def _bytes_hochladen(url, daten, inhaltstyp):

@@ -292,6 +292,18 @@ services:
     container_name: sales-linkedin
     command: python linkedin_dispatch.py
     restart: "no"
+    # HINTER EINEM PROFIL, und das ist eine Sicherheitsaussage, keine
+    # Bequemlichkeit: ein Dienst mit `profiles:` taucht in der normalen
+    # Compose-Konfiguration ueberhaupt nicht auf. `docker compose up -d`
+    # kann ihn also nicht versehentlich mitstarten, und der Vertragstest
+    # `test_clean_committed_compose_has_no_startable_linkedin_service`
+    # (scripts/tests/test_proxmox_compose.py) sieht ihn nicht — genau so,
+    # wie das Sperrgate des Proxmox-Runbooks es verlangt.
+    #
+    # Bewusst gestartet wird er so:
+    #   LINKEDIN_DRAFT_ID=<uuid> docker compose --profile linkedin     #     run --rm sales-linkedin
+    profiles:
+      - linkedin
     # KEIN env_file — dieselbe Trennung wie bei sales-mail: dieser Dienst
     # braucht die Kundendaten-DB, das LinkedIn-Token und den Medienordner,
     # sonst nichts. Ueber env_file erbte er auch OPENWA_API_KEY, SMTP_*,
@@ -306,7 +318,13 @@ services:
       # ueberschreibbar statt fest verdrahtet.
       - LINKEDIN_API_VERSION=${LINKEDIN_API_VERSION:-202608}
       - TZ=${TZ:-Europe/Berlin}
-      - LINKEDIN_INTERVAL_S=20
+      # Die Kennung des EINEN Beitrags, der veroeffentlicht werden soll.
+      # Ohne sie tut der Dienst nichts, ausser aufzulisten, was freigegeben
+      # waere. Er ist kein Dauerlaeufer: er nimmt genau diesen Entwurf und
+      # beendet sich. Begruendung im Kopf von linkedin_dispatch.py.
+      #
+      #   LINKEDIN_DRAFT_ID=<uuid> docker compose --profile linkedin       #     run --rm sales-linkedin
+      - LINKEDIN_DRAFT_ID=${LINKEDIN_DRAFT_ID:-}
     volumes:
       # Read-only wie ueberall: was gepostet werden kann, legt ausschliesslich
       # ein Mensch auf dem Host ab.
@@ -314,7 +332,8 @@ services:
     # Ein laufender Video-Upload darf nicht per SIGKILL zerrissen werden —
     # er laeuft abschnittweise und kann Minuten dauern (Upload-Timeout 300 s
     # je Abschnitt). Grosszuegiger als bei den Zwillingen, aus genau diesem
-    # Grund.
+    # Grund. Wird er doch abgeschnitten, bleibt der Entwurf geclaimt liegen
+    # und es steht nichts auf dem Profil — der sichere Ausgang.
     stop_grace_period: 120s
     logging:
       driver: json-file

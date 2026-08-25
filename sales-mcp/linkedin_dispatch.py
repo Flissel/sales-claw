@@ -1,10 +1,31 @@
 """sales-linkedin — der Zwilling des Dispatchers fuer LinkedIn-BEITRAEGE.
 
-Er liest ausschliesslich freigegebene LinkedIn-Beitraege
-(`drafts.status='approved' and channel='linkedin' and
-recipient='eigenes-profil'`) und veroeffentlicht sie ueber die offizielle
-LinkedIn-API auf dem Profil des Betreibers. Das Freigabe-Gate ist auch hier
-die Datenbank und nicht das Verhalten eines Sprachmodells.
+Er veroeffentlicht GENAU EINEN freigegebenen Beitrag — den, dessen Kennung
+ihm ueber `LINKEDIN_DRAFT_ID` genannt wird — ueber die offizielle
+LinkedIn-API auf dem Profil des Betreibers und beendet sich danach. Das
+Freigabe-Gate ist auch hier die Datenbank und nicht das Verhalten eines
+Sprachmodells.
+
+ZWEI KANTEN, DIE DIESER DIENST ANDERS ZIEHT ALS SEINE ZWILLINGE
+----------------------------------------------------------------
+dispatch.py (WhatsApp) und mail_dispatch.py (E-Mail) laufen als Schleife
+und nehmen je Runde einen Stapel. Beides waere hier falsch, und beides
+wurde in einem fremden Review benannt, bevor dieser Dienst je lief:
+
+1. STAPEL. Wer EINEN Beitrag freigibt und den Dienst startet, haette mit
+   einem Stapellauf auch alles veroeffentlicht, was sonst noch auf
+   `approved` steht — vor Wochen freigegeben, laengst vergessen, jetzt
+   oeffentlich. Die Freigabe gilt EINEM Beitrag, also muss die Ausfuehrung
+   demselben Beitrag gelten. Deshalb Exact-ID-One-Shot.
+
+2. WIEDERHOLBARKEIT. Ging ein Beitrag raus und scheiterte danach die
+   Buchung, blieb der Entwurf auf `failed` liegen — und
+   `entwurf_erneut_freigeben` holt ihn mit `bestaetigt=True` zurueck auf
+   `approved`. Bei WhatsApp bekommt der Empfaenger dann eine Nachricht
+   doppelt; hier stuende ein zweiter Beitrag oeffentlich auf dem Profil,
+   und niemand koennte vorher nachschlagen, ob der erste durchkam.
+   Deshalb `bereits_veroeffentlicht` (siehe dort) und die Reihenfolge
+   Beleg-vor-Buchung in `verarbeite_draft`.
 
 WARUM `recipient = 'eigenes-profil'` IN JEDER QUERY STEHT
 ---------------------------------------------------------
@@ -62,9 +83,8 @@ WhatsApp- und im Mailweg.
 import json
 import logging
 import os
-import signal
+import re
 import sys
-import threading
 
 import psycopg
 
@@ -75,12 +95,26 @@ import server
 from dispatch import (_als_fehler_buchen, _als_gesendet_buchen, _claim_marke,
                       _einzeilig)
 
-LINKEDIN_INTERVAL_S = float(os.environ.get("LINKEDIN_INTERVAL_S", "20"))
-LINKEDIN_ONCE = os.environ.get("LINKEDIN_ONCE", "").strip().lower() in (
-    "1", "true", "yes", "ja")
+# GENAU EIN ENTWURF, DESSEN KENNUNG GENANNT WIRD — kein Stapel, keine
+# Schleife, kein Dauerbetrieb.
+#
+# Die Zwillinge (dispatch.py, mail_dispatch.py) nehmen je Runde bis zu fuenf
+# freigegebene Entwuerfe. Fuer WhatsApp und E-Mail ist das richtig: dort ist
+# `approved` eine Anweisung des Betreibers an genau einen Empfaenger, und
+# mehrere davon abzuarbeiten ist blosse Reihenfolge.
+#
+# Hier waere es falsch. Wer EINEN Beitrag freigibt und den Dienst startet,
+# haette mit einem Stapellauf auch alles andere veroeffentlicht, was
+# irgendwann einmal auf `approved` stehen geblieben ist — vor Wochen
+# freigegeben, laengst vergessen, jetzt oeffentlich. Die Freigabe gilt einem
+# Beitrag; die Ausfuehrung muss demselben Beitrag gelten.
+#
+# Deshalb: der Betreiber nennt die Kennung, der Dienst macht genau das und
+# beendet sich.
+DRAFT_ID = os.environ.get("LINKEDIN_DRAFT_ID", "").strip()
 
-STAPEL = 5                  # Entwuerfe je Runde, wie bei den Zwillingen
-SENDE_PAUSE_S = float(os.environ.get("LINKEDIN_SENDE_PAUSE_S", "2.0"))
+_KENNUNG = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 
 # LinkedIn-Grenze fuer Beitraege mit mehreren Bildern. Ein Beitrag mit mehr
 # Bildern wuerde erst beim Veroeffentlichen abprallen — also nach der
@@ -88,13 +122,6 @@ SENDE_PAUSE_S = float(os.environ.get("LINKEDIN_SENDE_PAUSE_S", "2.0"))
 BILDER_MAX = 20
 
 LOG = logging.getLogger("sales-linkedin")
-_STOPP = threading.Event()
-
-# Ausgaenge, nach denen tatsaechlich mit LinkedIn gesprochen wurde — nur
-# danach wird pausiert. Die Pause gilt dem fremden Dienst, nicht der
-# eigenen Datenbank.
-_NETZ_AUSGAENGE = frozenset(("veroeffentlicht", "fehler",
-                             "veroeffentlicht_ohne_buchung"))
 
 
 class BeitragFehler(Exception):
@@ -135,6 +162,62 @@ def _versand_loggen(geclaimt, beitrag_urn, medienart) -> None:
                      "eigenes-profil", "beitrag": beitrag_urn,
                      "medienart": medienart},
                     ensure_ascii=False)))
+
+
+def _ungewiss_loggen(geclaimt, medienart, grund) -> None:
+    """Beleg fuer einen Versuch mit unbekanntem Ausgang.
+
+    Bewusst DIESELBE Zeilenart wie ein Erfolg (`type='versand'`), denn sie
+    hat dieselbe Wirkung: dieser Entwurf wird nicht noch einmal gepostet.
+    Unterschieden wird im Payload — `ungewiss: true` und `beitrag: null`.
+    Wer die Zeile liest, sieht sofort, dass hier ein Mensch nachsehen muss,
+    und niemand haelt sie faelschlich fuer eine belegte Veroeffentlichung.
+    """
+    server._q(
+        "insert into activities (lead_id, type, payload) "
+        "values (%s, 'versand', %s) returning id",
+        (geclaimt["lead_id"],
+         json.dumps({"draft_id": str(geclaimt["id"]), "kanal": "linkedin",
+                     "weg": "linkedin-dispatcher",
+                     "empfaenger": "eigenes-profil", "beitrag": None,
+                     "ungewiss": True, "medienart": medienart,
+                     "grund": grund}, ensure_ascii=False)))
+
+
+def bereits_veroeffentlicht(draft_id):
+    """Beitrags-Kennung, falls fuer diesen Entwurf schon gepostet wurde.
+
+    DIE Schutzkante gegen einen zweiten Beitrag — und sie fragt bewusst
+    `activities` und nicht `drafts.status`.
+
+    `activities` ist append-only: in der Produktion hat die Rolle dort nur
+    INSERT und SELECT. Eine einmal geschriebene Zeile verschwindet also nie
+    wieder und laesst sich auch nicht nachtraeglich schoenen.
+    `drafts.status` dagegen ist zuruecksetzbar: `entwurf_erneut_freigeben`
+    holt einen `failed`-Entwurf mit `bestaetigt=True` zurueck auf
+    `approved` — ausdruecklich unter Inkaufnahme eines Doppelversands. Bei
+    WhatsApp ist das eine vertretbare Betreiberentscheidung, weil der
+    Empfaenger eine Nachricht doppelt bekommt. Auf einem oeffentlichen
+    Profil ist es ein zweiter Beitrag, den jeder Leser sieht — und der
+    Betreiber kann VORHER nirgends nachschlagen, ob der erste durchkam.
+
+    Genau dafuer gibt es diese Abfrage. Sie macht das Doppelposten
+    konstruktiv unmoeglich statt es durch Disziplin zu verhindern.
+    """
+    zeilen = server._q(
+        "select payload from activities where type = 'versand' "
+        "and payload->>'kanal' = 'linkedin' "
+        "and payload->>'draft_id' = %s limit 1", (str(draft_id),))
+    if not zeilen:
+        return None
+    last = zeilen[0]["payload"] or {}
+    if isinstance(last, str):        # je nach Treiber Text statt dict
+        last = json.loads(last)
+    if last.get("ungewiss"):
+        return ("ungewisser Ausgang eines frueheren Versuchs — auf dem "
+                "Profil nachsehen")
+    # Auch ohne lesbare Kennung ist die ZEILE die Aussage: es ging raus.
+    return last.get("beitrag") or "unbekannte Beitrags-Kennung"
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +297,17 @@ def _medienart(bilder, video) -> str:
 # ---------------------------------------------------------------------------
 
 def verarbeite_draft(draft_id) -> str:
-    """Ein Beitrag: claimen, Medien laden, veroeffentlichen, buchen."""
+    """Ein Beitrag: pruefen, claimen, Medien laden, veroeffentlichen, buchen."""
+    # VOR dem Claim, nicht danach: ein Entwurf, der schon draussen ist, soll
+    # gar nicht erst angefasst werden — kein Statuswechsel, keine Marke, kein
+    # Rauschen in der Freigabe-Anzeige. Das Rennen zweier Laeufer faengt
+    # trotzdem der Claim ab: er ist atomar, nur einer gewinnt.
+    schon = bereits_veroeffentlicht(draft_id)
+    if schon:
+        LOG.warning("draft=%s NICHT erneut gepostet — bereits veroeffentlicht "
+                    "als %s", draft_id, schon)
+        return "schon_veroeffentlicht"
+
     geclaimt = claim(draft_id)
     if geclaimt is None:
         LOG.info("draft=%s uebersprungen (nicht mehr approved, keine "
@@ -242,11 +335,52 @@ def verarbeite_draft(draft_id) -> str:
         return "medien_unbrauchbar"
 
     art = _medienart(bilder, video)
+
+    # Hochladen zuerst und GETRENNT: ein Upload veroeffentlicht nichts, ein
+    # Fehler dabei ist also eindeutig — es steht garantiert nichts auf dem
+    # Profil. Deshalb braucht er keine Ungewissheits-Behandlung.
     try:
         bild_urns, video_urn = medien_hochladen(bilder, video)
+    except linkedin_api.LinkedInFehler as e:
+        _als_fehler_buchen(draft_id, marke, _einzeilig(str(e))[:500])
+        LOG.info("draft=%s Medien fehlgeschlagen, nichts veroeffentlicht (%s)",
+                 draft_id, _einzeilig(str(e))[:160])
+        return "fehler"
+
+    # Und jetzt der eine Aufruf, der etwas oeffentlich macht.
+    try:
         beitrag = linkedin_api.beitrag_erstellen(text, bilder=bild_urns,
                                                  video=video_urn)
     except linkedin_api.LinkedInFehler as e:
+        if e.ungewiss:
+            # DER FALL, DEN DAS SPERRGATE DES PROXMOX-RUNBOOKS „unbekannter
+            # externer Erfolgszustand" nennt. Wir haben keine Antwort
+            # gesehen — der Beitrag KANN oeffentlich stehen. Ihn als blossen
+            # Fehler zu buchen waere die gefaehrlichste Luege dieses
+            # Dienstes: der Entwurf sieht dann wiederholbar aus, und der
+            # naechste Lauf postete ein zweites Mal.
+            #
+            # Deshalb entsteht hier derselbe Beleg wie bei einem Erfolg, nur
+            # ohne Kennung und mit `ungewiss`. Er sperrt jede Wiederholung.
+            # Aufloesen kann das nur ein Mensch, der auf dem Profil nachsieht.
+            grund = _einzeilig(str(e))[:300]
+            try:
+                _ungewiss_loggen(geclaimt, art, grund)
+            except psycopg.Error as db:
+                LOG.critical("draft=%s UNGEWISSER AUSGANG und der Nachweis "
+                             "liess sich nicht schreiben (%s) — auf dem "
+                             "Profil nachsehen, BEVOR dieser Entwurf erneut "
+                             "angefasst wird. Grund: %s",
+                             draft_id, _einzeilig(str(db)), grund)
+                return "ungewiss_ohne_nachweis"
+            _als_fehler_buchen(draft_id, marke, (
+                f"UNGEWISS: keine Antwort von LinkedIn gesehen. Der Beitrag "
+                f"KANN oeffentlich stehen. Erneutes Freigeben aendert daran "
+                f"nichts — dieser Dienst wird ihn nicht noch einmal posten. "
+                f"Auf dem Profil nachsehen und dann entscheiden. {grund}"))
+            LOG.critical("draft=%s UNGEWISSER AUSGANG — Profil pruefen: %s",
+                         draft_id, grund)
+            return "ungewiss"
         _als_fehler_buchen(draft_id, marke, _einzeilig(str(e))[:500])
         LOG.info("draft=%s fehlgeschlagen (%s, dauerhaft=%s)", draft_id,
                  _einzeilig(str(e))[:160], e.dauerhaft)
@@ -268,10 +402,26 @@ def verarbeite_draft(draft_id) -> str:
                  type(e).__name__)
         return "fehler"
 
+    # DER BELEG ZUERST, DIE BUCHUNG DANACH. Die Reihenfolge ist der Punkt:
+    # `activities` ist append-only und damit der haltbare Nachweis, dass
+    # dieser Beitrag draussen ist. Stand er frueher hinter der Buchung, gab
+    # es bei gescheiterter Buchung UEBERHAUPT KEINEN Nachweis in der
+    # Datenbank — die Beitrags-Kennung existierte nur in einer Logzeile, und
+    # `bereits_veroeffentlicht` haette den Entwurf spaeter durchgewinkt.
+    try:
+        _versand_loggen(geclaimt, beitrag, art)
+    except psycopg.Error as e:
+        # Der schlimmste Fall, den es hier noch gibt: draussen, aber ohne
+        # Nachweis. Die Kennung steht wenigstens im Log — laut und in einer
+        # Zeile, die einen Menschen ruft.
+        LOG.critical("draft=%s VEROEFFENTLICHT als %s, aber der Nachweis "
+                     "liess sich nicht schreiben: %s — diese Kennung von "
+                     "Hand sichern, bevor der Entwurf erneut angefasst wird",
+                     draft_id, beitrag, _einzeilig(str(e)))
+        return "veroeffentlicht_ohne_nachweis"
+
     try:
         gebucht = _als_gesendet_buchen(draft_id, marke)
-        if gebucht:
-            _versand_loggen(geclaimt, beitrag, art)
     except psycopg.Error as e:
         gebucht = False
         LOG.critical("draft=%s VEROEFFENTLICHT (%s), Buchung scheiterte: %s",
@@ -289,31 +439,21 @@ def verarbeite_draft(draft_id) -> str:
     return "veroeffentlicht"
 
 
-def eine_runde() -> dict:
-    """Bis zu STAPEL freigegebene Beitraege, aelteste zuerst."""
-    zeilen = server._q(
-        "select id from drafts where status = 'approved' "
-        "and channel = 'linkedin' and recipient = 'eigenes-profil' "
-        "order by created_at limit %s", (STAPEL,))
-    bilanz = {}
-    letzter_ausgang = None
-    for z in zeilen:
-        if letzter_ausgang in _NETZ_AUSGAENGE and SENDE_PAUSE_S > 0:
-            _STOPP.wait(SENDE_PAUSE_S)      # unterbrechbar durch SIGTERM
-        letzter_ausgang = verarbeite_draft(z["id"])
-        bilanz[letzter_ausgang] = bilanz.get(letzter_ausgang, 0) + 1
-    return bilanz
+def wartende_beitraege():
+    """Welche Beitraege waeren freigegeben? Nur Lesen, veroeffentlicht nichts.
+
+    Fuer den Betreiber, damit er die Kennung findet, die er dem Dienst
+    nennen will — und damit er sieht, was sonst noch auf `approved` steht.
+    """
+    return server._q(
+        "select id, subject, media_ref, approved_at from drafts "
+        "where status = 'approved' and channel = 'linkedin' "
+        "and recipient = 'eigenes-profil' order by created_at")
 
 
 # ---------------------------------------------------------------------------
 # Betrieb
 # ---------------------------------------------------------------------------
-
-def _stoppen(signum, _rahmen) -> None:
-    LOG.info("Signal %s empfangen — Ende nach der laufenden Runde.",
-             signal.Signals(signum).name)
-    _STOPP.set()
-
 
 def _logging_einrichten() -> None:
     """Eigener Handler auf stdout — gleiche Lehre wie in den Zwillingen.
@@ -347,32 +487,43 @@ def main() -> int:
                     ", ".join(fehlend))
         return 0
 
-    _STOPP.clear()
-    for sig in (signal.SIGTERM, signal.SIGINT):
+    if not DRAFT_ID:
+        # Kein Ausfall, sondern der Normalzustand: ohne genannte Kennung hat
+        # dieser Dienst nichts zu tun. Er sagt dem Betreiber, was er
+        # veroeffentlichen KOENNTE, und beendet sich.
         try:
-            signal.signal(sig, _stoppen)
-        except ValueError:
-            pass    # nicht im Hauptthread (Tests) — dann eben ohne Handler
+            wartend = wartende_beitraege()
+        except psycopg.Error as e:
+            LOG.error("Datenbank nicht erreichbar: %s", _einzeilig(str(e)))
+            return 0
+        LOG.warning(
+            "LINKEDIN_DRAFT_ID ist nicht gesetzt — es wurde NICHTS "
+            "veroeffentlicht. Dieser Dienst nimmt genau EINEN Entwurf, "
+            "dessen Kennung ihm genannt wird. Freigegeben und wartend: %d.",
+            len(wartend))
+        for z in wartend:
+            # Betreff und Dateiname, kein Beitragstext: die Logzeile soll
+            # wiedererkennbar machen, nicht den Inhalt ausbreiten.
+            LOG.warning("  %s  %s  [%s]", z["id"],
+                        (z["subject"] or "")[:60], z["media_ref"] or "nur Text")
+        return 0
+
+    if not _KENNUNG.match(DRAFT_ID):
+        LOG.error("LINKEDIN_DRAFT_ID ist keine Entwurfs-Kennung (UUID "
+                  "erwartet). Es wurde nichts veroeffentlicht.")
+        return 2
 
     # Weder Token noch Person-Kennung ins Log: das eine ist ein Geheimnis,
     # das andere ein Personenbezug.
-    LOG.info("Start: schema=%s api-version=%s intervall=%gs pause=%gs "
-             "once=%s — warte auf freigegebene LinkedIn-Beitraege.",
-             server.SCHEMA, linkedin_api.VERSION, LINKEDIN_INTERVAL_S,
-             SENDE_PAUSE_S, LINKEDIN_ONCE)
-
-    while not _STOPP.is_set():
-        try:
-            bilanz = eine_runde()
-            if bilanz:
-                LOG.info("Runde: %s", bilanz)
-        except psycopg.Error as e:
-            LOG.error("Datenbankfehler — Runde uebersprungen: %s",
-                      _einzeilig(str(e)))
-        if LINKEDIN_ONCE:
-            break
-        _STOPP.wait(LINKEDIN_INTERVAL_S)
-    LOG.info("Beendet.")
+    LOG.info("Start: schema=%s api-version=%s draft=%s — genau ein Beitrag.",
+             server.SCHEMA, linkedin_api.VERSION, DRAFT_ID)
+    try:
+        ausgang = verarbeite_draft(DRAFT_ID)
+    except psycopg.Error as e:
+        LOG.error("Datenbankfehler — es wurde nichts veroeffentlicht: %s",
+                  _einzeilig(str(e)))
+        return 1
+    LOG.info("Ausgang: %s", ausgang)
     return 0
 
 

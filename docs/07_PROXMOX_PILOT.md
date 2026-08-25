@@ -311,6 +311,46 @@ eigens freigegebener Runbook-Stand darf diesen Worker starten.
 **Stop-Gate:** In diesem Runbook ist jeder LinkedIn-Start unzulaessig. Der
 genehmigte Beitrag bleibt unveroeffentlicht; es gibt keinen Retry.
 
+### Stand 25.08.2026 — die drei Mangelpunkte sind adressiert
+
+Das Gate BLEIBT ZU. Diese Notiz hebt es nicht auf; sie legt nur die Fakten
+fuer den bereit, der den naechsten Runbook-Stand prueft und freigibt.
+
+Die drei oben genannten Punkte sind in `sales-mcp/linkedin_dispatch.py` und
+`sales-mcp/linkedin_api.py` umgesetzt und verhaltensgeprueft:
+
+1. **Exact-ID-One-Shot.** Der Stapellauf ist weg. Der Dienst liest
+   `LINKEDIN_DRAFT_ID`, veroeffentlicht genau diesen Entwurf und beendet
+   sich. Ohne Kennung listet er nur, was freigegeben waere, und tut nichts.
+   Test: `test_nur_der_genannte_entwurf_geht_raus`.
+2. **Retry-Sperre.** `bereits_veroeffentlicht()` fragt `activities` — nicht
+   `drafts.status`, denn der laesst sich ueber
+   `entwurf_erneut_freigeben(bestaetigt=True)` zuruecksetzen, `activities`
+   dagegen ist append-only. Der Beleg entsteht VOR der Statusbuchung, damit
+   er auch bei gescheiterter Buchung existiert. Tests:
+   `test_erneute_freigabe_postet_nicht_ein_zweites_mal`,
+   `test_beleg_steht_vor_der_buchung`.
+3. **Unbekannter externer Erfolgszustand.** `LinkedInFehler` traegt jetzt
+   `ungewiss`. Zeitueberschreitung, Netzabbruch, 408 und 5xx gelten als
+   ungewiss (bei 4xx hat LinkedIn geantwortet und abgelehnt). Ein ungewisser
+   Ausgang schreibt denselben sperrenden Beleg — mit `ungewiss: true` und
+   `beitrag: null` — und bucht den Entwurf mit einem `UNGEWISS:`-Text, der
+   sagt, dass der Beitrag oeffentlich stehen KANN. Tests:
+   `test_ungewisser_ausgang_sperrt_jede_wiederholung`,
+   `test_ungewissheit_wird_am_status_erkannt`,
+   `test_zeitueberschreitung_ist_ungewiss`.
+
+Was ein kuenftiger Runbook-Stand zusaetzlich klaeren muss, bevor der Worker
+laufen darf:
+
+* Der Bezug `media/` ist nicht Teil des Quellpakets (Abschnitt 4). Ohne
+  eigene Datenfreigabe und getrennten Transfer gibt es auf der VM keine
+  Bild- und Videodateien — Beitraege mit `media_ref` scheitern dort
+  zwangslaeufig, und zwar erst nach der Freigabe.
+* Ein ungewisser Ausgang verlangt einen Menschen, der auf dem Profil
+  nachsieht. Fuer den Pilotbetrieb gehoert festgelegt, wer das tut und
+  woran er den Fall bemerkt.
+
 ## 12. Autostart-Abnahme
 
 Nach erfolgreicher Kern- und Dispatcher-Abnahme VM und Docker kontrolliert

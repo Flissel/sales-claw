@@ -17,6 +17,7 @@ Der wichtigste Test dieser Datei ist `test_direktnachricht_wird_nicht_...`:
 er haelt fest, dass eine freigegebene LinkedIn-DIREKTNACHRICHT von diesem
 Dienst nicht angefasst wird. Genau so eine lag beim Bau in der Datenbank.
 """
+import io
 import json
 import os
 
@@ -143,24 +144,47 @@ def test_direktnachricht_wird_nicht_veroeffentlicht(umgebung, sammel):
                   recipient="Lisa Probekunde", subject="LinkedIn-Erstkontakt")
     assert ld.claim(dm) is None
     assert ld.verarbeite_draft(dm) == "uebersprungen"
-    assert ld.eine_runde() == {}
     assert umgebung.beitraege == []
+    # Sie taucht auch nicht als wartender Beitrag auf.
+    assert [z["id"] for z in ld.wartende_beitraege()] == []
     # Und der Entwurf steht unveraendert da — nicht geclaimt, nicht failed.
     zeile = _status(dm)
     assert zeile["status"] == "approved"
     assert zeile["error"] is None
 
 
-def test_runde_nimmt_nur_freigegebene_beitraege(umgebung, sammel):
+def test_nur_der_genannte_entwurf_geht_raus(umgebung, sammel):
+    """Exact-ID-One-Shot: die Freigabe gilt EINEM Beitrag.
+
+    Frueher nahm dieser Dienst einen Stapel. Wer einen Beitrag freigab und
+    den Dienst startete, veroeffentlichte damit auch alles andere, was
+    irgendwann auf `approved` stehen geblieben war.
+    """
+    alt1 = _entwurf(sammel, body="Vor Wochen freigegeben und vergessen")
+    alt2 = _entwurf(sammel, body="Ebenfalls vergessen")
+    gewollt = _entwurf(sammel, body="Der Beitrag, den ich jetzt will")
+
+    assert ld.verarbeite_draft(gewollt) == "veroeffentlicht"
+
+    assert len(umgebung.beitraege) == 1
+    assert umgebung.beitraege[0]["text"] == "Der Beitrag, den ich jetzt will"
+    assert _status(gewollt)["status"] == "sent"
+    # Die beiden anderen sind unberuehrt — nicht geclaimt, nicht gepostet.
+    for d in (alt1, alt2):
+        zeile = _status(d)
+        assert zeile["status"] == "approved"
+        assert zeile["error"] is None
+
+
+def test_wartende_beitraege_listet_nur_eigene_profil_entwuerfe(umgebung, sammel):
     _entwurf(sammel, recipient="Lisa Probekunde")             # DM
     _entwurf(sammel, status="pending")                        # nicht frei
     _entwurf(sammel, status="rejected")                       # abgelehnt
     _entwurf(sammel, channel="whatsapp", recipient="+4915112345678")
     gut = _entwurf(sammel, body="Der einzige echte Beitrag")
-    assert ld.eine_runde() == {"veroeffentlicht": 1}
-    assert len(umgebung.beitraege) == 1
-    assert umgebung.beitraege[0]["text"] == "Der einzige echte Beitrag"
-    assert _status(gut)["status"] == "sent"
+    wartend = ld.wartende_beitraege()
+    assert [str(z["id"]) for z in wartend] == [str(gut)]
+    assert umgebung.beitraege == []      # Auflisten postet nichts
 
 
 # ---------------------------------------------------------------------------
@@ -271,8 +295,10 @@ def test_claim_ist_einmalig(umgebung, sammel):
 def test_kein_zweiter_beitrag_nach_veroeffentlichung(umgebung, sammel):
     d = _entwurf(sammel)
     assert ld.verarbeite_draft(d) == "veroeffentlicht"
-    # Ein zweiter Durchlauf darf NICHT noch einmal posten.
-    assert ld.verarbeite_draft(d) == "uebersprungen"
+    # Ein zweiter Durchlauf darf NICHT noch einmal posten — und er scheitert
+    # jetzt am Beleg, nicht erst am Status. Das ist der Unterschied: der
+    # Status liesse sich zuruecksetzen, der Beleg nicht.
+    assert ld.verarbeite_draft(d) == "schon_veroeffentlicht"
     assert len(umgebung.beitraege) == 1
 
 
@@ -282,11 +308,186 @@ def test_buchung_scheitert_kein_zweiter_beitrag(umgebung, sammel, monkeypatch):
     d = _entwurf(sammel)
     assert ld.verarbeite_draft(d) == "veroeffentlicht_ohne_buchung"
     assert len(umgebung.beitraege) == 1
-    # Der Entwurf bleibt geclaimt liegen — nicht 'approved', also greift
-    # ihn keine weitere Runde.
     assert _status(d)["status"] == "failed"
-    assert ld.eine_runde() == {}
+    # Und selbst ein direkter zweiter Aufruf postet nicht noch einmal.
+    assert ld.verarbeite_draft(d) == "schon_veroeffentlicht"
     assert len(umgebung.beitraege) == 1
+
+
+# ---------------------------------------------------------------------------
+# Die Sperre gegen den zweiten Beitrag
+#
+# Der Fall, den ein fremdes Review benannte: ein Beitrag ist draussen, die
+# Buchung scheiterte, der Entwurf liegt auf `failed`. Genau dort greift
+# `entwurf_erneut_freigeben` mit bestaetigt=True und holt ihn auf
+# `approved` zurueck — bei WhatsApp eine vertretbare Betreiberentscheidung,
+# hier ein zweiter oeffentlicher Beitrag.
+# ---------------------------------------------------------------------------
+
+def test_erneute_freigabe_postet_nicht_ein_zweites_mal(umgebung, sammel,
+                                                       monkeypatch):
+    """Der harte Fall: veroeffentlicht, Buchung kaputt, wieder freigegeben."""
+    monkeypatch.setattr(ld, "_als_gesendet_buchen", lambda *a, **k: False)
+    d = _entwurf(sammel, body="Geht genau einmal raus")
+    assert ld.verarbeite_draft(d) == "veroeffentlicht_ohne_buchung"
+    assert len(umgebung.beitraege) == 1
+
+    # Ein Mensch setzt den Entwurf zurueck auf approved — genau das, was
+    # entwurf_erneut_freigeben(bestaetigt=True) tut.
+    server._q("update drafts set status = 'approved', error = null "
+              "where id = %s", (d,))
+    assert _status(d)["status"] == "approved"
+
+    assert ld.verarbeite_draft(d) == "schon_veroeffentlicht"
+    assert len(umgebung.beitraege) == 1        # KEIN zweiter Beitrag
+    # Und der Entwurf wurde dabei nicht angefasst: kein Claim, keine Marke.
+    zeile = _status(d)
+    assert zeile["status"] == "approved"
+    assert zeile["error"] is None
+
+
+def test_beleg_steht_vor_der_buchung(umgebung, sammel, monkeypatch):
+    """Scheitert die Buchung, existiert der Nachweis trotzdem.
+
+    Das ist die Bedingung dafuer, dass die Sperre ueberhaupt greifen kann:
+    stand der Beleg hinter der Buchung, gab es bei kaputter Buchung keinen
+    Eintrag — und der naechste Lauf haette den Entwurf durchgewunken.
+    """
+    monkeypatch.setattr(ld, "_als_gesendet_buchen", lambda *a, **k: False)
+    d = _entwurf(sammel)
+    ld.verarbeite_draft(d)
+    zeilen = server._q("select payload from activities where type = 'versand'")
+    assert len(zeilen) == 1
+    last = zeilen[0]["payload"]
+    if isinstance(last, str):
+        last = json.loads(last)
+    assert last["beitrag"].startswith("urn:li:share:")
+    assert ld.bereits_veroeffentlicht(d) == last["beitrag"]
+
+
+def test_ohne_beleg_keine_sperre(umgebung, sammel):
+    """Gegenprobe: ein unberuehrter Entwurf ist nicht gesperrt."""
+    d = _entwurf(sammel)
+    assert ld.bereits_veroeffentlicht(d) is None
+
+
+def test_sperre_verwechselt_entwuerfe_nicht(umgebung, sammel):
+    """Der Beleg des einen darf den anderen nicht blockieren."""
+    a = _entwurf(sammel, body="A")
+    b = _entwurf(sammel, body="B")
+    assert ld.verarbeite_draft(a) == "veroeffentlicht"
+    assert ld.bereits_veroeffentlicht(b) is None
+    assert ld.verarbeite_draft(b) == "veroeffentlicht"
+    assert [x["text"] for x in umgebung.beitraege] == ["A", "B"]
+
+
+def test_beleg_eines_anderen_kanals_sperrt_nicht(umgebung, sammel):
+    """Eine WhatsApp-Versandzeile darf keinen LinkedIn-Beitrag blockieren."""
+    d = _entwurf(sammel)
+    server._q(
+        "insert into activities (lead_id, type, payload) "
+        "values (%s, 'versand', %s) returning id",
+        (sammel, json.dumps({"draft_id": str(d), "kanal": "whatsapp"})))
+    assert ld.bereits_veroeffentlicht(d) is None
+    assert ld.verarbeite_draft(d) == "veroeffentlicht"
+
+
+# ---------------------------------------------------------------------------
+# Der unbekannte externe Erfolgszustand
+#
+# Eine Zeitueberschreitung heisst NICHT „nicht angekommen". Der Beitrag kann
+# oeffentlich stehen, waehrend wir einen Fehler buchen. Genau das nennt das
+# Sperrgate des Proxmox-Runbooks „unbekannter externer Erfolgszustand".
+# ---------------------------------------------------------------------------
+
+def test_ungewisser_ausgang_sperrt_jede_wiederholung(umgebung, sammel):
+    umgebung.fehler_bei_beitrag = linkedin_api.LinkedInFehler(
+        "Zeitueberschreitung bei /rest/posts nach 30s", dauerhaft=False,
+        ungewiss=True)
+    d = _entwurf(sammel)
+    assert ld.verarbeite_draft(d) == "ungewiss"
+
+    zeile = _status(d)
+    assert zeile["status"] == "failed"
+    assert zeile["error"].startswith("UNGEWISS:")
+    assert "KANN oeffentlich stehen" in zeile["error"]
+
+    # Der Beleg ist da, sagt aber ausdruecklich nicht "veroeffentlicht".
+    zeilen = server._q("select payload from activities where type = 'versand'")
+    assert len(zeilen) == 1
+    last = zeilen[0]["payload"]
+    if isinstance(last, str):
+        last = json.loads(last)
+    assert last["ungewiss"] is True
+    assert last["beitrag"] is None
+
+    # Und er sperrt — auch nach einer erneuten Freigabe von Hand.
+    umgebung.fehler_bei_beitrag = None
+    server._q("update drafts set status = 'approved', error = null "
+              "where id = %s", (d,))
+    assert ld.verarbeite_draft(d) == "schon_veroeffentlicht"
+    assert umgebung.beitraege == []
+
+
+def test_eindeutiger_fehler_sperrt_nicht(umgebung, sammel):
+    """Ein 4xx IST die Aussage: es ist nichts entstanden, Retry erlaubt."""
+    umgebung.fehler_bei_beitrag = linkedin_api.LinkedInFehler(
+        "HTTP 422 bei /rest/posts", dauerhaft=True, status=422, ungewiss=False)
+    d = _entwurf(sammel)
+    assert ld.verarbeite_draft(d) == "fehler"
+    assert ld.bereits_veroeffentlicht(d) is None
+    assert server._q(
+        "select id from activities where type = 'versand'") == []
+
+    # Nach dem Beheben laeuft er durch.
+    umgebung.fehler_bei_beitrag = None
+    server._q("update drafts set status = 'approved', error = null "
+              "where id = %s", (d,))
+    assert ld.verarbeite_draft(d) == "veroeffentlicht"
+
+
+def test_upload_fehler_erzeugt_keine_sperre(umgebung, sammel, tmp_path):
+    """Ein Upload veroeffentlicht nichts — er darf nichts blockieren."""
+    umgebung.fehler_bei_bild = linkedin_api.LinkedInFehler(
+        "Upload abgelehnt (HTTP 400)")
+    _datei(tmp_path, "bild.png")
+    d = _entwurf(sammel, media_ref="bild.png")
+    assert ld.verarbeite_draft(d) == "fehler"
+    assert ld.bereits_veroeffentlicht(d) is None
+    assert server._q("select id from activities where type = 'versand'") == []
+
+
+@pytest.mark.parametrize("status,ungewiss", [
+    (400, False), (403, False), (404, False), (422, False),
+    (408, True), (500, True), (502, True), (503, True),
+])
+def test_ungewissheit_wird_am_status_erkannt(monkeypatch, status, ungewiss):
+    """4xx ist eine Antwort, 5xx und 408 sind keine verwertbare Aussage."""
+    import urllib.error
+
+    def falsches_urlopen(anfrage, timeout=None):
+        raise urllib.error.HTTPError(
+            "https://api.linkedin.com/rest/posts", status, "x", {},
+            io.BytesIO(b'{"message":"x"}'))
+
+    monkeypatch.setattr(linkedin_api.urllib.request, "urlopen",
+                        falsches_urlopen)
+    with pytest.raises(linkedin_api.LinkedInFehler) as e:
+        linkedin_api._json_ruf("/rest/posts", {"a": 1})
+    assert e.value.ungewiss is ungewiss
+
+
+def test_zeitueberschreitung_ist_ungewiss(monkeypatch):
+    def falsches_urlopen(anfrage, timeout=None):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(linkedin_api.urllib.request, "urlopen",
+                        falsches_urlopen)
+    with pytest.raises(linkedin_api.LinkedInFehler) as e:
+        linkedin_api._json_ruf("/rest/posts", {"a": 1})
+    assert e.value.ungewiss is True
+    assert e.value.dauerhaft is False
+    assert "UNBEKANNT" in str(e.value)
 
 
 # ---------------------------------------------------------------------------
@@ -362,6 +563,50 @@ def test_ohne_token_wird_nichts_veroeffentlicht(umgebung, sammel, monkeypatch):
         "LINKEDIN_ACCESS_TOKEN", "LINKEDIN_PERSON_URN"]
     assert ld.main() == 0        # Exit 0, kein Ausfall
     assert umgebung.beitraege == []
+
+
+# ---------------------------------------------------------------------------
+# Der Einstieg: ohne genannte Kennung passiert nichts
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def eingerichtet(monkeypatch):
+    """Konfiguration vortaeuschen, damit main() ueberhaupt bis zur Arbeit kommt.
+
+    Die Suite laeuft mit ausgeblanktem LINKEDIN_ACCESS_TOKEN (Riegel 4), und
+    `main()` steigt bei fehlender Konfiguration korrekt sofort aus. Fuer die
+    Tests des Einstiegs muss dieser Riegel also gezielt gelockert werden —
+    die Attrappen aus `umgebung` stehen weiterhin davor, es geht nichts raus.
+    """
+    monkeypatch.setattr(linkedin_api, "TOKEN", "attrappe-token")
+    monkeypatch.setattr(linkedin_api, "PERSON_URN", "urn:li:person:ATTRAPPE")
+
+
+def test_main_ohne_kennung_veroeffentlicht_nichts(umgebung, eingerichtet,
+                                                  sammel, monkeypatch):
+    monkeypatch.setattr(ld, "DRAFT_ID", "")
+    _entwurf(sammel)
+    _entwurf(sammel)
+    assert ld.main() == 0        # kein Ausfall, nur nichts zu tun
+    assert umgebung.beitraege == []
+
+
+def test_main_mit_unsinniger_kennung_bricht_ab(umgebung, eingerichtet,
+                                               sammel, monkeypatch):
+    monkeypatch.setattr(ld, "DRAFT_ID", "der-erste-halt")
+    _entwurf(sammel)
+    assert ld.main() == 2
+    assert umgebung.beitraege == []
+
+
+def test_main_nimmt_genau_die_genannte_kennung(umgebung, eingerichtet,
+                                               sammel, monkeypatch):
+    anderer = _entwurf(sammel, body="Nicht dieser")
+    gewollt = _entwurf(sammel, body="Dieser")
+    monkeypatch.setattr(ld, "DRAFT_ID", str(gewollt))
+    assert ld.main() == 0
+    assert [x["text"] for x in umgebung.beitraege] == ["Dieser"]
+    assert _status(anderer)["status"] == "approved"
 
 
 # ---------------------------------------------------------------------------
