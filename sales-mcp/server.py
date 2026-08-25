@@ -1270,7 +1270,8 @@ POST_MAXLAENGE = 3000
 
 
 @_gesichert
-def post_entwurf_erstellen(thema: str, text: str, medien_datei: str = "") -> str:
+def post_entwurf_erstellen(thema: str, text: str, medien_datei: str = "",
+                          trotzdem: bool = False) -> str:
     """LinkedIn-POST (eigenes Profil, kein Empfaenger) in die Freigabe-Queue
     legen — fuer die zwei Schienen des Hauses: Karriere-/Partner-Recruiting
     und bAV-/B2B-Sichtbarkeit. Es wird NICHTS automatisch gepostet: nach der
@@ -1289,11 +1290,41 @@ def post_entwurf_erstellen(thema: str, text: str, medien_datei: str = "") -> str
     ist ein Merkposten, welches Bild/PDF der Betreiber mit anhaengen will.
     Hoechstens 3000 Zeichen (LinkedIn-Grenze). Kein Kundenname, keine
     Kundendaten und keine Produkt-/Tarifempfehlung im Text — auch ein Post
-    ist keine Beratung."""
+    ist keine Beratung.
+
+    VORHER `linkedin_historie()` LESEN. Gibt es zum selben Thema schon einen
+    nicht abgelehnten Beitrag, wird hier abgelehnt — zwei Beitraege zum
+    gleichen Thema fallen auf dem Profil auf. Ist es wirklich ein neuer
+    (Fortsetzung, anderer Blickwinkel), dann `trotzdem=True`.
+
+    Und schreib nicht fuenfmal denselben Absatz: `linkedin_historie()` nennt
+    unter `bausteine`, welche Saetze schon mehrfach wortgleich vorkamen.
+    Einzeln liest sich das gut, in Folge wie ein Serienbrief."""
     if not (thema or "").strip():
         return _json({"fehler": "Kein Thema angegeben."})
     if not (text or "").strip():
         return _json({"fehler": "Kein Text angegeben."})
+
+    # Gibt es zu diesem Thema schon einen Beitrag? Abgelehnte zaehlen nicht:
+    # die wurden bewusst weggeraeumt, und ein zweiter Anlauf ist dann genau
+    # das Richtige. Alles andere — wartend, freigegeben, draussen — ist eine
+    # Wiederholung, und die faellt auf dem Profil auf.
+    doppelt = _q(
+        "select status, created_at from drafts where channel = 'linkedin' "
+        "and recipient = 'eigenes-profil' and status <> 'rejected' "
+        "and lower(subject) = lower(%s) order by created_at desc limit 1",
+        (f"Post: {thema.strip()}",))
+    if doppelt and not trotzdem:
+        d = doppelt[0]
+        return _json({"fehler": (
+            f"Zum Thema '{thema.strip()}' gibt es schon einen Beitrag "
+            f"(Zustand '{d['status']}', vom "
+            f"{d['created_at'].strftime('%d.%m.%Y')}). Zwei Beitraege zum "
+            f"selben Thema fallen auf dem Profil auf. Lies linkedin_historie() "
+            f"— steht dort etwas, das du nur anders formulieren wolltest, "
+            f"lass es. Ist es wirklich ein neuer Beitrag (Fortsetzung, "
+            f"anderer Blickwinkel), ruf erneut auf mit trotzdem=True.")})
+
     if len(text) > POST_MAXLAENGE:
         return _json({"fehler": (
             f"LinkedIn-Posts duerfen hoechstens {POST_MAXLAENGE} Zeichen "
@@ -4325,6 +4356,187 @@ def antwort_entwerfen(lead_id: str, text: str,
                               "kein Mensch daraufgesehen.")})
 
 
+# ---------------------------------------------------------------------------
+# LinkedIn-Historie (Betreiber-Wunsch 25.08.2026)
+#
+# „post history von linkedin damit wir nicht redunate posts erzeugen und
+#  einen eigenen stil entwicklen koennen pro post."
+#
+# GEMESSEN am 25.08.2026: LinkedIn LIEFERT die Historie nicht. Die App hat
+# `w_member_social` (schreiben), aber keine Leseberechtigung — `GET
+# /rest/posts?q=author`, ein einzelner Beitrag und der alte ugcPosts-Weg
+# antworten alle mit HTTP 403 ACCESS_DENIED. Leserechte vergibt LinkedIn nur
+# an gepruefte Partner.
+#
+# Gebraucht wird das auch nicht: jeder Beitrag, der ueber dieses System
+# entstand, steht in `drafts`, und jeder veroeffentlichte traegt seine
+# Beitrags-Kennung in der `versand`-Aktivitaet. Was hier FEHLT, sind
+# Beitraege, die der Betreiber von Hand auf linkedin.com geschrieben hat —
+# die sieht dieses System nicht, und die Antwort sagt das auch.
+# ---------------------------------------------------------------------------
+
+LINKEDIN_HISTORIE_MAX = 30
+LINKEDIN_ERSTE_ZEILE = 120
+LINKEDIN_TEXT_VORSCHAU = 400
+# Ab wie vielen Zeichen ein wiederholter Satz als Baustein gilt. Kuerzere
+# Uebereinstimmungen („Ich freue mich", „Mehr dazu") sind Sprache, keine
+# Schablone.
+LINKEDIN_BAUSTEIN_WORTE = 6
+
+
+def _wortfolgen(text: str, laenge: int):
+    """Alle Wortfolgen dieser Laenge, klein und ohne Satzzeichen.
+
+    WORTFOLGEN statt ganzer Saetze, und das ist der Unterschied
+    zwischen einem Melder, der etwas findet, und einem, der schweigt:
+    die fuenf VibeMind-Beitraege vom 25.08.2026 teilten KEINEN
+    wortgleichen Satz. In jedem stand aber sinngemaess dieselbe
+    Wendung ueber Brain und die Ausfuehrungsgrenze, jedes Mal leicht
+    anders eingebettet. Ein Satzvergleich fand davon nichts.
+    """
+    rand = ".,;:!?()„“\"'—-"
+    worte = [w.strip(rand).lower() for w in str(text or "").split()]
+    worte = [w for w in worte if w]
+    return {" ".join(worte[k:k + laenge])
+            for k in range(max(0, len(worte) - laenge + 1))}
+
+
+def _verschmelzen(folgen):
+    """Ueberlappende Wortfolgen zu einer langen zusammenziehen.
+
+    Ohne diesen Schritt steht dieselbe Fundstelle mehrfach da, nur um
+    ein Wort verschoben: "ich habe dazu ein kurzes produktvideo",
+    "habe dazu ein kurzes produktvideo gemacht", "dazu ein kurzes
+    produktvideo gemacht das". Bei fuenf Beitraegen wurden daraus 34
+    Eintraege fuer eine Handvoll echter Wiederholungen — ein Melder,
+    der unlesbarer ist als das Problem, meldet nichts.
+    """
+    offen = sorted(folgen, key=len, reverse=True)
+    fertig = []
+    while offen:
+        aktuell = offen.pop(0)
+        gewachsen = True
+        while gewachsen:
+            gewachsen = False
+            for anderer in list(offen):
+                worte_a = aktuell.split()
+                worte_b = anderer.split()
+                # Vollstaendig enthalten: faellt einfach weg.
+                if anderer in aktuell:
+                    offen.remove(anderer)
+                    gewachsen = True
+                    continue
+                # Ueberlappung am Ende bzw. am Anfang -> anhaengen.
+                for n in range(min(len(worte_a), len(worte_b)) - 1, 0, -1):
+                    if worte_a[-n:] == worte_b[:n]:
+                        aktuell = " ".join(worte_a + worte_b[n:])
+                        break
+                    if worte_b[-n:] == worte_a[:n]:
+                        aktuell = " ".join(worte_b + worte_a[n:])
+                        break
+                else:
+                    continue
+                offen.remove(anderer)
+                gewachsen = True
+        fertig.append(aktuell)
+    return fertig
+
+
+def _bausteine_finden(beitraege, laenge: int):
+    """Wortfolgen, die in mehr als einem Beitrag vorkommen.
+
+    Gruppiert nach den BETROFFENEN BEITRAEGEN: was in denselben fuenf
+    Texten steht, ist eine Fundstelle, auch wenn es als ein Dutzend
+    verschobener Wortfolgen daherkommt. Innerhalb einer Gruppe werden
+    ueberlappende Folgen zu einer langen zusammengezogen.
+    """
+    gesehen = {}
+    for thema, text in beitraege:
+        for folge in _wortfolgen(text, laenge):
+            gesehen.setdefault(folge, set()).add(thema)
+    gruppen = {}
+    for folge, themen in gesehen.items():
+        if len(themen) > 1:
+            gruppen.setdefault(tuple(sorted(themen)), []).append(folge)
+    bausteine = []
+    for themen, folgen in gruppen.items():
+        for lang in _verschmelzen(folgen):
+            bausteine.append({"wortfolge": lang,
+                              "in_beitraegen": list(themen),
+                              "anzahl": len(themen)})
+    bausteine.sort(key=lambda b: (-b["anzahl"], -len(b["wortfolge"])))
+    return bausteine
+
+
+@_gesichert
+def linkedin_historie(limit: int = LINKEDIN_HISTORIE_MAX) -> str:
+    """Was wurde auf LinkedIn schon gepostet — und wo wiederholst du dich?
+
+    LIES DAS, BEVOR DU EINEN NEUEN BEITRAG SCHREIBST. Zwei Dinge stehen
+    drin:
+
+    * `beitraege` — jeder Beitrag mit Datum, Thema, Zustand, erster Zeile
+      und Textvorschau. `veroeffentlicht_als` traegt die Beitrags-Kennung,
+      wenn er wirklich draussen ist.
+    * `bausteine` — Saetze, die in MEHREREN Beitraegen wortgleich
+      vorkommen. Das ist der Schablonen-Melder: fuenf Beitraege, die in der
+      Mitte denselben Absatz tragen, lesen sich einzeln gut und in Folge
+      wie ein Serienbrief. Was hier steht, formulierst du im naechsten
+      Beitrag anders oder laesst es weg.
+
+    WAS NICHT DRINSTEHT: Beitraege, die der Betreiber von Hand auf
+    linkedin.com geschrieben hat. LinkedIn gibt die Historie nicht heraus
+    (403, die App hat nur Schreibrecht) — dieses System kennt nur, was
+    durch es hindurchging. Sag das, wenn es darauf ankommt, statt
+    Vollstaendigkeit zu behaupten.
+
+    Nur Lesezugriff."""
+    try:
+        anzahl = max(1, min(LINKEDIN_HISTORIE_MAX, int(limit)))
+    except (TypeError, ValueError):
+        anzahl = LINKEDIN_HISTORIE_MAX
+    zeilen = _q(
+        "select d.id, d.subject, d.body, d.media_ref, d.status, d.created_at,"
+        "       (select a.payload->>'beitrag' from activities a"
+        "         where a.payload->>'draft_id' = d.id::text"
+        "           and a.type = 'versand' limit 1) as beitrag"
+        "  from drafts d"
+        " where d.channel = 'linkedin' and d.recipient = 'eigenes-profil'"
+        " order by d.created_at desc limit %s", (anzahl,))
+
+    beitraege = []
+    for z in zeilen:
+        text = z["body"] or ""
+        erste = " ".join(text.split(chr(10))[0].split())
+        beitraege.append({
+            "erstellt_am": z["created_at"],
+            "thema": (z["subject"] or "").removeprefix("Post: "),
+            "status": z["status"],
+            "medien_datei": z["media_ref"],
+            "veroeffentlicht_als": z["beitrag"],
+            "erste_zeile": erste[:LINKEDIN_ERSTE_ZEILE],
+            "text": text[:LINKEDIN_TEXT_VORSCHAU],
+            "zeichen": len(text)})
+
+    # Welche Wendungen kommen in mehr als einem Beitrag vor? Verworfene
+    # zaehlen mit: auch ein abgelehnter Text zeigt, was schon dagewesen
+    # ist.
+    bausteine = _bausteine_finden(
+        [((z["subject"] or "").removeprefix("Post: "), z["body"])
+         for z in zeilen], LINKEDIN_BAUSTEIN_WORTE)
+
+    return _json({
+        "anzahl": len(beitraege),
+        "beitraege": beitraege,
+        "bausteine": bausteine,
+        "hinweis": (
+            "Vor einem neuen Beitrag lesen. Was unter `bausteine` steht, "
+            "kam schon mehrfach wortgleich vor — anders formulieren oder "
+            "weglassen. NICHT enthalten: Beitraege, die der Betreiber von "
+            "Hand auf linkedin.com geschrieben hat; LinkedIn gibt die "
+            "Historie nicht heraus.")})
+
+
 KENNUNGEN_MAX = 60
 
 
@@ -4435,6 +4647,10 @@ WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              profil_lesen, profil_aktualisieren,
              bedarf_speichern, bedarf_offen, entwurf_erstellen,
              post_entwurf_erstellen, medien_liste,
+             # Was schon gepostet wurde, samt Schablonen-Melder
+             # (25.08.2026). LinkedIn selbst gibt die Historie nicht
+             # heraus — 403, die App hat nur Schreibrecht.
+             linkedin_historie,
              posteingang, eingang_einordnen, absender_aufloesen,
              # Beobachtet, welche Absender-Merkmale stabil bleiben —
              # Grundlage fuer exaktes Matching statt Raten.

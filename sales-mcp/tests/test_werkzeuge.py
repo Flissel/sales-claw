@@ -688,9 +688,12 @@ def test_kontakt_aktualisieren_signatur_ueberlebt_den_dekorator():
     assert list(parameter) == ["lead_id", "feld", "wert"]
 
 
-def test_siebenundvierzig_werkzeuge_registriert():
+def test_achtundvierzig_werkzeuge_registriert():
     namen = {fn.__name__ for fn in server.WERKZEUGE}
-    assert len(namen) == 47
+    assert len(namen) == 48
+    # Was schon gepostet wurde, samt Schablonen-Melder (25.08.2026).
+    # LinkedIn selbst gibt die Historie nicht heraus (403).
+    assert "linkedin_historie" in namen
     # Autonomiestufe je Kontakt (25.08.2026). Der Agent kann die Stufe
     # NICHT setzen, nur in ihr handeln — Vertragstests in
     # tests/test_autonomie.py.
