@@ -502,7 +502,31 @@ label.feld { display: block; margin: .8rem 0; font-weight: 600; }
    Knopf — als Textzeile von 16px Hoehe ist er keines. */
 p.abbrechen a, p.meta > a { display: inline-block; min-height: 44px;
                             padding: .6rem .1rem; }
-button, input, select { font-family: inherit; }
+button, input, select, textarea { font-family: inherit; }
+/* Aufklappbare Freigabe-Karten (25.08.2026). `<details>` statt JavaScript:
+   der Betreiber oeffnet mehrere Entwuerfe nebeneinander, vergleicht und
+   entscheidet, ohne die Liste zu verlassen. Der Pfeil bleibt der native —
+   er ist die einzige Anzeige, die auch ohne CSS noch stimmt. */
+details.karte > summary { cursor: pointer; padding: .3rem 0;
+                          min-height: 44px; display: flex;
+                          align-items: center; gap: .4rem;
+                          flex-wrap: wrap; }
+details.karte > summary::marker { color: var(--gedaempft); }
+details.karte[open] > summary { margin-bottom: .6rem;
+                                border-bottom: 1px solid var(--linie);
+                                padding-bottom: .5rem; }
+details.karte > summary .meta { font-weight: 400; }
+/* Das Bearbeitungsfeld liegt hinter einer zweiten Klappe, damit es die
+   Entscheidungsknoepfe nicht verdraengt: wer nur freigeben will, soll
+   nicht an einem Textfeld vorbeiscrollen muessen. */
+details.bearbeiten > summary { cursor: pointer; min-height: 44px;
+                               display: flex; align-items: center;
+                               font-size: .95rem; color: var(--gedaempft); }
+textarea { width: 100%; box-sizing: border-box; padding: .6rem;
+           border: 1px solid var(--linie_stark); border-radius: 6px;
+           background: var(--flaeche); color: var(--schrift);
+           font-size: 1rem; line-height: 1.45; resize: vertical;
+           font-weight: 400; }
 button { min-height: 44px; padding: .6rem 1.1rem; border-radius: 6px;
          border: 1px solid var(--linie_stark); background: var(--flaeche);
          color: var(--schrift); cursor: pointer; font-weight: 600;
@@ -691,6 +715,65 @@ def _entwurf_kopf(z, zustand: str) -> str:
             f"{anhang}{alter} · draft_id: {_e(z['id'])}</div>")
 
 
+ENTWURF_VORSCHAU = 90
+
+
+def _entwurf_karte_offen(z) -> str:
+    """Eine Freigabe-Karte zum Aufklappen — mit Bearbeitungsfeld.
+
+    `<details>` statt eigener Seite und statt JavaScript: der Betreiber
+    kann mehrere Entwuerfe nebeneinander oeffnen, vergleichen und
+    entscheiden, ohne die Liste zu verlassen. Vor- und Zurueckspringen war
+    genau das, was ihn gestoert hat.
+
+    Zugeklappt steht so viel, dass man ohne Oeffnen erkennt, worum es geht
+    — Kontakt, Kanal, Anfang des Textes. Nicht mehr: die Vorschau steht in
+    einer Zeile, und ein ganzer Entwurf darin machte die Liste unlesbar.
+
+    Der Text ist Modelltext an einen Menschen und wird ueberall escaped,
+    auch in der Vorschau und im Textfeld.
+    """
+    text = z["body"] or ""
+    vorschau = " ".join(text.split())[:ENTWURF_VORSCHAU]
+    if len(" ".join(text.split())) > ENTWURF_VORSCHAU:
+        vorschau += " …"
+    return (
+        f'<details class="karte">'
+        f'<summary>{_badge(z["channel"])}'
+        f'<b>{_e(z["name"] or "(ohne Kontakt)")}</b>'
+        f'<span class="meta"> — {_e(vorschau)}</span></summary>'
+        f'{_entwurf_kopf(z, "pending")}'
+        f'<div class="text">{_e(text)}</div>'
+        f'{_entwurf_bearbeiten_form(z, text)}'
+        f'<div class="aktionen">'
+        f'{_formular("freigeben", z["id"], "Freigeben", "primaer")}'
+        f'{_formular("ablehnen", z["id"], "Ablehnen", "gefahr")}'
+        f'</div></details>')
+
+
+def _entwurf_bearbeiten_form(z, text: str) -> str:
+    """Das Textfeld — nur bei `pending`, denn nur dort darf geaendert werden.
+
+    Eigenes `<details>`, damit es die Entscheidungsknoepfe nicht
+    verdraengt: wer nur freigeben will, soll nicht an einem Textfeld
+    vorbeiscrollen muessen.
+    """
+    return (
+        f'<details class="bearbeiten"><summary>Text bearbeiten</summary>'
+        f'<form method="post" action="/aktion/bearbeiten">'
+        f'<input type="hidden" name="draft_id" value="{_e(z["id"])}">'
+        f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+        f'<p><label class="feld">Text<br>'
+        f'<textarea name="text" rows="8" maxlength="4096">'
+        f'{_e(text)}</textarea></label></p>'
+        f'<div class="aktionen">'
+        f'<button class="primaer">Aenderung speichern</button></div>'
+        f'</form>'
+        f'<p class="meta">Aendert nur den Entwurf — es geht nichts raus, und '
+        f'die Freigabe bleibt ein eigener Schritt. Alter und neuer Text '
+        f'werden protokolliert.</p></details>')
+
+
 @_gesichert_seite
 async def inbox(request):
     pending = server._q(
@@ -727,13 +810,7 @@ async def inbox(request):
         # Handy ueber die volle Breite, mit Abstand dazwischen. Ein Daumen,
         # der das Falsche trifft, verwirft hier einen Entwurf oder gibt einen
         # zum Versand frei — beides ist nicht zurueckzunehmen.
-        teile.append(
-            f'<div class="karte">{_entwurf_kopf(z, "pending")}'
-            f'<div class="text">{_e(z["body"])}</div>'
-            f'<div class="aktionen">'
-            f'{_formular("freigeben", z["id"], "Freigeben", "primaer")}'
-            f'{_formular("ablehnen", z["id"], "Ablehnen", "gefahr")}'
-            f"</div></div>")
+        teile.append(_entwurf_karte_offen(z))
 
     teile.append(f"<h2>Fehlgeschlagen ({len(gescheitert)})</h2>")
     if not gescheitert:
@@ -856,6 +933,25 @@ async def aktion_freigeben(request):
     if not zeilen:
         return _statusfehler(draft_id, "pending")
     _freigabe_loggen(zeilen[0])
+    return RedirectResponse("/", status_code=303)
+
+
+@_gesichert_seite
+async def aktion_bearbeiten(request):
+    """Den Text eines Entwurfs aendern — vor der Freigabe.
+
+    Geht ueber `server.entwurf_bearbeiten`, also durch dieselbe Kante wie
+    der Chat: nur `pending`, dieselben Laengengrenzen, dasselbe Protokoll
+    mit altem und neuem Text. Diese Oberflaeche baut keinen zweiten
+    Schreibweg.
+    """
+    form, draft_id, abbruch = await _aktions_vorspann(request)
+    if abbruch:
+        return abbruch
+    antwort = json.loads(server.entwurf_bearbeiten(
+        draft_id=draft_id, text=str(form.get("text") or "")))
+    if "fehler" in antwort:
+        return _fehlerseite(409, "Nicht geaendert", _e(antwort["fehler"]))
     return RedirectResponse("/", status_code=303)
 
 
@@ -2276,6 +2372,7 @@ app = Starlette(routes=[
     Route("/", inbox),
     Route("/aktion/freigeben", aktion_freigeben, methods=["POST"]),
     Route("/aktion/ablehnen", aktion_ablehnen, methods=["POST"]),
+    Route("/aktion/bearbeiten", aktion_bearbeiten, methods=["POST"]),
     Route("/aktion/erneut-freigeben", aktion_erneut_freigeben,
           methods=["POST"]),
     Route("/aktion/verwerfen", aktion_verwerfen, methods=["POST"]),

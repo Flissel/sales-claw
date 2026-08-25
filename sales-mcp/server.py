@@ -4008,6 +4008,90 @@ def firma_anreichern(lead_id: str, website: str = "") -> str:
                     "ist. Der Abruf kostete nichts.")}))
 
 
+@_gesichert
+def entwurf_bearbeiten(draft_id: str, text: str, betreff: str = "",
+                       medien_datei: str = "") -> str:
+    """Den Text eines Entwurfs aendern, BEVOR er freigegeben wird.
+
+    NUR bei `pending`. Das ist keine Bequemlichkeitsgrenze:
+
+    * `approved` und `sent` — freigegeben oder versendet wurde ein
+      BESTIMMTER Text. Ihn nachtraeglich zu aendern hiesse, die Freigabe
+      auf etwas umzuhaengen, das der Betreiber nie gelesen hat. Wer einen
+      freigegebenen Entwurf anders haben will, lehnt ihn ab und erstellt
+      einen neuen.
+    * `failed` — dort kann die Claim-Marke des Dispatchers stehen, und die
+      bedeutet, dass die Nachricht MOEGLICHERWEISE doch beim Empfaenger
+      ankam. Den Text dann still zu ersetzen waere das Gegenteil von
+      Nachvollziehbarkeit.
+    * `rejected` — abgelehnt ist abgelehnt.
+
+    `betreff` und `medien_datei` sind optional; ein leerer Wert laesst das
+    Feld unveraendert. Um einen Anhang zu ENTFERNEN, `medien_datei='-'`
+    uebergeben — ein leerer String kann „nicht anfassen" nicht von
+    „loeschen" unterscheiden.
+
+    Die Aenderung wird mit ALTEM UND NEUEM TEXT protokolliert. Das ist der
+    Sinn der Sache: hinterher muss nachvollziehbar sein, was der Betreiber
+    freigegeben hat und was vorher dastand."""
+    zeilen = _q("select id, status, channel, body, subject, media_ref, lead_id "
+                "from drafts where id = %s", (draft_id,))
+    if not zeilen:
+        return _json({"fehler": f"Kein Entwurf mit draft_id {draft_id}."})
+    d = zeilen[0]
+    if d["status"] != "pending":
+        return _json({"fehler": (
+            f"Entwurf steht auf '{d['status']}' und laesst sich nicht mehr "
+            f"bearbeiten. Geaendert wird nur, was noch NICHT freigegeben "
+            f"ist — sonst haenge die Freigabe an einem Text, den niemand "
+            f"gelesen hat. Wer ihn anders haben will: ablehnen und neu "
+            f"erstellen.")})
+
+    neu = str(text or "").strip()
+    if not neu:
+        return _json({"fehler": "Leerer Text — nichts geaendert."})
+    if neu == d["body"] and not (betreff or "").strip()             and not (medien_datei or "").strip():
+        return _json({"fehler": "Text ist unveraendert — nichts geaendert."})
+
+    # Anhang: '-' entfernt, leer laesst stehen, alles andere wird geprueft.
+    basis = d["media_ref"]
+    roh_medien = str(medien_datei or "").strip()
+    if roh_medien == "-":
+        basis = None
+    elif roh_medien:
+        basis, fehler = medien.pruefe(roh_medien)
+        if fehler:
+            return _json({"fehler": fehler})
+
+    # Dieselben Grenzen wie beim Erstellen — sonst entstuende beim
+    # Bearbeiten ein Entwurf, den entwurf_erstellen nie zugelassen haette.
+    if d["channel"] == "whatsapp" and basis             and len(neu) > medien.CAPTION_MAXLAENGE:
+        return _json({"fehler": (
+            f"Mit Anhang darf der Text hoechstens "
+            f"{medien.CAPTION_MAXLAENGE} Zeichen haben (er reist als "
+            f"Bildunterschrift mit), hier sind es {len(neu)}.")})
+    if d["channel"] == "linkedin" and len(neu) > POST_MAXLAENGE:
+        return _json({"fehler": (
+            f"LinkedIn-Beitraege duerfen hoechstens {POST_MAXLAENGE} "
+            f"Zeichen haben, hier sind es {len(neu)}.")})
+
+    neuer_betreff = str(betreff or "").strip() or d["subject"]
+    _q("update drafts set body = %s, subject = %s, media_ref = %s "
+       "where id = %s and status = 'pending' returning id",
+       (neu, neuer_betreff, basis, draft_id))
+    _q("insert into activities (lead_id, type, payload) "
+       "values (%s, 'entwurf_bearbeitet', %s) returning id",
+       (d["lead_id"], _json({
+           "draft_id": str(draft_id), "kanal": d["channel"],
+           "vorher": d["body"], "nachher": neu,
+           "betreff_vorher": d["subject"], "betreff_nachher": neuer_betreff,
+           "medien_vorher": d["media_ref"], "medien_nachher": basis})))
+    return _json({"draft_id": draft_id, "status": "pending",
+                  "zeichen": len(neu), "medien_datei": basis,
+                  "hinweis": ("Geaendert. Der Entwurf wartet weiter auf "
+                              "Freigabe — es ging nichts raus.")})
+
+
 KENNUNGEN_MAX = 60
 
 
@@ -4130,6 +4214,9 @@ WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              # Entwuerfe endgueltig wegraeumen; `pending` bleibt bei
              # `entwurf_ablehnen` — es gibt je Zustand genau einen Weg.
              entwurf_verwerfen,
+             # Entwuerfe vor der Freigabe korrigieren (25.08.2026).
+             # NUR pending — Begruendung im Docstring.
+             entwurf_bearbeiten,
              marktanalyse, b2b_leads, firma_anreichern)
 
 for _fn in WERKZEUGE:

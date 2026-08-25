@@ -2203,3 +2203,85 @@ def test_kein_archiv_knopf_am_sammelkontakt(sammelkontakt_zurueck):
     formulare = re.findall(r'action="/kontakte/archivieren".*?</form>', seite,
                            re.S)
     assert all(str(sammel) not in f for f in formulare)
+
+
+# ---------------------------------------------------------------------------
+# Entwuerfe bearbeiten und aufklappen (Betreiber-Wunsch 25.08.2026)
+#
+# „die freigaben müssen noch editierbar sein" und „Freigaben could be more
+# likely an extendable chart, which is open by click on. So we only have that
+# view with our back and forward."
+# ---------------------------------------------------------------------------
+
+def test_freigaben_sind_aufklappbar():
+    lead = _lead()
+    _entwurf(lead, text="Ein Entwurf, der aufklappbar sein soll.")
+    seite = _get("/").text
+    assert "<details class=\"karte\">" in seite
+    assert "<summary>" in seite
+    # Der Text steht drin — aber die Karte ist zu, bis jemand klickt.
+    assert "Ein Entwurf, der aufklappbar sein soll." in seite
+
+
+def test_vorschau_ist_gekuerzt_und_escaped():
+    lead = _lead()
+    _entwurf(lead, text='X' * 300 + '<script>alert(1)</script>')
+    seite = _get("/").text
+    assert "<script" not in seite
+    assert "…" in seite
+
+
+def test_bearbeitungsfeld_nur_bei_offenen_entwuerfen():
+    lead = _lead()
+    _entwurf(lead, status="pending")
+    assert 'action="/aktion/bearbeiten"' in _get("/").text
+    with server.pool.connection() as conn:
+        conn.execute("truncate sales_test.drafts cascade")
+    _entwurf(lead, status="approved")
+    assert 'action="/aktion/bearbeiten"' not in _get("/").text
+
+
+def test_bearbeiten_aendert_den_text_und_sendet_nichts():
+    lead = _lead()
+    d = _entwurf(lead, text="Alter Text")
+    antwort = _post("/aktion/bearbeiten",
+                    {"draft_id": d, "text": "Neuer Text", "csrf": ui.CSRF_TOKEN})
+    assert antwort.status_code in (200, 303)
+    zeile = server._q("select body, status from drafts where id = %s",
+                      (d,))[0]
+    assert zeile["body"] == "Neuer Text"
+    assert zeile["status"] == "pending"      # Freigabe bleibt ein eigener Schritt
+
+
+def test_bearbeiten_protokolliert_alt_und_neu():
+    lead = _lead()
+    d = _entwurf(lead, text="Alter Text")
+    _post("/aktion/bearbeiten",
+          {"draft_id": d, "text": "Neuer Text", "csrf": ui.CSRF_TOKEN})
+    zeilen = server._q(
+        "select payload from activities where type = 'entwurf_bearbeitet'")
+    assert len(zeilen) == 1
+    p = zeilen[0]["payload"]
+    assert p["vorher"] == "Alter Text"
+    assert p["nachher"] == "Neuer Text"
+
+
+def test_freigegebener_entwurf_laesst_sich_nicht_aendern():
+    """Sonst haenge die Freigabe an einem Text, den niemand gelesen hat."""
+    lead = _lead()
+    d = _entwurf(lead, text="Freigegeben", status="approved")
+    antwort = _post("/aktion/bearbeiten",
+                    {"draft_id": d, "text": "Heimlich anders",
+                     "csrf": ui.CSRF_TOKEN})
+    assert antwort.status_code == 409
+    assert server._q("select body from drafts where id = %s",
+                     (d,))[0]["body"] == "Freigegeben"
+
+
+def test_bearbeiten_ohne_csrf_ist_403():
+    lead = _lead()
+    d = _entwurf(lead, text="Alter Text")
+    assert _post("/aktion/bearbeiten",
+                 {"draft_id": d, "text": "Neu"}).status_code == 403
+    assert server._q("select body from drafts where id = %s",
+                     (d,))[0]["body"] == "Alter Text"
