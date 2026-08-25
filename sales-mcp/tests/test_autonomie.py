@@ -9,8 +9,15 @@ Betreiber am 25.08.2026, woertlich:
 
 DER SATZ, DEN DIESE SUITE VERTEIDIGT: der Agent kann die Stufe nicht selbst
 setzen. Er kann nur in ihr handeln. Ob eine Nachricht ohne menschlichen
-Blick an einen Menschen geht, entscheidet ausschliesslich ein Mensch — und
-zwar zweimal: ueber die Stufe UND ueber die WhatsApp-Kontaktfreigabe.
+Blick an einen Menschen geht, entscheiden DREI Tore, und keines davon der
+Agent:
+
+  1. die Autonomiestufe            — der Betreiber, nach dem Gespraech
+  2. die WhatsApp-Kontaktfreigabe  — der Betreiber, ob ueberhaupt
+  3. die Zustimmung des Kontakts   — der KONTAKT selbst (seit 25.08.2026,
+                                      tests/test_zustimmung.py)
+
+Faellt eines aus, entsteht hoechstens ein Entwurf zur Freigabe.
 
 Der Anlass fuer die Strenge steht im Verlauf dieses Projekts: die
 Auto-Antwort war schon einmal an und wurde am 22.08.2026 ausdruecklich
@@ -177,9 +184,18 @@ def test_halbauto_erzeugt_einen_pending_entwurf():
 
 
 def test_auto_erzeugt_einen_freigegebenen_entwurf():
+    """DREI Tore, nicht zwei — seit dem Zustimmungs-Gate vom 25.08.2026.
+
+    Diese Zusicherung stammt aus der Fassung davor und erwartete
+    `approved`, sobald Stufe und WhatsApp-Freigabe standen. Seit der
+    Kontakt selbst gefragt wird, gehoert seine Zustimmung dazu; ohne sie
+    faellt `auto` still auf `halbauto` zurueck. Der Rueckfall selbst ist
+    in tests/test_zustimmung.py festgenagelt — hier steht der Vollfall.
+    """
     lead = _lead()
     _freigeben(lead)
     server.kontakt_autonomie_setzen(lead, "auto")
+    server.zustimmung_erfassen(lead, True, "WhatsApp-Antwort", "Ja gerne")
     antwort = json.loads(server.antwort_entwerfen(lead, "Hallo, gerne!"))
     assert "fehler" not in antwort
     zeilen = _entwuerfe(lead)
@@ -187,6 +203,17 @@ def test_auto_erzeugt_einen_freigegebenen_entwurf():
     assert zeilen[0]["status"] == "approved"
     # In JEDER Zeile sichtbar, dass kein Mensch daraufgesehen hat.
     assert zeilen[0]["approved_by"] == "auto-betrieb"
+
+
+def test_auto_ohne_zustimmung_des_kontakts_bleibt_entwurf():
+    """Das dritte Tor: der Kontakt selbst. Ausfuehrlich in
+    tests/test_zustimmung.py."""
+    lead = _lead()
+    _freigeben(lead)
+    server.kontakt_autonomie_setzen(lead, "auto")
+    antwort = json.loads(server.antwort_entwerfen(lead, "Hallo, gerne!"))
+    assert antwort["wirksam_als"] == "halbauto"
+    assert _entwuerfe(lead)[0]["status"] == "pending"
 
 
 def test_auto_ohne_whatsapp_freigabe_erzeugt_nichts():

@@ -456,6 +456,181 @@ def kontakte_freigegeben() -> str:
 # Entscheidung eines Menschen — der Agent kann keine davon selbst treffen.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Zustimmung zur automatischen Antwort (Betreiber-Wunsch 25.08.2026)
+#
+# „request freigabe an den auto consumenten" — der Kontakt selbst soll
+# gefragt werden, bevor ein Programm ihm selbstaendig antwortet.
+#
+# Die Spezifikation (docs/moegliche-erweiterungen/autoantwort-zustimmungs-
+# gate.md) beschreibt, wie eine Zustimmung DOKUMENTIERT wird. Wie man sie
+# EINHOLT, stand dort nicht — das ist dieser Teil.
+#
+# DREI ENTSCHEIDUNGEN, die hier stecken:
+#
+# 1. Die Frage geht durch die Freigabe wie jede andere Nachricht.
+#    `zustimmung_anfragen` erzeugt einen ENTWURF, keinen Versand. Sonst
+#    wuerde ausgerechnet die Zustimmung zur automatischen Kommunikation
+#    automatisch erfragt.
+# 2. Die Antwort erfasst ein MENSCH. Ob ein „ja klar" eine Zustimmung war,
+#    liest kein Modell aus einem Chat — `zustimmung_erfassen` haelt
+#    Zeitpunkt, Quelle und den WORTLAUT fest.
+# 3. Fehlt sie, faellt `auto` still auf `halbauto` zurueck. Nicht als
+#    Fehler: die Absicht des Betreibers bleibt erhalten, nur der letzte
+#    Schritt fehlt. Das ist das fail-closed der Spezifikation.
+#
+# KONTAKTWEIT, nicht je Kanal (Betreiber-Entscheidung 25.08.2026): wer
+# zustimmt, dass ein Assistent fuer den Betreiber schreibt, meint die
+# Person und nicht den Uebertragungsweg.
+# ---------------------------------------------------------------------------
+
+ZUSTIMMUNG_SCHLUESSEL = "auto_zustimmung"
+
+ZUSTIMMUNG_FRAGE = (
+    "Kurze Frage: Fuer meine Nachrichten nutze ich teilweise einen "
+    "Assistenten, der schneller antwortet als ich. Ist es Ihnen recht, wenn "
+    "er Ihnen direkt antwortet? Ein kurzes Ja oder Nein genuegt — beides ist "
+    "voellig in Ordnung.")
+
+
+def _zustimmung(enrichment):
+    """Die gueltige Zustimmung, oder None. Fail-closed.
+
+    None bei: fehlendem Schluessel, kaputtem Wert, `erteilt` nicht
+    ausdruecklich True, oder gesetztem Widerruf. Alles Unklare gilt als
+    nicht zugestimmt — es geht darum, ob ein Programm einem Menschen
+    unbeaufsichtigt schreibt.
+    """
+    eintrag = (enrichment or {}).get(ZUSTIMMUNG_SCHLUESSEL)
+    if not isinstance(eintrag, dict):
+        return None
+    if eintrag.get("erteilt") is not True:
+        return None
+    if eintrag.get("widerrufen_am"):
+        return None
+    return eintrag
+
+
+@_gesichert
+def zustimmung_anfragen(lead_id: str, text: str = "") -> str:
+    """Den Kontakt FRAGEN, ob ein Assistent ihm direkt antworten darf.
+
+    Erzeugt einen ENTWURF, keinen Versand — die Frage geht durch dieselbe
+    Freigabe wie jede andere Nachricht. Das ist keine Foermlichkeit: eine
+    Zustimmung zur automatischen Kommunikation automatisch zu erfragen
+    waere genau der Vorgang, den sie erst erlauben soll.
+
+    Ohne `text` wird die Standardfrage verwendet. Sie nennt den Assistenten
+    beim Namen, statt ihn zu verschweigen — wer nicht weiss, dass er mit
+    einem Programm schreibt, hat nicht zugestimmt.
+
+    Die Antwort des Kontakts erfasst danach ein Mensch mit
+    `zustimmung_erfassen`."""
+    leads = _q("select id, name, enrichment from leads where id = %s",
+               (lead_id,))
+    if not leads:
+        return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
+    vorhanden = _zustimmung(leads[0]["enrichment"])
+    if vorhanden:
+        return _json({"fehler": (
+            f"{leads[0]['name']} hat bereits zugestimmt (am "
+            f"{vorhanden.get('am')}). Noch einmal zu fragen wirkt, als "
+            f"haetten wir es vergessen. Zuruecknehmen geht mit "
+            f"zustimmung_widerrufen.")})
+    frage = " ".join(str(text or "").split()) or ZUSTIMMUNG_FRAGE
+    roh = entwurf_erstellen(lead_id, "whatsapp", frage)
+    antwort = json.loads(roh)
+    if "fehler" in antwort:
+        return roh
+    _q("insert into activities (lead_id, type, payload) "
+       "values (%s, 'zustimmung_angefragt', %s) returning id",
+       (lead_id, _json({"draft_id": str(antwort["draft_id"])})))
+    return _json({**antwort, "hinweis": (
+        "Die Frage liegt als Entwurf zur Freigabe — es ging nichts raus. "
+        "Nach der Antwort des Kontakts mit zustimmung_erfassen "
+        "dokumentieren.")})
+
+
+@_gesichert
+def zustimmung_erfassen(lead_id: str, erteilt: bool, quelle: str,
+                        wortlaut: str = "") -> str:
+    """Die Antwort des Kontakts dokumentieren — das tut ein MENSCH.
+
+    Ob ein „ja klar" eine Zustimmung war, liest kein Modell aus einem Chat:
+    das entscheidet der Betreiber. Ruf das nur auf, wenn er es dir sagt.
+
+    `quelle` — woher sie kommt (z. B. „WhatsApp-Antwort", „Telefonat", „im
+    Termin besprochen"). `wortlaut` — was der Kontakt gesagt hat, moeglichst
+    woertlich. Beides landet im Nachweis; ohne sie ist eine Zustimmung eine
+    Behauptung."""
+    leads = _q("select id, name, enrichment from leads where id = %s",
+               (lead_id,))
+    if not leads:
+        return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
+    q = " ".join(str(quelle or "").split())
+    if not q:
+        return _json({"fehler": (
+            "Ohne Quelle wird nichts erfasst — ein Nachweis, der nicht sagt, "
+            "woher er kommt, ist keiner.")})
+    eintrag = {"erteilt": bool(erteilt), "am": _jetzt(), "durch": "betreiber",
+               "quelle": q[:200],
+               "wortlaut": " ".join(str(wortlaut or "").split())[:500]}
+    _q("update leads set enrichment = jsonb_set(enrichment, %s, %s::jsonb, "
+       "true), updated_at = now() where id = %s returning id",
+       ([ZUSTIMMUNG_SCHLUESSEL], _json(eintrag), lead_id))
+    _q("insert into activities (lead_id, type, payload) "
+       "values (%s, 'zustimmung', %s) returning id", (lead_id, _json(eintrag)))
+    return _json({"kontakt": leads[0]["name"], "erteilt": bool(erteilt),
+                  "quelle": eintrag["quelle"],
+                  "hinweis": ("Erfasst. `auto` wirkt jetzt." if erteilt else
+                              "Erfasst. Ohne Zustimmung bleibt es bei "
+                              "Entwuerfen zur Freigabe.")})
+
+
+@_gesichert
+def zustimmung_widerrufen(lead_id: str, grund: str = "") -> str:
+    """Eine erteilte Zustimmung zuruecknehmen — WIRKT SOFORT.
+
+    Sagt ein Kontakt „bitte nicht mehr automatisch", ruf das unverzueglich
+    auf. Es beendet nicht nur kuenftige automatische Antworten: bereits
+    freigegebene Entwuerfe, die OHNE menschlichen Blick entstanden sind
+    (approved_by='auto-betrieb'), werden abgelehnt, bevor der Dispatcher
+    sie zustellt. Genau die waeren sonst die Nachrichten, die nach dem
+    Widerruf noch ankommen."""
+    leads = _q("select id, name, enrichment from leads where id = %s",
+               (lead_id,))
+    if not leads:
+        return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
+    vorhanden = _zustimmung(leads[0]["enrichment"])
+    if not vorhanden:
+        return _json({"fehler": (
+            f"Fuer {leads[0]['name']} liegt keine gueltige Zustimmung vor — "
+            f"es gibt nichts zu widerrufen.")})
+    eintrag = dict(vorhanden)
+    eintrag["widerrufen_am"] = _jetzt()
+    eintrag["widerruf_grund"] = " ".join(str(grund or "").split())[:300]
+    _q("update leads set enrichment = jsonb_set(enrichment, %s, %s::jsonb, "
+       "true), updated_at = now() where id = %s returning id",
+       ([ZUSTIMMUNG_SCHLUESSEL], _json(eintrag), lead_id))
+    # Noch nicht zugestellte Auto-Antworten anhalten. NUR die ohne
+    # menschlichen Blick: was der Betreiber selbst freigegeben hat, hat er
+    # gelesen und gewollt — das anzuhalten waere seine Entscheidung, nicht
+    # unsere.
+    gestoppt = _q(
+        "update drafts set status = 'rejected', "
+        "error = 'Zustimmung widerrufen — nicht zugestellt.' "
+        "where lead_id = %s and status = 'approved' "
+        "and approved_by = 'auto-betrieb' returning id", (lead_id,))
+    _q("insert into activities (lead_id, type, payload) "
+       "values (%s, 'zustimmung_widerrufen', %s) returning id",
+       (lead_id, _json({"grund": eintrag["widerruf_grund"],
+                        "gestoppte_entwuerfe": len(gestoppt)})))
+    return _json({"kontakt": leads[0]["name"], "widerrufen": True,
+                  "gestoppte_entwuerfe": len(gestoppt),
+                  "hinweis": ("Wirkt sofort. Kuenftige Antworten entstehen "
+                              "nur noch als Entwurf zur Freigabe.")})
+
+
 AUTONOMIE_SCHLUESSEL = "autonomie"
 AUTONOMIE_VORGABE = "manuell"
 AUTONOMIE_STUFEN = ("ignorieren", "manuell", "halbauto", "auto")
@@ -4339,6 +4514,20 @@ def antwort_entwerfen(lead_id: str, text: str,
                       "hinweis": ("Entwurf liegt zur Freigabe. Es ging "
                                   "nichts raus.")})
 
+    # auto OHNE dokumentierte Zustimmung des Kontakts faellt auf halbauto
+    # zurueck — still und wirksam, nicht als Fehler. Die Absicht des
+    # Betreibers bleibt erhalten, nur der letzte Schritt fehlt. Das ist das
+    # fail-closed aus der Spezifikation.
+    if not _zustimmung(leads[0]["enrichment"]):
+        return _json({**antwort, "autonomie": "auto",
+                      "wirksam_als": "halbauto",
+                      "hinweis": (
+                          "Der Kontakt hat der automatischen Antwort NICHT "
+                          "zugestimmt — der Entwurf liegt deshalb zur "
+                          "Freigabe, obwohl die Stufe 'auto' ist. Fragen "
+                          "kann der Betreiber mit zustimmung_anfragen, "
+                          "erfassen mit zustimmung_erfassen.")})
+
     # auto: derselbe Uebergang wie in sales-auto, mit derselben Signatur im
     # Protokoll — `approved_by='auto-betrieb'` macht in jeder Zeile
     # sichtbar, dass hier kein Mensch geprueft hat.
@@ -4642,6 +4831,11 @@ WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              # Antworten im Rahmen der Stufe — der Agent kann die
              # Stufe nicht selbst setzen, nur in ihr handeln.
              antworten_faellig, antwort_entwerfen,
+             # Zustimmung des Kontakts zur automatischen Antwort:
+             # fragen (als Entwurf), erfassen (durch einen
+             # Menschen), widerrufen (wirkt sofort).
+             zustimmung_anfragen, zustimmung_erfassen,
+             zustimmung_widerrufen,
              aktivitaet_loggen, wiedervorlage_setzen, wiedervorlage_erledigt,
              vertrag_speichern, vertraege_ablaufend, termin_bestaetigen,
              profil_lesen, profil_aktualisieren,

@@ -688,9 +688,15 @@ def test_kontakt_aktualisieren_signatur_ueberlebt_den_dekorator():
     assert list(parameter) == ["lead_id", "feld", "wert"]
 
 
-def test_achtundvierzig_werkzeuge_registriert():
+def test_einundfuenfzig_werkzeuge_registriert():
     namen = {fn.__name__ for fn in server.WERKZEUGE}
-    assert len(namen) == 48
+    assert len(namen) == 51
+    # Zustimmung des Kontakts zur automatischen Antwort (25.08.2026):
+    # fragen als ENTWURF, erfassen durch einen MENSCHEN, widerrufen
+    # wirkt sofort. Vertragstests in tests/test_zustimmung.py.
+    assert "zustimmung_anfragen" in namen
+    assert "zustimmung_erfassen" in namen
+    assert "zustimmung_widerrufen" in namen
     # Was schon gepostet wurde, samt Schablonen-Melder (25.08.2026).
     # LinkedIn selbst gibt die Historie nicht heraus (403).
     assert "linkedin_historie" in namen
