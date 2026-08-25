@@ -1161,12 +1161,19 @@ async def kontakte(request):
         # zweiten Grauschattierung — neben dem Wort das zweite, von der Farbe
         # unabhaengige Merkmal.
         archiviert = server._archiviert(z["enrichment"])
+        sammel = _ist_sammelkontakt(z["id"])
         marke = (' <span class="badge archiv">archiviert</span>'
                  if archiviert else "")
+        # Der Sammelkontakt sieht sonst aus wie eine Person mit sehr vielen
+        # Nachrichten — genau diese Verwechslung ist am 25.08.2026 passiert.
+        if sammel:
+            marke += ' <span class="badge archiv">Sammelkontakt</span>'
         inhalt.append([
             f'<a href="/kontakte/{_e(z["id"])}">{_e(z["name"])}</a>{marke}',
             _e(z["status"]), _e(z["consent_status"]), _zeit(z["letzte"]),
-            _archiv_knopf_zeile(z["id"], archiviert)])
+            # Kein Archiv-Knopf am Sammelkontakt: das Werkzeug lehnt es
+            # ohnehin ab, und ein Knopf, der immer scheitert, ist eine Luege.
+            "" if sammel else _archiv_knopf_zeile(z["id"], archiviert)])
     rumpf = [schalter, _tabelle(
         ["Name", "Status", "Consent", "Letzte Aktivitaet", "Archiv"],
         inhalt)]
@@ -1248,6 +1255,21 @@ def _kontakt_formular(lead) -> str:
     und ersetzt die serverseitige Pruefung deshalb nicht, sondern faengt nur
     den Vertipper ab, bevor er eine Runde ueber das Netz macht.
     """
+    # Am Sammelkontakt gar kein Formular: `kontakt_aktualisieren` lehnt ihn
+    # ab, und ein Eingabefeld, das beim Speichern immer scheitert, laedt
+    # genau zu dem Missverstaendnis ein, das es verhindern soll.
+    if _ist_sammelkontakt(lead["id"]):
+        return (
+            '<h2>Sammelkontakt fuer unbekannte Eingaenge</h2>'
+            '<div class="karte"><p><b>Das ist kein Mensch.</b> An diesem '
+            'Satz haengt jede Nachricht einer Nummer, die noch keinem '
+            'Kontakt zugeordnet ist — also die Nachrichten vieler '
+            'verschiedener Absender nebeneinander. Ein Name daran taeuschte '
+            'eine Person vor, die es nicht gibt; deshalb sind seine '
+            'Stammdaten gesperrt.</p>'
+            '<p>Aufraeumen geht ueber <a href="/einordnung">Einordnung</a>: '
+            'dort wird jeder Absender einem echten Kontakt zugeordnet, und '
+            'seine Nachrichten wandern mit.</p></div>')
     felder = "".join(
         f'<p><label class="feld">{_e(KONTAKT_FELD_TITEL.get(feld, feld))}<br>'
         f'<input {KONTAKT_FELD_EINGABE.get(feld, KONTAKT_FELD_EINGABE_STANDARD)}'
@@ -1490,6 +1512,18 @@ def _archiv_warnseite(lead) -> HTMLResponse:
         f'<p class="abbrechen"><a href="/kontakte/{_e(lead["id"])}">'
         f'Abbrechen, nichts tun</a></p>',
         status=409)
+
+
+def _ist_sammelkontakt(lead_id) -> bool:
+    """Ist das der Sammelkontakt fuer unbekannte Eingaenge?
+
+    Er ist kein Mensch, sondern ein Systemsatz: an ihm haengt jede Nachricht
+    einer noch unbekannten Nummer. In der Liste sah er bisher aus wie eine
+    Person mit sehr vielen Nachrichten — am 25.08.2026 wurde er deshalb
+    prompt umbenannt und danach fuer einen echten Kontakt gehalten.
+    """
+    return bool(server.UNBEKANNT_LEAD_ID) and \
+        str(lead_id) == str(server.UNBEKANNT_LEAD_ID)
 
 
 def _archiv_knopf_zeile(lead_id, archiviert: bool) -> str:

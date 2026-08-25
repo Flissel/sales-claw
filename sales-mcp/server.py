@@ -232,6 +232,22 @@ def kontakt_aktualisieren(lead_id: str, feld: str, wert: str) -> str:
     erfassen (+49…/+43…): einer national geschriebenen Nummer (0170…) wird
     nicht vertraut, sie gilt als nicht zustellbar. Profilangaben gehoeren
     nach profil_aktualisieren, nicht hierher."""
+    # Der Sammelkontakt ist kein Mensch, sondern ein Systemsatz: an ihm haengt
+    # JEDE Nachricht einer noch unbekannten Nummer. `kontakt_archivieren`
+    # schuetzt ihn seit jeher — `kontakt_aktualisieren` nicht, und genau das
+    # ist am 25.08.2026 passiert: er wurde in der Oberflaeche in „Jody"
+    # umbenannt und sah danach aus wie eine Person mit 675 Nachrichten. Wer
+    # ihn so vor sich hat, haelt einen Stapel von sechzehn fremden Chats fuer
+    # einen Gespraechsverlauf. Deshalb dieselbe Kante wie beim Archivieren.
+    if UNBEKANNT_LEAD_ID and str(lead_id) == str(UNBEKANNT_LEAD_ID):
+        return _json({"fehler": (
+            "Das ist der Sammelkontakt fuer unbekannte Eingaenge, kein "
+            "Mensch — an ihm haengen die Nachrichten VIELER verschiedener "
+            "Absender. Seine Stammdaten lassen sich nicht aendern; ein Name "
+            "daran taeuschte eine Person vor, die es nicht gibt. Wer hier "
+            "aufraeumen will, ordnet die Absender einzeln zu "
+            "(eingang_einordnen) — dann wandern ihre Nachrichten an echte "
+            "Kontakte. Nichts geaendert.")})
     if feld not in KONTAKT_FELDER:
         return _json({"fehler": f"Unzulaessiges Feld '{feld}'. Erlaubt: "
                                 f"{', '.join(KONTAKT_FELDER)}. Profilangaben "

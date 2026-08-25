@@ -2148,3 +2148,58 @@ def test_archivieren_aus_der_liste_ohne_csrf_ist_403():
     lead = _lead()
     antwort = _post("/kontakte/archivieren", {"lead_id": lead})
     assert antwort.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Der Sammelkontakt ist kein Mensch
+#
+# Am 25.08.2026 wurde er in der Oberflaeche in "Jody" umbenannt und sah danach
+# aus wie eine Person mit 675 Nachrichten — in Wahrheit die Nachrichten von
+# sechzehn verschiedenen Fremden nebeneinander. `kontakt_archivieren` hatte
+# die Kante schon, `kontakt_aktualisieren` nicht.
+# ---------------------------------------------------------------------------
+
+def test_sammelkontakt_laesst_sich_nicht_umbenennen(sammelkontakt_zurueck):
+    sammel = _sammel()
+    antwort = json.loads(server.kontakt_aktualisieren(sammel, "name", "Jody"))
+    assert "fehler" in antwort
+    assert "kein Mensch" in antwort["fehler"]
+    name = server._q("select name from leads where id = %s", (sammel,))[0]
+    assert name["name"] != "Jody"
+
+
+def test_echter_kontakt_laesst_sich_weiter_umbenennen(sammelkontakt_zurueck):
+    _sammel()
+    lead = _lead(name="Alt")
+    antwort = json.loads(server.kontakt_aktualisieren(lead, "name", "Neu"))
+    assert "fehler" not in antwort
+    assert server._q("select name from leads where id = %s",
+                     (lead,))[0]["name"] == "Neu"
+
+
+def test_sammelkontakt_zeigt_kein_stammdatenformular(sammelkontakt_zurueck):
+    sammel = _sammel()
+    seite = _get(f"/kontakte/{sammel}").text
+    assert "Sammelkontakt fuer unbekannte Eingaenge" in seite
+    assert 'action="/kontakte/bearbeiten"' not in seite
+    assert "Das ist kein Mensch" in seite
+
+
+def test_kontaktliste_markiert_den_sammelkontakt(sammelkontakt_zurueck):
+    _sammel()
+    seite = _get("/kontakte").text
+    assert "Sammelkontakt" in seite
+
+
+def test_kein_archiv_knopf_am_sammelkontakt(sammelkontakt_zurueck):
+    """Ein Knopf, den das Werkzeug ohnehin ablehnt, waere eine Luege."""
+    sammel = _sammel()
+    lead = _lead()
+    seite = _get("/kontakte").text
+    # Fuer den echten Kontakt gibt es ihn …
+    assert f'value="{lead}"' in seite
+    # … fuer den Sammelkontakt nicht.
+    import re
+    formulare = re.findall(r'action="/kontakte/archivieren".*?</form>', seite,
+                           re.S)
+    assert all(str(sammel) not in f for f in formulare)
