@@ -688,9 +688,9 @@ def test_kontakt_aktualisieren_signatur_ueberlebt_den_dekorator():
     assert list(parameter) == ["lead_id", "feld", "wert"]
 
 
-def test_einundfuenfzig_werkzeuge_registriert():
+def test_dreiundfuenfzig_werkzeuge_registriert():
     namen = {fn.__name__ for fn in server.WERKZEUGE}
-    assert len(namen) == 51
+    assert len(namen) == 53
     # Zustimmung des Kontakts zur automatischen Antwort (25.08.2026):
     # fragen als ENTWURF, erfassen durch einen MENSCHEN, widerrufen
     # wirkt sofort. Vertragstests in tests/test_zustimmung.py.
@@ -711,6 +711,11 @@ def test_einundfuenfzig_werkzeuge_registriert():
     assert "entwurf_bearbeiten" in namen
     # Beobachtet, welche Absender-Merkmale stabil bleiben (25.08.2026).
     assert "kennungen_bericht" in namen
+    # Updates per Bot-Anfrage (27.08.2026): bestellen ja, ausfuehren nie —
+    # der Waechter auf dem Wirt fuehrt aus. Vertragstests in
+    # tests/test_auftraege.py.
+    assert "update_anfordern" in namen
+    assert "update_ergebnis" in namen
     assert "kontakt_aktualisieren" in namen
     # Das Kontaktprofil (25.08.2026) mit EIGENEM Takt: Schwelle 5 statt der
     # 50 des Chat-Reports, und ohne Nachrichten zu verstecken. Dazu der Weg
