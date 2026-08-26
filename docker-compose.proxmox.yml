@@ -1,3 +1,9 @@
+# HISTORISCH: Diese Datei stammt aus dem Proxmox-Piloten (08/2026). Die
+# Server-Politik (restart, AUTO_START_SESSIONS) traegt seit Commit 56d0581
+# die BASIS. Zur Laufzeit auf der VM werden NUR docker-compose.yml und
+# docker-compose.openwa.yml benutzt — dieses Overlay wuerde sales-claw auf
+# restart "no" zuruecksetzen (Bot nach Reboot tot). Es bleibt bestehen, weil
+# scripts/package_proxmox.py und zwei Testdateien es referenzieren.
 services:
   openwa:
     restart: unless-stopped
