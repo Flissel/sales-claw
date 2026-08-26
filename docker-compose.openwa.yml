@@ -35,8 +35,13 @@ services:
       context: ./openwa/upstream
       dockerfile: Dockerfile
     container_name: openwa
-    # Demo-Betrieb wie der Rest des Stacks: laeuft nur nach ausdruecklichem Start.
-    restart: "no"
+    # Anders als der uebrige Stack: startet nach einem Reboot von selbst.
+    # Grund (Betreiber am 26.08.2026): openwa haelt die WhatsApp-Anmeldung.
+    # Kommt der Container nicht hoch, verfaellt sie und muss per QR neu
+    # gescannt werden — das braucht ein Handy und damit einen Menschen.
+    # Gemessen am 26.08.2026: nach dem Reboot stand die Session auf `failed`,
+    # nach dem Containerstart auf `qr_ready` — die Anmeldung war weg.
+    restart: unless-stopped
     stop_grace_period: 45s
     environment:
       - NODE_ENV=production
@@ -54,7 +59,10 @@ services:
       - DATABASE_TYPE=sqlite
       # --- Engine: whatsapp-web.js (Grundsatzentscheidung 4).
       - ENGINE_TYPE=whatsapp-web.js
-      - AUTO_START_SESSIONS=false
+      # Produktionsbetrieb (Betreiber am 26.08.2026): die Session startet mit
+      # dem Container. Ohne das kaeme openwa nach einem Reboot zwar hoch, die
+      # WhatsApp-Verbindung bliebe aber aus, bis jemand sie von Hand startet.
+      - AUTO_START_SESSIONS=true
       # --- Rate-Limiter an (Grundsatzentscheidung 4). Die "medium"-Stufe ist
       # laut .env.example die auf der API tatsaechlich erzwungene; Werte hier
       # explizit gesetzt (== Anwendungsdefault) um die Entscheidung sichtbar

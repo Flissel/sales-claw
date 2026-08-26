@@ -33,7 +33,7 @@ services:
     # Anmelde-Trigger der Windows-Aufgabe \OpenClaw Gateway deaktiviert ist
     # (aktuell: Enabled=False) — sonst kämen bei einer Anmeldung zwei
     # Baileys-Sitzungen auf denselben Credentials hoch.
-    restart: "no"
+    restart: unless-stopped
     # KEIN env_file: .env — bewusst, und bewusst nicht bequem (Stufe 3, T5a).
     #
     # `.env` enthält OPENWA_API_KEY und SALES_DB_URL. Über `env_file: .env`
@@ -88,7 +88,7 @@ services:
     image: sales-claw-sales-mcp:local
     container_name: sales-mcp
     # Wie sales-claw im Demo-Betrieb: laeuft nur nach ausdruecklichem Start.
-    restart: "no"
+    restart: unless-stopped
     env_file:
       - .env
     # Der Medienordner (Stufe 4, F4). Hier liegen die Unterlagen, die der
@@ -111,7 +111,7 @@ services:
     # Report ist ein Arbeitsergebnis für einen Menschen. Er soll ihn im
     # Datei-Explorer öffnen, per Mail weiterreichen und aufheben können, ohne
     # `docker cp` zu lernen. Und er muss den Neustart eines Prototyp-Containers
-    # überleben, für den `restart: "no"` gilt.
+    # ueberleben.
     #
     # Warum NUR an sales-mcp und warum schreibbar: nur der Werkzeugdienst
     # erzeugt Reports. Dispatcher und Inbox haben hier nichts zu suchen — der
@@ -147,7 +147,7 @@ services:
     # Demo-Betrieb wie der restliche Stack. Bewusst "no": ein Dienst, der
     # Nachrichten an echte Menschen schickt, startet nicht von selbst mit dem
     # Rechner mit.
-    restart: "no"
+    restart: unless-stopped
     env_file:
       - .env
     environment:
@@ -199,7 +199,7 @@ services:
     container_name: sales-inbox
     command: python inbox.py
     # Demo-Betrieb wie der restliche Stack.
-    restart: "no"
+    restart: unless-stopped
     env_file:
       - .env
     environment:
@@ -239,7 +239,7 @@ services:
     # Demo-Betrieb wie der restliche Stack. Bewusst "no": ein Dienst, der
     # Mails an echte Menschen schickt, startet nicht von selbst mit dem
     # Rechner mit.
-    restart: "no"
+    restart: unless-stopped
     # KEIN env_file — dieselbe T5a-Ueberlegung wie beim Agent-Container
     # (siehe dort, ausfuehrlich): sales-mail braucht die Kundendaten-DB und
     # die SMTP-Zugangsdaten, sonst nichts. Ueber env_file erbte er auch
@@ -348,11 +348,12 @@ services:
   # tut wie immer NUR sales-dispatch. Kein neuer Versandweg: dieser Dienst
   # spricht nie mit OpenWA, er schreibt nur drafts/activities.
   #
-  # Bewusst "no" wie Dispatcher und Agent: ein Dienst, der von selbst
-  # Nachrichten an echte Menschen auf den Weg bringt, startet nicht von
-  # selbst mit dem Rechner mit. Ohne ANTHROPIC_API_KEY beendet er sich mit
-  # klarer Meldung, statt still nichts zu tun. EINE Instanz genuegt; gegen
-  # versehentliche zweite Instanzen sichert der Advisory-Lock je Lead.
+  # Bewusst "no" — anders als Dispatcher und Agent, die seit dem 26.08.2026
+  # auf `unless-stopped` stehen: dieser Dienst ist ein ZWEITER Antwortpfad
+  # neben dem Cron-Job `antworten-pruefen` im Agenten. Startete er mit dem
+  # Rechner mit, entstuenden Antworten doppelt. Ohne ANTHROPIC_API_KEY beendet
+  # er sich mit klarer Meldung, statt still nichts zu tun. EINE Instanz
+  # genuegt; gegen versehentliche zweite sichert der Advisory-Lock je Lead.
   sales-auto:
     build: ./sales-mcp
     image: sales-claw-sales-mcp:local
