@@ -87,8 +87,13 @@ Gelten für JEDE Aufgabe; jede Aufgabe erbt diesen Abschnitt.
    `sales-mcp`-Neustart trennt die MCP-Verbindung des Gateways
    stillschweigend → nach jedem mcp-Rebuild wird der Gateway neu gestartet
    (kurzer WhatsApp-Blip, erholt sich von selbst — heute Nacht gemessen).
-7. **Sicherung vor Update.** Timer-Reihenfolge 04:35 Sicherung, 05:15 Update —
-   die Sicherung ist der Rettungsanker des Updates. `openwa` wird für die
+7. **Updates auf Zuruf, nicht nachts (Betreiber, 27.08.2026).** Kein
+   Update-Timer. Zwei Wege: der Doppelklick des Betreibers, und eine Anfrage
+   an den Bot im Chat — der Bot schreibt dafür einen Auftrag in einen Spool,
+   ein Wächter auf dem Wirt führt aus (Aufgabe 7b). Der Bot fasst nie selbst
+   git oder docker an. Die NÄCHTLICHE SICHERUNG (04:35) bleibt; vor jedem
+   Update läuft zusätzlich update.sh-intern keine eigene Sicherung — der
+   Rettungsanker ist das Git-Tag `vor-update` plus die Nachtsicherung. `openwa` wird für die
    Sicherung kurz gestoppt (ein live getartes Chromium-Profil ist genau die
    Beschädigungsklasse, die die Nacht-Session gekostet hat); `sales-claw-state`
    wird live gesichert (kleine JSON/SQLite-Dateien, vertretbares Risiko).
@@ -548,18 +553,21 @@ echo "  2. Cutover-Reihenfolge: docs/04_BETRIEB_MINIPC.md"
 
 ### Aufgabe 7: Timer und Doppelklick-Bedienung
 
+Geändert am 27.08.2026: KEIN Update-Timer (Betreiber-Entscheidung — Updates
+auf Zuruf). Der `sales-update.service` bleibt als manueller systemd-Einstieg
+(`systemctl start sales-update`), bekommt aber keinen Timer.
+
 **Dateien:**
 - Neu: `deploy/systemd/sales-sicherung.service`
 - Neu: `deploy/systemd/sales-sicherung.timer`
 - Neu: `deploy/systemd/sales-update.service`
-- Neu: `deploy/systemd/sales-update.timer`
 - Neu: `scripts/update-server.ps1`
 - Neu: `scripts/status-server.ps1`
 
 **Schnittstellen:**
 - Konsumiert: update.sh, sicherung.sh, smoke.sh, Statusdatei aus Aufgabe 4.
-- Produziert: nächtliche Automatik (04:35 Sicherung, 05:15 Update) und zwei
-  Doppelklick-Dateien für den Betreiber.
+- Produziert: nächtliche Sicherung (04:35) und zwei Doppelklick-Dateien
+  für den Betreiber.
 
 - [ ] **Schritt 1:** Die vier systemd-Dateien anlegen (Pfade für Benutzer
   `debian` auf der VM, per `systemctl link` aus dem Checkout):
@@ -600,22 +608,8 @@ User=debian
 ExecStart=/usr/bin/bash /home/debian/sales-claw/deploy/update.sh
 ```
 
-```ini
-# deploy/systemd/sales-update.timer
-[Unit]
-Description=sales-claw: Update taeglich 05:15 (nach der Sicherung)
-
-[Timer]
-OnCalendar=*-*-* 05:15:00
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-```
-
-  Die Reihenfolge Sicherung→Update ist Absicht: die Sicherung ist der
-  Rettungsanker des Updates. Der 10-Minuten-Cron des Bots kann von einem
-  Gateway-Neustart um 05:15 einen Lauf verlieren — der nächste holt nach.
+  (Ein Update-Timer wird BEWUSST nicht angelegt — Betreiber-Entscheidung
+  vom 27.08.2026: Updates nur auf Zuruf.)
 
 - [ ] **Schritt 2:** `scripts/update-server.ps1` anlegen:
 
@@ -651,6 +645,61 @@ Read-Host "Enter zum Schliessen"
 - [ ] **Schritt 4:** Syntaxprüfung beider ps1:
   `pwsh -NoProfile -Command "[void][scriptblock]::Create((Get-Content scripts/update-server.ps1 -Raw)); [void][scriptblock]::Create((Get-Content scripts/status-server.ps1 -Raw)); 'parse ok'"` → `parse ok`.
 - [ ] **Schritt 5:** Commit `feat(deploy): Timer und Doppelklick-Bedienung fuer den Betrieb`.
+
+### Aufgabe 7b: Auftrags-Spool — Updates per Bot-Anfrage
+
+Betreiber-Entscheidung vom 27.08.2026: „update über mich bzw bot anfragen".
+Der Bot darf ein Update ANFORDERN, nie ausführen. Mechanik:
+
+1. Der Betreiber bittet den Bot im Chat um ein Update. Nur der Betreiber
+   kann das: `channels.whatsapp.allowFrom` enthält seit dem 26.08. NUR noch
+   seine Nummer, `dmPolicy=allowlist` — Fremde erreichen den Bot gar nicht.
+2. Der Bot ruft das MCP-Werkzeug `update_anfordern` auf. Es schreibt eine
+   Auftragsdatei in den Spool `./auftraege/` (im Checkout, gitignoriert,
+   als Volume in sales-mcp gemountet). Sperre: höchstens ein Auftrag alle
+   10 Minuten.
+3. Auf der VM wacht eine systemd-**path-Unit** über dem Spool. Sie startet
+   den Ausführer `deploy/auftrag-ausfuehren.sh`, der die Datei prüft
+   (bekannter Typ, jünger als 15 Minuten), `deploy/update.sh` fährt und das
+   Ergebnis als `ergebnis-<stempel>.json` in den Spool zurücklegt.
+4. Der Bot liest das Ergebnis über das MCP-Werkzeug `update_ergebnis` und
+   meldet es dem Betreiber. Der zusammengelegte Cron-Job meldet ROTE
+   Ergebnisse von sich aus (Erweiterung seines Auftragstexts).
+
+Derselbe Spool trägt später die Allowlist-Anträge des Team-Skills (Teil C) —
+gleiche Prüfkette, eigener Auftragstyp.
+
+**Dateien:**
+- Ändern: `sales-mcp/server.py` (zwei Werkzeuge: `update_anfordern`, `update_ergebnis`)
+- Neu: `sales-mcp/tests/test_auftraege.py`
+- Ändern: `docker-compose.yml` (Spool-Mount an sales-mcp, schreibbar)
+- Ändern: `.gitignore` (`auftraege/`)
+- Neu: `deploy/auftrag-ausfuehren.sh`
+- Neu: `deploy/systemd/sales-auftraege.path`, `deploy/systemd/sales-auftraege.service`
+- Ändern: `config/workspace/AGENTS.md` (Abschnitt: Update nur auf ausdrückliche Betreiber-Bitte)
+
+**Schnittstellen:**
+- Konsumiert: `deploy/update.sh` (Aufgabe 4), Statusdatei-Schema aus Aufgabe 4.
+- Produziert: Auftragsschema `{"typ":"update","zeitpunkt":"<ISO>"}` in
+  `auftraege/auftrag-<stempel>.json`; Ergebnisschema
+  `{"zeitpunkt","typ","ergebnis","hinweis"}` in `auftraege/ergebnis-<stempel>.json`.
+
+- [ ] **Schritt 1:** Tests schreiben (`test_auftraege.py`, Schema sales_test,
+  Spool per `AUFTRAG_SPOOL`-Umgebungsvariable auf ein Wegwerfverzeichnis):
+  Auftrag wird geschrieben; zweiter Auftrag innerhalb 10 Minuten wird
+  abgelehnt; `update_ergebnis` ohne Ergebnisdatei sagt das ehrlich;
+  `update_ergebnis` liefert das JÜNGSTE Ergebnis; kaputtes JSON im Spool
+  bringt keinen Absturz.
+- [ ] **Schritt 2:** Tests rot laufen lassen (Werkzeuge existieren nicht).
+- [ ] **Schritt 3:** Werkzeuge implementieren, Tests grün.
+- [ ] **Schritt 4:** Compose-Mount + .gitignore; sales-mcp neu bauen; Gateway
+  neu starten (bekannte Falle: MCP-Trennung); `openclaw mcp tools` zeigt die
+  zwei neuen Werkzeuge.
+- [ ] **Schritt 5:** Ausführer + path-Unit schreiben (`bash -n` sauber);
+  Live-Messung erst auf der VM (Aufgabe 12/13).
+- [ ] **Schritt 6:** AGENTS.md-Abschnitt + Cron-Auftragstext um die
+  Rote-Ergebnisse-Meldung erweitern (`openclaw cron edit`).
+- [ ] **Schritt 7:** Commit.
 
 ### Aufgabe 8: Betriebs-Doku
 
@@ -781,8 +830,9 @@ des Betreibers läuft die ganze Zeit normal weiter — nur der Assistent pausier
 - [ ] **Schritt 10:** Cron prüfen: `openclaw cron list` zeigt
   `antworten-pruefen` (kam im Volume mit); einen manuellen Lauf anstoßen
   und das Laufprotokoll lesen.
-- [ ] **Schritt 11:** Timer scharf schalten:
-  `ssh offload-vm 'sudo systemctl link ~/sales-claw/deploy/systemd/sales-sicherung.service ~/sales-claw/deploy/systemd/sales-sicherung.timer ~/sales-claw/deploy/systemd/sales-update.service ~/sales-claw/deploy/systemd/sales-update.timer && sudo systemctl enable --now sales-sicherung.timer sales-update.timer && systemctl list-timers | grep sales'`
+- [ ] **Schritt 11:** Sicherungs-Timer und Auftrags-Wächter scharf schalten
+  (KEIN Update-Timer — Betreiber-Entscheidung):
+  `ssh offload-vm 'sudo systemctl link ~/sales-claw/deploy/systemd/sales-sicherung.service ~/sales-claw/deploy/systemd/sales-sicherung.timer ~/sales-claw/deploy/systemd/sales-update.service ~/sales-claw/deploy/systemd/sales-auftraege.path ~/sales-claw/deploy/systemd/sales-auftraege.service && sudo systemctl enable --now sales-sicherung.timer sales-auftraege.path && systemctl list-timers | grep sales'`
 - [ ] **Schritt 12:** Update-Pfad im Endzustand messen (Wiederholung aus
   Aufgabe 12, jetzt grün erwartet): trivialer Commit + Push auf dem PC,
   `update-server.ps1` doppelklicken → `"ergebnis":"eingespielt"`.
@@ -832,21 +882,21 @@ Entwurf `skills/team-onboarding/SKILL.md`: Wenn der Betreiber schreibt
 
 ---
 
-## Offene Fragen an den Betreiber (für den Morgen)
+## Offene Fragen an den Betreiber
 
-1. **Tailscale auf der VM** — einverstanden? (Empfohlen; löst den Handy-Zugriff.
-   Ein Browser-Klick von dir bei der Einrichtung.)
-2. **Nächtliche Auto-Updates 05:15** — gewünscht, oder lieber nur per
-   Doppelklick? (Beides ist gebaut; der Timer wird nur auf dein Wort aktiviert.)
-3. **Benachrichtigung bei fehlgeschlagenem Update** — reicht der Doppelklick-
-   Status, oder willst du eine WhatsApp? (Letzteres braucht einen kleinen
-   Zusatzweg: Statusdatei → MCP → Cron-Meldung; skizziert, nicht gebaut.)
-4. **Proxmox-Vollsicherung (vzdump)** der VM zusätzlich zu den Volume-tars?
+Beantwortet am 27.08.2026: Tailscale JA · Updates auf Zuruf (Betreiber oder
+Bot-Anfrage → Aufgabe 7b) · Allowlist nur auf Anfrage, Eintrag durch Menschen.
+
+Noch offen:
+
+1. **Cutover-Termin**: 45–60 Minuten, du wirst zweimal kurz gebraucht
+   (Tailscale-Klick, ggf. Kopplungscode/QR).
+2. **Proxmox-Vollsicherung (vzdump)** der VM zusätzlich zu den Volume-tars?
    `local` auf pve hat nur 25 GB frei — dafür müsste ein Ziel her (USB-Platte,
    NAS). Bis dahin sind die rotierenden Volume-Sicherungen der Stand.
-5. **Teil C**: die drei Zuschnitt-Fragen oben.
-6. **Cutover-Termin**: 45–60 Minuten, du wirst zweimal kurz gebraucht
-   (Tailscale-Klick, ggf. Kopplungscode/QR).
+3. **Teil C, Rest-Zuschnitt**: Bekommt ein neues Teammitglied auch die
+   Weboberfläche (dann braucht sie erstmals Benutzerkonten)? Nur lesen oder
+   auch freigeben? Soll der Skill auch Offboarding können?
 
 ## Selbstprüfung (Plan gegen Spezifikation)
 
