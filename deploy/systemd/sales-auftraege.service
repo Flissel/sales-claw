@@ -1,0 +1,7 @@
+[Unit]
+Description=sales-claw: Auftraege aus dem Spool ausfuehren
+
+[Service]
+Type=oneshot
+User=debian
+ExecStart=/usr/bin/bash /home/debian/sales-claw/deploy/auftrag-ausfuehren.sh

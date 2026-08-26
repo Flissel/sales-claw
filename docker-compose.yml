@@ -123,6 +123,10 @@ services:
     volumes:
       - ./media:/media:ro
       - ./reports:/reports
+      # Auftrags-Spool (27.08.2026): update_anfordern() legt hier Auftraege
+      # ab, der Waechter auf dem Wirt (deploy/auftrag-ausfuehren.sh) holt
+      # sie und schreibt Ergebnisse zurueck. Schreibbar, gitignoriert.
+      - ./auftraege:/auftraege
     # Kein ports:-Eintrag — nur im Compose-Netz erreichbar. Der Dienst kennt
     # die Kundendaten-DB; er hat auf dem Host nichts verloren.
     logging:

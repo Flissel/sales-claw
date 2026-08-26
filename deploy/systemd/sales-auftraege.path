@@ -1,0 +1,8 @@
+[Unit]
+Description=sales-claw: Waechter ueber dem Auftrags-Spool
+
+[Path]
+PathExistsGlob=/home/debian/sales-claw/auftraege/auftrag-*.json
+
+[Install]
+WantedBy=multi-user.target

@@ -4832,6 +4832,98 @@ def kennungen_bericht() -> str:
             "openwa-Container wirklich greift.")})
 
 
+# ---------------------------------------------------------------------------
+# Auftrags-Spool — Updates per Bot-Anfrage (Betreiber am 27.08.2026:
+# "update ueber mich bzw bot anfragen"). Der Bot BESTELLT nur: das Werkzeug
+# schreibt eine Datei, ein Waechter auf dem WIRT (systemd-path-Unit +
+# deploy/auftrag-ausfuehren.sh) prueft den Typ und fuehrt aus. Der Bot hat
+# keinerlei Ausfuehrungsmacht — dieselbe Klasse Regel wie "der Agent
+# erreicht niemals approved von selbst".
+# ---------------------------------------------------------------------------
+
+AUFTRAG_SPERRE_S = 600  # hoechstens ein Update alle 10 Minuten
+
+
+def _auftrag_spool() -> Path:
+    """Zur AUFRUFZEIT gelesen, nicht beim Import — Tests setzen die
+    Umgebungsvariable je Testfall um."""
+    return Path(os.environ.get("AUFTRAG_SPOOL", "/auftraege"))
+
+
+@_gesichert
+def update_anfordern() -> str:
+    """Bestellt ein Software-Update des Stacks — NUR wenn der Betreiber es
+    im Chat ausdruecklich verlangt hat.
+
+    Das Werkzeug schreibt eine Auftragsdatei; ausgefuehrt wird auf dem
+    Wirtssystem (git pull + gestaffelter Neustart + Abnahme, mit
+    automatischem Rueckbau bei roter Abnahme). Das dauert einige Minuten.
+    Sag dem Betreiber, dass es angestossen ist, und lies das Ergebnis
+    spaeter mit update_ergebnis().
+
+    Sperren: ein wartender Auftrag blockiert neue; nach einem Ergebnis
+    gilt eine Ruhezeit von 10 Minuten.
+    """
+    spool = _auftrag_spool()
+    if not spool.is_dir():
+        return _json({"fehler": (
+            "Auftrags-Spool nicht vorhanden — das Verzeichnis ist auf "
+            "dieser Installation nicht eingebunden (VM-Funktion).")})
+    wartend = sorted(spool.glob("auftrag-*.json"))
+    if wartend:
+        return _json({"fehler": (
+            f"Ein Auftrag wartet bereits ({wartend[-1].name}) — der "
+            f"Waechter hat ihn noch nicht abgeholt.")})
+    ergebnisse = sorted(spool.glob("ergebnis-*.json"))
+    if ergebnisse:
+        juengste = max(p.stat().st_mtime for p in ergebnisse)
+        alter_s = datetime.now(timezone.utc).timestamp() - juengste
+        if alter_s < AUFTRAG_SPERRE_S:
+            return _json({"fehler": (
+                f"Das letzte Update liegt erst {int(alter_s)} Sekunden "
+                f"zurueck — hoechstens eines alle 10 Minuten.")})
+    jetzt = datetime.now(timezone.utc)
+    stempel = jetzt.strftime("%Y%m%d-%H%M%S")
+    ziel = spool / f"auftrag-{stempel}.json"
+    zwischen = spool / f".auftrag-{stempel}.tmp"
+    zwischen.write_text(_json({"typ": "update",
+                               "zeitpunkt": jetzt.isoformat()}),
+                        encoding="utf-8")
+    os.replace(zwischen, ziel)
+    return _json({"auftrag": ziel.name, "hinweis": (
+        "Auftrag liegt im Spool. Ausfuehrung dauert einige Minuten; "
+        "Ergebnis spaeter mit update_ergebnis() lesen.")})
+
+
+@_gesichert
+def update_ergebnis() -> str:
+    """Liest das juengste Update-Ergebnis aus dem Spool.
+
+    `ergebnis` ist null, solange noch keines vorliegt; `auftrag_wartet`
+    sagt, ob ein bestellter Auftrag noch nicht abgeholt wurde. Melde dem
+    Betreiber ehrlich, was hier steht — besonders `rollback` (Update war
+    fehlerhaft, alter Stand laeuft) und `notfall` (Mensch noetig).
+    """
+    spool = _auftrag_spool()
+    if not spool.is_dir():
+        return _json({"fehler": (
+            "Auftrags-Spool nicht vorhanden — das Verzeichnis ist auf "
+            "dieser Installation nicht eingebunden (VM-Funktion).")})
+    auftrag_wartet = bool(sorted(spool.glob("auftrag-*.json")))
+    ergebnisse = sorted(spool.glob("ergebnis-*.json"))
+    if not ergebnisse:
+        return _json({"ergebnis": None, "auftrag_wartet": auftrag_wartet,
+                      "hinweis": "Noch kein Ergebnis im Spool."})
+    try:
+        inhalt = json.loads(ergebnisse[-1].read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return _json({"fehler": (
+            f"Juengstes Ergebnis {ergebnisse[-1].name} ist nicht lesbar "
+            f"(kaputtes JSON?) — Mensch sollte in den Spool schauen.")})
+    return _json({"ergebnis": inhalt, "auftrag_wartet": auftrag_wartet,
+                  "datei": ergebnisse[-1].name})
+
+
 WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              kontakt_freigeben, kontakt_freigabe_entziehen,
              kontakte_freigegeben,
@@ -4880,7 +4972,10 @@ WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              # Entwuerfe vor der Freigabe korrigieren (25.08.2026).
              # NUR pending — Begruendung im Docstring.
              entwurf_bearbeiten,
-             marktanalyse, b2b_leads, firma_anreichern)
+             marktanalyse, b2b_leads, firma_anreichern,
+             # Update per Bot-Anfrage (27.08.2026) — bestellen und Ergebnis
+             # lesen; ausgefuehrt wird ausschliesslich auf dem Wirt.
+             update_anfordern, update_ergebnis)
 
 for _fn in WERKZEUGE:
     mcp.tool()(_fn)
