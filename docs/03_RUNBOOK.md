@@ -2420,3 +2420,8 @@ Regeln daraus:
    (`002_Koordination_Live.md`) — wie es die nav-Session vorbildlich tat.
 3. Rote Läufe, die AUSSCHLIESSLICH aus `ForeignKeyViolation`/verschwundenen
    Zeilen bestehen, zuerst als Kollision verdächtigen, nicht als Code-Fehler.
+
+---
+
+Betrieb auf dem MiniPC (nach dem Cutover): siehe [04_BETRIEB_MINIPC.md](04_BETRIEB_MINIPC.md),
+Bedienung fuer Nicht-Programmierer: [05_BEDIENUNG.md](05_BEDIENUNG.md).
