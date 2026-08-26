@@ -1,0 +1,10 @@
+[Unit]
+Description=sales-claw: Update aus GitHub einspielen (manuell oder per Auftrag)
+
+[Service]
+Type=oneshot
+User=debian
+ExecStart=/usr/bin/bash /home/debian/sales-claw/deploy/update.sh
+
+# BEWUSST kein Timer (Betreiber-Entscheidung 27.08.2026: Updates nur auf
+# Zuruf). Manueller Start: sudo systemctl start sales-update

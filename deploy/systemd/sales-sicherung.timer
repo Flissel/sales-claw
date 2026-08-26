@@ -1,0 +1,9 @@
+[Unit]
+Description=sales-claw: Sicherung taeglich 04:35
+
+[Timer]
+OnCalendar=*-*-* 04:35:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
