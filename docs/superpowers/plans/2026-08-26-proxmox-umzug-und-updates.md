@@ -56,7 +56,7 @@ Gelten für JEDE Aufgabe; jede Aufgabe erbt diesen Abschnitt.
 | Overlay `docker-compose.proxmox.yml` | referenziert von `scripts/package_proxmox.py`, `scripts/tests/test_package_proxmox.py`, `scripts/tests/test_proxmox_compose.py` — **bleibt bestehen, wird aber zur Laufzeit NICHT benutzt** |
 | Workspace-Pfad im Gateway | `/home/node/.openclaw/workspace/AGENTS.md` (bestätigt) |
 | Volumes | `openwa-data`, `sales-claw-state` (Konfig, Cron, Kanal-Kopplung), `sales-claw-keys` |
-| UI-Bindung | Basis-Compose bindet fest an `100.84.127.84` — die Tailscale-IP des **PCs**; auf der VM würde `up` daran scheitern |
+| UI-Bindung | Bereits parametrisiert: `${UI_TAILSCALE_IP:-127.0.0.1}` in der Basis, dokumentiert in `.env.example` Z. 25 — auf der VM genügt das Setzen der Variable (Befund 27.08., Aufgabe 1 entfällt) |
 | PC-Stack | 7 Container gesund, WhatsApp-Session `ready`, Cron `antworten-pruefen` alle 10 Min. |
 
 ## Entscheidungen (mit Begründung)
@@ -108,56 +108,15 @@ Gelten für JEDE Aufgabe; jede Aufgabe erbt diesen Abschnitt.
 
 # Teil A — Fundament im Repo (auf dem PC, ohne VM-Berührung)
 
-### Aufgabe 1: UI-Bindung parametrisieren
+### Aufgabe 1: UI-Bindung parametrisieren — ENTFÄLLT (Befund 27.08.2026)
 
-Die feste PC-Tailscale-IP in der Compose-Datei würde jeden `up` auf der VM
-scheitern lassen.
-
-**Dateien:**
-- Ändern: `docker-compose.yml` (Abschnitt `sales-ui`, `ports`)
-- Ändern: `.env.example` (neue Variable dokumentieren)
-- Prüfen mit: `scripts/check-compose-bindings.py` (existiert)
-
-**Schnittstellen:**
-- Produziert: Umgebungsvariable `SALES_UI_BIND` (Standard `127.0.0.1`),
-  von Aufgabe 3 (smoke.sh) und Aufgabe 11 (VM-.env) konsumiert.
-
-- [ ] **Schritt 1:** In `docker-compose.yml` die zwei Portzeilen des Dienstes
-  `sales-ui` ersetzen:
-
-```yaml
-    ports:
-      - "${SALES_UI_BIND:-127.0.0.1}:8791:8791"
-      - "127.0.0.1:8791:8791"
-```
-
-  wird zu genau EINER Zeile (die doppelte 127.0.0.1-Bindung bei leerem
-  `SALES_UI_BIND` wäre ein Portkonflikt):
-
-```yaml
-    ports:
-      - "${SALES_UI_BIND:-127.0.0.1}:8791:8791"
-```
-
-  Auf dem PC danach in `.env` setzen: `SALES_UI_BIND=100.84.127.84`
-  (das stellt den heutigen Zustand wieder her; der localhost-Zugriff auf dem
-  PC läuft dann über die Tailscale-IP oder wird nicht mehr gebraucht,
-  weil der PC nach dem Umzug gar keine UI mehr hostet).
-
-- [ ] **Schritt 2:** `.env.example` ergänzen:
-
-```
-# Adresse, an die die Oberflaeche gebunden wird. Auf dem PC die eigene
-# Tailscale-IP, auf der VM deren Tailscale-IP. Standard: 127.0.0.1.
-SALES_UI_BIND=127.0.0.1
-```
-
-- [ ] **Schritt 3:** Prüfen ohne das verbotene `docker compose config`:
-  `python scripts/check-compose-bindings.py` ausführen (dessen Vertrag
-  vorher lesen); zusätzlich auf dem PC messen:
-  `docker compose up -d sales-ui` und `curl -s -o /dev/null -w "%{http_code}" http://100.84.127.84:8791/` → erwartet `200`.
-
-- [ ] **Schritt 4:** Commit `fix(compose): UI-Bindung ueber SALES_UI_BIND statt fester IP`.
+Die Prüfung vor der Umsetzung ergab: schon gebaut. Die Basis-Compose bindet
+die Oberfläche an Loopback PLUS `${UI_TAILSCALE_IP:-127.0.0.1}`; der
+Doppelbindungs-Randfall (Variable leer → zweimal Loopback) ist im
+Compose-Kommentar ausdrücklich als erlaubt dokumentiert, die Variable steht
+in `.env.example` Z. 25 und ist in der PC-.env gesetzt. Auf der VM ist damit
+NUR die Variable in der .env zu setzen (Aufgabe 11, Schritt 3).
+Keine Änderung nötig. smoke.sh (Aufgabe 3) liest `UI_TAILSCALE_IP`.
 
 ### Aufgabe 2: Overlay als historisch markieren
 
@@ -206,9 +165,9 @@ melde() { printf '%-38s %s\n' "$1" "$2"; }
 fehl()  { melde "$1" "ROT: $2"; ROT=$((ROT+1)); }
 gut()   { melde "$1" "ok"; }
 
-# .env liefert SALES_UI_BIND, ohne Werte anzuzeigen (nur diese eine Variable).
+# .env liefert UI_TAILSCALE_IP, ohne Werte anzuzeigen (nur diese eine Variable).
 WURZEL="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BIND="$(grep -E '^SALES_UI_BIND=' "$WURZEL/.env" 2>/dev/null | cut -d= -f2)"
+BIND="$(grep -E '^UI_TAILSCALE_IP=' "$WURZEL/.env" 2>/dev/null | cut -d= -f2)"
 BIND="${BIND:-127.0.0.1}"
 
 # 1) Container laufen.
@@ -530,7 +489,7 @@ docker compose version >/dev/null || { echo "FEHLT: docker compose v2" >&2; exit
 if [ ! -f .env ]; then
   echo "FEHLT: $WURZEL/.env — vom alten Standort per scp holen (nie per Git)." >&2
   echo "Noetig sind mindestens: SALES_DB_URL, OPENWA_API_KEY, OPENWA_SESSION_ID," >&2
-  echo "INBOX_WEBHOOK_SECRET, SALES_UI_BIND (Tailscale-IP dieser Maschine)." >&2
+  echo "INBOX_WEBHOOK_SECRET, UI_TAILSCALE_IP (Tailscale-IP dieser Maschine)." >&2
   exit 1
 fi
 
@@ -754,7 +713,7 @@ gleiche Prüfkette, eigener Auftragstyp.
 - [ ] **Schritt 2:** `ssh offload-vm 'sudo tailscale up'` — gibt einen
   Anmelde-Link aus; **der Betreiber öffnet ihn im Browser und bestätigt**.
 - [ ] **Schritt 3:** `ssh offload-vm 'tailscale ip -4'` → die neue VM-Tailscale-IP
-  notieren; sie wird `SALES_UI_BIND` auf der VM und gehört in `docs/05_BEDIENUNG.md`.
+  notieren; sie wird `UI_TAILSCALE_IP` auf der VM und gehört in `docs/05_BEDIENUNG.md`.
 
 ### Aufgabe 11: Stack ohne Nebenwirkungen aufsetzen
 
@@ -774,7 +733,7 @@ Host github.com-sales
 - [ ] **Schritt 3:** `.env` übertragen (Secrets nie durch Git):
   `scp "C:/Users/User/Desktop/Sabine/sales-claw/.env" offload-vm:~/sales-claw/.env`
   danach auf der VM NUR die eine Zeile anpassen, ohne Werte anzuzeigen:
-  `ssh offload-vm 'cd ~/sales-claw && grep -q "^SALES_UI_BIND=" .env && sed -i "s/^SALES_UI_BIND=.*/SALES_UI_BIND=<VM-Tailscale-IP>/" .env || echo "SALES_UI_BIND=<VM-Tailscale-IP>" >> .env'`
+  `ssh offload-vm 'cd ~/sales-claw && grep -q "^UI_TAILSCALE_IP=" .env && sed -i "s/^UI_TAILSCALE_IP=.*/UI_TAILSCALE_IP=<VM-Tailscale-IP>/" .env || echo "UI_TAILSCALE_IP=<VM-Tailscale-IP>" >> .env'`
 - [ ] **Schritt 4:** `ssh offload-vm 'bash ~/sales-claw/deploy/bootstrap.sh'`
   → baut, startet sales-mcp + sales-ui. Erwartet: die zwei genannten
   Abschlusszeilen des Skripts.
@@ -912,5 +871,5 @@ Noch offen:
   Doppelklick-Dateien (Aufgabe 7), Tailscale-URL fürs Handy (Aufgabe 10). ✓
 - Platzhalter-Suche: keine TBD/TODO; alle Skripte vollständig; alle
   Prüfbefehle sind gemessene Kommandozeilen dieser Nacht. ✓
-- Typ-/Namenskonsistenz: `SALES_UI_BIND`, `~/sales-betrieb/`,
+- Typ-/Namenskonsistenz: `UI_TAILSCALE_IP`, `~/sales-betrieb/`,
   `update-status.json`, Volume- und Dienstnamen in allen Aufgaben identisch. ✓
