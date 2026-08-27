@@ -907,6 +907,16 @@ Historie/Schablonen-Gedanke (ein Status pro Tag höchstens).
   `chats/archive`. Kein neuer Schreibweg, das Protokoll bleibt die
   einzige Quelle.
 
+### Vorgemerkt (Betreiber, 27.08.2026): LinkedIn-Reaktionen beantworten
+
+Kommentare/Reaktionen lesen und beantworten braucht LinkedIns
+Partner-Programm (Community-Management-API, auf Unternehmensseiten
+zugeschnitten; 3–4 Monate Verfahren, Zusage ungewiss). Weg, wenn es
+soweit ist: Company Page (Fin2gether/VibeMind) als Absender der Serie,
+Partner-Antrag ueber die registrierte App, danach Kommentar → Entwurf →
+Freigabe wie ueberall. KEINE Scraper/Browser-Automatisierung auf dem
+Privatprofil (Sperr-Risiko trifft die ganze Serie).
+
 ### Reihenfolge des Gesamtvorhabens
 
 1. **Teil B — Umzug** (braucht den Betreiber, ~1h). Alles Weitere setzt
