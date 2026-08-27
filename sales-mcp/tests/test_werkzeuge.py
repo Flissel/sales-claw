@@ -688,9 +688,9 @@ def test_kontakt_aktualisieren_signatur_ueberlebt_den_dekorator():
     assert list(parameter) == ["lead_id", "feld", "wert"]
 
 
-def test_dreiundfuenfzig_werkzeuge_registriert():
+def test_fuenfundfuenfzig_werkzeuge_registriert():
     namen = {fn.__name__ for fn in server.WERKZEUGE}
-    assert len(namen) == 53
+    assert len(namen) == 55
     # Zustimmung des Kontakts zur automatischen Antwort (25.08.2026):
     # fragen als ENTWURF, erfassen durch einen MENSCHEN, widerrufen
     # wirkt sofort. Vertragstests in tests/test_zustimmung.py.
@@ -716,6 +716,11 @@ def test_dreiundfuenfzig_werkzeuge_registriert():
     # tests/test_auftraege.py.
     assert "update_anfordern" in namen
     assert "update_ergebnis" in namen
+    # LinkedIn-Versand per Bot-Anfrage (27.08.2026): das zweite Tor des
+    # Einmal-Versenders oeffnet der Betreiber per Chat. Vertragstests in
+    # tests/test_auftraege.py.
+    assert "linkedin_versand_anfordern" in namen
+    assert "linkedin_versand_ergebnis" in namen
     assert "kontakt_aktualisieren" in namen
     # Das Kontaktprofil (25.08.2026) mit EIGENEM Takt: Schwelle 5 statt der
     # 50 des Chat-Reports, und ohne Nachrichten zu verstecken. Dazu der Weg

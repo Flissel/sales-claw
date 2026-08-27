@@ -4843,11 +4843,52 @@ def kennungen_bericht() -> str:
 
 AUFTRAG_SPERRE_S = 600  # hoechstens ein Update alle 10 Minuten
 
+# Dateinamen tragen den Typ (auftrag-update-…, ergebnis-linkedin-…), damit
+# die Ergebnis-Leser verschiedener Auftragsarten einander NIE ueberdecken:
+# ein LinkedIn-Versand darf dem Cron-Job nicht als Update erscheinen.
+
 
 def _auftrag_spool() -> Path:
     """Zur AUFRUFZEIT gelesen, nicht beim Import — Tests setzen die
     Umgebungsvariable je Testfall um."""
     return Path(os.environ.get("AUFTRAG_SPOOL", "/auftraege"))
+
+
+def _spool_fehlt() -> str:
+    return _json({"fehler": (
+        "Auftrags-Spool nicht vorhanden — das Verzeichnis ist auf "
+        "dieser Installation nicht eingebunden (VM-Funktion).")})
+
+
+def _auftrag_ablegen(typ: str, extra: dict) -> str:
+    spool = _auftrag_spool()
+    jetzt = datetime.now(timezone.utc)
+    stempel = jetzt.strftime("%Y%m%d-%H%M%S")
+    ziel = spool / f"auftrag-{typ}-{stempel}.json"
+    zwischen = spool / f".auftrag-{typ}-{stempel}.tmp"
+    zwischen.write_text(_json({"typ": typ, "zeitpunkt": jetzt.isoformat(),
+                               **extra}), encoding="utf-8")
+    os.replace(zwischen, ziel)
+    return ziel.name
+
+
+def _ergebnis_lesen(typ: str) -> str:
+    spool = _auftrag_spool()
+    if not spool.is_dir():
+        return _spool_fehlt()
+    auftrag_wartet = bool(sorted(spool.glob(f"auftrag-{typ}-*.json")))
+    ergebnisse = sorted(spool.glob(f"ergebnis-{typ}-*.json"))
+    if not ergebnisse:
+        return _json({"ergebnis": None, "auftrag_wartet": auftrag_wartet,
+                      "hinweis": "Noch kein Ergebnis im Spool."})
+    try:
+        inhalt = json.loads(ergebnisse[-1].read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return _json({"fehler": (
+            f"Juengstes Ergebnis {ergebnisse[-1].name} ist nicht lesbar "
+            f"(kaputtes JSON?) — Mensch sollte in den Spool schauen.")})
+    return _json({"ergebnis": inhalt, "auftrag_wartet": auftrag_wartet,
+                  "datei": ergebnisse[-1].name})
 
 
 @_gesichert
@@ -4866,15 +4907,13 @@ def update_anfordern() -> str:
     """
     spool = _auftrag_spool()
     if not spool.is_dir():
-        return _json({"fehler": (
-            "Auftrags-Spool nicht vorhanden — das Verzeichnis ist auf "
-            "dieser Installation nicht eingebunden (VM-Funktion).")})
-    wartend = sorted(spool.glob("auftrag-*.json"))
+        return _spool_fehlt()
+    wartend = sorted(spool.glob("auftrag-update-*.json"))
     if wartend:
         return _json({"fehler": (
             f"Ein Auftrag wartet bereits ({wartend[-1].name}) — der "
             f"Waechter hat ihn noch nicht abgeholt.")})
-    ergebnisse = sorted(spool.glob("ergebnis-*.json"))
+    ergebnisse = sorted(spool.glob("ergebnis-update-*.json"))
     if ergebnisse:
         juengste = max(p.stat().st_mtime for p in ergebnisse)
         alter_s = datetime.now(timezone.utc).timestamp() - juengste
@@ -4882,15 +4921,8 @@ def update_anfordern() -> str:
             return _json({"fehler": (
                 f"Das letzte Update liegt erst {int(alter_s)} Sekunden "
                 f"zurueck — hoechstens eines alle 10 Minuten.")})
-    jetzt = datetime.now(timezone.utc)
-    stempel = jetzt.strftime("%Y%m%d-%H%M%S")
-    ziel = spool / f"auftrag-{stempel}.json"
-    zwischen = spool / f".auftrag-{stempel}.tmp"
-    zwischen.write_text(_json({"typ": "update",
-                               "zeitpunkt": jetzt.isoformat()}),
-                        encoding="utf-8")
-    os.replace(zwischen, ziel)
-    return _json({"auftrag": ziel.name, "hinweis": (
+    name = _auftrag_ablegen("update", {})
+    return _json({"auftrag": name, "hinweis": (
         "Auftrag liegt im Spool. Ausfuehrung dauert einige Minuten; "
         "Ergebnis spaeter mit update_ergebnis() lesen.")})
 
@@ -4904,24 +4936,72 @@ def update_ergebnis() -> str:
     Betreiber ehrlich, was hier steht — besonders `rollback` (Update war
     fehlerhaft, alter Stand laeuft) und `notfall` (Mensch noetig).
     """
+    return _ergebnis_lesen("update")
+
+
+LINKEDIN_VERSAND_ZIEL = "eigenes-profil"
+
+
+@_gesichert
+def linkedin_versand_anfordern(draft_id: str = "") -> str:
+    """Bestellt die Veroeffentlichung eines FREIGEGEBENEN LinkedIn-Entwurfs
+    — NUR wenn der Betreiber es im Chat ausdruecklich verlangt hat.
+
+    Ohne draft_id wird der einzige freigegebene LinkedIn-Entwurf genommen;
+    sind mehrere freigegeben, musst du eine Kennung nennen (die Antwort
+    listet sie auf). Der Versand selbst laeuft auf dem Wirt: der Waechter
+    startet den Einmal-Versender mit GENAU dieser Kennung — derselbe
+    Zwei-Tore-Weg wie von Hand (Freigabe + bewusster Start), nur dass das
+    zweite Tor jetzt der Betreiber per Chat oeffnet. Ergebnis spaeter mit
+    linkedin_versand_ergebnis() lesen.
+    """
     spool = _auftrag_spool()
     if not spool.is_dir():
+        return _spool_fehlt()
+    wartend = sorted(spool.glob("auftrag-linkedin-*.json"))
+    if wartend:
         return _json({"fehler": (
-            "Auftrags-Spool nicht vorhanden — das Verzeichnis ist auf "
-            "dieser Installation nicht eingebunden (VM-Funktion).")})
-    auftrag_wartet = bool(sorted(spool.glob("auftrag-*.json")))
-    ergebnisse = sorted(spool.glob("ergebnis-*.json"))
-    if not ergebnisse:
-        return _json({"ergebnis": None, "auftrag_wartet": auftrag_wartet,
-                      "hinweis": "Noch kein Ergebnis im Spool."})
-    try:
-        inhalt = json.loads(ergebnisse[-1].read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+            f"Ein Versand-Auftrag wartet bereits ({wartend[-1].name}).")})
+    frei = _q(
+        "select id, subject from drafts where status = 'approved' "
+        "and channel = 'linkedin' and recipient = %s "
+        "order by created_at", (LINKEDIN_VERSAND_ZIEL,))
+    if draft_id:
+        treffer = [z for z in frei if str(z["id"]) == draft_id]
+        if not treffer:
+            return _json({"fehler": (
+                f"{draft_id} ist kein freigegebener LinkedIn-Entwurf — "
+                f"nur approved wird versendet.")})
+        gewaehlt = treffer[0]
+    elif not frei:
         return _json({"fehler": (
-            f"Juengstes Ergebnis {ergebnisse[-1].name} ist nicht lesbar "
-            f"(kaputtes JSON?) — Mensch sollte in den Spool schauen.")})
-    return _json({"ergebnis": inhalt, "auftrag_wartet": auftrag_wartet,
-                  "datei": ergebnisse[-1].name})
+            "Kein freigegebener LinkedIn-Entwurf vorhanden — erst muss "
+            "der Betreiber in der Oberflaeche freigeben.")})
+    elif len(frei) > 1:
+        return _json({"fehler": "Mehrere freigegebene Entwuerfe — Kennung angeben.",
+                      "freigegeben": [{"draft_id": str(z["id"]),
+                                       "betreff": z["subject"]} for z in frei]})
+    else:
+        gewaehlt = frei[0]
+    name = _auftrag_ablegen("linkedin", {"draft_id": str(gewaehlt["id"])})
+    return _json({"auftrag": name, "draft_id": str(gewaehlt["id"]),
+                  "betreff": gewaehlt["subject"], "hinweis": (
+                      "Versand-Auftrag liegt im Spool. Ergebnis spaeter "
+                      "mit linkedin_versand_ergebnis() lesen.")})
+
+
+@_gesichert
+def linkedin_versand_ergebnis() -> str:
+    """Liest das juengste LinkedIn-Versand-Ergebnis aus dem Spool.
+
+    `veroeffentlicht` = draussen (die Beitrags-URN steht dabei).
+    `schon_veroeffentlicht` = war schon draussen, nichts doppelt.
+    `fehler`, `medien_unbrauchbar`, `leer` = nicht draussen, Grund nennen.
+    `ungewiss` = moeglicherweise draussen, aber ohne Nachweis — dem
+    Betreiber sagen, dass ein Mensch das LinkedIn-Profil pruefen muss,
+    BEVOR irgendjemand erneut versendet.
+    """
+    return _ergebnis_lesen("linkedin")
 
 
 WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
@@ -4975,7 +5055,11 @@ WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              marktanalyse, b2b_leads, firma_anreichern,
              # Update per Bot-Anfrage (27.08.2026) — bestellen und Ergebnis
              # lesen; ausgefuehrt wird ausschliesslich auf dem Wirt.
-             update_anfordern, update_ergebnis)
+             update_anfordern, update_ergebnis,
+             # LinkedIn-Versand per Bot-Anfrage (27.08.2026): das zweite
+             # Tor (bewusster Start des Einmal-Versenders) oeffnet der
+             # Betreiber per Chat statt per Hand.
+             linkedin_versand_anfordern, linkedin_versand_ergebnis)
 
 for _fn in WERKZEUGE:
     mcp.tool()(_fn)

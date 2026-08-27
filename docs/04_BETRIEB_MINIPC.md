@@ -40,6 +40,16 @@ Drei gleichwertige Auslöser, ein Mechanismus (`deploy/update.sh`):
    `deploy/auftrag-ausfuehren.sh`, der ausführt und das Ergebnis
    zurücklegt. Der Bot liest es mit `update_ergebnis()` und meldet es.
    Der Bot selbst fasst nie git oder docker an.
+
+   Derselbe Spool trägt seit dem 27.08. eine zweite Auftragsart:
+   **LinkedIn-Versand** („post den freigegebenen LinkedIn-Beitrag") —
+   `linkedin_versand_anfordern()` bestellt nur, was in der Oberfläche
+   FREIGEGEBEN ist, der Wächter startet den Einmal-Versender mit exakt
+   dieser Entwurfs-Kennung und liest den wahren Ausgang aus der
+   `Ausgang:`-Logzeile (der Versender endet auch bei Fehlschlägen mit
+   Exit 0 — gemessen). Dateinamen tragen den Typ
+   (`auftrag-update-…` / `auftrag-linkedin-…`), damit die
+   Ergebnis-Leser einander nie überdecken.
 3. **Von Hand auf der VM:** `bash ~/sales-claw/deploy/update.sh`
    (oder `sudo systemctl start sales-update`).
 

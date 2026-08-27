@@ -67,7 +67,7 @@ def test_ein_wartender_auftrag_blockiert_den_naechsten(spool):
 
 
 def test_kurz_nach_einem_ergebnis_wird_nicht_erneut_bestellt(spool):
-    (spool / "ergebnis-20260827-010000.json").write_text(
+    (spool / "ergebnis-update-20260827-010000.json").write_text(
         json.dumps({"typ": "update", "ergebnis": "eingespielt"}),
         encoding="utf-8")
     antwort = json.loads(server.update_anfordern())
@@ -77,7 +77,7 @@ def test_kurz_nach_einem_ergebnis_wird_nicht_erneut_bestellt(spool):
 
 
 def test_nach_ablauf_der_sperre_geht_es_wieder(spool):
-    alt = spool / "ergebnis-20260827-010000.json"
+    alt = spool / "ergebnis-update-20260827-010000.json"
     alt.write_text(json.dumps({"typ": "update", "ergebnis": "eingespielt"}),
                    encoding="utf-8")
     vor_elf_minuten = time.time() - 660
@@ -105,9 +105,9 @@ def test_ohne_ergebnis_sagt_es_das(spool):
 
 
 def test_das_juengste_ergebnis_gewinnt(spool):
-    (spool / "ergebnis-20260827-010000.json").write_text(
+    (spool / "ergebnis-update-20260827-010000.json").write_text(
         json.dumps({"ergebnis": "rollback"}), encoding="utf-8")
-    (spool / "ergebnis-20260827-020000.json").write_text(
+    (spool / "ergebnis-update-20260827-020000.json").write_text(
         json.dumps({"ergebnis": "eingespielt"}), encoding="utf-8")
     antwort = json.loads(server.update_ergebnis())
     assert antwort["ergebnis"]["ergebnis"] == "eingespielt"
@@ -120,8 +120,92 @@ def test_ein_wartender_auftrag_wird_mitgemeldet(spool):
 
 
 def test_kaputtes_ergebnis_json_stuerzt_nicht_ab(spool):
-    (spool / "ergebnis-20260827-030000.json").write_text(
+    (spool / "ergebnis-update-20260827-030000.json").write_text(
         "{kein json", encoding="utf-8")
     antwort = json.loads(server.update_ergebnis())
     assert "fehler" in antwort
     assert "lesbar" in antwort["fehler"]
+
+
+# ---------------------------------------------------------------------------
+# LinkedIn-Versand per Anfrage (27.08.2026, "mach das ."): das zweite Tor
+# des Einmal-Versenders — der bewusste Start — oeffnet der Betreiber per
+# Chat. Bestellt wird nur, was in der Oberflaeche FREIGEGEBEN wurde.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def saubere_tabellen():
+    with server.pool.connection() as conn:
+        conn.execute(
+            "truncate sales_test.activities, sales_test.drafts, "
+            "sales_test.personas, sales_test.leads cascade")
+    yield
+
+
+def _li_entwurf(status="approved", betreff="Post: Probe"):
+    lead = str(server._q(
+        "insert into leads (name, phone, source) values "
+        "('LinkedIn Selbst', null, 'linkedin') returning id")[0]["id"])
+    return str(server._q(
+        "insert into drafts (lead_id, channel, recipient, subject, body, "
+        "status) values (%s, 'linkedin', 'eigenes-profil', %s, 'Text.', %s) "
+        "returning id", (lead, betreff, status))[0]["id"])
+
+
+def test_ohne_freigegebenen_entwurf_wird_nichts_bestellt(spool, saubere_tabellen):
+    antwort = json.loads(server.linkedin_versand_anfordern())
+    assert "fehler" in antwort
+    assert "Kein freigegebener" in antwort["fehler"]
+    assert _auftraege(spool) == []
+
+
+def test_der_einzige_freigegebene_wird_bestellt(spool, saubere_tabellen):
+    kennung = _li_entwurf()
+    antwort = json.loads(server.linkedin_versand_anfordern())
+    assert antwort["draft_id"] == kennung
+    dateien = sorted(spool.glob("auftrag-linkedin-*.json"))
+    assert len(dateien) == 1
+    inhalt = json.loads(dateien[0].read_text(encoding="utf-8"))
+    assert inhalt["typ"] == "linkedin"
+    assert inhalt["draft_id"] == kennung
+
+
+def test_bei_mehreren_muss_die_kennung_genannt_werden(spool, saubere_tabellen):
+    a = _li_entwurf(betreff="Post: A")
+    _li_entwurf(betreff="Post: B")
+    antwort = json.loads(server.linkedin_versand_anfordern())
+    assert "fehler" in antwort
+    assert len(antwort["freigegeben"]) == 2
+    assert _auftraege(spool) == []
+    gezielt = json.loads(server.linkedin_versand_anfordern(a))
+    assert gezielt["draft_id"] == a
+
+
+def test_nur_approved_wird_bestellt(spool, saubere_tabellen):
+    kennung = _li_entwurf(status="pending")
+    antwort = json.loads(server.linkedin_versand_anfordern(kennung))
+    assert "fehler" in antwort
+    assert "approved" in antwort["fehler"]
+    assert _auftraege(spool) == []
+
+
+def test_ein_update_auftrag_blockiert_den_versand_nicht(spool, saubere_tabellen):
+    """Getrennte Spuren: die Auftragsarten duerfen einander nie sperren
+    oder ueberdecken."""
+    _li_entwurf()
+    server.update_anfordern()
+    antwort = json.loads(server.linkedin_versand_anfordern())
+    assert "fehler" not in antwort
+    zweiter = json.loads(server.linkedin_versand_anfordern())
+    assert "wartet bereits" in zweiter["fehler"]
+
+
+def test_die_ergebnisleser_sehen_nur_ihre_spur(spool):
+    (spool / "ergebnis-update-20260827-040000.json").write_text(
+        json.dumps({"ergebnis": "eingespielt"}), encoding="utf-8")
+    (spool / "ergebnis-linkedin-20260827-050000.json").write_text(
+        json.dumps({"ergebnis": "veroeffentlicht"}), encoding="utf-8")
+    update = json.loads(server.update_ergebnis())
+    linkedin = json.loads(server.linkedin_versand_ergebnis())
+    assert update["ergebnis"]["ergebnis"] == "eingespielt"
+    assert linkedin["ergebnis"]["ergebnis"] == "veroeffentlicht"
