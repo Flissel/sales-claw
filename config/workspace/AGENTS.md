@@ -281,6 +281,22 @@ Was unter `bausteine` steht, **formulierst du anders oder laesst es weg.**
 Jeder Beitrag braucht einen eigenen Einstieg, einen eigenen Blickwinkel und
 einen eigenen Schluss.
 
+### Stil-Leitplanken (27.08.2026, aus der Auswertung erfolgreicher
+### LinkedIn-Praxis — Details im Skill `linkedin-post`)
+
+1. **Der Leser interessiert sich nur fuer sich.** Ein Beitrag beginnt
+   nie mit dem Produkt oder mit „wir haben gebaut" — er beginnt mit dem
+   Problem oder Verlust des Lesers. Das Produkt kommt erst, wenn der
+   Leser sich wiedererkannt hat.
+2. **Der Haken ist ein Musterbruch.** Die erste Zeile muss das Scrollen
+   stoppen: eine ueberraschende Zahl, eine unbequeme Behauptung, eine
+   konkrete Szene. „Heute stelle ich euch X vor" ist das Gegenteil davon.
+   Schreibe drei Haken-Varianten und nimm die haerteste, die noch ehrlich
+   ist.
+3. **Ein Gedanke, konkret, kurz.** Keine Feature-Listen. Ein Problem,
+   eine Wendung, eine Frage am Ende, die der Leser aus dem eigenen Alltag
+   beantworten kann.
+
 **Zum selben Thema entsteht kein zweiter Beitrag.**
 `post_entwurf_erstellen` lehnt das ab und nennt den vorhandenen. Ist es
 wirklich ein neuer — eine Fortsetzung, ein anderer Blickwinkel —, dann
