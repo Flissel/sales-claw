@@ -809,6 +809,110 @@ des Betreibers läuft die ganze Zeit normal weiter — nur der Assistent pausier
 
 ---
 
+# Teil D — OpenWA-Ausbau (nach dem Cutover, Betreiber-Auftrag 27.08.2026)
+
+Vermessene Grundlage: 191 API-Routen (Routenkarte im Scratchpad erhoben,
+Kategorien: messages 27, groups 22, contacts 11, chats 9, status 8,
+labels 8, templates 5, automation-rules 5, presence 3, catalog 3).
+Reihenfolge nach Hebel; ALLES landet erst nach dem Cutover auf der VM,
+weil die Auftrags-Spool-Wege den systemd-Wächter brauchen.
+
+**Zwei Routen sind ausdrücklich TABU:** `automation-rules` (wäre ein
+DRITTER Antwortpfad neben Cron und sales-auto — die Doppel-Antwort-Falle)
+und `send-bulk` (Massenversand: WhatsApp-Sperr-Risiko plus rechtlich
+heikel ohne Einwilligung).
+
+### Aufgabe D1: Chat-Historie importieren — der Hebel
+
+Die Kontaktprofile sehen heute nur Nachrichten seit Inbetriebnahme des
+Posteingangs. `GET /api/sessions/:id/messages/:chatId/history` kann die
+Vorgeschichte je Kontakt nachladen — danach speisen sich Profile aus dem
+GANZEN Verlauf.
+
+**Dateien:** Neu `sales-mcp/history_import.py` (Einmal-Läufer nach dem
+Muster des LinkedIn-Versenders: expliziter Start, genau ein Kontakt je
+Lauf); neu Auftragstyp `historie` im Spool (Werkzeug
+`historie_import_anfordern(lead_id)`, Wächter-Zweig); Tests
+`test_history_import.py`.
+
+- [ ] **Schritt 1 — MESSUNG zuerst:** die History-Route an einem eigenen
+  Chat abrufen (aus sales-dispatch, wie alle OpenWA-Messungen): welche
+  Parameter (limit? cursor?), welche Felder je Nachricht (id, timestamp,
+  fromMe, body, type), wie weit zurück reicht sie. Ergebnis als
+  Kommentar in history_import.py festhalten.
+- [ ] **Schritt 2 — Dedup-Vertrag:** importiert wird NUR, was es noch
+  nicht gibt — Abgleich über `payload->>'message_id'` gegen die
+  vorhandenen activities des Leads. Ein zweiter Lauf desselben Kontakts
+  muss 0 neue Zeilen schreiben (Test).
+- [ ] **Schritt 3 — Zeitwahrheit:** der Original-Zeitstempel steht als
+  `gesendet_am` im payload; ob `created_at` beim INSERT setzbar ist,
+  wird GEMESSEN (append-only-Rolle) — wenn nein, bleibt created_at die
+  Importzeit und die Auswertungen lesen `gesendet_am`.
+- [ ] **Schritt 4:** Import löst den bestehenden Profil-Takt aus
+  (PROFIL_SCHWELLE zählt neue Nachrichten) — nach dem Import entsteht
+  das Profil von selbst. Test: Import von N>=5 Nachrichten macht den
+  Kontakt profil-fällig.
+- [ ] **Schritt 5:** Spool-Anbindung (Typ `historie`, payload lead_id +
+  chat_kennung), Wächter-Zweig, AGENTS.md-Absatz (nur auf
+  Betreiber-Bitte, je Kontakt), Tests, Commit.
+
+### Aufgabe D2: Terminfindung per Umfrage (`send-poll`)
+
+Drei Terminvorschläge als antippbare Umfrage statt Hin-und-her-Getippe.
+Bleibt im Drei-Tore-Modell: Werkzeug `terminumfrage_entwerfen(lead_id,
+frage, optionen)` erzeugt einen ENTWURF (Markierung im subject,
+Optionen als JSON im body), der Betreiber gibt frei, sales-dispatch
+erkennt die Markierung und ruft send-poll statt send-text.
+
+- [ ] **Schritt 1 — MESSUNG:** wie kommen Umfrage-Antworten zurück?
+  (Webhook-Ereignistyp an einem Selbsttest messen; erst danach wird der
+  Rückkanal — Antwort ins activities-Protokoll — gebaut.)
+- [ ] **Schritt 2:** Entwurfs-Format + dispatch-Zweig + Tests (Entwurf
+  ohne Freigabe sendet nie; kaputtes Options-JSON scheitert im
+  Entwurf, nie erst beim Senden).
+- [ ] **Schritt 3:** Rückkanal: eingehende Umfrage-Stimme wird
+  `kundenantwort` mit Verweis auf die Umfrage. Wiedervorlage-Vorschlag,
+  wenn nach 48h keine Stimme kam.
+
+### Aufgabe D3: WhatsApp-Status als Kanal (`status/send-video`)
+
+Produktvideos zusätzlich als Status — gleiche Zwei-Tore-Mechanik wie
+LinkedIn: Entwurf (channel `whatsapp-status`, recipient `status`) →
+Freigabe → Spool-Auftrag Typ `status` → Wächter startet den
+Einmal-Versender. Wiederverwendet den LinkedIn-Entwurfsfluss samt
+Historie/Schablonen-Gedanke (ein Status pro Tag höchstens).
+
+- [ ] **Schritt 1:** Einmal-Versender `status_dispatch.py` nach dem
+  LinkedIn-Muster (exakte Entwurfs-ID, Ausgangszeile, Nachweis in
+  activities). Schritt 2: Spool-Typ + Wächter-Zweig + Tests. Schritt 3:
+  AGENTS.md-Absatz.
+
+### Aufgabe D4–D6: Politur-Paket (je klein, nach D1–D3)
+
+- **D4 Labels als CRM-Spiegel:** Autonomiestufe/Archiv-Zustand als
+  Chat-Label auf dem Handy sichtbar. MESSUNG zuerst: Labels setzen
+  braucht ein WhatsApp-Business-Konto — ist das Konto eines? Können
+  Labels per API erzeugt werden oder nur zugewiesen? Danach: Abgleich im
+  dispatch-Takt aus dem leads-Zustand.
+- **D5 Lesen + Tippen:** sales-dispatch setzt unmittelbar vor einer
+  Auto-Antwort `chats/read` und `chats/typing` — gelesen wird erst
+  markiert, wenn wirklich geantwortet wird (ein „gelesen, keine
+  Antwort" wäre schlechter als gar kein Haken).
+- **D6 Archiv-Symmetrie:** `kontakt_archivieren` schreibt schon eine
+  activity — sales-dispatch greift sie auf und archiviert den Chat per
+  `chats/archive`. Kein neuer Schreibweg, das Protokoll bleibt die
+  einzige Quelle.
+
+### Reihenfolge des Gesamtvorhabens
+
+1. **Teil B — Umzug** (braucht den Betreiber, ~1h). Alles Weitere setzt
+   den systemd-Wächter der VM voraus.
+2. **D1 Historie-Import** — füttert Profile und damit alles andere.
+3. **D2 Terminumfrage** — der sichtbarste Vertriebsnutzen.
+4. **D3 Status-Kanal** — Marketing-Zweitverwertung der Videos.
+5. **D4–D6 Politur** — klein, unabhängig, in beliebiger Reihenfolge.
+6. **Teil C Team-Onboarding** — wartet auf die Zuschnitt-Antworten.
+
 # Teil C — OpenClaw-Skill „Team-Onboarding" (Spezifikationsentwurf)
 
 **Noch KEINE Aufgaben** — erst nach den Antworten des Betreibers (unten) wird
