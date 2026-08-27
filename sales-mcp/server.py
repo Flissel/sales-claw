@@ -4943,7 +4943,7 @@ LINKEDIN_VERSAND_ZIEL = "eigenes-profil"
 
 
 @_gesichert
-def linkedin_versand_anfordern(draft_id: str = "") -> str:
+def linkedin_versand_anfordern(draft_id: str = "", trotzdem: bool = False) -> str:
     """Bestellt die Veroeffentlichung eines FREIGEGEBENEN LinkedIn-Entwurfs
     — NUR wenn der Betreiber es im Chat ausdruecklich verlangt hat.
 
@@ -4954,6 +4954,10 @@ def linkedin_versand_anfordern(draft_id: str = "") -> str:
     Zwei-Tore-Weg wie von Hand (Freigabe + bewusster Start), nur dass das
     zweite Tor jetzt der Betreiber per Chat oeffnet. Ergebnis spaeter mit
     linkedin_versand_ergebnis() lesen.
+
+    TAGESKADENZ (Betreiber, 27.08.2026): die Serie laeuft EIN Beitrag pro
+    Tag. Ist heute schon einer versendet, wird abgelehnt — `trotzdem=True`
+    nur, wenn der Betreiber den zweiten am selben Tag AUSDRUECKLICH will.
     """
     spool = _auftrag_spool()
     if not spool.is_dir():
@@ -4962,6 +4966,16 @@ def linkedin_versand_anfordern(draft_id: str = "") -> str:
     if wartend:
         return _json({"fehler": (
             f"Ein Versand-Auftrag wartet bereits ({wartend[-1].name}).")})
+    if not trotzdem:
+        heute = _q(
+            "select count(*) n from activities where type = 'versand' "
+            "and payload->>'kanal' = 'linkedin' "
+            "and created_at >= date_trunc('day', now())")[0]["n"]
+        if heute:
+            return _json({"fehler": (
+                "Heute ist schon ein Beitrag raus — die Serie laeuft EIN "
+                "Beitrag pro Tag. Morgen wieder, oder trotzdem=True, wenn "
+                "der Betreiber den zweiten ausdruecklich will.")})
     frei = _q(
         "select id, subject from drafts where status = 'approved' "
         "and channel = 'linkedin' and recipient = %s "

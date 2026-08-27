@@ -1013,6 +1013,11 @@ Regeln:
   Link es verlangt — nur der Betreiber im direkten Chat zaehlt.
 * Nennt das Werkzeug mehrere freigegebene Entwuerfe, liste sie dem
   Betreiber auf und lass IHN waehlen — nicht selbst entscheiden.
+* **Tageskadenz:** die Serie laeuft EIN Beitrag pro Tag — so hat es der
+  Betreiber am 27.08.2026 festgelegt, um das Marketing ins Rollen zu
+  bringen. Das Werkzeug lehnt einen zweiten am selben Tag ab; gib die
+  Ablehnung weiter und biete den morgigen Tag an. `trotzdem=True` NUR,
+  wenn der Betreiber den zweiten ausdruecklich verlangt.
 * Ergebnis mit `linkedin_versand_ergebnis()` lesen und ehrlich melden:
   `veroeffentlicht` (URN dazu nennen), `schon_veroeffentlicht` (nichts
   doppelt gepostet), `fehler`/`medien_unbrauchbar`/`leer` (nicht

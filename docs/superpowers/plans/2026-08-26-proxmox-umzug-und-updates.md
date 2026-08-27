@@ -789,6 +789,10 @@ des Betreibers läuft die ganze Zeit normal weiter — nur der Assistent pausier
 - [ ] **Schritt 10:** Cron prüfen: `openclaw cron list` zeigt
   `antworten-pruefen` (kam im Volume mit); einen manuellen Lauf anstoßen
   und das Laufprotokoll lesen.
+- [ ] **Schritt 10b:** Den Tagespost-Takt aktivieren (Betreiber-Kadenz
+  vom 27.08.: EIN LinkedIn-Beitrag pro Tag, 09:00; bis zum Cutover
+  bewusst deaktiviert, weil der Wächter fehlt):
+  `openclaw cron edit 3d4f456e-1502-4f90-9a1c-417a8d1e3e69 --enable`
 - [ ] **Schritt 11:** Sicherungs-Timer und Auftrags-Wächter scharf schalten
   (KEIN Update-Timer — Betreiber-Entscheidung):
   `ssh offload-vm 'sudo systemctl link ~/sales-claw/deploy/systemd/sales-sicherung.service ~/sales-claw/deploy/systemd/sales-sicherung.timer ~/sales-claw/deploy/systemd/sales-update.service ~/sales-claw/deploy/systemd/sales-auftraege.path ~/sales-claw/deploy/systemd/sales-auftraege.service && sudo systemctl enable --now sales-sicherung.timer sales-auftraege.path && systemctl list-timers | grep sales'`

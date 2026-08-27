@@ -200,6 +200,37 @@ def test_ein_update_auftrag_blockiert_den_versand_nicht(spool, saubere_tabellen)
     assert "wartet bereits" in zweiter["fehler"]
 
 
+def test_ein_beitrag_pro_tag_haelt_die_kadenz(spool, saubere_tabellen):
+    """Betreiber 27.08.2026: die Serie ist pro Tag angesiedelt, um das
+    Marketing ins Rollen zu bekommen — der zweite am selben Tag braucht
+    ein ausdrueckliches trotzdem."""
+    kennung = _li_entwurf()
+    lead = server._q("select lead_id from drafts where id = %s",
+                     (kennung,))[0]["lead_id"]
+    server._q(
+        "insert into activities (lead_id, type, payload) values "
+        "(%s, 'versand', %s) returning id",
+        (lead, server._json({"kanal": "linkedin", "beitrag": "urn:li:x"})))
+    antwort = json.loads(server.linkedin_versand_anfordern())
+    assert "fehler" in antwort
+    assert "pro Tag" in antwort["fehler"]
+    assert sorted(spool.glob("auftrag-linkedin-*.json")) == []
+    erzwungen = json.loads(server.linkedin_versand_anfordern(trotzdem=True))
+    assert "fehler" not in erzwungen
+
+
+def test_gestriger_versand_blockiert_heute_nicht(spool, saubere_tabellen):
+    kennung = _li_entwurf()
+    lead = server._q("select lead_id from drafts where id = %s",
+                     (kennung,))[0]["lead_id"]
+    server._q(
+        "insert into activities (lead_id, type, payload, created_at) values "
+        "(%s, 'versand', %s, now() - interval '1 day') returning id",
+        (lead, server._json({"kanal": "linkedin", "beitrag": "urn:li:y"})))
+    antwort = json.loads(server.linkedin_versand_anfordern())
+    assert "fehler" not in antwort
+
+
 def test_die_ergebnisleser_sehen_nur_ihre_spur(spool):
     (spool / "ergebnis-update-20260827-040000.json").write_text(
         json.dumps({"ergebnis": "eingespielt"}), encoding="utf-8")
