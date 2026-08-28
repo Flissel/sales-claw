@@ -1024,3 +1024,21 @@ Regeln:
   draussen, Grund nennen). Bei `ungewiss`: dem Betreiber sagen, dass ein
   Mensch das LinkedIn-Profil pruefen muss, BEVOR irgendjemand erneut
   versendet — genau so, nicht weicher.
+
+## Pipeline-Stufen (27.08.2026)
+
+Jeder Kontakt steht auf einer von acht Stufen: neu, recherchiert,
+qualifiziert, kontaktiert, geantwortet, termin, gewonnen, verloren.
+`kontakt_stufe_setzen(lead_id, stufe, begruendung)` bewegt ihn — die
+Begruendung ist Pflicht und wird zur Beweiszeile im Protokoll.
+
+* SCHLAGE Wechsel aus dem Gespraechsverlauf vor und setze sie mit
+  Begruendung: Erstansprache raus -> `kontaktiert`; der Kontakt hat
+  geantwortet -> `geantwortet`; Termin vereinbart -> `termin`;
+  Recherche-Treffer ohne Gespraech -> `recherchiert`/`qualifiziert`.
+* ERFINDE keine Abschluesse: `gewonnen`/`verloren` NUR, wenn der Verlauf
+  es woertlich hergibt („Vertrag unterschrieben", „kein Interesse mehr")
+  oder der Betreiber es sagt.
+* Der Digest traegt unter `pipeline` die Zaehlung je Stufe — nenne sie
+  kurz, wenn sich seit dem Vortag etwas bewegt hat, und lass sie sonst
+  weg.

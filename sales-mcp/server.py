@@ -2896,7 +2896,15 @@ def digest() -> str:
                         "hinweis": (f"Nicht lesbar (Datenbankfehler "
                                     f"{e.sqlstate}) — der Rest des Digests "
                                     f"stimmt. {CHAT_REPORT_HINWEIS}")}
+    # Pipeline-Zaehlung (27.08.2026): der Altbestand `new` zaehlt als `neu`.
+    pipeline = {s: 0 for s in PIPELINE_STUFEN}
+    for z in _q("select status, count(*) n from leads where "
+                "coalesce((enrichment->>'_archiviert')::bool, false) = false "
+                "group by 1"):
+        pipeline[_stufe_lesen(z["status"])] = (
+            pipeline.get(_stufe_lesen(z["status"]), 0) + z["n"])
     return _json({"anzahl_entwuerfe": len(entwuerfe),
+                  "pipeline": pipeline,
                   "offene_entwuerfe": [
                       {"draft_id": e["id"], "kanal": e["channel"],
                        "kontakt": e["name"]} for e in entwuerfe],
@@ -4833,6 +4841,66 @@ def kennungen_bericht() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Pipeline-Stufen (27.08.2026). Befund davor: leads.status existierte von
+# Anfang an, aber alle 34 Leads standen auf `new` — kein Werkzeug bewegte je
+# ein Stadium. Sechs Stufen, jeder Wechsel mit Begruendung als Beweiszeile.
+# ---------------------------------------------------------------------------
+
+# Das Schema kannte die Pipeline laengst: leads_status_check erlaubt genau
+# acht Werte (gemessen 27.08.2026) — inklusive der Recherche-Stufen, die zu
+# b2b_leads/marktanalyse gehoeren. Die Datenbank bleibt beim englischen
+# Wortschatz des Constraints; Werkzeug und Oberflaeche sprechen deutsch.
+STUFEN_DB = {"neu": "new", "recherchiert": "researched",
+             "qualifiziert": "qualified", "kontaktiert": "contacted",
+             "geantwortet": "replied", "termin": "meeting",
+             "gewonnen": "won", "verloren": "lost"}
+DB_STUFEN = {v: k for k, v in STUFEN_DB.items()}
+PIPELINE_STUFEN = tuple(STUFEN_DB)
+
+
+def _stufe_lesen(status) -> str:
+    """DB-Wert (englisch, Constraint-Wortschatz) -> deutscher Stufenname."""
+    if status in (None, ""):
+        return "neu"
+    return DB_STUFEN.get(str(status), str(status))
+
+
+@_gesichert
+def kontakt_stufe_setzen(lead_id: str, stufe: str, begruendung: str) -> str:
+    """Bewegt einen Kontakt in der Vertriebs-Pipeline.
+
+    Stufen: neu -> recherchiert -> qualifiziert -> kontaktiert ->
+    geantwortet -> termin -> gewonnen | verloren. Rueckwaertsgaenge sind
+    erlaubt. Die Begruendung ist PFLICHT und landet als
+    `stufenwechsel`-Beweiszeile im Protokoll — schlage Wechsel aus dem
+    Gespraechsverlauf vor (Termin vereinbart -> termin), aber erfinde
+    keine Abschluesse: `gewonnen`/`verloren` nur, wenn der Verlauf es
+    woertlich hergibt oder der Betreiber es sagt.
+    """
+    if stufe not in PIPELINE_STUFEN:
+        return _json({"fehler": (
+            f"'{stufe}' ist keine Stufe — gueltig sind: "
+            f"{', '.join(PIPELINE_STUFEN)}.")})
+    if not (begruendung or "").strip():
+        return _json({"fehler": (
+            "Ohne Begruendung kein Wechsel — das Protokoll muss sagen, "
+            "warum sich das Stadium aendert.")})
+    zeilen = _q("select status from leads where id = %s", (lead_id,))
+    if not zeilen:
+        return _json({"fehler": f"Kontakt {lead_id} nicht gefunden."})
+    von = _stufe_lesen(zeilen[0]["status"])
+    if von == stufe:
+        return _json({"fehler": f"Kontakt steht schon auf '{stufe}'."})
+    _q("update leads set status = %s, updated_at = now() where id = %s "
+       "returning id", (STUFEN_DB[stufe], lead_id))
+    _q("insert into activities (lead_id, type, payload) values "
+       "(%s, 'stufenwechsel', %s) returning id",
+       (lead_id, _json({"von": von, "nach": stufe,
+                        "begruendung": begruendung.strip()})))
+    return _json({"lead_id": lead_id, "von": von, "nach": stufe})
+
+
+# ---------------------------------------------------------------------------
 # Auftrags-Spool — Updates per Bot-Anfrage (Betreiber am 27.08.2026:
 # "update ueber mich bzw bot anfragen"). Der Bot BESTELLT nur: das Werkzeug
 # schreibt eine Datei, ein Waechter auf dem WIRT (systemd-path-Unit +
@@ -5073,7 +5141,11 @@ WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              # LinkedIn-Versand per Bot-Anfrage (27.08.2026): das zweite
              # Tor (bewusster Start des Einmal-Versenders) oeffnet der
              # Betreiber per Chat statt per Hand.
-             linkedin_versand_anfordern, linkedin_versand_ergebnis)
+             linkedin_versand_anfordern, linkedin_versand_ergebnis,
+             # Pipeline (27.08.2026): sechs Stufen, jeder Wechsel mit
+             # Begruendung als Beweiszeile. Vertragstests in
+             # tests/test_pipeline.py.
+             kontakt_stufe_setzen)
 
 for _fn in WERKZEUGE:
     mcp.tool()(_fn)

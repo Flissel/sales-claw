@@ -535,8 +535,9 @@ def test_beide_werkzeuge_sind_registriert():
     # Updates per Bot-Anfrage 27.08.2026: update_anfordern und
     # update_ergebnis (test_auftraege.py) — bestellen ja, ausfuehren nie.
     # Dazu am selben Tag linkedin_versand_anfordern und
-    # linkedin_versand_ergebnis (ebenfalls test_auftraege.py).
-    assert len(namen) == len(set(namen)) == 55
+    # linkedin_versand_ergebnis (ebenfalls test_auftraege.py) sowie
+    # kontakt_stufe_setzen (test_pipeline.py).
+    assert len(namen) == len(set(namen)) == 56
 
 # ---------------------------------------------------------------------------
 # Nachbesserungen aus dem Stufe-5-Review (Befunde T1, B2, D2)

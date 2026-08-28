@@ -2646,3 +2646,41 @@ def test_auto_mit_freigabe_warnt_nicht_mehr():
     server.kontakt_freigeben(lead)
     server.kontakt_autonomie_setzen(lead, "auto")
     assert "ohne Wirkung" not in _get("/kontakte").text
+
+
+# ---------------------------------------------------------------------------
+# Pipeline (27.08.2026): Spaltensicht plus Stufen-Formular auf der
+# Kontaktseite — derselbe Werkzeugweg wie der Chat, jeder Wechsel eine
+# Beweiszeile.
+# ---------------------------------------------------------------------------
+
+def test_die_pipeline_zeigt_alle_stufen_als_spalten():
+    lead = _lead(name="Paula Pipelinefrau")
+    server.kontakt_stufe_setzen(lead, "termin", "Termin steht")
+    seite = _get("/pipeline").text
+    for stufe in server.PIPELINE_STUFEN:
+        assert stufe in seite
+    assert "Paula Pipelinefrau" in seite
+
+
+def test_stufe_setzen_ueber_die_oberflaeche_schreibt_den_beweis():
+    lead = _lead()
+    antwort = _post("/kontakte/stufe", {
+        "lead_id": lead, "stufe": "kontaktiert",
+        "begruendung": "", "csrf": ui.CSRF_TOKEN})
+    assert antwort.status_code == 303
+    zeile = server._q(
+        "select payload from activities where lead_id = %s and "
+        "type = 'stufenwechsel'", (lead,))[0]
+    assert zeile["payload"]["nach"] == "kontaktiert"
+    assert "Oberflaeche" in zeile["payload"]["begruendung"]
+
+
+def test_stufe_ohne_csrf_schreibt_nichts():
+    lead = _lead()
+    antwort = _post("/kontakte/stufe", {
+        "lead_id": lead, "stufe": "kontaktiert", "begruendung": "x"})
+    assert antwort.status_code in (400, 403)
+    assert server._q(
+        "select count(*) n from activities where lead_id = %s and "
+        "type = 'stufenwechsel'", (lead,))[0]["n"] == 0

@@ -469,6 +469,14 @@ h2 { font-size: 1.05rem; margin-top: 2rem; }
 .karte { background: var(--flaeche); border: 1px solid var(--linie);
          border-radius: 6px; padding: .8rem 1rem; margin: .7rem 0; }
 .karte .text { white-space: pre-wrap; margin: .5rem 0; }
+
+/* --- Pipeline-Spalten (27.08.2026): nebeneinander, bei Enge scrollt der
+       Container waagerecht — nie die ganze Seite. ------------------------- */
+.spalten { display: flex; gap: .8rem; align-items: flex-start;
+           overflow-x: auto; padding-bottom: .5rem; }
+.spalte { min-width: 11rem; flex: 1 0 11rem; }
+.spalte h2 { margin-top: .4rem; font-size: .95rem; }
+.spalte .karte { margin: .45rem 0; padding: .5rem .7rem; }
 .meta { color: var(--gedaempft); font-size: .85rem; }
 
 /* --- Abzeichen: das Wort traegt die Aussage, die Farbe hilft nur ---------- */
@@ -617,6 +625,7 @@ thead th { background: var(--kopfzeile); }
 """
 
 _NAV = (("/", "Freigaben"), ("/kontakte", "Kontakte"),
+        ("/pipeline", "Pipeline"),
         ("/posteingang", "Posteingang"), ("/einordnung", "Einordnung"),
         ("/wiedervorlagen", "Wiedervorlagen"), ("/medien", "Medien"))
 
@@ -2133,6 +2142,61 @@ def _autonomie_waehler(lead_id, stufe: str, freigegeben: bool) -> str:
 
 
 @_gesichert_seite
+async def aktion_kontakt_stufe(request):
+    """Pipeline-Stufe setzen — ueber dasselbe Werkzeug wie der Chat.
+
+    Ein leeres Begruendungsfeld wird zur ehrlichen Standard-Begruendung:
+    der Klick des Betreibers ist die Entscheidung, das Protokoll traegt
+    trotzdem einen Grund.
+    """
+    form, lead_id, abbruch = await _kontakt_vorspann(request)
+    if abbruch:
+        return abbruch
+    begruendung = str(form.get("begruendung") or "").strip() or \
+        "vom Betreiber ueber die Oberflaeche gesetzt"
+    antwort = json.loads(server.kontakt_stufe_setzen(
+        lead_id=lead_id, stufe=str(form.get("stufe") or ""),
+        begruendung=begruendung))
+    if "fehler" in antwort:
+        return _fehlerseite(400, "Nicht gesetzt", _e(antwort["fehler"]))
+    return RedirectResponse(f"/kontakte/{lead_id}#stufe", status_code=303)
+
+
+@_gesichert_seite
+async def pipeline(request):
+    """Die Spaltensicht: alle aktiven Kontakte nach Stufe, mit Wartezeit
+    seit dem letzten Kontakt in beide Richtungen."""
+    zeilen = server._q(
+        "select l.id, l.name, l.status, "
+        "  (select max(a.created_at) from activities a "
+        "   where a.lead_id = l.id and a.type in "
+        "   ('kundenantwort', 'nachricht_ausgehend', 'versand')) letzter "
+        "from leads l "
+        "where coalesce((l.enrichment->>'_archiviert')::bool, false) = false "
+        "order by l.name")
+    spalten = {s: [] for s in server.PIPELINE_STUFEN}
+    for z in zeilen:
+        spalten[server._stufe_lesen(z["status"])].append(z)
+    teile = ["<h1>Pipeline</h1>",
+             '<p class="meta">Stufe setzen: auf der Kontaktseite. '
+             'Jeder Wechsel steht mit Begruendung im Protokoll.</p>',
+             '<div class="spalten">']
+    for stufe in server.PIPELINE_STUFEN:
+        karten = "".join(
+            f'<div class="karte"><a href="/kontakte/{_e(str(k["id"]))}">'
+            f'{_e(k["name"] or "(ohne Namen)")}</a>'
+            f'<div class="meta">{_e(_zeit(k["letzter"])) if k["letzter"] else "noch kein Kontakt"}'
+            f'</div></div>'
+            for k in spalten[stufe])
+        teile.append(
+            f'<div class="spalte"><h2>{_e(stufe)} '
+            f'({len(spalten[stufe])})</h2>{karten or "<p class=meta>—</p>"}'
+            f'</div>')
+    teile.append("</div>")
+    return _seite("Pipeline", "".join(teile))
+
+
+@_gesichert_seite
 async def aktion_kontakt_autonomie(request):
     """Die Stufe setzen — ueber dasselbe Werkzeug wie der Chat."""
     form, lead_id, abbruch = await _kontakt_vorspann(request)
@@ -2421,6 +2485,24 @@ async def kontakt_detail(request):
     teile.append(_paar_tabelle(
         stammdaten + [("Angelegt", _zeit(lead["created_at"]))]))
     teile.append(_kontakt_formular(lead))
+
+    # Pipeline-Stufe (27.08.2026): dasselbe Werkzeug wie der Chat, mit
+    # Begruendungsfeld — jeder Wechsel ist eine Beweiszeile. Leeres Feld
+    # bekommt eine ehrliche Standard-Begruendung statt einer Ablehnung:
+    # der Klick des Betreibers IST die Entscheidung.
+    stufe_jetzt = server._stufe_lesen(lead["status"])
+    stufen_optionen = "".join(
+        f'<option value="{_e(s)}"{" selected" if s == stufe_jetzt else ""}>'
+        f'{_e(s)}</option>' for s in server.PIPELINE_STUFEN)
+    teile.append(
+        f'<h2 id="stufe">Pipeline-Stufe</h2>'
+        f'<form method="post" action="/kontakte/stufe" class="zeile">'
+        f'<input type="hidden" name="lead_id" value="{_e(lead_id)}">'
+        f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+        f'<select name="stufe" aria-label="Pipeline-Stufe">{stufen_optionen}'
+        f'</select> '
+        f'<input name="begruendung" placeholder="Begruendung (empfohlen)" '
+        f'size="34"> <button>Stufe setzen</button></form>')
 
     # Bedarfsstand: beantwortete Leitfaden-Fragen mit Wortlaut, offene als Zahl.
     bedarf = anreicherung.get("bedarf") or {}
@@ -2977,6 +3059,8 @@ app = Starlette(routes=[
           aktion_kontakt_freigabe_entziehen, methods=["POST"]),
     Route("/kontakte/autonomie", aktion_kontakt_autonomie,
           methods=["POST"]),
+    Route("/kontakte/stufe", aktion_kontakt_stufe, methods=["POST"]),
+    Route("/pipeline", pipeline),
     Route("/kontakte/wiederherstellen", aktion_kontakt_wiederherstellen,
           methods=["POST"]),
     Route("/kontakte/profil-anfordern", aktion_profil_anfordern,

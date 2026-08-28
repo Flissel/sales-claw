@@ -688,9 +688,9 @@ def test_kontakt_aktualisieren_signatur_ueberlebt_den_dekorator():
     assert list(parameter) == ["lead_id", "feld", "wert"]
 
 
-def test_fuenfundfuenfzig_werkzeuge_registriert():
+def test_sechsundfuenfzig_werkzeuge_registriert():
     namen = {fn.__name__ for fn in server.WERKZEUGE}
-    assert len(namen) == 55
+    assert len(namen) == 56
     # Zustimmung des Kontakts zur automatischen Antwort (25.08.2026):
     # fragen als ENTWURF, erfassen durch einen MENSCHEN, widerrufen
     # wirkt sofort. Vertragstests in tests/test_zustimmung.py.
@@ -721,6 +721,9 @@ def test_fuenfundfuenfzig_werkzeuge_registriert():
     # tests/test_auftraege.py.
     assert "linkedin_versand_anfordern" in namen
     assert "linkedin_versand_ergebnis" in namen
+    # Pipeline (27.08.2026): acht Stufen aus dem Schema-Constraint, jeder
+    # Wechsel mit Begruendung als Beweiszeile (tests/test_pipeline.py).
+    assert "kontakt_stufe_setzen" in namen
     assert "kontakt_aktualisieren" in namen
     # Das Kontaktprofil (25.08.2026) mit EIGENEM Takt: Schwelle 5 statt der
     # 50 des Chat-Reports, und ohne Nachrichten zu verstecken. Dazu der Weg
