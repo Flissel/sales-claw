@@ -16,9 +16,9 @@
         ]
       },
       "workspace": "/home/node/.openclaw/workspace",
-      "_kommentar_bootstrap": "GEMESSEN 22.08.2026: AGENTS.md ist ~47000 Zeichen. Mit den Vorgaben (20000 je Datei, 60000 gesamt) wurden davon nur 19184 in den Systemprompt eingespritzt - 41 Prozent. Abgeschnitten wurde alles ab 'Kundenchats (Auto-Betrieb)', DARUNTER DER ABSCHNITT 'Verbote - ohne Ausnahme'. Der Agent kannte seine eigenen absoluten Verbote also nicht; dass er sich trotzdem regelkonform verhielt, war das Urteil des Modells und nicht diese Datei. Der Fehler ist still: OpenClaw meldet ihn nur im JSON-Bericht eines Laufs (bootstrapTruncation), nicht im Log. Wer AGENTS.md kuerzt, darf diese Werte wieder senken - wer sie waechst, muss hier nachziehen.",
-      "bootstrapMaxChars": 60000,
-      "bootstrapTotalMaxChars": 100000
+      "_kommentar_bootstrap": "GEMESSEN 22.08.2026: AGENTS.md ist ~47000 Zeichen. Mit den Vorgaben (20000 je Datei, 60000 gesamt) wurden davon nur 19184 in den Systemprompt eingespritzt - 41 Prozent. Abgeschnitten wurde alles ab 'Kundenchats (Auto-Betrieb)', DARUNTER DER ABSCHNITT 'Verbote - ohne Ausnahme'. Der Agent kannte seine eigenen absoluten Verbote also nicht; dass er sich trotzdem regelkonform verhielt, war das Urteil des Modells und nicht diese Datei. Der Fehler ist still: OpenClaw meldet ihn nur im JSON-Bericht eines Laufs (bootstrapTruncation), nicht im Log. Wer AGENTS.md kuerzt, darf diese Werte wieder senken - wer sie waechst, muss hier nachziehen. NACHGEZOGEN 27.08.2026: AGENTS.md wuchs mit Update-/LinkedIn-/DSGVO-/Pipeline-Abschnitten auf ~60300 Zeichen - smoke.sh Pruefung 8 schlug korrekt an; beide Grenzen angehoben (100000/150000), Laufzeit per config set gleichgezogen.",
+      "bootstrapMaxChars": 100000,
+      "bootstrapTotalMaxChars": 150000
     },
     "list": [
       {
