@@ -917,17 +917,139 @@ Partner-Antrag ueber die registrierte App, danach Kommentar → Entwurf →
 Freigabe wie ueberall. KEINE Scraper/Browser-Automatisierung auf dem
 Privatprofil (Sperr-Risiko trifft die ganze Serie).
 
-### Reihenfolge des Gesamtvorhabens
+### Reihenfolge des Gesamtvorhabens (Stand 27.08.2026)
 
+0. **P1 Pipeline + P2 DSGVO** — sofort baubar, kein VM-Bezug.
 1. **Teil B — Umzug** (braucht den Betreiber, ~1h). Alles Weitere setzt
    den systemd-Wächter der VM voraus.
 2. **D1 Historie-Import** — füttert Profile und damit alles andere.
 3. **D2 Terminumfrage** — der sichtbarste Vertriebsnutzen.
 4. **D3 Status-Kanal** — Marketing-Zweitverwertung der Videos.
-5. **D4–D6 Politur** — klein, unabhängig, in beliebiger Reihenfolge.
-6. **Teil C Team-Onboarding** — wartet auf die Zuschnitt-Antworten.
+5. **Teil E — Team-Schicht** (E1 Login → E2 Besitzer → E3 Münder → E4
+   Onboarding-Skill).
+6. **D4–D6 Politur** — klein, unabhängig, in beliebiger Reihenfolge.
 
-# Teil C — OpenClaw-Skill „Team-Onboarding" (Spezifikationsentwurf)
+# Teil E — Die Team-Schicht (Betreiber-Entscheid 27.08.2026: „go")
+
+**Architektur, beschlossen:** EIN zentraler Bot (ein Gateway, ein Gehirn,
+eine Datenbank), je Berater ein eigener WhatsApp-Mund (eigene Nummer als
+eigene OpenWA-Session im selben Container). Vertraulichkeit zwischen
+Beratern über die ohnehin isolierten DM-Sessions des Gateways plus das
+Besitzer-Feld. Ein Bot pro Berater wurde verworfen: Kosten und Pflege
+×Teamgröße (allein der Prüf-Takt kostet ~327k Tokens je Lauf, gemessen),
+kein geteiltes Wissen. **Offen benannte Grenze:** die Werkzeug-Ebene
+erzwingt die Besitzer-Filterung anfangs per AGENTS.md-Anweisung, nicht
+hart — harte Identitäten je Berater sind eine spätere Stufe und stehen
+hier ehrlich als solche.
+
+Schema-Änderungen laufen als Migrationsdateien unter `db/` und werden
+beim Ausrollen von einem MENSCHEN mit der Owner-Rolle eingespielt — die
+Produktions-Rolle der Dienste bleibt ohne DDL, `activities` bleibt
+append-only.
+
+## Vorgezogen, weil sofort nützlich (kein VM-Bezug — baubar ab jetzt)
+
+### Aufgabe P1: Die Pipeline zum Leben erwecken
+
+Befund 27.08.2026: `leads.status` existiert (samt `score`,
+`score_breakdown`), aber alle 34 Leads stehen auf `new` — kein Werkzeug
+bewegt je ein Stadium.
+
+**Dateien:** `sales-mcp/server.py` (Werkzeug `kontakt_stufe_setzen`,
+Stufen-Konstante), `sales-mcp/ui.py` (Spaltenansicht `/pipeline`,
+Stufen-Auswahl in der Kontaktkarte), `sales-mcp/tests/test_pipeline.py`,
+AGENTS.md-Abschnitt, Digest-Erweiterung.
+
+- [ ] Stufen-Vertrag: `PIPELINE_STUFEN = ("neu", "kontaktiert", "termin",
+  "angebot", "abgeschlossen", "verloren")`; der Alt-Wert `new` wird beim
+  Lesen als `neu` gedeutet, geschrieben wird nur noch der neue Satz.
+- [ ] Werkzeug `kontakt_stufe_setzen(lead_id, stufe, begruendung)`:
+  validiert gegen den Vertrag, schreibt `leads.status` UND eine
+  `activities`-Zeile Typ `stufenwechsel` (von, nach, begruendung) — jeder
+  Wechsel ist Beweis, kein stiller Feldschreiber. Rueckwaertsgaenge sind
+  erlaubt, aber die Begruendung ist PFLICHT.
+- [ ] AGENTS.md: der Bot SCHLAEGT Stufenwechsel aus dem Gespraechsverlauf
+  vor (Termin vereinbart -> `termin`), setzt sie mit Begruendung und
+  nennt sie dem Betreiber im Digest; er erfindet keine Abschluesse —
+  `abgeschlossen`/`verloren` nur, wenn der Verlauf es woertlich hergibt
+  oder der Betreiber es sagt.
+- [ ] UI `/pipeline`: sechs Spalten, je Kontakt Karte mit Wartezeit seit
+  letztem Kundenkontakt; Digest zaehlt je Stufe.
+- [ ] Tests: Vertrag (nur gueltige Stufen), Beweiszeile, Alt-Wert-Deutung,
+  UI-Rendering. Volle Suite, Abnahme, Commit.
+
+### Aufgabe P2: DSGVO-Handwerk (Auskunft und Loeschweg)
+
+- [ ] `kontakt_auskunft(lead_id)`: vollstaendiger Export aller Daten
+  eines Kontakts (Stammdaten, enrichment, alle activities, Entwuerfe)
+  als Markdown-Report nach `/reports` — der Art.-15-Antwortentwurf.
+- [ ] `loeschantrag_vermerken(lead_id, quelle)`: markiert den Kontakt
+  (enrichment `_loeschantrag` mit Datum/Quelle), archiviert ihn und
+  STOPPT jede weitere Verarbeitung (antworten_faellig/Profile lassen
+  markierte Kontakte aus — Tests). Die physische Loeschung bleibt
+  BEWUSST ohne Werkzeug: sie laeuft als dokumentierter Runbook-Schritt
+  (`docs/06_DSGVO.md`) mit der Owner-Rolle, Vier-Augen, Frist 30 Tage.
+- [ ] `docs/06_DSGVO.md`: beide Ablaeufe, Zustaendigkeit, Fristen.
+
+## Die Team-Stufe selbst (nach Umzug und D1)
+
+### Aufgabe E1: UI-Anmeldung mit zwei Rollen
+
+**Dateien:** `db/00X_team.sql` (Tabelle `benutzer`: name, rolle
+lesen|freigeben, passwort_hash, aktiv), `sales-mcp/ui.py` (Login-Seite,
+signierter Sitzungs-Cookie mit Secret aus `.env`, Rollen-Pruefung an
+JEDEM Freigabe-/Schreib-POST), Tests.
+
+- [ ] Migration schreiben; Einspielen dokumentiert als Menschen-Schritt.
+- [ ] Login/Logout, Cookie signiert (Secret `UI_SESSION_SECRET` in .env,
+  nie im Log), Fehlversuche gebremst.
+- [ ] Rolle `lesen`: alle Seiten sichtbar, jeder verändernde POST wird
+  abgelehnt. Rolle `freigeben`: wie heute. Tests fuer BEIDE Richtungen.
+- [ ] Freigaben tragen kuenftig `approved_by=<benutzername>` statt
+  pauschal `betreiber` — wer freigab, steht im Beweis.
+
+### Aufgabe E2: Besitzer-Feld
+
+- [ ] Migration: `leads.berater text` (null = Betreiber). Vergabe in der
+  Kontaktkarte und bei der Einordnung; `kontakt_stufe_setzen` und Digest
+  filtern optional je Berater.
+- [ ] Zuordnung Berater-Handynummer -> Benutzername als Konfigdatei
+  (`config/berater.json`, via Git ausgerollt): der Bot erkennt am
+  DM-Absender, WER fragt, und haelt sich per AGENTS.md an dessen
+  Kontakte. (Die weiche Grenze von oben — hier verankert.)
+
+### Aufgabe E3: Mehrere WhatsApp-Muender
+
+- [ ] MESSUNG zuerst: zweite OpenWA-Session anlegen (Testnummer),
+  pruefen, wie der Webhook die Session kennzeichnet und ob
+  AUTO_START_SESSIONS alle Sessions startet.
+- [ ] `sales-inbox` schreibt die Session-Kennung in jede activity;
+  Einordnung nutzt sie fuer den Besitzer-Vorschlag.
+- [ ] `sales-dispatch` waehlt die Versand-Session nach `lead.berater`
+  ueber `config/berater.json`; ohne Zuordnung wie heute die Hauptnummer.
+- [ ] Kopplungs-Runbook je neuer Nummer (Pairing-Code-Ablauf ist
+  gemessen und dokumentiert).
+
+### Aufgabe E4: Onboarding-/Offboarding-Skill (ersetzt Teil C)
+
+- [ ] Workspace-Skill `team-onboarding`: auf „richte <Name> ein" sammelt
+  der Bot Name/Nummer/Rolle, erzeugt den Begruessungs-Entwurf und nennt
+  dem Betreiber die MENSCHEN-Schritte als Checkliste: benutzer-Zeile
+  einspielen (Doppelklick `scripts/berater-anlegen.ps1`, fragt Name +
+  Rolle + Passwort ab), Nummer in `channels.whatsapp.allowFrom`,
+  `config/berater.json`-Eintrag committen. Der Bot erweitert NIEMALS
+  selbst Zugriffslisten oder Benutzerkonten.
+- [ ] Offboarding: `benutzer.aktiv=false` (Login tot), Kontakte per
+  `uebergabe_erstellen` an einen Kollegen, Nummer aus allowFrom.
+- [ ] Tests fuer berater-anlegen.ps1 (Parse), Skill-Sichtbarkeit.
+
+# Teil C — AUFGEGANGEN in Teil E (27.08.2026)
+
+Die drei Zuschnitt-Fragen sind beantwortet: zentraler Bot mit eigenen
+Nummern je Berater (Teil E), Rollen lesen/freigeben (E1), Offboarding ja
+(E4). Der urspruengliche Entwurf bleibt unten als Herkunft stehen.
+
+## Ursprünglicher Spezifikationsentwurf (historisch)
 
 **Noch KEINE Aufgaben** — erst nach den Antworten des Betreibers (unten) wird
 daraus ein eigener Plan. Der Rahmen, damit die Richtung steht:
@@ -964,16 +1086,13 @@ Entwurf `skills/team-onboarding/SKILL.md`: Wenn der Betreiber schreibt
 Beantwortet am 27.08.2026: Tailscale JA · Updates auf Zuruf (Betreiber oder
 Bot-Anfrage → Aufgabe 7b) · Allowlist nur auf Anfrage, Eintrag durch Menschen.
 
-Noch offen:
+Noch offen (Stand 27.08.2026 — Team-Zuschnitt ist entschieden, siehe Teil E):
 
 1. **Cutover-Termin**: 45–60 Minuten, du wirst zweimal kurz gebraucht
    (Tailscale-Klick, ggf. Kopplungscode/QR).
 2. **Proxmox-Vollsicherung (vzdump)** der VM zusätzlich zu den Volume-tars?
    `local` auf pve hat nur 25 GB frei — dafür müsste ein Ziel her (USB-Platte,
    NAS). Bis dahin sind die rotierenden Volume-Sicherungen der Stand.
-3. **Teil C, Rest-Zuschnitt**: Bekommt ein neues Teammitglied auch die
-   Weboberfläche (dann braucht sie erstmals Benutzerkonten)? Nur lesen oder
-   auch freigeben? Soll der Skill auch Offboarding können?
 
 ## Selbstprüfung (Plan gegen Spezifikation)
 
