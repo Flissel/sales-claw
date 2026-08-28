@@ -1025,6 +1025,24 @@ Regeln:
   Mensch das LinkedIn-Profil pruefen muss, BEVOR irgendjemand erneut
   versendet — genau so, nicht weicher.
 
+## DSGVO: Auskunft und Loeschbegehren (27.08.2026)
+
+* Verlangt eine Person AUSKUNFT ueber ihre Daten: sag es dem Betreiber.
+  `kontakt_auskunft(lead_id)` erzeugt den Export nach /reports — der
+  Betreiber prueft und uebergibt selbst. Stelle den Export NIEMALS in
+  einen Chat.
+* Verlangt eine Person im Chat ausdruecklich die LOESCHUNG ihrer Daten:
+  rufe SOFORT `loeschantrag_vermerken(lead_id, quelle, wortlaut)` auf —
+  mit Quelle und dem Wortlaut der Bitte — und informiere den Betreiber.
+  Der Vermerk stoppt jede weitere Verarbeitung; das ist Schutz, kein
+  Risiko, darum darfst du ihn ohne Rueckfrage setzen.
+* Geloescht wird dadurch NICHTS: die physische Loeschung ist ein
+  Menschen-Schritt mit Vier-Augen (docs/06_DSGVO.md, Frist 30 Tage).
+  Sag das der Person auch so: „Ihre Daten werden nicht mehr verarbeitet;
+  die Loeschung wird innerhalb von 30 Tagen abgeschlossen."
+* Ein Kontakt mit Loeschantrag bekommt von dir NIE wieder eine
+  Nachricht, auch keine Bestaetigung nach der ersten.
+
 ## Pipeline-Stufen (27.08.2026)
 
 Jeder Kontakt steht auf einer von acht Stufen: neu, recherchiert,

@@ -762,6 +762,27 @@ def _archiviert(enrichment) -> bool:
     return isinstance(eintrag, dict) and eintrag.get("archiviert") is True
 
 
+LOESCH_SCHLUESSEL = "_loeschantrag"
+
+
+def _loeschantrag(enrichment):
+    """Der Loeschantrag-Vermerk — oder None.
+
+    Fail-closed in SCHUTZrichtung (Gegenstueck zur fail-open-Archivierung):
+    jeder dict-Vermerk zaehlt als Antrag, auch ein kaputter ohne Datum —
+    lieber zu viel gestoppt als einen Kontakt weiterverarbeitet, der um
+    Loeschung gebeten hat."""
+    eintrag = (enrichment or {}).get(LOESCH_SCHLUESSEL)
+    return eintrag if isinstance(eintrag, dict) else None
+
+
+def _loeschantrag_fehler(antrag) -> str:
+    return _json({"fehler": (
+        f"Loeschantrag vom {antrag.get('am', '?')} "
+        f"({antrag.get('quelle', 'Quelle unbekannt')}) — dieser Kontakt "
+        f"wird nicht mehr verarbeitet. Ablauf: docs/06_DSGVO.md.")})
+
+
 def _archiv_sql(spalte: str) -> str:
     """SQL-Ausdruck mit GENAU der Antwort von `_archiviert(...)` in Python.
 
@@ -832,7 +853,15 @@ def kontakt_archivieren(lead_id: str) -> str:
 def kontakt_wiederherstellen(lead_id: str) -> str:
     """Einen archivierten Kontakt wieder sichtbar machen. Gegen-Ereignis zum
     Archivieren — es gibt nichts wiederherzustellen ausser der Sichtbarkeit,
-    denn geloescht war nie etwas."""
+    denn geloescht war nie etwas.
+
+    AUSNAHME: liegt ein Loeschantrag vor, gibt es kein stilles
+    Zurueckholen — erst muss der Antrag geklaert sein (docs/06_DSGVO.md)."""
+    zeilen = _q("select enrichment from leads where id = %s", (lead_id,))
+    if zeilen:
+        antrag = _loeschantrag(zeilen[0]["enrichment"])
+        if antrag:
+            return _loeschantrag_fehler(antrag)
     return _archiv_setzen(lead_id, False)
 
 
@@ -1390,6 +1419,10 @@ def entwurf_erstellen(lead_id: str, kanal: str, text: str,
                (lead_id,))
     if not leads:
         return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
+    # Loeschantrag stoppt ALLES (P2, 27.08.2026) — noch vor der Freigabe.
+    antrag = _loeschantrag(leads[0]["enrichment"])
+    if antrag:
+        return _loeschantrag_fehler(antrag)
     # Kontakt-Freigabe VOR dem Insert (frueh sagen statt spaet scheitern,
     # dieselbe Begruendung wie bei CAPTION_MAXLAENGE): ein WhatsApp-Entwurf
     # fuer einen nicht freigegebenen Kontakt soll gar nicht erst in der
@@ -4517,6 +4550,10 @@ def antwort_entwerfen(lead_id: str, text: str,
         return _json({"fehler": (
             "Am Sammelkontakt haengen die Nachrichten vieler Fremder — eine "
             "Antwort dorthin ginge an den Falschen. Erst einordnen.")})
+    # Loeschantrag stoppt ALLES (P2, 27.08.2026) — noch vor der Stufe.
+    antrag = _loeschantrag(leads[0]["enrichment"])
+    if antrag:
+        return _loeschantrag_fehler(antrag)
 
     stufe = _autonomie(leads[0]["enrichment"])
     if stufe not in ("halbauto", "auto"):
@@ -4841,6 +4878,113 @@ def kennungen_bericht() -> str:
 
 
 # ---------------------------------------------------------------------------
+# DSGVO-Handwerk (P2, 27.08.2026): Auskunft als Export, Loeschantrag als
+# Vermerk mit Vollstopp. Die physische Loeschung bleibt BEWUSST ohne
+# Werkzeug — sie ist ein dokumentierter Menschen-Schritt (docs/06_DSGVO.md)
+# mit der Owner-Rolle und Vier-Augen; die Dienst-Rolle hat kein DELETE.
+# ---------------------------------------------------------------------------
+
+@_gesichert
+def kontakt_auskunft(lead_id: str) -> str:
+    """Datenauskunft nach Art. 15 DSGVO: ALLES, was zu diesem Kontakt
+    gespeichert ist — Stammdaten, Anreicherung, jede Protokollzeile, jeder
+    Entwurf — als Markdown nach /reports und als Volltext zurueck.
+
+    Versendet wird NICHTS: der Betreiber prueft den Export und gibt ihn
+    selbst an die Person weiter. Rufe das Werkzeug NUR auf Bitte des
+    Betreibers auf; verlangt der KONTAKT selbst Auskunft, sag es dem
+    Betreiber, statt den Export in den Chat zu stellen.
+    """
+    leads = _q("select * from leads where id = %s", (lead_id,))
+    if not leads:
+        return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
+    l = leads[0]
+    zeilen = _q("select type, payload, created_at from activities "
+                "where lead_id = %s order by created_at", (lead_id,))
+    entwuerfe = _q("select channel, status, subject, body, created_at "
+                   "from drafts where lead_id = %s order by created_at",
+                   (lead_id,))
+    heute = date.today().isoformat()
+    teile = [f"# Datenauskunft — {l['name']} ({heute})", "",
+             "Erstellt nach Art. 15 DSGVO. Vollstaendiger Auszug aller",
+             "gespeicherten Daten zu dieser Person.", "", "## Stammdaten", ""]
+    for feld in ("name", "phone", "email", "company", "title", "source",
+                 "status", "consent_status", "score", "notes",
+                 "created_at", "updated_at"):
+        if l.get(feld) not in (None, ""):
+            teile.append(f"* {feld}: {l[feld]}")
+    teile += ["", "## Anreicherung", "",
+              "```json", json.dumps(l.get("enrichment") or {},
+                                    ensure_ascii=False, indent=1,
+                                    default=str), "```"]
+    antrag = _loeschantrag(l.get("enrichment"))
+    if antrag:
+        teile += ["", f"**Loeschantrag vermerkt am {antrag.get('am', '?')}**"
+                  f" (Quelle: {antrag.get('quelle', '?')})."]
+    teile += ["", f"## Protokoll ({len(zeilen)} Eintraege)", ""]
+    for z in zeilen:
+        teile.append(f"* {z['created_at']:%d.%m.%Y %H:%M} — {z['type']}: "
+                     f"{json.dumps(z['payload'], ensure_ascii=False, default=str)}")
+    teile += ["", f"## Entwuerfe ({len(entwuerfe)})", ""]
+    for e in entwuerfe:
+        teile.append(f"* {e['created_at']:%d.%m.%Y %H:%M} — {e['channel']} "
+                     f"[{e['status']}] {e['subject'] or ''}: {e['body']}")
+    text = "\n".join(teile) + "\n"
+    name = f"auskunft-{recherche.slug(l['name'] or 'kontakt')}-{heute}.md"
+    pfad, schreibfehler = None, None
+    try:
+        pfad, _ueberschrieben = recherche.report_schreiben(name, text)
+    except OSError as e:
+        schreibfehler = f"Auskunft konnte nicht abgelegt werden: {e}"
+    return _json({"lead_id": lead_id, "datei": pfad, "text": text,
+                  "protokollzeilen": len(zeilen),
+                  "entwuerfe": len(entwuerfe),
+                  **({"fehler_ablage": schreibfehler}
+                     if schreibfehler else {})})
+
+
+@_gesichert
+def loeschantrag_vermerken(lead_id: str, quelle: str,
+                           wortlaut: str = "") -> str:
+    """Loeschbegehren (Art. 17 DSGVO) vermerken — stoppt SOFORT jede
+    weitere Verarbeitung dieses Kontakts.
+
+    Der Vermerk archiviert den Kontakt, blockiert neue Entwuerfe und den
+    Auto-Betrieb und verhindert stilles Zurueckholen. Geloescht wird hier
+    NICHTS: die physische Loeschung ist ein Menschen-Schritt mit
+    Vier-Augen (docs/06_DSGVO.md, Frist 30 Tage). Verlangt ein Kontakt im
+    Chat die Loeschung, vermerke sie MIT Quelle und Wortlaut und sag es
+    dem Betreiber sofort.
+    """
+    if not (quelle or "").strip():
+        return _json({"fehler": (
+            "Ohne Quelle kein Vermerk — der Nachweis muss sagen, woher "
+            "das Begehren kommt (z. B. 'WhatsApp-Nachricht', 'Telefonat').")})
+    leads = _q("select enrichment, name from leads where id = %s", (lead_id,))
+    if not leads:
+        return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
+    if _loeschantrag(leads[0]["enrichment"]):
+        return _json({"fehler": "Ein Loeschantrag liegt bereits vor."})
+    vermerk = {"am": _jetzt(), "quelle": quelle.strip(),
+               "durch": "betreiber"}
+    if (wortlaut or "").strip():
+        vermerk["wortlaut"] = wortlaut.strip()
+    _q("update leads set enrichment = jsonb_set(jsonb_set(enrichment, %s, "
+       "%s::jsonb, true), %s, %s::jsonb, true) where id = %s returning id",
+       ([LOESCH_SCHLUESSEL], json.dumps(vermerk, ensure_ascii=False),
+        [ARCHIV_SCHLUESSEL],
+        json.dumps({"archiviert": True, "at": _jetzt(),
+                    "durch": "loeschantrag"}), lead_id))
+    _q("insert into activities (lead_id, type, payload) values "
+       "(%s, 'loeschantrag', %s) returning id", (lead_id, _json(vermerk)))
+    return _json({"lead_id": lead_id, "kontakt": leads[0]["name"],
+                  "vermerkt_am": vermerk["am"], "hinweis": (
+                      "Verarbeitung gestoppt, Kontakt archiviert. Physische "
+                      "Loeschung: Menschen-Schritt nach docs/06_DSGVO.md, "
+                      "Frist 30 Tage.")})
+
+
+# ---------------------------------------------------------------------------
 # Pipeline-Stufen (27.08.2026). Befund davor: leads.status existierte von
 # Anfang an, aber alle 34 Leads standen auf `new` — kein Werkzeug bewegte je
 # ein Stadium. Sechs Stufen, jeder Wechsel mit Begruendung als Beweiszeile.
@@ -5142,10 +5286,14 @@ WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              # Tor (bewusster Start des Einmal-Versenders) oeffnet der
              # Betreiber per Chat statt per Hand.
              linkedin_versand_anfordern, linkedin_versand_ergebnis,
-             # Pipeline (27.08.2026): sechs Stufen, jeder Wechsel mit
+             # Pipeline (27.08.2026): acht Stufen, jeder Wechsel mit
              # Begruendung als Beweiszeile. Vertragstests in
              # tests/test_pipeline.py.
-             kontakt_stufe_setzen)
+             kontakt_stufe_setzen,
+             # DSGVO (P2, 27.08.2026): Auskunft als Export, Loeschantrag
+             # als Vollstopp-Vermerk — die Loeschung selbst bleibt ein
+             # Menschen-Schritt. Vertragstests in tests/test_dsgvo.py.
+             kontakt_auskunft, loeschantrag_vermerken)
 
 for _fn in WERKZEUGE:
     mcp.tool()(_fn)

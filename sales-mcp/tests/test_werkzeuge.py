@@ -688,9 +688,9 @@ def test_kontakt_aktualisieren_signatur_ueberlebt_den_dekorator():
     assert list(parameter) == ["lead_id", "feld", "wert"]
 
 
-def test_sechsundfuenfzig_werkzeuge_registriert():
+def test_achtundfuenfzig_werkzeuge_registriert():
     namen = {fn.__name__ for fn in server.WERKZEUGE}
-    assert len(namen) == 56
+    assert len(namen) == 58
     # Zustimmung des Kontakts zur automatischen Antwort (25.08.2026):
     # fragen als ENTWURF, erfassen durch einen MENSCHEN, widerrufen
     # wirkt sofort. Vertragstests in tests/test_zustimmung.py.
@@ -724,6 +724,10 @@ def test_sechsundfuenfzig_werkzeuge_registriert():
     # Pipeline (27.08.2026): acht Stufen aus dem Schema-Constraint, jeder
     # Wechsel mit Begruendung als Beweiszeile (tests/test_pipeline.py).
     assert "kontakt_stufe_setzen" in namen
+    # DSGVO (P2, 27.08.2026): Auskunft und Loeschantrag-Vollstopp — die
+    # Loeschung selbst bleibt ein Menschen-Schritt (tests/test_dsgvo.py).
+    assert "kontakt_auskunft" in namen
+    assert "loeschantrag_vermerken" in namen
     assert "kontakt_aktualisieren" in namen
     # Das Kontaktprofil (25.08.2026) mit EIGENEM Takt: Schwelle 5 statt der
     # 50 des Chat-Reports, und ohne Nachrichten zu verstecken. Dazu der Weg
@@ -740,9 +744,16 @@ def test_sechsundfuenfzig_werkzeuge_registriert():
     # Archivieren statt Loeschen (21.08.2026). Es gibt bewusst KEIN
     # Loesch-Werkzeug: kein DELETE-Recht auf `sales`, und `activities` haengt
     # mit ON DELETE CASCADE am Kontakt. Vertragstests in tests/test_ui.py.
+    #
+    # Dokumentierte Verengung 27.08.2026 (P2): `loeschantrag_vermerken`
+    # traegt das Wort, LOESCHT aber nichts — es VERMERKT ein Begehren und
+    # stoppt die Verarbeitung (tests/test_dsgvo.py). Der Vertrag bleibt:
+    # kein anderes Werkzeug darf loeschen oder danach klingen.
     assert "kontakt_archivieren" in namen
     assert "kontakt_wiederherstellen" in namen
-    assert not [n for n in namen if "loesch" in n or "delete" in n]
+    assert not [n for n in namen
+                if ("loesch" in n or "delete" in n)
+                and n != "loeschantrag_vermerken"]
     assert "wiedervorlage_setzen" in namen
     assert "wiedervorlage_erledigt" in namen
     assert "medien_liste" in namen
