@@ -2772,3 +2772,67 @@ def test_die_karte_traegt_den_lese_stand():
     lead = _lead()
     draft = _entwurf(lead)
     assert f'name="stand" value="{_lese_stand(draft)}"' in _get("/").text
+
+
+# ---------------------------------------------------------------------------
+# WhatsApp-Zustandsseite (29.08.2026): liest NUR — und bleibt stehen, wenn
+# OpenWA nicht antwortet. Genau dann wird sie gebraucht.
+# ---------------------------------------------------------------------------
+
+def test_whatsapp_seite_ohne_zugang_erklaert_statt_zu_scheitern(monkeypatch):
+    monkeypatch.setattr(ui, "OPENWA_VIEWER_KEY", "")
+    seite = _get("/whatsapp")
+    assert seite.status_code == 200
+    assert "OPENWA_VIEWER_KEY" in seite.text
+
+
+def test_whatsapp_seite_uebersetzt_den_zustand(monkeypatch):
+    monkeypatch.setattr(ui, "OPENWA_VIEWER_KEY", "egal")
+    monkeypatch.setattr(ui, "OPENWA_SESSION_ID", "")
+    monkeypatch.setattr(ui, "_openwa_lesen", lambda pfad: (
+        [{"id": "s1", "status": "qr_ready", "phone": "4917000",
+          "pushName": "Test", "connectedAt": "2026-08-29T07:00:00Z",
+          "lastActive": None, "engineLoaded": True}], None))
+    seite = _get("/whatsapp").text
+    assert "wartet auf Kopplung" in seite      # Klartext, nicht nur qr_ready
+    assert "nichts kommt an" in seite          # die Folge steht dabei
+    assert "29.08.2026 07:00 UTC" in seite     # ISO sauber formatiert
+
+
+def test_whatsapp_seite_warnt_wenn_nie_etwas_ankam(monkeypatch):
+    """Der Weg in den Posteingang wird aus der DATENBANK belegt, nicht aus
+    dem Webhook-Register: eine eingetragene Zeile beweist nichts, eine
+    angekommene Nachricht schon."""
+    monkeypatch.setattr(ui, "OPENWA_VIEWER_KEY", "egal")
+    monkeypatch.setattr(ui, "OPENWA_SESSION_ID", "")
+    monkeypatch.setattr(ui, "_openwa_lesen",
+                        lambda pfad: ([{"id": "s1", "status": "ready"}], None))
+    seite = _get("/whatsapp").text
+    assert "NIE eine" in seite
+    assert "unbewiesen" in seite
+
+
+def test_whatsapp_seite_belegt_die_kette_mit_einer_echten_nachricht(monkeypatch):
+    lead = _lead()
+    server._q("insert into activities (lead_id, type, payload) values "
+              "(%s, 'kundenantwort', %s) returning id",
+              (lead, server._json({"text": "Hallo"})))
+    monkeypatch.setattr(ui, "OPENWA_VIEWER_KEY", "egal")
+    monkeypatch.setattr(ui, "OPENWA_SESSION_ID", "")
+    monkeypatch.setattr(ui, "_openwa_lesen",
+                        lambda pfad: ([{"id": "s1", "status": "ready"}], None))
+    seite = _get("/whatsapp").text
+    assert "Die Kette bis in die Datenbank funktioniert" in seite
+
+
+def test_whatsapp_seite_haelt_einen_openwa_ausfall_aus(monkeypatch):
+    monkeypatch.setattr(ui, "OPENWA_VIEWER_KEY", "egal")
+    monkeypatch.setattr(ui, "_openwa_lesen",
+                        lambda p: (None, "OpenWA ist nicht erreichbar"))
+    seite = _get("/whatsapp")
+    assert seite.status_code == 200
+    assert "nicht erreichbar" in seite.text
+
+
+def test_der_nav_fuehrt_zur_whatsapp_seite():
+    assert 'href="/whatsapp"' in _get("/").text

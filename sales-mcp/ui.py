@@ -179,11 +179,13 @@ import html
 import json
 import logging
 import os
+import urllib.error
 import urllib.parse
+import urllib.request
 import secrets
 import sys
 import uuid
-from datetime import date
+from datetime import date, datetime
 
 import psycopg
 import uvicorn
@@ -628,7 +630,36 @@ thead th { background: var(--kopfzeile); }
 _NAV = (("/", "Freigaben"), ("/kontakte", "Kontakte"),
         ("/pipeline", "Pipeline"),
         ("/posteingang", "Posteingang"), ("/einordnung", "Einordnung"),
-        ("/wiedervorlagen", "Wiedervorlagen"), ("/medien", "Medien"))
+        ("/wiedervorlagen", "Wiedervorlagen"), ("/medien", "Medien"),
+        ("/whatsapp", "WhatsApp"))
+
+# --- WhatsApp-Zustand (29.08.2026) ------------------------------------------
+# Gelesen wird mit einem VIEWER-Schluessel: er darf GET, aber kein send-text
+# (gemessen: 403). Damit kann diese Seite den Zustand zeigen, ohne dass das
+# Freigabe-Gate durch einen zweiten Sendeweg umgangen werden koennte.
+OPENWA_URL = os.environ.get("OPENWA_URL", "").rstrip("/")
+OPENWA_VIEWER_KEY = os.environ.get("OPENWA_VIEWER_KEY", "")
+OPENWA_SESSION_ID = os.environ.get("OPENWA_SESSION_ID", "")
+OPENWA_DASHBOARD_URL = os.environ.get("OPENWA_DASHBOARD_URL",
+                                      "http://127.0.0.1:12785")
+OPENWA_TIMEOUT_S = 8
+
+# Was der Zustand bedeutet — in der Sprache des Betreibers, nicht in der
+# des Systems. `ready` heisst NICHT "alles gut", sondern genau das, was
+# hier steht.
+WA_ZUSTAND = {
+    "ready": ("verbunden", "gut",
+              "Nachrichten kommen an und gehen raus."),
+    "qr_ready": ("wartet auf Kopplung", "warnung",
+                 "Die Anmeldung fehlt — nichts kommt an, nichts geht raus. "
+                 "Neu koppeln in der OpenWA-Oberflaeche (Verweis unten)."),
+    "failed": ("gescheitert", "gefahr",
+               "Die Sitzung ist abgestuerzt. In der OpenWA-Oberflaeche "
+               "stoppen und neu starten; danach ggf. neu koppeln."),
+    "stopped": ("gestoppt", "warnung",
+                "Die Sitzung laeuft nicht. In der OpenWA-Oberflaeche starten."),
+    "starting": ("startet", "", "Einen Moment — die Sitzung faehrt hoch."),
+}
 
 
 def _seite(titel: str, rumpf: str, status: int = 200,
@@ -1677,7 +1708,7 @@ async def kontakte(request):
     archiv_zeigen = request.query_params.get("archiv") == "1"
     bedingung = "" if archiv_zeigen else (
         "where not " + server._archiv_sql("l.enrichment") + " ")
-    zeilen = server._q(
+    zeilen = server._q(  # noqa: E501 — Spaltenliste bleibt eine Zeile je Feld
         "select l.id, l.name, l.status, l.consent_status, l.enrichment, "
         "       (select max(a.created_at) from activities a "
         "         where a.lead_id = l.id) as letzte "
@@ -1708,7 +1739,11 @@ async def kontakte(request):
             marke += ' <span class="badge archiv">Sammelkontakt</span>'
         inhalt.append([
             f'<a href="/kontakte/{_e(z["id"])}">{_e(z["name"])}</a>{marke}',
-            _e(z["status"]), _e(z["consent_status"]), _zeit(z["letzte"]),
+            # Die Stufe deutsch wie auf /pipeline (29.08.2026): die Liste
+            # zeigte den rohen DB-Wert `new`, die Pipeline daneben `neu` —
+            # zwei Namen fuer dasselbe Feld sind ein Lesefehler in spe.
+            _e(server._stufe_lesen(z["status"])),
+            _e(z["consent_status"]), _zeit(z["letzte"]),
             # Am Sammelkontakt keine Stufe: er ist kein Mensch, und eine
             # Stufe darauf liesse den Agenten allen Fremden antworten.
             "" if sammel else _autonomie_waehler(
@@ -2277,18 +2312,146 @@ async def aktion_kontakt_stufe(request):
     return RedirectResponse(f"/kontakte/{lead_id}#stufe", status_code=303)
 
 
+def _wa_zeit(wert) -> str:
+    """OpenWA liefert ISO-Zeichenketten, die Datenbank Datumsobjekte —
+    `_zeit` kann nur letztere (dt.strftime). Eine fremde Zeichenkette
+    darf die Diagnoseseite nicht zum Absturz bringen, deshalb hier ein
+    eigener, nachsichtiger Formatierer."""
+    if not wert:
+        return "—"
+    if hasattr(wert, "strftime"):
+        return _zeit(wert)
+    try:
+        return datetime.fromisoformat(
+            str(wert).replace("Z", "+00:00")).strftime("%d.%m.%Y %H:%M UTC")
+    except ValueError:
+        return str(wert)[:32]
+
+
+def _openwa_lesen(pfad: str):
+    """Ein GET gegen OpenWA. Gibt (daten, fehlertext) — nie eine Ausnahme.
+
+    Diese Seite ist eine DIAGNOSE. Wenn die Diagnose selbst abstuerzt,
+    steht der Betreiber genau dann ohne Antwort da, wenn er sie braucht.
+    """
+    if not (OPENWA_URL and OPENWA_VIEWER_KEY):
+        return None, ("Kein Nur-Lese-Zugang eingerichtet — "
+                      "OPENWA_VIEWER_KEY fehlt in der .env.")
+    try:
+        anfrage = urllib.request.Request(
+            OPENWA_URL + pfad, headers={"X-Api-Key": OPENWA_VIEWER_KEY})
+        with urllib.request.urlopen(anfrage,
+                                    timeout=OPENWA_TIMEOUT_S) as antwort:
+            return json.loads(antwort.read() or b"null"), None
+    except urllib.error.HTTPError as e:
+        # Der Schluessel steht NIE in der Meldung — nur der Statuscode.
+        return None, f"OpenWA antwortet mit HTTP {e.code}."
+    except Exception:
+        return None, ("OpenWA ist nicht erreichbar — laeuft der Container "
+                      "openwa?")
+
+
+@_gesichert_seite
+async def whatsapp(request):
+    """Der WhatsApp-Zustand auf einen Blick.
+
+    Beantwortet die Frage, die am 26.08.2026 eine Stunde gekostet hat:
+    „Warum antwortet der Bot nicht?" — Sitzung verbunden? Webhook aktiv?
+    Der Weg zum Neukoppeln steht als Verweis dabei; gekoppelt wird in der
+    OpenWA-Oberflaeche, denn dafuer braucht es einen Schluessel, der
+    senden darf — und der gehoert nicht in diese Anzeige.
+    """
+    teile = ["<h1>WhatsApp</h1>"]
+
+    sitzungen, fehler = _openwa_lesen("/api/sessions")
+    if fehler:
+        teile.append(f'<div class="warnung"><b>Kein Zustand lesbar.</b> '
+                     f'{_e(fehler)}</div>')
+    else:
+        passende = [s for s in (sitzungen or [])
+                    if not OPENWA_SESSION_ID
+                    or str(s.get("id")) == OPENWA_SESSION_ID]
+        if not passende:
+            teile.append('<div class="warnung">OpenWA kennt diese Sitzung '
+                         'nicht — stimmt OPENWA_SESSION_ID?</div>')
+        for s in passende:
+            zustand = str(s.get("status") or "unbekannt")
+            wort, klasse, erklaerung = WA_ZUSTAND.get(
+                zustand, (zustand, "warnung",
+                          "Unbekannter Zustand — in der OpenWA-Oberflaeche "
+                          "nachsehen."))
+            teile.append(
+                f'<div class="karte"><h2>{_e(wort)} '
+                f'<span class="badge {klasse}">{_e(zustand)}</span></h2>'
+                f'<p>{_e(erklaerung)}</p>' +
+                _paar_tabelle([
+                    ("Nummer", s.get("phone") or "—"),
+                    ("Name im Profil", s.get("pushName") or "—"),
+                    ("Verbunden seit", _wa_zeit(s.get("connectedAt"))),
+                    ("Zuletzt aktiv", _wa_zeit(s.get("lastActive"))),
+                    ("Engine geladen", "ja" if s.get("engineLoaded") else "nein"),
+                ]) + '</div>')
+
+    # Der Weg vom Handy in die Datenbank — aus der Datenbank selbst
+    # beantwortet (29.08.2026). Der Webhook-Endpunkt von OpenWA verlangt
+    # OPERATOR (gemessen: 403 mit dem Nur-Lese-Schluessel), und die
+    # Registerzeile saehe ohnehin nur, DASS ein Haken eingetragen ist.
+    # „Wann kam zuletzt wirklich etwas an?" belegt die ganze Kette:
+    # Handy -> OpenWA -> Webhook -> sales-inbox -> activities.
+    teile.append("<h2>Weg in den Posteingang</h2>")
+    try:
+        letzte = server._q(
+            "select max(created_at) wann from activities "
+            "where type = 'kundenantwort'")[0]["wann"]
+    except Exception:
+        letzte = None
+        teile.append('<p class="meta">Datenbank gerade nicht lesbar.</p>')
+    if letzte:
+        stunden = (server._q("select extract(epoch from (now() - %s))/3600 h",
+                             (letzte,))[0]["h"] or 0)
+        satz = (f'Letzte eingegangene Kundennachricht: '
+                f'<b>{_e(_zeit(letzte))}</b> (vor {stunden:.1f} h).')
+        if stunden > 48:
+            teile.append(f'<div class="warnung">{satz} Das ist lange — wenn '
+                         f'du sicher bist, dass jemand geschrieben hat, '
+                         f'stimmt am Weg etwas nicht.</div>')
+        else:
+            teile.append(f"<p>{satz} Die Kette bis in die Datenbank "
+                         f"funktioniert.</p>")
+    elif letzte is None:
+        teile.append('<div class="warnung">Es ist noch NIE eine '
+                     'Kundennachricht angekommen — der Weg vom Handy in den '
+                     'Posteingang ist unbewiesen.</div>')
+
+    teile.append(
+        f'<h2>Koppeln und Neustarten</h2>'
+        f'<p>Diese Seite <b>liest nur</b>. Zum Koppeln, Neustarten oder '
+        f'Abmelden geht es in die OpenWA-Oberflaeche — dort ist ein '
+        f'Schluessel noetig, der senden darf, und der gehoert bewusst nicht '
+        f'in diese Anzeige (sonst liesse sich die Freigabe umgehen).</p>'
+        f'<p><a href="{_e(OPENWA_DASHBOARD_URL)}" target="_blank" '
+        f'rel="noreferrer">OpenWA-Oberflaeche oeffnen &rarr;</a></p>')
+    return _seite("WhatsApp", "".join(teile), refresh=60)
+
+
 @_gesichert_seite
 async def pipeline(request):
     """Die Spaltensicht: alle aktiven Kontakte nach Stufe, mit Wartezeit
     seit dem letzten Kontakt in beide Richtungen."""
+    # _archiv_sql statt einer handgeschriebenen Bedingung (29.08.2026):
+    # `enrichment->>'_archiviert'` liefert das OBJEKT als Text, ::bool
+    # scheitert bzw. wird null — die Pipeline zaehlte damit archivierte
+    # Kontakte mit (34 statt 28, im Browser gemessen). Filter und Anzeige
+    # duerfen nie verschiedene Regeln benutzen; genau davor warnt der
+    # Kommentar an _archiv_sql.
     zeilen = server._q(
         "select l.id, l.name, l.status, "
         "  (select max(a.created_at) from activities a "
         "   where a.lead_id = l.id and a.type in "
         "   ('kundenantwort', 'nachricht_ausgehend', 'versand')) letzter "
         "from leads l "
-        "where coalesce((l.enrichment->>'_archiviert')::bool, false) = false "
-        "order by l.name")
+        "where not " + server._archiv_sql("l.enrichment") +
+        " order by l.name")
     spalten = {s: [] for s in server.PIPELINE_STUFEN}
     for z in zeilen:
         spalten[server._stufe_lesen(z["status"])].append(z)
@@ -3202,6 +3365,7 @@ app = Starlette(routes=[
     Route("/kontakte/privat-entziehen", aktion_kontakt_privat_entziehen,
           methods=["POST"]),
     Route("/pipeline", pipeline),
+    Route("/whatsapp", whatsapp),
     Route("/kontakte/wiederherstellen", aktion_kontakt_wiederherstellen,
           methods=["POST"]),
     Route("/kontakte/profil-anfordern", aktion_profil_anfordern,

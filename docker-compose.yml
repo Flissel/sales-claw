@@ -437,6 +437,18 @@ services:
       # lead_id, die auf jeder Kontaktseite steht — die T5a-Ueberlegung oben
       # (keine Schluessel ins UI) bleibt davon unberuehrt.
       - INBOX_UNBEKANNT_LEAD_ID=${INBOX_UNBEKANNT_LEAD_ID:-}
+      # WhatsApp-Zustand auf /whatsapp (29.08.2026). Bewusst NICHT der
+      # OPENWA_API_KEY: der darf senden und wuerde das Freigabe-Gate
+      # umgehen (T5a, ausfuehrlich beim Agent-Container). Der VIEWER-
+      # Schluessel darf ausschliesslich lesen — gemessen am 29.08.2026:
+      # GET /api/sessions -> 200, POST messages/send-text -> 403.
+      # Fehlt er, zeigt die Seite eine Erklaerung statt eines Fehlers.
+      - OPENWA_URL=http://openwa:2785
+      - OPENWA_SESSION_ID=${OPENWA_SESSION_ID:-}
+      - OPENWA_VIEWER_KEY=${OPENWA_VIEWER_KEY:-}
+      # Adresse der OpenWA-Oberflaeche fuer den Verweis auf /whatsapp — der
+      # Browser des Betreibers ruft sie auf, nicht der Container.
+      - OPENWA_DASHBOARD_URL=${OPENWA_DASHBOARD_URL:-http://127.0.0.1:12785}
       # Zusaetzlich erlaubte Host-Header, kommagetrennt ohne Port — fuer den
       # Zugriff vom eigenen Handy ueber Tailscale. Leer lassen heisst: nur
       # Loopback, wie in Stufe 10.
