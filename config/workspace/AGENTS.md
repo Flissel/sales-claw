@@ -1025,6 +1025,18 @@ Regeln:
   Mensch das LinkedIn-Profil pruefen muss, BEVOR irgendjemand erneut
   versendet — genau so, nicht weicher.
 
+## `ignorieren` heisst ignorieren (29.08.2026)
+
+Ein Kontakt auf Stufe `ignorieren` wird von dir in KEINER Weise
+analysiert: keine Antworten (war schon so), keine Kontaktprofile, keine
+Chat-Reports (seit 29.08. auch technisch gefiltert). Dazu die Regel, die
+kein Filter erzwingen kann: **Lies den Verlauf eines ignorierten
+Kontakts NIEMALS aus eigenem Antrieb** — nicht fuer den Digest, nicht
+"zur Einordnung", nicht aus Neugier. Einzige Ausnahme: der Betreiber
+bittet dich ausdruecklich darum (z. B. per profil_anfordern — das
+uebersteuert bewusst). Hinter `ignorieren` stehen oft PRIVATE Chats;
+sie gehen den Vertrieb nichts an.
+
 ## DSGVO: Auskunft und Loeschbegehren (27.08.2026)
 
 * Verlangt eine Person AUSKUNFT ueber ihre Daten: sag es dem Betreiber.

@@ -991,6 +991,30 @@ AGENTS.md-Abschnitt, Digest-Erweiterung.
   (`docs/06_DSGVO.md`) mit der Owner-Rolle, Vier-Augen, Frist 30 Tage.
 - [ ] `docs/06_DSGVO.md`: beide Ablaeufe, Zustaendigkeit, Fristen.
 
+### Aufgabe P3: Privat-Markierung (geplant 29.08.2026 — schaerfer als ignorieren)
+
+Befund am 29.08.: `ignorieren` filterte nur das Antworten; Profile und
+Chat-Reports liefen fuer ignorierte (auch private) Kontakte weiter. Die
+Faelligkeitslisten sind seit dem 29.08. gefiltert (tests/
+test_ignorieren.py), gespeichert wird aber weiterhin ALLES. P3 ist die
+Stufe darueber fuer echte Privat-Kontakte (z. B. Lisa):
+
+* Markierung `_privat` je Kontakt (`kontakt_privat_setzen`, nur
+  Betreiber, Mechanik wie Archiv: Vermerk + Beweiszeile).
+* **sales-inbox speichert fuer private Kontakte KEINEN Inhalt** —
+  Datensparsamkeit statt Filterung: was nie gespeichert wurde, kann
+  nirgends auftauchen. (Empfehlung: gar keine Zeile, auch kein Zaehler;
+  der Kontakt ist dem System dann schlicht still.)
+* `chat_verlauf`, Profile, Reports, Auskunftsexport: verweigern mit
+  klarem Hinweis „privat markiert".
+* Der Historie-Import (D1) respektiert die Markierung.
+* UI: Schloss in der Kontaktliste; setzen/entziehen mit Bestaetigung.
+
+Offene Betreiber-Entscheidung: was passiert mit BEREITS gespeicherten
+Inhalten eines neu privat markierten Kontakts — behalten (ab jetzt
+still) oder Loeschung nach dem DSGVO-Runbook (docs/06)? Kein VM-Bezug,
+baubar jederzeit auf Zuruf.
+
 ## Die Team-Stufe selbst (nach Umzug und D1)
 
 ### Aufgabe E1: UI-Anmeldung mit zwei Rollen

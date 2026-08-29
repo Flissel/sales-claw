@@ -2394,6 +2394,11 @@ def _profil_faellig(schwelle: int = None):
         "                   '00000000-0000-0000-0000-000000000000'::uuid))"
         "    and (%(sammel)s = '' or a.lead_id::text <> %(sammel)s)"
         "    and not " + _archiv_sql("l.enrichment") +
+        # `ignorieren` heisst ignorieren (29.08.2026): kein Profil aus
+        # eigenem Antrieb. Die AUSDRUECKLICHE Anforderung des Betreibers
+        # uebersteuert — er hat es verlangt (tests/test_ignorieren.py).
+        "    and (" + _autonomie_sql("l.enrichment") + " <> 'ignorieren'"
+        "         or x.wann is not null)"
         "  group by a.lead_id, l.name"
         " having count(*) >= %(schwelle)s or bool_or(x.wann is not null)"
         "  order by bool_or(x.wann is not null) desc, count(*) desc, a.lead_id"
@@ -2431,6 +2436,10 @@ def _chat_faellig(schwelle: int = None):
         "    and " + _chat_offen_sql("a") +
         "    and (%(sammel)s = '' or a.lead_id::text <> %(sammel)s)"
         "    and not " + _archiv_sql("l.enrichment") +
+        # `ignorieren` heisst ignorieren (29.08.2026): auch kein Report —
+        # ein privater Chat wird nicht zusammengefasst
+        # (tests/test_ignorieren.py).
+        "    and " + _autonomie_sql("l.enrichment") + " <> 'ignorieren'"
         "  group by a.lead_id, l.name"
         " having count(*) >= %(schwelle)s"
         "  order by count(*) desc, a.lead_id"
