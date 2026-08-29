@@ -635,3 +635,45 @@ def test_gleiche_message_id_ueber_beide_richtungen_bucht_nur_einmal():
         ("wa-doppelt-1",))
     assert len(alle) == 1
     assert alle[0]["type"] == "kundenantwort"
+
+
+# ---------------------------------------------------------------------------
+# Privat-Markierung (P3, 29.08.2026): fuer private Kontakte wird KEIN
+# Inhalt gespeichert — Datensparsamkeit statt Filterung. Der Webhook wird
+# trotzdem mit 200 quittiert (OpenWA soll nicht endlos wiederholen), und
+# das Log nennt weder Nummer noch Text.
+# ---------------------------------------------------------------------------
+
+def test_privater_kontakt_wird_nicht_gespeichert():
+    lead = _lead("Pia Privat")
+    server.kontakt_privat_setzen(lead)
+    status, antwort = _post(_ereignis(id="wa-privat-1"))
+    assert status == 200
+    assert antwort.get("privat") is True
+    assert "aktivitaet_id" not in antwort
+    zeilen = server._q(
+        "select count(*) n from activities where lead_id = %s and "
+        "type in ('kundenantwort', 'nachricht_ausgehend')", (lead,))
+    assert zeilen[0]["n"] == 0
+
+
+def test_auch_die_eigene_richtung_bleibt_ungespeichert():
+    lead = _lead("Pia Privat")
+    server.kontakt_privat_setzen(lead)
+    status, antwort = _post(_echo(id="wa-privat-2"),
+                            kopfzeilen={"X-OpenWA-Event": "message.sent"})
+    assert status == 200
+    assert antwort.get("privat") is True
+    assert server._q(
+        "select count(*) n from activities where lead_id = %s",
+        (lead,))[0]["n"] == 1  # nur die kontakt_privat-Beweiszeile
+
+
+def test_das_log_verraet_weder_nummer_noch_text():
+    lead = _lead("Pia Privat")
+    server.kontakt_privat_setzen(lead)
+    with _Mitschnitt() as m:
+        _post(_ereignis(id="wa-privat-3"))
+    verdaechtig = [t for t in m.texte()
+                   if "1234567" in t or "Donnerstag" in t]
+    assert verdaechtig == []

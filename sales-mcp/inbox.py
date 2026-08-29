@@ -421,7 +421,7 @@ def lead_zu_nummer(chat_id: str):
     ziffern = chat_id.split("@", 1)[0]
     schwanz = ziffern[-8:] if len(ziffern) >= 8 else ziffern
     zeilen = server._q(
-        "select id, name, phone from leads where phone is not null "
+        "select id, name, phone, enrichment from leads where phone is not null "
         "and regexp_replace(phone, '[^0-9]', '', 'g') like %s "
         "order by updated_at desc limit 500", (f"%{schwanz}",))
     treffer = [z for z in zeilen
@@ -749,6 +749,13 @@ def _buchen(typ: str, actor: str, chat_id, nummern_fehler, nutzlast: dict,
                 return 200, {"doppelt": True}
 
             lead = lead_zu_nummer(chat_id) if chat_id else None
+            # Privat-Markierung (P3, 29.08.2026): fuer private Kontakte wird
+            # KEIN Inhalt gespeichert — Datensparsamkeit statt Filterung.
+            # 200 zurueck (OpenWA soll nicht endlos wiederholen), und das
+            # Log nennt bewusst weder Nummer noch Text noch Lead-Kennung.
+            if lead is not None and server._privat(lead.get("enrichment")):
+                LOG.info("privater kontakt — inhalt nicht gespeichert")
+                return 200, {"privat": True}
             if lead is None:
                 if not UNBEKANNT_LEAD_ID:
                     LOG.critical(

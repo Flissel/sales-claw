@@ -1664,6 +1664,10 @@ async def kontakte(request):
         sammel = _ist_sammelkontakt(z["id"])
         marke = (' <span class="badge archiv">archiviert</span>'
                  if archiviert else "")
+        # Privat (P3, 29.08.2026): das Schloss macht sichtbar, dass dieser
+        # Kontakt dem System still ist — nichts wird gespeichert.
+        if server._privat(z["enrichment"]):
+            marke += ' <span class="badge archiv" title="privat — es wird nichts gespeichert">&#128274; privat</span>'
         # Der Sammelkontakt sieht sonst aus wie eine Person mit sehr vielen
         # Nachrichten — genau diese Verwechslung ist am 25.08.2026 passiert.
         if sammel:
@@ -2141,6 +2145,83 @@ def _autonomie_waehler(lead_id, stufe: str, freigegeben: bool) -> str:
             f'</select> <button>Setzen</button></form>{warnung}')
 
 
+def _privat_warnseite(lead) -> HTMLResponse:
+    """Erster Schritt der Privat-Markierung: NUR die Warnseite. Der Verlust
+    ist hier ein anderer als beim Archiv — kuenftige Nachrichten werden GAR
+    NICHT gespeichert und sind nicht nachholbar. Genau das steht hier."""
+    return _seite(
+        "Privat markieren",
+        f'<div class="warnung">Der Kontakt <b>{_e(lead["name"])}</b> soll '
+        f'PRIVAT markiert werden.'
+        f'<p><b>Ab dann wird nichts mehr gespeichert</b> — eingehende wie '
+        f'ausgehende Nachrichten dieses Kontakts erreichen das System nicht '
+        f'mehr, und diese stille Zeit laesst sich NICHT nachtraeglich '
+        f'wiederherstellen. Kein Verlauf, keine Profile, keine Reports, '
+        f'keine Entwuerfe.</p>'
+        f'<p>Bestandsdaten bleiben erhalten (ab jetzt still) und sind nur '
+        f'noch ueber die Datenauskunft erreichbar. Aufheben laesst sich die '
+        f'Markierung jederzeit — gespeichert wird dann erst wieder ab '
+        f'diesem Moment.</p></div>'
+        f'<div class="aktionen">'
+        f'<form class="aktion gefahr" method="post" '
+        f'action="/kontakte/privat-bestaetigen">'
+        f'<input type="hidden" name="lead_id" value="{_e(lead["id"])}">'
+        f'<input type="hidden" name="name_bestaetigt" '
+        f'value="{_e(lead["name"])}">'
+        f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+        f'<button class="gefahr">Ja — {_e(lead["name"])} privat markieren'
+        f'</button></form></div>'
+        f'<p class="abbrechen"><a href="/kontakte/{_e(lead["id"])}">'
+        f'Abbrechen</a></p>')
+
+
+@_gesichert_seite
+async def aktion_kontakt_privat(request):
+    """Erster Schritt: nur die Warnseite, nichts geschrieben."""
+    _form, lead_id, abbruch = await _kontakt_vorspann(request)
+    if abbruch:
+        return abbruch
+    leads = _kontakt_zeile(lead_id)
+    if not leads:
+        return _fehlerseite(404, "Unbekannter Kontakt",
+                            f"Kein Kontakt mit lead_id {_e(lead_id)}.")
+    if server._privat(leads[0]["enrichment"]):
+        return _fehlerseite(409, "Schon privat",
+                            f"{_e(leads[0]['name'])} ist bereits privat "
+                            f"markiert. Nichts getan.")
+    return _privat_warnseite(leads[0])
+
+
+@_gesichert_seite
+async def aktion_kontakt_privat_bestaetigen(request):
+    """Der zweite, ausdrueckliche POST — mit Namensabgleich wie beim
+    Archivieren."""
+    form, lead_id, abbruch = await _kontakt_vorspann(request)
+    if abbruch:
+        return abbruch
+    if not str(form.get("name_bestaetigt") or ""):
+        return _fehlerseite(
+            400, "Bestaetigung fehlt",
+            "Ohne den auf der Warnseite gelesenen Namen wird nichts getan.")
+    antwort = json.loads(server.kontakt_privat_setzen(lead_id))
+    if "fehler" in antwort:
+        return _fehlerseite(400, "Nicht markiert", _e(antwort["fehler"]))
+    return RedirectResponse(f"/kontakte/{lead_id}", status_code=303)
+
+
+@_gesichert_seite
+async def aktion_kontakt_privat_entziehen(request):
+    """Aufheben geht direkt: es beginnt nur wieder das normale Speichern —
+    verloren geht dabei nichts."""
+    _form, lead_id, abbruch = await _kontakt_vorspann(request)
+    if abbruch:
+        return abbruch
+    antwort = json.loads(server.kontakt_privat_entziehen(lead_id))
+    if "fehler" in antwort:
+        return _fehlerseite(400, "Nicht aufgehoben", _e(antwort["fehler"]))
+    return RedirectResponse(f"/kontakte/{lead_id}", status_code=303)
+
+
 @_gesichert_seite
 async def aktion_kontakt_stufe(request):
     """Pipeline-Stufe setzen — ueber dasselbe Werkzeug wie der Chat.
@@ -2503,6 +2584,27 @@ async def kontakt_detail(request):
         f'</select> '
         f'<input name="begruendung" placeholder="Begruendung (empfohlen)" '
         f'size="34"> <button>Stufe setzen</button></form>')
+
+    # Privat-Markierung (P3, 29.08.2026): setzen fuehrt ueber die
+    # Warnseite (kuenftige Nachrichten sind unwiederbringlich still),
+    # aufheben geht direkt — dabei geht nichts verloren.
+    if server._privat(lead["enrichment"]):
+        teile.append(
+            f'<h2 id="privat">&#128274; Privat</h2>'
+            f'<p class="meta">Dieser Kontakt ist dem System still: nichts '
+            f'wird gespeichert, kein Verlauf, keine Entwuerfe. Bestand nur '
+            f'ueber die Datenauskunft.</p>'
+            f'<form method="post" action="/kontakte/privat-entziehen">'
+            f'<input type="hidden" name="lead_id" value="{_e(lead_id)}">'
+            f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+            f'<button>Privat-Markierung aufheben</button></form>')
+    else:
+        teile.append(
+            f'<h2 id="privat">Privat</h2>'
+            f'<form method="post" action="/kontakte/privat">'
+            f'<input type="hidden" name="lead_id" value="{_e(lead_id)}">'
+            f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+            f'<button>Privat markieren&hellip;</button></form>')
 
     # Bedarfsstand: beantwortete Leitfaden-Fragen mit Wortlaut, offene als Zahl.
     bedarf = anreicherung.get("bedarf") or {}
@@ -3060,6 +3162,11 @@ app = Starlette(routes=[
     Route("/kontakte/autonomie", aktion_kontakt_autonomie,
           methods=["POST"]),
     Route("/kontakte/stufe", aktion_kontakt_stufe, methods=["POST"]),
+    Route("/kontakte/privat", aktion_kontakt_privat, methods=["POST"]),
+    Route("/kontakte/privat-bestaetigen", aktion_kontakt_privat_bestaetigen,
+          methods=["POST"]),
+    Route("/kontakte/privat-entziehen", aktion_kontakt_privat_entziehen,
+          methods=["POST"]),
     Route("/pipeline", pipeline),
     Route("/kontakte/wiederherstellen", aktion_kontakt_wiederherstellen,
           methods=["POST"]),

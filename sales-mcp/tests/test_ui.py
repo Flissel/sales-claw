@@ -2684,3 +2684,43 @@ def test_stufe_ohne_csrf_schreibt_nichts():
     assert server._q(
         "select count(*) n from activities where lead_id = %s and "
         "type = 'stufenwechsel'", (lead,))[0]["n"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Privat-Markierung (P3, 29.08.2026): Warnseite vor dem Setzen (kuenftige
+# Nachrichten sind unwiederbringlich still), Aufheben direkt, Schloss in
+# der Liste.
+# ---------------------------------------------------------------------------
+
+def test_privat_setzen_braucht_die_warnseite():
+    lead = _lead()
+    erste = _post("/kontakte/privat", {"lead_id": lead, "csrf": ui.CSRF_TOKEN})
+    assert erste.status_code == 200
+    assert "nichts mehr gespeichert" in erste.text
+    assert server._privat(server._q(
+        "select enrichment from leads where id = %s",
+        (lead,))[0]["enrichment"]) is False
+    zweite = _post("/kontakte/privat-bestaetigen", {
+        "lead_id": lead, "name_bestaetigt": "Max Testperson",
+        "csrf": ui.CSRF_TOKEN})
+    assert zweite.status_code == 303
+    assert server._privat(server._q(
+        "select enrichment from leads where id = %s",
+        (lead,))[0]["enrichment"]) is True
+
+
+def test_privat_aufheben_geht_direkt():
+    lead = _lead()
+    server.kontakt_privat_setzen(lead)
+    antwort = _post("/kontakte/privat-entziehen",
+                    {"lead_id": lead, "csrf": ui.CSRF_TOKEN})
+    assert antwort.status_code == 303
+    assert server._privat(server._q(
+        "select enrichment from leads where id = %s",
+        (lead,))[0]["enrichment"]) is False
+
+
+def test_das_schloss_steht_in_der_liste():
+    lead = _lead()
+    server.kontakt_privat_setzen(lead)
+    assert "privat" in _get("/kontakte").text

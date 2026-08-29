@@ -536,9 +536,10 @@ def test_beide_werkzeuge_sind_registriert():
     # update_ergebnis (test_auftraege.py) — bestellen ja, ausfuehren nie.
     # Dazu am selben Tag linkedin_versand_anfordern und
     # linkedin_versand_ergebnis (ebenfalls test_auftraege.py) sowie
-    # kontakt_stufe_setzen (test_pipeline.py) und das DSGVO-Paar
-    # kontakt_auskunft/loeschantrag_vermerken (test_dsgvo.py).
-    assert len(namen) == len(set(namen)) == 58
+    # kontakt_stufe_setzen (test_pipeline.py), das DSGVO-Paar
+    # kontakt_auskunft/loeschantrag_vermerken (test_dsgvo.py) und das
+    # Privat-Paar kontakt_privat_setzen/entziehen (test_privat.py).
+    assert len(namen) == len(set(namen)) == 60
 
 # ---------------------------------------------------------------------------
 # Nachbesserungen aus dem Stufe-5-Review (Befunde T1, B2, D2)

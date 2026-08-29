@@ -991,7 +991,7 @@ AGENTS.md-Abschnitt, Digest-Erweiterung.
   (`docs/06_DSGVO.md`) mit der Owner-Rolle, Vier-Augen, Frist 30 Tage.
 - [ ] `docs/06_DSGVO.md`: beide Ablaeufe, Zustaendigkeit, Fristen.
 
-### Aufgabe P3: Privat-Markierung (geplant 29.08.2026 — schaerfer als ignorieren)
+### Aufgabe P3: Privat-Markierung — GEBAUT 29.08.2026 (Betreiber: p3 erst dann teil b — schaerfer als ignorieren)
 
 Befund am 29.08.: `ignorieren` filterte nur das Antworten; Profile und
 Chat-Reports liefen fuer ignorierte (auch private) Kontakte weiter. Die
