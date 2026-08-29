@@ -251,10 +251,17 @@ def test_schutzkoepfe_auch_auf_der_host_fehlerseite():
 # Freigeben: nur pending -> approved, approved_by='betreiber-ui'
 # ---------------------------------------------------------------------------
 
+def _lese_stand(draft):
+    """Der Fingerabdruck des Textes, wie ihn die geladene Seite truege."""
+    return ui._text_stand(server._q(
+        "select body from drafts where id = %s", (draft,))[0]["body"] or "")
+
+
 def test_freigeben_pending_wird_approved_mit_betreiber_ui():
     lead = _lead()
     draft = _entwurf(lead)
-    r = _post("/aktion/freigeben", {"draft_id": draft, "csrf": ui.CSRF_TOKEN})
+    r = _post("/aktion/freigeben", {"draft_id": draft, "csrf": ui.CSRF_TOKEN,
+                                    "stand": _lese_stand(draft)})
     assert r.status_code == 303
     zeile = _zeile(draft)
     assert zeile["status"] == "approved"
@@ -1648,8 +1655,16 @@ def test_kontakte_und_verlauf_lassen_sich_nirgends_loeschen():
     # Auch kein Chat-Werkzeug — sonst koennte der Agent, was die Oberflaeche
     # bewusst nicht kann. Hier bleibt die Zusage vollstaendig: der Agent
     # loescht auch keine Dateien.
+    #
+    # Dokumentierte Verengung 29.08.2026 (dieselbe wie in test_werkzeuge):
+    # `loeschantrag_vermerken` traegt das Wort, LOESCHT aber nichts — es
+    # VERMERKT ein DSGVO-Begehren und stoppt die Verarbeitung
+    # (tests/test_dsgvo.py). Kein anderes Werkzeug darf loeschen oder
+    # danach klingen.
     namen = {fn.__name__ for fn in server.WERKZEUGE}
-    assert not [n for n in namen if "loesch" in n or "delete" in n]
+    assert not [n for n in namen
+                if ("loesch" in n or "delete" in n)
+                and n != "loeschantrag_vermerken"]
 
 
 def test_kontakt_aktualisieren_weist_status_und_consent_ab():
@@ -2724,3 +2739,36 @@ def test_das_schloss_steht_in_der_liste():
     lead = _lead()
     server.kontakt_privat_setzen(lead)
     assert "privat" in _get("/kontakte").text
+
+
+# ---------------------------------------------------------------------------
+# Freigegeben wird, was GELESEN wurde (29.08.2026): der Lese-Stand bindet
+# die Freigabe an den angezeigten Wortlaut. Vorfall am selben Tag: Seite
+# vor einer Ueberarbeitung geladen, Klick danach — freigegeben wurde ein
+# anderer Text als der gelesene.
+# ---------------------------------------------------------------------------
+
+def test_veralteter_lese_stand_gibt_nichts_frei():
+    lead = _lead()
+    draft = _entwurf(lead)
+    alter_stand = _lese_stand(draft)
+    server.entwurf_bearbeiten(draft, "Voellig neuer Text nach dem Laden.")
+    r = _post("/aktion/freigeben", {"draft_id": draft, "csrf": ui.CSRF_TOKEN,
+                                    "stand": alter_stand})
+    assert r.status_code == 409
+    assert "geaendert" in r.text
+    assert _zeile(draft)["status"] == "pending"
+
+
+def test_ohne_lese_stand_gibt_es_keine_freigabe():
+    lead = _lead()
+    draft = _entwurf(lead)
+    r = _post("/aktion/freigeben", {"draft_id": draft, "csrf": ui.CSRF_TOKEN})
+    assert r.status_code == 400
+    assert _zeile(draft)["status"] == "pending"
+
+
+def test_die_karte_traegt_den_lese_stand():
+    lead = _lead()
+    draft = _entwurf(lead)
+    assert f'name="stand" value="{_lese_stand(draft)}"' in _get("/").text

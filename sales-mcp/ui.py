@@ -173,6 +173,7 @@ und vor allem die Schema-Wache — `import server` laesst denselben
 `sales`/`sales_test` ist.
 """
 import functools
+import hashlib
 import hmac
 import html
 import json
@@ -723,19 +724,32 @@ def _paar_tabelle(paare) -> str:
 # Freigabe-Inbox (/)
 # ---------------------------------------------------------------------------
 
+def _text_stand(text: str) -> str:
+    """Fingerabdruck des Textes, den der Betreiber GELESEN hat.
+
+    Gemessen am 29.08.2026: eine vor einer Ueberarbeitung geladene
+    Freigaben-Seite zeigte den alten Text, der Knopf schickte nur die ID —
+    freigegeben wurde etwas anderes als gelesen. Der Stand bindet die
+    Freigabe an den angezeigten Wortlaut."""
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()[:16]
+
+
 def _formular(aktion: str, draft_id, knopf: str, klasse: str = "",
-              checkbox: str | None = None) -> str:
+              checkbox: str | None = None, stand: str | None = None) -> str:
     """Die Knopfklasse steht ZUSAETZLICH am Formular: die Media-Query rueckt
     den gefaehrlichen Knopf auf schmalen Schirmen ab, und das geht nur ueber
     das Element, das die ganze Aktion umschliesst."""
     haken = (f'<label class="haken">'
              f'<input type="checkbox" name="bestaetigt" value="ja"> '
              f'{checkbox}</label>' if checkbox else "")
+    stand_feld = (f'<input type="hidden" name="stand" value="{_e(stand)}">'
+                  if stand is not None else "")
     return (f'<form class="aktion {klasse}" method="post" '
             f'action="/aktion/{aktion}">'
             f'<input type="hidden" name="draft_id" value="{_e(draft_id)}">'
             f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
-            f'{haken}<button class="{klasse}">{knopf}</button></form>')
+            f'{stand_feld}{haken}<button class="{klasse}">{knopf}</button>'
+            f'</form>')
 
 
 def _entwurf_kopf(z, zustand: str) -> str:
@@ -781,7 +795,7 @@ def _entwurf_karte_offen(z) -> str:
         f'<div class="text">{_e(text)}</div>'
         f'{_entwurf_bearbeiten_form(z, text)}'
         f'<div class="aktionen">'
-        f'{_formular("freigeben", z["id"], "Freigeben", "primaer")}'
+        f'{_formular("freigeben", z["id"], "Freigeben", "primaer", stand=_text_stand(text))}'
         f'{_formular("ablehnen", z["id"], "Ablehnen", "gefahr")}'
         f'</div></details>')
 
@@ -1326,9 +1340,29 @@ def _freigabe_loggen(z, erneut: bool = False) -> None:
 
 @_gesichert_seite
 async def aktion_freigeben(request):
-    _form, draft_id, abbruch = await _aktions_vorspann(request)
+    form, draft_id, abbruch = await _aktions_vorspann(request)
     if abbruch:
         return abbruch
+    # Freigegeben wird, was GELESEN wurde (29.08.2026): der Stand aus dem
+    # Formular muss zum aktuellen Text passen. Eine seit dem Laden der
+    # Seite geaenderte Fassung wird nicht still freigegeben — genau das
+    # ist an diesem Tag passiert (Ueberarbeitung zwischen Laden und Klick).
+    aktuell = server._q("select body, status from drafts where id = %s",
+                        (draft_id,))
+    if not aktuell or aktuell[0]["status"] != "pending":
+        return _statusfehler(draft_id, "pending")
+    stand = str(form.get("stand") or "")
+    if not stand:
+        return _fehlerseite(
+            400, "Lese-Stand fehlt",
+            "Diese Freigabe traegt keinen Stand des gelesenen Textes — "
+            "Seite neu laden und aus der aktuellen Ansicht freigeben.")
+    if stand != _text_stand(aktuell[0]["body"] or ""):
+        return _fehlerseite(
+            409, "Text wurde geaendert",
+            "Der Entwurf wurde geaendert, seit diese Seite geladen wurde. "
+            "Nichts freigegeben — Seite neu laden, den AKTUELLEN Text "
+            "lesen, dann freigeben.")
     # SQL wie server.entwurf_freigeben — einziger Unterschied: approved_by.
     zeilen = server._q(
         "update drafts set status = 'approved', approved_by = 'betreiber-ui', "
