@@ -1752,9 +1752,17 @@ async def kontakte(request):
             # Kein Archiv-Knopf am Sammelkontakt: das Werkzeug lehnt es
             # ohnehin ab, und ein Knopf, der immer scheitert, ist eine Luege.
             "" if sammel else _archiv_knopf_zeile(z["id"], archiviert)])
+    # „Consent: unknown" stand hier monatelang unerklaert (Betreiber-Frage
+    # vom 25.08.2026, nie beantwortet). Eine Spalte, die bei JEDEM Kontakt
+    # dasselbe unverstaendliche Wort zeigt, ist keine Information —
+    # deshalb steht die Bedeutung jetzt unter der Tabelle.
+    fussnote = ('<p class="meta"><b>Consent</b> ist die dokumentierte '
+                'Werbe-Einwilligung nach DSGVO — <i>unknown</i> heisst: nie '
+                'erfasst. Sie ist NICHT die WhatsApp-Freigabe (die steht auf '
+                'der Kontaktseite) und blockiert derzeit nichts.</p>')
     rumpf = [schalter, _tabelle(
-        ["Name", "Status", "Consent", "Letzte Aktivitaet", "Autonomie",
-         "Archiv"], inhalt)]
+        ["Name", "Stufe", "Consent", "Letzte Aktivitaet", "Autonomie",
+         "Archiv"], inhalt), fussnote]
     if not zeilen:
         rumpf = [schalter, "<p>Keine Kontakte.</p>"]
     return _seite(f"Kontakte ({len(zeilen)})", "".join(rumpf))
@@ -2969,11 +2977,25 @@ async def posteingang(request):
                         f'{_e(e.get("zugeordnet_name") or "Kontakt")}</a>'
                         f'</span>')
             absender = f'<div class="meta">Absender: {_e(e["absender"])}{lid}</div>'
+        # Eine Sprach- oder Bildnachricht hat keinen Text — die Karte zeigte
+        # dann eine leere Zeile, als waere nichts angekommen (gefunden im
+        # Browser-Durchgang 29.08.2026, Kontakt „Stephane B."). Der
+        # Nachrichtentyp steht ohnehin im Eintrag; er gehoert hierhin.
+        text = (e.get("text_kurz") or "").strip()
+        if text:
+            inhalt_zeile = f'<div class="text">{_e(text)}</div>'
+        else:
+            art = str(e.get("nachrichtentyp") or "").lower()
+            benennung = {"ptt": "Sprachnachricht", "audio": "Tonaufnahme",
+                         "image": "Bild", "video": "Video",
+                         "document": "Dokument", "sticker": "Sticker",
+                         "location": "Standort"}.get(art, "ohne Text")
+            inhalt_zeile = (f'<div class="meta">[{_e(benennung)} — kein '
+                            f'Text zum Mitlesen]</div>')
         teile.append(
             f'<div class="karte"><b><a href="/kontakte/{_e(e["lead_id"])}">'
             f'{_e(e["kontakt"] or "(ohne Kontakt)")}</a></b> — wartet seit '
-            f'{_e(e["wartet_stunden"])} h{absender}'
-            f'<div class="text">{_e(e["text_kurz"])}</div></div>')
+            f'{_e(e["wartet_stunden"])} h{absender}{inhalt_zeile}</div>')
     if "hinweis" in daten:
         teile.append(f'<div class="hinweis">{_e(daten["hinweis"])}</div>')
     return _seite("Posteingang", "".join(teile))

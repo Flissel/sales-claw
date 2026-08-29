@@ -1745,6 +1745,11 @@ def test_archivmerkmal_greift_nur_beim_echten_wahrheitswert():
 # kommt es aus der Datenbank.
 ERLAUBTE_LABEL = {
     "Name", "Status", "Consent", "Letzte Aktivitaet",       # /kontakte
+    # 29.08.2026: die Spalte heisst „Stufe" — sie zeigt die
+    # Pipeline-Stufe, und „Status" stand im selben Blick neben der
+    # Autonomie-„Stufe" daneben. „Status" bleibt in der Liste, weil
+    # andere Ansichten es weiterhin verwenden duerfen.
+    "Stufe",
     "Archiv",   # /kontakte, Archiv-Knopf je Zeile
     "Autonomie",   # /kontakte, Stufe je Zeile (25.08.2026)
     "Profil",   # /einordnung, Link zum Kontaktprofil
@@ -1928,7 +1933,10 @@ def test_jede_tabellenzelle_traegt_ihre_spaltenueberschrift():
               "values (%s, 'wiedervorlage', %s) returning id",
               (lead, json.dumps({"faellig_am": "2026-09-01",
                                  "notiz": "Vertragsablauf pruefen"})))
-    for pfad, spalten in (("/kontakte", ["Name", "Status", "Consent",
+    # „Stufe" statt „Status" seit 29.08.2026 — die Spalte zeigt die
+    # Pipeline-Stufe und stand als „Status" verwirrend neben der
+    # Autonomie-Stufe in derselben Zeile.
+    for pfad, spalten in (("/kontakte", ["Name", "Stufe", "Consent",
                                          "Letzte Aktivitaet"]),
                           ("/wiedervorlagen", ["Kontakt", "Faellig am",
                                                "Notiz"])):
@@ -2836,3 +2844,31 @@ def test_whatsapp_seite_haelt_einen_openwa_ausfall_aus(monkeypatch):
 
 def test_der_nav_fuehrt_zur_whatsapp_seite():
     assert 'href="/whatsapp"' in _get("/").text
+
+
+# ---------------------------------------------------------------------------
+# Kleinigkeiten aus dem Browser-Durchgang (29.08.2026).
+# ---------------------------------------------------------------------------
+
+def test_die_consent_spalte_erklaert_sich():
+    """Sie zeigte bei jedem Kontakt dasselbe 'unknown' — ohne Erklaerung
+    ist das keine Information, sondern eine offene Frage in der Ansicht.
+
+    Der Kontakt ist noetig: ohne Zeilen zeigt die Seite nur den
+    Leer-Hinweis, und dort gehoert keine Spaltenerklaerung hin."""
+    _lead()
+    seite = _get("/kontakte").text
+    assert "Werbe-Einwilligung" in seite
+    assert "nie erfasst" in seite
+    assert "NICHT die WhatsApp-Freigabe" in seite
+
+
+def test_sprachnachricht_ohne_text_wird_benannt():
+    lead = _lead()
+    server._q("insert into activities (lead_id, type, payload) values "
+              "(%s, 'kundenantwort', %s) returning id",
+              (lead, server._json({"text": "", "nachrichtentyp": "ptt",
+                                   "message_id": "wa-ptt-1"})))
+    seite = _get("/posteingang").text
+    assert "Sprachnachricht" in seite
+    assert "kein Text zum Mitlesen" in seite

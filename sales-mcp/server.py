@@ -1973,6 +1973,10 @@ def posteingang(stunden: int = 48) -> str:
         eintrag = {"lead_id": z["lead_id"], "kontakt": z["kontakt"],
                    "text_kurz": (text[:POSTEINGANG_TEXT_MAX] + "…"
                                  if len(text) > POSTEINGANG_TEXT_MAX else text),
+                   # Sprach- und Bildnachrichten haben keinen Text — ohne
+                   # den Typ steht dort eine leere Zeile, als waere nichts
+                   # angekommen (Browser-Durchgang 29.08.2026).
+                   "nachrichtentyp": nutzlast.get("nachrichtentyp") or "text",
                    "wartet_seit": z["created_at"],
                    "wartet_stunden": round(float(z["wartet_h"]), 1)}
         # `absender` steht NUR beim Sammelkontakt: bei einem echten Kontakt
@@ -4568,23 +4572,45 @@ def antworten_faellig(stunden: int = 48) -> str:
         for z in _q("select id, enrichment from leads where id = any(%s::uuid[])",
                     ([str(x) for x in lead_ids],)):
             privat[str(z["id"])] = _privat(z["enrichment"])
-    faellig = []
+    # Ein Entwurf, der auf Freigabe wartet, beantwortet noch nichts — der
+    # Kontakt blieb damit „faellig" und bekam bei JEDEM Lauf einen weiteren
+    # (gemessen 29.08.2026: drei Entwuerfe fuer denselben Kontakt, 44/24/12
+    # Stunden alt). Wartet einer, liegt der Ball beim Menschen.
+    # `approved` zaehlt mit: die Antwort ist beim Dispatcher, also
+    # unterwegs — ein zweiter Entwurf waere doppelt. `rejected` NICHT: der
+    # Betreiber wollte genau diese Antwort nicht, der Kunde wartet weiter.
+    offen = set()
+    if lead_ids:
+        for z in _q("select distinct lead_id from drafts where status = "
+                    "any(%s) and lead_id = any(%s::uuid[])",
+                    (["pending", "approved"], [str(x) for x in lead_ids])):
+            offen.add(str(z["lead_id"]))
+    faellig, wegen_entwurf = [], 0
     for e in eintraege:
-        if privat.get(str(e.get("lead_id"))):
+        kennung = str(e.get("lead_id"))
+        if privat.get(kennung):
             continue
-        stufe = stufen.get(str(e.get("lead_id")), AUTONOMIE_VORGABE)
+        if kennung in offen:
+            wegen_entwurf += 1
+            continue
+        stufe = stufen.get(kennung, AUTONOMIE_VORGABE)
         if stufe in ("halbauto", "auto"):
             faellig.append({**e, "autonomie": stufe})
     return _json({"fenster_stunden": postfach.get("fenster_stunden"),
                   "anzahl": len(faellig),
-                  "uebersprungen_weil_manuell": len(eintraege) - len(faellig),
+                  "uebersprungen_weil_entwurf_offen": wegen_entwurf,
+                  "uebersprungen_weil_manuell":
+                      len(eintraege) - len(faellig) - wegen_entwurf,
                   "eintraege": faellig,
                   "verlauf_limit": ANTWORT_VERLAUF,
                   "hinweis": (
                       f"chat_verlauf(lead_id, limit={ANTWORT_VERLAUF}) lesen "
                       f"— beide Richtungen —, die Antwort SELBST schreiben, "
                       f"dann antwort_entwerfen(lead_id, text). Bei 'auto' "
-                      f"geht sie danach ohne weitere Rueckfrage raus.")})
+                      f"geht sie danach ohne weitere Rueckfrage raus. "
+                      f"Kontakte mit einem Entwurf, der noch auf Freigabe "
+                      f"wartet, stehen hier NICHT — dort liegt der Ball "
+                      f"beim Betreiber.")})
 
 
 @_gesichert
