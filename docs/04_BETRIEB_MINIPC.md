@@ -139,3 +139,5 @@ Der PC-Stack bleibt danach 7 Tage GESTOPPT liegen (Rückfahrkarte), dann
 | AGENTS.md wächst über `bootstrapMaxChars` | wird still gekürzt, Bot kennt seine Regeln nicht | smoke.sh Prüfung 8 wacht darüber |
 | `grep -q` hinter Docker-Pipes bei `pipefail` | falsches ROT durch EPIPE | in Skripten grep ohne `-q` |
 | Live getartes Chromium-Profil | beschädigte WhatsApp-Session | openwa vor dem Sichern stoppen |
+
+<!-- Probe-Update fuer den Live-Beweis des Ausrollwegs (30.08.2026, Aufgabe 12). -->
