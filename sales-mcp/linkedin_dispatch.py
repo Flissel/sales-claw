@@ -84,7 +84,10 @@ import json
 import logging
 import os
 import re
+import signal
 import sys
+import threading
+from datetime import datetime, timezone
 
 import psycopg
 
@@ -111,7 +114,31 @@ from dispatch import (_als_fehler_buchen, _als_gesendet_buchen, _claim_marke,
 #
 # Deshalb: der Betreiber nennt die Kennung, der Dienst macht genau das und
 # beendet sich.
+# NACHGEZOGEN 30.08.2026 (Betreiber: „freigabe soll gleich versand machen"):
+# Der Dienst laeuft jetzt DAUERHAFT und nimmt freigegebene Beitraege von
+# selbst — wie sales-dispatch bei WhatsApp. Die Sorge oben bleibt gueltig,
+# wird aber anders abgefangen als durch das Fehlen einer Schleife:
+#
+#   * HOECHSTENS EINER PRO TAG (Kadenz des Betreibers vom 27.08.). Ein
+#     Stapel freigegebener Beitraege geht damit nie gemeinsam raus,
+#     sondern tropft — und wer zu viel freigegeben hat, merkt es am
+#     ersten Tag, nicht an fuenf Beitraegen gleichzeitig.
+#   * FRISCHEGRENZE: was laenger als LINKEDIN_FRISCHE_TAGE freigegeben
+#     ist, bleibt liegen. Genau der Fall „vor Wochen freigegeben, laengst
+#     vergessen" wird nicht ploetzlich oeffentlich, sondern wartet auf
+#     einen Menschen.
+#   * Der Einmal-Modus mit genannter Kennung bleibt daneben bestehen: er
+#     ignoriert die Kadenz, denn dort hat ein Mensch genau diesen Beitrag
+#     gemeint.
 DRAFT_ID = os.environ.get("LINKEDIN_DRAFT_ID", "").strip()
+
+# Wie oft nach freigegebenen Beitraegen gesehen wird. Zehn Sekunden wie bei
+# den Zwillingen waeren Verschwendung: hier kommt hoechstens einmal am Tag
+# etwas dazu.
+LINKEDIN_INTERVAL_S = float(os.environ.get("LINKEDIN_INTERVAL_S", "60"))
+LINKEDIN_FRISCHE_TAGE = int(os.environ.get("LINKEDIN_FRISCHE_TAGE", "7"))
+LINKEDIN_ONCE = os.environ.get("LINKEDIN_ONCE", "").strip().lower() in (
+    "1", "true", "ja", "yes")
 
 _KENNUNG = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
@@ -451,9 +478,69 @@ def wartende_beitraege():
         "and recipient = 'eigenes-profil' order by created_at")
 
 
+def heute_schon_veroeffentlicht() -> bool:
+    """Tageskadenz (Betreiber, 27.08.2026: ein Beitrag pro Tag).
+
+    Gezaehlt werden die NACHWEISE in `activities`, nicht drafts.status —
+    derselbe Grund wie bei `bereits_veroeffentlicht`: der Status ist
+    zuruecksetzbar, der Nachweis nicht.
+    """
+    return bool(server._q(
+        "select 1 from activities where type = 'versand' "
+        "and payload->>'kanal' = 'linkedin' "
+        "and created_at >= date_trunc('day', now()) limit 1"))
+
+
+def eine_runde() -> str:
+    """Ein Durchgang: hoechstens EIN Beitrag. Gibt den Ausgang zurueck.
+
+    `veroeffentlicht` | `kadenz` (heute war schon einer) | `nichts` (keiner
+    freigegeben oder alle zu alt) | die Ausgaenge von `verarbeite_draft`.
+    """
+    if DRAFT_ID:
+        # Handbetrieb: der Mensch hat GENAU diesen Beitrag gemeint — die
+        # Kadenz ist eine Regel fuer den Automatismus, nicht fuer ihn.
+        return verarbeite_draft(DRAFT_ID)
+
+    if heute_schon_veroeffentlicht():
+        return "kadenz"
+
+    zu_alt = 0
+    for beitrag in wartende_beitraege():
+        freigabe = beitrag.get("approved_at")
+        if freigabe is not None:
+            alter_tage = (datetime.now(timezone.utc) - freigabe).days
+            if alter_tage > LINKEDIN_FRISCHE_TAGE:
+                zu_alt += 1
+                continue
+        return verarbeite_draft(str(beitrag["id"]))
+
+    if zu_alt:
+        LOG.warning(
+            "%d freigegebene(r) Beitrag/Beitraege sind aelter als %d Tage "
+            "und bleiben liegen — wer sie will, gibt sie erneut frei "
+            "(Freigabe-Inbox). Es wurde NICHTS veroeffentlicht.",
+            zu_alt, LINKEDIN_FRISCHE_TAGE)
+    return "nichts"
+
+
 # ---------------------------------------------------------------------------
 # Betrieb
 # ---------------------------------------------------------------------------
+
+_STOPP = threading.Event()
+
+
+def _stopp_anfordern(signum, _rahmen) -> None:
+    """SIGTERM/SIGINT beenden die Schleife NACH der laufenden Runde.
+
+    Ein Abbruch mitten in einem Upload waere genau der ungewisse Ausgang,
+    gegen den der Nachweis-vor-Buchung-Weg gebaut ist.
+    """
+    LOG.info("%s empfangen — nach dieser Runde ist Schluss.",
+             signal.Signals(signum).name)
+    _STOPP.set()
+
 
 def _logging_einrichten() -> None:
     """Eigener Handler auf stdout — gleiche Lehre wie in den Zwillingen.
@@ -487,43 +574,47 @@ def main() -> int:
                     ", ".join(fehlend))
         return 0
 
-    if not DRAFT_ID:
-        # Kein Ausfall, sondern der Normalzustand: ohne genannte Kennung hat
-        # dieser Dienst nichts zu tun. Er sagt dem Betreiber, was er
-        # veroeffentlichen KOENNTE, und beendet sich.
-        try:
-            wartend = wartende_beitraege()
-        except psycopg.Error as e:
-            LOG.error("Datenbank nicht erreichbar: %s", _einzeilig(str(e)))
-            return 0
-        LOG.warning(
-            "LINKEDIN_DRAFT_ID ist nicht gesetzt — es wurde NICHTS "
-            "veroeffentlicht. Dieser Dienst nimmt genau EINEN Entwurf, "
-            "dessen Kennung ihm genannt wird. Freigegeben und wartend: %d.",
-            len(wartend))
-        for z in wartend:
-            # Betreff und Dateiname, kein Beitragstext: die Logzeile soll
-            # wiedererkennbar machen, nicht den Inhalt ausbreiten.
-            LOG.warning("  %s  %s  [%s]", z["id"],
-                        (z["subject"] or "")[:60], z["media_ref"] or "nur Text")
-        return 0
-
-    if not _KENNUNG.match(DRAFT_ID):
+    if DRAFT_ID and not _KENNUNG.match(DRAFT_ID):
         LOG.error("LINKEDIN_DRAFT_ID ist keine Entwurfs-Kennung (UUID "
                   "erwartet). Es wurde nichts veroeffentlicht.")
         return 2
 
-    # Weder Token noch Person-Kennung ins Log: das eine ist ein Geheimnis,
-    # das andere ein Personenbezug.
-    LOG.info("Start: schema=%s api-version=%s draft=%s — genau ein Beitrag.",
-             server.SCHEMA, linkedin_api.VERSION, DRAFT_ID)
-    try:
-        ausgang = verarbeite_draft(DRAFT_ID)
-    except psycopg.Error as e:
-        LOG.error("Datenbankfehler — es wurde nichts veroeffentlicht: %s",
-                  _einzeilig(str(e)))
-        return 1
-    LOG.info("Ausgang: %s", ausgang)
+    if DRAFT_ID:
+        # Handbetrieb: genau ein genannter Beitrag, dann Schluss.
+        # Weder Token noch Person-Kennung ins Log: das eine ist ein
+        # Geheimnis, das andere ein Personenbezug.
+        LOG.info("Start: schema=%s api-version=%s draft=%s — genau ein "
+                 "Beitrag.", server.SCHEMA, linkedin_api.VERSION, DRAFT_ID)
+        try:
+            ausgang = eine_runde()
+        except psycopg.Error as e:
+            LOG.error("Datenbankfehler — es wurde nichts veroeffentlicht: %s",
+                      _einzeilig(str(e)))
+            return 1
+        LOG.info("Ausgang: %s", ausgang)
+        return 0
+
+    signal.signal(signal.SIGTERM, _stopp_anfordern)
+    signal.signal(signal.SIGINT, _stopp_anfordern)
+    LOG.info("Start: schema=%s api-version=%s intervall=%gs frische=%dd "
+             "once=%s — Freigabe ist der Versand, hoechstens einer pro Tag.",
+             server.SCHEMA, linkedin_api.VERSION, LINKEDIN_INTERVAL_S,
+             LINKEDIN_FRISCHE_TAGE, LINKEDIN_ONCE)
+    while not _STOPP.is_set():
+        try:
+            ausgang = eine_runde()
+        except psycopg.Error as e:
+            # Ein DB-Ausfall beendet den Dienst nicht: er kommt wieder, und
+            # bis dahin bleibt jeder freigegebene Beitrag unangetastet.
+            LOG.error("Datenbank nicht erreichbar: %s", _einzeilig(str(e)))
+            ausgang = "db-ausfall"
+        # `nichts` und `kadenz` sind der Normalzustand und wuerden das Log
+        # sonst jede Minute fluten.
+        if ausgang not in ("nichts", "kadenz"):
+            LOG.info("Ausgang: %s", ausgang)
+        if LINKEDIN_ONCE:
+            return 0
+        _STOPP.wait(LINKEDIN_INTERVAL_S)
     return 0
 
 

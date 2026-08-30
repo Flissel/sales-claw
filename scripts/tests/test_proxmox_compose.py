@@ -91,7 +91,14 @@ def test_clean_committed_compose_has_no_startable_linkedin_service(tmp_path: Pat
     assert all(services[name]["restart"] == "unless-stopped" for name in automatic)
     assert services["sales-claw"]["restart"] == "no"
     assert services["sales-auto"]["restart"] == "no"
-    assert "sales-linkedin" not in services
+    # UMGEDREHT am 30.08.2026 auf Betreiber-Entscheid „freigabe soll gleich
+    # versand machen": sales-linkedin ist ein DAUERDIENST und steht damit
+    # in der Konfiguration. Das Sperrgate des Piloten (kein startbarer
+    # LinkedIn-Dienst) war die Lehre aus dem Doppelpost vom 26.08.; die
+    # Sorge faengt jetzt der Dienst selbst ab — hoechstens einer pro Tag,
+    # nichts laenger als LINKEDIN_FRISCHE_TAGE Freigegebenes
+    # (sales-mcp/tests/test_linkedin_dispatch.py).
+    assert services["sales-linkedin"]["restart"] == "unless-stopped"
     assert services["openwa"]["environment"]["AUTO_START_SESSIONS"] == "true"
 
 

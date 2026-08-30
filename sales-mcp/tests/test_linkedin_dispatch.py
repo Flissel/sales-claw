@@ -582,13 +582,29 @@ def eingerichtet(monkeypatch):
     monkeypatch.setattr(linkedin_api, "PERSON_URN", "urn:li:person:ATTRAPPE")
 
 
-def test_main_ohne_kennung_veroeffentlicht_nichts(umgebung, eingerichtet,
-                                                  sammel, monkeypatch):
+def test_main_ohne_kennung_nimmt_freigegebene_selbst(umgebung, eingerichtet,
+                                                     sammel, monkeypatch):
+    """UMGEDREHT am 30.08.2026 auf Betreiber-Entscheid „freigabe soll
+    gleich versand machen".
+
+    Vorher galt hier: ohne genannte Kennung geht NICHTS raus — die Lehre
+    aus dem Doppelpost vom 26.08., als ein Stapellauf einen vergessenen
+    freigegebenen Beitrag veroeffentlichte. Diese Sorge ist nicht
+    verschwunden, sie wird nur anders abgefangen: Tageskadenz (hoechstens
+    einer) und Frischegrenze (nichts laenger als LINKEDIN_FRISCHE_TAGE
+    Freigegebenes) — beides eigens getestet.
+
+    LINKEDIN_ONCE beendet die Schleife nach einer Runde; ohne das liefe
+    main() hier endlos, und genau daran haengt dieser Test frueher
+    haengengeblieben.
+    """
     monkeypatch.setattr(ld, "DRAFT_ID", "")
-    _entwurf(sammel)
-    _entwurf(sammel)
-    assert ld.main() == 0        # kein Ausfall, nur nichts zu tun
-    assert umgebung.beitraege == []
+    monkeypatch.setattr(ld, "LINKEDIN_ONCE", True)
+    _entwurf(sammel, body="Erster.")
+    _entwurf(sammel, body="Zweiter.")
+    assert ld.main() == 0
+    assert len(umgebung.beitraege) == 1          # Kadenz: genau einer
+    assert umgebung.beitraege[0]["text"] == "Erster."
 
 
 def test_main_mit_unsinniger_kennung_bricht_ab(umgebung, eingerichtet,
@@ -706,3 +722,85 @@ def test_get_ruf_schickt_keinen_rumpf(monkeypatch):
     assert gesehen["methode"] == "GET"
     # Die Kennung MUSS kodiert sein — unkodiert antwortet LinkedIn mit 400.
     assert "urn%3Ali%3Avideo%3AA%20B" in gesehen["url"]
+
+
+# ---------------------------------------------------------------------------
+# Dauerbetrieb (30.08.2026): Freigabe IST der Versand — Betreiber-Entscheid
+# „freigabe soll gleich versand machen". Der Einmal-Modus mit genannter
+# Kennung bleibt daneben bestehen (Handbetrieb, Notfall).
+#
+# Die alte Sorge aus dem Kopfkommentar — „vor Wochen freigegeben, laengst
+# vergessen, jetzt oeffentlich" — faengt die Frischegrenze ab, nicht mehr
+# das Fehlen einer Schleife.
+# ---------------------------------------------------------------------------
+
+def _tagesversand(lead_id, wann="now()"):
+    """Ein bereits veroeffentlichter Beitrag von heute (bzw. `wann`)."""
+    server._q(
+        f"insert into activities (lead_id, type, payload, created_at) values "
+        f"(%s, 'versand', %s, {wann}) returning id",
+        (lead_id, server._json({"kanal": "linkedin",
+                                "beitrag": "urn:li:ugcPost:ALT"})))
+
+
+def test_eine_runde_veroeffentlicht_den_aeltesten_freigegebenen(umgebung, sammel):
+    alt = _entwurf(sammel, body="Der aeltere Beitrag.")
+    _entwurf(sammel, body="Der juengere Beitrag.")
+    assert ld.eine_runde() == "veroeffentlicht"
+    assert len(umgebung.beitraege) == 1
+    assert umgebung.beitraege[0]["text"] == "Der aeltere Beitrag."
+    assert server._q("select status from drafts where id = %s",
+                     (alt,))[0]["status"] == "sent"
+
+
+def test_hoechstens_einer_pro_tag(umgebung, sammel):
+    """Die Tageskadenz des Betreibers steckt jetzt IM Dienst — vorher nur
+    im MCP-Werkzeug, das ein Dauerlaeufer nie aufruft."""
+    _entwurf(sammel, body="Erster.")
+    _entwurf(sammel, body="Zweiter.")
+    assert ld.eine_runde() == "veroeffentlicht"
+    assert ld.eine_runde() == "kadenz"
+    assert len(umgebung.beitraege) == 1
+
+
+def test_gestern_veroeffentlicht_blockiert_heute_nicht(umgebung, sammel):
+    _tagesversand(sammel, "now() - interval '1 day'")
+    _entwurf(sammel, body="Heute dran.")
+    assert ld.eine_runde() == "veroeffentlicht"
+
+
+def test_ohne_freigabe_passiert_nichts(umgebung, sammel):
+    _entwurf(sammel, status="pending")
+    assert ld.eine_runde() == "nichts"
+    assert umgebung.beitraege == []
+
+
+def test_zu_lange_freigegebene_bleiben_liegen(umgebung, sammel):
+    """„Vor Wochen freigegeben, laengst vergessen" darf nicht ploetzlich
+    oeffentlich werden — es bleibt approved und wartet auf einen Menschen."""
+    kennung = _entwurf(sammel, body="Uralt.")
+    server._q("update drafts set approved_at = now() - interval '30 days' "
+              "where id = %s returning id", (kennung,))
+    assert ld.eine_runde() == "nichts"
+    assert umgebung.beitraege == []
+    assert server._q("select status from drafts where id = %s",
+                     (kennung,))[0]["status"] == "approved"
+
+
+def test_ein_zu_alter_blockiert_den_frischen_nicht(umgebung, sammel):
+    alt = _entwurf(sammel, body="Uralt.")
+    server._q("update drafts set approved_at = now() - interval '30 days' "
+              "where id = %s returning id", (alt,))
+    _entwurf(sammel, body="Frisch freigegeben.")
+    assert ld.eine_runde() == "veroeffentlicht"
+    assert umgebung.beitraege[0]["text"] == "Frisch freigegeben."
+
+
+def test_der_einmal_modus_bleibt_erhalten(umgebung, sammel, monkeypatch):
+    """Handbetrieb mit genannter Kennung — unveraendert, und er ignoriert
+    die Tageskadenz bewusst: der Mensch hat genau diesen gemeint."""
+    _tagesversand(sammel)
+    kennung = _entwurf(sammel, body="Von Hand.")
+    monkeypatch.setattr(ld, "DRAFT_ID", kennung)
+    assert ld.eine_runde() == "veroeffentlicht"
+    assert umgebung.beitraege[0]["text"] == "Von Hand."

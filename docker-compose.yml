@@ -287,27 +287,27 @@ services:
   # aufs Profil. Die Klausel steht deshalb im Claim selbst (Kopf von
   # linkedin_dispatch.py).
   #
-  # Bewusst "no" wie bei allen Versendern: ein Dienst, der oeffentlich
-  # etwas unter dem Namen eines Menschen postet, startet nicht von selbst
-  # mit dem Rechner mit.
+  # DAUERDIENST seit 30.08.2026 (Betreiber: „freigabe soll gleich versand
+  # machen"). Vorher lief er hinter einem Profil und nur mit genannter
+  # Entwurfs-Kennung — die Lehre aus dem Doppelpost vom 26.08., als ein
+  # Stapellauf einen laengst vergessenen freigegebenen Beitrag
+  # veroeffentlichte.
+  #
+  # Diese Sorge ist nicht verschwunden, sie wird jetzt IM DIENST
+  # abgefangen statt durch dessen Abwesenheit: hoechstens EIN Beitrag pro
+  # Tag (Kadenz vom 27.08.) und nichts, was laenger als
+  # LINKEDIN_FRISCHE_TAGE (7) freigegeben ist. Beides in
+  # sales-mcp/tests/test_linkedin_dispatch.py eigens getestet.
+  #
+  # Handbetrieb bleibt und ignoriert die Kadenz bewusst — dort hat ein
+  # Mensch GENAU diesen Beitrag gemeint:
+  #   LINKEDIN_DRAFT_ID=<uuid> docker compose run --rm sales-linkedin
   sales-linkedin:
     build: ./sales-mcp
     image: sales-claw-sales-mcp:local
     container_name: sales-linkedin
     command: python linkedin_dispatch.py
-    restart: "no"
-    # HINTER EINEM PROFIL, und das ist eine Sicherheitsaussage, keine
-    # Bequemlichkeit: ein Dienst mit `profiles:` taucht in der normalen
-    # Compose-Konfiguration ueberhaupt nicht auf. `docker compose up -d`
-    # kann ihn also nicht versehentlich mitstarten, und der Vertragstest
-    # `test_clean_committed_compose_has_no_startable_linkedin_service`
-    # (scripts/tests/test_proxmox_compose.py) sieht ihn nicht — genau so,
-    # wie das Sperrgate des Proxmox-Runbooks es verlangt.
-    #
-    # Bewusst gestartet wird er so:
-    #   LINKEDIN_DRAFT_ID=<uuid> docker compose --profile linkedin     #     run --rm sales-linkedin
-    profiles:
-      - linkedin
+    restart: unless-stopped
     # KEIN env_file — dieselbe Trennung wie bei sales-mail: dieser Dienst
     # braucht die Kundendaten-DB, das LinkedIn-Token und den Medienordner,
     # sonst nichts. Ueber env_file erbte er auch OPENWA_API_KEY, SMTP_*,
