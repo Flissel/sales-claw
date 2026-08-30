@@ -16,7 +16,33 @@ BETRIEB="${SALES_BETRIEB:-$HOME/sales-betrieb}"
 STATUS="$BETRIEB/update-status.json"
 # NIEMALS nacktes `docker compose up -d`: es wuerde sales-auto starten
 # (zweiter Antwortpfad neben dem Cron-Job). Dienste immer namentlich.
-KERN="sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw"
+KERN_ALLE="sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw"
+
+# GEMESSEN 30.08.2026, Aufgabe 12: ein Update auf der frisch aufgesetzten
+# VM lief in den Rueckbau — und der startete mit der vollen Kernliste die
+# Dienste MIT NEBENWIRKUNGEN (dispatch, inbox, mail, claw), obwohl dort
+# bewusst nur mcp und ui liefen und der Kundenverkehr noch am alten
+# Standort hing. Kein Schaden entstanden (nachgeprueft: kein failed-
+# Entwurf, kein Versand), aber es war genau die Lage, die die
+# Cutover-Regel „nie zwei Standorte gleichzeitig" verbietet.
+#
+# Ein Update darf deshalb nur anfassen, was VORHER lief. Was absichtlich
+# stand, bleibt stehen — auch im Rueckbau.
+laufende_kerndienste() {
+  local laufend=""
+  for dienst in $KERN_ALLE; do
+    if [ "$(docker inspect -f '{{.State.Status}}' "$dienst" 2>/dev/null)" = "running" ]; then
+      laufend="$laufend $dienst"
+    fi
+  done
+  printf '%s' "${laufend# }"
+}
+
+KERN="$(laufende_kerndienste)"
+if [ -z "$KERN" ]; then
+  echo "ABBRUCH: kein Kerndienst laeuft — hier ist nichts zu aktualisieren." >&2
+  exit 1
+fi
 
 mkdir -p "$BETRIEB"
 cd "$WURZEL"
@@ -72,11 +98,18 @@ if echo "$GEAENDERT" | grep -E '^config/openclaw' >/dev/null; then
   echo "HINWEIS: $HINWEIS"
 fi
 
+gateway_neustarten() {
+  # Nur anfassen, was laeuft — KERN enthaelt sales-claw nur dann.
+  case " $KERN " in
+    *" sales-claw "*) docker restart sales-claw >/dev/null ;;
+  esac
+}
+
 rueckbau() {
   echo "Abnahme rot — Rueckbau auf $ALT." >&2
   git reset --hard "$ALT" >/dev/null
   docker compose up -d --build $KERN
-  docker restart sales-claw >/dev/null
+  gateway_neustarten
   sleep 30
   if bash "$WURZEL/deploy/smoke.sh"; then
     status_schreiben rollback "$ALT" "$NEU" "Update fehlerhaft; alter Stand laeuft wieder"
@@ -96,13 +129,29 @@ if $OPENWA_BAUEN; then
 fi
 if echo "$GEAENDERT" | grep -E '^config/workspace/' >/dev/null; then
   # Saat einspielen: Git ist Quelle der Wahrheit fuer den Workspace.
-  docker cp "$WURZEL/config/workspace/." sales-claw:/home/node/.openclaw/workspace/
+  # Auch in einen gestoppten Container kopierbar; existiert er gar nicht
+  # (Aufbauphase), ist das kein Grund, das ganze Update abzubrechen.
+  docker cp "$WURZEL/config/workspace/." \
+    sales-claw:/home/node/.openclaw/workspace/ 2>/dev/null || \
+    echo "HINWEIS: Workspace-Saat nicht eingespielt — sales-claw fehlt noch."
 fi
 if $GATEWAY_NEU; then
-  docker restart sales-claw >/dev/null
+  gateway_neustarten
   sleep 30   # Gateway, Kanal und MCP brauchen einen Moment (gemessen 5-20s).
 fi
 
-bash "$WURZEL/deploy/smoke.sh" || rueckbau
-status_schreiben eingespielt "$ALT" "$NEU" "${HINWEIS:-glatt durchgelaufen}"
-echo "Update eingespielt und Abnahme gruen."
+# Die Abnahme prueft den VOLLEN Stack — auf einem absichtlich unvollstaendigen
+# (Aufbauphase vor dem Cutover: nur mcp und ui) ist sie zwangslaeufig rot, und
+# ein Rueckbau waere dort sinnlos: die Roete kommt nicht vom Update. Gemessen
+# am 30.08.2026, als genau das passierte.
+if [ "$KERN" = "$KERN_ALLE" ]; then
+  bash "$WURZEL/deploy/smoke.sh" || rueckbau
+  status_schreiben eingespielt "$ALT" "$NEU" "${HINWEIS:-glatt durchgelaufen}"
+  echo "Update eingespielt und Abnahme gruen."
+else
+  echo "Abnahme UEBERSPRUNGEN: unvollstaendiger Stack (Aufbauphase). Es "
+  echo "laeuft: $KERN. Der neue Stand bleibt eingespielt; die volle Abnahme"
+  echo "gilt erst nach dem Cutover."
+  status_schreiben eingespielt "$ALT" "$NEU" \
+    "${HINWEIS:+$HINWEIS; }Abnahme uebersprungen - unvollstaendiger Stack"
+fi
