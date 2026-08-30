@@ -141,3 +141,5 @@ Der PC-Stack bleibt danach 7 Tage GESTOPPT liegen (Rückfahrkarte), dann
 | Live getartes Chromium-Profil | beschädigte WhatsApp-Session | openwa vor dem Sichern stoppen |
 
 <!-- Probe-Update fuer den Live-Beweis des Ausrollwegs (30.08.2026, Aufgabe 12). -->
+
+<!-- Zweiter Probelauf des Ausrollwegs (30.08.2026). -->
