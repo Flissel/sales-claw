@@ -42,14 +42,21 @@ Drei gleichwertige Auslöser, ein Mechanismus (`deploy/update.sh`):
    Der Bot selbst fasst nie git oder docker an.
 
    Derselbe Spool trägt seit dem 27.08. eine zweite Auftragsart:
-   **LinkedIn-Versand** („post den freigegebenen LinkedIn-Beitrag") —
-   `linkedin_versand_anfordern()` bestellt nur, was in der Oberfläche
-   FREIGEGEBEN ist, der Wächter startet den Einmal-Versender mit exakt
+   **LinkedIn-Versand** — `linkedin_versand_anfordern()` bestellt nur,
+   was FREIGEGEBEN ist, der Wächter startet den Versender mit exakt
    dieser Entwurfs-Kennung und liest den wahren Ausgang aus der
    `Ausgang:`-Logzeile (der Versender endet auch bei Fehlschlägen mit
    Exit 0 — gemessen). Dateinamen tragen den Typ
    (`auftrag-update-…` / `auftrag-linkedin-…`), damit die
    Ergebnis-Leser einander nie überdecken.
+
+   **Seit dem 30.08. ist das der Sonderweg, nicht der Normalweg:**
+   `sales-linkedin` läuft dauerhaft und nimmt freigegebene Beiträge
+   selbst (höchstens einer pro Tag, nichts älter als sieben Tage
+   freigegeben). Die Freigabe ist damit die Veröffentlichung — wie bei
+   WhatsApp. Der Auftragsweg bleibt für den Fall, dass ein bestimmter
+   Beitrag außer der Reihe raus soll; der Cron-Job „LinkedIn-Tagespost"
+   wurde als überflüssig entfernt.
 3. **Von Hand auf der VM:** `bash ~/sales-claw/deploy/update.sh`
    (oder `sudo systemctl start sales-update`).
 

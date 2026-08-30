@@ -7,7 +7,7 @@ Fünf Handgriffe. Mehr braucht der Alltag nicht; alles andere steht in
 |---|---|
 | **Geht es dem System gut?** | Doppelklick auf `scripts/status-server.ps1`. Steht überall „ok" und unten „ALLE PRUEFUNGEN GRUEN" — ja. |
 | **Update einspielen** | Doppelklick auf `scripts/update-server.ps1` — ODER dem Bot schreiben: „spiel das Update ein". Er bestellt es und meldet das Ergebnis. |
-| **LinkedIn-Post raus** | Erst in der Oberfläche freigeben, dann dem Bot schreiben: „post den freigegebenen LinkedIn-Beitrag". Freigeben allein versendet nie. |
+| **LinkedIn-Post raus** | Freigeben — mehr nicht. Der Beitrag geht binnen einer Minute raus, höchstens einer pro Tag (der Rest folgt an den nächsten Tagen). Freigabe geht in der Oberfläche oder über den Bot. |
 | **Oberfläche öffnen** | `http://<VM-Tailscale-IP>:8791` — funktioniert auch vom Handy, sobald es im Tailscale-Netz ist. *(IP wird beim Cutover hier eingetragen.)* |
 | **Etwas ist kaputt** | Status-Doppelklick, die ROTEN Zeilen kopieren und Claude geben. Nicht raten, nicht neustarten — die Zeilen sagen, wo es klemmt. |
 | **Notfall: Update zurückrollen** | Kapitel „Rückfahrkarte" in 04 — vier Zeilen zum Kopieren. Passiert bei rotem Update auch automatisch. |
