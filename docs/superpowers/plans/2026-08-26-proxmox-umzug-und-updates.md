@@ -1115,9 +1115,11 @@ einwilligung_erfassen/einwilligung_widerrufen (63 gesamt); UI-Fussnote,
 AGENTS.md, docs/05+06 nachgezogen. Vertraege: tests/test_uwg.py (10),
 Fixtures der Bestandssuiten mit dokumentierter Grundlage.
 
-**OFFEN — Dossier:** AVV-Vorlage, TOMs (aus docs/04/06 destilliert),
-AI-Act-Transparenz-Pruefung (JEDE Auto-Nachricht muss den Assistenten
-erkennbar machen).
+**Dossier GESCHRIEBEN (31.08.2026):** docs/07_AVV_VORLAGE.md (Art. 28,
+Platzhalter fuer Teil-E-Team-Mitglieder), docs/08_TOMS.md (destilliert,
+jede Zeile messbar), docs/09_KI_TRANSPARENZ.md (Art.-50-Einordnung:
+Zustimmungsfrage nennt den Assistenten, Verleugnungs-Verbot neu in
+AGENTS.md, Restpflichten beim Betreiber). F5 KOMPLETT.
 
 ### Aufgabe F6: Secrets-Haertung
 
