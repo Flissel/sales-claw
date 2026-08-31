@@ -32,5 +32,25 @@ done
 # Rotation: alles ausser den juengsten 7 Sicherungen entfernen.
 ls -1dt "$ZIEL"/*/ | tail -n +8 | xargs -r rm -rf
 
+# Spiegel AUSSER HAUS (F2, 31.08.2026): Sicherungen auf der Platte, die
+# sie schuetzen sollen, sind bei einem Plattenausfall wertlos. Steht in
+# $BETRIEB/spiegel.ziel ein rsync-Ziel (z. B. root@192.168.178.64:
+# /root/sales-claw-sicherungen), wird der ganze Sicherungsordner dorthin
+# gespiegelt — maschinenspezifische Laufzeit-Konfiguration, bewusst NICHT
+# in Git. --delete haelt die Rotation auch am Spiegel; ein Fehlschlag
+# bricht die Sicherung NICHT (lokal ist sie da), steht aber im Log.
+SPIEGEL_DATEI="${SALES_BETRIEB:-$HOME/sales-betrieb}/spiegel.ziel"
+if [ -f "$SPIEGEL_DATEI" ]; then
+  SPIEGEL_ZIEL="$(head -1 "$SPIEGEL_DATEI" | tr -d '[:space:]')"
+  if [ -n "$SPIEGEL_ZIEL" ]; then
+    if rsync -a --delete -e "ssh -i $HOME/.ssh/sicherung-spiegel -o BatchMode=yes -o StrictHostKeyChecking=accept-new" \
+        "$ZIEL"/ "$SPIEGEL_ZIEL"/; then
+      echo "Spiegel: $SPIEGEL_ZIEL aktualisiert"
+    else
+      echo "WARNUNG: Spiegelung nach $SPIEGEL_ZIEL fehlgeschlagen — lokale Sicherung ist unberuehrt." >&2
+    fi
+  fi
+fi
+
 echo "Sicherung: $ORDNER"
 ls -lh "$ORDNER"
