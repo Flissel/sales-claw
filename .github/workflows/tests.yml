@@ -1,0 +1,61 @@
+# CI (F1, 31.08.2026): die Suite laeuft bei jedem Push — vorher lief sie
+# nur, wenn jemand sie von Hand startete.
+#
+# Zwei getrennte Jobs, weil es zwei getrennte Welten sind:
+#   * container-suite — die 1.400+ Vertragstests im echten sales-mcp-Image
+#     gegen ein Postgres MIT pgvector (das Schema braucht vector(1536)).
+#     db/provision.sql laeuft unveraendert; nur die Extensions legt CI an,
+#     denn provision.sql prueft sie bewusst nur und legt sie nie selbst an.
+#   * host-suite — die Pilot-/Packaging-Tests aus scripts/tests, die auf
+#     dem Wirt laufen (kein Docker, kein DB-Zugriff).
+name: tests
+
+on:
+  push:
+    branches: ["**"]
+
+jobs:
+  container-suite:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: ci
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Schema provisionieren
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+          psql "postgresql://postgres:ci@localhost:5432/postgres" -v ON_ERROR_STOP=1 \
+            -c "create extension if not exists vector; create extension if not exists pgcrypto;"
+          psql "postgresql://postgres:ci@localhost:5432/postgres" -v ON_ERROR_STOP=1 \
+            -f db/provision.sql
+      - name: Image bauen
+        run: docker build -t sales-mcp-ci ./sales-mcp
+      - name: Suite
+        run: >-
+          docker run --rm --network host
+          -e SALES_DB_SCHEMA=sales_test
+          -e SALES_DB_URL="postgresql://postgres:ci@localhost:5432/postgres"
+          sales-mcp-ci
+          python -m pytest tests/ -q --tb=short -p no:cacheprovider
+
+  host-suite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Abhaengigkeiten
+        run: pip install --quiet pytest pyyaml requests
+      - name: Pilot- und Packaging-Tests
+        run: python -m pytest scripts/tests -q --tb=short
