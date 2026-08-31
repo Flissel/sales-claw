@@ -48,8 +48,13 @@ jobs:
           sales-mcp-ci
           python -m pytest tests/ -q --tb=short -p no:cacheprovider
 
+  # windows-latest ist hier KEINE Bequemlichkeit: package_proxmox.py
+  # verlangt Windows-No-Reparse-Verzeichnis-Handles als Sicherheitsanker
+  # ("secure packaging requires Windows no-reparse directory handles" —
+  # auf ubuntu-latest gemessen am 31.08.2026, 12 Tests rot allein daran),
+  # und die .ps1-Vertraege brauchen echtes PowerShell.
   host-suite:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
