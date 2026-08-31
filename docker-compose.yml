@@ -453,6 +453,9 @@ services:
       # Zugriff vom eigenen Handy ueber Tailscale. Leer lassen heisst: nur
       # Loopback, wie in Stufe 10.
       - UI_EXTRA_HOSTS=${UI_TAILSCALE_IP:-}
+      # Anmeldung (E1, 31.08.2026): leer = Uebergangszustand (offen wie
+      # bisher); gesetzt = Login Pflicht. Setzt deploy/benutzer-anlegen.sh.
+      - UI_SESSION_SECRET=${UI_SESSION_SECRET:-}
     volumes:
       # DER MEDIENORDNER — und hier OHNE `:ro`, als einziger Dienst im Stack.
       #

@@ -109,6 +109,15 @@ def test_ui_has_only_loopback_and_tailscale_bindings(tmp_path: Path) -> None:
     assert all(port["published"] == "8791" for port in ports)
 
 
+def test_ui_receives_the_session_secret_wiring(tmp_path: Path) -> None:
+    """E1 (31.08.2026): sales-ui hat KEIN env_file (T5a) — ohne diese
+    ausdrueckliche Leitung kaeme ein in die .env geschriebenes
+    UI_SESSION_SECRET nie im Container an, und benutzer-anlegen.sh
+    schaltete die Anmeldung nur scheinbar scharf."""
+    umgebung = rendered_config(tmp_path)["services"]["sales-ui"]["environment"]
+    assert "UI_SESSION_SECRET" in umgebung
+
+
 def _run_binding_gate(
     config: dict[str, object], expected: str
 ) -> subprocess.CompletedProcess[str]:
