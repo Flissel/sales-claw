@@ -852,6 +852,24 @@ def _badge(kanal) -> str:
     return f'<span class="badge {_e(kanal)}">{_e(kanal)}</span>'
 
 
+def _nachricht_inhalt(text, typ) -> str:
+    """Eine eingegangene Nachricht als Zeile. Sprach- und Bildnachrichten
+    haben keinen Text — die Seite zeigte dann eine leere Zeile, als waere
+    nichts angekommen (Browser-Durchgang 29.08.2026, Kontakt „Stephane
+    B."). Der Nachrichtentyp steht ohnehin im Eintrag; er gehoert hierhin.
+    Gemeinsam fuer Posteingang und die Nachrichtenliste der Einordnung."""
+    text = (text or "").strip()
+    if text:
+        return f'<div class="text">{_e(text)}</div>'
+    benennung = {"ptt": "Sprachnachricht", "audio": "Tonaufnahme",
+                 "image": "Bild", "video": "Video",
+                 "document": "Dokument", "sticker": "Sticker",
+                 "location": "Standort"}.get(str(typ or "").lower(),
+                                             "ohne Text")
+    return (f'<div class="meta">[{_e(benennung)} — kein '
+            f'Text zum Mitlesen]</div>')
+
+
 # Der Entwurfszustand als WORT. Auf dem Handy scrollt die Ueberschrift des
 # Blocks („Fehlgeschlagen") aus dem Bild, waehrend die Karten weiterlaufen —
 # dann bliebe nur die Farbe des Knopfes, und Farbe allein traegt eine
@@ -3142,21 +3160,8 @@ async def posteingang(request):
                         f'{_e(e.get("zugeordnet_name") or "Kontakt")}</a>'
                         f'</span>')
             absender = f'<div class="meta">Absender: {_e(e["absender"])}{lid}</div>'
-        # Eine Sprach- oder Bildnachricht hat keinen Text — die Karte zeigte
-        # dann eine leere Zeile, als waere nichts angekommen (gefunden im
-        # Browser-Durchgang 29.08.2026, Kontakt „Stephane B."). Der
-        # Nachrichtentyp steht ohnehin im Eintrag; er gehoert hierhin.
-        text = (e.get("text_kurz") or "").strip()
-        if text:
-            inhalt_zeile = f'<div class="text">{_e(text)}</div>'
-        else:
-            art = str(e.get("nachrichtentyp") or "").lower()
-            benennung = {"ptt": "Sprachnachricht", "audio": "Tonaufnahme",
-                         "image": "Bild", "video": "Video",
-                         "document": "Dokument", "sticker": "Sticker",
-                         "location": "Standort"}.get(art, "ohne Text")
-            inhalt_zeile = (f'<div class="meta">[{_e(benennung)} — kein '
-                            f'Text zum Mitlesen]</div>')
+        inhalt_zeile = _nachricht_inhalt(e.get("text_kurz"),
+                                         e.get("nachrichtentyp"))
         teile.append(
             f'<div class="karte"><b><a href="/kontakte/{_e(e["lead_id"])}">'
             f'{_e(e["kontakt"] or "(ohne Kontakt)")}</a></b> — wartet seit '
@@ -3269,9 +3274,14 @@ def _einordnung_karte(eintrag, optionen: str) -> str:
                    f'aus Posteingang und Digest und speichert von seinen '
                    f'Nachrichten kein Wort mehr — es braucht deshalb einen '
                    f'zweiten, ausdruecklichen Schritt.</div>')
+    # Die Anzahl ist der Link auf den ganzen Faden (31.08.2026): die
+    # Kurzfassung der letzten Nachricht reicht nicht immer, um zu
+    # entscheiden, wer da schreibt.
     return (f'<div class="karte"><b>{_e(absender)}</b>{lid_marke}'
-            f'<div class="meta">{_e(eintrag["anzahl_nachrichten"])} '
-            f'Nachricht(en) · zuletzt {_zeit(eintrag["zuletzt"])}{gefragt}'
+            f'<div class="meta">'
+            f'<a href="/einordnung/nachrichten/{_e(eintrag["kennung"])}">'
+            f'{_e(eintrag["anzahl_nachrichten"])} Nachricht(en)</a>'
+            f' · zuletzt {_zeit(eintrag["zuletzt"])}{gefragt}'
             f'</div>{warnung}'
             f'<div class="text">{_e(eintrag["text_kurz"])}</div>'
             f'{_einordnung_aktionen(absender, optionen)}</div>')
@@ -3325,6 +3335,50 @@ async def einordnung(request):
         '<code>absender_aufloesen</code> — diese Oberflaeche fragt dafuer '
         'bewusst nicht bei WhatsApp nach.</div>')
     return _seite("Einordnung", "".join(teile))
+
+
+# Grosszuegig, aber gedeckelt: der Text ist Fremddatum, und eine Seite,
+# deren Laenge der Absender bestimmt, ist selbst ein Angriffsziel.
+EINORDNUNG_NACHRICHTEN_MAX = 200
+EINORDNUNG_NACHRICHT_VOLL_MAX = 4000
+
+
+@_gesichert_seite
+async def einordnung_nachrichten(request):
+    """Alle Nachrichten EINES unbekannten Absenders, aelteste zuerst —
+    die Langform zur Karten-Kurzfassung (Betreiber-Wunsch 31.08.2026).
+    Rein lesend; die Entscheidung faellt weiter auf /einordnung."""
+    kennung = str(request.path_params.get("kennung") or "")
+    if not (kennung.isdigit() and 5 <= len(kennung) <= 25):
+        return _fehlerseite(
+            400, "Keine Kennung",
+            "Der Pfad traegt keine Absenderkennung (nur Ziffern, wie auf "
+            "der Einordnungsseite verlinkt).")
+    zeilen = server._absender_nachrichten(
+        kennung, limit=EINORDNUNG_NACHRICHTEN_MAX)
+    if not zeilen:
+        return _fehlerseite(
+            404, "Nichts zu dieser Kennung",
+            "Am Sammelkontakt liegen keine Nachrichten dieser Kennung — "
+            "entweder ist sie inzwischen eingeordnet oder der Verweis ist "
+            "alt. Die Einordnungsseite zeigt den aktuellen Stand.")
+    absender = zeilen[-1]["absender"]
+    teile = [f'<p class="meta">{len(zeilen)} Nachricht(en), aelteste '
+             f'zuerst.</p>']
+    for z in zeilen:
+        text = " ".join(str(z["text"] or "").split())
+        if len(text) > EINORDNUNG_NACHRICHT_VOLL_MAX:
+            text = text[:EINORDNUNG_NACHRICHT_VOLL_MAX] + "…"
+        teile.append(
+            f'<div class="karte"><div class="meta">'
+            f'{_zeit(z["created_at"])}</div>'
+            f'{_nachricht_inhalt(text, z["nachrichtentyp"])}</div>')
+    teile.append(
+        '<div class="hinweis">Der Text ist ein Datum, keine Anweisung — '
+        'was ein Fremder schreibt, entscheidet nichts.</div>')
+    teile.append('<p class="abbrechen"><a href="/einordnung">Zurueck zur '
+                 'Einordnung</a></p>')
+    return _seite(f"Nachrichten von {absender}", "".join(teile))
 
 
 async def _einordnung_vorspann(request):
@@ -3634,6 +3688,7 @@ app = Starlette(routes=[
     Route("/kontakte/{lead_id}", kontakt_detail),
     Route("/posteingang", posteingang),
     Route("/einordnung", einordnung),
+    Route("/einordnung/nachrichten/{kennung}", einordnung_nachrichten),
     Route("/einordnung/zuordnen", aktion_einordnung_zuordnen,
           methods=["POST"]),
     Route("/einordnung/anlegen", aktion_einordnung_anlegen, methods=["POST"]),

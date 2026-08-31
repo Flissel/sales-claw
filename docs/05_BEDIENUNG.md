@@ -8,7 +8,7 @@ Fünf Handgriffe. Mehr braucht der Alltag nicht; alles andere steht in
 | **Geht es dem System gut?** | Doppelklick auf `scripts/status-server.ps1`. Steht überall „ok" und unten „ALLE PRUEFUNGEN GRUEN" — ja. |
 | **Update einspielen** | Doppelklick auf `scripts/update-server.ps1` — ODER dem Bot schreiben: „spiel das Update ein". Er bestellt es und meldet das Ergebnis. |
 | **LinkedIn-Post raus** | Freigeben — mehr nicht. Der Beitrag geht binnen einer Minute raus, höchstens einer pro Tag (der Rest folgt an den nächsten Tagen). Freigabe geht in der Oberfläche oder über den Bot. |
-| **Oberfläche öffnen** | `http://<VM-Tailscale-IP>:8791` — funktioniert auch vom Handy, sobald es im Tailscale-Netz ist. *(IP wird beim Cutover hier eingetragen.)* |
+| **Oberfläche öffnen** | `https://vibemind-offload-1.tail6c7d61.ts.net` — verschlüsselt, gültiges Zertifikat, funktioniert von jedem Gerät im Tailscale-Netz (auch Handy). Ersatzweise `http://100.67.177.45:8791`. |
 | **Etwas ist kaputt** | Status-Doppelklick, die ROTEN Zeilen kopieren und Claude geben. Nicht raten, nicht neustarten — die Zeilen sagen, wo es klemmt. |
 | **Notfall: Update zurückrollen** | Kapitel „Rückfahrkarte" in 04 — vier Zeilen zum Kopieren. Passiert bei rotem Update auch automatisch. |
 | **Neuen Kontakt anschreiben** | Erst die Grundlage nennen: dem Bot schreiben „<Name> ist Bestandskunde" oder „<Name> hat auf der Messe eingewilligt" (mit Quelle). Ohne das verweigert das System die Erstansprache — § 7 UWG, kein Fehler. Wer selbst schreibt, darf immer beantwortet werden. |

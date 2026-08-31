@@ -728,11 +728,13 @@ def test_kontaktseite_escaped_den_reporttext():
 # Posteingang: spiegelt das Werkzeug (unbeantwortet zuerst, LID-Kennzeichnung)
 # ---------------------------------------------------------------------------
 
-def _kundenantwort(lead, text="Passt Donnerstag?", absender="491701234567@c.us"):
+def _kundenantwort(lead, text="Passt Donnerstag?", absender="491701234567@c.us",
+                   typ=None):
     server._q("insert into activities (lead_id, type, payload, actor) values "
               "(%s, 'kundenantwort', %s, 'human') returning id",
               (lead, json.dumps({"text": text, "richtung": "eingehend",
                                  "absender": absender,
+                                 "nachrichtentyp": typ or "text",
                                  "message_id": f"wa-{text[:8]}"})))
 
 
@@ -2893,3 +2895,63 @@ def test_sprachnachricht_ohne_text_wird_benannt():
     seite = _get("/posteingang").text
     assert "Sprachnachricht" in seite
     assert "kein Text zum Mitlesen" in seite
+
+
+# ---------------------------------------------------------------------------
+# /einordnung/nachrichten/<kennung> — alle Nachrichten eines Absenders
+# (Betreiber-Wunsch 31.08.2026: die Kurzfassung auf der Einordnungskarte
+# reicht nicht immer, um zu entscheiden, wer da schreibt.)
+# ---------------------------------------------------------------------------
+
+SOPHIE_KENNUNG = "183096603361451"     # _roh_ziffern(SOPHIE_LID)
+
+
+def test_einordnung_verlinkt_die_nachrichtenliste(sammelkontakt_zurueck):
+    sammel = _sammel()
+    _kundenantwort(sammel, text="Wer bin ich?", absender=SOPHIE_LID)
+    seite = _get("/einordnung").text
+    assert f'href="/einordnung/nachrichten/{SOPHIE_KENNUNG}"' in seite
+
+
+def test_nachrichtenliste_zeigt_alle_chronologisch_und_nur_eigene(
+        sammelkontakt_zurueck):
+    sammel = _sammel()
+    _kundenantwort(sammel, text="Erste Nachricht", absender=SOPHIE_LID)
+    _kundenantwort(sammel, text="Zweite Nachricht", absender=SOPHIE_LID)
+    _kundenantwort(sammel, text="Fremder Faden", absender="4915205134135@c.us")
+    seite = _get(f"/einordnung/nachrichten/{SOPHIE_KENNUNG}").text
+    assert "Erste Nachricht" in seite and "Zweite Nachricht" in seite
+    assert seite.index("Erste Nachricht") < seite.index("Zweite Nachricht")
+    assert "Fremder Faden" not in seite
+
+
+def test_nachrichtenliste_escaped_fremddaten(sammelkontakt_zurueck):
+    sammel = _sammel()
+    _kundenantwort(sammel, text="<script>alert(1)</script>",
+                   absender=SOPHIE_LID)
+    seite = _get(f"/einordnung/nachrichten/{SOPHIE_KENNUNG}").text
+    assert "<script>alert(1)</script>" not in seite
+    assert "&lt;script&gt;" in seite
+
+
+def test_nachrichtenliste_benennt_nachrichten_ohne_text(sammelkontakt_zurueck):
+    sammel = _sammel()
+    _kundenantwort(sammel, text="", absender=SOPHIE_LID, typ="ptt")
+    seite = _get(f"/einordnung/nachrichten/{SOPHIE_KENNUNG}").text
+    assert "Sprachnachricht" in seite
+    assert "kein Text zum Mitlesen" in seite
+
+
+def test_nachrichtenliste_unbekannte_kennung_ist_eine_meldung(
+        sammelkontakt_zurueck):
+    _sammel()
+    antwort = _get("/einordnung/nachrichten/999999999999")
+    assert antwort.status_code == 404
+    assert "keine Nachrichten" in antwort.text
+
+
+def test_nachrichtenliste_kaputte_kennung_wird_abgewiesen(
+        sammelkontakt_zurueck):
+    _sammel()
+    assert _get("/einordnung/nachrichten/abc123").status_code == 400
+    assert _get("/einordnung/nachrichten/1").status_code == 400

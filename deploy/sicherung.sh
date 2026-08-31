@@ -27,6 +27,16 @@ for vol in $VOLUMES; do
   docker run --rm -v "$vol":/quelle:ro -v "$ORDNER":/ziel alpine \
     tar czf "/ziel/$vol.tar.gz" -C /quelle .
 done
+
+# Der Medienordner (Bind-Mount, gitignored) haengt an KEINEM Volume und
+# fehlte deshalb in Sicherung UND Umzug — gefunden 31.08.2026, als nach
+# dem Cutover die PDFs weg waren. Er ist Versandmaterial (Checklisten,
+# Produktvideos) und gehoert mitgesichert.
+MEDIEN="$(cd "$(dirname "$0")/.." && pwd)/media"
+if [ -d "$MEDIEN" ]; then
+  tar czf "$ORDNER/media.tar.gz" -C "$MEDIEN" .
+fi
+
 ( cd "$ORDNER" && sha256sum ./*.tar.gz > MANIFEST.sha256 )
 
 # Rotation: alles ausser den juengsten 7 Sicherungen entfernen.

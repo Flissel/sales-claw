@@ -1113,12 +1113,13 @@ selbst, kann auf diesem Weg niemand alarmieren — ein Aussenkanal
 Login mit Rollen: **E1 GEBAUT 31.08.2026** (siehe Teil E) — scharf nach
 dem Menschen-Schritt benutzer-anlegen.sh.
 
-TLS ueber `tailscale serve`: **WARTET AUF DEN BETREIBER** — HTTPS ist im
-Tailnet nicht freigeschaltet. Einmalig im Tailscale-Admin bestaetigen:
-https://login.tailscale.com/f/serve?node=naXCJTLAiB11CNTRL — danach auf
-der VM `sudo tailscale serve --bg --https=443 http://127.0.0.1:8791`
-und pruefen, ob UI_EXTRA_HOSTS den ts.net-Namen braucht (Host-Header
-messen). SSO (Entra/Google) bleibt Ausbaustufe.
+TLS ueber `tailscale serve`: **LAEUFT seit 31.08.2026** (Betreiber hat
+Serve freigeschaltet). https://vibemind-offload-1.tail6c7d61.ts.net →
+Proxy auf 127.0.0.1:8791; gemessen: serve reicht den Original-Host
+durch (421 vor dem Fix), darum gilt jeder Extra-Host jetzt auch nackt
+und mit :443 (_erlaubte_hosts, test_ui), Leitung UI_SERVE_HOST in
+Compose + VM-.env. Vom PC durchs Tailnet gemessen: 200. F4 KOMPLETT
+(SSO bleibt Ausbaustufe).
 
 ### Aufgabe F5: UWG-Einwilligungs-Tor + Compliance-Dossier
 

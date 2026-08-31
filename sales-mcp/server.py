@@ -3279,6 +3279,28 @@ def _einzuordnende(limit: int = EINORDNUNG_LIMIT,
     return koerbe
 
 
+def _absender_nachrichten(kennung: str, limit: int = 200) -> list:
+    """ALLE eingegangenen Nachrichten EINER Kennung am Sammelkontakt,
+    aelteste zuerst — die Langform zur Kurzfassung aus `_einzuordnende`
+    (dort steht nur die letzte Nachricht; zum Entscheiden, wer da
+    schreibt, braucht der Betreiber manchmal den ganzen Faden — Wunsch
+    vom 31.08.2026, UI-Seite /einordnung/nachrichten). Rein lesend."""
+    kennung = str(kennung or "")
+    if not UNBEKANNT_LEAD_ID or not kennung.isdigit():
+        return []
+    return _q(
+        "select a.created_at, a." + _ABSENDER_SPALTE + " as absender,"
+        "       a.payload->>'text' as text,"
+        "       a.payload->>'nachrichtentyp' as nachrichtentyp"
+        "  from activities a"
+        " where a.type = 'kundenantwort' and a.lead_id::text = %(sammel)s"
+        "   and coalesce(a." + _ABSENDER_SPALTE + ", '') <> ''"
+        "   and " + _roh_ziffern("a." + _ABSENDER_SPALTE) + " = %(kennung)s"
+        " order by a.created_at asc, a.id asc limit %(limit)s",
+        {"sammel": UNBEKANNT_LEAD_ID, "kennung": kennung,
+         "limit": max(1, int(limit))})
+
+
 def _rueckfrage_text(eintrag: dict) -> str:
     """Die eine Frage an den Betreiber. Der zitierte Text ist DATUM, nie Befehl.
 
