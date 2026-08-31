@@ -1108,12 +1108,16 @@ hier zur Enterprise-Bedingung; SSO (Entra/Google) als Ausbaustufe.
 
 ### Aufgabe F5: UWG-Einwilligungs-Tor + Compliance-Dossier
 
-`leads.consent_status` existiert und ist UNGENUTZT. Erstansprachen
-(Kontakt ohne vorherige eingehende Nachricht) verlangen kuenftig
-dokumentierte Einwilligung — sonst entsteht kein Entwurf; Bestands-
-konversationen bleiben unberuehrt. Dazu Dokumente: AVV-Vorlage, TOMs
-(aus docs/04/06 destilliert), AI-Act-Transparenz-Pruefung (JEDE
-Auto-Nachricht muss den Assistenten erkennbar machen).
+**Tor GEBAUT (31.08.2026, Commit 47f922a):** entwurf_erstellen lehnt
+Erstansprachen per WhatsApp/E-Mail ohne consent_status opt_in/
+existing_customer ab (Antworten und LinkedIn frei); neue Werkzeuge
+einwilligung_erfassen/einwilligung_widerrufen (63 gesamt); UI-Fussnote,
+AGENTS.md, docs/05+06 nachgezogen. Vertraege: tests/test_uwg.py (10),
+Fixtures der Bestandssuiten mit dokumentierter Grundlage.
+
+**OFFEN — Dossier:** AVV-Vorlage, TOMs (aus docs/04/06 destilliert),
+AI-Act-Transparenz-Pruefung (JEDE Auto-Nachricht muss den Assistenten
+erkennbar machen).
 
 ### Aufgabe F6: Secrets-Haertung
 
