@@ -5354,6 +5354,20 @@ def linkedin_versand_anfordern(draft_id: str = "", trotzdem: bool = False) -> st
 
 
 @_gesichert
+def wache_ergebnis() -> str:
+    """Liest den juengsten Befund der Betriebs-Wache aus dem Spool.
+
+    Die Wache (deploy/wache.sh, alle 15 Minuten auf dem Wirt) legt NUR
+    bei roter Abnahme einen Befund ab — hoechstens einen je zwei
+    Stunden, damit ein andauernder Ausfall nicht stapelt. `ergebnis`
+    null heisst: seit dem letzten Befund war alles gruen. Melde einen
+    roten Befund dem Betreiber mit den roten Pruefzeilen — GENAU EINMAL
+    je Datei, wie bei update_ergebnis().
+    """
+    return _ergebnis_lesen("wache")
+
+
+@_gesichert
 def linkedin_versand_ergebnis() -> str:
     """Liest das juengste LinkedIn-Versand-Ergebnis aus dem Spool.
 
@@ -5434,7 +5448,11 @@ WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              # Privat-Markierung (P3, 29.08.2026): Datensparsamkeit statt
              # Filterung — der Posteingang speichert fuer private Kontakte
              # keinen Inhalt. Vertragstests in tests/test_privat.py.
-             kontakt_privat_setzen, kontakt_privat_entziehen)
+             kontakt_privat_setzen, kontakt_privat_entziehen,
+             # Betriebs-Wache (F3, 31.08.2026): der Wirt prueft alle 15
+             # Minuten, rote Befunde erreichen den Betreiber ueber den
+             # 2-h-Takt. Vertragstests in tests/test_auftraege.py.
+             wache_ergebnis)
 
 for _fn in WERKZEUGE:
     mcp.tool()(_fn)

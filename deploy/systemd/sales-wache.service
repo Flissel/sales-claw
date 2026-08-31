@@ -1,0 +1,7 @@
+[Unit]
+Description=sales-claw: Betriebs-Wache (Abnahme, rote Befunde in den Spool)
+
+[Service]
+Type=oneshot
+User=debian
+ExecStart=/usr/bin/bash /home/debian/sales-claw/deploy/wache.sh

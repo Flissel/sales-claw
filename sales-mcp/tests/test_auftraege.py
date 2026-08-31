@@ -240,3 +240,25 @@ def test_die_ergebnisleser_sehen_nur_ihre_spur(spool):
     linkedin = json.loads(server.linkedin_versand_ergebnis())
     assert update["ergebnis"]["ergebnis"] == "eingespielt"
     assert linkedin["ergebnis"]["ergebnis"] == "veroeffentlicht"
+
+
+# ---------------------------------------------------------------------------
+# Betriebs-Wache (F3, 31.08.2026): eigene Spur im Spool — ein roter
+# Wache-Befund darf dem Cron nie als Update oder LinkedIn-Ergebnis
+# erscheinen, und umgekehrt.
+# ---------------------------------------------------------------------------
+
+def test_die_wache_hat_ihre_eigene_spur(spool):
+    (spool / "ergebnis-wache-20260831-050000.json").write_text(
+        json.dumps({"typ": "wache", "ergebnis": "rot",
+                    "rote_pruefungen": ["openwa session"]}),
+        encoding="utf-8")
+    wache = json.loads(server.wache_ergebnis())
+    assert wache["ergebnis"]["rote_pruefungen"] == ["openwa session"]
+    assert json.loads(server.update_ergebnis())["ergebnis"] is None
+    assert json.loads(server.linkedin_versand_ergebnis())["ergebnis"] is None
+
+
+def test_ohne_befund_war_alles_gruen(spool):
+    antwort = json.loads(server.wache_ergebnis())
+    assert antwort["ergebnis"] is None
