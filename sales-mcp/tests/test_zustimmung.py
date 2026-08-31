@@ -44,8 +44,12 @@ def saubere_tabellen():
 
 
 def _lead(name="Max Testperson", phone="+491701234567"):
+    # existing_customer: das UWG-Erstansprache-Tor (test_uwg.py) ist hier
+    # nicht Thema — die Zustimmungsfrage selbst ist eine Ansprache und
+    # braucht im Betrieb dieselbe Grundlage.
     lead = str(server._q(
-        "insert into leads (name, phone, source) values (%s, %s, 'whatsapp') "
+        "insert into leads (name, phone, source, consent_status) values "
+        "(%s, %s, 'whatsapp', 'existing_customer') "
         "returning id", (name, phone))[0]["id"])
     server.kontakt_freigeben(lead)          # WhatsApp-Gate ist nicht Thema
     return lead

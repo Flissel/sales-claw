@@ -1457,6 +1457,15 @@ def entwurf_erstellen(lead_id: str, kanal: str, text: str,
     # Privat heisst still (P3, 29.08.2026).
     if _privat(leads[0]["enrichment"]):
         return _privat_fehler()
+    # UWG-Tor (F5, 31.08.2026): Erstansprache per WhatsApp/E-Mail nur mit
+    # dokumentierter Grundlage. LinkedIn-Beitraege aufs eigene Profil
+    # sprechen niemanden direkt an und bleiben frei.
+    if kanal in ("whatsapp", "email"):
+        zeile = _q("select consent_status from leads where id = %s",
+                   (lead_id,))
+        if (zeile and zeile[0]["consent_status"] not in EINWILLIGUNG_ARTEN
+                and not _hat_selbst_geschrieben(lead_id)):
+            return _erstansprache_fehler()
     # Kontakt-Freigabe VOR dem Insert (frueh sagen statt spaet scheitern,
     # dieselbe Begruendung wie bei CAPTION_MAXLAENGE): ein WhatsApp-Entwurf
     # fuer einen nicht freigegebenen Kontakt soll gar nicht erst in der
@@ -4973,6 +4982,84 @@ def kennungen_bericht() -> str:
 
 
 # ---------------------------------------------------------------------------
+# UWG-Einwilligungs-Tor (F5, 31.08.2026). `leads.consent_status` trug den
+# richtigen Wortschatz von Anfang an (opt_in | existing_customer | inbound |
+# unknown — Par. 7 Abs. 3 UWG eingebaut) und wurde nie benutzt. Jetzt gilt:
+# ERSTANSPRACHE per WhatsApp/E-Mail nur mit dokumentierter Grundlage;
+# ANTWORTEN bleibt frei, denn wer selbst schrieb, hat den Kanal geoeffnet.
+# ---------------------------------------------------------------------------
+
+EINWILLIGUNG_ARTEN = ("opt_in", "existing_customer")
+
+
+def _hat_selbst_geschrieben(lead_id: str) -> bool:
+    return bool(_q("select 1 from activities where lead_id = %s and "
+                   "type = 'kundenantwort' limit 1", (lead_id,)))
+
+
+def _erstansprache_fehler() -> str:
+    return _json({"fehler": (
+        "ERSTANSPRACHE ohne dokumentierte Einwilligung — es entsteht kein "
+        "Entwurf (Par. 7 UWG). Dieser Kontakt hat noch nie selbst "
+        "geschrieben, und consent_status traegt weder opt_in noch "
+        "existing_customer. Liegt eine Grundlage vor, erfasst sie der "
+        "Betreiber mit einwilligung_erfassen(lead_id, art, quelle).")})
+
+
+@_gesichert
+def einwilligung_erfassen(lead_id: str, art: str, quelle: str,
+                          wortlaut: str = "") -> str:
+    """Werbe-Einwilligung (UWG) dokumentieren — durch einen MENSCHEN.
+
+    `art`: opt_in (ausdrueckliche Einwilligung) oder existing_customer
+    (Bestandskunde, Par. 7 Abs. 3 UWG). Die Quelle ist Pflicht — ein
+    Nachweis ohne Herkunft ist keiner. Rufe das Werkzeug NUR auf, wenn
+    der Betreiber die Grundlage nennt; leite sie nie aus dem Gespraech
+    selbst ab. NICHT zu verwechseln mit zustimmung_erfassen (die gilt
+    der automatischen Antwort, diese hier der Ansprache ueberhaupt).
+    """
+    if art not in EINWILLIGUNG_ARTEN:
+        return _json({"fehler": (
+            f"'{art}' ist keine Grundlage — gueltig: "
+            f"{', '.join(EINWILLIGUNG_ARTEN)}.")})
+    if not (quelle or "").strip():
+        return _json({"fehler": (
+            "Ohne Quelle keine Einwilligung — der Nachweis muss sagen, "
+            "woher sie kommt.")})
+    zeilen = _q("update leads set consent_status = %s, updated_at = now() "
+                "where id = %s returning id, name", (art, lead_id))
+    if not zeilen:
+        return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
+    eintrag = {"art": art, "quelle": quelle.strip(), "durch": "betreiber"}
+    if (wortlaut or "").strip():
+        eintrag["wortlaut"] = wortlaut.strip()
+    _q("insert into activities (lead_id, type, payload) values "
+       "(%s, 'werbe_einwilligung', %s) returning id",
+       (lead_id, _json(eintrag)))
+    return _json({"lead_id": lead_id, "kontakt": zeilen[0]["name"],
+                  "consent_status": art})
+
+
+@_gesichert
+def einwilligung_widerrufen(lead_id: str, grund: str = "") -> str:
+    """Werbe-Einwilligung widerrufen — wirkt sofort: Erstansprachen sind
+    wieder gesperrt, Antworten auf eingehende Nachrichten bleiben frei."""
+    zeilen = _q("update leads set consent_status = 'unknown', "
+                "updated_at = now() where id = %s and consent_status = "
+                "any(%s) returning id, name",
+                (lead_id, list(EINWILLIGUNG_ARTEN)))
+    if not zeilen:
+        return _json({"fehler": (
+            "Keine dokumentierte Einwilligung vorhanden — nichts zu "
+            "widerrufen.")})
+    _q("insert into activities (lead_id, type, payload) values "
+       "(%s, 'werbe_einwilligung_widerrufen', %s) returning id",
+       (lead_id, _json({"grund": (grund or "").strip() or None})))
+    return _json({"lead_id": lead_id, "kontakt": zeilen[0]["name"],
+                  "consent_status": "unknown"})
+
+
+# ---------------------------------------------------------------------------
 # DSGVO-Handwerk (P2, 27.08.2026): Auskunft als Export, Loeschantrag als
 # Vermerk mit Vollstopp. Die physische Loeschung bleibt BEWUSST ohne
 # Werkzeug — sie ist ein dokumentierter Menschen-Schritt (docs/06_DSGVO.md)
@@ -5452,7 +5539,10 @@ WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              # Betriebs-Wache (F3, 31.08.2026): der Wirt prueft alle 15
              # Minuten, rote Befunde erreichen den Betreiber ueber den
              # 2-h-Takt. Vertragstests in tests/test_auftraege.py.
-             wache_ergebnis)
+             wache_ergebnis,
+             # UWG-Einwilligung (F5, 31.08.2026): Erstansprache nur mit
+             # dokumentierter Grundlage. Vertragstests in tests/test_uwg.py.
+             einwilligung_erfassen, einwilligung_widerrufen)
 
 for _fn in WERKZEUGE:
     mcp.tool()(_fn)

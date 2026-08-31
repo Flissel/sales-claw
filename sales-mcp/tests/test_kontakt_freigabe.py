@@ -41,8 +41,13 @@ def saubere_tabellen():
 def _anlegen(name="Max Testperson", phone="+491701234567", email=""):
     """Roher Kontakt ueber das Werkzeug — OHNE Kontakt-Freigabe. Genau so
     entsteht jeder Kontakt im Betrieb; das Gate ist von Anfang an zu."""
-    return json.loads(server.kontakt_anlegen(
+    lead = json.loads(server.kontakt_anlegen(
         name=name, phone=phone, email=email))["lead_id"]
+    # Werbe-Grundlage setzen, damit das UWG-Tor (test_uwg.py) nicht vor
+    # dem hier getesteten Freigabe-Gate spricht.
+    server._q("update leads set consent_status = 'existing_customer' "
+              "where id = %s returning id", (lead,))
+    return lead
 
 
 def _entwurf_sql(lead_id, status="approved", recipient="+491701234567"):

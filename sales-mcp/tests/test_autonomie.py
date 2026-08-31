@@ -58,8 +58,11 @@ def sammelkontakt_zurueck():
 
 
 def _lead(name="Max Testperson", phone="+491701234567"):
+    # existing_customer: das UWG-Erstansprache-Tor prueft test_uwg.py —
+    # hier geht es um die Autonomiestufen.
     return str(server._q(
-        "insert into leads (name, phone, source) values (%s, %s, 'whatsapp') "
+        "insert into leads (name, phone, source, consent_status) values "
+        "(%s, %s, 'whatsapp', 'existing_customer') "
         "returning id", (name, phone))[0]["id"])
 
 

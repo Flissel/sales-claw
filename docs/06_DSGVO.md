@@ -58,8 +58,31 @@ DELETE FROM sales.leads WHERE id = '<LEAD>';
 5. Löschprotokoll führen OHNE Personenbezug: Datum, wer (beide Namen),
    Fundstellen geprüft ja/nein. Ablage beim Betreiber, nicht im Repo.
 
+## Werbe-Einwilligung (§ 7 UWG, seit 31.08.2026)
+
+Neben der DSGVO (Datenverarbeitung) gilt das UWG (Ansprache): elektronische
+Werbung per WhatsApp/E-Mail braucht eine Einwilligung oder die
+Bestandskunden-Ausnahme des § 7 Abs. 3 UWG.
+
+- **Das Tor sitzt im Werkzeug:** `entwurf_erstellen` lehnt Erstansprachen
+  (der Kontakt hat nie selbst geschrieben) ohne `consent_status`
+  `opt_in`/`existing_customer` ab. Antworten auf eingehende Nachrichten
+  und LinkedIn-Beiträge aufs eigene Profil bleiben frei.
+- **Erfassen ist Menschensache:** `einwilligung_erfassen(lead_id, art,
+  quelle, wortlaut)` — die Quelle ist Pflicht, alles landet als
+  `werbe_einwilligung` im Protokoll (activities). Der Bot ruft es nur auf
+  ausdrückliche Nennung durch den Betreiber auf, nie aus eigener Deutung.
+- **Widerruf:** `einwilligung_widerrufen(lead_id, grund)` wirkt sofort;
+  „keine Werbung mehr" im Chat zählt als Widerruf.
+- **Abgrenzung:** die Zustimmung (`zustimmung_*`) erlaubt die automatische
+  Antwort, die Einwilligung (`einwilligung_*`) die werbliche Ansprache
+  überhaupt. Ein Löschantrag (oben) schlägt beides: Vollstopp.
+
+Verträge: `sales-mcp/tests/test_uwg.py`.
+
 ## Grenze
 
 Dieses Dokument ist Betriebsanleitung, keine Rechtsberatung. Bei
-Streitfällen (Auskunftsumfang, Aufbewahrungsfristen) entscheidet der
-Betreiber mit rechtlicher Beratung — nicht Claude, nicht der Bot.
+Streitfällen (Auskunftsumfang, Aufbewahrungsfristen, Reichweite der
+Bestandskunden-Ausnahme) entscheidet der Betreiber mit rechtlicher
+Beratung — nicht Claude, nicht der Bot.

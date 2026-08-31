@@ -539,8 +539,9 @@ def test_beide_werkzeuge_sind_registriert():
     # kontakt_stufe_setzen (test_pipeline.py), das DSGVO-Paar
     # kontakt_auskunft/loeschantrag_vermerken (test_dsgvo.py) und das
     # Privat-Paar kontakt_privat_setzen/entziehen (test_privat.py) und
-    # wache_ergebnis (F3, test_auftraege.py).
-    assert len(namen) == len(set(namen)) == 61
+    # wache_ergebnis (F3, test_auftraege.py). UWG-Paar einwilligung_
+    # erfassen/widerrufen (F5, test_uwg.py).
+    assert len(namen) == len(set(namen)) == 63
 
 # ---------------------------------------------------------------------------
 # Nachbesserungen aus dem Stufe-5-Review (Befunde T1, B2, D2)

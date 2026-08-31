@@ -42,10 +42,11 @@ def saubere_tabellen():
 
 
 def _lead(name="Dora Datenschutz"):
+    # existing_customer: UWG-Erstansprache-Tor (test_uwg.py) ist nicht Thema.
     lead = str(server._q(
-        "insert into leads (name, phone, email, source) values "
-        "(%s, '+491709998877', 'dora@example.org', 'whatsapp') "
-        "returning id", (name,))[0]["id"])
+        "insert into leads (name, phone, email, source, consent_status) "
+        "values (%s, '+491709998877', 'dora@example.org', 'whatsapp', "
+        "'existing_customer') returning id", (name,))[0]["id"])
     server.kontakt_freigeben(lead)
     return lead
 

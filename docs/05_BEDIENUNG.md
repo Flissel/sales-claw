@@ -11,6 +11,7 @@ Fünf Handgriffe. Mehr braucht der Alltag nicht; alles andere steht in
 | **Oberfläche öffnen** | `http://<VM-Tailscale-IP>:8791` — funktioniert auch vom Handy, sobald es im Tailscale-Netz ist. *(IP wird beim Cutover hier eingetragen.)* |
 | **Etwas ist kaputt** | Status-Doppelklick, die ROTEN Zeilen kopieren und Claude geben. Nicht raten, nicht neustarten — die Zeilen sagen, wo es klemmt. |
 | **Notfall: Update zurückrollen** | Kapitel „Rückfahrkarte" in 04 — vier Zeilen zum Kopieren. Passiert bei rotem Update auch automatisch. |
+| **Neuen Kontakt anschreiben** | Erst die Grundlage nennen: dem Bot schreiben „<Name> ist Bestandskunde" oder „<Name> hat auf der Messe eingewilligt" (mit Quelle). Ohne das verweigert das System die Erstansprache — § 7 UWG, kein Fehler. Wer selbst schreibt, darf immer beantwortet werden. |
 
 Drei Dinge, die man wissen muss:
 

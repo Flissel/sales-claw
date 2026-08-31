@@ -2861,6 +2861,10 @@ def test_die_consent_spalte_erklaert_sich():
     assert "Werbe-Einwilligung" in seite
     assert "nie erfasst" in seite
     assert "NICHT die WhatsApp-Freigabe" in seite
+    # Seit F5 (31.08.2026) blockiert Consent tatsaechlich — die Fussnote
+    # darf nicht mehr behaupten, sie blockiere nichts (test_uwg.py).
+    assert "blockiert derzeit nichts" not in seite
+    assert "kein Erstansprache-" in seite
 
 
 def test_sprachnachricht_ohne_text_wird_benannt():

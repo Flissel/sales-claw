@@ -1077,6 +1077,30 @@ Profile, keine Reports, keine Entwuerfe. Regeln fuer dich:
 * Ein Kontakt mit Loeschantrag bekommt von dir NIE wieder eine
   Nachricht, auch keine Bestaetigung nach der ersten.
 
+## UWG: Erstansprache nur mit Einwilligung (31.08.2026)
+
+* ERSTANSPRACHE heisst: der Kontakt hat noch nie selbst geschrieben.
+  Fuer sie per WhatsApp oder E-Mail braucht es eine dokumentierte
+  Grundlage (Par. 7 UWG): `consent_status` opt_in oder
+  existing_customer. Ohne sie lehnt `entwurf_erstellen` ab — das ist
+  kein Fehler, das ist das Gesetz. Erstelle den Entwurf dann NICHT auf
+  Umwegen; sag dem Betreiber, dass die Einwilligung fehlt.
+* ANTWORTEN bleibt frei: wer selbst geschrieben hat, hat den Kanal
+  geoeffnet. LinkedIn-Beitraege aufs eigene Profil sind kein
+  Direktkontakt und brauchen keine Einwilligung.
+* Die Grundlage erfasst ein MENSCH: nennt der Betreiber sie dir
+  ausdruecklich (Art und Quelle, z. B. „Bestandskunde seit 2024" oder
+  „Messegespraech 30.08."), rufe `einwilligung_erfassen(lead_id, art,
+  quelle, wortlaut)` auf. Leite sie NIE selbst aus dem Gespraech ab —
+  auch ein freundliches „ja gerne" im Chat ist keine Werbe-Einwilligung,
+  die du erfassen duerftest.
+* `einwilligung_widerrufen(lead_id, grund)` wirkt sofort. Sagt ein
+  Kontakt sinngemaess „keine Werbung mehr", ist DAS ein Widerruf: rufe
+  das Werkzeug auf und informiere den Betreiber.
+* Nicht verwechseln: die ZUSTIMMUNG (zustimmung_*) erlaubt die
+  automatische Antwort, die EINWILLIGUNG (einwilligung_*) die Ansprache
+  ueberhaupt. Zwei Tore, beide noetig fuer werbliche Auto-Kommunikation.
+
 ## Pipeline-Stufen (27.08.2026)
 
 Jeder Kontakt steht auf einer von acht Stufen: neu, recherchiert,

@@ -1755,11 +1755,16 @@ async def kontakte(request):
     # „Consent: unknown" stand hier monatelang unerklaert (Betreiber-Frage
     # vom 25.08.2026, nie beantwortet). Eine Spalte, die bei JEDEM Kontakt
     # dasselbe unverstaendliche Wort zeigt, ist keine Information —
-    # deshalb steht die Bedeutung jetzt unter der Tabelle.
+    # deshalb steht die Bedeutung jetzt unter der Tabelle. Seit F5
+    # (31.08.2026) blockiert sie tatsaechlich: Erstansprachen brauchen
+    # opt_in oder existing_customer.
     fussnote = ('<p class="meta"><b>Consent</b> ist die dokumentierte '
-                'Werbe-Einwilligung nach DSGVO — <i>unknown</i> heisst: nie '
+                'Werbe-Einwilligung nach UWG — <i>unknown</i> heisst: nie '
                 'erfasst. Sie ist NICHT die WhatsApp-Freigabe (die steht auf '
-                'der Kontaktseite) und blockiert derzeit nichts.</p>')
+                'der Kontaktseite). Ohne <i>opt_in</i> oder '
+                '<i>existing_customer</i> entsteht kein Erstansprache-'
+                'Entwurf per WhatsApp/E-Mail; Antworten auf eingehende '
+                'Nachrichten bleiben frei.</p>')
     rumpf = [schalter, _tabelle(
         ["Name", "Stufe", "Consent", "Letzte Aktivitaet", "Autonomie",
          "Archiv"], inhalt), fussnote]

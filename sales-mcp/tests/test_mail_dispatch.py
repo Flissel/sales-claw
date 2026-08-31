@@ -212,10 +212,13 @@ class _Mitschnitt(logging.Handler):
 def _lead(name="Max Testperson", email="max@example.com"):
     # Mit gesetzter Kontakt-Freigabe (WhatsApp-Gate, test_kontakt_freigabe.py)
     # — ein Test unten erstellt zum Gegenlesen auch einen WhatsApp-Entwurf.
+    # existing_customer: UWG-Erstansprache-Tor (test_uwg.py) ist nicht Thema.
     return server._q(
-        "insert into leads (name, email, phone, source, enrichment) values "
+        "insert into leads (name, email, phone, source, enrichment, "
+        "consent_status) values "
         "(%s, %s, '+491701234567', 'whatsapp', "
-        "'{\"whatsapp_freigabe\": {\"freigegeben\": true}}'::jsonb) "
+        "'{\"whatsapp_freigabe\": {\"freigegeben\": true}}'::jsonb, "
+        "'existing_customer') "
         "returning id", (name, email))[0]["id"]
 
 
