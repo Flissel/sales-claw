@@ -184,6 +184,7 @@ import urllib.parse
 import urllib.request
 import secrets
 import sys
+import time
 import uuid
 from datetime import date, datetime
 
@@ -218,6 +219,23 @@ ERLAUBTE_HOSTS = tuple(
 # Sessions — es gibt genau einen Betreiber, und ein Neustart der Seite im
 # Browser holt das frische Token von selbst (es steht in jedem Formular).
 CSRF_TOKEN = secrets.token_urlsafe(32)
+
+# --- Anmeldung (E1/F4, 31.08.2026) ------------------------------------------
+# SCHARF, sobald UI_SESSION_SECRET gesetzt ist — ohne Secret verhaelt sich
+# die Oberflaeche wie vorher (Uebergangszustand; scharf schalten tut der
+# Betreiber mit deploy/benutzer-anlegen.sh). Die Sitzung ist ein signierter
+# Cookie ueber name|ablauf; Rolle und aktiv kommen bei JEDER Anfrage frisch
+# aus der Tabelle `benutzer` — deaktivieren wirft laufende Sitzungen sofort
+# raus. Vertragstests: tests/test_login.py.
+UI_SESSION_SECRET = os.environ.get("UI_SESSION_SECRET", "")
+SITZUNG_COOKIE = "sitzung"
+SITZUNG_DAUER_S = 12 * 3600
+# Eine globale Bremse statt einer je Adresse: es gibt eine Handvoll
+# Benutzer, und hinter Tailscale ist jede Adresse ohnehin ein bekanntes
+# Geraet — global bremst auch den, der Adressen wechselt.
+ANMELDE_BREMSE = {"fehler": 0, "gesperrt_bis": 0.0}
+BREMSE_AB = 5
+BREMSE_SPERRE_S = 60
 
 GESENDETE_MAX = 20      # letzte gesendete Entwuerfe auf der Inbox
 KONTAKTE_MAX = 500      # Kontaktliste
@@ -344,10 +362,131 @@ class HostWache:
         await self.app(scope, receive, send)
 
 
+class AnmeldeWache:
+    """Ohne gueltige Sitzung keine Seite und kein POST — ausser /login.
+
+    Pure-ASGI wie die HostWache und INNERHALB von ihr (fremde Hosts
+    scheitern zuerst). Ohne UI_SESSION_SECRET ist die Wache durchlaessig —
+    der dokumentierte Uebergangszustand, bis der Betreiber Benutzer
+    anlegt (deploy/benutzer-anlegen.sh). Rolle `lesen` sieht alles und
+    darf nichts veraendern; /logout bleibt ihr als einziger POST."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not UI_SESSION_SECRET:
+            await self.app(scope, receive, send)
+            return
+        if scope["path"] == "/login":
+            await self.app(scope, receive, send)
+            return
+        name = _sitzung_pruefen(_cookie_wert(scope, SITZUNG_COOKIE))
+        benutzer = _benutzer_lesen(name) if name else None
+        if not benutzer:
+            if scope["method"] in ("GET", "HEAD"):
+                antwort = RedirectResponse("/login", status_code=303)
+            else:
+                antwort = _fehlerseite(
+                    403, "Nicht angemeldet",
+                    "Diese Aktion braucht eine Anmeldung. Nichts wurde "
+                    "getan — erst anmelden, dann erneut.")
+            await antwort(scope, receive, send)
+            return
+        scope["benutzer_name"] = benutzer["name"]
+        scope["benutzer_rolle"] = benutzer["rolle"]
+        if (benutzer["rolle"] == "lesen"
+                and scope["method"] not in ("GET", "HEAD")
+                and scope["path"] != "/logout"):
+            antwort = _fehlerseite(
+                403, "Nur Lesen",
+                "Diese Anmeldung darf sehen, aber nicht veraendern. "
+                "Nichts wurde getan — Freigaben braucht die Rolle "
+                "'freigeben'.")
+            await antwort(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
 def _csrf_ok(form) -> bool:
     """Vergleich in konstanter Zeit — wie die Signaturpruefung in inbox.py."""
     token = str(form.get("csrf") or "")
     return bool(token) and hmac.compare_digest(token, CSRF_TOKEN)
+
+
+# --- Anmelde-Handwerk (E1/F4) -----------------------------------------------
+
+def _passwort_hashen(klartext: str) -> str:
+    """scrypt aus der Standardbibliothek — kein Zusatzpaket, gesalzen,
+    Format scrypt$<salz-hex>$<hash-hex>."""
+    salz = secrets.token_bytes(16)
+    wert = hashlib.scrypt(klartext.encode("utf-8"), salt=salz,
+                          n=2 ** 14, r=8, p=1, dklen=32)
+    return f"scrypt${salz.hex()}${wert.hex()}"
+
+
+def _passwort_pruefen(klartext: str, gespeichert: str) -> bool:
+    """Still falsch bei jedem kaputten Hash — ein unlesbarer Eintrag darf
+    nie zur offenen Tuer werden."""
+    try:
+        verfahren, salz_hex, wert_hex = (gespeichert or "").split("$")
+        if verfahren != "scrypt":
+            return False
+        wert = hashlib.scrypt(klartext.encode("utf-8"),
+                              salt=bytes.fromhex(salz_hex),
+                              n=2 ** 14, r=8, p=1, dklen=32)
+        return hmac.compare_digest(wert.hex(), wert_hex)
+    except (ValueError, TypeError):
+        return False
+
+
+def _sitzung_bauen(name: str, ablauf: float) -> str:
+    basis = f"{name}|{int(ablauf)}"
+    sig = hmac.new(UI_SESSION_SECRET.encode("utf-8"), basis.encode("utf-8"),
+                   hashlib.sha256).hexdigest()
+    return f"{basis}|{sig}"
+
+
+def _sitzung_pruefen(cookiewert: str):
+    """Benutzername der gueltigen Sitzung oder None — nur Signatur und
+    Ablauf; Rolle und aktiv holt der Aufrufer FRISCH aus der Datenbank."""
+    teile = (cookiewert or "").split("|")
+    if len(teile) != 3:
+        return None
+    name, ablauf, sig = teile
+    erwartet = hmac.new(UI_SESSION_SECRET.encode("utf-8"),
+                        f"{name}|{ablauf}".encode("utf-8"),
+                        hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, erwartet):
+        return None
+    try:
+        if int(ablauf) < time.time():
+            return None
+    except ValueError:
+        return None
+    return name
+
+
+def _cookie_wert(scope, name: str) -> str:
+    roh = Headers(scope=scope).get("cookie", "")
+    for teil in roh.split(";"):
+        schluessel, _, wert = teil.strip().partition("=")
+        if schluessel == name:
+            return wert
+    return ""
+
+
+def _benutzer_lesen(name: str):
+    zeilen = server._q(
+        "select name, rolle from benutzer where name = %s and aktiv",
+        (name,))
+    return zeilen[0] if zeilen else None
+
+
+def _ui_akteur(request) -> str:
+    """Wer hier handelt: der angemeldete Benutzer — oder der alte
+    Sammelstempel 'betreiber-ui', solange die Anmeldung nicht scharf ist."""
+    return str(request.scope.get("benutzer_name") or "betreiber-ui")
 
 
 def _gesichert_seite(fn):
@@ -667,6 +806,13 @@ def _seite(titel: str, rumpf: str, status: int = 200,
     auffrischen = (f'<meta http-equiv="refresh" content="{int(refresh)}">'
                    if refresh else "")
     nav = "".join(f'<a href="{pfad}">{name}</a>' for pfad, name in _NAV)
+    # Abmelden nur bei scharfer Anmeldung — vorher gaebe es nichts zu
+    # beenden, und der Knopf waere eine Luege.
+    if UI_SESSION_SECRET:
+        nav += (f'<form method="post" action="/logout" '
+                f'style="display:inline;margin-left:auto">'
+                f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+                f'<button type="submit">Abmelden</button></form>')
     return HTMLResponse(
         f'<!doctype html><html lang="de"><head><meta charset="utf-8">'
         # Ohne diese Zeile legt Safari eine 980px breite Desktop-Leinwand an
@@ -1394,11 +1540,13 @@ async def aktion_freigeben(request):
             "Der Entwurf wurde geaendert, seit diese Seite geladen wurde. "
             "Nichts freigegeben — Seite neu laden, den AKTUELLEN Text "
             "lesen, dann freigeben.")
-    # SQL wie server.entwurf_freigeben — einziger Unterschied: approved_by.
+    # SQL wie server.entwurf_freigeben — einziger Unterschied: approved_by
+    # (angemeldeter Benutzer; 'betreiber-ui', solange die Anmeldung nicht
+    # scharf ist — test_login.py haelt beide Richtungen fest).
     zeilen = server._q(
-        "update drafts set status = 'approved', approved_by = 'betreiber-ui', "
+        "update drafts set status = 'approved', approved_by = %s, "
         "approved_at = now() where id = %s and status = 'pending' "
-        "returning id, lead_id, channel", (draft_id,))
+        "returning id, lead_id, channel", (_ui_akteur(request), draft_id))
     if not zeilen:
         return _statusfehler(draft_id, "pending")
     _freigabe_loggen(zeilen[0])
@@ -1463,12 +1611,13 @@ async def aktion_erneut_freigeben(request):
     # inklusive der Doppelversand-Marken-Pruefung (Claim-Praefix aus
     # server.py, dort begruendet: kein Import von dispatch.py moeglich).
     zeilen = server._q(
-        "update drafts set status = 'approved', approved_by = 'betreiber-ui', "
+        "update drafts set status = 'approved', approved_by = %s, "
         "approved_at = now(), error = null "
         "where id = %s and status = 'failed' "
         "and (%s or error is null or error not like %s) "
         "returning id, lead_id, channel",
-        (draft_id, False, f"{server._CLAIM_MARKE_PRAEFIX}%"))
+        (_ui_akteur(request), draft_id, False,
+         f"{server._CLAIM_MARKE_PRAEFIX}%"))
     if not zeilen:
         vorhanden = server._q("select status, error from drafts where id = %s",
                               (draft_id,))
@@ -3354,6 +3503,80 @@ async def wiedervorlagen(request):
 # App und Start
 # ---------------------------------------------------------------------------
 
+def _login_seite(meldung: str = "", status: int = 200) -> HTMLResponse:
+    hinweis = ""
+    if not UI_SESSION_SECRET:
+        hinweis = ('<p class="meta">Die Anmeldung ist nicht scharf — es ist '
+                   'kein UI_SESSION_SECRET gesetzt, die Oberflaeche steht '
+                   'allen im Tailscale-Netz offen. Scharf schalten: '
+                   'deploy/benutzer-anlegen.sh auf der VM ausfuehren '
+                   '(siehe docs/05).</p>')
+    fehler = f'<p class="fehler">{_e(meldung)}</p>' if meldung else ""
+    rumpf = (
+        f"{hinweis}{fehler}"
+        f'<form method="post" action="/login">'
+        f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+        f'<p><label>Name<br><input name="name" autocomplete="username" '
+        f'autofocus></label></p>'
+        f'<p><label>Passwort<br><input type="password" name="passwort" '
+        f'autocomplete="current-password"></label></p>'
+        f'<p><button type="submit">Anmelden</button></p>'
+        f'</form>')
+    return _seite("Anmeldung", rumpf, status=status)
+
+
+@_gesichert_seite
+async def login(request):
+    if request.method != "POST":
+        return _login_seite()
+    form = await request.form()
+    if not _csrf_ok(form):
+        return _fehlerseite(
+            400, "Ungueltige Anfrage",
+            "Die Anfrage traegt keine gueltige Marke dieser Oberflaeche. "
+            "Seite neu laden und erneut anmelden.")
+    if not UI_SESSION_SECRET:
+        return _login_seite()
+    jetzt = time.time()
+    if jetzt < ANMELDE_BREMSE["gesperrt_bis"]:
+        return _seite(
+            "Anmeldung", '<p class="fehler">Zu viele Fehlversuche — eine '
+            'Minute warten, dann erneut.</p>', status=429)
+    name = str(form.get("name") or "").strip()
+    zeilen = server._q(
+        "select passwort_hash, aktiv from benutzer where name = %s", (name,))
+    # Absichtlich EIN Fehlertext fuer alle Faelle (unbekannt, inaktiv,
+    # falsches Passwort) — die Anmeldemaske verraet nicht, welche Namen es
+    # gibt. Und kein Log des Namens: im Namensfeld landet erfahrungsgemaess
+    # auch mal ein Passwort.
+    if not (zeilen and zeilen[0]["aktiv"] and _passwort_pruefen(
+            str(form.get("passwort") or ""), zeilen[0]["passwort_hash"])):
+        ANMELDE_BREMSE["fehler"] += 1
+        if ANMELDE_BREMSE["fehler"] >= BREMSE_AB:
+            ANMELDE_BREMSE["gesperrt_bis"] = jetzt + BREMSE_SPERRE_S
+            ANMELDE_BREMSE["fehler"] = 0
+        LOG.warning("Anmeldung fehlgeschlagen")
+        return _login_seite("Anmeldung fehlgeschlagen.")
+    ANMELDE_BREMSE.update({"fehler": 0, "gesperrt_bis": 0.0})
+    antwort = RedirectResponse("/", status_code=303)
+    antwort.set_cookie(
+        SITZUNG_COOKIE, _sitzung_bauen(name, jetzt + SITZUNG_DAUER_S),
+        max_age=SITZUNG_DAUER_S, httponly=True, samesite="lax", path="/")
+    LOG.info("Anmeldung: %s", name)
+    return antwort
+
+
+async def logout(request):
+    form = await request.form()
+    if not _csrf_ok(form):
+        return _fehlerseite(
+            400, "Ungueltige Anfrage",
+            "Die Anfrage traegt keine gueltige Marke dieser Oberflaeche.")
+    antwort = RedirectResponse("/login", status_code=303)
+    antwort.delete_cookie(SITZUNG_COOKIE, path="/")
+    return antwort
+
+
 app = Starlette(routes=[
     Route("/", inbox),
     Route("/aktion/freigeben", aktion_freigeben, methods=["POST"]),
@@ -3422,7 +3645,11 @@ app = Starlette(routes=[
           aktion_medien_loeschen_bestaetigen, methods=["POST"]),
     Route("/medien/hochladen", aktion_medien_hochladen,
           methods=["POST"]),
-], middleware=[Middleware(HostWache)])
+    Route("/login", login, methods=["GET", "POST"]),
+    Route("/logout", logout, methods=["POST"]),
+    # HostWache zuerst (aussen): fremde Hosts scheitern vor allem anderen,
+    # auch vor der Anmeldung.
+], middleware=[Middleware(HostWache), Middleware(AnmeldeWache)])
 
 
 def _logging_einrichten() -> None:

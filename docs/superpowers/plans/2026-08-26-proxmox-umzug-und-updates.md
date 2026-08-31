@@ -1024,13 +1024,21 @@ lesen|freigeben, passwort_hash, aktiv), `sales-mcp/ui.py` (Login-Seite,
 signierter Sitzungs-Cookie mit Secret aus `.env`, Rollen-Pruefung an
 JEDEM Freigabe-/Schreib-POST), Tests.
 
-- [ ] Migration schreiben; Einspielen dokumentiert als Menschen-Schritt.
-- [ ] Login/Logout, Cookie signiert (Secret `UI_SESSION_SECRET` in .env,
-  nie im Log), Fehlversuche gebremst.
-- [ ] Rolle `lesen`: alle Seiten sichtbar, jeder verändernde POST wird
-  abgelehnt. Rolle `freigeben`: wie heute. Tests fuer BEIDE Richtungen.
-- [ ] Freigaben tragen kuenftig `approved_by=<benutzername>` statt
-  pauschal `betreiber` — wer freigab, steht im Beweis.
+**GEBAUT 31.08.2026** (tests/test_login.py, 27 Vertraege; Tabelle
+`benutzer` direkt in provision.sql statt eigener Migrationsdatei, auf
+der VM-DB eingespielt). Scharf wird es erst durch den Menschen-Schritt
+`deploy/benutzer-anlegen.sh` (legt Benutzer an, erzeugt beim ersten Mal
+UI_SESSION_SECRET, startet sales-ui neu) — bis dahin verhaelt sich die
+UI wie vorher.
+
+- [x] Migration (provision.sql, idempotent); Einspielen als
+  Menschen-Schritt dokumentiert (docs/04, benutzer-anlegen.sh).
+- [x] Login/Logout, Cookie signiert (HMAC ueber name|ablauf), Rolle und
+  aktiv pro Anfrage frisch aus der DB, Fehlversuche gebremst (5 → 60 s).
+- [x] Rolle `lesen`: sieht alles, jeder veraendernde POST 403. Rolle
+  `freigeben`: wie heute. Tests fuer beide Richtungen.
+- [x] Freigaben tragen `approved_by=<benutzername>`; ohne scharfe
+  Anmeldung bleibt der alte Stempel 'betreiber-ui' (Uebergang, getestet).
 
 ### Aufgabe E2: Besitzer-Feld
 
@@ -1102,9 +1110,15 @@ selbst, kann auf diesem Weg niemand alarmieren — ein Aussenkanal
 
 ### Aufgabe F4: TLS und Login
 
-TLS ohne oeffentliche Exposition ueber `tailscale serve` (gueltige
-Zertifikate im Tailnet). Login mit Rollen ist E1 (Teil E) und wird
-hier zur Enterprise-Bedingung; SSO (Entra/Google) als Ausbaustufe.
+Login mit Rollen: **E1 GEBAUT 31.08.2026** (siehe Teil E) — scharf nach
+dem Menschen-Schritt benutzer-anlegen.sh.
+
+TLS ueber `tailscale serve`: **WARTET AUF DEN BETREIBER** — HTTPS ist im
+Tailnet nicht freigeschaltet. Einmalig im Tailscale-Admin bestaetigen:
+https://login.tailscale.com/f/serve?node=naXCJTLAiB11CNTRL — danach auf
+der VM `sudo tailscale serve --bg --https=443 http://127.0.0.1:8791`
+und pruefen, ob UI_EXTRA_HOSTS den ts.net-Namen braucht (Host-Header
+messen). SSO (Entra/Google) bleibt Ausbaustufe.
 
 ### Aufgabe F5: UWG-Einwilligungs-Tor + Compliance-Dossier
 

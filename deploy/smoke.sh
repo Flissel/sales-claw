@@ -29,7 +29,16 @@ done
 # verlaessliche Innenpruefung auf beiden Plattformen. Ob die Tailscale-
 # Adresse von aussen traegt, prueft einmalig ein Geraet im Tailnet.
 code="$(curl -s -o /dev/null -m 10 -w '%{http_code}' "http://127.0.0.1:8791/" || true)"
-[ "$code" = "200" ] && gut "ui http" || fehl "ui http" "HTTP ${code:-000} an 127.0.0.1"
+if [ "$code" = "200" ]; then
+  gut "ui http"
+elif [ "$code" = "303" ]; then
+  # Anmeldung scharf (E1): / leitet Unangemeldete auf /login — gesund ist
+  # das nur, wenn die Anmeldeseite selbst antwortet.
+  login="$(curl -s -o /dev/null -m 10 -w '%{http_code}' "http://127.0.0.1:8791/login" || true)"
+  [ "$login" = "200" ] && gut "ui http" || fehl "ui http" "/login HTTP ${login:-000}"
+else
+  fehl "ui http" "HTTP ${code:-000} an 127.0.0.1"
+fi
 
 # 3) Datenbank erreichbar (Produktionsschema, reine Leseabfrage).
 if docker exec -e SALES_DB_SCHEMA=sales sales-mcp python -c \

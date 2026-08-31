@@ -129,6 +129,29 @@ Nie zwei Standorte gleichzeitig im Kundenverkehr. Reihenfolge:
 Der PC-Stack bleibt danach 7 Tage GESTOPPT liegen (Rückfahrkarte), dann
 `docker compose down` ohne `-v` — die Volumes bleiben 30 Tage Kaltreserve.
 
+## UI-Anmeldung (E1, seit 31.08.2026)
+
+Scharf, sobald `UI_SESSION_SECRET` in der `.env` steht — vorher verhält
+sich die Oberfläche wie früher (offen fürs Tailnet). Scharf schalten und
+Benutzer anlegen ist EIN Schritt:
+
+    bash ~/sales-claw/deploy/benutzer-anlegen.sh
+
+fragt Name, Rolle (`lesen` sieht alles und darf nichts verändern,
+`freigeben` arbeitet wie gewohnt) und Passwort ab (nie in der
+Prozessliste), legt beim ersten Mal das Secret an und startet `sales-ui`
+neu. Derselbe Aufruf ist auch Passwort-Reset und Reaktivierung.
+
+- Freigaben tragen dann den BENUTZERNAMEN in `approved_by` — wer freigab,
+  steht im Beweis ('betreiber-ui' nur noch im Übergangszustand).
+- Sitzung: signierter Cookie, 12 h; Rolle und aktiv werden bei jeder
+  Anfrage frisch gelesen — `update sales.benutzer set aktiv=false where
+  name='…'` wirft eine laufende Sitzung SOFORT raus (Deaktivieren geht
+  bewusst nur von Hand, nie über das Skript).
+- Fünf Fehlversuche sperren die Anmeldung für eine Minute (global).
+- Verträge: `sales-mcp/tests/test_login.py`; smoke akzeptiert die
+  Umleitung auf /login als gesund.
+
 ## Bekannte Fallen (alle gemessen)
 
 | Falle | Folge | Regel |

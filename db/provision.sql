@@ -94,6 +94,16 @@ begin
         embedding vector(1536),
         created_at timestamptz not null default now()
       )$ddl$, s);
+    -- E1 (31.08.2026): UI-Anmeldung. Kein DELETE — Offboarding ist
+    -- aktiv=false, der Name bleibt fuer approved_by-Nachweise lesbar.
+    execute format($ddl$
+      create table if not exists %I.benutzer (
+        name text primary key check (name !~ '[|:]' and name <> ''),
+        rolle text not null check (rolle in ('lesen','freigeben')),
+        passwort_hash text not null,
+        aktiv boolean not null default true,
+        created_at timestamptz not null default now()
+      )$ddl$, s);
     execute format('create index if not exists leads_status_idx on %I.leads (status)', s);
     execute format('create index if not exists activities_lead_idx on %I.activities (lead_id, created_at desc)', s);
     execute format('create index if not exists drafts_status_idx on %I.drafts (status, created_at desc)', s);
@@ -117,6 +127,7 @@ grant select, insert, update on sales.leads    to sales_app;
 grant select, insert         on sales.activities to sales_app;
 grant select, insert, update on sales.drafts   to sales_app;
 grant select, insert, update on sales.personas to sales_app;
+grant select, insert, update on sales.benutzer to sales_app;
 -- Bewusst NICHT vergeben: DELETE (nirgends), UPDATE/TRUNCATE auf activities.
 
 -- Testschema: voll berechtigt inkl. TRUNCATE — die Test-Fixture setzt
