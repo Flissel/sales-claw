@@ -1067,6 +1067,69 @@ JEDEM Freigabe-/Schreib-POST), Tests.
   `uebergabe_erstellen` an einen Kollegen, Nummer aus allowFrom.
 - [ ] Tests fuer berater-anlegen.ps1 (Parse), Skill-Sichtbarkeit.
 
+# Teil F — Enterprise-Reife (Betreiber 31.08.2026: „alles ohne dev api
+# whatsapp das kommt zum schluss")
+
+Massstab: was 5.000-€/Monat-Anbieter liefern muessen, gemessen an der
+Luecken-Analyse vom 31.08. Die offizielle WhatsApp Business API ist
+BEWUSST der letzte Block (F8) — alles davor funktioniert mit dem
+heutigen OpenWA-Unterbau und bleibt beim API-Wechsel gueltig.
+
+### Aufgabe F1: CI — die Suite laeuft bei jedem Push
+
+Heute laufen die 1.400+ Tests nur, wenn jemand sie startet. GitHub
+Actions: (a) sales-mcp-Image bauen, Suite gegen einen Postgres-Dienst
+mit pgvector und eingespieltem db/provision.sql (Schema sales_test);
+(b) die Host-Suite scripts/tests. Gruen wird zur Push-Bedingung.
+
+### Aufgabe F2: Sicherung ausser Haus + Fremd-Lese-Probe
+
+Die naechtlichen Volume-tars liegen auf der Platte, die sie schuetzen
+sollen. Spiegelung nach der Sicherung auf den Proxmox-WIRT (andere
+Maschine, ~470 MB/Tag bei Rotation 7 passt in dessen 25 GB), per
+rsync ueber einen eigenen VM->pve-Schluessel. Probe: ein gespiegeltes
+Archiv auf einer DRITTEN Maschine (PC) gegen das Manifest pruefen und
+tar-lesen — nicht in die PC-Volumes einspielen, die sind die
+Rueckfahrkarte.
+
+### Aufgabe F3: Wache — Roete meldet sich selbst
+
+systemd-Timer alle 15 Min: smoke.sh; bei Rot Ergebnisdatei in den
+Auftrags-Spool (Typ wache), der 2-h-Cron meldet neue rote Befunde dem
+Betreiber mit. EHRLICHE GRENZE, dokumentiert: faellt der Gateway
+selbst, kann auf diesem Weg niemand alarmieren — ein Aussenkanal
+(z. B. Mail direkt vom Wirt) ist ein eigener spaeterer Schritt.
+
+### Aufgabe F4: TLS und Login
+
+TLS ohne oeffentliche Exposition ueber `tailscale serve` (gueltige
+Zertifikate im Tailnet). Login mit Rollen ist E1 (Teil E) und wird
+hier zur Enterprise-Bedingung; SSO (Entra/Google) als Ausbaustufe.
+
+### Aufgabe F5: UWG-Einwilligungs-Tor + Compliance-Dossier
+
+`leads.consent_status` existiert und ist UNGENUTZT. Erstansprachen
+(Kontakt ohne vorherige eingehende Nachricht) verlangen kuenftig
+dokumentierte Einwilligung — sonst entsteht kein Entwurf; Bestands-
+konversationen bleiben unberuehrt. Dazu Dokumente: AVV-Vorlage, TOMs
+(aus docs/04/06 destilliert), AI-Act-Transparenz-Pruefung (JEDE
+Auto-Nachricht muss den Assistenten erkennbar machen).
+
+### Aufgabe F6: Secrets-Haertung
+
+Rotations-Runbook fuer alle Schluessel (.env-Inventar, wer rotiert
+wie, was danach neu startet); Ausbaustufe sops/age-Verschluesselung.
+
+### Aufgabe F7: Mandanten-Haertung (nach Teil E)
+
+Die weiche Besitzer-Grenze wird hart: Werkzeug-Ebene erzwingt den
+Berater-Kontext, spaeter Schema-je-Mandant fuer echte Mehrfirmigkeit.
+
+### Aufgabe F8 — ZUM SCHLUSS: offizielle WhatsApp Business API
+
+Meta-BSP, Template-Pflicht, Nachrichtengebuehren; Inbox/Dispatch sind
+gekapselt und werden umgehaengt. Erst wenn F1-F7 stehen.
+
 # Teil C — AUFGEGANGEN in Teil E (27.08.2026)
 
 Die drei Zuschnitt-Fragen sind beantwortet: zentraler Bot mit eigenen
