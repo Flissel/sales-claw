@@ -1137,8 +1137,14 @@ AGENTS.md, Restpflichten beim Betreiber). F5 KOMPLETT.
 
 ### Aufgabe F6: Secrets-Haertung
 
-Rotations-Runbook fuer alle Schluessel (.env-Inventar, wer rotiert
-wie, was danach neu startet); Ausbaustufe sops/age-Verschluesselung.
+**Runbook GESCHRIEBEN 31.08.2026:** docs/10_SECRETS_ROTATION.md —
+Inventar aller 26 .env-Schluessel (Verbraucher aus dem Compose gemessen,
+T5a-Verdrahtung erklaert), Verfahren neu-erzeugen→.env→up -d→smoke→alt
+widerrufen, Anlaesse, Ausserhalb-.env-Liste (SSH/Deploy-Key/Tailscale).
+Gemessen: Sicherungen enthalten die .env NICHT (nur die drei Volumes),
+Dateirechte 600. Fund: OPENAI_API_KEY und LLM_9ROUTER_API_KEY sind im
+Compose NICHT verdrahtet — Entfernen-Kandidaten (erst Volume-Config
+pruefen). Ausbaustufe sops/age bewusst offen (lohnt ab zwei Admins).
 
 ### Aufgabe F7: Mandanten-Haertung (nach Teil E)
 
