@@ -93,6 +93,17 @@
       }
     }
   },
+  "_kommentar_mcp": "NACHGETRAGEN 31.08.2026: Die sales-mcp-Anbindung war NUR im Laufzeit-Volume registriert (damals per `openclaw mcp add`, Timeouts am 26.08. per config set auf 30/60s erhoeht) - die Saat hier kannte sie nicht. Eine frische Installation ohne Volume-Wiederherstellung haette einen Bot OHNE Werkzeuge ergeben; nur smoke.sh Pruefung 4 haette es gemeldet. Struktur-Verdrahtung gehoert in die Saat (Config-Grenze, docs/04) - Laufzeit-Zustand wie Allowlist/Kopplung/Cron bleibt im Volume. Wortlaut exakt aus dem Laufzeit-Volume der VM uebernommen.",
+  "mcp": {
+    "servers": {
+      "sales": {
+        "url": "http://sales-mcp:8765/mcp",
+        "transport": "streamable-http",
+        "connectionTimeoutMs": 30000,
+        "requestTimeoutMs": 60000
+      }
+    }
+  },
   "tools": {
     "web": {
       "search": {
