@@ -70,7 +70,7 @@ Was `update.sh` tut, in dieser Reihenfolge:
   MCP-Verbindung des Gateways stillschweigend — gemessen 26.08.2026);
   `config/workspace/` ⇒ Saat einspielen + Gateway-Neustart;
   `openwa/upstream/` ⇒ openwa neu bauen;
-* fährt die Abnahme `deploy/smoke.sh` (acht Prüfungen, alle gemessen);
+* fährt die Abnahme `deploy/smoke.sh` (neun Prüfungen, alle gemessen);
 * bei Rot: automatischer Rückbau auf `vor-update`, erneute Abnahme,
   Ergebnis `rollback` (oder `notfall`, wenn auch der Rückbau rot ist).
 
@@ -120,7 +120,7 @@ Nie zwei Standorte gleichzeitig im Kundenverkehr. Reihenfolge:
 6. VM: sales-claw starten; Log muss `Listening for WhatsApp inbound`
    zeigen. Bei `session logged out`: Control-UI, „Erneut verknüpfen", QR.
 7. VM: `docker compose up -d sales-inbox sales-dispatch sales-mail sales-ui sales-mcp`.
-8. VM: `bash deploy/smoke.sh` → alle acht grün.
+8. VM: `bash deploy/smoke.sh` → alle neun grün.
 9. Von einer ZWEITEN Nummer eine WhatsApp schicken → muss als
    `kundenantwort` in der Datenbank und im Posteingang erscheinen.
 10. Cron prüfen (`openclaw cron list`), Timer/Wächter aktivieren
@@ -159,7 +159,8 @@ neu. Derselbe Aufruf ist auch Passwort-Reset und Reaktivierung.
 | Nacktes `docker compose up -d` | startet `sales-auto` → doppelte Antworten an Menschen | Dienste IMMER namentlich |
 | `sales-mcp`-Neustart | trennt still die MCP-Verbindung des Gateways | danach immer `docker restart sales-claw` |
 | `docker-compose.proxmox.yml` mitverwenden | setzt sales-claw auf `restart: no` → Bot nach Reboot tot | zur Laufzeit NUR die zwei Basis-Dateien |
-| AGENTS.md wächst über `bootstrapMaxChars` | wird still gekürzt, Bot kennt seine Regeln nicht | smoke.sh Prüfung 8 wacht darüber |
+| Eine Bootstrap-Datei wächst über `bootstrapMaxChars` | wird still gekürzt, Bot kennt seine Regeln nicht | smoke.sh Prüfung 8 wacht darüber (alle Dateien, nicht nur AGENTS.md) |
+| Die Bootstrap-Dateien wachsen in **Summe** über `bootstrapTotalMaxChars` | dasselbe, aber ohne dass jemand AGENTS.md anfasst — `memory/` wächst täglich | smoke.sh Prüfung 9 wacht darüber |
 | `grep -q` hinter Docker-Pipes bei `pipefail` | falsches ROT durch EPIPE | in Skripten grep ohne `-q` |
 | Live getartes Chromium-Profil | beschädigte WhatsApp-Session | openwa vor dem Sichern stoppen |
 

@@ -77,13 +77,61 @@ else
   fehl "cron antworten-pruefen" "nicht in der aktiven Liste"
 fi
 
-# 8) AGENTS.md passt in die Bootstrap-Grenze (Falle: stille Kuerzung).
-gr="$(docker exec sales-claw sh -c "wc -c < /home/node/.openclaw/workspace/AGENTS.md" 2>/dev/null | tr -d '[:space:]')"
-max="$(docker exec sales-claw sh -c "openclaw config get agents.defaults.bootstrapMaxChars 2>/dev/null" | grep -oE '[0-9]+' | head -1)"
-if [ -n "${max:-}" ] && [ -n "${gr:-}" ] && [ "$gr" -gt "$max" ] 2>/dev/null; then
-  fehl "agents.md groesse" "$gr Zeichen > bootstrapMaxChars $max — wird still gekuerzt"
+# 8+9) Die Bootstrap-Dateien passen in IHRE BEIDEN Grenzen.
+#
+# Die Falle ist die stille Kuerzung: OpenClaw schneidet zu grosse Dateien
+# beim Einspritzen ab und meldet das nur im JSON-Bericht eines Laufs
+# (bootstrapTruncation), nicht im Log. Am 22.08.2026 blieben so von 47000
+# Zeichen nur 19184 uebrig — abgeschnitten wurde alles ab "Kundenchats",
+# DARUNTER "Verbote - ohne Ausnahme". Der Agent kannte seine eigenen
+# absoluten Verbote nicht.
+#
+# Bis 31.08. pruefte diese Stelle NUR AGENTS.md gegen NUR bootstrapMaxChars.
+# Zwei Luecken, beide gemessen:
+#
+#   a) Gebootstrappt wird mehr als AGENTS.md — laut OpenClaw-Doku
+#      (concepts/agent-workspace) auch HEARTBEAT.md, BOOT.md, BOOTSTRAP.md,
+#      MEMORY.md, skills/ und memory/JJJJ-MM-TT.md. Der Tagesspeicher waechst
+#      von selbst; niemand fasst dafuer AGENTS.md an.
+#   b) Es gibt ZWEI Grenzen. bootstrapTotalMaxChars galt bisher ungeprueft.
+#      Gemessen 31.08.2026 in der Saat: 66164 Zeichen gesamt gegen 150000 —
+#      viel Luft, aber sie schrumpft mit jedem Tagesspeicher.
+#
+# Geprueft wird der LAUFZEIT-Workspace im Container, nicht die Saat: dort
+# liegen memory/ und die uebernommenen Skills.
+lese="$(docker exec sales-claw sh -c '
+  cd /home/node/.openclaw/workspace 2>/dev/null || { echo KEINWS; exit 0; }
+  gesamt=0; groesste=0; gname=""
+  for f in $(ls -1 AGENTS.md HEARTBEAT.md BOOT.md BOOTSTRAP.md MEMORY.md 2>/dev/null; \
+             find skills memory -name "*.md" 2>/dev/null); do
+    n=$(wc -c < "$f" | tr -d "[:space:]")
+    gesamt=$((gesamt+n))
+    if [ "$n" -gt "$groesste" ]; then groesste=$n; gname=$f; fi
+  done
+  echo "$gesamt $groesste ${gname:-–}"' 2>/dev/null)"
+
+je_max="$(docker exec sales-claw sh -c "openclaw config get agents.defaults.bootstrapMaxChars 2>/dev/null" | grep -oE '[0-9]+' | head -1)"
+ges_max="$(docker exec sales-claw sh -c "openclaw config get agents.defaults.bootstrapTotalMaxChars 2>/dev/null" | grep -oE '[0-9]+' | head -1)"
+ges="$(echo "$lese" | awk '{print $1}')"
+gr="$(echo "$lese"  | awk '{print $2}')"
+gname="$(echo "$lese" | awk '{print $3}')"
+
+if [ "$lese" = "KEINWS" ] || [ -z "${ges:-}" ]; then
+  fehl "bootstrap je datei" "Workspace im Container nicht lesbar"
+  fehl "bootstrap gesamt"   "Workspace im Container nicht lesbar"
 else
-  gut "agents.md groesse"
+  # 8) Groesste Einzeldatei gegen bootstrapMaxChars.
+  if [ -n "${je_max:-}" ] && [ "$gr" -gt "$je_max" ] 2>/dev/null; then
+    fehl "bootstrap je datei" "$gname $gr Zeichen > bootstrapMaxChars $je_max — wird still gekuerzt"
+  else
+    gut "bootstrap je datei"
+  fi
+  # 9) Summe aller Bootstrap-Dateien gegen bootstrapTotalMaxChars.
+  if [ -n "${ges_max:-}" ] && [ "$ges" -gt "$ges_max" ] 2>/dev/null; then
+    fehl "bootstrap gesamt" "$ges Zeichen > bootstrapTotalMaxChars $ges_max — wird still gekuerzt"
+  else
+    gut "bootstrap gesamt"
+  fi
 fi
 
 echo "---"
