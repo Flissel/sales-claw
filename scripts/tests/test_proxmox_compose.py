@@ -118,6 +118,16 @@ def test_ui_receives_the_session_secret_wiring(tmp_path: Path) -> None:
     assert "UI_SESSION_SECRET" in umgebung
 
 
+def test_ui_extra_hosts_traegt_ip_und_serve_namen(tmp_path: Path) -> None:
+    """F4 (31.08.2026): hinter `tailscale serve` kommt der ts.net-Name als
+    Host-Header an — ohne diese Leitung antwortet die HTTPS-Adresse 421
+    (gemessen). Die IP bleibt fuer den direkten Handy-Zugriff."""
+    umgebung = rendered_config(tmp_path)["services"]["sales-ui"]["environment"]
+    # Der Name kommt aus ${UI_SERVE_HOST:-} — hier ungesetzt, also endet
+    # der Wert auf ',' (ui.py filtert leere Glieder).
+    assert umgebung["UI_EXTRA_HOSTS"] == "100.64.0.10,"
+
+
 def _run_binding_gate(
     config: dict[str, object], expected: str
 ) -> subprocess.CompletedProcess[str]:

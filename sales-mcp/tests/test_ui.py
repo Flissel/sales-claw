@@ -175,6 +175,23 @@ def test_localhost_und_loopback_sind_zulaessig():
     assert _get("/", host="localhost:8791").status_code == 200
 
 
+def test_extra_host_gilt_auch_nackt_und_auf_443():
+    """Hinter `tailscale serve` (F4, gemessen 31.08.2026) kommt der
+    Original-Host OHNE :8791 an — mal nackt, mal mit :443. Beide Formen
+    eines eingetragenen Extra-Hosts muessen bedient werden, sonst ist die
+    HTTPS-Adresse ein 421. Fremde Namen bleiben fremd."""
+    vorher = ui.ERLAUBTE_HOSTS
+    ui.ERLAUBTE_HOSTS = ui._erlaubte_hosts(["vm.beispiel.ts.net"], ui.PORT)
+    try:
+        assert _get("/", host="vm.beispiel.ts.net:8791").status_code == 200
+        assert _get("/", host="vm.beispiel.ts.net").status_code == 200
+        assert _get("/", host="vm.beispiel.ts.net:443").status_code == 200
+        assert _get("/", host="boese.example").status_code == 421
+        assert _get("/", host="vm.beispiel.ts.net:8080").status_code == 421
+    finally:
+        ui.ERLAUBTE_HOSTS = vorher
+
+
 # ---------------------------------------------------------------------------
 # XSS: Fremddaten erscheinen escaped, nie roh — und die Seiten haben kein JS
 # ---------------------------------------------------------------------------

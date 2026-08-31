@@ -212,9 +212,20 @@ PORT = int(os.environ.get("UI_PORT", "8791"))
 # jedem Geraet Kundendaten zeigte.
 _EXTRA = [h.strip() for h in os.environ.get("UI_EXTRA_HOSTS", "").split(",")
           if h.strip()]
-ERLAUBTE_HOSTS = tuple(
-    [f"127.0.0.1:{PORT}", f"localhost:{PORT}"]
-    + [f"{h}:{PORT}" for h in _EXTRA])
+
+
+def _erlaubte_hosts(extra, port) -> tuple:
+    """Loopback mit Port plus jeden Extra-Eintrag in drei Formen: mit
+    :PORT (direkter Zugriff), nackt und mit :443 — hinter `tailscale
+    serve` reicht der Proxy den Original-Host durch (gemessen 31.08.2026:
+    421 auf der HTTPS-Adresse, bevor es diese drei Formen gab)."""
+    hosts = [f"127.0.0.1:{port}", f"localhost:{port}"]
+    for h in extra:
+        hosts += [f"{h}:{port}", h, f"{h}:443"]
+    return tuple(hosts)
+
+
+ERLAUBTE_HOSTS = _erlaubte_hosts(_EXTRA, PORT)
 # Boot-Token: lebt genau so lange wie der Prozess. Kein Persistieren, keine
 # Sessions — es gibt genau einen Betreiber, und ein Neustart der Seite im
 # Browser holt das frische Token von selbst (es steht in jedem Formular).
