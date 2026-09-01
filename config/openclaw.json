@@ -101,9 +101,19 @@
         "transport": "streamable-http",
         "connectionTimeoutMs": 30000,
         "requestTimeoutMs": 60000
+      },
+      "rowboat": {
+        "url": "http://192.168.178.65:3100/api/mcp",
+        "transport": "streamable-http",
+        "connectionTimeoutMs": 30000,
+        "requestTimeoutMs": 60000,
+        "toolFilter": {
+          "include": ["rowboat_wissensquellen", "rowboat_wissensquelle", "rowboat_dokumente"]
+        }
       }
     }
   },
+  "_kommentar_rowboat": "01.09.2026: mcp.servers.rowboat = Lesezugriff auf die VibeMind-Wissensbasis (Rowboat, MCP-Endpunkt POST /api/mcp; Code in vibemind-os, Branch claude/rowboat-mcp-endpoint-v1). Rowboat laeuft auf derselben VM in einem anderen Compose-Projekt, darum die LAN-IP statt eines Dienstnamens. Der Bearer-Schluessel steht NICHT hier: openclaw kennt fuer mcp.servers.*.headers keine Env-Referenz (Schema geprueft - nur Klartext), er wird per deploy/rowboat-anbinden.sh aus der .env ins Laufzeit-Volume gesetzt. Ohne diesen Schritt antwortet Rowboat -32001 und smoke.sh Pruefung 4 wird rot - absichtlich laut, keine stille Luecke. toolFilter: nur die drei Werkzeuge mit Live-Beweis; rowboat_datei_url kommt dazu, sobald es ein Datei-Dokument gibt. Kommentar-Schluessel stehen bewusst NICHT in mcp.servers - dort waere jeder Schluessel ein Servername.",
   "tools": {
     "web": {
       "search": {

@@ -45,14 +45,21 @@ if docker exec -e SALES_DB_SCHEMA=sales sales-mcp python -c \
   "import sys;sys.path.insert(0,'/app');import server;server._q('select 1')" \
   >/dev/null 2>&1; then gut "datenbank"; else fehl "datenbank" "select 1 scheitert"; fi
 
-# 4) Gateway kennt den MCP-Server UND hatte juengst keinen Startfehler.
+# 4) Gateway kennt BEIDE MCP-Server UND hatte juengst keinen Startfehler.
+# Seit 01.09.2026 zwei Server: `sales` (Werkzeugdienst des Hauses) und
+# `rowboat` (VibeMind-Wissensbasis, angebunden per deploy/rowboat-anbinden.sh
+# — die Saat kennt den Eintrag, der Schluessel kommt erst durch das Skript;
+# fehlt er, faellt genau diese Pruefung, und das ist gewollt).
 # grep hier NIE mit -q: -q beendet beim ersten Treffer, docker bekommt
 # EPIPE, und pipefail macht daraus ein falsches ROT (gemessen 27.08.2026).
-if docker exec sales-claw sh -c "openclaw mcp list --json 2>/dev/null" | grep '"sales"' >/dev/null; then
-  gut "mcp konfiguriert"
-else
-  fehl "mcp konfiguriert" "'sales' fehlt in mcp list"
-fi
+mcp_liste="$(docker exec sales-claw sh -c "openclaw mcp list --json 2>/dev/null" || true)"
+for server in sales rowboat; do
+  if printf '%s' "$mcp_liste" | grep "\"$server\"" >/dev/null; then
+    gut "mcp $server"
+  else
+    fehl "mcp $server" "'$server' fehlt in mcp list"
+  fi
+done
 if docker logs --since 10m sales-claw 2>&1 | grep -i "failed to start server" >/dev/null; then
   fehl "mcp verbindung" "Startfehler in den letzten 10 Min."
 else

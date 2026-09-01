@@ -355,6 +355,32 @@ zu verlassen, weil `server.py` `transport="streamable-http"` fest einträgt. Aus
 `sales-claw-state` und überlebt `down`/`up` (Task 4, Schritt 4: `openclaw mcp list`
 zeigt `sales` unverändert nach einem Neustart).
 
+### Zweiter MCP-Server: die VibeMind-Wissensbasis (Rowboat, 01.09.2026)
+
+Seit 01.09.2026 kennt das Gateway einen zweiten Server `rowboat`
+(`mcp.servers.rowboat` in `config/openclaw.json`): Rowboats eigener MCP-Endpunkt
+`POST /api/mcp` (JSON-RPC, `streamable-http`; Code in `vibemind-os`, Branch
+`claude/rowboat-mcp-endpoint-v1`). Rowboat läuft auf derselben VM in einem anderen
+Compose-Projekt, deshalb steht die LAN-IP `192.168.178.65:3100` in der Saat und kein
+Dienstname. Gemessen: aus dem `sales-claw`-Container antwortet der Endpunkt ohne
+Schlüssel mit `-32001` — erreichbar, und Rowboat verrät ohne Schlüssel nicht einmal
+seine Werkzeugliste.
+
+**Der Schlüssel steht nicht in der Saat.** openclaw 2026.7.1 kennt für
+`mcp.servers.*.headers` keine Env-Referenz — das Schema erlaubt nur Klartext (die
+`{source: "env"}`-Form gibt es nur bei Modell-Providern). `deploy/rowboat-anbinden.sh`
+liest `ROWBOAT_API_KEY` aus der `.env`, ergänzt den Saat-Eintrag um den Header und
+setzt ihn per `openclaw mcp set` ins Laufzeit-Volume, dann `openclaw mcp reload`
+(kein Neustart) und `openclaw mcp probe rowboat` als Beweis. Ohne diesen Schritt ist
+der Server konfiguriert, aber unbrauchbar — `smoke.sh` Prüfung 4 meldet das rot,
+absichtlich. `toolFilter.include` beschränkt auf die drei Werkzeuge mit Live-Beweis
+(`rowboat_wissensquellen`, `rowboat_wissensquelle`, `rowboat_dokumente`); nur lesend,
+Schreibwege gibt es im Endpunkt nicht. Was der Agent daraus an Kunden weitergibt und
+was nicht, regelt AGENTS.md („Wissensbasis").
+
+`sales-mcp/rowboat.py` (Chat-Route, RAG-Antwort) bleibt daneben bestehen — MCP heißt
+blättern, Chat heißt fragen; verdrahtet ist bisher nur der MCP-Weg.
+
 ### Architektur-Lehre: der functools.wraps-Vorfall
 
 Ein Bug, der die gesamte Werkzeuganbindung lahmlegte, ohne dass Verbindung oder
