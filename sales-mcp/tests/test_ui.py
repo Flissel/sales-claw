@@ -3018,3 +3018,20 @@ def test_kontaktseite_ohne_recherche_zeigt_den_leerstand():
     lead = _lead()
     seite = _get(f"/kontakte/{lead}").text
     assert "Noch keine Firmendaten" in seite
+
+
+def test_kontaktseite_zeigt_die_geschaeftsverweise():
+    lead = _lead()
+    server._q(
+        "update leads set enrichment = jsonb_set(enrichment, '{firma}', "
+        "%s::jsonb, true) where id = %s returning id",
+        (json.dumps({"website": "https://x.de", "seiten": [],
+                     "verweise": [
+                         {"plattform": "LinkedIn",
+                          "url": "https://linkedin.com/company/x"},
+                         {"plattform": "Instagram",
+                          "url": "https://instagram.com/x"}]}), lead))
+    seite = _get(f"/kontakte/{lead}").text
+    assert "LinkedIn" in seite and "Instagram" in seite
+    assert 'href="https://linkedin.com/company/x"' in seite
+    assert 'rel="noopener noreferrer nofollow"' in seite

@@ -1014,6 +1014,56 @@ def _hole_seite(url: str):
             "_links": leser.links}, None
 
 
+# Plattformen, die eine Firma auf ihrer eigenen Seite verlinkt. Erhoben
+# wird NUR die URL als Absprungpunkt — diese Plattformen werden NIE
+# abgerufen, ihr Inhalt nie gelesen. Das ist die legale Haelfte der
+# „Social-Media"-Frage (01.09.2026): ein Verweis, den die Firma selbst
+# veroeffentlicht, ist ihre eigene Aussage, kein Profiling eines Menschen.
+_VERWEIS_PLATTFORMEN = (
+    ("linkedin.", "LinkedIn"), ("xing.", "Xing"),
+    ("instagram.", "Instagram"), ("facebook.", "Facebook"),
+    ("fb.com", "Facebook"), ("youtube.", "YouTube"), ("youtu.be", "YouTube"),
+    ("tiktok.", "TikTok"), ("twitter.", "X"), ("x.com", "X"))
+_VERWEISE_MAX = 12
+
+
+def _geschaeftsverweise(seiten: list, eigene_url: str) -> list:
+    """Social-/Business-Links, die die Firma auf IHREN Seiten verlinkt —
+    [{plattform, url}], entdoppelt, gedeckelt. Die eigene Domain zaehlt
+    nicht (steht schon als `website`). Rein aus dem bereits gelesenen
+    HTML; kein weiterer Abruf."""
+    try:
+        eigener_host = urllib.parse.urlsplit(eigene_url).hostname or ""
+    except ValueError:
+        eigener_host = ""
+    eigener_host = eigener_host.lower().removeprefix("www.")
+    gefunden, gesehen = [], set()
+    for seite in seiten:
+        for verweis in seite.get("_links", []):
+            if _NICHT_HOLBAR.match(verweis or ""):
+                continue
+            try:
+                voll = urllib.parse.urljoin(seite["url"], verweis.strip())
+                host = (urllib.parse.urlsplit(voll).hostname or "").lower()
+            except ValueError:
+                continue
+            if not host or host.removeprefix("www.") == eigener_host:
+                continue
+            plattform = next((name for nadel, name in _VERWEIS_PLATTFORMEN
+                              if nadel in host), None)
+            if plattform is None:
+                continue
+            schluessel = urllib.parse.urldefrag(voll)[0].rstrip("/").lower()
+            if schluessel in gesehen:
+                continue
+            gesehen.add(schluessel)
+            gefunden.append({"plattform": plattform,
+                             "url": urllib.parse.urldefrag(voll)[0]})
+            if len(gefunden) >= _VERWEISE_MAX:
+                return gefunden
+    return gefunden
+
+
 def _unterseiten(start: dict) -> list:
     """Verweise der Startseite -> Kandidaten, nach Seitentyp sortiert.
 
@@ -1168,11 +1218,14 @@ def firma_daten(website_url: str, max_seiten: int = FIRMA_MAX_SEITEN):
             nicht_gelesen.append({"url": kandidat, "grund": fehler})
             continue
         seiten.append(seite)
+    # Verweise VOR dem Verwerfen der Arbeitsdaten einsammeln.
+    verweise = _geschaeftsverweise(seiten, start["url"])
     for seite in seiten:
         seite.pop("_links", None)       # Arbeitsdaten, nichts fuer die Ablage
     return {"website": start["url"], "seiten": seiten,
             "seiten_anzahl": len(seiten), "nicht_gelesen": nicht_gelesen,
             "hinweise": _firma_hinweise(seiten),
+            "geschaeftsverweise": verweise,
             "kosten_usd": FIRMA_KOSTEN_USD}, None
 
 

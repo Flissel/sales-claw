@@ -4553,6 +4553,10 @@ def firma_anreichern(lead_id: str, website: str = "") -> str:
     knoten = {"website": daten["website"], "seiten": daten["seiten"],
               "hinweise": daten["hinweise"],
               "nicht_gelesen": daten["nicht_gelesen"],
+              # Social-/Business-Links, die die Firma selbst verlinkt —
+              # nur die URL als Absprungpunkt (01.09.2026, kein Abruf, kein
+              # Content, keine Personendaten).
+              "verweise": daten.get("geschaeftsverweise", []),
               "stand": date.today().isoformat()}
     # EIN jsonb_set genuegt hier — und das ist kein Vergessen des Musters aus
     # profil_aktualisieren/bedarf_speichern, sondern sein Kern: `create_missing`

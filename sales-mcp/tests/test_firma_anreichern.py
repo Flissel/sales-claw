@@ -58,6 +58,9 @@ _START = _html("Muster Haustechnik GmbH", """
     <a href="/referenzen">Referenzen</a>
     <a href="/team/">Team</a>
     <a href="https://www.facebook.com/musterhaustechnik">Facebook</a>
+    <a href="https://www.linkedin.com/company/muster-haustechnik/">LinkedIn</a>
+    <a href="https://www.instagram.com/musterhaustechnik/">Instagram</a>
+    <a href="https://www.linkedin.com/company/muster-haustechnik/">LinkedIn nochmal</a>
     <a href="mailto:info@muster-haustechnik.de">Mail</a>
     <a href="tel:+499411234567">Anrufen</a>
     <a href="#oben">nach oben</a>
@@ -750,3 +753,55 @@ def test_zweiter_lauf_ersetzt_den_stand_vollstaendig(monkeypatch):
     firma = _enrichment(lead)["firma"]
     assert "marker_aus_lauf_1" not in firma
     assert "nicht_gelesen" in firma        # neuer Bestandteil der Ablage
+
+
+# ---------------------------------------------------------------------------
+# Geschaeftsverweise (01.09.2026, Betreiber-Wunsch): die Social-/Business-
+# Links, die die FIRMA AUF IHRER EIGENEN SEITE veroeffentlicht, als
+# Absprungpunkte mitnehmen. Nur die URL — kein Abruf dieser Plattformen,
+# kein Content, keine Personendaten. Genau die legale Haelfte der
+# ClarityCheck-Frage.
+# ---------------------------------------------------------------------------
+
+def test_geschaeftsverweise_werden_gesammelt(monkeypatch):
+    daten, fehler = recherche.firma_daten(STUB_BASIS + "/")
+    assert fehler is None
+    verweise = daten["geschaeftsverweise"]
+    plattformen = {v["plattform"] for v in verweise}
+    assert plattformen == {"Facebook", "LinkedIn", "Instagram"}
+    for v in verweise:
+        assert v["url"].startswith("https://")
+
+
+def test_geschaeftsverweise_ohne_dubletten(monkeypatch):
+    daten, _ = recherche.firma_daten(STUB_BASIS + "/")
+    urls = [v["url"] for v in daten["geschaeftsverweise"]]
+    assert len(urls) == len(set(urls))          # LinkedIn stand zweimal drin
+    assert sum(v["plattform"] == "LinkedIn"
+               for v in daten["geschaeftsverweise"]) == 1
+
+
+def test_geschaeftsverweise_landen_im_profil(monkeypatch):
+    lead = _firmenlead()
+    server.firma_anreichern(lead)
+    firma = server._q("select enrichment->'firma' as f from leads "
+                      "where id = %s", (lead,))[0]["f"]
+    assert isinstance(firma.get("verweise"), list)
+    assert {v["plattform"] for v in firma["verweise"]} == {
+        "Facebook", "LinkedIn", "Instagram"}
+
+
+def test_keine_eigene_domain_und_kein_fremder_content(monkeypatch):
+    """Die eigene Website ist kein Geschaeftsverweis (steht schon als
+    website da), und geholt werden die Plattformen NIE — sie tauchen in
+    keiner aufrufe-Liste des Stubs auf."""
+    lead = _firmenlead()
+    server.firma_anreichern(lead)
+    firma = server._q("select enrichment->'firma' as f from leads "
+                      "where id = %s", (lead,))[0]["f"]
+    for v in firma.get("verweise", []):
+        assert "127.0.0.1" not in v["url"]      # nicht die eigene (Stub-)Domain
+    with STUB.sperre:
+        pfade = [p for p in STUB.aufrufe]
+    assert all("linkedin" not in p and "facebook" not in p
+               and "instagram" not in p for p in pfade)

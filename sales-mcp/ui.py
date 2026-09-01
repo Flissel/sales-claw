@@ -632,6 +632,12 @@ h2 { font-size: 1.05rem; margin-top: 2rem; }
 .spalte .karte { margin: .45rem 0; padding: .5rem .7rem; }
 .meta { color: var(--gedaempft); font-size: .85rem; }
 
+/* --- Geschaeftsverweise (01.09.2026): anklickbare Absprung-Chips --------- */
+.verweise { display: flex; flex-wrap: wrap; gap: .4rem; }
+.verweis { display: inline-block; padding: .2rem .6rem; border-radius: 4px;
+           border: 1px solid var(--linie); text-decoration: none;
+           font-size: .85rem; }
+
 /* --- Abzeichen: das Wort traegt die Aussage, die Farbe hilft nur ---------- */
 .badge { display: inline-block; padding: .15rem .5rem; border-radius: 4px;
          font-size: .78rem; font-weight: 700; line-height: 1.6;
@@ -3063,7 +3069,23 @@ async def kontakt_detail(request):
                 f'<div class="karte"><b>{_e(s.get("titel") or s.get("typ") or "Seite")}</b>'
                 f'<div class="meta">{_e(s.get("url") or "")}</div>'
                 f'<div class="text">{_e(text)}</div></div>')
-        teile.append(meta + "".join(karten))
+        # Geschaeftsverweise (01.09.2026): die Social-/Business-Links, die
+        # die Firma selbst verlinkt — als anklickbare Absprungpunkte. Der
+        # Text ist eine feste Plattform-Bezeichnung aus dem Code, die URL
+        # Fremddatum (escaped; das href genauso).
+        verweise = firma.get("verweise")
+        verweise = verweise if isinstance(verweise, list) else []
+        verweis_zeile = ""
+        if verweise:
+            knoepfe = "".join(
+                f'<a class="verweis" href="{_e(v.get("url"))}" '
+                f'target="_blank" rel="noopener noreferrer nofollow">'
+                f'{_e(v.get("plattform") or "Link")}</a>'
+                for v in verweise if isinstance(v, dict) and v.get("url"))
+            verweis_zeile = (f'<p class="meta">Verlinkt von der Firma '
+                             f'(nur Absprung, nicht ausgewertet):</p>'
+                             f'<p class="verweise">{knoepfe}</p>')
+        teile.append(meta + "".join(karten) + verweis_zeile)
     else:
         teile.append(
             '<p class="meta">Noch keine Firmendaten — der Assistent '
