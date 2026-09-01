@@ -149,3 +149,128 @@ def test_digest_zaehlt_die_pipeline():
     d = json.loads(server.digest())
     assert d["pipeline"]["neu"] == 1
     assert d["pipeline"]["termin"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Automatischer Abgleich (01.09.2026): Stufen, die als Beweis im Protokoll
+# stehen, zieht stufen_abgleichen() nach — nur VORWAERTS, nur bis 'termin'
+# (gewonnen/verloren/qualifiziert bleiben Urteile), jede Bewegung mit
+# Begruendung. Betreiber-Wunsch: 39 Kontakte standen auf 'neu', obwohl
+# hunderte Nachrichten laengst bewiesen, wie weit sie wirklich sind.
+# ---------------------------------------------------------------------------
+
+def _aktivitaet(lead, typ, payload=None):
+    server._q("insert into activities (lead_id, type, payload) values "
+              "(%s, %s, %s) returning id",
+              (lead, typ, server._json(payload or {"text": "x"})))
+
+
+def _abgleich():
+    return json.loads(server.stufen_abgleichen())
+
+
+def _wechsel(lead):
+    return server._q(
+        "select payload from activities where lead_id = %s and "
+        "type = 'stufenwechsel' order by created_at", (lead,))
+
+
+def test_kundenantwort_beweist_geantwortet():
+    lead = _lead()
+    _aktivitaet(lead, "kundenantwort")
+    ergebnis = _abgleich()
+    assert ergebnis["nachgezogen"] == 1
+    assert _status(lead) == "replied"
+    beweis = _wechsel(lead)
+    assert len(beweis) == 1
+    assert beweis[0]["payload"]["nach"] == "geantwortet"
+    assert "automatisch" in beweis[0]["payload"]["begruendung"]
+
+
+def test_nur_ausgang_beweist_kontaktiert():
+    lead = _lead()
+    _aktivitaet(lead, "nachricht_ausgehend")
+    _abgleich()
+    assert _status(lead) == "contacted"
+
+
+def test_versand_zaehlt_wie_ausgang():
+    lead = _lead()
+    _aktivitaet(lead, "versand")
+    _abgleich()
+    assert _status(lead) == "contacted"
+
+
+def test_termin_beweist_termin():
+    lead = _lead()
+    _aktivitaet(lead, "kundenantwort")
+    _aktivitaet(lead, "termin", {"datum": "2026-09-03"})
+    _abgleich()
+    assert _status(lead) == "meeting"
+
+
+def test_niemals_rueckwaerts():
+    """Ein gewonnener Kontakt, der nochmal schreibt, faellt nicht auf
+    'geantwortet' zurueck — und ein Termin-Kontakt auch nicht."""
+    gewonnen = _lead(status="won")
+    _aktivitaet(gewonnen, "kundenantwort")
+    termin = _lead(status="meeting")
+    _aktivitaet(termin, "kundenantwort")
+    ergebnis = _abgleich()
+    assert ergebnis["nachgezogen"] == 0
+    assert _status(gewonnen) == "won"
+    assert _status(termin) == "meeting"
+
+
+def test_qualifiziert_geht_vorwaerts_auf_geantwortet():
+    lead = _lead(status="qualified")
+    _aktivitaet(lead, "kundenantwort")
+    _abgleich()
+    assert _status(lead) == "replied"
+
+
+def test_zweiter_lauf_aendert_nichts():
+    lead = _lead()
+    _aktivitaet(lead, "kundenantwort")
+    _abgleich()
+    ergebnis = _abgleich()
+    assert ergebnis["nachgezogen"] == 0
+    assert len(_wechsel(lead)) == 1
+
+
+def test_ohne_beweis_keine_bewegung():
+    lead = _lead()
+    _aktivitaet(lead, "notiz")
+    ergebnis = _abgleich()
+    assert ergebnis["nachgezogen"] == 0
+    assert _status(lead) == "new"
+
+
+def test_archivierte_private_und_systemkontakte_bleiben_stehen(monkeypatch):
+    archiv = str(server._q(
+        "insert into leads (name, source, enrichment) values "
+        "('Alt Archiv', 'whatsapp', "
+        "'{\"archiviert\": {\"archiviert\": true, \"am\": \"2026-08-01\"}}'"
+        "::jsonb) returning id")[0]["id"])
+    privat = str(server._q(
+        "insert into leads (name, source, enrichment) values "
+        "('Lisa Privat', 'whatsapp', '{\"_privat\": {}}'::jsonb) "
+        "returning id")[0]["id"])
+    system = _lead()
+    monkeypatch.setattr(server, "LINKEDIN_POST_LEAD_ID", system)
+    for lead in (archiv, privat, system):
+        _aktivitaet(lead, "kundenantwort")
+    ergebnis = _abgleich()
+    assert ergebnis["nachgezogen"] == 0
+    for lead in (archiv, privat, system):
+        assert _status(lead) == "new"
+
+
+def test_abgleich_meldet_die_bilanz():
+    a = _lead()
+    _aktivitaet(a, "kundenantwort")
+    _lead()                                 # ohne Beweis
+    ergebnis = _abgleich()
+    assert ergebnis["geprueft"] == 2
+    assert ergebnis["nachgezogen"] == 1
+    assert ergebnis["wechsel"][0]["nach"] == "geantwortet"

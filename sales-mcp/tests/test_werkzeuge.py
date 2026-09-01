@@ -699,9 +699,12 @@ def test_kontakt_aktualisieren_signatur_ueberlebt_den_dekorator():
     assert list(parameter) == ["lead_id", "feld", "wert"]
 
 
-def test_sechsundsechzig_werkzeuge_registriert():
+def test_siebenundsechzig_werkzeuge_registriert():
     namen = {fn.__name__ for fn in server.WERKZEUGE}
-    assert len(namen) == 66
+    assert len(namen) == 67
+    # Pipeline-Automatik (01.09.2026): beweisbare Stufen nachziehen,
+    # nur vorwaerts. Tests in tests/test_pipeline.py.
+    assert "stufen_abgleichen" in namen
     # UWG-Einwilligung (F5, 31.08.2026): Erstansprache nur mit Grundlage,
     # erfasst durch einen MENSCHEN mit Quelle. Tests in tests/test_uwg.py.
     assert "einwilligung_erfassen" in namen

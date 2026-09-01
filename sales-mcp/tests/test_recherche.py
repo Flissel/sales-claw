@@ -542,8 +542,9 @@ def test_beide_werkzeuge_sind_registriert():
     # wache_ergebnis (F3, test_auftraege.py). UWG-Paar einwilligung_
     # erfassen/widerrufen (F5, test_uwg.py). Betreiber-Postfach:
     # betreiber_mail_entwurf, postfach_lesen, postfach_mail_lesen
-    # (test_betreiber_mail.py, test_postfach.py).
-    assert len(namen) == len(set(namen)) == 66
+    # (test_betreiber_mail.py, test_postfach.py). Pipeline-Automatik:
+    # stufen_abgleichen (test_pipeline.py).
+    assert len(namen) == len(set(namen)) == 67
 
 # ---------------------------------------------------------------------------
 # Nachbesserungen aus dem Stufe-5-Review (Befunde T1, B2, D2)

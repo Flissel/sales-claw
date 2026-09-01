@@ -5411,6 +5411,66 @@ def kontakt_stufe_setzen(lead_id: str, stufe: str, begruendung: str) -> str:
     return _json({"lead_id": lead_id, "von": von, "nach": stufe})
 
 
+@_gesichert
+def stufen_abgleichen() -> str:
+    """Pipeline-Stufen aus den BEWEISEN im Protokoll nachziehen — fuer
+    alle aktiven Kontakte auf einmal (01.09.2026: 39 Kontakte standen auf
+    'neu', obwohl hunderte Nachrichten laengst zeigten, wie weit sie
+    sind). Regeln:
+
+    * Nur VORWAERTS, und hoechstens bis 'termin'. Was ein Urteil braucht
+      (qualifiziert, gewonnen, verloren), setzt nie die Automatik.
+    * Beweise: Termin im Protokoll -> termin; Kundenantwort ->
+      geantwortet; ausgehende Nachricht/Versand -> kontaktiert.
+    * Jede Bewegung laeuft durch kontakt_stufe_setzen — mit Begruendung
+      und Beweiszeile, wie jeder andere Wechsel auch.
+    * Archivierte, private und System-Kontakte bleiben unberuehrt.
+
+    Rufe es im Routinelauf auf; es ist idempotent (zweiter Lauf: nichts).
+    """
+    rang = {s: i for i, s in enumerate(PIPELINE_STUFEN)}
+    system = {kennung for kennung in (
+        UNBEKANNT_LEAD_ID, recherche.RECHERCHE_LEAD_ID,
+        LINKEDIN_POST_LEAD_ID, BETREIBER_MAIL_LEAD_ID) if kennung}
+    zeilen = _q(
+        "select l.id::text as id, l.status, l.enrichment,"
+        "  (select max(a.created_at) from activities a"
+        "    where a.lead_id = l.id and a.type = 'termin') as termin,"
+        "  (select max(a.created_at) from activities a"
+        "    where a.lead_id = l.id and a.type = 'kundenantwort')"
+        "    as antwort,"
+        "  (select max(a.created_at) from activities a"
+        "    where a.lead_id = l.id and a.type in"
+        "    ('nachricht_ausgehend', 'versand')) as ausgang"
+        " from leads l where not " + _archiv_sql("l.enrichment"))
+    geprueft, wechsel = 0, []
+    for z in zeilen:
+        if (z["id"] in system or _privat(z["enrichment"])
+                or _loeschantrag(z["enrichment"])):
+            continue
+        geprueft += 1
+        if z["termin"]:
+            soll = "termin"
+            grund = f"Termin im Protokoll ({z['termin']:%d.%m.%Y})"
+        elif z["antwort"]:
+            soll = "geantwortet"
+            grund = f"Kundenantwort vom {z['antwort']:%d.%m.%Y}"
+        elif z["ausgang"]:
+            soll = "kontaktiert"
+            grund = f"ausgehende Nachricht vom {z['ausgang']:%d.%m.%Y}"
+        else:
+            continue
+        ist = _stufe_lesen(z["status"])
+        if rang[soll] <= rang.get(ist, 0):
+            continue
+        antwort = json.loads(kontakt_stufe_setzen(
+            z["id"], soll, f"automatisch nachgezogen: {grund}"))
+        if "fehler" not in antwort:
+            wechsel.append({"lead_id": z["id"], "von": ist, "nach": soll})
+    return _json({"geprueft": geprueft, "nachgezogen": len(wechsel),
+                  "wechsel": wechsel[:50]})
+
+
 # ---------------------------------------------------------------------------
 # Auftrags-Spool — Updates per Bot-Anfrage (Betreiber am 27.08.2026:
 # "update ueber mich bzw bot anfragen"). Der Bot BESTELLT nur: das Werkzeug
@@ -5689,7 +5749,10 @@ WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              # Betreiber-Postfach (31.08.2026): eigene Korrespondenz
              # schreiben (Freigabe=Versand) und INBOX lesen (readonly).
              # Vertraege: tests/test_betreiber_mail.py, test_postfach.py.
-             betreiber_mail_entwurf, postfach_lesen, postfach_mail_lesen)
+             betreiber_mail_entwurf, postfach_lesen, postfach_mail_lesen,
+             # Pipeline-Automatik (01.09.2026): beweisbare Stufen
+             # nachziehen, nur vorwaerts. Vertraege: tests/test_pipeline.py.
+             stufen_abgleichen)
 
 for _fn in WERKZEUGE:
     mcp.tool()(_fn)

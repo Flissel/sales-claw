@@ -1151,3 +1151,10 @@ Begruendung ist Pflicht und wird zur Beweiszeile im Protokoll.
 * Der Digest traegt unter `pipeline` die Zaehlung je Stufe — nenne sie
   kurz, wenn sich seit dem Vortag etwas bewegt hat, und lass sie sonst
   weg.
+* AUTOMATIK (01.09.2026): rufe im Routinelauf `stufen_abgleichen()` auf.
+  Es zieht beweisbare Stufen nach — Termin im Protokoll -> termin,
+  Kundenantwort -> geantwortet, ausgehende Nachricht -> kontaktiert —
+  nur vorwaerts und nie ueber `termin` hinaus. Die Urteils-Stufen
+  (qualifiziert, gewonnen, verloren) bleiben deine Vorschlaege und die
+  Entscheidung des Betreibers. Hat der Abgleich etwas bewegt, gehoert
+  EIN Satz dazu in die Meldung.
