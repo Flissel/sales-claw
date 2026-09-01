@@ -85,3 +85,52 @@ def test_liste_verschweigt_nach_draussen_zeigende_symlinks(medienordner, tmp_pat
     (medienordner / "gut.pdf").write_bytes(b"%PDF-ok")
 
     assert medien.liste() == [("gut.pdf", 7)]
+
+def test_erzeugte_datei_wird_gefunden(tmp_path, monkeypatch):
+    erzeugt = tmp_path / "erzeugt"
+    erzeugt.mkdir()
+    (erzeugt / "termin-sabrina-2026-09-04.ics").write_text("BEGIN:VCALENDAR")
+    monkeypatch.setattr(medien, "ERZEUGT_VERZEICHNIS", str(erzeugt))
+    basis, fehler = medien.pruefe("termin-sabrina-2026-09-04.ics")
+    assert fehler is None
+    assert basis == "termin-sabrina-2026-09-04.ics"
+    assert medien.pfad(basis) == str(erzeugt / basis)
+
+
+def test_menschenordner_gewinnt_bei_namensgleichheit(tmp_path, monkeypatch):
+    """Legt ein Mensch eine Datei mit demselben Namen ab, gilt seine —
+    er ist die hoehere Instanz, nicht die Maschine."""
+    mensch = tmp_path / "media"
+    erzeugt = tmp_path / "erzeugt"
+    mensch.mkdir()
+    erzeugt.mkdir()
+    (mensch / "doppelt.pdf").write_bytes(b"%PDF-mensch")
+    (erzeugt / "doppelt.pdf").write_bytes(b"%PDF-maschine")
+    monkeypatch.setattr(medien, "MEDIA_VERZEICHNIS", str(mensch))
+    monkeypatch.setattr(medien, "ERZEUGT_VERZEICHNIS", str(erzeugt))
+    basis, fehler = medien.pruefe("doppelt.pdf")
+    assert fehler is None
+    assert medien.pfad(basis) == str(mensch / "doppelt.pdf")
+
+
+def test_traversal_greift_auch_im_erzeugt_ordner(tmp_path, monkeypatch):
+    erzeugt = tmp_path / "erzeugt"
+    erzeugt.mkdir()
+    monkeypatch.setattr(medien, "ERZEUGT_VERZEICHNIS", str(erzeugt))
+    for boesartig in ("../geheim.pdf", "unterordner/x.ics", "..\\x.ics"):
+        basis, fehler = medien.pruefe(boesartig)
+        assert basis is None and fehler
+
+
+def test_liste_nennt_beide_ordner(tmp_path, monkeypatch):
+    mensch = tmp_path / "media"
+    erzeugt = tmp_path / "erzeugt"
+    mensch.mkdir()
+    erzeugt.mkdir()
+    (mensch / "checkliste.pdf").write_bytes(b"%PDF-1")
+    (erzeugt / "termin-x-2026-09-04.ics").write_text("BEGIN:VCALENDAR")
+    monkeypatch.setattr(medien, "MEDIA_VERZEICHNIS", str(mensch))
+    monkeypatch.setattr(medien, "ERZEUGT_VERZEICHNIS", str(erzeugt))
+    namen = [name for name, _ in medien.liste()]
+    assert "checkliste.pdf" in namen
+    assert "termin-x-2026-09-04.ics" in namen

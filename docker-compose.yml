@@ -122,6 +122,13 @@ services:
     # Datenrichtungen und deshalb gegenläufige Rechte.
     volumes:
       - ./media:/media:ro
+      # media-erzeugt (01.09.2026): der EINZIGE Medienordner, in den das
+      # System selbst schreibt — hierhin legt `termin_bestaetigen` die
+      # Kalenderdatei, damit sie ohne Handgriff anhaengbar ist. Vorher lag
+      # sie nur in reports/ und war damit erzeugt und unversendbar. Der
+      # Menschen-Ordner darueber bleibt unveraendert :ro; die Versender
+      # unten binden diesen hier ebenfalls nur lesend.
+      - ./media-erzeugt:/media-erzeugt
       - ./reports:/reports
       # Sprachnachrichten NUR LESEN (01.09.2026): geschrieben wird dort
       # ausschliesslich von sales-inbox, gelesen zum Transkribieren.
@@ -174,6 +181,7 @@ services:
     # scheitert der Entwurf, statt ohne Anhang rauszugehen.
     volumes:
       - ./media:/media:ro
+      - ./media-erzeugt:/media-erzeugt:ro
     # Ein laufender Versand darf nicht per SIGKILL zerrissen werden: der
     # Dispatcher beendet nach SIGTERM die laufende Runde (HTTP-Timeout 30 s)
     # und geht dann. 45 s Gnadenfrist decken das ab.
@@ -344,6 +352,7 @@ services:
       # Read-only wie ueberall: was gepostet werden kann, legt ausschliesslich
       # ein Mensch auf dem Host ab.
       - ./media:/media:ro
+      - ./media-erzeugt:/media-erzeugt:ro
     # Ein laufender Video-Upload darf nicht per SIGKILL zerrissen werden —
     # er laeuft abschnittweise und kann Minuten dauern (Upload-Timeout 300 s
     # je Abschnitt). Grosszuegiger als bei den Zwillingen, aus genau diesem
@@ -515,6 +524,7 @@ services:
       # Datei-Explorer. Der AGENT bekommt kein Schreibrecht: sales-mcp und
       # sales-dispatch behalten `:ro`, und genau das ist der Punkt.
       - ./media:/media
+      - ./media-erzeugt:/media-erzeugt:ro
     ports:
       # Loopback IMMER. Die zweite Zeile bindet den Port zusaetzlich an die
       # Tailscale-Adresse dieses Rechners — ausdruecklich NICHT an 0.0.0.0:

@@ -29,6 +29,13 @@ openwa-qr.txt
 media/*
 !media/.gitkeep
 
+# media-erzeugt (01.09.2026): was das SYSTEM an versendbaren Unterlagen
+# erzeugt (Kalenderdateien). Inhalt gehoert niemandem im Repo — der
+# Ordner selbst muss aber im Klon existieren, sonst legt Compose ihn
+# als Root-owned Leerverzeichnis an (dieselbe Falle wie bei media/).
+media-erzeugt/*
+!media-erzeugt/.gitkeep
+
 # Reportordner (Stufe 5, R1; erweitert Stufe 7): Ergebnisse von
 # `marktanalyse` (Firmendaten Dritter) UND seit Stufe 7 die
 # Beraterin-Uebergaben (`uebergabe_erstellen`) — letztere enthalten

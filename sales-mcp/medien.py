@@ -43,6 +43,10 @@ import os
 # Host-Bind `./media:/media:ro` an sales-mcp und sales-dispatch — read-only,
 # damit weder Werkzeugdienst noch Dispatcher je in den Ordner schreiben koennen.
 MEDIA_VERZEICHNIS = os.environ.get("MEDIA_DIR", "/media")
+# Ordner fuer ERZEUGTE Unterlagen (01.09.2026): Kalenderdateien aus
+# `termin_bestaetigen`. media/ bleibt der Menschen-Ordner (nur lesbar,
+# Begruendung im Compose); hierhin schreibt das System selbst.
+ERZEUGT_VERZEICHNIS = os.environ.get("MEDIA_ERZEUGT_DIR", "/media-erzeugt")
 
 # 15 MB. Siehe Moduldocstring: OpenWA wuerde erst bei ~18,7 MB abriegeln, aber
 # eine WhatsApp-Nachricht ist kein Dateiserver, und die Schranke soll sprechen,
@@ -115,8 +119,34 @@ def wurzel() -> str:
     return os.path.realpath(MEDIA_VERZEICHNIS)
 
 
+def erzeugt_wurzel() -> str:
+    return os.path.realpath(ERZEUGT_VERZEICHNIS)
+
+
+def wurzeln() -> tuple:
+    """Beide Quellen in RANGFOLGE (01.09.2026): erst der Menschen-Ordner,
+    dann der fuer erzeugte Unterlagen.
+
+    Der Grund fuer den zweiten Ordner: `termin_bestaetigen` legte die
+    Kalenderdatei in reports/ ab — versendbar ist aber nur, was in
+    media/ liegt, und dort darf ausschliesslich ein Mensch ablegen
+    (Begruendung im Compose beim :ro-Bind). Die .ics war damit erzeugt
+    und unbrauchbar; der Betreiber musste sie von Hand kopieren.
+
+    Die Menschen-Regel bleibt unangetastet: media/ ist weiterhin nur
+    lesbar. Daneben steht jetzt ein Ordner, in den das System selbst
+    schreibt — und bei Namensgleichheit gewinnt der Mensch.
+    """
+    return (wurzel(), erzeugt_wurzel())
+
+
 def pfad(basis: str) -> str:
-    """Vollstaendiger Pfad einer bereits geprueften Datei."""
+    """Vollstaendiger Pfad einer bereits geprueften Datei — aus dem
+    Ordner, in dem sie tatsaechlich liegt (Menschen-Ordner zuerst)."""
+    for ordner in wurzeln():
+        ziel = os.path.join(ordner, basis)
+        if os.path.isfile(ziel):
+            return ziel
     return os.path.join(wurzel(), basis)
 
 
@@ -152,16 +182,23 @@ def pruefe(name: str):
             f"Endung '{endung or '(keine)'}' ist nicht zugelassen. Erlaubt: "
             f"{', '.join(sorted(ERLAUBT))}.")
 
-    ziel = os.path.join(wurzel(), basis)
+    # Beide Ordner in Rangfolge (Menschen-Ordner zuerst) — die Pruefungen
+    # je Ordner bleiben unveraendert, insbesondere die Symlink-Kante.
+    ziel, gefunden = os.path.join(wurzel(), basis), False
     try:
-        # Ein Symlink im Ordner, der nach draussen zeigt, waere der letzte Weg
-        # aus dem Verzeichnis heraus — realpath loest ihn auf, der Vergleich
-        # faengt ihn ab. (Der Bind kommt von einem Windows-Host und kennt das
-        # praktisch nicht; die Kante kostet eine Zeile.)
-        if not os.path.realpath(ziel).startswith(wurzel() + os.sep):
-            return None, (f"'{basis}' zeigt aus dem Medienordner heraus und "
-                          f"wird nicht angehaengt.")
-        if not os.path.isfile(ziel):
+        for ordner in wurzeln():
+            kandidat = os.path.join(ordner, basis)
+            # Ein Symlink im Ordner, der nach draussen zeigt, waere der letzte
+            # Weg aus dem Verzeichnis heraus — realpath loest ihn auf, der
+            # Vergleich faengt ihn ab. (Der Bind kommt von einem Windows-Host
+            # und kennt das praktisch nicht; die Kante kostet eine Zeile.)
+            if not os.path.realpath(kandidat).startswith(ordner + os.sep):
+                return None, (f"'{basis}' zeigt aus dem Medienordner heraus "
+                              f"und wird nicht angehaengt.")
+            if os.path.isfile(kandidat):
+                ziel, gefunden = kandidat, True
+                break
+        if not gefunden:
             return None, (f"Datei '{basis}' liegt nicht im Medienordner. "
                           f"medien_liste() zeigt, was verfuegbar ist.")
         if not os.access(ziel, os.R_OK):
@@ -237,8 +274,18 @@ def liste():
     Whitelist-Filter hatte genau diese Luecke. Wirft OSError, wenn der Ordner
     fehlt.
     """
+    namen = set()
+    for ordner in wurzeln():
+        try:
+            namen.update(os.listdir(ordner))
+        except OSError:
+            # Der ERZEUGT-Ordner darf fehlen (frischer Stack, alter Mount)
+            # — der Menschen-Ordner nicht: sein Fehlen ist ein echter
+            # Betriebsfehler und wirft weiter.
+            if ordner == wurzel():
+                raise
     eintraege = []
-    for name in sorted(os.listdir(wurzel())):
+    for name in sorted(namen):
         basis, fehler = pruefe(name)
         if fehler is None:
             eintraege.append((basis, os.path.getsize(pfad(basis))))

@@ -1205,6 +1205,20 @@ def termin_bestaetigen(lead_id: str, datum: str, uhrzeit: str,
     # `report_schreiben`. Dasselbe zweistufige Muster wie bei der Uebergabe.
     dateiname = f"termin-{recherche.slug(name)}-{tag.isoformat()}.ics"
     pfad, ueberschrieben, schreibfehler = None, False, None
+    # Zweitschrift in den Ordner fuer erzeugte Unterlagen (01.09.2026,
+    # Betreiber-Befund): bis dahin lag die .ics NUR in reports/ — und
+    # versendbar ist nur, was im Medienordner liegt. Der Betreiber musste
+    # sie von Hand kopieren, um sie an einen Entwurf zu haengen. Ein
+    # Fehlschlag hier kostet nur den Anhang, nie den Termin.
+    anhang_bereit = False
+    try:
+        os.makedirs(medien.ERZEUGT_VERZEICHNIS, exist_ok=True)
+        with open(os.path.join(medien.ERZEUGT_VERZEICHNIS, dateiname), "w",
+                  encoding="utf-8", newline="\r\n") as datei:
+            datei.write(ics_text)
+        anhang_bereit = True
+    except OSError:
+        pass
     try:
         pfad, ueberschrieben = recherche.report_schreiben(dateiname, ics_text)
     except (OSError, ValueError) as ex:
@@ -1236,10 +1250,16 @@ def termin_bestaetigen(lead_id: str, datum: str, uhrzeit: str,
                         "ort": ort_kurz, "pfad": pfad, "uid": uid,
                         "kalender": kalender_stand})))
 
-    hinweis = (f"Die Kalenderdatei liegt in reports\\{dateiname}. Zum "
-               f"Mitsenden kopiert der Betreiber sie von Hand nach media\\ "
-               f"und haengt sie mit entwurf_erstellen(..., medien_datei="
-               f"'{dateiname}') an.")
+    if anhang_bereit:
+        hinweis = (f"Die Kalenderdatei ist versandbereit: haenge sie mit "
+                   f"entwurf_erstellen(..., medien_datei='{dateiname}') an "
+                   f"— nichts zu kopieren. Zum Nachlesen liegt sie auch in "
+                   f"reports\\{dateiname}.")
+    else:
+        hinweis = (f"Die Kalenderdatei liegt in reports\\{dateiname}, konnte "
+                   f"aber nicht in den Medienordner gelegt werden (liegt der "
+                   f"Bind media-erzeugt am Container an?). Zum Mitsenden "
+                   f"kopiert der Betreiber sie von Hand nach media\\.")
     if zustand == kalender.NICHT_KONFIGURIERT:
         hinweis += (" Ein Kalender ist nicht konfiguriert (CALDAV_URL, "
                     "CALDAV_USER, CALDAV_PASSWORT in der .env) — es entstand "
