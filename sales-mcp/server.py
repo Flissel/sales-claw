@@ -5559,6 +5559,14 @@ def sprachnachrichten_transkribieren() -> str:
 SCORE_STUFEN = {"neu": 0, "recherchiert": 5, "qualifiziert": 12,
                 "kontaktiert": 18, "geantwortet": 30, "termin": 40}
 SCORE_MAX = 100
+# Betriebsgroesse (01.09.2026): fuer die betriebliche Altersvorsorge ist
+# die Mitarbeiterzahl DIE Kennzahl — 24 Mitarbeiter sind 24 moegliche
+# Vertraege. Sie steht laengst im Profil (firma_anreichern liest sie aus
+# dem Impressum) und wurde nie fuer die Priorisierung benutzt.
+# Gestaffelt statt linear: der Unterschied zwischen 3 und 8 Mitarbeitern
+# wiegt schwerer als der zwischen 60 und 65.
+SCORE_BETRIEB = ((50, 20), (20, 16), (10, 12), (5, 8), (1, 4))
+SCORE_MITARBEITER_MAX = 100000   # darueber ist es ein Lesefehler
 
 
 def _score_gespraech(lead_id: str) -> int:
@@ -5579,6 +5587,32 @@ def _score_gespraech(lead_id: str) -> int:
         punkte += 10 if tage <= 3 else 6 if tage <= 14 else 2 if tage <= 60 \
             else 0
     return min(punkte, 30)
+
+
+def _score_betrieb(anreicherung) -> int:
+    """Punkte fuer die Betriebsgroesse — nur bei EINDEUTIGER Zahl.
+
+    `firma_anreichern` legt bei mehreren Fundstellen ausdruecklich
+    `mitarbeiter_kandidaten` ab und nennt die Zahl uneindeutig; darauf
+    wird nicht priorisiert. Lieber keine Punkte als eine Reihenfolge,
+    die auf einem Werbetext beruht ("seit 1985 verbaute Anlagen").
+    """
+    firma = (anreicherung or {}).get("firma")
+    if not isinstance(firma, dict):
+        return 0
+    hinweise = firma.get("hinweise")
+    if not isinstance(hinweise, dict):
+        return 0
+    try:
+        anzahl = int(str(hinweise.get("mitarbeiter_genannt") or "").strip())
+    except (TypeError, ValueError):
+        return 0
+    if anzahl < 1 or anzahl > SCORE_MITARBEITER_MAX:
+        return 0
+    for grenze, punkte in SCORE_BETRIEB:
+        if anzahl >= grenze:
+            return punkte
+    return 0
 
 
 @_gesichert
@@ -5625,6 +5659,7 @@ def scoring_abgleichen() -> str:
             "gespraech": _score_gespraech(z["id"]),
             "bedarf": min(bedarf_anzahl * 4, 20),
             "erreichbarkeit": min(erreichbar, 20),
+            "betrieb": _score_betrieb(anreicherung),
         }
         punkte = min(sum(herleitung.values()), SCORE_MAX)
         _q("update leads set score = %s, score_breakdown = %s "

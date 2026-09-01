@@ -200,3 +200,63 @@ def test_der_digest_nennt_die_wichtigsten():
     assert "wichtigste_kontakte" in d
     assert d["wichtigste_kontakte"][0]["kontakt"] == "Wichtig"
     assert d["wichtigste_kontakte"][0]["punkte"] > 0
+
+
+# ---------------------------------------------------------------------------
+# Betriebsgroesse (01.09.2026): fuer die bAV ist die Mitarbeiterzahl DIE
+# Kennzahl — 24 Mitarbeiter sind 24 moegliche Vertraege. Sie steht laengst
+# im Profil (firma_anreichern liest sie aus dem Impressum), wurde aber nie
+# fuer die Priorisierung benutzt.
+# ---------------------------------------------------------------------------
+
+def _mit_firma(lead, hinweise):
+    server._q(
+        "update leads set enrichment = jsonb_set(enrichment, '{firma}', "
+        "%s::jsonb, true) where id = %s returning id",
+        (server._json({"website": "https://x.de", "hinweise": hinweise}),
+         lead))
+
+
+def test_grosser_betrieb_schlaegt_kleinen():
+    klein = _lead(name="Klein")
+    gross = _lead(name="Gross", phone="+491702223344")
+    _mit_firma(klein, {"mitarbeiter_genannt": "3"})
+    _mit_firma(gross, {"mitarbeiter_genannt": "45"})
+    _bewerten()
+    assert _punkte(gross)[0] > _punkte(klein)[0]
+    assert _punkte(gross)[1]["betrieb"] > _punkte(klein)[1]["betrieb"]
+
+
+def test_ohne_mitarbeiterzahl_null_punkte_statt_raten():
+    lead = _lead()
+    _mit_firma(lead, {"vertretung": "Denis Mustermann"})
+    _bewerten()
+    assert _punkte(lead)[1]["betrieb"] == 0
+
+
+def test_uneindeutige_mitarbeiterzahl_zaehlt_nicht():
+    """`firma_anreichern` legt bei mehreren Fundstellen KANDIDATEN ab und
+    nennt die Zahl ausdruecklich uneindeutig — darauf wird nicht
+    priorisiert."""
+    lead = _lead()
+    _mit_firma(lead, {"mitarbeiter_kandidaten": ["12", "40"]})
+    _bewerten()
+    assert _punkte(lead)[1]["betrieb"] == 0
+
+
+def test_unsinnige_zahl_wird_ignoriert():
+    for wert in ("keine", "", "0", "999999", None):
+        lead = _lead(name=f"X{wert}", phone=None)
+        _mit_firma(lead, {"mitarbeiter_genannt": wert})
+        _bewerten()
+        assert _punkte(lead)[1]["betrieb"] == 0, wert
+
+
+def test_die_herleitung_nennt_den_betrieb():
+    lead = _lead()
+    _mit_firma(lead, {"mitarbeiter_genannt": "24"})
+    _bewerten()
+    punkte, herleitung = _punkte(lead)
+    assert "betrieb" in herleitung
+    assert herleitung["betrieb"] > 0
+    assert sum(int(v) for v in herleitung.values()) == punkte
