@@ -626,3 +626,15 @@ def test_sprachnachrichten_werden_nur_von_der_inbox_geschrieben(
     mcp = bind("sales-mcp")
     assert inbox is not None and not inbox.get("read_only")
     assert mcp is not None and mcp.get("read_only") is True
+
+
+def test_ui_bekommt_den_kalender_aber_keine_sendemacht(tmp_path: Path) -> None:
+    """01.09.2026: der Kalender-Tab liest CalDAV — dafuer braucht sales-ui
+    die Zugangsdaten. Die Ausnahme ist eng: KEIN Schluessel, der senden
+    koennte (dieselbe T5a-Grenze wie beim OPENWA_VIEWER_KEY)."""
+    umgebung = rendered_config(tmp_path)["services"]["sales-ui"]["environment"]
+    for noetig in ("CALDAV_URL", "CALDAV_USER", "CALDAV_PASSWORT"):
+        assert noetig in umgebung
+    for verboten in ("OPENWA_API_KEY", "SMTP_PASSWORT", "APIFY_TOKEN",
+                     "LINKEDIN_ACCESS_TOKEN", "INBOX_WEBHOOK_SECRET"):
+        assert verboten not in umgebung

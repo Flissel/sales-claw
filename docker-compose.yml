@@ -509,6 +509,16 @@ services:
       # Anmeldung (E1, 31.08.2026): leer = Uebergangszustand (offen wie
       # bisher); gesetzt = Login Pflicht. Setzt deploy/benutzer-anlegen.sh.
       - UI_SESSION_SECRET=${UI_SESSION_SECRET:-}
+      # Kalender (01.09.2026): der Tab /kalender liest die Termine des
+      # Betreibers per CalDAV — REIN LESEND (ein REPORT-Aufruf, kein PUT).
+      # Bewusste Ausnahme von der T5a-Liste oben: der Kalenderzugang
+      # traegt KEINE Sendemacht (anders als OPENWA_API_KEY oder SMTP), und
+      # das UI zeigt die Termine ohnehin schon aus der eigenen Datenbank.
+      # Die Alternative — sales-mcp spiegelt den Kalender periodisch in
+      # die DB — waere mehr Code fuer dasselbe Bild.
+      - CALDAV_URL=${CALDAV_URL:-}
+      - CALDAV_USER=${CALDAV_USER:-}
+      - CALDAV_PASSWORT=${CALDAV_PASSWORT:-}
     volumes:
       # DER MEDIENORDNER — und hier OHNE `:ro`, als einziger Dienst im Stack.
       #
