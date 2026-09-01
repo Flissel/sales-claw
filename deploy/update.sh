@@ -90,6 +90,12 @@ fi
 if echo "$GEAENDERT" | grep -E '^openwa/upstream/' >/dev/null; then
   OPENWA_BAUEN=true
 fi
+# sales-stt (01.09.2026) hat ein EIGENES Image (faster-whisper, 431 MB) und
+# steht deshalb nicht in KERN. Ohne diese Zeile wuerde eine Aenderung an
+# ihm nie gebaut — und das faellt niemandem auf, weil der Rest gruen ist.
+if echo "$GEAENDERT" | grep -E '^sales-stt/' >/dev/null; then
+  BAUEN="$BAUEN sales-stt"
+fi
 if echo "$GEAENDERT" | grep -E '^config/workspace/' >/dev/null; then
   GATEWAY_NEU=true
 fi

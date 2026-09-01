@@ -3168,6 +3168,9 @@ VERLAUF_NAMEN = {
     "versand": "&rarr; zugestellt",
     "eingang_ignoriert": "&larr; ignoriert",
     "ausgang_ignoriert": "&rarr; ignoriert",
+    # Sprachnachricht in Text (01.09.2026) — steht als eigene Zeile
+    # hinter der Nachricht, die sie ausspricht.
+    "transkription": "&larr; abgehoert",
 }
 # Felder, die im Verlauf NICHTS zu suchen haben: Maschinenkram, der die
 # Zeile unlesbar macht. Sie bleiben in der Datenbank, sie stehen hier nur
@@ -3202,6 +3205,14 @@ def _verlauf_inhalt(a) -> str:
     text = str(last.get("text") or "").strip()
     if not text and last.get("ohne_text"):
         text = "(Text nicht gespeichert — Absender ist auf ignorieren)"
+    # Sprachnachricht ohne Text (01.09.2026): benennen statt leer lassen,
+    # und wo sie schon transkribiert ist, steht der Text unten als eigene
+    # Zeile (Typ `transkription`).
+    if not text and a["type"] == "kundenantwort" and last.get("audio_datei"):
+        text = _nachricht_inhalt("", last.get("nachrichtentyp"))
+        return text
+    if not text and a["type"] == "transkription" and last.get("leer"):
+        text = "(nichts Verstaendliches auf der Aufnahme)"
     rest = {k: v for k, v in last.items()
             if k not in VERLAUF_TECHNISCH and v not in (None, "", [], {})}
     klappe = ""

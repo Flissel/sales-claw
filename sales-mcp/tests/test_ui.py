@@ -3054,3 +3054,23 @@ def test_nachrichtentypen_werden_benannt(typ, erwartet):
                                    "message_id": f"wa-{typ}-1"})))
     seite = _get("/posteingang").text
     assert erwartet in seite
+
+
+def test_verlauf_zeigt_sprachnachricht_und_transkription():
+    """01.09.2026: eine Sprachnachricht stand als leere Zeile im Verlauf.
+    Jetzt wird sie benannt, und die Transkription steht als eigene Zeile
+    dahinter (append-only — die Nachricht selbst bleibt unveraendert)."""
+    lead = _lead()
+    server._q("insert into activities (lead_id, type, payload) values "
+              "(%s, 'kundenantwort', %s) returning id",
+              (lead, server._json({"text": "", "nachrichtentyp": "voice",
+                                   "audio_datei": "abc.ogg",
+                                   "message_id": "wa-v-1"})))
+    server._q("insert into activities (lead_id, type, payload) values "
+              "(%s, 'transkription', %s) returning id",
+              (lead, server._json({"text": "Ich haette eine Frage zur Police.",
+                                   "message_id": "wa-v-1", "sprache": "de"})))
+    seite = _get(f"/kontakte/{lead}").text
+    assert "Sprachnachricht" in seite
+    assert "abgehoert" in seite
+    assert "Ich haette eine Frage zur Police." in seite
