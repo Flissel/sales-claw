@@ -699,9 +699,12 @@ def test_kontakt_aktualisieren_signatur_ueberlebt_den_dekorator():
     assert list(parameter) == ["lead_id", "feld", "wert"]
 
 
-def test_achtundsechzig_werkzeuge_registriert():
+def test_neunundsechzig_werkzeuge_registriert():
     namen = {fn.__name__ for fn in server.WERKZEUGE}
-    assert len(namen) == 68
+    assert len(namen) == 69
+    # Sprachnachrichten (01.09.2026): lokal transkribieren. Tests in
+    # tests/test_sprachnachrichten.py.
+    assert "sprachnachrichten_transkribieren" in namen
     # Pipeline-Automatik (01.09.2026): beweisbare Stufen nachziehen,
     # nur vorwaerts. Tests in tests/test_pipeline.py.
     assert "stufen_abgleichen" in namen

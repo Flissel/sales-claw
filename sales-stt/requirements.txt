@@ -1,0 +1,5 @@
+# requests wird von huggingface_hub beim Modell-Download gebraucht und
+# ist NICHT in den faster-whisper-Abhaengigkeiten (gemessen 01.09.2026:
+# ModuleNotFoundError beim ersten Auftrag, nicht beim Import).
+faster-whisper==1.1.1
+requests==2.32.3

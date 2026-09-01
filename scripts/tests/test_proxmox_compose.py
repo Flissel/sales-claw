@@ -87,6 +87,9 @@ def test_clean_committed_compose_has_no_startable_linkedin_service(tmp_path: Pat
         "sales-inbox",
         "sales-dispatch",
         "sales-mail",
+        # sales-stt (01.09.2026): Dauerdienst, aber inert — das Modell
+        # wird erst beim ersten Auftrag geladen.
+        "sales-stt",
     }
     assert all(services[name]["restart"] == "unless-stopped" for name in automatic)
     assert services["sales-claw"]["restart"] == "no"
@@ -590,3 +593,36 @@ def test_runbook_rejects_bare_compose_start_mutation() -> None:
     mutated = text.replace(MAIL_START, "$COMPOSE up -d", 1)
     with pytest.raises(AssertionError):
         _assert_exact_service_starts(mutated)
+
+
+def test_stt_hat_keine_geheimnisse_und_keinen_port(tmp_path: Path) -> None:
+    """sales-stt (01.09.2026) bekommt Audio und gibt Text — mehr nicht.
+    Kein env_file, keine Datenbank, kein Port nach draussen (dieselbe
+    T5a-Haltung wie bei sales-ui, nur strenger: hier gibt es nicht einmal
+    einen Viewer-Schluessel)."""
+    dienst = rendered_config(tmp_path)["services"]["sales-stt"]
+    umgebung = dienst.get("environment") or {}
+    verboten = ("SALES_DB_URL", "OPENWA_API_KEY", "OPENWA_VIEWER_KEY",
+                "INBOX_WEBHOOK_SECRET", "SMTP_PASSWORT", "APIFY_TOKEN",
+                "LINKEDIN_ACCESS_TOKEN", "UI_SESSION_SECRET")
+    assert not [k for k in verboten if k in umgebung]
+    assert not dienst.get("ports")
+    # Das Modell liegt im Volume, nicht im Image.
+    ziele = [str(v.get("target")) for v in (dienst.get("volumes") or [])]
+    assert "/modelle" in ziele
+
+
+def test_sprachnachrichten_werden_nur_von_der_inbox_geschrieben(
+        tmp_path: Path) -> None:
+    """Gegenlaeufige Rechte wie bei media/reports: sales-inbox schreibt
+    die Audiodateien, sales-mcp liest sie zum Transkribieren."""
+    dienste = rendered_config(tmp_path)["services"]
+
+    def bind(name):
+        return next((v for v in (dienste[name].get("volumes") or [])
+                     if str(v.get("target")) == "/sprachnachrichten"), None)
+
+    inbox = bind("sales-inbox")
+    mcp = bind("sales-mcp")
+    assert inbox is not None and not inbox.get("read_only")
+    assert mcp is not None and mcp.get("read_only") is True

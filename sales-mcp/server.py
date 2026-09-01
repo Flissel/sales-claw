@@ -22,6 +22,7 @@ angeschrieben" ist eine Rechtsfrage (UWG), keine Stilfrage.
 import functools
 import json
 import os
+import urllib.request
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -5428,6 +5429,105 @@ def kontakt_stufe_setzen(lead_id: str, stufe: str, begruendung: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Sprachnachrichten (01.09.2026). Gemessen: 16 Stueck in 30 Tagen, und der
+# Assistent war fuer alle blind. sales-inbox legt das Audio ab (es kommt
+# inline im Webhook), hier wird es NACHTRAEGLICH transkribiert — durch
+# sales-stt auf derselben VM. Die Stimme eines Kunden geht an keinen
+# Fremddienst; das waere eine Auftragsverarbeitung mehr im AVV.
+#
+# Die Transkription ist eine EIGENE Aktivitaet: `activities` ist
+# append-only, die urspruengliche Zeile wird nie veraendert.
+# Vertraege: tests/test_sprachnachrichten.py.
+# ---------------------------------------------------------------------------
+
+SPRACH_VERZEICHNIS = os.environ.get("SPRACH_DIR", "/sprachnachrichten")
+STT_URL = os.environ.get("STT_URL", "http://sales-stt:2790")
+STT_ZEITBUDGET_S = float(os.environ.get("STT_TIMEOUT_S", "180"))
+SPRACH_JE_LAUF = 5      # ein Routinelauf arbeitet hoechstens so viele ab
+SPRACH_TEXT_MAX = 2000  # wie inbox.TEXT_MAXLAENGE — Fremddatum bleibt gedeckelt
+
+
+def _stt_aufrufen(audio: bytes) -> dict:
+    """Audio -> {text, sprache, dauer_s}. Wirft bei Ausfall (der Aufrufer
+    macht daraus einen gezaehlten Fehlschlag, keinen Datenverlust)."""
+    anfrage = urllib.request.Request(
+        f"{STT_URL.rstrip('/')}/transkribieren", data=audio,
+        headers={"Content-Type": "application/octet-stream"}, method="POST")
+    with urllib.request.urlopen(anfrage, timeout=STT_ZEITBUDGET_S) as antwort:
+        return json.loads(antwort.read())
+
+
+@_gesichert
+def sprachnachrichten_transkribieren() -> str:
+    """Offene Sprachnachrichten in Text verwandeln — lokal, im Haus.
+
+    Sucht Kundenantworten mit hinterlegter Audiodatei, zu denen noch
+    keine Transkription vorliegt, schickt sie an sales-stt und schreibt
+    das Ergebnis als eigene Aktivitaet `transkription` (mit Bezug zur
+    message_id). Die urspruengliche Nachricht bleibt unveraendert.
+
+    Faellt der Dienst aus, bleibt die Nachricht liegen und ist beim
+    naechsten Lauf wieder dran — es geht nichts verloren und nichts an
+    einen Fremddienst. Private Kontakte werden nie transkribiert.
+    Hoechstens {SPRACH_JE_LAUF} Stueck je Lauf; rufe es im Routinelauf.
+    """
+    offen = _q(
+        "select a.id::text as id, a.lead_id::text as lead_id, a.payload,"
+        "       l.enrichment"
+        "  from activities a join leads l on l.id = a.lead_id"
+        " where a.type = 'kundenantwort'"
+        "   and coalesce(a.payload->>'audio_datei', '') <> ''"
+        "   and not exists ("
+        "     select 1 from activities t where t.lead_id = a.lead_id"
+        "       and t.type = 'transkription'"
+        "       and t.payload->>'message_id' = a.payload->>'message_id')"
+        " order by a.created_at limit %s", (SPRACH_JE_LAUF,))
+    transkribiert, gescheitert, gruende = [], 0, []
+    for zeile in offen:
+        nutzlast = zeile["payload"] or {}
+        if _privat(zeile["enrichment"]) or _loeschantrag(zeile["enrichment"]):
+            continue
+        pfad = os.path.join(SPRACH_VERZEICHNIS,
+                            os.path.basename(nutzlast.get("audio_datei", "")))
+        try:
+            with open(pfad, "rb") as datei:
+                ergebnis = _stt_aufrufen(datei.read())
+        except Exception as e:      # noqa: BLE001 — Datei, Netz, Dienst
+            # server.py hat bewusst keinen Logger (die Werkzeuge sprechen
+            # ueber ihren Rueckgabewert); der Fehlschlag steht gezaehlt in
+            # der Antwort, die Nachricht bleibt liegen und ist beim
+            # naechsten Lauf wieder dran.
+            gruende.append(type(e).__name__)
+            gescheitert += 1
+            continue
+        text = " ".join(str(ergebnis.get("text") or "").split())
+        eintrag = {"message_id": nutzlast.get("message_id"),
+                   "text": text[:SPRACH_TEXT_MAX],
+                   "sprache": ergebnis.get("sprache"),
+                   "dauer_s": ergebnis.get("dauer_s"),
+                   "quelle": "sales-stt"}
+        if not text:
+            # Rauschen oder Versehen: vermerken, damit der naechste Lauf
+            # es nicht wieder durch die Maschine schickt.
+            eintrag["leer"] = True
+        _q("insert into activities (lead_id, type, payload, actor) values "
+           "(%s, 'transkription', %s, 'agent') returning id",
+           (zeile["lead_id"], _json(eintrag)))
+        transkribiert.append({"lead_id": zeile["lead_id"],
+                              "zeichen": len(text)})
+    antwort = {"transkribiert": len(transkribiert),
+               "gescheitert": gescheitert,
+               "offen_geblieben": max(0, len(offen)
+                                      - len(transkribiert) - gescheitert)}
+    if gruende:
+        # Die Fehlerart nennen, nicht nur zaehlen: 'URLError' heisst
+        # „sales-stt laeuft nicht", 'FileNotFoundError' heisst „Audio
+        # fehlt" — zwei sehr verschiedene Handgriffe.
+        antwort["gruende"] = sorted(set(gruende))
+    return _json(antwort)
+
+
+# ---------------------------------------------------------------------------
 # Lead-Scoring (01.09.2026). `leads.score`/`score_breakdown` standen seit
 # Stufe 1 im Schema und wurden nie benutzt — wie `consent_status` vor dem
 # UWG-Tor. Der Score misst NAEHE ZUM ABSCHLUSS aus vorhandenen Beweisen
@@ -5866,7 +5966,11 @@ WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              # Lead-Scoring (01.09.2026): Naehe zum Abschluss aus
              # vorhandenen Beweisen, entscheidet nichts. Vertraege:
              # tests/test_scoring.py.
-             scoring_abgleichen)
+             scoring_abgleichen,
+             # Sprachnachrichten (01.09.2026): lokal transkribieren, damit
+             # der Assistent sie ueberhaupt liest. Vertraege:
+             # tests/test_sprachnachrichten.py.
+             sprachnachrichten_transkribieren)
 
 for _fn in WERKZEUGE:
     mcp.tool()(_fn)

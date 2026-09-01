@@ -544,8 +544,9 @@ def test_beide_werkzeuge_sind_registriert():
     # betreiber_mail_entwurf, postfach_lesen, postfach_mail_lesen
     # (test_betreiber_mail.py, test_postfach.py). Pipeline-Automatik:
     # stufen_abgleichen (test_pipeline.py) und scoring_abgleichen
-    # (test_scoring.py).
-    assert len(namen) == len(set(namen)) == 68
+    # (test_scoring.py). Sprachnachrichten:
+    # sprachnachrichten_transkribieren (test_sprachnachrichten.py).
+    assert len(namen) == len(set(namen)) == 69
 
 # ---------------------------------------------------------------------------
 # Nachbesserungen aus dem Stufe-5-Review (Befunde T1, B2, D2)

@@ -123,6 +123,10 @@ services:
     volumes:
       - ./media:/media:ro
       - ./reports:/reports
+      # Sprachnachrichten NUR LESEN (01.09.2026): geschrieben wird dort
+      # ausschliesslich von sales-inbox, gelesen zum Transkribieren.
+      # Dieselbe gegenlaeufige Rechte-Logik wie oben.
+      - sales-sprachnachrichten:/sprachnachrichten:ro
       # Auftrags-Spool (27.08.2026): update_anfordern() legt hier Auftraege
       # ab, der Waechter auf dem Wirt (deploy/auftrag-ausfuehren.sh) holt
       # sie und schreibt Ergebnisse zurueck. Schreibbar, gitignoriert.
@@ -210,6 +214,13 @@ services:
       # Port im Compose-Netz, explizit statt implizit per Default.
       - INBOX_PORT=8790
       # INBOX_WEBHOOK_SECRET und INBOX_UNBEKANNT_LEAD_ID kommen aus .env.
+      - SPRACH_DIR=/sprachnachrichten
+    volumes:
+      # Sprachnachrichten (01.09.2026): das Audio kommt inline im Webhook
+      # und wird hier abgelegt — sales-mcp liest es zum Transkribieren.
+      # Eigenes Volume statt media/: das ist Kundeninhalt, kein
+      # Versandmaterial, und es soll nicht in der /medien-Ansicht landen.
+      - sales-sprachnachrichten:/sprachnachrichten
     stop_grace_period: 15s
     logging:
       driver: json-file
@@ -412,6 +423,39 @@ services:
   # versendet nichts und schreibt nur, was ein Mensch anklickt. Es darf nach
   # einem Neustart wieder da sein, ohne dass damit (wie bei Dispatcher oder
   # Agent) von selbst Nachrichten an echte Menschen moeglich wuerden.
+  # sales-stt (01.09.2026) — Sprache zu Text, LOKAL.
+  #
+  # Eigenes Image: faster-whisper bringt 431 MB mit, und das
+  # sales-mcp-Image steckt in sechs Diensten. Eigener Dienst statt
+  # Einbau, damit sie alle schlank bleiben.
+  #
+  # KEIN env_file, KEINE Datenbank, KEINE Schluessel (T5a-Haltung wie bei
+  # sales-ui): er bekommt Audio, gibt Text. Mehr kann er nicht.
+  #
+  # Das Modell (~300 MB) liegt im Volume und wird beim ERSTEN Auftrag
+  # geladen — nicht beim Start. Ein Stack, in dem nie jemand eine
+  # Sprachnachricht schickt, zahlt dafuer keinen Speicher.
+  sales-stt:
+    build: ./sales-stt
+    image: sales-claw-sales-stt:local
+    container_name: sales-stt
+    restart: unless-stopped
+    environment:
+      - STT_PORT=2790
+      - STT_MODELL=${STT_MODELL:-base}
+      - STT_SPRACHE=${STT_SPRACHE:-de}
+      - HF_HOME=/modelle
+      - TZ=${TZ:-Europe/Berlin}
+    volumes:
+      - sales-stt-modelle:/modelle
+    # Kein ports:-Eintrag — erreichbar ausschliesslich im Compose-Netz.
+    stop_grace_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   sales-ui:
     build: ./sales-mcp
     image: sales-claw-sales-mcp:local
@@ -500,3 +544,10 @@ volumes:
     name: sales-claw-state
   sales-claw-keys:
     name: sales-claw-keys
+  # Sprachnachrichten und das Whisper-Modell (01.09.2026). Getrennt, weil
+  # das eine Kundeninhalt ist (gehoert in die Sicherung) und das andere
+  # ein 300-MB-Download, der jederzeit neu geholt werden kann.
+  sales-sprachnachrichten:
+    name: sales-sprachnachrichten
+  sales-stt-modelle:
+    name: sales-stt-modelle

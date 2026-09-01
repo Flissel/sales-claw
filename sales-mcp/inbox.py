@@ -161,6 +161,7 @@ Geteilt mit `server.py` (gleiches Image): Verbindungspool, Query-Helfer `_q`
 und vor allem die Schema-Wache — `import server` laesst denselben `SystemExit`
 fliegen, wenn `SALES_DB_SCHEMA` etwas anderes als `sales`/`sales_test` ist.
 """
+import base64
 import hashlib
 import hmac
 import json
@@ -184,6 +185,15 @@ BIND_HOST = os.environ.get("INBOX_HOST", "0.0.0.0")
 PORT = int(os.environ.get("INBOX_PORT", "8790"))
 PFAD = os.environ.get("INBOX_PFAD", "/webhook")
 SECRET = os.environ.get("INBOX_WEBHOOK_SECRET", "")
+
+# Sprachnachrichten (01.09.2026): das Audio kommt inline im Webhook und
+# wird hier NUR abgelegt — transkribiert wird spaeter im Routinelauf.
+# 'voice' ist die Schreibweise, die OpenWA tatsaechlich schickt (gemessen:
+# 16 in 30 Tagen); 'ptt' und 'audio' kommen daneben vor.
+SPRACH_VERZEICHNIS = os.environ.get("SPRACH_DIR", "/sprachnachrichten")
+SPRACH_TYPEN = ("voice", "ptt", "audio")
+SPRACH_MAX_BYTES = int(os.environ.get("SPRACH_MAX_BYTES",
+                                      str(25 * 1024 * 1024)))
 UNBEKANNT_LEAD_ID = os.environ.get("INBOX_UNBEKANNT_LEAD_ID", "")
 
 EREIGNIS = "message.received"
@@ -646,7 +656,8 @@ def _eingehend(daten: dict, message_id: str):
     if quelle:
         nutzlast["kennung_quelle"] = quelle
     return _buchen("kundenantwort", "human", kennung, kennung_fehler, nutzlast,
-                   "unbekannter_absender", str(daten.get("from")))
+                   "unbekannter_absender", str(daten.get("from")),
+                   audio_daten=daten)
 
 
 def _ausgehend(daten: dict, message_id: str):
@@ -735,8 +746,55 @@ def _textteil(daten: dict, message_id: str) -> dict:
     }
 
 
+def _audio_sichern(daten: dict, message_id: str):
+    """Sprachnachricht -> Dateiname im Sprachordner, oder None.
+
+    Der Webhook liefert das Audio inline als base64
+    (WEBHOOK_MEDIA_INLINE_MAX_BYTES, Vorgabe 1 MB) — bisher wurde es
+    weggeworfen, und der Assistent war fuer 16 Nachrichten im Monat
+    blind. Hier wird NUR gespeichert: transkribiert wird spaeter im
+    Routinelauf (`sprachnachrichten_transkribieren`), damit der Webhook
+    schnell bleibt und OpenWA nicht in den Wiederholungslauf geht.
+
+    Vertraege: tests/test_sprachnachrichten.py.
+    """
+    if str(daten.get("type") or "").lower() not in SPRACH_TYPEN:
+        return None
+    medien = daten.get("media")
+    if not isinstance(medien, dict):
+        return None
+    roh = medien.get("data")
+    if not roh:
+        return None
+    try:
+        audio = base64.b64decode(roh, validate=True)
+    except (ValueError, TypeError):
+        LOG.warning("Sprachnachricht mit unlesbarem Audio-Blob — nur die "
+                    "Nachricht gebucht.")
+        return None
+    if not audio or len(audio) > SPRACH_MAX_BYTES:
+        LOG.warning("Sprachnachricht uebersprungen (%d Bytes, Grenze %d).",
+                    len(audio), SPRACH_MAX_BYTES)
+        return None
+    # Der Dateiname traegt die message_id (gehasht, damit kein Zeichen aus
+    # fremder Hand in einen Pfad geraet) — so ist die Datei eindeutig der
+    # Nachricht zugeordnet und eine Wiederholung ueberschreibt sich selbst.
+    name = hashlib.sha256(message_id.encode("utf-8")).hexdigest()[:32] + ".ogg"
+    try:
+        os.makedirs(SPRACH_VERZEICHNIS, exist_ok=True)
+        with open(os.path.join(SPRACH_VERZEICHNIS, name), "wb") as datei:
+            datei.write(audio)
+    except OSError as e:
+        LOG.warning("Sprachnachricht nicht gespeichert (%s) — die Nachricht "
+                    "selbst ist gebucht.", type(e).__name__)
+        return None
+    LOG.info("Sprachnachricht gesichert (%d Bytes).", len(audio))
+    return name
+
+
 def _buchen(typ: str, actor: str, chat_id, nummern_fehler, nutzlast: dict,
-            unbekannt_schluessel: str, roh_gegenstelle: str):
+            unbekannt_schluessel: str, roh_gegenstelle: str,
+            audio_daten: dict | None = None):
     """Dedup, Lead-Zuordnung und Insert unter der Schreibsperre.
 
     Eine Stelle fuer beide Richtungen: die Dedup-Pruefung und der
@@ -768,6 +826,14 @@ def _buchen(typ: str, actor: str, chat_id, nummern_fehler, nutzlast: dict,
                 lead_id = UNBEKANNT_LEAD_ID
             else:
                 lead_id = str(lead["id"])
+
+            # Audio ERST hier — nach dem Privat-Gate: fuer private
+            # Kontakte darf keine Datei entstehen (Datensparsamkeit,
+            # dieselbe Regel wie fuer den Text).
+            if audio_daten is not None:
+                name = _audio_sichern(audio_daten, nutzlast["message_id"])
+                if name:
+                    nutzlast["audio_datei"] = name
 
             akt_id = speichern(lead_id, nutzlast, typ, actor)
     except psycopg.Error as e:
