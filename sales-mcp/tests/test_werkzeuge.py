@@ -699,13 +699,19 @@ def test_kontakt_aktualisieren_signatur_ueberlebt_den_dekorator():
     assert list(parameter) == ["lead_id", "feld", "wert"]
 
 
-def test_dreiundsechzig_werkzeuge_registriert():
+def test_sechsundsechzig_werkzeuge_registriert():
     namen = {fn.__name__ for fn in server.WERKZEUGE}
-    assert len(namen) == 63
+    assert len(namen) == 66
     # UWG-Einwilligung (F5, 31.08.2026): Erstansprache nur mit Grundlage,
     # erfasst durch einen MENSCHEN mit Quelle. Tests in tests/test_uwg.py.
     assert "einwilligung_erfassen" in namen
     assert "einwilligung_widerrufen" in namen
+    # Betreiber-Postfach (31.08.2026): Korrespondenz-Entwuerfe mit freiem
+    # Empfaenger (Freigabe=Versand) und readonly-IMAP-Lesen. Tests in
+    # tests/test_betreiber_mail.py und tests/test_postfach.py.
+    assert "betreiber_mail_entwurf" in namen
+    assert "postfach_lesen" in namen
+    assert "postfach_mail_lesen" in namen
     # Zustimmung des Kontakts zur automatischen Antwort (25.08.2026):
     # fragen als ENTWURF, erfassen durch einen MENSCHEN, widerrufen
     # wirkt sofort. Vertragstests in tests/test_zustimmung.py.

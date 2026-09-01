@@ -13,6 +13,7 @@ Fünf Handgriffe. Mehr braucht der Alltag nicht; alles andere steht in
 | **Notfall: Update zurückrollen** | Kapitel „Rückfahrkarte" in 04 — vier Zeilen zum Kopieren. Passiert bei rotem Update auch automatisch. |
 | **Neuen Kontakt anschreiben** | Erst die Grundlage nennen: dem Bot schreiben „<Name> ist Bestandskunde" oder „<Name> hat auf der Messe eingewilligt" (mit Quelle). Ohne das verweigert das System die Erstansprache — § 7 UWG, kein Fehler. Wer selbst schreibt, darf immer beantwortet werden. |
 | **Oberfläche mit Anmeldung sichern** | Einmal auf der VM: `bash ~/sales-claw/deploy/benutzer-anlegen.sh` — fragt Name, Rolle und Passwort. Ab dann verlangt die Oberfläche eine Anmeldung; derselbe Aufruf setzt später Passwörter zurück oder legt Team-Mitglieder an (Rolle `lesen` = nur ansehen). |
+| **E-Mail schreiben lassen** | Dem Bot sagen: „schreib eine Mail an bewerbung@beispiel.de, Betreff X" — er legt den Entwurf in die Freigabe, deine Freigabe versendet über dein Mailkonto. Auch: „was ist im Postfach?" — er liest die INBOX (nur lesen, nichts wird verändert). |
 
 Drei Dinge, die man wissen muss:
 
