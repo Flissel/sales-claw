@@ -174,6 +174,10 @@ def saubere_umgebung(monkeypatch):
         return verbindung
 
     monkeypatch.setattr(mail_dispatch, "_verbindung", _blank)
+    # Riegel 4: nie das echte Postfach — die Sent-Kopie ist standardmaessig
+    # aus (wie „IMAP nicht konfiguriert"); ihre Vertraege unten schalten
+    # sie gezielt mit einem Stub ein.
+    monkeypatch.setattr(mail_dispatch, "_sent_moeglich", lambda: False)
     STUB.zuruecksetzen()
     with server.pool.connection() as conn:
         conn.execute(
@@ -807,3 +811,115 @@ def test_auch_die_base64_form_des_passworts_wird_gefiltert():
     assert allein not in gefiltert
     assert block not in gefiltert
     assert gefiltert.count("***") >= 2
+
+
+# ---------------------------------------------------------------------------
+# Sent-Kopie (01.09.2026): nach dem Versand liegt die Mail im Gesendet-
+# Ordner des Betreiber-Postfachs — der Betreiber fand seine erste Mail
+# dort nicht und hielt sie fuer nicht versendet. BEST EFFORT: die Kopie
+# aendert nie die Buchung.
+# ---------------------------------------------------------------------------
+
+class _SentStub:
+    """Merkt sich, WIE er benutzt wurde — die Vertraege lesen das aus."""
+
+    def __init__(self, listzeilen=None):
+        self.appends = []
+        self.listzeilen = (listzeilen if listzeilen is not None else
+                           [b'(\HasNoChildren) "." "INBOX.Drafts"',
+                            b'(\HasNoChildren \Sent) "." "INBOX.Sent"'])
+        self.logout_gerufen = False
+
+    def list(self):
+        return "OK", self.listzeilen
+
+    def append(self, ordner, flags, zeit, inhalt):
+        self.appends.append({"ordner": ordner, "flags": flags,
+                             "inhalt": inhalt})
+        return "OK", [b""]
+
+    def logout(self):
+        self.logout_gerufen = True
+        return "BYE", []
+
+
+def _mit_sent_stub(monkeypatch, stub):
+    monkeypatch.setattr(mail_dispatch, "_sent_moeglich", lambda: True)
+    monkeypatch.setattr(mail_dispatch, "_sent_verbinden", lambda: stub)
+
+
+def test_sent_kopie_landet_im_special_use_ordner(monkeypatch):
+    lead = _lead()
+    draft = _draft(lead, betreff="Kopie-Probe")
+    stub = _SentStub()
+    _mit_sent_stub(monkeypatch, stub)
+
+    mail_dispatch.eine_runde()
+
+    assert _zeile(draft)["status"] == "sent"
+    assert len(stub.appends) == 1
+    ablage = stub.appends[0]
+    assert ablage["ordner"] == '"INBOX.Sent"'
+    assert "\Seen" in ablage["flags"]
+    assert b"Kopie-Probe" in ablage["inhalt"]
+    assert b"max@example.com" in ablage["inhalt"]
+    assert stub.logout_gerufen
+
+
+def test_sent_kopie_faellt_ohne_special_use_auf_sent_zurueck(monkeypatch):
+    lead = _lead()
+    _draft(lead)
+    stub = _SentStub(listzeilen=[b'(\\HasNoChildren) "." "INBOX.Archiv"'])
+    _mit_sent_stub(monkeypatch, stub)
+
+    mail_dispatch.eine_runde()
+
+    assert stub.appends[0]["ordner"] == '"Sent"'
+
+
+def test_kopie_fehler_aendert_die_buchung_nicht(monkeypatch):
+    """Die Mail IST beim Empfaenger — ein IMAP-Ausfall macht daraus nie
+    einen failed-Entwurf oder einen zweiten Versand."""
+    lead = _lead()
+    draft = _draft(lead)
+    monkeypatch.setattr(mail_dispatch, "_sent_moeglich", lambda: True)
+
+    def kaputt():
+        raise OSError("connection refused")
+    monkeypatch.setattr(mail_dispatch, "_sent_verbinden", kaputt)
+
+    ergebnis = mail_dispatch.eine_runde()
+
+    assert ergebnis.get("gesendet") == 1
+    zeile = _zeile(draft)
+    assert zeile["status"] == "sent" and zeile["error"] is None
+    assert len(STUB.mails) == 1
+
+
+def test_kein_kopieversuch_bei_fehlversand(monkeypatch):
+    lead = _lead()
+    draft = _draft(lead)
+    STUB.rcpt_status = b"550 5.1.1 User unknown"
+
+    def nie():
+        raise AssertionError("Sent-Kopie darf bei Fehlversand nie laufen")
+    monkeypatch.setattr(mail_dispatch, "_sent_moeglich", lambda: True)
+    monkeypatch.setattr(mail_dispatch, "_sent_verbinden", nie)
+
+    mail_dispatch.eine_runde()
+
+    assert _zeile(draft)["status"] == "failed"
+
+
+def test_ohne_imap_konfiguration_kein_verbindungsversuch(monkeypatch):
+    lead = _lead()
+    draft = _draft(lead)
+
+    def nie():
+        raise AssertionError("ohne Konfiguration darf niemand verbinden")
+    # _sent_moeglich bleibt False (Riegel 4 der Fixture).
+    monkeypatch.setattr(mail_dispatch, "_sent_verbinden", nie)
+
+    mail_dispatch.eine_runde()
+
+    assert _zeile(draft)["status"] == "sent"

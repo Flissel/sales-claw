@@ -64,20 +64,24 @@ Gateways, manche Auth-Fehlertexte). Jeder Fehlertext geht deshalb durch
 bevor er in `drafts.error`, in den Chat oder ins Log geraet.
 """
 import base64
+import imaplib
 import json
 import logging
 import os
+import re
 import signal
 import smtplib
 import ssl
 import sys
 import threading
+import time
 from email.message import EmailMessage
 
 import psycopg
 
 import dispatch
 import mailadresse
+import postfach
 import server
 from dispatch import (_als_fehler_buchen, _als_gesendet_buchen, _claim_marke,
                       _einzeilig)
@@ -313,6 +317,48 @@ def senden(nachricht: EmailMessage) -> None:
 # Schleife
 # ---------------------------------------------------------------------------
 
+# --- Sent-Kopie (01.09.2026) -----------------------------------------------
+# SMTP stellt zu, legt aber nichts in den „Gesendet"-Ordner — der Betreiber
+# fand seine erste Betreiber-Mail dort nicht und hielt sie fuer nicht
+# versendet. Nach jedem erfolgreichen Versand wird die Mail deshalb per
+# IMAP-APPEND in den Sent-Ordner gelegt. BEST EFFORT: die Mail IST beim
+# Empfaenger — ein Kopie-Fehler aendert nie die Buchung, er steht im Log.
+# Die postfach-WERKZEUGE bleiben strikt readonly; der eine Schreibzugriff
+# (die eigene, bereits versendete Mail ablegen) lebt hier beim Versender.
+
+def _sent_moeglich() -> bool:
+    return postfach.konfiguriert()
+
+
+def _sent_verbinden():
+    return postfach._verbinden()
+
+
+def _sent_ordner(kasten) -> str:
+    """Der Sent-Ordner laut SPECIAL-USE-Flag (\\Sent) — Namen wie
+    'INBOX.Sent' vergibt der Server, nicht wir. Ohne Flag: 'Sent'."""
+    status, zeilen = kasten.list()
+    if status == "OK":
+        for zeile in zeilen or []:
+            roh = (zeile.decode("utf-8", "replace")
+                   if isinstance(zeile, bytes) else str(zeile))
+            if "\\Sent" in roh:
+                m = re.search(r'"([^"]+)"\s*$', roh)
+                return m.group(1) if m else roh.split()[-1]
+    return "Sent"
+
+
+def _sent_ablegen(nachricht: EmailMessage) -> None:
+    kasten = _sent_verbinden()
+    try:
+        ordner = _sent_ordner(kasten)
+        kasten.append(f'"{ordner}"', "\\Seen",
+                      imaplib.Time2Internaldate(time.time()),
+                      nachricht.as_bytes())
+    finally:
+        kasten.logout()
+
+
 def verarbeite_draft(draft_id) -> str:
     """Ein Entwurf: claimen, pruefen, senden, buchen. Gibt den Ausgang zurueck."""
     geclaimt = claim(draft_id)
@@ -344,7 +390,9 @@ def verarbeite_draft(draft_id) -> str:
         return "anhang_nicht_unterstuetzt"
 
     try:
-        senden(nachricht_bauen(adresse, geclaimt["subject"], geclaimt["body"]))
+        nachricht = nachricht_bauen(adresse, geclaimt["subject"],
+                                    geclaimt["body"])
+        senden(nachricht)
     except VersandFehler as e:
         _als_fehler_buchen(draft_id, marke, str(e))
         LOG.info("draft=%s fehlgeschlagen an %s (%s)", draft_id,
@@ -364,6 +412,16 @@ def verarbeite_draft(draft_id) -> str:
         LOG.info("draft=%s nicht konstruierbar (%s)", draft_id,
                  type(e).__name__)
         return "fehler"
+
+    # Sent-Kopie NACH dem Versand und VOR der Buchung — die Mail ist raus,
+    # die Kopie gehoert ins Postfach, selbst wenn die Buchung scheitert.
+    if _sent_moeglich():
+        try:
+            _sent_ablegen(nachricht)
+        except Exception as e:              # noqa: BLE001 — best effort
+            LOG.warning("draft=%s gesendet, Sent-Kopie scheiterte (%s: %s)",
+                        draft_id, type(e).__name__,
+                        _ohne_geheimnis(_einzeilig(str(e))[:120]))
 
     try:
         gebucht = _als_gesendet_buchen(draft_id, marke)
