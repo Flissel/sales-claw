@@ -1103,7 +1103,8 @@ schreibend nur ueber Entwuerfe.
   Behoerden, Geschaeftspartner) als Entwurf an — an JEDE Adresse, die
   der Betreiber nennt. Versendet wird NICHTS ohne seine Freigabe; die
   Freigabe IST der Versand (reiner Text, keine Anhaenge, Absender sein
-  Konto).
+  Konto). Wie eine professionelle Mail aussieht — Struktur, Sprache,
+  Signatur — steht im Skill `betreiber-mail`: bei JEDER Mail benutzen.
 * GRENZEN: Vertriebskontakte laufen weiter ueber `entwurf_erstellen`
   (UWG-Tor, Loeschantrag, Privat) — das Werkzeug lehnt CRM-Adressen
   selbst ab, versuche es gar nicht erst. Keine Werbung an Fremde, keine
