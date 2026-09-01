@@ -11,7 +11,10 @@ set -euo pipefail
 ZIEL="${1:-${SALES_BETRIEB:-$HOME/sales-betrieb}/sicherungen}"
 STEMPEL="$(date +%Y%m%d-%H%M%S)"
 ORDNER="$ZIEL/$STEMPEL"
-VOLUMES="openwa-data sales-claw-state sales-claw-keys"
+# sales-sprachnachrichten (01.09.2026) ist KUNDENINHALT und gehoert
+# gesichert. Das Whisper-Modell (sales-stt-modelle) NICHT: 300 MB, die
+# jederzeit neu geladen werden koennen.
+VOLUMES="openwa-data sales-claw-state sales-claw-keys sales-sprachnachrichten"
 
 mkdir -p "$ORDNER"
 
