@@ -3074,3 +3074,90 @@ def test_verlauf_zeigt_sprachnachricht_und_transkription():
     assert "Sprachnachricht" in seite
     assert "abgehoert" in seite
     assert "Ich haette eine Frage zur Police." in seite
+
+
+# ---------------------------------------------------------------------------
+# Kalender-Tab (01.09.2026, Betreiber-Wunsch): die Termine an EINER Stelle,
+# statt sie aus dem Verlauf einzelner Kontakte zu suchen. Quelle sind die
+# Termin-Aktivitaeten und die offenen Wiedervorlagen — beides steht schon
+# in der Datenbank. Der CalDAV-Kalender selbst laesst sich nicht einbetten
+# (kein Web-UI), seine Eintraege holt der Tab optional dazu.
+# ---------------------------------------------------------------------------
+
+def _termin(lead, datum, uhrzeit="10:00", thema="Beratung", ort="Buero"):
+    server._q("insert into activities (lead_id, type, payload) values "
+              "(%s, 'termin', %s) returning id",
+              (lead, server._json({"datum": datum, "uhrzeit": uhrzeit,
+                                   "thema": thema, "ort": ort,
+                                   "dauer_minuten": 60})))
+
+
+def test_kalender_steht_in_der_navigation():
+    assert '<a href="/kalender">Kalender</a>' in _get("/pipeline").text
+
+
+def test_kalender_zeigt_kommende_termine_mit_kontakt():
+    lead = _lead(name="Sabrina Schmidt")
+    _termin(lead, "2099-09-04", thema="Erstgespraech bAV")
+    seite = _get("/kalender").text
+    assert "Sabrina Schmidt" in seite
+    assert "Erstgespraech bAV" in seite
+    assert "04.09.2099" in seite
+
+
+def test_kalender_trennt_kommend_von_vergangen():
+    lead = _lead()
+    _termin(lead, "2020-01-15", thema="Lange her")
+    _termin(lead, "2099-09-04", thema="Steht an")
+    seite = _get("/kalender").text
+    assert seite.index("Steht an") < seite.index("Lange her")
+
+
+def test_kalender_zeigt_offene_wiedervorlagen():
+    lead = _lead(name="Max Wiedervorlage")
+    server._q("insert into activities (lead_id, type, payload) values "
+              "(%s, 'wiedervorlage', %s) returning id",
+              (lead, server._json({"faellig_am": "2099-10-01",
+                                   "notiz": "Angebot nachfassen"})))
+    seite = _get("/kalender").text
+    assert "Angebot nachfassen" in seite
+    assert "Max Wiedervorlage" in seite
+
+
+def test_kalender_escaped_fremddaten():
+    lead = _lead(name="<script>boese()</script>")
+    _termin(lead, "2099-09-04", thema="<b>fett</b>")
+    seite = _get("/kalender").text
+    assert "<script>boese()</script>" not in seite
+    assert "&lt;b&gt;fett&lt;/b&gt;" in seite
+
+
+def test_kalender_ohne_termine_ist_kein_fehler():
+    antwort = _get("/kalender")
+    assert antwort.status_code == 200
+    assert "Kein Termin" in antwort.text
+
+
+# ---------------------------------------------------------------------------
+# Medien nach Art gruppiert (01.09.2026, Betreiber-Wunsch): 11 Dateien in
+# einer flachen Liste — Videos, PDFs und Kalenderdateien durcheinander.
+# ---------------------------------------------------------------------------
+
+def test_medien_gruppiert_nach_art(medienordner):
+    (medienordner / "film.mp4").write_bytes(b"\x00" * 40)
+    (medienordner / "unterlage.pdf").write_bytes(b"%PDF-1.4 x")
+    (medienordner / "bild.png").write_bytes(b"\x89PNG\r\n\x1a\n x")
+    seite = _get("/medien").text
+    for ueberschrift in ("Videos", "Dokumente", "Bilder"):
+        assert ueberschrift in seite
+    assert "film.mp4" in seite and "unterlage.pdf" in seite
+
+
+def test_medien_zeigt_erzeugte_getrennt(medienordner, tmp_path, monkeypatch):
+    erzeugt = tmp_path / "erzeugt"
+    erzeugt.mkdir()
+    (erzeugt / "termin-x-2099-09-04.ics").write_text("BEGIN:VCALENDAR")
+    monkeypatch.setattr(server.medien, "ERZEUGT_VERZEICHNIS", str(erzeugt))
+    seite = _get("/medien").text
+    assert "termin-x-2099-09-04.ics" in seite
+    assert "Termine" in seite

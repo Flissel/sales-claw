@@ -196,6 +196,8 @@ from starlette.middleware import Middleware
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 from starlette.routing import Route
 
+import kalender
+
 import server
 
 # --- Konfiguration (Modulkonstanten, damit Tests sie umbiegen koennen) ------
@@ -785,6 +787,7 @@ thead th { background: var(--kopfzeile); }
 
 _NAV = (("/", "Freigaben"), ("/kontakte", "Kontakte"),
         ("/pipeline", "Pipeline"), ("/ergebnisse", "Ergebnisse"),
+        ("/kalender", "Kalender"),
         ("/posteingang", "Posteingang"), ("/einordnung", "Einordnung"),
         ("/wiedervorlagen", "Wiedervorlagen"), ("/medien", "Medien"),
         ("/whatsapp", "WhatsApp"))
@@ -1062,6 +1065,26 @@ def _entwurf_bearbeiten_form(z, text: str) -> str:
 MEDIEN_STUECK = 256 * 1024
 
 
+# Nach Art gruppiert (01.09.2026, Betreiber-Wunsch): elf Dateien in einer
+# flachen Liste — Videos, Unterlagen und Kalenderdateien durcheinander.
+# Reihenfolge ist Absicht: was am haeufigsten versendet wird, steht oben.
+_MEDIEN_ARTEN = (
+    ("Dokumente", (".pdf",)),
+    ("Videos", (".mp4",)),
+    ("Bilder", (".jpg", ".jpeg", ".png")),
+    ("Ton", (".mp3", ".ogg")),
+    ("Termine", (".ics",)),
+)
+
+
+def _medien_art(name: str) -> str:
+    endung = os.path.splitext(name)[1].lower()
+    for art, endungen in _MEDIEN_ARTEN:
+        if endung in endungen:
+            return art
+    return "Sonstige"
+
+
 def _medien_tabelle():
     try:
         eintraege = server.medien.liste()
@@ -1070,11 +1093,29 @@ def _medien_tabelle():
                 f'liegt der Ordner am Container an?</p>')
     if not eintraege:
         return "<p>Noch keine Unterlagen.</p>"
-    return _tabelle(
-        ["Datei", "Groesse", "Ansicht", "Loeschen"],
-        [[_e(name), _e(f"{groesse / 1048576:.2f} MB"),
-          _medien_vorschau(name), _medien_loeschen_knopf(name)]
-         for name, groesse in eintraege])
+    gruppen = {}
+    for name, groesse in eintraege:
+        gruppen.setdefault(_medien_art(name), []).append((name, groesse))
+    teile = []
+    for art, _ in _MEDIEN_ARTEN + (("Sonstige", ()),):
+        dateien = gruppen.get(art)
+        if not dateien:
+            continue
+        teile.append(f"<h2>{_e(art)} ({len(dateien)})</h2>")
+        teile.append(_tabelle(
+            ["Datei", "Groesse", "Ansicht", "Loeschen"],
+            [[_e(name), _e(_medien_groesse(groesse)),
+              _medien_vorschau(name), _medien_loeschen_knopf(name)]
+             for name, groesse in dateien]))
+    return "".join(teile)
+
+
+def _medien_groesse(bytes_: int) -> str:
+    """MB fuer Videos, KB fuer alles Kleine — '0.00 MB' bei einer 1-KB-
+    Kalenderdatei sagt nichts."""
+    if bytes_ >= 1048576:
+        return f"{bytes_ / 1048576:.2f} MB"
+    return f"{bytes_ / 1024:.0f} KB"
 
 
 def _medien_loeschen_knopf(name: str) -> str:
@@ -2683,6 +2724,80 @@ async def pipeline(request):
 
 
 @_gesichert_seite
+async def kalender_seite(request):
+    """Alle Termine an EINER Stelle (01.09.2026, Betreiber-Wunsch).
+
+    Drei Quellen, absteigende Verlaesslichkeit: die Termin-Aktivitaeten
+    aus der eigenen Datenbank (mit Kontaktbezug), die offenen
+    Wiedervorlagen — und, wenn CalDAV konfiguriert ist, die Eintraege
+    aus dem echten Kalender. Der CalDAV-Kalender hat kein Web-UI, das
+    man einbetten koennte; seine Termine werden deshalb gelesen. Faellt
+    er aus, steht der Rest trotzdem da.
+    """
+    heute = date.today()
+    zeilen = server._q(
+        "select a.payload, a.created_at, l.id as lead_id, l.name "
+        "from activities a left join leads l on l.id = a.lead_id "
+        "where a.type = 'termin' order by a.created_at desc limit 200")
+    kommend, vergangen = [], []
+    for z in zeilen:
+        last = z["payload"] or {}
+        tag = str(last.get("datum") or "")
+        eintrag = [
+            _e(tag_lesbar(tag)),
+            _e(last.get("uhrzeit") or ""),
+            (f'<a href="/kontakte/{_e(str(z["lead_id"]))}">'
+             f'{_e(z["name"] or "(ohne Kontakt)")}</a>' if z["lead_id"]
+             else _e(z["name"] or "—")),
+            _e(str(last.get("thema") or "")[:80]),
+            _e(str(last.get("ort") or "")[:60])]
+        (kommend if tag >= heute.isoformat() else vergangen).append(
+            (tag, eintrag))
+    kommend.sort(key=lambda p: p[0])
+    vergangen.sort(key=lambda p: p[0], reverse=True)
+
+    kopf = ["Datum", "Zeit", "Kontakt", "Thema", "Ort"]
+    teile = [f"<h2>Kommende Termine ({len(kommend)})</h2>"]
+    teile.append(_tabelle(kopf, [e for _, e in kommend]) if kommend
+                 else "<p>Kein Termin steht an.</p>")
+
+    offene = _offene_wiedervorlagen()
+    teile.append(f"<h2>Offene Wiedervorlagen ({len(offene)})</h2>")
+    teile.append(_wiedervorlagen_tabelle(offene, mit_kontakt=True)
+                 if offene else "<p>Nichts liegt wieder vor.</p>")
+
+    # Der echte Kalender — nur lesend, und ein Ausfall kostet nur diesen
+    # Abschnitt.
+    fremde, fehler = kalender.termine_lesen()
+    teile.append(f"<h2>Kalender ({len(fremde)})</h2>")
+    if fehler:
+        teile.append(f'<div class="hinweis">{_e(fehler)}</div>')
+    elif not kalender.konfiguration()[0]:
+        teile.append('<p class="meta">Kein Kalender verbunden (CALDAV_URL '
+                     'in der .env).</p>')
+    elif not fremde:
+        teile.append('<p class="meta">Keine Eintraege im Zeitfenster.</p>')
+    else:
+        teile.append(_tabelle(
+            ["Wann", "Titel", "Ort"],
+            [[_zeit(t["beginn"]), _e(t["titel"]), _e(t["ort"])]
+             for t in fremde[:100]]))
+
+    if vergangen:
+        teile.append(f"<h2>Vergangen ({len(vergangen)})</h2>")
+        teile.append(_tabelle(kopf, [e for _, e in vergangen[:30]]))
+    return _seite("Kalender", "".join(teile))
+
+
+def tag_lesbar(iso: str) -> str:
+    """'2026-09-04' -> '04.09.2026'. Fremddatum: was nicht passt, bleibt."""
+    try:
+        return date.fromisoformat(iso).strftime("%d.%m.%Y")
+    except (TypeError, ValueError):
+        return iso
+
+
+@_gesichert_seite
 async def ergebnisse(request):
     """Die Endzustaende der Pipeline: gewonnen und verloren — getrennt
     vom Fluss (Betreiber-Wunsch 01.09.2026), damit die Pipeline den Weg
@@ -3780,6 +3895,7 @@ app = Starlette(routes=[
           methods=["POST"]),
     Route("/pipeline", pipeline),
     Route("/ergebnisse", ergebnisse),
+    Route("/kalender", kalender_seite),
     Route("/whatsapp", whatsapp),
     Route("/kontakte/wiederherstellen", aktion_kontakt_wiederherstellen,
           methods=["POST"]),

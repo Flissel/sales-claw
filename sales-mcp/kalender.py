@@ -357,3 +357,89 @@ def eintragen(uid: str, ics_text: str):
         return EINGETRAGEN, None
     return FEHLGESCHLAGEN, (f"Kalender antwortet mit HTTP {code} — der "
                             f"Eintrag ist nicht sicher angelegt.")
+
+
+# ---------------------------------------------------------------------------
+# Lesen (01.09.2026, Betreiber-Wunsch „Kalender als Tab"): der CalDAV-
+# Kalender hat kein Web-UI, das man einbetten koennte — seine Eintraege
+# holt der Kalender-Tab deshalb selbst. REIN LESEND: ein REPORT-Aufruf,
+# kein PUT, kein DELETE. Faellt der Kalender aus, zeigt der Tab die
+# Termine aus der eigenen Datenbank und sagt warum der Rest fehlt.
+# ---------------------------------------------------------------------------
+
+_ZEITFENSTER_REPORT = (
+    '<?xml version="1.0" encoding="utf-8" ?>'
+    '<C:calendar-query xmlns:D="DAV:" '
+    'xmlns:C="urn:ietf:params:xml:ns:caldav">'
+    '<D:prop><D:getetag/><C:calendar-data/></D:prop>'
+    '<C:filter><C:comp-filter name="VCALENDAR">'
+    '<C:comp-filter name="VEVENT">'
+    '<C:time-range start="{von}" end="{bis}"/>'
+    '</C:comp-filter></C:comp-filter></C:filter>'
+    '</C:calendar-query>')
+
+
+def _ics_feld(block: str, name: str) -> str:
+    """Ein Feld aus einem VEVENT — entfaltet, ohne Parameter."""
+    for zeile in block.replace("\r\n ", "").replace("\n ", "").split("\n"):
+        zeile = zeile.strip()
+        if zeile.upper().startswith(name.upper()):
+            rest = zeile[len(name):]
+            if rest[:1] in (";", ":"):
+                return rest.split(":", 1)[-1].strip()
+    return ""
+
+
+def _ics_zeit(wert: str):
+    """DTSTART-Wert -> datetime (UTC) oder None. Wirft nie."""
+    roh = (wert or "").strip().rstrip("Z")
+    for muster in ("%Y%m%dT%H%M%S", "%Y%m%d"):
+        try:
+            return datetime.strptime(roh, muster).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
+def termine_lesen(tage_zurueck: int = 7, tage_voraus: int = 60):
+    """Termine aus dem CalDAV-Kalender -> (liste, fehler).
+
+    `liste` = [{"beginn": datetime, "titel": str, "ort": str, "uid": str}],
+    aufsteigend. Rein lesend; wirft nie — ein Kalenderproblem darf den
+    Tab nicht kosten, es kostet nur die Fremdtermine.
+    """
+    url, user, passwort = konfiguration()
+    if not (url and user and passwort):
+        return [], None          # nicht konfiguriert ist kein Fehler
+    jetzt = datetime.now(timezone.utc)
+    rumpf = _ZEITFENSTER_REPORT.format(
+        von=(jetzt - timedelta(days=tage_zurueck)).strftime("%Y%m%dT%H%M%SZ"),
+        bis=(jetzt + timedelta(days=tage_voraus)).strftime("%Y%m%dT%H%M%SZ"))
+    try:
+        anmeldung = base64.b64encode(
+            f"{user}:{passwort}".encode("utf-8")).decode("ascii")
+        anfrage = urllib.request.Request(
+            url, method="REPORT", data=rumpf.encode("utf-8"),
+            headers={"Content-Type": 'application/xml; charset="utf-8"',
+                     "Depth": "1",
+                     "User-Agent": CALDAV_USER_AGENT,
+                     "Authorization": f"Basic {anmeldung}"})
+        with urllib.request.urlopen(anfrage, timeout=TIMEOUT_S) as antwort:
+            text = antwort.read().decode("utf-8", "replace")
+    except Exception as e:       # noqa: BLE001 — Netz, HTTP, Zeitgrenze
+        return [], _ohne_geheimnis(_kurz(
+            f"Kalender nicht erreichbar ({type(e).__name__})."))
+
+    termine = []
+    for teil in text.split("BEGIN:VEVENT")[1:]:
+        block = teil.split("END:VEVENT", 1)[0]
+        beginn = _ics_zeit(_ics_feld(block, "DTSTART"))
+        if beginn is None:
+            continue
+        termine.append({
+            "beginn": beginn,
+            "titel": _ics_feld(block, "SUMMARY")[:200],
+            "ort": _ics_feld(block, "LOCATION")[:120],
+            "uid": _ics_feld(block, "UID")[:120]})
+    termine.sort(key=lambda t: t["beginn"])
+    return termine, None
