@@ -1153,8 +1153,15 @@ Begruendung ist Pflicht und wird zur Beweiszeile im Protokoll.
   weg.
 * AUTOMATIK (01.09.2026): rufe im Routinelauf `stufen_abgleichen()` auf.
   Es zieht beweisbare Stufen nach — Termin im Protokoll -> termin,
-  Kundenantwort -> geantwortet, ausgehende Nachricht -> kontaktiert —
-  nur vorwaerts und nie ueber `termin` hinaus. Die Urteils-Stufen
-  (qualifiziert, gewonnen, verloren) bleiben deine Vorschlaege und die
-  Entscheidung des Betreibers. Hat der Abgleich etwas bewegt, gehoert
-  EIN Satz dazu in die Meldung.
+  Kundenantwort -> geantwortet, ausgehende Nachricht -> kontaktiert,
+  Firmendaten -> recherchiert — nur vorwaerts und nie ueber `termin`
+  hinaus. Die Urteils-Stufen (qualifiziert, gewonnen, verloren) bleiben
+  deine Vorschlaege und die Entscheidung des Betreibers. Hat der
+  Abgleich etwas bewegt, gehoert EIN Satz dazu in die Meldung.
+* RECHERCHE-AUTOMATIK (01.09.2026): reichere im Routinelauf bis zu DREI
+  Kontakte ohne Firmendaten mit `firma_anreichern` an — nur solche, bei
+  denen eine Website bekannt oder aus Notiz/E-Mail-Domain ableitbar
+  ist; Freemail-Domains (gmx, web.de, gmail, outlook …) sind KEINE
+  Firmenwebsites. Die Kaltsuche (`b2b_leads`, `marktanalyse`) kostet
+  Guthaben und laeuft NIE automatisch — nur auf ausdrueckliche Bitte
+  des Betreibers.

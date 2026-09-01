@@ -5421,7 +5421,8 @@ def stufen_abgleichen() -> str:
     * Nur VORWAERTS, und hoechstens bis 'termin'. Was ein Urteil braucht
       (qualifiziert, gewonnen, verloren), setzt nie die Automatik.
     * Beweise: Termin im Protokoll -> termin; Kundenantwort ->
-      geantwortet; ausgehende Nachricht/Versand -> kontaktiert.
+      geantwortet; ausgehende Nachricht/Versand -> kontaktiert;
+      Firmendaten aus der Recherche (enrichment.firma) -> recherchiert.
     * Jede Bewegung laeuft durch kontakt_stufe_setzen — mit Begruendung
       und Beweiszeile, wie jeder andere Wechsel auch.
     * Archivierte, private und System-Kontakte bleiben unberuehrt.
@@ -5458,6 +5459,9 @@ def stufen_abgleichen() -> str:
         elif z["ausgang"]:
             soll = "kontaktiert"
             grund = f"ausgehende Nachricht vom {z['ausgang']:%d.%m.%Y}"
+        elif isinstance((z["enrichment"] or {}).get("firma"), dict):
+            soll = "recherchiert"
+            grund = "Firmendaten aus der Recherche im Profil"
         else:
             continue
         ist = _stufe_lesen(z["status"])

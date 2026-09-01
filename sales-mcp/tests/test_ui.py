@@ -2696,11 +2696,14 @@ def test_auto_mit_freigabe_warnt_nicht_mehr():
 # Beweiszeile.
 # ---------------------------------------------------------------------------
 
-def test_die_pipeline_zeigt_alle_stufen_als_spalten():
+def test_die_pipeline_zeigt_die_aktiven_stufen_als_spalten():
+    """Seit 01.09.2026 bewusst VERENGT: nur der Fluss (neu … termin) —
+    acht Spalten ueberragten jeden Bildschirm. gewonnen/verloren stehen
+    auf /ergebnisse (Vertraege am Dateiende)."""
     lead = _lead(name="Paula Pipelinefrau")
     server.kontakt_stufe_setzen(lead, "termin", "Termin steht")
     seite = _get("/pipeline").text
-    for stufe in server.PIPELINE_STUFEN:
+    for stufe in server.PIPELINE_STUFEN[:-2]:
         assert stufe in seite
     assert "Paula Pipelinefrau" in seite
 
@@ -2955,3 +2958,63 @@ def test_nachrichtenliste_kaputte_kennung_wird_abgewiesen(
     _sammel()
     assert _get("/einordnung/nachrichten/abc123").status_code == 400
     assert _get("/einordnung/nachrichten/1").status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Pipeline-Zuschnitt (01.09.2026, Betreiber-Feedback): die acht Spalten
+# ueberragten jeden Bildschirm — die Seite wirkte abgeschnitten. Die
+# Pipeline zeigt jetzt den FLUSS (neu … termin); die Endzustaende
+# gewonnen/verloren haben ihren eigenen Tab „Ergebnisse".
+# ---------------------------------------------------------------------------
+
+def test_pipeline_zeigt_nur_die_aktiven_stufen():
+    _lead()
+    seite = _get("/pipeline").text
+    for aktiv in ("neu", "recherchiert", "qualifiziert", "kontaktiert",
+                  "geantwortet", "termin"):
+        assert f"<h2>{aktiv} " in seite
+    assert "<h2>gewonnen " not in seite
+    assert "<h2>verloren " not in seite
+    assert 'href="/ergebnisse"' in seite      # Verweis statt Spalte
+
+
+def test_ergebnisse_zeigt_gewonnen_und_verloren():
+    gewonnen = _lead(name="Kunde Gewonnen")
+    server._q("update leads set status = 'won' where id = %s returning id",
+              (gewonnen,))
+    verloren = _lead(name="Kontakt Verloren", phone="+491702223344")
+    server._q("update leads set status = 'lost' where id = %s returning id",
+              (verloren,))
+    _lead(name="Aktiver Kontakt", phone="+491703334455")
+    seite = _get("/ergebnisse").text
+    assert "Kunde Gewonnen" in seite
+    assert "Kontakt Verloren" in seite
+    assert "Aktiver Kontakt" not in seite
+
+
+def test_ergebnisse_steht_in_der_navigation():
+    seite = _get("/pipeline").text
+    assert '<a href="/ergebnisse">Ergebnisse</a>' in seite
+
+
+def test_kontaktseite_zeigt_die_recherche_arbeit():
+    lead = _lead()
+    server._q(
+        "update leads set enrichment = jsonb_set(enrichment, '{firma}', "
+        "%s::jsonb, true) where id = %s returning id",
+        (json.dumps({"website": "https://beispiel-makler.de",
+                     "seiten": [{"url": "https://beispiel-makler.de/ueber",
+                                 "typ": "ueber", "titel": "Über uns",
+                                 "text": "Wir <script>x</script> beraten."}],
+                     "seiten_anzahl": 1}), lead))
+    seite = _get(f"/kontakte/{lead}").text
+    assert "Recherche" in seite
+    assert "beispiel-makler.de" in seite
+    assert "Über uns" in seite
+    assert "<script>x</script>" not in seite   # Fremddaten bleiben escaped
+
+
+def test_kontaktseite_ohne_recherche_zeigt_den_leerstand():
+    lead = _lead()
+    seite = _get(f"/kontakte/{lead}").text
+    assert "Noch keine Firmendaten" in seite

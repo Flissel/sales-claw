@@ -778,7 +778,7 @@ thead th { background: var(--kopfzeile); }
 """
 
 _NAV = (("/", "Freigaben"), ("/kontakte", "Kontakte"),
-        ("/pipeline", "Pipeline"),
+        ("/pipeline", "Pipeline"), ("/ergebnisse", "Ergebnisse"),
         ("/posteingang", "Posteingang"), ("/einordnung", "Einordnung"),
         ("/wiedervorlagen", "Wiedervorlagen"), ("/medien", "Medien"),
         ("/whatsapp", "WhatsApp"))
@@ -2646,11 +2646,18 @@ async def pipeline(request):
     spalten = {s: [] for s in server.PIPELINE_STUFEN}
     for z in zeilen:
         spalten[server._stufe_lesen(z["status"])].append(z)
+    # Nur der FLUSS (neu … termin) — acht Spalten ueberragten jeden
+    # Bildschirm und die Seite wirkte abgeschnitten (Betreiber-Feedback
+    # 01.09.2026). Die Endzustaende stehen auf /ergebnisse.
+    aktive = server.PIPELINE_STUFEN[:-2]
+    abgeschlossen = sum(len(spalten[s]) for s in server.PIPELINE_STUFEN[-2:])
     teile = ["<h1>Pipeline</h1>",
-             '<p class="meta">Stufe setzen: auf der Kontaktseite. '
-             'Jeder Wechsel steht mit Begruendung im Protokoll.</p>',
+             f'<p class="meta">Stufe setzen: auf der Kontaktseite. '
+             f'Jeder Wechsel steht mit Begruendung im Protokoll. '
+             f'Abgeschlossene ({abgeschlossen}) stehen unter '
+             f'<a href="/ergebnisse">Ergebnisse</a>.</p>',
              '<div class="spalten">']
-    for stufe in server.PIPELINE_STUFEN:
+    for stufe in aktive:
         karten = "".join(
             f'<div class="karte"><a href="/kontakte/{_e(str(k["id"]))}">'
             f'{_e(k["name"] or "(ohne Namen)")}</a>'
@@ -2663,6 +2670,35 @@ async def pipeline(request):
             f'</div>')
     teile.append("</div>")
     return _seite("Pipeline", "".join(teile))
+
+
+@_gesichert_seite
+async def ergebnisse(request):
+    """Die Endzustaende der Pipeline: gewonnen und verloren — getrennt
+    vom Fluss (Betreiber-Wunsch 01.09.2026), damit die Pipeline den Weg
+    zeigt und diese Seite die Bilanz."""
+    zeilen = server._q(
+        "select l.id, l.name, l.status, l.updated_at, "
+        "  (select a.payload->>'begruendung' from activities a "
+        "   where a.lead_id = l.id and a.type = 'stufenwechsel' "
+        "   order by a.created_at desc limit 1) as begruendung "
+        "from leads l "
+        "where l.status in ('won', 'lost') and not "
+        + server._archiv_sql("l.enrichment") + " order by l.updated_at desc")
+    teile = []
+    for status, titel in (("won", "Gewonnen"), ("lost", "Verloren")):
+        gruppe = [z for z in zeilen if z["status"] == status]
+        teile.append(f"<h2>{titel} ({len(gruppe)})</h2>")
+        if not gruppe:
+            teile.append("<p class=meta>—</p>")
+            continue
+        teile.append(_tabelle(
+            ["Kontakt", "Seit", "Begruendung"],
+            [[f'<a href="/kontakte/{_e(str(z["id"]))}">'
+              f'{_e(z["name"] or "(ohne Namen)")}</a>',
+              _zeit(z["updated_at"]),
+              _e((z["begruendung"] or "")[:160])] for z in gruppe]))
+    return _seite("Ergebnisse", "".join(teile))
 
 
 @_gesichert_seite
@@ -3007,6 +3043,32 @@ async def kontakt_detail(request):
         teile.append("<p>Noch keine Antworten erfasst.</p>")
 
     # Vertraege (enrichment.vertraege) — nur wenn es wirklich ein Array ist,
+    # Recherche-Arbeit sichtbar machen (Betreiber-Wunsch 01.09.2026):
+    # firma_anreichern legt unter enrichment.firma ab — bis jetzt zeigte
+    # die Seite davon nichts. Alles Fremddaten von fremden Websites:
+    # escaped und gekuerzt, wie ueberall.
+    teile.append("<h2>Recherche (Firma)</h2>")
+    firma = anreicherung.get("firma")
+    if isinstance(firma, dict) and (firma.get("website")
+                                    or firma.get("seiten")):
+        meta = f'<div class="meta">{_e(firma.get("website") or "")}</div>'
+        seiten = firma.get("seiten")
+        seiten = seiten if isinstance(seiten, list) else []
+        karten = []
+        for s in seiten[:6]:
+            if not isinstance(s, dict):
+                continue
+            text = " ".join(str(s.get("text") or "").split())[:300]
+            karten.append(
+                f'<div class="karte"><b>{_e(s.get("titel") or s.get("typ") or "Seite")}</b>'
+                f'<div class="meta">{_e(s.get("url") or "")}</div>'
+                f'<div class="text">{_e(text)}</div></div>')
+        teile.append(meta + "".join(karten))
+    else:
+        teile.append(
+            '<p class="meta">Noch keine Firmendaten — der Assistent '
+            'reichert mit firma_anreichern an (Website noetig).</p>')
+
     # dieselbe Typ-Vorsicht wie vertraege_ablaufend in server.py.
     vertraege = anreicherung.get("vertraege")
     vertraege = vertraege if isinstance(vertraege, list) else []
@@ -3680,6 +3742,7 @@ app = Starlette(routes=[
     Route("/kontakte/privat-entziehen", aktion_kontakt_privat_entziehen,
           methods=["POST"]),
     Route("/pipeline", pipeline),
+    Route("/ergebnisse", ergebnisse),
     Route("/whatsapp", whatsapp),
     Route("/kontakte/wiederherstellen", aktion_kontakt_wiederherstellen,
           methods=["POST"]),

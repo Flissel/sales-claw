@@ -274,3 +274,24 @@ def test_abgleich_meldet_die_bilanz():
     assert ergebnis["geprueft"] == 2
     assert ergebnis["nachgezogen"] == 1
     assert ergebnis["wechsel"][0]["nach"] == "geantwortet"
+
+
+def test_firmendaten_beweisen_recherchiert():
+    lead = _lead()
+    server._q(
+        "update leads set enrichment = jsonb_set(enrichment, '{firma}', "
+        "%s::jsonb, true) where id = %s returning id",
+        (server._json({"website": "https://x.de", "seiten": []}), lead))
+    _abgleich()
+    assert _status(lead) == "researched"
+
+
+def test_kundenantwort_schlaegt_firmendaten():
+    lead = _lead()
+    server._q(
+        "update leads set enrichment = jsonb_set(enrichment, '{firma}', "
+        "%s::jsonb, true) where id = %s returning id",
+        (server._json({"website": "https://x.de"}), lead))
+    _aktivitaet(lead, "kundenantwort")
+    _abgleich()
+    assert _status(lead) == "replied"
