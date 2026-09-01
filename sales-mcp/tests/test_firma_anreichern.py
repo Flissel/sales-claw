@@ -805,3 +805,14 @@ def test_keine_eigene_domain_und_kein_fremder_content(monkeypatch):
         pfade = [p for p in STUB.aufrufe]
     assert all("linkedin" not in p and "facebook" not in p
                and "instagram" not in p for p in pfade)
+
+
+def test_nackte_plattformlinks_zaehlen_nicht(monkeypatch):
+    """Live-Fund 01.09.2026 („Markus Kuehner Malerfachbetrieb"): manche
+    Seiten verlinken die Plattform selbst (https://instagram.com) statt
+    ihres Profils — ein Absprungpunkt ohne Ziel ist keiner."""
+    daten, _ = recherche.firma_daten(STUB_BASIS + "/")
+    urls = [v["url"] for v in daten["geschaeftsverweise"]]
+    assert "https://instagram.com" not in urls
+    assert any(u.endswith("/musterhaustechnik/") or
+               u.endswith("/musterhaustechnik") for u in urls)

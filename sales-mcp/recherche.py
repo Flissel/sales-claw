@@ -1053,6 +1053,11 @@ def _geschaeftsverweise(seiten: list, eigene_url: str) -> list:
                               if nadel in host), None)
             if plattform is None:
                 continue
+            # Nackter Plattformlink ohne Profilpfad (https://instagram.com)
+            # — ein Absprungpunkt ohne Ziel ist keiner (Live-Fund
+            # 01.09.2026, „Markus Kuehner Malerfachbetrieb").
+            if len(urllib.parse.urlsplit(voll).path.strip("/")) < 2:
+                continue
             schluessel = urllib.parse.urldefrag(voll)[0].rstrip("/").lower()
             if schluessel in gesehen:
                 continue
