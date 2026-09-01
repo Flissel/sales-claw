@@ -546,7 +546,7 @@ def test_beide_werkzeuge_sind_registriert():
     # stufen_abgleichen (test_pipeline.py) und scoring_abgleichen
     # (test_scoring.py). Sprachnachrichten:
     # sprachnachrichten_transkribieren (test_sprachnachrichten.py).
-    assert len(namen) == len(set(namen)) == 69
+    assert len(namen) == len(set(namen)) == 71
 
 # ---------------------------------------------------------------------------
 # Nachbesserungen aus dem Stufe-5-Review (Befunde T1, B2, D2)

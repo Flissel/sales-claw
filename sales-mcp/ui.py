@@ -2775,6 +2775,15 @@ async def kalender_seite(request):
         "select a.payload, a.created_at, l.id as lead_id, l.name "
         "from activities a left join leads l on l.id = a.lead_id "
         "where a.type = 'termin' order by a.created_at desc limit 200")
+    # Abgesagte fallen aus der Ansicht (01.09.2026) — sie stehen unten in
+    # ihrem eigenen Abschnitt, damit die Absage nachvollziehbar bleibt.
+    abgesagt = {str((z["payload"] or {}).get("uid") or ""): z["payload"] or {}
+                for z in server._q(
+                    "select payload from activities "
+                    " where type = 'termin_abgesagt' order by created_at")}
+    zeilen = [z for z in zeilen
+              if str((z["payload"] or {}).get("uid") or "") not in abgesagt
+              or not (z["payload"] or {}).get("uid")]
     kommend, vergangen, ohne_datum = [], [], []
     # Doppelt belegte Zeitfenster sichtbar machen (01.09.2026 gefunden:
     # zwei Termine mit derselben Person am selben Tag um dieselbe Zeit).
@@ -2805,7 +2814,9 @@ async def kalender_seite(request):
         eintrag = [
             _e(tag_lesbar(tag)), _e(zeit), kontakt,
             marke + _e(str(last.get("thema") or "")[:80]),
-            _e(str(last.get("ort") or "")[:60])]
+            _e(str(last.get("ort") or "")[:60]),
+            _termin_aktionen(str(z["lead_id"] or ""),
+                             str(last.get("uid") or ""), tag, zeit)]
         (kommend if tag >= heute.isoformat() else vergangen).append(
             (tag + zeit, eintrag))
     kommend.sort(key=lambda p: p[0])
@@ -2816,7 +2827,7 @@ async def kalender_seite(request):
     fremde, fremd_fehler = kalender.termine_lesen()
     teile = [_monatsgitter(monat, zeilen, fremde)]
 
-    kopf = ["Datum", "Zeit", "Kontakt", "Thema", "Ort"]
+    kopf = ["Datum", "Zeit", "Kontakt", "Thema", "Ort", "Aendern"]
     teile.append(f"<h2>Kommende Termine ({len(kommend)})</h2>")
     teile.append(_tabelle(kopf, [e for _, e in kommend]) if kommend
                  else "<p>Kein Termin steht an.</p>")
@@ -2852,7 +2863,68 @@ async def kalender_seite(request):
     if vergangen:
         teile.append(f"<h2>Vergangen ({len(vergangen)})</h2>")
         teile.append(_tabelle(kopf, [e for _, e in vergangen[:30]]))
+    if abgesagt:
+        teile.append(f"<h2>Abgesagt ({len(abgesagt)})</h2>")
+        teile.append(_tabelle(
+            ["Datum", "Zeit", "Thema", "Grund"],
+            [[_e(tag_lesbar(str(a.get("datum") or ""))),
+              _e(str(a.get("uhrzeit") or "")),
+              _e(str(a.get("thema") or "")[:60]),
+              _e(str(a.get("grund") or "")[:80])]
+             for a in list(abgesagt.values())[:30]]))
     return _seite("Kalender", "".join(teile))
+
+
+def _termin_aktionen(lead_id: str, uid: str, tag: str, zeit: str) -> str:
+    """Absagen und Verschieben — beide ueber DIESELBEN Werkzeuge wie der
+    Chat (server.termin_absagen / termin_verschieben). Die Oberflaeche
+    baut keinen zweiten Schreibweg; dasselbe Muster wie bei den
+    Freigaben."""
+    if not (lead_id and uid):
+        # Alt-Termine ohne uid (vor dem 01.09.2026) lassen sich nicht
+        # eindeutig adressieren — lieber kein Knopf als der falsche.
+        return '<span class="meta">—</span>'
+    verborgen = (f'<input type="hidden" name="lead_id" value="{_e(lead_id)}">'
+                 f'<input type="hidden" name="uid" value="{_e(uid)}">'
+                 f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">')
+    return (
+        f'<form class="aktion" method="post" action="/kalender/verschieben">'
+        f'{verborgen}'
+        f'<input type="date" name="datum" value="{_e(tag)}" required>'
+        f'<input type="time" name="uhrzeit" value="{_e(zeit)}" required>'
+        f'<button>Verschieben</button></form>'
+        f'<form class="aktion gefahr" method="post" '
+        f'action="/kalender/absagen">{verborgen}'
+        f'<input name="grund" placeholder="Grund" required>'
+        f'<button class="gefahr">Absagen</button></form>')
+
+
+@_gesichert_seite
+async def aktion_termin_absagen(request):
+    form = await request.form()
+    if not _csrf_ok(form):
+        return _fehlerseite(403, "Abgewiesen",
+                            "Fehlende oder falsche CSRF-Marke.")
+    antwort = json.loads(server.termin_absagen(
+        str(form.get("lead_id") or ""), str(form.get("uid") or ""),
+        str(form.get("grund") or "")))
+    if "fehler" in antwort:
+        return _fehlerseite(400, "Nicht abgesagt", _e(antwort["fehler"]))
+    return RedirectResponse("/kalender", status_code=303)
+
+
+@_gesichert_seite
+async def aktion_termin_verschieben(request):
+    form = await request.form()
+    if not _csrf_ok(form):
+        return _fehlerseite(403, "Abgewiesen",
+                            "Fehlende oder falsche CSRF-Marke.")
+    antwort = json.loads(server.termin_verschieben(
+        str(form.get("lead_id") or ""), str(form.get("uid") or ""),
+        str(form.get("datum") or ""), str(form.get("uhrzeit") or "")))
+    if "fehler" in antwort:
+        return _fehlerseite(400, "Nicht verschoben", _e(antwort["fehler"]))
+    return RedirectResponse("/kalender", status_code=303)
 
 
 _MONATSNAMEN = ("Januar", "Februar", "Maerz", "April", "Mai", "Juni", "Juli",
@@ -4041,6 +4113,9 @@ app = Starlette(routes=[
     Route("/pipeline", pipeline),
     Route("/ergebnisse", ergebnisse),
     Route("/kalender", kalender_seite),
+    Route("/kalender/absagen", aktion_termin_absagen, methods=["POST"]),
+    Route("/kalender/verschieben", aktion_termin_verschieben,
+          methods=["POST"]),
     Route("/whatsapp", whatsapp),
     Route("/kontakte/wiederherstellen", aktion_kontakt_wiederherstellen,
           methods=["POST"]),

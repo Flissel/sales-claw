@@ -3241,3 +3241,72 @@ def test_kaputter_monat_faellt_auf_heute_zurueck():
     for kaputt in ("2099-13", "quatsch", "2099", ""):
         antwort = _get(f"/kalender?monat={kaputt}")
         assert antwort.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Termine aendern in der Oberflaeche (01.09.2026, Betreiber: „geht das
+# auch mit Daten-Editierung?"). Dieselben Werkzeuge wie im Chat — die
+# Oberflaeche baut keinen zweiten Schreibweg (Muster der Freigaben).
+# ---------------------------------------------------------------------------
+
+def _termin_mit_uid(lead, uid="test-uid-1", datum="2099-09-04"):
+    server._q("insert into activities (lead_id, type, payload) values "
+              "(%s, 'termin', %s) returning id",
+              (lead, server._json({"datum": datum, "uhrzeit": "13:00",
+                                   "thema": "Erstgespraech", "uid": uid,
+                                   "dauer_minuten": 60})))
+    return uid
+
+
+def test_kalender_bietet_absagen_und_verschieben():
+    lead = _lead()
+    _termin_mit_uid(lead)
+    seite = _get("/kalender").text
+    assert 'action="/kalender/absagen"' in seite
+    assert 'action="/kalender/verschieben"' in seite
+
+
+def test_absagen_ohne_csrf_aendert_nichts():
+    lead = _lead()
+    uid = _termin_mit_uid(lead)
+    antwort = _post("/kalender/absagen",
+                    {"lead_id": lead, "uid": uid, "grund": "weg"})
+    assert antwort.status_code == 403
+    assert server._q("select count(*) n from activities where "
+                     "type = 'termin_abgesagt'")[0]["n"] == 0
+
+
+def test_absagen_ueber_die_oberflaeche_schreibt_den_beweis():
+    lead = _lead()
+    uid = _termin_mit_uid(lead)
+    antwort = _post("/kalender/absagen",
+                    {"lead_id": lead, "uid": uid,
+                     "grund": "Kunde hat abgesagt", "csrf": ui.CSRF_TOKEN})
+    assert antwort.status_code == 303
+    zeilen = server._q("select payload from activities where "
+                       "type = 'termin_abgesagt'")
+    assert len(zeilen) == 1
+    assert zeilen[0]["payload"]["uid"] == uid
+
+
+def test_verschieben_ueber_die_oberflaeche():
+    lead = _lead()
+    uid = _termin_mit_uid(lead)
+    antwort = _post("/kalender/verschieben",
+                    {"lead_id": lead, "uid": uid, "datum": "2099-09-11",
+                     "uhrzeit": "15:30", "csrf": ui.CSRF_TOKEN})
+    assert antwort.status_code == 303
+    neue = server._q("select payload from activities where type = 'termin' "
+                     "order by created_at desc limit 1")[0]["payload"]
+    assert neue["datum"] == "2099-09-11" and neue["uhrzeit"] == "15:30"
+
+
+def test_abgesagte_termine_verschwinden_aus_dem_kalender():
+    lead = _lead()
+    uid = _termin_mit_uid(lead)
+    server._q("insert into activities (lead_id, type, payload) values "
+              "(%s, 'termin_abgesagt', %s) returning id",
+              (lead, server._json({"uid": uid, "grund": "abgesagt"})))
+    seite = _get("/kalender").text
+    assert "Erstgespraech" not in seite
+    assert "Abgesagt (1)" in seite

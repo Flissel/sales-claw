@@ -443,3 +443,33 @@ def termine_lesen(tage_zurueck: int = 7, tage_voraus: int = 60):
             "uid": _ics_feld(block, "UID")[:120]})
     termine.sort(key=lambda t: t["beginn"])
     return termine, None
+
+
+def loeschen(uid: str):
+    """Einen Eintrag aus der Kalender-Kollektion entfernen -> (zustand,
+    grund). Fuer Absagen: ein abgesagter Termin, der im Handy des
+    Betreibers stehen bleibt, ist schlimmer als gar keiner. Wirft nie —
+    die Absage im Protokoll gilt auch dann, wenn der Kalender klemmt.
+    Ein 404 ist KEIN Fehler: der Eintrag ist dann schon weg."""
+    url, user, passwort = konfiguration()
+    if not (url and user and passwort):
+        return NICHT_KONFIGURIERT, None
+    try:
+        ziel = f"{url.rstrip('/')}/{uid}.ics"
+        anmeldung = base64.b64encode(
+            f"{user}:{passwort}".encode("utf-8")).decode("ascii")
+        anfrage = urllib.request.Request(
+            ziel, method="DELETE",
+            headers={"User-Agent": CALDAV_USER_AGENT,
+                     "Authorization": f"Basic {anmeldung}"})
+        with urllib.request.urlopen(anfrage, timeout=TIMEOUT_S) as antwort:
+            antwort.read()
+        return EINGETRAGEN, None
+    except urllib.error.HTTPError as e:
+        if e.code in (404, 410):
+            return EINGETRAGEN, None
+        return FEHLGESCHLAGEN, _ohne_geheimnis(_kurz(
+            f"Der Kalender lehnt das Loeschen ab (HTTP {e.code})."))
+    except Exception as e:      # noqa: BLE001 — Netz, Zeitgrenze, Protokoll
+        return FEHLGESCHLAGEN, _ohne_geheimnis(_kurz(
+            f"Kalender nicht erreichbar ({type(e).__name__})."))

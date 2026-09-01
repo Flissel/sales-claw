@@ -1274,7 +1274,11 @@ def termin_bestaetigen(lead_id: str, datum: str, uhrzeit: str,
         "fehler": schreibfehler,
         "termin": {"datum": tag.isoformat(), "uhrzeit": f"{zeit:%H:%M}",
                    "dauer_minuten": dauer, "thema": thema_kurz,
-                   "ort": ort_kurz or None},
+                   "ort": ort_kurz or None,
+                   # Die uid ist der Griff zum Absagen und Verschieben
+                   # (01.09.2026) — ohne sie in der Antwort muesste der
+                   # Aufrufer sie aus dem Protokoll suchen.
+                   "uid": uid},
         "kalender": kalender_stand,
         "bestaetigungstext": _bestaetigungstext(beginn, dauer, thema_kurz,
                                                 ort_kurz),
@@ -5453,6 +5457,104 @@ def kontakt_stufe_setzen(lead_id: str, stufe: str, begruendung: str) -> str:
     return _json({"lead_id": lead_id, "von": von, "nach": stufe})
 
 
+def _termin_zeile(lead_id: str, uid: str):
+    """Die Termin-Aktivitaet zu einer uid — oder None."""
+    zeilen = _q(
+        "select id::text as id, payload from activities "
+        " where lead_id = %s and type = 'termin' "
+        "   and payload->>'uid' = %s limit 1", (lead_id, uid))
+    return zeilen[0] if zeilen else None
+
+
+def _termin_abgesagt(lead_id: str, uid: str) -> bool:
+    return bool(_q("select 1 from activities where lead_id = %s and "
+                   "type = 'termin_abgesagt' and payload->>'uid' = %s "
+                   "limit 1", (lead_id, uid)))
+
+
+@_gesichert
+def termin_absagen(lead_id: str, uid: str, grund: str) -> str:
+    """Einen bestaetigten Termin absagen.
+
+    Im Protokoll entsteht eine NEUE Zeile (`termin_abgesagt`) mit Bezug
+    zur uid — die urspruengliche wird nie veraendert (append-only). Im
+    Kalender des Betreibers wird der Eintrag dagegen WIRKLICH geloescht:
+    ein abgesagter Termin, der im Handy stehen bleibt, ist schlimmer als
+    gar keiner. Der Grund ist Pflicht und steht im Protokoll.
+
+    Es wird NICHTS versendet — ob der Kontakt Bescheid bekommt,
+    entscheidet der Betreiber ueber einen Entwurf.
+    """
+    if not (grund or "").strip():
+        return _json({"fehler": (
+            "Ohne Grund keine Absage — das Protokoll muss sagen, warum der "
+            "Termin nicht stattfindet.")})
+    zeile = _termin_zeile(lead_id, uid)
+    if zeile is None:
+        return _json({"fehler": (
+            f"Zu diesem Kontakt gibt es keinen Termin mit der Kennung "
+            f"{uid}. Die Kennung steht in der Antwort von "
+            f"termin_bestaetigen und im Protokoll.")})
+    if _termin_abgesagt(lead_id, uid):
+        return _json({"fehler": "Dieser Termin ist bereits abgesagt."})
+    last = zeile["payload"] or {}
+    zustand, kalenderfehler = kalender.loeschen(uid)
+    _q("insert into activities (lead_id, type, payload) values "
+       "(%s, 'termin_abgesagt', %s) returning id",
+       (lead_id, _json({"uid": uid, "grund": grund.strip(),
+                        "datum": last.get("datum"),
+                        "uhrzeit": last.get("uhrzeit"),
+                        "thema": last.get("thema"),
+                        "kalender": kalenderfehler or zustand})))
+    return _json(_ohne_none({
+        "abgesagt": {"uid": uid, "datum": last.get("datum"),
+                     "uhrzeit": last.get("uhrzeit"),
+                     "thema": last.get("thema")},
+        "kalender": kalenderfehler or zustand,
+        "hinweis": ("Abgesagt und im Protokoll vermerkt. Der Kontakt weiss "
+                    "davon NICHTS — wenn er es erfahren soll, braucht es "
+                    "einen Entwurf.")}))
+
+
+@_gesichert
+def termin_verschieben(lead_id: str, uid: str, datum: str,
+                       uhrzeit: str) -> str:
+    """Einen Termin auf einen neuen Zeitpunkt legen.
+
+    Technisch: der alte wird abgesagt und ein neuer bestaetigt (mit
+    demselben Thema, derselben Dauer, demselben Ort — der Betreiber soll
+    nichts neu tippen). Beides steht im Protokoll, der Kalender bekommt
+    einen neuen Eintrag und verliert den alten.
+    """
+    zeile = _termin_zeile(lead_id, uid)
+    if zeile is None:
+        return _json({"fehler": (
+            f"Zu diesem Kontakt gibt es keinen Termin mit der Kennung {uid}.")})
+    if _termin_abgesagt(lead_id, uid):
+        return _json({"fehler": (
+            "Dieser Termin ist abgesagt — lege einen neuen an, statt einen "
+            "abgesagten zu verschieben.")})
+    last = zeile["payload"] or {}
+    neu = json.loads(termin_bestaetigen(
+        lead_id, datum, uhrzeit,
+        dauer_minuten=int(last.get("dauer_minuten") or 60),
+        thema=str(last.get("thema") or ""),
+        ort=str(last.get("ort") or "")))
+    if "fehler" in neu:
+        return _json(neu)        # nichts abgesagt, wenn der neue nicht steht
+    absage = json.loads(termin_absagen(
+        lead_id, uid,
+        f"verschoben auf {datum} {uhrzeit}"))
+    return _json(_ohne_none({
+        "termin": neu.get("termin"), "pfad": neu.get("pfad"),
+        "verschoben_von": {"uid": uid, "datum": last.get("datum"),
+                           "uhrzeit": last.get("uhrzeit")},
+        "alter_kalendereintrag": absage.get("kalender"),
+        "bestaetigungstext": neu.get("bestaetigungstext"),
+        "hinweis": ("Verschoben. Der Kontakt weiss davon NICHTS — wenn er "
+                    "es erfahren soll, braucht es einen Entwurf.")}))
+
+
 # ---------------------------------------------------------------------------
 # Sprachnachrichten (01.09.2026). Gemessen: 16 Stueck in 30 Tagen, und der
 # Assistent war fuer alle blind. sales-inbox legt das Audio ab (es kommt
@@ -6030,7 +6132,11 @@ WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              # Sprachnachrichten (01.09.2026): lokal transkribieren, damit
              # der Assistent sie ueberhaupt liest. Vertraege:
              # tests/test_sprachnachrichten.py.
-             sprachnachrichten_transkribieren)
+             sprachnachrichten_transkribieren,
+             # Termine aendern (01.09.2026): bis dahin gab es nur
+             # bestaetigen — eine Absage blieb fuer immer im Kalender.
+             # Vertraege: tests/test_termin.py.
+             termin_absagen, termin_verschieben)
 
 for _fn in WERKZEUGE:
     mcp.tool()(_fn)

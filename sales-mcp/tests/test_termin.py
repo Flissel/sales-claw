@@ -105,6 +105,13 @@ def stub_dienst():
 def leer(tmp_path, monkeypatch):
     # Kein Test schreibt je in das echte /reports des Betriebs.
     monkeypatch.setattr(recherche, "REPORT_VERZEICHNIS", str(tmp_path))
+    # Und keiner in den echten Medienordner: seit 01.09.2026 legt
+    # termin_bestaetigen die .ics zusaetzlich unter medien.ERZEUGT_
+    # VERZEICHNIS ab — ohne diese Umleitung fuellte jeder Testlauf den
+    # Container-Ordner und andere Suiten faenden dort fremde Dateien
+    # (gemessen: test_medien_liste_nennt_namen_und_groesse fand 15).
+    monkeypatch.setattr(medien, "ERZEUGT_VERZEICHNIS",
+                        str(tmp_path / "erzeugt"))
     # Und keiner spricht mit einem echten Kalender: die drei Variablen
     # werden fuer JEDEN Test geleert, wer sie braucht, setzt sie selbst.
     for name in ("CALDAV_URL", "CALDAV_USER", "CALDAV_PASSWORT"):
@@ -619,3 +626,80 @@ def test_zwei_termine_am_selben_tag_ueberschreiben_sich_nicht():
     assert "fehler" not in erst and "fehler" not in zweit
     assert erst["pfad"] != zweit["pfad"]
     assert zweit.get("ueberschrieben") is not True
+
+
+# ---------------------------------------------------------------------------
+# Absagen und Verschieben (01.09.2026, Betreiber: „geht das auch mit
+# Daten-Editierung?"). Bis hierhin gab es NUR termin_bestaetigen — sagte
+# ein Kunde ab, blieb der Termin fuer immer im Kalender des Betreibers.
+#
+# activities bleibt append-only: eine Absage ist eine NEUE Zeile mit
+# Bezug zur uid, die urspruengliche wird nie veraendert. Im CalDAV-
+# Kalender wird dagegen wirklich geloescht — ein abgesagter Termin, der
+# im Handy stehen bleibt, ist schlimmer als keiner.
+# ---------------------------------------------------------------------------
+
+def _uid_von(antwort):
+    return antwort["termin"]["uid"] if "termin" in antwort else antwort["uid"]
+
+
+def test_absagen_schreibt_beweis_und_laesst_das_original_stehen():
+    lead = _lead()
+    termin = json.loads(server.termin_bestaetigen(
+        lead, "2099-09-04", "13:00", thema="Erstgespraech"))
+    uid = _uid_von(termin)
+    antwort = json.loads(server.termin_absagen(lead, uid, "Kunde hat abgesagt"))
+    assert "fehler" not in antwort
+    zeilen = server._q(
+        "select payload from activities where lead_id = %s and "
+        "type = 'termin_abgesagt'", (lead,))
+    assert len(zeilen) == 1
+    assert zeilen[0]["payload"]["uid"] == uid
+    assert "abgesagt" in zeilen[0]["payload"]["grund"]
+    # Die urspruengliche Zeile bleibt (append-only).
+    assert server._q("select count(*) n from activities where lead_id = %s "
+                     "and type = 'termin'", (lead,))[0]["n"] == 1
+
+
+def test_absagen_ohne_grund_wird_abgelehnt():
+    lead = _lead()
+    uid = _uid_von(json.loads(server.termin_bestaetigen(
+        lead, "2099-09-04", "13:00")))
+    antwort = json.loads(server.termin_absagen(lead, uid, "  "))
+    assert "fehler" in antwort
+    assert server._q("select count(*) n from activities where "
+                     "type = 'termin_abgesagt'")[0]["n"] == 0
+
+
+def test_absagen_eines_unbekannten_termins_ist_eine_meldung():
+    lead = _lead()
+    antwort = json.loads(server.termin_absagen(lead, "gibt-es-nicht", "egal"))
+    assert "fehler" in antwort
+
+
+def test_zweimal_absagen_meldet_statt_doppelt_zu_buchen():
+    lead = _lead()
+    uid = _uid_von(json.loads(server.termin_bestaetigen(
+        lead, "2099-09-04", "13:00")))
+    server.termin_absagen(lead, uid, "Kunde krank")
+    antwort = json.loads(server.termin_absagen(lead, uid, "nochmal"))
+    assert "fehler" in antwort
+    assert server._q("select count(*) n from activities where "
+                     "type = 'termin_abgesagt'")[0]["n"] == 1
+
+
+def test_verschieben_legt_neuen_termin_an_und_sagt_den_alten_ab():
+    lead = _lead()
+    alt = json.loads(server.termin_bestaetigen(
+        lead, "2099-09-04", "13:00", thema="Erstgespraech"))
+    antwort = json.loads(server.termin_verschieben(
+        lead, _uid_von(alt), "2099-09-11", "15:30"))
+    assert "fehler" not in antwort
+    assert antwort["termin"]["datum"] == "2099-09-11"
+    assert antwort["termin"]["uhrzeit"] == "15:30"
+    # Das Thema wandert mit — der Betreiber soll es nicht neu tippen.
+    assert antwort["termin"]["thema"] == "Erstgespraech"
+    assert server._q("select count(*) n from activities where "
+                     "type = 'termin_abgesagt'")[0]["n"] == 1
+    assert server._q("select count(*) n from activities where "
+                     "type = 'termin'")[0]["n"] == 2

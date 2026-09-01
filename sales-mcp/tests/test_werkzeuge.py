@@ -699,9 +699,12 @@ def test_kontakt_aktualisieren_signatur_ueberlebt_den_dekorator():
     assert list(parameter) == ["lead_id", "feld", "wert"]
 
 
-def test_neunundsechzig_werkzeuge_registriert():
+def test_einundsiebzig_werkzeuge_registriert():
     namen = {fn.__name__ for fn in server.WERKZEUGE}
-    assert len(namen) == 69
+    assert len(namen) == 71
+    # Termine aendern (01.09.2026): absagen und verschieben.
+    assert "termin_absagen" in namen
+    assert "termin_verschieben" in namen
     # Sprachnachrichten (01.09.2026): lokal transkribieren. Tests in
     # tests/test_sprachnachrichten.py.
     assert "sprachnachrichten_transkribieren" in namen
@@ -1048,6 +1051,11 @@ def test_kontakt_anlegen_unzustellbare_nummer_bleibt_weiterhin_neu_anlegbar():
 def medienordner(tmp_path, monkeypatch):
     """Frischer Medienordner mit einer gueltigen PDF-Datei."""
     monkeypatch.setattr(medien, "MEDIA_VERZEICHNIS", str(tmp_path))
+    # Auch den Ordner fuer ERZEUGTE Unterlagen umbiegen (01.09.2026):
+    # sonst sieht diese Suite die .ics-Dateien, die test_termin.py im
+    # Container abgelegt hat — die Liste ist die Summe beider Ordner.
+    monkeypatch.setattr(medien, "ERZEUGT_VERZEICHNIS",
+                        str(tmp_path / "erzeugt"))
     (tmp_path / "checkliste.pdf").write_bytes(b"%PDF-1.4 Testinhalt")
     return tmp_path
 
