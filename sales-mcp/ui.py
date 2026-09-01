@@ -296,8 +296,22 @@ def _e(wert) -> str:
     return html.escape(str(wert if wert is not None else ""), quote=True)
 
 
+# Ortszeit statt UTC (01.09.2026, im Kalender gefunden): ein 12:00-Termin
+# stand als „10:00 UTC" da. Wer danach plant, verpasst ihn. Die Zone kommt
+# aus der Umgebung — dieselbe, in der auch die Dienste laufen.
+try:
+    from zoneinfo import ZoneInfo
+    ZEITZONE = ZoneInfo(os.environ.get("TZ", "Europe/Berlin"))
+except Exception:                    # noqa: BLE001 — ohne tzdata: UTC
+    ZEITZONE = None
+
+
 def _zeit(dt) -> str:
-    return dt.strftime("%d.%m.%Y %H:%M UTC") if dt else "—"
+    if not dt:
+        return "—"
+    if ZEITZONE is not None and getattr(dt, "tzinfo", None) is not None:
+        dt = dt.astimezone(ZEITZONE)
+    return dt.strftime("%d.%m.%Y %H:%M")
 
 
 # ---------------------------------------------------------------------------
@@ -633,6 +647,28 @@ h2 { font-size: 1.05rem; margin-top: 2rem; }
 .spalte h2 { margin-top: .4rem; font-size: .95rem; }
 .spalte .karte { margin: .45rem 0; padding: .5rem .7rem; }
 .meta { color: var(--gedaempft); font-size: .85rem; }
+
+/* --- Monatsgitter (01.09.2026): ein Kalender sieht aus wie ein Kalender.
+       Sieben Spalten, ein Kasten je Tag; bei Enge scrollt der Container
+       waagerecht statt die ganze Seite. ------------------------------------ */
+.monatskopf { display: flex; align-items: center; gap: 1rem;
+              margin: .6rem 0 .4rem; }
+.monatskopf a { text-decoration: none; padding: .1rem .5rem;
+                border: 1px solid var(--linie); border-radius: 4px; }
+.monat { display: grid; grid-template-columns: repeat(7, minmax(5.5rem, 1fr));
+         gap: 2px; background: var(--linie); border: 1px solid var(--linie);
+         overflow-x: auto; }
+.tagkopf { background: var(--kopfzeile); padding: .3rem .4rem;
+           font-size: .8rem; font-weight: 600; }
+.tag { background: var(--flaeche); min-height: 4.6rem; padding: .25rem .3rem; }
+.tag.leer { background: var(--grund); }
+.tag.heute { outline: 2px solid var(--info); outline-offset: -2px; }
+.tag .nummer { font-size: .8rem; color: var(--gedaempft); }
+.tag .e { display: block; font-size: .75rem; line-height: 1.25;
+          margin-top: .15rem; padding: .1rem .25rem; border-radius: 3px;
+          background: var(--kopfzeile); text-decoration: none;
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tag .e.fremd { font-style: italic; color: var(--gedaempft); }
 
 /* --- Geschaeftsverweise (01.09.2026): anklickbare Absprung-Chips --------- */
 .verweise { display: flex; flex-wrap: wrap; gap: .4rem; }
@@ -2739,27 +2775,57 @@ async def kalender_seite(request):
         "select a.payload, a.created_at, l.id as lead_id, l.name "
         "from activities a left join leads l on l.id = a.lead_id "
         "where a.type = 'termin' order by a.created_at desc limit 200")
-    kommend, vergangen = [], []
+    kommend, vergangen, ohne_datum = [], [], []
+    # Doppelt belegte Zeitfenster sichtbar machen (01.09.2026 gefunden:
+    # zwei Termine mit derselben Person am selben Tag um dieselbe Zeit).
+    belegung = {}
     for z in zeilen:
         last = z["payload"] or {}
         tag = str(last.get("datum") or "")
+        if tag:
+            belegung[(tag, str(last.get("uhrzeit") or ""))] = \
+                belegung.get((tag, str(last.get("uhrzeit") or "")), 0) + 1
+    for z in zeilen:
+        last = z["payload"] or {}
+        tag = str(last.get("datum") or "")
+        zeit = str(last.get("uhrzeit") or "")
+        kontakt = (f'<a href="/kontakte/{_e(str(z["lead_id"]))}">'
+                   f'{_e(z["name"] or "(ohne Kontakt)")}</a>'
+                   if z["lead_id"] else _e(z["name"] or "—"))
+        if not tag:
+            # Eine Termin-Notiz ohne Datum ist eine OFFENE ANFRAGE
+            # („Donnerstag 16 Uhr — welcher?"), kein vergangener Termin.
+            # Sie stand als leere Zeile unter „Vergangen".
+            ohne_datum.append([
+                _zeit(z["created_at"]), kontakt,
+                _e(str(last.get("inhalt") or last.get("thema") or "")[:160])])
+            continue
+        marke = ('<span class="badge achtung">Doppelt belegt</span> '
+                 if belegung.get((tag, zeit), 0) > 1 else "")
         eintrag = [
-            _e(tag_lesbar(tag)),
-            _e(last.get("uhrzeit") or ""),
-            (f'<a href="/kontakte/{_e(str(z["lead_id"]))}">'
-             f'{_e(z["name"] or "(ohne Kontakt)")}</a>' if z["lead_id"]
-             else _e(z["name"] or "—")),
-            _e(str(last.get("thema") or "")[:80]),
+            _e(tag_lesbar(tag)), _e(zeit), kontakt,
+            marke + _e(str(last.get("thema") or "")[:80]),
             _e(str(last.get("ort") or "")[:60])]
         (kommend if tag >= heute.isoformat() else vergangen).append(
-            (tag, eintrag))
+            (tag + zeit, eintrag))
     kommend.sort(key=lambda p: p[0])
     vergangen.sort(key=lambda p: p[0], reverse=True)
 
+    # --- Das Gitter (01.09.2026): ein Kalender sieht aus wie ein Kalender.
+    monat = _monat_lesen(request.query_params.get("monat"), heute)
+    fremde, fremd_fehler = kalender.termine_lesen()
+    teile = [_monatsgitter(monat, zeilen, fremde)]
+
     kopf = ["Datum", "Zeit", "Kontakt", "Thema", "Ort"]
-    teile = [f"<h2>Kommende Termine ({len(kommend)})</h2>"]
+    teile.append(f"<h2>Kommende Termine ({len(kommend)})</h2>")
     teile.append(_tabelle(kopf, [e for _, e in kommend]) if kommend
                  else "<p>Kein Termin steht an.</p>")
+    if ohne_datum:
+        teile.append(f"<h2>Ohne festes Datum ({len(ohne_datum)})</h2>")
+        teile.append('<p class="meta">Terminanfragen, bei denen der Tag '
+                     'noch nicht feststeht.</p>')
+        teile.append(_tabelle(["Notiert", "Kontakt", "Worum es geht"],
+                              ohne_datum))
 
     offene = _offene_wiedervorlagen()
     teile.append(f"<h2>Offene Wiedervorlagen ({len(offene)})</h2>")
@@ -2767,8 +2833,8 @@ async def kalender_seite(request):
                  if offene else "<p>Nichts liegt wieder vor.</p>")
 
     # Der echte Kalender — nur lesend, und ein Ausfall kostet nur diesen
-    # Abschnitt.
-    fremde, fehler = kalender.termine_lesen()
+    # Abschnitt. (Oben im Gitter stehen dieselben Termine.)
+    fehler = fremd_fehler
     teile.append(f"<h2>Kalender ({len(fremde)})</h2>")
     if fehler:
         teile.append(f'<div class="hinweis">{_e(fehler)}</div>')
@@ -2787,6 +2853,85 @@ async def kalender_seite(request):
         teile.append(f"<h2>Vergangen ({len(vergangen)})</h2>")
         teile.append(_tabelle(kopf, [e for _, e in vergangen[:30]]))
     return _seite("Kalender", "".join(teile))
+
+
+_MONATSNAMEN = ("Januar", "Februar", "Maerz", "April", "Mai", "Juni", "Juli",
+                "August", "September", "Oktober", "November", "Dezember")
+_WOCHENTAGE = ("Mo", "Di", "Mi", "Do", "Fr", "Sa", "So")
+
+
+def _monat_lesen(roh, heute):
+    """'2026-09' -> (jahr, monat). Kaputtes faellt auf heute zurueck —
+    der Wert kommt aus der Adresszeile und ist damit Fremddatum."""
+    try:
+        jahr, monat = str(roh or "").split("-")
+        jahr, monat = int(jahr), int(monat)
+        if 1 <= monat <= 12 and 1970 <= jahr <= 2999:
+            return jahr, monat
+    except (ValueError, AttributeError):
+        pass
+    return heute.year, heute.month
+
+
+def _monat_versetzt(jahr: int, monat: int, schritte: int) -> str:
+    gesamt = (jahr * 12 + monat - 1) + schritte
+    return f"{gesamt // 12:04d}-{gesamt % 12 + 1:02d}"
+
+
+def _monatsgitter(monat, zeilen, fremde) -> str:
+    """Der Kalender als Gitter — Wochentage als Spalten, ein Kasten je Tag.
+
+    Zwei Quellen in EINEM Bild: die CRM-Termine (mit Kontaktbezug, als
+    Verweis) und die Eintraege aus dem echten Kalender (kursiv, ohne
+    Verweis — sie gehoeren keinem Kontakt). Alles Fremddatum ist escaped.
+    """
+    jahr, mon = monat
+    erster = date(jahr, mon, 1)
+    # Montag als erster Spaltentag (deutsche Woche).
+    vorlauf = erster.weekday()
+    tage_im_monat = (date(jahr + (mon == 12), mon % 12 + 1, 1)
+                     - erster).days
+
+    belegt = {}
+    for z in zeilen:
+        last = z["payload"] or {}
+        tag = str(last.get("datum") or "")
+        if not tag.startswith(f"{jahr:04d}-{mon:02d}"):
+            continue
+        belegt.setdefault(tag, []).append(
+            f'<a class="e" href="/kontakte/{_e(str(z["lead_id"]))}">'
+            f'{_e(str(last.get("uhrzeit") or ""))} '
+            f'{_e(str(last.get("thema") or z["name"] or "Termin")[:22])}</a>'
+            if z["lead_id"] else
+            f'<span class="e">{_e(str(last.get("thema") or "Termin")[:22])}'
+            f'</span>')
+    for t in fremde:
+        beginn = t["beginn"].astimezone(ZEITZONE) if ZEITZONE else t["beginn"]
+        tag = beginn.strftime("%Y-%m-%d")
+        if not tag.startswith(f"{jahr:04d}-{mon:02d}"):
+            continue
+        belegt.setdefault(tag, []).append(
+            f'<span class="e fremd">{beginn:%H:%M} '
+            f'{_e(str(t["titel"])[:22])}</span>')
+
+    heute_iso = date.today().isoformat()
+    kaesten = ['<div class="tagkopf">' + t + "</div>" for t in _WOCHENTAGE]
+    kaesten += ['<div class="tag leer"></div>'] * vorlauf
+    for nummer in range(1, tage_im_monat + 1):
+        iso = f"{jahr:04d}-{mon:02d}-{nummer:02d}"
+        klasse = "tag heute" if iso == heute_iso else "tag"
+        kaesten.append(
+            f'<div class="{klasse}" data-tag="{iso}">'
+            f'<div class="nummer">{nummer}</div>'
+            f'{"".join(belegt.get(iso, []))}</div>')
+
+    zurueck = _monat_versetzt(jahr, mon, -1)
+    vor = _monat_versetzt(jahr, mon, 1)
+    return (f'<div class="monatskopf">'
+            f'<a href="/kalender?monat={zurueck}">&larr;</a>'
+            f'<b>{_MONATSNAMEN[mon - 1]} {jahr}</b>'
+            f'<a href="/kalender?monat={vor}">&rarr;</a></div>'
+            f'<div class="monat">{"".join(kaesten)}</div>')
 
 
 def tag_lesbar(iso: str) -> str:

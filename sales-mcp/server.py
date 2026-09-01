@@ -1203,7 +1203,12 @@ def termin_bestaetigen(lead_id: str, datum: str, uhrzeit: str,
     # Der Kundenname geht in einen Dateinamen — also durch `slug` (Whitelist
     # [a-z0-9-]) und danach durch die Einbettungspruefung in
     # `report_schreiben`. Dasselbe zweistufige Muster wie bei der Uebergabe.
-    dateiname = f"termin-{recherche.slug(name)}-{tag.isoformat()}.ics"
+    # Die Uhrzeit gehoert in den Namen (gemessen 01.09.2026): zwei Termine
+    # mit derselben Person am selben Tag trugen denselben Dateinamen, und
+    # der zweite hat die Kalenderdatei des ersten ueberschrieben — der
+    # Betreiber haette den ersten Anhang verloren, ohne es zu merken.
+    dateiname = (f"termin-{recherche.slug(name)}-{tag.isoformat()}"
+                 f"-{zeit:%H%M}.ics")
     pfad, ueberschrieben, schreibfehler = None, False, None
     # Zweitschrift in den Ordner fuer erzeugte Unterlagen (01.09.2026,
     # Betreiber-Befund): bis dahin lag die .ics NUR in reports/ — und

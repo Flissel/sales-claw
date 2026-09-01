@@ -162,7 +162,9 @@ def _ics(antwort):
 def test_datei_entsteht_im_reportordner_mit_geslugtem_namen(tmp_path):
     antwort = _termin(_lead(name="Müller & Söhne ../../etc/passwd"))
     assert os.path.dirname(antwort["pfad"]) == os.path.realpath(str(tmp_path))
-    assert re.fullmatch(r"termin-[a-z0-9-]+-\d{4}-\d{2}-\d{2}\.ics",
+    # Mit Uhrzeit im Namen (01.09.2026): zwei Termine mit derselben Person
+    # am selben Tag ueberschrieben sich sonst die Kalenderdatei.
+    assert re.fullmatch(r"termin-[a-z0-9-]+-\d{4}-\d{2}-\d{2}-\d{4}\.ics",
                         os.path.basename(antwort["pfad"]))
     assert "mueller" in os.path.basename(antwort["pfad"])
 
@@ -603,3 +605,17 @@ def test_ics_ist_anhaengbar_und_geht_als_dokument(tmp_path, monkeypatch):
     assert fehler is None
     assert basis == "termin-max-2026-08-26.ics"
     assert medien.endpunkt_und_typ(basis) == ("send-document", "text/calendar")
+
+
+def test_zwei_termine_am_selben_tag_ueberschreiben_sich_nicht():
+    """Gemessen 01.09.2026: zwei Termine mit Sabrina Schmidt am 04.09.
+    trugen BEIDE den Pfad termin-sabrina-schmidt-2026-09-04.ics — der
+    zweite hat die Kalenderdatei des ersten ueberschrieben."""
+    lead = _lead()
+    erst = json.loads(server.termin_bestaetigen(
+        lead, "2099-09-04", "13:00", thema="Erstgespraech"))
+    zweit = json.loads(server.termin_bestaetigen(
+        lead, "2099-09-04", "15:00", thema="Team-Meeting"))
+    assert "fehler" not in erst and "fehler" not in zweit
+    assert erst["pfad"] != zweit["pfad"]
+    assert zweit.get("ueberschrieben") is not True

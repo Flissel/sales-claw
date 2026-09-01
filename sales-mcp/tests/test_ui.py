@@ -3161,3 +3161,83 @@ def test_medien_zeigt_erzeugte_getrennt(medienordner, tmp_path, monkeypatch):
     seite = _get("/medien").text
     assert "termin-x-2099-09-04.ics" in seite
     assert "Termine" in seite
+
+
+def test_zeiten_stehen_in_ortszeit_nicht_utc():
+    """01.09.2026 im Kalender gefunden: ein 12:00-Termin stand als
+    '10:00 UTC' da. In einem Kalender ist das nicht nur unschoen — wer
+    danach plant, verpasst den Termin."""
+    from datetime import datetime, timezone
+    dt = datetime(2026, 9, 2, 10, 0, tzinfo=timezone.utc)
+    assert ui._zeit(dt) == "02.09.2026 12:00"      # Europe/Berlin, Sommer
+    winter = datetime(2026, 1, 15, 10, 0, tzinfo=timezone.utc)
+    assert ui._zeit(winter) == "15.01.2026 11:00"  # Winterzeit
+    assert ui._zeit(None) == "—"
+
+
+def test_kalender_zeigt_terminanfragen_ohne_datum_getrennt():
+    """Eine `termin`-Aktivitaet ohne Datum ist eine offene Anfrage
+    ('Donnerstag 16 Uhr — welcher?'), kein vergangener Termin. Sie stand
+    als leere Zeile unter 'Vergangen'."""
+    lead = _lead(name="Lisa Probekunde")
+    server._q("insert into activities (lead_id, type, payload) values "
+              "(%s, 'termin', %s) returning id",
+              (lead, server._json({"inhalt": "Donnerstag 16 Uhr, unklar"})))
+    seite = _get("/kalender").text
+    assert "Ohne festes Datum" in seite
+    assert "Donnerstag 16 Uhr, unklar" in seite
+    assert "Vergangen" not in seite      # nichts Vergangenes vorhanden
+
+
+def test_kalender_warnt_bei_terminkollision():
+    lead = _lead(name="Sabrina Schmidt")
+    _termin(lead, "2099-09-04", uhrzeit="13:00", thema="Erstgespraech")
+    _termin(lead, "2099-09-04", uhrzeit="13:00", thema="Team-Meeting")
+    seite = _get("/kalender").text
+    assert "Doppelt belegt" in seite
+
+
+# ---------------------------------------------------------------------------
+# Monatsansicht (01.09.2026, Betreiber: „warum nicht wie eine normale
+# Kalenderansicht?"). Ein Kalender ist ein Gitter — Wochentage als
+# Spalten, ein Kasten je Tag, Termine darin. Die Listen darunter bleiben:
+# sie tragen, was ein Gitter nicht zeigen kann (Wiedervorlagen, Anfragen
+# ohne Datum, doppelt belegte Zeiten).
+# ---------------------------------------------------------------------------
+
+def test_kalender_hat_ein_monatsgitter():
+    seite = _get("/kalender").text
+    assert 'class="monat"' in seite
+    for tag in ("Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"):
+        assert f'>{tag}<' in seite
+
+
+def test_monatsgitter_zeigt_den_termin_im_richtigen_kasten():
+    lead = _lead(name="Sabrina Schmidt")
+    _termin(lead, "2099-09-04", uhrzeit="13:00", thema="Erstgespraech")
+    seite = _get("/kalender?monat=2099-09").text
+    assert "September 2099" in seite
+    assert "13:00" in seite and "Erstgespraech" in seite
+    # Der 4.9.2099 ist ein Freitag — der Kasten traegt sein Datum.
+    assert 'data-tag="2099-09-04"' in seite
+
+
+def test_monatsgitter_blaettert_vor_und_zurueck():
+    seite = _get("/kalender?monat=2099-09").text
+    assert 'href="/kalender?monat=2099-08"' in seite
+    assert 'href="/kalender?monat=2099-10"' in seite
+
+
+def test_monatsgitter_zeigt_auch_die_kalendertermine(monkeypatch):
+    from datetime import datetime, timezone
+    monkeypatch.setattr(ui.kalender, "termine_lesen", lambda **k: ([{
+        "beginn": datetime(2099, 9, 11, 8, 30, tzinfo=timezone.utc),
+        "titel": "Fremder Termin", "ort": "Zoom", "uid": "x"}], None))
+    seite = _get("/kalender?monat=2099-09").text
+    assert "Fremder Termin" in seite
+
+
+def test_kaputter_monat_faellt_auf_heute_zurueck():
+    for kaputt in ("2099-13", "quatsch", "2099", ""):
+        antwort = _get(f"/kalender?monat={kaputt}")
+        assert antwort.status_code == 200
