@@ -3035,3 +3035,22 @@ def test_kontaktseite_zeigt_die_geschaeftsverweise():
     assert "LinkedIn" in seite and "Instagram" in seite
     assert 'href="https://linkedin.com/company/x"' in seite
     assert 'rel="noopener noreferrer nofollow"' in seite
+
+
+@pytest.mark.parametrize("typ,erwartet", [
+    ("voice", "Sprachnachricht"),      # OpenWA schickt 'voice' — gemessen
+    ("ptt", "Sprachnachricht"),        # historische Schreibweise
+    ("audio", "Tonaufnahme"),
+    ("image", "Bild"),
+])
+def test_nachrichtentypen_werden_benannt(typ, erwartet):
+    """Live-Messung 01.09.2026: OpenWA liefert 'voice' (16 Nachrichten in
+    30 Tagen), die Benennung kannte nur 'ptt' — sie standen als 'ohne
+    Text' da, als waere nichts angekommen."""
+    lead = _lead()
+    server._q("insert into activities (lead_id, type, payload) values "
+              "(%s, 'kundenantwort', %s) returning id",
+              (lead, server._json({"text": "", "nachrichtentyp": typ,
+                                   "message_id": f"wa-{typ}-1"})))
+    seite = _get("/posteingang").text
+    assert erwartet in seite

@@ -867,7 +867,11 @@ def _nachricht_inhalt(text, typ) -> str:
     text = (text or "").strip()
     if text:
         return f'<div class="text">{_e(text)}</div>'
-    benennung = {"ptt": "Sprachnachricht", "audio": "Tonaufnahme",
+    # 'voice' ist die Schreibweise, die OpenWA tatsaechlich schickt
+    # (gemessen 01.09.2026: 16 Stueck in 30 Tagen); 'ptt' stand hier aus
+    # der WhatsApp-Web-Zeit und traf keine einzige Nachricht.
+    benennung = {"voice": "Sprachnachricht", "ptt": "Sprachnachricht",
+                 "audio": "Tonaufnahme",
                  "image": "Bild", "video": "Video",
                  "document": "Dokument", "sticker": "Sticker",
                  "location": "Standort"}.get(str(typ or "").lower(),

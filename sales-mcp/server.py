@@ -3127,8 +3127,20 @@ def digest() -> str:
                 "group by 1"):
         pipeline[_stufe_lesen(z["status"])] = (
             pipeline.get(_stufe_lesen(z["status"]), 0) + z["n"])
+    # Wen zuerst anfassen? (01.09.2026) — die hoechsten Punktzahlen aus
+    # dem letzten scoring_abgleichen(). Nur ANZEIGE; der Score entscheidet
+    # nichts (tests/test_scoring.py).
+    wichtigste = _q(
+        "select id::text as id, name, score from leads "
+        " where score is not null and coalesce(status, 'new') "
+        "       not in ('won', 'lost') and not "
+        + _archiv_sql("enrichment") +
+        " order by score desc, updated_at desc limit 5")
     return _json({"anzahl_entwuerfe": len(entwuerfe),
                   "pipeline": pipeline,
+                  "wichtigste_kontakte": [
+                      {"lead_id": w["id"], "kontakt": w["name"],
+                       "punkte": w["score"]} for w in wichtigste],
                   "offene_entwuerfe": [
                       {"draft_id": e["id"], "kanal": e["channel"],
                        "kontakt": e["name"]} for e in entwuerfe],
@@ -5415,6 +5427,96 @@ def kontakt_stufe_setzen(lead_id: str, stufe: str, begruendung: str) -> str:
     return _json({"lead_id": lead_id, "von": von, "nach": stufe})
 
 
+# ---------------------------------------------------------------------------
+# Lead-Scoring (01.09.2026). `leads.score`/`score_breakdown` standen seit
+# Stufe 1 im Schema und wurden nie benutzt — wie `consent_status` vor dem
+# UWG-Tor. Der Score misst NAEHE ZUM ABSCHLUSS aus vorhandenen Beweisen
+# und ENTSCHEIDET NICHTS: er sortiert die Aufmerksamkeit des Betreibers.
+# Jede Teilpunktzahl steht mit Namen in score_breakdown — eine Zahl ohne
+# Herleitung waere eine Behauptung. Vertraege: tests/test_scoring.py.
+# ---------------------------------------------------------------------------
+
+SCORE_STUFEN = {"neu": 0, "recherchiert": 5, "qualifiziert": 12,
+                "kontaktiert": 18, "geantwortet": 30, "termin": 40}
+SCORE_MAX = 100
+
+
+def _score_gespraech(lead_id: str) -> int:
+    """Wie lebendig ist das Gespraech? Antworten zaehlen, Schweigen nicht."""
+    zeilen = _q(
+        "select count(*) filter (where type = 'kundenantwort') as antworten,"
+        "       max(created_at) filter (where type = 'kundenantwort')"
+        "         as letzte"
+        "  from activities where lead_id = %s", (lead_id,))
+    if not zeilen or not zeilen[0]["antworten"]:
+        return 0
+    punkte = min(int(zeilen[0]["antworten"]) * 4, 20)
+    letzte = zeilen[0]["letzte"]
+    if letzte is not None:
+        tage = (datetime.now(timezone.utc) - letzte).days
+        # Frische zaehlt: wer gestern schrieb, ist heiss; wer vor einem
+        # Vierteljahr schrieb, ist es nicht mehr.
+        punkte += 10 if tage <= 3 else 6 if tage <= 14 else 2 if tage <= 60 \
+            else 0
+    return min(punkte, 30)
+
+
+@_gesichert
+def scoring_abgleichen() -> str:
+    """Alle aktiven Kontakte bewerten (0–100) und nach Dringlichkeit
+    sortieren — „wen zuerst anfassen?".
+
+    Gerechnet wird aus vorhandenen Beweisen: Pipeline-Stufe, Lebendigkeit
+    des Gespraechs (Anzahl und Frische der Kundenantworten), erfasster
+    Bedarf und Erreichbarkeit (Telefon/E-Mail/Einwilligung). Nichts wird
+    abgerufen, nichts erfunden. Der Score ENTSCHEIDET NICHTS — kein
+    Versand, keine Stufe, keine Freigabe haengt an ihm; er sortiert nur
+    die Liste. Die Herleitung steht je Kontakt in `score_breakdown`.
+
+    Abgeschlossene (gewonnen/verloren), private, archivierte und
+    System-Kontakte bleiben unbewertet. Idempotent — rufe es im
+    Routinelauf nach `stufen_abgleichen()` auf.
+    """
+    system = {kennung for kennung in (
+        UNBEKANNT_LEAD_ID, recherche.RECHERCHE_LEAD_ID,
+        LINKEDIN_POST_LEAD_ID, BETREIBER_MAIL_LEAD_ID) if kennung}
+    zeilen = _q(
+        "select id::text as id, name, status, phone, email, consent_status,"
+        "       enrichment from leads "
+        " where coalesce(status, 'new') not in ('won', 'lost') and not "
+        + _archiv_sql("enrichment"))
+    bewertet = []
+    for z in zeilen:
+        if (z["id"] in system or _privat(z["enrichment"])
+                or _loeschantrag(z["enrichment"])):
+            continue
+        anreicherung = z["enrichment"] or {}
+        bedarf = anreicherung.get("bedarf")
+        bedarf_anzahl = len(bedarf) if isinstance(bedarf, dict) else 0
+        erreichbar = 0
+        if (z["phone"] or "").strip():
+            erreichbar += 6
+        if (z["email"] or "").strip():
+            erreichbar += 4
+        if z["consent_status"] in EINWILLIGUNG_ARTEN:
+            erreichbar += 10
+        herleitung = {
+            "stufe": SCORE_STUFEN.get(_stufe_lesen(z["status"]), 0),
+            "gespraech": _score_gespraech(z["id"]),
+            "bedarf": min(bedarf_anzahl * 4, 20),
+            "erreichbarkeit": min(erreichbar, 20),
+        }
+        punkte = min(sum(herleitung.values()), SCORE_MAX)
+        _q("update leads set score = %s, score_breakdown = %s "
+           "where id = %s returning id",
+           (punkte, _json(herleitung), z["id"]))
+        bewertet.append({"lead_id": z["id"], "kontakt": z["name"],
+                         "punkte": punkte})
+    bewertet.sort(key=lambda e: e["punkte"], reverse=True)
+    return _json({"bewertet": len(bewertet),
+                  "spitzenreiter": bewertet[:10]})
+
+
 @_gesichert
 def stufen_abgleichen() -> str:
     """Pipeline-Stufen aus den BEWEISEN im Protokoll nachziehen — fuer
@@ -5760,7 +5862,11 @@ WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              betreiber_mail_entwurf, postfach_lesen, postfach_mail_lesen,
              # Pipeline-Automatik (01.09.2026): beweisbare Stufen
              # nachziehen, nur vorwaerts. Vertraege: tests/test_pipeline.py.
-             stufen_abgleichen)
+             stufen_abgleichen,
+             # Lead-Scoring (01.09.2026): Naehe zum Abschluss aus
+             # vorhandenen Beweisen, entscheidet nichts. Vertraege:
+             # tests/test_scoring.py.
+             scoring_abgleichen)
 
 for _fn in WERKZEUGE:
     mcp.tool()(_fn)

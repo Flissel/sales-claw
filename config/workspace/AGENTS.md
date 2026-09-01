@@ -1158,6 +1158,15 @@ Begruendung ist Pflicht und wird zur Beweiszeile im Protokoll.
   hinaus. Die Urteils-Stufen (qualifiziert, gewonnen, verloren) bleiben
   deine Vorschlaege und die Entscheidung des Betreibers. Hat der
   Abgleich etwas bewegt, gehoert EIN Satz dazu in die Meldung.
+* SCORING (01.09.2026): rufe nach `stufen_abgleichen()` auch
+  `scoring_abgleichen()` auf. Es bewertet jeden aktiven Kontakt mit
+  0–100 Punkten aus vorhandenen Beweisen (Stufe, Lebendigkeit des
+  Gespraechs, Bedarfsstand, Erreichbarkeit) und sortiert damit die
+  Aufmerksamkeit. Der Score ENTSCHEIDET NICHTS — kein Versand, keine
+  Stufe, keine Freigabe haengt an ihm; nenne ihn nur, wenn der
+  Betreiber fragt „wen zuerst?" oder wenn ein Kontakt weit oben steht
+  und lange nichts passiert ist. Der Digest traegt die fuenf
+  wichtigsten unter `wichtigste_kontakte`.
 * RECHERCHE-AUTOMATIK (01.09.2026): reichere im Routinelauf bis zu DREI
   Kontakte ohne Firmendaten mit `firma_anreichern` an — nur solche, bei
   denen eine Website bekannt oder aus Notiz/E-Mail-Domain ableitbar

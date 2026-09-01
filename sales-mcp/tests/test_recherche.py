@@ -543,8 +543,9 @@ def test_beide_werkzeuge_sind_registriert():
     # erfassen/widerrufen (F5, test_uwg.py). Betreiber-Postfach:
     # betreiber_mail_entwurf, postfach_lesen, postfach_mail_lesen
     # (test_betreiber_mail.py, test_postfach.py). Pipeline-Automatik:
-    # stufen_abgleichen (test_pipeline.py).
-    assert len(namen) == len(set(namen)) == 67
+    # stufen_abgleichen (test_pipeline.py) und scoring_abgleichen
+    # (test_scoring.py).
+    assert len(namen) == len(set(namen)) == 68
 
 # ---------------------------------------------------------------------------
 # Nachbesserungen aus dem Stufe-5-Review (Befunde T1, B2, D2)
