@@ -342,6 +342,27 @@ _CSP = ("default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; "
 _CSP_DATEI = "default-src 'none'; sandbox"
 
 
+def _dashboard_origin() -> str:
+    """Die Origin des OpenWA-Dashboards — nur, wenn sie sich einbetten
+    laesst (02.09.2026): eine HTTPS-Adresse, die der Browser des Betreibers
+    erreicht. Die Loopback-Vorgabe http://127.0.0.1:12785 zeigt auf die VM
+    selbst und waere im Rahmen ein leeres Feld; sie bleibt ein Verweis."""
+    try:
+        teile = urllib.parse.urlsplit(OPENWA_DASHBOARD_URL)
+    except ValueError:
+        return ""
+    if teile.scheme != "https" or not teile.netloc:
+        return ""
+    return f"https://{teile.netloc}"
+
+
+def _csp_mit_rahmen(origin: str) -> str:
+    """Die Seiten-Richtlinie plus GENAU EINE Rahmenquelle. Nur die
+    WhatsApp-Seite traegt sie; alle anderen Seiten behalten
+    `default-src 'none'` ohne frame-src — dort gibt es nichts zu rahmen."""
+    return f"{_CSP}; frame-src {origin}"
+
+
 def _mit_koepfen(send):
     """Legt die Schutz-Koepfe auf jede Antwort — auch auf die Host-Fehlerseite."""
     async def send_mit_koepfen(nachricht):
@@ -669,6 +690,10 @@ h2 { font-size: 1.05rem; margin-top: 2rem; }
           background: var(--kopfzeile); text-decoration: none;
           overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tag .e.fremd { font-style: italic; color: var(--gedaempft); }
+
+/* --- Eingebettetes OpenWA-Dashboard (02.09.2026) ------------------------- */
+.dashboard { width: 100%; height: 78vh; min-height: 32rem; border: 1px solid
+             var(--linie); border-radius: 4px; background: var(--flaeche); }
 
 /* --- Geschaeftsverweise (01.09.2026): anklickbare Absprung-Chips --------- */
 .verweise { display: flex; flex-wrap: wrap; gap: .4rem; }
@@ -2701,6 +2726,26 @@ async def whatsapp(request):
                      'Kundennachricht angekommen — der Weg vom Handy in den '
                      'Posteingang ist unbewiesen.</div>')
 
+    origin = _dashboard_origin()
+    if origin:
+        # Das Dashboard direkt hier (Betreiber-Wunsch 02.09.2026). Es laeuft
+        # unter seiner eigenen HTTPS-Adresse und laesst sich einbetten,
+        # weil OpenWA (Patch 0002) diese Origin als frame-ancestor kennt.
+        # Der Schluessel, den es braucht, wird IM Dashboard eingegeben und
+        # bleibt im Browser des Betreibers — sales-ui sieht ihn nie, die
+        # T5a-Grenze steht. Kein Meta-Refresh: der Rahmen wuerde jede
+        # Minute neu laden, und das Dashboard aktualisiert sich selbst.
+        teile.append(
+            f'<h2>OpenWA</h2>'
+            f'<iframe class="dashboard" src="{_e(OPENWA_DASHBOARD_URL)}" '
+            f'title="OpenWA-Oberflaeche" referrerpolicy="no-referrer"></iframe>'
+            f'<p class="meta">Einmal mit dem OpenWA-Schluessel anmelden — '
+            f'die Anmeldung bleibt auf diesem Geraet erhalten. '
+            f'<a href="{_e(OPENWA_DASHBOARD_URL)}" target="_blank" '
+            f'rel="noreferrer">In eigenem Tab oeffnen &rarr;</a></p>')
+        antwort = _seite("WhatsApp", "".join(teile))
+        antwort.headers["Content-Security-Policy"] = _csp_mit_rahmen(origin)
+        return antwort
     teile.append(
         f'<h2>Koppeln und Neustarten</h2>'
         f'<p>Diese Seite <b>liest nur</b>. Zum Koppeln, Neustarten oder '

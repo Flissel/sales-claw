@@ -1,0 +1,62 @@
+diff --git a/dashboard/src/App.tsx b/dashboard/src/App.tsx
+index bb012a2..8f6ac31 100644
+--- a/dashboard/src/App.tsx
++++ b/dashboard/src/App.tsx
+@@ -39,14 +39,18 @@ function AppContent() {
+   // handleLogin stores a fresh key would re-fire the startup re-validation effect below and
+   // double the /auth/validate request on every sign-in — the effect is for genuine page
+   // refreshes with a saved key only.
+-  const [savedKey] = useState(() => sessionStorage.getItem('openwa_api_key'));
++  // sales-claw local patch (2026-09-02, deploy/openwa-patches/0002-dashboard-embed.patch):
++  // localStorage instead of sessionStorage, so the login survives closing the tab and the
++  // dashboard embedded in sales-ui is signed in on every visit. The deployment is tailnet-only
++  // and the key stays on the operator's own device; logout still clears it.
++  const [savedKey] = useState(() => localStorage.getItem('openwa_api_key'));
+   const [isAuthenticated, setIsAuthenticated] = useState(!!savedKey);
+   const [, setApiKey] = useState(savedKey || '');
+   const { setRole, role } = useRole();
+ 
+   const handleLogin = (key: string, validatedRole?: string) => {
+     setApiKey(key);
+-    sessionStorage.setItem('openwa_api_key', key);
++    localStorage.setItem('openwa_api_key', key);
+ 
+     // The login page's validate response already carried the role, so no second /auth/validate
+     // round-trip is needed here. An absent or unrecognized role falls back to viewer, the
+@@ -60,7 +64,7 @@ function AppContent() {
+     setApiKey('');
+     setIsAuthenticated(false);
+     setRole(null);
+-    sessionStorage.removeItem('openwa_api_key');
++    localStorage.removeItem('openwa_api_key');
+     // Wipe the React Query cache too: it is keyed by resource, not actor, so without a full
+     // clear a logout → login in the same tab with a different key/scope shows the previous
+     // actor's sessions/messages/apiKeys/audit rows.
+diff --git a/src/main.ts b/src/main.ts
+index 80b5fa3..d4e6e51 100644
+--- a/src/main.ts
++++ b/src/main.ts
+@@ -216,11 +216,23 @@ async function bootstrap() {
+   });
+ 
+   // Enhanced Security Headers
++  //
++  // sales-claw local patch (2026-09-02, deploy/openwa-patches/0002-dashboard-embed.patch):
++  // DASHBOARD_FRAME_ANCESTORS lists additional origins (space-separated) that may embed the
++  // dashboard in an <iframe> — for us the sales-ui origin, so the WhatsApp tab can show OpenWA
++  // directly. Empty keeps upstream behaviour ('self' only). With extra ancestors the
++  // X-Frame-Options header is dropped: it cannot express a second origin, and browsers give
++  // CSP frame-ancestors precedence over it anyway.
++  const extraFrameAncestors = (process.env.DASHBOARD_FRAME_ANCESTORS ?? '')
++    .split(/\s+/)
++    .filter(Boolean);
+   app.use(
+     helmet({
++      ...(extraFrameAncestors.length > 0 ? { frameguard: false } : {}),
+       contentSecurityPolicy: {
+         directives: {
+           defaultSrc: ["'self'"],
++          frameAncestors: ["'self'", ...extraFrameAncestors],
+           // The bundled dashboard pulls webfonts from Google Fonts (CSS from fonts.googleapis.com,
+           // font files from fonts.gstatic.com). Now that NestJS serves the dashboard under this CSP,
+           // allow those origins or the @import'd fonts are blocked and the UI falls back to system fonts.

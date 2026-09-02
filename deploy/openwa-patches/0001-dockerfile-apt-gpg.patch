@@ -1,0 +1,28 @@
+diff --git a/Dockerfile b/Dockerfile
+index cd8f188..69a4ddc 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -146,9 +146,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
+ # libpq5 and the postgresql-client packages themselves are clean. Recheck with:
+ #   trivy image --vuln-type os,library --severity CRITICAL,HIGH --ignore-unfixed --ignorefile .trivyignore <image>
+ COPY scripts/pgdg-ACCC4CF8.asc /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+-RUN echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
++# LOCAL BUILD FIX (measured 2026-08-18, sales-claw Stufe 3 / T1, not pushed upstream):
++# this Debian bookworm apt (2.6.1) rejects an ASCII-armored `signed-by=` key outright
++# with "NO_PUBKEY 7FCC7D46ACCC4CF8" — reproduced in an isolated debian:bookworm-slim
++# container against the LIVE apt.postgresql.org InRelease file, whose signature key
++# (`gpg --verify`) is exactly B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8, i.e. the
++# vendored key above IS correct and current; only the ASCII-armor form fails apt's
++# signed-by parser here. Dearmoring the same key to a binary keyring first verifies
++# cleanly (same isolated-container test). gnupg is purged again afterwards to keep
++# the image at its documented package-count budget (see comment above).
++RUN apt-get update && apt-get install -y --no-install-recommends gnupg \
++    && gpg --dearmor -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.gpg /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
++    && rm /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
++    && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.gpg] \
+ http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
+     && apt-get update && apt-get install -y --no-install-recommends postgresql-client-17 \
++    && apt-get purge -y --auto-remove gnupg \
+     && rm -rf /var/lib/apt/lists/*
+ 
+ # Set Puppeteer to skip automatic download during npm install (we download it explicitly below)

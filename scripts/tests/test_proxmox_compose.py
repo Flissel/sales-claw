@@ -638,3 +638,12 @@ def test_ui_bekommt_den_kalender_aber_keine_sendemacht(tmp_path: Path) -> None:
     for verboten in ("OPENWA_API_KEY", "SMTP_PASSWORT", "APIFY_TOKEN",
                      "LINKEDIN_ACCESS_TOKEN", "INBOX_WEBHOOK_SECRET"):
         assert verboten not in umgebung
+
+
+def test_openwa_bekommt_die_frame_ancestors_leitung(tmp_path: Path) -> None:
+    """02.09.2026: das Dashboard darf nur aus derselben Origin eingebettet
+    werden (frame-ancestors 'self', hart in helmet). Der lokale Patch
+    0002 liest DASHBOARD_FRAME_ANCESTORS — ohne diese Leitung bliebe der
+    Patch wirkungslos und der WhatsApp-Tab zeigte einen leeren Rahmen."""
+    umgebung = rendered_config(tmp_path)["services"]["openwa"]["environment"]
+    assert "DASHBOARD_FRAME_ANCESTORS" in umgebung

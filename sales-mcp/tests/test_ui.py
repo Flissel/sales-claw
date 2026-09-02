@@ -3310,3 +3310,57 @@ def test_abgesagte_termine_verschwinden_aus_dem_kalender():
     seite = _get("/kalender").text
     assert "Erstgespraech" not in seite
     assert "Abgesagt (1)" in seite
+
+
+# ---------------------------------------------------------------------------
+# OpenWA direkt im WhatsApp-Tab (02.09.2026, Betreiber-Wunsch). Das
+# Dashboard laeuft unter seiner eigenen HTTPS-Adresse; eingebettet wird es
+# nur dann, und die Seite oeffnet ihr CSP GENAU fuer diese eine Origin.
+# Alle anderen Seiten behalten `default-src 'none'` ohne frame-src.
+# ---------------------------------------------------------------------------
+
+def _wa_stub(monkeypatch):
+    monkeypatch.setattr(ui, "OPENWA_VIEWER_KEY", "egal")
+    monkeypatch.setattr(ui, "OPENWA_SESSION_ID", "")
+    monkeypatch.setattr(ui, "_openwa_lesen", lambda pfad: ([], None))
+
+
+def test_whatsapp_tab_bettet_das_dashboard_ein(monkeypatch):
+    _wa_stub(monkeypatch)
+    monkeypatch.setattr(ui, "OPENWA_DASHBOARD_URL",
+                        "https://vm.beispiel.ts.net:8443/")
+    antwort = _get("/whatsapp")
+    assert antwort.status_code == 200
+    assert '<iframe class="dashboard" src="https://vm.beispiel.ts.net:8443/"' \
+        in antwort.text
+    csp = antwort.headers["content-security-policy"]
+    assert "frame-src https://vm.beispiel.ts.net:8443" in csp
+    assert csp.startswith("default-src 'none'")       # Rest bleibt hart
+    assert 'http-equiv="refresh"' not in antwort.text  # kein Minuten-Reload
+
+
+def test_loopback_dashboard_wird_nicht_eingebettet(monkeypatch):
+    """Die Vorgabe http://127.0.0.1:12785 zeigt auf die VM selbst — im
+    Browser des Betreibers ein leerer Rahmen. Sie bleibt ein Verweis."""
+    _wa_stub(monkeypatch)
+    monkeypatch.setattr(ui, "OPENWA_DASHBOARD_URL", "http://127.0.0.1:12785")
+    antwort = _get("/whatsapp")
+    assert "<iframe" not in antwort.text
+    assert 'href="http://127.0.0.1:12785"' in antwort.text
+    assert "frame-src" not in antwort.headers["content-security-policy"]
+
+
+def test_andere_seiten_oeffnen_kein_frame_src(monkeypatch):
+    monkeypatch.setattr(ui, "OPENWA_DASHBOARD_URL",
+                        "https://vm.beispiel.ts.net:8443/")
+    for pfad in ("/", "/kontakte", "/kalender", "/medien"):
+        csp = _get(pfad).headers["content-security-policy"]
+        assert "frame-src" not in csp, pfad
+
+
+def test_dashboard_url_ist_fremddatum_und_wird_escaped(monkeypatch):
+    _wa_stub(monkeypatch)
+    monkeypatch.setattr(ui, "OPENWA_DASHBOARD_URL",
+                        'https://vm.beispiel.ts.net:8443/"><script>x</script>')
+    text = _get("/whatsapp").text
+    assert "<script>x</script>" not in text

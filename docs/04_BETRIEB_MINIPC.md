@@ -166,3 +166,20 @@ neu. Derselbe Aufruf ist auch Passwort-Reset und Reaktivierung.
 <!-- Probe-Update fuer den Live-Beweis des Ausrollwegs (30.08.2026, Aufgabe 12). -->
 
 <!-- Zweiter Probelauf des Ausrollwegs (30.08.2026). -->
+
+## OpenWA-Patches (seit 02.09.2026)
+
+`openwa/upstream/` ist ein gitignoriertes Nested-Repo (Pin `97cba60`).
+Unsere Änderungen daran liegen versioniert unter `deploy/openwa-patches/`
+(README dort) und werden mit `bash deploy/openwa-patch-anwenden.sh`
+eingespielt — idempotent, mit `--check` vor jedem Apply. Bis dahin lag
+der Dockerfile-Patch nur als unversionierte Arbeitskopie im
+Unterordner; ein `git checkout` dort hätte ihn still verloren.
+
+Patch 0002 macht das Dashboard im WhatsApp-Tab einbettbar
+(`DASHBOARD_FRAME_ANCESTORS` in der `.env`, eigene Serve-Adresse
+`https://<vm>.ts.net:8443` via `tailscale serve --https=8443
+http://127.0.0.1:12785`). Wirkt erst nach Neubau des openwa-Images;
+ein openwa-Neustart kann die WhatsApp-Session kosten (01.09.2026
+gemessen) — also erst fertig bauen, dann einmal `up -d openwa`, dann
+Session prüfen und notfalls per Pairing-Code neu koppeln.

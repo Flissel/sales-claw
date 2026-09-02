@@ -63,6 +63,11 @@ services:
       # dem Container. Ohne das kaeme openwa nach einem Reboot zwar hoch, die
       # WhatsApp-Verbindung bliebe aber aus, bis jemand sie von Hand startet.
       - AUTO_START_SESSIONS=true
+      # Einbettung des Dashboards in sales-ui (02.09.2026): zusaetzliche
+      # Origins fuer CSP frame-ancestors, leerzeichengetrennt — bei uns die
+      # HTTPS-Adresse von sales-ui. Leer = wie upstream ('self'). Braucht
+      # deploy/openwa-patches/0002-dashboard-embed.patch im Image.
+      - DASHBOARD_FRAME_ANCESTORS=${DASHBOARD_FRAME_ANCESTORS:-}
       # --- Rate-Limiter an (Grundsatzentscheidung 4). Die "medium"-Stufe ist
       # laut .env.example die auf der API tatsaechlich erzwungene; Werte hier
       # explizit gesetzt (== Anwendungsdefault) um die Entscheidung sichtbar
