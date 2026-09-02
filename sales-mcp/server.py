@@ -1515,6 +1515,9 @@ def entwurf_erstellen(lead_id: str, kanal: str, text: str,
         basis, fehler = medien.pruefe(medien_datei)
         if fehler:
             return _json({"fehler": fehler})
+        gesperrt = _anhang_gesperrt(basis)
+        if gesperrt:
+            return _json({"fehler": gesperrt})
         # Gemessene Grenze des Media-Endpunkts (medien.py, Kopf): die
         # Bildunterschrift darf 1024 Zeichen haben, reiner Text 4096. Ein
         # laengerer Text wuerde erst beim Zustellen mit HTTP 400 auffallen —
@@ -1641,6 +1644,9 @@ def post_entwurf_erstellen(thema: str, text: str, medien_datei: str = "",
         basis, fehler = medien.pruefe(medien_datei)
         if fehler:
             return _json({"fehler": fehler})
+        gesperrt = _anhang_gesperrt(basis)
+        if gesperrt:
+            return _json({"fehler": gesperrt})
     # recipient ist NOT NULL — 'eigenes-profil' sagt, wohin der Post gehoert,
     # und ist fuer den Dispatcher bedeutungslos: der fasst channel='linkedin'
     # ohnehin nie an, Posts nehmen denselben Handversand-Weg wie
@@ -1673,10 +1679,64 @@ def medien_liste() -> str:
         return _json({"fehler": f"Medienordner nicht lesbar "
                                 f"({type(e).__name__}) — liegt der Ordner "
                                 f"{medien.MEDIA_VERZEICHNIS} am Container an?"})
-    return _json({"anzahl": len(eintraege),
-                  "dateien": [{"name": name, "groesse_bytes": groesse,
-                               "groesse": _lesbare_groesse(groesse)}
-                              for name, groesse in eintraege]})
+    # UI-Plan Schritt 4 (02.09.2026): der Betreiber entscheidet je Datei,
+    # ob der Bot sie senden darf. Gesperrtes wird GENANNT, nicht verschwiegen —
+    # sonst raet der Bot, warum eine Datei fehlt, die der Betreiber kennt.
+    meta = medien_meta_lesen()
+    dateien, gesperrt = [], []
+    for name, groesse in eintraege:
+        m = meta.get(name)
+        if m and not m["bot_darf_senden"]:
+            gesperrt.append(name)
+            continue
+        dateien.append({"name": name, "groesse_bytes": groesse,
+                        "groesse": _lesbare_groesse(groesse),
+                        "herkunft": _medien_herkunft(name, m)})
+    return _json({"anzahl": len(dateien), "dateien": dateien,
+                  "gesperrt": gesperrt})
+
+
+def medien_meta_lesen() -> dict:
+    """dateiname -> {bot_darf_senden, herkunft}. Ohne Zeile gilt: darf
+    senden, hochgeladen (der Bestand vor Schritt 4 bleibt unveraendert)."""
+    return {z["dateiname"]: {"bot_darf_senden": bool(z["bot_darf_senden"]),
+                             "herkunft": str(z["herkunft"])}
+            for z in _q("select dateiname, bot_darf_senden, herkunft "
+                        "from medien_meta")}
+
+
+def medien_meta_setzen(dateiname: str, bot_darf_senden=None,
+                       herkunft=None) -> None:
+    """Upsert; None laesst das jeweilige Feld, wie es ist."""
+    _q("insert into medien_meta (dateiname, bot_darf_senden, herkunft) "
+       "values (%s, coalesce(%s::boolean, true), "
+       "        coalesce(%s::text, 'hochgeladen')) "
+       "on conflict (dateiname) do update set "
+       "  bot_darf_senden = coalesce(%s::boolean, medien_meta.bot_darf_senden), "
+       "  herkunft = coalesce(%s::text, medien_meta.herkunft), "
+       "  updated_at = now() returning dateiname",
+       (dateiname, bot_darf_senden, herkunft, bot_darf_senden, herkunft))
+
+
+def _medien_herkunft(name: str, m) -> str:
+    """Ohne Zeile: was das System selbst erzeugt hat (Termine unter
+    ERZEUGT_VERZEICHNIS) ist 'system', alles andere 'hochgeladen'."""
+    if m:
+        return m["herkunft"]
+    if (os.path.exists(os.path.join(medien.erzeugt_wurzel(), name))
+            and not os.path.exists(os.path.join(medien.wurzel(), name))):
+        return "system"
+    return "hochgeladen"
+
+
+def _anhang_gesperrt(basis: str):
+    m = medien_meta_lesen().get(basis)
+    if m and not m["bot_darf_senden"]:
+        return (f"Die Datei '{basis}' ist fuer den Bot gesperrt — der "
+                f"Schalter „Bot darf senden\" in den Medien steht auf Aus. "
+                f"Kein Entwurf entstanden. Frag den Betreiber, ob er sie "
+                f"freigibt.")
+    return None
 
 
 def _lesbare_groesse(bytes_: int) -> str:

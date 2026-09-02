@@ -104,6 +104,18 @@ begin
         aktiv boolean not null default true,
         created_at timestamptz not null default now()
       )$ddl$, s);
+    -- UI-Plan Schritt 4 (02.09.2026): je Datei im Medienordner der
+    -- Schalter "Bot darf senden" und die Herkunft. Ohne Zeile gilt: darf
+    -- senden, hochgeladen — der Bestand bleibt unveraendert.
+    execute format($ddl$
+      create table if not exists %I.medien_meta (
+        dateiname text primary key
+          check (dateiname <> '' and dateiname !~ '[/\\]'),
+        bot_darf_senden boolean not null default true,
+        herkunft text not null default 'hochgeladen'
+          check (herkunft in ('hochgeladen','chat','system')),
+        updated_at timestamptz not null default now()
+      )$ddl$, s);
     execute format('create index if not exists leads_status_idx on %I.leads (status)', s);
     execute format('create index if not exists activities_lead_idx on %I.activities (lead_id, created_at desc)', s);
     execute format('create index if not exists drafts_status_idx on %I.drafts (status, created_at desc)', s);
@@ -128,6 +140,7 @@ grant select, insert         on sales.activities to sales_app;
 grant select, insert, update on sales.drafts   to sales_app;
 grant select, insert, update on sales.personas to sales_app;
 grant select, insert, update on sales.benutzer to sales_app;
+grant select, insert, update on sales.medien_meta to sales_app;
 -- Bewusst NICHT vergeben: DELETE (nirgends), UPDATE/TRUNCATE auf activities.
 
 -- Testschema: voll berechtigt inkl. TRUNCATE — die Test-Fixture setzt

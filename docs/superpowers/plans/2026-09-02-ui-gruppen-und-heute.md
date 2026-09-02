@@ -32,7 +32,7 @@ Rollout nur `sales-ui` (`git pull --ff-only && docker compose up -d
   Art (sent/failed/rejected; bei Terminen termin/termin_verschoben/
   termin_abgesagt), zwei Einträge im Block, volle Liste unter
   `/freigaben/verlauf/<art>`.
-- [ ] **4. Medien.** Tabelle `medien_meta` (dateiname, bot_darf_senden,
+- [x] **4a. Medien (Schalter, Herkunft, Bot-Filter).** Tabelle `medien_meta` (dateiname, bot_darf_senden,
   herkunft, gesendet_zuletzt); `medien_liste()` im Bot filtert;
   Eingang speichert Betreiber-Anhänge (nur eigene Nummer) nach
   `/media-erzeugt` mit Herkunft „Chat“.

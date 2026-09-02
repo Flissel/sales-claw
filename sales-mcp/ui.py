@@ -1344,6 +1344,13 @@ def _medien_tabelle():
                 f'liegt der Ordner am Container an?</p>')
     if not eintraege:
         return "<p>Noch keine Unterlagen.</p>"
+    # Schritt 4 (02.09.2026): Herkunft, Schalter „Bot darf senden" und der
+    # letzte Versand je Datei — aus drafts, nicht aus einer eigenen Spalte.
+    meta = server.medien_meta_lesen()
+    zuletzt = {str(z["media_ref"]): z["wann"] for z in server._q(
+        "select media_ref, max(sent_at) as wann from drafts "
+        "where status = 'sent' and media_ref is not null "
+        "group by media_ref")}
     gruppen = {}
     for name, groesse in eintraege:
         gruppen.setdefault(_medien_art(name), []).append((name, groesse))
@@ -1354,11 +1361,27 @@ def _medien_tabelle():
             continue
         teile.append(f"<h2>{_e(art)} ({len(dateien)})</h2>")
         teile.append(_tabelle(
-            ["Datei", "Groesse", "Ansicht", "Loeschen"],
+            ["Datei", "Groesse", "Herkunft", "Bot darf senden",
+             "Zuletzt gesendet", "Ansicht", "Loeschen"],
             [[_e(name), _e(_medien_groesse(groesse)),
+              _e(server._medien_herkunft(name, meta.get(name))),
+              _medien_schalter(name, meta.get(name)),
+              _e(_zeit(zuletzt[name])) if name in zuletzt else "—",
               _medien_vorschau(name), _medien_loeschen_knopf(name)]
              for name, groesse in dateien]))
     return "".join(teile)
+
+
+def _medien_schalter(name: str, m) -> str:
+    """Das Wort traegt den Zustand (An/Aus), der Knopf die Gegenrichtung."""
+    an = m is None or bool(m["bot_darf_senden"])
+    ziel, knopf = ("nein", "Sperren") if an else ("ja", "Freigeben")
+    return (f'<b>{"An" if an else "Aus"}</b> '
+            f'<form class="aktion" method="post" action="/medien/bot">'
+            f'<input type="hidden" name="name" value="{_e(name)}">'
+            f'<input type="hidden" name="erlaubt" value="{ziel}">'
+            f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+            f'<button>{knopf}</button></form>')
 
 
 def _medien_groesse(bytes_: int) -> str:
@@ -1629,6 +1652,28 @@ async def aktion_medien_hochladen(request):
             f"({_e(type(e).__name__)}). Haengt er an diesem Dienst ohne "
             f"`:ro`?"))
     LOG.info("Medien: %s abgelegt (%d Byte)", basis, geschrieben)
+    return RedirectResponse("/medien", status_code=303)
+
+
+@_gesichert_seite
+async def aktion_medien_bot(request):
+    """Schalter „Bot darf senden" je Datei (UI-Plan Schritt 4). Kennt nur
+    Dateien, die es gibt — fuer eine geloeschte Datei eine Zeile anzulegen
+    waere ein Geist in der Tabelle."""
+    form = await request.form()
+    if not _csrf_ok(form):
+        return _fehlerseite(403, "Abgewiesen",
+                            "Fehlende oder falsche CSRF-Marke.")
+    erlaubt = str(form.get("erlaubt") or "").strip()
+    if erlaubt not in ("ja", "nein"):
+        return _fehlerseite(400, "Unklarer Schalter",
+                            "erlaubt muss ja oder nein sein.")
+    basis, fehler = server.medien.pruefe(str(form.get("name") or ""))
+    if fehler:
+        return _fehlerseite(404, "Datei unbekannt", _e(fehler))
+    server.medien_meta_setzen(basis, bot_darf_senden=(erlaubt == "ja"))
+    LOG.info("Medien: %s fuer den Bot %s", basis,
+             "freigegeben" if erlaubt == "ja" else "gesperrt")
     return RedirectResponse("/medien", status_code=303)
 
 
@@ -4677,6 +4722,7 @@ app = Starlette(routes=[
     Route("/wiedervorlagen/erledigt", aktion_wiedervorlage_erledigt,
           methods=["POST"]),
     Route("/medien", medien),
+    Route("/medien/bot", aktion_medien_bot, methods=["POST"]),
     Route("/medien/datei/{name}", medien_datei),
     Route("/medien/loeschen", aktion_medien_loeschen,
           methods=["POST"]),
