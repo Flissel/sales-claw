@@ -66,9 +66,9 @@ echo "2) Probe"
 PROBE="$(docker compose exec -T sales-claw openclaw mcp probe rowboat --json 2>&1 | sieb || true)"
 ROT=0
 for w in rowboat_wissensquellen rowboat_wissensquelle rowboat_dokumente; do
-  if printf '%s' "$PROBE" | grep -q "\"$w\""; then echo "   ok   $w"; else echo "   FEHL $w"; ROT=$((ROT+1)); fi
+  if printf '%s' "$PROBE" | grep -q "rowboat__$w"; then echo "   ok   $w"; else echo "   FEHL $w"; ROT=$((ROT+1)); fi
 done
-if printf '%s' "$PROBE" | grep -q '"rowboat_datei_url"'; then
+if printf '%s' "$PROBE" | grep -q 'rowboat__rowboat_datei_url'; then
   echo "   FEHL rowboat_datei_url ist sichtbar — toolFilter greift nicht"; ROT=$((ROT+1))
 fi
 if [ "$ROT" -ne 0 ]; then
