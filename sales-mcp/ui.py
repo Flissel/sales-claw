@@ -3132,7 +3132,8 @@ def _wa_karten_und_kette(sitzung, sitzung_fehler, letzte) -> str:
     Posteingang -> Datenbank (UI-Plan Schritt 6). Jede Station traegt ihren
     letzten Beweis als Satz; die Farbe kommt dazu, nicht statt dessen."""
     cron = server._q("select max(created_at) as wann from activities "
-                     "where actor = 'cron'")[0]["wann"]
+                     "where actor = 'cron' or type in "
+                     "('stufenwechsel', 'transkription')")[0]["wann"]
     anzahl = server._q("select count(*) n from activities "
                        "where type = 'kundenantwort'")[0]["n"]
     kontakte = server._q("select count(*) n from leads")[0]["n"]
@@ -3178,7 +3179,7 @@ def _wa_karten_und_kette(sitzung, sitzung_fehler, letzte) -> str:
         f'<div class="karte"><div class="railtitel">Automatik</div>'
         f'<div>{automatik}</div>'
         f'<div class="meta">„antworten-pruefen“ alle 2 h · Beweis: '
-        f'Aktivitaeten mit actor=cron</div></div>'
+        f'gebuchte Stufenwechsel und Transkriptionen</div></div>'
         f'<div class="karte"><div class="railtitel">Kundennachrichten</div>'
         f'<div><b class="mono">{int(anzahl)}</b> gesamt</div>'
         f'<div class="meta">letzte: {_e(_zeit(letzte)) if letzte is not None else "keine"}'
