@@ -682,6 +682,8 @@ nav.seite a.aktiv { background: var(--aktiv); color: var(--gut); }
 .zaehler.offen { background: var(--achtung); color: var(--achtung_auf);
                  font-weight: 700; }
 nav.seite .abmelden { margin-top: auto; padding: 0 .5rem; }
+/* Vier-Tab-Leiste (Schritt 7): am Desktop unsichtbar. */
+.tabs { display: none; }
 /* --- Startseite „Heute" (UI-Plan Schritt 2): Aufgaben links, Lage
        rechts. Unter 768 px eine Spalte. ------------------------------ */
 .heute { display: flex; gap: 1.6rem; align-items: flex-start; }
@@ -722,8 +724,22 @@ nav.seite .abmelden { margin-top: auto; padding: 0 .5rem; }
               gap: .15rem; padding: .3rem .5rem; }
   nav.seite .marke, .gruppenname { display: none; }
   .gruppe { display: contents; }
+  /* Oben bleibt nur die aktive Gruppe — die anderen drei sitzen unten. */
+  nav.seite .gruppe:not(.aktiv-gruppe) { display: none; }
   nav.seite a { padding: .5rem .8rem; }
   nav.seite .abmelden { margin-left: auto; padding: 0; }
+  nav.tabs { display: flex; position: fixed; bottom: 0; left: 0; right: 0;
+             z-index: 5; background: var(--balken);
+             border-top: 1px solid var(--linie);
+             padding: .25rem .4rem calc(.4rem + env(safe-area-inset-bottom)); }
+  nav.tabs a { flex: 1 1 0; display: flex; flex-direction: column;
+               align-items: center; justify-content: center; gap: .1rem;
+               min-height: 56px; font-size: .7rem; font-weight: 600;
+               letter-spacing: .04em; color: var(--gedaempft);
+               text-decoration: none; }
+  nav.tabs a.aktiv { color: var(--balken_schrift); }
+  nav.tabs .zaehler { margin-left: 0; }
+  main { padding-bottom: 6rem; }
 }
 
 h1 { font-size: 1.3rem; margin: .2rem 0 .8rem; }
@@ -1067,8 +1083,16 @@ def _seitenleiste(abmelden: str) -> str:
     zaehler = _zaehler()
     teile = ['<nav class="seite"><div class="marke">'
              '<span class="logo">S</span><span>sales-claw</span></div>']
+    # Die Gruppe der aktiven Seite: am Handy die einzige, die oben als
+    # Zeile bleibt (Schritt 7); ohne Treffer die erste (Aufgaben).
+    gruppe_aktiv = _GRUPPEN[0][0]
     for gruppe, eintraege in _GRUPPEN:
-        teile.append(f'<div class="gruppe"><div class="gruppenname">'
+        for pfad, _ in eintraege:
+            if pfad == aktiv or (pfad != "/" and aktiv.startswith(pfad + "/")):
+                gruppe_aktiv = gruppe
+    for gruppe, eintraege in _GRUPPEN:
+        marke = " aktiv-gruppe" if gruppe == gruppe_aktiv else ""
+        teile.append(f'<div class="gruppe{marke}"><div class="gruppenname">'
                      f'{_e(gruppe)}</div>')
         for pfad, name in eintraege:
             ist_aktiv = (pfad == aktiv or
@@ -1083,6 +1107,19 @@ def _seitenleiste(abmelden: str) -> str:
                          f'{zahl}</a>')
         teile.append("</div>")
     teile.append(abmelden)
+    teile.append("</nav>")
+    # Vier-Tab-Leiste (Schritt 7): immer im HTML, am Desktop per CSS
+    # verborgen, am Handy fest am unteren Rand. Jeder Tab fuehrt auf die
+    # erste Seite seiner Gruppe; der Aufgaben-Tab traegt den Heute-Zaehler.
+    teile.append('<nav class="tabs">')
+    for gruppe, eintraege in _GRUPPEN:
+        pfad = eintraege[0][0]
+        klasse = "tab aktiv" if gruppe == gruppe_aktiv else "tab"
+        zahl = ""
+        if pfad == "/" and int(zaehler.get("/", 0) or 0) > 0:
+            zahl = f'<span class="zaehler offen">{int(zaehler["/"])}</span>'
+        teile.append(f'<a class="{klasse}" href="{pfad}"><span>{_e(gruppe)}'
+                     f'</span>{zahl}</a>')
     teile.append("</nav>")
     return "".join(teile)
 
