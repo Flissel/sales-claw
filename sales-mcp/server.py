@@ -56,6 +56,7 @@ import medien
 # eines ohne Rückimport: recherche.py kennt weder Datenbank noch Werkzeuge,
 # nur HTTP, Normalisierung und Markdown (Begründung im Moduldocstring).
 import recherche
+import rowboat
 # Termine (Stufe 9): ICS-Text und der optionale CalDAV-Eintrag. Wieder ein
 # Modul ohne Datenbank und ohne Rückimport — und der einzige Ort, an dem
 # der neue ausgehende Pfad dieser Stufe steht.
@@ -6103,7 +6104,32 @@ def linkedin_versand_ergebnis() -> str:
     return _ergebnis_lesen("linkedin")
 
 
+@_gesichert
+def wissensbasis_fragen(frage: str) -> str:
+    """Die VibeMind-Wissensbasis (Rowboat) in natuerlicher Sprache fragen.
+
+    Anders als die drei rowboat_*-Werkzeuge des Gateways (Quellen und
+    Dokumente auflisten) laesst dieses Werkzeug Rowboat selbst im Index
+    nachschlagen und antworten — fuer „was kann VibeMind bei X?" ist das der
+    kuerzere Weg als zehn Dokumente zu lesen. Nur lesend; die Antwort ist
+    Material fuer dein Gespraech, kein Zitat fuer den Kunden (Produktfakten
+    ja, interne Namen/Pfade/Termine nein — siehe AGENTS.md).
+
+    Fehlt die Konfiguration oder ist Rowboat nicht erreichbar, steht das
+    als `fehler` in der Rueckgabe; erfinde dann keine Produktaussage.
+    """
+    if not (frage or "").strip():
+        return _json({"fehler": "frage fehlt"})
+    r = rowboat.frage(frage.strip())
+    if not r.get("ok"):
+        return _json({"fehler": r.get("fehler", "Wissensbasis antwortet nicht"),
+                      "dauer_ms": r.get("dauer_ms", 0)})
+    return _json({"antwort": r.get("antwort", ""), "dauer_ms": r.get("dauer_ms", 0),
+                  "hinweis": "Material fuer dich — an Kunden nur Produktfakten in eigenen Worten."})
+
+
 WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
+             wissensbasis_fragen,
              kontakt_freigeben, kontakt_freigabe_entziehen,
              kontakte_freigegeben,
              # Archivieren statt Loeschen — als CHAT-Werkzeuge, nicht nur in
