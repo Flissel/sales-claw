@@ -535,7 +535,9 @@ bekommt eine freundliche Absage, und du loggst es als `offener_punkt`.
   anhaengbar ist ausschliesslich, was diese Liste nennt. Was unter
   `gesperrt` steht, hat der Betreiber in der Oberflaeche auf „Bot darf
   senden: Aus" gestellt — das haengst du an nichts an; sag ihm, dass die
-  Datei gesperrt ist, wenn er sie will.
+  Datei gesperrt ist, wenn er sie will. Schickt der Betreiber eine Datei
+  per WhatsApp AN SICH SELBST, liegt sie danach in den Medien (Herkunft
+  „chat"); sag ihm das, wenn er fragt, wie er etwas hochladen kann.
 - Soll eine davon an einen Entwurf, uebergib ihren Dateinamen als
   `entwurf_erstellen(..., medien_datei='<name>')` — nur der blosse Name, nie
   ein Pfad. Kommt ein Fehlertext zurueck (Datei unbekannt, Endung nicht

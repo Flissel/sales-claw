@@ -663,3 +663,21 @@ def test_openwa_vertraut_dem_serve_proxy_und_weitet_die_ratenfenster(
     assert umgebung["RATE_LIMIT_SHORT_LIMIT"] == "40"
     assert umgebung["RATE_LIMIT_MEDIUM_LIMIT"] == "400"
     assert umgebung["RATE_LIMIT_LONG_LIMIT"] == "4000"
+
+
+def test_media_erzeugt_schreiben_nur_mcp_und_inbox(tmp_path: Path) -> None:
+    """UI-Plan 4b (02.09.2026): der erzeugte Medienordner wird von sales-mcp
+    (Termine) und sales-inbox (Upload per WhatsApp an sich selbst)
+    geschrieben — alle anderen lesen nur."""
+    dienste = rendered_config(tmp_path)["services"]
+
+    def bind(name):
+        return next((v for v in (dienste[name].get("volumes") or [])
+                     if str(v.get("target")) == "/media-erzeugt"), None)
+
+    for schreiber in ("sales-mcp", "sales-inbox"):
+        b = bind(schreiber)
+        assert b is not None and not b.get("read_only"), schreiber
+    for leser in ("sales-ui", "sales-linkedin"):
+        b = bind(leser)
+        assert b is not None and b.get("read_only") is True, leser

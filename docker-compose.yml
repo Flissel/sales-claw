@@ -229,6 +229,10 @@ services:
       # Eigenes Volume statt media/: das ist Kundeninhalt, kein
       # Versandmaterial, und es soll nicht in der /medien-Ansicht landen.
       - sales-sprachnachrichten:/sprachnachrichten
+      # Upload per WhatsApp (02.09.2026, UI-Plan 4b): eine Datei an sich
+      # selbst landet im erzeugten Medienordner — der zweite Dienst neben
+      # sales-mcp, der dort schreibt (Vertrag: test_proxmox_compose).
+      - ./media-erzeugt:/media-erzeugt
     stop_grace_period: 15s
     logging:
       driver: json-file

@@ -170,6 +170,8 @@ import os
 import signal
 import sys
 import threading
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
@@ -192,6 +194,14 @@ SECRET = os.environ.get("INBOX_WEBHOOK_SECRET", "")
 # 16 in 30 Tagen); 'ptt' und 'audio' kommen daneben vor.
 SPRACH_VERZEICHNIS = os.environ.get("SPRACH_DIR", "/sprachnachrichten")
 SPRACH_TYPEN = ("voice", "ptt", "audio")
+# UI-Plan Schritt 4b (02.09.2026): Anhaenge, die der Betreiber AN SICH SELBST
+# schickt, sind ein Upload in die Medien (Herkunft "chat"). Nur diese Typen,
+# nur in den erzeugten Ordner (der einzige, den dieser Dienst schreibt).
+ANHANG_TYPEN = ("image", "video", "document")
+ERZEUGT_VERZEICHNIS = os.environ.get("MEDIA_ERZEUGT_DIR", "/media-erzeugt")
+_ANHANG_ENDUNG = {"application/pdf": ".pdf", "image/jpeg": ".jpg",
+                  "image/png": ".png", "video/mp4": ".mp4",
+                  "audio/mpeg": ".mp3", "audio/ogg": ".ogg"}
 SPRACH_MAX_BYTES = int(os.environ.get("SPRACH_MAX_BYTES",
                                       str(25 * 1024 * 1024)))
 UNBEKANNT_LEAD_ID = os.environ.get("INBOX_UNBEKANNT_LEAD_ID", "")
@@ -690,6 +700,16 @@ def _ausgehend(daten: dict, message_id: str):
     """
     grund = selbst_chat_grund(daten)
     if grund:
+        # Schritt 4b: eine Datei an sich selbst ist ein Upload in die
+        # Medien. Alles andere im Selbst-Chat bleibt verworfen wie bisher —
+        # und auch der Anhang wird NIE als Nachricht gebucht.
+        if grund.startswith("Selbst-Chat"):
+            name, warum = _anhang_sichern(daten, message_id)
+            if name:
+                return 200, {"verworfen": grund, "medien": name}
+            if warum:
+                LOG.info("Selbst-Chat-Anhang nicht uebernommen: %s", warum)
+                return 200, {"verworfen": grund, "anhang_abgelehnt": warum}
         LOG.info("Eigene Nachricht verworfen: %s", grund)
         return 200, {"verworfen": grund}
 
@@ -790,6 +810,103 @@ def _audio_sichern(daten: dict, message_id: str):
         return None
     LOG.info("Sprachnachricht gesichert (%d Bytes).", len(audio))
     return name
+
+
+def _medien_nachladen(chat_id: str, message_id: str) -> bytes:
+    """Ueber-Cap-Anhaenge kommen im Webhook nur als Marker (omitted: true);
+    die Bytes liefert GET /messages/:chatId/:messageId/media (OPERATOR-
+    Schluessel, den dieser Dienst ohnehin traegt)."""
+    basis = os.environ.get("OPENWA_URL", "").rstrip("/")
+    sitzung = os.environ.get("OPENWA_SESSION_ID", "")
+    schluessel = os.environ.get("OPENWA_API_KEY", "")
+    if not (basis and sitzung and schluessel):
+        raise RuntimeError("OpenWA-Zugang fuer das Nachladen fehlt")
+    url = (f"{basis}/api/sessions/{urllib.parse.quote(sitzung, safe='')}"
+           f"/messages/{urllib.parse.quote(chat_id, safe='')}"
+           f"/{urllib.parse.quote(message_id, safe='')}/media")
+    anfrage = urllib.request.Request(url, headers={"X-Api-Key": schluessel})
+    with urllib.request.urlopen(anfrage, timeout=30) as antwort:
+        return antwort.read(server.medien.MAX_BYTES + 1)
+
+
+def _anhang_bytes(daten: dict, message_id: str):
+    """-> (bytes | None, media-dict | None)."""
+    medien = daten.get("media")
+    if not isinstance(medien, dict):
+        return None, None
+    if medien.get("omitted") is True:
+        chat = str(daten.get("chatId") or daten.get("to") or "")
+        try:
+            return _medien_nachladen(chat, message_id), medien
+        except Exception as e:  # Netz, HTTP, fehlende Konfiguration
+            LOG.warning("Anhang nicht nachladbar (%s).", type(e).__name__)
+            return None, medien
+    roh = medien.get("data")
+    if not roh:
+        return None, medien
+    try:
+        return base64.b64decode(roh, validate=True), medien
+    except (ValueError, TypeError):
+        return None, medien
+
+
+def _anhang_sichern(daten: dict, message_id: str):
+    """Selbst-Chat-Anhang -> (dateiname, None) | (None, grund) |
+    (None, None), wenn die Nachricht gar keinen Anhang traegt.
+
+    Geschrieben wird atomar (.teil -> os.replace) in ERZEUGT_VERZEICHNIS;
+    ein vorhandener Name wird nie ueberschrieben (-2, -3, …). Erlaubt ist
+    nur, was medien.pruefe_neuen_namen nimmt — der Bot kann spaeter nur
+    senden, was WhatsApp auf allen Geraeten abspielt.
+    """
+    if str(daten.get("type") or "").lower() not in ANHANG_TYPEN:
+        return None, None
+    inhalt, medien = _anhang_bytes(daten, message_id)
+    if medien is None:
+        return None, None
+    if not inhalt:
+        return None, "Anhang ohne lesbare Daten"
+    if len(inhalt) > server.medien.MAX_BYTES:
+        return None, (f"Anhang groesser als "
+                      f"{server.medien.MAX_BYTES // 1048576} MB")
+    mimetype = str(medien.get("mimetype") or "").split(";")[0].strip().lower()
+    name = str(medien.get("filename") or "").strip()
+    if name:
+        basis, fehler = server.medien.pruefe_neuen_namen(name)
+        if fehler:
+            return None, fehler
+    elif mimetype in _ANHANG_ENDUNG:
+        basis = ("chat-" + hashlib.sha256(message_id.encode("utf-8"))
+                 .hexdigest()[:12] + _ANHANG_ENDUNG[mimetype])
+    else:
+        return None, f"Dateityp {mimetype or 'unbekannt'} ist nicht erlaubt"
+    stamm, endung = os.path.splitext(basis)
+    ziel = os.path.join(ERZEUGT_VERZEICHNIS, basis)
+    laufnummer = 2
+    while os.path.exists(ziel):
+        basis = f"{stamm}-{laufnummer}{endung}"
+        ziel = os.path.join(ERZEUGT_VERZEICHNIS, basis)
+        laufnummer += 1
+    zwischen = ziel + ".teil"
+    try:
+        os.makedirs(ERZEUGT_VERZEICHNIS, exist_ok=True)
+        with open(zwischen, "wb") as datei:
+            datei.write(inhalt)
+        os.replace(zwischen, ziel)
+    except OSError as e:
+        try:
+            os.unlink(zwischen)
+        except OSError:
+            pass
+        return None, f"Medienordner nicht beschreibbar ({type(e).__name__})"
+    try:
+        server.medien_meta_setzen(basis, herkunft="chat")
+    except psycopg.Error as e:
+        LOG.warning("Herkunft fuer %s nicht gebucht (%s).", basis,
+                    type(e).__name__)
+    LOG.info("Anhang aus dem Selbst-Chat uebernommen: %s (%d Bytes)",
+             basis, len(inhalt))
+    return basis, None
 
 
 def _buchen(typ: str, actor: str, chat_id, nummern_fehler, nutzlast: dict,

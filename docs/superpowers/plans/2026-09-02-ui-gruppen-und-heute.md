@@ -32,7 +32,7 @@ Rollout nur `sales-ui` (`git pull --ff-only && docker compose up -d
   Art (sent/failed/rejected; bei Terminen termin/termin_verschoben/
   termin_abgesagt), zwei Einträge im Block, volle Liste unter
   `/freigaben/verlauf/<art>`.
-- [x] **4a. Medien (Schalter, Herkunft, Bot-Filter).** Tabelle `medien_meta` (dateiname, bot_darf_senden,
+- [x] **4. Medien (4a Schalter/Herkunft/Bot-Filter, 4b Upload per WhatsApp an sich selbst).** Tabelle `medien_meta` (dateiname, bot_darf_senden,
   herkunft, gesendet_zuletzt); `medien_liste()` im Bot filtert;
   Eingang speichert Betreiber-Anhänge (nur eigene Nummer) nach
   `/media-erzeugt` mit Herkunft „Chat“.
@@ -41,7 +41,7 @@ Rollout nur `sales-ui` (`git pull --ff-only && docker compose up -d
 - [x] **6. Monitoring.** Kette Handy → OpenWA → Webhook → Posteingang →
   Datenbank mit letztem Beweis je Station; Abnahme-Ergebnis aus
   `update-status.json`; Dashboard-Rahmen bleibt.
-- [ ] **7. Handy.** Seitenleiste wird unter 768 px zur Vier-Tab-Leiste.
+- [x] **7. Handy.** Seitenleiste wird unter 768 px zur Vier-Tab-Leiste.
 
 Bewusst nicht: Google-Fonts (CSP `default-src 'none'` lässt keine
 fremden Schriften; Plex Sans nur, wenn wir sie selbst ausliefern —
