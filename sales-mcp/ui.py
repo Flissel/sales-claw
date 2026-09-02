@@ -809,6 +809,26 @@ h2 { font-size: 1.05rem; margin-top: 2rem; }
                                    color: var(--achtung_auf); }
 .badge.termin { background: transparent; color: var(--schrift);
                 border: 1px solid var(--linie_stark); }
+/* --- Monitoring (Schritt 6): Zustandskarten und Kette ---------------- */
+.karten3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+           gap: .8rem; margin-top: .4rem; }
+.karten3 .karte { margin: 0; }
+.kette { display: flex; align-items: flex-start; gap: .3rem;
+         overflow-x: auto; padding: .4rem 0 .6rem; }
+.schritt { flex: 1 1 0; min-width: 8.5rem; }
+.punkt { display: inline-block; width: .65rem; height: .65rem;
+         border-radius: 999px; margin-right: .4rem; vertical-align: middle;
+         background: var(--neutral); }
+.punkt.gut { background: var(--gut); }
+.punkt.warnung { background: var(--achtung); }
+.punkt.gefahr { background: var(--fehler); }
+.strich { flex: 0 0 1.2rem; height: 2px; background: var(--linie_stark);
+          margin-top: .6rem; }
+@media (max-width: 767px) {
+  .karten3 { grid-template-columns: minmax(0, 1fr); }
+  .kette { flex-direction: column; }
+  .strich { display: none; }
+}
 /* --- Kontaktliste (Schritt 5): Stufe-Chip, Score-Pille, Segment ------ */
 .stufe { display: inline-block; padding: .1rem .55rem; border-radius: 999px;
          border: 1px solid var(--linie_stark); font-size: .8rem;
@@ -3067,6 +3087,69 @@ def _openwa_lesen(pfad: str):
                       "openwa?")
 
 
+KETTE_STILL_H = 48      # ab so vielen Stunden ohne Kundennachricht: gelb
+
+
+def _wa_karten_und_kette(sitzung, sitzung_fehler, letzte) -> str:
+    """Drei Zustandskarten und die Kette Handy -> OpenWA -> Webhook ->
+    Posteingang -> Datenbank (UI-Plan Schritt 6). Jede Station traegt ihren
+    letzten Beweis als Satz; die Farbe kommt dazu, nicht statt dessen."""
+    cron = server._q("select max(created_at) as wann from activities "
+                     "where actor = 'cron'")[0]["wann"]
+    anzahl = server._q("select count(*) n from activities "
+                       "where type = 'kundenantwort'")[0]["n"]
+    kontakte = server._q("select count(*) n from leads")[0]["n"]
+    stunden = None
+    if letzte is not None:
+        stunden = (server._q("select extract(epoch from (now() - %s))/3600 h",
+                             (letzte,))[0]["h"] or 0)
+
+    wort, klasse = sitzung
+    if sitzung_fehler:
+        wort, klasse = "nicht lesbar", "gefahr"
+    openwa_punkt = "gut" if klasse == "gut" else (
+        "gefahr" if klasse == "gefahr" else "warnung")
+    if letzte is None:
+        handy = ("warnung", "noch nie eine Kundennachricht — unbewiesen")
+    elif stunden is not None and stunden > KETTE_STILL_H:
+        handy = ("warnung", f"letzte Kundennachricht {_zeit(letzte)}, "
+                            f"seit {stunden:.0f} h nichts")
+    else:
+        handy = ("gut", f"letzte Kundennachricht {_zeit(letzte)}")
+    stationen = [
+        ("Handy", handy[0], handy[1]),
+        ("OpenWA", openwa_punkt,
+         (sitzung_fehler or f"Sitzung {wort}")),
+        ("Webhook", handy[0],
+         ("Zustellung belegt durch die letzte Kundennachricht"
+          if letzte is not None else "noch keine Zustellung belegt")),
+        ("Posteingang", "gut" if letzte is not None else "warnung",
+         (f"{anzahl} Kundennachrichten gebucht" if letzte is not None
+          else "noch nichts gebucht — unbewiesen")),
+        ("Datenbank", "gut", f"{kontakte} Kontakte, {anzahl} Kundenantworten"),
+    ]
+    kette = '<span class="strich"></span>'.join(
+        f'<div class="schritt"><span class="punkt {_e(p)}"></span>'
+        f'<b>{_e(name)}</b><div class="meta">{_e(beweis)}</div></div>'
+        for name, p, beweis in stationen)
+    automatik = (f'letzter Lauf {_e(_zeit(cron))}' if cron is not None
+                 else 'noch kein Lauf gebucht')
+    karten = (
+        f'<div class="karten3">'
+        f'<div class="karte"><div class="railtitel">Sitzung</div>'
+        f'<span class="badge {_e(klasse)}">{_e(wort)}</span></div>'
+        f'<div class="karte"><div class="railtitel">Automatik</div>'
+        f'<div>{automatik}</div>'
+        f'<div class="meta">„antworten-pruefen“ alle 2 h · Beweis: '
+        f'Aktivitaeten mit actor=cron</div></div>'
+        f'<div class="karte"><div class="railtitel">Kundennachrichten</div>'
+        f'<div><b class="mono">{int(anzahl)}</b> gesamt</div>'
+        f'<div class="meta">letzte: {_e(_zeit(letzte)) if letzte is not None else "keine"}'
+        f'</div></div></div>')
+    return (f'{karten}<h2>Weg vom Handy in die Datenbank</h2>'
+            f'<div class="kette">{kette}</div>')
+
+
 @_gesichert_seite
 async def whatsapp(request):
     """Der WhatsApp-Zustand auf einen Blick.
@@ -3081,6 +3164,7 @@ async def whatsapp(request):
     # „WhatsApp" zweimal untereinander (02.09.2026 im Browser gefunden).
     teile = []
 
+    sitzung = ("unbekannt", "warnung")
     sitzungen, fehler = _openwa_lesen("/api/sessions")
     if fehler:
         teile.append(f'<div class="warnung"><b>Kein Zustand lesbar.</b> '
@@ -3098,6 +3182,7 @@ async def whatsapp(request):
                 zustand, (zustand, "warnung",
                           "Unbekannter Zustand — in der OpenWA-Oberflaeche "
                           "nachsehen."))
+            sitzung = (wort, klasse)
             teile.append(
                 f'<div class="karte"><h2>{_e(wort)} '
                 f'<span class="badge {klasse}">{_e(zustand)}</span></h2>'
@@ -3140,6 +3225,8 @@ async def whatsapp(request):
         teile.append('<div class="warnung">Es ist noch NIE eine '
                      'Kundennachricht angekommen — der Weg vom Handy in den '
                      'Posteingang ist unbewiesen.</div>')
+
+    teile.append(_wa_karten_und_kette(sitzung, fehler, letzte))
 
     origin = _dashboard_origin()
     if origin:

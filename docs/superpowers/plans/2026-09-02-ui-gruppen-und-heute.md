@@ -38,7 +38,7 @@ Rollout nur `sales-ui` (`git pull --ff-only && docker compose up -d
   `/media-erzeugt` mit Herkunft „Chat“.
 - [x] **5. Kontakte.** Tabelle ohne Formular je Zeile, Autonomie als
   Segment, Score-Spalte; Aktionen bleiben auf der Kontaktseite.
-- [ ] **6. Monitoring.** Kette Handy → OpenWA → Webhook → Posteingang →
+- [x] **6. Monitoring.** Kette Handy → OpenWA → Webhook → Posteingang →
   Datenbank mit letztem Beweis je Station; Abnahme-Ergebnis aus
   `update-status.json`; Dashboard-Rahmen bleibt.
 - [ ] **7. Handy.** Seitenleiste wird unter 768 px zur Vier-Tab-Leiste.
