@@ -145,7 +145,7 @@ def test_post_mit_falschem_csrf_token_wird_abgewiesen(pfad):
 def test_csrf_token_steht_in_den_formularen_der_inbox():
     lead = _lead()
     _entwurf(lead)
-    seite = _get("/").text
+    seite = _get("/freigaben").text
     assert ui.CSRF_TOKEN in seite
 
 
@@ -199,7 +199,7 @@ def test_extra_host_gilt_auch_nackt_und_auf_443():
 def test_entwurfstext_mit_script_erscheint_escaped_nie_roh():
     lead = _lead()
     _entwurf(lead, text="<script>alert('xss')</script>")
-    seite = _get("/").text
+    seite = _get("/freigaben").text
     assert "<script" not in seite
     assert "&lt;script&gt;" in seite
 
@@ -207,7 +207,7 @@ def test_entwurfstext_mit_script_erscheint_escaped_nie_roh():
 def test_fehlertext_und_kontaktname_erscheinen_escaped():
     lead = _lead(name='<img src=x onerror="alert(1)">')
     _entwurf(lead, status="failed", fehler='<svg onload="alert(2)">')
-    seite = _get("/").text
+    seite = _get("/freigaben").text
     assert "<img" not in seite and "<svg" not in seite
     assert "&lt;img" in seite and "&lt;svg" in seite
     liste = _get("/kontakte").text
@@ -229,7 +229,7 @@ def test_fremddaten_brechen_nicht_aus_attribut_kontext_aus():
     (oben) NICHT faengt."""
     lead = _lead(name='Anna"><script>alert(1)</script>')
     _entwurf(lead, empfaenger='+49"><img src=x onerror=alert(2)>')
-    seite = _get("/").text
+    seite = _get("/freigaben").text
     assert '"><script' not in seite
     assert '"><img' not in seite
     assert "&quot;&gt;" in seite  # das Zeichen ist da, aber escaped
@@ -476,7 +476,7 @@ def test_verwerfen_knopf_steht_an_failed_und_approved_entwuerfen():
     lead = _lead()
     _entwurf(lead, status="failed", fehler="OpenWA 500")
     _entwurf(lead, status="approved", approved_by="betreiber")
-    seite = _get("/").text
+    seite = _get("/freigaben").text
     assert seite.count('action="/aktion/verwerfen"') == 2
 
 
@@ -485,7 +485,7 @@ def test_verwerfen_knopf_steht_nicht_an_pending_und_gesendeten():
     _entwurf(lead, status="pending")
     server._q("update drafts set sent_at = now() where id = %s returning id",
               (_entwurf(lead, status="sent"),))
-    seite = _get("/").text
+    seite = _get("/freigaben").text
     assert 'action="/aktion/verwerfen"' not in seite
 
 
@@ -621,7 +621,7 @@ def test_inbox_zeigt_pending_failed_approved_und_gesendete():
              text="Wartender WhatsApp-Text")
     server._q("update drafts set sent_at = now() where id = %s returning id",
               (_entwurf(lead, status="sent", text="Schon gesendeter Text"),))
-    seite = _get("/").text
+    seite = _get("/freigaben").text
     assert "Pending-Text hier" in seite
     assert "Nummer nicht zustellbar" in seite
     assert "wartet auf Dispatcher" in seite
@@ -633,7 +633,7 @@ def test_inbox_linkedin_sonderfall_nennt_den_handversand():
     lead = _lead()
     _entwurf(lead, status="approved", kanal="linkedin",
              approved_by="betreiber", text="LinkedIn-Post-Text")
-    seite = _get("/").text
+    seite = _get("/freigaben").text
     assert "von Hand" in seite
     assert "entwurf_manuell_gesendet" in seite
 
@@ -1889,7 +1889,7 @@ def test_keine_seitenart_laedt_etwas_von_aussen(sammelkontakt_zurueck):
 def test_media_query_fuer_schmale_schirme_wird_ausgeliefert():
     """Nicht `ui._STIL` wird geprueft, sondern was im Browser ankommt — die
     Konstante koennte gepflegt und trotzdem nicht eingebunden sein."""
-    seite = _get("/").text
+    seite = _get("/freigaben").text
     assert "@media (max-width: 640px)" in seite
     # Der gewaehlte Weg: Tabellenzeilen werden zu Karten, die
     # Spaltenueberschrift wandert per ::before aus data-label vor die Zelle.
@@ -1900,7 +1900,7 @@ def test_media_query_fuer_schmale_schirme_wird_ausgeliefert():
 def test_dunkles_thema_wird_ausgeliefert():
     """Viele Leute haben das Telefon dauerhaft auf dunkel; eine gleissend
     weisse Seite am Abend ist der Grund, sie nicht aufzumachen."""
-    seite = _get("/").text
+    seite = _get("/freigaben").text
     assert "@media (prefers-color-scheme: dark)" in seite
     # Farben stehen als Variablen — sonst kann der dunkle Satz sie gar nicht
     # ueberschreiben, und die beiden Themen driften beim naechsten #fff
@@ -1920,7 +1920,7 @@ def test_touchziele_und_schriftgroesse_der_eingabefelder():
     Schwelle, unter der iOS beim Fokussieren von selbst ins Feld zoomt und die
     Seite verschoben zuruecklaesst. Beides ist hier kein Geschmack: ein
     Fehlgriff neben „Freigeben" verschickt eine Nachricht."""
-    seite = _get("/").text
+    seite = _get("/freigaben").text
     assert "min-height: 44px" in seite
     assert "font-size: 16px" in seite
 
@@ -1929,14 +1929,14 @@ def test_die_seite_selbst_scrollt_nie_waagerecht():
     """Lange Zeichenketten ohne Leerzeichen (URLs, Base64, Kennungen) sind
     Fremddaten und kommen vor. Sie brechen um; was sich nicht brechen laesst,
     scrollt in seinem EIGENEN Kasten — nie die Seite."""
-    seite = _get("/").text
+    seite = _get("/freigaben").text
     assert "overflow-wrap: anywhere" in seite
     assert "html, body { overflow-x: hidden; }" in seite
     assert ".tabelle { overflow-x: auto;" in seite
 
 
 def test_navigation_umbricht_statt_ueberzulaufen():
-    seite = _get("/").text
+    seite = _get("/freigaben").text
     assert ("nav.seite { display: flex; flex-direction: row; flex-wrap: wrap;"
             in seite)
 
@@ -2046,7 +2046,7 @@ def test_jede_entwurfskarte_nennt_ihren_zustand_als_wort():
     _entwurf(lead, status="approved", approved_by="betreiber")
     server._q("update drafts set sent_at = now() where id = %s returning id",
               (_entwurf(lead, status="sent"),))
-    seite = _get("/").text
+    seite = _get("/freigaben").text
     for zustand, wort in ui.ZUSTAND_TITEL.items():
         assert f'<span class="badge zustand {zustand}">{wort}</span>' in seite
 
@@ -2074,7 +2074,7 @@ def test_freigeben_und_ablehnen_sind_getrennte_ziele():
     eine Nachricht oder verwirft einen Entwurf; beides ist endgueltig."""
     lead = _lead()
     _entwurf(lead)
-    seite = _get("/").text
+    seite = _get("/freigaben").text
     assert '<div class="aktionen">' in seite
     assert 'action="/aktion/freigeben"' in seite
     assert 'action="/aktion/ablehnen"' in seite
@@ -2285,7 +2285,7 @@ def test_kein_archiv_knopf_am_sammelkontakt(sammelkontakt_zurueck):
 def test_freigaben_sind_aufklappbar():
     lead = _lead()
     _entwurf(lead, text="Ein Entwurf, der aufklappbar sein soll.")
-    seite = _get("/").text
+    seite = _get("/freigaben").text
     assert "<details class=\"karte\">" in seite
     assert "<summary>" in seite
     # Der Text steht drin — aber die Karte ist zu, bis jemand klickt.
@@ -2295,7 +2295,7 @@ def test_freigaben_sind_aufklappbar():
 def test_vorschau_ist_gekuerzt_und_escaped():
     lead = _lead()
     _entwurf(lead, text='X' * 300 + '<script>alert(1)</script>')
-    seite = _get("/").text
+    seite = _get("/freigaben").text
     assert "<script" not in seite
     assert "…" in seite
 
@@ -2303,11 +2303,11 @@ def test_vorschau_ist_gekuerzt_und_escaped():
 def test_bearbeitungsfeld_nur_bei_offenen_entwuerfen():
     lead = _lead()
     _entwurf(lead, status="pending")
-    assert 'action="/aktion/bearbeiten"' in _get("/").text
+    assert 'action="/aktion/bearbeiten"' in _get("/freigaben").text
     with server.pool.connection() as conn:
         conn.execute("truncate sales_test.drafts cascade")
     _entwurf(lead, status="approved")
-    assert 'action="/aktion/bearbeiten"' not in _get("/").text
+    assert 'action="/aktion/bearbeiten"' not in _get("/freigaben").text
 
 
 def test_bearbeiten_aendert_den_text_und_sendet_nichts():
@@ -2801,7 +2801,7 @@ def test_ohne_lese_stand_gibt_es_keine_freigabe():
 def test_die_karte_traegt_den_lese_stand():
     lead = _lead()
     draft = _entwurf(lead)
-    assert f'name="stand" value="{_lese_stand(draft)}"' in _get("/").text
+    assert f'name="stand" value="{_lese_stand(draft)}"' in _get("/freigaben").text
 
 
 # ---------------------------------------------------------------------------
@@ -2866,7 +2866,7 @@ def test_whatsapp_seite_haelt_einen_openwa_ausfall_aus(monkeypatch):
 
 
 def test_der_nav_fuehrt_zur_whatsapp_seite():
-    assert 'href="/whatsapp"' in _get("/").text
+    assert 'href="/whatsapp"' in _get("/freigaben").text
 
 
 # ---------------------------------------------------------------------------

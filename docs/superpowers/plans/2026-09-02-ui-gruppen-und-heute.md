@@ -14,14 +14,14 @@ Jeder Schritt: Vertrag zuerst (rot), dann Code (grün), Commit, CI,
 Rollout nur `sales-ui` (`git pull --ff-only && docker compose up -d
 --build sales-ui`), Abnahme grün, Browser-Blick.
 
-- [ ] **1. Rahmen.** `_seite()` rendert eine Seitenleiste mit vier
+- [x] **1. Rahmen.** `_seite()` rendert eine Seitenleiste mit vier
   Gruppen statt der Reiterleiste; `_NAV` wird `_GRUPPEN`; Zähler aus
   denselben Abfragen wie die Seiten (`_zaehler()`, fällt leise aus);
   aktiver Menüpunkt über einen ContextVar aus `_gesichert_seite`.
   Tokens: hellere Fläche/Linie im dunklen Thema, `--aktiv`. Unter 768 px
   wird die Leiste wieder zur umbrechenden Zeile (Vier-Tab-Leiste kommt in
   Schritt 7). Verträge: `tests/test_seitenleiste.py`.
-- [ ] **2. Startseite „Heute“.** Neue Route `/`, die Freigabe-Inbox
+- [x] **2. Startseite „Heute“.** Neue Route `/`, die Freigabe-Inbox
   zieht nach `/freigaben` (Umleitungen der Aktionen folgen). Blöcke:
   Freigaben je Art mit Zählern, Wiedervorlagen, Einordnung; rechte
   Spalte: Kalender (`kalender.termine_lesen`), WhatsApp-Zustand,

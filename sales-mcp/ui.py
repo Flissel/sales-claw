@@ -682,6 +682,39 @@ nav.seite a.aktiv { background: var(--aktiv); color: var(--gut); }
 .zaehler.offen { background: var(--achtung); color: var(--achtung_auf);
                  font-weight: 700; }
 nav.seite .abmelden { margin-top: auto; padding: 0 .5rem; }
+/* --- Startseite „Heute" (UI-Plan Schritt 2): Aufgaben links, Lage
+       rechts. Unter 768 px eine Spalte. ------------------------------ */
+.heute { display: flex; gap: 1.6rem; align-items: flex-start; }
+.heute .haupt { flex: 1 1 auto; min-width: 0; }
+.heute .rand { width: 20rem; flex: none; display: flex;
+               flex-direction: column; gap: 1.4rem; }
+.heute .rand h2 { margin-top: 0; font-size: .72rem; letter-spacing: .08em;
+                  text-transform: uppercase; color: var(--gedaempft); }
+.heute .haupt h2 { margin-top: 1.4rem; }
+.arten { display: flex; flex-wrap: wrap; gap: .8rem; align-items: center;
+         margin: .2rem 0 .6rem; }
+.art { display: inline-flex; align-items: center; gap: .4rem;
+       color: var(--gedaempft); font-size: .9rem; }
+.art b { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas,
+         monospace; color: var(--schrift); font-weight: 600; }
+.termin { display: flex; gap: .6rem; align-items: flex-start;
+          padding: .3rem 0; }
+.termin .zeit { width: 4.6rem; flex: none; font-family: ui-monospace,
+                SFMono-Regular, Menlo, Consolas, monospace;
+                font-variant-numeric: tabular-nums;
+                color: var(--gedaempft); }
+.termin .zeit.heute { color: var(--info); }
+.kacheln { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+           gap: .4rem; }
+.kachel { background: var(--flaeche); border: 1px solid var(--linie);
+          border-radius: 6px; padding: .4rem .3rem; text-align: center; }
+.kachel b { display: block; font-family: ui-monospace, SFMono-Regular,
+            Menlo, Consolas, monospace; font-size: 1.1rem; }
+.kachel span { font-size: .72rem; color: var(--gedaempft); }
+@media (max-width: 767px) {
+  .heute { display: block; }
+  .heute .rand { width: auto; margin-top: 1.5rem; }
+}
 @media (max-width: 767px) {
   .rahmen { display: block; }
   nav.seite { display: flex; flex-direction: row; flex-wrap: wrap;
@@ -890,7 +923,7 @@ thead th { background: var(--kopfzeile); }
 # 02.09.2026 nach dem Design-Durchgang, docs/superpowers/plans/
 # 2026-09-02-ui-gruppen-und-heute.md). Reihenfolge ist Teil des Entwurfs.
 _GRUPPEN = (
-    ("Aufgaben", (("/", "Freigaben"),
+    ("Aufgaben", (("/", "Heute"), ("/freigaben", "Freigaben"),
                   ("/wiedervorlagen", "Wiedervorlagen"),
                   ("/einordnung", "Einordnung"),
                   ("/kalender", "Kalender"))),
@@ -906,18 +939,24 @@ _NAV = tuple(eintrag for _, eintraege in _GRUPPEN for eintrag in eintraege)
 # eines Parameters an jeder der ~30 _seite()-Stellen.
 _AKTIVER_PFAD = contextvars.ContextVar("aktiver_pfad", default="")
 # Pfade, deren Zaehler "offen" bedeutet (Achtung-Farbe, wenn > 0).
-_ZAEHLER_OFFEN = ("/", "/wiedervorlagen", "/einordnung")
+_ZAEHLER_OFFEN = ("/", "/freigaben", "/wiedervorlagen", "/einordnung")
 
 
 def _zaehler_abfragen() -> dict:
     """Die Zahlen am Menue — aus DENSELBEN Quellen wie die Seiten selbst,
     damit Menue und Seite nie zwei verschiedene Wahrheiten zeigen."""
     koerbe = server._einzuordnende(text_max=EINORDNUNG_TEXT_MAX)
-    return {
-        "/": server._q("select count(*) n from drafts "
-                       "where status = 'pending'")[0]["n"],
+    offen = {
+        "/freigaben": server._q("select count(*) n from drafts "
+                                "where status = 'pending'")[0]["n"],
         "/wiedervorlagen": len(_offene_wiedervorlagen()),
         "/einordnung": len(koerbe["neu"]) + len(koerbe["bereits_gefragt"]),
+    }
+    return {
+        # „Heute" zaehlt, was eine Entscheidung braucht — die Summe der
+        # drei Aufgaben-Zaehler, damit Menue und Startseite dasselbe sagen.
+        "/": sum(offen.values()),
+        **offen,
         "/kontakte": server._q(
             "select count(*) n from leads l where not "
             + server._archiv_sql("l.enrichment"))[0]["n"],
@@ -1021,7 +1060,7 @@ def _seite(titel: str, rumpf: str, status: int = 200,
 
 def _fehlerseite(status: int, titel: str, text: str) -> HTMLResponse:
     return _seite(titel, f'<p class="fehler">{text}</p>'
-                         f'<p class="abbrechen"><a href="/">Zurueck zur '
+                         f'<p class="abbrechen"><a href="/freigaben">Zurueck zur '
                          f'Freigabe-Inbox</a></p>',
                   status=status)
 
@@ -1799,7 +1838,7 @@ async def aktion_freigeben(request):
     if not zeilen:
         return _statusfehler(draft_id, "pending")
     _freigabe_loggen(zeilen[0])
-    return RedirectResponse("/", status_code=303)
+    return RedirectResponse("/freigaben", status_code=303)
 
 
 @_gesichert_seite
@@ -1818,7 +1857,7 @@ async def aktion_bearbeiten(request):
         draft_id=draft_id, text=str(form.get("text") or "")))
     if "fehler" in antwort:
         return _fehlerseite(409, "Nicht geaendert", _e(antwort["fehler"]))
-    return RedirectResponse("/", status_code=303)
+    return RedirectResponse("/freigaben", status_code=303)
 
 
 @_gesichert_seite
@@ -1839,7 +1878,7 @@ async def aktion_ablehnen(request):
               (z["lead_id"], server._json({"draft_id": str(z["id"]),
                                            "kanal": z["channel"],
                                            "weg": "ui"})))
-    return RedirectResponse("/", status_code=303)
+    return RedirectResponse("/freigaben", status_code=303)
 
 
 @_gesichert_seite
@@ -1887,7 +1926,7 @@ async def aktion_erneut_freigeben(request):
                 f"bestaetigt=True). error: {_e(error)}")
         return _statusfehler(draft_id, "failed")
     _freigabe_loggen(zeilen[0], erneut=True)
-    return RedirectResponse("/", status_code=303)
+    return RedirectResponse("/freigaben", status_code=303)
 
 
 # ---------------------------------------------------------------------------
@@ -2024,7 +2063,7 @@ async def aktion_verwerfen(request):
     if not getroffen:
         return _statusfehler(draft_id, "failed")
     _verwerfen_loggen(getroffen[0], "failed")
-    return RedirectResponse("/", status_code=303)
+    return RedirectResponse("/freigaben", status_code=303)
 
 
 @_gesichert_seite
@@ -2067,7 +2106,7 @@ async def aktion_verwerfen_bestaetigen(request):
     if not getroffen:
         return _statusfehler(draft_id, "approved")
     _verwerfen_loggen(getroffen[0], "approved")
-    return RedirectResponse("/", status_code=303)
+    return RedirectResponse("/freigaben", status_code=303)
 
 
 def _verwerfen_statusfehler(z) -> HTMLResponse:
@@ -4210,7 +4249,7 @@ async def login(request):
         LOG.warning("Anmeldung fehlgeschlagen")
         return _login_seite("Anmeldung fehlgeschlagen.")
     ANMELDE_BREMSE.update({"fehler": 0, "gesperrt_bis": 0.0})
-    antwort = RedirectResponse("/", status_code=303)
+    antwort = RedirectResponse("/freigaben", status_code=303)
     antwort.set_cookie(
         SITZUNG_COOKIE, _sitzung_bauen(name, jetzt + SITZUNG_DAUER_S),
         max_age=SITZUNG_DAUER_S, httponly=True, samesite="lax", path="/")
@@ -4229,8 +4268,202 @@ async def logout(request):
     return antwort
 
 
+
+WOCHENTAGE = ("Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag",
+              "Samstag", "Sonntag")
+WOCHENTAGE_KURZ = ("Mo", "Di", "Mi", "Do", "Fr", "Sa", "So")
+MONATE = ("Januar", "Februar", "März", "April", "Mai", "Juni", "Juli",
+          "August", "September", "Oktober", "November", "Dezember")
+HEUTE_JE_ART = 3          # offene Entwuerfe je Art auf der Startseite
+HEUTE_TERMINE = 4         # Kalendereintraege in der rechten Spalte
+HEUTE_TERMINE_TAGE = 14
+FREIGABE_ARTEN = (("whatsapp", "WhatsApp"), ("linkedin", "LinkedIn"),
+                  ("email", "E-Mail"))
+
+
+def _heute_kalender() -> str:
+    """Die naechsten Termine aus dem Kalender (CalDAV), Ortszeit. Ein
+    Lesefehler steht als Satz da — die Startseite faellt nicht mit ihm."""
+    try:
+        termine, fehler = kalender.termine_lesen(0, HEUTE_TERMINE_TAGE)
+    except Exception as e:
+        termine, fehler = [], f"Kalender nicht lesbar: {e}"
+    if fehler:
+        return f'<p class="meta">{_e(fehler)}</p>'
+    jetzt = datetime.now(ZEITZONE)
+    kommend = []
+    for t in termine:
+        beginn = t.get("beginn")
+        if not isinstance(beginn, datetime):
+            continue
+        if ZEITZONE is None:
+            beginn = beginn.replace(tzinfo=None)
+        elif beginn.tzinfo is None:
+            beginn = beginn.replace(tzinfo=ZEITZONE)
+        else:
+            beginn = beginn.astimezone(ZEITZONE)
+        if beginn < jetzt.replace(hour=0, minute=0, second=0, microsecond=0):
+            continue
+        kommend.append((beginn, str(t.get("titel") or "(ohne Titel)")))
+    kommend.sort(key=lambda p: p[0])
+    if not kommend:
+        return '<p class="meta">Nichts in den naechsten zwei Wochen.</p>'
+    zeilen = []
+    for beginn, titel in kommend[:HEUTE_TERMINE]:
+        klasse = " heute" if beginn.date() == jetzt.date() else ""
+        wann = (f"{WOCHENTAGE_KURZ[beginn.weekday()]} "
+                f"{beginn.strftime('%H:%M')}")
+        meta = ("heute" if klasse else
+                f"{beginn.day}. {MONATE[beginn.month - 1]}")
+        zeilen.append(f'<div class="termin"><span class="zeit{klasse}">'
+                      f'{_e(wann)}</span><span>{_e(titel)}'
+                      f'<br><span class="meta">{_e(meta)}</span></span></div>')
+    zeilen.append('<p class="meta"><a href="/kalender">Ganzen Kalender '
+                  'oeffnen</a></p>')
+    return "".join(zeilen)
+
+
+def _heute_whatsapp() -> str:
+    sitzungen, fehler = _openwa_lesen("/api/sessions")
+    if fehler:
+        return f'<p class="meta">{_e(fehler)}</p>'
+    passende = [s for s in (sitzungen or [])
+                if not OPENWA_SESSION_ID or str(s.get("id")) == OPENWA_SESSION_ID]
+    if not passende:
+        return '<p class="meta">OpenWA kennt die Sitzung nicht.</p>'
+    zustand = str(passende[0].get("status") or "unbekannt")
+    wort, klasse, _ = WA_ZUSTAND.get(zustand, (zustand, "warnung", ""))
+    return (f'<p><span class="badge {_e(klasse)}">{_e(wort)}</span> '
+            f'<span class="meta">seit {_e(_wa_zeit(passende[0].get("connectedAt")))}'
+            f'</span></p><p class="meta"><a href="/whatsapp">Zustand und '
+            f'Kette</a></p>')
+
+
+def _heute_posteingang() -> str:
+    try:
+        daten = json.loads(server.posteingang())
+    except Exception as e:
+        return f'<p class="meta">Posteingang nicht lesbar: {_e(e)}</p>'
+    anzahl = int(daten.get("anzahl_unbeantwortet") or 0)
+    if not anzahl:
+        return '<p class="meta">Keine unbeantworteten Eingaenge.</p>'
+    namen = [str(e.get("kontakt") or "?") for e in daten.get("eintraege") or []]
+    aelteste = max((float(e.get("wartet_stunden") or 0)
+                    for e in daten.get("eintraege") or []), default=0)
+    return (f'<p><b class="mono">{anzahl}</b> unbeantwortet, aelteste seit '
+            f'{aelteste:.0f} h</p>'
+            f'<p class="meta">{_e(", ".join(namen[:3]))}'
+            f'{" …" if len(namen) > 3 else ""}</p>'
+            f'<p class="meta"><a href="/posteingang">Posteingang oeffnen</a></p>')
+
+
+def _heute_pipeline() -> str:
+    zeilen = server._q(
+        "select l.status, count(*) n from leads l where not "
+        + server._archiv_sql("l.enrichment") + " group by l.status")
+    zahlen = {}
+    for z in zeilen:
+        stufe = server._stufe_lesen(z["status"])
+        zahlen[stufe] = zahlen.get(stufe, 0) + int(z["n"])
+    kacheln = "".join(
+        f'<div class="kachel"><b>{zahlen.get(s, 0)}</b>'
+        f'<span>{_e(s)}</span></div>'
+        for s in server.PIPELINE_STUFEN[:-2])
+    return (f'<div class="kacheln">{kacheln}</div>'
+            f'<p class="meta"><a href="/pipeline">Pipeline oeffnen</a></p>')
+
+
+@_gesichert_seite
+async def heute(request):
+    """Startseite (UI-Plan Schritt 2, 02.09.2026): was eine Entscheidung
+    braucht, links — Freigaben je Art, Wiedervorlagen, Einordnung; die Lage
+    rechts — Kalender, WhatsApp, Posteingang, Pipeline. Jede Zahl kommt aus
+    derselben Quelle wie die Seite, auf die sie verweist."""
+    pending = server._q(
+        "select d.id, d.channel, d.recipient, d.body, d.media_ref, "
+        "       extract(epoch from (now() - d.created_at)) / 3600 as alter_h, "
+        "       l.name, l.consent_status "
+        "from drafts d left join leads l on l.id = d.lead_id "
+        "where d.status = 'pending' order by d.created_at desc")
+    je_art = {art: [] for art, _ in FREIGABE_ARTEN}
+    for z in pending:
+        je_art.setdefault(str(z["channel"]), []).append(z)
+    termine_offen = server._q(
+        "select l.id as lead_id, l.name, a.payload from activities a "
+        "left join leads l on l.id = a.lead_id "
+        "where a.type = 'termin' and coalesce(a.payload->>'datum', '') = '' "
+        "order by a.created_at desc limit 5")
+    wiedervorlagen = _offene_wiedervorlagen()
+    koerbe = server._einzuordnende(text_max=EINORDNUNG_TEXT_MAX)
+    einordnung_offen = len(koerbe["neu"]) + len(koerbe["bereits_gefragt"])
+
+    jetzt = datetime.now(ZEITZONE)
+    offen = len(pending) + len(wiedervorlagen) + einordnung_offen
+    satz = ("Nichts wartet auf dich. Alles laeuft." if not offen else
+            f"{offen} Entscheidung{'en' if offen != 1 else ''} "
+            f"warte{'n' if offen != 1 else 't'} auf dich. Alles andere laeuft.")
+    haupt = [f'<p class="meta">{WOCHENTAGE[jetzt.weekday()]}, {jetzt.day}. '
+             f'{MONATE[jetzt.month - 1]} {jetzt.year} · '
+             f'{jetzt.strftime("%H:%M")}</p><p>{_e(satz)}</p>']
+
+    haupt.append('<h2>Freigaben</h2><div class="arten">')
+    for art, name in FREIGABE_ARTEN:
+        haupt.append(f'<span class="art">'
+                     f'<span class="badge {_e(art)}">{_e(name)}</span>'
+                     f'<b>{len(je_art.get(art, []))}</b></span>')
+    haupt.append(f'<span class="art"><span class="badge termin">Termine</span>'
+                 f'<b>{len(termine_offen)}</b></span>'
+                 f'<a href="/freigaben">Alle Freigaben</a></div>')
+    if not pending:
+        haupt.append("<p>Keine offenen Entwuerfe.</p>")
+    for art, name in FREIGABE_ARTEN:
+        zeilen = je_art.get(art, [])
+        for z in zeilen[:HEUTE_JE_ART]:
+            haupt.append(_entwurf_karte_offen(z))
+        if len(zeilen) > HEUTE_JE_ART:
+            haupt.append(f'<p class="meta">+ {len(zeilen) - HEUTE_JE_ART} '
+                         f'weitere {_e(name)}-Entwuerfe unter '
+                         f'<a href="/freigaben">Freigaben</a>.</p>')
+    for art in je_art:
+        if art not in dict(FREIGABE_ARTEN):
+            for z in je_art[art][:HEUTE_JE_ART]:
+                haupt.append(_entwurf_karte_offen(z))
+    if termine_offen:
+        haupt.append('<h2>Termine ohne festes Datum</h2>')
+        for z in termine_offen:
+            last = z["payload"] or {}
+            haupt.append(
+                f'<div class="karte"><b><a href="/kontakte/{_e(z["lead_id"])}">'
+                f'{_e(z["name"] or "?")}</a></b> '
+                f'<span class="meta">{_e(str(last.get("inhalt") or last.get("thema") or "")[:160])}'
+                f'</span> · <a href="/kalender">im Kalender</a></div>')
+
+    haupt.append(f'<h2>Wiedervorlagen ({len(wiedervorlagen)})</h2>')
+    if wiedervorlagen:
+        haupt.append(_wiedervorlagen_tabelle(wiedervorlagen[:5]))
+        if len(wiedervorlagen) > 5:
+            haupt.append(f'<p class="meta"><a href="/wiedervorlagen">Alle '
+                         f'{len(wiedervorlagen)} Wiedervorlagen</a></p>')
+    else:
+        haupt.append("<p>Keine offene Wiedervorlage.</p>")
+
+    haupt.append(f'<h2>Einordnung ({einordnung_offen})</h2>')
+    haupt.append(
+        f'<p>{"Kein unbekannter Absender wartet." if not einordnung_offen else f"{einordnung_offen} unbekannte Absender warten auf eine Entscheidung."} '
+        f'<a href="/einordnung">Einordnung oeffnen</a></p>')
+
+    rand = (f'<div><h2>Kalender</h2>{_heute_kalender()}</div>'
+            f'<div><h2>WhatsApp</h2>{_heute_whatsapp()}</div>'
+            f'<div><h2>Posteingang</h2>{_heute_posteingang()}</div>'
+            f'<div><h2>Pipeline</h2>{_heute_pipeline()}</div>')
+    return _seite("Heute",
+                  f'<div class="heute"><div class="haupt">{"".join(haupt)}'
+                  f'</div><aside class="rand">{rand}</aside></div>')
+
+
 app = Starlette(routes=[
-    Route("/", inbox),
+    Route("/", heute),
+    Route("/freigaben", inbox),
     Route("/aktion/freigeben", aktion_freigeben, methods=["POST"]),
     Route("/aktion/ablehnen", aktion_ablehnen, methods=["POST"]),
     Route("/aktion/bearbeiten", aktion_bearbeiten, methods=["POST"]),

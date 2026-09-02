@@ -52,7 +52,7 @@ def test_vier_gruppen_mit_allen_seiten():
     seite = _get("/kontakte").text
     for gruppe in ("Aufgaben", "Analyse", "Daten", "Monitoring"):
         assert f'<div class="gruppenname">{gruppe}</div>' in seite, gruppe
-    for pfad in ("/", "/wiedervorlagen", "/einordnung", "/kalender",
+    for pfad in ("/", "/freigaben", "/wiedervorlagen", "/einordnung", "/kalender",
                  "/kontakte", "/pipeline", "/ergebnisse", "/posteingang",
                  "/medien", "/whatsapp"):
         assert f'href="{pfad}"' in seite, pfad
@@ -78,12 +78,15 @@ def test_offene_freigaben_zaehlen_am_menue():
     seite = _get("/kontakte").text
     # Offenes traegt die Achtung-Farbe, Bestand die neutrale.
     assert 'Freigaben</span><span class="zaehler offen">2</span>' in seite
+    # „Heute" ist die Summe der Aufgaben-Zaehler.
+    assert 'Heute</span><span class="zaehler offen">2</span>' in seite
     assert 'Kontakte</span><span class="zaehler">1</span>' in seite
 
 
 def test_nichts_offen_ist_ein_neutraler_nullzaehler():
     seite = _get("/kontakte").text
     assert 'Freigaben</span><span class="zaehler">0</span>' in seite
+    assert 'Heute</span><span class="zaehler">0</span>' in seite
     assert 'zaehler offen' not in seite
 
 
