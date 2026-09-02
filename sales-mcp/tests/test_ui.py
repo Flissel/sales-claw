@@ -2044,6 +2044,7 @@ def test_jede_entwurfskarte_nennt_ihren_zustand_als_wort():
     _entwurf(lead, text="Pending-Text hier")
     _entwurf(lead, status="failed", fehler="OpenWA HTTP 500")
     _entwurf(lead, status="approved", approved_by="betreiber")
+    _entwurf(lead, status="rejected", text="Abgelehnter Text")
     server._q("update drafts set sent_at = now() where id = %s returning id",
               (_entwurf(lead, status="sent"),))
     seite = _get("/freigaben").text

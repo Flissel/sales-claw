@@ -27,7 +27,7 @@ Rollout nur `sales-ui` (`git pull --ff-only && docker compose up -d
   Spalte: Kalender (`kalender.termine_lesen`), WhatsApp-Zustand,
   Posteingang, Pipeline-Zähler. Verträge in `test_ui.py` ziehen von
   `/` auf `/freigaben` um, neue in `test_heute.py`.
-- [ ] **3. Freigaben in vier Blöcken mit Verlauf.** `inbox()` teilt
+- [x] **3. Freigaben in vier Blöcken mit Verlauf.** `inbox()` teilt
   pending nach `channel`; Termine = offene Terminanfragen; Verlauf je
   Art (sent/failed/rejected; bei Terminen termin/termin_verschoben/
   termin_abgesagt), zwei Einträge im Block, volle Liste unter

@@ -800,6 +800,40 @@ h2 { font-size: 1.05rem; margin-top: 2rem; }
                           border: 2px solid var(--gut_text); }
 .badge.zustand.sent { background: transparent; color: var(--gedaempft);
                       border: 1px dashed var(--linie_stark); }
+.badge.zustand.rejected, .badge.zustand.termin_abgesagt {
+  background: transparent; color: var(--schrift);
+  border: 1px solid var(--linie_stark); }
+.badge.zustand.termin { background: transparent; color: var(--gut_text);
+                        border: 2px solid var(--gut_text); }
+.badge.zustand.termin_verschoben { background: var(--achtung);
+                                   color: var(--achtung_auf); }
+.badge.termin { background: transparent; color: var(--schrift);
+                border: 1px solid var(--linie_stark); }
+/* --- Freigaben in vier Bloecken mit Verlauf je Art (Schritt 3) ------ */
+.block { margin-top: 1.4rem; padding-top: .2rem; }
+.block > h2 { display: flex; align-items: center; gap: .5rem;
+              border-bottom: 2px solid var(--linie); padding-bottom: .4rem;
+              margin-top: .6rem; }
+.block > h2 .zaehler { margin-left: 0; }
+.verlauftitel { display: flex; align-items: center; gap: .6rem;
+                font-size: .72rem; letter-spacing: .08em;
+                text-transform: uppercase; color: var(--gedaempft);
+                margin: 1.1rem 0 .2rem; }
+.verlauftitel a { text-transform: none; letter-spacing: 0;
+                  margin-left: auto; font-size: .85rem; }
+.eintrag { display: grid; grid-template-columns: 8.6rem minmax(0, 1fr) auto;
+           gap: .6rem; align-items: center; padding: .35rem 0;
+           border-top: 1px solid var(--linie); font-size: .92rem; }
+.eintrag .wann { color: var(--gedaempft); font-family: ui-monospace,
+                 SFMono-Regular, Menlo, Consolas, monospace;
+                 font-variant-numeric: tabular-nums; }
+.eintrag .was { overflow: hidden; text-overflow: ellipsis;
+                white-space: nowrap; }
+.eintrag .badge { margin: 0; }
+@media (max-width: 767px) {
+  .eintrag { grid-template-columns: minmax(0, 1fr); }
+  .eintrag .was { white-space: normal; }
+}
 
 .fehler { color: var(--fehler); white-space: pre-wrap; }
 .hinweis { background: var(--hinweis_flaeche);
@@ -986,7 +1020,9 @@ def _seitenleiste(abmelden: str) -> str:
         teile.append(f'<div class="gruppe"><div class="gruppenname">'
                      f'{_e(gruppe)}</div>')
         for pfad, name in eintraege:
-            klasse = ' class="aktiv"' if pfad == aktiv else ""
+            ist_aktiv = (pfad == aktiv or
+                         (pfad != "/" and aktiv.startswith(pfad + "/")))
+            klasse = ' class="aktiv"' if ist_aktiv else ""
             zahl = ""
             if pfad in zaehler:
                 n = int(zaehler[pfad])
@@ -1096,7 +1132,13 @@ def _nachricht_inhalt(text, typ) -> str:
 # dann bliebe nur die Farbe des Knopfes, und Farbe allein traegt eine
 # Unterscheidung nicht (Sehschwaeche, Sonnenlicht, kleines Abzeichen).
 ZUSTAND_TITEL = {"pending": "zu pruefen", "failed": "fehlgeschlagen",
-                 "approved": "freigegeben", "sent": "gesendet"}
+                 "approved": "freigegeben", "sent": "gesendet",
+                 "rejected": "abgelehnt"}
+# Termin-Verlauf (Schritt 3): Aktivitaetstyp -> Wort. Getrennt von den
+# Entwurfszustaenden, weil test_ui jeden Entwurfszustand auf der Seite
+# erwartet — Termine sind keine Entwuerfe.
+TERMIN_TITEL = {"termin": "bestaetigt", "termin_verschoben": "verschoben",
+                "termin_abgesagt": "abgesagt"}
 
 
 def _zustand_badge(zustand: str) -> str:
@@ -1105,7 +1147,8 @@ def _zustand_badge(zustand: str) -> str:
     suchen. `_e` laeuft trotzdem drueber, damit die Regel auch dann haelt,
     wenn hier spaeter jemand eine Spalte durchreicht."""
     return (f'<span class="badge zustand {_e(zustand)}">'
-            f'{_e(ZUSTAND_TITEL.get(zustand, zustand))}</span>')
+            f'{_e(ZUSTAND_TITEL.get(zustand) or TERMIN_TITEL.get(zustand, zustand))}'
+            f'</span>')
 
 
 def _tabelle(spalten, zeilen) -> str:
@@ -1659,6 +1702,10 @@ async def aktion_wiedervorlage_erledigt(request):
 
 @_gesichert_seite
 async def inbox(request):
+    """Freigaben in vier Bloecken — WhatsApp, LinkedIn, E-Mail, Termine —
+    jeder mit seinen offenen Entwuerfen (zu pruefen, fehlgeschlagen,
+    freigegeben) und darunter seinem eigenen Verlauf (UI-Plan Schritt 3,
+    Betreiber 02.09.2026: „damit alles seine Ordnung hat")."""
     pending = server._q(
         "select d.id, d.channel, d.recipient, d.body, d.media_ref, "
         "       extract(epoch from (now() - d.created_at)) / 3600 as alter_h, "
@@ -1677,77 +1724,177 @@ async def inbox(request):
         "       d.approved_by, d.approved_at, l.name, l.consent_status "
         "from drafts d left join leads l on l.id = d.lead_id "
         "where d.status = 'approved' order by d.created_at desc")
-    gesendet = server._q(
-        "select d.id, d.channel, d.recipient, d.body, d.sent_at, "
-        "       l.name, l.consent_status "
-        "from drafts d left join leads l on l.id = d.lead_id "
-        "where d.status = 'sent' "
-        "order by d.sent_at desc nulls last limit %s", (GESENDETE_MAX,))
 
-    teile = [f'<h2>Zur Freigabe ({len(pending)})</h2>']
-    if not pending:
-        teile.append("<p>Keine offenen Entwuerfe.</p>")
-    for z in pending:
-        # „Freigeben" und „Ablehnen" stehen in EINEM `.aktionen`-Kasten: der
-        # haelt sie auf dem Desktop nebeneinander und stapelt sie auf dem
-        # Handy ueber die volle Breite, mit Abstand dazwischen. Ein Daumen,
-        # der das Falsche trifft, verwirft hier einen Entwurf oder gibt einen
-        # zum Versand frei — beides ist nicht zurueckzunehmen.
-        teile.append(_entwurf_karte_offen(z))
+    def je_art(zeilen):
+        d = {}
+        for z in zeilen:
+            d.setdefault(str(z["channel"]), []).append(z)
+        return d
+    offen, kaputt, wartend = je_art(pending), je_art(gescheitert), je_art(freigegeben)
+    bekannt = dict(FREIGABE_ARTEN)
+    # Unbekannte Kanaele (falls je einer dazukommt) haengen sich hinten an,
+    # statt unsichtbar zu bleiben.
+    arten = list(FREIGABE_ARTEN) + [
+        (a, a) for a in sorted(set(offen) | set(kaputt) | set(wartend))
+        if a not in bekannt]
 
-    teile.append(f"<h2>Fehlgeschlagen ({len(gescheitert)})</h2>")
-    if not gescheitert:
-        teile.append("<p>Keine fehlgeschlagenen Entwuerfe.</p>")
-    for z in gescheitert:
+    teile = ['<p class="meta">Vier Arten, vier Listen, vier Verlaeufe. '
+             'Freigeben heisst senden; nichts geht ohne dich raus.</p>']
+    for art, name in arten:
+        n_offen = len(offen.get(art, []))
         teile.append(
-            f'<div class="karte">{_entwurf_kopf(z, "failed")}'
-            f'<div class="text">{_e(z["body"])}</div>'
-            f'<div class="fehler">Fehler: {_e(z["error"])}</div>'
-            f'<div class="aktionen">'
-            f'{_formular("erneut-freigeben", z["id"], "Erneut freigeben", "",
-                         checkbox="erneute Freigabe bestaetigen")}'
-            # Einschrittig, anders als beim freigegebenen Entwurf darunter:
-            # ein gescheiterter Entwurf ging nachweislich nicht raus, und
-            # verwerfen versendet nichts. Der Fehler dieser Richtung kostet
-            # einen Entwurfstext, nicht eine ungewollte Zustellung.
-            f'{_formular("verwerfen", z["id"], "Verwerfen", "gefahr")}'
-            f"</div></div>")
+            f'<section class="block"><h2>{_badge(art)} {_e(name)} '
+            f'<span class="zaehler{" offen" if n_offen else ""}">{n_offen}'
+            f'</span></h2>')
+        if not (offen.get(art) or kaputt.get(art) or wartend.get(art)):
+            teile.append('<p class="meta">Nichts offen.</p>')
+        for z in offen.get(art, []):
+            # „Freigeben" und „Ablehnen" stehen in EINEM `.aktionen`-Kasten:
+            # nebeneinander am Desktop, gestapelt ueber die volle Breite am
+            # Handy. Beides ist nicht zurueckzunehmen.
+            teile.append(_entwurf_karte_offen(z))
+        for z in kaputt.get(art, []):
+            teile.append(
+                f'<div class="karte">{_entwurf_kopf(z, "failed")}'
+                f'<div class="text">{_e(z["body"])}</div>'
+                f'<div class="fehler">Fehler: {_e(z["error"])}</div>'
+                f'<div class="aktionen">'
+                f'{_formular("erneut-freigeben", z["id"], "Erneut freigeben", "",
+                             checkbox="erneute Freigabe bestaetigen")}'
+                # Einschrittig: ein gescheiterter Entwurf ging nachweislich
+                # nicht raus, und verwerfen versendet nichts.
+                f'{_formular("verwerfen", z["id"], "Verwerfen", "gefahr")}'
+                f"</div></div>")
+        for z in wartend.get(art, []):
+            if z["channel"] == "linkedin":
+                stand = ('<div class="hinweis">LinkedIn: von Hand posten, '
+                         'danach im Chat <code>entwurf_manuell_gesendet</code> '
+                         'melden — automatisch geht hier nichts raus.</div>')
+            else:
+                stand = ('<div class="meta">wartet auf Dispatcher '
+                         '(Versand uebernimmt der zustaendige Dienst '
+                         'automatisch)</div>')
+            teile.append(
+                f'<div class="karte">{_entwurf_kopf(z, "approved")}'
+                f'<div class="text">{_e(z["body"])}</div>'
+                f'<div class="meta">freigegeben: {_e(z["approved_by"])} am '
+                f'{_zeit(z["approved_at"])}</div>{stand}'
+                # ZWEISTUFIG: dieser Knopf fuehrt auf eine Warnseite und
+                # schreibt selbst nichts (aktion_verwerfen).
+                f'<div class="aktionen">'
+                f'{_formular("verwerfen", z["id"], "Verwerfen", "gefahr")}'
+                f'</div></div>')
+        teile.append(_verlauf_block(art, name))
+        teile.append("</section>")
 
-    teile.append(f"<h2>Freigegeben ({len(freigegeben)})</h2>")
-    if not freigegeben:
-        teile.append("<p>Nichts wartet auf Zustellung.</p>")
-    for z in freigegeben:
-        if z["channel"] == "linkedin":
-            # Es gibt bewusst keinen LinkedIn-Dispatcher (Stufe 3, Nr. 3).
-            stand = ('<div class="hinweis">LinkedIn: von Hand posten, danach '
-                     'im Chat <code>entwurf_manuell_gesendet</code> melden — '
-                     'automatisch geht hier nichts raus.</div>')
-        else:
-            stand = ('<div class="meta">wartet auf Dispatcher '
-                     '(Versand uebernimmt der zustaendige Dienst '
-                     'automatisch)</div>')
+    # Termine: offen = Anfragen ohne festes Datum; Verlauf = bestaetigt,
+    # verschoben, abgesagt.
+    termine_offen = server._q(
+        "select l.id as lead_id, l.name, a.payload from activities a "
+        "left join leads l on l.id = a.lead_id "
+        "where a.type = 'termin' and coalesce(a.payload->>'datum', '') = '' "
+        "order by a.created_at desc limit 20")
+    teile.append(
+        f'<section class="block"><h2><span class="badge termin">Termine</span> '
+        f'Termine <span class="zaehler{" offen" if termine_offen else ""}">'
+        f'{len(termine_offen)}</span></h2>')
+    if not termine_offen:
+        teile.append('<p class="meta">Keine Terminanfrage ohne festes Datum.</p>')
+    for z in termine_offen:
+        last = z["payload"] or {}
         teile.append(
-            f'<div class="karte">{_entwurf_kopf(z, "approved")}'
-            f'<div class="text">{_e(z["body"])}</div>'
-            f'<div class="meta">freigegeben: {_e(z["approved_by"])} am '
-            f'{_zeit(z["approved_at"])}</div>{stand}'
-            # ZWEISTUFIG: dieser Knopf fuehrt auf eine Warnseite und schreibt
-            # selbst nichts (aktion_verwerfen). Eine geltende Freigabe
-            # zurueckzunehmen ist keine Sache eines Daumens, der danebentrifft.
-            f'<div class="aktionen">'
-            f'{_formular("verwerfen", z["id"], "Verwerfen", "gefahr")}'
-            f'</div></div>')
+            f'<div class="karte"><b><a href="/kontakte/{_e(z["lead_id"])}">'
+            f'{_e(z["name"] or "?")}</a></b> '
+            f'<span class="meta">{_e(str(last.get("inhalt") or last.get("thema") or "")[:160])}'
+            f'</span> · <a href="/kalender">im Kalender</a></div>')
+    teile.append(_verlauf_block("termine", "Termine"))
+    teile.append("</section>")
+    return _seite("Freigaben", "".join(teile), refresh=30)
 
-    teile.append(f"<h2>Zuletzt gesendet (hoechstens {GESENDETE_MAX})</h2>")
-    if not gesendet:
-        teile.append("<p>Noch nichts gesendet.</p>")
-    for z in gesendet:
-        teile.append(
-            f'<div class="karte">{_entwurf_kopf(z, "sent")}'
-            f'<div class="text">{_e(z["body"])}</div>'
-            f'<div class="meta">gesendet: {_zeit(z["sent_at"])}</div></div>')
 
-    return _seite("Freigabe-Inbox", "".join(teile), refresh=30)
+VERLAUF_JE_ART = 5      # Eintraege je Art auf der Freigabe-Seite
+VERLAUF_MAX = 200       # Eintraege auf der Verlaufsseite einer Art
+
+
+def _verlauf_entwuerfe(art: str, limit: int):
+    """Gesendet und abgelehnt sind Verlauf; fehlgeschlagen ist offen
+    (Erneut freigeben / Verwerfen) und steht darum NICHT hier."""
+    return server._q(
+        "select d.id, d.channel, d.recipient, d.body, d.status, d.error, "
+        "       coalesce(d.sent_at, d.approved_at, d.created_at) as wann, "
+        "       l.name from drafts d left join leads l on l.id = d.lead_id "
+        "where d.channel = %s and d.status in ('sent', 'rejected') "
+        "order by wann desc limit %s", (art, limit))
+
+
+def _verlauf_termine(limit: int):
+    return server._q(
+        "select a.type, a.payload, a.created_at as wann, "
+        "       l.id as lead_id, l.name from activities a "
+        "left join leads l on l.id = a.lead_id "
+        "where a.type in ('termin', 'termin_verschoben', 'termin_abgesagt') "
+        "and (a.type <> 'termin' or coalesce(a.payload->>'datum', '') <> '') "
+        "order by a.created_at desc limit %s", (limit,))
+
+
+def _verlauf_zeile_entwurf(z) -> str:
+    text = str(z["body"] or "")[:ENTWURF_VORSCHAU]
+    return (f'<div class="eintrag"><span class="wann">{_e(_zeit(z["wann"]))}'
+            f'</span><span class="was"><b>{_e(z["name"] or "(ohne Kontakt)")}'
+            f'</b> &rarr; {_e(z["recipient"])} · {_e(text)}</span>'
+            f'{_zustand_badge(str(z["status"]))}</div>')
+
+
+def _verlauf_zeile_termin(z) -> str:
+    last = z["payload"] or {}
+    stuecke = [f'<b>{_e(z["name"] or "(ohne Kontakt)")}</b>']
+    wann_termin = " ".join(s for s in (str(last.get("datum") or ""),
+                                       str(last.get("uhrzeit") or "")) if s)
+    if wann_termin:
+        stuecke.append(_e(wann_termin))
+    for schluessel in ("thema", "grund"):
+        if last.get(schluessel):
+            stuecke.append(_e(str(last[schluessel])[:120]))
+    return (f'<div class="eintrag"><span class="wann">{_e(_zeit(z["wann"]))}'
+            f'</span><span class="was">{" · ".join(stuecke)}</span>'
+            f'{_zustand_badge(str(z["type"]))}</div>')
+
+
+def _verlauf_block(art: str, name: str) -> str:
+    if art == "termine":
+        zeilen = _verlauf_termine(VERLAUF_JE_ART)
+        rumpf = "".join(_verlauf_zeile_termin(z) for z in zeilen)
+    else:
+        zeilen = _verlauf_entwuerfe(art, VERLAUF_JE_ART)
+        rumpf = "".join(_verlauf_zeile_entwurf(z) for z in zeilen)
+    if not zeilen:
+        rumpf = '<p class="meta">Noch nichts im Verlauf.</p>'
+    return (f'<h3 class="verlauftitel">Verlauf {_e(name)}'
+            f'<a href="/freigaben/verlauf/{_e(art)}">Ganzer Verlauf</a></h3>'
+            f'{rumpf}')
+
+
+@_gesichert_seite
+async def freigaben_verlauf(request):
+    art = str(request.path_params.get("art") or "")
+    namen = dict(FREIGABE_ARTEN)
+    if art == "termine":
+        name = "Termine"
+        zeilen = _verlauf_termine(VERLAUF_MAX)
+        rumpf = "".join(_verlauf_zeile_termin(z) for z in zeilen)
+    elif art in namen:
+        name = namen[art]
+        zeilen = _verlauf_entwuerfe(art, VERLAUF_MAX)
+        rumpf = "".join(_verlauf_zeile_entwurf(z) for z in zeilen)
+    else:
+        return _fehlerseite(404, "Unbekannte Art",
+                            "Verlaeufe gibt es fuer whatsapp, linkedin, email "
+                            "und termine.")
+    if not zeilen:
+        rumpf = '<p class="meta">Noch nichts im Verlauf.</p>'
+    kopf = (f'<p class="meta">{len(zeilen)} Eintraege (hoechstens {VERLAUF_MAX}) '
+            f'· <a href="/freigaben">Zurueck zu den Freigaben</a></p>')
+    return _seite(f"Verlauf {name}", kopf + rumpf)
 
 
 # ---------------------------------------------------------------------------
@@ -4249,7 +4396,7 @@ async def login(request):
         LOG.warning("Anmeldung fehlgeschlagen")
         return _login_seite("Anmeldung fehlgeschlagen.")
     ANMELDE_BREMSE.update({"fehler": 0, "gesperrt_bis": 0.0})
-    antwort = RedirectResponse("/freigaben", status_code=303)
+    antwort = RedirectResponse("/", status_code=303)
     antwort.set_cookie(
         SITZUNG_COOKIE, _sitzung_bauen(name, jetzt + SITZUNG_DAUER_S),
         max_age=SITZUNG_DAUER_S, httponly=True, samesite="lax", path="/")
@@ -4464,6 +4611,7 @@ async def heute(request):
 app = Starlette(routes=[
     Route("/", heute),
     Route("/freigaben", inbox),
+    Route("/freigaben/verlauf/{art}", freigaben_verlauf),
     Route("/aktion/freigeben", aktion_freigeben, methods=["POST"]),
     Route("/aktion/ablehnen", aktion_ablehnen, methods=["POST"]),
     Route("/aktion/bearbeiten", aktion_bearbeiten, methods=["POST"]),
