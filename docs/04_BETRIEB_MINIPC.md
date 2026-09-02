@@ -197,5 +197,7 @@ Seitdem setzt `docker-compose.openwa.yml` `TRUSTED_PROXIES=172.16.0.0/12`
 weitet die Fenster auf 40/s, 400/min, 4000/h. Alle vier Werte sind über
 die `.env` überschreibbar. Prüfen: der Warnhinweis
 `X-Forwarded-For is present but TRUSTED_PROXIES is empty` darf im
-openwa-Log nicht mehr auftauchen, und eine Antwort über die
-Serve-Adresse trägt `X-RateLimit-Limit-short: 40`.
+openwa-Log nicht mehr auftauchen, und eine Antwort auf einer gezählten
+Route über die Serve-Adresse (z. B. `/api/sessions`, nicht `/api/health`,
+das ausgenommen ist) trägt `X-RateLimit-Limit-short: 40` — gemessen
+02.09.2026, 25 gleichzeitige Anfragen ohne einen 429.
