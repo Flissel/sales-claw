@@ -172,6 +172,7 @@ und vor allem die Schema-Wache — `import server` laesst denselben
 `SystemExit` fliegen, wenn SALES_DB_SCHEMA etwas anderes als
 `sales`/`sales_test` ist.
 """
+import contextvars
 import functools
 import hashlib
 import hmac
@@ -542,6 +543,7 @@ def _gesichert_seite(fn):
     `_gesichert` aus server.py, nur mit HTML statt JSON)."""
     @functools.wraps(fn)
     async def innen(request):
+        _AKTIVER_PFAD.set(request.url.path)
         try:
             return await fn(request)
         except psycopg.OperationalError:
@@ -596,6 +598,7 @@ _STIL = """
 :root {
   color-scheme: light dark;
   --grund: #f5f4f0; --flaeche: #ffffff; --kopfzeile: #f0eee8;
+  --aktiv: #e4e1d9;
   --schrift: #1c1b18; --gedaempft: #5c574c;
   --linie: #d8d4cc; --linie_stark: #8a8578;
   --balken: #2f2a24; --balken_schrift: #f5f4f0;
@@ -612,9 +615,10 @@ _STIL = """
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --grund: #171512; --flaeche: #221f1b; --kopfzeile: #2a2721;
+    --grund: #171512; --flaeche: #26221d; --kopfzeile: #2a2721;
+    --aktiv: #2e2a24;
     --schrift: #ece8e0; --gedaempft: #b0a99c;
-    --linie: #3a352d; --linie_stark: #847d6e;
+    --linie: #4a443a; --linie_stark: #847d6e;
     --balken: #0d0c0a; --balken_schrift: #ece8e0;
     --verweis: #8cc0f0;
     --gut: #5fc98f; --gut_auf: #0c2418; --gut_text: #6ad39b;
@@ -641,17 +645,53 @@ html, body { overflow-x: hidden; }
 body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
        margin: 0; background: var(--grund); color: var(--schrift);
        font-size: 16px; line-height: 1.45; overflow-wrap: anywhere; }
-main { max-width: 62rem; margin: 0 auto; padding: 1rem 1rem 4rem; }
+main { flex: 1 1 auto; min-width: 0; max-width: 80rem;
+       padding: 1.2rem 2rem 4rem; }
 a { color: var(--verweis); }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
        font-size: .92em; }
 
-/* --- Navigation: umbricht, statt ueberzulaufen --------------------------- */
-nav { background: var(--balken); display: flex; flex-wrap: wrap;
-      gap: .15rem; padding: .3rem .5rem; }
-nav a { color: var(--balken_schrift); text-decoration: none; font-weight: 600;
-        display: flex; align-items: center; min-height: 44px;
-        padding: .5rem .8rem; border-radius: 6px; }
+/* --- Seitenleiste (02.09.2026, UI-Plan Schritt 1): vier Gruppen statt
+       zehn gleichrangiger Reiter. Unter 768 px wird sie wieder zur
+       umbrechenden Zeile — die Vier-Tab-Leiste ist Schritt 7. --------- */
+.rahmen { display: flex; align-items: flex-start; min-height: 100vh; }
+nav.seite { width: 15rem; flex: none; background: var(--balken);
+            color: var(--balken_schrift); display: flex;
+            flex-direction: column; gap: 1.1rem; padding: 1rem .75rem;
+            position: sticky; top: 0; height: 100vh; overflow-y: auto; }
+nav.seite .marke { display: flex; align-items: center; gap: .6rem;
+                   padding: 0 .5rem; font-weight: 700; }
+nav.seite .logo { width: 1.9rem; height: 1.9rem; border-radius: 6px;
+                  background: var(--gut); color: var(--gut_auf);
+                  display: flex; align-items: center;
+                  justify-content: center; }
+.gruppe { display: flex; flex-direction: column; gap: .15rem; }
+.gruppenname { font-size: .7rem; letter-spacing: .08em;
+               text-transform: uppercase; color: var(--gedaempft);
+               padding: 0 .7rem .2rem; font-weight: 600; }
+nav.seite a { color: var(--balken_schrift); text-decoration: none;
+              font-weight: 600; display: flex; align-items: center;
+              gap: .6rem; min-height: 44px; padding: .5rem .7rem;
+              border-radius: 6px; }
+nav.seite a.aktiv { background: var(--aktiv); color: var(--gut); }
+.zaehler { margin-left: auto; font-family: ui-monospace, SFMono-Regular,
+           Menlo, Consolas, monospace; font-variant-numeric: tabular-nums;
+           font-size: .78rem; font-weight: 600; padding: .05rem .5rem;
+           border-radius: 999px; background: var(--kopfzeile);
+           color: var(--gedaempft); }
+.zaehler.offen { background: var(--achtung); color: var(--achtung_auf);
+                 font-weight: 700; }
+nav.seite .abmelden { margin-top: auto; padding: 0 .5rem; }
+@media (max-width: 767px) {
+  .rahmen { display: block; }
+  nav.seite { display: flex; flex-direction: row; flex-wrap: wrap;
+              width: auto; height: auto; position: static;
+              gap: .15rem; padding: .3rem .5rem; }
+  nav.seite .marke, .gruppenname { display: none; }
+  .gruppe { display: contents; }
+  nav.seite a { padding: .5rem .8rem; }
+  nav.seite .abmelden { margin-left: auto; padding: 0; }
+}
 
 h1 { font-size: 1.3rem; margin: .2rem 0 .8rem; }
 h2 { font-size: 1.05rem; margin-top: 2rem; }
@@ -846,12 +886,79 @@ thead th { background: var(--kopfzeile); }
 }
 """
 
-_NAV = (("/", "Freigaben"), ("/kontakte", "Kontakte"),
-        ("/pipeline", "Pipeline"), ("/ergebnisse", "Ergebnisse"),
-        ("/kalender", "Kalender"),
-        ("/posteingang", "Posteingang"), ("/einordnung", "Einordnung"),
-        ("/wiedervorlagen", "Wiedervorlagen"), ("/medien", "Medien"),
-        ("/whatsapp", "WhatsApp"))
+# Vier Gruppen statt zehn gleichrangiger Reiter (Betreiber-Entscheid
+# 02.09.2026 nach dem Design-Durchgang, docs/superpowers/plans/
+# 2026-09-02-ui-gruppen-und-heute.md). Reihenfolge ist Teil des Entwurfs.
+_GRUPPEN = (
+    ("Aufgaben", (("/", "Freigaben"),
+                  ("/wiedervorlagen", "Wiedervorlagen"),
+                  ("/einordnung", "Einordnung"),
+                  ("/kalender", "Kalender"))),
+    ("Analyse", (("/kontakte", "Kontakte"), ("/pipeline", "Pipeline"),
+                 ("/ergebnisse", "Ergebnisse"),
+                 ("/posteingang", "Posteingang"))),
+    ("Daten", (("/medien", "Medien"),)),
+    ("Monitoring", (("/whatsapp", "WhatsApp"),)),
+)
+_NAV = tuple(eintrag for _, eintraege in _GRUPPEN for eintrag in eintraege)
+# Welche Seite gerade gebaut wird — gesetzt von _gesichert_seite, gelesen
+# von der Seitenleiste fuer den aktiven Menuepunkt. Ein ContextVar statt
+# eines Parameters an jeder der ~30 _seite()-Stellen.
+_AKTIVER_PFAD = contextvars.ContextVar("aktiver_pfad", default="")
+# Pfade, deren Zaehler "offen" bedeutet (Achtung-Farbe, wenn > 0).
+_ZAEHLER_OFFEN = ("/", "/wiedervorlagen", "/einordnung")
+
+
+def _zaehler_abfragen() -> dict:
+    """Die Zahlen am Menue — aus DENSELBEN Quellen wie die Seiten selbst,
+    damit Menue und Seite nie zwei verschiedene Wahrheiten zeigen."""
+    koerbe = server._einzuordnende(text_max=EINORDNUNG_TEXT_MAX)
+    return {
+        "/": server._q("select count(*) n from drafts "
+                       "where status = 'pending'")[0]["n"],
+        "/wiedervorlagen": len(_offene_wiedervorlagen()),
+        "/einordnung": len(koerbe["neu"]) + len(koerbe["bereits_gefragt"]),
+        "/kontakte": server._q(
+            "select count(*) n from leads l where not "
+            + server._archiv_sql("l.enrichment"))[0]["n"],
+        "/posteingang": json.loads(server.posteingang())
+        ["anzahl_unbeantwortet"],
+        "/medien": len(server.medien.liste()),
+    }
+
+
+def _zaehler() -> dict:
+    """Scheitert eine Zaehlabfrage, fehlt der Zaehler — nicht die Seite.
+    Die Seite ist die Diagnose; ein Menue, das sie mitreisst, waere
+    genau dann weg, wenn man es braucht."""
+    try:
+        return _zaehler_abfragen()
+    except Exception:
+        LOG.warning("Menue-Zaehler nicht lesbar", exc_info=True)
+        return {}
+
+
+def _seitenleiste(abmelden: str) -> str:
+    aktiv = _AKTIVER_PFAD.get()
+    zaehler = _zaehler()
+    teile = ['<nav class="seite"><div class="marke">'
+             '<span class="logo">S</span><span>sales-claw</span></div>']
+    for gruppe, eintraege in _GRUPPEN:
+        teile.append(f'<div class="gruppe"><div class="gruppenname">'
+                     f'{_e(gruppe)}</div>')
+        for pfad, name in eintraege:
+            klasse = ' class="aktiv"' if pfad == aktiv else ""
+            zahl = ""
+            if pfad in zaehler:
+                n = int(zaehler[pfad])
+                art = " offen" if (pfad in _ZAEHLER_OFFEN and n > 0) else ""
+                zahl = f'<span class="zaehler{art}">{n}</span>'
+            teile.append(f'<a{klasse} href="{pfad}"><span>{_e(name)}</span>'
+                         f'{zahl}</a>')
+        teile.append("</div>")
+    teile.append(abmelden)
+    teile.append("</nav>")
+    return "".join(teile)
 
 # --- WhatsApp-Zustand (29.08.2026) ------------------------------------------
 # Gelesen wird mit einem VIEWER-Schluessel: er darf GET, aber kein send-text
@@ -886,14 +993,14 @@ def _seite(titel: str, rumpf: str, status: int = 200,
            refresh: int | None = None) -> HTMLResponse:
     auffrischen = (f'<meta http-equiv="refresh" content="{int(refresh)}">'
                    if refresh else "")
-    nav = "".join(f'<a href="{pfad}">{name}</a>' for pfad, name in _NAV)
     # Abmelden nur bei scharfer Anmeldung — vorher gaebe es nichts zu
     # beenden, und der Knopf waere eine Luege.
+    abmelden = ""
     if UI_SESSION_SECRET:
-        nav += (f'<form method="post" action="/logout" '
-                f'style="display:inline;margin-left:auto">'
-                f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
-                f'<button type="submit">Abmelden</button></form>')
+        abmelden = (f'<form method="post" action="/logout" class="abmelden">'
+                    f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+                    f'<button type="submit">Abmelden</button></form>')
+    nav = _seitenleiste(abmelden)
     return HTMLResponse(
         f'<!doctype html><html lang="de"><head><meta charset="utf-8">'
         # Ohne diese Zeile legt Safari eine 980px breite Desktop-Leinwand an
@@ -907,7 +1014,8 @@ def _seite(titel: str, rumpf: str, status: int = 200,
         f'<meta name="color-scheme" content="light dark">'
         f"{auffrischen}<title>{_e(titel)} — sales-ui</title>"
         f"<style>{_STIL}</style></head><body>"
-        f"<nav>{nav}</nav><main><h1>{_e(titel)}</h1>{rumpf}</main>"
+        f'<div class="rahmen">{nav}<main><h1>{_e(titel)}</h1>{rumpf}'
+        f"</main></div>"
         f"</body></html>", status_code=status)
 
 

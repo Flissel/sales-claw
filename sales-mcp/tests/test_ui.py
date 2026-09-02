@@ -1937,7 +1937,7 @@ def test_die_seite_selbst_scrollt_nie_waagerecht():
 
 def test_navigation_umbricht_statt_ueberzulaufen():
     seite = _get("/").text
-    assert ("nav { background: var(--balken); display: flex; flex-wrap: wrap;"
+    assert ("nav.seite { display: flex; flex-direction: row; flex-wrap: wrap;"
             in seite)
 
 
@@ -2995,7 +2995,7 @@ def test_ergebnisse_zeigt_gewonnen_und_verloren():
 
 def test_ergebnisse_steht_in_der_navigation():
     seite = _get("/pipeline").text
-    assert '<a href="/ergebnisse">Ergebnisse</a>' in seite
+    assert 'href=\"/ergebnisse\"' in seite
 
 
 def test_kontaktseite_zeigt_die_recherche_arbeit():
@@ -3094,7 +3094,7 @@ def _termin(lead, datum, uhrzeit="10:00", thema="Beratung", ort="Buero"):
 
 
 def test_kalender_steht_in_der_navigation():
-    assert '<a href="/kalender">Kalender</a>' in _get("/pipeline").text
+    assert 'href="/kalender"' in _get("/pipeline").text
 
 
 def test_kalender_zeigt_kommende_termine_mit_kontakt():
