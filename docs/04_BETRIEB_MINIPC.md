@@ -183,3 +183,19 @@ http://127.0.0.1:12785`). Wirkt erst nach Neubau des openwa-Images;
 ein openwa-Neustart kann die WhatsApp-Session kosten (01.09.2026
 gemessen) — also erst fertig bauen, dann einmal `up -d openwa`, dann
 Session prüfen und notfalls per Pairing-Code neu koppeln.
+
+## OpenWA-Ratenbegrenzer hinter dem Proxy (seit 02.09.2026)
+
+OpenWA begrenzt Anfragen pro Client-IP in drei Fenstern (short/medium/
+long). Hinter `tailscale serve` kommt aber jeder Browser als das
+Docker-Bridge-Gateway an — gemessen 02.09.2026: Dashboard, sales-ui und
+Betriebsskripte teilten sich EIN 10/s-Fenster, das Dashboard blieb nach
+dem Login im 429 (`ThrottlerException: Too Many Requests`) hängen.
+
+Seitdem setzt `docker-compose.openwa.yml` `TRUSTED_PROXIES=172.16.0.0/12`
+(openwa liest das X-Forwarded-For des Proxys und zählt pro Browser) und
+weitet die Fenster auf 40/s, 400/min, 4000/h. Alle vier Werte sind über
+die `.env` überschreibbar. Prüfen: der Warnhinweis
+`X-Forwarded-For is present but TRUSTED_PROXIES is empty` darf im
+openwa-Log nicht mehr auftauchen, und eine Antwort über die
+Serve-Adresse trägt `X-RateLimit-Limit-short: 40`.

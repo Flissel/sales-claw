@@ -68,12 +68,26 @@ services:
       # HTTPS-Adresse von sales-ui. Leer = wie upstream ('self'). Braucht
       # deploy/openwa-patches/0002-dashboard-embed.patch im Image.
       - DASHBOARD_FRAME_ANCESTORS=${DASHBOARD_FRAME_ANCESTORS:-}
-      # --- Rate-Limiter an (Grundsatzentscheidung 4). Die "medium"-Stufe ist
-      # laut .env.example die auf der API tatsaechlich erzwungene; Werte hier
-      # explizit gesetzt (== Anwendungsdefault) um die Entscheidung sichtbar
-      # zu machen statt sie implizit dem Default zu ueberlassen.
+      # --- Rate-Limiter an (Grundsatzentscheidung 4). Drei Fenster pro
+      # Client-IP (short/medium/long), global auf jeder Route.
+      #
+      # Gemessen 02.09.2026: hinter `tailscale serve` sieht openwa JEDEN
+      # Browser als das Docker-Bridge-Gateway (172.22.0.1) — Dashboard,
+      # sales-ui und Betriebsskripte teilten sich EIN Fenster von 10/s, und
+      # das Dashboard blieb nach dem Login im 429 (ThrottlerException)
+      # haengen. TRUSTED_PROXIES laesst openwa das X-Forwarded-For des
+      # Proxys lesen (nur wenn der direkte Peer selbst im Bereich liegt) und
+      # pro Browser zaehlen. 172.16.0.0/12 deckt jedes Docker-Netz ab, das
+      # Compose beim Neuanlegen vergeben kann; unsere eigenen Container
+      # schicken kein X-Forwarded-For und bleiben damit ihre eigene IP.
+      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-172.16.0.0/12}
+      # Die Fenster sind fuer eine Oberflaeche bemessen, die beim Laden
+      # einen Schwall Anfragen schickt (die Vorgaben 10/s, 100/min, 1000/h
+      # rissen schon beim ersten Seitenaufbau) — und bleiben ein Schutz.
+      - RATE_LIMIT_SHORT_LIMIT=${RATE_LIMIT_SHORT_LIMIT:-40}
       - RATE_LIMIT_MEDIUM_TTL=60000
-      - RATE_LIMIT_MEDIUM_LIMIT=100
+      - RATE_LIMIT_MEDIUM_LIMIT=${RATE_LIMIT_MEDIUM_LIMIT:-400}
+      - RATE_LIMIT_LONG_LIMIT=${RATE_LIMIT_LONG_LIMIT:-4000}
       # --- API-Key: API_MASTER_KEY bleibt ABSICHTLICH ungesetzt. Gemessener
       # Provisionierungsweg (openwa/upstream/docs/06-api-specification.md
       # §"API-Key Lifecycle" + .env.example "SECURITY"-Abschnitt): OpenWA

@@ -647,3 +647,19 @@ def test_openwa_bekommt_die_frame_ancestors_leitung(tmp_path: Path) -> None:
     Patch wirkungslos und der WhatsApp-Tab zeigte einen leeren Rahmen."""
     umgebung = rendered_config(tmp_path)["services"]["openwa"]["environment"]
     assert "DASHBOARD_FRAME_ANCESTORS" in umgebung
+
+
+def test_openwa_vertraut_dem_serve_proxy_und_weitet_die_ratenfenster(
+        tmp_path: Path) -> None:
+    """02.09.2026 gemessen: hinter `tailscale serve` sieht openwa JEDEN
+    Browser als das Bridge-Gateway (172.22.0.1) — Dashboard, sales-ui und
+    Betriebsskripte teilten sich EIN Ratenfenster von 10/s, und das
+    Dashboard blieb nach dem Login im 429 (ThrottlerException) haengen.
+    Mit TRUSTED_PROXIES liest openwa X-Forwarded-For des Proxys und zaehlt
+    pro Browser; die Fenster sind fuer eine Oberflaeche bemessen, die beim
+    Laden einen Schwall Anfragen schickt — und bleiben ein Schutz."""
+    umgebung = rendered_config(tmp_path)["services"]["openwa"]["environment"]
+    assert umgebung["TRUSTED_PROXIES"] == "172.16.0.0/12"
+    assert umgebung["RATE_LIMIT_SHORT_LIMIT"] == "40"
+    assert umgebung["RATE_LIMIT_MEDIUM_LIMIT"] == "400"
+    assert umgebung["RATE_LIMIT_LONG_LIMIT"] == "4000"
