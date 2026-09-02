@@ -32,6 +32,65 @@ index bb012a2..8f6ac31 100644
      // Wipe the React Query cache too: it is keyed by resource, not actor, so without a full
      // clear a logout → login in the same tab with a different key/scope shows the previous
      // actor's sessions/messages/apiKeys/audit rows.
+diff --git a/dashboard/src/hooks/useWebSocket.ts b/dashboard/src/hooks/useWebSocket.ts
+index 098561f..1696e67 100644
+--- a/dashboard/src/hooks/useWebSocket.ts
++++ b/dashboard/src/hooks/useWebSocket.ts
+@@ -161,8 +161,8 @@ export function useWebSocket(events: WebSocketEvents = {}) {
+   const connect = useCallback(() => {
+     if (socketRef.current?.connected) return;
+ 
+-    // Get API key from sessionStorage (same as api.ts)
+-    const apiKey = sessionStorage.getItem('openwa_api_key');
++    // Get API key from localStorage (same as api.ts; local patch 0002 keeps the login)
++    const apiKey = localStorage.getItem('openwa_api_key');
+ 
+     if (!apiKey) {
+       console.warn('[WebSocket] No API key found, skipping connection');
+diff --git a/dashboard/src/services/api.ts b/dashboard/src/services/api.ts
+index a0fded4..65e61bf 100644
+--- a/dashboard/src/services/api.ts
++++ b/dashboard/src/services/api.ts
+@@ -661,7 +661,7 @@ export interface SearchResults {
+ // throw an Error carrying the HTTP status and, when the gateway supplied one, its machine code.
+ async function handleErrorResponse<T>(response: Response): Promise<T> {
+   if (response.status === 401) {
+-    sessionStorage.removeItem('openwa_api_key');
++    localStorage.removeItem('openwa_api_key');
+     if (typeof window !== 'undefined') {
+       window.location.assign('/');
+       return new Promise<T>(() => {});
+@@ -690,8 +690,8 @@ async function handleErrorResponse<T>(response: Response): Promise<T> {
+ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+   const url = `${API_BASE_URL}${endpoint}`;
+ 
+-  // Get API key from sessionStorage for authentication
+-  const apiKey = sessionStorage.getItem('openwa_api_key');
++  // Get API key from localStorage for authentication (local patch 0002)
++  const apiKey = localStorage.getItem('openwa_api_key');
+ 
+   // For FormData (file uploads) let the browser set multipart/form-data + boundary itself.
+   const isFormData = options.body instanceof FormData;
+@@ -716,7 +716,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
+ 
+ /** Like {@link request} but returns the raw response text — e.g. a plugin's HTML config-UI bundle. */
+ async function requestText(endpoint: string): Promise<string> {
+-  const apiKey = sessionStorage.getItem('openwa_api_key');
++  const apiKey = localStorage.getItem('openwa_api_key');
+   const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+     headers: { ...(apiKey ? { 'X-API-Key': apiKey } : {}) },
+   });
+@@ -732,8 +732,8 @@ async function requestText(endpoint: string): Promise<string> {
+ async function requestBlob(endpoint: string): Promise<Blob> {
+   const url = `${API_BASE_URL}${endpoint}`;
+ 
+-  // Get API key from sessionStorage for authentication
+-  const apiKey = sessionStorage.getItem('openwa_api_key');
++  // Get API key from localStorage for authentication (local patch 0002)
++  const apiKey = localStorage.getItem('openwa_api_key');
+ 
+   const headers: HeadersInit = {
+     ...(apiKey ? { 'X-API-Key': apiKey } : {}),
 diff --git a/src/main.ts b/src/main.ts
 index 80b5fa3..d4e6e51 100644
 --- a/src/main.ts
