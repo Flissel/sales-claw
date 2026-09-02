@@ -2826,7 +2826,8 @@ def test_whatsapp_seite_uebersetzt_den_zustand(monkeypatch):
     seite = _get("/whatsapp").text
     assert "wartet auf Kopplung" in seite      # Klartext, nicht nur qr_ready
     assert "nichts kommt an" in seite          # die Folge steht dabei
-    assert "29.08.2026 07:00 UTC" in seite     # ISO sauber formatiert
+    assert "29.08.2026 09:00" in seite         # ISO -> Ortszeit (CEST)
+    assert "UTC" not in seite                   # keine zwei Zeitzonen mehr
 
 
 def test_whatsapp_seite_warnt_wenn_nie_etwas_ankam(monkeypatch):

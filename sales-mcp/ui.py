@@ -2625,8 +2625,9 @@ def _wa_zeit(wert) -> str:
     if hasattr(wert, "strftime"):
         return _zeit(wert)
     try:
-        return datetime.fromisoformat(
-            str(wert).replace("Z", "+00:00")).strftime("%d.%m.%Y %H:%M UTC")
+        # Ueber _zeit, damit auch diese Seite Ortszeit zeigt (02.09.2026 im
+        # Browser gefunden: „07:20 UTC" neben „18:20" auf derselben Seite).
+        return _zeit(datetime.fromisoformat(str(wert).replace("Z", "+00:00")))
     except ValueError:
         return str(wert)[:32]
 
@@ -2664,7 +2665,9 @@ async def whatsapp(request):
     OpenWA-Oberflaeche, denn dafuer braucht es einen Schluessel, der
     senden darf — und der gehoert nicht in diese Anzeige.
     """
-    teile = ["<h1>WhatsApp</h1>"]
+    # Keine eigene h1 — _seite setzt den Titel bereits; die Seite zeigte
+    # „WhatsApp" zweimal untereinander (02.09.2026 im Browser gefunden).
+    teile = []
 
     sitzungen, fehler = _openwa_lesen("/api/sessions")
     if fehler:
