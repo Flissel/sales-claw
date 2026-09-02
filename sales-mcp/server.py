@@ -57,6 +57,7 @@ import medien
 # nur HTTP, Normalisierung und Markdown (Begründung im Moduldocstring).
 import recherche
 import rowboat
+import sperrliste
 # Termine (Stufe 9): ICS-Text und der optionale CalDAV-Eintrag. Wieder ein
 # Modul ohne Datenbank und ohne Rückimport — und der einzige Ort, an dem
 # der neue ausgehende Pfad dieser Stufe steht.
@@ -187,6 +188,35 @@ def _lead_mit_gleicher_nummer(chat_id: str):
     return treffer[0] if treffer else None
 
 
+def _sperre(email: str = "", phone: str = "") -> str:
+    """Grund der Verbotslisten-Sperre fuer diese Kennungen — oder ''.
+
+    F1 (03.09.2026): compliance.sperrliste teilen wir mit Marketing. Wer dort
+    steht, hat irgendwo „nein" gesagt (Unsubscribe, Bounce, Widerruf,
+    Loeschantrag). Vor jeder ERSTANSPRACHE wird gefragt; ein Treffer ist eine
+    Ablehnung mit Grund — der Betreiber soll ihn lesen, nicht raten.
+    """
+    return sperrliste.gesperrt(_q, email=email or "", phone=phone or "") or ""
+
+
+def _sperre_fuer_lead(lead_id: str) -> str:
+    zeilen = _q("select email, phone from leads where id = %s", (lead_id,))
+    if not zeilen:
+        return ""
+    return _sperre(zeilen[0].get("email") or "", zeilen[0].get("phone") or "")
+
+
+def _lead_sperren(lead_id: str, quelle: str, grund: str = "") -> int:
+    """Traegt den Kontakt in die gemeinsame Verbotsliste ein (Widerruf,
+    Loeschantrag) — damit Marketing ihn ab jetzt ebenfalls nicht anschreibt."""
+    zeilen = _q("select email, phone from leads where id = %s", (lead_id,))
+    if not zeilen:
+        return 0
+    return sperrliste.sperren(_q, email=zeilen[0].get("email") or "",
+                              phone=zeilen[0].get("phone") or "",
+                              quelle=quelle, grund=grund)
+
+
 @_gesichert
 def kontakt_anlegen(name: str, email: str = "", phone: str = "",
                     source: str = "whatsapp", notes: str = "") -> str:
@@ -208,6 +238,12 @@ def kontakt_anlegen(name: str, email: str = "", phone: str = "",
                 return _json({
                     "lead_id": bestehend["id"], "angelegt": False,
                     "hinweis": "Kontakt mit dieser Nummer existiert bereits"})
+    grund = _sperre(email, phone)
+    if grund:
+        return _json({"fehler": (
+            f"Nicht angelegt: diese Kennung steht auf der gemeinsamen "
+            f"Verbotsliste ({grund}). Keine Erstansprache — wer sich abgemeldet, "
+            f"widerrufen oder Loeschung verlangt hat, wird nicht erneut erfasst.")})
     zeilen = _q(
         "insert into leads (name, email, phone, source, notes) "
         "values (%s, nullif(%s,''), nullif(%s,''), %s, nullif(%s,'')) "
@@ -546,6 +582,11 @@ def zustimmung_anfragen(lead_id: str, text: str = "") -> str:
                (lead_id,))
     if not leads:
         return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
+    grund = _sperre_fuer_lead(lead_id)
+    if grund:
+        return _json({"fehler": (
+            f"{leads[0]['name']} steht auf der gemeinsamen Verbotsliste "
+            f"({grund}) — keine Zustimmungsanfrage, keine Erstansprache.")})
     vorhanden = _zustimmung(leads[0]["enrichment"])
     if vorhanden:
         return _json({"fehler": (
@@ -628,6 +669,8 @@ def zustimmung_widerrufen(lead_id: str, grund: str = "") -> str:
     _q("update leads set enrichment = jsonb_set(enrichment, %s, %s::jsonb, "
        "true), updated_at = now() where id = %s returning id",
        ([ZUSTIMMUNG_SCHLUESSEL], _json(eintrag), lead_id))
+    # F1: der Widerruf gilt auch fuer Marketing — gemeinsame Verbotsliste.
+    _lead_sperren(lead_id, "sales:widerruf", eintrag["widerruf_grund"] or "Widerruf")
     # Noch nicht zugestellte Auto-Antworten anhalten. NUR die ohne
     # menschlichen Blick: was der Betreiber selbst freigegeben hat, hat er
     # gelesen und gewollt — das anzuhalten waere seine Entscheidung, nicht
@@ -1482,6 +1525,13 @@ def entwurf_erstellen(lead_id: str, kanal: str, text: str,
                (lead_id,))
     if not leads:
         return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
+    # F1: gemeinsame Verbotsliste — auch Marketings Unsubscribes/Bounces
+    # sperren hier den Entwurf, nicht nur unsere eigenen Widerrufe.
+    grund = _sperre(leads[0].get("email") or "", leads[0].get("phone") or "")
+    if grund:
+        return _json({"fehler": (
+            f"Kein Entwurf: {leads[0]['name']} steht auf der gemeinsamen "
+            f"Verbotsliste ({grund}).")})
     # Loeschantrag stoppt ALLES (P2, 27.08.2026) — noch vor der Freigabe.
     antrag = _loeschantrag(leads[0]["enrichment"])
     if antrag:
@@ -5451,6 +5501,8 @@ def loeschantrag_vermerken(lead_id: str, quelle: str,
                     "durch": "loeschantrag"}), lead_id))
     _q("insert into activities (lead_id, type, payload) values "
        "(%s, 'loeschantrag', %s) returning id", (lead_id, _json(vermerk)))
+    # F1: Loeschbegehren gilt fuer beide Systeme — gemeinsame Verbotsliste.
+    _lead_sperren(lead_id, "sales:loeschantrag", f"Loeschantrag via {quelle.strip()}")
     return _json({"lead_id": lead_id, "kontakt": leads[0]["name"],
                   "vermerkt_am": vermerk["am"], "hinweis": (
                       "Verarbeitung gestoppt, Kontakt archiviert. Physische "
