@@ -809,6 +809,37 @@ h2 { font-size: 1.05rem; margin-top: 2rem; }
                                    color: var(--achtung_auf); }
 .badge.termin { background: transparent; color: var(--schrift);
                 border: 1px solid var(--linie_stark); }
+/* --- Kontaktliste (Schritt 5): Stufe-Chip, Score-Pille, Segment ------ */
+.stufe { display: inline-block; padding: .1rem .55rem; border-radius: 999px;
+         border: 1px solid var(--linie_stark); font-size: .8rem;
+         font-weight: 600; white-space: nowrap; }
+.stufe.termin { color: var(--gut_text); border-color: var(--gut_text); }
+.stufe.geantwortet { color: var(--info); border-color: var(--info); }
+.stufe.gewonnen { background: var(--gut); color: var(--gut_auf);
+                  border-color: var(--gut); }
+.score { display: inline-block; min-width: 2.4rem; text-align: center;
+         padding: .1rem .5rem; border-radius: 999px;
+         font-family: ui-monospace, SFMono-Regular, Menlo, Consolas,
+         monospace; font-variant-numeric: tabular-nums; font-size: .82rem;
+         background: var(--kopfzeile); color: var(--schrift); }
+.score.hoch { background: var(--gut); color: var(--gut_auf);
+              font-weight: 700; }
+.score.mittel { background: var(--achtung); color: var(--achtung_auf);
+                font-weight: 700; }
+.score.leer { color: var(--gedaempft); }
+.segment { display: inline-flex; flex-wrap: wrap; border: 1px solid
+           var(--linie_stark); border-radius: 6px; overflow: hidden; }
+.segment form { margin: 0; }
+.segment button, .segment .an { display: inline-flex; align-items: center;
+                                min-height: 36px; padding: 0 .6rem;
+                                font-size: .82rem; border: 0;
+                                border-right: 1px solid var(--linie_stark);
+                                background: transparent;
+                                color: var(--gedaempft); cursor: pointer; }
+.segment > :last-child button, .segment > .an:last-child {
+  border-right: 0; }
+.segment .an { background: var(--schrift); color: var(--grund);
+               font-weight: 700; cursor: default; }
 /* --- Freigaben in vier Bloecken mit Verlauf je Art (Schritt 3) ------ */
 .block { margin-top: 1.4rem; padding-top: .2rem; }
 .block > h2 { display: flex; align-items: center; gap: .5rem;
@@ -2339,6 +2370,7 @@ async def kontakte(request):
         "where not " + server._archiv_sql("l.enrichment") + " ")
     zeilen = server._q(  # noqa: E501 — Spaltenliste bleibt eine Zeile je Feld
         "select l.id, l.name, l.status, l.consent_status, l.enrichment, "
+        "       l.score, "
         "       (select max(a.created_at) from activities a "
         "         where a.lead_id = l.id) as letzte "
         "from leads l " + bedingung +
@@ -2366,16 +2398,18 @@ async def kontakte(request):
         # Nachrichten — genau diese Verwechslung ist am 25.08.2026 passiert.
         if sammel:
             marke += ' <span class="badge archiv">Sammelkontakt</span>'
+        # Die Stufe deutsch wie auf /pipeline (29.08.2026); seit Schritt 5
+        # (02.09.2026) als Chip, der Score als Pille, Consent als Meta-Zeile
+        # unter dem Namen, die Autonomie als Segment statt Auswahlfeld.
+        stufe = server._stufe_lesen(z["status"])
         inhalt.append([
-            f'<a href="/kontakte/{_e(z["id"])}">{_e(z["name"])}</a>{marke}',
-            # Die Stufe deutsch wie auf /pipeline (29.08.2026): die Liste
-            # zeigte den rohen DB-Wert `new`, die Pipeline daneben `neu` —
-            # zwei Namen fuer dasselbe Feld sind ein Lesefehler in spe.
-            _e(server._stufe_lesen(z["status"])),
-            _e(z["consent_status"]), _zeit(z["letzte"]),
+            f'<a href="/kontakte/{_e(z["id"])}">{_e(z["name"])}</a>{marke}'
+            f'<div class="meta">Consent: {_e(z["consent_status"])}</div>',
+            f'<span class="stufe {_e(stufe)}">{_e(stufe)}</span>',
+            _score_pille(z["score"]), _zeit(z["letzte"]),
             # Am Sammelkontakt keine Stufe: er ist kein Mensch, und eine
             # Stufe darauf liesse den Agenten allen Fremden antworten.
-            "" if sammel else _autonomie_waehler(
+            "" if sammel else _autonomie_segment(
                 z["id"], server._autonomie(z["enrichment"]),
                 server._whatsapp_freigegeben(z["enrichment"])),
             # Kein Archiv-Knopf am Sammelkontakt: das Werkzeug lehnt es
@@ -2395,8 +2429,8 @@ async def kontakte(request):
                 'Entwurf per WhatsApp/E-Mail; Antworten auf eingehende '
                 'Nachrichten bleiben frei.</p>')
     rumpf = [schalter, _tabelle(
-        ["Name", "Stufe", "Consent", "Letzte Aktivitaet", "Autonomie",
-         "Archiv"], inhalt), fussnote]
+        ["Name", "Stufe", "Score", "Zuletzt", "Autonomie", "Archiv"],
+        inhalt), fussnote]
     if not zeilen:
         rumpf = [schalter, "<p>Keine Kontakte.</p>"]
     return _seite(f"Kontakte ({len(zeilen)})", "".join(rumpf))
@@ -2825,6 +2859,45 @@ def _ist_sammelkontakt(lead_id) -> bool:
     """
     return bool(server.UNBEKANNT_LEAD_ID) and \
         str(lead_id) == str(server.UNBEKANNT_LEAD_ID)
+
+
+SCORE_HOCH, SCORE_MITTEL = 50, 30
+
+
+def _score_pille(score) -> str:
+    """Der Score als Pille — Farbe hilft, die Zahl traegt die Aussage."""
+    if score is None:
+        return '<span class="score leer">—</span>'
+    n = int(score)
+    klasse = " hoch" if n >= SCORE_HOCH else (" mittel" if n >= SCORE_MITTEL
+                                             else "")
+    return f'<span class="score{klasse}">{n}</span>'
+
+
+def _autonomie_segment(lead_id, stufe: str, freigegeben: bool) -> str:
+    """Die Autonomiestufe als Segment (UI-Plan Schritt 5): die gesetzte
+    Stufe steht als Wort, jede andere ist ein Knopf — ein Klick, kein
+    Auswahlfeld plus Setzen, und weiterhin ohne JavaScript. Dieselbe
+    Route wie bisher; „auto" heisst nach wie vor, dass Nachrichten ohne
+    menschlichen Blick an Menschen gehen."""
+    teile = ['<div class="segment">']
+    for s in server.AUTONOMIE_STUFEN:
+        if s == stufe:
+            teile.append(f'<span class="an">{_e(s)}</span>')
+        else:
+            teile.append(
+                f'<form method="post" action="/kontakte/autonomie">'
+                f'<input type="hidden" name="lead_id" value="{_e(lead_id)}">'
+                f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+                f'<input type="hidden" name="stufe" value="{_e(s)}">'
+                f'<button>{_e(s)}</button></form>')
+    teile.append("</div>")
+    if stufe == "auto" and not freigegeben:
+        teile.append(f'<div class="meta"><b>ohne Wirkung</b> — keine '
+                     f'WhatsApp-Freigabe '
+                     f'(<a href="/kontakte/{_e(lead_id)}#freigabe">erteilen'
+                     f'</a>)</div>')
+    return "".join(teile)
 
 
 def _autonomie_waehler(lead_id, stufe: str, freigegeben: bool) -> str:

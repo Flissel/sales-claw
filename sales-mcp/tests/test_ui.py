@@ -1769,6 +1769,7 @@ ERLAUBTE_LABEL = {
     # Autonomie-„Stufe" daneben. „Status" bleibt in der Liste, weil
     # andere Ansichten es weiterhin verwenden duerfen.
     "Stufe",
+    "Score", "Zuletzt",   # /kontakte seit Schritt 5 (02.09.2026)
     "Archiv",   # /kontakte, Archiv-Knopf je Zeile
     "Autonomie",   # /kontakte, Stufe je Zeile (25.08.2026)
     "Profil",   # /einordnung, Link zum Kontaktprofil
@@ -1955,8 +1956,8 @@ def test_jede_tabellenzelle_traegt_ihre_spaltenueberschrift():
     # „Stufe" statt „Status" seit 29.08.2026 — die Spalte zeigt die
     # Pipeline-Stufe und stand als „Status" verwirrend neben der
     # Autonomie-Stufe in derselben Zeile.
-    for pfad, spalten in (("/kontakte", ["Name", "Stufe", "Consent",
-                                         "Letzte Aktivitaet"]),
+    for pfad, spalten in (("/kontakte", ["Name", "Stufe", "Score",
+                                         "Zuletzt"]),
                           ("/wiedervorlagen", ["Kontakt", "Faellig am",
                                                "Notiz"])):
         seite = _get(pfad).text

@@ -36,7 +36,7 @@ Rollout nur `sales-ui` (`git pull --ff-only && docker compose up -d
   herkunft, gesendet_zuletzt); `medien_liste()` im Bot filtert;
   Eingang speichert Betreiber-Anhänge (nur eigene Nummer) nach
   `/media-erzeugt` mit Herkunft „Chat“.
-- [ ] **5. Kontakte.** Tabelle ohne Formular je Zeile, Autonomie als
+- [x] **5. Kontakte.** Tabelle ohne Formular je Zeile, Autonomie als
   Segment, Score-Spalte; Aktionen bleiben auf der Kontaktseite.
 - [ ] **6. Monitoring.** Kette Handy → OpenWA → Webhook → Posteingang →
   Datenbank mit letztem Beweis je Station; Abnahme-Ergebnis aus
