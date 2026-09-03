@@ -669,8 +669,12 @@ def zustimmung_widerrufen(lead_id: str, grund: str = "") -> str:
     _q("update leads set enrichment = jsonb_set(enrichment, %s, %s::jsonb, "
        "true), updated_at = now() where id = %s returning id",
        ([ZUSTIMMUNG_SCHLUESSEL], _json(eintrag), lead_id))
-    # F1: der Widerruf gilt auch fuer Marketing — gemeinsame Verbotsliste.
-    _lead_sperren(lead_id, "sales:widerruf", eintrag["widerruf_grund"] or "Widerruf")
+    # BEWUSST KEIN Eintrag in die gemeinsame Verbotsliste (F1-Lehre,
+    # 03.09.2026): diese Zustimmung ist die zum Assistenten-Autoantworten
+    # (auto_zustimmung), ihr Widerruf heisst „ab jetzt liest der Betreiber
+    # wieder mit" — nicht „kein Kontakt mehr". Die Suite haelt das fest
+    # (test_nach_widerruf_darf_wieder_gefragt_werden); in die Verbotsliste
+    # gehoert nur, wer wirklich keinen Kontakt will: Loeschantrag.
     # Noch nicht zugestellte Auto-Antworten anhalten. NUR die ohne
     # menschlichen Blick: was der Betreiber selbst freigegeben hat, hat er
     # gelesen und gewollt — das anzuhalten waere seine Entscheidung, nicht

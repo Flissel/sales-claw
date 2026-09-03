@@ -38,6 +38,10 @@ def saubere_tabellen():
         conn.execute(
             "truncate sales_test.activities, sales_test.drafts, "
             "sales_test.personas, sales_test.leads cascade")
+        # F1 (03.09.2026): loeschantrag_vermerken schreibt in die TEST-Verbotsliste
+        # (compliance_test, nie compliance) — je Test leeren, sonst blockiert
+        # Doras Loeschantrag die naechste Erstansprache mit derselben Nummer.
+        conn.execute("truncate compliance_test.sperrliste")
     yield
 
 

@@ -15,10 +15,21 @@ Ziffernteil.
 NUR STANDARDBIBLIOTHEK; der Datenbankgriff wird hereingereicht (server._q),
 damit das Modul ohne Datenbank pruefbar bleibt.
 """
+import os
 import re
 from typing import Callable, List, Optional
 
 Abfrage = Callable[..., list]
+
+# Testlaeufe (SALES_DB_SCHEMA=sales_test) duerfen die PRODUKTIONS-Verbotsliste
+# nicht beruehren — gemessen 03.09.2026: die Suite schrieb Test-Kennungen in
+# compliance.sperrliste und blockierte damit spaetere Tests (und haette echte
+# Kontakte mit denselben Nummern gesperrt). Darum folgt das Schema dem
+# Datenbankschema: sales_test -> compliance_test (gleiche DDL, ohne
+# Marketing-Trigger), alles andere -> compliance.
+SCHEMA = os.environ.get(
+    "SPERRLISTE_SCHEMA",
+    "compliance_test" if os.environ.get("SALES_DB_SCHEMA", "") == "sales_test" else "compliance")
 
 
 def kennung_email(text: Optional[str]) -> Optional[str]:
@@ -61,7 +72,7 @@ def gesperrt(q: Abfrage, email: str = "", phone: str = "") -> Optional[str]:
     ks = kennungen(email, phone)
     if not ks:
         return None
-    rows = q("select kennung, quelle, grund from compliance.sperrliste "
+    rows = q(f"select kennung, quelle, grund from {SCHEMA}.sperrliste "
              "where kennung = any(%s) and aufgehoben_am is null", (ks,)) or []
     if not rows:
         return None
@@ -73,5 +84,5 @@ def sperren(q: Abfrage, email: str = "", phone: str = "", *, quelle: str, grund:
     """Sperrt jede Kennung ueber compliance.sperren (idempotent). Rueckgabe: Anzahl."""
     ks = kennungen(email, phone)
     for k in ks:
-        q("select compliance.sperren(%s, %s, %s)", (k, quelle, grund))
+        q(f"select {SCHEMA}.sperren(%s, %s, %s)", (k, quelle, grund))
     return len(ks)

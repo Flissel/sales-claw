@@ -33,7 +33,8 @@ def test_gesperrt_fragt_nur_aktive_sperren():
     grund = sl.gesperrt(q, email="", phone="0171 1234567")
     assert grund is not None and "marketing:unsubscribe" in grund
     sql, params = gesehen[0]
-    assert "compliance.sperrliste" in sql
+    assert f"{sl.SCHEMA}.sperrliste" in sql
+    assert sl.SCHEMA == "compliance_test"   # Testlauf beruehrt nie die Produktionsliste
     assert "aufgehoben_am is null" in sql.lower()
     assert params == (["tel:+491711234567"],)
 
@@ -53,5 +54,5 @@ def test_sperren_ruft_die_funktion_je_kennung():
 
     n = sl.sperren(q, email="a@x.de", phone="0171 1234567", quelle="sales:widerruf", grund="am Telefon")
     assert n == 2
-    assert all("compliance.sperren" in s for s, _ in gesehen)
+    assert all(f"{sl.SCHEMA}.sperren" in s for s, _ in gesehen)
     assert gesehen[0][1] == ("email:a@x.de", "sales:widerruf", "am Telefon")
