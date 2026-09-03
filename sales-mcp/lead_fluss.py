@@ -75,3 +75,28 @@ def vermerken(q, lead_ids: list, proposal_id: str, jetzt: str) -> int:
         q("insert into activities (lead_id, type, payload) values (%s, %s, %s) returning id",
           (lid, "an_marketing", json.dumps({"proposal_id": proposal_id})))
     return len(lead_ids)
+
+
+# --- F3: Antworten auf Marketing-Nachrichten -> sales-claw-Kontakt ---------
+
+def uebergaben_offen(q, limit: int = 20) -> list:
+    """Offene Uebergaben ueber die SECURITY-DEFINER-Funktion — sales_app liest
+    die Tabelle nie direkt."""
+    return q("select id::text as id, from_email, from_name, subject, auszug, kampagne, "
+             "klassifikation, seit from marketing.uebergaben_offen(%s)", (int(limit),)) or []
+
+
+def uebergabe_erledigen(q, uebergabe_id: str, status: str, lead_id, grund: str) -> bool:
+    zeilen = q("select marketing.uebergabe_erledigen(%s::uuid, %s, %s, %s) as ok",
+               (uebergabe_id, status, lead_id, grund or ""))
+    return bool((zeilen or [{}])[0].get("ok"))
+
+
+def kontaktname(from_name: str, from_email: str) -> str:
+    name = (from_name or "").strip()
+    return name or (from_email or "").split("@")[0].strip()
+
+
+def uebergabe_notiz(u: dict) -> str:
+    return (f"Marketing-Uebergabe ({u.get('klassifikation', '?')}): {u.get('subject', '')}\n"
+            f"Kampagne: {u.get('kampagne') or '(keine)'}\n{u.get('auszug', '')}")

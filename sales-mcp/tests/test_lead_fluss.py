@@ -85,3 +85,36 @@ def test_vermerken_schreibt_enrichment_und_aktivitaet_je_lead():
     assert len(updates) == 2 and len(aktivitaeten) == 2
     assert aktivitaeten[0][1] == "an_marketing"
     assert json.loads(aktivitaeten[0][2])["proposal_id"] == "p-1"
+
+
+# --- F3 -------------------------------------------------------------------
+
+def test_uebergaben_offen_ruft_die_funktion_mit_limit():
+    q = Rekorder([[{"id": "u1", "from_email": "p@x.de", "from_name": "P", "subject": "Re",
+                    "auszug": "Hi", "kampagne": "Herbst", "klassifikation": "reply", "seit": "2026-09-03"}]])
+    offen = lead_fluss.uebergaben_offen(q, 5)
+    assert offen[0]["id"] == "u1"
+    sql, params = q.aufrufe[0]
+    assert "marketing.uebergaben_offen(%s)" in sql and "id::text" in sql
+    assert params == (5,)
+
+
+def test_uebergabe_erledigen_gibt_bool():
+    q = Rekorder([[{"ok": True}], [{"ok": False}]])
+    assert lead_fluss.uebergabe_erledigen(q, "u1", "angenommen", "l1", "") is True
+    assert lead_fluss.uebergabe_erledigen(q, "u1", "abgelehnt", None, "Spam") is False
+    sql, params = q.aufrufe[0]
+    assert "marketing.uebergabe_erledigen(%s::uuid, %s, %s, %s)" in sql
+    assert params == ("u1", "angenommen", "l1", "")
+
+
+def test_kontaktname_faellt_auf_lokalteil_zurueck():
+    assert lead_fluss.kontaktname("  Petra Probe ", "petra@x.de") == "Petra Probe"
+    assert lead_fluss.kontaktname("", "petra.probe@x.de") == "petra.probe"
+
+
+def test_uebergabe_notiz_traegt_kontext():
+    n = lead_fluss.uebergabe_notiz({"klassifikation": "question", "subject": "Re: Preise",
+                                    "kampagne": "", "auszug": "Was kostet es?"})
+    assert "Marketing-Uebergabe (question)" in n and "Re: Preise" in n
+    assert "(keine)" in n and "Was kostet es?" in n
