@@ -1242,8 +1242,10 @@ Betreiber-Chat, und antworte dem Kunden ohne Produktzusage.
 ## Verbotsliste und Wissensbasis-Frage (03.09.2026)
 
 - Lehnt `kontakt_anlegen`, `zustimmung_anfragen` oder `entwurf_erstellen` mit
-  „Verbotsliste" ab, hat diese Person irgendwo „nein" gesagt — bei uns oder
-  im Marketing (Abmeldung, Bounce, Widerruf, Loeschantrag). Das ist endgueltig
+  „Verbotsliste" ab, hat diese Person irgendwo „nein" gesagt — bei uns
+  (Loeschantrag) oder im Marketing (Abmeldung, Bounce). Ein Widerruf der
+  Auto-Zustimmung ist KEINE Sperre: dann liest der Betreiber wieder mit, mehr
+  nicht. Ein Verbotslisten-Treffer dagegen ist endgueltig
   fuer dich: keine Erstansprache, kein zweiter Versuch ueber einen anderen
   Kanal, kein Neuanlegen mit anderer Schreibweise. Sag dem Betreiber den
   genannten Grund; aufheben kann nur er.

@@ -400,11 +400,22 @@ Seit F1 gibt es `compliance.sperrliste` (Migration 013 im Marketing-Space,
 - **Marketing schreibt** per Trigger (`unsubscribed_at`, `bounce_count >= 2`) und
   prueft mit Gate 13 vor jedem Versand (harter Abbruch) sowie beim Staging
   von Publikumsvorschlaegen.
-- **Wir schreiben** bei `zustimmung_widerrufen` (`sales:widerruf`) und
-  `loeschantrag_vermerken` (`sales:loeschantrag`) und **pruefen vor jeder
-  Erstansprache**: `kontakt_anlegen` legt einen gesperrten Kontakt nicht an,
-  `zustimmung_anfragen` und `entwurf_erstellen` lehnen mit Grund ab. Der Grund
-  steht in der Rueckgabe, damit der Betreiber ihn liest statt zu raten.
+- **Wir schreiben** bei `loeschantrag_vermerken` (`sales:loeschantrag`) und
+  **pruefen vor jeder Erstansprache**: `kontakt_anlegen` legt einen gesperrten
+  Kontakt nicht an, `zustimmung_anfragen` und `entwurf_erstellen` lehnen mit
+  Grund ab. Der Grund steht in der Rueckgabe, damit der Betreiber ihn liest
+  statt zu raten.
+- **Bewusst NICHT** bei `zustimmung_widerrufen`: diese Zustimmung ist die zum
+  Assistenten-Autoantworten (`auto_zustimmung`); ihr Widerruf heisst „ab jetzt
+  liest der Betreiber wieder mit", nicht „kein Kontakt". Die Suite haelt das
+  fest (`test_nach_widerruf_darf_wieder_gefragt_werden`) — ein erster
+  Widerruf-Hook in die Verbotsliste fiel genau daran (10 rote Tests, 03.09.2026).
+- **Testlaeufe haben ihre eigene Liste:** bei `SALES_DB_SCHEMA=sales_test`
+  spricht `sperrliste.py` mit `compliance_test` (Migration 013b), nie mit der
+  Produktionsliste. Gemessen, warum das noetig ist: die Suite hatte
+  Test-Kennungen in `compliance.sperrliste` geschrieben, und „Max Testperson
+  steht auf der gemeinsamen Verbotsliste" blockierte danach quer durch alle
+  Dateien. Die DSGVO-Fixture leert `compliance_test.sperrliste` je Test.
 - **Aufheben ist ein Zeitstempel** (`aufgehoben_am`), nie ein DELETE — die
   Zeile ist das Protokoll. Die Rolle `sales_app` darf lesen und sperren, nicht
   loeschen.
