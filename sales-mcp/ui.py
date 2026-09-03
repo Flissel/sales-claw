@@ -1315,9 +1315,11 @@ def _entwurf_kopf(z, zustand: str) -> str:
               if z.get("media_ref") else "")
     alter = (f' · Alter: {float(z["alter_h"]):.1f} h'
              if z.get("alter_h") is not None else "")
+    betreff = (f'<div>Betreff: <b>{_e(z["subject"])}</b></div>'
+               if z.get("subject") else "")
     return (f'{_zustand_badge(zustand)}{_badge(z["channel"])}'
             f'<b>{_e(z["name"] or "(ohne Kontakt)")}'
-            f"</b> &rarr; {_e(z['recipient'])}"
+            f"</b> &rarr; {_e(z['recipient'])}{betreff}"
             f'<div class="meta">consent: {_e(z.get("consent_status"))}'
             f"{anhang}{alter} · draft_id: {_e(z['id'])}</div>")
 
@@ -1358,6 +1360,13 @@ def _entwurf_karte_offen(z) -> str:
         f'</div></details>')
 
 
+# Textfeld-Grenzen je Kanal: WhatsApp 4096 (Kanalgrenze), LinkedIn die
+# gemessene Post-Grenze, E-Mail grosszuegig — der Server prueft ohnehin.
+TEXTFELD_MAX = {"whatsapp": 4096, "linkedin": server.POST_MAXLAENGE,
+                "email": 20000}
+BETREFF_MAX = 200
+
+
 def _entwurf_bearbeiten_form(z, text: str) -> str:
     """Das Textfeld — nur bei `pending`, denn nur dort darf geaendert werden.
 
@@ -1365,13 +1374,26 @@ def _entwurf_bearbeiten_form(z, text: str) -> str:
     verdraengt: wer nur freigeben will, soll nicht an einem Textfeld
     vorbeiscrollen muessen.
     """
+    # Grenze JE KANAL (03.09.2026): 4096 war die WhatsApp-Grenze fuer alle —
+    # eine 5.537 Zeichen lange E-Mail liess sich damit weder aendern noch
+    # absenden (der Browser sperrt ein zu langes Feld). E-Mails bekommen
+    # ausserdem ihren Betreff zum Bearbeiten; das Feld waechst mit dem Text.
+    kanal = str(z.get("channel") or "")
+    grenze = TEXTFELD_MAX.get(kanal, TEXTFELD_MAX["whatsapp"])
+    zeilen = min(30, max(10, text.count("\n") + 2, len(text) // 90 + 1))
+    betreff_feld = (
+        f'<p><label class="feld">Betreff<br>'
+        f'<input type="text" name="betreff" value="{_e(z.get("subject") or "")}" '
+        f'maxlength="{BETREFF_MAX}"></label></p>'
+        if kanal == "email" else "")
     return (
         f'<details class="bearbeiten"><summary>Text bearbeiten</summary>'
         f'<form method="post" action="/aktion/bearbeiten">'
         f'<input type="hidden" name="draft_id" value="{_e(z["id"])}">'
         f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+        f'{betreff_feld}'
         f'<p><label class="feld">Text<br>'
-        f'<textarea name="text" rows="8" maxlength="4096">'
+        f'<textarea name="text" rows="{zeilen}" maxlength="{grenze}">'
         f'{_e(text)}</textarea></label></p>'
         f'<div class="aktionen">'
         f'<button class="primaer">Aenderung speichern</button></div>'
@@ -1840,7 +1862,7 @@ async def inbox(request):
     freigegeben) und darunter seinem eigenen Verlauf (UI-Plan Schritt 3,
     Betreiber 02.09.2026: „damit alles seine Ordnung hat")."""
     pending = server._q(
-        "select d.id, d.channel, d.recipient, d.body, d.media_ref, "
+        "select d.id, d.channel, d.recipient, d.body, d.media_ref, d.subject, "
         "       extract(epoch from (now() - d.created_at)) / 3600 as alter_h, "
         "       l.name, l.consent_status "
         "from drafts d left join leads l on l.id = d.lead_id "
@@ -2140,7 +2162,8 @@ async def aktion_bearbeiten(request):
     if abbruch:
         return abbruch
     antwort = json.loads(server.entwurf_bearbeiten(
-        draft_id=draft_id, text=str(form.get("text") or "")))
+        draft_id=draft_id, text=str(form.get("text") or ""),
+        betreff=str(form.get("betreff") or "")[:BETREFF_MAX]))
     if "fehler" in antwort:
         return _fehlerseite(409, "Nicht geaendert", _e(antwort["fehler"]))
     return RedirectResponse("/freigaben", status_code=303)
@@ -4776,7 +4799,7 @@ async def heute(request):
     rechts — Kalender, WhatsApp, Posteingang, Pipeline. Jede Zahl kommt aus
     derselben Quelle wie die Seite, auf die sie verweist."""
     pending = server._q(
-        "select d.id, d.channel, d.recipient, d.body, d.media_ref, "
+        "select d.id, d.channel, d.recipient, d.body, d.media_ref, d.subject, "
         "       extract(epoch from (now() - d.created_at)) / 3600 as alter_h, "
         "       l.name, l.consent_status "
         "from drafts d left join leads l on l.id = d.lead_id "
