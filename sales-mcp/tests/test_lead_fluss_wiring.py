@@ -73,3 +73,82 @@ def test_recherche_an_marketing_vermerkt_nichts_ohne_proposal(monkeypatch):
 
 def test_recherche_an_marketing_ist_registriert():
     assert server.recherche_an_marketing in server.WERKZEUGE
+
+
+# --- F3 -------------------------------------------------------------------
+
+UEBERGABE = {"id": "u1", "from_email": "petra@kunde.de", "from_name": "Petra Probe",
+             "subject": "Re: Early Access", "auszug": "Wie geht es weiter?",
+             "kampagne": "Herbst", "klassifikation": "reply", "seit": "2026-09-03"}
+
+
+def test_uebergaben_pruefen_listet_offene(monkeypatch):
+    monkeypatch.setattr(server, "_q", verteiler([("uebergaben_offen", [UEBERGABE])]))
+    out = json.loads(server.uebergaben_pruefen())
+    assert out["offen"] == 1 and out["uebergaben"][0]["from_email"] == "petra@kunde.de"
+
+
+def test_annehmen_legt_kontakt_mit_marketing_und_inbound_an(monkeypatch):
+    q = verteiler([
+        ("uebergaben_offen", [UEBERGABE]),
+        ("lower(email) = lower(%s)", []),              # kein bestehender Kontakt
+        ("insert into leads", [{"id": "l-neu"}]),
+        ("uebergabe_erledigen", [{"ok": True}]),
+    ])
+    monkeypatch.setattr(server, "_q", q)
+    monkeypatch.setattr(server, "_sperre", lambda email="", phone="": "")
+    out = json.loads(server.uebergabe_annehmen("u1"))
+    assert out == {"lead_id": "l-neu", "angelegt": True, "consent_status": "inbound", "uebergabe_erledigt": True}
+    insert = next(p for s, p in q.aufrufe if "insert into leads" in s)
+    assert "marketing" in insert                       # source='marketing'
+    assert any("consent_status = 'inbound'" in s for s, _ in q.aufrufe)
+    erledigt = next(p for s, p in q.aufrufe if "uebergabe_erledigen" in s)
+    assert erledigt[1] == "angenommen" and erledigt[2] == "l-neu"
+
+
+def test_annehmen_nutzt_bestehenden_kontakt_per_email(monkeypatch):
+    q = verteiler([
+        ("uebergaben_offen", [UEBERGABE]),
+        ("lower(email) = lower(%s)", [{"id": "l-alt"}]),
+        ("uebergabe_erledigen", [{"ok": True}]),
+    ])
+    monkeypatch.setattr(server, "_q", q)
+    monkeypatch.setattr(server, "_sperre", lambda email="", phone="": "")
+    out = json.loads(server.uebergabe_annehmen("u1"))
+    assert out["lead_id"] == "l-alt" and out["angelegt"] is False
+    assert not any("insert into leads" in s for s, _ in q.aufrufe)
+
+
+def test_annehmen_lehnt_gesperrten_absender_ab(monkeypatch):
+    q = verteiler([("uebergaben_offen", [UEBERGABE]), ("uebergabe_erledigen", [{"ok": True}])])
+    monkeypatch.setattr(server, "_q", q)
+    monkeypatch.setattr(server, "_sperre", lambda email="", phone="": "marketing:unsubscribe: abgemeldet")
+    out = json.loads(server.uebergabe_annehmen("u1"))
+    assert "Verbotsliste" in out["fehler"]
+    erledigt = next(p for s, p in q.aufrufe if "uebergabe_erledigen" in s)
+    assert erledigt[1] == "abgelehnt" and "Verbotsliste" in erledigt[3]
+    assert not any("insert into leads" in s for s, _ in q.aufrufe)
+
+
+def test_annehmen_unbekannte_uebergabe(monkeypatch):
+    monkeypatch.setattr(server, "_q", verteiler([("uebergaben_offen", [])]))
+    out = json.loads(server.uebergabe_annehmen("u9"))
+    assert "Keine offene Uebergabe" in out["fehler"]
+
+
+def test_ablehnen_braucht_grund(monkeypatch):
+    monkeypatch.setattr(server, "_q", verteiler([]))
+    out = json.loads(server.uebergabe_ablehnen("u1", "  "))
+    assert "grund" in out["fehler"]
+
+
+def test_ablehnen_mit_grund(monkeypatch):
+    q = verteiler([("uebergabe_erledigen", [{"ok": True}])])
+    monkeypatch.setattr(server, "_q", q)
+    out = json.loads(server.uebergabe_ablehnen("u1", "Spam"))
+    assert out == {"abgelehnt": True}
+
+
+def test_drei_uebergabe_werkzeuge_registriert():
+    for fn in (server.uebergaben_pruefen, server.uebergabe_annehmen, server.uebergabe_ablehnen):
+        assert fn in server.WERKZEUGE

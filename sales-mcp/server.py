@@ -6220,8 +6220,68 @@ def recherche_an_marketing(begruendung: str, lead_ids: str = "", erneut: bool = 
                   "hinweis": "Genehmigung passiert in der Marketing-UI, nicht hier."})
 
 
+@_gesichert
+def uebergaben_pruefen() -> str:
+    """Offene Uebergaben aus dem Marketing: Menschen, die auf eine
+    Marketing-Nachricht ECHT geantwortet haben (Kurator hat sie als reply oder
+    question eingeordnet). Im Routinelauf pruefen; annehmen mit
+    uebergabe_annehmen, Spam/Unklares mit uebergabe_ablehnen und Grund.
+    Nur lesend."""
+    offen = lead_fluss.uebergaben_offen(_q, 20)
+    return _json({"offen": len(offen),
+                  "uebergaben": [{**u, "seit": str(u.get("seit", ""))} for u in offen]})
+
+
+@_gesichert
+def uebergabe_annehmen(uebergabe_id: str) -> str:
+    """Eine Uebergabe annehmen: Kontakt anlegen (oder den bestehenden mit
+    dieser E-Mail nehmen), consent_status auf inbound — die Person hat selbst
+    geschrieben, also ist ANTWORTEN erlaubt (UWG-Satz 2); eine Erstansprache
+    auf anderen Kanaelen bleibt gesperrt. Steht der Absender inzwischen auf
+    der Verbotsliste, wird die Uebergabe mit Grund abgelehnt, nicht angenommen."""
+    offen = [u for u in lead_fluss.uebergaben_offen(_q, 100) if str(u.get("id")) == str(uebergabe_id)]
+    if not offen:
+        return _json({"fehler": f"Keine offene Uebergabe {uebergabe_id}."})
+    u = offen[0]
+    grund = _sperre(u["from_email"], "")
+    if grund:
+        lead_fluss.uebergabe_erledigen(_q, uebergabe_id, "abgelehnt", None, f"Verbotsliste: {grund}")
+        return _json({"fehler": f"{u['from_email']} steht inzwischen auf der Verbotsliste "
+                                f"({grund}) — Uebergabe abgelehnt."})
+    treffer = _q("select id from leads where lower(email) = lower(%s) limit 1", (u["from_email"],))
+    if treffer:
+        lead_id, angelegt = str(treffer[0]["id"]), False
+    else:
+        out = json.loads(kontakt_anlegen(lead_fluss.kontaktname(u.get("from_name", ""), u["from_email"]),
+                                         email=u["from_email"], source="marketing",
+                                         notes=lead_fluss.uebergabe_notiz(u)))
+        if "fehler" in out:
+            return _json({"fehler": "Kontakt nicht angelegt: " + out["fehler"]})
+        lead_id, angelegt = str(out["lead_id"]), bool(out.get("angelegt", True))
+    _q("update leads set consent_status = 'inbound', updated_at = now() "
+       "where id = %s and consent_status = 'unknown' returning id", (lead_id,))
+    _q("insert into activities (lead_id, type, payload) values (%s, %s, %s) returning id",
+       (lead_id, "uebergabe_angenommen",
+        _json({"uebergabe_id": uebergabe_id, "von": u["from_email"], "betreff": u.get("subject", ""),
+               "kampagne": u.get("kampagne", ""), "klassifikation": u.get("klassifikation", "")})))
+    ok = lead_fluss.uebergabe_erledigen(_q, uebergabe_id, "angenommen", lead_id, "")
+    return _json({"lead_id": lead_id, "angelegt": angelegt, "consent_status": "inbound",
+                  "uebergabe_erledigt": ok})
+
+
+@_gesichert
+def uebergabe_ablehnen(uebergabe_id: str, grund: str) -> str:
+    """Eine Uebergabe ablehnen — mit Grund (Spam, Autoreply, kein Bedarf).
+    Der Grund landet bei Marketing an der Uebergabe."""
+    if not (grund or "").strip():
+        return _json({"fehler": "grund fehlt — eine Ablehnung braucht einen Satz, den Marketing lesen kann."})
+    ok = lead_fluss.uebergabe_erledigen(_q, uebergabe_id, "abgelehnt", None, grund.strip())
+    return _json({"abgelehnt": True} if ok else {"fehler": f"Keine offene Uebergabe {uebergabe_id}."})
+
+
 WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              wissensbasis_fragen, recherche_an_marketing,
+             uebergaben_pruefen, uebergabe_annehmen, uebergabe_ablehnen,
              kontakt_freigeben, kontakt_freigabe_entziehen,
              kontakte_freigegeben,
              # Archivieren statt Loeschen — als CHAT-Werkzeuge, nicht nur in

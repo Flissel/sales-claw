@@ -547,7 +547,8 @@ def test_beide_werkzeuge_sind_registriert():
     # (test_scoring.py). Sprachnachrichten:
     # sprachnachrichten_transkribieren (test_sprachnachrichten.py).
     # Wissensbasis (03.09.2026): wissensbasis_fragen (tests/test_wissensbasis.py).
-    assert len(namen) == len(set(namen)) == 72
+    # 03.09.2026: + Lead-Fluss mit Marketing (4 Werkzeuge).
+    assert len(namen) == len(set(namen)) == 76
 
 # ---------------------------------------------------------------------------
 # Nachbesserungen aus dem Stufe-5-Review (Befunde T1, B2, D2)
