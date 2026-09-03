@@ -84,12 +84,18 @@ def test_nach_der_freigabe_ist_der_kontakt_nicht_mehr_faellig():
     assert lead not in _faellige_ids()
 
 
-def test_ein_abgelehnter_entwurf_gibt_den_kontakt_wieder_frei():
-    """Abgelehnt heisst: der Betreiber wollte diese Antwort nicht — der
-    Kunde wartet weiter, und ein neuer Versuch ist richtig."""
+def test_ein_abgelehnter_entwurf_haelt_bis_der_kunde_wieder_schreibt():
+    """UMGEDREHT am 03.09.2026 (Betreiber: „es werden immer wieder Entwuerfe
+    gemacht, die ich abgelehnt hatte"): Abgelehnt heisst, der Betreiber will
+    auf DIESE Nachricht keine Antwort — kein neuer Versuch, bis der Kunde
+    wieder schreibt. Ausfuehrlich: tests/test_ablehnung_haelt.py."""
     lead = _wartender()
     d = json.loads(server.entwurf_erstellen(lead, "whatsapp", "Unpassend."))
     server.entwurf_ablehnen(d["draft_id"])
+    assert lead not in _faellige_ids()
+    server._q("insert into activities (lead_id, type, payload) values "
+              "(%s, 'kundenantwort', %s) returning id",
+              (lead, server._json({"text": "Und nun?"})))
     assert lead in _faellige_ids()
 
 

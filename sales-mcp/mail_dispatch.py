@@ -173,7 +173,7 @@ def claim(draft_id):
     zeilen = server._q(
         "update drafts set status = 'failed', error = %s "
         "where id = %s and status = 'approved' and channel = 'email' "
-        "returning id, lead_id, recipient, subject, body, media_ref",
+        "returning id, lead_id, recipient, subject, body, media_ref, cc",
         (marke, draft_id))
     if not zeilen:
         return None
@@ -211,7 +211,8 @@ def _betreff(roh: str) -> str:
     return sauber[:BETREFF_MAXLAENGE] or BETREFF_VORGABE
 
 
-def nachricht_bauen(adresse: str, betreff: str, rumpf: str) -> EmailMessage:
+def nachricht_bauen(adresse: str, betreff: str, rumpf: str,
+                    cc=None) -> EmailMessage:
     """Der fertige Text als text/plain, UTF-8.
 
     `EmailMessage` statt zusammengesetzter Zeichenketten: es kodiert
@@ -222,6 +223,13 @@ def nachricht_bauen(adresse: str, betreff: str, rumpf: str) -> EmailMessage:
     nachricht = EmailMessage()
     nachricht["From"] = EMAIL_ABSENDER
     nachricht["To"] = adresse
+    # CC (03.09.2026): kommt geprueft aus drafts.cc (mailadresse.pruefe je
+    # Adresse beim Anlegen/Bearbeiten); hier nur noch einzeilig gemacht, aus
+    # demselben Grund wie beim Betreff. send_message nimmt To UND Cc als
+    # Umschlag-Empfaenger.
+    cc_zeile = " ".join(str(cc or "").split())
+    if cc_zeile:
+        nachricht["Cc"] = cc_zeile
     nachricht["Subject"] = _betreff(betreff)
     # `cte="quoted-printable"` ist NICHT Geschmack, sondern ein gemessener
     # Fix. Ohne Angabe waehlt `set_content` die Kodierung selbst — und fuer
@@ -391,7 +399,7 @@ def verarbeite_draft(draft_id) -> str:
 
     try:
         nachricht = nachricht_bauen(adresse, geclaimt["subject"],
-                                    geclaimt["body"])
+                                    geclaimt["body"], cc=geclaimt.get("cc"))
         senden(nachricht)
     except VersandFehler as e:
         _als_fehler_buchen(draft_id, marke, str(e))

@@ -180,6 +180,7 @@ import html
 import json
 import logging
 import os
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -295,6 +296,29 @@ LOG = logging.getLogger("sales-ui")
 def _e(wert) -> str:
     """html.escape fuer ALLES Fremde — None wird zur leeren Zeichenkette."""
     return html.escape(str(wert if wert is not None else ""), quote=True)
+
+
+# Nur http(s), und die Suche laeuft auf dem bereits ESCAPTEN Text: escapte
+# Anfuehrungszeichen (&quot; &#x27;) und Klammern (&lt; &gt;) beenden eine
+# Adresse, statt Teil von ihr zu werden.
+_URL_MUSTER = re.compile(
+    r"https?://(?:(?!&quot;|&#x27;|&lt;|&gt;)[^\s<>\"'])+")
+_URL_SATZZEICHEN = ".,;:)!?"
+
+
+def _text_html(text) -> str:
+    """Wie _e — und http(s)-Adressen werden anklickbar (Betreiber 03.09.2026:
+    „Hyperlinks werden als Text angezeigt"). Erst escapen, dann verlinken,
+    nie umgekehrt; javascript:, ftp: und alles andere bleiben Text."""
+    sicher = _e(text)
+
+    def _link(treffer):
+        url, rest = treffer.group(0), ""
+        while url and url[-1] in _URL_SATZZEICHEN:
+            rest, url = url[-1] + rest, url[:-1]
+        return (f'<a href="{url}" rel="noreferrer noopener" '
+                f'target="_blank">{url}</a>{rest}')
+    return _URL_MUSTER.sub(_link, sicher)
 
 
 # Ortszeit statt UTC (01.09.2026, im Kalender gefunden): ein 12:00-Termin
@@ -1201,7 +1225,7 @@ def _nachricht_inhalt(text, typ) -> str:
     Gemeinsam fuer Posteingang und die Nachrichtenliste der Einordnung."""
     text = (text or "").strip()
     if text:
-        return f'<div class="text">{_e(text)}</div>'
+        return f'<div class="text">{_text_html(text)}</div>'
     # 'voice' ist die Schreibweise, die OpenWA tatsaechlich schickt
     # (gemessen 01.09.2026: 16 Stueck in 30 Tagen); 'ptt' stand hier aus
     # der WhatsApp-Web-Zeit und traf keine einzige Nachricht.
@@ -1317,6 +1341,8 @@ def _entwurf_kopf(z, zustand: str) -> str:
              if z.get("alter_h") is not None else "")
     betreff = (f'<div>Betreff: <b>{_e(z["subject"])}</b></div>'
                if z.get("subject") else "")
+    betreff += (f'<div>CC: <b>{_e(z["cc"])}</b></div>'
+                if z.get("cc") else "")
     return (f'{_zustand_badge(zustand)}{_badge(z["channel"])}'
             f'<b>{_e(z["name"] or "(ohne Kontakt)")}'
             f"</b> &rarr; {_e(z['recipient'])}{betreff}"
@@ -1352,7 +1378,7 @@ def _entwurf_karte_offen(z) -> str:
         f'<b>{_e(z["name"] or "(ohne Kontakt)")}</b>'
         f'<span class="meta"> — {_e(vorschau)}</span></summary>'
         f'{_entwurf_kopf(z, "pending")}'
-        f'<div class="text">{_e(text)}</div>'
+        f'<div class="text">{_text_html(text)}</div>'
         f'{_entwurf_bearbeiten_form(z, text)}'
         f'<div class="aktionen">'
         f'{_formular("freigeben", z["id"], "Freigeben", "primaer", stand=_text_stand(text))}'
@@ -1365,6 +1391,7 @@ def _entwurf_karte_offen(z) -> str:
 TEXTFELD_MAX = {"whatsapp": 4096, "linkedin": server.POST_MAXLAENGE,
                 "email": 20000}
 BETREFF_MAX = 200
+CC_FELD_MAX = 300
 
 
 def _entwurf_bearbeiten_form(z, text: str) -> str:
@@ -1385,6 +1412,9 @@ def _entwurf_bearbeiten_form(z, text: str) -> str:
         f'<p><label class="feld">Betreff<br>'
         f'<input type="text" name="betreff" value="{_e(z.get("subject") or "")}" '
         f'maxlength="{BETREFF_MAX}"></label></p>'
+        f'<p><label class="feld">CC (kommagetrennt, leer = keins)<br>'
+        f'<input type="text" name="cc" value="{_e(z.get("cc") or "")}" '
+        f'maxlength="{CC_FELD_MAX}"></label></p>'
         if kanal == "email" else "")
     return (
         f'<details class="bearbeiten"><summary>Text bearbeiten</summary>'
@@ -1862,7 +1892,7 @@ async def inbox(request):
     freigegeben) und darunter seinem eigenen Verlauf (UI-Plan Schritt 3,
     Betreiber 02.09.2026: „damit alles seine Ordnung hat")."""
     pending = server._q(
-        "select d.id, d.channel, d.recipient, d.body, d.media_ref, d.subject, "
+        "select d.id, d.channel, d.recipient, d.body, d.media_ref, d.subject, d.cc, "
         "       extract(epoch from (now() - d.created_at)) / 3600 as alter_h, "
         "       l.name, l.consent_status "
         "from drafts d left join leads l on l.id = d.lead_id "
@@ -1914,7 +1944,7 @@ async def inbox(request):
         for z in kaputt.get(art, []):
             teile.append(
                 f'<div class="karte">{_entwurf_kopf(z, "failed")}'
-                f'<div class="text">{_e(z["body"])}</div>'
+                f'<div class="text">{_text_html(z["body"])}</div>'
                 f'<div class="fehler">Fehler: {_e(z["error"])}</div>'
                 f'<div class="aktionen">'
                 f'{_formular("erneut-freigeben", z["id"], "Erneut freigeben", "",
@@ -1934,7 +1964,7 @@ async def inbox(request):
                          'automatisch)</div>')
             teile.append(
                 f'<div class="karte">{_entwurf_kopf(z, "approved")}'
-                f'<div class="text">{_e(z["body"])}</div>'
+                f'<div class="text">{_text_html(z["body"])}</div>'
                 f'<div class="meta">freigegeben: {_e(z["approved_by"])} am '
                 f'{_zeit(z["approved_at"])}</div>{stand}'
                 # ZWEISTUFIG: dieser Knopf fuehrt auf eine Warnseite und
@@ -2163,7 +2193,9 @@ async def aktion_bearbeiten(request):
         return abbruch
     antwort = json.loads(server.entwurf_bearbeiten(
         draft_id=draft_id, text=str(form.get("text") or ""),
-        betreff=str(form.get("betreff") or "")[:BETREFF_MAX]))
+        betreff=str(form.get("betreff") or "")[:BETREFF_MAX],
+        # cc nur, wenn das Formular das Feld hatte (E-Mail); sonst unveraendert.
+        cc=(str(form.get("cc") or "")[:CC_FELD_MAX] if "cc" in form else None)))
     if "fehler" in antwort:
         return _fehlerseite(409, "Nicht geaendert", _e(antwort["fehler"]))
     return RedirectResponse("/freigaben", status_code=303)
@@ -2313,7 +2345,7 @@ def _verwerfen_warnseite(z) -> HTMLResponse:
         f'vollzaehlig stehen.</p>{anhang}'
         f'<p>Ist der Entwurf inzwischen in Zustellung gegangen, wird hier '
         f'nichts getan (die Seite sagt es dann).</p></div>'
-        f'<div class="text">{_e(anfang)}</div>'
+        f'<div class="text">{_text_html(anfang)}</div>'
         f'<div class="aktionen">'
         f'<form class="aktion gefahr" method="post" '
         f'action="/aktion/verwerfen-bestaetigen">'
@@ -4018,7 +4050,7 @@ async def kontakt_detail(request):
             karten.append(
                 f'<div class="karte"><b>{_e(s.get("titel") or s.get("typ") or "Seite")}</b>'
                 f'<div class="meta">{_e(s.get("url") or "")}</div>'
-                f'<div class="text">{_e(text)}</div></div>')
+                f'<div class="text">{_text_html(text)}</div></div>')
         # Geschaeftsverweise (01.09.2026): die Social-/Business-Links, die
         # die Firma selbst verlinkt — als anklickbare Absprungpunkte. Der
         # Text ist eine feste Plattform-Bezeichnung aus dem Code, die URL
@@ -4170,7 +4202,7 @@ def _verlauf_inhalt(a) -> str:
                   f'<code>{_e(roh)}</code></details>')
     if not text:
         return klappe or '<span class="meta">—</span>'
-    return f'<div class="text">{_e(text)}</div>{klappe}'
+    return f'<div class="text">{_text_html(text)}</div>{klappe}'
 
 
 # ---------------------------------------------------------------------------
@@ -4799,7 +4831,7 @@ async def heute(request):
     rechts — Kalender, WhatsApp, Posteingang, Pipeline. Jede Zahl kommt aus
     derselben Quelle wie die Seite, auf die sie verweist."""
     pending = server._q(
-        "select d.id, d.channel, d.recipient, d.body, d.media_ref, d.subject, "
+        "select d.id, d.channel, d.recipient, d.body, d.media_ref, d.subject, d.cc, "
         "       extract(epoch from (now() - d.created_at)) / 3600 as alter_h, "
         "       l.name, l.consent_status "
         "from drafts d left join leads l on l.id = d.lead_id "
