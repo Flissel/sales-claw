@@ -415,7 +415,12 @@ Menschen geht, und das ist keine Entscheidung, die aus einem Gespraech folgt.
 
 1. `antworten_faellig()` nennt, wer auf eine Antwort wartet UND eine Stufe
    hat, die eine erlaubt. `manuell` und `ignorieren` stehen dort nie.
-2. `chat_verlauf(lead_id, limit=20)` lesen — beide Richtungen.
+2. Den mitgelieferten `verlauf` je Eintrag lesen — die letzten 10
+   Nachrichten beider Richtungen, aelteste zuerst, Sprachnachrichten als
+   Text. Er ist die Grundlage des Entwurfs: greif Namen, Zusagen, Termine
+   und offene Fragen daraus auf und wiederhole nichts, was schon
+   beantwortet ist. Nur wenn du weiter zurueck musst:
+   `chat_verlauf(lead_id)`.
 3. Die Antwort **selbst schreiben**.
 4. `antwort_entwerfen(lead_id, text)` aufrufen. Die Stufe entscheidet, ob
    daraus ein Entwurf zur Freigabe wird oder eine zugestellte Nachricht.

@@ -22,6 +22,7 @@ angeschrieben" ist eine Rechtsfrage (UWG), keine Stilfrage.
 import functools
 import json
 import os
+import re
 import urllib.request
 import uuid
 from datetime import date, datetime, timedelta, timezone
@@ -709,7 +710,10 @@ AUTONOMIE_TEXT = {
 # Wie viel Verlauf der Agent fuer eine Antwort liest. Der Betreiber nannte
 # „letzten 20 nachrichten … von beiden" — also beide Richtungen zusammen,
 # nicht 20 je Seite.
-ANTWORT_VERLAUF = 20
+# Antwort-Kontext (03.09.2026): so viele Nachrichten beider Richtungen
+# liegen jedem faelligen Eintrag bei — die juengsten, aelteste zuerst.
+ANTWORT_VERLAUF = 10
+ANTWORT_TEXT_MAX = 300      # Zeichen je Nachricht im Antwort-Kontext
 
 
 def _autonomie(enrichment) -> str:
@@ -4850,6 +4854,46 @@ def entwurf_bearbeiten(draft_id: str, text: str, betreff: str = "",
 
 
 @_gesichert
+def _letzte_nachrichten(lead_id: str, anzahl: int, absender=None) -> list:
+    """Die juengsten `anzahl` Nachrichten eines Kontakts, aelteste zuerst —
+    der Kontext, auf dem eine Antwort entsteht (03.09.2026).
+
+    Beide Richtungen, Sprachnachrichten als Transkript (`art`:
+    'sprachnachricht'), lange Texte auf ANTWORT_TEXT_MAX Zeichen gekuerzt.
+    Am Sammelkontakt zaehlen nur die Eingaenge DIESES Absenders — sonst
+    stuende der Chat vieler Fremder in einem Kontext.
+    Nur Lesezugriff."""
+    typen = ["kundenantwort", "nachricht_ausgehend", "versand", "transkription"]
+    params = {"lead": lead_id, "typen": typen, "n": max(1, int(anzahl))}
+    bedingung = ""
+    ziffern = re.sub(r"\D", "", str(absender or ""))
+    if ziffern:
+        bedingung = (" and (a.type <> 'kundenantwort' or "
+                     + _roh_ziffern("a." + _ABSENDER_SPALTE) + " = %(ziffern)s)")
+        params["ziffern"] = ziffern
+    zeilen = _q(
+        "select a.type, a.payload, a.created_at from activities a"
+        " where a.lead_id = %(lead)s and a.type = any(%(typen)s)" + bedingung +
+        " order by a.created_at desc, a.id desc limit %(n)s", params)
+    verlauf = []
+    for z in reversed(zeilen):
+        last = z["payload"] or {}
+        text = " ".join(str(last.get("text") or "").split())
+        eintrag = {"wann": z["created_at"],
+                   "richtung": ("ausgehend" if z["type"] in
+                                ("nachricht_ausgehend", "versand")
+                                else "eingehend")}
+        if z["type"] == "transkription":
+            eintrag["art"] = "sprachnachricht"
+        elif z["type"] == "kundenantwort" and last.get("audio_datei") and not text:
+            text = "[Sprachnachricht — der Text folgt als 'sprachnachricht']"
+        if len(text) > ANTWORT_TEXT_MAX:
+            text = text[:ANTWORT_TEXT_MAX] + "…"
+        eintrag["text"] = text
+        verlauf.append(eintrag)
+    return verlauf
+
+
 def antworten_faellig(stunden: int = 48) -> str:
     """Wer wartet auf eine Antwort — und darf der Agent sie schreiben?
 
@@ -4863,9 +4907,10 @@ def antworten_faellig(stunden: int = 48) -> str:
     `manuell` und `ignorieren` stehen hier NIE. Wer dort wartet, wartet auf
     einen Menschen; das ist keine Aufgabe, die du dir nehmen darfst.
 
-    Ablauf je Eintrag: `chat_verlauf(lead_id, limit=20)` lesen — beide
-    Richtungen —, die Antwort SELBST schreiben, `antwort_entwerfen(lead_id,
-    text)` aufrufen. Der Sammelkontakt steht hier nie: dort haengen die
+    Ablauf je Eintrag: den mitgelieferten `verlauf` lesen (die letzten 10
+    Nachrichten beider Richtungen, aelteste zuerst, Sprachnachrichten als
+    Text), die Antwort SELBST schreiben, `antwort_entwerfen(lead_id, text)`
+    aufrufen. `chat_verlauf` nur, wenn du weiter zurueck musst. Der Sammelkontakt steht hier nie: dort haengen die
     Nachrichten vieler Fremder.
 
     Nur Lesezugriff."""
@@ -4909,7 +4954,9 @@ def antworten_faellig(stunden: int = 48) -> str:
             continue
         stufe = stufen.get(kennung, AUTONOMIE_VORGABE)
         if stufe in ("halbauto", "auto"):
-            faellig.append({**e, "autonomie": stufe})
+            faellig.append({**e, "autonomie": stufe,
+                            "verlauf": _letzte_nachrichten(
+                                kennung, ANTWORT_VERLAUF, e.get("absender"))})
     return _json({"fenster_stunden": postfach.get("fenster_stunden"),
                   "anzahl": len(faellig),
                   "uebersprungen_weil_entwurf_offen": wegen_entwurf,
@@ -4918,8 +4965,12 @@ def antworten_faellig(stunden: int = 48) -> str:
                   "eintraege": faellig,
                   "verlauf_limit": ANTWORT_VERLAUF,
                   "hinweis": (
-                      f"chat_verlauf(lead_id, limit={ANTWORT_VERLAUF}) lesen "
-                      f"— beide Richtungen —, die Antwort SELBST schreiben, "
+                      f"Je Eintrag liegt 'verlauf' bei: die letzten "
+                      f"{ANTWORT_VERLAUF} Nachrichten beider Richtungen, "
+                      f"aelteste zuerst, Sprachnachrichten als Text. Darauf "
+                      f"die Antwort SELBST schreiben (Namen, Zusagen und "
+                      f"offene Fragen daraus aufgreifen); chat_verlauf nur, "
+                      f"wenn du weiter zurueck musst. "
                       f"dann antwort_entwerfen(lead_id, text). Bei 'auto' "
                       f"geht sie danach ohne weitere Rueckfrage raus. "
                       f"Kontakte mit einem Entwurf, der noch auf Freigabe "
@@ -4933,6 +4984,7 @@ def antwort_entwerfen(lead_id: str, text: str,
     """Eine SELBST GESCHRIEBENE Antwort ablegen — die Stufe entscheidet, wohin.
 
     Dieses Werkzeug formuliert nichts: den Text schreibst du, nachdem du
+    den `verlauf` aus antworten_faellig (die letzten 10 Nachrichten) oder
     `chat_verlauf(lead_id)` gelesen hast.
 
       halbauto — der Entwurf wird 'pending'. Es geht NICHTS raus, bevor ein

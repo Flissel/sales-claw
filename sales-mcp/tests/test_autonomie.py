@@ -306,7 +306,7 @@ def test_faelligkeit_nennt_die_stufe_und_das_verlauf_limit():
     treffer = [e for e in faellig["eintraege"] if str(e["lead_id"]) == lead]
     assert treffer and treffer[0]["autonomie"] == "halbauto"
     # „letzten 20 nachrichten … von beiden" — beide Richtungen zusammen.
-    assert faellig["verlauf_limit"] == server.ANTWORT_VERLAUF == 20
+    assert faellig["verlauf_limit"] == server.ANTWORT_VERLAUF == 10   # 03.09.2026: die letzten 10 liegen als 'verlauf' bei
 
 
 def test_faelligkeit_aendert_nichts():
