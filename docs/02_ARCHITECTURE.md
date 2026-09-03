@@ -381,6 +381,43 @@ was nicht, regelt AGENTS.md („Wissensbasis").
 `sales-mcp/rowboat.py` (Chat-Route, RAG-Antwort) bleibt daneben bestehen — MCP heißt
 blättern, Chat heißt fragen; verdrahtet ist bisher nur der MCP-Weg.
 
+### Gemeinsame Verbotsliste mit Marketing (F1, 03.09.2026)
+
+sales-claw und der Marketing-Space von VibeMind haengen an DERSELBEN Postgres
+(VM-Supabase, `192.168.178.65:54322`). Bisher fuehrte jede Seite Einwilligung
+getrennt: Marketing kennt Unsubscribes und Bounces, wir kennen Widerrufe und
+Loeschantraege — und keiner sah die des anderen. Der Gefahrenfall war die
+Erstansprache an jemanden, der auf der anderen Seite laengst „nein" gesagt hat.
+
+Seit F1 gibt es `compliance.sperrliste` (Migration 013 im Marketing-Space,
+`vibemind-os/spaces/marketing/db/013_compliance_sperrliste.sql`):
+
+- **Kennung** normalisiert, auf beiden Seiten mit derselben Regel
+  (`sales-mcp/sperrliste.py` ↔ `spaces/marketing/tools/sperrliste.py`):
+  `email:<kleingeschrieben>` oder `tel:+<E.164>` — „(0)"-Vorwahlnull faellt weg,
+  „00" wird „+", eine nationale Null wird `+49`, WhatsApp-Chat-IDs liefern
+  ihren Ziffernteil.
+- **Marketing schreibt** per Trigger (`unsubscribed_at`, `bounce_count >= 2`) und
+  prueft mit Gate 13 vor jedem Versand (harter Abbruch) sowie beim Staging
+  von Publikumsvorschlaegen.
+- **Wir schreiben** bei `zustimmung_widerrufen` (`sales:widerruf`) und
+  `loeschantrag_vermerken` (`sales:loeschantrag`) und **pruefen vor jeder
+  Erstansprache**: `kontakt_anlegen` legt einen gesperrten Kontakt nicht an,
+  `zustimmung_anfragen` und `entwurf_erstellen` lehnen mit Grund ab. Der Grund
+  steht in der Rueckgabe, damit der Betreiber ihn liest statt zu raten.
+- **Aufheben ist ein Zeitstempel** (`aufgehoben_am`), nie ein DELETE — die
+  Zeile ist das Protokoll. Die Rolle `sales_app` darf lesen und sperren, nicht
+  loeschen.
+
+Bewiesen am 03.09.2026: synthetischer Marketing-Unsubscribe → Trigger →
+`kontakt_anlegen` verweigert als `sales_app` mit „marketing:unsubscribe".
+
+**Testrezept** (server.py braucht mcp 2.0, also nur im Container): Wegwerf-Klon
+auf der VM, `docker build -t sales-mcp:dev sales-mcp`, dann
+`docker run --rm --env-file ~/sales-claw/.env -e SALES_DB_SCHEMA=sales_test
+sales-mcp:dev python -m pytest -q`. NIE zwei Laeufe parallel — sie teilen sich
+`sales_test`, und ein per Timeout abgebrochener `docker run` lebt weiter.
+
 ### Architektur-Lehre: der functools.wraps-Vorfall
 
 Ein Bug, der die gesamte Werkzeuganbindung lahmlegte, ohne dass Verbindung oder
