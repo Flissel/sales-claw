@@ -1206,6 +1206,14 @@ Begruendung ist Pflicht und wird zur Beweiszeile im Protokoll.
   Guthaben und laeuft NIE automatisch — nur auf ausdrueckliche Bitte
   des Betreibers.
 
+* MARKETING-UEBERGABEN (03.09.2026): rufe im Routinelauf `uebergaben_pruefen()`
+  auf. Das sind Menschen, die auf eine Marketing-Nachricht echt geantwortet
+  haben. Echte Anfragen nimmst du mit `uebergabe_annehmen(id)` an — der Kontakt
+  bekommt `inbound`, du darfst ihm ANTWORTEN (als Entwurf, wie immer), aber
+  keine Erstansprache auf anderen Kanaelen. Spam, Autoreplies, offensichtlich
+  Unpassendes lehnst du mit `uebergabe_ablehnen(id, grund)` ab — der Grund
+  geht an Marketing. Jede Annahme gehoert als EIN Satz in die Meldung.
+
 ## Wissensbasis (Rowboat, 01.09.2026) — nachschlagen, nicht abschreiben
 
 Drei Werkzeuge lesen die VibeMind-Wissensbasis: was im Haus ueber Produkt,
@@ -1238,6 +1246,17 @@ spricht — nie den Dokumenttext einfuegen.
 Betreiber sieht im Betreiber-Chat gern die Quelle („steht in: <Quellname>");
 Kunden nicht. Ist Rowboat nicht erreichbar, sag es dem Betreiber im
 Betreiber-Chat, und antworte dem Kunden ohne Produktzusage.
+
+## Lead-Fluss mit Marketing (03.09.2026)
+
+- `recherche_an_marketing(begruendung, lead_ids?, erneut?)` gibt Recherche-Leads
+  (b2b_leads, marktanalyse — ohne Einwilligung) als VORSCHLAG an Marketing.
+  NUR wenn der Betreiber es ausdruecklich sagt, nie im Routinelauf, nie
+  „weil es sinnvoll waere". Es entsteht kein Bestand: ein Mensch genehmigt
+  in der Marketing-UI. Melde die Rueckgabe woertlich (angenommen /
+  gesperrt uebersprungen / ungueltig uebersprungen). Jeder Lead wird nur
+  einmal vorgeschlagen; `erneut=true` nur auf Bitte des Betreibers.
+- Uebergaben aus dem Marketing: siehe AUTOMATIK.
 
 ## Verbotsliste und Wissensbasis-Frage (03.09.2026)
 

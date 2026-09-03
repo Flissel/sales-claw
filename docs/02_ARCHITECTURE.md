@@ -429,6 +429,30 @@ auf der VM, `docker build -t sales-mcp:dev sales-mcp`, dann
 sales-mcp:dev python -m pytest -q`. NIE zwei Laeufe parallel — sie teilen sich
 `sales_test`, und ein per Timeout abgebrochener `docker run` lebt weiter.
 
+### Lead-Fluss mit Marketing (F2/F3, 03.09.2026)
+
+Beide Richtungen laufen ueber DB-Funktionen in derselben Postgres (Marketing-
+Migrationen 041/042, `SECURITY DEFINER`): `sales_app` darf sie rufen, hat aber
+keine Tabellenrechte auf `marketing.*` (`verify_041_042.sql` prueft das).
+
+- **F2 Sales -> Marketing:** `recherche_an_marketing` waehlt Recherche-Leads
+  (`source='recherche'`, `consent_status='unknown'`, mit E-Mail) und ruft
+  `marketing.vorschlag_aus_sales` — ein `audience_proposals`-Eintrag
+  (`hand:sales-claw`, `pending_review`) plus Kandidaten. Gesperrte Kennungen
+  ueberspringt die Funktion; jeder Lead wird nur einmal vorgeschlagen
+  (`enrichment.an_marketing`). Nur auf Betreiber-Bitte, nie im Routinelauf.
+- **F3 Marketing -> Sales:** Klassifiziert der Kurator eine eingehende Nachricht
+  als `reply`/`question`, legt ein Trigger eine Uebergabe an (idempotent je
+  Nachricht, Sperrliste zuerst). `uebergaben_pruefen` liest sie ueber
+  `marketing.uebergaben_offen`, `uebergabe_annehmen` macht daraus einen
+  Kontakt mit `source='marketing'`, `consent_status='inbound'` (UWG: wer selbst
+  schreibt, oeffnet den Kanal) — oder nimmt den bestehenden Kontakt mit
+  dieser E-Mail. `uebergabe_ablehnen` braucht einen Grund.
+- **Gemessen beim Bau:** `leads.source` hat keinen CHECK (`marketing` ist
+  zulaessig); `inbound_messages` verlangt `classified_by`, sobald eine
+  Klassifikation gesetzt wird (`inbound_classification_audit`) — der Trigger
+  feuert also nur auf Klassifikationen, die jemand verantwortet.
+
 ### Architektur-Lehre: der functools.wraps-Vorfall
 
 Ein Bug, der die gesamte Werkzeuganbindung lahmlegte, ohne dass Verbindung oder
