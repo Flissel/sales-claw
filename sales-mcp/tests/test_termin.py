@@ -597,9 +597,12 @@ def test_werkzeug_ist_registriert_und_die_signatur_ueberlebt_den_dekorator():
     assert server.termin_bestaetigen in server.WERKZEUGE
     parameter = inspect.signature(server.termin_bestaetigen).parameters
     assert list(parameter) == ["lead_id", "datum", "uhrzeit", "dauer_minuten",
-                               "thema", "ort"]
+                               "thema", "ort", "konferenz_raum"]
     assert parameter["dauer_minuten"].default == 60
     assert parameter["thema"].default == "Erstgespraech"
+    # Der Videoraum ist ZUSATZ, nie Vorgabe: wer den Schalter nicht kennt,
+    # bekommt denselben Termin wie vorher — und keinen Aufruf nach draussen.
+    assert parameter["konferenz_raum"].default is False
 
 
 def test_ics_ist_anhaengbar_und_geht_als_dokument(tmp_path, monkeypatch):
