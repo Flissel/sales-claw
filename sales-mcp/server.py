@@ -57,6 +57,7 @@ import medien
 # nur HTTP, Normalisierung und Markdown (Begründung im Moduldocstring).
 import recherche
 import rowboat
+import lead_fluss
 import sperrliste
 # Termine (Stufe 9): ICS-Text und der optionale CalDAV-Eintrag. Wieder ein
 # Modul ohne Datenbank und ohne Rückimport — und der einzige Ort, an dem
@@ -6184,8 +6185,43 @@ def wissensbasis_fragen(frage: str) -> str:
                   "hinweis": "Material fuer dich — an Kunden nur Produktfakten in eigenen Worten."})
 
 
+@_gesichert
+def recherche_an_marketing(begruendung: str, lead_ids: str = "", erneut: bool = False) -> str:
+    """Recherche-Leads (b2b_leads/marktanalyse, ohne Einwilligung) als
+    VORSCHLAG an Marketing geben — NUR auf ausdrueckliche Bitte des Betreibers.
+
+    Warum ueberhaupt: diese Leads darf der Vertrieb nach UWG nicht kalt
+    ansprechen. Marketing hat ein Staging mit menschlicher Freigabe genau
+    dafuer (F2, 03.09.2026). Hier entsteht also kein Bestand — ein Vorschlag
+    mit Quelle hand:sales-claw, den ein Mensch in der Marketing-UI
+    genehmigt oder verwirft. Gesperrte Kennungen (Verbotsliste) ueberspringt
+    die Datenbankfunktion selbst; jeder Lead wird nur einmal vorgeschlagen
+    (erneut=true ueberstimmt bewusst).
+
+    lead_ids: optional, kommagetrennt — sonst alle passenden Recherche-Leads.
+    """
+    if not (begruendung or "").strip():
+        return _json({"fehler": "begruendung fehlt — Marketing muss lesen koennen, "
+                                "warum diese Leads zur Zielgruppe passen."})
+    ids = [t.strip() for t in (lead_ids or "").split(",") if t.strip()] or None
+    zeilen = lead_fluss.recherche_kandidaten(
+        _q, archiviert=_archiv_sql("enrichment"), privat=_privat_sql("enrichment"),
+        lead_ids=ids, erneut=bool(erneut))
+    kandidaten = lead_fluss.kandidaten_form(zeilen)
+    if not kandidaten:
+        return _json({"fehler": "Keine passenden Recherche-Leads (Quelle recherche, ohne "
+                                "Einwilligung, mit E-Mail, nicht archiviert, noch nicht "
+                                "vorgeschlagen — erneut=true hebt das Letzte auf)."})
+    ergebnis = lead_fluss.vorschlagen(
+        _q, f"sales-claw Recherche {date.today().isoformat()}", begruendung.strip(), kandidaten)
+    if ergebnis.get("proposal_id"):
+        lead_fluss.vermerken(_q, [str(z["id"]) for z in zeilen], str(ergebnis["proposal_id"]), _jetzt())
+    return _json({**ergebnis, "leads": len(zeilen),
+                  "hinweis": "Genehmigung passiert in der Marketing-UI, nicht hier."})
+
+
 WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
-             wissensbasis_fragen,
+             wissensbasis_fragen, recherche_an_marketing,
              kontakt_freigeben, kontakt_freigabe_entziehen,
              kontakte_freigegeben,
              # Archivieren statt Loeschen — als CHAT-Werkzeuge, nicht nur in
