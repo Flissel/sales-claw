@@ -64,6 +64,7 @@ import sperrliste
 # Modul ohne Datenbank und ohne Rückimport — und der einzige Ort, an dem
 # der neue ausgehende Pfad dieser Stufe steht.
 import kalender
+import konferenz
 # LID-Auflösung (Stufe 11): wem gehört eine `@lid`-Kennung? Wieder ein Modul
 # ohne Datenbank und ohne Rückimport — es kennt nur HTTP und nummern.py, und
 # es versendet nichts (ein GET gegen den eigenen OpenWA-Container).
@@ -1208,7 +1209,8 @@ def _termin_dauer(dauer) -> int:
 @_gesichert
 def termin_bestaetigen(lead_id: str, datum: str, uhrzeit: str,
                        dauer_minuten: int = TERMIN_DAUER_VORGABE,
-                       thema: str = "Erstgespraech", ort: str = "") -> str:
+                       thema: str = "Erstgespraech", ort: str = "",
+                       konferenz_raum: bool = False) -> str:
     """Einen muendlich vereinbarten Termin festhalten: Kalenderdatei (.ics)
     nach /reports, Eintrag im Kalender des Betreibers (falls konfiguriert),
     automatische Wiedervorlage „Terminerinnerung" am Vortag und ein
@@ -1224,7 +1226,21 @@ def termin_bestaetigen(lead_id: str, datum: str, uhrzeit: str,
     `reports\\`; soll sie an eine Nachricht, kopiert der Betreiber sie von
     Hand nach `media\\` (dort legt nur ein Mensch ab). Ein zweiter Termin
     mit demselben Kontakt am selben Tag ueberschreibt die Datei —
-    `ueberschrieben: true` sagt es."""
+    `ueberschrieben: true` sagt es.
+
+    `konferenz_raum=True` legt zusaetzlich einen Videoraum an und traegt
+    ihn als `ort` ein (nur wenn `ort` leer ist — ein von Hand gesetzter
+    Ort hat Vorrang). Der Link steht damit im ICS (LOCATION), im
+    Kalendereintrag des Betreibers und im Bestaetigungstext. Anbieter ist
+    `KONFERENZ_ANBIETER`: Google Meet liefert AUSSCHLIESSLICH den Raum,
+    ohne Eintrag in einem Google-Kalender und ohne Teilnehmerliste dort;
+    ohne Konfiguration entsteht ein Jitsi-Raum. Faellt der Anbieter aus,
+    steht der Grund in `konferenz_hinweis` und es gibt trotzdem einen
+    Link — ein Termin ohne Raum waere schlechter.
+
+    Auch hier wird NICHTS versendet: der Link geht in den Vorschlagstext,
+    die Einladung an Team oder Kontakt bleibt ein Entwurf mit Freigabe
+    (Betreiber-Entscheid 04.09.2026)."""
     leads = _q("select name from leads where id = %s", (lead_id,))
     if not leads:
         return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
@@ -1248,6 +1264,10 @@ def termin_bestaetigen(lead_id: str, datum: str, uhrzeit: str,
     dauer = _termin_dauer(dauer_minuten)
     thema_kurz = (thema or "").strip()[:TERMIN_TEXT_MAXLAENGE] or "Termin"
     ort_kurz = (ort or "").strip()[:TERMIN_TEXT_MAXLAENGE]
+    konferenz_hinweis = ""
+    if konferenz_raum and not ort_kurz:
+        raum_url, konferenz_hinweis = konferenz.raum()
+        ort_kurz = raum_url[:TERMIN_TEXT_MAXLAENGE]
     beginn = datetime.combine(tag, zeit)
     uid = f"{uuid.uuid4()}@sales-claw"
     ics_text = kalender.ics(uid, beginn, dauer, f"{thema_kurz} — {name}",
@@ -1333,6 +1353,7 @@ def termin_bestaetigen(lead_id: str, datum: str, uhrzeit: str,
                    # Aufrufer sie aus dem Protokoll suchen.
                    "uid": uid},
         "kalender": kalender_stand,
+        "konferenz_hinweis": konferenz_hinweis or None,
         "bestaetigungstext": _bestaetigungstext(beginn, dauer, thema_kurz,
                                                 ort_kurz),
         # Bleibt IMMER stehen, auch wenn sie auf heute faellt — sie ist der
