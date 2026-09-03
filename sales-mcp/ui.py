@@ -1872,7 +1872,10 @@ async def inbox(request):
         if a not in bekannt]
 
     teile = ['<p class="meta">Vier Arten, vier Listen, vier Verlaeufe. '
-             'Freigeben heisst senden; nichts geht ohne dich raus.</p>']
+             'Freigeben heisst senden; nichts geht ohne dich raus. '
+             'Diese Seite laedt nicht von selbst neu, damit dir beim '
+             'Tippen nichts verloren geht — '
+             '<a href="/freigaben">neu laden</a>, wenn du Neues erwartest.</p>']
     for art, name in arten:
         n_offen = len(offen.get(art, []))
         teile.append(
@@ -1942,7 +1945,10 @@ async def inbox(request):
             f'</span> · <a href="/kalender">im Kalender</a></div>')
     teile.append(_verlauf_block("termine", "Termine"))
     teile.append("</section>")
-    return _seite("Freigaben", "".join(teile), refresh=30)
+    # KEIN Auto-Refresh mehr (Betreiber 03.09.2026: „ich bearbeite einen Text
+    # und werde wie bei einem Reload in die Mitte der Seite gezogen") — auf
+    # dieser Seite wird getippt, und ein Neuladen wirft den Text weg.
+    return _seite("Freigaben", "".join(teile))
 
 
 VERLAUF_JE_ART = 5      # Eintraege je Art auf der Freigabe-Seite
