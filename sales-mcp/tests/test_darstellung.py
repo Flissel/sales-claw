@@ -277,3 +277,54 @@ def test_firmenrecherche_text_kuerzt_an_wortgrenze_und_traegt_titel():
     text_normalisiert = " ".join(lang.split())
     assert ui._e(ui._kurz(text_normalisiert, 300)) in seite
     assert f'title="{ui._e(text_normalisiert)}"' in seite
+
+
+# ---------------------------------------------------------------------------
+# Aufgabe 8 (10.09.2026): „Heute" zaehlt ehrlich — `termine_offen` stand
+# bereits bereit (fuer die Anzeige der Termin-Kacheln), fehlte aber in der
+# Summe `offen`. Gemessen: Kopfzeile „1 Entscheidung wartet auf dich. Alles
+# andere laeuft.", waehrend zwei Terminanfragen ohne Datum darunter standen.
+# ---------------------------------------------------------------------------
+
+def test_heute_zaehlt_terminanfragen_mit():
+    """Eine Terminanfrage ohne Datum zaehlt als offener Posten.
+
+    Gemessen 10.09.2026: die Kopfzeile sagte „1 Entscheidung wartet auf
+    dich. Alles andere laeuft.", waehrend darunter ZWEI Terminanfragen
+    ohne Datum standen — `termine_offen` fehlte in der Summe.
+    """
+    lead = _lead("Offen Eins")
+    _termin_aktivitaet(lead, datum="", uhrzeit="",
+                       thema="Donnerstag 16 Uhr — welcher?")
+    _termin_aktivitaet(lead, datum="", uhrzeit="",
+                       thema="Freitag vormittags?")
+    seite = _get("/").text
+    assert "1 Entscheidung" not in seite, (
+        "zwei Terminanfragen wurden als eine gezaehlt")
+    assert "2 " in seite, "die Kopfzeile nennt die zwei Anfragen nicht"
+
+
+def test_heute_behauptet_keine_ruhe_wenn_etwas_offen_ist():
+    """„Alles andere laeuft" darf nicht neben offenen Posten stehen."""
+    lead = _lead("Offen Zwei")
+    _termin_aktivitaet(lead, datum="", uhrzeit="", thema="Wann genau?")
+    seite = _get("/").text
+    assert "Alles andere läuft" not in seite and "Alles andere laeuft" not in seite
+
+
+def test_heute_meldet_ruhe_bei_leerer_datenbank():
+    seite = _get("/").text
+    assert "Nichts wartet auf dich" in seite
+
+
+def test_heute_chips_und_satz_stammen_aus_derselben_rechnung():
+    """Zeigt der Termine-Chip eine Zahl > 0, darf „Keine offenen
+    Entwuerfe" nicht mehr erscheinen — Chips und Satz duerfen sich nicht
+    mehr widersprechen koennen (gemessen 10.09.2026: Chip „Termine 2" neben
+    „Keine offenen Entwuerfe").
+    """
+    lead = _lead("Chip Konsistenz")
+    _termin_aktivitaet(lead, datum="", uhrzeit="", thema="Welcher Tag?")
+    seite = _get("/").text
+    assert '<span class="badge termin">Termine</span><b>1</b>' in seite
+    assert "Keine offenen Entwürfe" not in seite

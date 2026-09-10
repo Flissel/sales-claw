@@ -5014,10 +5014,31 @@ async def heute(request):
     einordnung_offen = len(koerbe["neu"]) + len(koerbe["bereits_gefragt"])
 
     jetzt = datetime.now(ZEITZONE)
-    offen = len(pending) + len(wiedervorlagen) + einordnung_offen
-    satz = ("Nichts wartet auf dich. Alles laeuft." if not offen else
-            f"{offen} Entscheidung{'en' if offen != 1 else ''} "
-            f"warte{'n' if offen != 1 else 't'} auf dich. Alles andere laeuft.")
+    # `termine_offen` gehoert in die Summe: es stand eine Zeile weiter
+    # oben schon bereit und wurde nur in der Anzeige benutzt. Dadurch
+    # meldete die Kopfzeile „1 Entscheidung … Alles andere laeuft",
+    # waehrend zwei Terminanfragen ohne Datum darunter standen
+    # (gemessen 10.09.2026).
+    posten = []
+    if pending:
+        posten.append(f"{len(pending)} Entwurf" if len(pending) == 1
+                      else f"{len(pending)} Entwürfe")
+    if einordnung_offen:
+        posten.append(f"{einordnung_offen} Einordnung" if einordnung_offen == 1
+                      else f"{einordnung_offen} Einordnungen")
+    if termine_offen:
+        posten.append(f"{len(termine_offen)} Terminanfrage"
+                      if len(termine_offen) == 1
+                      else f"{len(termine_offen)} Terminanfragen")
+    if wiedervorlagen:
+        posten.append(f"{len(wiedervorlagen)} Wiedervorlage"
+                      if len(wiedervorlagen) == 1
+                      else f"{len(wiedervorlagen)} Wiedervorlagen")
+    offen = (len(pending) + len(wiedervorlagen) + einordnung_offen
+             + len(termine_offen))
+    satz = ("Nichts wartet auf dich. Alles läuft." if not offen else
+            f"{offen} Posten warten auf dich: {', '.join(posten)}."
+            if offen > 1 else f"{posten[0]} wartet auf dich.")
     haupt = [f'<p class="meta">{WOCHENTAGE[jetzt.weekday()]}, {jetzt.day}. '
              f'{MONATE[jetzt.month - 1]} {jetzt.year} · '
              f'{jetzt.strftime("%H:%M")}</p><p>{_e(satz)}</p>']
@@ -5030,7 +5051,11 @@ async def heute(request):
     haupt.append(f'<span class="art"><span class="badge termin">Termine</span>'
                  f'<b>{len(termine_offen)}</b></span>'
                  f'<a href="/freigaben">Alle Freigaben</a></div>')
-    if not pending:
+    # Chips und Satz speisen aus denselben Zahlen (Betreiber-Klarstellung
+    # 10.09.2026): der Chip „Termine 2" und „Keine offenen Entwürfe" kamen
+    # bisher aus getrennten Rechnungen (`pending` allein) und konnten sich
+    # deshalb widersprechen.
+    if not pending and not termine_offen:
         haupt.append("<p>Keine offenen Entwürfe.</p>")
     for art, name in FREIGABE_ARTEN:
         zeilen = je_art.get(art, [])

@@ -91,7 +91,11 @@ def test_heute_zeigt_freigaben_je_art_in_fester_reihenfolge():
             < seite.index("Mail-Text hier"))
     # Die Karten sind dieselben wie unter /freigaben — mit denselben Knoepfen.
     assert 'action="/aktion/freigeben"' in seite
-    assert "4 Entscheidungen warten" in seite
+    # Aufgabe 8 (10.09.2026): der alte Satz „4 Entscheidungen warten auf
+    # dich. Alles andere laeuft." behauptete Ruhe, die es bei offenen
+    # Terminanfragen/Einordnungen nicht gab. Der neue Satz schluesselt die
+    # Posten auf, statt sie unter „Entscheidungen" zu verstecken.
+    assert "4 Posten warten auf dich: 4 Entwürfe." in seite
 
 
 def test_heute_deckelt_je_art_und_verweist_auf_freigaben():
@@ -158,4 +162,6 @@ def test_wiedervorlagen_und_einordnung_stehen_mit_zahl_da():
     assert "<h2>Wiedervorlagen (1)</h2>" in seite
     assert "Nachfassen" in seite
     assert "<h2>Einordnung (0)</h2>" in seite
-    assert "1 Entscheidung wartet" in seite
+    # Aufgabe 8 (10.09.2026): bei genau einem offenen Posten nennt der Satz
+    # die Art statt eines nichtssagenden „1 Entscheidung wartet".
+    assert "1 Wiedervorlage wartet auf dich." in seite
