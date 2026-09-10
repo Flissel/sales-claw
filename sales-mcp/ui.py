@@ -313,10 +313,17 @@ def _kurz(text, laenge=90) -> str:
         return text
     schnitt = text[:laenge]
     leer = schnitt.rfind(" ")
-    # Nur an der Wortgrenze schneiden, wenn dabei nicht mehr als ein
-    # Drittel verloren geht — bei einer langen URL ohne Leerzeichen ist
-    # der harte Schnitt das kleinere Uebel.
-    if leer > laenge // 3 * 2:
+    # Nur an der Wortgrenze schneiden, wenn dabei nicht zu viel verloren
+    # geht. Ein fester Bruchteil (vormals: ein Drittel) versagt bei
+    # kleinen `laenge`-Werten wie 22 (Monatsgitter): dort verfehlte die
+    # Schwelle jede Wortgrenze im plausiblen Bereich, und der Schnitt fiel
+    # mitten ins Wort ("Kennenlernen Förderini…"). Jetzt: bei laengeren
+    # Texten hoechstens 12 Zeichen verloren (kein im Betrieb vorkommendes
+    # Wort ist laenger), bei kurzen `laenge`-Werten hoechstens die Haelfte.
+    # Bei einer langen URL ohne Leerzeichen bleibt der harte Schnitt das
+    # kleinere Uebel.
+    schwelle = max(laenge // 2, laenge - 12)
+    if leer > schwelle:
         schnitt = schnitt[:leer]
     return schnitt.rstrip(" ,;:·-–—") + "…"
 

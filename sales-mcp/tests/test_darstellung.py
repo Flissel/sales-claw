@@ -308,6 +308,70 @@ def test_kuerzung_bricht_nicht_mitten_im_wort():
         f"mitten im Wort abgeschnitten: …{rumpf[-15:]}")
 
 
+# ---------------------------------------------------------------------------
+# Fix-Runde 3 (10.09.2026, Schlusspruefung Mangel 2): die feste Schwelle
+# `laenge // 3 * 2` versagte bei kleinen `laenge`-Werten wie 22
+# (Monatsgitter) — die Wortgrenze lag ausserhalb der Schwelle, der Schnitt
+# fiel mitten ins Wort ("Kennenlernen Förderini…"). Diese Eigenschafts-
+# pruefung laeuft ueber ALLE real vorkommenden `laenge`-Werte (22, 60, 80,
+# 90, 120, 160, 300 — siehe die Aufrufstellen in ui.py) mit echten,
+# real langen Anzeigetexten und behauptet nur EINE Eigenschaft: das Ergebnis
+# endet nie mitten in einem Wort. Ergaenzt test_kuerzung_bricht_nicht_
+# mitten_im_wort (der bleibt als konkreter Regressionsbeleg fuer den
+# urspruenglich gemessenen Fall stehen).
+# ---------------------------------------------------------------------------
+
+_KUERZUNG_TEXTE = [
+    ("Kennenlernen Förderinitiative für kleine Betriebe mit vielen "
+     "Details, die eigentlich niemand lesen will", 22),
+    ("Videogespräch Erstberatung zum Thema Fördermittel und Zeitplan für "
+     "die naechsten Schritte", 22),
+    ("Martin bestätigt per WhatsApp Interesse und Termin Donnerstag "
+     "14 Uhr; der Betreiber trägt 14:30 im Kalender ein", 60),
+    ("Hallo Herr Beispiel, vielen Dank für Ihr Interesse an unserer "
+     "Beratung — wann passt Ihnen ein kurzer Rückruf diese Woche?", 80),
+    ("Hallo Herr Beispiel, vielen Dank für Ihr Interesse an unserer "
+     "Beratung — wann passt Ihnen ein kurzer Rückruf diese Woche?", 90),
+    ("Diese Freigabe traegt keinen Stand des gelesenen Textes — Seite neu "
+     "laden und aus der aktuellen Ansicht freigeben, sonst geht der "
+     "falsche Text raus.", 120),
+    ("Kontakt hat sich nach mehrfacher Rückfrage endgültig gegen eine "
+     "Zusammenarbeit entschieden, Gründe privat, nicht Preis, und moechte "
+     "auch in Zukunft nicht mehr kontaktiert werden.", 160),
+    (("Wir sind ein inhabergeführter Betrieb mit langjähriger Erfahrung "
+      "in der Beratung kleiner und mittlerer Unternehmen ") * 3, 300),
+]
+
+
+@pytest.mark.parametrize("lang,laenge", _KUERZUNG_TEXTE)
+def test_kuerzung_bricht_nie_mitten_im_wort(lang, laenge):
+    """Eigenschaftspruefung ueber alle real vorkommenden Laengen: das
+    Zeichen direkt nach dem gekuerzten Rumpf ist im Original KEIN
+    Wortzeichen (Buchstabe/Ziffer) mehr — nie mitten im Wort. `_kurz`
+    strippt am Wortende bewusst auch Satzzeichen (` ,;:·-–—`), darum haengt
+    z.B. nach „…freigeben" im Original noch ein Komma, was legitim ist und
+    kein Wortabbruch — nur ein direkt anschliessender Buchstabe/eine Ziffer
+    waere ein echter Fund."""
+    kurz = ui._kurz(lang, laenge)
+    assert kurz.endswith("…"), f"nicht als gekuerzt markiert: {kurz!r}"
+    rumpf = kurz[:-1].rstrip()
+    assert lang.startswith(rumpf), f"Anfang stimmt nicht: {rumpf!r}"
+    rest = lang[len(rumpf):len(rumpf) + 1]
+    assert not rumpf or not rest.isalnum(), (
+        f"mitten im Wort abgeschnitten bei laenge={laenge}: …{rumpf[-20:]}")
+
+
+def test_kuerzung_ohne_leerzeichen_schneidet_hart():
+    """Eine lange URL ohne Leerzeichen hat keine Wortgrenze zum Schneiden —
+    dort bleibt der harte Schnitt bewusst das kleinere Uebel (siehe
+    Kommentar an `_kurz`), die obige Eigenschaftspruefung gilt hier NICHT."""
+    lang = "https://beispiel.de/" + "x" * 300
+    kurz = ui._kurz(lang, 60)
+    assert kurz.endswith("…")
+    assert len(kurz) <= 61
+    assert lang.startswith(kurz[:-1])
+
+
 def test_kurzer_text_bleibt_unveraendert():
     assert ui._kurz("Optimal", 60) == "Optimal"
 
@@ -332,7 +396,17 @@ def test_terminkarte_auf_startseite_zeigt_vollen_text_als_title():
         "der sichtbare, gekuerzte Text fehlt")
 
 
-def test_verlaufszeile_termin_auf_freigaben_kuerzt_an_wortgrenze():
+# Die folgenden Tests heissen bewusst "...verwendet_kurz..." statt
+# "...kuerzt_an_wortgrenze...": `assert ui._kurz(x, n) in seite` vergleicht
+# die Ausgabe von `_kurz` mit sich selbst und waere auch gruen, wenn `_kurz`
+# gar nicht kuerzte (Fix-Runde 3, Schlusspruefung Mangel 2). Ihr Zweck ist
+# die VERDRAHTUNG: dass jede Seite `_kurz` mit dem richtigen `laenge`-Wert
+# aufruft, den vollen Text escaped als `title` mitgibt und das Ergebnis auch
+# tatsaechlich rendert. Die Wortgrenzen-EIGENSCHAFT selbst ist unabhaengig
+# davon in test_kuerzung_bricht_nie_mitten_im_wort abgesichert (parametrisiert
+# ueber dieselben `laenge`-Werte, die hier verwendet werden).
+
+def test_verlaufszeile_termin_auf_freigaben_verwendet_kurz():
     lang_thema = ("Kennenlernen Förderinitiative für kleine Betriebe mit "
                   "vielen Details, die eigentlich niemand lesen will")
     lead = _lead("Ver Lauf")
@@ -343,7 +417,7 @@ def test_verlaufszeile_termin_auf_freigaben_kuerzt_an_wortgrenze():
     assert f'title="{ui._e(lang_thema)}"' in seite
 
 
-def test_monatsgitter_titel_kuerzt_an_wortgrenze_und_traegt_titel():
+def test_monatsgitter_titel_verwendet_kurz_und_traegt_titel():
     lang_thema = "Kennenlernen Förderinitiative für kleine Betriebe"
     lead = _lead("Monat Gitter")
     _termin_aktivitaet(lead, datum="2026-09-05", uhrzeit="10:00",
@@ -361,7 +435,7 @@ def test_monatsgitter_titel_kuerzt_an_wortgrenze_und_traegt_titel():
 # Wort). Alle drei liegen in ui.py und wurden nachgezogen.
 # ---------------------------------------------------------------------------
 
-def test_entwurfsvorschau_kuerzt_an_wortgrenze_und_traegt_titel():
+def test_entwurfsvorschau_verwendet_kurz_und_traegt_titel():
     """Die zugeklappte Entwurfskarte auf /freigaben (und /) zeigte bisher
     eine Vorschau, die hart bei 90 Zeichen abbrach — OHNE jedes Kuerzungs-
     zeichen, ein Entwurf wirkte einfach mittendrin zu Ende."""
@@ -378,7 +452,7 @@ def test_entwurfsvorschau_kuerzt_an_wortgrenze_und_traegt_titel():
     assert "…" in seite
 
 
-def test_ergebnisse_begruendung_kuerzt_an_wortgrenze_und_traegt_titel():
+def test_ergebnisse_begruendung_verwendet_kurz_und_traegt_titel():
     lang = ("Kontakt hat sich nach mehrfacher Rueckfrage endgueltig gegen "
             "eine Zusammenarbeit entschieden, Gruende privat, nicht Preis")
     lead = _lead("Gustav Gewonnen")
@@ -392,7 +466,7 @@ def test_ergebnisse_begruendung_kuerzt_an_wortgrenze_und_traegt_titel():
     assert f'title="{ui._e(lang)}"' in seite
 
 
-def test_firmenrecherche_text_kuerzt_an_wortgrenze_und_traegt_titel():
+def test_firmenrecherche_text_verwendet_kurz_und_traegt_titel():
     lang = ("Wir sind ein inhabergefuehrter Betrieb mit langjaehriger "
             "Erfahrung in der Beratung kleiner und mittlerer Unternehmen " * 3)
     lead = _lead("Firma Recherche")
