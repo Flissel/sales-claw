@@ -4901,6 +4901,18 @@ MONATE = ("Januar", "Februar", "März", "April", "Mai", "Juni", "Juli",
 HEUTE_JE_ART = 3          # offene Entwuerfe je Art auf der Startseite
 HEUTE_TERMINE = 4         # Kalendereintraege in der rechten Spalte
 HEUTE_TERMINE_TAGE = 14
+# Mangel 3 (Schlusspruefung, 10.09.2026): fuer den ehrlichen Kopfsatz auf der
+# Startseite braucht `_einzuordnende` eine deutlich groessere Grenze als der
+# Chat-/Anzeige-Deckel EINORDNUNG_LIMIT (25) — sonst zaehlt „N Posten warten
+# auf dich" bei mehr als 25 unbekannten Absendern wieder zu wenig, dieselbe
+# Unehrlichkeit wie bei den Terminanfragen (Aufgabe 8). Kein echtes
+# `count(*)`, weil die Aufteilung in `neu`/`bereits_gefragt`/`aufgeloest`
+# erst je Zeile in Python entschieden wird (`_lead_mit_gleicher_nummer`) —
+# das waere in SQL eine Duplizierung derselben Normalisierungslogik. 1000
+# ist grosszuegig fuer den tatsaechlichen Bestand eines Sammelkontakts; ist
+# der Betrieb darueber, zaehlt der Kopfsatz wieder zu wenig (kein `count(*)`
+# moeglich, siehe oben) — dieser Rest-Deckel ist dokumentiert, nicht behoben.
+EINORDNUNG_ZAEHL_LIMIT = 1000
 FREIGABE_ARTEN = (("whatsapp", "WhatsApp"), ("linkedin", "LinkedIn"),
                   ("email", "E-Mail"))
 
@@ -5012,13 +5024,36 @@ async def heute(request):
     je_art = {art: [] for art, _ in FREIGABE_ARTEN}
     for z in pending:
         je_art.setdefault(str(z["channel"]), []).append(z)
+    # Anzeige bleibt gedeckelt (Kacheln/Karten sollen nicht endlos werden),
+    # aber die Kopfzeile zaehlt ab hier die ECHTE Gesamtzahl (Mangel 3,
+    # Schlusspruefung 10.09.2026): `termine_offen` allein hat `limit 5`,
+    # `_offene_wiedervorlagen` `limit 200` — beide gross genug fuer die
+    # Anzeige, aber „N Posten warten auf dich" log bei mehr als dem Deckel
+    # wieder zu wenig, dieselbe Unehrlichkeit wie in Aufgabe 8, nur an zwei
+    # weiteren Stellen. Drei zusaetzliche Zaehlabfragen fallen bei einer
+    # Startseite, die ohnehin mehrfach abfragt, nicht ins Gewicht.
     termine_offen = server._q(
         "select l.id as lead_id, l.name, a.payload from activities a "
         "left join leads l on l.id = a.lead_id "
         "where a.type = 'termin' and coalesce(a.payload->>'datum', '') = '' "
         "order by a.created_at desc limit 5")
+    termine_offen_gesamt = server._q(
+        "select count(*) as n from activities a where a.type = 'termin' "
+        "and coalesce(a.payload->>'datum', '') = ''")[0]["n"]
     wiedervorlagen = _offene_wiedervorlagen()
-    koerbe = server._einzuordnende(text_max=EINORDNUNG_TEXT_MAX)
+    wiedervorlagen_gesamt = server._q(
+        "select count(*) as n from activities w where w.type = 'wiedervorlage' "
+        "and not exists (select 1 from activities e where "
+        "e.type = 'wiedervorlage_erledigt' "
+        "and e.payload->>'wiedervorlage_id' = w.id::text)")[0]["n"]
+    # `_einzuordnende` teilt Zeilen erst in Python (`_lead_mit_gleicher_
+    # nummer`) in neu/bereits_gefragt/aufgeloest auf — ein echtes `count(*)`
+    # muesste diese Normalisierungslogik in SQL duplizieren. Stattdessen ein
+    # deutlich groesserer Deckel als der Chat-/Anzeige-Deckel EINORDNUNG_
+    # LIMIT (siehe EINORDNUNG_ZAEHL_LIMIT); auf dieser Seite wird ohnehin
+    # nur gezaehlt, keine Liste gerendert.
+    koerbe = server._einzuordnende(limit=EINORDNUNG_ZAEHL_LIMIT,
+                                   text_max=EINORDNUNG_TEXT_MAX)
     einordnung_offen = len(koerbe["neu"]) + len(koerbe["bereits_gefragt"])
 
     jetzt = datetime.now(ZEITZONE)
@@ -5034,16 +5069,16 @@ async def heute(request):
     if einordnung_offen:
         posten.append(f"{einordnung_offen} Einordnung" if einordnung_offen == 1
                       else f"{einordnung_offen} Einordnungen")
-    if termine_offen:
-        posten.append(f"{len(termine_offen)} Terminanfrage"
-                      if len(termine_offen) == 1
-                      else f"{len(termine_offen)} Terminanfragen")
-    if wiedervorlagen:
-        posten.append(f"{len(wiedervorlagen)} Wiedervorlage"
-                      if len(wiedervorlagen) == 1
-                      else f"{len(wiedervorlagen)} Wiedervorlagen")
-    offen = (len(pending) + len(wiedervorlagen) + einordnung_offen
-             + len(termine_offen))
+    if termine_offen_gesamt:
+        posten.append(f"{termine_offen_gesamt} Terminanfrage"
+                      if termine_offen_gesamt == 1
+                      else f"{termine_offen_gesamt} Terminanfragen")
+    if wiedervorlagen_gesamt:
+        posten.append(f"{wiedervorlagen_gesamt} Wiedervorlage"
+                      if wiedervorlagen_gesamt == 1
+                      else f"{wiedervorlagen_gesamt} Wiedervorlagen")
+    offen = (len(pending) + wiedervorlagen_gesamt + einordnung_offen
+             + termine_offen_gesamt)
     satz = ("Nichts wartet auf dich. Alles läuft." if not offen else
             f"{offen} Posten warten auf dich: {', '.join(posten)}."
             if offen > 1 else f"{posten[0]} wartet auf dich.")
@@ -5057,13 +5092,13 @@ async def heute(request):
                      f'<span class="badge {_e(art)}">{_e(name)}</span>'
                      f'<b>{len(je_art.get(art, []))}</b></span>')
     haupt.append(f'<span class="art"><span class="badge termin">Termine</span>'
-                 f'<b>{len(termine_offen)}</b></span>'
+                 f'<b>{termine_offen_gesamt}</b></span>'
                  f'<a href="/freigaben">Alle Freigaben</a></div>')
     # Chips und Satz speisen aus denselben Zahlen (Betreiber-Klarstellung
     # 10.09.2026): der Chip „Termine 2" und „Keine offenen Entwürfe" kamen
     # bisher aus getrennten Rechnungen (`pending` allein) und konnten sich
     # deshalb widersprechen.
-    if not pending and not termine_offen:
+    if not pending and not termine_offen_gesamt:
         haupt.append("<p>Keine offenen Entwürfe.</p>")
     for art, name in FREIGABE_ARTEN:
         zeilen = je_art.get(art, [])
@@ -5087,13 +5122,21 @@ async def heute(request):
                 f'{_e(z["name"] or "?")}</a></b> '
                 f'<span class="meta" title="{_e(voll)}">{_e(_kurz(voll, 160))}'
                 f'</span> · <a href="/kalender">im Kalender</a></div>')
+        # Die Kacheln bleiben gedeckelt (limit 5) — steht die Gesamtzahl im
+        # Kopfsatz hoeher, muss sichtbar sein, dass hier nur ein Teil steht
+        # (sonst fragt der Betreiber sich, wo die uebrigen sind).
+        if termine_offen_gesamt > len(termine_offen):
+            haupt.append(f'<p class="meta">{len(termine_offen)} von '
+                         f'{termine_offen_gesamt} gezeigt — den Rest zeigt '
+                         f'<a href="/freigaben">Freigaben</a>.</p>')
 
-    haupt.append(f'<h2>Wiedervorlagen ({len(wiedervorlagen)})</h2>')
+    haupt.append(f'<h2>Wiedervorlagen ({wiedervorlagen_gesamt})</h2>')
     if wiedervorlagen:
         haupt.append(_wiedervorlagen_tabelle(wiedervorlagen[:5]))
-        if len(wiedervorlagen) > 5:
+        if wiedervorlagen_gesamt > 5:
+            gezeigt_auf_seite = min(wiedervorlagen_gesamt, WIEDERVORLAGEN_MAX)
             haupt.append(f'<p class="meta"><a href="/wiedervorlagen">Alle '
-                         f'{len(wiedervorlagen)} Wiedervorlagen</a></p>')
+                         f'{gezeigt_auf_seite} Wiedervorlagen</a></p>')
     else:
         haupt.append("<p>Keine offene Wiedervorlage.</p>")
 

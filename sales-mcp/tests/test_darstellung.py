@@ -532,3 +532,63 @@ def test_heute_chips_und_satz_stammen_aus_derselben_rechnung():
     seite = _get("/").text
     assert '<span class="badge termin">Termine</span><b>1</b>' in seite
     assert "Keine offenen Entwürfe" not in seite
+
+
+# ---------------------------------------------------------------------------
+# Mangel 3 (Schlusspruefung, 10.09.2026): „N Posten warten auf dich" speiste
+# sich aus gedeckelten Abfragen (`termine_offen` limit 5, `_offene_
+# wiedervorlagen` limit 200, `server._einzuordnende` limit 25) — bei mehr
+# als dem jeweiligen Deckel nennt „Heute" wieder eine zu kleine Zahl,
+# dieselbe Unehrlichkeit wie in Aufgabe 8, nur an drei weiteren Stellen.
+# Fix: echte Gesamtzahlen per Zaehlabfrage statt der gedeckelten
+# Listenlaengen; die Kachel/Karten-Anzeige bleibt gedeckelt, zeigt das aber
+# jetzt ("X von Y gezeigt").
+# ---------------------------------------------------------------------------
+
+def test_heute_zaehlt_mehr_als_fuenf_termine_ohne_datum_korrekt():
+    """`termine_offen` zeigt (auf der Startseite) hoechstens 5 Karten, die
+    Kopfzeile und der Termine-Chip muessen aber die ECHTE Zahl nennen —
+    sieben Terminanfragen ohne Datum duerfen nicht als fuenf gezaehlt
+    werden."""
+    for i in range(7):
+        lead = _lead(f"Sieben Termine {i}")
+        _termin_aktivitaet(lead, datum="", uhrzeit="", thema=f"Frage {i}?")
+    seite = _get("/").text
+    assert '<span class="badge termin">Termine</span><b>7</b></span>' in seite, (
+        "der Termine-Chip zeigt nicht die echte Zahl (7), sondern den "
+        "Kartendeckel")
+    assert "7 Terminanfragen" in seite, (
+        "die Kopfzeile nennt nicht die echten sieben Terminanfragen")
+    assert "5 von 7 gezeigt" in seite, (
+        "kein Hinweis, dass die Kartenliste nur einen Teil der sieben zeigt")
+
+
+def test_heute_zaehlt_mehr_als_einordnung_deckel_korrekt():
+    """`server._einzuordnende` deckelt die Chat-/Anzeigefassung auf
+    EINORDNUNG_LIMIT (25) Zeilen — mehr als 25 unbekannte Absender duerfen
+    auf der Startseite trotzdem nicht als 25 gezaehlt werden."""
+    assert server.EINORDNUNG_LIMIT == 25, (
+        "Testannahme veraltet: EINORDNUNG_LIMIT hat sich geaendert")
+    sammel = str(server._q(
+        "insert into leads (name, source) values "
+        "('Unbekannte Eingaenge', 'system') returning id")[0]["id"])
+    vorher = server.UNBEKANNT_LEAD_ID
+    server.UNBEKANNT_LEAD_ID = sammel
+    try:
+        anzahl = server.EINORDNUNG_LIMIT + 3
+        for i in range(anzahl):
+            absender = f"4917000{i:05d}@c.us"
+            server._q(
+                "insert into activities (lead_id, type, payload, actor) "
+                "values (%s, 'kundenantwort', %s, 'human')",
+                (sammel, json.dumps({
+                    "text": f"Hallo, Nummer {i}?", "richtung": "eingehend",
+                    "absender": absender,
+                    "message_id": f"wa-{absender}-{i}"})))
+        seite = _get("/").text
+        assert f"{anzahl} Einordnungen" in seite, (
+            f"die Kopfzeile zaehlt nicht die echten {anzahl} unbekannten "
+            f"Absender, sondern hoechstens den Deckel "
+            f"({server.EINORDNUNG_LIMIT})")
+    finally:
+        server.UNBEKANNT_LEAD_ID = vorher
