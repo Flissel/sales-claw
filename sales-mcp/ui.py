@@ -3146,7 +3146,16 @@ def _wa_karten_und_kette(sitzung, sitzung_fehler, letzte) -> str:
                      "('stufenwechsel', 'transkription')")[0]["wann"]
     anzahl = server._q("select count(*) n from activities "
                        "where type = 'kundenantwort'")[0]["n"]
-    kontakte = server._q("select count(*) n from leads")[0]["n"]
+    # Zwei Zahlen statt einer: `count(*) from leads` zaehlte auch die
+    # archivierten mit und hiess trotzdem "Kontakte" — dieselbe Bezeichnung
+    # wie in der Navigation, die nur die aktiven zaehlt (gemessen 10.09.2026:
+    # 469 gegen 461, Differenz genau die acht archivierten).
+    aktive = server._q(
+        "select count(*) n from leads l "
+        "where not " + server._archiv_sql("l.enrichment"))[0]["n"]
+    archivierte = server._q(
+        "select count(*) n from leads l "
+        "where " + server._archiv_sql("l.enrichment"))[0]["n"]
     stunden = None
     if letzte is not None:
         stunden = (server._q("select extract(epoch from (now() - %s))/3600 h",
@@ -3174,7 +3183,9 @@ def _wa_karten_und_kette(sitzung, sitzung_fehler, letzte) -> str:
         ("Posteingang", "gut" if letzte is not None else "warnung",
          (f"{anzahl} Kundennachrichten gebucht" if letzte is not None
           else "noch nichts gebucht — unbewiesen")),
-        ("Datenbank", "gut", f"{kontakte} Kontakte, {anzahl} Kundenantworten"),
+        ("Datenbank", "gut",
+         f"{aktive} aktive Kontakte, {archivierte} archiviert, "
+         f"{anzahl} Kundenantworten"),
     ]
     kette = '<span class="strich"></span>'.join(
         f'<div class="schritt"><span class="punkt {_e(p)}"></span>'

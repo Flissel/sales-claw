@@ -121,3 +121,25 @@ def test_csrf_fehlerseite_zeigt_echte_umlaute():
     gefunden = [w for w in WOERTER_ASCII if w in seite]
     assert not gefunden, (
         f"CSRF-Fehlerseite zeigt ASCII-Umschreibungen: {gefunden}")
+
+
+def test_whatsapp_seite_nennt_aktive_und_archivierte_getrennt():
+    """Zwei Zahlen, zwei Namen — nicht zweimal 'Kontakte'.
+
+    Der Archiv-Schluessel ist verschachtelt (`enrichment -> ARCHIV_SCHLUESSEL
+    -> 'archiviert'`, siehe `server._archiv_sql`/`server.ARCHIV_SCHLUESSEL`),
+    nicht der flache `{"archiviert": true}` aus der ersten Fassung dieses
+    Tests — der schrieb am Merkmal vorbei und zaehlte den Kontakt weiterhin
+    als aktiv. `archiviert` ist hier ein echter jsonb-Boolean (`true`), keine
+    Zeichenkette, damit die `jsonb_typeof`-Pruefung in `_archiv_sql` greift."""
+    _lead("Aktiv Eins")
+    archiv = _lead("Archiviert Eins")
+    server._q(
+        "update leads set enrichment = coalesce(enrichment, '{}'::jsonb) || "
+        "jsonb_build_object(%s::text, jsonb_build_object('archiviert', true)) "
+        "where id = %s", (server.ARCHIV_SCHLUESSEL, archiv))
+    seite = _get("/whatsapp").text
+    assert "1 aktive Kontakte" in seite or "1 aktiver Kontakt" in seite, (
+        "die WhatsApp-Seite benennt die aktiven Kontakte nicht")
+    assert "1 archiviert" in seite, (
+        "die archivierten Kontakte werden nicht getrennt ausgewiesen")
