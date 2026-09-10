@@ -7,6 +7,7 @@ Zeichenkette im Payload, CalDAV liefert Zeitstempel.
 """
 import json
 import os
+import re
 from datetime import datetime, timezone
 
 import pytest
@@ -255,7 +256,14 @@ def test_zwei_quellen_zeigt_hinweis_und_beide_orte(monkeypatch):
     assert "Video Call" in seite, "eigene Ortsangabe fehlt"
     assert "https://meet.google.com/tin-jrqe-qwx" in seite, (
         "importierte Ortsangabe fehlt — Quelle stillschweigend verworfen")
-    assert seite.count("Video Call mit Sophie &amp; Stephane") <= 2, (
+    # Aufgabe 7 (10.09.2026): Terminkarten tragen den vollen Text jetzt
+    # zusaetzlich als `title`-Attribut (Kuerzung an Wortgrenzen). Dasselbe
+    # Thema steht dadurch bewusst zweimal auf demselben Element — sichtbar
+    # gekuerzt UND voll im title. Das ist keine Dopplung der ANZEIGE, die
+    # dieser Test eigentlich prueft; title-Attribute werden deshalb vor dem
+    # Zaehlen entfernt.
+    sichtbar = re.sub(r' title="[^"]*"', "", seite)
+    assert sichtbar.count("Video Call mit Sophie &amp; Stephane") <= 2, (
         "derselbe Termin steht mehr als zweimal auf der Seite "
         "(Gitter + Liste sind erlaubt)")
 

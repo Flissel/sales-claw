@@ -297,6 +297,26 @@ def _e(wert) -> str:
     return html.escape(str(wert if wert is not None else ""), quote=True)
 
 
+def _kurz(text, laenge=90) -> str:
+    """Text auf `laenge` kuerzen, aber nur an einer Wortgrenze.
+
+    Vorher schnitt die Anzeige hart nach n Zeichen ab; auf der Startseite
+    endete ein Termin mit „Thema Vibe ·" und niemand sah, dass ein Satz
+    fehlte. Der volle Text gehoert vom Aufrufer als `title` mitgegeben.
+    """
+    text = str(text or "").strip()
+    if len(text) <= laenge:
+        return text
+    schnitt = text[:laenge]
+    leer = schnitt.rfind(" ")
+    # Nur an der Wortgrenze schneiden, wenn dabei nicht mehr als ein
+    # Drittel verloren geht — bei einer langen URL ohne Leerzeichen ist
+    # der harte Schnitt das kleinere Uebel.
+    if leer > laenge // 3 * 2:
+        schnitt = schnitt[:leer]
+    return schnitt.rstrip(" ,;:·-–—") + "…"
+
+
 # Ortszeit statt UTC (01.09.2026, im Kalender gefunden): ein 12:00-Termin
 # stand als „10:00 UTC" da. Wer danach plant, verpasst ihn. Die Zone kommt
 # aus der Umgebung — dieselbe, in der auch die Dienste laufen.
@@ -1959,10 +1979,11 @@ async def inbox(request):
         teile.append('<p class="meta">Keine Terminanfrage ohne festes Datum.</p>')
     for z in termine_offen:
         last = z["payload"] or {}
+        voll = str(last.get("inhalt") or last.get("thema") or "")
         teile.append(
             f'<div class="karte"><b><a href="/kontakte/{_e(z["lead_id"])}">'
             f'{_e(z["name"] or "?")}</a></b> '
-            f'<span class="meta">{_e(str(last.get("inhalt") or last.get("thema") or "")[:160])}'
+            f'<span class="meta" title="{_e(voll)}">{_e(_kurz(voll, 160))}'
             f'</span> · <a href="/kalender">im Kalender</a></div>')
     teile.append(_verlauf_block("termine", "Termine"))
     teile.append("</section>")
@@ -1995,10 +2016,12 @@ def _verlauf_termine(limit: int):
 
 
 def _verlauf_zeile_entwurf(z) -> str:
-    text = str(z["body"] or "")[:ENTWURF_VORSCHAU]
+    text_voll = str(z["body"] or "")
+    text = (f'<span title="{_e(text_voll)}">'
+            f'{_e(_kurz(text_voll, ENTWURF_VORSCHAU))}</span>')
     return (f'<div class="eintrag"><span class="wann">{_e(_zeit(z["wann"]))}'
             f'</span><span class="was"><b>{_e(z["name"] or "(ohne Kontakt)")}'
-            f'</b> &rarr; {_e(z["recipient"])} · {_e(text)}</span>'
+            f'</b> &rarr; {_e(z["recipient"])} · {text}</span>'
             f'{_zustand_badge(str(z["status"]))}</div>')
 
 
@@ -2010,8 +2033,11 @@ def _verlauf_zeile_termin(z) -> str:
     if wann_termin:
         stuecke.append(_e(wann_termin))
     for schluessel in ("thema", "grund"):
-        if last.get(schluessel):
-            stuecke.append(_e(str(last[schluessel])[:120]))
+        wert_voll = last.get(schluessel)
+        if wert_voll:
+            wert_voll = str(wert_voll)
+            stuecke.append(f'<span title="{_e(wert_voll)}">'
+                           f'{_e(_kurz(wert_voll, 120))}</span>')
     return (f'<div class="eintrag"><span class="wann">{_e(_zeit(z["wann"]))}'
             f'</span><span class="was">{" · ".join(stuecke)}</span>'
             f'{_zustand_badge(str(z["type"]))}</div>')
@@ -3548,9 +3574,10 @@ async def kalender_seite(request):
             # Eine Termin-Notiz ohne Datum ist eine OFFENE ANFRAGE
             # („Donnerstag 16 Uhr — welcher?"), kein vergangener Termin.
             # Sie stand als leere Zeile unter „Vergangen".
+            voll = str(last.get("inhalt") or last.get("thema") or "")
             ohne_datum.append([
                 _zeit(z["created_at"]), kontakt,
-                _e(str(last.get("inhalt") or last.get("thema") or "")[:160])])
+                f'<span title="{_e(voll)}">{_e(_kurz(voll, 160))}</span>'])
             continue
         marke = ('<span class="badge achtung">Doppelt belegt</span> '
                  if belegung.get((tag, zeit), 0) > 1 else "")
@@ -3567,13 +3594,18 @@ async def kalender_seite(request):
         # waere hier weiterhin leer und haette die einzige Ortsangabe
         # stillschweigend verworfen.
         basis = paar if paar is not None else {"ort": last.get("ort")}
-        ort_basis = str(basis.get("ort") or "")[:60]
+        ort_basis_voll = str(basis.get("ort") or "")
         ort_abweichend = basis.get("abweichend", {}).get("ort")
-        ort_html = (f'{_e(ort_basis)} / {_e(str(ort_abweichend)[:60])}'
-                   if ort_abweichend else _e(ort_basis))
+        ort_basis_html = (f'<span title="{_e(ort_basis_voll)}">'
+                          f'{_e(_kurz(ort_basis_voll, 60))}</span>')
+        ort_html = (f'{ort_basis_html} / <span title="{_e(str(ort_abweichend))}">'
+                   f'{_e(_kurz(str(ort_abweichend), 60))}</span>'
+                   if ort_abweichend else ort_basis_html)
+        thema_voll = str(last.get("thema") or "")
         eintrag = [
             _e(tag_lesbar(tag)), _e(zeit), kontakt,
-            marke + quellen_marke + _e(str(last.get("thema") or "")[:80]),
+            marke + quellen_marke +
+            f'<span title="{_e(thema_voll)}">{_e(_kurz(thema_voll, 80))}</span>',
             ort_html,
             _termin_aktionen(str(z["lead_id"] or ""),
                              str(last.get("uid") or ""), tag, zeit)]
@@ -3624,13 +3656,17 @@ async def kalender_seite(request):
         teile.append(_tabelle(kopf, [e for _, e in vergangen[:30]]))
     if abgesagt:
         teile.append(f"<h2>Abgesagt ({len(abgesagt)})</h2>")
+        abgesagt_zeilen = []
+        for a in list(abgesagt.values())[:30]:
+            thema_voll = str(a.get("thema") or "")
+            grund_voll = str(a.get("grund") or "")
+            abgesagt_zeilen.append([
+                _e(tag_lesbar(str(a.get("datum") or ""))),
+                _e(str(a.get("uhrzeit") or "")),
+                f'<span title="{_e(thema_voll)}">{_e(_kurz(thema_voll, 60))}</span>',
+                f'<span title="{_e(grund_voll)}">{_e(_kurz(grund_voll, 80))}</span>'])
         teile.append(_tabelle(
-            ["Datum", "Zeit", "Thema", "Grund"],
-            [[_e(tag_lesbar(str(a.get("datum") or ""))),
-              _e(str(a.get("uhrzeit") or "")),
-              _e(str(a.get("thema") or "")[:60]),
-              _e(str(a.get("grund") or "")[:80])]
-             for a in list(abgesagt.values())[:30]]))
+            ["Datum", "Zeit", "Thema", "Grund"], abgesagt_zeilen))
     return _seite("Kalender", "".join(teile))
 
 
@@ -3729,21 +3765,27 @@ def _monatsgitter(monat, zeilen, fremde) -> str:
         tag = str(last.get("datum") or "")
         if not tag.startswith(f"{jahr:04d}-{mon:02d}"):
             continue
-        belegt.setdefault(tag, []).append(
-            f'<a class="e" href="/kontakte/{_e(str(z["lead_id"]))}">'
-            f'{_e(str(last.get("uhrzeit") or ""))} '
-            f'{_e(str(last.get("thema") or z["name"] or "Termin")[:22])}</a>'
-            if z["lead_id"] else
-            f'<span class="e">{_e(str(last.get("thema") or "Termin")[:22])}'
-            f'</span>')
+        if z["lead_id"]:
+            titel_voll = str(last.get("thema") or z["name"] or "Termin")
+            eintrag_html = (
+                f'<a class="e" href="/kontakte/{_e(str(z["lead_id"]))}" '
+                f'title="{_e(titel_voll)}">'
+                f'{_e(str(last.get("uhrzeit") or ""))} '
+                f'{_e(_kurz(titel_voll, 22))}</a>')
+        else:
+            titel_voll = str(last.get("thema") or "Termin")
+            eintrag_html = (f'<span class="e" title="{_e(titel_voll)}">'
+                            f'{_e(_kurz(titel_voll, 22))}</span>')
+        belegt.setdefault(tag, []).append(eintrag_html)
     for t in fremde:
         beginn = t["beginn"].astimezone(ZEITZONE) if ZEITZONE else t["beginn"]
         tag = beginn.strftime("%Y-%m-%d")
         if not tag.startswith(f"{jahr:04d}-{mon:02d}"):
             continue
+        titel_fremd = str(t["titel"])
         belegt.setdefault(tag, []).append(
-            f'<span class="e fremd">{beginn:%H:%M} '
-            f'{_e(str(t["titel"])[:22])}</span>')
+            f'<span class="e fremd" title="{_e(titel_fremd)}">{beginn:%H:%M} '
+            f'{_e(_kurz(titel_fremd, 22))}</span>')
 
     heute_iso = date.today().isoformat()
     kaesten = ['<div class="tagkopf">' + t + "</div>" for t in _WOCHENTAGE]
@@ -4996,10 +5038,11 @@ async def heute(request):
         haupt.append('<h2>Termine ohne festes Datum</h2>')
         for z in termine_offen:
             last = z["payload"] or {}
+            voll = str(last.get("inhalt") or last.get("thema") or "")
             haupt.append(
                 f'<div class="karte"><b><a href="/kontakte/{_e(z["lead_id"])}">'
                 f'{_e(z["name"] or "?")}</a></b> '
-                f'<span class="meta">{_e(str(last.get("inhalt") or last.get("thema") or "")[:160])}'
+                f'<span class="meta" title="{_e(voll)}">{_e(_kurz(voll, 160))}'
                 f'</span> · <a href="/kalender">im Kalender</a></div>')
 
     haupt.append(f'<h2>Wiedervorlagen ({len(wiedervorlagen)})</h2>')

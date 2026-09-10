@@ -156,3 +156,68 @@ def test_favicon_wird_beantwortet():
     antwort = _get("/favicon.ico")
     assert antwort.status_code in (200, 204), (
         f"/favicon.ico antwortet mit {antwort.status_code}")
+
+
+# ---------------------------------------------------------------------------
+# Aufgabe 7: Texte an Wortgrenzen kuerzen (10.09.2026) — Karten- und
+# Verlaufstexte brachen hart nach einer festen Zeichenzahl ab, mitten im
+# Wort: auf der Startseite endete ein Termin mit „… Thema Vibe ·", im
+# Monatsgitter stand „Kennenlernen Förderini". `ui._kurz` schneidet nur an
+# einer Wortgrenze und markiert das Abschneiden sichtbar.
+# ---------------------------------------------------------------------------
+
+def test_kuerzung_bricht_nicht_mitten_im_wort():
+    lang = ("Martin bestätigt per WhatsApp Interesse und Termin Donnerstag "
+            "14 Uhr; der Betreiber trägt 14:30 im Kalender ein")
+    kurz = ui._kurz(lang, 60)
+    assert kurz.endswith("…"), "gekuerzter Text sagt nicht, dass er gekuerzt ist"
+    assert len(kurz) <= 61, f"zu lang: {len(kurz)}"
+    rumpf = kurz[:-1].rstrip()
+    assert lang.startswith(rumpf), "der Anfang stimmt nicht mehr"
+    assert not rumpf or lang[len(rumpf):len(rumpf) + 1] in ("", " "), (
+        f"mitten im Wort abgeschnitten: …{rumpf[-15:]}")
+
+
+def test_kurzer_text_bleibt_unveraendert():
+    assert ui._kurz("Optimal", 60) == "Optimal"
+
+
+def test_terminkarte_auf_startseite_zeigt_vollen_text_als_title():
+    """Die Terminkarte auf '/' (Termine ohne festes Datum) kuerzt sichtbar
+    an einer Wortgrenze und traegt den vollen Text als title-Attribut —
+    escaped, denn ein Kundentext gehoert nie roh in ein Attribut."""
+    lang = ("Martin bestätigt per WhatsApp Interesse & Termin Donnerstag "
+            "14 Uhr <script>boese()</script>; der Betreiber trägt 14:30 "
+            "im Kalender ein, Thema Vibe · Förderung")
+    lead = _lead("Karla Karte")
+    server._q(
+        "insert into activities (lead_id, type, payload) values "
+        "(%s, 'termin', %s::jsonb)",
+        (lead, json.dumps({"inhalt": lang})))
+    seite = _get("/").text
+    assert "<script>boese()</script>" not in seite, "ungekuerztes Skript im Markup"
+    assert f'title="{ui._e(lang)}"' in seite, (
+        "der volle Text steht nicht escaped als title im Markup")
+    assert ui._e(ui._kurz(lang, 160)) in seite, (
+        "der sichtbare, gekuerzte Text fehlt")
+
+
+def test_verlaufszeile_termin_auf_freigaben_kuerzt_an_wortgrenze():
+    lang_thema = ("Kennenlernen Förderinitiative für kleine Betriebe mit "
+                  "vielen Details, die eigentlich niemand lesen will")
+    lead = _lead("Ver Lauf")
+    _termin_aktivitaet(lead, datum="2026-09-05", uhrzeit="10:00",
+                       thema=lang_thema)
+    seite = _get("/freigaben").text
+    assert ui._kurz(lang_thema, 120) in seite
+    assert f'title="{ui._e(lang_thema)}"' in seite
+
+
+def test_monatsgitter_titel_kuerzt_an_wortgrenze_und_traegt_titel():
+    lang_thema = "Kennenlernen Förderinitiative für kleine Betriebe"
+    lead = _lead("Monat Gitter")
+    _termin_aktivitaet(lead, datum="2026-09-05", uhrzeit="10:00",
+                       thema=lang_thema)
+    seite = _get("/kalender?monat=2026-09").text
+    assert ui._kurz(lang_thema, 22) in seite
+    assert f'title="{ui._e(lang_thema)}"' in seite
