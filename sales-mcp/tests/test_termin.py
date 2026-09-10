@@ -86,6 +86,18 @@ class _Handler(BaseHTTPRequestHandler):
         if STUB.rumpf:
             self.wfile.write(STUB.rumpf)
 
+    def do_REPORT(self):  # noqa: N802 — von BaseHTTPRequestHandler vorgegeben
+        laenge = int(self.headers.get("Content-Length", "0"))
+        self.rfile.read(laenge) if laenge else b""
+        with STUB.sperre:
+            STUB.aufrufe.append({"pfad": self.path, "methode": "REPORT"})
+        self.send_response(STUB.status)
+        self.send_header("Content-Type", 'application/xml; charset="utf-8"')
+        self.send_header("Content-Length", str(len(STUB.rumpf)))
+        self.end_headers()
+        if STUB.rumpf:
+            self.wfile.write(STUB.rumpf)
+
     def log_message(self, *_):
         pass
 
@@ -534,6 +546,57 @@ def test_500_wird_zum_fehlertext(kalender_konfiguriert):
     antwort = _termin()
     assert "500" in antwort["kalender"]
     assert "KOLLEKTION" in antwort["kalender"]
+
+
+# ---------------------------------------------------------------------------
+# CalDAV lesen (termine_lesen / _ics_feld) — Fix-Runde 1 zu Aufgabe 1
+#
+# `_maskiere()` (RFC 5545 §3.3.11) escapet beim SCHREIBEN Semikolon, Komma,
+# Umbruch und Backslash (oben getestet: test_text_werte_werden_nach_
+# 3_3_11_maskiert). Ein SUMMARY, das ueber `termine_lesen()` aus dem echten
+# Kalender zurueckkommt, kann genau diese Escapes tragen — auch von einem
+# fremden Kalenderclient, nicht nur von sales-claw selbst. Blieben sie beim
+# Lesen stehen, zeigte die Oberflaeche das ICS-Escaping als sichtbaren Text
+# UND `_e()` escapet das darin verbliebene "&" obendrauf — exakt das
+# beobachtete Produktionssymptom `&amp;amp\;` auf /kalender.
+# ---------------------------------------------------------------------------
+
+def test_ics_escaping_wird_beim_lesen_rueckgaengig_gemacht(
+        kalender_konfiguriert):
+    """`\\;`, `\\,`, `\\n` und `\\\\` aus einem gelesenen SUMMARY werden zu
+    `;`, `,`, Zeilenumbruch und `\\` — sonst zeigt die Oberflaeche das
+    Escaping selbst an, statt des eigentlichen Zeichens."""
+    STUB.rumpf = (
+        "BEGIN:VEVENT\r\n"
+        "UID:fremd-1@irgendein-client\r\n"
+        "DTSTART;TZID=Europe/Berlin:20260905T190000\r\n"
+        r"SUMMARY:Beratung\, Vorsorge\; Nachtrag\\Rest\nZweite Zeile" +
+        "\r\n"
+        "END:VEVENT\r\n"
+    ).encode("utf-8")
+    termine, fehler = kalender.termine_lesen()
+    assert fehler is None
+    assert len(termine) == 1
+    assert termine[0]["titel"] == (
+        "Beratung, Vorsorge; Nachtrag\\Rest\nZweite Zeile")
+
+
+def test_kaufmaennisches_und_aus_dem_kalender_bleibt_unverfaelscht(
+        kalender_konfiguriert):
+    """Das konkrete Produktionssymptom, nachgebaut: ein SUMMARY, das bereits
+    ein maskiertes Semikolon traegt (wie es entstuende, wenn ein bereits
+    HTML-escapetes "&amp;" durch `_maskiere()` liefe — das "; in "&amp;"
+    wird dabei zu "\\;"), kommt beim Lesen als "&amp;" zurueck, nicht als
+    "&amp\\;"."""
+    STUB.rumpf = (
+        "BEGIN:VEVENT\r\n"
+        "UID:fremd-2@irgendein-client\r\n"
+        "DTSTART;TZID=Europe/Berlin:20260905T190000\r\n"
+        r"SUMMARY:Video Call mit Sophie &amp\; Stephane" + "\r\n"
+        "END:VEVENT\r\n"
+    ).encode("utf-8")
+    termine, fehler = kalender.termine_lesen()
+    assert termine[0]["titel"] == "Video Call mit Sophie &amp; Stephane"
 
 
 def test_passwort_landet_in_keinem_fehlertext(kalender_konfiguriert):

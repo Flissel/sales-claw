@@ -58,6 +58,7 @@ RFC 5545, das Wesentliche und warum es hier so steht
 """
 import base64
 import os
+import re
 import socket
 import urllib.error
 import urllib.parse
@@ -379,14 +380,30 @@ _ZEITFENSTER_REPORT = (
     '</C:calendar-query>')
 
 
+_ICS_ESCAPE = re.compile(r"\\(.)")
+
+
+def _entmaskiere(text: str) -> str:
+    """Kehrt `_maskiere()` um (RFC 5545 §3.3.11): `\\;`, `\\,`, `\\n`/`\\N`
+    und `\\\\` werden wieder `;`, `,`, Zeilenumbruch und `\\`.
+
+    Ein gelesenes Feld, das diese Escapes stehen laesst, zeigt der
+    Oberflaeche das ICS-Escaping als sichtbaren Text an — und `_e()`
+    escapet ein darin verbliebenes „&" beim Rendern obendrauf (gemessen:
+    `&amp;amp\\;` auf /kalender, 10.09.2026).
+    """
+    return _ICS_ESCAPE.sub(
+        lambda m: "\n" if m.group(1) in "nN" else m.group(1), text)
+
+
 def _ics_feld(block: str, name: str) -> str:
-    """Ein Feld aus einem VEVENT — entfaltet, ohne Parameter."""
+    """Ein Feld aus einem VEVENT — entfaltet, ohne Parameter, entmaskiert."""
     for zeile in block.replace("\r\n ", "").replace("\n ", "").split("\n"):
         zeile = zeile.strip()
         if zeile.upper().startswith(name.upper()):
             rest = zeile[len(name):]
             if rest[:1] in (";", ":"):
-                return rest.split(":", 1)[-1].strip()
+                return _entmaskiere(rest.split(":", 1)[-1].strip())
     return ""
 
 
