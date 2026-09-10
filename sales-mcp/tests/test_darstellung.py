@@ -169,29 +169,72 @@ _LITERAL_MUSTER = re.compile(
     re.IGNORECASE)
 
 _ROUTE_RE = re.compile(r"^/[a-z0-9/_-]*$")
-_SQL_RE = re.compile(r"\b(select|insert into|update|delete from)\b",
-                     re.IGNORECASE)
 _BEZEICHNER_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
-# Zwei Routen sind NICHT als eigenes Literal notiert, sondern stecken in
-# einem groesseren, mehrteiligen HTML-Fragment (mehrere f-Strings ohne
-# Operator werden von Python/ast zu einem Literal verschmolzen) — darum
-# greift _BEZEICHNER_RE/_ROUTE_RE dort nicht direkt. Beide Routen sind seit
-# frueheren Aufgaben bewusst ASCII/kebab-case (siehe die isolierten
-# Routen-Konstanten weiter unten in ui.py, z.B. '/medien/loeschen').
-_EINGEBETTETE_ROUTEN = (
-    'action="/medien/loeschen"',
-    'action="/medien/loeschen-bestaetigen"',
-)
+# ---------------------------------------------------------------------------
+# Fix-Runde 4 (10.09.2026, Waechter-Fix): die Ausnahmeregeln pruefen bisher
+# per Teilstring-Suche auf dem GANZEN Literal, statt zu pruefen, ob das
+# Literal ALS GANZES technisch ist. Zwei belegte Folgen (siehe
+# .superpowers/sdd/2026-09-10-sales-ui-stufe-1-wahrheit-und-fehler/
+# waechter-fix-report.md):
+#   (a) `_STIL` (ui.py:634) ist EIN einziges 23.545 Zeichen langes Literal
+#       (Python verschmilzt die aneinandergehaengten Teile zu einem
+#       ast.Constant). Die CSS-Regel 'select, input[type="text"] {'
+#       (ui.py:1011/1059) enthaelt das Wort 'select' als CSS-Selektor —
+#       `_SQL_RE.search()` stufte dadurch den GANZEN Block als technisch
+#       ein und ueberspringt seither rund 19 deutsche CSS-Kommentare.
+#   (b) `_EINGEBETTETE_ROUTEN` exemptierte ebenfalls per Teilstring: das
+#       Literal bei ui.py:1664 enthaelt sowohl
+#       `action="/medien/loeschen-bestaetigen"` als auch 312 Zeichen echten
+#       Anzeigetext ("Das ist ein echtes Loeschen. ...") — der Anzeigetext
+#       blieb dadurch ungeprueft mit-exemptiert.
+#
+# Fix, zwei Teile:
+#   1. `_SQL_RE` erkennt SQL nur noch als PRAEFIX ('^select\b' o.ae.), und
+#      `_technische_fragmente()` zerlegt jedes Literal in Zeilen und prueft
+#      JEDE Zeile einzeln (`_ist_technisches_fragment`) statt das ganze
+#      Literal auf einmal freizusprechen. Bei `_STIL` exemptiert eine
+#      CSS-Selektor-Zeile, die mit 'select' BEGINNT, nur sich selbst, nicht
+#      ihre ~800 Nachbarzeilen.
+#   2. Damit faellt aber jede Zeile durch, die technischen UND
+#      Anzeigetext-Anteil mischt — genau der Fall bei ui.py:1539/1664, wo
+#      eine Route als `action="..."`-Attributwert oder ein Formularfeld
+#      als `name="..."`-Attributwert MITTEN in einer sonst normalen
+#      HTML-Zeile steht (belegt: ohne Maskierung meldet der Waechter
+#      faelschlich 'loeschen' aus `action="/medien/loeschen"` und
+#      'begruendung' aus `name="begruendung"` als ASCII-Fund, obwohl beide
+#      Bezeichner/Routen sind, keine Prosa). `_ohne_technische_
+#      attributwerte()` maskiert deshalb NUR den Wert eines `action=`- oder
+#      `name=`-Attributs, und auch nur, wenn dieser Wert fuer sich genommen
+#      Route oder Bezeichner ist (`_ROUTE_RE`/`_BEZEICHNER_RE`, dieselben
+#      Pruefungen wie fuer ein eigenstaendiges Literal) — das ist strukturell
+#      begruendet (HTML-Attributsyntax), keine Teilstring-Suche nach
+#      irgendeinem Wort irgendwo.
+#
+# `_EINGEBETTETE_ROUTEN` entfaellt komplett: beide Routen sind an ihrer
+# eigentlichen Stelle (ui.py:5231/5233, den Starlette-`Route(...)`-
+# Konstanten) je ein eigenes, einzeiliges Literal, das `_ROUTE_RE` bereits
+# direkt per Vollmatch erkennt; als eingebetteter Attributwert deckt sie
+# jetzt `_ohne_technische_attributwerte` ab. Das Fragment bei ui.py:1664
+# ist damit NICHT mehr blockweise exemptiert — nur sein `action=`-Anteil
+# ist maskiert, sein Anzeigetext bleibt geprueft.
+# ---------------------------------------------------------------------------
+_SQL_RE = re.compile(r"^(select|insert into|update|delete from)\b",
+                     re.IGNORECASE)
+_ATTR_WERT_RE = re.compile(r'((?:action|name)=")([^"]*)(")')
 
 
-def _ist_technisches_literal(s: str) -> bool:
-    """True fuer Literale, die strukturell KEIN Anzeigetext sind, sondern
-    Bezeichner/Route/SQL — sie werden nie als Prosa an den Browser
-    ausgeliefert, sondern als Formularfeld-Name, Payload-/Dict-Schluessel
-    (z.B. 'eintraege', 'vertraege', 'begruendung' — Vertrag mit server.py,
-    Umbenennen bricht gespeicherte Payloads), CSS-Klasse, Routen-Pfad oder
-    SQL-Fragment verwendet. Randbedingung: Bezeichner sind tabu."""
+def _ist_technisches_fragment(s: str) -> bool:
+    """True fuer ein Fragment — ein ganzes einzeiliges Literal ODER eine
+    einzelne Zeile eines mehrzeiligen Literals (siehe
+    `_technische_fragmente`) —, das strukturell KEIN Anzeigetext ist,
+    sondern Bezeichner/Route/SQL: nie als Prosa an den Browser ausgeliefert,
+    sondern als Formularfeld-Name, Payload-/Dict-Schluessel (z.B.
+    'eintraege', 'vertraege', 'begruendung' — Vertrag mit server.py,
+    Umbenennen bricht gespeicherte Payloads), CSS-Selektor, Routen-Pfad
+    oder SQL-Anweisung verwendet. Jede Pruefung bezieht sich auf das
+    Fragment ALS GANZES (Vollmatch bzw. Praefix) — nie auf ein Vorkommen
+    irgendwo darin (Fix-Runde 4). Randbedingung: Bezeichner sind tabu."""
     kern = s.strip()
     if not kern:
         return True
@@ -199,11 +242,38 @@ def _ist_technisches_literal(s: str) -> bool:
         return True
     if _ROUTE_RE.match(kern):
         return True
-    if _SQL_RE.search(kern):
-        return True
-    if any(route in kern for route in _EINGEBETTETE_ROUTEN):
+    if _SQL_RE.match(kern):
         return True
     return False
+
+
+def _ohne_technische_attributwerte(zeile: str) -> str:
+    """Maskiert `action="..."`/`name="..."`-Attributwerte, die fuer sich
+    genommen Route oder Bezeichner sind (siehe Fix-Runde 4, Teil 2), bevor
+    die Zeile auf ASCII-Umschreibungen geprueft wird. Nur der Wert in genau
+    dieser Attributposition zaehlt, und nur wenn er selbst
+    `_ROUTE_RE`/`_BEZEICHNER_RE` erfuellt — keine Teilstring-Suche nach dem
+    Wort irgendwo in der Zeile."""
+    def ersetze(treffer):
+        praefix, wert, suffix = treffer.groups()
+        if _ROUTE_RE.match(wert) or _BEZEICHNER_RE.fullmatch(wert):
+            return praefix + suffix
+        return treffer.group(0)
+    return _ATTR_WERT_RE.sub(ersetze, zeile)
+
+
+def _technische_fragmente(s: str):
+    """Zerlegt ein Literal in seine Zeilen, maskiert je Zeile eingebettete
+    technische Attributwerte (`_ohne_technische_attributwerte`) und liefert
+    nur die NICHT rein-technischen Zeilen zurueck. Fuer ein einzeiliges
+    Literal (der Regelfall) ist das gleichwertig zur alten, literal-weiten
+    Pruefung. Fuer ein mehrzeiliges Literal — in ui.py nur `_STIL`, siehe
+    Fix-Runde 4 oben — exemptiert eine technische Zeile (eine einzelne
+    CSS-Regel/ein Selektor) nur sich selbst, nicht ihre Nachbarn."""
+    for zeile in s.split("\n"):
+        if _ist_technisches_fragment(zeile):
+            continue
+        yield _ohne_technische_attributwerte(zeile)
 
 
 def _ui_string_literale():
@@ -236,14 +306,17 @@ def test_literale_zeigen_echte_umlaute():
     Waechters oben (Gross-/Kleinschreibung, unvollstaendige Seitenliste).
     Ersetzt test_seite_zeigt_echte_umlaute NICHT (der bleibt als
     Rendering-Beleg stehen), ist aber ab Fix-Runde 3 die tragende
-    Absicherung gegen ASCII-Umschreibungen (Schlusspruefung, 10.09.2026)."""
+    Absicherung gegen ASCII-Umschreibungen (Schlusspruefung, 10.09.2026).
+
+    Prueft je Literal jede Zeile einzeln (`_technische_fragmente`, siehe
+    Fix-Runde 4) — bei einem mehrzeiligen Literal wie `_STIL` exemptiert
+    eine technische Zeile nur sich selbst, nicht den ganzen Block."""
     funde = []
     for lineno, s in _ui_string_literale():
-        if _ist_technisches_literal(s):
-            continue
-        treffer = sorted(set(_LITERAL_MUSTER.findall(s)))
-        if treffer:
-            funde.append((lineno, treffer, s[:80]))
+        for zeile in _technische_fragmente(s):
+            treffer = sorted(set(_LITERAL_MUSTER.findall(zeile)))
+            if treffer:
+                funde.append((lineno, treffer, zeile.strip()[:80]))
     assert not funde, (
         "ui.py enthaelt ASCII-Umschreibungen in Anzeigetext-Literalen "
         "(Zeile: Woerter: Auszug): "
