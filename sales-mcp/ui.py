@@ -3354,6 +3354,76 @@ async def pipeline(request):
     return _seite("Pipeline", "".join(teile))
 
 
+# Toleranz beim Paaren: dieselbe Buchung kann in zwei Quellen um ein paar
+# Minuten auseinanderliegen (Rundung beim Import). Fuenf Minuten sind eng
+# genug, dass zwei ECHTE Termine nicht verschmelzen — der Betreiber hat
+# ausdruecklich entschieden, dass beide Quellen Wahrheit bleiben und
+# Zweifelsfaelle im Digest geklaert werden, nicht hier.
+PAAR_TOLERANZ_MIN = 5
+
+
+def _termine_paaren(eigene, importierte):
+    """Termine aus beiden Quellen zu einer Liste verschmelzen.
+
+    Verschmolzen wird NICHT der Inhalt: jeder Eintrag behaelt beide
+    Ortsangaben und nennt seine Quellen. Die Entscheidung, welche Fassung
+    stimmt, trifft der Betreiber im Digest.
+    """
+    ergebnis = []
+    for eintrag in list(eigene) + list(importierte):
+        for vorhanden in ergebnis:
+            if _gleicher_termin(vorhanden, eintrag):
+                vorhanden["quellen"].append(eintrag.get("quelle", "?"))
+                for feld in ("ort", "titel"):
+                    if not vorhanden.get(feld) and eintrag.get(feld):
+                        vorhanden[feld] = eintrag[feld]
+                    elif (eintrag.get(feld)
+                          and eintrag[feld] != vorhanden.get(feld)):
+                        vorhanden.setdefault("abweichend", {})[feld] = \
+                            eintrag[feld]
+                break
+        else:
+            neu = dict(eintrag)
+            neu["quellen"] = [eintrag.get("quelle", "?")]
+            ergebnis.append(neu)
+    return ergebnis
+
+
+def _gleicher_termin(a, b) -> bool:
+    """Gleicher Kontakt, gleiche Startzeit (+/- Toleranz), aehnlicher Titel."""
+    if a.get("lead_id") and b.get("lead_id") and a["lead_id"] != b["lead_id"]:
+        return False
+    beginn_a, beginn_b = a.get("beginn"), b.get("beginn")
+    if beginn_a is None or beginn_b is None:
+        return False
+    abstand = abs((beginn_a - beginn_b).total_seconds())
+    if abstand > PAAR_TOLERANZ_MIN * 60:
+        return False
+    titel_a = str(a.get("titel") or "").strip().lower()
+    titel_b = str(b.get("titel") or "").strip().lower()
+    return (titel_a == titel_b
+            or titel_a.startswith(titel_b[:20])
+            or titel_b.startswith(titel_a[:20]))
+
+
+def _beginn_aus_payload(payload):
+    """`datum`+`uhrzeit` aus dem Payload zu einem bewussten Zeitpunkt.
+
+    Die Strings im Payload sind ORTSZEIT — so hat der Betreiber sie
+    diktiert und so stehen sie in der .ics. Sie als UTC zu lesen waere
+    derselbe Zwei-Stunden-Fehler noch einmal, nur an anderer Stelle.
+    """
+    tag = str((payload or {}).get("datum") or "")
+    zeit = str((payload or {}).get("uhrzeit") or "")
+    if not tag:
+        return None
+    try:
+        roh = datetime.fromisoformat(f"{tag}T{zeit or '00:00'}")
+    except ValueError:
+        return None
+    return roh.replace(tzinfo=ZEITZONE) if ZEITZONE else roh
+
+
 @_gesichert_seite
 async def kalender_seite(request):
     """Alle Termine an EINER Stelle (01.09.2026, Betreiber-Wunsch).
@@ -3379,9 +3449,41 @@ async def kalender_seite(request):
     zeilen = [z for z in zeilen
               if str((z["payload"] or {}).get("uid") or "") not in abgesagt
               or not (z["payload"] or {}).get("uid")]
+    # Der echte Kalender wird schon hier gelesen (statt erst beim Gitter
+    # weiter unten), damit seine Termine VOR dem Aufbau von kommend/vergangen
+    # mit den eigenen gepaart werden koennen (Aufgabe 4).
+    fremde, fremd_fehler = kalender.termine_lesen()
+
+    # Aufgabe 4: dieselbe Buchung steht oft in beiden Quellen — einmal im
+    # eigenen Store (mit Kontaktbezug), einmal im CalDAV-Import. Betreiber-
+    # Entscheidung: nicht automatisch zusammenfuehren, beide Quellen bleiben
+    # Wahrheit. `_termine_paaren` erkennt nur, WELCHE Zeilen zusammengehoeren;
+    # die Anzeige unten zeigt sie als einen Eintrag mit dem Hinweis
+    # „zwei Quellen" und beiden abweichenden Ortsangaben.
+    eigene_normalisiert = []
+    for i, z in enumerate(zeilen):
+        last = z["payload"] or {}
+        beginn = _beginn_aus_payload(last)
+        if beginn is None:
+            continue
+        eigene_normalisiert.append({
+            "_index": i, "titel": str(last.get("thema") or ""),
+            "beginn": beginn, "ort": str(last.get("ort") or ""),
+            "quelle": "store", "lead_id": z["lead_id"]})
+    importierte_normalisiert = [
+        {"titel": t["titel"], "beginn": t["beginn"], "ort": t["ort"],
+         "quelle": "caldav"} for t in fremde]
+    paar_je_index = {p["_index"]: p
+                     for p in _termine_paaren(eigene_normalisiert,
+                                              importierte_normalisiert)
+                     if "_index" in p}
+
     kommend, vergangen, ohne_datum = [], [], []
     # Doppelt belegte Zeitfenster sichtbar machen (01.09.2026 gefunden:
     # zwei Termine mit derselben Person am selben Tag um dieselbe Zeit).
+    # Das ist etwas ANDERES als die Quellen-Paarung oben: hier sind es zwei
+    # verschiedene Termine zur selben Zeit, dort dieselbe Buchung aus zwei
+    # Quellen — die Erkennung bleibt deshalb unabhaengig davon.
     belegung = {}
     for z in zeilen:
         last = z["payload"] or {}
@@ -3389,7 +3491,7 @@ async def kalender_seite(request):
         if tag:
             belegung[(tag, str(last.get("uhrzeit") or ""))] = \
                 belegung.get((tag, str(last.get("uhrzeit") or "")), 0) + 1
-    for z in zeilen:
+    for i, z in enumerate(zeilen):
         last = z["payload"] or {}
         tag = str(last.get("datum") or "")
         zeit = str(last.get("uhrzeit") or "")
@@ -3406,10 +3508,20 @@ async def kalender_seite(request):
             continue
         marke = ('<span class="badge achtung">Doppelt belegt</span> '
                  if belegung.get((tag, zeit), 0) > 1 else "")
+        paar = paar_je_index.get(i)
+        quellen_marke = (
+            '<span class="badge achtung" title="Dieser Termin steht in zwei '
+            'Quellen — der Assistent klärt im Digest, welche Fassung '
+            'stimmt.">zwei Quellen</span> '
+            if paar and len(paar.get("quellen", [])) > 1 else "")
+        ort_eigen = str(last.get("ort") or "")[:60]
+        ort_abweichend = (paar or {}).get("abweichend", {}).get("ort")
+        ort_html = (f'{_e(ort_eigen)} / {_e(str(ort_abweichend)[:60])}'
+                   if ort_abweichend else _e(ort_eigen))
         eintrag = [
             _e(tag_lesbar(tag)), _e(zeit), kontakt,
-            marke + _e(str(last.get("thema") or "")[:80]),
-            _e(str(last.get("ort") or "")[:60]),
+            marke + quellen_marke + _e(str(last.get("thema") or "")[:80]),
+            ort_html,
             _termin_aktionen(str(z["lead_id"] or ""),
                              str(last.get("uid") or ""), tag, zeit)]
         (kommend if tag >= heute.isoformat() else vergangen).append(
@@ -3419,7 +3531,6 @@ async def kalender_seite(request):
 
     # --- Das Gitter (01.09.2026): ein Kalender sieht aus wie ein Kalender.
     monat = _monat_lesen(request.query_params.get("monat"), heute)
-    fremde, fremd_fehler = kalender.termine_lesen()
     teile = [_monatsgitter(monat, zeilen, fremde)]
 
     kopf = ["Datum", "Zeit", "Kontakt", "Thema", "Ort", "Ändern"]

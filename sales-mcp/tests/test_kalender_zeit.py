@@ -108,3 +108,52 @@ def test_tzid_termin_zeigt_dieselbe_uhrzeit_wie_der_eigene_termin():
     uhrzeit='19:00' in der Vergangen-Tabelle, nicht 21:00."""
     beginn = kalender._ics_zeit("20260905T190000", tzid="Europe/Berlin")
     assert ui._zeit(beginn).endswith("19:00")
+
+
+# ---------------------------------------------------------------------------
+# Aufgabe 4: doppelte Termine aus zwei Quellen als EIN Eintrag mit dem
+# Hinweis "zwei Quellen" — Betreiber-Entscheidung (Spec Sec3.3): nicht
+# automatisch zusammenfuehren, beide Quellen bleiben Wahrheit.
+# ---------------------------------------------------------------------------
+
+def test_gleicher_termin_aus_zwei_quellen_wird_ein_eintrag():
+    """Eigener Store und Kalender-Import ergeben EINEN Eintrag."""
+    eigene = [{"titel": "Video Call mit Sophie & Stephane",
+               "beginn": datetime(2026, 9, 5, 19, 0, tzinfo=timezone.utc),
+               "ort": "Video Call", "quelle": "store"}]
+    importierte = [{"titel": "Video Call mit Sophie & Stephane",
+                    "beginn": datetime(2026, 9, 5, 19, 0, tzinfo=timezone.utc),
+                    "ort": "https://meet.google.com/tin-jrqe-qwx",
+                    "quelle": "caldav"}]
+    paare = ui._termine_paaren(eigene, importierte)
+    assert len(paare) == 1, f"erwartet 1 Eintrag, bekam {len(paare)}"
+    assert sorted(paare[0]["quellen"]) == ["caldav", "store"]
+
+
+def test_verschiedene_termine_bleiben_getrennt():
+    """Unterschiedliche Startzeiten werden NICHT zusammengezogen."""
+    eigene = [{"titel": "Erstgespräch",
+               "beginn": datetime(2026, 9, 5, 19, 0, tzinfo=timezone.utc),
+               "ort": "", "quelle": "store"}]
+    importierte = [{"titel": "Erstgespräch",
+                    "beginn": datetime(2026, 9, 5, 21, 0, tzinfo=timezone.utc),
+                    "ort": "", "quelle": "caldav"}]
+    assert len(ui._termine_paaren(eigene, importierte)) == 2
+
+
+def test_zwei_quellen_werden_in_der_seite_ausgewiesen():
+    """Der Hinweis steht sichtbar am Eintrag, nicht nur in den Daten."""
+    lead = server._q(
+        "insert into leads (name, phone, source) values "
+        "('Stephane B.', '+491701234567', 'whatsapp') returning id")[0]["id"]
+    server._q(
+        "insert into activities (lead_id, type, payload) values "
+        "(%s, 'termin', %s::jsonb)",
+        (lead, json.dumps(
+            {"datum": "2026-09-05", "uhrzeit": "21:00",
+             "thema": "Video Call mit Sophie & Stephane",
+             "ort": "Video Call", "uid": "doppelt-1"})))
+    seite = _get("/kalender").text
+    assert seite.count("Video Call mit Sophie &amp; Stephane") <= 2, (
+        "derselbe Termin steht mehr als zweimal auf der Seite "
+        "(Gitter + Liste sind erlaubt)")
