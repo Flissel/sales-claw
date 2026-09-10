@@ -35,29 +35,55 @@ Postgres mit pgvector.
 
 ### Testlauf (gilt für jeden „Run"-Schritt unten)
 
-Einmalig ein Postgres mit den nötigen Erweiterungen starten und das Schema anlegen:
+**Die Umgebung steht bereits** (aufgebaut und verifiziert am 10.09.2026): Container
+`sales-testdb` im Docker-Netz `sales-test-net`. Falls sie fehlt, so aufbauen — das
+Rezept weicht bewusst vom CI-Workflow ab, siehe die drei Anmerkungen darunter:
 
 ```bash
-docker run -d --name sales-testdb -e POSTGRES_PASSWORD=ci -p 5432:5432 \
-  pgvector/pgvector:pg16
-sleep 5
-psql "postgresql://postgres:ci@localhost:5432/postgres" -v ON_ERROR_STOP=1 \
+docker network create sales-test-net
+docker run -d --name sales-testdb --network sales-test-net \
+  -e POSTGRES_PASSWORD=ci -p 55432:5432 pgvector/pgvector:pg16
+docker exec -i sales-testdb psql -U postgres -v ON_ERROR_STOP=1 \
   -c "create extension if not exists vector; create extension if not exists pgcrypto;"
-psql "postgresql://postgres:ci@localhost:5432/postgres" -v ON_ERROR_STOP=1 \
-  -f db/provision.sql
+docker exec -i sales-testdb psql -U postgres -v ON_ERROR_STOP=1 < db/provision.sql
+# Ohne diese Migration fallen 154 Tests aus (siehe Anmerkung 3):
+docker exec -i sales-testdb psql -U postgres -v ON_ERROR_STOP=1 \
+  < ../marketing/db/013b_compliance_test_schema.sql
 ```
 
 Danach je Lauf, aus dem Wurzelverzeichnis von sales-claw:
 
 ```bash
 docker build -t sales-mcp-ci ./sales-mcp
-docker run --rm --network host \
+docker run --rm --network sales-test-net \
   -e SALES_DB_SCHEMA=sales_test \
-  -e SALES_DB_URL="postgresql://postgres:ci@localhost:5432/postgres" \
+  -e SALES_DB_URL="postgresql://postgres:ci@sales-testdb:5432/postgres" \
   sales-mcp-ci python -m pytest tests/<datei> -q --tb=short -p no:cacheprovider
 ```
 
 Im Folgenden abgekürzt als `PYTEST tests/<datei>`.
+
+**Drei Abweichungen vom CI-Workflow, jede gemessen:**
+
+1. **Eigenes Docker-Netz statt `--network host`.** Der CI-Workflow läuft auf
+   `ubuntu-latest`, wo Host-Networking funktioniert; auf Docker Desktop für Windows
+   tut es das nicht verlässlich. Der Testcontainer erreicht die Datenbank deshalb
+   über den Containernamen `sales-testdb`, nicht über `localhost`.
+2. **Port 55432 statt 5432.** Auf diesem Rechner belegt der Supabase-Container des
+   VibeMind-Swarms bereits 5432. Der Port wird von außen ohnehin nur zum Nachsehen
+   gebraucht — die Tests sprechen containerintern über 5432.
+3. **`compliance_test` muss zusätzlich angelegt werden.** `sperrliste.py:30` leitet
+   das Schema aus `SALES_DB_SCHEMA` ab: `sales_test` → `compliance_test`. Dessen DDL
+   liegt aber im Marketing-Space (`spaces/marketing/db/013b_compliance_test_schema.sql`),
+   nicht in `db/provision.sql`, und der CI-Workflow von sales-claw fährt sie nicht mit.
+   Ohne sie brechen 154 Tests mit `InvalidSchemaName: schema "compliance_test" does
+   not exist`. Die Migration `013_compliance_sperrliste.sql` wird **nicht** gebraucht
+   und schlägt hier fehl (sie setzt das Schema `marketing` voraus).
+
+**Ausgangswert vor Stufe 1, gemessen am 10.09.2026:**
+`1508 passed, 4 warnings in 200.37s` — die Suite ist grün. Jeder Lauf nach einer
+Aufgabe muss mindestens diese 1508 Tests grün halten; die Zahl steigt mit den neuen
+Testdateien.
 
 ---
 

@@ -64,8 +64,19 @@ Alles Übrige aus der Wunschliste kommt ohne Skripte aus: Suche, Filter, Sortier
 Paginierung, Massenaktionen (Checkboxen plus ein Absenden), Woche/Monat-Umschalter,
 farbige Termine, der komplette Optik-Umbau.
 
-Zusätzlich nötig: `img-src 'self'` für die Medien-Vorschau (kein JavaScript, nur
-Bilder aus eigener Quelle).
+**Korrektur (10.09.2026, am Code gemessen):** Die Richtlinie ist heute schon reicher
+als `default-src 'none'`. In `ui.py:335` steht:
+
+```text
+default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; media-src 'self';
+form-action 'self'; base-uri 'none'; frame-ancestors 'none'
+```
+
+`img-src 'self'` und `media-src 'self'` stehen seit dem 25.08.2026 darin, weil die
+Medienseite Bilder zeigt und Videos abspielt. Für die Medien-Vorschau (§5.4) ist
+also **keine** Lockerung mehr nötig, und ein eigenes Favicon lässt sich schon heute
+ausliefern. Die einzige Änderung an der Richtlinie in diesem Vorhaben bleibt
+`script-src 'self' 'nonce-…'` für den Hinweis auf neue Entwürfe.
 
 ### 2.2 `ui.py` wird beim Umbau aufgeteilt
 
