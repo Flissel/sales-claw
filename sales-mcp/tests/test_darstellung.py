@@ -4,8 +4,10 @@ Diese Datei prueft nicht, WAS die Oberflaeche kann, sondern ob das, was sie
 zeigt, stimmt: ein kaufmaennisches Und bleibt ein kaufmaennisches Und, ein
 Umlaut bleibt ein Umlaut, ein Satz endet nicht mitten im Wort.
 """
+import ast
 import json
 import os
+import re
 
 import pytest
 
@@ -121,6 +123,131 @@ def test_csrf_fehlerseite_zeigt_echte_umlaute():
     gefunden = [w for w in WOERTER_ASCII if w in seite]
     assert not gefunden, (
         f"CSRF-Fehlerseite zeigt ASCII-Umschreibungen: {gefunden}")
+
+
+# ---------------------------------------------------------------------------
+# Fix-Runde 3 (10.09.2026, Schlusspruefung Mangel 1): der seitenbasierte
+# Waechter oben hat zwei Luecken, beide in der Schlusspruefung gemessen:
+# (a) er ist case-sensitiv — 'zurueck' klein in WOERTER_ASCII faengt
+# 'Zurueck' gross im Code NICHT, darum blieb test_csrf_fehlerseite_... gruen,
+# obwohl genau diese Seite "Zurueck" zeigte; (b) SEITEN oben deckt nur zehn
+# GET-Seiten ab, nicht /kontakte/{id}, /wiedervorlagen,
+# /freigaben/verlauf/{art} oder jede Warnseite — dort lag die Haelfte der
+# Funde. Dieser Test prueft stattdessen JEDES String-Literal in ui.py direkt
+# (per ast, siehe _ui_string_literale) — unabhaengig davon, ob und wo eine
+# Seite es gerade rendert, und case-insensitiv. Der alte, seitenbasierte
+# Test bleibt bestehen (er belegt zusaetzlich, dass beim Rendern nichts an
+# den Literalen kaputtgeht), ist aber ab jetzt nicht mehr die tragende
+# Absicherung — das ist dieser hier.
+# ---------------------------------------------------------------------------
+
+# Erweiterung von WOERTER_ASCII um Woerter, die in der Seiten-Liste oben
+# BEWUSST fehlen, weil sie dort Bezeichner treffen wuerden (siehe Kommentar
+# an WOERTER_ASCII: 'ueber', 'Empfaenger', 'traegt' u.ae. wuerden auf
+# Seitenebene an CSS-Klassen/Routen/Feldnamen anschlagen). Auf Literal-Ebene
+# mit Wortgrenzen (\b) ist das ungefaehrlich: ein Formularfeld wie
+# 'empfaenger_bestaetigt' ist per Unterstrich zu einem einzigen \b-Wort
+# verschmolzen und wird von \bempfaenger\b nicht getroffen — zusaetzlich
+# faengt _ist_technisches_literal bare Bezeichner/Routen/SQL ohnehin vorher
+# ab. Jedes Wort hier wurde gegen den aktuellen Stand von ui.py verifiziert
+# (keine verbleibenden Bezeichner-Treffer ausser den zwei Routen unten).
+LITERAL_WOERTER_ASCII = WOERTER_ASCII + [
+    "spaeter", "ueberschreibung", "nachtraegt", "vergroessern",
+    "geschaeftsverweise", "traegt", "entwurfszustaende", "fuellung",
+    "farbunabhaengiges", "bloecken", "fuer", "hoehe",
+    "entscheidungsknoepfe", "verdraengt", "muessen", "spaltenueberschrift",
+    "ausschliesslich", "ueber", "gefaehrliche", "rueckt", "zusaetzlich",
+    "faehrt", "haengen", "groesser", "haengt", "uebernimmt",
+    "zustaendige", "haekchen", "empfaenger", "luege", "saehe",
+    "vollzaehlig", "taeuschte", "aufraeumen", "laesst", "laeuft",
+    "eintraege", "maerz", "zurueckholen", "geloescht", "aktivitaeten",
+    "verstaendliches", "vertraege", "enthaelt",
+]
+
+_LITERAL_MUSTER = re.compile(
+    r"\b(" + "|".join(re.escape(w) for w in LITERAL_WOERTER_ASCII) + r")\b",
+    re.IGNORECASE)
+
+_ROUTE_RE = re.compile(r"^/[a-z0-9/_-]*$")
+_SQL_RE = re.compile(r"\b(select|insert into|update|delete from)\b",
+                     re.IGNORECASE)
+_BEZEICHNER_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+
+# Zwei Routen sind NICHT als eigenes Literal notiert, sondern stecken in
+# einem groesseren, mehrteiligen HTML-Fragment (mehrere f-Strings ohne
+# Operator werden von Python/ast zu einem Literal verschmolzen) — darum
+# greift _BEZEICHNER_RE/_ROUTE_RE dort nicht direkt. Beide Routen sind seit
+# frueheren Aufgaben bewusst ASCII/kebab-case (siehe die isolierten
+# Routen-Konstanten weiter unten in ui.py, z.B. '/medien/loeschen').
+_EINGEBETTETE_ROUTEN = (
+    'action="/medien/loeschen"',
+    'action="/medien/loeschen-bestaetigen"',
+)
+
+
+def _ist_technisches_literal(s: str) -> bool:
+    """True fuer Literale, die strukturell KEIN Anzeigetext sind, sondern
+    Bezeichner/Route/SQL — sie werden nie als Prosa an den Browser
+    ausgeliefert, sondern als Formularfeld-Name, Payload-/Dict-Schluessel
+    (z.B. 'eintraege', 'vertraege', 'begruendung' — Vertrag mit server.py,
+    Umbenennen bricht gespeicherte Payloads), CSS-Klasse, Routen-Pfad oder
+    SQL-Fragment verwendet. Randbedingung: Bezeichner sind tabu."""
+    kern = s.strip()
+    if not kern:
+        return True
+    if _BEZEICHNER_RE.fullmatch(kern):
+        return True
+    if _ROUTE_RE.match(kern):
+        return True
+    if _SQL_RE.search(kern):
+        return True
+    if any(route in kern for route in _EINGEBETTETE_ROUTEN):
+        return True
+    return False
+
+
+def _ui_string_literale():
+    """Alle String-Literale in ui.py ausserhalb von Docstrings, mit
+    Zeilennummer — dieselbe ast-Technik, mit der die Schlussfixes die
+    ASCII-Funde selbst aufgespuert haben. Echte Python-Kommentare (`#`) sind
+    fuer ast ohnehin nie Literale und tauchen hier gar nicht erst auf."""
+    quelltext = open(ui.__file__, encoding="utf-8").read()
+    baum = ast.parse(quelltext)
+    docstring_ids = set()
+    for node in ast.walk(baum):
+        if isinstance(node, (ast.Module, ast.FunctionDef,
+                             ast.AsyncFunctionDef, ast.ClassDef)):
+            body = node.body
+            if (body and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant)
+                    and isinstance(body[0].value.value, str)):
+                docstring_ids.add(id(body[0].value))
+    treffer = []
+    for node in ast.walk(baum):
+        if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                and id(node) not in docstring_ids and node.value):
+            treffer.append((node.lineno, node.value))
+    return treffer
+
+
+def test_literale_zeigen_echte_umlaute():
+    """Jedes Anzeigetext-Literal in ui.py, unabhaengig davon, ob/wo eine
+    Seite es gerade rendert — schliesst die zwei Luecken des seitenbasierten
+    Waechters oben (Gross-/Kleinschreibung, unvollstaendige Seitenliste).
+    Ersetzt test_seite_zeigt_echte_umlaute NICHT (der bleibt als
+    Rendering-Beleg stehen), ist aber ab Fix-Runde 3 die tragende
+    Absicherung gegen ASCII-Umschreibungen (Schlusspruefung, 10.09.2026)."""
+    funde = []
+    for lineno, s in _ui_string_literale():
+        if _ist_technisches_literal(s):
+            continue
+        treffer = sorted(set(_LITERAL_MUSTER.findall(s)))
+        if treffer:
+            funde.append((lineno, treffer, s[:80]))
+    assert not funde, (
+        "ui.py enthaelt ASCII-Umschreibungen in Anzeigetext-Literalen "
+        "(Zeile: Woerter: Auszug): "
+        + "; ".join(f"{z}: {w}: {s!r}" for z, w, s in funde))
 
 
 def test_whatsapp_seite_nennt_aktive_und_archivierte_getrennt():

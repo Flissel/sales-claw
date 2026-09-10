@@ -583,7 +583,7 @@ def _gesichert_seite(fn):
         except psycopg.OperationalError:
             return _fehlerseite(503, "Datenbank nicht erreichbar",
                                 "Gerade wird NICHTS gelesen oder geschrieben. "
-                                "Spaeter erneut versuchen.")
+                                "Später erneut versuchen.")
         except psycopg.Error as e:
             # Nur der SQLSTATE — Fehlertexte der DB koennen Fremddaten tragen.
             return _fehlerseite(503, "Datenbankfehler",
@@ -625,10 +625,10 @@ def _gesichert_seite(fn):
 # ---------------------------------------------------------------------------
 
 _STIL = """
-/* --- Farben. Heller Satz als Grundlage, dunkler als Ueberschreibung. ------
+/* --- Farben. Heller Satz als Grundlage, dunkler als Überschreibung. ------
    Namen statt Werte im Rest des Stils: eine Farbe wird genau einmal
    entschieden und zweimal belegt, sonst driften helles und dunkles Thema
-   auseinander, sobald jemand irgendwo ein #fff nachtraegt. */
+   auseinander, sobald jemand irgendwo ein #fff nachträgt. */
 :root {
   color-scheme: light dark;
   --grund: #f5f4f0; --flaeche: #ffffff; --kopfzeile: #f0eee8;
@@ -669,7 +669,7 @@ _STIL = """
 }
 
 *, *::before, *::after { box-sizing: border-box; }
-/* Kein Auto-Vergroessern beim Drehen ins Querformat (iOS). */
+/* Kein Auto-Vergrößern beim Drehen ins Querformat (iOS). */
 html { -webkit-text-size-adjust: 100%; }
 /* `overflow-wrap: anywhere` steht bewusst GANZ OBEN und vererbt sich: jede
    Zelle, jede Karte, jede Meta-Zeile kann Fremddaten tragen, und die Regel
@@ -818,13 +818,13 @@ h2 { font-size: 1.05rem; margin-top: 2rem; }
 .dashboard { width: 100%; height: 78vh; min-height: 32rem; border: 1px solid
              var(--linie); border-radius: 4px; background: var(--flaeche); }
 
-/* --- Geschaeftsverweise (01.09.2026): anklickbare Absprung-Chips --------- */
+/* --- Geschäftsverweise (01.09.2026): anklickbare Absprung-Chips --------- */
 .verweise { display: flex; flex-wrap: wrap; gap: .4rem; }
 .verweis { display: inline-block; padding: .2rem .6rem; border-radius: 4px;
            border: 1px solid var(--linie); text-decoration: none;
            font-size: .85rem; }
 
-/* --- Abzeichen: das Wort traegt die Aussage, die Farbe hilft nur ---------- */
+/* --- Abzeichen: das Wort trägt die Aussage, die Farbe hilft nur ---------- */
 .badge { display: inline-block; padding: .15rem .5rem; border-radius: 4px;
          font-size: .78rem; font-weight: 700; line-height: 1.6;
          color: var(--neutral_auf); background: var(--neutral);
@@ -837,8 +837,8 @@ h2 { font-size: 1.05rem; margin-top: 2rem; }
                   border-color: var(--lila); }
 .badge.lid { background: var(--achtung); color: var(--achtung_auf);
              border-color: var(--achtung); }
-/* Archiviert und die vier Entwurfszustaende tragen ihr Wort im HTML; Fuellung
-   gegen Umriss kommt als zweites, FARBUNABHAENGIGES Merkmal dazu — auf einem
+/* Archiviert und die vier Entwurfszustände tragen ihr Wort im HTML; Füllung
+   gegen Umriss kommt als zweites, FARBUNABHÄNGIGES Merkmal dazu — auf einem
    sonnenbeschienenen Telefon ist ein Farbton kein Unterschied. */
 .badge.archiv { background: transparent; color: var(--schrift);
                 border: 1px dashed var(--linie_stark); }
@@ -910,7 +910,7 @@ h2 { font-size: 1.05rem; margin-top: 2rem; }
   border-right: 0; }
 .segment .an { background: var(--schrift); color: var(--grund);
                font-weight: 700; cursor: default; }
-/* --- Freigaben in vier Bloecken mit Verlauf je Art (Schritt 3) ------ */
+/* --- Freigaben in vier Blöcken mit Verlauf je Art (Schritt 3) ------ */
 .block { margin-top: 1.4rem; padding-top: .2rem; }
 .block > h2 { display: flex; align-items: center; gap: .5rem;
               border-bottom: 2px solid var(--linie); padding-bottom: .4rem;
@@ -956,12 +956,12 @@ label.haken { display: flex; align-items: center; gap: .5rem;
 label.haken input[type="checkbox"] { width: 22px; height: 22px; flex: none; }
 label.feld { display: block; margin: .8rem 0; font-weight: 600; }
 /* Ein alleinstehender Verweis („Abbrechen, nichts tun", „auch archivierte
-   zeigen") ist auf dem Telefon genauso ein Ziel fuer einen Daumen wie ein
-   Knopf — als Textzeile von 16px Hoehe ist er keines. */
+   zeigen") ist auf dem Telefon genauso ein Ziel für einen Daumen wie ein
+   Knopf — als Textzeile von 16px Höhe ist er keines. */
 p.abbrechen a, p.meta > a { display: inline-block; min-height: 44px;
                             padding: .6rem .1rem; }
 button, input, select, textarea { font-family: inherit; }
-/* Vorschau in der Medienliste. Feste Hoehe statt fester Breite: die Zeile
+/* Vorschau in der Medienliste. Feste Höhe statt fester Breite: die Zeile
    soll gleich hoch bleiben, egal ob Hoch- oder Querformat. */
 .vorschau { max-width: 100%; max-height: 140px; height: auto;
             border-radius: 6px; display: block; background: var(--grund); }
@@ -981,8 +981,8 @@ details.karte[open] > summary { margin-bottom: .6rem;
                                 padding-bottom: .5rem; }
 details.karte > summary .meta { font-weight: 400; }
 /* Das Bearbeitungsfeld liegt hinter einer zweiten Klappe, damit es die
-   Entscheidungsknoepfe nicht verdraengt: wer nur freigeben will, soll
-   nicht an einem Textfeld vorbeiscrollen muessen. */
+   Entscheidungsknöpfe nicht verdrängt: wer nur freigeben will, soll
+   nicht an einem Textfeld vorbeiscrollen müssen. */
 details.bearbeiten > summary { cursor: pointer; min-height: 44px;
                                display: flex; align-items: center;
                                font-size: .95rem; color: var(--gedaempft); }
@@ -1008,7 +1008,7 @@ select, input[type="text"], input[type="tel"], input[type="email"] {
 
 /* --- Tabellen ------------------------------------------------------------
    Auf dem Desktop bleibt es eine Tabelle; der Kasten drumherum scrollt
-   notfalls fuer sich, damit nie die SEITE waagerecht scrollt. */
+   notfalls für sich, damit nie die SEITE waagerecht scrollt. */
 .tabelle { overflow-x: auto; margin: .7rem 0; }
 table { border-collapse: collapse; width: 100%; background: var(--flaeche); }
 th, td { border: 1px solid var(--linie); padding: .5rem .6rem;
@@ -1033,20 +1033,20 @@ thead th { background: var(--kopfzeile); }
                              border-bottom: 1px solid var(--linie);
                              padding: .55rem .8rem; font-size: .95rem; }
   .tabelle tr > *:last-child { border-bottom: 0; }
-  /* Die Spaltenueberschrift wandert vor die Zelle. `data-label` setzt
-     ausschliesslich `_tabelle()`, und zwar aus eigenem Text. */
+  /* Die Spaltenüberschrift wandert vor die Zelle. `data-label` setzt
+     ausschließlich `_tabelle()`, und zwar aus eigenem Text. */
   .tabelle td[data-label]::before {
     content: attr(data-label); display: block; font-weight: 700;
     font-size: .72rem; letter-spacing: .04em; text-transform: uppercase;
     color: var(--gedaempft); margin-bottom: .15rem; }
-  /* Aktionen untereinander und ueber die volle Breite: ein Daumen trifft
+  /* Aktionen untereinander und über die volle Breite: ein Daumen trifft
      einen Streifen, keinen Punkt. */
   .aktionen { flex-direction: column; align-items: stretch; }
   .aktionen form.aktion { width: 100%; }
   .aktionen form.aktion > button, .aktionen > button { width: 100%; }
   .aktionen form.aktion > select, .aktionen form.aktion > input[type="text"] {
     max-width: none; }
-  /* Der gefaehrliche Knopf rueckt zusaetzlich ab — „Ablehnen" darf nicht
+  /* Der gefährliche Knopf rückt zusätzlich ab — „Ablehnen" darf nicht
      dort liegen, wo der Daumen nach „Freigeben" noch nachwippt. */
   .aktionen form.aktion.gefahr { margin-top: .8rem; }
   select, input[type="text"], input[type="tel"], input[type="email"] {
@@ -1182,7 +1182,7 @@ WA_ZUSTAND = {
                "stoppen und neu starten; danach ggf. neu koppeln."),
     "stopped": ("gestoppt", "warnung",
                 "Die Sitzung läuft nicht. In der OpenWA-Oberfläche starten."),
-    "starting": ("startet", "", "Einen Moment — die Sitzung faehrt hoch."),
+    "starting": ("startet", "", "Einen Moment — die Sitzung fährt hoch."),
 }
 
 
@@ -1218,7 +1218,7 @@ def _seite(titel: str, rumpf: str, status: int = 200,
 
 def _fehlerseite(status: int, titel: str, text: str) -> HTMLResponse:
     return _seite(titel, f'<p class="fehler">{text}</p>'
-                         f'<p class="abbrechen"><a href="/freigaben">Zurueck zur '
+                         f'<p class="abbrechen"><a href="/freigaben">Zurück zur '
                          f'Freigabe-Inbox</a></p>',
                   status=status)
 
@@ -1553,7 +1553,7 @@ def _medien_formular(vorbelegt_ueberschreiben: bool = False) -> str:
         f'{haken}'
         f'<div class="aktionen">'
         f'<button class="primaer">Hochladen</button></div></form>'
-        f'<p class="meta">Erlaubt: {_e(erlaubt)}. Hoechstens {grenze} MB. '
+        f'<p class="meta">Erlaubt: {_e(erlaubt)}. Höchstens {grenze} MB. '
         f'Die Datei steht danach im Chat unter <code>medien_liste()</code> '
         f'und lässt sich an Entwürfe hängen. Sie geht dadurch an '
         f'niemanden — versendet wird erst mit einer Freigabe.</p></div>')
@@ -1719,7 +1719,7 @@ async def aktion_medien_loeschen_bestaetigen(request):
         return _fehlerseite(500, "Nicht gelöscht", (
             f"Datei nicht löschbar ({_e(type(e).__name__)}). Hängt der "
             f"Medienordner an diesem Dienst ohne `:ro`?"))
-    LOG.warning("Medien: %s geloescht (%d Entwuerfe verwiesen darauf)",
+    LOG.warning("Medien: %s gelöscht (%d Entwürfe verwiesen darauf)",
                 basis, len(verweise))
     return RedirectResponse("/medien", status_code=303)
 
@@ -1752,7 +1752,7 @@ async def aktion_medien_hochladen(request):
     if server.medien.liegt_schon(basis) and not ueberschreiben:
         return _fehlerseite(409, "Datei gibt es schon", (
             f"'{_e(basis)}' liegt bereits im Medienordner. Sie kann an einem "
-            f"freigegebenen Entwurf haengen, den der Dispatcher erst beim "
+            f"freigegebenen Entwurf hängen, den der Dispatcher erst beim "
             f"Zustellen liest — deshalb wird hier nichts still ersetzt. Wer "
             f"es trotzdem will, setzt den Haken „Vorhandene Datei gleichen "
             f"Namens ersetzen“."))
@@ -1779,13 +1779,13 @@ async def aktion_medien_hochladen(request):
         grenze = server.medien.MAX_BYTES // 1048576
         return _fehlerseite(413 if "gross" in str(e) else 400,
                             "Nicht abgelegt",
-                            f"Die Datei ist leer oder groesser als {grenze} MB."
+                            f"Die Datei ist leer oder größer als {grenze} MB."
                             if "gross" in str(e) else "Die Datei ist leer.")
     except OSError as e:
         _aufraeumen(zwischen)
         return _fehlerseite(500, "Nicht abgelegt", (
             f"Der Medienordner ist nicht beschreibbar "
-            f"({_e(type(e).__name__)}). Haengt er an diesem Dienst ohne "
+            f"({_e(type(e).__name__)}). Hängt er an diesem Dienst ohne "
             f"`:ro`?"))
     LOG.info("Medien: %s abgelegt (%d Byte)", basis, geschrieben)
     return RedirectResponse("/medien", status_code=303)
@@ -1808,7 +1808,7 @@ async def aktion_medien_bot(request):
     if fehler:
         return _fehlerseite(404, "Datei unbekannt", _e(fehler))
     server.medien_meta_setzen(basis, bot_darf_senden=(erlaubt == "ja"))
-    LOG.info("Medien: %s fuer den Bot %s", basis,
+    LOG.info("Medien: %s für den Bot %s", basis,
              "freigegeben" if erlaubt == "ja" else "gesperrt")
     return RedirectResponse("/medien", status_code=303)
 
@@ -1953,7 +1953,7 @@ async def inbox(request):
                          'melden — automatisch geht hier nichts raus.</div>')
             else:
                 stand = ('<div class="meta">wartet auf Dispatcher '
-                         '(Versand uebernimmt der zustaendige Dienst '
+                         '(Versand übernimmt der zuständige Dienst '
                          'automatisch)</div>')
             teile.append(
                 f'<div class="karte">{_entwurf_kopf(z, "approved")}'
@@ -2154,7 +2154,7 @@ async def aktion_freigeben(request):
     if not stand:
         return _fehlerseite(
             400, "Lese-Stand fehlt",
-            "Diese Freigabe traegt keinen Stand des gelesenen Textes — "
+            "Diese Freigabe trägt keinen Stand des gelesenen Textes — "
             "Seite neu laden und aus der aktuellen Ansicht freigeben.")
     if stand != _text_stand(aktuell[0]["body"] or ""):
         return _fehlerseite(
@@ -2228,7 +2228,7 @@ async def aktion_erneut_freigeben(request):
         return _fehlerseite(
             400, "Bestätigung fehlt",
             "Erneut freigeben heißt: derselbe Versand wird noch einmal "
-            "versucht. Ohne gesetztes Haekchen wird nichts getan.")
+            "versucht. Ohne gesetztes Häkchen wird nichts getan.")
     # SQL wie server.entwurf_erneut_freigeben mit bestaetigt=False —
     # inklusive der Doppelversand-Marken-Pruefung (Claim-Praefix aus
     # server.py, dort begruendet: kein Import von dispatch.py moeglich).
@@ -2251,7 +2251,7 @@ async def aktion_erneut_freigeben(request):
                 and error.startswith(server._CLAIM_MARKE_PRAEFIX)):
             return _fehlerseite(
                 409, "Verweigert: möglicher Doppelversand",
-                "Dieser Entwurf traegt die Zustellungs-Marke des Dispatchers "
+                "Dieser Entwurf trägt die Zustellungs-Marke des Dispatchers "
                 "— ein Absturz zwischen Claim und Buchung kann bedeuten, dass "
                 "die Nachricht BEREITS ZUGESTELLT wurde. Diese Oberfläche "
                 "gibt so einen Entwurf grundsätzlich nicht erneut frei. Wer "
@@ -2308,10 +2308,10 @@ def _marken_seite(error: str) -> HTMLResponse:
     Schaden, hier ein `rejected`, das eine erfolgte Zustellung verdeckt."""
     return _fehlerseite(
         409, "Verweigert: möglicherweise bereits zugestellt",
-        "Dieser Entwurf traegt die Zustellungs-Marke des Dispatchers — ein "
+        "Dieser Entwurf trägt die Zustellungs-Marke des Dispatchers — ein "
         "Absturz zwischen Claim und Buchung kann bedeuten, dass die Nachricht "
-        "BEREITS BEIM EMPFAENGER ist. Ihn zu verwerfen schriebe dann eine "
-        "Luege in die Datenbank: die Zeile saehe aus wie &#x27;nie "
+        "BEREITS BEIM EMPFÄNGER ist. Ihn zu verwerfen schriebe dann eine "
+        "Lüge in die Datenbank: die Zeile sähe aus wie &#x27;nie "
         "rausgegangen&#x27;. Diese Oberfläche verwirft so einen Entwurf "
         "grundsätzlich nicht. Wer das ausdrücklich verantworten will, tut "
         "das im Chat: entwurf_verwerfen(draft_id, bestaetigt=True). "
@@ -2323,7 +2323,7 @@ def _verwerfen_warnseite(z) -> HTMLResponse:
     Empfaenger und Textanfang — und NICHTS schreiben."""
     text = str(z["body"] or "")
     anfang = text[:VERWERFEN_TEXT_MAX] + ("…" if len(text) > VERWERFEN_TEXT_MAX else "")
-    anhang = (f'<p>Am Entwurf haengt der Anhang <b>{_e(z["media_ref"])}</b>.</p>'
+    anhang = (f'<p>Am Entwurf hängt der Anhang <b>{_e(z["media_ref"])}</b>.</p>'
               if z.get("media_ref") else "")
     return _seite(
         "Verwerfen bestätigen",
@@ -2335,7 +2335,7 @@ def _verwerfen_warnseite(z) -> HTMLResponse:
         f'zuständige Dispatcher dürfte diesen Entwurf jederzeit nehmen. '
         f'Danach steht er auf <code>rejected</code> und geht nicht mehr raus. '
         f'<b>Gelöscht wird nichts</b> — Text und Verlauf bleiben '
-        f'vollzaehlig stehen.</p>{anhang}'
+        f'vollzählig stehen.</p>{anhang}'
         f'<p>Ist der Entwurf inzwischen in Zustellung gegangen, wird hier '
         f'nichts getan (die Seite sagt es dann).</p></div>'
         f'<div class="text">{_e(anfang)}</div>'
@@ -2411,7 +2411,7 @@ async def aktion_verwerfen_bestaetigen(request):
     if not bestaetigt_fuer:
         return _fehlerseite(
             400, "Bestätigung fehlt",
-            "Ohne den auf der Warnseite gelesenen Empfaenger wird nichts "
+            "Ohne den auf der Warnseite gelesenen Empfänger wird nichts "
             "getan.")
     zeilen = _entwurf_zeile(draft_id)
     if not zeilen:
@@ -2424,7 +2424,7 @@ async def aktion_verwerfen_bestaetigen(request):
     if str(z["recipient"] or "") != bestaetigt_fuer:
         return _fehlerseite(
             409, "Bestätigung passt nicht mehr",
-            "Der Entwurf geht inzwischen an einen anderen Empfaenger als auf "
+            "Der Entwurf geht inzwischen an einen anderen Empfänger als auf "
             "der Warnseite. Nichts wurde getan — die Seite neu laden und "
             "erneut ansehen.")
     if (z["error"] or "").startswith(server._CLAIM_MARKE_PRAEFIX):
@@ -2636,12 +2636,12 @@ def _kontakt_formular(lead) -> str:
         return (
             '<h2>Sammelkontakt für unbekannte Eingänge</h2>'
             '<div class="karte"><p><b>Das ist kein Mensch.</b> An diesem '
-            'Satz haengt jede Nachricht einer Nummer, die noch keinem '
+            'Satz hängt jede Nachricht einer Nummer, die noch keinem '
             'Kontakt zugeordnet ist — also die Nachrichten vieler '
-            'verschiedener Absender nebeneinander. Ein Name daran taeuschte '
+            'verschiedener Absender nebeneinander. Ein Name daran täuschte '
             'eine Person vor, die es nicht gibt; deshalb sind seine '
             'Stammdaten gesperrt.</p>'
-            '<p>Aufraeumen geht ueber <a href="/einordnung">Einordnung</a>: '
+            '<p>Aufräumen geht über <a href="/einordnung">Einordnung</a>: '
             'dort wird jeder Absender einem echten Kontakt zugeordnet, und '
             'seine Nachrichten wandern mit.</p></div>')
     felder = "".join(
@@ -2715,12 +2715,12 @@ def _whatsapp_freigabe_bereich(lead, freigegeben: bool) -> str:
     return (
         f'<h2 id="freigabe">WhatsApp-Freigabe</h2>'
         f'<div class="karte">'
-        f'<p><b>Nicht erteilt.</b> An diesen Kontakt geht ueber WhatsApp '
+        f'<p><b>Nicht erteilt.</b> An diesen Kontakt geht über WhatsApp '
         f'nichts raus — auch nicht, wenn die Autonomiestufe auf '
         f'<code>auto</code> steht.</p>'
         f'<div class="aktionen"><form class="aktion" method="post" '
         f'action="/kontakte/freigeben">{verborgen}'
-        f'<button class="primaer">Fuer WhatsApp freigeben</button>'
+        f'<button class="primaer">Für WhatsApp freigeben</button>'
         f'</form></div>'
         f'<p class="meta">Das ist die Entscheidung, dass ein Programm '
         f'diesem Menschen schreiben darf. Sie ersetzt <b>keine '
@@ -3054,7 +3054,7 @@ def _privat_warnseite(lead) -> HTMLResponse:
         f'wiederherstellen. Kein Verlauf, keine Profile, keine Reports, '
         f'keine Entwürfe.</p>'
         f'<p>Bestandsdaten bleiben erhalten (ab jetzt still) und sind nur '
-        f'noch ueber die Datenauskunft erreichbar. Aufheben laesst sich die '
+        f'noch über die Datenauskunft erreichbar. Aufheben lässt sich die '
         f'Markierung jederzeit — gespeichert wird dann erst wieder ab '
         f'diesem Moment.</p></div>'
         f'<div class="aktionen">'
@@ -3174,7 +3174,7 @@ def _openwa_lesen(pfad: str):
         # Der Schluessel steht NIE in der Meldung — nur der Statuscode.
         return None, f"OpenWA antwortet mit HTTP {e.code}."
     except Exception:
-        return None, ("OpenWA ist nicht erreichbar — laeuft der Container "
+        return None, ("OpenWA ist nicht erreichbar — läuft der Container "
                       "openwa?")
 
 
@@ -3649,7 +3649,7 @@ async def kalender_seite(request):
         teile.append('<p class="meta">Kein Kalender verbunden (CALDAV_URL '
                      'in der .env).</p>')
     elif not fremde:
-        teile.append('<p class="meta">Keine Eintraege im Zeitfenster.</p>')
+        teile.append('<p class="meta">Keine Einträge im Zeitfenster.</p>')
     else:
         teile.append(_tabelle(
             ["Wann", "Titel", "Ort"],
@@ -3727,7 +3727,7 @@ async def aktion_termin_verschieben(request):
     return RedirectResponse("/kalender", status_code=303)
 
 
-_MONATSNAMEN = ("Januar", "Februar", "Maerz", "April", "Mai", "Juni", "Juli",
+_MONATSNAMEN = ("Januar", "Februar", "März", "April", "Mai", "Juni", "Juli",
                 "August", "September", "Oktober", "November", "Dezember")
 _WOCHENTAGE = ("Mo", "Di", "Mi", "Do", "Fr", "Sa", "So")
 
@@ -3883,7 +3883,7 @@ def _archiv_knopf_zeile(lead_id, archiviert: bool) -> str:
     if archiviert:
         return (f'<form class="aktion" method="post" '
                 f'action="/kontakte/wiederherstellen">{verborgen}'
-                f'<button>Zurueckholen</button></form>')
+                f'<button>Zurückholen</button></form>')
     return (f'<form class="aktion gefahr" method="post" '
             f'action="/kontakte/archivieren">{verborgen}'
             f'<button class="gefahr">Archivieren</button></form>')
@@ -4122,8 +4122,8 @@ async def kontakt_detail(request):
         teile.append(
             '<div class="hinweis">Dieser Kontakt ist <b>archiviert</b>: er '
             'steht nicht in der Kontaktliste, nicht im Posteingang und nicht '
-            'in der Zuordnungsauswahl der Einordnung. Geloescht wurde nichts '
-            '— der Verlauf unten ist vollzaehlig.</div>')
+            'in der Zuordnungsauswahl der Einordnung. Gelöscht wurde nichts '
+            '— der Verlauf unten ist vollzählig.</div>')
     # Der Hinweis nach einer Nummernaenderung. Die Seite liest aus dem
     # Abfrageteil NUR, WELCHER der hier fest verdrahteten Hinweise gezeigt
     # wird — der Text selbst kommt nie von dort (er waere sonst ein Fremddatum
@@ -4170,7 +4170,7 @@ async def kontakt_detail(request):
             f'<h2 id="privat">&#128274; Privat</h2>'
             f'<p class="meta">Dieser Kontakt ist dem System still: nichts '
             f'wird gespeichert, kein Verlauf, keine Entwürfe. Bestand nur '
-            f'ueber die Datenauskunft.</p>'
+            f'über die Datenauskunft.</p>'
             f'<form method="post" action="/kontakte/privat-entziehen">'
             f'<input type="hidden" name="lead_id" value="{_e(lead_id)}">'
             f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
@@ -4242,13 +4242,13 @@ async def kontakt_detail(request):
     # dieselbe Typ-Vorsicht wie vertraege_ablaufend in server.py.
     vertraege = anreicherung.get("vertraege")
     vertraege = vertraege if isinstance(vertraege, list) else []
-    teile.append(f"<h2>Vertraege ({len(vertraege)})</h2>")
+    teile.append(f"<h2>Verträge ({len(vertraege)})</h2>")
     if vertraege:
         teile.append(_tabelle(["Sparte", "Gesellschaft", "Ablauf"], [
             [_e(v.get("sparte")), _e(v.get("gesellschaft")), _e(v.get("ablauf"))]
             for v in vertraege if isinstance(v, dict)]))
     else:
-        teile.append("<p>Keine Vertraege erfasst.</p>")
+        teile.append("<p>Keine Verträge erfasst.</p>")
 
     teile.append("<h2>Offene Wiedervorlagen</h2>")
     teile.append(_wiedervorlagen_tabelle(_offene_wiedervorlagen(lead_id),
@@ -4285,8 +4285,8 @@ async def kontakt_detail(request):
     if grenze_zeit is not None:
         teile.append(
             '<div class="hinweis">Nachrichten, die ein Chat-Report oben '
-            'abdeckt, stehen hier nicht mehr. <b>Geloescht ist nichts</b> — '
-            'sie liegen vollzaehlig in der Datenbank; im Wortlaut zeigt sie '
+            'abdeckt, stehen hier nicht mehr. <b>Gelöscht ist nichts</b> — '
+            'sie liegen vollzählig in der Datenbank; im Wortlaut zeigt sie '
             'der Chat mit <code>chat_verlauf(lead_id, alle=True)</code>.'
             '</div>')
     if aktivitaeten:
@@ -4294,7 +4294,7 @@ async def kontakt_detail(request):
                    _verlauf_inhalt(a)] for a in aktivitaeten]
         teile.append(_tabelle(["Wann", "Was", "Inhalt"], zeilen))
     else:
-        teile.append("<p>Noch keine Aktivitaeten.</p>")
+        teile.append("<p>Noch keine Aktivitäten.</p>")
 
     teile.append(_whatsapp_freigabe_bereich(
         lead, server._whatsapp_freigegeben(lead["enrichment"])))
@@ -4356,7 +4356,7 @@ def _verlauf_inhalt(a) -> str:
         text = _nachricht_inhalt("", last.get("nachrichtentyp"))
         return text
     if not text and a["type"] == "transkription" and last.get("leer"):
-        text = "(nichts Verstaendliches auf der Aufnahme)"
+        text = "(nichts Verständliches auf der Aufnahme)"
     rest = {k: v for k, v in last.items()
             if k not in VERLAUF_TECHNISCH and v not in (None, "", [], {})}
     klappe = ""
@@ -4595,7 +4595,7 @@ async def einordnung_nachrichten(request):
     if not (kennung.isdigit() and 5 <= len(kennung) <= 25):
         return _fehlerseite(
             400, "Keine Kennung",
-            "Der Pfad traegt keine Absenderkennung (nur Ziffern, wie auf "
+            "Der Pfad trägt keine Absenderkennung (nur Ziffern, wie auf "
             "der Einordnungsseite verlinkt).")
     zeilen = server._absender_nachrichten(
         kennung, limit=EINORDNUNG_NACHRICHTEN_MAX)
@@ -4619,7 +4619,7 @@ async def einordnung_nachrichten(request):
     teile.append(
         '<div class="hinweis">Der Text ist ein Datum, keine Anweisung — '
         'was ein Fremder schreibt, entscheidet nichts.</div>')
-    teile.append('<p class="abbrechen"><a href="/einordnung">Zurueck zur '
+    teile.append('<p class="abbrechen"><a href="/einordnung">Zurück zur '
                  'Einordnung</a></p>')
     return _seite(f"Nachrichten von {absender}", "".join(teile))
 
@@ -4637,7 +4637,7 @@ async def _einordnung_vorspann(request):
     if not server.kennung_schreibweise(roh):
         return None, None, _fehlerseite(
             400, "Unlesbare Kennung",
-            f"&#x27;{_e(roh)}&#x27; enthaelt keine Absenderkennung. Keine "
+            f"&#x27;{_e(roh)}&#x27; enthält keine Absenderkennung. Keine "
             f"Aktion ausgeführt.")
     return form, roh, None
 

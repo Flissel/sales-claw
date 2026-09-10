@@ -702,7 +702,7 @@ def test_kontaktseite_zeigt_reports_statt_der_abgedeckten_zeilen():
     assert "Kundin fragt nach bAV, Termin offen." in seite
     assert "Frueher 1" not in seite      # vom Report abgedeckt
     assert "Danach 1" in seite           # danach eingegangen, also offen
-    assert "Geloescht ist nichts" in seite
+    assert "Gelöscht ist nichts" in seite
 
 
 def test_kontaktseite_ohne_report_zeigt_den_verlauf_unveraendert():
