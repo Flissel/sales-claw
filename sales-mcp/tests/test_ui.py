@@ -2788,7 +2788,7 @@ def test_veralteter_lese_stand_gibt_nichts_frei():
     r = _post("/aktion/freigeben", {"draft_id": draft, "csrf": ui.CSRF_TOKEN,
                                     "stand": alter_stand})
     assert r.status_code == 409
-    assert "geaendert" in r.text
+    assert "geändert" in r.text
     assert _zeile(draft)["status"] == "pending"
 
 

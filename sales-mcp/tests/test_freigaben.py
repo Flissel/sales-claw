@@ -122,7 +122,7 @@ def test_termine_block_mit_offenem_und_verlauf():
     assert seite.index("Datum noch offen") < seite.index("Verlauf Termine")
     verlauf = seite[seite.index("Verlauf Termine"):]
     assert "Erstgespraech Video" in verlauf
-    assert "bestaetigt" in verlauf
+    assert "bestätigt" in verlauf
     assert "abgesagt" in verlauf
     assert "Kunde krank" in verlauf
     ganze = _get("/freigaben/verlauf/termine")

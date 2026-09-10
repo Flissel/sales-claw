@@ -39,6 +39,11 @@ def _get(pfad, host=HOST_OK):
     return CLIENT.get(pfad, headers={"host": host})
 
 
+def _post(pfad, daten, host=HOST_OK):
+    return CLIENT.post(pfad, data=daten, headers={"host": host},
+                       follow_redirects=False)
+
+
 def _lead(name="Max Bestand"):
     return str(server._q(
         "insert into leads (name, phone, source) values "
@@ -68,12 +73,26 @@ def test_kaufmaennisches_und_erscheint_einmal_escapet():
 # Wortliste statt Regex auf `ae|oe|ue`: ein Muster wuerde bei jedem
 # englischen Wort und jeder E-Mail-Adresse anschlagen. Diese Liste
 # enthaelt nur Woerter, die in der laufenden Oberflaeche gemessen wurden.
+#
+# Fix-Runde 2 (10.09.2026): ganze Woerter allein liessen Wortformen wie
+# 'geaendert'/'unveraendert' oder 'ausgefuehrt' durchrutschen — keines der
+# damaligen 25 Woerter ist Teilstring davon. Die untere Zeile ergaenzt
+# Wortstaemme, die mehrere Formen auf einmal fangen, geprueft gegen echte
+# Bezeichner in ui.py (Formularfeld-Namen, Routen), damit kein Stamm einen
+# Bezeichner faelschlich trifft: 'bestaetig' etwa kollidiert mit
+# `name="bestaetigt"`/`name="name_bestaetigt"` und bleibt deshalb draussen —
+# 'Bestaetigung' (Grossschreibung, laengere Form) faengt denselben Fehler,
+# ohne das Formularfeld zu treffen.
 WOERTER_ASCII = [
     "aelteste", "naechste", "oeffnen", "Entwuerfe", "Entwuerfen",
     "Oberflaeche", "laedt", "Aendern", "aendern", "Groesse", "Loeschen",
     "loeschen", "gehoert", "klaert", "noetig", "moeglich", "zurueck",
     "Verlaeufe", "heisst", "Eingaenge", "Faellig", "Rueckruf",
     "Begruendung", "ausdruecklich", "Schluessel",
+    # Wortstaemme (Fix-Runde 2): fangen Wortformen, die die Woerter oben
+    # nicht als Teilstring enthalten.
+    "aender", "Aender", "gueltig", "waehl", "staendig", "pruef",
+    "ausgefuehr", "Bestaetigung",
 ]
 
 SEITEN = ["/", "/freigaben", "/einordnung", "/kalender", "/kontakte",
@@ -89,3 +108,16 @@ def test_seite_zeigt_echte_umlaute(pfad):
     gefunden = [w for w in WOERTER_ASCII if w in seite]
     assert not gefunden, (
         f"{pfad} zeigt ASCII-Umschreibungen: {gefunden}")
+
+
+def test_csrf_fehlerseite_zeigt_echte_umlaute():
+    """Der meisterreichte Fehlerpfad der ganzen Oberflaeche — ein POST ohne
+    gueltiges CSRF-Token — steht auf keiner der zehn GET-Seiten und blieb
+    deshalb in Fix-Runde 1 unentdeckt ASCII (Fix-Runde 2, 10.09.2026)."""
+    antwort = _post("/aktion/freigeben",
+                    {"draft_id": "00000000-0000-0000-0000-000000000000",
+                     "csrf": "falsch"})
+    seite = antwort.text
+    gefunden = [w for w in WOERTER_ASCII if w in seite]
+    assert not gefunden, (
+        f"CSRF-Fehlerseite zeigt ASCII-Umschreibungen: {gefunden}")

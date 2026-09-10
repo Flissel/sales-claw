@@ -1219,13 +1219,13 @@ def _nachricht_inhalt(text, typ) -> str:
 # Blocks („Fehlgeschlagen") aus dem Bild, waehrend die Karten weiterlaufen —
 # dann bliebe nur die Farbe des Knopfes, und Farbe allein traegt eine
 # Unterscheidung nicht (Sehschwaeche, Sonnenlicht, kleines Abzeichen).
-ZUSTAND_TITEL = {"pending": "zu pruefen", "failed": "fehlgeschlagen",
+ZUSTAND_TITEL = {"pending": "zu prüfen", "failed": "fehlgeschlagen",
                  "approved": "freigegeben", "sent": "gesendet",
                  "rejected": "abgelehnt"}
 # Termin-Verlauf (Schritt 3): Aktivitaetstyp -> Wort. Getrennt von den
 # Entwurfszustaenden, weil test_ui jeden Entwurfszustand auf der Seite
 # erwartet — Termine sind keine Entwuerfe.
-TERMIN_TITEL = {"termin": "bestaetigt", "termin_verschoben": "verschoben",
+TERMIN_TITEL = {"termin": "bestätigt", "termin_verschoben": "verschoben",
                 "termin_abgesagt": "abgesagt"}
 
 
@@ -1374,9 +1374,9 @@ def _entwurf_bearbeiten_form(z, text: str) -> str:
         f'<textarea name="text" rows="8" maxlength="4096">'
         f'{_e(text)}</textarea></label></p>'
         f'<div class="aktionen">'
-        f'<button class="primaer">Aenderung speichern</button></div>'
+        f'<button class="primaer">Änderung speichern</button></div>'
         f'</form>'
-        f'<p class="meta">Aendert nur den Entwurf — es geht nichts raus, und '
+        f'<p class="meta">Ändert nur den Entwurf — es geht nichts raus, und '
         f'die Freigabe bleibt ein eigener Schritt. Alter und neuer Text '
         f'werden protokolliert.</p></details>')
 
@@ -1695,7 +1695,7 @@ async def aktion_medien_hochladen(request):
                             "Fehlende oder falsche CSRF-Marke.")
     datei = form.get("datei")
     if datei is None or not getattr(datei, "filename", ""):
-        return _fehlerseite(400, "Keine Datei", "Es wurde nichts ausgewaehlt.")
+        return _fehlerseite(400, "Keine Datei", "Es wurde nichts ausgewählt.")
 
     basis, fehler = server.medien.pruefe_neuen_namen(datei.filename)
     if fehler:
@@ -1893,7 +1893,7 @@ async def inbox(request):
                 f'<div class="fehler">Fehler: {_e(z["error"])}</div>'
                 f'<div class="aktionen">'
                 f'{_formular("erneut-freigeben", z["id"], "Erneut freigeben", "",
-                             checkbox="erneute Freigabe bestaetigen")}'
+                             checkbox="erneute Freigabe bestätigen")}'
                 # Einschrittig: ein gescheiterter Entwurf ging nachweislich
                 # nicht raus, und verwerfen versendet nichts.
                 f'{_formular("verwerfen", z["id"], "Verwerfen", "gefahr")}'
@@ -2041,10 +2041,10 @@ def _statusfehler(draft_id, erwartet: str) -> HTMLResponse:
         return _fehlerseite(404, "Unbekannter Entwurf",
                             f"Kein Entwurf mit draft_id {_e(draft_id)}.")
     return _fehlerseite(
-        409, "Keine Aktion ausgefuehrt",
+        409, "Keine Aktion ausgeführt",
         f"Entwurf {_e(draft_id)} hat Status "
         f"&#x27;{_e(zeilen[0]['status'])}&#x27;, erwartet "
-        f"&#x27;{_e(erwartet)}&#x27;. Der Entwurf blieb unveraendert.")
+        f"&#x27;{_e(erwartet)}&#x27;. Der Entwurf blieb unverändert.")
 
 
 async def _aktions_vorspann(request):
@@ -2056,8 +2056,8 @@ async def _aktions_vorspann(request):
     form = await request.form()
     if not _csrf_ok(form):
         return None, None, _fehlerseite(
-            403, "CSRF-Token fehlt oder ist ungueltig",
-            "Keine Aktion ausgefuehrt. Die Seite neu laden und erneut "
+            403, "CSRF-Token fehlt oder ist ungültig",
+            "Keine Aktion ausgeführt. Die Seite neu laden und erneut "
             "versuchen — das Token wechselt mit jedem Dienststart.")
     roh = str(form.get("draft_id") or "").strip()
     try:
@@ -2065,7 +2065,7 @@ async def _aktions_vorspann(request):
     except ValueError:
         return None, None, _fehlerseite(
             400, "Unlesbare draft_id",
-            f"&#x27;{_e(roh)}&#x27; ist keine UUID. Keine Aktion ausgefuehrt.")
+            f"&#x27;{_e(roh)}&#x27; ist keine UUID. Keine Aktion ausgeführt.")
     return form, draft_id, None
 
 
@@ -2104,8 +2104,8 @@ async def aktion_freigeben(request):
             "Seite neu laden und aus der aktuellen Ansicht freigeben.")
     if stand != _text_stand(aktuell[0]["body"] or ""):
         return _fehlerseite(
-            409, "Text wurde geaendert",
-            "Der Entwurf wurde geaendert, seit diese Seite geladen wurde. "
+            409, "Text wurde geändert",
+            "Der Entwurf wurde geändert, seit diese Seite geladen wurde. "
             "Nichts freigegeben — Seite neu laden, den AKTUELLEN Text "
             "lesen, dann freigeben.")
     # SQL wie server.entwurf_freigeben — einziger Unterschied: approved_by
@@ -2136,7 +2136,7 @@ async def aktion_bearbeiten(request):
     antwort = json.loads(server.entwurf_bearbeiten(
         draft_id=draft_id, text=str(form.get("text") or "")))
     if "fehler" in antwort:
-        return _fehlerseite(409, "Nicht geaendert", _e(antwort["fehler"]))
+        return _fehlerseite(409, "Nicht geändert", _e(antwort["fehler"]))
     return RedirectResponse("/freigaben", status_code=303)
 
 
@@ -2172,7 +2172,7 @@ async def aktion_erneut_freigeben(request):
     # (Moduldocstring, Sicherheitsmodell).
     if str(form.get("bestaetigt") or "") != "ja":
         return _fehlerseite(
-            400, "Bestaetigung fehlt",
+            400, "Bestätigung fehlt",
             "Erneut freigeben heißt: derselbe Versand wird noch einmal "
             "versucht. Ohne gesetztes Haekchen wird nichts getan.")
     # SQL wie server.entwurf_erneut_freigeben mit bestaetigt=False —
@@ -2356,7 +2356,7 @@ async def aktion_verwerfen_bestaetigen(request):
     bestaetigt_fuer = str(form.get("empfaenger_bestaetigt") or "")
     if not bestaetigt_fuer:
         return _fehlerseite(
-            400, "Bestaetigung fehlt",
+            400, "Bestätigung fehlt",
             "Ohne den auf der Warnseite gelesenen Empfaenger wird nichts "
             "getan.")
     zeilen = _entwurf_zeile(draft_id)
@@ -2369,7 +2369,7 @@ async def aktion_verwerfen_bestaetigen(request):
     # kein Ja zu dem, was jetzt passieren wuerde — also lieber gar nichts.
     if str(z["recipient"] or "") != bestaetigt_fuer:
         return _fehlerseite(
-            409, "Bestaetigung passt nicht mehr",
+            409, "Bestätigung passt nicht mehr",
             "Der Entwurf geht inzwischen an einen anderen Empfaenger als auf "
             "der Warnseite. Nichts wurde getan — die Seite neu laden und "
             "erneut ansehen.")
@@ -2405,10 +2405,10 @@ def _verwerfen_statusfehler(z) -> HTMLResponse:
             "Dieser Entwurf ist zugestellt. Die Zeile ist der Zustellnachweis "
             "und wird nicht verworfen: was raus ist, ist raus. Nichts getan.")
     return _fehlerseite(
-        409, "Keine Aktion ausgefuehrt",
+        409, "Keine Aktion ausgeführt",
         f"Entwurf hat Status &#x27;{_e(z['status'])}&#x27; — verworfen wird "
         f"nur aus &#x27;failed&#x27; oder &#x27;approved&#x27;. Der Entwurf "
-        f"blieb unveraendert.")
+        f"blieb unverändert.")
 
 
 # ---------------------------------------------------------------------------
@@ -2735,8 +2735,8 @@ async def _kontakt_vorspann(request):
     form = await request.form()
     if not _csrf_ok(form):
         return None, None, _fehlerseite(
-            403, "CSRF-Token fehlt oder ist ungueltig",
-            "Keine Aktion ausgefuehrt. Die Seite neu laden und erneut "
+            403, "CSRF-Token fehlt oder ist ungültig",
+            "Keine Aktion ausgeführt. Die Seite neu laden und erneut "
             "versuchen — das Token wechselt mit jedem Dienststart.")
     roh = str(form.get("lead_id") or "").strip()
     try:
@@ -2745,7 +2745,7 @@ async def _kontakt_vorspann(request):
         return None, None, _fehlerseite(
             400, "Unlesbare lead_id",
             f"&#x27;{_e(roh)}&#x27; ist keine lead_id. Keine Aktion "
-            f"ausgefuehrt.")
+            f"ausgeführt.")
     return form, lead_id, None
 
 
@@ -2764,7 +2764,7 @@ def _feld_pruefen(feld: str, wert: str):
     """
     if feld == "name" and not wert:
         return ("Ein Kontakt ohne Namen ist nicht vorgesehen — genau das sagt "
-                "auch kontakt_aktualisieren. Nichts geaendert.")
+                "auch kontakt_aktualisieren. Nichts geändert.")
     if not wert:
         # Leeren ist erlaubt und heisst „Angabe entfaellt" (nullif im
         # Werkzeug) — nur beim Namen nicht, siehe oben.
@@ -2776,11 +2776,11 @@ def _feld_pruefen(feld: str, wert: str):
                     f"eine Nummer MIT Landesvorwahl (+49…/+43…); eine national "
                     f"geschriebene Nummer (0170…, 0664…) wird nicht geraten, "
                     f"weil daraus die Nummer eines Fremden entstehen kann. "
-                    f"Nichts geaendert.")
+                    f"Nichts geändert.")
     if feld == "email":
         adresse, fehler = server.mailadresse.pruefe(wert)
         if adresse is None:
-            return f"E-Mail-Adresse nicht verwendbar ({fehler}). Nichts geaendert."
+            return f"E-Mail-Adresse nicht verwendbar ({fehler}). Nichts geändert."
     return None
 
 
@@ -2848,10 +2848,10 @@ async def aktion_kontakt_bearbeiten(request):
             if gesetzt:
                 _kontakt_loggen(lead_id, "korrektur", {"felder": gesetzt})
             return _fehlerseite(
-                400, "Nicht vollstaendig gespeichert",
+                400, "Nicht vollständig gespeichert",
                 f"{_e(antwort['fehler'])}"
                 + (f" Bereits gespeichert: {_e(', '.join(gesetzt))}."
-                   if gesetzt else " Nichts geaendert."))
+                   if gesetzt else " Nichts geändert."))
         gesetzt.append(feld)
     _kontakt_loggen(lead_id, "korrektur", {"felder": gesetzt})
     ziel = f"/kontakte/{lead_id}"
@@ -3042,7 +3042,7 @@ async def aktion_kontakt_privat_bestaetigen(request):
         return abbruch
     if not str(form.get("name_bestaetigt") or ""):
         return _fehlerseite(
-            400, "Bestaetigung fehlt",
+            400, "Bestätigung fehlt",
             "Ohne den auf der Warnseite gelesenen Namen wird nichts getan.")
     antwort = json.loads(server.kontakt_privat_setzen(lead_id))
     if "fehler" in antwort:
@@ -3178,7 +3178,7 @@ def _wa_karten_und_kette(sitzung, sitzung_fehler, letzte) -> str:
         f'<span class="badge {_e(klasse)}">{_e(wort)}</span></div>'
         f'<div class="karte"><div class="railtitel">Automatik</div>'
         f'<div>{automatik}</div>'
-        f'<div class="meta">„antworten-pruefen“ alle 2 h · Beweis: '
+        f'<div class="meta">„antworten-prüfen“ alle 2 h · Beweis: '
         f'gebuchte Stufenwechsel und Transkriptionen</div></div>'
         f'<div class="karte"><div class="railtitel">Kundennachrichten</div>'
         f'<div><b class="mono">{int(anzahl)}</b> gesamt</div>'
@@ -3747,8 +3747,8 @@ def _kontaktprofil_bereich(lead_id) -> str:
     return (f'<h2 id="profil">Kontaktprofil</h2><div class="karte">'
             f'{"".join(zeilen)}'
             f'<p class="meta">Stand vom {_zeit(profil.get("stand_vom"))} — '
-            f'aus dem Nachrichtenverlauf erschlossen, nicht bestaetigt. '
-            f'Bestaetigte Angaben stehen oben unter den Stammdaten.</p>'
+            f'aus dem Nachrichtenverlauf erschlossen, nicht bestätigt. '
+            f'Bestätigte Angaben stehen oben unter den Stammdaten.</p>'
             f'{_profil_knopf(lead_id)}</div>')
 
 
@@ -3806,7 +3806,7 @@ async def aktion_kontakt_archivieren_bestaetigen(request):
     bestaetigt_fuer = str(form.get("name_bestaetigt") or "")
     if not bestaetigt_fuer:
         return _fehlerseite(
-            400, "Bestaetigung fehlt",
+            400, "Bestätigung fehlt",
             "Ohne den auf der Warnseite gelesenen Namen wird nichts getan.")
     leads = _kontakt_zeile(lead_id)
     if not leads:
@@ -3818,7 +3818,7 @@ async def aktion_kontakt_archivieren_bestaetigen(request):
     # zu dem, was jetzt passieren wuerde — also lieber gar nichts.
     if str(lead["name"] or "") != bestaetigt_fuer:
         return _fehlerseite(
-            409, "Bestaetigung passt nicht mehr",
+            409, "Bestätigung passt nicht mehr",
             "Der Kontakt heißt inzwischen anders als auf der Warnseite. "
             "Nichts wurde getan — die Seite neu laden und erneut ansehen.")
     if server._archiviert(lead["enrichment"]):
@@ -4403,15 +4403,15 @@ async def _einordnung_vorspann(request):
     form = await request.form()
     if not _csrf_ok(form):
         return None, None, _fehlerseite(
-            403, "CSRF-Token fehlt oder ist ungueltig",
-            "Keine Aktion ausgefuehrt. Die Seite neu laden und erneut "
+            403, "CSRF-Token fehlt oder ist ungültig",
+            "Keine Aktion ausgeführt. Die Seite neu laden und erneut "
             "versuchen — das Token wechselt mit jedem Dienststart.")
     roh = str(form.get("absender") or "").strip()
     if not server.kennung_schreibweise(roh):
         return None, None, _fehlerseite(
             400, "Unlesbare Kennung",
             f"&#x27;{_e(roh)}&#x27; enthaelt keine Absenderkennung. Keine "
-            f"Aktion ausgefuehrt.")
+            f"Aktion ausgeführt.")
     return form, roh, None
 
 
@@ -4513,9 +4513,9 @@ async def aktion_einordnung_zuordnen(request):
         lead_id = str(uuid.UUID(roh))
     except ValueError:
         return _fehlerseite(
-            400, "Kein Kontakt gewaehlt",
+            400, "Kein Kontakt gewählt",
             f"&#x27;{_e(roh)}&#x27; ist keine lead_id. Im Auswahlfeld einen "
-            f"Kontakt waehlen. Keine Aktion ausgefuehrt.")
+            f"Kontakt wählen. Keine Aktion ausgeführt.")
     antwort = json.loads(server.eingang_einordnen(
         absender=absender, entscheidung="zuordnen", lead_id=lead_id))
     if "fehler" in antwort:
@@ -4546,7 +4546,7 @@ async def aktion_einordnung_anlegen(request):
         return _fehlerseite(
             400, "Name fehlt",
             "Ein Kontakt ohne Namen ist nicht vorgesehen. Keine Aktion "
-            "ausgefuehrt.")
+            "ausgeführt.")
     # Welche Rufnummer bekommt der neue Kontakt? Die, unter der die Kennung im
     # Haus gefuehrt wird (`lid_kanonisch`) — das ist bei `4917…@c.us` sie
     # selbst und bei einer bereits aufgeloesten `183…@lid` die gespeicherte
