@@ -1595,16 +1595,16 @@ def _medien_loeschen_warnseite(basis: str, verweise) -> HTMLResponse:
         liste = "".join(
             f'<li>{_e(z["status"])} · {_e(z["channel"])} · '
             f'{_e(z["name"] or "(ohne Kontakt)")}</li>' for z in verweise)
-        hinweis = (f'<p><b>An dieser Datei haengen {len(verweise)} '
-                   f'Entwuerfe:</b></p><ul>{liste}</ul>'
+        hinweis = (f'<p><b>An dieser Datei hängen {len(verweise)} '
+                   f'Entwürfe:</b></p><ul>{liste}</ul>'
                    f'<p>Nach dem Löschen scheitern sie beim Zustellen — '
                    f'`drafts.media_ref` hält nur den Namen, nicht die '
                    f'Datei.</p>')
     else:
         hinweis = "<p>Kein Entwurf verweist auf diese Datei.</p>"
     return _seite(
-        "Loeschen bestaetigen",
-        f'<h1>Loeschen bestaetigen</h1><div class="karte">'
+        "Löschen bestätigen",
+        f'<h1>Löschen bestätigen</h1><div class="karte">'
         f'<p>Datei: <b>{_e(basis)}</b></p>{hinweis}'
         f'<p><b>Das ist ein echtes Löschen.</b> Anders als beim Archivieren '
         f'von Kontakten gibt es hier nichts zurückzuholen — die Datei liegt '
@@ -2515,7 +2515,7 @@ def _offene_wiedervorlagen(lead_id=None):
 
 def _wiedervorlagen_tabelle(zeilen, mit_kontakt: bool = True) -> str:
     heute = date.today().isoformat()
-    spalten = (["Kontakt"] if mit_kontakt else []) + ["Faellig am", "Notiz"]
+    spalten = (["Kontakt"] if mit_kontakt else []) + ["Fällig am", "Notiz"]
     inhalt = []
     for z in zeilen:
         nutzlast = z["payload"] or {}
@@ -2580,7 +2580,7 @@ def _kontakt_formular(lead) -> str:
     # genau zu dem Missverstaendnis ein, das es verhindern soll.
     if _ist_sammelkontakt(lead["id"]):
         return (
-            '<h2>Sammelkontakt fuer unbekannte Eingaenge</h2>'
+            '<h2>Sammelkontakt für unbekannte Eingänge</h2>'
             '<div class="karte"><p><b>Das ist kein Mensch.</b> An diesem '
             'Satz haengt jede Nachricht einer Nummer, die noch keinem '
             'Kontakt zugeordnet ist — also die Nachrichten vieler '
@@ -2722,7 +2722,7 @@ def _archiv_bereich(lead, archiviert: bool) -> str:
             f'</div>'
             f'<p class="meta">Nimmt den Kontakt aus Kontaktliste, Posteingang '
             f'und Zuordnungsauswahl. Der nächste Schritt zeigt erst, was an '
-            f'ihm hängt. <b>Loeschen gibt es hier nicht</b> — die Rolle hat '
+            f'ihm hängt. <b>Löschen gibt es hier nicht</b> — die Rolle hat '
             f'kein DELETE-Recht, und der Verlauf hängt mit ON DELETE CASCADE '
             f'am Kontakt: ein Löschen nähme die ganze Historie mit. Ein '
             f'echtes Löschbegehren ist ein Admin-Eingriff außerhalb dieser '
@@ -2873,25 +2873,25 @@ def _archiv_warnseite(lead) -> HTMLResponse:
                                  for status, anzahl in sorted(entwuerfe.items()))
     versand = ""
     if entwuerfe.get("approved"):
-        versand = ('<p><b>Achtung:</b> freigegebene Entwuerfe an diesen '
+        versand = ('<p><b>Achtung:</b> freigegebene Entwürfe an diesen '
                    'Kontakt stellt der Dispatcher weiter zu — Archivieren '
-                   'haelt keinen Versand an. Wer das will, lehnt die Entwuerfe '
+                   'hält keinen Versand an. Wer das will, lehnt die Entwürfe '
                    'ab (Freigabe-Inbox) und entzieht die WhatsApp-Freigabe '
                    '(im Chat: kontakt_freigabe_entziehen).</p>')
     return _seite(
-        "Archivieren bestaetigen",
+        "Archivieren bestätigen",
         f'<div class="warnung">Der Kontakt <b>{_e(lead["name"])}</b> soll '
-        f'archiviert werden. An ihm haengen <b>{_e(aktivitaeten)}</b> '
-        f'Aktivitaet(en) und <b>{_e(offen)}</b> offene Entwuerfe'
+        f'archiviert werden. An ihm hängen <b>{_e(aktivitaeten)}</b> '
+        f'Aktivität(en) und <b>{_e(offen)}</b> offene Entwürfe'
         f'{" (" + _e(aufschluesselung) + ")" if aufschluesselung else ""}.'
         f'<p>Archivieren nimmt ihn aus Kontaktliste, Posteingang und der '
-        f'Zuordnungsauswahl der Einordnung. <b>Geloescht wird nichts</b>: der '
-        f'Verlauf bleibt vollzaehlig, der Kontakt bleibt ueber „auch '
-        f'archivierte zeigen" erreichbar und laesst sich jederzeit '
+        f'Zuordnungsauswahl der Einordnung. <b>Gelöscht wird nichts</b>: der '
+        f'Verlauf bleibt vollzählig, der Kontakt bleibt über „auch '
+        f'archivierte zeigen" erreichbar und lässt sich jederzeit '
         f'wiederherstellen.</p>{versand}'
-        f'<p>Schreibt er spaeter erneut, steht seine Nachricht nicht mehr im '
+        f'<p>Schreibt er später erneut, steht seine Nachricht nicht mehr im '
         f'Posteingang — also in genau der Ansicht, in der man ihn '
-        f'wiederfinden wuerde.</p></div>'
+        f'wiederfinden würde.</p></div>'
         f'<div class="aktionen">'
         f'<form class="aktion gefahr" method="post" '
         f'action="/kontakte/archivieren-bestaetigen">'
@@ -3075,7 +3075,7 @@ async def aktion_kontakt_stufe(request):
     if abbruch:
         return abbruch
     begruendung = str(form.get("begruendung") or "").strip() or \
-        "vom Betreiber über die Oberflaeche gesetzt"
+        "vom Betreiber über die Oberfläche gesetzt"
     antwort = json.loads(server.kontakt_stufe_setzen(
         lead_id=lead_id, stufe=str(form.get("stufe") or ""),
         begruendung=begruendung))
@@ -3905,7 +3905,7 @@ async def kontakt_detail(request):
     # Betreiber Beliebiges in den Mund legen).
     if request.query_params.get("gespeichert") == "telefon":
         teile.append(
-            '<div class="warnung">Telefonnummer geaendert. Damit wechselt der '
+            '<div class="warnung">Telefonnummer geändert. Damit wechselt der '
             'Schlüssel, über den eingehende Nachrichten diesem Kontakt '
             'zugeordnet werden: Nachrichten von der ALTEN Nummer landen ab '
             'sofort beim Sammelkontakt „Unbekannte Eingänge" und müssen '
@@ -4087,7 +4087,7 @@ VERLAUF_NAMEN = {
     "ausgang_ignoriert": "&rarr; ignoriert",
     # Sprachnachricht in Text (01.09.2026) — steht als eigene Zeile
     # hinter der Nachricht, die sie ausspricht.
-    "transkription": "&larr; abgehoert",
+    "transkription": "&larr; abgehört",
 }
 # Felder, die im Verlauf NICHTS zu suchen haben: Maschinenkram, der die
 # Zeile unlesbar macht. Sie bleiben in der Datenbank, sie stehen hier nur
@@ -4289,7 +4289,7 @@ def _einordnung_karte(eintrag, optionen: str) -> str:
                    f'<b>{_e(betroffen["name"])}</b></a>. Ignorieren nimmt ihn '
                    f'aus Posteingang und Digest und speichert von seinen '
                    f'Nachrichten kein Wort mehr — es braucht deshalb einen '
-                   f'zweiten, ausdruecklichen Schritt.</div>')
+                   f'zweiten, ausdrücklichen Schritt.</div>')
     # Die Anzahl ist der Link auf den ganzen Faden (31.08.2026): die
     # Kurzfassung der letzten Nachricht reicht nicht immer, um zu
     # entscheiden, wer da schreibt.
@@ -4812,7 +4812,7 @@ async def heute(request):
             haupt.append(_entwurf_karte_offen(z))
         if len(zeilen) > HEUTE_JE_ART:
             haupt.append(f'<p class="meta">+ {len(zeilen) - HEUTE_JE_ART} '
-                         f'weitere {_e(name)}-Entwuerfe unter '
+                         f'weitere {_e(name)}-Entwürfe unter '
                          f'<a href="/freigaben">Freigaben</a>.</p>')
     for art in je_art:
         if art not in dict(FREIGABE_ARTEN):

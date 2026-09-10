@@ -981,7 +981,7 @@ def test_einordnung_zeigt_den_kontaktnamen_als_warnung_am_eintrag(
     seite = _get("/einordnung").text
     assert "Wartet auf Entscheidung (1)" in seite
     assert "Sophie Beispiel" in seite
-    assert "zweiten, ausdruecklichen Schritt" in seite
+    assert "zweiten, ausdrücklichen Schritt" in seite
 
 
 def test_einordnung_zeigt_entschiedene_als_verlauf(sammelkontakt_zurueck):
@@ -1450,10 +1450,10 @@ def test_bearbeiten_nennt_die_folgen_einer_neuen_telefonnummer():
     assert r.status_code == 303
     assert r.headers["location"] == f"/kontakte/{lead}?gespeichert=telefon"
     seite = _get(r.headers["location"]).text
-    assert "Telefonnummer geaendert" in seite
+    assert "Telefonnummer geändert" in seite
     assert "Sammelkontakt" in seite
     # Ohne den Abfrageteil steht der Hinweis NICHT auf der Seite.
-    assert "Telefonnummer geaendert" not in _get(f"/kontakte/{lead}").text
+    assert "Telefonnummer geändert" not in _get(f"/kontakte/{lead}").text
 
 
 def test_bearbeiten_unbekannter_kontakt_gibt_404():
@@ -1481,8 +1481,8 @@ def test_archivieren_erster_post_zeigt_nur_die_warnseite():
                                         "csrf": ui.CSRF_TOKEN})
     assert r.status_code == 409
     assert "Max Testperson" in r.text
-    assert "1</b> Aktivitaet(en)" in r.text
-    assert "1</b> offene Entwuerfe" in r.text
+    assert "1</b> Aktivität(en)" in r.text
+    assert "1</b> offene Entwürfe" in r.text
     # Das eigene Formular des zweiten Schritts, mit eigenem Hidden-Feld.
     assert 'action="/kontakte/archivieren-bestaetigen"' in r.text
     assert 'name="name_bestaetigt" value="Max Testperson"' in r.text
@@ -1657,7 +1657,7 @@ def test_kontakte_und_verlauf_lassen_sich_nirgends_loeschen():
     # Die Kontaktseite sagt ausdruecklich, dass es kein Loeschen gibt, und
     # nennt den Grund — schweigen waere hier die schlechtere Antwort.
     seite = _get(f"/kontakte/{lead}").text
-    assert "Loeschen gibt es hier nicht" in seite
+    assert "Löschen gibt es hier nicht" in seite
     assert "ON DELETE CASCADE" in seite
     # Auf den Datensatz-Seiten taucht kein Loeschweg auf. /medien steht
     # bewusst NICHT in der Liste: dort geht es um Dateien.
@@ -1774,7 +1774,7 @@ ERLAUBTE_LABEL = {
     "Autonomie",   # /kontakte, Stufe je Zeile (25.08.2026)
     "Profil",   # /einordnung, Link zum Kontaktprofil
     "Quittieren",   # /wiedervorlagen, Erledigt-Knopf je Zeile
-    "Kontakt", "Faellig am", "Notiz",                       # Wiedervorlagen
+    "Kontakt", "Fällig am", "Notiz",                        # Wiedervorlagen
     "Frage", "Antwort",                                     # Bedarfsstand
     "Sparte", "Gesellschaft", "Ablauf",                     # Vertraege
     "Wann", "Was", "Inhalt",   # Verlauf (25.08.2026 lesbar gemacht)
@@ -1958,7 +1958,7 @@ def test_jede_tabellenzelle_traegt_ihre_spaltenueberschrift():
     # Autonomie-Stufe in derselben Zeile.
     for pfad, spalten in (("/kontakte", ["Name", "Stufe", "Score",
                                          "Zuletzt"]),
-                          ("/wiedervorlagen", ["Kontakt", "Faellig am",
+                          ("/wiedervorlagen", ["Kontakt", "Fällig am",
                                                "Notiz"])):
         seite = _get(pfad).text
         for spalte in spalten:
@@ -2210,7 +2210,7 @@ def test_archivieren_aus_der_liste_schreibt_erst_nichts():
     antwort = _post("/kontakte/archivieren",
                     {"lead_id": lead, "csrf": ui.CSRF_TOKEN})
     assert antwort.status_code == 409
-    assert "Archivieren bestaetigen" in antwort.text
+    assert "Archivieren bestätigen" in antwort.text
     zeile = server._q("select enrichment from leads where id = %s", (lead,))[0]
     assert not server._archiviert(zeile["enrichment"])
 
@@ -2251,7 +2251,7 @@ def test_echter_kontakt_laesst_sich_weiter_umbenennen(sammelkontakt_zurueck):
 def test_sammelkontakt_zeigt_kein_stammdatenformular(sammelkontakt_zurueck):
     sammel = _sammel()
     seite = _get(f"/kontakte/{sammel}").text
-    assert "Sammelkontakt fuer unbekannte Eingaenge" in seite
+    assert "Sammelkontakt für unbekannte Eingänge" in seite
     assert 'action="/kontakte/bearbeiten"' not in seite
     assert "Das ist kein Mensch" in seite
 
@@ -2584,7 +2584,7 @@ def test_loeschen_zeigt_erst_die_warnseite(medienordner):
     antwort = _post("/medien/loeschen",
                     {"name": "bild.png", "csrf": ui.CSRF_TOKEN})
     assert antwort.status_code == 409
-    assert "Loeschen bestaetigen" in antwort.text
+    assert "Löschen bestätigen" in antwort.text
     assert (medienordner / "bild.png").is_file()      # nichts passiert
 
 
@@ -2596,7 +2596,7 @@ def test_loeschen_nennt_die_haengenden_entwuerfe(medienordner):
               ("bild.png", lead))
     antwort = _post("/medien/loeschen",
                     {"name": "bild.png", "csrf": ui.CSRF_TOKEN})
-    assert "haengen 1" in antwort.text or "haengen" in antwort.text
+    assert "hängen 1" in antwort.text or "hängen" in antwort.text
 
 
 def test_bestaetigtes_loeschen_entfernt_die_datei(medienordner):
@@ -2720,7 +2720,7 @@ def test_stufe_setzen_ueber_die_oberflaeche_schreibt_den_beweis():
         "select payload from activities where lead_id = %s and "
         "type = 'stufenwechsel'", (lead,))[0]
     assert zeile["payload"]["nach"] == "kontaktiert"
-    assert "Oberflaeche" in zeile["payload"]["begruendung"]
+    assert "Oberfläche" in zeile["payload"]["begruendung"]
 
 
 def test_stufe_ohne_csrf_schreibt_nichts():
@@ -3075,7 +3075,7 @@ def test_verlauf_zeigt_sprachnachricht_und_transkription():
                                    "message_id": "wa-v-1", "sprache": "de"})))
     seite = _get(f"/kontakte/{lead}").text
     assert "Sprachnachricht" in seite
-    assert "abgehoert" in seite
+    assert "abgehört" in seite
     assert "Ich haette eine Frage zur Police." in seite
 
 

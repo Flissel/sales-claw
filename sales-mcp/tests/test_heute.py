@@ -99,7 +99,7 @@ def test_heute_deckelt_je_art_und_verweist_auf_freigaben():
     for i in range(ui.HEUTE_JE_ART + 2):
         _entwurf(lead, text=f"Entwurf Nummer {i}")
     seite = _get("/").text
-    assert f"+ 2 weitere WhatsApp-Entwuerfe" in seite
+    assert f"+ 2 weitere WhatsApp-Entwürfe" in seite
     assert 'href="/freigaben"' in seite
 
 
