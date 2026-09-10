@@ -303,6 +303,10 @@ def _kurz(text, laenge=90) -> str:
     Vorher schnitt die Anzeige hart nach n Zeichen ab; auf der Startseite
     endete ein Termin mit „Thema Vibe ·" und niemand sah, dass ein Satz
     fehlte. Der volle Text gehoert vom Aufrufer als `title` mitgegeben.
+
+    Verwechslungsschutz: `kalender.py` hat eine GLEICHNAMIGE, aber andere
+    Funktion `kalender._kurz(text)` — faltet Fehlertexte dieses Moduls hart
+    auf `FEHLER_MAXLAENGE`, ohne Wortgrenze. Beide sind bewusst getrennt.
     """
     text = str(text or "").strip()
     if len(text) <= laenge:

@@ -230,6 +230,14 @@ def test_kuerzerer_titel_als_vollstaendiges_praefix_wird_gepaart():
 # Paarungs- und Badge-Pfad in kalender_seite waere sonst NIE erreicht und
 # ein seite.count(...)-Check wuerde auch bei kaputter Logik gruen bleiben.
 # Die CalDAV-Quelle wird deshalb hier ersetzt statt weggelassen.
+#
+# Das ersetzt nur den Rueckgabewert von termine_lesen(), NICHT die
+# Konfiguration selbst: kalender_seite() prueft an anderer Stelle separat
+# `kalender.konfiguration()[0]` (ui.py:3643) — das liest CALDAV_URL/-USER/
+# -PASSWORT direkt aus der Umgebung und ist vom Monkeypatch hier unberuehrt.
+# Deshalb zeigt die Seite trotz nicht-leerer Attrappe weiterhin „Kein
+# Kalender verbunden" statt der rohen „Kalender (N)"-Tabelle — siehe die
+# genauere Erklaerung unten bei der Zaehl-Pruefung.
 
 def test_zwei_quellen_zeigt_hinweis_und_beide_orte(monkeypatch):
     """Wired: die Kalenderseite zeigt EINE Zeile mit dem Hinweis
@@ -264,14 +272,34 @@ def test_zwei_quellen_zeigt_hinweis_und_beide_orte(monkeypatch):
     # mit und kann eine echte Doppelrenderung nicht mehr von der Kuerzung
     # unterscheiden (siehe Fix-Runde 2, Bericht Aufgabe 7).
     #
-    # Praeziser: die Testumgebung hat kein CALDAV_URL (siehe Kommentar oben),
-    # die separate „Kalender"-Tabelle (reine CalDAV-Liste) rendert deshalb
-    # nie — der einzige Ort, an dem eine doppelt gerenderte BUCHUNG als
-    # doppelte ZEILE sichtbar wuerde, ist die Kommende/Vergangen-Tabelle
-    # (die vom Monatsgitter unabhaengige „Liste"). Das Gitter zeigt fuer
-    # einen gepaarten Termin ABSICHTLICH zwei Kaestchen (eigene + CalDAV-
-    # Quelle, Aufgabe 4) — das ist keine Dopplung, sondern Design, und wird
-    # hier deshalb bewusst nicht mitgezaehlt.
+    # Praeziser (Fix-Runde 3 — der Grund war zuvor falsch benannt): die
+    # separate rohe „Kalender"-Tabelle (reine CalDAV-Liste, `t["titel"]`
+    # UNGEKUERZT) rendert hier NICHT etwa, weil termine_lesen() oben leer
+    # waere — die Attrappe liefert bewusst einen echten Eintrag. Sie bleibt
+    # aus, weil kalender_seite() VOR dieser Tabelle separat
+    # `kalender.konfiguration()[0]` prueft (ui.py:3643) — das liest
+    # CALDAV_URL/-USER/-PASSWORT direkt aus der Prozessumgebung, unabhaengig
+    # vom `termine_lesen`-Ruecklauf, und ist in dieser Umgebung nicht
+    # gesetzt. Deshalb bleibt genau EIN Ort uebrig, an dem eine doppelt
+    # gerenderte BUCHUNG als doppelte Tabellenzeile sichtbar wuerde: die
+    # Kommende/Vergangen-Tabelle (die vom Monatsgitter unabhaengige
+    # „Liste"). Das Gitter selbst zeigt fuer einen gepaarten Termin
+    # ABSICHTLICH zwei Kaestchen (eigene + CalDAV-Quelle, Aufgabe 4) — das
+    # ist keine Dopplung, sondern Design, und wird hier bewusst nicht
+    # mitgezaehlt (das Gitter ist `<div>`-basiert, `<tr>` kommt dort nicht
+    # vor).
+    #
+    # Wichtig fuer spaeter: diese Zaehlung `== 1` haengt an genau dieser
+    # Konfigurationssperre. Faellt `kalender.konfiguration()[0]` weg (oder
+    # wird hier zusaetzlich gemockt, sodass sie erfuellt ist), rendert die
+    # rohe „Kalender"-Tabelle MIT — leer nachgemessen: ein zweites,
+    # LEGITIMES `<tr>` mit demselben Volltext kommt hinzu, `len(treffer)`
+    # steigt von 1 auf 2, und dieser Test schlaegt fehl, OHNE dass irgendein
+    # Bug vorliegt. Wer `konfiguration()` in `kalender_seite` aendert oder
+    # entfernt, muss diese Zaehlung dann auf die Kommende/Vergangen-Tabelle
+    # einschraenken (statt auf alle `<tr>` der Seite), sonst verliert der
+    # Test entweder seine Trennschaerfe oder faengt sich einen falschen
+    # Fehlschlag ein.
     zeilen_html = re.findall(r"<tr>.*?</tr>", seite, flags=re.S)
     treffer = [z for z in zeilen_html
               if "Video Call mit Sophie &amp; Stephane" in z]

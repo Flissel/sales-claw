@@ -291,6 +291,14 @@ def _ohne_geheimnis(text: str) -> str:
 
 
 def _kurz(text: str) -> str:
+    """Fehlertext auf `FEHLER_MAXLAENGE` falten — harter Zeichenschnitt,
+    keine Wortgrenze. Nur fuer Diagnose-/Fehlermeldungen dieses Moduls.
+
+    Verwechslungsschutz: `ui.py` hat eine GLEICHNAMIGE, aber andere Funktion
+    `ui._kurz(text, laenge=90)` fuer Anzeigetexte im Browser — kuerzt an
+    Wortgrenzen und haengt „…" an (Aufgabe 7, 10.09.2026). Beide sind
+    bewusst getrennt, nicht austauschbar.
+    """
     return " ".join((text or "").split())[:FEHLER_MAXLAENGE]
 
 
