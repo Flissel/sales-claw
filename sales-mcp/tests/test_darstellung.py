@@ -221,3 +221,59 @@ def test_monatsgitter_titel_kuerzt_an_wortgrenze_und_traegt_titel():
     seite = _get("/kalender?monat=2026-09").text
     assert ui._kurz(lang_thema, 22) in seite
     assert f'title="{ui._e(lang_thema)}"' in seite
+
+
+# ---------------------------------------------------------------------------
+# Nachtrag (10.09.2026, Koordinator-Rueckmeldung): dieselbe Fehlerklasse
+# (Fließtext, hart abgeschnitten, keine Wortgrenze) steckte an drei weiteren
+# Anzeigestellen, die der urspruengliche Auftrag nicht namentlich aufzaehlte,
+# aber die Spec allgemein verlangt (§3.5: kein Anzeigetext endet mitten im
+# Wort). Alle drei liegen in ui.py und wurden nachgezogen.
+# ---------------------------------------------------------------------------
+
+def test_entwurfsvorschau_kuerzt_an_wortgrenze_und_traegt_titel():
+    """Die zugeklappte Entwurfskarte auf /freigaben (und /) zeigte bisher
+    eine Vorschau, die hart bei 90 Zeichen abbrach — OHNE jedes Kuerzungs-
+    zeichen, ein Entwurf wirkte einfach mittendrin zu Ende."""
+    lang = ("Hallo Herr Beispiel, vielen Dank fuer Ihr Interesse an unserer "
+            "Beratung — wann passt Ihnen ein kurzer Rueckruf diese Woche?")
+    lead = _lead("Ella Entwurf")
+    server._q(
+        "insert into drafts (lead_id, channel, recipient, body, status) "
+        "values (%s, 'whatsapp', '+491701234567', %s, 'pending')",
+        (lead, lang))
+    seite = _get("/freigaben").text
+    assert ui._e(ui._kurz(lang, ui.ENTWURF_VORSCHAU)) in seite
+    assert f'title="{ui._e(lang)}"' in seite
+    assert "…" in seite
+
+
+def test_ergebnisse_begruendung_kuerzt_an_wortgrenze_und_traegt_titel():
+    lang = ("Kontakt hat sich nach mehrfacher Rueckfrage endgueltig gegen "
+            "eine Zusammenarbeit entschieden, Gruende privat, nicht Preis")
+    lead = _lead("Gustav Gewonnen")
+    server._q("update leads set status = 'won' where id = %s", (lead,))
+    server._q(
+        "insert into activities (lead_id, type, payload) values "
+        "(%s, 'stufenwechsel', %s::jsonb)",
+        (lead, json.dumps({"begruendung": lang})))
+    seite = _get("/ergebnisse").text
+    assert ui._e(ui._kurz(lang, 160)) in seite
+    assert f'title="{ui._e(lang)}"' in seite
+
+
+def test_firmenrecherche_text_kuerzt_an_wortgrenze_und_traegt_titel():
+    lang = ("Wir sind ein inhabergefuehrter Betrieb mit langjaehriger "
+            "Erfahrung in der Beratung kleiner und mittlerer Unternehmen " * 3)
+    lead = _lead("Firma Recherche")
+    server._q(
+        "update leads set enrichment = jsonb_set(coalesce(enrichment, '{}'), "
+        "'{firma}', %s::jsonb, true) where id = %s",
+        (json.dumps({"website": "https://beispiel.de",
+                     "seiten": [{"url": "https://beispiel.de/ueber",
+                                "typ": "ueber", "titel": "Über uns",
+                                "text": lang}]}), lead))
+    seite = _get(f"/kontakte/{lead}").text
+    text_normalisiert = " ".join(lang.split())
+    assert ui._e(ui._kurz(text_normalisiert, 300)) in seite
+    assert f'title="{ui._e(text_normalisiert)}"' in seite

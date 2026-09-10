@@ -258,14 +258,26 @@ def test_zwei_quellen_zeigt_hinweis_und_beide_orte(monkeypatch):
         "importierte Ortsangabe fehlt — Quelle stillschweigend verworfen")
     # Aufgabe 7 (10.09.2026): Terminkarten tragen den vollen Text jetzt
     # zusaetzlich als `title`-Attribut (Kuerzung an Wortgrenzen). Dasselbe
-    # Thema steht dadurch bewusst zweimal auf demselben Element — sichtbar
-    # gekuerzt UND voll im title. Das ist keine Dopplung der ANZEIGE, die
-    # dieser Test eigentlich prueft; title-Attribute werden deshalb vor dem
-    # Zaehlen entfernt.
-    sichtbar = re.sub(r' title="[^"]*"', "", seite)
-    assert sichtbar.count("Video Call mit Sophie &amp; Stephane") <= 2, (
-        "derselbe Termin steht mehr als zweimal auf der Seite "
-        "(Gitter + Liste sind erlaubt)")
+    # Thema steht dadurch an JEDER Anzeigestelle bewusst zweimal — sichtbar
+    # (ggf. gekuerzt) UND voll im title. Ein reiner `seite.count(...)` auf
+    # den escapten Volltext zaehlt damit auch legitime title-Wiederholungen
+    # mit und kann eine echte Doppelrenderung nicht mehr von der Kuerzung
+    # unterscheiden (siehe Fix-Runde 2, Bericht Aufgabe 7).
+    #
+    # Praeziser: die Testumgebung hat kein CALDAV_URL (siehe Kommentar oben),
+    # die separate „Kalender"-Tabelle (reine CalDAV-Liste) rendert deshalb
+    # nie — der einzige Ort, an dem eine doppelt gerenderte BUCHUNG als
+    # doppelte ZEILE sichtbar wuerde, ist die Kommende/Vergangen-Tabelle
+    # (die vom Monatsgitter unabhaengige „Liste"). Das Gitter zeigt fuer
+    # einen gepaarten Termin ABSICHTLICH zwei Kaestchen (eigene + CalDAV-
+    # Quelle, Aufgabe 4) — das ist keine Dopplung, sondern Design, und wird
+    # hier deshalb bewusst nicht mitgezaehlt.
+    zeilen_html = re.findall(r"<tr>.*?</tr>", seite, flags=re.S)
+    treffer = [z for z in zeilen_html
+              if "Video Call mit Sophie &amp; Stephane" in z]
+    assert len(treffer) == 1, (
+        f"der Termin steht in {len(treffer)} Tabellenzeilen statt einer "
+        "— echte Doppelrenderung in Kommende/Vergangen")
 
 
 def test_zwei_quellen_mit_leerem_eigenem_ort_verwirft_importierten_ort_nicht(

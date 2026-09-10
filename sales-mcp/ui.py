@@ -1385,14 +1385,14 @@ def _entwurf_karte_offen(z) -> str:
     auch in der Vorschau und im Textfeld.
     """
     text = z["body"] or ""
-    vorschau = " ".join(text.split())[:ENTWURF_VORSCHAU]
-    if len(" ".join(text.split())) > ENTWURF_VORSCHAU:
-        vorschau += " …"
+    text_normalisiert = " ".join(text.split())
+    vorschau = _kurz(text_normalisiert, ENTWURF_VORSCHAU)
     return (
         f'<details class="karte">'
         f'<summary>{_badge(z["channel"])}'
         f'<b>{_e(z["name"] or "(ohne Kontakt)")}</b>'
-        f'<span class="meta"> — {_e(vorschau)}</span></summary>'
+        f'<span class="meta" title="{_e(text_normalisiert)}"> — {_e(vorschau)}'
+        f'</span></summary>'
         f'{_entwurf_kopf(z, "pending")}'
         f'<div class="text">{_e(text)}</div>'
         f'{_entwurf_bearbeiten_form(z, text)}'
@@ -3835,12 +3835,17 @@ async def ergebnisse(request):
         if not gruppe:
             teile.append("<p class=meta>—</p>")
             continue
+        ergebnis_zeilen = []
+        for z in gruppe:
+            begruendung_voll = str(z["begruendung"] or "")
+            ergebnis_zeilen.append([
+                f'<a href="/kontakte/{_e(str(z["id"]))}">'
+                f'{_e(z["name"] or "(ohne Namen)")}</a>',
+                _zeit(z["updated_at"]),
+                f'<span title="{_e(begruendung_voll)}">'
+                f'{_e(_kurz(begruendung_voll, 160))}</span>'])
         teile.append(_tabelle(
-            ["Kontakt", "Seit", "Begründung"],
-            [[f'<a href="/kontakte/{_e(str(z["id"]))}">'
-              f'{_e(z["name"] or "(ohne Namen)")}</a>',
-              _zeit(z["updated_at"]),
-              _e((z["begruendung"] or "")[:160])] for z in gruppe]))
+            ["Kontakt", "Seit", "Begründung"], ergebnis_zeilen))
     return _seite("Ergebnisse", "".join(teile))
 
 
@@ -4201,11 +4206,12 @@ async def kontakt_detail(request):
         for s in seiten[:6]:
             if not isinstance(s, dict):
                 continue
-            text = " ".join(str(s.get("text") or "").split())[:300]
+            text_voll = " ".join(str(s.get("text") or "").split())
             karten.append(
                 f'<div class="karte"><b>{_e(s.get("titel") or s.get("typ") or "Seite")}</b>'
                 f'<div class="meta">{_e(s.get("url") or "")}</div>'
-                f'<div class="text">{_e(text)}</div></div>')
+                f'<div class="text" title="{_e(text_voll)}">'
+                f'{_e(_kurz(text_voll, 300))}</div></div>')
         # Geschaeftsverweise (01.09.2026): die Social-/Business-Links, die
         # die Firma selbst verlinkt — als anklickbare Absprungpunkte. Der
         # Text ist eine feste Plattform-Bezeichnung aus dem Code, die URL
