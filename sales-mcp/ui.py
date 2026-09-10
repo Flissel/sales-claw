@@ -187,7 +187,7 @@ import secrets
 import sys
 import time
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 import psycopg
 import uvicorn
@@ -308,11 +308,21 @@ except Exception:                    # noqa: BLE001 — ohne tzdata: UTC
 
 
 def _zeit(dt) -> str:
-    if not dt:
+    """Zeitpunkt in Ortszeit. Ein Zeitstempel OHNE Zone gilt als UTC.
+
+    Die Datenbank liefert durchweg `timestamptz` (db/provision.sql), also
+    bewusste Zeitpunkte. Wo trotzdem ein naiver ankommt — aus einem
+    JSON-Payload, aus einem Kalender-Import ohne Zonenangabe — waere die
+    Alternative, ihn ungerechnet stehen zu lassen: genau das erzeugte
+    dieselbe Buchung mit zwei Uhrzeiten (19:00 und 21:00, 10.09.2026).
+    """
+    if dt is None:
         return "—"
-    if ZEITZONE is not None and getattr(dt, "tzinfo", None) is not None:
-        dt = dt.astimezone(ZEITZONE)
-    return dt.strftime("%d.%m.%Y %H:%M")
+    if ZEITZONE is None:
+        return dt.strftime("%d.%m.%Y %H:%M")
+    if getattr(dt, "tzinfo", None) is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(ZEITZONE).strftime("%d.%m.%Y %H:%M")
 
 
 # ---------------------------------------------------------------------------

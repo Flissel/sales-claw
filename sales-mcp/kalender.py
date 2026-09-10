@@ -65,6 +65,25 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
+# Ortszeit fuer DTSTART-Werte ohne (oder mit unbekannter) Zone — dieselbe
+# Quelle und derselbe Fallback wie ui.ZEITZONE (10.09.2026, Aufgabe 3):
+# unabhaengiges Modul (siehe Moduldocstring), daher eigene, aber identisch
+# hergeleitete Zone statt eines Rueckimports aus ui.py.
+#
+# Import und Instanziierung bewusst GETRENNT abgesichert: eine ungueltige
+# `TZID` aus einem fremden VEVENT (unten, `_ics_zeit`) darf `ZoneInfo`
+# selbst nicht global lahmlegen — sonst risse eine kaputte Fremdzone auch
+# die Standardzone Europe/Berlin mit.
+try:
+    from zoneinfo import ZoneInfo
+except Exception:                    # noqa: BLE001 — kein zoneinfo verfuegbar
+    ZoneInfo = None
+try:
+    _ORTSZONE = (ZoneInfo(os.environ.get("TZ", "Europe/Berlin"))
+                 if ZoneInfo is not None else None)
+except Exception:                    # noqa: BLE001 — ohne tzdata: UTC
+    _ORTSZONE = None
+
 # 20 s wie im Plan. Ein Kalendereintrag ist Beiwerk des Werkzeugs: er darf
 # einen Werkzeugaufruf nicht laenger aufhalten, als ein Mensch im Chat
 # wartet — die ICS-Datei entsteht ohnehin unabhaengig davon.
@@ -407,15 +426,66 @@ def _ics_feld(block: str, name: str) -> str:
     return ""
 
 
-def _ics_zeit(wert: str):
-    """DTSTART-Wert -> datetime (UTC) oder None. Wirft nie."""
-    roh = (wert or "").strip().rstrip("Z")
+_TZID_MUSTER = re.compile(r"(?i)TZID=([^:;]+)")
+
+
+def _ics_tzid(block: str, name: str) -> str:
+    """TZID-Parameter eines Feldes (z. B. 'Europe/Berlin') — leer, wenn
+    keiner gesetzt ist. Eigenstaendig neben `_ics_feld`, das Parameter
+    bewusst verwirft (dessen Docstring: „ohne Parameter")."""
+    for zeile in block.replace("\r\n ", "").replace("\n ", "").split("\n"):
+        zeile = zeile.strip()
+        if zeile.upper().startswith(name.upper()):
+            treffer = _TZID_MUSTER.search(zeile.split(":", 1)[0])
+            return treffer.group(1).strip() if treffer else ""
+    return ""
+
+
+def _ics_zeit(wert: str, tzid: str = ""):
+    """DTSTART-Wert (+ optionaler TZID-Parameter) -> datetime (UTC) oder
+    None. Wirft nie.
+
+    Zonenregeln (RFC 5545 3.3.5), gemessen am Produktionssymptom
+    (10.09.2026: derselbe Termin 19:00 in der Vergangen-Tabelle, 21:00 in
+    der Kalender-Tabelle):
+
+    * Ein 'Z'-Suffix ist bereits UTC.
+    * `TZID=<Zone>` benennt die Zone einer angegebenen ORTSZEIT. Wird der
+      Parameter verworfen und der rohe Wert wie UTC gelesen, entsteht
+      genau der gemessene Zwei-Stunden-Versatz (TZID=Europe/Berlin,
+      September/CEST = UTC+2).
+    * Ganz ohne Zone ("floating time") gilt der Wert ebenfalls als
+      Ortszeit, nicht als UTC.
+
+    Alle drei Faelle werden hier nach UTC vereinheitlicht, damit der Rest
+    der Pipeline (ui._zeit -> astimezone) durchgehend mit bewussten
+    Zeitpunkten arbeitet.
+    """
+    roh = (wert or "").strip()
+    ist_utc = roh.endswith("Z")
+    roh = roh.rstrip("Z")
+    naiv = None
     for muster in ("%Y%m%dT%H%M%S", "%Y%m%d"):
         try:
-            return datetime.strptime(roh, muster).replace(tzinfo=timezone.utc)
+            naiv = datetime.strptime(roh, muster)
+            break
         except ValueError:
             continue
-    return None
+    if naiv is None:
+        return None
+    if ist_utc:
+        return naiv.replace(tzinfo=timezone.utc)
+    zone = None
+    if tzid and ZoneInfo is not None:
+        try:
+            zone = ZoneInfo(tzid)
+        except Exception:            # noqa: BLE001 — unbekannte/kaputte Zone
+            zone = None
+    if zone is None:
+        zone = _ORTSZONE
+    if zone is None:                 # ohne tzdata bleibt nur UTC (wie ui.ZEITZONE)
+        return naiv.replace(tzinfo=timezone.utc)
+    return naiv.replace(tzinfo=zone).astimezone(timezone.utc)
 
 
 def termine_lesen(tage_zurueck: int = 7, tage_voraus: int = 60):
@@ -450,7 +520,8 @@ def termine_lesen(tage_zurueck: int = 7, tage_voraus: int = 60):
     termine = []
     for teil in text.split("BEGIN:VEVENT")[1:]:
         block = teil.split("END:VEVENT", 1)[0]
-        beginn = _ics_zeit(_ics_feld(block, "DTSTART"))
+        beginn = _ics_zeit(_ics_feld(block, "DTSTART"),
+                           _ics_tzid(block, "DTSTART"))
         if beginn is None:
             continue
         termine.append({
