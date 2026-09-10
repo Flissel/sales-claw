@@ -3228,8 +3228,9 @@ def _wa_karten_und_kette(sitzung, sitzung_fehler, letzte) -> str:
          (f"{anzahl} Kundennachrichten gebucht" if letzte is not None
           else "noch nichts gebucht — unbewiesen")),
         ("Datenbank", "gut",
-         f"{aktive} aktive Kontakte, {archivierte} archiviert, "
-         f"{anzahl} Kundenantworten"),
+         (f"{aktive} aktiver Kontakt" if aktive == 1
+          else f"{aktive} aktive Kontakte")
+         + f", {archivierte} archiviert, {anzahl} Kundenantworten"),
     ]
     kette = '<span class="strich"></span>'.join(
         f'<div class="schritt"><span class="punkt {_e(p)}"></span>'

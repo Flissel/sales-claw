@@ -139,8 +139,11 @@ def test_whatsapp_seite_nennt_aktive_und_archivierte_getrennt():
         "jsonb_build_object(%s::text, jsonb_build_object('archiviert', true)) "
         "where id = %s", (server.ARCHIV_SCHLUESSEL, archiv))
     seite = _get("/whatsapp").text
-    assert "1 aktive Kontakte" in seite or "1 aktiver Kontakt" in seite, (
-        "die WhatsApp-Seite benennt die aktiven Kontakte nicht")
+    assert "1 aktiver Kontakt" in seite, (
+        "die WhatsApp-Seite verwendet bei genau einem aktiven Kontakt nicht "
+        "die grammatisch richtige Einzahl (bisher: '1 aktive Kontakte')")
+    assert "1 aktive Kontakte" not in seite, (
+        "die Mehrzahlform steht faelschlich bei genau einem aktiven Kontakt")
     assert "1 archiviert" in seite, (
         "die archivierten Kontakte werden nicht getrennt ausgewiesen")
 
