@@ -3365,27 +3365,38 @@ PAAR_TOLERANZ_MIN = 5
 def _termine_paaren(eigene, importierte):
     """Termine aus beiden Quellen zu einer Liste verschmelzen.
 
+    Verschmolzen wird AUSSCHLIESSLICH quellenuebergreifend: jeder eigene
+    Termin sucht sich hoechstens einen passenden importierten Partner —
+    nie einen zweiten eigenen. Ohne diese Grenze wuerden zwei ECHTE
+    Termine derselben Quelle (z.B. desselben Kontakts, wenige Minuten
+    auseinander) faelschlich zu einer Zeile verschmelzen. Deshalb wird
+    hier bewusst ueber `eigene` iteriert und `importierte` als Vorrat
+    behandelt, aus dem jeder Partner nur einmal gezogen werden kann —
+    die Regel steht damit im Kontrollfluss, nicht in einem Guard.
+
     Verschmolzen wird NICHT der Inhalt: jeder Eintrag behaelt beide
     Ortsangaben und nennt seine Quellen. Die Entscheidung, welche Fassung
     stimmt, trifft der Betreiber im Digest.
     """
+    frei = list(importierte)
     ergebnis = []
-    for eintrag in list(eigene) + list(importierte):
-        for vorhanden in ergebnis:
-            if _gleicher_termin(vorhanden, eintrag):
-                vorhanden["quellen"].append(eintrag.get("quelle", "?"))
-                for feld in ("ort", "titel"):
-                    if not vorhanden.get(feld) and eintrag.get(feld):
-                        vorhanden[feld] = eintrag[feld]
-                    elif (eintrag.get(feld)
-                          and eintrag[feld] != vorhanden.get(feld)):
-                        vorhanden.setdefault("abweichend", {})[feld] = \
-                            eintrag[feld]
-                break
-        else:
-            neu = dict(eintrag)
-            neu["quellen"] = [eintrag.get("quelle", "?")]
-            ergebnis.append(neu)
+    for eigen in eigene:
+        neu = dict(eigen)
+        neu["quellen"] = [eigen.get("quelle", "?")]
+        treffer = next((i for i, imp in enumerate(frei)
+                        if _gleicher_termin(neu, imp)), None)
+        if treffer is not None:
+            partner = frei.pop(treffer)
+            neu["quellen"].append(partner.get("quelle", "?"))
+            if not neu.get("ort") and partner.get("ort"):
+                neu["ort"] = partner["ort"]
+            elif partner.get("ort") and partner["ort"] != neu.get("ort"):
+                neu.setdefault("abweichend", {})["ort"] = partner["ort"]
+        ergebnis.append(neu)
+    for imp in frei:
+        neu = dict(imp)
+        neu["quellen"] = [imp.get("quelle", "?")]
+        ergebnis.append(neu)
     return ergebnis
 
 
@@ -3396,14 +3407,25 @@ def _gleicher_termin(a, b) -> bool:
     beginn_a, beginn_b = a.get("beginn"), b.get("beginn")
     if beginn_a is None or beginn_b is None:
         return False
+    if (beginn_a.tzinfo is None) != (beginn_b.tzinfo is None):
+        # Ein naiver und ein zonenbehafteter Zeitpunkt lassen sich nicht
+        # subtrahieren (TypeError) — ohne Zone ist der Vergleich ohnehin
+        # nicht aussagekraeftig, also lieber kein Treffer als ein Absturz,
+        # der die ganze Kalenderseite mitreisst.
+        return False
     abstand = abs((beginn_a - beginn_b).total_seconds())
     if abstand > PAAR_TOLERANZ_MIN * 60:
         return False
     titel_a = str(a.get("titel") or "").strip().lower()
     titel_b = str(b.get("titel") or "").strip().lower()
-    return (titel_a == titel_b
-            or titel_a.startswith(titel_b[:20])
-            or titel_b.startswith(titel_a[:20]))
+    # Gepaart wird, wenn die Titel gleich sind oder der KUERZERE
+    # vollstaendig Praefix des laengeren ist (z.B. Store "VibeMind
+    # Gespraech (Scalosoft)" gegen CalDAV "VibeMind Gespraech"). Eine feste
+    # Zeichenzahl waere hier die falsche Grenze: "Beratungsgespraech am
+    # Telefon mit Herrn Schmidt" und "...mit Frau Weber" teilen sich mehr
+    # als zwanzig Zeichen Anfang, sind aber zwei verschiedene Termine —
+    # keiner der beiden ist vollstaendiger Praefix des anderen.
+    return titel_a.startswith(titel_b) or titel_b.startswith(titel_a)
 
 
 def _beginn_aus_payload(payload):
@@ -3514,10 +3536,17 @@ async def kalender_seite(request):
             'Quellen — der Assistent klärt im Digest, welche Fassung '
             'stimmt.">zwei Quellen</span> '
             if paar and len(paar.get("quellen", [])) > 1 else "")
-        ort_eigen = str(last.get("ort") or "")[:60]
-        ort_abweichend = (paar or {}).get("abweichend", {}).get("ort")
-        ort_html = (f'{_e(ort_eigen)} / {_e(str(ort_abweichend)[:60])}'
-                   if ort_abweichend else _e(ort_eigen))
+        # Der Ort wird aus dem GEPAARTEN Eintrag gelesen, nicht mehr aus der
+        # rohen Zeile: ist der eigene Ort leer und nur der importierte
+        # gesetzt, traegt `paar["ort"]` bereits den importierten Wert (der
+        # Merge in _termine_paaren hat ihn uebernommen) — `last.get("ort")`
+        # waere hier weiterhin leer und haette die einzige Ortsangabe
+        # stillschweigend verworfen.
+        basis = paar if paar is not None else {"ort": last.get("ort")}
+        ort_basis = str(basis.get("ort") or "")[:60]
+        ort_abweichend = basis.get("abweichend", {}).get("ort")
+        ort_html = (f'{_e(ort_basis)} / {_e(str(ort_abweichend)[:60])}'
+                   if ort_abweichend else _e(ort_basis))
         eintrag = [
             _e(tag_lesbar(tag)), _e(zeit), kontakt,
             marke + quellen_marke + _e(str(last.get("thema") or "")[:80]),

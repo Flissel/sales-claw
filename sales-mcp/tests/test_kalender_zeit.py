@@ -141,8 +141,98 @@ def test_verschiedene_termine_bleiben_getrennt():
     assert len(ui._termine_paaren(eigene, importierte)) == 2
 
 
-def test_zwei_quellen_werden_in_der_seite_ausgewiesen():
-    """Der Hinweis steht sichtbar am Eintrag, nicht nur in den Daten."""
+# --- Fix-Runde 1: Kritisch 1 — Verschmelzen NUR quellenuebergreifend ------
+
+def test_zwei_eigene_termine_verschmelzen_nicht_miteinander():
+    """Zwei ECHTE eigene Termine desselben Kontakts, wenige Minuten
+    auseinander, mit aehnlichem Titel — duerfen NICHT zu einer Zeile mit
+    quellen=['store', 'store'] werden. Verschmelzen gilt ausschliesslich
+    quellenuebergreifend (eigen<->importiert), nie eigen<->eigen."""
+    eigene = [
+        {"titel": "Erstgespräch", "lead_id": "kontakt-1",
+         "beginn": datetime(2026, 9, 5, 19, 0, tzinfo=timezone.utc),
+         "ort": "Büro", "quelle": "store"},
+        {"titel": "Erstgespräch", "lead_id": "kontakt-1",
+         "beginn": datetime(2026, 9, 5, 19, 3, tzinfo=timezone.utc),
+         "ort": "Telefon", "quelle": "store"},
+    ]
+    paare = ui._termine_paaren(eigene, [])
+    assert len(paare) == 2, f"erwartet 2 getrennte Eintraege, bekam {len(paare)}"
+    assert all(p["quellen"] == ["store"] for p in paare)
+
+
+def test_zwei_importierte_termine_verschmelzen_nicht_miteinander():
+    """Dieselbe Grenze auch in die andere Richtung: zwei CalDAV-Eintraege
+    duerfen nicht miteinander verschmelzen, nur mit einem eigenen."""
+    importierte = [
+        {"titel": "Termin", "beginn": datetime(2026, 9, 5, 19, 0,
+                                               tzinfo=timezone.utc),
+         "ort": "", "quelle": "caldav"},
+        {"titel": "Termin", "beginn": datetime(2026, 9, 5, 19, 2,
+                                               tzinfo=timezone.utc),
+         "ort": "", "quelle": "caldav"},
+    ]
+    paare = ui._termine_paaren([], importierte)
+    assert len(paare) == 2
+    assert all(p["quellen"] == ["caldav"] for p in paare)
+
+
+# --- Fix-Runde 1: Kritisch 2 — der gemergte Ort darf nicht verworfen werden
+
+def test_paarung_uebernimmt_importierten_ort_wenn_eigener_leer():
+    """Ist der eigene Ort leer und der importierte gesetzt, muss der
+    gepaarte Eintrag den importierten Ort tragen — NICHT als
+    'abweichend', sondern als der einzige, gueltige Ort."""
+    eigene = [{"titel": "Erstgespräch",
+               "beginn": datetime(2026, 9, 5, 19, 0, tzinfo=timezone.utc),
+               "ort": "", "quelle": "store"}]
+    importierte = [{"titel": "Erstgespräch",
+                    "beginn": datetime(2026, 9, 5, 19, 0, tzinfo=timezone.utc),
+                    "ort": "https://meet.google.com/leer-ort",
+                    "quelle": "caldav"}]
+    paare = ui._termine_paaren(eigene, importierte)
+    assert len(paare) == 1
+    assert paare[0]["ort"] == "https://meet.google.com/leer-ort"
+    assert "abweichend" not in paare[0]
+
+
+# --- Fix-Runde 1: Wichtig 4 — Titelvergleich ohne feste Zeichengrenze ------
+
+def test_langer_gemeinsamer_anfang_ohne_volles_praefix_wird_nicht_gepaart():
+    """Zwei ECHTE, verschiedene Termine teilen sich mehr als zwanzig
+    Zeichen Anfang — keiner ist vollstaendiger Praefix des anderen, also
+    KEINE Paarung (Regression der alten 20-Zeichen-Schwelle)."""
+    eigene = [{"titel": "Beratungsgespräch am Telefon mit Herrn Schmidt",
+               "beginn": datetime(2026, 9, 5, 19, 0, tzinfo=timezone.utc),
+               "ort": "", "quelle": "store"}]
+    importierte = [{"titel": "Beratungsgespräch am Telefon mit Frau Weber",
+                    "beginn": datetime(2026, 9, 5, 19, 1, tzinfo=timezone.utc),
+                    "ort": "", "quelle": "caldav"}]
+    assert len(ui._termine_paaren(eigene, importierte)) == 2
+
+
+def test_kuerzerer_titel_als_vollstaendiges_praefix_wird_gepaart():
+    """Store-Titel mit Zusatz in Klammern gegen den knapperen CalDAV-Titel
+    bleibt gepaart, weil der kuerzere Titel vollstaendig Praefix ist."""
+    eigene = [{"titel": "VibeMind Gespräch (Scalosoft)",
+               "beginn": datetime(2026, 9, 5, 19, 0, tzinfo=timezone.utc),
+               "ort": "", "quelle": "store"}]
+    importierte = [{"titel": "VibeMind Gespräch",
+                    "beginn": datetime(2026, 9, 5, 19, 0, tzinfo=timezone.utc),
+                    "ort": "", "quelle": "caldav"}]
+    assert len(ui._termine_paaren(eigene, importierte)) == 1
+
+
+# --- Fix-Runde 1: Wichtig 3 — der Seiten-Test muss den Pfad tatsaechlich
+# durchlaufen. In der Testumgebung ist kein CALDAV_URL gesetzt, deshalb
+# liefert kalender.termine_lesen() im echten Betrieb immer ([], None) — der
+# Paarungs- und Badge-Pfad in kalender_seite waere sonst NIE erreicht und
+# ein seite.count(...)-Check wuerde auch bei kaputter Logik gruen bleiben.
+# Die CalDAV-Quelle wird deshalb hier ersetzt statt weggelassen.
+
+def test_zwei_quellen_zeigt_hinweis_und_beide_orte(monkeypatch):
+    """Wired: die Kalenderseite zeigt EINE Zeile mit dem Hinweis
+    'zwei Quellen' und beiden abweichenden Ortsangaben."""
     lead = server._q(
         "insert into leads (name, phone, source) values "
         "('Stephane B.', '+491701234567', 'whatsapp') returning id")[0]["id"]
@@ -150,10 +240,50 @@ def test_zwei_quellen_werden_in_der_seite_ausgewiesen():
         "insert into activities (lead_id, type, payload) values "
         "(%s, 'termin', %s::jsonb)",
         (lead, json.dumps(
-            {"datum": "2026-09-05", "uhrzeit": "21:00",
+            {"datum": "2026-09-05", "uhrzeit": "19:00",
              "thema": "Video Call mit Sophie & Stephane",
              "ort": "Video Call", "uid": "doppelt-1"})))
+    monkeypatch.setattr(
+        kalender, "termine_lesen",
+        lambda *a, **k: ([{
+            "beginn": datetime(2026, 9, 5, 17, 0, tzinfo=timezone.utc),
+            "titel": "Video Call mit Sophie & Stephane",
+            "ort": "https://meet.google.com/tin-jrqe-qwx",
+            "uid": "caldav-x"}], None))
     seite = _get("/kalender").text
+    assert "zwei Quellen" in seite, "Hinweis fehlt auf der Seite"
+    assert "Video Call" in seite, "eigene Ortsangabe fehlt"
+    assert "https://meet.google.com/tin-jrqe-qwx" in seite, (
+        "importierte Ortsangabe fehlt — Quelle stillschweigend verworfen")
     assert seite.count("Video Call mit Sophie &amp; Stephane") <= 2, (
         "derselbe Termin steht mehr als zweimal auf der Seite "
         "(Gitter + Liste sind erlaubt)")
+
+
+def test_zwei_quellen_mit_leerem_eigenem_ort_verwirft_importierten_ort_nicht(
+        monkeypatch):
+    """Kritisch 2 direkt am gerenderten HTML: der eigene Ort ist leer, nur
+    der importierte ist gesetzt. Die Zeile darf keine leere Ortsspalte
+    zeigen, waehrend sie 'zwei Quellen' behauptet."""
+    lead = server._q(
+        "insert into leads (name, phone, source) values "
+        "('Ohne Ort', '+491709999999', 'whatsapp') returning id")[0]["id"]
+    server._q(
+        "insert into activities (lead_id, type, payload) values "
+        "(%s, 'termin', %s::jsonb)",
+        (lead, json.dumps(
+            {"datum": "2026-09-05", "uhrzeit": "19:00",
+             "thema": "Erstgespräch ohne Ort",
+             "ort": "", "uid": "doppelt-2"})))
+    monkeypatch.setattr(
+        kalender, "termine_lesen",
+        lambda *a, **k: ([{
+            "beginn": datetime(2026, 9, 5, 17, 0, tzinfo=timezone.utc),
+            "titel": "Erstgespräch ohne Ort",
+            "ort": "https://meet.google.com/nur-caldav",
+            "uid": "caldav-y"}], None))
+    seite = _get("/kalender").text
+    assert "zwei Quellen" in seite
+    assert "https://meet.google.com/nur-caldav" in seite, (
+        "der einzige Ort (aus CalDAV) wurde stillschweigend verworfen, "
+        "weil die Anzeige noch die leere eigene Zeile gelesen hat")
