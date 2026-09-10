@@ -599,6 +599,41 @@ def test_kaufmaennisches_und_aus_dem_kalender_bleibt_unverfaelscht(
     assert termine[0]["titel"] == "Video Call mit Sophie &amp; Stephane"
 
 
+def test_tzid_wird_in_termine_lesen_korrekt_nach_utc_umgerechnet(
+        kalender_konfiguriert):
+    """Mangel 4 (Schlusspruefung, 10.09.2026): `_ics_zeit`, `_ics_feld` und
+    `_ics_tzid` sind einzeln getestet, ihre VERDRAHTUNG in `termine_lesen`
+    — `_ics_zeit(_ics_feld(block, "DTSTART"), _ics_tzid(block, "DTSTART"))`
+    — bisher nicht. Die beiden Tests oben liefern bereits einen REPORT-Stub
+    mit `DTSTART;TZID=Europe/Berlin`, pruefen aber nur `titel`, nie
+    `beginn` — genau der Pfad, der das Leitsymptom behebt (derselbe Termin
+    mit zwei Uhrzeiten, siehe Docstring an `_ics_zeit`).
+
+    TZID bewusst NICHT Europe/Berlin: das ist zugleich `_ORTSZONE`, der
+    Fallback fuer eine FEHLENDE Zone — mit dieser Zone waere der Test
+    gruen geblieben, selbst wenn `_ics_tzid(...)` in `termine_lesen` gar
+    nicht mehr aufgerufen wuerde (erste Fassung dieses Tests, gegen den
+    Code unten mit `git stash` geprueft: blieb faelschlich gruen). America/
+    New_York hat am selben Datum einen anderen Versatz (UTC-4) und deckt
+    den Fehler zuverlaessig auf."""
+    STUB.rumpf = (
+        "BEGIN:VEVENT\r\n"
+        "UID:fremd-tzid@irgendein-client\r\n"
+        "DTSTART;TZID=America/New_York:20260905T190000\r\n"
+        "SUMMARY:TZID-Verdrahtung\r\n"
+        "END:VEVENT\r\n"
+    ).encode("utf-8")
+    termine, fehler = kalender.termine_lesen()
+    assert fehler is None
+    assert len(termine) == 1
+    # 5. September 2026 liegt in der US-Sommerzeit (EDT, UTC-4): 19:00
+    # Ortszeit America/New_York entspricht 23:00 UTC — nicht 17:00 (TZID
+    # verworfen, faelschlich auf Europe/Berlin/_ORTSZONE zurueckgefallen)
+    # und nicht 19:00 (TZID verworfen, roh als UTC gelesen).
+    assert termine[0]["beginn"] == datetime(2026, 9, 5, 23, 0,
+                                            tzinfo=timezone.utc)
+
+
 def test_passwort_landet_in_keinem_fehlertext(kalender_konfiguriert):
     """Fremde Fehlerrumpfe spiegeln Anfragen manchmal zurueck."""
     STUB.status = 401
