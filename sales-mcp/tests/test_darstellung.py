@@ -143,3 +143,16 @@ def test_whatsapp_seite_nennt_aktive_und_archivierte_getrennt():
         "die WhatsApp-Seite benennt die aktiven Kontakte nicht")
     assert "1 archiviert" in seite, (
         "die archivierten Kontakte werden nicht getrennt ausgewiesen")
+
+
+def test_pipeline_hat_genau_eine_ueberschrift():
+    seite = _get("/pipeline").text
+    assert seite.count("<h1") == 1, (
+        f"{seite.count('<h1')} h1-Elemente auf /pipeline, erwartet 1")
+
+
+def test_favicon_wird_beantwortet():
+    """Kein 404 bei jedem Seitenaufruf."""
+    antwort = _get("/favicon.ico")
+    assert antwort.status_code in (200, 204), (
+        f"/favicon.ico antwortet mit {antwort.status_code}")

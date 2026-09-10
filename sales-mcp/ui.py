@@ -1199,6 +1199,20 @@ def _fehlerseite(status: int, titel: str, text: str) -> HTMLResponse:
                   status=status)
 
 
+# Ein Buchstabe als SVG statt einer .ico-Datei: kein zusaetzlicher
+# Mount, keine CSP-Lockerung, und das 404 bei jedem Seitenaufruf ist weg.
+_FAVICON = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+    '<rect width="32" height="32" rx="6" fill="#1f7a4d"/>'
+    '<text x="16" y="23" font-size="20" font-family="sans-serif" '
+    'font-weight="700" fill="#ffffff" text-anchor="middle">S</text></svg>')
+
+
+async def favicon(request):
+    return Response(_FAVICON, media_type="image/svg+xml",
+                    headers={"cache-control": "public, max-age=86400"})
+
+
 def _badge(kanal) -> str:
     return f'<span class="badge {_e(kanal)}">{_e(kanal)}</span>'
 
@@ -3344,8 +3358,7 @@ async def pipeline(request):
     # 01.09.2026). Die Endzustaende stehen auf /ergebnisse.
     aktive = server.PIPELINE_STUFEN[:-2]
     abgeschlossen = sum(len(spalten[s]) for s in server.PIPELINE_STUFEN[-2:])
-    teile = ["<h1>Pipeline</h1>",
-             f'<p class="meta">Stufe setzen: auf der Kontaktseite. '
+    teile = [f'<p class="meta">Stufe setzen: auf der Kontaktseite. '
              f'Jeder Wechsel steht mit Begründung im Protokoll. '
              f'Abgeschlossene ({abgeschlossen}) stehen unter '
              f'<a href="/ergebnisse">Ergebnisse</a>.</p>',
@@ -5014,6 +5027,9 @@ async def heute(request):
 
 app = Starlette(routes=[
     Route("/", heute),
+    # Vor allen Platzhalter-Routen (z. B. `/kontakte/{lead_id}`), damit
+    # kein `{...}`-Segment sie je abfangen kann.
+    Route("/favicon.ico", favicon),
     Route("/freigaben", inbox),
     Route("/freigaben/verlauf/{art}", freigaben_verlauf),
     Route("/aktion/freigeben", aktion_freigeben, methods=["POST"]),
