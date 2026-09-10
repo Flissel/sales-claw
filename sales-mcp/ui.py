@@ -401,8 +401,8 @@ class HostWache:
         if host not in ERLAUBTE_HOSTS:
             antwort = _fehlerseite(
                 421, "Falscher Host",
-                "Diese Oberflaeche antwortet nur auf 127.0.0.1, localhost "
-                "und die ausdruecklich erlaubten Adressen (UI_EXTRA_HOSTS). "
+                "Diese Oberfläche antwortet nur auf 127.0.0.1, localhost "
+                "und die ausdrücklich erlaubten Adressen (UI_EXTRA_HOSTS). "
                 "Anfragen unter fremdem Namen (DNS-Rebinding) werden nicht "
                 "bedient.")
             await antwort(scope, receive, send)
@@ -449,7 +449,7 @@ class AnmeldeWache:
                 and scope["path"] != "/logout"):
             antwort = _fehlerseite(
                 403, "Nur Lesen",
-                "Diese Anmeldung darf sehen, aber nicht veraendern. "
+                "Diese Anmeldung darf sehen, aber nicht verändern. "
                 "Nichts wurde getan — Freigaben braucht die Rolle "
                 "'freigeben'.")
             await antwort(scope, receive, send)
@@ -934,7 +934,7 @@ button, input, select, textarea { font-family: inherit; }
 video.vorschau { width: 240px; max-width: 100%; }
 audio { width: 100%; max-width: 240px; }
 /* Aufklappbare Freigabe-Karten (25.08.2026). `<details>` statt JavaScript:
-   der Betreiber oeffnet mehrere Entwuerfe nebeneinander, vergleicht und
+   der Betreiber öffnet mehrere Entwürfe nebeneinander, vergleicht und
    entscheidet, ohne die Liste zu verlassen. Der Pfeil bleibt der native —
    er ist die einzige Anzeige, die auch ohne CSS noch stimmt. */
 details.karte > summary { cursor: pointer; padding: .3rem 0;
@@ -966,7 +966,7 @@ button.primaer { background: var(--gut); border-color: var(--gut);
 button.gefahr { background: var(--flaeche); border-color: var(--fehler);
                 color: var(--fehler); border-width: 2px; }
 /* 16px ist die Schwelle: darunter zoomt iOS beim Fokussieren von selbst in
-   das Feld hinein und laesst die Seite verschoben zurueck. */
+   das Feld hinein und lässt die Seite verschoben zurück. */
 select, input[type="text"], input[type="tel"], input[type="email"] {
   min-height: 44px; padding: .5rem .6rem; border-radius: 6px;
   border: 1px solid var(--linie_stark); background: var(--flaeche);
@@ -1142,12 +1142,12 @@ WA_ZUSTAND = {
               "Nachrichten kommen an und gehen raus."),
     "qr_ready": ("wartet auf Kopplung", "warnung",
                  "Die Anmeldung fehlt — nichts kommt an, nichts geht raus. "
-                 "Neu koppeln in der OpenWA-Oberflaeche (Verweis unten)."),
+                 "Neu koppeln in der OpenWA-Oberfläche (Verweis unten)."),
     "failed": ("gescheitert", "gefahr",
-               "Die Sitzung ist abgestuerzt. In der OpenWA-Oberflaeche "
+               "Die Sitzung ist abgestürzt. In der OpenWA-Oberfläche "
                "stoppen und neu starten; danach ggf. neu koppeln."),
     "stopped": ("gestoppt", "warnung",
-                "Die Sitzung laeuft nicht. In der OpenWA-Oberflaeche starten."),
+                "Die Sitzung läuft nicht. In der OpenWA-Oberfläche starten."),
     "starting": ("startet", "", "Einen Moment — die Sitzung faehrt hoch."),
 }
 
@@ -1449,8 +1449,8 @@ def _medien_tabelle():
             continue
         teile.append(f"<h2>{_e(art)} ({len(dateien)})</h2>")
         teile.append(_tabelle(
-            ["Datei", "Groesse", "Herkunft", "Bot darf senden",
-             "Zuletzt gesendet", "Ansicht", "Loeschen"],
+            ["Datei", "Größe", "Herkunft", "Bot darf senden",
+             "Zuletzt gesendet", "Ansicht", "Löschen"],
             [[_e(name), _e(_medien_groesse(groesse)),
               _e(server._medien_herkunft(name, meta.get(name))),
               _medien_schalter(name, meta.get(name)),
@@ -1485,7 +1485,7 @@ def _medien_loeschen_knopf(name: str) -> str:
             f'action="/medien/loeschen">'
             f'<input type="hidden" name="name" value="{_e(name)}">'
             f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
-            f'<button class="gefahr">Loeschen</button></form>')
+            f'<button class="gefahr">Löschen</button></form>')
 
 
 def _medien_formular(vorbelegt_ueberschreiben: bool = False) -> str:
@@ -1507,7 +1507,7 @@ def _medien_formular(vorbelegt_ueberschreiben: bool = False) -> str:
         f'<button class="primaer">Hochladen</button></div></form>'
         f'<p class="meta">Erlaubt: {_e(erlaubt)}. Hoechstens {grenze} MB. '
         f'Die Datei steht danach im Chat unter <code>medien_liste()</code> '
-        f'und laesst sich an Entwuerfe haengen. Sie geht dadurch an '
+        f'und lässt sich an Entwürfe hängen. Sie geht dadurch an '
         f'niemanden — versendet wird erst mit einer Freigabe.</p></div>')
 
 
@@ -1540,7 +1540,7 @@ def _medien_vorschau(name: str) -> str:
         return (f'<audio controls preload="none" '
                 f'src="{_e(quelle)}"></audio>')
     return (f'<a href="{_e(quelle)}" target="_blank" rel="noreferrer">'
-            f'Oeffnen</a>')
+            f'Öffnen</a>')
 
 
 @_gesichert_seite
@@ -1597,8 +1597,8 @@ def _medien_loeschen_warnseite(basis: str, verweise) -> HTMLResponse:
             f'{_e(z["name"] or "(ohne Kontakt)")}</li>' for z in verweise)
         hinweis = (f'<p><b>An dieser Datei haengen {len(verweise)} '
                    f'Entwuerfe:</b></p><ul>{liste}</ul>'
-                   f'<p>Nach dem Loeschen scheitern sie beim Zustellen — '
-                   f'`drafts.media_ref` haelt nur den Namen, nicht die '
+                   f'<p>Nach dem Löschen scheitern sie beim Zustellen — '
+                   f'`drafts.media_ref` hält nur den Namen, nicht die '
                    f'Datei.</p>')
     else:
         hinweis = "<p>Kein Entwurf verweist auf diese Datei.</p>"
@@ -1606,8 +1606,8 @@ def _medien_loeschen_warnseite(basis: str, verweise) -> HTMLResponse:
         "Loeschen bestaetigen",
         f'<h1>Loeschen bestaetigen</h1><div class="karte">'
         f'<p>Datei: <b>{_e(basis)}</b></p>{hinweis}'
-        f'<p><b>Das ist ein echtes Loeschen.</b> Anders als beim Archivieren '
-        f'von Kontakten gibt es hier nichts zurueckzuholen — die Datei liegt '
+        f'<p><b>Das ist ein echtes Löschen.</b> Anders als beim Archivieren '
+        f'von Kontakten gibt es hier nichts zurückzuholen — die Datei liegt '
         f'danach nicht mehr im Medienordner.</p>'
         f'<div class="aktionen">'
         f'<form class="aktion gefahr" method="post" '
@@ -1615,7 +1615,7 @@ def _medien_loeschen_warnseite(basis: str, verweise) -> HTMLResponse:
         f'<input type="hidden" name="name" value="{_e(basis)}">'
         f'<input type="hidden" name="name_bestaetigt" value="{_e(basis)}">'
         f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
-        f'<button class="gefahr">Ja — {_e(basis)} loeschen</button>'
+        f'<button class="gefahr">Ja — {_e(basis)} löschen</button>'
         f'</form></div>'
         f'<p class="abbrechen"><a href="/medien">Abbrechen, nichts tun</a>'
         f'</p></div>', status=409)
@@ -1652,24 +1652,24 @@ async def aktion_medien_loeschen_bestaetigen(request):
     if fehler:
         return _fehlerseite(404, "Nicht gefunden", _e(fehler))
     if str(form.get("name_bestaetigt") or "") != basis:
-        return _fehlerseite(400, "Bestaetigung fehlt", (
+        return _fehlerseite(400, "Bestätigung fehlt", (
             "Ohne den auf der Warnseite gelesenen Dateinamen wird nichts "
-            "geloescht."))
+            "gelöscht."))
 
     verweise = _medien_verweise(basis)
     freigegeben = [z for z in verweise if z["status"] == "approved"]
     if freigegeben:
-        return _fehlerseite(409, "Nicht geloescht", (
+        return _fehlerseite(409, "Nicht gelöscht", (
             f"Auf '{_e(basis)}' verweisen {len(freigegeben)} FREIGEGEBENE "
-            f"Entwuerfe. Der Versender liest die Datei erst beim Zustellen "
+            f"Entwürfe. Der Versender liest die Datei erst beim Zustellen "
             f"und kann das jeden Moment tun — dann ginge eine Nachricht "
-            f"ohne ihre Unterlage raus oder scheiterte. Erst die Entwuerfe "
-            f"ablehnen, dann die Datei loeschen."))
+            f"ohne ihre Unterlage raus oder scheiterte. Erst die Entwürfe "
+            f"ablehnen, dann die Datei löschen."))
     try:
         os.unlink(os.path.join(server.medien.wurzel(), basis))
     except OSError as e:
-        return _fehlerseite(500, "Nicht geloescht", (
-            f"Datei nicht loeschbar ({_e(type(e).__name__)}). Haengt der "
+        return _fehlerseite(500, "Nicht gelöscht", (
+            f"Datei nicht löschbar ({_e(type(e).__name__)}). Hängt der "
             f"Medienordner an diesem Dienst ohne `:ro`?"))
     LOG.warning("Medien: %s geloescht (%d Entwuerfe verwiesen darauf)",
                 basis, len(verweise))
@@ -1792,14 +1792,14 @@ def _wiedervorlage_formular(lead_id) -> str:
         f'<form method="post" action="/wiedervorlagen/setzen">'
         f'<input type="hidden" name="lead_id" value="{_e(lead_id)}">'
         f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
-        f'<p><label class="feld">Faellig am<br>'
+        f'<p><label class="feld">Fällig am<br>'
         f'<input type="date" name="faellig_am" required></label></p>'
         f'<p><label class="feld">Notiz<br>'
         f'<input type="text" name="notiz" maxlength="300" required '
-        f'placeholder="Rueckruf wegen des Angebots"></label></p>'
+        f'placeholder="Rückruf wegen des Angebots"></label></p>'
         f'<div class="aktionen">'
         f'<button class="primaer">Merken</button></div></form>'
-        f'<p class="meta">Erscheint ab dem Faelligkeitstag im Digest und '
+        f'<p class="meta">Erscheint ab dem Fälligkeitstag im Digest und '
         f'unter <a href="/wiedervorlagen">Wiedervorlagen</a>, bis sie '
         f'quittiert wird. Es geht dabei nichts an den Kunden.</p></div>')
 
@@ -1871,8 +1871,8 @@ async def inbox(request):
         (a, a) for a in sorted(set(offen) | set(kaputt) | set(wartend))
         if a not in bekannt]
 
-    teile = ['<p class="meta">Vier Arten, vier Listen, vier Verlaeufe. '
-             'Freigeben heisst senden; nichts geht ohne dich raus.</p>']
+    teile = ['<p class="meta">Vier Arten, vier Listen, vier Verläufe. '
+             'Freigeben heißt senden; nichts geht ohne dich raus.</p>']
     for art, name in arten:
         n_offen = len(offen.get(art, []))
         teile.append(
@@ -2021,12 +2021,12 @@ async def freigaben_verlauf(request):
         rumpf = "".join(_verlauf_zeile_entwurf(z) for z in zeilen)
     else:
         return _fehlerseite(404, "Unbekannte Art",
-                            "Verlaeufe gibt es fuer whatsapp, linkedin, email "
+                            "Verläufe gibt es für whatsapp, linkedin, email "
                             "und termine.")
     if not zeilen:
         rumpf = '<p class="meta">Noch nichts im Verlauf.</p>'
-    kopf = (f'<p class="meta">{len(zeilen)} Eintraege (hoechstens {VERLAUF_MAX}) '
-            f'· <a href="/freigaben">Zurueck zu den Freigaben</a></p>')
+    kopf = (f'<p class="meta">{len(zeilen)} Einträge (höchstens {VERLAUF_MAX}) '
+            f'· <a href="/freigaben">Zurück zu den Freigaben</a></p>')
     return _seite(f"Verlauf {name}", kopf + rumpf)
 
 
@@ -2173,7 +2173,7 @@ async def aktion_erneut_freigeben(request):
     if str(form.get("bestaetigt") or "") != "ja":
         return _fehlerseite(
             400, "Bestaetigung fehlt",
-            "Erneut freigeben heisst: derselbe Versand wird noch einmal "
+            "Erneut freigeben heißt: derselbe Versand wird noch einmal "
             "versucht. Ohne gesetztes Haekchen wird nichts getan.")
     # SQL wie server.entwurf_erneut_freigeben mit bestaetigt=False —
     # inklusive der Doppelversand-Marken-Pruefung (Claim-Praefix aus
@@ -2196,12 +2196,12 @@ async def aktion_erneut_freigeben(request):
         if (status == "failed"
                 and error.startswith(server._CLAIM_MARKE_PRAEFIX)):
             return _fehlerseite(
-                409, "Verweigert: moeglicher Doppelversand",
+                409, "Verweigert: möglicher Doppelversand",
                 "Dieser Entwurf traegt die Zustellungs-Marke des Dispatchers "
                 "— ein Absturz zwischen Claim und Buchung kann bedeuten, dass "
-                "die Nachricht BEREITS ZUGESTELLT wurde. Diese Oberflaeche "
-                "gibt so einen Entwurf grundsaetzlich nicht erneut frei. Wer "
-                "das Doppelversand-Risiko ausdruecklich uebernehmen will, tut "
+                "die Nachricht BEREITS ZUGESTELLT wurde. Diese Oberfläche "
+                "gibt so einen Entwurf grundsätzlich nicht erneut frei. Wer "
+                "das Doppelversand-Risiko ausdrücklich übernehmen will, tut "
                 "das im Chat: entwurf_erneut_freigeben(draft_id, "
                 f"bestaetigt=True). error: {_e(error)}")
         return _statusfehler(draft_id, "failed")
@@ -2253,13 +2253,13 @@ def _marken_seite(error: str) -> HTMLResponse:
     Freigeben. Hier zaehlt sie andersherum: dort waere ein zweiter Versand der
     Schaden, hier ein `rejected`, das eine erfolgte Zustellung verdeckt."""
     return _fehlerseite(
-        409, "Verweigert: moeglicherweise bereits zugestellt",
+        409, "Verweigert: möglicherweise bereits zugestellt",
         "Dieser Entwurf traegt die Zustellungs-Marke des Dispatchers — ein "
         "Absturz zwischen Claim und Buchung kann bedeuten, dass die Nachricht "
         "BEREITS BEIM EMPFAENGER ist. Ihn zu verwerfen schriebe dann eine "
         "Luege in die Datenbank: die Zeile saehe aus wie &#x27;nie "
-        "rausgegangen&#x27;. Diese Oberflaeche verwirft so einen Entwurf "
-        "grundsaetzlich nicht. Wer das ausdruecklich verantworten will, tut "
+        "rausgegangen&#x27;. Diese Oberfläche verwirft so einen Entwurf "
+        "grundsätzlich nicht. Wer das ausdrücklich verantworten will, tut "
         "das im Chat: entwurf_verwerfen(draft_id, bestaetigt=True). "
         f"error: {_e(error)}")
 
@@ -2272,15 +2272,15 @@ def _verwerfen_warnseite(z) -> HTMLResponse:
     anhang = (f'<p>Am Entwurf haengt der Anhang <b>{_e(z["media_ref"])}</b>.</p>'
               if z.get("media_ref") else "")
     return _seite(
-        "Verwerfen bestaetigen",
+        "Verwerfen bestätigen",
         f'<div class="warnung">Dieser Entwurf ist <b>freigegeben</b> und '
         f'wartet auf Zustellung an <b>{_e(z["recipient"])}</b>'
         f'{" (" + _e(z["name"]) + ")" if z.get("name") else ""} '
-        f'ueber {_e(z["channel"])}.'
-        f'<p>Verwerfen nimmt eine Freigabe zurueck, die bereits gilt: der '
-        f'zustaendige Dispatcher duerfte diesen Entwurf jederzeit nehmen. '
+        f'über {_e(z["channel"])}.'
+        f'<p>Verwerfen nimmt eine Freigabe zurück, die bereits gilt: der '
+        f'zuständige Dispatcher dürfte diesen Entwurf jederzeit nehmen. '
         f'Danach steht er auf <code>rejected</code> und geht nicht mehr raus. '
-        f'<b>Geloescht wird nichts</b> — Text und Verlauf bleiben '
+        f'<b>Gelöscht wird nichts</b> — Text und Verlauf bleiben '
         f'vollzaehlig stehen.</p>{anhang}'
         f'<p>Ist der Entwurf inzwischen in Zustellung gegangen, wird hier '
         f'nichts getan (die Seite sagt es dann).</p></div>'
@@ -2396,8 +2396,8 @@ def _verwerfen_statusfehler(z) -> HTMLResponse:
         return _fehlerseite(
             409, "Offener Entwurf — hier ist Ablehnen der Weg",
             "Dieser Entwurf steht noch auf &#x27;pending&#x27;. Offene "
-            "Entwuerfe werden mit dem Knopf <b>Ablehnen</b> im Block "
-            "&#x27;Zur Freigabe&#x27; weggeraeumt — das ist derselbe Vorgang "
+            "Entwürfe werden mit dem Knopf <b>Ablehnen</b> im Block "
+            "&#x27;Zur Freigabe&#x27; weggeräumt — das ist derselbe Vorgang "
             "(er endet ebenfalls auf &#x27;rejected&#x27;). Nichts getan.")
     if z["status"] == "sent":
         return _fehlerseite(
@@ -2479,7 +2479,7 @@ async def kontakte(request):
     # (31.08.2026) blockiert sie tatsaechlich: Erstansprachen brauchen
     # opt_in oder existing_customer.
     fussnote = ('<p class="meta"><b>Consent</b> ist die dokumentierte '
-                'Werbe-Einwilligung nach UWG — <i>unknown</i> heisst: nie '
+                'Werbe-Einwilligung nach UWG — <i>unknown</i> heißt: nie '
                 'erfasst. Sie ist NICHT die WhatsApp-Freigabe (die steht auf '
                 'der Kontaktseite). Ohne <i>opt_in</i> oder '
                 '<i>existing_customer</i> entsteht kein Erstansprache-'
@@ -2520,7 +2520,7 @@ def _wiedervorlagen_tabelle(zeilen, mit_kontakt: bool = True) -> str:
     for z in zeilen:
         nutzlast = z["payload"] or {}
         faellig = str(nutzlast.get("faellig_am") or "")
-        marke = " <b>(faellig)</b>" if faellig and faellig <= heute else ""
+        marke = " <b>(fällig)</b>" if faellig and faellig <= heute else ""
         zelle = ([f'<a href="/kontakte/{_e(z["lead_id"])}">'
                   f'{_e(z["name"] or "(ohne Kontakt)")}</a>']
                  if mit_kontakt else [])
@@ -2603,13 +2603,13 @@ def _kontakt_formular(lead) -> str:
         f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">{felder}'
         f'<div class="aktionen">'
         f'<button class="primaer">Speichern</button></div></form>'
-        f'<p class="meta">Aenderbar sind nur diese Felder — Status, Consent '
+        f'<p class="meta">Änderbar sind nur diese Felder — Status, Consent '
         f'und Profilangaben nicht: die Einwilligung entsteht aus einer Antwort '
-        f'des Kontakts (bedarf_speichern), Profilangaben gehoeren nach '
-        f'profil_aktualisieren. Ein leeres Feld loescht die Angabe (der Name '
-        f'nicht). Die <b>Telefonnummer</b> ist der Schluessel, ueber den '
+        f'des Kontakts (bedarf_speichern), Profilangaben gehören nach '
+        f'profil_aktualisieren. Ein leeres Feld löscht die Angabe (der Name '
+        f'nicht). Die <b>Telefonnummer</b> ist der Schlüssel, über den '
         f'eingehende Nachrichten diesem Kontakt zugeordnet werden — sie zu '
-        f'aendern verschiebt kuenftige Nachrichten der alten Nummer zum '
+        f'ändern verschiebt künftige Nachrichten der alten Nummer zum '
         f'Sammelkontakt. Immer mit Landesvorwahl (+49…/+43…).</p></div>')
 
 
@@ -2648,7 +2648,7 @@ def _whatsapp_freigabe_bereich(lead, freigegeben: bool) -> str:
             f'<h2 id="freigabe">WhatsApp-Freigabe</h2>'
             f'<div class="karte">'
             f'<p><b>Erteilt.</b> Der Dispatcher stellt freigegebene '
-            f'Entwuerfe an diesen Kontakt zu. Steht die Autonomiestufe auf '
+            f'Entwürfe an diesen Kontakt zu. Steht die Autonomiestufe auf '
             f'<code>auto</code>, antwortet der Agent selbst.</p>'
             f'<div class="aktionen"><form class="aktion gefahr" '
             f'method="post" action="/kontakte/freigabe-entziehen">'
@@ -2711,22 +2711,22 @@ def _archiv_bereich(lead, archiviert: bool) -> str:
                 f'<div class="aktionen"><form class="aktion" method="post" '
                 f'action="/kontakte/wiederherstellen">'
                 f'{verborgen}<button class="primaer">Wiederherstellen</button>'
-                f'</form></div><p class="meta">Holt den Kontakt zurueck in '
+                f'</form></div><p class="meta">Holt den Kontakt zurück in '
                 f'Kontaktliste, Posteingang und Zuordnungsauswahl. Ein '
-                f'Gegen-Ereignis, kein Zuruecknehmen — es war nie etwas '
-                f'geloescht.</p></div>')
+                f'Gegen-Ereignis, kein Zurücknehmen — es war nie etwas '
+                f'gelöscht.</p></div>')
     return (f'<h2>Archiv</h2><div class="karte">'
             f'<div class="aktionen"><form class="aktion gefahr" method="post" '
             f'action="/kontakte/archivieren">'
             f'{verborgen}<button class="gefahr">Archivieren</button></form>'
             f'</div>'
             f'<p class="meta">Nimmt den Kontakt aus Kontaktliste, Posteingang '
-            f'und Zuordnungsauswahl. Der naechste Schritt zeigt erst, was an '
-            f'ihm haengt. <b>Loeschen gibt es hier nicht</b> — die Rolle hat '
-            f'kein DELETE-Recht, und der Verlauf haengt mit ON DELETE CASCADE '
-            f'am Kontakt: ein Loeschen naehme die ganze Historie mit. Ein '
-            f'echtes Loeschbegehren ist ein Admin-Eingriff ausserhalb dieser '
-            f'Oberflaeche.</p></div>')
+            f'und Zuordnungsauswahl. Der nächste Schritt zeigt erst, was an '
+            f'ihm hängt. <b>Loeschen gibt es hier nicht</b> — die Rolle hat '
+            f'kein DELETE-Recht, und der Verlauf hängt mit ON DELETE CASCADE '
+            f'am Kontakt: ein Löschen nähme die ganze Historie mit. Ein '
+            f'echtes Löschbegehren ist ein Admin-Eingriff außerhalb dieser '
+            f'Oberfläche.</p></div>')
 
 
 async def _kontakt_vorspann(request):
@@ -2996,9 +2996,9 @@ def _privat_warnseite(lead) -> HTMLResponse:
         f'PRIVAT markiert werden.'
         f'<p><b>Ab dann wird nichts mehr gespeichert</b> — eingehende wie '
         f'ausgehende Nachrichten dieses Kontakts erreichen das System nicht '
-        f'mehr, und diese stille Zeit laesst sich NICHT nachtraeglich '
+        f'mehr, und diese stille Zeit lässt sich NICHT nachträglich '
         f'wiederherstellen. Kein Verlauf, keine Profile, keine Reports, '
-        f'keine Entwuerfe.</p>'
+        f'keine Entwürfe.</p>'
         f'<p>Bestandsdaten bleiben erhalten (ab jetzt still) und sind nur '
         f'noch ueber die Datenauskunft erreichbar. Aufheben laesst sich die '
         f'Markierung jederzeit — gespeichert wird dann erst wieder ab '
@@ -3075,7 +3075,7 @@ async def aktion_kontakt_stufe(request):
     if abbruch:
         return abbruch
     begruendung = str(form.get("begruendung") or "").strip() or \
-        "vom Betreiber ueber die Oberflaeche gesetzt"
+        "vom Betreiber über die Oberflaeche gesetzt"
     antwort = json.loads(server.kontakt_stufe_setzen(
         lead_id=lead_id, stufe=str(form.get("stufe") or ""),
         begruendung=begruendung))
@@ -3218,7 +3218,7 @@ async def whatsapp(request):
             zustand = str(s.get("status") or "unbekannt")
             wort, klasse, erklaerung = WA_ZUSTAND.get(
                 zustand, (zustand, "warnung",
-                          "Unbekannter Zustand — in der OpenWA-Oberflaeche "
+                          "Unbekannter Zustand — in der OpenWA-Oberfläche "
                           "nachsehen."))
             sitzung = (wort, klasse)
             teile.append(
@@ -3278,22 +3278,22 @@ async def whatsapp(request):
         teile.append(
             f'<h2>OpenWA</h2>'
             f'<iframe class="dashboard" src="{_e(OPENWA_DASHBOARD_URL)}" '
-            f'title="OpenWA-Oberflaeche" referrerpolicy="no-referrer"></iframe>'
-            f'<p class="meta">Einmal mit dem OpenWA-Schluessel anmelden — '
-            f'die Anmeldung bleibt auf diesem Geraet erhalten. '
+            f'title="OpenWA-Oberfläche" referrerpolicy="no-referrer"></iframe>'
+            f'<p class="meta">Einmal mit dem OpenWA-Schlüssel anmelden — '
+            f'die Anmeldung bleibt auf diesem Gerät erhalten. '
             f'<a href="{_e(OPENWA_DASHBOARD_URL)}" target="_blank" '
-            f'rel="noreferrer">In eigenem Tab oeffnen &rarr;</a></p>')
+            f'rel="noreferrer">In eigenem Tab öffnen &rarr;</a></p>')
         antwort = _seite("WhatsApp", "".join(teile))
         antwort.headers["Content-Security-Policy"] = _csp_mit_rahmen(origin)
         return antwort
     teile.append(
         f'<h2>Koppeln und Neustarten</h2>'
         f'<p>Diese Seite <b>liest nur</b>. Zum Koppeln, Neustarten oder '
-        f'Abmelden geht es in die OpenWA-Oberflaeche — dort ist ein '
-        f'Schluessel noetig, der senden darf, und der gehoert bewusst nicht '
-        f'in diese Anzeige (sonst liesse sich die Freigabe umgehen).</p>'
+        f'Abmelden geht es in die OpenWA-Oberfläche — dort ist ein '
+        f'Schlüssel nötig, der senden darf, und der gehört bewusst nicht '
+        f'in diese Anzeige (sonst ließe sich die Freigabe umgehen).</p>'
         f'<p><a href="{_e(OPENWA_DASHBOARD_URL)}" target="_blank" '
-        f'rel="noreferrer">OpenWA-Oberflaeche oeffnen &rarr;</a></p>')
+        f'rel="noreferrer">OpenWA-Oberfläche öffnen &rarr;</a></p>')
     return _seite("WhatsApp", "".join(teile), refresh=60)
 
 
@@ -3325,7 +3325,7 @@ async def pipeline(request):
     abgeschlossen = sum(len(spalten[s]) for s in server.PIPELINE_STUFEN[-2:])
     teile = ["<h1>Pipeline</h1>",
              f'<p class="meta">Stufe setzen: auf der Kontaktseite. '
-             f'Jeder Wechsel steht mit Begruendung im Protokoll. '
+             f'Jeder Wechsel steht mit Begründung im Protokoll. '
              f'Abgeschlossene ({abgeschlossen}) stehen unter '
              f'<a href="/ergebnisse">Ergebnisse</a>.</p>',
              '<div class="spalten">']
@@ -3412,7 +3412,7 @@ async def kalender_seite(request):
     fremde, fremd_fehler = kalender.termine_lesen()
     teile = [_monatsgitter(monat, zeilen, fremde)]
 
-    kopf = ["Datum", "Zeit", "Kontakt", "Thema", "Ort", "Aendern"]
+    kopf = ["Datum", "Zeit", "Kontakt", "Thema", "Ort", "Ändern"]
     teile.append(f"<h2>Kommende Termine ({len(kommend)})</h2>")
     teile.append(_tabelle(kopf, [e for _, e in kommend]) if kommend
                  else "<p>Kein Termin steht an.</p>")
@@ -3620,7 +3620,7 @@ async def ergebnisse(request):
             teile.append("<p class=meta>—</p>")
             continue
         teile.append(_tabelle(
-            ["Kontakt", "Seit", "Begruendung"],
+            ["Kontakt", "Seit", "Begründung"],
             [[f'<a href="/kontakte/{_e(str(z["id"]))}">'
               f'{_e(z["name"] or "(ohne Namen)")}</a>',
               _zeit(z["updated_at"]),
@@ -3710,7 +3710,7 @@ def _profil_knopf(lead_id) -> str:
             f'<input type="hidden" name="lead_id" value="{_e(lead_id)}">'
             f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
             f'<button>Neues Profil anfordern</button></form></div>'
-            f'<p class="meta">Der Agent schreibt es beim naechsten '
+            f'<p class="meta">Der Agent schreibt es beim nächsten '
             f'Durchgang. Es geht dabei nichts an den Kunden.</p>')
 
 
@@ -3819,7 +3819,7 @@ async def aktion_kontakt_archivieren_bestaetigen(request):
     if str(lead["name"] or "") != bestaetigt_fuer:
         return _fehlerseite(
             409, "Bestaetigung passt nicht mehr",
-            "Der Kontakt heisst inzwischen anders als auf der Warnseite. "
+            "Der Kontakt heißt inzwischen anders als auf der Warnseite. "
             "Nichts wurde getan — die Seite neu laden und erneut ansehen.")
     if server._archiviert(lead["enrichment"]):
         return _fehlerseite(
@@ -3906,13 +3906,13 @@ async def kontakt_detail(request):
     if request.query_params.get("gespeichert") == "telefon":
         teile.append(
             '<div class="warnung">Telefonnummer geaendert. Damit wechselt der '
-            'Schluessel, ueber den eingehende Nachrichten diesem Kontakt '
+            'Schlüssel, über den eingehende Nachrichten diesem Kontakt '
             'zugeordnet werden: Nachrichten von der ALTEN Nummer landen ab '
-            'sofort beim Sammelkontakt „Unbekannte Eingaenge" und muessen '
-            'unter /einordnung neu zugeordnet werden; ausgehende Entwuerfe '
+            'sofort beim Sammelkontakt „Unbekannte Eingänge" und müssen '
+            'unter /einordnung neu zugeordnet werden; ausgehende Entwürfe '
             'gehen an die NEUE Nummer. Bereits gebuchte Zeilen im Verlauf '
-            'bleiben, wo sie sind (activities ist append-only). Laeuft der '
-            'Kontakt im Auto-Betrieb, greift die Aenderung dort erst nach '
+            'bleiben, wo sie sind (activities ist append-only). Läuft der '
+            'Kontakt im Auto-Betrieb, greift die Änderung dort erst nach '
             'scripts/sync-allowlist.ps1.</div>')
     teile.append(_paar_tabelle(
         stammdaten + [("Angelegt", _zeit(lead["created_at"]))]))
@@ -3933,7 +3933,7 @@ async def kontakt_detail(request):
         f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
         f'<select name="stufe" aria-label="Pipeline-Stufe">{stufen_optionen}'
         f'</select> '
-        f'<input name="begruendung" placeholder="Begruendung (empfohlen)" '
+        f'<input name="begruendung" placeholder="Begründung (empfohlen)" '
         f'size="34"> <button>Stufe setzen</button></form>')
 
     # Privat-Markierung (P3, 29.08.2026): setzen fuehrt ueber die
@@ -3943,7 +3943,7 @@ async def kontakt_detail(request):
         teile.append(
             f'<h2 id="privat">&#128274; Privat</h2>'
             f'<p class="meta">Dieser Kontakt ist dem System still: nichts '
-            f'wird gespeichert, kein Verlauf, keine Entwuerfe. Bestand nur '
+            f'wird gespeichert, kein Verlauf, keine Entwürfe. Bestand nur '
             f'ueber die Datenauskunft.</p>'
             f'<form method="post" action="/kontakte/privat-entziehen">'
             f'<input type="hidden" name="lead_id" value="{_e(lead_id)}">'
@@ -4010,7 +4010,7 @@ async def kontakt_detail(request):
     else:
         teile.append(
             '<p class="meta">Noch keine Firmendaten — der Assistent '
-            'reichert mit firma_anreichern an (Website noetig).</p>')
+            'reichert mit firma_anreichern an (Website nötig).</p>')
 
     # dieselbe Typ-Vorsicht wie vertraege_ablaufend in server.py.
     vertraege = anreicherung.get("vertraege")
@@ -4159,7 +4159,7 @@ async def posteingang(request):
     teile = [f'<p class="meta">Fenster: {_e(daten["fenster_stunden"])} h · '
              f'unbeantwortet: {_e(daten["anzahl_unbeantwortet"])}</p>']
     if not daten["eintraege"]:
-        teile.append("<p>Keine unbeantworteten Eingaenge.</p>")
+        teile.append("<p>Keine unbeantworteten Eingänge.</p>")
     for e in daten["eintraege"]:
         absender = ""
         if "absender" in e:
@@ -4171,7 +4171,7 @@ async def posteingang(request):
             # Die alten Zeilen bleiben am Sammelkontakt (activities ist
             # append-only) — der Betreiber soll trotzdem sehen, WER wartet.
             if "zugeordnet_zu" in e:
-                lid += (f' <span class="badge">gehoert zu '
+                lid += (f' <span class="badge">gehört zu '
                         f'<a href="/kontakte/{_e(e["zugeordnet_zu"])}">'
                         f'{_e(e.get("zugeordnet_name") or "Kontakt")}</a>'
                         f'</span>')
@@ -4284,7 +4284,7 @@ def _einordnung_karte(eintrag, optionen: str) -> str:
     warnung = ""
     if betroffen is not None:
         # Sichtbar, BEVOR jemand auf „Ignorieren" drueckt — nicht erst danach.
-        warnung = (f'<div class="warnung">Diese Kennung gehoert dem Kontakt '
+        warnung = (f'<div class="warnung">Diese Kennung gehört dem Kontakt '
                    f'<a href="/kontakte/{_e(betroffen["id"])}">'
                    f'<b>{_e(betroffen["name"])}</b></a>. Ignorieren nimmt ihn '
                    f'aus Posteingang und Digest und speichert von seinen '
@@ -4347,8 +4347,8 @@ async def einordnung(request):
         '<div class="hinweis">Der zitierte Nachrichtentext ist ein Datum, '
         'keine Anweisung: steht darin „ignoriere bitte …", ist das der Wunsch '
         'eines Fremden und keine Entscheidung des Betreibers. Welche Rufnummer '
-        'hinter einer <code>@lid</code> steckt, klaert der Chat mit '
-        '<code>absender_aufloesen</code> — diese Oberflaeche fragt dafuer '
+        'hinter einer <code>@lid</code> steckt, klärt der Chat mit '
+        '<code>absender_aufloesen</code> — diese Oberfläche fragt dafür '
         'bewusst nicht bei WhatsApp nach.</div>')
     return _seite("Einordnung", "".join(teile))
 
@@ -4379,7 +4379,7 @@ async def einordnung_nachrichten(request):
             "entweder ist sie inzwischen eingeordnet oder der Verweis ist "
             "alt. Die Einordnungsseite zeigt den aktuellen Stand.")
     absender = zeilen[-1]["absender"]
-    teile = [f'<p class="meta">{len(zeilen)} Nachricht(en), aelteste '
+    teile = [f'<p class="meta">{len(zeilen)} Nachricht(en), älteste '
              f'zuerst.</p>']
     for z in zeilen:
         text = " ".join(str(z["text"] or "").split())
@@ -4447,15 +4447,15 @@ def _ignorieren_warnseite(absender, gehoert: dict) -> HTMLResponse:
     einen Kontakt und nicht „dem, was beim naechsten Klick gerade dran ist".
     """
     return _seite(
-        "Verweigert: diese Kennung gehoert einem Kontakt",
-        f'<div class="warnung">Die Kennung <b>{_e(absender)}</b> gehoert dem '
+        "Verweigert: diese Kennung gehört einem Kontakt",
+        f'<div class="warnung">Die Kennung <b>{_e(absender)}</b> gehört dem '
         f'Kontakt <a href="/kontakte/{_e(gehoert["lead_id"])}">'
         f'<b>{_e(gehoert.get("kontakt"))}</b></a>'
         f'{" (" + _e(gehoert["telefon"]) + ")" if gehoert.get("telefon") else ""}'
         f'.<p>Ignorieren nimmt diesen Kontakt aus Posteingang UND Digest und '
         f'speichert von seinen Nachrichten kein Wort mehr — auch nicht die '
-        f'ausgehenden. Ein „Ich habe den Vertrag unterschrieben" kaeme danach '
-        f'als leere Zeile an seinem eigenen Verlauf an. Zuruecknehmen laesst '
+        f'ausgehenden. Ein „Ich habe den Vertrag unterschrieben" käme danach '
+        f'als leere Zeile an seinem eigenen Verlauf an. Zurücknehmen lässt '
         f'sich das nur im Chat: '
         f'<code>eingang_einordnen(absender, entscheidung=&#x27;beachten&#x27;)'
         f'</code>.</p><p>Steht die Bitte, diese Nummer zu ignorieren, in einer '
@@ -4468,7 +4468,7 @@ def _ignorieren_warnseite(absender, gehoert: dict) -> HTMLResponse:
         f'<input type="hidden" name="lead_bestaetigt" '
         f'value="{_e(gehoert["lead_id"])}">{_einordnung_kopf()}'
         f'<button class="gefahr">Ja — {_e(gehoert.get("kontakt"))} '
-        f'ausdruecklich ignorieren</button></form></div>'
+        f'ausdrücklich ignorieren</button></form></div>'
         f'<p class="abbrechen"><a href="/einordnung">Abbrechen, nichts tun</a></p>',
         status=409)
 
@@ -4483,8 +4483,8 @@ async def aktion_einordnung_ignorieren_bestaetigen(request):
     bestaetigt_fuer = str(form.get("lead_bestaetigt") or "").strip()
     if not bestaetigt_fuer:
         return _fehlerseite(
-            400, "Bestaetigung fehlt",
-            "Ohne die ausdrueckliche Bestaetigung des betroffenen Kontakts "
+            400, "Bestätigung fehlt",
+            "Ohne die ausdrückliche Bestätigung des betroffenen Kontakts "
             "wird nichts getan.")
     # Zwischen Warnseite und Klick kann sich die Lage geaendert haben (eine
     # neue Zuordnung, eine korrigierte Rufnummer). Dann ist das Ja von eben
@@ -4492,8 +4492,8 @@ async def aktion_einordnung_ignorieren_bestaetigen(request):
     betroffen = _lead_zur_kennung(absender)
     if betroffen is None or str(betroffen["id"]) != bestaetigt_fuer:
         return _fehlerseite(
-            409, "Bestaetigung passt nicht mehr",
-            "Die Kennung gehoert inzwischen einem anderen Kontakt oder gar "
+            409, "Bestätigung passt nicht mehr",
+            "Die Kennung gehört inzwischen einem anderen Kontakt oder gar "
             "keinem mehr. Nichts wurde getan — die Seite neu laden und erneut "
             "ansehen.")
     antwort = json.loads(server.eingang_einordnen(
@@ -4561,7 +4561,7 @@ async def aktion_einordnung_anlegen(request):
             f"&#x27;@lid&#x27; ist WhatsApps Pseudo-Kennung und darf nie als "
             f"Telefonnummer eines Kontakts eingetragen werden. Zuerst im Chat "
             f"<code>absender_aufloesen(kennung=&#x27;{_e(absender)}&#x27;)"
-            f"</code> laufen lassen (diese Oberflaeche fragt bewusst nicht "
+            f"</code> laufen lassen (diese Oberfläche fragt bewusst nicht "
             f"selbst bei WhatsApp nach), danach hier anlegen oder zuordnen. "
             f"Kein Kontakt angelegt.")
     antwort = json.loads(server.kontakt_anlegen(
@@ -4588,9 +4588,9 @@ def _login_seite(meldung: str = "", status: int = 200) -> HTMLResponse:
     hinweis = ""
     if not UI_SESSION_SECRET:
         hinweis = ('<p class="meta">Die Anmeldung ist nicht scharf — es ist '
-                   'kein UI_SESSION_SECRET gesetzt, die Oberflaeche steht '
+                   'kein UI_SESSION_SECRET gesetzt, die Oberfläche steht '
                    'allen im Tailscale-Netz offen. Scharf schalten: '
-                   'deploy/benutzer-anlegen.sh auf der VM ausfuehren '
+                   'deploy/benutzer-anlegen.sh auf der VM ausführen '
                    '(siehe docs/05).</p>')
     fehler = f'<p class="fehler">{_e(meldung)}</p>' if meldung else ""
     rumpf = (
@@ -4613,8 +4613,8 @@ async def login(request):
     form = await request.form()
     if not _csrf_ok(form):
         return _fehlerseite(
-            400, "Ungueltige Anfrage",
-            "Die Anfrage traegt keine gueltige Marke dieser Oberflaeche. "
+            400, "Ungültige Anfrage",
+            "Die Anfrage trägt keine gültige Marke dieser Oberfläche. "
             "Seite neu laden und erneut anmelden.")
     if not UI_SESSION_SECRET:
         return _login_seite()
@@ -4651,8 +4651,8 @@ async def logout(request):
     form = await request.form()
     if not _csrf_ok(form):
         return _fehlerseite(
-            400, "Ungueltige Anfrage",
-            "Die Anfrage traegt keine gueltige Marke dieser Oberflaeche.")
+            400, "Ungültige Anfrage",
+            "Die Anfrage trägt keine gültige Marke dieser Oberfläche.")
     antwort = RedirectResponse("/login", status_code=303)
     antwort.delete_cookie(SITZUNG_COOKIE, path="/")
     return antwort
@@ -4697,7 +4697,7 @@ def _heute_kalender() -> str:
         kommend.append((beginn, str(t.get("titel") or "(ohne Titel)")))
     kommend.sort(key=lambda p: p[0])
     if not kommend:
-        return '<p class="meta">Nichts in den naechsten zwei Wochen.</p>'
+        return '<p class="meta">Nichts in den nächsten zwei Wochen.</p>'
     zeilen = []
     for beginn, titel in kommend[:HEUTE_TERMINE]:
         klasse = " heute" if beginn.date() == jetzt.date() else ""
@@ -4709,7 +4709,7 @@ def _heute_kalender() -> str:
                       f'{_e(wann)}</span><span>{_e(titel)}'
                       f'<br><span class="meta">{_e(meta)}</span></span></div>')
     zeilen.append('<p class="meta"><a href="/kalender">Ganzen Kalender '
-                  'oeffnen</a></p>')
+                  'öffnen</a></p>')
     return "".join(zeilen)
 
 
@@ -4736,15 +4736,15 @@ def _heute_posteingang() -> str:
         return f'<p class="meta">Posteingang nicht lesbar: {_e(e)}</p>'
     anzahl = int(daten.get("anzahl_unbeantwortet") or 0)
     if not anzahl:
-        return '<p class="meta">Keine unbeantworteten Eingaenge.</p>'
+        return '<p class="meta">Keine unbeantworteten Eingänge.</p>'
     namen = [str(e.get("kontakt") or "?") for e in daten.get("eintraege") or []]
     aelteste = max((float(e.get("wartet_stunden") or 0)
                     for e in daten.get("eintraege") or []), default=0)
-    return (f'<p><b class="mono">{anzahl}</b> unbeantwortet, aelteste seit '
+    return (f'<p><b class="mono">{anzahl}</b> unbeantwortet, älteste seit '
             f'{aelteste:.0f} h</p>'
             f'<p class="meta">{_e(", ".join(namen[:3]))}'
             f'{" …" if len(namen) > 3 else ""}</p>'
-            f'<p class="meta"><a href="/posteingang">Posteingang oeffnen</a></p>')
+            f'<p class="meta"><a href="/posteingang">Posteingang öffnen</a></p>')
 
 
 def _heute_pipeline() -> str:
@@ -4760,7 +4760,7 @@ def _heute_pipeline() -> str:
         f'<span>{_e(s)}</span></div>'
         for s in server.PIPELINE_STUFEN[:-2])
     return (f'<div class="kacheln">{kacheln}</div>'
-            f'<p class="meta"><a href="/pipeline">Pipeline oeffnen</a></p>')
+            f'<p class="meta"><a href="/pipeline">Pipeline öffnen</a></p>')
 
 
 @_gesichert_seite
@@ -4805,7 +4805,7 @@ async def heute(request):
                  f'<b>{len(termine_offen)}</b></span>'
                  f'<a href="/freigaben">Alle Freigaben</a></div>')
     if not pending:
-        haupt.append("<p>Keine offenen Entwuerfe.</p>")
+        haupt.append("<p>Keine offenen Entwürfe.</p>")
     for art, name in FREIGABE_ARTEN:
         zeilen = je_art.get(art, [])
         for z in zeilen[:HEUTE_JE_ART]:
@@ -4840,7 +4840,7 @@ async def heute(request):
     haupt.append(f'<h2>Einordnung ({einordnung_offen})</h2>')
     haupt.append(
         f'<p>{"Kein unbekannter Absender wartet." if not einordnung_offen else f"{einordnung_offen} unbekannte Absender warten auf eine Entscheidung."} '
-        f'<a href="/einordnung">Einordnung oeffnen</a></p>')
+        f'<a href="/einordnung">Einordnung öffnen</a></p>')
 
     rand = (f'<div><h2>Kalender</h2>{_heute_kalender()}</div>'
             f'<div><h2>WhatsApp</h2>{_heute_whatsapp()}</div>'

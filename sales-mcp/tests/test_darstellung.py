@@ -63,3 +63,29 @@ def test_kaufmaennisches_und_erscheint_einmal_escapet():
     assert "&amp;amp\\;" not in seite, "dreifach escapet"
     assert "Sophie &amp; Stephane" in seite, (
         "das kaufmaennische Und fehlt oder ist falsch escapet")
+
+
+# Wortliste statt Regex auf `ae|oe|ue`: ein Muster wuerde bei jedem
+# englischen Wort und jeder E-Mail-Adresse anschlagen. Diese Liste
+# enthaelt nur Woerter, die in der laufenden Oberflaeche gemessen wurden.
+WOERTER_ASCII = [
+    "aelteste", "naechste", "oeffnen", "Entwuerfe", "Entwuerfen",
+    "Oberflaeche", "laedt", "Aendern", "aendern", "Groesse", "Loeschen",
+    "loeschen", "gehoert", "klaert", "noetig", "moeglich", "zurueck",
+    "Verlaeufe", "heisst", "Eingaenge", "Faellig", "Rueckruf",
+    "Begruendung", "ausdruecklich", "Schluessel",
+]
+
+SEITEN = ["/", "/freigaben", "/einordnung", "/kalender", "/kontakte",
+          "/pipeline", "/ergebnisse", "/posteingang", "/medien", "/whatsapp"]
+
+
+@pytest.mark.parametrize("pfad", SEITEN)
+def test_seite_zeigt_echte_umlaute(pfad):
+    """Keine ASCII-Umschreibung erreicht den Browser."""
+    lead = _lead("Ena Ottenschläger")
+    _termin_aktivitaet(lead)
+    seite = _get(pfad).text
+    gefunden = [w for w in WOERTER_ASCII if w in seite]
+    assert not gefunden, (
+        f"{pfad} zeigt ASCII-Umschreibungen: {gefunden}")
