@@ -139,16 +139,35 @@ Zwei getrennte Fehler, sichtbar am selben Termin:
   eigene Termin-Store und der importierte Kalender enthalten denselben Termin, ohne
   dass sie zusammengeführt werden.
 
-Zu tun: alle Zeitpunkte in einer Zone speichern (UTC) und genau einmal beim Rendern
-in lokale Zeit umrechnen. Für die Duplikate ein Zusammenführungs-Merkmal einführen
-(Titel + Startzeit + Kontakt), damit ein Termin einmal erscheint — mit der
-vollständigeren der beiden Ortsangaben.
+**Zeitzone** ist ein reiner Fehler und wird behoben: alle Zeitpunkte in einer Zone
+speichern (UTC), genau einmal beim Rendern in lokale Zeit umrechnen.
 
-### 3.4 461 gegen 469
+**Duplikate werden NICHT automatisch zusammengeführt.** Betreiber-Entscheidung:
+*„der Bot soll das mit dem Betreiber im Digest entwirren — beide Quellen sind
+Wahrheit."* Es gibt also keine Gewinner-Regel zwischen eigenem Termin-Store und
+importiertem Kalender. Stattdessen:
 
-Die Navigation zählt 461 Kontakte, die WhatsApp-Seite 469. Zu klären, welche Zählung
-was einschließt (Archivierte? Sammelkontakte? Gesperrte?), dann **eine** Zählweise
-festlegen und beide Stellen daraus speisen.
+1. Verdächtige Paare erkennen (gleicher Kontakt, gleiche Startzeit ± Toleranz,
+   ähnlicher Titel) und in der Oberfläche als *ein* Eintrag mit dem Hinweis
+   „zwei Quellen" darstellen, nicht als zwei Zeilen.
+2. Der Bot legt die Frage im Digest vor: derselbe Termin? welcher Ort stimmt?
+3. Erst die Antwort des Betreibers führt zusammen.
+
+Reihenfolge beachten: Der Zeitzonen-Fix kommt zuerst. Zeigen beide Quellen danach
+dieselbe Uhrzeit, war der 19:00/21:00-Unterschied nur die falsche Umrechnung.
+Bleibt ein Unterschied, ist es ein echter Konflikt und gehört in den Digest.
+
+### 3.4 461 gegen 469 — geklärt, kein Zählfehler
+
+Gemessen im Code: die WhatsApp-Seite zählt `select count(*) n from leads`
+(`ui.py:3139`), also **alle** Leads einschließlich der archivierten. Die Kontaktliste
+filtert Archivierte heraus (`ui.py:2429`, `where not server._archiv_sql(...)`) und
+liegt mit 461 deutlich unter ihrem Deckel `KONTAKTE_MAX = 500` — die Zahl ist also
+echt und nicht abgeschnitten. Die Differenz von acht sind die archivierten Kontakte.
+
+Beide Zahlen stimmen; der Fehler ist, dass beide „Kontakte" heißen. Zu tun: die
+WhatsApp-Seite beschriftet ihre Zahl als aktive Kontakte und nennt die archivierten
+getrennt („461 aktive Kontakte, 8 archiviert").
 
 ### 3.5 Kleinere Fehler
 
@@ -215,8 +234,10 @@ Zu bauen (alles serverseitig, ohne Skript):
   oder Stufe ändern — über dieselben Chat-Werkzeuge wie die Einzelaktion, je Kontakt
   einzeln aufgerufen, damit jede Schutzkante greift
 
-Der Consent-Befund (459 von 461 auf `unknown`) wird als Filter sichtbar, damit
-erkennbar ist, wie viele Kontakte für eine Erstansprache gesperrt sind.
+Der Consent-Befund (459 von 461 auf `unknown`) wird als **Filter** sichtbar, damit
+erkennbar ist, wie viele Kontakte für eine Erstansprache gesperrt sind. Mehr nicht:
+den Engpass selbst anzugehen (Zustimmungen nachtragen oder anfragen) hat der
+Betreiber ausdrücklich als **eigenes Thema** außerhalb dieses Plans eingeordnet.
 
 ### 4.5 Kontakt-Detailseite: von 13 Abschnitten auf 4
 
@@ -278,21 +299,35 @@ Das erklärt die zwölf unbeantworteten Nachrichten mit bis zu 37 Stunden Wartez
 
 Neu:
 
+* **Nur für WhatsApp** (Betreiber-Entscheidung). Dort schreiben Leute in mehreren
+  kurzen Nachrichten hintereinander; bei E-Mail und LinkedIn bleibt der bisherige
+  Rhythmus.
 * Eingehende Kundennachricht startet einen Zeitgeber von **20 Sekunden**.
 * Jede weitere Nachricht desselben Kontakts setzt ihn zurück — damit entsteht ein
   Entwurf auf den **ganzen Gedanken**, nicht auf jeden Satzfetzen.
-* Läuft er ab, erzeugt der Bot einen Entwurf. Der geht in `pending` und erscheint
-  unter „Freigaben" und auf „Heute".
-* **Nichts wird gesendet.** Die bestehenden Kanten bleiben unangetastet:
-  WhatsApp-Freigabe je Kontakt, Consent nach UWG, Freigabe durch den Betreiber.
+* Läuft er ab, ruft der Zeitgeber **denselben Pfad wie heute** auf. Die bestehende
+  Autonomie-Regel (`server.py:4968`) gilt unverändert weiter und wird nicht
+  nachgebaut:
+  * `ignorieren`, `manuell` → **kein Entwurf**
+  * `halbauto` (Vorgabe) → Entwurf in `pending`, erscheint unter „Freigaben" und
+    auf „Heute"
+  * `auto` → **sendet weiterhin selbst** (Betreiber-Entscheidung); ohne
+    dokumentierte Zustimmung des Kontakts fällt die Stufe wie bisher still auf
+    `halbauto` zurück
+* Alle übrigen Kanten bleiben unangetastet: WhatsApp-Freigabe je Kontakt, Consent
+  nach UWG, „Privat", Löschantrag.
 * Der Zwei-Stunden-Lauf bleibt als Netz für alles, was der Zeitgeber verpasst hat
   (Neustart, Ausfall).
 
+**Nachrichten ohne Text** (Bild, Sprachnachricht) — heute stehen dafür Einträge wie
+`[Bild — kein Text zum Mitlesen]` im Posteingang. Betreiber-Entscheidung: der Inhalt
+wird **automatisch beschrieben** und fließt in den Entwurf ein. Sprachnachrichten
+transkribiert `sales-stt` bereits; für Bilder kommt eine Beschreibung durch ein
+Modell dazu. Der Zeitgeber läuft dabei erst an, wenn die Beschreibung vorliegt —
+sonst entstünde ein Entwurf über eine Nachricht, deren Inhalt noch niemand kennt.
+
 Ort: `sales-mcp/inbox.py` (Eingang) und `sales-mcp/auto.py` (Entwurfserzeugung) —
 nicht in der Oberfläche.
-
-Offen zu klären bei der Umsetzung: Was passiert bei Kontakten auf Autonomie
-`manuell` oder `ignorieren`, und was bei Nachrichten ohne Text (Bilder)?
 
 ### 5.2 Live-Hinweis auf neue Entwürfe
 
@@ -341,19 +376,23 @@ Wissensquelle für den Bot.
 
 * **Bereich** `/mitarbeiter`: Ordnerstruktur zum Durchsehen und Herunterladen,
   getrennt von den Bot-Medien. Diese Dateien gehen **nicht** an Kunden.
-* **Wissensquelle**: Text aus PDF und DOCX extrahieren und indexieren, damit der Bot
-  Produkt- und Antragsfragen beantworten kann.
+  Sichtbar für die bestehende Rolle `lesen` und den Betreiber
+  (Betreiber-Entscheidung) — keine neue Rolle, kein neuer Anmeldeweg.
+* **Wissensquelle**: Text aus PDF und DOCX extrahieren und indexieren.
 
-Zwei Punkte sind vor der Umsetzung zu klären:
+**Umfang der Indexierung:** Betreiber-Entscheidung ist *alles indexieren*, auch
+Antragsformulare und Mitarbeiterunterlagen. Die Bedenken wurden vorgelegt und
+verworfen; das ist entschieden.
 
-1. **Größe.** 3,8 GB passen nicht in den 15-MB-Rahmen der Medien-Tabelle. Der
-   Mitarbeiter-Bereich braucht eine eigene Ablage (Volume oder Dateipfad), keine
-   Aufnahme in `media/`.
-2. **Datenschutz.** Es handelt sich um Unterlagen eines Finanzvertriebs; einzelne
-   Dateien („log in.docx", Antragsformulare) können Zugangs- oder Personendaten
-   enthalten. Vor der Indexierung ist zu prüfen, was hineindarf — im Zweifel gilt der
-   bestehende Grundsatz, sensible Daten nicht in eine durchsuchbare Wissensbasis zu
-   legen.
+**Ablageort — daraus folgt eine Auflage:** Der Index wird **lokal** geführt und
+**nicht** in die Rowboat-Wissensbasis gelegt. Das folgt der bestehenden Regel des
+Betreibers, sensible Unterlagen nicht in die Rowboat-KB zu geben (die ohne
+Anwendungsverschlüsselung arbeitet). „Alles durchsuchbar" bleibt damit erfüllt, ohne
+die Daten aus dem Haus zu geben.
+
+**Größe:** 3,8 GB passen nicht in den 15-MB-Rahmen der Medien-Tabelle. Der
+Mitarbeiter-Bereich braucht eine eigene Ablage (Volume oder Dateipfad), keine
+Aufnahme in `media/`.
 
 ### 5.6 E-Mail und LinkedIn überwachen wie WhatsApp
 
@@ -449,8 +488,9 @@ Stufe 3, wenn die Volltextsuche aus §4.4 steht und sich zeigt, wo sie nicht rei
 Für jede Stufe gilt: **am laufenden System gemessen, nicht am Code behauptet.**
 
 * Stufe 1: Seiten im Browser aufrufen, Umlaute und Escaping prüfen; derselbe Termin
-  muss überall dieselbe Uhrzeit tragen und einmal erscheinen; beide Kontaktzählungen
-  müssen übereinstimmen.
+  muss überall dieselbe Uhrzeit tragen und als **ein** Eintrag mit dem Hinweis
+  „zwei Quellen" erscheinen statt vierfach; die beiden Kontaktzahlen müssen
+  benennen, was sie zählen.
 * Stufe 2: Suche, Filter, Sortierung, Paginierung und Massenaktionen gegen die echten
   461 Kontakte; Kontaktseite auf vollständige Bearbeitbarkeit prüfen.
 * Stufe 3: eine echte Nachricht schicken und messen, ob nach 20 Sekunden ein Entwurf
