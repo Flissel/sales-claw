@@ -273,3 +273,55 @@ def test_gegenvorschlag_nennt_die_neue_zeit():
 
 def test_antwort_ohne_gegenvorschlag_hat_keine_neue_zeit():
     assert kalender.ics_antwort_lesen(ANTWORT_ABSAGE)["neuer_beginn"] is None
+
+
+def test_gegenvorschlag_mit_echtem_vtimezone_liest_den_termin_nicht_die_sommerzeitregel():
+    """K2 (Schlusspruefung, 11.09.2026): `ics_antwort_lesen` nahm bisher
+    zeilenweise die ERSTE DTSTART-Zeile im GANZEN Dokument. Jede
+    zeitzonenbewusste Kalenderdatei traegt aber VOR dem eigentlichen Termin
+    einen VTIMEZONE-Block mit EIGENEN DTSTART-Zeilen (die Sommerzeit-
+    Umstellung, aus BEGIN:DAYLIGHT/BEGIN:STANDARD) — die wurde bisher
+    faelschlich genommen. Nachgerechnet am Produktionssymptom (gemeldet
+    vom Betreiber): ein Gegenvorschlag fuer den 02.10.2026 wurde als
+    1970-03-29 03:00 Uhr gelesen — genau der DTSTART aus BEGIN:DAYLIGHT.
+
+    Alle bisherigen COUNTER-Tests (`GEGENVORSCHLAG` oben) sind handgeschrieben
+    MINIMAL und tragen deshalb gar kein VTIMEZONE — sie waeren an diesem
+    Fehler nie gescheitert. Dieser Test erzeugt die VTIMEZONE-Zeilen NICHT
+    von Hand, sondern laesst `ics_einladung` sie schreiben — dieselbe
+    `VTIMEZONE`-Konstante, die auch `ics()` produktiv verwendet — und bleibt
+    damit realistisch, auch wenn sich das Format je aendert. Nur METHOD, das
+    vorgeschlagene neue DTSTART und ein COMMENT werden veraendert, wie eine
+    echte Antwortmail es taete (Mailprogramme spiegeln bei einer Antwort oft
+    die komplette VCALENDAR-Struktur zurueck, siehe Modul-Docstring von
+    `ics_antwort_lesen`)."""
+    ursprung = "20261001T143000"          # 2026-10-01 14:30 Europe/Berlin
+    einladung = kalender.ics_einladung(
+        "abc-123", datetime(2026, 10, 1, 14, 30), 30, "Erstgespräch",
+        veranstalter="felix@vibemind.space",
+        eingeladene=["ivan@vibemind.space"])
+
+    # Sanity: die generierte Einladung traegt tatsaechlich einen
+    # VTIMEZONE-Block mit einer eigenen DTSTART-Zeile aus der
+    # Sommerzeit-Regel — sonst wuerde dieser Test den alten Fehler gar
+    # nicht mehr auslösen koennen.
+    assert "BEGIN:VTIMEZONE" in einladung
+    assert "DTSTART:19700329T020000" in einladung
+
+    antwort = (
+        einladung
+        .replace("METHOD:REQUEST", "METHOD:COUNTER")
+        .replace(f"DTSTART;TZID=Europe/Berlin:{ursprung}",
+                 "DTSTART;TZID=Europe/Berlin:20261002T160000")
+        .replace("END:VEVENT",
+                 "COMMENT:Donnerstag passt besser\r\nEND:VEVENT"))
+
+    ergebnis = kalender.ics_antwort_lesen(antwort)
+    assert ergebnis["methode"] == "COUNTER"
+    assert ergebnis["neuer_beginn"] == datetime(
+        2026, 10, 2, 14, 0, tzinfo=timezone.utc), (
+        "neuer_beginn kommt aus der ERSTEN DTSTART-Zeile des Dokuments "
+        "statt aus dem VEVENT-Block — die VTIMEZONE-Sommerzeitregel "
+        "(1970-03-29) wird gelesen, nicht der Termin.")
+    assert "Donnerstag passt besser" in ergebnis["grund"]
+    assert ergebnis["uid"] == "abc-123"

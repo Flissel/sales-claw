@@ -340,8 +340,15 @@ def ics_antwort_lesen(text: str):
     Der TZID-Parameter von DTSTART (nur fuer COUNTER gebraucht) wird ueber
     das vorhandene `_ics_tzid(block, name)` gelesen statt ueber einen
     eigenen zweiten Helfer — der sucht selbst die passende Zeile in einem
-    Textblock und entfaltet dabei selbststaendig, es reicht also der rohe
-    Text hier hinein.
+    Textblock und entfaltet dabei selbststaendig. `block` ist hier (seit
+    K2, Schlusspruefung 11.09.2026) NICHT mehr der ganze Rohtext, sondern
+    ausschliesslich der herausgeschnittene VEVENT-Block: eine
+    zeitzonenbewusste Kalenderdatei traegt VOR dem Termin einen
+    VTIMEZONE-Block mit EIGENEN DTSTART-Zeilen (Sommerzeit-Umstellung,
+    `BEGIN:DAYLIGHT`/`BEGIN:STANDARD`) — wer den ganzen Text durchsucht,
+    liest deren erste DTSTART-Zeile statt der des Termins. Derselbe Zuschnitt
+    wie in `termine_lesen` (die CalDAV-Lesestrecke, dort `_ics_feld`/
+    `_ics_tzid(block, ...)` auf dem VEVENT-Block).
 
     `teilnehmende` (Fix-Runde 2, Koordinator, 11.09.2026, Mangel 1) traegt
     ALLE ATTENDEE-Zeilen, nicht nur die erste: RFC 5546 empfiehlt zwar,
@@ -359,18 +366,41 @@ def ics_antwort_lesen(text: str):
     roh = (text or "")
     if "BEGIN:VCALENDAR" not in roh:
         return None
-    zeilen = roh.replace("\r\n ", "").replace("\r\n\t", "").replace(
-        "\n ", "").replace("\n\t", "").replace("\r\n", "\n").split("\n")
+    entfaltet = roh.replace("\r\n ", "").replace("\r\n\t", "").replace(
+        "\n ", "").replace("\n\t", "").replace("\r\n", "\n")
     ergebnis = {"uid": "", "methode": "", "teilnehmer": "", "status": "",
                 "grund": "", "folge": 0, "neuer_beginn": None,
                 "teilnehmende": []}
+
+    # METHOD ist eine Eigenschaft von VCALENDAR selbst (RFC 5546), nicht von
+    # VEVENT — sie liegt bewusst ausserhalb des unten herausgeschnittenen
+    # Blocks und wird deshalb weiterhin ueber das GANZE Dokument gesucht.
+    for zeile in entfaltet.split("\n"):
+        name, _, wert = zeile.partition(":")
+        if name.split(";")[0].upper() == "METHOD":
+            ergebnis["methode"] = wert.strip().upper()
+            break
+
+    # Erst den VEVENT-Block herausschneiden, DANN darin lesen — wie die
+    # CalDAV-Lesestrecke es seit Langem macht (`termine_lesen`,
+    # `text.split("BEGIN:VEVENT")[1:]` / `teil.split("END:VEVENT", 1)[0]`).
+    # Ohne das nimmt die ERSTE DTSTART-Zeile im ganzen Dokument den Vorrang
+    # — und eine zeitzonenbewusste Kalenderdatei traegt VOR dem eigentlichen
+    # Termin einen VTIMEZONE-Block mit EIGENEN DTSTART-Zeilen
+    # (BEGIN:DAYLIGHT/BEGIN:STANDARD, die Sommerzeit-Umstellungsregeln,
+    # siehe die Konstante `VTIMEZONE` oben). Gemessenes Symptom (K2,
+    # Schlusspruefung 11.09.2026): ein Gegenvorschlag fuer den 02.10.2026
+    # wurde als 1970-03-29 gelesen — genau der DTSTART aus BEGIN:DAYLIGHT.
+    block = ""
+    if "BEGIN:VEVENT" in entfaltet:
+        block = entfaltet.split("BEGIN:VEVENT", 1)[1].split(
+            "END:VEVENT", 1)[0]
+
     dtstart_wert = ""
-    for zeile in zeilen:
+    for zeile in block.split("\n"):
         name, _, wert = zeile.partition(":")
         feld = name.split(";")[0].upper()
-        if feld == "METHOD":
-            ergebnis["methode"] = wert.strip().upper()
-        elif feld == "UID" and not ergebnis["uid"]:
+        if feld == "UID" and not ergebnis["uid"]:
             ergebnis["uid"] = _entmaskiere(wert.strip())
         elif feld == "SEQUENCE":
             try:
@@ -400,7 +430,7 @@ def ics_antwort_lesen(text: str):
         return None
     if ergebnis["methode"] == "COUNTER" and dtstart_wert:
         ergebnis["neuer_beginn"] = _ics_zeit(
-            dtstart_wert, _ics_tzid(roh, "DTSTART"))
+            dtstart_wert, _ics_tzid(block, "DTSTART"))
     return ergebnis
 
 
