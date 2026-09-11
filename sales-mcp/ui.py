@@ -4403,6 +4403,44 @@ def _verlauf_einladung_antwort(payload: dict) -> str:
     return zeile
 
 
+def _verlauf_einladung_entworfen(payload: dict) -> str:
+    """Der vorgeschlagene Termin im Verlauf: Datum, Uhrzeit und Thema
+    lesbar in der Zeile (W4, Schlusspruefung 11.09.2026) — vorher gab
+    `einladung_entworfen` der Aktivitaet nur einen Namen ("→ Einladung
+    entworfen"), der vorgeschlagene Termin selbst stand nur als rohes JSON
+    hinter der Klappe; der Betreiber sah „→ Einladung entworfen" und musste
+    aufklappen, um zu erfahren, WANN.
+
+    Nach dem Muster von Aufgabe 6 (`_verlauf_einladung_antwort`): das
+    Wichtigste sofort lesbar in der Zeile, `thema` (Fremdtext — vom
+    Betreiber im Werkzeugaufruf gesetzt, aber ungeprueft, kann also
+    Kundennamen o. Ae. tragen) ueber `_e`/`_kurz` mit vollem Text im
+    `title`, Rest (uid, folge, eingeladene) hinter einer Klappe statt in
+    der Zeile."""
+    datum = str(payload.get("datum") or "").strip()
+    uhrzeit = str(payload.get("uhrzeit") or "").strip()
+    wann = " ".join(s for s in (datum, uhrzeit) if s)
+    thema_voll = str(payload.get("thema") or "").strip()
+    stuecke = []
+    if wann:
+        stuecke.append(f'<b>{_e(wann)}</b>')
+    if thema_voll:
+        stuecke.append(f'<span title="{_e(thema_voll)}">'
+                       f'{_e(_kurz(thema_voll, EINLADUNG_GRUND_KURZ))}</span>')
+    zeile = " · ".join(stuecke)
+    rest = {k: v for k, v in payload.items()
+            if k not in VERLAUF_TECHNISCH
+            and k not in ("datum", "uhrzeit", "thema")
+            and v not in (None, "", [], {})}
+    if rest:
+        roh = json.dumps(rest, ensure_ascii=False, default=str)
+        if len(roh) > PAYLOAD_KURZ:
+            roh = roh[:PAYLOAD_KURZ] + "…"
+        zeile += (f'<details><summary class="meta">Details</summary>'
+                  f'<code>{_e(roh)}</code></details>')
+    return zeile
+
+
 def _verlauf_inhalt(a) -> str:
     """Der Nachrichtentext — und der Maschinenkram nur auf Wunsch.
 
@@ -4415,12 +4453,15 @@ def _verlauf_inhalt(a) -> str:
     nichts verloren — es steht nur nicht mehr im Weg.
     """
     last = a["payload"] or {}
-    # Aufgabe 6: der Einladungsstand hat eine eigene, uebersetzte
-    # Darstellung — vor der generischen `text`-Behandlung unten, die fuer
-    # diesen Typ nichts faende (die Nutzlast hat kein `text`-Feld) und in
-    # die rohe JSON-Nutzlast-Klappe fiele.
+    # Aufgabe 6 / W4 (Schlusspruefung 11.09.2026): beide Einladungs-
+    # Aktivitaeten haben eine eigene, uebersetzte Darstellung — vor der
+    # generischen `text`-Behandlung unten, die fuer beide Typen nichts
+    # faende (die Nutzlast hat kein `text`-Feld) und in die rohe
+    # JSON-Nutzlast-Klappe fiele.
     if a["type"] == "einladung_antwort":
         return _verlauf_einladung_antwort(last)
+    if a["type"] == "einladung_entworfen":
+        return _verlauf_einladung_entworfen(last)
     text = str(last.get("text") or "").strip()
     if not text and last.get("ohne_text"):
         text = "(Text nicht gespeichert — Absender ist auf ignorieren)"

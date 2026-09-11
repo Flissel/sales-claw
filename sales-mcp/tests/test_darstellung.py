@@ -811,3 +811,59 @@ def test_ablehnungsgrund_wird_gekuerzt_mit_vollem_text_im_title():
         "EINLADUNG_GRUND_KURZ hinausgehen, sonst kuerzt _kurz gar nichts")
     assert ui._e(gekuerzt) in seite
     assert f'title="{ui._e(lang)}"' in seite
+
+
+# ---------------------------------------------------------------------------
+# W4 (Schlusspruefung, 11.09.2026): der vorgeschlagene Termin im Verlauf,
+# bei der Aktivitaet `einladung_entworfen` (Aufgabe 3/5). Vorher gab
+# `einladung_entworfen` der Aktivitaet nur einen Namen ("→ Einladung
+# entworfen"), der vorgeschlagene Termin selbst stand nur als rohes JSON
+# hinter der aufklappbaren Klappe — der Betreiber musste aufklappen, um zu
+# erfahren, WANN.
+# ---------------------------------------------------------------------------
+
+def test_einladung_entworfen_zeigt_termin_lesbar_im_verlauf():
+    """Datum, Uhrzeit und Thema stehen jetzt lesbar in der Verlaufszeile,
+    nicht mehr nur hinter der Klappe — nach demselben Muster, das Aufgabe 6
+    fuer `einladung_antwort` gebaut hat (uebersetzter/lesbarer Kern als
+    eigenes Element, Rest hinter `<details>`)."""
+    lead = _lead("Ivan")
+    server._q(
+        "insert into activities (lead_id, type, payload) values "
+        "(%s, 'einladung_entworfen', %s::jsonb)",
+        (lead, json.dumps({"uid": "abc-555", "datum": "2026-10-01",
+                           "uhrzeit": "14:30", "folge": 0,
+                           "eingeladene": ["ivan@vibemind.space"],
+                           "thema": "Erstgespräch"})))
+    seite = _get(f"/kontakte/{lead}").text
+    assert "2026-10-01 14:30" in seite
+    assert "<b>2026-10-01 14:30</b>" in seite, (
+        "Datum/Uhrzeit stehen nicht als eigenes Element in der Zeile — "
+        "nur noch als Teil der rohen JSON-Nutzlast hinter der Klappe")
+    assert "Erstgespräch" in seite
+
+
+def test_einladung_entworfen_thema_wird_gekuerzt_mit_vollem_text_im_title():
+    """`thema` ist Fremdtext (vom Betreiber im Werkzeugaufruf gesetzt, aber
+    ungeprueft — kann Kundennamen o. Ae. tragen) — dasselbe
+    Kuerzungsmuster wie der Ablehnungsgrund bei `einladung_antwort`
+    (Aufgabe 6, siehe test_ablehnungsgrund_wird_gekuerzt_mit_vollem_text_im_title
+    oben)."""
+    lang = ("Erstgespräch zur betrieblichen Altersvorsorge mit ausführlicher "
+            "Bedarfsanalyse und Besprechung der bestehenden Verträge sowie "
+            "möglicher Ergänzungen für die nächsten Jahre")
+    lead = _lead("Lena Lang")
+    server._q(
+        "insert into activities (lead_id, type, payload) values "
+        "(%s, 'einladung_entworfen', %s::jsonb)",
+        (lead, json.dumps({"uid": "abc-556", "datum": "2026-10-01",
+                           "uhrzeit": "14:30", "folge": 0,
+                           "eingeladene": ["lena@vibemind.space"],
+                           "thema": lang})))
+    seite = _get(f"/kontakte/{lead}").text
+    gekuerzt = ui._kurz(lang, ui.EINLADUNG_GRUND_KURZ)
+    assert gekuerzt != lang, (
+        "Testannahme verletzt: das lange Thema muesste ueber "
+        "EINLADUNG_GRUND_KURZ hinausgehen, sonst kuerzt _kurz gar nichts")
+    assert ui._e(gekuerzt) in seite
+    assert f'title="{ui._e(lang)}"' in seite
