@@ -246,6 +246,32 @@ def test_mehrfaches_lesen_derselben_mail_erzeugt_keine_dublette(stub):
     assert len(zeilen) == 1, zeilen
 
 
+def test_unterschiedliche_begruendung_bei_gleichem_status_bleibt_erhalten(stub):
+    """Fix-Runde 1 (Koordinator): sagt jemand zuerst kurz ab ('kann nicht')
+    und schickt kurz darauf eine ausfuehrlichere Begruendung nach (gleicher
+    Status, gleiche SEQUENCE) — beide Zeilen bleiben erhalten. Der Grund ist
+    der Teil, wegen dem der Betreiber ueberhaupt hinsieht; ein Dedup allein
+    ueber Status/Folge wuerde die zweite, brauchbarere Begruendung
+    verschlucken."""
+    lead_id = _lead()
+    stub.mails[b"10"] = _antwort_mail(
+        status="DECLINED", grund="kann nicht", uid="uid-1")
+    stub.mails[b"11"] = _antwort_mail(
+        status="DECLINED",
+        grund="bin die Woche beim Kunden in München, ab der 15. wieder da",
+        uid="uid-1")
+    server.postfach_mail_lesen("10")
+    server.postfach_mail_lesen("11")
+    zeilen = server._q(
+        "select payload from activities where lead_id = %s and "
+        "type = 'einladung_antwort'", (lead_id,))
+    assert len(zeilen) == 2, zeilen
+    gruende = {z["payload"]["grund"] for z in zeilen}
+    assert gruende == {
+        "kann nicht",
+        "bin die Woche beim Kunden in München, ab der 15. wieder da"}
+
+
 def test_unbekannter_teilnehmer_erzeugt_keine_aktivitaet(stub):
     """Eine Antwort von einer Adresse ohne zugehoerigen Kontakt laesst sich
     niemandem zuordnen — es entsteht keine Aktivitaet, aber auch kein

@@ -140,9 +140,18 @@ def _antwort_festhalten(antwort: dict) -> None:
     Findet sich zur Antwortadresse kein Kontakt, wird NICHTS geschrieben
     — eine Antwort von unbekannter Adresse laesst sich niemandem
     zuordnen. Ein zweites Lesen DERSELBEN Antwort (gleicher Kontakt,
-    gleiche uid/folge/status) erzeugt keine weitere Zeile: `lesen()` ist
-    ein reiner Lesevorgang und darf beliebig oft wiederholt werden, ohne
-    das Protokoll bei jedem Aufruf erneut zu befuellen.
+    gleiche uid/folge/status/grund) erzeugt keine weitere Zeile: `lesen()`
+    ist ein reiner Lesevorgang und darf beliebig oft wiederholt werden,
+    ohne das Protokoll bei jedem Aufruf erneut zu befuellen.
+
+    Der GRUND gehoert bewusst mit in den Dedup-Schluessel (Fix-Runde 1,
+    Koordinator, 11.09.2026): eine kurze Absage ("kann nicht"), der kurz
+    danach eine ausfuehrlichere Begruendung folgt (gleicher Status, gleiche
+    SEQUENCE) — genau der Fall, wegen dem der Betreiber ueberhaupt
+    hinsieht —, wuerde sonst als Dublette erkannt und die zweite, bessere
+    Begruendung verschluckt. Bei tatsaechlich MEHRFACHER Verarbeitung
+    derselben Mail bleibt der Schutz erhalten: dieselbe Mail liefert auch
+    denselben Grund.
     """
     import server
     teilnehmer = (antwort.get("teilnehmer") or "").strip()
@@ -155,11 +164,13 @@ def _antwort_festhalten(antwort: dict) -> None:
     uid = antwort.get("uid") or ""
     folge = antwort.get("folge") or 0
     status = antwort.get("status") or ""
+    grund = antwort.get("grund") or ""
     vorhanden = server._q(
         "select 1 from activities where lead_id = %s and "
         "type = 'einladung_antwort' and payload->>'uid' = %s and "
-        "payload->>'folge' = %s and payload->>'status' = %s limit 1",
-        (lead_id, uid, str(folge), status))
+        "payload->>'folge' = %s and payload->>'status' = %s and "
+        "payload->>'grund' = %s limit 1",
+        (lead_id, uid, str(folge), status, grund))
     if vorhanden:
         return
     neuer_beginn = antwort.get("neuer_beginn")
@@ -169,7 +180,7 @@ def _antwort_festhalten(antwort: dict) -> None:
         (lead_id, json.dumps({
             "uid": uid, "methode": antwort.get("methode") or "",
             "teilnehmer": teilnehmer, "status": status,
-            "grund": antwort.get("grund") or "", "folge": folge,
+            "grund": grund, "folge": folge,
             "neuer_beginn": (neuer_beginn.isoformat()
                             if neuer_beginn else None)})))
 
