@@ -1357,7 +1357,8 @@ def termin_bestaetigen(lead_id: str, datum: str, uhrzeit: str,
 def termin_einladen(lead_id: str, datum: str, uhrzeit: str,
                     dauer_minuten: int = TERMIN_DAUER_VORGABE,
                     thema: str = "Erstgespraech", ort: str = "",
-                    eingeladene: str = "") -> str:
+                    eingeladene: str = "", uid: str = "",
+                    folge: int = 0) -> str:
     """Einen Termin als EINLADUNG vorschlagen — der Empfaenger entscheidet.
 
     Anders als `termin_bestaetigen` haelt das hier keinen vereinbarten Termin
@@ -1368,7 +1369,20 @@ def termin_einladen(lead_id: str, datum: str, uhrzeit: str,
 
     `eingeladene` ist eine kommagetrennte Liste von Adressen; leer bedeutet
     die Adresse des Kontakts. Versendet wird NICHTS: der Entwurf bleibt
-    'pending', bis der Betreiber ihn freigibt."""
+    'pending', bis der Betreiber ihn freigibt.
+
+    `uid`/`folge` (Fix-Runde 1 zu Aufgabe 5, 11.09.2026, Gegenvorschlaege):
+    OHNE Angabe verhaelt sich dieses Werkzeug genau wie bisher — neue
+    Kennung, SEQUENCE 0. Wird `uid` angegeben, schreibt die Funktion eine
+    BESTEHENDE Buchung fort (z. B. nachdem der Betreiber einen
+    Gegenvorschlag angenommen hat) statt eine zweite, unabhaengige
+    Einladung zu erzeugen — sonst zeigt das Kalenderprogramm des
+    Empfaengers die alte und die neue Zeit NEBENEINANDER, weil es beide
+    fuer verschiedene Buchungen haelt. `folge` muss dann hoeher sein als
+    die zuletzt fuer diese `uid` bei diesem Kontakt verwendete SEQUENCE —
+    Kalenderprogramme ignorieren eine gleiche oder niedrigere Folge als
+    wirkungslos (RFC 5546); ein zu niedriger Wert wird deshalb abgelehnt,
+    nicht stillschweigend uebernommen."""
     leads = _q("select id, name, email from leads where id = %s", (lead_id,))
     if not leads:
         return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
@@ -1377,6 +1391,44 @@ def termin_einladen(lead_id: str, datum: str, uhrzeit: str,
     beginn, tag, zeit, fehler = _termin_zeitpunkt(datum, uhrzeit)
     if fehler:
         return _json({"fehler": fehler})
+
+    # Fix-Runde 1 zu Aufgabe 5: uid/folge validieren, BEVOR irgendeine
+    # Datei geschrieben oder ein Entwurf angelegt wird — derselbe
+    # Fail-Fast-Grundsatz wie bei `_termin_zeitpunkt` oben.
+    vorgabe_uid = (uid or "").strip()
+    try:
+        folge = int(folge)
+    except (TypeError, ValueError):
+        return _json({"fehler": f"folge muss eine ganze Zahl sein, nicht "
+                                f"{folge!r}."})
+    if vorgabe_uid:
+        bisherige = _q(
+            "select (payload->>'folge')::int as folge from activities "
+            "where lead_id = %s and type = 'einladung_entworfen' and "
+            "payload->>'uid' = %s order by (payload->>'folge')::int desc "
+            "limit 1", (lead_id, vorgabe_uid))
+        if not bisherige:
+            return _json({"fehler": (
+                f"Keine vorherige Einladung mit der Kennung {vorgabe_uid} "
+                f"bei diesem Kontakt gefunden — ohne bestehende Einladung "
+                f"gibt es nichts fortzuschreiben. Ohne `uid` entsteht eine "
+                f"neue, unabhaengige Einladung.")})
+        bisherige_folge = bisherige[0]["folge"] or 0
+        if folge <= bisherige_folge:
+            return _json({"fehler": (
+                f"folge {folge} ist nicht hoeher als die bisherige "
+                f"SEQUENCE {bisherige_folge} dieser Einladung "
+                f"({vorgabe_uid}) — Kalenderprogramme wuerden eine "
+                f"gleiche oder niedrigere Folge als wirkungslos ignorieren. "
+                f"Naechste gueltige Folge: {bisherige_folge + 1}.")})
+    elif folge != 0:
+        # Lieber ein lesbarer Fehler als eine `folge` ohne Wirkung: eine
+        # neue Einladung (keine `uid` angegeben) beginnt immer bei
+        # SEQUENCE 0 — ein anderer Wert wuerde hier sonst still verworfen.
+        return _json({"fehler": (
+            "folge ohne uid ergibt keinen Sinn — eine neue Einladung "
+            "beginnt immer bei SEQUENCE 0. Zum Fortschreiben einer "
+            "bestehenden Einladung deren uid mit angeben.")})
 
     gaeste = [t.strip() for t in (eingeladene or "").split(",") if t.strip()]
     if not gaeste:
@@ -1412,14 +1464,31 @@ def termin_einladen(lead_id: str, datum: str, uhrzeit: str,
     dauer = _termin_dauer(dauer_minuten)
     thema_kurz = (thema or "").strip()[:TERMIN_TEXT_MAXLAENGE] or "Termin"
     ort_kurz = (ort or "").strip()[:TERMIN_TEXT_MAXLAENGE]
-    uid = f"{uuid.uuid4()}@sales-claw"
+    # Bestehende Kennung fortschreiben (Fix-Runde 1 zu Aufgabe 5) statt
+    # immer eine neue zu ziehen — oben bereits validiert (SEQUENCE hoeher
+    # als die vorige, oder frisch mit folge 0).
+    uid = vorgabe_uid or f"{uuid.uuid4()}@sales-claw"
     try:
         ics_text = kalender.ics_einladung(
             uid, beginn, dauer, f"{thema_kurz} — {name}",
-            veranstalter=absender, eingeladene=gaeste, ort=ort_kurz)
+            veranstalter=absender, eingeladene=gaeste, ort=ort_kurz,
+            folge=folge)
     except ValueError as ex:
         return _json({"fehler": f"Einladung nicht baubar: {ex}"})
 
+    # Der Dateiname bleibt name/datum/uhrzeit-basiert, AUCH beim
+    # Fortschreiben (Fix-Runde 1 zu Aufgabe 5, entschieden statt
+    # uebernommen): reports/ ist ein Anhaengsel-Archiv, kein nach `uid`
+    # indizierter Bestand — nirgends im Projekt wird eine Einladungsdatei
+    # ueber ihren Namen anhand der `uid` wiedergefunden (nur ueber die
+    # jeweils aktuelle Rueckgabe `dateiname`/`pfad` DIESES Aufrufs, die in
+    # denselben Entwurf eingehaengt wird). Die Sicherheitsfrage, die diese
+    # Stufe eigentlich betrifft — verhindert, dass zwei Buchungen im
+    # Kalenderprogramm des EMPFAENGERS nebeneinander stehen —, ist bereits
+    # durch dieselbe UID/SEQUENCE IM ICS-INHALT geloest (oben), nicht durch
+    # den lokalen Dateinamen. Eine `uid` im Dateinamen wuerde nur die
+    # lesbaren Namen (Vorbild: `termin_bestaetigen`) durch haessliche
+    # UUIDs ersetzen, ohne diese Frage zusaetzlich zu loesen.
     dateiname = (f"einladung-{recherche.slug(name)}-{tag.isoformat()}"
                  f"-{zeit:%H%M}.ics")
     # `ziel_medien`/`medien_bestand_vorher` fuer das Aufraeumen weiter unten
@@ -1518,9 +1587,10 @@ def termin_einladen(lead_id: str, datum: str, uhrzeit: str,
     _q("insert into activities (lead_id, type, payload) values "
        "(%s, 'einladung_entworfen', %s::jsonb)",
        (lead_id, json.dumps({"uid": uid, "datum": tag.isoformat(),
-                             "uhrzeit": f"{zeit:%H:%M}", "folge": 0,
+                             "uhrzeit": f"{zeit:%H:%M}", "folge": folge,
                              "eingeladene": gaeste, "thema": thema_kurz})))
-    return _json({**entwurf, "uid": uid, "datei": dateiname, "pfad": pfad,
+    return _json({**entwurf, "uid": uid, "folge": folge, "datei": dateiname,
+                  "pfad": pfad,
                   "hinweis": ("Die Einladung liegt zur Freigabe. Es ging "
                               "nichts raus, und im Kalender steht noch "
                               "nichts — das passiert erst bei der Zusage.")})

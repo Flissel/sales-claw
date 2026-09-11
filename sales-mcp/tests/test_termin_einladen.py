@@ -235,3 +235,112 @@ def test_fehlender_absender_wird_gemeldet(monkeypatch):
     antwort = json.loads(server.termin_einladen(lead, "2026-10-01", "14:30"))
     assert "fehler" in antwort
     assert "EMAIL_ABSENDER" in antwort["fehler"]
+
+
+# ---------------------------------------------------------------------------
+# Fix-Runde 1 zu Aufgabe 5 (Koordinator-Feedback, 11.09.2026): `uid`/`folge`
+# zum Fortschreiben einer bestehenden Einladung (z. B. nach einem
+# angenommenen Gegenvorschlag) — statt einer zweiten, unabhaengigen
+# Einladung, die im Kalenderprogramm des Empfaengers neben der alten
+# stehen bleibt. Eigene Daten (2026-12-0x/nicht sonst im Modul verwendete
+# Uhrzeiten): der Medienordner wird zwischen Tests NICHT geleert (siehe
+# `test_report_schreibfehler_wird_gemeldet_und_raeumt_auf` oben), eine
+# Kollision mit den ueberall sonst benutzten 2026-10-01/14:30 waere hier
+# besonders leicht moeglich (derselbe Kontaktname "Ivan").
+# ---------------------------------------------------------------------------
+
+def test_uid_und_folge_schreiben_die_bestehende_einladung_fort():
+    """Der Kernfall: zweiter Aufruf mit der Kennung des ersten und
+    hoeherer Folge traegt DIESELBE UID mit gestiegener SEQUENCE — keine
+    zweite, unabhaengige Buchung."""
+    lead = _lead()
+    erste = json.loads(server.termin_einladen(
+        lead, "2026-12-03", "11:00", thema="Erstgespräch"))
+    assert "fehler" not in erste, erste
+    assert erste["folge"] == 0
+
+    zweite = json.loads(server.termin_einladen(
+        lead, "2026-12-04", "15:30", thema="Erstgespräch",
+        uid=erste["uid"], folge=1))
+    assert "fehler" not in zweite, zweite
+    assert zweite["uid"] == erste["uid"]
+    assert zweite["folge"] == 1
+
+    with open(zweite["pfad"], encoding="utf-8", newline="") as f:
+        text = _entfaltet(f.read())
+    assert f"UID:{erste['uid']}" in text
+    assert "SEQUENCE:1" in text
+
+    # Zwei Aktivitaeten unter DERSELBEN uid, mit unterschiedlicher folge —
+    # append-only, keine Aenderung der ersten Zeile.
+    zeilen = server._q(
+        "select payload from activities where lead_id = %s and "
+        "type = 'einladung_entworfen' order by created_at", (lead,))
+    assert len(zeilen) == 2, zeilen
+    assert [z["payload"]["folge"] for z in zeilen] == [0, 1]
+    assert {z["payload"]["uid"] for z in zeilen} == {erste["uid"]}
+
+
+def test_gleiche_oder_niedrigere_folge_wird_abgelehnt():
+    """Eine SEQUENCE, die nicht hoeher ist als die zuletzt verwendete, waere
+    fuer ein Kalenderprogramm wirkungslos (RFC 5546) — das muss ein
+    lesbarer Fehler sein, keine still erzeugte, nutzlose Einladung."""
+    lead = _lead()
+    erste = json.loads(server.termin_einladen(
+        lead, "2026-12-03", "11:00", thema="Erstgespräch"))
+    hoehere = json.loads(server.termin_einladen(
+        lead, "2026-12-04", "15:30", thema="Erstgespräch",
+        uid=erste["uid"], folge=2))
+    assert "fehler" not in hoehere, hoehere
+
+    gleiche = json.loads(server.termin_einladen(
+        lead, "2026-12-05", "09:45", thema="Erstgespräch",
+        uid=erste["uid"], folge=2))
+    assert "fehler" in gleiche
+    assert "SEQUENCE" in gleiche["fehler"]
+
+    niedrigere = json.loads(server.termin_einladen(
+        lead, "2026-12-05", "09:45", thema="Erstgespräch",
+        uid=erste["uid"], folge=1))
+    assert "fehler" in niedrigere
+    assert "SEQUENCE" in niedrigere["fehler"]
+
+    # Kein Entwurf und keine Datei aus den beiden abgelehnten Aufrufen.
+    entwuerfe = server._q(
+        "select id from drafts where lead_id = %s", (lead,))
+    assert len(entwuerfe) == 2, entwuerfe  # nur die zwei erfolgreichen
+
+
+def test_ohne_uid_bleibt_alles_wie_bisher():
+    """Ohne `uid` (und ohne `folge`) verhaelt sich das Werkzeug exakt wie
+    vor dieser Fix-Runde: neue Kennung, SEQUENCE 0."""
+    lead = _lead()
+    antwort = json.loads(server.termin_einladen(
+        lead, "2026-12-03", "11:00", thema="Erstgespräch"))
+    assert "fehler" not in antwort, antwort
+    assert antwort["folge"] == 0
+    assert antwort["uid"].endswith("@sales-claw")
+
+
+def test_uid_ohne_vorherige_einladung_wird_abgelehnt():
+    """Eine `uid`, zu der es bei diesem Kontakt keine vorherige Einladung
+    gibt, laesst sich nicht fortschreiben — sonst koennte eine falsch
+    abgetippte Kennung unbemerkt eine neue, aber falsch benannte Buchung
+    erzeugen."""
+    lead = _lead()
+    antwort = json.loads(server.termin_einladen(
+        lead, "2026-12-03", "11:00", thema="Erstgespräch",
+        uid="frei-erfunden@sales-claw", folge=1))
+    assert "fehler" in antwort
+    assert "Keine vorherige Einladung" in antwort["fehler"]
+
+
+def test_folge_ohne_uid_wird_abgelehnt():
+    """`folge` ohne `uid` haette ohne diese Pruefung STILL keine Wirkung
+    (eine neue Einladung beginnt ohnehin immer bei SEQUENCE 0) — das muss
+    gemeldet werden, kein unbemerkter Bedeutungsverlust einer Angabe."""
+    lead = _lead()
+    antwort = json.loads(server.termin_einladen(
+        lead, "2026-12-03", "11:00", thema="Erstgespräch", folge=1))
+    assert "fehler" in antwort
+    assert "ohne uid" in antwort["fehler"]
