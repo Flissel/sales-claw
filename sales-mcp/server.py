@@ -1372,9 +1372,28 @@ def termin_einladen(lead_id: str, datum: str, uhrzeit: str,
 
     Anders als `termin_bestaetigen` haelt das hier keinen vereinbarten Termin
     fest, sondern schlaegt einen vor: Es entsteht eine Einladung, die als
-    Entwurf zur Freigabe liegt. Der Kalendereintrag entsteht ERST, wenn
-    zugesagt wurde — ein Termin im eigenen Kalender, dem niemand zugestimmt
-    hat, waere eine Belegung auf Verdacht.
+    Entwurf zur Freigabe liegt — ein Termin im eigenen Kalender, dem niemand
+    zugestimmt hat, waere eine Belegung auf Verdacht.
+
+    WAS BEI EINER ZUSAGE TATSAECHLICH PASSIERT (W3, Schlusspruefung
+    11.09.2026, korrigiert — der Text hier behauptete zuvor faelschlich
+    "Der Kalendereintrag entsteht ERST, wenn zugesagt wurde"; kein Code tat
+    das je): NICHTS automatisch. Es entsteht kein Kalendereintrag, keine
+    Erinnerung, keine Wiedervorlage — nur die Nachfass-Wiedervorlage, die
+    dieser Aufruf selbst schon beim VERSAND der Einladung anlegt (unten),
+    unabhaengig davon, ob und wie geantwortet wird. Eine Antwort (Zusage/
+    Absage/Gegenvorschlag) wird ueber `postfach_lesen`/`postfach_mail_lesen`
+    gelesen und protokolliert (`postfach.py`, `kalenderteil: true` markiert
+    Mails mit einer erkennbaren Antwort), aber NIE automatisch umgesetzt —
+    dieselbe bindende Randbedingung wie ueberall in dieser Stufe ("kein
+    automatisches Zusagen"). Will der Betreiber den zugesagten Termin im
+    EIGENEN Kalender und eine Terminerinnerung, ruft er nach der Zusage
+    ausdruecklich `termin_bestaetigen` mit der vereinbarten Zeit auf — das
+    ist eine eigene, bewusste Entscheidung des Betreibers, kein automatischer
+    Folgeschritt dieses Werkzeugs. Das war eine ausdrueckliche Entscheidung
+    bei der Schlusspruefung: automatische Zusage-Behandlung ist NICHT Teil
+    dieses Vorhabens (eigene Abwaegung, ob ein zugesagter Termin automatisch
+    im Kalender landen soll oder erst nach bewusster Bestaetigung).
 
     `eingeladene` ist eine kommagetrennte Liste von Adressen; leer bedeutet
     die Adresse des Kontakts. Versendet wird NICHTS: der Entwurf bleibt
