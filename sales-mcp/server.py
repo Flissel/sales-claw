@@ -1422,27 +1422,63 @@ def termin_einladen(lead_id: str, datum: str, uhrzeit: str,
 
     dateiname = (f"einladung-{recherche.slug(name)}-{tag.isoformat()}"
                  f"-{zeit:%H%M}.ics")
+    # `ziel_medien`/`medien_bestand_vorher` fuer das Aufraeumen weiter unten
+    # (Fix-Runde 2) gebraucht: nur entfernen, was DIESER Aufruf neu angelegt
+    # hat, nie eine bereits bestehende Datei (z. B. eine fremde, gueltige
+    # Einladung mit zufaellig demselben Dateinamen).
+    ziel_medien = os.path.join(medien.ERZEUGT_VERZEICHNIS, dateiname)
     try:
         os.makedirs(medien.ERZEUGT_VERZEICHNIS, exist_ok=True)
-        with open(os.path.join(medien.ERZEUGT_VERZEICHNIS, dateiname), "w",
-                  encoding="utf-8", newline="\r\n") as datei:
+        medien_bestand_vorher = os.path.exists(ziel_medien)
+        with open(ziel_medien, "w", encoding="utf-8", newline="\r\n") as datei:
             datei.write(ics_text)
     except OSError as ex:
         return _json({"fehler": (
             f"Die Einladung konnte nicht abgelegt werden ({type(ex).__name__}"
             f": {ex}) — ohne Datei im Medienordner ist sie nicht versendbar.")})
-    pfad, _ueberschrieben = recherche.report_schreiben(dateiname, ics_text)
+    pfad, ueberschrieben = recherche.report_schreiben(dateiname, ics_text)
 
+    # Echte Umlaute (Fix-Runde 2, 11.09.2026): die bindende Randbedingung
+    # "Anzeigetexte tragen echte Umlaute" gilt hier erst recht — das ist
+    # kein internes Label, sondern der Text im Postfach des Kunden.
     text = (f"Hallo {name},\n\n"
-            f"ich schlage {tag.strftime('%d.%m.%Y')} um {zeit:%H:%M} Uhr vor "
-            f"({dauer} Minuten){', ' + ort_kurz if ort_kurz else ''}.\n"
-            f"Die Einladung haengt an — Sie koennen direkt zusagen oder "
-            f"absagen.\n\nViele Gruesse")
+            f"ich schlage folgenden Termin vor: {tag.strftime('%d.%m.%Y')} "
+            f"um {zeit:%H:%M} Uhr ({dauer} Minuten)"
+            f"{', ' + ort_kurz if ort_kurz else ''}.\n\n"
+            f"Im Anhang finden Sie die Einladung zum Eintragen in Ihren "
+            f"Kalender — Sie können direkt zusagen oder absagen.\n\n"
+            f"Viele Grüße")
     roh = entwurf_erstellen(lead_id, "email", text,
                             betreff=f"Terminvorschlag: {thema_kurz}",
                             medien_datei=dateiname)
     entwurf = json.loads(roh)
     if "fehler" in entwurf:
+        # Aufraeumen statt Muell liegen lassen (Fix-Runde 2, 11.09.2026):
+        # der haeufigste Fall ist genau die Zielgruppe dieses Werkzeugs —
+        # ein frischer Erstkontakt mit consent_status='unknown' (DB-
+        # Standardwert), den das UWG-Tor in entwurf_erstellen ablehnt. Ohne
+        # das hier bliebe die .ics in media-erzeugt und in reports/ liegen,
+        # ohne Entwurf und ohne Hinweis darauf.
+        #
+        # Bewusst HIER abgefangen statt die Freigabe-/UWG-Pruefung vorab
+        # nachzubauen: es bleibt EINE Wahrheit ueber das Tor, naemlich die
+        # in entwurf_erstellen. Zwei Pruefungen derselben Regel drifteten in
+        # diesem Projekt schon mehrfach auseinander (siehe _termin_zeitpunkt
+        # weiter oben, aus demselben Grund herausgezogen).
+        #
+        # Best effort und nur, was DIESER Aufruf neu angelegt hat — ein
+        # Aufraeumfehler darf den eigentlichen, aussagekraeftigen Fehlertext
+        # (z. B. "keine dokumentierte Einwilligung") nicht verdecken.
+        if not medien_bestand_vorher:
+            try:
+                os.remove(ziel_medien)
+            except OSError:
+                pass
+        if not ueberschrieben and pfad:
+            try:
+                os.remove(pfad)
+            except OSError:
+                pass
         return roh
 
     # 'einladung_entworfen', nicht 'einladung_gesendet' (Fix-Runde 1,

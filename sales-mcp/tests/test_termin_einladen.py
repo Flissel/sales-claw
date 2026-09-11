@@ -14,6 +14,16 @@ import server  # noqa: E402
 # noch selbst laedt (siehe Kommentar an der gleichnamigen Stelle in
 # `server.termin_einladen`).
 import mail_dispatch  # noqa: E402
+import medien  # noqa: E402
+import recherche  # noqa: E402
+
+
+def _entfaltet(text: str) -> str:
+    """ICS-Zeilen sind auf 75 Oktette gefaltet (CRLF + Leerzeichen) — vor
+    einem Substring-Vergleich erst entfalten, sonst kann eine lange
+    ORGANIZER/ATTENDEE-Zeile mitten in der gesuchten Adresse brechen.
+    Dieselbe Technik wie in kalender.ics_einladung selbst."""
+    return text.replace("\r\n ", "").replace("\r\n\t", "")
 
 
 @pytest.fixture(autouse=True)
@@ -86,3 +96,107 @@ def test_vergangenes_datum_wird_abgelehnt():
     lead = _lead()
     antwort = json.loads(server.termin_einladen(lead, "2020-01-01", "14:30"))
     assert "fehler" in antwort
+
+
+# ---------------------------------------------------------------------------
+# Fix-Runde 2 (Koordinator-Feedback, 11.09.2026)
+# ---------------------------------------------------------------------------
+
+def test_organizer_ist_der_konfigurierte_absender_attendee_der_kontakt():
+    """Mangel 3: die Kernzusage der Aufgabe — ORGANIZER muss derselbe
+    Absender sein, von dem die Mail tatsaechlich kommt, sonst findet eine
+    Zusage nie zu ihrer Einladung zurueck. Bisher nur durch Codelesen
+    gestuetzt (mail_konfiguriert setzt 'buero@vibemind.space'), nicht durch
+    einen Test."""
+    lead = _lead()
+    antwort = json.loads(server.termin_einladen(
+        lead, "2026-10-01", "14:30", thema="Erstgespräch"))
+    assert "fehler" not in antwort, antwort
+    with open(antwort["pfad"], encoding="utf-8", newline="") as f:
+        text = _entfaltet(f.read())
+    assert "ORGANIZER:mailto:buero@vibemind.space" in text
+    assert ("ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;"
+            "PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:ivan@vibemind.space"
+            ) in text
+
+
+def test_ohne_einwilligung_bleibt_kein_muell_liegen():
+    """Mangel 2: der haeufigste Fall — ein frischer Erstkontakt mit dem
+    DB-Standardwert consent_status='unknown' (genau die Zielgruppe fuer
+    einen Terminvorschlag) wird vom UWG-Tor in entwurf_erstellen abgelehnt.
+    Weder ein Entwurf noch die zuvor geschriebene .ics duerfen zurueckbleiben
+    — und der Fehlertext muss den echten Grund nennen, nicht nur
+    'Fehler beim Anlegen'."""
+    lead = str(server._q(
+        "insert into leads (name, email, phone, source) values "
+        "(%s, %s, '+491701234567', 'whatsapp') returning id",
+        ("Kalt", "kalt@vibemind.space"))[0]["id"])
+
+    antwort = json.loads(server.termin_einladen(
+        lead, "2026-10-01", "14:30", thema="Erstgespräch"))
+
+    assert "fehler" in antwort
+    assert "einwilligung" in antwort["fehler"].lower()
+
+    entwuerfe = server._q("select id from drafts where lead_id = %s", (lead,))
+    assert entwuerfe == []
+
+    dateiname = f"einladung-{recherche.slug('Kalt')}-2026-10-01-1430.ics"
+    assert not os.path.exists(
+        os.path.join(medien.ERZEUGT_VERZEICHNIS, dateiname)), (
+        "verwaiste .ics im Medienordner haengengeblieben")
+    assert not os.path.exists(
+        os.path.join(recherche.REPORT_VERZEICHNIS, dateiname)), (
+        "verwaiste .ics in reports/ haengengeblieben")
+
+
+def test_mehrere_eingeladene_stehen_alle_als_attendee():
+    """Kleinere Luecke (freigestellt, billig): `eingeladene` mit mehreren,
+    kommagetrennten Adressen — ersetzt die Kontaktadresse, statt sie zu
+    ergaenzen (server.py: `if not gaeste: ... gaeste = [kontakt_mail]`)."""
+    lead = _lead()
+    antwort = json.loads(server.termin_einladen(
+        lead, "2026-10-01", "14:30",
+        eingeladene="erste@vibemind.space, zweite@vibemind.space"))
+    assert "fehler" not in antwort, antwort
+    with open(antwort["pfad"], encoding="utf-8", newline="") as f:
+        text = _entfaltet(f.read())
+    assert "mailto:erste@vibemind.space" in text
+    assert "mailto:zweite@vibemind.space" in text
+    assert "mailto:ivan@vibemind.space" not in text
+
+
+def test_kaputte_adresse_wird_nicht_gebaut():
+    """Kleinere Luecke (freigestellt, billig): der ValueError-Pfad aus
+    kalender._adresse (kein '@') — die Einladung wird gar nicht erst
+    angelegt, kalender.ics_einladung wird VOR jedem Dateizugriff
+    aufgerufen."""
+    lead = _lead()
+    antwort = json.loads(server.termin_einladen(
+        lead, "2026-10-01", "14:30", eingeladene="keine-email-adresse"))
+    assert "fehler" in antwort
+    assert "nicht baubar" in antwort["fehler"]
+
+
+def test_nicht_beschreibbarer_medienordner_wird_gemeldet(tmp_path, monkeypatch):
+    """Kleinere Luecke (freigestellt, billig): der Medienordner existiert
+    nicht und kann es auch nicht werden (ein Dateiname im Pfad, wo ein
+    Ordner erwartet wird) — os.makedirs wirft OSError."""
+    sperre = tmp_path / "ist-eine-datei"
+    sperre.write_text("x")
+    monkeypatch.setattr(medien, "ERZEUGT_VERZEICHNIS", str(sperre / "unterordner"))
+    lead = _lead()
+    antwort = json.loads(server.termin_einladen(lead, "2026-10-01", "14:30"))
+    assert "fehler" in antwort
+    assert "abgelegt" in antwort["fehler"]
+
+
+def test_fehlender_absender_wird_gemeldet(monkeypatch):
+    """Kleinere Luecke (freigestellt, billig): ohne EMAIL_ABSENDER kein
+    Veranstalter — die autouse-Fixture `mail_konfiguriert` wird fuer diesen
+    einen Test gezielt wieder aufgehoben."""
+    monkeypatch.setattr(mail_dispatch, "EMAIL_ABSENDER", "")
+    lead = _lead()
+    antwort = json.loads(server.termin_einladen(lead, "2026-10-01", "14:30"))
+    assert "fehler" in antwort
+    assert "EMAIL_ABSENDER" in antwort["fehler"]
