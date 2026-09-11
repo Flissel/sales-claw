@@ -62,6 +62,13 @@ IMAP_PASSWORT = os.environ.get(
 AUSZUG_MAX = 300      # Zeichen je Mail in der Liste
 TEXT_MAX = 20000      # Zeichen Volltext — Fremddatum bleibt gedeckelt
 ANZAHL_MAX = 25       # Mails je Liste
+# Kleinigkeit aus der Schlusspruefung (11.09.2026): der Grund in einer
+# Gegenvorschlags-Wiedervorlage (`_gegenvorschlag_vorlegen`) ist Fremdtext
+# aus einer Antwortmail und ging bisher UNGEKUERZT in die Notiz — ein sehr
+# langer Grund blaeht die Wiedervorlagen-Tabelle. Harter Zeichenschnitt wie
+# `kalender._kurz`/`FEHLER_MAXLAENGE`, nicht an einer Wortgrenze: es ist
+# eine Betriebsnotiz, keine Anzeigetext-Feinheit.
+GEGENVORSCHLAG_GRUND_MAXLAENGE = 200
 
 # Sichtbares Signal, wenn eine Kalenderantwort keinem Teilnehmer zugeordnet
 # werden kann (Fix-Runde 3): ohne eigenes Logging-Setup nutzt Python den
@@ -354,8 +361,14 @@ def _gegenvorschlag_vorlegen(server, lead_id: str, teilnehmer: str,
             alt = None
     kern = (f"statt {alt:%d.%m.%Y %H:%M} jetzt {lokal:%d.%m.%Y %H:%M} Uhr"
             if alt is not None else f"neue Zeit {lokal:%d.%m.%Y %H:%M} Uhr")
+    # Kleinigkeit (Schlusspruefung 11.09.2026): der Grund ist Fremdtext aus
+    # der Antwortmail und ging bisher ungekuerzt in die Notiz — gekappt,
+    # damit ein sehr langer Grund die Wiedervorlagen-Tabelle nicht blaeht.
+    grund_kurz = (grund or "").strip()
+    if len(grund_kurz) > GEGENVORSCHLAG_GRUND_MAXLAENGE:
+        grund_kurz = grund_kurz[:GEGENVORSCHLAG_GRUND_MAXLAENGE] + "…"
     notiz = (f"Gegenvorschlag von {teilnehmer}: {kern} vorgeschlagen"
-             + (f" — Grund: {grund}" if grund else "") +
+             + (f" — Grund: {grund_kurz}" if grund_kurz else "") +
              f". Automatisch passiert nichts — bei Zusage "
              f"termin_einladen mit dieser Zeit aufrufen (bisherige "
              f"Kennung {uid}, folge {folge + 1}).")

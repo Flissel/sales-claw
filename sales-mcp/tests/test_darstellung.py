@@ -813,6 +813,28 @@ def test_ablehnungsgrund_wird_gekuerzt_mit_vollem_text_im_title():
     assert f'title="{ui._e(lang)}"' in seite
 
 
+def test_ablehnungsgrund_script_kommt_escaped_an():
+    """Kleinigkeit aus der Schlusspruefung (11.09.2026): fuer andere Felder
+    gibt es dieses Muster bereits
+    (test_terminkarte_auf_startseite_zeigt_vollen_text_als_title oben,
+    urspruenglich Zeile 516) — fuer den Ablehnungsgrund fehlte es. Der
+    Grund ist Fremdtext (der Antwortende auf eine Einladung schreibt ihn)
+    und muss sowohl im sichtbaren, gekuerzten Text als auch im
+    `title`-Attribut escaped ankommen."""
+    grund = "Kann leider nicht <script>boese()</script> zum Termin"
+    lead = _lead("Böser Grund")
+    server._q(
+        "insert into activities (lead_id, type, payload) values "
+        "(%s, 'einladung_antwort', %s::jsonb)",
+        (lead, json.dumps({"uid": "abc-888", "status": "DECLINED",
+                           "grund": grund,
+                           "teilnehmer": "boese@vibemind.space"})))
+    seite = _get(f"/kontakte/{lead}").text
+    assert "<script>boese()</script>" not in seite, "ungekuerztes Skript im Markup"
+    assert f'title="{ui._e(grund)}"' in seite
+    assert ui._e(ui._kurz(grund, ui.EINLADUNG_GRUND_KURZ)) in seite
+
+
 # ---------------------------------------------------------------------------
 # W4 (Schlusspruefung, 11.09.2026): der vorgeschlagene Termin im Verlauf,
 # bei der Aktivitaet `einladung_entworfen` (Aufgabe 3/5). Vorher gab

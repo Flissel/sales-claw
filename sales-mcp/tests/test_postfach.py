@@ -714,3 +714,27 @@ def test_gegenvorschlag_protokollierfehler_reisst_die_mailanzeige_nicht_mit(
         "select id from activities where lead_id = %s and "
         "type = 'einladung_antwort'", (lead_id,))
     assert len(zeilen) == 1, zeilen
+
+
+def test_gegenvorschlag_notiz_kappt_einen_sehr_langen_grund(stub):
+    """Kleinigkeit aus der Schlusspruefung (11.09.2026): der Grund ist
+    Fremdtext aus der Antwortmail und ging bisher UNGEKUERZT in die
+    Wiedervorlage-Notiz — ein sehr langer Grund blaeht die Tabelle."""
+    lead_id = _lead()
+    lang = "Kann leider nicht, " + ("weil es einen anderen Termin gibt. " * 10)
+    assert len(lang) > postfach.GEGENVORSCHLAG_GRUND_MAXLAENGE, (
+        "Testannahme verletzt: der Grund muesste ueber "
+        "GEGENVORSCHLAG_GRUND_MAXLAENGE hinausgehen, sonst kappt der Fix "
+        "gar nichts")
+    stub.mails[b"27"] = _gegenvorschlag_mail(grund=lang)
+    antwort = json.loads(server.postfach_mail_lesen("27"))
+    assert "fehler" not in antwort, antwort
+    zeilen = server._q(
+        "select payload from activities where lead_id = %s and "
+        "type = 'wiedervorlage'", (lead_id,))
+    assert len(zeilen) == 1, zeilen
+    notiz = zeilen[0]["payload"]["notiz"]
+    assert lang not in notiz, (
+        "der volle, sehr lange Grund steht ungekuerzt in der Notiz")
+    gekuerzt = lang[:postfach.GEGENVORSCHLAG_GRUND_MAXLAENGE] + "…"
+    assert gekuerzt in notiz
