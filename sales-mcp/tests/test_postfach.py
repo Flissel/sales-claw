@@ -496,6 +496,31 @@ def test_gegenvorschlag_legt_wiedervorlage_fuer_den_betreiber_an(stub):
     assert wiedervorlagen[0]["payload"]["faellig_am"] == heute
 
 
+def test_gegenvorschlag_notiz_nennt_auch_die_alte_zeit(stub):
+    """Fix-Runde 2 (Koordinator, 11.09.2026): ohne die ALTE Zeit muesste der
+    Betreiber erst in der Vorgangshistorie nachsehen, wovon ueberhaupt
+    verschoben wird — die Wiedervorlage soll fuer sich stehen. Die alte
+    Zeit steht in der `einladung_entworfen`-Aktivitaet, die `termin_einladen`
+    beim urspruenglichen Versand angelegt haette; hier direkt eingefuegt,
+    ohne den ganzen Einladungsweg nachzubauen."""
+    lead_id = _lead()
+    server._q(
+        "insert into activities (lead_id, type, payload) values "
+        "(%s, 'einladung_entworfen', %s::jsonb)",
+        (lead_id, json.dumps({"uid": "abc-123", "datum": "2026-09-20",
+                              "uhrzeit": "10:00", "folge": 0,
+                              "eingeladene": ["ivan@vibemind.space"],
+                              "thema": "Erstgespräch"})))
+    stub.mails[b"26"] = _gegenvorschlag_mail(grund="Donnerstag passt besser")
+    antwort = json.loads(server.postfach_mail_lesen("26"))
+    assert "fehler" not in antwort, antwort
+    notiz = server._q(
+        "select payload from activities where lead_id = %s and "
+        "type = 'wiedervorlage'", (lead_id,))[0]["payload"]["notiz"]
+    assert "statt 20.09.2026 10:00" in notiz
+    assert "jetzt 02.10.2026 16:00" in notiz
+
+
 def test_gegenvorschlag_erzeugt_auch_die_einladung_antwort_aktivitaet(stub):
     """Die Wiedervorlage kommt ZUSAETZLICH zur bestehenden
     `einladung_antwort`-Aktivitaet aus Aufgabe 4 — nicht an ihrer Stelle."""

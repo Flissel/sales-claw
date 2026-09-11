@@ -302,6 +302,19 @@ def _gegenvorschlag_vorlegen(server, lead_id: str, teilnehmer: str,
     sofort faellig, nicht erst am Tag der vorgeschlagenen Zeit — die
     Wiedervorlage erscheint dadurch ab dem naechsten Digest.
 
+    Fix-Runde 2 (Koordinator, 11.09.2026): die Notiz nennt zusaetzlich die
+    ALTE Zeit ("statt … jetzt …") — sonst muesste der Betreiber erst in
+    der Vorgangshistorie nachsehen, wovon ueberhaupt verschoben wird, und
+    die Wiedervorlage waere keine Entscheidungsgrundlage fuer sich allein
+    mehr. Die alte Zeit steht in derselben `einladung_entworfen`-
+    Aktivitaet, aus der `server.termin_einladen` beim Fortschreiben
+    bereits die bisherige `folge` liest (siehe dortige Validierung) —
+    hier nur zusaetzlich `datum`/`uhrzeit` derselben Zeile gelesen, kein
+    zweiter Abfrageweg. Findet sich keine (z. B. weil der Gegenvorschlag
+    zu einer Buchung kam, die nicht ueber `termin_einladen` entstand),
+    faellt die Notiz auf die reine „neue Zeit"-Formulierung zurueck, statt
+    zu raten oder die Vorlage ganz zu unterlassen.
+
     Ausdruecklich KEINE automatische Zusage, KEINE automatische neue
     Einladung, KEIN Kalendereintrag (Randbedingungen dieser Stufe): die
     Notiz beschreibt nur, was der Betreiber bei Annahme selbst ausloesen
@@ -309,8 +322,23 @@ def _gegenvorschlag_vorlegen(server, lead_id: str, teilnehmer: str,
     Kennung mit erhoehter `folge`."""
     heute = datetime.now(timezone.utc).date()
     lokal = neuer_beginn.astimezone(_ORTSZONE) if _ORTSZONE else neuer_beginn
-    notiz = (f"Gegenvorschlag von {teilnehmer}: neue Zeit "
-             f"{lokal:%d.%m.%Y %H:%M} Uhr vorgeschlagen"
+    bisherige = server._q(
+        "select payload from activities where lead_id = %s and "
+        "type = 'einladung_entworfen' and payload->>'uid' = %s "
+        "order by (payload->>'folge')::int desc limit 1", (lead_id, uid))
+    alt = None
+    if bisherige:
+        p = bisherige[0]["payload"] or {}
+        try:
+            alt = datetime.strptime(f"{p.get('datum')} {p.get('uhrzeit')}",
+                                    "%Y-%m-%d %H:%M")
+        except (TypeError, ValueError):
+            # Unbrauchbares/fehlendes Datum in der alten Aktivitaet — lieber
+            # ohne die alte Zeit vorlegen als mit einem falschen Wert.
+            alt = None
+    kern = (f"statt {alt:%d.%m.%Y %H:%M} jetzt {lokal:%d.%m.%Y %H:%M} Uhr"
+            if alt is not None else f"neue Zeit {lokal:%d.%m.%Y %H:%M} Uhr")
+    notiz = (f"Gegenvorschlag von {teilnehmer}: {kern} vorgeschlagen"
              + (f" — Grund: {grund}" if grund else "") +
              f". Automatisch passiert nichts — bei Zusage "
              f"termin_einladen mit dieser Zeit aufrufen (bisherige "
