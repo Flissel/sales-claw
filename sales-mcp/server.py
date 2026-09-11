@@ -1640,9 +1640,16 @@ def termin_einladen(lead_id: str, datum: str, uhrzeit: str,
                   "pfad": pfad,
                   "wiedervorlage": {"aktivitaets_id": wv_id,
                                     "faellig_am": nachfass_faellig.isoformat()},
+                  # Kein "das passiert erst bei der Zusage" mehr (W3,
+                  # Nachpruefung 11.09.2026): der Docstring war korrigiert,
+                  # dieser Text nicht — die Unwahrheit stand danach nur noch
+                  # dort, wo der Betreiber sie tatsaechlich liest. Bei einer
+                  # Zusage passiert NICHTS automatisch.
                   "hinweis": ("Die Einladung liegt zur Freigabe. Es ging "
-                              "nichts raus, und im Kalender steht noch "
-                              "nichts — das passiert erst bei der Zusage. "
+                              "nichts raus, und im Kalender steht nichts — "
+                              "auch nach einer Zusage entsteht kein Eintrag "
+                              "von selbst; dafuer ist termin_bestaetigen "
+                              "mit der vereinbarten Zeit aufzurufen. "
                               f"Eine Wiedervorlage zum Nachfassen steht am "
                               f"{nachfass_faellig.isoformat()}.")})
 
