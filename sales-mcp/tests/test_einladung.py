@@ -191,6 +191,36 @@ def test_zusage_wird_gelesen():
     assert ergebnis["status"] == "ACCEPTED"
     assert ergebnis["teilnehmer"] == "ivan@vibemind.space"
     assert ergebnis["grund"] == ""
+    assert ergebnis["teilnehmende"] == [
+        {"teilnehmer": "ivan@vibemind.space", "status": "ACCEPTED"}]
+
+
+def test_antwort_mit_mehreren_teilnehmern_liefert_alle():
+    """Fix-Runde 2 (Koordinator, Mangel 1): eine Antwort auf eine Einladung
+    an mehrere spiegelt oft die komplette urspruengliche Teilnehmerliste
+    zurueck und aendert nur EINEN Status — die alte Fassung nahm per
+    `and not ergebnis["status"]` ausschliesslich die erste ATTENDEE-Zeile
+    und haette hier NEEDS-ACTION statt der echten Antwort gelesen.
+    `ics_antwort_lesen` gibt jetzt alle Zeilen zurueck; die Auswahl der
+    richtigen (per Absenderadresse) macht der Aufrufer (`postfach`), der
+    die Kalenderdatei allein nicht mehr eindeutig entscheiden kann."""
+    text = (
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REPLY\r\nBEGIN:VEVENT\r\n"
+        "UID:abc-123\r\nSEQUENCE:0\r\n"
+        "ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:felix@vibemind.space\r\n"
+        "ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:kunde@beispiel.de\r\n"
+        "ATTENDEE;PARTSTAT=DECLINED:mailto:ivan@vibemind.space\r\n"
+        "END:VEVENT\r\nEND:VCALENDAR\r\n")
+    ergebnis = kalender.ics_antwort_lesen(text)
+    assert ergebnis["teilnehmende"] == [
+        {"teilnehmer": "felix@vibemind.space", "status": "NEEDS-ACTION"},
+        {"teilnehmer": "kunde@beispiel.de", "status": "NEEDS-ACTION"},
+        {"teilnehmer": "ivan@vibemind.space", "status": "DECLINED"},
+    ]
+    # Das bestehende Feld bleibt zur Bequemlichkeit die erste Zeile — die
+    # eigentliche Auswahl trifft postfach ueber die Absenderadresse.
+    assert ergebnis["teilnehmer"] == "felix@vibemind.space"
+    assert ergebnis["status"] == "NEEDS-ACTION"
 
 
 def test_absage_traegt_den_grund():

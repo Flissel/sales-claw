@@ -24,6 +24,7 @@ markiert wird dabei nichts.
 """
 import email
 import email.header
+import email.utils
 import imaplib
 import json
 import os
@@ -120,6 +121,39 @@ def _kalender_teil(nachricht) -> str:
     return ""
 
 
+def _absenderadresse(nachricht) -> str:
+    """Die reine Adresse aus dem `From`-Header — ohne Anzeigename.
+
+    Fix-Runde 2 (Koordinator, 11.09.2026, Mangel 1): bei einer Antwort auf
+    eine Einladung an mehrere Empfaenger ist der Absender der Mail die
+    einzige verlaessliche Zuordnung zum tatsaechlich Antwortenden — die
+    ICS-Datei selbst spiegelt oft die komplette urspruengliche
+    Teilnehmerliste zurueck und aendert nur EINEN Status, die Reihenfolge
+    der ATTENDEE-Zeilen verraet also nicht, wer geantwortet hat."""
+    _, adresse = email.utils.parseaddr(_kopf(nachricht, "From"))
+    return adresse.strip()
+
+
+def _passenden_teilnehmer_waehlen(antwort: dict, absender: str) -> dict:
+    """Bei mehreren ATTENDEE-Zeilen in `antwort["teilnehmende"]` die Zeile
+    waehlen, deren Adresse zum Mail-Absender passt, und `teilnehmer`/
+    `status` darauf setzen (Fix-Runde 2, Mangel 1).
+
+    Findet sich der Absender in keiner Zeile — z. B. eine Weiterleitung
+    von fremder Adresse, oder eine Antwort ohne ATTENDEE ueberhaupt —,
+    bleiben die von `ics_antwort_lesen` gelieferten Werte (die erste
+    Zeile) als Rueckfall stehen; das ist kein neuer Fehlerfall, nur das
+    bisherige Verhalten fuer den Rand, in dem keine bessere Zuordnung
+    moeglich ist."""
+    for eintrag in antwort.get("teilnehmende") or []:
+        if eintrag.get("teilnehmer") == absender:
+            antwort = dict(antwort)
+            antwort["teilnehmer"] = eintrag["teilnehmer"]
+            antwort["status"] = eintrag["status"]
+            return antwort
+    return antwort
+
+
 def _antwort_festhalten(antwort: dict) -> None:
     """Eine gelesene Kalenderantwort als Aktivitaet `einladung_antwort` am
     passenden Kontakt festhalten (Aufgabe 6 zeigt sie im Kontakt-Verlauf).
@@ -152,10 +186,22 @@ def _antwort_festhalten(antwort: dict) -> None:
     Begruendung verschluckt. Bei tatsaechlich MEHRFACHER Verarbeitung
     derselben Mail bleibt der Schutz erhalten: dieselbe Mail liefert auch
     denselben Grund.
+
+    Ein LEERER Status (Fix-Runde 2, Koordinator, Mangel 2) wird verworfen,
+    nicht geschrieben: fehlt PARTSTAT in der ATTENDEE-Zeile, liefert
+    `kalender.ics_antwort_lesen` `status == ""` — Aufgabe 6 uebersetzt
+    Status-Werte fuer die Anzeige und haette fuer einen leeren Wert keine
+    Uebersetzung. Ein Abbilden auf einen erfundenen Ersatzwert (etwa
+    "UNKNOWN") wuerde nur vortaeuschen, es sei eine echte Antwort gelesen
+    worden — das Verwerfen ist ehrlicher: keine auswertbare Antwort, keine
+    Aktivitaet.
     """
     import server
     teilnehmer = (antwort.get("teilnehmer") or "").strip()
     if not teilnehmer:
+        return
+    status = antwort.get("status") or ""
+    if not status:
         return
     leads = server._q("select id from leads where email = %s", (teilnehmer,))
     if not leads:
@@ -163,7 +209,6 @@ def _antwort_festhalten(antwort: dict) -> None:
     lead_id = leads[0]["id"]
     uid = antwort.get("uid") or ""
     folge = antwort.get("folge") or 0
-    status = antwort.get("status") or ""
     grund = antwort.get("grund") or ""
     vorhanden = server._q(
         "select 1 from activities where lead_id = %s and "
@@ -259,6 +304,11 @@ def lesen(uid: str):
         if kalender_text:
             antwort = kalender.ics_antwort_lesen(kalender_text)
             if antwort is not None:
+                # Mangel 1 (Fix-Runde 2): die ICS-Datei allein kennt bei
+                # mehreren Teilnehmern nicht, wer geantwortet hat — der
+                # Absender der Mail schon.
+                antwort = _passenden_teilnehmer_waehlen(
+                    antwort, _absenderadresse(nachricht))
                 ergebnis["kalender_antwort"] = antwort
                 _antwort_festhalten(antwort)
         return ergebnis

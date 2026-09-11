@@ -272,6 +272,85 @@ def test_unterschiedliche_begruendung_bei_gleichem_status_bleibt_erhalten(stub):
         "bin die Woche beim Kunden in München, ab der 15. wieder da"}
 
 
+def _antwort_mail_mehrere(teilnehmer, von, uid="abc-123", grund=""):
+    """Wie `_antwort_mail`, aber mit MEHREREN ATTENDEE-Zeilen — simuliert
+    ein Mailprogramm, das bei einer Antwort auf eine Einladung an mehrere
+    die komplette urspruengliche Liste zurueckspiegelt und nur EINEN
+    Status aendert. `teilnehmer` ist eine Liste von (adresse, status)."""
+    attendee_zeilen = "".join(
+        f"ATTENDEE;PARTSTAT={status}:mailto:{adresse}\r\n"
+        for adresse, status in teilnehmer)
+    ics = ("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REPLY\r\nBEGIN:VEVENT\r\n"
+           f"UID:{uid}\r\nSEQUENCE:0\r\n" + attendee_zeilen
+           + (f"COMMENT:{grund}\r\n" if grund else "") +
+           "END:VEVENT\r\nEND:VCALENDAR\r\n")
+    nachricht = email.message.EmailMessage()
+    nachricht["From"] = von
+    nachricht["To"] = "buero@vibemind.space"
+    nachricht["Subject"] = "Terminvorschlag: Erstgespräch"
+    nachricht["Date"] = "Mon, 31 Aug 2026 10:00:00 +0200"
+    nachricht.set_content("Siehe Kalenderantwort im Anhang.")
+    nachricht.add_attachment(ics.encode("utf-8"), maintype="text",
+                             subtype="calendar", filename="reply.ics")
+    return nachricht.as_bytes()
+
+
+def test_antwort_mit_mehreren_teilnehmern_waehlt_ueber_absender(stub):
+    """Fix-Runde 2 (Koordinator, Mangel 1): die erste ATTENDEE-Zeile ist
+    NICHT zwingend die des Antwortenden — hier steht sie an dritter
+    Stelle, mit den ersten beiden auf NEEDS-ACTION (unveraendert). Der
+    Absender der Mail IST der Antwortende; darueber, nicht ueber die
+    Zeilenreihenfolge, muss die Aktivitaet zugeordnet werden."""
+    lead_id = _lead()
+    stub.mails[b"12"] = _antwort_mail_mehrere(
+        von="Ivan Beispiel <ivan@vibemind.space>",
+        teilnehmer=[
+            ("felix@vibemind.space", "NEEDS-ACTION"),
+            ("kunde@beispiel.de", "NEEDS-ACTION"),
+            ("ivan@vibemind.space", "DECLINED"),
+        ])
+    antwort = json.loads(server.postfach_mail_lesen("12"))
+    assert "fehler" not in antwort, antwort
+    zeilen = server._q(
+        "select payload from activities where lead_id = %s and "
+        "type = 'einladung_antwort'", (lead_id,))
+    assert len(zeilen) == 1, zeilen
+    payload = zeilen[0]["payload"]
+    assert payload["teilnehmer"] == "ivan@vibemind.space"
+    assert payload["status"] == "DECLINED"
+    # Auch das zurueckgegebene Volltext-Ergebnis traegt die richtige Wahl,
+    # nicht bloss die erste Zeile der ICS-Datei:
+    assert antwort["kalender_antwort"]["teilnehmer"] == "ivan@vibemind.space"
+    assert antwort["kalender_antwort"]["status"] == "DECLINED"
+
+
+def test_antwort_ohne_partstat_erzeugt_keine_aktivitaet(stub):
+    """Fix-Runde 2 (Koordinator, Mangel 2): fehlt PARTSTAT in der
+    ATTENDEE-Zeile, bleibt `status` leer — ein leerer Status ist in
+    Aufgabe 6 nicht uebersetzbar (keine Zuordnung Status->Text) und darf
+    nicht als Aktivitaet landen."""
+    lead_id = _lead()
+    ics = ("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REPLY\r\nBEGIN:VEVENT\r\n"
+           "UID:abc-123\r\nSEQUENCE:0\r\n"
+           "ATTENDEE:mailto:ivan@vibemind.space\r\n"
+           "END:VEVENT\r\nEND:VCALENDAR\r\n")
+    nachricht = email.message.EmailMessage()
+    nachricht["From"] = "Ivan Beispiel <ivan@vibemind.space>"
+    nachricht["To"] = "buero@vibemind.space"
+    nachricht["Subject"] = "Terminvorschlag: Erstgespräch"
+    nachricht["Date"] = "Mon, 31 Aug 2026 10:00:00 +0200"
+    nachricht.set_content("Siehe Kalenderantwort im Anhang.")
+    nachricht.add_attachment(ics.encode("utf-8"), maintype="text",
+                             subtype="calendar", filename="reply.ics")
+    stub.mails[b"13"] = nachricht.as_bytes()
+    antwort = json.loads(server.postfach_mail_lesen("13"))
+    assert "fehler" not in antwort, antwort
+    zeilen = server._q(
+        "select id from activities where lead_id = %s and "
+        "type = 'einladung_antwort'", (lead_id,))
+    assert zeilen == [], zeilen
+
+
 def test_unbekannter_teilnehmer_erzeugt_keine_aktivitaet(stub):
     """Eine Antwort von einer Adresse ohne zugehoerigen Kontakt laesst sich
     niemandem zuordnen — es entsteht keine Aktivitaet, aber auch kein

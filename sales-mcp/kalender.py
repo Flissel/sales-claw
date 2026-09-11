@@ -342,6 +342,19 @@ def ics_antwort_lesen(text: str):
     eigenen zweiten Helfer — der sucht selbst die passende Zeile in einem
     Textblock und entfaltet dabei selbststaendig, es reicht also der rohe
     Text hier hinein.
+
+    `teilnehmende` (Fix-Runde 2, Koordinator, 11.09.2026, Mangel 1) traegt
+    ALLE ATTENDEE-Zeilen, nicht nur die erste: RFC 5546 empfiehlt zwar,
+    dass eine Antwort nur den Antwortenden nennt, aber reale
+    Mailprogramme spiegeln bei einer Einladung an mehrere oft die
+    komplette urspruengliche Liste zurueck und aendern nur EINEN Status.
+    Welche Zeile die tatsaechliche Antwort ist, kann diese Funktion allein
+    nicht entscheiden — sie kennt nur die Kalenderdatei, nicht den
+    Mail-Absender. Die obersten Felder `teilnehmer`/`status` bleiben zur
+    Bequemlichkeit die ERSTE Zeile (bisheriges Verhalten, von den
+    bestehenden Ein-Teilnehmer-Tests abgedeckt); wer mehrere Teilnehmer
+    zulassen muss (postfach.py, ueber den Absender der Mail), liest
+    `teilnehmende`.
     """
     roh = (text or "")
     if "BEGIN:VCALENDAR" not in roh:
@@ -349,7 +362,8 @@ def ics_antwort_lesen(text: str):
     zeilen = roh.replace("\r\n ", "").replace("\r\n\t", "").replace(
         "\n ", "").replace("\n\t", "").replace("\r\n", "\n").split("\n")
     ergebnis = {"uid": "", "methode": "", "teilnehmer": "", "status": "",
-                "grund": "", "folge": 0, "neuer_beginn": None}
+                "grund": "", "folge": 0, "neuer_beginn": None,
+                "teilnehmende": []}
     dtstart_wert = ""
     for zeile in zeilen:
         name, _, wert = zeile.partition(":")
@@ -367,15 +381,21 @@ def ics_antwort_lesen(text: str):
             ergebnis["grund"] = _entmaskiere(wert.strip())
         elif feld == "DTSTART" and not dtstart_wert:
             dtstart_wert = wert.strip()
-        elif feld == "ATTENDEE" and not ergebnis["status"]:
+        elif feld == "ATTENDEE":
+            zeilen_status = ""
             for teil in name.split(";")[1:]:
                 schluessel, _, inhalt = teil.partition("=")
                 if schluessel.upper() == "PARTSTAT":
-                    ergebnis["status"] = inhalt.strip().upper()
+                    zeilen_status = inhalt.strip().upper()
             adresse = wert.strip()
             if adresse.lower().startswith("mailto:"):
                 adresse = adresse[7:]
-            ergebnis["teilnehmer"] = _entmaskiere(adresse)
+            adresse = _entmaskiere(adresse)
+            ergebnis["teilnehmende"].append(
+                {"teilnehmer": adresse, "status": zeilen_status})
+            if not ergebnis["status"]:
+                ergebnis["status"] = zeilen_status
+                ergebnis["teilnehmer"] = adresse
     if ergebnis["methode"] not in ("REPLY", "COUNTER"):
         return None
     if ergebnis["methode"] == "COUNTER" and dtstart_wert:
