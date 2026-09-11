@@ -425,7 +425,15 @@ def lesen(uid: str):
     (METHOD:REPLY/COUNTER), steht das Ergebnis zusaetzlich unter
     `kalender_antwort` und wird als Aktivitaet am passenden Kontakt
     festgehalten (siehe `_antwort_festhalten`). Rein lesend bleibt dabei
-    nur das IMAP-Postfach — das eigene Protokoll darf mitschreiben."""
+    nur das IMAP-Postfach — das eigene Protokoll darf mitschreiben.
+
+    Ein Fehler BEIM Protokollieren (W5, Schlusspruefung 11.09.2026) kostet
+    nicht die Mailanzeige: `_antwort_festhalten` laeuft in einem eigenen
+    Fangnetz, dessen Ausnahme als `protokollierfehler` im Ergebnis landet
+    (Fehlerklasse, keine Details — die stehen im Container-Log), statt
+    ungefangen bis zu `postfach_mail_lesen` durchzuschlagen, wo sie sonst
+    als „Postfach nicht erreichbar" gemeldet wuerde — eine falsche
+    Ursache, das IMAP-Postfach war erreichbar."""
     kasten = _verbinden()
     try:
         kasten.select("INBOX", readonly=True)
@@ -459,7 +467,37 @@ def lesen(uid: str):
                 ergebnis["kalender_antwort"] = (
                     gewaehlt if gewaehlt is not None else antwort)
                 if gewaehlt is not None:
-                    _antwort_festhalten(gewaehlt)
+                    try:
+                        # W5 (Schlusspruefung 11.09.2026): `_antwort_
+                        # festhalten` (und die darin aufgerufene
+                        # `_gegenvorschlag_vorlegen` — beide
+                        # Protokollierschritte, EIN Fangnetz genuegt, weil
+                        # der zweite Schritt synchron innerhalb des ersten
+                        # laeuft) liefen bisher OHNE eigenes Fangnetz
+                        # innerhalb von `lesen()`. Ein Fehler beim
+                        # Protokollieren ist ein Schreiben in der EIGENEN
+                        # Datenbank, kein IMAP-Problem — trotzdem riss er
+                        # bisher die GANZE Mailanzeige mit sich:
+                        # `postfach_mail_lesen` (server.py) faengt jede
+                        # Ausnahme aus `lesen()` in EINEM breiten
+                        # except und uebersetzt sie zu "Postfach nicht
+                        # erreichbar" — eine falsche Ursache, das Postfach
+                        # war die ganze Zeit erreichbar, nur das eigene
+                        # Protokoll schlug fehl. `ergebnis` ist an dieser
+                        # Stelle bereits vollstaendig aufgebaut (Betreff,
+                        # Text, `kalender_antwort`) und bleibt es —
+                        # gemeldet wird der TATSAECHLICHE Fehler, ohne die
+                        # Mailanzeige zu kosten.
+                        _antwort_festhalten(gewaehlt)
+                    except Exception as e:  # noqa: BLE001 — DB, kein IMAP
+                        LOG.warning(
+                            "Kalenderantwort (uid=%s) konnte nicht "
+                            "protokolliert werden (%s: %s)",
+                            antwort.get("uid") or "?", type(e).__name__, e)
+                        ergebnis["protokollierfehler"] = (
+                            f"Die Antwort wurde gelesen, aber nicht am "
+                            f"Kontakt festgehalten ({type(e).__name__}) — "
+                            f"Details im Container-Log.")
                 else:
                     LOG.warning(
                         "Kalenderantwort (uid=%s) ohne zuordenbaren "

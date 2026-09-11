@@ -653,3 +653,64 @@ def test_gegenvorschlag_ohne_passenden_teilnehmer_legt_keine_wiedervorlage_an(st
     wiedervorlagen = server._q(
         "select id from activities where type = 'wiedervorlage'")
     assert wiedervorlagen == []
+
+
+# ---------------------------------------------------------------------------
+# W5 (Schlusspruefung, 11.09.2026): ein Fehler BEIM Protokollieren
+# (_antwort_festhalten / _gegenvorschlag_vorlegen — eigene Datenbank, kein
+# IMAP) darf nicht die ganze Mailanzeige kosten und sich nicht als
+# "Postfach nicht erreichbar" ausgeben — eine falsche Ursache, das Postfach
+# war erreichbar.
+# ---------------------------------------------------------------------------
+
+def test_protokollierfehler_reisst_die_mailanzeige_nicht_mit(stub, monkeypatch):
+    """_antwort_festhalten lief bisher OHNE eigenes Fangnetz innerhalb von
+    lesen() — ein DB-Fehler dort riss die GANZE Mailanzeige mit, und
+    postfach_mail_lesens breites except uebersetzte ihn zu 'Postfach nicht
+    erreichbar'."""
+    _lead()
+    stub.mails[b"25"] = _antwort_mail(status="ACCEPTED", uid="abc-990")
+
+    def _kaputt(antwort):
+        raise RuntimeError("DB explodiert waehrend des Protokollierens")
+
+    monkeypatch.setattr(postfach, "_antwort_festhalten", _kaputt)
+    antwort = json.loads(server.postfach_mail_lesen("25"))
+    assert "fehler" not in antwort, (
+        f"die Mailanzeige wurde vom Protokollierfehler mitgerissen: {antwort}")
+    assert antwort["betreff"] == "Terminvorschlag: Erstgespräch"
+    assert antwort["kalender_antwort"]["status"] == "ACCEPTED"
+    assert "protokollierfehler" in antwort, (
+        "der Fehler beim Protokollieren wird nicht gemeldet — er "
+        "verschwindet lautlos")
+    assert "DB explodiert" not in antwort["protokollierfehler"], (
+        "keine rohen Ausnahmedetails im Werkzeug-Ergebnis, nur die "
+        "Fehlerklasse (Details gehoeren ins Container-Log)")
+
+
+def test_gegenvorschlag_protokollierfehler_reisst_die_mailanzeige_nicht_mit(
+        stub, monkeypatch):
+    """Derselbe Schutz gilt fuer den ZWEITEN Protokollierschritt
+    (_gegenvorschlag_vorlegen), der synchron INNERHALB von
+    _antwort_festhalten laeuft — ein Fehler dort darf ebenfalls nicht die
+    Mailanzeige kosten. Die erste Aktivitaet (einladung_antwort) ist zu
+    diesem Zeitpunkt bereits geschrieben; nur die Wiedervorlage schlaegt
+    fehl."""
+    lead_id = _lead()
+    stub.mails[b"26"] = _gegenvorschlag_mail(grund="Donnerstag passt besser")
+
+    def _kaputt(*args, **kwargs):
+        raise RuntimeError("Wiedervorlage explodiert")
+
+    monkeypatch.setattr(postfach, "_gegenvorschlag_vorlegen", _kaputt)
+    antwort = json.loads(server.postfach_mail_lesen("26"))
+    assert "fehler" not in antwort, (
+        f"die Mailanzeige wurde vom Protokollierfehler mitgerissen: {antwort}")
+    assert antwort["betreff"] == "Re: Terminvorschlag: Erstgespräch"
+    assert "protokollierfehler" in antwort
+    # Der ERSTE Schritt (einladung_antwort) ist trotzdem durchgelaufen —
+    # der Fehler traf nur den zweiten.
+    zeilen = server._q(
+        "select id from activities where lead_id = %s and "
+        "type = 'einladung_antwort'", (lead_id,))
+    assert len(zeilen) == 1, zeilen
