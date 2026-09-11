@@ -297,6 +297,9 @@ def ics_einladung(uid: str, beginn, dauer_minuten: int, summary: str,
     gaeste = [_adresse(e) for e in eingeladene]
     if not gaeste:
         raise ValueError("eine Einladung braucht mindestens einen Eingeladenen")
+    folge = int(folge)
+    if folge < 0:
+        raise ValueError(f"SEQUENCE darf nicht negativ sein: {folge!r}")
     roh = ics(uid, beginn, dauer_minuten, summary, ort=ort,
               beschreibung=beschreibung, jetzt=jetzt)
     # Auf der ENTFALTETEN Fassung arbeiten: `ics()` faltet auf 75 Oktette,
@@ -311,7 +314,7 @@ def ics_einladung(uid: str, beginn, dauer_minuten: int, summary: str,
                 ergebnis.append(
                     "ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;"
                     f"PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:{gast}")
-            ergebnis.append(f"SEQUENCE:{int(folge)}")
+            ergebnis.append(f"SEQUENCE:{folge}")
             continue
         if zeile == "CALSCALE:GREGORIAN":
             ergebnis.append(zeile)
