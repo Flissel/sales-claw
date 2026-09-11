@@ -1283,6 +1283,23 @@ ZUSTAND_TITEL = {"pending": "zu prüfen", "failed": "fehlgeschlagen",
 TERMIN_TITEL = {"termin": "bestätigt", "termin_verschoben": "verschoben",
                 "termin_abgesagt": "abgesagt"}
 
+# Aufgabe 6 (11.09.2026): der Stand einer Kalenderantwort. `status` kommt
+# roh aus der Kalenderantwort (kalender.ics_antwort_lesen ueber
+# postfach._antwort_festhalten) und bleibt in der Datenbank UNVERAENDERT —
+# ACCEPTED/DECLINED/TENTATIVE/NEEDS-ACTION sind iCal-Vokabular (RFC 5545
+# PARTSTAT), kein Text fuer den Betreiber. Uebersetzt wird nur beim
+# Rendern, nach demselben Muster wie ZUSTAND_TITEL/TERMIN_TITEL oben.
+# NEEDS-ACTION kommt in der Praxis kaum vor (eine gelesene Antwort HAT
+# einen Status), steht aber der Vollstaendigkeit halber hier — ein
+# unbekannter/leerer Wert faellt in `_verlauf_einladung_antwort` auf den
+# rohen Text zurueck statt auf einen erfundenen Ersatzwert.
+EINLADUNG_TEXT = {
+    "ACCEPTED": "zugesagt",
+    "DECLINED": "abgesagt",
+    "TENTATIVE": "unter Vorbehalt",
+    "NEEDS-ACTION": "wartet auf Antwort",
+}
+
 
 def _zustand_badge(zustand: str) -> str:
     """`zustand` ist IMMER ein Literal aus dieser Datei, nie eine DB-Spalte —
@@ -4322,6 +4339,14 @@ VERLAUF_NAMEN = {
     # Sprachnachricht in Text (01.09.2026) — steht als eigene Zeile
     # hinter der Nachricht, die sie ausspricht.
     "transkription": "&larr; abgehört",
+    # Termin-Einladungen (Aufgabe 6, 11.09.2026): 'einladung_entworfen'
+    # heisst so, WEIL zu diesem Zeitpunkt noch nichts verschickt ist — der
+    # Entwurf liegt zur Freigabe (dasselbe Freigabe-Gate wie jeder andere
+    # Kanal, siehe global-constraints.md). Verschickt wird sie erst ueber
+    # die Freigabe-Seite; diese Zeile im Verlauf ist nur die Spur, dass sie
+    # angelegt wurde.
+    "einladung_entworfen": "&rarr; Einladung entworfen",
+    "einladung_antwort": "&larr; Antwort",
 }
 # Felder, die im Verlauf NICHTS zu suchen haben: Maschinenkram, der die
 # Zeile unlesbar macht. Sie bleiben in der Datenbank, sie stehen hier nur
@@ -4341,6 +4366,43 @@ def _verlauf_richtung(a) -> str:
     return f'<span class="meta">{_e(a["type"])}</span>'
 
 
+# Laenge, ab der der Ablehnungs-/Antwortgrund im Verlauf gekuerzt wird
+# (Aufgabe 6) — derselbe Wortgrenzen-Schnitt wie ueberall (`_kurz`), voller
+# Text im `title`. Der Grund ist Fremdtext: der Antwortende schreibt ihn,
+# nicht der Betreiber.
+EINLADUNG_GRUND_KURZ = 140
+
+
+def _verlauf_einladung_antwort(payload: dict) -> str:
+    """Eine Kalenderantwort im Verlauf: der Status uebersetzt
+    (`EINLADUNG_TEXT`), der Grund gekuerzt mit vollem Text im `title` —
+    beides ueber `_e`, weil beides Fremdtext ist (der Status kommt zwar aus
+    einer festen iCal-Werteliste, aber ungeprueft aus einer fremden Mail).
+
+    `status`/`grund` fallen deshalb aus dem restlichen Payload-Auszug
+    heraus: sie stehen schon lesbar in der Zeile, ein zweites Mal roh im
+    aufklappbaren Detailblock waere nur Redundanz (und liesse den rohen
+    DB-Wert wieder auf der Seite auftauchen, den die Uebersetzung gerade
+    verbergen soll)."""
+    status = str(payload.get("status") or "")
+    wort = EINLADUNG_TEXT.get(status, status or "unbekannt")
+    zeile = f'<b>{_e(wort)}</b>'
+    grund = str(payload.get("grund") or "").strip()
+    if grund:
+        zeile += (f'<div class="text" title="{_e(grund)}">'
+                  f'{_e(_kurz(grund, EINLADUNG_GRUND_KURZ))}</div>')
+    rest = {k: v for k, v in payload.items()
+            if k not in VERLAUF_TECHNISCH and k not in ("status", "grund")
+            and v not in (None, "", [], {})}
+    if rest:
+        roh = json.dumps(rest, ensure_ascii=False, default=str)
+        if len(roh) > PAYLOAD_KURZ:
+            roh = roh[:PAYLOAD_KURZ] + "…"
+        zeile += (f'<details><summary class="meta">Details</summary>'
+                  f'<code>{_e(roh)}</code></details>')
+    return zeile
+
+
 def _verlauf_inhalt(a) -> str:
     """Der Nachrichtentext — und der Maschinenkram nur auf Wunsch.
 
@@ -4353,6 +4415,12 @@ def _verlauf_inhalt(a) -> str:
     nichts verloren — es steht nur nicht mehr im Weg.
     """
     last = a["payload"] or {}
+    # Aufgabe 6: der Einladungsstand hat eine eigene, uebersetzte
+    # Darstellung — vor der generischen `text`-Behandlung unten, die fuer
+    # diesen Typ nichts faende (die Nutzlast hat kein `text`-Feld) und in
+    # die rohe JSON-Nutzlast-Klappe fiele.
+    if a["type"] == "einladung_antwort":
+        return _verlauf_einladung_antwort(last)
     text = str(last.get("text") or "").strip()
     if not text and last.get("ohne_text"):
         text = "(Text nicht gespeichert — Absender ist auf ignorieren)"

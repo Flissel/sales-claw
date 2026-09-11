@@ -724,3 +724,90 @@ def test_heute_zaehlt_mehr_als_einordnung_deckel_korrekt():
             f"({server.EINORDNUNG_LIMIT})")
     finally:
         server.UNBEKANNT_LEAD_ID = vorher
+
+
+# ---------------------------------------------------------------------------
+# Aufgabe 6 (11.09.2026): der Einladungsstand im Kontakt-Verlauf. Die
+# Aktivitaet `einladung_antwort` (Aufgabe 4/5) traegt den Rueckmeldestatus
+# ROH aus der Kalenderantwort (ACCEPTED/DECLINED/TENTATIVE/NEEDS-ACTION) —
+# die Seite uebersetzt ihn nur beim Rendern, wie es das bestehende Muster
+# ZUSTAND_TITEL/TERMIN_TITEL fuer Entwuerfe und Termine bereits vormacht.
+# ---------------------------------------------------------------------------
+
+def test_einladungsstand_erscheint_am_kontakt():
+    """Die zwei Assertions aus dem Brief woertlich — PLUS zwei staerkere
+    (Fund beim RED-Lauf, 11.09.2026): `"abgesagt" in seite.lower()` ist auf
+    JEDER /kontakte/{id}-Seite schon VOR jeder Aenderung wahr, weil `_STIL`
+    (in jede Seite eingebettetes CSS) die Klasse `.badge.zustand.
+    termin_abgesagt` enthaelt — als Teilstring genuegt das der brieftreuen
+    Assertion, ohne dass mein Code je laeuft. Ebenso zeigte der bestehende
+    Fallback (unbekannter Aktivitaetstyp -> rohe JSON-Nutzlast im
+    aufklappbaren `<details>`) den Grund schon woertlich, bevor
+    `einladung_antwort` eine eigene Behandlung bekam. Die zwei zusaetzlichen
+    Assertions binden den Test an die tatsaechliche Uebersetzung
+    (`<b>abgesagt</b>` als eigenes Element) und daran, dass der ROHE
+    DB-Wert 'DECLINED' nirgends mehr auf der Seite steht."""
+    lead = _lead("Ivan")
+    server._q(
+        "insert into activities (lead_id, type, payload) values "
+        "(%s, 'einladung_antwort', %s::jsonb)",
+        (lead, json.dumps({"uid": "abc-123", "status": "DECLINED",
+                           "grund": "Bin beim Kunden in München",
+                           "teilnehmer": "ivan@vibemind.space"})))
+    seite = _get(f"/kontakte/{lead}").text
+    assert "abgesagt" in seite.lower()
+    assert "Bin beim Kunden in München" in seite
+    assert "<b>abgesagt</b>" in seite, (
+        "der uebersetzte Stand steht nicht als eigenes Element im Verlauf")
+    assert "DECLINED" not in seite, (
+        "der rohe DB-Statuswert taucht noch unuebersetzt auf der Seite auf")
+
+
+def test_zusage_erscheint_als_zugesagt():
+    lead = _lead("Ivan")
+    server._q(
+        "insert into activities (lead_id, type, payload) values "
+        "(%s, 'einladung_antwort', %s::jsonb)",
+        (lead, json.dumps({"uid": "abc-123", "status": "ACCEPTED",
+                           "grund": "", "teilnehmer": "ivan@vibemind.space"})))
+    seite = _get(f"/kontakte/{lead}").text
+    assert "zugesagt" in seite.lower()
+
+
+def test_vorbehalt_erscheint_unter_vorbehalt():
+    """TENTATIVE — auch der Status eines Gegenvorschlags (METHOD:COUNTER,
+    siehe postfach._antwort_festhalten) — wird uebersetzt, nicht roh
+    gezeigt."""
+    lead = _lead("Tanja Tentative")
+    server._q(
+        "insert into activities (lead_id, type, payload) values "
+        "(%s, 'einladung_antwort', %s::jsonb)",
+        (lead, json.dumps({"uid": "abc-999", "status": "TENTATIVE",
+                           "grund": "", "teilnehmer": "tanja@vibemind.space"})))
+    seite = _get(f"/kontakte/{lead}").text
+    assert "unter Vorbehalt" in seite
+    assert "TENTATIVE" not in seite
+
+
+def test_ablehnungsgrund_wird_gekuerzt_mit_vollem_text_im_title():
+    """Der Ablehnungsgrund ist Fremdtext (der Antwortende schreibt ihn) und
+    folgt demselben Kuerzungsmuster wie jeder andere lange Anzeigetext auf
+    dieser Seite: gekuerzt in der Zeile, voll im `title`, beides ueber
+    `_e`."""
+    lang = ("Leider kann ich zu diesem Termin nicht, weil ich an diesem Tag "
+            "bereits einen anderen wichtigen Kundentermin in München habe "
+            "und die Anfahrt zu lang waere, um beides zu schaffen")
+    lead = _lead("Lena Lang")
+    server._q(
+        "insert into activities (lead_id, type, payload) values "
+        "(%s, 'einladung_antwort', %s::jsonb)",
+        (lead, json.dumps({"uid": "abc-777", "status": "DECLINED",
+                           "grund": lang,
+                           "teilnehmer": "lena@vibemind.space"})))
+    seite = _get(f"/kontakte/{lead}").text
+    gekuerzt = ui._kurz(lang, ui.EINLADUNG_GRUND_KURZ)
+    assert gekuerzt != lang, (
+        "Testannahme verletzt: der lange Grund muesste ueber "
+        "EINLADUNG_GRUND_KURZ hinausgehen, sonst kuerzt _kurz gar nichts")
+    assert ui._e(gekuerzt) in seite
+    assert f'title="{ui._e(lang)}"' in seite
