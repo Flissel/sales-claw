@@ -923,3 +923,81 @@ def test_ohne_imap_konfiguration_kein_verbindungsversuch(monkeypatch):
     mail_dispatch.eine_runde()
 
     assert _zeile(draft)["status"] == "sent"
+
+
+# ---------------------------------------------------------------------------
+# Termin-Einladungen: Kalenderteil (Aufgabe 2, 2026-09-11)
+# ---------------------------------------------------------------------------
+
+def test_einladung_reist_als_kalenderteil():
+    """Die Einladung ist ein text/calendar-Teil mit method=REQUEST — nicht
+    ein beliebiger Anhang. Nur dann bietet ein Mailprogramm 'Annehmen' an."""
+    ics_text = "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nEND:VCALENDAR\r\n"
+    nachricht = mail_dispatch.nachricht_mit_einladung(
+        "kunde@beispiel.de", "Terminvorschlag", "Passt Ihnen der 1. Oktober?",
+        ics_text)
+    typen = [t.get_content_type() for t in nachricht.walk()]
+    assert "text/calendar" in typen, typen
+    kalenderteil = [t for t in nachricht.walk()
+                    if t.get_content_type() == "text/calendar"][0]
+    assert kalenderteil.get_param("method") == "REQUEST"
+    assert kalenderteil.get_param("charset", "").lower() == "utf-8"
+    assert "METHOD:REQUEST" in kalenderteil.get_content()
+
+
+def test_einladung_traegt_auch_lesbaren_text():
+    """Ein Mailprogramm ohne Kalenderunterstuetzung muss den Termin trotzdem
+    lesen koennen."""
+    nachricht = mail_dispatch.nachricht_mit_einladung(
+        "kunde@beispiel.de", "Terminvorschlag", "Passt Ihnen der 1. Oktober?",
+        "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n")
+    texte = [t.get_content() for t in nachricht.walk()
+             if t.get_content_type() == "text/plain"]
+    assert any("1. Oktober" in t for t in texte), texte
+
+
+def test_gewoehnliche_anhaenge_bleiben_abgelehnt():
+    """Die Ausnahme gilt NUR fuer Kalenderdaten — eine PDF bleibt abgelehnt."""
+    assert mail_dispatch._anhang_erlaubt("einladung.ics") is True
+    assert mail_dispatch._anhang_erlaubt("angebot.pdf") is False
+    assert mail_dispatch._anhang_erlaubt("bild.png") is False
+
+
+def test_entwurf_mit_ics_anhang_geht_als_einladung_raus(tmp_path, monkeypatch):
+    """Aufgabe 2, Schritt 4: die Ablehnung oeffnet sich NUR fuer Kalender-
+    dateien. Anders als beim PDF-Weg (test_entwurf_mit_anhang_geht_nicht_
+    ohne_den_anhang_raus) muss eine .ics jetzt tatsaechlich zugestellt
+    werden — als Kalenderteil, nicht als gewoehnlicher Anhang."""
+    monkeypatch.setattr(medien, "MEDIA_VERZEICHNIS", str(tmp_path))
+    ics_text = ("BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\n"
+                "SUMMARY:Terminvorschlag\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
+    (tmp_path / "einladung.ics").write_text(ics_text, encoding="utf-8")
+    draft = _draft(_lead(), medien="einladung.ics")
+
+    mail_dispatch.eine_runde()
+
+    zeile = _zeile(draft)
+    assert zeile["status"] == "sent", zeile["error"]
+    assert zeile["sent_at"] is not None
+    assert len(STUB.mails) == 1
+    nachricht = email.message_from_string(STUB.mails[0]["roh"],
+                                          policy=policy.default)
+    typen = [t.get_content_type() for t in nachricht.walk()]
+    assert "text/calendar" in typen, typen
+    kalenderteil = [t for t in nachricht.walk()
+                    if t.get_content_type() == "text/calendar"][0]
+    assert kalenderteil.get_param("method") == "REQUEST"
+    assert "METHOD:REQUEST" in kalenderteil.get_content()
+
+
+def test_entwurf_mit_fehlender_ics_wird_fehler_gebucht(tmp_path, monkeypatch):
+    """Dieselbe Zweitpruefung wie beim WhatsApp-Weg (medien.py-Docstring):
+    zwischen Freigabe und Zustellung kann die Datei verschwunden sein."""
+    monkeypatch.setattr(medien, "MEDIA_VERZEICHNIS", str(tmp_path))
+    draft = _draft(_lead(), medien="verschwunden.ics")
+
+    mail_dispatch.eine_runde()
+
+    zeile = _zeile(draft)
+    assert zeile["status"] == "failed"
+    assert STUB.mails == []

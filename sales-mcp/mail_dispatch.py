@@ -37,8 +37,9 @@ Mail an einen echten Menschen. Fehlgeschlagene Entwuerfe werden NIE
 automatisch wiederholt — der Weg zurueck fuehrt ueber einen Menschen, der
 neu freigibt.
 
-KEINE ANHAENGE — und deshalb auch kein stiller Versand ohne sie
----------------------------------------------------------------
+KEINE ANHAENGE — bis auf GENAU EINE Ausnahme, und deshalb auch kein
+stiller Versand ohne die Unterlage
+---------------------------------------------------------------------
 Diese Fassung versendet reinen Text (text/plain, UTF-8). Traegt ein
 Entwurf ein `media_ref`, wird er ausdruecklich FEHLGESCHLAGEN gebucht,
 statt ohne die Unterlage rauszugehen. Der Plan sah vor, `media_ref` bei
@@ -48,6 +49,12 @@ automatisch raus, und dann ist Ignorieren genau der Fehler, den der
 WhatsApp-Weg ausdruecklich nicht macht („Ein Ersatzversand als reiner Text
 findet ausdruecklich NICHT statt: freigegeben wurde eine Nachricht mit
 Unterlage", dispatch.py). Dieselbe Regel, derselbe Grund.
+
+Termin-Einladungen (Aufgabe 2, 2026-09-11) durchbrechen das NICHT, sondern
+sind die eine begruendete Ausnahme: `_anhang_erlaubt` laesst ausschliesslich
+`.ics` durch, und die reist dann nicht als Anhang, sondern als
+Kalenderteil (`nachricht_mit_einladung`, `method=REQUEST`) — siehe dort.
+Ein PDF oder Bild bleibt wie zuvor FEHLGESCHLAGEN.
 
 TLS: DER PORT ENTSCHEIDET (gemessen)
 ------------------------------------
@@ -81,6 +88,7 @@ import psycopg
 
 import dispatch
 import mailadresse
+import medien
 import postfach
 import server
 from dispatch import (_als_fehler_buchen, _als_gesendet_buchen, _claim_marke,
@@ -239,6 +247,42 @@ def nachricht_bauen(adresse: str, betreff: str, rumpf: str) -> EmailMessage:
     return nachricht
 
 
+def _anhang_erlaubt(dateiname: str) -> bool:
+    """Nur Kalenderdaten duerfen an eine Mail — sonst nichts.
+
+    Der Mailweg lehnte Anhaenge bisher vollstaendig ab
+    (`anhang_nicht_unterstuetzt`). Diese eine Ausnahme entsteht, weil eine
+    Einladung ohne Kalenderteil keine Einladung ist, sondern eine Textmail.
+    Alles andere bleibt abgelehnt: ein PDF-Anhang waere ein neuer Weg nach
+    draussen, und den gibt es hier bewusst nicht.
+    """
+    return (dateiname or "").lower().endswith(".ics")
+
+
+def nachricht_mit_einladung(adresse: str, betreff: str, rumpf: str,
+                            ics_text: str,
+                            methode: str = "REQUEST") -> EmailMessage:
+    """Eine Mail, die eine Kalendereinladung traegt.
+
+    Der Kalender reist als ALTERNATIVE zum Text, nicht als Anhang daneben:
+    so zeigt ein Mailprogramm die Schaltflaechen zum Annehmen und Ablehnen,
+    waehrend ein Programm ohne Kalenderunterstuetzung weiterhin den lesbaren
+    Text zeigt. Ein zusaetzlicher Anhang derselben Datei ist bewusst NICHT
+    dabei — manche Programme zeigen die Einladung dann doppelt.
+
+    `params=` an `add_alternative`: gemessen gegen python:3.12-slim (das
+    Image dieses Dienstes) — funktioniert dort, deshalb kein Ausweichen auf
+    das nachtraegliche `set_param`.
+    """
+    if methode not in ("REQUEST", "REPLY", "CANCEL", "COUNTER"):
+        raise ValueError(f"unbekannte Methode: {methode!r}")
+    nachricht = nachricht_bauen(adresse, betreff, rumpf)
+    nachricht.add_alternative(
+        ics_text, subtype="calendar", charset="utf-8",
+        params={"method": methode, "component": "VEVENT"})
+    return nachricht
+
+
 def _verbindung():
     """Offene, VERSCHLUESSELTE SMTP-Verbindung. Der Port entscheidet.
 
@@ -375,23 +419,53 @@ def verarbeite_draft(draft_id) -> str:
         return "unzustellbar"
 
     # Siehe Moduldocstring: lieber ein Entwurf, der auf einen Menschen
-    # wartet, als eine Mail ohne die freigegebene Unterlage.
+    # wartet, als eine Mail ohne die freigegebene Unterlage. Die EINE
+    # Ausnahme (Aufgabe 2, 2026-09-11): eine Kalenderdatei geht als
+    # Einladung mit, alles andere bleibt abgelehnt — `_anhang_erlaubt`
+    # ist dieselbe Regel wie im Kalenderteil-Test.
+    ics_text = None
     if geclaimt["media_ref"]:
-        grund = (f"Anhang '{geclaimt['media_ref']}' — der E-Mail-Versand "
-                 f"schickt nur Text. Es ging NICHTS raus (auch kein Text "
-                 f"ohne Anhang). Ohne Anhang neu erstellen und freigeben — "
-                 f"oder die Unterlage von Hand aus dem Mailprogramm "
-                 f"schicken; dieser Entwurf bleibt dann als failed "
-                 f"dokumentiert (entwurf_manuell_gesendet gilt NUR fuer "
-                 f"LinkedIn).")
-        _als_fehler_buchen(draft_id, marke, grund)
-        LOG.info("draft=%s nicht zugestellt (Anhang, kein Ersatzversand)",
-                 draft_id)
-        return "anhang_nicht_unterstuetzt"
+        if not _anhang_erlaubt(geclaimt["media_ref"]):
+            grund = (f"Anhang '{geclaimt['media_ref']}' — der E-Mail-Versand "
+                     f"schickt nur Text. Es ging NICHTS raus (auch kein Text "
+                     f"ohne Anhang). Ohne Anhang neu erstellen und freigeben — "
+                     f"oder die Unterlage von Hand aus dem Mailprogramm "
+                     f"schicken; dieser Entwurf bleibt dann als failed "
+                     f"dokumentiert (entwurf_manuell_gesendet gilt NUR fuer "
+                     f"LinkedIn).")
+            _als_fehler_buchen(draft_id, marke, grund)
+            LOG.info("draft=%s nicht zugestellt (Anhang, kein Ersatzversand)",
+                     draft_id)
+            return "anhang_nicht_unterstuetzt"
+
+        # Zweitpruefung unmittelbar vor dem Versand — dieselbe Ueberlegung
+        # wie beim WhatsApp-Weg (dispatch.py): zwischen Freigabe und
+        # Zustellung koennen Minuten liegen, media/ ist ein Host-Bind, den
+        # der Betreiber jederzeit aufraeumen kann.
+        basis, medienfehler = medien.pruefe(geclaimt["media_ref"])
+        if medienfehler:
+            _als_fehler_buchen(
+                draft_id, marke,
+                f"Kalenderdatei nicht versandfaehig: {medienfehler}")
+            LOG.info("draft=%s nicht zugestellt (%s)", draft_id, medienfehler)
+            return "anhang_fehlt"
+        try:
+            ics_text = medien.lies(basis).decode("utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            _als_fehler_buchen(
+                draft_id, marke,
+                f"Kalenderdatei '{basis}' nicht lesbar ({type(e).__name__}).")
+            LOG.info("draft=%s nicht zugestellt (Kalenderdatei nicht lesbar)",
+                     draft_id)
+            return "anhang_fehlt"
 
     try:
-        nachricht = nachricht_bauen(adresse, geclaimt["subject"],
-                                    geclaimt["body"])
+        if ics_text is not None:
+            nachricht = nachricht_mit_einladung(adresse, geclaimt["subject"],
+                                                geclaimt["body"], ics_text)
+        else:
+            nachricht = nachricht_bauen(adresse, geclaimt["subject"],
+                                        geclaimt["body"])
         senden(nachricht)
     except VersandFehler as e:
         _als_fehler_buchen(draft_id, marke, str(e))
