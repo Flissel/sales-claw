@@ -1,6 +1,8 @@
 """Vertragstests fuer `termin_einladen` — Einladung statt stillem Eintrag."""
 import json
 import os
+from datetime import timedelta, timezone
+from datetime import datetime as dt
 
 import pytest
 
@@ -96,6 +98,55 @@ def test_vergangenes_datum_wird_abgelehnt():
     lead = _lead()
     antwort = json.loads(server.termin_einladen(lead, "2020-01-01", "14:30"))
     assert "fehler" in antwort
+
+
+# ---------------------------------------------------------------------------
+# Wiedervorlage zum Nachfassen (W1, Schlusspruefung 11.09.2026)
+#
+# `postfach.lesen()` ist die einzige Auswertungsstelle fuer Antworten und
+# wird nur aktiv, wenn jemand die richtige Mail von Hand oeffnet — ohne
+# eigene Wiedervorlage verschwindet eine unbeantwortete Einladung lautlos.
+# `termin_bestaetigen` legt fuer die Terminerinnerung laengst eine an
+# (test_termin.py::test_wiedervorlage_entsteht_am_vortag_und_ist_auffindbar);
+# hier dasselbe Muster fuer die Einladung selbst.
+# ---------------------------------------------------------------------------
+
+def _heute():
+    """UTC, nicht date.today() — gleiche Begruendung wie in test_termin.py."""
+    return dt.now(timezone.utc).date()
+
+
+def test_einladung_legt_wiedervorlage_zum_nachfassen_an():
+    lead = _lead()
+    datum = (_heute() + timedelta(days=10)).isoformat()
+    antwort = json.loads(server.termin_einladen(
+        lead, datum, "14:30", thema="Erstgespräch"))
+    assert "fehler" not in antwort, antwort
+
+    faellig = (_heute() + timedelta(days=2)).isoformat()  # EINLADUNG_NACHFASS_TAGE
+    assert antwort["wiedervorlage"]["faellig_am"] == faellig
+    assert antwort["wiedervorlage"]["aktivitaets_id"]
+
+    zeilen = server._q(
+        "select payload from activities where lead_id = %s and "
+        "type = 'wiedervorlage'", (lead,))
+    assert len(zeilen) == 1, zeilen
+    assert zeilen[0]["payload"]["faellig_am"] == faellig
+    assert "Nachfassen" in zeilen[0]["payload"]["notiz"]
+    assert "Erstgespräch" in zeilen[0]["payload"]["notiz"]
+    assert datum in zeilen[0]["payload"]["notiz"]
+
+
+def test_nachfass_wiedervorlage_wird_auf_den_termintag_gedeckelt():
+    """Eine sehr kurzfristige Einladung (Termin morgen) darf keine
+    Nachfass-Faelligkeit NACH dem Termin bekommen — min(), nicht der volle
+    EINLADUNG_NACHFASS_TAGE-Abstand."""
+    lead = _lead()
+    datum = (_heute() + timedelta(days=1)).isoformat()
+    antwort = json.loads(server.termin_einladen(
+        lead, datum, "14:30", thema="Erstgespräch"))
+    assert "fehler" not in antwort, antwort
+    assert antwort["wiedervorlage"]["faellig_am"] == datum
 
 
 # ---------------------------------------------------------------------------

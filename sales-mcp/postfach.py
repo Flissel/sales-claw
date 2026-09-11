@@ -358,8 +358,21 @@ def _holen(kasten, uid: bytes):
 
 def liste(anzahl: int = 10) -> list:
     """Die neuesten Mails der INBOX, neueste zuerst — uid, von, betreff,
-    datum, auszug. Wirft bei Verbindungsproblemen (der Aufrufer in
-    server.py macht daraus die lesbare Meldung)."""
+    datum, auszug, kalenderteil. Wirft bei Verbindungsproblemen (der
+    Aufrufer in server.py macht daraus die lesbare Meldung).
+
+    `kalenderteil` (W1, Schlusspruefung 11.09.2026): True, wenn die Mail
+    einen `text/calendar`-Teil traegt — genau die Voraussetzung, unter der
+    `lesen()` eine Antwort auf eine Einladung erkennt und protokolliert.
+    Ohne dieses Feld war eine Antwort nur auffindbar, wenn jemand GENAU
+    diese Mail von Hand oeffnete, und nichts in der Liste wies darauf hin,
+    dass es sie ueberhaupt gibt — `liste()` wertete den Kalenderteil bisher
+    gar nicht aus. Bewusst nur die Anwesenheit des Teils, nicht dessen
+    Auswertung (kein `kalender.ics_antwort_lesen` hier): das bliebe
+    `lesen()` vorbehalten, das die Antwort auch tatsaechlich festhaelt —
+    zwei Stellen, die denselben ICS-Text unterschiedlich weit auswerten,
+    driften sonst leicht auseinander (dieselbe Erwaegung wie bei
+    `_ics_tzid`, siehe kalender.py)."""
     anzahl = max(1, min(int(anzahl), ANZAHL_MAX))
     kasten = _verbinden()
     try:
@@ -381,6 +394,7 @@ def liste(anzahl: int = 10) -> list:
                 "datum": _kopf(nachricht, "Date"),
                 "auszug": (text[:AUSZUG_MAX] + "…"
                            if len(text) > AUSZUG_MAX else text),
+                "kalenderteil": bool(_kalender_teil(nachricht)),
             })
         return ergebnis
     finally:

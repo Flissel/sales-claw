@@ -205,6 +205,24 @@ def _antwort_mail(status="ACCEPTED", teilnehmer="ivan@vibemind.space",
     return nachricht.as_bytes()
 
 
+def test_liste_markiert_mails_mit_kalenderteil(stub):
+    """W1 (Schlusspruefung, 11.09.2026): `liste()` wertete den Kalenderteil
+    bisher GAR NICHT aus — eine Antwort auf eine Einladung war nur
+    auffindbar, wenn jemand GENAU diese Mail von Hand oeffnete, und nichts
+    in der Liste wies darauf hin, dass es sie ueberhaupt gibt. `kalenderteil`
+    markiert nur die ANWESENHEIT des `text/calendar`-Teils — keine
+    Auswertung, die bleibt `lesen()` vorbehalten."""
+    stub.mails[b"4"] = _antwort_mail(status="ACCEPTED", uid="abc-123")
+    antwort = json.loads(server.postfach_lesen(anzahl=10))
+    assert "fehler" not in antwort, antwort
+    mails = {m["uid"]: m for m in antwort["mails"]}
+    assert set(mails) == {"1", "2", "3", "4"}
+    assert mails["4"]["kalenderteil"] is True
+    assert mails["1"]["kalenderteil"] is False
+    assert mails["2"]["kalenderteil"] is False
+    assert mails["3"]["kalenderteil"] is False
+
+
 def test_zusage_wird_als_aktivitaet_am_kontakt_festgehalten(stub):
     lead_id = _lead()
     stub.mails[b"5"] = _antwort_mail(status="ACCEPTED")
