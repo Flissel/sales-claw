@@ -351,10 +351,10 @@ def ics_antwort_lesen(text: str):
     Welche Zeile die tatsaechliche Antwort ist, kann diese Funktion allein
     nicht entscheiden — sie kennt nur die Kalenderdatei, nicht den
     Mail-Absender. Die obersten Felder `teilnehmer`/`status` bleiben zur
-    Bequemlichkeit die ERSTE Zeile (bisheriges Verhalten, von den
-    bestehenden Ein-Teilnehmer-Tests abgedeckt); wer mehrere Teilnehmer
-    zulassen muss (postfach.py, ueber den Absender der Mail), liest
-    `teilnehmende`.
+    Bequemlichkeit die ERSTE ZEILE MIT NICHTLEEREM STATUS (bisheriges
+    Verhalten, von den bestehenden Ein-Teilnehmer-Tests abgedeckt); wer
+    mehrere Teilnehmer zulassen muss (postfach.py, ueber den Absender der
+    Mail), liest `teilnehmende`.
     """
     roh = (text or "")
     if "BEGIN:VCALENDAR" not in roh:

@@ -27,6 +27,7 @@ import email.header
 import email.utils
 import imaplib
 import json
+import logging
 import os
 import re
 import ssl
@@ -44,6 +45,14 @@ IMAP_PASSWORT = os.environ.get(
 AUSZUG_MAX = 300      # Zeichen je Mail in der Liste
 TEXT_MAX = 20000      # Zeichen Volltext — Fremddatum bleibt gedeckelt
 ANZAHL_MAX = 25       # Mails je Liste
+
+# Sichtbares Signal, wenn eine Kalenderantwort keinem Teilnehmer zugeordnet
+# werden kann (Fix-Runde 3): ohne eigenes Logging-Setup nutzt Python den
+# "handler of last resort" und schreibt WARNING+ nach stderr — genug, damit
+# so ein Fall nicht stumm bleibt, ohne dass postfach.py (reine Bibliothek,
+# kein eigener Prozess wie dispatch.py/inbox.py) eine eigene Handler-
+# Konfiguration braucht.
+LOG = logging.getLogger("sales-postfach")
 
 
 def konfiguriert() -> bool:
@@ -134,24 +143,47 @@ def _absenderadresse(nachricht) -> str:
     return adresse.strip()
 
 
-def _passenden_teilnehmer_waehlen(antwort: dict, absender: str) -> dict:
-    """Bei mehreren ATTENDEE-Zeilen in `antwort["teilnehmende"]` die Zeile
-    waehlen, deren Adresse zum Mail-Absender passt, und `teilnehmer`/
-    `status` darauf setzen (Fix-Runde 2, Mangel 1).
+def _normalisierte_adresse(adresse: str) -> str:
+    """Fuer den Adressvergleich: Leerraum weg, komplett kleingeschrieben.
 
-    Findet sich der Absender in keiner Zeile — z. B. eine Weiterleitung
-    von fremder Adresse, oder eine Antwort ohne ATTENDEE ueberhaupt —,
-    bleiben die von `ics_antwort_lesen` gelieferten Werte (die erste
-    Zeile) als Rueckfall stehen; das ist kein neuer Fehlerfall, nur das
-    bisherige Verhalten fuer den Rand, in dem keine bessere Zuordnung
-    moeglich ist."""
+    Fix-Runde 3 (Koordinator, 11.09.2026): der Domaenenteil einer
+    E-Mail-Adresse ist ohnehin nicht schreibungsempfindlich, und viele
+    Mailanbieter normalisieren zwar die Domaene automatisch, den lokalen
+    Teil aber nicht — eine abweichende Schreibweise zwischen dem
+    `From`-Header und der `mailto:`-Zeile in der ICS-Datei ist deshalb
+    Alltag, kein Sonderfall. Ausdrueckliche Vorgabe des Koordinators:
+    Unterschiede im lokalen Teil als Tippfehler behandeln, nicht als
+    absichtliche Unterscheidung — deshalb hier die GANZE Adresse
+    kleingeschrieben, nicht nur die Domaene."""
+    return (adresse or "").strip().lower()
+
+
+def _passenden_teilnehmer_waehlen(antwort: dict, absender: str):
+    """Bei mehreren ATTENDEE-Zeilen in `antwort["teilnehmende"]` die Zeile
+    waehlen, deren (normalisierte) Adresse zum Mail-Absender passt, mit
+    `teilnehmer`/`status` darauf gesetzt — oder None (Fix-Runde 2/3,
+    Mangel 1).
+
+    KEIN Rueckfall mehr auf die erste Zeile (Fix-Runde 3, ausdrueckliche
+    Vorgabe des Koordinators, nachdem Fix-Runde 2 genau das noch tat):
+    findet sich der Absender in keiner Zeile — Tippfehler in der
+    Schreibweise sind durch `_normalisierte_adresse` bereits
+    ausgeschlossen, trotzdem kein Treffer, etwa bei einer Weiterleitung
+    von fremder Adresse oder einer Antwort ganz ohne ATTENDEE —, liefert
+    diese Funktion None. Der Aufrufer haelt dann NICHTS in der Datenbank
+    fest: lieber eine fehlende Aktivitaet als eine falsche unter fremdem
+    Namen. Ein Rueckfall auf „irgendeine" Zeile haette genau den
+    Verlustmechanismus reproduziert, den Mangel 1 beheben sollte — nur an
+    eine andere Bedingung (kein Absender-Treffer statt keine ATTENDEE-
+    Zeile ueberhaupt) geknuepft."""
+    ziel = _normalisierte_adresse(absender)
     for eintrag in antwort.get("teilnehmende") or []:
-        if eintrag.get("teilnehmer") == absender:
+        if _normalisierte_adresse(eintrag.get("teilnehmer", "")) == ziel:
             antwort = dict(antwort)
             antwort["teilnehmer"] = eintrag["teilnehmer"]
             antwort["status"] = eintrag["status"]
             return antwort
-    return antwort
+    return None
 
 
 def _antwort_festhalten(antwort: dict) -> None:
@@ -304,13 +336,21 @@ def lesen(uid: str):
         if kalender_text:
             antwort = kalender.ics_antwort_lesen(kalender_text)
             if antwort is not None:
-                # Mangel 1 (Fix-Runde 2): die ICS-Datei allein kennt bei
+                # Mangel 1 (Fix-Runde 2/3): die ICS-Datei allein kennt bei
                 # mehreren Teilnehmern nicht, wer geantwortet hat — der
-                # Absender der Mail schon.
-                antwort = _passenden_teilnehmer_waehlen(
+                # Absender der Mail schon (normalisiert verglichen, kein
+                # Rueckfall auf die erste Zeile).
+                gewaehlt = _passenden_teilnehmer_waehlen(
                     antwort, _absenderadresse(nachricht))
-                ergebnis["kalender_antwort"] = antwort
-                _antwort_festhalten(antwort)
+                ergebnis["kalender_antwort"] = (
+                    gewaehlt if gewaehlt is not None else antwort)
+                if gewaehlt is not None:
+                    _antwort_festhalten(gewaehlt)
+                else:
+                    LOG.warning(
+                        "Kalenderantwort (uid=%s) ohne zuordenbaren "
+                        "Teilnehmer — keine Aktivitaet festgehalten",
+                        antwort.get("uid") or "?")
         return ergebnis
     finally:
         kasten.logout()

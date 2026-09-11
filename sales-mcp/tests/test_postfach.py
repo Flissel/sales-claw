@@ -324,6 +324,49 @@ def test_antwort_mit_mehreren_teilnehmern_waehlt_ueber_absender(stub):
     assert antwort["kalender_antwort"]["status"] == "DECLINED"
 
 
+def test_antwort_waehlt_ueber_absender_trotz_gross_kleinschreibung(stub):
+    """Fix-Runde 3 (Koordinator): viele Mailanbieter normalisieren nur die
+    Domaene, nicht den lokalen Teil — eine abweichende Schreibweise
+    zwischen dem `From`-Header und der `mailto:`-Zeile in der ICS-Datei
+    ist deshalb Alltag, kein Sonderfall. Der Adressvergleich darf daran
+    nicht scheitern, sonst greift wieder der (jetzt abgeschaffte)
+    Rueckfall auf die erste Zeile."""
+    lead_id = _lead()
+    stub.mails[b"16"] = _antwort_mail_mehrere(
+        von="Ivan Beispiel <Ivan@Vibemind.Space>",
+        teilnehmer=[
+            ("felix@vibemind.space", "NEEDS-ACTION"),
+            ("ivan@vibemind.space", "DECLINED"),
+        ])
+    server.postfach_mail_lesen("16")
+    zeilen = server._q(
+        "select payload from activities where lead_id = %s and "
+        "type = 'einladung_antwort'", (lead_id,))
+    assert len(zeilen) == 1, zeilen
+    assert zeilen[0]["payload"]["teilnehmer"] == "ivan@vibemind.space"
+    assert zeilen[0]["payload"]["status"] == "DECLINED"
+
+
+def test_antwort_ohne_passenden_teilnehmer_erzeugt_keine_aktivitaet(stub):
+    """Fix-Runde 3 (Koordinator): kein Rueckfall mehr auf die erste Zeile.
+    Felix ist absichtlich ein ECHTER Kontakt — mit dem alten Rueckfall
+    (erste Zeile mit nichtleerem Status) waere hier eine Aktivitaet unter
+    SEINEM Namen entstanden, obwohl die Mail von einer ganz anderen
+    Adresse kam. Lieber gar keine Aktivitaet als eine falsche."""
+    _lead(name="Felix", email_adresse="felix@vibemind.space")
+    stub.mails[b"17"] = _antwort_mail_mehrere(
+        von="Fremde Adresse <fremd@nirgendwo.de>",
+        teilnehmer=[
+            ("felix@vibemind.space", "NEEDS-ACTION"),
+            ("ivan@vibemind.space", "DECLINED"),
+        ])
+    antwort = json.loads(server.postfach_mail_lesen("17"))
+    assert "fehler" not in antwort, antwort
+    zeilen = server._q(
+        "select id from activities where type = 'einladung_antwort'")
+    assert zeilen == [], zeilen
+
+
 def test_antwort_ohne_partstat_erzeugt_keine_aktivitaet(stub):
     """Fix-Runde 2 (Koordinator, Mangel 2): fehlt PARTSTAT in der
     ATTENDEE-Zeile, bleibt `status` leer — ein leerer Status ist in
