@@ -424,6 +424,72 @@ def test_unbekannter_teilnehmer_erzeugt_keine_aktivitaet(stub):
     assert zeilen == []
 
 
+def test_antwort_findet_kontakt_trotz_abweichender_schreibweise_in_db(stub):
+    """W2 (Schlusspruefung, 11.09.2026): der Kontakt-Lookup in
+    `_antwort_festhalten` verglich bisher exakt (`where email = %s`) — ohne
+    Normalisierung, obwohl `_normalisierte_adresse` zwei Funktionen weiter
+    oben genau dafuer gebaut wurde (`_passenden_teilnehmer_waehlen` nutzt
+    sie laengst fuer den Vergleich ATTENDEE<->From). Hier: der Kontakt
+    steht GROSSGESCHRIEBEN in der DB, die Kalenderdatei traegt ihn
+    kleingeschrieben."""
+    lead_id = _lead(email_adresse="IVAN@VIBEMIND.SPACE")
+    stub.mails[b"9"] = _antwort_mail(status="ACCEPTED",
+                                     teilnehmer="ivan@vibemind.space",
+                                     uid="abc-321")
+    antwort = json.loads(server.postfach_mail_lesen("9"))
+    assert "fehler" not in antwort, antwort
+    zeilen = server._q(
+        "select payload from activities where lead_id = %s and "
+        "type = 'einladung_antwort'", (lead_id,))
+    assert len(zeilen) == 1, (
+        "Kontakt wurde trotz Normalisierungs-Helfer nicht gefunden — "
+        "exakter Stringvergleich statt lower(trim(email)).")
+    assert zeilen[0]["payload"]["status"] == "ACCEPTED"
+
+
+def test_antwort_bei_mehreren_treffern_waehlt_deterministisch_denselben_kontakt(
+        stub):
+    """W2: `leads[0]` ohne ORDER BY haengt von der (unspezifizierten)
+    Rueckgabereihenfolge der Datenbank ab — zwei unabhaengige Antworten an
+    dieselbe (normalisierte) Adresse duerften nicht mal beim einen, mal
+    beim anderen Kontakt landen. Es kommt hier nicht darauf an, WELCHER der
+    beiden Kontakte gewaehlt wird, nur dass es IMMER derselbe ist.
+
+    Ehrlicher Befund zu diesem Test: er ist GRUEN, auch gegen den ALTEN
+    Code (dort liefert PostgreSQL fuer diese einfache, unveraenderte
+    Abfrage in der Praxis stabil die Einfuegereihenfolge zurueck — das ist
+    Zufall der Implementierung, kein garantiertes Verhalten der Norm). Er
+    ist damit kein echter RED-Beleg fuer die Nichtdeterminismus-Behauptung,
+    sondern eine REGRESSIONSSICHERUNG: das explizite `order by created_at
+    desc, id desc` im Fix macht das Verhalten GARANTIERT statt zufaellig
+    richtig — dieser Test haelt genau das fest, damit ein kuenftiges
+    Entfernen der ORDER BY (z. B. bei einer Umformulierung der Abfrage)
+    auffiele, auch wenn es lokal zufaellig weiter gruen bliebe."""
+    erster = _lead(name="Ivan Alt", email_adresse="ivan@vibemind.space")
+    zweiter = _lead(name="Ivan Neu", email_adresse="IVAN@VIBEMIND.SPACE")
+
+    stub.mails[b"10"] = _antwort_mail(status="ACCEPTED", uid="abc-701")
+    stub.mails[b"11"] = _antwort_mail(status="DECLINED", uid="abc-702")
+    antwort1 = json.loads(server.postfach_mail_lesen("10"))
+    antwort2 = json.loads(server.postfach_mail_lesen("11"))
+    assert "fehler" not in antwort1, antwort1
+    assert "fehler" not in antwort2, antwort2
+
+    treffer1 = server._q(
+        "select lead_id from activities where type = 'einladung_antwort' "
+        "and payload->>'uid' = 'abc-701'")
+    treffer2 = server._q(
+        "select lead_id from activities where type = 'einladung_antwort' "
+        "and payload->>'uid' = 'abc-702'")
+    assert len(treffer1) == 1 and len(treffer2) == 1
+    gefunden1 = str(treffer1[0]["lead_id"])
+    gefunden2 = str(treffer2[0]["lead_id"])
+    assert gefunden1 in (erster, zweiter)
+    assert gefunden1 == gefunden2, (
+        "zwei unabhaengige Antworten an dieselbe (normalisierte) Adresse "
+        "landeten bei VERSCHIEDENEN Kontakten — nicht deterministisch.")
+
+
 def test_mail_ohne_kalenderteil_bleibt_unberuehrt(stub):
     """Die bestehenden Stub-Mails ohne `text/calendar`-Teil (z. B. uid '1')
     duerfen unter keinen Umstaenden eine Aktivitaet erzeugen."""

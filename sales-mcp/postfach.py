@@ -255,7 +255,23 @@ def _antwort_festhalten(antwort: dict) -> None:
     status = antwort.get("status") or ""
     if not status:
         return
-    leads = server._q("select id from leads where email = %s", (teilnehmer,))
+    # W2 (Schlusspruefung 11.09.2026): normalisiert auf BEIDEN Seiten
+    # vergleichen — `_normalisierte_adresse` wurde zwei Funktionen weiter
+    # oben (`_passenden_teilnehmer_waehlen`) eigens gebaut, weil eine
+    # abweichende Schreibweise zwischen der `mailto:`-Zeile in der
+    # Kalenderdatei und dem gespeicherten Kontakt Alltag ist, kein
+    # Sonderfall — diese Abfrage hatte die Einsicht bisher nicht
+    # mitbekommen und verglich exakt (`where email = %s`). Deterministische
+    # Reihenfolge statt `leads[0]` ueber die Zufaelligkeit der DB-Rueckgabe:
+    # dasselbe Muster wie an anderen Mehrfachtreffer-Stellen im Projekt
+    # (`order by created_at desc, id desc`, siehe z. B. server.py) — bei
+    # zwei Kontakten mit derselben (normalisierten) Adresse liefert dieselbe
+    # Antwort-Mail dann immer denselben Kontakt, nicht mal den einen, mal
+    # den anderen.
+    leads = server._q(
+        "select id from leads where lower(trim(email)) = %s "
+        "order by created_at desc, id desc limit 1",
+        (_normalisierte_adresse(teilnehmer),))
     if not leads:
         return
     lead_id = leads[0]["id"]
