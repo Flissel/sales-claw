@@ -258,6 +258,70 @@ def ics(uid: str, beginn, dauer_minuten: int, summary: str, ort: str = "",
     return "\r\n".join(gefaltet) + "\r\n"
 
 
+def _adresse(wert: str) -> str:
+    """Eine E-Mail-Adresse fuer ORGANIZER/ATTENDEE — ohne `mailto:`-Praefix.
+
+    Geprueft wird nur das Noetigste: ein @ mit etwas davor und dahinter, und
+    keine Zeichen, die eine ICS-Zeile zerlegen koennten. Eine kaputte Adresse
+    hier wuerde eine Einladung erzeugen, die kein Mailprogramm zuordnen kann —
+    lieber ein Fehler beim Bauen als eine stille Einladung ins Leere.
+    """
+    kern = (wert or "").strip()
+    if kern.lower().startswith("mailto:"):
+        kern = kern[7:]
+    if "@" not in kern or kern.startswith("@") or kern.endswith("@"):
+        raise ValueError(f"keine Adresse: {kern!r}")
+    if any(z in kern for z in "\r\n,;:"):
+        raise ValueError(f"unerlaubte Zeichen in Adresse: {kern!r}")
+    return kern
+
+
+def ics_einladung(uid: str, beginn, dauer_minuten: int, summary: str,
+                  veranstalter: str = "", eingeladene=(), ort: str = "",
+                  beschreibung: str = BESCHREIBUNG, jetzt=None,
+                  folge: int = 0) -> str:
+    """Dieselbe Buchung wie `ics()`, aber als EINLADUNG (RFC 5546).
+
+    Unterschied zur CalDAV-Fassung, und warum es zwei gibt: RFC 4791 §4.1
+    VERBIETET `METHOD:` in einem Kalenderobjekt auf einem CalDAV-Server
+    (SabreDAV antwortet mit HTTP 415), RFC 5546 VERLANGT es fuer eine
+    Einladung. Eine Datei kann nicht beides sein. `ics()` bleibt deshalb
+    unveraendert die Fassung fuer den Kalender; diese hier geht per Mail.
+
+    `folge` ist die SEQUENCE: 0 fuer die erste Einladung, bei jeder Aenderung
+    derselben Buchung um eins hoeher. Mailprogramme erkennen daran, welche
+    Fassung die neuere ist — ohne sie wuerde eine Verschiebung als Dublette
+    erscheinen.
+    """
+    org = _adresse(veranstalter)
+    gaeste = [_adresse(e) for e in eingeladene]
+    if not gaeste:
+        raise ValueError("eine Einladung braucht mindestens einen Eingeladenen")
+    roh = ics(uid, beginn, dauer_minuten, summary, ort=ort,
+              beschreibung=beschreibung, jetzt=jetzt)
+    # Auf der ENTFALTETEN Fassung arbeiten: `ics()` faltet auf 75 Oktette,
+    # und eine eingefuegte Zeile muss danach mitgefaltet werden.
+    zeilen = roh.replace("\r\n ", "").replace("\r\n\t", "").split("\r\n")
+    ergebnis = []
+    for zeile in zeilen:
+        if zeile == "BEGIN:VEVENT":
+            ergebnis.append(zeile)
+            ergebnis.append(f"ORGANIZER:mailto:{org}")
+            for gast in gaeste:
+                ergebnis.append(
+                    "ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;"
+                    f"PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:{gast}")
+            ergebnis.append(f"SEQUENCE:{int(folge)}")
+            continue
+        if zeile == "CALSCALE:GREGORIAN":
+            ergebnis.append(zeile)
+            ergebnis.append("METHOD:REQUEST")
+            continue
+        ergebnis.append(zeile)
+    gefaltet = [teil for z in ergebnis if z for teil in _falte(z)]
+    return "\r\n".join(gefaltet) + "\r\n"
+
+
 # ---------------------------------------------------------------------------
 # CalDAV — optionaler Eintrag im echten Kalender des Betreibers
 # ---------------------------------------------------------------------------
