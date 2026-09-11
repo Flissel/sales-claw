@@ -1445,8 +1445,12 @@ def termin_einladen(lead_id: str, datum: str, uhrzeit: str,
     if "fehler" in entwurf:
         return roh
 
+    # 'einladung_entworfen', nicht 'einladung_gesendet' (Fix-Runde 1,
+    # 11.09.2026): zu diesem Zeitpunkt liegt ein Entwurf zur Freigabe, es
+    # ging nichts raus — der Betreiber kann ihn noch ablehnen. Ein Typ, der
+    # "gesendet" heisst, behauptet etwas, das nicht stattgefunden hat.
     _q("insert into activities (lead_id, type, payload) values "
-       "(%s, 'einladung_gesendet', %s::jsonb)",
+       "(%s, 'einladung_entworfen', %s::jsonb)",
        (lead_id, json.dumps({"uid": uid, "datum": tag.isoformat(),
                              "uhrzeit": f"{zeit:%H:%M}", "folge": 0,
                              "eingeladene": gaeste, "thema": thema_kurz})))
