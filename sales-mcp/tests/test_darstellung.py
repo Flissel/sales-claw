@@ -219,6 +219,23 @@ _BEZEICHNER_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 # ist damit NICHT mehr blockweise exemptiert — nur sein `action=`-Anteil
 # ist maskiert, sein Anzeigetext bleibt geprueft.
 # ---------------------------------------------------------------------------
+#
+# Fix-Runde 5 (10.09.2026, Nachpruefung): Fix-Runde 4 exemptierte eine
+# SQL-praefigierte Zeile noch immer als GANZES — dieselbe Verwechslungs-
+# Klasse wie in Runde 4, nur eine Groessenordnung kleiner. Belegt: ein
+# Kommentar ans Zeilenende der CSS-Selektor-Zeile gehaengt
+# ('select, input[type="text"] { /* mindesthoehe ueberschreibung */')
+# wurde NICHT gefangen, weil `_SQL_RE.match` am Zeilenanfang trifft und
+# `_ist_technisches_fragment` die Zeile dann komplett ueberspringt — auch
+# den Teil HINTER der Uebereinstimmung. Auf einer eigenen Zeile wird
+# derselbe Kommentar korrekt gefangen (dort greift kein SQL-Praefix).
+# Fix: `_ohne_sql_praefix` schneidet nur das technische STUECK ab, nicht
+# die ganze Zeile — bei einer CSS-Regel bis zur ersten oeffnenden Klammer
+# '{' (danach kann, wie hier belegt, ein Kommentar folgen), sonst (keine
+# '{' auf der Zeile — jede echte SQL-Anweisung in ui.py, verifiziert)
+# weiterhin bis zum Zeilenende. Der Rest hinter der Klammer wird wie jede
+# andere Zeile geprueft (inkl. Attributwert-Maskierung).
+# ---------------------------------------------------------------------------
 _SQL_RE = re.compile(r"^(select|insert into|update|delete from)\b",
                      re.IGNORECASE)
 _ATTR_WERT_RE = re.compile(r'((?:action|name)=")([^"]*)(")')
@@ -227,14 +244,16 @@ _ATTR_WERT_RE = re.compile(r'((?:action|name)=")([^"]*)(")')
 def _ist_technisches_fragment(s: str) -> bool:
     """True fuer ein Fragment — ein ganzes einzeiliges Literal ODER eine
     einzelne Zeile eines mehrzeiligen Literals (siehe
-    `_technische_fragmente`) —, das strukturell KEIN Anzeigetext ist,
-    sondern Bezeichner/Route/SQL: nie als Prosa an den Browser ausgeliefert,
-    sondern als Formularfeld-Name, Payload-/Dict-Schluessel (z.B.
-    'eintraege', 'vertraege', 'begruendung' — Vertrag mit server.py,
-    Umbenennen bricht gespeicherte Payloads), CSS-Selektor, Routen-Pfad
-    oder SQL-Anweisung verwendet. Jede Pruefung bezieht sich auf das
-    Fragment ALS GANZES (Vollmatch bzw. Praefix) — nie auf ein Vorkommen
-    irgendwo darin (Fix-Runde 4). Randbedingung: Bezeichner sind tabu."""
+    `_technische_fragmente`) —, das ALS GANZES strukturell KEIN Anzeigetext
+    ist, sondern Bezeichner oder Route: nie als Prosa an den Browser
+    ausgeliefert, sondern als Formularfeld-Name, Payload-/Dict-Schluessel
+    (z.B. 'eintraege', 'vertraege', 'begruendung' — Vertrag mit server.py,
+    Umbenennen bricht gespeicherte Payloads) oder Routen-Pfad verwendet.
+    Jede Pruefung bezieht sich auf das Fragment ALS GANZES (Vollmatch) —
+    nie auf ein Vorkommen irgendwo darin (Fix-Runde 4). SQL/CSS-Selektor
+    ist HIER bewusst NICHT geprueft: das technische Stueck kann kuerzer
+    sein als die Zeile (Fix-Runde 5) — siehe `_ohne_sql_praefix`.
+    Randbedingung: Bezeichner sind tabu."""
     kern = s.strip()
     if not kern:
         return True
@@ -242,9 +261,23 @@ def _ist_technisches_fragment(s: str) -> bool:
         return True
     if _ROUTE_RE.match(kern):
         return True
-    if _SQL_RE.match(kern):
-        return True
     return False
+
+
+def _ohne_sql_praefix(kern: str) -> str | None:
+    """Schneidet ein SQL-/CSS-Selektor-Praefix ab (`_SQL_RE`) und liefert
+    NUR den Rest danach zurueck — nicht (wie bis Fix-Runde 4) die ganze
+    Zeile. Das technische Stueck reicht bis zur ERSTEN oeffnenden Klammer
+    '{' (der CSS-Regelkoerper, z.B. beim 'select'-Selektor in `_STIL`);
+    danach kann im CSS ein Kommentar auf derselben Zeile folgen (Fix-Runde
+    5, belegt) und muss geprueft werden. Ohne '{' auf der Zeile — jede
+    echte SQL-Anweisung in ui.py, keine enthaelt eine '{' — bleibt die
+    gesamte Zeile technisch. Liefert None, wenn `kern` gar nicht mit SQL
+    beginnt (dann ist die Zeile normal zu behandeln)."""
+    if not _SQL_RE.match(kern):
+        return None
+    klammer = kern.find("{")
+    return kern[klammer + 1:] if klammer != -1 else ""
 
 
 def _ohne_technische_attributwerte(zeile: str) -> str:
@@ -253,7 +286,23 @@ def _ohne_technische_attributwerte(zeile: str) -> str:
     die Zeile auf ASCII-Umschreibungen geprueft wird. Nur der Wert in genau
     dieser Attributposition zaehlt, und nur wenn er selbst
     `_ROUTE_RE`/`_BEZEICHNER_RE` erfuellt — keine Teilstring-Suche nach dem
-    Wort irgendwo in der Zeile."""
+    Wort irgendwo in der Zeile.
+
+    Bewusst NUR `action=`/`name=` (Fix-Runde 5, Rest 2): weitere
+    Attribute wie `href=`, `value=`, `id=`, `class=` koennen ebenfalls
+    Route-/Bezeichner-Werte tragen und wuerden von dieser Funktion GENAUSO
+    sicher behandelt (die Absicherung ist der Wert selbst, nicht der
+    Attributname) — sie fehlen hier nur, weil kein aktuelles `ui.py`-
+    Vorkommen sie braucht (verifiziert: volle Suite gruen ohne sie). EIN
+    Attribut ist bewusst NICHT hier und darf es auch nie werden:
+    `placeholder=` traegt echten Anzeigetext (siehe ui.py:4168,
+    `placeholder="Begründung (empfohlen)"`) und muss immer geprueft
+    bleiben, selbst wenn ein Wert zufaellig identifier-foermig aussehen
+    sollte. Falls die kommende Optik-Ueberarbeitung ein neues `href=`/
+    `value=`/`id=`/`class=` mit Route- oder Bezeichner-Wert einfuehrt und
+    dieser Test dadurch faelschlich anschlaegt (der SICHERE Fehlschlag —
+    zu viele Meldungen, keine stillen Luecken): den Attributnamen zur
+    Alternative in `_ATTR_WERT_RE` ergaenzen, NICHT `placeholder`."""
     def ersetze(treffer):
         praefix, wert, suffix = treffer.groups()
         if _ROUTE_RE.match(wert) or _BEZEICHNER_RE.fullmatch(wert):
@@ -263,17 +312,27 @@ def _ohne_technische_attributwerte(zeile: str) -> str:
 
 
 def _technische_fragmente(s: str):
-    """Zerlegt ein Literal in seine Zeilen, maskiert je Zeile eingebettete
-    technische Attributwerte (`_ohne_technische_attributwerte`) und liefert
-    nur die NICHT rein-technischen Zeilen zurueck. Fuer ein einzeiliges
-    Literal (der Regelfall) ist das gleichwertig zur alten, literal-weiten
-    Pruefung. Fuer ein mehrzeiliges Literal — in ui.py nur `_STIL`, siehe
-    Fix-Runde 4 oben — exemptiert eine technische Zeile (eine einzelne
-    CSS-Regel/ein Selektor) nur sich selbst, nicht ihre Nachbarn."""
+    """Zerlegt ein Literal in seine Zeilen und liefert die NICHT
+    rein-technischen zurueck: eine als GANZES technische Zeile (blank,
+    Bezeichner, Route) faellt komplett weg; bei einer SQL-/CSS-Selektor-
+    Zeile faellt nur ihr technisches Praefix weg (`_ohne_sql_praefix`,
+    Fix-Runde 5) und der Rest wird — wie jede andere Zeile — um
+    eingebettete technische Attributwerte bereinigt
+    (`_ohne_technische_attributwerte`) und zurueckgegeben. Fuer ein
+    einzeiliges Literal (der Regelfall) ist das gleichwertig zur alten,
+    literal-weiten Pruefung. Fuer ein mehrzeiliges Literal — in ui.py nur
+    `_STIL`, siehe Fix-Runde 4 — exemptiert eine technische Zeile nur sich
+    selbst, nicht ihre Nachbarn."""
     for zeile in s.split("\n"):
         if _ist_technisches_fragment(zeile):
             continue
-        yield _ohne_technische_attributwerte(zeile)
+        kern = zeile.strip()
+        rest = _ohne_sql_praefix(kern)
+        if rest is not None:
+            if not rest.strip():
+                continue
+            kern = rest
+        yield _ohne_technische_attributwerte(kern)
 
 
 def _ui_string_literale():
