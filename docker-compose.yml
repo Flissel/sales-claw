@@ -250,10 +250,17 @@ services:
   # (Grundsatzentscheidung 1) — es gibt keinen Weg, auf dem eine E-Mail ohne
   # `approved` hinausgeht.
   #
-  # KEIN volumes:-Eintrag, und das ist eine Aussage: dieser Dienst versendet
-  # reinen Text. Er hat im Medienordner nichts zu suchen, und der
-  # Reportordner geht ihn erst recht nichts an. Trägt ein E-Mail-Entwurf
-  # trotzdem einen Anhang, wird er fehlgeschlagen gebucht statt ohne die
+  # Read-only Mount auf beide Medienordner (Schlussprüfung K1, 2026-09-11):
+  # `verarbeite_draft` liest die Kalenderdatei einer Termin-Einladung über
+  # `medien.pruefe`/`medien.lies` (mail_dispatch.py, siehe dort) — ohne
+  # Mount fand dieser Dienst die Datei nie und buchte JEDE freigegebene
+  # Einladung als `failed`. Der frühere Kommentar hier ("KEIN
+  # volumes:-Eintrag, und das ist eine Aussage") galt nur, solange dieser
+  # Dienst reinen Text versendete und jeden Anhang ablehnte — seit der
+  # Kalenderteil-Ausnahme (Aufgabe 2) stimmt das nicht mehr. Der
+  # Reportordner bleibt weiterhin außen vor: `mail_dispatch.py` liest nie
+  # aus `reports/`. Trägt ein E-Mail-Entwurf einen anderen Anhang als eine
+  # `.ics`-Datei, wird er weiterhin fehlgeschlagen gebucht statt ohne die
   # Unterlage zugestellt (Begründung im Kopf von mail_dispatch.py).
   #
   # Ohne SMTP-Zugangsdaten in der .env beendet er sich beim Start mit einer
@@ -287,6 +294,15 @@ services:
       # Schleifentakt explizit statt implizit per Default — wie beim
       # Dispatcher.
       - MAIL_INTERVAL_S=10
+    # Derselbe Medienordner wie an sales-dispatch, ebenfalls read-only
+    # (Begründung dort und im Kommentar oben): `medien.pruefe`/`medien.lies`
+    # erwarten unter den Standardpfaden `/media` und `/media-erzeugt` etwas
+    # zu finden (medien.py: MEDIA_DIR/MEDIA_ERZEUGT_DIR, beide unveraendert
+    # per Default `/media` bzw. `/media-erzeugt` — keine zusaetzliche
+    # Umgebungsvariable noetig, die Pfade sind bereits deckungsgleich).
+    volumes:
+      - ./media:/media:ro
+      - ./media-erzeugt:/media-erzeugt:ro
     # Ein laufender Versand darf nicht per SIGKILL zerrissen werden: der
     # Dienst beendet nach SIGTERM die laufende Runde (SMTP-Timeout 30 s) und
     # geht dann. 45 s Gnadenfrist decken das ab — dieselbe Rechnung wie bei

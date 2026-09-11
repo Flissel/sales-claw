@@ -678,6 +678,36 @@ def test_media_erzeugt_schreiben_nur_mcp_und_inbox(tmp_path: Path) -> None:
     for schreiber in ("sales-mcp", "sales-inbox"):
         b = bind(schreiber)
         assert b is not None and not b.get("read_only"), schreiber
-    for leser in ("sales-ui", "sales-linkedin"):
+    for leser in ("sales-ui", "sales-linkedin", "sales-mail"):
         b = bind(leser)
         assert b is not None and b.get("read_only") is True, leser
+
+
+def test_sales_mail_erreicht_beide_medienordner(tmp_path: Path) -> None:
+    """Schlussprüfung K1 (11.09.2026, echte Vorgabepfade, nichts gepatcht):
+    `mail_dispatch.verarbeite_draft` liest eine freigegebene Termin-Einladung
+    ueber `medien.pruefe`/`medien.lies` (mail_dispatch.py) — dieselben
+    Standardpfade `/media` und `/media-erzeugt`, die `medien.py` per Default
+    annimmt (MEDIA_DIR/MEDIA_ERZEUGT_DIR unveraendert). Vorher hatte
+    sales-mail dafuer KEINEN volumes:-Eintrag: die Datei war fuer den
+    Container schlicht unsichtbar, unabhaengig davon, was in ihr stand oder
+    ob sie existierte — jede freigegebene Einladung wurde `failed` gebucht.
+    Dieser Test liest die tatsaechlich committete docker-compose.yml ueber
+    `docker compose config` (wie der Rest dieser Datei) und patcht dabei
+    nichts an medien.py — anders als die Suite in sales-mcp/tests, die
+    `medien.MEDIA_VERZEICHNIS` fuer Tests umbiegt und die Luecke deshalb nie
+    gesehen hat: sie beweist den Codepfad, nicht die Auslieferung. Read-only
+    wie bei sales-dispatch und sales-linkedin: sales-mail legt nichts ab,
+    es liest nur, was ein Mensch (oder sales-mcp fuer die Einladung selbst)
+    dort abgelegt hat."""
+    dienste = rendered_config(tmp_path)["services"]
+    sales_mail_volumes = dienste["sales-mail"].get("volumes") or []
+    ziele = {str(v.get("target")): v for v in sales_mail_volumes}
+
+    for pfad in ("/media", "/media-erzeugt"):
+        assert pfad in ziele, (
+            f"sales-mail hat keinen volumes:-Eintrag fuer {pfad} — eine "
+            f"freigegebene Termin-Einladung wuerde 'failed' gebucht, weil "
+            f"medien.pruefe/medien.lies die Kalenderdatei im Container nie "
+            f"finden.")
+        assert ziele[pfad].get("read_only") is True, pfad
