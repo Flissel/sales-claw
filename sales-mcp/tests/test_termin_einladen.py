@@ -150,6 +150,41 @@ def test_ohne_einwilligung_bleibt_kein_muell_liegen():
         "verwaiste .ics in reports/ haengengeblieben")
 
 
+def test_report_schreibfehler_wird_gemeldet_und_raeumt_auf(monkeypatch):
+    """Fix-Runde 3: report_schreiben lief bislang OHNE try/except — anders
+    als bei den vier anderen Aufrufern im Modul, und anders als in
+    termin_bestaetigen ist ein fehlgeschlagener Schreibvorgang hier
+    TOEDLICH (keine Reportkopie -> keine vollstaendige Einladung, die man
+    anhaengen koennte), nicht nur Beiwerk. Gleiches Mock-Muster wie
+    `test_schreibfehler_kostet_den_termin_nicht` in test_termin.py."""
+    def _kaputt(*_a, **_kw):
+        raise OSError("Read-only file system")
+
+    monkeypatch.setattr(recherche, "report_schreiben", _kaputt)
+    lead = _lead()
+
+    # Eigenes Datum/Uhrzeit (nicht das sonst ueberall verwendete
+    # 2026-10-01/14:30): der Dateiname traegt Datum+Uhrzeit, und der reale
+    # Medienordner wird zwischen Tests NICHT geleert (nur die DB-Tabellen,
+    # siehe Fixture `leer` oben) — mit dem verbreiteten Datum haette hier
+    # bereits die Datei eines FRUEHEREN, erfolgreichen Tests gelegen, und
+    # die Sicherung "nur entfernen, was dieser Aufruf neu angelegt hat"
+    # haette zu Recht nicht geloescht, das aber als Fehlschlag dieses Tests
+    # ausgesehen.
+    antwort = json.loads(server.termin_einladen(lead, "2026-11-22", "09:15"))
+
+    assert "fehler" in antwort
+    assert "reports" in antwort["fehler"]
+
+    entwuerfe = server._q("select id from drafts where lead_id = %s", (lead,))
+    assert entwuerfe == []
+
+    dateiname = f"einladung-{recherche.slug('Ivan')}-2026-11-22-0915.ics"
+    assert not os.path.exists(
+        os.path.join(medien.ERZEUGT_VERZEICHNIS, dateiname)), (
+        "verwaiste .ics im Medienordner haengengeblieben")
+
+
 def test_mehrere_eingeladene_stehen_alle_als_attendee():
     """Kleinere Luecke (freigestellt, billig): `eingeladene` mit mehreren,
     kommagetrennten Adressen — ersetzt die Kontaktadresse, statt sie zu

@@ -1436,7 +1436,37 @@ def termin_einladen(lead_id: str, datum: str, uhrzeit: str,
         return _json({"fehler": (
             f"Die Einladung konnte nicht abgelegt werden ({type(ex).__name__}"
             f": {ex}) — ohne Datei im Medienordner ist sie nicht versendbar.")})
-    pfad, ueberschrieben = recherche.report_schreiben(dateiname, ics_text)
+    try:
+        pfad, ueberschrieben = recherche.report_schreiben(dateiname, ics_text)
+    except (OSError, ValueError) as ex:
+        # Fix-Runde 3 (11.09.2026): alle VIER anderen Aufrufer von
+        # report_schreiben im Modul (termin_bestaetigen, Uebergabe,
+        # marktanalyse, kontakt_auskunft) fangen OSError/ValueError ab, hier
+        # fehlte das — ein fehlender Bind ./reports:/reports haette einen
+        # rohen Traceback erzeugt, UND die media-erzeugt-Kopie waere als
+        # Muell liegengeblieben (dieselbe Fehlerklasse wie beim UWG-
+        # Aufraeumen weiter unten, nur ueber einen anderen Ausloeser).
+        #
+        # ANDERS als in termin_bestaetigen ("der Termin ist vereinbart, und
+        # daran haengt die Wiedervorlage — ein fehlender Reportordner darf
+        # das nicht kassieren") ist der Fehlschlag hier TOEDLICH: dort steht
+        # das eigentliche Ergebnis (der vereinbarte Termin, die
+        # Wiedervorlage) unabhaengig von der Datei. Hier NICHT — ohne die
+        # Reportkopie gibt es keine vollstaendige Einladung, die man an
+        # einen Entwurf haengen koennte; die media-erzeugt-Kopie allein waere
+        # eine Kalenderdatei ohne jede Zweitschrift und ohne Entwurf, der auf
+        # sie zeigt. Deshalb: abbrechen, lesbare Meldung statt Traceback, und
+        # die bereits geschriebene media-erzeugt-Kopie wieder entfernen —
+        # nur wenn DIESER Aufruf sie neu angelegt hat (siehe
+        # medien_bestand_vorher oben).
+        if not medien_bestand_vorher:
+            try:
+                os.remove(ziel_medien)
+            except OSError:
+                pass
+        return _json({"fehler": (
+            f"Die Einladung konnte nicht abgelegt werden ({type(ex).__name__}"
+            f": {ex}) — liegt der Bind ./reports:/reports am Container an?")})
 
     # Echte Umlaute (Fix-Runde 2, 11.09.2026): die bindende Randbedingung
     # "Anzeigetexte tragen echte Umlaute" gilt hier erst recht — das ist
