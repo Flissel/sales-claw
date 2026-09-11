@@ -1634,12 +1634,14 @@ def entwurf_erstellen(lead_id: str, kanal: str, text: str,
     darf deshalb hoechstens 1024 Zeichen haben); bei linkedin ist der
     Dateiname nur ein Merkposten fuer den Handversand.
 
-    BEI E-MAIL GEHEN ANHAENGE NICHT MIT: sales-mail versendet in dieser
-    Fassung reinen Text. Ein E-Mail-Entwurf MIT `medien_datei` wird beim
-    Versand ausdruecklich fehlgeschlagen gebucht, statt ohne die Unterlage
-    rauszugehen — freigegeben wurde eine Nachricht MIT Unterlage. Wer eine
-    Datei per Mail schicken will, sendet sie von Hand und quittiert mit
-    entwurf_manuell_gesendet."""
+    BEI E-MAIL GEHEN ANHAENGE SONST NICHT MIT: sales-mail versendet in
+    dieser Fassung reinen Text. Ein E-Mail-Entwurf MIT `medien_datei` wird
+    beim Versand ausdruecklich fehlgeschlagen gebucht, statt ohne die
+    Unterlage rauszugehen — freigegeben wurde eine Nachricht MIT Unterlage.
+    Wer eine Datei per Mail schicken will, sendet sie von Hand und
+    quittiert mit entwurf_manuell_gesendet. EINE Ausnahme: eine `.ics` geht
+    als Kalendereinladung mit (METHOD:REQUEST) — sie ist kein Anhang im
+    obigen Sinn, siehe `termin_einladen`."""
     if kanal not in ("whatsapp", "linkedin", "email"):
         return _json({"fehler": f"Unzulaessiger Kanal '{kanal}'. "
                                 f"Erlaubt: whatsapp, linkedin, email"})
@@ -1710,7 +1712,12 @@ def entwurf_erstellen(lead_id: str, kanal: str, text: str,
         "returning id, status",
         (lead_id, kanal, empfaenger or leads[0]["name"], betreff, text, basis))
     hinweis = "Nicht versendet — wartet in der Queue."
-    if basis and kanal == "email":
+    # `.ics` ausgenommen (seit 11.09.2026): sales-mail traegt eine
+    # Kalenderdatei inzwischen wirklich zu — als METHOD:REQUEST-Kalenderteil,
+    # nicht als gewoehnlicher Anhang. Die Warnung unten gilt fuer jeden
+    # ANDEREN Anhangstyp weiter unveraendert; nur fuer .ics waere sie jetzt
+    # schlicht falsch (siehe mail_dispatch._anhang_erlaubt).
+    if basis and kanal == "email" and not basis.lower().endswith(".ics"):
         # Frueh sagen statt spaet scheitern: sales-mail bucht einen
         # E-Mail-Entwurf mit Anhang fehlgeschlagen (er ginge sonst ohne die
         # Unterlage raus, die jemand freigegeben hat). Das soll der Betreiber

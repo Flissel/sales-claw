@@ -612,6 +612,23 @@ def test_entwurf_erstellen_warnt_frueh_beim_anhang_an_einer_email(
     assert "ACHTUNG" not in whatsapp["hinweis"]
 
 
+def test_entwurf_erstellen_warnt_nicht_bei_einer_ics_an_einer_email(
+        tmp_path, monkeypatch):
+    """Seit Aufgabe 2 traegt sales-mail eine `.ics` wirklich zu (als
+    METHOD:REQUEST-Kalenderteil, nicht als gewoehnlicher Anhang) — die
+    Vorwarnung aus dem Test oben waere fuer diesen einen Dateityp falsch
+    und darf hier nicht erscheinen. Fuer jeden anderen Anhang bleibt sie
+    unveraendert (siehe der Test direkt darueber, `.pdf`)."""
+    monkeypatch.setattr(medien, "MEDIA_VERZEICHNIS", str(tmp_path))
+    (tmp_path / "einladung.ics").write_bytes(
+        b"BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n")
+    lead = str(_lead())
+
+    mit = json.loads(server.entwurf_erstellen(
+        lead, "email", "Text", medien_datei="einladung.ics"))
+    assert "ACHTUNG" not in mit["hinweis"], mit
+
+
 # ---------------------------------------------------------------------------
 # Verbindungsart, Konfiguration, Start
 # ---------------------------------------------------------------------------
