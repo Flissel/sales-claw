@@ -5,7 +5,7 @@ verbietet `METHOD:` auf einem CalDAV-Server, RFC 5546 verlangt es fuer eine
 Einladung. Beide Fassungen beschreiben dieselbe Buchung unter derselben UID.
 """
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -241,3 +241,35 @@ def test_einladung_ist_keine_antwort():
         veranstalter="felix@vibemind.space",
         eingeladene=["ivan@vibemind.space"])
     assert kalender.ics_antwort_lesen(text) is None
+
+
+# ---------------------------------------------------------------------------
+# Aufgabe 5 (Gegenvorschlaege, 11.09.2026): METHOD:COUNTER traegt einen
+# konkreten neuen Zeitpunkt (DTSTART) statt nur eines Status.
+# ---------------------------------------------------------------------------
+
+GEGENVORSCHLAG = (
+    "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:COUNTER\r\nBEGIN:VEVENT\r\n"
+    "UID:abc-123\r\nSEQUENCE:0\r\n"
+    "DTSTART;TZID=Europe/Berlin:20261002T160000\r\n"
+    "ATTENDEE;PARTSTAT=DECLINED:mailto:ivan@vibemind.space\r\n"
+    "COMMENT:Donnerstag passt besser\r\n"
+    "END:VEVENT\r\nEND:VCALENDAR\r\n")
+
+
+def test_gegenvorschlag_nennt_die_neue_zeit():
+    """`neuer_beginn` ist bewusst zonenbehaftet (UTC) — dasselbe Ergebnis,
+    das `_ics_zeit` fuer jeden anderen Zeitpunkt in diesem Modul liefert
+    (Fix aus der Zeitzonenarbeit der vorigen Stufe: naive und
+    zonenbehaftete Werte nicht mischen). Europe/Berlin steht im Oktober
+    auf Sommerzeit (UTC+2) — 16:00 Ortszeit ist 14:00 UTC, derselbe
+    Moment wie im Kalendertext."""
+    ergebnis = kalender.ics_antwort_lesen(GEGENVORSCHLAG)
+    assert ergebnis["methode"] == "COUNTER"
+    assert ergebnis["neuer_beginn"] == datetime(
+        2026, 10, 2, 14, 0, tzinfo=timezone.utc)
+    assert "Donnerstag passt besser" in ergebnis["grund"]
+
+
+def test_antwort_ohne_gegenvorschlag_hat_keine_neue_zeit():
+    assert kalender.ics_antwort_lesen(ANTWORT_ABSAGE)["neuer_beginn"] is None

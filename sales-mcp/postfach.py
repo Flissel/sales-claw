@@ -31,8 +31,25 @@ import logging
 import os
 import re
 import ssl
+from datetime import datetime, timezone
 
 import kalender
+
+# Eigene, aber identisch hergeleitete Zone statt eines Rueckimports aus
+# kalender.py oder ui.py — derselbe Grund, den kalender.py fuer seine
+# _ORTSZONE dokumentiert: ein Modul soll nicht an der privaten Zonen-
+# Instanz eines anderen haengen. Nur fuer die Lesbarkeit der Wiedervorlage-
+# Notiz bei einem Gegenvorschlag gebraucht (Aufgabe 5) — die eigentliche
+# Auswertung von `neuer_beginn` bleibt zonenbehaftetes UTC aus kalender.py.
+try:
+    from zoneinfo import ZoneInfo
+except Exception:                    # noqa: BLE001 — kein zoneinfo verfuegbar
+    ZoneInfo = None
+try:
+    _ORTSZONE = (ZoneInfo(os.environ.get("TZ", "Europe/Berlin"))
+                 if ZoneInfo is not None else None)
+except Exception:                    # noqa: BLE001 — ohne tzdata: UTC
+    _ORTSZONE = None
 
 IMAP_HOST = os.environ.get(
     "IMAP_HOST", os.environ.get("SMTP_HOST", "")).strip()
@@ -189,6 +206,9 @@ def _passenden_teilnehmer_waehlen(antwort: dict, absender: str):
 def _antwort_festhalten(antwort: dict) -> None:
     """Eine gelesene Kalenderantwort als Aktivitaet `einladung_antwort` am
     passenden Kontakt festhalten (Aufgabe 6 zeigt sie im Kontakt-Verlauf).
+    Bei einem Gegenvorschlag (METHOD:COUNTER) kommt zusaetzlich eine
+    Wiedervorlage dazu, die dem Betreiber die neue Zeit vorlegt (Aufgabe
+    5, siehe `_gegenvorschlag_vorlegen`).
 
     Das ist ein Schreiben in der EIGENEN Datenbank, kein IMAP-Schreiben —
     die Zusage „nur lesend" am Modulkopf gilt fuer das Postfach des
@@ -260,6 +280,42 @@ def _antwort_festhalten(antwort: dict) -> None:
             "grund": grund, "folge": folge,
             "neuer_beginn": (neuer_beginn.isoformat()
                             if neuer_beginn else None)})))
+    # Aufgabe 5 (11.09.2026): ein Gegenvorschlag ist keine Absage — er
+    # traegt einen KONKRETEN neuen Termin, ueber den der Betreiber
+    # entscheiden soll. Der Dedup-Schutz oben (fruehes `return` bei
+    # `vorhanden`) deckt auch diesen Zweig mit ab: dieselbe Antwort legt
+    # nie eine zweite Wiedervorlage an.
+    if antwort.get("methode") == "COUNTER" and neuer_beginn is not None:
+        _gegenvorschlag_vorlegen(server, lead_id, teilnehmer, neuer_beginn,
+                                 grund, uid, folge)
+
+
+def _gegenvorschlag_vorlegen(server, lead_id: str, teilnehmer: str,
+                             neuer_beginn, grund: str, uid: str,
+                             folge: int) -> None:
+    """Einen Gegenvorschlag (METHOD:COUNTER) dem Betreiber vorlegen —
+    ueber dieselbe Wiedervorlage, die auch `termin_bestaetigen` fuer seine
+    Terminerinnerung anlegt (`server._wiedervorlage_anlegen`, EIN
+    Insert-Muster fuer alle Wiedervorlagen im Projekt).
+
+    `faellig_am` ist HEUTE, nicht der neue Termin: die Entscheidung ist
+    sofort faellig, nicht erst am Tag der vorgeschlagenen Zeit — die
+    Wiedervorlage erscheint dadurch ab dem naechsten Digest.
+
+    Ausdruecklich KEINE automatische Zusage, KEINE automatische neue
+    Einladung, KEIN Kalendereintrag (Randbedingungen dieser Stufe): die
+    Notiz beschreibt nur, was der Betreiber bei Annahme selbst ausloesen
+    muesste — `termin_einladen` mit der neuen Zeit, unter derselben
+    Kennung mit erhoehter `folge`."""
+    heute = datetime.now(timezone.utc).date()
+    lokal = neuer_beginn.astimezone(_ORTSZONE) if _ORTSZONE else neuer_beginn
+    notiz = (f"Gegenvorschlag von {teilnehmer}: neue Zeit "
+             f"{lokal:%d.%m.%Y %H:%M} Uhr vorgeschlagen"
+             + (f" — Grund: {grund}" if grund else "") +
+             f". Automatisch passiert nichts — bei Zusage "
+             f"termin_einladen mit dieser Zeit aufrufen (bisherige "
+             f"Kennung {uid}, folge {folge + 1}).")
+    server._wiedervorlage_anlegen(lead_id, heute, notiz)
 
 
 def _holen(kasten, uid: bytes):

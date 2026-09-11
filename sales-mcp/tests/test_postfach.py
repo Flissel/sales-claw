@@ -438,3 +438,109 @@ def test_einladung_ist_keine_antwort_im_postfach(stub):
     zeilen = server._q(
         "select id from activities where type = 'einladung_antwort'")
     assert zeilen == []
+
+
+# ---------------------------------------------------------------------------
+# Gegenvorschlaege (Aufgabe 5, 11.09.2026) — METHOD:COUNTER traegt einen
+# konkreten neuen Zeitpunkt. Der Bot nimmt ihn nicht an: er legt eine
+# Wiedervorlage an, dasselbe Muster wie die Terminerinnerung von
+# `termin_bestaetigen`. Automatisch entsteht keine Zusage, keine neue
+# Einladung, kein Kalendereintrag.
+# ---------------------------------------------------------------------------
+
+def _gegenvorschlag_mail(teilnehmer="ivan@vibemind.space",
+                         von="Ivan Beispiel <ivan@vibemind.space>",
+                         uid="abc-123", folge=0, grund="",
+                         dtstart="20261002T160000"):
+    ics = ("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:COUNTER\r\n"
+           "BEGIN:VEVENT\r\n"
+           f"UID:{uid}\r\nSEQUENCE:{folge}\r\n"
+           f"DTSTART;TZID=Europe/Berlin:{dtstart}\r\n"
+           f"ATTENDEE;PARTSTAT=DECLINED:mailto:{teilnehmer}\r\n"
+           + (f"COMMENT:{grund}\r\n" if grund else "") +
+           "END:VEVENT\r\nEND:VCALENDAR\r\n")
+    nachricht = email.message.EmailMessage()
+    nachricht["From"] = von
+    nachricht["To"] = "buero@vibemind.space"
+    nachricht["Subject"] = "Re: Terminvorschlag: Erstgespräch"
+    nachricht["Date"] = "Mon, 31 Aug 2026 10:00:00 +0200"
+    nachricht.set_content("Siehe Gegenvorschlag im Anhang.")
+    nachricht.add_attachment(ics.encode("utf-8"), maintype="text",
+                             subtype="calendar", filename="counter.ics")
+    return nachricht.as_bytes()
+
+
+def test_gegenvorschlag_legt_wiedervorlage_fuer_den_betreiber_an(stub):
+    """Der eigentliche Zweck dieser Stufe: der Betreiber muss den
+    Gegenvorschlag SEHEN und ihm zustimmen oder ihn ablehnen koennen — eine
+    faellige Wiedervorlage ist das bestehende Muster dafuer im Projekt
+    (`termin_bestaetigen`s Terminerinnerung)."""
+    lead_id = _lead()
+    stub.mails[b"20"] = _gegenvorschlag_mail(
+        grund="Donnerstag passt besser")
+    antwort = json.loads(server.postfach_mail_lesen("20"))
+    assert "fehler" not in antwort, antwort
+    wiedervorlagen = server._q(
+        "select payload from activities where lead_id = %s and "
+        "type = 'wiedervorlage'", (lead_id,))
+    assert len(wiedervorlagen) == 1, wiedervorlagen
+    notiz = wiedervorlagen[0]["payload"]["notiz"]
+    assert "ivan@vibemind.space" in notiz
+    assert "02.10.2026" in notiz and "16:00" in notiz
+    assert "Donnerstag passt besser" in notiz
+    assert "abc-123" in notiz and "folge 1" in notiz
+    # Faellig HEUTE — die Entscheidung soll sofort im Digest auftauchen,
+    # nicht erst am Tag der vorgeschlagenen Zeit.
+    import datetime as _dt
+    heute = _dt.datetime.now(_dt.timezone.utc).date().isoformat()
+    assert wiedervorlagen[0]["payload"]["faellig_am"] == heute
+
+
+def test_gegenvorschlag_erzeugt_auch_die_einladung_antwort_aktivitaet(stub):
+    """Die Wiedervorlage kommt ZUSAETZLICH zur bestehenden
+    `einladung_antwort`-Aktivitaet aus Aufgabe 4 — nicht an ihrer Stelle."""
+    lead_id = _lead()
+    stub.mails[b"21"] = _gegenvorschlag_mail()
+    server.postfach_mail_lesen("21")
+    zeile = server._q(
+        "select payload from activities where lead_id = %s and "
+        "type = 'einladung_antwort'", (lead_id,))[0]
+    assert zeile["payload"]["methode"] == "COUNTER"
+    assert zeile["payload"]["neuer_beginn"] is not None
+
+
+def test_mehrfaches_lesen_des_gegenvorschlags_erzeugt_keine_doppelte_wiedervorlage(stub):
+    lead_id = _lead()
+    stub.mails[b"22"] = _gegenvorschlag_mail()
+    server.postfach_mail_lesen("22")
+    server.postfach_mail_lesen("22")
+    wiedervorlagen = server._q(
+        "select id from activities where lead_id = %s and "
+        "type = 'wiedervorlage'", (lead_id,))
+    assert len(wiedervorlagen) == 1, wiedervorlagen
+
+
+def test_absage_ohne_gegenzeit_legt_keine_wiedervorlage_an(stub):
+    """Eine normale Absage (METHOD:REPLY) ist kein Gegenvorschlag — sie
+    bekommt keine Wiedervorlage, nur die Aktivitaet."""
+    lead_id = _lead()
+    stub.mails[b"23"] = _antwort_mail(
+        status="DECLINED", grund="Bin an dem Tag beim Kunden in München")
+    server.postfach_mail_lesen("23")
+    wiedervorlagen = server._q(
+        "select id from activities where lead_id = %s and "
+        "type = 'wiedervorlage'", (lead_id,))
+    assert wiedervorlagen == []
+
+
+def test_gegenvorschlag_ohne_passenden_teilnehmer_legt_keine_wiedervorlage_an(stub):
+    """Wie bei jeder anderen Antwort: ohne zuordenbaren Kontakt entsteht
+    GAR NICHTS — auch keine Wiedervorlage."""
+    stub.mails[b"24"] = _gegenvorschlag_mail(
+        teilnehmer="unbekannt@nirgendwo.de",
+        von="Unbekannt <unbekannt@nirgendwo.de>")
+    antwort = json.loads(server.postfach_mail_lesen("24"))
+    assert "fehler" not in antwort, antwort
+    wiedervorlagen = server._q(
+        "select id from activities where type = 'wiedervorlage'")
+    assert wiedervorlagen == []
