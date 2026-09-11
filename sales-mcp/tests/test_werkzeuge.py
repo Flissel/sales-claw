@@ -699,9 +699,11 @@ def test_kontakt_aktualisieren_signatur_ueberlebt_den_dekorator():
     assert list(parameter) == ["lead_id", "feld", "wert"]
 
 
-def test_sechsundsiebzig_werkzeuge_registriert():
+def test_siebenundsiebzig_werkzeuge_registriert():
     namen = {fn.__name__ for fn in server.WERKZEUGE}
-    assert len(namen) == 76
+    assert len(namen) == 77
+    # 11.09.2026: termin_einladen dazugekommen (tests/test_termin_einladen.py).
+    assert "termin_einladen" in namen
     # Wissensbasis (03.09.2026): wissensbasis_fragen (tests/test_wissensbasis.py).
     assert "wissensbasis_fragen" in namen
     # Lead-Fluss mit Marketing (03.09.2026): tests/test_lead_fluss_wiring.py.

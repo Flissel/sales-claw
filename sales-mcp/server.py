@@ -1201,6 +1201,31 @@ def _termin_dauer(dauer) -> int:
         return TERMIN_DAUER_VORGABE
 
 
+def _termin_zeitpunkt(datum: str, uhrzeit: str):
+    """Datum und Uhrzeit zu einem naiven Ortszeit-Zeitpunkt — oder ein Fehler.
+
+    Liefert `(beginn, tag, zeit, None)` bei Erfolg und `(None, None, None,
+    fehlertext)` sonst. Herausgezogen aus `termin_bestaetigen` (11.09.2026),
+    damit `termin_einladen` dieselbe Regel benutzt statt einer zweiten:
+    zwei Pruefungen driften auseinander, und die Abweichung faellt erst auf,
+    wenn ein Termin an einem der beiden Wege durchrutscht.
+    """
+    try:
+        tag = date.fromisoformat((datum or "").strip())
+    except ValueError:
+        return None, None, None, (f"Ungueltiges Datum '{datum}' — erwartet "
+                                  f"ISO-Format YYYY-MM-DD.")
+    try:
+        zeit = datetime.strptime((uhrzeit or "").strip(), "%H:%M").time()
+    except ValueError:
+        return None, None, None, (f"Ungueltige Uhrzeit '{uhrzeit}' — erwartet "
+                                  f"HH:MM (24-Stunden-Form, z. B. 14:30).")
+    if tag < datetime.now(timezone.utc).date():
+        return None, None, None, (f"Der Termin {tag.isoformat()} liegt in der "
+                                  f"Vergangenheit — es wurde nichts angelegt.")
+    return datetime.combine(tag, zeit), tag, zeit, None
+
+
 @_gesichert
 def termin_bestaetigen(lead_id: str, datum: str, uhrzeit: str,
                        dauer_minuten: int = TERMIN_DAUER_VORGABE,
@@ -1226,25 +1251,14 @@ def termin_bestaetigen(lead_id: str, datum: str, uhrzeit: str,
         return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
     name = leads[0]["name"]
 
-    try:
-        tag = date.fromisoformat((datum or "").strip())
-    except ValueError:
-        return _json({"fehler": f"Ungueltiges Datum '{datum}' — erwartet "
-                                f"ISO-Format YYYY-MM-DD."})
-    try:
-        zeit = datetime.strptime((uhrzeit or "").strip(), "%H:%M").time()
-    except ValueError:
-        return _json({"fehler": f"Ungueltige Uhrzeit '{uhrzeit}' — erwartet "
-                                f"HH:MM (24-Stunden-Form, z. B. 14:30)."})
+    beginn, tag, zeit, fehler = _termin_zeitpunkt(datum, uhrzeit)
+    if fehler:
+        return _json({"fehler": fehler})
     heute = datetime.now(timezone.utc).date()
-    if tag < heute:
-        return _json({"fehler": f"Der Termin {tag.isoformat()} liegt in der "
-                                f"Vergangenheit — es wurde nichts angelegt."})
 
     dauer = _termin_dauer(dauer_minuten)
     thema_kurz = (thema or "").strip()[:TERMIN_TEXT_MAXLAENGE] or "Termin"
     ort_kurz = (ort or "").strip()[:TERMIN_TEXT_MAXLAENGE]
-    beginn = datetime.combine(tag, zeit)
     uid = f"{uuid.uuid4()}@sales-claw"
     ics_text = kalender.ics(uid, beginn, dauer, f"{thema_kurz} — {name}",
                             ort=ort_kurz)
@@ -1337,6 +1351,109 @@ def termin_bestaetigen(lead_id: str, datum: str, uhrzeit: str,
         "wiedervorlage": {"aktivitaets_id": wv_id,
                           "faellig_am": faellig.isoformat()},
         "hinweis": hinweis}))
+
+
+@_gesichert
+def termin_einladen(lead_id: str, datum: str, uhrzeit: str,
+                    dauer_minuten: int = TERMIN_DAUER_VORGABE,
+                    thema: str = "Erstgespraech", ort: str = "",
+                    eingeladene: str = "") -> str:
+    """Einen Termin als EINLADUNG vorschlagen — der Empfaenger entscheidet.
+
+    Anders als `termin_bestaetigen` haelt das hier keinen vereinbarten Termin
+    fest, sondern schlaegt einen vor: Es entsteht eine Einladung, die als
+    Entwurf zur Freigabe liegt. Der Kalendereintrag entsteht ERST, wenn
+    zugesagt wurde — ein Termin im eigenen Kalender, dem niemand zugestimmt
+    hat, waere eine Belegung auf Verdacht.
+
+    `eingeladene` ist eine kommagetrennte Liste von Adressen; leer bedeutet
+    die Adresse des Kontakts. Versendet wird NICHTS: der Entwurf bleibt
+    'pending', bis der Betreiber ihn freigibt."""
+    leads = _q("select id, name, email from leads where id = %s", (lead_id,))
+    if not leads:
+        return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
+    name, kontakt_mail = leads[0]["name"], (leads[0]["email"] or "").strip()
+
+    beginn, tag, zeit, fehler = _termin_zeitpunkt(datum, uhrzeit)
+    if fehler:
+        return _json({"fehler": fehler})
+
+    gaeste = [t.strip() for t in (eingeladene or "").split(",") if t.strip()]
+    if not gaeste:
+        if not kontakt_mail:
+            return _json({"fehler": (
+                f"{name} hat keine E-Mail-Adresse — ohne Adresse kann keine "
+                f"Einladung verschickt werden. Entweder die Adresse am "
+                f"Kontakt nachtragen oder `eingeladene` angeben.")})
+        gaeste = [kontakt_mail]
+
+    # Erst hier importiert, nicht am Dateikopf: `server` wird beim Start
+    # vollstaendig geladen, bevor irgendein Werkzeug aufgerufen wird — aber
+    # mail_dispatch.py importiert seinerseits `dispatch`, und `dispatch.py`
+    # zieht mit `from server import _jetzt` etwas aus DIESEM Modul. Ein
+    # Import von mail_dispatch am Kopf von server.py waere ein Ringschluss
+    # waehrend server.py noch selbst geladen wird (_jetzt existiert an der
+    # Stelle des Imports noch nicht) — AttributeError beim Start des ganzen
+    # Diensts. Verschoben in den Aufruf, laeuft er erst, wenn server.py
+    # bereits fertig geladen ist; der Ring schliesst sich dann folgenlos.
+    import mail_dispatch
+    # Derselbe Absender wie beim tatsaechlichen Versand: `nachricht_bauen`
+    # setzt das `From:`-Feld auf `mail_dispatch.EMAIL_ABSENDER` (nicht auf
+    # SMTP_USER, das ist nur der SMTP-Login) — weichen ORGANIZER und From
+    # voneinander ab, ordnet kein Mailprogramm eine Zusage der Einladung
+    # zu, und sie kommt nie an. Deshalb dieselbe Konstante, nicht eine
+    # zweite, unabhaengig berechnete Adresse.
+    absender = (mail_dispatch.EMAIL_ABSENDER or "").strip()
+    if not absender:
+        return _json({"fehler": (
+            "Kein Absender konfiguriert (EMAIL_ABSENDER) — eine Einladung "
+            "braucht einen Veranstalter.")})
+
+    dauer = _termin_dauer(dauer_minuten)
+    thema_kurz = (thema or "").strip()[:TERMIN_TEXT_MAXLAENGE] or "Termin"
+    ort_kurz = (ort or "").strip()[:TERMIN_TEXT_MAXLAENGE]
+    uid = f"{uuid.uuid4()}@sales-claw"
+    try:
+        ics_text = kalender.ics_einladung(
+            uid, beginn, dauer, f"{thema_kurz} — {name}",
+            veranstalter=absender, eingeladene=gaeste, ort=ort_kurz)
+    except ValueError as ex:
+        return _json({"fehler": f"Einladung nicht baubar: {ex}"})
+
+    dateiname = (f"einladung-{recherche.slug(name)}-{tag.isoformat()}"
+                 f"-{zeit:%H%M}.ics")
+    try:
+        os.makedirs(medien.ERZEUGT_VERZEICHNIS, exist_ok=True)
+        with open(os.path.join(medien.ERZEUGT_VERZEICHNIS, dateiname), "w",
+                  encoding="utf-8", newline="\r\n") as datei:
+            datei.write(ics_text)
+    except OSError as ex:
+        return _json({"fehler": (
+            f"Die Einladung konnte nicht abgelegt werden ({type(ex).__name__}"
+            f": {ex}) — ohne Datei im Medienordner ist sie nicht versendbar.")})
+    pfad, _ueberschrieben = recherche.report_schreiben(dateiname, ics_text)
+
+    text = (f"Hallo {name},\n\n"
+            f"ich schlage {tag.strftime('%d.%m.%Y')} um {zeit:%H:%M} Uhr vor "
+            f"({dauer} Minuten){', ' + ort_kurz if ort_kurz else ''}.\n"
+            f"Die Einladung haengt an — Sie koennen direkt zusagen oder "
+            f"absagen.\n\nViele Gruesse")
+    roh = entwurf_erstellen(lead_id, "email", text,
+                            betreff=f"Terminvorschlag: {thema_kurz}",
+                            medien_datei=dateiname)
+    entwurf = json.loads(roh)
+    if "fehler" in entwurf:
+        return roh
+
+    _q("insert into activities (lead_id, type, payload) values "
+       "(%s, 'einladung_gesendet', %s::jsonb)",
+       (lead_id, json.dumps({"uid": uid, "datum": tag.isoformat(),
+                             "uhrzeit": f"{zeit:%H:%M}", "folge": 0,
+                             "eingeladene": gaeste, "thema": thema_kurz})))
+    return _json({**entwurf, "uid": uid, "datei": dateiname, "pfad": pfad,
+                  "hinweis": ("Die Einladung liegt zur Freigabe. Es ging "
+                              "nichts raus, und im Kalender steht noch "
+                              "nichts — das passiert erst bei der Zusage.")})
 
 
 def _bestaetigungstext(beginn: datetime, dauer: int, thema: str,
@@ -6301,6 +6418,10 @@ WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              zustimmung_widerrufen,
              aktivitaet_loggen, wiedervorlage_setzen, wiedervorlage_erledigt,
              vertrag_speichern, vertraege_ablaufend, termin_bestaetigen,
+             # Einladung statt stillem Eintrag (11.09.2026): schlaegt vor,
+             # bindet niemanden — der Kalendereintrag entsteht erst bei der
+             # Zusage, siehe Docstring dort.
+             termin_einladen,
              profil_lesen, profil_aktualisieren,
              bedarf_speichern, bedarf_offen, entwurf_erstellen,
              post_entwurf_erstellen, medien_liste,

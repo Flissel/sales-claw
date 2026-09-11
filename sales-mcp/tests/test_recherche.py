@@ -548,7 +548,10 @@ def test_beide_werkzeuge_sind_registriert():
     # sprachnachrichten_transkribieren (test_sprachnachrichten.py).
     # Wissensbasis (03.09.2026): wissensbasis_fragen (tests/test_wissensbasis.py).
     # 03.09.2026: + Lead-Fluss mit Marketing (4 Werkzeuge).
-    assert len(namen) == len(set(namen)) == 76
+    # 11.09.2026: + termin_einladen (tests/test_termin_einladen.py) — legt
+    # eine Terminvorschlag-Einladung als Entwurf an, im Unterschied zu
+    # termin_bestaetigen (haelt einen bereits vereinbarten Termin fest).
+    assert len(namen) == len(set(namen)) == 77
 
 # ---------------------------------------------------------------------------
 # Nachbesserungen aus dem Stufe-5-Review (Befunde T1, B2, D2)
