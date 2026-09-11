@@ -13,6 +13,7 @@ Saetze, die diese Suite verteidigt:
 Getestet wird gegen einen Stub (Muster test_mail_dispatch: kein echter
 Server in der Suite); die Live-Verbindung misst der Rollout.
 """
+import email.message
 import json
 import os
 
@@ -154,3 +155,138 @@ def test_verbindungsfehler_wird_zur_meldung(monkeypatch):
     monkeypatch.setattr(postfach, "_verbinden", kaputt)
     antwort = json.loads(server.postfach_lesen())
     assert "fehler" in antwort
+
+
+# ---------------------------------------------------------------------------
+# Antworten auf Einladungen (Aufgabe 4, 11.09.2026) — eigene Tests, der Brief
+# gab fuer diesen Schritt keinen Testcode vor (anders als Schritt 1). Das
+# Postfach bleibt beim IMAP rein lesend; diese Faelle pruefen nur, dass eine
+# erkannte Kalenderantwort als Aktivitaet an der eigenen Datenbank landet —
+# keine IMAP-Schreiboperation.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def leer():
+    with server.pool.connection() as conn:
+        conn.execute("truncate sales_test.activities, sales_test.drafts, "
+                     "sales_test.leads cascade")
+    yield
+
+
+def _lead(name="Ivan", email_adresse="ivan@vibemind.space"):
+    return str(server._q(
+        "insert into leads (name, email, phone, source) values "
+        "(%s, %s, '+491701234567', 'whatsapp') returning id",
+        (name, email_adresse))[0]["id"])
+
+
+def _antwort_mail(status="ACCEPTED", teilnehmer="ivan@vibemind.space",
+                  grund="", uid="abc-123",
+                  von="Ivan Beispiel <ivan@vibemind.space>"):
+    """Eine Mail mit einem `text/calendar`-Teil (METHOD:REPLY) — die
+    Antwort auf eine Einladung, so wie ein Mailprogramm sie tatsaechlich
+    verschickt: der Kalenderteil ist ein eigener MIME-Teil, kein Anhang
+    im Sinne von medien.py (analog mail_dispatch.nachricht_mit_einladung,
+    die ihn beim Versand ebenso als Teil anhaengt, nicht als Attachment
+    im UI-Sinn)."""
+    ics = ("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REPLY\r\nBEGIN:VEVENT\r\n"
+           f"UID:{uid}\r\nSEQUENCE:0\r\n"
+           f"ATTENDEE;PARTSTAT={status}:mailto:{teilnehmer}\r\n"
+           + (f"COMMENT:{grund}\r\n" if grund else "") +
+           "END:VEVENT\r\nEND:VCALENDAR\r\n")
+    nachricht = email.message.EmailMessage()
+    nachricht["From"] = von
+    nachricht["To"] = "buero@vibemind.space"
+    nachricht["Subject"] = "Terminvorschlag: Erstgespräch"
+    nachricht["Date"] = "Mon, 31 Aug 2026 10:00:00 +0200"
+    nachricht.set_content("Siehe Kalenderantwort im Anhang.")
+    nachricht.add_attachment(ics.encode("utf-8"), maintype="text",
+                             subtype="calendar", filename="reply.ics")
+    return nachricht.as_bytes()
+
+
+def test_zusage_wird_als_aktivitaet_am_kontakt_festgehalten(stub):
+    lead_id = _lead()
+    stub.mails[b"5"] = _antwort_mail(status="ACCEPTED")
+    antwort = json.loads(server.postfach_mail_lesen("5"))
+    assert "fehler" not in antwort, antwort
+    zeilen = server._q(
+        "select payload from activities where lead_id = %s and "
+        "type = 'einladung_antwort'", (lead_id,))
+    assert len(zeilen) == 1, zeilen
+    payload = zeilen[0]["payload"]
+    assert payload["status"] == "ACCEPTED"
+    assert payload["teilnehmer"] == "ivan@vibemind.space"
+    assert payload["uid"] == "abc-123"
+
+
+def test_absage_traegt_den_grund_in_die_aktivitaet(stub):
+    lead_id = _lead()
+    stub.mails[b"6"] = _antwort_mail(
+        status="DECLINED", grund="Bin an dem Tag beim Kunden in München")
+    server.postfach_mail_lesen("6")
+    zeile = server._q(
+        "select payload from activities where lead_id = %s and "
+        "type = 'einladung_antwort'", (lead_id,))[0]
+    assert zeile["payload"]["status"] == "DECLINED"
+    assert "beim Kunden in München" in zeile["payload"]["grund"]
+
+
+def test_mehrfaches_lesen_derselben_mail_erzeugt_keine_dublette(stub):
+    """`lesen()` ist ein reiner Lesevorgang und darf beliebig oft aufgerufen
+    werden (z. B. wenn der Betreiber dieselbe Mail zweimal oeffnet) — jeder
+    Aufruf darf trotzdem hoechstens EINE Aktivitaet pro Antwort erzeugen."""
+    lead_id = _lead()
+    stub.mails[b"7"] = _antwort_mail(status="ACCEPTED")
+    server.postfach_mail_lesen("7")
+    server.postfach_mail_lesen("7")
+    zeilen = server._q(
+        "select id from activities where lead_id = %s and "
+        "type = 'einladung_antwort'", (lead_id,))
+    assert len(zeilen) == 1, zeilen
+
+
+def test_unbekannter_teilnehmer_erzeugt_keine_aktivitaet(stub):
+    """Eine Antwort von einer Adresse ohne zugehoerigen Kontakt laesst sich
+    niemandem zuordnen — es entsteht keine Aktivitaet, aber auch kein
+    Fehler."""
+    stub.mails[b"8"] = _antwort_mail(teilnehmer="unbekannt@nirgendwo.de")
+    antwort = json.loads(server.postfach_mail_lesen("8"))
+    assert "fehler" not in antwort, antwort
+    zeilen = server._q(
+        "select id from activities where type = 'einladung_antwort'")
+    assert zeilen == []
+
+
+def test_mail_ohne_kalenderteil_bleibt_unberuehrt(stub):
+    """Die bestehenden Stub-Mails ohne `text/calendar`-Teil (z. B. uid '1')
+    duerfen unter keinen Umstaenden eine Aktivitaet erzeugen."""
+    server.postfach_mail_lesen("1")
+    zeilen = server._q(
+        "select id from activities where type = 'einladung_antwort'")
+    assert zeilen == []
+
+
+def test_einladung_ist_keine_antwort_im_postfach(stub):
+    """Eine REQUEST-Datei (die eigene ausgehende Einladung, faelschlich im
+    Posteingang) darf ebenfalls keine Aktivitaet erzeugen — derselbe
+    Vertrag wie `kalender.ics_antwort_lesen` selbst."""
+    import kalender
+    from datetime import datetime
+    einladung = kalender.ics_einladung(
+        "xyz-999", datetime(2026, 10, 1, 14, 30), 30, "Erstgespräch",
+        veranstalter="felix@vibemind.space",
+        eingeladene=["ivan@vibemind.space"])
+    nachricht = email.message.EmailMessage()
+    nachricht["From"] = "Felix <felix@vibemind.space>"
+    nachricht["To"] = "buero@vibemind.space"
+    nachricht["Subject"] = "Terminvorschlag: Erstgespräch"
+    nachricht["Date"] = "Mon, 31 Aug 2026 10:00:00 +0200"
+    nachricht.set_content("Einladung im Anhang.")
+    nachricht.add_attachment(einladung.encode("utf-8"), maintype="text",
+                             subtype="calendar", filename="invite.ics")
+    stub.mails[b"9"] = nachricht.as_bytes()
+    server.postfach_mail_lesen("9")
+    zeilen = server._q(
+        "select id from activities where type = 'einladung_antwort'")
+    assert zeilen == []

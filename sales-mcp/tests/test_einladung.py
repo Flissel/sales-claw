@@ -168,3 +168,46 @@ def test_negative_folge_wird_abgelehnt():
             "abc-123", datetime(2026, 10, 1, 14, 30), 30, "Erstgespräch",
             veranstalter="felix@vibemind.space",
             eingeladene=["ivan@vibemind.space"], folge=-1)
+
+
+ANTWORT_ZUSAGE = (
+    "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REPLY\r\nBEGIN:VEVENT\r\n"
+    "UID:abc-123\r\nSEQUENCE:0\r\n"
+    "ATTENDEE;PARTSTAT=ACCEPTED:mailto:ivan@vibemind.space\r\n"
+    "END:VEVENT\r\nEND:VCALENDAR\r\n")
+
+ANTWORT_ABSAGE = (
+    "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REPLY\r\nBEGIN:VEVENT\r\n"
+    "UID:abc-123\r\nSEQUENCE:0\r\n"
+    "ATTENDEE;PARTSTAT=DECLINED:mailto:ivan@vibemind.space\r\n"
+    "COMMENT:Bin an dem Tag beim Kunden in München\r\n"
+    "END:VEVENT\r\nEND:VCALENDAR\r\n")
+
+
+def test_zusage_wird_gelesen():
+    ergebnis = kalender.ics_antwort_lesen(ANTWORT_ZUSAGE)
+    assert ergebnis["uid"] == "abc-123"
+    assert ergebnis["methode"] == "REPLY"
+    assert ergebnis["status"] == "ACCEPTED"
+    assert ergebnis["teilnehmer"] == "ivan@vibemind.space"
+    assert ergebnis["grund"] == ""
+
+
+def test_absage_traegt_den_grund():
+    ergebnis = kalender.ics_antwort_lesen(ANTWORT_ABSAGE)
+    assert ergebnis["status"] == "DECLINED"
+    assert "beim Kunden in München" in ergebnis["grund"]
+
+
+def test_kein_kalendertext_gibt_nichts():
+    assert kalender.ics_antwort_lesen("Guten Tag, passt mir leider nicht.") is None
+    assert kalender.ics_antwort_lesen("") is None
+
+
+def test_einladung_ist_keine_antwort():
+    """Eine REQUEST-Datei darf nicht als Antwort durchgehen."""
+    text = kalender.ics_einladung(
+        "abc-123", datetime(2026, 10, 1, 14, 30), 30, "Erstgespräch",
+        veranstalter="felix@vibemind.space",
+        eingeladene=["ivan@vibemind.space"])
+    assert kalender.ics_antwort_lesen(text) is None

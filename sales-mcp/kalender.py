@@ -325,6 +325,65 @@ def ics_einladung(uid: str, beginn, dauer_minuten: int, summary: str,
     return "\r\n".join(gefaltet) + "\r\n"
 
 
+def ics_antwort_lesen(text: str):
+    """Eine Antwort auf eine Einladung lesen — oder None.
+
+    Liefert nur bei METHOD:REPLY und METHOD:COUNTER ein Ergebnis; eine
+    REQUEST-Datei ist KEINE Antwort und darf nicht als eine durchgehen
+    (sonst haette eine weitergeleitete Einladung als Zusage gegolten).
+
+    Gelesen wird auf der ENTFALTETEN Fassung: ein Grund laenger als 75
+    Oktette steht sonst ueber mehrere Zeilen und wuerde abgeschnitten.
+    Werte laufen durch `_entmaskiere`, sonst steht im Grund ein `\\,` statt
+    eines Kommas — derselbe Fehler, der im Lesepfad schon einmal steckte.
+
+    Der TZID-Parameter von DTSTART (nur fuer COUNTER gebraucht) wird ueber
+    das vorhandene `_ics_tzid(block, name)` gelesen statt ueber einen
+    eigenen zweiten Helfer — der sucht selbst die passende Zeile in einem
+    Textblock und entfaltet dabei selbststaendig, es reicht also der rohe
+    Text hier hinein.
+    """
+    roh = (text or "")
+    if "BEGIN:VCALENDAR" not in roh:
+        return None
+    zeilen = roh.replace("\r\n ", "").replace("\r\n\t", "").replace(
+        "\n ", "").replace("\n\t", "").replace("\r\n", "\n").split("\n")
+    ergebnis = {"uid": "", "methode": "", "teilnehmer": "", "status": "",
+                "grund": "", "folge": 0, "neuer_beginn": None}
+    dtstart_wert = ""
+    for zeile in zeilen:
+        name, _, wert = zeile.partition(":")
+        feld = name.split(";")[0].upper()
+        if feld == "METHOD":
+            ergebnis["methode"] = wert.strip().upper()
+        elif feld == "UID" and not ergebnis["uid"]:
+            ergebnis["uid"] = _entmaskiere(wert.strip())
+        elif feld == "SEQUENCE":
+            try:
+                ergebnis["folge"] = int(wert.strip())
+            except ValueError:
+                pass
+        elif feld == "COMMENT" and not ergebnis["grund"]:
+            ergebnis["grund"] = _entmaskiere(wert.strip())
+        elif feld == "DTSTART" and not dtstart_wert:
+            dtstart_wert = wert.strip()
+        elif feld == "ATTENDEE" and not ergebnis["status"]:
+            for teil in name.split(";")[1:]:
+                schluessel, _, inhalt = teil.partition("=")
+                if schluessel.upper() == "PARTSTAT":
+                    ergebnis["status"] = inhalt.strip().upper()
+            adresse = wert.strip()
+            if adresse.lower().startswith("mailto:"):
+                adresse = adresse[7:]
+            ergebnis["teilnehmer"] = _entmaskiere(adresse)
+    if ergebnis["methode"] not in ("REPLY", "COUNTER"):
+        return None
+    if ergebnis["methode"] == "COUNTER" and dtstart_wert:
+        ergebnis["neuer_beginn"] = _ics_zeit(
+            dtstart_wert, _ics_tzid(roh, "DTSTART"))
+    return ergebnis
+
+
 # ---------------------------------------------------------------------------
 # CalDAV — optionaler Eintrag im echten Kalender des Betreibers
 # ---------------------------------------------------------------------------
