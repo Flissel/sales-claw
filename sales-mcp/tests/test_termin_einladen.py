@@ -395,3 +395,63 @@ def test_folge_ohne_uid_wird_abgelehnt():
         lead, "2026-12-03", "11:00", thema="Erstgespräch", folge=1))
     assert "fehler" in antwort
     assert "ohne uid" in antwort["fehler"]
+
+
+# --- Wie die Mail beim Empfaenger ankommt (12.09.2026) ---------------------
+# Gefunden im ersten echten Durchgang gegen ein Gmail-Postfach, nicht am
+# Schreibtisch: der Text sprach von einem Anhang, den es bewusst nicht gibt,
+# und ein Videoraum-Link war in der Mail selbst unsichtbar.
+
+def test_einladungstext_verspricht_keinen_anhang():
+    """`nachricht_mit_einladung` haengt die Kalenderdaten ABSICHTLICH nicht
+    als Datei an, sondern als Alternative zum Text — nur so baut das
+    Mailprogramm die Schaltflaechen. Ein Text, der einen Anhang ankuendigt,
+    widerspricht dem sichtbar: der Empfaenger sucht eine Datei, findet keine
+    und haelt die Mail fuer kaputt."""
+    lead = _lead()
+    json.loads(server.termin_einladen(
+        lead, "2026-10-01", "14:30", thema="Erstgespräch"))
+    rumpf = server._q(
+        "select body from drafts where lead_id = %s", (lead,))[0]["body"]
+    assert "Anhang" not in rumpf, rumpf
+    assert "zusagen" in rumpf and "absagen" in rumpf, rumpf
+
+
+def test_videoraum_link_steht_sichtbar_in_der_mail():
+    """Ein Meet-/Jitsi-Raum kommt als `ort` herein und landete bisher NUR im
+    LOCATION-Feld des Kalendereintrags — in der Mail stand er nirgends. Wer
+    eine Einladung zu einem Videotermin bekommt, erwartet den Link im Text."""
+    lead = _lead()
+    raum = "https://meet.google.com/abc-defg-hij"
+    json.loads(server.termin_einladen(
+        lead, "2026-10-01", "14:30", thema="Erstgespräch", ort=raum))
+    rumpf = server._q(
+        "select body from drafts where lead_id = %s", (lead,))[0]["body"]
+    assert raum in rumpf, rumpf
+    # Und er ist als Videoraum benannt, nicht als "Ort: https://…".
+    assert f"Videoraum: {raum}" in rumpf, rumpf
+
+
+def test_gewoehnlicher_ort_heisst_weiterhin_ort():
+    """Gegenprobe zum vorigen Test: die Unterscheidung darf nicht jeden Ort
+    zum Videoraum erklaeren."""
+    lead = _lead()
+    json.loads(server.termin_einladen(
+        lead, "2026-10-01", "14:30", thema="Erstgespräch", ort="Büro Kirchheim"))
+    rumpf = server._q(
+        "select body from drafts where lead_id = %s", (lead,))[0]["body"]
+    assert "Ort: Büro Kirchheim" in rumpf, rumpf
+    assert "Videoraum" not in rumpf, rumpf
+
+
+def test_kalenderbeschreibung_traegt_echte_umlaute():
+    """Die DESCRIPTION steht in JEDER Einladung, die einen Kunden erreicht —
+    sichtbarer als jede Bildschirmzeile. Der Waechter aus Stufe 1 bewacht nur
+    `ui.py` und hat diese Stelle nie gesehen; hier stand "ueber"."""
+    lead = _lead()
+    antwort = json.loads(server.termin_einladen(
+        lead, "2026-10-01", "14:30", thema="Erstgespräch"))
+    with open(antwort["pfad"], encoding="utf-8", newline="") as f:
+        text = _entfaltet(f.read())
+    assert "über die" in text, text
+    assert "ueber die" not in text, text

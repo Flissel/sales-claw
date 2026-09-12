@@ -1601,12 +1601,29 @@ def termin_einladen(lead_id: str, datum: str, uhrzeit: str,
     # Echte Umlaute (Fix-Runde 2, 11.09.2026): die bindende Randbedingung
     # "Anzeigetexte tragen echte Umlaute" gilt hier erst recht — das ist
     # kein internes Label, sondern der Text im Postfach des Kunden.
+    #
+    # KEIN "Im Anhang" mehr (12.09.2026, im ersten echten Durchgang
+    # gefunden): der Satz beschrieb das Gegenteil dessen, was geschieht.
+    # `nachricht_mit_einladung` haengt die Kalenderdaten BEWUSST nicht als
+    # Datei an, sondern als Alternative zum Text — nur so baut das
+    # Mailprogramm die Schaltflaechen, statt eine Datei anzuzeigen. Wer
+    # "Anhang" liest und keinen findet, haelt die Mail fuer kaputt.
+    #
+    # Der Ort steht auf einer EIGENEN Zeile statt hinter der Uhrzeit: ist er
+    # ein Videoraum (`konferenz.raum()` aus der Konferenz-Linie), war der
+    # Link bisher nur im LOCATION-Feld des Kalendereintrags — in der Mail
+    # selbst also unsichtbar, obwohl genau er dort erwartet wird.
+    ist_link = ort_kurz.lower().startswith(("http://", "https://"))
+    ortzeile = f"{'Videoraum' if ist_link else 'Ort'}: {ort_kurz}\n\n" \
+        if ort_kurz else ""
     text = (f"Hallo {name},\n\n"
-            f"ich schlage folgenden Termin vor: {tag.strftime('%d.%m.%Y')} "
-            f"um {zeit:%H:%M} Uhr ({dauer} Minuten)"
-            f"{', ' + ort_kurz if ort_kurz else ''}.\n\n"
-            f"Im Anhang finden Sie die Einladung zum Eintragen in Ihren "
-            f"Kalender — Sie können direkt zusagen oder absagen.\n\n"
+            f"ich schlage folgenden Termin vor:\n"
+            f"{WOCHENTAGE[beginn.weekday()]}, {tag.strftime('%d.%m.%Y')} "
+            f"um {zeit:%H:%M} Uhr ({dauer} Minuten)\n\n"
+            f"{ortzeile}"
+            f"Ihr Kalenderprogramm zeigt diese Mail als Einladung — Sie "
+            f"können direkt zusagen, absagen oder einen anderen Termin "
+            f"vorschlagen.\n\n"
             f"Viele Grüße")
     roh = entwurf_erstellen(lead_id, "email", text,
                             betreff=f"Terminvorschlag: {thema_kurz}",

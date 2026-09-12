@@ -165,7 +165,13 @@ PRODID = "-//sales-claw//Terminbestaetigung//DE"
 # Die DESCRIPTION ist bewusst nichtssagend. Die Datei kann beim Kunden
 # landen (er bekommt sie im Zweifel als Anhang) — Bedarfsangaben, Notizen
 # oder gar eine Einschaetzung haetten dort nichts verloren.
-BESCHREIBUNG = ("Termin mit unserem Haus. Vereinbart ueber die "
+#
+# Echter Umlaut (12.09.2026, im ersten echten Durchgang gefunden): hier
+# stand "ueber". Der Waechter-Test aus Stufe 1 bewacht nur `ui.py` — dieser
+# Text hier steht in JEDER Einladung, die je einen Kunden erreicht, und ist
+# damit sichtbarer als jede Bildschirmzeile. ICS ist UTF-8 (CHARSET im
+# Mailteil, `_falte` zaehlt Oktetts), der Umlaut reist also unbeschadet.
+BESCHREIBUNG = ("Termin mit unserem Haus. Vereinbart über die "
                 "Terminassistenz.")
 
 
