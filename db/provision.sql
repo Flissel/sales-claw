@@ -70,7 +70,7 @@ begin
         id uuid primary key default gen_random_uuid(),
         lead_id uuid references %I.leads(id) on delete set null,
         channel text not null
-          check (channel in ('email','whatsapp','linkedin','voice','video','meeting_invite')),
+          check (channel in ('email','whatsapp','linkedin','voice','video','meeting_invite','telegram')),
         recipient text not null,
         subject text,
         body text not null,
@@ -119,6 +119,16 @@ begin
     -- CC fuer E-Mail-Entwuerfe (03.09.2026); add column, weil die Tabelle
     -- auf beiden Schemata laengst existiert.
     execute format('alter table %I.drafts add column if not exists cc text', s);
+    -- Telegram als Kanal (12.09.2026): sales-claw ist seit dem
+    -- Betreiber-Entscheid der einzige Versandweg des Hauses, und Marketings
+    -- eigener Telegram-Versender ist gesperrt. Ohne diese Zeilen scheiterte
+    -- JEDER Telegram-Entwurf am CHECK — und zwar erst beim Insert, also
+    -- lange nachdem der Agent den Text geschrieben hat. Drop+Add statt
+    -- „add column if not exists", weil man einen CHECK nicht nachruesten
+    -- kann; idempotent ueber `drop constraint if exists`.
+    execute format('alter table %I.drafts drop constraint if exists drafts_channel_check', s);
+    execute format($chk$alter table %I.drafts add constraint drafts_channel_check
+      check (channel in ('email','whatsapp','linkedin','voice','video','meeting_invite','telegram'))$chk$, s);
     execute format('create index if not exists leads_status_idx on %I.leads (status)', s);
     execute format('create index if not exists activities_lead_idx on %I.activities (lead_id, created_at desc)', s);
     execute format('create index if not exists drafts_status_idx on %I.drafts (status, created_at desc)', s);

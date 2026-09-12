@@ -699,9 +699,14 @@ def test_kontakt_aktualisieren_signatur_ueberlebt_den_dekorator():
     assert list(parameter) == ["lead_id", "feld", "wert"]
 
 
-def test_achtzig_werkzeuge_registriert():
+def test_zweiundachtzig_werkzeuge_registriert():
     namen = {fn.__name__ for fn in server.WERKZEUGE}
-    assert len(namen) == 80
+    assert len(namen) == 82
+    # Telegram als vierter Versandkanal (12.09.2026, tests/test_telegram.py):
+    # die chat_id hinterlegen bzw. entziehen. ERREICHBARKEIT, nicht
+    # Einwilligung — das UWG-Tor bleibt davon unberuehrt.
+    for w in ("telegram_freigeben", "telegram_freigabe_entziehen"):
+        assert w in namen
     # Marketings Versandauftraege (12.09.2026): sales-claw ist der einzige
     # Versandweg, Marketing schreibt nur noch (tests/test_versandauftrag.py).
     for w in ("versandauftraege_pruefen", "versandauftrag_uebernehmen",

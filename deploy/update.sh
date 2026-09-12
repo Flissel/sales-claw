@@ -96,6 +96,21 @@ fi
 if echo "$GEAENDERT" | grep -E '^sales-stt/' >/dev/null; then
   BAUEN="$BAUEN sales-stt"
 fi
+# sales-linkedin und sales-telegram TEILEN SICH das sales-mcp-Image, stehen
+# aber nicht in KERN_ALLE (die Abnahme prueft sie nicht, und stuenden sie
+# drin, waere sie auf jedem Stack ohne sie zwangslaeufig uebersprungen).
+# Folge ohne diese Zeilen: ein sales-mcp-Update baut das Image neu, recreated
+# aber nur KERN — die beiden liefen mit dem ALTEN Container weiter, und das
+# faellt niemandem auf, weil der Rest gruen ist. Gleiche Lehre wie bei
+# sales-stt eine Zeile darueber; fuer sales-linkedin bestand die Luecke
+# schon vorher und wird hier mitgeschlossen (12.09.2026).
+if echo "$GEAENDERT" | grep -E '^sales-mcp/' >/dev/null; then
+  for _dienst in sales-linkedin sales-telegram; do
+    if [ "$(docker inspect -f '{{.State.Status}}' "$_dienst" 2>/dev/null)" = "running" ]; then
+      BAUEN="$BAUEN $_dienst"
+    fi
+  done
+fi
 if echo "$GEAENDERT" | grep -E '^config/workspace/' >/dev/null; then
   GATEWAY_NEU=true
 fi

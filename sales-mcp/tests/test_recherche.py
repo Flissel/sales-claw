@@ -555,7 +555,10 @@ def test_beide_werkzeuge_sind_registriert():
     # (tests/test_versandauftrag.py). sales-claw ist seit dem Betreiber-
     # Entscheid der EINZIGE Versandweg; Marketing schreibt nur noch und
     # bittet hier um Zustellung.
-    assert len(namen) == len(set(namen)) == 80
+    # 12.09.2026: + Telegram-Erreichbarkeit, 2 Werkzeuge
+    # (tests/test_telegram.py). sales-claw hat seit dem Entscheid auch den
+    # Telegram-Dispatcher, den Marketing vorher hatte.
+    assert len(namen) == len(set(namen)) == 82
 
 # ---------------------------------------------------------------------------
 # Nachbesserungen aus dem Stufe-5-Review (Befunde T1, B2, D2)

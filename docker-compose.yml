@@ -314,6 +314,53 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Der Versender fuer TELEGRAM (sales-mcp/telegram_dispatch.py).
+  #
+  # Er existiert wegen des Betreiber-Entscheids vom 12.09.2026: sales-claw
+  # ist der einzige Versandweg des Hauses, Marketings eigener
+  # Telegram-Versender ist gesperrt — ohne diesen Dienst waere der Kanal
+  # ersatzlos weggefallen.
+  #
+  # Er fasst AUSSCHLIESSLICH `channel='telegram'` an (Klausel steht im Claim
+  # selbst, Kopf von telegram_dispatch.py). Ohne TELEGRAM_BOT_TOKEN laeuft er
+  # bewusst mit Exit 0 leer aus statt als „Exited (2)" dazustehen — ein nicht
+  # eingerichteter Kanal ist ein gueltiger Zustand, kein Ausfall (dieselbe
+  # Ueberlegung wie bei sales-mail).
+  sales-telegram:
+    build: ./sales-mcp
+    image: sales-claw-sales-mcp:local
+    container_name: sales-telegram
+    command: python telegram_dispatch.py
+    # Wie sales-mail bewusst „unless-stopped" und nicht „always": ein Dienst,
+    # der Nachrichten an echte Menschen schickt, startet nicht von selbst mit
+    # dem Rechner mit.
+    restart: unless-stopped
+    # KEIN env_file — dieselbe T5a-Trennung wie bei sales-mail: dieser Dienst
+    # braucht die Kundendaten-DB und den Bot-Token, sonst nichts. Ueber
+    # env_file erbte er auch SMTP_*, OPENWA_API_KEY, APIFY_TOKEN und CALDAV_*
+    # — Zugangsdaten, mit denen er nichts zu tun hat.
+    environment:
+      - SALES_DB_URL=${SALES_DB_URL}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TZ=${TZ:-Europe/Berlin}
+      # Schleifentakt explizit statt implizit per Default — wie bei den
+      # beiden Zwillingen.
+      - TELEGRAM_INTERVAL_S=10
+    # KEIN Medienordner: diese Fassung versendet reinen Text und bucht einen
+    # Entwurf mit Anhang ausdruecklich fehlgeschlagen. Ein gemounteter Ordner
+    # waere ein Versprechen, das der Code nicht einloest.
+    #
+    # Ein laufender Versand darf nicht per SIGKILL zerrissen werden: der
+    # Dienst beendet nach SIGTERM die laufende Runde (API-Timeout 20 s) und
+    # geht dann. 45 s Gnadenfrist decken das ab — dieselbe Rechnung wie bei
+    # den Zwillingen.
+    stop_grace_period: 45s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   # Der Versender fuer LinkedIn-BEITRAEGE (sales-mcp/linkedin_dispatch.py).
   # Er veroeffentlicht freigegebene Beitraege ueber die offizielle
   # LinkedIn-API auf dem Profil des Betreibers — Text, Bilder oder ein

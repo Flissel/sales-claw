@@ -59,6 +59,7 @@ import medien
 import recherche
 import rowboat
 import lead_fluss
+import telegram_chat
 import sperrliste
 # Termine (Stufe 9): ICS-Text und der optionale CalDAV-Eintrag. Wieder ein
 # Modul ohne Datenbank und ohne Rückimport — und der einzige Ort, an dem
@@ -344,6 +345,23 @@ def _whatsapp_freigegeben(enrichment) -> bool:
     return isinstance(eintrag, dict) and eintrag.get("freigegeben") is True
 
 
+def _telegram_chat_id(enrichment):
+    """Die hinterlegte chat_id oder None — fail-closed wie die
+    WhatsApp-Freigabe.
+
+    Fehlender Schluessel (jeder Bestandskontakt), entzogene Erreichbarkeit
+    oder ein kaputter Wert zaehlen als „nicht erreichbar". Geprueft wird
+    ueber `telegram_chat.pruefe`, damit Anzeige, Entwurf und Versand
+    dieselbe Regel benutzen — eine zweite Lesart waere genau der Fehler,
+    den `mailadresse.py` im Kopf beschreibt.
+    """
+    eintrag = (enrichment or {}).get("telegram")
+    if not isinstance(eintrag, dict) or eintrag.get("erreichbar") is not True:
+        return None
+    wert, fehler = telegram_chat.pruefe(eintrag.get("chat_id"))
+    return None if fehler else wert
+
+
 # Hinweise der beiden Freigabe-Werkzeuge (Modulkonstanten, damit Tests sie
 # woertlich pruefen koennen). Der Auto-Betrieb — OpenClaw hoert im Chat des
 # Kontakts mit und antwortet selbst — haengt an der allowFrom-Liste des
@@ -377,6 +395,77 @@ def _whatsapp_freigabe_setzen(lead_id: str, freigegeben: bool) -> str:
     return _json({"lead_id": zeilen[0]["id"], "kontakt": zeilen[0]["name"],
                   "whatsapp_freigabe": freigegeben,
                   "hinweis": FREIGABE_HINWEIS if freigegeben else ENTZUG_HINWEIS})
+
+
+TELEGRAM_HINWEIS = (
+    "Telegram-Zustellung ab sofort moeglich. ACHTUNG: das ist ERREICHBARKEIT, "
+    "keine Erlaubnis zur Werbung — ein Bot kann keinen Chat eroeffnen, die "
+    "Gegenseite hat ihn also selbst gestartet, aber das UWG-Tor bleibt davon "
+    "unberuehrt. Liegt eine Einwilligung vor, erfasst der Betreiber sie "
+    "getrennt mit einwilligung_erfassen(lead_id, art, quelle).")
+TELEGRAM_ENTZUG_HINWEIS = (
+    "Telegram-Zustellung ab sofort gesperrt. Ein bereits freigegebener, noch "
+    "nicht zugestellter Entwurf faellt beim Versand mit klarem Grund durch — "
+    "es geht nichts mehr raus.")
+
+
+def _telegram_setzen(lead_id: str, chat_id, erreichbar: bool) -> str:
+    eintrag = {"erreichbar": erreichbar, "at": _jetzt(), "durch": "betreiber"}
+    if erreichbar:
+        eintrag["chat_id"] = chat_id
+    else:
+        # Die ID BLEIBT stehen, nur die Erreichbarkeit faellt. Wer sie
+        # loeschte, muesste sie zum Wiederaufnehmen neu beschaffen — und
+        # beschaffen heisst hier: den Menschen bitten, den Bot erneut zu
+        # starten. Ein Entzug soll umkehrbar sein, ohne jemanden zu behelligen.
+        altes = _q("select enrichment -> 'telegram' ->> 'chat_id' as id "
+                   "from leads where id = %s", (lead_id,))
+        if altes and altes[0].get("id"):
+            eintrag["chat_id"] = altes[0]["id"]
+    zeilen = _q(
+        "update leads set enrichment = jsonb_set(enrichment, "
+        "'{telegram}', %s::jsonb, true), updated_at = now() where id = %s "
+        "returning id, name",
+        (json.dumps(eintrag), lead_id))
+    if not zeilen:
+        return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
+    _q("insert into activities (lead_id, type, payload) values "
+       "(%s, 'kontakt_freigabe', %s) returning id",
+       (lead_id, _json({"kanal": "telegram", "freigegeben": erreichbar})))
+    return _json({"lead_id": zeilen[0]["id"], "kontakt": zeilen[0]["name"],
+                  "telegram_erreichbar": erreichbar,
+                  "hinweis": TELEGRAM_HINWEIS if erreichbar
+                             else TELEGRAM_ENTZUG_HINWEIS})
+
+
+@_gesichert
+def telegram_freigeben(lead_id: str, chat_id: str) -> str:
+    """Die Telegram-chat_id eines Kontakts hinterlegen und ihn damit
+    erreichbar machen. NUR auf ausdrueckliche Anweisung des Betreibers —
+    nie aus eigenem Antrieb und nie „damit der Entwurf durchgeht".
+
+    Die chat_id ist eine POSITIVE Zahl (z. B. 1092040975) und stammt
+    daher, dass die Person den Bot selbst mit /start angeschrieben hat —
+    ein Bot kann keinen Chat eroeffnen. Sie sieht einer Telefonnummer
+    aehnlich und ist KEINE: sie wird nie als Nummer behandelt.
+
+    Das hier ist ERREICHBARKEIT, keine Einwilligung. Das UWG-Tor in
+    entwurf_erstellen bleibt davon unberuehrt; eine Erlaubnis erfasst der
+    Betreiber getrennt mit einwilligung_erfassen."""
+    wert, fehler = telegram_chat.pruefe(chat_id)
+    if fehler:
+        return _json({"fehler": fehler})
+    return _telegram_setzen(lead_id, wert, True)
+
+
+@_gesichert
+def telegram_freigabe_entziehen(lead_id: str) -> str:
+    """Telegram-Erreichbarkeit eines Kontakts entziehen (Betreiber-
+    Entscheidung oder Kundenwunsch „keine Nachrichten mehr" — dann SOFORT
+    aufrufen). Die hinterlegte chat_id bleibt gespeichert, damit ein
+    spaeteres Wiederaufnehmen niemanden erneut behelligen muss; zugestellt
+    wird ab sofort nichts mehr."""
+    return _telegram_setzen(lead_id, None, False)
 
 
 @_gesichert
@@ -1945,9 +2034,9 @@ def entwurf_erstellen(lead_id: str, kanal: str, text: str,
     quittiert mit entwurf_manuell_gesendet. EINE Ausnahme: eine `.ics` geht
     als Kalendereinladung mit (METHOD:REQUEST) — sie ist kein Anhang im
     obigen Sinn, siehe `termin_einladen`."""
-    if kanal not in ("whatsapp", "linkedin", "email"):
+    if kanal not in ("whatsapp", "linkedin", "email", "telegram"):
         return _json({"fehler": f"Unzulaessiger Kanal '{kanal}'. "
-                                f"Erlaubt: whatsapp, linkedin, email"})
+                                f"Erlaubt: whatsapp, linkedin, email, telegram"})
     leads = _q("select name, phone, email, enrichment from leads where id = %s",
                (lead_id,))
     if not leads:
@@ -1969,7 +2058,11 @@ def entwurf_erstellen(lead_id: str, kanal: str, text: str,
     # UWG-Tor (F5, 31.08.2026): Erstansprache per WhatsApp/E-Mail nur mit
     # dokumentierter Grundlage. LinkedIn-Beitraege aufs eigene Profil
     # sprechen niemanden direkt an und bleiben frei.
-    if kanal in ("whatsapp", "email"):
+    # Telegram gehoert hier dazu: es ist eine Direktansprache an einen
+    # Menschen, genau wie WhatsApp und E-Mail. Dass die Person den Bot
+    # gestartet hat, macht sie ERREICHBAR — eine Erlaubnis zur Werbung ist
+    # das nicht, und die Bot-API kennt den Unterschied nicht.
+    if kanal in ("whatsapp", "email", "telegram"):
         zeile = _q("select consent_status from leads where id = %s",
                    (lead_id,))
         if (zeile and zeile[0]["consent_status"] not in EINWILLIGUNG_ARTEN
@@ -1980,6 +2073,13 @@ def entwurf_erstellen(lead_id: str, kanal: str, text: str,
     # fuer einen nicht freigegebenen Kontakt soll gar nicht erst in der
     # Freigabe-Queue auftauchen. Der Dispatcher prueft beim Zustellen erneut
     # — das hier ist die fruehe Rueckmeldung, dort ist das harte Gate.
+    if kanal == "telegram" and not _telegram_chat_id(leads[0]["enrichment"]):
+        return _json({"fehler": (
+            "Fuer diesen Kontakt ist keine Telegram-chat_id hinterlegt — es "
+            "entsteht kein Entwurf. Sie kommt daher, dass die Person den Bot "
+            "selbst gestartet hat; hinterlegen kann sie ausschliesslich der "
+            "Betreiber (telegram_freigeben(lead_id, chat_id)). E-Mail und "
+            "LinkedIn stehen weiter offen.")})
     if kanal == "whatsapp" and not _whatsapp_freigegeben(leads[0]["enrichment"]):
         return _json({"fehler": (
             "Kontakt ist nicht fuer WhatsApp freigegeben — es entsteht kein "
@@ -2008,7 +2108,9 @@ def entwurf_erstellen(lead_id: str, kanal: str, text: str,
                 f"Bildunterschrift mit), hier sind es {len(text)}. Entweder "
                 f"kuerzen oder den Anhang weglassen.")})
     empfaenger = (leads[0]["phone"] if kanal == "whatsapp" else
-                  leads[0]["email"] if kanal == "email" else leads[0]["name"])
+                  leads[0]["email"] if kanal == "email" else
+                  _telegram_chat_id(leads[0]["enrichment"]) if kanal == "telegram"
+                  else leads[0]["name"])
     zeilen = _q(
         "insert into drafts (lead_id, channel, recipient, subject, body, "
         "media_ref) values (%s, %s, %s, nullif(%s,''), %s, %s) "
@@ -6962,6 +7064,9 @@ WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              versandauftraege_pruefen, versandauftrag_uebernehmen,
              versandauftrag_ablehnen,
              kontakt_freigeben, kontakt_freigabe_entziehen,
+             # Telegram-Erreichbarkeit (12.09.2026): die chat_id hinterlegen
+             # bzw. entziehen. ERREICHBARKEIT, nicht Einwilligung.
+             telegram_freigeben, telegram_freigabe_entziehen,
              kontakte_freigegeben,
              # Archivieren statt Loeschen — als CHAT-Werkzeuge, nicht nur in
              # der Oberflaeche: sales-ui darf grundsaetzlich nichts koennen,
