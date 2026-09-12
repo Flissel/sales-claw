@@ -7034,6 +7034,18 @@ def versandauftrag_uebernehmen(auftrag_id: str) -> str:
         _q, auftrag.get("empfaenger") or "", kanal=kanal,
         archiviert=_archiv_sql("enrichment"), privat=_privat_sql("enrichment"))
     if not treffer:
+        # Erst nachsehen, ob es ihn DOCH gibt - nur archiviert oder privat.
+        # „Kein Kontakt" waere dann falsch, und wer es liest, legt einen
+        # Doppelkontakt an (gemessen 12.09.2026 an genau diesem Fall).
+        versteckt = lead_fluss.empfaenger_versteckt(
+            _q, auftrag.get("empfaenger") or "", kanal=kanal)
+        if versteckt:
+            return _auftrag_absagen(auftrag_id, (
+                f"Der Kontakt zu {auftrag.get('empfaenger')} EXISTIERT "
+                f"({versteckt}), ist aber archiviert oder als privat "
+                f"gekennzeichnet - an beide wird nichts zugestellt. Leg "
+                f"keinen zweiten an; der Betreiber entscheidet, ob er ihn "
+                f"wiederherstellt (kontakt_wiederherstellen)."))
         return _auftrag_absagen(auftrag_id, (
             f"Kein Kontakt in sales-claw zu {auftrag.get('empfaenger') or '(leer)'} "
             f"— es entsteht kein Entwurf. Wer hier einen Kontakt anlegt, "

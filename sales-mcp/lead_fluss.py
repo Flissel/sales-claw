@@ -199,6 +199,23 @@ def empfaenger_leads(q, empfaenger: str, *, archiviert: str, privat: str,
     return []
 
 
+def empfaenger_versteckt(q, empfaenger: str, kanal: str = "") -> str:
+    """Gibt es den Kontakt DOCH, nur archiviert oder privat? Sonst ''.
+
+    GEMESSEN AM 12.09.2026: ein Versandauftrag an die Firmenadresse des
+    Betreibers wurde mit „Kein Kontakt in sales-claw" abgewiesen - dabei gab
+    es ihn, er war nur archiviert. Wer das liest, legt einen Doppelkontakt
+    an, und dann existiert dieselbe Person zweimal mit verschiedenen
+    Einwilligungen. Eine Absage muss den Unterschied nennen koennen.
+    """
+    treffer = empfaenger_leads(q, empfaenger, kanal=kanal,
+                               archiviert="false", privat="false")
+    if not treffer:
+        return ""
+    namen = ", ".join(str(z.get("name") or z["id"]) for z in treffer[:3])
+    return namen
+
+
 def auftrag_notiz(auftrag: dict) -> str:
     """Was am Kontakt stehen soll, damit spaeter jemand nachvollziehen kann,
     woher diese Nachricht kam."""

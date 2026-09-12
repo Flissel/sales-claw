@@ -206,6 +206,37 @@ def test_ohne_kontakt_wird_abgelehnt_und_kein_kontakt_angelegt(monkeypatch):
     assert "anna@firma.de" in erledigt[0][3]
 
 
+def test_ein_archivierter_kontakt_heisst_nicht_kein_kontakt(monkeypatch):
+    """Gemessen am 12.09.2026: ein Auftrag an die Firmenadresse des
+    Betreibers wurde mit „Kein Kontakt in sales-claw" abgewiesen - dabei gab
+    es ihn, er war nur archiviert. Wer das liest, legt einen Doppelkontakt
+    an, und dann existiert dieselbe Person zweimal mit verschiedenen
+    Einwilligungen."""
+    rufe = []
+
+    def aufloesung(q, empfaenger, **kw):
+        rufe.append(kw)
+        # Erster Ruf (mit den echten Filtern): nichts. Zweiter Ruf
+        # (Filter aus): der archivierte Kontakt.
+        if len(rufe) == 1:
+            return []
+        return [{"id": "l1", "name": "Betreiber Selbsttest", "email": "a@b.de",
+                 "phone": ""}]
+
+    q = verteiler([_offene(AUFTRAG),
+                   ("versandauftrag_erledigen", [{"ok": True}])])
+    monkeypatch.setattr(server, "_q", q)
+    monkeypatch.setattr(lead_fluss, "empfaenger_leads", aufloesung)
+    out = json.loads(server.versandauftrag_uebernehmen("a-1"))
+    self_grund = out["grund"]
+    assert "EXISTIERT" in self_grund
+    assert "Betreiber Selbsttest" in self_grund
+    assert "archiviert" in self_grund
+    assert "keinen zweiten" in self_grund
+    # Der zweite Ruf muss die Filter wirklich ausgeschaltet haben.
+    assert rufe[1]["archiviert"] == "false" and rufe[1]["privat"] == "false"
+
+
 def test_mehrere_kontakte_werden_abgelehnt_mit_beiden_namen(monkeypatch):
     q = verteiler([_offene(AUFTRAG),
                    ("from leads", [{"id": "l1", "name": "Anna A", "email": "anna@firma.de", "phone": ""},
