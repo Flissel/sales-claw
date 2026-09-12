@@ -106,6 +106,38 @@ def test_empfaenger_leads_beim_telefon_grenzt_ein_und_entscheidet_genau():
     assert [z["id"] for z in treffer] == ["l1"]
 
 
+def test_telegram_loest_ueber_die_chat_id_auf_nie_ueber_die_nummer():
+    """Gefunden im eigenen Durchstich am 12.09.2026: ohne den Kanal landete
+    eine chat_id im Telefon-Zweig. `1092040975` wird von kennung_tel zu
+    `tel:+1092040975`, und die Vorauswahl sucht dann Leads, deren Nummer auf
+    dieselben acht Ziffern endet — im Unglueckfall ein FREMDER Kontakt, und
+    die Nachricht ginge an den Falschen."""
+    q = Rekorder([[{"id": "l1", "name": "Anna", "email": "", "phone": ""}]])
+    treffer = lead_fluss.empfaenger_leads(q, "1092040975", kanal="telegram",
+                                          archiviert="A", privat="P")
+    sql, params = q.aufrufe[0]
+    assert "enrichment -> 'telegram' ->> 'chat_id' = %s" in sql
+    assert "regexp_replace" not in sql, "das waere der Telefon-Zweig"
+    assert params == ("1092040975",)
+    assert [z["id"] for z in treffer] == ["l1"]
+
+
+def test_telegram_verlangt_dass_die_erreichbarkeit_steht():
+    """Entzogene Erreichbarkeit heisst kein Empfaenger — fail-closed, genau
+    wie server._telegram_chat_id."""
+    q = Rekorder([[]])
+    lead_fluss.empfaenger_leads(q, "1092040975", kanal="telegram",
+                                archiviert="A", privat="P")
+    assert "'erreichbar') = 'true'" in q.aufrufe[0][0]
+
+
+def test_telegram_mit_unlesbarer_id_fragt_gar_nicht():
+    q = Rekorder()
+    assert lead_fluss.empfaenger_leads(q, "+49 176 1234567", kanal="telegram",
+                                       archiviert="A", privat="P") == []
+    assert q.aufrufe == []
+
+
 def test_empfaenger_leads_ohne_lesbare_adresse_fragt_gar_nicht():
     q = Rekorder()
     assert lead_fluss.empfaenger_leads(q, "weder-noch", archiviert="A", privat="P") == []
@@ -136,6 +168,24 @@ def test_unbekannter_auftrag_ist_ein_fehler_keine_absage(monkeypatch):
     assert "Kein offener Versandauftrag" in out["fehler"]
     # Nichts erledigen: ein Auftrag, den es nicht gibt, wird nicht abgelehnt.
     assert all("versandauftrag_erledigen" not in sql for sql, _ in q.aufrufe)
+
+
+def test_der_kanal_wird_an_die_aufloesung_durchgereicht(monkeypatch):
+    """Sonst waere die Schutzkante oben wirkungslos: sie haengt daran, dass
+    die Aufrufstelle den Kanal kennt und mitgibt."""
+    gesehen = {}
+
+    def falsche_aufloesung(q, empfaenger, **kw):
+        gesehen.update(empfaenger=empfaenger, kanal=kw.get("kanal"))
+        return []
+
+    q = verteiler([_offene({**AUFTRAG, "kanal": "telegram",
+                           "empfaenger": "1092040975"}),
+                   ("versandauftrag_erledigen", [{"ok": True}])])
+    monkeypatch.setattr(server, "_q", q)
+    monkeypatch.setattr(lead_fluss, "empfaenger_leads", falsche_aufloesung)
+    server.versandauftrag_uebernehmen("a-1")
+    assert gesehen == {"empfaenger": "1092040975", "kanal": "telegram"}
 
 
 def test_ohne_kontakt_wird_abgelehnt_und_kein_kontakt_angelegt(monkeypatch):

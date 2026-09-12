@@ -11,6 +11,7 @@ Verdrahtung (Werkzeuge, _gesichert, _q) liegt in server.py.
 import json
 
 import sperrliste          # Kennungs-Normalisierung, geteilt mit der Verbotsliste
+import telegram_chat       # chat_id-Pruefung, geteilt mit Anzeige und Versand
 
 VORSCHLAG_SCHLUESSEL = "an_marketing"      # enrichment-Schluessel: {proposal_id, am}
 MAX_KANDIDATEN = 500                        # Kappung der DB-Funktion
@@ -135,13 +136,25 @@ def versandauftrag_erledigen(q, auftrag_id: str, status: str,
     return bool((zeilen or [{}])[0].get("ok"))
 
 
-def empfaenger_leads(q, empfaenger: str, *, archiviert: str, privat: str) -> list:
-    """Kontakte zu dieser Adresse — E-Mail exakt, Telefon normalisiert.
+def empfaenger_leads(q, empfaenger: str, *, archiviert: str, privat: str,
+                     kanal: str = "") -> list:
+    """Kontakte zu dieser Adresse — E-Mail exakt, Telefon normalisiert, bei
+    Telegram ueber die hinterlegte chat_id.
 
-    NORMALISIERT WIRD MIT `sperrliste`, nicht mit einer eigenen Regel: dieselbe
-    Funktion, die auch die gemeinsame Verbotsliste befragt. Eine zweite
-    Telefon-Normalisierung waere genau der Fehler, den der Entscheid vom
-    12.09. abschafft — zwei Orte, die auseinanderlaufen koennen.
+    DER KANAL MUSS MIT (seit 12.09.2026, gefunden im eigenen Durchstich).
+    Ohne ihn landete eine chat_id im Telefon-Zweig: `1092040975` wird von
+    `sperrliste.kennung_tel` zu `tel:+1092040975`, und die Vorauswahl sucht
+    dann Leads, deren Nummer auf dieselben acht Ziffern endet. Im Glücksfall
+    findet sie niemanden (so geschehen) — im Unglücksfall einen FREMDEN
+    Kontakt, und die Nachricht ginge an den Falschen. Ein Kanal, der die
+    Auswahl bestimmt, ist hier keine Bequemlichkeit, sondern die
+    Schutzkante.
+
+    NORMALISIERT WIRD MIT `sperrliste` bzw. `telegram_chat`, nicht mit einer
+    eigenen Regel: dieselben Funktionen, die auch Verbotsliste, Anzeige und
+    Versand benutzen. Eine zweite Normalisierung waere genau der Fehler, den
+    der Entscheid vom 12.09. abschafft — zwei Orte, die auseinanderlaufen
+    koennen.
 
     Beim Telefon kann SQL nicht normalisiert vergleichen, ohne jede Zeile
     anzufassen. Darum zwei Stufen: die Datenbank grenzt ueber die letzten
@@ -151,6 +164,21 @@ def empfaenger_leads(q, empfaenger: str, *, archiviert: str, privat: str) -> lis
     _privat_sql — dieselbe Regel wie ueberall, nie eine eigene.
     """
     adresse = (empfaenger or "").strip()
+
+    if kanal == "telegram":
+        # AUSSCHLIESSLICH ueber die chat_id — nie ueber die Telefonnummer,
+        # auch wenn die Zahl wie eine aussieht. `erreichbar` muss true sein:
+        # ein Kontakt, dem der Betreiber die Erreichbarkeit entzogen hat,
+        # ist kein Empfaenger (fail-closed, wie server._telegram_chat_id).
+        ziel = telegram_chat.pruefe(adresse)[0]
+        if not ziel:
+            return []
+        return q("select id, name, email, phone from leads "
+                 "where enrichment -> 'telegram' ->> 'chat_id' = %s "
+                 "and (enrichment -> 'telegram' ->> 'erreichbar') = 'true' "
+                 f"and not {archiviert} and not {privat} order by created_at asc",
+                 (ziel,)) or []
+
     ziel_email = sperrliste.kennung_email(adresse)
     if ziel_email:
         return q("select id, name, email, phone from leads "

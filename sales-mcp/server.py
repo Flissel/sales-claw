@@ -7010,7 +7010,7 @@ def versandauftrag_uebernehmen(auftrag_id: str) -> str:
                       "hinweis": "Nicht veroeffentlicht — wartet auf deine Freigabe."})
 
     treffer = lead_fluss.empfaenger_leads(
-        _q, auftrag.get("empfaenger") or "",
+        _q, auftrag.get("empfaenger") or "", kanal=kanal,
         archiviert=_archiv_sql("enrichment"), privat=_privat_sql("enrichment"))
     if not treffer:
         return _auftrag_absagen(auftrag_id, (
