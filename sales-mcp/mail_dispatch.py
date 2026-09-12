@@ -181,7 +181,7 @@ def claim(draft_id):
     zeilen = server._q(
         "update drafts set status = 'failed', error = %s "
         "where id = %s and status = 'approved' and channel = 'email' "
-        "returning id, lead_id, recipient, subject, body, media_ref",
+        "returning id, lead_id, recipient, subject, body, media_ref, cc",
         (marke, draft_id))
     if not zeilen:
         return None
@@ -219,7 +219,8 @@ def _betreff(roh: str) -> str:
     return sauber[:BETREFF_MAXLAENGE] or BETREFF_VORGABE
 
 
-def nachricht_bauen(adresse: str, betreff: str, rumpf: str) -> EmailMessage:
+def nachricht_bauen(adresse: str, betreff: str, rumpf: str,
+                    cc=None) -> EmailMessage:
     """Der fertige Text als text/plain, UTF-8.
 
     `EmailMessage` statt zusammengesetzter Zeichenketten: es kodiert
@@ -230,6 +231,13 @@ def nachricht_bauen(adresse: str, betreff: str, rumpf: str) -> EmailMessage:
     nachricht = EmailMessage()
     nachricht["From"] = EMAIL_ABSENDER
     nachricht["To"] = adresse
+    # CC (03.09.2026): kommt geprueft aus drafts.cc (mailadresse.pruefe je
+    # Adresse beim Anlegen/Bearbeiten); hier nur noch einzeilig gemacht, aus
+    # demselben Grund wie beim Betreff. send_message nimmt To UND Cc als
+    # Umschlag-Empfaenger.
+    cc_zeile = " ".join(str(cc or "").split())
+    if cc_zeile:
+        nachricht["Cc"] = cc_zeile
     nachricht["Subject"] = _betreff(betreff)
     # `cte="quoted-printable"` ist NICHT Geschmack, sondern ein gemessener
     # Fix. Ohne Angabe waehlt `set_content` die Kodierung selbst — und fuer
@@ -261,7 +269,8 @@ def _anhang_erlaubt(dateiname: str) -> bool:
 
 def nachricht_mit_einladung(adresse: str, betreff: str, rumpf: str,
                             ics_text: str,
-                            methode: str = "REQUEST") -> EmailMessage:
+                            methode: str = "REQUEST",
+                            cc=None) -> EmailMessage:
     """Eine Mail, die eine Kalendereinladung traegt.
 
     Der Kalender reist als ALTERNATIVE zum Text, nicht als Anhang daneben:
@@ -276,7 +285,9 @@ def nachricht_mit_einladung(adresse: str, betreff: str, rumpf: str,
     """
     if methode not in ("REQUEST", "REPLY", "CANCEL", "COUNTER"):
         raise ValueError(f"unbekannte Methode: {methode!r}")
-    nachricht = nachricht_bauen(adresse, betreff, rumpf)
+    # `cc` durchgereicht (Merge 12.09.2026): sonst traegt eine Einladung als
+    # einzige ausgehende Mailart kein CC, obwohl drafts.cc gefuellt sein kann.
+    nachricht = nachricht_bauen(adresse, betreff, rumpf, cc=cc)
     nachricht.add_alternative(
         ics_text, subtype="calendar", charset="utf-8",
         params={"method": methode, "component": "VEVENT"})
@@ -460,12 +471,20 @@ def verarbeite_draft(draft_id) -> str:
             return "anhang_fehlt"
 
     try:
+        # Merge 12.09.2026: hier trafen zwei Aenderungen aufeinander — der
+        # Einladungszweig (ics_text) und CC aus drafts.cc. Beide bleiben, und
+        # CC gilt AUCH fuer Einladungen: wer einen Termin vorschlaegt, will
+        # den Kollegen genauso in Kopie setzen koennen wie bei jeder anderen
+        # Mail. Ohne die Durchreichung waere CC bei Einladungen still
+        # verschwunden.
         if ics_text is not None:
             nachricht = nachricht_mit_einladung(adresse, geclaimt["subject"],
-                                                geclaimt["body"], ics_text)
+                                                geclaimt["body"], ics_text,
+                                                cc=geclaimt.get("cc"))
         else:
             nachricht = nachricht_bauen(adresse, geclaimt["subject"],
-                                        geclaimt["body"])
+                                        geclaimt["body"],
+                                        cc=geclaimt.get("cc"))
         senden(nachricht)
     except VersandFehler as e:
         _als_fehler_buchen(draft_id, marke, str(e))

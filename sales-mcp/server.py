@@ -22,6 +22,7 @@ angeschrieben" ist eine Rechtsfrage (UWG), keine Stilfrage.
 import functools
 import json
 import os
+import re
 import urllib.request
 import uuid
 from datetime import date, datetime, timedelta, timezone
@@ -63,6 +64,7 @@ import sperrliste
 # Modul ohne Datenbank und ohne Rückimport — und der einzige Ort, an dem
 # der neue ausgehende Pfad dieser Stufe steht.
 import kalender
+import konferenz
 # LID-Auflösung (Stufe 11): wem gehört eine `@lid`-Kennung? Wieder ein Modul
 # ohne Datenbank und ohne Rückimport — es kennt nur HTTP und nummern.py, und
 # es versendet nichts (ein GET gegen den eigenen OpenWA-Container).
@@ -709,7 +711,10 @@ AUTONOMIE_TEXT = {
 # Wie viel Verlauf der Agent fuer eine Antwort liest. Der Betreiber nannte
 # „letzten 20 nachrichten … von beiden" — also beide Richtungen zusammen,
 # nicht 20 je Seite.
-ANTWORT_VERLAUF = 20
+# Antwort-Kontext (03.09.2026): so viele Nachrichten beider Richtungen
+# liegen jedem faelligen Eintrag bei — die juengsten, aelteste zuerst.
+ANTWORT_VERLAUF = 10
+ANTWORT_TEXT_MAX = 300      # Zeichen je Nachricht im Antwort-Kontext
 
 
 def _autonomie(enrichment) -> str:
@@ -1238,7 +1243,8 @@ def _termin_zeitpunkt(datum: str, uhrzeit: str):
 @_gesichert
 def termin_bestaetigen(lead_id: str, datum: str, uhrzeit: str,
                        dauer_minuten: int = TERMIN_DAUER_VORGABE,
-                       thema: str = "Erstgespraech", ort: str = "") -> str:
+                       thema: str = "Erstgespraech", ort: str = "",
+                       konferenz_raum: bool = False) -> str:
     """Einen muendlich vereinbarten Termin festhalten: Kalenderdatei (.ics)
     nach /reports, Eintrag im Kalender des Betreibers (falls konfiguriert),
     automatische Wiedervorlage „Terminerinnerung" am Vortag und ein
@@ -1254,7 +1260,21 @@ def termin_bestaetigen(lead_id: str, datum: str, uhrzeit: str,
     `reports\\`; soll sie an eine Nachricht, kopiert der Betreiber sie von
     Hand nach `media\\` (dort legt nur ein Mensch ab). Ein zweiter Termin
     mit demselben Kontakt am selben Tag ueberschreibt die Datei —
-    `ueberschrieben: true` sagt es."""
+    `ueberschrieben: true` sagt es.
+
+    `konferenz_raum=True` legt zusaetzlich einen Videoraum an und traegt
+    ihn als `ort` ein (nur wenn `ort` leer ist — ein von Hand gesetzter
+    Ort hat Vorrang). Der Link steht damit im ICS (LOCATION), im
+    Kalendereintrag des Betreibers und im Bestaetigungstext. Anbieter ist
+    `KONFERENZ_ANBIETER`: Google Meet liefert AUSSCHLIESSLICH den Raum,
+    ohne Eintrag in einem Google-Kalender und ohne Teilnehmerliste dort;
+    ohne Konfiguration entsteht ein Jitsi-Raum. Faellt der Anbieter aus,
+    steht der Grund in `konferenz_hinweis` und es gibt trotzdem einen
+    Link — ein Termin ohne Raum waere schlechter.
+
+    Auch hier wird NICHTS versendet: der Link geht in den Vorschlagstext,
+    die Einladung an Team oder Kontakt bleibt ein Entwurf mit Freigabe
+    (Betreiber-Entscheid 04.09.2026)."""
     leads = _q("select name from leads where id = %s", (lead_id,))
     if not leads:
         return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
@@ -1268,6 +1288,18 @@ def termin_bestaetigen(lead_id: str, datum: str, uhrzeit: str,
     dauer = _termin_dauer(dauer_minuten)
     thema_kurz = (thema or "").strip()[:TERMIN_TEXT_MAXLAENGE] or "Termin"
     ort_kurz = (ort or "").strip()[:TERMIN_TEXT_MAXLAENGE]
+    konferenz_hinweis = ""
+    if konferenz_raum and not ort_kurz:
+        raum_url, konferenz_hinweis = konferenz.raum()
+        ort_kurz = raum_url[:TERMIN_TEXT_MAXLAENGE]
+    # Merge 12.09.2026: die Konferenz-Linie hatte hier noch
+    # `beginn = datetime.combine(tag, zeit)`. Das ist seit dem Herausziehen
+    # von `_termin_zeitpunkt` (oben, Zeile mit `beginn, tag, zeit, fehler`)
+    # eine Dublette — dieselbe Rechnung, zweite Stelle. Nachgesehen: die
+    # Funktion liefert exakt denselben naiven Ortszeitpunkt, es geht also
+    # kein Verhalten verloren. Entfernt, damit die Regel an EINER Stelle
+    # steht; sonst driften die beiden bei der naechsten Aenderung
+    # auseinander, und genau dafuer wurde sie herausgezogen.
     uid = f"{uuid.uuid4()}@sales-claw"
     ics_text = kalender.ics(uid, beginn, dauer, f"{thema_kurz} — {name}",
                             ort=ort_kurz)
@@ -1352,6 +1384,7 @@ def termin_bestaetigen(lead_id: str, datum: str, uhrzeit: str,
                    # Aufrufer sie aus dem Protokoll suchen.
                    "uid": uid},
         "kalender": kalender_stand,
+        "konferenz_hinweis": konferenz_hinweis or None,
         "bestaetigungstext": _bestaetigungstext(beginn, dauer, thema_kurz,
                                                 ort_kurz),
         # Bleibt IMMER stehen, auch wenn sie auf heute faellt — sie ist der
@@ -2146,8 +2179,31 @@ BETREIBER_MAIL_TEXT_MAX = 20000
 BETREIBER_MAIL_BETREFF_MAX = 200
 
 
+CC_MAX = 5
+
+
+def _cc_pruefen(cc):
+    """'a@x.de, b@y.de' -> (normalisiert, None) | (None, fehler); leer -> (None, None).
+    Jede Adresse geht durch mailadresse.pruefe — dieselbe Kante wie `To`,
+    denn eine Kopfzeile aus Fremdtext ist dieselbe Injektionsflaeche."""
+    roh = str(cc or "").strip()
+    if not roh:
+        return None, None
+    teile = [t.strip() for t in re.split(r"[,;]", roh) if t.strip()]
+    if len(teile) > CC_MAX:
+        return None, f"Hoechstens {CC_MAX} Adressen im CC, hier sind es {len(teile)}."
+    adressen = []
+    for t in teile:
+        adresse, fehler = mailadresse.pruefe(t)
+        if fehler:
+            return None, f"CC-Adresse '{t}' ist unbrauchbar: {fehler}"
+        adressen.append(adresse)
+    return ", ".join(adressen), None
+
+
 @_gesichert
-def betreiber_mail_entwurf(empfaenger: str, betreff: str, text: str) -> str:
+def betreiber_mail_entwurf(empfaenger: str, betreff: str, text: str,
+                           cc: str = "") -> str:
     """E-Mail-ENTWURF fuer die eigene Korrespondenz des Betreibers — an
     eine frei gewaehlte Adresse (Bewerbungen, Anfragen, Behoerden).
 
@@ -2157,6 +2213,8 @@ def betreiber_mail_entwurf(empfaenger: str, betreff: str, text: str) -> str:
     Adresse einem CRM-Kontakt, nimm entwurf_erstellen — dort gelten
     UWG-Tor, Loeschantrag und Privat-Schutz. Und NIE fuer Werbung an
     Fremde: das Werkzeug ist Schreibtisch, kein Verteiler.
+    `cc`: weitere Empfaenger in Kopie, kommagetrennt (hoechstens 5) —
+    sie stehen sichtbar in der Mail und in der Freigabe.
     """
     if not BETREIBER_MAIL_LEAD_ID:
         return _json({"fehler": (
@@ -2194,10 +2252,13 @@ def betreiber_mail_entwurf(empfaenger: str, betreff: str, text: str) -> str:
             f"'{treffer[0]['name']}' — Vertriebspost laeuft ueber "
             f"entwurf_erstellen(lead_id, 'email', …), wo UWG-Tor, "
             f"Loeschantrag und Privat-Schutz gelten.")})
+    cc_wert, fehler = _cc_pruefen(cc)
+    if fehler:
+        return _json({"fehler": fehler})
     zeilen = _q(
-        "insert into drafts (lead_id, channel, recipient, subject, body) "
-        "values (%s, 'email', %s, %s, %s) returning id, status",
-        (BETREIBER_MAIL_LEAD_ID, adresse, betreff, text))
+        "insert into drafts (lead_id, channel, recipient, subject, body, cc) "
+        "values (%s, 'email', %s, %s, %s, %s) returning id, status",
+        (BETREIBER_MAIL_LEAD_ID, adresse, betreff, text, cc_wert))
     return _json({"draft_id": zeilen[0]["id"], "status": zeilen[0]["status"],
                   "hinweis": ("Wartet auf Freigabe — Freigabe ist der "
                               "Versand (reiner Text, keine Anhaenge).")})
@@ -5101,7 +5162,7 @@ def firma_anreichern(lead_id: str, website: str = "") -> str:
 
 @_gesichert
 def entwurf_bearbeiten(draft_id: str, text: str, betreff: str = "",
-                       medien_datei: str = "") -> str:
+                       medien_datei: str = "", cc=None) -> str:
     """Den Text eines Entwurfs aendern, BEVOR er freigegeben wird.
 
     NUR bei `pending`. Das ist keine Bequemlichkeitsgrenze:
@@ -5125,8 +5186,8 @@ def entwurf_bearbeiten(draft_id: str, text: str, betreff: str = "",
     Die Aenderung wird mit ALTEM UND NEUEM TEXT protokolliert. Das ist der
     Sinn der Sache: hinterher muss nachvollziehbar sein, was der Betreiber
     freigegeben hat und was vorher dastand."""
-    zeilen = _q("select id, status, channel, body, subject, media_ref, lead_id "
-                "from drafts where id = %s", (draft_id,))
+    zeilen = _q("select id, status, channel, body, subject, media_ref, lead_id, "
+                "cc from drafts where id = %s", (draft_id,))
     if not zeilen:
         return _json({"fehler": f"Kein Entwurf mit draft_id {draft_id}."})
     d = zeilen[0]
@@ -5141,7 +5202,8 @@ def entwurf_bearbeiten(draft_id: str, text: str, betreff: str = "",
     neu = str(text or "").strip()
     if not neu:
         return _json({"fehler": "Leerer Text — nichts geaendert."})
-    if neu == d["body"] and not (betreff or "").strip()             and not (medien_datei or "").strip():
+    if (neu == d["body"] and not (betreff or "").strip()
+            and not (medien_datei or "").strip() and cc is None):
         return _json({"fehler": "Text ist unveraendert — nichts geaendert."})
 
     # Anhang: '-' entfernt, leer laesst stehen, alles andere wird geprueft.
@@ -5167,20 +5229,67 @@ def entwurf_bearbeiten(draft_id: str, text: str, betreff: str = "",
             f"Zeichen haben, hier sind es {len(neu)}.")})
 
     neuer_betreff = str(betreff or "").strip() or d["subject"]
-    _q("update drafts set body = %s, subject = %s, media_ref = %s "
+    # cc: None = unveraendert, "" = kein CC mehr, sonst geprueft (03.09.2026).
+    neuer_cc = d.get("cc")
+    if cc is not None:
+        neuer_cc, fehler = _cc_pruefen(cc)
+        if fehler:
+            return _json({"fehler": fehler})
+    _q("update drafts set body = %s, subject = %s, media_ref = %s, cc = %s "
        "where id = %s and status = 'pending' returning id",
-       (neu, neuer_betreff, basis, draft_id))
+       (neu, neuer_betreff, basis, neuer_cc, draft_id))
     _q("insert into activities (lead_id, type, payload) "
        "values (%s, 'entwurf_bearbeitet', %s) returning id",
        (d["lead_id"], _json({
            "draft_id": str(draft_id), "kanal": d["channel"],
            "vorher": d["body"], "nachher": neu,
            "betreff_vorher": d["subject"], "betreff_nachher": neuer_betreff,
-           "medien_vorher": d["media_ref"], "medien_nachher": basis})))
+           "medien_vorher": d["media_ref"], "medien_nachher": basis,
+           "cc_vorher": d.get("cc"), "cc_nachher": neuer_cc})))
     return _json({"draft_id": draft_id, "status": "pending",
                   "zeichen": len(neu), "medien_datei": basis,
                   "hinweis": ("Geaendert. Der Entwurf wartet weiter auf "
                               "Freigabe — es ging nichts raus.")})
+
+
+def _letzte_nachrichten(lead_id: str, anzahl: int, absender=None) -> list:
+    """Die juengsten `anzahl` Nachrichten eines Kontakts, aelteste zuerst —
+    der Kontext, auf dem eine Antwort entsteht (03.09.2026).
+
+    Beide Richtungen, Sprachnachrichten als Transkript (`art`:
+    'sprachnachricht'), lange Texte auf ANTWORT_TEXT_MAX Zeichen gekuerzt.
+    Am Sammelkontakt zaehlen nur die Eingaenge DIESES Absenders — sonst
+    stuende der Chat vieler Fremder in einem Kontext.
+    Nur Lesezugriff."""
+    typen = ["kundenantwort", "nachricht_ausgehend", "versand", "transkription"]
+    params = {"lead": lead_id, "typen": typen, "n": max(1, int(anzahl))}
+    bedingung = ""
+    ziffern = re.sub(r"\D", "", str(absender or ""))
+    if ziffern:
+        bedingung = (" and (a.type <> 'kundenantwort' or "
+                     + _roh_ziffern("a." + _ABSENDER_SPALTE) + " = %(ziffern)s)")
+        params["ziffern"] = ziffern
+    zeilen = _q(
+        "select a.type, a.payload, a.created_at from activities a"
+        " where a.lead_id = %(lead)s and a.type = any(%(typen)s)" + bedingung +
+        " order by a.created_at desc, a.id desc limit %(n)s", params)
+    verlauf = []
+    for z in reversed(zeilen):
+        last = z["payload"] or {}
+        text = " ".join(str(last.get("text") or "").split())
+        eintrag = {"wann": z["created_at"],
+                   "richtung": ("ausgehend" if z["type"] in
+                                ("nachricht_ausgehend", "versand")
+                                else "eingehend")}
+        if z["type"] == "transkription":
+            eintrag["art"] = "sprachnachricht"
+        elif z["type"] == "kundenantwort" and last.get("audio_datei") and not text:
+            text = "[Sprachnachricht — der Text folgt als 'sprachnachricht']"
+        if len(text) > ANTWORT_TEXT_MAX:
+            text = text[:ANTWORT_TEXT_MAX] + "…"
+        eintrag["text"] = text
+        verlauf.append(eintrag)
+    return verlauf
 
 
 @_gesichert
@@ -5197,9 +5306,10 @@ def antworten_faellig(stunden: int = 48) -> str:
     `manuell` und `ignorieren` stehen hier NIE. Wer dort wartet, wartet auf
     einen Menschen; das ist keine Aufgabe, die du dir nehmen darfst.
 
-    Ablauf je Eintrag: `chat_verlauf(lead_id, limit=20)` lesen — beide
-    Richtungen —, die Antwort SELBST schreiben, `antwort_entwerfen(lead_id,
-    text)` aufrufen. Der Sammelkontakt steht hier nie: dort haengen die
+    Ablauf je Eintrag: den mitgelieferten `verlauf` lesen (die letzten 10
+    Nachrichten beider Richtungen, aelteste zuerst, Sprachnachrichten als
+    Text), die Antwort SELBST schreiben, `antwort_entwerfen(lead_id, text)`
+    aufrufen. `chat_verlauf` nur, wenn du weiter zurueck musst. Der Sammelkontakt steht hier nie: dort haengen die
     Nachrichten vieler Fremder.
 
     Nur Lesezugriff."""
@@ -5233,7 +5343,22 @@ def antworten_faellig(stunden: int = 48) -> str:
                     "any(%s) and lead_id = any(%s::uuid[])",
                     (["pending", "approved"], [str(x) for x in lead_ids])):
             offen.add(str(z["lead_id"]))
-    faellig, wegen_entwurf = [], 0
+    # Ablehnung haelt (Betreiber 03.09.2026): ein abgelehnter Entwurf, der
+    # NACH der juengsten Kundennachricht entstand, IST die Entscheidung
+    # "darauf keine Antwort". Vorher blieb der Kontakt faellig und bekam bei
+    # jedem Lauf denselben Entwurf erneut. Erst eine neue Kundennachricht
+    # hebt das auf.
+    abgelehnt = set()
+    if lead_ids:
+        for z in _q(
+                "select distinct d.lead_id from drafts d "
+                "where d.status = 'rejected' and d.lead_id = any(%s::uuid[]) "
+                "  and d.created_at > coalesce((select max(a.created_at) "
+                "      from activities a where a.lead_id = d.lead_id "
+                "       and a.type = 'kundenantwort'), 'epoch'::timestamptz)",
+                ([str(x) for x in lead_ids],)):
+            abgelehnt.add(str(z["lead_id"]))
+    faellig, wegen_entwurf, wegen_ablehnung = [], 0, 0
     for e in eintraege:
         kennung = str(e.get("lead_id"))
         if privat.get(kennung):
@@ -5241,24 +5366,39 @@ def antworten_faellig(stunden: int = 48) -> str:
         if kennung in offen:
             wegen_entwurf += 1
             continue
+        if kennung in abgelehnt:
+            wegen_ablehnung += 1
+            continue
         stufe = stufen.get(kennung, AUTONOMIE_VORGABE)
         if stufe in ("halbauto", "auto"):
-            faellig.append({**e, "autonomie": stufe})
+            faellig.append({**e, "autonomie": stufe,
+                            "verlauf": _letzte_nachrichten(
+                                kennung, ANTWORT_VERLAUF, e.get("absender"))})
     return _json({"fenster_stunden": postfach.get("fenster_stunden"),
                   "anzahl": len(faellig),
                   "uebersprungen_weil_entwurf_offen": wegen_entwurf,
+                  "uebersprungen_weil_abgelehnt": wegen_ablehnung,
                   "uebersprungen_weil_manuell":
-                      len(eintraege) - len(faellig) - wegen_entwurf,
+                      len(eintraege) - len(faellig) - wegen_entwurf
+                      - wegen_ablehnung,
                   "eintraege": faellig,
                   "verlauf_limit": ANTWORT_VERLAUF,
                   "hinweis": (
-                      f"chat_verlauf(lead_id, limit={ANTWORT_VERLAUF}) lesen "
-                      f"— beide Richtungen —, die Antwort SELBST schreiben, "
-                      f"dann antwort_entwerfen(lead_id, text). Bei 'auto' "
+                      f"Je Eintrag liegt 'verlauf' bei: die letzten "
+                      f"{ANTWORT_VERLAUF} Nachrichten beider Richtungen, "
+                      f"aelteste zuerst, Sprachnachrichten als Text. Darauf "
+                      f"die Antwort SELBST schreiben (Namen, Zusagen und "
+                      f"offene Fragen daraus aufgreifen); chat_verlauf nur, "
+                      f"wenn du weiter zurueck musst. "
+                      f"Dann antwort_entwerfen(lead_id, text). Bei 'auto' "
                       f"geht sie danach ohne weitere Rueckfrage raus. "
                       f"Kontakte mit einem Entwurf, der noch auf Freigabe "
                       f"wartet, stehen hier NICHT — dort liegt der Ball "
-                      f"beim Betreiber.")})
+                      f"beim Betreiber. Abgelehnt heisst abgelehnt: fuer "
+                      f"dieselbe Kundennachricht setzt du nicht neu an "
+                      f"(uebersprungen_weil_abgelehnt); erst eine neue "
+                      f"Nachricht des Kunden macht den Kontakt wieder "
+                      f"faellig.")})
 
 
 @_gesichert
@@ -5267,6 +5407,7 @@ def antwort_entwerfen(lead_id: str, text: str,
     """Eine SELBST GESCHRIEBENE Antwort ablegen — die Stufe entscheidet, wohin.
 
     Dieses Werkzeug formuliert nichts: den Text schreibst du, nachdem du
+    den `verlauf` aus antworten_faellig (die letzten 10 Nachrichten) oder
     `chat_verlauf(lead_id)` gelesen hast.
 
       halbauto — der Entwurf wird 'pending'. Es geht NICHTS raus, bevor ein

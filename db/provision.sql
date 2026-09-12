@@ -116,6 +116,9 @@ begin
           check (herkunft in ('hochgeladen','chat','system')),
         updated_at timestamptz not null default now()
       )$ddl$, s);
+    -- CC fuer E-Mail-Entwuerfe (03.09.2026); add column, weil die Tabelle
+    -- auf beiden Schemata laengst existiert.
+    execute format('alter table %I.drafts add column if not exists cc text', s);
     execute format('create index if not exists leads_status_idx on %I.leads (status)', s);
     execute format('create index if not exists activities_lead_idx on %I.activities (lead_id, created_at desc)', s);
     execute format('create index if not exists drafts_status_idx on %I.drafts (status, created_at desc)', s);

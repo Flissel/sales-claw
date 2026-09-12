@@ -130,5 +130,10 @@ def test_termine_block_mit_offenem_und_verlauf():
     assert "Erstgespraech Video" in ganze.text
 
 
-def test_freigabe_seite_frischt_weiter_alle_30_s_auf():
-    assert 'http-equiv="refresh" content="30"' in _get("/freigaben").text
+def test_freigabe_seite_laedt_nicht_von_selbst_neu():
+    """Betreiber 03.09.2026: der 30-s-Refresh warf beim Bearbeiten den Text
+    weg und zog die Seite 'wie bei einem Reload in die Mitte'. Auf einer
+    Seite, auf der getippt wird, gibt es kein Auto-Neuladen."""
+    seite = _get("/freigaben").text
+    assert 'http-equiv="refresh"' not in seite
+    assert 'href="/freigaben">neu laden</a>' in seite

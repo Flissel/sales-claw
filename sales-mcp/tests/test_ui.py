@@ -626,7 +626,9 @@ def test_inbox_zeigt_pending_failed_approved_und_gesendete():
     assert "Nummer nicht zustellbar" in seite
     assert "wartet auf Dispatcher" in seite
     assert "Schon gesendeter Text" in seite
-    assert 'http-equiv="refresh" content="30"' in seite
+    # Seit 03.09.2026 KEIN Auto-Refresh auf der Freigabe-Seite (dort wird
+    # getippt); Vertrag in test_freigaben.py.
+    assert 'http-equiv="refresh"' not in seite
 
 
 def test_inbox_linkedin_sonderfall_nennt_den_handversand():
