@@ -1206,6 +1206,55 @@ EINLADUNG_NACHFASS_TAGE = 2
 WOCHENTAGE = ("Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag",
               "Samstag", "Sonntag")
 
+# Reihenfolge ist nicht beliebig: "&amp;" MUSS zuletzt stehen. Sonst wuerde
+# "&amp;lt;" in einem Durchgang erst zu "&amp;<" statt zu "&lt;" — wer den
+# Ampersand zuerst aufloest, erzeugt Entitaeten, die es nie gab.
+_THEMA_ENTITAETEN = (("&lt;", "<"), ("&gt;", ">"), ("&quot;", '"'),
+                     ("&#x27;", "'"), ("&#39;", "'"), ("&amp;", "&"))
+
+
+def _ohne_entitaeten(text: str) -> str:
+    """HTML-Entitaeten in Thema und Ort aufloesen — eng begrenzt.
+
+    GEMESSEN 12.09.2026 im ersten echten Durchgang: im Gmail-Postfach des
+    Betreibers stand woertlich „Terminvorschlag: Angebot &amp; Foerderung".
+    Der escapte Wert entsteht NICHT im Code (bei Stufe 1 nachgeprueft:
+    ausserhalb von `ui._e()` escapet keine Stelle beim Speichern) — er kommt
+    als Werkzeug-Argument herein, weil das aufrufende Sprachmodell sein „&"
+    von sich aus escapet. Betroffen ist jeder Termin mit „&" im Thema, und
+    es landet in SUMMARY, Betreff und Kalender des Kunden.
+
+    KEIN `html.unescape` — das zerstoert deutschen Text. HTML5 loest `&not`
+    AUCH OHNE Semikolon auf; gemessen im Container dieses Dienstes:
+
+        html.unescape("Beratung &notwendig fuer Sie")
+        -> 'Beratung ¬wendig fuer Sie'
+
+    Ein Thema „Beratung &notwendig" waere damit stillschweigend
+    verstuemmelt. Deshalb die feste Liste oben, jede Entitaet nur MIT
+    Semikolon. `tests/test_thema_entitaeten.py` nagelt genau diese Grenze
+    fest und faellt um, sobald jemand auf `html.unescape` umstellt.
+
+    Mehrfach, bis sich nichts mehr aendert: Bestandsdaten tragen
+    „&amp;amp;" (doppelt escapt), da genuegt ein Durchgang nicht. Gedeckelt,
+    damit kein konstruierter Wert die Schleife lange laufen laesst.
+
+    NUR Thema und Ort. Das Freigabe-Gate und der Nachrichtentext bleiben
+    unangetastet: dort steht im Zweifel woertlicher Kundentext, und ihn
+    stillschweigend umzuschreiben waere schlimmer als eine haessliche
+    Entitaet. Thema und Ort setzt der Betreiber oder der Bot — dort nennt
+    niemand einen Termin absichtlich „&amp;", und ein escapter Link mit
+    Abfrageteil („?a=1&amp;b=2") ist schlicht kaputt.
+    """
+    text = text or ""
+    for _ in range(3):
+        vorher = text
+        for muster, zeichen in _THEMA_ENTITAETEN:
+            text = text.replace(muster, zeichen)
+        if text == vorher:
+            break
+    return text
+
 
 def _termin_dauer(dauer) -> int:
     """Wunsch -> erlaubte Dauer. Kappung, kein Fehler (siehe oben)."""
@@ -1286,8 +1335,11 @@ def termin_bestaetigen(lead_id: str, datum: str, uhrzeit: str,
     heute = datetime.now(timezone.utc).date()
 
     dauer = _termin_dauer(dauer_minuten)
-    thema_kurz = (thema or "").strip()[:TERMIN_TEXT_MAXLAENGE] or "Termin"
-    ort_kurz = (ort or "").strip()[:TERMIN_TEXT_MAXLAENGE]
+    # Entitaeten VOR dem Kappen aufloesen: sonst schnitte die Laengengrenze
+    # mitten in "&amp;" und liesse ein "&am" stehen.
+    thema_kurz = (_ohne_entitaeten(thema).strip()[:TERMIN_TEXT_MAXLAENGE]
+                  or "Termin")
+    ort_kurz = _ohne_entitaeten(ort).strip()[:TERMIN_TEXT_MAXLAENGE]
     konferenz_hinweis = ""
     if konferenz_raum and not ort_kurz:
         raum_url, konferenz_hinweis = konferenz.raum()
@@ -1523,8 +1575,11 @@ def termin_einladen(lead_id: str, datum: str, uhrzeit: str,
             "braucht einen Veranstalter.")})
 
     dauer = _termin_dauer(dauer_minuten)
-    thema_kurz = (thema or "").strip()[:TERMIN_TEXT_MAXLAENGE] or "Termin"
-    ort_kurz = (ort or "").strip()[:TERMIN_TEXT_MAXLAENGE]
+    # Entitaeten VOR dem Kappen aufloesen: sonst schnitte die Laengengrenze
+    # mitten in "&amp;" und liesse ein "&am" stehen.
+    thema_kurz = (_ohne_entitaeten(thema).strip()[:TERMIN_TEXT_MAXLAENGE]
+                  or "Termin")
+    ort_kurz = _ohne_entitaeten(ort).strip()[:TERMIN_TEXT_MAXLAENGE]
     # Bestehende Kennung fortschreiben (Fix-Runde 1 zu Aufgabe 5) statt
     # immer eine neue zu ziehen — oben bereits validiert (SEQUENCE hoeher
     # als die vorige, oder frisch mit folge 0).
