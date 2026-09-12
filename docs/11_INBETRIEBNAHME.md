@@ -222,8 +222,20 @@ Freigabe beim Empfänger als Kalender ankommt, ist damit noch nicht bewiesen.
 
 **Die `&amp;`-Bestandsdaten.** Der Lesepfad ist korrigiert, die alten Einträge in
 `activities.payload` nicht. Der Durchgang **macht sie sichtbar, er heilt sie nicht.**
-Die Bereinigung ist eine Entscheidung über Produktionsdaten und braucht vorher einen
-Blick darauf, wie viele Einträge betroffen sind.
+Die Bereinigung ist eine Entscheidung über Produktionsdaten — und die trifft sich
+besser mit einer Zahl als mit einem Bauchgefühl:
+
+```bash
+export SALES_DSN=$(grep '^SALES_DB_URL=' .env | sed 's/^SALES_DB_URL=//')
+docker run --rm -e SALES_DSN -i postgres:17-alpine \
+  sh -c 'psql "$SALES_DSN" -f -' < scripts/bestandsdaten-entities-zaehlen.sql
+unset SALES_DSN
+```
+
+Die Datei liest nur — kein `UPDATE`, kein `DELETE`, kein `BEGIN`. Sie zeigt je Feld,
+wie viele Zeilen betroffen sind, welche Aktivitätsarten es trifft, seit wann, und ein
+paar Beispiele zum Ansehen. Die DSN steht dabei nie in einer Kommandozeile (Muster aus
+`docs/03_RUNBOOK.md`, Abschnitt „psql-Gegenproben").
 
 **Eine mögliche zweite Ursache auf `/freigaben`.** Bei Stufe 1 ließ sich nicht
 ausschließen, dass dort neben dem behobenen Escaping-Fehler noch etwas anderes wirkt.
