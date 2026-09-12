@@ -692,10 +692,10 @@ def test_eigener_kalenderfehler_ist_auch_eine_luecke(monkeypatch):
 Und in `sales-mcp/tests/test_termin.py` anhängen:
 
 ```python
-def test_termine_lesen_liefert_auch_das_ende(kalender_stub):
+def test_termine_lesen_liefert_auch_das_ende(kalender_konfiguriert):
     """DTEND wurde im ganzen Baum nur GESCHRIEBEN, nie gelesen — ohne
     Endzeit ist keine Ueberlappung berechenbar (Spec §2.2)."""
-    kalender_stub.rumpf = (
+    STUB.rumpf = (
         '<?xml version="1.0"?><multistatus xmlns="DAV:">'
         '<response><propstat><prop><calendar-data>'
         "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:u1\r\n"
@@ -709,7 +709,11 @@ def test_termine_lesen_liefert_auch_das_ende(kalender_stub):
     assert (termine[0]["ende"] - termine[0]["beginn"]).total_seconds() == 6300
 ```
 
-> **Hinweis an den Umsetzer:** Der Name der CalDAV-Stub-Fixture in `test_termin.py` ist zu prüfen (die Datei hat einen `_Stub` und einen `http.server`-Thread, siehe Kopf der Datei). Nimm die dort vorhandene Fixture; erfinde keine zweite.
+> **Die Namen sind nachgeschlagen, nicht geraten:** `test_termin.py` hat ein
+> modulweites `STUB`-Objekt mit `.rumpf` und `.status`, einen autouse-Dienst
+> `stub_dienst` und die Fixture `kalender_konfiguriert`, die `CALDAV_URL`
+> auf den Stub zeigen lässt. `STUB.status` ggf. auf den Wert setzen, den die
+> vorhandenen Lesetests verwenden — nimm einen von ihnen als Muster.
 
 - [ ] **Step 2: Tests laufen lassen und Fehlschlag prüfen**
 
@@ -1509,6 +1513,14 @@ git commit -m "feat(ui): fremde Termine erscheinen mit dem Namen ihrer Quelle"
 
 * **Ein Abrufdienst.** `belegungen()` holt bei jedem Aufruf. Bei zwei bis fünf Quellen ist das eine HTTP-Anfrage je Quelle und Aufruf — vertretbar. Ein Zwischenspeicher mit Verfallszeit ist die naheliegende nächste Stufe, wenn es spürbar wird.
 * **CalDAV-Quellen in der Tabelle.** Der eigene Kalender bleibt in der `.env`; er braucht Zugangsdaten und es gibt genau einen. Die Spalte `art` hat den Platz schon.
+
+* **Der zweite, private Kalender des Betreibers — offene Lücke gegen die Spec.** §2.2 verlangt ausdrücklich: *„Der eigene Privatkalender zählt mit."* Dieser Plan erfüllt das **nicht**. `CALDAV_URL` ist genau ein Wert in der `.env`, und die Tabelle nimmt nur `art='ics'`. Legt der Betreiber nach §3 Ziffer 1 einen zweiten Kalender „Privat" an, taucht dessen Belegung in `belegungen()` nicht auf — und dann wäre die Trennung in zwei Kalender ein **Rückschritt** gegenüber heute, wo alles in einem liegt und mitgelesen wird.
+
+  **Warum trotzdem nicht hier:** Es hängt an einer ungemessenen Frage — gibt PrivateEmail für einen Kalender eine Abonnement-Adresse heraus? Wenn ja, trägt der Betreiber seinen Privatkalender über dieselbe Seite ein wie ein Kollege, und es ist **null zusätzlicher Code**. Wenn nein, braucht die Tabelle `art='caldav'` samt Zugangsdaten, und das ist ein eigener Entwurf.
+
+  **Verbindliche Reihenfolge:** Diese Messung gehört **vor** §3 Ziffer 1. Wer erst trennt und dann misst, fährt in der Zwischenzeit mit einer Belegungsliste, die die Hälfte seiner eigenen Termine nicht kennt.
+
+* **§2.6 „Fähigkeiten je Quelle anzeigen".** Für ICS-Quellen gibt es nichts abzufragen — eine Adresse liefert Termine oder nicht, und genau das zeigt die Seite aus Task 5 bereits („zuletzt gelesen, 14 Termine" bzw. der Fehlertext). Der Abschnitt war auf CalDAV-Quellen mit `OPTIONS`-Abfrage gemünzt und ist mit Weg 3 gegenstandslos, solange es keine CalDAV-Quellen in der Tabelle gibt.
 * **Farbige Wochenansicht** — Stufe 4 der Oberflächen-Überarbeitung (Spec §2.5).
 * **Freie Zeiten vorschlagen.** `termin_konflikte` beantwortet „ist diese Zeit frei"; „finde mir eine freie Zeit" ist eine eigene Aufgabe.
 * **Die Messung „taucht eine CalDAV-Freigabe im fremden Konto auf?"** — mit Weg 3 nicht mehr Voraussetzung (Spec §2.1, Revision).
