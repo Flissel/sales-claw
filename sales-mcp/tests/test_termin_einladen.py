@@ -455,3 +455,46 @@ def test_kalenderbeschreibung_traegt_echte_umlaute():
         text = _entfaltet(f.read())
     assert "über die" in text, text
     assert "ueber die" not in text, text
+
+
+# --- Zeilenenden der versendeten Datei (12.09.2026) ------------------------
+# Gefunden erst am echten Gmail-Postfach: dort stand "Unable to load event".
+# Gmail hatte den Kalenderteil also erkannt und war am PARSEN gescheitert.
+# Ursache war eine doppelte Uebersetzung beim Schreiben der Zweitschrift.
+
+def _rohbytes(dateiname):
+    with open(os.path.join(medien.ERZEUGT_VERZEICHNIS, dateiname), "rb") as f:
+        return f.read()
+
+
+def test_versendete_datei_hat_einfaches_crlf():
+    """RFC 5545 §3.1 verlangt CRLF. Die Zweitschrift in `media-erzeugt` wurde
+    mit `newline="\\r\\n"` geschrieben, obwohl der Text schon CRLF trug —
+    Python uebersetzte jedes "\\n" ein ZWEITES Mal, jede Zeile endete auf
+    "\\r\\r\\n". Strenge Parser lehnen das ab; Gmail zeigte "Unable to load
+    event".
+
+    Geprueft wird die Datei in `media-erzeugt`, NICHT die in `reports`:
+    versendet wird nur der Medienordner (`_anhang_erlaubt`), und genau die
+    Fassung dort war kaputt, waehrend die Kopie in `reports` korrekt war.
+    Deshalb ist es nie jemandem aufgefallen."""
+    lead = _lead()
+    antwort = json.loads(server.termin_einladen(
+        lead, "2026-10-01", "14:30", thema="Erstgespräch"))
+    roh = _rohbytes(antwort["datei"])
+    assert b"\r\r" not in roh, roh[:120]
+    assert b"\r\n" in roh, roh[:120]
+    # Kein nacktes LF ohne CR — sonst waere die Uebersetzung nur halb heil.
+    assert roh.replace(b"\r\n", b"").count(b"\n") == 0, roh[:200]
+
+
+def test_versendete_datei_gleicht_der_in_reports():
+    """Zwei Fassungen derselben Buchung duerfen sich nicht unterscheiden —
+    die eine wird versendet, die andere archiviert. Weicht die versendete ab,
+    beweist das Archiv nichts ueber das, was beim Kunden ankam."""
+    lead = _lead()
+    antwort = json.loads(server.termin_einladen(
+        lead, "2026-10-01", "14:30", thema="Erstgespräch"))
+    with open(antwort["pfad"], "rb") as f:
+        archiv = f.read()
+    assert _rohbytes(antwort["datei"]) == archiv

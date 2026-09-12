@@ -1463,8 +1463,15 @@ def termin_bestaetigen(lead_id: str, datum: str, uhrzeit: str,
     anhang_bereit = False
     try:
         os.makedirs(medien.ERZEUGT_VERZEICHNIS, exist_ok=True)
+        # newline="\n" heisst: NICHT uebersetzen (dasselbe Muster wie
+        # recherche.report_schreiben und der Moduldocstring von kalender.py).
+        # Vorher stand hier newline="\r\n" — und weil `ics_text` die CRLF
+        # bereits woertlich traegt, uebersetzte Python jedes "\n" ein
+        # ZWEITES Mal: jede Zeile endete auf "\r\r\n". Gefunden erst am
+        # echten Gmail-Postfach ("Unable to load event"), weil die Kopie in
+        # `reports` korrekt war und nur die versendete Fassung kaputt.
         with open(os.path.join(medien.ERZEUGT_VERZEICHNIS, dateiname), "w",
-                  encoding="utf-8", newline="\r\n") as datei:
+                  encoding="utf-8", newline="\n") as datei:
             datei.write(ics_text)
         anhang_bereit = True
     except OSError:
@@ -1704,7 +1711,9 @@ def termin_einladen(lead_id: str, datum: str, uhrzeit: str,
     try:
         os.makedirs(medien.ERZEUGT_VERZEICHNIS, exist_ok=True)
         medien_bestand_vorher = os.path.exists(ziel_medien)
-        with open(ziel_medien, "w", encoding="utf-8", newline="\r\n") as datei:
+        # newline="\n" = keine Uebersetzung, siehe die ausfuehrliche
+        # Begruendung an der gleichartigen Stelle in `termin_bestaetigen`.
+        with open(ziel_medien, "w", encoding="utf-8", newline="\n") as datei:
             datei.write(ics_text)
     except OSError as ex:
         return _json({"fehler": (
