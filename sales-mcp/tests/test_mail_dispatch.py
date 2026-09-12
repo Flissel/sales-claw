@@ -575,10 +575,15 @@ def test_kein_retry_in_der_naechsten_runde():
 # Anhaenge — der Punkt, an dem diese Fassung ausdruecklich NICHT sendet
 # ---------------------------------------------------------------------------
 
-def test_entwurf_mit_anhang_geht_nicht_ohne_den_anhang_raus():
+def test_entwurf_mit_fehlender_unterlage_geht_nicht_ohne_sie_raus():
     """Freigegeben wurde eine Nachricht MIT Unterlage. Sie ohne zu senden
     waere etwas anderes als das Freigegebene — dieselbe Regel wie beim
-    WhatsApp-Weg, dort fuer eine geloeschte Datei."""
+    WhatsApp-Weg, dort fuer eine geloeschte Datei.
+
+    SEIT DEM 12.09.2026 DARF EIN PDF MIT (siehe _anhang_erlaubt). Die Regel
+    hier bleibt davon unberuehrt: die Datei liegt NICHT im Medienordner,
+    also geht nichts raus — und schon gar kein Ersatztext ohne sie.
+    """
     draft = _draft(_lead(), medien="checkliste.pdf")
 
     mail_dispatch.eine_runde()
@@ -586,30 +591,59 @@ def test_entwurf_mit_anhang_geht_nicht_ohne_den_anhang_raus():
     zeile = _zeile(draft)
     assert zeile["status"] == "failed"
     assert "checkliste.pdf" in zeile["error"]
-    assert "NICHTS raus" in zeile["error"]
-    assert STUB.mails == []
+    assert "nicht versandfaehig" in zeile["error"]
+    assert STUB.mails == [], "kein Ersatzversand ohne die freigegebene Unterlage"
     assert zeile["sent_at"] is None
 
 
-def test_entwurf_erstellen_warnt_frueh_beim_anhang_an_einer_email(
+def test_ein_pdf_an_einer_email_entsteht_jetzt_als_entwurf(
         tmp_path, monkeypatch):
-    """Frueh sagen statt spaet scheitern: der Betreiber soll es beim
-    Erstellen erfahren, nicht erst nach seiner Freigabe."""
+    """Hier stand bis zum 12.09.2026 das Gegenteil: `entwurf_erstellen`
+    WARNTE, dass jeder Anhang ausser .ics beim Versand fehlschlaegt.
+
+    Der Betreiber hat den Mailweg fuer Anhaenge geoeffnet (Layout-
+    Musterblaetter an die Firmenadresse). Die Warnung ist deshalb entfallen
+    — und eine Warnung, die nicht mehr stimmt, ist schlimmer als keine.
+    """
     monkeypatch.setattr(medien, "MEDIA_VERZEICHNIS", str(tmp_path))
     (tmp_path / "checkliste.pdf").write_bytes(b"%PDF-1.4 Testinhalt")
     lead = str(_lead())
 
     mit = json.loads(server.entwurf_erstellen(
         lead, "email", "Text", medien_datei="checkliste.pdf"))
-    assert "ACHTUNG" in mit["hinweis"] and "checkliste.pdf" in mit["hinweis"]
+    assert "fehler" not in mit, mit
+    assert mit["status"] == "pending"
+    assert mit["medien_datei"] == "checkliste.pdf"
+    assert "ACHTUNG" not in mit["hinweis"]
 
-    ohne = json.loads(server.entwurf_erstellen(lead, "email", "Text"))
-    assert "ACHTUNG" not in ohne["hinweis"]
 
-    # Bei WhatsApp bleibt alles, wie es war — dort geht der Anhang mit.
-    whatsapp = json.loads(server.entwurf_erstellen(
-        lead, "whatsapp", "Text", medien_datei="checkliste.pdf"))
-    assert "ACHTUNG" not in whatsapp["hinweis"]
+def test_unbekannter_anhangstyp_erzeugt_gar_keinen_email_entwurf(
+        tmp_path, monkeypatch):
+    """Frueh sagen statt spaet scheitern — die Regel bleibt, nur die Liste
+    hat sich geaendert. Ein .mp4 kann der Mailweg nicht, also soll der
+    Entwurf gar nicht erst in der Freigabe-Queue auftauchen."""
+    monkeypatch.setattr(medien, "MEDIA_VERZEICHNIS", str(tmp_path))
+    (tmp_path / "film.mp4").write_bytes(b"\x00\x00\x00 ftypisom")
+    out = json.loads(server.entwurf_erstellen(
+        str(_lead()), "email", "Text", medien_datei="film.mp4"))
+    assert "fehler" in out
+    assert "kennt den Anhangstyp" in out["fehler"]
+    assert server._q("select id from drafts where media_ref = %s",
+                     ("film.mp4",)) == []
+
+
+def test_zu_grosser_anhang_erzeugt_gar_keinen_email_entwurf(
+        tmp_path, monkeypatch):
+    """Die Kodierung legt ein Drittel drauf, und viele Empfaenger weisen
+    ueber 25 MB ab. Lieber hier mit klarem Satz ablehnen als beim
+    Empfaenger unzustellbar sein."""
+    monkeypatch.setattr(medien, "MEDIA_VERZEICHNIS", str(tmp_path))
+    (tmp_path / "dick.pdf").write_bytes(b"%PDF" + b"x" * (9 * 1024 * 1024))
+    out = json.loads(server.entwurf_erstellen(
+        str(_lead()), "email", "Text", medien_datei="dick.pdf"))
+    assert "fehler" in out and "hoechstens" in out["fehler"]
+    assert server._q("select id from drafts where media_ref = %s",
+                     ("dick.pdf",)) == []
 
 
 def test_entwurf_erstellen_warnt_nicht_bei_einer_ics_an_einer_email(
@@ -973,11 +1007,55 @@ def test_einladung_traegt_auch_lesbaren_text():
     assert any("1. Oktober" in t for t in texte), texte
 
 
-def test_gewoehnliche_anhaenge_bleiben_abgelehnt():
-    """Die Ausnahme gilt NUR fuer Kalenderdaten — eine PDF bleibt abgelehnt."""
-    assert mail_dispatch._anhang_erlaubt("einladung.ics") is True
-    assert mail_dispatch._anhang_erlaubt("angebot.pdf") is False
-    assert mail_dispatch._anhang_erlaubt("bild.png") is False
+def test_welche_anhaenge_der_mailweg_kennt():
+    """Bis zum 12.09.2026 stand hier „nur .ics"; PDF und Bild waren
+    ausdruecklich abgelehnt. Der Betreiber hat das geoeffnet — aber KURZ:
+    was hier nicht steht, geht weiterhin nicht raus."""
+    for erlaubt in ("einladung.ics", "angebot.pdf", "bild.png",
+                    "foto.jpg", "Foto.JPEG"):
+        assert mail_dispatch._anhang_erlaubt(erlaubt) is True, erlaubt
+    for abgelehnt in ("film.mp4", "sprache.ogg", "tabelle.xlsx",
+                      "programm.exe", "ohne-endung", ""):
+        assert mail_dispatch._anhang_erlaubt(abgelehnt) is False, abgelehnt
+
+
+def test_ein_pdf_reist_als_datei_mit_ihrem_namen(tmp_path, monkeypatch):
+    """Der Empfaenger soll `muster-vorlage-warm-sand.pdf` sehen und nicht
+    `anhang.bin` — an dem Namen erkennt er, worum er gebeten wurde."""
+    monkeypatch.setattr(medien, "MEDIA_VERZEICHNIS", str(tmp_path))
+    (tmp_path / "muster-vorlage-warm-sand.pdf").write_bytes(b"%PDF-1.4 x")
+    draft = _draft(_lead(), medien="muster-vorlage-warm-sand.pdf")
+
+    mail_dispatch.eine_runde()
+
+    zeile = _zeile(draft)
+    assert zeile["status"] == "sent", zeile["error"]
+    assert len(STUB.mails) == 1
+    # Aus dem ROHTEXT geparst, den der Mailserver-Ersatz empfangen hat:
+    # das prueft, was wirklich ueber die Leitung ging.
+    import email as _email
+    nachricht = _email.message_from_string(STUB.mails[0]["roh"])
+    anhaenge = [teil for teil in nachricht.walk() if teil.get_filename()]
+    assert [teil.get_filename() for teil in anhaenge] == ["muster-vorlage-warm-sand.pdf"]
+    assert anhaenge[0].get_content_type() == "application/pdf"
+    assert anhaenge[0].get_payload(decode=True) == b"%PDF-1.4 x"
+    # Und der Text steht weiter daneben, nicht statt des Anhangs.
+    assert nachricht.is_multipart()
+
+
+def test_zu_grosser_anhang_faellt_auch_beim_versand_durch(tmp_path, monkeypatch):
+    """Zwischen Freigabe und Zustellung kann die Datei gewachsen sein —
+    der Medienordner ist ein Host-Bind. Auch dann geht nichts raus."""
+    monkeypatch.setattr(medien, "MEDIA_VERZEICHNIS", str(tmp_path))
+    (tmp_path / "dick.pdf").write_bytes(b"%PDF" + b"x" * (9 * 1024 * 1024))
+    draft = _draft(_lead(), medien="dick.pdf")
+
+    mail_dispatch.eine_runde()
+
+    zeile = _zeile(draft)
+    assert zeile["status"] == "failed"
+    assert "hoechstens" in zeile["error"]
+    assert STUB.mails == []
 
 
 def test_entwurf_mit_ics_anhang_geht_als_einladung_raus(tmp_path, monkeypatch):

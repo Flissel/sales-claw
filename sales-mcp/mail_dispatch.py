@@ -255,16 +255,72 @@ def nachricht_bauen(adresse: str, betreff: str, rumpf: str,
     return nachricht
 
 
-def _anhang_erlaubt(dateiname: str) -> bool:
-    """Nur Kalenderdaten duerfen an eine Mail — sonst nichts.
+# Was ausser dem Kalender an eine Mail darf, mit dem Medientyp, unter dem es
+# reist. Bewusst KURZ: was hier nicht steht, geht nicht raus.
+ANHANG_TYPEN = {
+    ".pdf": ("application", "pdf"),
+    ".png": ("image", "png"),
+    ".jpg": ("image", "jpeg"),
+    ".jpeg": ("image", "jpeg"),
+}
 
-    Der Mailweg lehnte Anhaenge bisher vollstaendig ab
-    (`anhang_nicht_unterstuetzt`). Diese eine Ausnahme entsteht, weil eine
-    Einladung ohne Kalenderteil keine Einladung ist, sondern eine Textmail.
-    Alles andere bleibt abgelehnt: ein PDF-Anhang waere ein neuer Weg nach
-    draussen, und den gibt es hier bewusst nicht.
+# Eigene, ENGERE Schranke als medien.MAX_BYTES (15 MB). Eine Mail waechst
+# durch die Base64-Kodierung um rund ein Drittel, und die meisten Empfaenger
+# — Gmail eingeschlossen — weisen ueber 25 MB Nachrichtengroesse ab. 8 MB
+# roh werden zu etwa 10,7 MB Nachricht und passen ueberall; 15 MB roh waeren
+# 20 MB und stiessen bei manchen an. Lieber hier mit klarem Satz ablehnen
+# als beim Empfaenger unzustellbar sein.
+ANHANG_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _anhang_erlaubt(dateiname: str) -> bool:
+    """Kalenderdaten, PDF und Bilder duerfen an eine Mail — sonst nichts.
+
+    HIER STAND BIS ZUM 12.09.2026 „nur .ics", mit der Begruendung: „ein
+    PDF-Anhang waere ein neuer Weg nach draussen, und den gibt es hier
+    bewusst nicht." Diese Begruendung ist entfallen, und zwar aus einem
+    nachpruefbaren Grund — nicht weil sie unbequem war:
+
+    Als sie geschrieben wurde, war der Mailweg EIN Weg nach draussen unter
+    mehreren, und Marketing hatte einen eigenen daneben. Seit dem
+    Betreiber-Entscheid vom selben Tag ist sales-claw der EINZIGE Versandweg
+    des Hauses: jede Nachricht — auch jede aus dem Marketing — laeuft durch
+    `entwurf_erstellen` (gemeinsame Verbotsliste, Loeschantrag, Privat-Flag,
+    UWG, Kontakt-Freigabe, Anhangspruefung), landet als Entwurf in der
+    Warteschlange und wartet auf einen Menschen. Ein Anhang ist damit kein
+    zusaetzlicher Weg mehr, sondern Fracht auf einem Weg, der bereits
+    bewacht ist.
+
+    Der Anlass war konkret: Layout-Vorlagen sollen dem Betreiber als
+    Musterblatt an seine Firmenadresse gehen, damit er sie ansieht, bevor er
+    sie freigibt. Eine Freigabe ohne Anschauung ist keine.
+
+    WAS BLEIBT: die Regel „lieber kein Versand als einer ohne die
+    freigegebene Unterlage". Was hier durchfaellt, wird fehlgeschlagen
+    gebucht — es geht NIE ein Ersatztext ohne Anhang raus.
     """
-    return (dateiname or "").lower().endswith(".ics")
+    name = (dateiname or "").lower()
+    return name.endswith(".ics") or any(name.endswith(e) for e in ANHANG_TYPEN)
+
+
+def _anhang_anfuegen(nachricht, basis: str, roh: bytes) -> str:
+    """Haengt `roh` als Datei an. Gibt '' zurueck oder einen Grund.
+
+    Der Dateiname reist so, wie er im Medienordner heisst: der Empfaenger
+    soll `muster-vorlage-warm-sand.pdf` sehen und nicht `anhang.bin`.
+    """
+    endung = "." + basis.rsplit(".", 1)[-1].lower() if "." in basis else ""
+    typ = ANHANG_TYPEN.get(endung)
+    if typ is None:
+        return f"Anhang '{basis}' hat keinen Typ, den der Mailweg kennt."
+    if len(roh) > ANHANG_MAX_BYTES:
+        return (f"Anhang '{basis}' ist {len(roh) // 1048576} MB gross; per "
+                f"Mail gehen hoechstens {ANHANG_MAX_BYTES // 1048576} MB "
+                f"(die Kodierung schlaegt noch ein Drittel drauf, und viele "
+                f"Empfaenger weisen ueber 25 MB ab).")
+    nachricht.add_attachment(roh, maintype=typ[0], subtype=typ[1],
+                             filename=basis)
+    return ""
 
 
 def nachricht_mit_einladung(adresse: str, betreff: str, rumpf: str,
@@ -430,18 +486,19 @@ def verarbeite_draft(draft_id) -> str:
         return "unzustellbar"
 
     # Siehe Moduldocstring: lieber ein Entwurf, der auf einen Menschen
-    # wartet, als eine Mail ohne die freigegebene Unterlage. Die EINE
-    # Ausnahme (Aufgabe 2, 2026-09-11): eine Kalenderdatei geht als
-    # Einladung mit, alles andere bleibt abgelehnt — `_anhang_erlaubt`
-    # ist dieselbe Regel wie im Kalenderteil-Test.
+    # wartet, als eine Mail ohne die freigegebene Unterlage. Seit dem
+    # 12.09.2026 duerfen ausser der Kalenderdatei auch PDF und Bilder mit
+    # (`_anhang_erlaubt`, Begruendung dort) — die Regel „kein Ersatzversand
+    # ohne Anhang" bleibt dabei unveraendert.
     ics_text = None
+    anhang = None                 # (basis, roh) fuer alles ausser .ics
     if geclaimt["media_ref"]:
         if not _anhang_erlaubt(geclaimt["media_ref"]):
             grund = (f"Anhang '{geclaimt['media_ref']}' — der E-Mail-Versand "
-                     f"schickt nur Text. Es ging NICHTS raus (auch kein Text "
-                     f"ohne Anhang). Ohne Anhang neu erstellen und freigeben — "
-                     f"oder die Unterlage von Hand aus dem Mailprogramm "
-                     f"schicken; dieser Entwurf bleibt dann als failed "
+                     f"kennt diesen Typ nicht. Es ging NICHTS raus (auch kein "
+                     f"Text ohne Anhang). Erlaubt sind .ics, .pdf, .png, .jpg "
+                     f"und .jpeg; alles andere von Hand aus dem Mailprogramm "
+                     f"schicken — dieser Entwurf bleibt dann als failed "
                      f"dokumentiert (entwurf_manuell_gesendet gilt NUR fuer "
                      f"LinkedIn).")
             _als_fehler_buchen(draft_id, marke, grund)
@@ -456,19 +513,31 @@ def verarbeite_draft(draft_id) -> str:
         basis, medienfehler = medien.pruefe(geclaimt["media_ref"])
         if medienfehler:
             _als_fehler_buchen(
-                draft_id, marke,
-                f"Kalenderdatei nicht versandfaehig: {medienfehler}")
+                draft_id, marke, f"Anhang nicht versandfaehig: {medienfehler}")
             LOG.info("draft=%s nicht zugestellt (%s)", draft_id, medienfehler)
             return "anhang_fehlt"
+
+        ist_kalender = basis.lower().endswith(".ics")
         try:
-            ics_text = medien.lies(basis).decode("utf-8")
-        except (OSError, UnicodeDecodeError) as e:
+            roh = medien.lies(basis)
+        except OSError as e:
             _als_fehler_buchen(
                 draft_id, marke,
-                f"Kalenderdatei '{basis}' nicht lesbar ({type(e).__name__}).")
-            LOG.info("draft=%s nicht zugestellt (Kalenderdatei nicht lesbar)",
-                     draft_id)
+                f"Anhang '{basis}' nicht lesbar ({type(e).__name__}).")
+            LOG.info("draft=%s nicht zugestellt (Anhang nicht lesbar)", draft_id)
             return "anhang_fehlt"
+        if ist_kalender:
+            try:
+                ics_text = roh.decode("utf-8")
+            except UnicodeDecodeError as e:
+                _als_fehler_buchen(
+                    draft_id, marke,
+                    f"Kalenderdatei '{basis}' nicht lesbar ({type(e).__name__}).")
+                LOG.info("draft=%s nicht zugestellt (Kalenderdatei nicht lesbar)",
+                         draft_id)
+                return "anhang_fehlt"
+        else:
+            anhang = (basis, roh)
 
     try:
         # Merge 12.09.2026: hier trafen zwei Aenderungen aufeinander — der
@@ -485,6 +554,16 @@ def verarbeite_draft(draft_id) -> str:
             nachricht = nachricht_bauen(adresse, geclaimt["subject"],
                                         geclaimt["body"],
                                         cc=geclaimt.get("cc"))
+        if anhang is not None:
+            # NACH dem Bauen, VOR dem Senden: schlaegt das Anhaengen fehl
+            # (zu gross, unbekannter Typ), geht nichts raus — dieselbe
+            # Regel wie oben, nur an der letzten moeglichen Stelle.
+            fehler_anhang = _anhang_anfuegen(nachricht, anhang[0], anhang[1])
+            if fehler_anhang:
+                _als_fehler_buchen(draft_id, marke, fehler_anhang)
+                LOG.info("draft=%s nicht zugestellt (%s)", draft_id,
+                         _einzeilig(fehler_anhang)[:120])
+                return "anhang_nicht_unterstuetzt"
         senden(nachricht)
     except VersandFehler as e:
         _als_fehler_buchen(draft_id, marke, str(e))

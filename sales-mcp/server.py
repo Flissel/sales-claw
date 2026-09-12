@@ -2116,6 +2116,35 @@ def entwurf_erstellen(lead_id: str, kanal: str, text: str,
                 f"{medien.CAPTION_MAXLAENGE} Zeichen haben (er reist als "
                 f"Bildunterschrift mit), hier sind es {len(text)}. Entweder "
                 f"kuerzen oder den Anhang weglassen.")})
+    # E-MAIL TRAEGT SEIT DEM 12.09.2026 ANHAENGE (Betreiber-Auftrag: Layout-
+    # Musterblaetter sollen an die Firmenadresse). Hier stand vorher eine
+    # Warnung, dass jeder Anhang ausser .ics beim Versand fehlschlaegt — sie
+    # ist entfallen, weil sie nicht mehr stimmt, und eine Warnung, die nicht
+    # stimmt, ist schlimmer als keine.
+    #
+    # Was BLEIBT, ist die Groessenschranke: der Mailweg nimmt hoechstens
+    # mail_dispatch.ANHANG_MAX_BYTES (8 MB roh), weil die Kodierung ein
+    # Drittel drauflegt und viele Empfaenger ueber 25 MB abweisen. Frueh
+    # sagen statt spaet scheitern — der Betreiber soll das beim Erstellen
+    # erfahren, nicht erst nach der Freigabe.
+    MAIL_ANHANG_ARTEN = (".ics", ".pdf", ".png", ".jpg", ".jpeg")
+    MAIL_ANHANG_MAX = 8 * 1024 * 1024
+    if basis and kanal == "email":
+        if not basis.lower().endswith(MAIL_ANHANG_ARTEN):
+            return _json({"fehler": (
+                f"Der Mailweg kennt den Anhangstyp von '{basis}' nicht. "
+                f"Erlaubt sind: {', '.join(MAIL_ANHANG_ARTEN)}. Es entsteht "
+                f"kein Entwurf.")})
+        try:
+            groesse = len(medien.lies(basis))
+        except OSError:
+            groesse = 0
+        if groesse > MAIL_ANHANG_MAX:
+            return _json({"fehler": (
+                f"Der Anhang '{basis}' ist {groesse // 1048576} MB gross; per "
+                f"Mail gehen hoechstens {MAIL_ANHANG_MAX // 1048576} MB. Es "
+                f"entsteht kein Entwurf.")})
+
     empfaenger = (leads[0]["phone"] if kanal == "whatsapp" else
                   leads[0]["email"] if kanal == "email" else
                   _telegram_chat_id(leads[0]["enrichment"]) if kanal == "telegram"
@@ -2126,23 +2155,6 @@ def entwurf_erstellen(lead_id: str, kanal: str, text: str,
         "returning id, status",
         (lead_id, kanal, empfaenger or leads[0]["name"], betreff, text, basis))
     hinweis = "Nicht versendet — wartet in der Queue."
-    # `.ics` ausgenommen (seit 11.09.2026): sales-mail traegt eine
-    # Kalenderdatei inzwischen wirklich zu — als METHOD:REQUEST-Kalenderteil,
-    # nicht als gewoehnlicher Anhang. Die Warnung unten gilt fuer jeden
-    # ANDEREN Anhangstyp weiter unveraendert; nur fuer .ics waere sie jetzt
-    # schlicht falsch (siehe mail_dispatch._anhang_erlaubt).
-    if basis and kanal == "email" and not basis.lower().endswith(".ics"):
-        # Frueh sagen statt spaet scheitern: sales-mail bucht einen
-        # E-Mail-Entwurf mit Anhang fehlgeschlagen (er ginge sonst ohne die
-        # Unterlage raus, die jemand freigegeben hat). Das soll der Betreiber
-        # beim Erstellen erfahren, nicht erst nach der Freigabe.
-        hinweis += (f" ACHTUNG: E-Mails gehen als reiner Text raus — dieser "
-                    f"Entwurf traegt den Anhang '{basis}' und wird deshalb "
-                    f"beim Versand fehlschlagen. Entweder ohne Anhang neu "
-                    f"erstellen — oder die Unterlage von Hand aus dem "
-                    f"Mailprogramm schicken; der Entwurf bleibt dann als "
-                    f"failed dokumentiert (entwurf_manuell_gesendet gilt "
-                    f"NUR fuer LinkedIn).")
     return _json({"draft_id": zeilen[0]["id"], "status": zeilen[0]["status"],
                   "medien_datei": basis, "hinweis": hinweis})
 
