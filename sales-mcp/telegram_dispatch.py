@@ -342,18 +342,27 @@ def _logging_einrichten() -> None:
 def main() -> int:
     _logging_einrichten()
 
-    if not BOT_TOKEN:
-        # Exit 0, nicht 2 — wortgleiche Begruendung wie in mail_dispatch:
-        # ein nicht eingerichteter Kanal ist ein gueltiger Zustand, kein
-        # Ausfall, und ein Container als „Exited (2)" sieht aus wie ein
-        # Fehler und wird gesucht.
-        LOG.warning("Telegram-Kanal nicht eingerichtet — TELEGRAM_BOT_TOKEN "
-                    "fehlt in der Umgebung (.env). Es wird nichts versendet; "
-                    "freigegebene Telegram-Entwuerfe bleiben liegen.")
-        return 0
-
     signal.signal(signal.SIGTERM, _stoppen)
     signal.signal(signal.SIGINT, _stoppen)
+
+    if not BOT_TOKEN:
+        # Ein nicht eingerichteter Kanal ist ein gueltiger Zustand, kein
+        # Ausfall — wortgleiche Begruendung wie in mail_dispatch. ABER:
+        # dort steht `return 0`, und das waere hier ein Fehler. Der Dienst
+        # laeuft mit `restart: unless-stopped`, und Docker startet danach
+        # AUCH nach Exit 0 neu — ein Container, der sofort sauber endet,
+        # wird also im Sekundentakt wiederbelebt. Statt zu enden wartet er
+        # deshalb still, bis jemand ihn stoppt: „gebaut und getestet, aber
+        # inert" heisst genau das.
+        #
+        # (Dieselbe Schleife droht mail_dispatch, sobald jemand dort die
+        # SMTP-Zugangsdaten entfernt. Dort liegt sie bisher nur brach.)
+        LOG.warning("Telegram-Kanal nicht eingerichtet — TELEGRAM_BOT_TOKEN "
+                    "fehlt in der Umgebung (.env). Es wird nichts versendet; "
+                    "freigegebene Telegram-Entwuerfe bleiben liegen. Der "
+                    "Dienst wartet, statt zu enden (sonst Neustartschleife).")
+        _STOPP.wait()
+        return 0
 
     LOG.info("sales-telegram startet (Takt %.0fs, Stapel %d)",
              INTERVAL_S, STAPEL)
