@@ -3369,3 +3369,47 @@ def test_dashboard_url_ist_fremddatum_und_wird_escaped(monkeypatch):
                         'https://vm.beispiel.ts.net:8443/"><script>x</script>')
     text = _get("/whatsapp").text
     assert "<script>x</script>" not in text
+
+
+@pytest.fixture
+def erzeugter_ordner(tmp_path, monkeypatch):
+    """Der ZWEITE Medienordner — der, in den das System selbst schreibt
+    (Kalenderdateien, erzeugte PDFs). Die Seite /medien listet beide."""
+    ziel = tmp_path / "erzeugt"
+    ziel.mkdir()
+    monkeypatch.setattr(server.medien, "ERZEUGT_VERZEICHNIS", str(ziel))
+    return ziel
+
+
+def test_erzeugte_datei_laesst_sich_loeschen(medienordner, erzeugter_ordner):
+    """Gemeldet am 12.09.2026: "das Loeschen in Medien geht nicht".
+
+    Der Loeschbefehl griff hart in `medien.wurzel()` — den Upload-Ordner —,
+    waehrend die Seite BEIDE Ordner auflistet und `medien.pfad()` laengst
+    beide kennt. Jede erzeugte Datei (Kalenderdateien, erzeugte PDFs) war
+    damit unloeschbar, und der Fehlertext zeigte auf die falsche Ursache
+    ("Haengt der Medienordner ohne :ro?")."""
+    (erzeugter_ordner / "einladung-probe-2026-10-01-1000.ics").write_bytes(
+        b"BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n")
+    antwort = _post("/medien/loeschen-bestaetigen",
+                    {"name": "einladung-probe-2026-10-01-1000.ics",
+                     "name_bestaetigt": "einladung-probe-2026-10-01-1000.ics",
+                     "csrf": ui.CSRF_TOKEN})
+    assert antwort.status_code == 303, antwort.text
+    assert not (erzeugter_ordner
+                / "einladung-probe-2026-10-01-1000.ics").exists()
+
+
+def test_bei_namensgleichheit_gewinnt_der_menschen_ordner(
+        medienordner, erzeugter_ordner):
+    """`medien.wurzeln()` hat eine Rangfolge: erst der Menschen-Ordner. Das
+    Loeschen muss derselben folgen, sonst entfernt der Knopf neben dem
+    ANGEZEIGTEN Eintrag eine andere Datei als die gezeigte."""
+    (medienordner / "doppelt.pdf").write_bytes(b"mensch")
+    (erzeugter_ordner / "doppelt.pdf").write_bytes(b"system")
+    antwort = _post("/medien/loeschen-bestaetigen",
+                    {"name": "doppelt.pdf", "name_bestaetigt": "doppelt.pdf",
+                     "csrf": ui.CSRF_TOKEN})
+    assert antwort.status_code == 303, antwort.text
+    assert not (medienordner / "doppelt.pdf").exists()
+    assert (erzeugter_ordner / "doppelt.pdf").read_bytes() == b"system"

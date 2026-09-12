@@ -1789,12 +1789,22 @@ async def aktion_medien_loeschen_bestaetigen(request):
             f"und kann das jeden Moment tun — dann ginge eine Nachricht "
             f"ohne ihre Unterlage raus oder scheiterte. Erst die Entwürfe "
             f"ablehnen, dann die Datei löschen."))
+    # `medien.pfad()` statt `medien.wurzel()` (12.09.2026, Betreiber-Befund
+    # „das Loeschen in Medien geht nicht"): die Seite listet BEIDE Ordner —
+    # den Upload-Ordner des Menschen und den fuer erzeugte Unterlagen —,
+    # der Loeschbefehl griff aber hart nur in den ersten. Jede erzeugte
+    # Datei (Kalenderdateien, erzeugte PDFs) war damit unloeschbar, und der
+    # Fehlertext zeigte auf die falsche Ursache. `pfad()` folgt derselben
+    # Rangfolge wie die Anzeige (Mensch vor System), sodass der Knopf genau
+    # die Datei trifft, die daneben steht.
+    ziel = server.medien.pfad(basis)
     try:
-        os.unlink(os.path.join(server.medien.wurzel(), basis))
+        os.unlink(ziel)
     except OSError as e:
         return _fehlerseite(500, "Nicht gelöscht", (
-            f"Datei nicht löschbar ({_e(type(e).__name__)}). Hängt der "
-            f"Medienordner an diesem Dienst ohne `:ro`?"))
+            f"Datei nicht löschbar ({_e(type(e).__name__)}) in "
+            f"{_e(os.path.dirname(ziel))}. Ist dieser Ordner an sales-ui "
+            f"schreibbar eingehängt, also ohne `:ro`?"))
     LOG.warning("Medien: %s gelöscht (%d Entwürfe verwiesen darauf)",
                 basis, len(verweise))
     return RedirectResponse("/medien", status_code=303)

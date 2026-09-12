@@ -668,17 +668,32 @@ def test_openwa_vertraut_dem_serve_proxy_und_weitet_die_ratenfenster(
 def test_media_erzeugt_schreiben_nur_mcp_und_inbox(tmp_path: Path) -> None:
     """UI-Plan 4b (02.09.2026): der erzeugte Medienordner wird von sales-mcp
     (Termine) und sales-inbox (Upload per WhatsApp an sich selbst)
-    geschrieben — alle anderen lesen nur."""
+    geschrieben — alle anderen lesen nur.
+
+    GEAENDERT 12.09.2026, und zwar bewusst: `sales-ui` steht jetzt bei den
+    Schreibern. Ausloeser war der Betreiber-Befund „das Loeschen in Medien
+    geht nicht" — die Seite /medien listet BEIDE Ordner und bietet neben
+    jeder Datei einen Loeschknopf, und bei den erzeugten Unterlagen lief er
+    ins Leere. Loeschen IST Schreiben.
+
+    Warum das den Grundsatz nicht aufweicht: die Regel trennt den AGENTEN
+    vom MENSCHEN, nicht Dienst von Dienst. `sales-ui` ist die Hand des
+    Betreibers hinter Host-Wache und CSRF-Marke — genau deshalb ist dort
+    auch `/media` schon lange ohne `:ro` (ausfuehrlich begruendet im
+    Compose). `sales-linkedin` und `sales-mail` bleiben lesend; sie sind
+    Automaten. HOCHGELADEN wird weiterhin nur nach `media/`: der
+    Upload-Pfad geht ueber `medien.wurzel()`.
+    """
     dienste = rendered_config(tmp_path)["services"]
 
     def bind(name):
         return next((v for v in (dienste[name].get("volumes") or [])
                      if str(v.get("target")) == "/media-erzeugt"), None)
 
-    for schreiber in ("sales-mcp", "sales-inbox"):
+    for schreiber in ("sales-mcp", "sales-inbox", "sales-ui"):
         b = bind(schreiber)
         assert b is not None and not b.get("read_only"), schreiber
-    for leser in ("sales-ui", "sales-linkedin", "sales-mail"):
+    for leser in ("sales-linkedin", "sales-mail"):
         b = bind(leser)
         assert b is not None and b.get("read_only") is True, leser
 

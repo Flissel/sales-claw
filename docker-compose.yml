@@ -601,7 +601,18 @@ services:
       # Datei-Explorer. Der AGENT bekommt kein Schreibrecht: sales-mcp und
       # sales-dispatch behalten `:ro`, und genau das ist der Punkt.
       - ./media:/media
-      - ./media-erzeugt:/media-erzeugt:ro
+      # Auch hier OHNE `:ro`, seit dem 12.09.2026 — und aus GENAU derselben
+      # Ueberlegung wie oben, nur zu Ende gedacht: Loeschen ist Schreiben.
+      # Die Seite /medien listet beide Ordner und bietet neben jeder Datei
+      # einen Loeschknopf; bei den erzeugten Unterlagen lief er ins Leere
+      # (Betreiber-Befund „das Loeschen in Medien geht nicht"). Der
+      # Grundsatz bleibt unveraendert: es handelt weiterhin ausschliesslich
+      # ein MENSCH, hinter Host-Wache und CSRF-Marke. Der AGENT bekommt
+      # nichts dazu — sales-mcp schreibt hier ohnehin (es erzeugt die
+      # Dateien), sales-dispatch und sales-mail behalten ihr `:ro`.
+      # HOCHGELADEN wird weiterhin NUR nach media/: der Upload-Pfad geht
+      # ueber `medien.wurzel()`, nicht ueber diesen Ordner.
+      - ./media-erzeugt:/media-erzeugt
     ports:
       # Loopback IMMER. Die zweite Zeile bindet den Port zusaetzlich an die
       # Tailscale-Adresse dieses Rechners — ausdruecklich NICHT an 0.0.0.0:
