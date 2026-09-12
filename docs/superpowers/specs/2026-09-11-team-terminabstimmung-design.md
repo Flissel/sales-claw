@@ -66,27 +66,62 @@ Das ist der Angelpunkt des Entwurfs. Es löst drei Fälle mit einer Struktur: di
 freigegebenen Kalender der Kollegen, den eigenen Privatkalender, und später Kunden mit
 einem anderen Anbieter — ohne dass jemand Code anfasst.
 
-**Zwei Wege, wie eine fremde Quelle entsteht:**
+Jede Quelle trägt zusätzlich eine **Art**: `caldav` (der eigene Kalender, schreibend) oder
+`ics` (ein abonnierter fremder Kalender, immer nur lesend).
 
-1. **Entdeckt (Regelfall).** Gibt ein Kollege seinen Kalender frei, erscheint er nach dem
-   Sharing-Standard **im Konto des Empfängers**. Ein `PROPFIND` auf das eigene
-   Kalender-Zuhause findet ihn dann neben dem eigenen. **Niemand tauscht Passwörter.**
-2. **Eingetragen (Rückfall).** Kann ein Anbieter keine Freigaben, lässt sich eine Quelle
-   mit eigenen Zugangsdaten von Hand eintragen.
+**Drei Wege, wie eine fremde Quelle entsteht — Weg 3 ist der Regelfall:**
 
-> **Ungeprüfte Annahme, erster Schritt der Umsetzung:** Dass ein freigegebener Kalender im
-> Konto des Empfängers auftaucht, ist die Mechanik des Standards, und der Server meldet die
-> passenden Fähigkeiten — **gesehen haben wir es nicht**, weil bisher niemand etwas
-> freigegeben hat. Der Plan beginnt deshalb mit einer Freigabe zwischen zwei Konten und der
-> Messung, ob sie erscheint. Erscheint sie nicht, greift Weg 2 und das Vorhaben wächst um
-> die Verwaltung fremder Zugangsdaten.
+1. **Entdeckt.** Gibt ein Kollege **beim selben Anbieter** seinen Kalender frei, erscheint
+   er nach dem Sharing-Standard im Konto des Empfängers; ein `PROPFIND` findet ihn neben dem
+   eigenen. Niemand tauscht Passwörter. Setzt voraus, dass beide Konten auf demselben Server
+   liegen.
+2. **Eingetragen.** Eine Quelle mit eigenen Zugangsdaten von Hand. Rückfall, unerwünscht:
+   fremde Zugangsdaten zu verwalten ist die teuerste aller Varianten.
+3. **Abonniert (Regelfall).** Der Kollege gibt die **geheime iCal-Adresse** seines Kalenders
+   heraus — eine URL, die jeder große Anbieter anbietet (Google: „Geheime Adresse im
+   iCal-Format"; Apple, Outlook, Nextcloud, PrivateEmail entsprechend). Kein Konto, kein
+   Passwort, kein Zugriff auf das Postfach, vom Kollegen jederzeit widerrufbar.
+
+> **Revision 12.09.2026 — gemessen, nicht vermutet.** Dieser Abschnitt hieß bis dahin „zwei
+> Wege" und erklärte Weg 1 zum Regelfall, gestützt auf die Annahme „die Kollegen nutzen
+> auch PrivateEmail". **Die Annahme ist hinfällig:** das erste Teammitglied (Ivan) arbeitet
+> mit einem Google-Konto. Zwischen PrivateEmail und Google gibt es keine CalDAV-Freigabe —
+> das sind zwei Server, die nichts voneinander wissen. Weg 1 bleibt als Abkürzung für
+> Kollegen beim selben Anbieter im Entwurf, ist aber **nicht mehr die Grundlage**, und die
+> Messung „erscheint eine Freigabe im fremden Konto?" ist damit keine Voraussetzung des
+> Vorhabens mehr, sondern eine spätere Bequemlichkeit.
+>
+> Weg 3 trägt stattdessen, und er ist **der einzige anbieterunabhängige**. Er passt zudem
+> besser zur Entkopplung, die dieser Abschnitt ohnehin herstellt: Ob hinter einer Quelle
+> PrivateEmail, Google oder etwas Drittes steht, bleibt der Software gleichgültig.
+>
+> **Was Weg 3 kostet:** Die Adresse ist ein Schlüssel in Form einer URL — wer sie hat, liest
+> den Kalender, bis der Kollege sie zurücksetzt. Sie gehört deshalb behandelt wie ein
+> Passwort (§4).
 
 ### 2.2 Überlappungsprüfung wird personenübergreifend
 
 Heute fragt die Doppelbelegungs-Erkennung: „hat der Betreiber dann schon etwas?"
-Künftig: „hat **die vorgesehene Person** dann schon etwas?"
+Künftig: „haben **alle Beteiligten** dann schon etwas?"
 
-Der Bot schlägt keinen Termin vor, der bei der vorgesehenen Person kollidiert. Findet er
+**Präzisiert am 12.09.2026 auf ausdrücklichen Wunsch des Betreibers** („dass Ivans und
+meiner dann berücksichtigt wird"): Geprüft wird gegen **jede aktive Quelle**, nicht gegen
+eine ausgewählte. Ein Termin, an dem Betreiber und Kollege teilnehmen, ist nur dann frei,
+wenn er in **beiden** Kalendern frei ist. Das ist der ganze Zweck des Vorhabens — eine
+Prüfung, die nur den eigenen Kalender kennt, hat den Betreiber genau dorthin gebracht, wo
+er heute steht.
+
+Daraus folgen zwei Dinge, die leicht übersehen werden:
+
+* **Eine Quelle, die gerade nicht abrufbar ist, darf nicht stillschweigend als „frei"
+  gelten.** Sonst schlägt der Bot ausgerechnet dann Termine vor, wenn er am wenigsten
+  weiß. Ist eine Quelle veraltet oder unerreichbar, sagt er es — und schlägt mit dem
+  Vorbehalt vor, statt ihn zu verschweigen.
+* **Der eigene Privatkalender zählt mit.** Er wird nicht freigegeben (§3 Ziffer 1), aber er
+  ist eine Quelle für die eigene Belegung. Sonst wäre die Trennung in zwei Kalender ein
+  Rückschritt gegenüber heute.
+
+Der Bot schlägt keinen Termin vor, der bei einem der Beteiligten kollidiert. Findet er
 keine freie Zeit, sagt er das — statt einen Vorschlag zu machen, der abgelehnt wird.
 
 ### 2.3 Termine werden als Einladung verschickt
@@ -149,6 +184,37 @@ Termine fehlen.
 
 Das folgt dem Vorbild der WhatsApp-Seite: die Kette zeigen und jede Station belegen.
 
+### 2.7 Der Kollege verbindet seinen Kalender selbst (12.09.2026)
+
+Eine Seite im Tailnet, erreichbar über **einen Link**, den der Betreiber verschickt. Sie
+führt durch drei Schritte:
+
+1. **„Welchen Kalender nutzt du?"** — Google, Apple, Outlook, anderer.
+2. **Der Klickweg für genau diesen Anbieter.** Drei Zeilen für seinen, nicht ein Text für
+   alle.
+3. **Adresse einfügen — die Seite holt sie sofort ab und antwortet im Klartext:** „Passt.
+   Ich sehe 14 Termine, der nächste am Montag um 09:00."
+
+**Schritt 3 ist der Kern, nicht die Zierde.** Der häufigste Fehler ist, die *öffentliche*
+statt der *geheimen* Adresse zu erwischen oder einen Link auf eine Webseite zu kopieren.
+Ohne sofortige Rückmeldung merkt das niemand, und die Sicht bleibt tagelang leer, ohne dass
+jemand weiß warum. Die Seite muss deshalb bei Misserfolg sagen, **was** sie stattdessen
+bekommen hat — nicht „ungültig".
+
+Danach zeigt die Seite nur noch „verbunden, zuletzt gelesen um HH:MM". **Die Adresse wird
+nie wieder angezeigt**, auch nicht dem Betreiber: sie ist ein Schlüssel, kein Anzeigewert.
+
+**Öffentlich erreichbar ist daran nichts.** Die Seite liegt hinter Tailscale, wie die
+übrige Oberfläche. Das unterscheidet sie von der Kundenbuchungsseite
+(`2026-09-11-terminbuchung-kunden-design.md`), die aus dem offenen Netz erreichbar sein
+muss — Kollegen können ins Tailnet, Kunden nicht.
+
+**Eine schmale Rolle `kalender`.** Heute gilt im Code: *„Rolle `lesen` sieht alles und darf
+nichts verändern."* „Alles" heißt sämtliche Kontakte, Entwürfe und den Posteingang — der
+komplette Kundenstamm. Ein Kollege, der nur Termine abgleichen soll, bekommt deshalb eine
+dritte Rolle, die ausschließlich den Kalender und diese Seite sieht. Ohne sie ist Ziffer 2
+in §3 nicht vertretbar.
+
 ---
 
 ## 3. Was der Betreiber einrichtet
@@ -156,12 +222,15 @@ Das folgt dem Vorbild der WhatsApp-Seite: die Kette zeigen und jede Station bele
 1. **Einen zweiten Kalender „Privat" anlegen** und **nicht** freigeben. Solange Privates und
    Geschäftliches in einem Kalender liegen, bedeutet „das Team sieht alles" auch: das Team
    sieht Arzttermine. Das eigene Kalenderprogramm zeigt weiterhin beide übereinander.
-2. **Den Geschäftskalender für die Kollegen freigeben** (Leserecht), und die Kollegen
-   umgekehrt.
-3. **Die entdeckten Quellen benennen** — welcher Kalender gehört zu wem.
+2. **Den Kollegen ins Tailnet holen** und ihm ein Konto mit der Rolle `kalender` geben —
+   damit er die eigene Seite sieht.
+3. **Ihm den Verbindungslink schicken.** Den Rest macht er selbst (§2.7); der Betreiber
+   muss keine Adresse abtippen und keine fremden Zugangsdaten entgegennehmen.
+4. **Die Quelle benennen** — welcher Kalender gehört zu wem.
 
 Schritt 1 ist **nicht optional**: Er ist die Voraussetzung dafür, dass volle Sichtbarkeit
-vertretbar ist.
+vertretbar ist. Dieselbe Empfehlung gilt für den Kollegen — er sollte einen eigenen
+Kalender „Arbeit" abonnierbar machen statt seinen privaten.
 
 ---
 
@@ -185,6 +254,21 @@ Der Betreiber hat „volle Details" ausdrücklich gewählt. Die Alternative — 
 bleibt technisch offen, weil der Server `calendar-availability` kann; sie wäre der
 datensparsame Weg, falls ein Kunde das verlangt.
 
+**Die geheime Kalenderadresse ist ein Geheimnis (12.09.2026, mit Weg 3 in §2.1
+hinzugekommen).** Sie trägt ihre Berechtigung in sich: Wer sie kennt, liest den Kalender
+des Kollegen vollständig, ohne Anmeldung und ohne Spur. Daraus folgt, ohne Ausnahme:
+
+* Sie steht in der Datenbank, **nie** in einem Log, **nie** in einer Fehlermeldung, **nie**
+  in der Oberfläche — auch nicht für den Betreiber. `kalender._ohne_geheimnis()` filtert
+  bereits das CalDAV-Passwort aus Fehlertexten; dieselbe Kante gilt hier.
+* Sie erscheint in **keiner** Sicherung, die das Haus verlässt, ohne dass jemand weiß, dass
+  sie darin steckt — `docs/04_BACKUP_RESTORE.md` ist entsprechend zu ergänzen.
+* Der Kollege muss wissen, dass **er** sie widerrufen kann, und wie. Das gehört auf die
+  Verbindungsseite, nicht in eine Fußnote.
+
+Der Widerruf ist damit beim Kollegen und nicht beim Betreiber — das ist ein Vorzug
+gegenüber ausgetauschten Zugangsdaten, kein Zufall.
+
 ---
 
 ## 5. Nicht im Umfang
@@ -206,13 +290,20 @@ datensparsame Weg, falls ein Kunde das verlangt.
 
 **Am laufenden System gemessen, nicht am Code behauptet.**
 
-1. **Freigabe erscheint** (erster Schritt, entscheidet den weiteren Umfang): Ein Kalender
-   wird zwischen zwei Konten freigegeben; das `PROPFIND` auf das Kalender-Zuhause des
-   Empfängers muss ihn finden.
+1. **Ein Kollege verbindet seinen Kalender selbst** (Torschritt, Revision 12.09.2026): Er
+   öffnet den Link im Tailnet, wählt seinen Anbieter, fügt die geheime Adresse ein — und
+   die Seite antwortet mit der Zahl der gefundenen Termine und dem nächsten davon. Ein
+   falsch kopierter Link (öffentliche Adresse, Webseite) wird **benannt**, nicht bloß
+   abgewiesen. Danach steht die Adresse nirgends mehr auf dem Bildschirm.
 2. **Fremde Termine sichtbar**: Ein Termin im Kalender eines Kollegen erscheint in der
    Team-Sicht mit dessen Namen.
 3. **Keine Kollisionsvorschläge**: Zu einer Zeit, in der der Kollege belegt ist, schlägt der
    Bot keinen Termin vor — und sagt, dass er keine freie Zeit findet.
+3a. **Beide Seiten zählen**: Ein gemeinsamer Termin wird nur vorgeschlagen, wenn er im
+   Kalender des Betreibers **und** in dem des Kollegen frei ist. Gegenprobe in beide
+   Richtungen: je einmal blockiert nur der eine, dann nur der andere.
+3b. **Eine stumme Quelle gilt nicht als frei**: Ist eine Quelle unerreichbar oder veraltet,
+   sagt der Bot es beim Vorschlag — er verschweigt die Lücke nicht.
 4. **Einladung kommt an**: Eine verschickte Einladung erscheint im Kalenderprogramm des
    Empfängers als annehmbare Einladung, nicht als Textmail mit Anhang.
 5. **Zusage wird verstanden**: Nach der Annahme steht der Termin in der Oberfläche als
@@ -223,5 +314,9 @@ datensparsame Weg, falls ein Kunde das verlangt.
 8. **Fremder Anbieter**: Eine Einladung an ein Konto außerhalb des Teams (Kunde) verhält
    sich wie eine gewöhnliche Kalendereinladung.
 
-Prüfung 1 ist der **Torschritt**: Ihr Ergebnis entscheidet, ob der Entwurf in der billigen
-Fassung (§2.1 Weg 1) gebaut wird oder in der teureren (Weg 2).
+Prüfung 1 ist der **Torschritt**. Bis zum 12.09.2026 war das eine andere Prüfung — „taucht
+eine Freigabe im fremden Konto auf?" —, und ihr Ergebnis sollte entscheiden, ob die billige
+oder die teure Fassung gebaut wird. Diese Frage ist weggefallen, weil der erste Kollege bei
+einem anderen Anbieter arbeitet (§2.1). Der neue Torschritt misst dafür etwas Härteres:
+ob ein Mensch, der von ICS nichts weiß, seinen Kalender in drei Schritten verbindet.
+Scheitert er dort, nützt der Rest des Vorhabens nichts.
