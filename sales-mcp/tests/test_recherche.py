@@ -551,7 +551,11 @@ def test_beide_werkzeuge_sind_registriert():
     # 11.09.2026: + termin_einladen (tests/test_termin_einladen.py) — legt
     # eine Terminvorschlag-Einladung als Entwurf an, im Unterschied zu
     # termin_bestaetigen (haelt einen bereits vereinbarten Termin fest).
-    assert len(namen) == len(set(namen)) == 77
+    # 12.09.2026: + Marketings Versandauftraege, 3 Werkzeuge
+    # (tests/test_versandauftrag.py). sales-claw ist seit dem Betreiber-
+    # Entscheid der EINZIGE Versandweg; Marketing schreibt nur noch und
+    # bittet hier um Zustellung.
+    assert len(namen) == len(set(namen)) == 80
 
 # ---------------------------------------------------------------------------
 # Nachbesserungen aus dem Stufe-5-Review (Befunde T1, B2, D2)

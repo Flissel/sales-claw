@@ -10,6 +10,8 @@ Verdrahtung (Werkzeuge, _gesichert, _q) liegt in server.py.
 """
 import json
 
+import sperrliste          # Kennungs-Normalisierung, geteilt mit der Verbotsliste
+
 VORSCHLAG_SCHLUESSEL = "an_marketing"      # enrichment-Schluessel: {proposal_id, am}
 MAX_KANDIDATEN = 500                        # Kappung der DB-Funktion
 
@@ -100,3 +102,81 @@ def kontaktname(from_name: str, from_email: str) -> str:
 def uebergabe_notiz(u: dict) -> str:
     return (f"Marketing-Uebergabe ({u.get('klassifikation', '?')}): {u.get('subject', '')}\n"
             f"Kampagne: {u.get('kampagne') or '(keine)'}\n{u.get('auszug', '')}")
+
+
+# --- Versandauftraege: Marketing bittet, sales-claw entscheidet -------------
+#
+# Betreiber-Entscheid 12.09.2026 — sales-claw wird der EINZIGE Versandweg
+# (Spec vibemind-os/docs/superpowers/specs/2026-09-12-sales-claw-einziger-
+# versandweg.md). Marketing schreibt Text und Unterlage, kennt aber keine
+# lead_id und keine unserer Tore. Es legt deshalb einen AUFTRAG in
+# marketing.versandauftraege; wir holen ihn hier ab und machen daraus
+# hoechstens einen Entwurf — durch dieselben Tore wie jeder andere.
+#
+# Warum das Aufloesen hier und nicht drueben: die Adresse ist alles, was
+# Marketing hat. Welcher Kontakt dazu gehoert, ob er archiviert, privat oder
+# gesperrt ist, steht bei uns. Ein Auftrag ist eine Bitte, kein Befehl.
+
+POST_KANAL = "linkedin_post"          # Beitrag aufs eigene Profil, ohne Empfaenger
+
+
+def versandauftraege_offen(q, limit: int = 20) -> list:
+    """Offene Auftraege ueber die SECURITY-DEFINER-Funktion — sales_app liest
+    marketing.versandauftraege nie direkt."""
+    return q("select id::text as id, kanal, empfaenger, betreff, nachricht, "
+             "medien_datei, kampagne, quelle, seit "
+             "from marketing.versandauftraege_offen(%s)", (int(limit),)) or []
+
+
+def versandauftrag_erledigen(q, auftrag_id: str, status: str,
+                             draft_id: str = "", grund: str = "") -> bool:
+    zeilen = q("select marketing.versandauftrag_erledigen(%s::uuid, %s, %s, %s) as ok",
+               (auftrag_id, status, draft_id or "", grund or ""))
+    return bool((zeilen or [{}])[0].get("ok"))
+
+
+def empfaenger_leads(q, empfaenger: str, *, archiviert: str, privat: str) -> list:
+    """Kontakte zu dieser Adresse — E-Mail exakt, Telefon normalisiert.
+
+    NORMALISIERT WIRD MIT `sperrliste`, nicht mit einer eigenen Regel: dieselbe
+    Funktion, die auch die gemeinsame Verbotsliste befragt. Eine zweite
+    Telefon-Normalisierung waere genau der Fehler, den der Entscheid vom
+    12.09. abschafft — zwei Orte, die auseinanderlaufen koennen.
+
+    Beim Telefon kann SQL nicht normalisiert vergleichen, ohne jede Zeile
+    anzufassen. Darum zwei Stufen: die Datenbank grenzt ueber die letzten
+    acht Ziffern grob ein (Index-freundlich genug bei dieser Groesse), und
+    die genaue Entscheidung faellt hier mit derselben Funktion wie ueberall.
+    `archiviert`/`privat` sind die SQL-Fragmente aus server._archiv_sql /
+    _privat_sql — dieselbe Regel wie ueberall, nie eine eigene.
+    """
+    adresse = (empfaenger or "").strip()
+    ziel_email = sperrliste.kennung_email(adresse)
+    if ziel_email:
+        return q("select id, name, email, phone from leads "
+                 f"where lower(btrim(coalesce(email, ''))) = %s "
+                 f"and not {archiviert} and not {privat} order by created_at asc",
+                 (ziel_email.split(":", 1)[1],)) or []
+
+    ziel_tel = sperrliste.kennung_tel(adresse)
+    if ziel_tel:
+        ziffern = ziel_tel.split("+", 1)[1]
+        roh = q("select id, name, email, phone from leads "
+                r"where regexp_replace(coalesce(phone, ''), '\D', '', 'g') like %s "
+                f"and not {archiviert} and not {privat} order by created_at asc",
+                ("%" + ziffern[-8:],)) or []
+        return [z for z in roh
+                if sperrliste.kennung_tel(z.get("phone") or "") == ziel_tel]
+
+    return []
+
+
+def auftrag_notiz(auftrag: dict) -> str:
+    """Was am Kontakt stehen soll, damit spaeter jemand nachvollziehen kann,
+    woher diese Nachricht kam."""
+    teile = [f"Marketing-Versandauftrag ({auftrag.get('kanal', '?')})"]
+    if auftrag.get("kampagne"):
+        teile.append(f"Kampagne: {auftrag['kampagne']}")
+    if auftrag.get("quelle"):
+        teile.append(f"Quelle: {auftrag['quelle']}")
+    return "\n".join(teile)

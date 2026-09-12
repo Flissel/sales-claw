@@ -6754,9 +6754,141 @@ def uebergabe_ablehnen(uebergabe_id: str, grund: str) -> str:
     return _json({"abgelehnt": True} if ok else {"fehler": f"Keine offene Uebergabe {uebergabe_id}."})
 
 
+# --- Marketings Versandauftraege -------------------------------------------
+#
+# Betreiber-Entscheid 12.09.2026: sales-claw wird der EINZIGE Versandweg
+# (Spec vibemind-os/docs/superpowers/specs/2026-09-12-sales-claw-einziger-
+# versandweg.md). Gemessen wurde davor: Marketing hat NIE etwas zugestellt
+# (campaign_sends/_openfang/_telegram je 0 Zeilen), wir 25 mal. Marketing
+# schreibt jetzt nur noch — den Rest macht dieser Weg.
+#
+# EIN AUFTRAG IST EINE BITTE. Er wird hier zu hoechstens einem Entwurf, und
+# zwar durch dieselben Tore wie jeder andere: entwurf_erstellen prueft
+# Verbotsliste, Loeschantrag, Privat-Flag, UWG-Erstansprache, WhatsApp-
+# Freigabe und Anhang. Faellt er durch, geht der Torfehler WOERTLICH als
+# Grund an Marketing zurueck — dort steht er an der Auftragszeile, und
+# Marketing muss dafuer nichts in sales.* lesen duerfen.
+
+
+def _auftrag_holen(auftrag_id: str):
+    """Einen offenen Auftrag oder None. Die DB-Funktion liefert nur offene —
+    ein erledigter Auftrag ist hier schlicht nicht da."""
+    for a in lead_fluss.versandauftraege_offen(_q, 100):
+        if str(a.get("id")) == str(auftrag_id):
+            return a
+    return None
+
+
+def _auftrag_absagen(auftrag_id: str, grund: str) -> str:
+    """Absage buchen und denselben Grund zurueckgeben — damit der Agent im
+    Chat liest, was Marketing an der Auftragszeile liest."""
+    lead_fluss.versandauftrag_erledigen(_q, auftrag_id, "abgelehnt", "", grund)
+    return _json({"abgelehnt": True, "grund": grund})
+
+
+@_gesichert
+def versandauftraege_pruefen() -> str:
+    """Offene Versandauftraege aus dem Marketing: fertige Texte, die jemand
+    zustellen soll. Im Routinelauf pruefen; uebernehmen mit
+    versandauftrag_uebernehmen, Unpassendes mit versandauftrag_ablehnen und
+    Grund. Nur lesend — hier geht nichts raus.
+
+    Marketing kennt keine Kontakte, nur Adressen. Das Zuordnen, die
+    Einwilligungsfrage und der Versand liegen bei uns."""
+    offen = lead_fluss.versandauftraege_offen(_q, 20)
+    return _json({"offen": len(offen),
+                  "auftraege": [{**a, "seit": str(a.get("seit", ""))} for a in offen]})
+
+
+@_gesichert
+def versandauftrag_uebernehmen(auftrag_id: str) -> str:
+    """Einen Versandauftrag in einen Entwurf verwandeln — mit allen Toren.
+
+    Es wird NICHTS versendet: der Entwurf bleibt 'pending' und wartet auf die
+    Freigabe des Betreibers wie jeder andere.
+
+    Bei den Kanaelen whatsapp/email/linkedin wird die Adresse zuerst einem
+    Kontakt zugeordnet. Gibt es keinen, wird der Auftrag ABGELEHNT und kein
+    Kontakt angelegt: ein frisch angelegter haette consent_status 'unknown'
+    und fiele sofort am UWG-Tor durch — wer hier einen Bestand anlegt,
+    entscheidet der Betreiber, nicht die Maschine (kontakt_anlegen). Passen
+    mehrere Kontakte, wird ebenfalls abgelehnt, mit beiden Namen im Grund.
+
+    Bei linkedin_post entsteht ein Beitrag aufs eigene Profil: kein
+    Empfaenger, kein Kontakt, Thema aus dem Feld betreff."""
+    auftrag = _auftrag_holen(auftrag_id)
+    if not auftrag:
+        return _json({"fehler": f"Kein offener Versandauftrag {auftrag_id}."})
+
+    kanal = (auftrag.get("kanal") or "").strip()
+    text = auftrag.get("nachricht") or ""
+    betreff = auftrag.get("betreff") or ""
+    datei = auftrag.get("medien_datei") or ""
+
+    if kanal == lead_fluss.POST_KANAL:
+        out = json.loads(post_entwurf_erstellen(betreff, text, medien_datei=datei))
+        if "fehler" in out:
+            return _auftrag_absagen(auftrag_id, out["fehler"])
+        ok = lead_fluss.versandauftrag_erledigen(
+            _q, auftrag_id, "angenommen", str(out["draft_id"]), "")
+        return _json({"draft_id": out["draft_id"], "status": out["status"],
+                      "kanal": kanal, "auftrag_erledigt": ok,
+                      "hinweis": "Nicht veroeffentlicht — wartet auf deine Freigabe."})
+
+    treffer = lead_fluss.empfaenger_leads(
+        _q, auftrag.get("empfaenger") or "",
+        archiviert=_archiv_sql("enrichment"), privat=_privat_sql("enrichment"))
+    if not treffer:
+        return _auftrag_absagen(auftrag_id, (
+            f"Kein Kontakt in sales-claw zu {auftrag.get('empfaenger') or '(leer)'} "
+            f"— es entsteht kein Entwurf. Wer hier einen Kontakt anlegt, "
+            f"entscheidet der Betreiber; ohne Einwilligung duerfte ihn ohnehin "
+            f"niemand erstansprechen."))
+    if len(treffer) > 1:
+        namen = ", ".join(str(z.get("name") or z["id"]) for z in treffer[:4])
+        return _auftrag_absagen(auftrag_id, (
+            f"Mehrere Kontakte haengen an {auftrag.get('empfaenger')}: {namen}. "
+            f"Solange unklar ist, wer gemeint ist, entsteht kein Entwurf."))
+
+    lead_id = str(treffer[0]["id"])
+    out = json.loads(entwurf_erstellen(lead_id, kanal, text, betreff=betreff,
+                                       medien_datei=datei))
+    if "fehler" in out:
+        return _auftrag_absagen(auftrag_id, out["fehler"])
+
+    _q("insert into activities (lead_id, type, payload) values (%s, %s, %s) returning id",
+       (lead_id, "versandauftrag_uebernommen",
+        _json({"auftrag_id": auftrag_id, "kanal": kanal,
+               "kampagne": auftrag.get("kampagne", ""),
+               "quelle": auftrag.get("quelle", ""),
+               "draft_id": str(out["draft_id"])})))
+    ok = lead_fluss.versandauftrag_erledigen(
+        _q, auftrag_id, "angenommen", str(out["draft_id"]), "")
+    return _json({"draft_id": out["draft_id"], "status": out["status"],
+                  "lead_id": lead_id, "kanal": kanal, "auftrag_erledigt": ok,
+                  "hinweis": out.get("hinweis", "")})
+
+
+@_gesichert
+def versandauftrag_ablehnen(auftrag_id: str, grund: str) -> str:
+    """Einen Versandauftrag ablehnen — mit Grund (passt nicht, falscher
+    Zeitpunkt, Text stimmt nicht). Der Grund landet bei Marketing an der
+    Auftragszeile."""
+    if not (grund or "").strip():
+        return _json({"fehler": "grund fehlt — eine Ablehnung braucht einen Satz, "
+                                "den Marketing lesen kann."})
+    ok = lead_fluss.versandauftrag_erledigen(_q, auftrag_id, "abgelehnt", "", grund.strip())
+    return _json({"abgelehnt": True} if ok
+                 else {"fehler": f"Kein offener Versandauftrag {auftrag_id}."})
+
+
 WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              wissensbasis_fragen, recherche_an_marketing,
              uebergaben_pruefen, uebergabe_annehmen, uebergabe_ablehnen,
+             # Marketings Versandauftraege (12.09.2026): sales-claw ist der
+             # einzige Versandweg, Marketing schreibt nur noch.
+             versandauftraege_pruefen, versandauftrag_uebernehmen,
+             versandauftrag_ablehnen,
              kontakt_freigeben, kontakt_freigabe_entziehen,
              kontakte_freigegeben,
              # Archivieren statt Loeschen — als CHAT-Werkzeuge, nicht nur in

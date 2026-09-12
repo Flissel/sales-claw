@@ -699,9 +699,14 @@ def test_kontakt_aktualisieren_signatur_ueberlebt_den_dekorator():
     assert list(parameter) == ["lead_id", "feld", "wert"]
 
 
-def test_siebenundsiebzig_werkzeuge_registriert():
+def test_achtzig_werkzeuge_registriert():
     namen = {fn.__name__ for fn in server.WERKZEUGE}
-    assert len(namen) == 77
+    assert len(namen) == 80
+    # Marketings Versandauftraege (12.09.2026): sales-claw ist der einzige
+    # Versandweg, Marketing schreibt nur noch (tests/test_versandauftrag.py).
+    for w in ("versandauftraege_pruefen", "versandauftrag_uebernehmen",
+              "versandauftrag_ablehnen"):
+        assert w in namen
     # 11.09.2026: termin_einladen dazugekommen (tests/test_termin_einladen.py).
     assert "termin_einladen" in namen
     # Wissensbasis (03.09.2026): wissensbasis_fragen (tests/test_wissensbasis.py).
