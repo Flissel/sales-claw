@@ -3677,7 +3677,13 @@ async def kalender_seite(request):
     # Der echte Kalender wird schon hier gelesen (statt erst beim Gitter
     # weiter unten), damit seine Termine VOR dem Aufbau von kommend/vergangen
     # mit den eigenen gepaart werden koennen (Aufgabe 4).
-    fremde, fremd_fehler = kalender.termine_lesen()
+    # Team-Sicht (Aufgabe 6, Spec §2.5): server.belegungen() statt nur des
+    # eigenen `kalender.termine_lesen()` — die Liste traegt jetzt auch die
+    # Termine verbundener Kollegen-Kalender, jeder Eintrag mit dem Namen
+    # seiner Quelle (server.EIGENE_QUELLE fuer den eigenen). Schweigt eine
+    # Quelle, steht sie in `luecken` und wird unten als Hinweis genannt statt
+    # stillschweigend als frei zu gelten (Spec §2.2).
+    eintraege, luecken = server.belegungen()
 
     # Aufgabe 4: dieselbe Buchung steht oft in beiden Quellen — einmal im
     # eigenen Store (mit Kontaktbezug), einmal im CalDAV-Import. Betreiber-
@@ -3697,7 +3703,7 @@ async def kalender_seite(request):
             "quelle": "store", "lead_id": z["lead_id"]})
     importierte_normalisiert = [
         {"titel": t["titel"], "beginn": t["beginn"], "ort": t["ort"],
-         "quelle": "caldav"} for t in fremde]
+         "quelle": "caldav"} for t in eintraege]
     paar_je_index = {p["_index"]: p
                      for p in _termine_paaren(eigene_normalisiert,
                                               importierte_normalisiert)
@@ -3769,7 +3775,7 @@ async def kalender_seite(request):
 
     # --- Das Gitter (01.09.2026): ein Kalender sieht aus wie ein Kalender.
     monat = _monat_lesen(request.query_params.get("monat"), heute)
-    teile = [_monatsgitter(monat, zeilen, fremde)]
+    teile = [_monatsgitter(monat, zeilen, eintraege)]
 
     kopf = ["Datum", "Zeit", "Kontakt", "Thema", "Ort", "Ändern"]
     teile.append(f"<h2>Kommende Termine ({len(kommend)})</h2>")
@@ -3789,20 +3795,32 @@ async def kalender_seite(request):
 
     # Der echte Kalender — nur lesend, und ein Ausfall kostet nur diesen
     # Abschnitt. (Oben im Gitter stehen dieselben Termine.)
-    fehler = fremd_fehler
-    teile.append(f"<h2>Kalender ({len(fremde)})</h2>")
-    if fehler:
-        teile.append(f'<div class="hinweis">{_e(fehler)}</div>')
-    elif not kalender.konfiguration()[0]:
-        teile.append('<p class="meta">Kein Kalender verbunden (CALDAV_URL '
-                     'in der .env).</p>')
-    elif not fremde:
+    # Team-Sicht (Aufgabe 6, Spec §2.5): eine Liste ueber ALLE aktiven
+    # Quellen — den eigenen Kalender (server.EIGENE_QUELLE) UND jeden
+    # verbundenen Kollegen-Kalender —, jeder Eintrag mit dem Namen seiner
+    # Quelle als eigenes Element neben Zeit und Titel: schlicht, wie heute
+    # die Marke "zwei Quellen". Farbliche Unterscheidung und Wochenansicht
+    # sind Stufe 4 der Oberflaechen-Ueberarbeitung (Spec §2.5) — hier
+    # bewusst nicht vorgezogen, damit dort nichts doppelt gebaut wird.
+    teile.append(f"<h2>Kalender ({len(eintraege)})</h2>")
+    if luecken:
+        # Die Huerde steht UEBER der Liste: eine Quelle, die schweigt,
+        # gilt sonst faelschlich als frei (Spec §2.2) — dieselbe Regel, die
+        # `server.belegungen()` schon fuer den Chat (Aufgabe 3/4) durchsetzt,
+        # hier fuer die Oberflaeche. Eine Luecke, die niemand sieht, ist
+        # schlimmer als keine Sicht.
+        wer = "; ".join(f"{_e(l['quelle'])} ({_e(l['grund'])})"
+                        for l in luecken)
+        teile.append(f'<p class="hinweis">Nicht abrufbar: {wer}. Dort '
+                     f'können Termine liegen, die hier fehlen.</p>')
+    if not eintraege:
         teile.append('<p class="meta">Keine Einträge im Zeitfenster.</p>')
     else:
         teile.append(_tabelle(
-            ["Wann", "Titel", "Ort"],
-            [[_zeit(t["beginn"]), _e(t["titel"]), _e(t["ort"])]
-             for t in fremde[:100]]))
+            ["Wann", "Titel", "Ort", "Quelle"],
+            [[_zeit(t["beginn"]), _e(t["titel"]), _e(t["ort"]),
+              f'<span class="badge">{_e(t["quelle"])}</span>']
+             for t in eintraege[:100]]))
 
     if vergangen:
         teile.append(f"<h2>Vergangen ({len(vergangen)})</h2>")
@@ -5270,7 +5288,13 @@ FREIGABE_ARTEN = (("whatsapp", "WhatsApp"), ("linkedin", "LinkedIn"),
 
 def _heute_kalender() -> str:
     """Die naechsten Termine aus dem Kalender (CalDAV), Ortszeit. Ein
-    Lesefehler steht als Satz da — die Startseite faellt nicht mit ihm."""
+    Lesefehler steht als Satz da — die Startseite faellt nicht mit ihm.
+
+    Bleibt bewusst auf `kalender.termine_lesen()` statt `server.belegungen()`
+    (Aufgabe 6, Spec §2.5): die Startseite „Heute" zeigt absichtlich nur den
+    eigenen Tag, nicht die Team-Sicht. Das ist eine Entscheidung, keine
+    Auslassung — die Team-Sicht mit allen Quellen steht auf /kalender.
+    """
     try:
         termine, fehler = kalender.termine_lesen(0, HEUTE_TERMINE_TAGE)
     except Exception as e:
