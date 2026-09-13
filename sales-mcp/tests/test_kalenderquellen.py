@@ -236,6 +236,7 @@ def test_privates_ziel_wird_abgewiesen():
 from datetime import datetime as _dt, timedelta as _td, timezone as _tz  # noqa: E402
 
 _BALD = _dt.now(_tz.utc) + _td(days=5)
+_ALT = _dt.now(_tz.utc) - _td(days=800)
 
 
 def _ics(*vevents: str) -> bytes:
@@ -307,3 +308,33 @@ def test_unlesbare_duration_wird_gezaehlt_und_gemeldet(server_stub):
     assert termine[0]["ende"] == termine[0]["beginn"]
     assert fehler is not None
     assert "unlesbar" in fehler.lower()
+
+
+def test_laengst_beendete_serie_macht_die_quelle_nicht_fuer_immer_zur_luecke(
+        server_stub):
+    """Koordinator-Fix-Runde (13.09.2026): der Serien-Zaehler lief bisher
+    VOR dem Zeitfenster — eine Serie, deren einziger bekannter Anhaltspunkt
+    (Master-DTSTART/-DTEND) vor Jahren lag, machte die Quelle damit
+    DAUERHAFT zur Luecke: termin_konflikte haette fuer sie nie wieder
+    frei: true gemeldet. Jetzt zaehlt nur, was im Fenster liegt."""
+    server_stub.rumpf = _ics(_vevent(
+        "uralte-serie@google", _ALT.strftime("%Y%m%dT%H%M%SZ"),
+        "DTEND:" + (_ALT + _td(hours=1)).strftime("%Y%m%dT%H%M%SZ") + "\r\n"
+        "RRULE:FREQ=WEEKLY;UNTIL=" + (_ALT + _td(days=30)).strftime(
+            "%Y%m%dT%H%M%SZ") + "\r\nSUMMARY:Laengst vorbei\r\n"))
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert termine == []
+    assert fehler is None, fehler
+
+
+def test_laengst_veraltete_unlesbare_dauer_macht_die_quelle_nicht_fuer_immer_zur_luecke(
+        server_stub):
+    """Dieselbe Korrektur fuer unlesbare DURATION: ein Jahre alter Termin
+    mit unlesbarer Dauer soll nicht auf ewig als Luecke gemeldet werden,
+    wenn er laengst ausserhalb jedes Planungsfensters liegt."""
+    server_stub.rumpf = _ics(_vevent(
+        "uralt-seltsam@irgendwer", _ALT.strftime("%Y%m%dT%H%M%SZ"),
+        "DURATION:P2W\r\nSUMMARY:Uralt und komisch\r\n"))
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert termine == []
+    assert fehler is None, fehler

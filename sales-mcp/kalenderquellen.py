@@ -276,13 +276,10 @@ def hole(url: str, tage_zurueck: int = 7, tage_voraus: int = 60):
                                     kalender._ics_tzid(block, "DTSTART"))
         if beginn is None:
             continue
-        if kalender._ics_feld(block, "RRULE"):
-            # K4: nicht entfalten, nicht als einzelnen Termin am ersten
-            # DTSTART durchrutschen lassen — nur zaehlen.
-            serien += 1
-            continue
+        ist_serie = bool(kalender._ics_feld(block, "RRULE"))
         ende = kalender._ics_zeit(kalender._ics_feld(block, "DTEND"),
                                   kalender._ics_tzid(block, "DTEND"))
+        dauer_unlesbar = False
         if not (ende and ende > beginn):
             # Ohne (lesbares) DTEND: DURATION probieren (K4 — RFC 5545
             # erlaubt beides, Apple und manche Outlook-Exporte nutzen es).
@@ -293,17 +290,31 @@ def hole(url: str, tage_zurueck: int = 7, tage_voraus: int = 60):
             else:
                 # Weder DTEND noch (lesbare) DURATION: punktuell. NICHT
                 # geraten: eine erfundene Dauer erzeugte Kollisionen, die es
-                # nicht gibt. Eine vorhandene, aber unlesbare DURATION wird
-                # gezaehlt (K4) statt kommentarlos zu verpuffen.
-                if dauer_wert:
-                    unlesbare_dauer += 1
+                # nicht gibt.
+                dauer_unlesbar = bool(dauer_wert)
                 ende = beginn
-        # Zeitfenster (K2/W1): ein punktueller Termin (ende == beginn)
+        # Zeitfenster (K2/W1) — jetzt VOR dem Serien-/Dauer-Zaehler (Fix
+        # Koordinator, 13.09.2026): eine Serie oder ein unlesbares DURATION
+        # zaehlt nur, wenn IHR eigener Anhaltspunkt (Master-DTSTART/-DTEND)
+        # im Fenster liegt. Vorher zaehlte auch eine vor Jahren beendete
+        # Serie fuer immer als Luecke — termin_konflikte haette fuer eine
+        # solche Quelle NIE WIEDER frei: true gemeldet, und /team/kalender
+        # haette sie fuer immer als Fehler statt mit Terminzahl gezeigt
+        # (kalenderquelle_stand_setzen laesst den Zaehler bei jedem
+        # `fehler` unveraendert). Ein punktueller Termin (ende == beginn)
         # zaehlt, wenn sein Zeitpunkt im Fenster liegt; sonst gilt die
         # Ueberlappung [beginn, ende) mit [von, bis) — dieselbe Regel wie
         # die CalDAV time-range REPORT in kalender.termine_lesen.
         if ende <= von or beginn >= bis:
             continue
+        if ist_serie:
+            # K4: nicht entfalten, nicht als einzelnen Termin am ersten
+            # DTSTART durchrutschen lassen — nur zaehlen (und das erst,
+            # seit gerade eben, nur innerhalb des Fensters).
+            serien += 1
+            continue
+        if dauer_unlesbar:
+            unlesbare_dauer += 1
         termine.append({
             "beginn": beginn,
             "ende": ende,
