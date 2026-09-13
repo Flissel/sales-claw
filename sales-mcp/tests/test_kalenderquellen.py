@@ -35,6 +35,13 @@ _ICS = (
     "SUMMARY:Erster Termin\r\n"
     "LOCATION:Büro\r\n"
     "END:VEVENT\r\n"
+    # Ohne DTEND — Fix-Runde 1, WICHTIG 2: bisher hatten beide Testtermine
+    # ein DTEND, der Rueckfall ende=beginn war nirgends festgenagelt.
+    "BEGIN:VEVENT\r\n"
+    "UID:dritter@google\r\n"
+    "DTSTART;TZID=Europe/Berlin:20261003T080000\r\n"
+    "SUMMARY:Dritter Termin\r\n"
+    "END:VEVENT\r\n"
     "END:VCALENDAR\r\n")
 
 
@@ -47,7 +54,7 @@ class _Stub:
 
 
 @pytest.fixture
-def server_stub():
+def server_stub(monkeypatch):
     stub = _Stub()
 
     class Handler(BaseHTTPRequestHandler):
@@ -65,6 +72,10 @@ def server_stub():
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     stub.url = f"http://127.0.0.1:{httpd.server_address[1]}/privat.ics"
+    # Fix-Runde 1, SSRF-Schluss: `hole()` weist 127.0.0.1 jetzt per Vorgabe ab
+    # (siehe Modulkonstante unten). Der Stub braucht die ausdrueckliche
+    # Freigabe — monkeypatch setzt sie zurueck, sobald der Test endet.
+    monkeypatch.setattr(kalenderquellen, "PRIVATE_ZIELE_ERLAUBT", True)
     yield stub
     httpd.shutdown()
 
@@ -72,7 +83,8 @@ def server_stub():
 def test_termine_werden_gelesen_und_sortiert(server_stub):
     termine, fehler = kalenderquellen.hole(server_stub.url)
     assert fehler is None, fehler
-    assert [t["titel"] for t in termine] == ["Erster Termin", "Zweiter Termin"]
+    assert [t["titel"] for t in termine] == [
+        "Erster Termin", "Zweiter Termin", "Dritter Termin"]
     assert termine[0]["ort"] == "Büro"
     assert termine[0]["uid"] == "erster@google"
 
@@ -83,6 +95,16 @@ def test_ende_wird_gelesen(server_stub):
     termine, _ = kalenderquellen.hole(server_stub.url)
     dauer = termine[0]["ende"] - termine[0]["beginn"]
     assert dauer.total_seconds() == 3600, termine[0]
+
+
+def test_ende_faellt_ohne_dtend_auf_beginn_zurueck(server_stub):
+    """Fix-Runde 1, WICHTIG 2: der Rueckfall ende=beginn ohne DTEND war
+    ungetestet — beide bisherigen Testtermine hatten ein DTEND. Eine
+    erfundene Dauer erzeugte Kollisionen, die es nicht gibt (der eigentliche
+    Grund fuer dieses Modul)."""
+    termine, _ = kalenderquellen.hole(server_stub.url)
+    dritter = next(t for t in termine if t["uid"] == "dritter@google")
+    assert dritter["ende"] == dritter["beginn"], dritter
 
 
 def test_zeiten_sind_zonenbewusst(server_stub):
@@ -131,18 +153,75 @@ def test_nur_http_und_https():
     assert "http" in fehler.lower(), fehler
 
 
-def test_die_adresse_steht_in_keinem_fehlertext():
+def test_kaputte_adresse_wirft_nicht():
+    """Fix-Runde 1, KRITISCH 1: eine unbalancierte eckige Klammer laesst
+    `urllib.parse.urlsplit` mit 'ValueError: Invalid IPv6 URL' werfen —
+    ausserhalb eines Fangnetzes reisst das die aufrufende Seite ab statt
+    eine Meldung zurueckzugeben. hole() wirft nie, auch hier nicht."""
+    termine, fehler = kalenderquellen.hole("http://exa[mple.com/geheim.ics")
+    assert termine == []
+    assert fehler is not None
+
+
+def test_die_adresse_steht_in_keinem_fehlertext(monkeypatch):
     """Spec §4: die Adresse ist ein Geheimnis mit der Berechtigung darin.
-    Ein Fehlertext geht in die Datenbank und auf den Bildschirm."""
+    Ein Fehlertext geht in die Datenbank und auf den Bildschirm.
+
+    Fix-Runde 1, KRITISCH 2: eine `.invalid`-Adresse loest zwar garantiert
+    nicht auf, fragt aber trotzdem den Namensdienst — in einem
+    abgeschotteten CI-Netz ist das fragil, und seit dem SSRF-Schluss prueft
+    `hole()` vor jedem Abruf ohnehin per `socket.getaddrinfo`. Beides wird
+    hier umgangen: die Ziel-Pruefung wird auf 'erlaubt' gestellt und der
+    Verbindungsaufbau selbst wirft direkt — kein Namensdienst, kein Netz."""
     url = "https://calendar.google.invalid/ical/GEHEIM123/basic.ics"
+    monkeypatch.setattr(kalenderquellen, "_ziel_erlaubt", lambda u: (True, None))
+
+    def _wirft(_url):
+        raise TimeoutError("Zeitgrenze ueberschritten")
+
+    monkeypatch.setattr(kalenderquellen, "_antwort_lesen", _wirft)
     _, fehler = kalenderquellen.hole(url)
     assert fehler is not None
     assert "GEHEIM123" not in fehler, fehler
 
 
 def test_ohne_adresse_filtert_auch_teile():
+    """Fix-Runde 1, WICHTIG 1: der bisherige Text enthielt die VOLLSTAENDIGE
+    Adresse — die entfernt schon die erste `.replace(url, ...)`-Zeile in
+    `ohne_adresse`, die Pfad-/Abfrage-Filterung darunter blieb ungeprueft.
+    Hier steht NUR der Pfad, nicht der Host — genau der Fall, fuer den die
+    Pfadfilterung existiert (der Pfad allein genuegt einem Angreifer, der
+    den Host kennt)."""
     url = "https://calendar.google.invalid/ical/GEHEIM123/basic.ics"
-    text = f"Fehler beim Abruf von {url} (Zeitgrenze)"
+    text = "Fehler beim Abruf von /ical/GEHEIM123/basic.ics (Zeitgrenze)"
     sauber = kalenderquellen.ohne_adresse(text, url)
     assert "GEHEIM123" not in sauber
     assert "Zeitgrenze" in sauber
+
+
+def test_private_ziele_sind_per_vorgabe_gesperrt():
+    """Sicherheitskante mit Schalter: der Schalter muss im Code sichtbar
+    UND per Vorgabe AUS sein. Nur die server_stub-Fixture setzt ihn (per
+    monkeypatch, mit automatischem Zuruecksetzen) — produktiv darf er nie
+    an sein."""
+    assert kalenderquellen.PRIVATE_ZIELE_ERLAUBT is False
+
+
+def test_loopback_ziel_wird_abgewiesen():
+    """Ohne diese Kante waere `hole()` mit einer Adresse auf 127.0.0.1 ein
+    Fenster in den eigenen Container — dort haengen Postgres und der
+    MCP-Port im selben Netz (dieselbe SSRF-Klasse wie recherche._ziel_erlaubt,
+    dort Review-Befund S1/S2)."""
+    termine, fehler = kalenderquellen.hole("http://127.0.0.1:9/geheim.ics")
+    assert termine == []
+    assert fehler is not None
+    assert "eigenen Netz" in fehler, fehler
+
+
+def test_privates_ziel_wird_abgewiesen():
+    """10.0.0.0/8 ist kein oeffentlich geroutetes Ziel — genau der Bereich,
+    in dem VM-interne Dienste haengen koennten."""
+    termine, fehler = kalenderquellen.hole("http://10.0.0.1/geheim.ics")
+    assert termine == []
+    assert fehler is not None
+    assert "eigenen Netz" in fehler, fehler
