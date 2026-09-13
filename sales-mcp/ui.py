@@ -476,6 +476,22 @@ class HostWache:
         await self.app(scope, receive, send)
 
 
+# Was die schmale Rolle `kalender` sehen darf. Ergaenzt 12.09.2026: die
+# vorhandene Rolle `lesen` "sieht alles" — das sind saemtliche Kontakte,
+# Entwuerfe und der Posteingang, also der komplette Kundenstamm. Ein
+# Kollege, der nur Termine abgleichen soll, bekommt das nicht.
+# Praefixe, keine Regex: eine Liste, die man vorlesen kann.
+_KALENDER_ROLLE_PFADE = ("/team/kalender", "/kalender", "/logout", "/login")
+
+
+def _pfad_erlaubt(rolle: str, pfad: str) -> bool:
+    """Darf diese Rolle diesen Pfad sehen? Nur `kalender` ist eingeschraenkt."""
+    if rolle != "kalender":
+        return True
+    return any(pfad == p or pfad.startswith(p + "/")
+               for p in _KALENDER_ROLLE_PFADE)
+
+
 class AnmeldeWache:
     """Ohne gueltige Sitzung keine Seite und kein POST — ausser /login.
 
@@ -509,9 +525,17 @@ class AnmeldeWache:
             return
         scope["benutzer_name"] = benutzer["name"]
         scope["benutzer_rolle"] = benutzer["rolle"]
-        if (benutzer["rolle"] == "lesen"
+        if not _pfad_erlaubt(benutzer["rolle"], scope["path"]):
+            antwort = _fehlerseite(
+                403, "Nicht für diese Anmeldung",
+                "Diese Anmeldung sieht den Kalender und die Seite zum "
+                "Verbinden — sonst nichts. Nichts wurde getan.")
+            await antwort(scope, receive, send)
+            return
+        if (benutzer["rolle"] in ("lesen", "kalender")
                 and scope["method"] not in ("GET", "HEAD")
-                and scope["path"] != "/logout"):
+                and scope["path"] not in ("/logout",
+                                          "/team/kalender/verbinden")):
             antwort = _fehlerseite(
                 403, "Nur Lesen",
                 "Diese Anmeldung darf sehen, aber nicht verändern. "
@@ -609,6 +633,7 @@ def _gesichert_seite(fn):
     @functools.wraps(fn)
     async def innen(request):
         _AKTIVER_PFAD.set(request.url.path)
+        _AKTIVE_ROLLE.set(str(request.scope.get("benutzer_rolle") or ""))
         try:
             return await fn(request)
         except psycopg.OperationalError:
@@ -1092,7 +1117,13 @@ _GRUPPEN = (
     ("Aufgaben", (("/", "Heute"), ("/freigaben", "Freigaben"),
                   ("/wiedervorlagen", "Wiedervorlagen"),
                   ("/einordnung", "Einordnung"),
-                  ("/kalender", "Kalender"))),
+                  ("/kalender", "Kalender"),
+                  # Task 5 (12.09.2026): die Seite, ueber die ein Kollege
+                  # seinen Kalender verbindet — nicht nur per Direktlink
+                  # erreichbar, auch aus dem Menue (fuer den Betreiber, der
+                  # Kollegen einrichtet, wie fuer die Rolle `kalender`
+                  # selbst — s. _pfad_erlaubt/_seitenleiste).
+                  ("/team/kalender", "Kalender verbinden"))),
     ("Analyse", (("/kontakte", "Kontakte"), ("/pipeline", "Pipeline"),
                  ("/ergebnisse", "Ergebnisse"),
                  ("/posteingang", "Posteingang"))),
@@ -1104,6 +1135,13 @@ _NAV = tuple(eintrag for _, eintraege in _GRUPPEN for eintrag in eintraege)
 # von der Seitenleiste fuer den aktiven Menuepunkt. Ein ContextVar statt
 # eines Parameters an jeder der ~30 _seite()-Stellen.
 _AKTIVER_PFAD = contextvars.ContextVar("aktiver_pfad", default="")
+# Task 5 (12.09.2026): wer gerade angemeldet ist — dieselbe ContextVar-
+# Technik wie oben, gesetzt von _gesichert_seite. Die Seitenleiste blendet
+# fuer die schmale Rolle `kalender` jeden Menuepunkt aus, den sie ohnehin
+# nicht betreten darf (_pfad_erlaubt): sonst zeigte das Menue Verweise auf
+# Kontakte/Freigaben/Posteingang, die alle in einem 403 enden — die Rolle
+# soll schmal AUSSEHEN, nicht nur schmal SEIN.
+_AKTIVE_ROLLE = contextvars.ContextVar("aktive_rolle", default="")
 # Pfade, deren Zaehler "offen" bedeutet (Achtung-Farbe, wenn > 0).
 _ZAEHLER_OFFEN = ("/", "/freigaben", "/wiedervorlagen", "/einordnung")
 
@@ -1146,16 +1184,26 @@ def _zaehler() -> dict:
 def _seitenleiste(abmelden: str) -> str:
     aktiv = _AKTIVER_PFAD.get()
     zaehler = _zaehler()
+    # Task 5: fuer die schmale Rolle `kalender` bleibt vom Menue nur, was
+    # `_pfad_erlaubt` auch betreten darf — sonst wuerde die Seitenleiste
+    # Verweise auf Kontakte/Freigaben/Posteingang zeigen, die alle in einem
+    # 403 enden. Fuer jede andere Rolle (leer/`lesen`/`freigeben`) liefert
+    # `_pfad_erlaubt` immer True, die Liste bleibt also unveraendert.
+    rolle = _AKTIVE_ROLLE.get()
+    gruppen = tuple(
+        (gruppe, tuple(e for e in eintraege if _pfad_erlaubt(rolle, e[0])))
+        for gruppe, eintraege in _GRUPPEN)
+    gruppen = tuple(g for g in gruppen if g[1])
     teile = ['<nav class="seite"><div class="marke">'
              '<span class="logo">S</span><span>sales-claw</span></div>']
     # Die Gruppe der aktiven Seite: am Handy die einzige, die oben als
     # Zeile bleibt (Schritt 7); ohne Treffer die erste (Aufgaben).
-    gruppe_aktiv = _GRUPPEN[0][0]
-    for gruppe, eintraege in _GRUPPEN:
+    gruppe_aktiv = gruppen[0][0]
+    for gruppe, eintraege in gruppen:
         for pfad, _ in eintraege:
             if pfad == aktiv or (pfad != "/" and aktiv.startswith(pfad + "/")):
                 gruppe_aktiv = gruppe
-    for gruppe, eintraege in _GRUPPEN:
+    for gruppe, eintraege in gruppen:
         marke = " aktiv-gruppe" if gruppe == gruppe_aktiv else ""
         teile.append(f'<div class="gruppe{marke}"><div class="gruppenname">'
                      f'{_e(gruppe)}</div>')
@@ -1177,7 +1225,7 @@ def _seitenleiste(abmelden: str) -> str:
     # verborgen, am Handy fest am unteren Rand. Jeder Tab fuehrt auf die
     # erste Seite seiner Gruppe; der Aufgaben-Tab traegt den Heute-Zaehler.
     teile.append('<nav class="tabs">')
-    for gruppe, eintraege in _GRUPPEN:
+    for gruppe, eintraege in gruppen:
         pfad = eintraege[0][0]
         klasse = "tab aktiv" if gruppe == gruppe_aktiv else "tab"
         zahl = ""
@@ -3827,6 +3875,100 @@ async def aktion_termin_verschieben(request):
     return RedirectResponse("/kalender", status_code=303)
 
 
+# --- Team-Kalender: der Kollege verbindet selbst (Task 5, Spec §2.7) -------
+#
+# Klickwege je Anbieter. Ein Text fuer alle waere hier der Fehler: wer
+# Google nutzt, soll nicht durch vier Absaetze zu Apple lesen muessen.
+_ANBIETER_WEGE = (
+    ("Google Kalender",
+     "Einstellungen → „Einstellungen für meine Kalender“ → deinen Kalender "
+     "wählen → „Kalender integrieren“ → <b>Geheime Adresse im iCal-Format</b>"),
+    ("Apple iCloud",
+     "Kalender-App → Kalender einblenden → beim Kalender auf das Symbol → "
+     "„Öffentlicher Kalender“ aktivieren → Adresse kopieren"),
+    ("Outlook / Microsoft 365",
+     "Einstellungen → Kalender → „Freigegebene Kalender“ → „Kalender "
+     "veröffentlichen“ → Berechtigung „Alle Details“ → <b>ICS-Link</b> kopieren"),
+)
+
+
+@_gesichert_seite
+async def team_kalender(request):
+    """Die Seite, über die ein Kollege seinen Kalender verbindet."""
+    zeilen = []
+    for quelle in server.kalenderquellen_lesen(nur_aktive=False):
+        stand = (f"zuletzt gelesen {_zeit(quelle['zuletzt_gelesen'])}"
+                 if quelle["zuletzt_gelesen"] else "noch nicht gelesen")
+        if quelle["letzter_fehler"]:
+            stand += f" — {_e(quelle['letzter_fehler'])}"
+        elif quelle["termine_zuletzt"] is not None:
+            stand += f", {quelle['termine_zuletzt']} Termine"
+        # Die Adresse steht hier NICHT (Spec §4).
+        zeilen.append([_e(quelle["anzeigename"]), stand])
+    tabelle = (_tabelle(["Name", "Stand"], zeilen) if zeilen else
+               '<p class="meta">Noch kein Kalender verbunden.</p>')
+
+    wege = "".join(
+        f'<details><summary>{_e(name)}</summary><p class="meta">{weg}</p>'
+        f'</details>' for name, weg in _ANBIETER_WEGE)
+
+    formular = (
+        f'<form method="post" action="/team/kalender/verbinden">'
+        f'<input type="hidden" name="csrf" value="{_e(CSRF_TOKEN)}">'
+        f'<label>Dein Name<br><input name="name" required></label>'
+        f'<label>Geheime Kalenderadresse<br>'
+        f'<input name="url" type="text" required '
+        f'placeholder="https://…/basic.ics"></label>'
+        f'<button type="submit">Verbinden und prüfen</button></form>')
+
+    return _seite("Kalender verbinden",
+                  '<h1>Kalender verbinden</h1>'
+                  '<p class="meta">Suche unten deinen Anbieter, hole dir die '
+                  'geheime Adresse und füge sie ein. Es wird sofort geprüft, '
+                  'ob sie stimmt. Du kannst sie bei deinem Anbieter jederzeit '
+                  'zurücksetzen — dann endet der Zugriff sofort.</p>'
+                  + wege + formular + '<h2>Verbunden</h2>' + tabelle)
+
+
+@_gesichert_seite
+async def aktion_kalender_verbinden(request):
+    """Adresse prüfen, dann erst speichern — nie umgekehrt.
+
+    Die sofortige Rückmeldung ist der Kern von §2.7: der häufigste Fehler
+    ist die öffentliche statt der geheimen Adresse, und ohne Prüfung merkt
+    das niemand — die Sicht bliebe tagelang leer.
+    """
+    form = await request.form()
+    if not _csrf_ok(form):
+        return _fehlerseite(403, "Abgewiesen",
+                            "Fehlende oder falsche CSRF-Marke.")
+    name = str(form.get("name") or "").strip()[:80]
+    url = str(form.get("url") or "").strip()
+    if not name:
+        return _fehlerseite(400, "Name fehlt",
+                            "Ohne Namen lässt sich der Kalender später "
+                            "niemandem zuordnen.")
+    termine, fehler = server.kalenderquellen.hole(url)
+    if fehler:
+        return _seite("Kalender verbinden", (
+            f'<h1>Das hat nicht geklappt</h1>'
+            f'<p class="fehler">{_e(fehler)}</p>'
+            f'<p class="meta">Nichts wurde gespeichert.</p>'
+            f'<p><a href="/team/kalender">Zurück und erneut versuchen</a></p>'))
+    server.kalenderquelle_speichern(name, url)
+    naechster = ""
+    if termine:
+        naechster = (f" Der nächste ist „{_e(termine[0]['titel'])}" + '" am '
+                     f"{_zeit(termine[0]['beginn'])}.")
+    return _seite("Kalender verbunden", (
+        f'<h1>Passt</h1>'
+        f'<p>Ich sehe {len(termine)} Termin{"e" if len(termine) != 1 else ""} '
+        f'in deinem Kalender.{naechster}</p>'
+        f'<p class="meta">Die Adresse ist gespeichert und wird ab jetzt nicht '
+        f'mehr angezeigt.</p>'
+        f'<p><a href="/team/kalender">Zur Übersicht</a></p>'))
+
+
 _MONATSNAMEN = ("Januar", "Februar", "März", "April", "Mai", "Juni", "Juli",
                 "August", "September", "Oktober", "November", "Dezember")
 _WOCHENTAGE = ("Mo", "Di", "Mi", "Do", "Fr", "Sa", "So")
@@ -5396,6 +5538,9 @@ app = Starlette(routes=[
     Route("/kalender", kalender_seite),
     Route("/kalender/absagen", aktion_termin_absagen, methods=["POST"]),
     Route("/kalender/verschieben", aktion_termin_verschieben,
+          methods=["POST"]),
+    Route("/team/kalender", team_kalender),
+    Route("/team/kalender/verbinden", aktion_kalender_verbinden,
           methods=["POST"]),
     Route("/whatsapp", whatsapp),
     Route("/kontakte/wiederherstellen", aktion_kontakt_wiederherstellen,

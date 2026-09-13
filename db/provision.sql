@@ -96,10 +96,13 @@ begin
       )$ddl$, s);
     -- E1 (31.08.2026): UI-Anmeldung. Kein DELETE — Offboarding ist
     -- aktiv=false, der Name bleibt fuer approved_by-Nachweise lesbar.
+    -- Rolle 'kalender' (12.09.2026): schmaler Zugang fuer einen Kollegen,
+    -- der nur seinen Kalender verbindet — sieht NICHT, was 'lesen' sieht
+    -- (Kontakte, Entwuerfe, Posteingang), siehe ui._pfad_erlaubt.
     execute format($ddl$
       create table if not exists %I.benutzer (
         name text primary key check (name !~ '[|:]' and name <> ''),
-        rolle text not null check (rolle in ('lesen','freigeben')),
+        rolle text not null check (rolle in ('lesen','freigeben','kalender')),
         passwort_hash text not null,
         aktiv boolean not null default true,
         created_at timestamptz not null default now()
