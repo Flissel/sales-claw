@@ -3989,7 +3989,11 @@ async def aktion_kalender_verbinden(request):
         return _fehlerseite(400, "Name fehlt",
                             "Ohne Namen lässt sich der Kalender später "
                             "niemandem zuordnen.")
-    termine, fehler = server.kalenderquellen.hole(url)
+    # Zeitfenster wie server.belegungen()s Vorgabe (K2/W1, Schlusspruefung
+    # 13.09.2026): dieselbe Zahl, die die Sicht auf /kalender spaeter fuer
+    # dieselbe Quelle zeigt — sonst meldet die Sofortpruefung hier "1.284
+    # Termine" (die ganze Historie) und die spaetere Sicht etwas anderes.
+    termine, fehler = server.kalenderquellen.hole(url, 0, 60)
     if fehler:
         return _seite("Kalender verbinden", (
             f'<h1>Das hat nicht geklappt</h1>'

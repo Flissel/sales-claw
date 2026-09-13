@@ -40,7 +40,7 @@ def _t(tag, stunde):
 
 def test_fremde_quelle_erscheint_mit_namen(monkeypatch):
     server.kalenderquelle_speichern("Ivan", "https://example.test/a.ics")
-    monkeypatch.setattr(kalenderquellen, "hole", lambda url: ([
+    monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: ([
         {"beginn": _t(1, 9), "ende": _t(1, 10), "titel": "Kundentermin",
          "ort": "", "uid": "x"}], None))
     eintraege, luecken = server.belegungen()
@@ -55,7 +55,7 @@ def test_eigener_und_fremder_kalender_zusammen(monkeypatch):
         {"beginn": _t(1, 14), "ende": _t(1, 15), "titel": "Eigener",
          "ort": "", "uid": "e"}], None))
     server.kalenderquelle_speichern("Ivan", "https://example.test/a.ics")
-    monkeypatch.setattr(kalenderquellen, "hole", lambda url: ([
+    monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: ([
         {"beginn": _t(1, 9), "ende": _t(1, 10), "titel": "Ivans",
          "ort": "", "uid": "i"}], None))
     eintraege, _ = server.belegungen()
@@ -68,7 +68,7 @@ def test_unerreichbare_quelle_wird_als_luecke_gemeldet(monkeypatch):
     Bot ausgerechnet dann Termine vor, wenn er am wenigsten weiss."""
     server.kalenderquelle_speichern("Ivan", "https://example.test/a.ics")
     monkeypatch.setattr(kalenderquellen, "hole",
-                        lambda url: ([], "Nicht erreichbar (TimeoutError)."))
+                        lambda url, *a, **k: ([], "Nicht erreichbar (TimeoutError)."))
     eintraege, luecken = server.belegungen()
     assert eintraege == []
     assert len(luecken) == 1
@@ -78,7 +78,7 @@ def test_unerreichbare_quelle_wird_als_luecke_gemeldet(monkeypatch):
 
 def test_der_stand_wird_festgehalten(monkeypatch):
     qid = server.kalenderquelle_speichern("Ivan", "https://example.test/a.ics")
-    monkeypatch.setattr(kalenderquellen, "hole", lambda url: ([
+    monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: ([
         {"beginn": _t(1, 9), "ende": _t(1, 10), "titel": "A", "ort": "",
          "uid": "x"}], None))
     server.belegungen()
@@ -99,7 +99,7 @@ def test_fehlerfall_wird_in_der_datenbank_festgehalten(monkeypatch):
     letzte bekannte Zahl nicht wegwischt (Aufgabe 1 hat das nur isoliert an
     kalenderquelle_stand_setzen geprueft, nie ueber belegungen())."""
     qid = server.kalenderquelle_speichern("Ivan", "https://example.test/a.ics")
-    monkeypatch.setattr(kalenderquellen, "hole", lambda url: ([
+    monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: ([
         {"beginn": _t(1, 9), "ende": _t(1, 10), "titel": "A", "ort": "",
          "uid": "x"}], None))
     server.belegungen()
@@ -109,7 +109,7 @@ def test_fehlerfall_wird_in_der_datenbank_festgehalten(monkeypatch):
     assert alter_zeitpunkt is not None
 
     monkeypatch.setattr(kalenderquellen, "hole",
-                        lambda url: ([], "Nicht erreichbar (TimeoutError)."))
+                        lambda url, *a, **k: ([], "Nicht erreichbar (TimeoutError)."))
     server.belegungen()
     q = [z for z in server.kalenderquellen_lesen() if z["id"] == qid][0]
     assert q["letzter_fehler"] == "Nicht erreichbar (TimeoutError)."
@@ -126,7 +126,7 @@ def test_inaktive_quelle_wird_nicht_abgerufen(monkeypatch):
         conn.execute("update sales_test.kalender_quellen set aktiv = false")
     gerufen = []
     monkeypatch.setattr(kalenderquellen, "hole",
-                        lambda url: gerufen.append(url) or ([], None))
+                        lambda url, *a, **k: gerufen.append(url) or ([], None))
     eintraege, luecken = server.belegungen()
     assert gerufen == []
     assert eintraege == [] and luecken == []

@@ -2417,7 +2417,12 @@ def belegungen(tage_voraus: int = 60):
         eintraege.append({**t, "quelle": EIGENE_QUELLE})
 
     for quelle in kalenderquellen_lesen():
-        termine, fehler = kalenderquellen.hole(quelle["url"])
+        # Dasselbe Fenster wie beim eigenen Kalender oben (K2/W1,
+        # Schlusspruefung 13.09.2026): `tage_zurueck=0` hier explizit statt
+        # `hole()`s eigener Vorgabe (7) ueberlassen — sonst haette „die
+        # Termine" in belegungen() zwei verschiedene Auffassungen je nach
+        # Quelle, genau die Fuge, vor der der Pruefbericht warnt.
+        termine, fehler = kalenderquellen.hole(quelle["url"], 0, tage_voraus)
         kalenderquelle_stand_setzen(
             quelle["id"], None if fehler else len(termine), fehler)
         if fehler:

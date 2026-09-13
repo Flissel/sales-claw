@@ -39,6 +39,7 @@ import socket
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta, timezone
 
 import kalender
 
@@ -171,12 +172,26 @@ def _sieht_aus_wie_kalender(text: str) -> bool:
     return "BEGIN:VCALENDAR" in text[:2000].upper()
 
 
-def hole(url: str):
+def hole(url: str, tage_zurueck: int = 7, tage_voraus: int = 60):
     """Eine abonnierte Adresse abrufen -> (termine, fehler).
 
-    `termine` = [{"beginn", "ende", "titel", "ort", "uid"}], aufsteigend.
-    Wirft nie: eine unerreichbare Quelle darf keine Seite und keinen
-    Werkzeugaufruf kosten, sie kostet nur ihre eigenen Termine.
+    `termine` = [{"beginn", "ende", "titel", "ort", "uid"}], aufsteigend,
+    auf ein Zeitfenster begrenzt. Wirft nie: eine unerreichbare Quelle darf
+    keine Seite und keinen Werkzeugaufruf kosten, sie kostet nur ihre
+    eigenen Termine.
+
+    Zeitfenster (K2/W1, Schlusspruefung 13.09.2026): OHNE dieses Fenster
+    kommt jede Vergangenheit eines Google-/Apple-/Outlook-Feeds ungefiltert
+    mit, und der aufsteigend sortierte erste Eintrag ist der AELTESTE
+    Termin des ganzen Abonnements statt „der naechste" — gemessen genau an
+    dem Satz, den ein Kollege beim Verbinden zuerst liest ("Der naechste
+    ist ..."). Signatur bewusst wie `kalender.termine_lesen(tage_zurueck,
+    tage_voraus)`: zwei verschiedene Auffassungen davon, was „die Termine"
+    sind, waeren der naechste Fehler. Die Ueberlappungsregel spiegelt die
+    CalDAV time-range REPORT, mit der `termine_lesen` filtert (RFC 4791
+    §9.9): ein Termin zaehlt, wenn sein Intervall [beginn, ende) das
+    Fenster [von, bis) ueberschneidet; ein punktueller Termin (ende ==
+    beginn, siehe unten) zaehlt, wenn sein Zeitpunkt im Fenster liegt.
     """
     url = (url or "").strip()
     erlaubt, grund = _ziel_erlaubt(url)
@@ -211,6 +226,10 @@ def hole(url: str):
                     "geheime Adresse im iCal-Format, sie endet meist auf "
                     "'.ics'.")
 
+    jetzt = datetime.now(timezone.utc)
+    von = jetzt - timedelta(days=tage_zurueck)
+    bis = jetzt + timedelta(days=tage_voraus)
+
     termine = []
     for teil in text.split("BEGIN:VEVENT")[1:]:
         block = teil.split("END:VEVENT", 1)[0]
@@ -220,11 +239,18 @@ def hole(url: str):
             continue
         ende = kalender._ics_zeit(kalender._ics_feld(block, "DTEND"),
                                   kalender._ics_tzid(block, "DTEND"))
+        # Ohne DTEND gilt der Termin als punktuell. NICHT geraten: eine
+        # erfundene Dauer erzeugte Kollisionen, die es nicht gibt.
+        ende = ende if ende and ende > beginn else beginn
+        # Zeitfenster (K2/W1): ein punktueller Termin (ende == beginn)
+        # zaehlt, wenn sein Zeitpunkt im Fenster liegt; sonst gilt die
+        # Ueberlappung [beginn, ende) mit [von, bis) — dieselbe Regel wie
+        # die CalDAV time-range REPORT in kalender.termine_lesen.
+        if ende <= von or beginn >= bis:
+            continue
         termine.append({
             "beginn": beginn,
-            # Ohne DTEND gilt der Termin als punktuell. NICHT geraten: eine
-            # erfundene Dauer erzeugte Kollisionen, die es nicht gibt.
-            "ende": ende if ende and ende > beginn else beginn,
+            "ende": ende,
             "titel": kalender._ics_feld(block, "SUMMARY")[:200],
             "ort": kalender._ics_feld(block, "LOCATION")[:120],
             "uid": kalender._ics_feld(block, "UID")[:120]})

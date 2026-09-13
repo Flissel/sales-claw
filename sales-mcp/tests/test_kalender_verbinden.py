@@ -1,5 +1,6 @@
 """Der Kollege verbindet selbst — Spec §2.7, Pruefung 1 (Torschritt)."""
 import os
+from datetime import datetime, timedelta, timezone
 
 import psycopg
 import pytest
@@ -92,24 +93,79 @@ def test_seite_erklaert_den_weg_je_anbieter():
     assert "Geheime Adresse im iCal-Format" in seite
 
 
+class _FakeAntwort:
+    """Attrappe fuer kalenderquellen._antwort_lesen: laesst das ECHTE
+    hole() parsen und fenstern, ohne Netz zu brauchen (Muster:
+    test_kalenderquellen.py::test_die_adresse_steht_in_keinem_fehlertext)."""
+
+    def __init__(self, daten: bytes):
+        self._daten = daten
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self, n):
+        return self._daten[:n]
+
+
+def _ics_zwei_termine(alt_beginn, alt_ende, zuk_beginn, zuk_ende) -> bytes:
+    fmt = "%Y%m%dT%H%M%SZ"
+    return (
+        "BEGIN:VCALENDAR\r\n"
+        "VERSION:2.0\r\n"
+        "BEGIN:VEVENT\r\n"
+        "UID:uralt@test\r\n"
+        f"DTSTART:{alt_beginn.strftime(fmt)}\r\n"
+        f"DTEND:{alt_ende.strftime(fmt)}\r\n"
+        "SUMMARY:Uralter Termin\r\n"
+        "END:VEVENT\r\n"
+        "BEGIN:VEVENT\r\n"
+        "UID:kuenftig@test\r\n"
+        f"DTSTART:{zuk_beginn.strftime(fmt)}\r\n"
+        f"DTEND:{zuk_ende.strftime(fmt)}\r\n"
+        "SUMMARY:Kuenftiger Termin\r\n"
+        "END:VEVENT\r\n"
+        "END:VCALENDAR\r\n").encode("utf-8")
+
+
 def test_verbinden_meldet_die_zahl_der_termine(monkeypatch):
-    """Der Kern von §2.7: sofortige Rueckmeldung im Klartext."""
-    monkeypatch.setattr(kalenderquellen, "hole", lambda url: ([
-        {"beginn": __import__("datetime").datetime(2026, 10, 1, 9,
-         tzinfo=__import__("datetime").timezone.utc),
-         "ende": __import__("datetime").datetime(2026, 10, 1, 10,
-         tzinfo=__import__("datetime").timezone.utc),
-         "titel": "A", "ort": "", "uid": "x"}], None))
+    """Der Kern von §2.7: sofortige Rueckmeldung im Klartext.
+
+    K2 (Schlusspruefung 13.09.2026): der bisherige Test stubbte `hole()`
+    komplett und lieferte GENAU EINEN kuenftigen Termin — der aelteste war
+    darin zufaellig auch der naechste, und der eigentliche Fehler (hole()
+    ohne Zeitfenster liefert den AELTESTEN Termin der GANZEN Historie als
+    "naechsten") blieb unsichtbar. Hier laeuft das ECHTE hole() (nur das
+    Netz ist ersetzt, ueber _antwort_lesen) mit einem ueber 5 Jahre alten
+    Termin UND einem kuenftigen — vor dem Fix waere "Uralter Termin" der
+    gemeldete "naechste" gewesen (aufsteigend sortiert, kein Fenster).
+    """
+    jetzt = datetime.now(timezone.utc)
+    monkeypatch.setattr(kalenderquellen, "_ziel_erlaubt",
+                        lambda url: (True, None))
+    monkeypatch.setattr(kalenderquellen, "_antwort_lesen", lambda url: (
+        _FakeAntwort(_ics_zwei_termine(
+            jetzt - timedelta(days=2000),
+            jetzt - timedelta(days=2000) + timedelta(hours=1),
+            jetzt + timedelta(days=10),
+            jetzt + timedelta(days=10, hours=1)))))
     antwort = _post({"name": "Ivan", "url": "https://example.test/a.ics",
                      "csrf": ui.CSRF_TOKEN})
     assert antwort.status_code == 200, antwort.text
+    # Nur der kuenftige Termin liegt im Fenster — die Zahl bezieht sich auf
+    # dasselbe Fenster, das /kalender spaeter benutzt (K2-Ruling).
     assert "1 Termin" in antwort.text
+    assert "Uralter Termin" not in antwort.text
+    assert "Kuenftiger Termin" in antwort.text
     assert server.kalenderquellen_lesen()[0]["anzeigename"] == "Ivan"
 
 
 def test_falscher_link_wird_benannt_nicht_nur_abgewiesen(monkeypatch):
     """Der haeufigste Bedienfehler. 'Ungueltig' hilft niemandem weiter."""
-    monkeypatch.setattr(kalenderquellen, "hole", lambda url: (
+    monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: (
         [], "Dort liegt kein Kalender, sondern eine Webseite."))
     antwort = _post({"name": "Ivan", "url": "https://example.test/",
                      "csrf": ui.CSRF_TOKEN})
@@ -122,7 +178,7 @@ def test_die_adresse_erscheint_nach_dem_speichern_nirgends(monkeypatch):
     """Spec §4: sie ist ein Schluessel, kein Anzeigewert — auch nicht fuer
     den Betreiber."""
     geheim = "https://calendar.google.com/ical/GEHEIM123/basic.ics"
-    monkeypatch.setattr(kalenderquellen, "hole", lambda url: ([], None))
+    monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: ([], None))
     antwort = _post({"name": "Ivan", "url": geheim, "csrf": ui.CSRF_TOKEN})
     # Gegenprobe (Pruefer, Fix-Runde 1): "die Adresse steht nirgends" haelt
     # auch dann, wenn das Speichern klanglos scheitert — dann steht ja
@@ -143,7 +199,7 @@ def test_ohne_csrf_passiert_nichts():
 
 
 def test_leerer_name_wird_abgewiesen(monkeypatch):
-    monkeypatch.setattr(kalenderquellen, "hole", lambda url: ([], None))
+    monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: ([], None))
     antwort = _post({"name": "  ", "url": "https://example.test/a.ics",
                      "csrf": ui.CSRF_TOKEN})
     assert antwort.status_code == 400
@@ -168,7 +224,7 @@ def test_db_fehler_beim_speichern_traegt_die_adresse_nicht_nach_aussen(
     Fehlerseite tragen — auch nicht ueber die DB-Fehlermeldung (DETAIL
     einer Unique-Verletzung nennt z.B. den Wert der Spalte)."""
     geheim = "https://calendar.google.com/ical/GEHEIM999/basic.ics"
-    monkeypatch.setattr(kalenderquellen, "hole", lambda url: ([], None))
+    monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: ([], None))
 
     def _wirft(name, url):
         raise psycopg.errors.UniqueViolation(
@@ -214,7 +270,7 @@ def test_end_zu_end_anmeldung_rolle_kalender(scharf, monkeypatch):
 
     # Verbinden per POST funktioniert trotz der allgemeinen Schreibsperre
     # fuer diese Rolle — die eine Ausnahme, die ihr gehoert.
-    monkeypatch.setattr(kalenderquellen, "hole", lambda url: ([], None))
+    monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: ([], None))
     verbunden = client.post(
         "/team/kalender/verbinden",
         data={"name": "Ivan", "url": "https://example.test/a.ics",
