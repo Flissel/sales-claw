@@ -3813,7 +3813,20 @@ async def kalender_seite(request):
                         for l in luecken)
         teile.append(f'<p class="hinweis">Nicht abrufbar: {wer}. Dort '
                      f'können Termine liegen, die hier fehlen.</p>')
-    if not eintraege:
+    if (not eintraege and not luecken and not kalender.konfiguration()[0]
+            and not server.kalenderquellen_lesen()):
+        # Ehrlich statt leer (Betreiber-Frage nach dem entfernten
+        # CALDAV_URL-Tor, Aufgabe 6 Fix-Runde 1): „nichts konfiguriert" sah
+        # sonst genauso aus wie „alles konfiguriert, gerade nur nichts los"
+        # — die Seite WEISS, dass keine einzige Quelle angeschlossen ist,
+        # und darf das nicht verschweigen. `kalenderquellen_lesen()` liefert
+        # die geheime Adresse mit, hier wird nur ihre Anzahl (leer/nicht
+        # leer) benutzt, nie angezeigt.
+        teile.append('<p class="meta">Kein Kalender verbunden — weder der '
+                     'eigene (CALDAV_URL in der .env) noch ein '
+                     'Kollegen-Kalender (siehe <a href="/team/kalender">'
+                     'Kalender verbinden</a>).</p>')
+    elif not eintraege:
         teile.append('<p class="meta">Keine Einträge im Zeitfenster.</p>')
     else:
         teile.append(_tabelle(

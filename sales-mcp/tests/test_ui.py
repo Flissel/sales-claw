@@ -3235,7 +3235,13 @@ def test_monatsgitter_blaettert_vor_und_zurueck():
 
 def test_monatsgitter_zeigt_auch_die_kalendertermine(monkeypatch):
     from datetime import datetime, timezone
-    monkeypatch.setattr(ui.kalender, "termine_lesen", lambda **k: ([{
+    # Aufgabe 6 (Team-Sicht): kalender_seite() ruft seither server.
+    # belegungen(), das termine_lesen() mit ZWEI Stellungsargumenten
+    # aufruft (tage_zurueck, tage_voraus) statt der frueheren Null-Argument-
+    # Aufrufstelle hier. Nur die Attrappen-SIGNATUR wird geweitet (wie die
+    # anderen Attrappen im Baum, z.B. test_kalender_zeit.py), die
+    # Zusicherung unten bleibt unveraendert.
+    monkeypatch.setattr(ui.kalender, "termine_lesen", lambda *a, **k: ([{
         "beginn": datetime(2099, 9, 11, 8, 30, tzinfo=timezone.utc),
         "titel": "Fremder Termin", "ort": "Zoom", "uid": "x"}], None))
     seite = _get("/kalender?monat=2099-09").text

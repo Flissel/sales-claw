@@ -232,12 +232,13 @@ def test_kuerzerer_titel_als_vollstaendiges_praefix_wird_gepaart():
 # Die CalDAV-Quelle wird deshalb hier ersetzt statt weggelassen.
 #
 # Das ersetzt nur den Rueckgabewert von termine_lesen(), NICHT die
-# Konfiguration selbst: kalender_seite() prueft an anderer Stelle separat
-# `kalender.konfiguration()[0]` (ui.py:3643) — das liest CALDAV_URL/-USER/
-# -PASSWORT direkt aus der Umgebung und ist vom Monkeypatch hier unberuehrt.
-# Deshalb zeigt die Seite trotz nicht-leerer Attrappe weiterhin „Kein
-# Kalender verbunden" statt der rohen „Kalender (N)"-Tabelle — siehe die
-# genauere Erklaerung unten bei der Zaehl-Pruefung.
+# Konfiguration selbst: `kalender.konfiguration()[0]` liest CALDAV_URL/
+# -USER/-PASSWORT direkt aus der Umgebung und ist vom Monkeypatch hier
+# unberuehrt (in dieser Umgebung nicht gesetzt). Bis Aufgabe 6 pruefte
+# `kalender_seite()` genau diesen Wert VOR der rohen „Kalender (N)"-Tabelle
+# und blendete sie deshalb hier aus — seit Aufgabe 6 (Team-Sicht,
+# `server.belegungen()`) ist dieses Tor weg und die Tabelle rendert auch
+# hier mit; siehe die genauere Erklaerung unten bei der Zaehl-Pruefung.
 
 def test_zwei_quellen_zeigt_hinweis_und_beide_orte(monkeypatch):
     """Wired: die Kalenderseite zeigt EINE Zeile mit dem Hinweis
@@ -275,32 +276,43 @@ def test_zwei_quellen_zeigt_hinweis_und_beide_orte(monkeypatch):
     # Praeziser (Fix-Runde 3 — der Grund war zuvor falsch benannt): die
     # separate rohe „Kalender"-Tabelle (reine CalDAV-Liste, `t["titel"]`
     # UNGEKUERZT) rendert hier NICHT etwa, weil termine_lesen() oben leer
-    # waere — die Attrappe liefert bewusst einen echten Eintrag. Sie bleibt
-    # aus, weil kalender_seite() VOR dieser Tabelle separat
-    # `kalender.konfiguration()[0]` prueft (ui.py:3643) — das liest
-    # CALDAV_URL/-USER/-PASSWORT direkt aus der Prozessumgebung, unabhaengig
-    # vom `termine_lesen`-Ruecklauf, und ist in dieser Umgebung nicht
-    # gesetzt. Deshalb bleibt genau EIN Ort uebrig, an dem eine doppelt
-    # gerenderte BUCHUNG als doppelte Tabellenzeile sichtbar wuerde: die
-    # Kommende/Vergangen-Tabelle (die vom Monatsgitter unabhaengige
-    # „Liste"). Das Gitter selbst zeigt fuer einen gepaarten Termin
-    # ABSICHTLICH zwei Kaestchen (eigene + CalDAV-Quelle, Aufgabe 4) — das
-    # ist keine Dopplung, sondern Design, und wird hier bewusst nicht
-    # mitgezaehlt (das Gitter ist `<div>`-basiert, `<tr>` kommt dort nicht
-    # vor).
+    # waere — die Attrappe liefert bewusst einen echten Eintrag. Sie blieb
+    # BIS AUFGABE 6 aus, weil kalender_seite() VOR dieser Tabelle separat
+    # `kalender.konfiguration()[0]` pruefte — CALDAV_URL/-USER/-PASSWORT
+    # direkt aus der Prozessumgebung, unabhaengig vom `termine_lesen`-
+    # Ruecklauf, und in dieser Umgebung nicht gesetzt.
     #
-    # Wichtig fuer spaeter: diese Zaehlung `== 1` haengt an genau dieser
-    # Konfigurationssperre. Faellt `kalender.konfiguration()[0]` weg (oder
-    # wird hier zusaetzlich gemockt, sodass sie erfuellt ist), rendert die
-    # rohe „Kalender"-Tabelle MIT — leer nachgemessen: ein zweites,
-    # LEGITIMES `<tr>` mit demselben Volltext kommt hinzu, `len(treffer)`
-    # steigt von 1 auf 2, und dieser Test schlaegt fehl, OHNE dass irgendein
-    # Bug vorliegt. Wer `konfiguration()` in `kalender_seite` aendert oder
-    # entfernt, muss diese Zaehlung dann auf die Kommende/Vergangen-Tabelle
-    # einschraenken (statt auf alle `<tr>` der Seite), sonst verliert der
-    # Test entweder seine Trennschaerfe oder faengt sich einen falschen
-    # Fehlschlag ein.
-    zeilen_html = re.findall(r"<tr>.*?</tr>", seite, flags=re.S)
+    # AUFGABE 6 (Team-Sicht, Fix-Runde 1 — Auftraggeber-Entscheidung nach
+    # Pruefung): genau dieses Tor ist jetzt weg, ABSICHTLICH — sonst bliebe
+    # der Kalender eines Kollegen unsichtbar, nur weil der Betreiber selbst
+    # kein CalDAV eingerichtet hat. Die rohe „Kalender"-Tabelle zeigt seither
+    # ALLE Quellen aus `server.belegungen()` und rendert deshalb jetzt AUCH
+    # HIER — mit einer zweiten Zeile fuer denselben Termin. Das ist KEINE
+    # Doppelrenderung, sondern genau das Design aus Aufgabe 4 (beide Quellen
+    # bleiben Wahrheit, „zwei Quellen"-Marke), jetzt nur an einer
+    # zusaetzlichen Anzeigestelle sichtbar. Die Zaehlung wird deshalb — wie
+    # hier vorher schon als Vorgabe fuer genau diesen Fall festgehalten —
+    # auf die Kommende/Vergangen-Tabelle eingeschraenkt statt auf alle `<tr>`
+    # der Seite; die eigentliche Zusicherung (keine Doppelrenderung
+    # INNERHALB dieser Liste) bleibt unveraendert. Das Monatsgitter zeigt
+    # fuer einen gepaarten Termin weiterhin ABSICHTLICH zwei Kaestchen
+    # (eigene + CalDAV-Quelle, Aufgabe 4) — keine Dopplung, sondern Design,
+    # und zaehlt hier ohnehin nicht mit (`<div>`-basiert, kein `<tr>`).
+    def _abschnitt(praefix: str) -> str:
+        """Nur der Text zwischen einer <h2>-Ueberschrift (Praefix reicht,
+        die Zahl in Klammern schwankt) und der naechsten — damit die seit
+        Aufgabe 6 zusaetzlich renderende "Kalender"-Tabelle (alle Quellen)
+        nicht mitgezaehlt wird."""
+        beginn = seite.find(praefix)
+        if beginn == -1:
+            return ""
+        ende = seite.find("<h2>", beginn + len(praefix))
+        return seite[beginn:ende if ende != -1 else len(seite)]
+
+    kommend_und_vergangen = (_abschnitt("<h2>Kommende Termine")
+                             + _abschnitt("<h2>Vergangen"))
+    zeilen_html = re.findall(r"<tr>.*?</tr>", kommend_und_vergangen,
+                             flags=re.S)
     treffer = [z for z in zeilen_html
               if "Video Call mit Sophie &amp; Stephane" in z]
     assert len(treffer) == 1, (

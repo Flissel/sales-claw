@@ -21,6 +21,17 @@ def _get(pfad, host=HOST_OK):
     return CLIENT.get(pfad, headers={"host": host})
 
 
+@pytest.fixture(autouse=True)
+def ohne_kollegenquellen():
+    """`kalenderquellen_lesen()` fragt echte Zeilen ab — ohne eigene
+    Aufraeumung koennten liegen gebliebene Zeilen anderer Testdateien den
+    'nichts verbunden'-Test unten faelschlich gruen ODER rot machen (Muster
+    wie test_kalender_verbinden.py::leer)."""
+    with server.pool.connection() as conn:
+        conn.execute("truncate sales_test.kalender_quellen cascade")
+    yield
+
+
 def _bald(stunden):
     return datetime.now(timezone.utc) + timedelta(hours=stunden)
 
@@ -64,3 +75,19 @@ def test_fremddaten_erscheinen_escaped(monkeypatch):
     assert "<script>alert(1)</script>" not in seite
     assert "&lt;script&gt;" in seite
     assert "<b>Ivan</b>" not in seite
+
+
+def test_ohne_jede_quelle_sagt_die_seite_es_statt_zu_schweigen(monkeypatch):
+    """Fix-Runde 1 (Auftraggeber-Frage): nichts konfiguriert, nichts
+    verbunden — vorher gab es dafuer die Meldung 'Kein Kalender verbunden
+    (CALDAV_URL in der .env)'. Mit dem entfernten Konfigurations-Tor sah
+    dieser Zustand genauso aus wie 'alles verbunden, aber gerade nichts
+    los' ('Keine Eintraege im Zeitfenster.') — eine Seite, die schweigt,
+    obwohl sie weiss, dass keine einzige Quelle angeschlossen ist, ist
+    schlechter als eine, die es sagt."""
+    monkeypatch.setattr(server, "belegungen", _belegt())
+    antwort = _get("/kalender")
+    assert antwort.status_code == 200
+    seite = antwort.text
+    assert "Kein Kalender verbunden" in seite
+    assert "Keine Einträge im Zeitfenster." not in seite
