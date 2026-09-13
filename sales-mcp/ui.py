@@ -3796,17 +3796,28 @@ async def kalender_seite(request):
     teile.append(f"<h2>Kommende Termine ({len(kommend)})</h2>")
     teile.append(_tabelle(kopf, [e for _, e in kommend]) if kommend
                  else "<p>Kein Termin steht an.</p>")
-    if ohne_datum:
+    # W5 (Schlusspruefung 13.09.2026): die schmale Rolle `kalender` darf
+    # /kalender sehen (sie soll nur Termine abgleichen) — Kundenname, Thema
+    # und Ort AN einem Termin sind dafuer gewollt (Spec §4, Betreiber-Wahl
+    # "Alles — Kunde, Thema, Ort"). "Ohne festes Datum" ist aber der ROHE
+    # eingegangene Anfragetext (`inhalt`), und Wiedervorlagen samt Notiz
+    # sind gar keine Termindaten — genau der Kundenstamm, vor dem diese
+    # Rolle bewusst ferngehalten wird (Spec §2.7). Ohne diese Ausblendung
+    # kaeme die schmale Rolle ueber den EINEN Pfad, den sie betreten darf,
+    # scheibchenweise doch an beides.
+    schmale_rolle = _AKTIVE_ROLLE.get() == "kalender"
+    if ohne_datum and not schmale_rolle:
         teile.append(f"<h2>Ohne festes Datum ({len(ohne_datum)})</h2>")
         teile.append('<p class="meta">Terminanfragen, bei denen der Tag '
                      'noch nicht feststeht.</p>')
         teile.append(_tabelle(["Notiert", "Kontakt", "Worum es geht"],
                               ohne_datum))
 
-    offene = _offene_wiedervorlagen()
-    teile.append(f"<h2>Offene Wiedervorlagen ({len(offene)})</h2>")
-    teile.append(_wiedervorlagen_tabelle(offene, mit_kontakt=True)
-                 if offene else "<p>Nichts liegt wieder vor.</p>")
+    if not schmale_rolle:
+        offene = _offene_wiedervorlagen()
+        teile.append(f"<h2>Offene Wiedervorlagen ({len(offene)})</h2>")
+        teile.append(_wiedervorlagen_tabelle(offene, mit_kontakt=True)
+                     if offene else "<p>Nichts liegt wieder vor.</p>")
 
     # Der echte Kalender — nur lesend, und ein Ausfall kostet nur diesen
     # Abschnitt. (Oben im Gitter stehen dieselben Termine.)

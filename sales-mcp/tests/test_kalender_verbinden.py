@@ -30,9 +30,13 @@ def leer():
     with server.pool.connection() as conn:
         # `benutzer` mit dabei (Fix-Runde 1, KRITISCH 3): der neue
         # Anmelde-Test legt echte Konten an, die sonst zwischen den Tests
-        # dieser Datei stehen blieben.
+        # dieser Datei stehen blieben. `leads`/`activities` mit dabei (W5,
+        # Schlusspruefung 13.09.2026): der neue Sichtbarkeits-Test legt
+        # echte Termine/Wiedervorlagen an (Muster: test_team_sicht.py::
+        # ohne_kollegenquellen).
         conn.execute("truncate sales_test.kalender_quellen, "
-                     "sales_test.benutzer cascade")
+                     "sales_test.benutzer, sales_test.leads, "
+                     "sales_test.activities cascade")
     yield
 
 
@@ -352,3 +356,60 @@ def test_end_zu_end_anmeldung_rolle_kalender(scharf, monkeypatch):
         headers={"host": HOST_OK}, follow_redirects=False)
     assert entfernt.status_code == 303, entfernt.text
     assert server.kalenderquellen_lesen() == []
+
+
+def test_rolle_kalender_sieht_termine_aber_keine_wiedervorlagen_oder_anfragen(
+        scharf):
+    """W5 (Schlusspruefung 13.09.2026): der eine Pfad, den die schmale
+    Rolle betreten darf (/kalender), lieferte Kontaktnamen, Themen samt
+    Ort UND (scheibchenweise) den restlichen Kundenstamm mit: rohe
+    Anfragetexte ("Ohne festes Datum") und offene Wiedervorlagen samt
+    Notiz. Termine mit Kunde/Thema/Ort sind gewollt (Spec §4, Betreiber-
+    Wahl "Alles"); Wiedervorlagen und rohe Anfragen sind keine Termindaten
+    und genau das, wovor diese Rolle ferngehalten werden sollte."""
+    heute = datetime.now(timezone.utc).date()
+    lead = server._q(
+        "insert into leads (name, phone, source) values "
+        "('W5-Testkontakt', '+491701119999', 'whatsapp') returning id"
+    )[0]["id"]
+    # Ein gewoehnlicher, DATIERTER Termin — Spec §4 will genau das sehen.
+    server._q(
+        "insert into activities (lead_id, type, payload) values "
+        "(%s, 'termin', %s)",
+        (lead, server._json({
+            "datum": (heute + timedelta(days=3)).isoformat(),
+            "uhrzeit": "10:00", "thema": "W5-SICHTBARES-THEMA",
+            "ort": "W5-SICHTBARER-ORT", "uid": "w5-termin"})))
+    # Eine Terminanfrage OHNE Datum — traegt den rohen eingegangenen Text.
+    server._q(
+        "insert into activities (lead_id, type, payload) values "
+        "(%s, 'termin', %s)",
+        (lead, server._json({
+            "inhalt": "W5-GEHEIMER-ANFRAGETEXT"})))
+    server.wiedervorlage_setzen(
+        lead, heute.isoformat(), "W5-GEHEIME-WIEDERVORLAGE-NOTIZ")
+
+    _benutzer_kalender()
+    client = _client()
+    _login(client, "ivan", "nur-kalender-9")
+    seite = client.get("/kalender", headers={"host": HOST_OK}).text
+
+    assert "W5-SICHTBARES-THEMA" in seite
+    assert "W5-SICHTBARER-ORT" in seite
+    assert "W5-GEHEIMER-ANFRAGETEXT" not in seite
+    assert "W5-GEHEIME-WIEDERVORLAGE-NOTIZ" not in seite
+    assert "Offene Wiedervorlagen" not in seite
+    assert "Ohne festes Datum" not in seite
+
+    # Gegenprobe: fuer die volle Rolle ('lesen') stehen beide Abschnitte
+    # weiterhin da (kein Kollateralschaden fuer den Betreiber selbst).
+    # Eigener Client + eigenes Konto, damit die scharf geschaltete Wache
+    # (UI_SESSION_SECRET) auch diese Anfrage authentifiziert verlangt.
+    import benutzer_anlegen
+    meldung = benutzer_anlegen.anlegen("betreiberin", "lesen", "voller-zugriff-9")
+    assert meldung.startswith("OK"), meldung
+    voller_client = _client()
+    _login(voller_client, "betreiberin", "voller-zugriff-9")
+    voll = voller_client.get("/kalender", headers={"host": HOST_OK}).text
+    assert "W5-GEHEIMER-ANFRAGETEXT" in voll
+    assert "W5-GEHEIME-WIEDERVORLAGE-NOTIZ" in voll
