@@ -143,6 +143,30 @@ Container unter `/app/...-openclaw-backup.tar.gz` und wird vom Skript
 bewusst nicht aus dem Container kopiert — nur das Log wird gesichert. Für den
 eigentlichen Restore ist ohnehin das tar-Archiv der Volumes maßgeblich.
 
+## Was diese Sicherung NICHT einschließt: die Datenbank
+
+`state.tar`/`keys.tar` sichern ausschließlich die beiden Docker-Volumes
+`sales-claw-state`/`sales-claw-keys` (OpenClaw/WhatsApp-Sitzung,
+Konfiguration). **Die Postgres-Datenbank (`sales`/`sales_test`) läuft auf
+einer separaten, geteilten Instanz** (`debian-supabase-db-1`, siehe
+`db/provision.sql`) und ist von diesen beiden Skripten nicht erfasst — ihre
+Sicherung ist Sache des Betriebs dieser geteilten Instanz, nicht dieses
+Runbooks.
+
+Das ist seit der Stufe „Kalenderquellen und Team-Sicht" (12.09.2026)
+ausdrücklich zu nennen: `sales.kalender_quellen.url` trägt die **geheime
+iCal-Adresse** eines verbundenen Kollegenkalenders — wer sie kennt, liest
+den Kalender vollständig, ohne Anmeldung (siehe `kalenderquellen.py`,
+Moduldocstring). Wie `sales.benutzer.passwort_hash` und die
+CalDAV-Zugangsdaten in der `.env` (10_SECRETS_ROTATION.md) ist das ein
+Geheimnis, das **in jeder Sicherung der Datenbank** mitläuft, sobald ein
+erster Kollege seinen Kalender verbindet — auch wenn keine Zeile dieses
+Dokuments oder seiner beiden Skripte sie je anfasst. Wer die
+Postgres-Instanz sichert (Snapshot, `pg_dump`, o. Ä.), muss diese Sicherung
+also mit derselben Sorgfalt behandeln wie eine, die Passworthashes enthält
+— Zugriff einschränken, nicht unverschlüsselt ablegen, nicht in ein
+Ticket/Log kopieren.
+
 ## Härtung (Fix-Runde 1)
 
 Ein Review der ersten Fassung ergab zwei Befunde. Beide stammten aus dem

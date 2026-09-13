@@ -1703,6 +1703,74 @@ Das App-Passwort deckt DAV also **doch** ab; es ist dasselbe wie für SMTP.
 Die Kollektions-URL wurde per PROPFIND (Depth 1) ermittelt — maßgeblich ist
 die, deren `resourcetype` `calendar` enthält, nicht die Sammel-URL darüber.
 
+### Kollegen-Kalender (Stufe „Kalenderquellen und Team-Sicht", 12.09.2026) — nach diesem Einspielen: `db/provision.sql` zuerst
+
+**Wichtigster Schritt der Inbetriebnahme dieser Stufe, VOR dem Neustart der
+Container:** `db/provision.sql` gegen die Produktionsdatenbank (`sales`,
+nicht `sales_test`) fahren. `db/provision.sql` läuft **nirgends
+automatisch** — der einzige Aufrufer im Baum ist
+`.github/workflows/tests.yml`, dort nur gegen ein frisches CI-Postgres.
+Kein Compose-Dienst, kein Deploy-Skript ruft es gegen die echte Maschine
+auf. Ohne diesen Schritt fehlt `sales.kalender_quellen` und der erweiterte
+CHECK auf `sales.benutzer.rolle` — dieselbe DSN-Sicherheitsregel wie bei
+den psql-Gegenproben oben (Abschnitt „psql-Gegenproben"): die DSN nie in
+eine Kommandozeile, sondern als Host-Umgebungsvariable ohne Wert
+durchgereicht:
+
+```bash
+export SALES_DSN=$(grep '^SALES_DB_URL=' .env | sed 's/^SALES_DB_URL=//')
+docker run --rm -e SALES_DSN \
+  -v "$(pwd)/db/provision.sql:/provision.sql:ro" \
+  -i postgres:17-alpine sh -c \
+  'psql "$SALES_DSN" -v ON_ERROR_STOP=1 -f /provision.sql'
+unset SALES_DSN
+```
+
+**Achtung Rechte:** `provision.sql` verlangt DDL (`create table`,
+`alter table`) — laut Dateikopf „Anwenden als `supabase_admin`". Die
+`sales_app`-Rolle, mit der `sales-mcp` selbst läuft, hat **kein** DDL
+(bewusst, siehe Dateiende von `provision.sql`: „Bewusst NICHT vergeben:
+DELETE"; dasselbe Prinzip gilt für DDL). Ist `.env`s `SALES_DB_URL` auf
+diese eingeschränkte Laufzeitrolle gesetzt (empfohlen für den laufenden
+Dienst), schlägt der obige Lauf mit einem Rechte-Fehler fehl — dann die
+`supabase_admin`-DSN der geteilten Instanz einsetzen (dieselbe, mit der
+auch die Extensions am Kopf der Datei geprüft werden), nicht `.env`s
+Laufzeit-DSN. Das CI-Muster in `.github/workflows/tests.yml` macht es vor:
+dort läuft `provision.sql` explizit mit dem Postgres-Superuser, erst
+danach startet der `sales-mcp`-Container mit der eingeschränkten Rolle.
+
+`provision.sql` ist additiv und idempotent (jede Tabelle/jeder Constraint
+per `if not exists`/`drop … if exists` + `add`) — ein wiederholter Lauf
+gegen eine bereits provisionierte Datenbank ist folgenlos, es meldet nur
+„already exists, skipping" für das, was schon stimmt.
+
+**Was ohne diesen Lauf passiert (und was nicht mehr):** `benutzer_anlegen`
+für die Rolle `kalender` scheitert mit SQLSTATE 23514 (der CHECK auf
+`benutzer.rolle` kennt den Wert `'kalender'` auf einer bestehenden
+Installation nicht, bis die Migration läuft — Fund K1 der Schlussprüfung
+2026-09-13) — der Kollege bekommt also gar kein Konto. Fehlt zusätzlich
+`sales.kalender_quellen` (42P01), bleibt `/kalender`, `/team/kalender`
+und die Kollisionsprüfung (`termin_konflikte`, `termin_bestaetigen`,
+`termin_einladen`) davon **unberührt** (Fund K3, seither behoben):
+`server.belegungen()` fängt eine fehlende/unlesbare Quellentabelle ab und
+meldet sie wie eine unerreichbare Quelle — als Lücke, nicht als
+Werkzeugausfall. Die bestehende Terminbuchung läuft also weiter; nur die
+Team-Sicht auf Kollegen-Kalender bleibt bis zum DDL-Lauf inaktiv.
+
+**Reihenfolge:** DDL-Lauf **vor** `deploy/benutzer-anlegen.sh` für die
+neue Rolle und vor dem ersten Verbindungsversuch eines Kollegen über
+`/team/kalender`. Ein Neustart der Container ist für den DDL-Lauf selbst
+nicht nötig — `sales-mcp` liest das Schema bei jeder Anfrage neu, kein
+Cache.
+
+**Voraussetzung für Prüfpunkt 1 der Spec (Kollege erreicht den
+Verbindungslink überhaupt):** `UI_TAILSCALE_IP`/`UI_SERVE_HOST` müssen in
+der `.env` der VM gesetzt sein, UND `UI_SESSION_SECRET` muss stehen — ohne
+`UI_SESSION_SECRET` läuft die Anmelde-Wache im durchlässigen
+Übergangszustand, dort sieht jeder im Tailnet die volle Oberfläche, auch
+der Kollege mit dem schmalen Konto (Spec §3 Ziffer 2 setzt das
+ausdrücklich voraus).
+
 ## E-Mail-Versand einrichten (Stufe 9)
 
 Der Dienst `sales-mail` ist der Zwilling von `sales-dispatch`: er liest

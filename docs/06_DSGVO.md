@@ -80,6 +80,54 @@ Bestandskunden-Ausnahme des § 7 Abs. 3 UWG.
 
 Verträge: `sales-mcp/tests/test_uwg.py`.
 
+## Kollegen-Kalender (Team-Sicht, seit 12.09.2026)
+
+Ein Kollege kann seinen eigenen Kalender über eine geheime iCal-Adresse mit
+`sales-claw` verbinden (`/team/kalender`), damit Terminvorschläge nicht mit
+ihm kollidieren — Auslöser war der ausdrückliche Betreiber-Wunsch „dass
+Ivans und meiner dann berücksichtigt wird".
+
+**Wer sieht was, auf welcher Grundlage.**
+
+- **Was verarbeitet wird:** Titel, Ort und Zeitraum jedes Termins im
+  verbundenen Kalender des Kollegen — nicht mehr, als der Kalender selbst
+  hergibt. Die Adresse (das Geheimnis, das den Zugriff trägt) wird
+  gespeichert (`sales.kalender_quellen.url`), aber nie angezeigt oder
+  geloggt (Spec §4, technisch durchgesetzt — siehe 08_TOMS.md).
+- **Wer es sieht:** der Betreiber (Rolle `lesen`/`freigeben`) über
+  `/kalender` — dort mit Kundenname, Thema und Ort, denn genau das braucht
+  die Kollisionsprüfung und ist die vom Betreiber gewählte Sichtbarkeits-
+  stufe „Alles — Kunde, Thema, Ort" (Spec §4). Der Kollege selbst (die
+  eigens dafür geschaffene, schmale Rolle `kalender`) sieht denselben
+  Kalender-Abschnitt — inklusive der Termine anderer Kollegen, denn die
+  Kollisionsprüfung ist eine Team-Angelegenheit —, aber ausdrücklich
+  **nicht** den übrigen Kundenstamm: `/kontakte`, `/posteingang` und
+  innerhalb von `/kalender` auch offene Wiedervorlagen samt Notiz sowie
+  rohe, noch nicht terminierte Anfragetexte bleiben ihr verborgen (W5,
+  Schlussprüfung 13.09.2026 — das sind keine Termindaten). Vertrag:
+  `sales-mcp/tests/test_kalender_verbinden.py::
+  test_rolle_kalender_sieht_termine_aber_keine_wiedervorlagen_oder_anfragen`.
+- **Rechtsgrundlage:** das Verbinden ist eine bewusste, selbst ausgeführte
+  Handlung des Kollegen (er trägt die geheime Adresse selbst ein — kein
+  automatischer Zugriff auf ein fremdes Konto), zum Zweck der internen
+  Terminabstimmung zwischen Kollegen desselben Betriebs. Das trägt sich auf
+  ein berechtigtes betriebliches Interesse (Art. 6 Abs. 1 lit. f DSGVO) an
+  kollisionsfreier Terminplanung; eine betriebliche Anweisung/Einwilligung
+  im Innenverhältnis ist die sauberere Grundlage, wo eine solche ohnehin
+  vorliegt (z. B. Arbeitsvertrag, Betriebsvereinbarung) — das entscheidet
+  der Betreiber, siehe „Grenze" unten.
+- **Widerruf:** der Kollege setzt seine Adresse beim eigenen Anbieter
+  jederzeit selbst zurück — der Zugriff endet damit sofort, ohne dass
+  `sales-claw` etwas tun muss (die alte Adresse wird beim nächsten Abruf
+  nur noch mit Fehler quittiert). Zusätzlich kann jede Quelle über
+  `/team/kalender` aktiv entfernt werden (W3) — ein Gegen-Ereignis, kein
+  Hard-Delete: die Zeile bleibt bestehen, aber die Adresse wird
+  gelöscht (`aktiv = false, url = null`), damit `sales_app` (ohne
+  DELETE-Recht auf jeder Tabelle) konsistent bleibt.
+- **Aufbewahrung:** wie beim übrigen Bestand kein automatisches Ablaufdatum
+  — eine entfernte Quelle bleibt als deaktivierte Zeile stehen (Nachweis,
+  dass und wann sie entfernt wurde), ohne die Adresse selbst.
+
 ## Grenze
 
 Dieses Dokument ist Betriebsanleitung, keine Rechtsberatung. Bei
