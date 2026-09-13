@@ -107,6 +107,15 @@ begin
         aktiv boolean not null default true,
         created_at timestamptz not null default now()
       )$ddl$, s);
+    -- Rolle 'kalender' nachtraeglich zugelassen (Fix-Runde Schlusspruefung,
+    -- 13.09.2026): auf bereits bestehenden Installationen (`benutzer` steht
+    -- seit E1, 31.08.2026) wirkt das obige `create table if not exists`
+    -- nicht mehr, der alte Zwei-Werte-CHECK ueberlebt und
+    -- `benutzer_anlegen.py` scheitert mit 23514. Per ALTER nachgezogen,
+    -- idempotent wie beim drafts_channel_check-Muster unten.
+    execute format('alter table %I.benutzer drop constraint if exists benutzer_rolle_check', s);
+    execute format($chk$alter table %I.benutzer add constraint benutzer_rolle_check
+      check (rolle in ('lesen','freigeben','kalender'))$chk$, s);
     -- UI-Plan Schritt 4 (02.09.2026): je Datei im Medienordner der
     -- Schalter "Bot darf senden" und die Herkunft. Ohne Zeile gilt: darf
     -- senden, hochgeladen — der Bestand bleibt unveraendert.
