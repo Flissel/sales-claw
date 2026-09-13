@@ -87,6 +87,39 @@ def test_der_stand_wird_festgehalten(monkeypatch):
     assert q["letzter_fehler"] is None
 
 
+def test_fehlerfall_wird_in_der_datenbank_festgehalten(monkeypatch):
+    """Ergaenzung Fix-Runde 1 (Pruefung 13.09.2026): der Fehlerfall wurde
+    bisher nur ueber den Rueckgabewert von belegungen() geprueft, nie gegen
+    die Tabelle selbst — dort liest die Verbindungsseite den Stand aber
+    tatsaechlich ab ("zuletzt gelesen um ...", Fehlertext). Steht dort
+    nichts oder das Falsche, sucht der Kollege an der falschen Stelle.
+
+    Ablauf als Abfolge, erst erfolgreich, dann fehlschlagend: nur so zeigt
+    sich im Zusammenspiel mit belegungen(), dass ein einzelner Ausfall die
+    letzte bekannte Zahl nicht wegwischt (Aufgabe 1 hat das nur isoliert an
+    kalenderquelle_stand_setzen geprueft, nie ueber belegungen())."""
+    qid = server.kalenderquelle_speichern("Ivan", "https://example.test/a.ics")
+    monkeypatch.setattr(kalenderquellen, "hole", lambda url: ([
+        {"beginn": _t(1, 9), "ende": _t(1, 10), "titel": "A", "ort": "",
+         "uid": "x"}], None))
+    server.belegungen()
+    q = [z for z in server.kalenderquellen_lesen() if z["id"] == qid][0]
+    assert q["termine_zuletzt"] == 1
+    alter_zeitpunkt = q["zuletzt_gelesen"]
+    assert alter_zeitpunkt is not None
+
+    monkeypatch.setattr(kalenderquellen, "hole",
+                        lambda url: ([], "Nicht erreichbar (TimeoutError)."))
+    server.belegungen()
+    q = [z for z in server.kalenderquellen_lesen() if z["id"] == qid][0]
+    assert q["letzter_fehler"] == "Nicht erreichbar (TimeoutError)."
+    assert q["zuletzt_gelesen"] is not None
+    assert q["zuletzt_gelesen"] > alter_zeitpunkt
+    # Der wertvollste Teil: der alte Zaehler bleibt stehen, ein einzelner
+    # Ausfall wischt die letzte bekannte Zahl nicht weg.
+    assert q["termine_zuletzt"] == 1
+
+
 def test_inaktive_quelle_wird_nicht_abgerufen(monkeypatch):
     server.kalenderquelle_speichern("Ivan", "https://example.test/a.ics")
     with server.pool.connection() as conn:
