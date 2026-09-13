@@ -699,9 +699,13 @@ def test_kontakt_aktualisieren_signatur_ueberlebt_den_dekorator():
     assert list(parameter) == ["lead_id", "feld", "wert"]
 
 
-def test_zweiundachtzig_werkzeuge_registriert():
+def test_dreiundachtzig_werkzeuge_registriert():
     namen = {fn.__name__ for fn in server.WERKZEUGE}
-    assert len(namen) == 82
+    # 13.09.2026: termin_konflikte dazugekommen (Aufgabe 4,
+    # tests/test_kollision.py) — reine Auskunft VOR einem Terminvorschlag,
+    # 82 -> 83.
+    assert len(namen) == 83
+    assert "termin_konflikte" in namen
     # Telegram als vierter Versandkanal (12.09.2026, tests/test_telegram.py):
     # die chat_id hinterlegen bzw. entziehen. ERREICHBARKEIT, nicht
     # Einwilligung — das UWG-Tor bleibt davon unberuehrt.

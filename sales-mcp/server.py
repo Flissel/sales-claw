@@ -1425,6 +1425,12 @@ def termin_bestaetigen(lead_id: str, datum: str, uhrzeit: str,
     heute = datetime.now(timezone.utc).date()
 
     dauer = _termin_dauer(dauer_minuten)
+    # Kollisionen melden, nicht verhindern (Entscheidung im Plan vom
+    # 12.09.2026): der Betreiber ruft dieses Werkzeug bewusst auf, und eine
+    # Doppelbuchung kann gewollt sein. Wer vorher wissen will, ob frei ist,
+    # nimmt `termin_konflikte`.
+    kollisionen, quellen_luecken = _kollisionen(beginn, dauer)
+    kollisionstext = _kollisionstext(kollisionen, quellen_luecken)
     # Entitaeten VOR dem Kappen aufloesen: sonst schnitte die Laengengrenze
     # mitten in "&amp;" und liesse ein "&am" stehen.
     thema_kurz = (_ohne_entitaeten(thema).strip()[:TERMIN_TEXT_MAXLAENGE]
@@ -1541,7 +1547,10 @@ def termin_bestaetigen(lead_id: str, datum: str, uhrzeit: str,
         # vertrag_speichern).
         "wiedervorlage": {"aktivitaets_id": wv_id,
                           "faellig_am": faellig.isoformat()},
-        "hinweis": hinweis}))
+        "kollisionen": kollisionen,
+        "quellen_luecken": quellen_luecken,
+        "hinweis": (kollisionstext + " " if kollisionstext else "")
+                   + hinweis}))
 
 
 @_gesichert
@@ -1672,6 +1681,12 @@ def termin_einladen(lead_id: str, datum: str, uhrzeit: str,
             "braucht einen Veranstalter.")})
 
     dauer = _termin_dauer(dauer_minuten)
+    # Kollisionen melden, nicht verhindern (Entscheidung im Plan vom
+    # 12.09.2026): der Betreiber ruft dieses Werkzeug bewusst auf, und eine
+    # Doppelbuchung kann gewollt sein. Wer vorher wissen will, ob frei ist,
+    # nimmt `termin_konflikte`.
+    kollisionen, quellen_luecken = _kollisionen(beginn, dauer)
+    kollisionstext = _kollisionstext(kollisionen, quellen_luecken)
     # Entitaeten VOR dem Kappen aufloesen: sonst schnitte die Laengengrenze
     # mitten in "&amp;" und liesse ein "&am" stehen.
     thema_kurz = (_ohne_entitaeten(thema).strip()[:TERMIN_TEXT_MAXLAENGE]
@@ -1844,12 +1859,15 @@ def termin_einladen(lead_id: str, datum: str, uhrzeit: str,
                   "pfad": pfad,
                   "wiedervorlage": {"aktivitaets_id": wv_id,
                                     "faellig_am": nachfass_faellig.isoformat()},
+                  "kollisionen": kollisionen,
+                  "quellen_luecken": quellen_luecken,
                   # Kein "das passiert erst bei der Zusage" mehr (W3,
                   # Nachpruefung 11.09.2026): der Docstring war korrigiert,
                   # dieser Text nicht — die Unwahrheit stand danach nur noch
                   # dort, wo der Betreiber sie tatsaechlich liest. Bei einer
                   # Zusage passiert NICHTS automatisch.
-                  "hinweis": ("Die Einladung liegt zur Freigabe. Es ging "
+                  "hinweis": (kollisionstext + " " if kollisionstext else "")
+                             + ("Die Einladung liegt zur Freigabe. Es ging "
                               "nichts raus, und im Kalender steht nichts — "
                               "auch nach einer Zusage entsteht kein Eintrag "
                               "von selbst; dafuer ist termin_bestaetigen "
@@ -2410,6 +2428,82 @@ def belegungen(tage_voraus: int = 60):
 
     eintraege.sort(key=lambda e: e["beginn"])
     return eintraege, luecken
+
+
+def _kollisionen(beginn, dauer_minuten: int):
+    """Wer ist zu dieser Zeit schon belegt? -> (treffer, luecken).
+
+    Ueberlappung im halboffenen Sinn: Ende gleich Beginn ist NACHEINANDER,
+    nicht gleichzeitig. Ohne diese Kante waere jeder Tag mit einer
+    Terminkette durchgehend blockiert.
+
+    `beginn` kommt bei einem Aufruf aus termin_konflikte/termin_bestaetigen/
+    termin_einladen als NAIVER Zeitpunkt aus `_termin_zeitpunkt` herein
+    (deren Docstring: „ORTSZEIT Europe/Berlin"); die Eintraege aus
+    `belegungen()` sind dagegen durchgehend UTC-aware (kalender._ics_zeit
+    rechnet jede Fremdzone auf UTC um). Ein direkter Vergleich der beiden
+    wirft `TypeError: can't compare offset-naive and offset-aware
+    datetimes` — gemessen im RED-Lauf zu Aufgabe 4 (13.09.2026), nicht nur
+    vermutet. Ohne eigene Zeitzonen-Bibliothek in diesem Modul wird hier
+    NICHT umgerechnet, sondern nur die Vergleichbarkeit hergestellt: eine
+    naive Uhrzeit wird direkt als UTC aufgefasst (keine Verschiebung). Das
+    ist eine bewusst enge Notloesung fuer diese Aufgabe, keine echte
+    Zeitzonenumrechnung — siehe Bericht zu Aufgabe 4 fuer die Einordnung.
+    """
+    if beginn.tzinfo is None:
+        beginn = beginn.replace(tzinfo=timezone.utc)
+    ende = beginn + timedelta(minutes=dauer_minuten)
+    eintraege, luecken = belegungen()
+    treffer = [
+        {"quelle": e["quelle"], "titel": e["titel"],
+         "beginn": e["beginn"].isoformat(), "ende": e["ende"].isoformat()}
+        for e in eintraege
+        # e["ende"] > e["beginn"] schliesst punktuelle Eintraege aus (kein
+        # DTEND) — sie wuerden sonst als nulllanges Fenster mitzaehlen.
+        if e["ende"] > e["beginn"] and e["beginn"] < ende and e["ende"] > beginn]
+    return treffer, luecken
+
+
+def _kollisionstext(treffer, luecken) -> str:
+    """Ein Satz fuer Mensch und Modell — beide lesen denselben."""
+    teile = []
+    if treffer:
+        wer = ", ".join(
+            f"{t['quelle']} ({t['titel']})" if t["titel"] else t["quelle"]
+            for t in treffer)
+        teile.append(f"ACHTUNG, zu dieser Zeit ist schon etwas: {wer}.")
+    if luecken:
+        wer = ", ".join(l["quelle"] for l in luecken)
+        teile.append(
+            f"Ausserdem war {wer} gerade nicht abrufbar — dort kann etwas "
+            f"liegen, das hier fehlt.")
+    return " ".join(teile)
+
+
+@_gesichert
+def termin_konflikte(datum: str, uhrzeit: str,
+                     dauer_minuten: int = TERMIN_DAUER_VORGABE) -> str:
+    """Ist diese Zeit bei ALLEN Beteiligten frei? Fragt jede Quelle.
+
+    VOR einem Terminvorschlag aufrufen. Es wird nichts angelegt und nichts
+    versendet — das hier ist eine reine Auskunft.
+
+    `frei` ist nur dann wahr, wenn nichts kollidiert UND jede Quelle
+    geantwortet hat. War eine Quelle stumm, ist die Antwort NICHT „frei":
+    eine unbekannte Belegung ist keine freie Zeit (Spec §2.2).
+    """
+    beginn, tag, zeit, fehler = _termin_zeitpunkt(datum, uhrzeit)
+    if fehler:
+        return _json({"fehler": fehler})
+    dauer = _termin_dauer(dauer_minuten)
+    treffer, luecken = _kollisionen(beginn, dauer)
+    text = _kollisionstext(treffer, luecken)
+    return _json({
+        "frei": not treffer and not luecken,
+        "kollisionen": treffer,
+        "quellen_luecken": luecken,
+        "hinweis": text or (f"{tag.isoformat()} {zeit:%H:%M} ist bei allen "
+                            f"bekannten Quellen frei.")})
 
 
 def _medien_herkunft(name: str, m) -> str:
@@ -7210,6 +7304,11 @@ WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
              # bindet niemanden — der Kalendereintrag entsteht erst bei der
              # Zusage, siehe Docstring dort.
              termin_einladen,
+             # Kollisionspruefung VOR einem Vorschlag (Aufgabe 4,
+             # 12.09.2026): reine Auskunft, legt nichts an. termin_bestaetigen
+             # und termin_einladen melden eine Kollision nur noch, sie
+             # blockieren nicht — hier fragt der Bot vorher.
+             termin_konflikte,
              profil_lesen, profil_aktualisieren,
              bedarf_speichern, bedarf_offen, entwurf_erstellen,
              post_entwurf_erstellen, medien_liste,

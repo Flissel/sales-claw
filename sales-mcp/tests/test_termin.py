@@ -135,6 +135,20 @@ def leer(tmp_path, monkeypatch):
             "sales_test.personas, sales_test.leads cascade")
 
 
+@pytest.fixture(autouse=True)
+def keine_echten_belegungsabrufe(monkeypatch):
+    """Aufgabe 4 (13.09.2026): termin_bestaetigen ruft seither `belegungen()`
+    auf (Kollisionspruefung). Ohne diese Fixture loest das hier echte
+    CalDAV-REPORT-Aufrufe gegen STUB aus — gemessen: STUB.aufrufe bekam
+    einen zusaetzlichen REPORT-Eintrag VOR dem eigentlich getesteten PUT,
+    und Tests, die aufrufe[0] lasen (User-Agent, Aufrufzahl), griffen
+    daneben. Diese Datei prueft das Kalender-PUT, nicht die
+    Kollisionspruefung selbst (die hat tests/test_kollision.py) — deshalb
+    wird hier `belegungen()` stillgelegt, nicht die Erwartungen der
+    bestehenden Tests geaendert."""
+    monkeypatch.setattr(server, "belegungen", lambda tage_voraus=60: ([], []))
+
+
 @pytest.fixture
 def kalender_konfiguriert(monkeypatch):
     monkeypatch.setenv("CALDAV_URL", STUB_URL)

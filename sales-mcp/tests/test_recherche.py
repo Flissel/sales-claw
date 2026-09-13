@@ -558,7 +558,11 @@ def test_beide_werkzeuge_sind_registriert():
     # 12.09.2026: + Telegram-Erreichbarkeit, 2 Werkzeuge
     # (tests/test_telegram.py). sales-claw hat seit dem Entscheid auch den
     # Telegram-Dispatcher, den Marketing vorher hatte.
-    assert len(namen) == len(set(namen)) == 82
+    # 13.09.2026: + termin_konflikte (tests/test_kollision.py) — Aufgabe 4,
+    # Kollisionspruefung ueber alle Quellen. Reine Auskunft, VOR einem
+    # Terminvorschlag; termin_bestaetigen/termin_einladen melden eine
+    # Kollision seither nur noch, sie blockieren nicht.
+    assert len(namen) == len(set(namen)) == 83
 
 # ---------------------------------------------------------------------------
 # Nachbesserungen aus dem Stufe-5-Review (Befunde T1, B2, D2)
