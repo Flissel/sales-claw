@@ -116,6 +116,27 @@ begin
           check (herkunft in ('hochgeladen','chat','system')),
         updated_at timestamptz not null default now()
       )$ddl$, s);
+    -- Abonnierte Fremdkalender (Spec 2026-09-11 §2.1 Weg 3, ergaenzt
+    -- 12.09.2026). `url` ist die GEHEIME iCal-Adresse eines Kollegen und
+    -- damit ein Geheimnis mit der Berechtigung darin: wer sie kennt, liest
+    -- den Kalender. Sie wird nie angezeigt und nie geloggt (Spec §4).
+    -- `art` ist heute nur 'ics'; der eigene CalDAV-Kalender bleibt in der
+    -- .env, weil er Zugangsdaten braucht und genau einer ist.
+    execute format($ddl$
+      create table if not exists %I.kalender_quellen (
+        id uuid primary key default gen_random_uuid(),
+        anzeigename text not null check (anzeigename <> ''),
+        art text not null default 'ics' check (art in ('ics')),
+        url text not null check (url <> ''),
+        aktiv boolean not null default true,
+        zuletzt_gelesen timestamptz,
+        letzter_fehler text,
+        termine_zuletzt int,
+        created_at timestamptz not null default now()
+      )$ddl$, s);
+    execute format('create unique index if not exists '
+                   'kalender_quellen_name_idx on %I.kalender_quellen '
+                   '(anzeigename)', s);
     -- CC fuer E-Mail-Entwuerfe (03.09.2026); add column, weil die Tabelle
     -- auf beiden Schemata laengst existiert.
     execute format('alter table %I.drafts add column if not exists cc text', s);

@@ -2324,6 +2324,44 @@ def medien_meta_setzen(dateiname: str, bot_darf_senden=None,
        (dateiname, bot_darf_senden, herkunft, bot_darf_senden, herkunft))
 
 
+def kalenderquellen_lesen(nur_aktive: bool = True) -> list:
+    """Die abonnierten Fremdkalender. Enthaelt die GEHEIME Adresse — der
+    Aufrufer darf sie benutzen, aber niemals anzeigen oder loggen."""
+    bedingung = "where aktiv" if nur_aktive else ""
+    return [dict(z, id=str(z["id"])) for z in _q(
+        f"select id, anzeigename, art, url, aktiv, zuletzt_gelesen, "
+        f"letzter_fehler, termine_zuletzt from kalender_quellen "
+        f"{bedingung} order by anzeigename")]
+
+
+def kalenderquelle_speichern(anzeigename: str, url: str) -> str:
+    """Anlegen oder die Adresse eines bekannten Namens ersetzen.
+
+    Ersetzen statt danebenlegen: setzt ein Kollege seine Adresse zurueck
+    und verbindet neu, wuerde die alte sonst stuendlich Fehler erzeugen und
+    niemand wuesste, welche der beiden gilt.
+    """
+    return str(_q(
+        "insert into kalender_quellen (anzeigename, url) values (%s, %s) "
+        "on conflict (anzeigename) do update set url = excluded.url, "
+        "aktiv = true, letzter_fehler = null, zuletzt_gelesen = null "
+        "returning id", (anzeigename.strip(), url.strip()))[0]["id"])
+
+
+def kalenderquelle_stand_setzen(quelle_id: str, anzahl, fehler) -> None:
+    """Nach jedem Abruf. `anzahl=None` laesst den alten Zaehler stehen —
+    ein einzelner Ausfall soll die letzte bekannte Zahl nicht wegwischen."""
+    _q("update kalender_quellen set zuletzt_gelesen = now(), "
+       "letzter_fehler = %s, "
+       "termine_zuletzt = coalesce(%s, termine_zuletzt) "
+       "where id = %s", (fehler, anzahl, quelle_id))
+
+
+def kalenderquelle_entfernen(quelle_id: str) -> bool:
+    return bool(_q("delete from kalender_quellen where id = %s returning id",
+                   (quelle_id,)))
+
+
 def _medien_herkunft(name: str, m) -> str:
     """Ohne Zeile: was das System selbst erzeugt hat (Termine unter
     ERZEUGT_VERZEICHNIS) ist 'system', alles andere 'hochgeladen'."""
