@@ -2451,7 +2451,14 @@ def belegungen(tage_voraus: int = 60):
             quelle["id"], None if fehler else len(termine), fehler)
         if fehler:
             luecken.append({"quelle": quelle["anzeigename"], "grund": fehler})
-            continue
+            # KEIN `continue` (K4, Schlusspruefung 13.09.2026): `hole()`
+            # meldet `fehler` jetzt auch fuer eine Quelle, die TEILWEISE
+            # verstanden wurde (Serientermine/unlesbare DURATION neben
+            # gewoehnlichen VEVENTs) — die gueltigen `termine` bleiben
+            # echte Kollisionsdaten, nur weil ein Teil der Antwort nicht
+            # verstanden wurde, verwerfen wir nicht auch den Rest. In jedem
+            # AELTEREN Fehlerpfad (unerreichbar, HTTP-Fehler, ...) ist
+            # `termine` ohnehin leer — die Schleife unten tut dort nichts.
         for t in termine:
             eintraege.append({**t, "quelle": quelle["anzeigename"]})
 

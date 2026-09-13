@@ -35,6 +35,7 @@ freigeben, und eine 80/443-Regel wuerde echte Quellen abweisen.
 """
 import ipaddress
 import os
+import re
 import socket
 import urllib.error
 import urllib.parse
@@ -172,6 +173,28 @@ def _sieht_aus_wie_kalender(text: str) -> bool:
     return "BEGIN:VCALENDAR" in text[:2000].upper()
 
 
+# RFC 5545 §3.3.6 DURATION — bescheidene Auswertung fuer Tage/Stunden/
+# Minuten/Sekunden (K4-Ruling, Schlusspruefung 13.09.2026). Bewusst NICHT
+# unterstuetzt: Wochen ("P2W") und negative Dauern — beide sind in echten
+# Kalenderexporten selten, und eine falsche Auswertung waere schlimmer als
+# eine ehrlich gemeldete Luecke. Was hier nicht passt, gilt als unlesbar.
+_DAUER_MUSTER = re.compile(
+    r"^P(?:(?P<tage>\d+)D)?"
+    r"(?:T(?:(?P<stunden>\d+)H)?(?:(?P<minuten>\d+)M)?(?:(?P<sekunden>\d+)S)?)?$")
+
+
+def _dauer_lesen(wert: str):
+    """DURATION-Wert ('PT1H30M', 'P1D', ...) -> timedelta oder None (nicht
+    verstanden — behandle wie ein fehlendes Ende, siehe Aufrufer)."""
+    treffer = _DAUER_MUSTER.match((wert or "").strip())
+    if not treffer:
+        return None
+    teile = {k: int(v) for k, v in treffer.groupdict(default="0").items()}
+    dauer = timedelta(days=teile["tage"], hours=teile["stunden"],
+                      minutes=teile["minuten"], seconds=teile["sekunden"])
+    return dauer if dauer > timedelta(0) else None
+
+
 def hole(url: str, tage_zurueck: int = 7, tage_voraus: int = 60):
     """Eine abonnierte Adresse abrufen -> (termine, fehler).
 
@@ -192,6 +215,20 @@ def hole(url: str, tage_zurueck: int = 7, tage_voraus: int = 60):
     §9.9): ein Termin zaehlt, wenn sein Intervall [beginn, ende) das
     Fenster [von, bis) ueberschneidet; ein punktueller Termin (ende ==
     beginn, siehe unten) zaehlt, wenn sein Zeitpunkt im Fenster liegt.
+
+    Serientermine und DURATION (K4, Schlusspruefung 13.09.2026): ein VEVENT
+    mit RRULE wird NICHT entfaltet (ein eigenes Vorhaben, halb richtig waere
+    schlimmer als gar nicht) — es zaehlt weder mit seinem einzelnen DTSTART
+    als Termin (das waere K4s Ursprungsfehler: ein woechentliches Meeting
+    kollidiert dann nie wieder) noch fehlt es stillschweigend. Stattdessen
+    zaehlt `hole()` solche Eintraege (und VEVENTs mit unlesbarer DURATION
+    statt DTEND) und meldet sie als `fehler` — nicht als leerer `termine`,
+    denn andere, einmalige VEVENTs derselben Antwort bleiben gueltige
+    Kollisionsdaten. `belegungen()` haengt diesen Text als eigene Luecke an,
+    OHNE die zurueckgegebenen `termine` zu verwerfen (Fix K4/K3): eine
+    Quelle mit Serientermin meldet `termin_konflikte` dadurch nie
+    `frei: true`, verliert aber nicht die Kollisionen, die sie sehr wohl
+    versteht.
     """
     url = (url or "").strip()
     erlaubt, grund = _ziel_erlaubt(url)
@@ -231,17 +268,36 @@ def hole(url: str, tage_zurueck: int = 7, tage_voraus: int = 60):
     bis = jetzt + timedelta(days=tage_voraus)
 
     termine = []
+    serien = 0
+    unlesbare_dauer = 0
     for teil in text.split("BEGIN:VEVENT")[1:]:
         block = teil.split("END:VEVENT", 1)[0]
         beginn = kalender._ics_zeit(kalender._ics_feld(block, "DTSTART"),
                                     kalender._ics_tzid(block, "DTSTART"))
         if beginn is None:
             continue
+        if kalender._ics_feld(block, "RRULE"):
+            # K4: nicht entfalten, nicht als einzelnen Termin am ersten
+            # DTSTART durchrutschen lassen — nur zaehlen.
+            serien += 1
+            continue
         ende = kalender._ics_zeit(kalender._ics_feld(block, "DTEND"),
                                   kalender._ics_tzid(block, "DTEND"))
-        # Ohne DTEND gilt der Termin als punktuell. NICHT geraten: eine
-        # erfundene Dauer erzeugte Kollisionen, die es nicht gibt.
-        ende = ende if ende and ende > beginn else beginn
+        if not (ende and ende > beginn):
+            # Ohne (lesbares) DTEND: DURATION probieren (K4 — RFC 5545
+            # erlaubt beides, Apple und manche Outlook-Exporte nutzen es).
+            dauer_wert = kalender._ics_feld(block, "DURATION")
+            dauer = _dauer_lesen(dauer_wert) if dauer_wert else None
+            if dauer is not None:
+                ende = beginn + dauer
+            else:
+                # Weder DTEND noch (lesbare) DURATION: punktuell. NICHT
+                # geraten: eine erfundene Dauer erzeugte Kollisionen, die es
+                # nicht gibt. Eine vorhandene, aber unlesbare DURATION wird
+                # gezaehlt (K4) statt kommentarlos zu verpuffen.
+                if dauer_wert:
+                    unlesbare_dauer += 1
+                ende = beginn
         # Zeitfenster (K2/W1): ein punktueller Termin (ende == beginn)
         # zaehlt, wenn sein Zeitpunkt im Fenster liegt; sonst gilt die
         # Ueberlappung [beginn, ende) mit [von, bis) — dieselbe Regel wie
@@ -255,4 +311,20 @@ def hole(url: str, tage_zurueck: int = 7, tage_voraus: int = 60):
             "ort": kalender._ics_feld(block, "LOCATION")[:120],
             "uid": kalender._ics_feld(block, "UID")[:120]})
     termine.sort(key=lambda t: t["beginn"])
-    return termine, None
+
+    hinweise = []
+    if serien:
+        hinweise.append(
+            f"{serien} Serientermin{'e' if serien != 1 else ''} (RRULE) "
+            f"werden nicht aufgeloest — dort kann etwas liegen, das hier "
+            f"fehlt.")
+    if unlesbare_dauer:
+        hinweise.append(
+            f"{unlesbare_dauer} Termin{'e' if unlesbare_dauer != 1 else ''} "
+            f"mit unlesbarer Dauer (DURATION) — als punktuell behandelt, "
+            f"dort kann etwas liegen, das hier fehlt.")
+    # Bewusst KEIN leeres `termine` bei einer Luecke (anders als jeder
+    # andere Fehlerpfad oben): andere, einmalige VEVENTs derselben Antwort
+    # bleiben gueltige Kollisionsdaten (siehe Docstring). `belegungen()`
+    # haengt den Hinweis als eigene Luecke an, OHNE `termine` zu verwerfen.
+    return termine, (" ".join(hinweise) if hinweise else None)

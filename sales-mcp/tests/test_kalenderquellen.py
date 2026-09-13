@@ -225,3 +225,85 @@ def test_privates_ziel_wird_abgewiesen():
     assert termine == []
     assert fehler is not None
     assert "eigenen Netz" in fehler, fehler
+
+
+# --- K4 (Schlusspruefung 13.09.2026): Serientermine und DURATION ----------
+#
+# Datumsangaben bewusst nahe an "heute" (nicht im Oktober-2026-Muster der
+# uebrigen Fixture oben): seit K2/W1 filtert hole() ein Zeitfenster
+# (Vorgabe 7 Tage zurueck, 60 Tage voraus) — ein Termin ausserhalb davon
+# wuerde in diesen Tests fuer den falschen Grund fehlen.
+from datetime import datetime as _dt, timedelta as _td, timezone as _tz  # noqa: E402
+
+_BALD = _dt.now(_tz.utc) + _td(days=5)
+
+
+def _ics(*vevents: str) -> bytes:
+    return ("BEGIN:VCALENDAR\r\nVERSION:2.0\r\n"
+           + "".join(vevents) + "END:VCALENDAR\r\n").encode("utf-8")
+
+
+def _vevent(uid: str, dtstart: str, rumpf: str) -> str:
+    return f"BEGIN:VEVENT\r\nUID:{uid}\r\nDTSTART:{dtstart}\r\n{rumpf}END:VEVENT\r\n"
+
+
+def test_serientermin_wird_als_luecke_gemeldet_statt_einmalig_gezaehlt(
+        server_stub):
+    """Der Kernbefund K4: ein RRULE-VEVENT darf NICHT als einzelner Termin
+    am ersten DTSTART durchrutschen (er kollidiert dann nie wieder) — er
+    zaehlt stattdessen als Luecke, damit die Quelle nie `frei: true`
+    ergibt."""
+    server_stub.rumpf = _ics(_vevent(
+        "teamrunde@google", _BALD.strftime("%Y%m%dT%H%M%SZ"),
+        "DTEND:" + (_BALD + _td(hours=1)).strftime("%Y%m%dT%H%M%SZ") + "\r\n"
+        "RRULE:FREQ=WEEKLY;BYDAY=MO\r\n"
+        "SUMMARY:Teamrunde\r\n"))
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert termine == [], termine
+    assert fehler is not None
+    assert "Serientermin" in fehler and "RRULE" in fehler
+
+
+def test_serie_neben_normalem_termin_behaelt_den_normalen(server_stub):
+    """Eine Luecke darf gueltige Kollisionsdaten nicht mitreissen: ein
+    gewoehnlicher VEVENT in derselben Antwort bleibt ein echter Termin."""
+    server_stub.rumpf = _ics(
+        _vevent("normal@google", _BALD.strftime("%Y%m%dT%H%M%SZ"),
+               "DTEND:" + (_BALD + _td(hours=1)).strftime("%Y%m%dT%H%M%SZ")
+               + "\r\nSUMMARY:Normaler Termin\r\n"),
+        _vevent("serie@google",
+               (_BALD + _td(days=1)).strftime("%Y%m%dT%H%M%SZ"),
+               "DTEND:" + (_BALD + _td(days=1, hours=1)).strftime(
+                   "%Y%m%dT%H%M%SZ") + "\r\nRRULE:FREQ=WEEKLY\r\n"
+               "SUMMARY:Serie\r\n"))
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert [t["titel"] for t in termine] == ["Normaler Termin"]
+    assert fehler is not None and "Serientermin" in fehler
+
+
+def test_duration_wird_als_ende_gelesen(server_stub):
+    """RFC 5545 erlaubt DURATION statt DTEND (Apple, manche
+    Outlook-Exporte) — ohne diese Lesung galt der Termin als punktuell und
+    `_kollisionen` filtert punktuelle Eintraege ausdruecklich weg (K4)."""
+    server_stub.rumpf = _ics(_vevent(
+        "dauer@apple", _BALD.strftime("%Y%m%dT%H%M%SZ"),
+        "DURATION:PT1H30M\r\nSUMMARY:Mit Dauer\r\n"))
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert fehler is None, fehler
+    assert len(termine) == 1
+    dauer = termine[0]["ende"] - termine[0]["beginn"]
+    assert dauer.total_seconds() == 5400, termine[0]
+
+
+def test_unlesbare_duration_wird_gezaehlt_und_gemeldet(server_stub):
+    """Was die bescheidene Auswertung nicht versteht (hier: Wochen, 'P2W'),
+    gilt wie ein fehlendes Ende — UND wird gemeldet (K4-Ruling), statt
+    kommentarlos als still 'frei' durchzugehen."""
+    server_stub.rumpf = _ics(_vevent(
+        "seltsam@irgendwer", _BALD.strftime("%Y%m%dT%H%M%SZ"),
+        "DURATION:P2W\r\nSUMMARY:Komische Dauer\r\n"))
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert len(termine) == 1
+    assert termine[0]["ende"] == termine[0]["beginn"]
+    assert fehler is not None
+    assert "unlesbar" in fehler.lower()

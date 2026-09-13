@@ -185,3 +185,38 @@ def test_fehlende_quellentabelle_reisst_termin_konflikte_nicht_ab(
     assert antwort["frei"] is False
     assert [l["quelle"] for l in antwort["quellen_luecken"]] == [
         server.FREMDE_QUELLEN_LUECKE]
+
+
+def test_teilweise_verstandene_quelle_behaelt_ihre_gueltigen_termine(
+        monkeypatch):
+    """K4 (Schlusspruefung 13.09.2026): `kalenderquellen.hole()` meldet
+    `fehler` jetzt auch fuer eine Quelle, die NUR TEILWEISE verstanden
+    wurde (Serientermin neben einem gewoehnlichen VEVENT). belegungen()
+    darf die gueltigen `termine` dabei nicht verwerfen (kein `continue`
+    mehr) — sonst gingen echte Kollisionsdaten verloren, nur weil ein Teil
+    derselben Antwort eine RRULE enthielt."""
+    server.kalenderquelle_speichern("Ivan", "https://example.test/a.ics")
+    monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: ([
+        {"beginn": _t(1, 9), "ende": _t(1, 10), "titel": "Normaler Termin",
+         "ort": "", "uid": "n"}],
+        "1 Serientermin (RRULE) wird nicht aufgeloest — dort kann etwas "
+        "liegen, das hier fehlt."))
+    eintraege, luecken = server.belegungen()
+    assert [e["titel"] for e in eintraege] == ["Normaler Termin"]
+    assert len(luecken) == 1
+    assert luecken[0]["quelle"] == "Ivan"
+    assert "Serientermin" in luecken[0]["grund"]
+
+
+def test_serientermin_laesst_termin_konflikte_nie_frei_melden(monkeypatch):
+    """Das K4-Ruling direkt am Werkzeug: eine Quelle mit einem
+    unaufgeloesten Serientermin darf `termin_konflikte` nie `frei: true`
+    liefern lassen, auch ohne dass irgendetwas kollidiert."""
+    monkeypatch.setattr(kalender, "termine_lesen", lambda *a, **k: ([], None))
+    server.kalenderquelle_speichern("Ivan", "https://example.test/a.ics")
+    monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: (
+        [], "1 Serientermin (RRULE) wird nicht aufgeloest — dort kann "
+            "etwas liegen, das hier fehlt."))
+    antwort = json.loads(server.termin_konflikte("2026-10-01", "09:00"))
+    assert antwort["frei"] is False
+    assert [l["quelle"] for l in antwort["quellen_luecken"]] == ["Ivan"]
