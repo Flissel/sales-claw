@@ -84,6 +84,24 @@ try:
 except Exception:                    # noqa: BLE001 — ohne tzdata: UTC
     _ORTSZONE = None
 
+
+def ortszone():
+    """Oeffentlicher Zugriff auf dieselbe Zone wie `_ics_zeit` oben —
+    fuer Aufrufer AUSSERHALB dieses Moduls, die eine naive Ortszeit
+    lokalisieren muessen, bevor sie sie mit einem `belegungen()`-Ergebnis
+    vergleichen (server._kollisionen, Fix-Runde 1 zu Aufgabe 4,
+    13.09.2026). `None`, wenn keine Zeitzonendaten verfuegbar sind — der
+    Aufrufer faellt dann bewusst auf UTC zurueck, statt hier fehlzuschlagen
+    (dieselbe Randbedingung wie `_ics_zeit`s eigener Rueckfall).
+
+    Ein Getter statt eines oeffentlichen Alias-Namens fuer `_ORTSZONE`: die
+    uebrigen Aufrufer dieses Moduls benutzen ausschliesslich benannte
+    Funktionen (`ics`, `eintragen`, `termine_lesen`, ...), nie ein internes
+    Attribut direkt — ein Unterstrich-Name bedeutet hier „modul-intern",
+    und das soll ueber die Modulgrenze hinweg so bleiben.
+    """
+    return _ORTSZONE
+
 # 20 s wie im Plan. Ein Kalendereintrag ist Beiwerk des Werkzeugs: er darf
 # einen Werkzeugaufruf nicht laenger aufhalten, als ein Mensch im Chat
 # wartet — die ICS-Datei entsteht ohnehin unabhaengig davon.

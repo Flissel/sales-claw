@@ -2443,15 +2443,27 @@ def _kollisionen(beginn, dauer_minuten: int):
     `belegungen()` sind dagegen durchgehend UTC-aware (kalender._ics_zeit
     rechnet jede Fremdzone auf UTC um). Ein direkter Vergleich der beiden
     wirft `TypeError: can't compare offset-naive and offset-aware
-    datetimes` — gemessen im RED-Lauf zu Aufgabe 4 (13.09.2026), nicht nur
-    vermutet. Ohne eigene Zeitzonen-Bibliothek in diesem Modul wird hier
-    NICHT umgerechnet, sondern nur die Vergleichbarkeit hergestellt: eine
-    naive Uhrzeit wird direkt als UTC aufgefasst (keine Verschiebung). Das
-    ist eine bewusst enge Notloesung fuer diese Aufgabe, keine echte
-    Zeitzonenumrechnung — siehe Bericht zu Aufgabe 4 fuer die Einordnung.
+    datetimes` — gemessen im RED-Lauf zu Aufgabe 4 (13.09.2026).
+
+    Lokalisiert wird deshalb mit der ORTSZONE (Europe/Berlin), NICHT mit
+    UTC (Fix-Runde 1, 13.09.2026 — Befund des Koordinators): eine fruehere
+    Fassung haengte hier `timezone.utc` direkt an die naive Zeit, ohne den
+    Versatz zu verrechnen. Gemessen im Container: zwei Stunden Fehler im
+    Sommer (CEST) — ein Termin von Ivan um 10:00 Ortszeit liegt bei 08:00
+    UTC, die falsch getaggte Anfrage verglich aber gegen 10:00 UTC (12:00
+    Ortszeit) und haette die Kollision VERPASST. Das waere schlimmer als
+    gar keine Pruefung gewesen: falsche Sicherheit statt keiner Aussage.
+    `kalender.ortszone()` liefert dieselbe Zone, mit der `belegungen()`s
+    fremde Eintraege ueberhaupt erst nach UTC umgerechnet wurden
+    (`kalender._ics_zeit`) — nur so ist der Vergleich unten tatsaechlich
+    aequivalent, nicht nur typkompatibel. Der Rueckfall auf UTC greift nur,
+    wenn im Container keine Zeitzonendaten verfuegbar sind (dann rechnet
+    auch `kalender.py` selbst nicht um, siehe dort) — im Test-/
+    Produktionscontainer gemessen: `kalender.ortszone()` loest auf, der
+    Rueckfall tritt also nicht ein.
     """
     if beginn.tzinfo is None:
-        beginn = beginn.replace(tzinfo=timezone.utc)
+        beginn = beginn.replace(tzinfo=kalender.ortszone() or timezone.utc)
     ende = beginn + timedelta(minutes=dauer_minuten)
     eintraege, luecken = belegungen()
     treffer = [
