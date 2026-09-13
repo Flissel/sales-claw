@@ -3989,6 +3989,21 @@ async def aktion_kalender_verbinden(request):
         return _fehlerseite(400, "Name fehlt",
                             "Ohne Namen lässt sich der Kalender später "
                             "niemandem zuordnen.")
+    # W4 (Schlusspruefung 13.09.2026): `kalenderquelle_speichern` legt per
+    # `on conflict (anzeigename)` einfach ueber eine bestehende Zeile —
+    # nennt sich ein Kollege wie die eigene Quelle, landen seine Termine in
+    # der Paarung des EIGENEN Kalenders (ui.py, `t["quelle"] ==
+    # server.EIGENE_QUELLE`) statt in der Team-Sicht. Genau die
+    # Verschmelzung, gegen die Ruling 10 gerichtet war, nur durch die
+    # Vordertuer. Case-insensitiv abgewiesen: eine Schreibvariante waere
+    # zwar keine echte Kollision in der Datenbank (der Vergleich dort ist
+    # case-sensitiv), saehe in der Liste daneben aber genauso verwirrend
+    # aus wie der exakte Name.
+    if name.casefold() == server.EIGENE_QUELLE.casefold():
+        return _fehlerseite(400, "Name vergeben", (
+            f'„{_e(server.EIGENE_QUELLE)}" ist der Name des eigenen '
+            f'Kalenders und dafür reserviert. Wähle einen anderen Namen, '
+            f'zum Beispiel deinen eigenen.'))
     # Zeitfenster wie server.belegungen()s Vorgabe (K2/W1, Schlusspruefung
     # 13.09.2026): dieselbe Zahl, die die Sicht auf /kalender spaeter fuer
     # dieselbe Quelle zeigt — sonst meldet die Sofortpruefung hier "1.284

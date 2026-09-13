@@ -206,6 +206,28 @@ def test_leerer_name_wird_abgewiesen(monkeypatch):
     assert server.kalenderquellen_lesen() == []
 
 
+def test_reservierter_name_wird_abgewiesen(monkeypatch):
+    """W4 (Schlusspruefung 13.09.2026): 'Betreiber' ist der Anzeigename der
+    EIGENEN Quelle (server.EIGENE_QUELLE) — nennt sich ein Kollege so,
+    wuerde `kalenderquelle_speichern`s `on conflict (anzeigename)` seine
+    Fremdtermine mit dem eigenen Kalender verschmelzen (ui.py paart
+    ausschliesslich ueber diesen Namen)."""
+    monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: ([], None))
+    antwort = _post({"name": "Betreiber", "url": "https://example.test/a.ics",
+                     "csrf": ui.CSRF_TOKEN})
+    assert antwort.status_code == 400, antwort.text
+    assert server.kalenderquellen_lesen() == []
+
+
+def test_reservierter_name_wird_case_insensitiv_abgewiesen(monkeypatch):
+    monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: ([], None))
+    antwort = _post({"name": "  betreiber  ",
+                     "url": "https://example.test/a.ics",
+                     "csrf": ui.CSRF_TOKEN})
+    assert antwort.status_code == 400, antwort.text
+    assert server.kalenderquellen_lesen() == []
+
+
 def test_rolle_kalender_darf_die_seite_und_sonst_nichts():
     """Die vorhandene Rolle `lesen` 'sieht alles' — also auch saemtliche
     Kontakte und den Posteingang. Fuer einen Kollegen ist das zu viel."""
