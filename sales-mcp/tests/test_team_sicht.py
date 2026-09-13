@@ -77,6 +77,23 @@ def test_monatsgitter_nennt_die_quelle():
     assert "Ivan: Kundentermin</span>" in gitter
 
 
+def test_monatsgitter_beschriftet_die_eigenen_termine_nicht(monkeypatch):
+    """Koordinator-Fix-Runde (13.09.2026): `fremde` traegt auch die
+    eigenen CalDAV-Termine (quelle == server.EIGENE_QUELLE) — die W2-Fix
+    hatte sie faelschlich mit "Betreiber: ..." beschriftet. Der eigene
+    Kalender braucht im eigenen Kalender keine Beschriftung; der Titel
+    soll dabei auch nicht unnoetig auf 16 statt 22 Zeichen gekuerzt
+    werden."""
+    eigen = [{"beginn": datetime(2026, 9, 5, 9, tzinfo=timezone.utc),
+             "ende": datetime(2026, 9, 5, 10, tzinfo=timezone.utc),
+             "titel": "Eigener Kundentermin", "ort": "",
+             "quelle": server.EIGENE_QUELLE}]
+    gitter = ui._monatsgitter((2026, 9), [], eigen)
+    assert "Betreiber:" not in gitter
+    assert 'title="Eigener Kundentermin"' in gitter
+    assert "Eigener Kundentermin</span>" in gitter
+
+
 def test_stumme_quelle_wird_auf_der_seite_genannt(monkeypatch):
     """Eine Luecke, die niemand sieht, ist schlimmer als keine Sicht."""
     monkeypatch.setattr(server, "belegungen", _belegt(

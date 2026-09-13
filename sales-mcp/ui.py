@@ -4163,10 +4163,17 @@ def _monatsgitter(monat, zeilen, fremde) -> str:
         # nicht zu unterscheiden, auf der einen Seite, deren Zweck genau
         # diese Unterscheidung ist. Im Tooltip voll ausgeschrieben, inline
         # knapp (wenig Platz je Kasten).
+        # NUR fuer FREMDE Eintraege (Koordinator-Fix-Runde, 13.09.2026):
+        # `fremde` traegt auch die eigenen CalDAV-Termine
+        # (quelle == server.EIGENE_QUELLE) — die standen zuvor faelschlich
+        # als "Betreiber: ..." beschriftet, im eigenen Kalender braucht der
+        # eigene Name keine Beschriftung, und der Titel verlor dabei
+        # unnoetig Platz (22 statt 16 Zeichen).
         quelle = str(t.get("quelle") or "")
-        tooltip = f"{quelle}: {titel_fremd}" if quelle else titel_fremd
-        inline = (f"{_kurz(quelle, 12)}: {_kurz(titel_fremd, 16)}" if quelle
-                  else _kurz(titel_fremd, 22))
+        ist_fremd = quelle and quelle != server.EIGENE_QUELLE
+        tooltip = f"{quelle}: {titel_fremd}" if ist_fremd else titel_fremd
+        inline = (f"{_kurz(quelle, 12)}: {_kurz(titel_fremd, 16)}"
+                  if ist_fremd else _kurz(titel_fremd, 22))
         belegt.setdefault(tag, []).append(
             f'<span class="e fremd" title="{_e(tooltip)}">{beginn:%H:%M} '
             f'{_e(inline)}</span>')
