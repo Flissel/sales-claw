@@ -534,8 +534,13 @@ class AnmeldeWache:
             return
         if (benutzer["rolle"] in ("lesen", "kalender")
                 and scope["method"] not in ("GET", "HEAD")
-                and scope["path"] not in ("/logout",
-                                          "/team/kalender/verbinden")):
+                and scope["path"] not in (
+                    "/logout", "/team/kalender/verbinden",
+                    # W3 (Schlusspruefung 13.09.2026): das Gegenstueck zu
+                    # "verbinden" braucht dieselbe Ausnahme — sonst kann
+                    # ausgerechnet der Kollege mit der schmalen Rolle die
+                    # eigene tote Quelle nicht entfernen.
+                    "/team/kalender/entfernen")):
             antwort = _fehlerseite(
                 403, "Nur Lesen",
                 "Diese Anmeldung darf sehen, aber nicht verändern. "
@@ -3945,8 +3950,25 @@ async def team_kalender(request):
         elif quelle["termine_zuletzt"] is not None:
             stand += f", {quelle['termine_zuletzt']} Termine"
         # Die Adresse steht hier NICHT (Spec §4).
-        zeilen.append([_e(quelle["anzeigename"]), stand])
-    tabelle = (_tabelle(["Name", "Stand"], zeilen) if zeilen else
+        # W3 (Schlusspruefung 13.09.2026): kalenderquelle_entfernen() hatte
+        # bisher keinen Aufrufer ausserhalb der Tests — setzte ein Kollege
+        # seine Adresse beim Anbieter zurueck (den Widerruf, den diese Seite
+        # ihm oben ausdruecklich anbietet), blieb die Zeile aktiv und schlug
+        # dauerhaft fehl. Je aktiver Quelle ein Knopf, nach dem Muster der
+        # uebrigen Aktionen (CSRF-Marke, einzelner POST, kein Bestaetigungs-
+        # schritt — das Entfernen ist ein Gegen-Ereignis, kein Hard-Delete:
+        # unter demselben Namen neu verbinden weckt die Zeile von selbst
+        # wieder auf, siehe kalenderquelle_entfernen()s Docstring).
+        aktion = (
+            f'<form class="aktion gefahr" method="post" '
+            f'action="/team/kalender/entfernen">'
+            f'<input type="hidden" name="quelle_id" '
+            f'value="{_e(str(quelle["id"]))}">'
+            f'<input type="hidden" name="csrf" value="{_e(CSRF_TOKEN)}">'
+            f'<button class="gefahr">Entfernen</button></form>'
+            if quelle["aktiv"] else '<span class="meta">entfernt</span>')
+        zeilen.append([_e(quelle["anzeigename"]), stand, aktion])
+    tabelle = (_tabelle(["Name", "Stand", "Aktion"], zeilen) if zeilen else
                '<p class="meta">Noch kein Kalender verbunden.</p>')
 
     wege = "".join(
@@ -4027,6 +4049,27 @@ async def aktion_kalender_verbinden(request):
         f'<p class="meta">Die Adresse ist gespeichert und wird ab jetzt nicht '
         f'mehr angezeigt.</p>'
         f'<p><a href="/team/kalender">Zur Übersicht</a></p>'))
+
+
+@_gesichert_seite
+async def aktion_kalender_entfernen(request):
+    """W3 (Schlusspruefung 13.09.2026): der einzige Aufrufer von
+    server.kalenderquelle_entfernen() ausserhalb der Tests — ohne ihn blieb
+    eine tote Quelle fuer immer aktiv und machte `frei: true` fuer sie
+    dauerhaft unmoeglich. Ein Gegen-Ereignis, kein Hard-Delete (siehe
+    kalenderquelle_entfernen()s Docstring): unter demselben Namen neu
+    verbinden weckt die Zeile von selbst wieder auf, ein Bestaetigungs-
+    schritt ist deshalb nicht noetig — dasselbe Muster wie
+    aktion_termin_absagen."""
+    form = await request.form()
+    if not _csrf_ok(form):
+        return _fehlerseite(403, "Abgewiesen",
+                            "Fehlende oder falsche CSRF-Marke.")
+    quelle_id = str(form.get("quelle_id") or "")
+    if not quelle_id:
+        return _fehlerseite(400, "Keine Quelle", "Keine Quelle angegeben.")
+    server.kalenderquelle_entfernen(quelle_id)
+    return RedirectResponse("/team/kalender", status_code=303)
 
 
 _MONATSNAMEN = ("Januar", "Februar", "März", "April", "Mai", "Juni", "Juli",
@@ -5631,6 +5674,8 @@ app = Starlette(routes=[
           methods=["POST"]),
     Route("/team/kalender", team_kalender),
     Route("/team/kalender/verbinden", aktion_kalender_verbinden,
+          methods=["POST"]),
+    Route("/team/kalender/entfernen", aktion_kalender_entfernen,
           methods=["POST"]),
     Route("/whatsapp", whatsapp),
     Route("/kontakte/wiederherstellen", aktion_kontakt_wiederherstellen,

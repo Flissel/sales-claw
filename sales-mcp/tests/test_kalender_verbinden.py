@@ -59,6 +59,11 @@ def _post(daten):
                        headers={"host": HOST_OK}, follow_redirects=False)
 
 
+def _post_entfernen(daten):
+    return CLIENT.post("/team/kalender/entfernen", data=daten,
+                       headers={"host": HOST_OK}, follow_redirects=False)
+
+
 def _client():
     # Eigener Client je Anmelde-Test (Muster aus test_login.py::_client) —
     # die Sitzung lebt im Cookie-Glas des Clients, geteilte Sitzungen
@@ -228,6 +233,43 @@ def test_reservierter_name_wird_case_insensitiv_abgewiesen(monkeypatch):
     assert server.kalenderquellen_lesen() == []
 
 
+def test_entfernen_knopf_steht_je_aktiver_quelle_auf_der_seite(monkeypatch):
+    """W3 (Schlusspruefung 13.09.2026): je Quelle ein Knopf auf der
+    Verbindungsseite selbst — vorher gab es dafuer ueberhaupt keinen
+    Aufrufer ausserhalb der Tests."""
+    monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: ([], None))
+    _post({"name": "Ivan", "url": "https://example.test/a.ics",
+          "csrf": ui.CSRF_TOKEN})
+    seite = _get("/team/kalender").text
+    assert 'action="/team/kalender/entfernen"' in seite
+    quelle_id = server.kalenderquellen_lesen()[0]["id"]
+    assert f'value="{quelle_id}"' in seite
+
+
+def test_entfernen_deaktiviert_die_quelle(monkeypatch):
+    monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: ([], None))
+    _post({"name": "Ivan", "url": "https://example.test/a.ics",
+          "csrf": ui.CSRF_TOKEN})
+    quelle_id = server.kalenderquellen_lesen()[0]["id"]
+    antwort = _post_entfernen({"quelle_id": quelle_id, "csrf": ui.CSRF_TOKEN})
+    assert antwort.status_code == 303, antwort.text
+    assert server.kalenderquellen_lesen() == []
+    # Nicht geloescht, nur deaktiviert (Gegen-Ereignis) — die Zeile bleibt,
+    # zaehlt aber nicht mehr als aktive Quelle.
+    alle = server.kalenderquellen_lesen(nur_aktive=False)
+    assert len(alle) == 1 and alle[0]["aktiv"] is False
+
+
+def test_entfernen_ohne_csrf_passiert_nichts(monkeypatch):
+    monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: ([], None))
+    _post({"name": "Ivan", "url": "https://example.test/a.ics",
+          "csrf": ui.CSRF_TOKEN})
+    quelle_id = server.kalenderquellen_lesen()[0]["id"]
+    antwort = _post_entfernen({"quelle_id": quelle_id})
+    assert antwort.status_code == 403
+    assert server.kalenderquellen_lesen()[0]["aktiv"] is True
+
+
 def test_rolle_kalender_darf_die_seite_und_sonst_nichts():
     """Die vorhandene Rolle `lesen` 'sieht alles' — also auch saemtliche
     Kontakte und den Posteingang. Fuer einen Kollegen ist das zu viel."""
@@ -300,3 +342,13 @@ def test_end_zu_end_anmeldung_rolle_kalender(scharf, monkeypatch):
         headers={"host": HOST_OK}, follow_redirects=False)
     assert verbunden.status_code == 200, verbunden.text
     assert server.kalenderquellen_lesen()[0]["anzeigename"] == "Ivan"
+
+    # Entfernen (W3) ist dieselbe Ausnahme wie Verbinden — sonst kann
+    # ausgerechnet diese Rolle die eigene tote Quelle nicht loswerden.
+    quelle_id = server.kalenderquellen_lesen()[0]["id"]
+    entfernt = client.post(
+        "/team/kalender/entfernen",
+        data={"quelle_id": quelle_id, "csrf": ui.CSRF_TOKEN},
+        headers={"host": HOST_OK}, follow_redirects=False)
+    assert entfernt.status_code == 303, entfernt.text
+    assert server.kalenderquellen_lesen() == []
