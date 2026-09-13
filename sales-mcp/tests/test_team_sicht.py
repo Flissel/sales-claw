@@ -57,6 +57,26 @@ def test_fremder_termin_traegt_den_namen(monkeypatch):
     assert "Ivan" in seite
 
 
+def test_monatsgitter_nennt_die_quelle():
+    """W2 (Schlusspruefung 13.09.2026): der bisherige Seiten-Test
+    (test_fremder_termin_traegt_den_namen oben) prueft nur 'Ivan' IRGENDWO
+    auf der Seite — das trifft schon durch die LISTE weiter unten zu,
+    waehrend das GITTER (das Bild, auf das ein Mensch tatsaechlich schaut)
+    den Namen gar nicht trug: ein Kollegentermin war dort von einem
+    eigenen CalDAV-Eintrag nicht zu unterscheiden. Direkt gegen das
+    Gitter-HTML, nicht gegen die ganze Seite."""
+    fremd = [{"beginn": datetime(2026, 9, 5, 9, tzinfo=timezone.utc),
+              "ende": datetime(2026, 9, 5, 10, tzinfo=timezone.utc),
+              "titel": "Kundentermin", "ort": "", "quelle": "Ivan"}]
+    gitter = ui._monatsgitter((2026, 9), [], fremd)
+    assert "Ivan" in gitter
+    # Sowohl inline als auch im Tooltip, nicht nur an einer der beiden
+    # Stellen (die Notiz im Ledger hatte behauptet, es stuende "nur im
+    # Tooltip" — dort stand es tatsaechlich an KEINER der beiden Stellen).
+    assert 'title="Ivan: Kundentermin"' in gitter
+    assert "Ivan: Kundentermin</span>" in gitter
+
+
 def test_stumme_quelle_wird_auf_der_seite_genannt(monkeypatch):
     """Eine Luecke, die niemand sieht, ist schlimmer als keine Sicht."""
     monkeypatch.setattr(server, "belegungen", _belegt(

@@ -4090,9 +4090,19 @@ def _monatsgitter(monat, zeilen, fremde) -> str:
         if not tag.startswith(f"{jahr:04d}-{mon:02d}"):
             continue
         titel_fremd = str(t["titel"])
+        # W2 (Schlusspruefung 13.09.2026): die Quelle steht dazu, genau wie
+        # in der Liste weiter unten (dort als eigener Badge) — sonst ist
+        # ein Kollegentermin im Gitter von einem eigenen CalDAV-Eintrag
+        # nicht zu unterscheiden, auf der einen Seite, deren Zweck genau
+        # diese Unterscheidung ist. Im Tooltip voll ausgeschrieben, inline
+        # knapp (wenig Platz je Kasten).
+        quelle = str(t.get("quelle") or "")
+        tooltip = f"{quelle}: {titel_fremd}" if quelle else titel_fremd
+        inline = (f"{_kurz(quelle, 12)}: {_kurz(titel_fremd, 16)}" if quelle
+                  else _kurz(titel_fremd, 22))
         belegt.setdefault(tag, []).append(
-            f'<span class="e fremd" title="{_e(titel_fremd)}">{beginn:%H:%M} '
-            f'{_e(_kurz(titel_fremd, 22))}</span>')
+            f'<span class="e fremd" title="{_e(tooltip)}">{beginn:%H:%M} '
+            f'{_e(inline)}</span>')
 
     heute_iso = date.today().isoformat()
     kaesten = ['<div class="tagkopf">' + t + "</div>" for t in _WOCHENTAGE]
