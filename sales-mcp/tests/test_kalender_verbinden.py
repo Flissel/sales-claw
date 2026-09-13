@@ -172,6 +172,62 @@ def test_verbinden_meldet_die_zahl_der_termine(monkeypatch):
     assert server.kalenderquellen_lesen()[0]["anzeigename"] == "Ivan"
 
 
+def _ics_serie_und_normal(normal_beginn, normal_ende, serie_beginn,
+                          serie_ende) -> bytes:
+    fmt = "%Y%m%dT%H%M%SZ"
+    return (
+        "BEGIN:VCALENDAR\r\n"
+        "VERSION:2.0\r\n"
+        "BEGIN:VEVENT\r\n"
+        "UID:normal@test\r\n"
+        f"DTSTART:{normal_beginn.strftime(fmt)}\r\n"
+        f"DTEND:{normal_ende.strftime(fmt)}\r\n"
+        "SUMMARY:Normaler Termin\r\n"
+        "END:VEVENT\r\n"
+        "BEGIN:VEVENT\r\n"
+        "UID:teamrunde@test\r\n"
+        f"DTSTART:{serie_beginn.strftime(fmt)}\r\n"
+        f"DTEND:{serie_ende.strftime(fmt)}\r\n"
+        "RRULE:FREQ=WEEKLY;BYDAY=MO\r\n"
+        "SUMMARY:Teamrunde\r\n"
+        "END:VEVENT\r\n"
+        "END:VCALENDAR\r\n").encode("utf-8")
+
+
+def test_verbinden_speichert_trotz_serientermin_und_zeigt_den_hinweis(
+        monkeypatch):
+    """BLOCKER (Koordinator-Fix-Runde, 13.09.2026): seit K4 meldet hole()
+    `fehler` auch dann, wenn die Quelle VOLLSTAENDIG verstanden wurde und
+    nur zusaetzlich eine Serie enthaelt — ui.py behandelte jeden `fehler`
+    bisher als Totalausfall ("Nichts wurde gespeichert"). Ein gewoehnlicher
+    Google-/Outlook-Kalender mit einer woechentlichen Teamrunde war damit
+    GAR NICHT MEHR verbindbar — Spec-Pruefpunkt 1, der Torschritt.
+
+    Echtes ICS mit RRULE UND einem gewoehnlichen Termin durch die
+    tatsaechliche Route, nicht durch einen vollstaendig gestubbten
+    hole() — der stubbt genau die Fensterung/Zaehlung weg, um die es hier
+    geht."""
+    jetzt = datetime.now(timezone.utc)
+    monkeypatch.setattr(kalenderquellen, "_ziel_erlaubt",
+                        lambda url: (True, None))
+    monkeypatch.setattr(kalenderquellen, "_antwort_lesen", lambda url: (
+        _FakeAntwort(_ics_serie_und_normal(
+            jetzt + timedelta(days=3), jetzt + timedelta(days=3, hours=1),
+            jetzt + timedelta(days=5), jetzt + timedelta(days=5, hours=1)))))
+    antwort = _post({"name": "Ivan", "url": "https://example.test/a.ics",
+                     "csrf": ui.CSRF_TOKEN})
+    assert antwort.status_code == 200, antwort.text
+    # Gespeichert — nicht abgewiesen.
+    assert server.kalenderquellen_lesen()[0]["anzeigename"] == "Ivan"
+    assert "Nichts wurde gespeichert" not in antwort.text
+    # Der verstandene Termin zaehlt und wird genannt ...
+    assert "1 Termin" in antwort.text
+    assert "Normaler Termin" in antwort.text
+    # ... der Vorbehalt steht DANEBEN, nicht als Totalabweisung.
+    assert "Serientermin" in antwort.text
+    assert "RRULE" in antwort.text
+
+
 def test_falscher_link_wird_benannt_nicht_nur_abgewiesen(monkeypatch):
     """Der haeufigste Bedienfehler. 'Ungueltig' hilft niemandem weiter."""
     monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: (

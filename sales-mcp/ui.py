@@ -4042,7 +4042,18 @@ async def aktion_kalender_verbinden(request):
     # dieselbe Quelle zeigt — sonst meldet die Sofortpruefung hier "1.284
     # Termine" (die ganze Historie) und die spaetere Sicht etwas anderes.
     termine, fehler = server.kalenderquellen.hole(url, 0, 60)
-    if fehler:
+    # BLOCKER (Koordinator-Fix-Runde, 13.09.2026): `fehler` ist seit K4
+    # NICHT mehr gleichbedeutend mit "nichts verstanden" — hole() meldet
+    # ihn auch dann, wenn die Quelle VOLLSTAENDIG verstanden wurde und nur
+    # zusaetzlich Serientermine/unlesbare Dauern enthaelt (siehe
+    # kalenderquellen.hole()s Docstring). Ein gewoehnlicher Google-/
+    # Outlook-Kalender mit einer woechentlichen Teamrunde waere sonst gar
+    # nicht mehr verbindbar gewesen — genau der Torschritt aus Spec-
+    # Pruefpunkt 1. Abgewiesen wird nur, wenn GAR NICHTS Verwertbares
+    # ankam (`termine` leer); sonst wie in server.belegungen() (K3/K4):
+    # speichern, und den Vorbehalt NEBEN die Zahl stellen statt die ganze
+    # Verbindung zu verweigern.
+    if fehler and not termine:
         return _seite("Kalender verbinden", (
             f'<h1>Das hat nicht geklappt</h1>'
             f'<p class="fehler">{_e(fehler)}</p>'
@@ -4053,10 +4064,12 @@ async def aktion_kalender_verbinden(request):
     if termine:
         naechster = (f" Der nächste ist „{_e(termine[0]['titel'])}" + '" am '
                      f"{_zeit(termine[0]['beginn'])}.")
+    vorbehalt = (f'<p class="hinweis">{_e(fehler)}</p>' if fehler else "")
     return _seite("Kalender verbunden", (
         f'<h1>Passt</h1>'
         f'<p>Ich sehe {len(termine)} Termin{"e" if len(termine) != 1 else ""} '
         f'in deinem Kalender.{naechster}</p>'
+        + vorbehalt +
         f'<p class="meta">Die Adresse ist gespeichert und wird ab jetzt nicht '
         f'mehr angezeigt.</p>'
         f'<p><a href="/team/kalender">Zur Übersicht</a></p>'))
