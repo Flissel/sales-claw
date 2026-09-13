@@ -804,3 +804,20 @@ def test_verschieben_legt_neuen_termin_an_und_sagt_den_alten_ab():
                      "type = 'termin_abgesagt'")[0]["n"] == 1
     assert server._q("select count(*) n from activities where "
                      "type = 'termin'")[0]["n"] == 2
+
+
+def test_termine_lesen_liefert_auch_das_ende(kalender_konfiguriert):
+    """DTEND wurde im ganzen Baum nur GESCHRIEBEN, nie gelesen — ohne
+    Endzeit ist keine Ueberlappung berechenbar (Spec §2.2)."""
+    STUB.rumpf = (
+        '<?xml version="1.0"?><multistatus xmlns="DAV:">'
+        '<response><propstat><prop><calendar-data>'
+        "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:u1\r\n"
+        "DTSTART;TZID=Europe/Berlin:20261001T090000\r\n"
+        "DTEND;TZID=Europe/Berlin:20261001T104500\r\n"
+        "SUMMARY:Mit Ende\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        '</calendar-data></prop></propstat></response></multistatus>'
+    ).encode("utf-8")
+    termine, fehler = kalender.termine_lesen()
+    assert fehler is None, fehler
+    assert (termine[0]["ende"] - termine[0]["beginn"]).total_seconds() == 6300

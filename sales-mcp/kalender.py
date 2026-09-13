@@ -681,9 +681,10 @@ def _ics_zeit(wert: str, tzid: str = ""):
 def termine_lesen(tage_zurueck: int = 7, tage_voraus: int = 60):
     """Termine aus dem CalDAV-Kalender -> (liste, fehler).
 
-    `liste` = [{"beginn": datetime, "titel": str, "ort": str, "uid": str}],
-    aufsteigend. Rein lesend; wirft nie — ein Kalenderproblem darf den
-    Tab nicht kosten, es kostet nur die Fremdtermine.
+    `liste` = [{"beginn": datetime, "ende": datetime, "titel": str,
+    "ort": str, "uid": str}], aufsteigend. Rein lesend; wirft nie — ein
+    Kalenderproblem darf den Tab nicht kosten, es kostet nur die
+    Fremdtermine.
     """
     url, user, passwort = konfiguration()
     if not (url and user and passwort):
@@ -714,8 +715,16 @@ def termine_lesen(tage_zurueck: int = 7, tage_voraus: int = 60):
                            _ics_tzid(block, "DTSTART"))
         if beginn is None:
             continue
+        ende = _ics_zeit(_ics_feld(block, "DTEND"),
+                         _ics_tzid(block, "DTEND"))
         termine.append({
             "beginn": beginn,
+            # Ergaenzt 12.09.2026: DTEND wurde im Baum bis dahin nur
+            # GESCHRIEBEN (ics()), nie gelesen — ohne Endzeit laesst sich
+            # keine Ueberlappung berechnen (Spec §2.2). Nur ERGAENZT, die
+            # beiden Anzeigestellen in ui.py bleiben unberuehrt.
+            # Fehlt DTEND, gilt der Termin als punktuell statt geraten.
+            "ende": ende if ende and ende > beginn else beginn,
             "titel": _ics_feld(block, "SUMMARY")[:200],
             "ort": _ics_feld(block, "LOCATION")[:120],
             "uid": _ics_feld(block, "UID")[:120]})

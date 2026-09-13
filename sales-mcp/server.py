@@ -65,6 +65,7 @@ import sperrliste
 # Modul ohne Datenbank und ohne Rückimport — und der einzige Ort, an dem
 # der neue ausgehende Pfad dieser Stufe steht.
 import kalender
+import kalenderquellen
 import konferenz
 # LID-Auflösung (Stufe 11): wem gehört eine `@lid`-Kennung? Wieder ein Modul
 # ohne Datenbank und ohne Rückimport — es kennt nur HTTP und nummern.py, und
@@ -2371,6 +2372,44 @@ def kalenderquelle_entfernen(quelle_id: str) -> bool:
     return bool(_q(
         "update kalender_quellen set aktiv = false, url = null "
         "where id = %s and aktiv returning id", (quelle_id,)))
+
+
+# Anzeigename der eigenen Quelle. Er steht neben fremden Namen in derselben
+# Liste, deshalb ein Name und kein leeres Feld.
+EIGENE_QUELLE = "Betreiber"
+
+
+def belegungen(tage_voraus: int = 60):
+    """Alle Termine aller aktiven Quellen -> (eintraege, luecken).
+
+    `eintraege` = [{"beginn", "ende", "titel", "ort", "quelle"}], aufsteigend.
+    `luecken`   = [{"quelle", "grund"}] — Quellen, die gerade nichts sagen.
+
+    DIE LUECKEN SIND DER PUNKT (Spec §2.2): eine Quelle, die nicht
+    antwortet, gilt NICHT als frei. Wer sie stillschweigend ueberginge,
+    liesse den Bot ausgerechnet dann Termine vorschlagen, wenn er am
+    wenigsten weiss. Jeder Aufrufer muss die Luecken weiterreichen.
+    """
+    eintraege, luecken = [], []
+
+    eigene, fehler = kalender.termine_lesen(0, tage_voraus)
+    if fehler:
+        luecken.append({"quelle": EIGENE_QUELLE, "grund": fehler})
+    for t in eigene:
+        eintraege.append({**t, "quelle": EIGENE_QUELLE})
+
+    for quelle in kalenderquellen_lesen():
+        termine, fehler = kalenderquellen.hole(quelle["url"])
+        kalenderquelle_stand_setzen(
+            quelle["id"], None if fehler else len(termine), fehler)
+        if fehler:
+            luecken.append({"quelle": quelle["anzeigename"], "grund": fehler})
+            continue
+        for t in termine:
+            eintraege.append({**t, "quelle": quelle["anzeigename"]})
+
+    eintraege.sort(key=lambda e: e["beginn"])
+    return eintraege, luecken
 
 
 def _medien_herkunft(name: str, m) -> str:
