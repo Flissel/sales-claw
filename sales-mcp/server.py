@@ -2358,8 +2358,19 @@ def kalenderquelle_stand_setzen(quelle_id: str, anzahl, fehler) -> None:
 
 
 def kalenderquelle_entfernen(quelle_id: str) -> bool:
-    return bool(_q("delete from kalender_quellen where id = %s returning id",
-                   (quelle_id,)))
+    """Aus Betreibersicht "entfernt" — technisch ein Gegen-Ereignis, kein
+    DELETE: `sales_app` hat auf keiner Tabelle ein Loeschrecht
+    (db/provision.sql: „Bewusst NICHT vergeben: DELETE (nirgends)"), und
+    dieses Projekt macht dafuer keine Ausnahme (wie ueberall im Haus:
+    archivieren statt loeschen, siehe `wiedervorlage_erledigt`,
+    `absender_beachtet`). Die Zeile bleibt bestehen (aktiv = false), aber
+    die GEHEIME Adresse wird vernichtet (url = null) — der Kollege
+    erwartet, dass sie weg ist, nicht dass sie nur ausgeblendet daliegt.
+    Verbindet er seinen Kalender unter demselben Namen neu, weckt
+    `kalenderquelle_speichern` genau diese Zeile von selbst wieder auf."""
+    return bool(_q(
+        "update kalender_quellen set aktiv = false, url = null "
+        "where id = %s and aktiv returning id", (quelle_id,)))
 
 
 def _medien_herkunft(name: str, m) -> str:

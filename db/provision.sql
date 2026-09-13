@@ -122,12 +122,18 @@ begin
     -- den Kalender. Sie wird nie angezeigt und nie geloggt (Spec §4).
     -- `art` ist heute nur 'ics'; der eigene CalDAV-Kalender bleibt in der
     -- .env, weil er Zugangsdaten braucht und genau einer ist.
+    -- `url` darf null sein (Fix-Runde 2, 13.09.2026): `sales_app` hat auf
+    -- keiner Tabelle ein DELETE-Recht, dieses Projekt macht dafuer keine
+    -- Ausnahme (Gegen-Ereignis statt Loeschung, wie ueberall im Haus).
+    -- kalenderquelle_entfernen() deaktiviert die Zeile stattdessen (aktiv
+    -- = false) und vernichtet dabei die Adresse (url = null) — leer darf
+    -- sie trotzdem nie sein, nur fehlend.
     execute format($ddl$
       create table if not exists %I.kalender_quellen (
         id uuid primary key default gen_random_uuid(),
         anzeigename text not null check (anzeigename <> ''),
         art text not null default 'ics' check (art in ('ics')),
-        url text not null check (url <> ''),
+        url text check (url is null or url <> ''),
         aktiv boolean not null default true,
         zuletzt_gelesen timestamptz,
         letzter_fehler text,
@@ -137,6 +143,14 @@ begin
     execute format('create unique index if not exists '
                    'kalender_quellen_name_idx on %I.kalender_quellen '
                    '(anzeigename)', s);
+    -- `url` nachtraeglich nullbar gemacht (Fix-Runde 2, 13.09.2026): auf
+    -- bereits bestehenden Installationen wirkt das obige `create table if
+    -- not exists` nicht mehr, deshalb per ALTER nachgezogen; idempotent
+    -- wie beim drafts_channel_check-Muster darunter.
+    execute format('alter table %I.kalender_quellen alter column url drop not null', s);
+    execute format('alter table %I.kalender_quellen drop constraint if exists kalender_quellen_url_check', s);
+    execute format($chk$alter table %I.kalender_quellen add constraint kalender_quellen_url_check
+      check (url is null or url <> '')$chk$, s);
     -- CC fuer E-Mail-Entwuerfe (03.09.2026); add column, weil die Tabelle
     -- auf beiden Schemata laengst existiert.
     execute format('alter table %I.drafts add column if not exists cc text', s);
