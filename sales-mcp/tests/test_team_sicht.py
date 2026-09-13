@@ -26,9 +26,13 @@ def ohne_kollegenquellen():
     """`kalenderquellen_lesen()` fragt echte Zeilen ab — ohne eigene
     Aufraeumung koennten liegen gebliebene Zeilen anderer Testdateien den
     'nichts verbunden'-Test unten faelschlich gruen ODER rot machen (Muster
-    wie test_kalender_verbinden.py::leer)."""
+    wie test_kalender_verbinden.py::leer). `activities`/`leads` dazu (Fix-
+    Runde 2, WICHTIG 1): der neue Paarungstest legt einen echten CRM-Termin
+    an — ohne Truncate wuerde er in andere Testdateien durchsickern (Muster
+    wie test_kalender_zeit.py::leer)."""
     with server.pool.connection() as conn:
-        conn.execute("truncate sales_test.kalender_quellen cascade")
+        conn.execute("truncate sales_test.kalender_quellen, "
+                     "sales_test.activities, sales_test.leads cascade")
     yield
 
 
@@ -91,3 +95,51 @@ def test_ohne_jede_quelle_sagt_die_seite_es_statt_zu_schweigen(monkeypatch):
     seite = antwort.text
     assert "Kein Kalender verbunden" in seite
     assert "Keine Einträge im Zeitfenster." not in seite
+
+
+def test_kollegentermin_wird_nicht_mit_crm_termin_verschmolzen(monkeypatch):
+    """Fix-Runde 2 (Pruefung, WICHTIG 1): 'zwei Quellen' darf nur heissen,
+    dass DIESELBE Buchung im CRM UND im EIGENEN Kalender des Betreibers
+    steht — nicht, dass ein CRM-Termin zufaellig aehnlich zu EINEM
+    KOLLEGENTERMIN liegt. Sonst verschluckt die Paarung Ivans eigene Zeile
+    und genau die Information, fuer die die Team-Sicht gebaut wurde (dass
+    Ivan zu dieser Zeit belegt ist), geht verloren."""
+    lead = server._q(
+        "insert into leads (name, phone, source) values "
+        "('Kollisionstest', '+491701112233', 'whatsapp') returning id"
+    )[0]["id"]
+    server._q(
+        "insert into activities (lead_id, type, payload) values "
+        "(%s, 'termin', %s)",
+        (lead, server._json({
+            "datum": "2026-09-05", "uhrzeit": "19:00",
+            "thema": "Video Call mit Sophie & Stephane",
+            "ort": "Büro", "uid": "crm-1"})))
+    monkeypatch.setattr(server, "belegungen", _belegt({
+        "beginn": datetime(2026, 9, 5, 17, 0, tzinfo=timezone.utc),
+        "ende": datetime(2026, 9, 5, 18, 0, tzinfo=timezone.utc),
+        "titel": "Video Call mit Sophie & Stephane",
+        "ort": "https://meet.google.com/ivan", "quelle": "Ivan"}))
+    antwort = _get("/kalender")
+    assert antwort.status_code == 200
+    seite = antwort.text
+    assert "zwei Quellen" not in seite, (
+        "Ivans Termin wurde mit dem CRM-Termin verschmolzen statt eine "
+        "eigene Zeile zu bleiben")
+    assert "Ivan" in seite
+
+
+def test_verbunden_aber_leer_ist_nicht_dasselbe_wie_nichts_verbunden(
+        monkeypatch):
+    """Fix-Runde 2 (Pruefung, WICHTIG 2): eine aktive Quelle, die gerade
+    null Termine liefert, ist etwas anderes als 'nichts verbunden' — sonst
+    genau die Verwechslung, die Fix-Runde 1 fuer den umgekehrten Fall schon
+    behoben hat."""
+    server.kalenderquelle_speichern(
+        "Ivan", "https://calendar.example.invalid/ivan.ics")
+    monkeypatch.setattr(server, "belegungen", _belegt())
+    antwort = _get("/kalender")
+    assert antwort.status_code == 200
+    seite = antwort.text
+    assert "Kein Kalender verbunden" not in seite
+    assert "Keine Einträge im Zeitfenster." in seite

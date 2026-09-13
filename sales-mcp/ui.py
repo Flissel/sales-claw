@@ -3701,9 +3701,19 @@ async def kalender_seite(request):
             "_index": i, "titel": str(last.get("thema") or ""),
             "beginn": beginn, "ort": str(last.get("ort") or ""),
             "quelle": "store", "lead_id": z["lead_id"]})
+    # Aufgabe 6 Fix-Runde 2 (Pruefung, WICHTIG 1): NUR der eigene Kalender
+    # (server.EIGENE_QUELLE) nimmt an der Paarung teil, nicht `eintraege` in
+    # voller Breite. "Zwei Quellen" bedeutet: DIESELBE Buchung steht im CRM
+    # UND im eigenen Kalender des Betreibers — nicht, dass ein CRM-Termin
+    # zufaellig aehnlich heisst und aehnlich liegt wie EIN KOLLEGENTERMIN.
+    # Wuerden Kollegen-Eintraege hier mitgepaart, koennte `_termine_paaren`
+    # Ivans Termin mit einem fremden CRM-Termin verschmelzen — er verschwaende
+    # als eigene Zeile, und genau die Information, fuer die die Team-Sicht
+    # gebaut wurde (dass Ivan zu dieser Zeit belegt ist), ginge verloren.
     importierte_normalisiert = [
         {"titel": t["titel"], "beginn": t["beginn"], "ort": t["ort"],
-         "quelle": "caldav"} for t in eintraege]
+         "quelle": "caldav"} for t in eintraege
+        if t["quelle"] == server.EIGENE_QUELLE]
     paar_je_index = {p["_index"]: p
                      for p in _termine_paaren(eigene_normalisiert,
                                               importierte_normalisiert)
