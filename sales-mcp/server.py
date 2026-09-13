@@ -2396,6 +2396,11 @@ def kalenderquelle_entfernen(quelle_id: str) -> bool:
 # Liste, deshalb ein Name und kein leeres Feld.
 EIGENE_QUELLE = "Betreiber"
 
+# Luecken-Bezeichnung, wenn `kalender_quellen` selbst fehlt oder nicht lesbar
+# ist (K3, Schlusspruefung 13.09.2026) — kein Name aus der Tabelle, denn die
+# Tabelle ist ja gerade das Problem.
+FREMDE_QUELLEN_LUECKE = "Kollegen-Kalender"
+
 
 def belegungen(tage_voraus: int = 60):
     """Alle Termine aller aktiven Quellen -> (eintraege, luecken).
@@ -2416,7 +2421,26 @@ def belegungen(tage_voraus: int = 60):
     for t in eigene:
         eintraege.append({**t, "quelle": EIGENE_QUELLE})
 
-    for quelle in kalenderquellen_lesen():
+    try:
+        fremde_quellen = kalenderquellen_lesen()
+    except psycopg.Error as e:
+        # K3 (Schlusspruefung 13.09.2026): db/provision.sql laeuft NUR in
+        # CI — auf einer Installation, auf der es noch nicht gegen die
+        # Produktionsdatenbank gefahren wurde, fehlt `kalender_quellen`
+        # (42P01) oder ist nicht lesbar. Ohne diesen Fang risse das
+        # @_gesichert der AUFRUFENDEN Funktion (termin_bestaetigen,
+        # termin_einladen, termin_konflikte) komplett ab — der Termin
+        # wuerde gar nicht erst gebucht, nicht nur die Kollisionspruefung.
+        # Eine fehlende/unlesbare Quellentabelle kostet wie eine
+        # unerreichbare Quelle hoechstens die Fremdtermine: als Luecke
+        # gemeldet, der eigene Kalender bleibt unberuehrt.
+        luecken.append({"quelle": FREMDE_QUELLEN_LUECKE, "grund": (
+            f"Kollegen-Kalender sind gerade nicht abrufbar "
+            f"({e.sqlstate or type(e).__name__}) — dort koennen Termine "
+            f"liegen, die hier fehlen.")})
+        fremde_quellen = []
+
+    for quelle in fremde_quellen:
         # Dasselbe Fenster wie beim eigenen Kalender oben (K2/W1,
         # Schlusspruefung 13.09.2026): `tage_zurueck=0` hier explizit statt
         # `hole()`s eigener Vorgabe (7) ueberlassen — sonst haette „die

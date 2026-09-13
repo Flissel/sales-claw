@@ -3,6 +3,7 @@
 Der Betreiber hat das am 12.09.2026 ausdruecklich verlangt: "dass Ivans und
 meiner dann beruecksichtigt wird". Geprueft wird gegen JEDE aktive Quelle.
 """
+import json
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -137,3 +138,50 @@ def test_eigener_kalenderfehler_ist_auch_eine_luecke(monkeypatch):
                         lambda *a, **k: ([], "Kalender nicht erreichbar."))
     eintraege, luecken = server.belegungen()
     assert [l["quelle"] for l in luecken] == ["Betreiber"]
+
+
+@pytest.fixture
+def ohne_kalender_quellen():
+    """Simuliert eine Installation, auf der db/provision.sql noch nicht
+    gegen die Datenbank gefahren wurde (K3, Schlusspruefung 13.09.2026):
+    `kalender_quellen` fehlt. Umbenennen statt DROP + CREATE — so bleibt
+    die exakte Spalten-/Constraint-Definition unangetastet und die Zeile
+    kommt beim Zurueckbenennen unveraendert wieder."""
+    with server.pool.connection() as conn:
+        conn.execute("alter table sales_test.kalender_quellen "
+                     "rename to kalender_quellen_versteckt")
+    try:
+        yield
+    finally:
+        with server.pool.connection() as conn:
+            conn.execute("alter table sales_test.kalender_quellen_versteckt "
+                         "rename to kalender_quellen")
+
+
+def test_fehlende_quellentabelle_kostet_nur_die_fremdtermine(
+        monkeypatch, ohne_kalender_quellen):
+    """K3: ohne `kalender_quellen` darf hoechstens die Fremdsicht ausfallen
+    — der eigene Kalender bleibt da, gemeldet als EINE Luecke statt eines
+    harten Fehlers."""
+    monkeypatch.setattr(kalender, "termine_lesen", lambda *a, **k: ([
+        {"beginn": _t(1, 14), "ende": _t(1, 15), "titel": "Eigener",
+         "ort": "", "uid": "e"}], None))
+    eintraege, luecken = server.belegungen()
+    assert [e["titel"] for e in eintraege] == ["Eigener"]
+    assert len(luecken) == 1
+    assert luecken[0]["quelle"] == server.FREMDE_QUELLEN_LUECKE
+
+
+def test_fehlende_quellentabelle_reisst_termin_konflikte_nicht_ab(
+        monkeypatch, ohne_kalender_quellen):
+    """Der eigentliche Schaden aus dem Pruefbericht: `@_gesichert` faengt
+    einen unbehandelten psycopg.Error der AUFRUFENDEN Funktion ab — ohne
+    den Fang in belegungen() waere termin_konflikte() (und ebenso
+    termin_bestaetigen/termin_einladen) insgesamt tot statt nur die
+    Kollisionspruefung gegen Kollegen-Kalender."""
+    monkeypatch.setattr(kalender, "termine_lesen", lambda *a, **k: ([], None))
+    antwort = json.loads(server.termin_konflikte("2026-10-01", "09:00"))
+    assert "fehler" not in antwort, antwort
+    assert antwort["frei"] is False
+    assert [l["quelle"] for l in antwort["quellen_luecken"]] == [
+        server.FREMDE_QUELLEN_LUECKE]
