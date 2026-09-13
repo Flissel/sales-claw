@@ -175,6 +175,7 @@ grant select, insert, update on sales.drafts   to sales_app;
 grant select, insert, update on sales.personas to sales_app;
 grant select, insert, update on sales.benutzer to sales_app;
 grant select, insert, update on sales.medien_meta to sales_app;
+grant select, insert, update on sales.kalender_quellen to sales_app;
 -- Bewusst NICHT vergeben: DELETE (nirgends), UPDATE/TRUNCATE auf activities.
 
 -- Testschema: voll berechtigt inkl. TRUNCATE — die Test-Fixture setzt

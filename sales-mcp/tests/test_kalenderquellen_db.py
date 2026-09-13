@@ -62,6 +62,30 @@ def test_fehler_loescht_den_alten_zaehler_nicht():
     assert q["letzter_fehler"] == "Zeitgrenze"
 
 
+def test_zweiter_erfolgreicher_aufruf_aktualisiert_zaehler():
+    """Ein zweiter erfolgreicher Abruf mit einer anderen Zahl muss den
+    Zaehler wirklich weiterschreiben — sonst friert er beim ersten Wert
+    ein (z.B. bei vertauschten coalesce-Argumenten)."""
+    qid = server.kalenderquelle_speichern("Ivan", "https://example.test/a.ics")
+    server.kalenderquelle_stand_setzen(qid, 14, None)
+    server.kalenderquelle_stand_setzen(qid, 20, None)
+    q = server.kalenderquellen_lesen()[0]
+    assert q["termine_zuletzt"] == 20
+
+
+def test_erfolg_nach_fehler_loescht_den_fehler():
+    """Klappt der naechste Abruf wieder, muss der alte Fehler verschwinden
+    und der neue Zaehlerstand stehen — sonst zeigt die Seite dauerhaft
+    einen Fehler, der laengst behoben ist."""
+    qid = server.kalenderquelle_speichern("Ivan", "https://example.test/a.ics")
+    server.kalenderquelle_stand_setzen(qid, 14, None)
+    server.kalenderquelle_stand_setzen(qid, None, "Zeitgrenze")
+    server.kalenderquelle_stand_setzen(qid, 20, None)
+    q = server.kalenderquellen_lesen()[0]
+    assert q["termine_zuletzt"] == 20
+    assert q["letzter_fehler"] is None
+
+
 def test_entfernen():
     qid = server.kalenderquelle_speichern("Ivan", "https://example.test/a.ics")
     assert server.kalenderquelle_entfernen(qid) is True
