@@ -97,6 +97,18 @@ git status --porcelain --untracked-files=no    # muss leer sein
 
 ## 3. Einspielen
 
+**Zuerst, VOR dem Stack-Neustart: `db/provision.sql` gegen die Produktionsdatenbank
+fahren.** Dieser Durchgang bringt die Stufe „Kalenderquellen und Team-Sicht"
+(`sales.kalender_quellen`, die erweiterte Rolle `kalender` auf `sales.benutzer`) — und
+`provision.sql` läuft **nirgends automatisch**, `deploy/update.sh` ruft es nicht auf.
+Befehl und DSN-Sicherheitsmuster (Host-Umgebungsvariable statt Kommandozeile) stehen in
+[03_RUNBOOK.md](03_RUNBOOK.md), Abschnitt „Kollegen-Kalender". Ohne diesen Schritt legt
+`benutzer_anlegen` für die neue Rolle keine Konten an (SQLSTATE 23514) — der Kollege
+bekommt gar keinen Zugang. Die bestehende Terminbuchung bleibt davon unberührt
+(`server.belegungen()` fängt eine fehlende Quellentabelle seit dieser Welle als Lücke ab,
+kein Werkzeugausfall mehr — siehe 03_RUNBOOK.md für das Detail), aber die neue Team-Sicht
+bleibt bis zum Lauf inaktiv.
+
 ```bash
 cd ~/sales-claw && bash deploy/update.sh
 ```
