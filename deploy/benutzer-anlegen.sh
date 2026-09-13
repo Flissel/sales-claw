@@ -17,7 +17,7 @@ if ! docker inspect -f '{{.State.Status}}' sales-mcp 2>/dev/null | grep -qx runn
 fi
 
 read -r -p "Benutzername: " NAME
-read -r -p "Rolle (lesen|freigeben): " ROLLE
+read -r -p "Rolle (lesen|freigeben|kalender): " ROLLE
 read -r -s -p "Passwort (min. 10 Zeichen): " PASSWORT; echo
 read -r -s -p "Passwort wiederholen: " PASSWORT2; echo
 if [ "$PASSWORT" != "$PASSWORT2" ]; then

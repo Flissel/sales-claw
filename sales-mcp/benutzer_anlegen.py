@@ -17,7 +17,7 @@ import sys
 import server
 import ui
 
-ROLLEN = ("lesen", "freigeben")
+ROLLEN = ("lesen", "freigeben", "kalender")
 
 
 def anlegen(name: str, rolle: str, passwort: str) -> str:
@@ -40,7 +40,7 @@ def anlegen(name: str, rolle: str, passwort: str) -> str:
 
 def main() -> int:
     if len(sys.argv) != 3:
-        print("Aufruf: benutzer_anlegen.py <name> <lesen|freigeben> "
+        print("Aufruf: benutzer_anlegen.py <name> <lesen|freigeben|kalender> "
               "(Passwort ueber STDIN)")
         return 2
     passwort = sys.stdin.read().strip()

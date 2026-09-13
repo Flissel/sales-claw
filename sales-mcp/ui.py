@@ -5155,6 +5155,18 @@ async def wiedervorlagen(request):
 # App und Start
 # ---------------------------------------------------------------------------
 
+# Task 5, Fix-Runde 1 (Pruefung): wohin nach der Anmeldung? "/" ist fuer
+# die schmale Rolle `kalender` ein sofortiges 403 (_pfad_erlaubt sperrt sie
+# dort) — der Kollege gaebe sein Passwort ein und saehe als Erstes "Nicht
+# fuer diese Anmeldung". Eine einfache Zuordnung Rolle -> Startseite, kein
+# Regelwerk; jede Rolle ohne eigenen Eintrag bleibt bei "/".
+_ROLLE_STARTSEITE = {"kalender": "/team/kalender"}
+
+
+def _startseite(rolle: str) -> str:
+    return _ROLLE_STARTSEITE.get(rolle, "/")
+
+
 def _login_seite(meldung: str = "", status: int = 200) -> HTMLResponse:
     hinweis = ""
     if not UI_SESSION_SECRET:
@@ -5196,7 +5208,8 @@ async def login(request):
             'Minute warten, dann erneut.</p>', status=429)
     name = str(form.get("name") or "").strip()
     zeilen = server._q(
-        "select passwort_hash, aktiv from benutzer where name = %s", (name,))
+        "select passwort_hash, aktiv, rolle from benutzer where name = %s",
+        (name,))
     # Absichtlich EIN Fehlertext fuer alle Faelle (unbekannt, inaktiv,
     # falsches Passwort) — die Anmeldemaske verraet nicht, welche Namen es
     # gibt. Und kein Log des Namens: im Namensfeld landet erfahrungsgemaess
@@ -5210,7 +5223,8 @@ async def login(request):
         LOG.warning("Anmeldung fehlgeschlagen")
         return _login_seite("Anmeldung fehlgeschlagen.")
     ANMELDE_BREMSE.update({"fehler": 0, "gesperrt_bis": 0.0})
-    antwort = RedirectResponse("/", status_code=303)
+    antwort = RedirectResponse(_startseite(zeilen[0]["rolle"]),
+                               status_code=303)
     antwort.set_cookie(
         SITZUNG_COOKIE, _sitzung_bauen(name, jetzt + SITZUNG_DAUER_S),
         max_age=SITZUNG_DAUER_S, httponly=True, samesite="lax", path="/")
