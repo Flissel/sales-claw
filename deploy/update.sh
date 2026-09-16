@@ -21,16 +21,41 @@ STATUS="$BETRIEB/update-status.json"
 # sie stillschweigend uebersprungen, obwohl sie seit dem 12.09.2026 laufen.
 KERN_ALLE="sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw sales-telegram sales-linkedin sales-stt"
 
-# Jeder Laden hat eine Umgebungsdatei; der bestehende ("sales", Vorgabewerte
-# aus den Compose-Dateien) hat keine — die leere Zeichenkette steht fuer
-# ihn. Ohne --env-file loest LADEN_PRAEFIX/LADEN_PROJEKT auf ihre Defaults
-# ("sales"/"sales-claw") auf, also GENAU den bisherigen Stand.
-LAEDEN=("")
+# Praefix und --env-file-Argument je Laden, PARALLELE Arrays (Index i
+# gehoert zusammen). Der bestehende Laden ("sales", Vorgabewerte aus den
+# Compose-Dateien) hat keine Umgebungsdatei — die leere Zeichenkette steht
+# fuer ihn, Index 0 ist deshalb immer "sales". Ohne --env-file loest
+# LADEN_PRAEFIX/LADEN_PROJEKT auf ihre Defaults ("sales"/"sales-claw") auf,
+# also GENAU den bisherigen Stand.
+LADEN_PRAEFIXE=("sales")
+LADEN_ENVARGS=("")
 for e in "$WURZEL"/deploy/laeden/*.env; do
   [ -e "$e" ] || continue
   [ "$(basename "$e")" = "beispiel.env" ] && continue
-  LAEDEN+=("--env-file $e")
+  LADEN_PRAEFIXE+=("$(sed -n 's/^LADEN_PRAEFIX=//p' "$e")")
+  LADEN_ENVARGS+=("--env-file $e")
 done
+
+# Bildet einen Dienstschluessel (z. B. sales-mcp, aus KERN_ALLE) auf den
+# tatsaechlichen Containernamen eines Ladens ab: <praefix>-<rest>, wobei
+# <rest> der Dienstschluessel ohne sein fuehrendes "sales-" ist. Fuer den
+# Basis-Laden (Praefix "sales") kommt dabei exakt der bisherige Name
+# heraus (sales-mcp -> sales-mcp) — das Verhalten des bestehenden Ladens
+# aendert sich nicht.
+#
+# KORREKTURRUNDE 1 (16.09.2026): laufende_kerndienste() fragte vorher
+# direkt "docker inspect $dienst" ab, also den DIENSTSCHLUESSEL statt des
+# Containernamens. Das ging fuer den Basis-Laden nur zufaellig gut, weil
+# dessen Container genauso heissen. Fuer jeden weiteren Laden (Container
+# "ivan-mcp" statt "sales-mcp") lieferte das immer "nicht gefunden" — der
+# so ermittelte EINE $KERN-Wert (aus dem Basis-Laden) wurde danach fuer
+# ALLE Laeden wiederverwendet und haette bei einem Laden mit absichtlich
+# nur zwei laufenden Diensten (z. B. frisch angelegt, wartet auf
+# Zugangsdaten) alle neun erzwungen — genau das, was der Kommentar unten
+# ("Ein Update darf nur anfassen, was VORHER lief") verhindern soll.
+containername() { # dienst praefix
+  printf '%s-%s' "$2" "${1#sales-}"
+}
 
 # GEMESSEN 30.08.2026, Aufgabe 12: ein Update auf der frisch aufgesetzten
 # VM lief in den Rueckbau — und der startete mit der vollen Kernliste die
@@ -41,22 +66,53 @@ done
 # Cutover-Regel „nie zwei Standorte gleichzeitig" verbietet.
 #
 # Ein Update darf deshalb nur anfassen, was VORHER lief. Was absichtlich
-# stand, bleibt stehen — auch im Rueckbau.
-laufende_kerndienste() {
-  local laufend=""
+# stand, bleibt stehen — auch im Rueckbau. Seit 16.09.2026 gilt das PRO
+# LADEN: ein Laden mit Umgebungsdatei, in dem gerade gar nichts laeuft
+# (z. B. frisch angelegt, wartet auf Zugangsdaten), ist dabei KEIN Fehler
+# — fuer ihn gibt es dann schlicht nichts anzufassen, ein Update darf ihn
+# nicht von sich aus hochziehen.
+laufende_kerndienste() { # praefix
+  local praefix="$1" laufend="" dienst c
   for dienst in $KERN_ALLE; do
-    if [ "$(docker inspect -f '{{.State.Status}}' "$dienst" 2>/dev/null)" = "running" ]; then
+    c="$(containername "$dienst" "$praefix")"
+    if [ "$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null)" = "running" ]; then
       laufend="$laufend $dienst"
     fi
   done
   printf '%s' "${laufend# }"
 }
 
-KERN="$(laufende_kerndienste)"
-if [ -z "$KERN" ]; then
-  echo "ABBRUCH: kein Kerndienst laeuft — hier ist nichts zu aktualisieren." >&2
+# Schnappschuss VOR jeder Aenderung, je Laden einzeln (nicht ein einziger
+# Wert fuer alle) — Grundlage sowohl fuer den Build- als auch fuer den
+# Rueckbau-Pfad. Bewusst ALS SCHNAPPSCHUSS und nicht live bei jedem
+# Zugriff neu abgefragt: ein Rueckbau soll den Zustand VOR dem
+# Update-Versuch wiederherstellen, nicht einen moeglicherweise durch den
+# fehlgeschlagenen Build schon angeschlagenen Zwischenzustand (ein Dienst
+# koennte nach einem missglueckten Rebuild kurzzeitig "exited" statt
+# "running" sein, obwohl er restauriert werden soll) — dieselbe Logik wie
+# im bisherigen Skript, das $KERN ebenfalls einmal ermittelte und fuer
+# Update UND Rueckbau gleichermassen nutzte, jetzt korrekt PRO LADEN statt
+# einmal global.
+LADEN_KERN=()
+ETWAS_LAEUFT=false
+for i in "${!LADEN_PRAEFIXE[@]}"; do
+  k="$(laufende_kerndienste "${LADEN_PRAEFIXE[$i]}")"
+  LADEN_KERN+=("$k")
+  [ -n "$k" ] && ETWAS_LAEUFT=true
+done
+if ! $ETWAS_LAEUFT; then
+  echo "ABBRUCH: in keinem Laden laeuft ein Kerndienst — hier ist nichts zu aktualisieren." >&2
   exit 1
 fi
+
+# Gateway-Neustart-Kurzschluss und die volle Abnahme (weiter unten) waren
+# schon vor Mehrladen-Unterstuetzung ausschliesslich fuer den Basis-Laden
+# gedacht (smoke.sh prueft nur dessen Container) und bleiben das hier
+# bewusst weiterhin — NICHT Teil dieser Korrektur. Ein eigener Name statt
+# des jetzt pro Laden ermittelten $KERN, damit diese beiden Stellen nicht
+# versehentlich den Rest-Wert der LETZTEN Schleifen-Iteration eines
+# ANDEREN Ladens sehen.
+KERN_BASIS="${LADEN_KERN[0]}"
 
 mkdir -p "$BETRIEB"
 cd "$WURZEL"
@@ -91,41 +147,34 @@ GEAENDERT="$(git diff --name-only "$ALT" "$NEU")"
 echo "Eingespielt $ALT -> $NEU. Geaendert:"
 echo "$GEAENDERT" | sed 's/^/  /'
 
-BAUEN=""; OPENWA_BAUEN=false; GATEWAY_NEU=false; HINWEIS=""
+# Diese Flags sind global (haengen nur vom Diff ab, nicht vom Laden). Die
+# eigentliche $BAUEN-Liste je Laden entsteht weiter unten, in der
+# Build-Schleife, aus diesen Flags UND dem laden-eigenen $KERN-Schnappschuss.
+BAUEN_BEI_MCP=false; BAUEN_BEI_COMPOSE=false
+OPENWA_BAUEN=false; GATEWAY_NEU=false; HINWEIS=""
+STT_GEAENDERT=false; MCP_GEAENDERT=false
 
 if echo "$GEAENDERT" | grep -E '^sales-mcp/' >/dev/null; then
-  BAUEN="$KERN"
+  BAUEN_BEI_MCP=true
+  MCP_GEAENDERT=true
   GATEWAY_NEU=true  # Gemessene Falle (26.08.2026): ein sales-mcp-Neustart
                     # trennt die MCP-Verbindung des Gateways stillschweigend.
 fi
 if echo "$GEAENDERT" | grep -E '^docker-compose' >/dev/null; then
-  BAUEN="$KERN"; OPENWA_BAUEN=true
+  BAUEN_BEI_COMPOSE=true; OPENWA_BAUEN=true
 fi
 if echo "$GEAENDERT" | grep -E '^openwa/upstream/' >/dev/null; then
   OPENWA_BAUEN=true
 fi
-# sales-stt (01.09.2026) hat ein EIGENES Image (faster-whisper, 431 MB).
-# Seit 16.09.2026 steht es in KERN_ALLE, aber BAUEN=$KERN (oben) wird nur
-# gesetzt, wenn sales-mcp/ oder docker-compose* sich aendern — eine
-# Aenderung NUR an sales-stt/ wuerde ohne diese Zeile nie gebaut, und das
-# faellt niemandem auf, weil der Rest gruen ist.
+# sales-stt (01.09.2026) hat ein EIGENES Image (faster-whisper, 431 MB) und
+# steht seit 16.09.2026 in KERN_ALLE, aber BAUEN_BEI_MCP/BAUEN_BEI_COMPOSE
+# greifen nur bei sales-mcp/ bzw. docker-compose* — eine Aenderung NUR an
+# sales-stt/ wuerde ohne diese Zeile nie gebaut. In der Build-Schleife
+# unten wird das je Laden NUR angewendet, wenn sales-stt dort tatsaechlich
+# laeuft (KORREKTURRUNDE 1: vorher unbedingt, ohne Laufend-Pruefung —
+# haette einen Laden, in dem sales-stt nie lief, von sich aus hochgezogen).
 if echo "$GEAENDERT" | grep -E '^sales-stt/' >/dev/null; then
-  BAUEN="$BAUEN sales-stt"
-fi
-# sales-linkedin und sales-telegram TEILEN SICH das sales-mcp-Image und
-# stehen seit 16.09.2026 auch in KERN_ALLE. Dieser Block bleibt trotzdem
-# stehen: wenn NUR sales-mcp/ sich aendert (nicht docker-compose*), ist
-# BAUEN bereits "$KERN" (oben) und enthaelt sie schon, sofern sie laufen —
-# diese Schleife ist damit ein explizites Gegenlesen derselben Bedingung,
-# nicht mehr die einzige Quelle. Gleiche Lehre wie bei sales-stt eine Zeile
-# darueber; fuer sales-linkedin bestand die Luecke urspruenglich schon vor
-# KERN_ALLE und wurde hier mitgeschlossen (12.09.2026).
-if echo "$GEAENDERT" | grep -E '^sales-mcp/' >/dev/null; then
-  for _dienst in sales-linkedin sales-telegram; do
-    if [ "$(docker inspect -f '{{.State.Status}}' "$_dienst" 2>/dev/null)" = "running" ]; then
-      BAUEN="$BAUEN $_dienst"
-    fi
-  done
+  STT_GEAENDERT=true
 fi
 if echo "$GEAENDERT" | grep -E '^config/workspace/' >/dev/null; then
   GATEWAY_NEU=true
@@ -136,8 +185,9 @@ if echo "$GEAENDERT" | grep -E '^config/openclaw' >/dev/null; then
 fi
 
 gateway_neustarten() {
-  # Nur anfassen, was laeuft — KERN enthaelt sales-claw nur dann.
-  case " $KERN " in
+  # Nur anfassen, was laeuft — KERN_BASIS enthaelt sales-claw nur dann.
+  # Bewusst nur der Basis-Laden, siehe Kommentar bei KERN_BASIS oben.
+  case " $KERN_BASIS " in
     *" sales-claw "*) docker restart sales-claw >/dev/null ;;
   esac
 }
@@ -145,9 +195,17 @@ gateway_neustarten() {
 rueckbau() {
   echo "Abnahme rot — Rueckbau auf $ALT." >&2
   git reset --hard "$ALT" >/dev/null
-  for L in "${LAEDEN[@]}"; do
+  # KORREKTURRUNDE 1: vorher lief hier `docker compose $L up -d --build
+  # $KERN` fuer JEDEN Laden mit dem EINEN, aus dem Basis-Laden ermittelten
+  # $KERN — die Rueckfahrkarte haette damit jeden weiteren Laden auf den
+  # vollen Neun-Dienste-Stand hochgezogen. Jetzt je Laden der eigene
+  # Schnappschuss aus LADEN_KERN; ein Laden ohne zuvor laufende Dienste
+  # bleibt unangetastet (nichts wiederherzustellen).
+  for i in "${!LADEN_PRAEFIXE[@]}"; do
+    k="${LADEN_KERN[$i]}"
+    [ -n "$k" ] || continue
     # shellcheck disable=SC2086
-    docker compose $L up -d --build $KERN
+    docker compose ${LADEN_ENVARGS[$i]} up -d --build $k
   done
   gateway_neustarten
   sleep 30
@@ -161,16 +219,51 @@ rueckbau() {
   exit 1
 }
 
-if [ -n "$BAUEN" ]; then
-  for L in "${LAEDEN[@]}"; do
+# Build-Schleife: je Laden eigenes $KERN (Schnappschuss von oben) und
+# eigenes $BAUEN. Ein Laden ohne zuvor laufende Dienste (leerer Eintrag in
+# LADEN_KERN) wird komplett uebersprungen — es gibt fuer ihn nichts
+# anzufassen (Tor/Vorgabe aus Korrekturrunde 1), statt ihn von hier aus
+# hochzuziehen.
+for i in "${!LADEN_PRAEFIXE[@]}"; do
+  P="${LADEN_PRAEFIXE[$i]}"
+  K="${LADEN_KERN[$i]}"
+  [ -n "$K" ] || continue
+
+  BAUEN=""
+  if $BAUEN_BEI_MCP || $BAUEN_BEI_COMPOSE; then
+    BAUEN="$K"
+  fi
+  if $STT_GEAENDERT; then
+    c="$(containername sales-stt "$P")"
+    if [ "$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null)" = "running" ]; then
+      BAUEN="$BAUEN sales-stt"
+    fi
+  fi
+  # sales-linkedin und sales-telegram TEILEN SICH das sales-mcp-Image und
+  # stehen seit 16.09.2026 auch in KERN_ALLE (damit schon in $K enthalten,
+  # wenn sie laufen und BAUEN_BEI_MCP/-COMPOSE zutrifft). Dieser Block
+  # bleibt als explizites Gegenlesen derselben Bedingung stehen, jetzt mit
+  # containername() PRO LADEN statt — wie vor Korrekturrunde 1 — gegen den
+  # bloss fuer den Basis-Laden korrekten Dienstschluessel selbst.
+  if $MCP_GEAENDERT; then
+    for _dienst in sales-linkedin sales-telegram; do
+      c="$(containername "$_dienst" "$P")"
+      if [ "$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null)" = "running" ]; then
+        BAUEN="$BAUEN $_dienst"
+      fi
+    done
+  fi
+
+  if [ -n "$BAUEN" ]; then
     # shellcheck disable=SC2086
-    docker compose $L up -d --build $BAUEN
-  done
-fi
+    docker compose ${LADEN_ENVARGS[$i]} up -d --build $BAUEN
+  fi
+done
+
 if $OPENWA_BAUEN; then
-  for L in "${LAEDEN[@]}"; do
+  for i in "${!LADEN_PRAEFIXE[@]}"; do
     # shellcheck disable=SC2086
-    docker compose $L -f docker-compose.openwa.yml up -d --build openwa
+    docker compose ${LADEN_ENVARGS[$i]} -f docker-compose.openwa.yml up -d --build openwa
   done
 fi
 if echo "$GEAENDERT" | grep -E '^config/workspace/' >/dev/null; then
@@ -189,15 +282,16 @@ fi
 # Die Abnahme prueft den VOLLEN Stack — auf einem absichtlich unvollstaendigen
 # (Aufbauphase vor dem Cutover: nur mcp und ui) ist sie zwangslaeufig rot, und
 # ein Rueckbau waere dort sinnlos: die Roete kommt nicht vom Update. Gemessen
-# am 30.08.2026, als genau das passierte.
-if [ "$KERN" = "$KERN_ALLE" ]; then
+# am 30.08.2026, als genau das passierte. Bewusst nur der Basis-Laden
+# (KERN_BASIS), siehe Kommentar dort — smoke.sh prueft ebenfalls nur ihn.
+if [ "$KERN_BASIS" = "$KERN_ALLE" ]; then
   bash "$WURZEL/deploy/smoke.sh" || rueckbau
   status_schreiben eingespielt "$ALT" "$NEU" "${HINWEIS:-glatt durchgelaufen}"
   echo "Update eingespielt und Abnahme gruen."
 else
   echo "Abnahme UEBERSPRUNGEN: unvollstaendiger Stack (Aufbauphase). Es "
-  echo "laeuft: $KERN. Der neue Stand bleibt eingespielt; die volle Abnahme"
-  echo "gilt erst nach dem Cutover."
+  echo "laeuft: $KERN_BASIS. Der neue Stand bleibt eingespielt; die volle"
+  echo "Abnahme gilt erst nach dem Cutover."
   status_schreiben eingespielt "$ALT" "$NEU" \
     "${HINWEIS:+$HINWEIS; }Abnahme uebersprungen - unvollstaendiger Stack"
 fi
