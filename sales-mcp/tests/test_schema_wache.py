@@ -22,6 +22,15 @@ haette also zu Recht fehlgeschlagen. Stattdessen: `"sales_" + "x" * 32"`
 Grenzfall "genau 31, muss erlaubt sein" zusaetzlich unter ERLAUBT — damit
 ist die Grenze von beiden Seiten festgehalten, nicht nur von der Seite, die
 ohnehin schon getroffen wurde.
+
+KORREKTURRUNDE 1 (Pruef-Befund):
+-------------------------------------------------------------------------
+Zwei Luecken in VERBOTEN, beide an Stellen, die der Auftrag ausdruecklich
+als Aufmerksamkeitsraster nannte, aber ungetestet liessen: kein Fall mit
+`'`/`"` (obwohl der server.py-Kommentar das ausdruecklich behauptet) und
+kein Grossbuchstabe INNERHALB des Kennungsteils (nur `"Sales"` im Praefix
+war vorhanden). Das Muster selbst war bereits korrekt — ergaenzt wurden nur
+die fehlenden Testfaelle, siehe Kommentare direkt bei den neuen Eintraegen.
 """
 import re
 from pathlib import Path
@@ -53,6 +62,29 @@ VERBOTEN = [
     # Name faelschlich als verboten erwartet worden, obwohl das Muster ihn
     # zulaesst.
     "sales_" + "x" * 32,
+    # Apostroph in der Kennung. Faengt eine kaputte Fassung, die im
+    # Kennungsteil `[a-z0-9_'"]` statt `[a-z0-9_]` verwendet — genau die
+    # Zeichenklasse, die der Kommentar in server.py als ausgeschlossen
+    # behauptet, ohne dass bisher ein Test das belegt haette. Realistischer
+    # Einschleusungsversuch gegen `options=-c search_path=...`.
+    "sales_a'b",
+    # Doppeltes Anfuehrungszeichen in der Kennung. Gleiche kaputte Fassung
+    # wie oben (`[a-z0-9_'"]`), anderes Zeichen — beide Anfuehrungszeichen-
+    # Arten muessen einzeln geprueft werden, ein Muster koennte nur eines
+    # davon versehentlich zulassen.
+    'sales_a"b',
+    # Grossbuchstabe als ERSTES Zeichen der Kennung (direkt nach dem
+    # Unterstrich). Faengt eine kaputte Fassung, die dort `[a-zA-Z]` statt
+    # `[a-z]` verwendet — der bisherige Grossbuchstaben-Fall ("Sales") deckt
+    # nur das Praefix ab, nicht diese Position.
+    "sales_Ivan",
+    # Grossbuchstabe NICHT an erster Stelle der Kennung, sondern mittendrin.
+    # Faengt eine kaputte Fassung, die nur im Wiederholungsteil
+    # `[a-z0-9_]{0,30}` faelschlich `[a-zA-Z0-9_]` verwendet, waehrend die
+    # erste Stelle `[a-z]` korrekt bliebe — ein Fehler, den "sales_Ivan"
+    # allein nicht zuverlaessig aufdeckt, weil dort nur die erste Stelle
+    # betroffen ist.
+    "sales_abC",
 ]
 
 
