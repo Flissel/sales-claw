@@ -176,6 +176,21 @@ begin
     execute format('alter table %I.drafts drop constraint if exists drafts_channel_check', s);
     execute format($chk$alter table %I.drafts add constraint drafts_channel_check
       check (channel in ('email','whatsapp','linkedin','voice','video','meeting_invite','telegram'))$chk$, s);
+
+    -- Passwort-Vergessen (16.09.2026): eine Adresse, an die ein Einmal-Link
+    -- gehen kann, und der Token selbst — GEHASHT, nie im Klartext. Wer die
+    -- Datenbank liest, darf damit kein Konto uebernehmen koennen; dieselbe
+    -- Ueberlegung wie beim passwort_hash daneben.
+    --
+    -- Warum ueberhaupt: `benutzer_anlegen.py` setzt Passwoerter per
+    -- Kommandozeile im Container, und das kann nur, wer eine Shell auf der
+    -- VM hat. Der zweite Benutzer (Rolle `kalender`) hat die nicht - fuer
+    -- ihn war Aussperrung bisher endgueltig.
+    execute format('alter table %I.benutzer add column if not exists email text', s);
+    execute format('alter table %I.benutzer add column if not exists reset_hash text', s);
+    execute format('alter table %I.benutzer add column if not exists reset_bis timestamptz', s);
+    -- Eine Bremse gegen Mailfluten auf Zuruf: wann zuletzt ein Link ging.
+    execute format('alter table %I.benutzer add column if not exists reset_zuletzt timestamptz', s);
     execute format('create index if not exists leads_status_idx on %I.leads (status)', s);
     execute format('create index if not exists activities_lead_idx on %I.activities (lead_id, created_at desc)', s);
     execute format('create index if not exists drafts_status_idx on %I.drafts (status, created_at desc)', s);

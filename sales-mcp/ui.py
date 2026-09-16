@@ -190,6 +190,7 @@ import time
 import uuid
 from datetime import date, datetime, timezone
 
+import passwort_reset
 import psycopg
 import uvicorn
 from starlette.applications import Starlette
@@ -481,7 +482,8 @@ class HostWache:
 # Entwuerfe und der Posteingang, also der komplette Kundenstamm. Ein
 # Kollege, der nur Termine abgleichen soll, bekommt das nicht.
 # Praefixe, keine Regex: eine Liste, die man vorlesen kann.
-_KALENDER_ROLLE_PFADE = ("/team/kalender", "/kalender", "/logout", "/login")
+_KALENDER_ROLLE_PFADE = ("/team/kalender", "/kalender", "/logout", "/login",
+                         "/passwort-vergessen", "/passwort-neu")
 
 
 def _pfad_erlaubt(rolle: str, pfad: str) -> bool:
@@ -508,7 +510,12 @@ class AnmeldeWache:
         if scope["type"] != "http" or not UI_SESSION_SECRET:
             await self.app(scope, receive, send)
             return
-        if scope["path"] == "/login":
+        if scope["path"] in ("/login", "/passwort-vergessen", "/passwort-neu"):
+            # Die zwei Reset-Seiten muessen OHNE Sitzung erreichbar sein -
+            # eine Wache davor schuetzte sie vor ihrem einzigen Benutzer.
+            # Sie sind nicht ungeschuetzt: /passwort-neu verlangt einen
+            # gueltigen Einmal-Token, und /passwort-vergessen kann nichts
+            # aendern, nur eine Mail an eine HINTERLEGTE Adresse ausloesen.
             await self.app(scope, receive, send)
             return
         name = _sitzung_pruefen(_cookie_wert(scope, SITZUNG_COOKIE))
@@ -5329,7 +5336,9 @@ def _login_seite(meldung: str = "", status: int = 200) -> HTMLResponse:
         f'<p><label>Passwort<br><input type="password" name="passwort" '
         f'autocomplete="current-password"></label></p>'
         f'<p><button type="submit">Anmelden</button></p>'
-        f'</form>')
+        f'</form>'
+        f'<p class="meta"><a href="/passwort-vergessen">Passwort '
+        f'vergessen?</a></p>')
     return _seite("Anmeldung", rumpf, status=status)
 
 
@@ -5374,6 +5383,205 @@ async def login(request):
         max_age=SITZUNG_DAUER_S, httponly=True, samesite="lax", path="/")
     LOG.info("Anmeldung: %s", name)
     return antwort
+
+
+# --- Passwort vergessen (16.09.2026) ---------------------------------------
+#
+# Betreiber-Auftrag. Es gab bisher genau einen Weg zu einem neuen Passwort:
+# `benutzer_anlegen.py` auf der Kommandozeile IM CONTAINER. Wer keine Shell
+# auf der VM hat - und der zweite Benutzer dieses Hauses hat keine -, war
+# ausgesperrt und musste den Betreiber bitten.
+#
+# Die Regeln stehen in `passwort_reset.py` (reine Rechnung, ohne Datenbank
+# und ohne Web pruefbar); hier steht nur die Verdrahtung.
+
+# Wohin der Link zeigt. AUS DER UMGEBUNG, nicht aus der Anfrage: wer den
+# Host-Header faelschen kann, wuerde sonst den Link auf seinen eigenen
+# Rechner zeigen lassen und den Token einsammeln. Fehlt sie, faellt der
+# Dienst auf die eigene Loopback-Adresse zurueck - dann ist der Link nur auf
+# der VM brauchbar, und das ist ein ehrlicher Zustand.
+UI_BASIS_URL = os.environ.get("UI_BASIS_URL", "").strip() or f"http://127.0.0.1:{PORT}"
+
+# EINE Antwort fuer jeden Ausgang. Ob es den Namen gibt, ob eine Adresse
+# hinterlegt ist, ob die Bremse greift - der Benutzer sieht denselben Satz.
+# Dieselbe Ueberlegung wie bei der Anmeldung: die Maske verraet nicht,
+# welche Namen es gibt.
+_RESET_ANTWORT = (
+    "Wenn es dieses Konto gibt und eine Adresse hinterlegt ist, ist eine "
+    "Mail mit einem Einmal-Link unterwegs. Der Link gilt 30 Minuten. "
+    "Kommt nichts an, sieh im Spam nach oder frag den Betreiber — er kann "
+    "das Passwort auch direkt setzen.")
+
+
+def _reset_mail_senden(adresse: str, name: str, token: str) -> bool:
+    """Die eine Mail. Fester Text, feste Adresse, kein Entwurf.
+
+    Warum NICHT ueber die Freigabe-Queue (Entscheid 12.09.2026, sales-claw
+    ist der einzige Versandweg): das waere ein Zirkel - wer freigibt, ist
+    gerade der Ausgesperrte. Die Ausnahme ist eng: die Adresse kommt aus
+    dem KONTO, der Text ist fest, und es gibt keinen Parameter, mit dem
+    jemand eigenen Inhalt hineinschriebe. Eine Kontoauskunft an den
+    Kontoinhaber ist keine Ansprache eines Kunden.
+    """
+    try:
+        import mail_dispatch
+        nachricht = mail_dispatch.nachricht_bauen(
+            adresse, passwort_reset.BETREFF,
+            passwort_reset.mailtext(name, passwort_reset.link_bauen(
+                UI_BASIS_URL, name, token)))
+        mail_dispatch.senden(nachricht)
+        return True
+    except Exception as e:  # noqa: BLE001 - ein Mailausfall darf die Seite nicht reissen
+        # Ohne Namen und ohne Adresse: im Log dieser Oberflaeche hat beides
+        # nichts verloren.
+        LOG.warning("Passwort-Mail fehlgeschlagen (%s)", type(e).__name__)
+        return False
+
+
+def _reset_seite(meldung: str = "", art: str = "meta", status: int = 200) -> HTMLResponse:
+    hinweis = f'<p class="{art}">{_e(meldung)}</p>' if meldung else ""
+    rumpf = (
+        f"{hinweis}"
+        f"<p>Trag deinen Namen ein. Ist für das Konto eine Adresse "
+        f"hinterlegt, geht ein Einmal-Link dorthin.</p>"
+        f'<form method="post" action="/passwort-vergessen">'
+        f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+        f'<p><label>Name<br><input name="name" autocomplete="username" '
+        f'autofocus></label></p>'
+        f'<p><button type="submit">Link anfordern</button></p>'
+        f'</form>'
+        f'<p class="meta"><a href="/login">Zurück zur Anmeldung</a></p>')
+    return _seite("Passwort vergessen", rumpf, status=status)
+
+
+@_gesichert_seite
+async def passwort_vergessen(request):
+    if request.method != "POST":
+        return _reset_seite()
+    form = await request.form()
+    if not _csrf_ok(form):
+        return _fehlerseite(
+            400, "Ungueltige Anfrage",
+            "Die Anfrage trägt keine gültige Marke dieser Oberfläche. "
+            "Seite neu laden und erneut versuchen.")
+
+    name = str(form.get("name") or "").strip()
+    # Ab hier IMMER dieselbe Antwort, egal was passiert. Jeder vorzeitige
+    # Ausstieg mit einem anderen Text waere eine Auskunft darueber, welche
+    # Konten es gibt.
+    zeilen = server._q(
+        "select name, email, aktiv, reset_zuletzt from benutzer where name = %s",
+        (name,)) if name else []
+    if zeilen and zeilen[0]["aktiv"] and (zeilen[0]["email"] or "").strip():
+        if passwort_reset.bremse_greift(zeilen[0]["reset_zuletzt"]):
+            LOG.info("Passwort-Link angefordert, Bremse greift")
+        else:
+            klartext, gehasht = passwort_reset.token_erzeugen()
+            server._q(
+                "update benutzer set reset_hash = %s, "
+                "reset_bis = now() + make_interval(secs => %s), "
+                "reset_zuletzt = now() where name = %s returning name",
+                (gehasht, passwort_reset.GUELTIG_S, zeilen[0]["name"]))
+            if _reset_mail_senden(zeilen[0]["email"], zeilen[0]["name"], klartext):
+                LOG.info("Passwort-Link verschickt")
+            else:
+                # Die Mail ging nicht raus - dann darf der Token auch nicht
+                # stehenbleiben. Ein gueltiger Token ohne Empfaenger ist ein
+                # offenes Fenster, das niemand bemerkt.
+                server._q("update benutzer set reset_hash = null, "
+                          "reset_bis = null where name = %s returning name",
+                          (zeilen[0]["name"],))
+    else:
+        LOG.info("Passwort-Link angefordert, kein brauchbares Konto")
+    return _reset_seite(_RESET_ANTWORT, art="meta")
+
+
+def _neu_seite(name: str, token: str, meldung: str = "",
+               art: str = "fehler", status: int = 200) -> HTMLResponse:
+    hinweis = f'<p class="{art}">{_e(meldung)}</p>' if meldung else ""
+    rumpf = (
+        f"{hinweis}"
+        f'<form method="post" action="/passwort-neu">'
+        f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+        f'<input type="hidden" name="name" value="{_e(name)}">'
+        f'<input type="hidden" name="token" value="{_e(token)}">'
+        f'<p><label>Neues Passwort<br><input type="password" name="passwort" '
+        f'autocomplete="new-password" autofocus></label></p>'
+        f'<p><label>Noch einmal<br><input type="password" name="passwort2" '
+        f'autocomplete="new-password"></label></p>'
+        f'<p><button type="submit">Passwort setzen</button></p>'
+        f'</form>')
+    return _seite("Neues Passwort", rumpf, status=status)
+
+
+def _token_konto(name: str, token: str):
+    """Das Konto zu einem GUELTIGEN Token - oder None. Prueft alles."""
+    if not name or not token:
+        return None
+    zeilen = server._q(
+        "select name, rolle, aktiv, reset_hash, reset_bis from benutzer "
+        "where name = %s", (name,))
+    if not zeilen or not zeilen[0]["aktiv"]:
+        return None
+    z = zeilen[0]
+    if not passwort_reset.token_stimmt(token, z["reset_hash"] or ""):
+        return None
+    if passwort_reset.abgelaufen(z["reset_bis"]):
+        return None
+    return z
+
+
+_TOKEN_TOT = ("Dieser Link gilt nicht mehr — er ist abgelaufen oder wurde "
+              "schon benutzt. Fordere unter „Passwort vergessen“ einen "
+              "neuen an.")
+
+
+@_gesichert_seite
+async def passwort_neu(request):
+    if request.method != "POST":
+        name = request.query_params.get("name", "")
+        token = request.query_params.get("token", "")
+        if _token_konto(name, token) is None:
+            return _seite("Neues Passwort",
+                          f'<p class="fehler">{_e(_TOKEN_TOT)}</p>'
+                          f'<p class="meta"><a href="/passwort-vergessen">'
+                          f'Neuen Link anfordern</a></p>', status=400)
+        return _neu_seite(name, token)
+
+    form = await request.form()
+    if not _csrf_ok(form):
+        return _fehlerseite(
+            400, "Ungültige Anfrage",
+            "Die Anfrage trägt keine gültige Marke dieser Oberfläche.")
+    name = str(form.get("name") or "")
+    token = str(form.get("token") or "")
+    konto = _token_konto(name, token)
+    if konto is None:
+        return _seite("Neues Passwort",
+                      f'<p class="fehler">{_e(_TOKEN_TOT)}</p>'
+                      f'<p class="meta"><a href="/passwort-vergessen">'
+                      f'Neuen Link anfordern</a></p>', status=400)
+
+    passwort = str(form.get("passwort") or "")
+    if passwort != str(form.get("passwort2") or ""):
+        return _neu_seite(name, token, "Die beiden Eingaben sind nicht gleich.")
+    grund = passwort_reset.passwort_taugt(passwort)
+    if grund:
+        return _neu_seite(name, token, grund)
+
+    # Setzen UND den Token loeschen - in einem Schritt, damit derselbe Link
+    # nie ein zweites Mal traegt.
+    server._q(
+        "update benutzer set passwort_hash = %s, reset_hash = null, "
+        "reset_bis = null where name = %s returning name",
+        (_passwort_hashen(passwort), konto["name"]))
+    LOG.info("Passwort neu gesetzt: %s", konto["name"])
+    # KEINE Sitzung von hier aus. Wer gerade ein Passwort gesetzt hat, soll
+    # es einmal benutzen - das ist die Probe, ob es angekommen ist.
+    return _seite(
+        "Neues Passwort",
+        '<p class="meta">Das Passwort steht. Melde dich jetzt damit an.</p>'
+        '<p><a href="/login">Zur Anmeldung</a></p>')
 
 
 async def logout(request):
@@ -5741,6 +5949,10 @@ app = Starlette(routes=[
     Route("/medien/hochladen", aktion_medien_hochladen,
           methods=["POST"]),
     Route("/login", login, methods=["GET", "POST"]),
+    # Ohne Sitzung erreichbar (AnmeldeWache laesst beide durch) - wer sein
+    # Passwort vergessen hat, kann sich nicht anmelden.
+    Route("/passwort-vergessen", passwort_vergessen, methods=["GET", "POST"]),
+    Route("/passwort-neu", passwort_neu, methods=["GET", "POST"]),
     Route("/logout", logout, methods=["POST"]),
     # HostWache zuerst (aussen): fremde Hosts scheitern vor allem anderen,
     # auch vor der Anmeldung.
