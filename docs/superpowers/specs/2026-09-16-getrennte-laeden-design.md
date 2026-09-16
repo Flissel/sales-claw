@@ -199,8 +199,14 @@ Ohne dieses Werkzeug rät der Bot und fragt nach; mit zwei Kalendern wird das Ra
 
 ### 2.6 Betrieb
 
-**Neun Container je Mensch**, bei Ivan als `ivan-mcp`, `ivan-ui`, `ivan-mail`,
-`ivan-dispatch`, `ivan-inbox`, `ivan-linkedin`, `ivan-telegram`, `ivan-stt`, `ivan-claw`.
+**Zehn Container je Mensch**, bei Ivan als `ivan-mcp`, `ivan-ui`, `ivan-mail`,
+`ivan-dispatch`, `ivan-inbox`, `ivan-linkedin`, `ivan-telegram`, `ivan-stt`, `ivan-claw`
+und `ivan-openwa`.
+
+*(Korrektur vom 16.09.2026, beim Schreiben des Plans gefunden: `openwa` — die
+WhatsApp-Schnittstelle auf Port 12785 — liegt in `docker-compose.openwa.yml`, einer
+zweiten Datei mit demselben Projektnamen, und gehört zum Laden. Ein elfter Dienst,
+`sales-auto`, steht in der Compose-Datei, wird aber bewusst nie gestartet.)*
 
 **Der Instanzname wird zum Parameter**: Projektname, Containernamen, Volumes und Port
 leiten sich daraus ab. Ein Laden ohne Namen bleibt `sales-claw` — die bestehende
@@ -303,9 +309,11 @@ Damit es beim dritten Mal nicht wieder erforscht werden muss:
 1. Schema `sales_<name>` anlegen — als `supabase_admin`, nicht mit der Laufzeit-Kennung.
 2. Datenbankbenutzer `sales_app_<name>` anlegen; Rechte auf das eigene Schema, auf
    `compliance` und lesend auf `sales_geteilt`. Kein DDL, kein DELETE.
-3. Die Schema-Wache in `server.py` um den neuen Namen erweitern.
+3. *(Entfällt seit dem Plan vom 16.09.2026: die Schema-Wache in `server.py` prüft nach
+   dem Muster `sales(_[a-z][a-z0-9_]{0,30})?` statt gegen eine Liste. Ein neuer Laden
+   braucht dort keine Änderung mehr.)*
 4. Die beiden Sichten in `sales_geteilt` um den neuen Laden erweitern.
-5. Neun Container mit dem Instanznamen, **eigene Volumes** (§1.3), `sales-stt-modelle`
+5. Zehn Container mit dem Instanznamen, **eigene Volumes** (§1.3), `sales-stt-modelle`
    geteilt.
 6. Vier Kanäle: WhatsApp-Pairing, Postfach, Telegram-Token, LinkedIn-Zugang.
 7. Einen Serve-Port vergeben und in Tailscale eine Regel `<person> -> tcp:<port>`.
