@@ -18,6 +18,64 @@
 # auf derselben Maschine setzt hier seinen eigenen Projektnamen.
 name: ${LADEN_PROJEKT:-sales-claw}
 
+# Schlussprüfung 16.09.2026, K1 — NUR die Werte, die die Umgebungsdatei des
+# Ladens gewinnen lassen. Vier Dienste (sales-mcp, sales-dispatch,
+# sales-inbox, sales-auto) importieren allesamt server.py vollstaendig
+# (dispatch.py/inbox.py/auto.py: "import server") und brauchen deshalb
+# praktisch denselben breiten Satz an Geheimnissen — genau die Beobachtung,
+# die frueher fuer `env_file: .env` sprach ("Vertrauensdomaene"). Das
+# Problem war nie die Breite, sondern dass `.env` ein FESTER Dateiname ist:
+# `docker compose --env-file deploy/laeden/ivan.env` steuert NUR die
+# `${...}`-Interpolation, nicht `env_file:` im Dienst — der ersetzt die
+# Basis-`.env` also NIE, ganz gleich welches `--env-file` uebergeben wird.
+# Ivans Dienste liefen damit als `sales_app` auf Schema `sales` (voller
+# Zugriff auf die Kundendaten des Betreibers) und erbten woertlich
+# OPENWA_API_KEY, SMTP_*, LINKEDIN_ACCESS_TOKEN, INBOX_WEBHOOK_SECRET usw.
+# des BASIS-Ladens.
+#
+# Fix: dieselben Werte, aber ausdruecklich per `${...}`-Interpolation statt
+# per `env_file:` — die IST empfindlich fuer `--env-file`. Ein Anker statt
+# vier einzeln ausgeschriebener Listen, weil sonst ein kuenftiges neues
+# Geheimnis in einem der vier Dienste vergessen werden kann (genau die
+# Drift, die diese Schlussprüfung an anderer Stelle schon gefunden hat).
+# Fehlt ein Wert in der Umgebungsdatei eines Ladens, loest `${VAR:-}` zu
+# LEER auf — NIE zum Wert eines anderen Ladens; SALES_DB_URL bekommt
+# bewusst KEINEN Vorgabewert (`${SALES_DB_URL}` pur), ein fehlender Wert
+# soll beim Import krachen (server.py:105, `os.environ["SALES_DB_URL"]`),
+# nicht still auf einer falschen Verbindung weiterlaufen.
+#
+# Der bestehende Laden aendert sich dadurch NICHT: ohne `--env-file` laedt
+# Compose weiterhin automatisch die lokale `.env`, und genau dieselben
+# Werte fliessen ein wie vorher ueber `env_file: .env` — nur jetzt
+# namentlich sichtbar statt pauschal vererbt.
+x-sales-mcp-umgebung: &sales_mcp_umgebung
+  SALES_DB_URL: ${SALES_DB_URL}
+  SALES_DB_SCHEMA: ${SALES_DB_SCHEMA:-sales}
+  TZ: ${TZ:-Europe/Berlin}
+  RECHERCHE_LEAD_ID: ${RECHERCHE_LEAD_ID:-}
+  LINKEDIN_POST_LEAD_ID: ${LINKEDIN_POST_LEAD_ID:-}
+  LINKEDIN_ACCESS_TOKEN: ${LINKEDIN_ACCESS_TOKEN:-}
+  LINKEDIN_PERSON_URN: ${LINKEDIN_PERSON_URN:-}
+  LINKEDIN_API_VERSION: ${LINKEDIN_API_VERSION:-202608}
+  SMTP_HOST: ${SMTP_HOST:-}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_USER: ${SMTP_USER:-}
+  SMTP_PASSWORT: ${SMTP_PASSWORT:-}
+  EMAIL_ABSENDER: ${EMAIL_ABSENDER:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  ROWBOAT_URL: ${ROWBOAT_URL:-}
+  ROWBOAT_PROJECT_ID: ${ROWBOAT_PROJECT_ID:-}
+  ROWBOAT_API_KEY: ${ROWBOAT_API_KEY:-}
+  KONFERENZ_ANBIETER: ${KONFERENZ_ANBIETER:-jitsi}
+  GOOGLE_MEET_CLIENT_ID: ${GOOGLE_MEET_CLIENT_ID:-}
+  GOOGLE_MEET_CLIENT_SECRET: ${GOOGLE_MEET_CLIENT_SECRET:-}
+  GOOGLE_MEET_REFRESH_TOKEN: ${GOOGLE_MEET_REFRESH_TOKEN:-}
+  OPENWA_API_KEY: ${OPENWA_API_KEY:-}
+  OPENWA_SESSION_ID: ${OPENWA_SESSION_ID:-}
+  INBOX_WEBHOOK_SECRET: ${INBOX_WEBHOOK_SECRET:-}
+  INBOX_UNBEKANNT_LEAD_ID: ${INBOX_UNBEKANNT_LEAD_ID:-}
+  APIFY_TOKEN: ${APIFY_TOKEN:-}
+
 services:
   sales-claw:
     image: ghcr.io/openclaw/openclaw:2026.7.1-slim
@@ -60,9 +118,15 @@ services:
     # Die Werte kommen weiterhin aus `.env`, aber über Compose-Interpolation
     # (`${...}`), die nur die genannten Namen auflöst.
     #
-    # sales-mcp und sales-dispatch behalten `env_file: .env`: sie SIND die
-    # Vertrauensdomäne für diese Geheimnisse — der eine hält die Kundendaten-DB,
-    # der andere ist die einzige Komponente, die versenden darf.
+    # sales-mcp und sales-dispatch (und sales-inbox/sales-auto) BLEIBEN die
+    # Vertrauensdomäne für die uebrigen Geheimnisse — der eine haelt die
+    # Kundendaten-DB, der andere ist die einzige Komponente, die versenden
+    # darf. Bis 16.09.2026 hiess das hier "behalten env_file: .env" — das
+    # war falsch, sobald ein ZWEITER Laden dazukam: `env_file: .env` ist ein
+    # fester Dateiname, den `docker compose --env-file <laden>.env` NICHT
+    # ersetzt (das steuert nur `${...}`-Interpolation). Alle vier erben
+    # dieselbe namentliche Liste wie hier — Anker `x-sales-mcp-umgebung`
+    # oben im Dokument, Begruendung dort (Schlussprüfung K1).
     environment:
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - TZ=${TZ:-Europe/Berlin}
@@ -97,8 +161,13 @@ services:
     container_name: ${LADEN_PRAEFIX:-sales}-mcp
     # Wie sales-claw im Demo-Betrieb: laeuft nur nach ausdruecklichem Start.
     restart: unless-stopped
-    env_file:
-      - .env
+    # KEIN env_file: .env mehr (Schlussprüfung K1, 16.09.2026) — der Anker
+    # x-sales-mcp-umgebung oben im Dokument setzt dieselben Werte per
+    # `${...}`-Interpolation, die auf `--env-file` reagiert. Begruendung
+    # dort und im Kommentar am Agent-Container oben.
+    environment:
+      <<: *sales_mcp_umgebung
+      MCP_PORT: ${MCP_PORT:-8765}
     # Der Medienordner (Stufe 4, F4). Hier liegen die Unterlagen, die der
     # Betreiber an Entwürfe hängen kann; `medien_liste` liest genau dieses
     # Verzeichnis und `entwurf_erstellen` prüft eine Datei gegen es, bevor ein
@@ -171,18 +240,20 @@ services:
     # Nachrichten an echte Menschen schickt, startet nicht von selbst mit dem
     # Rechner mit.
     restart: unless-stopped
-    env_file:
-      - .env
+    # KEIN env_file: .env mehr (Schlussprüfung K1) — siehe Anker
+    # x-sales-mcp-umgebung und Begruendung am Agent-Container oben.
     environment:
+      <<: *sales_mcp_umgebung
       # openwa laeuft aus docker-compose.openwa.yml — dank gepinntem
       # Projektnamen (oben) im selben Netz und unter diesem DNS-Namen
       # erreichbar. Gemessen aus einem Container dieses Netzes:
       # GET http://openwa:2785/api/health/ready -> 200, /api/sessions ohne
       # Key -> 401.
-      - OPENWA_URL=http://openwa:2785
+      OPENWA_URL: http://openwa:2785
       # Schleifentakt aus dem Plan (T3), explizit statt implizit per Default.
-      - DISPATCH_INTERVAL_S=10
-      # OPENWA_SESSION_ID und OPENWA_API_KEY kommen aus .env.
+      DISPATCH_INTERVAL_S: 10
+      # OPENWA_SESSION_ID und OPENWA_API_KEY kommen jetzt aus dem Anker
+      # (also aus der Umgebungsdatei DIESES Ladens, nicht mehr aus .env).
     # Derselbe Medienordner wie an sales-mcp, ebenfalls read-only (Begründung
     # dort). Der Dispatcher liest eine angehängte Datei unmittelbar vor dem
     # Senden erneut — sie kann seit der Freigabe verschwunden sein, und dann
@@ -224,13 +295,15 @@ services:
     command: python inbox.py
     # Demo-Betrieb wie der restliche Stack.
     restart: unless-stopped
-    env_file:
-      - .env
+    # KEIN env_file: .env mehr (Schlussprüfung K1) — siehe Anker
+    # x-sales-mcp-umgebung und Begruendung am Agent-Container oben.
     environment:
+      <<: *sales_mcp_umgebung
       # Port im Compose-Netz, explizit statt implizit per Default.
-      - INBOX_PORT=8790
-      # INBOX_WEBHOOK_SECRET und INBOX_UNBEKANNT_LEAD_ID kommen aus .env.
-      - SPRACH_DIR=/sprachnachrichten
+      INBOX_PORT: 8790
+      # INBOX_WEBHOOK_SECRET und INBOX_UNBEKANNT_LEAD_ID kommen jetzt aus
+      # dem Anker (also aus der Umgebungsdatei DIESES Ladens).
+      SPRACH_DIR: /sprachnachrichten
     volumes:
       # Sprachnachrichten (01.09.2026): das Audio kommt inline im Webhook
       # und wird hier abgelegt — sales-mcp liest es zum Transkribieren.
@@ -459,18 +532,21 @@ services:
     container_name: ${LADEN_PRAEFIX:-sales}-auto
     command: python auto.py
     restart: "no"
-    env_file:
-      - .env
+    # KEIN env_file: .env mehr (Schlussprüfung K1). Die alte Fassung hatte
+    # env_file: .env UND ein paar explizite Ueberschreibungen zugleich —
+    # SALES_DB_URL/ANTHROPIC_API_KEY waren dadurch schon laden-fest, aber
+    # RECHERCHE_LEAD_ID und LINKEDIN_POST_LEAD_ID (auto.py:96-98) kamen
+    # weiterhin aus der Basis-.env: Ivans Auto-Betrieb haette seine
+    # Recherche-/LinkedIn-Sammelkontakte auf den IDs des Betreibers gebucht.
+    # Der Anker schliesst genau diese Luecke mit.
     environment:
-      - SALES_DB_URL=${SALES_DB_URL}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      <<: *sales_mcp_umgebung
       # Dasselbe Primaermodell wie der Agent (config/openclaw.json).
-      - AUTO_MODELL=${AUTO_MODELL:-claude-sonnet-5}
+      AUTO_MODELL: ${AUTO_MODELL:-claude-sonnet-5}
       # Sammelfenster: so alt muss die juengste Kundennachricht sein, bevor
       # geantwortet wird — mehrere schnelle Nachrichten bekommen EINE Antwort.
-      - AUTO_SAMMELFENSTER_S=${AUTO_SAMMELFENSTER_S:-90}
-      - AUTO_INTERVAL_S=20
-      - TZ=${TZ:-Europe/Berlin}
+      AUTO_SAMMELFENSTER_S: ${AUTO_SAMMELFENSTER_S:-90}
+      AUTO_INTERVAL_S: 20
     # Ein laufender Modellaufruf (Timeout 90 s) darf die Runde zu Ende
     # bringen; danach geht der Dienst. 120 s Gnadenfrist decken das ab.
     stop_grace_period: 120s
@@ -553,9 +629,18 @@ services:
     # denen ein kompromittierter Web-Dienst das Gate umgehen koennte.
     environment:
       - SALES_DB_URL=${SALES_DB_URL}
-      # Ausdruecklich 'sales', nicht interpoliert: die Oberflaeche zeigt und
-      # schaltet die ECHTEN Entwuerfe. sales_test gehoert der Testsuite.
-      - SALES_DB_SCHEMA=sales
+      # War bis 16.09.2026 fest 'sales' (Begruendung damals: die Oberflaeche
+      # zeigt die ECHTEN Entwuerfe, sales_test gehoert der Testsuite — nur
+      # gab es da noch keinen zweiten Laden). Schlussprüfung K2: fest
+      # verdrahtet haette Ivans UI das SCHEMA DES BETREIBERS bekommen und
+      # waere mit "permission denied" gescheitert — und der naheliegende
+      # Reparaturversuch (der Rolle GRANT USAGE ON SCHEMA sales geben)
+      # haette die Kundendaten des Betreibers fuer Ivan komplett geoeffnet.
+      # Jetzt parametrisiert wie ueberall sonst; der Vorgabewert 'sales'
+      # haelt den bestehenden Laden unveraendert, sales_test bleibt weiterhin
+      # ausschliesslich Sache der Testsuite (die setzt SALES_DB_SCHEMA beim
+      # Testlauf selbst, siehe deploy/smoke.sh Testkommando).
+      - SALES_DB_SCHEMA=${SALES_DB_SCHEMA:-sales}
       - TZ=${TZ:-Europe/Berlin}
       - UI_PORT=8791
       # Der Sammelkontakt „Unbekannte Eingaenge" — dieselbe Variable wie bei

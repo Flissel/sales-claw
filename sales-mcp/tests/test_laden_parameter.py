@@ -176,3 +176,70 @@ def test_zweiter_laden_kollidiert_in_nichts():
     gemeinsam = volumes(erst) & volumes(zweit)
     assert gemeinsam == {"sales-stt-modelle"}, (
         "genau ein Volume darf geteilt sein — das Modellverzeichnis")
+
+
+@ohne_docker
+def test_zweiter_laden_bekommt_eigene_db_und_nicht_die_kanal_zugangsdaten_des_ersten():
+    """Schlussprüfung K1 (16.09.2026), als Regressionswache.
+
+    Vier Dienste (sales-mcp, sales-dispatch, sales-inbox, sales-auto) trugen
+    `env_file: - .env` — ein FESTER Dateiname, den `docker compose
+    --env-file <laden>.env` NICHT ersetzt (das steuert nur die
+    `${...}`-Interpolation). Gemessen: ein zweiter Laden liefe mit
+    `SALES_DB_URL`/`SALES_DB_SCHEMA` des BASIS-Ladens (voller Zugriff auf
+    dessen Kundendaten) und erbte woertlich dessen OPENWA_API_KEY. Der Fix
+    ersetzt `env_file:` durch den Anker `x-sales-mcp-umgebung`, der dieselben
+    Namen per `${...}` setzt — und DAS reagiert auf `--env-file`.
+
+    Dieser Test braucht kein echtes `deploy/laeden/*.env`: er setzt die
+    Interpolationsquelle direkt in der Prozessumgebung des
+    `docker compose config`-Aufrufs — fuer die Variablen-Aufloesung ist das
+    ununterscheidbar von `--env-file` (beides fuellt denselben Namensraum,
+    aus dem `${VAR}` liest). Vor dem Fix war `environment:` bei diesen vier
+    Diensten schlicht LEER (nur `env_file:` stand da) — solche Ueberschreibungen
+    haetten also gar nichts bewirkt, egal wie sie ankamen.
+
+    KAPUTTE FASSUNG, DIE DIESER TEST FAENGT: `env_file: - .env` statt eines
+    `${...}`-interpolierten `environment:`-Eintrags fuer irgendeinen der
+    vier Dienste — dann zeigt `docker compose config` fuer diesen Dienst
+    entweder den WERT AUS DER LOKALEN `.env` (nicht den hier gesetzten) oder
+    (falls die Datei den Schluessel gar nicht kennt) GAR KEINEN Eintrag,
+    statt des erwarteten `sales_ivan`/der Ivan-DSN — verifiziert per
+    Handprobe: mit `env_file:` statt Anker schlaegt genau diese Zusicherung
+    fehl (siehe schluss-fix-a-report.md, Abschnitt K1).
+    """
+    GEHEIMNIS_ERSTER_LADEN = "BASIS-OPENWA-SCHLUESSEL-TESTWERT"
+    DSN_ZWEITER_LADEN = (
+        "postgresql://sales_app_ivan:testpw@192.168.178.65:54322/postgres")
+
+    erst = _aufgeloest("docker-compose.yml", {
+        "OPENWA_API_KEY": GEHEIMNIS_ERSTER_LADEN,
+    })
+    zweit = _aufgeloest("docker-compose.yml", {
+        "SALES_DB_URL": DSN_ZWEITER_LADEN,
+        "SALES_DB_SCHEMA": "sales_ivan",
+        # Ivan hat bewusst KEINEN eigenen OpenWA-Schluessel gesetzt — genau
+        # der Fall aus deploy/laeden/beispiel.env heute. Er darf NICHT den
+        # des Betreibers bekommen.
+    })
+
+    VIER_DIENSTE = ("sales-mcp", "sales-dispatch", "sales-inbox", "sales-auto")
+    for dienst in VIER_DIENSTE:
+        umg_zweit = zweit["services"][dienst]["environment"]
+        assert umg_zweit.get("SALES_DB_URL") == DSN_ZWEITER_LADEN, (
+            f"{dienst}: SALES_DB_URL folgt nicht der Umgebungsdatei des "
+            f"Ladens — env_file: statt Anker?")
+        assert umg_zweit.get("SALES_DB_SCHEMA") == "sales_ivan", (
+            f"{dienst}: SALES_DB_SCHEMA folgt nicht der Umgebungsdatei des "
+            f"Ladens — Ivan liefe auf einem fremden Schema.")
+        assert umg_zweit.get("OPENWA_API_KEY") != GEHEIMNIS_ERSTER_LADEN, (
+            f"{dienst}: hat den OPENWA_API_KEY des BASIS-Ladens geerbt — "
+            f"genau der Befund aus K1.")
+
+    # Gegenprobe zur Gegenprobe: der ERSTE Laden bekommt weiterhin seinen
+    # EIGENEN gesetzten Wert (der Anker unterdrueckt ihn nicht einfach nur).
+    for dienst in VIER_DIENSTE:
+        umg_erst = erst["services"][dienst]["environment"]
+        assert umg_erst.get("OPENWA_API_KEY") == GEHEIMNIS_ERSTER_LADEN, (
+            f"{dienst}: bekommt nicht einmal seinen EIGENEN Schluessel — "
+            f"der Anker liest environment: nicht mehr aus?")

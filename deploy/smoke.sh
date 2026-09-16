@@ -18,7 +18,17 @@ BIND="$(grep -E '^UI_TAILSCALE_IP=' "$WURZEL/.env" 2>/dev/null | cut -d= -f2 | t
 BIND="${BIND:-127.0.0.1}"
 
 # 1) Container laufen.
-for c in sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw openwa; do
+#
+# "openwa" hiess der siebte Container bis zur Umstellung auf mehrere Laeden
+# (Plan 2026-09-16-zweiter-laden-getrennt, T1); seither traegt
+# docker-compose.openwa.yml `container_name: ${LADEN_PRAEFIX:-sales}-openwa`
+# — fuer den Basis-Laden also "sales-openwa" (Schlussprüfung K4, 16.09.2026:
+# diese Zeile war stehengeblieben, waehrend Abschnitt 10 unten schon
+# "sales-openwa" ERWARTETE — derselbe Commit widersprach sich selbst. Beim
+# ERSTEN Deploy haette das die Abnahme rot gemacht und einen automatischen
+# Rueckbau ausgeloest, dessen Abnahme AUCH rot geblieben waere: "openwa"
+# existiert nach der Umstellung nicht mehr).
+for c in sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw sales-openwa; do
   z="$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo fehlt)"
   [ "$z" = "running" ] && gut "container $c" || fehl "container $c" "$z"
 done
@@ -391,6 +401,86 @@ done < <(
   done
 )
 [ "$laeden_mit_env" -eq 1 ] || melde "ui_basis_url je laden" "uebersprungen (keine deploy/laeden/*.env ausser beispiel.env)"
+
+# 14) Von INNEN: jeder laufende *-mcp spricht mit SEINEM EIGENEN Schema und
+# SEINEM EIGENEN Datenbankbenutzer (die fehlende Pruefung der
+# Schlussprüfung 16.09.2026, Abschnitt K1/K2/K3).
+#
+# Alle dreizehn Abschnitte oben pruefen von AUSSEN — Namen, Ports,
+# Antwortcodes. Keiner fragt einen laufenden Container, mit welcher
+# Datenbank er tatsaechlich spricht. In genau diese Luecke passten K1
+# (`env_file: .env` gewann gegen `--env-file`), K2 (SALES_DB_SCHEMA fest
+# verdrahtet) und K3 (Schema-Migrationen ueberspringen unbekannte Laeden)
+# vollstaendig hinein — sie waeren hier gefunden worden, waere dieser
+# Abschnitt schon dagewesen.
+#
+# Gefragt wird der Container SELBST, per `docker exec ... python -c` (wie
+# Abschnitt 3 oben):
+#   * server.SCHEMA — das tatsaechlich IMPORTIERTE Schema (server.py:81),
+#     nicht die Absicht einer Umgebungsdatei.
+#   * current_user — der Datenbankbenutzer, ERFRAGT von der Datenbank
+#     selbst (`select current_user`), NICHT aus SALES_DB_URL herausgelesen.
+#     Zwei Gruende: ein Passwort im DSN soll dieses Skript nie sehen, und
+#     current_user ist die Wahrheit der offenen Verbindung — ein DSN kann
+#     lügen (falsch kopiert, alte Umgebungsdatei), current_user nicht.
+#
+# Erwartet je Laden mit Praefix P: Schema "sales" und Benutzer "sales_app"
+# wenn P="sales" (Basis-Laden), sonst Schema "sales_P" und Benutzer
+# "sales_app_P" — dasselbe Muster wie server.py:SCHEMA_MUSTER und
+# deploy/laden-anlegen.sh.
+#
+# Ein Laden, dessen *-mcp gerade nicht laeuft, ist KEIN Fehler (wie bei den
+# Abschnitten 11-13 oben — vielleicht gerade erst angelegt und noch nicht
+# gestartet). Ein Laden, dessen *-mcp laeuft und das FALSCHE Schema oder
+# den falschen Benutzer spricht, sehr wohl — GENAU der Fall, den K1 auf der
+# Produktion ausgeloest haette.
+#
+# GEGENPROBE (nicht Teil dieses Laufs, siehe schluss-fix-a-report.md
+# Abschnitt "Die fehlende Pruefung"): gegen drei Scratch-Container in
+# sales-test-net demonstriert — ein korrekt verdrahteter (Schema+Benutzer
+# passend zu sales_smoketest/sales_app_smoketest) meldet "ok"; einer, der
+# wie vor K1 den DSN/das Schema des BASIS-Ladens spricht, faellt auf die
+# Schema-Zusicherung; einer mit richtigem SALES_DB_SCHEMA aber dem
+# Basis-Benutzer faellt auf die Benutzer-Zusicherung. Keiner davon war
+# gruen, ohne es zu verdienen.
+#
+# WICHTIG, wie oben: kein `exit` in einer Subshell und keines blank im
+# Hauptskript. Prozess-Substitution statt Pipe.
+echo "== Datenbank-Identitaet je Laden (von innen) =="
+while IFS= read -r praefix; do
+  [ -n "$praefix" ] || continue
+  c="$praefix-mcp"
+  zustand="$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo fehlt)"
+  if [ "$zustand" != "running" ]; then
+    melde "db-identitaet $praefix" "uebersprungen ($c: $zustand)"
+    continue
+  fi
+  if [ "$praefix" = "sales" ]; then
+    erw_schema="sales"; erw_nutzer="sales_app"
+  else
+    erw_schema="sales_$praefix"; erw_nutzer="sales_app_$praefix"
+  fi
+  ist="$(docker exec "$c" python -c "import sys;sys.path.insert(0,'/app');import server;z=server._q('select current_user');print(server.SCHEMA);print(z[0]['current_user'])" 2>/dev/null)"
+  ist_schema="$(printf '%s\n' "$ist" | sed -n 1p)"
+  ist_nutzer="$(printf '%s\n' "$ist" | sed -n 2p)"
+  if [ -z "$ist_schema" ] || [ -z "$ist_nutzer" ]; then
+    fehl "db-identitaet $praefix" "$c antwortet nicht (siehe docker logs $c)"
+  elif [ "$ist_schema" != "$erw_schema" ]; then
+    fehl "db-identitaet $praefix" "Schema '$ist_schema', erwartet '$erw_schema'"
+  elif [ "$ist_nutzer" != "$erw_nutzer" ]; then
+    fehl "db-identitaet $praefix" "Benutzer '$ist_nutzer', erwartet '$erw_nutzer'"
+  else
+    gut "db-identitaet $praefix"
+  fi
+done < <(
+  printf 'sales\n'
+  for e in "$WURZEL"/deploy/laeden/*.env; do
+    [ -e "$e" ] || continue
+    [ "$(basename "$e")" = "beispiel.env" ] && continue
+    p="$(grep -E '^LADEN_PRAEFIX=' "$e" | cut -d= -f2 | tr -d '[:space:]')"
+    [ -n "$p" ] && printf '%s\n' "$p"
+  done
+)
 
 echo "---"
 if [ "$ROT" -eq 0 ]; then echo "ALLE PRUEFUNGEN GRUEN"; else echo "$ROT PRUEFUNG(EN) ROT"; fi

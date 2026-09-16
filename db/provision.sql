@@ -31,11 +31,33 @@ create schema if not exists sales_test;
 grant usage on schema sales to sales_app;
 grant usage on schema sales_test to sales_app;
 
--- Identische Tabellen in beiden Schemata; nur die Rechte unterscheiden sich.
+-- Identische Tabellen in JEDEM Laden-Schema; nur die Rechte unterscheiden
+-- sich (sales_test: siehe GRANT-Block unten). Schlussprüfung K3
+-- (16.09.2026): bis dahin stand hier ein Literal, `array['sales',
+-- 'sales_test']` — jede kuenftige Schemaaenderung haette jeden WEITEREN
+-- Laden (sales_ivan, ...) stumm uebersprungen. Gemessen: in der
+-- Testdatenbank fehlten sales_probe/sales_pruef die vier reset_*-Spalten
+-- aus einem frueheren Commit; auf der Produktion war sales_ivan im selben
+-- Zustand.
+--
+-- Jetzt wird ueber die TATSAECHLICH vorhandenen Laden-Schemata geschleift
+-- — dasselbe Muster wie server.py:SCHEMA_MUSTER
+-- (`sales(_[a-z][a-z0-9_]{0,30})?`), das definiert, was ueberhaupt ein
+-- gueltiger Laden-Schemaname ist. Ein Schema, das nur zufaellig mit
+-- "sales" beginnt aber nicht auf dieses Muster passt (oder gar nicht erst
+-- als Laden-Schema angelegt wurde), wird NICHT erfasst. `sales` und
+-- `sales_test` existieren zu diesem Zeitpunkt bereits (zwei Zeilen oben
+-- angelegt, in DERSELBEN Session sichtbar) und werden deshalb automatisch
+-- mit erfasst, ohne eigenen Sonderfall.
 do $$
 declare s text;
+declare laeden text[];
 begin
-  foreach s in array array['sales','sales_test'] loop
+  select coalesce(array_agg(schema_name order by schema_name), array[]::text[])
+    into laeden
+    from information_schema.schemata
+    where schema_name ~ '^sales(_[a-z][a-z0-9_]{0,30})?$';
+  foreach s in array laeden loop
     execute format($ddl$
       create table if not exists %I.leads (
         id uuid primary key default gen_random_uuid(),
@@ -197,17 +219,29 @@ begin
   end loop;
 end $$;
 
--- updated_at-Pflege, Eigentümer supabase_admin.
-create or replace function sales.set_updated_at() returns trigger language plpgsql as
-$fn$ begin new.updated_at = now(); return new; end; $fn$;
-create or replace function sales_test.set_updated_at() returns trigger language plpgsql as
-$fn$ begin new.updated_at = now(); return new; end; $fn$;
-drop trigger if exists leads_updated_at on sales.leads;
-create trigger leads_updated_at before update on sales.leads
-  for each row execute function sales.set_updated_at();
-drop trigger if exists leads_updated_at on sales_test.leads;
-create trigger leads_updated_at before update on sales_test.leads
-  for each row execute function sales_test.set_updated_at();
+-- updated_at-Pflege, Eigentümer supabase_admin. Derselbe K3-Befund galt
+-- hier genauso (zwei fest verdrahtete Schemata statt der tatsaechlich
+-- vorhandenen) — ohne diesen Nachzug bekaeme jeder WEITERE Laden nie eine
+-- funktionierende updated_at-Pflege auf `leads`. Dieselbe Ermittlung der
+-- Laden-Schemata wie im Tabellen-Block oben, ein zweites Mal, weil
+-- PL/pgSQL-`do`-Bloecke keine gemeinsame Variable teilen.
+do $$
+declare s text;
+declare laeden text[];
+begin
+  select coalesce(array_agg(schema_name order by schema_name), array[]::text[])
+    into laeden
+    from information_schema.schemata
+    where schema_name ~ '^sales(_[a-z][a-z0-9_]{0,30})?$';
+  foreach s in array laeden loop
+    execute format($crt$create or replace function %I.set_updated_at()
+      returns trigger language plpgsql as
+      $body$ begin new.updated_at = now(); return new; end; $body$ $crt$, s);
+    execute format('drop trigger if exists leads_updated_at on %I.leads', s);
+    execute format('create trigger leads_updated_at before update on %I.leads '
+                    'for each row execute function %I.set_updated_at()', s, s);
+  end loop;
+end $$;
 
 -- Rechte Demo-Schema: activities append-only als Datenbank-Garantie.
 grant select, insert, update on sales.leads    to sales_app;
