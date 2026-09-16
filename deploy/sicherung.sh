@@ -92,10 +92,30 @@ for P in $PRAEFIXE; do
       GESTOPPT="$GESTOPPT $P-openwa"
       docker stop "$P-openwa" >/dev/null
     fi
-  elif docker volume inspect "$P-openwa-data" >/dev/null 2>&1 && \
-       [ -n "$(docker run --rm -v "$P-openwa-data":/v alpine sh -c 'ls -A /v' 2>/dev/null)" ]; then
-    echo "FEHLER: Container '$P-openwa' nicht gefunden, aber Volume '$P-openwa-data' hat Inhalt - moeglicherweise eine veraltete Handkopie, waehrend die lebende Sitzung anderswo (z. B. noch unter dem alten Namen 'openwa') weiterlaeuft. Von Hand pruefen (siehe Dateikopf) vor dem Vertrauen auf diese Sicherung." >&2
-    FEHLER=$((FEHLER + 1))
+  elif docker volume inspect "$P-openwa-data" >/dev/null 2>&1; then
+    # Fix (Schlussfix D, Punkt 5): die alte Fassung fing einen Fehlschlag
+    # von `docker run ... alpine` (Image fehlt, Docker-Problem) mit
+    # `2>/dev/null` ab und las `[ -n "" ]` dann identisch zu "Volume ist
+    # leer" — ein gescheitertes Probe-Kommando sah damit genauso aus wie
+    # ein leeres Volume, und genau der Fall, den dieser Zweig eigentlich
+    # melden soll (veraltete Handkopie mit Inhalt), waere stillschweigend
+    # durchgewunken. Ein Fehlschlag der Sonde ist "weiss ich nicht", nicht
+    # "leer" — deshalb jetzt getrennt behandelt. Die Zuweisung steht als
+    # IF-Bedingung, nicht als eigene Anweisung mit separat geprueftem `$?`:
+    # dieses Skript laeuft unter `set -e` (Kopf der Datei), und eine blosse
+    # `x="$(cmd)"`-Zuweisung wuerde das ganze Skript bei einem Fehlschlag
+    # sofort beenden (gemessen: `bash -c 'set -e; x="$(false)"; echo nie
+    # hier'` erreicht das `echo` nicht) — als IF-Bedingung ist das von `-e`
+    # ausgenommen, genau wie beim Status-Check vier Zeilen darueber.
+    if inhalt="$(docker run --rm -v "$P-openwa-data":/v alpine sh -c 'ls -A /v' 2>/dev/null)"; then
+      if [ -n "$inhalt" ]; then
+        echo "FEHLER: Container '$P-openwa' nicht gefunden, aber Volume '$P-openwa-data' hat Inhalt - moeglicherweise eine veraltete Handkopie, waehrend die lebende Sitzung anderswo (z. B. noch unter dem alten Namen 'openwa') weiterlaeuft. Von Hand pruefen (siehe Dateikopf) vor dem Vertrauen auf diese Sicherung." >&2
+        FEHLER=$((FEHLER + 1))
+      fi
+    else
+      echo "FEHLER: Container '$P-openwa' nicht gefunden, UND die Inhalts-Sonde fuer Volume '$P-openwa-data' ist gescheitert (Image fehlt? Docker-Problem?) - kann NICHT ausschliessen, dass dort eine veraltete Handkopie mit Inhalt liegt, waehrend die lebende Sitzung anderswo weiterlaeuft. Von Hand pruefen (siehe Dateikopf) vor dem Vertrauen auf diese Sicherung." >&2
+      FEHLER=$((FEHLER + 1))
+    fi
   fi
 
   # sales-stt-modelle fehlt hier BEWUSST: 300 MB Modell, jederzeit neu

@@ -360,7 +360,18 @@ else
         printf 'FEHLER:%s hat kein brauchbares LADEN_PRAEFIX (%s)\n' "$e" "${p:-leer}"
         continue
       fi
-      [ -n "$u" ] && printf '%s:%s\n' "$p" "$u"
+      # Fix (Schlussfix D, Punkt 4): `[ -n "$u" ] &&` liess einen Laden mit
+      # gueltigem LADEN_PRAEFIX aber leerem/fehlendem PORT_UI einfach
+      # WEGFALLEN — kein FEHLER:-Eintrag, keine gut()/fehl()-Zeile, gar
+      # nichts; seine Oberflaeche wurde nie geprueft, ohne dass irgendwo
+      # sichtbar wurde, warum. Dieselbe Familie wie der LADEN_PRAEFIX-Fall
+      # zwei Zeilen darueber: eine fehlende Konfigurationszeile muss laut
+      # werden, nicht lautlos aus der Liste fallen.
+      if [ -z "$u" ]; then
+        printf 'FEHLER:%s hat kein brauchbares PORT_UI (%s)\n' "$e" "${u:-leer}"
+        continue
+      fi
+      printf '%s:%s\n' "$p" "$u"
     done
   )
 fi
@@ -388,17 +399,40 @@ else
   if [ -z "$mail_container" ]; then
     melde "absender je laden" "uebersprungen (kein *-mail-Container laeuft)"
   else
+    # Fix (Schlussfix D, Punkt 3): die alte Fassung fing die leere Zeile
+    # ZWEIMAL ab, und schon der erste Fang war der wirkliche Bug. Sind ALLE
+    # Absender leer, ist die von `printenv` je Container gelieferte Zeile
+    # selbst leer — und eine Befehlsersetzung `$(...)`, deren gesamter
+    # Inhalt nur aus Newlines besteht, wird auf einen VOELLIG leeren String
+    # abgeschnitten (nicht nur um EIN Newline): "$(printf '\n\n')" ist "",
+    # nicht zwei leere Zeilen. Die Information "zwei Container, beide leer"
+    # war damit schon beim Einsammeln von `absender` weg, lange bevor
+    # `uniq -d`/`[ -n ]` ueberhaupt ins Spiel kamen. Jede Zeile hier deshalb
+    # in eckige Klammern gepackt — "[]" fuer einen leeren Wert ist NIE eine
+    # leere Zeile und ueberlebt jede Befehlsersetzung unversehrt.
     absender="$(
       for c in $mail_container; do
-        docker exec "$c" printenv EMAIL_ABSENDER 2>/dev/null
+        printf '[%s]\n' "$(docker exec "$c" printenv EMAIL_ABSENDER 2>/dev/null)"
       done | sort
     )"
-    doppelt="$(printf '%s\n' "$absender" | uniq -d)"
+    # `uniq -c` statt `uniq -d`: traegt IMMER die Trefferzahl in der Zeile
+    # mit, auch beim Leerwert ("   2 []") — die Zeile ist dadurch nie leer,
+    # und die Pruefung faengt beide Faelle (echte Adresse doppelt, Leerwert
+    # doppelt) gleichermassen.
+    doppelt="$(printf '%s\n' "$absender" | uniq -c | awk '
+      { n = $1 + 0 }
+      n > 1 {
+        wert = $0
+        sub(/^[[:space:]]*[0-9]+[[:space:]]*/, "", wert)
+        sub(/^\[/, "", wert); sub(/\]$/, "", wert)
+        if (wert == "") wert = "(leer/nicht gesetzt)"
+        printf "%dx %s\n", n, wert
+      }')"
     if [ -n "$doppelt" ]; then
       fehl "absender je laden" "geteilt: $(printf '%s' "$doppelt" | tr '\n' ' ')"
     else
       gut "absender je laden"
-      printf '%s\n' "$absender" | sed 's/^/  /'
+      printf '%s\n' "$absender" | sed -e 's/^\[//' -e 's/\]$//' -e 's/^/  /'
     fi
   fi
 fi

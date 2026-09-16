@@ -20,6 +20,7 @@ Der Test braucht Docker. Er wird uebersprungen, wo keins ist — und steht
 deshalb ZUSAETZLICH in `deploy/smoke.sh`, damit er auf der VM wirklich
 laeuft. Ein uebersprungener Test ist kein gruener Test.
 """
+import ast
 import json
 import os
 import shutil
@@ -29,6 +30,7 @@ from pathlib import Path
 import pytest
 
 WURZEL = Path(__file__).resolve().parents[2]
+SALES_MCP_DIR = WURZEL / "sales-mcp"
 
 ohne_docker = pytest.mark.skipif(
     shutil.which("docker") is None,
@@ -87,6 +89,229 @@ def _hostports(dienst: dict) -> set[str]:
     """
     return {f"{p.get('host_ip', '')}:{p['published']}"
             for p in dienst.get("ports", [])}
+
+
+# ---------------------------------------------------------------------------
+# Waechter gegen den naechsten K1 (Schlussfix D, 16.09.2026).
+#
+# K1 (16.09.2026) ersetzte `env_file: .env` bei sales-mcp/sales-dispatch/
+# sales-inbox/sales-auto durch den namentlichen Anker `x-sales-mcp-umgebung`
+# in docker-compose.yml — richtig, weil `env_file:` einen festen Dateinamen
+# traegt, den `--env-file <laden>.env` nicht ersetzt. Beim Aufzaehlen ging
+# dabei CALDAV_URL/-USER/-PASSWORT verloren: kalender.py wertet einen
+# fehlenden Wert lautlos als "nicht konfiguriert" (NICHT_KONFIGURIERT bzw.
+# `[], None`) — kein Log, kein Fehler, kein Absturz. Ein Anker mit einer
+# reinen Namensliste laeuft GENAUSO wieder auseinander, sobald irgendein
+# Modul dieser vier Dienste eine neue Variable aus der Umgebung liest, ohne
+# dass jemand daran denkt, den Anker nachzuziehen.
+#
+# UMFANG DES SCANS — bewusst NICHT "ganz sales-mcp/*.py":
+# server.py/dispatch.py/inbox.py/auto.py sind die vier Dienste, die den
+# Anker per `<<: *sales_mcp_umgebung` bekommen (dispatch.py/inbox.py/
+# auto.py: "import server" -- Kommentar im Anker selbst). Was diese vier
+# beim AUSFUEHREN tatsaechlich erreichen koennen, ist der
+# Modul-Erreichbarkeitsgraph ab genau diesen vier Dateien — BFS ueber JEDE
+# lokale `import`/`from ... import`-Anweisung im Baum, auch innerhalb einer
+# Funktion (`ast.walk` sieht beide gleich): server.py:1678 importiert
+# `mail_dispatch` z.B. erst BEIM AUFRUF der Kalendermail-Funktion, nicht am
+# Dateikopf (Begruendung dort: Ringschluss-Vermeidung) — trotzdem laeuft
+# dieser Code in denselben vier Containern, sobald der Pfad genommen wird,
+# und seine Modul-Ebene (SMTP_*, MAIL_ONCE, ...) muss deshalb hier
+# mitgezaehlt werden, nicht nur der eine Aufruf. Reiner UI-/Webhook-Code wie
+# ui.py/telegram_dispatch.py/linkedin_dispatch.py/benutzer_anlegen.py/
+# passwort_reset.py bleibt trotzdem draussen: server.py/dispatch.py/inbox.py/
+# auto.py importieren KEINEN von ihnen, auch nicht lazy — docker-compose.yml
+# begruendet an jedem dieser Dienste einzeln (T5a), warum er die breite
+# Vertrauensdomaene nicht erbt, und dieser Scan widerspricht dem nicht,
+# er BEOBACHTET nur, was server.py & Co tatsaechlich importieren.
+_VIER_DIENSTE_EINSTIEGE = ("server", "dispatch", "inbox", "auto")
+
+
+def _erreichbare_module(einstiege: tuple[str, ...]) -> set[str]:
+    """BFS ueber lokale Importe ab `einstiege` (Modulnamen ohne `.py`).
+
+    Nur Module, die als `sales-mcp/<name>.py` tatsaechlich existieren, zaehlen
+    als "lokal" und werden weiterverfolgt — Fremdpakete (psycopg, yaml,
+    mcp.server.mcpserver, ...) haben keine gleichnamige Datei hier und fallen
+    dadurch von selbst heraus, ohne eine Ausschlussliste pflegen zu muessen.
+    """
+    gesehen: set[str] = set()
+    warteschlange = list(einstiege)
+    while warteschlange:
+        name = warteschlange.pop()
+        if name in gesehen:
+            continue
+        pfad = SALES_MCP_DIR / f"{name}.py"
+        if not pfad.is_file():
+            continue
+        gesehen.add(name)
+        baum = ast.parse(pfad.read_text(encoding="utf-8"), filename=str(pfad))
+        for knoten in ast.walk(baum):
+            if isinstance(knoten, ast.Import):
+                for alias in knoten.names:
+                    kandidat = alias.name.split(".")[0]
+                    if (SALES_MCP_DIR / f"{kandidat}.py").is_file():
+                        warteschlange.append(kandidat)
+            elif isinstance(knoten, ast.ImportFrom):
+                if knoten.module and knoten.level == 0:
+                    kandidat = knoten.module.split(".")[0]
+                    if (SALES_MCP_DIR / f"{kandidat}.py").is_file():
+                        warteschlange.append(kandidat)
+    return gesehen
+
+
+def _ist_leerer_vorgabewert(knoten: ast.AST | None) -> bool:
+    """True nur fuer einen WOERTLICHEN leeren Vorgabewert (`""`/`None`) oder
+    fehlenden Vorgabewert — genau die Form, unter der `os.environ.get(...)`
+    lautlos zu "nicht konfiguriert" wird, wenn die Umgebung die Variable
+    nicht traegt (die CALDAV-Bauart).
+
+    Ein anderer woertlicher Vorgabewert (Port, Pfad, Zeitlimit, eine feste
+    Kennung wie `CALDAV_USER_AGENT`s eigene) haelt den Dienst beim Fehlen
+    bereits in einem bekannten, sicheren Zustand — solche Variablen muessen
+    nicht durch den Anker laufen, um sicher zu sein, und werden hier
+    absichtlich NICHT verlangt. Ein BERECHNETER Vorgabewert (z.B.
+    `os.environ.get("SMTP_HOST", "")` als Rueckfall fuer IMAP_HOST in
+    postfach.py, oder sperrliste.py's Schema-Ternary) zaehlt ebenfalls nicht
+    als leer: er faellt auf eine ANDERE, bereits gepruefte Variable zurueck,
+    und dieser Test wuerde deren Fehlen ohnehin an ihrer eigenen Stelle
+    melden.
+    """
+    if knoten is None:
+        return True
+    if isinstance(knoten, ast.Constant):
+        return knoten.value == "" or knoten.value is None
+    return False
+
+
+def _gelesene_variablen(modulnamen: set[str]) -> dict[str, list[str]]:
+    """{Variablenname: ["datei.py:zeile", ...]} fuer jeden Fund von
+    `os.environ["X"]` (kein Vorgabewert moeglich, also immer verlangt) oder
+    `os.environ.get("X", ...)`/`os.getenv("X", ...)` MIT leerem/fehlendem
+    Vorgabewert (siehe `_ist_leerer_vorgabewert`) in den uebergebenen
+    Modulen.
+    """
+    fundstellen: dict[str, list[str]] = {}
+
+    def _merke(name: str, pfad: Path, zeile: int) -> None:
+        fundstellen.setdefault(name, []).append(f"{pfad.name}:{zeile}")
+
+    for modul in modulnamen:
+        pfad = SALES_MCP_DIR / f"{modul}.py"
+        baum = ast.parse(pfad.read_text(encoding="utf-8"), filename=str(pfad))
+        for knoten in ast.walk(baum):
+            # os.environ["X"] — Subscript auf os.environ, kein Vorgabewert.
+            if (isinstance(knoten, ast.Subscript)
+                    and isinstance(knoten.value, ast.Attribute)
+                    and knoten.value.attr == "environ"
+                    and isinstance(knoten.value.value, ast.Name)
+                    and knoten.value.value.id == "os"):
+                schluessel = knoten.slice
+                if isinstance(schluessel, ast.Constant) and isinstance(schluessel.value, str):
+                    _merke(schluessel.value, pfad, knoten.lineno)
+                continue
+            if not isinstance(knoten, ast.Call):
+                continue
+            ziel = knoten.func
+            ist_environ_get = (
+                isinstance(ziel, ast.Attribute) and ziel.attr == "get"
+                and isinstance(ziel.value, ast.Attribute)
+                and ziel.value.attr == "environ"
+                and isinstance(ziel.value.value, ast.Name)
+                and ziel.value.value.id == "os")
+            ist_getenv = (
+                isinstance(ziel, ast.Attribute) and ziel.attr == "getenv"
+                and isinstance(ziel.value, ast.Name) and ziel.value.id == "os")
+            if not (ist_environ_get or ist_getenv):
+                continue
+            if not knoten.args or not isinstance(knoten.args[0], ast.Constant):
+                continue
+            name = knoten.args[0].value
+            if not isinstance(name, str):
+                continue
+            vorgabe = knoten.args[1] if len(knoten.args) >= 2 else next(
+                (kw.value for kw in knoten.keywords if kw.arg == "default"), None)
+            if _ist_leerer_vorgabewert(vorgabe):
+                _merke(name, pfad, knoten.lineno)
+    return fundstellen
+
+
+# Namentliche, begruendete Ausnahmen (Auftrag Schlussfix D, Punkt 2): Werte,
+# die dieser Scan als "leerer Vorgabewert" findet, aber DIE ABSICHTLICH NICHT
+# ueber den Anker laufen sollen. Jede Zeile ist eine Entscheidung, keine
+# Luecke — wer eine neue hinzufuegt, tut das hier, nicht durch Stillschweigen.
+_ANKER_AUSNAHMEN = {
+    "DISPATCH_ONCE": (
+        "dispatch.py: Demo/Einzeltest-Schalter, dokumentiert in .env.example "
+        "als manuelles `docker compose run -e DISPATCH_ONCE=1 ...` fuer EINEN "
+        "Aufruf — kein Wert, der dauerhaft in der Umgebungsdatei eines "
+        "Ladens stuende."),
+    "AUTO_ONCE": (
+        "auto.py: derselbe Demo/Einzeltest-Schalter wie DISPATCH_ONCE, "
+        "gleiche Begruendung."),
+    "MAIL_ONCE": (
+        "mail_dispatch.py: derselbe Demo/Einzeltest-Schalter wie "
+        "DISPATCH_ONCE/AUTO_ONCE — erreichbar ueber server.py's lazy "
+        "'import mail_dispatch' (Kalendermail-Versand, server.py:1678), "
+        "gleiche Begruendung wie die beiden Geschwister."),
+    "FIRMA_PRIVATE_ZIELE": (
+        "recherche.py: NUR fuer die Testsuite (server_stub-Fixture, "
+        "monkeypatch) — MUSS in Produktion immer leer/aus bleiben. Ein "
+        "Ankereintrag waere hier keine Bequemlichkeit, sondern schaltete die "
+        "SSRF-Zielpruefung in jedem Laden ab."),
+    "KALENDERQUELLEN_PRIVATE_ZIELE": (
+        "kalenderquellen.py: dasselbe Testsuite-only-Muster und dieselbe "
+        "Begruendung wie FIRMA_PRIVATE_ZIELE (recherche.py)."),
+}
+
+
+@ohne_docker
+def test_anker_deckt_alle_gelesenen_caldav_und_verwandten_variablen_ab():
+    """Der eigentliche Waechter gegen den naechsten K1 (siehe Kommentarblock
+    oben). Ohne ihn haette K1 selbst nicht gemerkt, dass CALDAV_* fehlt — die
+    drei bestehenden Tests in dieser Datei pruefen Container/Volume/Port-
+    Namen und die Vertrauensgrenze zwischen zwei Laeden, aber keiner davon
+    fragt, ob die Anker-LISTE noch zum CODE passt, der sie liest.
+
+    KAPUTTE FASSUNG, DIE DIESER TEST FAENGT: jede Variable, die server.py
+    oder ein von ihm importiertes Modul mit einem leeren/fehlenden
+    Vorgabewert aus `os.environ` liest, aber in KEINEM der vier Dienste
+    sales-mcp/sales-dispatch/sales-inbox/sales-auto im aufgeloesten
+    `environment:` auftaucht — der exakte Fehlermodus von K1.
+
+    GEGENPROBE (von Hand gefuehrt, nicht Teil des automatischen Laufs):
+    eine der fuenf CALDAV_*-Zeilen aus dem Anker in docker-compose.yml
+    entfernt -> genau dieser Test schlaegt fehl, mit der entfernten Variable
+    in der Fehlermeldung samt Fundstelle(n) im Code.
+    """
+    gelesen = _gelesene_variablen(_erreichbare_module(_VIER_DIENSTE_EINSTIEGE))
+
+    cfg = _aufgeloest("docker-compose.yml")
+    verfuegbar: set[str] = set()
+    for dienst in ("sales-mcp", "sales-dispatch", "sales-inbox", "sales-auto"):
+        verfuegbar |= set(cfg["services"][dienst]["environment"])
+
+    fehlend = {
+        name: stellen for name, stellen in gelesen.items()
+        if name not in verfuegbar and name not in _ANKER_AUSNAHMEN
+    }
+    assert not fehlend, (
+        "Diese Variablen liest server.py (oder ein importiertes Modul) mit "
+        "leerem/fehlendem Vorgabewert, stehen aber in KEINEM der vier "
+        "Dienste im aufgeloesten environment: " +
+        ", ".join(f"{n} ({'/'.join(stellen)})" for n, stellen in sorted(fehlend.items())) +
+        " — entweder in x-sales-mcp-umgebung nachtragen (docker-compose.yml) "
+        "oder hier in _ANKER_AUSNAHMEN mit Begruendung eintragen.")
+
+    # Gegenprobe zur Gegenprobe: CALDAV_URL selbst MUSS von diesem Scan
+    # gefunden werden (kalender.py:472, leerer Vorgabewert) — schlaegt diese
+    # Zusicherung fehl, scannt die Funktion oben etwas anderes als gedacht
+    # (z.B. weil kalender.py nicht mehr im Erreichbarkeitsgraphen liegt) und
+    # der Waechter waere nur scheinbar scharf.
+    assert "CALDAV_URL" in gelesen, (
+        "Der Scan findet CALDAV_URL nicht mehr in kalender.py — pruefen, ob "
+        "kalender.py noch ueber server.py erreichbar ist (server.py: "
+        "'import kalender').")
 
 
 @ohne_docker

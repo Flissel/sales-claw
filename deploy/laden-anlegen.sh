@@ -99,6 +99,13 @@ LADEN_PROJEKT=$NAME-claw
 PORT_GATEWAY=$PORT_GATEWAY
 PORT_UI=$PORT_UI
 PORT_OPENWA=$PORT_OPENWA
+# Schlussfix D, Punkt 6: docker-compose.yml (Dienst sales-ui) faellt ohne
+# diese Zeile auf "http://127.0.0.1:12785" zurueck — den OpenWA-Port des
+# ERSTEN Ladens ("sales"), nicht auf $PORT_OPENWA dieses Ladens. Gemessen an
+# "ivan" (PORT_OPENWA=12786, ohne diese Zeile): die /whatsapp-Seite verlinkte
+# tatsaechlich auf :12785. Deshalb hier direkt aus PORT_OPENWA abgeleitet,
+# statt es der Vorgabe zu ueberlassen.
+OPENWA_DASHBOARD_URL=http://127.0.0.1:$PORT_OPENWA
 SALES_DB_SCHEMA=sales_$NAME
 SALES_DB_URL=postgresql://sales_app_$NAME:$PASSWORT@192.168.178.65:54322/postgres
 UI_TAILSCALE_IP=${UI_TAILSCALE_IP:-127.0.0.1}

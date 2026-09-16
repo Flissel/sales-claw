@@ -292,9 +292,37 @@ done
 # Bremse gleich unten (W1). Nicht ueber "docker volume inspect" allein
 # entscheidbar: ein frisch von Compose angelegtes leeres Volume EXISTIERT
 # bereits, bevor es befuellt wird.
+#
+# Fix (Schlussfix D, Punkt 5): `2>/dev/null` schluckte bisher JEDEN
+# Fehlschlag von `docker run ... alpine` (Image fehlt, kein Netz zum
+# Ziehen, Docker-Problem) — `[ -n "" ]` liest das dann identisch zu
+# "Volume ist leer". Genau dieser Fall wuerde unten die Migrations-Bremse
+# NICHT feuern lassen: sales-openwa-data gilt als "hat Inhalt geprueft und
+# ist leer" statt als "konnte nicht geprueft werden", openwa faehrt auf
+# einem moeglicherweise leeren Volume hoch, und die WhatsApp-Anmeldung des
+# Betreibers ist weg. Ein Sonden-Fehlschlag ist "weiss ich nicht", nicht
+# "leer" — deshalb jetzt ein dritter, eigener Rueckgabewert dafuer, den der
+# Aufrufer unten NICHT mit "leer" verwechseln kann.
+#
+# Exit 0 = hat Inhalt · Exit 1 = leer oder existiert nicht (definitiv) ·
+# Exit 2 = Sonde selbst gescheitert ("weiss ich nicht").
+#
+# Die Zuweisung steht als IF-BEDINGUNG (nicht als eigene Anweisung mit
+# separat geprueftem `$?`): dieses Skript laeuft unter `set -e`, und ein
+# fehlschlagendes `docker run` in einer blossen Zuweisung (`ausgabe="$(...)"`
+# ohne if) wuerde das GANZE Skript sofort beenden, statt den Fehlschlag hier
+# kontrolliert abzufangen — gemessen mit `bash -c 'set -e; x="$(false)";
+# echo nie hier'`, das `echo` laeuft nicht. Als Bedingung eines `if` ist ein
+# nichtnullwertiger Status dagegen von `-e` ausgenommen (dasselbe Muster
+# nutzt sicherung.sh bereits fuer den Container-Status-Check).
 volume_hat_inhalt() { # volume
   docker volume inspect "$1" >/dev/null 2>&1 || return 1
-  [ -n "$(docker run --rm -v "$1":/v alpine sh -c 'ls -A /v' 2>/dev/null)" ]
+  local ausgabe
+  if ausgabe="$(docker run --rm -v "$1":/v alpine sh -c 'ls -A /v' 2>/dev/null)"; then
+    [ -n "$ausgabe" ]
+  else
+    return 2
+  fi
 }
 
 if $OPENWA_BAUEN; then
@@ -317,15 +345,44 @@ if $OPENWA_BAUEN; then
     # Fehlermeldung (docs/03_RUNBOOK.md, Tor 10). Ein zweiter/weiterer
     # Laden ist NIE betroffen: sein Volume ist von Anfang an neu und soll
     # leer sein.
-    if [ "$P" = "sales" ] && ! volume_hat_inhalt "sales-openwa-data" \
-        && volume_hat_inhalt "openwa-data"; then
-      echo "ABBRUCH: 'sales-openwa-data' ist leer oder fehlt, waehrend das alte 'openwa-data' Inhalt hat." >&2
-      echo "  Vor dem naechsten Update-Lauf von Hand umkopieren (docs/03_RUNBOOK.md, Tor 10):" >&2
-      echo "    docker volume create sales-openwa-data" >&2
-      echo "    docker run --rm -v openwa-data:/alt -v sales-openwa-data:/neu alpine \\" >&2
-      echo "      sh -c 'cp -a /alt/. /neu/'" >&2
-      status_schreiben fehler "$ALT" "$NEU" "openwa-Volume-Umzug fehlt - Basis-openwa absichtlich NICHT angefasst"
-      exit 1
+    if [ "$P" = "sales" ]; then
+      # `if volume_hat_inhalt ...; then rc=0; else rc=$?; fi` statt der
+      # kuerzeren Zweizeilerform "cmd; rc=$?": Zweiteres ist unter `set -e`
+      # (Kopf dieser Datei) NICHT sicher — ein Ruecksprung ungleich 0 wuerde
+      # das ganze Skript sofort beenden, bevor `rc=$?` je liefe (gemessen:
+      # `bash -c 'set -e; false; rc=$?; echo nie hier'` laeuft nicht bis zum
+      # echo). Als IF-Bedingung ist der Ruecksprung von `-e` ausgenommen,
+      # und `$?` im `else`-Zweig traegt weiterhin den genauen Wert (hier
+      # gemessen: 2 kommt unveraendert an).
+      if volume_hat_inhalt "sales-openwa-data"; then
+        NEU_HAT_INHALT=0
+      else
+        NEU_HAT_INHALT=$?
+      fi
+      if volume_hat_inhalt "openwa-data"; then
+        ALT_HAT_INHALT=0
+      else
+        ALT_HAT_INHALT=$?
+      fi
+      # Fix (Schlussfix D, Punkt 5): Exit 2 = Sonde gescheitert, NICHT
+      # gleichbedeutend mit "leer" (Begruendung bei volume_hat_inhalt oben).
+      # Auf Unsicherheit genauso abbrechen wie auf den bereits bekannten
+      # Migrations-Fall — beide sollen laut werden, nicht durchgewunken.
+      if [ "$NEU_HAT_INHALT" -eq 2 ] || [ "$ALT_HAT_INHALT" -eq 2 ]; then
+        echo "ABBRUCH: Die Inhalts-Sonde (docker run --rm ... alpine ls -A) ist fuer 'sales-openwa-data' oder 'openwa-data' gescheitert (Image fehlt? Docker-Problem?) - kann NICHT sicher zwischen 'leer' und 'hat Inhalt' unterscheiden." >&2
+        echo "  Von Hand pruefen, bevor erneut versucht wird: docker run --rm -v sales-openwa-data:/v alpine sh -c 'ls -A /v'" >&2
+        status_schreiben fehler "$ALT" "$NEU" "openwa-Inhalts-Sonde gescheitert - Basis-openwa absichtlich NICHT angefasst"
+        exit 1
+      fi
+      if [ "$NEU_HAT_INHALT" -ne 0 ] && [ "$ALT_HAT_INHALT" -eq 0 ]; then
+        echo "ABBRUCH: 'sales-openwa-data' ist leer oder fehlt, waehrend das alte 'openwa-data' Inhalt hat." >&2
+        echo "  Vor dem naechsten Update-Lauf von Hand umkopieren (docs/03_RUNBOOK.md, Tor 10):" >&2
+        echo "    docker volume create sales-openwa-data" >&2
+        echo "    docker run --rm -v openwa-data:/alt -v sales-openwa-data:/neu alpine \\" >&2
+        echo "      sh -c 'cp -a /alt/. /neu/'" >&2
+        status_schreiben fehler "$ALT" "$NEU" "openwa-Volume-Umzug fehlt - Basis-openwa absichtlich NICHT angefasst"
+        exit 1
+      fi
     fi
 
     # shellcheck disable=SC2086

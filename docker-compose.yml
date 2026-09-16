@@ -75,6 +75,41 @@ x-sales-mcp-umgebung: &sales_mcp_umgebung
   INBOX_WEBHOOK_SECRET: ${INBOX_WEBHOOK_SECRET:-}
   INBOX_UNBEKANNT_LEAD_ID: ${INBOX_UNBEKANNT_LEAD_ID:-}
   APIFY_TOKEN: ${APIFY_TOKEN:-}
+  # Schlussfix D (16.09.2026) — K1 hatte den CalDAV-Teil des Ankers
+  # vergessen: server.py importiert kalender.py vollstaendig (Zeile 67),
+  # und kalender.eintragen()/termine_lesen() (aufgerufen aus
+  # termin_bestaetigen bzw. dem Kalender-Report) lesen CALDAV_URL/-USER/
+  # -PASSWORT direkt aus os.environ — vorher ueber `env_file: .env`, seit
+  # K1 ueber GAR NICHTS. Die Folge war still: kalender.py wertet einen
+  # leeren Wert genauso wie "nicht konfiguriert" (NICHT_KONFIGURIERT bzw.
+  # `[], None`), kein Fehler, kein Log. Ein zweiter Laden MIT eigenem
+  # CalDAV-Zugang haette ihn nie bekommen; auf dieser Maschine fiel es
+  # nicht auf, weil die lokale .env ohnehin kein CALDAV traegt.
+  # CALDAV_TIMEOUT_S/-USER_AGENT sind fuer sich genommen unkritisch (beide
+  # haben einen sicheren Code-Vorgabewert, kalender.py:108/149) und
+  # rutschen deshalb durch keine der automatisierten Waechter — sie
+  # kommen dennoch mit, nach demselben Muster wie die uebrigen drei
+  # (Vorgabewert im Anker = Vorgabewert im Code, sichtbar statt geraten).
+  CALDAV_URL: ${CALDAV_URL:-}
+  CALDAV_USER: ${CALDAV_USER:-}
+  CALDAV_PASSWORT: ${CALDAV_PASSWORT:-}
+  CALDAV_TIMEOUT_S: ${CALDAV_TIMEOUT_S:-20}
+  CALDAV_USER_AGENT: "${CALDAV_USER_AGENT:-Mozilla/5.0 (compatible; sales-claw/1.0; CalDAV)}"
+  # Derselbe Fund, eine Tuer weiter: server.py:2610 liest
+  # BETREIBER_MAIL_LEAD_ID (Sammelkontakt fuer Betreiber-Mails, exakt das
+  # Muster von RECHERCHE_LEAD_ID/LINKEDIN_POST_LEAD_ID/
+  # INBOX_UNBEKANNT_LEAD_ID direkt darueber) — stand vorher NIRGENDS im
+  # Anker und war damit fuer JEDEN Laden immer leer, nicht erst seit K1.
+  # Aufgenommen aus demselben Grund wie die drei Geschwister: eine
+  # fehlende Zeile hier loest zu LEER auf (unveraendertes Verhalten fuer
+  # den bestehenden Laden), eine fehlende Zeile im Anker selbst waere die
+  # naechste stille Luecke gewesen, die der neue Waechter-Test
+  # (test_laden_parameter.py) sofort gemeldet haette. Verkabelung/Doku
+  # (.env.example, beispiel.env) bleibt AUSSERHALB dieser Korrektur — die
+  # Variable ist unabhaengig davon bereits heute (und war es vorher schon)
+  # fuer jeden Laden leer, dieser Nachtrag aendert daran nichts, macht sie
+  # nur laden-scharf FUER DEN TAG, an dem sie befuellt wird.
+  BETREIBER_MAIL_LEAD_ID: ${BETREIBER_MAIL_LEAD_ID:-}
 
 services:
   sales-claw:
@@ -304,6 +339,20 @@ services:
       # INBOX_WEBHOOK_SECRET und INBOX_UNBEKANNT_LEAD_ID kommen jetzt aus
       # dem Anker (also aus der Umgebungsdatei DIESES Ladens).
       SPRACH_DIR: /sprachnachrichten
+      # Schlussfix D (16.09.2026) — bedingtes Restrisiko aus der
+      # K1-Pruefung: `_medien_nachladen` (inbox.py:819, fuer Anhaenge, die
+      # OpenWA nur als Marker liefert und die erst per GET nachgeladen
+      # werden) liest OPENWA_URL OHNE Vorgabewert — anders als
+      # dispatch.py/lid.py, die beide auf "http://openwa:2785" zurueckfallen.
+      # Ohne diese Zeile war die Variable fuer sales-inbox nie gesetzt (auch
+      # nicht vor K1 — env_file: .env kannte OPENWA_URL nicht, das stand nur
+      # hartkodiert bei sales-dispatch/sales-ui), und jedes Nachladen eines
+      # ueber-grossen Anhangs schlug mit "OpenWA-Zugang fuer das Nachladen
+      # fehlt" fehl. Kein Geheimnis und nicht laden-spezifisch (der
+      # Netzwerk-Alias "openwa" bleibt fuer jeden Laden unveraendert — siehe
+      # Kommentar in docker-compose.openwa.yml): deshalb hartkodiert wie bei
+      # sales-dispatch, nicht ueber den Anker.
+      OPENWA_URL: http://openwa:2785
     volumes:
       # Sprachnachrichten (01.09.2026): das Audio kommt inline im Webhook
       # und wird hier abgelegt — sales-mcp liest es zum Transkribieren.
