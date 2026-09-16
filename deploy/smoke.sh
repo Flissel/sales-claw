@@ -562,6 +562,50 @@ else
   )
 fi
 
+# 15) UI_SESSION_SECRET ist bei jeder laufenden Oberflaeche gesetzt
+# (Schlussprüfung-Korrekturwelle 2026-09-16, Bereich C, W7). LEER heisst
+# Uebergangszustand OHNE Anmeldepflicht (docker-compose.yml, Dienst
+# sales-ui, Kommentar bei UI_SESSION_SECRET) — die Tailscale-Bindung waere
+# dann die EINZIGE Tuer, und ui.py meldet das selbst nirgends: kein Log,
+# kein Fehlercode, die Seite laedt einfach ohne /login. Bis zu dieser
+# Korrekturwelle gab es fuer einen ZWEITEN Laden ohnehin keinen Weg, das
+# Secret zu setzen (deploy/benutzer-anlegen.sh war fest auf sales-mcp/
+# sales verdrahtet, siehe dort); diese Pruefung faengt zusaetzlich den
+# Fall ab, dass jemand `sales-ui`/`<name>-ui` startet, BEVOR
+# deploy/benutzer-anlegen.sh <name> zum ersten Mal gelaufen ist (RUNBOOK,
+# "Einen zweiten Laden anlegen", Schritt 4) — der Container laeuft dann
+# schon, bevor ein Mensch das Secret gesetzt hat.
+#
+# Ueber ALLE laufenden *-ui-Container (docker ps), nicht nur
+# deploy/laeden/*.env — dasselbe Muster wie Abschnitt 12 ("Absenderadressen
+# sind je Laden verschieden"): der Basis-Laden "sales" hat keine
+# Umgebungsdatei, der Wert kommt deshalb immer aus dem LAUFENDEN Container
+# selbst (printenv), nie aus einer Datei.
+#
+# Kein laufender *-ui-Container ist KEIN Fehler dieses Abschnitts (wie bei
+# Abschnitt 12) — dann gibt es nichts zu pruefen. Dieselbe --nur-basis-Gate
+# wie 11-14: ein leeres Secret in einem EINZELNEN Zweitladen darf keinen
+# Rueckbau DES PRODUKTIONSLADENS in deploy/update.sh ausloesen (W2); die
+# volle Pruefung laeuft ueber deploy/wache.sh alle 15 Minuten.
+echo "== UI_SESSION_SECRET je laufender Oberflaeche =="
+if [ "$MODUS" = "basis" ]; then
+  melde "ui_session_secret je laden" "uebersprungen (--nur-basis; volle Pruefung ueber deploy/wache.sh alle 15 Minuten)"
+else
+  ui_container="$(docker ps --format '{{.Names}}' | grep -- '-ui$' || true)"
+  if [ -z "$ui_container" ]; then
+    melde "ui_session_secret je laden" "uebersprungen (kein *-ui-Container laeuft)"
+  else
+    for c in $ui_container; do
+      wert="$(docker exec "$c" printenv UI_SESSION_SECRET 2>/dev/null || true)"
+      if [ -z "$(printf '%s' "$wert" | tr -d '[:space:]')" ]; then
+        fehl "ui_session_secret $c" "leer — Oberflaeche ohne Anmeldepflicht (Uebergangszustand); deploy/benutzer-anlegen.sh ${c%-ui} ausfuehren"
+      else
+        gut "ui_session_secret $c"
+      fi
+    done
+  fi
+fi
+
 echo "---"
 if [ "$ROT" -eq 0 ]; then echo "ALLE PRUEFUNGEN GRUEN"; else echo "$ROT PRUEFUNG(EN) ROT"; fi
 exit "$ROT"
