@@ -161,6 +161,24 @@ Sie bleiben getrennt: Man kann Werbung teilen, die der Kollege sieht, sein Bot a
 verschickt — und umgekehrt. `bot_darf_senden` mit „Sichtbarkeit" zu überladen wäre ein
 Rückschritt an einer Stelle, die Rechtsfolgen trägt.
 
+> **Einschränkung, die in Plan 1 bestehen bleibt (Schlussprüfung 16.09.2026).**
+> Die **Dateiablage** ist zwischen allen Läden **geteilt** und wird erst in Plan 2 getrennt.
+> Vier Ordner des Wirts hängen unparametrisiert in jedem Laden: `media` (die
+> Versandmappe), `media-erzeugt` (dort liegen die erzeugten Kalenderdateien, **also
+> Kundentermine mit Namen**), `reports` und `auftraege`.
+>
+> Daraus folgt dreierlei, und es ist besser, es zu sagen als es zu verschweigen:
+> der zweite Laden **sieht die erzeugten Dateien des ersten** und kann in
+> `media-erzeugt` auch schreiben; der Schalter `kollegen_sehen` aus diesem Abschnitt
+> wirkt deshalb erst, wenn Plan 2 die Ordner trennt — vorher regelt er die Anzeige, nicht
+> den Zugriff; und über `auftraege` besteht ein **Steuerkanal**, weil
+> `deploy/auftrag-ausfuehren.sh` auf dem Wirt Aufträge ausführt, ohne den Laden zu
+> unterscheiden, aus dem sie stammen.
+>
+> Für zwei Menschen, die ohnehin zusammenarbeiten, ist das tragbar. Für den dritten,
+> der nicht zum engsten Kreis gehört, ist es das nicht — dann muss Plan 2 vorher
+> kommen. Die Datenbank-Trennung ist davon **nicht** betroffen; sie hält (§2.2, Tor 1).
+
 **Bei neuen Medien wird unter *Freigaben* gefragt, Vorgabe nein — aber nur bei bewusst
 hochgeladenen Dateien** (`herkunft = 'hochgeladen'`). Was aus dem Chat kommt, bleibt stumm
 privat und ist auf der Medien-Seite jederzeit teilbar. Sonst ersäuft die Freigabeliste an
