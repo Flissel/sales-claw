@@ -1,5 +1,11 @@
 # Mehrere sales-claw-Instanzen auf einem Wirt
 
+> **ÜBERHOLT (16.09.2026).** Ersetzt durch `2026-09-16-getrennte-laeden-design.md`, das die
+> drei offenen Entscheidungen aus §3 beantwortet (eine Datenbank · Ressourcen gemessen ·
+> wer darf was sehen) und den geteilten Teil ausarbeitet. Der Befund aus §1 — wörtlich
+> benannte Volumes, geteilte WhatsApp-Anmeldung, feste Namen und Ports — gilt unverändert
+> und ist dort übernommen. Dieses Papier bleibt als Vorgeschichte stehen.
+
 **Datum:** 2026-09-11
 **Status:** Design. Nachgelagertes Vorhaben — erst umzusetzen, wenn das Team tatsächlich
 wächst.
