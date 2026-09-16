@@ -142,20 +142,123 @@ else
 fi
 
 # 10) Compose-Aufloesung: der Instanzname ist seit 16.09.2026 ein Parameter
-# (Plan 2026-09-16-zweiter-laden-getrennt, T1). Wird NUR hier wirklich
-# geprueft: in der Suite ueberspringt sich der Test selbst, wo kein Docker
-# ist (shutil.which("docker") is None) — ein uebersprungener Test ist kein
-# gruener Test. Ans Ende dieser Datei gehaengt statt hinter das bestehende
-# `exit "$ROT"` (das haette den Aufruf nie erreicht) und ueber
-# fehl/gut/ROT eingebunden, damit ein rotes Ergebnis auch im Exit-Code
-# dieses Skripts ankommt, statt die uebrigen Pruefungen darunter stumm
-# abzuschneiden.
+# (Plan 2026-09-16-zweiter-laden-getrennt, T1). Dieselbe Behauptung wie in
+# sales-mcp/tests/test_laden_parameter.py (das bleibt die Pruefung fuer
+# Entwicklungsrechner), hier aber OHNE pytest und ohne `python`: auf der VM
+# ist kein pytest installiert und es gibt dort nur `python3`, kein `python`
+# (Befund Koordinator, 16.09.2026, gemessen per `python3 -c "import pytest"`
+# -> ModuleNotFoundError). Ein pytest-Aufruf haette hier IMMER Exit!=0
+# geliefert und ueber sales-wache.timer alle zwei Stunden einen Fehlalarm
+# ausgeloest, ohne dass etwas kaputt war. Dieser Abschnitt braucht deshalb
+# nur, was auf der VM tatsaechlich vorhanden ist: docker und python3 mit
+# der Standardbibliothek (json, os, subprocess) — kein pip-Paket, keine
+# Datei aus sales-mcp/tests/.
+# Ans Ende dieser Datei gehaengt statt hinter das bestehende `exit "$ROT"`
+# (das haette den Aufruf nie erreicht) und ueber fehl/gut/ROT eingebunden,
+# damit ein rotes Ergebnis auch im Exit-Code dieses Skripts ankommt, statt
+# die uebrigen Pruefungen darunter stumm abzuschneiden.
 echo "== Compose-Aufloesung =="
-compose_out="$(cd "$WURZEL/sales-mcp" && python -m pytest tests/test_laden_parameter.py -q 2>&1)"
+compose_out="$(python3 - "$WURZEL" <<'PYEOF' 2>&1
+import json
+import os
+import subprocess
+import sys
+
+wurzel = sys.argv[1]
+
+# Dieselben sechs Variablen wie in sales-mcp/tests/test_laden_parameter.py:
+# aus der eigenen Umgebung entfernen, bevor gezielt ueberschrieben wird —
+# sonst faelscht ein auf der VM zufaellig gesetztes LADEN_PRAEFIX das
+# Ergebnis, und die Pruefung waere gruen, ohne etwas zu pruefen.
+LADEN_VARIABLEN = ("LADEN_PRAEFIX", "LADEN_PROJEKT", "PORT_GATEWAY",
+                    "PORT_UI", "PORT_OPENWA", "UI_TAILSCALE_IP")
+
+
+def aufgeloest(datei, umgebung=None):
+    basis = dict(os.environ)
+    for k in LADEN_VARIABLEN:
+        basis.pop(k, None)
+    roh = subprocess.run(
+        ["docker", "compose", "-f", datei, "config", "--format", "json"],
+        cwd=wurzel, capture_output=True, text=True,
+        env={**basis, **(umgebung or {})})
+    if roh.returncode != 0:
+        raise SystemExit(
+            "docker compose config (%s) Exit %d: %s"
+            % (datei, roh.returncode, roh.stderr))
+    return json.loads(roh.stdout)
+
+
+def hostports(dienst):
+    return {"%s:%s" % (p.get("host_ip", ""), p["published"])
+            for p in dienst.get("ports", [])}
+
+
+# 1) Der bestehende Laden bleibt ohne gesetzte Variablen unveraendert.
+erst = aufgeloest("docker-compose.yml")
+assert erst["name"] == "sales-claw", erst["name"]
+erwartete_container = {
+    "sales-claw", "sales-mcp", "sales-dispatch", "sales-inbox",
+    "sales-mail", "sales-telegram", "sales-linkedin", "sales-auto",
+    "sales-stt", "sales-ui"}
+ist = {d["container_name"] for d in erst["services"].values()}
+assert ist == erwartete_container, ist
+istv = {v["name"] for v in erst["volumes"].values()}
+assert istv == {"sales-claw-state", "sales-claw-keys",
+                 "sales-sprachnachrichten", "sales-stt-modelle"}, istv
+assert hostports(erst["services"]["sales-claw"]) == {"127.0.0.1:18894"}, \
+    hostports(erst["services"]["sales-claw"])
+assert hostports(erst["services"]["sales-ui"]) == {"127.0.0.1:8791"}, \
+    hostports(erst["services"]["sales-ui"])
+
+# 2) Dasselbe fuer openwa.
+erst_wa = aufgeloest("docker-compose.openwa.yml")
+assert erst_wa["name"] == "sales-claw", erst_wa["name"]
+assert erst_wa["services"]["openwa"]["container_name"] == "sales-openwa", \
+    erst_wa["services"]["openwa"]["container_name"]
+istv_wa = {v["name"] for v in erst_wa["volumes"].values()}
+assert istv_wa == {"sales-openwa-data"}, istv_wa
+assert hostports(erst_wa["services"]["openwa"]) == {"127.0.0.1:12785"}, \
+    hostports(erst_wa["services"]["openwa"])
+
+# 3) Ein zweiter Laden kollidiert in nichts.
+u = {"LADEN_PRAEFIX": "ivan", "LADEN_PROJEKT": "ivan-claw",
+     "PORT_GATEWAY": "18895", "PORT_UI": "8792", "PORT_OPENWA": "12786"}
+zweit = aufgeloest("docker-compose.yml", u)
+zweit_wa = aufgeloest("docker-compose.openwa.yml", u)
+assert zweit["name"] == "ivan-claw", zweit["name"]
+
+
+def namen(c):
+    return {d["container_name"] for d in c["services"].values()}
+
+
+def volumes(c):
+    return {v["name"] for v in c["volumes"].values()}
+
+
+def ports(c):
+    return {p for d in c["services"].values() for p in hostports(d)}
+
+
+ueberschneidung_namen = (namen(erst) | namen(erst_wa)) & (namen(zweit) | namen(zweit_wa))
+assert not ueberschneidung_namen, ueberschneidung_namen
+ueberschneidung_ports1 = ports(erst) & ports(zweit)
+assert not ueberschneidung_ports1, ueberschneidung_ports1
+ueberschneidung_ports2 = ports(erst_wa) & ports(zweit_wa)
+assert not ueberschneidung_ports2, ueberschneidung_ports2
+
+# sales-stt-modelle ist die AUSNAHME: geteilt, nicht vervielfacht.
+gemeinsam = volumes(erst) & volumes(zweit)
+assert gemeinsam == {"sales-stt-modelle"}, gemeinsam
+
+print("compose-aufloesung ok")
+PYEOF
+)"
 if [ $? -eq 0 ]; then
   gut "compose parameter"
 else
-  fehl "compose parameter" "loest nicht wie erwartet auf: $(echo "$compose_out" | tail -1)"
+  fehl "compose parameter" "loest nicht wie erwartet auf: $(echo "$compose_out" | tail -3)"
 fi
 
 echo "---"
