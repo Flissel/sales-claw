@@ -217,20 +217,51 @@ PORT = int(os.environ.get("UI_PORT", "8791"))
 # jedem Geraet Kundendaten zeigte.
 _EXTRA = [h.strip() for h in os.environ.get("UI_EXTRA_HOSTS", "").split(",")
           if h.strip()]
+# Schlussfix F (16.09.2026): `PORT` (oben, UI_PORT) ist der Container-
+# INTERNE Port und bleibt fuer JEDEN Laden fest 8791 (docker-compose.yml,
+# Dienst sales-ui) — ein zweiter Laden ist aber ueber einen ANDEREN
+# Docker-Host-Port erreichbar (PORT_UI, docker-compose.yml Abschnitt
+# ports:) und, hinter `tailscale serve`, ueber einen dritten, ebenfalls
+# eigenen Port (Teil von UI_BASIS_URL). Gemessen an "ivan": Host-Port 8792,
+# Serve-Port 8445 — beide weder 8791 noch das feste :443, das
+# _erlaubte_hosts bis hierhin kannte. Ergebnis war HTTP 421 auf beiden
+# Adressen, obwohl der Container gesund war (Host: <tailscale-ip> lieferte
+# 200). Beide Werte sind Auskuenfte ueber GENAU diesen einen Laden — kein
+# Platzhalter, keine Adresse eines anderen Ladens.
+_HOST_PORT = os.environ.get("PORT_UI", "").strip()
+_BASIS_URL = os.environ.get("UI_BASIS_URL", "").strip()
 
 
-def _erlaubte_hosts(extra, port) -> tuple:
+def _erlaubte_hosts(extra, port, host_port="", basis_url="") -> tuple:
     """Loopback mit Port plus jeden Extra-Eintrag in drei Formen: mit
     :PORT (direkter Zugriff), nackt und mit :443 — hinter `tailscale
     serve` reicht der Proxy den Original-Host durch (gemessen 31.08.2026:
-    421 auf der HTTPS-Adresse, bevor es diese drei Formen gab)."""
+    421 auf der HTTPS-Adresse, bevor es diese drei Formen gab).
+
+    Dazu, laden-spezifisch (Schlussfix F, 16.09.2026):
+    * `host_port` — der Docker-Host-Port DIESES Ladens (PORT_UI). Weicht er
+      von `port` ab, bekommen Loopback UND localhost zusaetzlich die Form
+      mit diesem Port.
+    * `basis_url` — UI_BASIS_URL DIESES Ladens (die tailscale-serve-Adresse
+      samt ihrem eigenen Port). Aufgenommen wird NUR die exakte Netzwerk-
+      adresse (Host samt Port) daraus, nie Pfad/Query, und kein
+      Platzhalter.
+
+    Eine leere Zeichenkette bei `host_port`/`basis_url` aendert nichts am
+    bisherigen Verhalten — der Basis-Laden bleibt unveraendert."""
     hosts = [f"127.0.0.1:{port}", f"localhost:{port}"]
+    if host_port and str(host_port) != str(port):
+        hosts += [f"127.0.0.1:{host_port}", f"localhost:{host_port}"]
     for h in extra:
         hosts += [f"{h}:{port}", h, f"{h}:443"]
+    if basis_url:
+        netloc = urllib.parse.urlsplit(basis_url).netloc
+        if netloc:
+            hosts.append(netloc)
     return tuple(hosts)
 
 
-ERLAUBTE_HOSTS = _erlaubte_hosts(_EXTRA, PORT)
+ERLAUBTE_HOSTS = _erlaubte_hosts(_EXTRA, PORT, _HOST_PORT, _BASIS_URL)
 # Boot-Token: lebt genau so lange wie der Prozess. Kein Persistieren, keine
 # Sessions — es gibt genau einen Betreiber, und ein Neustart der Seite im
 # Browser holt das frische Token von selbst (es steht in jedem Formular).

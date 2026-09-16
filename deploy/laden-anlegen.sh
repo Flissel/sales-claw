@@ -119,6 +119,15 @@ UI_TAILSCALE_IP=${UI_TAILSCALE_IP:-127.0.0.1}
 # der Passwort-vergessen-Mail ins Leere — vor dem ersten Versand
 # gegenpruefen.
 UI_BASIS_URL=https://$UI_SERVE_HOST:$PORT_SERVE
+# Derselbe Rechnername wie oben in UI_BASIS_URL, OHNE "https://" und OHNE
+# Port (Vorlage: deploy/laeden/beispiel.env) — docker-compose.yml (Dienst
+# sales-ui) reicht ihn ueber UI_EXTRA_HOSTS an ui.py durch, das daraus die
+# nackte Form und die Form mit :443 zulaesst; die EXAKTE Adresse samt
+# PORT_SERVE zieht ui.py direkt aus UI_BASIS_URL (Schlussfix F,
+# 16.09.2026). Schlussfix D liess diese Zeile hier aus, obwohl sie schon
+# fuer UI_BASIS_URL berechnet wurde — Ergebnis war ein UI_EXTRA_HOSTS ohne
+# Rechnername (nur "$UI_TAILSCALE_IP," mit leerem zweiten Glied).
+UI_SERVE_HOST=$UI_SERVE_HOST
 EOF
 
 echo "Umgebungsdatei geschrieben: $ENVDATEI (nur fuer den Eigentuemer lesbar)"

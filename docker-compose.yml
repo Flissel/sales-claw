@@ -692,6 +692,16 @@ services:
       - SALES_DB_SCHEMA=${SALES_DB_SCHEMA:-sales}
       - TZ=${TZ:-Europe/Berlin}
       - UI_PORT=8791
+      # Docker-Host-Port DIESES Ladens (siehe ports: weiter unten) — NICHT
+      # dasselbe wie UI_PORT direkt darueber: UI_PORT bleibt fuer JEDEN
+      # Laden fest 8791 (derselbe Container-Port), PORT_UI ist das externe
+      # Portmapping und je Laden verschieden (Basis-Laden 8791, "ivan"
+      # 8792). ui.py (_erlaubte_hosts) braucht PORT_UI, um auch den
+      # eigenen Host-Port dieses Ladens in die Host-Erlaubnisliste
+      # aufzunehmen (Schlussfix F, 16.09.2026) — ohne diese Zeile lieferte
+      # /login unter dem Host-Port eines zweiten Ladens 421, obwohl der
+      # Container gesund war.
+      - PORT_UI=${PORT_UI:-8791}
       # Der Sammelkontakt „Unbekannte Eingaenge" — dieselbe Variable wie bei
       # sales-inbox, hier nur GELESEN. Ohne sie findet server._einzuordnende()
       # nichts und die Seite /einordnung (Stufe 11 in der Oberflaeche) bliebe

@@ -192,6 +192,82 @@ def test_extra_host_gilt_auch_nackt_und_auf_443():
         ui.ERLAUBTE_HOSTS = vorher
 
 
+def test_erlaubte_hosts_nimmt_host_port_und_serve_adresse_eines_ladens_auf():
+    """Schlussfix F (16.09.2026), auf der Produktions-VM gemessen: der
+    zweite Laden ("ivan") lieferte HTTP 421 sowohl auf seinem eigenen
+    Docker-Host-Port (8792 — darueber prueft deploy/smoke.sh) als auch auf
+    seiner tailscale-serve-Adresse mit eigenem Port (8445), obwohl der
+    Container gesund war (Host: <tailscale-ip> lieferte 200). Grund:
+    `_erlaubte_hosts` kannte bis dahin nur den Container-internen Port
+    (8791, fuer JEDEN Laden gleich, weil UI_PORT in docker-compose.yml
+    nicht parametrisiert ist) und das fest verdrahtete :443.
+
+    `_erlaubte_hosts` ist rein (keine DB, kein IO) — direkt aufrufen ist der
+    billigste Weg zu den drei Gegenproben aus dem Auftrag."""
+    hosts = ui._erlaubte_hosts(
+        ["100.67.177.45"], 8791, host_port="8792",
+        basis_url="https://vibemind-offload-1.tail6c7d61.ts.net:8445")
+    # Gegenprobe 1: eigener Docker-Host-Port dieses Ladens.
+    assert "127.0.0.1:8792" in hosts
+    assert "localhost:8792" in hosts
+    # Gegenprobe 2: eigene tailscale-serve-Adresse dieses Ladens, MIT ihrem
+    # eigenen Port — keine Wildcard: die blosse Serve-Domain ohne diesen
+    # Port (bzw. mit dem alten fest verdrahteten :443) wird NICHT
+    # zusaetzlich geoeffnet, weil UI_BASIS_URL nicht ueber UI_EXTRA_HOSTS
+    # laeuft.
+    assert "vibemind-offload-1.tail6c7d61.ts.net:8445" in hosts
+    assert "vibemind-offload-1.tail6c7d61.ts.net" not in hosts
+    assert "vibemind-offload-1.tail6c7d61.ts.net:443" not in hosts
+    # Gegenprobe 3: eine fremde Adresse bleibt draussen.
+    assert "boeser.example.com" not in hosts
+    assert "boeser.example.com:8792" not in hosts
+    # Basis-Laden-Verhalten bleibt erhalten: Container-Port, Extra-Host in
+    # allen drei alten Formen.
+    assert "127.0.0.1:8791" in hosts
+    assert "100.67.177.45:8791" in hosts
+    assert "100.67.177.45" in hosts
+    assert "100.67.177.45:443" in hosts
+
+
+def test_erlaubte_hosts_ohne_host_port_und_basis_url_bleibt_beim_alten_stand():
+    """Kein PORT_UI/keine UI_BASIS_URL gesetzt (der heutige Basis-Laden) —
+    das Ergebnis muss WORTWOERTLICH das alte Tupel sein, sonst waere der
+    Basis-Laden von diesem Fix mitbetroffen."""
+    alt = ("127.0.0.1:8791", "localhost:8791",
+           "100.67.177.45:8791", "100.67.177.45", "100.67.177.45:443")
+    assert ui._erlaubte_hosts(["100.67.177.45"], 8791) == alt
+    assert ui._erlaubte_hosts(["100.67.177.45"], 8791, "", "") == alt
+    # host_port == port (kein zweiter Laden, nur explizit mitgegeben):
+    # keine zusaetzlichen Eintraege.
+    assert ui._erlaubte_hosts(["100.67.177.45"], 8791, "8791", "") == alt
+
+
+def test_zweiter_laden_ueber_host_port_und_serve_adresse_erreichbar_fremde_bleibt_421():
+    """Dieselben drei Gegenproben wie oben, diesmal durch die volle
+    Middleware (TestClient) statt direkt gegen `_erlaubte_hosts` — zeigt,
+    dass ERLAUBTE_HOSTS tatsaechlich so verwendet wird, wie die Funktion es
+    liefert, UND dass der Basis-Laden (Host: 127.0.0.1:8791 und seine
+    Tailscale-Adresse) dabei unveraendert bleibt."""
+    vorher = ui.ERLAUBTE_HOSTS
+    ui.ERLAUBTE_HOSTS = ui._erlaubte_hosts(
+        ["100.67.177.45"], ui.PORT, host_port="8792",
+        basis_url="https://vibemind-offload-1.tail6c7d61.ts.net:8445")
+    try:
+        # 1) Host-Port dieses Ladens (Docker-Portmapping).
+        assert _get("/", host="127.0.0.1:8792").status_code == 200
+        # 2) Serve-Adresse dieses Ladens (tailscale serve --https 8445).
+        assert _get(
+            "/", host="vibemind-offload-1.tail6c7d61.ts.net:8445"
+        ).status_code == 200
+        # 3) fremde Adresse bleibt abgewiesen.
+        assert _get("/", host="boeser.example.com").status_code == 421
+        # Basis-Laden unveraendert.
+        assert _get("/", host="127.0.0.1:8791").status_code == 200
+        assert _get("/", host="100.67.177.45:443").status_code == 200
+    finally:
+        ui.ERLAUBTE_HOSTS = vorher
+
+
 # ---------------------------------------------------------------------------
 # XSS: Fremddaten erscheinen escaped, nie roh — und die Seiten haben kein JS
 # ---------------------------------------------------------------------------
