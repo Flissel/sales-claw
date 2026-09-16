@@ -44,6 +44,32 @@ alter table :"schema".drafts drop constraint if exists drafts_lead_id_fkey;
 alter table :"schema".drafts add constraint drafts_lead_id_fkey
   foreign key (lead_id) references :"schema".leads(id) on delete set null;
 
+-- updated_at-Pflege: kein Anwendungscode-Versprechen, sondern ein Trigger.
+-- Von den "update leads set ..."-Anweisungen im Code setzen mehrere
+-- updated_at NICHT selbst (server.py:394, 996, 1992, 2016, 2024, 5447,
+-- 6310, 6409, 6798, u.a. Consent-Aenderungen) — sie verlassen sich auf
+-- genau diesen Trigger. `like ... including all` kopiert KEINE Trigger,
+-- also fehlt er ohne diesen Block im neuen Schema.
+--
+-- Die FUNKTION muss ebenfalls im neuen Schema liegen, nicht nur der
+-- Trigger: ein Verweis auf sales.set_updated_at() waere zum Scheitern
+-- verurteilt, weil das REVOKE weiter unten der Rolle die USAGE auf sales
+-- entzieht — die Funktion waere fuer sie unerreichbar. provision.sql
+-- macht es fuer sales und sales_test genauso: eine eigene Funktion je
+-- Schema, kein globaler/gemeinsamer Verweis.
+--
+-- `$fn$` statt `$$`, damit sich das Dollar-Quoting nicht mit dem
+-- umgebenden Skript beisst. Der Funktionsname (:"schema".set_updated_at)
+-- steht ausserhalb des $fn$...$fn$-Blocks, psql ersetzt :"schema" dort
+-- also regulaer — nachgemessen unten mit pg_get_triggerdef, nicht nur
+-- angenommen.
+create or replace function :"schema".set_updated_at() returns trigger
+  language plpgsql as $fn$ begin new.updated_at = now(); return new; end; $fn$;
+
+drop trigger if exists leads_updated_at on :"schema".leads;
+create trigger leads_updated_at before update on :"schema".leads
+  for each row execute function :"schema".set_updated_at();
+
 -- Der Benutzer dieses Ladens. Kein DDL, kein DELETE — wie sales_app
 -- (db/provision.sql:198-204).
 --
