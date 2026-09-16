@@ -29,6 +29,7 @@ import pytest
 os.environ["SALES_DB_SCHEMA"] = "sales_test"
 import passwort_reset  # noqa: E402
 import server  # noqa: E402
+import mail_dispatch  # noqa: E402
 import ui  # noqa: E402
 
 
@@ -49,6 +50,7 @@ def schema_wache():
 def sauber():
     with server.pool.connection() as conn:
         conn.execute("truncate sales_test.benutzer")
+        conn.execute("truncate sales_test.benutzer_mails")
     yield
 
 
@@ -133,60 +135,170 @@ def test_mailtext_traegt_den_link_und_beruhigt():
 # --- Die Verdrahtung -------------------------------------------------------
 
 def _anfordern(name):
-    """POST /passwort-vergessen, ohne echten Webserver."""
+    """POST /passwort-vergessen, ohne echten Webserver.
+
+    Die Seite VERSENDET NICHTS mehr - sie legt einen Zettel. Kein Umbau um
+    des Umbaus willen: `sales-ui` hat keine SMTP-Umgebung und darf nach
+    T5a keine bekommen (Sendemacht nur bei den Versendern, damit das
+    Freigabe-Tor die Datenbank bleibt). Der erste Anlauf rief hier
+    `mail_dispatch.senden` im UI-Container auf und konnte NIE senden.
+    """
     from starlette.testclient import TestClient
-    with mock.patch.object(ui, "_reset_mail_senden", return_value=True) as mail:
-        with TestClient(ui.app) as client:
-            antwort = client.post("/passwort-vergessen", headers=HOST_OK,
-                                  data={"csrf": ui.CSRF_TOKEN, "name": name})
-    return antwort, mail
+    with TestClient(ui.app) as client:
+        return client.post("/passwort-vergessen", headers=HOST_OK,
+                           data={"csrf": ui.CSRF_TOKEN, "name": name})
+
+
+def _zettel(name=None):
+    """Konto-Zettel, wahlweise fuer einen Namen."""
+    if name is None:
+        return server._q("select id, benutzer, art, status, grund "
+                         "from benutzer_mails order by erstellt_am")
+    return server._q("select id, benutzer, art, status, grund "
+                     "from benutzer_mails where benutzer = %s "
+                     "order by erstellt_am", (name,))
 
 
 def test_unbekannter_name_sieht_dasselbe_wie_ein_bekannter():
     """Die Maske verraet nicht, welche Konten es gibt."""
     _benutzer("ivan")
-    mit, _ = _anfordern("ivan")
-    ohne, _ = _anfordern("gibtsnicht")
+    mit = _anfordern("ivan")
+    ohne = _anfordern("gibtsnicht")
     assert mit.status_code == ohne.status_code == 200
     assert ui._RESET_ANTWORT[:60] in mit.text
     assert ui._RESET_ANTWORT[:60] in ohne.text
 
 
-def test_konto_ohne_adresse_loest_keine_mail_aus():
+def test_die_seite_legt_nur_einen_zettel_und_keinen_token():
+    """Der Klartext soll die Datenbank NIE erreichen - auch nicht kurz."""
+    _benutzer("ivan")
+    _anfordern("ivan")
+    zettel = _zettel("ivan")
+    assert len(zettel) == 1
+    assert zettel[0]["art"] == "passwort_reset"
+    assert zettel[0]["status"] == "offen"
+    z = server._q("select reset_hash, reset_bis, reset_zuletzt "
+                  "from benutzer where name = %s", ("ivan",))[0]
+    assert z["reset_hash"] is None and z["reset_bis"] is None
+    assert z["reset_zuletzt"] is not None       # die Bremse laeuft ab jetzt
+
+
+def test_konto_ohne_adresse_bekommt_keinen_zettel():
     _benutzer("ohnemail", email="")
-    antwort, mail = _anfordern("ohnemail")
+    antwort = _anfordern("ohnemail")
     assert antwort.status_code == 200
-    mail.assert_not_called()
-    assert server._q("select reset_hash from benutzer where name = %s",
-                     ("ohnemail",))[0]["reset_hash"] is None
+    assert _zettel() == []
 
 
-def test_inaktives_konto_loest_keine_mail_aus():
+def test_inaktives_konto_bekommt_keinen_zettel():
     _benutzer("ruhend", aktiv=False)
-    _, mail = _anfordern("ruhend")
-    mail.assert_not_called()
+    _anfordern("ruhend")
+    assert _zettel() == []
+
+
+def test_unbekannter_name_bekommt_keinen_zettel():
+    _anfordern("gibtsnicht")
+    assert _zettel() == []
 
 
 def test_zweite_anforderung_greift_in_die_bremse():
     _benutzer("ivan")
-    _, erste = _anfordern("ivan")
-    erste.assert_called_once()
-    _, zweite = _anfordern("ivan")
-    zweite.assert_not_called()
+    _anfordern("ivan")
+    _anfordern("ivan")
+    assert len(_zettel("ivan")) == 1            # kein zweiter Zettel
 
 
-def test_scheiternde_mail_laesst_keinen_gueltigen_token_stehen():
-    """Ein offenes Fenster, das niemand bemerkt, ist schlimmer als ein
-    Fehler."""
+# --- Der Versender: hier entsteht der Token, hier liegt die Sendemacht ----
+
+def _versenden(zettel_id, basis="https://haus.example", fehler=None):
+    """verarbeite_kontomail mit abgefangenem SMTP-Ausgang."""
+    def _ausgang(_nachricht):
+        if fehler is not None:
+            raise fehler
+
+    with mock.patch.object(mail_dispatch, "UI_BASIS_URL", basis), \
+         mock.patch.object(mail_dispatch, "EMAIL_ABSENDER",
+                           "haus@example.invalid"), \
+         mock.patch.object(mail_dispatch, "senden",
+                           side_effect=_ausgang) as gesendet:
+        ausgang = mail_dispatch.verarbeite_kontomail(zettel_id)
+    return ausgang, gesendet
+
+
+def test_versender_erzeugt_den_token_und_verschickt():
     _benutzer("ivan")
-    from starlette.testclient import TestClient
-    with mock.patch.object(ui, "_reset_mail_senden", return_value=False):
-        with TestClient(ui.app) as client:
-            client.post("/passwort-vergessen", headers=HOST_OK,
-                        data={"csrf": ui.CSRF_TOKEN, "name": "ivan"})
+    _anfordern("ivan")
+    ausgang, gesendet = _versenden(_zettel("ivan")[0]["id"])
+    assert ausgang == "gesendet"
+    gesendet.assert_called_once()
     z = server._q("select reset_hash, reset_bis from benutzer where name = %s",
                   ("ivan",))[0]
+    assert z["reset_hash"] and z["reset_bis"]   # jetzt erst gibt es einen
+    assert _zettel("ivan")[0]["status"] == "gesendet"
+
+
+def test_der_klartext_steht_nirgends_in_der_datenbank():
+    """Die eigentliche Zusage: gespeichert wird nur der Hash."""
+    import urllib.parse
+    _benutzer("ivan")
+    _anfordern("ivan")
+    _, gesendet = _versenden(_zettel("ivan")[0]["id"])
+    rumpf = gesendet.call_args[0][0].get_content()
+    roh = rumpf.split("token=")[1].split()[0]
+    klartext = urllib.parse.unquote(roh)
+    gespeichert = server._q("select reset_hash from benutzer where name = %s",
+                            ("ivan",))[0]["reset_hash"]
+    assert klartext and klartext not in gespeichert
+    assert passwort_reset.token_stimmt(klartext, gespeichert)
+
+
+def test_scheiternder_versand_raeumt_token_und_bremse_weg():
+    """Ein Fehlschlag, den der Mensch nicht verursacht hat, darf ihn nicht
+    aussperren - genau das ist am 17.09.2026 passiert."""
+    _benutzer("ivan")
+    _anfordern("ivan")
+    ausgang, _ = _versenden(_zettel("ivan")[0]["id"],
+                            fehler=mail_dispatch.VersandFehler("SMTP tot"))
+    assert ausgang == "fehler"
+    z = server._q("select reset_hash, reset_bis, reset_zuletzt "
+                  "from benutzer where name = %s", ("ivan",))[0]
     assert z["reset_hash"] is None and z["reset_bis"] is None
+    assert z["reset_zuletzt"] is None           # die Bremse ist offen
+    _anfordern("ivan")                          # und der naechste geht sofort
+    assert len(_zettel("ivan")) == 2
+
+
+def test_ohne_basis_adresse_wird_nichts_versendet():
+    """Lieber keine Mail als eine mit totem Link."""
+    _benutzer("ivan")
+    _anfordern("ivan")
+    ausgang, gesendet = _versenden(_zettel("ivan")[0]["id"], basis="")
+    assert ausgang == "fehler"
+    gesendet.assert_not_called()
+    assert server._q("select reset_zuletzt from benutzer where name = %s",
+                     ("ivan",))[0]["reset_zuletzt"] is None
+
+
+def test_zwischenzeitlich_deaktiviertes_konto_bekommt_nichts():
+    """Zwischen Zettel und Versand kann sich etwas aendern - der Versender
+    glaubt der Oberflaeche nicht, er prueft noch einmal."""
+    _benutzer("ivan")
+    _anfordern("ivan")
+    server._q("update benutzer set aktiv = false where name = %s "
+              "returning name", ("ivan",))
+    ausgang, gesendet = _versenden(_zettel("ivan")[0]["id"])
+    assert ausgang == "fehler"
+    gesendet.assert_not_called()
+
+
+def test_ein_zettel_wird_nur_einmal_versendet():
+    _benutzer("ivan")
+    _anfordern("ivan")
+    zid = _zettel("ivan")[0]["id"]
+    _versenden(zid)
+    ausgang, gesendet = _versenden(zid)
+    assert ausgang == "uebersprungen"
+    gesendet.assert_not_called()
 
 
 def _token_setzen(name, klartext, sekunden=600):

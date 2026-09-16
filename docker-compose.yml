@@ -420,6 +420,16 @@ services:
       - SMTP_USER=${SMTP_USER:-}
       - SMTP_PASSWORT=${SMTP_PASSWORT:-}
       - EMAIL_ABSENDER=${EMAIL_ABSENDER:-}
+      # Wohin der Link in der Passwort-Mail zeigt (17.09.2026). KEIN
+      # Geheimnis — eine Adresse, kein Schluessel; T5a bleibt gewahrt.
+      # Dieser Dienst braucht sie, seit die Konto-Mails hier entstehen
+      # statt in der Oberflaeche: `sales-ui` hat keine SMTP-Umgebung und
+      # darf keine bekommen, also legt sie nur einen Zettel in
+      # `benutzer_mails` und dieser Dienst holt ihn ab.
+      #
+      # Fehlt sie, versendet der Dienst den Zettel NICHT und sagt es im
+      # Log — lieber keine Mail als eine mit totem Link.
+      - UI_BASIS_URL=${UI_BASIS_URL:-}
       - TZ=${TZ:-Europe/Berlin}
       # Schleifentakt explizit statt implizit per Default — wie beim
       # Dispatcher.

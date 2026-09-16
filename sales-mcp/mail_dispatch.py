@@ -88,6 +88,7 @@ import psycopg
 
 import dispatch
 import mailadresse
+import passwort_reset
 import medien
 import postfach
 import server
@@ -100,6 +101,12 @@ SMTP_PORT = int(os.environ.get("SMTP_PORT", "587") or "587")
 SMTP_USER = os.environ.get("SMTP_USER", "").strip()
 SMTP_PASSWORT = os.environ.get("SMTP_PASSWORT", "")
 EMAIL_ABSENDER = os.environ.get("EMAIL_ABSENDER", "").strip()
+
+# Wohin der Link in der Passwort-Mail zeigt. Fehlt sie, wird KEIN
+# Konto-Zettel versendet - lieber gar keine Mail als eine mit einem Link,
+# der ins Leere zeigt. Je Laden verschieden (der zweite traegt seinen
+# eigenen Serve-Port), deshalb aus der Umgebung und nicht geraten.
+UI_BASIS_URL = os.environ.get("UI_BASIS_URL", "").strip()
 
 SMTP_TIMEOUT_S = float(os.environ.get("SMTP_TIMEOUT_S", "30"))
 MAIL_INTERVAL_S = float(os.environ.get("MAIL_INTERVAL_S", "10"))
@@ -613,6 +620,101 @@ def verarbeite_draft(draft_id) -> str:
     return "gesendet"
 
 
+def verarbeite_kontomail(zettel_id) -> str:
+    """Eine Mail des Hauses AN SICH SELBST (17.09.2026).
+
+    WARUM HIER UND NICHT IN DER OBERFLAECHE: nach T5a liegt Sendemacht
+    ausschliesslich bei den Versand-Diensten, damit das Freigabe-Tor die
+    Datenbank bleibt. `sales-ui` hat keine SMTP-Zugangsdaten und darf
+    keine bekommen; sie legt deshalb nur einen Zettel in
+    `benutzer_mails`, und abgeholt wird er hier.
+
+    WARUM DIESE MAIL NICHT DURCH `drafts` GEHT: das waere ein Zirkel -
+    wer freigibt, ist gerade der Ausgesperrte. Die Ausnahme ist eng, und
+    die Regeln stehen JETZT dort, wo auch die Sendemacht liegt:
+      * Empfaenger ist ausschliesslich `benutzer.email` eines
+        BESTEHENDEN, AKTIVEN Kontos - nie eine Adresse vom Zettel.
+      * Der Text ist fest (`passwort_reset.mailtext`); es gibt keinen
+        Parameter, mit dem jemand eigenen Inhalt hineinschriebe.
+      * Der Zettel traegt nur einen Kontonamen. Wer ihn faelschen
+        koennte, loeste dieselbe Mail an dieselbe Adresse aus wie ueber
+        das Formular - keine neue Macht.
+
+    DER TOKEN ENTSTEHT HIER, nicht in der Oberflaeche: so erreicht der
+    Klartext die Datenbank nie, auch nicht fuer die Sekunden, die ein
+    Zettel liegt. Gespeichert wird nur sein sha256-Hash.
+    """
+    zeilen = server._q(
+        "select id, benutzer, art, status from benutzer_mails where id = %s",
+        (zettel_id,))
+    if not zeilen or zeilen[0]["status"] != "offen":
+        return "uebersprungen"
+    zettel = zeilen[0]
+
+    def _schliessen(status, grund=""):
+        server._q("update benutzer_mails set status = %s, grund = %s, "
+                  "erledigt_am = now() where id = %s returning id",
+                  (status, grund[:500], zettel["id"]))
+        return status
+
+    def _bremse_freigeben(name):
+        # Ein Fehlschlag, den der Mensch nicht verursacht hat, darf ihn
+        # nicht aussperren. Ohne diese Zeile blieb er eine Viertelstunde
+        # draussen - und die immer gleiche Antwort der Seite verbarg es
+        # (gemessen 17.09.2026).
+        server._q("update benutzer set reset_hash = null, reset_bis = null, "
+                  "reset_zuletzt = null where name = %s returning name",
+                  (name,))
+
+    if zettel["art"] != "passwort_reset":
+        return _schliessen("fehler", "unbekannte Art: %s" % zettel["art"])
+
+    if not UI_BASIS_URL:
+        # Lieber keine Mail als eine mit totem Link. Die Bremse geht auf,
+        # damit ein spaeterer Versuch nach dem Nachtragen sofort greift.
+        _bremse_freigeben(zettel["benutzer"])
+        LOG.error("UI_BASIS_URL fehlt in der Umgebung dieses Dienstes - der "
+                  "Link in der Passwort-Mail zeigte auf nichts. Zettel %s "
+                  "nicht versendet.", zettel["id"])
+        return _schliessen("fehler", "UI_BASIS_URL fehlt")
+
+    konten = server._q(
+        "select name, email, aktiv from benutzer where name = %s",
+        (zettel["benutzer"],))
+    if (not konten or not konten[0]["aktiv"]
+            or not (konten[0]["email"] or "").strip()):
+        # Zwischen Zettel und Versand kann sich etwas geaendert haben -
+        # deshalb hier NOCH EINMAL pruefen, nicht der Oberflaeche glauben.
+        _bremse_freigeben(zettel["benutzer"])
+        return _schliessen("fehler", "kein brauchbares Konto")
+    konto = konten[0]
+
+    klartext, gehasht = passwort_reset.token_erzeugen()
+    server._q(
+        "update benutzer set reset_hash = %s, "
+        "reset_bis = now() + make_interval(secs => %s) "
+        "where name = %s returning name",
+        (gehasht, passwort_reset.GUELTIG_S, konto["name"]))
+    try:
+        nachricht = nachricht_bauen(
+            konto["email"], passwort_reset.BETREFF,
+            passwort_reset.mailtext(
+                konto["name"],
+                passwort_reset.link_bauen(UI_BASIS_URL, konto["name"],
+                                          klartext)))
+        senden(nachricht)
+    except Exception as e:      # noqa: BLE001 - ein Ausfall darf die Runde nicht reissen
+        # Der Token darf nicht stehenbleiben: ein gueltiger Token ohne
+        # Empfaenger ist ein offenes Fenster, das niemand bemerkt.
+        _bremse_freigeben(konto["name"])
+        grund = _ohne_geheimnis("%s: %s" % (type(e).__name__, e))
+        LOG.warning("Passwort-Mail nicht versendet (%s)", grund)
+        return _schliessen("fehler", grund)
+
+    LOG.info("Passwort-Link versendet an %s", _maskiert(konto["email"]))
+    return _schliessen("gesendet")
+
+
 def eine_runde() -> dict:
     """Bis zu STAPEL freigegebene E-Mail-Entwuerfe, aelteste zuerst."""
     zeilen = server._q(
@@ -625,6 +727,19 @@ def eine_runde() -> dict:
             _STOPP.wait(SENDE_PAUSE_S)      # unterbrechbar durch SIGTERM
         letzter_ausgang = verarbeite_draft(z["id"])
         bilanz[letzter_ausgang] = bilanz.get(letzter_ausgang, 0) + 1
+
+    # Konto-Zettel NACH den Entwuerfen, aber in derselben Runde: sie sind
+    # selten und klein, und ein Mensch, der sich ausgesperrt hat, wartet
+    # sonst bis zum naechsten Durchlauf. Eigene Zaehler, damit die Bilanz
+    # im Log die beiden Arten nicht vermischt.
+    for z in server._q(
+            "select id from benutzer_mails where status = 'offen' "
+            "order by erstellt_am limit %s", (STAPEL,)):
+        if letzter_ausgang in _NETZ_AUSGAENGE and SENDE_PAUSE_S > 0:
+            _STOPP.wait(SENDE_PAUSE_S)
+        letzter_ausgang = verarbeite_kontomail(z["id"])
+        schluessel = "konto:%s" % letzter_ausgang
+        bilanz[schluessel] = bilanz.get(schluessel, 0) + 1
     return bilanz
 
 

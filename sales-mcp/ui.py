@@ -5456,30 +5456,6 @@ _RESET_ANTWORT = (
     "das Passwort auch direkt setzen.")
 
 
-def _reset_mail_senden(adresse: str, name: str, token: str) -> bool:
-    """Die eine Mail. Fester Text, feste Adresse, kein Entwurf.
-
-    Warum NICHT ueber die Freigabe-Queue (Entscheid 12.09.2026, sales-claw
-    ist der einzige Versandweg): das waere ein Zirkel - wer freigibt, ist
-    gerade der Ausgesperrte. Die Ausnahme ist eng: die Adresse kommt aus
-    dem KONTO, der Text ist fest, und es gibt keinen Parameter, mit dem
-    jemand eigenen Inhalt hineinschriebe. Eine Kontoauskunft an den
-    Kontoinhaber ist keine Ansprache eines Kunden.
-    """
-    try:
-        import mail_dispatch
-        nachricht = mail_dispatch.nachricht_bauen(
-            adresse, passwort_reset.BETREFF,
-            passwort_reset.mailtext(name, passwort_reset.link_bauen(
-                UI_BASIS_URL, name, token)))
-        mail_dispatch.senden(nachricht)
-        return True
-    except Exception as e:  # noqa: BLE001 - ein Mailausfall darf die Seite nicht reissen
-        # Ohne Namen und ohne Adresse: im Log dieser Oberflaeche hat beides
-        # nichts verloren.
-        LOG.warning("Passwort-Mail fehlgeschlagen (%s)", type(e).__name__)
-        return False
-
 
 def _reset_seite(meldung: str = "", art: str = "meta", status: int = 200) -> HTMLResponse:
     hinweis = f'<p class="{art}">{_e(meldung)}</p>' if meldung else ""
@@ -5519,21 +5495,33 @@ async def passwort_vergessen(request):
         if passwort_reset.bremse_greift(zeilen[0]["reset_zuletzt"]):
             LOG.info("Passwort-Link angefordert, Bremse greift")
         else:
-            klartext, gehasht = passwort_reset.token_erzeugen()
+            # NUR EIN ZETTEL - diese Oberflaeche sendet nicht.
+            #
+            # Der erste Anlauf rief hier `mail_dispatch.senden` auf. Der
+            # Import gelang (dasselbe Image), der Versand konnte NIE
+            # gelingen: `sales-ui` hat keine SMTP-Umgebung, und nach T5a
+            # darf sie auch keine bekommen - Sendemacht liegt
+            # ausschliesslich bei den Versand-Diensten, damit das
+            # Freigabe-Tor die DATENBANK bleibt. Gemessen am 17.09.2026,
+            # am lebenden System, nachdem der Betreiber „es kommt nichts
+            # an" meldete.
+            #
+            # Den Token erzeugt der VERSENDER, nicht diese Seite. Damit
+            # erreicht der Klartext die Datenbank nie - auch nicht fuer
+            # die Sekunden, die ein Zettel hier liegt.
             server._q(
-                "update benutzer set reset_hash = %s, "
-                "reset_bis = now() + make_interval(secs => %s), "
-                "reset_zuletzt = now() where name = %s returning name",
-                (gehasht, passwort_reset.GUELTIG_S, zeilen[0]["name"]))
-            if _reset_mail_senden(zeilen[0]["email"], zeilen[0]["name"], klartext):
-                LOG.info("Passwort-Link verschickt")
-            else:
-                # Die Mail ging nicht raus - dann darf der Token auch nicht
-                # stehenbleiben. Ein gueltiger Token ohne Empfaenger ist ein
-                # offenes Fenster, das niemand bemerkt.
-                server._q("update benutzer set reset_hash = null, "
-                          "reset_bis = null where name = %s returning name",
-                          (zeilen[0]["name"],))
+                "insert into benutzer_mails (benutzer, art) "
+                "values (%s, 'passwort_reset') returning id",
+                (zeilen[0]["name"],))
+            # Die Bremse zaehlt ab jetzt: ein Zettel liegt, eine Mail wird
+            # versucht. Scheitert der Versand endgueltig, raeumt der
+            # Versender sie wieder weg - sonst bliebe der Ausgesperrte fuer
+            # einen FREMDEN Fehler eine Viertelstunde laenger ausgesperrt.
+            # Genau das ist am 17.09.2026 passiert, und die immer gleiche
+            # Antwort der Seite hat es verborgen.
+            server._q("update benutzer set reset_zuletzt = now() "
+                      "where name = %s returning name", (zeilen[0]["name"],))
+            LOG.info("Passwort-Link beauftragt")
     else:
         LOG.info("Passwort-Link angefordert, kein brauchbares Konto")
     return _reset_seite(_RESET_ANTWORT, art="meta")

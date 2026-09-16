@@ -213,6 +213,36 @@ begin
     execute format('alter table %I.benutzer add column if not exists reset_bis timestamptz', s);
     -- Eine Bremse gegen Mailfluten auf Zuruf: wann zuletzt ein Link ging.
     execute format('alter table %I.benutzer add column if not exists reset_zuletzt timestamptz', s);
+
+    -- Auftragszettel fuer Mails AN DAS EIGENE HAUS (17.09.2026).
+    --
+    -- WARUM ES DIESE TABELLE GIBT: die Oberflaeche kann nicht selbst
+    -- senden - und soll es nicht koennen. Nach T5a (Stufe 3) liegt
+    -- Sendemacht ausschliesslich bei den Versand-Diensten, damit das
+    -- Freigabe-Tor die DATENBANK bleibt und nicht die Exec-Freigabeliste
+    -- des Docker-Hosts. `sales-ui` hat deshalb keine SMTP-Zugangsdaten,
+    -- und der erste Anlauf des Passwort-Vergessens scheiterte genau daran:
+    -- die Route rief `mail_dispatch.senden` im UI-Container auf, der
+    -- Import gelang (dasselbe Image), der Versand konnte nie gelingen.
+    --
+    -- Also dieselbe Bruecke wie `marketing.versandauftraege`: wer nicht
+    -- senden darf, legt einen Zettel; wer senden darf, holt ihn ab.
+    --
+    -- WAS HIER NICHT DRINSTEHT: der Token. Den erzeugt der VERSENDER,
+    -- unmittelbar bevor er die Mail baut, und schreibt nur dessen Hash
+    -- nach `benutzer.reset_hash`. Der Klartext erreicht die Datenbank
+    -- also nie - auch nicht fuer die Sekunden, die ein Zettel hier liegt.
+    execute format($t$create table if not exists %I.benutzer_mails (
+        id uuid primary key default gen_random_uuid(),
+        benutzer text not null,
+        art text not null check (art in ('passwort_reset')),
+        status text not null default 'offen'
+               check (status in ('offen','gesendet','fehler')),
+        grund text not null default '',
+        erstellt_am timestamptz not null default now(),
+        erledigt_am timestamptz)$t$, s);
+    execute format('create index if not exists benutzer_mails_offen_idx '
+                   'on %I.benutzer_mails (status, erstellt_am)', s);
     execute format('create index if not exists leads_status_idx on %I.leads (status)', s);
     execute format('create index if not exists activities_lead_idx on %I.activities (lead_id, created_at desc)', s);
     execute format('create index if not exists drafts_status_idx on %I.drafts (status, created_at desc)', s);
@@ -249,6 +279,7 @@ grant select, insert         on sales.activities to sales_app;
 grant select, insert, update on sales.drafts   to sales_app;
 grant select, insert, update on sales.personas to sales_app;
 grant select, insert, update on sales.benutzer to sales_app;
+grant select, insert, update on sales.benutzer_mails to sales_app;
 grant select, insert, update on sales.medien_meta to sales_app;
 grant select, insert, update on sales.kalender_quellen to sales_app;
 -- Bewusst NICHT vergeben: DELETE (nirgends), UPDATE/TRUNCATE auf activities.
