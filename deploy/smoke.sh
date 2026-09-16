@@ -197,6 +197,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 
 wurzel = sys.argv[1]
 
@@ -212,10 +213,35 @@ def aufgeloest(datei, umgebung=None):
     basis = dict(os.environ)
     for k in LADEN_VARIABLEN:
         basis.pop(k, None)
-    roh = subprocess.run(
-        ["docker", "compose", "-f", datei, "config", "--format", "json"],
-        cwd=wurzel, capture_output=True, text=True,
-        env={**basis, **(umgebung or {})})
+    # Schlussfix E (16.09.2026): das Entfernen der sechs Variablen OBEN reicht
+    # nicht. `docker compose` liest zusaetzlich, unabhaengig von der
+    # Prozessumgebung, immer die Datei `.env` im Projektverzeichnis selbst.
+    # Auf der Produktions-VM steht dort UI_TAILSCALE_IP=<echte Tailscale-
+    # Adresse> — die Zusicherung unten (sales-ui bindet nur an 127.0.0.1)
+    # brach deshalb dort JEDES Mal (gemessen: zwei Host-Bindungen statt
+    # einer), obwohl nichts kaputt war. sales-wache.timer meldete das alle 15
+    # Minuten, und deploy/update.sh haette denselben roten Abschnitt als
+    # Abnahmetor genommen und einen Rueckbau des Produktionsstands ausgeloest.
+    # Fix: `docker compose` eine LEERE Umgebungsdatei mitgeben. `--env-file`
+    # ERSETZT die projekteigene `.env` als Interpolationsquelle vollstaendig
+    # (sie wird nicht zusaetzlich gelesen) — was danach noch zaehlt, ist
+    # ausschliesslich `basis`/`umgebung` oben, also genau das, was diese
+    # Funktion ausdruecklich steuert. Uebrig bleiben Interpolations-Warnungen
+    # auf stderr (z. B. "SALES_DB_URL is not set") fuer Variablen ohne
+    # `:-Vorgabewert` — die sind erwartet und harmlos: `docker compose` gibt
+    # dafuer trotzdem Exit 0, und einzig roh.returncode wird unten geprueft,
+    # nie stderr.
+    leere_umgebungsdatei = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".env", delete=False)
+    leere_umgebungsdatei.close()
+    try:
+        roh = subprocess.run(
+            ["docker", "compose", "--env-file", leere_umgebungsdatei.name,
+             "-f", datei, "config", "--format", "json"],
+            cwd=wurzel, capture_output=True, text=True,
+            env={**basis, **(umgebung or {})})
+    finally:
+        os.unlink(leere_umgebungsdatei.name)
     if roh.returncode != 0:
         raise SystemExit(
             "docker compose config (%s) Exit %d: %s"

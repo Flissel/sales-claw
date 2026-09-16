@@ -25,6 +25,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -64,10 +65,32 @@ def _aufgeloest(datei: str, umgebung: dict | None = None) -> dict:
     basis = dict(os.environ)
     for k in _LADEN_VARIABLEN:
         basis.pop(k, None)
-    roh = subprocess.run(
-        ["docker", "compose", "-f", datei, "config", "--format", "json"],
-        cwd=WURZEL, capture_output=True, text=True,
-        env={**basis, **(umgebung or {})})
+    # KORREKTUR Schlussfix E (16.09.2026): das Entfernen der Variablen oben
+    # bereinigt nur die PROZESSUMGEBUNG. `docker compose` liest zusaetzlich,
+    # unabhaengig davon, immer die Datei `.env` im Projektverzeichnis selbst
+    # (WURZEL) — auf einem Entwicklungsrechner mit einer `.env`, die z. B.
+    # UI_TAILSCALE_IP traegt, waere dieser Test rot gewesen, obwohl nichts
+    # kaputt ist (derselbe Befund wie in deploy/smoke.sh Abschnitt 10,
+    # gemessen auf der Produktions-VM: zwei Host-Bindungen statt einer).
+    # Fix: `docker compose` eine LEERE Umgebungsdatei mitgeben. `--env-file`
+    # ERSETZT die projekteigene `.env` als Interpolationsquelle vollstaendig
+    # (sie wird nicht zusaetzlich gelesen) — was danach noch zaehlt, ist
+    # ausschliesslich `basis`/`umgebung` oben, also genau das, was dieser
+    # Test ausdruecklich steuert. Uebrig bleiben Interpolations-Warnungen auf
+    # stderr (z. B. "SALES_DB_URL is not set") fuer Variablen ohne
+    # `:-Vorgabewert` — die sind erwartet und harmlos: `docker compose` gibt
+    # dafuer trotzdem Exit 0, und einzig roh.returncode wird unten geprueft.
+    leere_umgebungsdatei = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".env", delete=False)
+    leere_umgebungsdatei.close()
+    try:
+        roh = subprocess.run(
+            ["docker", "compose", "--env-file", leere_umgebungsdatei.name,
+             "-f", datei, "config", "--format", "json"],
+            cwd=WURZEL, capture_output=True, text=True,
+            env={**basis, **(umgebung or {})})
+    finally:
+        os.unlink(leere_umgebungsdatei.name)
     assert roh.returncode == 0, roh.stderr
     return json.loads(roh.stdout)
 
