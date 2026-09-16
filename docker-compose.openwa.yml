@@ -27,14 +27,32 @@
 # DNS-Namen erreichbar ist. Der Dispatcher (Dienst sales-dispatch in
 # docker-compose.yml) nutzt das. Der explizite Name haelt die Kopplung fest,
 # statt sie vom Verzeichnisnamen abhaengig zu lassen.
-name: sales-claw
+#
+# LADEN_PROJEKT ist seit 16.09.2026 ein Parameter (Plan
+# 2026-09-16-zweiter-laden-getrennt, T1), identisch zu docker-compose.yml —
+# ohne gesetzte Variable loest er auf "sales-claw" auf, also GENAU den
+# bisherigen Stand.
+name: ${LADEN_PROJEKT:-sales-claw}
 
 services:
   openwa:
     build:
       context: ./openwa/upstream
       dockerfile: Dockerfile
-    container_name: openwa
+    # Dienstschluessel "openwa" bleibt UNVERAENDERT (Korrektur zum Brief,
+    # Vorab-Abgleich 16.09.2026): Compose vergibt den Netzwerk-Alias nach
+    # dem Dienstschluessel, nicht nach container_name — deshalb funktioniert
+    # OPENWA_URL=http://openwa:2785 in docker-compose.yml unveraendert, auch
+    # mit parametrisiertem container_name hier.
+    #
+    # container_name ist seit 16.09.2026 ein Parameter, identisch zum
+    # Muster in docker-compose.yml. ACHTUNG, Abweichung vom Ist-Zustand: der
+    # Container heisst bis zur Umstellung "openwa", danach "sales-openwa" —
+    # eine einmalige Umbenennung. Das Volume (siehe unten) bleibt beim alten
+    # Namen "openwa-data", bis es manuell umkopiert wird, damit die
+    # WhatsApp-Anmeldung nicht verloren geht (Betreiber-Aktion, siehe
+    # Aufgabe-4-Runbook — bewusst NICHT Teil dieses Commits).
+    container_name: ${LADEN_PRAEFIX:-sales}-openwa
     # Anders als der uebrige Stack: startet nach einem Reboot von selbst.
     # Grund (Betreiber am 26.08.2026): openwa haelt die WhatsApp-Anmeldung.
     # Kommt der Container nicht hoch, verfaellt sie und muss per QR neu
@@ -162,7 +180,10 @@ services:
       # ueber den Containernamen an (OPENWA_URL=http://openwa:2785),
       # also am Host vorbei. Diese Bindung ist ausschliesslich fuer
       # den Menschen da — Dashboard und QR-Kopplung.
-      - "127.0.0.1:12785:2785"
+      # HOST-Port ist seit 16.09.2026 ein Parameter (PORT_OPENWA), der
+      # Container-Port bleibt fest — gleiches Muster wie beim Gateway-Port
+      # in docker-compose.yml.
+      - "127.0.0.1:${PORT_OPENWA:-12785}:2785"
     logging:
       driver: json-file
       options:
@@ -186,5 +207,17 @@ services:
 volumes:
   # Expliziter name:, sonst prefixt Compose mit dem Projektnamen (vgl.
   # docker-compose.yml).
+  #
+  # ACHTUNG, Abweichung vom Ist-Zustand (Plan 2026-09-16-zweiter-laden-
+  # getrennt, T1): das Volume heisst bis zur Umstellung "openwa-data",
+  # danach "sales-openwa-data". Ein neues, leeres Volume bedeutet VERLUST
+  # der openwa-WhatsApp-Anmeldung. Die Umkopierung
+  #   docker volume create sales-openwa-data
+  #   docker run --rm -v openwa-data:/alt -v sales-openwa-data:/neu alpine \
+  #     sh -c 'cp -a /alt/. /neu/'
+  # ist deshalb ABSICHTLICH NICHT Teil dieses Commits — sie greift in den
+  # laufenden Produktionsbetrieb ein und bleibt Betreiber-Sache (siehe
+  # Bericht zu diesem Plan). Vor dem ersten Start von
+  # docker-compose.openwa.yml NACH dieser Aenderung MUSS sie erledigt sein.
   openwa-data:
-    name: openwa-data
+    name: ${LADEN_PRAEFIX:-sales}-openwa-data

@@ -62,3 +62,8 @@ desktop.ini
 
 # Auftrags-Spool (Laufzeitdaten, 27.08.2026)
 auftraege/
+
+# Umgebungsdateien der Laeden tragen DSN samt Passwort (Spec 2026-09-16).
+# Nur die Vorlage gehoert ins Repository.
+deploy/laeden/*.env
+!deploy/laeden/beispiel.env

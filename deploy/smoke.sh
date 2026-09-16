@@ -141,6 +141,23 @@ else
   fi
 fi
 
+# 10) Compose-Aufloesung: der Instanzname ist seit 16.09.2026 ein Parameter
+# (Plan 2026-09-16-zweiter-laden-getrennt, T1). Wird NUR hier wirklich
+# geprueft: in der Suite ueberspringt sich der Test selbst, wo kein Docker
+# ist (shutil.which("docker") is None) — ein uebersprungener Test ist kein
+# gruener Test. Ans Ende dieser Datei gehaengt statt hinter das bestehende
+# `exit "$ROT"` (das haette den Aufruf nie erreicht) und ueber
+# fehl/gut/ROT eingebunden, damit ein rotes Ergebnis auch im Exit-Code
+# dieses Skripts ankommt, statt die uebrigen Pruefungen darunter stumm
+# abzuschneiden.
+echo "== Compose-Aufloesung =="
+compose_out="$(cd "$WURZEL/sales-mcp" && python -m pytest tests/test_laden_parameter.py -q 2>&1)"
+if [ $? -eq 0 ]; then
+  gut "compose parameter"
+else
+  fehl "compose parameter" "loest nicht wie erwartet auf: $(echo "$compose_out" | tail -1)"
+fi
+
 echo "---"
 if [ "$ROT" -eq 0 ]; then echo "ALLE PRUEFUNGEN GRUEN"; else echo "$ROT PRUEFUNG(EN) ROT"; fi
 exit "$ROT"

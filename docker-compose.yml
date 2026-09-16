@@ -11,12 +11,17 @@
 # — und niemand muss dafür einen laufenden Container neu erzeugen. Würde das
 # Verzeichnis umbenannt, fiele diese Kopplung stillschweigend auseinander;
 # der explizite Name hier und in docker-compose.openwa.yml hält sie fest.
-name: sales-claw
+#
+# LADEN_PROJEKT ist seit 16.09.2026 ein Parameter (Plan
+# 2026-09-16-zweiter-laden-getrennt, T1): ohne gesetzte Variable loest er
+# auf "sales-claw" auf, also GENAU den bisherigen Stand. Ein zweiter Laden
+# auf derselben Maschine setzt hier seinen eigenen Projektnamen.
+name: ${LADEN_PROJEKT:-sales-claw}
 
 services:
   sales-claw:
     image: ghcr.io/openclaw/openclaw:2026.7.1-slim
-    container_name: sales-claw
+    container_name: ${LADEN_PRAEFIX:-sales}-claw
     # DEMO-BETRIEB: bewusst "no", nicht "unless-stopped".
     #
     # Der Container hängt an der persönlichen WhatsApp-Nummer des Betreibers
@@ -67,7 +72,10 @@ services:
       - sales-claw-keys:/home/node/.config/openclaw
     ports:
       # Nur Loopback. Der Gateway hält WhatsApp-Session und Modellschlüssel.
-      - "127.0.0.1:18894:18894"
+      # HOST-Port ist seit 16.09.2026 ein Parameter (PORT_GATEWAY), der
+      # Container-Port bleibt fest — Muster wie bei allen anderen Ports
+      # dieses Plans (Spec 2026-09-16 §2.6).
+      - "127.0.0.1:${PORT_GATEWAY:-18894}:18894"
     logging:
       driver: json-file
       options:
@@ -86,7 +94,7 @@ services:
     # unten faehrt DASSELBE Image (siehe dort). Damit genuegt weiterhin ein
     # `docker compose build sales-mcp`, um beide Dienste aktuell zu halten.
     image: sales-claw-sales-mcp:local
-    container_name: sales-mcp
+    container_name: ${LADEN_PRAEFIX:-sales}-mcp
     # Wie sales-claw im Demo-Betrieb: laeuft nur nach ausdruecklichem Start.
     restart: unless-stopped
     env_file:
@@ -157,7 +165,7 @@ services:
   sales-dispatch:
     build: ./sales-mcp
     image: sales-claw-sales-mcp:local
-    container_name: sales-dispatch
+    container_name: ${LADEN_PRAEFIX:-sales}-dispatch
     command: python dispatch.py
     # Demo-Betrieb wie der restliche Stack. Bewusst "no": ein Dienst, der
     # Nachrichten an echte Menschen schickt, startet nicht von selbst mit dem
@@ -212,7 +220,7 @@ services:
   sales-inbox:
     build: ./sales-mcp
     image: sales-claw-sales-mcp:local
-    container_name: sales-inbox
+    container_name: ${LADEN_PRAEFIX:-sales}-inbox
     command: python inbox.py
     # Demo-Betrieb wie der restliche Stack.
     restart: unless-stopped
@@ -268,7 +276,7 @@ services:
   sales-mail:
     build: ./sales-mcp
     image: sales-claw-sales-mcp:local
-    container_name: sales-mail
+    container_name: ${LADEN_PRAEFIX:-sales}-mail
     command: python mail_dispatch.py
     # Demo-Betrieb wie der restliche Stack. Bewusst "no": ein Dienst, der
     # Mails an echte Menschen schickt, startet nicht von selbst mit dem
@@ -329,7 +337,7 @@ services:
   sales-telegram:
     build: ./sales-mcp
     image: sales-claw-sales-mcp:local
-    container_name: sales-telegram
+    container_name: ${LADEN_PRAEFIX:-sales}-telegram
     command: python telegram_dispatch.py
     # Wie sales-mail bewusst „unless-stopped" und nicht „always": ein Dienst,
     # der Nachrichten an echte Menschen schickt, startet nicht von selbst mit
@@ -391,7 +399,7 @@ services:
   sales-linkedin:
     build: ./sales-mcp
     image: sales-claw-sales-mcp:local
-    container_name: sales-linkedin
+    container_name: ${LADEN_PRAEFIX:-sales}-linkedin
     command: python linkedin_dispatch.py
     restart: unless-stopped
     # KEIN env_file — dieselbe Trennung wie bei sales-mail: dieser Dienst
@@ -448,7 +456,7 @@ services:
   sales-auto:
     build: ./sales-mcp
     image: sales-claw-sales-mcp:local
-    container_name: sales-auto
+    container_name: ${LADEN_PRAEFIX:-sales}-auto
     command: python auto.py
     restart: "no"
     env_file:
@@ -514,7 +522,7 @@ services:
   sales-stt:
     build: ./sales-stt
     image: sales-claw-sales-stt:local
-    container_name: sales-stt
+    container_name: ${LADEN_PRAEFIX:-sales}-stt
     restart: unless-stopped
     environment:
       - STT_PORT=2790
@@ -535,7 +543,7 @@ services:
   sales-ui:
     build: ./sales-mcp
     image: sales-claw-sales-mcp:local
-    container_name: sales-ui
+    container_name: ${LADEN_PRAEFIX:-sales}-ui
     command: python ui.py
     restart: unless-stopped
     # KEIN env_file — dieselbe T5a-Ueberlegung wie bei sales-claw und
@@ -626,8 +634,8 @@ services:
       # falschen Netz haengt. Ohne gesetzte UI_TAILSCALE_IP faellt die Zeile
       # auf Loopback zurueck und ist damit wirkungslos (doppeltes Mapping
       # derselben Adresse ist erlaubt).
-      - "127.0.0.1:8791:8791"
-      - "${UI_TAILSCALE_IP:-127.0.0.1}:8791:8791"
+      - "127.0.0.1:${PORT_UI:-8791}:8791"
+      - "${UI_TAILSCALE_IP:-127.0.0.1}:${PORT_UI:-8791}:8791"
     logging:
       driver: json-file
       options:
@@ -638,14 +646,24 @@ volumes:
   # Explizite name:-Angabe, sonst prefixt Compose mit dem Projektnamen
   # (hier "sales-claw" -> "sales-claw_sales-claw-state"), was den in den
   # Randbedingungen geforderten literalen Volume-Namen verfehlt.
+  #
+  # Der Praefix ist seit 16.09.2026 ein Parameter (Plan
+  # 2026-09-16-zweiter-laden-getrennt, T1); ohne gesetzte Variable loest er
+  # auf die bisherigen Namen auf — daran haengt die WhatsApp-Anmeldung des
+  # bestehenden Ladens (sales-claw-state). Ein um ein Zeichen falsch
+  # aufgeloester Name heisst: der Gateway haengt an einem LEEREN Volume und
+  # zeigt wieder einen QR-Code, ohne Fehlermeldung.
   sales-claw-state:
-    name: sales-claw-state
+    name: ${LADEN_PRAEFIX:-sales}-claw-state
   sales-claw-keys:
-    name: sales-claw-keys
+    name: ${LADEN_PRAEFIX:-sales}-claw-keys
   # Sprachnachrichten und das Whisper-Modell (01.09.2026). Getrennt, weil
   # das eine Kundeninhalt ist (gehoert in die Sicherung) und das andere
   # ein 300-MB-Download, der jederzeit neu geholt werden kann.
   sales-sprachnachrichten:
-    name: sales-sprachnachrichten
+    name: ${LADEN_PRAEFIX:-sales}-sprachnachrichten
+  # AUSNAHME, bewusst NICHT parametrisiert: ein 300-MB-Modelldownload ist
+  # kein Kundeninhalt. Alle Laeden teilen ihn (Spec §2.6) — wörtlich
+  # benannt, damit ein zweiter Laden ihn wiederverwendet statt neu laedt.
   sales-stt-modelle:
     name: sales-stt-modelle
