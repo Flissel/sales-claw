@@ -79,8 +79,16 @@ import mailadresse
 import postfach
 
 SCHEMA = os.environ.get("SALES_DB_SCHEMA", "sales")
-if SCHEMA not in ("sales", "sales_test"):
-    raise SystemExit(f"Unzulaessiges Schema '{SCHEMA}' — erlaubt: sales, sales_test")
+# Ein Muster statt einer Liste (Plan 2026-09-16, T2): jeder weitere Laden
+# heisst `sales_<kennung>`, und niemand muss diese Zeile dafuer anfassen.
+# Streng bleibt es trotzdem — der Name wird unten in
+# `options=-c search_path={SCHEMA}` eingesetzt, und das Muster laesst weder
+# Leerzeichen noch Anfuehrungszeichen, Kommata oder Semikola zu.
+SCHEMA_MUSTER = re.compile(r"sales(_[a-z][a-z0-9_]{0,30})?")
+if not SCHEMA_MUSTER.fullmatch(SCHEMA):
+    raise SystemExit(
+        f"Unzulaessiges Schema '{SCHEMA}' — erlaubt: sales, sales_test "
+        f"oder sales_<kennung> (Kleinbuchstaben, Ziffern, Unterstrich)")
 
 LEITFADEN = yaml.safe_load(
     (Path(__file__).parent / "leitfaden.yaml").read_text(encoding="utf-8"))
