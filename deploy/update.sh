@@ -11,6 +11,13 @@
 #   GEMELDET, nie automatisch angewendet.
 set -euo pipefail
 
+# Wie in deploy/laden-anlegen.sh und deploy/wiederherstellen.sh: ohne
+# LC_ALL=C kollationiert bash Bereiche wie [a-z] unter z. B. de_DE.UTF-8
+# GROSS- und Kleinschreibung durcheinander, ein Praefix wie "Ivan" bestuende
+# die Gueltigkeitspruefung unten dann faelschlich. Gehoert zu Tor 13
+# (Schlussprüfung 2026-09-16, Bereich B, W3).
+export LC_ALL=C
+
 WURZEL="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BETRIEB="${SALES_BETRIEB:-$HOME/sales-betrieb}"
 STATUS="$BETRIEB/update-status.json"
@@ -29,12 +36,30 @@ KERN_ALLE="sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw s
 # also GENAU den bisherigen Stand.
 LADEN_PRAEFIXE=("sales")
 LADEN_ENVARGS=("")
+# W3 (Schlussprüfung 2026-09-16, Bereich B): eine Umgebungsdatei ohne
+# brauchbares LADEN_PRAEFIX (Tippfehler im Schluessel, auskommentierte
+# Zeile, oder unter Debian ein mitkopiertes CRLF -> "ivan\r") ist ein
+# FEHLER, keine Leerstelle — sie wurde bisher lautlos aus der Ladenliste
+# ausgelassen (gemessen: 4 .env-Dateien, 3 erkannte Laeden, exit 0). `tr -d
+# '[:space:]'` faengt das CRLF ab, die Regex (identisch zu
+# deploy/laden-anlegen.sh/wiederherstellen.sh) alles andere Unbrauchbare.
+LADEN_ENV_FEHLER=0
 for e in "$WURZEL"/deploy/laeden/*.env; do
   [ -e "$e" ] || continue
   [ "$(basename "$e")" = "beispiel.env" ] && continue
-  LADEN_PRAEFIXE+=("$(sed -n 's/^LADEN_PRAEFIX=//p' "$e")")
+  p="$(sed -n 's/^LADEN_PRAEFIX=//p' "$e" | tr -d '[:space:]')"
+  if ! [[ "$p" =~ ^[a-z][a-z0-9_]{0,30}$ ]]; then
+    echo "FEHLER: $e hat kein brauchbares LADEN_PRAEFIX ('${p:-leer}') - dieser Laden wird vom Update NICHT sicher erkannt." >&2
+    LADEN_ENV_FEHLER=$((LADEN_ENV_FEHLER + 1))
+    continue
+  fi
+  LADEN_PRAEFIXE+=("$p")
   LADEN_ENVARGS+=("--env-file $e")
 done
+if [ "$LADEN_ENV_FEHLER" -gt 0 ]; then
+  echo "ABBRUCH: $LADEN_ENV_FEHLER Umgebungsdatei(en) in deploy/laeden/ ohne brauchbares LADEN_PRAEFIX - siehe FEHLER-Zeilen oben." >&2
+  exit 1
+fi
 
 # Bildet einen Dienstschluessel (z. B. sales-mcp, aus KERN_ALLE) auf den
 # tatsaechlichen Containernamen eines Ladens ab: <praefix>-<rest>, wobei
@@ -209,7 +234,10 @@ rueckbau() {
   done
   gateway_neustarten
   sleep 30
-  if bash "$WURZEL/deploy/smoke.sh"; then
+  # --nur-basis: siehe Kommentar bei KERN_BASIS oben und bei der Abnahme
+  # weiter unten (W2, Schlussprüfung 2026-09-16) - smoke.sh betrachtet von
+  # hier aus konsequent nur den Basis-Laden.
+  if bash "$WURZEL/deploy/smoke.sh" --nur-basis; then
     status_schreiben rollback "$ALT" "$NEU" "Update fehlerhaft; alter Stand laeuft wieder"
     echo "Rueckbau erfolgreich — alter Stand laeuft, Abnahme gruen."
   else
@@ -260,8 +288,46 @@ for i in "${!LADEN_PRAEFIXE[@]}"; do
   fi
 done
 
+# Existiert ein Volume und hat es Inhalt? Genutzt von der Migrations-
+# Bremse gleich unten (W1). Nicht ueber "docker volume inspect" allein
+# entscheidbar: ein frisch von Compose angelegtes leeres Volume EXISTIERT
+# bereits, bevor es befuellt wird.
+volume_hat_inhalt() { # volume
+  docker volume inspect "$1" >/dev/null 2>&1 || return 1
+  [ -n "$(docker run --rm -v "$1":/v alpine sh -c 'ls -A /v' 2>/dev/null)" ]
+}
+
 if $OPENWA_BAUEN; then
   for i in "${!LADEN_PRAEFIXE[@]}"; do
+    # W1 (Schlussprüfung 2026-09-16, Bereich B): openwa nur fuer Laeden
+    # hochziehen, die auch sonst bedient werden — dieselbe Bremse wie die
+    # Build-Schleife oben (leerer LADEN_KERN-Schnappschuss = nichts
+    # anzufassen). Vorher lief das hier UNBEDINGT fuer jeden Eintrag in
+    # LADEN_PRAEFIXE, auch einen frisch angelegten Laden, der noch auf
+    # Zugangsdaten wartet.
+    K="${LADEN_KERN[$i]}"
+    [ -n "$K" ] || continue
+
+    P="${LADEN_PRAEFIXE[$i]}"
+    # Migrations-Bremse, NUR fuer den Basis-Laden: docker-compose.openwa.yml
+    # (Kopf der Datei, Abschnitt "volumes:") benennt das Volume seit
+    # 16.09.2026 von "openwa-data" auf "sales-openwa-data" um. Ohne
+    # Handkopie VOR diesem Lauf haengt "openwa" danach an einem leeren
+    # neuen Volume — die WhatsApp-Anmeldung ist weg, ohne jede
+    # Fehlermeldung (docs/03_RUNBOOK.md, Tor 10). Ein zweiter/weiterer
+    # Laden ist NIE betroffen: sein Volume ist von Anfang an neu und soll
+    # leer sein.
+    if [ "$P" = "sales" ] && ! volume_hat_inhalt "sales-openwa-data" \
+        && volume_hat_inhalt "openwa-data"; then
+      echo "ABBRUCH: 'sales-openwa-data' ist leer oder fehlt, waehrend das alte 'openwa-data' Inhalt hat." >&2
+      echo "  Vor dem naechsten Update-Lauf von Hand umkopieren (docs/03_RUNBOOK.md, Tor 10):" >&2
+      echo "    docker volume create sales-openwa-data" >&2
+      echo "    docker run --rm -v openwa-data:/alt -v sales-openwa-data:/neu alpine \\" >&2
+      echo "      sh -c 'cp -a /alt/. /neu/'" >&2
+      status_schreiben fehler "$ALT" "$NEU" "openwa-Volume-Umzug fehlt - Basis-openwa absichtlich NICHT angefasst"
+      exit 1
+    fi
+
     # shellcheck disable=SC2086
     docker compose ${LADEN_ENVARGS[$i]} -f docker-compose.openwa.yml up -d --build openwa
   done
@@ -283,9 +349,18 @@ fi
 # (Aufbauphase vor dem Cutover: nur mcp und ui) ist sie zwangslaeufig rot, und
 # ein Rueckbau waere dort sinnlos: die Roete kommt nicht vom Update. Gemessen
 # am 30.08.2026, als genau das passierte. Bewusst nur der Basis-Laden
-# (KERN_BASIS), siehe Kommentar dort — smoke.sh prueft ebenfalls nur ihn.
+# (KERN_BASIS), siehe Kommentar dort.
+#
+# --nur-basis (W2, Schlussprüfung 2026-09-16): smoke.sh prueft seit
+# Aufgabe 6 auch ZWEITE Laeden (Abschnitte 11-14) — ohne diesen Schalter
+# haette ein einzelner roter Zweitladen (z. B. ein leeres UI_BASIS_URL in
+# irgendeiner deploy/laeden/*.env) hier einen VOLLEN Rueckbau DES
+# PRODUKTIONSLADENS ausgeloest, obwohl der nichts mit dem Update zu tun
+# hatte. Die Zweitladen-Pruefungen laufen weiter ohne diesen Schalter —
+# ueber deploy/wache.sh alle 15 Minuten, wo sie hingehoeren — sie duerfen
+# nur keinen Rueckbau der Produktion mehr ausloesen.
 if [ "$KERN_BASIS" = "$KERN_ALLE" ]; then
-  bash "$WURZEL/deploy/smoke.sh" || rueckbau
+  bash "$WURZEL/deploy/smoke.sh" --nur-basis || rueckbau
   status_schreiben eingespielt "$ALT" "$NEU" "${HINWEIS:-glatt durchgelaufen}"
   echo "Update eingespielt und Abnahme gruen."
 else

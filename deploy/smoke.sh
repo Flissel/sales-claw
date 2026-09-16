@@ -8,6 +8,30 @@
 # es wird NUR diese eine Variable extrahiert, nie die Datei angezeigt.
 set -uo pipefail
 
+# Wie in deploy/laden-anlegen.sh und deploy/wiederherstellen.sh: ohne
+# LC_ALL=C kollationiert bash Bereiche wie [a-z] unter z. B. de_DE.UTF-8
+# GROSS- und Kleinschreibung durcheinander. Gehoert zu Tor 13
+# (Schlussprüfung 2026-09-16, Bereich B, W3).
+export LC_ALL=C
+
+# --nur-basis (W2, Schlussprüfung 2026-09-16, Bereich B): beschraenkt die
+# Abnahme auf den Basis-Laden ("sales") — ohne Abschnitte 11-14 (die
+# ZWEITEN Laeden). deploy/update.sh benutzt das an seinem Abnahmetor: ein
+# einzelner roter Zweitladen (z. B. ein leeres UI_BASIS_URL in irgendeiner
+# deploy/laeden/*.env) darf keinen Rueckbau DES PRODUKTIONSLADENS mehr
+# ausloesen. Ohne Argument (der Normalfall, u. a. deploy/wache.sh alle 15
+# Minuten) laeuft weiterhin die VOLLE Abnahme, Zweitladen eingeschlossen —
+# dort gehoeren diese Pruefungen hin.
+MODUS="voll"
+case "${1:-}" in
+  --nur-basis) MODUS="basis" ;;
+  "") ;;
+  *)
+    echo "Unbekanntes Argument: $1 (erwartet: --nur-basis oder kein Argument)" >&2
+    exit 2
+    ;;
+esac
+
 ROT=0
 melde() { printf '%-32s %s\n' "$1" "$2"; }
 fehl()  { melde "$1" "ROT: $2"; ROT=$((ROT+1)); }
@@ -299,29 +323,47 @@ fi
 # Prozess-Substitution (`< <(...)`), nicht an einer Pipe — so laeuft der
 # Schleifenkoerper im Hauptskript und darf fehl()/gut() wirklich aufrufen.
 echo "== Oberflaechen je Laden =="
-while IFS=: read -r praefix port; do
-  [ -n "$praefix" ] || continue
-  zustand="$(docker inspect -f '{{.State.Status}}' "$praefix-ui" 2>/dev/null || echo fehlt)"
-  if [ "$zustand" != "running" ]; then
-    melde "ui $praefix" "uebersprungen ($praefix-ui: $zustand)"
-    continue
-  fi
-  code="$(curl -s -o /dev/null -m 10 -w '%{http_code}' "http://127.0.0.1:$port/login" || true)"
-  if [ "$code" = "200" ]; then
-    gut "ui $praefix"
-  else
-    fehl "ui $praefix" "/login HTTP ${code:-000} auf Port $port"
-  fi
-done < <(
-  printf 'sales:8791\n'
-  for e in "$WURZEL"/deploy/laeden/*.env; do
-    [ -e "$e" ] || continue
-    [ "$(basename "$e")" = "beispiel.env" ] && continue
-    p="$(grep -E '^LADEN_PRAEFIX=' "$e" | cut -d= -f2 | tr -d '[:space:]')"
-    u="$(grep -E '^PORT_UI=' "$e" | cut -d= -f2 | tr -d '[:space:]')"
-    [ -n "$p" ] && [ -n "$u" ] && printf '%s:%s\n' "$p" "$u"
-  done
-)
+if [ "$MODUS" = "basis" ]; then
+  melde "ui je laden" "uebersprungen (--nur-basis; volle Pruefung ueber deploy/wache.sh alle 15 Minuten)"
+else
+  while IFS=: read -r praefix port; do
+    [ -n "$praefix" ] || continue
+    # W3 (Schlussprüfung 2026-09-16, Bereich B): der Erzeuger unten laeuft
+    # per Prozess-Substitution in einer SUBSHELL (siehe Begruendung weiter
+    # unten in dieser Datei) — fehl() dort aufzurufen wuerde ROT in DIESEM
+    # Skript nicht erhoehen. Ein fehlerhaftes LADEN_PRAEFIX wird deshalb als
+    # FEHLER:<meldung>-Zeile durchgereicht und ERST HIER, in der
+    # Haupt-Shell, gezaehlt.
+    if [ "$praefix" = "FEHLER" ]; then
+      fehl "ui je laden" "$port"
+      continue
+    fi
+    zustand="$(docker inspect -f '{{.State.Status}}' "$praefix-ui" 2>/dev/null || echo fehlt)"
+    if [ "$zustand" != "running" ]; then
+      melde "ui $praefix" "uebersprungen ($praefix-ui: $zustand)"
+      continue
+    fi
+    code="$(curl -s -o /dev/null -m 10 -w '%{http_code}' "http://127.0.0.1:$port/login" || true)"
+    if [ "$code" = "200" ]; then
+      gut "ui $praefix"
+    else
+      fehl "ui $praefix" "/login HTTP ${code:-000} auf Port $port"
+    fi
+  done < <(
+    printf 'sales:8791\n'
+    for e in "$WURZEL"/deploy/laeden/*.env; do
+      [ -e "$e" ] || continue
+      [ "$(basename "$e")" = "beispiel.env" ] && continue
+      p="$(grep -E '^LADEN_PRAEFIX=' "$e" | cut -d= -f2 | tr -d '[:space:]')"
+      u="$(grep -E '^PORT_UI=' "$e" | cut -d= -f2 | tr -d '[:space:]')"
+      if ! [[ "$p" =~ ^[a-z][a-z0-9_]{0,30}$ ]]; then
+        printf 'FEHLER:%s hat kein brauchbares LADEN_PRAEFIX (%s)\n' "$e" "${p:-leer}"
+        continue
+      fi
+      [ -n "$u" ] && printf '%s:%s\n' "$p" "$u"
+    done
+  )
+fi
 
 # 12) Absenderadressen sind je Laden verschieden (Aufgabe 7, Schritt 4,
 # Plan 2026-09-16-zweiter-laden-getrennt). Der Unfall, den die ganze
@@ -339,21 +381,25 @@ done < <(
 # deploy/smoke.sh genau hier beenden und den abschliessenden `exit "$ROT"`
 # nie erreichen. Stattdessen fehl()/gut(), wie im Rest der Datei.
 echo "== Absenderadressen sind je Laden verschieden =="
-mail_container="$(docker ps --format '{{.Names}}' | grep -- '-mail$' || true)"
-if [ -z "$mail_container" ]; then
-  melde "absender je laden" "uebersprungen (kein *-mail-Container laeuft)"
+if [ "$MODUS" = "basis" ]; then
+  melde "absender je laden" "uebersprungen (--nur-basis; volle Pruefung ueber deploy/wache.sh alle 15 Minuten)"
 else
-  absender="$(
-    for c in $mail_container; do
-      docker exec "$c" printenv EMAIL_ABSENDER 2>/dev/null
-    done | sort
-  )"
-  doppelt="$(printf '%s\n' "$absender" | uniq -d)"
-  if [ -n "$doppelt" ]; then
-    fehl "absender je laden" "geteilt: $(printf '%s' "$doppelt" | tr '\n' ' ')"
+  mail_container="$(docker ps --format '{{.Names}}' | grep -- '-mail$' || true)"
+  if [ -z "$mail_container" ]; then
+    melde "absender je laden" "uebersprungen (kein *-mail-Container laeuft)"
   else
-    gut "absender je laden"
-    printf '%s\n' "$absender" | sed 's/^/  /'
+    absender="$(
+      for c in $mail_container; do
+        docker exec "$c" printenv EMAIL_ABSENDER 2>/dev/null
+      done | sort
+    )"
+    doppelt="$(printf '%s\n' "$absender" | uniq -d)"
+    if [ -n "$doppelt" ]; then
+      fehl "absender je laden" "geteilt: $(printf '%s' "$doppelt" | tr '\n' ' ')"
+    else
+      gut "absender je laden"
+      printf '%s\n' "$absender" | sed 's/^/  /'
+    fi
   fi
 fi
 
@@ -379,28 +425,44 @@ fi
 # Substitution statt Pipe, damit die Schleife im Hauptskript laeuft und
 # fehl()/gut() wirklich ROT erhoehen kann.
 echo "== UI_BASIS_URL je Laden =="
-laeden_mit_env=0
-while IFS=: read -r praefix basis; do
-  [ -n "$praefix" ] || continue
-  laeden_mit_env=1
-  case "$basis" in
-    *127.0.0.1*|*localhost*|"")
-      fehl "ui_basis_url $praefix" "'$basis' — Passwort-vergessen-Mail dieses Ladens traegt einen toten Link"
-      ;;
-    *)
-      gut "ui_basis_url $praefix"
-      ;;
-  esac
-done < <(
-  for e in "$WURZEL"/deploy/laeden/*.env; do
-    [ -e "$e" ] || continue
-    [ "$(basename "$e")" = "beispiel.env" ] && continue
-    p="$(grep -E '^LADEN_PRAEFIX=' "$e" | cut -d= -f2 | tr -d '[:space:]')"
-    b="$(grep -E '^UI_BASIS_URL=' "$e" | cut -d= -f2-)"
-    [ -n "$p" ] && printf '%s:%s\n' "$p" "$b"
-  done
-)
-[ "$laeden_mit_env" -eq 1 ] || melde "ui_basis_url je laden" "uebersprungen (keine deploy/laeden/*.env ausser beispiel.env)"
+if [ "$MODUS" = "basis" ]; then
+  melde "ui_basis_url je laden" "uebersprungen (--nur-basis; volle Pruefung ueber deploy/wache.sh alle 15 Minuten)"
+else
+  laeden_mit_env=0
+  while IFS=: read -r praefix basis; do
+    [ -n "$praefix" ] || continue
+    laeden_mit_env=1
+    # W3, wie bei "Oberflaeche je Laden" oben: der Erzeuger unten laeuft in
+    # einer Subshell (Prozess-Substitution) und darf ROT nicht selbst
+    # erhoehen — eine fehlerhafte LADEN_PRAEFIX-Zeile kommt deshalb als
+    # FEHLER:<meldung> durch und wird ERST HIER gezaehlt.
+    if [ "$praefix" = "FEHLER" ]; then
+      fehl "ui_basis_url je laden" "$basis"
+      continue
+    fi
+    case "$basis" in
+      *127.0.0.1*|*localhost*|"")
+        fehl "ui_basis_url $praefix" "'$basis' — Passwort-vergessen-Mail dieses Ladens traegt einen toten Link"
+        ;;
+      *)
+        gut "ui_basis_url $praefix"
+        ;;
+    esac
+  done < <(
+    for e in "$WURZEL"/deploy/laeden/*.env; do
+      [ -e "$e" ] || continue
+      [ "$(basename "$e")" = "beispiel.env" ] && continue
+      p="$(grep -E '^LADEN_PRAEFIX=' "$e" | cut -d= -f2 | tr -d '[:space:]')"
+      b="$(grep -E '^UI_BASIS_URL=' "$e" | cut -d= -f2-)"
+      if ! [[ "$p" =~ ^[a-z][a-z0-9_]{0,30}$ ]]; then
+        printf 'FEHLER:%s hat kein brauchbares LADEN_PRAEFIX (%s)\n' "$e" "${p:-leer}"
+        continue
+      fi
+      printf '%s:%s\n' "$p" "$b"
+    done
+  )
+  [ "$laeden_mit_env" -eq 1 ] || melde "ui_basis_url je laden" "uebersprungen (keine deploy/laeden/*.env ausser beispiel.env)"
+fi
 
 # 14) Von INNEN: jeder laufende *-mcp spricht mit SEINEM EIGENEN Schema und
 # SEINEM EIGENEN Datenbankbenutzer (die fehlende Pruefung der
@@ -447,40 +509,58 @@ done < <(
 # WICHTIG, wie oben: kein `exit` in einer Subshell und keines blank im
 # Hauptskript. Prozess-Substitution statt Pipe.
 echo "== Datenbank-Identitaet je Laden (von innen) =="
-while IFS= read -r praefix; do
-  [ -n "$praefix" ] || continue
-  c="$praefix-mcp"
-  zustand="$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo fehlt)"
-  if [ "$zustand" != "running" ]; then
-    melde "db-identitaet $praefix" "uebersprungen ($c: $zustand)"
-    continue
-  fi
-  if [ "$praefix" = "sales" ]; then
-    erw_schema="sales"; erw_nutzer="sales_app"
-  else
-    erw_schema="sales_$praefix"; erw_nutzer="sales_app_$praefix"
-  fi
-  ist="$(docker exec "$c" python -c "import sys;sys.path.insert(0,'/app');import server;z=server._q('select current_user');print(server.SCHEMA);print(z[0]['current_user'])" 2>/dev/null)"
-  ist_schema="$(printf '%s\n' "$ist" | sed -n 1p)"
-  ist_nutzer="$(printf '%s\n' "$ist" | sed -n 2p)"
-  if [ -z "$ist_schema" ] || [ -z "$ist_nutzer" ]; then
-    fehl "db-identitaet $praefix" "$c antwortet nicht (siehe docker logs $c)"
-  elif [ "$ist_schema" != "$erw_schema" ]; then
-    fehl "db-identitaet $praefix" "Schema '$ist_schema', erwartet '$erw_schema'"
-  elif [ "$ist_nutzer" != "$erw_nutzer" ]; then
-    fehl "db-identitaet $praefix" "Benutzer '$ist_nutzer', erwartet '$erw_nutzer'"
-  else
-    gut "db-identitaet $praefix"
-  fi
-done < <(
-  printf 'sales\n'
-  for e in "$WURZEL"/deploy/laeden/*.env; do
-    [ -e "$e" ] || continue
-    [ "$(basename "$e")" = "beispiel.env" ] && continue
-    p="$(grep -E '^LADEN_PRAEFIX=' "$e" | cut -d= -f2 | tr -d '[:space:]')"
-    [ -n "$p" ] && printf '%s\n' "$p"
-  done
-)
+if [ "$MODUS" = "basis" ]; then
+  melde "db-identitaet je laden" "uebersprungen (--nur-basis; volle Pruefung ueber deploy/wache.sh alle 15 Minuten)"
+else
+  while IFS= read -r praefix; do
+    [ -n "$praefix" ] || continue
+    # W3, wie in den Abschnitten oben: Erzeuger laeuft in einer Subshell
+    # (Prozess-Substitution), darf ROT nicht selbst erhoehen. Hier nur EIN
+    # Feld je Zeile (kein Doppelpunkt-Trenner) — die Fehlerzeile traegt
+    # ihre eigene "FEHLER:"-Markierung als Praefix.
+    case "$praefix" in
+      FEHLER:*)
+        fehl "db-identitaet je laden" "${praefix#FEHLER:}"
+        continue
+        ;;
+    esac
+    c="$praefix-mcp"
+    zustand="$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo fehlt)"
+    if [ "$zustand" != "running" ]; then
+      melde "db-identitaet $praefix" "uebersprungen ($c: $zustand)"
+      continue
+    fi
+    if [ "$praefix" = "sales" ]; then
+      erw_schema="sales"; erw_nutzer="sales_app"
+    else
+      erw_schema="sales_$praefix"; erw_nutzer="sales_app_$praefix"
+    fi
+    ist="$(docker exec "$c" python -c "import sys;sys.path.insert(0,'/app');import server;z=server._q('select current_user');print(server.SCHEMA);print(z[0]['current_user'])" 2>/dev/null)"
+    ist_schema="$(printf '%s\n' "$ist" | sed -n 1p)"
+    ist_nutzer="$(printf '%s\n' "$ist" | sed -n 2p)"
+    if [ -z "$ist_schema" ] || [ -z "$ist_nutzer" ]; then
+      fehl "db-identitaet $praefix" "$c antwortet nicht (siehe docker logs $c)"
+    elif [ "$ist_schema" != "$erw_schema" ]; then
+      fehl "db-identitaet $praefix" "Schema '$ist_schema', erwartet '$erw_schema'"
+    elif [ "$ist_nutzer" != "$erw_nutzer" ]; then
+      fehl "db-identitaet $praefix" "Benutzer '$ist_nutzer', erwartet '$erw_nutzer'"
+    else
+      gut "db-identitaet $praefix"
+    fi
+  done < <(
+    printf 'sales\n'
+    for e in "$WURZEL"/deploy/laeden/*.env; do
+      [ -e "$e" ] || continue
+      [ "$(basename "$e")" = "beispiel.env" ] && continue
+      p="$(grep -E '^LADEN_PRAEFIX=' "$e" | cut -d= -f2 | tr -d '[:space:]')"
+      if ! [[ "$p" =~ ^[a-z][a-z0-9_]{0,30}$ ]]; then
+        printf 'FEHLER:%s hat kein brauchbares LADEN_PRAEFIX (%s)\n' "$e" "${p:-leer}"
+        continue
+      fi
+      printf '%s\n' "$p"
+    done
+  )
+fi
 
 echo "---"
 if [ "$ROT" -eq 0 ]; then echo "ALLE PRUEFUNGEN GRUEN"; else echo "$ROT PRUEFUNG(EN) ROT"; fi
