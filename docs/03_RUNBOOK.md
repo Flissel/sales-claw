@@ -2489,6 +2489,142 @@ Regeln daraus:
 3. Rote Läufe, die AUSSCHLIESSLICH aus `ForeignKeyViolation`/verschwundenen
    Zeilen bestehen, zuerst als Kollision verdächtigen, nicht als Code-Fehler.
 
+## Einen zweiten Laden anlegen
+
+Ein zweiter Mitarbeiter bekommt einen eigenen, vom bestehenden Laden
+getrennten Satz Container, Ports und Datenbank-Schema (Plan
+2026-09-16-zweiter-laden-getrennt). Die Trennung liegt **in der
+Datenbank**, nicht im Code — siehe die Rechtematrix in
+`db/laden-anlegen.sql`. Alle Befehle unten laufen **auf der VM**
+(Debian, bash) — `deploy/laden-anlegen.sh` läuft nicht auf Windows.
+
+### 1. Umgebungsdatei erzeugen
+
+```bash
+deploy/laden-anlegen.sh ivan 18895 8792 12786
+```
+
+Prüft den Namen gegen dasselbe Muster wie `SCHEMA_MUSTER` in
+`sales-mcp/server.py`, prüft alle drei Ports gegen bereits belegte (bevor
+irgendetwas angelegt wird), verweigert das Überschreiben eines
+bestehenden Ladens und erzeugt erst dann `deploy/laeden/ivan.env` — nur
+für den Eigentümer lesbar, mit erzeugtem Datenbank-Passwort. Die Datei ist
+per `.gitignore` (`deploy/laeden/*.env`, Ausnahme `beispiel.env`) vom
+Repository ausgeschlossen; das erzeugt das Skript nicht selbst, sondern
+prüft die vorhandene Regel. Das Skript startet **nichts** und legt auch
+in der Datenbank nichts an — dafür bräuchte es die Kennung von
+`supabase_admin`, die bewusst nirgends im Repository liegt. Es gibt am
+Ende genau die nächsten Schritte aus (unten wiedergegeben).
+
+### 2. Schema und Benutzer anlegen (als `supabase_admin`)
+
+Der `psql`-Aufruf aus der Skriptausgabe, unverändert übernommen — das
+Passwort kommt über die **Umgebung** (`-e LADEN_PASSWORT=…`), nie über
+`-v`/argv, sonst stünde es in der Prozessliste:
+
+```bash
+PW=$(sed -n 's#.*sales_app_ivan:\([^@]*\)@.*#\1#p' deploy/laeden/ivan.env)
+docker exec -i -e LADEN_PASSWORT="$PW" debian-supabase-db-1 \
+  psql -U supabase_admin -d postgres -v laden=ivan \
+  < db/laden-anlegen.sql
+unset PW
+```
+
+Idempotent — ein zweiter Lauf ändert nichts (siehe Dateikopf von
+`db/laden-anlegen.sql`).
+
+### 3. Trennung prüfen — Tor 1 der Spec
+
+```bash
+docker exec -i debian-supabase-db-1 psql \
+  "postgresql://sales_app_ivan:<passwort>@127.0.0.1:5432/postgres" \
+  -v laden=ivan < db/pruefe-laden.sql
+```
+
+Erwartet: **1** eine Zahl, **2** `permission denied`, **3** eine Zahl,
+**4** `permission denied`. **Abschnitt 2 muss `permission denied` sagen,
+nicht eine Zahl — auch die 0 wäre ein gebrochener Laden**: ein leeres
+Ergebnis heißt nur „gerade keine Zeilen da", nicht „kein Zugriff". Nur
+`permission denied` belegt, dass die Rolle `sales_app_ivan` das fremde
+Schema `sales` wirklich nicht lesen kann.
+
+> ⚠️ **Das `openwa`-Volume heißt seit dem 16.09.2026
+> `<präfix>-openwa-data`**, vorher schlicht `openwa-data`. Wird ein
+> **bestehender** Laden (etwa der heutige `sales`-Laden) nach dieser
+> Umstellung neu erzeugt, ohne den Inhalt vorher umzukopieren, hängt er an
+> einem leeren `sales-openwa-data`-Volume — die WhatsApp-Anmeldung ist
+> weg, **ohne jede Fehlermeldung**, es erscheint einfach wieder ein
+> QR-Code. Umkopieren VOR dem ersten Start nach der Umstellung:
+> ```bash
+> docker volume create sales-openwa-data
+> docker run --rm -v openwa-data:/alt -v sales-openwa-data:/neu alpine \
+>   sh -c 'cp -a /alt/. /neu/'
+> ```
+> Für einen echten **zweiten** Laden (`ivan-openwa-data`) betrifft das
+> nicht — das Volume ist von Anfang an neu und **soll** leer sein, der
+> neue QR-Code beim ersten Start ist dort der Normalfall (siehe Tor 10
+> unten).
+
+### 4. Dienste starten — niemals nacktes `up -d`
+
+Ein nacktes `docker compose up -d` würde `ivan-auto` mitstarten — einen
+Dienst, der bewusst nie läuft (`deploy/update.sh:17`). Deshalb immer
+namentlich, und gestaffelt: zunächst nur die zwei Dienste, die ohne
+externe Zugangsdaten auskommen, der Rest erst, sobald Postfach,
+Telegram-Token, LinkedIn-Zugang und WhatsApp-Pairing für den neuen Laden
+vorliegen.
+
+```bash
+# Erster Start — nur sales-mcp/sales-ui brauchen keine externen
+# Zugangsdaten:
+docker compose --env-file deploy/laeden/ivan.env up -d --build \
+  sales-mcp sales-ui
+
+# Später, sobald Postfach/Telegram-Token/LinkedIn vorliegen — alle neun
+# Dienste des Hauptstacks (weiterhin OHNE ivan-auto):
+docker compose --env-file deploy/laeden/ivan.env up -d --build \
+  sales-mcp sales-ui sales-inbox sales-dispatch sales-mail \
+  sales-claw sales-telegram sales-linkedin sales-stt
+
+# OpenWA (WhatsApp) — eigene Compose-Datei, braucht das WhatsApp-Pairing
+# (neuer QR-Code) des neuen Ladens:
+docker compose --env-file deploy/laeden/ivan.env \
+  -f docker-compose.openwa.yml up -d --build openwa
+```
+
+### 5. Nachmessen
+
+**Laufende Container** (zehn, sobald alles oben gestartet ist):
+
+```bash
+docker ps --format '{{.Names}}' | grep '^ivan-' | sort
+# erwartet: ivan-claw, ivan-dispatch, ivan-inbox, ivan-linkedin,
+#           ivan-mail, ivan-mcp, ivan-openwa, ivan-stt, ivan-telegram,
+#           ivan-ui — zehn Zeilen. ivan-auto läuft NICHT.
+```
+
+**Tor 10 — getrennte WhatsApp-Anmeldungen:**
+
+```bash
+docker volume ls --format '{{.Name}}' | grep -E 'claw-state|openwa-data' | sort
+# erwartet: ivan-claw-state, ivan-openwa-data, sales-claw-state,
+#           sales-openwa-data — vier verschiedene.
+
+docker logs sales-claw --since 5m | grep -ci 'qr' || echo "0 — richtig"
+docker logs ivan-claw  --since 5m | grep -ci 'qr'
+# erwartet: beim bestehenden Laden 0, beim neuen >0 — neues Pairing dort,
+# der bestehende Laden bleibt unangetastet angemeldet.
+```
+
+**Tor 11 — die gemeinsame Sperrliste wirkt in beiden Läden:**
+
+```bash
+docker exec ivan-mcp python -c "
+import sperrliste
+print('Schema der Sperrliste:', sperrliste.SCHEMA)"
+# erwartet: compliance — NICHT compliance_test, NICHT compliance_ivan.
+```
+
 ---
 
 Betrieb auf dem MiniPC (nach dem Cutover): siehe [04_BETRIEB_MINIPC.md](04_BETRIEB_MINIPC.md),
