@@ -16,7 +16,21 @@ BETRIEB="${SALES_BETRIEB:-$HOME/sales-betrieb}"
 STATUS="$BETRIEB/update-status.json"
 # NIEMALS nacktes `docker compose up -d`: es wuerde sales-auto starten
 # (zweiter Antwortpfad neben dem Cron-Job). Dienste immer namentlich.
-KERN_ALLE="sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw"
+#
+# telegram/linkedin/stt fehlten hier bis zum 16.09.2026 — ein Update hat
+# sie stillschweigend uebersprungen, obwohl sie seit dem 12.09.2026 laufen.
+KERN_ALLE="sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw sales-telegram sales-linkedin sales-stt"
+
+# Jeder Laden hat eine Umgebungsdatei; der bestehende ("sales", Vorgabewerte
+# aus den Compose-Dateien) hat keine — die leere Zeichenkette steht fuer
+# ihn. Ohne --env-file loest LADEN_PRAEFIX/LADEN_PROJEKT auf ihre Defaults
+# ("sales"/"sales-claw") auf, also GENAU den bisherigen Stand.
+LAEDEN=("")
+for e in "$WURZEL"/deploy/laeden/*.env; do
+  [ -e "$e" ] || continue
+  [ "$(basename "$e")" = "beispiel.env" ] && continue
+  LAEDEN+=("--env-file $e")
+done
 
 # GEMESSEN 30.08.2026, Aufgabe 12: ein Update auf der frisch aufgesetzten
 # VM lief in den Rueckbau — und der startete mit der vollen Kernliste die
@@ -90,20 +104,22 @@ fi
 if echo "$GEAENDERT" | grep -E '^openwa/upstream/' >/dev/null; then
   OPENWA_BAUEN=true
 fi
-# sales-stt (01.09.2026) hat ein EIGENES Image (faster-whisper, 431 MB) und
-# steht deshalb nicht in KERN. Ohne diese Zeile wuerde eine Aenderung an
-# ihm nie gebaut — und das faellt niemandem auf, weil der Rest gruen ist.
+# sales-stt (01.09.2026) hat ein EIGENES Image (faster-whisper, 431 MB).
+# Seit 16.09.2026 steht es in KERN_ALLE, aber BAUEN=$KERN (oben) wird nur
+# gesetzt, wenn sales-mcp/ oder docker-compose* sich aendern — eine
+# Aenderung NUR an sales-stt/ wuerde ohne diese Zeile nie gebaut, und das
+# faellt niemandem auf, weil der Rest gruen ist.
 if echo "$GEAENDERT" | grep -E '^sales-stt/' >/dev/null; then
   BAUEN="$BAUEN sales-stt"
 fi
-# sales-linkedin und sales-telegram TEILEN SICH das sales-mcp-Image, stehen
-# aber nicht in KERN_ALLE (die Abnahme prueft sie nicht, und stuenden sie
-# drin, waere sie auf jedem Stack ohne sie zwangslaeufig uebersprungen).
-# Folge ohne diese Zeilen: ein sales-mcp-Update baut das Image neu, recreated
-# aber nur KERN — die beiden liefen mit dem ALTEN Container weiter, und das
-# faellt niemandem auf, weil der Rest gruen ist. Gleiche Lehre wie bei
-# sales-stt eine Zeile darueber; fuer sales-linkedin bestand die Luecke
-# schon vorher und wird hier mitgeschlossen (12.09.2026).
+# sales-linkedin und sales-telegram TEILEN SICH das sales-mcp-Image und
+# stehen seit 16.09.2026 auch in KERN_ALLE. Dieser Block bleibt trotzdem
+# stehen: wenn NUR sales-mcp/ sich aendert (nicht docker-compose*), ist
+# BAUEN bereits "$KERN" (oben) und enthaelt sie schon, sofern sie laufen —
+# diese Schleife ist damit ein explizites Gegenlesen derselben Bedingung,
+# nicht mehr die einzige Quelle. Gleiche Lehre wie bei sales-stt eine Zeile
+# darueber; fuer sales-linkedin bestand die Luecke urspruenglich schon vor
+# KERN_ALLE und wurde hier mitgeschlossen (12.09.2026).
 if echo "$GEAENDERT" | grep -E '^sales-mcp/' >/dev/null; then
   for _dienst in sales-linkedin sales-telegram; do
     if [ "$(docker inspect -f '{{.State.Status}}' "$_dienst" 2>/dev/null)" = "running" ]; then
@@ -129,7 +145,10 @@ gateway_neustarten() {
 rueckbau() {
   echo "Abnahme rot — Rueckbau auf $ALT." >&2
   git reset --hard "$ALT" >/dev/null
-  docker compose up -d --build $KERN
+  for L in "${LAEDEN[@]}"; do
+    # shellcheck disable=SC2086
+    docker compose $L up -d --build $KERN
+  done
   gateway_neustarten
   sleep 30
   if bash "$WURZEL/deploy/smoke.sh"; then
@@ -143,10 +162,16 @@ rueckbau() {
 }
 
 if [ -n "$BAUEN" ]; then
-  docker compose up -d --build $BAUEN
+  for L in "${LAEDEN[@]}"; do
+    # shellcheck disable=SC2086
+    docker compose $L up -d --build $BAUEN
+  done
 fi
 if $OPENWA_BAUEN; then
-  docker compose -f docker-compose.openwa.yml up -d --build openwa
+  for L in "${LAEDEN[@]}"; do
+    # shellcheck disable=SC2086
+    docker compose $L -f docker-compose.openwa.yml up -d --build openwa
+  done
 fi
 if echo "$GEAENDERT" | grep -E '^config/workspace/' >/dev/null; then
   # Saat einspielen: Git ist Quelle der Wahrheit fuer den Workspace.
