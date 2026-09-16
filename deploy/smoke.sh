@@ -261,6 +261,92 @@ else
   fehl "compose parameter" "loest nicht wie erwartet auf: $(echo "$compose_out" | tail -3)"
 fi
 
+# 11) Oberflaeche je Laden (Aufgabe 6, Schritt 4, Plan
+# 2026-09-16-zweiter-laden-getrennt). Prueft nicht nur den bestehenden
+# Laden (das tut Abschnitt 2 schon, gegen $BIND), sondern JEDE Oberflaeche,
+# die inzwischen ein eigenes Postfach/eine eigene Nummer bedienen soll: je
+# eine Zeile pro deploy/laeden/<name>.env, dazu von Hand der Basis-Laden
+# "sales" — er hat KEINE Umgebungsdatei, seine Werte sind die
+# Compose-Vorgaben (LADEN_PRAEFIX=sales, PORT_UI=8791).
+#
+# Zwei Zustaende, bewusst unterschieden statt in einen Fehlertopf geworfen:
+#   - Container laeuft nicht -> der Laden ist vielleicht gerade erst
+#     angelegt und noch nicht gestartet (docs/03_RUNBOOK.md, "Einen
+#     zweiten Laden anlegen", Schritt 4 startet gestaffelt) -> KEIN
+#     Fehler, aber sichtbar gemeldet, nie stillschweigend uebersprungen.
+#   - Container laeuft, /login antwortet nicht mit 200 -> Fehler.
+#
+# Nur PORT_UI/LADEN_PRAEFIX werden per grep aus der Datei gezogen (genau
+# wie BIND ganz oben) — die Datei traegt auch den Datenbank-DSN samt
+# Passwort, der hier nicht gebraucht wird und nie in die Umgebung dieses
+# Skripts soll.
+#
+# WICHTIG: keine Pruefung in einer `( ... )`-Subshell mit eigenem `exit` —
+# eine Subshell kann ROT in DIESEM Skript nicht erhoehen, und ihr `exit`
+# beendet nur sich selbst, nie deploy/smoke.sh (dieselbe Falle, die
+# "compose parameter" oben mit einer Variable+$? statt eines Abbruchs
+# vermeidet). Die while-Schleife haengt deshalb an einer
+# Prozess-Substitution (`< <(...)`), nicht an einer Pipe — so laeuft der
+# Schleifenkoerper im Hauptskript und darf fehl()/gut() wirklich aufrufen.
+echo "== Oberflaechen je Laden =="
+while IFS=: read -r praefix port; do
+  [ -n "$praefix" ] || continue
+  zustand="$(docker inspect -f '{{.State.Status}}' "$praefix-ui" 2>/dev/null || echo fehlt)"
+  if [ "$zustand" != "running" ]; then
+    melde "ui $praefix" "uebersprungen ($praefix-ui: $zustand)"
+    continue
+  fi
+  code="$(curl -s -o /dev/null -m 10 -w '%{http_code}' "http://127.0.0.1:$port/login" || true)"
+  if [ "$code" = "200" ]; then
+    gut "ui $praefix"
+  else
+    fehl "ui $praefix" "/login HTTP ${code:-000} auf Port $port"
+  fi
+done < <(
+  printf 'sales:8791\n'
+  for e in "$WURZEL"/deploy/laeden/*.env; do
+    [ -e "$e" ] || continue
+    [ "$(basename "$e")" = "beispiel.env" ] && continue
+    p="$(grep -E '^LADEN_PRAEFIX=' "$e" | cut -d= -f2 | tr -d '[:space:]')"
+    u="$(grep -E '^PORT_UI=' "$e" | cut -d= -f2 | tr -d '[:space:]')"
+    [ -n "$p" ] && [ -n "$u" ] && printf '%s:%s\n' "$p" "$u"
+  done
+)
+
+# 12) Absenderadressen sind je Laden verschieden (Aufgabe 7, Schritt 4,
+# Plan 2026-09-16-zweiter-laden-getrennt). Der Unfall, den die ganze
+# Trennung verhindern soll: zwei Laeden mit derselben EMAIL_ABSENDER —
+# dann landen Antworten im falschen Postfach, ohne jede Fehlermeldung
+# (docs/11_INBETRIEBNAHME.md, Abschnitt 2.3, dasselbe Muster wie dort fuer
+# SMTP_USER/IMAP_USER beschrieben).
+#
+# Kein laufender *-mail-Container ist KEIN Fehler dieses Abschnitts — dann
+# gibt es nichts zu vergleichen, das ist der Fall "Dienste laufen nicht",
+# nicht "Oberflaeche antwortet nicht". Zwei oder mehr Laeden mit demselben
+# Wert sind ein Fehler.
+#
+# WICHTIG, wie oben: kein blosses `exit 1` an dieser Stelle — das wuerde
+# deploy/smoke.sh genau hier beenden und den abschliessenden `exit "$ROT"`
+# nie erreichen. Stattdessen fehl()/gut(), wie im Rest der Datei.
+echo "== Absenderadressen sind je Laden verschieden =="
+mail_container="$(docker ps --format '{{.Names}}' | grep -- '-mail$' || true)"
+if [ -z "$mail_container" ]; then
+  melde "absender je laden" "uebersprungen (kein *-mail-Container laeuft)"
+else
+  absender="$(
+    for c in $mail_container; do
+      docker exec "$c" printenv EMAIL_ABSENDER 2>/dev/null
+    done | sort
+  )"
+  doppelt="$(printf '%s\n' "$absender" | uniq -d)"
+  if [ -n "$doppelt" ]; then
+    fehl "absender je laden" "geteilt: $(printf '%s' "$doppelt" | tr '\n' ' ')"
+  else
+    gut "absender je laden"
+    printf '%s\n' "$absender" | sed 's/^/  /'
+  fi
+fi
+
 echo "---"
 if [ "$ROT" -eq 0 ]; then echo "ALLE PRUEFUNGEN GRUEN"; else echo "$ROT PRUEFUNG(EN) ROT"; fi
 exit "$ROT"

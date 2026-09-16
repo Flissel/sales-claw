@@ -2625,6 +2625,79 @@ print('Schema der Sperrliste:', sperrliste.SCHEMA)"
 # erwartet: compliance — NICHT compliance_test, NICHT compliance_ivan.
 ```
 
+### 6. Zugang: eigener Serve-Port und eigene Zugriffsregel
+
+Ein eigener `PORT_UI` (oben, Schritt 1) hilft allein nichts — Tailscale bietet
+sonst weiterhin **beide** Oberflächen unter derselben Adresse (443) an. Jeder
+Laden braucht deshalb zusätzlich einen eigenen öffentlichen Serve-Port **und**
+eine Zugriffsregel, die den neuen Menschen auf genau diesen Port beschränkt
+(Plan 2026-09-16-zweiter-laden-getrennt, Tor 2).
+
+**Die zweite Oberfläche über Tailscale anbieten** (auf der VM, als root/sudo):
+
+```bash
+sudo tailscale serve --bg --https 8444 http://127.0.0.1:8792
+tailscale serve status
+```
+
+Erwartet: zwei Einträge, beide `(tailnet only)` — 443 auf `127.0.0.1:8791`
+(bestehender Laden), 8444 auf `127.0.0.1:8792` (`ivan`s `PORT_UI`, siehe
+`deploy/laeden/ivan.env`). Jeder weitere Laden braucht einen weiteren
+`--https`-Port und dessen eigenen `PORT_UI`.
+
+**Die Zugriffsregel in der Tailscale-Verwaltung umstellen** — der Grant für
+den neuen Menschen wechselt von `tcp:443` auf den neuen Port, er kommt nicht
+zusätzlich dazu:
+
+```json
+{ "src": ["ivan.gasparik161@gmail.com"], "dst": ["vibemind-offload-1"], "ip": ["tcp:8444"] }
+```
+
+Und der `tests`-Block, der **vor** dem Speichern geprüft wird — das Speichern
+der Regel schlägt fehl, wenn eine dieser Behauptungen nicht zutrifft, die
+Prüfung läuft also, bevor irgendjemand sie umgehen kann:
+
+```json
+"tests": [
+  { "src": "ivan.gasparik161@gmail.com",
+    "accept": ["100.67.177.45:8444"],
+    "deny":   ["100.67.177.45:443", "100.67.177.45:54322",
+               "100.67.177.45:54323", "100.67.177.45:22"] }
+]
+```
+
+**Die Abnahme für den neuen Menschen — wörtlich zum Weiterschicken.** Drei
+Punkte, geprüft von SEINEM eigenen Gerät aus, nicht von der VM oder dem
+Betreiber-PC:
+
+1. `https://vibemind-offload-1.tail6c7d61.ts.net:8444/` → **seine** Anmeldung
+   erscheint.
+2. `https://vibemind-offload-1.tail6c7d61.ts.net/` (ohne Port, also 443) →
+   **kein Verbindungsaufbau.** Die fremde Oberfläche (der bestehende Laden)
+   ist für ihn nicht erreichbar.
+3. `http://100.67.177.45:54323/` (Supabase Studio) → **kein
+   Verbindungsaufbau.**
+
+**Warum Punkt 2 und 3 „kein Verbindungsaufbau" heißen müssen, nicht „403".**
+Ein 403 bedeutet: die Verbindung ist angekommen, ein Server hat sie gesehen
+und abgewiesen — das ist eine Regel **im Code**, die eine Anfrage erst nach
+Prüfung eines Rechts ablehnt. Ein Fehler in genau dieser Prüfung (eine
+vergessene Bedingung, ein Bug in der Rechteabfrage) könnte aus dem 403 später
+ein 200 machen, ohne dass sich am Netz irgendetwas ändert. „Kein
+Verbindungsaufbau" hängt dagegen an keiner Anwendung — es ist eine
+Eigenschaft des Netzes selbst: die Tailscale-ACL lässt das Paket gar nicht
+erst ankommen, es gibt aus Sicht des Anfragenden schlicht keinen Weg zu
+diesem Port. Das ist eine Regel **im Netz**, nicht im Code, und deshalb hier
+die richtige Behauptung — nicht die schwächere Ersatzbehauptung „der Server
+hat abgelehnt".
+
+`deploy/smoke.sh` prüft automatisiert nur die halbe Strecke — dass jede
+Oberfläche über ihren eigenen `PORT_UI` **lokal** (127.0.0.1) erreichbar ist
+(Abschnitt „Oberflaechen je Laden" im Skript). Die Netzregel selbst (Punkt 2
+und 3 oben) ist keine Prüfung, die von der VM aus laufen kann — sie braucht
+ein Gerät außerhalb, für das die Regel gilt, und bleibt deshalb eine einmalige
+Messung von Hand nach jeder Änderung der Zugriffsregel.
+
 ---
 
 Betrieb auf dem MiniPC (nach dem Cutover): siehe [04_BETRIEB_MINIPC.md](04_BETRIEB_MINIPC.md),
