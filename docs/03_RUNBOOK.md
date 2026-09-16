@@ -2501,7 +2501,7 @@ Datenbank**, nicht im Code — siehe die Rechtematrix in
 ### 1. Umgebungsdatei erzeugen
 
 ```bash
-deploy/laden-anlegen.sh ivan 18895 8792 12786 8444
+deploy/laden-anlegen.sh ivan 18895 8792 12786 8445
 ```
 
 Prüft den Namen gegen dasselbe Muster wie `SCHEMA_MUSTER` in
@@ -2516,10 +2516,10 @@ in der Datenbank nichts an — dafür bräuchte es die Kennung von
 `supabase_admin`, die bewusst nirgends im Repository liegt. Es gibt am
 Ende genau die nächsten Schritte aus (unten wiedergegeben).
 
-Das fünfte Argument (`8444` oben) ist **nicht** `PORT_UI` — es ist der
+Das fünfte Argument (`8445` oben) ist **nicht** `PORT_UI` — es ist der
 Port, den `sudo tailscale serve --https` in Schritt 6 später bekommt.
 Beide Zahlen sind unabhängig voneinander frei gewählt und müssen sich
-nicht gleichen (im Beispiel oben: `PORT_UI=8792`, Serve-Port `8444`); wer
+nicht gleichen (im Beispiel oben: `PORT_UI=8792`, Serve-Port `8445`); wer
 sie verwechselt, bekommt keinen Fehler, sondern eine `UI_BASIS_URL`, die
 still auf den falschen Port zeigt. Das Skript rät hier nichts — fehlt das
 fünfte Argument, bricht es ab, statt einen Wert aus `PORT_UI` abzuleiten.
@@ -2656,21 +2656,31 @@ gewählt, nur bei `tailscale serve` eingetragen.
 **Die zweite Oberfläche über Tailscale anbieten** (auf der VM, als root/sudo):
 
 ```bash
-sudo tailscale serve --bg --https 8444 http://127.0.0.1:8792
+sudo tailscale serve --bg --https 8445 http://127.0.0.1:8792
 tailscale serve status
 ```
 
 Erwartet: zwei Einträge, beide `(tailnet only)` — 443 auf `127.0.0.1:8791`
-(bestehender Laden), 8444 auf `127.0.0.1:8792` (`ivan`s `PORT_UI`, siehe
+(bestehender Laden), 8445 auf `127.0.0.1:8792` (`ivan`s `PORT_UI`, siehe
 `deploy/laeden/ivan.env`). Jeder weitere Laden braucht einen weiteren
 `--https`-Port und dessen eigenen `PORT_UI`.
+
+**Warum 8445 und nicht 8444 (gemessen 17.09.2026).** Auf der VM lauscht
+nginx auf `0.0.0.0:8444` („Captain Integration Control“, HTTPS 200). Ein
+Grant `tcp:8444` würde dem neuen Menschen genau diese fremde Oberfläche
+öffnen. Vor der Wahl eines Serve-Ports deshalb immer `ss -ltnp | grep :<port>`
+auf der VM: der Port muss auf allen Adressen frei sein. Aus demselben Grund
+steht `:8444` im `deny` des tests-Blocks, ebenso `:8792` — `ivan-ui` ist
+zusätzlich direkt an `100.67.177.45:8792` gebunden und wäre ohne Regel am
+Serve-Port vorbei erreichbar. Die Regel wurde am 17.09.2026 so gespeichert
+(vorher stand dort `tcp:443`, also die Oberfläche des bestehenden Ladens).
 
 **Die Zugriffsregel in der Tailscale-Verwaltung umstellen** — der Grant für
 den neuen Menschen wechselt von `tcp:443` auf den neuen Port, er kommt nicht
 zusätzlich dazu:
 
 ```json
-{ "src": ["ivan.gasparik161@gmail.com"], "dst": ["vibemind-offload-1"], "ip": ["tcp:8444"] }
+{ "src": ["ivan.gasparik161@gmail.com"], "dst": ["vibemind-offload-1"], "ip": ["tcp:8445"] }
 ```
 
 Und der `tests`-Block, der **vor** dem Speichern geprüft wird — das Speichern
@@ -2680,9 +2690,12 @@ Prüfung läuft also, bevor irgendjemand sie umgehen kann:
 ```json
 "tests": [
   { "src": "ivan.gasparik161@gmail.com",
-    "accept": ["100.67.177.45:8444"],
-    "deny":   ["100.67.177.45:443", "100.67.177.45:54322",
-               "100.67.177.45:54323", "100.67.177.45:22"] }
+    "accept": ["100.67.177.45:8445"],
+    "deny":   ["100.67.177.45:443", "100.67.177.45:8444",
+               "100.67.177.45:8792", "100.67.177.45:22",
+               "100.67.177.45:2222", "100.67.177.45:8443",
+               "100.67.177.45:54321", "100.67.177.45:54322",
+               "100.67.177.45:54323"] }
 ]
 ```
 
@@ -2690,7 +2703,7 @@ Prüfung läuft also, bevor irgendjemand sie umgehen kann:
 Punkte, geprüft von SEINEM eigenen Gerät aus, nicht von der VM oder dem
 Betreiber-PC:
 
-1. `https://vibemind-offload-1.tail6c7d61.ts.net:8444/` → **seine** Anmeldung
+1. `https://vibemind-offload-1.tail6c7d61.ts.net:8445/` → **seine** Anmeldung
    erscheint.
 2. `https://vibemind-offload-1.tail6c7d61.ts.net/` (ohne Port, also 443) →
    **kein Verbindungsaufbau.** Die fremde Oberfläche (der bestehende Laden)
