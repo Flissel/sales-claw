@@ -5402,6 +5402,18 @@ async def login(request):
 # der VM brauchbar, und das ist ein ehrlicher Zustand.
 UI_BASIS_URL = os.environ.get("UI_BASIS_URL", "").strip() or f"http://127.0.0.1:{PORT}"
 
+# Und sie SAGT es, wenn sie fehlt. Ein stiller Rueckfall auf das eigene
+# Loopback waere genau die Sorte Fehler, an der dieses Haus schon gelitten
+# hat: die Mail geht raus, der Empfaenger klickt, nichts passiert - und es
+# faellt erst auf, wenn jemand fragt. Einmal beim Start ins Log genuegt;
+# eine Warnung je Anfrage wuerde niemand mehr lesen.
+if not os.environ.get("UI_BASIS_URL", "").strip():
+    LOG.warning(
+        "UI_BASIS_URL ist nicht gesetzt - Links in der "
+        "Passwort-vergessen-Mail zeigen auf %s und sind ausserhalb dieses "
+        "Containers wertlos. Wohin sie gehoeren, steht im docker-compose.yml.",
+        UI_BASIS_URL)
+
 # EINE Antwort fuer jeden Ausgang. Ob es den Namen gibt, ob eine Adresse
 # hinterlegt ist, ob die Bremse greift - der Benutzer sieht denselben Satz.
 # Dieselbe Ueberlegung wie bei der Anmeldung: die Maske verraet nicht,
