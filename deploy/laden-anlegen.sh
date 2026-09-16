@@ -60,6 +60,19 @@ done
 
 PASSWORT="$(openssl rand -base64 24 | tr -d '/+=' | head -c 32)"
 
+# Rechnername fuer UI_BASIS_URL unten — dasselbe Muster wie UI_TAILSCALE_IP
+# oben: aus der Umgebung, mit Rueckfall, falls sie fehlt. Anders als bei der
+# IP gibt es hier noch keinen "leer = nur Loopback"-Ausweg (die Mail braucht
+# eine echte Adresse), deshalb faellt es auf den heute einzigen bekannten
+# Rechner dieses Hauses zurueck. Ein Laden auf einer ANDEREN Maschine: vor
+# dem Aufruf UI_SERVE_HOST in der Umgebung setzen.
+if [ -n "${UI_SERVE_HOST:-}" ]; then
+  UI_SERVE_HOST_HERKUNFT="aus der Umgebung uebernommen"
+else
+  UI_SERVE_HOST_HERKUNFT="GERATEN (UI_SERVE_HOST war beim Aufruf nicht gesetzt)"
+fi
+UI_SERVE_HOST="${UI_SERVE_HOST:-vibemind-offload-1.tail6c7d61.ts.net}"
+
 mkdir -p "$WURZEL/deploy/laeden"
 # umask VOR dem Anlegen der Datei, nicht chmod danach: so existiert kein
 # Zeitfenster, in dem die Datei mit den Standardrechten (world-readable)
@@ -74,6 +87,15 @@ PORT_OPENWA=$PORT_OPENWA
 SALES_DB_SCHEMA=sales_$NAME
 SALES_DB_URL=postgresql://sales_app_$NAME:$PASSWORT@192.168.178.65:54322/postgres
 UI_TAILSCALE_IP=${UI_TAILSCALE_IP:-127.0.0.1}
+# UI_BASIS_URL ist $UI_SERVE_HOST_HERKUNFT und traegt PORT_UI ($PORT_UI)
+# als Port. PORT_UI ist der Docker-Host-Port dieses Ladens — NICHT
+# zwingend derselbe wie der externe 'tailscale serve --https'-Port, der
+# erst in einem spaeteren, manuellen Schritt gewaehlt wird (RUNBOOK,
+# Abschnitt "Zugang: eigener Serve-Port und eigene Zugriffsregel"). VOR
+# dem ersten Versand einer Passwort-vergessen-Mail beide Teile —
+# Rechnername und Port — gegen den tatsaechlich benutzten
+# 'tailscale serve'-Befehl fuer diesen Laden pruefen.
+UI_BASIS_URL=https://$UI_SERVE_HOST:$PORT_UI
 EOF
 
 echo "Umgebungsdatei geschrieben: $ENVDATEI (nur fuer den Eigentuemer lesbar)"

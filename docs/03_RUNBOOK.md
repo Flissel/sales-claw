@@ -2516,6 +2516,12 @@ in der Datenbank nichts an — dafür bräuchte es die Kennung von
 `supabase_admin`, die bewusst nirgends im Repository liegt. Es gibt am
 Ende genau die nächsten Schritte aus (unten wiedergegeben).
 
+Die erzeugte Datei trägt außerdem `UI_BASIS_URL`, je Laden verschieden
+(Rechnername plus dem in Schritt 6 gewählten eigenen Serve-Port) — steht
+sie falsch oder bleibt sie leer, zeigt der Link in der
+Passwort-vergessen-Mail auf `http://127.0.0.1:8791`, das Loopback des
+**bestehenden** Ladens, statt auf die eigene Oberfläche.
+
 ### 2. Schema und Benutzer anlegen (als `supabase_admin`)
 
 Der `psql`-Aufruf aus der Skriptausgabe, unverändert übernommen — das
