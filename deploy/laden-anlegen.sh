@@ -3,7 +3,7 @@
 # db/pruefe-laden.sql, siehe .superpowers/sdd/2026-09-16-zweiter-laden-
 # getrennt/task-4-brief.md.
 #
-#   deploy/laden-anlegen.sh ivan 18895 8792 12786
+#   deploy/laden-anlegen.sh ivan 18895 8792 12786 8444
 #
 # Laeuft auf der VM (Debian, bash, ss, openssl, docker) — NICHT auf Windows.
 #
@@ -29,8 +29,18 @@ set -euo pipefail
 export LC_ALL=C
 
 WURZEL="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-NAME="${1:?Aufruf: laden-anlegen.sh <name> <port-gateway> <port-ui> <port-openwa>}"
+NAME="${1:?Aufruf: laden-anlegen.sh <name> <port-gateway> <port-ui> <port-openwa> <port-serve>}"
 PORT_GATEWAY="${2:?}"; PORT_UI="${3:?}"; PORT_OPENWA="${4:?}"
+# Fuenftes Argument, PFLICHT — kein Rueckfall, kein Raten. Das ist NICHT
+# PORT_UI: PORT_UI ist der Docker-Host-Port dieses Ladens, PORT_SERVE ist
+# der Port, den `sudo tailscale serve --bg --https <port> ...` spaeter von
+# Hand bekommt (RUNBOOK, Abschnitt "Zugang: eigener Serve-Port"). Beide
+# Zahlen sind frei waehlbar und muessen sich NICHT gleichen — im
+# dokumentierten Beispiel "ivan" ist PORT_UI=8792 und der Serve-Port 8444.
+# Ein Skript, das PORT_SERVE aus PORT_UI raet, hat schon einmal eine
+# UI_BASIS_URL erzeugt, die still auf den falschen Port zeigte — deshalb
+# hier ein Pflichtargument statt einer Ableitung.
+PORT_SERVE="${5:?Aufruf: laden-anlegen.sh <name> <port-gateway> <port-ui> <port-openwa> <port-serve> — <port-serve> ist NICHT <port-ui>, sondern der spaeter frei gewaehlte Port fuer 'tailscale serve --https', siehe RUNBOOK Abschnitt 'Zugang: eigener Serve-Port'}"
 
 # Dasselbe Muster wie SCHEMA_MUSTER in sales-mcp/server.py:87
 #   SCHEMA_MUSTER = re.compile(r"sales(_[a-z][a-z0-9_]{0,30})?")
@@ -50,8 +60,13 @@ if [ -e "$ENVDATEI" ]; then
 fi
 
 # Kollidierende Ports abfangen, BEVOR irgendetwas angelegt wird — nicht
-# erst, wenn ein Container schon halb hochkommt.
-for p in "$PORT_GATEWAY" "$PORT_UI" "$PORT_OPENWA"; do
+# erst, wenn ein Container schon halb hochkommt. Dieselbe `ss`-Pruefung
+# fuer PORT_SERVE wie fuer die anderen drei; sie fragt nur den lokalen
+# Zustand dieses Rechners ab. Ob PORT_SERVE bei `tailscale serve` selbst
+# schon vergeben ist, prueft `tailscale serve status` separat, von Hand
+# (RUNBOOK, Abschnitt "Zugang: eigener Serve-Port") — das ist ausserhalb
+# dessen, was dieses Skript ohne `tailscale`-Zugriff wissen kann.
+for p in "$PORT_GATEWAY" "$PORT_UI" "$PORT_OPENWA" "$PORT_SERVE"; do
   if ss -tlnH "sport = :$p" | grep -q .; then
     echo "FEHLER: Port $p ist belegt." >&2
     exit 1
@@ -87,15 +102,16 @@ PORT_OPENWA=$PORT_OPENWA
 SALES_DB_SCHEMA=sales_$NAME
 SALES_DB_URL=postgresql://sales_app_$NAME:$PASSWORT@192.168.178.65:54322/postgres
 UI_TAILSCALE_IP=${UI_TAILSCALE_IP:-127.0.0.1}
-# UI_BASIS_URL ist $UI_SERVE_HOST_HERKUNFT und traegt PORT_UI ($PORT_UI)
-# als Port. PORT_UI ist der Docker-Host-Port dieses Ladens — NICHT
-# zwingend derselbe wie der externe 'tailscale serve --https'-Port, der
-# erst in einem spaeteren, manuellen Schritt gewaehlt wird (RUNBOOK,
-# Abschnitt "Zugang: eigener Serve-Port und eigene Zugriffsregel"). VOR
-# dem ersten Versand einer Passwort-vergessen-Mail beide Teile —
-# Rechnername und Port — gegen den tatsaechlich benutzten
-# 'tailscale serve'-Befehl fuer diesen Laden pruefen.
-UI_BASIS_URL=https://$UI_SERVE_HOST:$PORT_UI
+# Rechnername ist $UI_SERVE_HOST_HERKUNFT (Rueckfall siehe oben). Der
+# Port ist PORT_SERVE ($PORT_SERVE), das fuenfte Skript-Argument — NICHT
+# PORT_UI ($PORT_UI): PORT_UI ist der Docker-Host-Port dieses Ladens,
+# PORT_SERVE der spaeter frei gewaehlte Port fuer
+# 'tailscale serve --https' (RUNBOOK, Abschnitt "Zugang: eigener
+# Serve-Port"). Stimmt PORT_SERVE nicht mit dem tatsaechlich benutzten
+# 'tailscale serve'-Aufruf fuer diesen Laden ueberein, zeigt der Link in
+# der Passwort-vergessen-Mail ins Leere — vor dem ersten Versand
+# gegenpruefen.
+UI_BASIS_URL=https://$UI_SERVE_HOST:$PORT_SERVE
 EOF
 
 echo "Umgebungsdatei geschrieben: $ENVDATEI (nur fuer den Eigentuemer lesbar)"

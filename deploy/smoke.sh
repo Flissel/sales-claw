@@ -347,6 +347,51 @@ else
   fi
 fi
 
+# 13) UI_BASIS_URL ist je Laden gesetzt und zeigt nicht auf Loopback
+# (Nachzug zum Plan 2026-09-16-zweiter-laden-getrennt). Eine fehlende oder
+# auf 127.0.0.1/localhost zeigende UI_BASIS_URL faellt in ui.py still auf
+# den Loopback-Port des BESTEHENDEN Ladens zurueck (siehe
+# docker-compose.yml, Dienst sales-ui) — die Passwort-vergessen-Mail
+# dieses Ladens ginge dann trotzdem raus, nur mit einem toten Link darin,
+# ohne dass irgendwo ein Fehler auftaucht.
+#
+# Der Basis-Laden "sales" hat KEINE Umgebungsdatei — diese Pruefung gilt
+# nur fuer Laeden mit deploy/laeden/<name>.env, er wird uebersprungen
+# (dasselbe Ausschlussmuster wie bei "Oberflaeche je Laden" oben, nur ohne
+# die von Hand vorangestellte sales:8791-Zeile).
+#
+# Nur LADEN_PRAEFIX/UI_BASIS_URL werden per grep gezogen, dieselbe
+# Vorsicht wie bei den anderen Laden-Abschnitten oben — die Datei traegt
+# auch den Datenbank-DSN samt Passwort.
+#
+# WICHTIG, wie oben: kein `exit` in einer Subshell und keines blank im
+# Hauptskript — beides macht diese Pruefung wirkungslos. Prozess-
+# Substitution statt Pipe, damit die Schleife im Hauptskript laeuft und
+# fehl()/gut() wirklich ROT erhoehen kann.
+echo "== UI_BASIS_URL je Laden =="
+laeden_mit_env=0
+while IFS=: read -r praefix basis; do
+  [ -n "$praefix" ] || continue
+  laeden_mit_env=1
+  case "$basis" in
+    *127.0.0.1*|*localhost*|"")
+      fehl "ui_basis_url $praefix" "'$basis' — Passwort-vergessen-Mail dieses Ladens traegt einen toten Link"
+      ;;
+    *)
+      gut "ui_basis_url $praefix"
+      ;;
+  esac
+done < <(
+  for e in "$WURZEL"/deploy/laeden/*.env; do
+    [ -e "$e" ] || continue
+    [ "$(basename "$e")" = "beispiel.env" ] && continue
+    p="$(grep -E '^LADEN_PRAEFIX=' "$e" | cut -d= -f2 | tr -d '[:space:]')"
+    b="$(grep -E '^UI_BASIS_URL=' "$e" | cut -d= -f2-)"
+    [ -n "$p" ] && printf '%s:%s\n' "$p" "$b"
+  done
+)
+[ "$laeden_mit_env" -eq 1 ] || melde "ui_basis_url je laden" "uebersprungen (keine deploy/laeden/*.env ausser beispiel.env)"
+
 echo "---"
 if [ "$ROT" -eq 0 ]; then echo "ALLE PRUEFUNGEN GRUEN"; else echo "$ROT PRUEFUNG(EN) ROT"; fi
 exit "$ROT"

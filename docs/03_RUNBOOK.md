@@ -2501,11 +2501,11 @@ Datenbank**, nicht im Code — siehe die Rechtematrix in
 ### 1. Umgebungsdatei erzeugen
 
 ```bash
-deploy/laden-anlegen.sh ivan 18895 8792 12786
+deploy/laden-anlegen.sh ivan 18895 8792 12786 8444
 ```
 
 Prüft den Namen gegen dasselbe Muster wie `SCHEMA_MUSTER` in
-`sales-mcp/server.py`, prüft alle drei Ports gegen bereits belegte (bevor
+`sales-mcp/server.py`, prüft alle vier Ports gegen bereits belegte (bevor
 irgendetwas angelegt wird), verweigert das Überschreiben eines
 bestehenden Ladens und erzeugt erst dann `deploy/laeden/ivan.env` — nur
 für den Eigentümer lesbar, mit erzeugtem Datenbank-Passwort. Die Datei ist
@@ -2516,11 +2516,22 @@ in der Datenbank nichts an — dafür bräuchte es die Kennung von
 `supabase_admin`, die bewusst nirgends im Repository liegt. Es gibt am
 Ende genau die nächsten Schritte aus (unten wiedergegeben).
 
-Die erzeugte Datei trägt außerdem `UI_BASIS_URL`, je Laden verschieden
-(Rechnername plus dem in Schritt 6 gewählten eigenen Serve-Port) — steht
-sie falsch oder bleibt sie leer, zeigt der Link in der
-Passwort-vergessen-Mail auf `http://127.0.0.1:8791`, das Loopback des
-**bestehenden** Ladens, statt auf die eigene Oberfläche.
+Das fünfte Argument (`8444` oben) ist **nicht** `PORT_UI` — es ist der
+Port, den `sudo tailscale serve --https` in Schritt 6 später bekommt.
+Beide Zahlen sind unabhängig voneinander frei gewählt und müssen sich
+nicht gleichen (im Beispiel oben: `PORT_UI=8792`, Serve-Port `8444`); wer
+sie verwechselt, bekommt keinen Fehler, sondern eine `UI_BASIS_URL`, die
+still auf den falschen Port zeigt. Das Skript rät hier nichts — fehlt das
+fünfte Argument, bricht es ab, statt einen Wert aus `PORT_UI` abzuleiten.
+
+Die erzeugte Datei trägt außerdem `UI_BASIS_URL`, zusammengesetzt aus dem
+Rechnernamen (Umgebungsvariable `UI_SERVE_HOST`, mit Rückfall) und diesem
+fünften Argument — steht sie falsch oder bleibt sie leer, zeigt der Link
+in der Passwort-vergessen-Mail auf `http://127.0.0.1:8791`, das Loopback
+des **bestehenden** Ladens, statt auf die eigene Oberfläche.
+`deploy/smoke.sh`, Abschnitt "UI_BASIS_URL je Laden", meldet das jetzt
+automatisch ROT, wenn die Zeile fehlt oder auf `127.0.0.1`/`localhost`
+zeigt.
 
 ### 2. Schema und Benutzer anlegen (als `supabase_admin`)
 
@@ -2637,7 +2648,10 @@ Ein eigener `PORT_UI` (oben, Schritt 1) hilft allein nichts — Tailscale bietet
 sonst weiterhin **beide** Oberflächen unter derselben Adresse (443) an. Jeder
 Laden braucht deshalb zusätzlich einen eigenen öffentlichen Serve-Port **und**
 eine Zugriffsregel, die den neuen Menschen auf genau diesen Port beschränkt
-(Plan 2026-09-16-zweiter-laden-getrennt, Tor 2).
+(Plan 2026-09-16-zweiter-laden-getrennt, Tor 2). Dieser Serve-Port ist
+**derselbe**, den Schritt 1 als fünftes Argument an `laden-anlegen.sh`
+bekam und der dort schon in `UI_BASIS_URL` steckt — hier wird er nicht neu
+gewählt, nur bei `tailscale serve` eingetragen.
 
 **Die zweite Oberfläche über Tailscale anbieten** (auf der VM, als root/sudo):
 
