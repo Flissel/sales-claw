@@ -82,10 +82,23 @@ es fand in einem Durchgang drei Dinge, die `ILIKE` nie findet:
   „DataGuard – Datenschutz & Informationssicherheit" ↔ „DATENSCHUTZ UND
   INFORMATIONSSICHERHEIT" (0.76); „Betreiber Selbsttest" ↔ „Betreiber Selbsttest
   E-Mail" (0.75).
-* **Einen echten Datenfehler:** dieselbe Nummer steht zweimal in verschiedener
-  Schreibweise — `+491749708452` und `+49 174 9708452`. Die Dublettenbremse
-  vergleicht exakt und übersieht das. **Nummern werden nicht normalisiert
-  gespeichert.**
+* **Eine Auffaelligkeit, die sich beim Nachpruefen aufloeste** (Korrektur
+  17.09.2026, noch am selben Tag): dieselbe Nummer steht zweimal in
+  verschiedener Schreibweise — `+491749708452` und `+49 174 9708452`. Daraus
+  wurde hier zunaechst geschlossen, die Dublettenbremse vergleiche exakt.
+  **Das war falsch.** `_lead_mit_gleicher_nummer` filtert per
+  `regexp_replace(phone,'[^0-9]','','g')` ueber die letzten acht Ziffern vor und
+  entscheidet dann mit `normalisiere_empfaenger` auf BEIDEN Seiten — genau
+  dieser Fall wird erkannt. Die Dedup-Kante kam am 18.08.2026 (`b1a538c`), und
+  alle vier fraglichen Zeilen sind vom 18.08.2026 und heissen „Betreiber
+  Selbsttest", „Anna Beispiel", „Lisa Probekunde": **Testdaten aus dem Tag, an
+  dem die Bremse gebaut wurde**, kein laufender Fehler.
+
+  Die Lehre gehoert trotzdem hierher: ein Trigramm-Fund ist ein HINWEIS, kein
+  Befund. Er sagt „diese beiden sehen sich aehnlich", nicht „hier ist ein
+  Fehler". Wer ihn ohne Gegenprobe gegen den Code weiterreicht, meldet
+  Fehlalarme — was hier zwischen dem ersten Entwurf dieses Dokuments und seiner
+  Korrektur genau passiert ist.
 * **Eine belastbare Negativaussage:** `similarity(name,'Ivan') > 0.3` liefert
   genau einen Treffer mit Ähnlichkeit 1.00. Varianten wie „Iwan" oder „Ivan G."
   hätte es gefunden. **Es gibt keinen zweiten Ivan** — das ist jetzt gemessen,
@@ -122,8 +135,10 @@ auf Windows), Vektoren in `pgvector`, kein zweiter Speicher.
 ## 3. Reihenfolge
 
 1. `pg_trgm` + Indizes + `kontakt_aehnlich` — löst das heutige Problem.
-2. **Nummern normalisiert speichern**, bevor die Dublettenbremse weiter exakt
-   vergleicht. Der Fund aus 2.1 ist ein Fehler, kein Schönheitsproblem.
+2. ~~Nummern normalisiert speichern~~ — **entfaellt**, siehe die Korrektur in
+   2.1: die Normalisierung findet bereits am Tor statt. Die vier auffaelligen
+   Zeilen sind Testdaten vom 18.08.2026 und koennen archiviert werden, wenn der
+   Betreiber es will; das ist Datenpflege, keine Codeaenderung.
 3. Deutsche Volltextsuche mit den zwei dokumentierten Grenzen.
 4. Einbettungen nur nach dem Tor aus 2.3.
 
