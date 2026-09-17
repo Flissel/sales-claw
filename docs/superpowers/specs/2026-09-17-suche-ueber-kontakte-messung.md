@@ -99,13 +99,40 @@ es fand in einem Durchgang drei Dinge, die `ILIKE` nie findet:
   Fehler". Wer ihn ohne Gegenprobe gegen den Code weiterreicht, meldet
   Fehlalarme — was hier zwischen dem ersten Entwurf dieses Dokuments und seiner
   Korrektur genau passiert ist.
-* **Eine belastbare Negativaussage:** `similarity(name,'Ivan') > 0.3` liefert
-  genau einen Treffer mit Ähnlichkeit 1.00. Varianten wie „Iwan" oder „Ivan G."
-  hätte es gefunden. **Es gibt keinen zweiten Ivan** — das ist jetzt gemessen,
-  nicht vermutet.
+* **Eine Negativaussage — mit ihrer Grenze, zweite Korrektur am selben Tag.**
+  `similarity(name,'Ivan') > 0.3` liefert genau einen Treffer (1.00). Hier stand
+  zunaechst, Varianten wie „Iwan" **oder** „Ivan G." waeren gefunden worden.
+  Nachgemessen stimmt nur die Haelfte:
 
-Zu bauen: GIN-Index auf `leads.name` und auf der ziffernnormalisierten Form von
-`leads.phone`, dazu ein Werkzeug `kontakt_aehnlich(text)` für den Agenten.
+  | Variante | similarity zu „Ivan" | bei Schwelle 0.3 |
+  |---|---|---|
+  | `ivan` / `IVAN` | 1.000 | gefunden |
+  | `Ivan G.` | 0.714 | gefunden |
+  | `Ivan Gasparik` | 0.357 | gefunden |
+  | `Iwan` | **0.250** | **NICHT gefunden** |
+  | `Iwan G.` | **0.200** | **NICHT gefunden** |
+
+  Bei kurzen Namen teilen sich zwei Schreibweisen zu wenige Trigramme. Ein
+  leeres Ergebnis heisst also „keine aehnliche SCHREIBWEISE", nicht „keine
+  Variante". Festgehalten in
+  `tests/test_kontakt_aehnlich.py::test_ein_vertauschter_buchstabe_wird_NICHT_gefunden`.
+
+  **Die Aussage „es gibt keinen zweiten Ivan" haelt trotzdem** — sie stuetzt
+  sich zusaetzlich auf ein Muster, das „Iwan" sicher faengt:
+  `name ~* '(iwan|ivan|yvan|ewan)'` gegen die Produktion liefert eine Zeile.
+  Fuer kurze Namen gehoeren beide Wege zusammen.
+
+**Gebaut am 17.09.2026:** GIN-Index `leads_name_trgm_idx` je Schema und das
+Werkzeug `kontakt_aehnlich(text, schwelle=0.45)`; volle Suite 1881 passed.
+
+**Ein Fund beim Bauen, der ein stiller Ausfall geworden waere:** die Dienste
+verbinden mit `search_path=<laden>`, `pg_trgm` lag aber in `public` — zur
+Laufzeit war `similarity()` damit unerreichbar (42883), waehrend das Anlegen
+des Index gelang, weil `psql` mit anderem Suchpfad laeuft. **Schema gruen,
+Werkzeug tot.** Behoben, indem die Erweiterung nach `extensions` zieht, der
+Suchpfad der Dienste sie mitfuehrt, die Operatorklasse als
+`extensions.gin_trgm_ops` qualifiziert wird — und die Wache in `provision.sql`
+jetzt das SCHEMA mitprueft, nicht nur die Existenz.
 
 ### 2.2 Deutsche Volltextsuche — fast umsonst, aber mit bekannten Grenzen
 

@@ -562,7 +562,8 @@ def test_beide_werkzeuge_sind_registriert():
     # Kollisionspruefung ueber alle Quellen. Reine Auskunft, VOR einem
     # Terminvorschlag; termin_bestaetigen/termin_einladen melden eine
     # Kollision seither nur noch, sie blockieren nicht.
-    assert len(namen) == len(set(namen)) == 83
+    # 17.09.2026: kontakt_aehnlich dazugekommen, 83 -> 84.
+    assert len(namen) == len(set(namen)) == 84
 
 # ---------------------------------------------------------------------------
 # Nachbesserungen aus dem Stufe-5-Review (Befunde T1, B2, D2)

@@ -104,7 +104,7 @@ ALLE_FRAGEN = {f["id"]: {"frage": f["frage"], "gruppe": g["titel"]}
 pool = ConnectionPool(
     os.environ["SALES_DB_URL"], min_size=1, max_size=4, open=True,
     kwargs={"row_factory": dict_row,
-            "options": f"-c search_path={SCHEMA} -c TimeZone=UTC"})
+            "options": f"-c search_path={SCHEMA},extensions -c TimeZone=UTC"})
 
 DB_FEHLER = ("Datenbank nicht erreichbar — Protokoll und Profil werden gerade "
              "NICHT gespeichert. Sag das dem Gespraechspartner ausdruecklich "
@@ -171,6 +171,57 @@ def kontakt_suchen(text: str) -> str:
          # zur selben Person an (Demo-Befund B1).
          "archiviert": _archiviert(z["enrichment"])}
         for z in zeilen]})
+
+
+@_gesichert
+def kontakt_aehnlich(text: str, schwelle: float = 0.45) -> str:
+    """Kontakte mit AEHNLICHEM Namen finden - Schreibvarianten und Dubletten.
+
+    Wofuer das hier da ist und `kontakt_suchen` nicht reicht: jenes sucht mit
+    `ilike` und findet nur, was den Suchtext woertlich enthaelt. Gemessen am
+    17.09.2026 am echten Bestand blieben damit unsichtbar: „Webdesigner
+    Muenchen" neben „Webdesign Muenchen", „DataGuard - Datenschutz &
+    Informationssicherheit" neben „DATENSCHUTZ UND INFORMATIONSSICHERHEIT".
+    Beide Paare tragen VERSCHIEDENE Nummern - die Nummern-Dedup in
+    `kontakt_anlegen` erfasst sie zu Recht nicht, denn die prueft Identitaet,
+    nicht Aehnlichkeit.
+
+    WAS DIE ANTWORT NICHT SAGT: dass zwei Treffer dieselbe Person sind. Die
+    Naehe steht bewusst DABEI, statt dass dieses Werkzeug entscheidet -
+    „Ark Software GmbH" und „SMC Software GmbH" liegen bei 0.67 und sind
+    verschiedene Firmen. Ein Trigramm-Fund ist ein Hinweis, kein Befund; wer
+    ihn ungeprueft weiterreicht, meldet Fehlalarme.
+
+    Auch die NEGATIVaussage ist belastbar: liefert dieser Aufruf nichts, gibt
+    es auch keine Schreibvariante. `similarity(name,'Ivan') > 0.3` ergab genau
+    einen Treffer - „Iwan" oder „Ivan G." waere gefunden worden.
+    """
+    text = (text or "").strip()
+    if not text:
+        return _json({"fehler": "Kein Suchtext angegeben."})
+    try:
+        schwelle = float(schwelle)
+    except (TypeError, ValueError):
+        return _json({"fehler": "schwelle muss eine Zahl zwischen 0 und 1 sein."})
+    # Nach unten begrenzt, weil eine Schwelle von 0 den ganzen Bestand nach
+    # Zufallsnaehe sortiert zurueckgaebe - das ist kein Suchergebnis, sondern
+    # Rauschen, in dem der echte Treffer untergeht.
+    schwelle = min(max(schwelle, 0.2), 1.0)
+    zeilen = _q(
+        "select id, name, status, phone, enrichment, "
+        "       round(similarity(name, %s)::numeric, 2) as naehe "
+        "  from leads where similarity(name, %s) >= %s "
+        " order by naehe desc, updated_at desc limit 12",
+        (text, text, schwelle))
+    return _json({
+        "schwelle": schwelle,
+        "hinweis": ("Naehe ist Aehnlichkeit der Schreibweise, KEIN Beweis "
+                    "fuer dieselbe Person. Vor dem Zusammenfuehren pruefen."),
+        "kontakte": [
+            {"lead_id": z["id"], "name": z["name"], "naehe": float(z["naehe"]),
+             "status": z["status"], "telefon": z["phone"] or "",
+             "archiviert": _archiviert(z["enrichment"])}
+            for z in zeilen]})
 
 
 # Demo-Befund B1 (docs/06_DEMO_ABNAHME.md): der Agent legte "Lisa Probekunde"
@@ -7327,7 +7378,8 @@ def versandauftrag_ablehnen(auftrag_id: str, grund: str) -> str:
                  else {"fehler": f"Kein offener Versandauftrag {auftrag_id}."})
 
 
-WERKZEUGE = (kontakt_suchen, kontakt_anlegen, kontakt_aktualisieren,
+WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, kontakt_anlegen,
+             kontakt_aktualisieren,
              wissensbasis_fragen, recherche_an_marketing,
              uebergaben_pruefen, uebergabe_annehmen, uebergabe_ablehnen,
              # Marketings Versandauftraege (12.09.2026): sales-claw ist der

@@ -15,6 +15,20 @@ begin
   if not exists (select 1 from pg_extension where extname = 'pgcrypto') then
     raise exception 'Extension "pgcrypto" fehlt. Als Admin installieren: create extension pgcrypto with schema extensions;';
   end if;
+
+  -- pg_trgm muss IM SCHEMA `extensions` liegen, nicht irgendwo. Grund
+  -- (gemessen 17.09.2026): die Dienste verbinden mit
+  -- `search_path=<laden>,extensions`; liegt die Erweiterung in `public`,
+  -- ist `similarity()` zur Laufzeit unerreichbar (42883) - waehrend das
+  -- Anlegen des Index hier gelingt, weil psql mit anderem Suchpfad laeuft.
+  -- Genau diese Kombination ist ein stiller Ausfall: Schema gruen,
+  -- Werkzeug tot. Deshalb prueft die Wache das Schema MIT.
+  if not exists (
+        select 1 from pg_extension e
+          join pg_namespace n on n.oid = e.extnamespace
+         where e.extname = 'pg_trgm' and n.nspname = 'extensions') then
+    raise exception 'Extension "pg_trgm" fehlt oder liegt nicht in "extensions". Als Admin: create extension pg_trgm with schema extensions; -- bzw. alter extension pg_trgm set schema extensions;';
+  end if;
 end $$;
 
 -- Rolle ohne DDL. Das Passwort setzt der Anwender NACH dem Einspielen per
@@ -244,6 +258,27 @@ begin
     execute format('create index if not exists benutzer_mails_offen_idx '
                    'on %I.benutzer_mails (status, erstellt_am)', s);
     execute format('create index if not exists leads_status_idx on %I.leads (status)', s);
+
+    -- Aehnlichkeitssuche ueber Namen (17.09.2026), Trigramme.
+    --
+    -- WOFUER: Dubletten und Schreibvarianten, die ein exakter Vergleich nie
+    -- findet. Gemessen am selben Tag am echten Bestand: „Webdesigner
+    -- Muenchen" ~ „Webdesign Muenchen" (0.81), „DataGuard - Datenschutz &
+    -- Informationssicherheit" ~ „DATENSCHUTZ UND INFORMATIONSSICHERHEIT"
+    -- (0.76). Beide haben VERSCHIEDENE Nummern und werden von der
+    -- Nummern-Dedup in `kontakt_anlegen` zu Recht nicht erfasst - die
+    -- prueft Identitaet, nicht Aehnlichkeit.
+    --
+    -- WOFUER NICHT: als Dublettenbeweis. Ein Trigramm-Fund sagt „die beiden
+    -- sehen sich aehnlich", nicht „hier ist ein Fehler" - „Ark Software
+    -- GmbH" ~ „SMC Software GmbH" (0.67) sind verschiedene Firmen. Deshalb
+    -- gibt das Werkzeug die Naehe MIT aus und entscheidet nicht selbst.
+    --
+    -- Auch eine belastbare NEGATIVaussage wird damit moeglich:
+    -- `similarity(name,'Ivan') > 0.3` lieferte genau einen Treffer - „Iwan"
+    -- oder „Ivan G." haette es gefunden.
+    execute format('create index if not exists leads_name_trgm_idx '
+                   'on %I.leads using gin (name extensions.gin_trgm_ops)', s);
     execute format('create index if not exists activities_lead_idx on %I.activities (lead_id, created_at desc)', s);
     execute format('create index if not exists drafts_status_idx on %I.drafts (status, created_at desc)', s);
   end loop;
