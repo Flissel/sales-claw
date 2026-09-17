@@ -42,6 +42,13 @@ end $$;
 
 create schema if not exists sales;
 create schema if not exists sales_test;
+-- Ohne DIESE Zeile ist `kontakt_aehnlich` tot, und zwar lautlos: die
+-- Erweiterung `pg_trgm` liegt in `extensions`, der Suchpfad der Dienste
+-- fuehrt das Schema mit — aber ohne USAGE darauf findet die Rolle
+-- `similarity()` trotzdem nicht (42883). Gemessen am 17.09.2026 NACH einem
+-- gruenen Deploy: Code richtig, Suchpfad richtig, Index da, Werkzeug tot.
+-- `has_schema_privilege('sales_app','extensions','usage')` war `false`.
+grant usage on schema extensions to sales_app;
 grant usage on schema sales to sales_app;
 grant usage on schema sales_test to sales_app;
 
