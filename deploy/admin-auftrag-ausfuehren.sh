@@ -144,12 +144,25 @@ update sales.admin_auftraege
 SQL
 
 # --- 1. Naechsten offenen Auftrag holen, sofort auf 'laeuft' setzen -------
-# Tab-getrennt (nicht '|'): eine E-Mail-Adresse darf laut mailadresse.py
-# im lokalen Teil ein '|' enthalten (RFC-5322-atext) — ein Tab kommt weder
-# in einem Ladennamen ([a-z0-9_]) noch in einer zulaessigen Adresse vor
-# (mailadresse.py schliesst Leerraum/Steuerzeichen bewusst aus).
+# Getrennt per ASCII Unit Separator chr(31) — weder '|' noch Tab reichen:
+# eine E-Mail-Adresse darf laut mailadresse.py im lokalen Teil ein '|'
+# enthalten (RFC-5322-atext), und Tab ist zwar selbst nirgends in einem
+# Ladennamen ([a-z0-9_]) oder einer zulaessigen Adresse erlaubt, scheitert
+# hier aber aus einem anderen Grund: Tab gehoert zu bashs Standard-IFS
+# ("IFS-Whitespace"), und `read` fasst dabei mehrere aufeinanderfolgende
+# Trenner zusammen und schneidet sie an Wortgrenzen ab — ein LEERES
+# mittleres Feld (bei 'tailscale_einladen' ist `name` immer NULL, also
+# coalesce(name,'') = '') verschwindet dann komplett, statt als leeres
+# Feld erhalten zu bleiben, und alle nachfolgenden Felder ruecken eine
+# Position nach vorn (EINLADEN_EMAIL landet faelschlich in LADEN_NAME,
+# EINLADEN_EMAIL selbst bleibt leer). Nachgemessen. chr(31) ist NICHT Teil
+# von IFS-Whitespace — `read` splittet dort ausschliesslich woertlich,
+# ohne Zusammenfassen/Abschneiden leerer Felder. chr(31) kommt ebenso
+# wenig in einem Ladennamen ([a-z0-9_]) oder einer zulaessigen Adresse vor
+# wie ein Tab: mailadresse.pys eigene Whitelist UND die CHECK-Constraint
+# der Datenbank selbst schliessen Steuerzeichen aus.
 ZEILE="$(psql_admin -tAc \
-  "select id || chr(9) || art || chr(9) || coalesce(name, '') || chr(9) \
+  "select id || chr(31) || art || chr(31) || coalesce(name, '') || chr(31) \
           || coalesce(email, '') \
    from sales.admin_auftraege \
    where art in ('laden_anlegen', 'tailscale_einladen') and status = 'offen' \
@@ -157,7 +170,7 @@ ZEILE="$(psql_admin -tAc \
 if [ -z "$ZEILE" ]; then
   exit 0
 fi
-IFS=$'\t' read -r AUFTRAG_ID ART LADEN_NAME EINLADEN_EMAIL <<< "$ZEILE"
+IFS=$'\037' read -r AUFTRAG_ID ART LADEN_NAME EINLADEN_EMAIL <<< "$ZEILE"
 psql_admin -v id="$AUFTRAG_ID" <<'SQL'
 update sales.admin_auftraege set status = 'laeuft' where id = :'id'::uuid;
 SQL
