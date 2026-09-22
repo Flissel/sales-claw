@@ -7,7 +7,7 @@
     "to": "${MELDE_AN}"
   },
   "displayName": "Regensburg-Firmenkontakte anreichern (Erstkontakt-Vorbereitung)",
-  "enabled": true,
+  "enabled": false,
   "lastDelivered": false,
   "name": "firmenkontakte-anreichern",
   "owner": {

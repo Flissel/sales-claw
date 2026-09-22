@@ -15,12 +15,19 @@ lagen: **unsichtbarer Betriebszustand, den niemand vermisst, bis er fehlt.**
 Vier **wiederkehrende** Jobs, aus dem laufenden Gateway geholt
 (`openclaw cron get <id>`), normalisiert:
 
-| Datei | Zeitplan | Zustellung |
-|---|---|---|
-| `antworten-pruefen.json` | `0 */2 * * *` (Versatz 5 min) | keine |
-| `firmenkontakte-anreichern.json` | alle 20 Minuten | Meldung |
-| `kalenderantworten-schnellcheck.json` | `0 8 * * *` (Europe/Berlin) | Meldung |
-| `morgen-digest.json` | `0 10 * * 1-5` (Europe/Berlin) | Meldung |
+| Datei | Zeitplan | Zustellung | Zustand |
+|---|---|---|---|
+| `antworten-pruefen.json` | `0 */2 * * *` (Versatz 5 min) | keine | aktiv |
+| `firmenkontakte-anreichern.json` | alle 20 Minuten | Meldung | **abgeschaltet** |
+| `kalenderantworten-schnellcheck.json` | `0 8 * * *` (Europe/Berlin) | Meldung | aktiv |
+| `morgen-digest.json` | `0 10 * * 1-5` (Europe/Berlin) | Meldung | aktiv |
+
+**`firmenkontakte-anreichern` ist abgeschaltet (Betreiber, 22.09.2026).** Er lief
+**alle 20 Minuten** und meldete jedes Mal — 72 Agentenlaeufe am Tag, und jeder
+kostet Modell-Kontingent. Die Deklaration bleibt hier stehen, damit die Absicht
+nachlesbar ist und er sich mit einer Zeile zurueckholen laesst; `enabled` steht
+auf `false`, und wer diesen Ordner als Saat benutzt, holt ihn NICHT versehentlich
+zurueck.
 
 **Nicht aufgenommen:** die vier `Termin: …`-Jobs. Das sind einmalige
 Erinnerungen zu konkreten Terminen — Daten, keine Konfiguration. Sie gehören in

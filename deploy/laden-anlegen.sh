@@ -168,6 +168,23 @@ echo "  docker compose --env-file $ENVDATEI up -d --build \\"
 echo "    sales-mcp sales-ui sales-inbox sales-dispatch sales-mail \\"
 echo "    sales-claw sales-telegram sales-linkedin sales-stt"
 echo
+echo "SOBALD DER AGENT LAEUFT ($NAME-claw) — seine Routinelaeufe saeen."
+echo "Ohne diesen Schritt hat der neue Laden einen Agenten, der NIE von"
+echo "selbst etwas tut: bis zum 22.09.2026 existierten die Cron-Jobs nur"
+echo "im Gateway-Volume des ersten Ladens, in keiner Datei — es gab also"
+echo "gar keine Vorlage. Jetzt liegen sie in deploy/cron/."
+echo
+echo "Die Nummer ist die von '$NAME', NICHT die des Betreibers: in den"
+echo "Jobs des ersten Ladens stand sie sechsmal eingebrannt, und"
+echo "unveraendert gesaet meldeten die Laeufe an das falsche Telefon."
+echo
+echo "  bash deploy/cron-saat.sh $NAME-claw +49...            # Probelauf"
+echo "  bash deploy/cron-saat.sh $NAME-claw +49... --wirklich  # und wirklich"
+echo
+echo "Danach muss die Spalte 'Declaration' gefuellt sein:"
+echo
+echo "  docker exec $NAME-claw openclaw cron list"
+echo
 echo "WhatsApp (openwa) ist eine eigene Compose-Datei und braucht das"
 echo "WhatsApp-Pairing (neuer QR-Code) — folgt separat, siehe Runbook-"
 echo "Abschnitt 'Einen zweiten Laden anlegen':"
