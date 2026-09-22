@@ -134,10 +134,23 @@ PYEOF
   mapfile -t ARGS <<< "$ROH"
 
   if [ "$WIRKLICH" = "--wirklich" ]; then
-    if docker exec "$CONTAINER" openclaw "${ARGS[@]}" >/dev/null 2>&1; then
+    # Den GRUND zeigen, nicht nur das Scheitern. Beim ersten echten Lauf
+    # gegen Ivans Gateway meldete dieses Skript viermal „Aufruf abgelehnt"
+    # und verschwieg, dass es an EINER Sache lag:
+    #   invalid cron.add params: delivery.channel is not configured: whatsapp
+    # Drei der vier Jobs melden per WhatsApp, und sein Kanal-Plugin war
+    # mangels Kopplung nicht geladen. Ein Fehlschlag ohne Grund kostet
+    # genau die Zeit, die dieses Skript sparen soll.
+    if AUSGABE="$(docker exec "$CONTAINER" openclaw "${ARGS[@]}" 2>&1)"; then
       echo "  gesaet     $name"
     else
-      echo "  FEHLER     $name — Aufruf abgelehnt" >&2
+      GRUND="$(printf '%s' "$AUSGABE" | grep -viE '^Config warnings|^- plugins'                | grep -iE 'error|invalid' | head -1)"
+      case "$GRUND" in
+        *"delivery.channel is not configured"*)
+          echo "  SPAETER    $name — der Kanal fehlt noch: ${GRUND##*: }" >&2
+          echo "             (erst WhatsApp koppeln, dann diesen Lauf wiederholen)" >&2 ;;
+        *) echo "  FEHLER     $name — ${GRUND:-kein Grund gemeldet}" >&2 ;;
+      esac
     fi
   else
     zustand="aktiv"
