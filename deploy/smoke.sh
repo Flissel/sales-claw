@@ -111,12 +111,25 @@ else
   gut "whatsapp kanal"
 fi
 
-# 7) Der zusammengelegte Cron-Job ist aktiv (cron list zeigt nur aktive Jobs).
-if docker exec sales-claw sh -c "openclaw cron list 2>/dev/null" | grep "antworten-pruefen" >/dev/null; then
-  gut "cron antworten-pruefen"
-else
-  fehl "cron antworten-pruefen" "nicht in der aktiven Liste"
-fi
+# 7) Die beiden Tageslaeufe sind aktiv (cron list zeigt nur aktive Jobs).
+#
+# Bis zum 22.09.2026 stand hier `antworten-pruefen` — der Lauf, der alle
+# zwei Stunden Entwuerfe schrieb. Der Betreiber hat ihn abgeschaltet und den
+# Tag auf zwei Laeufe gestellt: 08:00 Vorbereitung, 22:00 Nachbereitung.
+#
+# Die Pruefung MUSSTE mitgezogen werden, und der Grund ist lehrreich: der
+# Cron-Zustand liegt im Gateway-Volumen, nicht im Code. Eine Abnahme, die
+# einen abgeschalteten Job verlangt, faellt deshalb rot — und der
+# automatische Rueckbau faellt aus DEMSELBEN Grund erneut rot, weil er nur
+# den Code zurueckdreht. Ergebnis war „NOTFALL: Mensch noetig" fuer eine
+# Aenderung, die genau so gewollt war.
+for job in morgen-digest abend-nachbereitung; do
+  if docker exec sales-claw sh -c "openclaw cron list 2>/dev/null" | grep "$job" >/dev/null; then
+    gut "cron $job"
+  else
+    fehl "cron $job" "nicht in der aktiven Liste"
+  fi
+done
 
 # 8+9) Die Bootstrap-Dateien passen in IHRE BEIDEN Grenzen.
 #
