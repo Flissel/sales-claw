@@ -87,8 +87,7 @@ import secrets
 auth = saat.setdefault("gateway", {}).setdefault("auth", {})
 if auth.get("mode") == "token" and not auth.get("token"):
     auth["token"] = secrets.token_urlsafe(32)
-    sys.stderr.write("  gateway.auth.token: neu erzeugt (bleibt im Volumen)
-")
+    sys.stderr.write("  gateway.auth.token: neu erzeugt (bleibt im Volumen)" + chr(10))
 # Die Erlaubnisliste ist der einzige Wert, der sich je Mensch unterscheidet.
 # Faende sich hier je ein weiterer, gehoert er GENAUSO hierher — und nicht in
 # eine zweite Vorlage.
