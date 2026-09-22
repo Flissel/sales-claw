@@ -136,7 +136,14 @@ services:
       #
       # Nach dem Recreate muss der Webhook einmal registriert werden (siehe
       # docs/03_RUNBOOK.md, Abschnitt „Eingehende Kundenantworten").
-      - SSRF_ALLOWED_HOSTS=sales-inbox
+      # Je Laden, nicht fest (Befund 22.09.2026): hier stand `sales-inbox`
+      # auch fuer den zweiten Laden. Der einzige Host, den IVANS
+      # WhatsApp-Bruecke erreichen durfte, war damit FELIX' Posteingang -
+      # sein eigener waere von der SSRF-Sperre geblockt worden, und ein
+      # dorthin eingetragener Webhook haette seine Kundennachrichten in die
+      # fremde Kundenhistorie geschrieben. Gemessen am laufenden Container:
+      # ivan-openwa trug SSRF_ALLOWED_HOSTS=sales-inbox.
+      - SSRF_ALLOWED_HOSTS=${LADEN_PRAEFIX:-sales}-inbox
       # --- LID-Aufloesung in der Eingangsrichtung (Stufe 11, T2).
       #
       # NICHT AKTIV IM LAUFENDEN CONTAINER — wie SSRF_ALLOWED_HOSTS wirkt
