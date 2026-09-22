@@ -63,10 +63,21 @@ fehler_melden() {
     letzter="${ERLEDIGT[-1]}"
   fi
   local grund="Abbruch nach Schritt '$letzter' (Exit $exit_code)"
-  local erledigt_json
-  erledigt_json="$(python3 -c '
-import json, sys
-print(json.dumps({"erledigt": sys.argv[1:]}))' "${ERLEDIGT[@]:-}")"
+  # W1 (Schlusspruefung): bewusst OHNE python3 — dieser Pfad ist die letzte
+  # Verteidigungslinie, falls python3 selbst die Abbruchursache war (der
+  # letzte Schritt vor dem Erfolgs-Update oben ruft selbst python3 auf).
+  # Scheitert python3, meldet fehler_melden sonst selbst nichts, und der
+  # Auftrag bliebe fuer immer auf 'laeuft' stehen. ERLEDIGT enthaelt
+  # ausschliesslich fest verdrahtete, alphanumerische Bezeichner
+  # ("aufnahme", "ports", ...) — kein Escaping noetig.
+  local erledigt_json="[" sep="" schritt
+  for schritt in "${ERLEDIGT[@]:-}"; do
+    [ -z "$schritt" ] && continue
+    erledigt_json+="$sep\"$schritt\""
+    sep=","
+  done
+  erledigt_json+="]"
+  erledigt_json="{\"erledigt\": $erledigt_json}"
   # ergebnis/grund enthalten kein Geheimnis, aber aus Konsistenz zum Fix
   # beim Erfolgs-Update unten (dieselbe docker-exec/psql-Angriffsflaeche):
   # blosse -e-Namensform statt -v, damit hier nie versehentlich Nutzdaten
@@ -114,6 +125,22 @@ freier_port() {
   return 1
 }
 
+# --- 0. Haengende Auftraege aus einem fruehen Absturz zurueckholen --------
+# Spec §2.4: ein 'laeuft', das laenger als 10 Minuten steht, ist kein
+# laufender Auftrag mehr, sondern ein Rest eines abgebrochenen Laufs
+# (Neustart, systemctl stop, OOM — keiner davon laesst den ERR-Trap
+# feuern). Ohne diesen Schritt gibt es aus der Oberflaeche KEINEN Weg
+# zurueck: sales_app hat kein update/delete auf admin_auftraege.
+psql_admin <<'SQL'
+update sales.admin_auftraege
+   set status = 'fehler',
+       fehler = 'Haengender Auftrag: laenger als 10 Minuten auf ''laeuft'' '
+                'stehengeblieben, vom naechsten Durchlauf zurueckgesetzt.',
+       erledigt_am = now()
+ where art = 'laden_anlegen' and status = 'laeuft'
+   and erstellt_am < now() - interval '10 minutes';
+SQL
+
 # --- 1. Naechsten offenen Auftrag holen, sofort auf 'laeuft' setzen -------
 ZEILE="$(psql_admin -tAc \
   "select id || '|' || name from sales.admin_auftraege \
@@ -143,9 +170,17 @@ ERLEDIGT+=("umgebungsdatei")
 
 ENVDATEI="deploy/laeden/$LADEN_NAME.env"
 DB_PW="$(sed -n "s#.*sales_app_$LADEN_NAME:\\([^@]*\\)@.*#\\1#p" "$ENVDATEI")"
+if [ -z "$DB_PW" ]; then
+  echo "FEHLER: Datenbank-Passwort konnte nicht aus $ENVDATEI gelesen werden." >&2
+  exit 1
+fi
 
 # --- 4. db/laden-anlegen.sql — Schema, Tabellen, Rolle, Rechte ------------
-docker exec -i -e LADEN_PASSWORT="$DB_PW" debian-supabase-db-1 \
+# W2 (Schlusspruefung): bewusst die vorangestellte Zuweisung statt
+# "-e LADEN_PASSWORT=$DB_PW" — letzteres traegt den Wert woertlich im Argv
+# des AEUSSEREN `docker`-Aufrufs (sichtbar z.B. ueber `ps aux`). Dasselbe
+# bereits geprüfte Muster wie beim Erfolgs-Update weiter unten (ERGEBNIS).
+LADEN_PASSWORT="$DB_PW" docker exec -i -e LADEN_PASSWORT debian-supabase-db-1 \
   psql -U supabase_admin -d postgres -v laden="$LADEN_NAME" \
   < db/laden-anlegen.sql >/dev/null
 unset DB_PW
@@ -195,17 +230,14 @@ unset KONTO_PW
 # aufgezeichneten Argv des `docker exec`-Aufrufs.
 #
 # WICHTIG — auch "-e ERGEBNIS=$ERGEBNIS_JSON" (der Wert direkt hinter dem
-# Flag, wie es LADEN_PASSWORT zwei Bloecke weiter oben tut) reicht dafuer
-# NICHT: ebenfalls nachgemessen — der Wert steht dann zwar nicht mehr in
-# PSQLS Argv, aber weiterhin woertlich im Argv des AEUSSEREN `docker`-
-# Aufrufs selbst. Deshalb hier bewusst die BLOSSE Namensform "-e ERGEBNIS"
-# mit vorangestellter Zuweisung: docker uebernimmt den Wert dann aus
-# SEINER EIGENEN (nur fuer diesen einen Aufruf gesetzten) Prozessumgebung,
-# nirgends erscheint er als Kommandozeilenargument. (Das bereits bestehende
-# `-e LADEN_PASSWORT="$DB_PW"` oben ist bewusst NICHT auf dieses staerkere
-# Muster umgestellt — das ist das unveraenderte, bereits freigegebene
-# Muster aus deploy/laden-anlegen.sh, ausserhalb des Umfangs dieser
-# Aufgabe.)
+# Flag) reicht dafuer NICHT: ebenfalls nachgemessen — der Wert steht dann
+# zwar nicht mehr in PSQLS Argv, aber weiterhin woertlich im Argv des
+# AEUSSEREN `docker`-Aufrufs selbst. Deshalb hier bewusst die BLOSSE
+# Namensform "-e ERGEBNIS" mit vorangestellter Zuweisung: docker uebernimmt
+# den Wert dann aus SEINER EIGENEN (nur fuer diesen einen Aufruf gesetzten)
+# Prozessumgebung, nirgends erscheint er als Kommandozeilenargument. (W2,
+# Schlusspruefung: `LADEN_PASSWORT` beim db/laden-anlegen.sql-Aufruf oben
+# ist inzwischen auf genau dasselbe Muster umgestellt.)
 ERGEBNIS="$ERGEBNIS_JSON" docker exec -i -e ERGEBNIS debian-supabase-db-1 \
   psql -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
   -v id="$AUFTRAG_ID" <<'SQL'

@@ -139,6 +139,31 @@ def test_seite_ohne_javascript():
     assert "<script" not in r.text.lower()
 
 
+def test_seite_zeigt_ergebnis_mit_echtem_json_ohne_absturz():
+    """K1 der Schlusspruefung: ergebnis kommt aus der DB bereits als dict
+    (psycopg3 deserialisiert jsonb automatisch) — json.loads() darauf war
+    ein TypeError, den keine Vorgaengerpruefung sah, weil kein Test je ein
+    nicht-leeres ergebnis eingefuegt hatte."""
+    server._q(
+        "insert into admin_auftraege "
+        "(art, name, angefordert_von, status, ergebnis, erledigt_am) "
+        "values ('laden_anlegen', 'lena', 'test', 'erfolg', "
+        "%s::jsonb, now())",
+        ('{"passwort": "Probe-XYZ123", "port_serve": 8446, "hinweis": "x"}',))
+    r = _get("/team/laden-anlegen")
+    assert r.status_code == 200
+    assert "Probe-XYZ123" in r.text
+
+
+@pytest.mark.parametrize("reservierter_name", ["sales", "test"])
+def test_reservierte_namen_werden_abgewiesen(reservierter_name):
+    r = _post("/team/laden-anlegen/anfordern",
+              {"name": reservierter_name, "csrf": ui.CSRF_TOKEN})
+    assert r.status_code == 400
+    zeilen = server._q("select count(*) as n from admin_auftraege")
+    assert zeilen[0]["n"] == 0
+
+
 def test_scharfe_anmeldung_traegt_den_echten_namen(scharf):
     """Deckt die Luecke aus der Ergaenzung oben: nur mit einer echten
     Sitzung unterscheidet sich _ui_akteur(request) ueberhaupt von einem

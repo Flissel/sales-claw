@@ -4017,7 +4017,10 @@ def _admin_auftrag_ergebnis_text(zeile) -> str:
         return "wartet auf den Wirt (bis zu 20 Sekunden)"
     if zeile["status"] == "laeuft":
         return "wird gerade angelegt …"
-    info = json.loads(zeile["ergebnis"]) if zeile["ergebnis"] else {}
+    # K1 (Schlusspruefung): server.pool laeuft mit psycopg3/dict_row — eine
+    # jsonb-Spalte kommt bereits als Python-dict zurueck, nicht als String.
+    # json.loads() darauf warf TypeError bei JEDEM Auftrag mit 'ergebnis'.
+    info = zeile["ergebnis"] or {}
     if zeile["status"] == "fehler":
         erledigt = ", ".join(info.get("erledigt", [])) or "nichts"
         grund = zeile["fehler"] or "kein Grund vermerkt"
@@ -4071,6 +4074,11 @@ async def aktion_laden_anlegen(request):
             "Ein Ladenname besteht aus Kleinbuchstaben, Ziffern und "
             "Unterstrich, beginnt mit einem Buchstaben, höchstens 31 "
             "Zeichen. Nichts wurde angelegt.")
+    if name in ("sales", "test"):
+        return _fehlerseite(
+            400, "Reservierter Name",
+            f"'{name}' ist reserviert (Basis-Laden bzw. Test-Schema) und "
+            "kann nicht als Ladenname verwendet werden. Nichts wurde angelegt.")
     server._q(
         "insert into admin_auftraege (art, name, angefordert_von) "
         "values ('laden_anlegen', %s, %s) returning id",
