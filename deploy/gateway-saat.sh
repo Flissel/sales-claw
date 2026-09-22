@@ -127,5 +127,21 @@ docker cp "$TMP" "$CONTAINER:$ZIEL"
 # trotzdem einen Fehler und nie „gesaet".
 echo "  gesaet: $CONTAINER:$ZIEL"
 echo
+# Der stille Ausfall, der erst beim ERSTEN Cron-Lauf auffaellt (gemessen
+# 22.09.2026): die Saat traegt bewusst KEINE Anmeldung - ein Zugangstoken
+# gehoert nicht ins Git. Folge: ein neuer Laden faellt auf das freie Modell
+# zurueck, startet sauber, meldet „[gateway] ready", ist healthy - und
+# scheitert erst Stunden spaeter mit „All models failed". Deshalb steht es
+# hier, nicht im Log.
+echo
+echo "ACHTUNG — dieser Laden hat noch KEINE eigene Modell-Anmeldung."
+echo "Er faellt damit auf das Ausweichmodell zurueck (openrouter/free),"
+echo "dessen Tageskontingent sich ALLE Laeden mit demselben Schluessel"
+echo "teilen. Der Agent startet trotzdem sauber und scheitert erst beim"
+echo "ersten echten Lauf:"
+echo "    All models failed (2): ... No API key found for provider \"anthropic\""
+echo "Anmeldung einrichten, bevor Cron-Jobs scharf gestellt werden:"
+echo "    docker exec -it $CONTAINER openclaw models auth login --provider anthropic"
+echo
 echo "Jetzt starten und nachsehen, ob er durchkommt:"
 echo "  docker start $CONTAINER && sleep 8 && docker logs --tail 5 $CONTAINER"

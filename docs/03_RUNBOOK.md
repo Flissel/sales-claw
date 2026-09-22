@@ -2670,6 +2670,39 @@ nicht kaputt: das Kanal-Plugin lädt erst mit der Kopplung. Nach Schritt 4d
 denselben Befehl noch einmal — er ist idempotent (`--declaration-key`), ein
 zweiter Lauf legt nichts doppelt an.
 
+#### Der stille Ausfall: ein neuer Laden hat keine Modell-Anmeldung
+
+**Gemessen 22.09.2026, und es fiel erst Stunden später auf.** Die Saat trägt
+bewusst **keine** Anmeldung — ein Zugangstoken gehört nicht ins Repository. Die
+Folge: ein frisch gesäter Agent startet sauber, meldet `[gateway] ready`, ist
+`healthy` — und scheitert beim ersten echten Lauf:
+
+```
+anthropic/claude-sonnet-5:  No API key found for provider "anthropic"
+openrouter/openrouter/free: 429 Rate limit exceeded: free-models-per-day
+FallbackSummaryError: All models failed (2)
+```
+
+`auth.profiles` existiert im laufenden ersten Laden (`anthropic:manual`), in der
+Saat nicht. Das eigentliche Token liegt nicht unter `credentials/`, sondern in
+`agents/main/agent/openclaw-agent.sqlite`.
+
+**Zwei Dinge folgen daraus:**
+
+1. **Vor dem Scharfstellen der Cron-Jobs eine Anmeldung einrichten**, sonst läuft
+   der Agent alle zwei Stunden ins Leere:
+   ```bash
+   docker exec -it <laden>-claw openclaw models auth login --provider anthropic
+   ```
+2. **Das Freikontingent ist geteilt.** Alle Läden derselben Maschine benutzen
+   denselben `OPENROUTER_API_KEY` — ein Laden ohne eigene Anmeldung verbraucht
+   also genau das Ausweichkontingent, auf das der **erste** Laden bei Störungen
+   zurückfällt. Solange ein Laden keine eigene Anmeldung hat, gehören seine
+   Cron-Jobs abgeschaltet:
+   ```bash
+   docker exec <laden>-claw openclaw cron disable <id>
+   ```
+
 #### 4d. Nach der WhatsApp-Kopplung: den Webhook anbinden
 
 Erst jetzt gibt es `OPENWA_API_KEY` und `OPENWA_SESSION_ID`; beide entstehen mit
