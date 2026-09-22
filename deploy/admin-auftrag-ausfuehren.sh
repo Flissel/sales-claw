@@ -126,92 +126,100 @@ freier_port() {
 }
 
 # --- 0. Haengende Auftraege aus einem fruehen Absturz zurueckholen --------
-# Spec §2.4: ein 'laeuft', das laenger als 10 Minuten steht, ist kein
-# laufender Auftrag mehr, sondern ein Rest eines abgebrochenen Laufs
-# (Neustart, systemctl stop, OOM — keiner davon laesst den ERR-Trap
-# feuern). Ohne diesen Schritt gibt es aus der Oberflaeche KEINEN Weg
-# zurueck: sales_app hat kein update/delete auf admin_auftraege.
+# Spec §2.4 (Laden anlegen) / Spec 2026-09-22-tailscale-einladung-design
+# §2.4 (Tailscale-Einladungen): ein 'laeuft', das laenger als 10 Minuten
+# steht, ist kein laufender Auftrag mehr, sondern ein Rest eines
+# abgebrochenen Laufs (Neustart, systemctl stop, OOM, ein haengender
+# Tailscale-API-Aufruf trotz --max-time — keiner davon laesst den ERR-Trap
+# feuern). Gilt fuer BEIDE Auftragsarten, sonst gibt es fuer die neuere
+# keinen Weg zurueck: sales_app hat kein update/delete auf admin_auftraege.
 psql_admin <<'SQL'
 update sales.admin_auftraege
    set status = 'fehler',
        fehler = 'Haengender Auftrag: laenger als 10 Minuten auf ''laeuft'' '
                 'stehengeblieben, vom naechsten Durchlauf zurueckgesetzt.',
        erledigt_am = now()
- where art = 'laden_anlegen' and status = 'laeuft'
+ where art in ('laden_anlegen', 'tailscale_einladen') and status = 'laeuft'
    and erstellt_am < now() - interval '10 minutes';
 SQL
 
 # --- 1. Naechsten offenen Auftrag holen, sofort auf 'laeuft' setzen -------
+# Tab-getrennt (nicht '|'): eine E-Mail-Adresse darf laut mailadresse.py
+# im lokalen Teil ein '|' enthalten (RFC-5322-atext) — ein Tab kommt weder
+# in einem Ladennamen ([a-z0-9_]) noch in einer zulaessigen Adresse vor
+# (mailadresse.py schliesst Leerraum/Steuerzeichen bewusst aus).
 ZEILE="$(psql_admin -tAc \
-  "select id || '|' || name from sales.admin_auftraege \
-   where art = 'laden_anlegen' and status = 'offen' \
+  "select id || chr(9) || art || chr(9) || coalesce(name, '') || chr(9) \
+          || coalesce(email, '') \
+   from sales.admin_auftraege \
+   where art in ('laden_anlegen', 'tailscale_einladen') and status = 'offen' \
    order by erstellt_am limit 1")"
 if [ -z "$ZEILE" ]; then
   exit 0
 fi
-AUFTRAG_ID="${ZEILE%%|*}"
-LADEN_NAME="${ZEILE#*|}"
+IFS=$'\t' read -r AUFTRAG_ID ART LADEN_NAME EINLADEN_EMAIL <<< "$ZEILE"
 psql_admin -v id="$AUFTRAG_ID" <<'SQL'
 update sales.admin_auftraege set status = 'laeuft' where id = :'id'::uuid;
 SQL
 ERLEDIGT+=("aufnahme")
 
-# --- 2. Vier freie Ports suchen -------------------------------------------
-PORT_GATEWAY="$(freier_port 18894 18950)"
-PORT_UI="$(freier_port 8791 8850)"
-PORT_OPENWA="$(freier_port 12785 12850)"
-PORT_SERVE="$(freier_port 8446 8500)"
-ERLEDIGT+=("ports")
+if [ "$ART" = "laden_anlegen" ]; then
+  # --- 2. Vier freie Ports suchen -------------------------------------------
+  PORT_GATEWAY="$(freier_port 18894 18950)"
+  PORT_UI="$(freier_port 8791 8850)"
+  PORT_OPENWA="$(freier_port 12785 12850)"
+  PORT_SERVE="$(freier_port 8446 8500)"
+  ERLEDIGT+=("ports")
 
-# --- 3. deploy/laden-anlegen.sh — unveraendert, wie von Hand --------------
-bash deploy/laden-anlegen.sh "$LADEN_NAME" "$PORT_GATEWAY" "$PORT_UI" \
-  "$PORT_OPENWA" "$PORT_SERVE" >/dev/null
-ERLEDIGT+=("umgebungsdatei")
+  # --- 3. deploy/laden-anlegen.sh — unveraendert, wie von Hand --------------
+  bash deploy/laden-anlegen.sh "$LADEN_NAME" "$PORT_GATEWAY" "$PORT_UI" \
+    "$PORT_OPENWA" "$PORT_SERVE" >/dev/null
+  ERLEDIGT+=("umgebungsdatei")
 
-ENVDATEI="deploy/laeden/$LADEN_NAME.env"
-DB_PW="$(sed -n "s#.*sales_app_$LADEN_NAME:\\([^@]*\\)@.*#\\1#p" "$ENVDATEI")"
-if [ -z "$DB_PW" ]; then
-  # `false` statt `exit 1`: AUFTRAG_ID ist an dieser Stelle bereits gesetzt
-  # (Schritt 1 lief), also loest `false` den ERR-Trap aus und schreibt
-  # sofort status='fehler' mit dem echten Grund und der bisherigen
-  # ERLEDIGT-Liste. `exit 1` würde den Trap umgehen — der Auftrag bliebe
-  # bis zu 10 Minuten lang faelschlich als "wird gerade angelegt" sichtbar,
-  # bis Schritt 0 ihn beim naechsten Durchlauf mit einem generischen Grund
-  # zurueckstuft (nachgemessen in der Schlusspruefung der Schlusspruefung).
-  echo "FEHLER: Datenbank-Passwort konnte nicht aus $ENVDATEI gelesen werden." >&2
-  false
-fi
+  ENVDATEI="deploy/laeden/$LADEN_NAME.env"
+  DB_PW="$(sed -n "s#.*sales_app_$LADEN_NAME:\\([^@]*\\)@.*#\\1#p" "$ENVDATEI")"
+  if [ -z "$DB_PW" ]; then
+    # `false` statt `exit 1`: AUFTRAG_ID ist an dieser Stelle bereits gesetzt
+    # (Schritt 1 lief), also loest `false` den ERR-Trap aus und schreibt
+    # sofort status='fehler' mit dem echten Grund und der bisherigen
+    # ERLEDIGT-Liste. `exit 1` würde den Trap umgehen — der Auftrag bliebe
+    # bis zu 10 Minuten lang faelschlich als "wird gerade angelegt" sichtbar,
+    # bis Schritt 0 ihn beim naechsten Durchlauf mit einem generischen Grund
+    # zurueckstuft (nachgemessen in der Schlusspruefung der Schlusspruefung).
+    echo "FEHLER: Datenbank-Passwort konnte nicht aus $ENVDATEI gelesen werden." >&2
+    false
+  fi
 
-# --- 4. db/laden-anlegen.sql — Schema, Tabellen, Rolle, Rechte ------------
-# W2 (Schlusspruefung): bewusst die vorangestellte Zuweisung statt
-# "-e LADEN_PASSWORT=$DB_PW" — letzteres traegt den Wert woertlich im Argv
-# des AEUSSEREN `docker`-Aufrufs (sichtbar z.B. ueber `ps aux`). Dasselbe
-# bereits geprüfte Muster wie beim Erfolgs-Update weiter unten (ERGEBNIS).
-LADEN_PASSWORT="$DB_PW" docker exec -i -e LADEN_PASSWORT debian-supabase-db-1 \
-  psql -U supabase_admin -d postgres -v laden="$LADEN_NAME" \
-  < db/laden-anlegen.sql >/dev/null
-unset DB_PW
-ERLEDIGT+=("schema")
+  # --- 4. db/laden-anlegen.sql — Schema, Tabellen, Rolle, Rechte ------------
+  # W2 (Schlusspruefung): bewusst die vorangestellte Zuweisung statt
+  # "-e LADEN_PASSWORT=$DB_PW" — letzteres traegt den Wert woertlich im Argv
+  # des AEUSSEREN `docker`-Aufrufs (sichtbar z.B. ueber `ps aux`). Dasselbe
+  # bereits geprüfte Muster wie beim Erfolgs-Update weiter unten (ERGEBNIS).
+  LADEN_PASSWORT="$DB_PW" docker exec -i -e LADEN_PASSWORT debian-supabase-db-1 \
+    psql -U supabase_admin -d postgres -v laden="$LADEN_NAME" \
+    < db/laden-anlegen.sql >/dev/null
+  unset DB_PW
+  ERLEDIGT+=("schema")
 
-# --- 5. Nur die zwei Dienste ohne externe Zugangsdaten --------------------
-# DIENSTSCHLUESSEL bleiben "sales-mcp"/"sales-ui" — das Env-File entscheidet
-# per LADEN_PRAEFIX-Interpolation, welcher Laden tatsaechlich entsteht.
-docker compose --env-file "$ENVDATEI" up -d --build sales-mcp sales-ui \
-  >/dev/null
-ERLEDIGT+=("container")
+  # --- 5. Nur die zwei Dienste ohne externe Zugangsdaten --------------------
+  # DIENSTSCHLUESSEL bleiben "sales-mcp"/"sales-ui" — das Env-File entscheidet
+  # per LADEN_PRAEFIX-Interpolation, welcher Laden tatsaechlich entsteht.
+  docker compose --env-file "$ENVDATEI" up -d --build sales-mcp sales-ui \
+    >/dev/null
+  ERLEDIGT+=("container")
 
-# --- 6. Konto mit Wegwerf-Passwort ----------------------------------------
-KONTO_PW="Probe-$(openssl rand -base64 9 | tr -d '/+=' | head -c 10)"
-printf '%s\n%s\n%s\n%s\n' "$LADEN_NAME" "freigeben" "$KONTO_PW" "$KONTO_PW" \
-  | bash deploy/benutzer-anlegen.sh "$LADEN_NAME" >/dev/null
-ERLEDIGT+=("konto")
+  # --- 6. Konto mit Wegwerf-Passwort ----------------------------------------
+  KONTO_PW="Probe-$(openssl rand -base64 9 | tr -d '/+=' | head -c 10)"
+  printf '%s\n%s\n%s\n%s\n' "$LADEN_NAME" "freigeben" "$KONTO_PW" "$KONTO_PW" \
+    | bash deploy/benutzer-anlegen.sh "$LADEN_NAME" >/dev/null
+  ERLEDIGT+=("konto")
 
-# --- 7. Erfolg melden ------------------------------------------------------
-# KONTO_PW geht hier ueber die PROZESSUMGEBUNG von python3, NICHT ueber
-# argv (Global Constraints: "Passwoerter nie ueber argv"). sys.argv haette
-# es waehrend der Laufzeit von python3 kurz in dessen Kommandozeile
-# getragen (sichtbar z.B. ueber /proc/<pid>/cmdline oder `ps aux`).
-ERGEBNIS_JSON="$(KONTO_PW="$KONTO_PW" python3 -c '
+  # --- 7. Erfolg melden ------------------------------------------------------
+  # KONTO_PW geht hier ueber die PROZESSUMGEBUNG von python3, NICHT ueber
+  # argv (Global Constraints: "Passwoerter nie ueber argv"). sys.argv haette
+  # es waehrend der Laufzeit von python3 kurz in dessen Kommandozeile
+  # getragen (sichtbar z.B. ueber /proc/<pid>/cmdline oder `ps aux`).
+  ERGEBNIS_JSON="$(KONTO_PW="$KONTO_PW" python3 -c '
 import json, os, sys
 pw = os.environ["KONTO_PW"]
 ui_port, serve_port = sys.argv[1], sys.argv[2]
@@ -225,34 +233,123 @@ print(json.dumps({
                 "Menschen und die vier Kanaele (Postfach, Telegram, "
                 "LinkedIn, WhatsApp).")
 }))' "$PORT_UI" "$PORT_SERVE")"
-unset KONTO_PW
+  unset KONTO_PW
 
-# ERGEBNIS_JSON traegt das frische Kontopasswort im Klartext (Feld
-# "passwort") weiter. Ein "-v ergebnis=..." an psql_admin haette es in
-# PSQLS EIGENEM argv getragen — innerhalb des Containers per `ps` sichtbar,
-# solange die Abfrage laeuft, dieselbe Umgehung, die db/laden-anlegen.sql
-# fuer LADEN_PASSWORT bereits mit `\getenv` vermeidet
-# (db/laden-anlegen.sql:80). Nachgemessen mit einer docker-Attrappe: mit
-# "-v ergebnis=$ERGEBNIS_JSON" stand das Passwort woertlich im
-# aufgezeichneten Argv des `docker exec`-Aufrufs.
-#
-# WICHTIG — auch "-e ERGEBNIS=$ERGEBNIS_JSON" (der Wert direkt hinter dem
-# Flag) reicht dafuer NICHT: ebenfalls nachgemessen — der Wert steht dann
-# zwar nicht mehr in PSQLS Argv, aber weiterhin woertlich im Argv des
-# AEUSSEREN `docker`-Aufrufs selbst. Deshalb hier bewusst die BLOSSE
-# Namensform "-e ERGEBNIS" mit vorangestellter Zuweisung: docker uebernimmt
-# den Wert dann aus SEINER EIGENEN (nur fuer diesen einen Aufruf gesetzten)
-# Prozessumgebung, nirgends erscheint er als Kommandozeilenargument. (W2,
-# Schlusspruefung: `LADEN_PASSWORT` beim db/laden-anlegen.sql-Aufruf oben
-# ist inzwischen auf genau dasselbe Muster umgestellt.)
-ERGEBNIS="$ERGEBNIS_JSON" docker exec -i -e ERGEBNIS debian-supabase-db-1 \
-  psql -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
-  -v id="$AUFTRAG_ID" <<'SQL'
+  # ERGEBNIS_JSON traegt das frische Kontopasswort im Klartext (Feld
+  # "passwort") weiter. Ein "-v ergebnis=..." an psql_admin haette es in
+  # PSQLS EIGENEM argv getragen — innerhalb des Containers per `ps` sichtbar,
+  # solange die Abfrage laeuft, dieselbe Umgehung, die db/laden-anlegen.sql
+  # fuer LADEN_PASSWORT bereits mit `\getenv` vermeidet
+  # (db/laden-anlegen.sql:80). Nachgemessen mit einer docker-Attrappe: mit
+  # "-v ergebnis=$ERGEBNIS_JSON" stand das Passwort woertlich im
+  # aufgezeichneten Argv des `docker exec`-Aufrufs.
+  #
+  # WICHTIG — auch "-e ERGEBNIS=$ERGEBNIS_JSON" (der Wert direkt hinter dem
+  # Flag) reicht dafuer NICHT: ebenfalls nachgemessen — der Wert steht dann
+  # zwar nicht mehr in PSQLS Argv, aber weiterhin woertlich im Argv des
+  # AEUSSEREN `docker`-Aufrufs selbst. Deshalb hier bewusst die BLOSSE
+  # Namensform "-e ERGEBNIS" mit vorangestellter Zuweisung: docker uebernimmt
+  # den Wert dann aus SEINER EIGENEN (nur fuer diesen einen Aufruf gesetzten)
+  # Prozessumgebung, nirgends erscheint er als Kommandozeilenargument. (W2,
+  # Schlusspruefung: `LADEN_PASSWORT` beim db/laden-anlegen.sql-Aufruf oben
+  # ist inzwischen auf genau dasselbe Muster umgestellt.)
+  ERGEBNIS="$ERGEBNIS_JSON" docker exec -i -e ERGEBNIS debian-supabase-db-1 \
+    psql -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
+    -v id="$AUFTRAG_ID" <<'SQL'
 \getenv ergebnis ERGEBNIS
 update sales.admin_auftraege
    set status = 'erfolg', ergebnis = :'ergebnis'::jsonb, erledigt_am = now()
  where id = :'id'::uuid;
 SQL
-unset ERGEBNIS_JSON
+  unset ERGEBNIS_JSON
+
+elif [ "$ART" = "tailscale_einladen" ]; then
+  # --- 2. Zugangsdaten aus der Wirt-Umgebung lesen -------------------------
+  # Niemals aus einem Container — siehe Spec §1.3 (T5a-Prinzip). Die Datei
+  # deploy/systemd/sales-admin-auftraege.service traegt sie per
+  # EnvironmentFile= in die Prozessumgebung DIESES Skripts, siehe
+  # tailscale-admin.env.example.
+  if [ -z "${TAILSCALE_API_KEY:-}" ] || [ -z "${TAILSCALE_TAILNET:-}" ]; then
+    echo "FEHLER: TAILSCALE_API_KEY/TAILSCALE_TAILNET nicht gesetzt (siehe " \
+         "tailscale-admin.env.example)." >&2
+    false
+  fi
+  ERLEDIGT+=("zugangsdaten")
+
+  # --- 3. Anfrage-Rumpf ueber python3 bauen, nicht per printf/Verkettung ---
+  # EINLADEN_EMAIL besteht die Datenbank-CHECK-Pruefung (Aufgabe 1), die
+  # etwas WEITER ist als mailadresse.pruefes eigene Whitelist (die
+  # Datenbank-Pruefung schliesst nur '@'/Leerraum aus, nicht z. B. ein
+  # Anfuehrungszeichen). Ein direkt verkettetes '{"email":"%s",...}' waere
+  # angreifbar, sollte je eine Zeile diese Pruefung umgehen (z. B. ein
+  # direkter SQL-Insert ausserhalb der Oberflaeche). json.dumps() entkommt
+  # korrekt, unabhaengig vom Inhalt.
+  ANFRAGE_JSON="$(EINLADEN_EMAIL="$EINLADEN_EMAIL" python3 -c '
+import json, os
+print(json.dumps({"email": os.environ["EINLADEN_EMAIL"], "role": "member"}))')"
+  ERLEDIGT+=("anfrage-aufbau")
+
+  # --- 4. Tailscale-Einladung anfordern -------------------------------------
+  # Der persoenliche API-Schluessel geht NIE ueber curls eigenes -H/--Argv
+  # (dort woertlich im Argv des Aufrufs sichtbar, dieselbe Leck-Klasse wie
+  # LADEN_PASSWORT/ERGEBNIS oben) — stattdessen per stdin an `curl -K -`,
+  # das eine kleine Konfigurationszeile liest statt eines
+  # Kommandozeilenarguments. --max-time 15: der einzige Schritt in dieser
+  # Datei, der ueber das lokale Netz hinausgeht und deshalb wirklich
+  # haengen kann — die anderen sind alle localhost (docker exec/psql).
+  ANTWORT="$(printf 'header = "Authorization: Bearer %s"\n' \
+      "$TAILSCALE_API_KEY" | \
+    curl -sS --max-time 15 -K - \
+      -X POST \
+      "https://api.tailscale.com/api/v2/tailnet/$TAILSCALE_TAILNET/user-invites" \
+      -H "Content-Type: application/json" \
+      -d "$ANFRAGE_JSON" \
+      -w $'\n%{http_code}')"
+  HTTP_CODE="${ANTWORT##*$'\n'}"
+  ANTWORT_RUMPF="${ANTWORT%$'\n'*}"
+  ERLEDIGT+=("api-aufruf")
+
+  # --- 5. Ergebnis auswerten -------------------------------------------------
+  # Tailscales genaues Fehler-JSON-Format war zum Entwurfszeitpunkt nicht
+  # zweifelsfrei zu klaeren (Spec §1.2) — deshalb defensiv: sowohl
+  # "message" als auch "error" versuchen, sonst der rohe Antwortkoerper
+  # (gekuerzt). Ein einziger python3-Aufruf gibt STATUS und Nutzlast
+  # tab-getrennt zurueck (derselbe Trenner-Grund wie beim Einlesen des
+  # Auftrags in Schritt 1).
+  AUSWERTUNG="$(HTTP_CODE="$HTTP_CODE" ANTWORT_RUMPF="$ANTWORT_RUMPF" \
+    python3 -c '
+import json, os
+code = os.environ["HTTP_CODE"]
+rumpf = os.environ["ANTWORT_RUMPF"]
+try:
+    daten = json.loads(rumpf)
+except (ValueError, TypeError):
+    daten = {}
+if code.startswith("2"):
+    print("erfolg\t" + json.dumps({"inviteUrl": daten.get("inviteUrl", "")}))
+else:
+    grund = (daten.get("message") or daten.get("error")
+             or "HTTP " + code + ": " + rumpf[:200])
+    print("fehler\t" + grund)
+')"
+  STATUS="${AUSWERTUNG%%$'\t'*}"
+  NUTZLAST="${AUSWERTUNG#*$'\t'}"
+  ERLEDIGT+=("auswertung")
+
+  if [ "$STATUS" = "fehler" ]; then
+    echo "FEHLER: Tailscale-Einladung fehlgeschlagen — $NUTZLAST" >&2
+    false
+  fi
+
+  # --- 6. Erfolg melden -------------------------------------------------------
+  DATEN="$NUTZLAST" docker exec -i -e DATEN debian-supabase-db-1 \
+    psql -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
+    -v id="$AUFTRAG_ID" <<'SQL'
+\getenv ergebnis DATEN
+update sales.admin_auftraege
+   set status = 'erfolg', ergebnis = :'ergebnis'::jsonb, erledigt_am = now()
+ where id = :'id'::uuid;
+SQL
+fi
 
 trap - ERR

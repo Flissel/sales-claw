@@ -4,4 +4,11 @@ Description=sales-claw: Admin-Auftraege aus sales.admin_auftraege ausfuehren
 [Service]
 Type=oneshot
 User=debian
+# TAILSCALE_API_KEY/TAILSCALE_TAILNET fuer den tailscale_einladen-Zweig
+# von admin-auftrag-ausfuehren.sh — ausschliesslich hier, nie in einem
+# Container (T5a-Prinzip, Spec 2026-09-22-tailscale-einladung-design §1.3).
+# "-" davor: eine fehlende Datei ist NICHT fatal, damit 'laden_anlegen'-
+# Auftraege weiterlaufen, auch bevor die Tailscale-Zugangsdaten je
+# eingerichtet wurden.
+EnvironmentFile=-/home/debian/sales-claw/tailscale-admin.env
 ExecStart=/usr/bin/bash /home/debian/sales-claw/deploy/admin-auftrag-ausfuehren.sh
