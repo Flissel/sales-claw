@@ -25,6 +25,7 @@ WURZEL="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$WURZEL"
 
 AUFTRAG_ID=""
+FEHLER_TEXT=""
 ERLEDIGT=()
 
 # ON_ERROR_STOP=1: ohne das kann psql einen SQL-Fehler auf stderr melden und
@@ -62,7 +63,7 @@ fehler_melden() {
   if [ "${#ERLEDIGT[@]}" -gt 0 ]; then
     letzter="${ERLEDIGT[-1]}"
   fi
-  local grund="Abbruch nach Schritt '$letzter' (Exit $exit_code)"
+  local grund="${FEHLER_TEXT:-Abbruch nach Schritt '$letzter' (Exit $exit_code)}"
   # W1 (Schlusspruefung): bewusst OHNE python3 — dieser Pfad ist die letzte
   # Verteidigungslinie, falls python3 selbst die Abbruchursache war (der
   # letzte Schritt vor dem Erfolgs-Update oben ruft selbst python3 auf).
@@ -157,10 +158,13 @@ SQL
 # Position nach vorn (EINLADEN_EMAIL landet faelschlich in LADEN_NAME,
 # EINLADEN_EMAIL selbst bleibt leer). Nachgemessen. chr(31) ist NICHT Teil
 # von IFS-Whitespace — `read` splittet dort ausschliesslich woertlich,
-# ohne Zusammenfassen/Abschneiden leerer Felder. chr(31) kommt ebenso
-# wenig in einem Ladennamen ([a-z0-9_]) oder einer zulaessigen Adresse vor
-# wie ein Tab: mailadresse.pys eigene Whitelist UND die CHECK-Constraint
-# der Datenbank selbst schliessen Steuerzeichen aus.
+# ohne Zusammenfassen/Abschneiden leerer Felder. chr(31) kommt in einem
+# Ladennamen ([a-z0-9_]) nie vor. In einer E-Mail-Adresse schliesst nur
+# mailadresse.pys eigene Whitelist Steuerzeichen wie chr(31) aus — die
+# CHECK-Constraint der Datenbank selbst (`[^@[:space:]]`) tut das NICHT,
+# chr(31) zaehlt dort nicht als Leerraum. Unschaedlich bleibt es trotzdem:
+# EINLADEN_EMAIL ist das LETZTE Feld dieses `read`, ein darin eingebettetes
+# chr(31) wuerde also Teil des E-Mail-Inhalts, nicht ein Feld verschieben.
 ZEILE="$(psql_admin -tAc \
   "select id || chr(31) || art || chr(31) || coalesce(name, '') || chr(31) \
           || coalesce(email, '') \
@@ -283,8 +287,8 @@ elif [ "$ART" = "tailscale_einladen" ]; then
   # EnvironmentFile= in die Prozessumgebung DIESES Skripts, siehe
   # tailscale-admin.env.example.
   if [ -z "${TAILSCALE_API_KEY:-}" ] || [ -z "${TAILSCALE_TAILNET:-}" ]; then
-    echo "FEHLER: TAILSCALE_API_KEY/TAILSCALE_TAILNET nicht gesetzt (siehe " \
-         "tailscale-admin.env.example)." >&2
+    FEHLER_TEXT="TAILSCALE_API_KEY/TAILSCALE_TAILNET nicht gesetzt (siehe tailscale-admin.env.example)."
+    echo "FEHLER: $FEHLER_TEXT" >&2
     false
   fi
   ERLEDIGT+=("zugangsdaten")
@@ -338,18 +342,21 @@ try:
     daten = json.loads(rumpf)
 except (ValueError, TypeError):
     daten = {}
+if not isinstance(daten, dict):
+    daten = {}
 if code.startswith("2"):
     print("erfolg\t" + json.dumps({"inviteUrl": daten.get("inviteUrl", "")}))
 else:
     grund = (daten.get("message") or daten.get("error")
              or "HTTP " + code + ": " + rumpf[:200])
-    print("fehler\t" + grund)
+    print("fehler\t" + str(grund))
 ')"
   STATUS="${AUSWERTUNG%%$'\t'*}"
   NUTZLAST="${AUSWERTUNG#*$'\t'}"
   ERLEDIGT+=("auswertung")
 
   if [ "$STATUS" = "fehler" ]; then
+    FEHLER_TEXT="Tailscale: $NUTZLAST"
     echo "FEHLER: Tailscale-Einladung fehlgeschlagen — $NUTZLAST" >&2
     false
   fi
@@ -363,6 +370,10 @@ update sales.admin_auftraege
    set status = 'erfolg', ergebnis = :'ergebnis'::jsonb, erledigt_am = now()
  where id = :'id'::uuid;
 SQL
+else
+  FEHLER_TEXT="Unbekannte Auftragsart '$ART'."
+  echo "FEHLER: $FEHLER_TEXT" >&2
+  false
 fi
 
 trap - ERR

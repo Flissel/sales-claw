@@ -3011,22 +3011,31 @@ Link zum Weitergeben: <link>
 Dieser Link ist nützlich, falls die E-Mail selbst nicht ankommt — der Mensch kann
 den Link direkt folgen, statt auf die Einladungs-E-Mail zu warten.
 
-**Mit Fehler** zeigt die Zeile Tailscales eigene Fehlermeldung, zum Beispiel:
+**Mit Fehler** zeigt die Zeile Tailscales eigene Fehlermeldung mit dem Präfix
+„Tailscale: ", zum Beispiel:
 
 ```
-FEHLER — user already invited
+FEHLER — Tailscale: user already invited
 ```
 
 oder
 
 ```
-FEHLER — invalid API key
+FEHLER — Tailscale: invalid API key
 ```
 
 oder — bei zu vielen Anfragen in kurzer Zeit:
 
 ```
-FEHLER — rate limited
+FEHLER — Tailscale: rate limited
+```
+
+Fehlt `tailscale-admin.env` auf der VM, oder wurde sie nach dem Anlegen nicht mit
+`sudo systemctl daemon-reload && sudo systemctl restart sales-admin-auftraege.timer`
+geladen, erscheint stattdessen eine eigene, klar benannte Meldung:
+
+```
+FEHLER — TAILSCALE_API_KEY/TAILSCALE_TAILNET nicht gesetzt (siehe tailscale-admin.env.example).
 ```
 
 #### Nach einem erfolgreichen Lauf von Hand

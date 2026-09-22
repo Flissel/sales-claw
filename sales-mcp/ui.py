@@ -534,8 +534,8 @@ def _pfad_erlaubt(rolle: str, pfad: str) -> bool:
     sonst (db/provision.sql, hartes array['sales','sales_test'], Aufgabe 1 /
     test_admin_auftraege_tabelle.py::test_admin_auftraege_existiert_in_...);
     der Testcontainer verbindet ausschliesslich mit `sales_test` (nie mit
-    `sales`), waere `sales_test` hier NICHT gleichgestellt, saehe keiner
-    der beiden Knoepfe in JEDEM Testlauf niemand — auch nicht die Rolle
+    `sales`), waere `sales_test` hier NICHT gleichgestellt, saehe in JEDEM
+    Testlauf niemand einen der beiden Knoepfe — auch nicht die Rolle
     `freigeben` selbst."""
     if any(pfad == p or pfad.startswith(p + "/") for p in _ADMIN_BASIS_PFADE):
         return rolle == "freigeben" and server.SCHEMA in ("sales", "sales_test")
@@ -4038,7 +4038,9 @@ def _admin_auftrag_ergebnis_text(zeile) -> str:
             return f"FEHLER — {_e(zeile['fehler'] or 'kein Grund vermerkt')}"
         link = info.get("inviteUrl")
         zusatz = f" Link zum Weitergeben: {_e(link)}" if link else ""
-        return f"Einladung verschickt.{zusatz}"
+        return (f"Einladung verschickt.{zusatz} Die Zugriffsregel fuer den "
+                 f"neuen Menschen bleibt weiterhin Handarbeit, siehe Runbook "
+                 f"Abschnitt 6.")
     if zeile["status"] == "fehler":
         erledigt = ", ".join(info.get("erledigt", [])) or "nichts"
         grund = zeile["fehler"] or "kein Grund vermerkt"
