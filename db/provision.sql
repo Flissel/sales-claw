@@ -344,6 +344,36 @@ begin
   end loop;
 end $$;
 
+-- Auftraege "Laden anlegen" aus der Oberflaeche (22.09.2026).
+--
+-- ANDERS ALS DER TABELLEN-BLOCK OBEN: diese Tabelle gehoert NICHT zu jedem
+-- Laden, sondern ausschliesslich dem Basis-Laden — dieselbe Ueberlegung wie
+-- compliance/compliance_test, NICHT wie K3 (dort war "zwei feste Schemata"
+-- der Fehler, weil die betroffenen Tabellen in JEDEM Laden gebraucht
+-- wurden; hier ist "zwei feste Schemata" richtig, weil die Faehigkeit
+-- ausdruecklich nur dem Basis-Laden gehoert). sales_test steht daneben,
+-- damit die Testsuite (die NIE gegen sales laufen darf) die Rollen-
+-- Tor-Logik und den Einfuege-/Anzeige-Pfad ueberhaupt pruefen kann.
+do $$
+declare s text;
+begin
+  foreach s in array array['sales','sales_test'] loop
+    execute format($t$create table if not exists %I.admin_auftraege (
+        id uuid primary key default gen_random_uuid(),
+        art text not null check (art = 'laden_anlegen'),
+        name text not null check (name ~ '^[a-z][a-z0-9_]{0,30}$'),
+        angefordert_von text not null,
+        status text not null default 'offen'
+               check (status in ('offen','laeuft','erfolg','fehler')),
+        ergebnis jsonb,
+        fehler text,
+        erstellt_am timestamptz not null default now(),
+        erledigt_am timestamptz)$t$, s);
+    execute format('create index if not exists admin_auftraege_offen_idx '
+                   'on %I.admin_auftraege (status, erstellt_am)', s);
+  end loop;
+end $$;
+
 -- Rechte Demo-Schema: activities append-only als Datenbank-Garantie.
 grant select, insert, update on sales.leads    to sales_app;
 grant select, insert         on sales.activities to sales_app;
@@ -351,6 +381,9 @@ grant select, insert, update on sales.drafts   to sales_app;
 grant select, insert, update on sales.personas to sales_app;
 grant select, insert, update on sales.benutzer to sales_app;
 grant select, insert, update on sales.benutzer_mails to sales_app;
+-- Kein update, kein delete: die Oberflaeche legt einen Auftrag an, sie
+-- aendert ihn nie wieder — nur der Wirt (als supabase_admin) tut das.
+grant select, insert on sales.admin_auftraege to sales_app;
 grant select, insert, update on sales.medien_meta to sales_app;
 grant select, insert, update on sales.kalender_quellen to sales_app;
 -- Bewusst NICHT vergeben: DELETE (nirgends), UPDATE/TRUNCATE auf activities.
