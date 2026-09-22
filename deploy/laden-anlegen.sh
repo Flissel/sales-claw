@@ -88,6 +88,27 @@ else
 fi
 UI_SERVE_HOST="${UI_SERVE_HOST:-vibemind-offload-1.tail6c7d61.ts.net}"
 
+# Dieselbe Behandlung fuer die Tailscale-Adresse — sie hatte als einzige
+# KEINE Vorgabe, und weil dieses Skript mit `set -u` laeuft, brach es
+# deshalb bei Zeile 96 ab, bevor es irgendetwas tat: „UI_TAILSCALE_IP:
+# unbound variable" (gemessen 22.09.2026 auf der VM, aus dem regulaeren
+# Checkout). Wer den Laden anlegen wollte, ohne sie vorher von Hand zu
+# exportieren, kam nicht bis zur ersten Ausgabe.
+#
+# Geholt wird sie wie in deploy/smoke.sh: aus der `.env` des Ladens, in der
+# sie ohnehin steht. Fehlt sie auch dort, sagt das Skript WAS fehlt und WO
+# es hingehoert, statt einen Shell-Fehler zu werfen.
+if [ -z "${UI_TAILSCALE_IP:-}" ] && [ -r "$WURZEL/.env" ]; then
+  UI_TAILSCALE_IP="$(grep -E '^UI_TAILSCALE_IP=' "$WURZEL/.env" | cut -d= -f2- | tr -d '[:space:]')"
+fi
+if [ -z "${UI_TAILSCALE_IP:-}" ]; then
+  echo "FEHLER: UI_TAILSCALE_IP ist weder gesetzt noch steht es in $WURZEL/.env." >&2
+  echo "        Die Tailscale-Adresse dieser Maschine ermitteln mit:" >&2
+  echo "          tailscale ip -4" >&2
+  echo "        und in $WURZEL/.env eintragen (UI_TAILSCALE_IP=100.x.y.z)." >&2
+  exit 1
+fi
+
 mkdir -p "$WURZEL/deploy/laeden"
 # umask VOR dem Anlegen der Datei, nicht chmod danach: so existiert kein
 # Zeitfenster, in dem die Datei mit den Standardrechten (world-readable)
