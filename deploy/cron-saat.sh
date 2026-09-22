@@ -61,6 +61,16 @@ for datei in "$CRONDIR"/*.json; do
   [ -e "$datei" ] || continue
   name="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1],encoding='utf-8'))['name'])" "$datei")"
 
+  # „Nur Basis-Laden": manche Laeufe gehoeren dem ersten Betreiber und
+  # keinem neuen Menschen — die Regensburg-Recherche etwa ist SEINE
+  # Kandidatenliste. Ohne diese Kante saete der zweite Laden sie mit und
+  # arbeitete fremde Kontakte ab (Betreiber-Entscheid 22.09.2026).
+  NUR_BASIS="$(python3 -c "import json,sys;print('1' if json.load(open(sys.argv[1],encoding='utf-8')).get('nur_basis_laden') else '')" "$datei")"
+  if [ -n "$NUR_BASIS" ] && [ "${CONTAINER%%-*}" != "sales" ]; then
+    echo "  uebersprungen $name (nur Basis-Laden)"
+    continue
+  fi
+
   # Die Argumentliste baut python3 — ein Auftragstext enthaelt Zeilenumbrueche
   # und Anfuehrungszeichen, und in der Shell zusammengesetzt waere er
   # irgendwann falsch zitiert.
