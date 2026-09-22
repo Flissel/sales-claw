@@ -2675,12 +2675,26 @@ zusätzlich direkt an `100.67.177.45:8792` gebunden und wäre ohne Regel am
 Serve-Port vorbei erreichbar. Die Regel wurde am 17.09.2026 so gespeichert
 (vorher stand dort `tcp:443`, also die Oberfläche des bestehenden Ladens).
 
+**Die Adresse muss BUCHSTABENGENAU die sein, unter der Tailscale den
+Menschen führt — gemessen 22.09.2026, und es kostete genau ein Zeichen.**
+Hier stand `ivan.gasparik161@gmail.com` (mit Punkt), während die in der
+Tailscale-Verwaltung freigegebene Identität `ivangasparik161@gmail.com`
+lautet (ohne). Gmail behandelt Punkte im lokalen Teil als bedeutungslos und
+stellt beides zu; **Tailscale vergleicht die Zeichenkette**. Die Regel hätte
+für ihn also nie gegriffen.
+
+Der `tests`-Block fing es nicht, weil Regel **und** Test dieselbe falsche
+Adresse benutzten — ein Test, der sich selbst bestätigt. Beim Speichern war
+der Mensch zudem noch gar kein Nutzer des Tailnets, es gab also nichts, wogegen
+Tailscale hätte prüfen können. **Deshalb: die Adresse aus der Nutzerliste der
+Verwaltung kopieren, nicht aus einer Nachricht abtippen.**
+
 **Die Zugriffsregel in der Tailscale-Verwaltung umstellen** — der Grant für
 den neuen Menschen wechselt von `tcp:443` auf den neuen Port, er kommt nicht
 zusätzlich dazu:
 
 ```json
-{ "src": ["ivan.gasparik161@gmail.com"], "dst": ["vibemind-offload-1"], "ip": ["tcp:8445"] }
+{ "src": ["ivangasparik161@gmail.com"], "dst": ["vibemind-offload-1"], "ip": ["tcp:8445"] }
 ```
 
 Und der `tests`-Block, der **vor** dem Speichern geprüft wird — das Speichern
@@ -2689,7 +2703,7 @@ Prüfung läuft also, bevor irgendjemand sie umgehen kann:
 
 ```json
 "tests": [
-  { "src": "ivan.gasparik161@gmail.com",
+  { "src": "ivangasparik161@gmail.com",
     "accept": ["100.67.177.45:8445"],
     "deny":   ["100.67.177.45:443", "100.67.177.45:8444",
                "100.67.177.45:8792", "100.67.177.45:22",
