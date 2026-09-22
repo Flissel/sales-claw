@@ -1,0 +1,10 @@
+[Unit]
+Description=sales-claw: Admin-Auftraege (Laden anlegen) alle 20 Sekunden
+
+[Timer]
+OnUnitActiveSec=20s
+OnBootSec=20s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

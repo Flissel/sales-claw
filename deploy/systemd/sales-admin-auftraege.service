@@ -1,0 +1,7 @@
+[Unit]
+Description=sales-claw: Admin-Auftraege aus sales.admin_auftraege ausfuehren
+
+[Service]
+Type=oneshot
+User=debian
+ExecStart=/usr/bin/bash /home/debian/sales-claw/deploy/admin-auftrag-ausfuehren.sh
