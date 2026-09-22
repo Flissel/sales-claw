@@ -2998,7 +2998,7 @@ Ergebnis feststeht. Das geschieht ausschließlich per `<meta http-equiv="refresh
 ohne JavaScript. **Mit Erfolg** erscheint:
 
 ```
-Einladung verschickt. Die Zugriffsregel fuer den neuen Menschen bleibt
+Einladung verschickt. Die Zugriffsregel für den neuen Menschen bleibt
 weiterhin Handarbeit, siehe Runbook Abschnitt 6.
 ```
 
@@ -3006,7 +3006,7 @@ Falls Tailscales Antwort einen Link enthielt (typischerweise bei erfolgreichem
 Versand), steht er direkt nach „Einladung verschickt." eingefügt:
 
 ```
-Einladung verschickt. Link zum Weitergeben: <link> Die Zugriffsregel fuer
+Einladung verschickt. Link zum Weitergeben: <link> Die Zugriffsregel für
 den neuen Menschen bleibt weiterhin Handarbeit, siehe Runbook Abschnitt 6.
 ```
 

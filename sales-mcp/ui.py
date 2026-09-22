@@ -4038,7 +4038,7 @@ def _admin_auftrag_ergebnis_text(zeile) -> str:
             return f"FEHLER — {_e(zeile['fehler'] or 'kein Grund vermerkt')}"
         link = info.get("inviteUrl")
         zusatz = f" Link zum Weitergeben: {_e(link)}" if link else ""
-        return (f"Einladung verschickt.{zusatz} Die Zugriffsregel fuer den "
+        return (f"Einladung verschickt.{zusatz} Die Zugriffsregel für den "
                  f"neuen Menschen bleibt weiterhin Handarbeit, siehe Runbook "
                  f"Abschnitt 6.")
     if zeile["status"] == "fehler":
