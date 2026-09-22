@@ -2954,6 +2954,92 @@ sind — das ist ein Schutzmechanismus: wer die Fehlerbehandlung nicht versteht 
 `Laden xyz` zweimal hintereinander startet, bekommt eine Fehlermeldung, statt die
 Datenbank aus Versehen zu verwirren.
 
+### 8. Team-Mitglied per Tailscale einladen
+
+**Neu seit 22.09.2026:** Ein Team-Mitglied zum Tailnet hinzufügen — durch einen
+Knopf in der Oberfläche des Basis-Ladens. Die Architektur lädt eine Zeile in
+`sales.admin_auftraege` ein; ein systemd-Timer auf der VM liest sie ab und ruft
+die Tailscale-API auf.
+
+#### Voraussetzung
+
+Auf der VM muss die Datei `/home/debian/sales-claw/tailscale-admin.env` existieren
+und folgende Einträge tragen:
+
+```bash
+TAILSCALE_API_KEY=<personengebundener API-Schluessel>
+TAILSCALE_TAILNET=<Tailnet-Name>
+```
+
+Die Datei muss aus `tailscale-admin.env.example` kopiert und auf `chmod 600`
+gesetzt werden. Der `TAILSCALE_API_KEY` muss ein persönliches Token eines
+Owner/Admin/IT-Admin des Tailnet sein (Tailscale erzwingt das für die API; ein
+OAuth-Client-Token reicht nicht).
+
+Nach dem Erstellen der Datei den Timer neustarten — `EnvironmentFile=` wird von
+systemd nur beim (Neu-)Start des Dienstes gelesen:
+
+```bash
+sudo systemctl daemon-reload && sudo systemctl restart sales-admin-auftraege.timer
+systemctl list-timers sales-admin-auftraege.timer
+# erwartet: ein Eintrag mit NEXT mindestens 1 Sekunde, hoechstens 20 Sekunden entfernt
+```
+
+#### Weg
+
+1. Im Basis-Laden anmelden als Rolle `freigeben`.
+2. Menü → **Admin** → **Team-Mitglied einladen** (nur für diese Rolle im
+   Basis-Laden sichtbar).
+3. Die E-Mail-Adresse des neuen Menschen eintragen.
+4. **Einladen** klicken.
+
+Die Seite friert nicht ein — sie lädt sich automatisch alle 5 Sekunden neu, bis ein
+Ergebnis feststeht. Das geschieht ausschließlich per `<meta http-equiv="refresh">`,
+ohne JavaScript. **Mit Erfolg** erscheint:
+
+```
+Einladung verschickt.
+```
+
+Falls Tailscales Antwort einen Link enthielt (typischerweise bei erfolgreichem
+Versand), steht darunter zusätzlich:
+
+```
+Link zum Weitergeben: <link>
+```
+
+Dieser Link ist nützlich, falls die E-Mail selbst nicht ankommt — der Mensch kann
+den Link direkt folgen, statt auf die Einladungs-E-Mail zu warten.
+
+**Mit Fehler** zeigt die Zeile Tailscales eigene Fehlermeldung, zum Beispiel:
+
+```
+FEHLER — user already invited
+```
+
+oder
+
+```
+FEHLER — invalid API key
+```
+
+oder — bei zu vielen Anfragen in kurzer Zeit:
+
+```
+FEHLER — rate limited
+```
+
+#### Nach einem erfolgreichen Lauf von Hand
+
+Die Tailscale-Einladung selbst wurde verschickt. **Was der Betreiber noch tun
+muss** (Spec §4, ausdrücklich nicht automatisiert):
+
+1. **Zugriffsregel einrichten** für den neuen Menschen in der
+   Tailscale-Verwaltung — dieselbe Stelle wie Abschnitt 6, den neuen Benutzer
+   suchen (erst nach Annahme der Einladung sichtbar), dessen Adresse kopieren,
+   nicht abtippen, und unter `tcp:<port>` freigeben (wobei `<port>` der
+   Serve-Port des Ladens ist, in den der Mensch arbeiten soll).
+
 ---
 
 Betrieb auf dem MiniPC (nach dem Cutover): siehe [04_BETRIEB_MINIPC.md](04_BETRIEB_MINIPC.md),
