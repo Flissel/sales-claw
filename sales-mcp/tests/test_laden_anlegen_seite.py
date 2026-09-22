@@ -155,6 +155,22 @@ def test_seite_zeigt_ergebnis_mit_echtem_json_ohne_absturz():
     assert "Probe-XYZ123" in r.text
 
 
+def test_seite_zeigt_ergebnis_bei_fehler_mit_echtem_json_ohne_absturz():
+    """Ergaenzt die K1-Pruefung oben: der urspruengliche Befund war ein
+    TypeError auf JEDEM nicht-leeren `ergebnis`, nicht nur bei 'erfolg' —
+    fehler_melden() in deploy/admin-auftrag-ausfuehren.sh schreibt bei
+    einem Abbruch ebenfalls ein ergebnis::jsonb (die ERLEDIGT-Liste)."""
+    server._q(
+        "insert into admin_auftraege "
+        "(art, name, angefordert_von, status, ergebnis, fehler, erledigt_am) "
+        "values ('laden_anlegen', 'lena', 'test', 'fehler', "
+        "%s::jsonb, 'Abbruch nach Schritt umgebungsdatei (Exit 1)', now())",
+        ('{"erledigt": ["aufnahme", "ports", "umgebungsdatei"]}',))
+    r = _get("/team/laden-anlegen")
+    assert r.status_code == 200
+    assert "aufnahme, ports, umgebungsdatei" in r.text
+
+
 @pytest.mark.parametrize("reservierter_name", ["sales", "test"])
 def test_reservierte_namen_werden_abgewiesen(reservierter_name):
     r = _post("/team/laden-anlegen/anfordern",

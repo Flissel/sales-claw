@@ -171,8 +171,15 @@ ERLEDIGT+=("umgebungsdatei")
 ENVDATEI="deploy/laeden/$LADEN_NAME.env"
 DB_PW="$(sed -n "s#.*sales_app_$LADEN_NAME:\\([^@]*\\)@.*#\\1#p" "$ENVDATEI")"
 if [ -z "$DB_PW" ]; then
+  # `false` statt `exit 1`: AUFTRAG_ID ist an dieser Stelle bereits gesetzt
+  # (Schritt 1 lief), also loest `false` den ERR-Trap aus und schreibt
+  # sofort status='fehler' mit dem echten Grund und der bisherigen
+  # ERLEDIGT-Liste. `exit 1` würde den Trap umgehen — der Auftrag bliebe
+  # bis zu 10 Minuten lang faelschlich als "wird gerade angelegt" sichtbar,
+  # bis Schritt 0 ihn beim naechsten Durchlauf mit einem generischen Grund
+  # zurueckstuft (nachgemessen in der Schlusspruefung der Schlusspruefung).
   echo "FEHLER: Datenbank-Passwort konnte nicht aus $ENVDATEI gelesen werden." >&2
-  exit 1
+  false
 fi
 
 # --- 4. db/laden-anlegen.sql — Schema, Tabellen, Rolle, Rechte ------------
