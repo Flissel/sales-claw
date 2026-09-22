@@ -699,16 +699,19 @@ def test_kontakt_aktualisieren_signatur_ueberlebt_den_dekorator():
     assert list(parameter) == ["lead_id", "feld", "wert"]
 
 
-def test_vierundachtzig_werkzeuge_registriert():
+def test_fuenfundachtzig_werkzeuge_registriert():
     namen = {fn.__name__ for fn in server.WERKZEUGE}
     # 13.09.2026: termin_konflikte dazugekommen (Aufgabe 4,
     # tests/test_kollision.py) — reine Auskunft VOR einem Terminvorschlag,
     # 82 -> 83.
     # 17.09.2026: kontakt_aehnlich (tests/test_kontakt_aehnlich.py) — findet
     # Schreibvarianten, die `kontakt_suchen` mit `ilike` verfehlt, 83 -> 84.
-    assert len(namen) == 84
+    # 22.09.2026: gespraeche_suchen (tests/test_gespraeche_suchen.py) —
+    # deutsche Volltextsuche ueber den Freitext der Aktivitaeten, 84 -> 85.
+    assert len(namen) == 85
     assert "termin_konflikte" in namen
     assert "kontakt_aehnlich" in namen
+    assert "gespraeche_suchen" in namen
     # Telegram als vierter Versandkanal (12.09.2026, tests/test_telegram.py):
     # die chat_id hinterlegen bzw. entziehen. ERREICHBARKEIT, nicht
     # Einwilligung — das UWG-Tor bleibt davon unberuehrt.

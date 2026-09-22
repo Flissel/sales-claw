@@ -287,6 +287,35 @@ begin
     execute format('create index if not exists leads_name_trgm_idx '
                    'on %I.leads using gin (name extensions.gin_trgm_ops)', s);
     execute format('create index if not exists activities_lead_idx on %I.activities (lead_id, created_at desc)', s);
+
+    -- Volltextsuche ueber den Gespraechsverlauf (22.09.2026), deutsch.
+    --
+    -- NUR DREI SCHLUESSEL, und das ist Absicht: gemessen am 17.09. tragen
+    -- `text` (3005), `inhalt` (888) und `begruendung` (141) Freitext,
+    -- waehrend `message_id` (6155!), `draft_id` und `lead_id` Kennungen
+    -- sind. Kennungen in einem Volltextindex verwaessern jede Frage - sie
+    -- erzeugen Treffer, die nur zufaellig Zeichen teilen.
+    --
+    -- Erzeugte Spalte statt Index-Ausdruck, damit `ts_headline` und
+    -- `ts_rank` denselben Text sehen wie der Index - ein Ausdrucksindex
+    -- waere bei jeder Abfrage neu zu tippen und irgendwann anders.
+    --
+    -- ZWEI GEMESSENE GRENZEN, die der Werkzeug-Hinweis wiederholt:
+    --   * Der deutsche Stemmer trennt Substantiv und Verb. „Nummer
+    --     gewechselt" findet den Satz „Falscher Ivan hat Nummer WECHSEL
+    --     gehabt" NICHT (0 Treffer, gemessen 17.09.2026).
+    --   * Verneinung wird ignoriert: „kein Interesse" liefert lauter
+    --     Interessenten.
+    -- Das ist keine Schwaeche dieser Umsetzung, sondern wie Volltextsuche
+    -- arbeitet - und deshalb steht es dort, wo jemand es liest.
+    execute format($t$alter table %I.activities
+        add column if not exists suchtext tsvector
+        generated always as (to_tsvector('german'::regconfig,
+            coalesce(payload->>'text', '') || ' ' ||
+            coalesce(payload->>'inhalt', '') || ' ' ||
+            coalesce(payload->>'begruendung', ''))) stored$t$, s);
+    execute format('create index if not exists activities_suchtext_idx '
+                   'on %I.activities using gin (suchtext)', s);
     execute format('create index if not exists drafts_status_idx on %I.drafts (status, created_at desc)', s);
   end loop;
 end $$;

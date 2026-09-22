@@ -224,6 +224,74 @@ def kontakt_aehnlich(text: str, schwelle: float = 0.45) -> str:
             for z in zeilen]})
 
 
+@_gesichert
+def gespraeche_suchen(frage: str, grenze: int = 10) -> str:
+    """Im GESPRAECHSVERLAUF suchen - welche Unterhaltung erwaehnte etwas.
+
+    Ergaenzt `kontakt_suchen` (Stammdaten) und `kontakt_aehnlich`
+    (Schreibweisen) um das, was beide nicht koennen: den Freitext der
+    Aktivitaeten. Gemessen am 17.09.2026 lagen dort 6397 Texte, und die
+    einzige Art, sie zu durchsuchen, war ein geratenes `ILIKE`-Muster.
+
+    Durchsucht werden GENAU DREI Schluessel - `text`, `inhalt`,
+    `begruendung`. Kennungen wie `message_id` (6155 Stueck!) oder
+    `draft_id` bleiben draussen: in einem Volltextindex erzeugen sie
+    Treffer, die nur zufaellig Zeichen teilen.
+
+    ZWEI GRENZEN, beide gemessen - wer sie nicht kennt, zieht aus einem
+    leeren Ergebnis den falschen Schluss:
+
+      * DER STEMMER TRENNT SUBSTANTIV UND VERB. Die Suche nach „Nummer
+        gewechselt" findet den Satz „Falscher Ivan hat Nummer WECHSEL
+        gehabt" NICHT - null Treffer, am 17.09.2026 am echten Bestand
+        gemessen. Wer ein Ereignis sucht, probiert beide Wortformen.
+      * VERNEINUNG WIRD IGNORIERT. „kein Interesse" liefert lauter
+        Interessenten; das „kein" verschwindet als Stoppwort.
+
+    Ein leeres Ergebnis heisst deshalb „diese Wortformen kommen nicht
+    vor", nicht „das Ereignis gab es nicht".
+
+    Mehrere Woerter werden UND-verknuepft (`websearch_to_tsquery`);
+    Anfuehrungszeichen suchen eine Wortfolge, `OR` trennt Alternativen.
+    """
+    frage = (frage or "").strip()
+    if not frage:
+        return _json({"fehler": "Keine Frage angegeben."})
+    try:
+        grenze = int(grenze)
+    except (TypeError, ValueError):
+        return _json({"fehler": "grenze muss eine ganze Zahl sein."})
+    grenze = min(max(grenze, 1), 50)
+
+    zeilen = _q(
+        "select a.id, a.lead_id, a.type, a.created_at, l.name, "
+        "       round(ts_rank(a.suchtext, f.q)::numeric, 4) as rang, "
+        "       ts_headline('german'::regconfig, "
+        "                   coalesce(a.payload->>'text', "
+        "                            a.payload->>'inhalt', "
+        "                            a.payload->>'begruendung', ''), f.q, "
+        "                   'MaxWords=28, MinWords=10, ShortWord=2, "
+        "                    StartSel=<<, StopSel=>>') as ausschnitt "
+        "  from activities a "
+        "  join leads l on l.id = a.lead_id, "
+        "       websearch_to_tsquery('german'::regconfig, %s) as f(q) "
+        " where a.suchtext @@ f.q "
+        " order by rang desc, a.created_at desc limit %s",
+        (frage, grenze))
+    return _json({
+        "frage": frage,
+        "hinweis": ("Volltextsuche: der deutsche Stemmer trennt Substantiv "
+                    "und Verb (»gewechselt« findet »Wechsel« nicht), und "
+                    "Verneinung wird ignoriert (»kein Interesse« liefert "
+                    "Interessenten). Leer heisst »diese Wortformen kommen "
+                    "nicht vor«, nicht »gab es nicht«."),
+        "treffer": [
+            {"lead_id": z["lead_id"], "name": z["name"], "art": z["type"],
+             "wann": z["created_at"].isoformat(),
+             "rang": float(z["rang"]), "ausschnitt": z["ausschnitt"]}
+            for z in zeilen]})
+
+
 # Demo-Befund B1 (docs/06_DEMO_ABNAHME.md): der Agent legte "Lisa Probekunde"
 # im Durchspiel doppelt an, entgegen der Regel "erst suchen, dann anlegen"
 # (Modellvarianz). Die Kante gehoert deshalb in die Werkzeugschicht, nicht ins
@@ -7378,7 +7446,8 @@ def versandauftrag_ablehnen(auftrag_id: str, grund: str) -> str:
                  else {"fehler": f"Kein offener Versandauftrag {auftrag_id}."})
 
 
-WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, kontakt_anlegen,
+WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,
+             kontakt_anlegen,
              kontakt_aktualisieren,
              wissensbasis_fragen, recherche_an_marketing,
              uebergaben_pruefen, uebergabe_annehmen, uebergabe_ablehnen,
