@@ -371,6 +371,42 @@ begin
         erledigt_am timestamptz)$t$, s);
     execute format('create index if not exists admin_auftraege_offen_idx '
                    'on %I.admin_auftraege (status, erstellt_am)', s);
+    -- Tailscale-Einladungen (Spec 2026-09-22-tailscale-einladung-design,
+    -- §2.1): zweite Auftragsart in derselben Tabelle statt einer zweiten
+    -- Tabelle/eines zweiten Zeitgebers — `art` ist genau als
+    -- Unterscheidungsmerkmal angelegt. `add column if not exists` und
+    -- `drop constraint if exists` + `add constraint`, weil die Tabelle auf
+    -- beiden Schemata laengst existiert (dasselbe Muster wie beim
+    -- drafts_channel_check/benutzer_rolle_check weiter oben in dieser
+    -- Datei) — ein CHECK laesst sich nicht nachruesten, nur ersetzen.
+    --
+    -- Beide neuen CHECKs nennen `is not null` ausdruecklich: ein CHECK der
+    -- Form "art <> 'x' or email ~ muster" LAESST eine NULL-email fuer
+    -- art='x' durch, weil "NULL ~ muster" in SQL weder wahr noch falsch
+    -- ist, sondern NULL — und ein CHECK gilt bei einem NULL-Ergebnis als
+    -- NICHT verletzt. Ohne "is not null" waere die Pflichtangabe wirkungslos.
+    execute format('alter table %I.admin_auftraege '
+                   'add column if not exists email text', s);
+    execute format('alter table %I.admin_auftraege '
+                   'alter column name drop not null', s);
+    execute format('alter table %I.admin_auftraege '
+                   'drop constraint if exists admin_auftraege_art_check', s);
+    execute format($chk$alter table %I.admin_auftraege add constraint
+      admin_auftraege_art_check
+      check (art in ('laden_anlegen', 'tailscale_einladen'))$chk$, s);
+    execute format('alter table %I.admin_auftraege '
+                   'drop constraint if exists admin_auftraege_name_check', s);
+    execute format($chk$alter table %I.admin_auftraege add constraint
+      admin_auftraege_name_check
+      check (art <> 'laden_anlegen'
+             or (name is not null and name ~ '^[a-z][a-z0-9_]{0,30}$'))$chk$, s);
+    execute format('alter table %I.admin_auftraege '
+                   'drop constraint if exists admin_auftraege_email_check', s);
+    execute format($chk$alter table %I.admin_auftraege add constraint
+      admin_auftraege_email_check
+      check (art <> 'tailscale_einladen'
+             or (email is not null
+                 and email ~ '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$'))$chk$, s);
   end loop;
 end $$;
 
