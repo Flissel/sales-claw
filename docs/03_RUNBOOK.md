@@ -2609,6 +2609,106 @@ docker compose --env-file deploy/laeden/ivan.env \
   -f docker-compose.openwa.yml up -d --build openwa
 ```
 
+### 4b. Den Agenten einrichten — drei Geheimnisse und zwei Saaten
+
+**Warum dieser Schritt existiert (gemessen 22.09.2026).** Beim ersten Versuch,
+Ivans Dienste zu starten, fehlten **sechs** Dinge — und keines davon stand in
+einer Anleitung. `ivan-claw` lief in eine Neustartschleife (78 Versuche),
+`ivan-inbox` in eine zweite. Jedes einzelne hätte den dritten Laden genauso
+aufgehalten.
+
+Seither erzeugt `deploy/laden-anlegen.sh` die Geheimnisse mit, und zwei Skripte
+legen den Rest. Dieser Abschnitt erklärt, **woher jeder Wert kommt** — denn die
+häufigste Frage war nicht „wie setze ich das", sondern „woher bekomme ich das".
+
+#### Die drei Geheimnisse — und woher sie wirklich kommen
+
+| Wert | Herkunft | Wer braucht ihn |
+|---|---|---|
+| `OPENROUTER_API_KEY` | **geteilt.** Derselbe wie im ersten Laden, aus der Haupt-`.env`. `laden-anlegen.sh` holt ihn von dort. | `<laden>-claw` |
+| `INBOX_WEBHOOK_SECRET` | **erfunden.** Niemand gibt ihn heraus — er wird gewürfelt. `laden-anlegen.sh` erzeugt 48 Zeichen, **je Laden ein eigener**. | `<laden>-inbox` **und** openwa |
+| `gateway.auth.token` | **erfunden.** `deploy/gateway-saat.sh` würfelt ihn beim Säen und legt ihn ins Volumen. Steht nie im Repository. | `<laden>-claw` |
+
+**`INBOX_WEBHOOK_SECRET` ist das einzige, das ZWEI Seiten kennen müssen.**
+`<laden>-inbox` prüft damit die HMAC-Signatur jeder eingehenden Anfrage; openwa
+muss dasselbe Geheimnis beim Registrieren des Webhooks mitbekommen (Schritt 4d).
+Deshalb reicht es nicht, es in die Umgebungsdatei zu schreiben — der zweite Teil
+ist ein eigener Schritt, und er kann erst **nach** der WhatsApp-Kopplung laufen.
+
+**Der Modell-Schlüssel wird bewusst geteilt** (Betreiber-Entscheid 22.09.2026):
+alle Läden derselben Maschine nutzen denselben. Wer das je trennen will, ändert
+eine Zeile in `laden-anlegen.sh`.
+
+#### 4c. Agent und Routinen säen — vor der Kopplung
+
+```bash
+# Der Agent: Konfiguration ins Volumen, mit SEINER Nummer in der Erlaubnisliste
+bash deploy/gateway-saat.sh <laden>-claw +49...            # Probelauf
+bash deploy/gateway-saat.sh <laden>-claw +49... --wirklich
+
+docker start <laden>-claw
+docker logs --tail 5 <laden>-claw      # erwartet: "[gateway] ready"
+
+# Die Routineläufe
+bash deploy/cron-saat.sh <laden>-claw +49... --wirklich
+docker exec <laden>-claw openclaw cron list
+```
+
+**Die Nummer ist die des NEUEN Menschen.** In `channels.whatsapp.allowFrom` der
+Saat stehen die Nummern des ersten Betreibers, und `dmPolicy` ist `allowlist` —
+roh kopiert könnte der neue Mensch seinen eigenen Agenten nicht ansprechen, der
+alte schon. Deshalb ist die Nummernliste Pflichtargument.
+
+**Erwartung bei `cron list`:** die Spalte `Declaration` ist **gefüllt**
+(`sales-claw/<name>`), nicht leer. Ein Strich heißt: der Job wurde von Hand
+angelegt und existiert in keiner Datei — genau der Zustand, aus dem
+`deploy/cron/` entstanden ist.
+
+**Erwartung bei der Saat:** drei der vier Jobs melden per WhatsApp und werden
+mit `SPAETER — der Kanal fehlt noch: whatsapp` übersprungen. Das ist richtig,
+nicht kaputt: das Kanal-Plugin lädt erst mit der Kopplung. Nach Schritt 4d
+denselben Befehl noch einmal — er ist idempotent (`--declaration-key`), ein
+zweiter Lauf legt nichts doppelt an.
+
+#### 4d. Nach der WhatsApp-Kopplung: den Webhook anbinden
+
+Erst jetzt gibt es `OPENWA_API_KEY` und `OPENWA_SESSION_ID`; beide entstehen mit
+der Kopplung und gehören in die Umgebungsdatei des Ladens.
+
+```bash
+bash deploy/webhook-anbinden.sh <laden>              # prüft und zeigt
+bash deploy/webhook-anbinden.sh <laden> --wirklich
+docker logs --tail 20 <laden>-inbox                  # eine eingehende Nachricht muss auftauchen
+```
+
+Das Skript prüft **vor** dem Registrieren, ob die SSRF-Ausnahme des Containers
+auf `<laden>-inbox` steht. Tut sie das nicht, bricht es ab — und das ist der
+wichtigste Teil: bis zum 22.09.2026 stand dort fest `sales-inbox`, auch in
+Ivans Container. Der einzige Host, den **seine** WhatsApp-Brücke erreichen
+durfte, war **Felix'** Posteingang; ein dorthin eingetragener Webhook hätte
+seine Kundennachrichten in die fremde Kundenhistorie geschrieben.
+
+#### Was auch weiterhin Handarbeit bleibt — und warum
+
+**Die WhatsApp-Kopplung.** Sie braucht ein Telefon am QR-Code. Kein Skript kann
+das, und keines sollte es können.
+
+**`mail`, `telegram`, `linkedin`, `stt`.** Sie brauchen ein Postfach, einen
+Bot-Token, einen LinkedIn-Zugang — Zugangsdaten, die es für einen neuen Menschen
+erst geben muss. Siehe Schritt 4.
+
+**Der Sammelkontakt.** `<laden>-inbox` verweigert ohne `INBOX_UNBEKANNT_LEAD_ID`
+den Start, zu Recht: eine Nachricht von einer unbekannten Nummer hätte sonst
+keinen Platz und ginge verloren. Im Schema des Ladens anlegen und die Kennung in
+die Umgebungsdatei eintragen:
+
+```sql
+insert into sales_<laden>.leads (name, source, status)
+values ('Unbekannte Eingaenge', 'whatsapp', 'new') returning id;
+```
+
+---
+
 ### 5. Nachmessen
 
 **Laufende Container** (zehn, sobald alles oben gestartet ist):
