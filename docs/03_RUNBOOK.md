@@ -2745,6 +2745,82 @@ und 3 oben) ist keine Prüfung, die von der VM aus laufen kann — sie braucht
 ein Gerät außerhalb, für das die Regel gilt, und bleibt deshalb eine einmalige
 Messung von Hand nach jeder Änderung der Zugriffsregel.
 
+### 7. Laden anlegen aus der Oberfläche
+
+**Neu seit 22.09.2026:** Einen neuen Laden ohne SSH-Zugang zur VM anlegen — durch einen
+Knopf in der Oberfläche des Basis-Ladens. Die Architektur lädt eine Zeile in
+`sales.admin_auftraege` ein; ein systemd-Timer auf der VM liest sie ab und ruft
+bestehende, geprüfte Skripte auf.
+
+#### Voraussetzung
+
+Der systemd-Timer muss auf der VM laufen:
+
+```bash
+systemctl list-timers sales-admin-auftraege.timer
+# erwartet: ein Eintrag mit NEXT mindestens 1 Sekunde, hoechstens 20 Sekunden entfernt
+```
+
+#### Weg
+
+1. Im Basis-Laden anmelden als Rolle `freigeben`.
+2. Menü → **Admin** → **Laden anlegen** (nur für diese Rolle im Basis-Laden
+   sichtbar).
+3. Den Namen des neuen Ladens eintragen (Kleinbuchstaben, Ziffern, Unterstrich,
+   höchstens 31 Zeichen, nicht leer).
+4. **Anlegen** klicken.
+
+Die Seite friert nicht ein — sie lädt sich automatisch alle 5 Sekunden neu, bis ein
+Ergebnis feststeht. Das geschieht ausschließlich per `<meta http-equiv="refresh">`,
+ohne JavaScript. **Mit Erfolg** erscheint ein Ergebnis wie:
+
+```
+Wegwerf-Passwort: <random>
+Serve-Port: <port>
+Als nächstes von Hand: tailscale serve --https <port> http://127.0.0.1:<port> 
+einrichten, danach die Zugriffsregel für den neuen Menschen und die vier Kanaele 
+(Postfach, Telegram, LinkedIn, WhatsApp).
+```
+
+**Mit Fehler** nennt das Ergebnis, wie weit es kam — zum Beispiel
+`erledigt: aufnahme, ports, umgebungsdatei` — und woran es gescheitert ist.
+
+#### Nach einem erfolgreichen Lauf von Hand
+
+1. **Serve-Port konfigurieren** (auf der VM als root):
+   ```bash
+   sudo tailscale serve --bg --https <port> http://127.0.0.1:<PORT_UI>
+   ```
+   Den `<port>` und `<PORT_UI>` aus dem Ergebnis der Oberfläche übernehmen (exakt wie
+   Abschnitt 6, nur mit den neuen Werten).
+
+2. **Zugriffsregel einrichten** für den neuen Menschen in der Tailscale-Verwaltung
+   (wie Abschnitt 6, die Adresse des neuen Nutzers kopieren, nicht abtippen, und unter
+   `tcp:<port>` freigeben).
+
+3. **Vier Kanäle einrichten** — **Postfach, Telegram, LinkedIn, WhatsApp** — siehe
+   `docs/11_INBETRIEBNAHME.md`. Das neue Passwort nutzen.
+
+#### Nach einem fehlgeschlagenen Lauf
+
+Das Ergebnis zeigt, wo der Prozess stecken blieb — z. B. `erledigt: aufnahme,
+ports` heißt, dass die Umgebungsdatei fehlgeschlagen hat. **Die halb angelegten
+Reste müssen von Hand aufgeräumt werden** — es gibt bewusst keinen automatischen
+Rückbau. Das liegt daran, dass die Fehlerursache unterschiedlich greifen kann
+(fehlender Port, defekte Datenbank, zerstörte Umgebungsdatei, …) und ein
+generischer Rückbau hier mehr kaputt macht, als er repariert. Der Ablauf:
+
+1. **Mit dem Laden nicht arbeiten** — er ist vermutlich nur halb hochgefahren.
+2. **Fehlgeschlagene Schritte nachsehen:** welche `<schritte>` im Ergebnis unter
+   `erledigt` stehen, und welche hätten folgen sollen.
+3. **Entsprechende Aufräum-Skripte von Hand aufrufen** (aus `db/` oder `deploy/`),
+   oder das betroffene Schema/die Rolle per Hand fallenlassen.
+
+Ein zweiter Versuch mit demselben Namen schlägt deshalb fehl, bis die Reste weg
+sind — das ist ein Schutzmechanismus: wer die Fehlerbehandlung nicht versteht und
+`Laden xyz` zweimal hintereinander startet, bekommt eine Fehlermeldung, statt die
+Datenbank aus Versehen zu verwirren.
+
 ---
 
 Betrieb auf dem MiniPC (nach dem Cutover): siehe [04_BETRIEB_MINIPC.md](04_BETRIEB_MINIPC.md),
