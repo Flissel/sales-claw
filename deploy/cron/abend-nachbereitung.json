@@ -1,0 +1,23 @@
+{
+  "agentId": "main",
+  "delivery": {
+    "channel": "whatsapp",
+    "mode": "announce",
+    "to": "${MELDE_AN}"
+  },
+  "description": "Taeglich 22:00 Europe/Berlin — NACHBEREITUNG: was heute geschah und was offen blieb. Gegenstueck zur Vorbereitung um 08:00 (Betreiber-Entscheid 22.09.2026).",
+  "enabled": true,
+  "lastDelivered": true,
+  "name": "abend-nachbereitung",
+  "payload": {
+    "kind": "agentTurn",
+    "message": "NACHBEREITUNG des Tages, 22:00.\n\nRufe digest() auf und berichte, was HEUTE geschehen ist: eingegangene Kundenantworten, gehaltene und verpasste Termine, Entwuerfe die noch auf Freigabe warten, und Wiedervorlagen die heute faellig waren und es noch sind.\n\nNenne ausdruecklich, was MORGEN ansteht, damit die Vorbereitung um 08:00 nicht das Erste ist, was davon erzaehlt.\n\nSchreibe KEINE Entwuerfe — dieser Lauf berichtet nur. War der Tag ereignislos, sage das in einem Satz; eine taegliche Meldung, dass nichts los war, macht den Kanal unbrauchbar, eine ausgelassene Meldung an einem ereignisreichen Tag aber auch."
+  },
+  "schedule": {
+    "expr": "0 22 * * *",
+    "kind": "cron",
+    "tz": "Europe/Berlin"
+  },
+  "sessionTarget": "isolated",
+  "wakeMode": "now"
+}

@@ -5,8 +5,8 @@
     "mode": "announce",
     "to": "${MELDE_AN}"
   },
-  "description": "Prueft alle 15 Minuten das Betreiber-Postfach auf Kalenderantworten (Zusage/Absage/Gegenvorschlag zu Termin-Einladungen) und meldet sofort per WhatsApp, statt auf den 2-Stunden-Lauf zu warten. Bucht NICHTS automatisch — das bleibt Handsache des Betreibers (bindende Regel aus termin_einladen).",
-  "enabled": true,
+  "description": "Abgeschaltet 22.09.2026 (Betreiber): der Tag hat nur noch zwei Laeufe, 08:00 und 22:00. Kalenderantworten fallen damit in die Vorbereitung. Prueft alle 15 Minuten das Betreiber-Postfach auf Kalenderantworten (Zusage/Absage/Gegenvorschlag zu Termin-Einladungen) und meldet sofort per WhatsApp, statt auf den 2-Stunden-Lauf zu warten. Bucht NICHTS automatisch — das bleibt Handsache des Betreibers (bindende Regel aus termin_einladen).",
+  "enabled": false,
   "lastDelivered": true,
   "name": "kalenderantworten-schnellcheck",
   "owner": {

@@ -5,16 +5,16 @@
     "mode": "announce",
     "to": "${MELDE_AN}"
   },
-  "description": "Werktags 08:00 Europe/Berlin: proaktiver Digest (Entwuerfe, faellige Wiedervorlagen, unvollstaendige Analysen) in den Betreiber-Chat (F2, Stufe 4).",
+  "description": "Taeglich 08:00 Europe/Berlin — VORBEREITUNG: was heute ansteht. Betreiber-Entscheid 22.09.2026: der Tag beginnt mit einer Uebersicht und endet mit einer Nachbereitung; dazwischen arbeitet niemand automatisch. Die frueheren Zeiten (10:00 werktags) und die stuendliche Entwurfsschleife sind abgeloest.",
   "enabled": true,
   "lastDelivered": true,
   "name": "morgen-digest",
   "payload": {
     "kind": "agentTurn",
-    "message": "Erstelle den Morgen-Digest: rufe digest() auf und fasse die Antwort als kurze, lesbare Liste zusammen, wie in der AGENTS.md-Digest-Regel beschrieben (faellige Wiedervorlagen ausdruecklich nennen). Halte die Nachricht kompakt."
+    "message": "VORBEREITUNG des Tages, 08:00.\n\nRufe digest() auf und fasse die Antwort als kurze, lesbare Liste zusammen, wie in der AGENTS.md-Digest-Regel beschrieben. Faellige Wiedervorlagen nennst du ausdruecklich, ebenso Termine des heutigen Tages.\n\nWas HEUTE ansteht, gehoert nach oben; was liegengeblieben ist, darunter. Schreibe KEINE Entwuerfe — dieser Lauf berichtet nur. Halte die Nachricht kompakt; ist nichts zu berichten, sage genau das in einem Satz, statt eine leere Liste zu schicken."
   },
   "schedule": {
-    "expr": "0 10 * * 1-5",
+    "expr": "0 8 * * *",
     "kind": "cron",
     "tz": "Europe/Berlin"
   },

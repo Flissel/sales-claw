@@ -4,8 +4,8 @@
     "channel": "last",
     "mode": "none"
   },
-  "description": "Sieht stuendlich nach, wer auf eine Antwort wartet, und entwirft eine. Verschickt nichts.",
-  "enabled": true,
+  "description": "Abgeschaltet 22.09.2026 (Betreiber). Dieser Lauf schrieb die Entwuerfe — alle zwei Stunden, fuer jeden Kontakt mit Entwurfsrecht. Nach der Umstellung der Autonomie-Vorgabe auf `manuell` betraf das noch 12 Kontakte; der Betreiber will stattdessen zwei Berichte am Tag und keine automatischen Entwuerfe. Sieht stuendlich nach, wer auf eine Antwort wartet, und entwirft eine. Verschickt nichts.",
+  "enabled": false,
   "name": "antworten-pruefen",
   "payload": {
     "kind": "agentTurn",
