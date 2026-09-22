@@ -114,6 +114,22 @@ mkdir -p "$WURZEL/deploy/laeden"
 # Zeitfenster, in dem die Datei mit den Standardrechten (world-readable)
 # daliegt. Ergebnis: -rw------- (nur der Eigentuemer liest das Passwort).
 umask 077
+# Zwei Werte, die bis zum 22.09.2026 niemand erzeugte — und deren Fehlen
+# erst auffiel, als der zweite Laden startete:
+#
+#   INBOX_WEBHOOK_SECRET  ohne ihn verweigert <laden>-inbox den Start, zu
+#                         Recht: „ohne Geheimnis koennte jeder im
+#                         Compose-Netz Aktivitaeten in die Kundenhistorie
+#                         schreiben". ivan-inbox haengte in einer
+#                         Neustartschleife, und es stand in keiner Anleitung.
+#   OPENROUTER_API_KEY    `docker compose --env-file` ERSETZT die Haupt-.env;
+#                         ohne Eintrag loest er auf "" auf, das Gateway kommt
+#                         hoch und kann nicht denken (nachgeprueft).
+#
+# Das Geheimnis ist JE LADEN eigen — es schuetzt genau diesen Posteingang.
+WEBHOOK_GEHEIMNIS="$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | od -An -tx1 | tr -d ' 
+')"
+
 cat > "$ENVDATEI" <<EOF
 LADEN_PRAEFIX=$NAME
 LADEN_PROJEKT=$NAME-claw
@@ -149,6 +165,8 @@ UI_BASIS_URL=https://$UI_SERVE_HOST:$PORT_SERVE
 # fuer UI_BASIS_URL berechnet wurde — Ergebnis war ein UI_EXTRA_HOSTS ohne
 # Rechnername (nur "$UI_TAILSCALE_IP," mit leerem zweiten Glied).
 UI_SERVE_HOST=$UI_SERVE_HOST
+INBOX_WEBHOOK_SECRET=$WEBHOOK_GEHEIMNIS
+OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
 EOF
 
 echo "Umgebungsdatei geschrieben: $ENVDATEI (nur fuer den Eigentuemer lesbar)"
