@@ -130,6 +130,24 @@ umask 077
 WEBHOOK_GEHEIMNIS="$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | od -An -tx1 | tr -d ' 
 ')"
 
+# Der Modell-Schluessel wird NICHT erfunden, sondern geteilt: alle Laeden
+# derselben Maschine nutzen denselben (Betreiber-Entscheid 22.09.2026).
+# Er kommt aus der Haupt-.env — NICHT aus der Shell-Umgebung. Genau das
+# stand hier zuerst (`${OPENROUTER_API_KEY:-}` im Heredoc) und schrieb eine
+# LEERE Zeile, weil ihn niemand exportiert hatte: nachgemessen an einem
+# Probelauf, `OPENROUTER_API_KEY -> LEER`. Das Gateway waere hochgekommen
+# und haette nicht denken koennen — derselbe stille Ausfall wie zuvor,
+# nur eine Ebene frueher.
+MODELL_SCHLUESSEL="${OPENROUTER_API_KEY:-}"
+if [ -z "$MODELL_SCHLUESSEL" ] && [ -r "$WURZEL/.env" ]; then
+  MODELL_SCHLUESSEL="$(grep -E '^OPENROUTER_API_KEY=' "$WURZEL/.env" | cut -d= -f2- | tr -d '[:space:]')"
+fi
+if [ -z "$MODELL_SCHLUESSEL" ]; then
+  echo "FEHLER: OPENROUTER_API_KEY steht weder in der Umgebung noch in $WURZEL/.env." >&2
+  echo "        Ohne ihn kommt <laden>-claw hoch und kann nicht denken." >&2
+  exit 1
+fi
+
 cat > "$ENVDATEI" <<EOF
 LADEN_PRAEFIX=$NAME
 LADEN_PROJEKT=$NAME-claw
@@ -166,7 +184,7 @@ UI_BASIS_URL=https://$UI_SERVE_HOST:$PORT_SERVE
 # Rechnername (nur "$UI_TAILSCALE_IP," mit leerem zweiten Glied).
 UI_SERVE_HOST=$UI_SERVE_HOST
 INBOX_WEBHOOK_SECRET=$WEBHOOK_GEHEIMNIS
-OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+OPENROUTER_API_KEY=$MODELL_SCHLUESSEL
 EOF
 
 echo "Umgebungsdatei geschrieben: $ENVDATEI (nur fuer den Eigentuemer lesbar)"
