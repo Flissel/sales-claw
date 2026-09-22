@@ -132,7 +132,8 @@ if zustellung.get("mode") == "announce":
 if d.get("enabled") is False:
     argv += ["--disabled"]
 
-print("\n".join(argv))
+# NUL-getrennt, nicht zeilenweise: die Auftragstexte sind mehrzeilig.
+sys.stdout.write(chr(0).join(argv))
 PYEOF
   then
     rm -f "$ARGSDATEI"
