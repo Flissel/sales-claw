@@ -518,7 +518,20 @@ _KALENDER_ROLLE_PFADE = ("/team/kalender", "/kalender", "/logout", "/login",
 
 
 def _pfad_erlaubt(rolle: str, pfad: str) -> bool:
-    """Darf diese Rolle diesen Pfad sehen? Nur `kalender` ist eingeschraenkt."""
+    """Darf diese Rolle diesen Pfad sehen? `kalender` ist eingeschraenkt,
+    `/team/laden-anlegen` zusaetzlich auf `freigeben` im Basis-Laden — sonst
+    saehe Ivan (selbst mit der Rolle `freigeben` in seinem eigenen Laden)
+    einen Knopf, der auf dem Wirt Container und Datenbankbenutzer erzeugt.
+
+    `sales_test` zaehlt hier als Basis-Laden, nicht als eigener Laden: die
+    Tabelle admin_auftraege existiert genau dort und in `sales`, nirgends
+    sonst (db/provision.sql, hartes array['sales','sales_test'], Aufgabe 1 /
+    test_admin_auftraege_tabelle.py::test_admin_auftraege_existiert_in_...);
+    der Testcontainer verbindet ausschliesslich mit `sales_test` (nie mit
+    `sales`), waere `sales_test` hier NICHT gleichgestellt, saehe der Knopf
+    in JEDEM Testlauf niemand — auch nicht die Rolle `freigeben` selbst."""
+    if pfad == "/team/laden-anlegen" or pfad.startswith("/team/laden-anlegen/"):
+        return rolle == "freigeben" and server.SCHEMA in ("sales", "sales_test")
     if rolle != "kalender":
         return True
     return any(pfad == p or pfad.startswith(p + "/")
@@ -1172,6 +1185,11 @@ _GRUPPEN = (
                  ("/posteingang", "Posteingang"))),
     ("Daten", (("/medien", "Medien"),)),
     ("Monitoring", (("/whatsapp", "WhatsApp"),)),
+    # Existiert im Menue NUR fuer Rolle freigeben im Basis-Laden — nicht
+    # wegen einer Extra-Pruefung hier, sondern weil _seitenleiste JEDEN
+    # Eintrag durch _pfad_erlaubt filtert (s. dort), und die faellt fuer
+    # jede andere Kombination durch.
+    ("Admin", (("/team/laden-anlegen", "Laden anlegen"),)),
 )
 _NAV = tuple(eintrag for _, eintraege in _GRUPPEN for eintrag in eintraege)
 # Welche Seite gerade gebaut wird — gesetzt von _gesichert_seite, gelesen
@@ -3987,6 +4005,79 @@ _ANBIETER_WEGE = (
 )
 
 
+# --- Laden anlegen: nur Rolle freigeben im Basis-Laden (Task 2, Spec §2) ---
+_LADEN_NAMEN_MUSTER = re.compile(r"^[a-z][a-z0-9_]{0,30}$")
+
+
+def _admin_auftrag_ergebnis_text(zeile) -> str:
+    """Menschenlesbare Zusammenfassung eines Auftrags — nie mehr behaupten,
+    als 'status' hergibt (siehe Spec §2.4: der Wirt schreibt 'fehler', nie
+    'erfolg', wenn nur ein Schritt fehlt; hier wird das nur ANGEZEIGT)."""
+    if zeile["status"] == "offen":
+        return "wartet auf den Wirt (bis zu 20 Sekunden)"
+    if zeile["status"] == "laeuft":
+        return "wird gerade angelegt …"
+    info = json.loads(zeile["ergebnis"]) if zeile["ergebnis"] else {}
+    if zeile["status"] == "fehler":
+        erledigt = ", ".join(info.get("erledigt", [])) or "nichts"
+        grund = zeile["fehler"] or "kein Grund vermerkt"
+        return f"FEHLER — erledigt: {_e(erledigt)}. {_e(grund)}"
+    return (f"Wegwerf-Passwort: {_e(info.get('passwort', '?'))} — "
+            f"Serve-Port: {_e(str(info.get('port_serve', '?')))}. "
+            f"{_e(info.get('hinweis', ''))}")
+
+
+@_gesichert_seite
+async def laden_anlegen_seite(request):
+    """Einen neuen Laden anlegen. Erreichbar nur fuer Rolle `freigeben` im
+    Basis-Laden (_pfad_erlaubt) — kein zweiter Check hier noetig, die
+    Middleware hat den Pfad bereits verweigert, wenn wir hier ankommen."""
+    zeilen = server._q(
+        "select name, status, ergebnis, fehler, erstellt_am "
+        "from admin_auftraege where art = 'laden_anlegen' "
+        "order by erstellt_am desc limit 10")
+    wartet = any(z["status"] in ("offen", "laeuft") for z in zeilen)
+    if zeilen:
+        tabelle = _tabelle(
+            ["Name", "Status", "Ergebnis"],
+            [[_e(z["name"]), _e(z["status"]),
+              _admin_auftrag_ergebnis_text(z)] for z in zeilen])
+    else:
+        tabelle = "<p>Noch kein Auftrag.</p>"
+    rumpf = (
+        '<form method="post" action="/team/laden-anlegen/anfordern">'
+        f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+        '<label>Name des neuen Ladens<br>'
+        '<input type="text" name="name" pattern="[a-z][a-z0-9_]{0,30}" '
+        'required placeholder="z. B. lena"></label> '
+        '<button type="submit">Anlegen</button>'
+        '</form>'
+        f'<h2>Bisherige Aufträge</h2>{tabelle}')
+    return _seite("Laden anlegen", rumpf, refresh=5 if wartet else None)
+
+
+@_gesichert_seite
+async def aktion_laden_anlegen(request):
+    form = await request.form()
+    if not _csrf_ok(form):
+        return _fehlerseite(
+            400, "Ungültige Anfrage",
+            "Die Anfrage trägt keine gültige Marke dieser Oberfläche. "
+            "Seite neu laden und erneut versuchen.")
+    name = str(form.get("name") or "").strip()
+    if not _LADEN_NAMEN_MUSTER.fullmatch(name):
+        return _fehlerseite(
+            400, "Ungültiger Name",
+            "Ein Ladenname besteht aus Kleinbuchstaben, Ziffern und "
+            "Unterstrich, beginnt mit einem Buchstaben, höchstens 31 "
+            "Zeichen. Nichts wurde angelegt.")
+    server._q(
+        "insert into admin_auftraege (art, name, angefordert_von) "
+        "values ('laden_anlegen', %s, %s) returning id",
+        (name, _ui_akteur(request)))
+    return RedirectResponse("/team/laden-anlegen", status_code=303)
+
+
 @_gesichert_seite
 async def team_kalender(request):
     """Die Seite, über die ein Kollege seinen Kalender verbindet."""
@@ -5946,6 +6037,9 @@ app = Starlette(routes=[
     Route("/team/kalender/verbinden", aktion_kalender_verbinden,
           methods=["POST"]),
     Route("/team/kalender/entfernen", aktion_kalender_entfernen,
+          methods=["POST"]),
+    Route("/team/laden-anlegen", laden_anlegen_seite),
+    Route("/team/laden-anlegen/anfordern", aktion_laden_anlegen,
           methods=["POST"]),
     Route("/whatsapp", whatsapp),
     Route("/kontakte/wiederherstellen", aktion_kontakt_wiederherstellen,
