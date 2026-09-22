@@ -2998,18 +2998,22 @@ Ergebnis feststeht. Das geschieht ausschließlich per `<meta http-equiv="refresh
 ohne JavaScript. **Mit Erfolg** erscheint:
 
 ```
-Einladung verschickt.
+Einladung verschickt. Die Zugriffsregel fuer den neuen Menschen bleibt
+weiterhin Handarbeit, siehe Runbook Abschnitt 6.
 ```
 
 Falls Tailscales Antwort einen Link enthielt (typischerweise bei erfolgreichem
-Versand), steht darunter zusätzlich:
+Versand), steht er direkt nach „Einladung verschickt." eingefügt:
 
 ```
-Link zum Weitergeben: <link>
+Einladung verschickt. Link zum Weitergeben: <link> Die Zugriffsregel fuer
+den neuen Menschen bleibt weiterhin Handarbeit, siehe Runbook Abschnitt 6.
 ```
 
 Dieser Link ist nützlich, falls die E-Mail selbst nicht ankommt — der Mensch kann
-den Link direkt folgen, statt auf die Einladungs-E-Mail zu warten.
+den Link direkt folgen, statt auf die Einladungs-E-Mail zu warten. Der Hinweis auf
+die Zugriffsregel ist derselbe, der in Abschnitt 6 dieses Runbooks ("Zugang: eigener
+Serve-Port und eigene Zugriffsregel") ausführlich beschrieben ist.
 
 **Mit Fehler** zeigt die Zeile Tailscales eigene Fehlermeldung mit dem Präfix
 „Tailscale: ", zum Beispiel:
