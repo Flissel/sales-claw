@@ -72,6 +72,21 @@ ANGEPASST="$(python3 - "$SAAT" "$NUMMERN" <<'PYEOF'
 import json, sys
 saat = json.load(open(sys.argv[1], encoding="utf-8"))
 nummern = [n.strip() for n in sys.argv[2].split(",") if n.strip()]
+# Kommentar-Schluessel raus. Die Saat im Repository erklaert sich selbst
+# ueber `_kommentar_*`-Eintraege, und das soll sie auch - aber openclaws
+# Schema lehnt sie ab: "Invalid config ... agents.defaults: Invalid input"
+# (gemessen 22.09.2026 beim ersten Start eines frisch gesaeten Gateways).
+# Also bleiben sie im Repository lesbar und verschwinden beim Schreiben.
+def ohne_kommentare(o):
+    if isinstance(o, dict):
+        return {k: ohne_kommentare(v) for k, v in o.items()
+                if not k.startswith("_kommentar")}
+    if isinstance(o, list):
+        return [ohne_kommentare(x) for x in o]
+    return o
+
+saat = ohne_kommentare(saat)
+
 kanaele = saat.setdefault("channels", {}).setdefault("whatsapp", {})
 vorher = kanaele.get("allowFrom", [])
 kanaele["allowFrom"] = nummern
