@@ -1,0 +1,29 @@
+{
+  "agentId": "main",
+  "delivery": {
+    "accountId": "default",
+    "channel": "whatsapp",
+    "mode": "announce",
+    "to": "${MELDE_AN}"
+  },
+  "displayName": "Regensburg-Firmenkontakte anreichern (Erstkontakt-Vorbereitung)",
+  "enabled": true,
+  "lastDelivered": false,
+  "name": "firmenkontakte-anreichern",
+  "owner": {
+    "agentId": "main",
+    "sessionKey": "agent:main:whatsapp:direct:${MELDE_AN}"
+  },
+  "payload": {
+    "kind": "agentTurn",
+    "message": "Routine: Firmendaten fuer RECHERCHE-FIRMENKONTAKTE IN REGENSBURG vervollstaendigen (Ziel: Erstkontakt-Vorbereitung fuer den Betreiber -- Name, Ansprechpartner, Telefon, E-Mail, Website, Adresse).\n\nFORTSCHRITTSDATEI: /home/node/.openclaw/workspace/firmen_anreicherung_progress.json (JSON: {processed: [lead_ids], complete: bool}).\n\nWICHTIGER SCOPE-WECHSEL (05.09.2026, Betreiber-Anweisung): dieser Job kuemmert sich NUR NOCH um Regensburg-Firmenkontakte, nicht mehr um alte Muenchen/Ingolstadt-Recherchen. Kandidatenfindung NICHT mehr per Alphabet-Rateverfahren (kontakt_suchen mit Einzelbuchstaben) -- das war ein Notbehelf und ist beendet.\n\nAblauf:\n1. Lies die Fortschrittsdatei. Wenn complete=true: antworte NUR mit NO_REPLY, sonst weiter.\n2. Kandidatenfindung ausschliesslich ueber die Regensburger Telefonvorwahl: rufe sales__kontakt_suchen('+49941') auf. Das Werkzeug liefert bis zu ~10 Treffer; das ist die vollstaendige bekannte Kandidatenmenge fuer diesen Lauf (kein Alphabet-Scan mehr noetig).\n3. Fuer jeden Treffer, dessen lead_id NICHT in processed steht: sales__profil_lesen(lead_id) aufrufen und pruefen:\n   - Notes muss 'Quelle: Google Maps' bzw. 'Recherche-Lead' enthalten UND die Adresse muss tatsaechlich Regensburg sein (nicht z.B. Muenchen trotz 941 in einer Nummer -- das kommt vor, prüfe die Adresse aus notes). Ist es kein echter Regensburg-Recherche-Firmenkontakt: lead_id trotzdem zu processed hinzufuegen (nichts weiter tun), naechster Kandidat.\n   - Ist firma-Feld schon vorhanden (enthaelt 'stand') UND email im Kontakt schon gesetzt: nur zu processed hinzufuegen, schon erledigt.\n   - Sonst: echter Kandidat.\n4. Fuer jeden echten Kandidaten (max 3 je Lauf tatsaechlich anreichern):\n   a. Falls profil.company noch nicht gesetzt: sales__profil_aktualisieren(lead_id, feld='company', wert=<Kontaktname>).\n   b. sales__firma_anreichern(lead_id) aufrufen (ohne website-Parameter). Bei 'Website blockt' (429) oder 'keine Website hinterlegt': lead_id trotzdem zu processed hinzufuegen, kein Fehler, kein Retry in diesem Lauf.\n   c. Enthalten die gelesenen Seiten eine E-Mail-Adresse (Muster etwas@etwas.tld, keine Bildpfade): sales__kontakt_aktualisieren(lead_id, feld='email', wert=<gefundene Adresse>) aufrufen (info@/kontakt@ bevorzugt vor personalisierten Adressen).\n   d. lead_id in jedem Fall zu processed hinzufuegen.\n5. Fortschrittsdatei aktualisiert zurueckschreiben. Wenn kontakt_suchen('+49941') beim naechsten Durchlauf AUSSCHLIESSLICH bereits in processed stehende lead_ids liefert: complete=true setzen (die Regensburg-Recherche ist dann vollstaendig abgearbeitet).\n6. Melde NUR wenn in diesem Lauf mindestens eine neue E-Mail-Adresse gefunden und gesetzt wurde: kurze Liste (Firma -> E-Mail, Adresse, Telefon falls aus notes bekannt). Sonst NO_REPLY. Bei Fehlern: kurze Fehlermeldung.\n\nWICHTIG: keine WhatsApp-Entwuerfe, keine Kaltansprache (consent: unknown bei allen Recherche-Kontakten) -- nur Kontaktdaten fuer den manuellen Erstkontakt des Betreibers (Anruf/Brief/LinkedIn) vervollstaendigen. firma_anreichern kostet nichts.",
+    "timeoutSeconds": 180
+  },
+  "schedule": {
+    "anchorMs": 1788603574420,
+    "everyMs": 1200000,
+    "kind": "every"
+  },
+  "sessionTarget": "isolated",
+  "wakeMode": "now"
+}

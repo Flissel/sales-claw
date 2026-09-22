@@ -1,0 +1,28 @@
+{
+  "agentId": "main",
+  "delivery": {
+    "channel": "whatsapp",
+    "mode": "announce",
+    "to": "${MELDE_AN}"
+  },
+  "description": "Prueft alle 15 Minuten das Betreiber-Postfach auf Kalenderantworten (Zusage/Absage/Gegenvorschlag zu Termin-Einladungen) und meldet sofort per WhatsApp, statt auf den 2-Stunden-Lauf zu warten. Bucht NICHTS automatisch — das bleibt Handsache des Betreibers (bindende Regel aus termin_einladen).",
+  "enabled": true,
+  "lastDelivered": true,
+  "name": "kalenderantworten-schnellcheck",
+  "owner": {
+    "agentId": "main",
+    "sessionKey": "agent:main:whatsapp:direct:${MELDE_AN}"
+  },
+  "payload": {
+    "kind": "agentTurn",
+    "message": "Schnellcheck Kalenderantworten (alle 15 Minuten). Rufe postfach_lesen(anzahl=15) auf. Suche unter den Mails Eintraege mit kalenderteil=true (ODER Betreff beginnt erkennbar mit einer Antwort auf eine Terminanfrage, z. B. \"Accepted:\", \"Declined:\", \"Zugesagt:\", \"Re: Invitation\").\n\nWICHTIG — NICHT DOPPELT MELDEN: Bevor du irgendetwas meldest, pruefe je Fund per profil_lesen(lead_id) (den passenden Kontakt ueber kontakt_suchen anhand Absenderadresse/Namen finden) die Aktivitaeten des Kontakts: steht dort bereits eine Aktivitaet vom Typ 'termin_bestaetigt' ODER eine Notiz/Aktivitaet, die dieselbe UID/denselben Termin (Datum+Uhrzeit+Thema) als bereits eingetragen ausweist (z.B. Status 'meeting'/'termin' mit passendem Datum) — dann ist dieser Fund bereits erledigt oder bereits gemeldet und wird NICHT erneut gemeldet. Melde einen Fund nur, wenn der Termin bei diesem Kontakt noch NICHT bestaetigt/eingetragen ist.\n\nFuer jeden verbleibenden, noch nicht gemeldeten Fund: postfach_mail_lesen(uid) fuer den Volltext, kurz pruefen ob es sich um eine Zusage, Absage oder einen Gegenvorschlag zu einem Termin handelt (Video-Call-Einladungen aus termin_einladen eingeschlossen). Ist es eine Zusage/Absage zu einem bereits bestehenden Termin (Status 'termin'/'meeting' beim Kontakt mit passendem Datum), gilt sie als erledigt/bereits gemeldet - NICHT erneut melden.\n\nMELDUNG NUR BEI ECHTEM NEUEM FUND: Ist mindestens eine erkennbare, noch nicht bearbeitete Kalenderantwort dabei, schicke GENAU EINE WhatsApp-Nachricht an den Betreiber mit: Absender, Betreff, Art der Antwort (Zusage/Absage/Gegenvorschlag) und dem vorgeschlagenen Termin (Datum/Uhrzeit), plus dem Hinweis, dass NICHTS automatisch gebucht wurde und du auf sein Signal wartest, um mit termin_bestaetigen(lead_id, datum, uhrzeit, ...) den Termin einzutragen. Ist keine neue Kalenderantwort dabei (oder ist der betreffende Termin beim Kontakt bereits als bestaetigt/termin/meeting verzeichnet): keine Nachricht senden (NO_REPLY), auch keine Zwischenmeldung. Bucht NIEMALS selbst einen Termin, egal wie eindeutig die Zusage klingt — das ist eine bindende Systemregel, keine Vorsicht von dir.",
+    "timeoutSeconds": 180
+  },
+  "schedule": {
+    "expr": "0 8 * * *",
+    "kind": "cron",
+    "tz": "Europe/Berlin"
+  },
+  "sessionTarget": "isolated",
+  "wakeMode": "now"
+}
