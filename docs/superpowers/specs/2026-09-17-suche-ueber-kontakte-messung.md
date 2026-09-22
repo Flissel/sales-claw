@@ -145,6 +145,30 @@ die dokumentiert gehören, statt später zu überraschen:**
   **nicht** (0 Treffer).
 * Verneinung wird ignoriert: „kein Interesse" liefert lauter *Interessenten*.
 
+**Gebaut am 22.09.2026.** Erzeugte Spalte `suchtext tsvector` je Schema, GIN-Index
+`activities_suchtext_idx`, Werkzeug `gespraeche_suchen(frage, grenze=10)` mit
+`ts_rank` und `ts_headline`. **Nur drei Schluessel** werden indiziert — `text`,
+`inhalt`, `begruendung`; Kennungen bleiben draussen, allen voran `message_id`
+mit 6155 Werten. Beide Grenzen stehen als Tests fest UND im `hinweis` der
+Antwort, denn der Agent liest die Antwort, nicht den Docstring.
+
+**Am echten Bestand bewiesen — und das schliesst den Kreis:**
+
+```
+### Nummer Wechsel      1 Treffer
+   Falscher Ivan hat <<Nummer>> <<Wechsel>> gehabt
+### Nummer gewechselt   0 Treffer
+### Versicherung Vorsorge  2 Treffer   (beide inhaltlich richtig)
+### Terminkarte         3 Treffer      („terminkarten" im Plural mitgefunden)
+```
+
+Der Satz in der ersten Zeile ist genau der, den am 17.09. **keine** Methode
+fand: `ILIKE` nur durch Raten des Musters, Trigramm nicht, und beide
+Einbettungsmodelle lieferten darauf „Bin in der Arbeit, kann gerade nicht
+telefonieren". Die Volltextsuche findet ihn in Millisekunden — und die Zeile
+darunter zeigt im selben Lauf, wo sie aufhoert. Das ist der Grund, warum die
+Grenze mitgeliefert wird statt verschwiegen zu werden.
+
 ### 2.3 Einbettungen — später, und nur für Themenfragen
 
 Wenn die beabsichtigten Fragen Themenfragen sind („wer hatte mit Vorsorge zu
@@ -166,7 +190,7 @@ auf Windows), Vektoren in `pgvector`, kein zweiter Speicher.
    2.1: die Normalisierung findet bereits am Tor statt. Die vier auffaelligen
    Zeilen sind Testdaten vom 18.08.2026 und koennen archiviert werden, wenn der
    Betreiber es will; das ist Datenpflege, keine Codeaenderung.
-3. Deutsche Volltextsuche mit den zwei dokumentierten Grenzen.
+3. ~~Deutsche Volltextsuche~~ — **gebaut am 22.09.2026**, siehe 2.2.
 4. Einbettungen nur nach dem Tor aus 2.3.
 
 **Die Messungen sind wiederholbar:** `/tmp/probe.py` auf `offload-vm`, Container
