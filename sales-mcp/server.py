@@ -5868,10 +5868,12 @@ def antworten_faellig(stunden: int = 48) -> str:
     und behaelt nur die Kontakte, deren Autonomiestufe eine Antwort
     ueberhaupt zulaesst:
 
-      halbauto — du schreibst einen Entwurf, ein Mensch gibt frei.
       auto     — der Entwurf entsteht freigegeben und wird zugestellt.
 
-    `manuell` und `ignorieren` stehen hier NIE. Wer dort wartet, wartet auf
+    NUR `auto` (22.09.2026). `halbauto` steht hier seit dem Betreiber-
+    Entscheid NICHT mehr: der Agent darf fuer solche Kontakte weiterhin
+    entwerfen, aber nur auf Zuruf ueber `antwort_entwerfen` — nicht von
+    sich aus. `manuell` und `ignorieren` standen hier ohnehin NIE. Wer dort wartet, wartet auf
     einen Menschen; das ist keine Aufgabe, die du dir nehmen darfst.
 
     Ablauf je Eintrag: den mitgelieferten `verlauf` lesen (die letzten 10
@@ -5938,7 +5940,17 @@ def antworten_faellig(stunden: int = 48) -> str:
             wegen_ablehnung += 1
             continue
         stufe = stufen.get(kennung, AUTONOMIE_VORGABE)
-        if stufe in ("halbauto", "auto"):
+        # NUR `auto` — Betreiber-Entscheid 22.09.2026: „die auto antwort nur
+        # bei automatic machen". Bis dahin stand hier `("halbauto", "auto")`,
+        # und der Routinelauf entwarf von sich aus fuer jeden halbauto-Kontakt.
+        #
+        # Der Unterschied ist die BEWEISLAST, nicht die Faehigkeit: `halbauto`
+        # heisst weiterhin „der Agent darf fuer diesen Kontakt entwerfen" — nur
+        # nicht mehr UNGEFRAGT. Wer einen Entwurf will, ruft
+        # `antwort_entwerfen` auf; dort ist `halbauto` ausdruecklich weiter
+        # erlaubt. Automatisch geschieht nur noch, was ausdruecklich auf
+        # `auto` steht.
+        if stufe == "auto":
             faellig.append({**e, "autonomie": stufe,
                             "verlauf": _letzte_nachrichten(
                                 kennung, ANTWORT_VERLAUF, e.get("absender"))})

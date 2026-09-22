@@ -307,7 +307,17 @@ def _kundennachricht(lead, text="Haben Sie kurz Zeit?"):
                            "absender": "491701234567@c.us"})))[0]["id"]
 
 
-def test_nur_halbauto_und_auto_stehen_in_der_faelligkeit():
+def test_NUR_auto_steht_in_der_faelligkeit():
+    """Betreiber-Entscheid 22.09.2026: „die auto antwort nur bei automatic".
+
+    Bis dahin nahm die Faelligkeitsliste `halbauto` UND `auto`, und der
+    Routinelauf entwarf damit von sich aus fuer jeden halbauto-Kontakt.
+
+    Der Unterschied ist die BEWEISLAST, nicht die Faehigkeit: `halbauto`
+    heisst weiterhin „der Agent darf fuer diesen Kontakt entwerfen" — nur
+    nicht mehr ungefragt. Genau das haelt der Test darunter fest, und beide
+    gehoeren zusammen gelesen.
+    """
     warten = {}
     for stufe in server.AUTONOMIE_STUFEN:
         lead = _lead(name=f"Kontakt {stufe}",
@@ -317,20 +327,34 @@ def test_nur_halbauto_und_auto_stehen_in_der_faelligkeit():
         warten[stufe] = lead
     faellig = json.loads(server.antworten_faellig())
     drin = {str(e["lead_id"]) for e in faellig["eintraege"]}
-    assert warten["halbauto"] in drin
     assert warten["auto"] in drin
+    assert warten["halbauto"] not in drin, (
+        "halbauto gehoert seit 22.09.2026 NICHT mehr in die Faelligkeit")
     assert warten["manuell"] not in drin
     assert warten["ignorieren"] not in drin
-    assert faellig["uebersprungen_weil_manuell"] >= 2
+
+
+def test_halbauto_bekommt_weiter_einen_entwurf_auf_zuruf():
+    """Die Gegenprobe zum Test darueber: eingeschraenkt ist der ROUTINELAUF,
+    nicht das Werkzeug. Wer einen Entwurf will, bekommt ihn."""
+    lead = _lead(name="Kontakt halbauto zuruf", phone="+491700000099")
+    _freigeben(lead)
+    server.kontakt_autonomie_setzen(lead, "halbauto")
+    antwort = json.loads(server.antwort_entwerfen(lead, "Hallo"))
+    assert "fehler" not in antwort, antwort
+    assert _entwuerfe(lead), "auf Zuruf muss ein Entwurf entstehen"
 
 
 def test_faelligkeit_nennt_die_stufe_und_das_verlauf_limit():
     lead = _lead()
-    server.kontakt_autonomie_setzen(lead, "halbauto")
+    # `auto`, seit die Faelligkeit nur noch diese Stufe nimmt (22.09.2026).
+    # Die Zusicherung bleibt inhaltlich dieselbe: der Eintrag NENNT die
+    # Stufe, damit der Agent nicht raten muss, was er darf.
+    server.kontakt_autonomie_setzen(lead, "auto")
     _kundennachricht(lead)
     faellig = json.loads(server.antworten_faellig())
     treffer = [e for e in faellig["eintraege"] if str(e["lead_id"]) == lead]
-    assert treffer and treffer[0]["autonomie"] == "halbauto"
+    assert treffer and treffer[0]["autonomie"] == "auto"
     # „letzten 20 nachrichten … von beiden" — beide Richtungen zusammen.
     assert faellig["verlauf_limit"] == server.ANTWORT_VERLAUF == 10   # 03.09.2026: die letzten 10 liegen als 'verlauf' bei
 

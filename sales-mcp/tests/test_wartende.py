@@ -43,7 +43,11 @@ def _wartender(name="Wanda Wartend", phone="+491702223344"):
         "insert into leads (name, phone, source) values "
         "(%s, %s, 'whatsapp') returning id", (name, phone))[0]["id"])
     server.kontakt_freigeben(lead)
-    server.kontakt_autonomie_setzen(lead, "halbauto")
+    # `auto` statt `halbauto` seit 22.09.2026: die Faelligkeitsliste
+    # nimmt nur noch ausdruecklich automatische Kontakte. Dieser Test
+    # prueft etwas anderes — er braucht hier bloss einen Kontakt, der
+    # ueberhaupt in der Liste steht.
+    server.kontakt_autonomie_setzen(lead, "auto")
     server._q(
         "insert into activities (lead_id, type, payload) values "
         "(%s, 'kundenantwort', %s) returning id",
