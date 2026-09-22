@@ -153,6 +153,32 @@ PYEOF
   mapfile -d '' -t ARGS < "$ARGSDATEI"
   rm -f "$ARGSDATEI"
 
+  # DUBLETTEN-SPERRE (gemessen 22.09.2026): `--declaration-key` entdoppelt
+  # nur gegen Jobs, die DIESEN Schluessel bereits tragen. Ein gleichnamiger
+  # Job, der von Hand angelegt wurde, hat keinen — und wird deshalb NICHT
+  # erkannt. Beim Saeen in das gewachsene Gateway des ersten Ladens
+  # entstanden so zwei `morgen-digest` und zwei Anreicherungslaeufe, beide
+  # aktiv, beide mit demselben Zeitplan: der Digest waere morgens doppelt
+  # gekommen. Deshalb vorher fragen, statt hinterher aufzuraeumen.
+  VORHANDEN="$(docker exec "$CONTAINER" openclaw cron list --json 2>/dev/null     | python3 -c "
+import json,sys
+try: jobs = json.load(sys.stdin).get('jobs', [])
+except Exception: sys.exit(0)
+name = sys.argv[1]
+for j in jobs:
+    if (j.get('name') or j.get('displayName')) != name: continue
+    d = j.get('declaration')
+    key = d.get('key') if isinstance(d, dict) else j.get('declarationKey')
+    if not key: print(j['id'])
+" "$name" 2>/dev/null || true)"
+  if [ -n "$VORHANDEN" ]; then
+    echo "  UEBERSPRUNGEN $name — es gibt ihn schon OHNE Deklaration:" >&2
+    echo "                $VORHANDEN" >&2
+    echo "                Saeen wuerde ihn verdoppeln. Erst entscheiden:" >&2
+    echo "                  docker exec $CONTAINER openclaw cron rm <id>" >&2
+    continue
+  fi
+
   if [ "$WIRKLICH" = "--wirklich" ]; then
     # Den GRUND zeigen, nicht nur das Scheitern. Beim ersten echten Lauf
     # gegen Ivans Gateway meldete dieses Skript viermal „Aufruf abgelehnt"
