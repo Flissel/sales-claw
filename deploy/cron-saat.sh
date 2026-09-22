@@ -68,7 +68,14 @@ for datei in "$CRONDIR"/*.json; do
   # 22.09.2026 stuerzte python3 fuer eine Datei ab, und das Skript meldete
   # fuer sie trotzdem „wuerde saeen" — ein Fehlschlag, der wie Erfolg
   # aussieht. Deshalb erst in eine Variable, Code pruefen, dann zerlegen.
-  if ! ROH="$(python3 - "$datei" "$MELDE_AN" <<'PYEOF'
+  # NUL-getrennt ueber eine DATEI, nicht zeilenweise ueber eine Variable.
+  # Gemessen 22.09.2026: die Auftragstexte sind mehrzeilig (der laengste hat
+  # fuenf Absaetze und traegt zusaetzlich ), und zeilenweise uebergeben
+  # wurde daraus ein Argument JE ZEILE — openclaw antwortete „Too many
+  # arguments for this command". Kommandosubstitution kann keine NUL-Bytes
+  # tragen, deshalb der Umweg ueber eine Datei.
+  ARGSDATEI="$(mktemp)"
+  if ! python3 - "$datei" "$MELDE_AN" > "$ARGSDATEI" <<'PYEOF'
 import json, sys
 d = json.load(open(sys.argv[1], encoding="utf-8"))
 melde_an = sys.argv[2]
@@ -127,11 +134,13 @@ if d.get("enabled") is False:
 
 print("\n".join(argv))
 PYEOF
-)"; then
+  then
+    rm -f "$ARGSDATEI"
     echo "  FEHLER     $name — Deklaration nicht uebersetzbar (siehe oben)" >&2
     exit 1
   fi
-  mapfile -t ARGS <<< "$ROH"
+  mapfile -d '' -t ARGS < "$ARGSDATEI"
+  rm -f "$ARGSDATEI"
 
   if [ "$WIRKLICH" = "--wirklich" ]; then
     # Den GRUND zeigen, nicht nur das Scheitern. Beim ersten echten Lauf
@@ -144,7 +153,10 @@ PYEOF
     if AUSGABE="$(docker exec "$CONTAINER" openclaw "${ARGS[@]}" 2>&1)"; then
       echo "  gesaet     $name"
     else
-      GRUND="$(printf '%s' "$AUSGABE" | grep -viE '^Config warnings|^- plugins'                | grep -iE 'error|invalid' | head -1)"
+      # `|| true`: findet grep nichts, ist sein Exit-Code 1 — und unter
+      # `set -e` starb das Skript hier lautlos, statt den Fehler zu melden.
+      # Gemessen 22.09.2026: vier abgelehnte Jobs, null Ausgabe.
+      GRUND="$(printf '%s' "$AUSGABE" | grep -viE '^Config warnings|^- plugins'                | grep -iE 'error|invalid|too many|unknown' | head -1 || true)"
       case "$GRUND" in
         *"delivery.channel is not configured"*)
           echo "  SPAETER    $name — der Kanal fehlt noch: ${GRUND##*: }" >&2
