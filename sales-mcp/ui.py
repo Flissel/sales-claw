@@ -200,6 +200,7 @@ from starlette.responses import HTMLResponse, RedirectResponse, Response
 from starlette.routing import Route
 
 import kalender
+import mailadresse
 
 import server
 
@@ -517,20 +518,26 @@ _KALENDER_ROLLE_PFADE = ("/team/kalender", "/kalender", "/logout", "/login",
                          "/passwort-vergessen", "/passwort-neu")
 
 
+_ADMIN_BASIS_PFADE = ("/team/laden-anlegen", "/team/tailscale-einladen")
+
+
 def _pfad_erlaubt(rolle: str, pfad: str) -> bool:
     """Darf diese Rolle diesen Pfad sehen? `kalender` ist eingeschraenkt,
-    `/team/laden-anlegen` zusaetzlich auf `freigeben` im Basis-Laden — sonst
-    saehe Ivan (selbst mit der Rolle `freigeben` in seinem eigenen Laden)
-    einen Knopf, der auf dem Wirt Container und Datenbankbenutzer erzeugt.
+    jeder Pfad in `_ADMIN_BASIS_PFADE` zusaetzlich auf `freigeben` im
+    Basis-Laden — sonst saehe Ivan (selbst mit der Rolle `freigeben` in
+    seinem eigenen Laden) Knoepfe, die auf dem Wirt handeln (Container
+    erzeugen, eine Tailscale-Einladung mit dem persoenlichen Schluessel
+    des Betreibers verschicken).
 
     `sales_test` zaehlt hier als Basis-Laden, nicht als eigener Laden: die
     Tabelle admin_auftraege existiert genau dort und in `sales`, nirgends
     sonst (db/provision.sql, hartes array['sales','sales_test'], Aufgabe 1 /
     test_admin_auftraege_tabelle.py::test_admin_auftraege_existiert_in_...);
     der Testcontainer verbindet ausschliesslich mit `sales_test` (nie mit
-    `sales`), waere `sales_test` hier NICHT gleichgestellt, saehe der Knopf
-    in JEDEM Testlauf niemand — auch nicht die Rolle `freigeben` selbst."""
-    if pfad == "/team/laden-anlegen" or pfad.startswith("/team/laden-anlegen/"):
+    `sales`), waere `sales_test` hier NICHT gleichgestellt, saehe keiner
+    der beiden Knoepfe in JEDEM Testlauf niemand — auch nicht die Rolle
+    `freigeben` selbst."""
+    if any(pfad == p or pfad.startswith(p + "/") for p in _ADMIN_BASIS_PFADE):
         return rolle == "freigeben" and server.SCHEMA in ("sales", "sales_test")
     if rolle != "kalender":
         return True
@@ -1189,7 +1196,8 @@ _GRUPPEN = (
     # wegen einer Extra-Pruefung hier, sondern weil _seitenleiste JEDEN
     # Eintrag durch _pfad_erlaubt filtert (s. dort), und die faellt fuer
     # jede andere Kombination durch.
-    ("Admin", (("/team/laden-anlegen", "Laden anlegen"),)),
+    ("Admin", (("/team/laden-anlegen", "Laden anlegen"),
+               ("/team/tailscale-einladen", "Team-Mitglied einladen"))),
 )
 _NAV = tuple(eintrag for _, eintraege in _GRUPPEN for eintrag in eintraege)
 # Welche Seite gerade gebaut wird — gesetzt von _gesichert_seite, gelesen
@@ -4012,15 +4020,25 @@ _LADEN_NAMEN_MUSTER = re.compile(r"^[a-z][a-z0-9_]{0,30}$")
 def _admin_auftrag_ergebnis_text(zeile) -> str:
     """Menschenlesbare Zusammenfassung eines Auftrags — nie mehr behaupten,
     als 'status' hergibt (siehe Spec §2.4: der Wirt schreibt 'fehler', nie
-    'erfolg', wenn nur ein Schritt fehlt; hier wird das nur ANGEZEIGT)."""
+    'erfolg', wenn nur ein Schritt fehlt; hier wird das nur ANGEZEIGT).
+    Verzweigt zusaetzlich auf `zeile["art"]`, weil 'erfolg' bei den beiden
+    Auftragsarten voellig verschiedene Formen von `ergebnis` traegt."""
     if zeile["status"] == "offen":
         return "wartet auf den Wirt (bis zu 20 Sekunden)"
     if zeile["status"] == "laeuft":
-        return "wird gerade angelegt …"
-    # K1 (Schlusspruefung): server.pool laeuft mit psycopg3/dict_row — eine
-    # jsonb-Spalte kommt bereits als Python-dict zurueck, nicht als String.
-    # json.loads() darauf warf TypeError bei JEDEM Auftrag mit 'ergebnis'.
+        return ("wird gerade verschickt …" if zeile["art"] == "tailscale_einladen"
+                 else "wird gerade angelegt …")
+    # K1 (Schlusspruefung des vorigen Untervorhabens): server.pool laeuft
+    # mit psycopg3/dict_row — eine jsonb-Spalte kommt bereits als
+    # Python-dict zurueck, nicht als String. json.loads() darauf wirft
+    # TypeError.
     info = zeile["ergebnis"] or {}
+    if zeile["art"] == "tailscale_einladen":
+        if zeile["status"] == "fehler":
+            return f"FEHLER — {_e(zeile['fehler'] or 'kein Grund vermerkt')}"
+        link = info.get("inviteUrl")
+        zusatz = f" Link zum Weitergeben: {_e(link)}" if link else ""
+        return f"Einladung verschickt.{zusatz}"
     if zeile["status"] == "fehler":
         erledigt = ", ".join(info.get("erledigt", [])) or "nichts"
         grund = zeile["fehler"] or "kein Grund vermerkt"
@@ -4036,7 +4054,7 @@ async def laden_anlegen_seite(request):
     Basis-Laden (_pfad_erlaubt) — kein zweiter Check hier noetig, die
     Middleware hat den Pfad bereits verweigert, wenn wir hier ankommen."""
     zeilen = server._q(
-        "select name, status, ergebnis, fehler, erstellt_am "
+        "select art, name, status, ergebnis, fehler, erstellt_am "
         "from admin_auftraege where art = 'laden_anlegen' "
         "order by erstellt_am desc limit 10")
     wartet = any(z["status"] in ("offen", "laeuft") for z in zeilen)
@@ -4084,6 +4102,56 @@ async def aktion_laden_anlegen(request):
         "values ('laden_anlegen', %s, %s) returning id",
         (name, _ui_akteur(request)))
     return RedirectResponse("/team/laden-anlegen", status_code=303)
+
+
+@_gesichert_seite
+async def tailscale_einladen_seite(request):
+    """Einen neuen Menschen zum Tailnet einladen. Erreichbar nur fuer Rolle
+    `freigeben` im Basis-Laden (_pfad_erlaubt) — kein zweiter Check hier
+    noetig, die Middleware hat den Pfad bereits verweigert, wenn wir hier
+    ankommen. Automatisiert wird ausschliesslich die Einladung selbst —
+    die Tailscale-Zugriffsregel bleibt Handarbeit (Spec §4)."""
+    zeilen = server._q(
+        "select art, email, status, ergebnis, fehler, erstellt_am "
+        "from admin_auftraege where art = 'tailscale_einladen' "
+        "order by erstellt_am desc limit 10")
+    wartet = any(z["status"] in ("offen", "laeuft") for z in zeilen)
+    if zeilen:
+        tabelle = _tabelle(
+            ["E-Mail", "Status", "Ergebnis"],
+            [[_e(z["email"]), _e(z["status"]),
+              _admin_auftrag_ergebnis_text(z)] for z in zeilen])
+    else:
+        tabelle = "<p>Noch kein Auftrag.</p>"
+    rumpf = (
+        '<form method="post" action="/team/tailscale-einladen/anfordern">'
+        f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+        '<label>E-Mail-Adresse des neuen Menschen<br>'
+        '<input type="email" name="email" required '
+        'placeholder="z. B. kolleg@example.com"></label> '
+        '<button type="submit">Einladen</button>'
+        '</form>'
+        f'<h2>Bisherige Einladungen</h2>{tabelle}')
+    return _seite("Team-Mitglied einladen", rumpf, refresh=5 if wartet else None)
+
+
+@_gesichert_seite
+async def aktion_tailscale_einladen(request):
+    form = await request.form()
+    if not _csrf_ok(form):
+        return _fehlerseite(
+            400, "Ungültige Anfrage",
+            "Die Anfrage trägt keine gültige Marke dieser Oberfläche. "
+            "Seite neu laden und erneut versuchen.")
+    email, fehler = mailadresse.pruefe(str(form.get("email") or ""))
+    if fehler:
+        return _fehlerseite(
+            400, "Ungültige E-Mail-Adresse", f"{fehler}. Nichts wurde angefordert.")
+    server._q(
+        "insert into admin_auftraege (art, email, angefordert_von) "
+        "values ('tailscale_einladen', %s, %s) returning id",
+        (email, _ui_akteur(request)))
+    return RedirectResponse("/team/tailscale-einladen", status_code=303)
 
 
 @_gesichert_seite
@@ -6048,6 +6116,9 @@ app = Starlette(routes=[
           methods=["POST"]),
     Route("/team/laden-anlegen", laden_anlegen_seite),
     Route("/team/laden-anlegen/anfordern", aktion_laden_anlegen,
+          methods=["POST"]),
+    Route("/team/tailscale-einladen", tailscale_einladen_seite),
+    Route("/team/tailscale-einladen/anfordern", aktion_tailscale_einladen,
           methods=["POST"]),
     Route("/whatsapp", whatsapp),
     Route("/kontakte/wiederherstellen", aktion_kontakt_wiederherstellen,
