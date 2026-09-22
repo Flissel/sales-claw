@@ -915,7 +915,23 @@ def zustimmung_widerrufen(lead_id: str, grund: str = "") -> str:
 
 
 AUTONOMIE_SCHLUESSEL = "autonomie"
-AUTONOMIE_VORGABE = "halbauto"
+# `manuell`, nicht `halbauto` — Betreiber-Entscheid 22.09.2026, und bis dahin
+# stand hier das Gegenteil dessen, was `_autonomie` zwei Zeilen tiefer ueber
+# sich selbst behauptete („Alles Unklare ist `manuell` (fail-closed)").
+#
+# WAS DIE ALTE VORGABE ANRICHTETE, gemessen am 22.09.2026: von 553 Kontakten
+# trugen 538 KEINE Stufe und fielen damit auf „schreib einen Entwurf". Nur 40
+# Kontakte haben je zurueckgeschrieben, und davon sind rund drei Viertel
+# private Chats — das WhatsApp-Konto des Betreibers ist sein privates. Der
+# Agent entwarf also Vertriebstexte an Freunde: an eine Kontaktin mit 89
+# eingehenden Nachrichten, davon drei mit Geschaeftsbezug („Same here", „Bro",
+# „Naechstes mal machen wir grillen bei uns"), ging der Entwurf „Schreib mir
+# gern, wann es dir passt, dann schauen wir uns das an".
+#
+# Die Umkehr der Beweislast ist der Punkt: nicht der Agent entwirft fuer alle
+# und der Mensch sortiert aus, sondern der Mensch benennt, wer Kunde ist. Wer
+# ausdruecklich auf `halbauto` oder `auto` steht, ist davon unberuehrt.
+AUTONOMIE_VORGABE = "manuell"
 AUTONOMIE_STUFEN = ("ignorieren", "manuell", "halbauto", "auto")
 AUTONOMIE_TEXT = {
     "ignorieren": "Ignorieren — kein Wort wird gespeichert.",

@@ -88,19 +88,38 @@ def _entwuerfe(lead):
 def test_die_vier_stufen_stehen_an_einer_stelle():
     assert server.AUTONOMIE_STUFEN == ("ignorieren", "manuell", "halbauto",
                                        "auto")
-    assert server.AUTONOMIE_VORGABE == "halbauto"
+    assert server.AUTONOMIE_VORGABE == "manuell"
     assert set(server.AUTONOMIE_TEXT) == set(server.AUTONOMIE_STUFEN)
 
 
-def test_vorgabe_ist_halbauto():
-    """Betreiberentscheidung 25.08.2026: „standart ist halb automatic".
+def test_vorgabe_ist_manuell():
+    """Zwei Betreiberentscheidungen, und die zweite dreht die erste zurueck.
 
-    Vorher war es `manuell`. Der Wechsel ist vertretbar, weil ein Entwurf
-    an NIEMANDEN geht und ohne WhatsApp-Freigabe ohnehin keiner entsteht.
-    Die fail-closed-Grenze liegt jetzt bei `auto` — dort dreifach.
+    25.08.2026: „standart ist halb automatic" — von `manuell` auf
+    `halbauto`. Begruendet damit, dass ein Entwurf an NIEMANDEN geht; die
+    fail-closed-Grenze liege bei `auto`.
+
+    22.09.2026: zurueck auf `manuell`. Die Begruendung von damals stimmte
+    fuer den VERSAND und uebersah die KOSTEN. Gemessen an dem Tag: von 553
+    Kontakten trugen 538 keine Stufe und fielen damit auf „schreib einen
+    Entwurf". Nur 40 Kontakte haben je zurueckgeschrieben, davon rund drei
+    Viertel private Chats — das WhatsApp-Konto des Betreibers ist sein
+    privates. Der Agent entwarf Vertriebstexte an Freunde: an eine
+    Kontaktin mit 89 eingehenden Nachrichten, davon drei mit
+    Geschaeftsbezug („Same here", „Bro", „Naechstes mal machen wir grillen
+    bei uns"), ging „Schreib mir gern, wann es dir passt, dann schauen wir
+    uns das an".
+
+    Ein Entwurf geht an niemanden — aber er kostet einen Menschen
+    Aufmerksamkeit, und fuenf unbrauchbare Entwuerfe entwerten die Liste,
+    in der auch die brauchbaren stehen. Das ist der Grund, warum die
+    Beweislast jetzt andersherum liegt: der Mensch benennt, wer Kunde ist.
+
+    Der Docstring von `_autonomie` behauptete uebrigens die ganze Zeit
+    „Alles Unklare ist `manuell` (fail-closed)". Ab heute stimmt er.
     """
-    assert _stufe(_lead()) == "halbauto"
-    assert server.AUTONOMIE_VORGABE == "halbauto"
+    assert _stufe(_lead()) == "manuell"
+    assert server.AUTONOMIE_VORGABE == "manuell"
 
 
 @pytest.mark.parametrize("kaputt", [
@@ -251,10 +270,17 @@ def test_der_agent_erreicht_niemals_approved_von_selbst():
 
     Geprueft wird deshalb, was zaehlt: alles bleibt `pending`, solange
     nicht ALLE DREI Tore offen sind.
+
+    22.09.2026: die Stufe wird hier jetzt AUSDRUECKLICH gesetzt. Seit die
+    Vorgabe wieder `manuell` ist, entstuende sonst gar kein Entwurf — und
+    der Test pruefte versehentlich nichts mehr. Ein Test, der gruen wird,
+    weil der Weg gar nicht mehr beschritten wird, ist schlimmer als ein
+    roter.
     """
     lead = _lead()
     _freigeben(lead)
-    # Vorgabe halbauto: es entsteht ein Entwurf — aber nur ein Entwurf.
+    server.kontakt_autonomie_setzen(lead, "halbauto")
+    # Mit halbauto entsteht ein Entwurf — aber nur ein Entwurf.
     json.loads(server.antwort_entwerfen(lead, "Hallo"))
     # Auch der gewoehnliche Weg legt nur 'pending' an.
     json.loads(server.entwurf_erstellen(lead, "whatsapp", "Noch einer"))
