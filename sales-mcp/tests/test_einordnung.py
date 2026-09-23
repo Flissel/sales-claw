@@ -929,3 +929,73 @@ def test_signatur_ueberlebt_den_dekorator_und_werkzeug_ist_registriert():
                if name != "bestaetigt")
     assert parameter["bestaetigt"].default is False
     assert server.eingang_einordnen in server.WERKZEUGE
+
+
+# ---------------------------------------------------------------------------
+# Eine Zuordnung ergaenzt eine Nummer — sie ueberstimmt sie nicht (23.09.2026)
+# ---------------------------------------------------------------------------
+
+IVAN_NEU = "491791714185@c.us"
+IVAN_ALT = "4917688014635@c.us"
+
+
+def test_eine_veraltete_zuordnung_macht_aus_einem_kontakt_keinen_fremden():
+    """Der vom Betreiber gemeldete Fall, gemessen im laufenden Betrieb.
+
+    Am 01.09.2026 hat er gesagt: „491791714185 gehoert zu dem Kontakt mit
+    4917688014635" — damals stand die alte Nummer am Lead. Am 22.09.2026
+    wurde die NEUE Nummer an den Lead geschrieben; seither zeigt dieselbe
+    Zuordnung auf eine Nummer, die niemand mehr hat.
+
+    Weil jeder Aufrufer ueber `lid_kanonisch` fragte — die Zuordnung ERSETZT
+    die Kennung, statt fuer sie einzuspringen — stand der Kontakt danach unter
+    seiner EIGENEN, am Lead stehenden Nummer wieder in der Einordnungsliste.
+    Gemessen am 23.09.2026 gegen den laufenden Dienst:
+
+        direkt              -> Ivan, +491791714185
+        ueber lid_kanonisch -> 4917688014635@c.us -> None
+    """
+    lead = _lead("Ivan", "+491791714185")
+    sammel = _sammel()
+    _zuordnung(IVAN_NEU, IVAN_ALT)
+    _kundenantwort(sammel, IVAN_NEU, text="Bin dabei")
+
+    koerbe = _einordnen()
+    offen = [e["kennung"] for e in koerbe["neu"] + koerbe["bereits_gefragt"]]
+    assert offen == [], f"nichts einzuordnen — der Kontakt steht fest: {offen}"
+    assert [e.get("kontakt") for e in koerbe["aufgeloest"]] == ["Ivan"]
+    assert str(koerbe["aufgeloest"][0]["lead_id"]) == lead
+
+
+def test_ignorieren_bleibt_verweigert_wenn_die_zuordnung_ins_leere_zeigt():
+    """Die Schutzkante aus Review-Befund H3 haengt an derselben Frage.
+
+    Sie verweigert `ignorieren`, wenn die Kennung einem echten Kontakt gehoert
+    — und stellte diese Frage bis zum 23.09.2026 ebenfalls nur ueber die
+    aufgeloeste Form. Eine veraltete Zuordnung machte damit nicht bloss die
+    Liste falsch, sondern oeffnete die Kante: der Kontakt haette ohne
+    `bestaetigt=True` stillgelegt werden koennen, und von seinen Nachrichten
+    waere danach kein Wort mehr gespeichert worden.
+    """
+    _lead("Ivan", "+491791714185")
+    sammel = _sammel()
+    _zuordnung(IVAN_NEU, IVAN_ALT)
+    _kundenantwort(sammel, IVAN_NEU)
+
+    antwort = _einordnen(absender=IVAN_NEU, entscheidung="ignorieren")
+    assert antwort.get("ignoriert") is None
+    assert "fehler" in antwort and "Ivan" in antwort["fehler"]
+    assert antwort["gehoert_zu"]["kontakt"] == "Ivan"
+
+
+def test_eine_LID_ohne_zuordnung_bleibt_unveraendert_eine_rueckfrage():
+    """Die Gegenprobe: an dem, was die Aufloesung wirklich braucht, aendert
+    sich nichts. Eine `@lid` ist keine Rufnummer — ohne Zuordnung findet sie
+    keinen Kontakt und wird gefragt, nicht geraten."""
+    _lead("Sophie Beispiel", "+49 172 9186846")
+    sammel = _sammel()
+    _kundenantwort(sammel, SOPHIE_LID)
+    koerbe = _einordnen()
+    assert [e["kennung"] for e in koerbe["neu"]] == [server.lid.ziffern(SOPHIE_LID)]
+    assert koerbe["aufgeloest"] == []
+

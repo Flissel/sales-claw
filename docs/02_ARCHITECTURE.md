@@ -816,6 +816,70 @@ importieren — ein Test hält fest, dass beide **dieselbe** Funktion benutzen
 damit eine Freigabe nie die Freigabe für etwas anderes ist als das, was
 tatsächlich passiert.
 
+### Wem gehört eine Kennung? Nummer zuerst, Zuordnung als Rückfall (23.09.2026)
+
+Ein Mensch kann mehr als eine Nummer haben. `leads.phone` ist **eine** Spalte —
+die zweite Nummer hat in diesem Schema keinen Platz. Diese Lücke füllt die
+gespeicherte **Zuordnung** (`activities.type = 'lid_zuordnung'`): eine
+append-only-Aussage „diese Kennung gehört zu jener Nummer", geschrieben entweder
+vom Betreiber über `eingang_einordnen(entscheidung='zuordnen')` oder von einem
+`absender_aufloesen`-Lauf, der OpenWA nach der Rufnummer hinter einer `@lid`
+gefragt hat.
+
+**Die Reihenfolge ist der ganze Punkt, und sie war an beiden Enden falsch.**
+
+| Stelle | vorher | jetzt |
+|---|---|---|
+| `inbox.lead_zu_nummer` (wohin wird gebucht) | Zuordnung **nur** bei `@lid` befragt, eine Rufnummer lief daran vorbei | Nummer zuerst, Zuordnung als Rückfall, genau **ein** Schritt |
+| `posteingang`, `_einzuordnende`, `eingang_einordnen`, UI-Seite `/einordnung` | ausschließlich über `lid_kanonisch`, die Zuordnung **ersetzte** die Kennung | `server.lead_zu_kennung`: Nummer zuerst, Zuordnung danach |
+
+Beide Fehler haben dieselbe Wurzel — eine Zuordnung wurde als *Ersatz* der
+Kennung behandelt statt als *Ergänzung*. Und sie hatten gegenläufige Wirkung,
+weshalb der Betrieb erst wie Zufall aussah („manchmal kommt er zum Einordnen"):
+
+* **Am Eingang** wurde zu wenig aufgelöst. `eingang_einordnen` verspricht dem
+  Betreiber wörtlich „Künftige Nachrichten von dieser Kennung laufen zum Kontakt
+  mit dieser Nummer". Für jede Kennung, die selbst schon eine Rufnummer war, war
+  das unwahr. Gemessen: am 01.09.2026 ordnete der Betreiber `491791714185` dem
+  Kontakt hinter `4917688014635@c.us` zu — bis zum 22.09.2026 landeten trotzdem
+  **217 Nachrichten** desselben Menschen am Sammelkontakt.
+* **In der Anzeige** wurde zu viel aufgelöst. Am 22.09.2026 wanderte die neue
+  Nummer an den Lead; damit zeigte dieselbe Zuordnung auf eine Nummer, die
+  niemand mehr hat. Gemessen am laufenden Dienst am 23.09.2026:
+
+  ```
+  Kennung              491791714185@c.us
+  direkt            -> Ivan, +491791714185        (sein Kontakt)
+  über lid_kanonisch -> 4917688014635@c.us -> None (niemand mehr)
+  ```
+
+  Das ist keine verpasste Auflösung, sondern eine **Umkehr**: ein Kontakt wurde
+  unter seiner eigenen, am Lead stehenden Nummer als Unbekannter vorgelegt. Und
+  es traf nicht nur die Liste — die Schutzkante aus Review-Befund H3, die
+  `ignorieren` für echte Kontakte verweigert, stellt dieselbe Frage. Eine
+  veraltete Zuordnung öffnete sie.
+
+**Drei Grenzen, bewusst gezogen:**
+
+1. **Genau ein Schritt.** `A→B` und `B→C` sind zwei Aussagen des Betreibers;
+   „A ist C" ist eine dritte, die er nie getroffen hat. Eine Kette könnte
+   außerdem im Kreis laufen.
+2. **Kein Kontakt entsteht dabei.** Zeigt die Zuordnung auf eine Nummer, die
+   niemandem gehört, bleibt der Absender unbekannt und wird gefragt.
+3. **Der direkte Treffer gewinnt immer.** Eine Zuordnung darf eine Nummer
+   ergänzen, nie überstimmen.
+
+`lid_kanonisch` bleibt unverändert — es beantwortet die Frage „unter welcher
+Schreibweise wird diese Identität geführt", nicht „wem gehört sie". Wer nach dem
+Kontakt fragt, nimmt `lead_zu_kennung`; die Doppelung von
+`_lead_mit_gleicher_nummer` (server) und `lead_zu_nummer` (inbox) bleibt aus dem
+alten Grund bestehen (Zirkelimport), trägt aber jetzt dieselbe Reihenfolge.
+
+Festgehalten in `tests/test_inbox.py` (fünf Tests, darunter ausdrücklich
+`test_der_DIREKTE_treffer_schlaegt_eine_veraltete_zuordnung` und
+`test_die_bruecke_geht_genau_EINEN_schritt`) und `tests/test_einordnung.py`
+(drei Tests, darunter die wiederhergestellte H3-Kante).
+
 ### Compose-Isolation: Der Agent-Container erbt keine Versand-Secrets
 
 `docker-compose.yml`, Dienst `sales-claw`, hatte ursprünglich

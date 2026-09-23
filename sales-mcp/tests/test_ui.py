@@ -1040,26 +1040,41 @@ def test_einordnung_seitenaufruf_beansprucht_keine_rueckfrage(
     assert _aktivitaeten(server.ABSENDER_RUECKFRAGE) == []
 
 
-def test_einordnung_zeigt_den_kontaktnamen_als_warnung_am_eintrag(
+def test_einordnung_legt_einen_bekannten_kontakt_gar_nicht_erst_vor(
         sammelkontakt_zurueck):
-    """Gehoert die Kennung einem echten Kontakt, muss das AM EINTRAG stehen —
-    bevor jemand auf „Ignorieren" drueckt, nicht erst danach.
+    """Die Zusage ist unveraendert: Anzeige und Verweigerung behaupten nie
+    Verschiedenes. Die ERFUELLUNG hat sich am 23.09.2026 verschoben.
 
-    Die Kennung steht hier als WhatsApp-JID (`…@s.whatsapp.net`). Genau dafuer
-    fragt die Oberflaeche zusaetzlich Python-seitig mit `lid_kanonisch` +
-    `_lead_mit_gleicher_nummer` nach: die SQL-Aufloesung in `_einzuordnende`
-    greift nur bei `@c.us`/`@lid`, und ohne die zweite Frage stuende dieser
-    Absender ohne Warnung da — waehrend `eingang_einordnen` das Ignorieren sehr
-    wohl verweigerte. Anzeige und Verweigerung sollen nie Verschiedenes
-    behaupten."""
+    Die Kennung steht hier als WhatsApp-JID (`…@s.whatsapp.net`). Die
+    SQL-Aufloesung in `_einzuordnende` greift nur bei `@c.us`/`@lid`, dieser
+    Absender lief also bis dahin daran vorbei und stand UNTER „Wartet auf
+    Entscheidung" — die Oberflaeche musste ihn ein zweites Mal Python-seitig
+    nachschlagen und eine Warnung danebenschreiben, damit niemand auf
+    „Ignorieren" drueckt.
+
+    Seit `_einzuordnende` ueber `lead_zu_kennung` fragt (Nummer zuerst,
+    Zuordnung als Rueckfall), erkennt schon der Dienst den Kontakt. Der
+    Eintrag steht damit unter „Bereits entschieden" — einer Tabelle mit Link
+    zum Kontakt und OHNE Ignorieren-Knopf. Das ist strenger als die Warnung,
+    die er ersetzt: der gefaehrliche Knopf steht gar nicht mehr da.
+
+    Beide Haelften der Zusage werden hier geprueft, die Anzeige UND die
+    Verweigerung — dass sie uebereinstimmen, ist der eigentliche Punkt.
+    """
     sammel = _sammel()
-    _lead(name="Sophie Beispiel", phone=SOPHIE_PHONE)
+    lead = _lead(name="Sophie Beispiel", phone=SOPHIE_PHONE)
     _kundenantwort(sammel, text="Ich habe unterschrieben",
                    absender="491729186846@s.whatsapp.net")
     seite = _get("/einordnung").text
-    assert "Wartet auf Entscheidung (1)" in seite
+    assert "Wartet auf Entscheidung (0)" in seite
+    assert "Bereits entschieden (1)" in seite
     assert "Sophie Beispiel" in seite
-    assert "zweiten, ausdrücklichen Schritt" in seite
+    assert f'/kontakte/{lead}' in seite
+
+    verweigert = json.loads(server.eingang_einordnen(
+        absender="491729186846@s.whatsapp.net", entscheidung="ignorieren"))
+    assert verweigert.get("ignoriert") is None
+    assert verweigert["gehoert_zu"]["kontakt"] == "Sophie Beispiel"
 
 
 def test_einordnung_zeigt_entschiedene_als_verlauf(sammelkontakt_zurueck):

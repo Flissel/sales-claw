@@ -430,8 +430,8 @@ def _ist_gruppe(daten: dict) -> bool:
 # Datenbank
 # ---------------------------------------------------------------------------
 
-def lead_zu_nummer(chat_id: str):
-    """Lead mit dieser Nummer — verglichen wird normalisiert, nicht als Text.
+def _lead_mit_phone(chat_id: str):
+    """Lead, dessen `phone` GENAU diese Nummer ist — oder None.
 
     Vorfilter in SQL ueber die letzten acht Ziffern (Schreibweisen
     unterscheiden sich vorne: `+49…`, `0049…`, `49 (0)…`, nie hinten), die
@@ -450,6 +450,56 @@ def lead_zu_nummer(chat_id: str):
         LOG.warning("Nummer %s steht bei %d Kontakten — juengster gewinnt.",
                     _maskiert(chat_id), len(treffer))
     return treffer[0] if treffer else None
+
+
+def lead_zu_nummer(chat_id: str):
+    """Wem gehoert diese Kennung? Erst die Nummer selbst, dann die Zuordnung.
+
+    ZWEI STUFEN, UND DIE REIHENFOLGE IST DER KERN (23.09.2026).
+
+    1. `leads.phone` — die Nummer, die am Kontakt steht.
+    2. Die gespeicherte Zuordnung: was der Betreiber ueber
+       `eingang_einordnen(entscheidung='zuordnen')` gesagt hat, oder was ein
+       `absender_aufloesen`-Lauf von OpenWA erfahren hat. GENAU EIN Schritt.
+
+    Stufe 2 gab es hier bisher nicht. `_kennung` befragt die Zuordnung zwar,
+    aber NUR im `@lid`-Zweig — eine Rufnummer lief daran vorbei. Damit war die
+    Zusage, die `eingang_einordnen` dem Betreiber woertlich gibt („Kuenftige
+    Nachrichten von dieser Kennung laufen zum Kontakt mit dieser Nummer"), fuer
+    jede Kennung unwahr, die selbst schon eine Nummer war. GEMESSEN am echten
+    Bestand: am 01.09.2026 ordnete der Betreiber `491791714185` dem Kontakt
+    hinter `4917688014635@c.us` zu; bis zum 22.09.2026 landeten trotzdem 217
+    Nachrichten desselben Menschen am Sammelkontakt, und er kam immer wieder
+    zum Einordnen. Ein Mensch mit zwei Nummern hatte in diesem System keinen
+    Platz — `leads.phone` ist EINE Spalte.
+
+    WARUM RUECKFALL UND NICHT VORLAUF. Die Zuordnung darf erst greifen, wenn
+    die Nummer selbst niemanden findet. Sonst zerlegt eine veraltete Zeile,
+    was laengst stimmt: dieselbe Zuordnung zeigt heute von Ivans NEUER Nummer
+    auf seine ALTE, waehrend sein Kontakt inzwischen die neue traegt. Vorn
+    angewendet schickte sie ihn auf eine Nummer, die kein Kontakt mehr hat —
+    zurueck an den Sammelkontakt, den er gerade verlassen hat. Festgehalten in
+    `test_der_DIREKTE_treffer_schlaegt_eine_veraltete_zuordnung`.
+
+    WARUM GENAU EIN SCHRITT. `A->B` und `B->C` sind zwei Aussagen des
+    Betreibers; „A ist C" ist seine dritte, die er nie getroffen hat. Eine
+    Kette koennte ausserdem im Kreis laufen. Ein Schritt ist beweisbar das,
+    was dasteht.
+
+    Es entsteht dabei NIE ein Kontakt: zeigt die Zuordnung auf eine Nummer,
+    die niemandem gehoert, bleibt der Absender unbekannt und wird gefragt.
+    """
+    lead = _lead_mit_phone(chat_id)
+    if lead is not None:
+        return lead
+    ueber = server.lid_telefon(chat_id)
+    if not ueber or ueber == chat_id:
+        return None
+    lead = _lead_mit_phone(ueber)
+    if lead is not None:
+        LOG.info("Kennung %s ueber die gespeicherte Zuordnung aufgeloest.",
+                 _maskiert(chat_id))
+    return lead
 
 
 # Beide Richtungen teilen sich den Dedup-Raum: eine WhatsApp-message_id ist

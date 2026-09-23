@@ -5130,10 +5130,7 @@ def _lead_zur_kennung(absender):
     oder als `…@s.whatsapp.net` gebuchte Kennung landete unter 'neu', obwohl
     sie einem Kontakt gehoert. Hier faellt sie auf.
     """
-    aufgeloest = server.lid_kanonisch(absender)
-    if not str(aufgeloest).endswith("@c.us"):
-        return None
-    return server._lead_mit_gleicher_nummer(aufgeloest)
+    return server.lead_zu_kennung(absender)
 
 
 def _kontakt_optionen() -> str:

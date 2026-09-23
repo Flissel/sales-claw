@@ -3230,11 +3230,13 @@ def posteingang(stunden: int = 48) -> str:
             # aber der Betreiber soll sehen, WER da wartet. Gefragt wird mit
             # der AUFGELOESTEN Form (`kanon`), sonst faende eine `183…@lid`
             # ihren Kontakt nicht mehr, seit die Anzeige roh ist.
-            if str(z["kanon"] or "").endswith("@c.us"):
-                bekannt = _lead_mit_gleicher_nummer(z["kanon"])
-                if bekannt is not None and str(bekannt["id"]) != str(z["lead_id"]):
-                    eintrag["zugeordnet_zu"] = bekannt["id"]
-                    eintrag["zugeordnet_name"] = bekannt["name"]
+            # Ueber `lead_zu_kennung` mit der ROHEN Kennung, nicht ueber
+            # `kanon` allein: eine veraltete Zuordnung darf die Nummer nicht
+            # ueberstimmen, die am Kontakt steht (siehe dort, 23.09.2026).
+            bekannt = lead_zu_kennung(z["anzeige"])
+            if bekannt is not None and str(bekannt["id"]) != str(z["lead_id"]):
+                eintrag["zugeordnet_zu"] = bekannt["id"]
+                eintrag["zugeordnet_name"] = bekannt["name"]
         eintraege.append(eintrag)
 
     antwort = {"fenster_stunden": fenster,
@@ -4357,6 +4359,48 @@ def lid_kanonisch(kennung) -> str:
     return lid_telefon(z) or kennung_schreibweise(kennung)
 
 
+def lead_zu_kennung(kennung):
+    """Wem gehoert diese Kennung? Die Nummer selbst zuerst, die Zuordnung danach.
+
+    DIESELBE REIHENFOLGE WIE `inbox.lead_zu_nummer`, und aus demselben Grund
+    (23.09.2026). Bis hierher fragten alle Aufrufer ausschliesslich ueber
+    `lid_kanonisch`, also ueber die AUFGELOESTE Form — die Zuordnung ersetzte
+    die Kennung, statt fuer sie einzuspringen. Bei einer `@lid` ist das
+    richtig: sie ist keine Rufnummer, ohne Aufloesung findet sie niemanden.
+    Bei einer Rufnummer ist es ein Ruecksschritt, sobald die Zuordnung
+    veraltet.
+
+    GEMESSEN am laufenden Betrieb (23.09.2026), und genau das, was der
+    Betreiber gemeldet hat — „manchmal kommt Ivan zum Einordnen, obwohl er
+    schon einen Kontakt hat":
+
+        Kennung             491791714185@c.us
+        direkt           -> Ivan, +491791714185          (sein Kontakt)
+        ueber lid_kanonisch -> 4917688014635@c.us -> None (niemand mehr)
+
+    Am 01.09.2026 zeigte die Zuordnung von seiner NEUEN Nummer auf seine ALTE,
+    denn damals stand die alte am Kontakt. Am 22.09.2026 wurde die neue Nummer
+    an den Kontakt geschrieben — und damit zeigte die Zuordnung ins Leere. Die
+    Folge war nicht bloss „nicht gefunden", sondern eine UMKEHR: ein Kontakt,
+    der unter seiner eigenen, am Lead stehenden Nummer als Unbekannter
+    vorgelegt wurde. Eine Zuordnung darf eine Nummer ergaenzen, nie
+    ueberstimmen.
+
+    Fuer Kennungen ohne Rufnummerncharakter (`…@lid` ohne Zuordnung) ist das
+    Ergebnis unveraendert None — der Absender wird gefragt, nicht geraten.
+    """
+    schreibweise = kennung_schreibweise(kennung)
+    if schreibweise.endswith("@c.us"):
+        lead = _lead_mit_gleicher_nummer(schreibweise)
+        if lead is not None:
+            return lead
+    kanonisch = lid_kanonisch(kennung)
+    if (kanonisch and kanonisch != schreibweise
+            and str(kanonisch).endswith("@c.us")):
+        return _lead_mit_gleicher_nummer(kanonisch)
+    return None
+
+
 def lid_zuordnung_speichern(kennung, telefon: str, quelle: str,
                             typ: str) -> str:
     """Eine Zuordnung als Aktivitaet — append-only, juengste gewinnt.
@@ -4507,8 +4551,11 @@ def _einzuordnende(limit: int = EINORDNUNG_LIMIT,
                    "anzahl_nachrichten": z["anzahl"], "zuletzt": z["zuletzt"],
                    "text_kurz": (text[:grenze] + "…"
                                  if len(text) > grenze else text)}
-        bekannt = (_lead_mit_gleicher_nummer(z["kanon"])
-                   if str(z["kanon"] or "").endswith("@c.us") else None)
+        # Die ROHE Kennung geht hinein: `lead_zu_kennung` fragt die Nummer
+        # selbst zuerst und faellt erst danach auf die Zuordnung zurueck.
+        # Mit `kanon` allein stand ein Kontakt unter seiner eigenen, am Lead
+        # stehenden Nummer wieder in dieser Liste (gemessen 23.09.2026).
+        bekannt = lead_zu_kennung(z["anzeige"])
         if bekannt is not None:
             eintrag["lead_id"] = bekannt["id"]
             eintrag["kontakt"] = bekannt["name"]
@@ -4681,8 +4728,7 @@ def eingang_einordnen(absender: str = "", entscheidung: str = "",
     if not kennung:
         return _json({"fehler": f"'{absender}' enthaelt keine Kennung."})
     aufgeloest = lid_kanonisch(absender)
-    betroffen = (_lead_mit_gleicher_nummer(aufgeloest)
-                 if str(aufgeloest).endswith("@c.us") else None)
+    betroffen = lead_zu_kennung(absender)
 
     if entscheidung == "ignorieren":
         if betroffen is not None and not bestaetigt:

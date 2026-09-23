@@ -516,6 +516,115 @@ def test_unbekannter_absender_legt_keinen_kontakt_an():
     assert server._q("select count(*) as n from leads")[0]["n"] == vorher
 
 
+# ---------------------------------------------------------------------------
+# Zweitnummern: was der Betreiber einmal eingeordnet hat, bleibt eingeordnet
+# ---------------------------------------------------------------------------
+
+def _zuordnung(kennung, telefon):
+    """Wie `eingang_einordnen(entscheidung='zuordnen')` sie ablegt.
+
+    `lid_zuordnung_speichern` haengt die Zeile an den Sammelkontakt, und den
+    kennt SERVER unter eigenem Namen — `_sammel_lead()` setzt nur den des
+    Eingangs. Ohne diese Klammer schluege der Fremdschluessel an.
+    """
+    vorher = server.UNBEKANNT_LEAD_ID
+    server.UNBEKANNT_LEAD_ID = inbox.UNBEKANNT_LEAD_ID or ""
+    try:
+        return server.lid_zuordnung_speichern(kennung, telefon, "betreiber",
+                                              "rufnummer")
+    finally:
+        server.UNBEKANNT_LEAD_ID = vorher
+
+
+def test_eine_zugeordnete_ZWEITNUMMER_landet_beim_richtigen_kontakt():
+    """Der gemessene Fall — 217 Nachrichten am falschen Platz.
+
+    Am 01.09.2026 hat der Betreiber `491791714185` dem Kontakt hinter
+    `4917688014635@c.us` zugeordnet; das Werkzeug versprach ihm dabei woertlich
+    „Kuenftige Nachrichten von dieser Kennung laufen zum Kontakt mit dieser
+    Nummer". Eingehalten wurde das nie: `_kennung` befragt die gespeicherte
+    Zuordnung NUR im `@lid`-Zweig, eine Rufnummer laeuft daran vorbei. Bis zum
+    22.09.2026 landeten so 217 Nachrichten desselben Menschen am
+    Sammelkontakt — drei Wochen, nachdem die Frage „wer ist das?" beantwortet
+    war. Deshalb kam er immer wieder zum Einordnen.
+    """
+    lead = _lead("Ivan", "+4917688014635")
+    sammel = _sammel_lead()
+    _zuordnung("491791714185", "4917688014635@c.us")
+    status, _ = _post(_ereignis(**{"from": "491791714185@c.us",
+                                   "chatId": "491791714185@c.us"}))
+    assert status == 200
+    zeilen = _aktivitaeten()
+    assert len(zeilen) == 1
+    assert str(zeilen[0]["lead_id"]) == lead != sammel
+
+
+def test_auch_die_AUSGEHENDE_richtung_folgt_der_zuordnung():
+    """Sonst stuende die Antwort des Betreibers weiter am Sammelkontakt — und
+    die Beantwortet-Pruefung saehe eine Frage ohne Antwort."""
+    lead = _lead("Ivan", "+4917688014635")
+    sammel = _sammel_lead()
+    _zuordnung("491791714185", "4917688014635@c.us")
+    status, _ = _post(_echo(**{"to": "491791714185@c.us",
+                               "chatId": "491791714185@c.us"}))
+    assert status == 200
+    zeilen = _aktivitaeten("nachricht_ausgehend")
+    assert len(zeilen) == 1
+    assert str(zeilen[0]["lead_id"]) == lead != sammel
+
+
+def test_der_DIREKTE_treffer_schlaegt_eine_veraltete_zuordnung():
+    """Die Reihenfolge ist der Kern, nicht ein Detail.
+
+    Genau dieser Zustand steht heute in der Produktion: die Zuordnung zeigt
+    von der neuen Nummer auf die ALTE (`491791714185` -> `4917688014635@c.us`),
+    inzwischen traegt der Kontakt aber die NEUE. Wer die Zuordnung vor der
+    direkten Suche anwendet, loest auf eine Nummer auf, die kein Kontakt mehr
+    hat — und schickt den Menschen zurueck an den Sammelkontakt, den er
+    gerade verlassen hat. Die Zuordnung ist ein RUECKFALL, kein Vorlauf.
+    """
+    lead = _lead("Ivan", "+491791714185")          # neue Nummer, wie heute
+    sammel = _sammel_lead()
+    _zuordnung("491791714185", "4917688014635@c.us")   # zeigt ins Leere
+    status, _ = _post(_ereignis(**{"from": "491791714185@c.us",
+                                   "chatId": "491791714185@c.us"}))
+    assert status == 200
+    assert str(_aktivitaeten()[0]["lead_id"]) == lead != sammel
+
+
+def test_eine_zuordnung_ohne_passenden_kontakt_bleibt_am_sammelkontakt():
+    """Kein Auto-Anlegen, auch nicht ueber die Bruecke: zeigt die Zuordnung
+    auf eine Nummer, die niemandem gehoert, ist der Absender weiterhin
+    unbekannt — und wird gefragt, statt geraten."""
+    _lead("Jemand anders", "+49 170 1234567")
+    sammel = _sammel_lead()
+    _zuordnung("4915199999999", "4915288888888@c.us")
+    status, _ = _post(_ereignis(**{"from": "4915199999999@c.us",
+                                   "chatId": "4915199999999@c.us"}))
+    assert status == 200
+    zeilen = _aktivitaeten()
+    assert str(zeilen[0]["lead_id"]) == sammel
+    assert zeilen[0]["payload"]["unbekannter_absender"] is True
+
+
+def test_die_bruecke_geht_genau_EINEN_schritt():
+    """A -> B -> C wird nicht durchgereicht.
+
+    Eine Kette waere eine Aussage, die der Betreiber nie getroffen hat: er hat
+    gesagt „A ist B" und „B ist C", nicht „A ist C". Zwei Schritte koennten
+    ausserdem im Kreis laufen. Ein Schritt ist beweisbar das, was er gesagt
+    hat — mehr nicht.
+    """
+    lead = _lead("Am Ende der Kette", "+4915277777777")
+    sammel = _sammel_lead()
+    _zuordnung("4915199999999", "4915288888888@c.us")
+    _zuordnung("4915288888888", "4915277777777@c.us")
+    status, _ = _post(_ereignis(**{"from": "4915199999999@c.us",
+                                   "chatId": "4915199999999@c.us"}))
+    assert status == 200
+    assert str(_aktivitaeten()[0]["lead_id"]) == sammel != lead
+
+
 def test_absender_ohne_brauchbare_nummer_landet_im_sammel_lead():
     _lead()
     sammel = _sammel_lead()
