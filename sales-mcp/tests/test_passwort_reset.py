@@ -243,8 +243,14 @@ def test_der_klartext_steht_nirgends_in_der_datenbank():
     _benutzer("ivan")
     _anfordern("ivan")
     _, gesendet = _versenden(_zettel("ivan")[0]["id"])
-    rumpf = gesendet.call_args[0][0].get_content()
+    # Seit 23.09.2026 traegt eine Mail mit Link zusaetzlich eine HTML-
+    # Fassung; der Token wird aus der TEXTFASSUNG gelesen, und der Link muss
+    # in der HTML-Fassung anklickbar sein (Betreiber-Forderung 03.09.2026).
+    nachricht = gesendet.call_args[0][0]
+    rumpf = nachricht.get_body(preferencelist=("plain",)).get_content()
     roh = rumpf.split("token=")[1].split()[0]
+    html = nachricht.get_body(preferencelist=("html",)).get_content()
+    assert f'token={roh}">' in html and "<a href=" in html
     klartext = urllib.parse.unquote(roh)
     gespeichert = server._q("select reset_hash from benutzer where name = %s",
                             ("ivan",))[0]["reset_hash"]

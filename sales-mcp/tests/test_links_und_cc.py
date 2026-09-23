@@ -143,3 +143,78 @@ def test_oberflaeche_zeigt_cc_und_bearbeitet_es():
                                      "betreff": "Hallo", "cc": "murks",
                                      "csrf": ui.CSRF_TOKEN})
     assert r.status_code == 409
+
+
+
+# ---------------------------------------------------------------------------
+# Die ausgehende Mail (23.09.2026) — die zweite Haelfte derselben Forderung
+# ---------------------------------------------------------------------------
+#
+# Die Forderung vom 03.09.2026 wurde nur in der OBERFLAECHE erfuellt. Die
+# Mail selbst ging weiter als reiner Text raus. Gemessen am 23.09.2026: die
+# Terminbestaetigung an einen Kunden trug ihren Konferenzlink als nackte
+# Zeichenkette. Ob er klickbar war, entschied allein das Mailprogramm des
+# Empfaengers. Jetzt reist neben dem Text eine HTML-Fassung mit echten
+# Links, nach DENSELBEN Regeln wie `ui._text_html`.
+
+JITSI = "https://meet.jit.si/PQcfdRqk6XMSiikezhOYe3mvzXNzdJxs"
+MIT_LINK = ("Bonjour Stephane,\n\nLien de la réunion : " + JITSI +
+            "\n\nCordialement")
+
+
+def _teile(nachricht):
+    return {t.get_content_type(): t for t in nachricht.walk()
+            if not t.is_multipart()}
+
+
+def test_eine_mail_mit_link_traegt_eine_HTML_fassung_mit_echtem_link():
+    nachricht = mail_dispatch.nachricht_bauen("k@example.org", "Termin",
+                                              MIT_LINK)
+    teile = _teile(nachricht)
+    assert nachricht.get_content_type() == "multipart/alternative"
+    html = teile["text/html"].get_content()
+    assert f'<a href="{JITSI}">{JITSI}</a>' in html
+    assert "réunion" in html and "<br>" in html
+
+
+def test_die_TEXTFASSUNG_bleibt_woertlich_was_freigegeben_wurde():
+    """Freigegeben wurde der Text. Die HTML-Fassung ist eine Darstellung
+    davon, kein zweiter Inhalt — der Text selbst aendert sich um kein Zeichen."""
+    nachricht = mail_dispatch.nachricht_bauen("k@example.org", "Termin",
+                                              MIT_LINK)
+    assert _teile(nachricht)["text/plain"].get_content().rstrip("\n") == \
+        MIT_LINK
+
+
+def test_eine_mail_OHNE_link_bleibt_reiner_text():
+    """Kein Anlass, kein Umbau: ohne Link gibt es nichts zu verlinken."""
+    nachricht = mail_dispatch.nachricht_bauen("k@example.org", "Hallo",
+                                              "Hallo Katrin,\ndanke!")
+    assert nachricht.get_content_type() == "text/plain"
+
+
+def test_im_HTML_wird_erst_escaped_dann_verlinkt():
+    """Der Rumpf stammt aus einem Entwurf, und ein Entwurf kann Kundentext
+    zitieren. Was darin nach Markup aussieht, bleibt Text; `javascript:`
+    wird nie zum Link; Satzzeichen hinter der Adresse gehoeren nicht dazu."""
+    rumpf = ("Siehe https://example.org/a?x=1&y=2. Und <script>boese()"
+             "</script> javascript:alert(1)")
+    html = _teile(mail_dispatch.nachricht_bauen("k@example.org", "x", rumpf)
+                  )["text/html"].get_content()
+    assert '<a href="https://example.org/a?x=1&amp;y=2">' in html
+    assert "</a>." in html
+    assert "<script>" not in html and "&lt;script&gt;" in html
+    assert 'href="javascript' not in html
+
+
+def test_die_EINLADUNG_traegt_text_html_und_kalender():
+    """Der Weg der Terminbestaetigung: der Kalenderteil muss bleiben, sonst
+    fehlen beim Kunden die Schaltflaechen zum Annehmen."""
+    ics = ("BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\n"
+           "UID:x@y\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
+    nachricht = mail_dispatch.nachricht_mit_einladung(
+        "k@example.org", "Termin", MIT_LINK, ics)
+    teile = _teile(nachricht)
+    assert set(teile) == {"text/plain", "text/html", "text/calendar"}
+    assert f'<a href="{JITSI}">' in teile["text/html"].get_content()
+    assert teile["text/calendar"].get_param("method") == "REQUEST"

@@ -92,6 +92,7 @@ import passwort_reset
 import medien
 import postfach
 import server
+import verlinken
 from dispatch import (_als_fehler_buchen, _als_gesendet_buchen, _claim_marke,
                       _einzeilig)
 
@@ -259,7 +260,32 @@ def nachricht_bauen(adresse: str, betreff: str, rumpf: str,
     # deutschen Text kompakt und im Rohtext lesbar.
     nachricht.set_content(rumpf or "", subtype="plain", charset="utf-8",
                           cte="quoted-printable")
+    # HTML-FASSUNG, SOBALD EIN LINK IM TEXT STEHT (23.09.2026). Der Betreiber
+    # hatte am 03.09.2026 klickbare Hyperlinks verlangt; umgesetzt wurde das
+    # nur in der Oberflaeche. Gemessen am 23.09.2026: eine Terminbestaetigung
+    # an einen Kunden trug ihren Konferenzlink als nackte Zeichenkette — ob
+    # er klickbar war, entschied allein das Mailprogramm des Empfaengers.
+    #
+    # Die Textfassung bleibt WOERTLICH, was freigegeben wurde; die HTML-
+    # Fassung ist nur ihre Darstellung, nach derselben Regel wie in der
+    # Oberflaeche (`verlinken.py`: erst escapen, dann verlinken, nur http(s)).
+    # Ohne Link bleibt die Mail reiner Text — kein Anlass, kein Umbau.
+    if verlinken.enthaelt_link(rumpf):
+        nachricht.add_alternative(_html_fassung(rumpf), subtype="html",
+                                  charset="utf-8", cte="quoted-printable")
     return nachricht
+
+
+def _html_fassung(rumpf: str) -> str:
+    """Der Text als schlichtes HTML: Zeilen bleiben Zeilen, Links werden Links.
+
+    `<br>` statt `white-space: pre-wrap`, weil Outlook Stilangaben dieser Art
+    verwirft und den Text dann in eine einzige Zeile zoege.
+    """
+    zeilen = verlinken.text_html(rumpf).split("\n")
+    return ('<!doctype html><html><body style="font-family:Arial,sans-serif;'
+            'font-size:14px;line-height:1.5">' + "<br>\n".join(zeilen)
+            + "</body></html>")
 
 
 # Was ausser dem Kalender an eine Mail darf, mit dem Medientyp, unter dem es

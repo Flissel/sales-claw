@@ -201,6 +201,7 @@ from starlette.routing import Route
 
 import kalender
 import mailadresse
+import verlinken
 
 import server
 
@@ -362,27 +363,13 @@ def _kurz(text, laenge=90) -> str:
     return schnitt.rstrip(" ,;:·-–—") + "…"
 
 
-# Nur http(s), und die Suche laeuft auf dem bereits ESCAPTEN Text: escapte
-# Anfuehrungszeichen (&quot; &#x27;) und Klammern (&lt; &gt;) beenden eine
-# Adresse, statt Teil von ihr zu werden.
-_URL_MUSTER = re.compile(
-    r"https?://(?:(?!&quot;|&#x27;|&lt;|&gt;)[^\s<>\"'])+")
-_URL_SATZZEICHEN = ".,;:)!?"
-
-
 def _text_html(text) -> str:
     """Wie _e — und http(s)-Adressen werden anklickbar (Betreiber 03.09.2026:
-    „Hyperlinks werden als Text angezeigt"). Erst escapen, dann verlinken,
-    nie umgekehrt; javascript:, ftp: und alles andere bleiben Text."""
-    sicher = _e(text)
-
-    def _link(treffer):
-        url, rest = treffer.group(0), ""
-        while url and url[-1] in _URL_SATZZEICHEN:
-            rest, url = url[-1] + rest, url[:-1]
-        return (f'<a href="{url}" rel="noreferrer noopener" '
-                f'target="_blank">{url}</a>{rest}')
-    return _URL_MUSTER.sub(_link, sicher)
+    „Hyperlinks werden als Text angezeigt"). Die Regel selbst steht in
+    `verlinken.py`, weil die ausgehende Mail sie seit dem 23.09.2026 ebenso
+    braucht; hier kommt nur der neue Reiter dazu."""
+    return verlinken.text_html(
+        text, ' rel="noreferrer noopener" target="_blank"')
 
 
 # Ortszeit statt UTC (01.09.2026, im Kalender gefunden): ein 12:00-Termin
