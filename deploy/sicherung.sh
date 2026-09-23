@@ -69,6 +69,26 @@ for P in $PRAEFIXE; do
   UNTERORDNER="$ORDNER/$P"
   mkdir -p "$UNTERORDNER"
 
+  # MEDIEN JE LADEN (23.09.2026). Seit jeder Laden eigene Medienordner hat
+  # (docker-compose.yml, MEDIEN_ORDNER/MEDIEN_ERZEUGT_ORDNER), werden sie hier
+  # je Laden gesichert — ganz oben in der Schleife, damit auch ein Laden
+  # ohne Volumes (frisch angelegt) seine Dateien nicht verliert. Vorher gab
+  # es EINE globale media.tar.gz, und media-erzeugt fehlte ganz — dort liegen
+  # die Dateien, die der Betreiber per WhatsApp an sich selbst schickt, und
+  # die lassen sich nicht neu erzeugen.
+  for paar in MEDIEN_ORDNER:media MEDIEN_ERZEUGT_ORDNER:media-erzeugt; do
+    v="${paar%%:*}"; vorgabe="${paar#*:}"
+    dir=""
+    if [ "$P" != sales ] && [ -r "$WURZEL/deploy/laeden/$P.env" ]; then
+      dir="$(sed -n "s/^$v=//p" "$WURZEL/deploy/laeden/$P.env" | tr -d '[:space:]')"
+    fi
+    dir="${dir:-./$vorgabe}"
+    case "$dir" in /*) ;; *) dir="$WURZEL/${dir#./}" ;; esac
+    if [ -d "$dir" ]; then
+      tar czf "$UNTERORDNER/$vorgabe.tar.gz" -C "$dir" .
+    fi
+  done
+
   # openwa fuer die Dauer der Sicherung stoppen: ein live getartes
   # Chromium-Profil ist die Beschaedigungsklasse, die am 26.08.2026 die
   # WhatsApp-Session gekostet hat.
@@ -156,14 +176,10 @@ for P in $PRAEFIXE; do
     | gzip > "$UNTERORDNER/schema.sql.gz"
 done
 
-# Der Medienordner (Bind-Mount, gitignored) haengt an KEINEM Volume und
-# fehlte deshalb in Sicherung UND Umzug — gefunden 31.08.2026, als nach
-# dem Cutover die PDFs weg waren. Er ist Versandmaterial (Checklisten,
-# Produktvideos) und gehoert mitgesichert.
-MEDIEN="$(cd "$(dirname "$0")/.." && pwd)/media"
-if [ -d "$MEDIEN" ]; then
-  tar czf "$ORDNER/media.tar.gz" -C "$MEDIEN" .
-fi
+# Die Medienordner werden seit 23.09.2026 JE LADEN oben in der Schleife
+# gesichert (<laden>/media.tar.gz, <laden>/media-erzeugt.tar.gz). Die
+# fruehere globale media.tar.gz stand hier: gefunden 31.08.2026, als nach
+# dem Cutover die PDFs weg waren.
 
 # -r/--no-run-if-empty: faende find nichts (koennte in einem Testaufbau
 # passieren, in dem selbst "sales" noch keine Volumes hat), wuerde xargs

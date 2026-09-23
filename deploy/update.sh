@@ -44,6 +44,7 @@ LADEN_ENVARGS=("")
 # '[:space:]'` faengt das CRLF ab, die Regex (identisch zu
 # deploy/laden-anlegen.sh/wiederherstellen.sh) alles andere Unbrauchbare.
 LADEN_ENV_FEHLER=0
+MEDIEN_GESEHEN=""
 for e in "$WURZEL"/deploy/laeden/*.env; do
   [ -e "$e" ] || continue
   [ "$(basename "$e")" = "beispiel.env" ] && continue
@@ -53,11 +54,33 @@ for e in "$WURZEL"/deploy/laeden/*.env; do
     LADEN_ENV_FEHLER=$((LADEN_ENV_FEHLER + 1))
     continue
   fi
+  # MEDIEN JE LADEN (23.09.2026). docker-compose.yml haengt die Medien ueber
+  # ${MEDIEN_ORDNER:-./media} und ${MEDIEN_ERZEUGT_ORDNER:-./media-erzeugt}
+  # ein. Der Vorgabewert gehoert dem Basis-Laden — ein weiterer Laden, der
+  # die Werte nicht setzt, saehe STILL die Dateien des ersten, darunter
+  # Kalenderdateien mit Kundennamen. Deshalb hier ein Fehler statt eines
+  # Rueckfalls, und derselbe Ordner fuer zwei Laeden ebenso.
+  for v in MEDIEN_ORDNER MEDIEN_ERZEUGT_ORDNER; do
+    w="$(sed -n "s/^$v=//p" "$e" | tr -d '[:space:]')"
+    w="${w%/}"
+    case "$w" in
+      ""|media|./media|media-erzeugt|./media-erzeugt|"$WURZEL/media"|"$WURZEL/media-erzeugt")
+        echo "FEHLER: $e setzt $v nicht auf einen eigenen Ordner ('${w:-leer}') - dieser Laden saehe die Medien des Basis-Ladens." >&2
+        LADEN_ENV_FEHLER=$((LADEN_ENV_FEHLER + 1))
+        continue 2 ;;
+    esac
+    if [[ " $MEDIEN_GESEHEN " == *" $w "* ]]; then
+      echo "FEHLER: $e teilt $v ('$w') mit einem anderen Laden." >&2
+      LADEN_ENV_FEHLER=$((LADEN_ENV_FEHLER + 1))
+      continue 2
+    fi
+    MEDIEN_GESEHEN="$MEDIEN_GESEHEN $w"
+  done
   LADEN_PRAEFIXE+=("$p")
   LADEN_ENVARGS+=("--env-file $e")
 done
 if [ "$LADEN_ENV_FEHLER" -gt 0 ]; then
-  echo "ABBRUCH: $LADEN_ENV_FEHLER Umgebungsdatei(en) in deploy/laeden/ ohne brauchbares LADEN_PRAEFIX - siehe FEHLER-Zeilen oben." >&2
+  echo "ABBRUCH: $LADEN_ENV_FEHLER Umgebungsdatei(en) in deploy/laeden/ fehlerhaft (LADEN_PRAEFIX oder eigene Medienordner) - siehe FEHLER-Zeilen oben." >&2
   exit 1
 fi
 

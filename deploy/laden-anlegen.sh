@@ -185,7 +185,18 @@ UI_BASIS_URL=https://$UI_SERVE_HOST:$PORT_SERVE
 UI_SERVE_HOST=$UI_SERVE_HOST
 INBOX_WEBHOOK_SECRET=$WEBHOOK_GEHEIMNIS
 OPENROUTER_API_KEY=$MODELL_SCHLUESSEL
+# Medien je Laden (23.09.2026, Betreiber: fuer mich meine Medien, fuer Ivan
+# andere). Ohne diese zwei Zeilen haengt docker-compose.yml die Ordner des
+# Basis-Ladens ein; deploy/update.sh weist einen Laden ohne sie deshalb ab.
+MEDIEN_ORDNER=./laeden-daten/$NAME/media
+MEDIEN_ERZEUGT_ORDNER=./laeden-daten/$NAME/media-erzeugt
 EOF
+
+# Die Ordner gleich mit anlegen, mit denselben Rechten wie media/ des
+# Basis-Ladens (755) - die umask 077 von oben gilt der Umgebungsdatei,
+# nicht den Medien.
+( umask 022; mkdir -p "$WURZEL/laeden-daten/$NAME/media" "$WURZEL/laeden-daten/$NAME/media-erzeugt" )
+echo "Medienordner angelegt: $WURZEL/laeden-daten/$NAME/{media,media-erzeugt}"
 
 echo "Umgebungsdatei geschrieben: $ENVDATEI (nur fuer den Eigentuemer lesbar)"
 echo

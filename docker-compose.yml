@@ -233,14 +233,22 @@ services:
     # (Begründung dort) — die beiden Ordner haben genau gegenläufige
     # Datenrichtungen und deshalb gegenläufige Rechte.
     volumes:
-      - ./media:/media:ro
+      # MEDIEN JE LADEN (23.09.2026, Betreiber: fuer mich meine Medien, fuer
+      # Ivan andere). Bis dahin stand hier fest ./media - jeder Laden aus
+      # diesem Checkout sah die Dateien des ersten. Der Basis-Laden hat keine
+      # Umgebungsdatei und bleibt ueber den Vorgabewert auf seinen Ordnern;
+      # jeder weitere Laden MUSS MEDIEN_ORDNER und MEDIEN_ERZEUGT_ORDNER
+      # setzen, sonst weist deploy/update.sh ihn ab (ein fehlender Wert fiele
+      # sonst STILL auf den Ordner des Basis-Ladens zurueck). Alle elf Stellen
+      # prueft scripts/tests/test_proxmox_compose.py.
+      - ${MEDIEN_ORDNER:-./media}:/media:ro
       # media-erzeugt (01.09.2026): der EINZIGE Medienordner, in den das
       # System selbst schreibt — hierhin legt `termin_bestaetigen` die
       # Kalenderdatei, damit sie ohne Handgriff anhaengbar ist. Vorher lag
       # sie nur in reports/ und war damit erzeugt und unversendbar. Der
       # Menschen-Ordner darueber bleibt unveraendert :ro; die Versender
       # unten binden diesen hier ebenfalls nur lesend.
-      - ./media-erzeugt:/media-erzeugt
+      - ${MEDIEN_ERZEUGT_ORDNER:-./media-erzeugt}:/media-erzeugt
       - ./reports:/reports
       # Sprachnachrichten NUR LESEN (01.09.2026): geschrieben wird dort
       # ausschliesslich von sales-inbox, gelesen zum Transkribieren.
@@ -294,8 +302,8 @@ services:
     # Senden erneut — sie kann seit der Freigabe verschwunden sein, und dann
     # scheitert der Entwurf, statt ohne Anhang rauszugehen.
     volumes:
-      - ./media:/media:ro
-      - ./media-erzeugt:/media-erzeugt:ro
+      - ${MEDIEN_ORDNER:-./media}:/media:ro
+      - ${MEDIEN_ERZEUGT_ORDNER:-./media-erzeugt}:/media-erzeugt:ro
     # Ein laufender Versand darf nicht per SIGKILL zerrissen werden: der
     # Dispatcher beendet nach SIGTERM die laufende Runde (HTTP-Timeout 30 s)
     # und geht dann. 45 s Gnadenfrist decken das ab.
@@ -362,7 +370,7 @@ services:
       # Upload per WhatsApp (02.09.2026, UI-Plan 4b): eine Datei an sich
       # selbst landet im erzeugten Medienordner — der zweite Dienst neben
       # sales-mcp, der dort schreibt (Vertrag: test_proxmox_compose).
-      - ./media-erzeugt:/media-erzeugt
+      - ${MEDIEN_ERZEUGT_ORDNER:-./media-erzeugt}:/media-erzeugt
     stop_grace_period: 15s
     logging:
       driver: json-file
@@ -441,8 +449,8 @@ services:
     # per Default `/media` bzw. `/media-erzeugt` — keine zusaetzliche
     # Umgebungsvariable noetig, die Pfade sind bereits deckungsgleich).
     volumes:
-      - ./media:/media:ro
-      - ./media-erzeugt:/media-erzeugt:ro
+      - ${MEDIEN_ORDNER:-./media}:/media:ro
+      - ${MEDIEN_ERZEUGT_ORDNER:-./media-erzeugt}:/media-erzeugt:ro
     # Ein laufender Versand darf nicht per SIGKILL zerrissen werden: der
     # Dienst beendet nach SIGTERM die laufende Runde (SMTP-Timeout 30 s) und
     # geht dann. 45 s Gnadenfrist decken das ab — dieselbe Rechnung wie bei
@@ -558,8 +566,8 @@ services:
     volumes:
       # Read-only wie ueberall: was gepostet werden kann, legt ausschliesslich
       # ein Mensch auf dem Host ab.
-      - ./media:/media:ro
-      - ./media-erzeugt:/media-erzeugt:ro
+      - ${MEDIEN_ORDNER:-./media}:/media:ro
+      - ${MEDIEN_ERZEUGT_ORDNER:-./media-erzeugt}:/media-erzeugt:ro
     # Ein laufender Video-Upload darf nicht per SIGKILL zerrissen werden —
     # er laeuft abschnittweise und kann Minuten dauern (Upload-Timeout 300 s
     # je Abschnitt). Grosszuegiger als bei den Zwillingen, aus genau diesem
@@ -774,7 +782,7 @@ services:
       # Seite hinter Host-Wache und CSRF-Marke statt ueber den
       # Datei-Explorer. Der AGENT bekommt kein Schreibrecht: sales-mcp und
       # sales-dispatch behalten `:ro`, und genau das ist der Punkt.
-      - ./media:/media
+      - ${MEDIEN_ORDNER:-./media}:/media
       # Auch hier OHNE `:ro`, seit dem 12.09.2026 — und aus GENAU derselben
       # Ueberlegung wie oben, nur zu Ende gedacht: Loeschen ist Schreiben.
       # Die Seite /medien listet beide Ordner und bietet neben jeder Datei
@@ -786,7 +794,7 @@ services:
       # Dateien), sales-dispatch und sales-mail behalten ihr `:ro`.
       # HOCHGELADEN wird weiterhin NUR nach media/: der Upload-Pfad geht
       # ueber `medien.wurzel()`, nicht ueber diesen Ordner.
-      - ./media-erzeugt:/media-erzeugt
+      - ${MEDIEN_ERZEUGT_ORDNER:-./media-erzeugt}:/media-erzeugt
     ports:
       # Loopback IMMER. Die zweite Zeile bindet den Port zusaetzlich an die
       # Tailscale-Adresse dieses Rechners — ausdruecklich NICHT an 0.0.0.0:

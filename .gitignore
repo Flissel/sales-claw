@@ -67,3 +67,5 @@ auftraege/
 # Nur die Vorlage gehoert ins Repository.
 deploy/laeden/*.env
 !deploy/laeden/beispiel.env
+# Medien je Laden (23.09.2026) - Kundeninhalt, nie ins Repository
+laeden-daten/

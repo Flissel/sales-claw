@@ -31,7 +31,7 @@ def _committed_file(relative_path: str) -> str:
     return completed.stdout
 
 
-def rendered_config(tmp_path: Path) -> dict[str, object]:
+def rendered_config(tmp_path: Path, extra_env: dict[str, str] | None = None) -> dict[str, object]:
     compose_root = tmp_path / "committed-compose"
     compose_root.mkdir()
     (compose_root / "docker-compose.yml").write_text(
@@ -62,6 +62,7 @@ def rendered_config(tmp_path: Path) -> dict[str, object]:
             "UI_TAILSCALE_IP": "100.64.0.10",
         }
     )
+    env.update(extra_env or {})
     command = ["docker", "compose", "--env-file", str(compose_root / ".env.example")]
     for compose_file in COMPOSE_FILES:
         command.extend(("-f", str(compose_root / compose_file.name)))
@@ -726,3 +727,50 @@ def test_sales_mail_erreicht_beide_medienordner(tmp_path: Path) -> None:
             f"medien.pruefe/medien.lies die Kalenderdatei im Container nie "
             f"finden.")
         assert ziele[pfad].get("read_only") is True, pfad
+
+
+# ---------------------------------------------------------------------------
+# Medien je Laden (23.09.2026)
+# ---------------------------------------------------------------------------
+#
+# Betreiber: „für mich gibt es meine Medien und für Ivan andere — shared ist
+# nicht gut, weil ich ein Side-Business habe." Gemessen am selben Tag: alle
+# elf Einhaengestellen von `media` und `media-erzeugt` waren fest auf
+# `./media` bzw. `./media-erzeugt` verdrahtet. Ivans Laden laeuft aus
+# demselben Checkout — sein Bot sah 23 Dateien des Betreibers, darunter die
+# erzeugten Kalenderdateien mit Kundennamen. Der Entwurf vom 16.09.2026 hatte
+# das als bekannte Einschraenkung von Plan 1 festgehalten.
+
+MEDIEN_ZIELE = ("/media", "/media-erzeugt")
+
+
+def _medien_quellen(dienste) -> dict[tuple[str, str], str]:
+    return {(name, str(v.get("target"))): str(v.get("source"))
+            for name, dienst in dienste.items()
+            for v in (dienst.get("volumes") or [])
+            if str(v.get("target")) in MEDIEN_ZIELE}
+
+
+def test_ohne_ladenwert_bleibt_der_basis_laden_auf_seinen_ordnern(tmp_path: Path) -> None:
+    """Der bestehende Laden hat keine Umgebungsdatei — fuer ihn aendert sich
+    kein einziger Pfad. Keine Datei wandert, nichts ist umzuziehen."""
+    quellen = _medien_quellen(rendered_config(tmp_path)["services"])
+    assert len(quellen) == 11
+    for (dienst, ziel), quelle in quellen.items():
+        assert quelle.replace("\\", "/").endswith(ziel), (dienst, ziel, quelle)
+
+
+def test_ein_laden_mit_eigenem_ordner_teilt_KEINE_einzige_einhaengestelle(tmp_path: Path) -> None:
+    """Die eigentliche Zusage: ist der Ordner eines Ladens gesetzt, zeigt
+    JEDE Einhaengestelle dorthin. Eine vergessene Stelle waere genau das
+    stille Teilen, das hier abgeschafft wird — deshalb wird nicht eine
+    Stelle stichprobenhaft geprueft, sondern alle."""
+    eigene = {"/media": "/srv/laeden/ivan/media",
+              "/media-erzeugt": "/srv/laeden/ivan/media-erzeugt"}
+    quellen = _medien_quellen(rendered_config(tmp_path, {
+        "MEDIEN_ORDNER": eigene["/media"],
+        "MEDIEN_ERZEUGT_ORDNER": eigene["/media-erzeugt"],
+    })["services"])
+    assert len(quellen) == 11
+    falsch = {k: v for k, v in quellen.items() if v != eigene[k[1]]}
+    assert falsch == {}, f"teilt weiterhin mit dem Basis-Laden: {falsch}"

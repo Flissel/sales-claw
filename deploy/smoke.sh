@@ -476,6 +476,30 @@ else
   fi
 fi
 
+# 12b) Medienordner sind je Laden verschieden (23.09.2026). Gemessen am
+# laufenden Container, nicht an der Umgebungsdatei: entscheidend ist, was
+# tatsaechlich eingehaengt ist. Je Laden laeuft genau ein *-mcp.
+echo "== Medienordner sind je Laden verschieden =="
+if [ "$MODUS" = "basis" ]; then
+  melde "medien je laden" "uebersprungen (--nur-basis; volle Pruefung ueber deploy/wache.sh alle 15 Minuten)"
+else
+  mcp_container="$(docker ps --format '{{.Names}}' | grep -- '-mcp$' || true)"
+  quellen="$(
+    for c in $mcp_container; do
+      for ziel in /media /media-erzeugt; do
+        printf '[%s]\n' "$(docker inspect "$c" --format "{{range .Mounts}}{{if eq .Destination \"$ziel\"}}{{.Source}}{{end}}{{end}}")"
+      done
+    done | sort
+  )"
+  doppelt="$(printf '%s\n' "$quellen" | uniq -d)"
+  if [ -n "$doppelt" ]; then
+    fehl "medien je laden" "geteilt: $(printf '%s' "$doppelt" | tr '\n' ' ')"
+  else
+    gut "medien je laden"
+    printf '%s\n' "$quellen" | sed -e 's/^\[//' -e 's/\]$//' -e 's/^/  /'
+  fi
+fi
+
 # 13) UI_BASIS_URL ist je Laden gesetzt und zeigt nicht auf Loopback
 # (Nachzug zum Plan 2026-09-16-zweiter-laden-getrennt). Eine fehlende oder
 # auf 127.0.0.1/localhost zeigende UI_BASIS_URL faellt in ui.py still auf
