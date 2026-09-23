@@ -1,0 +1,10 @@
+[Unit]
+Description=sales-claw: Ablauf des Tailscale-Tokens pruefen und per Telegram melden
+
+[Service]
+Type=oneshot
+User=debian
+# TAILSCALE_API_KEY/TAILSCALE_TAILNET/TELEGRAM_CHAT_ID — dieselbe Datei wie
+# beim Einladen (sales-admin-auftraege.service), nie in einem Container.
+EnvironmentFile=-/home/debian/sales-claw/tailscale-admin.env
+ExecStart=/usr/bin/bash /home/debian/sales-claw/deploy/token-ablauf-waechter.sh

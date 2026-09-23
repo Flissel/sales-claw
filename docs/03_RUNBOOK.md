@@ -3053,6 +3053,31 @@ muss** (Spec §4, ausdrücklich nicht automatisiert):
    nicht abtippen, und unter `tcp:<port>` freigeben (wobei `<port>` der
    Serve-Port des Ladens ist, in den der Mensch arbeiten soll).
 
+#### Token-Ablauf: der Bot erinnert
+
+Der API-Token läuft nach 90 Tagen ab, danach scheitert jede Einladung. Der
+Timer `sales-token-waechter.timer` (täglich 09:00 Europe/Berlin, holt einen
+verpassten Lauf nach) fragt bei Tailscale nach, wann **der gerade eingetragene**
+Token abläuft. 5 bis 1 Tag(e) vorher und am Ablauftag schickt der Telegram-Bot
+eine Nachricht mit den Schritten zum Neusetzen an `TELEGRAM_CHAT_ID`
+(aus `tailscale-admin.env`). Ist der Token abgelaufen oder widerrufen, meldet
+er das täglich, bis ein neuer drin ist.
+
+Erneuern heißt nur: neuen Token erzeugen, Zeile `TAILSCALE_API_KEY=` in
+`~/sales-claw/tailscale-admin.env` ersetzen. Kein Neustart, keine
+Neueinrichtung — beide Timer lesen die Datei bei jedem Lauf frisch, und der
+Wächter übernimmt das neue Ablaufdatum von selbst.
+
+Einmal einrichten (auf der VM):
+
+```bash
+sudo cp deploy/systemd/sales-token-waechter.timer \
+        deploy/systemd/sales-token-waechter.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now sales-token-waechter.timer
+bash deploy/token-ablauf-waechter.sh --probe   # schickt eine Probenachricht
+```
+
 ---
 
 Betrieb auf dem MiniPC (nach dem Cutover): siehe [04_BETRIEB_MINIPC.md](04_BETRIEB_MINIPC.md),

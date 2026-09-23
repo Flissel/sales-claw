@@ -1,0 +1,10 @@
+[Unit]
+Description=sales-claw: Ablauf des Tailscale-Tokens taeglich pruefen
+
+[Timer]
+OnCalendar=*-*-* 09:00:00 Europe/Berlin
+# War die VM um 9 Uhr aus, wird der Lauf beim naechsten Start nachgeholt.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
