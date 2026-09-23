@@ -625,6 +625,61 @@ def test_die_bruecke_geht_genau_EINEN_schritt():
     assert str(_aktivitaeten()[0]["lead_id"]) == sammel != lead
 
 
+# ---------------------------------------------------------------------------
+# Der Selbst-Chat in LID-Form (23.09.2026)
+# ---------------------------------------------------------------------------
+
+EIGENE_LID = "164000000000001@lid"
+
+
+def test_der_SELBST_CHAT_in_LID_form_wird_erkannt_und_verworfen():
+    """Gemessen im laufenden Betrieb: 1211 Zeilen am Sammelkontakt.
+
+    Seit dem 18.08.2026 adressiert WhatsApp Chats als `@lid`. Im Selbst-Chat
+    traegt `from` dann die eigene RUFNUMMER, `chatId` aber die eigene LID —
+    der Ziffernvergleich sah zwei verschiedene Kennungen, und jede
+    Bot-Antwort, jede Digest-Zustellung, jede weitergereichte Nachricht wurde
+    als Kundenverkehr gebucht. Vom 21.08. bis 23.09.2026 waren das 1211
+    Zeilen, und OpenWA loest die Kennung nachweislich zur Betreiber-Nummer
+    auf. Mit der gespeicherten Zuordnung wird sie jetzt als das erkannt, was
+    sie ist.
+    """
+    sammel = _sammel_lead()
+    _zuordnung(EIGENE_LID, EIGENE)
+    status, antwort = _post(_echo(**{"to": EIGENE_LID, "chatId": EIGENE_LID,
+                                     "body": "Digest: 3 Wiedervorlagen"}))
+    assert status == 200
+    assert str(antwort.get("verworfen", "")).startswith("Selbst-Chat")
+    assert _aktivitaeten("nachricht_ausgehend") == []
+    assert sammel  # der Sammelkontakt existierte — gebucht wurde trotzdem nichts
+
+
+def test_ohne_zuordnung_bleibt_die_eigene_LID_unerkannt():
+    """Die Grenze, festgehalten statt verschwiegen: eine LID IST keine
+    Rufnummer, und ohne Zuordnung weiss der Eingang nicht, wem sie gehoert.
+    Er fragt dafuer NICHT bei OpenWA nach — nicht auf dem heissen Pfad, nicht
+    gegen ein Rate-Limit von zehn Abfragen. Die Zuordnung entsteht einmal,
+    ueber `absender_aufloesen(kennung=…)`."""
+    _sammel_lead()
+    status, _ = _post(_echo(**{"to": EIGENE_LID, "chatId": EIGENE_LID}))
+    assert status == 200
+    assert len(_aktivitaeten("nachricht_ausgehend")) == 1
+
+
+def test_eine_FREMDE_LID_mit_zuordnung_ist_kein_selbst_chat():
+    """Die Gegenprobe: die Aufloesung darf nur die eigene Nummer als eigene
+    erkennen. Eine Antwort an einen Kunden unter seiner LID bleibt eine
+    Antwort an einen Kunden — und landet dank Zuordnung sogar bei ihm."""
+    kunde = _lead("Max Testperson", "+49 170 1234567")
+    _sammel_lead()
+    _zuordnung("183000000000002@lid", KUNDE)
+    status, antwort = _post(_echo(**{"to": "183000000000002@lid",
+                                     "chatId": "183000000000002@lid"}))
+    assert status == 200 and "verworfen" not in antwort
+    zeilen = _aktivitaeten("nachricht_ausgehend")
+    assert len(zeilen) == 1 and str(zeilen[0]["lead_id"]) == kunde
+
+
 def test_absender_ohne_brauchbare_nummer_landet_im_sammel_lead():
     _lead()
     sammel = _sammel_lead()

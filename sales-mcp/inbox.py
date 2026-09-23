@@ -410,13 +410,48 @@ def selbst_chat_grund(daten: dict):
     ein faelschlich gebuchter Selbst-Chat verstopft das Postfach mit dem
     eigenen Bot-Verkehr (unsichtbar, schaedlich).
     """
-    chat = _ziffern(daten.get("chatId") or daten.get("to"))
-    eigen = _ziffern(daten.get("from"))
+    roh_chat = daten.get("chatId") or daten.get("to")
+    roh_eigen = daten.get("from")
+    chat = _ziffern(roh_chat)
+    eigen = _ziffern(roh_eigen)
     if not chat or not eigen:
         return "eigene Nachricht ohne lesbare Chat-/Absenderkennung"
     if chat == eigen:
-        return "Selbst-Chat (Notizzettel-/Bot-Kanal), kein Kundenverkehr"
+        return SELBST_CHAT
+    # LID-FORM (23.09.2026). Seit WhatsApp Chats als `@lid` adressiert, traegt
+    # im Selbst-Chat `from` die eigene RUFNUMMER und `chatId` die eigene LID.
+    # Der Ziffernvergleich oben sah darin zwei Kennungen — gemessen wurden so
+    # vom 21.08. bis 23.09.2026 1211 Bot-Antworten, Digest-Zustellungen und
+    # weitergereichte Nachrichten als Kundenverkehr am Sammelkontakt gebucht,
+    # und der Datei-Upload an sich selbst (Schritt 4b) lief ins Leere.
+    # Verglichen werden deshalb zusaetzlich die AUFGELOESTEN Formen — ueber
+    # die gespeicherte Zuordnung, nie ueber eine Live-Abfrage bei OpenWA
+    # (heisser Pfad, Rate-Limit nach zehn Abfragen).
+    if _aufgeloeste_ziffern(roh_chat) == _aufgeloeste_ziffern(roh_eigen):
+        return SELBST_CHAT
     return None
+
+
+SELBST_CHAT = "Selbst-Chat (Notizzettel-/Bot-Kanal), kein Kundenverkehr"
+
+
+def _aufgeloeste_ziffern(jid) -> str:
+    """Ziffern der Person hinter einem JID — eine `@lid` ueber die Zuordnung.
+
+    Ohne Zuordnung bleibt die LID, was sie ist, und zaehlt als eigene
+    Kennung: lieber einen Selbst-Chat verpassen (sichtbar im Sammelkontakt)
+    als einen Kunden-Chat verwerfen (unsichtbar, sein Text waere weg). Ein
+    Datenbankfehler endet ebenso — er kommt beim Buchen ohnehin wieder hoch,
+    dort mit dem richtigen Status fuer OpenWA.
+    """
+    ziffern = _ziffern(jid)
+    if not lid.ist_lid(jid):
+        return ziffern
+    try:
+        telefon = server.lid_telefon(ziffern)
+    except psycopg.Error:
+        return ziffern
+    return _ziffern(telefon) if telefon else ziffern
 
 
 def _ist_gruppe(daten: dict) -> bool:
