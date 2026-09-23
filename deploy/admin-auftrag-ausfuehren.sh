@@ -301,9 +301,14 @@ elif [ "$ART" = "tailscale_einladen" ]; then
   # angreifbar, sollte je eine Zeile diese Pruefung umgehen (z. B. ein
   # direkter SQL-Insert ausserhalb der Oberflaeche). json.dumps() entkommt
   # korrekt, unabhaengig vom Inhalt.
+  #
+  # Eine LISTE, kein einzelnes Objekt: /user-invites nimmt mehrere
+  # Einladungen auf einmal an. Gemessen am 23.09.2026 im ersten echten Lauf —
+  # ein einzelnes Objekt beantwortet Tailscale mit "invalid request body,
+  # expected a list of invitation requests".
   ANFRAGE_JSON="$(EINLADEN_EMAIL="$EINLADEN_EMAIL" python3 -c '
 import json, os
-print(json.dumps({"email": os.environ["EINLADEN_EMAIL"], "role": "member"}))')"
+print(json.dumps([{"email": os.environ["EINLADEN_EMAIL"], "role": "member"}]))')"
   ERLEDIGT+=("anfrage-aufbau")
 
   # --- 4. Tailscale-Einladung anfordern -------------------------------------
@@ -342,6 +347,10 @@ try:
     daten = json.loads(rumpf)
 except (ValueError, TypeError):
     daten = {}
+# Erfolg kommt als Liste (eine Einladung je Anfrage-Eintrag, wir schicken
+# genau einen), ein Fehler als Objekt mit "message".
+if isinstance(daten, list):
+    daten = daten[0] if daten and isinstance(daten[0], dict) else {}
 if not isinstance(daten, dict):
     daten = {}
 if code.startswith("2"):
