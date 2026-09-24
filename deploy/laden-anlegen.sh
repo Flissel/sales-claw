@@ -198,6 +198,9 @@ UI_BASIS_URL=https://$UI_SERVE_HOST:$PORT_SERVE
 UI_SERVE_HOST=$UI_SERVE_HOST
 INBOX_WEBHOOK_SECRET=$WEBHOOK_GEHEIMNIS
 OPENROUTER_API_KEY=$MODELL_SCHLUESSEL
+# Name auf der Terminkarte (Datenquelle mitglied.name). Leer heisst: das
+# Feld wird beim Erstellen erfragt.
+MITGLIED_NAME=${MITGLIED_NAME:-}
 # Medien je Laden (23.09.2026, Betreiber: fuer mich meine Medien, fuer Ivan
 # andere). Ohne diese zwei Zeilen haengt docker-compose.yml die Ordner des
 # Basis-Ladens ein; deploy/update.sh weist einen Laden ohne sie deshalb ab.
