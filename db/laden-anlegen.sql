@@ -35,6 +35,20 @@ create table if not exists :"schema".kalender_quellen (like sales.kalender_quell
 -- Hand). `like ... including all` uebernimmt den art-CHECK des Basis-Ladens.
 create table if not exists :"schema".benutzer_mails   (like sales.benutzer_mails   including all);
 
+-- Schlussfix-Welle 24.09.2026, Befund 4: `like ... including all` kopiert
+-- den art-CHECK von sales.benutzer_mails NUR so, wie er GENAU JETZT
+-- aussieht. db/provision.sql erweitert diesen CHECK erst zur Laufzeit um
+-- 'willkommen' (drop constraint if exists + add constraint, siehe dort,
+-- ~Zeile 269) — laeuft provision.sql auf der Basis NACH diesem Skript statt
+-- davor, entstuende der neue Laden noch mit dem ALTEN CHECK (nur
+-- 'passwort_reset'), und der erste Willkommens-Zettel schluege mit einer
+-- CHECK-Verletzung fehl. Idempotentes Drop+Add stellt den erweiterten CHECK
+-- unabhaengig von der Lauf-Reihenfolge her — wie provision.sql es fuer
+-- sales/sales_test bereits tut, hier fuer den NEUEN Laden.
+alter table :"schema".benutzer_mails drop constraint if exists benutzer_mails_art_check;
+alter table :"schema".benutzer_mails add constraint benutzer_mails_art_check
+  check (art in ('passwort_reset','willkommen'));
+
 -- Die zwei Fremdschluessel, INNERHALB des neuen Schemas. Zeigten sie auf
 -- sales.leads, waere die Trennung schon hier gebrochen.
 --

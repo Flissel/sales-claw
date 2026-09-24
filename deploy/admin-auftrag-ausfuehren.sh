@@ -235,11 +235,26 @@ if [ "$ART" = "laden_anlegen" ]; then
   # --- 6b. Willkommensmail (24.09.2026) -------------------------------------
   # Nur mit Adresse. Geschrieben wird ins Schema des NEUEN Ladens - das darf
   # nur der Wirt (supabase_admin), nie die Oberflaeche des Basis-Ladens.
-  # Name und Adresse sind keine Geheimnisse; psql -v quotet sie per :'…'.
+  # Der Name ist kein Geheimnis und bleibt per -v (psql quotet ihn per
+  # :'…'). Die Adresse dagegen ist ein Personenbezug — anders als Name/
+  # Schema geht sie deshalb NIE ueber argv (Spec §2.2: "Werte ueber
+  # \getenv, nie ueber Argv"; Schlussfix-Welle 24.09.2026, Befund 2 — vorher
+  # stand sie per "-v mail=..." woertlich sowohl im Argv des AEUSSEREN
+  # docker-Aufrufs als auch in dem von psql selbst, sichtbar per `ps` fuer
+  # jeden, der waehrend der laufenden Abfrage hinsah). Sie geht stattdessen
+  # ueber die Prozessumgebung des docker-exec-Aufrufs (blosse Namensform
+  # "-e MAIL") und "\getenv mail MAIL" als erste Heredoc-Zeile — dasselbe
+  # Muster wie ERGEBNIS/DATEN weiter unten in dieser Datei. :'mail' bleibt
+  # in der SQL selbst unveraendert, nur die Herkunft des Werts aendert sich.
+  # Deshalb hier bewusst NICHT psql_admin (das ruft docker exec ohne -e
+  # auf) — ON_ERROR_STOP=1 wird darum unten selbst gesetzt.
   WILLKOMMEN_STATUS=""
   if [ -n "$EINLADEN_EMAIL" ]; then
-    ZETTEL_ID="$(psql_admin -tAq -v schema="sales_$LADEN_NAME" \
-        -v name="$LADEN_NAME" -v mail="$EINLADEN_EMAIL" <<'SQL' | head -n1
+    ZETTEL_ID="$(MAIL="$EINLADEN_EMAIL" docker exec -i -e MAIL \
+        debian-supabase-db-1 psql -U supabase_admin -d postgres \
+        -v ON_ERROR_STOP=1 -tAq -v schema="sales_$LADEN_NAME" \
+        -v name="$LADEN_NAME" <<'SQL' | head -n1
+\getenv mail MAIL
 update :"schema".benutzer set email = :'mail' where name = :'name';
 insert into :"schema".benutzer_mails (benutzer, art)
   values (:'name', 'willkommen') returning id;
@@ -286,6 +301,12 @@ ergebnis = {
 # Mit Willkommensmail kennt NIEMAND das Wegwerf-Passwort - es wird nicht
 # angezeigt, der Mensch setzt sein eigenes ueber den Link.
 if os.environ["WILLKOMMEN_AN"]:
+    # Befund 6 (Schlusspruefung 24.09.2026): der Link geht innerhalb von
+    # Sekunden raus, funktioniert aber erst, sobald "Als naechstes von
+    # Hand" oben erledigt ist. Nur in diesem Zweig, damit der
+    # Kein-Adresse-Hinweis unveraendert bleibt.
+    ergebnis["hinweis"] += (" Der Link in der Willkommensmail funktioniert "
+                             "erst nach diesen Schritten; er gilt 7 Tage.")
     ergebnis["willkommen"] = {"an": os.environ["WILLKOMMEN_AN"],
                               "status": os.environ["WILLKOMMEN_STATUS"]}
 else:
@@ -294,8 +315,15 @@ print(json.dumps(ergebnis))' "$PORT_UI" "$PORT_SERVE")"
   unset KONTO_PW
 
   # ERGEBNIS_JSON traegt das frische Kontopasswort im Klartext (Feld
-  # "passwort") weiter. Ein "-v ergebnis=..." an psql_admin haette es in
-  # PSQLS EIGENEM argv getragen — innerhalb des Containers per `ps` sichtbar,
+  # "passwort") weiter — das gilt NUR, wenn keine Adresse angegeben wurde
+  # (siehe python3-Block oben: mit WILLKOMMEN_AN gesetzt steht dort
+  # ergebnis["willkommen"], nie ein "passwort"-Feld; ohne Adresse bleibt es
+  # beim Wegwerf-Passwort wie vor der Willkommensmail, Schlussfix-Welle
+  # 24.09.2026, Befund 3). Der folgende Absatz gilt fuer beide Faelle
+  # gleichermassen, weil ERGEBNIS_JSON so oder so ueber die Umgebung statt
+  # argv geht — nur der INHALT unterscheidet sich. Ein "-v ergebnis=..." an
+  # psql_admin haette es in PSQLS EIGENEM argv getragen — innerhalb des
+  # Containers per `ps` sichtbar,
   # solange die Abfrage laeuft, dieselbe Umgehung, die db/laden-anlegen.sql
   # fuer LADEN_PASSWORT bereits mit `\getenv` vermeidet
   # (db/laden-anlegen.sql:80). Nachgemessen mit einer docker-Attrappe: mit

@@ -423,6 +423,18 @@ services:
     # aus .env, ueber Compose-Interpolation der genannten Namen.
     environment:
       - SALES_DB_URL=${SALES_DB_URL}
+      # Schlussfix-Welle 24.09.2026, Befund 1: fehlte hier komplett, waehrend
+      # jeder andere DB-Dienst sie bekommt (Anker x-sales-mcp-umgebung oder,
+      # wie bei sales-ui, namentlich). server.py faellt ohne sie auf
+      # SCHEMA="sales" zurueck (SALES_DB_SCHEMA = os.environ.get(...,
+      # "sales")) und setzt search_path=sales,extensions — fuer einen
+      # zweiten Laden meldet sich <laden>-mail dann als sales_app_<laden> an,
+      # eine Rolle OHNE usage auf sales, und jede Abfrage auf benutzer_mails
+      # schlaegt mit "relation does not exist" fehl: main() protokolliert
+      # "Datenbankfehler — Runde uebersprungen" alle 10 Sekunden, fuer immer,
+      # ohne dass je eine Mail rausgeht. Guard: test_laden_parameter.py,
+      # test_zweiter_laden_bekommt_eigene_db_und_nicht_die_kanal_zugangsdaten_des_ersten.
+      - SALES_DB_SCHEMA=${SALES_DB_SCHEMA:-sales}
       - SMTP_HOST=${SMTP_HOST:-}
       - SMTP_PORT=${SMTP_PORT:-587}
       - SMTP_USER=${SMTP_USER:-}

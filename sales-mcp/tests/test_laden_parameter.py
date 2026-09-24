@@ -484,6 +484,36 @@ def test_zweiter_laden_bekommt_eigene_db_und_nicht_die_kanal_zugangsdaten_des_er
             f"{dienst}: hat den OPENWA_API_KEY des BASIS-Ladens geerbt — "
             f"genau der Befund aus K1.")
 
+    # sales-mail gehoert NICHT zu VIER_DIENSTE (eigene, benannte
+    # environment:-Liste statt des x-sales-mcp-umgebung-Ankers — er soll ja
+    # gerade NICHT den breiten Satz an Geheimnissen der vier Dienste oben
+    # erben, siehe T5a-Kommentar im Compose-File selbst), braucht aber
+    # dieselbe SALES_DB_SCHEMA-Treue wie sie. Schlussfix-Welle 24.09.2026,
+    # Befund 1 (Regressionswache): SALES_DB_URL stand hier immer schon
+    # namentlich, SALES_DB_SCHEMA fehlte komplett — server.py fiel dadurch
+    # auf SCHEMA="sales" zurueck (os.environ.get("SALES_DB_SCHEMA",
+    # "sales")), <laden>-mail meldete sich mit `sales_app_<laden>` (keine
+    # usage auf sales) am SCHEMA DES BETREIBERS an, und jede Abfrage auf
+    # benutzer_mails scheiterte mit "relation does not exist" — main()
+    # protokollierte "Datenbankfehler — Runde uebersprungen" alle 10
+    # Sekunden, fuer immer, ohne dass je eine Mail rausging.
+    #
+    # KAPUTTE FASSUNG, DIE DIESE ZUSICHERUNG FAENGT: die
+    # `SALES_DB_SCHEMA=${SALES_DB_SCHEMA:-sales}`-Zeile im
+    # `sales-mail`-Dienst entfernt — verifiziert per Handprobe (Zeile
+    # entfernt: `umg_mail_zweit.get("SALES_DB_SCHEMA")` liefert dann `None`
+    # statt `"sales_ivan"`, die Zusicherung schlaegt fehl; Zeile wieder da:
+    # gruen).
+    umg_mail_zweit = zweit["services"]["sales-mail"]["environment"]
+    assert umg_mail_zweit.get("SALES_DB_URL") == DSN_ZWEITER_LADEN, (
+        "sales-mail: SALES_DB_URL folgt nicht der Umgebungsdatei des "
+        "Ladens.")
+    assert umg_mail_zweit.get("SALES_DB_SCHEMA") == "sales_ivan", (
+        "sales-mail: SALES_DB_SCHEMA fehlt oder folgt nicht der "
+        "Umgebungsdatei des Ladens — <laden>-mail liefe auf dem SCHEMA "
+        "DES BETREIBERS und faende benutzer_mails dort nicht (Befund 1, "
+        "Schlussfix-Welle 24.09.2026).")
+
     # Gegenprobe zur Gegenprobe: der ERSTE Laden bekommt weiterhin seinen
     # EIGENEN gesetzten Wert (der Anker unterdrueckt ihn nicht einfach nur).
     for dienst in VIER_DIENSTE:

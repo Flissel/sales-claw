@@ -1781,8 +1781,16 @@ Freigabe geht nichts raus — dieselbe Konstruktion, dasselbe Gate.
 # Start (alle Dienste des Hauptstacks)
 docker compose up -d sales-mcp sales-dispatch sales-inbox sales-mail
 docker compose logs --tail 20 sales-mail
-# erwartet: "Start: schema=sales smtp=<host>:465 tls=implizit (SSL) ...
-#            warte auf freigegebene E-Mail-Entwuerfe."
+# erwartet (Format seit der Trennung Kunden-/Betreiber-Identitaet,
+# Schlussfix-Welle 24.09.2026 — siehe mail_dispatch.py main() fuer die
+# genaue Zusammensetzung): ZWEI Zeilen, in dieser Reihenfolge:
+#   Aktiv: kundenmails=ja kontomails=<ja/nein> (identitaet=<kunde/system>)
+#   Start: schema=sales kunde=<host>:<port> (<SSL/STARTTLS>)
+#          [system=<host>:<port> (<SSL/STARTTLS>)] intervall=10s pause=1s
+#          once=False — warte auf freigegebene E-Mail-Entwuerfe.
+# "system=..." erscheint nur, wenn SYSTEM_SMTP_* zusaetzlich zu SMTP_*
+# gesetzt ist; im Basis-Laden (kein SYSTEM_*) faellt kontomails=ja mit
+# identitaet=kunde auf dieselbe Identitaet wie kundenmails zurueck.
 ```
 
 **Zugangsdaten sind Betreiberaktion — niemals erfinden.** In die `.env`:
@@ -1799,6 +1807,22 @@ Nach jeder Änderung an der `.env` muss der Container **neu erzeugt** werden
 (`docker compose up -d sales-mail`) — Compose wertet `env_file` beim
 Erzeugen aus, nicht beim Start. Ein laufender Container behält die Werte
 seines Erzeugungszeitpunkts.
+
+**Rotation des Betreiber-Passworts betrifft ALLE Läden (Schlussfix-Welle
+24.09.2026, Befund 3).** `deploy/laden-anlegen.sh` kopiert `SMTP_PASSWORT`
+der Basis-`.env` beim Anlegen eines neuen Ladens einmalig als
+`SYSTEM_SMTP_PASSWORT` in dessen eigene `deploy/laeden/<name>.env` (Spec
+§2.3) — es ist danach eine **eigene Kopie**, keine Referenz. Wird das
+Betreiber-Postfach-Passwort geändert, reicht es **nicht**, nur die
+Basis-`.env` zu aktualisieren: `SYSTEM_SMTP_PASSWORT` muss von Hand in
+**jeder** `deploy/laeden/*.env` nachgezogen werden, und **jeder**
+`<laden>-mail`-Container braucht danach eine Neuerzeugung
+(`docker compose --env-file deploy/laeden/<name>.env up -d sales-mail`
+für jeden Laden), zusätzlich zum Basis-`sales-mail`
+(`docker compose up -d sales-mail`) für dessen eigenes `SMTP_PASSWORT`.
+Wird ein Laden dabei vergessen, versendet dessen Konto-Mails weiter mit
+dem alten Passwort — bis der Mailserver es zurückweist, was je nach
+Anbieter erst auffällt, wenn ein Mensch sich wirklich aussperrt.
 
 **Fehlt ein Wert, beendet sich der Dienst mit Exit 0** und einer Zeile
 „E-Mail-Kanal nicht eingerichtet — … fehlt in der Umgebung". Das ist kein
@@ -2586,19 +2610,24 @@ Schema `sales` wirklich nicht lesen kann.
 
 Ein nacktes `docker compose up -d` würde `ivan-auto` mitstarten — einen
 Dienst, der bewusst nie läuft (`deploy/update.sh:17`). Deshalb immer
-namentlich, und gestaffelt: zunächst nur die zwei Dienste, die ohne
+namentlich, und gestaffelt: zunächst nur die drei Dienste, die ohne NEUE
 externe Zugangsdaten auskommen, der Rest erst, sobald Postfach,
 Telegram-Token, LinkedIn-Zugang und WhatsApp-Pairing für den neuen Laden
 vorliegen.
 
 ```bash
-# Erster Start — nur sales-mcp/sales-ui brauchen keine externen
-# Zugangsdaten:
+# Erster Start — sales-mcp/sales-ui brauchen keine externen Zugangsdaten,
+# sales-mail seit Schlussfix-Welle 24.09.2026 ebenfalls nicht: es sendet
+# Konto-Mails ueber SYSTEM_SMTP_*, das deploy/laden-anlegen.sh beim Anlegen
+# bereits aus der Basis-.env in deploy/laeden/ivan.env kopiert hat (Spec
+# §2.3) — kein manueller Schritt noetig, bevor dieser Dienst laeuft:
 docker compose --env-file deploy/laeden/ivan.env up -d --build \
-  sales-mcp sales-ui
+  sales-mcp sales-ui sales-mail
 
 # Später, sobald Postfach/Telegram-Token/LinkedIn vorliegen — alle neun
-# Dienste des Hauptstacks (weiterhin OHNE ivan-auto):
+# Dienste des Hauptstacks (weiterhin OHNE ivan-auto; sales-mail steht hier
+# erneut, das ist unschaedlich — Compose erzeugt einen unveraenderten
+# Container nicht neu):
 docker compose --env-file deploy/laeden/ivan.env up -d --build \
   sales-mcp sales-ui sales-inbox sales-dispatch sales-mail \
   sales-claw sales-telegram sales-linkedin sales-stt
@@ -2905,7 +2934,10 @@ systemctl list-timers sales-admin-auftraege.timer
    von der Betreiber-Adresse eine Willkommensmail mit Link zum Passwort-Setzen
    (7 Tage gültig). Dann erscheint auf der Ergebnisseite **kein**
    Wegwerf-Passwort, sondern der Versandstatus (verschickt / fehlgeschlagen:
-   Grund / noch unterwegs).
+   Grund / noch unterwegs). Die Mail geht innerhalb von Sekunden raus, der
+   Link funktioniert aber erst, sobald der Hinweis „Als nächstes von Hand"
+   auf der Ergebnisseite (`tailscale serve`, Zugriffsregel,
+   Tailscale-Einladung) erledigt ist.
 5. **Anlegen** klicken.
 
 Die Seite friert nicht ein — sie lädt sich automatisch alle 5 Sekunden neu, bis ein
