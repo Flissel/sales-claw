@@ -4032,9 +4032,15 @@ def _admin_auftrag_ergebnis_text(zeile) -> str:
         erledigt = ", ".join(info.get("erledigt", [])) or "nichts"
         grund = zeile["fehler"] or "kein Grund vermerkt"
         return f"FEHLER — erledigt: {_e(erledigt)}. {_e(grund)}"
+    port = _e(str(info.get("port_serve", "?")))
+    hinweis = _e(info.get("hinweis", ""))
+    willkommen = info.get("willkommen")
+    if willkommen:
+        return (f"Willkommensmail an {_e(willkommen.get('an', '?'))}: "
+                f"{_e(willkommen.get('status', '?'))}. "
+                f"Serve-Port: {port}. {hinweis}")
     return (f"Wegwerf-Passwort: {_e(info.get('passwort', '?'))} — "
-            f"Serve-Port: {_e(str(info.get('port_serve', '?')))}. "
-            f"{_e(info.get('hinweis', ''))}")
+            f"Serve-Port: {port}. {hinweis}")
 
 
 @_gesichert_seite
@@ -4060,6 +4066,10 @@ async def laden_anlegen_seite(request):
         '<label>Name des neuen Ladens<br>'
         '<input type="text" name="name" pattern="[a-z][a-z0-9_]{0,30}" '
         'required placeholder="z. B. lena"></label> '
+        '<label>Private E-Mail-Adresse (optional — bekommt eine '
+        'Willkommensmail mit Link zum Passwort-Setzen)<br>'
+        '<input type="email" name="email" '
+        'placeholder="z. B. lena@example.com"></label> '
         '<button type="submit">Anlegen</button>'
         '</form>'
         f'<h2>Bisherige Aufträge</h2>{tabelle}')
@@ -4086,10 +4096,18 @@ async def aktion_laden_anlegen(request):
             400, "Reservierter Name",
             f"'{name}' ist reserviert (Basis-Laden bzw. Test-Schema) und "
             "kann nicht als Ladenname verwendet werden. Nichts wurde angelegt.")
+    email = None
+    roh = str(form.get("email") or "").strip()
+    if roh:
+        email, fehler = mailadresse.pruefe(roh)
+        if fehler:
+            return _fehlerseite(
+                400, "Ungültige E-Mail-Adresse",
+                f"{fehler}. Nichts wurde angelegt.")
     server._q(
-        "insert into admin_auftraege (art, name, angefordert_von) "
-        "values ('laden_anlegen', %s, %s) returning id",
-        (name, _ui_akteur(request)))
+        "insert into admin_auftraege (art, name, email, angefordert_von) "
+        "values ('laden_anlegen', %s, %s, %s) returning id",
+        (name, email, _ui_akteur(request)))
     return RedirectResponse("/team/laden-anlegen", status_code=303)
 
 

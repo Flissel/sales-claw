@@ -140,3 +140,24 @@ def test_email_darf_bei_tailscale_einladen_nicht_leer_sein():
             hat_sqlstate = "23514" in str(getattr(e, "sqlstate", "") or e)
         assert hat_sqlstate, "email=NULL haette am CHECK scheitern muessen"
         conn.rollback()
+
+
+def test_laden_anlegen_mit_kaputter_adresse_scheitert_am_check():
+    with server.pool.connection() as conn:
+        hat_sqlstate = False
+        try:
+            conn.execute(
+                "insert into admin_auftraege (art, name, email, angefordert_von) "
+                "values ('laden_anlegen', 'lena', 'keine adresse', 'test')")
+        except Exception as e:
+            hat_sqlstate = "23514" in str(getattr(e, "sqlstate", "") or e)
+        assert hat_sqlstate
+        conn.rollback()
+
+
+def test_laden_anlegen_ohne_adresse_bleibt_erlaubt():
+    with server.pool.connection() as conn:
+        conn.execute(
+            "insert into admin_auftraege (art, name, angefordert_von) "
+            "values ('laden_anlegen', 'lena', 'test')")
+        conn.rollback()

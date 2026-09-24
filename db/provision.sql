@@ -407,9 +407,12 @@ begin
              or (name is not null and name ~ '^[a-z][a-z0-9_]{0,30}$'))$chk$, s);
     execute format('alter table %I.admin_auftraege '
                    'drop constraint if exists admin_auftraege_email_check', s);
+    -- Seit 24.09.2026 darf auch 'laden_anlegen' eine Adresse tragen (die
+    -- Willkommensmail) - optional, aber wenn, dann gueltig. Pflicht bleibt
+    -- sie nur fuer 'tailscale_einladen'.
     execute format($chk$alter table %I.admin_auftraege add constraint
       admin_auftraege_email_check
-      check (art <> 'tailscale_einladen'
+      check ((email is null and art <> 'tailscale_einladen')
              or (email is not null
                  and email ~ '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$'))$chk$, s);
   end loop;

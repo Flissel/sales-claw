@@ -199,3 +199,44 @@ def test_scharfe_anmeldung_traegt_den_echten_namen(scharf):
     zeile = server._q(
         "select angefordert_von from admin_auftraege")[0]
     assert zeile["angefordert_von"] == "mira"
+
+
+def test_gute_adresse_wird_mitgespeichert():
+    r = _post("/team/laden-anlegen/anfordern",
+              {"name": "lena", "email": "lena@privat.example",
+               "csrf": ui.CSRF_TOKEN})
+    assert r.status_code == 303
+    z = server._q("select name, email from admin_auftraege")[0]
+    assert z == {"name": "lena", "email": "lena@privat.example"}
+
+
+@pytest.mark.parametrize("schlecht", ["keine-adresse", "a@b", "x y@z.de"])
+def test_schlechte_adresse_wird_abgewiesen(schlecht):
+    r = _post("/team/laden-anlegen/anfordern",
+              {"name": "lena", "email": schlecht, "csrf": ui.CSRF_TOKEN})
+    assert r.status_code == 400
+    assert server._q("select count(*) as n from admin_auftraege")[0]["n"] == 0
+
+
+def test_ohne_adresse_bleibt_alles_wie_bisher():
+    r = _post("/team/laden-anlegen/anfordern",
+              {"name": "lena", "email": "", "csrf": ui.CSRF_TOKEN})
+    assert r.status_code == 303
+    assert server._q("select email from admin_auftraege")[0]["email"] is None
+    server._q(
+        "update admin_auftraege set status = 'erfolg', erledigt_am = now(), "
+        "ergebnis = %s::jsonb returning id",
+        ('{"passwort": "Probe-ABC", "port_serve": 8446, "hinweis": "h"}',))
+    assert "Probe-ABC" in _get("/team/laden-anlegen").text
+
+
+def test_mit_willkommensmail_wird_kein_passwort_angezeigt():
+    server._q(
+        "insert into admin_auftraege (art, name, email, angefordert_von, "
+        "status, ergebnis, erledigt_am) values ('laden_anlegen', 'lena', "
+        "'lena@privat.example', 'test', 'erfolg', %s::jsonb, now())",
+        ('{"willkommen": {"an": "lena@privat.example", "status": "verschickt"},'
+         ' "port_serve": 8446, "hinweis": "h"}',))
+    text = _get("/team/laden-anlegen").text
+    assert "Willkommensmail an lena@privat.example: verschickt" in text
+    assert "Wegwerf-Passwort" not in text
