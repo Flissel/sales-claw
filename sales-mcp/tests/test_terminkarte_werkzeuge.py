@@ -149,3 +149,10 @@ def test_karte_mit_zu_kleinem_feld_meldet_fehler_statt_datei(monkeypatch, umgebu
     akt = server._q("select payload from activities where lead_id = %s and type = "
                     "'terminkarte'", (lead,))
     assert akt == []
+
+
+def test_auskunft_nennt_die_terminkarte(monkeypatch, umgebung):
+    _freigegeben(monkeypatch)
+    lead = _lead()
+    datei = json.loads(server.terminkarte_erstellen(lead, leer_lassen=True))["datei"]
+    assert datei in json.loads(server.kontakt_auskunft(lead))["text"]

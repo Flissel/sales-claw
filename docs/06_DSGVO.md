@@ -17,6 +17,11 @@ Eine Person will wissen, was über sie gespeichert ist.
 3. Verlangt der Kontakt die Auskunft im Chat, sagt der Bot es dem
    Betreiber; er stellt den Export nie selbst in den Chat.
 
+- **Terminkarten** (seit 24.09.2026) stehen in der Auskunft als Aktivität `terminkarte`
+  mit Dateiname, eingesetzten Werten und Fassung der Vorlage. Die Datei selbst liegt in
+  `media-erzeugt` des Ladens (Basis-Laden: `media-erzeugt/`, weitere Läden:
+  `laeden-daten/<laden>/media-erzeugt/`).
+
 ## Löschbegehren (Art. 17)
 
 Eine Person will gelöscht werden.
@@ -50,8 +55,12 @@ Ablauf (Vier-Augen — Betreiber plus eine zweite Person):
 DELETE FROM sales.leads WHERE id = '<LEAD>';
 ```
 
-3. Dateien nachziehen: `reports/` und `media/` auf Dateien zu dieser
-   Person durchsehen und entfernen (auch die Auskunfts-Exporte).
+3. Dateien nachziehen — physisch zu löschende Stellen:
+   - `reports/` und `media/` auf Dateien zu dieser Person durchsehen und
+     entfernen (auch die Auskunfts-Exporte).
+   - **Terminkarten-Dateien** des Kontakts: `terminkarte-<kunde>-*.pdf` in `media-erzeugt`
+     des Ladens — die Namen stehen in den Aktivitäten `terminkarte` des Kontakts. Gedruckte
+     Karten beim Teamleiter sind Papier und gehören in die Rückfrage an ihn.
 4. Sicherungen: die rotierenden Volume-Sicherungen (7 Tage) und
    DB-Sicherungen laufen aus; bis dahin gilt die Verarbeitung als
    eingestellt (Vermerk-Vollstopp). Nicht einzeln in Archive hineinoperieren.
