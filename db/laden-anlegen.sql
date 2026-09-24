@@ -110,3 +110,14 @@ grant select, insert, update on all tables in schema compliance to :"rolle";
 -- Trennung: sie liegt in der Datenbank, nicht im Code.
 revoke all on schema sales from :"rolle";
 revoke all on all tables in schema sales from :"rolle";
+
+-- Terminkarten (Migration marketing/045): jeder Laden bestellt und beurteilt
+-- seine Vorlagen-Auftraege selbst. Welcher Laden ruft, bestimmt die Datenbank
+-- aus der Anmeldung (marketing._laden_des_aufrufers) - nicht dieser Name hier.
+grant usage on schema marketing to :"rolle";
+grant execute on function
+    marketing.vorlagenauftrag_anlegen(text, bytea, text, text, text),
+    marketing.vorlagenauftraege_des_ladens(),
+    marketing.vorlagenauftrag_urteil(uuid, text, text),
+    marketing.formular_vorlage(text)
+    to :"rolle";
