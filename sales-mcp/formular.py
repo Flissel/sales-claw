@@ -26,22 +26,43 @@ WERT_PT_MIN = 6
 MUSTER = {"text": "Muster Mustermann", "datum": "24.09.2026", "uhrzeit": "14:30",
           "telefon": "+49 170 1234567", "mehrzeilig": "Muster: Vorinfos zum Termin"}
 
+# Transliteration table for characters without NFKD decomposition
+TRANSLITERATION = {
+    'Ł': 'L', 'ł': 'l',
+    'Ø': 'O', 'ø': 'o',
+    'Đ': 'D', 'đ': 'd',
+    'Ħ': 'H', 'ħ': 'h',
+    'ı': 'i',
+    'Œ': 'OE', 'œ': 'oe',
+    'Ŧ': 'T', 'ŧ': 't',
+}
+
+
+class PasstNicht(ValueError):
+    """Raised when a field value is too long to fit in its designated space."""
+    pass
+
 
 def beispielwerte(gestalt: dict) -> dict:
     return {f["name"]: MUSTER.get(f.get("art"), "Muster") for f in gestalt["felder"]}
 
 
 def _druckbar(text: str) -> str:
-    """Helvetica kennt Latin-1. Alles andere: zerlegen, sonst weglassen —
-    ein Absturz beim Drucken waere schlimmer als ein fehlender Akzent."""
+    """Helvetica kennt Latin-1. Alles andere: transliterieren, dann zerlegen,
+    sonst weglassen — ein Absturz beim Drucken waere schlimmer als ein fehlender Akzent."""
     aus = []
     for z in str(text or ""):
         try:
             z.encode("latin-1")
             aus.append(z)
         except UnicodeEncodeError:
-            basis = unicodedata.normalize("NFKD", z).encode("latin-1", "ignore").decode("latin-1")
-            aus.append(basis)
+            # Try explicit transliteration first
+            if z in TRANSLITERATION:
+                aus.append(TRANSLITERATION[z])
+            else:
+                # Fall back to NFKD normalization
+                basis = unicodedata.normalize("NFKD", z).encode("latin-1", "ignore").decode("latin-1")
+                aus.append(basis)
     return "".join(aus)
 
 
@@ -59,15 +80,15 @@ def _zeilen(text: str, breite: float, pt: float) -> list:
     return zeilen
 
 
-def _passend(text: str, breite: float, hoehe: float) -> tuple:
+def _passend(text: str, breite: float, hoehe: float, beschriftung: str = "") -> tuple:
     """Groesste Schrift, bei der der umbrochene Text in den Platz passt.
-    Passt er nicht einmal in der kleinsten: kleinste Schrift, und der Text
-    laeuft ueber den Rand hinaus — sichtbar, nie verloren."""
+    Wenn er nicht einmal in der kleinsten passt, wird PasstNicht gehoben."""
     for pt in range(WERT_PT_MAX, WERT_PT_MIN - 1, -1):
         zeilen = _zeilen(text, breite, pt)
         if len(zeilen) * pt * 1.2 <= hoehe:
             return pt, zeilen
-    return WERT_PT_MIN, _zeilen(text, breite, WERT_PT_MIN)
+    # Text passt nicht mal bei WERT_PT_MIN — Exception
+    raise PasstNicht(f"Feld '{beschriftung}' ist zu lang fuer die Karte - bitte kuerzen.")
 
 
 def setzen(gestalt: dict, werte: dict) -> bytes:
@@ -98,7 +119,7 @@ def setzen(gestalt: dict, werte: dict) -> bytes:
         if not wert:
             continue
         platz_h = hoehe - BESCHRIFTUNG_PT * 1.4
-        pt, zeilen = _passend(wert, breite, platz_h)
+        pt, zeilen = _passend(wert, breite, platz_h, f["beschriftung"])
         c.setFont(SCHRIFT, pt)
         y = oben - BESCHRIFTUNG_PT * 1.4 - pt
         for zeile in zeilen:

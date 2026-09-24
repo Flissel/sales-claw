@@ -55,10 +55,56 @@ def test_leere_felder_sind_kein_fehler():
 
 def test_zeichen_ausserhalb_latin1_stuerzen_nicht():
     text = _text(formular.setzen(GESTALT, {"kunde": "Łukasz Żółć 🙂"}))
-    assert "ukasz" in text
+    assert "Lukasz" in text
 
 
 def test_musterblatt_und_karte_sind_derselbe_aufruf():
     muster = formular.beispielwerte(GESTALT)
     assert set(muster) == {"kunde", "datum", "notiz"}
     assert "Muster" in _text(formular.setzen(GESTALT, muster))
+
+
+def test_wert_der_nur_nach_schrumpfen_passt_ist_vollstaendig():
+    """Ein langer Wert, der nach Größenverkleinerung passt, wird vollständig angezeigt."""
+    lang = "Anneliese Kowalczyk-Schwarzenberger"
+    text = " ".join(_text(formular.setzen(GESTALT, {"kunde": lang})).split())
+    for wort in lang.split():
+        assert wort in text, wort
+
+
+def test_zu_langer_wert_hebt_passt_nicht_exception():
+    """Ein Wert, der nicht mal bei minimaler Schrift passt, wirft PasstNicht."""
+    # Kleines Feld mit großem Text
+    gestalt_klein = {
+        "seite": {"breite_mm": 148, "hoehe_mm": 105},
+        "texte": [],
+        "felder": [
+            {"name": "kunde", "beschriftung": "Kunde", "art": "text", "quelle": "kunde.name",
+             "platz": {"x": 8, "y": 20, "breite": 30, "hoehe": 5}},
+        ],
+    }
+    zu_lang = "Antidisestablishmentarianism Floccinaucinilicilification Pneumonoultramicroscopicsilicovolcanoconiosis extra extra extra"
+    try:
+        formular.setzen(gestalt_klein, {"kunde": zu_lang})
+        assert False, "Expected PasstNicht exception"
+    except formular.PasstNicht as e:
+        assert "Kunde" in str(e)
+        assert "zu lang" in str(e)
+
+
+def test_feld_am_seitenende_passt_wenn_es_klein_genug_ist():
+    """Ein Feld nahe am Seitenende mit ausreichend kleinem Wert passt ohne Exception."""
+    # Feld fast ganz unten mit wenig Platz
+    gestalt_oben = {
+        "seite": {"breite_mm": 148, "hoehe_mm": 105},
+        "texte": [],
+        "felder": [
+            {"name": "test", "beschriftung": "Test", "art": "text", "quelle": "test",
+             "platz": {"x": 8, "y": 95, "breite": 60, "hoehe": 8}},
+        ],
+    }
+    # Kurzer Wert sollte passen
+    pdf = formular.setzen(gestalt_oben, {"test": "OK"})
+    text = _text(pdf)
+    assert "OK" in text
+    assert "Test" in text
