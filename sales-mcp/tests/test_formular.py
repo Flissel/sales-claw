@@ -140,21 +140,16 @@ def test_langer_einzelwort_wird_umbrochen():
     assert text.count("B") == 37
 
 
-def test_80_as_passt_oder_fehler():
-    """80 X's in 60mm Feld: entweder alle 80 vorhanden oder PasstNicht."""
-    # 80 X's = sicher zu lang horizontal und vertikal
-    # Verwende "X" um nicht mit Text zu kollidieren
+def test_80_xs_passt_in_2_zeilen():
+    """80 X's in 60mm Feld passt auf 2 Zeilen → alle 80 vorhanden, keine Exception."""
+    # 80 X's brechen sich auf 2 Zeilen auf, passen aber vertikal in die 12mm Hoehe
     lang = "X" * 80
-    try:
-        pdf = formular.setzen(GESTALT, {"kunde": lang})
-        text = _text(pdf)
-        # Wenn nicht fehler: alle 80 X's sollten da sein
-        extracted = text.replace("\n", "").replace(" ", "")
-        x_count = extracted.count("X")
-        assert x_count == 80, f"Expected 80 X's but got {x_count}"
-    except formular.PasstNicht:
-        # Fehler ist auch ok bei so langen Worten
-        pass
+    pdf = formular.setzen(GESTALT, {"kunde": lang})
+    text = _text(pdf)
+    # Alle 80 X's sollten da sein
+    extracted = text.replace("\n", "").replace(" ", "")
+    x_count = extracted.count("X")
+    assert x_count == 80, f"Expected 80 X's but got {x_count}"
 
 
 def test_zeilen_breitet_lange_einzelworte_auf_charakterbasis_um():
@@ -184,3 +179,47 @@ def test_zeilen_breitet_lange_einzelworte_auf_charakterbasis_um():
     zeilen = formular._zeilen(normal, breite, pt)
     text = " ".join(zeilen)
     assert "Hello" in text and "world" in text
+
+
+def test_breite_invariant_bei_verschiedenen_eingaben():
+    """Testet dass jede Zeile die Breitengarantie erfuellt."""
+    from reportlab.lib.units import mm
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    breite = 60 * mm
+    hoehe = 12 * mm
+
+    # Test verschiedene Eingaben
+    testfaelle = [
+        "A" * 80,  # Lange Sequenz
+        "very.long.email.address@example.com.test.de",  # Email-aehnlich
+        "Hallo Welt normaler Text",  # Normale Worte gemischt
+        "AAAAAA BBBBBB CCCCCC",  # Mehrere lange Worte
+    ]
+
+    for text in testfaelle:
+        pt, zeilen = formular._passend(text, breite, hoehe, "Test", "test")
+        # Verifiziere dass jede Zeile die Breite einhält
+        for zeile in zeilen:
+            width = stringWidth(zeile, formular.SCHRIFT, pt)
+            assert width <= breite, f"Zeile '{zeile}' zu breit: {width}pt > {breite}pt bei pt={pt}"
+        # Verifiziere Hoehe
+        assert len(zeilen) * pt * 1.2 <= hoehe
+
+
+def test_sehr_schmales_feld_mit_einzelzeichen_wirft_exception():
+    """0.5mm breites Feld mit 'W' kann nicht passen → PasstNicht."""
+    gestalt_sehr_schmal = {
+        "seite": {"breite_mm": 148, "hoehe_mm": 105},
+        "texte": [],
+        "felder": [
+            {"name": "kunde", "beschriftung": "Kunde", "art": "text", "quelle": "kunde.name",
+             "platz": {"x": 8, "y": 20, "breite": 0.5, "hoehe": 90}},
+        ],
+    }
+    try:
+        formular.setzen(gestalt_sehr_schmal, {"kunde": "W"})
+        assert False, "Expected PasstNicht exception for 0.5mm field"
+    except formular.PasstNicht as e:
+        assert e.feld == "kunde"
+        assert e.beschriftung == "Kunde"

@@ -120,10 +120,15 @@ def _zeilen(text: str, breite: float, pt: float) -> list:
 
 def _passend(text: str, breite: float, hoehe: float, beschriftung: str = "", feld: str = "") -> tuple:
     """Groesste Schrift, bei der der umbrochene Text in den Platz passt.
+    Validiert sowohl Hoehe als auch Breite jeder Zeile.
     Wenn er nicht einmal in der kleinsten passt, wird PasstNicht gehoben."""
     for pt in range(WERT_PT_MAX, WERT_PT_MIN - 1, -1):
         zeilen = _zeilen(text, breite, pt)
-        if len(zeilen) * pt * 1.2 <= hoehe:
+        # Check height budget
+        if len(zeilen) * pt * 1.2 > hoehe:
+            continue
+        # Check width invariant: every line must fit
+        if all(stringWidth(zeile, SCHRIFT, pt) <= breite for zeile in zeilen):
             return pt, zeilen
     # Text passt nicht mal bei WERT_PT_MIN — Exception
     raise PasstNicht(beschriftung, feld)
