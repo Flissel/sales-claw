@@ -218,10 +218,11 @@ if [ "$ART" = "laden_anlegen" ]; then
   unset DB_PW
   ERLEDIGT+=("schema")
 
-  # --- 5. Nur die zwei Dienste ohne externe Zugangsdaten --------------------
-  # DIENSTSCHLUESSEL bleiben "sales-mcp"/"sales-ui" — das Env-File entscheidet
-  # per LADEN_PRAEFIX-Interpolation, welcher Laden tatsaechlich entsteht.
-  docker compose --env-file "$ENVDATEI" up -d --build sales-mcp sales-ui \
+  # --- 5. Die drei Dienste ohne Kundenzugangsdaten --------------------------
+  # sales-mail seit 24.09.2026: er verschickt Konto-Mails ueber die
+  # Betreiber-Identitaet (SYSTEM_*), Kundenentwuerfe erst, wenn das Postfach
+  # des Ladens eingetragen ist. DIENSTSCHLUESSEL bleiben woertlich.
+  docker compose --env-file "$ENVDATEI" up -d --build sales-mcp sales-ui sales-mail \
     >/dev/null
   ERLEDIGT+=("container")
 
@@ -231,25 +232,65 @@ if [ "$ART" = "laden_anlegen" ]; then
     | bash deploy/benutzer-anlegen.sh "$LADEN_NAME" >/dev/null
   ERLEDIGT+=("konto")
 
+  # --- 6b. Willkommensmail (24.09.2026) -------------------------------------
+  # Nur mit Adresse. Geschrieben wird ins Schema des NEUEN Ladens - das darf
+  # nur der Wirt (supabase_admin), nie die Oberflaeche des Basis-Ladens.
+  # Name und Adresse sind keine Geheimnisse; psql -v quotet sie per :'…'.
+  WILLKOMMEN_STATUS=""
+  if [ -n "$EINLADEN_EMAIL" ]; then
+    ZETTEL_ID="$(psql_admin -tAq -v schema="sales_$LADEN_NAME" \
+        -v name="$LADEN_NAME" -v mail="$EINLADEN_EMAIL" <<'SQL' | head -n1
+update :"schema".benutzer set email = :'mail' where name = :'name';
+insert into :"schema".benutzer_mails (benutzer, art)
+  values (:'name', 'willkommen') returning id;
+SQL
+)"
+    ERLEDIGT+=("willkommen-zettel")
+    # Der Dienst wurde eben erst gestartet und fragt alle 10 s ab. Bis zu
+    # 60 s warten; was danach noch offen ist, meldet die Seite ehrlich so.
+    WILLKOMMEN_STATUS="noch unterwegs"
+    # Abfrage als Heredoc, nicht per -c: psql setzt :"schema"/:'id' nur in
+    # Eingabe von stdin/Datei ein, nicht in einem -c-Befehl.
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+      STAND="$(psql_admin -tAq -v schema="sales_$LADEN_NAME" -v id="$ZETTEL_ID" \
+        2>/dev/null <<'SQL' || true
+select status || chr(31) || grund from :"schema".benutzer_mails where id = :'id'::uuid;
+SQL
+)"
+      case "${STAND%%$'\037'*}" in
+        gesendet) WILLKOMMEN_STATUS="verschickt"; break ;;
+        fehler)   WILLKOMMEN_STATUS="fehlgeschlagen: ${STAND#*$'\037'}"; break ;;
+      esac
+      sleep 5
+    done
+  fi
+
   # --- 7. Erfolg melden ------------------------------------------------------
   # KONTO_PW geht hier ueber die PROZESSUMGEBUNG von python3, NICHT ueber
   # argv (Global Constraints: "Passwoerter nie ueber argv"). sys.argv haette
   # es waehrend der Laufzeit von python3 kurz in dessen Kommandozeile
   # getragen (sichtbar z.B. ueber /proc/<pid>/cmdline oder `ps aux`).
-  ERGEBNIS_JSON="$(KONTO_PW="$KONTO_PW" python3 -c '
+  ERGEBNIS_JSON="$(KONTO_PW="$KONTO_PW" WILLKOMMEN_AN="$EINLADEN_EMAIL" \
+    WILLKOMMEN_STATUS="$WILLKOMMEN_STATUS" python3 -c '
 import json, os, sys
-pw = os.environ["KONTO_PW"]
 ui_port, serve_port = sys.argv[1], sys.argv[2]
-print(json.dumps({
-    "passwort": pw,
+ergebnis = {
     "port_ui": int(ui_port),
     "port_serve": int(serve_port),
     "hinweis": ("Als naechstes von Hand: tailscale serve --https " +
                 serve_port + " http://127.0.0.1:" + ui_port +
                 " einrichten, danach die Zugriffsregel fuer den neuen "
                 "Menschen und die vier Kanaele (Postfach, Telegram, "
-                "LinkedIn, WhatsApp).")
-}))' "$PORT_UI" "$PORT_SERVE")"
+                "LinkedIn, WhatsApp)."),
+}
+# Mit Willkommensmail kennt NIEMAND das Wegwerf-Passwort - es wird nicht
+# angezeigt, der Mensch setzt sein eigenes ueber den Link.
+if os.environ["WILLKOMMEN_AN"]:
+    ergebnis["willkommen"] = {"an": os.environ["WILLKOMMEN_AN"],
+                              "status": os.environ["WILLKOMMEN_STATUS"]}
+else:
+    ergebnis["passwort"] = os.environ["KONTO_PW"]
+print(json.dumps(ergebnis))' "$PORT_UI" "$PORT_SERVE")"
   unset KONTO_PW
 
   # ERGEBNIS_JSON traegt das frische Kontopasswort im Klartext (Feld

@@ -2901,7 +2901,12 @@ systemctl list-timers sales-admin-auftraege.timer
    sichtbar).
 3. Den Namen des neuen Ladens eintragen (Kleinbuchstaben, Ziffern, Unterstrich,
    höchstens 31 Zeichen, nicht leer).
-4. **Anlegen** klicken.
+4. Optional die private E-Mail-Adresse des neuen Menschen eintragen. Er bekommt
+   von der Betreiber-Adresse eine Willkommensmail mit Link zum Passwort-Setzen
+   (7 Tage gültig). Dann erscheint auf der Ergebnisseite **kein**
+   Wegwerf-Passwort, sondern der Versandstatus (verschickt / fehlgeschlagen:
+   Grund / noch unterwegs).
+5. **Anlegen** klicken.
 
 Die Seite friert nicht ein — sie lädt sich automatisch alle 5 Sekunden neu, bis ein
 Ergebnis feststeht. Das geschieht ausschließlich per `<meta http-equiv="refresh">`,
@@ -2917,6 +2922,11 @@ einrichten, danach die Zugriffsregel für den neuen Menschen und die vier Kanael
 
 **Mit Fehler** nennt das Ergebnis, wie weit es kam — zum Beispiel
 `erledigt: aufnahme, ports, umgebungsdatei` — und woran es gescheitert ist.
+
+#### Konto-Mails in jedem Laden
+
+Jeder Laden hat `<laden>-mail`. Konto-Mails gehen über `SYSTEM_*` (Betreiber),
+Kundenentwürfe nur über die eigenen `SMTP_*` und bleiben ohne sie liegen.
 
 #### Nach einem erfolgreichen Lauf von Hand
 

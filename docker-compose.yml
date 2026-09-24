@@ -428,6 +428,13 @@ services:
       - SMTP_USER=${SMTP_USER:-}
       - SMTP_PASSWORT=${SMTP_PASSWORT:-}
       - EMAIL_ABSENDER=${EMAIL_ABSENDER:-}
+      # Betreiber-Identitaet NUR fuer Konto-Mails (Spec 2026-09-24). Nur
+      # dieser Dienst bekommt sie - nie sales-ui/sales-mcp (T5a).
+      - SYSTEM_SMTP_HOST=${SYSTEM_SMTP_HOST:-}
+      - SYSTEM_SMTP_PORT=${SYSTEM_SMTP_PORT:-587}
+      - SYSTEM_SMTP_USER=${SYSTEM_SMTP_USER:-}
+      - SYSTEM_SMTP_PASSWORT=${SYSTEM_SMTP_PASSWORT:-}
+      - SYSTEM_ABSENDER=${SYSTEM_ABSENDER:-}
       # Wohin der Link in der Passwort-Mail zeigt (17.09.2026). KEIN
       # Geheimnis — eine Adresse, kein Schluessel; T5a bleibt gewahrt.
       # Dieser Dienst braucht sie, seit die Konto-Mails hier entstehen

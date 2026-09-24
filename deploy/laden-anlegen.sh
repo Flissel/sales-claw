@@ -148,6 +148,19 @@ if [ -z "$MODELL_SCHLUESSEL" ]; then
   exit 1
 fi
 
+# Betreiber-Identitaet fuer Konto-Mails (24.09.2026): die SMTP_*-Werte des
+# Basis-Ladens, woertlich uebernommen (nur \r entfernt - ein Passwort darf
+# Leerzeichen tragen). Sie landen NUR als SYSTEM_* in dieser Datei; die
+# SMTP_* des neuen Ladens bleiben leer, bis sein eigenes Postfach steht -
+# bis dahin verschickt <laden>-mail ausschliesslich Konto-Mails.
+basis_wert() { grep -E "^$1=" "$WURZEL/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r'; }
+SYS_HOST="$(basis_wert SMTP_HOST)"; SYS_PORT="$(basis_wert SMTP_PORT)"
+SYS_USER="$(basis_wert SMTP_USER)"; SYS_PASSWORT="$(basis_wert SMTP_PASSWORT)"
+SYS_ABSENDER="$(basis_wert EMAIL_ABSENDER)"
+if [ -z "$SYS_HOST" ] || [ -z "$SYS_USER" ] || [ -z "$SYS_PASSWORT" ] || [ -z "$SYS_ABSENDER" ]; then
+  echo "WARNUNG: SMTP_* des Basis-Ladens unvollstaendig in $WURZEL/.env —" \
+       "$NAME-mail kann keine Konto-Mails verschicken." >&2
+fi
 cat > "$ENVDATEI" <<EOF
 LADEN_PRAEFIX=$NAME
 LADEN_PROJEKT=$NAME-claw
@@ -190,6 +203,12 @@ OPENROUTER_API_KEY=$MODELL_SCHLUESSEL
 # Basis-Ladens ein; deploy/update.sh weist einen Laden ohne sie deshalb ab.
 MEDIEN_ORDNER=./laeden-daten/$NAME/media
 MEDIEN_ERZEUGT_ORDNER=./laeden-daten/$NAME/media-erzeugt
+# Konto-Mails ueber die Adresse des Betreibers (Spec 2026-09-24).
+SYSTEM_SMTP_HOST=$SYS_HOST
+SYSTEM_SMTP_PORT=${SYS_PORT:-587}
+SYSTEM_SMTP_USER=$SYS_USER
+SYSTEM_SMTP_PASSWORT=$SYS_PASSWORT
+SYSTEM_ABSENDER=$SYS_ABSENDER
 EOF
 
 # Die Ordner gleich mit anlegen, mit denselben Rechten wie media/ des
