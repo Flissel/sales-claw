@@ -264,6 +264,11 @@ begin
         erledigt_am timestamptz)$t$, s);
     execute format('create index if not exists benutzer_mails_offen_idx '
                    'on %I.benutzer_mails (status, erstellt_am)', s);
+    -- Willkommensmail (24.09.2026). Drop+Add, weil ein CHECK sich nicht
+    -- nachruesten laesst; idempotent wie drafts_channel_check.
+    execute format('alter table %I.benutzer_mails drop constraint if exists benutzer_mails_art_check', s);
+    execute format($chk$alter table %I.benutzer_mails add constraint benutzer_mails_art_check
+      check (art in ('passwort_reset','willkommen'))$chk$, s);
     execute format('create index if not exists leads_status_idx on %I.leads (status)', s);
 
     -- Aehnlichkeitssuche ueber Namen (17.09.2026), Trigramme.

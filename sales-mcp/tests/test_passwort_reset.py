@@ -410,3 +410,60 @@ def test_die_anmeldemaske_zeigt_den_weg():
     with TestClient(ui.app) as client:
         assert "/passwort-vergessen" in client.get(
             "/login", headers=HOST_OK).text
+
+
+# --- Willkommen (24.09.2026) -----------------------------------------------
+
+def _zettel_willkommen(name):
+    return server._q(
+        "insert into benutzer_mails (benutzer, art) values (%s, 'willkommen') "
+        "returning id", (name,))[0]["id"]
+
+
+def test_willkommen_gilt_sieben_tage_reset_dreissig_minuten():
+    _benutzer("lena", email="lena@privat.example")
+    _benutzer("ivan")
+    _versenden(_zettel_willkommen("lena"))
+    _anfordern("ivan")
+    _versenden(_zettel("ivan")[0]["id"])
+    rest = {z["name"]: z["rest_s"] for z in server._q(
+        "select name, extract(epoch from reset_bis - now()) as rest_s "
+        "from benutzer where name in ('lena','ivan')")}
+    assert 6.9 * 86400 < rest["lena"] <= 7 * 86400
+    assert 25 * 60 < rest["ivan"] <= 30 * 60
+
+
+def test_willkommen_hat_festen_text_und_link_auf_den_eigenen_laden():
+    _benutzer("lena", email="lena@privat.example")
+    ausgang, gesendet = _versenden(_zettel_willkommen("lena"),
+                                   basis="https://ivan.example:8445")
+    assert ausgang == "gesendet"
+    nachricht = gesendet.call_args[0][0]
+    assert nachricht["Subject"] == passwort_reset.WILLKOMMEN_BETREFF
+    assert nachricht["To"] == "lena@privat.example"
+    rumpf = nachricht.get_body(preferencelist=("plain",)).get_content()
+    assert "https://ivan.example:8445/passwort-neu?name=lena&token=" in rumpf
+    assert "lena" in rumpf and "7 Tage" in rumpf
+
+
+def test_willkommen_geht_ueber_die_system_identitaet():
+    _benutzer("lena", email="lena@privat.example")
+    _, gesendet = _versenden(_zettel_willkommen("lena"))
+    assert gesendet.call_args.kwargs["identitaet"].art == "system"
+
+
+def test_unbekannte_art_bleibt_fehler():
+    _benutzer("lena", email="lena@privat.example")
+    with server.pool.connection() as conn:
+        conn.execute("alter table benutzer_mails drop constraint benutzer_mails_art_check")
+    try:
+        zid = server._q("insert into benutzer_mails (benutzer, art) values "
+                        "('lena', 'quatsch') returning id")[0]["id"]
+        ausgang, gesendet = _versenden(zid)
+        assert ausgang == "fehler" and not gesendet.called
+    finally:
+        with server.pool.connection() as conn:
+            conn.execute("delete from benutzer_mails where art = 'quatsch'")
+            conn.execute("alter table benutzer_mails add constraint "
+                         "benutzer_mails_art_check check "
+                         "(art in ('passwort_reset','willkommen'))")

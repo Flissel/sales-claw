@@ -747,8 +747,16 @@ def verarbeite_kontomail(zettel_id) -> str:
                   "reset_zuletzt = null where name = %s returning name",
                   (name,))
 
-    if zettel["art"] != "passwort_reset":
+    arten = {
+        "passwort_reset": (passwort_reset.GUELTIG_S, passwort_reset.BETREFF,
+                           passwort_reset.mailtext),
+        "willkommen": (passwort_reset.WILLKOMMEN_GUELTIG_S,
+                       passwort_reset.WILLKOMMEN_BETREFF,
+                       passwort_reset.willkommenstext),
+    }
+    if zettel["art"] not in arten:
         return _schliessen("fehler", "unbekannte Art: %s" % zettel["art"])
+    gueltig_s, betreff, text = arten[zettel["art"]]
 
     if not UI_BASIS_URL:
         # Lieber keine Mail als eine mit totem Link. Die Bremse geht auf,
@@ -775,7 +783,7 @@ def verarbeite_kontomail(zettel_id) -> str:
         "update benutzer set reset_hash = %s, "
         "reset_bis = now() + make_interval(secs => %s) "
         "where name = %s returning name",
-        (gehasht, passwort_reset.GUELTIG_S, konto["name"]))
+        (gehasht, gueltig_s, konto["name"]))
     try:
         # Konto-Mail (24.09.2026): geht IMMER ueber die Betreiber-Identitaet,
         # wenn sie vollstaendig gesetzt ist - nie ueber die des Ladens, damit
@@ -784,11 +792,10 @@ def verarbeite_kontomail(zettel_id) -> str:
         # des Ladens zurueck (siehe dort).
         system = system_identitaet()
         nachricht = nachricht_bauen(
-            konto["email"], passwort_reset.BETREFF,
-            passwort_reset.mailtext(
-                konto["name"],
-                passwort_reset.link_bauen(UI_BASIS_URL, konto["name"],
-                                          klartext)),
+            konto["email"], betreff,
+            text(konto["name"],
+                 passwort_reset.link_bauen(UI_BASIS_URL, konto["name"],
+                                           klartext)),
             absender=system.absender)
         senden(nachricht, identitaet=system)
     except Exception as e:      # noqa: BLE001 - ein Ausfall darf die Runde nicht reissen
@@ -799,7 +806,8 @@ def verarbeite_kontomail(zettel_id) -> str:
         LOG.warning("Passwort-Mail nicht versendet (%s)", grund)
         return _schliessen("fehler", grund)
 
-    LOG.info("Passwort-Link versendet an %s", _maskiert(konto["email"]))
+    LOG.info("Konto-Mail (%s) versendet an %s", zettel["art"],
+             _maskiert(konto["email"]))
     return _schliessen("gesendet")
 
 

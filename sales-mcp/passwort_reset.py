@@ -48,6 +48,11 @@ import time
 # genug, dass jemand das Postfach am Handy erst spaeter aufmacht.
 GUELTIG_S = 30 * 60
 
+# Willkommensmail (24.09.2026): 7 Tage, weil ein neuer Mensch die Mail
+# nicht zwingend am selben Tag liest. Derselbe Token-Mechanismus, derselbe
+# Link auf /passwort-neu - nur laenger gueltig.
+WILLKOMMEN_GUELTIG_S = 7 * 24 * 3600
+
 # Eine Mail je Konto und Viertelstunde. Wer das Formular zehnmal abschickt,
 # soll nicht zehn Mails ausloesen - und der Ausgesperrte soll trotzdem nicht
 # lange warten muessen, wenn die erste im Spam gelandet ist.
@@ -144,3 +149,18 @@ def mailtext(name: str, link: str) -> str:
         f"Der Link gilt {GUELTIG_S // 60} Minuten und genau einmal.\n\n"
         f"Warst du das nicht, musst du nichts tun - ohne den Link aendert\n"
         f"sich nichts, und dein bisheriges Passwort gilt weiter.\n")
+
+
+WILLKOMMEN_BETREFF = "Dein Zugang zur sales-claw-Oberflaeche"
+
+
+def willkommenstext(name: str, link: str) -> str:
+    """Fester Text, wie mailtext: kein Parameter fuer freien Inhalt."""
+    return (
+        f"Hallo,\n\n"
+        f"fuer dich wurde ein Zugang zur sales-claw-Oberflaeche eingerichtet.\n"
+        f"Dein Benutzername: {name}\n\n"
+        f"Hier legst du dein Passwort fest:\n\n"
+        f"{link}\n\n"
+        f"Der Link gilt {WILLKOMMEN_GUELTIG_S // 86400} Tage und genau einmal.\n"
+        f"Danach meldest du dich mit Benutzername und Passwort an.\n")
