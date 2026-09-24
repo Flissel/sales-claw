@@ -564,7 +564,9 @@ def test_beide_werkzeuge_sind_registriert():
     # Kollision seither nur noch, sie blockieren nicht.
     # 17.09.2026: kontakt_aehnlich dazugekommen, 83 -> 84.
     # 22.09.2026: gespraeche_suchen dazugekommen, 84 -> 85.
-    assert len(namen) == len(set(namen)) == 85
+    # Terminkarten 24.09.2026: vorlage_beauftragen, vorlagenauftraege_pruefen,
+    # vorlage_urteil, terminkarte_erstellen — 85 -> 89.
+    assert len(namen) == len(set(namen)) == 89
 
 # ---------------------------------------------------------------------------
 # Nachbesserungen aus dem Stufe-5-Review (Befunde T1, B2, D2)

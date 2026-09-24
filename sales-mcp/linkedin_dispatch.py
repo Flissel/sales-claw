@@ -262,7 +262,7 @@ def medien_aufteilen(media_ref):
     namen = [t.strip() for t in (media_ref or "").split(",") if t.strip()]
     bilder, video = [], None
     for name in namen:
-        basis, fehler = medien.pruefe(name)
+        basis, fehler = medien.pruefe_anhang(name)
         if fehler:
             raise BeitragFehler(fehler)
         endpunkt, _typ = medien.endpunkt_und_typ(basis)

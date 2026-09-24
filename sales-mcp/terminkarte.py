@@ -70,7 +70,13 @@ def werte_sammeln(q, lead_id: str, gestalt: dict, mitglied_name: str, zusatz: di
 
 
 def dateiname(kunde: str, datum_iso: str, vorhanden) -> str:
-    kern = f"terminkarte-{recherche.slug(kunde) or 'kontakt'}-{datum_iso or date.today().isoformat()}"
+    # Nur ein echtes ISO-Datum kommt in den Namen; alles andere (leer,
+    # Freitext, Pfadteile) wird durch heute ersetzt.
+    try:
+        tag = date.fromisoformat(datum_iso).isoformat()
+    except (TypeError, ValueError):
+        tag = date.today().isoformat()
+    kern = f"terminkarte-{recherche.slug(kunde) or 'kontakt'}-{tag}"
     name, n = f"{kern}.pdf", 1
     while vorhanden(name):
         n += 1

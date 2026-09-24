@@ -28,6 +28,10 @@ def schema_wache():
 def umgebung(tmp_path, monkeypatch):
     with server.pool.connection() as conn:
         conn.execute("truncate sales_test.leads cascade")
+        # test_nach_loeschantrag_keine_karte traegt die Nummer aus _lead() in die
+        # TEST-Verbotsliste ein; ohne Leeren blockiert sie in spaeteren Dateien
+        # (test_mail_dispatch, test_medien_meta) jede Erstansprache — wie test_dsgvo.
+        conn.execute("truncate compliance_test.sperrliste")
     erzeugt, mappe = tmp_path / "erzeugt", tmp_path / "media"
     erzeugt.mkdir(); mappe.mkdir()
     monkeypatch.setattr(medien, "ERZEUGT_VERZEICHNIS", str(erzeugt))
@@ -156,3 +160,126 @@ def test_auskunft_nennt_die_terminkarte(monkeypatch, umgebung):
     lead = _lead()
     datei = json.loads(server.terminkarte_erstellen(lead, leer_lassen=True))["datei"]
     assert datei in json.loads(server.kontakt_auskunft(lead))["text"]
+
+
+# ---------------------------------------------------------------------------
+# Final-Review-Fixwelle (final-fix-findings.md, 24.09.2026)
+# ---------------------------------------------------------------------------
+
+def _vorgelegt(monkeypatch, gestalt, runde=1):
+    monkeypatch.setattr(vorlagen_bruecke, "auftraege", lambda q: [
+        {"id": "a1", "art": "terminkarte", "status": "vorgelegt", "runde": runde,
+         "vorlage": "terminkarte", "fehler": "", "rueckmeldungen": []}])
+    monkeypatch.setattr(vorlagen_bruecke, "vorlage", lambda q, n: {
+        "name": "terminkarte", "status": "vorschlag", "fassung": 1, "gestalt": gestalt,
+        "freigegebene_fassung": None, "freigegebene_gestalt": None})
+
+
+def _mit_platz(**platz):
+    feld = dict(GESTALT["felder"][0], platz=dict(GESTALT["felder"][0]["platz"], **platz))
+    return {"seite": GESTALT["seite"], "felder": [feld] + GESTALT["felder"][1:]}
+
+
+@pytest.mark.parametrize("gestalt", [_mit_platz(hoehe=4), _mit_platz(x="8")],
+                         ids=["feld-4mm", "string-koordinate"])
+def test_i1_nicht_setzbares_musterblatt_haelt_die_pruefung_nicht_an(monkeypatch, umgebung,
+                                                                     gestalt):
+    """I-1: ein Musterblatt, das `setzen` nicht zeichnen kann, wird zum
+    beantwortbaren Eintrag (auftrag_id + fehler + frage), nicht zur Ausnahme."""
+    _vorgelegt(monkeypatch, gestalt)
+    antwort = json.loads(server.vorlagenauftraege_pruefen())
+    eintrag = antwort["vorgelegt"][0]
+    assert eintrag["auftrag_id"] == "a1" and eintrag["runde"] == 1
+    assert eintrag["fehler"].startswith("Musterblatt nicht setzbar: ")
+    assert "nein" in eintrag["frage"] and "Marketing" in eintrag["frage"]
+    assert "muster" not in eintrag and "link" not in eintrag
+    assert list(umgebung[0].iterdir()) == []
+
+
+def test_i3_alte_gescheiterte_auftraege_werden_nicht_ewig_gemeldet(monkeypatch, umgebung):
+    """I-3: gemeldet wird ein gescheiterter Auftrag nur, wenn er der juengste
+    seiner Art ist (Liste kommt juengster zuerst)."""
+    def auftrag(i, status):
+        return {"id": i, "art": "terminkarte", "status": status, "runde": 1,
+                "vorlage": "terminkarte", "fehler": "kaputt", "rueckmeldungen": []}
+    monkeypatch.setattr(vorlagen_bruecke, "auftraege", lambda q: [
+        auftrag("neu1", "in_arbeit"), auftrag("alt1", "gescheitert"),
+        auftrag("alt2", "gescheitert")])
+    uebrige = json.loads(server.vorlagenauftraege_pruefen())["uebrige"]
+    assert [u["id"] for u in uebrige] == ["neu1"]
+
+    monkeypatch.setattr(vorlagen_bruecke, "auftraege", lambda q: [
+        auftrag("jung", "gescheitert"), auftrag("alt", "gescheitert")])
+    uebrige = json.loads(server.vorlagenauftraege_pruefen())["uebrige"]
+    assert [u["id"] for u in uebrige] == ["jung"]
+
+
+def test_mc_umbenanntes_heic_wird_vor_der_datenbank_abgewiesen(monkeypatch, umgebung):
+    """M-c: die Endung allein beweist nichts — HEIC-Bytes in einer .jpg."""
+    (umgebung[1] / "karte.jpg").write_bytes(b"\x00\x00\x00\x18ftypheic" + b"0" * 64)
+    aufgerufen = []
+    monkeypatch.setattr(vorlagen_bruecke, "anlegen", lambda *a: aufgerufen.append(a))
+    antwort = json.loads(server.vorlage_beauftragen(bild="karte.jpg"))
+    assert "fehler" in antwort and "JPEG" in antwort["fehler"] and "PNG" in antwort["fehler"]
+    assert aufgerufen == []
+
+
+def test_mc_echtes_jpeg_und_png_gehen_durch(monkeypatch, umgebung):
+    (umgebung[1] / "karte.jpg").write_bytes(b"\xff\xd8\xff\xe0" + b"0" * 64)
+    (umgebung[1] / "karte.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+    aufgerufen = []
+    monkeypatch.setattr(vorlagen_bruecke, "anlegen",
+                        lambda *a: aufgerufen.append(a) or {"ok": True, "id": "x"})
+    assert json.loads(server.vorlage_beauftragen(bild="karte.jpg"))["auftrag_id"] == "x"
+    assert json.loads(server.vorlage_beauftragen(bild="karte.png"))["auftrag_id"] == "x"
+    assert [a[2] for a in aufgerufen] == ["image/jpeg", "image/png"]
+
+
+def test_md_kontakt_ohne_termin_bekommt_keine_karte(monkeypatch, umgebung):
+    """M-d: ohne Termin wird nachgefragt — auch leer_lassen macht keine Karte."""
+    _freigegeben(monkeypatch)
+    lead = str(server._q("insert into leads (name, phone, source) values ('Ohne Termin',"
+                         " '+491709999999', 'test') returning id")[0]["id"])
+    for leer in (False, True):
+        antwort = json.loads(server.terminkarte_erstellen(lead, leer_lassen=leer))
+        assert antwort["kein_termin"] is True
+        assert "termin_bestaetigen" in antwort["hinweis"]
+        assert "datei" not in antwort
+    assert list(umgebung[0].iterdir()) == []
+    assert server._q("select id from activities where lead_id = %s and type = "
+                     "'terminkarte'", (lead,)) == []
+
+
+def test_ohne_ui_basis_url_nennt_die_antwort_den_dateinamen(monkeypatch, umgebung):
+    monkeypatch.setattr(server, "UI_BASIS_URL", "")
+    _freigegeben(monkeypatch)
+    antwort = json.loads(server.terminkarte_erstellen(_lead(), leer_lassen=True))
+    assert antwort["link"] == ""
+    assert antwort["hinweis"] == ("Kein Link moeglich (UI_BASIS_URL fehlt) - die Datei "
+                                  f"liegt in den Medien unter {antwort['datei']}.")
+    _vorgelegt(monkeypatch, GESTALT)
+    eintrag = json.loads(server.vorlagenauftraege_pruefen())["vorgelegt"][0]
+    assert eintrag["link"] == "" and eintrag["muster"] in eintrag["hinweis"]
+
+
+def test_ma_karte_und_muster_sind_kein_kundenanhang(monkeypatch, umgebung):
+    """M-a: Terminkarte und Musterblatt gehen nie an den Kunden (Spec §1)."""
+    for name in ("terminkarte-x-2026-10-02.pdf", "muster-terminkarte-f1-r1.pdf"):
+        (umgebung[0] / name).write_bytes(b"%PDF-1.4 karte")
+    (umgebung[1] / "flyer.pdf").write_bytes(b"%PDF-1.4 flyer")
+    namen = [d["name"] for d in json.loads(server.medien_liste())["dateien"]]
+    assert namen == ["flyer.pdf"]
+    lead = _lead()
+    for name in ("terminkarte-x-2026-10-02.pdf", "muster-terminkarte-f1-r1.pdf"):
+        antwort = json.loads(server.entwurf_erstellen(lead, "linkedin", "Hallo",
+                                                      medien_datei=name))
+        assert "fehler" in antwort and "nicht an Kunden" in antwort["fehler"]
+    assert server._q("select id from drafts where lead_id = %s", (lead,)) == []
+    basis, fehler = medien.pruefe_anhang("terminkarte-x-2026-10-02.pdf")
+    assert basis is None and "nicht an Kunden" in fehler
+    # Nur das erzeugte Musterblatt ist intern, nicht jede Datei mit muster-.
+    assert not medien.intern("muster-vorlage-warm-sand.pdf")
+    assert medien.intern("muster-terminkarte-f2-r3.pdf")
+    # Die Oberflaeche liefert die Datei weiter aus: dieselbe Grundpruefung.
+    assert medien.pruefe("terminkarte-x-2026-10-02.pdf") == ("terminkarte-x-2026-10-02.pdf",
+                                                             None)

@@ -37,6 +37,7 @@ Konstanten unten:
   ist eine Datei, keine aufgenommene Sprachnachricht.
 """
 import os
+import re
 
 # Ueberschreibbar fuer die Testsuite (die Tests biegen das Modulattribut auf ein
 # tmp-Verzeichnis um) und fuer einen abweichenden Mount. Im Betrieb ist es der
@@ -218,6 +219,40 @@ def pruefe(name: str):
     return basis, None
 
 
+# Terminkarten (24.09.2026, Spec §1): die ausgefuellte Karte traegt
+# Kundendaten und ist fuer den Teamleiter, das Musterblatt ist ein interner
+# Entwurf. Beide liegen in media-erzeugt, damit die Oberflaeche sie unter
+# /medien/datei/ ausliefern kann — an einen Kunden-Entwurf duerfen sie nie.
+#
+# Terminkarten: jeder Name mit `terminkarte-`. Musterblaetter: NUR die Form,
+# die vorlagenauftraege_pruefen erzeugt (`muster-<vorlage>-f<n>-r<n>.pdf`) —
+# ein blosses `muster-` traefe auch Marketings Kunden-Unterlagen wie
+# `muster-vorlage-warm-sand.pdf` (tests/test_mail_dispatch.py).
+INTERN_MUSTER = re.compile(r"^(terminkarte-.*|muster-.+-f\d+-r\d+\.pdf)$", re.IGNORECASE)
+
+
+def intern(basis: str) -> bool:
+    """Ist das eine interne Unterlage (Terminkarte, Musterblatt)?"""
+    return bool(INTERN_MUSTER.match(basis or ""))
+
+
+def pruefe_anhang(name: str):
+    """`pruefe` plus die Kundenanhang-Regel -> (basisname, None) | (None, fehler).
+
+    Fuer jeden Weg, auf dem eine Datei an einen Entwurf oder in einen
+    Versand geht. Die Oberflaeche (Ansehen, Loeschen, Schalter) bleibt bei
+    `pruefe` — sie liefert die Karte dem Mitglied aus, nicht dem Kunden.
+    """
+    basis, fehler = pruefe(name)
+    if fehler:
+        return None, fehler
+    if intern(basis):
+        return None, (f"'{basis}' ist eine interne Unterlage (Terminkarte oder "
+                      f"Musterblatt) und geht nicht an Kunden - sie ist nur fuer "
+                      f"das Mitglied bzw. den Teamleiter.")
+    return basis, None
+
+
 def pruefe_neuen_namen(name: str):
     """Darf eine Datei DIESES Namens neu abgelegt werden? -> (basis, fehler).
 
@@ -264,8 +299,12 @@ def lies(basis: str) -> bytes:
         return f.read()
 
 
-def liste():
+def liste(nur_anhaenge: bool = False):
     """Anhaengbare Dateien im Medienordner: [(name, groesse_bytes)], sortiert.
+
+    `nur_anhaenge=True` (fuer das Bot-Werkzeug medien_liste) laesst die
+    internen Unterlagen weg, die `pruefe_anhang` ablehnt; die Oberflaeche
+    zeigt sie weiter.
 
     Gefiltert ueber DIESELBE Pruefung, die `entwurf_erstellen` anwendet — die
     Liste ist ein Versprechen ("genau diese Namen nimmt entwurf_erstellen"),
@@ -286,7 +325,7 @@ def liste():
                 raise
     eintraege = []
     for name in sorted(namen):
-        basis, fehler = pruefe(name)
+        basis, fehler = (pruefe_anhang if nur_anhaenge else pruefe)(name)
         if fehler is None:
             eintraege.append((basis, os.path.getsize(pfad(basis))))
     return eintraege

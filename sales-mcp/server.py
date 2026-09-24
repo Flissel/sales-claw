@@ -2207,7 +2207,8 @@ def entwurf_erstellen(lead_id: str, kanal: str, text: str,
     `medien_datei` haengt optional eine Unterlage an: der blosse Dateiname
     einer Datei aus dem Medienordner (medien_liste zeigt, was dort liegt) —
     ohne jede Pfadangabe, Endung pdf/jpg/jpeg/png/mp3/ogg/ics, hoechstens
-    15 MB. Passt etwas davon nicht, entsteht KEIN Entwurf und der Grund
+    15 MB, keine Terminkarte/kein Musterblatt (terminkarte-*, muster-*-f<n>-r<n>.pdf).
+    Passt etwas davon nicht, entsteht KEIN Entwurf und der Grund
     kommt als Fehlertext zurueck. Bei WhatsApp geht der Anhang zusammen mit
     dem Text in EINER Nachricht raus (der Text wird zur Bildunterschrift und
     darf deshalb hoechstens 1024 Zeichen haben); bei linkedin ist der
@@ -2277,7 +2278,7 @@ def entwurf_erstellen(lead_id: str, kanal: str, text: str,
     # zustellbar ist, soll gar nicht erst in der Freigabe-Queue auftauchen.
     basis = None
     if (medien_datei or "").strip():
-        basis, fehler = medien.pruefe(medien_datei)
+        basis, fehler = medien.pruefe_anhang(medien_datei)
         if fehler:
             return _json({"fehler": fehler})
         gesperrt = _anhang_gesperrt(basis)
@@ -2425,7 +2426,7 @@ def post_entwurf_erstellen(thema: str, text: str, medien_datei: str = "",
             f"der Datenbank — LINKEDIN_POST_LEAD_ID in der .env pruefen.")})
     basis = None
     if (medien_datei or "").strip():
-        basis, fehler = medien.pruefe(medien_datei)
+        basis, fehler = medien.pruefe_anhang(medien_datei)
         if fehler:
             return _json({"fehler": fehler})
         gesperrt = _anhang_gesperrt(basis)
@@ -2456,9 +2457,10 @@ def medien_liste() -> str:
     jeder Datei im Medienordner. Genau diese Namen nimmt
     entwurf_erstellen(..., medien_datei='<name>'). Dateien mit einer nicht
     versendbaren Endung tauchen nicht auf (erlaubt sind pdf, jpg, jpeg, png,
-    mp3, ogg, ics, mp4)."""
+    mp3, ogg, ics, mp4). Terminkarten und Musterblaetter (terminkarte-*,
+    muster-*-f<n>-r<n>.pdf) fehlen ebenfalls: sie gehen nie an Kunden."""
     try:
-        eintraege = medien.liste()
+        eintraege = medien.liste(nur_anhaenge=True)
     except OSError as e:
         return _json({"fehler": f"Medienordner nicht lesbar "
                                 f"({type(e).__name__}) — liegt der Ordner "
@@ -5842,7 +5844,7 @@ def entwurf_bearbeiten(draft_id: str, text: str, betreff: str = "",
     if roh_medien == "-":
         basis = None
     elif roh_medien:
-        basis, fehler = medien.pruefe(roh_medien)
+        basis, fehler = medien.pruefe_anhang(roh_medien)
         if fehler:
             return _json({"fehler": fehler})
 
@@ -7540,6 +7542,20 @@ def _medien_link(dateiname: str) -> str:
     return f"{UI_BASIS_URL}/medien/datei/{quote(dateiname)}" if UI_BASIS_URL else ""
 
 
+def _mit_link(antwort: dict, dateiname: str) -> dict:
+    """Link setzen — und ohne UI_BASIS_URL sagen, wo die Datei liegt."""
+    antwort["link"] = _medien_link(dateiname)
+    if not antwort["link"]:
+        antwort["hinweis"] = (f"Kein Link moeglich (UI_BASIS_URL fehlt) - die Datei "
+                              f"liegt in den Medien unter {dateiname}.")
+    return antwort
+
+
+# Die ersten Bytes, nicht die Endung, entscheiden (ein umbenanntes HEIC vom
+# iPhone heisst gern .jpg, und Marketing koennte es nicht lesen).
+FOTO_KENNUNG = {"image/jpeg": b"\xff\xd8\xff", "image/png": b"\x89PNG\r\n\x1a\n"}
+
+
 def _erzeugt_schreiben(dateiname: str, inhalt: bytes) -> None:
     os.makedirs(medien.ERZEUGT_VERZEICHNIS, exist_ok=True)
     with open(os.path.join(medien.ERZEUGT_VERZEICHNIS, dateiname), "wb") as datei:
@@ -7550,8 +7566,11 @@ def _erzeugt_schreiben(dateiname: str, inhalt: bytes) -> None:
 def vorlage_beauftragen(bild: str = "", beschreibung: str = "", anmerkung: str = "") -> str:
     """Die Teamvorlage „Terminkarte" bei Marketing bestellen.
 
-    `bild`: Dateiname eines Fotos einer UNAUSGEFUELLTEN Karte aus den Medien
-    (medien_liste() zeigt sie; ein Foto an den eigenen Chat landet dort).
+    `bild`: Dateiname eines Fotos (JPEG oder PNG) einer UNAUSGEFUELLTEN
+    Karte aus den Medien. In die Medien kommt das Foto, indem das Mitglied
+    es per WhatsApp an sich selbst schickt (Chat mit sich selbst) oder auf
+    der Seite /medien hochlaedt. Den Dateinamen holst du dir IMMER mit
+    medien_liste() — nie raten oder selbst zusammensetzen.
     ODER `beschreibung`: die Felder in Worten, wenn es kein Foto gibt oder
     Marketing das Foto nicht lesen konnte. Genau eins von beiden.
 
@@ -7570,6 +7589,12 @@ def vorlage_beauftragen(bild: str = "", beschreibung: str = "", anmerkung: str =
         if len(foto) > FOTO_MAX_BYTES:
             return _json({"fehler": f"Das Foto ist {len(foto) // 1048576} MB gross; "
                                     f"hoechstens 8 MB."})
+        if not foto.startswith(FOTO_KENNUNG[typ]):
+            return _json({"fehler": f"'{basis}' ist dem Inhalt nach kein "
+                                    f"{'JPEG' if typ == 'image/jpeg' else 'PNG'} "
+                                    f"(vielleicht ein umbenanntes HEIC-Foto). Erlaubt "
+                                    f"sind nur echte JPEG- oder PNG-Fotos - am Handy "
+                                    f"als JPEG speichern oder einen Screenshot schicken."})
     antwort = vorlagen_bruecke.anlegen(_q, foto, typ, beschreibung, anmerkung)
     if not antwort.get("ok"):
         return _json({"fehler": antwort.get("grund") or "Marketing hat abgelehnt."})
@@ -7584,9 +7609,16 @@ def vorlagenauftraege_pruefen() -> str:
     """Stand der eigenen Vorlagen-Auftraege. Fuer jeden VORGELEGTEN Auftrag
     entsteht ein Musterblatt in den Medien; frag das Mitglied mit dem Link,
     ob die Karte so passt, und trag die Antwort mit vorlage_urteil() ein."""
-    vorgelegt, sonst = [], []
+    vorgelegt, sonst, gesehene_arten = [], [], set()
+    # Die Liste kommt juengster Auftrag zuerst. Ein gescheiterter Auftrag
+    # wird nur gemeldet, solange er der juengste seiner Art ist — sonst kaeme
+    # derselbe alte Fehlschlag in jeder Postfach-Durchsicht wieder.
     for a in vorlagen_bruecke.auftraege(_q):
+        juengster = a["art"] not in gesehene_arten
+        gesehene_arten.add(a["art"])
         if a["status"] != "vorgelegt":
+            if a["status"] == "gescheitert" and not juengster:
+                continue
             sonst.append({k: a[k] for k in ("id", "art", "status", "runde", "fehler")})
             continue
         v = vorlagen_bruecke.vorlage(_q, a["vorlage"])
@@ -7594,12 +7626,25 @@ def vorlagenauftraege_pruefen() -> str:
             sonst.append({"id": a["id"], "status": "vorgelegt", "fehler": "Vorlage fehlt"})
             continue
         name = f"muster-{a['vorlage']}-f{v['fassung']}-r{a['runde']}.pdf"
-        _erzeugt_schreiben(name, formular.setzen(v["gestalt"],
-                                                 formular.beispielwerte(v["gestalt"])))
-        vorgelegt.append({"auftrag_id": a["id"], "runde": a["runde"], "muster": name,
-                          "link": _medien_link(name),
-                          "frage": (f"Passt die Terminkarte so? (Runde {a['runde']}) "
-                                    f"Ja, oder was soll anders werden?")})
+        # Ein Blatt, das nicht setzbar ist, darf die Pruefung nicht anhalten:
+        # das Mitglied bekaeme nie eine auftrag_id, koennte nicht nein sagen,
+        # und der eine offene Auftrag je Art sperrte alle Laeden.
+        try:
+            blatt = formular.setzen(v["gestalt"], formular.beispielwerte(v["gestalt"]))
+        except Exception as e:  # noqa: BLE001 — jede Ursache wird zur Rueckfrage
+            grund = str(e).splitlines()[0][:160] if str(e) else type(e).__name__
+            vorgelegt.append({
+                "auftrag_id": a["id"], "runde": a["runde"],
+                "fehler": f"Musterblatt nicht setzbar: {grund}",
+                "frage": ("Das Musterblatt der Terminkarte liess sich nicht setzen. Soll "
+                          "Marketing nachbessern? Antworte mit nein und dem Hinweis, was "
+                          "anders werden soll.")})
+            continue
+        _erzeugt_schreiben(name, blatt)
+        vorgelegt.append(_mit_link({
+            "auftrag_id": a["id"], "runde": a["runde"], "muster": name,
+            "frage": (f"Passt die Terminkarte so? (Runde {a['runde']}) "
+                      f"Ja, oder was soll anders werden?")}, name))
     return _json({"vorgelegt": vorgelegt, "uebrige": sonst})
 
 
@@ -7625,7 +7670,9 @@ def terminkarte_erstellen(lead_id: str, zusatz: dict | None = None,
     """Eine Terminkarte fuer den Teamleiter setzen — NUR auf Zuruf.
 
     Werte kommen aus Kontakt, juengstem nicht abgesagten Termin und dem
-    Namen des Mitglieds. Fehlt etwas, kommt `fehlend` zurueck und KEINE
+    Namen des Mitglieds. Ohne Termin kommt `kein_termin` zurueck und keine
+    Karte: frag nach dem Termin und trag ihn erst mit termin_bestaetigen
+    ein. Fehlt etwas anderes, kommt `fehlend` zurueck und KEINE
     Datei: frag nach, und ruf erneut mit `zusatz={feldname: wert}` auf —
     oder mit `leer_lassen=True`, wenn das Mitglied es von Hand eintraegt.
     Die Karte wird beim Kontakt abgelegt; gib dem Mitglied den Link."""
@@ -7642,6 +7689,12 @@ def terminkarte_erstellen(lead_id: str, zusatz: dict | None = None,
                       "stand": stand[:1]})
     gestalt = v["freigegebene_gestalt"]
     r = terminkarte.werte_sammeln(_q, lead_id, gestalt, MITGLIED_NAME, zusatz or {})
+    # Spec §5: ohne Termin keine Karte — auch nicht mit leer_lassen. Der Bot
+    # fragt nach dem Termin, statt eine Karte ohne ihn zu setzen.
+    if not r["termin_uid"]:
+        return _json({"kein_termin": True,
+                      "hinweis": ("Fuer diesen Kontakt ist kein Termin eingetragen - "
+                                  "erst termin_bestaetigen(...), dann die Karte.")})
     if r["fehlend"] and not leer_lassen:
         beschriftung = {f["name"]: f["beschriftung"] for f in gestalt["felder"]}
         return _json({"fehlend": [{"feld": n, "beschriftung": beschriftung[n]}
@@ -7660,7 +7713,7 @@ def terminkarte_erstellen(lead_id: str, zusatz: dict | None = None,
            "datei": name, "vorlage": "terminkarte",
            "fassung": v["freigegebene_fassung"], "termin_uid": r["termin_uid"],
            "werte": r["werte"], "leer": r["fehlend"]})))
-    return _json({"datei": name, "link": _medien_link(name), "leer": r["fehlend"]})
+    return _json(_mit_link({"datei": name, "leer": r["fehlend"]}, name))
 
 
 WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,

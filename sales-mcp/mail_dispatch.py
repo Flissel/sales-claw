@@ -598,7 +598,7 @@ def verarbeite_draft(draft_id) -> str:
         # wie beim WhatsApp-Weg (dispatch.py): zwischen Freigabe und
         # Zustellung koennen Minuten liegen, media/ ist ein Host-Bind, den
         # der Betreiber jederzeit aufraeumen kann.
-        basis, medienfehler = medien.pruefe(geclaimt["media_ref"])
+        basis, medienfehler = medien.pruefe_anhang(geclaimt["media_ref"])
         if medienfehler:
             _als_fehler_buchen(
                 draft_id, marke, f"Anhang nicht versandfaehig: {medienfehler}")

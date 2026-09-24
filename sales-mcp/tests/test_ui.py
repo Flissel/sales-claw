@@ -2668,6 +2668,20 @@ def test_datei_mit_pfad_wird_nicht_ausgeliefert(medienordner):
     assert _get("/medien/datei/..%2F..%2Fetc%2Fpasswd").status_code in (404, 400)
 
 
+def test_terminkarte_wird_dem_mitglied_weiter_ausgeliefert(medienordner, tmp_path,
+                                                          monkeypatch):
+    """M-a (Terminkarten, 24.09.2026): Karte und Musterblatt sind kein
+    Kundenanhang — der Link, den das Mitglied bekommt, muss aber gehen."""
+    erzeugt = tmp_path / "erzeugt"
+    erzeugt.mkdir()
+    monkeypatch.setattr(server.medien, "ERZEUGT_VERZEICHNIS", str(erzeugt))
+    (erzeugt / "terminkarte-x-2026-10-02.pdf").write_bytes(b"%PDF-1.4 karte")
+    antwort = _get("/medien/datei/terminkarte-x-2026-10-02.pdf")
+    assert antwort.status_code == 200
+    assert antwort.content == b"%PDF-1.4 karte"
+    assert antwort.headers["content-type"].startswith("application/pdf")
+
+
 def test_unbekannte_datei_ist_404(medienordner):
     assert _get("/medien/datei/gibtsnicht.png").status_code == 404
 

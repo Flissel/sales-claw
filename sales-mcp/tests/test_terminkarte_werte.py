@@ -96,3 +96,14 @@ def test_dateiname_bekommt_bei_kollision_ein_suffix():
     belegt = {"terminkarte-juergen-muessig-2026-10-02.pdf"}
     assert terminkarte.dateiname("Jürgen Müßig", "2026-10-02", belegt.__contains__) == \
         "terminkarte-juergen-muessig-2026-10-02-2.pdf"
+
+
+def test_dateiname_nimmt_nur_ein_echtes_datum():
+    """T4: ein kaputtes termin.datum landet nicht im Dateinamen."""
+    from datetime import date
+    heute = date.today().isoformat()
+    assert terminkarte.dateiname("Anna", "2026-10-02", lambda n: False) == \
+        "terminkarte-anna-2026-10-02.pdf"
+    for kaputt in ("", "morgen", "2026-13-40", "../x", None):
+        assert terminkarte.dateiname("Anna", kaputt, lambda n: False) == \
+            f"terminkarte-anna-{heute}.pdf"
