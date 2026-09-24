@@ -708,10 +708,16 @@ def test_fuenfundachtzig_werkzeuge_registriert():
     # Schreibvarianten, die `kontakt_suchen` mit `ilike` verfehlt, 83 -> 84.
     # 22.09.2026: gespraeche_suchen (tests/test_gespraeche_suchen.py) —
     # deutsche Volltextsuche ueber den Freitext der Aktivitaeten, 84 -> 85.
-    assert len(namen) == 85
+    # 24.09.2026: Terminkarten (Task 4, tests/test_terminkarte_werkzeuge.py) —
+    # vorlage_beauftragen, vorlagenauftraege_pruefen, vorlage_urteil,
+    # terminkarte_erstellen, 85 -> 89.
+    assert len(namen) == 89
     assert "termin_konflikte" in namen
     assert "kontakt_aehnlich" in namen
     assert "gespraeche_suchen" in namen
+    for w in ("vorlage_beauftragen", "vorlagenauftraege_pruefen",
+              "vorlage_urteil", "terminkarte_erstellen"):
+        assert w in namen
     # Telegram als vierter Versandkanal (12.09.2026, tests/test_telegram.py):
     # die chat_id hinterlegen bzw. entziehen. ERREICHBARKEIT, nicht
     # Einwilligung — das UWG-Tor bleibt davon unberuehrt.

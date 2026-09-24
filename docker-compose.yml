@@ -203,6 +203,9 @@ services:
     environment:
       <<: *sales_mcp_umgebung
       MCP_PORT: ${MCP_PORT:-8765}
+      # Terminkarten: Link auf die Oberflaeche und der Name auf der Karte.
+      UI_BASIS_URL: ${UI_BASIS_URL:-}
+      MITGLIED_NAME: ${MITGLIED_NAME:-}
     # Der Medienordner (Stufe 4, F4). Hier liegen die Unterlagen, die der
     # Betreiber an Entwürfe hängen kann; `medien_liste` liest genau dieses
     # Verzeichnis und `entwurf_erstellen` prüft eine Datei gegen es, bevor ein

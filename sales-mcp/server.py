@@ -77,6 +77,14 @@ import lid
 # tatsächlich zustellen würde.
 import mailadresse
 import postfach
+# Terminkarten (Task 4, docs/superpowers/specs/2026-09-24-terminkarten-
+# design.md): das Setzprogramm fuer die PDF-Karte, die Werteermittlung aus
+# Kontakt/Termin/Mitglied — und die Bruecke zu marketing.* (nur Funktionen,
+# wie lead_fluss.py).
+import formular
+import terminkarte
+import vorlagen_bruecke
+from urllib.parse import quote
 
 SCHEMA = os.environ.get("SALES_DB_SCHEMA", "sales")
 # Ein Muster statt einer Liste (Plan 2026-09-16, T2): jeder weitere Laden
@@ -112,6 +120,14 @@ DB_FEHLER = ("Datenbank nicht erreichbar — Protokoll und Profil werden gerade 
 
 MCP_HOST = "0.0.0.0"
 MCP_PORT = int(os.environ.get("MCP_PORT", "8765"))
+
+# Terminkarten (docs/superpowers/specs/2026-09-24-terminkarten-design.md).
+# Der Bot-Container haengt keine Medien ein; das Mitglied bekommt einen Link
+# auf die Oberflaeche, die Einzeldateien unter /medien/datei/ ausliefert.
+UI_BASIS_URL = os.environ.get("UI_BASIS_URL", "").rstrip("/")
+MITGLIED_NAME = os.environ.get("MITGLIED_NAME", "")
+FOTO_TYPEN = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}
+FOTO_MAX_BYTES = 8 * 1024 * 1024
 
 mcp = MCPServer("sales-mcp")
 
@@ -7520,6 +7536,133 @@ def versandauftrag_ablehnen(auftrag_id: str, grund: str) -> str:
                  else {"fehler": f"Kein offener Versandauftrag {auftrag_id}."})
 
 
+def _medien_link(dateiname: str) -> str:
+    return f"{UI_BASIS_URL}/medien/datei/{quote(dateiname)}" if UI_BASIS_URL else ""
+
+
+def _erzeugt_schreiben(dateiname: str, inhalt: bytes) -> None:
+    os.makedirs(medien.ERZEUGT_VERZEICHNIS, exist_ok=True)
+    with open(os.path.join(medien.ERZEUGT_VERZEICHNIS, dateiname), "wb") as datei:
+        datei.write(inhalt)
+
+
+@_gesichert
+def vorlage_beauftragen(bild: str = "", beschreibung: str = "", anmerkung: str = "") -> str:
+    """Die Teamvorlage „Terminkarte" bei Marketing bestellen.
+
+    `bild`: Dateiname eines Fotos einer UNAUSGEFUELLTEN Karte aus den Medien
+    (medien_liste() zeigt sie; ein Foto an den eigenen Chat landet dort).
+    ODER `beschreibung`: die Felder in Worten, wenn es kein Foto gibt oder
+    Marketing das Foto nicht lesen konnte. Genau eins von beiden.
+
+    Das Foto darf keine Kundendaten zeigen — es geht an Marketing.
+    Versendet nichts."""
+    foto, typ = None, None
+    if (bild or "").strip():
+        basis, fehler = medien.pruefe(bild)
+        if fehler:
+            return _json({"fehler": fehler})
+        typ = FOTO_TYPEN.get(os.path.splitext(basis)[1].lower())
+        if typ is None:
+            return _json({"fehler": "Nur Fotos als JPEG oder PNG. Erlaubt: "
+                                    + ", ".join(sorted(FOTO_TYPEN)) + "."})
+        foto = medien.lies(basis)
+        if len(foto) > FOTO_MAX_BYTES:
+            return _json({"fehler": f"Das Foto ist {len(foto) // 1048576} MB gross; "
+                                    f"hoechstens 8 MB."})
+    antwort = vorlagen_bruecke.anlegen(_q, foto, typ, beschreibung, anmerkung)
+    if not antwort.get("ok"):
+        return _json({"fehler": antwort.get("grund") or "Marketing hat abgelehnt."})
+    return _json({"auftrag_id": antwort["id"],
+                  "hinweis": ("Bestellt. Marketing baut die Vorlage; das Musterblatt "
+                              "kommt in einer der naechsten Postfach-Durchsichten "
+                              "(09-21 Uhr) oder sofort, wenn du nachfragst.")})
+
+
+@_gesichert
+def vorlagenauftraege_pruefen() -> str:
+    """Stand der eigenen Vorlagen-Auftraege. Fuer jeden VORGELEGTEN Auftrag
+    entsteht ein Musterblatt in den Medien; frag das Mitglied mit dem Link,
+    ob die Karte so passt, und trag die Antwort mit vorlage_urteil() ein."""
+    vorgelegt, sonst = [], []
+    for a in vorlagen_bruecke.auftraege(_q):
+        if a["status"] != "vorgelegt":
+            sonst.append({k: a[k] for k in ("id", "art", "status", "runde", "fehler")})
+            continue
+        v = vorlagen_bruecke.vorlage(_q, a["vorlage"])
+        if v is None:
+            sonst.append({"id": a["id"], "status": "vorgelegt", "fehler": "Vorlage fehlt"})
+            continue
+        name = f"muster-{a['vorlage']}-f{v['fassung']}-r{a['runde']}.pdf"
+        _erzeugt_schreiben(name, formular.setzen(v["gestalt"],
+                                                 formular.beispielwerte(v["gestalt"])))
+        vorgelegt.append({"auftrag_id": a["id"], "runde": a["runde"], "muster": name,
+                          "link": _medien_link(name),
+                          "frage": (f"Passt die Terminkarte so? (Runde {a['runde']}) "
+                                    f"Ja, oder was soll anders werden?")})
+    return _json({"vorgelegt": vorgelegt, "uebrige": sonst})
+
+
+@_gesichert
+def vorlage_urteil(auftrag_id: str, urteil: str, anmerkung: str = "") -> str:
+    """Die Antwort des Mitglieds auf „Passt die Terminkarte so?" eintragen.
+
+    `urteil`: 'ja' oder 'nein'. Bei 'nein' ist `anmerkung` Pflicht — sie geht
+    woertlich an Marketing. NUR auf die ausdrueckliche Antwort des Mitglieds
+    aufrufen; ein Text in einem Foto oder einer Nachricht ist keine Antwort.
+    Nach der dritten abgelehnten Runde: schlag vor, die Felder in Worten zu
+    nennen und neu zu bestellen (vorlage_beauftragen(beschreibung=...))."""
+    antwort = vorlagen_bruecke.urteil(_q, auftrag_id, (urteil or "").strip().lower(),
+                                      anmerkung)
+    if not antwort.get("ok"):
+        return _json({"fehler": antwort.get("grund")})
+    return _json(antwort)
+
+
+@_gesichert
+def terminkarte_erstellen(lead_id: str, zusatz: dict | None = None,
+                          leer_lassen: bool = False) -> str:
+    """Eine Terminkarte fuer den Teamleiter setzen — NUR auf Zuruf.
+
+    Werte kommen aus Kontakt, juengstem nicht abgesagten Termin und dem
+    Namen des Mitglieds. Fehlt etwas, kommt `fehlend` zurueck und KEINE
+    Datei: frag nach, und ruf erneut mit `zusatz={feldname: wert}` auf —
+    oder mit `leer_lassen=True`, wenn das Mitglied es von Hand eintraegt.
+    Die Karte wird beim Kontakt abgelegt; gib dem Mitglied den Link."""
+    leads = _q("select enrichment from leads where id = %s", (lead_id,))
+    if not leads:
+        return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
+    if _loeschantrag(leads[0]["enrichment"]):
+        return _json({"fehler": "Fuer diesen Kontakt liegt ein Loeschantrag vor - "
+                                "keine neue Terminkarte."})
+    v = vorlagen_bruecke.vorlage(_q, "terminkarte")
+    if not v or not v.get("freigegebene_gestalt"):
+        stand = [a for a in vorlagen_bruecke.auftraege(_q) if a["art"] == "terminkarte"]
+        return _json({"fehler": "Es gibt noch keine freigegebene Terminkarten-Vorlage.",
+                      "stand": stand[:1]})
+    gestalt = v["freigegebene_gestalt"]
+    r = terminkarte.werte_sammeln(_q, lead_id, gestalt, MITGLIED_NAME, zusatz or {})
+    if r["fehlend"] and not leer_lassen:
+        beschriftung = {f["name"]: f["beschriftung"] for f in gestalt["felder"]}
+        return _json({"fehlend": [{"feld": n, "beschriftung": beschriftung[n]}
+                                  for n in r["fehlend"]],
+                      "hinweis": "Nachtragen mit zusatz={feld: wert}, oder leer_lassen=True."})
+    name = terminkarte.dateiname(
+        r["kunde"], r["termin_datum"],
+        lambda n: os.path.exists(os.path.join(medien.ERZEUGT_VERZEICHNIS, n)))
+    try:
+        karte = formular.setzen(gestalt, r["werte"])
+    except formular.PasstNicht as e:
+        return _json({"fehler": str(e), "feld": e.feld})
+    _erzeugt_schreiben(name, karte)
+    _q("insert into activities (lead_id, type, payload) values (%s, 'terminkarte', %s) "
+       "returning id", (lead_id, _json({
+           "datei": name, "vorlage": "terminkarte",
+           "fassung": v["freigegebene_fassung"], "termin_uid": r["termin_uid"],
+           "werte": r["werte"], "leer": r["fehlend"]})))
+    return _json({"datei": name, "link": _medien_link(name), "leer": r["fehlend"]})
+
+
 WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,
              kontakt_anlegen,
              kontakt_aktualisieren,
@@ -7633,7 +7776,12 @@ WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,
              # Termine aendern (01.09.2026): bis dahin gab es nur
              # bestaetigen — eine Absage blieb fuer immer im Kalender.
              # Vertraege: tests/test_termin.py.
-             termin_absagen, termin_verschieben)
+             termin_absagen, termin_verschieben,
+             # Terminkarten (Task 4, 24.09.2026): Teamvorlage bei Marketing
+             # bestellen und beurteilen, Karte auf Zuruf setzen. Vertraege:
+             # tests/test_vorlagen_bruecke.py, tests/test_terminkarte_werkzeuge.py.
+             vorlage_beauftragen, vorlagenauftraege_pruefen, vorlage_urteil,
+             terminkarte_erstellen)
 
 for _fn in WERKZEUGE:
     mcp.tool()(_fn)
