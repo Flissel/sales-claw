@@ -153,7 +153,7 @@ fi
 # Leerzeichen tragen). Sie landen NUR als SYSTEM_* in dieser Datei; die
 # SMTP_* des neuen Ladens bleiben leer, bis sein eigenes Postfach steht -
 # bis dahin verschickt <laden>-mail ausschliesslich Konto-Mails.
-basis_wert() { grep -E "^$1=" "$WURZEL/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r'; }
+basis_wert() { { grep -E "^$1=" "$WURZEL/.env" 2>/dev/null || true; } | head -1 | cut -d= -f2- | tr -d '\r'; }
 SYS_HOST="$(basis_wert SMTP_HOST)"; SYS_PORT="$(basis_wert SMTP_PORT)"
 SYS_USER="$(basis_wert SMTP_USER)"; SYS_PASSWORT="$(basis_wert SMTP_PASSWORT)"
 SYS_ABSENDER="$(basis_wert EMAIL_ABSENDER)"
