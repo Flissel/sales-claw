@@ -159,6 +159,10 @@ def saubere_umgebung(monkeypatch):
     monkeypatch.setattr(mail_dispatch, "SMTP_USER", "stub-user@example.org")
     monkeypatch.setattr(mail_dispatch, "SMTP_PASSWORT", "STUB-GEHEIMNIS")
     monkeypatch.setattr(mail_dispatch, "EMAIL_ABSENDER", "haus@example.org")
+    # Riegel 2b: nie die echte Betreiber-Identitaet aus der .env.
+    for name in ("SYSTEM_SMTP_HOST", "SYSTEM_SMTP_USER",
+                 "SYSTEM_SMTP_PASSWORT", "SYSTEM_ABSENDER"):
+        monkeypatch.setattr(mail_dispatch, name, "")
     monkeypatch.setattr(mail_dispatch, "SENDE_PAUSE_S", 0.0)
     monkeypatch.setattr(mail_dispatch, "SMTP_TIMEOUT_S", 5.0)
     assert mail_dispatch.SMTP_HOST == "127.0.0.1", (
@@ -166,7 +170,7 @@ def saubere_umgebung(monkeypatch):
         "echte Mail rausgeht.")
 
     # Riegel 3: blanke Verbindung zum Stub statt TLS.
-    def _blank():
+    def _blank(identitaet=None):
         verbindung = smtplib.SMTP(mail_dispatch.SMTP_HOST,
                                   mail_dispatch.SMTP_PORT,
                                   timeout=mail_dispatch.SMTP_TIMEOUT_S)
@@ -526,7 +530,7 @@ def test_passwort_landet_nie_im_fehlertext():
 def test_mailserver_nicht_erreichbar_wird_failed(monkeypatch):
     draft = _draft(_lead())
 
-    def _tot():
+    def _tot(identitaet=None):
         return smtplib.SMTP("127.0.0.1", 1, timeout=2.0)   # niemand hoert zu
 
     monkeypatch.setattr(mail_dispatch, "_verbindung", _tot)
@@ -539,7 +543,7 @@ def test_mailserver_nicht_erreichbar_wird_failed(monkeypatch):
 
 
 def test_kaputte_verbindung_toetet_die_schleife_nicht(monkeypatch):
-    def _tot():
+    def _tot(identitaet=None):
         raise ValueError("kaputte Konfiguration")
 
     monkeypatch.setattr(mail_dispatch, "_verbindung", _tot)
@@ -1096,3 +1100,109 @@ def test_entwurf_mit_fehlender_ics_wird_fehler_gebucht(tmp_path, monkeypatch):
     zeile = _zeile(draft)
     assert zeile["status"] == "failed"
     assert STUB.mails == []
+
+
+# ---------------------------------------------------------------------------
+# Zwei Identitaeten (24.09.2026): Konto-Mails vom Betreiber, Entwuerfe nie
+# ---------------------------------------------------------------------------
+
+def _system_setzen(monkeypatch, absender="betreiber@example.org"):
+    monkeypatch.setattr(mail_dispatch, "SYSTEM_SMTP_HOST", "127.0.0.1")
+    monkeypatch.setattr(mail_dispatch, "SYSTEM_SMTP_PORT", STUB_PORT)
+    monkeypatch.setattr(mail_dispatch, "SYSTEM_SMTP_USER", "betreiber-user")
+    monkeypatch.setattr(mail_dispatch, "SYSTEM_SMTP_PASSWORT", "SYSTEM-GEHEIMNIS")
+    monkeypatch.setattr(mail_dispatch, "SYSTEM_ABSENDER", absender)
+
+
+def _konto_mit_zettel(name="lena", art="passwort_reset"):
+    with server.pool.connection() as conn:
+        conn.execute("truncate sales_test.benutzer, sales_test.benutzer_mails")
+    server._q(
+        "insert into benutzer (name, rolle, passwort_hash, aktiv, email) "
+        "values (%s, 'lesen', 'x', true, %s) returning name",
+        (name, f"{name}@privat.example"))
+    return server._q(
+        "insert into benutzer_mails (benutzer, art) values (%s, %s) "
+        "returning id", (name, art))[0]["id"]
+
+
+def _zettelstatus(zettel_id):
+    return server._q("select status, grund from benutzer_mails where id = %s",
+                     (zettel_id,))[0]
+
+
+def test_ohne_kundenpostfach_bleibt_der_entwurf_liegen(monkeypatch):
+    """Die Kernregel: gaebe es nur die Betreiber-Identitaet, darf ein
+    Kundenentwurf trotzdem NICHT rausgehen - sonst schriebe der Betreiber
+    im Namen eines anderen Menschen an dessen Kunden."""
+    monkeypatch.setattr(mail_dispatch, "SMTP_PASSWORT", "")
+    _system_setzen(monkeypatch)
+    draft = _draft(_lead())
+
+    mail_dispatch.eine_runde()
+
+    assert _zeile(draft)["status"] == "approved"
+    assert STUB.mails == []
+
+
+def test_kontomail_geht_ueber_die_betreiber_identitaet(monkeypatch):
+    monkeypatch.setattr(mail_dispatch, "SMTP_PASSWORT", "")
+    monkeypatch.setattr(mail_dispatch, "UI_BASIS_URL", "https://laden.example")
+    _system_setzen(monkeypatch)
+    zettel = _konto_mit_zettel()
+
+    mail_dispatch.eine_runde()
+
+    assert _zettelstatus(zettel)["status"] == "gesendet"
+    assert len(STUB.mails) == 1
+    assert "betreiber@example.org" in STUB.mails[0]["absender"]
+    assert "From: betreiber@example.org" in STUB.mails[0]["roh"]
+
+
+def test_beide_identitaeten_trennen_sauber(monkeypatch):
+    monkeypatch.setattr(mail_dispatch, "UI_BASIS_URL", "https://laden.example")
+    _system_setzen(monkeypatch)
+    draft = _draft(_lead())
+    zettel = _konto_mit_zettel()
+
+    mail_dispatch.eine_runde()
+
+    assert _zeile(draft)["status"] == "sent"
+    assert _zettelstatus(zettel)["status"] == "gesendet"
+    absender = sorted(m["absender"] for m in STUB.mails)
+    assert any("haus@example.org" in a for a in absender)
+    assert any("betreiber@example.org" in a for a in absender)
+    for m in STUB.mails:
+        if "max@example.com" in " ".join(m["empfaenger"]):
+            assert "haus@example.org" in m["absender"]
+
+
+def test_ohne_system_identitaet_nimmt_kontomail_die_des_ladens(monkeypatch):
+    monkeypatch.setattr(mail_dispatch, "UI_BASIS_URL", "https://laden.example")
+    zettel = _konto_mit_zettel()
+
+    mail_dispatch.eine_runde()
+
+    assert _zettelstatus(zettel)["status"] == "gesendet"
+    assert "haus@example.org" in STUB.mails[0]["absender"]
+
+
+def test_system_passwort_wird_maskiert(monkeypatch):
+    _system_setzen(monkeypatch)
+    text = mail_dispatch._ohne_geheimnis("Antwort: SYSTEM-GEHEIMNIS kaputt")
+    assert "SYSTEM-GEHEIMNIS" not in text and "***" in text
+
+
+def test_dienst_startet_mit_nur_der_system_identitaet(monkeypatch):
+    monkeypatch.setattr(mail_dispatch, "SMTP_PASSWORT", "")
+    _system_setzen(monkeypatch)
+    monkeypatch.setattr(mail_dispatch, "MAIL_ONCE", True)
+    draft = _draft(_lead())
+
+    with _Mitschnitt() as mitschnitt:
+        assert mail_dispatch.main() == 0
+
+    assert _zeile(draft)["status"] == "approved"
+    gemeldet = " ".join(mitschnitt.texte())
+    assert "kontomails=ja" in gemeldet
+    assert "Entwuerfe bleiben liegen" in gemeldet

@@ -82,6 +82,7 @@ import ssl
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from email.message import EmailMessage
 
 import psycopg
@@ -102,6 +103,17 @@ SMTP_PORT = int(os.environ.get("SMTP_PORT", "587") or "587")
 SMTP_USER = os.environ.get("SMTP_USER", "").strip()
 SMTP_PASSWORT = os.environ.get("SMTP_PASSWORT", "")
 EMAIL_ABSENDER = os.environ.get("EMAIL_ABSENDER", "").strip()
+
+# Zweite Identitaet (24.09.2026): NUR fuer Konto-Mails aus `benutzer_mails`
+# - die Adresse des Betreibers, damit auch ein Laden ohne eigenes Postfach
+# "Passwort vergessen" und Willkommensmails verschicken kann. Kundenentwuerfe
+# laufen NIE hierueber (siehe eine_runde). Fehlt sie, gelten fuer
+# Konto-Mails die SMTP_* oben - im Basis-Laden ist das dieselbe Person.
+SYSTEM_SMTP_HOST = os.environ.get("SYSTEM_SMTP_HOST", "").strip()
+SYSTEM_SMTP_PORT = int(os.environ.get("SYSTEM_SMTP_PORT", "587") or "587")
+SYSTEM_SMTP_USER = os.environ.get("SYSTEM_SMTP_USER", "").strip()
+SYSTEM_SMTP_PASSWORT = os.environ.get("SYSTEM_SMTP_PASSWORT", "")
+SYSTEM_ABSENDER = os.environ.get("SYSTEM_ABSENDER", "").strip()
 
 # Wohin der Link in der Passwort-Mail zeigt. Fehlt sie, wird KEIN
 # Konto-Zettel versendet - lieber gar keine Mail als eine mit einem Link,
@@ -135,6 +147,38 @@ _STOPP = threading.Event()
 _NETZ_AUSGAENGE = frozenset(("gesendet", "fehler", "gesendet_ohne_buchung"))
 
 
+@dataclass(frozen=True)
+class Identitaet:
+    """Mit wessen Zugangsdaten und unter welcher Adresse eine Mail rausgeht."""
+    art: str            # "kunde" | "system" - nur fuer Log und Fehlertexte
+    host: str
+    port: int
+    user: str
+    passwort: str
+    absender: str
+
+    def vollstaendig(self) -> bool:
+        return bool(self.host and self.user and self.passwort and self.absender)
+
+    def brauchbar(self) -> bool:
+        return self.vollstaendig() and bool(mailadresse.pruefe(self.absender)[0])
+
+
+def kunden_identitaet() -> Identitaet:
+    """Die Identitaet des Ladens selbst. Liest die Modulkonstanten bei jedem
+    Aufruf, damit Tests sie wie bisher umbiegen koennen."""
+    return Identitaet("kunde", SMTP_HOST, SMTP_PORT, SMTP_USER,
+                      SMTP_PASSWORT, EMAIL_ABSENDER)
+
+
+def system_identitaet() -> Identitaet:
+    """Fuer Konto-Mails: die des Betreibers, wenn vollstaendig gesetzt,
+    sonst die des Ladens."""
+    eigen = Identitaet("system", SYSTEM_SMTP_HOST, SYSTEM_SMTP_PORT,
+                       SYSTEM_SMTP_USER, SYSTEM_SMTP_PASSWORT, SYSTEM_ABSENDER)
+    return eigen if eigen.vollstaendig() else kunden_identitaet()
+
+
 class VersandFehler(Exception):
     """Fehlgeschlagener Zustellversuch mit menschenlesbarem Grund."""
 
@@ -146,19 +190,19 @@ def _ohne_geheimnis(text: str) -> str:
     Chat. Fremde Antworttexte spiegeln Anfragen manchmal zurueck; die Zeile
     kostet nichts und schliesst die Klasse Vorfall aus.
     """
-    if not SMTP_PASSWORT:
-        return text
-    # Auch die kodierten Formen (Review-Befund H2): auf der Leitung reist
-    # das Passwort als Base64 — allein (AUTH LOGIN) oder als
-    # \0user\0passwort-Block (AUTH PLAIN). Ein spiegelnder Gateway gaebe
-    # genau diese Darstellung zurueck, nicht den Klartext. Der
-    # CalDAV-Zwilling (kalender.py) filtert aus demselben Grund zwei Formen.
-    text = text.replace(SMTP_PASSWORT, "***")
-    text = text.replace(base64.b64encode(
-        SMTP_PASSWORT.encode("utf-8")).decode("ascii"), "***")
-    text = text.replace(base64.b64encode(
-        f"\0{SMTP_USER}\0{SMTP_PASSWORT}".encode("utf-8")).decode("ascii"),
-        "***")
+    # Seit 24.09.2026 fuer BEIDE Identitaeten.
+    for user, passwort in ((SMTP_USER, SMTP_PASSWORT),
+                           (SYSTEM_SMTP_USER, SYSTEM_SMTP_PASSWORT)):
+        if not passwort:
+            continue
+        # Auch die kodierten Formen (Review-Befund H2): auf der Leitung
+        # reist das Passwort als Base64 - allein (AUTH LOGIN) oder als
+        # \0user\0passwort-Block (AUTH PLAIN).
+        text = text.replace(passwort, "***")
+        text = text.replace(base64.b64encode(
+            passwort.encode("utf-8")).decode("ascii"), "***")
+        text = text.replace(base64.b64encode(
+            f"\0{user}\0{passwort}".encode("utf-8")).decode("ascii"), "***")
     return text
 
 
@@ -228,7 +272,7 @@ def _betreff(roh: str) -> str:
 
 
 def nachricht_bauen(adresse: str, betreff: str, rumpf: str,
-                    cc=None) -> EmailMessage:
+                    cc=None, absender=None) -> EmailMessage:
     """Der fertige Text als text/plain, UTF-8.
 
     `EmailMessage` statt zusammengesetzter Zeichenketten: es kodiert
@@ -237,7 +281,7 @@ def nachricht_bauen(adresse: str, betreff: str, rumpf: str,
     ist die Stelle, an der Kopfzeilen-Injektionen entstehen.
     """
     nachricht = EmailMessage()
-    nachricht["From"] = EMAIL_ABSENDER
+    nachricht["From"] = absender or EMAIL_ABSENDER
     nachricht["To"] = adresse
     # CC (03.09.2026): kommt geprueft aus drafts.cc (mailadresse.pruefe je
     # Adresse beim Anlegen/Bearbeiten); hier nur noch einzeilig gemacht, aus
@@ -383,7 +427,7 @@ def nachricht_mit_einladung(adresse: str, betreff: str, rumpf: str,
     return nachricht
 
 
-def _verbindung():
+def _verbindung(identitaet=None):
     """Offene, VERSCHLUESSELTE SMTP-Verbindung. Der Port entscheidet.
 
     465 = implizites TLS (SMTP_SSL, ab dem ersten Byte verschluesselt),
@@ -396,34 +440,37 @@ def _verbindung():
     biegt `_verbindung` auf eine blanke Verbindung zum lokalen Stub um und
     beruehrt so nie einen echten Mailserver.
     """
+    ident = identitaet or kunden_identitaet()
     kontext = ssl.create_default_context()
-    if SMTP_PORT == SMTP_SSL_PORT:
-        return smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=SMTP_TIMEOUT_S,
-                                context=kontext)
-    verbindung = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=SMTP_TIMEOUT_S)
+    if ident.port == SMTP_SSL_PORT:
+        return smtplib.SMTP_SSL(ident.host, ident.port,
+                                timeout=SMTP_TIMEOUT_S, context=kontext)
+    verbindung = smtplib.SMTP(ident.host, ident.port, timeout=SMTP_TIMEOUT_S)
     verbindung.ehlo()
     verbindung.starttls(context=kontext)
     verbindung.ehlo()
     return verbindung
 
 
-def senden(nachricht: EmailMessage) -> None:
+def senden(nachricht: EmailMessage, identitaet=None) -> None:
     """Eine Nachricht zustellen. Wirft VersandFehler mit lesbarem Grund.
 
     Die Abbildung der Ausfaelle auf lesbare Texte steht an EINER Stelle —
     sonst liest der Betreiber je nach Ausfallart etwas anderes fuer
     dieselbe Ursache (gleiche Ueberlegung wie `dispatch._senden`).
     """
+    ident = identitaet or kunden_identitaet()
+    praefix = "SYSTEM_SMTP" if ident.art == "system" else "SMTP"
     verbindung = None
     try:
-        verbindung = _verbindung()
-        if SMTP_USER:
-            verbindung.login(SMTP_USER, SMTP_PASSWORT)
+        verbindung = _verbindung(ident)
+        if ident.user:
+            verbindung.login(ident.user, ident.passwort)
         verbindung.send_message(nachricht)
     except smtplib.SMTPAuthenticationError as e:
         raise VersandFehler(_ohne_geheimnis(_einzeilig(
-            f"SMTP-Anmeldung abgelehnt ({e.smtp_code}) — SMTP_USER/"
-            f"SMTP_PASSWORT in der .env pruefen (viele Anbieter verlangen "
+            f"SMTP-Anmeldung abgelehnt ({e.smtp_code}) — {praefix}_USER/"
+            f"{praefix}_PASSWORT in der .env pruefen (viele Anbieter verlangen "
             f"ein App-Passwort). Antwort: "
             f"{e.smtp_error.decode('utf-8', 'replace') if isinstance(e.smtp_error, bytes) else e.smtp_error}"
         ))) from None
@@ -441,7 +488,7 @@ def senden(nachricht: EmailMessage) -> None:
             f"{SMTP_TIMEOUT_S:g} s.") from None
     except ssl.SSLError as e:
         raise VersandFehler(_ohne_geheimnis(_einzeilig(
-            f"TLS-Fehler zum Mailserver: {e}. Stimmt SMTP_PORT? 465 ist "
+            f"TLS-Fehler zum Mailserver: {e}. Stimmt {praefix}_PORT? 465 ist "
             f"implizites TLS, 587 ist STARTTLS."))) from None
     except (OSError, smtplib.SMTPException) as e:
         raise VersandFehler(_ohne_geheimnis(_einzeilig(
@@ -722,13 +769,20 @@ def verarbeite_kontomail(zettel_id) -> str:
         "where name = %s returning name",
         (gehasht, passwort_reset.GUELTIG_S, konto["name"]))
     try:
+        # Konto-Mail (24.09.2026): geht IMMER ueber die Betreiber-Identitaet,
+        # wenn sie vollstaendig gesetzt ist - nie ueber die des Ladens, damit
+        # auch ein Laden ohne eigenes Postfach seinen Menschen den Zugang
+        # zurueckgeben kann. `system_identitaet()` faellt sonst selbst auf die
+        # des Ladens zurueck (siehe dort).
+        system = system_identitaet()
         nachricht = nachricht_bauen(
             konto["email"], passwort_reset.BETREFF,
             passwort_reset.mailtext(
                 konto["name"],
                 passwort_reset.link_bauen(UI_BASIS_URL, konto["name"],
-                                          klartext)))
-        senden(nachricht)
+                                          klartext)),
+            absender=system.absender)
+        senden(nachricht, identitaet=system)
     except Exception as e:      # noqa: BLE001 - ein Ausfall darf die Runde nicht reissen
         # Der Token darf nicht stehenbleiben: ein gueltiger Token ohne
         # Empfaenger ist ein offenes Fenster, das niemand bemerkt.
@@ -743,9 +797,15 @@ def verarbeite_kontomail(zettel_id) -> str:
 
 def eine_runde() -> dict:
     """Bis zu STAPEL freigegebene E-Mail-Entwuerfe, aelteste zuerst."""
-    zeilen = server._q(
-        "select id from drafts where status = 'approved' and channel = 'email' "
-        "order by created_at limit %s", (STAPEL,))
+    # DIE WEICHE (24.09.2026): Kundenentwuerfe nur mit der EIGENEN Identitaet
+    # des Ladens. Fehlt sie, bleiben sie `approved` liegen und gehen raus,
+    # sobald das Postfach eingetragen ist - nie ueber die des Betreibers.
+    if kunden_identitaet().brauchbar():
+        zeilen = server._q(
+            "select id from drafts where status = 'approved' "
+            "and channel = 'email' order by created_at limit %s", (STAPEL,))
+    else:
+        zeilen = []
     bilanz = {}
     letzter_ausgang = None
     for z in zeilen:
@@ -809,22 +869,25 @@ def _fehlende_konfiguration() -> list:
 def main() -> int:
     _logging_einrichten()
 
-    fehlend = _fehlende_konfiguration()
-    if fehlend:
+    kunde_aktiv = kunden_identitaet().brauchbar()
+    system = system_identitaet()
+    konto_aktiv = system.brauchbar()
+    if not (kunde_aktiv or konto_aktiv):
         # Exit 0, nicht 2: ein nicht eingerichteter E-Mail-Kanal ist ein
-        # gueltiger Zustand dieses Prototyps, kein Ausfall. Der Dienst ist
-        # gebaut und getestet, aber inert, bis der Betreiber Zugangsdaten
-        # eintraegt — und ein Container, der als „Exited (2)" dasteht,
-        # sieht aus wie ein Fehler und wird gesucht.
-        LOG.warning("E-Mail-Kanal nicht eingerichtet — %s fehlt in der "
-                    "Umgebung (.env). Es wird nichts versendet; freigegebene "
-                    "E-Mail-Entwuerfe bleiben unangetastet liegen.",
-                    ", ".join(fehlend))
+        # gueltiger Zustand dieses Prototyps, kein Ausfall.
+        fehlend = _fehlende_konfiguration()
+        if fehlend:
+            LOG.warning("E-Mail-Kanal nicht eingerichtet — %s fehlt in der "
+                        "Umgebung (.env). Es wird nichts versendet; "
+                        "freigegebene E-Mail-Entwuerfe bleiben unangetastet "
+                        "liegen.", ", ".join(fehlend))
+        else:
+            LOG.error("EMAIL_ABSENDER ist keine brauchbare Adresse — es wird "
+                      "nichts versendet.")
         return 0
-    if not mailadresse.pruefe(EMAIL_ABSENDER)[0]:
-        LOG.error("EMAIL_ABSENDER ist keine brauchbare Adresse — es wird "
-                  "nichts versendet.")
-        return 0
+    LOG.info("Aktiv: kundenmails=%s kontomails=%s (identitaet=%s)",
+             "ja" if kunde_aktiv else "nein — Entwuerfe bleiben liegen",
+             "ja" if konto_aktiv else "nein", system.art)
 
     _STOPP.clear()
     for sig in (signal.SIGTERM, signal.SIGINT):

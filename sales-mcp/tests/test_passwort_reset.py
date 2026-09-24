@@ -212,13 +212,17 @@ def test_zweite_anforderung_greift_in_die_bremse():
 
 def _versenden(zettel_id, basis="https://haus.example", fehler=None):
     """verarbeite_kontomail mit abgefangenem SMTP-Ausgang."""
-    def _ausgang(_nachricht):
+    def _ausgang(_nachricht, **_k):
         if fehler is not None:
             raise fehler
 
     with mock.patch.object(mail_dispatch, "UI_BASIS_URL", basis), \
          mock.patch.object(mail_dispatch, "EMAIL_ABSENDER",
                            "haus@example.invalid"), \
+         mock.patch.object(mail_dispatch, "system_identitaet",
+                           lambda: mail_dispatch.Identitaet(
+                               "system", "127.0.0.1", 587, "u", "p",
+                               "haus@example.invalid")), \
          mock.patch.object(mail_dispatch, "senden",
                            side_effect=_ausgang) as gesendet:
         ausgang = mail_dispatch.verarbeite_kontomail(zettel_id)
