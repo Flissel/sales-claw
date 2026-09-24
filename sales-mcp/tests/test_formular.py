@@ -108,3 +108,79 @@ def test_feld_am_seitenende_passt_wenn_es_klein_genug_ist():
     text = _text(pdf)
     assert "OK" in text
     assert "Test" in text
+
+
+def test_passt_nicht_exception_has_feld_attribute():
+    """PasstNicht Exception hat .feld und .beschriftung Attribute."""
+    gestalt_klein = {
+        "seite": {"breite_mm": 148, "hoehe_mm": 105},
+        "texte": [],
+        "felder": [
+            {"name": "kunde", "beschriftung": "Kunde", "art": "text", "quelle": "kunde.name",
+             "platz": {"x": 8, "y": 20, "breite": 30, "hoehe": 5}},
+        ],
+    }
+    zu_lang = "Antidisestablishmentarianism " * 10
+    try:
+        formular.setzen(gestalt_klein, {"kunde": zu_lang})
+        assert False, "Expected PasstNicht exception"
+    except formular.PasstNicht as e:
+        assert e.feld == "kunde"
+        assert e.beschriftung == "Kunde"
+        assert "zu lang" in str(e)
+
+
+def test_langer_einzelwort_wird_umbrochen():
+    """Ein langer Einzelwort wird auf Zeichenbasis umbrochen."""
+    # Langer Einzelwort, der mehrere Zeichen pro Zeile nimmt
+    # Verwende "B" um nicht mit "TERMINKARTE" zu kollidieren
+    lang_wort = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"  # 37 B's
+    text = " ".join(_text(formular.setzen(GESTALT, {"kunde": lang_wort})).split())
+    # Alle B's sollten vorhanden sein
+    assert text.count("B") == 37
+
+
+def test_80_as_passt_oder_fehler():
+    """80 X's in 60mm Feld: entweder alle 80 vorhanden oder PasstNicht."""
+    # 80 X's = sicher zu lang horizontal und vertikal
+    # Verwende "X" um nicht mit Text zu kollidieren
+    lang = "X" * 80
+    try:
+        pdf = formular.setzen(GESTALT, {"kunde": lang})
+        text = _text(pdf)
+        # Wenn nicht fehler: alle 80 X's sollten da sein
+        extracted = text.replace("\n", "").replace(" ", "")
+        x_count = extracted.count("X")
+        assert x_count == 80, f"Expected 80 X's but got {x_count}"
+    except formular.PasstNicht:
+        # Fehler ist auch ok bei so langen Worten
+        pass
+
+
+def test_zeilen_breitet_lange_einzelworte_auf_charakterbasis_um():
+    """_zeilen muss lange Worte auf Zeichenbasis umbrechen."""
+    from reportlab.lib.units import mm
+
+    breite = 60 * mm  # 60mm in Punkt
+    pt = 11  # Testschrift
+
+    # Test 1: einfach lange Sequenz
+    lang = "A" * 40
+    zeilen = formular._zeilen(lang, breite, pt)
+    # Sollte mehrere Zeilen geben (nicht einfach 1 Line)
+    assert len(zeilen) > 1
+    # Alle Zeichen sollten vorhanden sein
+    text = "".join(zeilen)
+    assert text.count("A") == 40
+
+    # Test 2: lange E-Mail-ähnlich
+    email = "verylongemailaddresswithnodots" * 2
+    zeilen = formular._zeilen(email, breite, pt)
+    text = "".join(zeilen)
+    assert text == email
+
+    # Test 3: normale Worte sollten nicht kaputt gehen
+    normal = "Hello world test"
+    zeilen = formular._zeilen(normal, breite, pt)
+    text = " ".join(zeilen)
+    assert "Hello" in text and "world" in text

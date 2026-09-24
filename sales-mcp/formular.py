@@ -40,7 +40,11 @@ TRANSLITERATION = {
 
 class PasstNicht(ValueError):
     """Raised when a field value is too long to fit in its designated space."""
-    pass
+    def __init__(self, beschriftung: str, feld: str = ""):
+        self.beschriftung = beschriftung
+        self.feld = feld
+        msg = f"Feld '{beschriftung}' ist zu lang fuer die Karte - bitte kuerzen."
+        super().__init__(msg)
 
 
 def beispielwerte(gestalt: dict) -> dict:
@@ -66,21 +70,55 @@ def _druckbar(text: str) -> str:
     return "".join(aus)
 
 
+def _brechen(wort: str, breite: float, pt: float) -> list:
+    """Bricht ein einzelnes Wort in Teile, die jeweils in breite passen.
+    Wenn selbst ein einzelnes Zeichen zu breit ist, wird es dennoch ausgegeben."""
+    if stringWidth(wort, SCHRIFT, pt) <= breite:
+        return [wort]
+
+    teile = []
+    aktuell = ""
+    for z in wort:
+        probe = aktuell + z
+        if stringWidth(probe, SCHRIFT, pt) <= breite:
+            aktuell = probe
+        else:
+            if aktuell:
+                teile.append(aktuell)
+            aktuell = z
+    if aktuell:
+        teile.append(aktuell)
+    return teile if teile else [wort]
+
+
 def _zeilen(text: str, breite: float, pt: float) -> list:
     zeilen, aktuell = [], ""
     for wort in text.split():
+        # Check if word fits with current line
         probe = (aktuell + " " + wort).strip()
-        if stringWidth(probe, SCHRIFT, pt) <= breite or not aktuell:
+        if stringWidth(probe, SCHRIFT, pt) <= breite:
             aktuell = probe
         else:
-            zeilen.append(aktuell)
-            aktuell = wort
+            # Word doesn't fit on current line
+            if aktuell:
+                zeilen.append(aktuell)
+                aktuell = ""
+
+            # Check if word fits on its own
+            if stringWidth(wort, SCHRIFT, pt) <= breite:
+                aktuell = wort
+            else:
+                # Word is too long — break it into pieces
+                teile = _brechen(wort, breite, pt)
+                zeilen.extend(teile[:-1])
+                aktuell = teile[-1]
+
     if aktuell:
         zeilen.append(aktuell)
     return zeilen
 
 
-def _passend(text: str, breite: float, hoehe: float, beschriftung: str = "") -> tuple:
+def _passend(text: str, breite: float, hoehe: float, beschriftung: str = "", feld: str = "") -> tuple:
     """Groesste Schrift, bei der der umbrochene Text in den Platz passt.
     Wenn er nicht einmal in der kleinsten passt, wird PasstNicht gehoben."""
     for pt in range(WERT_PT_MAX, WERT_PT_MIN - 1, -1):
@@ -88,7 +126,7 @@ def _passend(text: str, breite: float, hoehe: float, beschriftung: str = "") -> 
         if len(zeilen) * pt * 1.2 <= hoehe:
             return pt, zeilen
     # Text passt nicht mal bei WERT_PT_MIN — Exception
-    raise PasstNicht(f"Feld '{beschriftung}' ist zu lang fuer die Karte - bitte kuerzen.")
+    raise PasstNicht(beschriftung, feld)
 
 
 def setzen(gestalt: dict, werte: dict) -> bytes:
@@ -119,7 +157,7 @@ def setzen(gestalt: dict, werte: dict) -> bytes:
         if not wert:
             continue
         platz_h = hoehe - BESCHRIFTUNG_PT * 1.4
-        pt, zeilen = _passend(wert, breite, platz_h, f["beschriftung"])
+        pt, zeilen = _passend(wert, breite, platz_h, f["beschriftung"], f["name"])
         c.setFont(SCHRIFT, pt)
         y = oben - BESCHRIFTUNG_PT * 1.4 - pt
         for zeile in zeilen:
