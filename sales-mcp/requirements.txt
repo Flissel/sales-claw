@@ -3,3 +3,5 @@ psycopg[binary]>=3.2
 psycopg_pool>=3.2
 PyYAML>=6.0
 pytest>=8.0
+reportlab>=4.0
+pypdf>=4.0
