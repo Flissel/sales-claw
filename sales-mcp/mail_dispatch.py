@@ -172,11 +172,19 @@ def kunden_identitaet() -> Identitaet:
 
 
 def system_identitaet() -> Identitaet:
-    """Fuer Konto-Mails: die des Betreibers, wenn vollstaendig gesetzt,
-    sonst die des Ladens."""
+    """Fuer Konto-Mails: die des Betreibers, wenn BRAUCHBAR (vollstaendig
+    UND eine gueltige Absenderadresse), sonst die des Ladens.
+
+    Review-Befund (Fix-Runde 1, 24.09.2026): auf `vollstaendig()` allein
+    zurueckzufallen war zu schwach - waeren Host/User/Passwort gesetzt, aber
+    `SYSTEM_ABSENDER` keine brauchbare Adresse, gaelte die Identitaet hier
+    als "vollstaendig" und `eine_runde` haette jeden Konto-Zettel damit als
+    `fehler` verbrannt, statt auf die funktionierende Laden-Identitaet
+    auszuweichen. `brauchbar()` prueft beides.
+    """
     eigen = Identitaet("system", SYSTEM_SMTP_HOST, SYSTEM_SMTP_PORT,
                        SYSTEM_SMTP_USER, SYSTEM_SMTP_PASSWORT, SYSTEM_ABSENDER)
-    return eigen if eigen.vollstaendig() else kunden_identitaet()
+    return eigen if eigen.brauchbar() else kunden_identitaet()
 
 
 class VersandFehler(Exception):
@@ -896,12 +904,21 @@ def main() -> int:
         except ValueError:
             pass    # nicht im Hauptthread (Tests) — dann eben ohne Handler
     # Weder Passwort noch Absenderadresse ins Log: das eine ist ein
-    # Geheimnis, das andere ein Personenbezug.
-    LOG.info("Start: schema=%s smtp=%s:%s tls=%s intervall=%gs pause=%gs "
-             "once=%s — warte auf freigegebene E-Mail-Entwuerfe.",
-             server.SCHEMA, SMTP_HOST, SMTP_PORT,
-             "implizit (SSL)" if SMTP_PORT == SMTP_SSL_PORT else "STARTTLS",
-             MAIL_INTERVAL_S, SENDE_PAUSE_S, MAIL_ONCE)
+    # Geheimnis, das andere ein Personenbezug. Seit Fix-Runde 1 (24.09.2026)
+    # nennt die Zeile Host/Port der TATSAECHLICH aktiven Identitaet(en) statt
+    # blind SMTP_HOST/SMTP_PORT — bei reiner System-Identitaet waren die
+    # sonst leer. Der Entwurfs-Hinweis steht nur, wenn Kundenmails aktiv sind.
+    teile = []
+    if kunde_aktiv:
+        modus = "SSL" if SMTP_PORT == SMTP_SSL_PORT else "STARTTLS"
+        teile.append(f"kunde={SMTP_HOST}:{SMTP_PORT} ({modus})")
+    if konto_aktiv:
+        modus = "SSL" if system.port == SMTP_SSL_PORT else "STARTTLS"
+        teile.append(f"system={system.host}:{system.port} ({modus})")
+    LOG.info("Start: schema=%s %s intervall=%gs pause=%gs once=%s%s",
+             server.SCHEMA, " ".join(teile), MAIL_INTERVAL_S, SENDE_PAUSE_S,
+             MAIL_ONCE,
+             " — warte auf freigegebene E-Mail-Entwuerfe." if kunde_aktiv else "")
 
     while not _STOPP.is_set():
         try:

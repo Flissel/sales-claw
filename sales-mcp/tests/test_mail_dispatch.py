@@ -1160,6 +1160,15 @@ def test_kontomail_geht_ueber_die_betreiber_identitaet(monkeypatch):
 
 
 def test_beide_identitaeten_trennen_sauber(monkeypatch):
+    """Reviewbefund (Fix-Runde 1, 24.09.2026): MAIL FROM allein reicht nicht
+    als Beleg der Trennung - es kommt aus dem From-Kopf (`EMAIL_ABSENDER`
+    bzw. `system.absender`), nicht aus der SMTP-ANMELDUNG. Wuerde jemand
+    `verarbeite_draft` versehentlich auf
+    `senden(nachricht, identitaet=system_identitaet())` umstellen, bliebe der
+    From-Kopf unveraendert (der wird ja separat aus `absender=` gebaut) und
+    dieser Test waere weiter gruen. Deshalb zusaetzlich die ANMELDUNG selbst
+    pruefen: der Entwurf meldet sich mit der Laden-Kennung an, die Konto-Mail
+    mit der des Betreibers."""
     monkeypatch.setattr(mail_dispatch, "UI_BASIS_URL", "https://laden.example")
     _system_setzen(monkeypatch)
     draft = _draft(_lead())
@@ -1176,9 +1185,39 @@ def test_beide_identitaeten_trennen_sauber(monkeypatch):
         if "max@example.com" in " ".join(m["empfaenger"]):
             assert "haus@example.org" in m["absender"]
 
+    # Die ANMELDUNG selbst, nicht nur der Briefkopf: AUTH PLAIN traegt
+    # \0user\0passwort base64-kodiert (siehe
+    # test_anmeldung_findet_statt_und_das_passwort_reist_nicht_im_klartext).
+    assert len(STUB.anmeldungen) == 2
+    angemeldete_user = []
+    for befehl in STUB.anmeldungen:
+        entpackt = base64.b64decode(befehl.split(" ", 2)[2]).decode("utf-8")
+        angemeldete_user.append(entpackt.split("\x00")[1])
+    assert "stub-user@example.org" in angemeldete_user   # der Entwurf: der Laden
+    assert "betreiber-user" in angemeldete_user          # die Konto-Mail: der Betreiber
+
 
 def test_ohne_system_identitaet_nimmt_kontomail_die_des_ladens(monkeypatch):
     monkeypatch.setattr(mail_dispatch, "UI_BASIS_URL", "https://laden.example")
+    zettel = _konto_mit_zettel()
+
+    mail_dispatch.eine_runde()
+
+    assert _zettelstatus(zettel)["status"] == "gesendet"
+    assert "haus@example.org" in STUB.mails[0]["absender"]
+
+
+def test_ungueltiger_system_absender_faellt_auf_die_laden_identitaet_zurueck(
+        monkeypatch):
+    """Reviewbefund (Fix-Runde 1, 24.09.2026): SYSTEM_* kann VOLLSTAENDIG
+    gesetzt und trotzdem UNBRAUCHBAR sein, wenn SYSTEM_ABSENDER keine
+    gueltige Adresse ist. `system_identitaet()` fiel vorher nur bei
+    UNvollstaendigen Werten auf die Laden-Identitaet zurueck - mit einem
+    vollstaendigen, aber ungueltigen Absender haette `eine_runde` jeden
+    Konto-Zettel als 'fehler' verbrannt, obwohl eine funktionierende
+    Identitaet (die des Ladens) bereitstuende."""
+    monkeypatch.setattr(mail_dispatch, "UI_BASIS_URL", "https://laden.example")
+    _system_setzen(monkeypatch, absender="kein-absender")
     zettel = _konto_mit_zettel()
 
     mail_dispatch.eine_runde()
