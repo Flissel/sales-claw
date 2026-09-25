@@ -234,6 +234,35 @@ _HOST_PORT = os.environ.get("PORT_UI", "").strip()
 _BASIS_URL = os.environ.get("UI_BASIS_URL", "").strip()
 
 
+# Schalter Sales <-> Marketing (25.09.2026, Spec docs/superpowers/specs/
+# 2026-09-25-marketing-schalter-design.md). Leer = kein Schalter. Gesetzt
+# NUR in der Haupt-.env des Basis-Ladens — zweite Laeden starten mit
+# --env-file, das die Haupt-.env ersetzt (deploy/laden-anlegen.sh).
+def _marketing_url_lesen(roh: str) -> str:
+    return roh.strip().rstrip("/")
+
+
+MARKETING_URL = _marketing_url_lesen(os.environ.get("MARKETING_URL", ""))
+
+
+def _marketing_link(rolle: str) -> str:
+    """Ziel des Marketing-Schalters oder "" (kein Schalter). Zwei Huerden:
+    die Adresse ist gesetzt UND die Rolle ist `freigeben` im Basis-Laden —
+    dieselbe Sperre wie das Admin-Menue (_pfad_erlaubt), damit eine falsch
+    gesetzte Umgebung den Schalter nie in einem fremden Laden zeigt.
+
+    Den Rueckweg (`zurueck`) gibt es nur mit einer https-Basisadresse: die
+    Marketing-Seite nimmt ohnehin nur https://…ts.net an."""
+    if not MARKETING_URL:
+        return ""
+    if rolle != "freigeben" or server.SCHEMA not in ("sales", "sales_test"):
+        return ""
+    ziel = f"{MARKETING_URL}/mockup/"
+    if _BASIS_URL.startswith("https://"):
+        ziel += "?" + urllib.parse.urlencode({"zurueck": _BASIS_URL})
+    return ziel
+
+
 def _erlaubte_hosts(extra, port, host_port="", basis_url="") -> tuple:
     """Loopback mit Port plus jeden Extra-Eintrag in drei Formen: mit
     :PORT (direkter Zugriff), nackt und mit :443 — hinter `tailscale
@@ -805,6 +834,12 @@ nav.seite .logo { width: 1.9rem; height: 1.9rem; border-radius: 6px;
                   background: var(--gut); color: var(--gut_auf);
                   display: flex; align-items: center;
                   justify-content: center; }
+nav.seite .schalter { display: flex; gap: .2rem; padding: 0 .5rem;
+                      font-size: .8rem; }
+nav.seite .schalter span, nav.seite .schalter a {
+  min-height: 0; padding: .2rem .6rem; border-radius: 999px; }
+nav.seite .schalter .aktiv { background: var(--aktiv); color: var(--gut);
+                             font-weight: 700; }
 .gruppe { display: flex; flex-direction: column; gap: .15rem; }
 .gruppenname { font-size: .7rem; letter-spacing: .08em;
                text-transform: uppercase; color: var(--gedaempft);
@@ -862,7 +897,7 @@ nav.seite .abmelden { margin-top: auto; padding: 0 .5rem; }
   nav.seite { display: flex; flex-direction: row; flex-wrap: wrap;
               width: auto; height: auto; position: static;
               gap: .15rem; padding: .3rem .5rem; }
-  nav.seite .marke, .gruppenname { display: none; }
+  nav.seite .marke, nav.seite .schalter, .gruppenname { display: none; }
   .gruppe { display: contents; }
   /* Oben bleibt nur die aktive Gruppe — die anderen drei sitzen unten. */
   nav.seite .gruppe:not(.aktiv-gruppe) { display: none; }
@@ -1250,8 +1285,12 @@ def _seitenleiste(abmelden: str) -> str:
         (gruppe, tuple(e for e in eintraege if _pfad_erlaubt(rolle, e[0])))
         for gruppe, eintraege in _GRUPPEN)
     gruppen = tuple(g for g in gruppen if g[1])
+    marketing = _marketing_link(rolle)
     teile = ['<nav class="seite"><div class="marke">'
              '<span class="logo">S</span><span>sales-claw</span></div>']
+    if marketing:
+        teile.append('<div class="schalter"><span class="aktiv">Sales</span>'
+                     f'<a href="{_e(marketing)}">Marketing</a></div>')
     # Die Gruppe der aktiven Seite: am Handy die einzige, die oben als
     # Zeile bleibt (Schritt 7); ohne Treffer die erste (Aufgaben).
     gruppe_aktiv = gruppen[0][0]
@@ -1289,6 +1328,9 @@ def _seitenleiste(abmelden: str) -> str:
             zahl = f'<span class="zaehler offen">{int(zaehler["/"])}</span>'
         teile.append(f'<a class="{klasse}" href="{pfad}"><span>{_e(gruppe)}'
                      f'</span>{zahl}</a>')
+    if marketing:
+        teile.append(f'<a class="tab" href="{_e(marketing)}">'
+                     '<span>Marketing</span></a>')
     teile.append("</nav>")
     return "".join(teile)
 
