@@ -72,9 +72,10 @@ bestehenden Marketing-Oberfläche und wieder zurück, am PC wie am Handy.
 
 - Im Kopf (`<header>`) kommt derselbe Schalter **Sales | Marketing** dazu.
 - „Sales" verlinkt auf den Parameter `zurueck` — aber **nur**, wenn er eine
-  `https://`-Adresse auf einer Domain `*.ts.net` ist. Sonst erscheint der
-  Schalter ohne Sales-Link. Damit taugt die Seite nicht als Umleitung auf fremde
-  Adressen.
+  `https://`-Adresse im eigenen Tailnet `*.tail6c7d61.ts.net` ist. Sonst
+  erscheint der Schalter ohne Sales-Link. Damit taugt die Seite nicht als
+  Umleitung auf fremde Adressen — auch nicht auf die öffentliche
+  Tailscale-Funnel-Adresse eines fremden Tailnets (Final-Review M1).
 - Der zuletzt gültige Wert wird im Browser gemerkt (`localStorage`, Zugriff in
   `try/catch`), damit der Rückweg nach einem Neuladen ohne Parameter bleibt.
 
@@ -97,16 +98,17 @@ bestehenden Marketing-Oberfläche und wieder zurück, am PC wie am Handy.
 | Rolle nicht `freigeben` / Laden nicht Basis | kein Schalter |
 | `marketing-api` auf der VM abgestürzt | systemd startet neu; bis dahin Fehlerseite von `tailscale serve` |
 | PC aus | Seite geht; nur die OpenFang-Benachrichtigung bei neuen Vorschlägen fehlt |
-| `zurueck` fehlt oder nicht `https://…ts.net` | kein Sales-Link (bzw. der gemerkte) |
+| `zurueck` fehlt oder nicht `https://` im eigenen Tailnet `*.tail6c7d61.ts.net` | kein Sales-Link (bzw. der gemerkte) |
 
 ## 6. Tests
 
 1. Sales: Schalter erscheint nur mit gesetzter `MARKETING_URL` UND Rolle
    `freigeben`; fehlt bei leerer Adresse und anderer Rolle. Der Link trägt die
    Sales-Adresse korrekt kodiert in `zurueck`.
-2. Marketing: die Prüffunktion für `zurueck` nimmt `https://x.ts.net/…` an und
-   weist `http://…ts.net`, `javascript:`, `https://ts.net.boese.de` und fremde
-   Domains ab.
+2. Marketing: die Prüffunktion für `zurueck` nimmt `https://x.tail6c7d61.ts.net/…`
+   (das eigene Tailnet) an und weist `http://…ts.net`, `javascript:`,
+   `https://ts.net.boese.de`, fremde Tailnets (`https://x.tailabcdef.ts.net`)
+   und fremde Domains ab.
 3. VM-Instanz: `curl http://127.0.0.1:5510/api/stats` auf der VM liefert dieselben
    Zahlen wie auf dem PC (dieselbe Datenbank, Modus B belegt).
 4. Betrieb: `tailscale serve status` zeigt `:8446` „tailnet only"; Ivans Netmap
