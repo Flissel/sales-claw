@@ -450,3 +450,8 @@ else
   status_schreiben eingespielt "$ALT" "$NEU" \
     "${HINWEIS:+$HINWEIS; }Abnahme uebersprungen - unvollstaendiger Stack"
 fi
+
+# Marketing-Seite (25.09.2026): eigener Checkout, eigener Dienst. Ein Fehler
+# dort darf den eingespielten Sales-Stand NICHT zuruecknehmen.
+bash "$WURZEL/deploy/marketing-aktualisieren.sh" || \
+  echo "HINWEIS: Marketing-Seite nicht aktualisiert (s. oben)."

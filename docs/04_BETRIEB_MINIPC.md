@@ -202,3 +202,91 @@ openwa-Log nicht mehr auftauchen, und eine Antwort auf einer gezählten
 Route über die Serve-Adresse (z. B. `/api/sessions`, nicht `/api/health`,
 das ausgenommen ist) trägt `X-RateLimit-Limit-short: 40` — gemessen
 02.09.2026, 25 gleichzeitige Anfragen ohne einen 429.
+
+## Marketing-Seite auf der VM (seit 25.09.2026)
+
+Der Schalter Sales ↔ Marketing (`docs/superpowers/specs/2026-09-25-marketing-
+schalter-design.md`) braucht eine zweite, eigenständige Instanz der
+Marketing-API auf `vibemind-offload-1` — ein schlanker `vibemind-os`-Checkout
+(nur `spaces/marketing` per `sparse-checkout`), eigener systemd-Dienst
+`marketing-api` (`deploy/systemd/marketing-api.service`), erreichbar nur im
+Tailnet über `tailscale serve --https=8446`. Die Betriebsbausteine
+(`deploy/marketing-aktualisieren.sh`, die Unit-Datei) sind seit 25.09.2026
+fertig und lokal getestet; die Auslieferung selbst ist ein eigener,
+freigabepflichtiger Schritt (Plan Aufgabe 4, WORKBOARD-Claim
+`cc-marketing-schalter`) und **stand 25.09.2026 noch nicht ausgeführt** —
+nichts davon läuft bislang auf der VM.
+
+**Einrichtung (einmalig, aus Plan Aufgabe 4, Schritt 2-6):**
+
+Leseschlüssel für `vibemind-os` auf der VM erzeugen und als
+**schreibgeschützten** Deploy-Key an `Flissel/vibemind-os` hängen:
+
+```bash
+ssh offload-vm 'ssh-keygen -t ed25519 -N "" -f ~/.ssh/marketing-os-deploy -C offload-vm-marketing-os && cat >> ~/.ssh/config <<EOF
+
+Host github.com-marketing
+  HostName github.com
+  User git
+  IdentityFile ~/.ssh/marketing-os-deploy
+  IdentitiesOnly yes
+EOF'
+```
+
+Öffentlichen Teil an das Repo hängen: `gh repo deploy-key add … --title
+offload-vm-marketing-os` (Konto Flissel — Zwei-Konten-Falle beachten: `gh`
+hat zwei Konten, das falsche liefert „Repository not found").
+
+Schlanker Checkout + venv:
+
+```bash
+ssh offload-vm 'git clone --filter=blob:none --no-checkout --branch master git@github.com-marketing:Flissel/vibemind-os.git ~/marketing-os && cd ~/marketing-os && git sparse-checkout set spaces/marketing && git checkout master && python3 -m venv .venv && .venv/bin/pip install -q fastapi uvicorn'
+```
+
+Danach `ssh offload-vm 'cd ~/marketing-os && .venv/bin/python -c "import
+spaces.marketing.api.server"'` — fehlt ein Modul, genau dieses
+nachinstallieren und hier im Runbook ergänzen.
+
+Schlüsseldatei `/home/debian/marketing-api.env` (Rechte 600) mit
+`MARKETING_PROPOSAL_API_KEY`, `MARKETING_N8N_API_KEY`,
+`MARKETING_UNSUB_SECRET` — Werte per Datei-Übertragung aus der PC-`.env`
+(scp einer Scratchpad-Datei, danach dort löschen), nie im Befehl selbst.
+
+Dienst: Unit-Datei nach `/etc/systemd/system/` kopieren, dann
+
+```bash
+systemd-analyze verify /etc/systemd/system/marketing-api.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now marketing-api
+```
+
+Beweis: `curl -s http://127.0.0.1:5510/api/stats` auf der VM liefert
+dieselben Zahlen wie `curl -s http://127.0.0.1:5510/api/stats` auf dem PC
+(die PC-Instanz).
+
+Tailnet-Freigabe:
+
+```bash
+ssh offload-vm 'sudo tailscale serve --bg --https=8446 http://127.0.0.1:5510 && tailscale serve status'
+```
+
+Erwartet: `:8446 (tailnet only)`.
+
+**Bewusst kein `OPENFANG_*` auf der VM-Instanz.** Die
+OpenFang-Benachrichtigung beim Anlegen von Vorschlägen läuft über die
+PC-Instanz der Marketing-API — die Agenten, die Vorschläge anlegen, laufen
+dort. Die Brücke ist ohnehin nicht fatal (`urlopen(..., timeout=5)` in
+`try/except`, `api/server.py:2656-2675`). So wandert kein weiterer
+Schlüssel auf die VM (Plan, Global Constraints, Abweichung von Spec §3.1).
+
+**Gate vor dem Freischalten:** Die Ivan-Netzmap-Prüfung (Plan Aufgabe 4,
+Schritt 7 — `tailscale debug netmap` bzw. die wirksame Paketregel für Ivans
+Knoten, erreicht er `vibemind-offload-1:8446`?) **muss grün sein, bevor
+`tailscale serve --https=8446` dauerhaft angeschaltet bleibt.** Ist Ivans
+Knoten erreichbar, gilt: STOP, `tailscale serve` für 8446 sofort wieder
+abschalten und den Betreiber fragen — Ivan darf die Marketing-Seite nicht
+über diesen Weg erreichen können.
+
+**Aktualisieren:** läuft mit `update.sh` mit (holt den Marketing-Checkout
+nach und startet `marketing-api` bei Bedarf neu, nicht fatal für den
+Sales-Laden); von Hand: `bash deploy/marketing-aktualisieren.sh`.

@@ -1,0 +1,22 @@
+[Unit]
+Description=Marketing-API (zweite Instanz fuer die Marketing-Seite, nur 127.0.0.1)
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+User=debian
+WorkingDirectory=/home/debian/marketing-os
+# Schluessel (MARKETING_PROPOSAL_API_KEY, MARKETING_N8N_API_KEY,
+# MARKETING_UNSUB_SECRET) nur hier, Rechte 600. KEIN OPENFANG_* — die
+# Benachrichtigung laeuft ueber die PC-Instanz (Plan, Global Constraints).
+EnvironmentFile=/home/debian/marketing-api.env
+Environment=MARKETING_HTTP_BIND=127.0.0.1
+Environment=MARKETING_HTTP_PORT=5510
+Environment=SUPABASE_SSH_HOST=
+Environment=SUPABASE_DB_CONTAINER=debian-supabase-db-1
+ExecStart=/home/debian/marketing-os/.venv/bin/python -m spaces.marketing.api.server
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
