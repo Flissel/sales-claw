@@ -66,6 +66,20 @@ def test_schalter_in_seitenleiste_und_tableiste(gesetzt):
     assert f'href="{href}"' in tabs
 
 
+def test_schalter_stiehlt_nicht_die_aktiv_klasse(gesetzt):
+    # test_seitenleiste.py zaehlt genau ein class="aktiv" (der aktive
+    # Menuepunkt); der Schalter traegt deshalb eine eigene Klasse.
+    token = ui._AKTIVER_PFAD.set("/kontakte")
+    try:
+        leiste = _leiste("freigeben")
+    finally:
+        ui._AKTIVER_PFAD.reset(token)
+    assert '<div class="schalter">' in leiste
+    assert leiste.count('class="aktiv"') == 1
+    assert '<a class="aktiv" href="/kontakte">' in leiste
+    assert '<span class="schalter-aktiv">Sales</span>' in leiste
+
+
 @pytest.mark.parametrize("basis", ["", "http://127.0.0.1:8791"])
 def test_ohne_https_basis_kein_rueckweg(gesetzt, monkeypatch, basis):
     monkeypatch.setattr(ui, "_BASIS_URL", basis)

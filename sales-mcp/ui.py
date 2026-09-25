@@ -838,8 +838,8 @@ nav.seite .schalter { display: flex; gap: .2rem; padding: 0 .5rem;
                       font-size: .8rem; }
 nav.seite .schalter span, nav.seite .schalter a {
   min-height: 0; padding: .2rem .6rem; border-radius: 999px; }
-nav.seite .schalter .aktiv { background: var(--aktiv); color: var(--gut);
-                             font-weight: 700; }
+nav.seite .schalter .schalter-aktiv { background: var(--aktiv);
+                                     color: var(--gut); font-weight: 700; }
 .gruppe { display: flex; flex-direction: column; gap: .15rem; }
 .gruppenname { font-size: .7rem; letter-spacing: .08em;
                text-transform: uppercase; color: var(--gedaempft);
@@ -1289,7 +1289,7 @@ def _seitenleiste(abmelden: str) -> str:
     teile = ['<nav class="seite"><div class="marke">'
              '<span class="logo">S</span><span>sales-claw</span></div>']
     if marketing:
-        teile.append('<div class="schalter"><span class="aktiv">Sales</span>'
+        teile.append('<div class="schalter"><span class="schalter-aktiv">Sales</span>'
                      f'<a href="{_e(marketing)}">Marketing</a></div>')
     # Die Gruppe der aktiven Seite: am Handy die einzige, die oben als
     # Zeile bleibt (Schritt 7); ohne Treffer die erste (Aufgaben).
