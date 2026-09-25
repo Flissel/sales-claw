@@ -14,7 +14,7 @@
 
 - `MARKETING_URL` leer = kein Schalter. Gesetzt nur in der Haupt-`.env` des Basis-Ladens auf der VM (zweite Läden starten mit `--env-file`, das die Haupt-`.env` ersetzt).
 - Schalter nur für Rolle `freigeben` UND `server.SCHEMA in ("sales", "sales_test")` — dieselbe Sperre wie `_ADMIN_BASIS_PFADE`.
-- Rückweg (`zurueck`) nur `https://` mit Hostname auf `.ts.net`.
+- Rückweg (`zurueck`) nur `https://` mit Hostname im eigenen Tailnet `*.tail6c7d61.ts.net` (Final-Review M1: ein beliebiges `*.ts.net` ließe fremde Tailscale-Funnel-Adressen zu).
 - Marketing-API auf der VM: `MARKETING_HTTP_BIND=127.0.0.1`, `MARKETING_HTTP_PORT=5510`, `SUPABASE_SSH_HOST` leer (Modus B), `SUPABASE_DB_CONTAINER=debian-supabase-db-1`.
 - Tailnet-Adresse: `https://vibemind-offload-1.tail6c7d61.ts.net:8446` → `http://127.0.0.1:5510`, tailnet only, kein Funnel.
 - Schlüssel nur in `/home/debian/marketing-api.env` (Rechte 600), nie in argv, nie im Repo.
@@ -180,7 +180,7 @@ ersetzen durch
     teile = ['<nav class="seite"><div class="marke">'
              '<span class="logo">S</span><span>sales-claw</span></div>']
     if marketing:
-        teile.append('<div class="schalter"><span class="aktiv">Sales</span>'
+        teile.append('<div class="schalter"><span class="schalter-aktiv">Sales</span>'
                      f'<a href="{_e(marketing)}">Marketing</a></div>')
 ```
 
@@ -199,9 +199,11 @@ nav.seite .schalter { display: flex; gap: .2rem; padding: 0 .5rem;
                       font-size: .8rem; }
 nav.seite .schalter span, nav.seite .schalter a {
   min-height: 0; padding: .2rem .6rem; border-radius: 999px; }
-nav.seite .schalter .aktiv { background: var(--aktiv); color: var(--gut);
-                             font-weight: 700; }
+nav.seite .schalter .schalter-aktiv { background: var(--aktiv);
+                                     color: var(--gut); font-weight: 700; }
 ```
+
+(Final-Review I3: eigene Klasse `schalter-aktiv`, nicht `aktiv` — `tests/test_seitenleiste.py` zählt genau ein `class="aktiv"`.)
 
 Im Handy-Block (`@media (max-width: 767px)` mit `nav.seite .marke, .gruppenname { display: none; }`) die Zeile ergänzen zu `nav.seite .marke, nav.seite .schalter, .gruppenname { display: none; }`.
 
@@ -555,38 +557,22 @@ git commit -m "feat(deploy): Marketing-API als zweite Instanz auf der VM"
 Deploy, neuer GitHub-Schlüssel und Tailscale-Änderung brauchen request-spezifische Freigabe. Vorher WORKBOARD-Claim `cc-marketing-schalter` eintragen und committen.
 
 - [ ] **Step 1: Push.** sales-claw `feat/stufe-1-fundament`, vibemind-os `master` aus dem Worktree. Vorher `git status` und `git log origin/<zweig>..HEAD` — nur eigene und bereits freigegebene Commits.
-- [ ] **Step 2: Leseschlüssel für vibemind-os** auf der VM:
+Reihenfolge und exakte Befehle stehen verbindlich in `docs/04_BETRIEB_MINIPC.md`, Abschnitt „Marketing-Seite auf der VM" (Final-Review I2: die Unit kommt erst mit `update.sh` auf die VM, also zuerst `update.sh`). Vorher die Voraussetzungen dort prüfen: `python3-venv` installiert, `debian` in Gruppe `docker` (Modus B), `sudo -n true` klappt.
 
-```bash
-ssh offload-vm 'ssh-keygen -t ed25519 -N "" -f ~/.ssh/marketing-os-deploy -C offload-vm-marketing-os && cat >> ~/.ssh/config <<EOF
-
-Host github.com-marketing
-  HostName github.com
-  User git
-  IdentityFile ~/.ssh/marketing-os-deploy
-  IdentitiesOnly yes
-EOF'
-```
-
-Öffentlichen Teil als **schreibgeschützten** Deploy-Key an `Flissel/vibemind-os` hängen (`gh repo deploy-key add … --title offload-vm-marketing-os`, Konto Flissel — Zwei-Konten-Falle beachten).
-- [ ] **Step 3: Schlanker Checkout + venv:**
-
-```bash
-ssh offload-vm 'git clone --filter=blob:none --no-checkout --branch master git@github.com-marketing:Flissel/vibemind-os.git ~/marketing-os && cd ~/marketing-os && git sparse-checkout set spaces/marketing && git checkout master && python3 -m venv .venv && .venv/bin/pip install -q fastapi uvicorn'
-```
-
-Dann `ssh offload-vm 'cd ~/marketing-os && .venv/bin/python -c "import spaces.marketing.api.server"'` — fehlt ein Modul, genau dieses nachinstallieren und im Runbook ergänzen.
-- [ ] **Step 4: Schlüsseldatei** `/home/debian/marketing-api.env` (600) mit `MARKETING_PROPOSAL_API_KEY`, `MARKETING_N8N_API_KEY`, `MARKETING_UNSUB_SECRET` — Werte per Datei-Übertragung aus der PC-`.env` (scp einer Scratchpad-Datei, danach dort löschen), nie im Befehl.
-- [ ] **Step 5: Dienst:** Unit nach `/etc/systemd/system/` kopieren, `systemd-analyze verify`, `daemon-reload`, `enable --now marketing-api`. Beweis: `curl -s http://127.0.0.1:5510/api/stats` auf der VM == `curl -s http://127.0.0.1:5510/api/stats` auf dem PC (gleiche Zahlen).
-- [ ] **Step 6: Tailnet:** `ssh offload-vm 'sudo tailscale serve --bg --https=8446 http://127.0.0.1:5510 && tailscale serve status'` → `:8446 (tailnet only)`.
-- [ ] **Step 7: Ivan-Prüfung:** `tailscale debug netmap` bzw. die wirksame Paketregel für Ivans Knoten — erreicht er `vibemind-offload-1:8446`? Wenn ja: STOP, `tailscale serve` für 8446 wieder abschalten, Betreiber fragen.
-- [ ] **Step 8: Sales:** `MARKETING_URL=https://vibemind-offload-1.tail6c7d61.ts.net:8446` in `~/sales-claw/.env` (Haupt-.env), dann `bash deploy/update.sh` (macht den Pull selbst; vorher NICHT pullen). Falls sales-ui nicht neu erstellt wurde: `docker compose up -d sales-ui` (namentlich). `docker exec sales-ui env | grep MARKETING_URL` gesetzt; `docker exec ivan-ui env | grep MARKETING_URL` leer.
-- [ ] **Step 9: Echter Klick:** PC-Browser und Handy — Sales → Marketing → Sales; Sales-Link auf der Marketing-Seite zeigt auf die Sales-Adresse; im Ivan-Laden kein Schalter. WORKBOARD-Claim schließen.
+- [ ] **Step 2: `update.sh` zuerst, `MARKETING_URL` noch leer** — `ssh offload-vm 'bash ~/sales-claw/deploy/update.sh'` (macht den Pull selbst; vorher NICHT pullen). Bringt Unit + Skripte; Schalter bleibt verborgen. Dieser erste Lauf ist noch das alte `update.sh` — der Marketing-Haken läuft erst ab dem zweiten Lauf mit. Rückfahrkarte / frühe `exit 1`-Pfade überspringen die Marketing-Aktualisierung bewusst.
+- [ ] **Step 3: Leseschlüssel für vibemind-os** auf der VM (`ssh-keygen` nur, wenn der Schlüssel fehlt; `~/.ssh/config` idempotent per `grep -q "Host github.com-marketing" ~/.ssh/config || cat >> …`), öffentlichen Teil mit `ssh offload-vm cat ~/.ssh/marketing-os-deploy.pub` holen und als **schreibgeschützten** Deploy-Key an `Flissel/vibemind-os` hängen (`gh repo deploy-key add … --title offload-vm-marketing-os`, Konto Flissel — Zwei-Konten-Falle beachten).
+- [ ] **Step 4: Schlanker Checkout + venv** (`git clone --filter=blob:none --no-checkout … && git sparse-checkout set spaces/marketing && git checkout master && python3 -m venv .venv && .venv/bin/pip install -q fastapi uvicorn`), dann Import-Probe `spaces.marketing.api.server` — fehlt ein Modul, genau dieses nachinstallieren und im Runbook ergänzen.
+- [ ] **Step 5: Schlüsseldatei** `/home/debian/marketing-api.env` (600) mit `MARKETING_PROPOSAL_API_KEY`, `MARKETING_N8N_API_KEY`, `MARKETING_UNSUB_SECRET` — Werte per Datei-Übertragung aus der PC-`.env` (scp einer Scratchpad-Datei, danach dort löschen), nie im Befehl.
+- [ ] **Step 6: Dienst:** `ssh offload-vm 'sudo install -m644 ~/sales-claw/deploy/systemd/marketing-api.service /etc/systemd/system/ && sudo systemd-analyze verify /etc/systemd/system/marketing-api.service && sudo systemctl daemon-reload && sudo systemctl enable --now marketing-api'`. Beweis: `curl -s http://127.0.0.1:5510/api/stats` auf der VM == `curl -s http://127.0.0.1:5510/api/stats` auf dem PC (gleiche Zahlen).
+- [ ] **Step 7: Ivan-Prüfung — VOR dem Freischalten:** `tailscale debug netmap` bzw. die wirksame Paketregel für Ivans Knoten — erreicht er `vibemind-offload-1:8446`? Wenn ja: STOP, Step 8 nicht ausführen, Betreiber fragen.
+- [ ] **Step 8: Tailnet:** `ssh offload-vm 'sudo tailscale serve --bg --https=8446 http://127.0.0.1:5510 && tailscale serve status'` → `:8446 (tailnet only)`.
+- [ ] **Step 9: Sales:** `MARKETING_URL=https://vibemind-offload-1.tail6c7d61.ts.net:8446` in `~/sales-claw/.env` (Haupt-.env), dann `ssh offload-vm 'cd ~/sales-claw && docker compose up -d sales-ui'` (namentlich). `docker exec sales-ui env | grep MARKETING_URL` gesetzt; `docker exec ivan-ui env | grep MARKETING_URL` leer.
+- [ ] **Step 10: Echter Klick:** PC-Browser und Handy — Sales → Marketing → Sales; Sales-Link auf der Marketing-Seite zeigt auf die Sales-Adresse; im Ivan-Laden kein Schalter. WORKBOARD-Claim schließen.
 
 ---
 
 ## Self-Review (erledigt)
 
-- Spec-Abdeckung: §3.1 → Task 3+4; §3.2 → Task 1; §3.3 → Task 2; §4 → Task 4 Step 6-7; §5 → Tests in Task 1-3, Absturz via `Restart=on-failure`; §6.1 → Task 1; §6.2 → Task 2; §6.3 → Task 4 Step 5; §6.4 → Task 4 Step 6-9.
+- Spec-Abdeckung: §3.1 → Task 3+4; §3.2 → Task 1; §3.3 → Task 2; §4 → Task 4 Step 7-8; §5 → Tests in Task 1-3, Absturz via `Restart=on-failure`; §6.1 → Task 1; §6.2 → Task 2; §6.3 → Task 4 Step 6; §6.4 → Task 4 Step 7-10 (Nummern nach der Umstellung im Final-Review I2).
 - Einzige Abweichung (OPENFANG auf der VM) steht in den Global Constraints mit Begründung.
 - Namen konsistent: `MARKETING_URL`, `_marketing_url_lesen`, `_marketing_link`, `schalter.js`, `rueckwegPruefen`, `rueckwegBestimmen`, `marketing-api`, `marketing-aktualisieren.sh`, `MARKETING_OS`, `SYSTEMCTL`.

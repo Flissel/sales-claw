@@ -217,60 +217,105 @@ freigabepflichtiger Schritt (Plan Aufgabe 4, WORKBOARD-Claim
 `cc-marketing-schalter`) und **stand 25.09.2026 noch nicht ausgeführt** —
 nichts davon läuft bislang auf der VM.
 
-**Einrichtung (einmalig, aus Plan Aufgabe 4, Schritt 2-6):**
-
-Leseschlüssel für `vibemind-os` auf der VM erzeugen und als
-**schreibgeschützten** Deploy-Key an `Flissel/vibemind-os` hängen:
+**Voraussetzungen auf der VM (vorher prüfen):**
 
 ```bash
-ssh offload-vm 'ssh-keygen -t ed25519 -N "" -f ~/.ssh/marketing-os-deploy -C offload-vm-marketing-os && cat >> ~/.ssh/config <<EOF
-
-Host github.com-marketing
-  HostName github.com
-  User git
-  IdentityFile ~/.ssh/marketing-os-deploy
-  IdentitiesOnly yes
-EOF'
+ssh offload-vm 'dpkg -s python3-venv >/dev/null 2>&1 || sudo apt-get install -y python3-venv'
+ssh offload-vm 'id -nG | tr " " "\n" | grep -qx docker && echo docker-ok'   # Modus B: docker exec als debian
+ssh offload-vm 'sudo -n true && echo sudo-ok'   # marketing-aktualisieren.sh ruft sudo -n systemctl
 ```
 
-Öffentlichen Teil an das Repo hängen: `gh repo deploy-key add … --title
-offload-vm-marketing-os` (Konto Flissel — Zwei-Konten-Falle beachten: `gh`
-hat zwei Konten, das falsche liefert „Repository not found").
+Fehlt `docker-ok`: `ssh offload-vm 'sudo usermod -aG docker debian'`, danach
+neu anmelden — ohne Gruppe scheitert jede Abfrage der Marketing-API.
 
-Schlanker Checkout + venv:
+**Einrichtung (einmalig, in genau dieser Reihenfolge — Plan Aufgabe 4):**
 
-```bash
-ssh offload-vm 'git clone --filter=blob:none --no-checkout --branch master git@github.com-marketing:Flissel/vibemind-os.git ~/marketing-os && cd ~/marketing-os && git sparse-checkout set spaces/marketing && git checkout master && python3 -m venv .venv && .venv/bin/pip install -q fastapi uvicorn'
-```
+1. **`update.sh` zuerst, `MARKETING_URL` noch leer.** Bringt Unit-Datei und
+   Skripte nach `~/sales-claw`; der Schalter bleibt verborgen.
 
-Danach `ssh offload-vm 'cd ~/marketing-os && .venv/bin/python -c "import
-spaces.marketing.api.server"'` — fehlt ein Modul, genau dieses
-nachinstallieren und hier im Runbook ergänzen.
+   ```bash
+   ssh offload-vm 'bash ~/sales-claw/deploy/update.sh'
+   ```
 
-Schlüsseldatei `/home/debian/marketing-api.env` (Rechte 600) mit
-`MARKETING_PROPOSAL_API_KEY`, `MARKETING_N8N_API_KEY`,
-`MARKETING_UNSUB_SECRET` — Werte per Datei-Übertragung aus der PC-`.env`
-(scp einer Scratchpad-Datei, danach dort löschen), nie im Befehl selbst.
+   Hinweis: Dieser erste Lauf ist noch das **alte** `update.sh` (es zieht
+   sich selbst erst nach), der Marketing-Haken läuft also erst **ab dem
+   zweiten** `update.sh`-Lauf mit. Und bewusst: Rückfahrkarte und die frühen
+   `exit 1`-Pfade von `update.sh` überspringen die Marketing-Aktualisierung.
 
-Dienst: Unit-Datei nach `/etc/systemd/system/` kopieren, dann
+2. **Leseschlüssel** für `vibemind-os` erzeugen (Anhängen an `~/.ssh/config`
+   idempotent), öffentlichen Teil holen und als **schreibgeschützten**
+   Deploy-Key an `Flissel/vibemind-os` hängen:
 
-```bash
-systemd-analyze verify /etc/systemd/system/marketing-api.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now marketing-api
-```
+   ```bash
+   ssh offload-vm 'test -f ~/.ssh/marketing-os-deploy || ssh-keygen -t ed25519 -N "" -f ~/.ssh/marketing-os-deploy -C offload-vm-marketing-os'
+   ssh offload-vm 'grep -q "Host github.com-marketing" ~/.ssh/config 2>/dev/null || cat >> ~/.ssh/config <<EOF
 
-Beweis: `curl -s http://127.0.0.1:5510/api/stats` auf der VM liefert
-dieselben Zahlen wie `curl -s http://127.0.0.1:5510/api/stats` auf dem PC
-(die PC-Instanz).
+   Host github.com-marketing
+     HostName github.com
+     User git
+     IdentityFile ~/.ssh/marketing-os-deploy
+     IdentitiesOnly yes
+   EOF'
+   ssh offload-vm 'cat ~/.ssh/marketing-os-deploy.pub'
+   ```
 
-Tailnet-Freigabe:
+   Den ausgegebenen öffentlichen Teil anhängen: `gh repo deploy-key add
+   <datei> --repo Flissel/vibemind-os --title offload-vm-marketing-os` (ohne
+   `--allow-write`; Konto Flissel — Zwei-Konten-Falle beachten: `gh` hat zwei
+   Konten, das falsche liefert „Repository not found").
 
-```bash
-ssh offload-vm 'sudo tailscale serve --bg --https=8446 http://127.0.0.1:5510 && tailscale serve status'
-```
+3. **Schlanker Checkout + venv:**
 
-Erwartet: `:8446 (tailnet only)`.
+   ```bash
+   ssh offload-vm 'git clone --filter=blob:none --no-checkout --branch master git@github.com-marketing:Flissel/vibemind-os.git ~/marketing-os && cd ~/marketing-os && git sparse-checkout set spaces/marketing && git checkout master && python3 -m venv .venv && .venv/bin/pip install -q fastapi uvicorn'
+   ssh offload-vm 'cd ~/marketing-os && .venv/bin/python -c "import spaces.marketing.api.server"'
+   ```
+
+   Fehlt ein Modul, genau dieses nachinstallieren und hier ergänzen.
+
+4. **Schlüsseldatei** `/home/debian/marketing-api.env` (Rechte 600) mit
+   `MARKETING_PROPOSAL_API_KEY`, `MARKETING_N8N_API_KEY`,
+   `MARKETING_UNSUB_SECRET` — Werte per Datei-Übertragung aus der PC-`.env`
+   (scp einer Scratchpad-Datei, danach dort löschen), nie im Befehl selbst.
+   Danach `ssh offload-vm 'chmod 600 ~/marketing-api.env && stat -c %a ~/marketing-api.env'` → `600`.
+
+5. **Dienst** (die Unit kommt aus Schritt 1):
+
+   ```bash
+   ssh offload-vm 'sudo install -m644 ~/sales-claw/deploy/systemd/marketing-api.service /etc/systemd/system/ && sudo systemd-analyze verify /etc/systemd/system/marketing-api.service && sudo systemctl daemon-reload && sudo systemctl enable --now marketing-api'
+   ```
+
+   Beweis: `ssh offload-vm 'curl -s http://127.0.0.1:5510/api/stats'`
+   liefert dieselben Zahlen wie `curl -s http://127.0.0.1:5510/api/stats`
+   auf dem PC (die PC-Instanz).
+
+6. **Gate: Ivan-Netzmap-Prüfung — VOR dem Freischalten.** `tailscale debug
+   netmap` bzw. die wirksame Paketregel für Ivans Knoten: erreicht er
+   `vibemind-offload-1:8446`? Ist Ivans Knoten erreichbar: STOP, Schritt 7
+   nicht ausführen, Betreiber fragen — Ivan darf die Marketing-Seite nicht
+   über diesen Weg erreichen können.
+
+7. **Tailnet-Freigabe:**
+
+   ```bash
+   ssh offload-vm 'sudo tailscale serve --bg --https=8446 http://127.0.0.1:5510 && tailscale serve status'
+   ```
+
+   Erwartet: `:8446 (tailnet only)`.
+
+8. **Sales:** `MARKETING_URL=https://vibemind-offload-1.tail6c7d61.ts.net:8446`
+   in `~/sales-claw/.env` (Haupt-`.env`, nie in ein Zweit-Laden-Template),
+   dann `sales-ui` namentlich neu erstellen:
+
+   ```bash
+   ssh offload-vm 'cd ~/sales-claw && docker compose up -d sales-ui'
+   ssh offload-vm 'docker exec sales-ui env | grep MARKETING_URL'   # gesetzt
+   ssh offload-vm 'docker exec ivan-ui env | grep MARKETING_URL'    # leer
+   ```
+
+9. **Echter Klick:** PC-Browser und Handy — Sales → Marketing → Sales; der
+   Sales-Link auf der Marketing-Seite zeigt auf die Sales-Adresse; im
+   Ivan-Laden kein Schalter.
 
 **Bewusst kein `OPENFANG_*` auf der VM-Instanz.** Die
 OpenFang-Benachrichtigung beim Anlegen von Vorschlägen läuft über die
@@ -279,14 +324,11 @@ dort. Die Brücke ist ohnehin nicht fatal (`urlopen(..., timeout=5)` in
 `try/except`, `api/server.py:2656-2675`). So wandert kein weiterer
 Schlüssel auf die VM (Plan, Global Constraints, Abweichung von Spec §3.1).
 
-**Gate vor dem Freischalten:** Die Ivan-Netzmap-Prüfung (Plan Aufgabe 4,
-Schritt 7 — `tailscale debug netmap` bzw. die wirksame Paketregel für Ivans
-Knoten, erreicht er `vibemind-offload-1:8446`?) **muss grün sein, bevor
-`tailscale serve --https=8446` dauerhaft angeschaltet bleibt.** Ist Ivans
-Knoten erreichbar, gilt: STOP, `tailscale serve` für 8446 sofort wieder
-abschalten und den Betreiber fragen — Ivan darf die Marketing-Seite nicht
-über diesen Weg erreichen können.
-
-**Aktualisieren:** läuft mit `update.sh` mit (holt den Marketing-Checkout
-nach und startet `marketing-api` bei Bedarf neu, nicht fatal für den
-Sales-Laden); von Hand: `bash deploy/marketing-aktualisieren.sh`.
+**Aktualisieren:** läuft ab dem zweiten `update.sh`-Lauf nach der
+Einrichtung mit (holt den Marketing-Checkout nach und startet
+`marketing-api` bei Bedarf neu, nicht fatal für den Sales-Laden); von Hand:
+`bash ~/sales-claw/deploy/marketing-aktualisieren.sh`. Neu gestartet wird
+gegen die Standdatei `~/marketing-os/.git/marketing-api-gestartet` (zuletzt
+erfolgreich gestarteter Commit): scheitern `restart`, `is-active` oder die
+Gesundheitsprobe auf `/api/health`, endet das Skript mit `HINWEIS` und
+Nicht-Null, und der nächste Lauf versucht den Neustart erneut.
