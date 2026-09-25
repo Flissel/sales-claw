@@ -170,6 +170,16 @@ status_schreiben() { # ergebnis von auf hinweis
     "$(date -Is)" "$1" "$2" "$3" "$4" > "$STATUS"
 }
 
+# Marketing-Seite (25.09.2026): eigener Checkout, eigener Dienst. Ein Fehler
+# dort darf den eingespielten Sales-Stand NICHT zuruecknehmen. Eigene
+# Funktion (KORREKTURRUNDE 1), weil sales-claw selbst "Bereits aktuell"
+# sein kann, waehrend der Marketing-Checkout unabhaengig davon neue Commits
+# hat — der fruehe exit 0 unten darf den Aufruf deshalb nicht auslassen.
+marketing_aktualisieren() {
+  bash "$WURZEL/deploy/marketing-aktualisieren.sh" || \
+    echo "HINWEIS: Marketing-Seite nicht aktualisiert (s. oben)."
+}
+
 # Unversionierte Dateien (.env, media/, auftraege/) gehoeren zum Betrieb und
 # stoeren einen ff-Merge nicht — geprueft werden nur nachgefuehrte Dateien.
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
@@ -186,6 +196,7 @@ NEU="$(git rev-parse "origin/$ZWEIG")"
 if [ "$ALT" = "$NEU" ]; then
   status_schreiben aktuell "$ALT" "$NEU" "keine Aenderung"
   echo "Bereits aktuell: $ALT"
+  marketing_aktualisieren
   exit 0
 fi
 
@@ -452,6 +463,7 @@ else
 fi
 
 # Marketing-Seite (25.09.2026): eigener Checkout, eigener Dienst. Ein Fehler
-# dort darf den eingespielten Sales-Stand NICHT zuruecknehmen.
-bash "$WURZEL/deploy/marketing-aktualisieren.sh" || \
-  echo "HINWEIS: Marketing-Seite nicht aktualisiert (s. oben)."
+# dort darf den eingespielten Sales-Stand NICHT zuruecknehmen. (Funktion
+# oben bei status_schreiben() — auch der fruehe "Bereits aktuell"-Zweig
+# ruft sie auf.)
+marketing_aktualisieren
