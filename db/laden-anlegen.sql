@@ -35,6 +35,10 @@ create table if not exists :"schema".kalender_quellen (like sales.kalender_quell
 -- Hand). `like ... including all` uebernimmt den art-CHECK des Basis-Ladens.
 create table if not exists :"schema".benutzer_mails   (like sales.benutzer_mails   including all);
 
+-- WhatsApp verbinden (29.09.2026): Anfrage + QR-Code, siehe db/provision.sql.
+-- `including all` bringt CHECK und den Teilindex (eine offene Anfrage) mit.
+create table if not exists :"schema".whatsapp_kopplung (like sales.whatsapp_kopplung including all);
+
 -- Schlussfix-Welle 24.09.2026, Befund 4: `like ... including all` kopiert
 -- den art-CHECK von sales.benutzer_mails NUR so, wie er GENAU JETZT
 -- aussieht. db/provision.sql erweitert diesen CHECK erst zur Laufzeit um
@@ -121,6 +125,7 @@ grant select, insert, update on :"schema".benutzer         to :"rolle";
 grant select, insert, update on :"schema".medien_meta      to :"rolle";
 grant select, insert, update on :"schema".kalender_quellen to :"rolle";
 grant select, insert, update on :"schema".benutzer_mails   to :"rolle";
+grant select, insert         on :"schema".whatsapp_kopplung to :"rolle";
 
 -- Die Sperrliste ist GEMEINSAM (Spec §2.1): wer Werbung widerspricht, hat
 -- allen widersprochen.

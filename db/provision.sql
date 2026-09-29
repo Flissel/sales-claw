@@ -271,6 +271,35 @@ begin
       check (art in ('passwort_reset','willkommen'))$chk$, s);
     execute format('create index if not exists leads_status_idx on %I.leads (status)', s);
 
+    -- WhatsApp verbinden als Selbstbedienung (29.09.2026). Dieselbe Bruecke
+    -- wie benutzer_mails: den QR-Code gibt OpenWA nur einem Schluessel, der
+    -- auch senden darf, und so einen hat die Oberflaeche absichtlich nicht.
+    -- Sie legt deshalb nur eine Anfrage an; deploy/whatsapp-koppeln.sh (als
+    -- supabase_admin) schreibt den QR-Code in dieselbe Zeile und meldet das
+    -- Ergebnis. Hoechstens EINE offene Anfrage je Laden (Teilindex).
+    execute format($t$create table if not exists %I.whatsapp_kopplung (
+        id uuid primary key default gen_random_uuid(),
+        status text not null default 'angefordert'
+               check (status in ('angefordert','qr','verbunden','abgelaufen','fehler')),
+        qr text,
+        fehler text,
+        erstellt_am timestamptz not null default now(),
+        aktualisiert_am timestamptz not null default now())$t$, s);
+    execute format('create unique index if not exists whatsapp_kopplung_offen_idx '
+                   'on %I.whatsapp_kopplung ((true)) '
+                   'where status in (''angefordert'',''qr'')', s);
+    -- Rechte der Laden-Rolle hier statt nur in laden-anlegen.sql: sonst
+    -- bekaemen bestehende Laeden (Ivan) die Tabelle ohne Zugriff — genau
+    -- das war bei benutzer_mails passiert (Rechte damals von Hand).
+    -- Lesen und anfragen, nie aendern oder loeschen.
+    if s = 'sales' then
+      execute 'grant select, insert on sales.whatsapp_kopplung to sales_app';
+    elsif s <> 'sales_test' and exists (
+        select 1 from pg_roles where rolname = 'sales_app_' || substr(s, 7)) then
+      execute format('grant select, insert on %I.whatsapp_kopplung to %I',
+                     s, 'sales_app_' || substr(s, 7));
+    end if;
+
     -- Aehnlichkeitssuche ueber Namen (17.09.2026), Trigramme.
     --
     -- WOFUER: Dubletten und Schreibvarianten, die ein exakter Vergleich nie

@@ -3610,6 +3610,10 @@ async def whatsapp(request):
                     ("Engine geladen", "ja" if s.get("engineLoaded") else "nein"),
                 ]) + '</div>')
 
+    # WhatsApp verbinden (29.09.2026): Selbstbedienung statt Handarbeit.
+    kopplung_html, kopplung_wartet = _wa_kopplung_block(sitzung[1] == "gut")
+    teile.append(kopplung_html)
+
     # Der Weg vom Handy in die Datenbank — aus der Datenbank selbst
     # beantwortet (29.08.2026). Der Webhook-Endpunkt von OpenWA verlangt
     # OPERATOR (gemessen: 403 mit dem Nur-Lese-Schluessel), und die
@@ -3671,7 +3675,76 @@ async def whatsapp(request):
         f'in diese Anzeige (sonst ließe sich die Freigabe umgehen).</p>'
         f'<p><a href="{_e(OPENWA_DASHBOARD_URL)}" target="_blank" '
         f'rel="noreferrer">OpenWA-Oberfläche öffnen &rarr;</a></p>')
-    return _seite("WhatsApp", "".join(teile), refresh=60)
+    # Waehrend der Kopplung alle 3 s: ein QR-Code gilt nur ~20 s, und der
+    # Wirt schreibt jeden neuen sofort in die Zeile.
+    return _seite("WhatsApp", "".join(teile),
+                  refresh=3 if kopplung_wartet else 60)
+
+
+# Nur ein PNG als Data-URL in Base64 — alles andere (Anfuehrungszeichen,
+# Skript, fremde Adresse) wird nicht eingebettet. Die Zeile schreibt zwar
+# nur der Wirt, aber die Laden-Rolle darf ebenfalls einfuegen.
+_QR_MUSTER = re.compile(r"^data:image/png;base64,[A-Za-z0-9+/]+={0,2}$")
+
+
+def _wa_kopplung_block(verbunden: bool) -> tuple[str, bool]:
+    """Knopf, Wartehinweis oder QR-Code — je nach juengster Anfrage.
+    Gibt (html, wartet) zurueck; `wartet` schaltet das schnelle Neuladen."""
+    if verbunden:
+        return "", False
+    knopf = (f'<form method="post" action="/whatsapp/verbinden">'
+             f'<input type="hidden" name="csrf" value="{_e(CSRF_TOKEN)}">'
+             f'<button class="primaer" type="submit">WhatsApp verbinden'
+             f'</button></form>')
+    try:
+        zeilen = server._q("select status, qr, fehler from whatsapp_kopplung "
+                           "order by erstellt_am desc limit 1")
+    except psycopg.errors.UndefinedTable:
+        # Code ausgeliefert, db/provision.sql noch nicht eingespielt: die
+        # Seite bleibt heil, nur der Knopf fehlt bis dahin.
+        return "", False
+    z = zeilen[0] if zeilen else None
+    if z and z["status"] == "angefordert":
+        return ('<div class="karte"><h2>WhatsApp verbinden</h2>'
+                '<p>Wird vorbereitet … der QR-Code erscheint hier gleich.'
+                '</p></div>'), True
+    if z and z["status"] == "qr":
+        qr = str(z["qr"] or "")
+        bild = (f'<img class="qr" src="{_e(qr)}" alt="QR-Code zum Koppeln" '
+                f'width="264" height="264">' if _QR_MUSTER.match(qr) else
+                '<p class="meta">Der QR-Code kommt gleich …</p>')
+        return ('<div class="karte"><h2>WhatsApp verbinden</h2>'
+                '<ol class="schritte"><li>WhatsApp auf dem Handy öffnen.</li>'
+                '<li>Einstellungen → <b>Verknüpfte Geräte</b> → '
+                '„Gerät hinzufügen".</li>'
+                '<li>Diesen Code scannen. Er erneuert sich von selbst.</li>'
+                f'</ol>{bild}</div>'), True
+    if z and z["status"] == "verbunden":
+        return ('<div class="karte"><h2>WhatsApp ist verbunden</h2>'
+                '<p>Nachrichten kommen ab jetzt im Posteingang an.</p>'
+                '</div>'), False
+    grund = ""
+    if z and z["status"] in ("abgelaufen", "fehler"):
+        text = z["fehler"] or "Das hat nicht geklappt."
+        grund = (f'<p class="warnung">{_e(text)} '
+                 f'Einfach noch einmal versuchen.</p>')
+    return ('<div class="karte"><h2>WhatsApp verbinden</h2>'
+            '<p>Verbinde die WhatsApp-Nummer, über die dieser Laden '
+            'schreibt. Du brauchst dafür nur dein Handy.</p>'
+            f'{grund}{knopf}</div>'), False
+
+
+@_gesichert_seite
+async def aktion_whatsapp_verbinden(request):
+    """Legt eine Anfrage an; hoechstens eine offene (Teilindex), ein
+    Doppelklick legt also nichts doppelt an."""
+    form = await request.form()
+    if not _csrf_ok(form):
+        return _fehlerseite(403, "Abgewiesen",
+                            "Fehlende oder falsche CSRF-Marke.")
+    server._q("insert into whatsapp_kopplung default values "
+              "on conflict do nothing")
+    return RedirectResponse("/whatsapp", status_code=303)
 
 
 @_gesichert_seite
@@ -6255,6 +6328,7 @@ app = Starlette(routes=[
     Route("/team/tailscale-einladen/anfordern", aktion_tailscale_einladen,
           methods=["POST"]),
     Route("/whatsapp", whatsapp),
+    Route("/whatsapp/verbinden", aktion_whatsapp_verbinden, methods=["POST"]),
     Route("/kontakte/wiederherstellen", aktion_kontakt_wiederherstellen,
           methods=["POST"]),
     Route("/kontakte/profil-anfordern", aktion_profil_anfordern,
