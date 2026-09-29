@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { ABSCHNITTE, einfuegen } from '../src/abschnitte.ts';
-import { nurErreichbare } from '../src/pult.ts';
+import { ANZEIGE, medienName, nurErreichbare } from '../src/pult.ts';
 
 const DOK = { root: { type: 'EmailLayout', data: { canvasColor: '#0f2422', textColor: '#cfe3df', childrenIds: ['a', 'b'] } },
   a: { type: 'Text', data: { props: { text: 'eins' } } }, b: { type: 'Text', data: { props: { text: 'zwei' } } } };
@@ -28,7 +28,8 @@ for (const { schluessel } of ABSCHNITTE) {
       assert.match(id, /^[A-Za-z0-9_-]{1,64}$/);
       if (b.type === 'Image') {
         assert.ok(b.data.props.width > 0 && b.data.props.height > 0, `${id} ist ein Bildplatz`);
-        assert.match(b.data.props.url, /^\/medien\/datei\/platzhalter-\d+x\d+\.png$/);
+        assert.ok(b.data.props.url.startsWith(ANZEIGE), `${id}: url beginnt mit ANZEIGE`);
+        assert.match(medienName(b.data.props.url) ?? '', /^platzhalter-\d+x\d+\.png$/);
         assert.ok(b.data.props.alt);
       }
       if (b.type === 'ColumnsContainer') assert.equal(b.data.props.columns.length, 3);

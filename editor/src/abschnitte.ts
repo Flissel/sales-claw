@@ -5,6 +5,7 @@ import type { Dokument } from './pult';
 
 // Gleicher Wert wie ANZEIGE in pult.ts; hier lokal, weil Node (Tests) eine
 // Erweiterungslose Import-Adresse nicht aufloest und tsc keine ".ts"-Adressen erlaubt.
+// Gleichlauf mit pult.ts wird in test/abschnitte.test.mjs geprueft.
 const ANZEIGE = '/medien/datei/';
 
 export type AbschnittSchluessel =
