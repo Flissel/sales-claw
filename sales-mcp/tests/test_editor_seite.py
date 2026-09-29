@@ -37,6 +37,9 @@ class Falsch:
         self.format = "bloecke"
         self.art = "newsletter"
         self.status = "entwurf"
+        self.alter_weg = None
+        self.alt_format = "felder"          # Format der aelteren Fassung 1
+        self.speichern_antwort = {"fassung": 3}
 
     def anfrage(self, methode, pfad, daten=None, roh=False):
         self.aufrufe.append((methode, pfad, daten))
@@ -57,11 +60,13 @@ class Falsch:
                    "layout": None if bloecke else "dunkel", "urheber": "betreiber", "erstellt_am": "x",
                    "format": self.format, "bloecke": DOK if bloecke else None}
             alt = {"fassung": 1, "felder": FELDER, "layout": "dunkel", "urheber": "agent",
-                   "erstellt_am": "y", "format": "felder", "bloecke": None}
+                   "erstellt_am": "y", "format": self.alt_format, "bloecke": None}
             return {"inhalt": {"id": IID, "art": self.art, "titel": "Oktober", "status": self.status,
                                "mandant": "vibemind"},
-                    "fassungen": [neu, alt], "alter_weg": None}
+                    "fassungen": [neu, alt], "alter_weg": self.alter_weg}
         if pfad == f"/inhalte/{IID}/bloecke":
+            return self.speichern_antwort
+        if pfad == f"/inhalte/{IID}/in_bloecke":
             return {"fassung": 3}
         if pfad == "/inhalte/aus_vorlage":
             return {"id": IID}
@@ -520,3 +525,109 @@ def test_i1_kein_api_aufruf_im_event_loop(angemeldet, pult, monkeypatch):
     angemeldet.post("/marketing/aus-vorlage", headers=HOST, follow_redirects=False,
                     data={"csrf": ui.CSRF_TOKEN, "vorlage": "leer", "titel": "T"})
     assert len(pult.aufrufe) >= 5 and im_loop == []
+
+
+# --- Schlussrunde E1 (final-fix-findings.md) ------------------------------------
+
+def test_i7_alter_weg_im_datenelement(angemeldet, pult):
+    assert _start(angemeldet.get(f"/marketing/editor/{IID}", headers=HOST).text)["alter_weg"] is None
+    pult.alter_weg = {"status": "pending_approval", "kanal": "email"}
+    start = _start(angemeldet.get(f"/marketing/editor/{IID}", headers=HOST).text)
+    assert start["alter_weg"] == {"status": "pending_approval", "kanal": "email"}
+
+
+def test_speichern_koerper_hoechstens_300_kb(angemeldet, pult):
+    gross = {"root": {"type": "EmailLayout", "data": {"childrenIds": []}},
+             "t": {"type": "Text", "data": {"props": {"text": "x" * (300 * 1024)}}}}
+    r = _speichern(angemeldet, {"X-CSRF": ui.CSRF_TOKEN}, dokument=gross)
+    assert r.status_code == 413 and "300 KB" in r.json()["grund"]
+    assert not any(a[1].endswith("/bloecke") for a in pult.aufrufe)
+    # knapp darunter geht durch
+    klein = {"root": {"type": "EmailLayout", "data": {"childrenIds": []}},
+             "t": {"type": "Text", "data": {"props": {"text": "x" * (250 * 1024)}}}}
+    assert _speichern(angemeldet, {"X-CSRF": ui.CSRF_TOKEN}, dokument=klein).status_code == 200
+
+
+def test_speichern_kaputte_api_antwort_503(angemeldet, pult):
+    for antwort in ({}, {"fassung": "drei"}, {"fassung": None}, {"fassung": [3]}):
+        pult.speichern_antwort = antwort
+        r = _speichern(angemeldet, {"X-CSRF": ui.CSRF_TOKEN})
+        assert r.status_code == 503 and r.json() == {"grund": "Speichern gerade nicht möglich"}, antwort
+
+
+def test_bild_route_entschluesselt_nur_einmal(monkeypatch, medien_ordner):
+    """Starlette entschluesselt den Pfad schon; ein zweites unquote machte aus
+    logo%2Epng wieder logo.png (Umgehung der Endungs- und Namenspruefung)."""
+    import asyncio
+    monkeypatch.setattr(ui, "UI_SESSION_SECRET", "geheim")
+    gut = ui_editor.bild_token()
+
+    async def holen(pfad: str, roh: str) -> tuple[int, bytes]:
+        # Roher ASGI-Aufruf: der Test-Client entschluesselt %25 selbst schon
+        # einmal und saehe den Fehler nie. So kommt der Pfad an, wie uvicorn
+        # ihn aus "logo%252Epng" macht: path "logo%2Epng".
+        scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "GET",
+                 "scheme": "http", "path": pfad, "raw_path": roh.encode(), "query_string": b"",
+                 "root_path": "", "headers": [(b"host", HOST["host"].encode())],
+                 "client": ("127.0.0.1", 1), "server": ("127.0.0.1", 8791)}
+        eingang = [{"type": "http.request", "body": b"", "more_body": False}]
+        aus = {"status": 0, "body": b""}
+
+        async def receive():
+            return eingang.pop(0) if eingang else {"type": "http.disconnect"}
+
+        async def send(m):
+            if m["type"] == "http.response.start":
+                aus["status"] = m["status"]
+            elif m["type"] == "http.response.body":
+                aus["body"] += m.get("body", b"")
+        await ui.app(scope, receive, send)
+        return aus["status"], aus["body"]
+
+    status, inhalt = asyncio.run(holen(f"/marketing/bild/{gut}/logo%2Epng", f"/marketing/bild/{gut}/logo%252Epng"))
+    assert status == 404 and b"PNG" not in inhalt
+    status, inhalt = asyncio.run(holen(f"/marketing/bild/{gut}/logo.png", f"/marketing/bild/{gut}/logo.png"))
+    assert status == 200 and inhalt.startswith(b"\x89PNG")
+
+
+def test_i8_knopf_ins_editor_format_nur_fuer_feld_newsletter(angemeldet, pult):
+    pult.format = "felder"
+    s = angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST).text
+    assert f'action="/marketing/entwurf/{IID}/in-bloecke"' in s and "Ins Editor-Format übernehmen" in s
+    assert f'name="csrf" value="{ui.CSRF_TOKEN}"' in s
+    for feld, wert in (("format", "bloecke"), ("art", "post"), ("status", "freigegeben")):
+        f = Falsch()
+        f.format = "felder"
+        setattr(f, feld, wert)
+        pult.__dict__.update(f.__dict__)
+        s = angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST).text
+        assert "Ins Editor-Format übernehmen" not in s, feld
+
+
+def test_i8_uebernehmen_leitet_in_den_editor(angemeldet, pult):
+    r = angemeldet.post(f"/marketing/entwurf/{IID}/in-bloecke", headers=HOST,
+                        data={"csrf": ui.CSRF_TOKEN}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == f"/marketing/editor/{IID}"
+    m, p, d = pult.aufrufe[-1]
+    assert (m, p) == ("POST", f"/inhalte/{IID}/in_bloecke") and d == {"von": "mira"}
+
+
+def test_i8_uebernehmen_csrf_und_ablehnung(angemeldet, pult):
+    r = angemeldet.post(f"/marketing/entwurf/{IID}/in-bloecke", headers=HOST, data={}, follow_redirects=False)
+    assert r.status_code == 403 and not any(a[1].endswith("/in_bloecke") for a in pult.aufrufe)
+    pult.fehler = marketing_pult.PultFehler("abgelehnt", "Dieser Newsletter ist schon im Editor-Format")
+    r = angemeldet.post(f"/marketing/entwurf/{IID}/in-bloecke", headers=HOST,
+                        data={"csrf": ui.CSRF_TOKEN}, follow_redirects=False)
+    assert r.status_code == 422 and "schon im Editor-Format" in r.text
+
+
+def test_formularwahl_nach_neuester_fassung(angemeldet, pult):
+    """Aeltere Feld-Fassung eines Editor-Newsletters ansehen: kein Feldformular
+    (die DB lehnte das Speichern ohnehin ab), sondern der Weg in den Editor."""
+    s = angemeldet.get(f"/marketing/entwurf/{IID}?fassung=1", headers=HOST).text
+    assert "Fassung 1" in s
+    assert 'name="abschnitt_text"' not in s and f'href="/marketing/editor/{IID}"' in s
+    # umgekehrt: neueste ist Feldformat, aeltere war Bloecke -> Formular, kein Editor-Knopf
+    pult.format, pult.alt_format = "felder", "bloecke"
+    s = angemeldet.get(f"/marketing/entwurf/{IID}?fassung=1", headers=HOST).text
+    assert 'name="abschnitt_text"' in s and "/marketing/editor/" not in s

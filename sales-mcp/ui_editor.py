@@ -39,6 +39,9 @@ CSP_BILD = "default-src 'none'; sandbox"
 VORLAGE_NAME = re.compile(r"^[a-z][a-z0-9-]{1,40}$")
 TITEL_MAX = 200
 KONFLIKT = "Inzwischen gibt es Fassung"
+# Obergrenze fuer den Speichern-Koerper: die DB nimmt hoechstens 256 KB
+# Dokument an, dazu Betreff/Vorschautext und JSON-Rahmen.
+KOERPER_MAX = 300 * 1024
 
 
 def _ui():
@@ -142,6 +145,9 @@ def routen(ui) -> list:
             "medien_url": "/marketing/editor/medien.json",
             "zurueck_url": f"/marketing/entwurf/{iid}",
             "csrf": ui.CSRF_TOKEN,
+            # Herkunft aus dem alten Freigabeweg - der Editor zeigt denselben
+            # Hinweis wie die Entwurfsseite (ui_marketing.alter_hinweis).
+            "alter_weg": d.get("alter_weg") if isinstance(d.get("alter_weg"), dict) else None,
         }
         seite = (
             '<!doctype html><html lang="de"><head><meta charset="utf-8">'
@@ -166,8 +172,20 @@ def routen(ui) -> list:
         marke = request.headers.get("x-csrf", "")
         if not marke or not hmac.compare_digest(marke, ui.CSRF_TOKEN):
             return json_grund(403, "Fehlende oder falsche CSRF-Marke")
+        # Groesse vor dem Lesen (Content-Length) und beim Lesen (Stuecke) begrenzen.
         try:
-            body = json.loads(await request.body())
+            laenge = int(request.headers.get("content-length") or 0)
+        except ValueError:
+            laenge = 0
+        if laenge > KOERPER_MAX:
+            return json_grund(413, "Das Dokument ist zu groß (höchstens 300 KB)")
+        roh = bytearray()
+        async for stueck in request.stream():
+            roh += stueck
+            if len(roh) > KOERPER_MAX:
+                return json_grund(413, "Das Dokument ist zu groß (höchstens 300 KB)")
+        try:
+            body = json.loads(bytes(roh))
         except (ValueError, UnicodeDecodeError):
             return json_grund(422, "Die Anfrage ist kein gültiges JSON")
         if not isinstance(body, dict):
@@ -198,7 +216,12 @@ def routen(ui) -> list:
                     return json_grund(409, grund, konflikt=True)
                 return json_grund(422, grund or "Abgelehnt")
             return json_grund(503, "Speichern gerade nicht möglich")
-        return JSONResponse({"fassung": int(r["fassung"])}, headers={"Cache-Control": "no-store"})
+        fassung = r.get("fassung") if isinstance(r, dict) else None
+        if isinstance(fassung, bool) or not isinstance(fassung, int):
+            # Die API hat gespeichert (oder nicht) - ohne Fassungsnummer koennen
+            # wir das nicht bestaetigen; der Editor behaelt die Aenderungen.
+            return json_grund(503, "Speichern gerade nicht möglich")
+        return JSONResponse({"fassung": fassung}, headers={"Cache-Control": "no-store"})
 
     @ui._gesichert_seite
     async def medien_json(request):
@@ -218,7 +241,9 @@ def routen(ui) -> list:
                             headers={"Content-Security-Policy": CSP_BILD})
         if not bild_token_ok(request.path_params["token"]):
             return nicht_da
-        name = urllib.parse.unquote(request.path_params["name"])
+        # path_params ist schon entschluesselt - ein zweites unquote machte aus
+        # "logo%2Epng" wieder "logo.png" und umginge die Namenspruefung.
+        name = request.path_params["name"]
         endung = os.path.splitext(name)[1].lower()
         if endung not in BILD_ENDUNGEN:
             return nicht_da

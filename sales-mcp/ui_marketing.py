@@ -210,12 +210,21 @@ def routen(ui) -> list:
             f'<button type="submit">Ablehnen</button></form></div>') if ist_neueste else ""
         # Editor-Newsletter (format "bloecke"): Inhalt nur im Editor; das
         # Feldformular wuerde die Bloecke nicht kennen (die DB lehnt eine
-        # Felder-Fassung darauf ohnehin ab). Urteilen bleibt hier.
-        im_editor = akt.get("format") == "bloecke"
+        # Felder-Fassung darauf ohnehin ab). Urteilen bleibt hier. Massgeblich
+        # ist das Format der NEUESTEN Fassung - auch wenn eine aeltere gezeigt
+        # wird, denn gespeichert wird immer obendrauf.
+        im_editor = fassungen[0].get("format") == "bloecke"
+        # Feld-Newsletter (z.B. aus dem alten Weg ueber die Bruecke): einmalig
+        # ins Editor-Format uebernehmen (marketing.pult_in_bloecke_uebernehmen).
+        in_bloecke = "" if im_editor or i["art"] != "newsletter" else (
+            f'<form method="post" action="{basis}/in-bloecke" class="aktion">{csrf}'
+            f'<button type="submit">Ins Editor-Format übernehmen</button>'
+            f'<span class="meta">Legt eine neue Fassung im Editor-Format an; danach wird dieser '
+            f'Newsletter nur noch im Editor bearbeitet.</span></form>')
         felder_formular = (
             f'<p>Dieser Newsletter wird im Editor bearbeitet.</p>'
             f'<p><a class="knopf" href="/marketing/editor/{e(i["id"])}">Im Editor öffnen</a></p>'
-        ) if im_editor else (
+        ) if im_editor else in_bloecke + (
             f'<form method="post" action="{basis}/speichern" class="pult-felder">{csrf}'
             f'<label>{betreff} <input name="betreff" value="{e(fe.get("betreff"))}"></label>'
             f'<label>Vorschautext <input name="vorschautext" value="{e(fe.get("vorschautext"))}"></label>'
@@ -229,8 +238,8 @@ def routen(ui) -> list:
         wahl_links = "".join(
             f'<a class="{"aktiv" if k == fmt else ""}" href="{basis}?fassung={nr}&amp;format={k}">{t}</a>'
             for k, t in RAHMEN_FORMATE.items())
-        if not im_editor:
-            # Fuer Editor-Newsletter gibt es (noch) kein PDF - die API sagt 422.
+        if akt.get("format") != "bloecke":
+            # Fuer Editor-Fassungen gibt es (noch) kein PDF - die API sagt 422.
             wahl_links += (f'<a href="{basis}/vorschau?fassung={nr}&amp;format=pdf" target="_blank" '
                            f'rel="noopener noreferrer">PDF &#8599;</a>')
         rumpf = (
@@ -297,6 +306,19 @@ def routen(ui) -> list:
         except marketing_pult.PultFehler as f:
             return fehler(f)
         return RedirectResponse(f"/marketing/entwurf/{iid}?fassung={int(r['fassung'])}", status_code=303)
+
+    @ui._gesichert_seite
+    async def in_bloecke(request):
+        form = await request.form()
+        if not ui._csrf_ok(form):
+            return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
+        iid = urllib.parse.quote(request.path_params["iid"], safe="")
+        try:
+            await run_in_threadpool(marketing_pult.anfrage, "POST", f"/inhalte/{iid}/in_bloecke",
+                                    {"von": von(request)})
+        except marketing_pult.PultFehler as f:
+            return fehler(f)
+        return RedirectResponse(f"/marketing/editor/{iid}", status_code=303)
 
     @ui._gesichert_seite
     async def entscheiden(request):
@@ -551,6 +573,7 @@ def routen(ui) -> list:
         Route("/marketing/entwurf/{iid}/vorschau", vorschau),
         Route("/marketing/entwurf/{iid}/speichern", speichern, methods=["POST"]),
         Route("/marketing/entwurf/{iid}/entscheiden", entscheiden, methods=["POST"]),
+        Route("/marketing/entwurf/{iid}/in-bloecke", in_bloecke, methods=["POST"]),
         Route("/marketing/layouts", layouts),
         Route("/marketing/layout-bild/{name}", layout_bild),
         Route("/marketing/layout-vorschau", layout_vorschau, methods=["POST"]),
