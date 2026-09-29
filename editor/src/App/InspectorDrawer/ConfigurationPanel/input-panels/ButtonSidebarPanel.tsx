@@ -45,7 +45,9 @@ export default function ButtonSidebarPanel({ data, setData }: ButtonSidebarPanel
       <TextInput
         label="Link"
         placeholder="https://…"
-        helperText="Nur Adressen mit https://"
+        required
+        error={url.trim() === ''}
+        helperText={url.trim() === '' ? 'Ohne Link wird der Knopf nicht gespeichert – bitte https://… eintragen' : 'Nur Adressen mit https://'}
         defaultValue={url}
         onChange={(url) => updateData({ ...data, props: { ...data.props, url } })}
       />

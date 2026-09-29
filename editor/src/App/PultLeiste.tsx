@@ -17,7 +17,7 @@ import {
 } from '@mui/material';
 
 import { getDocument } from '../documents/editor/EditorContext';
-import { speichern } from '../pult';
+import { fehlerText, speichern } from '../pult';
 import { alsUngespeichert, pultStore } from '../pultZustand';
 
 // Leiste oben: Betreff, Vorschautext, Speichern, Vorschau, Zurueck.
@@ -76,7 +76,7 @@ export default function PultLeiste() {
       return;
     }
     setKonflikt(null);
-    setMeldung({ art: 'error', text: `Nicht gespeichert: ${e.grund}. Deine Änderungen sind noch da.` });
+    setMeldung({ art: 'error', text: fehlerText(e.grund) });
   };
 
   const vorschau = (format: 'mail' | 'handy') => {

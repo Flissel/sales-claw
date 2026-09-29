@@ -5,6 +5,7 @@ import { IconButton, Paper, Stack, SxProps, Tooltip } from '@mui/material';
 
 import { TEditorBlock, TEditorConfiguration } from '../../../editor/core';
 import { resetDocument, setSelectedBlockId, useDocument } from '../../../editor/EditorContext';
+import { mitNachfahren } from '../../../../pult';
 import { ColumnsContainerProps } from '../../ColumnsContainer/ColumnsContainerPropsSchema';
 import cloneDocumentBlock from '../cloneDocumentBlock';
 
@@ -98,16 +99,20 @@ export default function TuneMenu({ blockId }: Props) {
   };
 
   const handleDeleteClick = () => {
+    // Rekursiv: ein Rahmen oder Spaltenblock nimmt seinen Inhalt mit. Sonst
+    // blieben die Kinder als unsichtbare Waisen im Dokument und die DB lehnte
+    // jedes Speichern ab ("Es gibt Bloecke, die nirgends eingebunden sind").
+    const weg = mitNachfahren(document, blockId);
     const filterChildrenIds = (childrenIds: string[] | null | undefined) => {
       if (!childrenIds) {
         return childrenIds;
       }
-      return childrenIds.filter((f) => f !== blockId);
+      return childrenIds.filter((f) => !weg.has(f));
     };
     const nDocument: typeof document = { ...document };
     for (const [id, b] of Object.entries(nDocument)) {
       const block = b as TEditorBlock;
-      if (id === blockId) {
+      if (weg.has(id)) {
         continue;
       }
 
@@ -151,7 +156,9 @@ export default function TuneMenu({ blockId }: Props) {
           nDocument[id] = block;
       }
     }
-    delete nDocument[blockId];
+    for (const id of weg) {
+      delete nDocument[id];
+    }
     resetDocument(nDocument);
   };
 

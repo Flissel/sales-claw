@@ -18,8 +18,10 @@ function generateId() {
 export type EditorChildrenIdsProps = {
   childrenIds: string[] | null | undefined;
   onChange: (val: EditorChildrenChange) => void;
+  // true in Rahmen und Spalten: das Menue bietet dort keine Rahmen/Spalten an
+  nurInhalt?: boolean;
 };
-export default function EditorChildrenIds({ childrenIds, onChange }: EditorChildrenIdsProps) {
+export default function EditorChildrenIds({ childrenIds, onChange, nurInhalt }: EditorChildrenIdsProps) {
   const appendBlock = (block: TEditorBlock) => {
     const blockId = generateId();
     return onChange({
@@ -41,18 +43,18 @@ export default function EditorChildrenIds({ childrenIds, onChange }: EditorChild
   };
 
   if (!childrenIds || childrenIds.length === 0) {
-    return <AddBlockButton placeholder onSelect={appendBlock} />;
+    return <AddBlockButton placeholder nurInhalt={nurInhalt} onSelect={appendBlock} />;
   }
 
   return (
     <>
       {childrenIds.map((childId, i) => (
         <Fragment key={childId}>
-          <AddBlockButton onSelect={(block) => insertBlock(block, i)} />
+          <AddBlockButton nurInhalt={nurInhalt} onSelect={(block) => insertBlock(block, i)} />
           <EditorBlock id={childId} />
         </Fragment>
       ))}
-      <AddBlockButton onSelect={appendBlock} />
+      <AddBlockButton nurInhalt={nurInhalt} onSelect={appendBlock} />
     </>
   );
 }

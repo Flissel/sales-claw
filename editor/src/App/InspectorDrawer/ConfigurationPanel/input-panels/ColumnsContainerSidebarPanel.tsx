@@ -60,8 +60,8 @@ export default function ColumnsContainerPanel({ data, setData }: ColumnsContaine
         step={4}
         marks
         min={0}
-        max={80}
-        defaultValue={data.props?.columnsGap ?? 0}
+        max={48}
+        defaultValue={Math.min(data.props?.columnsGap ?? 0, 48)}
         onChange={(columnsGap) => updateData({ ...data, props: { ...data.props, columnsGap } })}
       />
       <RadioGroupInput

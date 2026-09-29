@@ -36,7 +36,7 @@ export default function SingleStylePropertyPanel({ name, value, onChange }: Styl
           step={4}
           marks
           min={0}
-          max={48}
+          max={32}
           label="Eckenradius"
           defaultValue={defaultValue}
           onChange={handleChange}

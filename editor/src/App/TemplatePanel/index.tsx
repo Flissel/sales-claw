@@ -1,12 +1,14 @@
 import React from 'react';
 
 import { MonitorOutlined, PhoneIphoneOutlined } from '@mui/icons-material';
-import { Box, Stack, SxProps, ToggleButton, ToggleButtonGroup, Tooltip, Typography } from '@mui/material';
+import { Alert, Box, Stack, SxProps, ToggleButton, ToggleButtonGroup, Tooltip, Typography } from '@mui/material';
 
 import EditorBlock from '../../documents/editor/EditorBlock';
 import { setSelectedScreenSize, useSelectedScreenSize } from '../../documents/editor/EditorContext';
 import ToggleInspectorPanelButton from '../InspectorDrawer/ToggleInspectorPanelButton';
-import PultLeiste, { PULT_LEISTE_HOEHE } from '../PultLeiste';
+import { alterWegHinweis } from '../../pult';
+import { pultStore } from '../../pultZustand';
+import PultLeiste from '../PultLeiste';
 
 // Gegenueber dem Beispiel entfernt: Reiter Vorschau/HTML/JSON, JSON-Import und
 // -Download, "Share" und die Vorlagen-Seitenleiste. Die massgebliche Vorschau
@@ -15,6 +17,9 @@ const WERKZEUG_HOEHE = 49;
 
 export default function TemplatePanel() {
   const selectedScreenSize = useSelectedScreenSize();
+  const start = pultStore((p) => p.start);
+  // Wie die Entwurfsseite: der alte Freigabeweg (Telegram -> n8n) laeuft unabhaengig weiter.
+  const alterWeg = start ? alterWegHinweis(start) : null;
 
   let mainBoxSx: SxProps = {
     height: '100%',
@@ -42,8 +47,8 @@ export default function TemplatePanel() {
   };
 
   return (
-    <>
-      <Box sx={{ position: 'sticky', top: 0, zIndex: 'appBar' }}>
+    <Box sx={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
+      <Box sx={{ flexShrink: 0, zIndex: 'appBar' }}>
         <PultLeiste />
         <Stack
           sx={{
@@ -76,10 +81,16 @@ export default function TemplatePanel() {
             <ToggleInspectorPanelButton />
           </Stack>
         </Stack>
+        {alterWeg && (
+          <Alert severity="warning" data-testid="alter-weg" sx={{ borderRadius: 0 }}>
+            {alterWeg}
+          </Alert>
+        )}
       </Box>
       <Box
         sx={{
-          height: `calc(100vh - ${PULT_LEISTE_HOEHE + WERKZEUG_HOEHE}px)`,
+          flex: 1,
+          minHeight: 0,
           overflow: 'auto',
           minWidth: 370,
         }}
@@ -88,6 +99,6 @@ export default function TemplatePanel() {
           <EditorBlock id="root" />
         </Box>
       </Box>
-    </>
+    </Box>
   );
 }

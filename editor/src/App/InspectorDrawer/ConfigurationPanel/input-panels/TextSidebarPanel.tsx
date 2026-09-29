@@ -30,7 +30,7 @@ export default function TextSidebarPanel({ data, setData }: TextSidebarPanelProp
       <TextInput
         label="Inhalt"
         rows={5}
-        helperText="Erlaubt: **fett**, *kursiv*, [Link](https://…)"
+        helperText="Erlaubt: **fett**, *kursiv*, [Link](https://…). Leerzeile = neuer Absatz, Enter = neue Zeile."
         defaultValue={data.props?.text ?? ''}
         onChange={(text) => updateData({ ...data, props: { ...data.props, text } })}
       />

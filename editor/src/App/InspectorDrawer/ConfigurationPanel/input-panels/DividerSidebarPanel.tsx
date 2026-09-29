@@ -41,7 +41,7 @@ export default function DividerSidebarPanel({ data, setData }: DividerSidebarPan
         units="px"
         step={1}
         min={1}
-        max={24}
+        max={10}
         defaultValue={lineHeight}
         onChange={(lineHeight) => updateData({ ...data, props: { ...data.props, lineHeight } })}
       />

@@ -13,7 +13,19 @@ export type Start = {
   medien_url: string;
   zurueck_url: string;
   csrf: string;
+  // Herkunft aus dem alten Freigabeweg (broadcast_proposals): Status und Kanal, sonst null.
+  alter_weg?: { status?: string | null; kanal?: string | null } | null;
 };
+
+// Wie die Entwurfsseite (ui_marketing.py): nur solange der alte Weg noch offen ist.
+export function alterWegHinweis(s: Pick<Start, 'alter_weg'>): string | null {
+  const a = s.alter_weg;
+  if (!a || (a.status !== 'draft' && a.status !== 'pending_approval')) return null;
+  return (
+    `Dieser Entwurf liegt noch im alten Freigabeweg (${a.kanal ?? ''}). Ablehnen hier stoppt ihn dort nicht, ` +
+    'und Änderungen hier werden dort nicht verschickt. Im alten Weg ablehnen, falls er nicht rausgehen soll.'
+  );
+}
 
 export function startLesen(): Start {
   const el = document.getElementById('editor-start');
@@ -29,12 +41,87 @@ export function zurAnzeige<T extends Dokument>(doc: T): T {
   return umschreiben(doc, (u) => (u.startsWith('medien:') ? ANZEIGE + encodeURIComponent(u.slice(7)) : u));
 }
 
+// Fehler im Inhalt (nicht im Netz) - der Text geht so an den Betreiber.
+export class InhaltFehler extends Error {}
+
+// Name der Mediendatei zu einer Anzeige-Adresse; null, wenn die Adresse keine
+// Medien-Adresse ist oder sich nicht entschluesseln laesst (kaputtes %-Zeichen).
+export function medienName(url: string): string | null {
+  if (!url.startsWith(ANZEIGE)) return null;
+  try {
+    return decodeURIComponent(url.slice(ANZEIGE.length));
+  } catch {
+    return null;
+  }
+}
+
+// Vor dem Speichern: nur Bloecke, die von root aus erreichbar sind (belt and
+// braces zum rekursiven Loeschen - die DB lehnt verwaiste Bloecke ab), und
+// Bilder zurueck auf "medien:<name>".
 export function zurSpeicherung<T extends Dokument>(doc: T): T {
-  return umschreiben(doc, (u) => (u.startsWith(ANZEIGE) ? 'medien:' + decodeURIComponent(u.slice(ANZEIGE.length)) : u));
+  return umschreiben(nurErreichbare(doc), (u) => {
+    if (!u.startsWith(ANZEIGE)) return u;
+    const name = medienName(u);
+    if (name === null) throw new InhaltFehler('Bildadresse ungültig');
+    return 'medien:' + name;
+  });
 }
 
 function istObjekt(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
+}
+
+function kinderListe(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((k): k is string => typeof k === 'string') : [];
+}
+
+// Kinder eines Blocks auf den Pfaden des Editors (wie marketing.pult_bloecke_fehler):
+// EmailLayout data.childrenIds, Container data.props.childrenIds,
+// ColumnsContainer data.props.columns[].childrenIds.
+export function kinderVon(block: unknown): string[] {
+  if (!istObjekt(block) || !istObjekt(block.data)) return [];
+  const data = block.data;
+  const props = istObjekt(data.props) ? data.props : {};
+  const ids = [...kinderListe(data.childrenIds), ...kinderListe(props.childrenIds)];
+  if (Array.isArray(props.columns)) {
+    for (const c of props.columns) if (istObjekt(c)) ids.push(...kinderListe(c.childrenIds));
+  }
+  return ids;
+}
+
+// Alle Bloecke, die von root aus erreichbar sind, in derselben Form; der Rest faellt weg.
+export function nurErreichbare<T extends Dokument>(doc: T): T {
+  const erreicht = new Set<string>();
+  const offen = ['root'];
+  while (offen.length > 0) {
+    const id = offen.pop() as string;
+    if (erreicht.has(id) || !(id in doc)) continue;
+    erreicht.add(id);
+    offen.push(...kinderVon(doc[id]));
+  }
+  const neu: Dokument = {};
+  for (const [id, b] of Object.entries(doc)) if (erreicht.has(id)) neu[id] = b;
+  return neu as T;
+}
+
+// Ein Block und alle seine Nachfahren (fuer das Loeschen im Block-Menue).
+export function mitNachfahren(doc: Dokument, blockId: string): Set<string> {
+  const weg = new Set<string>();
+  const offen = [blockId];
+  while (offen.length > 0) {
+    const id = offen.pop() as string;
+    if (weg.has(id)) continue;
+    weg.add(id);
+    offen.push(...kinderVon(doc[id]));
+  }
+  return weg;
+}
+
+// Meldung nach einem fehlgeschlagenen Speichern: der Grund ohne eigenen
+// Schlusspunkt, damit nichts doppelt dasteht.
+export function fehlerText(grund: string): string {
+  const g = grund.trim().replace(/[\s.!]+$/u, '');
+  return `Nicht gespeichert: ${g || 'unbekannter Grund'}. Deine Änderungen sind noch da.`;
 }
 
 function umschreiben<T extends Dokument>(doc: T, f: (u: string) => string): T {
@@ -63,6 +150,16 @@ export async function speichern(
   basis: number,
   alsKopie: boolean
 ): Promise<Ergebnis> {
+  let dokument: Dokument;
+  try {
+    dokument = zurSpeicherung(doc);
+  } catch (e) {
+    return {
+      ok: false,
+      konflikt: false,
+      grund: e instanceof InhaltFehler ? e.message : 'Das Dokument lässt sich nicht speichern',
+    };
+  }
   let r: Response;
   try {
     r = await fetch(s.speichern_url, {
@@ -73,12 +170,12 @@ export async function speichern(
         basis_fassung: basis,
         betreff,
         vorschautext,
-        dokument: zurSpeicherung(doc),
+        dokument,
         als_kopie: alsKopie,
       }),
     });
   } catch {
-    return { ok: false, konflikt: false, grund: 'Keine Verbindung zum Pult – Änderungen sind noch da.' };
+    return { ok: false, konflikt: false, grund: 'Keine Verbindung zum Pult' };
   }
   const j: unknown = await r.json().catch(() => ({}));
   const antwort = istObjekt(j) ? j : {};

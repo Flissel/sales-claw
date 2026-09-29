@@ -17,6 +17,8 @@ type TButtonProps = {
   label: string;
   icon: JSX.Element;
   block: () => TEditorBlock;
+  // nur auf oberster Ebene erlaubt (Rahmen, Spalten)
+  nurOben?: boolean;
 };
 
 // Nur die Bloecke, die das Pult annimmt (kein Html, kein Avatar). Neue Bloecke
@@ -105,6 +107,7 @@ export const BUTTONS: TButtonProps[] = [
   {
     label: 'Spalten',
     icon: <ViewColumnOutlined />,
+    nurOben: true,
     block: () => ({
       type: 'ColumnsContainer',
       data: {
@@ -120,6 +123,7 @@ export const BUTTONS: TButtonProps[] = [
   {
     label: 'Rahmen',
     icon: <LibraryAddOutlined />,
+    nurOben: true,
     block: () => ({
       type: 'Container',
       data: {

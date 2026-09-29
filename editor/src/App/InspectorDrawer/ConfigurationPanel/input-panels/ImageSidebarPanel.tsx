@@ -9,7 +9,7 @@ import {
 import { Button, MenuItem, Stack, TextField, ToggleButton, Typography } from '@mui/material';
 import { ImageProps, ImagePropsSchema } from '@usewaypoint/block-image';
 
-import { ANZEIGE } from '../../../../pult';
+import { ANZEIGE, medienName } from '../../../../pult';
 import { medienLaden, pultStore } from '../../../../pultZustand';
 
 import BaseSidebarPanel from './helpers/BaseSidebarPanel';
@@ -31,7 +31,10 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
 
   // Das freie URL-Feld gibt es hier nicht: Bilder kommen nur aus den Medien.
   const aktuell = data.props?.url ?? '';
-  const gewaehlt = aktuell.startsWith(ANZEIGE) ? decodeURIComponent(aktuell.slice(ANZEIGE.length)) : '';
+  // medienName faengt ein kaputtes %-Zeichen ab (sonst wuerfe das Panel beim Zeichnen).
+  const name = medienName(aktuell);
+  const kaputt = aktuell.startsWith(ANZEIGE) && name === null;
+  const gewaehlt = name ?? '';
   const optionen = medien ?? [];
   const fehltInListe = gewaehlt !== '' && !optionen.includes(gewaehlt);
 
@@ -64,7 +67,7 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
               ? 'Medien werden geladen …'
               : optionen.length === 0
                 ? 'Keine Bilder in den Medien. Bilder im Pult unter Medien hochladen.'
-                : 'Erlaubt: png, jpg, gif, webp aus den Medien'
+                : 'Erlaubt: png, jpg, jpeg aus den Medien'
           }
         >
           <MenuItem value="">
@@ -77,6 +80,11 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
             </MenuItem>
           ))}
         </TextField>
+        {kaputt && (
+          <Typography variant="body2" color="error">
+            Bildadresse ungültig. Bitte ein Bild aus den Medien wählen.
+          </Typography>
+        )}
         {aktuell !== '' && !aktuell.startsWith(ANZEIGE) && (
           <Typography variant="body2" color="error">
             Dieses Bild stammt nicht aus den Medien und wird beim Speichern abgelehnt. Bitte ein Bild aus den
@@ -106,11 +114,15 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
       <Stack direction="row" spacing={2}>
         <TextDimensionInput
           label="Breite"
+          min={1}
+          max={600}
           defaultValue={data.props?.width}
           onChange={(width) => updateData({ ...data, props: { ...data.props, width } })}
         />
         <TextDimensionInput
           label="Höhe"
+          min={0}
+          max={600}
           defaultValue={data.props?.height}
           onChange={(height) => updateData({ ...data, props: { ...data.props, height } })}
         />
