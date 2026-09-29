@@ -883,10 +883,18 @@ nav.seite .abmelden { margin-top: auto; padding: 0 .5rem; }
                align-items: center; justify-content: center; gap: .1rem;
                min-height: 56px; font-size: .7rem; font-weight: 600;
                letter-spacing: .04em; color: var(--gedaempft);
-               text-decoration: none; }
+               text-decoration: none; min-width: 0; white-space: nowrap;
+               overflow: hidden; text-overflow: ellipsis; }
+  /* Sechs Reiter (29.09.2026): "Monitoring" brach mitten im Wort um. Die
+     Beschriftung ist ein Flex-Kind - die Auslassung muss am <span> sitzen. */
+  nav.tabs a > span:first-child { max-width: 100%; white-space: nowrap;
+                                  overflow: hidden; text-overflow: ellipsis; }
   nav.tabs a.aktiv { color: var(--balken_schrift); }
   nav.tabs .zaehler { margin-left: 0; }
   main { padding-bottom: 6rem; }
+}
+@media (max-width: 399px) {
+  nav.tabs a { font-size: .62rem; letter-spacing: 0; }
 }
 
 h1 { font-size: 1.3rem; margin: .2rem 0 .8rem; }
@@ -941,9 +949,15 @@ h2 { font-size: 1.05rem; margin-top: 2rem; }
   display: block; width: 100%; margin-top: .3rem; }
 .pult-felder fieldset { border: 1px solid var(--linie); border-radius: 4px;
                         margin: .6rem 0; padding: .5rem; }
-.pult-rechts iframe.vorschau { width: 100%; height: 80vh; border: 1px solid
+/* Höhe gemessen am 29.09.2026: der Rahmen war 140 px hoch, weil die
+   Medienlisten-Regel `.vorschau { max-height: 140px }` ihn mittraf. Die ist
+   jetzt auf img/video beschränkt; max-height: none hält es fest. */
+.pult-rechts iframe.vorschau { width: 100%; height: min(80vh, 1100px);
+                               max-height: none; border: 1px solid
                                var(--linie); border-radius: 4px;
                                background: #ffffff; }
+@media (max-width: 767px) {
+  .pult-rechts iframe.vorschau { min-height: 70vh; } }
 .pult-rechts iframe.vorschau.handy { max-width: 400px; display: block;
                                      margin: 0 auto; }
 .mandanten { display: flex; flex-wrap: wrap; gap: .5rem; margin: .5rem 0 1rem; }
@@ -1132,7 +1146,9 @@ p.abbrechen a, p.meta > a { display: inline-block; min-height: 44px;
 button, input, select, textarea { font-family: inherit; }
 /* Vorschau in der Medienliste. Feste Höhe statt fester Breite: die Zeile
    soll gleich hoch bleiben, egal ob Hoch- oder Querformat. */
-.vorschau { max-width: 100%; max-height: 140px; height: auto;
+/* Nur Bild und Video: der Rahmen des Marketing-Pults heißt auch .vorschau
+   und wurde von dieser Regel auf 140 px gedrückt (29.09.2026). */
+img.vorschau, video.vorschau { max-width: 100%; max-height: 140px; height: auto;
             border-radius: 6px; display: block; background: var(--grund); }
 video.vorschau { width: 240px; max-width: 100%; }
 audio { width: 100%; max-width: 240px; }
@@ -1255,6 +1271,29 @@ _GRUPPEN = (
                ("/team/tailscale-einladen", "Team-Mitglied einladen"))),
 )
 _NAV = tuple(eintrag for _, eintraege in _GRUPPEN for eintrag in eintraege)
+# Detailseiten gehoeren zu ihrer Liste (Browser-Durchlauf 29.09.2026): die
+# Pfade /marketing/entwurf/<id> und /marketing/layout/<name> liegen NICHT
+# unter /marketing/entwuerfe bzw. /marketing/layouts, sondern nur unter
+# /marketing - ohne diese Zuordnung leuchtete dort "Übersicht" statt der
+# Liste, aus der man gekommen ist. Schluessel: Vorsilbe des Detailpfads.
+_DETAIL_ZU_LISTE = {
+    "/marketing/entwurf": "/marketing/entwuerfe",
+    "/marketing/layout": "/marketing/layouts",
+    "/marketing/layout-bild": "/marketing/layouts",
+}
+
+
+def _aktiver_eintrag(aktiv: str, pfade) -> str | None:
+    """Der EINE aktive Menuepfad: der laengste, der gleich dem aktuellen ist
+    oder dessen Vorsilbe (bis zu einem /). Vorher war jeder passende Eintrag
+    aktiv - auf /marketing/entwuerfe also auch "Übersicht" (/marketing)."""
+    for detail, liste in _DETAIL_ZU_LISTE.items():
+        if aktiv == detail or aktiv.startswith(detail + "/"):
+            aktiv = liste
+            break
+    passend = [p for p in pfade
+               if p == aktiv or (p != "/" and aktiv.startswith(p + "/"))]
+    return max(passend, key=len) if passend else None
 # Welche Seite gerade gebaut wird — gesetzt von _gesichert_seite, gelesen
 # von der Seitenleiste fuer den aktiven Menuepunkt. Ein ContextVar statt
 # eines Parameters an jeder der ~30 _seite()-Stellen.
@@ -1322,18 +1361,18 @@ def _seitenleiste(abmelden: str) -> str:
              '<span class="logo">S</span><span>sales-claw</span></div>']
     # Die Gruppe der aktiven Seite: am Handy die einzige, die oben als
     # Zeile bleibt (Schritt 7); ohne Treffer die erste (Aufgaben).
+    aktiver_pfad = _aktiver_eintrag(
+        aktiv, [pfad for _, eintraege in gruppen for pfad, _ in eintraege])
     gruppe_aktiv = gruppen[0][0]
     for gruppe, eintraege in gruppen:
-        for pfad, _ in eintraege:
-            if pfad == aktiv or (pfad != "/" and aktiv.startswith(pfad + "/")):
-                gruppe_aktiv = gruppe
+        if any(pfad == aktiver_pfad for pfad, _ in eintraege):
+            gruppe_aktiv = gruppe
     for gruppe, eintraege in gruppen:
         marke = " aktiv-gruppe" if gruppe == gruppe_aktiv else ""
         teile.append(f'<div class="gruppe{marke}"><div class="gruppenname">'
                      f'{_e(gruppe)}</div>')
         for pfad, name in eintraege:
-            ist_aktiv = (pfad == aktiv or
-                         (pfad != "/" and aktiv.startswith(pfad + "/")))
+            ist_aktiv = pfad == aktiver_pfad
             klasse = ' class="aktiv"' if ist_aktiv else ""
             zahl = ""
             if pfad in zaehler:
@@ -3571,6 +3610,10 @@ async def whatsapp(request):
                     ("Engine geladen", "ja" if s.get("engineLoaded") else "nein"),
                 ]) + '</div>')
 
+    # WhatsApp verbinden (29.09.2026): Selbstbedienung statt Handarbeit.
+    kopplung_html, kopplung_wartet = _wa_kopplung_block(sitzung[1] == "gut")
+    teile.append(kopplung_html)
+
     # Der Weg vom Handy in die Datenbank — aus der Datenbank selbst
     # beantwortet (29.08.2026). Der Webhook-Endpunkt von OpenWA verlangt
     # OPERATOR (gemessen: 403 mit dem Nur-Lese-Schluessel), und die
@@ -3632,7 +3675,70 @@ async def whatsapp(request):
         f'in diese Anzeige (sonst ließe sich die Freigabe umgehen).</p>'
         f'<p><a href="{_e(OPENWA_DASHBOARD_URL)}" target="_blank" '
         f'rel="noreferrer">OpenWA-Oberfläche öffnen &rarr;</a></p>')
-    return _seite("WhatsApp", "".join(teile), refresh=60)
+    # Waehrend der Kopplung alle 3 s: ein QR-Code gilt nur ~20 s, und der
+    # Wirt schreibt jeden neuen sofort in die Zeile.
+    return _seite("WhatsApp", "".join(teile),
+                  refresh=3 if kopplung_wartet else 60)
+
+
+# Nur ein PNG als Data-URL in Base64 — alles andere (Anfuehrungszeichen,
+# Skript, fremde Adresse) wird nicht eingebettet. Die Zeile schreibt zwar
+# nur der Wirt, aber die Laden-Rolle darf ebenfalls einfuegen.
+_QR_MUSTER = re.compile(r"^data:image/png;base64,[A-Za-z0-9+/]+={0,2}$")
+
+
+def _wa_kopplung_block(verbunden: bool) -> tuple[str, bool]:
+    """Knopf, Wartehinweis oder QR-Code — je nach juengster Anfrage.
+    Gibt (html, wartet) zurueck; `wartet` schaltet das schnelle Neuladen."""
+    if verbunden:
+        return "", False
+    knopf = (f'<form method="post" action="/whatsapp/verbinden">'
+             f'<input type="hidden" name="csrf" value="{_e(CSRF_TOKEN)}">'
+             f'<button class="primaer" type="submit">WhatsApp verbinden'
+             f'</button></form>')
+    zeilen = server._q("select status, qr, fehler from whatsapp_kopplung "
+                       "order by erstellt_am desc limit 1")
+    z = zeilen[0] if zeilen else None
+    if z and z["status"] == "angefordert":
+        return ('<div class="karte"><h2>WhatsApp verbinden</h2>'
+                '<p>Wird vorbereitet … der QR-Code erscheint hier gleich.'
+                '</p></div>'), True
+    if z and z["status"] == "qr":
+        qr = str(z["qr"] or "")
+        bild = (f'<img class="qr" src="{_e(qr)}" alt="QR-Code zum Koppeln" '
+                f'width="264" height="264">' if _QR_MUSTER.match(qr) else
+                '<p class="meta">Der QR-Code kommt gleich …</p>')
+        return ('<div class="karte"><h2>WhatsApp verbinden</h2>'
+                '<ol class="schritte"><li>WhatsApp auf dem Handy öffnen.</li>'
+                '<li>Einstellungen → <b>Verknüpfte Geräte</b> → '
+                '„Gerät hinzufügen".</li>'
+                '<li>Diesen Code scannen. Er erneuert sich von selbst.</li>'
+                f'</ol>{bild}</div>'), True
+    if z and z["status"] == "verbunden":
+        return ('<div class="karte"><h2>WhatsApp ist verbunden</h2>'
+                '<p>Nachrichten kommen ab jetzt im Posteingang an.</p>'
+                '</div>'), False
+    grund = ""
+    if z and z["status"] in ("abgelaufen", "fehler"):
+        grund = (f'<p class="warnung">{_e(z["fehler"] or "Das hat nicht '
+                 f'geklappt.")} Einfach noch einmal versuchen.</p>')
+    return ('<div class="karte"><h2>WhatsApp verbinden</h2>'
+            '<p>Verbinde die WhatsApp-Nummer, über die dieser Laden '
+            'schreibt. Du brauchst dafür nur dein Handy.</p>'
+            f'{grund}{knopf}</div>'), False
+
+
+@_gesichert_seite
+async def aktion_whatsapp_verbinden(request):
+    """Legt eine Anfrage an; hoechstens eine offene (Teilindex), ein
+    Doppelklick legt also nichts doppelt an."""
+    form = await request.form()
+    if not _csrf_ok(form):
+        return _fehlerseite(403, "Abgewiesen",
+                            "Fehlende oder falsche CSRF-Marke.")
+    server._q("insert into whatsapp_kopplung default values "
+              "on conflict do nothing")
+    return RedirectResponse("/whatsapp", status_code=303)
 
 
 @_gesichert_seite
@@ -6216,6 +6322,7 @@ app = Starlette(routes=[
     Route("/team/tailscale-einladen/anfordern", aktion_tailscale_einladen,
           methods=["POST"]),
     Route("/whatsapp", whatsapp),
+    Route("/whatsapp/verbinden", aktion_whatsapp_verbinden, methods=["POST"]),
     Route("/kontakte/wiederherstellen", aktion_kontakt_wiederherstellen,
           methods=["POST"]),
     Route("/kontakte/profil-anfordern", aktion_profil_anfordern,

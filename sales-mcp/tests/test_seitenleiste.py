@@ -107,3 +107,76 @@ def test_auf_dem_handy_wird_die_leiste_zur_zeile():
     assert ("nav.seite { display: flex; flex-direction: row; flex-wrap: wrap;"
             in seite)
     assert "@media (max-width: 767px)" in seite
+
+
+# --- Browser-Durchlauf 29.09.2026 (Newsletter-Editor E1, Aufgabe 0c/0d) ------
+# Vorher war JEDER Eintrag aktiv, dessen Pfad Vorsilbe des aktuellen ist:
+# auf /marketing/entwuerfe leuchteten "Übersicht" UND "Entwürfe".
+
+import re  # noqa: E402
+
+_AKTIV_A = re.compile(r'<a class="aktiv" href="([^"]+)"><span>([^<]+)</span>')
+
+
+def _aktive(pfad: str, rolle: str = "freigeben") -> list:
+    t_pfad = ui._AKTIVER_PFAD.set(pfad)
+    t_rolle = ui._AKTIVE_ROLLE.set(rolle)
+    try:
+        leiste = ui._seitenleiste("")
+    finally:
+        ui._AKTIVER_PFAD.reset(t_pfad)
+        ui._AKTIVE_ROLLE.reset(t_rolle)
+    return [name for _, name in _AKTIV_A.findall(leiste)]
+
+
+@pytest.mark.parametrize("pfad, erwartet", [
+    ("/marketing", "Übersicht"),
+    ("/marketing/entwuerfe", "Entwürfe"),
+    ("/marketing/entwurf/241a281c-ebe2-4e25-b1b6-e1a84b94d66a", "Entwürfe"),
+    ("/marketing/layouts", "Layouts"),
+    ("/marketing/layout/dunkel", "Layouts"),
+    ("/marketing/layout-bild/dunkel", "Layouts"),
+    ("/kontakte", "Kontakte"),
+    ("/team/kalender", "Kalender verbinden"),
+    ("/kalender", "Kalender"),
+])
+def test_genau_der_laengste_passende_eintrag_ist_aktiv(pfad, erwartet):
+    assert _aktive(pfad) == [erwartet]
+
+
+def test_detailseite_markiert_ihre_gruppe_als_aktiv_tab():
+    t_pfad = ui._AKTIVER_PFAD.set("/marketing/entwurf/abc")
+    t_rolle = ui._AKTIVE_ROLLE.set("freigeben")
+    try:
+        leiste = ui._seitenleiste("")
+    finally:
+        ui._AKTIVER_PFAD.reset(t_pfad)
+        ui._AKTIVE_ROLLE.reset(t_rolle)
+    assert '<a class="tab aktiv" href="/marketing"><span>Marketing' in leiste
+
+
+def _handy_block(css: str, selektor: str) -> str:
+    """Koerper der Regel `selektor` innerhalb der Handy-Regel mit nav.tabs."""
+    start = css.index("nav.tabs { display: flex; position: fixed;")
+    anfang = css.index(selektor + " {", start)
+    return css[anfang:css.index("}", anfang)]
+
+
+def test_handy_reiter_bleiben_einzeilig():
+    block = _handy_block(ui._STIL, "nav.tabs a")
+    for eigenschaft in ("white-space: nowrap", "overflow: hidden",
+                        "text-overflow: ellipsis", "min-width: 0"):
+        assert eigenschaft in block, eigenschaft
+    # Die Beschriftung ist ein <span> im Flex-Reiter: nur dort greift die
+    # Auslassung, am <a> allein bricht "Monitoring" weiter um.
+    span = _handy_block(ui._STIL, "nav.tabs a > span:first-child")
+    for eigenschaft in ("white-space: nowrap", "overflow: hidden",
+                        "text-overflow: ellipsis", "max-width: 100%"):
+        assert eigenschaft in span, eigenschaft
+
+
+def test_ganz_schmal_kleinere_reiterschrift():
+    css = ui._STIL
+    anfang = css.index("@media (max-width: 399px)")
+    block = css[anfang:css.index("}", css.index("nav.tabs a", anfang))]
+    assert "font-size: .62rem" in block and "letter-spacing: 0" in block

@@ -591,3 +591,43 @@ def test_m5_umlaute(angemeldet, pult, monkeypatch):
     assert 'placeholder="Überschrift"' in s
     monkeypatch.setattr(marketing_pult, "anfrage", lambda *a, **k: {"inhalte": []})
     assert "Keine Entwürfe." in angemeldet.get("/marketing/entwuerfe", headers=HOST).text
+
+
+# --- Browser-Durchlauf 29.09.2026 (Aufgabe 0b): Vorschau nur 140 px hoch ------
+# Gemessen: .pult-rechts iframe.vorschau {height:80vh} galt, aber die spaetere
+# Medienlisten-Regel `.vorschau { max-height: 140px }` traf denselben Rahmen.
+
+import re as _re  # noqa: E402
+
+_REGEL = _re.compile(r"([^{}]+)\{([^{}]*)\}")
+
+
+def test_entwurf_rahmen_traegt_klasse_vorschau(angemeldet):
+    s = angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST).text
+    assert '<iframe class="vorschau mail" sandbox' in s
+
+
+def test_keine_spaetere_regel_begrenzt_die_vorschau_hoehe():
+    css = ui._STIL
+    start = css.index(".pult-rechts iframe.vorschau {")
+    basis = css[start:css.index("}", start)]
+    assert "height: min(80vh, 1100px)" in basis and "max-height: none" in basis
+    for sel, koerper in _REGEL.findall(css[css.index("}", start) + 1:]):
+        if not _re.search(r"(^|[;\s])(max-|min-)?height\s*:", koerper):
+            continue
+        for s in (t.strip() for t in sel.split(",")):
+            s = s.split("{")[-1].strip()
+            if s.startswith(".pult-rechts iframe.vorschau"):
+                continue            # die eigenen (Handy-)Regeln
+            letzter = s.split()[-1] if s else ""
+            trifft = letzter in (".vorschau", "iframe", "iframe.vorschau", "*") or \
+                (letzter.startswith((".vorschau", "iframe.vorschau", "iframe")) and
+                 not letzter.startswith(("iframe.layout-bild", "iframe.dashboard")))
+            assert not trifft, f"spaetere Regel '{s}' setzt eine Hoehe auf den Vorschau-Rahmen"
+
+
+def test_handy_vorschau_mindestens_70vh():
+    css = ui._STIL
+    treffer = [m for m in _re.finditer(r"@media \(max-width: 767px\) \{\s*"
+                                       r"\.pult-rechts iframe\.vorschau \{([^}]*)\}", css)]
+    assert treffer and "min-height: 70vh" in treffer[0].group(1)
