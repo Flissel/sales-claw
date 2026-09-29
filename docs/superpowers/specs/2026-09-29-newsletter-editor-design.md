@@ -147,14 +147,26 @@ der Liste. Nichts wird still überschrieben.
   „Neu aus Vorlage", Übernahme der 4 Newsletter-Entwürfe.
 - **E2 — Agent bedient den Editor:** Block-Werkzeuge, „Vorlage aus Vorbild".
 
-## 7. Vor dem Plan zu prüfen (ohne Websuche aus dem Gedächtnis benannt)
+## 7. Geprüft am 29.09.2026 (Download und Funktionstest im Scratchpad)
 
-- Email Builder JS: Lizenz (MIT erwartet), aktueller Stand, ob der Editor als
-  Paket oder nur als Beispiel-App vorliegt, und wie er sich ohne externe Quellen
-  bauen lässt.
-- `mjml-python`: Lizenz, Abdeckung der benötigten MJML-Elemente
-  (`mj-section`, `mj-column`, `mj-text`, `mj-image`, `mj-button`, `mj-divider`,
-  `mj-spacer`), Installation im VM-venv.
+- **Email Builder JS** (github.com/usewaypoint/email-builder-js, Stand `ce3e610`,
+  09.02.2026): **MIT**. Die Blöcke und `document-core`/`email-builder` sind Pakete;
+  der **Editor selbst ist nur eine Beispiel-App** (`examples/vite-emailbuilder-mui`:
+  Vite, React 18, MUI, zustand, zod). Wir übernehmen ihn als eigenen Build.
+  Beim Übernehmen: das CDN-Stylesheet (highlight.js) aus `index.html` entfernen;
+  MUI/emotion setzt Inline-Styles → die Editor-Route braucht `style-src
+  'unsafe-inline'` zusätzlich zur Skript-Ausnahme; der Block `html` wird im
+  Editor nicht angeboten und von der DB-Prüfung abgewiesen; Text-Blöcke können
+  Markdown (`markdown: true`) — der Übersetzer behandelt es.
+- **mjml-python 1.4.2** (MIT): Wrapper um MRML (Rust-Port von MJML). Fertige
+  Pakete (abi3) für **Linux x86_64** (VM: x86_64, glibc 2.36 passt) und
+  **Windows** — kein Rust-Build nötig. Funktionstest: `mjml.mjml2html(src)` rendert
+  `mj-section`, `mj-column` (2 Spalten), `mj-text`, `mj-image`, `mj-button`,
+  `mj-divider`, `mj-spacer`, `mj-attributes`/`mj-all`; Outlook-Sonderblöcke (`mso`)
+  vorhanden; `&lt;script&gt;` bleibt Text.
+- **Folge für die Vorschau:** Newsletter-Bilder kommen aus den Medien des Ladens;
+  die Vorschau-CSP (heute `img-src data:`) muss für diese Vorschau Bilder von
+  sales-ui selbst erlauben (`img-src 'self' data:`).
 
 ## 8. Nicht Teil dieser Spec
 
