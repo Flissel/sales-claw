@@ -98,33 +98,11 @@ SQL
 }
 trap fehler_melden ERR
 
-# Freien Port zwischen $1 und $2 suchen; gibt ihn auf stdout aus.
-freier_port() {
-  local kandidat="$1" hoechstens="$2"
-  local ss_ausgabe
-  while [ "$kandidat" -le "$hoechstens" ]; do
-    # `ss`s EIGENEN Exit-Code separat pruefen, bevor dem grep-Ergebnis
-    # getraut wird: `ss ... | grep -q .` allein ist unter `pipefail` nicht
-    # sicher — scheitert `ss` (z.B. Exit 2, Programm fehlt/keine
-    # Berechtigung), liefert `grep -q .` auf der dadurch leeren Eingabe
-    # ebenfalls "kein Treffer" (Exit 1), und `pipefail` nimmt den Exit-Code
-    # des RECHTESTEN fehlschlagenden Befehls — hier grep, nicht ss. Das `!`
-    # davor drehte das zu "Port frei". Nachgemessen mit einer ss-Attrappe,
-    # die mit Exit 2 scheitert: die alte Fassung lieferte trotzdem einen
-    # Port zurueck, als waere er frei.
-    if ! ss_ausgabe="$(ss -tlnH "sport = :$kandidat")"; then
-      echo "FEHLER: 'ss' selbst ist fehlgeschlagen — Portpruefung nicht verlaesslich." >&2
-      return 1
-    fi
-    if ! echo "$ss_ausgabe" | grep -q .; then
-      echo "$kandidat"
-      return 0
-    fi
-    kandidat=$((kandidat + 1))
-  done
-  echo "FEHLER: kein freier Port zwischen $1 und $hoechstens." >&2
-  return 1
-}
+# freier_port, freier_serve_port und zugang_einrichten (29.09.2026): eigene
+# Datei, damit deploy/tests/test_ports_und_zugang.sh sie mit Attrappen
+# pruefen kann.
+# shellcheck source=ports-und-zugang.sh
+. "$WURZEL/deploy/ports-und-zugang.sh"
 
 # --- 0. Haengende Auftraege aus einem fruehen Absturz zurueckholen --------
 # Spec §2.4 (Laden anlegen) / Spec 2026-09-22-tailscale-einladung-design
@@ -185,7 +163,7 @@ if [ "$ART" = "laden_anlegen" ]; then
   PORT_GATEWAY="$(freier_port 18894 18950)"
   PORT_UI="$(freier_port 8791 8850)"
   PORT_OPENWA="$(freier_port 12785 12850)"
-  PORT_SERVE="$(freier_port 8446 8500)"
+  PORT_SERVE="$(freier_serve_port 8446 8500)"
   ERLEDIGT+=("ports")
 
   # --- 3. deploy/laden-anlegen.sh — unveraendert, wie von Hand --------------
@@ -231,6 +209,16 @@ if [ "$ART" = "laden_anlegen" ]; then
   printf '%s\n%s\n%s\n%s\n' "$LADEN_NAME" "freigeben" "$KONTO_PW" "$KONTO_PW" \
     | bash deploy/benutzer-anlegen.sh "$LADEN_NAME" >/dev/null
   ERLEDIGT+=("konto")
+
+  # --- 6a. Tailscale-Zugang (29.09.2026) ------------------------------------
+  # VOR der Willkommensmail: ihr Link zeigt auf diesen Port und soll schon
+  # funktionieren, wenn die Mail ankommt. Scheitert es, geht keine Mail
+  # raus — der Auftrag endet mit 'fehler' und nennt den Befehl zum
+  # Nachholen. Der Laden selbst steht dann bereits (ERLEDIGT sagt, bis wo).
+  FEHLER_TEXT="Laden angelegt, aber der Tailscale-Zugang auf Port $PORT_SERVE liess sich nicht einrichten; die Willkommensmail wurde NICHT verschickt. Von Hand: sudo tailscale serve --bg --https $PORT_SERVE http://127.0.0.1:$PORT_UI"
+  zugang_einrichten "$PORT_SERVE" "$PORT_UI"
+  FEHLER_TEXT=""
+  ERLEDIGT+=("zugang")
 
   # --- 6b. Willkommensmail (24.09.2026) -------------------------------------
   # Nur mit Adresse. Geschrieben wird ins Schema des NEUEN Ladens - das darf
@@ -292,21 +280,20 @@ ui_port, serve_port = sys.argv[1], sys.argv[2]
 ergebnis = {
     "port_ui": int(ui_port),
     "port_serve": int(serve_port),
-    "hinweis": ("Als naechstes von Hand: tailscale serve --https " +
-                serve_port + " http://127.0.0.1:" + ui_port +
-                " einrichten, danach die Zugriffsregel fuer den neuen "
-                "Menschen und die vier Kanaele (Postfach, Telegram, "
-                "LinkedIn, WhatsApp)."),
+    # Der Zugang auf serve_port steht seit Schritt 6a schon; von Hand
+    # bleiben nur die Zugriffsregel und die Kanaele.
+    "hinweis": ("Als naechstes von Hand: die Zugriffsregel fuer den neuen "
+                "Menschen (Port " + serve_port + ") und die vier Kanaele "
+                "(Postfach, Telegram, LinkedIn, WhatsApp)."),
 }
 # Mit Willkommensmail kennt NIEMAND das Wegwerf-Passwort - es wird nicht
 # angezeigt, der Mensch setzt sein eigenes ueber den Link.
 if os.environ["WILLKOMMEN_AN"]:
-    # Befund 6 (Schlusspruefung 24.09.2026): der Link geht innerhalb von
-    # Sekunden raus, funktioniert aber erst, sobald "Als naechstes von
-    # Hand" oben erledigt ist. Nur in diesem Zweig, damit der
-    # Kein-Adresse-Hinweis unveraendert bleibt.
-    ergebnis["hinweis"] += (" Der Link in der Willkommensmail funktioniert "
-                             "erst nach diesen Schritten; er gilt 7 Tage.")
+    # Der Link funktioniert fuer jeden, der schon im Tailnet ist und fuer
+    # den die Zugriffsregel gilt - fuer den Betreiber also sofort.
+    ergebnis["hinweis"] += (" Der Link in der Willkommensmail gilt 7 Tage; "
+                             "der neue Mensch kann ihn oeffnen, sobald "
+                             "seine Zugriffsregel steht.")
     ergebnis["willkommen"] = {"an": os.environ["WILLKOMMEN_AN"],
                               "status": os.environ["WILLKOMMEN_STATUS"]}
 else:

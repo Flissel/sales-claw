@@ -2934,10 +2934,10 @@ systemctl list-timers sales-admin-auftraege.timer
    von der Betreiber-Adresse eine Willkommensmail mit Link zum Passwort-Setzen
    (7 Tage gültig). Dann erscheint auf der Ergebnisseite **kein**
    Wegwerf-Passwort, sondern der Versandstatus (verschickt / fehlgeschlagen:
-   Grund / noch unterwegs). Die Mail geht innerhalb von Sekunden raus, der
-   Link funktioniert aber erst, sobald der Hinweis „Als nächstes von Hand"
-   auf der Ergebnisseite (`tailscale serve`, Zugriffsregel,
-   Tailscale-Einladung) erledigt ist.
+   Grund / noch unterwegs). Den Tailscale-Zugang (`tailscale serve`) richtet
+   der Auftrag seit 29.09.2026 selbst ein, bevor die Mail rausgeht. Der neue
+   Mensch kann den Link öffnen, sobald er im Tailnet ist (Tailscale-Einladung)
+   und seine Zugriffsregel steht.
 5. **Anlegen** klicken.
 
 Die Seite friert nicht ein — sie lädt sich automatisch alle 5 Sekunden neu, bis ein
@@ -2947,13 +2947,16 @@ ohne JavaScript. **Mit Erfolg** erscheint ein Ergebnis wie:
 ```
 Wegwerf-Passwort: <random>
 Serve-Port: <port>
-Als nächstes von Hand: tailscale serve --https <port> http://127.0.0.1:<port> 
-einrichten, danach die Zugriffsregel für den neuen Menschen und die vier Kanaele 
-(Postfach, Telegram, LinkedIn, WhatsApp).
+Als nächstes von Hand: die Zugriffsregel für den neuen Menschen (Port <port>)
+und die vier Kanaele (Postfach, Telegram, LinkedIn, WhatsApp).
 ```
 
 **Mit Fehler** nennt das Ergebnis, wie weit es kam — zum Beispiel
 `erledigt: aufnahme, ports, umgebungsdatei` — und woran es gescheitert ist.
+Scheitert nur der Tailscale-Zugang (Schritt `zugang`), steht der Laden schon,
+die Willkommensmail ist aber **nicht** verschickt; der Fehlertext nennt den
+`tailscale serve`-Befehl zum Nachholen. Danach die Mail über „Passwort
+vergessen" auf der Anmeldeseite des Ladens anstoßen (Benutzername = Ladenname).
 
 #### Konto-Mails in jedem Laden
 
@@ -2962,12 +2965,10 @@ Kundenentwürfe nur über die eigenen `SMTP_*` und bleiben ohne sie liegen.
 
 #### Nach einem erfolgreichen Lauf von Hand
 
-1. **Serve-Port konfigurieren** (auf der VM als root):
-   ```bash
-   sudo tailscale serve --bg --https <port> http://127.0.0.1:<PORT_UI>
-   ```
-   Den `<port>` und `<PORT_UI>` aus dem Ergebnis der Oberfläche übernehmen (exakt wie
-   Abschnitt 6, nur mit den neuen Werten).
+1. **Serve-Port** — erledigt der Auftrag seit 29.09.2026 selbst (Schritt
+   `zugang`, per `sudo -n tailscale serve`, danach nachgemessen). Prüfen mit
+   `tailscale serve status`. Freie Ports sucht er so, dass sie weder lauschen
+   noch schon eine Serve-Regel haben.
 
 2. **Zugriffsregel einrichten** für den neuen Menschen in der Tailscale-Verwaltung
    (wie Abschnitt 6, die Adresse des neuen Nutzers kopieren, nicht abtippen, und unter
