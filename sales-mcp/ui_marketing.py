@@ -72,11 +72,11 @@ def routen(ui) -> list:
     def fehler(f: marketing_pult.PultFehler):
         if f.art == "nicht_verbunden":
             return ui._fehlerseite(503, "Marketing nicht verbunden",
-                                   "Die Verbindung zur Marketing-API ist nicht eingerichtet oder der Schluessel stimmt nicht.")
+                                   "Die Verbindung zur Marketing-API ist nicht eingerichtet oder der Schlüssel stimmt nicht.")
         if f.art == "abgelehnt":
-            return ui._fehlerseite(422, "Nicht moeglich", e(f.grund))
+            return ui._fehlerseite(422, "Nicht möglich", e(f.grund))
         return ui._fehlerseite(503, "Marketing gerade nicht erreichbar",
-                               "Die Marketing-API antwortet nicht. Sales laeuft normal weiter.")
+                               "Die Marketing-API antwortet nicht. Sales läuft normal weiter.")
 
     def von(request) -> str:
         return ui._ui_akteur(request)
@@ -84,7 +84,7 @@ def routen(ui) -> list:
     @ui._gesichert_seite
     async def uebersicht(request):
         try:
-            d = marketing_pult.anfrage("GET", "/uebersicht?mandant=vibemind")
+            d = await run_in_threadpool(marketing_pult.anfrage, "GET", "/uebersicht?mandant=vibemind")
         except marketing_pult.PultFehler as f:
             return fehler(f)
         mandanten = "".join(
@@ -100,21 +100,38 @@ def routen(ui) -> list:
     @ui._gesichert_seite
     async def entwuerfe(request):
         art = request.query_params.get("art", "")
-        status = request.query_params.get("status", "")
-        q = urllib.parse.urlencode({k: v for k, v in (("mandant", "vibemind"), ("art", art), ("status", status)) if v})
+        if art not in ARTEN:
+            art = ""
+        # Ohne Angabe zeigt die Liste, was auf ein Urteil wartet; "alle" hebt
+        # den Status-Filter auf.
+        status = request.query_params.get("status", "") or "entwurf"
+        if status not in STATUS and status != "alle":
+            status = "entwurf"
+        api_status = "" if status == "alle" else status
+        q = urllib.parse.urlencode({k: v for k, v in (("mandant", "vibemind"), ("art", art), ("status", api_status)) if v})
         try:
-            d = marketing_pult.anfrage("GET", f"/inhalte?{q}")
+            d = await run_in_threadpool(marketing_pult.anfrage, "GET", f"/inhalte?{q}")
         except marketing_pult.PultFehler as f:
             return fehler(f)
+
+        def verweis(a: str, st: str) -> str:
+            return "/marketing/entwuerfe?" + e(urllib.parse.urlencode(
+                [(k, v) for k, v in (("art", a), ("status", st)) if v]))
+
+        # Art-Verweise behalten den Status, Status-Verweise die Art.
         filter_ = "".join(
-            f'<a class="{"aktiv" if art == k else ""}" href="/marketing/entwuerfe?art={k}">{e(t)}</a>'
+            f'<a class="{"aktiv" if art == k else ""}" href="{verweis(k, status)}">{e(t)}</a>'
             for k, t in (("", "Alle"), *ARTEN.items()))
+        filter_status = "".join(
+            f'<a class="{"aktiv" if status == k else ""}" href="{verweis(art, k)}">{e(t)}</a>'
+            for k, t in (*STATUS.items(), ("alle", "Alle")))
         zeilen = "".join(
             f'<tr><td><a href="/marketing/entwurf/{e(i["id"])}">{e(i["titel"])}</a></td>'
             f'<td>{e(ARTEN.get(i["art"], i["art"]))}</td><td>{e(STATUS.get(i["status"], i["status"]))}</td>'
             f'<td>{e(i["layout"] or "")}</td><td>{int(i["fassungen"])}</td><td>{e(str(i["erstellt_am"])[:10])}</td></tr>'
-            for i in d["inhalte"]) or '<tr><td colspan="6">Keine Entwuerfe.</td></tr>'
+            for i in d["inhalte"]) or '<tr><td colspan="6">Keine Entwürfe.</td></tr>'
         return ui._seite("Entwürfe", f'<div class="filter">{filter_}</div>'
+                         f'<div class="filter">{filter_status}</div>'
                          '<table><tr><th>Titel</th><th>Art</th><th>Status</th><th>Layout</th>'
                          f'<th>Fassungen</th><th>Datum</th></tr>{zeilen}</table>')
 
@@ -122,13 +139,13 @@ def routen(ui) -> list:
     async def entwurf(request):
         iid = request.path_params["iid"]
         try:
-            d = marketing_pult.anfrage("GET", f"/inhalte/{urllib.parse.quote(iid)}")
-            lay = marketing_pult.anfrage("GET", "/layouts?mandant=vibemind")
+            d = await run_in_threadpool(marketing_pult.anfrage, "GET", f"/inhalte/{urllib.parse.quote(iid)}")
+            lay = await run_in_threadpool(marketing_pult.anfrage, "GET", "/layouts?mandant=vibemind")
         except marketing_pult.PultFehler as f:
             return fehler(f)
         i, fassungen = d["inhalt"], d["fassungen"]
         if not fassungen:
-            return ui._fehlerseite(422, "Nicht moeglich", "Dieser Inhalt hat noch keine Fassung.")
+            return ui._fehlerseite(422, "Nicht möglich", "Dieser Inhalt hat noch keine Fassung.")
         neueste = int(fassungen[0]["fassung"])
         wahl = _fassung_zahl(request.query_params.get("fassung")) or neueste
         akt = next((f for f in fassungen if int(f["fassung"]) == wahl), fassungen[0])
@@ -139,12 +156,20 @@ def routen(ui) -> list:
             fmt = "mail"
         fe = akt["felder"] or {}
         abschnitte = "".join(
-            f'<fieldset><input name="abschnitt_titel" value="{e(a.get("titel"))}" placeholder="Ueberschrift">'
+            f'<fieldset><input name="abschnitt_titel" value="{e(a.get("titel"))}" placeholder="Überschrift">'
             f'<textarea name="abschnitt_text" rows="6">{e(a.get("text"))}</textarea></fieldset>'
             for a in fe.get("abschnitte") or [{"titel": "", "text": ""}])
+        # Das Layout der gezeigten Fassung ist immer vorgewaehlt; steht es
+        # nicht mehr in der Liste, wird es eigens angeboten - sonst waere
+        # still ein anderes gewaehlt und Speichern wechselte das Layout.
+        akt_layout = str(akt.get("layout") or "")
+        namen = [str(l.get("name") or "") for l in lay.get("layouts") or []]
         layouts = "".join(
-            f'<option value="{e(l["name"])}"{" selected" if l["name"] == akt["layout"] else ""}>{e(l["name"])}</option>'
-            for l in lay["layouts"])
+            f'<option value="{e(n)}"{" selected" if n == akt_layout else ""}>{e(n)}</option>'
+            for n in namen)
+        if akt_layout and akt_layout not in namen:
+            layouts = (f'<option value="{e(akt_layout)}" selected>'
+                       f'{e(akt_layout)} (nicht mehr in der Liste)</option>') + layouts
         verlauf = "".join(
             f'<li><a href="?fassung={int(f["fassung"])}">Fassung {int(f["fassung"])}</a> '
             f'&middot; {"Agent" if f["urheber"] == "agent" else "du"} &middot; {e(str(f["erstellt_am"])[:16])}</li>'
@@ -157,6 +182,14 @@ def routen(ui) -> list:
             f'<div class="warnung">Das ist nicht die neueste Fassung (Fassung {nr} von {neueste}). '
             f'Freigeben geht nur für die <a href="{basis}?fassung={neueste}">neueste Fassung</a>; '
             f'Speichern legt aus dieser eine neue an.</div>')
+        # Die Bruecke spiegelt nur alt -> Pult: ein Urteil hier stoppt einen
+        # noch offenen Vorschlag im alten Weg (Telegram -> n8n) nicht.
+        alter_weg = d.get("alter_weg") or {}
+        alter_hinweis = (
+            f'<div class="warnung">Dieser Entwurf liegt noch im alten Freigabeweg '
+            f'({e(alter_weg.get("kanal") or "")}). Ablehnen hier stoppt ihn dort nicht, und Änderungen '
+            f'hier werden dort nicht verschickt. Im alten Weg ablehnen, falls er nicht rausgehen soll.</div>'
+        ) if alter_weg.get("status") in ("draft", "pending_approval") else ""
         # Freigeben/Ablehnen nennen die Fassung, die hier zu sehen ist - die
         # DB lehnt ab, wenn inzwischen eine neuere existiert.
         fassung_feld = f'<input type="hidden" name="fassung" value="{nr}">'
@@ -187,7 +220,7 @@ def routen(ui) -> list:
                        f'rel="noopener noreferrer">PDF &#8599;</a>')
         rumpf = (
             f'<p class="meta">{e(ARTEN.get(i["art"], i["art"]))} &middot; '
-            f'{e(STATUS.get(i["status"], i["status"]))} &middot; Fassung {nr}</p>{hinweis}'
+            f'{e(STATUS.get(i["status"], i["status"]))} &middot; Fassung {nr}</p>{hinweis}{alter_hinweis}'
             f'<div class="pult"><div class="pult-links">{formular}<h2>Fassungen</h2><ul>{verlauf}</ul></div>'
             f'<div class="pult-rechts"><div class="vorschau-wahl">{wahl_links}</div>'
             f'<iframe class="vorschau {fmt}" sandbox title="Vorschau" '
@@ -203,10 +236,11 @@ def routen(ui) -> list:
         fassung = _fassung_zahl(request.query_params.get("fassung", "1"))
         fmt = request.query_params.get("format", "mail")
         if fassung is None or fmt not in ("mail", "handy", "pdf"):
-            return ui._fehlerseite(400, "Ungueltige Vorschau", "Fassung oder Format fehlt.")
+            return ui._fehlerseite(400, "Ungültige Vorschau", "Fassung oder Format fehlt.")
         q = urllib.parse.urlencode({"fassung": fassung, "format": fmt})
         try:
-            inhalt, typ = marketing_pult.anfrage("GET", f"/inhalte/{iid}/vorschau?{q}", roh=True)
+            inhalt, typ = await run_in_threadpool(
+                marketing_pult.anfrage, "GET", f"/inhalte/{iid}/vorschau?{q}", roh=True)
         except marketing_pult.PultFehler as f:
             return fehler(f)
         if str(typ).startswith("application/pdf"):
@@ -236,8 +270,9 @@ def routen(ui) -> list:
         }
         iid = urllib.parse.quote(request.path_params["iid"])
         try:
-            r = marketing_pult.anfrage("POST", f"/inhalte/{iid}/fassungen",
-                                       {"felder": felder, "layout": str(form.get("layout") or ""), "von": von(request)})
+            r = await run_in_threadpool(
+                marketing_pult.anfrage, "POST", f"/inhalte/{iid}/fassungen",
+                {"felder": felder, "layout": str(form.get("layout") or ""), "von": von(request)})
         except marketing_pult.PultFehler as f:
             return fehler(f)
         return RedirectResponse(f"/marketing/entwurf/{iid}?fassung={int(r['fassung'])}", status_code=303)
@@ -254,9 +289,10 @@ def routen(ui) -> list:
                                    "Seite neu laden und erneut.")
         iid = urllib.parse.quote(request.path_params["iid"])
         try:
-            marketing_pult.anfrage("POST", f"/inhalte/{iid}/entscheiden",
-                                   {"fassung": fassung, "urteil": str(form.get("urteil") or ""),
-                                    "von": von(request), "grund": str(form.get("grund") or "").strip()})
+            await run_in_threadpool(
+                marketing_pult.anfrage, "POST", f"/inhalte/{iid}/entscheiden",
+                {"fassung": fassung, "urteil": str(form.get("urteil") or ""),
+                 "von": von(request), "grund": str(form.get("grund") or "").strip()})
         except marketing_pult.PultFehler as f:
             return fehler(f)
         return RedirectResponse(f"/marketing/entwurf/{iid}", status_code=303)
@@ -266,7 +302,7 @@ def routen(ui) -> list:
     def gerahmter_fehler(f: marketing_pult.PultFehler) -> Response:
         """Wie fehler(), aber fuer den Vorschau-Rahmen (s. _gerahmt)."""
         if f.art == "abgelehnt":
-            return _gerahmt(f"<p>Vorschau nicht moeglich: {e(f.grund)}</p>", status=422)
+            return _gerahmt(f"<p>Vorschau nicht möglich: {e(f.grund)}</p>", status=422)
         if f.art == "nicht_verbunden":
             return _gerahmt("<p>Marketing nicht verbunden.</p>", status=503)
         return _gerahmt("<p>Marketing gerade nicht erreichbar.</p>", status=503)
@@ -308,7 +344,7 @@ def routen(ui) -> list:
                     return None, "Das Logo muss ein PNG oder JPEG sein."
                 gelesen += len(stueck)
                 if gelesen > LOGO_MAX:
-                    return None, "Das Logo ist groesser als 150 KB."
+                    return None, "Das Logo ist größer als 150 KB."
                 teile.append(stueck)
             roh = b"".join(teile)
             if roh.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -444,7 +480,7 @@ def routen(ui) -> list:
                 bisher = (layout_von(await alle_layouts(), name) or {}).get("gestalt")
             g, grund = await regler_lesen(form, bisher, logo_lesen=False)
             if g is None:
-                return _gerahmt(f"<p>Vorschau nicht moeglich: {e(grund)}</p>", status=422)
+                return _gerahmt(f"<p>Vorschau nicht möglich: {e(grund)}</p>", status=422)
             fmt = "handy" if form.get("format") == "handy" else "mail"
             inhalt, typ = await run_in_threadpool(
                 marketing_pult.anfrage, "POST", "/layouts/vorschau",
@@ -467,7 +503,7 @@ def routen(ui) -> list:
             return ui._fehlerseite(404, "Unbekanntes Layout", "")
         g, grund = await regler_lesen(form, l.get("gestalt"))
         if g is None:
-            return ui._fehlerseite(422, "Regler ungueltig", e(grund))
+            return ui._fehlerseite(422, "Regler ungültig", e(grund))
         try:
             await run_in_threadpool(marketing_pult.anfrage, "POST", f"/layouts/{pfad(name)}/fassungen",
                                     {"gestalt": g, "von": von(request)})

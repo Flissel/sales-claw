@@ -205,17 +205,33 @@ das ausgenommen ist) trägt `X-RateLimit-Limit-short: 40` — gemessen
 
 ## Marketing-Seite auf der VM (seit 25.09.2026)
 
-Der Schalter Sales ↔ Marketing (`docs/superpowers/specs/2026-09-25-marketing-
-schalter-design.md`) braucht eine zweite, eigenständige Instanz der
-Marketing-API auf `vibemind-offload-1` — ein schlanker `vibemind-os`-Checkout
-(nur `spaces/marketing` per `sparse-checkout`), eigener systemd-Dienst
+Das Marketing-Pult in sales-ui (`/marketing`, Spec `docs/superpowers/specs/
+2026-09-29-marketing-pult-design.md`) spricht mit einer eigenständigen Instanz
+der Marketing-API auf `vibemind-offload-1` — ein schlanker `vibemind-os`-
+Checkout (nur `spaces/marketing` per `sparse-checkout`), eigener systemd-Dienst
 `marketing-api` (`deploy/systemd/marketing-api.service`), erreichbar nur im
-Tailnet über `tailscale serve --https=8446`. Die Betriebsbausteine
-(`deploy/marketing-aktualisieren.sh`, die Unit-Datei) sind seit 25.09.2026
-fertig und lokal getestet; die Auslieferung selbst ist ein eigener,
-freigabepflichtiger Schritt (Plan Aufgabe 4, WORKBOARD-Claim
-`cc-marketing-schalter`) und **stand 25.09.2026 noch nicht ausgeführt** —
-nichts davon läuft bislang auf der VM.
+Tailnet über `tailscale serve --https=8446`. Die Instanz läuft seit 25.09.2026
+(Einrichtung unten). Der frühere Schalter Sales ↔ Marketing und seine Variable
+`MARKETING_URL` sind entfallen: sales-ui zeigt die Marketing-Seiten selbst und
+liest alles über den Pult-Router `/api/pult/*`.
+
+**`:8446` bleibt nötig:** gemessen 29.09.2026 erreicht der Container
+`sales-ui` die Marketing-API NUR über
+`https://vibemind-offload-1.tail6c7d61.ts.net:8446` (`127.0.0.1` und
+`172.17.0.1` → Connection refused). Genau diese Adresse ist
+`MARKETING_PULT_URL`.
+
+**Pult-Schlüssel:** jede `/api/pult/*`-Route verlangt den Header
+`X-Pult-Key` (ohne gesetzten Schlüssel antwortet der Router 503, mit falschem
+401; der Dienstschlüssel `X-API-Key` gilt dort nicht). Derselbe Wert steht an
+drei Stellen, nie im Befehl selbst (Datei-Übertragung wie bei Schritt 4):
+
+- `MARKETING_PULT_URL` + `MARKETING_PULT_KEY` in `~/sales-claw/.env` — der
+  Haupt-`.env` des Basis-Ladens, nie in ein Zweit-Laden-Template (Ivans Laden
+  bekommt kein Pult);
+- `MARKETING_PULT_KEY` in `/home/debian/marketing-api.env` (Rechte 600) für
+  die VM-Instanz;
+- `MARKETING_PULT_KEY` in der PC-`.env` für die PC-Instanz (Agenten, Tests).
 
 **Voraussetzungen auf der VM (vorher prüfen):**
 
@@ -230,8 +246,9 @@ neu anmelden — ohne Gruppe scheitert jede Abfrage der Marketing-API.
 
 **Einrichtung (einmalig, in genau dieser Reihenfolge — Plan Aufgabe 4):**
 
-1. **`update.sh` zuerst, `MARKETING_URL` noch leer.** Bringt Unit-Datei und
-   Skripte nach `~/sales-claw`; der Schalter bleibt verborgen.
+1. **`update.sh` zuerst, `MARKETING_PULT_URL` noch leer.** Bringt Unit-Datei
+   und Skripte nach `~/sales-claw`; das Pult meldet bis Schritt 8
+   „Marketing nicht verbunden“.
 
    ```bash
    ssh offload-vm 'bash ~/sales-claw/deploy/update.sh'
@@ -303,19 +320,23 @@ neu anmelden — ohne Gruppe scheitert jede Abfrage der Marketing-API.
 
    Erwartet: `:8446 (tailnet only)`.
 
-8. **Sales:** `MARKETING_URL=https://vibemind-offload-1.tail6c7d61.ts.net:8446`
-   in `~/sales-claw/.env` (Haupt-`.env`, nie in ein Zweit-Laden-Template),
-   dann `sales-ui` namentlich neu erstellen:
+8. **Sales:** `MARKETING_PULT_URL=https://vibemind-offload-1.tail6c7d61.ts.net:8446`
+   und `MARKETING_PULT_KEY=…` in `~/sales-claw/.env` (Haupt-`.env`), dazu
+   `MARKETING_PULT_KEY` in `~/marketing-api.env` und `sudo systemctl restart
+   marketing-api`; dann `sales-ui` namentlich neu erstellen:
 
    ```bash
    ssh offload-vm 'cd ~/sales-claw && docker compose up -d sales-ui'
-   ssh offload-vm 'docker exec sales-ui env | grep MARKETING_URL'   # gesetzt
-   ssh offload-vm 'docker exec ivan-ui env | grep MARKETING_URL'    # leer
+   ssh offload-vm 'docker exec sales-ui printenv MARKETING_PULT_URL'              # gesetzt
+   ssh offload-vm 'docker exec ivan-ui printenv MARKETING_PULT_URL || echo leer'  # leer
    ```
 
-9. **Echter Klick:** PC-Browser und Handy — Sales → Marketing → Sales; der
-   Sales-Link auf der Marketing-Seite zeigt auf die Sales-Adresse; im
-   Ivan-Laden kein Schalter.
+   Den Schlüssel selbst nie ausgeben: `docker exec sales-ui sh -c 'test -n
+   "$MARKETING_PULT_KEY" && echo gesetzt'`.
+
+9. **Echter Klick:** PC-Browser und Handy — `/marketing` zeigt die Zähler,
+   eine Entwurfsseite die Vorschau im Rahmen; im Ivan-Laden kein
+   Marketing-Menü.
 
 **Bewusst kein `OPENFANG_*` auf der VM-Instanz.** Die
 OpenFang-Benachrichtigung beim Anlegen von Vorschlägen läuft über die

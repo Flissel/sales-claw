@@ -1,6 +1,9 @@
 """Marketing-Pult in sales-ui (Spec 2026-09-29-marketing-pult-design.md §3.1,
 Stufe 1). Der Client zur Marketing-API wird gefaelscht."""
+import asyncio
+import json
 import os
+import urllib.request
 
 os.environ["SALES_DB_SCHEMA"] = "sales_test"
 
@@ -34,9 +37,17 @@ class Falsch:
         self.aufrufe = []
         self.fehler = None
         self.fehler_pfad = None      # gesetzt: nur Aufrufe mit diesem Pfad-Ende scheitern
+        self.im_loop = []            # Pfade, die IM Event-Loop-Thread liefen (blockieren sales-ui)
+        self.alter_weg = None        # I3: Status im alten Freigabeweg
+        self.layout = "dunkel"       # Layout der Fassungen
 
     def anfrage(self, methode, pfad, daten=None, roh=False):
         self.aufrufe.append((methode, pfad, daten))
+        try:
+            asyncio.get_running_loop()
+            self.im_loop.append(pfad)
+        except RuntimeError:
+            pass                     # Threadpool: kein laufender Loop in diesem Thread
         if self.fehler and (self.fehler_pfad is None or pfad.endswith(self.fehler_pfad)):
             raise self.fehler
         if pfad == "/layouts/vorschau" and roh:
@@ -56,10 +67,11 @@ class Falsch:
         if pfad == f"/inhalte/{IID}":
             return {"inhalt": {"id": IID, "art": "newsletter", "titel": "Early Access",
                                "status": "entwurf", "mandant": "vibemind"},
-                    "fassungen": [{"fassung": 2, "felder": FELDER, "layout": "dunkel",
+                    "fassungen": [{"fassung": 2, "felder": FELDER, "layout": self.layout,
                                    "urheber": "betreiber", "erstellt_am": "x"},
-                                  {"fassung": 1, "felder": FELDER, "layout": "dunkel",
-                                   "urheber": "agent", "erstellt_am": "y"}]}
+                                  {"fassung": 1, "felder": FELDER, "layout": self.layout,
+                                   "urheber": "agent", "erstellt_am": "y"}],
+                    "alter_weg": self.alter_weg}
         if pfad == "/layouts?mandant=vibemind":
             return {"layouts": [
                 {"name": "dunkel", "beschreibung": "Dunkel mit Tuerkis", "inhaltsart": "newsletter",
@@ -231,6 +243,7 @@ def test_db_ablehnung_zeigt_grund(angemeldet, pult):
                         data={"csrf": ui.CSRF_TOKEN, "betreff": "x", "abschnitt_titel": [""],
                               "abschnitt_text": ["y"], "layout": "dunkel"})
     assert r.status_code == 422 and "Nur Entwuerfe lassen sich bearbeiten" in r.text
+    assert "Nicht möglich" in r.text                          # M5: echte Umlaute
 
 
 # --- Task 5: Layout-Galerie und Layout-Editor --------------------------------
@@ -416,7 +429,7 @@ def test_riesiges_logo_wird_nicht_ganz_gelesen(angemeldet, pult, monkeypatch):
     riesig = b"\x89PNG\r\n\x1a\n" + b"0" * 2_000_000
     r = angemeldet.post("/marketing/layout/dunkel/speichern", headers=HOST, data=_regler(),
                         files={"logo": ("logo.png", riesig, "image/png")})
-    assert r.status_code == 422 and "Das Logo ist groesser als 150 KB." in r.text
+    assert r.status_code == 422 and "Das Logo ist größer als 150 KB." in r.text
     assert not any(a[1].endswith("/fassungen") for a in pult.aufrufe)
     assert groessen and all(g is not None and g > 0 for g in groessen), groessen
     assert sum(gelesen) <= ui_marketing.LOGO_MAX + ui_marketing.LOGO_STUECK
@@ -439,3 +452,142 @@ def test_als_standard(angemeldet, pult):
 def test_als_standard_ohne_csrf(angemeldet, pult):
     r = angemeldet.post("/marketing/layout/hell/standard", headers=HOST, data={})
     assert r.status_code == 403 and pult.aufrufe == []
+
+
+# --- Final-Review Fix-Welle (final-fix-findings.md) -------------------------
+
+def test_i1_kein_api_aufruf_im_event_loop(angemeldet, pult):
+    """sales-ui ist EIN uvicorn-Prozess: ein blockierender API-Aufruf im
+    Event-Loop friert jede andere Seite ein. Alle Pult-Aufrufe muessen im
+    Threadpool laufen (wie die Layout-Seiten)."""
+    angemeldet.get("/marketing", headers=HOST)
+    angemeldet.get("/marketing/entwuerfe", headers=HOST)
+    angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST)
+    angemeldet.get(f"/marketing/entwurf/{IID}/vorschau?fassung=2&format=mail", headers=HOST)
+    angemeldet.post(f"/marketing/entwurf/{IID}/speichern", headers=HOST, follow_redirects=False,
+                    data={"csrf": ui.CSRF_TOKEN, "betreff": "x", "abschnitt_titel": [""],
+                          "abschnitt_text": ["y"], "layout": "dunkel"})
+    angemeldet.post(f"/marketing/entwurf/{IID}/entscheiden", headers=HOST, follow_redirects=False,
+                    data={"csrf": ui.CSRF_TOKEN, "fassung": "2", "urteil": "freigeben", "grund": ""})
+    pfade = [a[1] for a in pult.aufrufe]
+    for teil in ("/uebersicht", "/inhalte?", f"/inhalte/{IID}", "/layouts?", "/vorschau?",
+                 "/fassungen", "/entscheiden"):
+        assert any(teil in p for p in pfade), teil
+    assert pult.im_loop == []
+
+
+ALTER_WEG_TEXT = "Dieser Entwurf liegt noch im alten Freigabeweg"
+
+
+def test_i3_warnung_alter_weg_offen(angemeldet, pult):
+    for status in ("pending_approval", "draft"):
+        pult.alter_weg = {"status": status, "kanal": "linkedin"}
+        s = angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST).text
+        assert (f"{ALTER_WEG_TEXT} (linkedin). Ablehnen hier stoppt ihn dort nicht, und Änderungen "
+                "hier werden dort nicht verschickt. Im alten Weg ablehnen, falls er nicht rausgehen soll.") in s
+        assert s.index(ALTER_WEG_TEXT) < s.index('value="freigeben"')     # ueber den Aktionen
+
+
+def test_i3_keine_warnung_ohne_oder_mit_erledigtem_alten_weg(angemeldet, pult):
+    for alter_weg in (None, {"status": "rejected", "kanal": "linkedin"}):
+        pult.alter_weg = alter_weg
+        s = angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST).text
+        assert ALTER_WEG_TEXT not in s, alter_weg
+
+
+def test_i3_kanal_wird_escaped(angemeldet, pult):
+    pult.alter_weg = {"status": "pending_approval", "kanal": "<b>x</b>"}
+    s = angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST).text
+    assert "(&lt;b&gt;x&lt;/b&gt;)" in s and "<b>x</b>" not in s
+
+
+class _Antwort:
+    def __init__(self, inhalt):
+        self.inhalt = inhalt
+        self.headers = {"Content-Type": "text/html"}
+
+    def read(self):
+        return self.inhalt
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+@pytest.fixture
+def client_echt(monkeypatch):
+    """Der echte marketing_pult.anfrage, nur urlopen gefaelscht."""
+    gesehen = []
+    inhalt = [b"{}"]
+
+    def urlopen(req, timeout=None):
+        gesehen.append(req)
+        return _Antwort(inhalt[0])
+
+    monkeypatch.setattr(marketing_pult, "URL", "http://pult.test")
+    monkeypatch.setattr(marketing_pult, "KEY", "geheim-123")
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    return gesehen, inhalt
+
+
+def test_m1_200_ohne_json_ist_pultfehler(client_echt):
+    _, inhalt = client_echt
+    inhalt[0] = b"<html>Proxy-Seite</html>"
+    with pytest.raises(marketing_pult.PultFehler) as f:
+        marketing_pult.anfrage("GET", "/uebersicht")
+    assert f.value.art == "unbekannt"
+
+
+def test_m2_schluessel_folgt_keiner_umleitung(client_echt):
+    gesehen, inhalt = client_echt
+    inhalt[0] = json.dumps({"ok": True}).encode()
+    assert marketing_pult.anfrage("POST", "/x", {"a": 1}) == {"ok": True}
+    req = gesehen[0]
+    assert req.unredirected_hdrs.get("X-pult-key") == "geheim-123"
+    assert "X-pult-key" not in req.headers                    # urllib gibt headers bei 30x weiter
+    assert req.headers.get("Content-type") == "application/json"
+
+
+def test_m3_standard_filter_zur_freigabe(angemeldet, pult):
+    s = angemeldet.get("/marketing/entwuerfe", headers=HOST).text
+    assert "status=entwurf" in pult.aufrufe[-1][1]
+    assert 'class="aktiv" href="/marketing/entwuerfe?status=entwurf"' in s
+
+
+def test_m3_alle_zeigt_alles(angemeldet, pult):
+    angemeldet.get("/marketing/entwuerfe?status=alle", headers=HOST)
+    assert "status=" not in pult.aufrufe[-1][1]
+
+
+def test_m3_filter_behalten_die_andere_achse(angemeldet, pult):
+    s = angemeldet.get("/marketing/entwuerfe?art=post&status=abgelehnt", headers=HOST).text
+    p = pult.aufrufe[-1][1]
+    assert "art=post" in p and "status=abgelehnt" in p
+    # Art-Verweise behalten den Status ...
+    assert 'href="/marketing/entwuerfe?art=newsletter&amp;status=abgelehnt"' in s
+    assert 'href="/marketing/entwuerfe?status=abgelehnt"' in s              # Art "Alle"
+    # ... Status-Verweise behalten die Art.
+    assert 'href="/marketing/entwuerfe?art=post&amp;status=freigegeben"' in s
+    assert 'href="/marketing/entwuerfe?art=post&amp;status=alle"' in s
+
+
+def test_m4_aktuelles_layout_vorgewaehlt(angemeldet, pult):
+    pult.layout = "hell"
+    s = angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST).text
+    assert '<option value="hell" selected>' in s and s.count(" selected>") == 1
+
+
+def test_m4_layout_nicht_mehr_in_der_liste(angemeldet, pult):
+    pult.layout = "altmodisch"
+    s = angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST).text
+    assert '<option value="altmodisch" selected>altmodisch (nicht mehr in der Liste)</option>' in s
+    assert s.count(" selected>") == 1
+
+
+def test_m5_umlaute(angemeldet, pult, monkeypatch):
+    s = angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST).text
+    assert 'placeholder="Überschrift"' in s
+    monkeypatch.setattr(marketing_pult, "anfrage", lambda *a, **k: {"inhalte": []})
+    assert "Keine Entwürfe." in angemeldet.get("/marketing/entwuerfe", headers=HOST).text

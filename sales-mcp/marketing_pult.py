@@ -29,13 +29,20 @@ def anfrage(methode: str, pfad: str, daten: dict | None = None, roh: bool = Fals
     koerper = json.dumps(daten).encode("utf-8") if daten is not None else None
     req = urllib.request.Request(
         f"{URL}/api/pult{pfad}", data=koerper, method=methode,
-        headers={"X-Pult-Key": KEY, "Content-Type": "application/json"})
+        headers={"Content-Type": "application/json"})
+    # Der Schluessel folgt keiner Umleitung: urllib gibt normale Koepfe bei
+    # einem 30x an das neue Ziel weiter, "unredirected" Koepfe nicht.
+    req.add_unredirected_header("X-Pult-Key", KEY)
     try:
         with urllib.request.urlopen(req, timeout=ZEITLIMIT_S) as r:
             inhalt = r.read()
             if roh:
                 return inhalt, r.headers.get("Content-Type", "application/octet-stream")
-            return json.loads(inhalt or b"{}")
+            try:
+                return json.loads(inhalt or b"{}")
+            except ValueError:
+                # 200, aber kein JSON (z.B. eine Proxy- oder Anmeldeseite).
+                raise PultFehler("unbekannt", "Antwort ist kein JSON")
     except urllib.error.HTTPError as e:
         try:
             koerper_fehler = json.loads(e.read() or b"{}")
