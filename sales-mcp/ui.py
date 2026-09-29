@@ -956,6 +956,31 @@ h2 { font-size: 1.05rem; margin-top: 2rem; }
                               var(--linie); border-radius: 999px; }
 .filter a.aktiv, .vorschau-wahl a.aktiv { background: var(--aktiv);
                                           color: var(--gut); font-weight: 700; }
+/* Layout-Galerie und -Editor (Task 5): Karten mit verkleinerter Vorschau.
+   Der Rahmen rendert in doppelter Breite und wird auf die Haelfte skaliert,
+   damit die Karte das ganze Layout zeigt; Klicks gehen an die Karte. */
+.galerie { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem;
+           margin-bottom: 1.5rem; }
+@media (min-width: 640px) {
+  .galerie { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 1100px) {
+  .galerie { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.layout-karte { border: 1px solid var(--linie); border-radius: 4px;
+                padding: .6rem; background: var(--flaeche); }
+.layout-karte > a { display: block; margin-top: .5rem; }
+.layout-rahmen { height: 260px; overflow: hidden; border-radius: 3px;
+                 background: #ffffff; }
+iframe.layout-bild { width: 200%; height: 520px; border: 0;
+                     transform: scale(.5); transform-origin: 0 0;
+                     pointer-events: none; }
+.abzeichen { border: 1px solid var(--gut); color: var(--gut); border-radius: 999px;
+             padding: 0 .5rem; font-weight: 700; }
+.pult-felder fieldset.farben { display: grid; gap: 0 1rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.pult-felder input[type="color"] { height: 2.4rem; padding: .1rem; }
+.pult-felder label.haken { display: inline-flex; align-items: center; gap: .4rem;
+                           font-weight: 400; margin-right: 1rem; }
+.pult-felder label.haken input { display: inline; width: auto; margin: 0; }
 
 /* --- Geschäftsverweise (01.09.2026): anklickbare Absprung-Chips --------- */
 .verweise { display: flex; flex-wrap: wrap; gap: .4rem; }

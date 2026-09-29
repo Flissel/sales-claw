@@ -22,15 +22,24 @@ def schema_wache():
     assert server.SCHEMA == "sales_test"
 
 
+GESTALT = {"grund": "#0f2422", "text": "#cfe3df", "akzent": "#5eead4", "flaeche": "#1d3b39",
+           "text_hell": "#e9fbf6", "text_leise": "#8aa3a0", "gold": "#fbbf24",
+           "handlung_text": "#0f2422", "rundung": 8, "schrift": "system", "abstand": "mittel"}
+LOGO_ALT = "data:image/png;base64,iVBORw0KGgo="
+
+
 class Falsch:
     def __init__(self):
         self.aufrufe = []
         self.fehler = None
+        self.fehler_pfad = None      # gesetzt: nur Aufrufe mit diesem Pfad-Ende scheitern
 
     def anfrage(self, methode, pfad, daten=None, roh=False):
         self.aufrufe.append((methode, pfad, daten))
-        if self.fehler:
+        if self.fehler and (self.fehler_pfad is None or pfad.endswith(self.fehler_pfad)):
             raise self.fehler
+        if pfad == "/layouts/vorschau" and roh:
+            return (b"<p>Beispiel</p>", "text/html")
         if roh:
             if "format=pdf" in pfad:
                 return (b"%PDF-1.4 falsch", "application/pdf")
@@ -51,8 +60,15 @@ class Falsch:
                                   {"fassung": 1, "felder": FELDER, "layout": "dunkel",
                                    "urheber": "agent", "erstellt_am": "y"}]}
         if pfad == "/layouts?mandant=vibemind":
-            return {"layouts": [{"name": "dunkel", "inhaltsart": "newsletter"},
-                                {"name": "hell", "inhaltsart": "newsletter"}]}
+            return {"layouts": [
+                {"name": "dunkel", "beschreibung": "Dunkel mit Tuerkis", "inhaltsart": "newsletter",
+                 "fassung": 2, "standard": False, "status": "aktiv",
+                 "gestalt": {**GESTALT, "logo": LOGO_ALT}},
+                {"name": "hell", "beschreibung": "Hell", "inhaltsart": "newsletter",
+                 "fassung": 1, "standard": True, "status": "aktiv",
+                 "gestalt": {**GESTALT, "grund": "#ffffff", "text": "#111111"}},
+                {"name": "karte", "beschreibung": "Post-Karte", "inhaltsart": "post",
+                 "fassung": 1, "standard": True, "status": "aktiv", "gestalt": GESTALT}]}
         if pfad.endswith("/fassungen"):
             return {"fassung": 3}
         if pfad.endswith("/entscheiden"):
@@ -214,3 +230,188 @@ def test_db_ablehnung_zeigt_grund(angemeldet, pult):
                         data={"csrf": ui.CSRF_TOKEN, "betreff": "x", "abschnitt_titel": [""],
                               "abschnitt_text": ["y"], "layout": "dunkel"})
     assert r.status_code == 422 and "Nur Entwuerfe lassen sich bearbeiten" in r.text
+
+
+# --- Task 5: Layout-Galerie und Layout-Editor --------------------------------
+
+def _regler(**mehr):
+    return {"csrf": ui.CSRF_TOKEN, **{k: str(v) for k, v in GESTALT.items()}, **mehr}
+
+
+def test_galerie_zeigt_alle_layouts_mit_vorschau(angemeldet):
+    r = angemeldet.get("/marketing/layouts", headers=HOST)
+    s = r.text
+    assert r.status_code == 200
+    assert "dunkel" in s and "hell" in s and "karte" in s and "Standard" in s
+    assert s.count('<iframe class="layout-bild"') == 3
+    assert 'src="/marketing/layout-bild/dunkel"' in s
+    assert 'href="/marketing/layout/dunkel"' in s
+    # nach Inhaltsart gruppiert, Standard zuerst
+    assert s.index("<h2>Newsletter</h2>") < s.index("/layout-bild/hell") < s.index("/layout-bild/dunkel")
+    assert s.index("/layout-bild/dunkel") < s.index("<h2>Post</h2>") < s.index("/layout-bild/karte")
+    assert "frame-src 'self'" in r.headers["content-security-policy"]
+    assert "<script" not in s
+
+
+def test_layout_bild_mit_sandbox(angemeldet, pult):
+    r = angemeldet.get("/marketing/layout-bild/dunkel", headers=HOST)
+    assert r.status_code == 200 and b"Beispiel" in r.content
+    csp = r.headers["content-security-policy"]
+    assert csp.startswith("sandbox") and "frame-ancestors 'self'" in csp
+    assert r.headers["x-frame-options"] == "SAMEORIGIN"
+    m, p, d = pult.aufrufe[-1]
+    assert (m, p) == ("POST", "/layouts/vorschau") and d["gestalt"]["grund"] == "#0f2422"
+    assert d["format"] == "mail"
+
+
+def test_layout_bild_unbekannt(angemeldet):
+    r = angemeldet.get("/marketing/layout-bild/gibtsnicht", headers=HOST)
+    assert r.status_code == 404
+    assert "sandbox" in r.headers["content-security-policy"]
+
+
+def test_editor_hat_alle_regler(angemeldet):
+    r = angemeldet.get("/marketing/layout/dunkel", headers=HOST)
+    s = r.text
+    for feld in ("grund", "text", "akzent", "flaeche", "text_hell", "text_leise", "gold",
+                 "handlung_text", "schrift", "abstand", "rundung", "kopf_text", "fuss_text", "logo",
+                 "logo_entfernen", "format"):
+        assert f'name="{feld}"' in s, feld
+    assert 'value="#0f2422"' in s and 'type="range"' in s and 'type="color"' in s
+    assert 'id="regler"' in s and 'enctype="multipart/form-data"' in s
+    assert 'action="/marketing/layout/dunkel/speichern"' in s
+    assert 'action="/marketing/layout/dunkel/standard"' in s
+    assert "Das Logo erscheint in der Vorschau nach dem Speichern" in s
+    assert "frame-src 'self'" in r.headers["content-security-policy"]
+
+
+def test_editor_ohne_skript_mit_vorschau_knopf(angemeldet):
+    s = angemeldet.get("/marketing/layout/dunkel", headers=HOST).text
+    assert "<script" not in s
+    knopf = s[s.index("Vorschau aktualisieren") - 400:s.index("Vorschau aktualisieren")]
+    assert 'formaction="/marketing/layout-vorschau"' in knopf
+    assert 'formtarget="vorschau"' in knopf and 'formmethod="post"' in knopf
+    assert 'formenctype="multipart/form-data"' in knopf
+    assert '<iframe class="vorschau" name="vorschau" sandbox' in s
+    assert 'src="/marketing/layout-bild/dunkel"' in s
+    assert 'name="format" value="mail" checked' in s
+
+
+def test_editor_unbekannt(angemeldet):
+    assert angemeldet.get("/marketing/layout/gibtsnicht", headers=HOST).status_code == 404
+
+
+def test_speichern_schickt_gestalt(angemeldet, pult):
+    daten = {"csrf": ui.CSRF_TOKEN, **{k: v for k, v in GESTALT.items() if k != "rundung"},
+             "rundung": "4", "kopf_text": "Hallo", "fuss_text": "", "format": "handy"}
+    r = angemeldet.post("/marketing/layout/dunkel/speichern", headers=HOST, data=daten,
+                        follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/marketing/layout/dunkel"
+    m, p, d = pult.aufrufe[-1]
+    assert (m, p) == ("POST", "/layouts/dunkel/fassungen")
+    assert d["gestalt"]["rundung"] == 4 and d["gestalt"]["kopf_text"] == "Hallo"
+    assert "fuss_text" not in d["gestalt"]          # leer = nicht gesetzt
+    assert "format" not in d["gestalt"]
+    assert d["gestalt"]["logo"] == LOGO_ALT         # ohne neue Datei bleibt das alte Logo
+    assert d["von"] == "mira"
+
+
+def test_speichern_logo_entfernen(angemeldet, pult):
+    r = angemeldet.post("/marketing/layout/dunkel/speichern", headers=HOST,
+                        data=_regler(logo_entfernen="1"), follow_redirects=False)
+    assert r.status_code == 303 and "logo" not in pult.aufrufe[-1][2]["gestalt"]
+
+
+def test_speichern_neues_logo(angemeldet, pult):
+    png = b"\x89PNG\r\n\x1a\n" + b"0" * 100
+    r = angemeldet.post("/marketing/layout/dunkel/speichern", headers=HOST, data=_regler(),
+                        files={"logo": ("logo.png", png, "image/png")}, follow_redirects=False)
+    assert r.status_code == 303
+    assert pult.aufrufe[-1][2]["gestalt"]["logo"].startswith("data:image/png;base64,iVBORw0KGgo")
+
+
+def test_speichern_ohne_csrf_kein_api_aufruf(angemeldet, pult):
+    daten = _regler()
+    del daten["csrf"]
+    r = angemeldet.post("/marketing/layout/dunkel/speichern", headers=HOST, data=daten)
+    assert r.status_code == 403 and pult.aufrufe == []
+
+
+def test_live_vorschau(angemeldet, pult):
+    r = angemeldet.post("/marketing/layout-vorschau", headers=HOST,
+                        data=_regler(format="handy", layout="dunkel"))
+    assert r.status_code == 200 and b"Beispiel" in r.content
+    csp = r.headers["content-security-policy"]
+    assert csp.startswith("sandbox") and "frame-ancestors 'self'" in csp
+    assert r.headers["x-frame-options"] == "SAMEORIGIN"
+    m, p, d = pult.aufrufe[-1]
+    assert p == "/layouts/vorschau" and d["format"] == "handy"
+    assert d["gestalt"]["logo"] == LOGO_ALT          # gespeichertes Logo, nicht hochgeladen
+    assert not any(a[1].endswith("/fassungen") for a in pult.aufrufe)   # nichts gespeichert
+
+
+def test_live_vorschau_ignoriert_hochgeladenes_logo(angemeldet, pult):
+    r = angemeldet.post("/marketing/layout-vorschau", headers=HOST, data=_regler(layout="dunkel"),
+                        files={"logo": ("x.gif", b"GIF89a....", "image/gif")})
+    assert r.status_code == 200 and pult.aufrufe[-1][2]["gestalt"]["logo"] == LOGO_ALT
+    assert pult.aufrufe[-1][2]["format"] == "mail"
+
+
+def test_live_vorschau_fehler_bleibt_im_rahmen(angemeldet, pult):
+    pult.fehler = marketing_pult.PultFehler("abgelehnt", "rundung muss eine Zahl von 0 bis 24 sein")
+    pult.fehler_pfad = "/layouts/vorschau"
+    r = angemeldet.post("/marketing/layout-vorschau", headers=HOST,
+                        data=_regler(rundung="999", layout="dunkel"))
+    assert r.status_code == 422 and "rundung muss eine Zahl" in r.text
+    # Die Fehlermeldung landet im Rahmen - ohne SAMEORIGIN bliebe er leer.
+    assert "sandbox" in r.headers["content-security-policy"]
+    assert r.headers["x-frame-options"] == "SAMEORIGIN"
+
+
+def test_live_vorschau_ohne_csrf(angemeldet, pult):
+    daten = _regler()
+    del daten["csrf"]
+    r = angemeldet.post("/marketing/layout-vorschau", headers=HOST, data=daten)
+    assert r.status_code == 403 and pult.aufrufe == []
+
+
+def test_ungueltiger_regler_zeigt_grund(angemeldet, pult):
+    pult.fehler = marketing_pult.PultFehler("abgelehnt", "rundung muss eine Zahl von 0 bis 24 sein")
+    pult.fehler_pfad = "/fassungen"
+    r = angemeldet.post("/marketing/layout/dunkel/speichern", headers=HOST,
+                        data=_regler(rundung="999"))
+    assert r.status_code == 422 and "rundung muss eine Zahl" in r.text
+
+
+def test_rundung_keine_zahl_ohne_api(angemeldet, pult):
+    r = angemeldet.post("/marketing/layout/dunkel/speichern", headers=HOST,
+                        data=_regler(rundung="viel"))
+    assert r.status_code == 422 and "Rundung muss eine Zahl" in r.text
+    assert not any(a[1].endswith("/fassungen") for a in pult.aufrufe)
+
+
+def test_zu_grosses_logo_abgewiesen_ohne_api(angemeldet, pult):
+    gross = b"\x89PNG\r\n\x1a\n" + b"0" * 160_000
+    r = angemeldet.post("/marketing/layout/dunkel/speichern", headers=HOST, data=_regler(),
+                        files={"logo": ("logo.png", gross, "image/png")})
+    assert r.status_code == 422 and "150 KB" in r.text
+    assert not any(a[1].endswith("/fassungen") for a in pult.aufrufe)
+
+
+def test_logo_falscher_typ_abgewiesen(angemeldet, pult):
+    r = angemeldet.post("/marketing/layout/dunkel/speichern", headers=HOST, data=_regler(),
+                        files={"logo": ("logo.png", b"GIF89a....", "image/png")})
+    assert r.status_code == 422 and "PNG oder JPEG" in r.text
+    assert not any(a[1].endswith("/fassungen") for a in pult.aufrufe)
+
+
+def test_als_standard(angemeldet, pult):
+    r = angemeldet.post("/marketing/layout/hell/standard", headers=HOST,
+                        data={"csrf": ui.CSRF_TOKEN}, follow_redirects=False)
+    assert r.status_code == 303 and pult.aufrufe[-1][:2] == ("POST", "/layouts/hell/standard")
+    assert r.headers["location"] == "/marketing/layouts"
+
+
+def test_als_standard_ohne_csrf(angemeldet, pult):
+    r = angemeldet.post("/marketing/layout/hell/standard", headers=HOST, data={})
+    assert r.status_code == 403 and pult.aufrufe == []

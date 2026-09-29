@@ -5,11 +5,18 @@ marketing_pult; diese Datei kennt keine Marketing-Tabelle.
 Wie der Rest von sales-ui: kein JavaScript (die Seiten-CSP sagt
 `default-src 'none'`). Die Wahl Mail/Handy ist deshalb ein normaler Verweis,
 der die Seite mit `format=` neu laedt; das PDF wird verlinkt, nicht
-eingebettet (wie auf der Medienseite)."""
+eingebettet (wie auf der Medienseite).
+
+Layouts (Task 5): Galerie und Editor. Die Vorschau der Regler ist ein
+zweiter Absende-Knopf im Reglerformular (`formaction` auf
+/marketing/layout-vorschau, `formtarget` = der Vorschau-Rahmen) - ohne
+Skript, also nicht bei jedem Tastendruck, sondern per Klick."""
 from __future__ import annotations
 
+import base64
 import urllib.parse
 
+from starlette.concurrency import run_in_threadpool
 from starlette.responses import RedirectResponse, Response
 from starlette.routing import Route
 
@@ -25,6 +32,29 @@ RAHMEN_FORMATE = {"mail": "Mail", "handy": "Handy"}
 # den eigenen Entwurfsrahmen (die Seiten-CSP sagt sonst 'none').
 _CSP_VORSCHAU = ("sandbox; default-src 'none'; img-src data:; "
                  "style-src 'unsafe-inline'; frame-ancestors 'self'")
+
+
+# Layout-Regler (Task 5). Die Farben kommen aus `type="color"`-Feldern, die
+# Pruefung der Werte macht die DB (`pult_gestalt_fehler`) - hier wird nur
+# gelesen, was eine Zahl oder Datei sein muss.
+FARBEN = ("grund", "text", "akzent", "flaeche", "text_hell", "text_leise", "gold", "handlung_text")
+FARB_NAMEN = {"grund": "Grund", "text": "Text", "akzent": "Akzent", "flaeche": "Fläche",
+              "text_hell": "Text hell", "text_leise": "Text leise", "gold": "Hervorhebung",
+              "handlung_text": "Knopf-Text"}
+SCHRIFTEN = (("system", "Klar"), ("serif", "Klassisch"), ("mono", "Technisch"))
+ABSTAENDE = (("eng", "eng"), ("mittel", "mittel"), ("weit", "weit"))
+LOGO_MAX = 150 * 1024
+
+
+def _gerahmt(inhalt, typ: str = "text/html; charset=utf-8", status: int = 200) -> Response:
+    """Antwort, die in einen eigenen, gesandboxten Rahmen gehoert: dieselben
+    Koepfe wie die Entwurfs-Vorschau (_CSP_VORSCHAU + SAMEORIGIN). Auch
+    Fehler gehen so hinaus - mit den Seiten-Koepfen (DENY) bliebe der Rahmen
+    leer und niemand saehe den Grund."""
+    return Response(inhalt, status_code=status, media_type=typ,
+                    headers={"Content-Security-Policy": _CSP_VORSCHAU,
+                             "X-Frame-Options": "SAMEORIGIN",
+                             "Cache-Control": "private, no-store"})
 
 
 def _fassung_zahl(roh) -> int | None:
@@ -230,6 +260,222 @@ def routen(ui) -> list:
             return fehler(f)
         return RedirectResponse(f"/marketing/entwurf/{iid}", status_code=303)
 
+    # --- Layouts (Task 5) -------------------------------------------------
+
+    def gerahmter_fehler(f: marketing_pult.PultFehler) -> Response:
+        """Wie fehler(), aber fuer den Vorschau-Rahmen (s. _gerahmt)."""
+        if f.art == "abgelehnt":
+            return _gerahmt(f"<p>Vorschau nicht moeglich: {e(f.grund)}</p>", status=422)
+        if f.art == "nicht_verbunden":
+            return _gerahmt("<p>Marketing nicht verbunden.</p>", status=503)
+        return _gerahmt("<p>Marketing gerade nicht erreichbar.</p>", status=503)
+
+    async def alle_layouts() -> list:
+        lay = await run_in_threadpool(marketing_pult.anfrage, "GET", "/layouts?mandant=vibemind")
+        return lay.get("layouts") or []
+
+    def layout_von(layouts: list, name: str) -> dict | None:
+        return next((l for l in layouts if l.get("name") == name), None)
+
+    def pfad(name: str) -> str:
+        return urllib.parse.quote(name, safe="")
+
+    async def regler_lesen(form, bisher: dict | None, logo_lesen: bool = True) -> tuple[dict | None, str]:
+        """Liest die Regler aus dem Formular. `bisher` ist die gespeicherte
+        Gestalt: ohne neue Datei bleibt deren Logo (ausser „Logo entfernen").
+        Die Vorschau liest keine Datei (logo_lesen=False) - ohne Skript kaeme
+        sie nicht bei jedem Klick erneut mit."""
+        g: dict = {k: str(form.get(k) or "").strip().lower() for k in FARBEN}
+        g["schrift"] = str(form.get("schrift") or "system")
+        g["abstand"] = str(form.get("abstand") or "mittel")
+        try:
+            g["rundung"] = int(str(form.get("rundung") or "8"))
+        except ValueError:
+            return None, "Rundung muss eine Zahl sein."
+        for k in ("kopf_text", "fuss_text"):
+            if (w := str(form.get(k) or "").strip()):
+                g[k] = w
+        datei = form.get("logo") if logo_lesen else None
+        if getattr(datei, "filename", ""):
+            roh = await datei.read()
+            if len(roh) > LOGO_MAX:
+                return None, "Das Logo ist groesser als 150 KB."
+            if roh.startswith(b"\x89PNG\r\n\x1a\n"):
+                typ = "png"
+            elif roh.startswith(b"\xff\xd8\xff"):
+                typ = "jpeg"
+            else:
+                return None, "Das Logo muss ein PNG oder JPEG sein."
+            g["logo"] = f"data:image/{typ};base64," + base64.b64encode(roh).decode("ascii")
+        elif bisher and bisher.get("logo") and not form.get("logo_entfernen"):
+            g["logo"] = bisher["logo"]
+        return g, ""
+
+    @ui._gesichert_seite
+    async def layouts(request):
+        try:
+            alle = await alle_layouts()
+        except marketing_pult.PultFehler as f:
+            return fehler(f)
+
+        def karte(l: dict) -> str:
+            n = str(l.get("name") or "")
+            standard = '<span class="abzeichen">Standard</span> ' if l.get("standard") else ""
+            return (f'<div class="layout-karte"><div class="layout-rahmen">'
+                    f'<iframe class="layout-bild" sandbox tabindex="-1" title="Vorschau {e(n)}" '
+                    f'src="/marketing/layout-bild/{e(pfad(n))}"></iframe></div>'
+                    f'<a href="/marketing/layout/{e(pfad(n))}"><b>{e(n)}</b></a>'
+                    f'<span class="meta">{standard}Fassung {int(l.get("fassung") or 1)}'
+                    f'{" &middot; " + e(l["beschreibung"]) if l.get("beschreibung") else ""}</span></div>')
+
+        reihenfolge = [*ARTEN, *sorted({str(l.get("inhaltsart") or "") for l in alle} - set(ARTEN))]
+        gruppen = []
+        for art in reihenfolge:
+            teil = [l for l in alle if str(l.get("inhaltsart") or "") == art]
+            if not teil:
+                continue
+            teil.sort(key=lambda l: (not l.get("standard"), str(l.get("name") or "")))
+            gruppen.append(f'<h2>{e(ARTEN.get(art, art or "Ohne Art"))}</h2>'
+                           f'<div class="galerie">{"".join(karte(l) for l in teil)}</div>')
+        antwort = ui._seite("Layouts", "".join(gruppen) or "<p>Keine Layouts.</p>")
+        antwort.headers["Content-Security-Policy"] = ui._csp_mit_rahmen("'self'")
+        return antwort
+
+    @ui._gesichert_seite
+    async def layout_bild(request):
+        try:
+            l = layout_von(await alle_layouts(), request.path_params["name"])
+            if not l:
+                return _gerahmt("<p>Unbekanntes Layout.</p>", status=404)
+            inhalt, typ = await run_in_threadpool(
+                marketing_pult.anfrage, "POST", "/layouts/vorschau",
+                {"gestalt": l.get("gestalt") or {}, "mandant": "vibemind", "format": "mail"}, roh=True)
+        except marketing_pult.PultFehler as f:
+            return gerahmter_fehler(f)
+        return _gerahmt(inhalt, typ)
+
+    @ui._gesichert_seite
+    async def layout_editor(request):
+        name = request.path_params["name"]
+        try:
+            l = layout_von(await alle_layouts(), name)
+        except marketing_pult.PultFehler as f:
+            return fehler(f)
+        if not l:
+            return ui._fehlerseite(404, "Unbekanntes Layout", "")
+        g = l.get("gestalt") or {}
+        csrf = f'<input type="hidden" name="csrf" value="{e(ui.CSRF_TOKEN)}">'
+        basis = f"/marketing/layout/{e(pfad(name))}"
+
+        def auswahl(feld, werte, aktuell):
+            return (f'<select name="{feld}">' + "".join(
+                f'<option value="{w}"{" selected" if w == aktuell else ""}>{t}</option>'
+                for w, t in werte) + "</select>")
+
+        try:
+            rundung = int(g.get("rundung", 8))
+        except (TypeError, ValueError):
+            rundung = 8
+        farben = "".join(
+            f'<label>{FARB_NAMEN[k]} <input type="color" name="{k}" value="{e(g.get(k) or "#000000")}"></label>'
+            for k in FARBEN)
+        regler = (
+            f'<fieldset class="farben"><legend>Farben</legend>{farben}</fieldset>'
+            f'<label>Schrift {auswahl("schrift", SCHRIFTEN, g.get("schrift", "system"))}</label>'
+            f'<label>Abstände {auswahl("abstand", ABSTAENDE, g.get("abstand", "mittel"))}</label>'
+            f'<label>Rundung (0–24) <input type="range" min="0" max="24" name="rundung" value="{rundung}"></label>'
+            f'<label>Kopfzeile <input name="kopf_text" maxlength="120" value="{e(g.get("kopf_text") or "")}"></label>'
+            f'<label>Fußzeile <input name="fuss_text" maxlength="300" value="{e(g.get("fuss_text") or "")}"></label>'
+            f'<label>Logo (PNG/JPEG, max. 150 KB) <input type="file" name="logo" accept="image/png,image/jpeg"></label>'
+            f'<p class="meta">Das Logo erscheint in der Vorschau nach dem Speichern.</p>'
+            + ('<label class="haken"><input type="checkbox" name="logo_entfernen" value="1"> Logo entfernen</label>'
+               if g.get("logo") else ""))
+        formate = "".join(
+            f'<label class="haken"><input type="radio" name="format" value="{k}"'
+            f'{" checked" if k == "mail" else ""}> {t}</label>' for k, t in RAHMEN_FORMATE.items())
+        art = str(l.get("inhaltsart") or "")
+        if l.get("standard"):
+            standard = f'<p class="meta">Standard für {e(ARTEN.get(art, art or "diese Art"))}.</p>'
+        else:
+            standard = (f'<form method="post" action="{basis}/standard" class="aktion">{csrf}'
+                        f'<button type="submit">Als Standard für {e(ARTEN.get(art, art or "diese Art"))}</button></form>')
+        # Der erste Absende-Knopf ist die Vorschau: Enter in einem Textfeld
+        # speichert so nichts aus Versehen.
+        knoepfe = (
+            f'<div class="aktionen">'
+            f'<button type="submit" formaction="/marketing/layout-vorschau" formtarget="vorschau" '
+            f'formmethod="post" formenctype="multipart/form-data">Vorschau aktualisieren</button>'
+            f'<button class="primaer" type="submit">Als neue Fassung speichern</button></div>')
+        rumpf = (
+            f'<p class="meta">{e(ARTEN.get(art, art))} &middot; Fassung {int(l.get("fassung") or 1)}'
+            f'{" &middot; " + e(l["beschreibung"]) if l.get("beschreibung") else ""}</p>'
+            f'<div class="pult"><div class="pult-links">'
+            f'<form id="regler" method="post" enctype="multipart/form-data" action="{basis}/speichern" '
+            f'class="pult-felder">{csrf}<input type="hidden" name="layout" value="{e(name)}">'
+            f'{regler}<fieldset class="vorschau-wahl"><legend>Vorschau als</legend>{formate}</fieldset>'
+            f'{knoepfe}</form>{standard}'
+            f'<p><a href="/marketing/layouts">Zurück zu allen Layouts</a></p></div>'
+            f'<div class="pult-rechts">'
+            f'<iframe class="vorschau" name="vorschau" sandbox title="Vorschau" '
+            f'src="/marketing/layout-bild/{e(pfad(name))}"></iframe></div></div>')
+        antwort = ui._seite(f"Layout {name}", rumpf)
+        antwort.headers["Content-Security-Policy"] = ui._csp_mit_rahmen("'self'")
+        return antwort
+
+    @ui._gesichert_seite
+    async def layout_vorschau(request):
+        form = await request.form()
+        if not ui._csrf_ok(form):
+            return _gerahmt("<p>Abgewiesen: fehlende oder falsche CSRF-Marke.</p>", status=403)
+        try:
+            bisher = None
+            if (name := str(form.get("layout") or "")):
+                bisher = (layout_von(await alle_layouts(), name) or {}).get("gestalt")
+            g, grund = await regler_lesen(form, bisher, logo_lesen=False)
+            if g is None:
+                return _gerahmt(f"<p>Vorschau nicht moeglich: {e(grund)}</p>", status=422)
+            fmt = "handy" if form.get("format") == "handy" else "mail"
+            inhalt, typ = await run_in_threadpool(
+                marketing_pult.anfrage, "POST", "/layouts/vorschau",
+                {"gestalt": g, "mandant": "vibemind", "format": fmt}, roh=True)
+        except marketing_pult.PultFehler as f:
+            return gerahmter_fehler(f)
+        return _gerahmt(inhalt, typ)
+
+    @ui._gesichert_seite
+    async def layout_speichern(request):
+        form = await request.form()
+        if not ui._csrf_ok(form):
+            return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
+        name = request.path_params["name"]
+        try:
+            l = layout_von(await alle_layouts(), name)
+        except marketing_pult.PultFehler as f:
+            return fehler(f)
+        if not l:
+            return ui._fehlerseite(404, "Unbekanntes Layout", "")
+        g, grund = await regler_lesen(form, l.get("gestalt"))
+        if g is None:
+            return ui._fehlerseite(422, "Regler ungueltig", e(grund))
+        try:
+            await run_in_threadpool(marketing_pult.anfrage, "POST", f"/layouts/{pfad(name)}/fassungen",
+                                    {"gestalt": g, "von": von(request)})
+        except marketing_pult.PultFehler as f:
+            return fehler(f)
+        return RedirectResponse(f"/marketing/layout/{pfad(name)}", status_code=303)
+
+    @ui._gesichert_seite
+    async def layout_standard(request):
+        form = await request.form()
+        if not ui._csrf_ok(form):
+            return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
+        try:
+            await run_in_threadpool(marketing_pult.anfrage, "POST",
+                                    f"/layouts/{pfad(request.path_params['name'])}/standard", {})
+        except marketing_pult.PultFehler as f:
+            return fehler(f)
+        return RedirectResponse("/marketing/layouts", status_code=303)
+
     return [
         Route("/marketing", uebersicht),
         Route("/marketing/entwuerfe", entwuerfe),
@@ -237,4 +483,10 @@ def routen(ui) -> list:
         Route("/marketing/entwurf/{iid}/vorschau", vorschau),
         Route("/marketing/entwurf/{iid}/speichern", speichern, methods=["POST"]),
         Route("/marketing/entwurf/{iid}/entscheiden", entscheiden, methods=["POST"]),
+        Route("/marketing/layouts", layouts),
+        Route("/marketing/layout-bild/{name}", layout_bild),
+        Route("/marketing/layout-vorschau", layout_vorschau, methods=["POST"]),
+        Route("/marketing/layout/{name}", layout_editor),
+        Route("/marketing/layout/{name}/speichern", layout_speichern, methods=["POST"]),
+        Route("/marketing/layout/{name}/standard", layout_standard, methods=["POST"]),
     ]
