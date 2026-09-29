@@ -1,0 +1,3 @@
+# Gebautes Editor-Paket byte-genau halten: MANIFEST.json prueft SHA-256,
+# ein CRLF-Umbau beim Auschecken (core.autocrlf) wuerde die Pruefsumme brechen.
+editor/** -text

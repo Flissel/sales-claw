@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Editor (Entwicklung)</title>
+  </head>
+  <body>
+    <!-- Nur fuer "npx vite" (Entwicklung). Die echte Seite baut sales-ui. -->
+    <div id="root"></div>
+    <script type="application/json" id="editor-start">{"dokument":{"root":{"type":"EmailLayout","data":{"backdropColor":"#F5F5F5","canvasColor":"#FFFFFF","textColor":"#262626","fontFamily":"MODERN_SANS","childrenIds":["b1"]}},"b1":{"type":"Text","data":{"style":{"padding":{"top":16,"bottom":16,"left":24,"right":24}},"props":{"text":"Hallo **Welt**","markdown":true}}}},"betreff":"Probe","vorschautext":"","basis_fassung":1,"speichern_url":"/speichern","vorschau_url":"/vorschau","medien_url":"/medien.json","zurueck_url":"/","csrf":"entwicklung"}</script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
