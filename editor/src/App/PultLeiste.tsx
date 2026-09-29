@@ -105,9 +105,12 @@ export default function PultLeiste() {
           px: 1.5,
           borderBottom: 1,
           borderColor: 'divider',
-          backgroundColor: 'white',
+          bgcolor: 'background.paper',
         }}
       >
+        <Typography variant="subtitle1" sx={{ fontWeight: 700, flexShrink: 0 }}>
+          Newsletter
+        </Typography>
         <Button size="small" startIcon={<ArrowBackOutlined />} onClick={zurueck} sx={{ flexShrink: 0 }}>
           Zurück zum Entwurf
         </Button>
@@ -134,9 +137,9 @@ export default function PultLeiste() {
         <Typography
           variant="body2"
           color={ungespeichert ? 'warning.main' : 'text.secondary'}
-          sx={{ flexShrink: 0, minWidth: 110 }}
+          sx={{ flexShrink: 0, minWidth: 190 }}
         >
-          {ungespeichert ? 'Ungespeichert' : `Fassung ${basis}`}
+          {ungespeichert ? `Fassung ${basis} · ungespeicherte Änderungen` : `Fassung ${basis} · gespeichert`}
         </Typography>
         <Button
           variant="contained"

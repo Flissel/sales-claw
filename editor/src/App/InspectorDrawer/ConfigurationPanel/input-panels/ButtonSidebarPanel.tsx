@@ -64,10 +64,10 @@ export default function ButtonSidebarPanel({ data, setData }: ButtonSidebarPanel
         defaultValue={size}
         onChange={(size) => updateData({ ...data, props: { ...data.props, size } })}
       >
-        <ToggleButton value="x-small">Xs</ToggleButton>
-        <ToggleButton value="small">Sm</ToggleButton>
-        <ToggleButton value="medium">Md</ToggleButton>
-        <ToggleButton value="large">Lg</ToggleButton>
+        <ToggleButton value="x-small">XS</ToggleButton>
+        <ToggleButton value="small">S</ToggleButton>
+        <ToggleButton value="medium">M</ToggleButton>
+        <ToggleButton value="large">L</ToggleButton>
       </RadioGroupInput>
       <RadioGroupInput
         label="Form"

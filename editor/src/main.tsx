@@ -8,10 +8,11 @@ import { onDocumentChange, resetDocument } from './documents/editor/EditorContex
 import { TEditorConfiguration } from './documents/editor/core';
 import { startLesen, zurAnzeige } from './pult';
 import { alsUngespeichert, pultStarten } from './pultZustand';
-import theme from './theme';
+import { pultThema } from './theme';
 import './editor.css';
 
 const wurzel = document.getElementById('root');
+const dunkel = window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false;
 
 function fehlerZeigen(el: HTMLElement, text: string) {
   const p = document.createElement('p');
@@ -32,7 +33,7 @@ if (wurzel) {
 
     ReactDOM.createRoot(wurzel).render(
       <React.StrictMode>
-        <ThemeProvider theme={theme}>
+        <ThemeProvider theme={pultThema(dunkel)}>
           <CssBaseline />
           <App />
         </ThemeProvider>

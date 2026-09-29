@@ -12,12 +12,12 @@ const BUTTON_SX: SxProps = { p: 1.5, display: 'flex', flexDirection: 'column' };
 const ICON_SX: SxProps = {
   mb: 0.75,
   width: '100%',
-  bgcolor: 'cadet.200',
+  bgcolor: 'action.hover',
   display: 'flex',
   justifyContent: 'center',
   p: 1,
   border: '1px solid',
-  borderColor: 'cadet.300',
+  borderColor: 'divider',
 };
 
 export default function BlockTypeButton({ label, icon, onClick }: BlockMenuButtonProps) {

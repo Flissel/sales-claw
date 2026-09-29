@@ -25,7 +25,7 @@ export default function PlaceholderButton({ onClick }: Props) {
       <AddOutlined
         sx={{
           p: 0.12,
-          bgcolor: 'brand.blue',
+          bgcolor: 'primary.main',
           borderRadius: 24,
           color: 'primary.contrastText',
         }}

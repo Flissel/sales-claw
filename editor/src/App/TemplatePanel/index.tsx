@@ -22,16 +22,18 @@ export default function TemplatePanel() {
   const alterWeg = start ? alterWegHinweis(start) : null;
 
   let mainBoxSx: SxProps = {
-    height: '100%',
+    my: 3,
+    mx: 'auto',
+    borderRadius: 2,
+    boxShadow: 3,
+    overflow: 'hidden',
+    backgroundColor: 'background.paper',
   };
   if (selectedScreenSize === 'mobile') {
     mainBoxSx = {
       ...mainBoxSx,
-      margin: '32px auto',
       width: 370,
       height: 800,
-      boxShadow:
-        'rgba(33, 36, 67, 0.04) 0px 10px 20px, rgba(33, 36, 67, 0.04) 0px 2px 6px, rgba(33, 36, 67, 0.04) 0px 0px 1px',
     };
   }
 
@@ -55,7 +57,7 @@ export default function TemplatePanel() {
             height: WERKZEUG_HOEHE,
             borderBottom: 1,
             borderColor: 'divider',
-            backgroundColor: 'white',
+            backgroundColor: 'background.paper',
             px: 1,
           }}
           direction="row"
@@ -63,7 +65,7 @@ export default function TemplatePanel() {
           alignItems="center"
         >
           <Typography variant="body2" color="text.secondary" sx={{ px: 1 }}>
-            Block anklicken zum Bearbeiten, „+“ fügt einen neuen Block ein.
+            Abschnitte links hineinziehen, Block anklicken zum Bearbeiten.
           </Typography>
           <Stack direction="row" spacing={2} alignItems="center">
             <ToggleButtonGroup value={selectedScreenSize} exclusive size="small" onChange={handleScreenSizeChange}>
@@ -93,6 +95,7 @@ export default function TemplatePanel() {
           minHeight: 0,
           overflow: 'auto',
           minWidth: 370,
+          bgcolor: 'background.default',
         }}
       >
         <Box sx={mainBoxSx}>

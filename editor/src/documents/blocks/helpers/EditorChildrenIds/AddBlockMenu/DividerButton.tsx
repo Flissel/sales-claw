@@ -44,11 +44,11 @@ export default function DividerButton({ buttonElement, onClick }: Props) {
           top: '-12px',
           left: '50%',
           transform: 'translateX(-10px)',
-          bgcolor: 'brand.blue',
+          bgcolor: 'primary.main',
           color: 'primary.contrastText',
           zIndex: 'fab',
           '&:hover, &:active, &:focus': {
-            bgcolor: 'brand.blue',
+            bgcolor: 'primary.main',
             color: 'primary.contrastText',
           },
         }}

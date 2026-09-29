@@ -7,7 +7,7 @@ import Picker from './Picker';
 
 const BUTTON_SX = {
   border: '1px solid',
-  borderColor: 'cadet.400',
+  borderColor: 'divider',
   width: 32,
   height: 32,
   borderRadius: '4px',

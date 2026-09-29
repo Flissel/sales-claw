@@ -1,49 +1,49 @@
 export const FONT_FAMILIES = [
   {
     key: 'MODERN_SANS',
-    label: 'Modern sans',
+    label: 'Modern (serifenlos)',
     value: '"Helvetica Neue", "Arial Nova", "Nimbus Sans", Arial, sans-serif',
   },
   {
     key: 'BOOK_SANS',
-    label: 'Book sans',
+    label: 'Buch (serifenlos)',
     value: 'Optima, Candara, "Noto Sans", source-sans-pro, sans-serif',
   },
   {
     key: 'ORGANIC_SANS',
-    label: 'Organic sans',
+    label: 'Organisch',
     value: 'Seravek, "Gill Sans Nova", Ubuntu, Calibri, "DejaVu Sans", source-sans-pro, sans-serif',
   },
   {
     key: 'GEOMETRIC_SANS',
-    label: 'Geometric sans',
+    label: 'Geometrisch',
     value: 'Avenir, "Avenir Next LT Pro", Montserrat, Corbel, "URW Gothic", source-sans-pro, sans-serif',
   },
   {
     key: 'HEAVY_SANS',
-    label: 'Heavy sans',
+    label: 'Kräftig',
     value:
       'Bahnschrift, "DIN Alternate", "Franklin Gothic Medium", "Nimbus Sans Narrow", sans-serif-condensed, sans-serif',
   },
   {
     key: 'ROUNDED_SANS',
-    label: 'Rounded sans',
+    label: 'Rund',
     value:
       'ui-rounded, "Hiragino Maru Gothic ProN", Quicksand, Comfortaa, Manjari, "Arial Rounded MT Bold", Calibri, source-sans-pro, sans-serif',
   },
   {
     key: 'MODERN_SERIF',
-    label: 'Modern serif',
+    label: 'Modern (Serifen)',
     value: 'Charter, "Bitstream Charter", "Sitka Text", Cambria, serif',
   },
   {
     key: 'BOOK_SERIF',
-    label: 'Book serif',
+    label: 'Buch (Serifen)',
     value: '"Iowan Old Style", "Palatino Linotype", "URW Palladio L", P052, serif',
   },
   {
     key: 'MONOSPACE',
-    label: 'Monospace',
+    label: 'Schreibmaschine',
     value: '"Nimbus Mono PS", "Courier New", "Cutive Mono", monospace',
   },
 ];
