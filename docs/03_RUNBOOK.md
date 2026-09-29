@@ -2948,7 +2948,8 @@ ohne JavaScript. **Mit Erfolg** erscheint ein Ergebnis wie:
 Wegwerf-Passwort: <random>
 Serve-Port: <port>
 Als nächstes von Hand: die Zugriffsregel für den neuen Menschen (Port <port>)
-und die vier Kanaele (Postfach, Telegram, LinkedIn, WhatsApp).
+und die Kanaele Postfach, Telegram, LinkedIn. WhatsApp verbindet er selbst
+auf seiner WhatsApp-Seite.
 ```
 
 **Mit Fehler** nennt das Ergebnis, wie weit es kam — zum Beispiel
@@ -2974,8 +2975,37 @@ Kundenentwürfe nur über die eigenen `SMTP_*` und bleiben ohne sie liegen.
    (wie Abschnitt 6, die Adresse des neuen Nutzers kopieren, nicht abtippen, und unter
    `tcp:<port>` freigeben).
 
-3. **Vier Kanäle einrichten** — **Postfach, Telegram, LinkedIn, WhatsApp** — siehe
+3. **Drei Kanäle einrichten** — **Postfach, Telegram, LinkedIn** — siehe
    `docs/11_INBETRIEBNAHME.md`. Das neue Passwort nutzen.
+
+4. **WhatsApp** — braucht keine Handarbeit mehr (29.09.2026). Der Auftrag
+   startet `<laden>-openwa` und trägt `OPENWA_API_KEY`, `OPENWA_SESSION_ID`
+   und `OPENWA_VIEWER_KEY` ein (Schritt `whatsapp`, Ergebnisfeld
+   `whatsapp`). Der neue Mensch klickt auf seiner Seite **WhatsApp** auf
+   „WhatsApp verbinden" und scannt den QR-Code mit dem Handy (Verknüpfte
+   Geräte). Danach bindet der Wirt den Webhook an, legt den Sammelkontakt an
+   und startet `<laden>-inbox` und `<laden>-dispatch`.
+
+#### WhatsApp verbinden — wie es läuft
+
+- Die Seite legt nur eine Anfrage in `<schema>.whatsapp_kopplung` an. Den
+  QR-Code liefert OpenWA nur einem Schlüssel, der senden darf; so einen hat
+  die Oberfläche absichtlich nicht.
+- `sales-whatsapp-kopplung.timer` (alle 20 s) ruft
+  `deploy/whatsapp_wirt.py koppeln` auf: Sitzung starten, 3 Minuten lang den
+  jeweils aktuellen QR-Code in die Zeile schreiben, nach dem Scan
+  abschließen. Ohne Scan: `abgelaufen`, der Knopf erscheint wieder.
+- Für einen Laden, der vor dem 29.09.2026 entstand, einmal von Hand:
+  `python3 deploy/whatsapp_wirt.py einrichten <laden>` (idempotent). Der
+  Knopf holt das sonst beim ersten Klick selbst nach.
+- Einmalig auf der VM, nach dem Pull:
+  ```bash
+  sudo cp deploy/systemd/sales-whatsapp-kopplung.{service,timer} /etc/systemd/system/
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now sales-whatsapp-kopplung.timer
+  ```
+- Protokoll: `journalctl -u sales-whatsapp-kopplung -n 50`. Tests:
+  `python3 deploy/tests/test_whatsapp_wirt.py` (ohne Docker, ohne Netz).
 
 #### Nach einem fehlgeschlagenen Lauf
 

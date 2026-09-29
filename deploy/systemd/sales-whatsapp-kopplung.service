@@ -1,0 +1,9 @@
+[Unit]
+Description=sales-claw: WhatsApp-Kopplungen aus der Oberflaeche bedienen (QR-Code, Webhook)
+
+[Service]
+Type=oneshot
+User=debian
+# Ein Lauf kann bis zu 3 Minuten dauern (Kopplungsfenster); der Timer
+# startet erst danach wieder — oneshot laeuft nie doppelt.
+ExecStart=/usr/bin/python3 /home/debian/sales-claw/deploy/whatsapp_wirt.py koppeln

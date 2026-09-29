@@ -268,23 +268,37 @@ SQL
     done
   fi
 
+  # --- 6c. WhatsApp vorbereiten (29.09.2026) --------------------------------
+  # OpenWA starten, Schluessel und Sitzung in die Umgebungsdatei. NICHT
+  # fatal: der Laden steht und die Mail ist raus; was hier fehlt, holt der
+  # Knopf "WhatsApp verbinden" (deploy/whatsapp_wirt.py koppeln) von selbst
+  # nach. `if !` loest den ERR-Trap bewusst nicht aus.
+  WHATSAPP_STATUS="vorbereitet"
+  if ! python3 deploy/whatsapp_wirt.py einrichten "$LADEN_NAME" >/dev/null 2>&1; then
+    WHATSAPP_STATUS="nicht vorbereitet"
+  fi
+  ERLEDIGT+=("whatsapp")
+
   # --- 7. Erfolg melden ------------------------------------------------------
   # KONTO_PW geht hier ueber die PROZESSUMGEBUNG von python3, NICHT ueber
   # argv (Global Constraints: "Passwoerter nie ueber argv"). sys.argv haette
   # es waehrend der Laufzeit von python3 kurz in dessen Kommandozeile
   # getragen (sichtbar z.B. ueber /proc/<pid>/cmdline oder `ps aux`).
   ERGEBNIS_JSON="$(KONTO_PW="$KONTO_PW" WILLKOMMEN_AN="$EINLADEN_EMAIL" \
-    WILLKOMMEN_STATUS="$WILLKOMMEN_STATUS" python3 -c '
+    WILLKOMMEN_STATUS="$WILLKOMMEN_STATUS" WHATSAPP_STATUS="$WHATSAPP_STATUS" python3 -c '
 import json, os, sys
 ui_port, serve_port = sys.argv[1], sys.argv[2]
 ergebnis = {
     "port_ui": int(ui_port),
     "port_serve": int(serve_port),
-    # Der Zugang auf serve_port steht seit Schritt 6a schon; von Hand
-    # bleiben nur die Zugriffsregel und die Kanaele.
+    # Der Zugang auf serve_port steht seit Schritt 6a schon; WhatsApp
+    # verbindet der neue Mensch seit 6c selbst. Von Hand bleiben die
+    # Zugriffsregel und drei Kanaele.
     "hinweis": ("Als naechstes von Hand: die Zugriffsregel fuer den neuen "
-                "Menschen (Port " + serve_port + ") und die vier Kanaele "
-                "(Postfach, Telegram, LinkedIn, WhatsApp)."),
+                "Menschen (Port " + serve_port + ") und die Kanaele "
+                "Postfach, Telegram, LinkedIn. WhatsApp verbindet er selbst "
+                "auf seiner WhatsApp-Seite."),
+    "whatsapp": os.environ["WHATSAPP_STATUS"],
 }
 # Mit Willkommensmail kennt NIEMAND das Wegwerf-Passwort - es wird nicht
 # angezeigt, der Mensch setzt sein eigenes ueber den Link.

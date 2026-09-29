@@ -1,0 +1,10 @@
+[Unit]
+Description=sales-claw: WhatsApp-Kopplungen alle 20 Sekunden pruefen
+
+[Timer]
+OnUnitActiveSec=20s
+OnBootSec=30s
+Persistent=false
+
+[Install]
+WantedBy=timers.target
