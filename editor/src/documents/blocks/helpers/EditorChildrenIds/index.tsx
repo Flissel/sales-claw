@@ -1,7 +1,12 @@
 import React, { Fragment } from 'react';
 
+import { Box } from '@mui/material';
+
 import { TEditorBlock } from '../../../editor/core';
 import EditorBlock from '../../../editor/EditorBlock';
+
+import { ABSCHNITTE, AbschnittSchluessel, DRAG_TYP } from '../../../../abschnitte';
+import { abschnittEinsetzen } from '../../../../App/AbschnittLeiste';
 
 import AddBlockButton from './AddBlockMenu';
 
@@ -15,6 +20,37 @@ function generateId() {
   return `block-${Date.now()}`;
 }
 
+// Ablagezone fuer Abschnitte aus der linken Leiste (nur oberste Ebene).
+function Ablage({ index }: { index: number }) {
+  const [aktiv, setAktiv] = React.useState(false);
+  return (
+    <Box
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.includes(DRAG_TYP)) {
+          e.preventDefault();
+          setAktiv(true);
+        }
+      }}
+      onDragLeave={() => setAktiv(false)}
+      onDrop={(e) => {
+        setAktiv(false);
+        const s = e.dataTransfer.getData(DRAG_TYP) as AbschnittSchluessel;
+        if (ABSCHNITTE.some((a) => a.schluessel === s)) {
+          e.preventDefault();
+          abschnittEinsetzen(s, index);
+        }
+      }}
+      sx={{
+        height: aktiv ? 24 : 6,
+        my: aktiv ? 1 : 0,
+        borderRadius: 1,
+        transition: 'all .12s',
+        bgcolor: aktiv ? 'primary.main' : 'transparent',
+        opacity: aktiv ? 0.35 : 1,
+      }}
+    />
+  );
+}
 export type EditorChildrenIdsProps = {
   childrenIds: string[] | null | undefined;
   onChange: (val: EditorChildrenChange) => void;
@@ -43,17 +79,24 @@ export default function EditorChildrenIds({ childrenIds, onChange, nurInhalt }: 
   };
 
   if (!childrenIds || childrenIds.length === 0) {
-    return <AddBlockButton placeholder nurInhalt={nurInhalt} onSelect={appendBlock} />;
+    return (
+      <>
+        {!nurInhalt && <Ablage index={0} />}
+        <AddBlockButton placeholder nurInhalt={nurInhalt} onSelect={appendBlock} />
+      </>
+    );
   }
 
   return (
     <>
       {childrenIds.map((childId, i) => (
         <Fragment key={childId}>
+          {!nurInhalt && <Ablage index={i} />}
           <AddBlockButton nurInhalt={nurInhalt} onSelect={(block) => insertBlock(block, i)} />
           <EditorBlock id={childId} />
         </Fragment>
       ))}
+      {!nurInhalt && <Ablage index={childrenIds.length} />}
       <AddBlockButton nurInhalt={nurInhalt} onSelect={appendBlock} />
     </>
   );
