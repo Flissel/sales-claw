@@ -40,6 +40,37 @@
 
 ---
 
+### Task 0: Korrekturen aus dem Browser-Durchlauf vom 29.09.2026 (Pult Stufe 1)
+
+Gefunden beim echten Durchlauf im Browser (Betreiber angemeldet). Vier Fehler, in beiden Repos.
+
+**Files:**
+- Modify: `spaces/marketing/claw/pult_render.py` (Worktree) + Test `spaces/marketing/claw/tests/test_pult_render.py`
+- Modify: `sales-mcp/ui.py` (sales-claw) + Tests `sales-mcp/tests/test_marketing_pult.py`, `sales-mcp/tests/test_seitenleiste.py`
+
+**Interfaces:**
+- Produces: Farbbedeutung, die ab jetzt überall gilt (auch für Task 1/2/4): **`grund`** = Seiten-/Inhaltsfläche, darauf **`text`** (Fließtext) und **`text_hell`** (Überschriften); **`flaeche`** = Kopf- und Fußband, darauf eine Schriftfarbe, die gegen `flaeche` genug Kontrast hat (siehe 0a); **`akzent`/`handlung_text`** = Knopf. Das ist die Bedeutung aus `claw/pdf.py` (`_kopf_und_grund`, `_stile`).
+
+**0a — Layouts „hell" und „warm-sand" unlesbar (`pult_render.mail_html`).** Heute liegt der Inhalt auf `flaeche` (in „hell"/„warm-sand" das dunkle Band) mit dunklem `text` → unlesbar. Neu:
+- äußerer Hintergrund und Inhaltskarte: `grund`; Fließtext `text`; Überschriften (`h1`, Abschnittstitel) `text_hell`; Knopf `akzent` mit `handlung_text`.
+- Kopfband (nur wenn `kopf_text` oder `logo` gesetzt) und Fußband (Pflichtteil + `fuss_text`) auf `flaeche`; Schriftfarbe im Band = die von `text_hell`, `#ffffff`, `#111111`, die gegen `flaeche` den höchsten Kontrast hat (`schoenheit.kontrast(vorne, hinten)` benutzen), gedämpfte Bandschrift entsprechend `text_leise` oder dieselbe Wahl.
+- Tests (in `test_pult_render.py`, mit den echten Gestalten von „dunkel" und „hell" aus `pdf.LAYOUTS`): für jede Gestalt hat der Fließtext gegen seinen Hintergrund mindestens Kontrast 4.5 (`schoenheit.kontrast(text, grund) >= 4.5`, aus dem gerenderten HTML die tatsächlich verwendeten `color`/`background`-Paare der Absätze und des Bandes herauslesen — ein kleiner Regex über `style="…color:#…"` im jeweiligen Container genügt); die bestehenden Tests bleiben grün. Zusätzlich einmal live gegen die VM-DB (lesend) alle drei Layouts rendern und die Kontrastwerte in den Report.
+- Das `pdf_bytes`-Rendern bleibt unverändert (es hat die Bedeutung schon richtig).
+
+**0b — Vorschau-Rahmen nur ~140 px hoch.** Die CSS-Regel `.pult-rechts iframe.vorschau { height: 80vh … }` (`ui.py` ~944) existiert, wirkt aber im Browser nicht. Erst messen, dann ändern: im laufenden Test-Client-HTML bzw. per Playwright gegen eine lokale sales-ui die berechnete Höhe (`getComputedStyle(iframe).height`) und die siegende Regel bestimmen (vermutlich eine spätere Regel, z. B. für `iframe.layout-bild`, oder ein fehlender Klassenname am `<iframe>`). Fix so, dass der Rahmen mindestens `min(80vh, 1100px)` hoch ist und am Handy (≤ 767 px) mindestens `70vh`. Test: das gerenderte Entwurfs-HTML trägt `class="vorschau"` am iframe, und im CSS kommt nach der `iframe.vorschau`-Regel keine Regel mehr, die dessen `height` für `.pult-rechts iframe` überschreibt (Test über den CSS-Text von `ui.py`: Reihenfolge der Selektoren). Im Report: gemessene Höhe vorher/nachher.
+
+**0c — Menü markiert „Übersicht" auf allen Marketing-Seiten.** `_seitenleiste` (`ui.py` ~1328/1335) markiert jeden Eintrag, dessen Pfad Vorsilbe des aktuellen ist. Neu: **nur der längste passende Eintrag** ist aktiv, und Detailseiten gehören zu ihrer Liste: Zuordnung `{"/marketing/entwurf": "/marketing/entwuerfe", "/marketing/layout": "/marketing/layouts", "/marketing/layout-bild": "/marketing/layouts"}` (als Konstante neben `_GRUPPEN`, mit Kommentar). Tests in `test_seitenleiste.py` (über `_AKTIVER_PFAD` + `_seitenleiste`, ohne DB-Abhängigkeit — die Zähler fallen leise aus): auf `/marketing` genau „Übersicht" aktiv; auf `/marketing/entwuerfe` und `/marketing/entwurf/<uuid>` genau „Entwürfe"; auf `/marketing/layout/dunkel` genau „Layouts"; auf `/kontakte` weiterhin genau „Kontakte" (Regression).
+
+**0d — Handy-Tableiste mit 6 Reitern bricht um.** In der Handy-Regel für `nav.tabs a` Beschriftung einzeilig: `white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0` und unter 400 px Breite `font-size: .62rem; letter-spacing: 0`. Test: der CSS-Text enthält diese Eigenschaften im `nav.tabs`-Block der Handy-Regel. Im Report ein Screenshot bei 390×844 (lokal oder nach Auslieferung in Task 7).
+
+- [ ] **Step 1:** Failing tests für 0a–0d schreiben (Marketing im Worktree, Sales im Repo), rot sehen.
+- [ ] **Step 2:** 0a–0d umsetzen, grün sehen: `…pytest spaces\marketing\claw	ests	est_pult_render.py -q`; Host-Runner `tests/test_marketing_pult.py`, `tests/test_seitenleiste.py` (2 bekannte Rote bleiben, keine neuen), `tests/test_ui.py`.
+- [ ] **Step 3:** Commits je Repo (PowerShell, explizite Pfade):
+  - Worktree: `fix(marketing): Mail-Vorschau nutzt die Farbbedeutung der Layouts (grund/flaeche)`
+  - sales-claw: `fix(ui): Pult-Vorschau hoch genug, Menue markiert die richtige Seite, Handy-Reiter einzeilig`
+
+---
+
 ### Task 1: Blockformat, Prüfung, Vorlagen-Tabelle (Migration 053)
 
 Arbeitsort: Worktree `C:\Users\User\Desktop\Vibemind_V1\vibemind-os\.worktrees\setup-agent`, `spaces/marketing/db/`.
@@ -358,7 +389,7 @@ DO $$ DECLARE g jsonb; BEGIN
     PERFORM marketing.pult_vorlage_speichern('leer', 'Leerer Newsletter mit Ueberschrift und Text',
       jsonb_build_object(
         'root', jsonb_build_object('type','EmailLayout','data', jsonb_build_object(
-            'backdropColor', g->>'grund', 'canvasColor', g->>'flaeche', 'textColor', g->>'text',
+            'backdropColor', g->>'flaeche', 'canvasColor', g->>'grund', 'textColor', g->>'text',
             'fontFamily','MODERN_SANS', 'childrenIds', '["kopf","text"]'::jsonb)),
         'kopf', '{"type":"Heading","data":{"style":{"padding":{"top":32,"bottom":8,"left":24,"right":24}},"props":{"text":"Ueberschrift","level":"h1"}}}'::jsonb,
         'text', '{"type":"Text","data":{"style":{"padding":{"top":8,"bottom":24,"left":24,"right":24}},"props":{"text":"Dein Text.","markdown":true}}}'::jsonb),
@@ -397,7 +428,7 @@ DO $$ DECLARE r record; g jsonb; v_kinder jsonb; v_doc jsonb; a jsonb; i int; BE
       v_kinder := v_kinder || '"knopf"'::jsonb;
     END IF;
     v_doc := v_doc || jsonb_build_object('root', jsonb_build_object('type','EmailLayout','data', jsonb_build_object(
-               'backdropColor', g->>'grund', 'canvasColor', g->>'flaeche', 'textColor', g->>'text',
+               'backdropColor', g->>'flaeche', 'canvasColor', g->>'grund', 'textColor', g->>'text',
                'fontFamily','MODERN_SANS', 'childrenIds', v_kinder)));
     IF marketing.pult_bloecke_fehler(v_doc) IS NULL THEN
       PERFORM marketing.pult_bloecke_speichern(r.id, r.fassung,
@@ -849,7 +880,7 @@ Arbeitsort: Worktree, `spaces/marketing/vorlagen/newsletter/`, `spaces/marketing
 - Consumes: Task 1 (`pult_vorlage_speichern`, Blockformat-Regeln), Task 2 (`bloecke_mjml.rendern`).
 - Produces: Dateiformat `{"name": "<^[a-z][a-z0-9-]{1,40}$>", "beschreibung": "...", "bloecke": {<Email-Builder-Dokument>}}`; Skript `python -m spaces.marketing.scripts.vorlagen_einspielen [--wirklich]` (ohne `--wirklich` nur Prüfung: ruft `SELECT marketing.pult_bloecke_fehler(...)` je Datei, ändert nichts).
 
-Inhalte (deutsch, VibeMind, Farben aus Layout `dunkel`: grund `#0f2422`, flaeche `#1d3b39`, akzent `#5eead4`, text `#cfe3df`, text_hell `#e9fbf6`, handlung_text `#0f2422`; jede Vorlage mit Logo-Bildblock `medien:vibemind-logo.png`):
+Inhalte (deutsch, VibeMind, Farben aus Layout `dunkel` in der Bedeutung aus Task 0: Inhaltsfläche `canvasColor` = grund `#0f2422`, Außenfläche `backdropColor` = flaeche `#1d3b39`, Fließtext `textColor` = text `#cfe3df`, Überschriften text_hell `#e9fbf6`, Knopf akzent `#5eead4` mit handlung_text `#0f2422`; jede Vorlage mit Logo-Bildblock `medien:vibemind-logo.png`):
 1. **newsletter** — Kopf mit Logo, Überschrift, Einleitung, zwei Themenblöcke als Spalten (je Überschrift + Text), Trenner, „Was als Nächstes kommt" (Text), Knopf „Mehr lesen".
 2. **ankuendigung** — große Überschrift, kurzer Text, großer Knopf, Abstand, Fußnote.
 3. **einladung** — Überschrift „Du bist eingeladen", Container mit Datum/Ort/Uhrzeit (Text mit **fett**), Knopf „Platz sichern", Hinweistext.
