@@ -93,6 +93,20 @@ MARKETING_OS="$T/marketing-os" MEDIEN_ERZEUGT="$T/medien" bash "$SKRIPT" >/dev/n
 out="$(MARKETING_OS="$T/marketing-os" MEDIEN_ERZEUGT="$T/fehlt-medien" bash "$SKRIPT" 2>&1)"
 echo "$out" | grep -q "Platzhalter nicht abgelegt"
 
+# 6c) Ablage scheitert (install per Stub im PATH, weil chmod unter Windows-
+#     Git-Bash nichts sperrt): nie fatal.
+#     Der Lauf endet wie ohne Platzhalter (hier: Neustart nachgeholt, Null),
+#     mit HINWEIS auf stderr.
+mkdir -p "$T/medien2" "$T/stub"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$T/stub/install"; chmod +x "$T/stub/install"
+commit spaces/marketing/x e
+out="$(PATH="$T/stub:$PATH" MARKETING_OS="$T/marketing-os" MEDIEN_ERZEUGT="$T/medien2" bash "$SKRIPT" 2>&1)" || {
+  echo "FEHLER: gescheiterte Ablage machte den Lauf fatal"; exit 1; }
+echo "$out" | grep -q "platzhalter-2x1.png nicht abgelegt"
+echo "$out" | grep -q "restart marketing-api" || {
+  echo "FEHLER: Neustart nach gescheiterter Ablage nicht erreicht"; exit 1; }
+[ "$(cat "$STAND")" = "$(git -C "$T/marketing-os" rev-parse HEAD)" ]
+
 # 7) lokale Aenderung: Abbruch mit Nicht-Null, nichts ueberschrieben
 echo lokal > "$T/marketing-os/spaces/marketing/x"
 if MARKETING_OS="$T/marketing-os" bash "$SKRIPT"; then

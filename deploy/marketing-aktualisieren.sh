@@ -41,7 +41,8 @@ if [ -d "$MEDIEN_ERZEUGT" ]; then
   for f in spaces/marketing/vorlagen/newsletter/platzhalter/platzhalter-*.png; do
     [ -f "$f" ] || continue
     ziel="$MEDIEN_ERZEUGT/$(basename "$f")"
-    cmp -s "$f" "$ziel" 2>/dev/null || install -m 644 "$f" "$ziel"
+    cmp -s "$f" "$ziel" 2>/dev/null || install -m 644 "$f" "$ziel" \
+      || echo "HINWEIS Marketing-Seite: $ziel nicht abgelegt." >&2
   done
 else
   echo "HINWEIS Marketing-Seite: $MEDIEN_ERZEUGT fehlt - Platzhalter nicht abgelegt." >&2
