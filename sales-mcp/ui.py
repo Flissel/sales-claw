@@ -1096,6 +1096,11 @@ label.haken { display: flex; align-items: center; gap: .5rem;
               min-height: 44px; font-size: .95rem; }
 label.haken input[type="checkbox"] { width: 22px; height: 22px; flex: none; }
 label.feld { display: block; margin: .8rem 0; font-weight: 600; }
+label.feld input { display: block; margin-top: .35rem; max-width: 36rem; }
+/* Nummerierte Schritte (Kalender verbinden): Luft zwischen den Schritten,
+   damit jeder als eigene Aufgabe lesbar bleibt. */
+ol.schritte { padding-left: 1.4rem; }
+ol.schritte > li { margin: .9rem 0; }
 /* Ein alleinstehender Verweis („Abbrechen, nichts tun", „auch archivierte
    zeigen") ist auf dem Telefon genauso ein Ziel für einen Daumen wie ein
    Knopf — als Textzeile von 16px Höhe ist er keines. */
@@ -4029,16 +4034,24 @@ async def aktion_termin_verschieben(request):
 #
 # Klickwege je Anbieter. Ein Text fuer alle waere hier der Fehler: wer
 # Google nutzt, soll nicht durch vier Absaetze zu Apple lesen muessen.
+# (Anbieter, Direktlink zu der Einstellungsseite, auf der die Adresse steht,
+# Klickweg ab dort). Der Link spart das Suchen im Menue — die haeufigste
+# Stelle, an der Kollegen haengen blieben (29.09.2026).
 _ANBIETER_WEGE = (
     ("Google Kalender",
-     "Einstellungen → „Einstellungen für meine Kalender“ → deinen Kalender "
-     "wählen → „Kalender integrieren“ → <b>Geheime Adresse im iCal-Format</b>"),
+     "https://calendar.google.com/calendar/r/settings",
+     "Links unter „Einstellungen für meine Kalender“ deinen Kalender "
+     "wählen → „Kalender integrieren“ → <b>Geheime Adresse im iCal-Format</b> "
+     "kopieren (nicht die öffentliche Adresse)"),
     ("Apple iCloud",
-     "Kalender-App → Kalender einblenden → beim Kalender auf das Symbol → "
-     "„Öffentlicher Kalender“ aktivieren → Adresse kopieren"),
+     "https://www.icloud.com/calendar",
+     "Neben deinem Kalender auf das Teilen-Symbol → „Öffentlicher Kalender“ "
+     "einschalten → Adresse kopieren"),
     ("Outlook / Microsoft 365",
-     "Einstellungen → Kalender → „Freigegebene Kalender“ → „Kalender "
-     "veröffentlichen“ → Berechtigung „Alle Details“ → <b>ICS-Link</b> kopieren"),
+     "https://outlook.live.com/calendar/0/options/calendar/SharedCalendars",
+     "Unter „Kalender veröffentlichen“ deinen Kalender und „Kann alle "
+     "Details anzeigen“ wählen → „Veröffentlichen“ → <b>ICS-Link</b> kopieren. "
+     "Mit Firmenkonto: dieselbe Seite unter outlook.office.com"),
 )
 
 
@@ -4236,26 +4249,41 @@ async def team_kalender(request):
     tabelle = (_tabelle(["Name", "Stand", "Aktion"], zeilen) if zeilen else
                '<p class="meta">Noch kein Kalender verbunden.</p>')
 
+    # Neuer Tab fuer die Anbieter-Seite: wer dort die Adresse kopiert, soll
+    # hierher zurueckkommen, ohne diese Seite neu suchen zu muessen.
     wege = "".join(
-        f'<details><summary>{_e(name)}</summary><p class="meta">{weg}</p>'
-        f'</details>' for name, weg in _ANBIETER_WEGE)
+        f'<details class="karte"><summary>{_e(name)}</summary>'
+        f'<p><a href="{_e(link)}" target="_blank" rel="noopener noreferrer">'
+        f'Einstellungen öffnen ↗</a></p><p class="meta">{weg}</p></details>'
+        for name, link, weg in _ANBIETER_WEGE)
 
+    # Vorbelegt mit dem angemeldeten Namen (ein Kollege mit Rolle
+    # `kalender` verbindet fast immer seinen eigenen), aenderbar fuer den
+    # Betreiber, der fuer jemanden verbindet. Der Sammelstempel ohne
+    # Anmeldung ist kein Name und bleibt deshalb leer.
+    akteur = _ui_akteur(request)
+    vorbelegt = "" if akteur == "betreiber-ui" else akteur
     formular = (
         f'<form method="post" action="/team/kalender/verbinden">'
         f'<input type="hidden" name="csrf" value="{_e(CSRF_TOKEN)}">'
-        f'<label>Dein Name<br><input name="name" required></label>'
-        f'<label>Geheime Kalenderadresse<br>'
-        f'<input name="url" type="text" required '
-        f'placeholder="https://…/basic.ics"></label>'
-        f'<button type="submit">Verbinden und prüfen</button></form>')
+        f'<ol class="schritte">'
+        f'<li><b>Anbieter wählen</b> und dort die geheime Adresse kopieren:'
+        f'{wege}</li>'
+        f'<li><label class="feld">Adresse hier einfügen'
+        f'<input name="url" type="text" required autocomplete="off" '
+        f'placeholder="https://…/basic.ics"></label></li>'
+        f'<li><label class="feld">Wessen Kalender ist das?'
+        f'<input name="name" type="text" required value="{_e(vorbelegt)}">'
+        f'</label></li>'
+        f'</ol>'
+        f'<button class="primaer" type="submit">Verbinden und prüfen</button>'
+        f'</form>')
 
     return _seite("Kalender verbinden",
-                  '<h1>Kalender verbinden</h1>'
-                  '<p class="meta">Suche unten deinen Anbieter, hole dir die '
-                  'geheime Adresse und füge sie ein. Es wird sofort geprüft, '
-                  'ob sie stimmt. Du kannst sie bei deinem Anbieter jederzeit '
-                  'zurücksetzen — dann endet der Zugriff sofort.</p>'
-                  + wege + formular + '<h2>Verbunden</h2>' + tabelle)
+                  '<p class="meta">Drei Schritte, dann wird sofort geprüft, '
+                  'ob es klappt. Du kannst die Adresse bei deinem Anbieter '
+                  'jederzeit zurücksetzen — dann endet der Zugriff sofort.</p>'
+                  + formular + '<h2>Verbunden</h2>' + tabelle)
 
 
 @_gesichert_seite

@@ -469,3 +469,41 @@ def test_rolle_kalender_sieht_termine_aber_keine_wiedervorlagen_oder_anfragen(
     voll = voller_client.get("/kalender", headers={"host": HOST_OK}).text
     assert "W5-GEHEIMER-ANFRAGETEXT" in voll
     assert "W5-GEHEIME-WIEDERVORLAGE-NOTIZ" in voll
+
+
+# --- Leichter machen (29.09.2026) -------------------------------------------
+
+def test_seite_hat_genau_eine_ueberschrift():
+    seite = _get("/team/kalender").text
+    assert seite.count("<h1>") == 1
+
+
+def test_seite_fuehrt_in_nummerierten_schritten():
+    seite = _get("/team/kalender").text
+    assert "<ol" in seite
+    # Erst Anbieter, dann Adresse einfuegen, dann pruefen — in dieser Reihenfolge.
+    assert (seite.index("Anbieter") < seite.index('name="url"')
+            < seite.index("Verbinden und prüfen"))
+
+
+def test_jeder_anbieter_hat_einen_direkten_link_zu_den_einstellungen():
+    seite = _get("/team/kalender").text
+    for link in ("https://calendar.google.com/calendar/r/settings",
+                 "https://www.icloud.com/calendar",
+                 "https://outlook.live.com/calendar/0/options/calendar/SharedCalendars"):
+        assert link in seite, link
+    # Neuer Tab: die eingefuegte Adresse soll hier nicht verloren gehen.
+    assert 'target="_blank" rel="noopener noreferrer"' in seite
+
+
+def test_name_ist_mit_dem_angemeldeten_benutzer_vorbelegt(scharf):
+    name = _benutzer_kalender("ivan", "nur-kalender-9")
+    client = _client()
+    assert _login(client, name, "nur-kalender-9").status_code == 303
+    seite = client.get("/team/kalender", headers={"host": HOST_OK}).text
+    assert 'name="name"' in seite and 'value="ivan"' in seite
+
+
+def test_ohne_anmeldung_bleibt_der_name_leer():
+    seite = _get("/team/kalender").text
+    assert 'value="betreiber-ui"' not in seite
