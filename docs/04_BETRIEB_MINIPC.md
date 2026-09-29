@@ -284,7 +284,10 @@ neu anmelden — ohne Gruppe scheitert jede Abfrage der Marketing-API.
 3. **Schlanker Checkout + venv:**
 
    ```bash
-   ssh offload-vm 'git clone --filter=blob:none --no-checkout --branch master git@github.com-marketing:Flissel/vibemind-os.git ~/marketing-os && cd ~/marketing-os && git sparse-checkout set spaces/marketing && git checkout master && python3 -m venv .venv && .venv/bin/pip install -q fastapi uvicorn'
+   ssh offload-vm 'git clone --filter=blob:none --no-checkout --branch master git@github.com-marketing:Flissel/vibemind-os.git ~/marketing-os && cd ~/marketing-os && git sparse-checkout set spaces/marketing && git checkout master && python3 -m venv .venv && .venv/bin/pip install -q fastapi uvicorn reportlab'
+   # reportlab: seit dem Marketing-Pult (29.09.2026) laedt der Server das
+   # Render-Modul (PDF-Vorschau). Ohne es startet marketing-api nicht
+   # (gemessen 29.09.: ModuleNotFoundError, Dienst in Neustart-Schleife).
    ssh offload-vm 'cd ~/marketing-os && .venv/bin/python -c "import spaces.marketing.api.server"'
    ```
 
