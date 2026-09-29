@@ -10,6 +10,7 @@ from starlette.testclient import TestClient  # noqa: E402
 import marketing_pult  # noqa: E402
 import server  # noqa: E402
 import ui  # noqa: E402
+import ui_marketing  # noqa: E402
 
 HOST = {"host": "127.0.0.1:8791"}
 IID = "11111111-1111-1111-1111-111111111111"
@@ -396,6 +397,29 @@ def test_zu_grosses_logo_abgewiesen_ohne_api(angemeldet, pult):
                         files={"logo": ("logo.png", gross, "image/png")})
     assert r.status_code == 422 and "150 KB" in r.text
     assert not any(a[1].endswith("/fassungen") for a in pult.aufrufe)
+
+
+def test_riesiges_logo_wird_nicht_ganz_gelesen(angemeldet, pult, monkeypatch):
+    """Ein 2-MB-Upload wird stueckweise gelesen und frueh abgebrochen - kein
+    read() ohne Groesse, und kaum mehr als die Grenze landet im Speicher."""
+    from starlette.datastructures import UploadFile
+    gelesen, groessen = [], []
+    original = UploadFile.read
+
+    async def spion(self, size=-1):
+        groessen.append(size)
+        daten = await original(self, size)
+        gelesen.append(len(daten))
+        return daten
+
+    monkeypatch.setattr(UploadFile, "read", spion)
+    riesig = b"\x89PNG\r\n\x1a\n" + b"0" * 2_000_000
+    r = angemeldet.post("/marketing/layout/dunkel/speichern", headers=HOST, data=_regler(),
+                        files={"logo": ("logo.png", riesig, "image/png")})
+    assert r.status_code == 422 and "Das Logo ist groesser als 150 KB." in r.text
+    assert not any(a[1].endswith("/fassungen") for a in pult.aufrufe)
+    assert groessen and all(g is not None and g > 0 for g in groessen), groessen
+    assert sum(gelesen) <= ui_marketing.LOGO_MAX + ui_marketing.LOGO_STUECK
 
 
 def test_logo_falscher_typ_abgewiesen(angemeldet, pult):

@@ -444,9 +444,9 @@ def _dashboard_origin() -> str:
 
 
 def _csp_mit_rahmen(origin: str) -> str:
-    """Die Seiten-Richtlinie plus GENAU EINE Rahmenquelle. Nur die
-    WhatsApp-Seite traegt sie; alle anderen Seiten behalten
-    `default-src 'none'` ohne frame-src — dort gibt es nichts zu rahmen."""
+    """Die Seiten-Richtlinie plus GENAU EINE Rahmenquelle. Nur Seiten mit Rahmen
+    tragen sie (WhatsApp-Seite, Marketing-Entwurf, Layout-Galerie und -Editor);
+    alle anderen behalten `default-src 'none'` ohne frame-src."""
     return f"{_CSP}; frame-src {origin}"
 
 

@@ -44,6 +44,7 @@ FARB_NAMEN = {"grund": "Grund", "text": "Text", "akzent": "Akzent", "flaeche": "
 SCHRIFTEN = (("system", "Klar"), ("serif", "Klassisch"), ("mono", "Technisch"))
 ABSTAENDE = (("eng", "eng"), ("mittel", "mittel"), ("weit", "weit"))
 LOGO_MAX = 150 * 1024
+LOGO_STUECK = 64 * 1024
 
 
 def _gerahmt(inhalt, typ: str = "text/html; charset=utf-8", status: int = 200) -> Response:
@@ -297,9 +298,19 @@ def routen(ui) -> list:
                 g[k] = w
         datei = form.get("logo") if logo_lesen else None
         if getattr(datei, "filename", ""):
-            roh = await datei.read()
-            if len(roh) > LOGO_MAX:
-                return None, "Das Logo ist groesser als 150 KB."
+            # In Stuecken lesen und abbrechen, sobald die Grenze ueberschritten
+            # ist - wie aktion_medien_hochladen in ui.py. Ein riesiger Upload
+            # landet so nie ganz im Speicher.
+            teile: list[bytes] = []
+            gelesen = 0
+            while (stueck := await datei.read(LOGO_STUECK)):
+                if not teile and not stueck.startswith((b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff")):
+                    return None, "Das Logo muss ein PNG oder JPEG sein."
+                gelesen += len(stueck)
+                if gelesen > LOGO_MAX:
+                    return None, "Das Logo ist groesser als 150 KB."
+                teile.append(stueck)
+            roh = b"".join(teile)
             if roh.startswith(b"\x89PNG\r\n\x1a\n"):
                 typ = "png"
             elif roh.startswith(b"\xff\xd8\xff"):
