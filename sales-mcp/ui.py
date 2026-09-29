@@ -201,6 +201,7 @@ from starlette.routing import Route
 
 import kalender
 import mailadresse
+import ui_marketing
 import verlinken
 
 import server
@@ -232,35 +233,6 @@ _EXTRA = [h.strip() for h in os.environ.get("UI_EXTRA_HOSTS", "").split(",")
 # Platzhalter, keine Adresse eines anderen Ladens.
 _HOST_PORT = os.environ.get("PORT_UI", "").strip()
 _BASIS_URL = os.environ.get("UI_BASIS_URL", "").strip()
-
-
-# Schalter Sales <-> Marketing (25.09.2026, Spec docs/superpowers/specs/
-# 2026-09-25-marketing-schalter-design.md). Leer = kein Schalter. Gesetzt
-# NUR in der Haupt-.env des Basis-Ladens — zweite Laeden starten mit
-# --env-file, das die Haupt-.env ersetzt (deploy/laden-anlegen.sh).
-def _marketing_url_lesen(roh: str) -> str:
-    return roh.strip().rstrip("/")
-
-
-MARKETING_URL = _marketing_url_lesen(os.environ.get("MARKETING_URL", ""))
-
-
-def _marketing_link(rolle: str) -> str:
-    """Ziel des Marketing-Schalters oder "" (kein Schalter). Zwei Huerden:
-    die Adresse ist gesetzt UND die Rolle ist `freigeben` im Basis-Laden —
-    dieselbe Sperre wie das Admin-Menue (_pfad_erlaubt), damit eine falsch
-    gesetzte Umgebung den Schalter nie in einem fremden Laden zeigt.
-
-    Den Rueckweg (`zurueck`) gibt es nur mit einer https-Basisadresse: die
-    Marketing-Seite nimmt ohnehin nur https://…ts.net an."""
-    if not MARKETING_URL:
-        return ""
-    if rolle != "freigeben" or server.SCHEMA not in ("sales", "sales_test"):
-        return ""
-    ziel = f"{MARKETING_URL}/mockup/"
-    if _BASIS_URL.startswith("https://"):
-        ziel += "?" + urllib.parse.urlencode({"zurueck": _BASIS_URL})
-    return ziel
 
 
 def _erlaubte_hosts(extra, port, host_port="", basis_url="") -> tuple:
@@ -492,7 +464,10 @@ def _mit_koepfen(send):
                 koepfe["Content-Security-Policy"] = _CSP
             koepfe["X-Content-Type-Options"] = "nosniff"
             koepfe["Referrer-Policy"] = "no-referrer"
-            koepfe["X-Frame-Options"] = "DENY"
+            # Dasselbe fuer den Rahmen-Schutz: nur die Pult-Vorschau setzt
+            # SAMEORIGIN (sie wird in die eigene Entwurfsseite gerahmt).
+            if "x-frame-options" not in koepfe:
+                koepfe["X-Frame-Options"] = "DENY"
         await send(nachricht)
     return send_mit_koepfen
 
@@ -534,7 +509,10 @@ _KALENDER_ROLLE_PFADE = ("/team/kalender", "/kalender", "/logout", "/login",
                          "/passwort-vergessen", "/passwort-neu")
 
 
-_ADMIN_BASIS_PFADE = ("/team/laden-anlegen", "/team/tailscale-einladen")
+# "/marketing" (29.09.2026, Marketing-Pult Stufe 1): das Pult spricht mit
+# der Marketing-API des Betreibers — dieselbe Huerde wie die Admin-Seiten.
+_ADMIN_BASIS_PFADE = ("/team/laden-anlegen", "/team/tailscale-einladen",
+                      "/marketing")
 
 
 def _pfad_erlaubt(rolle: str, pfad: str) -> bool:
@@ -834,12 +812,6 @@ nav.seite .logo { width: 1.9rem; height: 1.9rem; border-radius: 6px;
                   background: var(--gut); color: var(--gut_auf);
                   display: flex; align-items: center;
                   justify-content: center; }
-nav.seite .schalter { display: flex; gap: .2rem; padding: 0 .5rem;
-                      font-size: .8rem; }
-nav.seite .schalter span, nav.seite .schalter a {
-  min-height: 0; padding: .2rem .6rem; border-radius: 999px; }
-nav.seite .schalter .schalter-aktiv { background: var(--aktiv);
-                                     color: var(--gut); font-weight: 700; }
 .gruppe { display: flex; flex-direction: column; gap: .15rem; }
 .gruppenname { font-size: .7rem; letter-spacing: .08em;
                text-transform: uppercase; color: var(--gedaempft);
@@ -897,7 +869,7 @@ nav.seite .abmelden { margin-top: auto; padding: 0 .5rem; }
   nav.seite { display: flex; flex-direction: row; flex-wrap: wrap;
               width: auto; height: auto; position: static;
               gap: .15rem; padding: .3rem .5rem; }
-  nav.seite .marke, nav.seite .schalter, .gruppenname { display: none; }
+  nav.seite .marke, .gruppenname { display: none; }
   .gruppe { display: contents; }
   /* Oben bleibt nur die aktive Gruppe — die anderen drei sitzen unten. */
   nav.seite .gruppe:not(.aktiv-gruppe) { display: none; }
@@ -958,6 +930,32 @@ h2 { font-size: 1.05rem; margin-top: 2rem; }
 /* --- Eingebettetes OpenWA-Dashboard (02.09.2026) ------------------------- */
 .dashboard { width: 100%; height: 78vh; min-height: 32rem; border: 1px solid
              var(--linie); border-radius: 4px; background: var(--flaeche); }
+
+/* --- Marketing-Pult (29.09.2026): Felder links, Vorschau rechts; auf dem
+   Telefon untereinander. Die Vorschau ist ein eigener, gesandboxter Rahmen. */
+.pult { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.2rem; }
+@media (min-width: 768px) {
+  .pult { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+.pult-felder label { display: block; margin: .6rem 0; font-weight: 600; }
+.pult-felder input, .pult-felder textarea, .pult-felder select {
+  display: block; width: 100%; margin-top: .3rem; }
+.pult-felder fieldset { border: 1px solid var(--linie); border-radius: 4px;
+                        margin: .6rem 0; padding: .5rem; }
+.pult-rechts iframe.vorschau { width: 100%; height: 80vh; border: 1px solid
+                               var(--linie); border-radius: 4px;
+                               background: #ffffff; }
+.pult-rechts iframe.vorschau.handy { max-width: 400px; display: block;
+                                     margin: 0 auto; }
+.mandanten { display: flex; flex-wrap: wrap; gap: .5rem; margin: .5rem 0 1rem; }
+.mandant { border: 1px solid var(--linie); border-radius: 999px;
+           padding: .2rem .8rem; font-weight: 600; }
+.mandant.aus { color: var(--gedaempft); font-weight: 400; border-style: dashed; }
+.filter, .vorschau-wahl { display: flex; flex-wrap: wrap; gap: .4rem;
+                          margin: .5rem 0 1rem; }
+.filter a, .vorschau-wahl a { padding: .3rem .8rem; border: 1px solid
+                              var(--linie); border-radius: 999px; }
+.filter a.aktiv, .vorschau-wahl a.aktiv { background: var(--aktiv);
+                                          color: var(--gut); font-weight: 700; }
 
 /* --- Geschäftsverweise (01.09.2026): anklickbare Absprung-Chips --------- */
 .verweise { display: flex; flex-wrap: wrap; gap: .4rem; }
@@ -1219,6 +1217,11 @@ _GRUPPEN = (
                  ("/posteingang", "Posteingang"))),
     ("Daten", (("/medien", "Medien"),)),
     ("Monitoring", (("/whatsapp", "WhatsApp"),)),
+    # Marketing-Pult (29.09.2026): wie Admin nur fuer freigeben im
+    # Basis-Laden (_ADMIN_BASIS_PFADE). /marketing/layouts kommt mit Task 5.
+    ("Marketing", (("/marketing", "Übersicht"),
+                   ("/marketing/entwuerfe", "Entwürfe"),
+                   ("/marketing/layouts", "Layouts"))),
     # Existiert im Menue NUR fuer Rolle freigeben im Basis-Laden — nicht
     # wegen einer Extra-Pruefung hier, sondern weil _seitenleiste JEDEN
     # Eintrag durch _pfad_erlaubt filtert (s. dort), und die faellt fuer
@@ -1290,12 +1293,8 @@ def _seitenleiste(abmelden: str) -> str:
         (gruppe, tuple(e for e in eintraege if _pfad_erlaubt(rolle, e[0])))
         for gruppe, eintraege in _GRUPPEN)
     gruppen = tuple(g for g in gruppen if g[1])
-    marketing = _marketing_link(rolle)
     teile = ['<nav class="seite"><div class="marke">'
              '<span class="logo">S</span><span>sales-claw</span></div>']
-    if marketing:
-        teile.append('<div class="schalter"><span class="schalter-aktiv">Sales</span>'
-                     f'<a href="{_e(marketing)}">Marketing</a></div>')
     # Die Gruppe der aktiven Seite: am Handy die einzige, die oben als
     # Zeile bleibt (Schritt 7); ohne Treffer die erste (Aufgaben).
     gruppe_aktiv = gruppen[0][0]
@@ -1333,9 +1332,6 @@ def _seitenleiste(abmelden: str) -> str:
             zahl = f'<span class="zaehler offen">{int(zaehler["/"])}</span>'
         teile.append(f'<a class="{klasse}" href="{pfad}"><span>{_e(gruppe)}'
                      f'</span>{zahl}</a>')
-    if marketing:
-        teile.append(f'<a class="tab" href="{_e(marketing)}">'
-                     '<span>Marketing</span></a>')
     teile.append("</nav>")
     return "".join(teile)
 
@@ -6217,6 +6213,7 @@ app = Starlette(routes=[
           methods=["POST"]),
     Route("/wiedervorlagen/erledigt", aktion_wiedervorlage_erledigt,
           methods=["POST"]),
+    *ui_marketing.routen(sys.modules[__name__]),
     Route("/medien", medien),
     Route("/medien/bot", aktion_medien_bot, methods=["POST"]),
     Route("/medien/datei/{name}", medien_datei),

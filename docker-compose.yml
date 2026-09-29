@@ -780,10 +780,12 @@ services:
       # http://127.0.0.1:8791 zurueck; die Mail ginge dann raus und der
       # Link zeigte ins Nichts des Containers.
       - UI_BASIS_URL=${UI_BASIS_URL:-}
-      # Schalter Sales <-> Marketing (25.09.2026): tailscale-serve-Adresse
-      # der Marketing-API auf der VM. NUR in der Haupt-.env setzen — zweite
-      # Laeden (--env-file) bekommen sie so nie. Leer = kein Schalter.
-      - MARKETING_URL=${MARKETING_URL:-}
+      # Marketing-Pult (29.09.2026): Adresse und Schluessel des Pult-Routers
+      # der Marketing-API (/api/pult). NUR in der Haupt-.env des
+      # Basis-Ladens setzen — zweite Laeden (--env-file) bekommen sie so
+      # nie. Leer = Pult zeigt "Marketing nicht verbunden".
+      - MARKETING_PULT_URL=${MARKETING_PULT_URL:-}
+      - MARKETING_PULT_KEY=${MARKETING_PULT_KEY:-}
       # Kalender (01.09.2026): der Tab /kalender liest die Termine des
       # Betreibers per CalDAV — REIN LESEND (ein REPORT-Aufruf, kein PUT).
       # Bewusste Ausnahme von der T5a-Liste oben: der Kalenderzugang
