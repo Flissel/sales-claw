@@ -108,12 +108,12 @@ export default function PultLeiste() {
           bgcolor: 'background.paper',
         }}
       >
-        <Typography variant="subtitle1" sx={{ fontWeight: 700, flexShrink: 0 }}>
-          Newsletter
-        </Typography>
         <Button size="small" startIcon={<ArrowBackOutlined />} onClick={zurueck} sx={{ flexShrink: 0 }}>
           Zurück zum Entwurf
         </Button>
+        <Typography variant="subtitle1" sx={{ fontWeight: 700, flexShrink: 0 }}>
+          Newsletter
+        </Typography>
         <TextField
           size="small"
           label="Betreff"
