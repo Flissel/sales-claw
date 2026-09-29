@@ -201,6 +201,7 @@ from starlette.routing import Route
 
 import kalender
 import mailadresse
+import ui_editor
 import ui_marketing
 import verlinken
 
@@ -515,6 +516,20 @@ _ADMIN_BASIS_PFADE = ("/team/laden-anlegen", "/team/tailscale-einladen",
                       "/marketing")
 
 
+# Newsletter-Editor (29.09.2026): die abgeschottete Vorschau (sandbox, eigene
+# undurchsichtige Herkunft) schickt keine Anmelde-Cookies - ihre Bilder kaemen
+# sonst nie an. Deshalb ist GENAU dieser Praefix ohne Sitzung offen: Form
+# /marketing/bild/<token>/<name>, nur GET/HEAD. Die Route prueft die Signatur
+# (HMAC mit UI_SESSION_SECRET, 15 Minuten) und liefert nur Bilddateien aus
+# den Medien (medien.pruefe_anhang). Alles andere unter /marketing bleibt
+# hinter der Anmeldung (test_editor_seite::test_ohne_anmeldung_...).
+_SIGNIERTES_BILD = re.compile(r"/marketing/bild/[0-9]{1,12}\.[0-9a-f]{64}/[^/.][^/]*")
+
+
+def _signiertes_bild(pfad: str) -> bool:
+    return _SIGNIERTES_BILD.fullmatch(pfad) is not None
+
+
 def _pfad_erlaubt(rolle: str, pfad: str) -> bool:
     """Darf diese Rolle diesen Pfad sehen? `kalender` ist eingeschraenkt,
     jeder Pfad in `_ADMIN_BASIS_PFADE` zusaetzlich auf `freigeben` im
@@ -531,6 +546,10 @@ def _pfad_erlaubt(rolle: str, pfad: str) -> bool:
     `sales`), waere `sales_test` hier NICHT gleichgestellt, saehe in JEDEM
     Testlauf niemand einen der beiden Knoepfe — auch nicht die Rolle
     `freigeben` selbst."""
+    if _signiertes_bild(pfad):
+        # Newsletter-Editor (29.09.2026): die Signatur ist die Berechtigung,
+        # nicht die Rolle - s. _SIGNIERTES_BILD.
+        return True
     if any(pfad == p or pfad.startswith(p + "/") for p in _ADMIN_BASIS_PFADE):
         return rolle == "freigeben" and server.SCHEMA in ("sales", "sales_test")
     if rolle != "kalender":
@@ -561,6 +580,10 @@ class AnmeldeWache:
             # Sie sind nicht ungeschuetzt: /passwort-neu verlangt einen
             # gueltigen Einmal-Token, und /passwort-vergessen kann nichts
             # aendern, nur eine Mail an eine HINTERLEGTE Adresse ausloesen.
+            await self.app(scope, receive, send)
+            return
+        if scope["method"] in ("GET", "HEAD") and _signiertes_bild(scope["path"]):
+            # Signierte Vorschau-Bilder, s. _SIGNIERTES_BILD.
             await self.app(scope, receive, send)
             return
         name = _sitzung_pruefen(_cookie_wert(scope, SITZUNG_COOKIE))
@@ -1184,6 +1207,10 @@ button.primaer { background: var(--gut); border-color: var(--gut);
                  color: var(--gut_auf); }
 button.gefahr { background: var(--flaeche); border-color: var(--fehler);
                 color: var(--fehler); border-width: 2px; }
+/* Verweis, der wie ein Hauptknopf aussieht (Im Editor öffnen, Neu aus Vorlage). */
+a.knopf { display: inline-block; min-height: 44px; padding: .6rem 1.1rem;
+          border-radius: 6px; border: 1px solid var(--gut); background: var(--gut);
+          color: var(--gut_auf); font-weight: 600; text-decoration: none; }
 /* 16px ist die Schwelle: darunter zoomt iOS beim Fokussieren von selbst in
    das Feld hinein und lässt die Seite verschoben zurück. */
 select, input[type="text"], input[type="tel"], input[type="email"] {
@@ -6351,6 +6378,9 @@ app = Starlette(routes=[
           methods=["POST"]),
     Route("/wiedervorlagen/erledigt", aktion_wiedervorlage_erledigt,
           methods=["POST"]),
+    # Editor (einzige Seite mit Skript), signierte Bilder, Vorlagen und die
+    # zwei Paket-Dateien - vor den Marketing-Routen.
+    *ui_editor.routen(sys.modules[__name__]),
     *ui_marketing.routen(sys.modules[__name__]),
     Route("/medien", medien),
     Route("/medien/bot", aktion_medien_bot, methods=["POST"]),

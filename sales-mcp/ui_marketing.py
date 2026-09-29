@@ -21,6 +21,7 @@ from starlette.responses import RedirectResponse, Response
 from starlette.routing import Route
 
 import marketing_pult
+import ui_editor
 
 ARTEN = {"newsletter": "Newsletter", "post": "Post", "material": "Team-Material"}
 STATUS = {"entwurf": "Zur Freigabe", "freigegeben": "Freigegeben", "abgelehnt": "Abgelehnt"}
@@ -30,7 +31,10 @@ RAHMEN_FORMATE = {"mail": "Mail", "handy": "Handy"}
 # Die Vorschau ist fremdes, gerendertes HTML: `sandbox` nimmt ihm Skripte,
 # Formulare und die eigene Herkunft. `frame-ancestors 'self'` erlaubt genau
 # den eigenen Entwurfsrahmen (die Seiten-CSP sagt sonst 'none').
-_CSP_VORSCHAU = ("sandbox; default-src 'none'; img-src data:; "
+# `img-src 'self'` (Newsletter-Editor, 29.09.2026): Bilder der Editor-
+# Newsletter kommen ueber die signierten Adressen /marketing/bild/...
+# (ui_editor.bild_basis) - weiter nichts von fremden Adressen.
+_CSP_VORSCHAU = ("sandbox; default-src 'none'; img-src 'self' data:; "
                  "style-src 'unsafe-inline'; frame-ancestors 'self'")
 
 
@@ -95,7 +99,9 @@ def routen(ui) -> list:
             f'<a class="kachel" href="/marketing/entwuerfe?status={k}"><b>{int(z.get(k, 0))}</b>'
             f'<span>{e(t)}</span></a>' for k, t in STATUS.items())
         return ui._seite("Marketing", f'<div class="mandanten">{mandanten}</div>'
-                                      f'<div class="kacheln">{karten}</div>')
+                                      f'<div class="kacheln">{karten}</div>'
+                                      '<p><a class="knopf" href="/marketing/vorlagen">'
+                                      'Neuer Newsletter aus Vorlage</a></p>')
 
     @ui._gesichert_seite
     async def entwuerfe(request):
@@ -202,7 +208,14 @@ def routen(ui) -> list:
             f'<input type="hidden" name="urteil" value="ablehnen">'
             f'<input type="text" name="grund" placeholder="Grund">'
             f'<button type="submit">Ablehnen</button></form></div>') if ist_neueste else ""
-        formular = (
+        # Editor-Newsletter (format "bloecke"): Inhalt nur im Editor; das
+        # Feldformular wuerde die Bloecke nicht kennen (die DB lehnt eine
+        # Felder-Fassung darauf ohnehin ab). Urteilen bleibt hier.
+        im_editor = akt.get("format") == "bloecke"
+        felder_formular = (
+            f'<p>Dieser Newsletter wird im Editor bearbeitet.</p>'
+            f'<p><a class="knopf" href="/marketing/editor/{e(i["id"])}">Im Editor öffnen</a></p>'
+        ) if im_editor else (
             f'<form method="post" action="{basis}/speichern" class="pult-felder">{csrf}'
             f'<label>{betreff} <input name="betreff" value="{e(fe.get("betreff"))}"></label>'
             f'<label>Vorschautext <input name="vorschautext" value="{e(fe.get("vorschautext"))}"></label>'
@@ -210,14 +223,16 @@ def routen(ui) -> list:
             f'<label>Knopf-Text <input name="knopf_text" value="{e(fe.get("knopf_text"))}"></label>'
             f'<label>Knopf-Link <input name="knopf_link" value="{e(fe.get("knopf_link"))}"></label>'
             f'<label>Layout <select name="layout">{layouts}</select></label>'
-            f'<button type="submit">Als neue Fassung speichern</button></form>'
-            f'{entscheiden}') if offen else (
+            f'<button type="submit">Als neue Fassung speichern</button></form>')
+        formular = f'{felder_formular}{entscheiden}' if offen else (
             f'<p>{e(STATUS.get(i["status"], i["status"]))}.</p>')
         wahl_links = "".join(
             f'<a class="{"aktiv" if k == fmt else ""}" href="{basis}?fassung={nr}&amp;format={k}">{t}</a>'
             for k, t in RAHMEN_FORMATE.items())
-        wahl_links += (f'<a href="{basis}/vorschau?fassung={nr}&amp;format=pdf" target="_blank" '
-                       f'rel="noopener noreferrer">PDF &#8599;</a>')
+        if not im_editor:
+            # Fuer Editor-Newsletter gibt es (noch) kein PDF - die API sagt 422.
+            wahl_links += (f'<a href="{basis}/vorschau?fassung={nr}&amp;format=pdf" target="_blank" '
+                           f'rel="noopener noreferrer">PDF &#8599;</a>')
         rumpf = (
             f'<p class="meta">{e(ARTEN.get(i["art"], i["art"]))} &middot; '
             f'{e(STATUS.get(i["status"], i["status"]))} &middot; Fassung {nr}</p>{hinweis}{alter_hinweis}'
@@ -237,7 +252,13 @@ def routen(ui) -> list:
         fmt = request.query_params.get("format", "mail")
         if fassung is None or fmt not in ("mail", "handy", "pdf"):
             return ui._fehlerseite(400, "Ungültige Vorschau", "Fassung oder Format fehlt.")
-        q = urllib.parse.urlencode({"fassung": fassung, "format": fmt})
+        q_teile = {"fassung": fassung, "format": fmt}
+        # Bilder der Editor-Newsletter: signierte Adresse, weil der
+        # abgeschottete Rahmen keine Anmelde-Cookies schickt. Leer (kein
+        # Geheimnis, kein https) -> weglassen, die API zeigt Platzhalter.
+        if (bild_basis := ui_editor.bild_basis()):
+            q_teile["bild_basis"] = bild_basis
+        q = urllib.parse.urlencode(q_teile)
         try:
             inhalt, typ = await run_in_threadpool(
                 marketing_pult.anfrage, "GET", f"/inhalte/{iid}/vorschau?{q}", roh=True)
