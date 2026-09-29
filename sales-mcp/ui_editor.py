@@ -42,6 +42,10 @@ KONFLIKT = "Inzwischen gibt es Fassung"
 # Obergrenze fuer den Speichern-Koerper: die DB nimmt hoechstens 256 KB
 # Dokument an, dazu Betreff/Vorschautext und JSON-Rahmen.
 KOERPER_MAX = 300 * 1024
+# Bildplatz-Kennung und Hinweis fuer Bild-Auftraege (Marketing-API prueft
+# nochmals; hier nur die Form).
+PLATZ_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+HINWEIS_MAX = 500
 
 
 def _ui():
@@ -144,6 +148,8 @@ def routen(ui) -> list:
             "vorschau_url": f"/marketing/entwurf/{iid}/vorschau",
             "medien_url": "/marketing/editor/medien.json",
             "zurueck_url": f"/marketing/entwurf/{iid}",
+            "bild_url": f"/marketing/editor/{iid}/bild",
+            "stand_url": f"/marketing/editor/{iid}/stand.json",
             "csrf": ui.CSRF_TOKEN,
             # Herkunft aus dem alten Freigabeweg - der Editor zeigt denselben
             # Hinweis wie die Entwurfsseite (ui_marketing.alter_hinweis).
@@ -222,6 +228,45 @@ def routen(ui) -> list:
             # wir das nicht bestaetigen; der Editor behaelt die Aenderungen.
             return json_grund(503, "Speichern gerade nicht möglich")
         return JSONResponse({"fassung": fassung}, headers={"Cache-Control": "no-store"})
+
+    @ui._gesichert_seite
+    async def editor_bild(request):
+        marke = request.headers.get("x-csrf", "")
+        if not marke or not hmac.compare_digest(marke, ui.CSRF_TOKEN):
+            return json_grund(403, "Fehlende oder falsche CSRF-Marke")
+        try:
+            body = json.loads(await request.body() or b"{}")
+        except (ValueError, UnicodeDecodeError):
+            return json_grund(422, "Die Anfrage ist kein gültiges JSON")
+        if not isinstance(body, dict):
+            return json_grund(422, "Die Anfrage ist kein JSON-Objekt")
+        platz, hinweis = body.get("platz"), body.get("hinweis", "")
+        if platz is not None and (not isinstance(platz, str) or not PLATZ_ID.match(platz)):
+            return json_grund(422, "Unbekannter Bildplatz")
+        if not isinstance(hinweis, str) or len(hinweis) > HINWEIS_MAX:
+            return json_grund(422, f"Der Hinweis darf höchstens {HINWEIS_MAX} Zeichen haben")
+        iid = urllib.parse.quote(request.path_params["iid"], safe="")
+        try:
+            r = await run_in_threadpool(marketing_pult.anfrage, "POST", f"/inhalte/{iid}/bilder",
+                                        {"platz": platz, "hinweis": hinweis.strip(), "nur_leere": False})
+        except marketing_pult.PultFehler as f:
+            if f.art == "abgelehnt":
+                return json_grund(422, str(f.grund or "Abgelehnt"))
+            return json_grund(503, "Auftrag gerade nicht möglich")
+        return JSONResponse({"auftrag": str((r or {}).get("auftrag") or "")}, headers={"Cache-Control": "no-store"})
+
+    @ui._gesichert_seite
+    async def editor_stand(request):
+        iid = urllib.parse.quote(request.path_params["iid"], safe="")
+        try:
+            d = await run_in_threadpool(marketing_pult.anfrage, "GET", f"/inhalte/{iid}")
+            b = await run_in_threadpool(marketing_pult.anfrage, "GET", f"/inhalte/{iid}/bilder")
+        except marketing_pult.PultFehler:
+            return json_grund(503, "Stand gerade nicht abrufbar")
+        fassungen = (d or {}).get("fassungen") or []
+        return JSONResponse({"fassung": int(fassungen[0]["fassung"]) if fassungen else 0,
+                             "auftraege": (b or {}).get("auftraege") or []},
+                            headers={"Cache-Control": "no-store"})
 
     @ui._gesichert_seite
     async def medien_json(request):
@@ -344,6 +389,8 @@ def routen(ui) -> list:
         Route("/marketing/editor/medien.json", medien_json),
         Route("/marketing/editor/{iid}", editor_seite),
         Route("/marketing/editor/{iid}/speichern", editor_speichern, methods=["POST"]),
+        Route("/marketing/editor/{iid}/bild", editor_bild, methods=["POST"]),
+        Route("/marketing/editor/{iid}/stand.json", editor_stand),
         Route("/marketing/bild/{token}/{name}", bild),
         Route("/marketing/vorlagen", vorlagen_seite),
         Route("/marketing/vorlage-bild/{name}", vorlage_bild),

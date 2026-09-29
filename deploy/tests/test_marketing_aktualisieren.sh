@@ -73,6 +73,26 @@ if MARKETING_OS="$T/marketing-os" GESUNDHEIT=false GESUNDHEIT_PAUSE=0 \
   echo "FEHLER: gescheiterte Gesundheitsprobe ergab Null"; exit 1; fi
 [ "$(cat "$STAND")" = "$vorher" ]
 
+# 6b) Platzhalter: liegen nach dem Lauf im Medienordner, ein zweiter Lauf
+#     aendert nichts, eine abweichende Zieldatei wird ersetzt; fehlt der
+#     Ordner, gibt es nur einen Hinweis (Nullstatus).
+mkdir -p "$T/arbeit/spaces/marketing/vorlagen/newsletter/platzhalter"
+printf 'png1' > "$T/arbeit/spaces/marketing/vorlagen/newsletter/platzhalter/platzhalter-2x1.png"
+( cd "$T/arbeit" && git add . && git -c user.name=t -c user.email=t@t commit -qm platzhalter \
+  && git push -q origin master )
+mkdir -p "$T/medien"
+MARKETING_OS="$T/marketing-os" MEDIEN_ERZEUGT="$T/medien" bash "$SKRIPT" >/dev/null
+[ "$(cat "$T/medien/platzhalter-2x1.png")" = png1 ]
+touch -d '2001-01-01 00:00:00' "$T/medien/platzhalter-2x1.png"
+MARKETING_OS="$T/marketing-os" MEDIEN_ERZEUGT="$T/medien" bash "$SKRIPT" >/dev/null
+[ "$(date -r "$T/medien/platzhalter-2x1.png" +%Y)" = 2001 ] || {
+  echo "FEHLER: unveraenderter Platzhalter neu geschrieben"; exit 1; }
+printf 'alt' > "$T/medien/platzhalter-2x1.png"
+MARKETING_OS="$T/marketing-os" MEDIEN_ERZEUGT="$T/medien" bash "$SKRIPT" >/dev/null
+[ "$(cat "$T/medien/platzhalter-2x1.png")" = png1 ]
+out="$(MARKETING_OS="$T/marketing-os" MEDIEN_ERZEUGT="$T/fehlt-medien" bash "$SKRIPT" 2>&1)"
+echo "$out" | grep -q "Platzhalter nicht abgelegt"
+
 # 7) lokale Aenderung: Abbruch mit Nicht-Null, nichts ueberschrieben
 echo lokal > "$T/marketing-os/spaces/marketing/x"
 if MARKETING_OS="$T/marketing-os" bash "$SKRIPT"; then

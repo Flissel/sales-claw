@@ -25,6 +25,9 @@ import ui_editor
 
 ARTEN = {"newsletter": "Newsletter", "post": "Post", "material": "Team-Material"}
 STATUS = {"entwurf": "Zur Freigabe", "freigegeben": "Freigegeben", "abgelehnt": "Abgelehnt"}
+# Bild-Auftraege (Marketing-API: marketing.bildauftraege.status).
+BILD_STATUS = {"offen": "wartet (PC muss laufen)", "in_arbeit": "wird erzeugt", "fertig": "fertig",
+               "fehler": "fehlgeschlagen", "verworfen": "verworfen"}
 # Was im Rahmen gezeigt wird; das PDF bekommt einen Verweis (s. oben).
 RAHMEN_FORMATE = {"mail": "Mail", "handy": "Handy"}
 
@@ -60,6 +63,20 @@ def _gerahmt(inhalt, typ: str = "text/html; charset=utf-8", status: int = 200) -
                     headers={"Content-Security-Policy": _CSP_VORSCHAU,
                              "X-Frame-Options": "SAMEORIGIN",
                              "Cache-Control": "private, no-store"})
+
+
+def _bildplaetze(bloecke) -> list[tuple[str, str]]:
+    """(id, alt) je Bildplatz (Image mit Breite und Hoehe) - wie
+    bildplaetze.finde in der Marketing-API, hier nur fuer die Auswahl."""
+    if not isinstance(bloecke, dict):
+        return []
+    aus = []
+    for bid, b in bloecke.items():
+        p = ((b or {}).get("data") or {}).get("props") or {}
+        if (b or {}).get("type") == "Image" and isinstance(p.get("width"), (int, float)) and p.get("width", 0) > 0 \
+                and isinstance(p.get("height"), (int, float)) and p.get("height", 0) > 0:
+            aus.append((str(bid), str(p.get("alt") or bid)))
+    return aus
 
 
 def _fassung_zahl(roh) -> int | None:
@@ -235,6 +252,28 @@ def routen(ui) -> list:
             f'<button type="submit">Als neue Fassung speichern</button></form>')
         formular = f'{felder_formular}{entscheiden}' if offen else (
             f'<p>{e(STATUS.get(i["status"], i["status"]))}.</p>')
+        bilder_html = ""
+        if im_editor and offen:
+            try:
+                stand = await run_in_threadpool(marketing_pult.anfrage, "GET",
+                                                f"/inhalte/{urllib.parse.quote(iid)}/bilder")
+                zeilen_b = "".join(
+                    f'<li>{e(a.get("platz") or ("alle leeren" if a.get("nur_leere") else "alle"))} &middot; '
+                    f'{e(BILD_STATUS.get(a.get("status"), a.get("status") or ""))}'
+                    f'{(" &middot; " + e(a.get("befund"))) if a.get("befund") else ""}'
+                    f'{(" &middot; Hinweis: " + e(a.get("hinweis"))) if a.get("hinweis") else ""}</li>'
+                    for a in (stand.get("auftraege") or [])[:10]) or "<li>Noch keine Bild-Aufträge.</li>"
+            except marketing_pult.PultFehler:
+                zeilen_b = "<li>Bildstand gerade nicht abrufbar.</li>"
+            optionen = '<option value="">alle Bildplätze</option>' + "".join(
+                f'<option value="{e(bid)}">{e(alt)}</option>' for bid, alt in _bildplaetze(fassungen[0].get("bloecke")))
+            bilder_html = (
+                f'<h2>Bilder</h2><ul>{zeilen_b}</ul>'
+                f'<form method="post" action="{basis}/bilder" class="aktion">{csrf}'
+                f'<label>Platz <select name="platz">{optionen}</select></label>'
+                f'<label>Hinweis <input name="hinweis" maxlength="500" placeholder="z. B. wärmer, mehr Menschen"></label>'
+                f'<button type="submit">Bild neu erzeugen</button>'
+                f'<span class="meta">Erzeugt wird am PC, sobald er läuft. Das Ergebnis ist eine neue Fassung.</span></form>')
         wahl_links = "".join(
             f'<a class="{"aktiv" if k == fmt else ""}" href="{basis}?fassung={nr}&amp;format={k}">{t}</a>'
             for k, t in RAHMEN_FORMATE.items())
@@ -245,7 +284,7 @@ def routen(ui) -> list:
         rumpf = (
             f'<p class="meta">{e(ARTEN.get(i["art"], i["art"]))} &middot; '
             f'{e(STATUS.get(i["status"], i["status"]))} &middot; Fassung {nr}</p>{hinweis}{alter_hinweis}'
-            f'<div class="pult"><div class="pult-links">{formular}<h2>Fassungen</h2><ul>{verlauf}</ul></div>'
+            f'<div class="pult"><div class="pult-links">{formular}{bilder_html}<h2>Fassungen</h2><ul>{verlauf}</ul></div>'
             f'<div class="pult-rechts"><div class="vorschau-wahl">{wahl_links}</div>'
             f'<iframe class="vorschau {fmt}" sandbox title="Vorschau" '
             f'src="{basis}/vorschau?fassung={nr}&amp;format={fmt}"></iframe>'
@@ -253,6 +292,25 @@ def routen(ui) -> list:
         antwort = ui._seite(i["titel"], rumpf)
         antwort.headers["Content-Security-Policy"] = ui._csp_mit_rahmen("'self'")
         return antwort
+
+    @ui._gesichert_seite
+    async def bilder(request):
+        form = await request.form()
+        if not ui._csrf_ok(form):
+            return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
+        iid = request.path_params["iid"]
+        platz = str(form.get("platz") or "").strip() or None
+        hinweis = str(form.get("hinweis") or "").strip()
+        if platz is not None and not ui_editor.PLATZ_ID.match(platz):
+            return ui._fehlerseite(422, "Nicht möglich", "Unbekannter Bildplatz.")
+        if len(hinweis) > ui_editor.HINWEIS_MAX:
+            return ui._fehlerseite(422, "Nicht möglich", "Der Hinweis ist zu lang.")
+        try:
+            await run_in_threadpool(marketing_pult.anfrage, "POST", f"/inhalte/{urllib.parse.quote(iid)}/bilder",
+                                    {"platz": platz, "hinweis": hinweis, "nur_leere": False})
+        except marketing_pult.PultFehler as f:
+            return fehler(f)
+        return RedirectResponse(f"/marketing/entwurf/{urllib.parse.quote(iid)}", status_code=303)
 
     @ui._gesichert_seite
     async def vorschau(request):
@@ -574,6 +632,7 @@ def routen(ui) -> list:
         Route("/marketing/entwurf/{iid}/speichern", speichern, methods=["POST"]),
         Route("/marketing/entwurf/{iid}/entscheiden", entscheiden, methods=["POST"]),
         Route("/marketing/entwurf/{iid}/in-bloecke", in_bloecke, methods=["POST"]),
+        Route("/marketing/entwurf/{iid}/bilder", bilder, methods=["POST"]),
         Route("/marketing/layouts", layouts),
         Route("/marketing/layout-bild/{name}", layout_bild),
         Route("/marketing/layout-vorschau", layout_vorschau, methods=["POST"]),

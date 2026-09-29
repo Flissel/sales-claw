@@ -32,6 +32,20 @@ ALT="$(git rev-parse HEAD)"
 BASIS="$(cat "$STAND")"
 git fetch origin master --quiet
 git merge --ff-only --quiet origin/master
+# Platzhalter fuer leere Newsletter-Bildplaetze (Spec 2026-09-29-newsletter-
+# bilder §4) in den System-Medienordner des Basis-Ladens. Nur kopieren, was
+# fehlt oder sich unterscheidet; nie loeschen. Vor dem "aktuell"-Ausstieg,
+# damit es jeder Lauf nachholt.
+MEDIEN_ERZEUGT="${MEDIEN_ERZEUGT:-$HOME/sales-claw/media-erzeugt}"
+if [ -d "$MEDIEN_ERZEUGT" ]; then
+  for f in spaces/marketing/vorlagen/newsletter/platzhalter/platzhalter-*.png; do
+    [ -f "$f" ] || continue
+    ziel="$MEDIEN_ERZEUGT/$(basename "$f")"
+    cmp -s "$f" "$ziel" 2>/dev/null || install -m 644 "$f" "$ziel"
+  done
+else
+  echo "HINWEIS Marketing-Seite: $MEDIEN_ERZEUGT fehlt - Platzhalter nicht abgelegt." >&2
+fi
 NEU="$(git rev-parse HEAD)"
 if [ "$BASIS" = "$NEU" ]; then
   echo "Marketing-Seite: aktuell ($NEU)."

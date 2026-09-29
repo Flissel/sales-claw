@@ -30,6 +30,10 @@ GESTALT = {"grund": "#0f2422", "text": "#cfe3df", "akzent": "#5eead4", "flaeche"
            "text_hell": "#e9fbf6", "text_leise": "#8aa3a0", "gold": "#fbbf24",
            "handlung_text": "#0f2422", "rundung": 8, "schrift": "system", "abstand": "mittel"}
 LOGO_ALT = "data:image/png;base64,iVBORw0KGgo="
+BLOECKE_MIT_PLATZ = {
+    "root": {"type": "EmailLayout", "data": {"childrenIds": ["kopf"]}},
+    "kopf": {"type": "Image", "data": {"props": {"url": "medien:platzhalter-2x1.png", "width": 600,
+                                                   "height": 300, "alt": "Team"}}}}
 
 
 class Falsch:
@@ -40,6 +44,8 @@ class Falsch:
         self.im_loop = []            # Pfade, die IM Event-Loop-Thread liefen (blockieren sales-ui)
         self.alter_weg = None        # I3: Status im alten Freigabeweg
         self.layout = "dunkel"       # Layout der Fassungen
+        self.bloecke = None          # gesetzt: neueste Fassung ist eine Editor-Fassung
+        self.bilder = {"auftraege": []}
 
     def anfrage(self, methode, pfad, daten=None, roh=False):
         self.aufrufe.append((methode, pfad, daten))
@@ -64,11 +70,14 @@ class Falsch:
             return {"inhalte": [{"id": IID, "art": "newsletter", "titel": "Early Access",
                                  "status": "entwurf", "erstellt_am": "2026-09-04", "fassungen": 2,
                                  "layout": "dunkel"}]}
+        if pfad == f"/inhalte/{IID}/bilder":
+            return {"auftrag": "a1"} if methode == "POST" else self.bilder
         if pfad == f"/inhalte/{IID}":
+            neu_extra = {"format": "bloecke", "bloecke": self.bloecke} if self.bloecke else {}
             return {"inhalt": {"id": IID, "art": "newsletter", "titel": "Early Access",
                                "status": "entwurf", "mandant": "vibemind"},
                     "fassungen": [{"fassung": 2, "felder": FELDER, "layout": self.layout,
-                                   "urheber": "betreiber", "erstellt_am": "x"},
+                                   "urheber": "betreiber", "erstellt_am": "x", **neu_extra},
                                   {"fassung": 1, "felder": FELDER, "layout": self.layout,
                                    "urheber": "agent", "erstellt_am": "y"}],
                     "alter_weg": self.alter_weg}
@@ -631,3 +640,43 @@ def test_handy_vorschau_mindestens_70vh():
     treffer = [m for m in _re.finditer(r"@media \(max-width: 767px\) \{\s*"
                                        r"\.pult-rechts iframe\.vorschau \{([^}]*)\}", css)]
     assert treffer and "min-height: 70vh" in treffer[0].group(1)
+
+def test_entwurf_zeigt_bildstand_und_formular(angemeldet, pult):
+    pult.bloecke = BLOECKE_MIT_PLATZ
+    pult.bilder = {"auftraege": [
+        {"platz": None, "nur_leere": True, "status": "offen", "befund": "", "hinweis": "", "geaendert_am": "2026-09-29 10:00"},
+        {"platz": "kopf", "nur_leere": False, "status": "fehler", "befund": "Schrift im Bild", "hinweis": "", "geaendert_am": "2026-09-29 09:00"}]}
+    seite = angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST).text
+    assert "Bilder" in seite and "wartet (PC muss laufen)" in seite and "Schrift im Bild" in seite
+    assert f'action="/marketing/entwurf/{IID}/bilder"' in seite and '<option value="kopf">' in seite
+    assert "<script" not in seite
+
+
+def test_entwurf_bildstand_fehler_laesst_seite_stehen(angemeldet, pult):
+    pult.bloecke = BLOECKE_MIT_PLATZ
+    pult.fehler = marketing_pult.PultFehler("nicht_erreichbar", "x")
+    pult.fehler_pfad = "/bilder"
+    r = angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST)
+    assert r.status_code == 200 and "Bildstand gerade nicht abrufbar" in r.text
+
+
+def test_entwurf_bilder_formular(angemeldet, pult):
+    r = angemeldet.post(f"/marketing/entwurf/{IID}/bilder", headers=HOST,
+                        data={"csrf": ui.CSRF_TOKEN, "platz": "", "hinweis": "mehr Menschen"},
+                        follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == f"/marketing/entwurf/{IID}"
+    assert pult.aufrufe[-1][2] == {"platz": None, "hinweis": "mehr Menschen", "nur_leere": False}
+
+
+def test_entwurf_bilder_formular_ohne_csrf(angemeldet, pult):
+    r = angemeldet.post(f"/marketing/entwurf/{IID}/bilder", headers=HOST, data={"platz": ""},
+                        follow_redirects=False)
+    assert r.status_code == 403 and not any(a[0] == "POST" for a in pult.aufrufe)
+
+
+def test_menue_vorlagen_und_editor():
+    pfade = ("/marketing", "/marketing/entwuerfe", "/marketing/layouts", "/marketing/vorlagen")
+    assert ui._aktiver_eintrag("/marketing/vorlagen", pfade) == "/marketing/vorlagen"
+    assert ui._aktiver_eintrag("/marketing/vorlage-bild/x", pfade) == "/marketing/vorlagen"
+    assert ui._aktiver_eintrag(f"/marketing/editor/{IID}", pfade) == "/marketing/entwuerfe"
+    assert ("/marketing/vorlagen", "Vorlagen") in ui._NAV

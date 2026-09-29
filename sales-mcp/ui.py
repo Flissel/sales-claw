@@ -1289,6 +1289,7 @@ _GRUPPEN = (
     # Basis-Laden (_ADMIN_BASIS_PFADE). /marketing/layouts kommt mit Task 5.
     ("Marketing", (("/marketing", "Übersicht"),
                    ("/marketing/entwuerfe", "Entwürfe"),
+                   ("/marketing/vorlagen", "Vorlagen"),
                    ("/marketing/layouts", "Layouts"))),
     # Existiert im Menue NUR fuer Rolle freigeben im Basis-Laden — nicht
     # wegen einer Extra-Pruefung hier, sondern weil _seitenleiste JEDEN
@@ -1307,6 +1308,8 @@ _DETAIL_ZU_LISTE = {
     "/marketing/entwurf": "/marketing/entwuerfe",
     "/marketing/layout": "/marketing/layouts",
     "/marketing/layout-bild": "/marketing/layouts",
+    "/marketing/editor": "/marketing/entwuerfe",
+    "/marketing/vorlage-bild": "/marketing/vorlagen",
 }
 
 

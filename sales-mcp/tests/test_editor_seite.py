@@ -40,6 +40,7 @@ class Falsch:
         self.alter_weg = None
         self.alt_format = "felder"          # Format der aelteren Fassung 1
         self.speichern_antwort = {"fassung": 3}
+        self.bilder = {"auftraege": []}
 
     def anfrage(self, methode, pfad, daten=None, roh=False):
         self.aufrufe.append((methode, pfad, daten))
@@ -64,6 +65,8 @@ class Falsch:
             return {"inhalt": {"id": IID, "art": self.art, "titel": "Oktober", "status": self.status,
                                "mandant": "vibemind"},
                     "fassungen": [neu, alt], "alter_weg": self.alter_weg}
+        if pfad == f"/inhalte/{IID}/bilder":
+            return {"auftrag": "a1"} if methode == "POST" else self.bilder
         if pfad == f"/inhalte/{IID}/bloecke":
             return self.speichern_antwort
         if pfad == f"/inhalte/{IID}/in_bloecke":
@@ -631,3 +634,40 @@ def test_formularwahl_nach_neuester_fassung(angemeldet, pult):
     pult.format, pult.alt_format = "felder", "bloecke"
     s = angemeldet.get(f"/marketing/entwurf/{IID}?fassung=1", headers=HOST).text
     assert 'name="abschnitt_text"' in s and "/marketing/editor/" not in s
+
+# --- Bilder: Auftrag und Stand (Newsletter-Bilder Task 8) -----------------------
+
+def test_start_nennt_bild_und_stand_url(angemeldet):
+    start = _start(angemeldet.get(f"/marketing/editor/{IID}", headers=HOST).text)
+    assert start["bild_url"] == f"/marketing/editor/{IID}/bild"
+    assert start["stand_url"] == f"/marketing/editor/{IID}/stand.json"
+
+
+def test_bild_beauftragen(angemeldet, pult):
+    r = angemeldet.post(f"/marketing/editor/{IID}/bild", headers={**HOST, "X-CSRF": ui.CSRF_TOKEN},
+                        json={"platz": "kopf", "hinweis": "waermer"})
+    assert r.status_code == 200 and r.json() == {"auftrag": "a1"}
+    assert pult.aufrufe[-1] == ("POST", f"/inhalte/{IID}/bilder",
+                                {"platz": "kopf", "hinweis": "waermer", "nur_leere": False})
+
+
+def test_bild_beauftragen_formen_und_csrf(angemeldet, pult):
+    assert angemeldet.post(f"/marketing/editor/{IID}/bild", headers=HOST, json={"platz": "kopf"}).status_code == 403
+    for body in ({"platz": "a b"}, {"platz": 5}, {"hinweis": "x" * 501}, [1]):
+        r = angemeldet.post(f"/marketing/editor/{IID}/bild", headers={**HOST, "X-CSRF": ui.CSRF_TOKEN}, json=body)
+        assert r.status_code == 422, body
+    assert not any(a[0] == "POST" for a in pult.aufrufe)
+
+
+def test_bild_beauftragen_db_grund(angemeldet, pult):
+    pult.fehler = marketing_pult.PultFehler(
+        "abgelehnt", "Bildplatz kopf gibt es in der gespeicherten Fassung nicht - erst speichern")
+    r = angemeldet.post(f"/marketing/editor/{IID}/bild", headers={**HOST, "X-CSRF": ui.CSRF_TOKEN},
+                        json={"platz": "kopf"})
+    assert r.status_code == 422 and "erst speichern" in r.json()["grund"]
+
+
+def test_stand_json(angemeldet, pult):
+    pult.bilder = {"auftraege": [{"platz": "kopf", "status": "in_arbeit"}]}
+    j = angemeldet.get(f"/marketing/editor/{IID}/stand.json", headers=HOST).json()
+    assert j["fassung"] == 2 and j["auftraege"][0]["status"] == "in_arbeit"
