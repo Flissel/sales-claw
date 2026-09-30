@@ -65,6 +65,11 @@ def _gerahmt(inhalt, typ: str = "text/html; charset=utf-8", status: int = 200) -
                              "Cache-Control": "private, no-store"})
 
 
+# Auswahlwert "nur leere Bildplaetze": sendet platz None + nur_leere True. Editor-Block-IDs
+# beginnen nie mit "__", eine Kollision mit einem echten Platz ist daher nicht zu erwarten.
+NUR_LEERE = "__leere__"
+
+
 def _bildplaetze(bloecke) -> list[tuple[str, str]]:
     """(id, alt) je Bildplatz (Image mit Breite und Hoehe) - wie
     bildplaetze.finde in der Marketing-API, hier nur fuer die Auswahl."""
@@ -265,7 +270,8 @@ def routen(ui) -> list:
                     for a in (stand.get("auftraege") or [])[:10]) or "<li>Noch keine Bild-Aufträge.</li>"
             except marketing_pult.PultFehler:
                 zeilen_b = "<li>Bildstand gerade nicht abrufbar.</li>"
-            optionen = '<option value="">alle Bildplätze</option>' + "".join(
+            optionen = ('<option value="">alle Bildplätze (auch belegte)</option>'
+                        f'<option value="{NUR_LEERE}">nur leere Bildplätze</option>') + "".join(
                 f'<option value="{e(bid)}">{e(alt)}</option>' for bid, alt in _bildplaetze(fassungen[0].get("bloecke")))
             bilder_html = (
                 f'<h2>Bilder</h2><ul>{zeilen_b}</ul>'
@@ -300,6 +306,9 @@ def routen(ui) -> list:
             return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
         iid = request.path_params["iid"]
         platz = str(form.get("platz") or "").strip() or None
+        nur_leere = platz == NUR_LEERE
+        if nur_leere:
+            platz = None
         hinweis = str(form.get("hinweis") or "").strip()
         if platz is not None and not ui_editor.PLATZ_ID.match(platz):
             return ui._fehlerseite(422, "Nicht möglich", "Unbekannter Bildplatz.")
@@ -307,7 +316,7 @@ def routen(ui) -> list:
             return ui._fehlerseite(422, "Nicht möglich", "Der Hinweis ist zu lang.")
         try:
             await run_in_threadpool(marketing_pult.anfrage, "POST", f"/inhalte/{urllib.parse.quote(iid)}/bilder",
-                                    {"platz": platz, "hinweis": hinweis, "nur_leere": False})
+                                    {"platz": platz, "hinweis": hinweis, "nur_leere": nur_leere})
         except marketing_pult.PultFehler as f:
             return fehler(f)
         return RedirectResponse(f"/marketing/entwurf/{urllib.parse.quote(iid)}", status_code=303)

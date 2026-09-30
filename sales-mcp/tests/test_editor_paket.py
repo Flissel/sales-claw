@@ -23,3 +23,9 @@ def test_keine_fremden_quellen():
 
 def test_nur_zwei_dateien_ausgeliefert():
     assert sorted(p.name for p in ORDNER.iterdir()) == ["MANIFEST.json", "editor.css", "editor.js"]
+
+
+def test_paket_ist_neu_gebaut_agent_konflikt_nennt_medien():
+    # PultLeiste.tsx: Konflikt bei neuer Agenten-Fassung verweist auf die Medien
+    text = (ORDNER / "editor.js").read_text(encoding="utf-8")
+    assert "Neue Bilder vom Agenten liegen auch in den Medien." in text

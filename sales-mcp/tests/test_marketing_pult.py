@@ -649,6 +649,8 @@ def test_entwurf_zeigt_bildstand_und_formular(angemeldet, pult):
     seite = angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST).text
     assert "Bilder" in seite and "wartet (PC muss laufen)" in seite and "Schrift im Bild" in seite
     assert f'action="/marketing/entwurf/{IID}/bilder"' in seite and '<option value="kopf">' in seite
+    assert '<option value="">alle Bildplätze (auch belegte)</option>' in seite
+    assert '<option value="__leere__">nur leere Bildplätze</option>' in seite
     assert "<script" not in seite
 
 
@@ -666,6 +668,14 @@ def test_entwurf_bilder_formular(angemeldet, pult):
                         follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == f"/marketing/entwurf/{IID}"
     assert pult.aufrufe[-1][2] == {"platz": None, "hinweis": "mehr Menschen", "nur_leere": False}
+
+
+def test_entwurf_bilder_formular_nur_leere(angemeldet, pult):
+    r = angemeldet.post(f"/marketing/entwurf/{IID}/bilder", headers=HOST,
+                        data={"csrf": ui.CSRF_TOKEN, "platz": "__leere__", "hinweis": ""},
+                        follow_redirects=False)
+    assert r.status_code == 303
+    assert pult.aufrufe[-1][2] == {"platz": None, "hinweis": "", "nur_leere": True}
 
 
 def test_entwurf_bilder_formular_ohne_csrf(angemeldet, pult):

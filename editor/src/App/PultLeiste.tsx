@@ -97,7 +97,9 @@ export default function PultLeiste() {
   // Ohne ungespeicherte Aenderungen direkt neu laden, sonst ueber den Konflikt-Dialog.
   const neueFassungLaden = () => {
     if (pultStore.getState().ungespeichert) {
-      setKonflikt('Der Agent hat eine neue Fassung gespeichert, du hast aber ungespeicherte Änderungen.');
+      setKonflikt(
+        'Der Agent hat eine neue Fassung gespeichert, du hast aber ungespeicherte Änderungen. Neue Bilder vom Agenten liegen auch in den Medien.',
+      );
       return;
     }
     window.location.reload();
