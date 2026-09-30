@@ -4,7 +4,7 @@
 
 **Goal:** Ein vorhandenes Newsletter-Bild wird am PC gesehen (Sehmodell), mit dem Hinweis des Betreibers zu einem Bearbeitungs-Prompt verbunden, per FLUX Bild-zu-Bild mit wählbarer Stärke überarbeitet und per CLIP gemessen; Editor und Pult zeigen das Ergebnis von selbst.
 
-**Architecture:** Alles, was ein Modell braucht, läuft im Bild-Arbeiter am PC (Ollama-Sehmodell, Ollama-Textmodell, ComfyUI/FLUX, CLIP über fastembed). Die VM speichert nur Aufträge (Migration 057: Stärke, Modus, Messung), liefert dem Arbeiter das Quellbild über eine neue Arbeiter-Route und schreibt die Fassung. Editor und Pult bekommen Regler, „ganz neu" und automatisches Erscheinen.
+**Architecture:** Alles, was ein Modell braucht, läuft im Bild-Arbeiter am PC (Ollama-Sehmodell, Ollama-Textmodell, ComfyUI/FLUX, CLIP über fastembed). Die VM speichert nur Aufträge (Migration 057: Stärke, Modus, Messung), liefert dem Arbeiter das Quellbild über eine neue Arbeiter-Route und schreibt die Fassung. Editor und Pult bekommen die Stufen „nah am Original"/„freier"/„ganz neu" und automatisches Erscheinen. Überarbeiten erzeugt nach Messung neu mit Motiv (Spec §0).
 
 **Tech Stack:** PostgreSQL/plpgsql, FastAPI, Python 3.11 (shared venv), ComfyUI 0.26 + ComfyUI-GGUF (FLUX.1-schnell), Ollama (`qwen2.5vl:3b`, `qwen2.5:7b`), fastembed (CLIP ViT-B/32), React 18 + MUI 5, Starlette.
 
@@ -818,6 +818,13 @@ def arbeiter_quelle(aid: str, platz: str = Query(""), x_bild_key: str | None = H
 
 ### Task 6: Bild-Arbeiter überarbeitet
 
+> **Änderung 30.09.2026 (Betreiber-Entscheid „Neu mit Motiv", Spec §0) — gilt VOR dem Text dieser Aufgabe:**
+> - Überarbeiten erzeugt **neu mit Motiv**: für einen Platz mit Quelle wird `comfy.erzeugen(...)` (Text-zu-Bild) aufgerufen, **nie** `comfy.ueberarbeiten`. Die Quelle dient nur `sehen.beschreiben` und `messen.messen`.
+> - `bild_prompt.bearbeitungs_prompt` bekommt den Parameter `nah: bool = True`: `nah` → der Anfrage an das Textmodell wird der Satz „Behalte Motiv, Umgebung und Bildaufbau der Beschreibung bei; ändere nur, was der Wunsch verlangt." hinzugefügt; sonst „Nur das Thema der Beschreibung bleibt; gestalte Bildaufbau frei." Der Arbeiter übergibt `nah = staerke <= 60`. Test dafür in `claw/tests/test_bild_prompt.py` (beide Sätze in der Anfrage). `bild_prompt.py` und der Test kommen in diesen Commit.
+> - In den Tests dieser Aufgabe: überall, wo `comfy.ueber` erwartet wird, gilt stattdessen `comfy.masse` (Text-zu-Bild mit den Platzmaßen), und `comfy.ueber` bleibt `[]`. Beispiel: `test_ueberarbeiten_ablauf_und_messung` → `comfy.masse == [(1200, 608)] and comfy.ueber == []`; `test_zu_unaehnlich_wiederholen_dann_bestes` → `len(comfy.masse) == 3`. Im Code von `_bilder` entfällt die `quelle is not None`-Verzweigung zu `ueberarbeiten`.
+> - Die Schwelle heißt weiter `MIN_AEHNLICH = 0.75` und gilt bei `staerke <= GRENZE_STAERKE (60)`.
+
+
 **Files (MOS):** Modify `spaces/marketing/workers/bild_worker.py`; Test `spaces/marketing/tests/test_bild_worker.py`.
 
 **Interfaces:** Consumes Tasks 1–5. Produces `ArbeiterApi.quelle(aid: str, platz: str) -> bytes | None` (404 → `None`), `ArbeiterApi.fertig(aid, ergebnis: dict, befund: str, messung: dict | None = None)`, `ein_durchlauf(api, comfy=bild_comfy, prompt=bild_prompt, starten=dienste_starten, uhr=time.monotonic, sehen=bild_sehen, messen=bild_messen) -> str`; Konstanten `GRENZE_STAERKE = 60`, `MIN_AEHNLICH = 0.75`.
@@ -1064,6 +1071,12 @@ def _bilder(api, aid, arbeit, staerke, hinweis, comfy, prompt, messen, je_bild_f
 
 ### Task 7: sales-ui — Stärke, „ganz neu", Messung, automatisches Neuladen
 
+> **Änderung 30.09.2026 (Betreiber-Entscheid „Neu mit Motiv", Spec §0) — gilt VOR dem Text dieser Aufgabe:**
+> - Statt Zahlenfeld eine Auswahl mit drei Werten: `<select name="staerke">` mit `35` „nah am Original" (vorausgewählt), `75` „freier", `100` „ganz neu". Das Häkchen `neu` entfällt im Pult; `staerke == 100` → `modus "neu"`, sonst `"ueberarbeiten"`. Der Editor-Endpunkt nimmt weiter `staerke` (0–100) und `neu` an.
+> - Die Messung heißt in der Anzeige „Themen-Ähnlichkeit": `"kopf: 82 % Themen-Ähnlichkeit"` statt „% ähnlich". Die Tests entsprechend (`"82 % Themen-Ähnlichkeit" in seite`, `pult.aufrufe[-1][2]["staerke"] == 35` bei Auswahl 35).
+> - Laufender Auftrag mit `modus == "ueberarbeiten"` zeigt „wird überarbeitet" (unverändert).
+
+
 **Files (SC):** Modify `sales-mcp/ui_editor.py`, `sales-mcp/ui_marketing.py`; Tests `sales-mcp/tests/test_editor_seite.py`, `sales-mcp/tests/test_marketing_pult.py`.
 
 **Interfaces:** Consumes Task 5. Produces: `POST /marketing/editor/{iid}/bild` nimmt `staerke` (int 0–100, Standard 55) und `neu` (bool) und schickt `{"platz", "hinweis", "nur_leere": False, "staerke", "modus"}` (`neu` → `staerke 100, modus "neu"`); Pult-Formular `staerke`/`neu`; Entwurfsseite mit `refresh=20` nur bei offenen Aufträgen; Messung „NN % ähnlich".
@@ -1158,6 +1171,11 @@ def test_pult_formular_staerke_und_neu(angemeldet, pult):
 ---
 
 ### Task 8: Editor — Regler, „ganz neu", automatisches Erscheinen; Paket bauen
+
+> **Änderung 30.09.2026 (Betreiber-Entscheid „Neu mit Motiv", Spec §0) — gilt VOR dem Text dieser Aufgabe:**
+> - **Kein Slider.** Im Bildfeld statt Regler eine `ToggleButtonGroup` mit „Nah am Original" (35, Standard) und „Freier" (75) sowie die Checkbox „Ganz neu erzeugen" (100). `staerkeWert` bleibt als Absicherung.
+> - `neuesBildMeldung` schreibt `"Neues Bild vom Agenten – 82 % Themen-Ähnlichkeit"`; Test entsprechend.
+
 
 **Files (SC):** Modify `editor/src/bildfeld.ts`, `editor/src/pult.ts`, `editor/src/pultZustand.ts`, `editor/src/main.tsx`, `editor/src/App/PultLeiste.tsx`, `editor/src/App/InspectorDrawer/ConfigurationPanel/input-panels/ImageSidebarPanel.tsx`; Test `editor/test/bildfeld.test.mjs`; Rebuild `sales-mcp/static/editor/*`.
 
@@ -1278,6 +1296,10 @@ Expected: tsc 0; Node-Tests grün; Build schreibt `static/editor/*`; Paket-Test 
 ---
 
 ### Task 9: Ausliefern und echter Durchlauf (nur nach Freigabe des Betreibers)
+
+> **Änderung 30.09.2026 (Betreiber-Entscheid „Neu mit Motiv", Spec §0) — gilt VOR dem Text dieser Aufgabe:**
+> - Echter Durchlauf mit Stärke **35** („nah am Original") und danach **75** („freier") für `ausblick_bild` mit Hinweis „keine Leuchtschrift, wärmeres Licht"; beide Ergebnisse ansehen. Der Betreiber prüft im Editor die zwei Stufen und „ganz neu" statt eines Reglers.
+
 
 - [ ] **Step 1:** WORKBOARD-Claim `cc-bild-ueberarbeiten` (äußeres Repo) und maschinenweite Koordination (VM + Migration) eintragen und committen.
 - [ ] **Step 2:** `migration_probe` für 057 noch einmal grün, dann 057 anwenden (Muster wie 056: Skript mit `_db._run_psql(<057>, None, streng=True)`, Spaltenalias nicht `t`); Nachweis: drei neue Spalten vorhanden, zwei neue Überladungen (`pg_proc`).

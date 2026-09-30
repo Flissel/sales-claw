@@ -4,6 +4,30 @@
 freigegeben. Baut auf `2026-09-29-newsletter-bilder-und-gestaltung-design.md`
 (ausgeliefert 30.09.) auf.**
 
+## 0. Änderung 30.09.2026 nach Messung (Betreiber-Entscheid „Neu mit Motiv")
+
+Gemessen am Hochhaus-Bild mit deutlichem Prompt („warm golden amber, plain
+facades, no signs"): FLUX.1-schnell Bild-zu-Bild hat eine **Kante zwischen 85
+und 90 %** — darunter bleiben Farben und (neue Fantasie-)Schrift erhalten
+(70/80/85 %: kühl, Schrift da), darüber entsteht ein **ganz neues** Bild (90 %:
+warm, ohne Leuchtschrift, anderer Aufbau). Einen Bereich „Aufbau bleibt,
+Stimmung ändert sich" gibt es nicht. CLIP misst dabei das **Thema**, nicht den
+Aufbau (90 %-Bild: 0,84; fremdes Motiv: 0,69).
+
+Deshalb gilt, und ersetzt §2 „Art der Überarbeitung"/„Stärke", §4.5, den
+Regler in §5 und die Bild-zu-Bild-Zeile in §7:
+
+- **Überarbeiten = neu mit Motiv:** Sehmodell beschreibt das Motiv (ohne
+  Schrift) → Prompt aus Motiv + Wunsch → **FLUX Text-zu-Bild** in den Maßen des
+  Platzes. Das Ausgangsbild dient nur zum Sehen und Messen. Der Bild-zu-Bild-Code
+  bleibt getestet im Repo, wird aber nicht angesteuert.
+- **Statt Regler zwei Stufen:** „nah am Original" (Stärke 35: Prompt hält Motiv,
+  Umgebung und Bildaufbau der Beschreibung fest) und „freier" (Stärke 75: nur
+  das Thema bleibt), plus „ganz neu" (100: ohne Beschreibung). DB/API behalten
+  die Zahl 0–100; die Oberfläche bietet nur diese drei Werte.
+- **Messung** heißt in der Oberfläche **„Themen-Ähnlichkeit"**; bei „nah"
+  (Stärke ≤ 60) gilt weiter: < 0,75 → neuer Versuch, nach 3 das beste.
+
 ## 1. Ziel
 
 Ein vorhandenes Newsletter-Bild wird gezielt überarbeitet statt neu gewürfelt:
