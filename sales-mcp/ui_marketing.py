@@ -14,6 +14,7 @@ Skript, also nicht bei jedem Tastendruck, sondern per Klick."""
 from __future__ import annotations
 
 import base64
+import html as _html
 import urllib.parse
 
 from starlette.concurrency import run_in_threadpool
@@ -26,6 +27,17 @@ import ui_editor
 ARTEN = {"newsletter": "Newsletter", "post": "Post", "material": "Team-Material"}
 STATUS = {"entwurf": "Zur Freigabe", "freigegeben": "Freigegeben", "abgelehnt": "Abgelehnt"}
 # Bild-Auftraege (Marketing-API: marketing.bildauftraege.status).
+def _messung_html(messung):
+    """Messung je Platz als Themen-Aehnlichkeit (CLIP-Kosinus des alten zum neuen Bild)."""
+    teile = []
+    if isinstance(messung, dict):
+        for platz, m in messung.items():
+            w = m.get("aehnlich_original") if isinstance(m, dict) else None
+            if isinstance(w, (int, float)) and not isinstance(w, bool):
+                teile.append(f" &middot; {_html.escape(str(platz))}: {round(w * 100)} % Themen-Ähnlichkeit")
+    return "".join(teile)
+
+
 BILD_STATUS = {"offen": "wartet (PC muss laufen)", "in_arbeit": "wird erzeugt", "fertig": "fertig",
                "fehler": "fehlgeschlagen", "verworfen": "verworfen"}
 # Was im Rahmen gezeigt wird; das PDF bekommt einen Verweis (s. oben).
@@ -258,16 +270,20 @@ def routen(ui) -> list:
         formular = f'{felder_formular}{entscheiden}' if offen else (
             f'<p>{e(STATUS.get(i["status"], i["status"]))}.</p>')
         bilder_html = ""
+        neu_laden = False
         if im_editor and offen:
             try:
                 stand = await run_in_threadpool(marketing_pult.anfrage, "GET",
                                                 f"/inhalte/{urllib.parse.quote(iid)}/bilder")
+                auftraege = stand.get("auftraege") or []
+                neu_laden = any(a.get("status") in ("offen", "in_arbeit") for a in auftraege)
                 zeilen_b = "".join(
                     f'<li>{e(a.get("platz") or ("alle leeren" if a.get("nur_leere") else "alle"))} &middot; '
-                    f'{e(BILD_STATUS.get(a.get("status"), a.get("status") or ""))}'
+                    f'{e("wird überarbeitet" if a.get("status") == "in_arbeit" and a.get("modus") == "ueberarbeiten" else BILD_STATUS.get(a.get("status"), a.get("status") or ""))}'
+                    f'{_messung_html(a.get("messung"))}'
                     f'{(" &middot; " + e(a.get("befund"))) if a.get("befund") else ""}'
                     f'{(" &middot; Hinweis: " + e(a.get("hinweis"))) if a.get("hinweis") else ""}</li>'
-                    for a in (stand.get("auftraege") or [])[:10]) or "<li>Noch keine Bild-Aufträge.</li>"
+                    for a in auftraege[:10]) or "<li>Noch keine Bild-Aufträge.</li>"
             except marketing_pult.PultFehler:
                 zeilen_b = "<li>Bildstand gerade nicht abrufbar.</li>"
             optionen = ('<option value="">alle Bildplätze (auch belegte)</option>'
@@ -278,7 +294,10 @@ def routen(ui) -> list:
                 f'<form method="post" action="{basis}/bilder" class="aktion">{csrf}'
                 f'<label>Platz <select name="platz">{optionen}</select></label>'
                 f'<label>Hinweis <input name="hinweis" maxlength="500" placeholder="z. B. wärmer, mehr Menschen"></label>'
-                f'<button type="submit">Bild neu erzeugen</button>'
+                f'<label>Stärke <select name="staerke">'
+                f'<option value="35" selected>nah am Original</option><option value="75">freier</option>'
+                f'<option value="100">ganz neu</option></select></label>'
+                f'<button type="submit">Bild überarbeiten</button>'
                 f'<span class="meta">Erzeugt wird am PC, sobald er läuft. Das Ergebnis ist eine neue Fassung.</span></form>')
         wahl_links = "".join(
             f'<a class="{"aktiv" if k == fmt else ""}" href="{basis}?fassung={nr}&amp;format={k}">{t}</a>'
@@ -295,7 +314,7 @@ def routen(ui) -> list:
             f'<iframe class="vorschau {fmt}" sandbox title="Vorschau" '
             f'src="{basis}/vorschau?fassung={nr}&amp;format={fmt}"></iframe>'
             f'</div></div>')
-        antwort = ui._seite(i["titel"], rumpf)
+        antwort = ui._seite(i["titel"], rumpf, refresh=20 if neu_laden else None)
         antwort.headers["Content-Security-Policy"] = ui._csp_mit_rahmen("'self'")
         return antwort
 
@@ -310,13 +329,21 @@ def routen(ui) -> list:
         if nur_leere:
             platz = None
         hinweis = str(form.get("hinweis") or "").strip()
+        roh_staerke = str(form.get("staerke") or "").strip()
+        if not roh_staerke:
+            staerke = 55
+        elif roh_staerke.isascii() and roh_staerke.isdigit() and int(roh_staerke) <= 100:
+            staerke = int(roh_staerke)
+        else:
+            return ui._fehlerseite(422, "Nicht möglich", "Die Stärke muss 0 bis 100 sein.")
         if platz is not None and not ui_editor.PLATZ_ID.match(platz):
             return ui._fehlerseite(422, "Nicht möglich", "Unbekannter Bildplatz.")
         if len(hinweis) > ui_editor.HINWEIS_MAX:
             return ui._fehlerseite(422, "Nicht möglich", "Der Hinweis ist zu lang.")
         try:
             await run_in_threadpool(marketing_pult.anfrage, "POST", f"/inhalte/{urllib.parse.quote(iid)}/bilder",
-                                    {"platz": platz, "hinweis": hinweis, "nur_leere": nur_leere})
+                                    {"platz": platz, "hinweis": hinweis, "nur_leere": nur_leere,
+                                     "staerke": staerke, "modus": "neu" if staerke == 100 else "ueberarbeiten"})
         except marketing_pult.PultFehler as f:
             return fehler(f)
         return RedirectResponse(f"/marketing/entwurf/{urllib.parse.quote(iid)}", status_code=303)

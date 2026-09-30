@@ -648,7 +648,31 @@ def test_bild_beauftragen(angemeldet, pult):
                         json={"platz": "kopf", "hinweis": "waermer"})
     assert r.status_code == 200 and r.json() == {"auftrag": "a1"}
     assert pult.aufrufe[-1] == ("POST", f"/inhalte/{IID}/bilder",
-                                {"platz": "kopf", "hinweis": "waermer", "nur_leere": False})
+                                {"platz": "kopf", "hinweis": "waermer", "nur_leere": False,
+                                 "staerke": 55, "modus": "ueberarbeiten"})
+
+
+def test_bild_mit_staerke(angemeldet, pult):
+    r = angemeldet.post(f"/marketing/editor/{IID}/bild", headers={**HOST, "X-CSRF": ui.CSRF_TOKEN},
+                        json={"platz": "kopf", "hinweis": "waermer", "staerke": 30})
+    assert r.status_code == 200
+    assert pult.aufrufe[-1][2] == {"platz": "kopf", "hinweis": "waermer", "nur_leere": False,
+                                   "staerke": 30, "modus": "ueberarbeiten"}
+
+
+def test_bild_ganz_neu(angemeldet, pult):
+    angemeldet.post(f"/marketing/editor/{IID}/bild", headers={**HOST, "X-CSRF": ui.CSRF_TOKEN},
+                    json={"platz": "kopf", "neu": True, "staerke": 20})
+    assert pult.aufrufe[-1][2]["staerke"] == 100 and pult.aufrufe[-1][2]["modus"] == "neu"
+
+
+@pytest.mark.parametrize("body", [{"staerke": 101}, {"staerke": -1}, {"staerke": True},
+                                  {"staerke": "5"}, {"neu": "ja"}])
+def test_bild_formen_staerke_neu(angemeldet, pult, body):
+    r = angemeldet.post(f"/marketing/editor/{IID}/bild", headers={**HOST, "X-CSRF": ui.CSRF_TOKEN},
+                        json={"platz": "kopf", **body})
+    assert r.status_code == 422
+    assert not any(a[0] == "POST" for a in pult.aufrufe)
 
 
 def test_bild_beauftragen_formen_und_csrf(angemeldet, pult):

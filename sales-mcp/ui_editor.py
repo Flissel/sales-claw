@@ -245,10 +245,16 @@ def routen(ui) -> list:
             return json_grund(422, "Unbekannter Bildplatz")
         if not isinstance(hinweis, str) or len(hinweis) > HINWEIS_MAX:
             return json_grund(422, f"Der Hinweis darf höchstens {HINWEIS_MAX} Zeichen haben")
+        staerke, neu = body.get("staerke", 55), body.get("neu", False)
+        if isinstance(staerke, bool) or not isinstance(staerke, int) or not 0 <= staerke <= 100:
+            return json_grund(422, "Die Stärke muss eine ganze Zahl von 0 bis 100 sein")
+        if not isinstance(neu, bool):
+            return json_grund(422, "neu muss true oder false sein")
+        nutzlast = {"platz": platz, "hinweis": hinweis.strip(), "nur_leere": False,
+                    "staerke": 100 if neu else staerke, "modus": "neu" if neu else "ueberarbeiten"}
         iid = urllib.parse.quote(request.path_params["iid"], safe="")
         try:
-            r = await run_in_threadpool(marketing_pult.anfrage, "POST", f"/inhalte/{iid}/bilder",
-                                        {"platz": platz, "hinweis": hinweis.strip(), "nur_leere": False})
+            r = await run_in_threadpool(marketing_pult.anfrage, "POST", f"/inhalte/{iid}/bilder", nutzlast)
         except marketing_pult.PultFehler as f:
             if f.art == "abgelehnt":
                 return json_grund(422, str(f.grund or "Abgelehnt"))

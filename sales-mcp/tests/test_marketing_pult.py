@@ -667,7 +667,8 @@ def test_entwurf_bilder_formular(angemeldet, pult):
                         data={"csrf": ui.CSRF_TOKEN, "platz": "", "hinweis": "mehr Menschen"},
                         follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == f"/marketing/entwurf/{IID}"
-    assert pult.aufrufe[-1][2] == {"platz": None, "hinweis": "mehr Menschen", "nur_leere": False}
+    assert pult.aufrufe[-1][2] == {"platz": None, "hinweis": "mehr Menschen", "nur_leere": False,
+                                   "staerke": 55, "modus": "ueberarbeiten"}
 
 
 def test_entwurf_bilder_formular_nur_leere(angemeldet, pult):
@@ -675,7 +676,53 @@ def test_entwurf_bilder_formular_nur_leere(angemeldet, pult):
                         data={"csrf": ui.CSRF_TOKEN, "platz": "__leere__", "hinweis": ""},
                         follow_redirects=False)
     assert r.status_code == 303
-    assert pult.aufrufe[-1][2] == {"platz": None, "hinweis": "", "nur_leere": True}
+    assert pult.aufrufe[-1][2] == {"platz": None, "hinweis": "", "nur_leere": True,
+                                   "staerke": 55, "modus": "ueberarbeiten"}
+
+
+def test_entwurf_laedt_neu_solange_auftraege_offen(angemeldet, pult):
+    pult.bloecke = BLOECKE_MIT_PLATZ
+    pult.bilder = {"auftraege": [
+        {"platz": "kopf", "status": "in_arbeit", "modus": "ueberarbeiten", "staerke": 40, "messung": {}}]}
+    seite = angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST).text
+    assert '<meta http-equiv="refresh" content="20">' in seite and "wird überarbeitet" in seite
+
+
+def test_entwurf_ohne_offene_auftraege_kein_neuladen_mit_messung(angemeldet, pult):
+    pult.bloecke = BLOECKE_MIT_PLATZ
+    pult.bilder = {"auftraege": [
+        {"platz": "kopf", "status": "fertig", "modus": "ueberarbeiten", "staerke": 55,
+         "messung": {"kopf": {"aehnlich_original": 0.823, "naeher_am_hinweis": 0.04}}}]}
+    seite = angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST).text
+    assert 'http-equiv="refresh"' not in seite and "kopf: 82 % Themen-Ähnlichkeit" in seite
+    assert '<select name="staerke">' in seite and 'name="neu"' not in seite
+    assert '<option value="35" selected>nah am Original</option>' in seite
+    assert '<option value="75">freier</option>' in seite and '<option value="100">ganz neu</option>' in seite
+
+
+def test_entwurf_bildstand_fehler_kein_neuladen(angemeldet, pult):
+    pult.bloecke = BLOECKE_MIT_PLATZ
+    pult.fehler = marketing_pult.PultFehler("nicht_erreichbar", "x")
+    pult.fehler_pfad = "/bilder"
+    assert 'http-equiv="refresh"' not in angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST).text
+
+
+def test_pult_formular_staerke_auswahl(angemeldet, pult):
+    def sende(**extra):
+        return angemeldet.post(f"/marketing/entwurf/{IID}/bilder", headers=HOST, follow_redirects=False,
+                               data={"csrf": ui.CSRF_TOKEN, "platz": "kopf", "hinweis": "", **extra})
+    assert sende(staerke="35").status_code == 303
+    assert pult.aufrufe[-1][2]["staerke"] == 35 and pult.aufrufe[-1][2]["modus"] == "ueberarbeiten"
+    sende(staerke="75")
+    assert pult.aufrufe[-1][2]["staerke"] == 75 and pult.aufrufe[-1][2]["modus"] == "ueberarbeiten"
+    sende(staerke="100")
+    assert pult.aufrufe[-1][2]["staerke"] == 100 and pult.aufrufe[-1][2]["modus"] == "neu"
+    sende(staerke="")
+    assert pult.aufrufe[-1][2]["staerke"] == 55
+    n = len(pult.aufrufe)
+    for schlecht in ("abc", "101", "-1", "3.5"):
+        assert sende(staerke=schlecht).status_code == 422, schlecht
+    assert len(pult.aufrufe) == n
 
 
 def test_entwurf_bilder_formular_ohne_csrf(angemeldet, pult):
