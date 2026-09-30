@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 
-import { medienListe, Start } from './pult';
+import type { Auftrag } from './bildfeld';
+import { medienListe, standLaden, Start } from './pult';
 
 // Zustand der Pult-Leiste: Startdaten, Betreff/Vorschautext, gemerkte Fassung
 // und ob seit dem letzten Speichern etwas geaendert wurde.
@@ -11,6 +12,7 @@ type TPult = {
   basis: number;
   ungespeichert: boolean;
   medien: string[] | null;
+  stand: { fassung: number; auftraege: Auftrag[] } | null;
 };
 
 export const pultStore = create<TPult>(() => ({
@@ -20,6 +22,7 @@ export const pultStore = create<TPult>(() => ({
   basis: 0,
   ungespeichert: false,
   medien: null,
+  stand: null,
 }));
 
 export function pultStarten(start: Start) {
@@ -42,4 +45,16 @@ export function medienLaden(neu = false) {
   if (!start) return;
   if (medienLaeuft && !neu) return;
   medienLaeuft = medienListe(start).then((medien) => pultStore.setState({ medien }));
+}
+
+let standTakt: ReturnType<typeof setInterval> | null = null;
+export function standAbfragen() {
+  const holen = async () => {
+    const { start } = pultStore.getState();
+    if (!start) return;
+    const s = await standLaden(start);
+    if (s) pultStore.setState({ stand: s });
+  };
+  void holen();
+  if (!standTakt) standTakt = setInterval(holen, 15000);
 }

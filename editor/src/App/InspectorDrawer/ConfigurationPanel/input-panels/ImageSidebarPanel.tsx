@@ -6,11 +6,13 @@ import {
   VerticalAlignCenterOutlined,
   VerticalAlignTopOutlined,
 } from '@mui/icons-material';
-import { Button, MenuItem, Stack, TextField, ToggleButton, Typography } from '@mui/material';
+import { Box, Button, Chip, Stack, TextField, ToggleButton, Typography } from '@mui/material';
 import { ImageProps, ImagePropsSchema } from '@usewaypoint/block-image';
 
-import { ANZEIGE, medienName } from '../../../../pult';
-import { medienLaden, pultStore } from '../../../../pultZustand';
+import { erzeugenSperre, formatText, istPlatz, standFuer } from '../../../../bildfeld';
+import { bildBeauftragen, ANZEIGE, medienName } from '../../../../pult';
+import { medienLaden, pultStore, standAbfragen } from '../../../../pultZustand';
+import { useSelectedBlockId } from '../../../../documents/editor/EditorContext';
 
 import BaseSidebarPanel from './helpers/BaseSidebarPanel';
 import RadioGroupInput from './helpers/inputs/RadioGroupInput';
@@ -25,6 +27,13 @@ type ImageSidebarPanelProps = {
 export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelProps) {
   const [, setErrors] = useState<ZodError | null>(null);
   const medien = pultStore((p) => p.medien);
+  const stand = pultStore((p) => p.stand);
+  const start = pultStore((p) => p.start);
+  const ungespeichert = pultStore((p) => p.ungespeichert);
+  const selectedBlockId = useSelectedBlockId();
+  const [hinweis, setHinweis] = useState('');
+  const [laeuft, setLaeuft] = useState(false);
+  const [rueckmeldung, setRueckmeldung] = useState<{ art: 'ok' | 'fehler'; text: string } | null>(null);
   useEffect(() => {
     medienLaden();
   }, []);
@@ -37,6 +46,25 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
   const gewaehlt = name ?? '';
   const optionen = medien ?? [];
   const fehltInListe = gewaehlt !== '' && !optionen.includes(gewaehlt);
+  // Platzhalter-Bilder sind keine Auswahl, nur Markierung fuer leere Plaetze.
+  const kacheln = optionen.filter((n) => !n.startsWith('platzhalter-'));
+  const platz = istPlatz(data.props);
+  const sperre = erzeugenSperre(ungespeichert, data.props ?? undefined);
+  const s = selectedBlockId ? standFuer(selectedBlockId, stand?.auftraege ?? []) : { text: '', art: null };
+
+  const erzeugen = async () => {
+    if (!start || !selectedBlockId || sperre) return;
+    setLaeuft(true);
+    setRueckmeldung(null);
+    const e = await bildBeauftragen(start, selectedBlockId, hinweis.trim());
+    setLaeuft(false);
+    if (e.ok) {
+      setRueckmeldung({ art: 'ok', text: 'Beauftragt. Das Bild kommt als neue Fassung, sobald der PC es erzeugt hat.' });
+      standAbfragen();
+    } else {
+      setRueckmeldung({ art: 'fehler', text: e.grund });
+    }
+  };
 
   const updateData = (d: unknown) => {
     const res = ImagePropsSchema.safeParse(d);
@@ -51,35 +79,102 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
   return (
     <BaseSidebarPanel title="Bild">
       <Stack spacing={1}>
+        {aktuell.startsWith(ANZEIGE) && (
+          <Box component="img" src={aktuell} alt="" sx={{ width: '100%', borderRadius: 1, border: 1, borderColor: 'divider' }} />
+        )}
+        <Typography variant="caption" color="text.secondary">
+          {platz
+            ? formatText(data.props?.width as number, data.props?.height as number)
+            : 'Kein Bildplatz – Breite und Höhe setzen, damit der Agent ein passendes Bild erzeugen kann'}
+        </Typography>
+        {s.art && (
+          <Chip
+            size="small"
+            label={s.text}
+            color={s.art === 'fehler' ? 'error' : s.art === 'laeuft' ? 'info' : 'default'}
+            sx={{ alignSelf: 'flex-start', maxWidth: '100%' }}
+          />
+        )}
+
+        <Typography variant="subtitle2">Bild erzeugen lassen</Typography>
         <TextField
-          select
+          size="small"
           fullWidth
-          variant="standard"
-          label="Aus den Medien"
-          value={gewaehlt}
-          onChange={(ev) => {
-            const name = ev.target.value;
-            const url = name ? ANZEIGE + encodeURIComponent(name) : null;
-            updateData({ ...data, props: { ...data.props, url } });
-          }}
-          helperText={
-            medien === null
-              ? 'Medien werden geladen …'
-              : optionen.length === 0
-                ? 'Keine Bilder in den Medien. Bilder im Pult unter Medien hochladen.'
-                : 'Erlaubt: png, jpg, jpeg aus den Medien'
-          }
+          label="Hinweis (optional)"
+          value={hinweis}
+          onChange={(ev) => setHinweis(ev.target.value)}
+          inputProps={{ maxLength: 500 }}
+        />
+        <Button
+          size="small"
+          variant="contained"
+          sx={{ alignSelf: 'flex-start' }}
+          disabled={sperre !== null || laeuft || !start || !selectedBlockId}
+          onClick={erzeugen}
         >
-          <MenuItem value="">
-            <em>Kein Bild</em>
-          </MenuItem>
-          {fehltInListe && <MenuItem value={gewaehlt}>{gewaehlt} (nicht mehr in den Medien)</MenuItem>}
-          {optionen.map((name) => (
-            <MenuItem key={name} value={name}>
-              {name}
-            </MenuItem>
-          ))}
-        </TextField>
+          Bild erzeugen lassen
+        </Button>
+        {sperre && (
+          <Typography variant="caption" color="text.secondary">
+            {sperre}
+          </Typography>
+        )}
+        {rueckmeldung && (
+          <Typography variant="body2" color={rueckmeldung.art === 'fehler' ? 'error' : 'text.secondary'}>
+            {rueckmeldung.text}
+          </Typography>
+        )}
+
+        <Typography variant="subtitle2">Aus Medien wählen</Typography>
+        {kacheln.length > 0 && (
+          <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 1 }}>
+            {kacheln.map((n) => {
+              const src = ANZEIGE + encodeURIComponent(n);
+              const an = n === gewaehlt;
+              return (
+                <Box
+                  key={n}
+                  component="img"
+                  src={src}
+                  alt={n}
+                  title={n}
+                  loading="lazy"
+                  onClick={() => updateData({ ...data, props: { ...data.props, url: src } })}
+                  sx={{
+                    width: '100%',
+                    aspectRatio: '1 / 1',
+                    objectFit: 'cover',
+                    borderRadius: 1,
+                    cursor: 'pointer',
+                    outline: an ? '2px solid' : 'none',
+                    outlineColor: 'primary.main',
+                  }}
+                />
+              );
+            })}
+          </Box>
+        )}
+        <Typography variant="caption" color="text.secondary">
+          {medien === null
+            ? 'Medien werden geladen …'
+            : optionen.length === 0
+              ? 'Keine Bilder in den Medien. Bilder im Pult unter Medien hochladen.'
+              : 'Erlaubt: png, jpg, jpeg aus den Medien'}
+        </Typography>
+        {gewaehlt !== '' && (
+          <Button
+            size="small"
+            sx={{ alignSelf: 'flex-start' }}
+            onClick={() => updateData({ ...data, props: { ...data.props, url: null } })}
+          >
+            Kein Bild
+          </Button>
+        )}
+        {fehltInListe && (
+          <Typography variant="caption" color="text.secondary">
+            {gewaehlt} (nicht mehr in den Medien)
+          </Typography>
+        )}
         {kaputt && (
           <Typography variant="body2" color="error">
             Bildadresse ungültig. Bitte ein Bild aus den Medien wählen.
@@ -111,6 +206,9 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
           updateData({ ...data, props: { ...data.props, linkHref } });
         }}
       />
+      <Typography variant="caption" color="text.secondary">
+        Breite und Höhe bestimmen das Format des Bildplatzes
+      </Typography>
       <Stack direction="row" spacing={2}>
         <TextDimensionInput
           label="Breite"

@@ -33,6 +33,7 @@ export default function PultLeiste() {
   const vorschautext = pultStore((p) => p.vorschautext);
   const basis = pultStore((p) => p.basis);
   const ungespeichert = pultStore((p) => p.ungespeichert);
+  const stand = pultStore((p) => p.stand);
 
   const [laeuft, setLaeuft] = useState(false);
   const [meldung, setMeldung] = useState<Meldung>(null);
@@ -90,6 +91,16 @@ export default function PultLeiste() {
       return;
     }
     window.location.href = start.zurueck_url;
+  };
+
+  const neueFassung = stand !== null && stand.fassung > basis ? stand.fassung : null;
+  // Ohne ungespeicherte Aenderungen direkt neu laden, sonst ueber den Konflikt-Dialog.
+  const neueFassungLaden = () => {
+    if (pultStore.getState().ungespeichert) {
+      setKonflikt('Der Agent hat eine neue Fassung gespeichert, du hast aber ungespeicherte Änderungen.');
+      return;
+    }
+    window.location.reload();
   };
 
   const vorschauHinweis = ungespeichert ? 'Erst speichern – die Vorschau zeigt die gespeicherte Fassung' : '';
@@ -180,6 +191,20 @@ export default function PultLeiste() {
           </span>
         </Tooltip>
       </Stack>
+      {neueFassung !== null && (
+        <Alert
+          severity="info"
+          data-testid="neue-fassung"
+          sx={{ borderRadius: 0 }}
+          action={
+            <Button color="inherit" size="small" onClick={neueFassungLaden}>
+              Laden
+            </Button>
+          }
+        >
+          Neue Fassung vom Agenten ({neueFassung}) – laden
+        </Alert>
+      )}
 
       <Dialog open={konflikt !== null} onClose={() => setKonflikt(null)}>
         <DialogTitle>Jemand anderes hat inzwischen gespeichert</DialogTitle>

@@ -1,6 +1,8 @@
 // Anbindung des Editors an das Marketing-Pult (sales-claw Spec
 // 2026-09-29-newsletter-editor-design.md §3.1). Einzige Stelle mit Netzverkehr:
 // nur relative Adressen von sales-ui.
+import type { Auftrag } from './bildfeld';
+
 export type Dokument = Record<string, unknown>;
 
 export type Start = {
@@ -11,6 +13,8 @@ export type Start = {
   speichern_url: string;
   vorschau_url: string;
   medien_url: string;
+  bild_url: string;
+  stand_url: string;
   zurueck_url: string;
   csrf: string;
   // Herkunft aus dem alten Freigabeweg (broadcast_proposals): Status und Kanal, sonst null.
@@ -193,5 +197,34 @@ export async function medienListe(s: Start): Promise<string[]> {
     return j.bilder.filter((b): b is string => typeof b === 'string' && medienNameOk(b));
   } catch {
     return [];
+  }
+}
+
+export async function bildBeauftragen(s: Start, platz: string, hinweis: string): Promise<{ ok: true } | { ok: false; grund: string }> {
+  try {
+    const r = await fetch(s.bild_url, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF': s.csrf },
+      body: JSON.stringify({ platz, hinweis }),
+    });
+    if (r.ok) return { ok: true };
+    const j: unknown = await r.json().catch(() => ({}));
+    const grund = istObjekt(j) && typeof j.grund === 'string' && j.grund ? j.grund : 'Auftrag gerade nicht möglich';
+    return { ok: false, grund };
+  } catch {
+    return { ok: false, grund: 'Keine Verbindung zum Pult' };
+  }
+}
+
+export async function standLaden(s: Start): Promise<{ fassung: number; auftraege: Auftrag[] } | null> {
+  try {
+    const r = await fetch(s.stand_url, { credentials: 'same-origin' });
+    if (!r.ok) return null;
+    const j: unknown = await r.json();
+    if (!istObjekt(j) || typeof j.fassung !== 'number' || !Array.isArray(j.auftraege)) return null;
+    return { fassung: j.fassung, auftraege: j.auftraege.filter(istObjekt) as Auftrag[] };
+  } catch {
+    return null;
   }
 }

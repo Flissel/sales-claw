@@ -7,7 +7,7 @@ import App from './App';
 import { onDocumentChange, resetDocument } from './documents/editor/EditorContext';
 import { TEditorConfiguration } from './documents/editor/core';
 import { startLesen, zurAnzeige } from './pult';
-import { alsUngespeichert, pultStarten } from './pultZustand';
+import { alsUngespeichert, pultStarten, standAbfragen } from './pultZustand';
 import { pultThema } from './theme';
 import './editor.css';
 
@@ -26,6 +26,7 @@ if (wurzel) {
   try {
     const start = startLesen();
     pultStarten(start);
+    standAbfragen();
     // Dokument aus dem Pult laden; Bilder "medien:<name>" zeigen wir ueber die
     // Medien-Adresse von sales-ui an (zurSpeicherung macht es beim Speichern rueckgaengig).
     resetDocument(zurAnzeige(start.dokument) as TEditorConfiguration);
