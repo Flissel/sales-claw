@@ -50,19 +50,33 @@ test('ladeEntscheid', () => {
   assert.equal(ladeEntscheid(3, 3, false), null);
   assert.equal(ladeEntscheid(4, 3, false), 'laden');
   assert.equal(ladeEntscheid(4, 3, true), 'hinweis');
+  assert.equal(ladeEntscheid(4, 3, false, null), 'laden');
+  assert.equal(ladeEntscheid(4, 3, false, 3), 'laden');
+  assert.equal(ladeEntscheid(4, 3, false, 4), 'hinweis');
+  assert.equal(ladeEntscheid(4, 3, true, 4), 'hinweis');
+  assert.equal(ladeEntscheid(3, 3, false, 3), null);
 });
 
 test('neuesBildMeldung', () => {
-  assert.equal(neuesBildMeldung([]), null);
+  const seit = Date.parse('2026-09-30T10:00:00Z');
+  const neuer = '2026-09-30T10:05:00Z';
+  const alt = '2026-09-30T09:00:00Z';
+  assert.equal(neuesBildMeldung([], seit), null);
   assert.deepEqual(
-    neuesBildMeldung([{ platz: 'kopf', status: 'fertig', messung: { kopf: { aehnlich_original: 0.823 } } },
-                      { platz: 'neben', status: 'fertig', messung: {} }]),
+    neuesBildMeldung([{ platz: 'kopf', status: 'fertig', geaendert_am: neuer, messung: { kopf: { aehnlich_original: 0.823 } } },
+                      { platz: 'neben', status: 'fertig', geaendert_am: neuer, messung: {} }], seit),
     { platz: 'kopf', text: 'Neues Bild vom Agenten – 82 % Themen-Ähnlichkeit' });
-  assert.deepEqual(neuesBildMeldung([{ platz: null, status: 'fertig', messung: {} }]), null);
-  assert.deepEqual(neuesBildMeldung([{ platz: 'kopf', status: 'fertig' }]),
+  assert.deepEqual(neuesBildMeldung([{ platz: null, status: 'fertig', geaendert_am: neuer, messung: {} }], seit), null);
+  assert.deepEqual(neuesBildMeldung([{ platz: 'kopf', status: 'fertig', geaendert_am: neuer }], seit),
+    { platz: 'kopf', text: 'Neues Bild vom Agenten' });
+  // alte, fehlende oder unlesbare Zeitstempel zaehlen nicht (reines Text-Speichern)
+  assert.equal(neuesBildMeldung([{ platz: 'kopf', status: 'fertig', geaendert_am: alt }], seit), null);
+  assert.equal(neuesBildMeldung([{ platz: 'kopf', status: 'fertig' }], seit), null);
+  assert.equal(neuesBildMeldung([{ platz: 'kopf', status: 'fertig', geaendert_am: 'gestern' }], seit), null);
+  assert.deepEqual(
+    neuesBildMeldung([{ platz: 'alt', status: 'fertig', geaendert_am: alt }, { platz: 'kopf', status: 'fertig', geaendert_am: neuer }], seit),
     { platz: 'kopf', text: 'Neues Bild vom Agenten' });
 });
-
 test('standFuer ueberarbeiten', () => {
   assert.deepEqual(standFuer('kopf', [{ platz: 'kopf', status: 'in_arbeit', modus: 'ueberarbeiten' }]),
     { text: 'wird überarbeitet', art: 'laeuft' });

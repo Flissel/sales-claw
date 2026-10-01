@@ -11,6 +11,7 @@ export type Auftrag = {
   staerke?: number;
   modus?: string;
   messung?: Messung;
+  geaendert_am?: string;
 };
 
 const UEBLICH: [number, number][] = [[1, 1], [2, 1], [3, 1], [4, 3], [3, 2], [16, 9], [3, 4], [2, 3], [9, 16]];
@@ -71,13 +72,24 @@ export function staerkeWert(roh: unknown): number {
   return typeof roh === 'number' && Number.isInteger(roh) && roh >= 0 && roh <= 100 ? roh : 55;
 }
 
-export function ladeEntscheid(standFassung: number, basis: number, ungespeichert: boolean): 'laden' | 'hinweis' | null {
+// schonGeladen: Fassung, fuer die diese Sitzung schon einmal automatisch neu geladen hat (Schutz gegen Neuladeschleife).
+export function ladeEntscheid(
+  standFassung: number,
+  basis: number,
+  ungespeichert: boolean,
+  schonGeladen: number | null = null,
+): 'laden' | 'hinweis' | null {
   if (standFassung <= basis) return null;
-  return ungespeichert ? 'hinweis' : 'laden';
+  return ungespeichert || schonGeladen === standFassung ? 'hinweis' : 'laden';
 }
 
-export function neuesBildMeldung(auftraege: Auftrag[]): { platz: string; text: string } | null {
-  const a = auftraege.find((x) => x.status === 'fertig');
+// seit: Ladezeitpunkt der Seite (ms); nur danach fertig gewordene Auftraege zaehlen.
+export function neuesBildMeldung(auftraege: Auftrag[], seit: number): { platz: string; text: string } | null {
+  const a = auftraege.find((x) => {
+    if (x.status !== 'fertig' || typeof x.geaendert_am !== 'string') return false;
+    const t = Date.parse(x.geaendert_am);
+    return Number.isFinite(t) && t > seit;
+  });
   if (!a) return null;
   const messung = a.messung ?? {};
   const platz = a.platz ?? Object.keys(messung)[0];

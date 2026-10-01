@@ -2,7 +2,7 @@ import { create } from 'zustand';
 
 import { ladeEntscheid, neuesBildMeldung } from './bildfeld';
 import type { Auftrag } from './bildfeld';
-import { setSelectedBlockId } from './documents/editor/EditorContext';
+import { getDocument, setSelectedBlockId } from './documents/editor/EditorContext';
 import { medienListe, standLaden, Start } from './pult';
 
 // Zustand der Pult-Leiste: Startdaten, Betreff/Vorschautext, gemerkte Fassung
@@ -16,6 +16,9 @@ type TPult = {
   medien: string[] | null;
   stand: { fassung: number; auftraege: Auftrag[] } | null;
   meldung: { platz: string; text: string } | null;
+  // Ladezeitpunkt der Seite (ms) und: steht im Hinweisfeld des Bildpanels etwas (zaehlt wie ungespeichert).
+  geladenUm: number;
+  hinweisOffen: boolean;
 };
 
 export const pultStore = create<TPult>(() => ({
@@ -27,6 +30,8 @@ export const pultStore = create<TPult>(() => ({
   medien: null,
   stand: null,
   meldung: null,
+  geladenUm: Date.now(),
+  hinweisOffen: false,
 }));
 
 export function pultStarten(start: Start) {
@@ -36,6 +41,7 @@ export function pultStarten(start: Start) {
     vorschautext: start.vorschautext ?? '',
     basis: start.basis_fassung,
     ungespeichert: false,
+    geladenUm: Date.now(),
   });
 }
 
@@ -52,6 +58,17 @@ export function medienLaden(neu = false) {
 }
 
 const MERKZETTEL = 'vibemind-neues-bild';
+const NEU_GELADEN = 'vibemind-neu-geladen';
+
+function schonGeladenLesen(): number | null {
+  try {
+    const roh = sessionStorage.getItem(NEU_GELADEN);
+    const n = roh === null ? NaN : Number(roh);
+    return Number.isInteger(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
 
 // Nach dem automatischen Neuladen: Merkzettel lesen und loeschen, Meldung zeigen, Platz hervorheben.
 export function meldungLesen() {
@@ -64,7 +81,7 @@ export function meldungLesen() {
     const { platz, text } = j as { platz?: unknown; text?: unknown };
     if (typeof platz !== 'string' || typeof text !== 'string') return;
     pultStore.setState({ meldung: { platz, text } });
-    setSelectedBlockId(platz);
+    if (platz in getDocument()) setSelectedBlockId(platz);
   } catch {
     /* kein Merkzettel, keine Meldung */
   }
@@ -78,10 +95,11 @@ export function standAbfragen() {
     const s = await standLaden(start);
     if (!s) return;
     pultStore.setState({ stand: s });
-    const { basis, ungespeichert } = pultStore.getState();
-    if (ladeEntscheid(s.fassung, basis, ungespeichert) === 'laden') {
-      const m = neuesBildMeldung(s.auftraege);
+    const { basis, ungespeichert, hinweisOffen, geladenUm } = pultStore.getState();
+    if (ladeEntscheid(s.fassung, basis, ungespeichert || hinweisOffen, schonGeladenLesen()) === 'laden') {
+      const m = neuesBildMeldung(s.auftraege, geladenUm);
       try {
+        sessionStorage.setItem(NEU_GELADEN, String(s.fassung));
         if (m) sessionStorage.setItem(MERKZETTEL, JSON.stringify(m));
       } catch {
         /* ohne Merkzettel wird nur neu geladen */

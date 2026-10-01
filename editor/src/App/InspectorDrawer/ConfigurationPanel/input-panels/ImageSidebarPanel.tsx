@@ -60,6 +60,8 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
   const [rueckmeldung, setRueckmeldung] = useState<{ art: 'ok' | 'fehler'; text: string } | null>(null);
   useEffect(() => {
     medienLaden();
+    // Panel weg (anderer Block gewaehlt): der Hinweis ist verworfen und blockiert das Neuladen nicht mehr.
+    return () => pultStore.setState({ hinweisOffen: false });
   }, []);
 
   // Das freie URL-Feld gibt es hier nicht: Bilder kommen nur aus den Medien.
@@ -90,6 +92,8 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
     );
     setLaeuft(false);
     if (e.ok) {
+      setHinweis('');
+      pultStore.setState({ hinweisOffen: false });
       setRueckmeldung({ art: 'ok', text: 'Beauftragt. Das Bild kommt als neue Fassung, sobald der PC es erzeugt hat.' });
       standAbfragen();
     } else {
@@ -133,7 +137,10 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
           fullWidth
           label="Hinweis (optional)"
           value={hinweis}
-          onChange={(ev) => setHinweis(ev.target.value)}
+          onChange={(ev) => {
+            setHinweis(ev.target.value);
+            pultStore.setState({ hinweisOffen: ev.target.value.trim() !== '' });
+          }}
           inputProps={{ maxLength: 500 }}
         />
         {!leer && (
