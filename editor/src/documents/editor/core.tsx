@@ -1,12 +1,8 @@
 import React from 'react';
 import { z } from 'zod';
 
-import { Button, ButtonPropsSchema } from '@usewaypoint/block-button';
 import { Divider, DividerPropsSchema } from '@usewaypoint/block-divider';
-import { Heading, HeadingPropsSchema } from '@usewaypoint/block-heading';
-import { Image, ImagePropsSchema } from '@usewaypoint/block-image';
 import { Spacer, SpacerPropsSchema } from '@usewaypoint/block-spacer';
-import { Text, TextPropsSchema } from '@usewaypoint/block-text';
 import {
   buildBlockComponent,
   buildBlockConfigurationDictionary,
@@ -20,6 +16,8 @@ import ContainerPropsSchema from '../blocks/Container/ContainerPropsSchema';
 import EmailLayoutEditor from '../blocks/EmailLayout/EmailLayoutEditor';
 import EmailLayoutPropsSchema from '../blocks/EmailLayout/EmailLayoutPropsSchema';
 import EditorBlockWrapper from '../blocks/helpers/block-wrappers/EditorBlockWrapper';
+import { VorlagenButton, VorlagenHeading, VorlagenImage, VorlagenText } from '../blocks/Vorlagentext';
+import { ButtonSchema, HeadingSchema, ImageSchema, TextSchema } from '../../schemata';
 
 // Platzhalter fuer ein Bild ohne Datei: als data:-Adresse, weil die Seite
 // Bilder nur von 'self' und data: laden darf (keine fremden Server).
@@ -36,10 +34,10 @@ const BILD_PLATZHALTER =
 // Heading, Text, Button, Image, Divider, Spacer, Container, ColumnsContainer an.
 const EDITOR_DICTIONARY = buildBlockConfigurationDictionary({
   Button: {
-    schema: ButtonPropsSchema,
+    schema: ButtonSchema,
     Component: (props) => (
       <EditorBlockWrapper>
-        <Button {...props} />
+        <VorlagenButton {...props} />
       </EditorBlockWrapper>
     ),
   },
@@ -60,15 +58,15 @@ const EDITOR_DICTIONARY = buildBlockConfigurationDictionary({
     ),
   },
   Heading: {
-    schema: HeadingPropsSchema,
+    schema: HeadingSchema,
     Component: (props) => (
       <EditorBlockWrapper>
-        <Heading {...props} />
+        <VorlagenHeading {...props} />
       </EditorBlockWrapper>
     ),
   },
   Image: {
-    schema: ImagePropsSchema,
+    schema: ImageSchema,
     Component: (data) => {
       const props = {
         ...data,
@@ -79,16 +77,16 @@ const EDITOR_DICTIONARY = buildBlockConfigurationDictionary({
       };
       return (
         <EditorBlockWrapper>
-          <Image {...props} />
+          <VorlagenImage {...props} />
         </EditorBlockWrapper>
       );
     },
   },
   Text: {
-    schema: TextPropsSchema,
+    schema: TextSchema,
     Component: (props) => (
       <EditorBlockWrapper>
-        <Text {...props} />
+        <VorlagenText {...props} />
       </EditorBlockWrapper>
     ),
   },

@@ -9,6 +9,7 @@ import {
   medienName,
   mitNachfahren,
   nurErreichbare,
+  zurAnzeige,
   zurSpeicherung,
 } from '../src/pult.ts';
 
@@ -62,6 +63,17 @@ test('zurSpeicherung: nur Erreichbares, Bilder zurueck auf medien:', () => {
   const neu = zurSpeicherung(kaputt);
   assert.equal(neu.waise, undefined);
   assert.equal(neu.r2.data.props.url, 'medien:logo neu.png');
+});
+
+test('Container-Hintergrundbild: medien: <-> Anzeige-Adresse wie beim Bildblock', () => {
+  const d = structuredClone(DOK);
+  d.rahmen.data.props = { ...d.rahmen.data.props, url: 'medien:kopf bild.jpg', width: 600, height: 300 };
+  const anzeige = zurAnzeige(d);
+  assert.equal(anzeige.rahmen.data.props.url, '/medien/datei/kopf%20bild.jpg');
+  assert.deepEqual(anzeige.rahmen.data.props.childrenIds, ['r1', 'r2']);
+  const zurueck = zurSpeicherung(anzeige);
+  assert.equal(zurueck.rahmen.data.props.url, 'medien:kopf bild.jpg');
+  assert.equal(zurueck.rahmen.data.props.height, 300);
 });
 
 test('zurSpeicherung: kaputtes %-Zeichen ist ein Inhaltsfehler, kein Netzfehler', () => {

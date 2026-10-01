@@ -14,3 +14,8 @@ body {
   height: 100vh;
   width: 100%;
 }
+
+/* Bildblock "Schwarz-weiß" (props.sw): nur das Bild grau, nicht die Blockfarbe. */
+.vorlage-sw img {
+  filter: grayscale(1);
+}

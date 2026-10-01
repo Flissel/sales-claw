@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { ZodError } from 'zod';
 
-import { TextProps, TextPropsSchema } from '@usewaypoint/block-text';
+import { TextDaten, TextSchema } from '../../../../schemata';
 
 import BaseSidebarPanel from './helpers/BaseSidebarPanel';
 import BooleanInput from './helpers/inputs/BooleanInput';
@@ -9,14 +9,14 @@ import TextInput from './helpers/inputs/TextInput';
 import MultiStylePropertyPanel from './helpers/style-inputs/MultiStylePropertyPanel';
 
 type TextSidebarPanelProps = {
-  data: TextProps;
-  setData: (v: TextProps) => void;
+  data: TextDaten;
+  setData: (v: TextDaten) => void;
 };
 export default function TextSidebarPanel({ data, setData }: TextSidebarPanelProps) {
   const [, setErrors] = useState<ZodError | null>(null);
 
   const updateData = (d: unknown) => {
-    const res = TextPropsSchema.safeParse(d);
+    const res = TextSchema.safeParse(d);
     if (res.success) {
       setData(res.data);
       setErrors(null);
@@ -38,6 +38,16 @@ export default function TextSidebarPanel({ data, setData }: TextSidebarPanelProp
         label="Formatierung (fett, kursiv, Links) anwenden"
         defaultValue={data.props?.markdown ?? false}
         onChange={(markdown) => updateData({ ...data, props: { ...data.props, markdown } })}
+      />
+      <BooleanInput
+        label="Versalien gesperrt"
+        defaultValue={data.style?.textTransform === 'uppercase'}
+        onChange={(an) =>
+          updateData({
+            ...data,
+            style: { ...data.style, textTransform: an ? 'uppercase' : null, letterSpacing: an ? 2 : null },
+          })
+        }
       />
 
       <MultiStylePropertyPanel

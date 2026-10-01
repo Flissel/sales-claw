@@ -133,7 +133,9 @@ export function fehlerText(grund: string): string {
 function umschreiben<T extends Dokument>(doc: T, f: (u: string) => string): T {
   const neu = JSON.parse(JSON.stringify(doc)) as T;
   for (const b of Object.values(neu)) {
-    if (!istObjekt(b) || b.type !== 'Image' || !istObjekt(b.data) || !istObjekt(b.data.props)) continue;
+    // Bildblock und Container-Hintergrundbild (Spec 2026-10-01 §4: derselbe Ort props.url).
+    if (!istObjekt(b) || (b.type !== 'Image' && b.type !== 'Container')) continue;
+    if (!istObjekt(b.data) || !istObjekt(b.data.props)) continue;
     const props = b.data.props;
     if (typeof props.url === 'string') props.url = f(props.url);
   }

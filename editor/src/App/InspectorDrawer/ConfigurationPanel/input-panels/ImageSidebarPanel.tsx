@@ -20,7 +20,6 @@ import {
   ToggleButtonGroup,
   Typography,
 } from '@mui/material';
-import { ImageProps, ImagePropsSchema } from '@usewaypoint/block-image';
 
 import {
   erzeugenSperre,
@@ -37,16 +36,18 @@ import {
 import { bildBeauftragen, ANZEIGE, loeschFrage, medienLoeschen, medienName } from '../../../../pult';
 import { medienLaden, pultStore, standAbfragen } from '../../../../pultZustand';
 import { useSelectedBlockId } from '../../../../documents/editor/EditorContext';
+import { ImageDaten, ImageSchema } from '../../../../schemata';
 
 import BaseSidebarPanel from './helpers/BaseSidebarPanel';
+import BooleanInput from './helpers/inputs/BooleanInput';
 import RadioGroupInput from './helpers/inputs/RadioGroupInput';
 import TextDimensionInput from './helpers/inputs/TextDimensionInput';
 import TextInput from './helpers/inputs/TextInput';
 import MultiStylePropertyPanel from './helpers/style-inputs/MultiStylePropertyPanel';
 
 type ImageSidebarPanelProps = {
-  data: ImageProps;
-  setData: (v: ImageProps) => void;
+  data: ImageDaten;
+  setData: (v: ImageDaten) => void;
 };
 export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelProps) {
   const [, setErrors] = useState<ZodError | null>(null);
@@ -127,7 +128,7 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
   };
 
   const updateData = (d: unknown) => {
-    const res = ImagePropsSchema.safeParse(d);
+    const res = ImageSchema.safeParse(d);
     if (res.success) {
       setData(res.data);
       setErrors(null);
@@ -296,6 +297,11 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
         </Button>
       </Stack>
 
+      <BooleanInput
+        label="Schwarz-weiß"
+        defaultValue={data.props?.sw === true}
+        onChange={(sw) => updateData({ ...data, props: { ...data.props, sw: sw ? true : null } })}
+      />
       <TextInput
         label="Alternativtext"
         defaultValue={data.props?.alt ?? ''}

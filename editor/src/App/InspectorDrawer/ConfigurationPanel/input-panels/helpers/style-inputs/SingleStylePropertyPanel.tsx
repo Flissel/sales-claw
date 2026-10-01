@@ -45,7 +45,7 @@ export default function SingleStylePropertyPanel({ name, value, onChange }: Styl
     case 'color':
       return <NullableColorInput label="Schriftfarbe" defaultValue={defaultValue} onChange={handleChange} />;
     case 'fontFamily':
-      return <NullableFontFamily label="Schriftart" defaultValue={defaultValue} onChange={handleChange} />;
+      return <NullableFontFamily label="Schriftart" defaultValue={defaultValue} onChange={handleChange} mitVorlage />;
     case 'fontSize':
       return <FontSizeInput label="Schriftgröße" defaultValue={defaultValue} onChange={handleChange} />;
     case 'fontWeight':

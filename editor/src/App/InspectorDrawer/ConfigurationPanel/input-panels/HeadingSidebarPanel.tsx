@@ -2,22 +2,25 @@ import React, { useState } from 'react';
 import { ZodError } from 'zod';
 
 import { ToggleButton } from '@mui/material';
-import { HeadingProps, HeadingPropsDefaults, HeadingPropsSchema } from '@usewaypoint/block-heading';
+import { HeadingPropsDefaults } from '@usewaypoint/block-heading';
+
+import { HeadingDaten, HeadingSchema } from '../../../../schemata';
 
 import BaseSidebarPanel from './helpers/BaseSidebarPanel';
+import BooleanInput from './helpers/inputs/BooleanInput';
 import RadioGroupInput from './helpers/inputs/RadioGroupInput';
 import TextInput from './helpers/inputs/TextInput';
 import MultiStylePropertyPanel from './helpers/style-inputs/MultiStylePropertyPanel';
 
 type HeadingSidebarPanelProps = {
-  data: HeadingProps;
-  setData: (v: HeadingProps) => void;
+  data: HeadingDaten;
+  setData: (v: HeadingDaten) => void;
 };
 export default function HeadingSidebarPanel({ data, setData }: HeadingSidebarPanelProps) {
   const [, setErrors] = useState<ZodError | null>(null);
 
   const updateData = (d: unknown) => {
-    const res = HeadingPropsSchema.safeParse(d);
+    const res = HeadingSchema.safeParse(d);
     if (res.success) {
       setData(res.data);
       setErrors(null);
@@ -31,6 +34,7 @@ export default function HeadingSidebarPanel({ data, setData }: HeadingSidebarPan
       <TextInput
         label="Inhalt"
         rows={3}
+        helperText="*kursiv* ist erlaubt."
         defaultValue={data.props?.text ?? HeadingPropsDefaults.text}
         onChange={(text) => {
           updateData({ ...data, props: { ...data.props, text } });
@@ -47,6 +51,16 @@ export default function HeadingSidebarPanel({ data, setData }: HeadingSidebarPan
         <ToggleButton value="h2">H2</ToggleButton>
         <ToggleButton value="h3">H3</ToggleButton>
       </RadioGroupInput>
+      <BooleanInput
+        label="Versalien gesperrt"
+        defaultValue={data.style?.textTransform === 'uppercase'}
+        onChange={(an) =>
+          updateData({
+            ...data,
+            style: { ...data.style, textTransform: an ? 'uppercase' : null, letterSpacing: an ? 2 : null },
+          })
+        }
+      />
       <MultiStylePropertyPanel
         names={['color', 'backgroundColor', 'fontFamily', 'fontWeight', 'textAlign', 'padding']}
         value={data.style}

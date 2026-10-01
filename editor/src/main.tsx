@@ -22,6 +22,16 @@ function fehlerZeigen(el: HTMLElement, text: string) {
   el.replaceChildren(p);
 }
 
+// Vorlagenschriften (OFL, von sales-ui ausgeliefert, kein Google Fonts) fuer die
+// Anzeige im Canvas; CSP erlaubt style-src/font-src 'self'.
+const SCHRIFTEN_CSS = '/marketing/schrift/schriften.css';
+if (!document.querySelector(`link[href="${SCHRIFTEN_CSS}"]`)) {
+  const link = document.createElement('link');
+  link.rel = 'stylesheet';
+  link.href = SCHRIFTEN_CSS;
+  document.head.appendChild(link);
+}
+
 if (wurzel) {
   try {
     const start = startLesen();

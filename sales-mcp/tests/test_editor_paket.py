@@ -35,3 +35,9 @@ def test_paket_ist_neu_gebaut_bilder_loeschen():
     # ImageSidebarPanel.tsx/pult.ts (01.10.2026): Muelleimer auf den Medien-Kacheln
     text = (ORDNER / "editor.js").read_text(encoding="utf-8")
     assert "Aus den Medien löschen" in text and "medien_loeschen_url" in text
+
+
+def test_paket_kennt_vorlagenschriften():
+    # Task 9 (2026-10-01 Vorlagen in Profi-Qualitaet): Vorlagenschriften, Versalien, Schrift-CSS
+    text = (ORDNER / "editor.js").read_text(encoding="utf-8")
+    assert "Vorlage – Anzeige" in text and "Versalien gesperrt" in text and "/marketing/schrift/schriften.css" in text

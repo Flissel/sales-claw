@@ -2,7 +2,9 @@ import React, { useState } from 'react';
 import { ZodError } from 'zod';
 
 import { ToggleButton } from '@mui/material';
-import { ButtonProps, ButtonPropsDefaults, ButtonPropsSchema } from '@usewaypoint/block-button';
+import { ButtonPropsDefaults } from '@usewaypoint/block-button';
+
+import { ButtonDaten, ButtonSchema } from '../../../../schemata';
 
 import BaseSidebarPanel from './helpers/BaseSidebarPanel';
 import ColorInput from './helpers/inputs/ColorInput';
@@ -11,14 +13,14 @@ import TextInput from './helpers/inputs/TextInput';
 import MultiStylePropertyPanel from './helpers/style-inputs/MultiStylePropertyPanel';
 
 type ButtonSidebarPanelProps = {
-  data: ButtonProps;
-  setData: (v: ButtonProps) => void;
+  data: ButtonDaten;
+  setData: (v: ButtonDaten) => void;
 };
 export default function ButtonSidebarPanel({ data, setData }: ButtonSidebarPanelProps) {
   const [, setErrors] = useState<ZodError | null>(null);
 
   const updateData = (d: unknown) => {
-    const res = ButtonPropsSchema.safeParse(d);
+    const res = ButtonSchema.safeParse(d);
     if (res.success) {
       setData(res.data);
       setErrors(null);
