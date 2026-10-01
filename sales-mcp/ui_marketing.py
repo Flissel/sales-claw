@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import html as _html
+import math
 import urllib.parse
 
 from starlette.concurrency import run_in_threadpool
@@ -26,18 +27,18 @@ import ui_editor
 
 ARTEN = {"newsletter": "Newsletter", "post": "Post", "material": "Team-Material"}
 STATUS = {"entwurf": "Zur Freigabe", "freigegeben": "Freigegeben", "abgelehnt": "Abgelehnt"}
-# Bild-Auftraege (Marketing-API: marketing.bildauftraege.status).
 def _messung_html(messung):
     """Messung je Platz als Themen-Aehnlichkeit (CLIP-Kosinus des alten zum neuen Bild)."""
     teile = []
     if isinstance(messung, dict):
         for platz, m in messung.items():
             w = m.get("aehnlich_original") if isinstance(m, dict) else None
-            if isinstance(w, (int, float)) and not isinstance(w, bool):
+            if isinstance(w, (int, float)) and not isinstance(w, bool) and math.isfinite(w):
                 teile.append(f" &middot; {_html.escape(str(platz))}: {round(w * 100)} % Themen-Ähnlichkeit")
     return "".join(teile)
 
 
+# Bild-Auftraege (Marketing-API: marketing.bildauftraege.status).
 BILD_STATUS = {"offen": "wartet (PC muss laufen)", "in_arbeit": "wird erzeugt", "fertig": "fertig",
                "fehler": "fehlgeschlagen", "verworfen": "verworfen"}
 # Was im Rahmen gezeigt wird; das PDF bekommt einen Verweis (s. oben).

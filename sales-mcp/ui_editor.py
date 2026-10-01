@@ -250,6 +250,7 @@ def routen(ui) -> list:
             return json_grund(422, "Die Stärke muss eine ganze Zahl von 0 bis 100 sein")
         if not isinstance(neu, bool):
             return json_grund(422, "neu muss true oder false sein")
+        neu = neu or staerke == 100      # Stufe 100 heisst immer "ganz neu"
         nutzlast = {"platz": platz, "hinweis": hinweis.strip(), "nur_leere": False,
                     "staerke": 100 if neu else staerke, "modus": "neu" if neu else "ueberarbeiten"}
         iid = urllib.parse.quote(request.path_params["iid"], safe="")

@@ -700,6 +700,16 @@ def test_entwurf_ohne_offene_auftraege_kein_neuladen_mit_messung(angemeldet, pul
     assert '<option value="75">freier</option>' in seite and '<option value="100">ganz neu</option>' in seite
 
 
+def test_entwurf_messung_nan_inf_stuerzt_nicht_ab(angemeldet, pult):
+    pult.bloecke = BLOECKE_MIT_PLATZ
+    pult.bilder = {"auftraege": [
+        {"platz": "kopf", "status": "fertig", "modus": "ueberarbeiten", "staerke": 55,
+         "messung": {"kopf": {"aehnlich_original": float("nan")}, "b": {"aehnlich_original": float("inf")},
+                     "c": {"aehnlich_original": 0.5}}}]}
+    r = angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST)
+    assert r.status_code == 200 and "c: 50 % Themen-Ähnlichkeit" in r.text and "kopf:" not in r.text.split("Bilder")[1]
+
+
 def test_entwurf_bildstand_fehler_kein_neuladen(angemeldet, pult):
     pult.bloecke = BLOECKE_MIT_PLATZ
     pult.fehler = marketing_pult.PultFehler("nicht_erreichbar", "x")

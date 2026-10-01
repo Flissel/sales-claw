@@ -666,6 +666,12 @@ def test_bild_ganz_neu(angemeldet, pult):
     assert pult.aufrufe[-1][2]["staerke"] == 100 and pult.aufrufe[-1][2]["modus"] == "neu"
 
 
+def test_bild_staerke_100_ist_neu(angemeldet, pult):
+    angemeldet.post(f"/marketing/editor/{IID}/bild", headers={**HOST, "X-CSRF": ui.CSRF_TOKEN},
+                    json={"platz": "kopf", "staerke": 100})
+    assert pult.aufrufe[-1][2]["staerke"] == 100 and pult.aufrufe[-1][2]["modus"] == "neu"
+
+
 @pytest.mark.parametrize("body", [{"staerke": 101}, {"staerke": -1}, {"staerke": True},
                                   {"staerke": "5"}, {"neu": "ja"}])
 def test_bild_formen_staerke_neu(angemeldet, pult, body):
