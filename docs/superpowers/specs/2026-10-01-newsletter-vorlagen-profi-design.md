@@ -109,10 +109,9 @@ Werkzeug setzen kann.
 | `style.textTransform` | Heading, Text | `none` \| `uppercase` | Versalien |
 | `style.lineHeight` | Heading, Text | Zahl 0,9 … 2,0 | Zeilenhöhe |
 | `props.text` mit `*kursiv*` | Heading | Markdown-Kursiv (nur Kursiv) | „Herbst*brief*“, „Der *Radhaus* Rundbrief“ |
-| `style.backgroundImage` | Container | `medien:<datei>` | Hintergrundbild des Abschnitts (Bildplatz für den Arbeiter) |
+| `props.url` + `props.width`/`props.height` | Container | `medien:<datei>`, 600 × 120–600 | Hintergrundbild des Abschnitts – derselbe Ort wie beim Bildblock, damit Bildplatz-Logik, Arbeiter, Quelle und Löschsperre unverändert greifen |
 | `style.overlay` | Container | `{farbe: "#hex", deckkraft: 0–100}` | halbtransparentes Farbfeld über dem Bild (Outlook: Vollfarbe) |
-| `props.hoehe` | Container | Zahl 120 … 600 (px) | feste Höhe eines Abschnitts mit Hintergrundbild (bestimmt die Bildplatz-Maße) |
-| `props.grafik` | Image | true/false | erzeugte Grafik (§6), kein Bildplatz für den Arbeiter |
+| `props.grafik` | Image, Container | true/false | erzeugte Grafik (§6), kein Bildplatz für den Arbeiter |
 | `props.sw` | Image | true/false | Auslieferung in Graustufen |
 | `root.data.schriften` | EmailLayout | `{anzeige: <id>, text: <id>}` | Schriftpaar der Vorlage |
 | `root.data.dunkel` | EmailLayout | true/false | Dark-Mode-Metadaten (tech) |
@@ -144,7 +143,7 @@ Georgia, Grotesk → Arial/Helvetica, Rajdhani → „Arial Narrow“, Arial). G
    Ohne Standard-Layout: neutrale Ersatzpalette (Akzent `#2563eb`), damit „Neu“ nie scheitert.
 3. **Logo:** Das Layout hält es als `data:`-Adresse (≤ 150 KB, PNG/JPEG); E-Mail-Programme
    blocken das. Beim Anlegen schreibt die API es einmalig als Datei
-   `logo-<laden>-<sha256[:10]>.png|jpg` in den Medienordner (`MARKETING_MEDIEN_ORDNER`) –
+   `logo-<laden>-<sha256[:10]>.png|jpg` in den Ordner für erzeugte Medien (`MARKETING_BILD_ORDNER`, media-erzeugt) –
    gleiche Prüfsumme = gleiche Datei, neues Logo = neue Datei, alte Newsletter behalten ihres.
    Kein Logo: der Masthead zeigt den Ladennamen als Wortmarke in der Anzeige-Schrift.
 4. Ablauf in der API: Vorlage + Layout lesen → Rollen füllen, Logo ablegen, Grafiken für tech
@@ -153,7 +152,7 @@ Georgia, Grotesk → Arial/Helvetica, Rajdhani → „Arial Narrow“, Arial). G
    „freigegeben + Mandant“ bleibt in der DB) und vermerkt das tatsächliche Standard-Layout statt
    des festen „dunkel“. Die Bildaufträge für leere Plätze entstehen weiter automatisch – jetzt
    mit der Layout-Palette (seit 01.10. live).
-5. **Vorlagenliste:** Die sieben neuen Vorlagen werden je Laden eingespielt (freigegeben).
+5. **Vorlagenliste:** Die sieben neuen Vorlagen werden einmal eingespielt und mit `fuer_alle = true` für jeden Laden freigegeben (heute ist der Vorlagenname der Schlüssel und an einen Mandanten gebunden).
    Die fünf alten verschwinden aus der Liste für neue Newsletter (Status zurückgezogen);
    bestehende Entwürfe bleiben unberührt.
 6. **Kontaktleiste und Fuß:** Telefon · Website · @instagram stehen als bearbeitbarer
@@ -175,8 +174,7 @@ Gleicher Akzent = gleiche Datei (Name enthält den Hexwert). Die Bildplätze die
   `?sw=1`; sales-ui liefert dann eine Graustufen-Fassung (Pillow, mit Cache). Original bleibt farbig.
 - **Container-Hintergrund:** Renderer setzt `mj-section background-url` + Hintergrundfarbe
   (Ausweichfarbe); das Farbfeld ist eine Spalte mit `rgba`-Hintergrund (Outlook: Vollfarbe).
-  Der Bild-Arbeiter behandelt `style.backgroundImage` eines Containers als Bildplatz
-  (Maße aus Containerbreite × fester Kopfhöhe aus `props.hoehe`).
+  Der Bild-Arbeiter behandelt `props.url` eines Containers als Bildplatz (Maße aus `props.width` × `props.height`).
 
 ## 8. Editor
 
