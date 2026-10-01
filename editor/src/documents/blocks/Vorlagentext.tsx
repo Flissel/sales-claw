@@ -53,7 +53,7 @@ export function VorlagenHeading({ style, props }: HeadingDaten) {
     fontWeight: style?.fontWeight ?? 'bold',
     textAlign: style?.textAlign ?? undefined,
     margin: 0,
-    fontSize: GROESSE[level],
+    fontSize: style?.fontSize ?? GROESSE[level],
     padding: polster(style?.padding),
     ...feinStil(style, paar),
   };

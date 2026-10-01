@@ -23,6 +23,8 @@ const ContainerPropsSchema = z.object({
       width: z.number().nullable().optional(),
       height: z.number().nullable().optional(),
       grafik: z.boolean().nullable().optional(),
+      // Bildhinweis fuer den Bild-Arbeiter (Hintergrund-Slot der Vorlage).
+      alt: z.string().nullable().optional(),
     })
     .optional()
     .nullable(),

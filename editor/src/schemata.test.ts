@@ -64,3 +64,15 @@ describe('Darstellung im Editor', () => {
     expect(kursivTeile('')).toEqual([]);
   });
 });
+
+describe('Review-Fixes', () => {
+  it('Heading behaelt fontSize', () => {
+    const d = { style: { fontSize: 52, letterSpacing: 2 }, props: { text: 'x', level: 'h1' } };
+    expect(HeadingSchema.parse(d)).toEqual(d);
+    expect(HeadingSchema.safeParse({ style: { fontSize: 99 }, props: {} }).success).toBe(false);
+  });
+  it('Container behaelt alt', () => {
+    const d = { props: { url: 'medien:a.jpg', alt: 'Bildhinweis' } };
+    expect(ContainerPropsSchema.parse(d)).toEqual(d);
+  });
+});

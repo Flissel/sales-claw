@@ -57,7 +57,7 @@ export default function HeadingSidebarPanel({ data, setData }: HeadingSidebarPan
         onChange={(an) =>
           updateData({
             ...data,
-            style: { ...data.style, textTransform: an ? 'uppercase' : null, letterSpacing: an ? 2 : null },
+            style: { ...data.style, textTransform: an ? 'uppercase' : null, letterSpacing: an ? 2 : data.style?.letterSpacing === 2 ? null : data.style?.letterSpacing },
           })
         }
       />

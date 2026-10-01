@@ -77,7 +77,11 @@ export function mitStil<S extends z.ZodRawShape, P extends z.ZodTypeAny, E exten
   return z.object({ style: stil.extend(extra).optional().nullable(), props: basis.shape.props });
 }
 
-export const HeadingSchema = mitStil(HeadingPropsSchema, Fein);
+// fontSize: das Paket-Heading kennt keine Schriftgroesse; Vorlagen setzen 8-72 (wie der SQL-Validator).
+export const HeadingSchema = mitStil(HeadingPropsSchema, {
+  ...Fein,
+  fontSize: z.number().min(8).max(72).nullable().optional(),
+});
 export const TextSchema = mitStil(TextPropsSchema, Fein);
 export const ButtonSchema = mitStil(ButtonPropsSchema, { fontFamily: FontFamily });
 

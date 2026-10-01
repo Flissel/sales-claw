@@ -32,7 +32,7 @@ const BILD_PLATZHALTER =
 
 // Html und Avatar sind absichtlich nicht dabei: die Pruefung im Pult nimmt nur
 // Heading, Text, Button, Image, Divider, Spacer, Container, ColumnsContainer an.
-const EDITOR_DICTIONARY = buildBlockConfigurationDictionary({
+export const EDITOR_DICTIONARY = buildBlockConfigurationDictionary({
   Button: {
     schema: ButtonSchema,
     Component: (props) => (
