@@ -6,10 +6,32 @@ import {
   VerticalAlignCenterOutlined,
   VerticalAlignTopOutlined,
 } from '@mui/icons-material';
-import { Box, Button, Chip, Stack, TextField, ToggleButton, Typography } from '@mui/material';
+import {
+  Box,
+  Button,
+  Checkbox,
+  Chip,
+  FormControlLabel,
+  Stack,
+  TextField,
+  ToggleButton,
+  ToggleButtonGroup,
+  Typography,
+} from '@mui/material';
 import { ImageProps, ImagePropsSchema } from '@usewaypoint/block-image';
 
-import { erzeugenSperre, formatText, istPlatz, standFuer } from '../../../../bildfeld';
+import {
+  erzeugenSperre,
+  formatText,
+  istLeer,
+  istPlatz,
+  knopfText,
+  staerkeWert,
+  standFuer,
+  STUFE_FREI,
+  STUFE_NAH,
+  STUFE_NEU,
+} from '../../../../bildfeld';
 import { bildBeauftragen, ANZEIGE, medienName } from '../../../../pult';
 import { medienLaden, pultStore, standAbfragen } from '../../../../pultZustand';
 import { useSelectedBlockId } from '../../../../documents/editor/EditorContext';
@@ -32,6 +54,8 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
   const ungespeichert = pultStore((p) => p.ungespeichert);
   const selectedBlockId = useSelectedBlockId();
   const [hinweis, setHinweis] = useState('');
+  const [stufe, setStufe] = useState<number>(STUFE_NAH);
+  const [neu, setNeu] = useState(false);
   const [laeuft, setLaeuft] = useState(false);
   const [rueckmeldung, setRueckmeldung] = useState<{ art: 'ok' | 'fehler'; text: string } | null>(null);
   useEffect(() => {
@@ -49,6 +73,7 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
   // Platzhalter-Bilder sind keine Auswahl, nur Markierung fuer leere Plaetze.
   const kacheln = optionen.filter((n) => !n.startsWith('platzhalter-'));
   const platz = istPlatz(data.props);
+  const leer = istLeer(aktuell);
   const sperre = erzeugenSperre(ungespeichert, data.props ?? undefined);
   const s = selectedBlockId ? standFuer(selectedBlockId, stand?.auftraege ?? []) : { text: '', art: null };
 
@@ -56,7 +81,13 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
     if (!start || !selectedBlockId || sperre) return;
     setLaeuft(true);
     setRueckmeldung(null);
-    const e = await bildBeauftragen(start, selectedBlockId, hinweis.trim());
+    const e = await bildBeauftragen(
+      start,
+      selectedBlockId,
+      hinweis.trim(),
+      staerkeWert(neu || leer ? STUFE_NEU : stufe),
+      neu || leer,
+    );
     setLaeuft(false);
     if (e.ok) {
       setRueckmeldung({ art: 'ok', text: 'Beauftragt. Das Bild kommt als neue Fassung, sobald der PC es erzeugt hat.' });
@@ -96,7 +127,7 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
           />
         )}
 
-        <Typography variant="subtitle2">Bild erzeugen lassen</Typography>
+        <Typography variant="subtitle2">{knopfText(leer)}</Typography>
         <TextField
           size="small"
           fullWidth
@@ -105,6 +136,27 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
           onChange={(ev) => setHinweis(ev.target.value)}
           inputProps={{ maxLength: 500 }}
         />
+        {!leer && (
+          <>
+            <ToggleButtonGroup
+              exclusive
+              size="small"
+              value={stufe}
+              disabled={neu}
+              onChange={(_, v: number | null) => {
+                if (v !== null) setStufe(v);
+              }}
+              aria-label="Stärke der Überarbeitung"
+            >
+              <ToggleButton value={STUFE_NAH}>Nah am Original</ToggleButton>
+              <ToggleButton value={STUFE_FREI}>Freier</ToggleButton>
+            </ToggleButtonGroup>
+            <FormControlLabel
+              control={<Checkbox size="small" checked={neu} onChange={(ev) => setNeu(ev.target.checked)} />}
+              label="Ganz neu erzeugen"
+            />
+          </>
+        )}
         <Button
           size="small"
           variant="contained"
@@ -112,7 +164,7 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
           disabled={sperre !== null || laeuft || !start || !selectedBlockId}
           onClick={erzeugen}
         >
-          Bild erzeugen lassen
+          {knopfText(leer)}
         </Button>
         {sperre && (
           <Typography variant="caption" color="text.secondary">
@@ -250,3 +302,4 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
     </BaseSidebarPanel>
   );
 }
+

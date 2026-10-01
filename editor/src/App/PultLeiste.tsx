@@ -34,6 +34,7 @@ export default function PultLeiste() {
   const basis = pultStore((p) => p.basis);
   const ungespeichert = pultStore((p) => p.ungespeichert);
   const stand = pultStore((p) => p.stand);
+  const neuesBild = pultStore((p) => p.meldung);
 
   const [laeuft, setLaeuft] = useState(false);
   const [meldung, setMeldung] = useState<Meldung>(null);
@@ -208,6 +209,17 @@ export default function PultLeiste() {
         </Alert>
       )}
 
+      {neuesBild !== null && (
+        <Alert
+          severity="success"
+          data-testid="neues-bild"
+          sx={{ borderRadius: 0 }}
+          onClose={() => pultStore.setState({ meldung: null })}
+        >
+          {neuesBild.text}
+        </Alert>
+      )}
+
       <Dialog open={konflikt !== null} onClose={() => setKonflikt(null)}>
         <DialogTitle>Jemand anderes hat inzwischen gespeichert</DialogTitle>
         <DialogContent>
@@ -270,3 +282,4 @@ export default function PultLeiste() {
     </>
   );
 }
+

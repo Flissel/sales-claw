@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { erzeugenSperre, formatText, istLeer, istPlatz, standFuer } from '../src/bildfeld.ts';
+import { erzeugenSperre, formatText, istLeer, istPlatz, knopfText, ladeEntscheid, neuesBildMeldung, staerkeWert, standFuer } from '../src/bildfeld.ts';
 
 test('formatText wie die Marketing-API', () => {
   assert.equal(formatText(600, 300), '2:1 · 1200×608');
@@ -32,4 +32,40 @@ test('erzeugenSperre', () => {
   assert.equal(erzeugenSperre(false, { width: 600, height: 300 }), null);
   assert.match(erzeugenSperre(true, { width: 600, height: 300 }), /^Erst speichern/);
   assert.match(erzeugenSperre(false, { width: 600, height: 0 }), /^Kein Bildplatz/);
+});
+
+test('knopfText', () => {
+  assert.equal(knopfText(true), 'Bild erzeugen');
+  assert.equal(knopfText(false), 'Bild überarbeiten');
+});
+
+test('staerkeWert', () => {
+  assert.equal(staerkeWert(30), 30);
+  assert.equal(staerkeWert(0), 0);
+  assert.equal(staerkeWert(100), 100);
+  for (const x of [101, -1, 5.5, '30', null, undefined, NaN]) assert.equal(staerkeWert(x), 55);
+});
+
+test('ladeEntscheid', () => {
+  assert.equal(ladeEntscheid(3, 3, false), null);
+  assert.equal(ladeEntscheid(4, 3, false), 'laden');
+  assert.equal(ladeEntscheid(4, 3, true), 'hinweis');
+});
+
+test('neuesBildMeldung', () => {
+  assert.equal(neuesBildMeldung([]), null);
+  assert.deepEqual(
+    neuesBildMeldung([{ platz: 'kopf', status: 'fertig', messung: { kopf: { aehnlich_original: 0.823 } } },
+                      { platz: 'neben', status: 'fertig', messung: {} }]),
+    { platz: 'kopf', text: 'Neues Bild vom Agenten – 82 % Themen-Ähnlichkeit' });
+  assert.deepEqual(neuesBildMeldung([{ platz: null, status: 'fertig', messung: {} }]), null);
+  assert.deepEqual(neuesBildMeldung([{ platz: 'kopf', status: 'fertig' }]),
+    { platz: 'kopf', text: 'Neues Bild vom Agenten' });
+});
+
+test('standFuer ueberarbeiten', () => {
+  assert.deepEqual(standFuer('kopf', [{ platz: 'kopf', status: 'in_arbeit', modus: 'ueberarbeiten' }]),
+    { text: 'wird überarbeitet', art: 'laeuft' });
+  assert.deepEqual(standFuer('kopf', [{ platz: 'kopf', status: 'in_arbeit', modus: 'neu' }]),
+    { text: 'wird erzeugt', art: 'laeuft' });
 });

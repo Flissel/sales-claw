@@ -7,7 +7,7 @@ import App from './App';
 import { onDocumentChange, resetDocument } from './documents/editor/EditorContext';
 import { TEditorConfiguration } from './documents/editor/core';
 import { startLesen, zurAnzeige } from './pult';
-import { alsUngespeichert, pultStarten, standAbfragen } from './pultZustand';
+import { alsUngespeichert, meldungLesen, pultStarten, standAbfragen } from './pultZustand';
 import { pultThema } from './theme';
 import './editor.css';
 
@@ -30,6 +30,7 @@ if (wurzel) {
     // Dokument aus dem Pult laden; Bilder "medien:<name>" zeigen wir ueber die
     // Medien-Adresse von sales-ui an (zurSpeicherung macht es beim Speichern rueckgaengig).
     resetDocument(zurAnzeige(start.dokument) as TEditorConfiguration);
+    meldungLesen();
     onDocumentChange(alsUngespeichert);
 
     ReactDOM.createRoot(wurzel).render(
@@ -44,3 +45,4 @@ if (wurzel) {
     fehlerZeigen(wurzel, 'Der Editor konnte den Entwurf nicht laden. Bitte die Seite neu laden oder zurück zum Entwurf gehen.');
   }
 }
+

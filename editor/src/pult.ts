@@ -200,13 +200,13 @@ export async function medienListe(s: Start): Promise<string[]> {
   }
 }
 
-export async function bildBeauftragen(s: Start, platz: string, hinweis: string): Promise<{ ok: true } | { ok: false; grund: string }> {
+export async function bildBeauftragen(s: Start, platz: string, hinweis: string, staerke: number, neu: boolean): Promise<{ ok: true } | { ok: false; grund: string }> {
   try {
     const r = await fetch(s.bild_url, {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json', 'X-CSRF': s.csrf },
-      body: JSON.stringify({ platz, hinweis }),
+      body: JSON.stringify({ platz, hinweis, staerke, neu }),
     });
     if (r.ok) return { ok: true };
     const j: unknown = await r.json().catch(() => ({}));
@@ -228,3 +228,4 @@ export async function standLaden(s: Start): Promise<{ fassung: number; auftraege
     return null;
   }
 }
+

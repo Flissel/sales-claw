@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 
+import { ladeEntscheid, neuesBildMeldung } from './bildfeld';
 import type { Auftrag } from './bildfeld';
+import { setSelectedBlockId } from './documents/editor/EditorContext';
 import { medienListe, standLaden, Start } from './pult';
 
 // Zustand der Pult-Leiste: Startdaten, Betreff/Vorschautext, gemerkte Fassung
@@ -13,6 +15,7 @@ type TPult = {
   ungespeichert: boolean;
   medien: string[] | null;
   stand: { fassung: number; auftraege: Auftrag[] } | null;
+  meldung: { platz: string; text: string } | null;
 };
 
 export const pultStore = create<TPult>(() => ({
@@ -23,6 +26,7 @@ export const pultStore = create<TPult>(() => ({
   ungespeichert: false,
   medien: null,
   stand: null,
+  meldung: null,
 }));
 
 export function pultStarten(start: Start) {
@@ -47,14 +51,45 @@ export function medienLaden(neu = false) {
   medienLaeuft = medienListe(start).then((medien) => pultStore.setState({ medien }));
 }
 
+const MERKZETTEL = 'vibemind-neues-bild';
+
+// Nach dem automatischen Neuladen: Merkzettel lesen und loeschen, Meldung zeigen, Platz hervorheben.
+export function meldungLesen() {
+  try {
+    const roh = sessionStorage.getItem(MERKZETTEL);
+    if (roh === null) return;
+    sessionStorage.removeItem(MERKZETTEL);
+    const j: unknown = JSON.parse(roh);
+    if (typeof j !== 'object' || j === null) return;
+    const { platz, text } = j as { platz?: unknown; text?: unknown };
+    if (typeof platz !== 'string' || typeof text !== 'string') return;
+    pultStore.setState({ meldung: { platz, text } });
+    setSelectedBlockId(platz);
+  } catch {
+    /* kein Merkzettel, keine Meldung */
+  }
+}
+
 let standTakt: ReturnType<typeof setInterval> | null = null;
 export function standAbfragen() {
   const holen = async () => {
     const { start } = pultStore.getState();
     if (!start) return;
     const s = await standLaden(start);
-    if (s) pultStore.setState({ stand: s });
+    if (!s) return;
+    pultStore.setState({ stand: s });
+    const { basis, ungespeichert } = pultStore.getState();
+    if (ladeEntscheid(s.fassung, basis, ungespeichert) === 'laden') {
+      const m = neuesBildMeldung(s.auftraege);
+      try {
+        if (m) sessionStorage.setItem(MERKZETTEL, JSON.stringify(m));
+      } catch {
+        /* ohne Merkzettel wird nur neu geladen */
+      }
+      window.location.reload();
+    }
   };
   void holen();
   if (!standTakt) standTakt = setInterval(holen, 15000);
 }
+
