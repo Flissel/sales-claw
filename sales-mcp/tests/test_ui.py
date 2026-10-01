@@ -1759,10 +1759,13 @@ def test_kontakte_und_verlauf_lassen_sich_nirgends_loeschen():
         assert "/loeschen" not in _get(pfad).text
     # Routen mit „loesch" gibt es nur unter /medien — nirgends fuer
     # Kontakte, Entwuerfe oder Aktivitaeten.
+    # Erweitert 01.10.2026 (Betreiber: Bilder im Editor loeschen): auch
+    # /marketing/editor/medien/ loescht nur DATEIEN aus dem Medienordner -
+    # dieselbe Pruefung wie /medien (ui.medien_loeschsperre), kein Datensatz.
     pfade = [getattr(r, "path", "") for r in ui.app.routes]
     verdaechtig = [p for p in pfade
                    if ("loesch" in p or "delete" in p)
-                   and not p.startswith("/medien/")]
+                   and not p.startswith(("/medien/", "/marketing/editor/medien/"))]
     assert not verdaechtig, verdaechtig
     # Auch kein Chat-Werkzeug — sonst koennte der Agent, was die Oberflaeche
     # bewusst nicht kann. Hier bleibt die Zusage vollstaendig: der Agent
@@ -2733,6 +2736,21 @@ def test_freigegebener_entwurf_blockiert_das_loeschen(medienordner):
     antwort = _post("/medien/loeschen-bestaetigen",
                     {"name": "bild.png", "name_bestaetigt": "bild.png",
                      "csrf": ui.CSRF_TOKEN})
+    assert antwort.status_code == 409
+    assert (medienordner / "bild.png").is_file()
+
+
+def test_newsletter_bild_ist_nicht_loeschbar(medienordner, monkeypatch):
+    """Betreiber 01.10.2026: Newsletter-Bilder liegen hier, die Fassungen in
+    Marketing halten nur den Namen - ein Bild im Newsletter bleibt."""
+    (medienordner / "bild.png").write_bytes(b"x" * 64)
+    monkeypatch.setattr(ui.marketing_pult, "eingerichtet", lambda: True)
+    monkeypatch.setattr(ui.marketing_pult, "medien_verweise",
+                        lambda n: [{"titel": "Herbst", "status": "entwurf"}])
+    warn = _post("/medien/loeschen", {"name": "bild.png", "csrf": ui.CSRF_TOKEN})
+    assert "Nicht löschbar" in warn.text and "Herbst" in warn.text and "Ja —" not in warn.text
+    antwort = _post("/medien/loeschen-bestaetigen",
+                    {"name": "bild.png", "name_bestaetigt": "bild.png", "csrf": ui.CSRF_TOKEN})
     assert antwort.status_code == 409
     assert (medienordner / "bild.png").is_file()
 

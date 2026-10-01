@@ -63,3 +63,15 @@ def anfrage(methode: str, pfad: str, daten: dict | None = None, roh: bool = Fals
         raise PultFehler("unbekannt", str(e.code))
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         raise PultFehler("nicht_erreichbar", type(e).__name__)
+
+
+def medien_verweise(name: str) -> list:
+    """Welche Marketing-Inhalte tragen diese Mediendatei noch (neueste Fassung
+    eines nicht abgelehnten Inhalts oder die freigegebene)? Wirft PultFehler -
+    der Aufrufer loescht dann NICHT (unbekannt ist nicht unbenutzt)."""
+    from urllib.parse import quote
+    r = anfrage("GET", f"/medien/verweise?name={quote(name, safe='')}")
+    verweise = r.get("verweise") if isinstance(r, dict) else None
+    if not isinstance(verweise, list):
+        raise PultFehler("unbekannt", "Antwort ohne Verweisliste")
+    return [v for v in verweise if isinstance(v, dict)]

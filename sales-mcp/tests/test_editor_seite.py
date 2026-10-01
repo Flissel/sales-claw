@@ -41,6 +41,7 @@ class Falsch:
         self.alt_format = "felder"          # Format der aelteren Fassung 1
         self.speichern_antwort = {"fassung": 3}
         self.bilder = {"auftraege": []}
+        self.verweise = []
 
     def anfrage(self, methode, pfad, daten=None, roh=False):
         self.aufrufe.append((methode, pfad, daten))
@@ -78,6 +79,8 @@ class Falsch:
                                   "fassung": 1}]}
         if pfad.startswith("/layouts"):
             return {"layouts": []}
+        if pfad.startswith("/medien/verweise?name="):
+            return {"verweise": self.verweise}
         return {}
 
 
@@ -701,3 +704,71 @@ def test_stand_json(angemeldet, pult):
     pult.bilder = {"auftraege": [{"platz": "kopf", "status": "in_arbeit"}]}
     j = angemeldet.get(f"/marketing/editor/{IID}/stand.json", headers=HOST).json()
     assert j["fassung"] == 2 and j["auftraege"][0]["status"] == "in_arbeit"
+
+
+# --- Bilder aus der Bibliothek loeschen (Betreiber 01.10.2026) -------------------
+
+LOESCHEN = "/marketing/editor/medien/loeschen"
+
+
+@pytest.fixture
+def bibliothek(monkeypatch, tmp_path):
+    monkeypatch.setattr(server.medien, "MEDIA_VERZEICHNIS", str(tmp_path))
+    (tmp_path / "nl-1234abcd-kopf.jpg").write_bytes(bytes([0xFF, 0xD8]) + b"x" * 64)
+    return tmp_path
+
+
+def _loeschen(c, name, bestaetigt=False, csrf=True):
+    kopf = {**HOST, **({"X-CSRF": ui.CSRF_TOKEN} if csrf else {})}
+    return c.post(LOESCHEN, json={"name": name, "bestaetigt": bestaetigt}, headers=kopf)
+
+
+def test_start_kennt_die_loesch_adresse(angemeldet):
+    start = _start(angemeldet.get(f"/marketing/editor/{IID}", headers=HOST).text)
+    assert start["medien_loeschen_url"] == LOESCHEN
+
+
+def test_pruefen_loescht_nichts_und_berichtet(angemeldet, pult, bibliothek):
+    r = _loeschen(angemeldet, "nl-1234abcd-kopf.jpg")
+    assert r.status_code == 200
+    assert r.json() == {"name": "nl-1234abcd-kopf.jpg", "entwuerfe": 0, "sperre": None, "newsletter": []}
+    assert (bibliothek / "nl-1234abcd-kopf.jpg").is_file()
+    assert ("GET", "/medien/verweise?name=nl-1234abcd-kopf.jpg", None) in pult.aufrufe
+
+
+def test_bestaetigt_loescht_die_datei(angemeldet, pult, bibliothek):
+    r = _loeschen(angemeldet, "nl-1234abcd-kopf.jpg", bestaetigt=True)
+    assert r.status_code == 200 and r.json() == {"geloescht": "nl-1234abcd-kopf.jpg"}
+    assert not (bibliothek / "nl-1234abcd-kopf.jpg").exists()
+
+
+def test_bild_im_newsletter_sperrt(angemeldet, pult, bibliothek):
+    pult.verweise = [{"id": IID, "titel": "Herbst-Update", "status": "entwurf", "art": "newsletter", "wo": "aktuell"}]
+    info = _loeschen(angemeldet, "nl-1234abcd-kopf.jpg").json()
+    assert "Herbst-Update" in info["sperre"] and info["newsletter"] == [{"titel": "Herbst-Update", "status": "entwurf"}]
+    r = _loeschen(angemeldet, "nl-1234abcd-kopf.jpg", bestaetigt=True)
+    assert r.status_code == 409 and "Herbst-Update" in r.json()["grund"]
+    assert (bibliothek / "nl-1234abcd-kopf.jpg").is_file()
+
+
+def test_marketing_weg_sperrt_statt_zu_raten(angemeldet, pult, bibliothek):
+    pult.fehler = marketing_pult.PultFehler("nicht_erreichbar", "URLError")
+    r = _loeschen(angemeldet, "nl-1234abcd-kopf.jpg", bestaetigt=True)
+    assert r.status_code == 409 and "Marketing antwortet gerade nicht" in r.json()["grund"]
+    assert (bibliothek / "nl-1234abcd-kopf.jpg").is_file()
+
+
+def test_ohne_csrf_403(angemeldet, pult, bibliothek):
+    assert _loeschen(angemeldet, "nl-1234abcd-kopf.jpg", bestaetigt=True, csrf=False).status_code == 403
+    assert (bibliothek / "nl-1234abcd-kopf.jpg").is_file()
+
+
+def test_platzhalter_bleiben(angemeldet, pult, bibliothek):
+    (bibliothek / "platzhalter-2x1.png").write_bytes(bytes([0x89]) + b"PNG" + b"x" * 64)
+    assert _loeschen(angemeldet, "platzhalter-2x1.png", bestaetigt=True).status_code == 422
+    assert (bibliothek / "platzhalter-2x1.png").is_file()
+
+
+@pytest.mark.parametrize("name", ["gibt-es-nicht.jpg", "../server.py", 7])
+def test_unbekannt_oder_unsinn(angemeldet, pult, bibliothek, name):
+    assert _loeschen(angemeldet, name, bestaetigt=True).status_code in (404, 422)

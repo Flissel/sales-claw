@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { ZodError } from 'zod';
 
 import {
+  DeleteOutlined,
   VerticalAlignBottomOutlined,
   VerticalAlignCenterOutlined,
   VerticalAlignTopOutlined,
@@ -12,6 +13,7 @@ import {
   Checkbox,
   Chip,
   FormControlLabel,
+  IconButton,
   Stack,
   TextField,
   ToggleButton,
@@ -32,7 +34,7 @@ import {
   STUFE_NAH,
   STUFE_NEU,
 } from '../../../../bildfeld';
-import { bildBeauftragen, ANZEIGE, medienName } from '../../../../pult';
+import { bildBeauftragen, ANZEIGE, loeschFrage, medienLoeschen, medienName } from '../../../../pult';
 import { medienLaden, pultStore, standAbfragen } from '../../../../pultZustand';
 import { useSelectedBlockId } from '../../../../documents/editor/EditorContext';
 
@@ -96,6 +98,29 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
       pultStore.setState({ hinweisOffen: false });
       setRueckmeldung({ art: 'ok', text: 'Beauftragt. Das Bild kommt als neue Fassung, sobald der PC es erzeugt hat.' });
       standAbfragen();
+    } else {
+      setRueckmeldung({ art: 'fehler', text: e.grund });
+    }
+  };
+
+  // Bild aus der Bibliothek loeschen: erst pruefen (Newsletter/Entwuerfe), dann nachfragen, dann loeschen.
+  const loeschen = async (n: string) => {
+    if (!start) return;
+    setRueckmeldung(null);
+    const p = await medienLoeschen(start, n, false);
+    if (!p.ok || !p.info) {
+      setRueckmeldung({ art: 'fehler', text: p.ok ? 'Prüfung fehlgeschlagen' : p.grund });
+      return;
+    }
+    if (p.info.sperre) {
+      setRueckmeldung({ art: 'fehler', text: p.info.sperre });
+      return;
+    }
+    if (!window.confirm(loeschFrage(p.info))) return;
+    const e = await medienLoeschen(start, n, true);
+    if (e.ok) {
+      setRueckmeldung({ art: 'ok', text: `„${n}“ gelöscht.` });
+      medienLaden(true);
     } else {
       setRueckmeldung({ art: 'fehler', text: e.grund });
     }
@@ -191,24 +216,45 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
               const src = ANZEIGE + encodeURIComponent(n);
               const an = n === gewaehlt;
               return (
-                <Box
-                  key={n}
-                  component="img"
-                  src={src}
-                  alt={n}
-                  title={n}
-                  loading="lazy"
-                  onClick={() => updateData({ ...data, props: { ...data.props, url: src } })}
-                  sx={{
-                    width: '100%',
-                    aspectRatio: '1 / 1',
-                    objectFit: 'cover',
-                    borderRadius: 1,
-                    cursor: 'pointer',
-                    outline: an ? '2px solid' : 'none',
-                    outlineColor: 'primary.main',
-                  }}
-                />
+                <Box key={n} sx={{ position: 'relative' }}>
+                  <Box
+                    component="img"
+                    src={src}
+                    alt={n}
+                    title={n}
+                    loading="lazy"
+                    onClick={() => updateData({ ...data, props: { ...data.props, url: src } })}
+                    sx={{
+                      width: '100%',
+                      aspectRatio: '1 / 1',
+                      objectFit: 'cover',
+                      borderRadius: 1,
+                      cursor: 'pointer',
+                      outline: an ? '2px solid' : 'none',
+                      outlineColor: 'primary.main',
+                      display: 'block',
+                    }}
+                  />
+                  {!an && start?.medien_loeschen_url && (
+                    <IconButton
+                      size="small"
+                      aria-label={`${n} löschen`}
+                      title="Aus den Medien löschen"
+                      onClick={() => loeschen(n)}
+                      sx={{
+                        position: 'absolute',
+                        top: 2,
+                        right: 2,
+                        p: '2px',
+                        bgcolor: 'rgba(0,0,0,0.55)',
+                        color: '#fff',
+                        '&:hover': { bgcolor: 'error.main' },
+                      }}
+                    >
+                      <DeleteOutlined sx={{ fontSize: 16 }} />
+                    </IconButton>
+                  )}
+                </Box>
               );
             })}
           </Box>

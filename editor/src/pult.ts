@@ -13,6 +13,8 @@ export type Start = {
   speichern_url: string;
   vorschau_url: string;
   medien_url: string;
+  // Bilder aus der Bibliothek loeschen (01.10.2026); fehlt bei aelterem sales-ui.
+  medien_loeschen_url?: string;
   bild_url: string;
   stand_url: string;
   zurueck_url: string;
@@ -229,3 +231,53 @@ export async function standLaden(s: Start): Promise<{ fassung: number; auftraege
   }
 }
 
+
+export type LoeschInfo = { name: string; entwuerfe: number; sperre: string | null; newsletter: { titel: string; status: string }[] };
+
+// Zwei Schritte wie die Medienseite: bestaetigt=false prueft nur (nichts wird geloescht).
+export async function medienLoeschen(
+  s: Start,
+  name: string,
+  bestaetigt: boolean,
+): Promise<{ ok: true; info: LoeschInfo | null } | { ok: false; grund: string }> {
+  if (!s.medien_loeschen_url) return { ok: false, grund: 'Löschen ist hier noch nicht eingerichtet' };
+  try {
+    const r = await fetch(s.medien_loeschen_url, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF': s.csrf },
+      body: JSON.stringify({ name, bestaetigt }),
+    });
+    const j: unknown = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const grund = istObjekt(j) && typeof j.grund === 'string' && j.grund ? j.grund : 'Löschen gerade nicht möglich';
+      return { ok: false, grund };
+    }
+    if (bestaetigt) return { ok: true, info: null };
+    if (!istObjekt(j) || typeof j.name !== 'string') return { ok: false, grund: 'Antwort unverständlich' };
+    const newsletter = Array.isArray(j.newsletter)
+      ? j.newsletter.filter(istObjekt).map((v) => ({ titel: String(v.titel ?? ''), status: String(v.status ?? '') }))
+      : [];
+    return {
+      ok: true,
+      info: {
+        name: j.name,
+        entwuerfe: typeof j.entwuerfe === 'number' ? j.entwuerfe : 0,
+        sperre: typeof j.sperre === 'string' && j.sperre ? j.sperre : null,
+        newsletter,
+      },
+    };
+  } catch {
+    return { ok: false, grund: 'Keine Verbindung zum Pult' };
+  }
+}
+
+// Text fuer die Rueckfrage vor dem Loeschen.
+export function loeschFrage(info: LoeschInfo): string {
+  const teile = [`„${info.name}“ endgültig aus den Medien löschen?`];
+  if (info.entwuerfe > 0) {
+    teile.push(`${info.entwuerfe} Sales-Entwurf/Entwürfe nennen diese Datei und scheitern danach beim Zustellen.`);
+  }
+  teile.push('Das lässt sich nicht rückgängig machen.');
+  return teile.join(' ');
+}

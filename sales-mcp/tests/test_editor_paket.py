@@ -29,3 +29,9 @@ def test_paket_ist_neu_gebaut_agent_konflikt_nennt_medien():
     # PultLeiste.tsx: Konflikt bei neuer Agenten-Fassung verweist auf die Medien
     text = (ORDNER / "editor.js").read_text(encoding="utf-8")
     assert "Neue Bilder vom Agenten liegen auch in den Medien." in text
+
+
+def test_paket_ist_neu_gebaut_bilder_loeschen():
+    # ImageSidebarPanel.tsx/pult.ts (01.10.2026): Muelleimer auf den Medien-Kacheln
+    text = (ORDNER / "editor.js").read_text(encoding="utf-8")
+    assert "Aus den Medien löschen" in text and "medien_loeschen_url" in text

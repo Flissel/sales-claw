@@ -201,6 +201,7 @@ from starlette.routing import Route
 
 import kalender
 import mailadresse
+import marketing_pult
 import ui_editor
 import ui_marketing
 import verlinken
@@ -1955,7 +1956,69 @@ def _medien_verweise(basis: str):
         "where d.media_ref = %s order by d.created_at", (basis,))
 
 
-def _medien_loeschen_warnseite(basis: str, verweise) -> HTMLResponse:
+def _newsletter_verweise(basis: str):
+    """Welche Marketing-Inhalte tragen die Datei noch? -> (liste, fehler).
+
+    Betreiber 01.10.2026 („Bilder in der UI loeschen"): Newsletter-Bilder
+    liegen hier im Medienordner, die Marketing-Fassungen halten nur den
+    Namen. Ohne Marketing-Anbindung gibt es keine Newsletter -> nichts zu
+    pruefen. Antwortet Marketing nicht, ist "benutzt?" unbekannt -> fehler,
+    und der Aufrufer loescht NICHT (fail-closed).
+    """
+    if not marketing_pult.eingerichtet():
+        return [], None
+    try:
+        return marketing_pult.medien_verweise(basis), None
+    except marketing_pult.PultFehler:
+        return [], ("Marketing antwortet gerade nicht – ob ein Newsletter "
+                    "dieses Bild noch nutzt, ist unbekannt. Deshalb wird "
+                    "nichts gelöscht; bitte später erneut versuchen.")
+
+
+def medien_loeschsperre(basis: str):
+    """Gemeinsame Pruefung fuer /medien und den Editor -> (entwuerfe,
+    newsletter, sperre). sperre ist Klartext (nicht HTML) oder None."""
+    entwuerfe = _medien_verweise(basis)
+    newsletter, fehler = _newsletter_verweise(basis)
+    if fehler:
+        return entwuerfe, newsletter, fehler
+    freigegeben = [z for z in entwuerfe if z["status"] == "approved"]
+    if freigegeben:
+        return entwuerfe, newsletter, (
+            f"Auf '{basis}' verweisen {len(freigegeben)} FREIGEGEBENE "
+            f"Entwürfe. Der Versender liest die Datei erst beim Zustellen "
+            f"und kann das jeden Moment tun — dann ginge eine Nachricht "
+            f"ohne ihre Unterlage raus oder scheiterte. Erst die Entwürfe "
+            f"ablehnen, dann die Datei löschen.")
+    if newsletter:
+        titel = ", ".join(f"„{v.get('titel') or '(ohne Titel)'}“" for v in newsletter[:5])
+        return entwuerfe, newsletter, (
+            f"Das Bild steckt noch in {len(newsletter)} Newsletter/Inhalt(en): "
+            f"{titel}. Dort erst ein anderes Bild wählen (oder den Inhalt "
+            f"ablehnen), dann löschen.")
+    return entwuerfe, newsletter, None
+
+
+def medien_datei_loeschen(basis: str):
+    """Loescht die angezeigte Datei -> None oder Fehlertext (Klartext).
+
+    `medien.pfad()` statt `medien.wurzel()` (12.09.2026, Betreiber-Befund
+    „das Loeschen in Medien geht nicht"): die Seite listet BEIDE Ordner —
+    den Upload-Ordner des Menschen und den fuer erzeugte Unterlagen —,
+    der Loeschbefehl griff aber hart nur in den ersten. `pfad()` folgt
+    derselben Rangfolge wie die Anzeige (Mensch vor System), sodass der
+    Knopf genau die Datei trifft, die daneben steht."""
+    ziel = server.medien.pfad(basis)
+    try:
+        os.unlink(ziel)
+    except OSError as e:
+        return (f"Datei nicht löschbar ({type(e).__name__}) in "
+                f"{os.path.dirname(ziel)}. Ist dieser Ordner an sales-ui "
+                f"schreibbar eingehängt, also ohne `:ro`?")
+    return None
+
+
+def _medien_loeschen_warnseite(basis: str, verweise, newsletter=(), sperre=None) -> HTMLResponse:
     if verweise:
         liste = "".join(
             f'<li>{_e(z["status"])} · {_e(z["channel"])} · '
@@ -1967,6 +2030,17 @@ def _medien_loeschen_warnseite(basis: str, verweise) -> HTMLResponse:
                    f'Datei.</p>')
     else:
         hinweis = "<p>Kein Entwurf verweist auf diese Datei.</p>"
+    if newsletter:
+        hinweis += ('<p><b>Newsletter mit diesem Bild:</b></p><ul>' + "".join(
+            f'<li>{_e(v.get("titel") or "(ohne Titel)")} · {_e(v.get("status") or "")}</li>'
+            for v in newsletter) + '</ul>')
+    if sperre:
+        return _seite(
+            "Nicht löschbar",
+            f'<h1>Nicht löschbar</h1><div class="karte">'
+            f'<p>Datei: <b>{_e(basis)}</b></p>{hinweis}<p>{_e(sperre)}</p>'
+            f'<p class="abbrechen"><a href="/medien">Zurück zu den Medien</a></p></div>',
+            status=409)
     return _seite(
         "Löschen bestätigen",
         f'<h1>Löschen bestätigen</h1><div class="karte">'
@@ -1996,7 +2070,8 @@ async def aktion_medien_loeschen(request):
     basis, fehler = server.medien.pruefe(str(form.get("name") or ""))
     if fehler:
         return _fehlerseite(404, "Nicht gefunden", _e(fehler))
-    return _medien_loeschen_warnseite(basis, _medien_verweise(basis))
+    entwuerfe, newsletter, sperre = medien_loeschsperre(basis)
+    return _medien_loeschen_warnseite(basis, entwuerfe, newsletter, sperre)
 
 
 @_gesichert_seite
@@ -2021,31 +2096,12 @@ async def aktion_medien_loeschen_bestaetigen(request):
             "Ohne den auf der Warnseite gelesenen Dateinamen wird nichts "
             "gelöscht."))
 
-    verweise = _medien_verweise(basis)
-    freigegeben = [z for z in verweise if z["status"] == "approved"]
-    if freigegeben:
-        return _fehlerseite(409, "Nicht gelöscht", (
-            f"Auf '{_e(basis)}' verweisen {len(freigegeben)} FREIGEGEBENE "
-            f"Entwürfe. Der Versender liest die Datei erst beim Zustellen "
-            f"und kann das jeden Moment tun — dann ginge eine Nachricht "
-            f"ohne ihre Unterlage raus oder scheiterte. Erst die Entwürfe "
-            f"ablehnen, dann die Datei löschen."))
-    # `medien.pfad()` statt `medien.wurzel()` (12.09.2026, Betreiber-Befund
-    # „das Loeschen in Medien geht nicht"): die Seite listet BEIDE Ordner —
-    # den Upload-Ordner des Menschen und den fuer erzeugte Unterlagen —,
-    # der Loeschbefehl griff aber hart nur in den ersten. Jede erzeugte
-    # Datei (Kalenderdateien, erzeugte PDFs) war damit unloeschbar, und der
-    # Fehlertext zeigte auf die falsche Ursache. `pfad()` folgt derselben
-    # Rangfolge wie die Anzeige (Mensch vor System), sodass der Knopf genau
-    # die Datei trifft, die daneben steht.
-    ziel = server.medien.pfad(basis)
-    try:
-        os.unlink(ziel)
-    except OSError as e:
-        return _fehlerseite(500, "Nicht gelöscht", (
-            f"Datei nicht löschbar ({_e(type(e).__name__)}) in "
-            f"{_e(os.path.dirname(ziel))}. Ist dieser Ordner an sales-ui "
-            f"schreibbar eingehängt, also ohne `:ro`?"))
+    verweise, _newsletter, sperre = medien_loeschsperre(basis)
+    if sperre:
+        return _fehlerseite(409, "Nicht gelöscht", _e(sperre))
+    fehler = medien_datei_loeschen(basis)
+    if fehler:
+        return _fehlerseite(500, "Nicht gelöscht", _e(fehler))
     LOG.warning("Medien: %s gelöscht (%d Entwürfe verwiesen darauf)",
                 basis, len(verweise))
     return RedirectResponse("/medien", status_code=303)

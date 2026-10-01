@@ -147,6 +147,7 @@ def routen(ui) -> list:
             "speichern_url": f"/marketing/editor/{iid}/speichern",
             "vorschau_url": f"/marketing/entwurf/{iid}/vorschau",
             "medien_url": "/marketing/editor/medien.json",
+            "medien_loeschen_url": "/marketing/editor/medien/loeschen",
             "zurueck_url": f"/marketing/entwurf/{iid}",
             "bild_url": f"/marketing/editor/{iid}/bild",
             "stand_url": f"/marketing/editor/{iid}/stand.json",
@@ -276,6 +277,46 @@ def routen(ui) -> list:
                             headers={"Cache-Control": "no-store"})
 
     @ui._gesichert_seite
+    async def medien_loeschen(request):
+        """Bild aus der Bibliothek loeschen (Betreiber 01.10.2026). Zwei Schritte
+        wie /medien: ohne "bestaetigt" nur pruefen und berichten, mit
+        "bestaetigt" erneut pruefen und loeschen. Gesperrt wie dort, dazu
+        Bilder in Newslettern (ui.medien_loeschsperre)."""
+        marke = request.headers.get("x-csrf", "")
+        if not marke or not hmac.compare_digest(marke, ui.CSRF_TOKEN):
+            return json_grund(403, "Fehlende oder falsche CSRF-Marke")
+        try:
+            body = json.loads(await request.body() or b"{}")
+        except (ValueError, UnicodeDecodeError):
+            return json_grund(422, "Die Anfrage ist kein gültiges JSON")
+        if not isinstance(body, dict):
+            return json_grund(422, "Die Anfrage ist kein JSON-Objekt")
+        name, bestaetigt = body.get("name"), body.get("bestaetigt", False)
+        if not isinstance(name, str) or not isinstance(bestaetigt, bool):
+            return json_grund(422, "name (Text) und bestaetigt (true/false) erwartet")
+        basis, fehler = await run_in_threadpool(ui.server.medien.pruefe, name)
+        if fehler:
+            return json_grund(404, str(fehler))
+        if basis.startswith("platzhalter-"):
+            return json_grund(422, "Platzhalter gehören zu den Vorlagen und bleiben")
+        try:
+            entwuerfe, newsletter, sperre = await run_in_threadpool(ui.medien_loeschsperre, basis)
+        except Exception:   # noqa: BLE001 - Sales-DB weg: unbekannt ist nicht unbenutzt
+            return json_grund(503, "Prüfung gerade nicht möglich")
+        if not bestaetigt:
+            return JSONResponse({"name": basis, "entwuerfe": len(entwuerfe), "sperre": sperre,
+                                 "newsletter": [{"titel": v.get("titel"), "status": v.get("status")}
+                                                for v in newsletter]},
+                                headers={"Cache-Control": "no-store"})
+        if sperre:
+            return json_grund(409, sperre)
+        fehler = await run_in_threadpool(ui.medien_datei_loeschen, basis)
+        if fehler:
+            return json_grund(500, fehler)
+        ui.LOG.warning("Medien (Editor): %s gelöscht (%d Entwürfe verwiesen darauf)", basis, len(entwuerfe))
+        return JSONResponse({"geloescht": basis}, headers={"Cache-Control": "no-store"})
+
+    @ui._gesichert_seite
     async def medien_json(request):
         try:
             eintraege = await run_in_threadpool(ui.server.medien.liste, True)
@@ -394,6 +435,7 @@ def routen(ui) -> list:
     return [
         # medien.json VOR {iid}, sonst faenge der Platzhalter sie ab.
         Route("/marketing/editor/medien.json", medien_json),
+        Route("/marketing/editor/medien/loeschen", medien_loeschen, methods=["POST"]),
         Route("/marketing/editor/{iid}", editor_seite),
         Route("/marketing/editor/{iid}/speichern", editor_speichern, methods=["POST"]),
         Route("/marketing/editor/{iid}/bild", editor_bild, methods=["POST"]),
