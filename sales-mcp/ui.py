@@ -531,6 +531,16 @@ def _signiertes_bild(pfad: str) -> bool:
     return _SIGNIERTES_BILD.fullmatch(pfad) is not None
 
 
+# Eigene OFL-Schriften (Newsletter-Vorlagen): Vorschau und Mailprogramme laden
+# sie ohne Cookies. Offen sind nur GET/HEAD auf /marketing/schrift/<datei>;
+# die Route liefert ausschliesslich Registerdateien und schriften.css.
+_SCHRIFT = re.compile(r"/marketing/schrift/[A-Za-z0-9._-]{1,80}")
+
+
+def _schrift_pfad(pfad: str) -> bool:
+    return _SCHRIFT.fullmatch(pfad) is not None
+
+
 def _pfad_erlaubt(rolle: str, pfad: str) -> bool:
     """Darf diese Rolle diesen Pfad sehen? `kalender` ist eingeschraenkt,
     jeder Pfad in `_ADMIN_BASIS_PFADE` zusaetzlich auf `freigeben` im
@@ -547,6 +557,8 @@ def _pfad_erlaubt(rolle: str, pfad: str) -> bool:
     `sales`), waere `sales_test` hier NICHT gleichgestellt, saehe in JEDEM
     Testlauf niemand einen der beiden Knoepfe — auch nicht die Rolle
     `freigeben` selbst."""
+    if _schrift_pfad(pfad):
+        return True
     if _signiertes_bild(pfad):
         # Newsletter-Editor (29.09.2026): die Signatur ist die Berechtigung,
         # nicht die Rolle - s. _SIGNIERTES_BILD.
@@ -581,6 +593,10 @@ class AnmeldeWache:
             # Sie sind nicht ungeschuetzt: /passwort-neu verlangt einen
             # gueltigen Einmal-Token, und /passwort-vergessen kann nichts
             # aendern, nur eine Mail an eine HINTERLEGTE Adresse ausloesen.
+            await self.app(scope, receive, send)
+            return
+        if scope["method"] in ("GET", "HEAD") and _schrift_pfad(scope["path"]):
+            # Eigene Schriften, s. _SCHRIFT.
             await self.app(scope, receive, send)
             return
         if scope["method"] in ("GET", "HEAD") and _signiertes_bild(scope["path"]):

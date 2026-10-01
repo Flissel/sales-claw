@@ -24,6 +24,7 @@ from starlette.responses import FileResponse, HTMLResponse, JSONResponse, Redire
 from starlette.routing import Route
 
 import marketing_pult
+import schriften
 
 GUELTIG_S = 900
 BILD_ENDUNGEN = (".png", ".jpg", ".jpeg", ".gif", ".webp")
@@ -51,6 +52,24 @@ HINWEIS_MAX = 500
 def _ui():
     import ui
     return ui
+
+
+def _graustufen(pfad: str):
+    """(Bytes, Medientyp) der Graustufen-Fassung oder None bei jedem Fehler."""
+    try:
+        import io
+        from PIL import Image, ImageOps
+        with Image.open(pfad) as bild:
+            png = bild.format == "PNG"
+            grau = ImageOps.grayscale(bild)
+            puffer = io.BytesIO()
+            if png:
+                grau.save(puffer, "PNG")
+            else:
+                grau.convert("L").save(puffer, "JPEG", quality=88)
+        return puffer.getvalue(), ("image/png" if png else "image/jpeg")
+    except Exception:  # noqa: BLE001 - Originaldatei ist die sichere Rueckfalloption
+        return None
 
 
 def bild_token(jetzt: int | None = None) -> str:
@@ -347,10 +366,31 @@ def routen(ui) -> list:
         typ = mimetypes.guess_type(basis)[0] or medien.ERLAUBT.get(endung, ("", ""))[1]
         if not typ or not typ.startswith("image/"):
             return nicht_da
-        return FileResponse(medien.pfad(basis), media_type=typ,
-                            headers={"Cache-Control": "private, max-age=300",
-                                     "X-Content-Type-Options": "nosniff",
-                                     "Content-Security-Policy": CSP_BILD})
+        kopf = {"Cache-Control": "private, max-age=300",
+                "X-Content-Type-Options": "nosniff",
+                "Content-Security-Policy": CSP_BILD}
+        if request.query_params.get("sw") == "1":
+            # Schwarz-Weiss-Fassung (Vorlagen mit Graustufen-Bildern). Pillow-
+            # Fehler -> Originaldatei, nie ein 500 in der Vorschau.
+            grau = await run_in_threadpool(_graustufen, medien.pfad(basis))
+            if grau is not None:
+                return Response(grau[0], media_type=grau[1], headers=kopf)
+        return FileResponse(medien.pfad(basis), media_type=typ, headers=kopf)
+
+    async def schrift(request):
+        # OHNE Anmeldung (AnmeldeWache laesst /marketing/schrift/<datei> durch):
+        # die abgeschottete Vorschau und Mailprogramme laden die Schriften
+        # ohne Cookies, aus undurchsichtiger Herkunft -> CORS offen. Nur die
+        # Registerdateien und schriften.css, sonst 404.
+        datei = request.path_params["datei"]
+        kopf = {"Access-Control-Allow-Origin": "*",
+                "Cache-Control": "public, max-age=31536000, immutable",
+                "X-Content-Type-Options": "nosniff"}
+        if datei == "schriften.css":
+            return Response(schriften.css(), media_type="text/css", headers=kopf)
+        if not schriften.datei_ok(datei):
+            return Response("Nicht gefunden", status_code=404, media_type="text/plain")
+        return Response((schriften.ORDNER / datei).read_bytes(), media_type="font/woff2", headers=kopf)
 
     @ui._gesichert_seite
     async def vorlagen_seite(request):
@@ -441,6 +481,7 @@ def routen(ui) -> list:
         Route("/marketing/editor/{iid}/bild", editor_bild, methods=["POST"]),
         Route("/marketing/editor/{iid}/stand.json", editor_stand),
         Route("/marketing/bild/{token}/{name}", bild),
+        Route("/marketing/schrift/{datei}", schrift),
         Route("/marketing/vorlagen", vorlagen_seite),
         Route("/marketing/vorlage-bild/{name}", vorlage_bild),
         Route("/marketing/aus-vorlage", aus_vorlage, methods=["POST"]),

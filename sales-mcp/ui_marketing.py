@@ -51,7 +51,7 @@ RAHMEN_FORMATE = {"mail": "Mail", "handy": "Handy"}
 # Newsletter kommen ueber die signierten Adressen /marketing/bild/...
 # (ui_editor.bild_basis) - weiter nichts von fremden Adressen.
 _CSP_VORSCHAU = ("sandbox; default-src 'none'; img-src 'self' data:; "
-                 "style-src 'unsafe-inline'; frame-ancestors 'self'")
+                 "font-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'self'")
 
 
 # Layout-Regler (Task 5). Die Farben kommen aus `type="color"`-Feldern, die

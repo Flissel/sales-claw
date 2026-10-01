@@ -378,7 +378,9 @@ def test_ohne_anmeldung_ist_kein_marketing_pfad_offen(monkeypatch):
                           else (r.status_code == 403 and "Nicht angemeldet" in r.text))
             if not geschuetzt:
                 offen.append((methode, route.path, r.status_code))
-    assert offen == [("GET", "/marketing/bild/{token}/{name}", 404)]
+    # offen sind genau die zwei Ausnahmen: signiertes Bild und eigene Schriften
+    assert sorted(offen) == [("GET", "/marketing/bild/{token}/{name}", 404),
+                             ("GET", "/marketing/schrift/{datei}", 404)]
 
 
 def test_statik_ohne_anmeldung_nicht_erreichbar(monkeypatch):
@@ -772,3 +774,73 @@ def test_platzhalter_bleiben(angemeldet, pult, bibliothek):
 @pytest.mark.parametrize("name", ["gibt-es-nicht.jpg", "../server.py", 7])
 def test_unbekannt_oder_unsinn(angemeldet, pult, bibliothek, name):
     assert _loeschen(angemeldet, name, bestaetigt=True).status_code in (404, 422)
+
+
+# --- Eigene Schriften, Schwarz-Weiss-Bilder, Vorschau-CSP (Newsletter-Vorlagen Task 8) ---
+
+def test_schrift_css_ohne_anmeldung_mit_cors(monkeypatch):
+    monkeypatch.setattr(ui, "UI_SESSION_SECRET", "geheim")     # Wache aktiv, keine Sitzung
+    c = TestClient(ui.app)
+    r = c.get("/marketing/schrift/schriften.css", headers=HOST, follow_redirects=False)
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/css")
+    assert r.headers["access-control-allow-origin"] == "*"
+    assert r.headers["cache-control"] == "public, max-age=31536000, immutable"
+    assert "font-family: 'Oxanium'" in r.text and "url(oxanium-600-normal.woff2)" in r.text
+    assert "googleapis" not in r.text
+
+
+def test_schriftdatei_und_nichts_anderes(monkeypatch):
+    monkeypatch.setattr(ui, "UI_SESSION_SECRET", "geheim")
+    c = TestClient(ui.app)
+    r = c.get("/marketing/schrift/poppins-400-normal.woff2", headers=HOST, follow_redirects=False)
+    assert r.status_code == 200 and r.content[:4] == b"wOF2" and r.headers["content-type"] == "font/woff2"
+    assert r.headers["access-control-allow-origin"] == "*"
+    for boese in ("../ui.py", "poppins.ttf", "x-400-normal.woff2", "%2e%2e%2fui.py",
+                  "OFL-poppins.txt", "poppins-500-normal.woff2"):
+        r = c.get(f"/marketing/schrift/{boese}", headers=HOST, follow_redirects=False)
+        assert r.status_code in (303, 404), boese
+        assert b"wOF2" not in r.content, boese
+    # nur GET/HEAD ohne Anmeldung
+    assert c.post("/marketing/schrift/schriften.css", headers=HOST, follow_redirects=False).status_code in (403, 405)
+
+
+def test_schriften_register_und_dateien_stimmen():
+    import schriften
+    assert len(schriften.REGISTER) == 11
+    assert sum(len(s["dateien"]) for s in schriften.REGISTER.values()) == 22
+    for sid, s in schriften.REGISTER.items():
+        assert (schriften.ORDNER / f"OFL-{sid}.txt").is_file(), sid
+        for gewicht, stil in s["dateien"]:
+            assert (schriften.ORDNER / f"{sid}-{gewicht}-{stil}.woff2").read_bytes()[:4] == b"wOF2"
+
+
+def test_vorschau_csp_erlaubt_eigene_schriften():
+    import ui_marketing
+    assert "font-src 'self'" in ui_marketing._CSP_VORSCHAU
+    assert "style-src 'self' 'unsafe-inline'" in ui_marketing._CSP_VORSCHAU
+
+
+def test_bild_sw(monkeypatch, medien_ordner):
+    import io
+    from PIL import Image
+    monkeypatch.setattr(ui, "UI_SESSION_SECRET", "geheim")
+    Image.new("RGB", (8, 8), (200, 30, 30)).save(medien_ordner / "rot.png")
+    Image.new("RGB", (8, 8), (200, 30, 30)).save(medien_ordner / "rot.jpg")
+    c = TestClient(ui.app)
+    t = ui_editor.bild_token()
+    for name, fmt in (("rot.png", "PNG"), ("rot.jpg", "JPEG")):
+        farbig = c.get(f"/marketing/bild/{t}/{name}", headers=HOST)
+        grau = c.get(f"/marketing/bild/{t}/{name}?sw=1", headers=HOST)
+        assert farbig.status_code == grau.status_code == 200
+        assert Image.open(io.BytesIO(farbig.content)).convert("RGB").getpixel((4, 4))[0] > 150
+        bild = Image.open(io.BytesIO(grau.content))
+        assert bild.format == fmt
+        px = bild.convert("RGB").getpixel((4, 4))
+        assert px[0] == px[1] == px[2]
+
+
+def test_bild_sw_kaputte_datei_liefert_original(monkeypatch, medien_ordner):
+    monkeypatch.setattr(ui, "UI_SESSION_SECRET", "geheim")
+    c = TestClient(ui.app)
+    r = c.get(f"/marketing/bild/{ui_editor.bild_token()}/logo.png?sw=1", headers=HOST)
+    assert r.status_code == 200 and r.content.startswith(b"\x89PNG")
