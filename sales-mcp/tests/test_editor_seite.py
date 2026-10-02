@@ -844,3 +844,41 @@ def test_bild_sw_kaputte_datei_liefert_original(monkeypatch, medien_ordner):
     c = TestClient(ui.app)
     r = c.get(f"/marketing/bild/{ui_editor.bild_token()}/logo.png?sw=1", headers=HOST)
     assert r.status_code == 200 and r.content.startswith(b"\x89PNG")
+
+
+def test_freistellen_nutzlast(angemeldet, pult):
+    r = angemeldet.post(f"/marketing/editor/{IID}/bild", json={"platz": "i", "freistellen": True, "staerke": 30, "neu": True},
+                        headers={**HOST, "X-CSRF": ui.CSRF_TOKEN})
+    assert r.status_code == 200
+    methode, pfad, daten = pult.aufrufe[-1]
+    assert pfad == f"/inhalte/{IID}/bilder"
+    assert daten == {"platz": "i", "hinweis": "", "nur_leere": False, "staerke": 0, "modus": "freistellen"}
+
+
+@pytest.mark.parametrize("body", [{"freistellen": True}, {"platz": "i", "freistellen": "ja"}])
+def test_freistellen_ungueltig(angemeldet, pult, body):
+    r = angemeldet.post(f"/marketing/editor/{IID}/bild", json=body, headers={**HOST, "X-CSRF": ui.CSRF_TOKEN})
+    assert r.status_code == 422
+    assert not any(a[0] == "POST" for a in pult.aufrufe)
+
+
+def test_freistellen_api_grund_durchgereicht(angemeldet, pult):
+    pult.fehler = marketing_pult.PultFehler("abgelehnt", "Dieser Platz hat noch kein echtes Bild")
+    r = angemeldet.post(f"/marketing/editor/{IID}/bild", json={"platz": "i", "freistellen": True},
+                        headers={**HOST, "X-CSRF": ui.CSRF_TOKEN})
+    assert r.status_code == 422 and "kein echtes Bild" in r.json()["grund"]
+
+
+def test_bild_sw_behaelt_alpha(monkeypatch, medien_ordner):
+    import io
+    from PIL import Image
+    monkeypatch.setattr(ui, "UI_SESSION_SECRET", "geheim")
+    bild = Image.new("RGBA", (8, 8), (200, 30, 30, 255))
+    bild.putpixel((0, 0), (200, 30, 30, 0))
+    bild.save(medien_ordner / "frei.png")
+    c = TestClient(ui.app)
+    r = c.get(f"/marketing/bild/{ui_editor.bild_token()}/frei.png?sw=1", headers=HOST)
+    assert r.status_code == 200
+    grau = Image.open(io.BytesIO(r.content))
+    assert grau.format == "PNG" and grau.mode == "LA"
+    assert grau.getpixel((0, 0))[1] == 0 and grau.getpixel((4, 4))[1] == 255
