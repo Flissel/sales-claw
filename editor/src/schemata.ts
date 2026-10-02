@@ -85,11 +85,72 @@ export const HeadingSchema = mitStil(HeadingPropsSchema, {
 export const TextSchema = mitStil(TextPropsSchema, Fein);
 export const ButtonSchema = mitStil(ButtonPropsSchema, { fontFamily: FontFamily });
 
+// Vorhandene Schnitte je Schrift als [gewicht, kursiv]; gespiegelt aus claw/schriften.py REGISTER.
+export const SCHNITTE: Record<SchriftId, Array<[number, boolean]>> = {
+  cormorant: [[400, false], [400, true]],
+  'dm-sans': [[400, false], [700, false]],
+  playfair: [[900, false]],
+  poppins: [[400, false], [600, false], [700, false]],
+  'young-serif': [[400, false]],
+  manrope: [[300, false], [400, false], [700, false]],
+  bodoni: [[500, false], [500, true]],
+  montserrat: [[400, false], [600, false]],
+  josefin: [[300, false], [700, false]],
+  oxanium: [[600, false], [700, false]],
+  rajdhani: [[500, false], [600, false]],
+};
+
+const FARBE = /^#[0-9a-fA-F]{6}$/;
+const EBENE_ID = /^[A-Za-z0-9_-]{1,32}$/;
+const QUELLE = /^medien:[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.(png|jpe?g|gif|webp)$/;
+
+const BildEbeneSchema = z.object({
+  id: z.string().regex(EBENE_ID),
+  art: z.literal('bild'),
+  quelle: z.string().regex(QUELLE).refine((q) => !q.includes('..')),
+  x: z.number().min(-600).max(1200),
+  y: z.number().min(-750).max(1500),
+  breite: z.number().min(8).max(3000),
+  drehung: z.number().min(-180).max(180),
+});
+
+const TextEbeneSchema = z
+  .object({
+    id: z.string().regex(EBENE_ID),
+    art: z.literal('text'),
+    text: z
+      .string()
+      .max(200)
+      .refine((t) => t.split('\n').length <= 6),
+    schrift: z.enum(SCHRIFT_IDS),
+    gewicht: z.number().int(),
+    kursiv: z.boolean(),
+    groesse: z.number().min(10).max(160),
+    farbe: z.string().regex(FARBE),
+    ausrichtung: z.enum(['links', 'mitte', 'rechts']),
+    zeilenabstand: z.number().min(0.8).max(2),
+    x: z.number().min(-600).max(1200),
+    y: z.number().min(-750).max(1500),
+    drehung: z.number().min(-180).max(180),
+  })
+  .refine((t) => SCHNITTE[t.schrift].some(([g, k]) => g === t.gewicht && k === t.kursiv), {
+    message: 'Schnitt der Schrift nicht vorhanden',
+  });
+
+export const GestaltungSchema = z.object({
+  version: z.literal(1),
+  format: z.enum(['quer', 'quadrat', 'hoch', 'banner']),
+  hintergrund: z.string().regex(FARBE),
+  ebenen: z.array(z.union([BildEbeneSchema, TextEbeneSchema])).max(20),
+});
+
 const bildProps = ImagePropsSchema.shape.props.unwrap().unwrap();
 export const ImageSchema = z.object({
   style: ImagePropsSchema.shape.style,
   props: bildProps
-    .extend({ sw: z.boolean().nullable().optional(), grafik: z.boolean().nullable().optional() })
+    .extend({ sw: z.boolean().nullable().optional(), grafik: z.boolean().nullable().optional(),
+      gestaltung: GestaltungSchema.nullable().optional(),
+    })
     .optional()
     .nullable(),
 });
