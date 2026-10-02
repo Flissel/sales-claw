@@ -74,6 +74,14 @@ class Falsch:
             return {"auftrag": "a1"} if methode == "POST" else self.bilder
         if pfad == f"/inhalte/{IID}/gestaltung":
             return self.gestaltung_antwort
+        if pfad == f"/inhalte/{IID}/chat":
+            return {"auftrag": "c1"} if methode == "POST" else {"laeuft": False, "verlauf": [{"id": "c1"}]}
+        if pfad == f"/inhalte/{IID}/chat/rueckgaengig":
+            return {"fassung": 4}
+        if pfad == f"/inhalte/{IID}/export/vorschau":
+            return {"flaechen": {"kopf": {"handy": "medien:gs-0123456789ab.jpg", "tablet": "x", "pc": "y"}}}
+        if pfad == f"/inhalte/{IID}/export":
+            return {"dateien": ["oktober-handy.jpg"], "auftrag": "e1"}
         if pfad == f"/inhalte/{IID}/bloecke":
             return self.speichern_antwort
         if pfad == f"/inhalte/{IID}/in_bloecke":
@@ -958,3 +966,152 @@ def test_bild_sw_behaelt_alpha(monkeypatch, medien_ordner):
     grau = Image.open(io.BytesIO(r.content))
     assert grau.format == "PNG" and grau.mode == "LA"
     assert grau.getpixel((0, 0))[1] == 0 and grau.getpixel((4, 4))[1] == 255
+
+
+# --- Chat, Rueckgaengig, Export durchreichen ---------------------------------------
+
+def _post(c, ende, body, csrf=True):
+    h = {**HOST, "X-CSRF": ui.CSRF_TOKEN} if csrf else HOST
+    return c.post(f"/marketing/editor/{IID}/{ende}", headers=h, json=body)
+
+
+def _posts(pult):
+    return [a for a in pult.aufrufe if a[0] == "POST"]
+
+
+def test_start_nennt_chat_und_export_urls(angemeldet):
+    start = _start(angemeldet.get(f"/marketing/editor/{IID}", headers=HOST).text)
+    assert start["chat_url"] == f"/marketing/editor/{IID}/chat"
+    assert start["chat_stand_url"] == f"/marketing/editor/{IID}/chat.json"
+    assert start["chat_rueckgaengig_url"] == f"/marketing/editor/{IID}/chat/rueckgaengig"
+    assert start["export_vorschau_url"] == f"/marketing/editor/{IID}/export/vorschau"
+    assert start["export_url"] == f"/marketing/editor/{IID}/export"
+
+
+def test_chat_durchreichen(angemeldet, pult):
+    r = _post(angemeldet, "chat", {"nachricht": "Mach den Titel gross", "kontext": {"auswahl": "t1"}})
+    assert r.status_code == 200 and r.json() == {"auftrag": "c1"}
+    assert r.headers["cache-control"] == "no-store"
+    assert pult.aufrufe[-1] == ("POST", f"/inhalte/{IID}/chat",
+                                {"nachricht": "Mach den Titel gross", "kontext": {"auswahl": "t1"}})
+    assert pult.zeitlimits[-1] is None
+
+
+def test_chat_kontext_ist_optional(angemeldet, pult):
+    assert _post(angemeldet, "chat", {"nachricht": "Hallo"}).status_code == 200
+    assert pult.aufrufe[-1][2] == {"nachricht": "Hallo", "kontext": {}}
+
+
+def test_chat_stand_json(angemeldet, pult):
+    r = angemeldet.get(f"/marketing/editor/{IID}/chat.json", headers=HOST)
+    assert r.status_code == 200 and r.json() == {"laeuft": False, "verlauf": [{"id": "c1"}]}
+    assert r.headers["cache-control"] == "no-store"
+    assert pult.aufrufe[-1] == ("GET", f"/inhalte/{IID}/chat", None)
+
+
+def test_chat_stand_json_pult_weg(angemeldet, pult):
+    pult.fehler = marketing_pult.PultFehler("nicht_erreichbar", "intern")
+    r = angemeldet.get(f"/marketing/editor/{IID}/chat.json", headers=HOST)
+    assert r.status_code == 503 and r.json() == {"grund": "Assistent gerade nicht erreichbar"}
+
+
+def test_chat_stand_json_ohne_anmeldung_gesperrt(pult, monkeypatch):
+    monkeypatch.setattr(ui, "UI_SESSION_SECRET", "geheim")
+    r = TestClient(ui.app).get(f"/marketing/editor/{IID}/chat.json", headers=HOST, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/login" and not pult.aufrufe
+
+
+def test_rueckgaengig_durchreichen(angemeldet, pult):
+    r = _post(angemeldet, "chat/rueckgaengig", {"auftrag": "c1"})
+    assert r.status_code == 200 and r.json() == {"fassung": 4}
+    assert pult.aufrufe[-1] == ("POST", f"/inhalte/{IID}/chat/rueckgaengig", {"auftrag": "c1"})
+
+
+def test_export_vorschau_durchreichen(angemeldet, pult):
+    r = _post(angemeldet, "export/vorschau", {"flaechen": ["kopf"]})
+    assert r.status_code == 200
+    # Entwurfsbild-Adressen bleiben unveraendert (der Editor macht zurAnzeige).
+    assert r.json()["flaechen"]["kopf"]["handy"] == "medien:gs-0123456789ab.jpg"
+    assert pult.aufrufe[-1] == ("POST", f"/inhalte/{IID}/export/vorschau", {"flaechen": ["kopf"]})
+    assert pult.zeitlimits[-1] == ui_editor.GESTALTUNG_ZEITLIMIT_S
+
+
+def test_export_durchreichen(angemeldet, pult):
+    r = _post(angemeldet, "export", {"newsletter": True, "flaechen": ["kopf"], "bestaetigt": True})
+    assert r.status_code == 200 and r.json() == {"dateien": ["oktober-handy.jpg"], "auftrag": "e1"}
+    assert pult.aufrufe[-1] == ("POST", f"/inhalte/{IID}/export",
+                                {"newsletter": True, "flaechen": ["kopf"], "bestaetigt": True})
+    assert pult.zeitlimits[-1] == ui_editor.GESTALTUNG_ZEITLIMIT_S
+
+
+@pytest.mark.parametrize("ende,body", [
+    ("chat", {"nachricht": "x"}),
+    ("chat/rueckgaengig", {"auftrag": "c1"}),
+    ("export/vorschau", {"flaechen": []}),
+    ("export", {"newsletter": True, "flaechen": [], "bestaetigt": True}),
+])
+def test_chat_und_export_ohne_csrf(angemeldet, pult, ende, body):
+    assert _post(angemeldet, ende, body, csrf=False).status_code == 403
+    assert not _posts(pult)
+
+
+@pytest.mark.parametrize("nachricht", ["", "   ", None, 5, "x" * 2001])
+def test_chat_nachricht_ungueltig(angemeldet, pult, nachricht):
+    r = _post(angemeldet, "chat", {"nachricht": nachricht})
+    assert r.status_code == 422 and r.json()["grund"]
+    assert not _posts(pult)
+
+
+def test_chat_nachricht_2000_geht(angemeldet, pult):
+    assert _post(angemeldet, "chat", {"nachricht": "x" * 2000}).status_code == 200
+
+
+@pytest.mark.parametrize("kontext", ["x", [1], 5, True])
+def test_chat_kontext_kein_objekt(angemeldet, pult, kontext):
+    r = _post(angemeldet, "chat", {"nachricht": "Hi", "kontext": kontext})
+    assert r.status_code == 422 and not _posts(pult)
+
+
+def test_chat_kontext_zu_gross(angemeldet, pult):
+    r = _post(angemeldet, "chat", {"nachricht": "Hi", "kontext": {"k": "x" * 5000}})
+    assert r.status_code == 422 and not _posts(pult)
+
+
+@pytest.mark.parametrize("ende,body", [
+    ("chat", [1]),
+    ("chat/rueckgaengig", {}),
+    ("chat/rueckgaengig", {"auftrag": 5}),
+    ("export/vorschau", {}),
+    ("export/vorschau", {"flaechen": "kopf"}),
+    ("export/vorschau", {"flaechen": [1]}),
+    ("export", {"newsletter": "ja", "flaechen": [], "bestaetigt": True}),
+    ("export", {"newsletter": True, "flaechen": "kopf", "bestaetigt": True}),
+])
+def test_chat_und_export_formfehler(angemeldet, pult, ende, body):
+    r = _post(angemeldet, ende, body)
+    assert r.status_code == 422 and not _posts(pult)
+
+
+@pytest.mark.parametrize("bestaetigt", [False, None, "true", 1])
+def test_export_nur_mit_bestaetigung(angemeldet, pult, bestaetigt):
+    r = _post(angemeldet, "export", {"newsletter": True, "flaechen": [], "bestaetigt": bestaetigt})
+    assert r.status_code == 422 and r.json()["grund"] == "Export nur mit Bestätigung"
+    assert not _posts(pult)
+    r = _post(angemeldet, "export", {"newsletter": True, "flaechen": []})
+    assert r.status_code == 422 and not _posts(pult)
+
+
+@pytest.mark.parametrize("ende,body", [
+    ("chat", {"nachricht": "Hi"}),
+    ("chat/rueckgaengig", {"auftrag": "c1"}),
+    ("export/vorschau", {"flaechen": ["kopf"]}),
+    ("export", {"newsletter": False, "flaechen": ["kopf"], "bestaetigt": True}),
+])
+def test_chat_und_export_fehlerabbildung(angemeldet, pult, ende, body):
+    pult.fehler = marketing_pult.PultFehler("abgelehnt", "Der Assistent arbeitet gerade")
+    r = _post(angemeldet, ende, body)
+    assert r.status_code == 422 and r.json() == {"grund": "Der Assistent arbeitet gerade"}
+    for art in ("nicht_erreichbar", "nicht_verbunden", "unbekannt"):
+        pult.fehler = marketing_pult.PultFehler(art, "intern")
+        r = _post(angemeldet, ende, body)
+        assert r.status_code == 503 and r.json() == {"grund": "Assistent gerade nicht erreichbar"}

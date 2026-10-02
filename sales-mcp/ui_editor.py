@@ -49,6 +49,9 @@ KOERPER_MAX = 300 * 1024
 PLATZ_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 GESTALTUNG_ZEITLIMIT_S = 30
 HINWEIS_MAX = 500
+NACHRICHT_MAX = 2000
+KONTEXT_MAX = 4 * 1024
+ASSISTENT_WEG = "Assistent gerade nicht erreichbar"
 
 
 def _ui():
@@ -181,6 +184,11 @@ def routen(ui) -> list:
             "bild_url": f"/marketing/editor/{iid}/bild",
             "gestaltung_url": f"/marketing/editor/{iid}/gestaltung",
             "stand_url": f"/marketing/editor/{iid}/stand.json",
+            "chat_url": f"/marketing/editor/{iid}/chat",
+            "chat_stand_url": f"/marketing/editor/{iid}/chat.json",
+            "chat_rueckgaengig_url": f"/marketing/editor/{iid}/chat/rueckgaengig",
+            "export_vorschau_url": f"/marketing/editor/{iid}/export/vorschau",
+            "export_url": f"/marketing/editor/{iid}/export",
             "csrf": ui.CSRF_TOKEN,
             # Herkunft aus dem alten Freigabeweg - der Editor zeigt denselben
             # Hinweis wie die Entwurfsseite (ui_marketing.alter_hinweis).
@@ -327,6 +335,105 @@ def routen(ui) -> list:
             return json_grund(503, "Gestaltung gerade nicht möglich")
         if not isinstance(r, dict):
             return json_grund(503, "Gestaltung gerade nicht möglich")
+        return JSONResponse(r, headers={"Cache-Control": "no-store"})
+
+    async def _agent_post(request, pfad: str, pruefen, zeitlimit=None):
+        """Gemeinsamer Weg der schreibenden Agent-Routen: CSRF, JSON-Objekt,
+        Formpruefung (`pruefen(body)` -> (nutzlast, None) oder (None, grund)),
+        Pult-Aufruf im Threadpool, Fehlerabbildung wie editor_bild."""
+        marke = request.headers.get("x-csrf", "")
+        if not marke or not hmac.compare_digest(marke, ui.CSRF_TOKEN):
+            return json_grund(403, "Fehlende oder falsche CSRF-Marke")
+        try:
+            body = json.loads(await request.body() or b"{}")
+        except (ValueError, UnicodeDecodeError):
+            return json_grund(422, "Die Anfrage ist kein gültiges JSON")
+        if not isinstance(body, dict):
+            return json_grund(422, "Die Anfrage ist kein JSON-Objekt")
+        nutzlast, grund = pruefen(body)
+        if grund:
+            return json_grund(422, grund)
+        iid = urllib.parse.quote(request.path_params["iid"], safe="")
+        aufruf = functools.partial(marketing_pult.anfrage, "POST", f"/inhalte/{iid}/{pfad}", nutzlast)
+        if zeitlimit:
+            aufruf = functools.partial(aufruf, zeitlimit=zeitlimit)
+        try:
+            r = await run_in_threadpool(aufruf)
+        except marketing_pult.PultFehler as f:
+            if f.art == "abgelehnt":
+                return json_grund(422, str(f.grund or "Abgelehnt"))
+            return json_grund(503, ASSISTENT_WEG)
+        if not isinstance(r, dict):
+            return json_grund(503, ASSISTENT_WEG)
+        return JSONResponse(r, headers={"Cache-Control": "no-store"})
+
+    def _flaechen_ids(body: dict):
+        flaechen = body.get("flaechen")
+        if not isinstance(flaechen, list) or not all(isinstance(b, str) for b in flaechen):
+            return None
+        return flaechen
+
+    def _chat_pruefen(body: dict):
+        nachricht, kontext = body.get("nachricht"), body.get("kontext", {})
+        if not isinstance(nachricht, str) or not nachricht.strip():
+            return None, "Die Nachricht fehlt"
+        if len(nachricht) > NACHRICHT_MAX:
+            return None, f"Die Nachricht darf höchstens {NACHRICHT_MAX} Zeichen haben"
+        if not isinstance(kontext, dict):
+            return None, "kontext muss ein Objekt sein"
+        if len(json.dumps(kontext, ensure_ascii=False).encode()) > KONTEXT_MAX:
+            return None, "kontext ist zu groß (höchstens 4 KB)"
+        return {"nachricht": nachricht, "kontext": kontext}, None
+
+    def _rueckgaengig_pruefen(body: dict):
+        auftrag = body.get("auftrag")
+        if not isinstance(auftrag, str) or not auftrag:
+            return None, "auftrag fehlt"
+        return {"auftrag": auftrag}, None
+
+    def _vorschau_pruefen(body: dict):
+        flaechen = _flaechen_ids(body)
+        if flaechen is None:
+            return None, "flaechen muss eine Liste von Block-IDs sein"
+        return {"flaechen": flaechen}, None
+
+    def _export_pruefen(body: dict):
+        if body.get("bestaetigt") is not True:
+            return None, "Export nur mit Bestätigung"
+        newsletter, flaechen = body.get("newsletter", False), body.get("flaechen", [])
+        if not isinstance(newsletter, bool):
+            return None, "newsletter muss true oder false sein"
+        if not isinstance(flaechen, list) or not all(isinstance(b, str) for b in flaechen):
+            return None, "flaechen muss eine Liste von Block-IDs sein"
+        return {"newsletter": newsletter, "flaechen": flaechen, "bestaetigt": True}, None
+
+    @ui._gesichert_seite
+    async def editor_chat(request):
+        return await _agent_post(request, "chat", _chat_pruefen)
+
+    @ui._gesichert_seite
+    async def editor_chat_rueckgaengig(request):
+        return await _agent_post(request, "chat/rueckgaengig", _rueckgaengig_pruefen)
+
+    @ui._gesichert_seite
+    async def editor_export_vorschau(request):
+        # Rechnet auf der VM mehrere Flaechen x drei Geraete - wie die Gestaltung.
+        return await _agent_post(request, "export/vorschau", _vorschau_pruefen, GESTALTUNG_ZEITLIMIT_S)
+
+    @ui._gesichert_seite
+    async def editor_export(request):
+        return await _agent_post(request, "export", _export_pruefen, GESTALTUNG_ZEITLIMIT_S)
+
+    @ui._gesichert_seite
+    async def editor_chat_stand(request):
+        # Nur lesen: ohne CSRF, aber hinter der Anmeldung.
+        iid = urllib.parse.quote(request.path_params["iid"], safe="")
+        try:
+            r = await run_in_threadpool(marketing_pult.anfrage, "GET", f"/inhalte/{iid}/chat")
+        except marketing_pult.PultFehler:
+            return json_grund(503, ASSISTENT_WEG)
+        if not isinstance(r, dict):
+            return json_grund(503, ASSISTENT_WEG)
         return JSONResponse(r, headers={"Cache-Control": "no-store"})
 
     @ui._gesichert_seite
@@ -528,6 +635,11 @@ def routen(ui) -> list:
         Route("/marketing/editor/{iid}/speichern", editor_speichern, methods=["POST"]),
         Route("/marketing/editor/{iid}/bild", editor_bild, methods=["POST"]),
         Route("/marketing/editor/{iid}/gestaltung", editor_gestaltung, methods=["POST"]),
+        Route("/marketing/editor/{iid}/chat", editor_chat, methods=["POST"]),
+        Route("/marketing/editor/{iid}/chat.json", editor_chat_stand),
+        Route("/marketing/editor/{iid}/chat/rueckgaengig", editor_chat_rueckgaengig, methods=["POST"]),
+        Route("/marketing/editor/{iid}/export/vorschau", editor_export_vorschau, methods=["POST"]),
+        Route("/marketing/editor/{iid}/export", editor_export, methods=["POST"]),
         Route("/marketing/editor/{iid}/stand.json", editor_stand),
         Route("/marketing/bild/{token}/{name}", bild),
         Route("/marketing/schrift/{datei}", schrift),
