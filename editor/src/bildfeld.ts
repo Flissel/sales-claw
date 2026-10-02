@@ -41,6 +41,11 @@ export function istLeer(url: string | null | undefined): boolean {
   return !url || !url.trim() || PLATZHALTER.test(url);
 }
 
+// Freistellen nur bei einem echten Bild: kein Platzhalter, keine leere Adresse, keine Grafik.
+export function freistellbar(props: { url?: string | null; grafik?: boolean | null }): boolean {
+  return !istLeer(props.url) && props.grafik !== true;
+}
+
 const TEXT: Record<string, [string, 'wartet' | 'laeuft']> = { offen: ['wartet (PC muss laufen)', 'wartet'], in_arbeit: ['wird erzeugt', 'laeuft'] };
 
 export function standFuer(platz: string, auftraege: Auftrag[]): { text: string; art: 'wartet' | 'laeuft' | 'fehler' | null } {

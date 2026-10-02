@@ -24,6 +24,7 @@ import {
 import {
   erzeugenSperre,
   formatText,
+  freistellbar,
   istLeer,
   istPlatz,
   knopfText,
@@ -33,7 +34,7 @@ import {
   STUFE_NAH,
   STUFE_NEU,
 } from '../../../../bildfeld';
-import { bildBeauftragen, ANZEIGE, loeschFrage, medienLoeschen, medienName } from '../../../../pult';
+import { bildBeauftragen, bildFreistellen, ANZEIGE, loeschFrage, medienLoeschen, medienName } from '../../../../pult';
 import { medienLaden, pultStore, standAbfragen } from '../../../../pultZustand';
 import { useSelectedBlockId } from '../../../../documents/editor/EditorContext';
 import { ImageDaten, ImageSchema } from '../../../../schemata';
@@ -79,6 +80,7 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
   const kacheln = optionen.filter((n) => !n.startsWith('platzhalter-'));
   const platz = istPlatz(data.props);
   const leer = istLeer(aktuell);
+  const frei = freistellbar({ url: aktuell, grafik: data.props?.grafik });
   const sperre = erzeugenSperre(ungespeichert, data.props ?? undefined);
   const s = selectedBlockId ? standFuer(selectedBlockId, stand?.auftraege ?? []) : { text: '', art: null };
 
@@ -98,6 +100,20 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
       setHinweis('');
       pultStore.setState({ hinweisOffen: false });
       setRueckmeldung({ art: 'ok', text: 'Beauftragt. Das Bild kommt als neue Fassung, sobald der PC es erzeugt hat.' });
+      standAbfragen();
+    } else {
+      setRueckmeldung({ art: 'fehler', text: e.grund });
+    }
+  };
+
+  const freistellen = async () => {
+    if (!start || !selectedBlockId || ungespeichert) return;
+    setLaeuft(true);
+    setRueckmeldung(null);
+    const e = await bildFreistellen(start, selectedBlockId);
+    setLaeuft(false);
+    if (e.ok) {
+      setRueckmeldung({ art: 'ok', text: 'Freistellen beauftragt – das Bild kommt als neue Fassung.' });
       standAbfragen();
     } else {
       setRueckmeldung({ art: 'fehler', text: e.grund });
@@ -203,6 +219,24 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
           <Typography variant="caption" color="text.secondary">
             {sperre}
           </Typography>
+        )}
+        {frei && (
+          <>
+            <Button
+              size="small"
+              variant="outlined"
+              sx={{ alignSelf: 'flex-start' }}
+              disabled={ungespeichert || laeuft || !start || !selectedBlockId}
+              onClick={freistellen}
+            >
+              Freistellen
+            </Button>
+            {ungespeichert && (
+              <Typography variant="caption" color="text.secondary">
+                Erst speichern
+              </Typography>
+            )}
+          </>
         )}
         {rueckmeldung && (
           <Typography variant="body2" color={rueckmeldung.art === 'fehler' ? 'error' : 'text.secondary'}>

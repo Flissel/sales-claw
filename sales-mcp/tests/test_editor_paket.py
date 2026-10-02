@@ -41,3 +41,8 @@ def test_paket_kennt_vorlagenschriften():
     # Task 9 (2026-10-01 Vorlagen in Profi-Qualitaet): Vorlagenschriften, Versalien, Schrift-CSS
     text = (ORDNER / "editor.js").read_text(encoding="utf-8")
     assert "Vorlage – Anzeige" in text and "Versalien gesperrt" in text and "/marketing/schrift/schriften.css" in text
+
+
+def test_paket_kennt_freistellen():
+    text = (ORDNER / "editor.js").read_text(encoding="utf-8")
+    assert "Freistellen beauftragt" in text and "freistellen" in text

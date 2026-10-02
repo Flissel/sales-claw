@@ -221,6 +221,23 @@ export async function bildBeauftragen(s: Start, platz: string, hinweis: string, 
   }
 }
 
+export async function bildFreistellen(s: Start, platz: string): Promise<{ ok: true } | { ok: false; grund: string }> {
+  try {
+    const r = await fetch(s.bild_url, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF': s.csrf },
+      body: JSON.stringify({ platz, freistellen: true }),
+    });
+    if (r.ok) return { ok: true };
+    const j: unknown = await r.json().catch(() => ({}));
+    const grund = istObjekt(j) && typeof j.grund === 'string' && j.grund ? j.grund : 'Freistellen gerade nicht möglich';
+    return { ok: false, grund };
+  } catch {
+    return { ok: false, grund: 'Keine Verbindung zum Pult' };
+  }
+}
+
 export async function standLaden(s: Start): Promise<{ fassung: number; auftraege: Auftrag[] } | null> {
   try {
     const r = await fetch(s.stand_url, { credentials: 'same-origin' });
