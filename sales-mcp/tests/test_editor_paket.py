@@ -46,3 +46,10 @@ def test_paket_kennt_vorlagenschriften():
 def test_paket_kennt_freistellen():
     text = (ORDNER / "editor.js").read_text(encoding="utf-8")
     assert "Freistellen beauftragt" in text and "freistellen" in text
+
+
+def test_paket_kennt_gestaltung():
+    # Task 7 (2026-10-02 Gestaltungsflaeche): Fenster, Blockauswahl, Handy-Hinweis, Rechen-Route
+    text = (ORDNER / "editor.js").read_text(encoding="utf-8")
+    for s in ("Gestaltungsfläche", "Zurück zum Newsletter", "am Handy unter 12 px", "gestaltung_url"):
+        assert s in text, s

@@ -1,0 +1,352 @@
+// Vollbildfenster fuer eine Gestaltungsflaeche (Spec 2026-10-02 §3, Framer-Stil):
+// Kopfleiste oben, Ebenen links, Flaeche in der Mitte, Eigenschaften rechts.
+// "Zurueck zum Newsletter" prueft, laesst den Server flachrechnen und setzt dann
+// gestaltung, url, width, height und alt am Bild-Block.
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+
+import { ArrowBackRounded, ErrorOutlineRounded, IosShareRounded, RedoRounded, UndoRounded } from '@mui/icons-material';
+import { Box, Button, CircularProgress, IconButton, ThemeProvider, ToggleButton, ToggleButtonGroup, Tooltip, Typography } from '@mui/material';
+
+import { getDocument, setDocument, setSelectedBlockId } from '../../documents/editor/EditorContext';
+import { Format, FORMATE, schieben } from '../../gestaltung';
+import { gestaltungRechnen } from '../../pult';
+import { gestaltungSchliessen, pultStore } from '../../pultZustand';
+import { GestaltungSchema } from '../../schemata';
+
+import { FarbFeld } from './Bedienelemente';
+import EbenenListe from './EbenenListe';
+import Eigenschaften from './Eigenschaften';
+import Flaeche, { Hinweisleiste } from './Flaeche';
+import { flaecheLesen, formatWechseln, ladenfarben, pruefGrund, quelleAnzeige } from './hilfen';
+import { FARBE, gestaltungThema, KOPF_HOEHE, LINKS_BREITE, RECHTS_BREITE, UI_SCHRIFT } from './gestaltungStil';
+import { useGestaltung } from './useGestaltung';
+
+// Naht fuer Task 14: mit onExportieren wird "Exportieren…" aktiv, chat erscheint unter den Eigenschaften.
+export type GestaltungFensterProps = {
+  onExportieren?: () => void;
+  chat?: React.ReactNode;
+};
+
+const FORMAT_KNOEPFE: Array<[Format, string]> = [
+  ['quer', 'Quer'],
+  ['quadrat', 'Quadrat'],
+  ['hoch', 'Hoch'],
+  ['banner', 'Banner'],
+];
+
+// Kleines Seitenverhaeltnis-Symbol (max. 16 px) fuer die Format-Segmente.
+function FormatSymbol({ f }: { f: Format }) {
+  const [a, b] = FORMATE[f];
+  const s = 14 / Math.max(a, b);
+  return <Box component="span" sx={{ width: a * s, height: b * s, border: '1.5px solid currentColor', borderRadius: '2px', flexShrink: 0 }} />;
+}
+
+export default function GestaltungFenster(props: GestaltungFensterProps) {
+  const offen = pultStore((p) => p.gestaltungOffen);
+  const thema = useMemo(gestaltungThema, []);
+  if (offen === null) return null;
+  return (
+    <ThemeProvider theme={thema}>
+      <Fenster key={offen} id={offen} {...props} />
+    </ThemeProvider>
+  );
+}
+
+function Fenster({ id, onExportieren, chat }: GestaltungFensterProps & { id: string }) {
+  const start = pultStore((p) => p.start);
+  const [anfang] = useState(() => flaecheLesen(getDocument()[id], getDocument().root));
+  const z = useGestaltung(anfang.g);
+  const [alt, setAlt] = useState(anfang.alt);
+  const [altFehlt, setAltFehlt] = useState(false);
+  const [versteckt, setVersteckt] = useState<Set<string>>(() => new Set());
+  const [textFokus, setTextFokus] = useState(0);
+  const [laeuft, setLaeuft] = useState(false);
+  const [fehler, setFehler] = useState<string | null>(null);
+  const altRef = useRef<HTMLTextAreaElement>(null);
+  const wurzel = useRef<HTMLDivElement>(null);
+  const farben = useMemo(() => ladenfarben(getDocument().root, z.g), [z.g]);
+  const geaendert = z.g !== anfang.g || alt !== anfang.alt;
+
+  // Block weg (z. B. geloescht) oder kein Bild: Fenster schliessen.
+  useEffect(() => {
+    if (getDocument()[id]?.type !== 'Image') gestaltungSchliessen();
+  }, [id]);
+
+  useEffect(() => wurzel.current?.focus(), []);
+
+  // Tab schliessen mit offener, ungesicherter Gestaltung: der Browser fragt nach.
+  const geaendertRef = useRef(geaendert);
+  geaendertRef.current = geaendert;
+  useEffect(() => {
+    const warnen = (ev: BeforeUnloadEvent) => {
+      if (geaendertRef.current) {
+        ev.preventDefault();
+        ev.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', warnen);
+    return () => window.removeEventListener('beforeunload', warnen);
+  }, []);
+
+  // Tastatur: Strg+Z/Y, Pfeile (1, Shift 10), Entf, Esc hebt die Auswahl auf.
+  const zRef = useRef(z);
+  zRef.current = z;
+  useEffect(() => {
+    const taste = (ev: KeyboardEvent) => {
+      const zz = zRef.current;
+      const el = ev.target instanceof HTMLElement ? ev.target : null;
+      const tippt = el?.closest('input, textarea, select, [contenteditable="true"], [role="listbox"], [role="menu"], .MuiPopover-root') != null;
+      const k = ev.key.toLowerCase();
+      if ((ev.ctrlKey || ev.metaKey) && (k === 'z' || k === 'y')) {
+        if (tippt) return;
+        ev.preventDefault();
+        if (k === 'y' || ev.shiftKey) zz.vor();
+        else zz.zurueck();
+        return;
+      }
+      if (tippt || zz.auswahl === null) return;
+      const id = zz.auswahl;
+      if (ev.key === 'Delete' || ev.key === 'Backspace') {
+        ev.preventDefault();
+        zz.ebeneLoeschen(id);
+      } else if (ev.key === 'Escape') {
+        zz.waehlen(null);
+      } else if (ev.key.startsWith('Arrow')) {
+        ev.preventDefault();
+        const d = ev.shiftKey ? 10 : 1;
+        const dx = ev.key === 'ArrowLeft' ? -d : ev.key === 'ArrowRight' ? d : 0;
+        const dy = ev.key === 'ArrowUp' ? -d : ev.key === 'ArrowDown' ? d : 0;
+        zz.ebeneAendern(id, (e) => schieben(e, dx, dy), 'gleiten');
+      }
+    };
+    window.addEventListener('keydown', taste);
+    return () => window.removeEventListener('keydown', taste);
+  }, []);
+
+  const umschalten = (eid: string) =>
+    setVersteckt((alt) => {
+      const neu = new Set(alt);
+      if (!neu.delete(eid)) neu.add(eid);
+      return neu;
+    });
+
+  const verwerfen = () => {
+    if (geaendert && !window.confirm('Änderungen an der Fläche verwerfen?')) return;
+    gestaltungSchliessen();
+    setSelectedBlockId(id);
+  };
+
+  const zurueck = async () => {
+    if (laeuft) return;
+    z.festschreiben();
+    const g = z.aktuell();
+    const a = alt.trim();
+    if (a === '') {
+      setAltFehlt(true);
+      setFehler('Alternativtext fehlt – bitte rechts unten beschreiben, was die Fläche zeigt.');
+      altRef.current?.focus();
+      return;
+    }
+    const p = GestaltungSchema.safeParse(g);
+    if (!p.success) {
+      setFehler(pruefGrund(p.error, g));
+      return;
+    }
+    const block = getDocument()[id];
+    if (block?.type !== 'Image') {
+      gestaltungSchliessen();
+      return;
+    }
+    const gestaltung = p.data;
+    const props = block.data.props ?? {};
+    // Unveraendert und schon gerechnet: nichts rechnen, nur den Alt-Text uebernehmen.
+    if (anfang.hatBild && JSON.stringify(gestaltung) === JSON.stringify(anfang.g)) {
+      if (a !== props.alt) setDocument({ [id]: { type: 'Image', data: { ...block.data, props: { ...props, alt: a } } } });
+      gestaltungSchliessen();
+      setSelectedBlockId(id);
+      return;
+    }
+    if (!start) {
+      setFehler('Keine Verbindung zum Pult');
+      return;
+    }
+    setLaeuft(true);
+    setFehler(null);
+    const r = await gestaltungRechnen(start, gestaltung);
+    setLaeuft(false);
+    if (!r.ok) {
+      setFehler(r.grund);
+      return;
+    }
+    const jetzt = getDocument()[id];
+    if (jetzt?.type !== 'Image') {
+      gestaltungSchliessen();
+      return;
+    }
+    setDocument({
+      [id]: {
+        type: 'Image',
+        data: {
+          ...jetzt.data,
+          props: { ...jetzt.data.props, gestaltung, url: quelleAnzeige(r.url), width: r.width, height: r.height, alt: a },
+        },
+      },
+    });
+    pultStore.setState({
+      meldung: {
+        platz: id,
+        text:
+          r.hinweise.length > 0
+            ? `Fläche übernommen. Hinweise: ${r.hinweise.join(' · ')}`
+            : 'Fläche übernommen. Zum Abschluss den Newsletter speichern.',
+      },
+    });
+    gestaltungSchliessen();
+    setSelectedBlockId(id);
+  };
+
+  const meldung = fehler && (
+    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1, fontSize: 12, color: FARBE.fehler }}>
+      <ErrorOutlineRounded sx={{ fontSize: 14 }} />
+      <span>{fehler}</span>
+      <Button size="small" onClick={verwerfen} sx={{ height: 24, fontSize: 12, color: FARBE.gedaempft, fontWeight: 500 }}>
+        Änderungen verwerfen
+      </Button>
+    </Box>
+  );
+
+  return (
+    <Box
+      ref={wurzel}
+      tabIndex={-1}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Gestaltungsfläche"
+      sx={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 1250, // ueber dem MUI-Drawer (1200), unter Menues/Popovern (1300)
+        display: 'grid',
+        gridTemplateColumns: `${LINKS_BREITE}px minmax(0, 1fr) ${RECHTS_BREITE}px`,
+        gridTemplateRows: `${KOPF_HOEHE}px minmax(0, 1fr)`,
+        bgcolor: FARBE.geruest,
+        color: FARBE.text,
+        fontFamily: UI_SCHRIFT,
+        outline: 'none',
+        '@keyframes gestaltungAuf': { from: { opacity: 0 }, to: { opacity: 1 } },
+        animation: 'gestaltungAuf 150ms ease-out',
+        '@media (prefers-reduced-motion: reduce)': { animation: 'none' },
+      }}
+    >
+      {/* Kopfleiste */}
+      <Box
+        component="header"
+        sx={{
+          gridColumn: '1 / -1',
+          display: 'grid',
+          gridTemplateColumns: `${LINKS_BREITE}px minmax(0, 1fr) ${RECHTS_BREITE}px`,
+          alignItems: 'center',
+          bgcolor: FARBE.panel,
+          borderBottom: `1px solid ${FARBE.linie}`,
+        }}
+      >
+        <Box sx={{ px: 1 }}>
+          <Button
+            onClick={zurueck}
+            disabled={laeuft}
+            color="inherit"
+            startIcon={laeuft ? <CircularProgress size={14} color="inherit" /> : <ArrowBackRounded sx={{ fontSize: 18 }} />}
+            sx={{ color: FARBE.text, minWidth: 208, justifyContent: 'flex-start', '&:hover': { bgcolor: FARBE.hover } }}
+          >
+            {laeuft ? 'Wird gerechnet …' : 'Zurück zum Newsletter'}
+          </Button>
+        </Box>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2, minWidth: 0 }}>
+          <ToggleButtonGroup
+            exclusive
+            value={z.g.format}
+            aria-label="Format"
+            onChange={(_, f: Format | null) => {
+              if (f) z.setzen(formatWechseln(z.aktuell(), f));
+            }}
+          >
+            {FORMAT_KNOEPFE.map(([f, name]) => {
+              const [a, b] = FORMATE[f];
+              return (
+                <ToggleButton key={f} value={f} aria-label={`${name} ${a}:${b}`} sx={{ gap: 1, px: 1.5, fontSize: 12, fontWeight: 500 }}>
+                  <FormatSymbol f={f} />
+                  {name}
+                  <Box component="span" sx={{ color: FARBE.gedaempft, fontVariantNumeric: 'tabular-nums' }}>
+                    {a}:{b}
+                  </Box>
+                </ToggleButton>
+              );
+            })}
+          </ToggleButtonGroup>
+          <Box sx={{ width: '1px', height: 24, bgcolor: FARBE.linie }} />
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Typography sx={{ fontSize: 12, color: FARBE.gedaempft }}>Hintergrund</Typography>
+            <FarbFeld
+              kompakt
+              label="Hintergrund"
+              wert={z.g.hintergrund}
+              laden={farben.laden}
+              benutzt={farben.benutzt}
+              onChange={(v, art) => z.setzen({ ...z.aktuell(), hintergrund: v }, art)}
+            />
+          </Box>
+        </Box>
+        <Box sx={{ px: 2, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 0.5 }}>
+          <Tooltip title="Rückgängig (Strg+Z)">
+            <IconButton aria-label="Rückgängig" onClick={z.zurueck}>
+              <UndoRounded sx={{ fontSize: 18 }} />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title="Wiederholen (Strg+Y)">
+            <IconButton aria-label="Wiederholen" onClick={z.vor}>
+              <RedoRounded sx={{ fontSize: 18 }} />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title={onExportieren ? 'Fläche und Newsletter exportieren' : 'Kommt mit dem Assistenten'}>
+            {/* span: ein deaktivierter Knopf loest selbst keine Tooltip-Ereignisse aus */}
+            <Box component="span" sx={{ ml: 1 }}>
+              <Button variant="contained" disableElevation disabled={!onExportieren} onClick={onExportieren} startIcon={<IosShareRounded sx={{ fontSize: 16 }} />}>
+                Exportieren…
+              </Button>
+            </Box>
+          </Tooltip>
+        </Box>
+      </Box>
+
+      {/* Links: Ebenen */}
+      <Box sx={{ bgcolor: FARBE.panel, borderRight: `1px solid ${FARBE.linie}`, minHeight: 0 }}>
+        <EbenenListe z={z} versteckt={versteckt} umschalten={umschalten} />
+      </Box>
+
+      {/* Mitte: Flaeche und Hinweise */}
+      <Box component="main" sx={{ display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}>
+        <Flaeche z={z} versteckt={versteckt} onTextBearbeiten={() => setTextFokus((n) => n + 1)} />
+        <Hinweisleiste z={z} meldung={meldung} />
+      </Box>
+
+      {/* Rechts: Eigenschaften, darunter (Task 14) der Chat */}
+      <Box component="aside" aria-label="Eigenschaften" sx={{ bgcolor: FARBE.panel, borderLeft: `1px solid ${FARBE.linie}`, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+        <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+          <Eigenschaften
+            z={z}
+            farben={farben}
+            alt={alt}
+            setAlt={(a) => {
+              setAlt(a);
+              if (a.trim() !== '') setAltFehlt(false);
+            }}
+            altFehlt={altFehlt}
+            altRef={altRef}
+            textFokus={textFokus}
+          />
+        </Box>
+        {chat && <Box sx={{ borderTop: `1px solid ${FARBE.linie}`, minHeight: 0 }}>{chat}</Box>}
+      </Box>
+    </Box>
+  );
+}

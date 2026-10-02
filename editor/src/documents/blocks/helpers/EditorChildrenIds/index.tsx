@@ -7,6 +7,7 @@ import EditorBlock from '../../../editor/EditorBlock';
 
 import { ABSCHNITTE, AbschnittSchluessel, DRAG_TYP } from '../../../../abschnitte';
 import { abschnittEinsetzen } from '../../../../App/AbschnittLeiste';
+import { gestaltungOeffnen } from '../../../../pultZustand';
 
 import AddBlockButton from './AddBlockMenu';
 
@@ -18,6 +19,13 @@ export type EditorChildrenChange = {
 
 function generateId() {
   return `block-${Date.now()}`;
+}
+
+// Eine neue Gestaltungsflaeche oeffnet sofort ihr Fenster.
+function nachEinfuegen(block: TEditorBlock, blockId: string) {
+  if (block.type === 'Image' && typeof block.data.props?.gestaltung === 'object' && block.data.props.gestaltung !== null) {
+    gestaltungOeffnen(blockId);
+  }
 }
 
 // Ablagezone fuer Abschnitte aus der linken Leiste (nur oberste Ebene).
@@ -60,22 +68,24 @@ export type EditorChildrenIdsProps = {
 export default function EditorChildrenIds({ childrenIds, onChange, nurInhalt }: EditorChildrenIdsProps) {
   const appendBlock = (block: TEditorBlock) => {
     const blockId = generateId();
-    return onChange({
+    onChange({
       blockId,
       block,
       childrenIds: [...(childrenIds || []), blockId],
     });
+    nachEinfuegen(block, blockId);
   };
 
   const insertBlock = (block: TEditorBlock, index: number) => {
     const blockId = generateId();
     const newChildrenIds = [...(childrenIds || [])];
     newChildrenIds.splice(index, 0, blockId);
-    return onChange({
+    onChange({
       blockId,
       block,
       childrenIds: newChildrenIds,
     });
+    nachEinfuegen(block, blockId);
   };
 
   if (!childrenIds || childrenIds.length === 0) {

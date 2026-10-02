@@ -2,6 +2,7 @@ import React from 'react';
 
 import {
   Crop32Outlined,
+  DashboardCustomizeOutlined,
   HMobiledataOutlined,
   HorizontalRuleOutlined,
   ImageOutlined,
@@ -11,6 +12,9 @@ import {
   ViewColumnOutlined,
 } from '@mui/icons-material';
 
+import { flaechenHintergrund } from '../../../../../App/Gestaltung/hilfen';
+import { neueGestaltung } from '../../../../../gestaltung';
+import { getDocument } from '../../../../editor/EditorContext';
 import { TEditorBlock } from '../../../../editor/core';
 
 type TButtonProps = {
@@ -80,6 +84,27 @@ export const BUTTONS: TButtonProps[] = [
           linkHref: null,
         },
         style: { padding: { top: 16, bottom: 16, left: 24, right: 24 } },
+      },
+    }),
+  },
+  {
+    // Gestaltungsflaeche (Spec 2026-10-02 §1): ein Bild-Block mit Ebenen; nach dem
+    // Einfuegen oeffnet sich das Gestaltungsfenster (EditorChildrenIds).
+    label: 'Gestaltungsfläche',
+    icon: <DashboardCustomizeOutlined />,
+    block: () => ({
+      type: 'Image',
+      data: {
+        style: { padding: { top: 16, bottom: 16, left: 24, right: 24 } },
+        props: {
+          url: null,
+          alt: 'Gestaltung',
+          width: 600,
+          height: 400,
+          contentAlignment: 'middle',
+          linkHref: null,
+          gestaltung: neueGestaltung(flaechenHintergrund(getDocument().root)),
+        },
       },
     }),
   },

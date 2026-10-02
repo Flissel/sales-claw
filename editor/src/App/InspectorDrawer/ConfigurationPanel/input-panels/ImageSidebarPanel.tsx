@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { ZodError } from 'zod';
 
 import {
+  DashboardCustomizeOutlined,
   DeleteOutlined,
   VerticalAlignBottomOutlined,
   VerticalAlignCenterOutlined,
@@ -35,7 +36,7 @@ import {
   STUFE_NEU,
 } from '../../../../bildfeld';
 import { bildBeauftragen, bildFreistellen, ANZEIGE, loeschFrage, medienLoeschen, medienName } from '../../../../pult';
-import { medienLaden, pultStore, standAbfragen } from '../../../../pultZustand';
+import { gestaltungOeffnen, medienLaden, pultStore, standAbfragen } from '../../../../pultZustand';
 import { useSelectedBlockId } from '../../../../documents/editor/EditorContext';
 import { ImageDaten, ImageSchema } from '../../../../schemata';
 
@@ -45,6 +46,10 @@ import RadioGroupInput from './helpers/inputs/RadioGroupInput';
 import TextDimensionInput from './helpers/inputs/TextDimensionInput';
 import TextInput from './helpers/inputs/TextInput';
 import MultiStylePropertyPanel from './helpers/style-inputs/MultiStylePropertyPanel';
+
+function platzText(w: unknown, h: unknown): string {
+  return typeof w === 'number' && typeof h === 'number' ? ` · ${w} × ${h}` : '';
+}
 
 type ImageSidebarPanelProps = {
   data: ImageDaten;
@@ -56,6 +61,8 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
   const stand = pultStore((p) => p.stand);
   const start = pultStore((p) => p.start);
   const ungespeichert = pultStore((p) => p.ungespeichert);
+  // Wechselt beim Oeffnen/Schliessen des Gestaltungsfensters: der Alt-Text unten liest danach neu.
+  const fensterOffen = pultStore((p) => p.gestaltungOffen !== null);
   const selectedBlockId = useSelectedBlockId();
   const [hinweis, setHinweis] = useState('');
   const [stufe, setStufe] = useState<number>(STUFE_NAH);
@@ -152,6 +159,44 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
       setErrors(res.error);
     }
   };
+
+  // Gestaltungsflaeche: kein Bildplatz und keine Bildauftraege - nur Gestalten und Alt-Text.
+  const flaeche = data.props?.gestaltung;
+  if (flaeche) {
+    return (
+      <BaseSidebarPanel title="Gestaltungsfläche">
+        <Stack spacing={1}>
+          {aktuell.startsWith(ANZEIGE) ? (
+            <Box component="img" src={aktuell} alt="" sx={{ width: '100%', borderRadius: 1, border: 1, borderColor: 'divider' }} />
+          ) : (
+            <Typography variant="caption" color="text.secondary">
+              Noch nicht gerechnet – im Gestaltungsfenster mit „Zurück zum Newsletter“ übernehmen.
+            </Typography>
+          )}
+          <Typography variant="caption" color="text.secondary">
+            {flaeche.ebenen.length} {flaeche.ebenen.length === 1 ? 'Ebene' : 'Ebenen'}
+            {platzText(data.props?.width, data.props?.height)}
+          </Typography>
+          <Button
+            size="small"
+            variant="contained"
+            sx={{ alignSelf: 'flex-start' }}
+            startIcon={<DashboardCustomizeOutlined fontSize="small" />}
+            disabled={!selectedBlockId}
+            onClick={() => selectedBlockId && gestaltungOeffnen(selectedBlockId)}
+          >
+            Gestalten
+          </Button>
+        </Stack>
+        <TextInput
+          key={fensterOffen ? 'offen' : 'zu'}
+          label="Alternativtext"
+          defaultValue={data.props?.alt ?? ''}
+          onChange={(alt) => updateData({ ...data, props: { ...data.props, alt } })}
+        />
+      </BaseSidebarPanel>
+    );
+  }
 
   return (
     <BaseSidebarPanel title="Bild">

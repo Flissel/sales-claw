@@ -2,6 +2,7 @@
 // 2026-09-29-newsletter-editor-design.md §3.1). Einzige Stelle mit Netzverkehr:
 // nur relative Adressen von sales-ui.
 import type { Auftrag } from './bildfeld';
+import type { Gestaltung } from './gestaltung';
 
 export type Dokument = Record<string, unknown>;
 
@@ -16,6 +17,8 @@ export type Start = {
   // Bilder aus der Bibliothek loeschen (01.10.2026); fehlt bei aelterem sales-ui.
   medien_loeschen_url?: string;
   bild_url: string;
+  // Gestaltungsflaeche flachrechnen (Spec 2026-10-02 §5).
+  gestaltung_url: string;
   stand_url: string;
   zurueck_url: string;
   csrf: string;
@@ -236,6 +239,35 @@ export async function bildFreistellen(s: Start, platz: string): Promise<{ ok: tr
   } catch {
     return { ok: false, grund: 'Keine Verbindung zum Pult' };
   }
+}
+
+export type GestaltungErgebnis =
+  | { ok: true; url: string; width: number; height: number; hinweise: string[] }
+  | { ok: false; grund: string };
+
+// Der Server prueft und rechnet die Flaeche zu einem Entwurfsbild (medien:gs-<hash12>.jpg).
+export async function gestaltungRechnen(s: Start, g: Gestaltung): Promise<GestaltungErgebnis> {
+  let r: Response;
+  try {
+    r = await fetch(s.gestaltung_url, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF': s.csrf },
+      body: JSON.stringify({ gestaltung: g }),
+    });
+  } catch {
+    return { ok: false, grund: 'Keine Verbindung zum Pult' };
+  }
+  const j: unknown = await r.json().catch(() => ({}));
+  const a = istObjekt(j) ? j : {};
+  if (!r.ok) {
+    return { ok: false, grund: typeof a.grund === 'string' && a.grund ? a.grund : 'Gestaltung gerade nicht möglich' };
+  }
+  if (typeof a.url !== 'string' || !a.url.startsWith('medien:') || typeof a.width !== 'number' || typeof a.height !== 'number') {
+    return { ok: false, grund: 'Antwort unverständlich' };
+  }
+  const hinweise = Array.isArray(a.hinweise) ? a.hinweise.filter((h): h is string => typeof h === 'string') : [];
+  return { ok: true, url: a.url, width: a.width, height: a.height, hinweise };
 }
 
 export async function standLaden(s: Start): Promise<{ fassung: number; auftraege: Auftrag[] } | null> {

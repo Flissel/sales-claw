@@ -5,6 +5,7 @@ import { Stack, useTheme } from '@mui/material';
 import { useInspectorDrawerOpen } from '../documents/editor/EditorContext';
 
 import AbschnittLeiste, { ABSCHNITT_LEISTE_BREITE } from './AbschnittLeiste';
+import GestaltungFenster from './Gestaltung/GestaltungFenster';
 import InspectorDrawer, { INSPECTOR_DRAWER_WIDTH } from './InspectorDrawer';
 import TemplatePanel from './TemplatePanel';
 
@@ -35,6 +36,8 @@ export default function App() {
       >
         <TemplatePanel />
       </Stack>
+      {/* Vollbild ueber allem; Task 14 gibt onExportieren und chat mit. */}
+      <GestaltungFenster />
     </>
   );
 }

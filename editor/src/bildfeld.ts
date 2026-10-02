@@ -32,8 +32,14 @@ export function formatText(width: number, height: number): string {
   return `${a}:${b} · ${eb}×${eh}`;
 }
 
-export function istPlatz(p: { width?: unknown; height?: unknown } | null | undefined): boolean {
-  return !!p && typeof p.width === 'number' && p.width > 0 && typeof p.height === 'number' && p.height > 0;
+// Gestaltungsflaeche (props.gestaltung ist ein Objekt): kein Bildplatz, kein Freistellen -
+// sonst ueberschriebe der Bild-Arbeiter die Komposition (Spec 2026-10-02 §1).
+function istFlaeche(p: { gestaltung?: unknown }): boolean {
+  return typeof p.gestaltung === 'object' && p.gestaltung !== null;
+}
+
+export function istPlatz(p: { width?: unknown; height?: unknown; gestaltung?: unknown } | null | undefined): boolean {
+  return !!p && !istFlaeche(p) && typeof p.width === 'number' && p.width > 0 && typeof p.height === 'number' && p.height > 0;
 }
 
 const PLATZHALTER = /(^medien:|\/medien\/datei\/)platzhalter-\d{1,3}x\d{1,3}\.png$/;
@@ -42,8 +48,8 @@ export function istLeer(url: string | null | undefined): boolean {
 }
 
 // Freistellen nur bei einem echten Bild: kein Platzhalter, keine leere Adresse, keine Grafik.
-export function freistellbar(props: { url?: string | null; grafik?: boolean | null }): boolean {
-  return !istLeer(props.url) && props.grafik !== true;
+export function freistellbar(props: { url?: string | null; grafik?: boolean | null; gestaltung?: unknown }): boolean {
+  return !istLeer(props.url) && props.grafik !== true && !istFlaeche(props);
 }
 
 const TEXT: Record<string, [string, 'wartet' | 'laeuft']> = { offen: ['wartet (PC muss laufen)', 'wartet'], in_arbeit: ['wird erzeugt', 'laeuft'] };
@@ -58,7 +64,7 @@ export function standFuer(platz: string, auftraege: Auftrag[]): { text: string; 
   return { text: '', art: null };
 }
 
-export function erzeugenSperre(ungespeichert: boolean, props: { width?: unknown; height?: unknown } | undefined): string | null {
+export function erzeugenSperre(ungespeichert: boolean, props: { width?: unknown; height?: unknown; gestaltung?: unknown } | undefined): string | null {
   if (!istPlatz(props)) return 'Kein Bildplatz – Breite und Höhe setzen';
   if (ungespeichert) return 'Erst speichern – dieser Platz ist noch nicht gespeichert';
   return null;

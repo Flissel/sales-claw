@@ -19,6 +19,8 @@ type TPult = {
   // Ladezeitpunkt der Seite (ms) und: steht im Hinweisfeld des Bildpanels etwas (zaehlt wie ungespeichert).
   geladenUm: number;
   hinweisOffen: boolean;
+  // Block-id der Gestaltungsflaeche, deren Fenster offen ist (null = Newsletter).
+  gestaltungOffen: string | null;
 };
 
 export const pultStore = create<TPult>(() => ({
@@ -32,7 +34,16 @@ export const pultStore = create<TPult>(() => ({
   meldung: null,
   geladenUm: Date.now(),
   hinweisOffen: false,
+  gestaltungOffen: null,
 }));
+
+export function gestaltungOeffnen(id: string) {
+  pultStore.setState({ gestaltungOffen: id });
+}
+
+export function gestaltungSchliessen() {
+  pultStore.setState({ gestaltungOffen: null });
+}
 
 export function pultStarten(start: Start) {
   pultStore.setState({
@@ -95,8 +106,10 @@ export function standAbfragen() {
     const s = await standLaden(start);
     if (!s) return;
     pultStore.setState({ stand: s });
-    const { basis, ungespeichert, hinweisOffen, geladenUm } = pultStore.getState();
-    if (ladeEntscheid(s.fassung, basis, ungespeichert || hinweisOffen, schonGeladenLesen()) === 'laden') {
+    const { basis, ungespeichert, hinweisOffen, geladenUm, gestaltungOffen } = pultStore.getState();
+    // Ein offenes Gestaltungsfenster zaehlt wie ungespeichert: Neuladen wuerfe die Flaeche weg.
+    const offen = ungespeichert || hinweisOffen || gestaltungOffen !== null;
+    if (ladeEntscheid(s.fassung, basis, offen, schonGeladenLesen()) === 'laden') {
       const m = neuesBildMeldung(s.auftraege, geladenUm);
       try {
         sessionStorage.setItem(NEU_GELADEN, String(s.fassung));
