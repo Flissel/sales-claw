@@ -120,7 +120,8 @@ const TextEbeneSchema = z
     art: z.literal('text'),
     text: z
       .string()
-      .max(200)
+      .refine((t) => [...t].length <= 200)
+      .refine((t) => t.trim() !== '')
       .refine((t) => t.split('\n').length <= 6),
     schrift: z.enum(SCHRIFT_IDS),
     gewicht: z.number().int(),
@@ -141,7 +142,10 @@ export const GestaltungSchema = z.object({
   version: z.literal(1),
   format: z.enum(['quer', 'quadrat', 'hoch', 'banner']),
   hintergrund: z.string().regex(FARBE),
-  ebenen: z.array(z.union([BildEbeneSchema, TextEbeneSchema])).max(20),
+  ebenen: z
+    .array(z.union([BildEbeneSchema, TextEbeneSchema]))
+    .max(20)
+    .refine((l) => new Set(l.map((e) => e.id)).size === l.length, { message: 'doppelte Ebenen-id' }),
 });
 
 const bildProps = ImagePropsSchema.shape.props.unwrap().unwrap();

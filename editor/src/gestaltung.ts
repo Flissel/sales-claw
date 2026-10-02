@@ -97,7 +97,7 @@ export function hinweise(g: Gestaltung): string[] {
   const out: string[] = [];
   for (const e of g.ebenen) {
     if (e.art === 'text' && e.groesse < 22) {
-      out.push(`Text „${e.text.slice(0, 30)}“ ist am Handy unter 12 px`);
+      out.push(`Text „${[...e.text.split('\n')[0]].slice(0, 30).join('')}“ ist am Handy unter 12 px`);
     }
   }
   return out;

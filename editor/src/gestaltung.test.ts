@@ -63,6 +63,19 @@ describe('gestaltung', () => {
     expect(ok({ ...text, farbe: '#fff' })).toBe(false);
     expect(ok({ ...text, id: 'a b' })).toBe(false);
   });
+  it('schema gleicht dem Server: leerer Text, doppelte ids, Codepunkte', () => {
+    const g = neueGestaltung('#FFFFFF');
+    const ok = (ebenen: object[]) => GestaltungSchema.safeParse({ ...g, ebenen }).success;
+    expect(ok([{ ...text, text: '' }])).toBe(false);
+    expect(ok([{ ...text, text: ' \n  ' }])).toBe(false);
+    expect(ok([text, { ...bild, id: 't' }])).toBe(false);
+    expect(ok([{ ...text, text: '😀'.repeat(200) }])).toBe(true);
+    expect(ok([{ ...text, text: '😀'.repeat(201) }])).toBe(false);
+  });
+  it('hinweis nennt nur die erste Zeile', () => {
+    expect(hinweise({ ...neueGestaltung('#FFFFFF'), ebenen: [{ ...text, text: 'Eins\nZwei', groesse: 18 }] }))
+      .toEqual(['Text „Eins“ ist am Handy unter 12 px']);
+  });
   it('SCHNITTE entspricht dem Register (22 Schnitte)', () => {
     const alle = Object.entries(SCHNITTE).flatMap(([id, l]) => l.map(([g, k]) => `${id}:${g}:${k ? 'i' : 'n'}`)).sort();
     expect(alle).toEqual([
