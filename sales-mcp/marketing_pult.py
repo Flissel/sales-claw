@@ -23,7 +23,8 @@ def eingerichtet() -> bool:
     return bool(URL and KEY)
 
 
-def anfrage(methode: str, pfad: str, daten: dict | None = None, roh: bool = False):
+def anfrage(methode: str, pfad: str, daten: dict | None = None, roh: bool = False,
+            zeitlimit: float | None = None):
     if not eingerichtet():
         raise PultFehler("nicht_verbunden", "MARKETING_PULT_URL/KEY fehlt")
     koerper = json.dumps(daten).encode("utf-8") if daten is not None else None
@@ -34,7 +35,7 @@ def anfrage(methode: str, pfad: str, daten: dict | None = None, roh: bool = Fals
     # einem 30x an das neue Ziel weiter, "unredirected" Koepfe nicht.
     req.add_unredirected_header("X-Pult-Key", KEY)
     try:
-        with urllib.request.urlopen(req, timeout=ZEITLIMIT_S) as r:
+        with urllib.request.urlopen(req, timeout=ZEITLIMIT_S if zeitlimit is None else zeitlimit) as r:
             inhalt = r.read()
             if roh:
                 return inhalt, r.headers.get("Content-Type", "application/octet-stream")

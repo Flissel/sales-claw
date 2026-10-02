@@ -33,6 +33,7 @@ class Falsch:
     def __init__(self):
         self.aufrufe = []
         self.fehler = None
+        self.zeitlimits = []
         self.betreff = "Oktober-Ausgabe"
         self.format = "bloecke"
         self.art = "newsletter"
@@ -42,9 +43,12 @@ class Falsch:
         self.speichern_antwort = {"fassung": 3}
         self.bilder = {"auftraege": []}
         self.verweise = []
+        self.gestaltung_antwort = {"url": "/medien/datei/gs-0123456789ab.jpg", "width": 1200,
+                                   "height": 800, "hinweise": []}
 
-    def anfrage(self, methode, pfad, daten=None, roh=False):
+    def anfrage(self, methode, pfad, daten=None, roh=False, zeitlimit=None):
         self.aufrufe.append((methode, pfad, daten))
+        self.zeitlimits.append(zeitlimit)
         if self.fehler:
             raise self.fehler
         if roh:
@@ -68,6 +72,8 @@ class Falsch:
                     "fassungen": [neu, alt], "alter_weg": self.alter_weg}
         if pfad == f"/inhalte/{IID}/bilder":
             return {"auftrag": "a1"} if methode == "POST" else self.bilder
+        if pfad == f"/inhalte/{IID}/gestaltung":
+            return self.gestaltung_antwort
         if pfad == f"/inhalte/{IID}/bloecke":
             return self.speichern_antwort
         if pfad == f"/inhalte/{IID}/in_bloecke":
@@ -700,6 +706,66 @@ def test_bild_beauftragen_db_grund(angemeldet, pult):
     r = angemeldet.post(f"/marketing/editor/{IID}/bild", headers={**HOST, "X-CSRF": ui.CSRF_TOKEN},
                         json={"platz": "kopf"})
     assert r.status_code == 422 and "erst speichern" in r.json()["grund"]
+
+
+# --- Gestaltungsflaeche durchreichen ---------------------------------------------
+
+GESTALTUNG = {"format": "quer", "alt": "Herbst", "ebenen": []}
+
+
+def _gestalten(c, body, csrf=True):
+    h = {**HOST, "X-CSRF": ui.CSRF_TOKEN} if csrf else HOST
+    return c.post(f"/marketing/editor/{IID}/gestaltung", headers=h, json=body)
+
+
+def test_start_nennt_gestaltung_url(angemeldet):
+    start = _start(angemeldet.get(f"/marketing/editor/{IID}", headers=HOST).text)
+    assert start["gestaltung_url"] == f"/marketing/editor/{IID}/gestaltung"
+
+
+def test_gestaltung_durchreichen(angemeldet, pult):
+    r = _gestalten(angemeldet, {"gestaltung": GESTALTUNG})
+    assert r.status_code == 200 and r.json() == pult.gestaltung_antwort
+    assert r.headers["cache-control"] == "no-store"
+    assert pult.aufrufe[-1] == ("POST", f"/inhalte/{IID}/gestaltung", {"gestaltung": GESTALTUNG})
+    assert pult.zeitlimits[-1] == 30      # Flaechen mit vielen Ebenen rechnen laenger als 8 s
+
+
+def test_gestaltung_ohne_csrf(angemeldet, pult):
+    assert _gestalten(angemeldet, {"gestaltung": GESTALTUNG}, csrf=False).status_code == 403
+    assert not any(a[0] == "POST" for a in pult.aufrufe)
+
+
+@pytest.mark.parametrize("body", [{}, {"gestaltung": "x"}, {"gestaltung": [1]}, {"gestaltung": None}, [1]])
+def test_gestaltung_kein_objekt(angemeldet, pult, body):
+    r = _gestalten(angemeldet, body)
+    assert r.status_code == 422 and r.json()["grund"] == "Gestaltung fehlt"
+    assert not any(a[0] == "POST" for a in pult.aufrufe)
+
+
+def test_gestaltung_pult_lehnt_ab(angemeldet, pult):
+    pult.fehler = marketing_pult.PultFehler("abgelehnt", "Bild x fehlt in den Medien")
+    r = _gestalten(angemeldet, {"gestaltung": GESTALTUNG})
+    assert r.status_code == 422 and r.json() == {"grund": "Bild x fehlt in den Medien"}
+
+
+@pytest.mark.parametrize("art", ["nicht_erreichbar", "nicht_verbunden", "unbekannt"])
+def test_gestaltung_pult_weg(angemeldet, pult, art):
+    pult.fehler = marketing_pult.PultFehler(art, "intern")
+    r = _gestalten(angemeldet, {"gestaltung": GESTALTUNG})
+    assert r.status_code == 503 and r.json() == {"grund": "Gestaltung gerade nicht möglich"}
+
+
+def test_medien_json_ohne_entwurfsbilder(angemeldet, monkeypatch, tmp_path):
+    erzeugt = tmp_path / "erzeugt"
+    erzeugt.mkdir()
+    (tmp_path / "leer").mkdir()
+    for name in ("gs-0123456789ab.jpg", "nl-12345678-x.jpg"):
+        (erzeugt / name).write_bytes(bytes([0xFF, 0xD8]) + b"x" * 64)
+    monkeypatch.setattr(server.medien, "MEDIA_VERZEICHNIS", str(tmp_path / "leer"))
+    monkeypatch.setattr(server.medien, "ERZEUGT_VERZEICHNIS", str(erzeugt))
+    r = angemeldet.get("/marketing/editor/medien.json", headers=HOST)
+    assert r.json() == {"bilder": ["nl-12345678-x.jpg"]}
 
 
 def test_stand_json(angemeldet, pult):

@@ -9,6 +9,7 @@ kein script-src. Die Editor-Seite setzt ihre eigene Richtlinie CSP_EDITOR;
 ui._mit_koepfen laesst eine Antwort, die schon eine CSP traegt, in Ruhe."""
 from __future__ import annotations
 
+import functools
 import hashlib
 import hmac
 import json
@@ -46,6 +47,7 @@ KOERPER_MAX = 300 * 1024
 # Bildplatz-Kennung und Hinweis fuer Bild-Auftraege (Marketing-API prueft
 # nochmals; hier nur die Form).
 PLATZ_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+GESTALTUNG_ZEITLIMIT_S = 30
 HINWEIS_MAX = 500
 
 
@@ -177,6 +179,7 @@ def routen(ui) -> list:
             "medien_loeschen_url": "/marketing/editor/medien/loeschen",
             "zurueck_url": f"/marketing/entwurf/{iid}",
             "bild_url": f"/marketing/editor/{iid}/bild",
+            "gestaltung_url": f"/marketing/editor/{iid}/gestaltung",
             "stand_url": f"/marketing/editor/{iid}/stand.json",
             "csrf": ui.CSRF_TOKEN,
             # Herkunft aus dem alten Freigabeweg - der Editor zeigt denselben
@@ -298,6 +301,33 @@ def routen(ui) -> list:
                 return json_grund(422, str(f.grund or "Abgelehnt"))
             return json_grund(503, "Auftrag gerade nicht möglich")
         return JSONResponse({"auftrag": str((r or {}).get("auftrag") or "")}, headers={"Cache-Control": "no-store"})
+
+    @ui._gesichert_seite
+    async def editor_gestaltung(request):
+        marke = request.headers.get("x-csrf", "")
+        if not marke or not hmac.compare_digest(marke, ui.CSRF_TOKEN):
+            return json_grund(403, "Fehlende oder falsche CSRF-Marke")
+        try:
+            body = json.loads(await request.body() or b"{}")
+        except (ValueError, UnicodeDecodeError):
+            return json_grund(422, "Die Anfrage ist kein gültiges JSON")
+        gestaltung = body.get("gestaltung") if isinstance(body, dict) else None
+        if not isinstance(gestaltung, dict):
+            return json_grund(422, "Gestaltung fehlt")
+        iid = urllib.parse.quote(request.path_params["iid"], safe="")
+        try:
+            # Das Pult prueft und rechnet; viele Ebenen brauchen laenger als
+            # die 8 s der uebrigen Aufrufe.
+            r = await run_in_threadpool(
+                functools.partial(marketing_pult.anfrage, "POST", f"/inhalte/{iid}/gestaltung",
+                                  {"gestaltung": gestaltung}, zeitlimit=GESTALTUNG_ZEITLIMIT_S))
+        except marketing_pult.PultFehler as f:
+            if f.art == "abgelehnt":
+                return json_grund(422, str(f.grund or "Abgelehnt"))
+            return json_grund(503, "Gestaltung gerade nicht möglich")
+        if not isinstance(r, dict):
+            return json_grund(503, "Gestaltung gerade nicht möglich")
+        return JSONResponse(r, headers={"Cache-Control": "no-store"})
 
     @ui._gesichert_seite
     async def editor_stand(request):
@@ -496,6 +526,7 @@ def routen(ui) -> list:
         Route("/marketing/editor/{iid}", editor_seite),
         Route("/marketing/editor/{iid}/speichern", editor_speichern, methods=["POST"]),
         Route("/marketing/editor/{iid}/bild", editor_bild, methods=["POST"]),
+        Route("/marketing/editor/{iid}/gestaltung", editor_gestaltung, methods=["POST"]),
         Route("/marketing/editor/{iid}/stand.json", editor_stand),
         Route("/marketing/bild/{token}/{name}", bild),
         Route("/marketing/schrift/{datei}", schrift),

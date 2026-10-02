@@ -231,6 +231,17 @@ def pruefe(name: str):
 INTERN_MUSTER = re.compile(r"^(terminkarte-.*|muster-.+-f\d+-r\d+\.pdf)$", re.IGNORECASE)
 
 
+# Entwurfsbilder der Gestaltungsflaechen (Newsletter-Editor): das Pult legt sie
+# als gs-<hash12>.jpg in den Erzeugt-Ordner. Sie sind Zwischenstand, keine
+# Medien: nicht in Listen/Picker, nicht als Anhang. `pruefe` (Anzeige unter
+# /medien/datei/) laesst sie durch - der Editor zeigt Flaechen darueber.
+ENTWURF_MUSTER = re.compile(r"^gs-[0-9a-f]{12}\.jpg$")
+
+
+def entwurfsbild(basis: str) -> bool:
+    return bool(ENTWURF_MUSTER.match(basis or ""))
+
+
 def intern(basis: str) -> bool:
     """Ist das eine interne Unterlage (Terminkarte, Musterblatt)?"""
     return bool(INTERN_MUSTER.match(basis or ""))
@@ -246,6 +257,9 @@ def pruefe_anhang(name: str):
     basis, fehler = pruefe(name)
     if fehler:
         return None, fehler
+    if entwurfsbild(basis):
+        return None, (f"'{basis}' ist ein Entwurfsbild einer Gestaltungsflaeche "
+                      f"(Entwurfsbild) und kein Medium - es geht nicht als Anhang.")
     if intern(basis):
         return None, (f"'{basis}' ist eine interne Unterlage (Terminkarte oder "
                       f"Musterblatt) und geht nicht an Kunden - sie ist nur fuer "
@@ -325,6 +339,8 @@ def liste(nur_anhaenge: bool = False):
                 raise
     eintraege = []
     for name in sorted(namen):
+        if entwurfsbild(name):
+            continue
         basis, fehler = (pruefe_anhang if nur_anhaenge else pruefe)(name)
         if fehler is None:
             eintraege.append((basis, os.path.getsize(pfad(basis))))
