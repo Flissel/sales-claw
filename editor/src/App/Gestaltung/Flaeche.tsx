@@ -119,18 +119,19 @@ export default function Flaeche({ z, versteckt, onTextBearbeiten }: Props) {
   };
 
   // Scrollrad: nur mit Auswahl; passive: false, damit preventDefault greift.
-  const stand = useRef({ z, zoom });
-  stand.current = { z, zoom };
+  const stand = useRef({ z, zoom, versteckt });
+  stand.current = { z, zoom, versteckt };
   useEffect(() => {
     const el = buehne.current;
     if (!el) return;
     // drehen() rundet auf ganze Grad (20 px = 1 Grad); feine Touchpad-Schritte sammeln, sonst bewegt sich nichts.
     let rest = 0;
     const rad = (e: WheelEvent) => {
-      const { z: zz } = stand.current;
+      const { z: zz, versteckt: aus } = stand.current;
       const id = zz.auswahl;
+      // Nur mit sichtbarer Auswahl; Strg+Rad (Touchpad-Zoom) bleibt beim Browser.
+      if (id === null || aus.has(id) || e.ctrlKey) return;
       e.preventDefault();
-      if (id === null || e.ctrlKey) return;
       const d = scrollPixel(e);
       if (!e.shiftKey) {
         zz.ebeneAendern(id, (eb) => skalieren(eb, d), 'gleiten');
@@ -151,6 +152,9 @@ export default function Flaeche({ z, versteckt, onTextBearbeiten }: Props) {
   const runter = (ev: React.PointerEvent<HTMLDivElement>, e: Ebene) => {
     if (ev.button !== 0) return;
     ev.stopPropagation();
+    buehne.current?.focus({ preventScroll: true });
+    // Ein wartender Scroll-/Tipp-Schritt wird jetzt sein eigener Schritt, nicht Teil des Ziehens.
+    z.festschreiben();
     z.waehlen(e.id);
     ev.currentTarget.setPointerCapture(ev.pointerId);
     zug.current = { id: e.id, px: ev.clientX, py: ev.clientY, start: e, bewegt: false };
@@ -233,8 +237,14 @@ export default function Flaeche({ z, versteckt, onTextBearbeiten }: Props) {
   return (
     <Box
       ref={buehne}
-      onPointerDown={() => z.waehlen(null)}
-      sx={{ position: 'relative', flex: 1, minHeight: 0, overflow: 'hidden', bgcolor: FARBE.geruest, display: 'grid', placeItems: 'center', userSelect: 'none' }}
+      data-buehne
+      tabIndex={-1}
+      aria-label="Fläche"
+      onPointerDown={() => {
+        buehne.current?.focus({ preventScroll: true });
+        z.waehlen(null);
+      }}
+      sx={{ position: 'relative', flex: 1, minHeight: 0, overflow: 'hidden', outline: 'none', bgcolor: FARBE.geruest, display: 'grid', placeItems: 'center', userSelect: 'none' }}
     >
       {zoom > 0 && (
         <div style={{ position: 'relative', width: BREITE * zoom, height: h * zoom, boxShadow: FLAECHE_SCHATTEN, borderRadius: 2 }}>

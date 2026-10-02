@@ -16,6 +16,8 @@ export function useGestaltung(anfang: Gestaltung) {
   const [auswahl, setAuswahl] = useState<string | null>(null);
   const jetzt = useRef(g);
   const takt = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Zeichnet neu, wenn ein Schritt festgeschrieben wird (Rueckgaengig/Wiederholen-Knoepfe).
+  const [, setSchritte] = useState(0);
 
   const zeigen = useCallback((neu: Gestaltung) => {
     jetzt.current = neu;
@@ -26,7 +28,15 @@ export function useGestaltung(anfang: Gestaltung) {
     if (takt.current) clearTimeout(takt.current);
     takt.current = null;
     // Nur echte Aenderungen werden ein Schritt (Blur/Loslassen ohne Bewegung erzeugt keinen leeren).
-    if (v.jetzt() !== jetzt.current && JSON.stringify(v.jetzt()) !== JSON.stringify(jetzt.current)) v.setzen(jetzt.current);
+    if (v.jetzt() === jetzt.current) return;
+    if (JSON.stringify(v.jetzt()) === JSON.stringify(jetzt.current)) {
+      // inhaltlich gleich: zurueck auf den festgeschriebenen Stand (kein leerer Schritt)
+      jetzt.current = v.jetzt();
+      setG(v.jetzt());
+      return;
+    }
+    v.setzen(jetzt.current);
+    setSchritte((n) => n + 1);
   }, [v]);
 
   useEffect(() => () => {
@@ -37,7 +47,11 @@ export function useGestaltung(anfang: Gestaltung) {
     (neu: Gestaltung, art: Art = 'sofort') => {
       zeigen(neu);
       if (art === 'sofort') festschreiben();
-      else if (art === 'gleiten') {
+      else if (art === 'live') {
+        // Ziehen laeuft: ein noch wartender Sammel-Takt darf keinen Zwischenstand festschreiben.
+        if (takt.current) clearTimeout(takt.current);
+        takt.current = null;
+      } else {
         if (takt.current) clearTimeout(takt.current);
         takt.current = setTimeout(festschreiben, RUHE_MS);
       }
@@ -109,6 +123,9 @@ export function useGestaltung(anfang: Gestaltung) {
     verschieben,
     zurueck,
     vor,
+    // Ein noch nicht festgeschriebener Stand zaehlt als rueckgaengig machbar (zurueck() schreibt ihn erst fest).
+    kannZurueck: v.kannZurueck() || g !== v.jetzt(),
+    kannVor: v.kannVor() && g === v.jetzt(),
   };
 }
 

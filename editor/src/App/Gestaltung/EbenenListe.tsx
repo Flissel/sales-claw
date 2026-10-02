@@ -205,6 +205,7 @@ export default function EbenenListe({ z, versteckt, umschalten }: Props) {
               )}
               <Box
                 tabIndex={0}
+                data-tasten
                 aria-selected={an}
                 onClick={() => z.waehlen(e.id)}
                 onKeyDown={(ev) => {

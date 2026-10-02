@@ -88,3 +88,14 @@ describe('gestaltung', () => {
     expect(alle).toHaveLength(22);
   });
 });
+
+describe('verlauf kann', () => {
+  it('kannZurueck/kannVor an den Enden', () => {
+    const v = verlauf('a');
+    expect([v.kannZurueck(), v.kannVor()]).toEqual([false, false]);
+    v.setzen('b');
+    expect([v.kannZurueck(), v.kannVor()]).toEqual([true, false]);
+    v.zurueck();
+    expect([v.kannZurueck(), v.kannVor()]).toEqual([false, true]);
+  });
+});

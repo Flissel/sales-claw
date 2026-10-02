@@ -16,9 +16,8 @@ import {
   Typography,
 } from '@mui/material';
 
-import { getDocument } from '../documents/editor/EditorContext';
-import { fehlerText, speichern } from '../pult';
-import { alsUngespeichert, pultStore } from '../pultZustand';
+import { fehlerText } from '../pult';
+import { alsUngespeichert, newsletterSichern, pultStore } from '../pultZustand';
 
 // Leiste oben: Betreff, Vorschautext, Speichern, Vorschau, Zurueck.
 // Die Pruefung, ob der Inhalt erlaubt ist, macht das Pult beim Speichern.
@@ -57,15 +56,9 @@ export default function PultLeiste() {
 
   const sichern = async (alsKopie: boolean) => {
     setLaeuft(true);
-    const { betreff: b, vorschautext: v, basis: n } = pultStore.getState();
-    const dokVorher = getDocument();
-    const e = await speichern(start, dokVorher, b, v, n, alsKopie);
+    const e = await newsletterSichern(alsKopie);
     setLaeuft(false);
     if (e.ok) {
-      const nachher = pultStore.getState();
-      // Nur als gespeichert markieren, wenn waehrend des Speicherns nichts geaendert wurde.
-      const unveraendert = getDocument() === dokVorher && nachher.betreff === b && nachher.vorschautext === v;
-      pultStore.setState({ basis: e.fassung, ungespeichert: !unveraendert });
       setKonflikt(null);
       setMeldung({
         art: 'success',

@@ -7,10 +7,11 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowBackRounded, ErrorOutlineRounded, IosShareRounded, RedoRounded, UndoRounded } from '@mui/icons-material';
 import { Box, Button, CircularProgress, IconButton, ThemeProvider, ToggleButton, ToggleButtonGroup, Tooltip, Typography } from '@mui/material';
 
-import { getDocument, setDocument, setSelectedBlockId } from '../../documents/editor/EditorContext';
+import { getDocument, setSelectedBlockId } from '../../documents/editor/EditorContext';
+import type { TEditorConfiguration } from '../../documents/editor/core';
 import { Format, FORMATE, schieben } from '../../gestaltung';
-import { gestaltungRechnen } from '../../pult';
-import { gestaltungSchliessen, pultStore } from '../../pultZustand';
+import { fehlerText, gestaltungRechnen } from '../../pult';
+import { gestaltungSchliessen, newsletterSichern, pultStore } from '../../pultZustand';
 import { GestaltungSchema } from '../../schemata';
 
 import { FarbFeld } from './Bedienelemente';
@@ -19,6 +20,7 @@ import Eigenschaften from './Eigenschaften';
 import Flaeche, { Hinweisleiste } from './Flaeche';
 import { flaecheLesen, formatWechseln, ladenfarben, pruefGrund, quelleAnzeige } from './hilfen';
 import { FARBE, gestaltungThema, KOPF_HOEHE, LINKS_BREITE, RECHTS_BREITE, UI_SCHRIFT } from './gestaltungStil';
+import { flaechenTaste } from './tasten';
 import { useGestaltung } from './useGestaltung';
 
 // Naht fuer Task 14: mit onExportieren wird "Exportieren…" aktiv, chat erscheint unter den Eigenschaften.
@@ -39,6 +41,13 @@ function FormatSymbol({ f }: { f: Format }) {
   const [a, b] = FORMATE[f];
   const s = 14 / Math.max(a, b);
   return <Box component="span" sx={{ width: a * s, height: b * s, border: '1.5px solid currentColor', borderRadius: '2px', flexShrink: 0 }} />;
+}
+
+// Dokument mit geaenderten Props des Bild-Blocks id (fehlt der Block, bleibt alles, wie es ist).
+function mitProps(d: TEditorConfiguration, id: string, patch: Record<string, unknown>): TEditorConfiguration {
+  const b = d[id];
+  if (b?.type !== 'Image') return d;
+  return { ...d, [id]: { type: 'Image', data: { ...b.data, props: { ...b.data.props, ...patch } } } };
 }
 
 export default function GestaltungFenster(props: GestaltungFensterProps) {
@@ -91,27 +100,28 @@ function Fenster({ id, onExportieren, chat }: GestaltungFensterProps & { id: str
   // Tastatur: Strg+Z/Y, Pfeile (1, Shift 10), Entf, Esc hebt die Auswahl auf.
   const zRef = useRef(z);
   zRef.current = z;
+  const verstecktRef = useRef(versteckt);
+  verstecktRef.current = versteckt;
   useEffect(() => {
     const taste = (ev: KeyboardEvent) => {
       const zz = zRef.current;
-      const el = ev.target instanceof HTMLElement ? ev.target : null;
-      const tippt = el?.closest('input, textarea, select, [contenteditable="true"], [role="listbox"], [role="menu"], .MuiPopover-root') != null;
+      const el = ev.target instanceof HTMLElement && ev.target !== document.body ? ev.target : null;
+      if (!flaechenTaste(el)) return;
       const k = ev.key.toLowerCase();
       if ((ev.ctrlKey || ev.metaKey) && (k === 'z' || k === 'y')) {
-        if (tippt) return;
         ev.preventDefault();
         if (k === 'y' || ev.shiftKey) zz.vor();
         else zz.zurueck();
         return;
       }
-      if (tippt || zz.auswahl === null) return;
+      if (zz.auswahl === null) return;
       const id = zz.auswahl;
       if (ev.key === 'Delete' || ev.key === 'Backspace') {
         ev.preventDefault();
         zz.ebeneLoeschen(id);
       } else if (ev.key === 'Escape') {
         zz.waehlen(null);
-      } else if (ev.key.startsWith('Arrow')) {
+      } else if (ev.key.startsWith('Arrow') && !verstecktRef.current.has(id)) {
         ev.preventDefault();
         const d = ev.shiftKey ? 10 : 1;
         const dx = ev.key === 'ArrowLeft' ? -d : ev.key === 'ArrowRight' ? d : 0;
@@ -123,12 +133,15 @@ function Fenster({ id, onExportieren, chat }: GestaltungFensterProps & { id: str
     return () => window.removeEventListener('keydown', taste);
   }, []);
 
-  const umschalten = (eid: string) =>
-    setVersteckt((alt) => {
-      const neu = new Set(alt);
-      if (!neu.delete(eid)) neu.add(eid);
-      return neu;
-    });
+  // Ausblenden der ausgewaehlten Ebene hebt die Auswahl auf (Rad/Pfeile wirkten sonst unsichtbar).
+  const umschalten = (eid: string) => {
+    const neu = new Set(versteckt);
+    if (!neu.delete(eid)) {
+      neu.add(eid);
+      if (z.auswahl === eid) z.waehlen(null);
+    }
+    setVersteckt(neu);
+  };
 
   const verwerfen = () => {
     if (geaendert && !window.confirm('Änderungen an der Fläche verwerfen?')) return;
@@ -158,10 +171,9 @@ function Fenster({ id, onExportieren, chat }: GestaltungFensterProps & { id: str
       return;
     }
     const gestaltung = p.data;
-    const props = block.data.props ?? {};
-    // Unveraendert und schon gerechnet: nichts rechnen, nur den Alt-Text uebernehmen.
-    if (anfang.hatBild && JSON.stringify(gestaltung) === JSON.stringify(anfang.g)) {
-      if (a !== props.alt) setDocument({ [id]: { type: 'Image', data: { ...block.data, props: { ...props, alt: a } } } });
+    const unveraendert = anfang.hatBild && JSON.stringify(gestaltung) === JSON.stringify(anfang.g);
+    // Nichts geaendert: nichts zu rechnen und nichts zu speichern.
+    if (unveraendert && a === (block.data.props?.alt ?? '')) {
       gestaltungSchliessen();
       setSelectedBlockId(id);
       return;
@@ -172,34 +184,29 @@ function Fenster({ id, onExportieren, chat }: GestaltungFensterProps & { id: str
     }
     setLaeuft(true);
     setFehler(null);
-    const r = await gestaltungRechnen(start, gestaltung);
+    // Nur der Alt-Text neu: ohne Rechnen speichern. Sonst rechnet der Server zuerst das Bild.
+    let patch: Record<string, unknown> = { alt: a };
+    let hinweise: string[] = [];
+    if (!unveraendert) {
+      const r = await gestaltungRechnen(start, gestaltung);
+      if (!r.ok) {
+        setLaeuft(false);
+        setFehler(r.grund);
+        return;
+      }
+      patch = { gestaltung, url: quelleAnzeige(r.url), width: r.width, height: r.height, alt: a };
+      hinweise = r.hinweise;
+    }
+    // Neue Fassung (wie "Speichern" in der Pult-Leiste); der Block aendert sich erst bei Erfolg.
+    const e = await newsletterSichern(false, (d) => mitProps(d, id, patch));
     setLaeuft(false);
-    if (!r.ok) {
-      setFehler(r.grund);
+    if (!e.ok) {
+      setFehler(fehlerText(e.grund));
       return;
     }
-    const jetzt = getDocument()[id];
-    if (jetzt?.type !== 'Image') {
-      gestaltungSchliessen();
-      return;
-    }
-    setDocument({
-      [id]: {
-        type: 'Image',
-        data: {
-          ...jetzt.data,
-          props: { ...jetzt.data.props, gestaltung, url: quelleAnzeige(r.url), width: r.width, height: r.height, alt: a },
-        },
-      },
-    });
+    const gesichert = `Fläche übernommen und als Fassung ${e.fassung} gespeichert.`;
     pultStore.setState({
-      meldung: {
-        platz: id,
-        text:
-          r.hinweise.length > 0
-            ? `Fläche übernommen. Hinweise: ${r.hinweise.join(' · ')}`
-            : 'Fläche übernommen. Zum Abschluss den Newsletter speichern.',
-      },
+      meldung: { platz: id, text: hinweise.length > 0 ? `${gesichert} Hinweise: ${hinweise.join(' · ')}` : gesichert },
     });
     gestaltungSchliessen();
     setSelectedBlockId(id);
@@ -219,6 +226,7 @@ function Fenster({ id, onExportieren, chat }: GestaltungFensterProps & { id: str
     <Box
       ref={wurzel}
       tabIndex={-1}
+      data-tasten
       role="dialog"
       aria-modal="true"
       aria-label="Gestaltungsfläche"
@@ -261,7 +269,18 @@ function Fenster({ id, onExportieren, chat }: GestaltungFensterProps & { id: str
             {laeuft ? 'Wird gerechnet …' : 'Zurück zum Newsletter'}
           </Button>
         </Box>
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2, minWidth: 0 }}>
+        <Box
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 2,
+            minWidth: 0,
+            overflow: 'hidden',
+            // Schmal (< 1280 px): Formate nur mit Symbol und Verhaeltnis, "Hintergrund" nur als Farbfeld.
+            '@media (max-width: 1279.98px)': { gap: 1, '& .format-name, & .hintergrund-text': { display: 'none' } },
+          }}
+        >
           <ToggleButtonGroup
             exclusive
             value={z.g.format}
@@ -273,9 +292,9 @@ function Fenster({ id, onExportieren, chat }: GestaltungFensterProps & { id: str
             {FORMAT_KNOEPFE.map(([f, name]) => {
               const [a, b] = FORMATE[f];
               return (
-                <ToggleButton key={f} value={f} aria-label={`${name} ${a}:${b}`} sx={{ gap: 1, px: 1.5, fontSize: 12, fontWeight: 500 }}>
+                <ToggleButton key={f} value={f} aria-label={`${name} ${a}:${b}`} title={`${name} ${a}:${b}`} sx={{ gap: 1, px: 1.5, fontSize: 12, fontWeight: 500, whiteSpace: 'nowrap' }}>
                   <FormatSymbol f={f} />
-                  {name}
+                  <span className="format-name">{name}</span>
                   <Box component="span" sx={{ color: FARBE.gedaempft, fontVariantNumeric: 'tabular-nums' }}>
                     {a}:{b}
                   </Box>
@@ -285,7 +304,9 @@ function Fenster({ id, onExportieren, chat }: GestaltungFensterProps & { id: str
           </ToggleButtonGroup>
           <Box sx={{ width: '1px', height: 24, bgcolor: FARBE.linie }} />
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <Typography sx={{ fontSize: 12, color: FARBE.gedaempft }}>Hintergrund</Typography>
+            <Typography className="hintergrund-text" sx={{ fontSize: 12, color: FARBE.gedaempft }}>
+              Hintergrund
+            </Typography>
             <FarbFeld
               kompakt
               label="Hintergrund"
@@ -298,14 +319,19 @@ function Fenster({ id, onExportieren, chat }: GestaltungFensterProps & { id: str
         </Box>
         <Box sx={{ px: 2, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 0.5 }}>
           <Tooltip title="Rückgängig (Strg+Z)">
-            <IconButton aria-label="Rückgängig" onClick={z.zurueck}>
+            {/* span: Tooltip auch am deaktivierten Knopf */}
+            <span>
+            <IconButton aria-label="Rückgängig" onClick={z.zurueck} disabled={!z.kannZurueck}>
               <UndoRounded sx={{ fontSize: 18 }} />
             </IconButton>
+            </span>
           </Tooltip>
           <Tooltip title="Wiederholen (Strg+Y)">
-            <IconButton aria-label="Wiederholen" onClick={z.vor}>
+            <span>
+            <IconButton aria-label="Wiederholen" onClick={z.vor} disabled={!z.kannVor}>
               <RedoRounded sx={{ fontSize: 18 }} />
             </IconButton>
+            </span>
           </Tooltip>
           <Tooltip title={onExportieren ? 'Fläche und Newsletter exportieren' : 'Kommt mit dem Assistenten'}>
             {/* span: ein deaktivierter Knopf loest selbst keine Tooltip-Ereignisse aus */}

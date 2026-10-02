@@ -2,8 +2,9 @@ import { create } from 'zustand';
 
 import { ladeEntscheid, neuesBildMeldung } from './bildfeld';
 import type { Auftrag } from './bildfeld';
-import { getDocument, setSelectedBlockId } from './documents/editor/EditorContext';
-import { medienListe, standLaden, Start } from './pult';
+import { getDocument, setDocument, setSelectedBlockId } from './documents/editor/EditorContext';
+import type { TEditorConfiguration } from './documents/editor/core';
+import { Ergebnis, medienListe, speichern, standLaden, Start } from './pult';
 
 // Zustand der Pult-Leiste: Startdaten, Betreff/Vorschautext, gemerkte Fassung
 // und ob seit dem letzten Speichern etwas geaendert wurde.
@@ -58,6 +59,28 @@ export function pultStarten(start: Start) {
 
 export function alsUngespeichert() {
   if (!pultStore.getState().ungespeichert) pultStore.setState({ ungespeichert: true });
+}
+
+// Newsletter als neue Fassung speichern (Pult-Leiste und Gestaltungsfenster).
+// aenderung: wird auf das Dokument angewandt und nur bei Erfolg uebernommen - schlaegt das
+// Speichern fehl, bleibt das Dokument im Editor, wie es war.
+export async function newsletterSichern(
+  alsKopie: boolean,
+  aenderung?: (d: TEditorConfiguration) => TEditorConfiguration
+): Promise<Ergebnis> {
+  const { start, betreff: b, vorschautext: v, basis: n } = pultStore.getState();
+  if (!start) return { ok: false, konflikt: false, grund: 'Keine Verbindung zum Pult' };
+  const vorher = getDocument();
+  const zuSichern = aenderung ? aenderung(vorher) : vorher;
+  const e = await speichern(start, zuSichern, b, v, n, alsKopie);
+  if (e.ok) {
+    const nachher = pultStore.getState();
+    // Nur als gespeichert markieren, wenn waehrend des Speicherns nichts geaendert wurde.
+    const unveraendert = getDocument() === vorher && nachher.betreff === b && nachher.vorschautext === v;
+    if (aenderung) setDocument(unveraendert ? zuSichern : aenderung(getDocument()));
+    pultStore.setState({ basis: e.fassung, ungespeichert: !unveraendert });
+  }
+  return e;
 }
 
 let medienLaeuft: Promise<void> | null = null;

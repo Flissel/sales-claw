@@ -105,7 +105,14 @@ export function hinweise(g: Gestaltung): string[] {
 
 const MAX_SCHRITTE = 100;
 
-export function verlauf<T>(start: T): { jetzt(): T; setzen(v: T): void; zurueck(): boolean; vor(): boolean } {
+export function verlauf<T>(start: T): {
+  jetzt(): T;
+  setzen(v: T): void;
+  zurueck(): boolean;
+  vor(): boolean;
+  kannZurueck(): boolean;
+  kannVor(): boolean;
+} {
   let stand: T[] = [start];
   let i = 0;
   return {
@@ -125,5 +132,7 @@ export function verlauf<T>(start: T): { jetzt(): T; setzen(v: T): void; zurueck(
       i += 1;
       return true;
     },
+    kannZurueck: () => i > 0,
+    kannVor: () => i < stand.length - 1,
   };
 }
