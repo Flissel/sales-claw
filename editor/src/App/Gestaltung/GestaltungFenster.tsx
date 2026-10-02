@@ -23,6 +23,7 @@ import { FARBE, gestaltungThema, KOPF_HOEHE, LINKS_BREITE, RECHTS_BREITE, UI_SCH
 import { useFensterTasten } from './useFensterTasten';
 import { useGestaltung } from './useGestaltung';
 import { SperrSchicht, useAgentArbeitet } from '../Chat/Sperre';
+import { useInert } from '../Chat/sperren';
 
 // Naht fuer Task 14: mit onExportieren wird "Exportieren…" aktiv, chat erscheint unter den Eigenschaften.
 export type GestaltungFensterProps = {
@@ -65,6 +66,11 @@ export default function GestaltungFenster(props: GestaltungFensterProps) {
 function Fenster({ id, onExportieren, chat }: GestaltungFensterProps & { id: string }) {
   const start = pultStore((p) => p.start);
   const arbeitet = useAgentArbeitet();
+  // Sperre auch fuer die Tastatur: Kopfmitte, Ebenen, Flaeche und Eigenschaften sind inert.
+  const kopfRef = useInert<HTMLDivElement>(arbeitet !== null);
+  const ebenenRef = useInert<HTMLDivElement>(arbeitet !== null);
+  const mitteRef = useInert<HTMLDivElement>(arbeitet !== null);
+  const eigenschaftenRef = useInert<HTMLDivElement>(arbeitet !== null);
   const [anfang] = useState(() => flaecheLesen(getDocument()[id], getDocument().root));
   const z = useGestaltung(anfang.g);
   const [alt, setAlt] = useState(anfang.alt);
@@ -234,7 +240,7 @@ function Fenster({ id, onExportieren, chat }: GestaltungFensterProps & { id: str
         <Box sx={{ px: 1 }}>
           <Button
             onClick={zurueck}
-            disabled={laeuft}
+            disabled={laeuft || arbeitet !== null}
             color="inherit"
             startIcon={laeuft ? <CircularProgress size={14} color="inherit" /> : <ArrowBackRounded sx={{ fontSize: 18 }} />}
             sx={{ color: FARBE.text, minWidth: 208, justifyContent: 'flex-start', '&:hover': { bgcolor: FARBE.hover } }}
@@ -243,6 +249,7 @@ function Fenster({ id, onExportieren, chat }: GestaltungFensterProps & { id: str
           </Button>
         </Box>
         <Box
+          ref={kopfRef}
           sx={{
             display: 'flex',
             alignItems: 'center',
@@ -320,12 +327,12 @@ function Fenster({ id, onExportieren, chat }: GestaltungFensterProps & { id: str
       </Box>
 
       {/* Links: Ebenen */}
-      <Box sx={{ bgcolor: FARBE.panel, borderRight: `1px solid ${FARBE.linie}`, minHeight: 0 }}>
+      <Box ref={ebenenRef} sx={{ bgcolor: FARBE.panel, borderRight: `1px solid ${FARBE.linie}`, minHeight: 0 }}>
         <EbenenListe z={z} versteckt={versteckt} umschalten={umschalten} />
       </Box>
 
       {/* Mitte: Flaeche und Hinweise */}
-      <Box component="main" sx={{ display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}>
+      <Box ref={mitteRef} component="main" sx={{ display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}>
         <Flaeche z={z} versteckt={versteckt} onTextBearbeiten={() => setTextFokus((n) => n + 1)} />
         <Hinweisleiste z={z} meldung={meldung} />
       </Box>
@@ -335,7 +342,7 @@ function Fenster({ id, onExportieren, chat }: GestaltungFensterProps & { id: str
 
       {/* Rechts: Eigenschaften, darunter der Chat */}
       <Box component="aside" aria-label="Eigenschaften" sx={{ bgcolor: FARBE.panel, borderLeft: `1px solid ${FARBE.linie}`, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-        <Box aria-disabled={arbeitet ? true : undefined} sx={{ flex: 1, minHeight: 0, overflowY: 'auto', opacity: arbeitet ? 0.4 : 1, pointerEvents: arbeitet ? 'none' : 'auto', transition: 'opacity 150ms ease-out' }}>
+        <Box ref={eigenschaftenRef} aria-disabled={arbeitet ? true : undefined} sx={{ flex: 1, minHeight: 0, overflowY: 'auto', opacity: arbeitet ? 0.4 : 1, pointerEvents: arbeitet ? 'none' : 'auto', transition: 'opacity 150ms ease-out' }}>
           <Eigenschaften
             z={z}
             farben={farben}

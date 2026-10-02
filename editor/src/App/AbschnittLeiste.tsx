@@ -5,6 +5,9 @@ import { Box, Button, Card, CardContent, Drawer, Typography, useTheme } from '@m
 import { ABSCHNITTE, AbschnittSchluessel, DRAG_TYP, einfuegen } from '../abschnitte';
 import { getDocument, setDocument, setSelectedBlockId } from '../documents/editor/EditorContext';
 
+import { useAgentArbeitet } from './Chat/Sperre';
+import { useInert } from './Chat/sperren';
+
 export const ABSCHNITT_LEISTE_BREITE = 240;
 
 // Fuegt den Abschnitt ein und waehlt den neuen obersten Block aus
@@ -77,6 +80,7 @@ function Skizze({ schluessel }: { schluessel: AbschnittSchluessel }) {
 }
 
 export default function AbschnittLeiste() {
+  const inertRef = useInert<HTMLDivElement>(useAgentArbeitet() !== null);
   return (
     <Drawer
       variant="permanent"
@@ -87,7 +91,7 @@ export default function AbschnittLeiste() {
         '& .MuiDrawer-paper': { width: ABSCHNITT_LEISTE_BREITE, boxSizing: 'border-box' },
       }}
     >
-      <Box sx={{ p: 2, overflow: 'auto', height: '100%' }}>
+      <Box ref={inertRef} sx={{ p: 2, overflow: 'auto', height: '100%' }}>
         <Typography variant="h6" sx={{ mb: 0.5 }}>
           Abschnitte
         </Typography>

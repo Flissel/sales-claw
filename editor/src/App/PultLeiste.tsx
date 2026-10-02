@@ -129,6 +129,7 @@ export default function PultLeiste() {
           size="small"
           label="Betreff"
           value={betreff}
+          disabled={agent !== null}
           onChange={(ev) => {
             pultStore.setState({ betreff: ev.target.value });
             alsUngespeichert();
@@ -139,6 +140,7 @@ export default function PultLeiste() {
           size="small"
           label="Vorschautext"
           value={vorschautext}
+          disabled={agent !== null}
           onChange={(ev) => {
             pultStore.setState({ vorschautext: ev.target.value });
             alsUngespeichert();

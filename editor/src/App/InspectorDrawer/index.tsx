@@ -4,6 +4,8 @@ import { Box, Drawer, Tab, Tabs } from '@mui/material';
 
 import { setSidebarTab, useInspectorDrawerOpen, useSelectedSidebarTab } from '../../documents/editor/EditorContext';
 
+import { useInert } from '../Chat/sperren';
+
 import ConfigurationPanel from './ConfigurationPanel';
 import StylesPanel from './StylesPanel';
 
@@ -11,6 +13,7 @@ export const INSPECTOR_DRAWER_WIDTH = 320;
 
 // chat: unter den Block-Eigenschaften (einklappbar, Spec 2026-10-02 §3); gesperrt: der Agent arbeitet.
 export default function InspectorDrawer({ chat, gesperrt = false }: { chat?: React.ReactNode; gesperrt?: boolean }) {
+  const panelRef = useInert<HTMLDivElement>(gesperrt);
   const selectedSidebarTab = useSelectedSidebarTab();
   const inspectorDrawerOpen = useInspectorDrawerOpen();
 
@@ -41,6 +44,7 @@ export default function InspectorDrawer({ chat, gesperrt = false }: { chat?: Rea
         </Box>
       </Box>
       <Box
+        ref={panelRef}
         aria-disabled={gesperrt || undefined}
         sx={{
           width: INSPECTOR_DRAWER_WIDTH,

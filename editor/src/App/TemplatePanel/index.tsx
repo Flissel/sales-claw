@@ -9,6 +9,8 @@ import ToggleInspectorPanelButton from '../InspectorDrawer/ToggleInspectorPanelB
 import { alterWegHinweis } from '../../pult';
 import { pultStore } from '../../pultZustand';
 import PultLeiste from '../PultLeiste';
+import { useAgentArbeitet } from '../Chat/Sperre';
+import { useInert } from '../Chat/sperren';
 
 // Gegenueber dem Beispiel entfernt: Reiter Vorschau/HTML/JSON, JSON-Import und
 // -Download, "Share" und die Vorlagen-Seitenleiste. Die massgebliche Vorschau
@@ -18,6 +20,10 @@ const WERKZEUG_HOEHE = 49;
 export default function TemplatePanel() {
   const selectedScreenSize = useSelectedScreenSize();
   const start = pultStore((p) => p.start);
+  // Waehrend der Agent arbeitet: Werkzeugleiste und Canvas auch per Tastatur gesperrt.
+  const gesperrt = useAgentArbeitet() !== null;
+  const leisteRef = useInert<HTMLDivElement>(gesperrt);
+  const canvasRef = useInert<HTMLDivElement>(gesperrt);
   // Wie die Entwurfsseite: der alte Freigabeweg (Telegram -> n8n) laeuft unabhaengig weiter.
   const alterWeg = start ? alterWegHinweis(start) : null;
 
@@ -53,6 +59,7 @@ export default function TemplatePanel() {
       <Box sx={{ flexShrink: 0, zIndex: 'appBar' }}>
         <PultLeiste />
         <Stack
+          ref={leisteRef}
           sx={{
             height: WERKZEUG_HOEHE,
             borderBottom: 1,
@@ -90,6 +97,7 @@ export default function TemplatePanel() {
         )}
       </Box>
       <Box
+        ref={canvasRef}
         sx={{
           flex: 1,
           minHeight: 0,

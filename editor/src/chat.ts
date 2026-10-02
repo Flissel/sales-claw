@@ -198,3 +198,22 @@ export function dateiNamen(slug: string, auswahl: ExportAuswahl): string[] {
   for (const f of auswahl.flaechen) for (const [g] of GERAETE) namen.push(`${slug}-${f}-${g}.jpg`);
   return namen;
 }
+
+// Rueckgaengig stellt die Fassung VOR dieser Antwort wieder her - bei einer aelteren Antwort
+// verschwaende damit alles Spaetere. Erlaubt also nur fuer die neueste fertige Chat-Antwort mit
+// Fassung, und nur solange deren Fassung die aktuelle ist. Liefert deren id oder null.
+export function rueckgaengigFuer(verlauf: ChatEintrag[], basis: number): string | null {
+  for (let i = verlauf.length - 1; i >= 0; i--) {
+    const e = verlauf[i];
+    if (e.art !== 'chat' || e.status !== 'fertig' || e.fassung_nachher === null) continue;
+    return e.fassung_nachher === basis ? e.id : null;
+  }
+  return null;
+}
+
+// Text der Sperre, solange ein Auftrag offen ist (null = frei).
+export function sperrText(chat: ChatStand | null): string | null {
+  if (!chat?.laeuft) return null;
+  const exportLaeuft = chat.verlauf.some((e) => e.art === 'export' && LAEUFT.includes(e.status));
+  return exportLaeuft ? 'Newsletter-Bilder werden gerechnet …' : 'Agent arbeitet …';
+}

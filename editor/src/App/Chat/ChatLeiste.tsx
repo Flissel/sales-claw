@@ -16,8 +16,8 @@ import {
 } from '@mui/icons-material';
 import { Box, Button, ButtonBase, CircularProgress, IconButton, InputBase, ThemeProvider, Tooltip } from '@mui/material';
 
-import { ChatEintrag, ChatKontext, ExportAuswahl, exportVorschlag } from '../../chat';
-import { chatAbschicken, chatRueckgaengig, pultStore } from '../../pultZustand';
+import { ChatEintrag, ChatKontext, ExportAuswahl, exportVorschlag, rueckgaengigFuer } from '../../chat';
+import { chatAbschicken, chatRueckgaengig, HINWEIS_OFFEN, pultStore } from '../../pultZustand';
 import { FARBE, FOKUS, gestaltungThema, uebergang, UI_SCHRIFT } from '../Gestaltung/gestaltungStil';
 
 import { Punkte, useAgentArbeitet } from './Sperre';
@@ -54,6 +54,8 @@ const kleinerKnopf = { height: 24, px: 1, fontSize: 12, fontWeight: 500, color: 
 
 type Aktionen = {
   rueckSperre: string | null;
+  // Die eine Antwort, die sich rueckgaengig machen laesst (rueckgaengigFuer).
+  rueckId: string | null;
   rueckLaeuft: string | null;
   rueckFehler: { id: string; grund: string } | null;
   onRueckgaengig: (id: string) => void;
@@ -77,7 +79,8 @@ function Eintrag({ e, a }: { e: ChatEintrag; a: Aktionen }) {
     );
   }
   const vorschlag = e.status === 'fertig' ? exportVorschlag(e) : null;
-  const kannZurueck = e.status === 'fertig' && e.fassung_nachher !== null;
+  const mitFassung = e.art === 'chat' && e.status === 'fertig' && e.fassung_nachher !== null;
+  const kannZurueck = mitFassung && a.rueckId === e.id;
   const sperre = a.rueckSperre;
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
@@ -102,12 +105,17 @@ function Eintrag({ e, a }: { e: ChatEintrag; a: Aktionen }) {
           )}
         </Blase>
       )}
-      {(kannZurueck || vorschlag) && (
+      {(mitFassung || vorschlag) && (
         <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 0.5, mt: -0.5 }}>
           {e.fassung_nachher !== null && (
             <Box component="span" sx={{ fontSize: 11, color: FARBE.gedaempft, mr: 0.5, fontVariantNumeric: 'tabular-nums' }}>
               Fassung {e.fassung_nachher}
               {e.ergebnis.notiz ? ` · ${e.ergebnis.notiz}` : ''}
+            </Box>
+          )}
+          {mitFassung && !kannZurueck && (
+            <Box component="span" sx={{ fontSize: 11, color: FARBE.gedaempft, fontStyle: 'italic' }}>
+              · Spätere Änderungen vorhanden
             </Box>
           )}
           {kannZurueck && (
@@ -151,6 +159,8 @@ export default function ChatLeiste({ kontext, sperre = null, hoehe, vorschlaege 
   const thema = useMemo(gestaltungThema, []);
   const chat = pultStore((p) => p.chat);
   const ungespeichert = pultStore((p) => p.ungespeichert);
+  const hinweisOffen = pultStore((p) => p.hinweisOffen);
+  const basis = pultStore((p) => p.basis);
   const arbeitet = useAgentArbeitet();
   const [offen, setOffen] = useState(true);
   const [text, setText] = useState('');
@@ -182,7 +192,16 @@ export default function ChatLeiste({ kontext, sperre = null, hoehe, vorschlaege 
   };
 
   const aktionen: Aktionen = {
-    rueckSperre: sperre ?? (arbeitet ? 'Der Assistent arbeitet gerade' : ungespeichert ? 'Erst speichern – sonst gingen deine Änderungen verloren' : null),
+    rueckSperre:
+      sperre ??
+      (arbeitet
+        ? 'Der Assistent arbeitet gerade'
+        : hinweisOffen
+          ? HINWEIS_OFFEN
+          : ungespeichert
+            ? 'Erst speichern – sonst gingen deine Änderungen verloren'
+            : null),
+    rueckId: rueckgaengigFuer(verlauf, basis),
     rueckLaeuft,
     rueckFehler,
     onRueckgaengig: async (id) => {
@@ -216,7 +235,7 @@ export default function ChatLeiste({ kontext, sperre = null, hoehe, vorschlaege 
 
         {offen && (
           <Box sx={{ height: hoehe, display: 'flex', flexDirection: 'column', minHeight: 0, borderTop: `1px solid ${FARBE.linie}` }}>
-            <Box ref={liste} aria-live="polite" sx={{ flex: 1, minHeight: 0, overflowY: 'auto', bgcolor: FARBE.geruest, p: 2, display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <Box ref={liste} sx={{ flex: 1, minHeight: 0, overflowY: 'auto', bgcolor: FARBE.geruest, p: 2, display: 'flex', flexDirection: 'column', gap: 2 }}>
               {verlauf.length === 0 ? (
                 <Box sx={{ m: 'auto', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1.5, maxWidth: 260 }}>
                   <AutoAwesomeRounded sx={{ fontSize: 24, color: FARBE.akzent }} />

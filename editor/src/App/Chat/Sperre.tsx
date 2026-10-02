@@ -1,21 +1,60 @@
 // Sperre waehrend der Agent (oder der Newsletter-Export am PC) arbeitet: Text der Sperre,
 // Schreib-Indikator (drei Punkte im 150-ms-Takt) und die Schicht ueber gesperrten Bereichen.
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 
 import { Box } from '@mui/material';
 
-import type { ChatEintrag } from '../../chat';
+import { sperrText } from '../../chat';
 import { pultStore } from '../../pultZustand';
 import { FARBE, UI_SCHRIFT } from '../Gestaltung/gestaltungStil';
 
-const laeuftNoch = (e: ChatEintrag) => e.status === 'offen' || e.status === 'in_arbeit';
-
 // Text der Sperre, solange ein Auftrag offen ist (null = frei).
 export function useAgentArbeitet(): string | null {
-  return pultStore((p) => {
-    if (!p.chat?.laeuft) return null;
-    return p.chat.verlauf.some((e) => e.art === 'export' && laeuftNoch(e)) ? 'Newsletter-Bilder werden gerechnet …' : 'Agent arbeitet …';
+  return pultStore((p) => sperrText(p.chat));
+}
+
+const UNSICHTBAR = {
+  position: 'absolute',
+  width: '1px',
+  height: '1px',
+  margin: '-1px',
+  padding: 0,
+  overflow: 'hidden',
+  clip: 'rect(0 0 0 0)',
+  whiteSpace: 'nowrap',
+  border: 0,
+} as const;
+
+// Ansagen fuer Screenreader, einmal je Seite eingehaengt: Regionen sind von Anfang an da
+// (leer) und werden erst gefuellt - so wird die Aenderung angesagt. Angesagt werden die Sperre
+// und nur die jeweils neueste Antwort, die in dieser Sitzung fertig geworden ist.
+export function Ansagen() {
+  const sperre = useAgentArbeitet();
+  const letzter = pultStore((p) => {
+    const v = p.chat?.verlauf ?? [];
+    return v.length > 0 ? v[v.length - 1] : null;
   });
+  const [antwort, setAntwort] = useState('');
+  const vorher = useRef<{ id: string; lief: boolean } | null>(null);
+  useEffect(() => {
+    if (!letzter) return;
+    const lief = letzter.status === 'offen' || letzter.status === 'in_arbeit';
+    const war = vorher.current;
+    if (war && war.id === letzter.id && war.lief && !lief) {
+      setAntwort(letzter.antwort || (letzter.status === 'fehler' ? 'Das hat nicht geklappt.' : 'Erledigt.'));
+    }
+    vorher.current = { id: letzter.id, lief };
+  }, [letzter]);
+  return (
+    <>
+      <Box role="status" aria-live="polite" sx={UNSICHTBAR}>
+        {sperre ?? ''}
+      </Box>
+      <Box aria-live="polite" sx={UNSICHTBAR}>
+        {antwort}
+      </Box>
+    </>
+  );
 }
 
 // Drei Punkte, je 150 ms hell (Schreib-Indikator).
@@ -47,8 +86,7 @@ export function Punkte({ farbe = FARBE.gedaempft }: { farbe?: string }) {
 export function SperrSchicht({ text, lage }: { text: string; lage: React.CSSProperties }) {
   return (
     <Box
-      role="status"
-      aria-live="polite"
+      aria-hidden="true"
       style={lage}
       sx={{
         display: 'flex',

@@ -202,12 +202,16 @@ export function chatAbfragen() {
   void holen();
 }
 
+export const HINWEIS_OFFEN = 'Im Bildfeld steht noch ein Hinweis – erst beauftragen oder leeren';
+
 // Nachricht an den Agenten. Ungesicherte Aenderungen am Newsletter werden vorher gespeichert -
 // der Agent arbeitet mit der gespeicherten Fassung. Liefert null oder den Grund fuer den Betreiber.
 export async function chatAbschicken(nachricht: string, kontext: ChatKontext): Promise<string | null> {
-  const { start, ungespeichert, chat } = pultStore.getState();
+  const { start, ungespeichert, hinweisOffen, chat } = pultStore.getState();
   if (!start) return 'Keine Verbindung zum Pult';
   if (chat?.laeuft) return 'Der Assistent arbeitet gerade';
+  // Wie beim Neuladen: ein offener Bildhinweis hielte es auf - die Agenten-Fassung bliebe ungeladen.
+  if (hinweisOffen) return HINWEIS_OFFEN;
   if (ungespeichert) {
     const e = await newsletterSichern(false);
     if (!e.ok) return fehlerText(e.grund);
@@ -239,9 +243,10 @@ export async function chatAbschicken(nachricht: string, kontext: ChatKontext): P
 
 // Rueckgaengig legt die Fassung vor der Agenten-Antwort als neue Fassung an; danach neu laden.
 export async function chatRueckgaengig(auftrag: string): Promise<string | null> {
-  const { start, ungespeichert, chat } = pultStore.getState();
+  const { start, ungespeichert, hinweisOffen, chat } = pultStore.getState();
   if (!start) return 'Keine Verbindung zum Pult';
   if (chat?.laeuft) return 'Der Assistent arbeitet gerade';
+  if (hinweisOffen) return HINWEIS_OFFEN;
   if (ungespeichert) return 'Erst speichern – sonst gingen deine Änderungen verloren';
   const r = await rueckgaengig(start, auftrag);
   if (!r.ok) return r.grund;

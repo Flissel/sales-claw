@@ -156,6 +156,13 @@ describe('chatAbschicken', () => {
     expect(adressen(f)).toEqual(['/s']);
   });
 
+  it('offener Bildhinweis: nichts wird gesendet (das Neuladen danach waere blockiert)', async () => {
+    pultStore.setState({ hinweisOffen: true });
+    const f = netz({});
+    expect(await chatAbschicken('x', { fenster: 'newsletter', auswahl: null })).toMatch(/Hinweis/);
+    expect(f).not.toHaveBeenCalled();
+  });
+
   it('waehrend der Agent arbeitet wird nichts gesendet', async () => {
     pultStore.setState({ chat: { laeuft: true, verlauf: [] } });
     const f = netz({});
@@ -170,6 +177,13 @@ describe('chatRueckgaengig', () => {
     expect(await chatRueckgaengig('a1')).toBeNull();
     expect(JSON.parse(String((f.mock.calls[0] as unknown as [string, RequestInit])[1].body))).toEqual({ auftrag: 'a1' });
     expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it('offener Bildhinweis sperrt Rueckgaengig', async () => {
+    pultStore.setState({ hinweisOffen: true });
+    const f = netz({});
+    expect(await chatRueckgaengig('a1')).toMatch(/Hinweis/);
+    expect(f).not.toHaveBeenCalled();
   });
 
   it('mit ungespeicherten Aenderungen gesperrt', async () => {

@@ -10,6 +10,8 @@ import {
   exportVorschlag,
   neueFassungNachChat,
   rueckgaengig,
+  rueckgaengigFuer,
+  sperrText,
   titelSlug,
 } from './chat';
 import type { Start } from './pult';
@@ -229,5 +231,45 @@ describe('Dateinamen', () => {
       'herbst-kopf-tablet.jpg',
       'herbst-kopf-pc.jpg',
     ]);
+  });
+});
+
+describe('rueckgaengigFuer', () => {
+  const alt = eintrag({ id: 'a1', status: 'fertig', fassung_vorher: 3, fassung_nachher: 4 });
+  const neu = eintrag({ id: 'a2', status: 'fertig', fassung_vorher: 4, fassung_nachher: 5 });
+
+  it('nur die neueste fertige Antwort, deren Fassung die aktuelle ist', () => {
+    expect(rueckgaengigFuer([alt, neu], 5)).toBe('a2');
+  });
+
+  it('aeltere Antworten nie (Rueckgaengig verwuerfe die spaetere Arbeit)', () => {
+    expect(rueckgaengigFuer([alt, neu], 4)).toBeNull();
+  });
+
+  it('nichts, wenn danach jemand gespeichert hat', () => {
+    expect(rueckgaengigFuer([alt, neu], 6)).toBeNull();
+  });
+
+  it('Antworten ohne Fassung, Fehler und Exporte zaehlen nicht als neueste', () => {
+    const ohne = eintrag({ id: 'a3', status: 'fertig', fassung_nachher: null });
+    const fehl = eintrag({ id: 'a4', status: 'fehler' });
+    const exp = eintrag({ id: 'e1', art: 'export', status: 'fertig', fassung_nachher: null });
+    expect(rueckgaengigFuer([neu, ohne, fehl, exp], 5)).toBe('a2');
+  });
+
+  it('eine laufende neuere Nachricht sperrt nichts weg, aber laeuft wird extra gesperrt', () => {
+    expect(rueckgaengigFuer([neu, eintrag({ id: 'a5', status: 'in_arbeit' })], 5)).toBe('a2');
+  });
+});
+
+describe('sperrText', () => {
+  it('null, solange nichts laeuft', () => {
+    expect(sperrText(null)).toBeNull();
+    expect(sperrText({ laeuft: false, verlauf: [] })).toBeNull();
+  });
+
+  it('Agent oder Newsletter-Export', () => {
+    expect(sperrText({ laeuft: true, verlauf: [eintrag({ status: 'in_arbeit' })] })).toBe('Agent arbeitet …');
+    expect(sperrText({ laeuft: true, verlauf: [eintrag({ art: 'export', status: 'offen' })] })).toBe('Newsletter-Bilder werden gerechnet …');
   });
 });

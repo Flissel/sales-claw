@@ -8,7 +8,7 @@ import { pultStore } from '../pultZustand';
 
 import AbschnittLeiste, { ABSCHNITT_LEISTE_BREITE } from './AbschnittLeiste';
 import ChatLeiste from './Chat/ChatLeiste';
-import { SperrSchicht, useAgentArbeitet } from './Chat/Sperre';
+import { Ansagen, SperrSchicht, useAgentArbeitet } from './Chat/Sperre';
 import ExportDialog from './Export/ExportDialog';
 import GestaltungFenster from './Gestaltung/GestaltungFenster';
 import InspectorDrawer, { INSPECTOR_DRAWER_WIDTH } from './InspectorDrawer';
@@ -89,6 +89,7 @@ export default function App() {
         onExportieren={() => exportOeffnen(flaeche ? { newsletter: false, flaechen: [flaeche] } : null)}
         chat={<FensterChat exportOeffnen={exportOeffnen} />}
       />
+      <Ansagen />
       <ExportDialog offen={exportDialog !== null} vorbelegt={exportDialog?.vorbelegt ?? null} onClose={() => setExportDialog(null)} />
     </>
   );
