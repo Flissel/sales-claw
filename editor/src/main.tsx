@@ -7,7 +7,7 @@ import App from './App';
 import { onDocumentChange, resetDocument } from './documents/editor/EditorContext';
 import { TEditorConfiguration } from './documents/editor/core';
 import { startLesen, zurAnzeige } from './pult';
-import { alsUngespeichert, meldungLesen, pultStarten, standAbfragen } from './pultZustand';
+import { alsUngespeichert, chatAbfragen, fensterWiederOeffnen, meldungLesen, pultStarten, standAbfragen } from './pultZustand';
 import { pultThema } from './theme';
 import './editor.css';
 
@@ -41,7 +41,11 @@ if (wurzel) {
     // Medien-Adresse von sales-ui an (zurSpeicherung macht es beim Speichern rueckgaengig).
     resetDocument(zurAnzeige(start.dokument) as TEditorConfiguration);
     meldungLesen();
+    // Nach dem Neuladen wegen einer Agenten-Fassung: offenes Gestaltungsfenster wieder oeffnen.
+    fensterWiederOeffnen();
     onDocumentChange(alsUngespeichert);
+    // Chat-Verlauf einmal laden; laeuft ein Auftrag, fragt chatAbfragen alle 2 s weiter.
+    chatAbfragen();
 
     ReactDOM.createRoot(wurzel).render(
       <React.StrictMode>

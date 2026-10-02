@@ -2,9 +2,10 @@ import { create } from 'zustand';
 
 import { ladeEntscheid, neuesBildMeldung } from './bildfeld';
 import type { Auftrag } from './bildfeld';
+import { ChatKontext, chatLaden, chatSenden, ChatStand, neueFassungNachChat, rueckgaengig } from './chat';
 import { getDocument, setDocument, setSelectedBlockId } from './documents/editor/EditorContext';
 import type { TEditorConfiguration } from './documents/editor/core';
-import { Ergebnis, medienListe, speichern, standLaden, Start } from './pult';
+import { Ergebnis, fehlerText, medienListe, speichern, standLaden, Start } from './pult';
 
 // Zustand der Pult-Leiste: Startdaten, Betreff/Vorschautext, gemerkte Fassung
 // und ob seit dem letzten Speichern etwas geaendert wurde.
@@ -22,6 +23,11 @@ type TPult = {
   hinweisOffen: boolean;
   // Block-id der Gestaltungsflaeche, deren Fenster offen ist (null = Newsletter).
   gestaltungOffen: string | null;
+  // Meldet das offene Fenster: ungesicherte Aenderungen an der Flaeche, ausgewaehlte Ebene.
+  gestaltungGeaendert: boolean;
+  gestaltungAuswahl: string | null;
+  // Chat mit dem Gestaltungs-Agenten (null = noch nicht geladen). laeuft sperrt das Dokument.
+  chat: ChatStand | null;
 };
 
 export const pultStore = create<TPult>(() => ({
@@ -36,6 +42,9 @@ export const pultStore = create<TPult>(() => ({
   geladenUm: Date.now(),
   hinweisOffen: false,
   gestaltungOffen: null,
+  gestaltungGeaendert: false,
+  gestaltungAuswahl: null,
+  chat: null,
 }));
 
 export function gestaltungOeffnen(id: string) {
@@ -43,7 +52,7 @@ export function gestaltungOeffnen(id: string) {
 }
 
 export function gestaltungSchliessen() {
-  pultStore.setState({ gestaltungOffen: null });
+  pultStore.setState({ gestaltungOffen: null, gestaltungGeaendert: false, gestaltungAuswahl: null });
 }
 
 export function pultStarten(start: Start) {
@@ -93,6 +102,7 @@ export function medienLaden(neu = false) {
 
 const MERKZETTEL = 'vibemind-neues-bild';
 const NEU_GELADEN = 'vibemind-neu-geladen';
+const FENSTER = 'vibemind-fenster';
 
 function schonGeladenLesen(): number | null {
   try {
@@ -121,6 +131,37 @@ export function meldungLesen() {
   }
 }
 
+// Gibt es eine neuere Fassung als die geladene und nichts Ungesichertes, laedt die Seite neu
+// (Bildauftraege ueber standAbfragen, Agenten-Antworten und Rueckgaengig ueber den Chat).
+// Schutz gegen Neuladeschleifen: je Fassung hoechstens einmal automatisch (sessionStorage).
+// Ein offenes, unveraendertes Gestaltungsfenster geht dabei nicht verloren - es oeffnet sich wieder.
+export function neueFassungLaden(fassung: number, auftraege: Auftrag[] = []) {
+  const { basis, ungespeichert, hinweisOffen, geladenUm, gestaltungOffen, gestaltungGeaendert } = pultStore.getState();
+  const offen = ungespeichert || hinweisOffen || (gestaltungOffen !== null && gestaltungGeaendert);
+  if (ladeEntscheid(fassung, basis, offen, schonGeladenLesen()) !== 'laden') return;
+  const m = neuesBildMeldung(auftraege, geladenUm);
+  try {
+    sessionStorage.setItem(NEU_GELADEN, String(fassung));
+    if (m) sessionStorage.setItem(MERKZETTEL, JSON.stringify(m));
+    if (gestaltungOffen !== null) sessionStorage.setItem(FENSTER, gestaltungOffen);
+  } catch {
+    /* ohne Merkzettel wird nur neu geladen */
+  }
+  window.location.reload();
+}
+
+// Nach dem Neuladen: war ein Gestaltungsfenster offen, oeffnet es sich wieder.
+export function fensterWiederOeffnen() {
+  try {
+    const id = sessionStorage.getItem(FENSTER);
+    if (id === null) return;
+    sessionStorage.removeItem(FENSTER);
+    if (getDocument()[id]?.type === 'Image') gestaltungOeffnen(id);
+  } catch {
+    /* kein Merkzettel */
+  }
+}
+
 let standTakt: ReturnType<typeof setInterval> | null = null;
 export function standAbfragen() {
   const holen = async () => {
@@ -129,21 +170,81 @@ export function standAbfragen() {
     const s = await standLaden(start);
     if (!s) return;
     pultStore.setState({ stand: s });
-    const { basis, ungespeichert, hinweisOffen, geladenUm, gestaltungOffen } = pultStore.getState();
-    // Ein offenes Gestaltungsfenster zaehlt wie ungespeichert: Neuladen wuerfe die Flaeche weg.
-    const offen = ungespeichert || hinweisOffen || gestaltungOffen !== null;
-    if (ladeEntscheid(s.fassung, basis, offen, schonGeladenLesen()) === 'laden') {
-      const m = neuesBildMeldung(s.auftraege, geladenUm);
-      try {
-        sessionStorage.setItem(NEU_GELADEN, String(s.fassung));
-        if (m) sessionStorage.setItem(MERKZETTEL, JSON.stringify(m));
-      } catch {
-        /* ohne Merkzettel wird nur neu geladen */
-      }
-      window.location.reload();
-    }
+    neueFassungLaden(s.fassung, s.auftraege);
   };
   void holen();
   if (!standTakt) standTakt = setInterval(holen, 15000);
 }
 
+// Chat-Stand: einmal beim Laden, danach alle 2 s, solange der Agent arbeitet.
+// Jeder Aufruf beginnt eine neue Runde; aeltere Runden planen nichts mehr ein.
+export const CHAT_TAKT_MS = 2000;
+let chatRunde = 0;
+let chatTakt: ReturnType<typeof setTimeout> | null = null;
+export function chatAbfragen() {
+  const runde = ++chatRunde;
+  if (chatTakt) clearTimeout(chatTakt);
+  chatTakt = null;
+  const holen = async () => {
+    const { start } = pultStore.getState();
+    if (!start) return;
+    const neu = await chatLaden(start);
+    if (runde !== chatRunde) return;
+    if (neu) {
+      const vorher = pultStore.getState().chat?.verlauf ?? [];
+      pultStore.setState({ chat: neu });
+      const f = neueFassungNachChat(vorher, neu.verlauf);
+      if (f !== null) neueFassungLaden(f);
+    }
+    // Netzfehler waehrend der Agent arbeitet: weiter fragen, die Sperre bleibt sichtbar.
+    if (pultStore.getState().chat?.laeuft) chatTakt = setTimeout(holen, CHAT_TAKT_MS);
+  };
+  void holen();
+}
+
+// Nachricht an den Agenten. Ungesicherte Aenderungen am Newsletter werden vorher gespeichert -
+// der Agent arbeitet mit der gespeicherten Fassung. Liefert null oder den Grund fuer den Betreiber.
+export async function chatAbschicken(nachricht: string, kontext: ChatKontext): Promise<string | null> {
+  const { start, ungespeichert, chat } = pultStore.getState();
+  if (!start) return 'Keine Verbindung zum Pult';
+  if (chat?.laeuft) return 'Der Assistent arbeitet gerade';
+  if (ungespeichert) {
+    const e = await newsletterSichern(false);
+    if (!e.ok) return fehlerText(e.grund);
+  }
+  const r = await chatSenden(start, nachricht, kontext);
+  if (!r.ok) {
+    // Z. B. arbeitet der Assistent schon fuer einen anderen Tab: Stand holen, damit die Sperre erscheint.
+    chatAbfragen();
+    return r.grund;
+  }
+  // Vorlaeufiger Eintrag: sperrt sofort und laesst neueFassungNachChat den Uebergang erkennen.
+  const eintrag = {
+    id: r.auftrag,
+    art: 'chat' as const,
+    nachricht,
+    antwort: '',
+    status: 'offen' as const,
+    hinweise: [],
+    ergebnis: {},
+    fassung_vorher: pultStore.getState().basis,
+    fassung_nachher: null,
+    erstellt_am: new Date().toISOString(),
+  };
+  const verlauf = (pultStore.getState().chat?.verlauf ?? []).filter((e) => e.id !== r.auftrag);
+  pultStore.setState({ chat: { laeuft: true, verlauf: [...verlauf, eintrag] } });
+  chatAbfragen();
+  return null;
+}
+
+// Rueckgaengig legt die Fassung vor der Agenten-Antwort als neue Fassung an; danach neu laden.
+export async function chatRueckgaengig(auftrag: string): Promise<string | null> {
+  const { start, ungespeichert, chat } = pultStore.getState();
+  if (!start) return 'Keine Verbindung zum Pult';
+  if (chat?.laeuft) return 'Der Assistent arbeitet gerade';
+  if (ungespeichert) return 'Erst speichern – sonst gingen deine Änderungen verloren';
+  const r = await rueckgaengig(start, auftrag);
+  if (!r.ok) return r.grund;
+  neueFassungLaden(r.fassung);
+  return null;
+}

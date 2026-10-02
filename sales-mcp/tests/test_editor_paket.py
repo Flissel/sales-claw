@@ -53,3 +53,10 @@ def test_paket_kennt_gestaltung():
     text = (ORDNER / "editor.js").read_text(encoding="utf-8")
     for s in ("Gestaltungsfläche", "Zurück zum Newsletter", "am Handy unter 12 px", "gestaltung_url"):
         assert s in text, s
+
+
+def test_paket_kennt_assistenten():
+    # Task 14 (2026-10-02 Gestaltungs-Agent): Chat, Sperre, Rueckgaengig, Export-Dialog
+    text = (ORDNER / "editor.js").read_text(encoding="utf-8")
+    for s in ("Agent arbeitet", "In Medien exportieren", "Rückgängig", "chat_url"):
+        assert s in text, s

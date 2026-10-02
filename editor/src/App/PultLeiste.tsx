@@ -19,6 +19,8 @@ import {
 import { fehlerText } from '../pult';
 import { alsUngespeichert, newsletterSichern, pultStore } from '../pultZustand';
 
+import { useAgentArbeitet } from './Chat/Sperre';
+
 // Leiste oben: Betreff, Vorschautext, Speichern, Vorschau, Zurueck.
 // Die Pruefung, ob der Inhalt erlaubt ist, macht das Pult beim Speichern.
 
@@ -34,6 +36,8 @@ export default function PultLeiste() {
   const ungespeichert = pultStore((p) => p.ungespeichert);
   const stand = pultStore((p) => p.stand);
   const neuesBild = pultStore((p) => p.meldung);
+  // Waehrend der Agent arbeitet, lehnt der Server Handspeichern ab ("Der Assistent arbeitet gerade").
+  const agent = useAgentArbeitet();
 
   const [laeuft, setLaeuft] = useState(false);
   const [meldung, setMeldung] = useState<Meldung>(null);
@@ -146,18 +150,26 @@ export default function PultLeiste() {
           color={ungespeichert ? 'warning.main' : 'text.secondary'}
           sx={{ flexShrink: 0, minWidth: 190 }}
         >
-          {ungespeichert ? `Fassung ${basis} · ungespeicherte Änderungen` : `Fassung ${basis} · gespeichert`}
+          {agent
+            ? `Fassung ${basis} · ${agent}`
+            : ungespeichert
+              ? `Fassung ${basis} · ungespeicherte Änderungen`
+              : `Fassung ${basis} · gespeichert`}
         </Typography>
-        <Button
-          variant="contained"
-          size="small"
-          startIcon={<SaveOutlined />}
-          disabled={laeuft}
-          onClick={() => sichern(false)}
-          sx={{ flexShrink: 0 }}
-        >
-          {laeuft ? 'Speichert …' : 'Speichern'}
-        </Button>
+        <Tooltip title={agent ? 'Gesperrt, bis der Assistent fertig ist' : ''}>
+          <span>
+            <Button
+              variant="contained"
+              size="small"
+              startIcon={<SaveOutlined />}
+              disabled={laeuft || agent !== null}
+              onClick={() => sichern(false)}
+              sx={{ flexShrink: 0 }}
+            >
+              {laeuft ? 'Speichert …' : 'Speichern'}
+            </Button>
+          </span>
+        </Tooltip>
         <Tooltip title={vorschauHinweis}>
           <span>
             <Button
@@ -231,7 +243,7 @@ export default function PultLeiste() {
           >
             Neu laden
           </Button>
-          <Button variant="contained" disabled={laeuft} onClick={() => sichern(true)}>
+          <Button variant="contained" disabled={laeuft || agent !== null} onClick={() => sichern(true)}>
             Als Kopie behalten
           </Button>
         </DialogActions>

@@ -9,7 +9,7 @@ import { Box, Button, CircularProgress, IconButton, ThemeProvider, ToggleButton,
 
 import { getDocument, setSelectedBlockId } from '../../documents/editor/EditorContext';
 import type { TEditorConfiguration } from '../../documents/editor/core';
-import { Format, FORMATE, schieben } from '../../gestaltung';
+import { Format, FORMATE } from '../../gestaltung';
 import { fehlerText, gestaltungRechnen } from '../../pult';
 import { gestaltungSchliessen, newsletterSichern, pultStore } from '../../pultZustand';
 import { GestaltungSchema } from '../../schemata';
@@ -20,8 +20,9 @@ import Eigenschaften from './Eigenschaften';
 import Flaeche, { Hinweisleiste } from './Flaeche';
 import { flaecheLesen, formatWechseln, ladenfarben, pruefGrund, quelleAnzeige } from './hilfen';
 import { FARBE, gestaltungThema, KOPF_HOEHE, LINKS_BREITE, RECHTS_BREITE, UI_SCHRIFT } from './gestaltungStil';
-import { flaechenTaste } from './tasten';
+import { useFensterTasten } from './useFensterTasten';
 import { useGestaltung } from './useGestaltung';
+import { SperrSchicht, useAgentArbeitet } from '../Chat/Sperre';
 
 // Naht fuer Task 14: mit onExportieren wird "Exportieren…" aktiv, chat erscheint unter den Eigenschaften.
 export type GestaltungFensterProps = {
@@ -63,6 +64,7 @@ export default function GestaltungFenster(props: GestaltungFensterProps) {
 
 function Fenster({ id, onExportieren, chat }: GestaltungFensterProps & { id: string }) {
   const start = pultStore((p) => p.start);
+  const arbeitet = useAgentArbeitet();
   const [anfang] = useState(() => flaecheLesen(getDocument()[id], getDocument().root));
   const z = useGestaltung(anfang.g);
   const [alt, setAlt] = useState(anfang.alt);
@@ -97,41 +99,12 @@ function Fenster({ id, onExportieren, chat }: GestaltungFensterProps & { id: str
     return () => window.removeEventListener('beforeunload', warnen);
   }, []);
 
-  // Tastatur: Strg+Z/Y, Pfeile (1, Shift 10), Entf, Esc hebt die Auswahl auf.
-  const zRef = useRef(z);
-  zRef.current = z;
-  const verstecktRef = useRef(versteckt);
-  verstecktRef.current = versteckt;
+  useFensterTasten(z, versteckt);
+
+  // Dem Chat melden: ungesicherte Aenderungen (sperrt Senden, haelt das Neuladen auf) und Auswahl.
   useEffect(() => {
-    const taste = (ev: KeyboardEvent) => {
-      const zz = zRef.current;
-      const el = ev.target instanceof HTMLElement && ev.target !== document.body ? ev.target : null;
-      if (!flaechenTaste(el)) return;
-      const k = ev.key.toLowerCase();
-      if ((ev.ctrlKey || ev.metaKey) && (k === 'z' || k === 'y')) {
-        ev.preventDefault();
-        if (k === 'y' || ev.shiftKey) zz.vor();
-        else zz.zurueck();
-        return;
-      }
-      if (zz.auswahl === null) return;
-      const id = zz.auswahl;
-      if (ev.key === 'Delete' || ev.key === 'Backspace') {
-        ev.preventDefault();
-        zz.ebeneLoeschen(id);
-      } else if (ev.key === 'Escape') {
-        zz.waehlen(null);
-      } else if (ev.key.startsWith('Arrow') && !verstecktRef.current.has(id)) {
-        ev.preventDefault();
-        const d = ev.shiftKey ? 10 : 1;
-        const dx = ev.key === 'ArrowLeft' ? -d : ev.key === 'ArrowRight' ? d : 0;
-        const dy = ev.key === 'ArrowUp' ? -d : ev.key === 'ArrowDown' ? d : 0;
-        zz.ebeneAendern(id, (e) => schieben(e, dx, dy), 'gleiten');
-      }
-    };
-    window.addEventListener('keydown', taste);
-    return () => window.removeEventListener('keydown', taste);
-  }, []);
+    pultStore.setState({ gestaltungGeaendert: geaendert, gestaltungAuswahl: z.auswahl });
+  }, [geaendert, z.auswahl]);
 
   // Ausblenden der ausgewaehlten Ebene hebt die Auswahl auf (Rad/Pfeile wirkten sonst unsichtbar).
   const umschalten = (eid: string) => {
@@ -277,6 +250,8 @@ function Fenster({ id, onExportieren, chat }: GestaltungFensterProps & { id: str
             gap: 2,
             minWidth: 0,
             overflow: 'hidden',
+            opacity: arbeitet ? 0.4 : 1,
+            pointerEvents: arbeitet ? 'none' : 'auto',
             // Schmal (< 1280 px): Formate nur mit Symbol und Verhaeltnis, "Hintergrund" nur als Farbfeld.
             '@media (max-width: 1279.98px)': { gap: 1, '& .format-name, & .hintergrund-text': { display: 'none' } },
           }}
@@ -321,14 +296,14 @@ function Fenster({ id, onExportieren, chat }: GestaltungFensterProps & { id: str
           <Tooltip title="Rückgängig (Strg+Z)">
             {/* span: Tooltip auch am deaktivierten Knopf */}
             <span>
-            <IconButton aria-label="Rückgängig" onClick={z.zurueck} disabled={!z.kannZurueck}>
+            <IconButton aria-label="Rückgängig" onClick={z.zurueck} disabled={!z.kannZurueck || arbeitet !== null}>
               <UndoRounded sx={{ fontSize: 18 }} />
             </IconButton>
             </span>
           </Tooltip>
           <Tooltip title="Wiederholen (Strg+Y)">
             <span>
-            <IconButton aria-label="Wiederholen" onClick={z.vor} disabled={!z.kannVor}>
+            <IconButton aria-label="Wiederholen" onClick={z.vor} disabled={!z.kannVor || arbeitet !== null}>
               <RedoRounded sx={{ fontSize: 18 }} />
             </IconButton>
             </span>
@@ -355,9 +330,12 @@ function Fenster({ id, onExportieren, chat }: GestaltungFensterProps & { id: str
         <Hinweisleiste z={z} meldung={meldung} />
       </Box>
 
-      {/* Rechts: Eigenschaften, darunter (Task 14) der Chat */}
+      {/* Waehrend der Agent arbeitet: Ebenen und Flaeche gesperrt (absolut - nimmt keine Rasterzelle) */}
+      {arbeitet && <SperrSchicht text={arbeitet} lage={{ position: 'absolute', top: KOPF_HOEHE, left: 0, right: RECHTS_BREITE, bottom: 0, zIndex: 2 }} />}
+
+      {/* Rechts: Eigenschaften, darunter der Chat */}
       <Box component="aside" aria-label="Eigenschaften" sx={{ bgcolor: FARBE.panel, borderLeft: `1px solid ${FARBE.linie}`, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-        <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+        <Box aria-disabled={arbeitet ? true : undefined} sx={{ flex: 1, minHeight: 0, overflowY: 'auto', opacity: arbeitet ? 0.4 : 1, pointerEvents: arbeitet ? 'none' : 'auto', transition: 'opacity 150ms ease-out' }}>
           <Eigenschaften
             z={z}
             farben={farben}
@@ -371,7 +349,7 @@ function Fenster({ id, onExportieren, chat }: GestaltungFensterProps & { id: str
             textFokus={textFokus}
           />
         </Box>
-        {chat && <Box sx={{ borderTop: `1px solid ${FARBE.linie}`, minHeight: 0 }}>{chat}</Box>}
+        {chat && <Box sx={{ borderTop: `1px solid ${FARBE.linie}`, flexShrink: 0 }}>{chat}</Box>}
       </Box>
     </Box>
   );

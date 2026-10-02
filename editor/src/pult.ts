@@ -20,6 +20,12 @@ export type Start = {
   // Gestaltungsflaeche flachrechnen (Spec 2026-10-02 §5).
   gestaltung_url: string;
   stand_url: string;
+  // Gestaltungs-Agent und Export (Spec 2026-10-02 §4, §6); Anbindung in chat.ts.
+  chat_url: string;
+  chat_stand_url: string;
+  chat_rueckgaengig_url: string;
+  export_vorschau_url: string;
+  export_url: string;
   zurueck_url: string;
   csrf: string;
   // Herkunft aus dem alten Freigabeweg (broadcast_proposals): Status und Kanal, sonst null.
