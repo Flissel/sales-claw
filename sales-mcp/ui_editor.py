@@ -395,7 +395,8 @@ def routen(ui) -> list:
         # OHNE Anmeldung (AnmeldeWache laesst /marketing/bild/<t>/<n> durch):
         # die abgeschottete Vorschau schickt keine Anmelde-Cookies. Die
         # Berechtigung ist die Signatur - 15 Minuten, nur Bilder aus den
-        # Medien, keine internen Unterlagen (Terminkarten tragen Kundendaten).
+        # Medien (auch Entwurfsbilder gs-*), keine internen Unterlagen
+        # (Terminkarten tragen Kundendaten).
         nicht_da = Response("Nicht gefunden", status_code=404, media_type="text/plain",
                             headers={"Content-Security-Policy": CSP_BILD})
         if not bild_token_ok(request.path_params["token"]):
@@ -407,7 +408,7 @@ def routen(ui) -> list:
         if endung not in BILD_ENDUNGEN:
             return nicht_da
         medien = ui.server.medien
-        basis, fehler = await run_in_threadpool(medien.pruefe_anhang, name)
+        basis, fehler = await run_in_threadpool(medien.pruefe_anzeige, name)
         if fehler or not basis:
             return nicht_da
         typ = mimetypes.guess_type(basis)[0] or medien.ERLAUBT.get(endung, ("", ""))[1]

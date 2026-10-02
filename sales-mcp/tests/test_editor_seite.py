@@ -343,6 +343,16 @@ def test_bild_route_ohne_anmeldung_nur_mit_token(monkeypatch, medien_ordner):
         assert b"PNG" not in r.content, pfad
 
 
+def test_bild_route_liefert_entwurfsbilder_aus(monkeypatch, medien_ordner):
+    # Block-Bilder `medien:gs-...` werden ueber diese Route angezeigt.
+    (medien_ordner / "gs-0123456789ab.jpg").write_bytes(bytes([0xFF, 0xD8, 0xFF]) + b"0" * 10)
+    monkeypatch.setattr(ui, "UI_SESSION_SECRET", "geheim")
+    c = TestClient(ui.app)
+    r = c.get(f"/marketing/bild/{ui_editor.bild_token()}/gs-0123456789ab.jpg", headers=HOST)
+    assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg"
+    assert server.medien.pruefe_anhang("gs-0123456789ab.jpg")[0] is None   # Anhang: weiter gesperrt
+
+
 def test_bild_route_nur_get(monkeypatch, medien_ordner):
     monkeypatch.setattr(ui, "UI_SESSION_SECRET", "geheim")
     c = TestClient(ui.app)
@@ -728,7 +738,7 @@ def test_gestaltung_durchreichen(angemeldet, pult):
     assert r.status_code == 200 and r.json() == pult.gestaltung_antwort
     assert r.headers["cache-control"] == "no-store"
     assert pult.aufrufe[-1] == ("POST", f"/inhalte/{IID}/gestaltung", {"gestaltung": GESTALTUNG})
-    assert pult.zeitlimits[-1] == 30      # Flaechen mit vielen Ebenen rechnen laenger als 8 s
+    assert pult.zeitlimits[-1] == ui_editor.GESTALTUNG_ZEITLIMIT_S == 30      # Flaechen mit vielen Ebenen rechnen laenger als 8 s
 
 
 def test_gestaltung_ohne_csrf(angemeldet, pult):

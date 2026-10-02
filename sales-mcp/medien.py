@@ -267,6 +267,21 @@ def pruefe_anhang(name: str):
     return basis, None
 
 
+def pruefe_anzeige(name: str):
+    """`pruefe` plus die Sperre fuer interne Unterlagen -> (basisname, None) | (None, fehler).
+
+    Fuer die signierte Bildroute (Vorschau, Editor): sie zeigt auch
+    Entwurfsbilder der Gestaltungsflaechen (gs-*), aber nie Terminkarten oder
+    Musterblaetter. Anhaenge laufen weiter ueber `pruefe_anhang`.
+    """
+    basis, fehler = pruefe(name)
+    if fehler:
+        return None, fehler
+    if intern(basis):
+        return None, f"'{basis}' ist eine interne Unterlage."
+    return basis, None
+
+
 def pruefe_neuen_namen(name: str):
     """Darf eine Datei DIESES Namens neu abgelegt werden? -> (basis, fehler).
 
