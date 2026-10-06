@@ -77,10 +77,10 @@ describe('chatAbfragen', () => {
     chatAbfragen();
     await vi.advanceTimersByTimeAsync(CHAT_TAKT_MS * 3);
     expect(adressen(f)).toEqual(['/c.json']);
-    expect(pultStore.getState().chat).toEqual({ laeuft: false, verlauf: [] });
+    expect(pultStore.getState().chat).toEqual({ laeuft: false, verlauf: [], live: null, vorgemerkt: null });
   });
 
-  it('fragt alle 2 s, solange laeuft, und laedt bei fertiger neuer Fassung neu', async () => {
+  it('fragt im Takt, solange laeuft, und laedt bei fertiger neuer Fassung neu', async () => {
     const f = netz({
       '/c.json': [
         [200, { laeuft: true, verlauf: [eintrag({})] }],
@@ -164,7 +164,7 @@ describe('chatAbschicken', () => {
   });
 
   it('waehrend der Agent arbeitet wird nichts gesendet', async () => {
-    pultStore.setState({ chat: { laeuft: true, verlauf: [] } });
+    pultStore.setState({ chat: { laeuft: true, verlauf: [], live: null, vorgemerkt: null } });
     const f = netz({});
     expect(await chatAbschicken('x', { fenster: 'newsletter', auswahl: null })).toBe('Der Assistent arbeitet gerade');
     expect(f).not.toHaveBeenCalled();

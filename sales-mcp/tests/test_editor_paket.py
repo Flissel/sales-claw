@@ -60,3 +60,11 @@ def test_paket_kennt_assistenten():
     text = (ORDNER / "editor.js").read_text(encoding="utf-8")
     for s in ("Agent arbeitet", "In Medien exportieren", "Rückgängig", "chat_url"):
         assert s in text, s
+
+
+def test_paket_kennt_live_ansicht():
+    # 2026-10-02 Newsletter-Agent live (Task 7): Schritt-Zeile, Vormerken, Stopp-Dialog, Routen
+    text = (ORDNER / "editor.js").read_text(encoding="utf-8")
+    for s in ("Vormerken", "Bisherige Schritte behalten", "Schritt ", "Wird gestoppt",
+              "chat_vormerkung_url", "chat_vormerkung_starten_url", "chat_stopp_url"):
+        assert s in text, s

@@ -16,7 +16,8 @@ import ContainerPropsSchema from '../blocks/Container/ContainerPropsSchema';
 import EmailLayoutEditor from '../blocks/EmailLayout/EmailLayoutEditor';
 import EmailLayoutPropsSchema from '../blocks/EmailLayout/EmailLayoutPropsSchema';
 import EditorBlockWrapper from '../blocks/helpers/block-wrappers/EditorBlockWrapper';
-import { VorlagenButton, VorlagenHeading, VorlagenImage, VorlagenText } from '../blocks/Vorlagentext';
+import BildOderVorschau from '../blocks/FlaechenVorschau';
+import { VorlagenButton, VorlagenHeading, VorlagenText } from '../blocks/Vorlagentext';
 import { ButtonSchema, HeadingSchema, ImageSchema, TextSchema } from '../../schemata';
 
 // Platzhalter fuer ein Bild ohne Datei: als data:-Adresse, weil die Seite
@@ -77,7 +78,7 @@ export const EDITOR_DICTIONARY = buildBlockConfigurationDictionary({
       };
       return (
         <EditorBlockWrapper>
-          <VorlagenImage {...props} />
+          <BildOderVorschau {...props} />
         </EditorBlockWrapper>
       );
     },

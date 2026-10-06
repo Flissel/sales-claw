@@ -5,6 +5,7 @@ import {
   chatLaden,
   chatSenden,
   dateiNamen,
+  laufenderChat,
   exportieren,
   exportVorschau,
   exportVorschlag,
@@ -12,7 +13,11 @@ import {
   rueckgaengig,
   rueckgaengigFuer,
   sperrText,
+  stoppen,
   titelSlug,
+  vormerken,
+  vormerkungLoeschen,
+  vormerkungStarten,
 } from './chat';
 import type { Start } from './pult';
 
@@ -22,6 +27,9 @@ const start = {
   chat_rueckgaengig_url: '/marketing/editor/abc/chat/rueckgaengig',
   export_vorschau_url: '/marketing/editor/abc/export/vorschau',
   export_url: '/marketing/editor/abc/export',
+  chat_vormerkung_url: '/marketing/editor/abc/chat/vormerkung',
+  chat_vormerkung_starten_url: '/marketing/editor/abc/chat/vormerkung/starten',
+  chat_stopp_url: '/marketing/editor/abc/chat/stopp',
   csrf: 'marke-1',
 } as Start;
 
@@ -106,6 +114,43 @@ describe('chatLaden', () => {
     expect(aufruf(f)[0]).toBe('/marketing/editor/abc/chat.json');
     expect(r?.laeuft).toBe(false);
     expect(r?.verlauf).toEqual([gut, { ...gut, id: 'a2', hinweise: [], ergebnis: {}, antwort: '' }]);
+    expect(r?.live).toBeNull();
+    expect(r?.vorgemerkt).toBeNull();
+  });
+
+  it('liest live (Schritt, Zwischenstand, Stopp) und die vorgemerkte Nachricht', async () => {
+    const zwischen = { root: { type: 'EmailLayout', data: { childrenIds: [] } } };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        antwort(200, {
+          laeuft: true,
+          verlauf: [],
+          live: { schritt: 'Titel setzen', schritt_nr: 3, zwischenstand: zwischen, stopp: 'behalten' },
+          vorgemerkt: { id: 'v-1', nachricht: 'Danach Farben' },
+        }),
+      ),
+    );
+    const r = await chatLaden(start);
+    expect(r?.live).toEqual({ schritt: 'Titel setzen', schritt_nr: 3, zwischenstand: zwischen, stopp: 'behalten' });
+    expect(r?.vorgemerkt).toEqual({ id: 'v-1', nachricht: 'Danach Farben' });
+  });
+
+  it('kaputtes live/vorgemerkt wird null bzw. vorsichtig gelesen', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        antwort(200, {
+          laeuft: true,
+          verlauf: [],
+          live: { schritt: 5, schritt_nr: 'x', zwischenstand: [1], stopp: 'egal' },
+          vorgemerkt: { id: 7 },
+        }),
+      ),
+    );
+    const r = await chatLaden(start);
+    expect(r?.live).toEqual({ schritt: '', schritt_nr: 0, zwischenstand: null, stopp: null });
+    expect(r?.vorgemerkt).toBeNull();
   });
 
   it('null bei Netzfehler', async () => {
@@ -271,5 +316,74 @@ describe('sperrText', () => {
   it('Agent oder Newsletter-Export', () => {
     expect(sperrText({ laeuft: true, verlauf: [eintrag({ status: 'in_arbeit' })] })).toBe('Agent arbeitet …');
     expect(sperrText({ laeuft: true, verlauf: [eintrag({ art: 'export', status: 'offen' })] })).toBe('Newsletter-Bilder werden gerechnet …');
+  });
+});
+
+describe('laufenderChat', () => {
+  it('der offene oder laufende Chat-Auftrag, nie ein Export', () => {
+    expect(laufenderChat(null)).toBeNull();
+    expect(laufenderChat({ laeuft: true, verlauf: [eintrag({ id: 'x', art: 'export', status: 'in_arbeit' })] })).toBeNull();
+    expect(laufenderChat({ laeuft: false, verlauf: [eintrag({ status: 'fertig' })] })).toBeNull();
+    expect(laufenderChat({ laeuft: true, verlauf: [eintrag({ id: 'f', status: 'fertig' }), eintrag({ id: 'l', status: 'in_arbeit' })] })?.id).toBe('l');
+  });
+});
+
+describe('Vormerken und Stopp', () => {
+  it('vormerken: PUT mit CSRF und {nachricht, kontext}, liefert id und status', async () => {
+    const f = vi.fn(async () => antwort(200, { id: 'v-1', status: 'wartet' }));
+    vi.stubGlobal('fetch', f);
+    expect(await vormerken(start, 'Danach Farben', { fenster: 'newsletter', auswahl: null })).toEqual({ ok: true, id: 'v-1', status: 'wartet' });
+    const [adresse, init] = aufruf(f);
+    expect(adresse).toBe('/marketing/editor/abc/chat/vormerkung');
+    expect(init.method).toBe('PUT');
+    expect((init.headers as Record<string, string>)['X-CSRF']).toBe('marke-1');
+    expect(JSON.parse(String(init.body))).toEqual({ nachricht: 'Danach Farben', kontext: { fenster: 'newsletter', auswahl: null } });
+  });
+
+  it('vormerken: status offen (es lief nichts mehr) und unbrauchbare Antwort', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => antwort(200, { id: 'v-2', status: 'offen' })));
+    expect(await vormerken(start, 'x', { fenster: 'newsletter', auswahl: null })).toEqual({ ok: true, id: 'v-2', status: 'offen' });
+    vi.stubGlobal('fetch', vi.fn(async () => antwort(200, { id: 'v-2', status: 'komisch' })));
+    expect((await vormerken(start, 'x', { fenster: 'newsletter', auswahl: null })).ok).toBe(false);
+  });
+
+  it('vormerkungLoeschen: DELETE ohne Body, mit CSRF', async () => {
+    const f = vi.fn(async () => antwort(200, { geloescht: true }));
+    vi.stubGlobal('fetch', f);
+    expect(await vormerkungLoeschen(start)).toEqual({ ok: true, geloescht: true });
+    const [adresse, init] = aufruf(f);
+    expect(adresse).toBe('/marketing/editor/abc/chat/vormerkung');
+    expect(init.method).toBe('DELETE');
+    expect(init.body).toBeUndefined();
+    expect((init.headers as Record<string, string>)['X-CSRF']).toBe('marke-1');
+  });
+
+  it('vormerkungStarten: POST, liefert den Auftrag; 422 liefert den Grund', async () => {
+    const f = vi.fn(async () => antwort(200, { auftrag: 'v-1' }));
+    vi.stubGlobal('fetch', f);
+    expect(await vormerkungStarten(start)).toEqual({ ok: true, auftrag: 'v-1' });
+    expect(aufruf(f)[0]).toBe('/marketing/editor/abc/chat/vormerkung/starten');
+    expect(aufruf(f)[1].method).toBe('POST');
+    vi.stubGlobal('fetch', vi.fn(async () => antwort(422, { grund: 'Der Assistent arbeitet gerade' })));
+    expect(await vormerkungStarten(start)).toEqual({ ok: false, grund: 'Der Assistent arbeitet gerade' });
+  });
+
+  it('stoppen: POST {art, auftrag} an chat_stopp_url, liest abgeschlossen und veraltet', async () => {
+    const f = vi.fn(async () => antwort(200, { abgeschlossen: false }));
+    vi.stubGlobal('fetch', f);
+    expect(await stoppen(start, 'behalten', 'a1')).toEqual({ ok: true, abgeschlossen: false, veraltet: false });
+    const [adresse, init] = aufruf(f);
+    expect(adresse).toBe('/marketing/editor/abc/chat/stopp');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(String(init.body))).toEqual({ art: 'behalten', auftrag: 'a1' });
+    vi.stubGlobal('fetch', vi.fn(async () => antwort(200, { abgeschlossen: false, veraltet: true })));
+    expect(await stoppen(start, 'verwerfen')).toEqual({ ok: true, abgeschlossen: false, veraltet: true });
+  });
+
+  it('stoppen ohne Auftrag schickt nur die Art', async () => {
+    const f = vi.fn(async () => antwort(200, { abgeschlossen: true }));
+    vi.stubGlobal('fetch', f);
+    await stoppen(start, 'verwerfen');
+    expect(JSON.parse(String(aufruf(f)[1].body))).toEqual({ art: 'verwerfen' });
   });
 });

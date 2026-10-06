@@ -15,6 +15,14 @@ export function useGestaltung(anfang: Gestaltung) {
   const [g, setG] = useState<Gestaltung>(anfang);
   const [auswahl, setAuswahl] = useState<string | null>(null);
   const jetzt = useRef(g);
+  // Neuer Anfang von aussen (Live-Ansicht: der Agent hat die Flaeche geaendert): Stand und
+  // Verlauf beginnen dort neu - schon beim Zeichnen, damit nichts kurz als geaendert gilt.
+  const [basis, setBasis] = useState(anfang);
+  if (basis !== anfang) {
+    setBasis(anfang);
+    setG(anfang);
+    jetzt.current = anfang;
+  }
   const takt = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Zeichnet neu, wenn ein Schritt festgeschrieben wird (Rueckgaengig/Wiederholen-Knoepfe).
   const [, setSchritte] = useState(0);

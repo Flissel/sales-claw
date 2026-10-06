@@ -17,6 +17,29 @@ import { useInert } from '../Chat/sperren';
 // ist die des Pults (Knoepfe "Vorschau Mail"/"Vorschau Handy").
 const WERKZEUG_HOEHE = 49;
 
+// Ein Zwischenstand des Agenten ist nicht vom Validator geprueft: laesst er sich trotz Vorpruefung
+// nicht zeichnen, bleibt der Editor stehen und zeigt einen ruhigen Hinweis bis zum naechsten Stand.
+class ZwischenstandFang extends React.Component<{ puls: number; children: React.ReactNode }, { fehler: boolean }> {
+  state = { fehler: false };
+
+  static getDerivedStateFromError() {
+    return { fehler: true };
+  }
+
+  componentDidUpdate(vorher: { puls: number }) {
+    if (vorher.puls !== this.props.puls && this.state.fehler) this.setState({ fehler: false });
+  }
+
+  render() {
+    if (!this.state.fehler) return this.props.children;
+    return (
+      <Typography variant="body2" color="text.secondary" sx={{ p: 4, textAlign: 'center' }}>
+        Dieser Stand lässt sich nicht anzeigen – der Assistent arbeitet weiter.
+      </Typography>
+    );
+  }
+}
+
 export default function TemplatePanel() {
   const selectedScreenSize = useSelectedScreenSize();
   const start = pultStore((p) => p.start);
@@ -24,6 +47,7 @@ export default function TemplatePanel() {
   const gesperrt = useAgentArbeitet() !== null;
   const leisteRef = useInert<HTMLDivElement>(gesperrt);
   const canvasRef = useInert<HTMLDivElement>(gesperrt);
+  const puls = pultStore((p) => p.zwischenstand?.puls ?? 0);
   // Wie die Entwurfsseite: der alte Freigabeweg (Telegram -> n8n) laeuft unabhaengig weiter.
   const alterWeg = start ? alterWegHinweis(start) : null;
 
@@ -98,6 +122,7 @@ export default function TemplatePanel() {
       </Box>
       <Box
         ref={canvasRef}
+        data-canvas
         sx={{
           flex: 1,
           minHeight: 0,
@@ -107,7 +132,9 @@ export default function TemplatePanel() {
         }}
       >
         <Box sx={mainBoxSx}>
-          <EditorBlock id="root" />
+          <ZwischenstandFang puls={puls}>
+            <EditorBlock id="root" />
+          </ZwischenstandFang>
         </Box>
       </Box>
     </Box>

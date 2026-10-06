@@ -1,7 +1,8 @@
 // Anbindung an den Gestaltungs-Agenten und den Export (Spec 2026-10-02 §4, §6):
 // Chat senden/lesen, Rueckgaengig, Export-Vorschau und bestaetigter Export.
+// Live-Lauf (Spec 2026-10-02-newsletter-agent-live §2.3, §3): Zwischenstand, Vormerken, Stopp.
 // Nur relative Adressen aus den Startdaten; schreibende Aufrufe mit X-CSRF.
-import type { Start } from './pult';
+import type { Dokument, Start } from './pult';
 
 export type ExportAuswahl = { newsletter: boolean; flaechen: string[] };
 
@@ -20,7 +21,15 @@ export type ChatEintrag = {
   erstellt_am: string;
 };
 
-export type ChatStand = { laeuft: boolean; verlauf: ChatEintrag[] };
+export type StoppArt = 'behalten' | 'verwerfen';
+
+// Stand des laufenden Auftrags. zwischenstand im gespeicherten Format (medien:), null vor dem
+// ersten Schritt; stopp gesetzt = der Betreiber hat gestoppt, der Abschluss steht noch aus.
+export type ChatLive = { schritt: string; schritt_nr: number; zwischenstand: Dokument | null; stopp: StoppArt | null };
+
+export type Vorgemerkt = { id: string; nachricht: string };
+
+export type ChatStand = { laeuft: boolean; verlauf: ChatEintrag[]; live: ChatLive | null; vorgemerkt: Vorgemerkt | null };
 
 export type ChatKontext = { fenster: string; auswahl: string | null };
 
@@ -51,20 +60,22 @@ function zahlOderNull(v: unknown): number | null | undefined {
   return typeof v === 'number' && Number.isInteger(v) ? v : undefined;
 }
 
-// POST mit CSRF; liefert das Antwortobjekt oder den Grund des Servers.
+// Schreibender Aufruf mit CSRF (body undefined = ohne Body); liefert das Antwortobjekt oder den
+// Grund des Servers.
 async function senden(
   s: Start,
   url: string,
   body: unknown,
   sonst: string,
+  methode: 'POST' | 'PUT' | 'DELETE' = 'POST',
 ): Promise<{ ok: true; j: Record<string, unknown> } | Fehler> {
   let r: Response;
   try {
     r = await fetch(url, {
-      method: 'POST',
+      method: methode,
       credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json', 'X-CSRF': s.csrf },
-      body: JSON.stringify(body),
+      headers: body === undefined ? { 'X-CSRF': s.csrf } : { 'Content-Type': 'application/json', 'X-CSRF': s.csrf },
+      body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {
     return { ok: false, grund: KEINE_VERBINDUNG };
@@ -118,6 +129,22 @@ function eintragLesen(v: unknown): ChatEintrag | null {
   };
 }
 
+function liveLesen(v: unknown): ChatLive | null {
+  if (!istObjekt(v)) return null;
+  const nr = v.schritt_nr;
+  return {
+    schritt: typeof v.schritt === 'string' ? v.schritt : '',
+    schritt_nr: typeof nr === 'number' && Number.isInteger(nr) && nr > 0 ? nr : 0,
+    zwischenstand: istObjekt(v.zwischenstand) ? v.zwischenstand : null,
+    stopp: v.stopp === 'behalten' || v.stopp === 'verwerfen' ? v.stopp : null,
+  };
+}
+
+function vorgemerktLesen(v: unknown): Vorgemerkt | null {
+  if (!istObjekt(v) || typeof v.id !== 'string' || !v.id) return null;
+  return { id: v.id, nachricht: typeof v.nachricht === 'string' ? v.nachricht : '' };
+}
+
 export async function chatLaden(s: Start): Promise<ChatStand | null> {
   try {
     const r = await fetch(s.chat_stand_url, { credentials: 'same-origin' });
@@ -125,10 +152,49 @@ export async function chatLaden(s: Start): Promise<ChatStand | null> {
     const j: unknown = await r.json();
     if (!istObjekt(j) || typeof j.laeuft !== 'boolean' || !Array.isArray(j.verlauf)) return null;
     const verlauf = j.verlauf.map(eintragLesen).filter((e): e is ChatEintrag => e !== null);
-    return { laeuft: j.laeuft, verlauf };
+    return { laeuft: j.laeuft, verlauf, live: liveLesen(j.live), vorgemerkt: vorgemerktLesen(j.vorgemerkt) };
   } catch {
     return null;
   }
+}
+
+// Naechste Nachricht vormerken (ersetzt eine schon vorgemerkte). status 'offen': es lief
+// inzwischen nichts mehr, die Nachricht ist sofort als normaler Auftrag gestartet.
+export async function vormerken(
+  s: Start,
+  nachricht: string,
+  kontext: ChatKontext,
+): Promise<{ ok: true; id: string; status: 'wartet' | 'offen' } | Fehler> {
+  const r = await senden(s, s.chat_vormerkung_url, { nachricht, kontext }, 'Vormerken gerade nicht möglich', 'PUT');
+  if (!r.ok) return r;
+  const { id, status } = r.j;
+  if (typeof id !== 'string' || !id || (status !== 'wartet' && status !== 'offen')) return { ok: false, grund: UNVERSTAENDLICH };
+  return { ok: true, id, status };
+}
+
+export async function vormerkungLoeschen(s: Start): Promise<{ ok: true; geloescht: boolean } | Fehler> {
+  const r = await senden(s, s.chat_vormerkung_url, undefined, 'Löschen gerade nicht möglich', 'DELETE');
+  if (!r.ok) return r;
+  return { ok: true, geloescht: r.j.geloescht === true };
+}
+
+export async function vormerkungStarten(s: Start): Promise<{ ok: true; auftrag: string } | Fehler> {
+  const r = await senden(s, s.chat_vormerkung_starten_url, undefined, 'Starten gerade nicht möglich');
+  if (!r.ok) return r;
+  return typeof r.j.auftrag === 'string' && r.j.auftrag ? { ok: true, auftrag: r.j.auftrag } : { ok: false, grund: UNVERSTAENDLICH };
+}
+
+// Stopp des laufenden Auftrags. auftrag: nur diesen stoppen (laeuft inzwischen ein anderer,
+// passiert nichts - veraltet). abgeschlossen: sofort erledigt (Auftrag hatte noch nicht begonnen).
+export async function stoppen(
+  s: Start,
+  art: StoppArt,
+  auftrag?: string,
+): Promise<{ ok: true; abgeschlossen: boolean; veraltet: boolean } | Fehler> {
+  const body = auftrag === undefined ? { art } : { art, auftrag };
+  const r = await senden(s, s.chat_stopp_url, body, 'Stoppen gerade nicht möglich');
+  if (!r.ok) return r;
+  return { ok: true, abgeschlossen: r.j.abgeschlossen === true, veraltet: r.j.veraltet === true };
 }
 
 export async function rueckgaengig(s: Start, auftrag: string): Promise<{ ok: true; fassung: number } | Fehler> {
@@ -211,8 +277,14 @@ export function rueckgaengigFuer(verlauf: ChatEintrag[], basis: number): string 
   return null;
 }
 
+// Der offene oder laufende Chat-Auftrag (nur Chat, kein Export) - nur dann gibt es Vormerken und Stopp.
+export function laufenderChat(chat: Pick<ChatStand, 'laeuft' | 'verlauf'> | null): ChatEintrag | null {
+  if (!chat?.laeuft) return null;
+  return chat.verlauf.find((e) => e.art === 'chat' && LAEUFT.includes(e.status)) ?? null;
+}
+
 // Text der Sperre, solange ein Auftrag offen ist (null = frei).
-export function sperrText(chat: ChatStand | null): string | null {
+export function sperrText(chat: Pick<ChatStand, 'laeuft' | 'verlauf'> | null): string | null {
   if (!chat?.laeuft) return null;
   const exportLaeuft = chat.verlauf.some((e) => e.art === 'export' && LAEUFT.includes(e.status));
   return exportLaeuft ? 'Newsletter-Bilder werden gerechnet …' : 'Agent arbeitet …';

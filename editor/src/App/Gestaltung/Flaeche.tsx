@@ -25,7 +25,8 @@ function scrollPixel(e: WheelEvent): number {
   return e.deltaMode === 1 ? d * 16 : e.deltaMode === 2 ? d * 400 : d;
 }
 
-function EbenenInhalt({ e }: { e: Ebene }) {
+// Inhalt einer Ebene (auch fuer die Live-Vorschau im Canvas, FlaechenVorschau).
+export function EbenenInhalt({ e }: { e: Ebene }) {
   if (e.art === 'bild') {
     return <img src={quelleAnzeige(e.quelle)} alt="" draggable={false} style={{ display: 'block', width: e.breite, height: 'auto' }} />;
   }

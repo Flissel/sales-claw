@@ -1,16 +1,31 @@
 // Sperre waehrend der Agent (oder der Newsletter-Export am PC) arbeitet: Text der Sperre,
 // Schreib-Indikator (drei Punkte im 150-ms-Takt) und die Schicht ueber gesperrten Bereichen.
+// Im Chat-Lauf ist die Schicht durchsichtig: man sieht dem Agenten zu (Live-Ansicht), eine
+// ruhige Schritt-Zeile unten nennt, was er gerade tut.
 import React, { useEffect, useRef, useState } from 'react';
 
 import { Box } from '@mui/material';
 
-import { sperrText } from '../../chat';
+import { laufenderChat, sperrText } from '../../chat';
+import { schrittText } from '../../live';
 import { pultStore } from '../../pultZustand';
 import { FARBE, UI_SCHRIFT } from '../Gestaltung/gestaltungStil';
 
 // Text der Sperre, solange ein Auftrag offen ist (null = frei).
 export function useAgentArbeitet(): string | null {
   return pultStore((p) => sperrText(p.chat));
+}
+
+// Schritt-Zeile des laufenden Chat-Auftrags (null = kein Chat-Lauf, z. B. Export).
+export function useLiveZeile(): string | null {
+  return pultStore((p) => {
+    const lauf = laufenderChat(p.chat);
+    if (!lauf) return null;
+    if (p.chatGetrennt) return 'Verbindung …';
+    const live = p.chat?.live ?? null;
+    if (live?.stopp) return 'Wird gestoppt …';
+    return schrittText(live) ?? (lauf.status === 'offen' ? 'Wartet auf den Assistenten …' : 'Agent denkt nach …');
+  });
 }
 
 const UNSICHTBAR = {
@@ -29,7 +44,9 @@ const UNSICHTBAR = {
 // (leer) und werden erst gefuellt - so wird die Aenderung angesagt. Angesagt werden die Sperre
 // und nur die jeweils neueste Antwort, die in dieser Sitzung fertig geworden ist.
 export function Ansagen() {
-  const sperre = useAgentArbeitet();
+  const live = useLiveZeile();
+  const arbeitet = useAgentArbeitet();
+  const sperre = live ?? arbeitet;
   const letzter = pultStore((p) => {
     const v = p.chat?.verlauf ?? [];
     return v.length > 0 ? v[v.length - 1] : null;
@@ -83,7 +100,56 @@ export function Punkte({ farbe = FARBE.gedaempft }: { farbe?: string }) {
 }
 
 // Legt sich ueber gesperrte Bereiche (Canvas, Flaeche); lage = Position des Aufrufers.
+// Im Chat-Lauf durchsichtig mit der Schritt-Zeile unten, sonst abgedunkelt mit dem Text in der Mitte.
 export function SperrSchicht({ text, lage }: { text: string; lage: React.CSSProperties }) {
+  const live = useLiveZeile();
+  if (live !== null) {
+    return (
+      <Box aria-hidden="true" style={lage} sx={{ cursor: 'default' }}>
+        <Box
+          sx={{
+            position: 'absolute',
+            left: '50%',
+            bottom: 24,
+            transform: 'translateX(-50%)',
+            maxWidth: 'calc(100% - 48px)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 1.5,
+            px: 2,
+            height: 40,
+            borderRadius: '20px',
+            bgcolor: FARBE.panel,
+            border: `1px solid ${FARBE.linie}`,
+            color: FARBE.text,
+            fontFamily: UI_SCHRIFT,
+            fontSize: 13,
+            fontWeight: 500,
+            boxShadow: '0 8px 32px rgba(0,0,0,0.35)',
+            '@keyframes zeileAuf': { from: { opacity: 0, transform: 'translate(-50%, 8px)' }, to: { opacity: 1, transform: 'translate(-50%, 0)' } },
+            animation: 'zeileAuf 240ms cubic-bezier(0.2, 0, 0, 1)',
+            '@media (prefers-reduced-motion: reduce)': { animation: 'none' },
+          }}
+        >
+          <Punkte farbe={FARBE.akzent} />
+          <Box
+            key={live}
+            component="span"
+            sx={{
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              '@keyframes zeileText': { from: { opacity: 0 }, to: { opacity: 1 } },
+              animation: 'zeileText 200ms ease-out',
+              '@media (prefers-reduced-motion: reduce)': { animation: 'none' },
+            }}
+          >
+            {live}
+          </Box>
+        </Box>
+      </Box>
+    );
+  }
   return (
     <Box
       aria-hidden="true"

@@ -7,9 +7,10 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowBackRounded, ErrorOutlineRounded, IosShareRounded, RedoRounded, UndoRounded } from '@mui/icons-material';
 import { Box, Button, CircularProgress, IconButton, ThemeProvider, ToggleButton, ToggleButtonGroup, Tooltip, Typography } from '@mui/material';
 
-import { getDocument, setSelectedBlockId } from '../../documents/editor/EditorContext';
+import { getDocument, setSelectedBlockId, useDocument } from '../../documents/editor/EditorContext';
 import type { TEditorConfiguration } from '../../documents/editor/core';
 import { Format, FORMATE } from '../../gestaltung';
+import { gleich } from '../../live';
 import { fehlerText, gestaltungRechnen } from '../../pult';
 import { gestaltungSchliessen, newsletterSichern, pultStore } from '../../pultZustand';
 import { GestaltungSchema } from '../../schemata';
@@ -71,7 +72,7 @@ function Fenster({ id, onExportieren, chat }: GestaltungFensterProps & { id: str
   const ebenenRef = useInert<HTMLDivElement>(arbeitet !== null);
   const mitteRef = useInert<HTMLDivElement>(arbeitet !== null);
   const eigenschaftenRef = useInert<HTMLDivElement>(arbeitet !== null);
-  const [anfang] = useState(() => flaecheLesen(getDocument()[id], getDocument().root));
+  const [anfang, setAnfang] = useState(() => flaecheLesen(getDocument()[id], getDocument().root));
   const z = useGestaltung(anfang.g);
   const [alt, setAlt] = useState(anfang.alt);
   const [altFehlt, setAltFehlt] = useState(false);
@@ -106,6 +107,29 @@ function Fenster({ id, onExportieren, chat }: GestaltungFensterProps & { id: str
   }, []);
 
   useFensterTasten(z, versteckt);
+
+  // Live-Ansicht: aendert der Agent die offene Flaeche (Zwischenstand) oder kommt das echte Dokument
+  // zurueck, zeigt das Fenster diesen Stand - schreibgeschuetzt, die Sperre liegt darueber. Eigene,
+  // ungesicherte Aenderungen werden nie ueberschrieben; verschwindet die Flaeche, schliesst es.
+  const dokument = useDocument();
+  const block = dokument[id];
+  const gesehen = useRef(block);
+  const laeuftRef = useRef(laeuft);
+  laeuftRef.current = laeuft;
+  useEffect(() => {
+    // Jeder Zwischenstand ist ein neues Objekt - nur ein inhaltlich anderer Block zaehlt.
+    if (gleich(gesehen.current, block)) return;
+    gesehen.current = block;
+    if (geaendertRef.current || laeuftRef.current) return;
+    if (block?.type !== 'Image') {
+      gestaltungSchliessen();
+      return;
+    }
+    const neu = flaecheLesen(block, dokument.root);
+    setAnfang(neu);
+    setAlt(neu.alt);
+    setAltFehlt(false);
+  }, [block, dokument.root]);
 
   // Dem Chat melden: ungesicherte Aenderungen (sperrt Senden, haelt das Neuladen auf) und Auswahl.
   useEffect(() => {

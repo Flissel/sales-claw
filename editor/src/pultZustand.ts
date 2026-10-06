@@ -2,10 +2,25 @@ import { create } from 'zustand';
 
 import { ladeEntscheid, neuesBildMeldung } from './bildfeld';
 import type { Auftrag } from './bildfeld';
-import { ChatKontext, chatLaden, chatSenden, ChatStand, neueFassungNachChat, rueckgaengig } from './chat';
-import { getDocument, setDocument, setSelectedBlockId } from './documents/editor/EditorContext';
+import {
+  ChatEintrag,
+  ChatKontext,
+  chatLaden,
+  chatSenden,
+  ChatStand,
+  laufenderChat,
+  neueFassungNachChat,
+  rueckgaengig,
+  stoppen,
+  StoppArt,
+  vormerken,
+  vormerkungLoeschen,
+  vormerkungStarten,
+} from './chat';
+import { getDocument, resetDocument, setDocument, setSelectedBlockId } from './documents/editor/EditorContext';
 import type { TEditorConfiguration } from './documents/editor/core';
-import { Ergebnis, fehlerText, medienListe, speichern, standLaden, Start } from './pult';
+import { anzeigbar, zuletztGeaendert } from './live';
+import { Dokument, Ergebnis, fehlerText, medienListe, speichern, standLaden, Start, zurAnzeige } from './pult';
 
 // Zustand der Pult-Leiste: Startdaten, Betreff/Vorschautext, gemerkte Fassung
 // und ob seit dem letzten Speichern etwas geaendert wurde.
@@ -28,6 +43,13 @@ type TPult = {
   gestaltungAuswahl: string | null;
   // Chat mit dem Gestaltungs-Agenten (null = noch nicht geladen). laeuft sperrt das Dokument.
   chat: ChatStand | null;
+  // Letzte Chat-Abfrage gescheitert, waehrend der Agent arbeitet ("Verbindung …").
+  chatGetrennt: boolean;
+  // Der Canvas zeigt einen Zwischenstand des Agenten (nur Anzeige, nie gespeichert):
+  // echt = das Dokument davor (kommt zurueck, wenn der Lauf ohne neue Fassung endet),
+  // stand = der gezeigte Zwischenstand im gespeicherten Format, leuchtet = zuletzt geaenderter
+  // Block, puls = zaehlt jeden neuen Stand (startet das Aufleuchten neu).
+  zwischenstand: { echt: TEditorConfiguration; stand: Dokument; leuchtet: string | null; puls: number } | null;
 };
 
 export const pultStore = create<TPult>(() => ({
@@ -45,6 +67,8 @@ export const pultStore = create<TPult>(() => ({
   gestaltungGeaendert: false,
   gestaltungAuswahl: null,
   chat: null,
+  chatGetrennt: false,
+  zwischenstand: null,
 }));
 
 export function gestaltungOeffnen(id: string) {
@@ -66,8 +90,10 @@ export function pultStarten(start: Start) {
   });
 }
 
+// Ein angezeigter Zwischenstand (und das Zurueckholen des echten Dokuments) ist keine Aenderung.
 export function alsUngespeichert() {
-  if (!pultStore.getState().ungespeichert) pultStore.setState({ ungespeichert: true });
+  const { ungespeichert, zwischenstand } = pultStore.getState();
+  if (!ungespeichert && zwischenstand === null) pultStore.setState({ ungespeichert: true });
 }
 
 // Newsletter als neue Fassung speichern (Pult-Leiste und Gestaltungsfenster).
@@ -77,8 +103,10 @@ export async function newsletterSichern(
   alsKopie: boolean,
   aenderung?: (d: TEditorConfiguration) => TEditorConfiguration
 ): Promise<Ergebnis> {
-  const { start, betreff: b, vorschautext: v, basis: n } = pultStore.getState();
+  const { start, betreff: b, vorschautext: v, basis: n, zwischenstand } = pultStore.getState();
   if (!start) return { ok: false, konflikt: false, grund: 'Keine Verbindung zum Pult' };
+  // Im Canvas steht ein Zwischenstand des Agenten - der wird nie gespeichert.
+  if (zwischenstand) return { ok: false, konflikt: false, grund: 'Der Assistent arbeitet gerade' };
   const vorher = getDocument();
   const zuSichern = aenderung ? aenderung(vorher) : vorher;
   const e = await speichern(start, zuSichern, b, v, n, alsKopie);
@@ -135,10 +163,11 @@ export function meldungLesen() {
 // (Bildauftraege ueber standAbfragen, Agenten-Antworten und Rueckgaengig ueber den Chat).
 // Schutz gegen Neuladeschleifen: je Fassung hoechstens einmal automatisch (sessionStorage).
 // Ein offenes, unveraendertes Gestaltungsfenster geht dabei nicht verloren - es oeffnet sich wieder.
-export function neueFassungLaden(fassung: number, auftraege: Auftrag[] = []) {
+// Liefert true, wenn die Seite neu laedt.
+export function neueFassungLaden(fassung: number, auftraege: Auftrag[] = []): boolean {
   const { basis, ungespeichert, hinweisOffen, geladenUm, gestaltungOffen, gestaltungGeaendert } = pultStore.getState();
   const offen = ungespeichert || hinweisOffen || (gestaltungOffen !== null && gestaltungGeaendert);
-  if (ladeEntscheid(fassung, basis, offen, schonGeladenLesen()) !== 'laden') return;
+  if (ladeEntscheid(fassung, basis, offen, schonGeladenLesen()) !== 'laden') return false;
   const m = neuesBildMeldung(auftraege, geladenUm);
   try {
     sessionStorage.setItem(NEU_GELADEN, String(fassung));
@@ -148,6 +177,7 @@ export function neueFassungLaden(fassung: number, auftraege: Auftrag[] = []) {
     /* ohne Merkzettel wird nur neu geladen */
   }
   window.location.reload();
+  return true;
 }
 
 // Nach dem Neuladen: war ein Gestaltungsfenster offen, oeffnet es sich wieder.
@@ -176,9 +206,31 @@ export function standAbfragen() {
   if (!standTakt) standTakt = setInterval(holen, 15000);
 }
 
-// Chat-Stand: einmal beim Laden, danach alle 2 s, solange der Agent arbeitet.
+// Zwischenstand des Agenten im Canvas zeigen - nur Anzeige: das echte Dokument liegt beiseite,
+// alsUngespeichert und newsletterSichern sehen den Zwischenstand und tun nichts.
+function zwischenstandZeigen(stand: Dokument) {
+  const z = pultStore.getState().zwischenstand;
+  if (z && JSON.stringify(z.stand) === JSON.stringify(stand)) return;
+  if (!anzeigbar(stand)) return;
+  const anzeige = zurAnzeige(stand) as TEditorConfiguration;
+  const vorher = getDocument();
+  pultStore.setState({
+    zwischenstand: { echt: z?.echt ?? vorher, stand, leuchtet: zuletztGeaendert(vorher, anzeige), puls: (z?.puls ?? 0) + 1 },
+  });
+  resetDocument(anzeige);
+}
+
+// Lauf ohne (geladene) neue Fassung zu Ende: das echte Dokument kommt zurueck, wie es war.
+function zwischenstandBeenden() {
+  const z = pultStore.getState().zwischenstand;
+  if (!z) return;
+  resetDocument(z.echt);
+  pultStore.setState({ zwischenstand: null });
+}
+
+// Chat-Stand: einmal beim Laden, danach jede Sekunde, solange der Agent arbeitet (Live-Ansicht).
 // Jeder Aufruf beginnt eine neue Runde; aeltere Runden planen nichts mehr ein.
-export const CHAT_TAKT_MS = 2000;
+export const CHAT_TAKT_MS = 1000;
 let chatRunde = 0;
 let chatTakt: ReturnType<typeof setTimeout> | null = null;
 export function chatAbfragen() {
@@ -192,9 +244,16 @@ export function chatAbfragen() {
     if (runde !== chatRunde) return;
     if (neu) {
       const vorher = pultStore.getState().chat?.verlauf ?? [];
-      pultStore.setState({ chat: neu });
+      pultStore.setState({ chat: neu, chatGetrennt: false });
+      // Erst die neue Fassung (auch wenn schon die vorgemerkte Nachricht laeuft) - die Seite laedt neu.
       const f = neueFassungNachChat(vorher, neu.verlauf);
-      if (f !== null) neueFassungLaden(f);
+      const laedt = f !== null && neueFassungLaden(f);
+      if (!laedt) {
+        if (neu.live?.zwischenstand) zwischenstandZeigen(neu.live.zwischenstand);
+        else if (!neu.live) zwischenstandBeenden();
+      }
+    } else if (pultStore.getState().chat?.laeuft) {
+      pultStore.setState({ chatGetrennt: true });
     }
     // Netzfehler waehrend der Agent arbeitet: weiter fragen, die Sperre bleibt sichtbar.
     if (pultStore.getState().chat?.laeuft) chatTakt = setTimeout(holen, CHAT_TAKT_MS);
@@ -202,43 +261,112 @@ export function chatAbfragen() {
   void holen();
 }
 
-export const HINWEIS_OFFEN = 'Im Bildfeld steht noch ein Hinweis – erst beauftragen oder leeren';
-
-// Nachricht an den Agenten. Ungesicherte Aenderungen am Newsletter werden vorher gespeichert -
-// der Agent arbeitet mit der gespeicherten Fassung. Liefert null oder den Grund fuer den Betreiber.
-export async function chatAbschicken(nachricht: string, kontext: ChatKontext): Promise<string | null> {
-  const { start, ungespeichert, hinweisOffen, chat } = pultStore.getState();
-  if (!start) return 'Keine Verbindung zum Pult';
-  if (chat?.laeuft) return 'Der Assistent arbeitet gerade';
-  // Wie beim Neuladen: ein offener Bildhinweis hielte es auf - die Agenten-Fassung bliebe ungeladen.
-  if (hinweisOffen) return HINWEIS_OFFEN;
-  if (ungespeichert) {
-    const e = await newsletterSichern(false);
-    if (!e.ok) return fehlerText(e.grund);
-  }
-  const r = await chatSenden(start, nachricht, kontext);
-  if (!r.ok) {
-    // Z. B. arbeitet der Assistent schon fuer einen anderen Tab: Stand holen, damit die Sperre erscheint.
-    chatAbfragen();
-    return r.grund;
-  }
-  // Vorlaeufiger Eintrag: sperrt sofort und laesst neueFassungNachChat den Uebergang erkennen.
-  const eintrag = {
-    id: r.auftrag,
-    art: 'chat' as const,
+// Vorlaeufiger Eintrag fuer einen eben gestarteten Auftrag: sperrt sofort und laesst
+// neueFassungNachChat den Uebergang erkennen; danach wird abgefragt.
+function auftragEintragen(id: string, nachricht: string, rest: Partial<ChatStand> = {}) {
+  const eintrag: ChatEintrag = {
+    id,
+    art: 'chat',
     nachricht,
     antwort: '',
-    status: 'offen' as const,
+    status: 'offen',
     hinweise: [],
     ergebnis: {},
     fassung_vorher: pultStore.getState().basis,
     fassung_nachher: null,
     erstellt_am: new Date().toISOString(),
   };
-  const verlauf = (pultStore.getState().chat?.verlauf ?? []).filter((e) => e.id !== r.auftrag);
-  pultStore.setState({ chat: { laeuft: true, verlauf: [...verlauf, eintrag] } });
+  const alt = pultStore.getState().chat;
+  const verlauf = (alt?.verlauf ?? []).filter((e) => e.id !== id);
+  pultStore.setState({ chat: { live: null, vorgemerkt: null, ...alt, ...rest, laeuft: true, verlauf: [...verlauf, eintrag] } });
   chatAbfragen();
+}
+
+export const HINWEIS_OFFEN = 'Im Bildfeld steht noch ein Hinweis – erst beauftragen oder leeren';
+
+// Nachricht an den Agenten. Ungesicherte Aenderungen am Newsletter werden vorher gespeichert -
+// der Agent arbeitet mit der gespeicherten Fassung. Liefert null oder den Grund fuer den Betreiber.
+export async function chatAbschicken(nachricht: string, kontext: ChatKontext): Promise<string | null> {
+  const { start, chat } = pultStore.getState();
+  if (!start) return 'Keine Verbindung zum Pult';
+  if (chat?.laeuft) return 'Der Assistent arbeitet gerade';
+  const grund = await vorDemStart();
+  if (grund) return grund;
+  const r = await chatSenden(start, nachricht, kontext);
+  if (!r.ok) {
+    // Z. B. arbeitet der Assistent schon fuer einen anderen Tab: Stand holen, damit die Sperre erscheint.
+    chatAbfragen();
+    return r.grund;
+  }
+  auftragEintragen(r.auftrag, nachricht);
   return null;
+}
+
+// Vor jedem Start eines Auftrags: ein offener Bildhinweis hielte das Neuladen auf (die
+// Agenten-Fassung bliebe ungeladen); Ungesichertes wird gespeichert - der Agent arbeitet mit
+// der gespeicherten Fassung. Liefert null oder den Grund fuer den Betreiber.
+async function vorDemStart(): Promise<string | null> {
+  const { ungespeichert, hinweisOffen } = pultStore.getState();
+  if (hinweisOffen) return HINWEIS_OFFEN;
+  if (ungespeichert) {
+    const e = await newsletterSichern(false);
+    if (!e.ok) return fehlerText(e.grund);
+  }
+  return null;
+}
+
+// Waehrend eines Chat-Laufs: die naechste Nachricht vormerken (ersetzt eine vorgemerkte).
+// Laeuft nichts (mehr), geht sie wie gewohnt als Auftrag raus. Liefert null oder den Grund.
+export async function chatVormerken(nachricht: string, kontext: ChatKontext): Promise<string | null> {
+  const { start, chat } = pultStore.getState();
+  if (!start) return 'Keine Verbindung zum Pult';
+  if (!laufenderChat(chat)) return chatAbschicken(nachricht, kontext);
+  const r = await vormerken(start, nachricht, kontext);
+  if (!r.ok) return r.grund;
+  if (r.status === 'offen') {
+    // Der Lauf war inzwischen zu Ende: die Nachricht ist schon als normaler Auftrag gestartet.
+    auftragEintragen(r.id, nachricht, { vorgemerkt: null });
+    return null;
+  }
+  const jetzt = pultStore.getState().chat;
+  if (jetzt) pultStore.setState({ chat: { ...jetzt, vorgemerkt: { id: r.id, nachricht } } });
+  return null;
+}
+
+export async function vormerkungLoeschenAuftrag(): Promise<string | null> {
+  const { start } = pultStore.getState();
+  if (!start) return 'Keine Verbindung zum Pult';
+  const r = await vormerkungLoeschen(start);
+  if (!r.ok) return r.grund;
+  const jetzt = pultStore.getState().chat;
+  if (jetzt) pultStore.setState({ chat: { ...jetzt, vorgemerkt: null } });
+  return null;
+}
+
+// Nach Fehler oder Stopp bleibt die Vormerkung stehen; "Starten" schickt sie von Hand los.
+export async function vormerkungStartenAuftrag(): Promise<string | null> {
+  const { start, chat } = pultStore.getState();
+  if (!start) return 'Keine Verbindung zum Pult';
+  if (chat?.laeuft) return 'Der Assistent arbeitet gerade';
+  const nachricht = chat?.vorgemerkt?.nachricht ?? '';
+  const grund = await vorDemStart();
+  if (grund) return grund;
+  const r = await vormerkungStarten(start);
+  if (!r.ok) {
+    chatAbfragen();
+    return r.grund;
+  }
+  auftragEintragen(r.auftrag, nachricht, { vorgemerkt: null });
+  return null;
+}
+
+// Stopp des laufenden Chat-Auftrags; danach zeigt die Abfrage "wird gestoppt …" bis zum Abschluss.
+export async function chatStoppen(art: StoppArt): Promise<string | null> {
+  const { start, chat } = pultStore.getState();
+  if (!start) return 'Keine Verbindung zum Pult';
+  const r = await stoppen(start, art, laufenderChat(chat)?.id);
+  chatAbfragen();
+  return r.ok ? null : r.grund;
 }
 
 // Rueckgaengig legt die Fassung vor der Agenten-Antwort als neue Fassung an; danach neu laden.
