@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FakeXhr } from './__fixtures__/fakeXhr';
 import type { ChatEintrag } from './chat';
 import type { AnhangChip } from './chatKontext';
-import { resetDocument } from './documents/editor/EditorContext';
+import { onDocumentChange, resetDocument } from './documents/editor/EditorContext';
 import type { TEditorConfiguration } from './documents/editor/core';
 import type { Start } from './pult';
 import {
@@ -11,8 +11,10 @@ import {
   anhangHinzu,
   auswahlEntfernen,
   blockAlsKontext,
+  chatAbfragen,
   chatAbschicken,
   chatVormerken,
+  chipsAbgleichen,
   ebeneAlsKontext,
   pultStore,
   vorgemerkteChipsZurueck,
@@ -28,10 +30,11 @@ const START = {
 } as Start;
 
 const DOK = {
-  root: { type: 'EmailLayout', data: { childrenIds: ['titel', 'bild'] } },
+  root: { type: 'EmailLayout', data: { childrenIds: ['titel', 'bild', 'fl'] } },
   titel: { type: 'Heading', data: { props: { text: 'Goldener Herbst' } } },
   bild: { type: 'Image', data: { props: { url: '/medien/datei/held.png' } } },
-} as TEditorConfiguration;
+  fl: { type: 'Image', data: { props: { url: '/medien/datei/fl.png', gestaltung: { ebenen: [{ id: 'e-1', art: 'text', text: 'Hallo' }] } } } },
+} as unknown as TEditorConfiguration;
 
 function eintrag(teil: Partial<ChatEintrag>): ChatEintrag {
   return {
@@ -80,6 +83,8 @@ beforeEach(() => {
     chatAuswahl: [],
     chatAnhaenge: [],
     vorgemerktChips: null,
+    chatHinweis: null,
+    zwischenstand: null,
   });
 });
 
@@ -235,5 +240,133 @@ describe('Anhaenge hochladen', () => {
     anhangEntfernen(laufend.id);
     expect(x.abgebrochen).toBe(true);
     expect(pultStore.getState().chatAnhaenge.map((a) => a.id)).not.toContain(laufend.id);
+  });
+});
+
+describe('Chips folgen dem aktuellen Dokument', () => {
+  const ohne = (id: string) => {
+    const d = { ...DOK } as Record<string, unknown>;
+    delete d[id];
+    d.root = { type: 'EmailLayout', data: { childrenIds: Object.keys(d).filter((k) => k !== 'root') } };
+    return d as TEditorConfiguration;
+  };
+  const ohneEbene = (d: TEditorConfiguration = DOK) =>
+    ({ ...d, fl: { type: 'Image', data: { props: { url: '/medien/datei/fl.png', gestaltung: { ebenen: [] } } } } }) as unknown as TEditorConfiguration;
+
+  it('Senden laesst geloeschte Bloecke und Ebenen weg und sagt es', async () => {
+    blockAlsKontext('titel');
+    blockAlsKontext('bild');
+    ebeneAlsKontext('fl', { id: 'e-1', art: 'text', text: 'Hallo' } as never);
+    // Inzwischen (Agent, Rueckgaengig) ohne "bild" und ohne die Ebene - hier ohne Abgleich-Abo.
+    resetDocument(ohneEbene(ohne('bild')));
+    const f = netz({ '/c': [200, { auftrag: 'a9' }], '/c.json': [200, { laeuft: true, verlauf: [eintrag({ id: 'a9' })] }] });
+    expect(await chatAbschicken('mach das kürzer', { fenster: 'newsletter', auswahl: null })).toBeNull();
+    expect(body(f, '/c').kontext.auswahl).toEqual([{ art: 'block', id: 'titel', kurz: 'Überschrift · Goldener Herbst' }]);
+    expect(pultStore.getState().chatHinweis).toBe('2 markierte Elemente gibt es nicht mehr – entfernt');
+  });
+
+  it('nur noch entfernte Chips: Kontext wie ohne Chips', async () => {
+    blockAlsKontext('bild');
+    resetDocument(ohne('bild'));
+    const f = netz({ '/c': [200, { auftrag: 'a9' }], '/c.json': [200, { laeuft: true, verlauf: [eintrag({ id: 'a9' })] }] });
+    expect(await chatAbschicken('x', { fenster: 'newsletter', auswahl: 'titel' })).toBeNull();
+    expect(body(f, '/c').kontext).toEqual({ fenster: 'newsletter', auswahl: 'titel' });
+    expect(pultStore.getState().chatHinweis).toBe('1 markiertes Element gibt es nicht mehr – entfernt');
+  });
+
+  it('Vormerken ebenso', async () => {
+    pultStore.setState({ chat: { laeuft: true, verlauf: [eintrag({})], live: null, vorgemerkt: null } });
+    blockAlsKontext('titel');
+    blockAlsKontext('bild');
+    resetDocument(ohne('bild'));
+    const f = netz({ '/v': [200, { id: 'v-1', status: 'wartet' }] });
+    expect(await chatVormerken('danach', { fenster: 'newsletter', auswahl: null })).toBeNull();
+    expect(body(f, '/v').kontext.auswahl.map((a: { id: string }) => a.id)).toEqual(['titel']);
+    expect(pultStore.getState().vorgemerktChips?.auswahl.map((a) => a.id)).toEqual(['titel']);
+  });
+
+  it('beim Ersetzen des Dokuments verschwinden die Chips sofort, mit Hinweis', () => {
+    const ab = onDocumentChange(chipsAbgleichen);
+    try {
+      blockAlsKontext('titel');
+      blockAlsKontext('bild');
+      ebeneAlsKontext('fl', { id: 'e-1', art: 'text', text: 'Hallo' } as never);
+      resetDocument(ohneEbene());
+      expect(pultStore.getState().chatAuswahl.map((c) => c.id)).toEqual(['titel', 'bild']);
+      expect(pultStore.getState().chatHinweis).toBe('1 markiertes Element gibt es nicht mehr – entfernt');
+      resetDocument(ohne('bild'));
+      expect(pultStore.getState().chatAuswahl.map((c) => c.id)).toEqual(['titel']);
+    } finally {
+      ab();
+    }
+  });
+
+  it('nicht waehrend ein Zwischenstand gezeigt wird - das echte Dokument kommt zurueck', () => {
+    const ab = onDocumentChange(chipsAbgleichen);
+    try {
+      blockAlsKontext('bild');
+      pultStore.setState({ zwischenstand: { echt: DOK, stand: {}, leuchtet: null, puls: 1 } });
+      resetDocument(ohne('bild'));
+      expect(pultStore.getState().chatAuswahl).toHaveLength(1);
+    } finally {
+      ab();
+    }
+  });
+
+  it('die offene Flaeche wird beim Abgleich nicht geprueft - das Fenster haelt ungesicherte Ebenen', () => {
+    const ab = onDocumentChange(chipsAbgleichen);
+    try {
+      pultStore.setState({ gestaltungOffen: 'fl' });
+      ebeneAlsKontext('fl', { id: 'e-neu', art: 'text', text: 'Neu' } as never);
+      resetDocument({ ...DOK });
+      expect(pultStore.getState().chatAuswahl.map((c) => c.id)).toEqual(['e-neu']);
+    } finally {
+      ab();
+    }
+  });
+});
+
+describe('Hinweise am Eingabefeld', () => {
+  it('abgelehnter Chip nennt den Grund, ein angenommener nimmt ihn weg', () => {
+    expect(blockAlsKontext('gibtsnicht')).toBe('Diesen Block gibt es nicht mehr');
+    expect(pultStore.getState().chatHinweis).toBe('Diesen Block gibt es nicht mehr');
+    pultStore.setState({ chatAuswahl: Array.from({ length: 8 }, (_, i) => ({ art: 'block' as const, id: 'b' + i, kurz: 'k' })) });
+    blockAlsKontext('titel');
+    expect(pultStore.getState().chatHinweis).toContain('Höchstens 8');
+    pultStore.setState({ chatAuswahl: [] });
+    blockAlsKontext('titel');
+    expect(pultStore.getState().chatHinweis).toBeNull();
+  });
+});
+
+describe('Vormerkung verbraucht', () => {
+  const merk = { id: 'v-1', auswahl: [{ art: 'block' as const, id: 'titel', kurz: 'k' }], anhaenge: [] };
+
+  it('die vorgemerkte Nachricht startet - ihre id im Verlauf: vorgemerktChips weg', async () => {
+    pultStore.setState({ chat: { laeuft: true, verlauf: [eintrag({})], live: null, vorgemerkt: { id: 'v-1', nachricht: 'n' } }, vorgemerktChips: merk });
+    netz({ '/c.json': [200, { laeuft: true, verlauf: [eintrag({ status: 'fertig' }), eintrag({ id: 'v-1', status: 'offen' })], vorgemerkt: null }] });
+    chatAbfragen();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pultStore.getState().vorgemerktChips).toBeNull();
+    vorgemerkteChipsZurueck();
+    expect(pultStore.getState().chatAuswahl).toEqual([]);
+  });
+
+  it('verspaetete Abfrage ohne Vormerkung: bleibt; ersetzt durch eine andere: weg', async () => {
+    pultStore.setState({ chat: { laeuft: true, verlauf: [eintrag({})], live: null, vorgemerkt: { id: 'v-1', nachricht: 'n' } }, vorgemerktChips: merk });
+    netz({ '/c.json': [200, { laeuft: true, verlauf: [eintrag({})], vorgemerkt: null }] });
+    chatAbfragen();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pultStore.getState().vorgemerktChips?.id).toBe('v-1');
+    netz({ '/c.json': [200, { laeuft: true, verlauf: [eintrag({})], vorgemerkt: { id: 'v-2', nachricht: 'anders' } }] });
+    chatAbfragen();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pultStore.getState().vorgemerktChips).toBeNull();
+  });
+
+  it('Bearbeiten holt nur zurueck, solange genau diese Vormerkung dasteht', () => {
+    pultStore.setState({ chat: { laeuft: true, verlauf: [eintrag({})], live: null, vorgemerkt: null }, vorgemerktChips: merk });
+    vorgemerkteChipsZurueck();
+    expect(pultStore.getState().chatAuswahl).toEqual([]);
   });
 });

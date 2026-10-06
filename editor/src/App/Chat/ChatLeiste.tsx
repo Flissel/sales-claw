@@ -14,6 +14,7 @@ import {
   AutoAwesomeRounded,
   ErrorOutlineRounded,
   ExpandMoreRounded,
+  InfoOutlined,
   IosShareRounded,
   PhotoLibraryOutlined,
   ScheduleRounded,
@@ -23,10 +24,10 @@ import {
 import { Box, Button, ButtonBase, CircularProgress, IconButton, InputBase, ThemeProvider, Tooltip } from '@mui/material';
 
 import { ChatEintrag, ChatKontext, ExportAuswahl, exportVorschlag, laufenderChat, rueckgaengigFuer, stoppDialogOffen, Vorgemerkt } from '../../chat';
-import { DATEI_ANNAHME, sendenErlaubt } from '../../chatKontext';
+import { sendenErlaubt } from '../../chatKontext';
 import {
-  anhangHinzu,
   chatAbschicken,
+  chatHinweisWeg,
   chatRueckgaengig,
   chatVormerken,
   HINWEIS_OFFEN,
@@ -37,7 +38,8 @@ import {
 } from '../../pultZustand';
 import { FARBE, FOKUS, gestaltungThema, uebergang, UI_SCHRIFT } from '../Gestaltung/gestaltungStil';
 
-import KontextChips, { vorschauErzeugen } from './KontextChips';
+import { useAnhangAblage } from './AnhangAblage';
+import KontextChips from './KontextChips';
 import { Punkte, useAgentArbeitet, useLiveZeile } from './Sperre';
 import StoppDialog from './StoppDialog';
 
@@ -349,9 +351,7 @@ export default function ChatLeiste({ kontext, sperre = null, hoehe, vorschlaege 
   const [rueckLaeuft, setRueckLaeuft] = useState<string | null>(null);
   const [rueckFehler, setRueckFehler] = useState<{ id: string; grund: string } | null>(null);
   const liste = useRef<HTMLDivElement>(null);
-  const dateiWahl = useRef<HTMLInputElement>(null);
-  // Zaehlt dragenter/-leave (Kindelemente feuern beides); > 0 = Dateien schweben ueber dem Chat.
-  const [ziehen, setZiehen] = useState(0);
+  const hinweis = pultStore((p) => p.chatHinweis);
   const hochladenLaeuft = pultStore((p) => !sendenErlaubt(p.chatAnhaenge));
   const verlauf = chat?.verlauf ?? [];
   const letzter = verlauf[verlauf.length - 1];
@@ -367,19 +367,7 @@ export default function ChatLeiste({ kontext, sperre = null, hoehe, vorschlaege 
     sperre ?? (arbeitet && !chatLauf ? 'Der Assistent arbeitet gerade' : hochladenLaeuft ? 'Erst warten, bis die Anhänge hochgeladen sind' : null);
   const kannSenden = text.trim() !== '' && sendSperre === null && !sendet;
 
-  // Bueroklammer, Ziehen und Einfuegen: jede Datei sofort als Chip, der Upload laeuft im Hintergrund.
-  const dateienAnhaengen = (dateien: File[]) => {
-    let grund: string | null = null;
-    for (const d of dateien) {
-      const vorher = new Set(pultStore.getState().chatAnhaenge.map((a) => a.id));
-      grund = anhangHinzu(d) ?? grund;
-      const neu = pultStore.getState().chatAnhaenge.find((a) => !vorher.has(a.id));
-      if (neu && neu.art === 'bild' && neu.status !== 'fehler') void vorschauErzeugen(neu.id, d);
-    }
-    setFehler(grund);
-    setOffen(true);
-  };
-  const mitDateien = (ev: React.DragEvent) => Array.from(ev.dataTransfer.types).includes('Files');
+  const { ablage, ablageFlaeche, bueroklammer, beimEinfuegen } = useAnhangAblage({ onGrund: setFehler, onAngehaengt: () => setOffen(true) });
 
   const senden = async () => {
     if (!kannSenden) return;
@@ -425,56 +413,10 @@ export default function ChatLeiste({ kontext, sperre = null, hoehe, vorschlaege 
   return (
     <ThemeProvider theme={thema}>
       <Box
-        onDragEnter={(ev) => {
-          if (!mitDateien(ev)) return;
-          ev.preventDefault();
-          setZiehen((n) => n + 1);
-        }}
-        onDragOver={(ev) => {
-          if (!mitDateien(ev)) return;
-          ev.preventDefault();
-          ev.dataTransfer.dropEffect = 'copy';
-        }}
-        onDragLeave={(ev) => {
-          if (mitDateien(ev)) setZiehen((n) => Math.max(0, n - 1));
-        }}
-        onDrop={(ev) => {
-          if (!mitDateien(ev)) return;
-          ev.preventDefault();
-          setZiehen(0);
-          dateienAnhaengen(Array.from(ev.dataTransfer.files));
-        }}
+        {...ablage}
         sx={{ position: 'relative', display: 'flex', flexDirection: 'column', bgcolor: FARBE.panel, color: FARBE.text, fontFamily: UI_SCHRIFT, minHeight: 0 }}
       >
-        {ziehen > 0 && (
-          <Box
-            aria-hidden="true"
-            sx={{
-              position: 'absolute',
-              inset: 6,
-              zIndex: 2,
-              pointerEvents: 'none',
-              display: 'grid',
-              placeItems: 'center',
-              textAlign: 'center',
-              borderRadius: '10px',
-              border: `1.5px dashed ${FARBE.akzent}`,
-              bgcolor: 'rgba(15,15,17,0.86)',
-              color: FARBE.text,
-              fontSize: 13,
-              '@keyframes ablageAuf': { from: { opacity: 0 }, to: { opacity: 1 } },
-              animation: 'ablageAuf 120ms ease-out',
-            }}
-          >
-            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.75 }}>
-              <AttachFileRounded sx={{ fontSize: 20, color: FARBE.akzent, transform: 'rotate(45deg)' }} />
-              Hier ablegen – Bilder oder Dokumente
-              <Box component="span" sx={{ fontSize: 11, color: FARBE.gedaempft }}>
-                JPG, PNG, WebP · PDF, DOCX, TXT, MD · je bis 15 MB
-              </Box>
-            </Box>
-          </Box>
-        )}
+        {ablageFlaeche}
         <Box sx={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
         <ButtonBase
           onClick={() => setOffen((o) => !o)}
@@ -535,10 +477,11 @@ export default function ChatLeiste({ kontext, sperre = null, hoehe, vorschlaege 
             </Box>
 
             <Box sx={{ flexShrink: 0, p: 1, borderTop: `1px solid ${FARBE.linie}` }}>
-              {(fehler || sperre) && (
-                <Box sx={{ display: 'flex', gap: 0.75, px: 0.5, pb: 1, fontSize: 12, lineHeight: 1.4, color: fehler ? FARBE.fehler : FARBE.gedaempft }}>
+              {(fehler || hinweis || sperre) && (
+                <Box role={fehler || hinweis ? 'status' : undefined} sx={{ display: 'flex', gap: 0.75, px: 0.5, pb: 1, fontSize: 12, lineHeight: 1.4, color: fehler ? FARBE.fehler : FARBE.gedaempft }}>
                   {fehler && <ErrorOutlineRounded sx={{ fontSize: 14, mt: '1px' }} />}
-                  <span>{fehler ?? sperre}</span>
+                  {!fehler && hinweis && <InfoOutlined sx={{ fontSize: 14, mt: '1px', color: FARBE.warnung }} />}
+                  <span>{fehler ?? hinweis ?? sperre}</span>
                 </Box>
               )}
               <KontextChips />
@@ -557,37 +500,18 @@ export default function ChatLeiste({ kontext, sperre = null, hoehe, vorschlaege 
                   '&:focus-within': { borderColor: FARBE.akzent },
                 }}
               >
-                <Tooltip title="Datei anhängen – Bild oder Dokument (auch Ziehen oder Einfügen)">
-                  <IconButton aria-label="Datei anhängen" onClick={() => dateiWahl.current?.click()} sx={{ width: 28, height: 28, mb: '2px', ml: -1, flexShrink: 0 }}>
-                    <AttachFileRounded sx={{ fontSize: 16, transform: 'rotate(45deg)' }} />
-                  </IconButton>
-                </Tooltip>
-                <input
-                  ref={dateiWahl}
-                  type="file"
-                  multiple
-                  accept={DATEI_ANNAHME}
-                  hidden
-                  onChange={(ev) => {
-                    const dateien = Array.from(ev.target.files ?? []);
-                    ev.target.value = '';
-                    dateienAnhaengen(dateien);
-                  }}
-                />
+                {bueroklammer}
                 <InputBase
                   multiline
                   maxRows={6}
                   value={text}
                   inputRef={eingabe}
                   placeholder={chatLauf ? (vorgemerkt ? 'Vormerkung ersetzen …' : 'Nächste Nachricht vormerken …') : arbeitet ? 'Der Assistent arbeitet …' : 'Nachricht an den Assistenten'}
-                  onChange={(ev) => setText(ev.target.value.slice(0, NACHRICHT_MAX))}
-                  onPaste={(ev) => {
-                    // Bilder aus der Zwischenablage (heissen oft nur "image.png" - der Server macht den Namen eindeutig).
-                    const bilder = Array.from(ev.clipboardData.files).filter((f) => f.type.startsWith('image/'));
-                    if (bilder.length === 0) return;
-                    ev.preventDefault();
-                    dateienAnhaengen(bilder);
+                  onChange={(ev) => {
+                    setText(ev.target.value.slice(0, NACHRICHT_MAX));
+                    chatHinweisWeg();
                   }}
+                  onPaste={beimEinfuegen}
                   onKeyDown={(ev) => {
                     if (ev.key === 'Enter' && !ev.shiftKey && !ev.nativeEvent.isComposing) {
                       ev.preventDefault();

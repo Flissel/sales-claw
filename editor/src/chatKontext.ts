@@ -133,6 +133,49 @@ export function kontextBauen(auswahl: AuswahlChip[], anhaenge: AnhangChip[]): { 
   };
 }
 
+// Gibt es das markierte Element im Dokument noch? Bloecke: id vorhanden (nie root). Ebenen: die
+// Flaeche ist noch eine Gestaltungsflaeche mit dieser Ebene. Die Flaeche `offen` wird nicht geprueft -
+// ihr Fenster haelt ungesicherte Ebenen, die im Dokument noch fehlen.
+function chipGibtEs(c: AuswahlChip, doc: Record<string, unknown>, offen: string | null): boolean {
+  if (c.art === 'block') return c.id !== 'root' && istObjekt(doc[c.id]);
+  if (c.flaeche === undefined) return false;
+  if (c.flaeche === offen) return true;
+  const block = doc[c.flaeche];
+  const daten = istObjekt(block) && istObjekt(block.data) ? block.data : null;
+  const props = daten && istObjekt(daten.props) ? daten.props : null;
+  const g = props && istObjekt(props.gestaltung) ? props.gestaltung : null;
+  return g !== null && Array.isArray(g.ebenen) && g.ebenen.some((e) => istObjekt(e) && e.id === c.id);
+}
+
+// Chips gegen das aktuelle Dokument; behalten = dieselbe Liste, wenn nichts wegfaellt.
+export function chipsBereinigen(chips: AuswahlChip[], doc: Record<string, unknown>, offen: string | null): { behalten: AuswahlChip[]; entfernt: number } {
+  const behalten = chips.filter((c) => chipGibtEs(c, doc, offen));
+  return behalten.length === chips.length ? { behalten: chips, entfernt: 0 } : { behalten, entfernt: chips.length - behalten.length };
+}
+
+export function entferntHinweis(n: number): string {
+  return n === 1 ? '1 markiertes Element gibt es nicht mehr – entfernt' : `${n} markierte Elemente gibt es nicht mehr – entfernt`;
+}
+
+// Groesse in Byte, wie das Pult sie misst: json.dumps(kontext, ensure_ascii=False) mit den
+// Python-Trennern ", " und ": " (JSON.stringify schreibt sie ohne Leerzeichen).
+export function kontextBytes(v: unknown): number {
+  const text = (x: unknown): string => {
+    if (Array.isArray(x)) return '[' + x.map(text).join(', ') + ']';
+    if (istObjekt(x))
+      return (
+        '{' +
+        Object.entries(x)
+          .filter(([, w]) => w !== undefined)
+          .map(([k, w]) => JSON.stringify(k) + ': ' + text(w))
+          .join(', ') +
+        '}'
+      );
+    return JSON.stringify(x) ?? 'null';
+  };
+  return new TextEncoder().encode(text(v)).length;
+}
+
 // Senden erst, wenn kein Upload mehr laeuft.
 export function sendenErlaubt(anhaenge: AnhangChip[]): boolean {
   return !anhaenge.some((a) => a.status === 'laedt');

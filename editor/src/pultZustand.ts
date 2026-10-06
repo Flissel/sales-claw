@@ -18,7 +18,20 @@ import {
   vormerkungLoeschen,
   vormerkungStarten,
 } from './chat';
-import { AnhangChip, AuswahlChip, chipHinzu, dateiPruefen, kontextBauen, kurzText, MAX_ANHAENGE, MAX_AUSWAHL, sendenErlaubt } from './chatKontext';
+import {
+  AnhangChip,
+  AuswahlChip,
+  chipHinzu,
+  chipsBereinigen,
+  dateiPruefen,
+  entferntHinweis,
+  kontextBauen,
+  kontextBytes,
+  kurzText,
+  MAX_ANHAENGE,
+  MAX_AUSWAHL,
+  sendenErlaubt,
+} from './chatKontext';
 import { getDocument, resetDocument, setDocument, setSelectedBlockId } from './documents/editor/EditorContext';
 import type { Ebene } from './gestaltung';
 import type { TEditorConfiguration } from './documents/editor/core';
@@ -59,6 +72,8 @@ type TPult = {
   chatAuswahl: AuswahlChip[];
   chatAnhaenge: AnhangChip[];
   vorgemerktChips: { id: string; auswahl: AuswahlChip[]; anhaenge: AnhangChip[] } | null;
+  // Kurzer Hinweis am Eingabefeld (Chip abgelehnt, markierte Elemente weggefallen); null = keiner.
+  chatHinweis: string | null;
 };
 
 export const pultStore = create<TPult>(() => ({
@@ -81,6 +96,7 @@ export const pultStore = create<TPult>(() => ({
   chatAuswahl: [],
   chatAnhaenge: [],
   vorgemerktChips: null,
+  chatHinweis: null,
 }));
 
 export function gestaltungOeffnen(id: string) {
@@ -238,6 +254,7 @@ function zwischenstandBeenden() {
   if (!z) return;
   resetDocument(z.echt);
   pultStore.setState({ zwischenstand: null });
+  chipsAbgleichen();
 }
 
 // Chat-Stand: einmal beim Laden, danach jede Sekunde, solange ein Chat-Auftrag laeuft
@@ -259,6 +276,7 @@ export function chatAbfragen() {
     if (neu) {
       const vorher = pultStore.getState().chat?.verlauf ?? [];
       pultStore.setState({ chat: neu, chatGetrennt: false });
+      vorgemerkteChipsPruefen(neu);
       // Erst die neue Fassung (auch wenn schon die vorgemerkte Nachricht laeuft) - die Seite laedt neu.
       const f = neueFassungNachChat(vorher, neu.verlauf);
       const laedt = f !== null && neueFassungLaden(f);
@@ -332,14 +350,18 @@ export async function chatAbschicken(nachricht: string, kontext: ChatKontext): P
 type MitChips = { ok: true; kontext: ChatKontext; auswahl: AuswahlChip[]; anhaenge: AnhangChip[] };
 const KONTEXT_MAX = 4096;
 
+// Vor dem Senden: markierte Elemente, die es im Dokument nicht mehr gibt (Agent, Rueckgaengig,
+// Loeschen), fallen weg - mit Hinweis am Eingabefeld; die Nachricht geht trotzdem.
 function mitChips(kontext: ChatKontext): MitChips | { ok: false; grund: string } {
-  const { chatAuswahl, chatAnhaenge } = pultStore.getState();
+  const { chatAnhaenge } = pultStore.getState();
   if (!sendenErlaubt(chatAnhaenge)) return { ok: false, grund: 'Erst warten, bis die Anhänge hochgeladen sind' };
+  const { behalten: chatAuswahl, entfernt } = chipsBereinigen(pultStore.getState().chatAuswahl, getDocument(), null);
+  if (entfernt > 0) pultStore.setState({ chatAuswahl, chatHinweis: entferntHinweis(entfernt) });
   const k = kontextBauen(chatAuswahl, chatAnhaenge);
   const neu: ChatKontext = { ...kontext };
   if (k.auswahl.length > 0) neu.auswahl = k.auswahl;
   if (k.anhaenge.length > 0) neu.anhaenge = k.anhaenge;
-  if (new TextEncoder().encode(JSON.stringify(neu)).length > KONTEXT_MAX) return { ok: false, grund: 'Zu viel Kontext – entferne ein paar Chips' };
+  if (kontextBytes(neu) > KONTEXT_MAX) return { ok: false, grund: 'Zu viel Kontext – entferne ein paar Chips' };
   return { ok: true, kontext: neu, auswahl: chatAuswahl, anhaenge: chatAnhaenge };
 }
 
@@ -400,8 +422,8 @@ async function vormerkungSetzen(start: Start, nachricht: string, mit: MitChips):
 // "Bearbeiten" an der Vormerk-Karte: die mitgenommenen Chips kommen zurueck ueber das Eingabefeld
 // (ersetzt der Betreiber die Vormerkung, gehen sie wieder mit).
 export function vorgemerkteChipsZurueck() {
-  const { vorgemerktChips: v, chatAuswahl, chatAnhaenge } = pultStore.getState();
-  if (!v) return;
+  const { vorgemerktChips: v, chatAuswahl, chatAnhaenge, chat } = pultStore.getState();
+  if (!v || chat?.vorgemerkt?.id !== v.id) return;
   let auswahl = chatAuswahl;
   for (const c of v.auswahl) auswahl = chipHinzu(auswahl, c);
   const da = new Set(chatAnhaenge.map((a) => a.id));
@@ -410,25 +432,56 @@ export function vorgemerkteChipsZurueck() {
   pultStore.setState({ chatAuswahl: auswahl, chatAnhaenge: anhaenge });
 }
 
+// Die Vormerkung ist verbraucht (ihre id steht als Auftrag im Verlauf) oder durch eine andere ersetzt:
+// ihre Chips vergessen, sonst holte "Bearbeiten" sie spaeter noch einmal. Ein Stand ganz ohne
+// Vormerkung allein reicht nicht - das kann eine Abfrage von vor dem PUT sein.
+function vorgemerkteChipsPruefen(neu: ChatStand) {
+  const v = pultStore.getState().vorgemerktChips;
+  if (!v) return;
+  const verbraucht = neu.verlauf.some((e) => e.id === v.id);
+  const ersetzt = neu.vorgemerkt !== null && neu.vorgemerkt.id !== v.id;
+  if (verbraucht || ersetzt) pultStore.setState({ vorgemerktChips: null });
+}
+
+// Das Dokument wurde ersetzt oder geaendert (Agent, Rueckgaengig, Loeschen): die Chip-Reihe zeigt nur,
+// was es noch gibt. Nicht, solange ein Zwischenstand des Agenten gezeigt wird (das echte Dokument
+// kommt danach zurueck - zwischenstandBeenden gleicht dann ab). In main.tsx an onDocumentChange.
+export function chipsAbgleichen() {
+  const { zwischenstand, chatAuswahl, gestaltungOffen } = pultStore.getState();
+  if (zwischenstand !== null || chatAuswahl.length === 0) return;
+  const { behalten, entfernt } = chipsBereinigen(chatAuswahl, getDocument(), gestaltungOffen);
+  if (entfernt > 0) pultStore.setState({ chatAuswahl: behalten, chatHinweis: entferntHinweis(entfernt) });
+}
+
 // ─── Kontext-Chips (Alt+Klick / "+ Kontext") ────────────────────────────
 // Liefern null oder den Grund fuer den Betreiber.
+
+// Der Grund steht auch als Hinweis am Eingabefeld (Alt+Klick hat sonst keine Rueckmeldung).
+function abgelehnt(grund: string): string {
+  pultStore.setState({ chatHinweis: grund });
+  return grund;
+}
 
 function auswahlHinzu(chip: AuswahlChip): string | null {
   const alt = pultStore.getState().chatAuswahl;
   const neu = chipHinzu(alt, chip);
   if (neu !== alt) {
-    pultStore.setState({ chatAuswahl: neu });
+    pultStore.setState({ chatAuswahl: neu, chatHinweis: null });
     return null;
   }
   const schonDa = alt.some((c) => c.art === chip.art && c.id === chip.id && (c.flaeche ?? '') === (chip.flaeche ?? ''));
   if (schonDa) return null;
-  return alt.length >= MAX_AUSWAHL ? `Höchstens ${MAX_AUSWAHL} markierte Elemente je Nachricht` : 'Dieses Element lässt sich nicht markieren';
+  return abgelehnt(alt.length >= MAX_AUSWAHL ? `Höchstens ${MAX_AUSWAHL} markierte Elemente je Nachricht` : 'Dieses Element lässt sich nicht markieren');
 }
 
 export function blockAlsKontext(blockId: string): string | null {
   const block = blockId === 'root' ? undefined : getDocument()[blockId];
-  if (!block) return 'Diesen Block gibt es nicht mehr';
+  if (!block) return abgelehnt('Diesen Block gibt es nicht mehr');
   return auswahlHinzu({ art: 'block', id: blockId, kurz: kurzText(block) });
+}
+
+export function chatHinweisWeg() {
+  if (pultStore.getState().chatHinweis !== null) pultStore.setState({ chatHinweis: null });
 }
 
 export function ebeneAlsKontext(flaeche: string, e: Ebene): string | null {

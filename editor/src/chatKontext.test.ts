@@ -4,9 +4,12 @@ import {
   AnhangChip,
   AuswahlChip,
   chipHinzu,
+  chipsBereinigen,
   dateiPruefen,
+  entferntHinweis,
   KURZ_MAX,
   kontextBauen,
+  kontextBytes,
   kurzText,
   MAX_ANHAENGE,
   MAX_AUSWAHL,
@@ -123,5 +126,55 @@ describe('sendenErlaubt', () => {
     expect(sendenErlaubt([])).toBe(true);
     expect(sendenErlaubt([anhang('a.png', 'fertig'), anhang('b.png', 'fehler')])).toBe(true);
     expect(sendenErlaubt([anhang('a.png', 'fertig'), anhang('b.png', 'laedt')])).toBe(false);
+  });
+});
+
+describe('chipsBereinigen', () => {
+  const doc = {
+    root: { type: 'EmailLayout', data: { childrenIds: ['h', 'f', 'b'] } },
+    h: { type: 'Heading', data: { props: { text: 'x' } } },
+    b: { type: 'Image', data: { props: { url: 'medien:a.png' } } },
+    f: { type: 'Image', data: { props: { url: 'medien:a.png', gestaltung: { ebenen: [{ id: 'e-1' }, { id: 'e-2' }] } } } },
+  };
+  const ebene = (id: string, flaeche: string): AuswahlChip => ({ art: 'ebene', id, flaeche, kurz: 'k' });
+
+  it('Bloecke, die es nicht mehr gibt, fallen weg (root nie)', () => {
+    const r = chipsBereinigen([block('h'), block('weg'), block('root')], doc, null);
+    expect(r.behalten.map((c) => c.id)).toEqual(['h']);
+    expect(r.entfernt).toBe(2);
+  });
+
+  it('Ebenen nur, wenn die Flaeche sie noch hat', () => {
+    const chips = [ebene('e-1', 'f'), ebene('e-9', 'f'), ebene('e-1', 'b'), ebene('e-1', 'weg'), ebene('e-1', 'h')];
+    const r = chipsBereinigen(chips, doc, null);
+    expect(r.behalten).toEqual([ebene('e-1', 'f')]);
+    expect(r.entfernt).toBe(4);
+  });
+
+  it('die gerade offene Flaeche wird nicht geprueft (Fenster haelt ungesicherte Ebenen)', () => {
+    const r = chipsBereinigen([ebene('e-neu', 'f'), ebene('e-neu', 'b')], doc, 'f');
+    expect(r.behalten).toEqual([ebene('e-neu', 'f')]);
+    expect(r.entfernt).toBe(1);
+  });
+
+  it('nichts zu tun: dieselbe Liste', () => {
+    const l = [block('h')];
+    expect(chipsBereinigen(l, doc, null).behalten).toBe(l);
+  });
+
+  it('Hinweistext', () => {
+    expect(entferntHinweis(1)).toBe('1 markiertes Element gibt es nicht mehr – entfernt');
+    expect(entferntHinweis(3)).toBe('3 markierte Elemente gibt es nicht mehr – entfernt');
+  });
+});
+
+describe('kontextBytes', () => {
+  it('misst wie Pythons json.dumps(ensure_ascii=False) mit ", " und ": "', () => {
+    const k = { a: [1, 2], b: 'ü "x"', c: { d: null, e: true } };
+    const python = '{"a": [1, 2], "b": "ü \\"x\\"", "c": {"d": null, "e": true}}';
+    expect(kontextBytes(k)).toBe(new TextEncoder().encode(python).length);
+  });
+  it('Kommas und Doppelpunkte in Texten zaehlen nicht doppelt', () => {
+    expect(kontextBytes({ k: 'a, b: c' })).toBe(new TextEncoder().encode('{"k": "a, b: c"}').length);
   });
 });
