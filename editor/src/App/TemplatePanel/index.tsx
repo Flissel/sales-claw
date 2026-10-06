@@ -121,7 +121,6 @@ export default function TemplatePanel() {
         )}
       </Box>
       <Box
-        ref={canvasRef}
         data-canvas
         sx={{
           flex: 1,
@@ -131,10 +130,13 @@ export default function TemplatePanel() {
           bgcolor: 'background.default',
         }}
       >
-        <Box sx={mainBoxSx}>
-          <ZwischenstandFang puls={puls}>
-            <EditorBlock id="root" />
-          </ZwischenstandFang>
+        {/* inert nur auf dem Inhalt: der Rahmen bleibt per Rad/Touch/Scrollbalken scrollbar. */}
+        <Box ref={canvasRef} data-canvas-inhalt>
+          <Box sx={mainBoxSx}>
+            <ZwischenstandFang puls={puls}>
+              <EditorBlock id="root" />
+            </ZwischenstandFang>
+          </Box>
         </Box>
       </Box>
     </Box>

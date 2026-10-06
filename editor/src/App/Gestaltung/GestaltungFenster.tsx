@@ -366,14 +366,18 @@ function Fenster({ id, onExportieren, chat }: GestaltungFensterProps & { id: str
       </Box>
 
       {/* Links: Ebenen */}
-      <Box ref={ebenenRef} sx={{ bgcolor: FARBE.panel, borderRight: `1px solid ${FARBE.linie}`, minHeight: 0 }}>
-        <EbenenListe z={z} versteckt={versteckt} umschalten={umschalten} />
+      <Box sx={{ bgcolor: FARBE.panel, borderRight: `1px solid ${FARBE.linie}`, minHeight: 0, overflow: 'auto' }}>
+        <Box ref={ebenenRef}>
+          <EbenenListe z={z} versteckt={versteckt} umschalten={umschalten} />
+        </Box>
       </Box>
 
       {/* Mitte: Flaeche und Hinweise */}
-      <Box ref={mitteRef} component="main" sx={{ display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}>
-        <Flaeche z={z} versteckt={versteckt} onTextBearbeiten={() => setTextFokus((n) => n + 1)} />
-        <Hinweisleiste z={z} meldung={meldung} />
+      <Box component="main" sx={{ display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0, overflow: 'auto' }}>
+        <Box ref={mitteRef} sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, minWidth: 0 }}>
+          <Flaeche z={z} versteckt={versteckt} onTextBearbeiten={() => setTextFokus((n) => n + 1)} />
+          <Hinweisleiste z={z} meldung={meldung} />
+        </Box>
       </Box>
 
       {/* Waehrend der Agent arbeitet: Ebenen und Flaeche gesperrt (absolut - nimmt keine Rasterzelle) */}
@@ -381,7 +385,8 @@ function Fenster({ id, onExportieren, chat }: GestaltungFensterProps & { id: str
 
       {/* Rechts: Eigenschaften, darunter der Chat */}
       <Box component="aside" aria-label="Eigenschaften" sx={{ bgcolor: FARBE.panel, borderLeft: `1px solid ${FARBE.linie}`, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-        <Box ref={eigenschaftenRef} aria-disabled={arbeitet ? true : undefined} sx={{ flex: 1, minHeight: 0, overflowY: 'auto', opacity: arbeitet ? 0.4 : 1, pointerEvents: arbeitet ? 'none' : 'auto', transition: 'opacity 150ms ease-out' }}>
+        <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+          <Box ref={eigenschaftenRef} aria-disabled={arbeitet ? true : undefined} sx={{ opacity: arbeitet ? 0.4 : 1, pointerEvents: arbeitet ? 'none' : 'auto', transition: 'opacity 150ms ease-out' }}>
           <Eigenschaften
             z={z}
             farben={farben}
@@ -394,6 +399,7 @@ function Fenster({ id, onExportieren, chat }: GestaltungFensterProps & { id: str
             altRef={altRef}
             textFokus={textFokus}
           />
+          </Box>
         </Box>
         {chat && <Box sx={{ borderTop: `1px solid ${FARBE.linie}`, flexShrink: 0 }}>{chat}</Box>}
       </Box>

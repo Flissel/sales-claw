@@ -43,20 +43,15 @@ export default function InspectorDrawer({ chat, gesperrt = false }: { chat?: Rea
           </Tabs>
         </Box>
       </Box>
-      <Box
-        ref={panelRef}
-        aria-disabled={gesperrt || undefined}
-        sx={{
-          width: INSPECTOR_DRAWER_WIDTH,
-          flex: 1,
-          minHeight: 0,
-          overflow: 'auto',
-          opacity: gesperrt ? 0.45 : 1,
-          pointerEvents: gesperrt ? 'none' : 'auto',
-          transition: 'opacity 150ms ease-out',
-        }}
-      >
-        {renderCurrentSidebarPanel()}
+      <Box sx={{ width: INSPECTOR_DRAWER_WIDTH, flex: 1, minHeight: 0, overflow: 'auto' }}>
+        {/* inert nur auf dem Inhalt: der Rahmen bleibt scrollbar. */}
+        <Box
+          ref={panelRef}
+          aria-disabled={gesperrt || undefined}
+          sx={{ opacity: gesperrt ? 0.45 : 1, pointerEvents: gesperrt ? 'none' : 'auto', transition: 'opacity 150ms ease-out' }}
+        >
+          {renderCurrentSidebarPanel()}
+        </Box>
       </Box>
       {chat && <Box sx={{ width: INSPECTOR_DRAWER_WIDTH, flexShrink: 0 }}>{chat}</Box>}
     </Drawer>

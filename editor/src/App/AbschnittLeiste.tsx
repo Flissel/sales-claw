@@ -91,7 +91,8 @@ export default function AbschnittLeiste() {
         '& .MuiDrawer-paper': { width: ABSCHNITT_LEISTE_BREITE, boxSizing: 'border-box' },
       }}
     >
-      <Box ref={inertRef} sx={{ p: 2, overflow: 'auto', height: '100%' }}>
+      <Box sx={{ p: 2, overflow: 'auto', height: '100%' }}>
+        <Box ref={inertRef}>
         <Typography variant="h6" sx={{ mb: 0.5 }}>
           Abschnitte
         </Typography>
@@ -130,6 +131,7 @@ export default function AbschnittLeiste() {
           <Typography variant="caption" color="text.secondary" component="p" sx={{ mt: 0.5 }}>
             Einzelne Blöcke fügst du über „+“ im Newsletter ein.
           </Typography>
+        </Box>
         </Box>
       </Box>
     </Drawer>

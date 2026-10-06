@@ -99,13 +99,19 @@ export function Punkte({ farbe = FARBE.gedaempft }: { farbe?: string }) {
   );
 }
 
+// Die Schicht laesst Rad, Touch und Klicks durch: gesperrt wird der Inhalt per inert, die
+// Scroll-Rahmen darunter bleiben scrollbar. Nur sie selbst ist fuer Zeiger unsichtbar.
+export function schichtLage(lage: React.CSSProperties): React.CSSProperties {
+  return { ...lage, pointerEvents: 'none' };
+}
+
 // Legt sich ueber gesperrte Bereiche (Canvas, Flaeche); lage = Position des Aufrufers.
 // Im Chat-Lauf durchsichtig mit der Schritt-Zeile unten, sonst abgedunkelt mit dem Text in der Mitte.
 export function SperrSchicht({ text, lage }: { text: string; lage: React.CSSProperties }) {
   const live = useLiveZeile();
   if (live !== null) {
     return (
-      <Box aria-hidden="true" style={lage} sx={{ cursor: 'default' }}>
+      <Box aria-hidden="true" style={schichtLage(lage)} sx={{ cursor: 'default' }}>
         <Box
           sx={{
             position: 'absolute',
@@ -153,7 +159,7 @@ export function SperrSchicht({ text, lage }: { text: string; lage: React.CSSProp
   return (
     <Box
       aria-hidden="true"
-      style={lage}
+      style={schichtLage(lage)}
       sx={{
         display: 'flex',
         alignItems: 'center',
