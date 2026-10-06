@@ -2,6 +2,7 @@
 // Chat senden/lesen, Rueckgaengig, Export-Vorschau und bestaetigter Export.
 // Live-Lauf (Spec 2026-10-02-newsletter-agent-live §2.3, §3): Zwischenstand, Vormerken, Stopp.
 // Nur relative Adressen aus den Startdaten; schreibende Aufrufe mit X-CSRF.
+import type { AnhangKontext, AuswahlKontext } from './chatKontext';
 import type { Dokument, Start } from './pult';
 
 export type ExportAuswahl = { newsletter: boolean; flaechen: string[] };
@@ -31,7 +32,8 @@ export type Vorgemerkt = { id: string; nachricht: string };
 
 export type ChatStand = { laeuft: boolean; verlauf: ChatEintrag[]; live: ChatLive | null; vorgemerkt: Vorgemerkt | null };
 
-export type ChatKontext = { fenster: string; auswahl: string | null };
+// auswahl: die markierten Elemente (Chips) oder - ohne Chips - wie bisher die eine Auswahl im Fenster.
+export type ChatKontext = { fenster: string; auswahl: string | AuswahlKontext[] | null; anhaenge?: AnhangKontext[] };
 
 export type Geraet = 'handy' | 'tablet' | 'pc';
 export const GERAETE: ReadonlyArray<[Geraet, string]> = [
@@ -94,6 +96,49 @@ export async function chatSenden(
   const r = await senden(s, s.chat_url, { nachricht, kontext }, 'Der Assistent ist gerade nicht erreichbar');
   if (!r.ok) return r;
   return typeof r.j.auftrag === 'string' && r.j.auftrag ? { ok: true, auftrag: r.j.auftrag } : { ok: false, grund: UNVERSTAENDLICH };
+}
+
+export type Hochladen = {
+  promise: Promise<{ ok: true; name: string; art: 'bild' | 'dokument'; groesse: number } | Fehler>;
+  abbrechen: () => void;
+};
+
+// Anhang fuer den Chat ablegen (multipart "datei", X-CSRF). XHR statt fetch: nur so gibt es den
+// Upload-Fortschritt (0..1). Der gespeicherte Name kann vom Dateinamen abweichen - immer den aus
+// der Antwort verwenden.
+export function anhangHochladen(s: Start, datei: File, fortschritt: (anteil: number) => void): Hochladen {
+  if (!s.anhang_url) return { promise: Promise.resolve({ ok: false, grund: 'Anhänge sind hier noch nicht eingerichtet' }), abbrechen: () => undefined };
+  const xhr = new XMLHttpRequest();
+  const promise = new Promise<Awaited<Hochladen['promise']>>((fertig) => {
+    xhr.open('POST', s.anhang_url as string);
+    xhr.withCredentials = true;
+    xhr.setRequestHeader('X-CSRF', s.csrf);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && e.total > 0) fortschritt(Math.min(1, e.loaded / e.total));
+    };
+    xhr.onerror = () => fertig({ ok: false, grund: KEINE_VERBINDUNG });
+    xhr.onabort = () => fertig({ ok: false, grund: 'Abgebrochen' });
+    xhr.onload = () => {
+      let roh: unknown = null;
+      try {
+        roh = JSON.parse(xhr.responseText);
+      } catch {
+        roh = null;
+      }
+      const j = istObjekt(roh) ? roh : {};
+      if (xhr.status < 200 || xhr.status >= 300) {
+        const sonst = xhr.status === 413 ? 'Die Datei ist zu groß' : 'Hochladen gerade nicht möglich';
+        return fertig({ ok: false, grund: typeof j.grund === 'string' && j.grund ? j.grund : sonst });
+      }
+      const { name, art, groesse } = j;
+      if (typeof name !== 'string' || !name || (art !== 'bild' && art !== 'dokument')) return fertig({ ok: false, grund: UNVERSTAENDLICH });
+      fertig({ ok: true, name, art, groesse: typeof groesse === 'number' ? groesse : datei.size });
+    };
+    const form = new FormData();
+    form.append('datei', datei, datei.name);
+    xhr.send(form);
+  });
+  return { promise, abbrechen: () => xhr.abort() };
 }
 
 function exportAuswahlLesen(v: unknown): ExportAuswahl | null {

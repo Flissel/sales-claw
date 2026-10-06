@@ -3,6 +3,7 @@ import { create } from 'zustand';
 import { ladeEntscheid, neuesBildMeldung } from './bildfeld';
 import type { Auftrag } from './bildfeld';
 import {
+  anhangHochladen,
   ChatEintrag,
   ChatKontext,
   chatLaden,
@@ -17,7 +18,9 @@ import {
   vormerkungLoeschen,
   vormerkungStarten,
 } from './chat';
+import { AnhangChip, AuswahlChip, chipHinzu, dateiPruefen, kontextBauen, kurzText, MAX_ANHAENGE, MAX_AUSWAHL, sendenErlaubt } from './chatKontext';
 import { getDocument, resetDocument, setDocument, setSelectedBlockId } from './documents/editor/EditorContext';
+import type { Ebene } from './gestaltung';
 import type { TEditorConfiguration } from './documents/editor/core';
 import { anzeigbar, zuletztGeaendert } from './live';
 import { Dokument, Ergebnis, fehlerText, medienListe, speichern, standLaden, Start, zurAnzeige } from './pult';
@@ -50,6 +53,12 @@ type TPult = {
   // stand = der gezeigte Zwischenstand im gespeicherten Format, leuchtet = zuletzt geaenderter
   // Block, puls = zaehlt jeden neuen Stand (startet das Aufleuchten neu).
   zwischenstand: { echt: TEditorConfiguration; stand: Dokument; leuchtet: string | null; puls: number } | null;
+  // Chips ueber dem Chat-Eingabefeld (Spec 2026-10-06): markierte Bloecke/Ebenen und Anhaenge fuer
+  // die naechste Nachricht. vorgemerktChips: was mit der Vormerkung id mitging (die Karte zeigt die
+  // Anzahl, "Bearbeiten" holt sie zurueck) - das Pult liefert den Kontext der Vormerkung nicht mit.
+  chatAuswahl: AuswahlChip[];
+  chatAnhaenge: AnhangChip[];
+  vorgemerktChips: { id: string; auswahl: AuswahlChip[]; anhaenge: AnhangChip[] } | null;
 };
 
 export const pultStore = create<TPult>(() => ({
@@ -69,6 +78,9 @@ export const pultStore = create<TPult>(() => ({
   chat: null,
   chatGetrennt: false,
   zwischenstand: null,
+  chatAuswahl: [],
+  chatAnhaenge: [],
+  vorgemerktChips: null,
 }));
 
 export function gestaltungOeffnen(id: string) {
@@ -289,23 +301,54 @@ export const HINWEIS_OFFEN = 'Im Bildfeld steht noch ein Hinweis – erst beauft
 
 // Nachricht an den Agenten. Ungesicherte Aenderungen am Newsletter werden vorher gespeichert -
 // der Agent arbeitet mit der gespeicherten Fassung. Liefert null oder den Grund fuer den Betreiber.
+// Die Chips gehen mit der Nachricht (kontext.auswahl/anhaenge) und werden danach geleert.
 export async function chatAbschicken(nachricht: string, kontext: ChatKontext): Promise<string | null> {
   const { start, chat } = pultStore.getState();
   if (!start) return 'Keine Verbindung zum Pult';
   if (chat?.laeuft) return 'Der Assistent arbeitet gerade';
+  const vorab = mitChips(kontext);
+  if (!vorab.ok) return vorab.grund;
   const grund = await vorDemStart();
   if (grund) return grund;
+  // Nach dem Speichern neu aufnehmen: was inzwischen dazukam, geht mit.
+  const mit = mitChips(kontext);
+  if (!mit.ok) return mit.grund;
   // Steht noch eine Vormerkung (nach Fehler/Stopp), uebernimmt PUT sie und startet sie mit dem
   // neuen Text. Ein POST legte einen zweiten Auftrag an, und die alte Vormerkung liefe danach mit.
-  if (pultStore.getState().chat?.vorgemerkt) return vormerkungSetzen(start, nachricht, kontext);
-  const r = await chatSenden(start, nachricht, kontext);
+  if (pultStore.getState().chat?.vorgemerkt) return vormerkungSetzen(start, nachricht, mit);
+  const r = await chatSenden(start, nachricht, mit.kontext);
   if (!r.ok) {
     // Z. B. arbeitet der Assistent schon fuer einen anderen Tab: Stand holen, damit die Sperre erscheint.
     chatAbfragen();
     return r.grund;
   }
+  chipsVerbraucht(mit);
   auftragEintragen(r.auftrag, nachricht);
   return null;
+}
+
+// Momentaufnahme der Chips beim Senden: kontext mit ihnen und die Chips selbst (zum Leeren danach -
+// was waehrend des Sendens dazukommt, bleibt fuer die naechste Nachricht stehen).
+type MitChips = { ok: true; kontext: ChatKontext; auswahl: AuswahlChip[]; anhaenge: AnhangChip[] };
+const KONTEXT_MAX = 4096;
+
+function mitChips(kontext: ChatKontext): MitChips | { ok: false; grund: string } {
+  const { chatAuswahl, chatAnhaenge } = pultStore.getState();
+  if (!sendenErlaubt(chatAnhaenge)) return { ok: false, grund: 'Erst warten, bis die Anhänge hochgeladen sind' };
+  const k = kontextBauen(chatAuswahl, chatAnhaenge);
+  const neu: ChatKontext = { ...kontext };
+  if (k.auswahl.length > 0) neu.auswahl = k.auswahl;
+  if (k.anhaenge.length > 0) neu.anhaenge = k.anhaenge;
+  if (new TextEncoder().encode(JSON.stringify(neu)).length > KONTEXT_MAX) return { ok: false, grund: 'Zu viel Kontext – entferne ein paar Chips' };
+  return { ok: true, kontext: neu, auswahl: chatAuswahl, anhaenge: chatAnhaenge };
+}
+
+function chipsVerbraucht(mit: MitChips) {
+  const { chatAuswahl, chatAnhaenge } = pultStore.getState();
+  pultStore.setState({
+    chatAuswahl: chatAuswahl.filter((c) => !mit.auswahl.includes(c)),
+    chatAnhaenge: chatAnhaenge.filter((a) => !mit.anhaenge.some((m) => m.id === a.id)),
+  });
 }
 
 // Vor jedem Start eines Auftrags: ein offener Bildhinweis hielte das Neuladen auf (die
@@ -327,24 +370,135 @@ export async function chatVormerken(nachricht: string, kontext: ChatKontext): Pr
   const { start, chat } = pultStore.getState();
   if (!start) return 'Keine Verbindung zum Pult';
   if (!laufenderChat(chat)) return chatAbschicken(nachricht, kontext);
-  return vormerkungSetzen(start, nachricht, kontext);
+  const mit = mitChips(kontext);
+  if (!mit.ok) return mit.grund;
+  return vormerkungSetzen(start, nachricht, mit);
 }
 
 // PUT an die Vormerkung: 'wartet' = steht als Karte da, 'offen' = lief nichts, ist gestartet.
-async function vormerkungSetzen(start: Start, nachricht: string, kontext: ChatKontext): Promise<string | null> {
-  const r = await vormerken(start, nachricht, kontext);
+// Die Chips gehen mit; bei 'wartet' merkt sich der Editor, welche es waren (fuer Karte und Bearbeiten).
+async function vormerkungSetzen(start: Start, nachricht: string, mit: MitChips): Promise<string | null> {
+  const r = await vormerken(start, nachricht, mit.kontext);
   if (!r.ok) {
     chatAbfragen();
     return r.grund;
   }
+  chipsVerbraucht(mit);
   if (r.status === 'offen') {
     // Es lief nichts (mehr): die Nachricht ist sofort als normaler Auftrag gestartet.
+    pultStore.setState({ vorgemerktChips: null });
     auftragEintragen(r.id, nachricht, { vorgemerkt: null });
     return null;
   }
+  const anhaenge = mit.anhaenge.filter((a) => a.status === 'fertig');
+  pultStore.setState({ vorgemerktChips: mit.auswahl.length + anhaenge.length > 0 ? { id: r.id, auswahl: mit.auswahl, anhaenge } : null });
   const jetzt = pultStore.getState().chat;
   if (jetzt) pultStore.setState({ chat: { ...jetzt, vorgemerkt: { id: r.id, nachricht } } });
   return null;
+}
+
+// "Bearbeiten" an der Vormerk-Karte: die mitgenommenen Chips kommen zurueck ueber das Eingabefeld
+// (ersetzt der Betreiber die Vormerkung, gehen sie wieder mit).
+export function vorgemerkteChipsZurueck() {
+  const { vorgemerktChips: v, chatAuswahl, chatAnhaenge } = pultStore.getState();
+  if (!v) return;
+  let auswahl = chatAuswahl;
+  for (const c of v.auswahl) auswahl = chipHinzu(auswahl, c);
+  const da = new Set(chatAnhaenge.map((a) => a.id));
+  const platz = Math.max(0, MAX_ANHAENGE - chatAnhaenge.filter((a) => a.status !== 'fehler').length);
+  const anhaenge = [...chatAnhaenge, ...v.anhaenge.filter((a) => !da.has(a.id)).slice(0, platz)];
+  pultStore.setState({ chatAuswahl: auswahl, chatAnhaenge: anhaenge });
+}
+
+// ─── Kontext-Chips (Alt+Klick / "+ Kontext") ────────────────────────────
+// Liefern null oder den Grund fuer den Betreiber.
+
+function auswahlHinzu(chip: AuswahlChip): string | null {
+  const alt = pultStore.getState().chatAuswahl;
+  const neu = chipHinzu(alt, chip);
+  if (neu !== alt) {
+    pultStore.setState({ chatAuswahl: neu });
+    return null;
+  }
+  const schonDa = alt.some((c) => c.art === chip.art && c.id === chip.id && (c.flaeche ?? '') === (chip.flaeche ?? ''));
+  if (schonDa) return null;
+  return alt.length >= MAX_AUSWAHL ? `Höchstens ${MAX_AUSWAHL} markierte Elemente je Nachricht` : 'Dieses Element lässt sich nicht markieren';
+}
+
+export function blockAlsKontext(blockId: string): string | null {
+  const block = blockId === 'root' ? undefined : getDocument()[blockId];
+  if (!block) return 'Diesen Block gibt es nicht mehr';
+  return auswahlHinzu({ art: 'block', id: blockId, kurz: kurzText(block) });
+}
+
+export function ebeneAlsKontext(flaeche: string, e: Ebene): string | null {
+  return auswahlHinzu({ art: 'ebene', id: e.id, flaeche, kurz: kurzText(e) });
+}
+
+export function auswahlEntfernen(chip: AuswahlChip) {
+  pultStore.setState({ chatAuswahl: pultStore.getState().chatAuswahl.filter((c) => c !== chip) });
+}
+
+// "+ Kontext"-Tasten: an den Chat haengen bzw. (ist schon drin) wieder herausnehmen.
+export function blockKontextUmschalten(blockId: string): string | null {
+  const chip = pultStore.getState().chatAuswahl.find((c) => c.art === 'block' && c.id === blockId);
+  if (!chip) return blockAlsKontext(blockId);
+  auswahlEntfernen(chip);
+  return null;
+}
+
+export function ebeneKontextUmschalten(flaeche: string, e: Ebene): string | null {
+  const chip = pultStore.getState().chatAuswahl.find((c) => c.art === 'ebene' && c.id === e.id && c.flaeche === flaeche);
+  if (!chip) return ebeneAlsKontext(flaeche, e);
+  auswahlEntfernen(chip);
+  return null;
+}
+
+// ─── Anhaenge (Bueroklammer, Ziehen, Einfuegen) ─────────────────────────
+
+const uploads = new Map<string, () => void>();
+let anhangNr = 0;
+
+function anhangAendern(id: string, teil: Partial<AnhangChip>) {
+  const liste = pultStore.getState().chatAnhaenge;
+  if (!liste.some((a) => a.id === id)) return;
+  pultStore.setState({ chatAnhaenge: liste.map((a) => (a.id === id ? { ...a, ...teil } : a)) });
+}
+
+// Legt sofort einen Chip an (falscher Typ / zu gross: mit Grund, ohne Upload) und laedt hoch.
+// Liefert den Grund, wenn schon 5 Anhaenge dran sind (fehlerhafte zaehlen nicht).
+export function anhangHinzu(datei: File): string | null {
+  const { start, chatAnhaenge } = pultStore.getState();
+  if (chatAnhaenge.filter((a) => a.status !== 'fehler').length >= MAX_ANHAENGE) return `Höchstens ${MAX_ANHAENGE} Anhänge je Nachricht`;
+  const id = `anhang-${++anhangNr}`;
+  const p = dateiPruefen(datei);
+  const chip: AnhangChip = { id, name: datei.name, art: 'art' in p ? p.art : 'dokument', status: 'laedt', fortschritt: 0 };
+  const grund = 'grund' in p ? p.grund : start ? null : 'Keine Verbindung zum Pult';
+  if (grund !== null || !start) {
+    pultStore.setState({ chatAnhaenge: [...chatAnhaenge, { ...chip, status: 'fehler', grund: grund ?? undefined }] });
+    return null;
+  }
+  pultStore.setState({ chatAnhaenge: [...chatAnhaenge, chip] });
+  const h = anhangHochladen(start, datei, (f) => anhangAendern(id, { fortschritt: f }));
+  uploads.set(id, h.abbrechen);
+  void h.promise.then((r) => {
+    uploads.delete(id);
+    if (r.ok) anhangAendern(id, { name: r.name, art: r.art, status: 'fertig', fortschritt: 1 });
+    else anhangAendern(id, { status: 'fehler', grund: r.grund });
+  });
+  return null;
+}
+
+export function anhangVorschau(id: string, vorschau: string) {
+  anhangAendern(id, { vorschau });
+}
+
+// Entfernen bricht einen laufenden Upload ab (eine schon abgelegte Datei bleibt in den Medien).
+export function anhangEntfernen(id: string) {
+  const abbrechen = uploads.get(id);
+  uploads.delete(id);
+  pultStore.setState({ chatAnhaenge: pultStore.getState().chatAnhaenge.filter((a) => a.id !== id) });
+  abbrechen?.();
 }
 
 export async function vormerkungLoeschenAuftrag(): Promise<string | null> {
@@ -354,6 +508,7 @@ export async function vormerkungLoeschenAuftrag(): Promise<string | null> {
   if (!r.ok) return r.grund;
   const jetzt = pultStore.getState().chat;
   if (jetzt) pultStore.setState({ chat: { ...jetzt, vorgemerkt: null } });
+  pultStore.setState({ vorgemerktChips: null });
   return null;
 }
 

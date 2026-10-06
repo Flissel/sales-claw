@@ -68,3 +68,10 @@ def test_paket_kennt_live_ansicht():
     for s in ("Vormerken", "Bisherige Schritte behalten", "Schritt ", "Wird gestoppt",
               "chat_vormerkung_url", "chat_vormerkung_starten_url", "chat_stopp_url"):
         assert s in text, s
+
+
+def test_paket_kennt_kontext_und_anhaenge():
+    # 2026-10-06 Kontext per Klick und Uploads im Chat (Task 6): Chips, Bueroklammer, Anhang-Route
+    text = (ORDNER / "editor.js").read_text(encoding="utf-8")
+    for s in ("+ Kontext", "Datei anhängen", "anhang_url"):
+        assert s in text, s

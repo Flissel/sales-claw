@@ -1,8 +1,9 @@
 import React, { CSSProperties, useEffect, useRef, useState } from 'react';
 
-import { Box } from '@mui/material';
+import { CheckRounded } from '@mui/icons-material';
+import { Box, ButtonBase } from '@mui/material';
 
-import { pultStore } from '../../../../pultZustand';
+import { blockAlsKontext, blockKontextUmschalten, pultStore } from '../../../../pultZustand';
 import { useCurrentBlockId } from '../../../editor/EditorBlock';
 import { setSelectedBlockId, useSelectedBlockId } from '../../../editor/EditorContext';
 
@@ -58,16 +59,61 @@ function Leuchten({ puls, ziel }: { puls: number; ziel: React.RefObject<HTMLDivE
   );
 }
 
+// Kontext per Klick (Spec 2026-10-06 §1): am ausgewaehlten Block "+ Kontext" (nochmal: wieder heraus),
+// Alt+Klick auf irgendeinen Block haengt ihn als Chip an den Chat. Waehrend der Agent arbeitet, ist
+// der Canvas gesperrt (inert) - dann geht beides nicht.
+function KontextKnopf({ blockId, drin }: { blockId: string; drin: boolean }) {
+  return (
+    <ButtonBase
+      aria-label={drin ? 'Aus dem Kontext nehmen' : 'Als Kontext an den Chat hängen'}
+      title={drin ? 'Ist im Chat-Kontext – klicken nimmt ihn heraus' : 'Als Kontext an den Chat hängen (oder Alt+Klick)'}
+      onClick={(ev) => {
+        ev.stopPropagation();
+        ev.preventDefault();
+        blockKontextUmschalten(blockId);
+      }}
+      sx={{
+        position: 'absolute',
+        top: 6,
+        right: 6,
+        zIndex: 2,
+        height: 24,
+        px: 1,
+        gap: 0.5,
+        borderRadius: '12px',
+        fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+        fontSize: 12,
+        fontWeight: 600,
+        letterSpacing: 0,
+        color: drin ? AKZENT : '#ffffff',
+        bgcolor: drin ? '#ffffff' : AKZENT,
+        border: `1px solid ${AKZENT}`,
+        boxShadow: '0 1px 2px rgba(0,0,0,0.18), 0 4px 12px rgba(0,0,0,0.12)',
+        transition: 'background-color 150ms ease-out, color 150ms ease-out',
+        '&:hover': { bgcolor: drin ? '#eef3ff' : '#4a7bf0' },
+        '&.Mui-focusVisible': { outline: `2px solid ${AKZENT}`, outlineOffset: 2 },
+      }}
+    >
+      {drin && <CheckRounded sx={{ fontSize: 14 }} />}
+      {drin ? 'Im Kontext' : '+ Kontext'}
+    </ButtonBase>
+  );
+}
+
 export default function EditorBlockWrapper({ children }: TEditorBlockWrapperProps) {
   const selectedBlockId = useSelectedBlockId();
   const [mouseInside, setMouseInside] = useState(false);
   const blockId = useCurrentBlockId();
   const puls = pultStore((p) => (p.zwischenstand?.leuchtet === blockId ? p.zwischenstand.puls : null));
   const ref = useRef<HTMLDivElement>(null);
+  const imKontext = pultStore((p) => p.chatAuswahl.some((c) => c.art === 'block' && c.id === blockId));
 
   let outline: CSSProperties['outline'];
   if (selectedBlockId === blockId) {
     outline = '2px solid rgba(0,121,204, 1)';
+  } else if (imKontext) {
+    // Markiert fuer den Chat: ruhiger Akzent-Rahmen, gestrichelt (keine zweite Auswahl).
+    outline = `2px dashed ${AKZENT}`;
   } else if (mouseInside) {
     outline = '2px solid rgba(0,121,204, 0.3)';
   }
@@ -96,12 +142,17 @@ export default function EditorBlockWrapper({ children }: TEditorBlockWrapperProp
         setMouseInside(false);
       }}
       onClick={(ev) => {
-        setSelectedBlockId(blockId);
         ev.stopPropagation();
         ev.preventDefault();
+        if (ev.altKey) {
+          blockAlsKontext(blockId);
+          return;
+        }
+        setSelectedBlockId(blockId);
       }}
     >
       {renderMenu()}
+      {selectedBlockId === blockId && <KontextKnopf blockId={blockId} drin={imKontext} />}
       {children}
       {puls !== null && <Leuchten puls={puls} ziel={ref} />}
     </Box>

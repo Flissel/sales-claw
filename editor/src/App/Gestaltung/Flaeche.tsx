@@ -7,6 +7,7 @@ import { WarningAmberRounded } from '@mui/icons-material';
 import { Box } from '@mui/material';
 
 import { BREITE, drehen, Ebene, einrasten, hinweise, hoehe, Linie, schieben, skalieren, zoomFuer } from '../../gestaltung';
+import { ebeneAlsKontext, pultStore } from '../../pultZustand';
 import { SCHRIFT_FAMILIE } from '../../schemata';
 
 import { quelleAnzeige } from './hilfen';
@@ -182,8 +183,14 @@ export default function Flaeche({ z, versteckt, onTextBearbeiten }: Props) {
     setLinien(l);
   };
 
-  const los = () => {
-    if (zug.current?.bewegt) z.festschreiben();
+  // Alt+Ziehen = frei schieben; Alt+Klick ohne Ziehen = Ebene als Kontext an den Chat (Spec 2026-10-06 §1).
+  const los = (ev: React.PointerEvent<HTMLDivElement>) => {
+    const zg = zug.current;
+    if (zg?.bewegt) z.festschreiben();
+    else if (zg && ev.altKey && ev.type === 'pointerup') {
+      const flaeche = pultStore.getState().gestaltungOffen;
+      if (flaeche !== null) ebeneAlsKontext(flaeche, zg.start);
+    }
     zug.current = null;
     setLinien([]);
   };

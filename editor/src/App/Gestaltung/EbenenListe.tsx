@@ -2,13 +2,21 @@
 // "+ Bild" (Medienauswahl, freigestellte zuerst) und "+ Text".
 import React, { useEffect, useState } from 'react';
 
-import { AddPhotoAlternateOutlined, DeleteOutlineRounded, TextFieldsRounded, VisibilityOffOutlined, VisibilityOutlined } from '@mui/icons-material';
+import {
+  AddCommentOutlined,
+  AddPhotoAlternateOutlined,
+  CommentRounded,
+  DeleteOutlineRounded,
+  TextFieldsRounded,
+  VisibilityOffOutlined,
+  VisibilityOutlined,
+} from '@mui/icons-material';
 import { Box, Button, ButtonBase, IconButton, Popover, Tooltip, Typography } from '@mui/material';
 
 import { getDocument } from '../../documents/editor/EditorContext';
 import { Ebene, neueId } from '../../gestaltung';
 import { ANZEIGE } from '../../pult';
-import { medienLaden, pultStore } from '../../pultZustand';
+import { ebeneAlsKontext, ebeneKontextUmschalten, medienLaden, pultStore } from '../../pultZustand';
 import { SCHRIFT_FAMILIE } from '../../schemata';
 
 import { ebenenName, istFreigestellt, medienFuerEbenen, neueBildEbene, neueTextEbene, quelleAnzeige } from './hilfen';
@@ -108,6 +116,9 @@ function Medienauswahl({ anker, schliessen, waehlen }: { anker: HTMLElement | nu
 
 export default function EbenenListe({ z, versteckt, umschalten }: Props) {
   const { g, auswahl } = z;
+  const flaeche = pultStore((p) => p.gestaltungOffen);
+  const imKontext = pultStore((p) => p.chatAuswahl);
+  const kontextIds = new Set(imKontext.filter((c) => c.art === 'ebene' && c.flaeche === flaeche).map((c) => c.id));
   const [anker, setAnker] = useState<HTMLElement | null>(null);
   const [gezogen, setGezogen] = useState<number | null>(null);
   const [ziel, setZiel] = useState<number | null>(null); // Einfuegestelle in der Liste (0 = ganz oben)
@@ -178,6 +189,7 @@ export default function EbenenListe({ z, versteckt, umschalten }: Props) {
         {liste.map((e, i) => {
           const an = e.id === auswahl;
           const aus = versteckt.has(e.id);
+          const drin = kontextIds.has(e.id);
           return (
             <Box
               key={e.id}
@@ -207,7 +219,11 @@ export default function EbenenListe({ z, versteckt, umschalten }: Props) {
                 tabIndex={0}
                 data-tasten
                 aria-selected={an}
-                onClick={() => z.waehlen(e.id)}
+                onClick={(ev) => {
+                  // Alt+Klick: als Kontext an den Chat (Spec 2026-10-06 §1)
+                  if (ev.altKey && flaeche !== null) ebeneAlsKontext(flaeche, e);
+                  else z.waehlen(e.id);
+                }}
                 onKeyDown={(ev) => {
                   if (ev.key === 'Enter' || ev.key === ' ') {
                     ev.preventDefault();
@@ -237,6 +253,21 @@ export default function EbenenListe({ z, versteckt, umschalten }: Props) {
                 <Typography noWrap sx={{ flex: 1, minWidth: 0, fontSize: 13, color: aus ? FARBE.gedaempft : FARBE.text, fontWeight: an ? 600 : 400 }}>
                   {ebenenName(e)}
                 </Typography>
+                <Tooltip title={drin ? 'Ist im Chat-Kontext – klicken nimmt sie heraus' : '+ Kontext: an den Chat hängen (Alt+Klick)'}>
+                  <IconButton
+                    size="small"
+                    className="ebene-knopf"
+                    aria-label={drin ? 'Aus dem Kontext nehmen' : 'Als Kontext an den Chat hängen'}
+                    aria-pressed={drin}
+                    onClick={(ev) => {
+                      ev.stopPropagation();
+                      if (flaeche !== null) ebeneKontextUmschalten(flaeche, e);
+                    }}
+                    sx={{ opacity: drin || an ? 1 : 0, color: drin ? FARBE.akzent : undefined, transition: uebergang('opacity', 'background-color', 'color') }}
+                  >
+                    {drin ? <CommentRounded sx={{ fontSize: 15 }} /> : <AddCommentOutlined sx={{ fontSize: 15 }} />}
+                  </IconButton>
+                </Tooltip>
                 <Tooltip title={aus ? 'Einblenden (nur hier im Fenster)' : 'Ausblenden (nur hier im Fenster)'}>
                   <IconButton
                     size="small"

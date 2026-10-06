@@ -28,6 +28,8 @@ export type Start = {
   chat_vormerkung_url: string;
   chat_vormerkung_starten_url: string;
   chat_stopp_url: string;
+  // Anhaenge fuer den Chat (Spec 2026-10-06 §2.2); fehlt bei aelterem sales-ui.
+  anhang_url?: string;
   export_vorschau_url: string;
   export_url: string;
   zurueck_url: string;
