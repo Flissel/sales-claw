@@ -18,6 +18,7 @@ import os
 import re
 import time
 import urllib.parse
+import uuid
 from pathlib import Path
 
 from starlette.concurrency import run_in_threadpool
@@ -187,6 +188,9 @@ def routen(ui) -> list:
             "chat_url": f"/marketing/editor/{iid}/chat",
             "chat_stand_url": f"/marketing/editor/{iid}/chat.json",
             "chat_rueckgaengig_url": f"/marketing/editor/{iid}/chat/rueckgaengig",
+            "chat_vormerkung_url": f"/marketing/editor/{iid}/chat/vormerkung",
+            "chat_vormerkung_starten_url": f"/marketing/editor/{iid}/chat/vormerkung/starten",
+            "chat_stopp_url": f"/marketing/editor/{iid}/chat/stopp",
             "export_vorschau_url": f"/marketing/editor/{iid}/export/vorschau",
             "export_url": f"/marketing/editor/{iid}/export",
             "csrf": ui.CSRF_TOKEN,
@@ -337,24 +341,27 @@ def routen(ui) -> list:
             return json_grund(503, "Gestaltung gerade nicht möglich")
         return JSONResponse(r, headers={"Cache-Control": "no-store"})
 
-    async def _agent_post(request, pfad: str, pruefen, zeitlimit=None):
+    async def _agent_post(request, pfad: str, pruefen, zeitlimit=None, methode: str = "POST"):
         """Gemeinsamer Weg der schreibenden Agent-Routen: CSRF, JSON-Objekt,
         Formpruefung (`pruefen(body)` -> (nutzlast, None) oder (None, grund)),
-        Pult-Aufruf im Threadpool, Fehlerabbildung wie editor_bild."""
+        Pult-Aufruf im Threadpool, Fehlerabbildung wie editor_bild. `pruefen=None`:
+        Route ohne Koerper (nur CSRF), `methode` ist die Pult-Methode."""
         marke = request.headers.get("x-csrf", "")
         if not marke or not hmac.compare_digest(marke, ui.CSRF_TOKEN):
             return json_grund(403, "Fehlende oder falsche CSRF-Marke")
-        try:
-            body = json.loads(await request.body() or b"{}")
-        except (ValueError, UnicodeDecodeError):
-            return json_grund(422, "Die Anfrage ist kein gültiges JSON")
-        if not isinstance(body, dict):
-            return json_grund(422, "Die Anfrage ist kein JSON-Objekt")
-        nutzlast, grund = pruefen(body)
-        if grund:
-            return json_grund(422, grund)
+        nutzlast = None
+        if pruefen is not None:
+            try:
+                body = json.loads(await request.body() or b"{}")
+            except (ValueError, UnicodeDecodeError):
+                return json_grund(422, "Die Anfrage ist kein gültiges JSON")
+            if not isinstance(body, dict):
+                return json_grund(422, "Die Anfrage ist kein JSON-Objekt")
+            nutzlast, grund = pruefen(body)
+            if grund:
+                return json_grund(422, grund)
         iid = urllib.parse.quote(request.path_params["iid"], safe="")
-        aufruf = functools.partial(marketing_pult.anfrage, "POST", f"/inhalte/{iid}/{pfad}", nutzlast)
+        aufruf = functools.partial(marketing_pult.anfrage, methode, f"/inhalte/{iid}/{pfad}", nutzlast)
         if zeitlimit:
             aufruf = functools.partial(aufruf, zeitlimit=zeitlimit)
         try:
@@ -391,6 +398,20 @@ def routen(ui) -> list:
             return None, "auftrag fehlt"
         return {"auftrag": auftrag}, None
 
+    def _stopp_pruefen(body: dict):
+        art, auftrag = body.get("art"), body.get("auftrag")
+        if art not in ("behalten", "verwerfen"):
+            return None, "art muss behalten oder verwerfen sein"
+        nutzlast = {"art": art}
+        if auftrag is not None:
+            try:
+                if not isinstance(auftrag, str):
+                    raise ValueError
+                nutzlast["auftrag"] = str(uuid.UUID(auftrag))
+            except ValueError:
+                return None, "auftrag muss eine Auftrags-ID sein"
+        return nutzlast, None
+
     def _vorschau_pruefen(body: dict):
         flaechen = _flaechen_ids(body)
         if flaechen is None:
@@ -414,6 +435,22 @@ def routen(ui) -> list:
     @ui._gesichert_seite
     async def editor_chat_rueckgaengig(request):
         return await _agent_post(request, "chat/rueckgaengig", _rueckgaengig_pruefen)
+
+    @ui._gesichert_seite
+    async def editor_chat_vormerken(request):
+        return await _agent_post(request, "chat/vormerkung", _chat_pruefen, methode="PUT")
+
+    @ui._gesichert_seite
+    async def editor_chat_vormerkung_loeschen(request):
+        return await _agent_post(request, "chat/vormerkung", None, methode="DELETE")
+
+    @ui._gesichert_seite
+    async def editor_chat_vormerkung_starten(request):
+        return await _agent_post(request, "chat/vormerkung/starten", None)
+
+    @ui._gesichert_seite
+    async def editor_chat_stopp(request):
+        return await _agent_post(request, "chat/stopp", _stopp_pruefen)
 
     @ui._gesichert_seite
     async def editor_export_vorschau(request):
@@ -638,6 +675,10 @@ def routen(ui) -> list:
         Route("/marketing/editor/{iid}/chat", editor_chat, methods=["POST"]),
         Route("/marketing/editor/{iid}/chat.json", editor_chat_stand),
         Route("/marketing/editor/{iid}/chat/rueckgaengig", editor_chat_rueckgaengig, methods=["POST"]),
+        Route("/marketing/editor/{iid}/chat/vormerkung", editor_chat_vormerken, methods=["PUT"]),
+        Route("/marketing/editor/{iid}/chat/vormerkung", editor_chat_vormerkung_loeschen, methods=["DELETE"]),
+        Route("/marketing/editor/{iid}/chat/vormerkung/starten", editor_chat_vormerkung_starten, methods=["POST"]),
+        Route("/marketing/editor/{iid}/chat/stopp", editor_chat_stopp, methods=["POST"]),
         Route("/marketing/editor/{iid}/export/vorschau", editor_export_vorschau, methods=["POST"]),
         Route("/marketing/editor/{iid}/export", editor_export, methods=["POST"]),
         Route("/marketing/editor/{iid}/stand.json", editor_stand),
