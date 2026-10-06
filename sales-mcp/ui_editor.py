@@ -590,18 +590,77 @@ def routen(ui) -> list:
         except Exception:   # noqa: BLE001 - fail-closed
             await run_in_threadpool(ui.medien_datei_loeschen, basis)
             return json_grund(503, "Anhang konnte nicht gesichert werden - bitte erneut versuchen")
+        # Ohne Zeile gilt eine Datei als Gemeinsam und waere fuer jede Firma
+        # sichtbar: der Anhang gehoert der Firma des Newsletters. Gelingt das
+        # nicht, bleibt keine Datei liegen.
+        iid = urllib.parse.quote(request.path_params["iid"], safe="")
+        try:
+            await run_in_threadpool(marketing_pult.anfrage, "POST", f"/inhalte/{iid}/medien/zuordnen",
+                                    {"namen": [basis]})
+        except marketing_pult.PultFehler:
+            await run_in_threadpool(ui.medien_datei_loeschen, basis)
+            return json_grund(503, "Anhang konnte nicht der Firma zugeordnet werden - bitte erneut versuchen")
         ui.LOG.info("Medien (Editor-Anhang): %s abgelegt (%d Byte)", basis, groesse)
         return JSONResponse({"name": basis, "art": ui.server.medien.anhang_art(basis), "groesse": groesse},
                             headers={"Cache-Control": "no-store"})
 
     @ui._gesichert_seite
     async def medien_json(request):
+        """Bildwahl des Editors: nur Bilder der Firma des Newsletters plus
+        gemeinsame. Die Regel gehoert der Marketing-API (POST /medien/sichtbar);
+        hier wird nur weitergereicht. Ist die Zuordnung nicht lesbar, bleibt die
+        Liste leer (fail-closed) und die Bildwahl zeigt den Hinweis."""
+        try:
+            iid = str(uuid.UUID(request.query_params.get("iid", "")))
+        except ValueError:
+            return json_grund(422, "iid fehlt")
         try:
             eintraege = await run_in_threadpool(ui.server.medien.liste, True)
         except OSError:
             eintraege = []
-        bilder = [n for n, _groesse in eintraege if os.path.splitext(n)[1].lower() in BILD_ENDUNGEN]
-        return JSONResponse({"bilder": bilder}, headers={"Cache-Control": "no-store"})
+        alle = [n for n, _groesse in eintraege if os.path.splitext(n)[1].lower() in BILD_ENDUNGEN]
+        try:
+            d = await run_in_threadpool(marketing_pult.anfrage, "GET", f"/inhalte/{iid}")
+            mandant = str(((d or {}).get("inhalt") or {}).get("mandant") or "")
+            r = await run_in_threadpool(marketing_pult.anfrage, "POST", "/medien/sichtbar",
+                                        {"mandant": mandant, "namen": alle})
+            sichtbar = set(r["sichtbar"])
+            ergebnis = {"bilder": [n for n in alle if n in sichtbar],
+                        "zuordnung": dict(r.get("zuordnung") or {}),
+                        "mandanten": list(r.get("mandanten") or []),
+                        "mandant": mandant, "hinweis": None}
+        except (marketing_pult.PultFehler, TypeError, KeyError, ValueError, AttributeError):
+            ergebnis = {"bilder": [], "zuordnung": {}, "mandanten": [], "mandant": "",
+                        "hinweis": "Bildzuordnung nicht erreichbar"}
+        return JSONResponse(ergebnis, headers={"Cache-Control": "no-store"})
+
+    @ui._gesichert_seite
+    async def editor_medien_zuordnung(request):
+        """Bild einer Firma oder (mandant null) allen zuordnen. Fuer "Gemeinsam"
+        geht immer null an die API - nie "", das dort auf vibemind zurueckfiele."""
+        marke = request.headers.get("x-csrf", "")
+        if not marke or not hmac.compare_digest(marke, ui.CSRF_TOKEN):
+            return json_grund(403, "Fehlende oder falsche CSRF-Marke")
+        try:
+            body = json.loads(await request.body() or b"{}")
+        except (ValueError, UnicodeDecodeError):
+            return json_grund(422, "Die Anfrage ist kein gültiges JSON")
+        if not isinstance(body, dict):
+            return json_grund(422, "Die Anfrage ist kein JSON-Objekt")
+        name, mandant = body.get("name"), body.get("mandant", "")
+        if not isinstance(name, str) or not (mandant is None or (isinstance(mandant, str) and mandant)):
+            return json_grund(422, "name (Text) und mandant (Firma oder null) erwartet")
+        basis, fehler = await run_in_threadpool(ui.server.medien.pruefe_anzeige, name)
+        if fehler or not basis:
+            return json_grund(422, str(fehler or "Unbekannte Datei"))
+        try:
+            await run_in_threadpool(marketing_pult.anfrage, "POST", "/medien/zuordnung",
+                                    {"dateiname": basis, "mandant": mandant})
+        except marketing_pult.PultFehler as f:
+            if f.art == "abgelehnt":
+                return json_grund(422, str(f.grund or "Abgelehnt"))
+            return json_grund(503, "Zuordnung gerade nicht möglich")
+        return JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
 
     async def bild(request):
         # OHNE Anmeldung (AnmeldeWache laesst /marketing/bild/<t>/<n> durch):
@@ -744,6 +803,7 @@ def routen(ui) -> list:
         Route("/marketing/editor/{iid}/speichern", editor_speichern, methods=["POST"]),
         Route("/marketing/editor/{iid}/bild", editor_bild, methods=["POST"]),
         Route("/marketing/editor/{iid}/anhang", editor_anhang, methods=["POST"]),
+        Route("/marketing/editor/{iid}/medien/zuordnung", editor_medien_zuordnung, methods=["POST"]),
         Route("/marketing/editor/{iid}/gestaltung", editor_gestaltung, methods=["POST"]),
         Route("/marketing/editor/{iid}/chat", editor_chat, methods=["POST"]),
         Route("/marketing/editor/{iid}/chat.json", editor_chat_stand),

@@ -43,6 +43,8 @@ class Falsch:
         self.speichern_antwort = {"fassung": 3}
         self.bilder = {"auftraege": []}
         self.verweise = []
+        self.sichtbar = None                # None = alle angefragten Namen sichtbar
+        self.zuordnung = {}
         self.gestaltung_antwort = {"url": "/medien/datei/gs-0123456789ab.jpg", "width": 1200,
                                    "height": 800, "hinweise": []}
 
@@ -105,6 +107,14 @@ class Falsch:
                                   "fassung": 1}]}
         if pfad.startswith("/layouts"):
             return {"layouts": []}
+        if pfad == "/medien/sichtbar":
+            namen = list(daten["namen"])
+            sicht = namen if self.sichtbar is None else [n for n in namen if n in self.sichtbar]
+            return {"mandant": daten["mandant"], "name": "VibeMind", "sichtbar": sicht,
+                    "zuordnung": self.zuordnung,
+                    "mandanten": [{"id": "vibemind", "name": "VibeMind"}, {"id": "fin2gether", "name": "fin2gether"}]}
+        if pfad == "/medien/zuordnung":
+            return {"dateiname": daten["dateiname"], "mandant": daten["mandant"]}
         if pfad.startswith("/medien/verweise?name="):
             return {"verweise": self.verweise}
         return {}
@@ -280,19 +290,99 @@ def test_api_weg_wird_503(angemeldet, pult):
 
 # --- Medienliste ------------------------------------------------------------------
 
+MEDIEN = f"/marketing/editor/medien.json?iid={IID}"
+
 def test_medien_json_nur_bilder_ohne_interne(angemeldet, monkeypatch, tmp_path):
     for name in ("logo.png", "team.jpg", "preise.pdf", "terminkarte-x.png", "clip.mp4"):
         (tmp_path / name).write_bytes(b"\x89PNG\r\n\x1a\n0000")
     monkeypatch.setattr(server.medien, "MEDIA_VERZEICHNIS", str(tmp_path))
     monkeypatch.setattr(server.medien, "ERZEUGT_VERZEICHNIS", str(tmp_path / "fehlt"))
-    r = angemeldet.get("/marketing/editor/medien.json", headers=HOST)
-    assert r.status_code == 200 and r.json() == {"bilder": ["logo.png", "team.jpg"]}
+    r = angemeldet.get(MEDIEN, headers=HOST)
+    assert r.status_code == 200 and r.json()["bilder"] == ["logo.png", "team.jpg"]
 
 
 def test_medien_json_ordner_fehlt(angemeldet, monkeypatch, tmp_path):
     monkeypatch.setattr(server.medien, "MEDIA_VERZEICHNIS", str(tmp_path / "gibtsnicht"))
-    r = angemeldet.get("/marketing/editor/medien.json", headers=HOST)
-    assert r.status_code == 200 and r.json() == {"bilder": []}
+    r = angemeldet.get(MEDIEN, headers=HOST)
+    assert r.status_code == 200 and r.json()["bilder"] == []
+
+
+def test_medien_json_reicht_namen_durch_und_liefert_nur_sichtbare(angemeldet, pult, medienordner):
+    for name in ("logo-vibemind-0123456789.png", "logo-fin2gether-0123456789.png", "team.jpg"):
+        (medienordner / name).write_bytes(b"\x89PNG\r\n\x1a\n0000")
+    pult.sichtbar = {"logo-vibemind-0123456789.png", "team.jpg"}
+    pult.zuordnung = {"team.jpg": None, "logo-fin2gether-0123456789.png": "fin2gether"}
+    j = angemeldet.get(MEDIEN, headers=HOST).json()
+    assert j["bilder"] == ["logo-vibemind-0123456789.png", "team.jpg"]
+    assert j["zuordnung"] == pult.zuordnung and j["mandant"] == "vibemind" and j["hinweis"] is None
+    assert [m["id"] for m in j["mandanten"]] == ["vibemind", "fin2gether"]
+    ruf = [a for a in pult.aufrufe if a[1] == "/medien/sichtbar"]
+    assert len(ruf) == 1 and ruf[0][0] == "POST" and ruf[0][2]["mandant"] == "vibemind"
+    assert sorted(ruf[0][2]["namen"]) == ["logo-fin2gether-0123456789.png", "logo-vibemind-0123456789.png", "team.jpg"]
+    assert ("GET", f"/inhalte/{IID}", None) in pult.aufrufe
+
+
+@pytest.mark.parametrize("pfad", ["/marketing/editor/medien.json", "/marketing/editor/medien.json?iid=",
+                                  "/marketing/editor/medien.json?iid=kein-uuid"])
+def test_medien_json_ohne_gueltige_iid_ist_422(angemeldet, pult, pfad):
+    r = angemeldet.get(pfad, headers=HOST)
+    assert r.status_code == 422 and r.json() == {"grund": "iid fehlt"}
+    assert pult.aufrufe == []
+
+
+def test_medien_json_pult_weg_ist_leer_mit_hinweis(angemeldet, pult, medienordner):
+    (medienordner / "team.jpg").write_bytes(b"\x89PNG\r\n\x1a\n0000")
+    for art in ("nicht_erreichbar", "nicht_verbunden", "abgelehnt"):
+        pult.fehler = marketing_pult.PultFehler(art, "intern")
+        r = angemeldet.get(MEDIEN, headers=HOST)
+        assert r.status_code == 200, art
+        assert r.json() == {"bilder": [], "zuordnung": {}, "mandanten": [], "mandant": "",
+                            "hinweis": "Bildzuordnung nicht erreichbar"}, art
+
+
+# --- Bildzuordnung je Firma --------------------------------------------------------
+
+def _zuordnen(c, body, csrf=True):
+    kopf = {**HOST, **({"X-CSRF": ui.CSRF_TOKEN} if csrf else {})}
+    return c.post(f"/marketing/editor/{IID}/medien/zuordnung", json=body, headers=kopf)
+
+
+def test_zuordnung_ohne_csrf_ist_403(angemeldet, pult, medienordner):
+    (medienordner / "team.jpg").write_bytes(b"x" * 10)
+    assert _zuordnen(angemeldet, {"name": "team.jpg", "mandant": None}, csrf=False).status_code == 403
+    assert pult.aufrufe == []
+
+
+def test_zuordnung_reicht_null_und_firma_durch(angemeldet, pult, medienordner):
+    (medienordner / "team.jpg").write_bytes(b"x" * 10)
+    r = _zuordnen(angemeldet, {"name": "team.jpg", "mandant": None})
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    assert pult.aufrufe[-1] == ("POST", "/medien/zuordnung", {"dateiname": "team.jpg", "mandant": None})
+    assert _zuordnen(angemeldet, {"name": "team.jpg", "mandant": "fin2gether"}).status_code == 200
+    assert pult.aufrufe[-1] == ("POST", "/medien/zuordnung", {"dateiname": "team.jpg", "mandant": "fin2gether"})
+
+
+@pytest.mark.parametrize("body", [{"name": "team.jpg", "mandant": ""}, {"name": "team.jpg", "mandant": 5},
+                                  {"name": "team.jpg"}, {"mandant": None}, {"name": 3, "mandant": None}])
+def test_zuordnung_form_wird_geprueft(angemeldet, pult, medienordner, body):
+    (medienordner / "team.jpg").write_bytes(b"x" * 10)
+    assert _zuordnen(angemeldet, body).status_code == 422
+    assert pult.aufrufe == []
+
+
+def test_zuordnung_unbekannte_datei_ist_422_ohne_pultaufruf(angemeldet, pult, medienordner):
+    r = _zuordnen(angemeldet, {"name": "gibtsnicht.png", "mandant": None})
+    assert r.status_code == 422 and "grund" in r.json() and pult.aufrufe == []
+
+
+def test_zuordnung_pultfehler_wird_422_oder_503(angemeldet, pult, medienordner):
+    (medienordner / "team.jpg").write_bytes(b"x" * 10)
+    pult.fehler = marketing_pult.PultFehler("abgelehnt", "unbekannte Firma")
+    r = _zuordnen(angemeldet, {"name": "team.jpg", "mandant": "x"})
+    assert r.status_code == 422 and r.json() == {"grund": "unbekannte Firma"}
+    pult.fehler = marketing_pult.PultFehler("nicht_erreichbar", "intern")
+    r = _zuordnen(angemeldet, {"name": "team.jpg", "mandant": None})
+    assert r.status_code == 503 and "grund" in r.json()
 
 
 # --- Signierte Bilder ------------------------------------------------------------------
@@ -794,8 +884,8 @@ def test_medien_json_ohne_entwurfsbilder(angemeldet, monkeypatch, tmp_path):
         (erzeugt / name).write_bytes(bytes([0xFF, 0xD8]) + b"x" * 64)
     monkeypatch.setattr(server.medien, "MEDIA_VERZEICHNIS", str(tmp_path / "leer"))
     monkeypatch.setattr(server.medien, "ERZEUGT_VERZEICHNIS", str(erzeugt))
-    r = angemeldet.get("/marketing/editor/medien.json", headers=HOST)
-    assert r.json() == {"bilder": ["nl-12345678-x.jpg"]}
+    r = angemeldet.get(MEDIEN, headers=HOST)
+    assert r.json()["bilder"] == ["nl-12345678-x.jpg"]
 
 
 def test_stand_json(angemeldet, pult):
@@ -1422,6 +1512,25 @@ def test_anhang_meta_fehler_laesst_keine_sendbare_datei_zurueck(angemeldet, medi
     monkeypatch.setattr(server, "medien_meta_setzen", kaputt)
     r = _anhang(angemeldet, "privat.txt", b"geheim")
     assert r.status_code == 503 and list(medienordner.iterdir()) == []
+
+
+def test_anhang_wird_der_firma_des_newsletters_zugeordnet(angemeldet, pult, medienordner):
+    name = _anhang(angemeldet, "Preise 2026.PDF").json()["name"]
+    assert pult.aufrufe[-1] == ("POST", f"/inhalte/{IID}/medien/zuordnen", {"namen": [name]})
+
+
+def test_anhang_zuordnung_scheitert_datei_weg_und_503(angemeldet, pult, medienordner, monkeypatch):
+    echt = pult.anfrage
+
+    def anfrage(methode, pfad, daten=None, roh=False, zeitlimit=None):
+        if pfad.endswith("/medien/zuordnen"):
+            raise marketing_pult.PultFehler("nicht_erreichbar", "intern")
+        return echt(methode, pfad, daten, roh, zeitlimit)
+    monkeypatch.setattr(marketing_pult, "anfrage", anfrage)
+    r = _anhang(angemeldet, "logo.png", b"P" * 10)
+    assert r.status_code == 503
+    assert r.json() == {"grund": "Anhang konnte nicht der Firma zugeordnet werden - bitte erneut versuchen"}
+    assert list(medienordner.iterdir()) == []
 
 
 def test_ablegen_faellt_ohne_hardlink_auf_exklusives_anlegen_zurueck(medienordner, monkeypatch):
