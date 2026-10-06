@@ -29,6 +29,7 @@ import marketing_pult
 import schriften
 
 GUELTIG_S = 900
+_STAMM_FUER_PRAEFIX = 90   # Platz fuer "anhang-" und "-NNN" unter den 100 Zeichen
 BILD_ENDUNGEN = (".png", ".jpg", ".jpeg", ".gif", ".webp")
 STATIK = Path(__file__).resolve().parent / "static" / "editor"
 STATIK_DATEIEN = {"editor.js": "text/javascript", "editor.css": "text/css"}
@@ -543,12 +544,18 @@ def routen(ui) -> list:
         stamm, endung = ui.server.medien.anhang_name(datei.filename)
         if stamm is None:
             return json_grund(422, endung)
+        med = ui.server.medien
         for n in range(1, 1000):
             basis = f"{stamm}{endung}" if n == 1 else f"{stamm}-{n}{endung}"
+            if med.intern(basis) or med.entwurfsbild(basis):
+                # Das Suffix machte daraus einen internen Namen (terminkarte-2.pdf):
+                # fuer alle weiteren Kandidaten mit Praefix, sonst unsichtbar.
+                stamm = "anhang-" + stamm[:_STAMM_FUER_PRAEFIX]
+                basis = f"{stamm}-{n}{endung}"
             fehler = ui.server.medien.pruefe_neuen_namen(basis)[1]
             if fehler:   # kann nach der Normalisierung nicht vorkommen - Sicherheitsnetz
                 return json_grund(422, fehler)
-            if ui.server.medien.liegt_schon(basis):
+            if med.liegt_schon(basis):
                 continue
             groesse, abgelehnt = await ui.medien_ablegen(datei, basis, ersetzen=False)
             if abgelehnt and abgelehnt[0] == 409:    # zwischen Pruefung und Ablegen belegt
@@ -560,6 +567,14 @@ def routen(ui) -> list:
         if abgelehnt:
             status, text = abgelehnt
             return json_grund(500 if status == 500 else 422, text)
+        # Chat-Kontext ist nicht fuer Kunden gedacht: ohne Zeile in medien_meta
+        # gilt "Bot darf senden". Gesperrt anlegen; der Betreiber gibt auf /medien
+        # ausdruecklich frei. Gelingt das nicht, bleibt keine sendbare Datei liegen.
+        try:
+            await run_in_threadpool(ui.server.medien_meta_setzen, basis, False)
+        except Exception:   # noqa: BLE001 - fail-closed
+            await run_in_threadpool(ui.medien_datei_loeschen, basis)
+            return json_grund(503, "Anhang konnte nicht gesichert werden - bitte erneut versuchen")
         ui.LOG.info("Medien (Editor-Anhang): %s abgelegt (%d Byte)", basis, groesse)
         return JSONResponse({"name": basis, "art": ui.server.medien.anhang_art(basis), "groesse": groesse},
                             headers={"Cache-Control": "no-store"})

@@ -185,6 +185,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import secrets
+import shutil
 import sys
 import time
 import uuid
@@ -2145,7 +2146,9 @@ async def medien_ablegen(datei, basis: str, ersetzen: bool = True):
     """
     wurzel = server.medien.wurzel()
     ziel = os.path.join(wurzel, basis)
-    zwischen = os.path.join(wurzel, basis + ".teil")
+    # Je Anfrage ein eigener Zwischenname: zwei gleichzeitige Uploads desselben
+    # Namens duerfen nie in dieselbe .teil-Datei schreiben.
+    zwischen = os.path.join(wurzel, f"{basis}.{uuid.uuid4().hex}.teil")
     geschrieben = 0
     try:
         with open(zwischen, "wb") as raus:
@@ -2162,7 +2165,15 @@ async def medien_ablegen(datei, basis: str, ersetzen: bool = True):
         if ersetzen:
             os.replace(zwischen, ziel)
         else:
-            os.link(zwischen, ziel)
+            try:
+                os.link(zwischen, ziel)
+            except FileExistsError:
+                raise
+            except OSError:
+                # Dateisystem ohne Hardlinks (EPERM/ENOTSUP, manche Binds):
+                # exklusiv anlegen und kopieren - "xb" scheitert bei Namensgleichheit.
+                with open(zwischen, "rb") as rein, open(ziel, "xb") as raus:
+                    shutil.copyfileobj(rein, raus)
             _aufraeumen(zwischen)
     except FileExistsError:
         _aufraeumen(zwischen)

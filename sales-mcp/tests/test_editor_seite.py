@@ -1348,3 +1348,107 @@ def test_neue_endungen_sind_zugelassen_und_haben_mime():
         "send-document", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
     assert server.medien.ERLAUBT[".txt"] == ("send-document", "text/plain")
     assert server.medien.ERLAUBT[".md"] == ("send-document", "text/markdown")
+
+
+# --- Anhang: Nebenlaeufigkeit, Bot-Sperre, Randfaelle (Fix-Runde 1) --------
+
+class _Strom:
+    """Minimaler UploadFile-Ersatz: liefert den Inhalt in Stuecken und gibt dem
+    Event-Loop dazwischen die Kontrolle (so verzahnen sich zwei Uploads)."""
+    def __init__(self, inhalt, stueck=4):
+        self.inhalt, self.pos, self.stueck = inhalt, 0, stueck
+
+    async def read(self, _n):
+        import asyncio
+        await asyncio.sleep(0)
+        teil = self.inhalt[self.pos:self.pos + self.stueck]
+        self.pos += self.stueck
+        return teil
+
+    async def seek(self, p):
+        self.pos = p
+
+
+def test_gleichzeitiges_ablegen_gleichen_namens_laesst_eine_intakte_datei(medienordner):
+    import asyncio
+
+    async def lauf():
+        return await asyncio.gather(
+            ui.medien_ablegen(_Strom(b"A" * 40), "bild.png", ersetzen=False),
+            ui.medien_ablegen(_Strom(b"B" * 40), "bild.png", ersetzen=False))
+    erg = asyncio.run(lauf())
+    assert sorted(r[1][0] if r[1] else 0 for r in erg) == [0, 409]
+    assert (medienordner / "bild.png").read_bytes() in (b"A" * 40, b"B" * 40)
+    assert [p.name for p in medienordner.iterdir()] == ["bild.png"]
+
+
+def test_gleichzeitige_anhang_uploads_gleichen_namens_zwei_intakte_dateien(angemeldet, medienordner):
+    from concurrent.futures import ThreadPoolExecutor
+    inhalte = [bytes([65 + i]) * 200_000 for i in range(4)]
+    with ThreadPoolExecutor(4) as pool:
+        antworten = list(pool.map(lambda b: _anhang(angemeldet, "image.png", b), inhalte))
+    assert [a.status_code for a in antworten] == [200] * 4
+    namen = [a.json()["name"] for a in antworten]
+    assert len(set(namen)) == 4 and all(MARKETING_NAME.fullmatch(n) for n in namen)
+    assert sorted((medienordner / n).read_bytes() for n in namen) == sorted(inhalte)
+    assert sorted(p.name for p in medienordner.iterdir()) == sorted(namen)
+
+
+@pytest.fixture
+def meta_leer(angemeldet):
+    server._q("delete from medien_meta")
+    yield
+    server._q("delete from medien_meta")
+
+
+def test_anhang_ist_nicht_automatisch_fuer_den_bot_sendbar(angemeldet, medienordner, meta_leer):
+    name = _anhang(angemeldet, "privat.txt", b"geheim").json()["name"]
+    assert server.medien_meta_lesen()[name]["bot_darf_senden"] is False
+
+
+def test_medien_hochladen_bleibt_fuer_den_bot_freigegeben(angemeldet, medienordner, meta_leer):
+    r = angemeldet.post("/medien/hochladen", data={"csrf": ui.CSRF_TOKEN}, headers=HOST,
+                        files={"datei": ("angebot.pdf", b"y" * 10, "application/pdf")},
+                        follow_redirects=False)
+    assert r.status_code == 303 and "angebot.pdf" not in server.medien_meta_lesen()
+
+
+def test_anhang_meta_fehler_laesst_keine_sendbare_datei_zurueck(angemeldet, medienordner, monkeypatch):
+    def kaputt(*a, **k):
+        raise RuntimeError("db weg")
+    monkeypatch.setattr(server, "medien_meta_setzen", kaputt)
+    r = _anhang(angemeldet, "privat.txt", b"geheim")
+    assert r.status_code == 503 and list(medienordner.iterdir()) == []
+
+
+def test_ablegen_faellt_ohne_hardlink_auf_exklusives_anlegen_zurueck(medienordner, monkeypatch):
+    import asyncio
+
+    def kein_link(*a, **k):
+        raise PermissionError("kein Hardlink")
+    monkeypatch.setattr(os, "link", kein_link)
+    assert asyncio.run(ui.medien_ablegen(_Strom(b"NEU1"), "x.png", ersetzen=False))[1] is None
+    assert (medienordner / "x.png").read_bytes() == b"NEU1"
+    erg = asyncio.run(ui.medien_ablegen(_Strom(b"NEU2"), "x.png", ersetzen=False))
+    assert erg[1][0] == 409 and (medienordner / "x.png").read_bytes() == b"NEU1"
+    assert [p.name for p in medienordner.iterdir()] == ["x.png"]
+
+
+def test_anhang_kollisionssuffix_ergibt_keinen_internen_namen(angemeldet, medienordner):
+    (medienordner / "terminkarte.pdf").write_bytes(b"ALT")
+    name = _anhang(angemeldet, "terminkarte.pdf").json()["name"]
+    assert name == "anhang-terminkarte-2.pdf"
+    assert not server.medien.intern(name) and MARKETING_NAME.fullmatch(name)
+
+
+def test_anhang_nur_endung_und_doppelendung(angemeldet, medienordner):
+    assert _anhang(angemeldet, ".pdf").json()["name"] == "anhang.pdf"
+    assert _anhang(angemeldet, "x.pdf.exe").status_code == 422
+    assert [p.name for p in medienordner.iterdir()] == ["anhang.pdf"]
+
+
+def test_anhang_praefix_und_suffix_zusammen(angemeldet, medienordner):
+    a = _anhang(angemeldet, "Terminkarte-x.pdf").json()["name"]
+    b = _anhang(angemeldet, "Terminkarte-x.pdf").json()["name"]
+    assert (a, b) == ("anhang-Terminkarte-x.pdf", "anhang-Terminkarte-x-2.pdf")
+    assert not server.medien.intern(a) and not server.medien.intern(b)
