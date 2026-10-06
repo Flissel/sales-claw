@@ -53,6 +53,9 @@ class Falsch:
             raise self.fehler
         if roh:
             return (b"<!doctype html><p>Vorschau</p>", "text/html")
+        if pfad == "/mandanten":
+            return {"mandanten": [{"id": "vibemind", "name": "VibeMind", "aktiv": True},
+                                  {"id": "fin2gether", "name": "fin2gether", "aktiv": True}]}
         if pfad.startswith("/uebersicht"):
             return {"mandanten": [{"id": "vibemind", "name": "VibeMind", "aktiv": True}],
                     "zaehler": {"entwurf": 1, "freigegeben": 0, "abgelehnt": 0}}
@@ -159,7 +162,7 @@ def test_editor_seite_einzige_mit_skript(angemeldet):
     assert start["betreff"] == "Oktober-Ausgabe" and start["vorschautext"] == "Kurz"
     assert start["speichern_url"] == f"/marketing/editor/{IID}/speichern"
     assert start["vorschau_url"] == f"/marketing/entwurf/{IID}/vorschau"
-    assert start["medien_url"] == "/marketing/editor/medien.json"
+    assert start["medien_url"] == f"/marketing/editor/medien.json?iid={IID}"
     assert start["zurueck_url"] == f"/marketing/entwurf/{IID}"
     assert "Der Editor braucht einen größeren Bildschirm" in r.text
     # Nur ein Skript: das Paket. Das Datenelement ist kein Skript.
@@ -1452,3 +1455,63 @@ def test_anhang_praefix_und_suffix_zusammen(angemeldet, medienordner):
     b = _anhang(angemeldet, "Terminkarte-x.pdf").json()["name"]
     assert (a, b) == ("anhang-Terminkarte-x.pdf", "anhang-Terminkarte-x-2.pdf")
     assert not server.medien.intern(a) and not server.medien.intern(b)
+
+
+# --- Firmen-Umschalter im Editor-Bereich (Task 8) ---------------------------------
+
+def _mit_firma(c, wert):
+    cookies = "; ".join(f"{k}={v}" for k, v in c.cookies.items())
+    return {**HOST, "cookie": f"{cookies}; mk_mandant={wert}"}
+
+
+def test_start_nennt_firma_und_medien_urls(angemeldet):
+    start = _start(angemeldet.get(f"/marketing/editor/{IID}", headers=HOST).text)
+    assert start["mandant"] == {"id": "vibemind", "name": "VibeMind"}
+    assert start["medien_url"] == f"/marketing/editor/medien.json?iid={IID}"
+    assert start["medien_zuordnung_url"] == f"/marketing/editor/{IID}/medien/zuordnung"
+
+
+def test_start_firma_folgt_dem_inhalt_nicht_dem_cookie(angemeldet, pult, monkeypatch):
+    orig = pult.anfrage
+
+    def anfrage(methode, pfad, daten=None, roh=False, zeitlimit=None):
+        r = orig(methode, pfad, daten, roh, zeitlimit)
+        if pfad == f"/inhalte/{IID}":
+            r["inhalt"]["mandant"] = "fin2gether"
+        return r
+    monkeypatch.setattr(marketing_pult, "anfrage", anfrage)
+    start = _start(angemeldet.get(f"/marketing/editor/{IID}", headers=_mit_firma(angemeldet, "vibemind")).text)
+    assert start["mandant"] == {"id": "fin2gether", "name": "fin2gether"}
+
+
+def test_start_firmenname_ist_id_wenn_liste_nicht_erreichbar(angemeldet, pult, monkeypatch):
+    orig = pult.anfrage
+
+    def anfrage(methode, pfad, daten=None, roh=False, zeitlimit=None):
+        if pfad == "/mandanten":
+            raise marketing_pult.PultFehler("nicht_erreichbar", "x")
+        return orig(methode, pfad, daten, roh, zeitlimit)
+    monkeypatch.setattr(marketing_pult, "anfrage", anfrage)
+    r = angemeldet.get(f"/marketing/editor/{IID}", headers=HOST)
+    assert r.status_code == 200 and _start(r.text)["mandant"] == {"id": "vibemind", "name": "vibemind"}
+
+
+def test_vorlagen_mit_cookie_fin2gether(angemeldet, pult):
+    h = _mit_firma(angemeldet, "fin2gether")
+    s = angemeldet.get("/marketing/vorlagen", headers=h).text
+    assert ("GET", "/vorlagen?mandant=fin2gether&status=freigegeben", None) in pult.aufrufe
+    assert 'action="/marketing/mandant"' in s and 'name="zurueck" value="/marketing/vorlagen"' in s
+    assert 'aria-pressed="true" class="mandant aktiv">fin2gether' in s
+    angemeldet.get("/marketing/vorlage-bild/leer", headers=h)
+    assert any(a[1].startswith("/vorlagen/leer/vorschau?") and "mandant=fin2gether" in a[1]
+               for a in pult.aufrufe)
+    angemeldet.post("/marketing/aus-vorlage", headers=h, follow_redirects=False,
+                    data={"csrf": ui.CSRF_TOKEN, "vorlage": "leer", "titel": "T"})
+    assert pult.aufrufe[-1] == ("POST", "/inhalte/aus_vorlage",
+                                {"vorlage": "leer", "titel": "T", "mandant": "fin2gether"})
+
+
+def test_vorlagen_boeses_cookie_faellt_auf_vibemind(angemeldet, pult):
+    r = angemeldet.get("/marketing/vorlagen", headers=_mit_firma(angemeldet, 'x"><script>'))
+    assert r.status_code == 200 and "<script" not in r.text
+    assert ("GET", "/vorlagen?mandant=vibemind&status=freigegeben", None) in pult.aufrufe

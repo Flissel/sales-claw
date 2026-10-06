@@ -1005,6 +1005,7 @@ h2 { font-size: 1.05rem; margin-top: 2rem; }
 .mandant { border: 1px solid var(--linie); border-radius: 999px;
            padding: .2rem .8rem; font-weight: 600; }
 .mandant.aus { color: var(--gedaempft); font-weight: 400; border-style: dashed; }
+.mandant.aktiv { border-color: var(--gut); border-width: 2px; background: var(--aktiv); }
 .filter, .vorschau-wahl { display: flex; flex-wrap: wrap; gap: .4rem;
                           margin: .5rem 0 1rem; }
 .filter a, .vorschau-wahl a { padding: .3rem .8rem; border: 1px solid

@@ -22,6 +22,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import RedirectResponse, Response
 from starlette.routing import Route
 
+import marketing_mandant
 import marketing_pult
 import ui_editor
 
@@ -120,20 +121,48 @@ def routen(ui) -> list:
     def von(request) -> str:
         return ui._ui_akteur(request)
 
+    async def firma(request) -> tuple[str, list[dict]]:
+        """Die gewaehlte Firma (Cookie, geprueft gegen die aktive Liste) und die
+        Liste selbst. Wirft PultFehler - der Aufrufer faengt wie bei jedem
+        API-Aufruf."""
+        liste = await run_in_threadpool(marketing_mandant.mandanten)
+        return marketing_mandant.waehlen(request.cookies.get(marketing_mandant.COOKIE), liste), liste
+
+    def umschalter(m: str, liste: list[dict], zurueck: str) -> str:
+        return marketing_mandant.umschalter(e, ui.CSRF_TOKEN, m, liste, zurueck)
+
+    @ui._gesichert_seite
+    async def mandant_waehlen(request):
+        form = await request.form()
+        if not ui._csrf_ok(form):
+            return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
+        wahl = str(form.get("mandant") or "")
+        try:
+            liste = await run_in_threadpool(marketing_mandant.mandanten)
+        except marketing_pult.PultFehler as f:
+            return fehler(f)
+        if not any(m.get("id") == wahl and m.get("aktiv") for m in liste):
+            return ui._fehlerseite(422, "Nicht möglich", "Diese Firma gibt es nicht oder sie ist nicht aktiv.")
+        zurueck = str(form.get("zurueck") or "")
+        antwort = RedirectResponse(zurueck if marketing_mandant.ziel_ok(zurueck) else "/marketing",
+                                   status_code=303)
+        antwort.set_cookie(marketing_mandant.COOKIE, wahl, max_age=365 * 24 * 3600,
+                           httponly=True, samesite="lax", path="/marketing")
+        return antwort
+
     @ui._gesichert_seite
     async def uebersicht(request):
         try:
-            d = await run_in_threadpool(marketing_pult.anfrage, "GET", "/uebersicht?mandant=vibemind")
+            m, liste = await firma(request)
+            d = await run_in_threadpool(marketing_pult.anfrage, "GET",
+                                        f"/uebersicht?mandant={urllib.parse.quote(m)}")
         except marketing_pult.PultFehler as f:
             return fehler(f)
-        mandanten = "".join(
-            f'<span class="mandant{"" if m["aktiv"] else " aus"}">{e(m["name"])}'
-            f'{"" if m["aktiv"] else " &middot; kommt"}</span>' for m in d["mandanten"])
         z = d["zaehler"]
         karten = "".join(
             f'<a class="kachel" href="/marketing/entwuerfe?status={k}"><b>{int(z.get(k, 0))}</b>'
             f'<span>{e(t)}</span></a>' for k, t in STATUS.items())
-        return ui._seite("Marketing", f'<div class="mandanten">{mandanten}</div>'
+        return ui._seite("Marketing", umschalter(m, liste, "/marketing") +
                                       f'<div class="kacheln">{karten}</div>'
                                       '<p><a class="knopf" href="/marketing/vorlagen">'
                                       'Neuer Newsletter aus Vorlage</a></p>')
@@ -149,8 +178,9 @@ def routen(ui) -> list:
         if status not in STATUS and status != "alle":
             status = "entwurf"
         api_status = "" if status == "alle" else status
-        q = urllib.parse.urlencode({k: v for k, v in (("mandant", "vibemind"), ("art", art), ("status", api_status)) if v})
         try:
+            m, liste = await firma(request)
+            q = urllib.parse.urlencode({k: v for k, v in (("mandant", m), ("art", art), ("status", api_status)) if v})
             d = await run_in_threadpool(marketing_pult.anfrage, "GET", f"/inhalte?{q}")
         except marketing_pult.PultFehler as f:
             return fehler(f)
@@ -171,7 +201,9 @@ def routen(ui) -> list:
             f'<td>{e(ARTEN.get(i["art"], i["art"]))}</td><td>{e(STATUS.get(i["status"], i["status"]))}</td>'
             f'<td>{e(i["layout"] or "")}</td><td>{int(i["fassungen"])}</td><td>{e(str(i["erstellt_am"])[:10])}</td></tr>'
             for i in d["inhalte"]) or '<tr><td colspan="6">Keine Entwürfe.</td></tr>'
-        return ui._seite("Entwürfe", f'<div class="filter">{filter_}</div>'
+        return ui._seite("Entwürfe", umschalter(m, liste, "/marketing/entwuerfe?" + urllib.parse.urlencode(
+                                       [(k, v) for k, v in (("art", art), ("status", status)) if v])) +
+                         f'<div class="filter">{filter_}</div>'
                          f'<div class="filter">{filter_status}</div>'
                          '<table><tr><th>Titel</th><th>Art</th><th>Status</th><th>Layout</th>'
                          f'<th>Fassungen</th><th>Datum</th></tr>{zeilen}</table>')
@@ -181,7 +213,10 @@ def routen(ui) -> list:
         iid = request.path_params["iid"]
         try:
             d = await run_in_threadpool(marketing_pult.anfrage, "GET", f"/inhalte/{urllib.parse.quote(iid)}")
-            lay = await run_in_threadpool(marketing_pult.anfrage, "GET", "/layouts?mandant=vibemind")
+            # Die Layouts gehoeren der Firma des INHALTS, nicht der Cookie-Wahl.
+            lay = await run_in_threadpool(
+                marketing_pult.anfrage, "GET",
+                f"/layouts?mandant={urllib.parse.quote(str(d['inhalt']['mandant']))}")
         except marketing_pult.PultFehler as f:
             return fehler(f)
         i, fassungen = d["inhalt"], d["fassungen"]
@@ -445,8 +480,8 @@ def routen(ui) -> list:
             return _gerahmt("<p>Marketing nicht verbunden.</p>", status=503)
         return _gerahmt("<p>Marketing gerade nicht erreichbar.</p>", status=503)
 
-    async def alle_layouts() -> list:
-        lay = await run_in_threadpool(marketing_pult.anfrage, "GET", "/layouts?mandant=vibemind")
+    async def alle_layouts(m: str) -> list:
+        lay = await run_in_threadpool(marketing_pult.anfrage, "GET", f"/layouts?mandant={urllib.parse.quote(m)}")
         return lay.get("layouts") or []
 
     def layout_von(layouts: list, name: str) -> dict | None:
@@ -499,7 +534,8 @@ def routen(ui) -> list:
     @ui._gesichert_seite
     async def layouts(request):
         try:
-            alle = await alle_layouts()
+            m, liste = await firma(request)
+            alle = await alle_layouts(m)
         except marketing_pult.PultFehler as f:
             return fehler(f)
 
@@ -522,19 +558,21 @@ def routen(ui) -> list:
             teil.sort(key=lambda l: (not l.get("standard"), str(l.get("name") or "")))
             gruppen.append(f'<h2>{e(ARTEN.get(art, art or "Ohne Art"))}</h2>'
                            f'<div class="galerie">{"".join(karte(l) for l in teil)}</div>')
-        antwort = ui._seite("Layouts", "".join(gruppen) or "<p>Keine Layouts.</p>")
+        antwort = ui._seite("Layouts", umschalter(m, liste, "/marketing/layouts") +
+                            ("".join(gruppen) or "<p>Keine Layouts.</p>"))
         antwort.headers["Content-Security-Policy"] = ui._csp_mit_rahmen("'self'")
         return antwort
 
     @ui._gesichert_seite
     async def layout_bild(request):
         try:
-            l = layout_von(await alle_layouts(), request.path_params["name"])
+            m, _liste = await firma(request)
+            l = layout_von(await alle_layouts(m), request.path_params["name"])
             if not l:
                 return _gerahmt("<p>Unbekanntes Layout.</p>", status=404)
             inhalt, typ = await run_in_threadpool(
                 marketing_pult.anfrage, "POST", "/layouts/vorschau",
-                {"gestalt": l.get("gestalt") or {}, "mandant": "vibemind", "format": "mail"}, roh=True)
+                {"gestalt": l.get("gestalt") or {}, "mandant": m, "format": "mail"}, roh=True)
         except marketing_pult.PultFehler as f:
             return gerahmter_fehler(f)
         return _gerahmt(inhalt, typ)
@@ -543,7 +581,8 @@ def routen(ui) -> list:
     async def layout_editor(request):
         name = request.path_params["name"]
         try:
-            l = layout_von(await alle_layouts(), name)
+            m, _liste = await firma(request)
+            l = layout_von(await alle_layouts(m), name)
         except marketing_pult.PultFehler as f:
             return fehler(f)
         if not l:
@@ -613,16 +652,17 @@ def routen(ui) -> list:
         if not ui._csrf_ok(form):
             return _gerahmt("<p>Abgewiesen: fehlende oder falsche CSRF-Marke.</p>", status=403)
         try:
+            m, _liste = await firma(request)
             bisher = None
             if (name := str(form.get("layout") or "")):
-                bisher = (layout_von(await alle_layouts(), name) or {}).get("gestalt")
+                bisher = (layout_von(await alle_layouts(m), name) or {}).get("gestalt")
             g, grund = await regler_lesen(form, bisher, logo_lesen=False)
             if g is None:
                 return _gerahmt(f"<p>Vorschau nicht möglich: {e(grund)}</p>", status=422)
             fmt = "handy" if form.get("format") == "handy" else "mail"
             inhalt, typ = await run_in_threadpool(
                 marketing_pult.anfrage, "POST", "/layouts/vorschau",
-                {"gestalt": g, "mandant": "vibemind", "format": fmt}, roh=True)
+                {"gestalt": g, "mandant": m, "format": fmt}, roh=True)
         except marketing_pult.PultFehler as f:
             return gerahmter_fehler(f)
         return _gerahmt(inhalt, typ)
@@ -634,7 +674,8 @@ def routen(ui) -> list:
             return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
         name = request.path_params["name"]
         try:
-            l = layout_von(await alle_layouts(), name)
+            m, _liste = await firma(request)
+            l = layout_von(await alle_layouts(m), name)
         except marketing_pult.PultFehler as f:
             return fehler(f)
         if not l:
@@ -663,6 +704,7 @@ def routen(ui) -> list:
 
     return [
         Route("/marketing", uebersicht),
+        Route("/marketing/mandant", mandant_waehlen, methods=["POST"]),
         Route("/marketing/entwuerfe", entwuerfe),
         Route("/marketing/entwurf/{iid}", entwurf),
         Route("/marketing/entwurf/{iid}/vorschau", vorschau),

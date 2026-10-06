@@ -25,6 +25,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
+import marketing_mandant
 import marketing_pult
 import schriften
 
@@ -158,6 +159,11 @@ def routen(ui) -> list:
         return JSONResponse({**mehr, "grund": grund}, status_code=status,
                             headers={"Cache-Control": "no-store"})
 
+    async def firma(request) -> tuple[str, list[dict]]:
+        """Gewaehlte Firma (Cookie, gegen die aktive Liste geprueft) + Liste; wirft PultFehler."""
+        liste = await run_in_threadpool(marketing_mandant.mandanten)
+        return marketing_mandant.waehlen(request.cookies.get(marketing_mandant.COOKIE), liste), liste
+
     @ui._gesichert_seite
     async def editor_seite(request):
         roh = request.path_params["iid"]
@@ -173,14 +179,23 @@ def routen(ui) -> list:
             return ui._fehlerseite(422, "Nicht im Editor", e(nicht_im_editor) +
                                    f' <a href="/marketing/entwurf/{e(iid)}">Zurück zum Entwurf</a>')
         felder = neueste.get("felder") or {}
+        # Der Editor folgt der Firma des Newsletters, nicht dem Cookie. Ist die
+        # Liste nicht erreichbar, bleibt als Name die id (der Editor geht auf).
+        mid = str(i.get("mandant") or "")
+        try:
+            mname = marketing_mandant.name_von(mid, await run_in_threadpool(marketing_mandant.mandanten))
+        except marketing_pult.PultFehler:
+            mname = mid
         start = {
+            "mandant": {"id": mid, "name": mname},
             "dokument": neueste["bloecke"],
             "betreff": str(felder.get("betreff") or ""),
             "vorschautext": str(felder.get("vorschautext") or ""),
             "basis_fassung": int(neueste["fassung"]),
             "speichern_url": f"/marketing/editor/{iid}/speichern",
             "vorschau_url": f"/marketing/entwurf/{iid}/vorschau",
-            "medien_url": "/marketing/editor/medien.json",
+            "medien_url": f"/marketing/editor/medien.json?iid={iid}",
+            "medien_zuordnung_url": f"/marketing/editor/{iid}/medien/zuordnung",
             "medien_loeschen_url": "/marketing/editor/medien/loeschen",
             "zurueck_url": f"/marketing/entwurf/{iid}",
             "bild_url": f"/marketing/editor/{iid}/bild",
@@ -640,8 +655,9 @@ def routen(ui) -> list:
     @ui._gesichert_seite
     async def vorlagen_seite(request):
         try:
+            m, liste = await firma(request)
             d = await run_in_threadpool(marketing_pult.anfrage, "GET",
-                                        "/vorlagen?mandant=vibemind&status=freigegeben")
+                                        f"/vorlagen?mandant={urllib.parse.quote(m)}&status=freigegeben")
         except marketing_pult.PultFehler as f:
             return _fehler(ui, f)
         csrf = f'<input type="hidden" name="csrf" value="{e(ui.CSRF_TOKEN)}">'
@@ -663,7 +679,8 @@ def routen(ui) -> list:
                     f'<button class="primaer" type="submit">Neu aus Vorlage</button></form></div>')
 
         karten = "".join(karte(v) for v in d.get("vorlagen") or [])
-        rumpf = (f'<p class="meta">Eine Vorlage wählen, einen Titel geben - der neue Entwurf öffnet '
+        rumpf = (marketing_mandant.umschalter(e, ui.CSRF_TOKEN, m, liste, "/marketing/vorlagen")
+                 + f'<p class="meta">Eine Vorlage wählen, einen Titel geben - der neue Entwurf öffnet '
                  f'sich im Editor.</p>'
                  + (f'<div class="galerie">{karten}</div>' if karten else "<p>Keine freigegebenen Vorlagen.</p>"))
         antwort = ui._seite("Neuer Newsletter aus Vorlage", rumpf)
@@ -679,6 +696,7 @@ def routen(ui) -> list:
         if (b := bild_basis()):
             q["bild_basis"] = b
         try:
+            q["mandant"] = (await firma(request))[0]
             inhalt, typ = await run_in_threadpool(
                 marketing_pult.anfrage, "GET",
                 f"/vorlagen/{name}/vorschau?{urllib.parse.urlencode(q)}", roh=True)
@@ -701,8 +719,9 @@ def routen(ui) -> list:
             return ui._fehlerseite(422, "Nicht möglich",
                                    f"Der Titel fehlt oder ist länger als {TITEL_MAX} Zeichen.")
         try:
+            m, _liste = await firma(request)
             r = await run_in_threadpool(marketing_pult.anfrage, "POST", "/inhalte/aus_vorlage",
-                                        {"vorlage": vorlage, "titel": titel, "mandant": "vibemind"})
+                                        {"vorlage": vorlage, "titel": titel, "mandant": m})
         except marketing_pult.PultFehler as f:
             return _fehler(ui, f)
         return RedirectResponse(f"/marketing/editor/{urllib.parse.quote(str(r['id']), safe='')}",

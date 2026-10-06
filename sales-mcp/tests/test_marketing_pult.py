@@ -46,6 +46,7 @@ class Falsch:
         self.layout = "dunkel"       # Layout der Fassungen
         self.bloecke = None          # gesetzt: neueste Fassung ist eine Editor-Fassung
         self.bilder = {"auftraege": []}
+        self.inhalt_mandant = "vibemind"   # Firma des Inhalts (Entwurfsseite)
 
     def anfrage(self, methode, pfad, daten=None, roh=False):
         self.aufrufe.append((methode, pfad, daten))
@@ -62,6 +63,10 @@ class Falsch:
             if "format=pdf" in pfad:
                 return (b"%PDF-1.4 falsch", "application/pdf")
             return (b"<!doctype html><p>Vorschau</p>", "text/html")
+        if pfad == "/mandanten":
+            return {"mandanten": [{"id": "vibemind", "name": "VibeMind", "aktiv": True},
+                                  {"id": "fin2gether", "name": "fin2gether", "aktiv": True},
+                                  {"id": "alt", "name": "Alt", "aktiv": False}]}
         if pfad.startswith("/uebersicht"):
             return {"mandanten": [{"id": "vibemind", "name": "VibeMind", "aktiv": True},
                                   {"id": "fin2gether", "name": "fin2gether", "aktiv": False}],
@@ -75,13 +80,13 @@ class Falsch:
         if pfad == f"/inhalte/{IID}":
             neu_extra = {"format": "bloecke", "bloecke": self.bloecke} if self.bloecke else {}
             return {"inhalt": {"id": IID, "art": "newsletter", "titel": "Early Access",
-                               "status": "entwurf", "mandant": "vibemind"},
+                               "status": "entwurf", "mandant": self.inhalt_mandant},
                     "fassungen": [{"fassung": 2, "felder": FELDER, "layout": self.layout,
                                    "urheber": "betreiber", "erstellt_am": "x", **neu_extra},
                                   {"fassung": 1, "felder": FELDER, "layout": self.layout,
                                    "urheber": "agent", "erstellt_am": "y"}],
                     "alter_weg": self.alter_weg}
-        if pfad == "/layouts?mandant=vibemind":
+        if pfad.startswith("/layouts?mandant="):
             return {"layouts": [
                 {"name": "dunkel", "beschreibung": "Dunkel mit Tuerkis", "inhaltsart": "newsletter",
                  "fassung": 2, "standard": False, "status": "aktiv",
@@ -150,7 +155,7 @@ def angemeldet(pult):
 
 def test_uebersicht(angemeldet):
     s = angemeldet.get("/marketing", headers=HOST).text
-    assert "VibeMind" in s and "fin2gether" in s and "kommt" in s
+    assert "VibeMind" in s and "fin2gether" in s
     assert "Zur Freigabe" in s and ">7<" in s
 
 
@@ -598,7 +603,9 @@ def test_m4_layout_nicht_mehr_in_der_liste(angemeldet, pult):
 def test_m5_umlaute(angemeldet, pult, monkeypatch):
     s = angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST).text
     assert 'placeholder="Überschrift"' in s
-    monkeypatch.setattr(marketing_pult, "anfrage", lambda *a, **k: {"inhalte": []})
+    monkeypatch.setattr(marketing_pult, "anfrage", lambda methode, pfad, *a, **k: (
+        {"mandanten": [{"id": "vibemind", "name": "VibeMind", "aktiv": True}]} if pfad == "/mandanten"
+        else {"inhalte": []}))
     assert "Keine Entwürfe." in angemeldet.get("/marketing/entwuerfe", headers=HOST).text
 
 
@@ -747,3 +754,111 @@ def test_menue_vorlagen_und_editor():
     assert ui._aktiver_eintrag("/marketing/vorlage-bild/x", pfade) == "/marketing/vorlagen"
     assert ui._aktiver_eintrag(f"/marketing/editor/{IID}", pfade) == "/marketing/entwuerfe"
     assert ("/marketing/vorlagen", "Vorlagen") in ui._NAV
+
+
+# --- Firmen-Umschalter (Task 8) ----------------------------------------------
+
+def _mit_firma(c, wert):
+    """Anfrage-Kopfzeilen mit Sitzung UND dem Cookie mk_mandant (roher Wert)."""
+    cookies = "; ".join(f"{k}={v}" for k, v in c.cookies.items())
+    return {**HOST, "cookie": f"{cookies}; mk_mandant={wert}"}
+
+
+def _mandant_fragen(pult):
+    return [a[1] for a in pult.aufrufe if "mandant=" in a[1]]
+
+
+def test_umschalter_zeigt_aktive_firmen_nicht_alt(angemeldet):
+    s = angemeldet.get("/marketing", headers=HOST).text
+    assert 'action="/marketing/mandant"' in s and 'class="mandanten"' in s
+    assert 'name="mandant" value="vibemind"' in s and 'name="mandant" value="fin2gether"' in s
+    assert 'aria-pressed="true" class="mandant aktiv">VibeMind' in s
+    assert 'aria-pressed="false" class="mandant">fin2gether' in s
+    assert "Alt" not in s and 'value="alt"' not in s
+    assert f'name="csrf" value="{ui.CSRF_TOKEN}"' in s and 'name="zurueck" value="/marketing"' in s
+
+
+def test_mandant_wechseln_setzt_cookie_und_leitet_zurueck(angemeldet):
+    r = angemeldet.post("/marketing/mandant", headers=HOST, follow_redirects=False,
+                        data={"csrf": ui.CSRF_TOKEN, "mandant": "fin2gether", "zurueck": "/marketing/layouts"})
+    assert r.status_code == 303 and r.headers["location"] == "/marketing/layouts"
+    kopf = r.headers["set-cookie"]
+    assert kopf.startswith("mk_mandant=fin2gether") and "Path=/marketing" in kopf
+    assert "HttpOnly" in kopf and "SameSite=lax" in kopf and "Max-Age=31536000" in kopf
+
+
+@pytest.mark.parametrize("ziel", ["//boese.de", "https://boese.de", "/anderswo", "/marketing\\x",
+                                  "/marketing//x", "/marketing/a\r\nb", ""])
+def test_mandant_wechseln_boeses_ziel_geht_auf_marketing(angemeldet, ziel):
+    r = angemeldet.post("/marketing/mandant", headers=HOST, follow_redirects=False,
+                        data={"csrf": ui.CSRF_TOKEN, "mandant": "vibemind", "zurueck": ziel})
+    assert r.status_code == 303 and r.headers["location"] == "/marketing"
+
+
+def test_mandant_wechseln_ohne_csrf_403(angemeldet):
+    r = angemeldet.post("/marketing/mandant", headers=HOST, follow_redirects=False,
+                        data={"mandant": "fin2gether", "zurueck": "/marketing"})
+    assert r.status_code == 403 and "set-cookie" not in r.headers
+
+
+@pytest.mark.parametrize("wahl", ["alt", "gibtsnicht", "", 'x"><script>'])
+def test_mandant_wechseln_inaktiv_oder_unbekannt_422(angemeldet, wahl):
+    r = angemeldet.post("/marketing/mandant", headers=HOST, follow_redirects=False,
+                        data={"csrf": ui.CSRF_TOKEN, "mandant": wahl, "zurueck": "/marketing"})
+    assert r.status_code == 422 and "set-cookie" not in r.headers
+    assert "<script>" not in r.text
+
+
+def test_mandant_wechseln_api_weg_503(angemeldet, pult):
+    pult.fehler = marketing_pult.PultFehler("nicht_erreichbar", "x")
+    r = angemeldet.post("/marketing/mandant", headers=HOST, follow_redirects=False,
+                        data={"csrf": ui.CSRF_TOKEN, "mandant": "fin2gether", "zurueck": "/marketing"})
+    assert r.status_code == 503 and "set-cookie" not in r.headers
+
+
+def test_cookie_fin2gether_fragt_liste_und_layouts_an(angemeldet, pult):
+    h = _mit_firma(angemeldet, "fin2gether")
+    assert 'aria-pressed="true" class="mandant aktiv">fin2gether' in angemeldet.get("/marketing", headers=h).text
+    angemeldet.get("/marketing/entwuerfe", headers=h)
+    angemeldet.get("/marketing/layouts", headers=h)
+    angemeldet.get("/marketing/layout-bild/dunkel", headers=h)
+    angemeldet.get("/marketing/layout/dunkel", headers=h)
+    angemeldet.post("/marketing/layout-vorschau", headers=h, data={"csrf": ui.CSRF_TOKEN, "layout": "dunkel"})
+    angemeldet.post("/marketing/layout/dunkel/speichern", headers=h,
+                    data={"csrf": ui.CSRF_TOKEN, "layout": "dunkel"}, follow_redirects=False)
+    fragen = _mandant_fragen(pult)
+    assert "/uebersicht?mandant=fin2gether" in fragen
+    assert any(p.startswith("/inhalte?") and "mandant=fin2gether" in p for p in fragen)
+    assert "/layouts?mandant=fin2gether" in fragen
+    assert not any("mandant=vibemind" in p for p in fragen)
+    vorschauen = [a[2] for a in pult.aufrufe if a[1] == "/layouts/vorschau"]
+    assert len(vorschauen) >= 2 and all(v["mandant"] == "fin2gether" for v in vorschauen)
+
+
+@pytest.mark.parametrize("wert", ["alt", 'x"><script>', "", "gibtsnicht", "FIN2GETHER"])
+def test_boeses_cookie_faellt_auf_vibemind(angemeldet, pult, wert):
+    r = angemeldet.get("/marketing", headers=_mit_firma(angemeldet, wert))
+    assert r.status_code == 200 and "<script" not in r.text
+    angemeldet.get("/marketing/layouts", headers=_mit_firma(angemeldet, wert))
+    fragen = _mandant_fragen(pult)
+    assert "/uebersicht?mandant=vibemind" in fragen and "/layouts?mandant=vibemind" in fragen
+    assert all(p.endswith("mandant=vibemind") or "mandant=vibemind&" in p for p in fragen)
+
+
+def test_entwurf_folgt_der_firma_des_inhalts_nicht_dem_cookie(angemeldet, pult):
+    pult.inhalt_mandant = "fin2gether"
+    angemeldet.get(f"/marketing/entwurf/{IID}", headers=_mit_firma(angemeldet, "vibemind"))
+    assert "/layouts?mandant=fin2gether" in _mandant_fragen(pult)
+    assert "/layouts?mandant=vibemind" not in _mandant_fragen(pult)
+
+
+def test_mandantenliste_nicht_erreichbar_seite_zeigt_fehler(angemeldet, pult):
+    pult.fehler = marketing_pult.PultFehler("nicht_erreichbar", "x")
+    assert angemeldet.get("/marketing", headers=HOST).status_code == 503
+
+
+def test_quelltext_ohne_fest_verdrahtetes_vibemind():
+    from pathlib import Path
+    for name in ("ui_marketing.py", "ui_editor.py"):
+        t = (Path(__file__).resolve().parent.parent / name).read_text(encoding="utf-8")
+        assert '"vibemind"' not in t and "mandant=vibemind" not in t, name
