@@ -4,6 +4,7 @@ import { ArrowBackOutlined, PhoneIphoneOutlined, SaveOutlined, MailOutlined } fr
 import {
   Alert,
   Button,
+  Chip,
   Dialog,
   DialogActions,
   DialogContent,
@@ -125,6 +126,11 @@ export default function PultLeiste() {
         <Typography variant="subtitle1" sx={{ fontWeight: 700, flexShrink: 0 }}>
           Newsletter
         </Typography>
+        {start.mandant && (
+          <Tooltip title="Firma dieses Newsletters">
+            <Chip size="small" variant="outlined" label={start.mandant.name} sx={{ flexShrink: 0 }} />
+          </Tooltip>
+        )}
         <TextField
           size="small"
           label="Betreff"

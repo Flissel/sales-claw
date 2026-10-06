@@ -6,6 +6,9 @@ import type { Gestaltung } from './gestaltung';
 
 export type Dokument = Record<string, unknown>;
 
+// Firma (Mandant) eines Newsletters und Ziel der Bildzuordnung.
+export type Firma = { id: string; name: string };
+
 export type Start = {
   dokument: Dokument;
   betreff: string;
@@ -14,6 +17,9 @@ export type Start = {
   speichern_url: string;
   vorschau_url: string;
   medien_url: string;
+  // Firma dieses Newsletters und Zuordnung der Bilder zu Firmen; fehlen bei aelterem sales-ui.
+  mandant?: Firma;
+  medien_zuordnung_url?: string;
   // Bilder aus der Bibliothek loeschen (01.10.2026); fehlt bei aelterem sales-ui.
   medien_loeschen_url?: string;
   bild_url: string;
@@ -207,15 +213,70 @@ export async function speichern(
   return { ok: false, konflikt: r.status === 409, grund };
 }
 
-export async function medienListe(s: Start): Promise<string[]> {
+export type MedienStand = {
+  bilder: string[];
+  zuordnung: Record<string, string | null>;
+  mandanten: Firma[];
+  mandant: string;
+  hinweis: string | null;
+};
+
+const ZUORDNUNG_AUS = 'Bildzuordnung nicht erreichbar';
+
+function medienAusfall(): MedienStand {
+  return { bilder: [], zuordnung: {}, mandanten: [], mandant: '', hinweis: ZUORDNUNG_AUS };
+}
+
+// Fehler oder Unverstaendliches => keine Bilder plus Hinweis (fail-closed).
+export async function medienListe(s: Start): Promise<MedienStand> {
   try {
     const r = await fetch(s.medien_url, { credentials: 'same-origin' });
-    if (!r.ok) return [];
+    if (!r.ok) return medienAusfall();
     const j: unknown = await r.json();
-    if (!istObjekt(j) || !Array.isArray(j.bilder)) return [];
-    return j.bilder.filter((b): b is string => typeof b === 'string' && medienNameOk(b));
+    if (!istObjekt(j) || !Array.isArray(j.bilder)) return medienAusfall();
+    const zuordnung: Record<string, string | null> = {};
+    if (istObjekt(j.zuordnung)) {
+      for (const [n, m] of Object.entries(j.zuordnung)) {
+        if (typeof m === 'string' || m === null) zuordnung[n] = m;
+      }
+    }
+    const mandanten = Array.isArray(j.mandanten)
+      ? j.mandanten.filter(istObjekt).flatMap((m) =>
+          typeof m.id === 'string' && typeof m.name === 'string' ? [{ id: m.id, name: m.name }] : [],
+        )
+      : [];
+    return {
+      bilder: j.bilder.filter((b): b is string => typeof b === 'string' && medienNameOk(b)),
+      zuordnung,
+      mandanten,
+      mandant: typeof j.mandant === 'string' ? j.mandant : '',
+      hinweis: typeof j.hinweis === 'string' && j.hinweis ? j.hinweis : null,
+    };
   } catch {
-    return [];
+    return medienAusfall();
+  }
+}
+
+// mandant null = Gemeinsam (nie "").
+export async function medienZuordnen(
+  s: Start,
+  name: string,
+  mandant: string | null,
+): Promise<{ ok: true } | { ok: false; grund: string }> {
+  if (!s.medien_zuordnung_url) return { ok: false, grund: 'Zuordnung ist hier noch nicht eingerichtet' };
+  try {
+    const r = await fetch(s.medien_zuordnung_url, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF': s.csrf },
+      body: JSON.stringify({ name, mandant }),
+    });
+    const j: unknown = await r.json().catch(() => ({}));
+    if (r.ok && istObjekt(j) && j.ok === true) return { ok: true };
+    const grund = istObjekt(j) && typeof j.grund === 'string' && j.grund ? j.grund : 'Zuordnung gerade nicht möglich';
+    return { ok: false, grund };
+  } catch {
+    return { ok: false, grund: 'Keine Verbindung zum Pult' };
   }
 }
 

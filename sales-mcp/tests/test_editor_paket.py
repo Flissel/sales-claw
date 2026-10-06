@@ -75,3 +75,9 @@ def test_paket_kennt_kontext_und_anhaenge():
     text = (ORDNER / "editor.js").read_text(encoding="utf-8")
     for s in ("+ Kontext", "Datei anhängen", "anhang_url"):
         assert s in text, s
+
+
+def test_paket_kennt_firmen_etikett_und_zuordnung():
+    # Task 10 (2026-10-06 Mandanten): Firmen-Etikett, Bildzuordnung in der Bildwahl
+    text = (ORDNER / "editor.js").read_text(encoding="utf-8")
+    assert "Gemeinsam" in text and "Firma dieses Newsletters" in text

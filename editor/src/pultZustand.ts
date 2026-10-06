@@ -36,7 +36,7 @@ import { getDocument, resetDocument, setDocument, setSelectedBlockId } from './d
 import type { Ebene } from './gestaltung';
 import type { TEditorConfiguration } from './documents/editor/core';
 import { anzeigbar, zuletztGeaendert } from './live';
-import { Dokument, Ergebnis, fehlerText, medienListe, speichern, standLaden, Start, zurAnzeige } from './pult';
+import { Dokument, Ergebnis, fehlerText, Firma, medienListe, speichern, standLaden, Start, zurAnzeige } from './pult';
 
 // Zustand der Pult-Leiste: Startdaten, Betreff/Vorschautext, gemerkte Fassung
 // und ob seit dem letzten Speichern etwas geaendert wurde.
@@ -47,6 +47,10 @@ type TPult = {
   basis: number;
   ungespeichert: boolean;
   medien: string[] | null;
+  // Zuordnung der Bilder zu Firmen (null = Gemeinsam), Firmenliste und Hinweis des Servers (Bildwahl).
+  medienZuordnung: Record<string, string | null>;
+  mandanten: Firma[];
+  medienHinweis: string | null;
   stand: { fassung: number; auftraege: Auftrag[] } | null;
   meldung: { platz: string; text: string } | null;
   // Ladezeitpunkt der Seite (ms) und: steht im Hinweisfeld des Bildpanels etwas (zaehlt wie ungespeichert).
@@ -83,6 +87,9 @@ export const pultStore = create<TPult>(() => ({
   basis: 0,
   ungespeichert: false,
   medien: null,
+  medienZuordnung: {},
+  mandanten: [],
+  medienHinweis: null,
   stand: null,
   meldung: null,
   geladenUm: Date.now(),
@@ -153,7 +160,14 @@ export function medienLaden(neu = false) {
   const { start } = pultStore.getState();
   if (!start) return;
   if (medienLaeuft && !neu) return;
-  medienLaeuft = medienListe(start).then((medien) => pultStore.setState({ medien }));
+  medienLaeuft = medienListe(start).then((m) =>
+    pultStore.setState({
+      medien: m.bilder,
+      medienZuordnung: m.zuordnung,
+      mandanten: m.mandanten,
+      medienHinweis: m.hinweis,
+    }),
+  );
 }
 
 const MERKZETTEL = 'vibemind-neues-bild';

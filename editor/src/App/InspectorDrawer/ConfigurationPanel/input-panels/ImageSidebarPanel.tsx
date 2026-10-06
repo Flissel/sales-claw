@@ -15,6 +15,8 @@ import {
   Chip,
   FormControlLabel,
   IconButton,
+  Menu,
+  MenuItem,
   Stack,
   TextField,
   ToggleButton,
@@ -35,7 +37,7 @@ import {
   STUFE_NAH,
   STUFE_NEU,
 } from '../../../../bildfeld';
-import { bildBeauftragen, bildFreistellen, ANZEIGE, loeschFrage, medienLoeschen, medienName } from '../../../../pult';
+import { bildBeauftragen, bildFreistellen, ANZEIGE, loeschFrage, medienLoeschen, medienName, medienZuordnen } from '../../../../pult';
 import { gestaltungOeffnen, medienLaden, pultStore, standAbfragen } from '../../../../pultZustand';
 import { useSelectedBlockId } from '../../../../documents/editor/EditorContext';
 import { ImageDaten, ImageSchema } from '../../../../schemata';
@@ -58,6 +60,9 @@ type ImageSidebarPanelProps = {
 export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelProps) {
   const [, setErrors] = useState<ZodError | null>(null);
   const medien = pultStore((p) => p.medien);
+  const zuordnung = pultStore((p) => p.medienZuordnung);
+  const mandanten = pultStore((p) => p.mandanten);
+  const medienHinweis = pultStore((p) => p.medienHinweis);
   const stand = pultStore((p) => p.stand);
   const start = pultStore((p) => p.start);
   const ungespeichert = pultStore((p) => p.ungespeichert);
@@ -68,6 +73,8 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
   const [stufe, setStufe] = useState<number>(STUFE_NAH);
   const [neu, setNeu] = useState(false);
   const [laeuft, setLaeuft] = useState(false);
+  // Zuordnungsmenue: fuer welche Kachel es offen ist und woran es haengt.
+  const [menue, setMenue] = useState<{ name: string; anker: HTMLElement } | null>(null);
   const [rueckmeldung, setRueckmeldung] = useState<{ art: 'ok' | 'fehler'; text: string } | null>(null);
   useEffect(() => {
     medienLaden();
@@ -85,6 +92,10 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
   const fehltInListe = gewaehlt !== '' && !optionen.includes(gewaehlt);
   // Platzhalter-Bilder sind keine Auswahl, nur Markierung fuer leere Plaetze.
   const kacheln = optionen.filter((n) => !n.startsWith('platzhalter-'));
+  const firmenKurzname = (n: string) => {
+    const id = zuordnung[n];
+    return (id ? (mandanten.find((m) => m.id === id)?.name ?? id) : null) ?? 'Gemeinsam';
+  };
   const platz = istPlatz(data.props);
   const leer = istLeer(aktuell);
   const frei = freistellbar({ url: aktuell, grafik: data.props?.grafik });
@@ -144,6 +155,19 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
     const e = await medienLoeschen(start, n, true);
     if (e.ok) {
       setRueckmeldung({ art: 'ok', text: `„${n}“ gelöscht.` });
+      medienLaden(true);
+    } else {
+      setRueckmeldung({ art: 'fehler', text: e.grund });
+    }
+  };
+
+  // Bild einer Firma zuordnen (null = Gemeinsam); danach Liste neu laden.
+  const zuordnen = async (n: string, mandant: string | null) => {
+    setMenue(null);
+    if (!start) return;
+    setRueckmeldung(null);
+    const e = await medienZuordnen(start, n, mandant);
+    if (e.ok) {
       medienLaden(true);
     } else {
       setRueckmeldung({ art: 'fehler', text: e.grund });
@@ -290,6 +314,11 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
         )}
 
         <Typography variant="subtitle2">Aus Medien wählen</Typography>
+        {medienHinweis && (
+          <Typography variant="caption" color="text.secondary">
+            {medienHinweis}
+          </Typography>
+        )}
         {kacheln.length > 0 && (
           <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 1 }}>
             {kacheln.map((n) => {
@@ -334,11 +363,55 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
                       <DeleteOutlined sx={{ fontSize: 16 }} />
                     </IconButton>
                   )}
+                  {start?.medien_zuordnung_url && (
+                    <Button
+                      size="small"
+                      aria-label={`Zuordnung von ${n} ändern`}
+                      title="Firma dieses Bildes ändern"
+                      onClick={(ev) => setMenue({ name: n, anker: ev.currentTarget })}
+                      sx={{
+                        position: 'absolute',
+                        bottom: 2,
+                        left: 2,
+                        minWidth: 0,
+                        maxWidth: 'calc(100% - 4px)',
+                        p: '0 4px',
+                        fontSize: 11,
+                        lineHeight: 1.6,
+                        textTransform: 'none',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        bgcolor: 'rgba(0,0,0,0.55)',
+                        color: '#fff',
+                        '&:hover': { bgcolor: 'primary.main' },
+                      }}
+                    >
+                      {firmenKurzname(n)}
+                    </Button>
+                  )}
                 </Box>
               );
             })}
           </Box>
         )}
+        <Menu anchorEl={menue?.anker ?? null} open={menue !== null} onClose={() => setMenue(null)}>
+          {mandanten.map((m) => (
+            <MenuItem
+              key={m.id}
+              selected={menue !== null && zuordnung[menue.name] === m.id}
+              onClick={() => menue && zuordnen(menue.name, m.id)}
+            >
+              {m.name}
+            </MenuItem>
+          ))}
+          <MenuItem
+            selected={menue !== null && (zuordnung[menue.name] ?? null) === null}
+            onClick={() => menue && zuordnen(menue.name, null)}
+          >
+            Gemeinsam
+          </MenuItem>
+        </Menu>
         <Typography variant="caption" color="text.secondary">
           {medien === null
             ? 'Medien werden geladen …'
