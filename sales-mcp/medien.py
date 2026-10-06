@@ -78,7 +78,26 @@ ERLAUBT = {
     # registrierten MIME-Typ `text/calendar` (RFC 5545 §8.1): WhatsApp
     # zeigt sie als Datei, Mail-Programme als Termin.
     ".ics":  ("send-document", "text/calendar"),
+    # Editor-Anhaenge (Gestaltungs-Chat, 06.10.2026): nur Endungs-Erlaubnis.
+    # Alle gehen ueber dieselben Endpunkte und dieselbe Pruefung wie die
+    # uebrigen Eintraege; ein Bot-Weg verschickt nichts davon von selbst
+    # (entwurf_erstellen braucht den Namen ausdruecklich, `bot_darf_senden`
+    # gilt unveraendert).
+    ".webp": ("send-image",    "image/webp"),
+    ".docx": ("send-document",
+              "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    ".txt":  ("send-document", "text/plain"),
+    ".md":   ("send-document", "text/markdown"),
 }
+
+# Editor-Anhang: was der Gestaltungs-Chat annimmt (Untermenge von ERLAUBT).
+ANHANG_BILD = (".jpg", ".jpeg", ".png", ".webp")
+ANHANG_DOKUMENT = (".pdf", ".docx", ".txt", ".md")
+# Das Muster, das Marketings Arbeiter und API fuer Anhangsnamen erzwingen.
+ANHANG_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.(png|jpe?g|gif|webp|pdf|docx|txt|md)")
+_ANHANG_STAMM_MAX = 100   # laesst Platz fuer das Kollisions-Suffix "-NN"
+_UMLAUTE = {"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss",
+            "Ä": "Ae", "Ö": "Oe", "Ü": "Ue", "ẞ": "SS"}
 
 # Gemessene Obergrenze der Bildunterschrift (DTO `@MaxLength(1024)`). Ein
 # laengerer Text wuerde am Endpunkt mit HTTP 400 abprallen — das faellt lieber
@@ -306,6 +325,48 @@ def pruefe_neuen_namen(name: str):
             f"Endung '{endung or '(keine)'}' ist nicht zugelassen. Erlaubt: "
             f"{', '.join(sorted(ERLAUBT))}.")
     return basis, None
+
+
+def anhang_art(basis: str):
+    """'bild' | 'dokument' | None fuer einen Editor-Anhang nach Endung."""
+    endung = os.path.splitext(basis)[1].lower()
+    if endung in ANHANG_BILD:
+        return "bild"
+    if endung in ANHANG_DOKUMENT:
+        return "dokument"
+    return None
+
+
+def anhang_name(roh: str):
+    """Hochgeladenen Dateinamen auf das Anhangs-Muster bringen -> (stamm, endung) | (None, fehler).
+
+    Immer so, dass `stamm + endung` (auch mit angehaengtem "-NN") das Muster
+    `ANHANG_NAME` erfuellt. Umlaute werden umschrieben, alles andere
+    Nicht-ASCII und Leerzeichen werden "_"; Pfadanteile fallen weg, fuehrende
+    Punkte/Unterstriche/Striche auch, Wiederholungen werden zusammengezogen,
+    die Endung wird kleingeschrieben und der Stamm gekappt. Die Schreibweise
+    des Stamms bleibt sonst erhalten.
+    """
+    name = re.split(r"[\\/]", (roh or "").strip())[-1]
+    stamm, punkt, endung = name.rpartition(".")
+    endung = ("." + endung.lower()) if punkt else ""
+    if not punkt:
+        stamm = name
+    if endung not in ANHANG_BILD + ANHANG_DOKUMENT:
+        return None, (f"Endung '{endung or '(keine)'}' ist als Anhang nicht zugelassen. "
+                      f"Erlaubt: {', '.join(ANHANG_BILD + ANHANG_DOKUMENT)}.")
+    for a, b in _UMLAUTE.items():
+        stamm = stamm.replace(a, b)
+    stamm = re.sub(r"[^A-Za-z0-9._-]", "_", stamm)
+    stamm = re.sub(r"([._-])\1+", r"\1", stamm)
+    stamm = re.sub(r"_{2,}", "_", stamm)
+    stamm = re.sub(r"^[^A-Za-z0-9]+", "", stamm)
+    stamm = stamm[:_ANHANG_STAMM_MAX].rstrip("._-")
+    if not stamm:
+        stamm = "anhang"
+    if intern(stamm + endung) or entwurfsbild(stamm + endung):
+        stamm = "anhang-" + stamm      # sonst waere die Datei in der Liste unsichtbar
+    return stamm, endung
 
 
 def liegt_schon(basis: str) -> bool:

@@ -2128,6 +2128,60 @@ async def medien(request):
     return _seite("Medien", _medien_tabelle() + _medien_formular())
 
 
+async def medien_ablegen(datei, basis: str, ersetzen: bool = True):
+    """Eine hochgeladene Datei unter `basis` in den Medienordner schreiben.
+
+    Gemeinsam fuer /medien/hochladen und den Editor-Anhang: gleiche Groessen-
+    und Leer-Pruefung, gleicher Zielordner (`medien.wurzel()`). Geschrieben
+    wird erst unter einem Zwischennamen und dann umbenannt: ein abgebrochener
+    Upload soll keine halbe Datei hinterlassen, die der Dispatcher spaeter fuer
+    eine gueltige Unterlage haelt. Der Name ist bereits geprueft.
+
+    `ersetzen=False` legt nur an, wenn `basis` noch frei ist (atomar per
+    Hardlink statt Ersetzen) - so ueberschreiben zwei gleichzeitige Uploads
+    nie still eine Datei.
+
+    -> (geschriebene_bytes, None) | (None, (http_status, klartext))
+    """
+    wurzel = server.medien.wurzel()
+    ziel = os.path.join(wurzel, basis)
+    zwischen = os.path.join(wurzel, basis + ".teil")
+    geschrieben = 0
+    try:
+        with open(zwischen, "wb") as raus:
+            while True:
+                stueck = await datei.read(MEDIEN_STUECK)
+                if not stueck:
+                    break
+                geschrieben += len(stueck)
+                if geschrieben > server.medien.MAX_BYTES:
+                    raise ValueError("zu gross")
+                raus.write(stueck)
+        if geschrieben == 0:
+            raise ValueError("leer")
+        if ersetzen:
+            os.replace(zwischen, ziel)
+        else:
+            os.link(zwischen, ziel)
+            _aufraeumen(zwischen)
+    except FileExistsError:
+        _aufraeumen(zwischen)
+        return None, (409, f"'{basis}' liegt bereits im Medienordner.")
+    except ValueError as e:
+        _aufraeumen(zwischen)
+        grenze = server.medien.MAX_BYTES // 1048576
+        if "gross" in str(e):
+            return None, (413, f"Die Datei ist leer oder größer als {grenze} MB.")
+        return None, (400, "Die Datei ist leer.")
+    except OSError as e:
+        _aufraeumen(zwischen)
+        return None, (500, (
+            f"Der Medienordner ist nicht beschreibbar "
+            f"({type(e).__name__}). Hängt er an diesem Dienst ohne "
+            f"`:ro`?"))
+    return geschrieben, None
+
+
 @_gesichert_seite
 async def aktion_medien_hochladen(request):
     """Eine Unterlage ablegen — die einzige Stelle, an der etwas hereinkommt.
@@ -2156,36 +2210,10 @@ async def aktion_medien_hochladen(request):
             f"es trotzdem will, setzt den Haken „Vorhandene Datei gleichen "
             f"Namens ersetzen“."))
 
-    wurzel = server.medien.wurzel()
-    ziel = os.path.join(wurzel, basis)
-    zwischen = os.path.join(wurzel, basis + ".teil")
-    geschrieben = 0
-    try:
-        with open(zwischen, "wb") as raus:
-            while True:
-                stueck = await datei.read(MEDIEN_STUECK)
-                if not stueck:
-                    break
-                geschrieben += len(stueck)
-                if geschrieben > server.medien.MAX_BYTES:
-                    raise ValueError("zu gross")
-                raus.write(stueck)
-        if geschrieben == 0:
-            raise ValueError("leer")
-        os.replace(zwischen, ziel)
-    except ValueError as e:
-        _aufraeumen(zwischen)
-        grenze = server.medien.MAX_BYTES // 1048576
-        return _fehlerseite(413 if "gross" in str(e) else 400,
-                            "Nicht abgelegt",
-                            f"Die Datei ist leer oder größer als {grenze} MB."
-                            if "gross" in str(e) else "Die Datei ist leer.")
-    except OSError as e:
-        _aufraeumen(zwischen)
-        return _fehlerseite(500, "Nicht abgelegt", (
-            f"Der Medienordner ist nicht beschreibbar "
-            f"({_e(type(e).__name__)}). Hängt er an diesem Dienst ohne "
-            f"`:ro`?"))
+    geschrieben, abgelehnt = await medien_ablegen(datei, basis)
+    if abgelehnt:
+        status, text = abgelehnt
+        return _fehlerseite(status, "Nicht abgelegt", _e(text))
     LOG.info("Medien: %s abgelegt (%d Byte)", basis, geschrieben)
     return RedirectResponse("/medien", status_code=303)
 

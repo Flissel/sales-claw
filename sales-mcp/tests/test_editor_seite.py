@@ -1227,3 +1227,124 @@ def test_vormerk_und_stopp_fehlerabbildung(angemeldet, pult, methode, ende, body
     pult.fehler = marketing_pult.PultFehler("nicht_erreichbar", "intern")
     r = _senden(angemeldet, methode, ende, body)
     assert r.status_code == 503 and r.json() == {"grund": "Assistent gerade nicht erreichbar"}
+
+
+# --- Anhang hochladen (Gestaltungs-Chat) ---------------------------------
+
+MARKETING_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.(png|jpe?g|gif|webp|pdf|docx|txt|md)")
+
+
+@pytest.fixture
+def medienordner(tmp_path, monkeypatch):
+    monkeypatch.setattr(server.medien, "MEDIA_VERZEICHNIS", str(tmp_path))
+    return tmp_path
+
+
+def _anhang(c, name, inhalt=b"x" * 64, csrf=True):
+    daten = {"csrf": ui.CSRF_TOKEN} if csrf else {}
+    return c.post(f"/marketing/editor/{IID}/anhang", data=daten, headers=HOST,
+                  files={"datei": (name, inhalt, "application/octet-stream")})
+
+
+def test_start_nennt_anhang_url(angemeldet):
+    start = _start(angemeldet.get(f"/marketing/editor/{IID}", headers=HOST).text)
+    assert start["anhang_url"] == f"/marketing/editor/{IID}/anhang"
+
+
+def test_anhang_bild_und_pdf_landen_im_medienordner(angemeldet, medienordner):
+    r = _anhang(angemeldet, "logo.png", b"P" * 10)
+    assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
+    assert r.json() == {"name": "logo.png", "art": "bild", "groesse": 10}
+    assert (medienordner / "logo.png").read_bytes() == b"P" * 10
+    r = _anhang(angemeldet, "preise.pdf", b"D" * 20)
+    assert r.json() == {"name": "preise.pdf", "art": "dokument", "groesse": 20}
+    assert sorted(p.name for p in medienordner.iterdir()) == ["logo.png", "preise.pdf"]
+
+
+def test_anhang_name_wird_auf_das_marketing_muster_normalisiert(angemeldet, medienordner):
+    r = _anhang(angemeldet, "Preise 2026.PDF")
+    assert r.status_code == 200
+    name = r.json()["name"]
+    assert name == "Preise_2026.pdf" and MARKETING_NAME.fullmatch(name)
+    assert (medienordner / name).is_file()
+    name = _anhang(angemeldet, "Angebot_Müller.docx").json()["name"]
+    assert name == "Angebot_Mueller.docx" and MARKETING_NAME.fullmatch(name)
+    assert (medienordner / name).is_file()
+
+
+@pytest.mark.parametrize("roh,erwartet", [
+    ("Straße Öl Ärger.JPG", "Strasse_Oel_Aerger.jpg"),
+    ("..hidden file.png", "hidden_file.png"),
+    ("__a  b__c.md", "a_b_c.md"),
+    ("日本語.txt", "anhang.txt"),
+    ("a....b---c.webp", "a.b-c.webp"),
+    (r"C:\Users\x\bild.jpeg", "bild.jpeg"),
+])
+def test_anhang_normalisierung(angemeldet, medienordner, roh, erwartet):
+    r = _anhang(angemeldet, roh)
+    assert r.status_code == 200 and r.json()["name"] == erwartet
+    assert MARKETING_NAME.fullmatch(erwartet) and (medienordner / erwartet).is_file()
+
+
+def test_anhang_langer_name_wird_gekappt_und_passt_noch_mit_suffix(angemeldet, medienordner):
+    lang = "a" * 300 + ".png"
+    n1 = _anhang(angemeldet, lang).json()["name"]
+    n2 = _anhang(angemeldet, lang).json()["name"]
+    assert MARKETING_NAME.fullmatch(n1) and MARKETING_NAME.fullmatch(n2) and n1 != n2
+
+
+def test_anhang_interner_name_wird_nicht_unsichtbar(angemeldet, medienordner):
+    name = _anhang(angemeldet, "Terminkarte-x.pdf").json()["name"]
+    assert MARKETING_NAME.fullmatch(name) and not server.medien.intern(name)
+    assert server.medien.pruefe_anhang(name)[1] is None
+
+
+def test_anhang_kollision_bekommt_suffix_alte_datei_bleibt(angemeldet, medienordner):
+    (medienordner / "logo.png").write_bytes(b"ALT")
+    r = _anhang(angemeldet, "logo.png", b"NEU")
+    assert r.status_code == 200
+    name = r.json()["name"]
+    assert name == "logo-2.png" and MARKETING_NAME.fullmatch(name)
+    assert (medienordner / "logo.png").read_bytes() == b"ALT"
+    assert (medienordner / "logo-2.png").read_bytes() == b"NEU"
+    assert _anhang(angemeldet, "logo.png", b"DRITT").json()["name"] == "logo-3.png"
+    assert not list(medienordner.glob("*.teil"))
+
+
+@pytest.mark.parametrize("name", ["virus.exe", "ton.mp3", "clip.mp4", "kalender.ics", "ohne", "bild.gif"])
+def test_anhang_falscher_typ_ist_422(angemeldet, medienordner, name):
+    r = _anhang(angemeldet, name)
+    assert r.status_code == 422 and r.json()["grund"]
+    assert list(medienordner.iterdir()) == []
+
+
+def test_anhang_zu_gross_und_leer_ist_422(angemeldet, medienordner, monkeypatch):
+    monkeypatch.setattr(server.medien, "MAX_BYTES", 1024)
+    assert _anhang(angemeldet, "gross.pdf", b"z" * 4096).status_code == 422
+    assert _anhang(angemeldet, "leer.pdf", b"").status_code == 422
+    assert list(medienordner.iterdir()) == []
+
+
+def test_anhang_ohne_datei_ist_422(angemeldet, medienordner):
+    r = angemeldet.post(f"/marketing/editor/{IID}/anhang", data={"csrf": ui.CSRF_TOKEN}, headers=HOST)
+    assert r.status_code == 422
+
+
+def test_anhang_ohne_csrf_ist_403(angemeldet, medienordner):
+    r = _anhang(angemeldet, "logo.png", csrf=False)
+    assert r.status_code == 403 and r.json() == {"grund": "Fehlende oder falsche CSRF-Marke"}
+    assert list(medienordner.iterdir()) == []
+
+
+def test_anhang_nicht_beschreibbarer_ordner_ist_500(angemeldet, tmp_path, monkeypatch):
+    monkeypatch.setattr(server.medien, "MEDIA_VERZEICHNIS", str(tmp_path / "gibtsnicht"))
+    r = _anhang(angemeldet, "logo.png")
+    assert r.status_code == 500 and "nicht beschreibbar" in r.json()["grund"]
+
+
+def test_neue_endungen_sind_zugelassen_und_haben_mime():
+    assert server.medien.ERLAUBT[".webp"] == ("send-image", "image/webp")
+    assert server.medien.ERLAUBT[".docx"] == (
+        "send-document", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    assert server.medien.ERLAUBT[".txt"] == ("send-document", "text/plain")
+    assert server.medien.ERLAUBT[".md"] == ("send-document", "text/markdown")

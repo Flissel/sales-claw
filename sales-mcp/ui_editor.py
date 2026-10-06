@@ -186,6 +186,7 @@ def routen(ui) -> list:
             "gestaltung_url": f"/marketing/editor/{iid}/gestaltung",
             "stand_url": f"/marketing/editor/{iid}/stand.json",
             "chat_url": f"/marketing/editor/{iid}/chat",
+            "anhang_url": f"/marketing/editor/{iid}/anhang",
             "chat_stand_url": f"/marketing/editor/{iid}/chat.json",
             "chat_rueckgaengig_url": f"/marketing/editor/{iid}/chat/rueckgaengig",
             "chat_vormerkung_url": f"/marketing/editor/{iid}/chat/vormerkung",
@@ -527,6 +528,43 @@ def routen(ui) -> list:
         return JSONResponse({"geloescht": basis}, headers={"Cache-Control": "no-store"})
 
     @ui._gesichert_seite
+    async def editor_anhang(request):
+        """Bild oder Dokument fuer den Gestaltungs-Chat ablegen. Gleicher Ordner
+        und gleiche Pruefung wie /medien/hochladen (ui.medien_ablegen); der Name
+        wird auf Marketings Anhangsmuster normalisiert, eine Kollision bekommt
+        ein Suffix - nie ein stilles Ersetzen."""
+        form = await request.form()
+        marke = request.headers.get("x-csrf", "")
+        if not (ui._csrf_ok(form) or (marke and hmac.compare_digest(marke, ui.CSRF_TOKEN))):
+            return json_grund(403, "Fehlende oder falsche CSRF-Marke")
+        datei = form.get("datei")
+        if datei is None or not getattr(datei, "filename", ""):
+            return json_grund(422, "Es wurde keine Datei mitgeschickt")
+        stamm, endung = ui.server.medien.anhang_name(datei.filename)
+        if stamm is None:
+            return json_grund(422, endung)
+        for n in range(1, 1000):
+            basis = f"{stamm}{endung}" if n == 1 else f"{stamm}-{n}{endung}"
+            fehler = ui.server.medien.pruefe_neuen_namen(basis)[1]
+            if fehler:   # kann nach der Normalisierung nicht vorkommen - Sicherheitsnetz
+                return json_grund(422, fehler)
+            if ui.server.medien.liegt_schon(basis):
+                continue
+            groesse, abgelehnt = await ui.medien_ablegen(datei, basis, ersetzen=False)
+            if abgelehnt and abgelehnt[0] == 409:    # zwischen Pruefung und Ablegen belegt
+                await datei.seek(0)
+                continue
+            break
+        else:
+            return json_grund(422, "Zu viele gleichnamige Dateien")
+        if abgelehnt:
+            status, text = abgelehnt
+            return json_grund(500 if status == 500 else 422, text)
+        ui.LOG.info("Medien (Editor-Anhang): %s abgelegt (%d Byte)", basis, groesse)
+        return JSONResponse({"name": basis, "art": ui.server.medien.anhang_art(basis), "groesse": groesse},
+                            headers={"Cache-Control": "no-store"})
+
+    @ui._gesichert_seite
     async def medien_json(request):
         try:
             eintraege = await run_in_threadpool(ui.server.medien.liste, True)
@@ -671,6 +709,7 @@ def routen(ui) -> list:
         Route("/marketing/editor/{iid}", editor_seite),
         Route("/marketing/editor/{iid}/speichern", editor_speichern, methods=["POST"]),
         Route("/marketing/editor/{iid}/bild", editor_bild, methods=["POST"]),
+        Route("/marketing/editor/{iid}/anhang", editor_anhang, methods=["POST"]),
         Route("/marketing/editor/{iid}/gestaltung", editor_gestaltung, methods=["POST"]),
         Route("/marketing/editor/{iid}/chat", editor_chat, methods=["POST"]),
         Route("/marketing/editor/{iid}/chat.json", editor_chat_stand),

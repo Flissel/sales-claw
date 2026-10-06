@@ -68,7 +68,7 @@ def test_liste_bietet_nur_an_was_die_pruefung_nimmt(medienordner, monkeypatch):
     (medienordner / "leer.pdf").write_bytes(b"")
     (medienordner / ".versteckt.pdf").write_bytes(b"%PDF-versteckt")
     (medienordner / "riesig.pdf").write_bytes(b"x" * 101)
-    (medienordner / "notiz.txt").write_bytes(b"keine Whitelist-Endung")
+    (medienordner / "notiz.exe").write_bytes(b"keine Whitelist-Endung")
 
     eintraege = medien.liste()
     assert eintraege == [("gut.pdf", 7)]
