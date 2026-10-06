@@ -283,6 +283,12 @@ export function laufenderChat(chat: Pick<ChatStand, 'laeuft' | 'verlauf'> | null
   return chat.verlauf.find((e) => e.art === 'chat' && LAEUFT.includes(e.status)) ?? null;
 }
 
+// Der Stopp-Dialog gilt nur fuer den Lauf, fuer den er geoeffnet wurde: endet der Lauf, geht er zu,
+// und ein spaeterer Lauf oeffnet ihn nicht von selbst.
+export function stoppDialogOffen(stoppFuer: string | null, chat: Pick<ChatStand, 'laeuft' | 'verlauf'> | null): boolean {
+  return stoppFuer !== null && laufenderChat(chat)?.id === stoppFuer;
+}
+
 // Text der Sperre, solange ein Auftrag offen ist (null = frei).
 export function sperrText(chat: Pick<ChatStand, 'laeuft' | 'verlauf'> | null): string | null {
   if (!chat?.laeuft) return null;

@@ -70,7 +70,7 @@ function Inhalt({ onClose }: { onClose: () => void }) {
             {fehler}
           </Box>
         )}
-        <Button onClick={onClose} color="inherit" disabled={laeuft !== null} sx={{ color: FARBE.gedaempft, '&:hover': { color: FARBE.text, bgcolor: FARBE.hover } }}>
+        <Button onClick={onClose} color="inherit" autoFocus disabled={laeuft !== null} sx={{ color: FARBE.gedaempft, '&:hover': { color: FARBE.text, bgcolor: FARBE.hover } }}>
           Abbrechen
         </Button>
         <Box sx={{ ml: 'auto', display: 'flex', gap: 1 }}>
@@ -84,7 +84,7 @@ function Inhalt({ onClose }: { onClose: () => void }) {
           >
             Verwerfen
           </Button>
-          <Button variant="contained" disableElevation autoFocus disabled={laeuft !== null} onClick={() => void waehlen('behalten')} startIcon={knopfLaeuft('behalten')}>
+          <Button variant="contained" disableElevation disabled={laeuft !== null} onClick={() => void waehlen('behalten')} startIcon={knopfLaeuft('behalten')}>
             Bisherige Schritte behalten
           </Button>
         </Box>

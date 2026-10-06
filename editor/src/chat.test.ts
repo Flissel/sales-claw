@@ -13,6 +13,7 @@ import {
   rueckgaengig,
   rueckgaengigFuer,
   sperrText,
+  stoppDialogOffen,
   stoppen,
   titelSlug,
   vormerken,
@@ -325,6 +326,18 @@ describe('laufenderChat', () => {
     expect(laufenderChat({ laeuft: true, verlauf: [eintrag({ id: 'x', art: 'export', status: 'in_arbeit' })] })).toBeNull();
     expect(laufenderChat({ laeuft: false, verlauf: [eintrag({ status: 'fertig' })] })).toBeNull();
     expect(laufenderChat({ laeuft: true, verlauf: [eintrag({ id: 'f', status: 'fertig' }), eintrag({ id: 'l', status: 'in_arbeit' })] })?.id).toBe('l');
+  });
+});
+
+describe('stoppDialogOffen', () => {
+  const lauf = (id: string) => ({ laeuft: true, verlauf: [eintrag({ id, status: 'in_arbeit' })] });
+  it('nur fuer den Lauf, fuer den er geoeffnet wurde', () => {
+    expect(stoppDialogOffen('a1', lauf('a1'))).toBe(true);
+    expect(stoppDialogOffen(null, lauf('a1'))).toBe(false);
+  });
+  it('Lauf zu Ende oder ein neuer Lauf: der Dialog geht nicht von selbst (wieder) auf', () => {
+    expect(stoppDialogOffen('a1', { laeuft: false, verlauf: [eintrag({ status: 'fertig' })] })).toBe(false);
+    expect(stoppDialogOffen('a1', lauf('a2'))).toBe(false);
   });
 });
 

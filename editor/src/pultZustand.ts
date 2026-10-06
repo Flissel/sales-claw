@@ -228,9 +228,11 @@ function zwischenstandBeenden() {
   pultStore.setState({ zwischenstand: null });
 }
 
-// Chat-Stand: einmal beim Laden, danach jede Sekunde, solange der Agent arbeitet (Live-Ansicht).
+// Chat-Stand: einmal beim Laden, danach jede Sekunde, solange ein Chat-Auftrag laeuft
+// (Live-Ansicht); ein Newsletter-Export wie bisher alle 2 s.
 // Jeder Aufruf beginnt eine neue Runde; aeltere Runden planen nichts mehr ein.
 export const CHAT_TAKT_MS = 1000;
+export const EXPORT_TAKT_MS = 2000;
 let chatRunde = 0;
 let chatTakt: ReturnType<typeof setTimeout> | null = null;
 export function chatAbfragen() {
@@ -256,7 +258,8 @@ export function chatAbfragen() {
       pultStore.setState({ chatGetrennt: true });
     }
     // Netzfehler waehrend der Agent arbeitet: weiter fragen, die Sperre bleibt sichtbar.
-    if (pultStore.getState().chat?.laeuft) chatTakt = setTimeout(holen, CHAT_TAKT_MS);
+    const jetzt = pultStore.getState().chat;
+    if (jetzt?.laeuft) chatTakt = setTimeout(holen, laufenderChat(jetzt) ? CHAT_TAKT_MS : EXPORT_TAKT_MS);
   };
   void holen();
 }
@@ -292,6 +295,9 @@ export async function chatAbschicken(nachricht: string, kontext: ChatKontext): P
   if (chat?.laeuft) return 'Der Assistent arbeitet gerade';
   const grund = await vorDemStart();
   if (grund) return grund;
+  // Steht noch eine Vormerkung (nach Fehler/Stopp), uebernimmt PUT sie und startet sie mit dem
+  // neuen Text. Ein POST legte einen zweiten Auftrag an, und die alte Vormerkung liefe danach mit.
+  if (pultStore.getState().chat?.vorgemerkt) return vormerkungSetzen(start, nachricht, kontext);
   const r = await chatSenden(start, nachricht, kontext);
   if (!r.ok) {
     // Z. B. arbeitet der Assistent schon fuer einen anderen Tab: Stand holen, damit die Sperre erscheint.
@@ -321,10 +327,18 @@ export async function chatVormerken(nachricht: string, kontext: ChatKontext): Pr
   const { start, chat } = pultStore.getState();
   if (!start) return 'Keine Verbindung zum Pult';
   if (!laufenderChat(chat)) return chatAbschicken(nachricht, kontext);
+  return vormerkungSetzen(start, nachricht, kontext);
+}
+
+// PUT an die Vormerkung: 'wartet' = steht als Karte da, 'offen' = lief nichts, ist gestartet.
+async function vormerkungSetzen(start: Start, nachricht: string, kontext: ChatKontext): Promise<string | null> {
   const r = await vormerken(start, nachricht, kontext);
-  if (!r.ok) return r.grund;
+  if (!r.ok) {
+    chatAbfragen();
+    return r.grund;
+  }
   if (r.status === 'offen') {
-    // Der Lauf war inzwischen zu Ende: die Nachricht ist schon als normaler Auftrag gestartet.
+    // Es lief nichts (mehr): die Nachricht ist sofort als normaler Auftrag gestartet.
     auftragEintragen(r.id, nachricht, { vorgemerkt: null });
     return null;
   }

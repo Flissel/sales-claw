@@ -44,7 +44,7 @@ if (wurzel) {
     // Nach dem Neuladen wegen einer Agenten-Fassung: offenes Gestaltungsfenster wieder oeffnen.
     fensterWiederOeffnen();
     onDocumentChange(alsUngespeichert);
-    // Chat-Verlauf einmal laden; laeuft ein Auftrag, fragt chatAbfragen alle 2 s weiter.
+    // Chat-Verlauf einmal laden; laeuft ein Auftrag, fragt chatAbfragen weiter (Chat 1 s, Export 2 s).
     chatAbfragen();
 
     ReactDOM.createRoot(wurzel).render(

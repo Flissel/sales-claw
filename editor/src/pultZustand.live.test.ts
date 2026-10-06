@@ -6,8 +6,10 @@ import type { TEditorConfiguration } from './documents/editor/core';
 import type { Start } from './pult';
 import {
   alsUngespeichert,
+  chatAbschicken,
   CHAT_TAKT_MS,
   chatAbfragen,
+  EXPORT_TAKT_MS,
   chatStoppen,
   chatVormerken,
   newsletterSichern,
@@ -139,6 +141,20 @@ describe('Takt', () => {
     expect(f).toHaveBeenCalledTimes(3);
     await vi.advanceTimersByTimeAsync(5000);
     expect(adressen(f)).toEqual(['/c.json', '/c.json', '/c.json']);
+  });
+});
+
+describe('Takt bei Export', () => {
+  it('ein Newsletter-Export fragt weiter alle 2 s, nicht jede Sekunde', async () => {
+    expect(EXPORT_TAKT_MS).toBe(2000);
+    const exp = { laeuft: true, verlauf: [eintrag({ id: 'x1', art: 'export' })], live: null, vorgemerkt: null };
+    const f = netz({ '/c.json': [[200, exp]] });
+    chatAbfragen();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(f).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(f).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -276,6 +292,36 @@ describe('Vormerken', () => {
     expect(pultStore.getState().chat?.verlauf.map((e) => e.id)).toContain('v-1');
     await vi.advanceTimersByTimeAsync(0);
     expect(adressen(f)).toContain('/c.json');
+  });
+
+  it('nach Fehler + vorgemerkt: Senden -> PUT (uebernimmt die Vormerkung), kein POST', async () => {
+    pultStore.setState({
+      ungespeichert: true,
+      chat: { laeuft: false, verlauf: [eintrag({ status: 'fehler' })], live: null, vorgemerkt: { id: 'v-1', nachricht: 'alt' } },
+    });
+    const f = netz({
+      '/s': [[200, { fassung: 4 }]],
+      '/v': [[200, { id: 'v-1', status: 'offen' }]],
+      '/c.json': [[200, { laeuft: true, verlauf: [eintrag({ id: 'v-1', status: 'offen' })], live: null, vorgemerkt: null }]],
+    });
+    expect(await chatVormerken('neu', { fenster: 'newsletter', auswahl: null })).toBeNull();
+    // Ungesichertes zuerst gespeichert (die Nachricht startet sofort), dann PUT - nie POST chat_url.
+    expect(adressen(f).slice(0, 2)).toEqual(['/s', '/v']);
+    expect(adressen(f)).not.toContain('/c');
+    expect(aufruf(f, '/v').method).toBe('PUT');
+    expect(pultStore.getState().chat?.vorgemerkt).toBeNull();
+    expect(pultStore.getState().chat?.verlauf.map((e) => e.id)).toContain('v-1');
+  });
+
+  it('chatAbschicken mit stehender Vormerkung geht ebenfalls ueber PUT', async () => {
+    pultStore.setState({ chat: { laeuft: false, verlauf: [], live: null, vorgemerkt: { id: 'v-1', nachricht: 'alt' } } });
+    const f = netz({
+      '/v': [[200, { id: 'v-1', status: 'offen' }]],
+      '/c.json': [[200, { laeuft: true, verlauf: [eintrag({ id: 'v-1', status: 'offen' })], live: null, vorgemerkt: null }]],
+    });
+    expect(await chatAbschicken('neu', { fenster: 'newsletter', auswahl: null })).toBeNull();
+    expect(adressen(f)).not.toContain('/c');
+    expect(adressen(f)[0]).toBe('/v');
   });
 
   it('Vormerkung loeschen: DELETE, Karte weg', async () => {

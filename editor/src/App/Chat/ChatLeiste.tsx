@@ -21,7 +21,7 @@ import {
 } from '@mui/icons-material';
 import { Box, Button, ButtonBase, CircularProgress, IconButton, InputBase, ThemeProvider, Tooltip } from '@mui/material';
 
-import { ChatEintrag, ChatKontext, ExportAuswahl, exportVorschlag, laufenderChat, rueckgaengigFuer, Vorgemerkt } from '../../chat';
+import { ChatEintrag, ChatKontext, ExportAuswahl, exportVorschlag, laufenderChat, rueckgaengigFuer, stoppDialogOffen, Vorgemerkt } from '../../chat';
 import {
   chatAbschicken,
   chatRueckgaengig,
@@ -313,10 +313,15 @@ export default function ChatLeiste({ kontext, sperre = null, hoehe, vorschlaege 
   const arbeitet = useAgentArbeitet();
   const liveZeile = useLiveZeile();
   // Waehrend eines Chat-Laufs: Vormerken statt Senden, Stopp in der Kopfzeile.
-  const chatLauf = pultStore((p) => laufenderChat(p.chat) !== null);
+  const laufId = pultStore((p) => laufenderChat(p.chat)?.id ?? null);
+  const chatLauf = laufId !== null;
   const stoppLaeuft = pultStore((p) => p.chat?.live?.stopp != null);
   const vorgemerkt = chat?.vorgemerkt ?? null;
-  const [stoppOffen, setStoppOffen] = useState(false);
+  // Stopp-Dialog: id des Laufs, fuer den er geoeffnet wurde (null = zu). Endet der Lauf, geht er zu.
+  const [stoppFuer, setStoppFuer] = useState<string | null>(null);
+  useEffect(() => {
+    if (laufId === null || laufId !== stoppFuer) setStoppFuer(null);
+  }, [laufId, stoppFuer]);
   const eingabe = useRef<HTMLTextAreaElement>(null);
   const [offen, setOffen] = useState(true);
   const [text, setText] = useState('');
@@ -342,7 +347,8 @@ export default function ChatLeiste({ kontext, sperre = null, hoehe, vorschlaege 
     if (!kannSenden) return;
     setSendet(true);
     setFehler(null);
-    const grund = chatLauf ? await chatVormerken(text.trim(), kontext) : await chatAbschicken(text.trim(), kontext);
+    // Im Lauf und bei stehender Vormerkung immer ueber die Vormerkung (PUT), nie ein zweiter Auftrag.
+    const grund = chatLauf || vorgemerkt ? await chatVormerken(text.trim(), kontext) : await chatAbschicken(text.trim(), kontext);
     setSendet(false);
     if (grund) setFehler(grund);
     else setText('');
@@ -402,7 +408,7 @@ export default function ChatLeiste({ kontext, sperre = null, hoehe, vorschlaege 
               <Button
                 size="small"
                 disabled={stoppLaeuft}
-                onClick={() => setStoppOffen(true)}
+                onClick={() => setStoppFuer(laufId)}
                 startIcon={<StopRounded sx={{ fontSize: 14 }} />}
                 sx={{ mr: 1, height: 26, px: 1.25, fontSize: 12, fontWeight: 600, color: FARBE.text, border: `1px solid ${FARBE.linie}`, borderRadius: '13px', '&:hover': { bgcolor: FARBE.hover, borderColor: FARBE.gedaempft }, '&.Mui-disabled': { color: FARBE.gedaempft } }}
               >
@@ -412,7 +418,7 @@ export default function ChatLeiste({ kontext, sperre = null, hoehe, vorschlaege 
           </Tooltip>
         )}
         </Box>
-        <StoppDialog offen={stoppOffen && chatLauf} onClose={() => setStoppOffen(false)} />
+        <StoppDialog offen={stoppDialogOffen(stoppFuer, chat)} onClose={() => setStoppFuer(null)} />
 
         {offen && (
           <Box sx={{ height: hoehe, display: 'flex', flexDirection: 'column', minHeight: 0, borderTop: `1px solid ${FARBE.linie}` }}>

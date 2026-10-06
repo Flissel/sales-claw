@@ -110,26 +110,36 @@ function Fenster({ id, onExportieren, chat }: GestaltungFensterProps & { id: str
 
   // Live-Ansicht: aendert der Agent die offene Flaeche (Zwischenstand) oder kommt das echte Dokument
   // zurueck, zeigt das Fenster diesen Stand - schreibgeschuetzt, die Sperre liegt darueber. Eigene,
-  // ungesicherte Aenderungen werden nie ueberschrieben; verschwindet die Flaeche, schliesst es.
+  // ungesicherte Aenderungen werden nie ueberschrieben. Fehlt die Flaeche nur im Zwischenstand, bleibt
+  // das Fenster mit dem letzten Stand und einem Hinweis offen (sie kann nach Stopp/Fehler zurueckkommen).
   const dokument = useDocument();
   const block = dokument[id];
   const gesehen = useRef(block);
+  const zwischenstand = pultStore((p) => p.zwischenstand !== null);
+  const [entfernt, setEntfernt] = useState(false);
   const laeuftRef = useRef(laeuft);
   laeuftRef.current = laeuft;
   useEffect(() => {
+    // Lauf zu Ende und die Flaeche ist auch im echten Dokument nicht (mehr) da: schliessen.
+    if (!zwischenstand && block?.type !== 'Image' && !geaendertRef.current && !laeuftRef.current) {
+      gestaltungSchliessen();
+      return;
+    }
     // Jeder Zwischenstand ist ein neues Objekt - nur ein inhaltlich anderer Block zaehlt.
     if (gleich(gesehen.current, block)) return;
     gesehen.current = block;
     if (geaendertRef.current || laeuftRef.current) return;
     if (block?.type !== 'Image') {
-      gestaltungSchliessen();
+      if (pultStore.getState().zwischenstand) setEntfernt(true);
+      else gestaltungSchliessen();
       return;
     }
+    setEntfernt(false);
     const neu = flaecheLesen(block, dokument.root);
     setAnfang(neu);
     setAlt(neu.alt);
     setAltFehlt(false);
-  }, [block, dokument.root]);
+  }, [block, dokument.root, zwischenstand]);
 
   // Dem Chat melden: ungesicherte Aenderungen (sperrt Senden, haelt das Neuladen auf) und Auswahl.
   useEffect(() => {
@@ -215,7 +225,12 @@ function Fenster({ id, onExportieren, chat }: GestaltungFensterProps & { id: str
     setSelectedBlockId(id);
   };
 
-  const meldung = fehler && (
+  const meldung = entfernt && !fehler ? (
+    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1, fontSize: 12, color: FARBE.warnung }}>
+      <ErrorOutlineRounded sx={{ fontSize: 14 }} />
+      <span>Der Assistent hat diese Fläche im aktuellen Schritt entfernt – hier siehst du den letzten Stand.</span>
+    </Box>
+  ) : fehler && (
     <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1, fontSize: 12, color: FARBE.fehler }}>
       <ErrorOutlineRounded sx={{ fontSize: 14 }} />
       <span>{fehler}</span>
