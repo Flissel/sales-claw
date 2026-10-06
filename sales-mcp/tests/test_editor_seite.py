@@ -1624,3 +1624,39 @@ def test_vorlagen_boeses_cookie_faellt_auf_vibemind(angemeldet, pult):
     r = angemeldet.get("/marketing/vorlagen", headers=_mit_firma(angemeldet, 'x"><script>'))
     assert r.status_code == 200 and "<script" not in r.text
     assert ("GET", "/vorlagen?mandant=vibemind&status=freigegeben", None) in pult.aufrufe
+
+
+# --- Inhalt ohne Firma (Abschlusswelle I2b, T8a) -----------------------------------
+
+def _inhalt_ohne_firma(pult, monkeypatch, wert):
+    orig = pult.anfrage
+
+    def anfrage(methode, pfad, daten=None, roh=False, zeitlimit=None):
+        r = orig(methode, pfad, daten, roh, zeitlimit)
+        if pfad == f"/inhalte/{IID}":
+            if wert is ...:
+                r["inhalt"].pop("mandant", None)
+            else:
+                r["inhalt"]["mandant"] = wert
+        return r
+    monkeypatch.setattr(marketing_pult, "anfrage", anfrage)
+
+
+@pytest.mark.parametrize("wert", ["", None, ...], ids=["leer", "null", "fehlt"])
+def test_medien_json_inhalt_ohne_firma_ist_leer_mit_hinweis(angemeldet, pult, medienordner, monkeypatch, wert):
+    (medienordner / "team.jpg").write_bytes(b"\x89PNG\r\n\x1a\n0000")
+    _inhalt_ohne_firma(pult, monkeypatch, wert)
+    r = angemeldet.get(MEDIEN, headers=HOST)
+    assert r.status_code == 200
+    assert r.json() == {"bilder": [], "zuordnung": {}, "mandanten": [], "mandant": "",
+                        "hinweis": "Bildzuordnung nicht erreichbar"}
+    assert not any(a[1] == "/medien/sichtbar" for a in pult.aufrufe)
+
+
+@pytest.mark.parametrize("wert", ["", None, ...], ids=["leer", "null", "fehlt"])
+def test_start_ohne_firma_am_inhalt_ist_null(angemeldet, pult, monkeypatch, wert):
+    _inhalt_ohne_firma(pult, monkeypatch, wert)
+    r = angemeldet.get(f"/marketing/editor/{IID}", headers=_mit_firma(angemeldet, "fin2gether"))
+    assert r.status_code == 200
+    assert _start(r.text)["mandant"] is None
+    assert not any(a[1] == "/mandanten" for a in pult.aufrufe)

@@ -17,7 +17,7 @@ import {
   Typography,
 } from '@mui/material';
 
-import { fehlerText } from '../pult';
+import { fehlerText, firmaEtikett } from '../pult';
 import { alsUngespeichert, newsletterSichern, pultStore } from '../pultZustand';
 
 import { useAgentArbeitet } from './Chat/Sperre';
@@ -31,6 +31,7 @@ export const PULT_LEISTE_HOEHE = 64;
 
 export default function PultLeiste() {
   const start = pultStore((p) => p.start);
+  const etikett = firmaEtikett(start?.mandant);
   const betreff = pultStore((p) => p.betreff);
   const vorschautext = pultStore((p) => p.vorschautext);
   const basis = pultStore((p) => p.basis);
@@ -126,9 +127,9 @@ export default function PultLeiste() {
         <Typography variant="subtitle1" sx={{ fontWeight: 700, flexShrink: 0 }}>
           Newsletter
         </Typography>
-        {start.mandant && (
+        {etikett !== null && (
           <Tooltip title="Firma dieses Newsletters">
-            <Chip size="small" variant="outlined" label={start.mandant.name} sx={{ flexShrink: 0 }} />
+            <Chip size="small" variant="outlined" label={etikett} sx={{ flexShrink: 0 }} />
           </Tooltip>
         )}
         <TextField

@@ -15,7 +15,7 @@ import { Box, Button, ButtonBase, IconButton, Popover, Tooltip, Typography } fro
 
 import { getDocument } from '../../documents/editor/EditorContext';
 import { Ebene, neueId } from '../../gestaltung';
-import { ANZEIGE } from '../../pult';
+import { ANZEIGE, leereBildwahl } from '../../pult';
 import { ebeneAlsKontext, ebeneKontextUmschalten, medienLaden, pultStore } from '../../pultZustand';
 import { SCHRIFT_FAMILIE } from '../../schemata';
 
@@ -49,7 +49,9 @@ function Medienauswahl({ anker, schliessen, waehlen }: { anker: HTMLElement | nu
   useEffect(() => {
     if (anker) medienLaden(true);
   }, [anker]);
+  const medienHinweis = pultStore((p) => p.medienHinweis);
   const liste = medienFuerEbenen(medien ?? []);
+  const leer = leereBildwahl(liste.length, medienHinweis);
   const gruppen: Array<[string, string[]]> = [
     ['Freigestellt', liste.filter(istFreigestellt)],
     ['Medien', liste.filter((n) => !istFreigestellt(n))],
@@ -66,9 +68,7 @@ function Medienauswahl({ anker, schliessen, waehlen }: { anker: HTMLElement | nu
       <Typography sx={{ fontSize: 13, fontWeight: 600, mb: 0.5 }}>Bild aus den Medien</Typography>
       <Typography sx={{ fontSize: 12, color: FARBE.gedaempft, mb: 2 }}>Freigestellte Bilder liegen ohne Hintergrund auf der Fläche.</Typography>
       {medien === null && <Typography sx={{ fontSize: 12, color: FARBE.gedaempft }}>Medien werden geladen …</Typography>}
-      {medien !== null && liste.length === 0 && (
-        <Typography sx={{ fontSize: 12, color: FARBE.gedaempft }}>Keine Bilder in den Medien. Bilder im Pult unter Medien hochladen.</Typography>
-      )}
+      {medien !== null && leer !== null && <Typography sx={{ fontSize: 12, color: FARBE.gedaempft }}>{leer}</Typography>}
       {gruppen.map(([titel, namen]) =>
         namen.length === 0 ? null : (
           <Box key={titel} sx={{ mb: 2 }}>

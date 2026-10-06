@@ -37,7 +37,17 @@ import {
   STUFE_NAH,
   STUFE_NEU,
 } from '../../../../bildfeld';
-import { bildBeauftragen, bildFreistellen, ANZEIGE, loeschFrage, medienLoeschen, medienName, medienZuordnen } from '../../../../pult';
+import {
+  bildBeauftragen,
+  bildFreistellen,
+  ANZEIGE,
+  loeschFrage,
+  medienLoeschen,
+  medienName,
+  medienZuordnen,
+  MEDIEN_LEER,
+  leereBildwahl,
+} from '../../../../pult';
 import { gestaltungOeffnen, medienLaden, pultStore, standAbfragen } from '../../../../pultZustand';
 import { useSelectedBlockId } from '../../../../documents/editor/EditorContext';
 import { ImageDaten, ImageSchema } from '../../../../schemata';
@@ -415,8 +425,8 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
         <Typography variant="caption" color="text.secondary">
           {medien === null
             ? 'Medien werden geladen …'
-            : optionen.length === 0
-              ? 'Keine Bilder in den Medien. Bilder im Pult unter Medien hochladen.'
+            : leereBildwahl(optionen.length, medienHinweis) === MEDIEN_LEER
+              ? MEDIEN_LEER // mit Hinweis steht oben schon der Hinweis, nie "keine Bilder"
               : 'Erlaubt: png, jpg, jpeg aus den Medien'}
         </Typography>
         {gewaehlt !== '' && (

@@ -5,7 +5,7 @@ import { HeightOutlined, OpacityOutlined } from '@mui/icons-material';
 import { Box, Button, InputLabel, Stack, Typography } from '@mui/material';
 
 import ContainerPropsSchema, { ContainerProps } from '../../../../documents/blocks/Container/ContainerPropsSchema';
-import { ANZEIGE, medienName } from '../../../../pult';
+import { ANZEIGE, leereBildwahl, medienName } from '../../../../pult';
 import { medienLaden, pultStore } from '../../../../pultZustand';
 
 import BaseSidebarPanel from './helpers/BaseSidebarPanel';
@@ -27,6 +27,7 @@ const DECKKRAFT_START = 60;
 export default function ContainerSidebarPanel({ data, setData }: ContainerSidebarPanelProps) {
   const [, setErrors] = useState<ZodError | null>(null);
   const medien = pultStore((p) => p.medien);
+  const medienHinweis = pultStore((p) => p.medienHinweis);
   useEffect(() => {
     medienLaden();
   }, []);
@@ -90,9 +91,7 @@ export default function ContainerSidebarPanel({ data, setData }: ContainerSideba
         <Typography variant="caption" color="text.secondary">
           {medien === null
             ? 'Medien werden geladen …'
-            : kacheln.length === 0
-              ? 'Keine Bilder in den Medien. Bilder im Pult unter Medien hochladen.'
-              : 'Das Bild füllt den Abschnitt (Breite 600 px).'}
+            : (leereBildwahl(kacheln.length, medienHinweis) ?? 'Das Bild füllt den Abschnitt (Breite 600 px).')}
         </Typography>
         {aktuell !== '' && (
           <>

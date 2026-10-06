@@ -862,3 +862,11 @@ def test_quelltext_ohne_fest_verdrahtetes_vibemind():
     for name in ("ui_marketing.py", "ui_editor.py"):
         t = (Path(__file__).resolve().parent.parent / name).read_text(encoding="utf-8")
         assert '"vibemind"' not in t and "mandant=vibemind" not in t, name
+
+
+@pytest.mark.parametrize("wert", ["", None], ids=["leer", "null"])
+def test_entwurf_inhalt_ohne_firma_fehlerseite_statt_500(angemeldet, pult, wert):
+    pult.inhalt_mandant = wert
+    r = angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST)
+    assert r.status_code == 422 and "Nicht möglich" in r.text
+    assert not any(p.startswith("/layouts") for p in _mandant_fragen(pult))

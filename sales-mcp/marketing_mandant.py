@@ -4,6 +4,8 @@ Eingabe des Browsers und damit nicht vertrauenswuerdig: nur eine id, die die
 Marketing-API als aktiv meldet, gilt - alles andere faellt auf VORGABE."""
 from __future__ import annotations
 
+from starlette.concurrency import run_in_threadpool
+
 import marketing_pult
 
 COOKIE, VORGABE = "mk_mandant", "vibemind"
@@ -23,6 +25,13 @@ def waehlen(cookie: str | None, liste: list[dict]) -> str:
     if cookie and any(m.get("id") == cookie and m.get("aktiv") for m in liste):
         return cookie
     return VORGABE
+
+
+async def firma(request) -> tuple[str, list[dict]]:
+    """Die gewaehlte Firma (Cookie, geprueft gegen die aktive Liste) und die Liste
+    selbst. Wirft PultFehler - der Aufrufer faengt wie bei jedem API-Aufruf."""
+    liste = await run_in_threadpool(mandanten)
+    return waehlen(request.cookies.get(COOKIE), liste), liste
 
 
 def name_von(mid: str, liste: list[dict]) -> str:

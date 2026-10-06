@@ -18,7 +18,8 @@ export type Start = {
   vorschau_url: string;
   medien_url: string;
   // Firma dieses Newsletters und Zuordnung der Bilder zu Firmen; fehlen bei aelterem sales-ui.
-  mandant?: Firma;
+  // null = Inhalt ohne Firma (alter Entwurf): kein Etikett, nie eine Vorgabe-Firma.
+  mandant?: Firma | null;
   medien_zuordnung_url?: string;
   // Bilder aus der Bibliothek loeschen (01.10.2026); fehlt bei aelterem sales-ui.
   medien_loeschen_url?: string;
@@ -222,6 +223,21 @@ export type MedienStand = {
 };
 
 const ZUORDNUNG_AUS = 'Bildzuordnung nicht erreichbar';
+
+// Etikett der Firma in der Pult-Leiste; null (kein Etikett) ohne Firma oder mit leerer id.
+export function firmaEtikett(mandant: Firma | null | undefined): string | null {
+  if (!mandant || typeof mandant.id !== 'string' || !mandant.id.trim()) return null;
+  return mandant.name || mandant.id;
+}
+
+export const MEDIEN_LEER = 'Keine Bilder in den Medien. Bilder im Pult unter Medien hochladen.';
+
+// Text einer geladenen Bildwahl ohne Bilder. Der Zuordnungs-Hinweis geht immer vor: dann ist die
+// Bibliothek nicht leer, sondern ihre Zuordnung unbekannt. null = es gibt Bilder und keinen Hinweis.
+export function leereBildwahl(anzahl: number, hinweis: string | null): string | null {
+  if (hinweis) return hinweis;
+  return anzahl === 0 ? MEDIEN_LEER : null;
+}
 
 function medienAusfall(): MedienStand {
   return { bilder: [], zuordnung: {}, mandanten: [], mandant: '', hinweis: ZUORDNUNG_AUS };

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { medienListe, medienZuordnen, Start } from './pult';
+import { firmaEtikett, leereBildwahl, MEDIEN_LEER, medienListe, medienZuordnen, Start } from './pult';
 import { medienLaden, pultStore } from './pultZustand';
 
 const start = {
@@ -124,5 +124,31 @@ describe('medienLaden', () => {
     medienLaden(true);
     await vi.waitFor(() => expect(pultStore.getState().medienHinweis).toBe('Bildzuordnung nicht erreichbar'));
     expect(pultStore.getState().medien).toEqual([]);
+  });
+});
+
+describe('leereBildwahl', () => {
+  it('zeigt den Zuordnungs-Hinweis statt "keine Bilder"', () => {
+    expect(leereBildwahl(0, 'Bildzuordnung nicht erreichbar')).toBe('Bildzuordnung nicht erreichbar');
+    expect(leereBildwahl(0, 'Bildzuordnung nicht erreichbar')).not.toBe(MEDIEN_LEER);
+  });
+  it('leere Bibliothek ohne Hinweis', () => {
+    expect(leereBildwahl(0, null)).toBe(MEDIEN_LEER);
+  });
+  it('mit Bildern und ohne Hinweis kein Text', () => {
+    expect(leereBildwahl(3, null)).toBeNull();
+  });
+});
+
+describe('firmaEtikett', () => {
+  it('Name der Firma', () => {
+    expect(firmaEtikett({ id: 'laura', name: 'Laura Nails' })).toBe('Laura Nails');
+    expect(firmaEtikett({ id: 'laura', name: '' })).toBe('laura');
+  });
+  it('kein Etikett ohne Firma oder mit leerer id', () => {
+    expect(firmaEtikett(null)).toBeNull();
+    expect(firmaEtikett(undefined)).toBeNull();
+    expect(firmaEtikett({ id: '', name: '' })).toBeNull();
+    expect(firmaEtikett({ id: '  ', name: 'X' })).toBeNull();
   });
 });

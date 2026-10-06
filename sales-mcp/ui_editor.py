@@ -159,11 +159,6 @@ def routen(ui) -> list:
         return JSONResponse({**mehr, "grund": grund}, status_code=status,
                             headers={"Cache-Control": "no-store"})
 
-    async def firma(request) -> tuple[str, list[dict]]:
-        """Gewaehlte Firma (Cookie, gegen die aktive Liste geprueft) + Liste; wirft PultFehler."""
-        liste = await run_in_threadpool(marketing_mandant.mandanten)
-        return marketing_mandant.waehlen(request.cookies.get(marketing_mandant.COOKIE), liste), liste
-
     @ui._gesichert_seite
     async def editor_seite(request):
         roh = request.path_params["iid"]
@@ -181,13 +176,18 @@ def routen(ui) -> list:
         felder = neueste.get("felder") or {}
         # Der Editor folgt der Firma des Newsletters, nicht dem Cookie. Ist die
         # Liste nicht erreichbar, bleibt als Name die id (der Editor geht auf).
+        # Ohne Firma am Inhalt (alter Entwurf) steht null im Start-JSON: nie die
+        # Vorgabe-Firma unterschieben; der Editor zeigt dann kein Etikett.
         mid = str(i.get("mandant") or "")
-        try:
-            mname = marketing_mandant.name_von(mid, await run_in_threadpool(marketing_mandant.mandanten))
-        except marketing_pult.PultFehler:
-            mname = mid
+        mandant = None
+        if mid:
+            try:
+                mname = marketing_mandant.name_von(mid, await run_in_threadpool(marketing_mandant.mandanten))
+            except marketing_pult.PultFehler:
+                mname = mid
+            mandant = {"id": mid, "name": mname}
         start = {
-            "mandant": {"id": mid, "name": mname},
+            "mandant": mandant,
             "dokument": neueste["bloecke"],
             "betreff": str(felder.get("betreff") or ""),
             "vorschautext": str(felder.get("vorschautext") or ""),
@@ -622,6 +622,8 @@ def routen(ui) -> list:
         try:
             d = await run_in_threadpool(marketing_pult.anfrage, "GET", f"/inhalte/{iid}")
             mandant = str(((d or {}).get("inhalt") or {}).get("mandant") or "")
+            if not mandant:   # keine Firma am Inhalt = Zuordnung nicht lesbar (fail-closed)
+                raise ValueError("Inhalt ohne Firma")
             r = await run_in_threadpool(marketing_pult.anfrage, "POST", "/medien/sichtbar",
                                         {"mandant": mandant, "namen": alle})
             sichtbar = set(r["sichtbar"])
@@ -714,7 +716,7 @@ def routen(ui) -> list:
     @ui._gesichert_seite
     async def vorlagen_seite(request):
         try:
-            m, liste = await firma(request)
+            m, liste = await marketing_mandant.firma(request)
             d = await run_in_threadpool(marketing_pult.anfrage, "GET",
                                         f"/vorlagen?mandant={urllib.parse.quote(m)}&status=freigegeben")
         except marketing_pult.PultFehler as f:
@@ -755,7 +757,7 @@ def routen(ui) -> list:
         if (b := bild_basis()):
             q["bild_basis"] = b
         try:
-            q["mandant"] = (await firma(request))[0]
+            q["mandant"] = (await marketing_mandant.firma(request))[0]
             inhalt, typ = await run_in_threadpool(
                 marketing_pult.anfrage, "GET",
                 f"/vorlagen/{name}/vorschau?{urllib.parse.urlencode(q)}", roh=True)
@@ -778,7 +780,7 @@ def routen(ui) -> list:
             return ui._fehlerseite(422, "Nicht möglich",
                                    f"Der Titel fehlt oder ist länger als {TITEL_MAX} Zeichen.")
         try:
-            m, _liste = await firma(request)
+            m, _liste = await marketing_mandant.firma(request)
             r = await run_in_threadpool(marketing_pult.anfrage, "POST", "/inhalte/aus_vorlage",
                                         {"vorlage": vorlage, "titel": titel, "mandant": m})
         except marketing_pult.PultFehler as f:

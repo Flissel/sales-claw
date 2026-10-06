@@ -121,13 +121,6 @@ def routen(ui) -> list:
     def von(request) -> str:
         return ui._ui_akteur(request)
 
-    async def firma(request) -> tuple[str, list[dict]]:
-        """Die gewaehlte Firma (Cookie, geprueft gegen die aktive Liste) und die
-        Liste selbst. Wirft PultFehler - der Aufrufer faengt wie bei jedem
-        API-Aufruf."""
-        liste = await run_in_threadpool(marketing_mandant.mandanten)
-        return marketing_mandant.waehlen(request.cookies.get(marketing_mandant.COOKIE), liste), liste
-
     def umschalter(m: str, liste: list[dict], zurueck: str) -> str:
         return marketing_mandant.umschalter(e, ui.CSRF_TOKEN, m, liste, zurueck)
 
@@ -153,7 +146,7 @@ def routen(ui) -> list:
     @ui._gesichert_seite
     async def uebersicht(request):
         try:
-            m, liste = await firma(request)
+            m, liste = await marketing_mandant.firma(request)
             d = await run_in_threadpool(marketing_pult.anfrage, "GET",
                                         f"/uebersicht?mandant={urllib.parse.quote(m)}")
         except marketing_pult.PultFehler as f:
@@ -179,7 +172,7 @@ def routen(ui) -> list:
             status = "entwurf"
         api_status = "" if status == "alle" else status
         try:
-            m, liste = await firma(request)
+            m, liste = await marketing_mandant.firma(request)
             q = urllib.parse.urlencode({k: v for k, v in (("mandant", m), ("art", art), ("status", api_status)) if v})
             d = await run_in_threadpool(marketing_pult.anfrage, "GET", f"/inhalte?{q}")
         except marketing_pult.PultFehler as f:
@@ -214,9 +207,13 @@ def routen(ui) -> list:
         try:
             d = await run_in_threadpool(marketing_pult.anfrage, "GET", f"/inhalte/{urllib.parse.quote(iid)}")
             # Die Layouts gehoeren der Firma des INHALTS, nicht der Cookie-Wahl.
+            # Ohne Firma kein Rueckfall auf eine andere: Fehlerseite statt 500.
+            inhalt = d.get("inhalt") if isinstance(d, dict) else None
+            mandant = inhalt.get("mandant") if isinstance(inhalt, dict) else None
+            if not isinstance(mandant, str) or not mandant:
+                return ui._fehlerseite(422, "Nicht möglich", "Dieser Inhalt gehört zu keiner Firma.")
             lay = await run_in_threadpool(
-                marketing_pult.anfrage, "GET",
-                f"/layouts?mandant={urllib.parse.quote(str(d['inhalt']['mandant']))}")
+                marketing_pult.anfrage, "GET", f"/layouts?mandant={urllib.parse.quote(mandant)}")
         except marketing_pult.PultFehler as f:
             return fehler(f)
         i, fassungen = d["inhalt"], d["fassungen"]
@@ -534,7 +531,7 @@ def routen(ui) -> list:
     @ui._gesichert_seite
     async def layouts(request):
         try:
-            m, liste = await firma(request)
+            m, liste = await marketing_mandant.firma(request)
             alle = await alle_layouts(m)
         except marketing_pult.PultFehler as f:
             return fehler(f)
@@ -566,7 +563,7 @@ def routen(ui) -> list:
     @ui._gesichert_seite
     async def layout_bild(request):
         try:
-            m, _liste = await firma(request)
+            m, _liste = await marketing_mandant.firma(request)
             l = layout_von(await alle_layouts(m), request.path_params["name"])
             if not l:
                 return _gerahmt("<p>Unbekanntes Layout.</p>", status=404)
@@ -581,7 +578,7 @@ def routen(ui) -> list:
     async def layout_editor(request):
         name = request.path_params["name"]
         try:
-            m, _liste = await firma(request)
+            m, _liste = await marketing_mandant.firma(request)
             l = layout_von(await alle_layouts(m), name)
         except marketing_pult.PultFehler as f:
             return fehler(f)
@@ -652,7 +649,7 @@ def routen(ui) -> list:
         if not ui._csrf_ok(form):
             return _gerahmt("<p>Abgewiesen: fehlende oder falsche CSRF-Marke.</p>", status=403)
         try:
-            m, _liste = await firma(request)
+            m, _liste = await marketing_mandant.firma(request)
             bisher = None
             if (name := str(form.get("layout") or "")):
                 bisher = (layout_von(await alle_layouts(m), name) or {}).get("gestalt")
@@ -674,7 +671,7 @@ def routen(ui) -> list:
             return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
         name = request.path_params["name"]
         try:
-            m, _liste = await firma(request)
+            m, _liste = await marketing_mandant.firma(request)
             l = layout_von(await alle_layouts(m), name)
         except marketing_pult.PultFehler as f:
             return fehler(f)
