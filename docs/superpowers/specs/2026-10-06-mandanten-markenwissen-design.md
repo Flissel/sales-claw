@@ -39,9 +39,12 @@ Feste Grenzen wie bisher: kein Modell auf der VM; Claude nur am PC über den Mar
   Layouts, Layout-Vorschau, Layout-Fassungen, Newsletter anlegen) nehmen den gewählten Mandanten.
 - **Editor folgt dem Newsletter**, nicht dem Umschalter: Mandant kommt aus dem Inhalt
   (`GET /inhalte/{iid}` liefert `mandant`). Oben im Editor ein kleines Etikett mit dem Firmennamen.
-- Migration: `UPDATE marketing.mandanten SET aktiv = true WHERE id = 'fin2gether'`. Der Versand
-  bleibt durch die vorhandenen Pflichtprüfungen (Verteiler, Impressum) gesperrt, bis fin2gether
-  Verteiler und Impressum hat.
+- Migration: `UPDATE marketing.mandanten SET aktiv = true WHERE id = 'fin2gether'`. Korrektur
+  06.10. (Task-1-Befund): Eine Pflichtprüfung für Verteiler/Impressum gibt es **nicht**. Das ist
+  unschädlich, weil kein Weg einen Pult-Newsletter selbst versendet. „Freigeben“ legt nur ab;
+  nach draußen geht nur `versand_beauftragen` (Freitext → sales-claw-Entwurf, den ein Mensch
+  freigibt). Ein fehlendes Impressum zeigt die Vorschau rot („Impressum fehlt“). Eine
+  Versandsperre je Mandant ist nicht Teil dieses Bausteins.
 
 ## 2. Bildtrennung (Marketing-API, VM)
 
