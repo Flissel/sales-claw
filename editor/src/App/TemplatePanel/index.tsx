@@ -9,7 +9,7 @@ import ToggleInspectorPanelButton from '../InspectorDrawer/ToggleInspectorPanelB
 import { alterWegHinweis } from '../../pult';
 import { pultStore } from '../../pultZustand';
 import PultLeiste from '../PultLeiste';
-import { useAgentArbeitet, useNurLesen } from '../Chat/Sperre';
+import { useGesperrt } from '../Chat/Sperre';
 import { useInert } from '../Chat/sperren';
 
 // Gegenueber dem Beispiel entfernt: Reiter Vorschau/HTML/JSON, JSON-Import und
@@ -44,7 +44,7 @@ export default function TemplatePanel() {
   const selectedScreenSize = useSelectedScreenSize();
   const start = pultStore((p) => p.start);
   // Waehrend der Agent arbeitet: Werkzeugleiste und Canvas auch per Tastatur gesperrt.
-  const gesperrt = useAgentArbeitet() !== null || useNurLesen();
+  const gesperrt = useGesperrt();
   const leisteRef = useInert<HTMLDivElement>(gesperrt);
   const canvasRef = useInert<HTMLDivElement>(gesperrt);
   const puls = pultStore((p) => p.zwischenstand?.puls ?? 0);

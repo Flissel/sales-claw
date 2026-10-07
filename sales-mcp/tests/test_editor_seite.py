@@ -367,7 +367,9 @@ def test_editor_abgelehnt_bleibt_fehlerseite(angemeldet, pult):
 def test_start_enthaelt_status_urls_und_nur_offene_rueckmeldungen(angemeldet, pult):
     pult.rueckmeldungen = [
         {"text": "Betreff kuerzen", "von": "chef", "am": "2026-10-07T10:00:00+00:00", "fassung": 2, "erledigt": False},
-        {"text": "Alt", "von": "chef", "am": "2026-10-06T10:00:00+00:00", "fassung": 1, "erledigt": True}]
+        {"text": "Alt", "von": "chef", "am": "2026-10-06T10:00:00+00:00", "fassung": 1, "erledigt": True},
+        {"text": "Ohne Fassung", "von": "chef", "am": "x", "fassung": "zwei", "erledigt": False},
+        {"text": "Bool", "von": "chef", "am": "x", "fassung": True, "erledigt": False}]
     start = _start(angemeldet.get(f"/marketing/editor/{IID}", headers=HOST).text)
     assert start["status"] == "entwurf" and start["eingereicht_am"] is None
     assert start["einreichen_url"] == f"/marketing/editor/{IID}/einreichen"

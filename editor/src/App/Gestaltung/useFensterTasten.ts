@@ -15,7 +15,7 @@ export function useFensterTasten(z: GestaltungZustand, versteckt: Set<string>) {
   verstecktRef.current = versteckt;
   useEffect(() => {
     const taste = (ev: KeyboardEvent) => {
-      if (pultStore.getState().chat?.laeuft) return;
+      if (pultStore.getState().chat?.laeuft || pultStore.getState().nurLesen) return;
       const zz = zRef.current;
       const el = ev.target instanceof HTMLElement && ev.target !== document.body ? ev.target : null;
       if (!flaechenTaste(el)) return;

@@ -12,6 +12,7 @@ import {
   laufenderChat,
   neueFassungNachChat,
   rueckgaengig,
+  sperrText,
   stoppen,
   StoppArt,
   vormerken,
@@ -36,6 +37,9 @@ import { getDocument, resetDocument, setDocument, setSelectedBlockId } from './d
 import type { Ebene } from './gestaltung';
 import type { TEditorConfiguration } from './documents/editor/core';
 import { anzeigbar, zuletztGeaendert } from './live';
+
+// Liegt zur Freigabe: der Editor ist nur lesend (Zurueckziehen hebt es auf).
+export const LIEGT_ZUR_FREIGABE = 'Liegt zur Freigabe – erst zurückziehen';
 import { Dokument, einreichen, Ergebnis, fehlerText, Firma, medienListe, speichern, standLaden, Start, zurAnzeige } from './pult';
 
 // Zustand der Pult-Leiste: Startdaten, Betreff/Vorschautext, gemerkte Fassung
@@ -134,7 +138,8 @@ export function pultStarten(start: Start) {
 export async function einreichenAuftrag(): Promise<string | null> {
   const { start, chat, hinweisOffen, ungespeichert } = pultStore.getState();
   if (!start) return 'Keine Verbindung zum Pult';
-  if (chat?.laeuft) return 'Der Assistent arbeitet gerade';
+  // Dasselbe Kriterium wie die Sperre in der Oberflaeche (Agent oder Newsletter-Export).
+  if (sperrText(chat) !== null) return 'Der Assistent arbeitet gerade';
   if (hinweisOffen) return HINWEIS_OFFEN;
   if (ungespeichert) {
     const e = await newsletterSichern(false);
@@ -142,7 +147,9 @@ export async function einreichenAuftrag(): Promise<string | null> {
   }
   const r = await einreichen(start);
   if (!r.ok) return r.grund;
-  pultStore.setState({ start: { ...start, status: 'eingereicht', eingereicht_am: new Date().toISOString() }, nurLesen: true });
+  // Zeit vom Server, wenn er sie mitschickt; sonst die Uhr dieses Rechners.
+  const am = r.eingereicht_am ?? new Date().toISOString();
+  pultStore.setState({ start: { ...start, status: 'eingereicht', eingereicht_am: am }, nurLesen: true });
   return null;
 }
 
@@ -249,6 +256,7 @@ export function fensterWiederOeffnen() {
     const id = sessionStorage.getItem(FENSTER);
     if (id === null) return;
     sessionStorage.removeItem(FENSTER);
+    if (pultStore.getState().nurLesen) return;
     if (getDocument()[id]?.type === 'Image') gestaltungOeffnen(id);
   } catch {
     /* kein Merkzettel */
@@ -356,8 +364,9 @@ export const HINWEIS_OFFEN = 'Im Bildfeld steht noch ein Hinweis – erst beauft
 // der Agent arbeitet mit der gespeicherten Fassung. Liefert null oder den Grund fuer den Betreiber.
 // Die Chips gehen mit der Nachricht (kontext.auswahl/anhaenge) und werden danach geleert.
 export async function chatAbschicken(nachricht: string, kontext: ChatKontext): Promise<string | null> {
-  const { start, chat } = pultStore.getState();
+  const { start, chat, nurLesen } = pultStore.getState();
   if (!start) return 'Keine Verbindung zum Pult';
+  if (nurLesen) return LIEGT_ZUR_FREIGABE;
   if (chat?.laeuft) return 'Der Assistent arbeitet gerade';
   const vorab = mitChips(kontext);
   if (!vorab.ok) return vorab.grund;
@@ -424,8 +433,9 @@ async function vorDemStart(): Promise<string | null> {
 // Waehrend eines Chat-Laufs: die naechste Nachricht vormerken (ersetzt eine vorgemerkte).
 // Laeuft nichts (mehr), geht sie wie gewohnt als Auftrag raus. Liefert null oder den Grund.
 export async function chatVormerken(nachricht: string, kontext: ChatKontext): Promise<string | null> {
-  const { start, chat } = pultStore.getState();
+  const { start, chat, nurLesen } = pultStore.getState();
   if (!start) return 'Keine Verbindung zum Pult';
+  if (nurLesen) return LIEGT_ZUR_FREIGABE;
   if (!laufenderChat(chat)) return chatAbschicken(nachricht, kontext);
   const mit = mitChips(kontext);
   if (!mit.ok) return mit.grund;
@@ -556,7 +566,8 @@ function anhangAendern(id: string, teil: Partial<AnhangChip>) {
 // Legt sofort einen Chip an (falscher Typ / zu gross: mit Grund, ohne Upload) und laedt hoch.
 // Liefert den Grund, wenn schon 5 Anhaenge dran sind (fehlerhafte zaehlen nicht).
 export function anhangHinzu(datei: File): string | null {
-  const { start, chatAnhaenge } = pultStore.getState();
+  const { start, chatAnhaenge, nurLesen } = pultStore.getState();
+  if (nurLesen) return LIEGT_ZUR_FREIGABE;
   if (chatAnhaenge.filter((a) => a.status !== 'fehler').length >= MAX_ANHAENGE) return `Höchstens ${MAX_ANHAENGE} Anhänge je Nachricht`;
   const id = `anhang-${++anhangNr}`;
   const p = dateiPruefen(datei);
@@ -602,8 +613,9 @@ export async function vormerkungLoeschenAuftrag(): Promise<string | null> {
 
 // Nach Fehler oder Stopp bleibt die Vormerkung stehen; "Starten" schickt sie von Hand los.
 export async function vormerkungStartenAuftrag(): Promise<string | null> {
-  const { start, chat } = pultStore.getState();
+  const { start, chat, nurLesen } = pultStore.getState();
   if (!start) return 'Keine Verbindung zum Pult';
+  if (nurLesen) return LIEGT_ZUR_FREIGABE;
   if (chat?.laeuft) return 'Der Assistent arbeitet gerade';
   const nachricht = chat?.vorgemerkt?.nachricht ?? '';
   const grund = await vorDemStart();
@@ -628,8 +640,9 @@ export async function chatStoppen(art: StoppArt): Promise<string | null> {
 
 // Rueckgaengig legt die Fassung vor der Agenten-Antwort als neue Fassung an; danach neu laden.
 export async function chatRueckgaengig(auftrag: string): Promise<string | null> {
-  const { start, ungespeichert, hinweisOffen, chat } = pultStore.getState();
+  const { start, ungespeichert, hinweisOffen, chat, nurLesen } = pultStore.getState();
   if (!start) return 'Keine Verbindung zum Pult';
+  if (nurLesen) return LIEGT_ZUR_FREIGABE;
   if (chat?.laeuft) return 'Der Assistent arbeitet gerade';
   if (hinweisOffen) return HINWEIS_OFFEN;
   if (ungespeichert) return 'Erst speichern – sonst gingen deine Änderungen verloren';

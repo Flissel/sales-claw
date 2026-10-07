@@ -140,12 +140,13 @@ function LaufBlase({ text }: { text: string }) {
 function VorgemerktKarte({
   v,
   laeuft,
-  arbeitet,
+  sperre,
   onBearbeiten,
 }: {
   v: Vorgemerkt;
   laeuft: boolean;
-  arbeitet: boolean;
+  // Grund, warum nichts gestartet oder geaendert werden darf (null = frei).
+  sperre: string | null;
   onBearbeiten: (text: string) => void;
 }) {
   const [aktion, setAktion] = useState<'loeschen' | 'starten' | null>(null);
@@ -192,7 +193,7 @@ function VorgemerktKarte({
         </Box>
       )}
       <Box sx={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 0.5, mr: -0.75 }}>
-        <Button size="small" disabled={aktion !== null} onClick={() => onBearbeiten(v.nachricht)} sx={kleinerKnopf}>
+        <Button size="small" disabled={aktion !== null || sperre === LIEGT_ZUR_FREIGABE} onClick={() => onBearbeiten(v.nachricht)} sx={kleinerKnopf}>
           Bearbeiten
         </Button>
         {laeuft ? (
@@ -204,11 +205,11 @@ function VorgemerktKarte({
             <Button size="small" disabled={aktion !== null} onClick={() => void tun('loeschen')} startIcon={dreher('loeschen')} sx={kleinerKnopf}>
               Verwerfen
             </Button>
-            <Tooltip title={arbeitet ? 'Der Assistent arbeitet gerade' : ''}>
+            <Tooltip title={sperre ?? ''}>
               <span>
                 <Button
                   size="small"
-                  disabled={aktion !== null || arbeitet}
+                  disabled={aktion !== null || sperre !== null}
                   onClick={() => void tun('starten')}
                   startIcon={dreher('starten')}
                   sx={{ ...kleinerKnopf, color: FARBE.akzent }}
@@ -233,6 +234,8 @@ type Aktionen = {
   rueckFehler: { id: string; grund: string } | null;
   onRueckgaengig: (id: string) => void;
   onExport: (v: ExportAuswahl) => void;
+  // Liegt zur Freigabe: kein Export-Vorschlag, keine Rueckgaengig-Aktion.
+  nurLesen: boolean;
   // Schritt-Zeile des laufenden Chat-Auftrags (useLiveZeile).
   liveZeile: string | null;
 };
@@ -303,7 +306,7 @@ function Eintrag({ e, a }: { e: ChatEintrag; a: Aktionen }) {
               </span>
             </Tooltip>
           )}
-          {vorschlag && (
+          {vorschlag && !a.nurLesen && (
             <Button size="small" onClick={() => a.onExport(vorschlag)} startIcon={<IosShareRounded sx={{ fontSize: 14 }} />} sx={{ ...kleinerKnopf, color: FARBE.akzent }}>
               Exportieren…
             </Button>
@@ -403,6 +406,7 @@ export default function ChatLeiste({ kontext, sperre: sperreVon = null, hoehe, v
       if (grund) setRueckFehler({ id, grund });
     },
     onExport,
+    nurLesen,
     liveZeile,
   };
 
@@ -475,7 +479,7 @@ export default function ChatLeiste({ kontext, sperre: sperreVon = null, hoehe, v
               ) : (
                 verlauf.map((e) => <Eintrag key={e.id} e={e} a={aktionen} />)
               )}
-              {vorgemerkt && <VorgemerktKarte v={vorgemerkt} laeuft={chatLauf} arbeitet={arbeitet !== null} onBearbeiten={bearbeiten} />}
+              {vorgemerkt && <VorgemerktKarte v={vorgemerkt} laeuft={chatLauf} sperre={nurLesen ? LIEGT_ZUR_FREIGABE : arbeitet !== null ? 'Der Assistent arbeitet gerade' : null} onBearbeiten={bearbeiten} />}
             </Box>
 
             <Box sx={{ flexShrink: 0, p: 1, borderTop: `1px solid ${FARBE.linie}` }}>

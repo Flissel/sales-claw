@@ -19,8 +19,11 @@ export function useAnhangAblage({ onGrund, onAngehaengt }: { onGrund: (grund: st
   const dateiWahl = useRef<HTMLInputElement>(null);
   // Zaehlt dragenter/-leave (Kindelemente feuern beides); > 0 = Dateien schweben ueber dem Chat.
   const [ziehen, setZiehen] = useState(0);
+  // Liegt zur Freigabe: keine Anhaenge (Bueroklammer, Ziehen, Einfuegen).
+  const nurLesen = pultStore((p) => p.nurLesen);
 
   const anhaengen = (dateien: File[]) => {
+    if (nurLesen) return;
     let grund: string | null = null;
     for (const d of dateien) {
       const vorher = new Set(pultStore.getState().chatAnhaenge.map((a) => a.id));
@@ -35,12 +38,12 @@ export function useAnhangAblage({ onGrund, onAngehaengt }: { onGrund: (grund: st
   // Auf den Bereich, der Dateien annimmt (braucht position: relative fuer die Ablageflaeche).
   const ablage = {
     onDragEnter: (ev: React.DragEvent) => {
-      if (!mitDateien(ev)) return;
+      if (nurLesen || !mitDateien(ev)) return;
       ev.preventDefault();
       setZiehen((n) => n + 1);
     },
     onDragOver: (ev: React.DragEvent) => {
-      if (!mitDateien(ev)) return;
+      if (nurLesen || !mitDateien(ev)) return;
       ev.preventDefault();
       ev.dataTransfer.dropEffect = 'copy';
     },
@@ -48,7 +51,7 @@ export function useAnhangAblage({ onGrund, onAngehaengt }: { onGrund: (grund: st
       if (mitDateien(ev)) setZiehen((n) => Math.max(0, n - 1));
     },
     onDrop: (ev: React.DragEvent) => {
-      if (!mitDateien(ev)) return;
+      if (nurLesen || !mitDateien(ev)) return;
       ev.preventDefault();
       setZiehen(0);
       anhaengen(Array.from(ev.dataTransfer.files));
@@ -89,7 +92,7 @@ export function useAnhangAblage({ onGrund, onAngehaengt }: { onGrund: (grund: st
   const bueroklammer = (
     <>
       <Tooltip title="Datei anhängen – Bild oder Dokument (auch Ziehen oder Einfügen)">
-        <IconButton aria-label="Datei anhängen" onClick={() => dateiWahl.current?.click()} sx={{ width: 28, height: 28, mb: '2px', ml: -1, flexShrink: 0 }}>
+        <IconButton aria-label="Datei anhängen" disabled={nurLesen} onClick={() => dateiWahl.current?.click()} sx={{ width: 28, height: 28, mb: '2px', ml: -1, flexShrink: 0 }}>
           <AttachFileRounded sx={{ fontSize: 16, transform: 'rotate(45deg)' }} />
         </IconButton>
       </Tooltip>
@@ -111,6 +114,7 @@ export function useAnhangAblage({ onGrund, onAngehaengt }: { onGrund: (grund: st
   // Fuer das Eingabefeld: Bilder aus der Zwischenablage (heissen oft nur "image.png" - der Server
   // macht den Namen eindeutig); Text wird normal eingefuegt.
   const beimEinfuegen = (ev: React.ClipboardEvent) => {
+    if (nurLesen) return;
     const bilder = Array.from(ev.clipboardData.files).filter((f) => f.type.startsWith('image/'));
     if (bilder.length === 0) return;
     ev.preventDefault();

@@ -8,7 +8,7 @@ import { Box } from '@mui/material';
 
 import { laufenderChat, sperrText } from '../../chat';
 import { schrittText } from '../../live';
-import { pultStore } from '../../pultZustand';
+import { LIEGT_ZUR_FREIGABE as LIEGT, pultStore } from '../../pultZustand';
 import { FARBE, UI_SCHRIFT } from '../Gestaltung/gestaltungStil';
 
 // Text der Sperre, solange ein Auftrag offen ist (null = frei).
@@ -17,9 +17,17 @@ export function useAgentArbeitet(): string | null {
 }
 
 // Liegt zur Freigabe: der Editor ist nur lesend (Zurueckziehen hebt es auf).
-export const LIEGT_ZUR_FREIGABE = 'Liegt zur Freigabe – erst zurückziehen';
+export const LIEGT_ZUR_FREIGABE = LIEGT;
 export function useNurLesen(): boolean {
   return pultStore((p) => p.nurLesen);
+}
+
+// Gesperrt, wenn der Agent arbeitet ODER der Newsletter zur Freigabe liegt. Beide Hooks laufen immer
+// (nie in `||`/`&&` aufrufen - sonst aendert sich die Hook-Reihenfolge zwischen den Renderings).
+export function useGesperrt(): boolean {
+  const arbeitet = useAgentArbeitet();
+  const nurLesen = useNurLesen();
+  return arbeitet !== null || nurLesen;
 }
 
 // Schritt-Zeile des laufenden Chat-Auftrags (null = kein Chat-Lauf, z. B. Export).

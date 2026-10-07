@@ -223,11 +223,9 @@ export async function speichern(
   return { ok: false, konflikt: r.status === 409, grund };
 }
 
-async function freigabeSchritt(
-  url: string | undefined,
-  csrf: string,
-  standardGrund: string,
-): Promise<{ ok: true } | { ok: false; grund: string }> {
+type SchrittErgebnis = { ok: true; eingereicht_am?: string } | { ok: false; grund: string };
+
+async function freigabeSchritt(url: string | undefined, csrf: string, standardGrund: string): Promise<SchrittErgebnis> {
   if (!url) return { ok: false, grund: 'Das ist hier noch nicht eingerichtet' };
   try {
     const r = await fetch(url, {
@@ -236,8 +234,12 @@ async function freigabeSchritt(
       headers: { 'Content-Type': 'application/json', 'X-CSRF': csrf },
       body: '{}',
     });
-    if (r.ok) return { ok: true };
     const j: unknown = await r.json().catch(() => ({}));
+    if (r.ok) {
+      return istObjekt(j) && typeof j.eingereicht_am === 'string' && j.eingereicht_am
+        ? { ok: true, eingereicht_am: j.eingereicht_am }
+        : { ok: true };
+    }
     return { ok: false, grund: istObjekt(j) && typeof j.grund === 'string' && j.grund ? j.grund : standardGrund };
   } catch {
     return { ok: false, grund: 'Keine Verbindung zum Pult' };

@@ -190,7 +190,8 @@ def routen(ui) -> list:
         rueck = [{"text": str(r.get("text") or ""), "von": str(r.get("von") or ""),
                   "am": str(r.get("am") or ""), "fassung": r.get("fassung")}
                  for r in (d.get("rueckmeldungen") or [])
-                 if isinstance(r, dict) and not r.get("erledigt")]
+                 if isinstance(r, dict) and not r.get("erledigt")
+                 and isinstance(r.get("fassung"), int) and not isinstance(r.get("fassung"), bool)]
         start = {
             "status": i.get("status"),
             "eingereicht_am": i.get("eingereicht_am") if i.get("status") == "eingereicht" else None,

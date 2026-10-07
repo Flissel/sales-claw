@@ -23,7 +23,7 @@ import { flaecheLesen, formatWechseln, ladenfarben, pruefGrund, quelleAnzeige } 
 import { FARBE, gestaltungThema, KOPF_HOEHE, LINKS_BREITE, RECHTS_BREITE, UI_SCHRIFT } from './gestaltungStil';
 import { useFensterTasten } from './useFensterTasten';
 import { useGestaltung } from './useGestaltung';
-import { SperrSchicht, useAgentArbeitet } from '../Chat/Sperre';
+import { LIEGT_ZUR_FREIGABE, SperrSchicht, useAgentArbeitet, useNurLesen } from '../Chat/Sperre';
 import { useInert } from '../Chat/sperren';
 
 // Naht fuer Task 14: mit onExportieren wird "Exportieren…" aktiv, chat erscheint unter den Eigenschaften.
@@ -66,7 +66,9 @@ export default function GestaltungFenster(props: GestaltungFensterProps) {
 
 function Fenster({ id, onExportieren, chat }: GestaltungFensterProps & { id: string }) {
   const start = pultStore((p) => p.start);
-  const arbeitet = useAgentArbeitet();
+  const nurLesen = useNurLesen();
+  // Agent/Export am PC ODER Liegt-zur-Freigabe: dieselbe Sperre (beide Hooks laufen immer).
+  const arbeitet = useAgentArbeitet() ?? (nurLesen ? LIEGT_ZUR_FREIGABE : null);
   // Sperre auch fuer die Tastatur: Kopfmitte, Ebenen, Flaeche und Eigenschaften sind inert.
   const kopfRef = useInert<HTMLDivElement>(arbeitet !== null);
   const ebenenRef = useInert<HTMLDivElement>(arbeitet !== null);

@@ -96,6 +96,19 @@ describe('einreichenAuftrag', () => {
     expect(pultStore.getState().start?.eingereicht_am).toBeTruthy();
   });
 
+  it('eingereicht_am kommt vom Server, wenn er es mitschickt', async () => {
+    vorbereiten();
+    vi.stubGlobal('fetch', vi.fn(async () => antwort(200, { status: 'eingereicht', fassung: 2, eingereicht_am: '2026-10-07T08:00:00+00:00' })));
+    expect(await einreichenAuftrag()).toBeNull();
+    expect(pultStore.getState().start?.eingereicht_am).toBe('2026-10-07T08:00:00+00:00');
+  });
+
+  it('Export am PC sperrt wie der Agent', async () => {
+    vorbereiten({ chat: { laeuft: true, verlauf: [{ art: 'export', status: 'offen' } as never], live: null, vorgemerkt: null } });
+    vi.stubGlobal('fetch', vi.fn());
+    expect(await einreichenAuftrag()).toBe('Der Assistent arbeitet gerade');
+  });
+
   it('speichert Ungespeichertes vorher; scheitert das, wird nicht eingereicht', async () => {
     vorbereiten();
     pultStore.setState({ ungespeichert: true });

@@ -13,7 +13,7 @@ import { chatAbfragen, medienLaden, pultStore } from '../../pultZustand';
 import { quelleAnzeige } from '../Gestaltung/hilfen';
 import { FARBE, gestaltungThema, UI_SCHRIFT } from '../Gestaltung/gestaltungStil';
 
-import { useAgentArbeitet } from '../Chat/Sperre';
+import { LIEGT_ZUR_FREIGABE, useAgentArbeitet } from '../Chat/Sperre';
 
 // Seitenverhaeltnis der Flaechen-Variante je Geraet (Handy 4:5, Tablet 1:1, PC 3:2).
 const SEITEN: Record<Geraet, number> = { handy: 4 / 5, tablet: 1, pc: 3 / 2 };
@@ -100,7 +100,9 @@ function Inhalt({ vorbelegt, onClose }: { vorbelegt: ExportAuswahl | null; onClo
   const start = pultStore((p) => p.start);
   const basis = pultStore((p) => p.basis);
   const ungesichert = pultStore((p) => p.ungespeichert || p.gestaltungGeaendert);
-  const arbeitet = useAgentArbeitet();
+  const nurLesen = pultStore((p) => p.nurLesen);
+  // Agent/Export am PC ODER Liegt-zur-Freigabe sperren den Export.
+  const arbeitet = useAgentArbeitet() ?? (nurLesen ? LIEGT_ZUR_FREIGABE : null);
   const [flaechen] = useState(flaechenImDokument);
   const [newsletter, setNewsletter] = useState(vorbelegt?.newsletter ?? true);
   const [gewaehlt, setGewaehlt] = useState<Set<string>>(() => new Set((vorbelegt?.flaechen ?? []).filter((id) => flaechen.some((f) => f.id === id))));
