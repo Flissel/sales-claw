@@ -551,7 +551,7 @@ def test_entwurf_mit_bloecken_zeigt_editor_knopf(angemeldet):
     assert f'href="/marketing/editor/{IID}"' in s and "Im Editor öffnen" in s
     assert "Dieser Newsletter wird im Editor bearbeitet." in s
     assert 'name="abschnitt_text"' not in s and f'action="/marketing/entwurf/{IID}/speichern"' not in s
-    assert 'value="freigeben"' in s and 'value="ablehnen"' in s          # Urteil bleibt
+    assert 'value="freigeben"' not in s and 'value="ablehnen"' in s   # Freigeben nur in den Freigaben; Verwerfen bleibt
     assert "script-src" not in r.headers["content-security-policy"]
 
 

@@ -1003,6 +1003,56 @@ h2 { font-size: 1.05rem; margin-top: 2rem; }
   .pult-rechts iframe.vorschau { min-height: 70vh; } }
 .pult-rechts iframe.vorschau.handy { max-width: 400px; display: block;
                                      margin: 0 auto; }
+/* --- Entwurfsseite (07.10.2026): Kopf, Band, Karten. Rand-Fehler: der Inhalt
+   lief links am Rand ab, weil body (overflow-x: hidden) ein eigener Bildlauf-
+   Behaelter ist, den Fokus/Anker waagerecht verschieben koennen, sobald ein Kind
+   breiter wird (Grid-Spalten ohne min-width: 0). `clip` laesst sich nie
+   verschieben; die Spalten duerfen schrumpfen. ---------------------------- */
+main { overflow-x: clip; }
+.pult > * { min-width: 0; }
+.kopfzeile { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .7rem;
+             margin: 0 0 .8rem; }
+.firma { border: 1px solid var(--linie_stark); border-radius: 999px;
+         padding: .05rem .7rem; font-weight: 600; font-size: .9rem; }
+.status-pill { border-radius: 999px; padding: .1rem .8rem; font-weight: 700;
+               font-size: .85rem; background: var(--kopfzeile);
+               color: var(--schrift); border: 1px solid var(--linie_stark); }
+.status-pill.st-zurueckgegeben { background: var(--achtung); color: var(--achtung_auf);
+                                 border-color: var(--achtung); }
+.status-pill.st-eingereicht { background: var(--hinweis_flaeche);
+                              color: var(--hinweis_schrift); border-color: var(--hinweis_linie); }
+.status-pill.st-freigegeben { background: var(--aktiv); color: var(--gut); border-color: var(--gut); }
+.status-pill.st-abgelehnt { background: var(--fehler_flaeche); color: var(--fehler_schrift);
+                            border-color: var(--fehler_linie); }
+.feedback-band { background: var(--hinweis_flaeche); border: 1px solid var(--hinweis_linie);
+                 color: var(--hinweis_schrift); border-radius: 6px;
+                 padding: .6rem .9rem; margin: 0 0 1rem; }
+.feedback-band blockquote { margin: .3rem 0 0; }
+.feedback-band details { margin-top: .5rem; }
+.feedback-band summary { cursor: pointer; min-height: 44px; display: flex;
+                         align-items: center; }
+.pult-links .karte h2 { margin: 0 0 .6rem; font-size: 1rem; }
+.pult-links .karte .aktionen { margin-top: .4rem; }
+details.gefahr { margin-top: 1rem; }
+details.gefahr > summary { cursor: pointer; color: var(--fehler); font-size: .85rem;
+                           min-height: 44px; display: flex; align-items: center; }
+details.gefahr form { display: flex; flex-wrap: wrap; align-items: end; gap: .5rem; }
+details.gefahr label { flex: 1 1 14rem; font-weight: 600; }
+details.gefahr label input { display: block; width: 100%; margin-top: .3rem; }
+form.aktion > .bild-zeile { flex: 1 1 100%; }
+.bild-zeile { display: grid; gap: .6rem 1rem; align-items: end;
+              grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); }
+.bild-zeile label { font-weight: 600; font-size: .9rem; }
+.bild-zeile label select, .bild-zeile label input { display: block; width: 100%;
+                                                     margin-top: .3rem; font-weight: 400; }
+ul.zeitleiste { list-style: none; margin: 0; padding: 0; }
+ul.zeitleiste li { padding: .35rem 0 .35rem 1rem; border-left: 2px solid var(--linie_stark); }
+ul.zeitleiste li.freigegeben { border-left-color: var(--gut); font-weight: 600; }
+ul.bildstand { list-style: none; margin: 0 0 .8rem; padding: 0; }
+ul.bildstand li { padding: .2rem 0; }
+.kacheln.vier { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 767px) {
+  .kacheln.vier { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .mandanten { display: flex; flex-wrap: wrap; gap: .5rem; margin: .5rem 0 1rem; }
 .mandant { border: 1px solid var(--linie); border-radius: 999px;
            padding: .2rem .8rem; font-weight: 600; }

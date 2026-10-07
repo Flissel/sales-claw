@@ -47,6 +47,9 @@ class Falsch:
         self.bloecke = None          # gesetzt: neueste Fassung ist eine Editor-Fassung
         self.bilder = {"auftraege": []}
         self.inhalt_mandant = "vibemind"   # Firma des Inhalts (Entwurfsseite)
+        self.status = "entwurf"            # Status des Inhalts (entwurf|eingereicht|freigegeben|abgelehnt)
+        self.rueckmeldungen = []           # neueste zuerst: {text, von, am, fassung, erledigt}
+        self.extra = {}                    # weitere Felder am Inhalt (freigegebene_fassung, ...)
 
     def anfrage(self, methode, pfad, daten=None, roh=False):
         self.aufrufe.append((methode, pfad, daten))
@@ -70,7 +73,7 @@ class Falsch:
         if pfad.startswith("/uebersicht"):
             return {"mandanten": [{"id": "vibemind", "name": "VibeMind", "aktiv": True},
                                   {"id": "fin2gether", "name": "fin2gether", "aktiv": False}],
-                    "zaehler": {"entwurf": 7, "freigegeben": 0, "abgelehnt": 0}}
+                    "zaehler": {"entwurf": 7, "eingereicht": 2, "freigegeben": 0, "abgelehnt": 0}}
         if pfad.startswith("/inhalte?"):
             return {"inhalte": [{"id": IID, "art": "newsletter", "titel": "Early Access",
                                  "status": "entwurf", "erstellt_am": "2026-09-04", "fassungen": 2,
@@ -80,12 +83,15 @@ class Falsch:
         if pfad == f"/inhalte/{IID}":
             neu_extra = {"format": "bloecke", "bloecke": self.bloecke} if self.bloecke else {}
             return {"inhalt": {"id": IID, "art": "newsletter", "titel": "Early Access",
-                               "status": "entwurf", "mandant": self.inhalt_mandant},
+                               "status": self.status, "mandant": self.inhalt_mandant,
+                               "freigegebene_fassung": None, "entschieden_von": None,
+                               "entschieden_am": None, "grund": None, "eingereichte_fassung": None,
+                               "eingereicht_am": None, "eingereicht_von": None, **self.extra},
                     "fassungen": [{"fassung": 2, "felder": FELDER, "layout": self.layout,
                                    "urheber": "betreiber", "erstellt_am": "x", **neu_extra},
                                   {"fassung": 1, "felder": FELDER, "layout": self.layout,
                                    "urheber": "agent", "erstellt_am": "y"}],
-                    "alter_weg": self.alter_weg}
+                    "alter_weg": self.alter_weg, "rueckmeldungen": self.rueckmeldungen}
         if pfad.startswith("/layouts?mandant="):
             return {"layouts": [
                 {"name": "dunkel", "beschreibung": "Dunkel mit Tuerkis", "inhaltsart": "newsletter",
@@ -156,7 +162,7 @@ def angemeldet(pult):
 def test_uebersicht(angemeldet):
     s = angemeldet.get("/marketing", headers=HOST).text
     assert "VibeMind" in s and "fin2gether" in s
-    assert "Zur Freigabe" in s and ">7<" in s
+    assert "in Arbeit" in s and ">7<" in s and "zur Freigabe" in s and ">2<" in s
 
 
 def test_entwuerfe_liste(angemeldet):
@@ -185,6 +191,7 @@ def test_aeltere_fassung_nur_ansehen(angemeldet):
     assert "Das ist nicht die neueste Fassung" in s
     assert f'src="/marketing/entwurf/{IID}/vorschau?fassung=1&amp;format=mail"' in s
     assert 'value="freigeben"' not in s and "/entscheiden" not in s
+    assert "/einreichen" not in s                              # einreichen nimmt die neueste Fassung
     assert "/speichern" in s                                   # speichern bleibt erlaubt
 
 
@@ -221,16 +228,17 @@ def test_speichern_ohne_csrf_abgewiesen(angemeldet, pult):
     assert r.status_code == 403 and not any(a[0] == "POST" for a in pult.aufrufe)
 
 
-def test_freigeben(angemeldet, pult):
+def test_freigeben_geht_hier_nicht_mehr(angemeldet, pult):
     r = angemeldet.post(f"/marketing/entwurf/{IID}/entscheiden", headers=HOST, follow_redirects=False,
                         data={"csrf": ui.CSRF_TOKEN, "fassung": "2", "urteil": "freigeben", "grund": ""})
-    assert r.status_code == 303
-    assert pult.aufrufe[-1][2] == {"fassung": 2, "urteil": "freigeben", "von": "mira", "grund": ""}
+    assert r.status_code == 422 and "Freigeben geht über die Freigaben" in r.text
+    assert 'href="/freigaben#marketing"' in r.text
+    assert not any(a[0] == "POST" for a in pult.aufrufe)
 
 
 def test_entscheiden_ohne_fassung_abgewiesen(angemeldet, pult):
     for fassung in (None, "", "abc", "0"):
-        daten = {"csrf": ui.CSRF_TOKEN, "urteil": "freigeben", "grund": ""}
+        daten = {"csrf": ui.CSRF_TOKEN, "urteil": "ablehnen", "grund": "weg"}
         if fassung is not None:
             daten["fassung"] = fassung
         r = angemeldet.post(f"/marketing/entwurf/{IID}/entscheiden", headers=HOST,
@@ -482,7 +490,7 @@ def test_i1_kein_api_aufruf_im_event_loop(angemeldet, pult):
                     data={"csrf": ui.CSRF_TOKEN, "betreff": "x", "abschnitt_titel": [""],
                           "abschnitt_text": ["y"], "layout": "dunkel"})
     angemeldet.post(f"/marketing/entwurf/{IID}/entscheiden", headers=HOST, follow_redirects=False,
-                    data={"csrf": ui.CSRF_TOKEN, "fassung": "2", "urteil": "freigeben", "grund": ""})
+                    data={"csrf": ui.CSRF_TOKEN, "fassung": "2", "urteil": "ablehnen", "grund": "weg"})
     pfade = [a[1] for a in pult.aufrufe]
     for teil in ("/uebersicht", "/inhalte?", f"/inhalte/{IID}", "/layouts?", "/vorschau?",
                  "/fassungen", "/entscheiden"):
@@ -499,7 +507,7 @@ def test_i3_warnung_alter_weg_offen(angemeldet, pult):
         s = angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST).text
         assert (f"{ALTER_WEG_TEXT} (linkedin). Ablehnen hier stoppt ihn dort nicht, und Änderungen "
                 "hier werden dort nicht verschickt. Im alten Weg ablehnen, falls er nicht rausgehen soll.") in s
-        assert s.index(ALTER_WEG_TEXT) < s.index('value="freigeben"')     # ueber den Aktionen
+        assert s.index(ALTER_WEG_TEXT) < s.index('value="ablehnen"')     # ueber den Aktionen
 
 
 def test_i3_keine_warnung_ohne_oder_mit_erledigtem_alten_weg(angemeldet, pult):
@@ -870,3 +878,174 @@ def test_entwurf_inhalt_ohne_firma_fehlerseite_statt_500(angemeldet, pult, wert)
     r = angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST)
     assert r.status_code == 422 and "Nicht möglich" in r.text
     assert not any(p.startswith("/layouts") for p in _mandant_fragen(pult))
+
+
+# --- Task 5 (Newsletter-Freigabe): Entwurfsseite neu ---------------------------
+
+def _seite(angemeldet, pult, status="entwurf", rueckmeldungen=None, **extra):
+    pult.status, pult.rueckmeldungen, pult.extra = status, rueckmeldungen or [], extra
+    return angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST).text
+
+
+def _rumpf(s):
+    """Nur der Seitenkoerper (ohne das eingebettete CSS, das Klassennamen enthaelt)."""
+    return s[s.index("<main"):]
+
+
+OFFEN = {"text": "Überschrift kürzer", "von": "mira", "am": "2026-10-07 09:00", "fassung": 2, "erledigt": False}
+
+
+@pytest.mark.parametrize("status,rueck,wort", [
+    ("entwurf", [OFFEN], "zurückgegeben"),
+    ("entwurf", [], "in Arbeit"),
+    ("entwurf", [{**OFFEN, "erledigt": True}], "in Arbeit"),
+    ("eingereicht", [], "zur Freigabe"),
+    ("freigegeben", [], "freigegeben"),
+    ("abgelehnt", [], "verworfen"),
+])
+def test_status_pill_je_zustand(angemeldet, pult, status, rueck, wort):
+    s = _rumpf(_seite(angemeldet, pult, status, rueck))
+    assert '<span class="status-pill' in s and f'>{wort}</span>' in s
+    assert ui_marketing.status_wort({"status": status}, rueck) == wort
+
+
+def test_status_wort_ohne_rueckmeldungen_und_unbekannt():
+    assert ui_marketing.status_wort({"status": "entwurf"}) == "in Arbeit"
+    assert ui_marketing.status_wort({"status": "komisch"}) == "komisch"
+
+
+def test_kopf_zeigt_firma_und_fassung(angemeldet, pult):
+    s = _rumpf(_seite(angemeldet, pult))
+    assert 'class="firma"' in s and ">VibeMind<" in s and "Fassung 2" in s
+
+
+def test_band_mit_neuestem_kommentar_und_aelteren_in_details(angemeldet, pult):
+    aelter = {"text": "Logo größer", "von": "ivan", "am": "2026-10-06 08:00", "fassung": 1, "erledigt": False}
+    s = _rumpf(_seite(angemeldet, pult, "entwurf", [OFFEN, aelter]))
+    band = s[s.index('class="feedback-band"'):]
+    assert "Überschrift kürzer" in band.split("<details")[0] and "mira" in band
+    assert "<details" in band and "Logo größer" in band.split("<details")[1]
+
+
+def test_kein_band_ohne_offene_rueckmeldung(angemeldet, pult):
+    s = _rumpf(_seite(angemeldet, pult, "entwurf", [{**OFFEN, "erledigt": True}]))
+    assert "feedback-band" not in s
+
+
+def test_kein_freigeben_ablegen_mehr(angemeldet, pult):
+    for st in ("entwurf", "eingereicht", "freigegeben", "abgelehnt"):
+        s = _seite(angemeldet, pult, st)
+        assert "Freigeben (ablegen)" not in s and 'value="freigeben"' not in s, st
+
+
+def test_entwurf_hat_einreichen_verwerfen_und_editor(angemeldet, pult):
+    pult.bloecke = BLOECKE_MIT_PLATZ
+    s = _seite(angemeldet, pult)
+    assert f'action="/marketing/entwurf/{IID}/einreichen"' in s and "Zur Freigabe einreichen" in s
+    assert "Zurückziehen" not in s
+    assert f'/marketing/editor/{IID}' in s and "Im Editor öffnen" in s
+    assert '<details class="gefahr">' in s and 'name="grund"' in s and 'value="ablehnen"' in s
+    assert "Bild überarbeiten" in s
+
+
+def test_eingereicht_zeigt_zurueckziehen_ohne_bildkarte(angemeldet, pult):
+    pult.bloecke = BLOECKE_MIT_PLATZ
+    s = _seite(angemeldet, pult, "eingereicht")
+    assert f'action="/marketing/entwurf/{IID}/zurueckziehen"' in s and "Zurückziehen" in s
+    assert "/einreichen" not in s and "Zur Freigabe einreichen" not in s
+    assert "Bild überarbeiten" not in s and '/bilder"' not in s
+    assert not any(a[1].endswith("/bilder") for a in pult.aufrufe)
+    assert '<details class="gefahr">' in s                      # verwerfen geht auch aus eingereicht
+
+
+def test_freigegeben_und_verworfen_ohne_aktionen(angemeldet, pult):
+    for st in ("freigegeben", "abgelehnt"):
+        s = _rumpf(_seite(angemeldet, pult, st))
+        assert "/einreichen" not in s and "/zurueckziehen" not in s and "gefahr" not in s
+
+
+def test_fassungen_zeitleiste_markiert_freigegebene(angemeldet, pult):
+    s = _rumpf(_seite(angemeldet, pult, "freigegeben", freigegebene_fassung=1))
+    zeilen = [z.split("</li>")[0] for z in s.split("<li") if "Fassung" in z.split("</li>")[0]]
+    eins = [z for z in zeilen if ">Fassung 1<" in z][0]
+    zwei = [z for z in zeilen if ">Fassung 2<" in z][0]
+    assert "freigegeben" in eins and "Agent" in eins
+    assert "freigegeben" not in zwei
+
+
+def test_felder_entwurf_behaelt_formular_in_arbeit(angemeldet, pult):
+    s = _seite(angemeldet, pult)
+    assert 'name="betreff"' in s and f'action="/marketing/entwurf/{IID}/speichern"' in s
+    s = _seite(angemeldet, pult, "eingereicht")
+    assert 'name="betreff"' not in s
+
+
+def test_einreichen_sendet_pult_aufruf(angemeldet, pult):
+    r = angemeldet.post(f"/marketing/entwurf/{IID}/einreichen", headers=HOST, follow_redirects=False,
+                        data={"csrf": ui.CSRF_TOKEN})
+    assert r.status_code == 303 and r.headers["location"] == f"/marketing/entwurf/{IID}"
+    assert pult.aufrufe[-1] == ("POST", f"/inhalte/{IID}/einreichen", {"von": "mira"})
+
+
+def test_zurueckziehen_sendet_pult_aufruf(angemeldet, pult):
+    r = angemeldet.post(f"/marketing/entwurf/{IID}/zurueckziehen", headers=HOST, follow_redirects=False,
+                        data={"csrf": ui.CSRF_TOKEN})
+    assert r.status_code == 303
+    assert pult.aufrufe[-1] == ("POST", f"/inhalte/{IID}/zurueckziehen", {"von": "mira"})
+
+
+@pytest.mark.parametrize("aktion", ["einreichen", "zurueckziehen", "verwerfen"])
+def test_aktionen_ohne_csrf_kein_aufruf(angemeldet, pult, aktion):
+    r = angemeldet.post(f"/marketing/entwurf/{IID}/{aktion}", headers=HOST, follow_redirects=False,
+                        data={"fassung": "2", "grund": "x"})
+    assert r.status_code == 403 and not any(a[0] == "POST" for a in pult.aufrufe)
+
+
+def test_einreichen_ablehnung_zeigt_grund(angemeldet, pult):
+    pult.fehler = marketing_pult.PultFehler("abgelehnt", "Der Assistent arbeitet gerade")
+    r = angemeldet.post(f"/marketing/entwurf/{IID}/einreichen", headers=HOST, data={"csrf": ui.CSRF_TOKEN})
+    assert r.status_code == 422 and "Der Assistent arbeitet gerade" in r.text
+
+
+def test_verwerfen_sendet_ablehnen_mit_grund(angemeldet, pult):
+    r = angemeldet.post(f"/marketing/entwurf/{IID}/verwerfen", headers=HOST, follow_redirects=False,
+                        data={"csrf": ui.CSRF_TOKEN, "fassung": "2", "grund": "  Thema passt nicht "})
+    assert r.status_code == 303 and r.headers["location"] == f"/marketing/entwurf/{IID}"
+    assert pult.aufrufe[-1] == ("POST", f"/inhalte/{IID}/entscheiden",
+                                {"fassung": 2, "urteil": "ablehnen", "von": "mira", "grund": "Thema passt nicht"})
+
+
+@pytest.mark.parametrize("grund", ["", "   "])
+def test_verwerfen_ohne_grund_422_ohne_aufruf(angemeldet, pult, grund):
+    r = angemeldet.post(f"/marketing/entwurf/{IID}/verwerfen", headers=HOST, follow_redirects=False,
+                        data={"csrf": ui.CSRF_TOKEN, "fassung": "2", "grund": grund})
+    assert r.status_code == 422 and "Bitte gib einen Grund an" in r.text
+    assert not any(a[0] == "POST" for a in pult.aufrufe)
+
+
+def test_entscheiden_ablehnen_ohne_grund_422_ohne_aufruf(angemeldet, pult):
+    r = angemeldet.post(f"/marketing/entwurf/{IID}/entscheiden", headers=HOST,
+                        data={"csrf": ui.CSRF_TOKEN, "fassung": "2", "urteil": "ablehnen", "grund": ""})
+    assert r.status_code == 422 and not any(a[0] == "POST" for a in pult.aufrufe)
+
+
+def test_entwuerfe_liste_nutzt_status_woerter_und_eingereicht_filter(angemeldet, pult):
+    s = angemeldet.get("/marketing/entwuerfe?status=eingereicht", headers=HOST).text
+    assert "status=eingereicht" in pult.aufrufe[-1][1]
+    assert 'class="aktiv" href="/marketing/entwuerfe?status=eingereicht"' in s and "in Arbeit" in s
+
+
+def test_uebersicht_kacheln_in_worten(angemeldet):
+    s = angemeldet.get("/marketing", headers=HOST).text
+    for wort in ("in Arbeit", "zur Freigabe", "freigegeben", "verworfen"):
+        assert f"<span>{wort}</span>" in s
+    assert "status=eingereicht" in s and "Zur Freigabe</span>" not in s
+
+
+# Rand-Fehler: die Pult-Seite darf nie breiter als der Rahmen werden und nie
+# waagerecht verschiebbar sein (Screenshot 07.10.: linke Spalte am Rand abgeschnitten).
+def test_css_pult_spalten_schrumpfen_und_main_clippt():
+    css = ui._STIL
+    assert ".pult > * { min-width: 0; }" in css
+    assert "main { overflow-x: clip; }" in css
+    assert ".status-pill" in css and ".feedback-band" in css

@@ -27,7 +27,30 @@ import marketing_pult
 import ui_editor
 
 ARTEN = {"newsletter": "Newsletter", "post": "Post", "material": "Team-Material"}
-STATUS = {"entwurf": "Zur Freigabe", "freigegeben": "Freigegeben", "abgelehnt": "Abgelehnt"}
+# Anzeige-Status in Worten (Spec 2026-10-07 §5): "zurückgegeben" ist kein DB-Status,
+# sondern ein Entwurf mit offener Rückmeldung (status_wort).
+STATUS = {"entwurf": "in Arbeit", "eingereicht": "zur Freigabe",
+          "freigegeben": "freigegeben", "abgelehnt": "verworfen"}
+
+
+def _offen(rueckmeldungen) -> list[dict]:
+    return [r for r in rueckmeldungen or [] if isinstance(r, dict) and not r.get("erledigt")]
+
+
+def status_wort(inhalt, rueckmeldungen=None) -> str:
+    """Status in Worten: entwurf + offene Rückmeldung = zurückgegeben, entwurf = in Arbeit,
+    eingereicht = zur Freigabe, freigegeben, abgelehnt = verworfen."""
+    st = str(inhalt.get("status") or "")
+    if st == "entwurf" and _offen(rueckmeldungen if rueckmeldungen is not None
+                                  else inhalt.get("rueckmeldungen")):
+        return "zurückgegeben"
+    return STATUS.get(st, st)
+
+
+def _pill(inhalt, rueckmeldungen, e) -> str:
+    wort = status_wort(inhalt, rueckmeldungen)
+    klasse = "zurueckgegeben" if wort == "zurückgegeben" else e(str(inhalt.get("status") or ""))
+    return f'<span class="status-pill st-{klasse}">{e(wort)}</span>'
 def _messung_html(messung):
     """Messung je Platz als Themen-Aehnlichkeit (CLIP-Kosinus des alten zum neuen Bild)."""
     teile = []
@@ -156,7 +179,7 @@ def routen(ui) -> list:
             f'<a class="kachel" href="/marketing/entwuerfe?status={k}"><b>{int(z.get(k, 0))}</b>'
             f'<span>{e(t)}</span></a>' for k, t in STATUS.items())
         return ui._seite("Marketing", umschalter(m, liste, "/marketing") +
-                                      f'<div class="kacheln">{karten}</div>'
+                                      f'<div class="kacheln vier">{karten}</div>'
                                       '<p><a class="knopf" href="/marketing/vorlagen">'
                                       'Neuer Newsletter aus Vorlage</a></p>')
 
@@ -191,7 +214,7 @@ def routen(ui) -> list:
             for k, t in (*STATUS.items(), ("alle", "Alle")))
         zeilen = "".join(
             f'<tr><td><a href="/marketing/entwurf/{e(i["id"])}">{e(i["titel"])}</a></td>'
-            f'<td>{e(ARTEN.get(i["art"], i["art"]))}</td><td>{e(STATUS.get(i["status"], i["status"]))}</td>'
+            f'<td>{e(ARTEN.get(i["art"], i["art"]))}</td><td>{e(status_wort(i))}</td>'
             f'<td>{e(i["layout"] or "")}</td><td>{int(i["fassungen"])}</td><td>{e(str(i["erstellt_am"])[:10])}</td></tr>'
             for i in d["inhalte"]) or '<tr><td colspan="6">Keine Entwürfe.</td></tr>'
         return ui._seite("Entwürfe", umschalter(m, liste, "/marketing/entwuerfe?" + urllib.parse.urlencode(
@@ -214,11 +237,14 @@ def routen(ui) -> list:
                 return ui._fehlerseite(422, "Nicht möglich", "Dieser Inhalt gehört zu keiner Firma.")
             lay = await run_in_threadpool(
                 marketing_pult.anfrage, "GET", f"/layouts?mandant={urllib.parse.quote(mandant)}")
+            firma = marketing_mandant.name_von(
+                mandant, await run_in_threadpool(marketing_mandant.mandanten))
         except marketing_pult.PultFehler as f:
             return fehler(f)
         i, fassungen = d["inhalt"], d["fassungen"]
         if not fassungen:
             return ui._fehlerseite(422, "Nicht möglich", "Dieser Inhalt hat noch keine Fassung.")
+        rueck = d.get("rueckmeldungen") or []
         neueste = int(fassungen[0]["fassung"])
         wahl = _fassung_zahl(request.query_params.get("fassung")) or neueste
         akt = next((f for f in fassungen if int(f["fassung"]) == wahl), fassungen[0])
@@ -243,17 +269,31 @@ def routen(ui) -> list:
         if akt_layout and akt_layout not in namen:
             layouts = (f'<option value="{e(akt_layout)}" selected>'
                        f'{e(akt_layout)} (nicht mehr in der Liste)</option>') + layouts
+        freigegeben_nr = i.get("freigegebene_fassung")
+        eingereicht_nr = i.get("eingereichte_fassung") if i["status"] == "eingereicht" else None
+
+        def marke(f) -> str:
+            n = int(f["fassung"])
+            t = ""
+            if freigegeben_nr is not None and n == int(freigegeben_nr):
+                t += " &middot; <b>freigegeben</b>"
+            if eingereicht_nr is not None and n == int(eingereicht_nr):
+                t += " &middot; <b>zur Freigabe</b>"
+            return t
         verlauf = "".join(
-            f'<li><a href="?fassung={int(f["fassung"])}">Fassung {int(f["fassung"])}</a> '
-            f'&middot; {"Agent" if f["urheber"] == "agent" else "du"} &middot; {e(str(f["erstellt_am"])[:16])}</li>'
+            f'<li class="{"freigegeben" if freigegeben_nr is not None and int(f["fassung"]) == int(freigegeben_nr) else ""}">'
+            f'<a href="?fassung={int(f["fassung"])}">Fassung {int(f["fassung"])}</a> '
+            f'&middot; {"Agent" if f["urheber"] == "agent" else "du"} &middot; {e(str(f["erstellt_am"])[:16])}'
+            f'{marke(f)}</li>'
             for f in fassungen)
-        offen = i["status"] == "entwurf"
+        status = i["status"]
+        in_arbeit = status == "entwurf"
         csrf = f'<input type="hidden" name="csrf" value="{e(ui.CSRF_TOKEN)}">'
         basis = f"/marketing/entwurf/{e(i['id'])}"
         betreff = "Betreff" if i["art"] == "newsletter" else "Betreff (optional)"
         hinweis = "" if ist_neueste else (
             f'<div class="warnung">Das ist nicht die neueste Fassung (Fassung {nr} von {neueste}). '
-            f'Freigeben geht nur für die <a href="{basis}?fassung={neueste}">neueste Fassung</a>; '
+            f'Einreichen geht nur für die <a href="{basis}?fassung={neueste}">neueste Fassung</a>; '
             f'Speichern legt aus dieser eine neue an.</div>')
         # Die Bruecke spiegelt nur alt -> Pult: ein Urteil hier stoppt einen
         # noch offenen Vorschlag im alten Weg (Telegram -> n8n) nicht.
@@ -263,24 +303,54 @@ def routen(ui) -> list:
             f'({e(alter_weg.get("kanal") or "")}). Ablehnen hier stoppt ihn dort nicht, und Änderungen '
             f'hier werden dort nicht verschickt. Im alten Weg ablehnen, falls er nicht rausgehen soll.</div>'
         ) if alter_weg.get("status") in ("draft", "pending_approval") else ""
-        # Freigeben/Ablehnen nennen die Fassung, die hier zu sehen ist - die
-        # DB lehnt ab, wenn inzwischen eine neuere existiert.
+        # Feedback-Band: neueste offene Rueckmeldung offen, aeltere eingeklappt.
+        offene = _offen(rueck)
+        band = ""
+        if offene:
+            def zeile(r) -> str:
+                return (f'<b>Zurückgegeben von {e(r.get("von"))} am {e(str(r.get("am") or "")[:16])}:</b>'
+                        f'<blockquote>{e(r.get("text"))}</blockquote>')
+            aeltere = "".join(f'<div>{zeile(r)}</div>' for r in offene[1:])
+            band = (f'<div class="feedback-band">{zeile(offene[0])}'
+                    + (f'<details><summary>Ältere Rückmeldungen ({len(offene) - 1})</summary>{aeltere}</details>'
+                       if aeltere else "") + '</div>')
+        # Verwerfen nennt die gesehene Fassung; der Grund ist Pflicht und das Feld
+        # klappt erst beim Klick auf.
         fassung_feld = f'<input type="hidden" name="fassung" value="{nr}">'
-        entscheiden = (
-            f'<div class="aktionen">'
-            f'<form method="post" action="{basis}/entscheiden" class="aktion">{csrf}{fassung_feld}'
-            f'<input type="hidden" name="urteil" value="freigeben">'
-            f'<button class="primaer" type="submit">Freigeben (ablegen)</button></form>'
-            f'<form method="post" action="{basis}/entscheiden" class="aktion gefahr">{csrf}{fassung_feld}'
+        verwerfen_karte = (
+            f'<details class="gefahr"><summary>Verwerfen</summary>'
+            f'<form method="post" action="{basis}/verwerfen" class="aktion">{csrf}{fassung_feld}'
             f'<input type="hidden" name="urteil" value="ablehnen">'
-            f'<input type="text" name="grund" placeholder="Grund">'
-            f'<button type="submit">Ablehnen</button></form></div>') if ist_neueste else ""
+            f'<label>Grund (Pflicht)<input type="text" name="grund" required maxlength="500"></label>'
+            f'<button class="gefahr" type="submit">Verwerfen</button></form></details>')
         # Editor-Newsletter (format "bloecke"): Inhalt nur im Editor; das
         # Feldformular wuerde die Bloecke nicht kennen (die DB lehnt eine
-        # Felder-Fassung darauf ohnehin ab). Urteilen bleibt hier. Massgeblich
-        # ist das Format der NEUESTEN Fassung - auch wenn eine aeltere gezeigt
-        # wird, denn gespeichert wird immer obendrauf.
+        # Felder-Fassung darauf ohnehin ab). Massgeblich ist das Format der
+        # NEUESTEN Fassung - auch wenn eine aeltere gezeigt wird.
         im_editor = fassungen[0].get("format") == "bloecke"
+        editor_knopf = (f'<a class="knopf" href="/marketing/editor/{e(i["id"])}">'
+                        f'{"Im Editor öffnen" if in_arbeit else "Im Editor ansehen"}</a>') if im_editor else ""
+        if status == "eingereicht":
+            wann = e(str(i.get("eingereicht_am") or "")[:16])
+            vom = e(i.get("eingereicht_von") or "")
+            zeile_status = (f'<p class="meta">Liegt zur Freigabe seit {wann}'
+                            f'{" (eingereicht von " + vom + ")" if vom else ""}. '
+                            f'Freigegeben wird in den <a href="/freigaben#marketing">Freigaben</a>.</p>')
+            haupt = (f'<form method="post" action="{basis}/zurueckziehen" class="aktion">{csrf}'
+                     f'<button type="submit">Zurückziehen</button></form>')
+        elif in_arbeit:
+            zeile_status = '<p>Dieser Newsletter wird im Editor bearbeitet.</p>' if im_editor else ""
+            haupt = (f'<form method="post" action="{basis}/einreichen" class="aktion">{csrf}'
+                     f'<button class="primaer" type="submit">Zur Freigabe einreichen</button></form>')
+        else:
+            zeile_status = f'<p class="meta">{e(status_wort(i, rueck))[:1].upper()}{e(status_wort(i, rueck))[1:]}.' \
+                           f'{(" Grund: " + e(i.get("grund"))) if status == "abgelehnt" and i.get("grund") else ""}</p>'
+            haupt = ""
+        if ist_neueste and status in ("entwurf", "eingereicht"):
+            aktionen = (f'{zeile_status}<div class="aktionen">{editor_knopf}{haupt}</div>{verwerfen_karte}')
+        else:
+            aktionen = f'{zeile_status}<div class="aktionen">{editor_knopf}</div>' if (zeile_status or editor_knopf) else ""
+        aktionskarte = f'<div class="karte"><h2>Aktionen</h2>{aktionen}</div>' if aktionen else ""
         # Feld-Newsletter (z.B. aus dem alten Weg ueber die Bruecke): einmalig
         # ins Editor-Format uebernehmen (marketing.pult_in_bloecke_uebernehmen).
         in_bloecke = "" if im_editor or i["art"] != "newsletter" else (
@@ -288,23 +358,22 @@ def routen(ui) -> list:
             f'<button type="submit">Ins Editor-Format übernehmen</button>'
             f'<span class="meta">Legt eine neue Fassung im Editor-Format an; danach wird dieser '
             f'Newsletter nur noch im Editor bearbeitet.</span></form>')
-        felder_formular = (
-            f'<p>Dieser Newsletter wird im Editor bearbeitet.</p>'
-            f'<p><a class="knopf" href="/marketing/editor/{e(i["id"])}">Im Editor öffnen</a></p>'
-        ) if im_editor else in_bloecke + (
-            f'<form method="post" action="{basis}/speichern" class="pult-felder">{csrf}'
-            f'<label>{betreff} <input name="betreff" value="{e(fe.get("betreff"))}"></label>'
-            f'<label>Vorschautext <input name="vorschautext" value="{e(fe.get("vorschautext"))}"></label>'
-            f'{abschnitte}'
-            f'<label>Knopf-Text <input name="knopf_text" value="{e(fe.get("knopf_text"))}"></label>'
-            f'<label>Knopf-Link <input name="knopf_link" value="{e(fe.get("knopf_link"))}"></label>'
-            f'<label>Layout <select name="layout">{layouts}</select></label>'
-            f'<button type="submit">Als neue Fassung speichern</button></form>')
-        formular = f'{felder_formular}{entscheiden}' if offen else (
-            f'<p>{e(STATUS.get(i["status"], i["status"]))}.</p>')
+        # Felder-Fassungen (Posts, Material, alte Newsletter) behalten das Formular - solange sie in Arbeit sind.
+        feldkarte = ""
+        if in_arbeit and not im_editor:
+            feldkarte = (
+                f'<div class="karte"><h2>Inhalt</h2>{in_bloecke}'
+                f'<form method="post" action="{basis}/speichern" class="pult-felder">{csrf}'
+                f'<label>{betreff} <input name="betreff" value="{e(fe.get("betreff"))}"></label>'
+                f'<label>Vorschautext <input name="vorschautext" value="{e(fe.get("vorschautext"))}"></label>'
+                f'{abschnitte}'
+                f'<label>Knopf-Text <input name="knopf_text" value="{e(fe.get("knopf_text"))}"></label>'
+                f'<label>Knopf-Link <input name="knopf_link" value="{e(fe.get("knopf_link"))}"></label>'
+                f'<label>Layout <select name="layout">{layouts}</select></label>'
+                f'<button type="submit">Als neue Fassung speichern</button></form></div>')
         bilder_html = ""
         neu_laden = False
-        if im_editor and offen:
+        if im_editor and in_arbeit:
             try:
                 stand = await run_in_threadpool(marketing_pult.anfrage, "GET",
                                                 f"/inhalte/{urllib.parse.quote(iid)}/bilder")
@@ -323,15 +392,16 @@ def routen(ui) -> list:
                         f'<option value="{NUR_LEERE}">nur leere Bildplätze</option>') + "".join(
                 f'<option value="{e(bid)}">{e(alt)}</option>' for bid, alt in _bildplaetze(fassungen[0].get("bloecke")))
             bilder_html = (
-                f'<h2>Bilder</h2><ul>{zeilen_b}</ul>'
+                f'<div class="karte"><h2>Bilder</h2><ul class="bildstand">{zeilen_b}</ul>'
                 f'<form method="post" action="{basis}/bilder" class="aktion">{csrf}'
+                f'<div class="bild-zeile">'
                 f'<label>Platz <select name="platz">{optionen}</select></label>'
-                f'<label>Hinweis <input name="hinweis" maxlength="500" placeholder="z. B. wärmer, mehr Menschen"></label>'
                 f'<label>Stärke <select name="staerke">'
                 f'<option value="35" selected>nah am Original</option><option value="75">freier</option>'
                 f'<option value="100">ganz neu</option></select></label>'
-                f'<button type="submit">Bild überarbeiten</button>'
-                f'<span class="meta">Erzeugt wird am PC, sobald er läuft. Das Ergebnis ist eine neue Fassung.</span></form>')
+                f'<label>Hinweis <input type="text" name="hinweis" maxlength="500" placeholder="z. B. wärmer, mehr Menschen"></label>'
+                f'<button type="submit">Bild überarbeiten</button></div>'
+                f'<span class="meta">Erzeugt wird am PC, sobald er läuft. Das Ergebnis ist eine neue Fassung.</span></form></div>')
         wahl_links = "".join(
             f'<a class="{"aktiv" if k == fmt else ""}" href="{basis}?fassung={nr}&amp;format={k}">{t}</a>'
             for k, t in RAHMEN_FORMATE.items())
@@ -339,10 +409,13 @@ def routen(ui) -> list:
             # Fuer Editor-Fassungen gibt es (noch) kein PDF - die API sagt 422.
             wahl_links += (f'<a href="{basis}/vorschau?fassung={nr}&amp;format=pdf" target="_blank" '
                            f'rel="noopener noreferrer">PDF &#8599;</a>')
+        kopf = (f'<div class="entwurf-kopf">'
+                f'<p class="kopfzeile"><span class="firma">{e(firma)}</span>{_pill(i, rueck, e)}'
+                f'<span class="meta">{e(ARTEN.get(i["art"], i["art"]))} &middot; Fassung {nr}</span></p></div>')
         rumpf = (
-            f'<p class="meta">{e(ARTEN.get(i["art"], i["art"]))} &middot; '
-            f'{e(STATUS.get(i["status"], i["status"]))} &middot; Fassung {nr}</p>{hinweis}{alter_hinweis}'
-            f'<div class="pult"><div class="pult-links">{formular}{bilder_html}<h2>Fassungen</h2><ul>{verlauf}</ul></div>'
+            f'{kopf}{band}{hinweis}{alter_hinweis}'
+            f'<div class="pult"><div class="pult-links">{aktionskarte}{feldkarte}{bilder_html}'
+            f'<div class="karte"><h2>Fassungen</h2><ul class="zeitleiste">{verlauf}</ul></div></div>'
             f'<div class="pult-rechts"><div class="vorschau-wahl">{wahl_links}</div>'
             f'<iframe class="vorschau {fmt}" sandbox title="Vorschau" '
             f'src="{basis}/vorschau?fassung={nr}&amp;format={fmt}"></iframe>'
@@ -452,20 +525,61 @@ def routen(ui) -> list:
         form = await request.form()
         if not ui._csrf_ok(form):
             return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
+        # Freigeben passiert in den Sales-Freigaben (Spec 2026-10-07), nicht hier.
+        if str(form.get("urteil") or "") == "freigeben":
+            return ui._fehlerseite(422, "Nicht möglich",
+                                   'Freigeben geht über die Freigaben. '
+                                   '<a href="/freigaben#marketing">Zu den Freigaben</a>')
+        return await verwerfen_senden(request, form)
+
+    async def verwerfen_senden(request, form):
+        """Verwerfen = urteil ablehnen. Der Grund ist Pflicht - die API sagt sonst 422;
+        hier wird vorher geprueft, damit gar kein Aufruf hinausgeht."""
         fassung = _fassung_zahl(form.get("fassung"))
         if fassung is None:
             return ui._fehlerseite(400, "Abgewiesen",
                                    "Welche Fassung gemeint ist, fehlt. Nichts wurde entschieden - "
                                    "Seite neu laden und erneut.")
+        if str(form.get("urteil") or "") != "ablehnen":
+            return ui._fehlerseite(422, "Nicht möglich", "Unbekanntes Urteil.")
+        grund = str(form.get("grund") or "").strip()
+        if not grund:
+            return ui._fehlerseite(422, "Nicht möglich", "Bitte gib einen Grund an.")
         iid = urllib.parse.quote(request.path_params["iid"])
         try:
             await run_in_threadpool(
                 marketing_pult.anfrage, "POST", f"/inhalte/{iid}/entscheiden",
-                {"fassung": fassung, "urteil": str(form.get("urteil") or ""),
-                 "von": von(request), "grund": str(form.get("grund") or "").strip()})
+                {"fassung": fassung, "urteil": "ablehnen", "von": von(request), "grund": grund})
         except marketing_pult.PultFehler as f:
             return fehler(f)
         return RedirectResponse(f"/marketing/entwurf/{iid}", status_code=303)
+
+    @ui._gesichert_seite
+    async def verwerfen(request):
+        form = await request.form()
+        if not ui._csrf_ok(form):
+            return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
+        form = {"fassung": form.get("fassung"), "grund": form.get("grund"), "urteil": "ablehnen"}
+        return await verwerfen_senden(request, form)
+
+    def einfache_aktion(aktion: str):
+        """einreichen / zurueckziehen: nur {von}, die Regeln liegen in der DB."""
+        @ui._gesichert_seite
+        async def handler(request):
+            form = await request.form()
+            if not ui._csrf_ok(form):
+                return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
+            iid = urllib.parse.quote(request.path_params["iid"], safe="")
+            try:
+                await run_in_threadpool(marketing_pult.anfrage, "POST",
+                                        f"/inhalte/{iid}/{aktion}", {"von": von(request)})
+            except marketing_pult.PultFehler as f:
+                return fehler(f)
+            return RedirectResponse(f"/marketing/entwurf/{iid}", status_code=303)
+        return handler
+
+    einreichen = einfache_aktion("einreichen")
+    zurueckziehen = einfache_aktion("zurueckziehen")
 
     # --- Layouts (Task 5) -------------------------------------------------
 
@@ -708,6 +822,9 @@ def routen(ui) -> list:
         Route("/marketing/entwurf/{iid}/speichern", speichern, methods=["POST"]),
         Route("/marketing/entwurf/{iid}/entscheiden", entscheiden, methods=["POST"]),
         Route("/marketing/entwurf/{iid}/in-bloecke", in_bloecke, methods=["POST"]),
+        Route("/marketing/entwurf/{iid}/einreichen", einreichen, methods=["POST"]),
+        Route("/marketing/entwurf/{iid}/zurueckziehen", zurueckziehen, methods=["POST"]),
+        Route("/marketing/entwurf/{iid}/verwerfen", verwerfen, methods=["POST"]),
         Route("/marketing/entwurf/{iid}/bilder", bilder, methods=["POST"]),
         Route("/marketing/layouts", layouts),
         Route("/marketing/layout-bild/{name}", layout_bild),
