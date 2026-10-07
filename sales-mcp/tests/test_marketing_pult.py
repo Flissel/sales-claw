@@ -50,6 +50,7 @@ class Falsch:
         self.status = "entwurf"            # Status des Inhalts (entwurf|eingereicht|freigegeben|abgelehnt)
         self.rueckmeldungen = []           # neueste zuerst: {text, von, am, fassung, erledigt}
         self.extra = {}                    # weitere Felder am Inhalt (freigegebene_fassung, ...)
+        self.inhalte = None                # gesetzt: Zeilen der Entwurfsliste
 
     def anfrage(self, methode, pfad, daten=None, roh=False):
         self.aufrufe.append((methode, pfad, daten))
@@ -73,8 +74,11 @@ class Falsch:
         if pfad.startswith("/uebersicht"):
             return {"mandanten": [{"id": "vibemind", "name": "VibeMind", "aktiv": True},
                                   {"id": "fin2gether", "name": "fin2gether", "aktiv": False}],
-                    "zaehler": {"entwurf": 7, "eingereicht": 2, "freigegeben": 0, "abgelehnt": 0}}
+                    "zaehler": {"entwurf": 7, "zurueckgegeben": 1, "eingereicht": 2, "freigegeben": 0,
+                                "abgelehnt": 0}}
         if pfad.startswith("/inhalte?"):
+            if self.inhalte is not None:
+                return {"inhalte": self.inhalte}
             return {"inhalte": [{"id": IID, "art": "newsletter", "titel": "Early Access",
                                  "status": "entwurf", "erstellt_am": "2026-09-04", "fassungen": 2,
                                  "layout": "dunkel"}]}
@@ -181,7 +185,7 @@ def test_entwurf_zeigt_felder_und_vorschau(angemeldet):
     # Vorschau im Browser leer; Skripte gibt es in sales-ui nicht.
     assert "frame-src 'self'" in r.headers["content-security-policy"]
     assert "<script" not in s
-    # Freigeben nennt die gesehene Fassung.
+    # Verwerfen nennt die gesehene Fassung.
     assert '<input type="hidden" name="fassung" value="2">' in s
     assert "nicht die neueste Fassung" not in s
 
@@ -1032,13 +1036,15 @@ def test_entscheiden_ablehnen_ohne_grund_422_ohne_aufruf(angemeldet, pult):
 def test_entwuerfe_liste_nutzt_status_woerter_und_eingereicht_filter(angemeldet, pult):
     s = angemeldet.get("/marketing/entwuerfe?status=eingereicht", headers=HOST).text
     assert "status=eingereicht" in pult.aufrufe[-1][1]
-    assert 'class="aktiv" href="/marketing/entwuerfe?status=eingereicht"' in s and "in Arbeit" in s
+    assert 'class="aktiv" href="/marketing/entwuerfe?status=eingereicht"' in s
+    assert "<td>in Arbeit</td>" in s
 
 
 def test_uebersicht_kacheln_in_worten(angemeldet):
     s = angemeldet.get("/marketing", headers=HOST).text
-    for wort in ("in Arbeit", "zur Freigabe", "freigegeben", "verworfen"):
+    for wort in ("in Arbeit", "zurückgegeben", "zur Freigabe", "freigegeben", "verworfen"):
         assert f"<span>{wort}</span>" in s
+    assert "status=zurueckgegeben" in s and ">1<" in s
     assert "status=eingereicht" in s and "Zur Freigabe</span>" not in s
 
 
@@ -1046,6 +1052,51 @@ def test_uebersicht_kacheln_in_worten(angemeldet):
 # waagerecht verschiebbar sein (Screenshot 07.10.: linke Spalte am Rand abgeschnitten).
 def test_css_pult_spalten_schrumpfen_und_main_clippt():
     css = ui._STIL
-    assert ".pult > * { min-width: 0; }" in css
     assert "main { overflow-x: clip; }" in css
     assert ".status-pill" in css and ".feedback-band" in css
+
+
+# --- Fix-Runde 1: zurückgegeben in Übersicht und Liste -------------------------
+
+def test_status_wort_zaehler_je_zeile():
+    assert ui_marketing.status_wort({"status": "entwurf", "offene_rueckmeldungen": 2}) == "zurückgegeben"
+    assert ui_marketing.status_wort({"status": "entwurf", "offene_rueckmeldungen": 0}) == "in Arbeit"
+    assert ui_marketing.status_wort({"status": "eingereicht", "offene_rueckmeldungen": 2}) == "zur Freigabe"
+
+
+def _liste(pult, *zeilen):
+    pult.inhalte = list(zeilen)
+
+
+def _zeile(titel, n, status="entwurf"):
+    return {"id": IID, "art": "newsletter", "titel": titel, "status": status,
+            "erstellt_am": "2026-10-07", "fassungen": 1, "layout": "dunkel", "offene_rueckmeldungen": n}
+
+
+def test_liste_zeigt_zurueckgegeben_und_trennt_die_filter(angemeldet, pult):
+    _liste(pult, _zeile("Offen-A", 1), _zeile("Ruhig-B", 0))
+    z = angemeldet.get("/marketing/entwuerfe?status=zurueckgegeben", headers=HOST).text
+    assert "status=entwurf" in pult.aufrufe[-1][1]                  # API kennt nur DB-Status
+    assert "Offen-A" in z and "Ruhig-B" not in z and "<td>zurückgegeben</td>" in z
+    assert 'class="aktiv" href="/marketing/entwuerfe?status=zurueckgegeben"' in z
+    a = angemeldet.get("/marketing/entwuerfe?status=entwurf", headers=HOST).text
+    assert "Ruhig-B" in a and "Offen-A" not in a and "<td>in Arbeit</td>" in a
+    alle = angemeldet.get("/marketing/entwuerfe?status=alle", headers=HOST).text
+    assert "Offen-A" in alle and "Ruhig-B" in alle
+
+
+def test_einreichen_ist_zweitrangig_editor_ist_haupt(angemeldet, pult):
+    pult.bloecke = BLOECKE_MIT_PLATZ
+    s = _rumpf(_seite(angemeldet, pult))
+    assert 'class="knopf" href="/marketing/editor/' in s
+    assert 'class="primaer"' not in s
+
+
+def test_bilder_statuspunkte_je_status(angemeldet, pult):
+    pult.bloecke = BLOECKE_MIT_PLATZ
+    pult.bilder = {"auftraege": [{"platz": "kopf", "status": st} for st in
+                                 ("offen", "in_arbeit", "fertig", "fehler", "verworfen")]}
+    s = _rumpf(_seite(angemeldet, pult))
+    for st in ("offen", "in_arbeit", "fertig", "fehler", "verworfen"):
+        assert f'<span class="punkt bs-{st}"' in s, st
+        assert f".punkt.bs-{st} " in ui._STIL

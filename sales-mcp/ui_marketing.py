@@ -29,7 +29,7 @@ import ui_editor
 ARTEN = {"newsletter": "Newsletter", "post": "Post", "material": "Team-Material"}
 # Anzeige-Status in Worten (Spec 2026-10-07 §5): "zurückgegeben" ist kein DB-Status,
 # sondern ein Entwurf mit offener Rückmeldung (status_wort).
-STATUS = {"entwurf": "in Arbeit", "eingereicht": "zur Freigabe",
+STATUS = {"entwurf": "in Arbeit", "zurueckgegeben": "zurückgegeben", "eingereicht": "zur Freigabe",
           "freigegeben": "freigegeben", "abgelehnt": "verworfen"}
 
 
@@ -37,20 +37,32 @@ def _offen(rueckmeldungen) -> list[dict]:
     return [r for r in rueckmeldungen or [] if isinstance(r, dict) and not r.get("erledigt")]
 
 
+def _hat_offene(inhalt, rueckmeldungen=None) -> bool:
+    """Offene Rückmeldung: aus der Liste (Entwurfsseite) oder dem Zähler je Zeile
+    (`offene_rueckmeldungen` in /inhalte)."""
+    if rueckmeldungen is None:
+        rueckmeldungen = inhalt.get("rueckmeldungen")
+    if _offen(rueckmeldungen):
+        return True
+    n = inhalt.get("offene_rueckmeldungen")
+    return isinstance(n, int) and not isinstance(n, bool) and n > 0
+
+
 def status_wort(inhalt, rueckmeldungen=None) -> str:
     """Status in Worten: entwurf + offene Rückmeldung = zurückgegeben, entwurf = in Arbeit,
     eingereicht = zur Freigabe, freigegeben, abgelehnt = verworfen."""
     st = str(inhalt.get("status") or "")
-    if st == "entwurf" and _offen(rueckmeldungen if rueckmeldungen is not None
-                                  else inhalt.get("rueckmeldungen")):
-        return "zurückgegeben"
+    if st == "entwurf" and _hat_offene(inhalt, rueckmeldungen):
+        return STATUS["zurueckgegeben"]
     return STATUS.get(st, st)
 
 
 def _pill(inhalt, rueckmeldungen, e) -> str:
     wort = status_wort(inhalt, rueckmeldungen)
-    klasse = "zurueckgegeben" if wort == "zurückgegeben" else e(str(inhalt.get("status") or ""))
+    klasse = "zurueckgegeben" if wort == STATUS["zurueckgegeben"] else e(str(inhalt.get("status") or ""))
     return f'<span class="status-pill st-{klasse}">{e(wort)}</span>'
+
+
 def _messung_html(messung):
     """Messung je Platz als Themen-Aehnlichkeit (CLIP-Kosinus des alten zum neuen Bild)."""
     teile = []
@@ -179,7 +191,7 @@ def routen(ui) -> list:
             f'<a class="kachel" href="/marketing/entwuerfe?status={k}"><b>{int(z.get(k, 0))}</b>'
             f'<span>{e(t)}</span></a>' for k, t in STATUS.items())
         return ui._seite("Marketing", umschalter(m, liste, "/marketing") +
-                                      f'<div class="kacheln vier">{karten}</div>'
+                                      f'<div class="kacheln fuenf">{karten}</div>'
                                       '<p><a class="knopf" href="/marketing/vorlagen">'
                                       'Neuer Newsletter aus Vorlage</a></p>')
 
@@ -188,12 +200,14 @@ def routen(ui) -> list:
         art = request.query_params.get("art", "")
         if art not in ARTEN:
             art = ""
-        # Ohne Angabe zeigt die Liste, was auf ein Urteil wartet; "alle" hebt
-        # den Status-Filter auf.
+        # Ohne Angabe zeigt die Liste, was in Arbeit ist; "alle" hebt den
+        # Status-Filter auf.
         status = request.query_params.get("status", "") or "entwurf"
         if status not in STATUS and status != "alle":
             status = "entwurf"
-        api_status = "" if status == "alle" else status
+        # "zurueckgegeben" ist kein DB-Status: die API liefert dafuer entwurf, die Zeilen
+        # tragen `offene_rueckmeldungen`, danach wird hier getrennt (wie der Uebersichts-Zaehler).
+        api_status = "entwurf" if status == "zurueckgegeben" else ("" if status == "alle" else status)
         try:
             m, liste = await marketing_mandant.firma(request)
             q = urllib.parse.urlencode({k: v for k, v in (("mandant", m), ("art", art), ("status", api_status)) if v})
@@ -212,11 +226,14 @@ def routen(ui) -> list:
         filter_status = "".join(
             f'<a class="{"aktiv" if status == k else ""}" href="{verweis(art, k)}">{e(t)}</a>'
             for k, t in (*STATUS.items(), ("alle", "Alle")))
+        inhalte = d["inhalte"]
+        if status in ("entwurf", "zurueckgegeben"):
+            inhalte = [i for i in inhalte if _hat_offene(i) == (status == "zurueckgegeben")]
         zeilen = "".join(
             f'<tr><td><a href="/marketing/entwurf/{e(i["id"])}">{e(i["titel"])}</a></td>'
             f'<td>{e(ARTEN.get(i["art"], i["art"]))}</td><td>{e(status_wort(i))}</td>'
             f'<td>{e(i["layout"] or "")}</td><td>{int(i["fassungen"])}</td><td>{e(str(i["erstellt_am"])[:10])}</td></tr>'
-            for i in d["inhalte"]) or '<tr><td colspan="6">Keine Entwürfe.</td></tr>'
+            for i in inhalte) or '<tr><td colspan="6">Keine Entwürfe.</td></tr>'
         return ui._seite("Entwürfe", umschalter(m, liste, "/marketing/entwuerfe?" + urllib.parse.urlencode(
                                        [(k, v) for k, v in (("art", art), ("status", status)) if v])) +
                          f'<div class="filter">{filter_}</div>'
@@ -272,20 +289,17 @@ def routen(ui) -> list:
         freigegeben_nr = i.get("freigegebene_fassung")
         eingereicht_nr = i.get("eingereichte_fassung") if i["status"] == "eingereicht" else None
 
-        def marke(f) -> str:
+        def zeitleiste_zeile(f) -> str:
             n = int(f["fassung"])
-            t = ""
-            if freigegeben_nr is not None and n == int(freigegeben_nr):
-                t += " &middot; <b>freigegeben</b>"
+            freigegeben = freigegeben_nr is not None and n == int(freigegeben_nr)
+            marke = " &middot; <b>freigegeben</b>" if freigegeben else ""
             if eingereicht_nr is not None and n == int(eingereicht_nr):
-                t += " &middot; <b>zur Freigabe</b>"
-            return t
-        verlauf = "".join(
-            f'<li class="{"freigegeben" if freigegeben_nr is not None and int(f["fassung"]) == int(freigegeben_nr) else ""}">'
-            f'<a href="?fassung={int(f["fassung"])}">Fassung {int(f["fassung"])}</a> '
-            f'&middot; {"Agent" if f["urheber"] == "agent" else "du"} &middot; {e(str(f["erstellt_am"])[:16])}'
-            f'{marke(f)}</li>'
-            for f in fassungen)
+                marke += " &middot; <b>zur Freigabe</b>"
+            return (f'<li class="{"freigegeben" if freigegeben else ""}">'
+                    f'<a href="?fassung={n}">Fassung {n}</a> '
+                    f'&middot; {"Agent" if f["urheber"] == "agent" else "du"} &middot; {e(str(f["erstellt_am"])[:16])}'
+                    f'{marke}</li>')
+        verlauf = "".join(zeitleiste_zeile(f) for f in fassungen)
         status = i["status"]
         in_arbeit = status == "entwurf"
         csrf = f'<input type="hidden" name="csrf" value="{e(ui.CSRF_TOKEN)}">'
@@ -341,7 +355,7 @@ def routen(ui) -> list:
         elif in_arbeit:
             zeile_status = '<p>Dieser Newsletter wird im Editor bearbeitet.</p>' if im_editor else ""
             haupt = (f'<form method="post" action="{basis}/einreichen" class="aktion">{csrf}'
-                     f'<button class="primaer" type="submit">Zur Freigabe einreichen</button></form>')
+                     f'<button type="submit">Zur Freigabe einreichen</button></form>')
         else:
             zeile_status = f'<p class="meta">{e(status_wort(i, rueck))[:1].upper()}{e(status_wort(i, rueck))[1:]}.' \
                            f'{(" Grund: " + e(i.get("grund"))) if status == "abgelehnt" and i.get("grund") else ""}</p>'
@@ -380,7 +394,8 @@ def routen(ui) -> list:
                 auftraege = stand.get("auftraege") or []
                 neu_laden = any(a.get("status") in ("offen", "in_arbeit") for a in auftraege)
                 zeilen_b = "".join(
-                    f'<li>{e(a.get("platz") or ("alle leeren" if a.get("nur_leere") else "alle"))} &middot; '
+                    f'<li><span class="punkt bs-{e(a.get("status") or "offen")}" aria-hidden="true"></span>'
+                    f'{e(a.get("platz") or ("alle leeren" if a.get("nur_leere") else "alle"))} &middot; '
                     f'{e("wird überarbeitet" if a.get("status") == "in_arbeit" and a.get("modus") == "ueberarbeiten" else BILD_STATUS.get(a.get("status"), a.get("status") or ""))}'
                     f'{_messung_html(a.get("messung"))}'
                     f'{(" &middot; " + e(a.get("befund"))) if a.get("befund") else ""}'

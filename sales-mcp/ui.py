@@ -1003,13 +1003,13 @@ h2 { font-size: 1.05rem; margin-top: 2rem; }
   .pult-rechts iframe.vorschau { min-height: 70vh; } }
 .pult-rechts iframe.vorschau.handy { max-width: 400px; display: block;
                                      margin: 0 auto; }
-/* --- Entwurfsseite (07.10.2026): Kopf, Band, Karten. Rand-Fehler: der Inhalt
-   lief links am Rand ab, weil body (overflow-x: hidden) ein eigener Bildlauf-
-   Behaelter ist, den Fokus/Anker waagerecht verschieben koennen, sobald ein Kind
-   breiter wird (Grid-Spalten ohne min-width: 0). `clip` laesst sich nie
-   verschieben; die Spalten duerfen schrumpfen. ---------------------------- */
+/* --- Entwurfsseite (07.10.2026): Kopf, Band, Karten. Rand-Fehler (Hypothese,
+   lokal nicht reproduzierbar): der Inhalt stand im Screenshot ~280 px nach links
+   verschoben, d. h. die Seite war waagerecht gescrollt. body mit overflow-x: hidden
+   ist ein eigener Bildlauf-Behaelter, den Fokus/Anker verschieben koennen; `clip`
+   auf main ist nie verschiebbar. Die Regel gilt fuer ALLE Seiten (main ist das
+   gemeinsame Geruest), nicht nur fuer das Marketing-Pult. ------------------- */
 main { overflow-x: clip; }
-.pult > * { min-width: 0; }
 .kopfzeile { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .7rem;
              margin: 0 0 .8rem; }
 .firma { border: 1px solid var(--linie_stark); border-radius: 999px;
@@ -1050,9 +1050,14 @@ ul.zeitleiste li { padding: .35rem 0 .35rem 1rem; border-left: 2px solid var(--l
 ul.zeitleiste li.freigegeben { border-left-color: var(--gut); font-weight: 600; }
 ul.bildstand { list-style: none; margin: 0 0 .8rem; padding: 0; }
 ul.bildstand li { padding: .2rem 0; }
-.kacheln.vier { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.punkt.bs-offen { background: var(--achtung); }
+.punkt.bs-in_arbeit { background: var(--info); }
+.punkt.bs-fertig { background: var(--gut); }
+.punkt.bs-fehler { background: var(--fehler); }
+.punkt.bs-verworfen { background: var(--gedaempft); }
+.kacheln.fuenf { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 @media (max-width: 767px) {
-  .kacheln.vier { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .kacheln.fuenf { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .mandanten { display: flex; flex-wrap: wrap; gap: .5rem; margin: .5rem 0 1rem; }
 .mandant { border: 1px solid var(--linie); border-radius: 999px;
            padding: .2rem .8rem; font-weight: 600; }
