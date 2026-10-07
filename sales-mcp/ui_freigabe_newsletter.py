@@ -12,6 +12,7 @@ Faellt die API aus, zeigt der Abschnitt einen Hinweis - die Seite bleibt."""
 from __future__ import annotations
 
 import threading
+from functools import partial
 import time
 import urllib.parse
 from datetime import datetime, timezone
@@ -30,35 +31,59 @@ VERLAUF_MAX = 10
 OFFEN_MAX = 100
 ZAEHLER_ALTER_S = 60
 ZAEHLER_ZEITLIMIT_S = 2
+LESE_ZEITLIMIT_S = 3
 
 _EINGEREICHT = f"/freigaben?status=eingereicht&limit={OFFEN_MAX}"
 _ENTSCHIEDEN = f"/freigaben?status=entschieden&limit={VERLAUF_MAX}"
 
 _cache_lock = threading.Lock()
-_cache: dict = {"stand": None, "wert": 0}
+_cache: dict = {"stand": None, "wert": 0, "ok": True}
+_laeuft = {"thread": None}
 
 
 def _cache_leeren() -> None:
     with _cache_lock:
-        _cache["stand"], _cache["wert"] = None, 0
+        _cache.update(stand=None, wert=0, ok=True)
 
 
-def anzahl_offen() -> int:
-    """Zahl der eingereichten Marketing-Inhalte fuer den Menue-Zaehler.
-    60 s Zwischenspeicher (auch fuer den Fehlerfall - sonst wartete jede
-    Seite bei toter API zwei Sekunden), Zeitlimit 2 s, jeder Fehler => 0."""
-    jetzt = time.monotonic()
+def _merken(wert: int, ok: bool) -> None:
     with _cache_lock:
-        if _cache["stand"] is not None and jetzt - _cache["stand"] < ZAEHLER_ALTER_S:
-            return int(_cache["wert"])
+        _cache.update(stand=time.monotonic(), wert=wert, ok=ok)
+
+
+def _frisch() -> bool:
+    with _cache_lock:
+        return _cache["stand"] is not None and time.monotonic() - _cache["stand"] < ZAEHLER_ALTER_S
+
+
+def _laden() -> int:
+    """Blockierend (nur im Thread/Threadpool aufrufen): holt die Zahl und
+    merkt sie - auch den Fehlerfall, damit eine tote API nicht jede Seite
+    warten laesst."""
     try:
         antwort = marketing_pult.anfrage("GET", _EINGEREICHT, zeitlimit=ZAEHLER_ZEITLIMIT_S)
         liste = antwort.get("freigaben") if isinstance(antwort, dict) else None
         wert = len(liste) if isinstance(liste, list) else 0
+        _merken(wert, isinstance(liste, list))
     except Exception:  # noqa: BLE001 - ein Zaehler darf nie die Seite reissen
         wert = 0
+        _merken(0, False)
+    return wert
+
+
+def anzahl_offen() -> int:
+    """Zahl der eingereichten Marketing-Inhalte fuer den Menue-Zaehler.
+    NUR Zwischenspeicher: kein Netzwerk auf dem Render-Weg (der laeuft im
+    Event-Loop). Ist der Speicher aelter als 60 s, stoesst ein Hintergrund-
+    Thread die Auffrischung an; bis dahin gilt der alte Wert (leer => 0)."""
     with _cache_lock:
-        _cache["stand"], _cache["wert"] = time.monotonic(), wert
+        wert = int(_cache["wert"])
+    if not _frisch():
+        t = _laeuft["thread"]
+        if t is None or not t.is_alive():
+            t = threading.Thread(target=_laden, daemon=True, name="freigabe-zaehler")
+            _laeuft["thread"] = t
+            t.start()
     return wert
 
 
@@ -82,7 +107,8 @@ def _dicts(liste) -> list[dict]:
 
 
 async def _lesen(pfad: str) -> list[dict]:
-    antwort = await run_in_threadpool(marketing_pult.anfrage, "GET", pfad)
+    antwort = await run_in_threadpool(partial(marketing_pult.anfrage, "GET", pfad,
+                                              zeitlimit=LESE_ZEITLIMIT_S))
     return _dicts(antwort.get("freigaben") if isinstance(antwort, dict) else None)
 
 
@@ -125,7 +151,7 @@ def _karte(ui, f: dict, fmt: str) -> str:
         f'placeholder="Was fehlt?"></textarea>'
         f'<button>Zurückgeben</button></form>')
     return (
-        f'<details class="karte"><summary>{_etiketten(ui, f)}<b>{e(f.get("titel"))}</b></summary>'
+        f'<details class="karte" open><summary>{_etiketten(ui, f)}<b>{e(f.get("titel"))}</b></summary>'
         f'{betreff}'
         f'<div class="meta">Fassung {nr} · eingereicht von {e(f.get("eingereicht_von"))} '
         f'vor {e(_vor(f.get("eingereicht_am")))}</div>'
@@ -186,13 +212,23 @@ async def abschnitt(ui, request=None) -> str:
     fmt = "mail"
     if request is not None and request.query_params.get("nl_format") in FORMATE:
         fmt = request.query_params["nl_format"]
+    hinweis_weg = ('{k}</h2><p class="meta">Marketing gerade nicht erreichbar. '
+                   'Sales läuft normal weiter.</p></section>')
+    if _frisch() and not _cache["ok"]:
+        return hinweis_weg.format(k=kopf)          # kuerzlich gescheitert: sofort
     try:
         offen = await _lesen(_EINGEREICHT)
+        _merken(len(offen), True)
         verlauf = await _lesen(_ENTSCHIEDEN)
     except marketing_pult.PultFehler as f:
-        text = ("Marketing nicht verbunden." if f.art == "nicht_verbunden"
-                else "Marketing gerade nicht erreichbar.")
-        return f'{kopf}</h2><p class="meta">{text} Sales läuft normal weiter.</p></section>'
+        _merken(0, False)
+        if f.art == "nicht_verbunden":
+            return (f'{kopf}</h2><p class="meta">Marketing nicht verbunden. '
+                    f'Sales läuft normal weiter.</p></section>')
+        return hinweis_weg.format(k=kopf)
+    except Exception:  # noqa: BLE001 - die Seite darf daran nie scheitern
+        _merken(0, False)
+        return hinweis_weg.format(k=kopf)
     n = len(offen)
     teile = [f'{kopf}<span class="zaehler{" offen" if n else ""}">{n}</span></h2>',
              _hinweis(ui, request)]

@@ -1367,9 +1367,7 @@ def _zaehler_abfragen() -> dict:
     koerbe = server._einzuordnende(text_max=EINORDNUNG_TEXT_MAX)
     offen = {
         "/freigaben": server._q("select count(*) n from drafts "
-                                "where status = 'pending'")[0]["n"]
-        # Eingereichte Marketing-Inhalte (Zwischenspeicher, Fehler => 0).
-        + ui_freigabe_newsletter.anzahl_offen(),
+                                "where status = 'pending'")[0]["n"],
         "/wiedervorlagen": len(_offene_wiedervorlagen()),
         "/einordnung": len(koerbe["neu"]) + len(koerbe["bereits_gefragt"]),
     }
@@ -1378,6 +1376,9 @@ def _zaehler_abfragen() -> dict:
         # drei Aufgaben-Zaehler, damit Menue und Startseite dasselbe sagen.
         "/": sum(offen.values()),
         **offen,
+        # Eingereichte Marketing-Inhalte NUR hier im Menue-Zaehler, nicht in
+        # der Heute-Summe (R10); nur Zwischenspeicher, kein Netzwerk.
+        "/freigaben": offen["/freigaben"] + ui_freigabe_newsletter.anzahl_offen(),
         "/kontakte": server._q(
             "select count(*) n from leads l where not "
             + server._archiv_sql("l.enrichment"))[0]["n"],

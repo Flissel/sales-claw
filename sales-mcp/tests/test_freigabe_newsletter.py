@@ -121,7 +121,7 @@ def test_abschnitt_zeigt_karten_mit_firmen_und_art_etikett(pult):
     assert f'src="/marketing/entwurf/{IID}/vorschau?fassung=3&amp;format=mail"' in s
     assert 'href="/freigaben?nl_format=handy#marketing"' in s
     assert f'href="/marketing/entwurf/{IID}"' in s           # Im Editor ansehen
-    assert "Betreff kuerzer" in s and "<details" in s         # erledigte Rueckmeldung
+    assert "Betreff kuerzer" in s and '<details class="karte" open>' in s    # R11         # erledigte Rueckmeldung
     assert "Noch offener Punkt" not in s                      # offene nicht unter "erledigt"
     assert "<script" not in s
     assert "frame-src 'self'" in r.headers["content-security-policy"]
@@ -160,23 +160,65 @@ def test_verlauf(pult):
     assert ("GET", "/freigaben?status=entschieden&limit=10", None) in pult.aufrufe
 
 
-def test_zaehler_addiert(pult, monkeypatch):
+def test_zaehler_addiert_nur_im_menue_nicht_in_heute(pult, monkeypatch):
     monkeypatch.setattr(server.medien, "liste", lambda *a, **k: [])   # Medienordner gibt es hier nicht
-    assert ui_freigabe_newsletter.anzahl_offen() == 2
-    assert ui._zaehler_abfragen()["/freigaben"] == 2
+    assert ui_freigabe_newsletter._laden() == 2
+    z = ui._zaehler_abfragen()
+    assert z["/freigaben"] == 2
+    assert z["/"] == z["/freigaben"] - 2 + z["/wiedervorlagen"] + z["/einordnung"]   # R10
 
 
-def test_anzahl_offen_cache_und_fehler(pult):
-    assert ui_freigabe_newsletter.anzahl_offen() == 2
+def test_anzahl_offen_ist_nur_zwischenspeicher(pult):
+    assert ui_freigabe_newsletter.anzahl_offen() == 0           # kalt: kein Abruf auf dem Render-Weg
+    t = ui_freigabe_newsletter._laeuft["thread"]
+    t.join(5)
+    assert pult.im_loop == []
+    assert ui_freigabe_newsletter.anzahl_offen() == 2           # Hintergrund hat aufgefrischt
     n = len(pult.aufrufe)
     assert ui_freigabe_newsletter.anzahl_offen() == 2
-    assert len(pult.aufrufe) == n                              # zweiter Aufruf aus dem Zwischenspeicher
-    ui_freigabe_newsletter._cache_leeren()
+    assert len(pult.aufrufe) == n                               # frisch: kein weiterer Abruf
+
+
+def test_laden_fehler_gibt_0(pult):
     pult.fehler = marketing_pult.PultFehler("nicht_erreichbar", "x")
-    assert ui_freigabe_newsletter.anzahl_offen() == 0
+    assert ui_freigabe_newsletter._laden() == 0
     pult.fehler = RuntimeError("kaputt")
-    ui_freigabe_newsletter._cache_leeren()
-    assert ui_freigabe_newsletter.anzahl_offen() == 0
+    assert ui_freigabe_newsletter._laden() == 0
+
+
+def test_kalter_zaehler_blockiert_den_loop_nicht(pult, monkeypatch):
+    monkeypatch.setattr(server.medien, "liste", lambda *a, **k: [])
+    for pfad in ("/freigaben", "/"):
+        ui_freigabe_newsletter._cache_leeren()
+        assert CLIENT.get(pfad, headers=HOST).status_code == 200
+        t = ui_freigabe_newsletter._laeuft["thread"]
+        if t is not None:
+            t.join(5)
+        assert pult.im_loop == [], pfad
+
+
+def test_tote_api_wird_nicht_bei_jedem_aufruf_neu_versucht(pult):
+    pult.fehler = marketing_pult.PultFehler("nicht_erreichbar", "x")
+    assert "Marketing gerade nicht erreichbar" in _seite().text
+    n = len(pult.aufrufe)
+    assert n == 1                                               # zweite Lesung entfaellt
+    assert "Marketing gerade nicht erreichbar" in _seite().text
+    assert len(pult.aufrufe) == n                               # < 60 s: sofort, ohne Abruf
+
+
+def test_lese_zeitlimit_kurz(pult, monkeypatch):
+    gesehen = []
+    orig = pult.anfrage
+    monkeypatch.setattr(marketing_pult, "anfrage",
+                        lambda *a, **k: (gesehen.append(k.get("zeitlimit")), orig(*a, **k))[1])
+    _seite()
+    assert gesehen and all(z is not None and z <= 3 for z in gesehen)
+
+
+def test_unerwarteter_fehler_ist_kein_500(pult):
+    pult.fehler = RuntimeError("kaputt")
+    r = _seite()
+    assert r.status_code == 200 and "Marketing gerade nicht erreichbar" in r.text
 
 
 def test_freigeben_schickt_pult_aufruf(pult):
