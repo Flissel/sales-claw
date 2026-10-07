@@ -578,6 +578,9 @@ def test_vorlagen_seite(angemeldet, pult):
     s = r.text
     assert r.status_code == 200 and "Leere Vorlage" in s
     assert '<iframe class="layout-bild" sandbox' in s and 'src="/marketing/vorlage-bild/leer"' in s
+    # Task 6: Vorschauen lazy, Platzhalter mit Vorlagenname hinter dem Rahmen
+    assert s.count('<iframe class="layout-bild"') == s.count('loading="lazy"') >= 1
+    assert '<span class="layout-platzhalter">' in s
     assert 'action="/marketing/aus-vorlage"' in s and 'name="vorlage" value="leer"' in s
     assert 'name="titel"' in s and f'value="{ui.CSRF_TOKEN}"' in s
     assert "frame-src 'self'" in r.headers["content-security-policy"]

@@ -1083,8 +1083,11 @@ ul.bildstand li { padding: .2rem 0; }
                 padding: .6rem; background: var(--flaeche); }
 .layout-karte > a { display: block; margin-top: .5rem; }
 .layout-rahmen { height: 260px; overflow: hidden; border-radius: 3px;
-                 background: #ffffff; }
-iframe.layout-bild { width: 200%; height: 520px; border: 0;
+                 background: #ffffff; position: relative; }
+.layout-platzhalter { position: absolute; inset: 0; display: flex;
+                      align-items: center; justify-content: center;
+                      padding: .5rem; text-align: center; color: #6b7280; }
+iframe.layout-bild { position: relative; width: 200%; height: 520px; border: 0;
                      transform: scale(.5); transform-origin: 0 0;
                      pointer-events: none; }
 .abzeichen { border: 1px solid var(--gut); color: var(--gut); border-radius: 999px;
@@ -1367,7 +1370,7 @@ _GRUPPEN = (
     ("Marketing", (("/marketing", "Übersicht"),
                    ("/marketing/entwuerfe", "Entwürfe"),
                    ("/marketing/vorlagen", "Vorlagen"),
-                   ("/marketing/layouts", "Layouts"))),
+                   ("/marketing/layouts", "Marke"))),
     # Existiert im Menue NUR fuer Rolle freigeben im Basis-Laden — nicht
     # wegen einer Extra-Pruefung hier, sondern weil _seitenleiste JEDEN
     # Eintrag durch _pfad_erlaubt filtert (s. dort), und die faellt fuer

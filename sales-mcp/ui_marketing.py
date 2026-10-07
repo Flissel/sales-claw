@@ -27,6 +27,7 @@ import marketing_pult
 import ui_editor
 
 ARTEN = {"newsletter": "Newsletter", "post": "Post", "material": "Team-Material"}
+MARKE_SATZ = "Diese Einstellungen (Farben, Schrift, Logo, Kopf- und Fußzeile) füllen neue Newsletter aus Vorlagen."
 # Anzeige-Status in Worten (Spec 2026-10-07 §5): "zurückgegeben" ist kein DB-Status,
 # sondern ein Entwurf mit offener Rückmeldung (status_wort).
 STATUS = {"entwurf": "in Arbeit", "zurueckgegeben": "zurückgegeben", "eingereicht": "zur Freigabe",
@@ -669,7 +670,8 @@ def routen(ui) -> list:
             n = str(l.get("name") or "")
             standard = '<span class="abzeichen">Standard</span> ' if l.get("standard") else ""
             return (f'<div class="layout-karte"><div class="layout-rahmen">'
-                    f'<iframe class="layout-bild" sandbox tabindex="-1" title="Vorschau {e(n)}" '
+                    f'<span class="layout-platzhalter">{e(n)}</span>'
+                    f'<iframe class="layout-bild" sandbox tabindex="-1" loading="lazy" title="Vorschau {e(n)}" '
                     f'src="/marketing/layout-bild/{e(pfad(n))}"></iframe></div>'
                     f'<a href="/marketing/layout/{e(pfad(n))}"><b>{e(n)}</b></a>'
                     f'<span class="meta">{standard}Fassung {int(l.get("fassung") or 1)}'
@@ -684,8 +686,9 @@ def routen(ui) -> list:
             teil.sort(key=lambda l: (not l.get("standard"), str(l.get("name") or "")))
             gruppen.append(f'<h2>{e(ARTEN.get(art, art or "Ohne Art"))}</h2>'
                            f'<div class="galerie">{"".join(karte(l) for l in teil)}</div>')
-        antwort = ui._seite("Layouts", umschalter(m, liste, "/marketing/layouts") +
-                            ("".join(gruppen) or "<p>Keine Layouts.</p>"))
+        antwort = ui._seite("Marke", umschalter(m, liste, "/marketing/layouts") +
+                            f'<p class="meta">{MARKE_SATZ}</p>' +
+                            ("".join(gruppen) or "<p>Keine Marken.</p>"))
         antwort.headers["Content-Security-Policy"] = ui._csp_mit_rahmen("'self'")
         return antwort
 
@@ -757,6 +760,7 @@ def routen(ui) -> list:
             f'formmethod="post" formenctype="multipart/form-data">Vorschau aktualisieren</button>'
             f'<button class="primaer" type="submit">Als neue Fassung speichern</button></div>')
         rumpf = (
+            f'<p class="meta">{MARKE_SATZ}</p>'
             f'<p class="meta">{e(ARTEN.get(art, art))} &middot; Fassung {int(l.get("fassung") or 1)}'
             f'{" &middot; " + e(l["beschreibung"]) if l.get("beschreibung") else ""}</p>'
             f'<div class="pult"><div class="pult-links">'
@@ -764,11 +768,11 @@ def routen(ui) -> list:
             f'class="pult-felder">{csrf}<input type="hidden" name="layout" value="{e(name)}">'
             f'{regler}<fieldset class="vorschau-wahl"><legend>Vorschau als</legend>{formate}</fieldset>'
             f'{knoepfe}</form>{standard}'
-            f'<p><a href="/marketing/layouts">Zurück zu allen Layouts</a></p></div>'
+            f'<p><a href="/marketing/layouts">Zurück zu allen Marken</a></p></div>'
             f'<div class="pult-rechts">'
             f'<iframe class="vorschau" name="vorschau" sandbox title="Vorschau" '
             f'src="/marketing/layout-bild/{e(pfad(name))}"></iframe></div></div>')
-        antwort = ui._seite(f"Layout {name}", rumpf)
+        antwort = ui._seite(f"Marke {name}", rumpf)
         antwort.headers["Content-Security-Policy"] = ui._csp_mit_rahmen("'self'")
         return antwort
 

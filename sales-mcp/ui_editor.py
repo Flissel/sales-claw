@@ -729,7 +729,8 @@ def routen(ui) -> list:
                 return ""
             beschreibung = str(v.get("beschreibung") or n)
             return (f'<div class="layout-karte"><div class="layout-rahmen">'
-                    f'<iframe class="layout-bild" sandbox tabindex="-1" title="Vorschau {e(beschreibung)}" '
+                    f'<span class="layout-platzhalter">{e(beschreibung)}</span>'
+                    f'<iframe class="layout-bild" sandbox tabindex="-1" loading="lazy" title="Vorschau {e(beschreibung)}" '
                     f'src="/marketing/vorlage-bild/{e(n)}"></iframe></div>'
                     f'<b>{e(beschreibung)}</b><span class="meta">{e(n)} &middot; Fassung '
                     f'{int(v.get("fassung") or 1)}</span>'

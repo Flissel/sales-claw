@@ -1100,3 +1100,30 @@ def test_bilder_statuspunkte_je_status(angemeldet, pult):
     for st in ("offen", "in_arbeit", "fertig", "fehler", "verworfen"):
         assert f'<span class="punkt bs-{st}"' in s, st
         assert f".punkt.bs-{st} " in ui._STIL
+
+
+# --- Task 6: "Marke" statt "Layouts", Vorschauen lazy ---------------------------
+
+SATZ_MARKE = "Diese Einstellungen (Farben, Schrift, Logo, Kopf- und Fußzeile) füllen neue Newsletter aus Vorlagen."
+
+
+def test_galerie_heisst_marke_mit_satz_und_lazy_vorschauen(angemeldet):
+    r = angemeldet.get("/marketing/layouts", headers=HOST)
+    s = r.text
+    assert r.status_code == 200
+    assert "<title>Marke" in s and "<h1>Marke</h1>" in s
+    assert SATZ_MARKE in s
+    assert s.count('<iframe class="layout-bild" sandbox tabindex="-1" loading="lazy"') == 3
+    for n in ("dunkel", "hell", "karte"):
+        assert f'<span class="layout-platzhalter">{n}</span>' in s
+
+
+def test_editor_heisst_marke_mit_satz(angemeldet):
+    s = angemeldet.get("/marketing/layout/dunkel", headers=HOST).text
+    assert "<h1>Marke dunkel</h1>" in s and SATZ_MARKE in s
+    assert "Zurück zu allen Marken" in s and 'href="/marketing/layouts"' in s
+
+
+def test_navigation_zeigt_marke_nicht_layouts(angemeldet):
+    s = angemeldet.get("/marketing", headers=HOST).text
+    assert 'href="/marketing/layouts"' in s and ">Marke<" in s and ">Layouts<" not in s
