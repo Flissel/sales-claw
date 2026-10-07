@@ -447,11 +447,20 @@ def _dashboard_origin() -> str:
     return f"https://{teile.netloc}"
 
 
-def _csp_mit_rahmen(origin: str) -> str:
+def _csp_mit_rahmen(origin: str, bilddaten: bool = False, schriften: bool = False) -> str:
     """Die Seiten-Richtlinie plus GENAU EINE Rahmenquelle. Nur Seiten mit Rahmen
-    tragen sie (WhatsApp-Seite, Marketing-Entwurf, Layout-Galerie und -Editor);
-    alle anderen behalten `default-src 'none'` ohne frame-src."""
-    return f"{_CSP}; frame-src {origin}"
+    tragen sie (WhatsApp-Seite, Marketing-Entwurf, Marke, Editor);
+    alle anderen behalten `default-src 'none'` ohne frame-src.
+
+    `bilddaten` erlaubt zusaetzlich data:-Bilder (Marke: Logo des Spiegels),
+    `schriften` eigene Schriften samt Stylesheet derselben Herkunft (Marke:
+    Schriftmuster aus /marketing/schrift/schriften.css)."""
+    csp = _CSP
+    if bilddaten:
+        csp = csp.replace("img-src 'self';", "img-src 'self' data:;")
+    if schriften:
+        csp = csp.replace("style-src 'unsafe-inline';", "style-src 'unsafe-inline' 'self'; font-src 'self';")
+    return f"{csp}; frame-src {origin}"
 
 
 def _mit_koepfen(send):

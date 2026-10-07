@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 import urllib.parse
 import uuid
+from datetime import datetime, timezone
 
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import RedirectResponse, Response
@@ -21,17 +22,22 @@ from starlette.routing import Route
 
 import marketing_mandant
 import marketing_pult
+import schriften
 import ui_editor
 
 SEITE = "/marketing/layouts"
 NACHRICHT_MAX = 2000
+PC_WARTET_NACH_S = 60                # danach: "sobald der PC läuft"
+KURZ_ZEILEN, KURZ_ZEICHEN = 2, 160
 ANHAENGE_MAX = 5                     # wie ANHAENGE_MAX der Marketing-API (kontext.anhaenge)
 REFRESH_S = 5
 FORMATE = {"mail": "Mail", "handy": "Handy"}
+PC_LAEUFT = "Wird übernommen, sobald der PC läuft"
 KEIN_PROFIL = "Noch kein Branding – erzähl mir von der Firma"
 NEUERES_PROFIL = "Inzwischen gibt es ein neueres Profil – bitte neu laden"
 _FARBE = re.compile(r"#[0-9A-Fa-f]{6}")
-_BILD_DATEN = re.compile(r"data:image/(?:png|jpeg);base64,[A-Za-z0-9+/=]{1,200000}")
+LOGO_BASE64_MAX = 210_000           # Logo <= 140 KB als data-URL = rund 187 000 Zeichen, plus Luft
+_BILD_DATEN = re.compile(rf"data:image/(?:png|jpeg);base64,[A-Za-z0-9+/=]{{1,{LOGO_BASE64_MAX}}}")
 _FARBEN = (("akzent", "Akzent"), ("flaeche", "Fläche"))
 _VORSCHLAG_FARBEN = (("akzent", "Akzent"), ("zweitfarbe", "Zweitfarbe"), ("grund", "Grund"), ("text", "Text"))
 _STATUS = {"offen": "wartet (PC muss laufen)", "in_arbeit": "wird bearbeitet", "fehler": "fehlgeschlagen"}
@@ -42,6 +48,29 @@ def _uuid_oder_none(wert) -> str | None:
         return str(uuid.UUID(str(wert)))
     except ValueError:
         return None
+
+
+def _kurz(text) -> str:
+    """Die ersten Zeilen eines Abschnitts, auf KURZ_ZEICHEN gekuerzt."""
+    zeilen = [z.strip() for z in str(text or "").splitlines() if z.strip()][:KURZ_ZEILEN]
+    t = "\n".join(zeilen)
+    return t if len(t) <= KURZ_ZEICHEN else t[:KURZ_ZEICHEN - 1].rstrip() + "…"
+
+
+def _alter_s(roh) -> float | None:
+    """Alter eines ISO-/Postgres-Zeitpunkts in Sekunden; ohne Zeitzone gilt UTC. None, wenn unlesbar."""
+    try:
+        dt = datetime.fromisoformat(str(roh).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - dt).total_seconds()
+
+
+def _familie(sid) -> str | None:
+    s = schriften.REGISTER.get(sid) if isinstance(sid, str) else None
+    return s["familie"] if s else None
 
 
 def routen(ui) -> list:
@@ -72,6 +101,20 @@ def routen(ui) -> list:
 
     # --- Seite -----------------------------------------------------------------------------
 
+    def muster(sid, firma: str) -> str:
+        """Schriftmuster "Aa – Firma" in der Schrift (nur Register-ids, sonst nur der Name)."""
+        familie = _familie(sid)
+        if not familie:
+            return f'<span class="schriftmuster">{e(str(sid or ""))}</span>'
+        return (f'<span class="schriftmuster" style="font-family:\'{familie}\', sans-serif">'
+                f'Aa – {e(firma)}</span> <span class="meta">({e(familie)})</span>')
+
+    def schrift_zeile(anzeige, text, firma: str) -> str:
+        if not (anzeige or text):
+            return ""
+        return (f'<p class="schriften">Überschrift: {muster(anzeige, firma)}<br>'
+                f'Text: {muster(text, firma)}</p>')
+
     def profil_html(d: dict) -> str:
         sp = d.get("spiegel") if isinstance(d.get("spiegel"), dict) else {}
         g = sp.get("gestalt") if isinstance(sp.get("gestalt"), dict) else {}
@@ -79,17 +122,23 @@ def routen(ui) -> list:
         if not g and not stand:
             return f'<div class="marke-profil"><p><b>{KEIN_PROFIL}</b></p></div>'
         teile = []
-        farben = "".join(farbfeld(n, g.get(k)) for k, n in _FARBEN)
+        firma = str(d.get("name") or d.get("mandant") or "")
+        aktuell = d.get("aktuell") if isinstance(d.get("aktuell"), dict) else {}
+        werte = aktuell.get("werte") if isinstance(aktuell.get("werte"), dict) else {}
+        farben = ("".join(farbfeld(n, g.get(k)) for k, n in _FARBEN)
+                  + "".join(farbfeld(n, werte.get(k)) for k, n in (("grund", "Grund"), ("text", "Text"))))
         if farben:
             teile.append(f'<div class="farben-zeile">{farben}</div>')
-        schriften = g.get("schriften") if isinstance(g.get("schriften"), dict) else {}
-        if schriften.get("anzeige") or schriften.get("text"):
-            teile.append(f'<p>Schrift: <span class="schriftmuster">{e(str(schriften.get("anzeige") or ""))}</span>'
-                         f' (Überschrift) &middot; <span class="schriftmuster">{e(str(schriften.get("text") or ""))}</span>'
-                         f' (Text)</p>')
+        schrift = g.get("schriften") if isinstance(g.get("schriften"), dict) else {}
+        teile.append(schrift_zeile(schrift.get("anzeige"), schrift.get("text"), firma))
         logo = str(g.get("logo") or "")
         if _BILD_DATEN.fullmatch(logo):
             teile.append(f'<p><img class="marke-logo" src="{logo}" alt="Logo"></p>')
+        ab = aktuell.get("abschnitte") if isinstance(aktuell.get("abschnitte"), dict) else {}
+        for titel in ("Ton", "Zielgruppe"):
+            kurz = _kurz(ab.get(titel))
+            if kurz:
+                teile.append(f'<p class="kurz"><b>{titel}:</b> {e(kurz).replace(chr(10), "<br>")}</p>')
         if stand:
             teile.append(f'<p class="meta">Stand: {e(stand)}</p>')
         if sp.get("fehler"):
@@ -116,9 +165,10 @@ def routen(ui) -> list:
         return f'<div class="marke-chat">{"".join(runden) or leer}</div>'
 
     def formular_html(d: dict) -> str:
-        laeuft = ('<p class="meta">Der Marken-Agent arbeitet gerade – die Seite lädt sich selbst neu. '
-                  'Eine neue Nachricht geht erst danach.</p>' if d.get("laeuft") else "")
-        return (f'{laeuft}<form method="post" action="/marketing/marke/senden" enctype="multipart/form-data" '
+        if d.get("laeuft"):
+            return ('<p class="meta">Der Marken-Agent arbeitet gerade – die Seite lädt sich selbst neu. '
+                    'Eine neue Nachricht geht erst danach.</p>')
+        return (f'<form method="post" action="/marketing/marke/senden" enctype="multipart/form-data" '
                 f'class="pult-felder">{csrf_feld()}'
                 f'<label>Nachricht <textarea name="nachricht" rows="4" maxlength="{NACHRICHT_MAX}" required '
                 f'placeholder="z. B. Wir sind eine Rösterei, warm und klar. Unsere Webseite: https://…"></textarea></label>'
@@ -133,10 +183,8 @@ def routen(ui) -> list:
         vid = str(v["id"])
         w = v.get("vorschlag") if isinstance(v.get("vorschlag"), dict) else {}
         farben = "".join(farbfeld(n, w.get(k)) for k, n in _VORSCHLAG_FARBEN)
-        schrift = ""
-        if w.get("schrift_anzeige") or w.get("schrift_text"):
-            schrift = (f'<p>Schrift: <span class="schriftmuster">{e(str(w.get("schrift_anzeige") or ""))}</span>'
-                       f' &middot; <span class="schriftmuster">{e(str(w.get("schrift_text") or ""))}</span></p>')
+        schrift = schrift_zeile(w.get("schrift_anzeige"), w.get("schrift_text"),
+                                str(d.get("name") or d.get("mandant") or ""))
         logo = f'<p>Logo: {e(str(w["logo"]))}</p>' if w.get("logo") else ""
         abschnitte = "".join(
             f'<h3>{e(str(n))}</h3><p>{e(str(t))}</p>'
@@ -156,7 +204,7 @@ def routen(ui) -> list:
                 f'<input type="hidden" name="vorschlag" value="{e(vid)}">'
                 f'<button type="submit">Verwerfen</button></form></div>'
                 f'<div class="pult-rechts"><iframe class="vorschau" sandbox title="Vorschau" '
-                f'src="/marketing/marke/vorschau?format={fmt}"></iframe></div></div>')
+                f'src="{e(f"/marketing/marke/vorschau?format={fmt}&vorschlag={vid}")}"></iframe></div></div>')
 
     @ui._gesichert_seite
     async def marke(request):
@@ -172,16 +220,18 @@ def routen(ui) -> list:
             return fehler(marketing_pult.PultFehler("unbekannt", "Antwort ohne Marke"))
         status = ""
         if d.get("uebernahme"):
-            status = '<p class="status-zeile">Wird übernommen …</p>'
+            alter = _alter_s(d.get("uebernahme_seit"))
+            wartet = alter is not None and alter > PC_WARTET_NACH_S
+            status = f'<p class="status-zeile">{PC_LAEUFT if wartet else "Wird übernommen …"}</p>'
         arbeitet = bool(d.get("laeuft") or d.get("uebernahme"))
-        rumpf = (marketing_mandant.umschalter(e, ui.CSRF_TOKEN, m, liste, SEITE)
+        rumpf = ('<link rel="stylesheet" href="/marketing/schrift/schriften.css">'
+                 + marketing_mandant.umschalter(e, ui.CSRF_TOKEN, m, liste, SEITE)
                  + '<p class="meta">Das Markenprofil bestimmt Farben, Schriften und Logo neuer Newsletter. '
                    'Erzähl dem Marken-Agenten von der Firma; was er vorschlägt, übernimmst du hier.</p>'
                  + profil_html(d) + status + "<h2>Chat</h2>" + chat_html(d) + formular_html(d)
                  + vorschlag_html(d, fmt))
         antwort = ui._seite("Marke", rumpf, refresh=REFRESH_S if arbeitet else None)
-        antwort.headers["Content-Security-Policy"] = ui._csp_mit_rahmen("'self'").replace(
-            "img-src 'self'", "img-src 'self' data:")
+        antwort.headers["Content-Security-Policy"] = ui._csp_mit_rahmen("'self'", bilddaten=True, schriften=True)
         return antwort
 
     # --- Vorschau-Proxy ---------------------------------------------------------------------
@@ -191,10 +241,15 @@ def routen(ui) -> list:
         fmt = request.query_params.get("format", "mail")
         fmt = fmt if fmt in FORMATE else "mail"
         try:
-            m, _liste = await marketing_mandant.firma(request)
-            d = await run_in_threadpool(marketing_pult.anfrage, "GET", f"/marke?mandant={urllib.parse.quote(m)}")
-            v = d.get("vorschlag") if isinstance(d, dict) else None
-            vid = _uuid_oder_none(v.get("id")) if isinstance(v, dict) else None
+            if "vorschlag" in request.query_params:
+                # Der Rahmen zeigt genau den Vorschlag, den die Karte daneben zeigt - auch wenn
+                # inzwischen ein neuerer offen ist.
+                vid = _uuid_oder_none(request.query_params["vorschlag"])
+            else:
+                m, _liste = await marketing_mandant.firma(request)
+                d = await run_in_threadpool(marketing_pult.anfrage, "GET", f"/marke?mandant={urllib.parse.quote(m)}")
+                v = d.get("vorschlag") if isinstance(d, dict) else None
+                vid = _uuid_oder_none(v.get("id")) if isinstance(v, dict) else None
             if not vid:
                 return _gerahmt("<p>Kein Vorschlag offen.</p>", status=404)
             q = {"format": fmt}
@@ -260,6 +315,7 @@ def routen(ui) -> list:
             await run_in_threadpool(marketing_pult.anfrage, "POST", "/marke/chat",
                                     {"mandant": m, "nachricht": nachricht, "kontext": {"anhaenge": anhaenge}})
         except marketing_pult.PultFehler as f:
+            await aufraeumen()           # abgelehnt (z. B. es laeuft schon einer): keine Kopien anhaeufen
             return fehler(f)
         return RedirectResponse(SEITE, status_code=303)
 

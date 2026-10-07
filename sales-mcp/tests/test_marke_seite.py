@@ -2,6 +2,7 @@
 Der Client zur Marketing-API wird gefaelscht (wie in test_marketing_pult.py)."""
 import asyncio
 import os
+from datetime import datetime, timedelta, timezone
 
 os.environ["SALES_DB_SCHEMA"] = "sales_test"
 
@@ -16,11 +17,11 @@ HOST = {"host": "127.0.0.1:8791"}
 VID = "22222222-2222-2222-2222-222222222222"
 LOGO = "data:image/png;base64,iVBORw0KGgo="
 SPIEGEL = {"gestalt": {"akzent": "#5eead4", "flaeche": "#1d3b39", "logo": LOGO,
-                       "schriften": {"anzeige": "fraunces", "text": "inter"}},
+                       "schriften": {"anzeige": "playfair", "text": "manrope"}},
            "stand": "2026-10-07 09:12 von mira", "gespiegelt_am": "2026-10-07T09:12:00", "fehler": None}
 VORSCHLAG = {"id": VID, "erstellt_am": "2026-10-07T10:00:00",
              "vorschlag": {"akzent": "#ff6600", "zweitfarbe": "#fff1e6", "grund": "#ffffff", "text": "#111111",
-                           "schrift_anzeige": "fraunces", "schrift_text": "inter", "logo": None,
+                           "schrift_anzeige": "playfair", "schrift_text": "manrope", "logo": None,
                            "abschnitte": {"Wer wir sind": "Eine kleine Rösterei.", "Ton": "<b>warm</b> und klar"},
                            "mustertext": {"betreff": "Hallo", "ueberschrift": "Kaffee", "absatz": "Frisch."}}}
 
@@ -37,7 +38,8 @@ class Falsch:
         self.fehler_pfad = None
         self.im_loop = []
         self.zustand = {"mandant": "vibemind", "name": "VibeMind", "spiegel": dict(SPIEGEL),
-                        "auftraege": [], "laeuft": False, "vorschlag": None, "uebernahme": None}
+                        "auftraege": [], "laeuft": False, "vorschlag": None, "uebernahme": None,
+                        "uebernahme_seit": None, "aktuell": None}
 
     def anfrage(self, methode, pfad, daten=None, roh=False, zeitlimit=None):
         self.aufrufe.append((methode, pfad, daten))
@@ -122,13 +124,15 @@ def test_profil_mit_kopfteil(angemeldet):
     s = r.text
     assert r.status_code == 200 and "<h1>Marke</h1>" in s
     assert "#5eead4" in s and "#1d3b39" in s
-    assert "fraunces" in s and "inter" in s
+    assert "Aa – VibeMind" in s
     assert f'<img class="marke-logo" src="{LOGO}"' in s
     assert "Stand: 2026-10-07 09:12 von mira" in s
     assert "Noch kein Branding" not in s
     csp = r.headers["content-security-policy"]
-    assert "img-src 'self' data:" in csp and "frame-src 'self'" in csp
-    assert "script-src" not in csp
+    assert csp == ("default-src 'none'; style-src 'unsafe-inline' 'self'; font-src 'self'; "
+                   "img-src 'self' data:; media-src 'self'; form-action 'self'; base-uri 'none'; "
+                   "frame-ancestors 'none'; frame-src 'self'")
+    assert '<link rel="stylesheet" href="/marketing/schrift/schriften.css">' in s
 
 
 def test_profil_ohne_kopfteil(angemeldet, pult):
@@ -265,7 +269,7 @@ def test_vorschlag_karte_und_rahmen(angemeldet, pult):
     pult.zustand["vorschlag"] = VORSCHLAG
     s = seite(angemeldet).text
     assert '<iframe class="vorschau" sandbox' in s
-    assert 'src="/marketing/marke/vorschau?format=mail"' in s
+    assert f'src="/marketing/marke/vorschau?format=mail&amp;vorschlag={VID}"' in s
     assert 'href="/marketing/layouts?format=handy"' in s
     assert "#ff6600" in s and "Eine kleine Rösterei." in s and "&lt;b&gt;warm&lt;/b&gt;" in s
     assert "<b>warm</b>" not in s
@@ -278,7 +282,7 @@ def test_vorschlag_karte_und_rahmen(angemeldet, pult):
 def test_handy_umschalter(angemeldet, pult):
     pult.zustand["vorschlag"] = VORSCHLAG
     s = seite(angemeldet, "/marketing/layouts?format=handy").text
-    assert 'src="/marketing/marke/vorschau?format=handy"' in s
+    assert f'src="/marketing/marke/vorschau?format=handy&amp;vorschlag={VID}"' in s
     assert 'href="/marketing/layouts?format=mail"' in s
 
 
@@ -405,3 +409,115 @@ def test_alle_pult_aufrufe_im_threadpool(angemeldet, pult, medienordner):
     for teil in ("/marke?mandant=", "/vorschau?", "/medien/zuordnung", "/marke/chat", "/uebernehmen", "/verwerfen"):
         assert any(teil in p for p in pfade), teil
     assert pult.im_loop == []
+
+
+# --- Fix-Runde 1 --------------------------------------------------------------------------
+
+AKTUELL = {"abschnitte": {"Ton": "warm und klar\n\nimmer per Du\ndritte Zeile",
+                          "Zielgruppe": "Radfahrer in der Stadt " + "x" * 300},
+           "werte": {"grund": "#faf7f2", "text": "#2b2724", "akzent": "#b45309"}}
+
+
+def test_ton_und_zielgruppe_aus_aktuell_gekuerzt(angemeldet, pult):
+    pult.zustand["aktuell"] = AKTUELL
+    s = rumpf(seite(angemeldet))
+    assert "<b>Ton:</b> warm und klar<br>immer per Du" in s and "dritte Zeile" not in s
+    ziel = s[s.index("<b>Zielgruppe:</b>"):]
+    ziel = ziel[:ziel.index("</p>")]
+    assert "Radfahrer in der Stadt" in ziel and ziel.endswith("…") and len(ziel) < 200
+    assert "Grund #faf7f2" in s and "Text #2b2724" in s
+
+
+def test_ohne_aktuell_keine_ton_zeilen(angemeldet):
+    s = rumpf(seite(angemeldet))
+    assert "<b>Ton:</b>" not in s and "<b>Zielgruppe:</b>" not in s and "Grund #" not in s
+
+
+def test_aktuell_wird_escaped(angemeldet, pult):
+    pult.zustand["aktuell"] = {"abschnitte": {"Ton": "<script>x</script>"}, "werte": {}}
+    s = rumpf(seite(angemeldet))
+    assert "<script" not in s and "&lt;script&gt;" in s
+
+
+def _vor(sekunden):
+    return (datetime.now(timezone.utc) - timedelta(seconds=sekunden)).isoformat()
+
+
+def test_uebernahme_unter_60s(angemeldet, pult):
+    pult.zustand.update(uebernahme="laeuft", uebernahme_seit=_vor(20))
+    s = rumpf(seite(angemeldet))
+    assert "Wird übernommen …" in s and "sobald der PC läuft" not in s
+
+
+def test_uebernahme_ueber_60s_sagt_pc(angemeldet, pult):
+    pult.zustand.update(uebernahme="laeuft", uebernahme_seit=_vor(90))
+    r = seite(angemeldet)
+    assert "Wird übernommen, sobald der PC läuft" in r.text and "Wird übernommen …" not in rumpf(r)
+    assert 'http-equiv="refresh"' in r.text
+
+
+def test_uebernahme_seit_postgres_format_und_ohne_zone(angemeldet, pult):
+    alt = datetime.now(timezone.utc) - timedelta(seconds=120)
+    pult.zustand.update(uebernahme="laeuft", uebernahme_seit=alt.strftime("%Y-%m-%d %H:%M:%S") + "+00")
+    assert "sobald der PC läuft" in seite(angemeldet).text
+    pult.zustand["uebernahme_seit"] = alt.strftime("%Y-%m-%d %H:%M:%S")       # ohne Zone = UTC
+    assert "sobald der PC läuft" in seite(angemeldet).text
+    pult.zustand["uebernahme_seit"] = "kein Datum"
+    assert "Wird übernommen …" in rumpf(seite(angemeldet))
+
+
+def test_schriftmuster_in_der_schrift(angemeldet, pult):
+    pult.zustand["vorschlag"] = VORSCHLAG
+    s = rumpf(seite(angemeldet))
+    assert "font-family:'Playfair Display', sans-serif\">Aa – VibeMind" in s
+    assert "font-family:'Manrope', sans-serif\">Aa – VibeMind" in s
+
+
+def test_unbekannte_schrift_id_wird_nicht_in_css_gesetzt(angemeldet, pult):
+    pult.zustand["spiegel"]["gestalt"]["schriften"] = {"anzeige": "x';}</style><b>", "text": "manrope"}
+    s = rumpf(seite(angemeldet))
+    assert "</style><b>" not in s and "&lt;/style&gt;" in s
+    assert "font-family:'x" not in s
+
+
+def test_logo_grenze(angemeldet, pult):
+    rand = "data:image/png;base64," + "A" * 210_000
+    pult.zustand["spiegel"]["gestalt"]["logo"] = rand
+    assert 'class="marke-logo"' in rumpf(seite(angemeldet))
+    pult.zustand["spiegel"]["gestalt"]["logo"] = rand + "A"
+    assert 'class="marke-logo"' not in rumpf(seite(angemeldet))
+
+
+def test_formular_weg_solange_agent_laeuft(angemeldet, pult):
+    pult.zustand["laeuft"] = True
+    s = rumpf(seite(angemeldet))
+    assert 'action="/marketing/marke/senden"' not in s and 'type="file"' not in s
+    assert "Der Marken-Agent arbeitet gerade" in s
+    pult.zustand["laeuft"] = False
+    assert 'action="/marketing/marke/senden"' in rumpf(seite(angemeldet))
+
+
+def test_chat_abgelehnt_loescht_eben_abgelegte_uploads(angemeldet, pult, medienordner):
+    pult.fehler = marketing_pult.PultFehler("abgelehnt", "Es läuft schon ein Auftrag")
+    pult.fehler_pfad = "/marke/chat"
+    r = angemeldet.post("/marketing/marke/senden", headers=HOST,
+                        data={"csrf": ui.CSRF_TOKEN, "nachricht": "Logo"},
+                        files={"datei": ("logo.png", b"P" * 10, "image/png")})
+    assert r.status_code == 422 and "Es läuft schon ein Auftrag" in r.text
+    assert list(medienordner.iterdir()) == []
+
+
+def test_vorschau_nimmt_die_id_aus_dem_rahmen(angemeldet, pult):
+    neuer = "44444444-4444-4444-4444-444444444444"
+    pult.zustand["vorschlag"] = {**VORSCHLAG, "id": neuer}
+    r = angemeldet.get(f"/marketing/marke/vorschau?format=mail&vorschlag={VID}", headers=HOST)
+    assert r.status_code == 200
+    assert pult.aufrufe[-1][1].startswith(f"/marke/vorschlaege/{VID}/vorschau?")
+    assert not any(a[1].startswith("/marke?mandant=") for a in pult.aufrufe)
+
+
+@pytest.mark.parametrize("wert", ["../../x", "", "nix"])
+def test_vorschau_ungueltige_id_404_im_rahmen(angemeldet, pult, wert):
+    r = angemeldet.get(f"/marketing/marke/vorschau?vorschlag={wert}", headers=HOST)
+    assert r.status_code == 404 and "sandbox" in r.headers["content-security-policy"]
+    assert pult.nach("/vorschlaege") == []
