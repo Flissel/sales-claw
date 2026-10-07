@@ -81,3 +81,10 @@ def test_paket_kennt_firmen_etikett_und_zuordnung():
     # Task 10 (2026-10-06 Mandanten): Firmen-Etikett, Bildzuordnung in der Bildwahl
     text = (ORDNER / "editor.js").read_text(encoding="utf-8")
     assert "Gemeinsam" in text and "Firma dieses Newsletters" in text
+
+
+def test_paket_kennt_einreichen():
+    # Task 7 (2026-10-07 Newsletter-Freigabe): Einreichen, nur lesend, Feedback-Band
+    text = (ORDNER / "editor.js").read_text(encoding="utf-8")
+    for s in ("Zur Freigabe einreichen", "Liegt zur Freigabe", "einreichen_url", "zurueckziehen_url"):
+        assert s in text, s

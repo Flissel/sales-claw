@@ -170,7 +170,7 @@ def routen(ui) -> list:
         i, fassungen = d.get("inhalt") or {}, d.get("fassungen") or []
         neueste = fassungen[0] if fassungen else {}
         if (neueste.get("format") != "bloecke" or not isinstance(neueste.get("bloecke"), dict)
-                or i.get("art") != "newsletter" or i.get("status") != "entwurf"):
+                or i.get("art") != "newsletter" or i.get("status") not in ("entwurf", "eingereicht")):
             return ui._fehlerseite(422, "Nicht im Editor", e(nicht_im_editor) +
                                    f' <a href="/marketing/entwurf/{e(iid)}">Zurück zum Entwurf</a>')
         felder = neueste.get("felder") or {}
@@ -186,7 +186,17 @@ def routen(ui) -> list:
             except marketing_pult.PultFehler:
                 mname = mid
             mandant = {"id": mid, "name": mname}
+        # Nur offene Rueckmeldungen (neueste zuerst, wie die API liefert) gehen an den Editor.
+        rueck = [{"text": str(r.get("text") or ""), "von": str(r.get("von") or ""),
+                  "am": str(r.get("am") or ""), "fassung": r.get("fassung")}
+                 for r in (d.get("rueckmeldungen") or [])
+                 if isinstance(r, dict) and not r.get("erledigt")]
         start = {
+            "status": i.get("status"),
+            "eingereicht_am": i.get("eingereicht_am") if i.get("status") == "eingereicht" else None,
+            "rueckmeldungen": rueck,
+            "einreichen_url": f"/marketing/editor/{iid}/einreichen",
+            "zurueckziehen_url": f"/marketing/editor/{iid}/zurueckziehen",
             "mandant": mandant,
             "dokument": neueste["bloecke"],
             "betreff": str(felder.get("betreff") or ""),
@@ -664,6 +674,29 @@ def routen(ui) -> list:
             return json_grund(503, "Zuordnung gerade nicht möglich")
         return JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
 
+    async def _freigabe_schritt(request, schritt: str):
+        """Einreichen bzw. Zurueckziehen: nur durchreichen, die Regeln liegen in der API/DB."""
+        marke = request.headers.get("x-csrf", "")
+        if not marke or not hmac.compare_digest(marke, ui.CSRF_TOKEN):
+            return json_grund(403, "Fehlende oder falsche CSRF-Marke")
+        iid = urllib.parse.quote(request.path_params["iid"], safe="")
+        try:
+            r = await run_in_threadpool(marketing_pult.anfrage, "POST", f"/inhalte/{iid}/{schritt}",
+                                        {"von": ui._ui_akteur(request)})
+        except marketing_pult.PultFehler as f:
+            if f.art == "abgelehnt":
+                return json_grund(422, str(f.grund or "Abgelehnt"))
+            return json_grund(503, "Marketing gerade nicht erreichbar")
+        return JSONResponse(r if isinstance(r, dict) else {}, headers={"Cache-Control": "no-store"})
+
+    @ui._gesichert_seite
+    async def editor_einreichen(request):
+        return await _freigabe_schritt(request, "einreichen")
+
+    @ui._gesichert_seite
+    async def editor_zurueckziehen(request):
+        return await _freigabe_schritt(request, "zurueckziehen")
+
     async def bild(request):
         # OHNE Anmeldung (AnmeldeWache laesst /marketing/bild/<t>/<n> durch):
         # die abgeschottete Vorschau schickt keine Anmelde-Cookies. Die
@@ -805,6 +838,8 @@ def routen(ui) -> list:
         Route("/marketing/editor/{iid}", editor_seite),
         Route("/marketing/editor/{iid}/speichern", editor_speichern, methods=["POST"]),
         Route("/marketing/editor/{iid}/bild", editor_bild, methods=["POST"]),
+        Route("/marketing/editor/{iid}/einreichen", editor_einreichen, methods=["POST"]),
+        Route("/marketing/editor/{iid}/zurueckziehen", editor_zurueckziehen, methods=["POST"]),
         Route("/marketing/editor/{iid}/anhang", editor_anhang, methods=["POST"]),
         Route("/marketing/editor/{iid}/medien/zuordnung", editor_medien_zuordnung, methods=["POST"]),
         Route("/marketing/editor/{iid}/gestaltung", editor_gestaltung, methods=["POST"]),

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 
-import { ArrowBackOutlined, PhoneIphoneOutlined, SaveOutlined, MailOutlined } from '@mui/icons-material';
+import { ArrowBackOutlined, PhoneIphoneOutlined, SaveOutlined, MailOutlined, SendOutlined } from '@mui/icons-material';
 import {
   Alert,
   Button,
@@ -18,9 +18,10 @@ import {
 } from '@mui/material';
 
 import { fehlerText, firmaEtikett } from '../pult';
-import { alsUngespeichert, newsletterSichern, pultStore } from '../pultZustand';
+import { alsUngespeichert, einreichenAuftrag, newsletterSichern, pultStore } from '../pultZustand';
 
 import { useAgentArbeitet } from './Chat/Sperre';
+import { LiegtBand, RueckmeldungBand } from './FreigabeBand';
 
 // Leiste oben: Betreff, Vorschautext, Speichern, Vorschau, Zurueck.
 // Die Pruefung, ob der Inhalt erlaubt ist, macht das Pult beim Speichern.
@@ -38,6 +39,7 @@ export default function PultLeiste() {
   const ungespeichert = pultStore((p) => p.ungespeichert);
   const stand = pultStore((p) => p.stand);
   const neuesBild = pultStore((p) => p.meldung);
+  const nurLesen = pultStore((p) => p.nurLesen);
   // Waehrend der Agent arbeitet, lehnt der Server Handspeichern ab ("Der Assistent arbeitet gerade").
   const agent = useAgentArbeitet();
 
@@ -45,6 +47,7 @@ export default function PultLeiste() {
   const [meldung, setMeldung] = useState<Meldung>(null);
   const [konflikt, setKonflikt] = useState<string | null>(null);
   const [verlassen, setVerlassen] = useState(false);
+  const [reicht, setReicht] = useState(false);
 
   // Beim Schliessen des Tabs mit ungespeicherten Aenderungen warnt der Browser.
   useEffect(() => {
@@ -78,6 +81,18 @@ export default function PultLeiste() {
     }
     setKonflikt(null);
     setMeldung({ art: 'error', text: fehlerText(e.grund) });
+  };
+
+  const einreichenKlick = async () => {
+    setReicht(true);
+    const grund = await einreichenAuftrag();
+    setReicht(false);
+    if (grund === null) {
+      setKonflikt(null);
+      setMeldung({ art: 'success', text: 'Zur Freigabe eingereicht' });
+    } else {
+      setMeldung({ art: 'error', text: grund });
+    }
   };
 
   const vorschau = (format: 'mail' | 'handy') => {
@@ -171,7 +186,7 @@ export default function PultLeiste() {
               variant="contained"
               size="small"
               startIcon={<SaveOutlined />}
-              disabled={laeuft || agent !== null}
+              disabled={laeuft || agent !== null || nurLesen}
               onClick={() => sichern(false)}
               sx={{ flexShrink: 0 }}
             >
@@ -179,6 +194,23 @@ export default function PultLeiste() {
             </Button>
           </span>
         </Tooltip>
+        {start.einreichen_url && !nurLesen && (
+          <Tooltip title={agent ? 'Gesperrt, bis der Assistent fertig ist' : ''}>
+            <span>
+              <Button
+                variant="outlined"
+                size="small"
+                color="success"
+                startIcon={<SendOutlined />}
+                disabled={reicht || laeuft || agent !== null}
+                onClick={() => void einreichenKlick()}
+                sx={{ flexShrink: 0 }}
+              >
+                {reicht ? 'Reicht ein …' : 'Zur Freigabe einreichen'}
+              </Button>
+            </span>
+          </Tooltip>
+        )}
         <Tooltip title={vorschauHinweis}>
           <span>
             <Button
@@ -208,6 +240,8 @@ export default function PultLeiste() {
           </span>
         </Tooltip>
       </Stack>
+      <RueckmeldungBand />
+      <LiegtBand />
       {neueFassung !== null && (
         <Alert
           severity="info"

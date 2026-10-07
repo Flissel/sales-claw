@@ -9,6 +9,8 @@ export type Dokument = Record<string, unknown>;
 // Firma (Mandant) eines Newsletters und Ziel der Bildzuordnung.
 export type Firma = { id: string; name: string };
 
+export type Rueckmeldung = { text: string; von: string; am: string; fassung: number };
+
 export type Start = {
   dokument: Dokument;
   betreff: string;
@@ -41,6 +43,13 @@ export type Start = {
   export_url: string;
   zurueck_url: string;
   csrf: string;
+  // Freigabe (Spec 2026-10-07): Status des Newsletters, Einreichzeit, offene Rueckmeldungen
+  // (neueste zuerst) und die Routen; fehlen bei aelterem sales-ui.
+  status?: 'entwurf' | 'eingereicht';
+  eingereicht_am?: string | null;
+  rueckmeldungen?: Rueckmeldung[];
+  einreichen_url?: string;
+  zurueckziehen_url?: string;
   // Herkunft aus dem alten Freigabeweg (broadcast_proposals): Status und Kanal, sonst null.
   alter_weg?: { status?: string | null; kanal?: string | null } | null;
 };
@@ -212,6 +221,42 @@ export async function speichern(
   if (r.ok && typeof antwort.fassung === 'number') return { ok: true, fassung: antwort.fassung };
   const grund = typeof antwort.grund === 'string' && antwort.grund ? antwort.grund : 'Speichern gerade nicht möglich';
   return { ok: false, konflikt: r.status === 409, grund };
+}
+
+async function freigabeSchritt(
+  url: string | undefined,
+  csrf: string,
+  standardGrund: string,
+): Promise<{ ok: true } | { ok: false; grund: string }> {
+  if (!url) return { ok: false, grund: 'Das ist hier noch nicht eingerichtet' };
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF': csrf },
+      body: '{}',
+    });
+    if (r.ok) return { ok: true };
+    const j: unknown = await r.json().catch(() => ({}));
+    return { ok: false, grund: istObjekt(j) && typeof j.grund === 'string' && j.grund ? j.grund : standardGrund };
+  } catch {
+    return { ok: false, grund: 'Keine Verbindung zum Pult' };
+  }
+}
+
+// "07.10.2026, 09:30" in der Ortszeit; unlesbares Datum => unveraendert zurueck.
+export function datumKurz(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+export function einreichen(s: Start) {
+  return freigabeSchritt(s.einreichen_url, s.csrf, 'Einreichen gerade nicht möglich');
+}
+
+export function zurueckziehen(s: Start) {
+  return freigabeSchritt(s.zurueckziehen_url, s.csrf, 'Zurückziehen gerade nicht möglich');
 }
 
 export type MedienStand = {

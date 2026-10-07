@@ -16,6 +16,12 @@ export function useAgentArbeitet(): string | null {
   return pultStore((p) => sperrText(p.chat));
 }
 
+// Liegt zur Freigabe: der Editor ist nur lesend (Zurueckziehen hebt es auf).
+export const LIEGT_ZUR_FREIGABE = 'Liegt zur Freigabe – erst zurückziehen';
+export function useNurLesen(): boolean {
+  return pultStore((p) => p.nurLesen);
+}
+
 // Schritt-Zeile des laufenden Chat-Auftrags (null = kein Chat-Lauf, z. B. Export).
 export function useLiveZeile(): string | null {
   return pultStore((p) => {

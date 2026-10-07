@@ -36,7 +36,7 @@ import { getDocument, resetDocument, setDocument, setSelectedBlockId } from './d
 import type { Ebene } from './gestaltung';
 import type { TEditorConfiguration } from './documents/editor/core';
 import { anzeigbar, zuletztGeaendert } from './live';
-import { Dokument, Ergebnis, fehlerText, Firma, medienListe, speichern, standLaden, Start, zurAnzeige } from './pult';
+import { Dokument, einreichen, Ergebnis, fehlerText, Firma, medienListe, speichern, standLaden, Start, zurAnzeige } from './pult';
 
 // Zustand der Pult-Leiste: Startdaten, Betreff/Vorschautext, gemerkte Fassung
 // und ob seit dem letzten Speichern etwas geaendert wurde.
@@ -78,6 +78,8 @@ type TPult = {
   vorgemerktChips: { id: string; auswahl: AuswahlChip[]; anhaenge: AnhangChip[] } | null;
   // Kurzer Hinweis am Eingabefeld (Chip abgelehnt, markierte Elemente weggefallen); null = keiner.
   chatHinweis: string | null;
+  // Liegt zur Freigabe: Canvas, Werkzeuge, Inspector und Chat sind gesperrt (Zurueckziehen hebt es auf).
+  nurLesen: boolean;
 };
 
 export const pultStore = create<TPult>(() => ({
@@ -104,6 +106,7 @@ export const pultStore = create<TPult>(() => ({
   chatAnhaenge: [],
   vorgemerktChips: null,
   chatHinweis: null,
+  nurLesen: false,
 }));
 
 export function gestaltungOeffnen(id: string) {
@@ -122,7 +125,25 @@ export function pultStarten(start: Start) {
     basis: start.basis_fassung,
     ungespeichert: false,
     geladenUm: Date.now(),
+    nurLesen: start.status === 'eingereicht',
   });
+}
+
+// "Zur Freigabe einreichen": nicht, solange der Assistent arbeitet; Ungespeichertes wird vorher
+// gespeichert. Erfolg sperrt den Editor. Liefert null oder den Grund fuer den Betreiber.
+export async function einreichenAuftrag(): Promise<string | null> {
+  const { start, chat, hinweisOffen, ungespeichert } = pultStore.getState();
+  if (!start) return 'Keine Verbindung zum Pult';
+  if (chat?.laeuft) return 'Der Assistent arbeitet gerade';
+  if (hinweisOffen) return HINWEIS_OFFEN;
+  if (ungespeichert) {
+    const e = await newsletterSichern(false);
+    if (!e.ok) return fehlerText(e.grund);
+  }
+  const r = await einreichen(start);
+  if (!r.ok) return r.grund;
+  pultStore.setState({ start: { ...start, status: 'eingereicht', eingereicht_am: new Date().toISOString() }, nurLesen: true });
+  return null;
 }
 
 // Ein angezeigter Zwischenstand (und das Zurueckholen des echten Dokuments) ist keine Aenderung.

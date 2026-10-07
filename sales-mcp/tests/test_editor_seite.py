@@ -38,6 +38,8 @@ class Falsch:
         self.format = "bloecke"
         self.art = "newsletter"
         self.status = "entwurf"
+        self.eingereicht_am = None
+        self.rueckmeldungen = []
         self.alter_weg = None
         self.alt_format = "felder"          # Format der aelteren Fassung 1
         self.speichern_antwort = {"fassung": 3}
@@ -73,8 +75,14 @@ class Falsch:
             alt = {"fassung": 1, "felder": FELDER, "layout": "dunkel", "urheber": "agent",
                    "erstellt_am": "y", "format": self.alt_format, "bloecke": None}
             return {"inhalt": {"id": IID, "art": self.art, "titel": "Oktober", "status": self.status,
-                               "mandant": "vibemind"},
-                    "fassungen": [neu, alt], "alter_weg": self.alter_weg}
+                               "mandant": "vibemind", "eingereicht_am": self.eingereicht_am,
+                               "eingereicht_von": "mira" if self.eingereicht_am else None},
+                    "fassungen": [neu, alt], "alter_weg": self.alter_weg,
+                    "rueckmeldungen": self.rueckmeldungen}
+        if pfad == f"/inhalte/{IID}/einreichen":
+            return {"status": "eingereicht", "fassung": 2}
+        if pfad == f"/inhalte/{IID}/zurueckziehen":
+            return {"status": "entwurf"}
         if pfad == f"/inhalte/{IID}/bilder":
             return {"auftrag": "a1"} if methode == "POST" else self.bilder
         if pfad == f"/inhalte/{IID}/gestaltung":
@@ -338,6 +346,58 @@ def test_medien_json_pult_weg_ist_leer_mit_hinweis(angemeldet, pult, medienordne
         assert r.status_code == 200, art
         assert r.json() == {"bilder": [], "zuordnung": {}, "mandanten": [], "mandant": "",
                             "hinweis": "Bildzuordnung nicht erreichbar"}, art
+
+
+# --- Einreichen / Zurueckziehen (Task 7) ----------------------------------------------
+
+def test_editor_oeffnet_eingereicht_nur_lesend(angemeldet, pult):
+    pult.status = "eingereicht"
+    pult.eingereicht_am = "2026-10-07T09:30:00+00:00"
+    r = angemeldet.get(f"/marketing/editor/{IID}", headers=HOST)
+    assert r.status_code == 200
+    start = _start(r.text)
+    assert start["status"] == "eingereicht" and start["eingereicht_am"] == "2026-10-07T09:30:00+00:00"
+
+
+def test_editor_abgelehnt_bleibt_fehlerseite(angemeldet, pult):
+    pult.status = "abgelehnt"
+    assert angemeldet.get(f"/marketing/editor/{IID}", headers=HOST).status_code == 422
+
+
+def test_start_enthaelt_status_urls_und_nur_offene_rueckmeldungen(angemeldet, pult):
+    pult.rueckmeldungen = [
+        {"text": "Betreff kuerzen", "von": "chef", "am": "2026-10-07T10:00:00+00:00", "fassung": 2, "erledigt": False},
+        {"text": "Alt", "von": "chef", "am": "2026-10-06T10:00:00+00:00", "fassung": 1, "erledigt": True}]
+    start = _start(angemeldet.get(f"/marketing/editor/{IID}", headers=HOST).text)
+    assert start["status"] == "entwurf" and start["eingereicht_am"] is None
+    assert start["einreichen_url"] == f"/marketing/editor/{IID}/einreichen"
+    assert start["zurueckziehen_url"] == f"/marketing/editor/{IID}/zurueckziehen"
+    assert start["rueckmeldungen"] == [
+        {"text": "Betreff kuerzen", "von": "chef", "am": "2026-10-07T10:00:00+00:00", "fassung": 2}]
+
+
+@pytest.mark.parametrize("ziel", ["einreichen", "zurueckziehen"])
+def test_einreichen_route_ohne_csrf_ist_403(angemeldet, pult, ziel):
+    r = angemeldet.post(f"/marketing/editor/{IID}/{ziel}", headers=HOST)
+    assert r.status_code == 403 and pult.aufrufe == []
+
+
+@pytest.mark.parametrize("ziel", ["einreichen", "zurueckziehen"])
+def test_einreichen_route_leitet_mit_akteur_weiter(angemeldet, pult, ziel):
+    r = angemeldet.post(f"/marketing/editor/{IID}/{ziel}", headers={**HOST, "X-CSRF": ui.CSRF_TOKEN})
+    assert r.status_code == 200 and r.json()["status"] in ("eingereicht", "entwurf")
+    assert pult.aufrufe[-1] == ("POST", f"/inhalte/{IID}/{ziel}", {"von": "mira"})
+
+
+@pytest.mark.parametrize("ziel", ["einreichen", "zurueckziehen"])
+def test_einreichen_pultfehler_wird_422_oder_503(angemeldet, pult, ziel):
+    kopf = {**HOST, "X-CSRF": ui.CSRF_TOKEN}
+    pult.fehler = marketing_pult.PultFehler("abgelehnt", "Ein Bild wird gerade erzeugt")
+    r = angemeldet.post(f"/marketing/editor/{IID}/{ziel}", headers=kopf)
+    assert r.status_code == 422 and r.json() == {"grund": "Ein Bild wird gerade erzeugt"}
+    pult.fehler = marketing_pult.PultFehler("nicht_erreichbar", "intern")
+    r = angemeldet.post(f"/marketing/editor/{IID}/{ziel}", headers=kopf)
+    assert r.status_code == 503 and r.json() == {"grund": "Marketing gerade nicht erreichbar"}
 
 
 # --- Bildzuordnung je Firma --------------------------------------------------------

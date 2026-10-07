@@ -8,7 +8,7 @@ import { pultStore } from '../pultZustand';
 
 import AbschnittLeiste, { ABSCHNITT_LEISTE_BREITE } from './AbschnittLeiste';
 import ChatLeiste from './Chat/ChatLeiste';
-import { Ansagen, SperrSchicht, useAgentArbeitet } from './Chat/Sperre';
+import { Ansagen, SperrSchicht, useAgentArbeitet, useNurLesen } from './Chat/Sperre';
 import ExportDialog from './Export/ExportDialog';
 import GestaltungFenster from './Gestaltung/GestaltungFenster';
 import InspectorDrawer, { INSPECTOR_DRAWER_WIDTH } from './InspectorDrawer';
@@ -58,6 +58,7 @@ function FensterChat({ exportOeffnen }: { exportOeffnen: Export }) {
 export default function App() {
   const inspectorDrawerOpen = useInspectorDrawerOpen();
   const arbeitet = useAgentArbeitet();
+  const nurLesen = useNurLesen();
   const flaeche = pultStore((p) => p.gestaltungOffen);
   // null = zu; sonst offen mit Vorbelegung (null = Standard).
   const [exportDialog, setExportDialog] = useState<{ vorbelegt: ExportAuswahl | null } | null>(null);
@@ -69,7 +70,7 @@ export default function App() {
   return (
     <>
       <AbschnittLeiste />
-      <InspectorDrawer gesperrt={arbeitet !== null} chat={<NewsletterChat exportOeffnen={exportOeffnen} />} />
+      <InspectorDrawer gesperrt={arbeitet !== null || nurLesen} chat={<NewsletterChat exportOeffnen={exportOeffnen} />} />
 
       <Stack
         sx={{

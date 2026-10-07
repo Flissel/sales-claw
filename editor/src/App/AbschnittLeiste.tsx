@@ -5,7 +5,7 @@ import { Box, Button, Card, CardContent, Drawer, Typography, useTheme } from '@m
 import { ABSCHNITTE, AbschnittSchluessel, DRAG_TYP, einfuegen } from '../abschnitte';
 import { getDocument, setDocument, setSelectedBlockId } from '../documents/editor/EditorContext';
 
-import { useAgentArbeitet } from './Chat/Sperre';
+import { useAgentArbeitet, useNurLesen } from './Chat/Sperre';
 import { useInert } from './Chat/sperren';
 
 export const ABSCHNITT_LEISTE_BREITE = 240;
@@ -80,7 +80,7 @@ function Skizze({ schluessel }: { schluessel: AbschnittSchluessel }) {
 }
 
 export default function AbschnittLeiste() {
-  const inertRef = useInert<HTMLDivElement>(useAgentArbeitet() !== null);
+  const inertRef = useInert<HTMLDivElement>(useAgentArbeitet() !== null || useNurLesen());
   return (
     <Drawer
       variant="permanent"

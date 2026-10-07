@@ -40,7 +40,7 @@ import { FARBE, FOKUS, gestaltungThema, uebergang, UI_SCHRIFT } from '../Gestalt
 
 import { useAnhangAblage } from './AnhangAblage';
 import KontextChips from './KontextChips';
-import { Punkte, useAgentArbeitet, useLiveZeile } from './Sperre';
+import { LIEGT_ZUR_FREIGABE, Punkte, useAgentArbeitet, useLiveZeile, useNurLesen } from './Sperre';
 import StoppDialog from './StoppDialog';
 
 export const NACHRICHT_MAX = 2000;
@@ -325,13 +325,15 @@ export type ChatLeisteProps = {
   onExport: (v: ExportAuswahl) => void;
 };
 
-export default function ChatLeiste({ kontext, sperre = null, hoehe, vorschlaege = [], onExport }: ChatLeisteProps) {
+export default function ChatLeiste({ kontext, sperre: sperreVon = null, hoehe, vorschlaege = [], onExport }: ChatLeisteProps) {
   const thema = useMemo(gestaltungThema, []);
   const chat = pultStore((p) => p.chat);
   const ungespeichert = pultStore((p) => p.ungespeichert);
   const hinweisOffen = pultStore((p) => p.hinweisOffen);
   const basis = pultStore((p) => p.basis);
   const arbeitet = useAgentArbeitet();
+  const nurLesen = useNurLesen();
+  const sperre = sperreVon ?? (nurLesen ? LIEGT_ZUR_FREIGABE : null);
   const liveZeile = useLiveZeile();
   // Waehrend eines Chat-Laufs: Vormerken statt Senden, Stopp in der Kopfzeile.
   const laufId = pultStore((p) => laufenderChat(p.chat)?.id ?? null);
@@ -503,6 +505,7 @@ export default function ChatLeiste({ kontext, sperre = null, hoehe, vorschlaege 
                 {bueroklammer}
                 <InputBase
                   multiline
+                  disabled={nurLesen}
                   maxRows={6}
                   value={text}
                   inputRef={eingabe}
