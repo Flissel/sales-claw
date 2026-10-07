@@ -515,8 +515,10 @@ _KALENDER_ROLLE_PFADE = ("/team/kalender", "/kalender", "/logout", "/login",
 
 # "/marketing" (29.09.2026, Marketing-Pult Stufe 1): das Pult spricht mit
 # der Marketing-API des Betreibers — dieselbe Huerde wie die Admin-Seiten.
+# "/freigaben/newsletter" (07.10.2026): die Freigabe-Knoepfe fuer Marketing-
+# Inhalte handeln ueber dieselbe Marketing-API - dieselbe Huerde wie /marketing.
 _ADMIN_BASIS_PFADE = ("/team/laden-anlegen", "/team/tailscale-einladen",
-                      "/marketing")
+                      "/marketing", "/freigaben/newsletter")
 
 
 # Newsletter-Editor (29.09.2026): die abgeschottete Vorschau (sandbox, eigene
@@ -1436,7 +1438,7 @@ def _zaehler_abfragen() -> dict:
         **offen,
         # Eingereichte Marketing-Inhalte NUR hier im Menue-Zaehler, nicht in
         # der Heute-Summe (R10); nur Zwischenspeicher, kein Netzwerk.
-        "/freigaben": offen["/freigaben"] + ui_freigabe_newsletter.anzahl_offen(),
+        "/freigaben": offen["/freigaben"] + ui_freigabe_newsletter.anzahl_offen(sys.modules[__name__]),
         "/kontakte": server._q(
             "select count(*) n from leads l where not "
             + server._archiv_sql("l.enrichment"))[0]["n"],

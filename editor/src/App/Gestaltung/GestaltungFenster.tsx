@@ -53,6 +53,12 @@ function mitProps(d: TEditorConfiguration, id: string, patch: Record<string, unk
   return { ...d, [id]: { type: 'Image', data: { ...b.data, props: { ...b.data.props, ...patch } } } };
 }
 
+// "Zurueck zum Newsletter": gesperrt, solange gerechnet wird oder der Agent arbeitet - nicht aber
+// bei nurLesen (Liegt zur Freigabe): dann schliesst der Knopf nur das Fenster.
+export function zurueckGesperrt(laeuft: boolean, arbeitet: string | null, nurLesen: boolean): boolean {
+  return laeuft || (arbeitet !== null && !nurLesen);
+}
+
 export default function GestaltungFenster(props: GestaltungFensterProps) {
   const offen = pultStore((p) => p.gestaltungOffen);
   const thema = useMemo(gestaltungThema, []);
@@ -166,6 +172,12 @@ function Fenster({ id, onExportieren, chat }: GestaltungFensterProps & { id: str
 
   const zurueck = async () => {
     if (laeuft) return;
+    // Liegt zur Freigabe: nur schauen - schliessen, nichts rechnen oder speichern.
+    if (nurLesen) {
+      gestaltungSchliessen();
+      setSelectedBlockId(id);
+      return;
+    }
     z.festschreiben();
     const g = z.aktuell();
     const a = alt.trim();
@@ -281,7 +293,7 @@ function Fenster({ id, onExportieren, chat }: GestaltungFensterProps & { id: str
         <Box sx={{ px: 1 }}>
           <Button
             onClick={zurueck}
-            disabled={laeuft || arbeitet !== null}
+            disabled={zurueckGesperrt(laeuft, arbeitet, nurLesen)}
             color="inherit"
             startIcon={laeuft ? <CircularProgress size={14} color="inherit" /> : <ArrowBackRounded sx={{ fontSize: 18 }} />}
             sx={{ color: FARBE.text, minWidth: 208, justifyContent: 'flex-start', '&:hover': { bgcolor: FARBE.hover } }}

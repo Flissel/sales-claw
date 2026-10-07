@@ -3,6 +3,7 @@ Task 4). Der Client zur Marketing-API wird gefaelscht (wie in
 test_marketing_pult.py); es gibt kein JavaScript."""
 import asyncio
 import os
+import sys
 
 os.environ["SALES_DB_SCHEMA"] = "sales_test"
 
@@ -97,12 +98,42 @@ class Falsch:
         return [a for a in self.aufrufe if a[0] == "POST"]
 
 
+def _anmelden(rolle: str) -> TestClient:
+    """Angemeldeter Client (F1: der Abschnitt folgt der /marketing-Huerde - Rolle
+    freigeben im Basis-Laden; sales_test zaehlt als Basis-Laden)."""
+    with server.pool.connection() as conn:
+        conn.execute("truncate sales_test.benutzer cascade")
+    server._q("insert into benutzer (name, rolle, passwort_hash, aktiv) values (%s,%s,%s,true)",
+              ("mira", rolle, ui._passwort_hashen("korrekt-pferd-9")))
+    c = TestClient(ui.app)
+    r = c.post("/login", data={"name": "mira", "passwort": "korrekt-pferd-9", "csrf": ui.CSRF_TOKEN},
+               headers=HOST, follow_redirects=False)
+    assert r.status_code == 303
+    return c
+
+
 @pytest.fixture
-def pult(monkeypatch):
+def anmeldung(monkeypatch):
+    monkeypatch.setattr(ui, "UI_SESSION_SECRET", "test-geheimnis-nur-fuer-die-suite")
+    ui.ANMELDE_BREMSE.update({"fehler": 0, "gesperrt_bis": 0.0})
+    yield _anmelden
+    ui.ANMELDE_BREMSE.update({"fehler": 0, "gesperrt_bis": 0.0})
+
+
+@pytest.fixture
+def pult(monkeypatch, anmeldung):
     f = Falsch()
     monkeypatch.setattr(marketing_pult, "anfrage", f.anfrage)
     monkeypatch.setattr(marketing_pult, "eingerichtet", lambda: True)
+    monkeypatch.setattr(sys.modules[__name__], "CLIENT", anmeldung("freigeben"))
     return f
+
+
+@pytest.fixture
+def rolle_freigeben():
+    t = ui._AKTIVE_ROLLE.set("freigeben")
+    yield
+    ui._AKTIVE_ROLLE.reset(t)
 
 
 def _seite():
@@ -120,7 +151,7 @@ def test_abschnitt_zeigt_karten_mit_firmen_und_art_etikett(pult):
     assert "Fassung 3" in s and "agent" in s
     assert f'src="/marketing/entwurf/{IID}/vorschau?fassung=3&amp;format=mail"' in s
     assert 'href="/freigaben?nl_format=handy#marketing"' in s
-    assert f'href="/marketing/entwurf/{IID}"' in s           # Im Editor ansehen
+    assert f'href="/marketing/editor/{IID}">Im Editor ansehen' in s     # M6: der Editor (eingereicht: nur lesen)
     assert "Betreff kuerzer" in s and '<details class="karte" open>' in s    # R11         # erledigte Rueckmeldung
     assert "Noch offener Punkt" not in s                      # offene nicht unter "erledigt"
     assert "<script" not in s
@@ -160,7 +191,7 @@ def test_verlauf(pult):
     assert ("GET", "/freigaben?status=entschieden&limit=10", None) in pult.aufrufe
 
 
-def test_zaehler_addiert_nur_im_menue_nicht_in_heute(pult, monkeypatch):
+def test_zaehler_addiert_nur_im_menue_nicht_in_heute(pult, monkeypatch, rolle_freigeben):
     monkeypatch.setattr(server.medien, "liste", lambda *a, **k: [])   # Medienordner gibt es hier nicht
     assert ui_freigabe_newsletter._laden() == 2
     z = ui._zaehler_abfragen()
@@ -168,14 +199,14 @@ def test_zaehler_addiert_nur_im_menue_nicht_in_heute(pult, monkeypatch):
     assert z["/"] == z["/freigaben"] - 2 + z["/wiedervorlagen"] + z["/einordnung"]   # R10
 
 
-def test_anzahl_offen_ist_nur_zwischenspeicher(pult):
-    assert ui_freigabe_newsletter.anzahl_offen() == 0           # kalt: kein Abruf auf dem Render-Weg
+def test_anzahl_offen_ist_nur_zwischenspeicher(pult, rolle_freigeben):
+    assert ui_freigabe_newsletter.anzahl_offen(ui) == 0           # kalt: kein Abruf auf dem Render-Weg
     t = ui_freigabe_newsletter._laeuft["thread"]
     t.join(5)
     assert pult.im_loop == []
-    assert ui_freigabe_newsletter.anzahl_offen() == 2           # Hintergrund hat aufgefrischt
+    assert ui_freigabe_newsletter.anzahl_offen(ui) == 2           # Hintergrund hat aufgefrischt
     n = len(pult.aufrufe)
-    assert ui_freigabe_newsletter.anzahl_offen() == 2
+    assert ui_freigabe_newsletter.anzahl_offen(ui) == 2
     assert len(pult.aufrufe) == n                               # frisch: kein weiterer Abruf
 
 
@@ -225,7 +256,7 @@ def test_freigeben_schickt_pult_aufruf(pult):
     r = CLIENT.post(f"/freigaben/newsletter/{IID}/freigeben", headers=HOST, follow_redirects=False,
                     data={"csrf": ui.CSRF_TOKEN, "fassung": "3", "bestaetigt": "ja"})
     assert r.status_code == 303 and r.headers["location"].endswith("#marketing")
-    assert pult.aktionen() == [("POST", f"/inhalte/{IID}/freigeben", {"fassung": 3, "von": "betreiber-ui"})]
+    assert pult.aktionen() == [("POST", f"/inhalte/{IID}/freigeben", {"fassung": 3, "von": "mira"})]
     assert pult.im_loop == []
     assert "Medien: 2 Flächen" in CLIENT.get(r.headers["location"], headers=HOST).text
 
@@ -251,7 +282,7 @@ def test_zurueckgeben_schickt_kommentar(pult):
                     data={"csrf": ui.CSRF_TOKEN, "fassung": "3", "kommentar": "  Betreff fehlt  "})
     assert r.status_code == 303 and r.headers["location"] == "/freigaben#marketing"
     assert pult.aktionen() == [("POST", f"/inhalte/{IID}/zurueckgeben",
-                                {"fassung": 3, "von": "betreiber-ui", "text": "Betreff fehlt"})]
+                                {"fassung": 3, "von": "mira", "text": "Betreff fehlt"})]
     assert pult.im_loop == []
 
 
@@ -298,3 +329,111 @@ def test_api_weg_seite_bleibt(pult):
     assert r.status_code == 200
     assert "Marketing gerade nicht erreichbar" in r.text
     assert "Hallo Welt" in r.text                              # Sales-Arten da
+
+
+# --- Endwelle (final fix) ---
+
+
+def test_f1_nicht_eingerichtet_kein_abschnitt_kein_zaehler_kein_thread(pult, monkeypatch, rolle_freigeben):
+    monkeypatch.setattr(marketing_pult, "eingerichtet", lambda: False)
+    monkeypatch.setattr(server.medien, "liste", lambda *a, **k: [])
+    monkeypatch.setitem(ui_freigabe_newsletter._laeuft, "thread", None)
+    r = _seite()
+    assert r.status_code == 200 and 'id="marketing"' not in r.text and "Marketing nicht verbunden" not in r.text
+    assert ui_freigabe_newsletter.anzahl_offen(ui) == 0
+    assert asyncio.run(ui_freigabe_newsletter.abschnitt(ui)) == ""
+    assert ui_freigabe_newsletter._laeuft["thread"] is None and pult.aufrufe == []
+
+
+@pytest.mark.parametrize("rolle", ["lesen", ""])
+def test_f1_rolle_ohne_marketing_kein_abschnitt(pult, anmeldung, monkeypatch, rolle):
+    monkeypatch.setattr(server.medien, "liste", lambda *a, **k: [])
+    monkeypatch.setitem(ui_freigabe_newsletter._laeuft, "thread", None)
+    if rolle:
+        r = anmeldung(rolle).get("/freigaben", headers=HOST)
+        assert r.status_code == 200 and 'id="marketing"' not in r.text
+    t = ui._AKTIVE_ROLLE.set(rolle)
+    try:
+        assert ui_freigabe_newsletter.anzahl_offen(ui) == 0
+        assert asyncio.run(ui_freigabe_newsletter.abschnitt(ui)) == ""
+    finally:
+        ui._AKTIVE_ROLLE.reset(t)
+    assert ui_freigabe_newsletter._laeuft["thread"] is None and pult.aufrufe == []
+
+
+@pytest.mark.parametrize("pfad,daten", [
+    ("freigeben", {"fassung": "3", "bestaetigt": "ja"}),
+    ("zurueckgeben", {"fassung": "3", "kommentar": "x"}),
+    ("export-nachholen", {}),
+])
+def test_f1_post_routen_folgen_der_marketing_regel(pult, anmeldung, monkeypatch, pfad, daten):
+    c = anmeldung("lesen")
+    r = c.post(f"/freigaben/newsletter/{IID}/{pfad}", headers=HOST, data={"csrf": ui.CSRF_TOKEN, **daten})
+    assert r.status_code == 403 and "Nicht für diese Anmeldung" in r.text and pult.aktionen() == []
+    assert ui._pfad_erlaubt("freigeben", f"/freigaben/newsletter/{IID}/{pfad}") is True
+    monkeypatch.setattr(server, "SCHEMA", "sales_ivan")          # eigener Laden: wie /marketing gesperrt
+    assert ui._pfad_erlaubt("freigeben", f"/freigaben/newsletter/{IID}/{pfad}") is False
+    assert ui._pfad_erlaubt("freigeben", "/freigaben") is True    # die Sales-Freigaben selbst bleiben
+
+
+@pytest.mark.parametrize("pfad,daten,was", [
+    ("freigeben", {"fassung": "3", "bestaetigt": "ja"}, "freigegeben wurde"),
+    ("export-nachholen", {}, "der Export angestoßen wurde"),
+])
+@pytest.mark.parametrize("art", ["nicht_erreichbar", "unbekannt"])
+def test_f2_zeitlimit_30s_und_unklares_ergebnis(pult, monkeypatch, pfad, daten, was, art):
+    monkeypatch.setattr(server.medien, "liste", lambda *a, **k: [])
+    gesehen = []
+    orig = pult.anfrage
+
+    def anfrage(*a, **k):
+        if a[0] == "POST":
+            gesehen.append(k.get("zeitlimit"))
+        orig(*a, **k)
+        if a[0] != "POST":
+            return {"freigaben": []}                                # Zaehler der Fehlerseite
+        raise marketing_pult.PultFehler(art, "TimeoutError")     # die API kann es ausgefuehrt haben
+
+    monkeypatch.setattr(marketing_pult, "anfrage", anfrage)
+    r = CLIENT.post(f"/freigaben/newsletter/{IID}/{pfad}", headers=HOST, data={"csrf": ui.CSRF_TOKEN, **daten})
+    assert gesehen == [30] == [ui_freigabe_newsletter.AKTION_ZEITLIMIT_S]
+    assert r.status_code == 504 and "Ergebnis unklar – Seite neu laden" in r.text and was in r.text
+    assert "Nichts wurde" not in r.text
+
+
+def test_f2_abgelehnt_bleibt_grund(pult):
+    pult.fehler = marketing_pult.PultFehler("abgelehnt", "Wurde zurückgezogen – bitte neu laden")
+    r = CLIENT.post(f"/freigaben/newsletter/{IID}/freigeben", headers=HOST,
+                    data={"csrf": ui.CSRF_TOKEN, "fassung": "3", "bestaetigt": "ja"})
+    assert r.status_code == 422 and "Wurde zurückgezogen – bitte neu laden" in r.text
+
+
+def test_m1_verlauf_zurueckgegeben_neuester_kommentar_und_wer(pult):
+    pult.entschieden = [_verlauf(id="e", titel="Zurueck", status="entwurf", entschieden_von=None, rueckmeldungen=[
+        {"text": "Neuer Punkt", "von": "ivan", "am": "2026-10-07T10:00:00+00:00", "fassung": 2, "erledigt": False},
+        {"text": "Alter Punkt", "von": "mira", "am": "2026-10-06T10:00:00+00:00", "fassung": 1, "erledigt": True},
+    ])]
+    s = _seite().text
+    zeile = s[s.index("Zurueck</b>"):]
+    zeile = zeile[:zeile.index("</div>")]
+    assert "zurückgegeben" in zeile and "ivan" in zeile and "Neuer Punkt" in zeile
+    assert "Alter Punkt" not in zeile and "mira" not in zeile
+
+
+def test_m2_feldformat_ohne_export_knopf(pult):
+    pult.entschieden = [_verlauf(id="f", titel="Felder", format="felder", export={"auftrag_status": None}),
+                        _verlauf(id="b", titel="Bloecke", format="bloecke", export={"auftrag_status": None})]
+    s = _seite().text
+    assert "/freigaben/newsletter/f/export-nachholen" not in s
+    assert "/freigaben/newsletter/b/export-nachholen" in s
+    felder = s[s.index("Felder</b>"):]
+    assert "Export offen" not in felder[:felder.index("</div>")]
+
+
+def test_m7b_crlf_zaehlt_als_ein_zeichen(pult):
+    text = "a\r\n" * 999 + "ab"                      # 2000 Zeichen mit LF, 2999 mit CRLF
+    r = CLIENT.post(f"/freigaben/newsletter/{IID}/zurueckgeben", headers=HOST, follow_redirects=False,
+                    data={"csrf": ui.CSRF_TOKEN, "fassung": "3", "kommentar": text})
+    assert r.status_code == 303, r.text
+    gesendet = pult.aktionen()[0][2]["text"]
+    assert "\r" not in gesendet and len(gesendet) == 2000

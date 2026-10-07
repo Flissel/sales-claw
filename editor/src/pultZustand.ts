@@ -149,7 +149,11 @@ export async function einreichenAuftrag(): Promise<string | null> {
   if (!r.ok) return r.grund;
   // Zeit vom Server, wenn er sie mitschickt; sonst die Uhr dieses Rechners.
   const am = r.eingereicht_am ?? new Date().toISOString();
-  pultStore.setState({ start: { ...start, status: 'eingereicht', eingereicht_am: am }, nurLesen: true });
+  // Einreichen erledigt offene Rueckmeldungen (DB) - das Feedback-Band verschwindet sofort.
+  pultStore.setState({
+    start: { ...start, status: 'eingereicht', eingereicht_am: am, rueckmeldungen: [] },
+    nurLesen: true,
+  });
   return null;
 }
 

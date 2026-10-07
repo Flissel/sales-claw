@@ -122,6 +122,19 @@ describe('einreichenAuftrag', () => {
     expect(pultStore.getState().nurLesen).toBe(false);
   });
 
+  it('Erfolg leert das offene Feedback-Band (M7a); ein Fehlschlag laesst es stehen', async () => {
+    const rm = [{ text: 'Preis fehlt', von: 'mira', am: '2026-10-07T08:00:00+00:00', fassung: 2, erledigt: false }];
+    resetDocument(DOK);
+    pultStarten(start({ rueckmeldungen: rm } as Partial<Start>));
+    pultStore.setState({ chat: null });
+    vi.stubGlobal('fetch', vi.fn(async () => antwort(422, { grund: 'Ein Bild wird gerade erzeugt' })));
+    expect(await einreichenAuftrag()).toBe('Ein Bild wird gerade erzeugt');
+    expect(pultStore.getState().start?.rueckmeldungen).toEqual(rm);
+    vi.stubGlobal('fetch', vi.fn(async () => antwort(200, { status: 'eingereicht', fassung: 2 })));
+    expect(await einreichenAuftrag()).toBeNull();
+    expect(pultStore.getState().start?.rueckmeldungen).toEqual([]);
+  });
+
   it('Server-Grund beim Einreichen bleibt, nurLesen bleibt aus', async () => {
     vorbereiten();
     vi.stubGlobal('fetch', vi.fn(async () => antwort(422, { grund: 'Ein Bild wird gerade erzeugt' })));

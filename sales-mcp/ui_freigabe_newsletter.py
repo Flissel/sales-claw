@@ -32,6 +32,10 @@ OFFEN_MAX = 100
 ZAEHLER_ALTER_S = 60
 ZAEHLER_ZEITLIMIT_S = 2
 LESE_ZEITLIMIT_S = 3
+# Freigeben exportiert danach alle Flaechen x 3 Geraete auf der VM - wie die
+# Gestaltung im Editor (ui_editor.GESTALTUNG_ZEITLIMIT_S) dauert das laenger als 8 s.
+AKTION_ZEITLIMIT_S = 30
+UNKLAR_TITEL = "Ergebnis unklar – Seite neu laden"
 
 _EINGEREICHT = f"/freigaben?status=eingereicht&limit={OFFEN_MAX}"
 _ENTSCHIEDEN = f"/freigaben?status=entschieden&limit={VERLAUF_MAX}"
@@ -56,6 +60,14 @@ def _frisch() -> bool:
         return _cache["stand"] is not None and time.monotonic() - _cache["stand"] < ZAEHLER_ALTER_S
 
 
+def sichtbar(ui) -> bool:
+    """Abschnitt und Zaehler gibt es nur, wenn die Marketing-API eingerichtet
+    ist UND die angemeldete Rolle /marketing betreten darf - dieselbe Huerde
+    wie das Pult (ui._pfad_erlaubt), Rolle aus derselben Quelle wie die
+    Seitenleiste (ui._AKTIVE_ROLLE, gesetzt von _gesichert_seite)."""
+    return marketing_pult.eingerichtet() and ui._pfad_erlaubt(ui._AKTIVE_ROLLE.get(), "/marketing")
+
+
 def _laden() -> int:
     """Blockierend (nur im Thread/Threadpool aufrufen): holt die Zahl und
     merkt sie - auch den Fehlerfall, damit eine tote API nicht jede Seite
@@ -71,11 +83,14 @@ def _laden() -> int:
     return wert
 
 
-def anzahl_offen() -> int:
+def anzahl_offen(ui) -> int:
     """Zahl der eingereichten Marketing-Inhalte fuer den Menue-Zaehler.
     NUR Zwischenspeicher: kein Netzwerk auf dem Render-Weg (der laeuft im
     Event-Loop). Ist der Speicher aelter als 60 s, stoesst ein Hintergrund-
-    Thread die Auffrischung an; bis dahin gilt der alte Wert (leer => 0)."""
+    Thread die Auffrischung an; bis dahin gilt der alte Wert (leer => 0).
+    Nicht sichtbar (s. sichtbar): 0, und es startet kein Thread."""
+    if not sichtbar(ui):
+        return 0
     with _cache_lock:
         wert = int(_cache["wert"])
     if not _frisch():
@@ -156,7 +171,7 @@ def _karte(ui, f: dict, fmt: str) -> str:
         f'<div class="meta">Fassung {nr} · eingereicht von {e(f.get("eingereicht_von"))} '
         f'vor {e(_vor(f.get("eingereicht_am")))}</div>'
         f'<div class="nl-vorschau"><div class="vorschau-wahl">{wahl}'
-        f'<a href="/marketing/entwurf/{iid}">Im Editor ansehen</a></div>'
+        f'<a href="/marketing/editor/{iid}">Im Editor ansehen</a></div>'
         f'<iframe class="vorschau {fmt}" sandbox title="Vorschau" '
         f'src="/marketing/entwurf/{iid}/vorschau?fassung={nr}&amp;format={fmt}"></iframe></div>'
         f'{rueck}<div class="aktionen">{freigeben}{zurueck}</div></details>')
@@ -174,7 +189,8 @@ def _verlauf_zeile(ui, f: dict) -> str:
             zusatz = "Export läuft"
         elif auftrag == "fertig":
             zusatz = "Newsletter-Bilder fertig"
-        elif f.get("art") == "newsletter":
+        elif f.get("art") == "newsletter" and f.get("format") != "felder":
+            # Feld-Format: es gibt keinen Newsletter-Export und keine Flaechen - kein Knopf
             zusatz = (
                 f'Export offen – erneut anstoßen <form class="aktion" method="post" '
                 f'action="/freigaben/newsletter/{iid}/export-nachholen">'
@@ -186,8 +202,13 @@ def _verlauf_zeile(ui, f: dict) -> str:
     elif status == "abgelehnt":
         text = f'verworfen{wer} · {e(f.get("grund"))}'
     else:
+        # Die API liefert die Rueckmeldungen neueste zuerst: die juengste nennt
+        # Kommentar und wer zurueckgegeben hat (entschieden_von gilt hier nicht).
         letzte = _dicts(f.get("rueckmeldungen"))
-        kommentar = e(letzte[-1].get("text")) if letzte else ""
+        neueste = letzte[0] if letzte else {}
+        kommentar = e(neueste.get("text")) if neueste else ""
+        von = neueste.get("von")
+        wer = f' <span class="meta">{e(von)}</span>' if von else ""
         text = f'zurückgegeben{wer} · {kommentar}'
     return f'<div class="karte">{kopf} <span class="meta">{text}</span></div>'
 
@@ -207,8 +228,10 @@ def _hinweis(ui, request) -> str:
 
 
 async def abschnitt(ui, request=None) -> str:
-    """HTML des Abschnitts "Marketing" (offene Karten + Verlauf)."""
-    kopf = '<section class="block" id="marketing"><h2>Marketing '
+    """HTML des Abschnitts "Marketing" (offene Karten + Verlauf); "" wenn nicht sichtbar."""
+    if not sichtbar(ui):
+        return ""
+    kopf ='<section class="block" id="marketing"><h2>Marketing '
     fmt = "mail"
     if request is not None and request.query_params.get("nl_format") in FORMATE:
         fmt = request.query_params["nl_format"]
@@ -261,6 +284,15 @@ def routen(ui) -> list:
                                "Die Marketing-API antwortet nicht. Nichts wurde getan; "
                                "Sales läuft normal weiter.")
 
+    def fehler_nach_post(f: marketing_pult.PultFehler, was: str):
+        """Freigeben/Export nachholen: lief die Anfrage ab (Zeitlimit, Verbindung weg, unklare
+        Antwort), kann die Marketing-API sie trotzdem ausgefuehrt haben - nie "Nichts wurde getan"."""
+        if f.art in ("nicht_erreichbar", "unbekannt"):
+            return ui._fehlerseite(504, UNKLAR_TITEL,
+                                   f"Die Marketing-API hat nicht rechtzeitig geantwortet. Ob {was}, "
+                                   "ist offen - bitte die Freigaben-Seite neu laden und nachsehen.")
+        return fehler(f)
+
     def ziel(anker_abfrage: str = "") -> RedirectResponse:
         return RedirectResponse(f"/freigaben{anker_abfrage}#marketing", status_code=303)
 
@@ -278,10 +310,11 @@ def routen(ui) -> list:
                                    "Nichts wurde freigegeben.")
         iid = urllib.parse.quote(request.path_params["iid"], safe="")
         try:
-            r = await run_in_threadpool(marketing_pult.anfrage, "POST", f"/inhalte/{iid}/freigeben",
-                                        {"fassung": fassung, "von": ui._ui_akteur(request)})
+            r = await run_in_threadpool(partial(
+                marketing_pult.anfrage, "POST", f"/inhalte/{iid}/freigeben",
+                {"fassung": fassung, "von": ui._ui_akteur(request)}, zeitlimit=AKTION_ZEITLIMIT_S))
         except marketing_pult.PultFehler as f:
-            return fehler(f)
+            return fehler_nach_post(f, "freigegeben wurde")
         _cache_leeren()
         r = r if isinstance(r, dict) else {}
         if r.get("export_fehler"):
@@ -299,7 +332,9 @@ def routen(ui) -> list:
         if fassung is None:
             return ui._fehlerseite(400, "Abgewiesen", "Welche Fassung gemeint ist, fehlt. "
                                    "Nichts wurde zurückgegeben - Seite neu laden.")
-        text = str(form.get("kommentar") or "").strip()
+        # Browser schicken Zeilenumbrueche als CRLF - gezaehlt wird wie in der
+        # textarea (maxlength) und in der DB: LF
+        text = str(form.get("kommentar") or "").replace("\r\n", "\n").strip()
         if not text:
             return ui._fehlerseite(422, "Bitte sag kurz, was fehlt",
                                    "Bitte sag kurz, was fehlt. Nichts wurde zurückgegeben.")
@@ -322,10 +357,11 @@ def routen(ui) -> list:
             return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
         iid = urllib.parse.quote(request.path_params["iid"], safe="")
         try:
-            r = await run_in_threadpool(marketing_pult.anfrage, "POST",
-                                        f"/inhalte/{iid}/export_nachholen", {})
+            r = await run_in_threadpool(partial(
+                marketing_pult.anfrage, "POST", f"/inhalte/{iid}/export_nachholen", {},
+                zeitlimit=AKTION_ZEITLIMIT_S))
         except marketing_pult.PultFehler as f:
-            return fehler(f)
+            return fehler_nach_post(f, "der Export angestoßen wurde")
         if isinstance(r, dict) and r.get("export_fehler"):
             return ziel("?nl_hinweis=export_offen")
         return ziel()

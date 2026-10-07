@@ -931,6 +931,27 @@ def test_band_mit_neuestem_kommentar_und_aelteren_in_details(angemeldet, pult):
     assert "<details" in band and "Logo größer" in band.split("<details")[1]
 
 
+def test_band_zeigt_lesbare_ortszeit_statt_iso(angemeldet, pult):
+    """M8: "am 07.10.2026 14:32" (Ortszeit wie ui._zeit), nicht der rohe ISO-Text der API."""
+    from datetime import datetime, timezone
+    roh = "2026-10-07T12:32:10.123456+00:00"
+    s = _rumpf(_seite(angemeldet, pult, "entwurf", [{**OFFEN, "am": roh}]))
+    band = s[s.index('class="feedback-band"'):]
+    erwartet = ui._zeit(datetime(2026, 10, 7, 12, 32, tzinfo=timezone.utc))
+    assert f"am {erwartet}:" in band and erwartet.startswith("07.10.2026 ")
+    assert "2026-10-07T12" not in band
+    assert ui_marketing._wann(ui, "kaputt") == "kaputt" and ui_marketing._wann(ui, None) == ""
+
+
+def test_entwurf_firmenname_nicht_lesbar_seite_bleibt(angemeldet, pult):
+    """M5: scheitert nur die Firmenliste, steht die Seite mit der Firmen-Kennung (wie im Editor)."""
+    pult.fehler, pult.fehler_pfad = marketing_pult.PultFehler("nicht_erreichbar", "x"), "/mandanten"
+    r = angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST)
+    assert r.status_code == 200, r.text
+    s = _rumpf(r.text)
+    assert 'class="firma"' in s and ">vibemind<" in s and "Early Access" in s
+
+
 def test_kein_band_ohne_offene_rueckmeldung(angemeldet, pult):
     s = _rumpf(_seite(angemeldet, pult, "entwurf", [{**OFFEN, "erledigt": True}]))
     assert "feedback-band" not in s

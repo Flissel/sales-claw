@@ -17,6 +17,7 @@ import base64
 import html as _html
 import math
 import urllib.parse
+from datetime import datetime
 
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import RedirectResponse, Response
@@ -36,6 +37,16 @@ STATUS = {"entwurf": "in Arbeit", "zurueckgegeben": "zurückgegeben", "eingereic
 
 def _offen(rueckmeldungen) -> list[dict]:
     return [r for r in rueckmeldungen or [] if isinstance(r, dict) and not r.get("erledigt")]
+
+
+def _wann(ui, roh) -> str:
+    """ISO-Zeitpunkt der API lesbar in Ortszeit ("07.10.2026 14:32", ui._zeit);
+    Unlesbares bleibt gekuerzt stehen."""
+    try:
+        dt = datetime.fromisoformat(str(roh).replace("Z", "+00:00"))
+    except ValueError:
+        return str(roh or "")[:16]
+    return ui._zeit(dt)
 
 
 def _hat_offene(inhalt, rueckmeldungen=None) -> bool:
@@ -255,10 +266,13 @@ def routen(ui) -> list:
                 return ui._fehlerseite(422, "Nicht möglich", "Dieser Inhalt gehört zu keiner Firma.")
             lay = await run_in_threadpool(
                 marketing_pult.anfrage, "GET", f"/layouts?mandant={urllib.parse.quote(mandant)}")
-            firma = marketing_mandant.name_von(
-                mandant, await run_in_threadpool(marketing_mandant.mandanten))
         except marketing_pult.PultFehler as f:
             return fehler(f)
+        try:
+            firma = marketing_mandant.name_von(
+                mandant, await run_in_threadpool(marketing_mandant.mandanten))
+        except marketing_pult.PultFehler:
+            firma = mandant          # nur das Etikett - wie im Editor kein Grund fuer eine Fehlerseite
         i, fassungen = d["inhalt"], d["fassungen"]
         if not fassungen:
             return ui._fehlerseite(422, "Nicht möglich", "Dieser Inhalt hat noch keine Fassung.")
@@ -323,7 +337,7 @@ def routen(ui) -> list:
         band = ""
         if offene:
             def zeile(r) -> str:
-                return (f'<b>Zurückgegeben von {e(r.get("von"))} am {e(str(r.get("am") or "")[:16])}:</b>'
+                return (f'<b>Zurückgegeben von {e(r.get("von"))} am {e(_wann(ui, r.get("am")))}:</b>'
                         f'<blockquote>{e(r.get("text"))}</blockquote>')
             aeltere = "".join(f'<div>{zeile(r)}</div>' for r in offene[1:])
             band = (f'<div class="feedback-band">{zeile(offene[0])}'
