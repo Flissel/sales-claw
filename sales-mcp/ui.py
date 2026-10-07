@@ -204,6 +204,7 @@ import kalender
 import mailadresse
 import marketing_pult
 import ui_editor
+import ui_freigabe_newsletter
 import ui_marketing
 import verlinken
 
@@ -993,6 +994,7 @@ h2 { font-size: 1.05rem; margin-top: 2rem; }
 /* Höhe gemessen am 29.09.2026: der Rahmen war 140 px hoch, weil die
    Medienlisten-Regel `.vorschau { max-height: 140px }` ihn mittraf. Die ist
    jetzt auf img/video beschränkt; max-height: none hält es fest. */
+.nl-vorschau iframe.vorschau,
 .pult-rechts iframe.vorschau { width: 100%; height: min(80vh, 1100px);
                                max-height: none; border: 1px solid
                                var(--linie); border-radius: 4px;
@@ -1006,6 +1008,7 @@ h2 { font-size: 1.05rem; margin-top: 2rem; }
            padding: .2rem .8rem; font-weight: 600; }
 .mandant.aus { color: var(--gedaempft); font-weight: 400; border-style: dashed; }
 .mandant.aktiv { border-color: var(--gut); border-width: 2px; background: var(--aktiv); }
+.nl-vorschau iframe.vorschau.handy { max-width: 400px; display: block; }
 .filter, .vorschau-wahl { display: flex; flex-wrap: wrap; gap: .4rem;
                           margin: .5rem 0 1rem; }
 .filter a, .vorschau-wahl a { padding: .3rem .8rem; border: 1px solid
@@ -1364,7 +1367,9 @@ def _zaehler_abfragen() -> dict:
     koerbe = server._einzuordnende(text_max=EINORDNUNG_TEXT_MAX)
     offen = {
         "/freigaben": server._q("select count(*) n from drafts "
-                                "where status = 'pending'")[0]["n"],
+                                "where status = 'pending'")[0]["n"]
+        # Eingereichte Marketing-Inhalte (Zwischenspeicher, Fehler => 0).
+        + ui_freigabe_newsletter.anzahl_offen(),
         "/wiedervorlagen": len(_offene_wiedervorlagen()),
         "/einordnung": len(koerbe["neu"]) + len(koerbe["bereits_gefragt"]),
     }
@@ -2438,10 +2443,16 @@ async def inbox(request):
             f'</span> · <a href="/kalender">im Kalender</a></div>')
     teile.append(_verlauf_block("termine", "Termine"))
     teile.append("</section>")
+    # Marketing (R7): eingereichte Inhalte aller Firmen und Arten.
+    teile.append(await ui_freigabe_newsletter.abschnitt(
+        sys.modules[__name__], request))
     # KEIN Auto-Refresh mehr (Betreiber 03.09.2026: „ich bearbeite einen Text
     # und werde wie bei einem Reload in die Mitte der Seite gezogen") — auf
     # dieser Seite wird getippt, und ein Neuladen wirft den Text weg.
-    return _seite("Freigaben", "".join(teile))
+    antwort = _seite("Freigaben", "".join(teile))
+    # Der Marketing-Abschnitt zeigt die Vorschau in einem eigenen Rahmen.
+    antwort.headers["Content-Security-Policy"] = _csp_mit_rahmen("'self'")
+    return antwort
 
 
 VERLAUF_JE_ART = 5      # Eintraege je Art auf der Freigabe-Seite
@@ -6497,6 +6508,7 @@ app = Starlette(routes=[
     # zwei Paket-Dateien - vor den Marketing-Routen.
     *ui_editor.routen(sys.modules[__name__]),
     *ui_marketing.routen(sys.modules[__name__]),
+    *ui_freigabe_newsletter.routen(sys.modules[__name__]),
     Route("/medien", medien),
     Route("/medien/bot", aktion_medien_bot, methods=["POST"]),
     Route("/medien/datei/{name}", medien_datei),
