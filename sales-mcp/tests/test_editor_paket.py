@@ -88,3 +88,11 @@ def test_paket_kennt_einreichen():
     text = (ORDNER / "editor.js").read_text(encoding="utf-8")
     for s in ("Zur Freigabe einreichen", "Liegt zur Freigabe", "einreichen_url", "zurueckziehen_url"):
         assert s in text, s
+
+
+def test_paket_kennt_marke_geaendert():
+    # Marke per Chat (2026-10-07 Task 7): Band mit Uebernehmen/Ausblenden, Bitte an den Agenten
+    text = (ORDNER / "editor.js").read_text(encoding="utf-8")
+    for s in ("Die Marke hat sich geändert", "Übernimm die neue Marke: Farben, Schriften und Logo, sonst nichts ändern.",
+              "marke_hinweis_aus_url"):
+        assert s in text, s

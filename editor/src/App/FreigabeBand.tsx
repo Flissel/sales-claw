@@ -3,7 +3,8 @@ import React, { useState } from 'react';
 import { Alert, Box, Button, Typography } from '@mui/material';
 
 import { datumKurz, Rueckmeldung, zurueckziehen } from '../pult';
-import { pultStore } from '../pultZustand';
+import { markeBandSichtbar, markeHinweisAusblenden, markeUebernehmen, pultStore } from '../pultZustand';
+import { useGesperrt } from './Chat/Sperre';
 
 // Band: der Newsletter liegt zur Freigabe, der Editor ist nur lesend. Zurueckziehen laedt die Seite neu.
 export function LiegtBand() {
@@ -73,6 +74,49 @@ export function RueckmeldungBand() {
           </Typography>
         </details>
       ))}
+    </Alert>
+  );
+}
+
+// Band nach einer Markenübernahme: der Agent kann Farben, Schriften und Logo in diesen Entwurf
+// übernehmen. Gesperrt, solange der Agent arbeitet; nach beiden Knöpfen verschwindet das Band.
+export function MarkeBand() {
+  const sichtbar = pultStore((p) => markeBandSichtbar(p.start, p.nurLesen));
+  const gesperrt = useGesperrt();
+  const [laeuft, setLaeuft] = useState(false);
+  const [fehler, setFehler] = useState<string | null>(null);
+  if (!sichtbar) return null;
+
+  const los = async (aktion: () => Promise<string | null>) => {
+    setLaeuft(true);
+    setFehler(null);
+    const grund = await aktion();
+    setLaeuft(false);
+    if (grund) setFehler(grund);
+  };
+
+  return (
+    <Alert
+      severity="info"
+      data-testid="marke-geaendert"
+      sx={{ borderRadius: 0 }}
+      action={
+        <>
+          <Button color="inherit" size="small" disabled={gesperrt || laeuft} onClick={() => void los(markeUebernehmen)}>
+            Übernehmen
+          </Button>
+          <Button color="inherit" size="small" disabled={gesperrt || laeuft} onClick={() => void los(markeHinweisAusblenden)}>
+            Ausblenden
+          </Button>
+        </>
+      }
+    >
+      Die Marke hat sich geändert – übernehmen?
+      {fehler !== null && (
+        <Box role="status" component="span" sx={{ display: 'block', color: 'error.main' }}>
+          {fehler}
+        </Box>
+      )}
     </Alert>
   );
 }

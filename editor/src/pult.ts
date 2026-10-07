@@ -50,6 +50,10 @@ export type Start = {
   rueckmeldungen?: Rueckmeldung[];
   einreichen_url?: string;
   zurueckziehen_url?: string;
+  // Marke per Chat (Spec 2026-10-07): Marke nach einer Uebernahme neuer als die neueste Fassung
+  // (nur im Entwurf) und die Route fuer "Ausblenden"; fehlen bei aelterem sales-ui.
+  marke_geaendert?: boolean;
+  marke_hinweis_aus_url?: string;
   // Herkunft aus dem alten Freigabeweg (broadcast_proposals): Status und Kanal, sonst null.
   alter_weg?: { status?: string | null; kanal?: string | null } | null;
 };
@@ -259,6 +263,10 @@ export function einreichen(s: Start) {
 
 export function zurueckziehen(s: Start) {
   return freigabeSchritt(s.zurueckziehen_url, s.csrf, 'Zurückziehen gerade nicht möglich');
+}
+
+export function markeHinweisAus(s: Start) {
+  return freigabeSchritt(s.marke_hinweis_aus_url, s.csrf, 'Ausblenden gerade nicht möglich');
 }
 
 export type MedienStand = {

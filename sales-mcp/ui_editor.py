@@ -9,6 +9,7 @@ kein script-src. Die Editor-Seite setzt ihre eigene Richtlinie CSP_EDITOR;
 ui._mit_koepfen laesst eine Antwort, die schon eine CSP traegt, in Ruhe."""
 from __future__ import annotations
 
+import datetime
 import functools
 import hashlib
 import hmac
@@ -194,6 +195,23 @@ async def anhang_speichern(ui, datei):
     return basis, groesse, None
 
 
+def _zeitpunkt(wert) -> datetime.datetime | None:
+    """ISO-Zeit -> Zeitpunkt mit Zone (ohne Zone gilt UTC); unlesbar -> None."""
+    if not isinstance(wert, str) or not wert:
+        return None
+    try:
+        z = datetime.datetime.fromisoformat(wert.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return z if z.tzinfo else z.replace(tzinfo=datetime.timezone.utc)
+
+
+def _neuer_als(wert, vergleich) -> bool:
+    """True nur, wenn beide Zeiten lesbar sind und `wert` echt nach `vergleich` liegt."""
+    a, b = _zeitpunkt(wert), _zeitpunkt(vergleich)
+    return a is not None and b is not None and a > b
+
+
 def routen(ui) -> list:
     e = ui._e
     nicht_im_editor = ("Dieser Entwurf lässt sich nicht im Editor öffnen. Der Editor öffnet nur "
@@ -238,6 +256,11 @@ def routen(ui) -> list:
                  and isinstance(r.get("fassung"), int) and not isinstance(r.get("fassung"), bool)]
         start = {
             "status": i.get("status"),
+            # Marke nach einer Uebernahme neuer als die neueste Fassung: der Editor bietet an,
+            # dass der Agent sie uebernimmt. Nur im Entwurf (eingereicht ist nur lesend).
+            "marke_geaendert": i.get("status") == "entwurf"
+                               and _neuer_als(i.get("marke_geaendert_am"), neueste.get("erstellt_am")),
+            "marke_hinweis_aus_url": f"/marketing/editor/{iid}/marke-hinweis-aus",
             "eingereicht_am": i.get("eingereicht_am") if i.get("status") == "eingereicht" else None,
             "rueckmeldungen": rueck,
             "einreichen_url": f"/marketing/editor/{iid}/einreichen",
@@ -711,6 +734,21 @@ def routen(ui) -> list:
     async def editor_zurueckziehen(request):
         return await _freigabe_schritt(request, "zurueckziehen")
 
+    @ui._gesichert_seite
+    async def editor_marke_hinweis_aus(request):
+        """"Ausblenden" am Marken-Band: loescht die Markierung am Inhalt (nur durchreichen)."""
+        marke = request.headers.get("x-csrf", "")
+        if not marke or not hmac.compare_digest(marke, ui.CSRF_TOKEN):
+            return json_grund(403, "Fehlende oder falsche CSRF-Marke")
+        iid = urllib.parse.quote(request.path_params["iid"], safe="")
+        try:
+            r = await run_in_threadpool(marketing_pult.anfrage, "POST", f"/inhalte/{iid}/marke_hinweis_aus", {})
+        except marketing_pult.PultFehler as f:
+            if f.art == "abgelehnt":
+                return json_grund(422, str(f.grund or "Abgelehnt"))
+            return json_grund(503, "Marketing gerade nicht erreichbar")
+        return JSONResponse(r if isinstance(r, dict) else {}, headers={"Cache-Control": "no-store"})
+
     async def bild(request):
         # OHNE Anmeldung (AnmeldeWache laesst /marketing/bild/<t>/<n> durch):
         # die abgeschottete Vorschau schickt keine Anmelde-Cookies. Die
@@ -854,6 +892,7 @@ def routen(ui) -> list:
         Route("/marketing/editor/{iid}/bild", editor_bild, methods=["POST"]),
         Route("/marketing/editor/{iid}/einreichen", editor_einreichen, methods=["POST"]),
         Route("/marketing/editor/{iid}/zurueckziehen", editor_zurueckziehen, methods=["POST"]),
+        Route("/marketing/editor/{iid}/marke-hinweis-aus", editor_marke_hinweis_aus, methods=["POST"]),
         Route("/marketing/editor/{iid}/anhang", editor_anhang, methods=["POST"]),
         Route("/marketing/editor/{iid}/medien/zuordnung", editor_medien_zuordnung, methods=["POST"]),
         Route("/marketing/editor/{iid}/gestaltung", editor_gestaltung, methods=["POST"]),

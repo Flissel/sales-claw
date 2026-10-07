@@ -40,7 +40,7 @@ import { anzeigbar, zuletztGeaendert } from './live';
 
 // Liegt zur Freigabe: der Editor ist nur lesend (Zurueckziehen hebt es auf).
 export const LIEGT_ZUR_FREIGABE = 'Liegt zur Freigabe – erst zurückziehen';
-import { Dokument, einreichen, Ergebnis, fehlerText, Firma, medienListe, speichern, standLaden, Start, zurAnzeige } from './pult';
+import { Dokument, einreichen, Ergebnis, fehlerText, Firma, markeHinweisAus, medienListe, speichern, standLaden, Start, zurAnzeige } from './pult';
 
 // Zustand der Pult-Leiste: Startdaten, Betreff/Vorschautext, gemerkte Fassung
 // und ob seit dem letzten Speichern etwas geaendert wurde.
@@ -154,6 +154,37 @@ export async function einreichenAuftrag(): Promise<string | null> {
     start: { ...start, status: 'eingereicht', eingereicht_am: am, rueckmeldungen: [] },
     nurLesen: true,
   });
+  return null;
+}
+
+// Marke per Chat: Band "Die Marke hat sich geändert". Nicht bei nurLesen/eingereicht.
+export const MARKE_BITTE = 'Übernimm die neue Marke: Farben, Schriften und Logo, sonst nichts ändern.';
+
+export function markeBandSichtbar(start: Start | null, nurLesen: boolean): boolean {
+  return !!start && start.marke_geaendert === true && start.status !== 'eingereicht' && !nurLesen;
+}
+
+function markeBandWeg() {
+  const { start } = pultStore.getState();
+  if (start) pultStore.setState({ start: { ...start, marke_geaendert: false } });
+}
+
+// "Übernehmen": die Bitte geht wörtlich über den Chat-Weg an den Agenten. Liefert null oder den Grund.
+export async function markeUebernehmen(): Promise<string | null> {
+  const grund = await chatAbschicken(MARKE_BITTE, { fenster: 'newsletter', auswahl: null });
+  if (grund) return grund;
+  markeBandWeg();
+  return null;
+}
+
+// "Ausblenden": die Markierung am Inhalt löschen. Nicht, solange der Assistent arbeitet.
+export async function markeHinweisAusblenden(): Promise<string | null> {
+  const { start, chat } = pultStore.getState();
+  if (!start) return 'Keine Verbindung zum Pult';
+  if (sperrText(chat) !== null) return 'Der Assistent arbeitet gerade';
+  const r = await markeHinweisAus(start);
+  if (!r.ok) return r.grund;
+  markeBandWeg();
   return null;
 }
 

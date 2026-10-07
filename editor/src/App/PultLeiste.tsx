@@ -21,7 +21,7 @@ import { fehlerText, firmaEtikett } from '../pult';
 import { alsUngespeichert, einreichenAuftrag, newsletterSichern, pultStore } from '../pultZustand';
 
 import { useAgentArbeitet } from './Chat/Sperre';
-import { LiegtBand, RueckmeldungBand } from './FreigabeBand';
+import { LiegtBand, MarkeBand, RueckmeldungBand } from './FreigabeBand';
 
 // Leiste oben: Betreff, Vorschautext, Speichern, Vorschau, Zurueck.
 // Die Pruefung, ob der Inhalt erlaubt ist, macht das Pult beim Speichern.
@@ -242,6 +242,7 @@ export default function PultLeiste() {
       </Stack>
       <RueckmeldungBand />
       <LiegtBand />
+      <MarkeBand />
       {neueFassung !== null && (
         <Alert
           severity="info"

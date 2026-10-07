@@ -41,6 +41,8 @@ class Falsch:
         self.eingereicht_am = None
         self.rueckmeldungen = []
         self.alter_weg = None
+        self.marke_am = None                # inhalt.marke_geaendert_am
+        self.fassung_am = "x"               # erstellt_am der neuesten Fassung
         self.alt_format = "felder"          # Format der aelteren Fassung 1
         self.speichern_antwort = {"fassung": 3}
         self.bilder = {"auftraege": []}
@@ -70,17 +72,20 @@ class Falsch:
         if pfad == f"/inhalte/{IID}":
             bloecke = self.format == "bloecke"
             neu = {"fassung": 2, "felder": {"betreff": self.betreff, "vorschautext": "Kurz"} if bloecke else FELDER,
-                   "layout": None if bloecke else "dunkel", "urheber": "betreiber", "erstellt_am": "x",
+                   "layout": None if bloecke else "dunkel", "urheber": "betreiber", "erstellt_am": self.fassung_am,
                    "format": self.format, "bloecke": DOK if bloecke else None}
             alt = {"fassung": 1, "felder": FELDER, "layout": "dunkel", "urheber": "agent",
                    "erstellt_am": "y", "format": self.alt_format, "bloecke": None}
             return {"inhalt": {"id": IID, "art": self.art, "titel": "Oktober", "status": self.status,
                                "mandant": "vibemind", "eingereicht_am": self.eingereicht_am,
-                               "eingereicht_von": "mira" if self.eingereicht_am else None},
+                               "eingereicht_von": "mira" if self.eingereicht_am else None,
+                               "marke_geaendert_am": self.marke_am},
                     "fassungen": [neu, alt], "alter_weg": self.alter_weg,
                     "rueckmeldungen": self.rueckmeldungen}
         if pfad == f"/inhalte/{IID}/einreichen":
             return {"status": "eingereicht", "fassung": 2}
+        if pfad == f"/inhalte/{IID}/marke_hinweis_aus":
+            return {"ok": True}
         if pfad == f"/inhalte/{IID}/zurueckziehen":
             return {"status": "entwurf"}
         if pfad == f"/inhalte/{IID}/bilder":
@@ -399,6 +404,50 @@ def test_einreichen_pultfehler_wird_422_oder_503(angemeldet, pult, ziel):
     assert r.status_code == 422 and r.json() == {"grund": "Ein Bild wird gerade erzeugt"}
     pult.fehler = marketing_pult.PultFehler("nicht_erreichbar", "intern")
     r = angemeldet.post(f"/marketing/editor/{IID}/{ziel}", headers=kopf)
+    assert r.status_code == 503 and r.json() == {"grund": "Marketing gerade nicht erreichbar"}
+
+
+# --- Hinweis "Marke geaendert" (Marke per Chat, Task 7) ----------------------------------
+
+@pytest.mark.parametrize("fassung_am, marke_am, status, erwartet", [
+    ("2026-10-07T09:00:00+00:00", "2026-10-07T10:00:00+00:00", "entwurf", True),     # Marke neuer
+    ("2026-10-07T10:00:00+00:00", "2026-10-07T09:00:00+00:00", "entwurf", False),    # Fassung neuer
+    ("2026-10-07T10:00:00+00:00", "2026-10-07T10:00:00+00:00", "entwurf", False),    # gleich = nicht neuer
+    ("2026-10-07T09:00:00+00:00", "2026-10-07T10:00:00+00:00", "eingereicht", False),
+    ("2026-10-07T09:00:00+00:00", None, "entwurf", False),                           # nie markiert
+    # andere Zeitzonen / ohne Zone: es zaehlt der Zeitpunkt, nicht der Text
+    ("2026-10-07T11:30:00+02:00", "2026-10-07T09:45:00+00:00", "entwurf", True),
+    ("2026-10-07T11:30:00+02:00", "2026-10-07T09:15:00+00:00", "entwurf", False),
+    ("2026-10-07T09:00:00", "2026-10-07T10:00:00Z", "entwurf", True),
+    ("x", "2026-10-07T10:00:00+00:00", "entwurf", False),                            # unlesbar: kein Hinweis
+])
+def test_start_marke_geaendert_bedingung(angemeldet, pult, fassung_am, marke_am, status, erwartet):
+    pult.fassung_am, pult.marke_am, pult.status = fassung_am, marke_am, status
+    if status == "eingereicht":
+        pult.eingereicht_am = "2026-10-07T09:30:00+00:00"
+    start = _start(angemeldet.get(f"/marketing/editor/{IID}", headers=HOST).text)
+    assert start["marke_geaendert"] is erwartet
+    assert start["marke_hinweis_aus_url"] == f"/marketing/editor/{IID}/marke-hinweis-aus"
+
+
+def test_marke_hinweis_aus_ohne_csrf_ist_403(angemeldet, pult):
+    r = angemeldet.post(f"/marketing/editor/{IID}/marke-hinweis-aus", headers=HOST)
+    assert r.status_code == 403 and pult.aufrufe == []
+
+
+def test_marke_hinweis_aus_ruft_das_pult(angemeldet, pult):
+    r = angemeldet.post(f"/marketing/editor/{IID}/marke-hinweis-aus", headers={**HOST, "X-CSRF": ui.CSRF_TOKEN})
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    assert pult.aufrufe[-1][:2] == ("POST", f"/inhalte/{IID}/marke_hinweis_aus")
+
+
+def test_marke_hinweis_aus_pultfehler_wird_422_oder_503(angemeldet, pult):
+    kopf = {**HOST, "X-CSRF": ui.CSRF_TOKEN}
+    pult.fehler = marketing_pult.PultFehler("abgelehnt", "Inhalt nicht gefunden")
+    r = angemeldet.post(f"/marketing/editor/{IID}/marke-hinweis-aus", headers=kopf)
+    assert r.status_code == 422 and r.json() == {"grund": "Inhalt nicht gefunden"}
+    pult.fehler = marketing_pult.PultFehler("nicht_erreichbar", "intern")
+    r = angemeldet.post(f"/marketing/editor/{IID}/marke-hinweis-aus", headers=kopf)
     assert r.status_code == 503 and r.json() == {"grund": "Marketing gerade nicht erreichbar"}
 
 
