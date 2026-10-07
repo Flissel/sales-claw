@@ -150,6 +150,50 @@ def _gerahmt(inhalt, typ: str = "text/html; charset=utf-8", status: int = 200) -
                              "Cache-Control": "private, no-store"})
 
 
+async def anhang_speichern(ui, datei):
+    """Anhang (Bild/Dokument) im Medienordner ablegen und fuer den Bot sperren.
+    Gleicher Ordner und gleiche Pruefung wie /medien/hochladen (ui.medien_ablegen);
+    der Name wird auf Marketings Anhangsmuster normalisiert, eine Kollision bekommt
+    ein Suffix - nie ein stilles Ersetzen. Die Firmenzuordnung macht der Aufrufer
+    (und loescht die Datei, wenn sie scheitert).
+    -> (basis, groesse, None) | (None, None, (http_status, klartext))"""
+    stamm, endung = ui.server.medien.anhang_name(datei.filename)
+    if stamm is None:
+        return None, None, (422, endung)
+    med = ui.server.medien
+    for n in range(1, 1000):
+        basis = f"{stamm}{endung}" if n == 1 else f"{stamm}-{n}{endung}"
+        if med.intern(basis) or med.entwurfsbild(basis):
+            # Das Suffix machte daraus einen internen Namen (terminkarte-2.pdf):
+            # fuer alle weiteren Kandidaten mit Praefix, sonst unsichtbar.
+            stamm = "anhang-" + stamm[:_STAMM_FUER_PRAEFIX]
+            basis = f"{stamm}-{n}{endung}"
+        fehler = ui.server.medien.pruefe_neuen_namen(basis)[1]
+        if fehler:   # kann nach der Normalisierung nicht vorkommen - Sicherheitsnetz
+            return None, None, (422, fehler)
+        if med.liegt_schon(basis):
+            continue
+        groesse, abgelehnt = await ui.medien_ablegen(datei, basis, ersetzen=False)
+        if abgelehnt and abgelehnt[0] == 409:    # zwischen Pruefung und Ablegen belegt
+            await datei.seek(0)
+            continue
+        break
+    else:
+        return None, None, (422, "Zu viele gleichnamige Dateien")
+    if abgelehnt:
+        status, text = abgelehnt
+        return None, None, (500 if status == 500 else 422, text)
+    # Chat-Kontext ist nicht fuer Kunden gedacht: ohne Zeile in medien_meta
+    # gilt "Bot darf senden". Gesperrt anlegen; der Betreiber gibt auf /medien
+    # ausdruecklich frei. Gelingt das nicht, bleibt keine sendbare Datei liegen.
+    try:
+        await run_in_threadpool(ui.server.medien_meta_setzen, basis, False)
+    except Exception:   # noqa: BLE001 - fail-closed
+        await run_in_threadpool(ui.medien_datei_loeschen, basis)
+        return None, None, (503, "Anhang konnte nicht gesichert werden - bitte erneut versuchen")
+    return basis, groesse, None
+
+
 def routen(ui) -> list:
     e = ui._e
     nicht_im_editor = ("Dieser Entwurf lässt sich nicht im Editor öffnen. Der Editor öffnet nur "
@@ -567,40 +611,9 @@ def routen(ui) -> list:
         datei = form.get("datei")
         if datei is None or not getattr(datei, "filename", ""):
             return json_grund(422, "Es wurde keine Datei mitgeschickt")
-        stamm, endung = ui.server.medien.anhang_name(datei.filename)
-        if stamm is None:
-            return json_grund(422, endung)
-        med = ui.server.medien
-        for n in range(1, 1000):
-            basis = f"{stamm}{endung}" if n == 1 else f"{stamm}-{n}{endung}"
-            if med.intern(basis) or med.entwurfsbild(basis):
-                # Das Suffix machte daraus einen internen Namen (terminkarte-2.pdf):
-                # fuer alle weiteren Kandidaten mit Praefix, sonst unsichtbar.
-                stamm = "anhang-" + stamm[:_STAMM_FUER_PRAEFIX]
-                basis = f"{stamm}-{n}{endung}"
-            fehler = ui.server.medien.pruefe_neuen_namen(basis)[1]
-            if fehler:   # kann nach der Normalisierung nicht vorkommen - Sicherheitsnetz
-                return json_grund(422, fehler)
-            if med.liegt_schon(basis):
-                continue
-            groesse, abgelehnt = await ui.medien_ablegen(datei, basis, ersetzen=False)
-            if abgelehnt and abgelehnt[0] == 409:    # zwischen Pruefung und Ablegen belegt
-                await datei.seek(0)
-                continue
-            break
-        else:
-            return json_grund(422, "Zu viele gleichnamige Dateien")
+        basis, groesse, abgelehnt = await anhang_speichern(ui, datei)
         if abgelehnt:
-            status, text = abgelehnt
-            return json_grund(500 if status == 500 else 422, text)
-        # Chat-Kontext ist nicht fuer Kunden gedacht: ohne Zeile in medien_meta
-        # gilt "Bot darf senden". Gesperrt anlegen; der Betreiber gibt auf /medien
-        # ausdruecklich frei. Gelingt das nicht, bleibt keine sendbare Datei liegen.
-        try:
-            await run_in_threadpool(ui.server.medien_meta_setzen, basis, False)
-        except Exception:   # noqa: BLE001 - fail-closed
-            await run_in_threadpool(ui.medien_datei_loeschen, basis)
-            return json_grund(503, "Anhang konnte nicht gesichert werden - bitte erneut versuchen")
+            return json_grund(*abgelehnt)
         # Ohne Zeile gilt eine Datei als Gemeinsam und waere fuer jede Firma
         # sichtbar: der Anhang gehoert der Firma des Newsletters. Gelingt das
         # nicht, bleibt keine Datei liegen.

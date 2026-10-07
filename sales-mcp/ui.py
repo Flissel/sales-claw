@@ -1094,6 +1094,18 @@ iframe.layout-bild { position: relative; width: 200%; height: 520px; border: 0;
                      pointer-events: none; }
 .abzeichen { border: 1px solid var(--gut); color: var(--gut); border-radius: 999px;
              padding: 0 .5rem; font-weight: 700; }
+.marke-profil { border: 1px solid var(--linie); border-radius: 4px; padding: .6rem .8rem;
+                margin: .5rem 0; background: var(--flaeche); }
+.farben-zeile { display: flex; flex-wrap: wrap; gap: .4rem 1.2rem; }
+.farbe { display: inline-flex; align-items: center; gap: .4rem; }
+.farbfeld { display: inline-block; width: 1.4rem; height: 1.4rem; border-radius: 3px;
+            border: 1px solid var(--linie); }
+.marke-logo { max-height: 4rem; max-width: 12rem; background: #ffffff; padding: .2rem; }
+.schriftmuster { font-weight: 700; }
+.marke-chat { display: grid; gap: .5rem; margin-bottom: .8rem; }
+.chat-du { margin: 0; padding: .4rem .6rem; border-radius: 4px; background: var(--flaeche); }
+.chat-agent { margin: 0 0 0 1.2rem; }
+.status-zeile { font-weight: 700; }
 .pult-felder fieldset.farben { display: grid; gap: 0 1rem;
   grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .pult-felder input[type="color"] { height: 2.4rem; padding: .1rem; }

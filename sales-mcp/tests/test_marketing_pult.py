@@ -272,212 +272,7 @@ def test_db_ablehnung_zeigt_grund(angemeldet, pult):
     assert "Nicht möglich" in r.text                          # M5: echte Umlaute
 
 
-# --- Task 5: Layout-Galerie und Layout-Editor --------------------------------
-
-def _regler(**mehr):
-    return {"csrf": ui.CSRF_TOKEN, **{k: str(v) for k, v in GESTALT.items()}, **mehr}
-
-
-def test_galerie_zeigt_alle_layouts_mit_vorschau(angemeldet):
-    r = angemeldet.get("/marketing/layouts", headers=HOST)
-    s = r.text
-    assert r.status_code == 200
-    assert "dunkel" in s and "hell" in s and "karte" in s and "Standard" in s
-    assert s.count('<iframe class="layout-bild"') == 3
-    assert 'src="/marketing/layout-bild/dunkel"' in s
-    assert 'href="/marketing/layout/dunkel"' in s
-    # nach Inhaltsart gruppiert, Standard zuerst
-    assert s.index("<h2>Newsletter</h2>") < s.index("/layout-bild/hell") < s.index("/layout-bild/dunkel")
-    assert s.index("/layout-bild/dunkel") < s.index("<h2>Post</h2>") < s.index("/layout-bild/karte")
-    assert "frame-src 'self'" in r.headers["content-security-policy"]
-    assert "<script" not in s
-
-
-def test_layout_bild_mit_sandbox(angemeldet, pult):
-    r = angemeldet.get("/marketing/layout-bild/dunkel", headers=HOST)
-    assert r.status_code == 200 and b"Beispiel" in r.content
-    csp = r.headers["content-security-policy"]
-    assert csp.startswith("sandbox") and "frame-ancestors 'self'" in csp
-    assert r.headers["x-frame-options"] == "SAMEORIGIN"
-    m, p, d = pult.aufrufe[-1]
-    assert (m, p) == ("POST", "/layouts/vorschau") and d["gestalt"]["grund"] == "#0f2422"
-    assert d["format"] == "mail"
-
-
-def test_layout_bild_unbekannt(angemeldet):
-    r = angemeldet.get("/marketing/layout-bild/gibtsnicht", headers=HOST)
-    assert r.status_code == 404
-    assert "sandbox" in r.headers["content-security-policy"]
-
-
-def test_editor_hat_alle_regler(angemeldet):
-    r = angemeldet.get("/marketing/layout/dunkel", headers=HOST)
-    s = r.text
-    for feld in ("grund", "text", "akzent", "flaeche", "text_hell", "text_leise", "gold",
-                 "handlung_text", "schrift", "abstand", "rundung", "kopf_text", "fuss_text", "logo",
-                 "logo_entfernen", "format"):
-        assert f'name="{feld}"' in s, feld
-    assert 'value="#0f2422"' in s and 'type="range"' in s and 'type="color"' in s
-    assert 'id="regler"' in s and 'enctype="multipart/form-data"' in s
-    assert 'action="/marketing/layout/dunkel/speichern"' in s
-    assert 'action="/marketing/layout/dunkel/standard"' in s
-    assert "Das Logo erscheint in der Vorschau nach dem Speichern" in s
-    assert "frame-src 'self'" in r.headers["content-security-policy"]
-
-
-def test_editor_ohne_skript_mit_vorschau_knopf(angemeldet):
-    s = angemeldet.get("/marketing/layout/dunkel", headers=HOST).text
-    assert "<script" not in s
-    knopf = s[s.index("Vorschau aktualisieren") - 400:s.index("Vorschau aktualisieren")]
-    assert 'formaction="/marketing/layout-vorschau"' in knopf
-    assert 'formtarget="vorschau"' in knopf and 'formmethod="post"' in knopf
-    assert 'formenctype="multipart/form-data"' in knopf
-    assert '<iframe class="vorschau" name="vorschau" sandbox' in s
-    assert 'src="/marketing/layout-bild/dunkel"' in s
-    assert 'name="format" value="mail" checked' in s
-
-
-def test_editor_unbekannt(angemeldet):
-    assert angemeldet.get("/marketing/layout/gibtsnicht", headers=HOST).status_code == 404
-
-
-def test_speichern_schickt_gestalt(angemeldet, pult):
-    daten = {"csrf": ui.CSRF_TOKEN, **{k: v for k, v in GESTALT.items() if k != "rundung"},
-             "rundung": "4", "kopf_text": "Hallo", "fuss_text": "", "format": "handy"}
-    r = angemeldet.post("/marketing/layout/dunkel/speichern", headers=HOST, data=daten,
-                        follow_redirects=False)
-    assert r.status_code == 303 and r.headers["location"] == "/marketing/layout/dunkel"
-    m, p, d = pult.aufrufe[-1]
-    assert (m, p) == ("POST", "/layouts/dunkel/fassungen")
-    assert d["gestalt"]["rundung"] == 4 and d["gestalt"]["kopf_text"] == "Hallo"
-    assert "fuss_text" not in d["gestalt"]          # leer = nicht gesetzt
-    assert "format" not in d["gestalt"]
-    assert d["gestalt"]["logo"] == LOGO_ALT         # ohne neue Datei bleibt das alte Logo
-    assert d["von"] == "mira"
-
-
-def test_speichern_logo_entfernen(angemeldet, pult):
-    r = angemeldet.post("/marketing/layout/dunkel/speichern", headers=HOST,
-                        data=_regler(logo_entfernen="1"), follow_redirects=False)
-    assert r.status_code == 303 and "logo" not in pult.aufrufe[-1][2]["gestalt"]
-
-
-def test_speichern_neues_logo(angemeldet, pult):
-    png = b"\x89PNG\r\n\x1a\n" + b"0" * 100
-    r = angemeldet.post("/marketing/layout/dunkel/speichern", headers=HOST, data=_regler(),
-                        files={"logo": ("logo.png", png, "image/png")}, follow_redirects=False)
-    assert r.status_code == 303
-    assert pult.aufrufe[-1][2]["gestalt"]["logo"].startswith("data:image/png;base64,iVBORw0KGgo")
-
-
-def test_speichern_ohne_csrf_kein_api_aufruf(angemeldet, pult):
-    daten = _regler()
-    del daten["csrf"]
-    r = angemeldet.post("/marketing/layout/dunkel/speichern", headers=HOST, data=daten)
-    assert r.status_code == 403 and pult.aufrufe == []
-
-
-def test_live_vorschau(angemeldet, pult):
-    r = angemeldet.post("/marketing/layout-vorschau", headers=HOST,
-                        data=_regler(format="handy", layout="dunkel"))
-    assert r.status_code == 200 and b"Beispiel" in r.content
-    csp = r.headers["content-security-policy"]
-    assert csp.startswith("sandbox") and "frame-ancestors 'self'" in csp
-    assert r.headers["x-frame-options"] == "SAMEORIGIN"
-    m, p, d = pult.aufrufe[-1]
-    assert p == "/layouts/vorschau" and d["format"] == "handy"
-    assert d["gestalt"]["logo"] == LOGO_ALT          # gespeichertes Logo, nicht hochgeladen
-    assert not any(a[1].endswith("/fassungen") for a in pult.aufrufe)   # nichts gespeichert
-
-
-def test_live_vorschau_ignoriert_hochgeladenes_logo(angemeldet, pult):
-    r = angemeldet.post("/marketing/layout-vorschau", headers=HOST, data=_regler(layout="dunkel"),
-                        files={"logo": ("x.gif", b"GIF89a....", "image/gif")})
-    assert r.status_code == 200 and pult.aufrufe[-1][2]["gestalt"]["logo"] == LOGO_ALT
-    assert pult.aufrufe[-1][2]["format"] == "mail"
-
-
-def test_live_vorschau_fehler_bleibt_im_rahmen(angemeldet, pult):
-    pult.fehler = marketing_pult.PultFehler("abgelehnt", "rundung muss eine Zahl von 0 bis 24 sein")
-    pult.fehler_pfad = "/layouts/vorschau"
-    r = angemeldet.post("/marketing/layout-vorschau", headers=HOST,
-                        data=_regler(rundung="999", layout="dunkel"))
-    assert r.status_code == 422 and "rundung muss eine Zahl" in r.text
-    # Die Fehlermeldung landet im Rahmen - ohne SAMEORIGIN bliebe er leer.
-    assert "sandbox" in r.headers["content-security-policy"]
-    assert r.headers["x-frame-options"] == "SAMEORIGIN"
-
-
-def test_live_vorschau_ohne_csrf(angemeldet, pult):
-    daten = _regler()
-    del daten["csrf"]
-    r = angemeldet.post("/marketing/layout-vorschau", headers=HOST, data=daten)
-    assert r.status_code == 403 and pult.aufrufe == []
-
-
-def test_ungueltiger_regler_zeigt_grund(angemeldet, pult):
-    pult.fehler = marketing_pult.PultFehler("abgelehnt", "rundung muss eine Zahl von 0 bis 24 sein")
-    pult.fehler_pfad = "/fassungen"
-    r = angemeldet.post("/marketing/layout/dunkel/speichern", headers=HOST,
-                        data=_regler(rundung="999"))
-    assert r.status_code == 422 and "rundung muss eine Zahl" in r.text
-
-
-def test_rundung_keine_zahl_ohne_api(angemeldet, pult):
-    r = angemeldet.post("/marketing/layout/dunkel/speichern", headers=HOST,
-                        data=_regler(rundung="viel"))
-    assert r.status_code == 422 and "Rundung muss eine Zahl" in r.text
-    assert not any(a[1].endswith("/fassungen") for a in pult.aufrufe)
-
-
-def test_zu_grosses_logo_abgewiesen_ohne_api(angemeldet, pult):
-    gross = b"\x89PNG\r\n\x1a\n" + b"0" * 160_000
-    r = angemeldet.post("/marketing/layout/dunkel/speichern", headers=HOST, data=_regler(),
-                        files={"logo": ("logo.png", gross, "image/png")})
-    assert r.status_code == 422 and "150 KB" in r.text
-    assert not any(a[1].endswith("/fassungen") for a in pult.aufrufe)
-
-
-def test_riesiges_logo_wird_nicht_ganz_gelesen(angemeldet, pult, monkeypatch):
-    """Ein 2-MB-Upload wird stueckweise gelesen und frueh abgebrochen - kein
-    read() ohne Groesse, und kaum mehr als die Grenze landet im Speicher."""
-    from starlette.datastructures import UploadFile
-    gelesen, groessen = [], []
-    original = UploadFile.read
-
-    async def spion(self, size=-1):
-        groessen.append(size)
-        daten = await original(self, size)
-        gelesen.append(len(daten))
-        return daten
-
-    monkeypatch.setattr(UploadFile, "read", spion)
-    riesig = b"\x89PNG\r\n\x1a\n" + b"0" * 2_000_000
-    r = angemeldet.post("/marketing/layout/dunkel/speichern", headers=HOST, data=_regler(),
-                        files={"logo": ("logo.png", riesig, "image/png")})
-    assert r.status_code == 422 and "Das Logo ist größer als 150 KB." in r.text
-    assert not any(a[1].endswith("/fassungen") for a in pult.aufrufe)
-    assert groessen and all(g is not None and g > 0 for g in groessen), groessen
-    assert sum(gelesen) <= ui_marketing.LOGO_MAX + ui_marketing.LOGO_STUECK
-
-
-def test_logo_falscher_typ_abgewiesen(angemeldet, pult):
-    r = angemeldet.post("/marketing/layout/dunkel/speichern", headers=HOST, data=_regler(),
-                        files={"logo": ("logo.png", b"GIF89a....", "image/png")})
-    assert r.status_code == 422 and "PNG oder JPEG" in r.text
-    assert not any(a[1].endswith("/fassungen") for a in pult.aufrufe)
-
-
-def test_als_standard(angemeldet, pult):
-    r = angemeldet.post("/marketing/layout/hell/standard", headers=HOST,
-                        data={"csrf": ui.CSRF_TOKEN}, follow_redirects=False)
-    assert r.status_code == 303 and pult.aufrufe[-1][:2] == ("POST", "/layouts/hell/standard")
-    assert r.headers["location"] == "/marketing/layouts"
-
-
-def test_als_standard_ohne_csrf(angemeldet, pult):
-    r = angemeldet.post("/marketing/layout/hell/standard", headers=HOST, data={})
-    assert r.status_code == 403 and pult.aufrufe == []
+# Layout-Galerie und Regler-Editor (Task 5) entfallen mit Task 6 (Seite Marke): siehe test_marke_seite.py
 
 
 # --- Final-Review Fix-Welle (final-fix-findings.md) -------------------------
@@ -833,18 +628,11 @@ def test_cookie_fin2gether_fragt_liste_und_layouts_an(angemeldet, pult):
     assert 'aria-pressed="true" class="mandant aktiv">fin2gether' in angemeldet.get("/marketing", headers=h).text
     angemeldet.get("/marketing/entwuerfe", headers=h)
     angemeldet.get("/marketing/layouts", headers=h)
-    angemeldet.get("/marketing/layout-bild/dunkel", headers=h)
-    angemeldet.get("/marketing/layout/dunkel", headers=h)
-    angemeldet.post("/marketing/layout-vorschau", headers=h, data={"csrf": ui.CSRF_TOKEN, "layout": "dunkel"})
-    angemeldet.post("/marketing/layout/dunkel/speichern", headers=h,
-                    data={"csrf": ui.CSRF_TOKEN, "layout": "dunkel"}, follow_redirects=False)
     fragen = _mandant_fragen(pult)
     assert "/uebersicht?mandant=fin2gether" in fragen
     assert any(p.startswith("/inhalte?") and "mandant=fin2gether" in p for p in fragen)
-    assert "/layouts?mandant=fin2gether" in fragen
+    assert "/marke?mandant=fin2gether" in fragen
     assert not any("mandant=vibemind" in p for p in fragen)
-    vorschauen = [a[2] for a in pult.aufrufe if a[1] == "/layouts/vorschau"]
-    assert len(vorschauen) >= 2 and all(v["mandant"] == "fin2gether" for v in vorschauen)
 
 
 @pytest.mark.parametrize("wert", ["alt", 'x"><script>', "", "gibtsnicht", "FIN2GETHER"])
@@ -853,7 +641,7 @@ def test_boeses_cookie_faellt_auf_vibemind(angemeldet, pult, wert):
     assert r.status_code == 200 and "<script" not in r.text
     angemeldet.get("/marketing/layouts", headers=_mit_firma(angemeldet, wert))
     fragen = _mandant_fragen(pult)
-    assert "/uebersicht?mandant=vibemind" in fragen and "/layouts?mandant=vibemind" in fragen
+    assert "/uebersicht?mandant=vibemind" in fragen and "/marke?mandant=vibemind" in fragen
     assert all(p.endswith("mandant=vibemind") or "mandant=vibemind&" in p for p in fragen)
 
 
@@ -1124,26 +912,6 @@ def test_bilder_statuspunkte_je_status(angemeldet, pult):
 
 
 # --- Task 6: "Marke" statt "Layouts", Vorschauen lazy ---------------------------
-
-SATZ_MARKE = "Diese Einstellungen (Farben, Schrift, Logo, Kopf- und Fußzeile) füllen neue Newsletter aus Vorlagen."
-
-
-def test_galerie_heisst_marke_mit_satz_und_lazy_vorschauen(angemeldet):
-    r = angemeldet.get("/marketing/layouts", headers=HOST)
-    s = r.text
-    assert r.status_code == 200
-    assert "<title>Marke" in s and "<h1>Marke</h1>" in s
-    assert SATZ_MARKE in s
-    assert s.count('<iframe class="layout-bild" sandbox tabindex="-1" loading="lazy"') == 3
-    for n in ("dunkel", "hell", "karte"):
-        assert f'<span class="layout-platzhalter">{n}</span>' in s
-
-
-def test_editor_heisst_marke_mit_satz(angemeldet):
-    s = angemeldet.get("/marketing/layout/dunkel", headers=HOST).text
-    assert "<h1>Marke dunkel</h1>" in s and SATZ_MARKE in s
-    assert "Zurück zu allen Marken" in s and 'href="/marketing/layouts"' in s
-
 
 def test_navigation_zeigt_marke_nicht_layouts(angemeldet):
     s = angemeldet.get("/marketing", headers=HOST).text
