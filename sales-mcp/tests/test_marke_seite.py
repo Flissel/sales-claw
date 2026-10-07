@@ -275,7 +275,8 @@ def test_vorschlag_karte_und_rahmen(angemeldet, pult):
     assert "<b>warm</b>" not in s
     assert 'action="/marketing/marke/uebernehmen"' in s and 'action="/marketing/marke/verwerfen"' in s
     assert 'type="checkbox" name="bestaetigt"' in s and f'name="vorschlag" value="{VID}"' in s
-    assert "Die Marke hat sich geändert – übernehmen?" in s
+    assert "Ja, dieses Profil übernehmen" in s
+    assert "Die Marke hat sich geändert – übernehmen?" not in s               # das ist der Editor-Hinweis
     assert "<script" not in s
 
 
@@ -327,7 +328,8 @@ def test_uebernehmen_mit_haken(angemeldet, pult):
     r = angemeldet.post("/marketing/marke/uebernehmen", headers=HOST, follow_redirects=False,
                         data={"csrf": ui.CSRF_TOKEN, "vorschlag": VID, "bestaetigt": "ja"})
     assert r.status_code == 303 and r.headers["location"] == "/marketing/layouts"
-    assert pult.nach("/uebernehmen")[-1] == ("POST", f"/marke/vorschlaege/{VID}/uebernehmen", {"von": "mira"})
+    assert pult.nach("/uebernehmen")[-1] == ("POST", f"/marke/vorschlaege/{VID}/uebernehmen",
+                                             {"von": "mira", "mandant": "vibemind"})
 
 
 def test_uebernehmen_ohne_csrf(angemeldet, pult):
@@ -357,7 +359,8 @@ def test_verwerfen(angemeldet, pult):
     r = angemeldet.post("/marketing/marke/verwerfen", headers=HOST, follow_redirects=False,
                         data={"csrf": ui.CSRF_TOKEN, "vorschlag": VID})
     assert r.status_code == 303 and r.headers["location"] == "/marketing/layouts"
-    assert pult.nach("/verwerfen")[-1] == ("POST", f"/marke/vorschlaege/{VID}/verwerfen", {"von": "mira"})
+    assert pult.nach("/verwerfen")[-1] == ("POST", f"/marke/vorschlaege/{VID}/verwerfen",
+                                           {"von": "mira", "mandant": "vibemind"})
 
 
 def test_verwerfen_ohne_csrf(angemeldet, pult):
@@ -521,3 +524,79 @@ def test_vorschau_ungueltige_id_404_im_rahmen(angemeldet, pult, wert):
     r = angemeldet.get(f"/marketing/marke/vorschau?vorschlag={wert}", headers=HOST)
     assert r.status_code == 404 and "sandbox" in r.headers["content-security-policy"]
     assert pult.nach("/vorschlaege") == []
+
+
+
+# --- Schlussrunde (final-review.md) -------------------------------------------------------
+
+def _mit_cookie(c, firma):
+    cookies = "; ".join(f"{k}={v}" for k, v in c.cookies.items())
+    return {**HOST, "cookie": f"{cookies}; mk_mandant={firma}"}
+
+
+def test_i3_profil_zeigt_die_lesehinweise_der_marke_md(angemeldet, pult):
+    pult.zustand["profil_hinweise"] = ["Marke.md: akzent ungültig", "Marke.md: <b>logo</b> ungültig"]
+    s = rumpf(seite(angemeldet))
+    profil = s[s.index('class="marke-profil"'):s.index("<h2>Chat</h2>")]
+    assert "Marke.md: akzent ungültig" in profil and "Marke.md: &lt;b&gt;logo&lt;/b&gt; ungültig" in profil
+    assert "<b>logo</b>" not in s
+
+
+def test_i3_hinweise_auch_ohne_gespiegeltes_profil(angemeldet, pult):
+    pult.zustand["spiegel"] = {"gestalt": {}, "stand": "", "gespiegelt_am": None, "fehler": None}
+    pult.zustand["profil_hinweise"] = ["Marke.md: akzent ungültig"]
+    s = rumpf(seite(angemeldet))
+    assert "Noch kein Branding" in s and "Marke.md: akzent ungültig" in s
+
+
+def test_i6_fehlgeschlagene_uebernahme_ist_sichtbar(angemeldet, pult):
+    pult.zustand["letzte_uebernahme"] = {"status": "fehler", "geaendert_am": "2026-10-07T11:00:00",
+                                         "antwort": "Übernehmen nicht möglich: Logo <x>.png nicht gefunden",
+                                         "hinweise": []}
+    s = rumpf(seite(angemeldet))
+    assert "Übernehmen fehlgeschlagen" in s and "Logo &lt;x&gt;.png nicht gefunden" in s
+
+
+def test_i6_hinweise_einer_erfolgreichen_uebernahme(angemeldet, pult):
+    pult.zustand["letzte_uebernahme"] = {"status": "fertig", "geaendert_am": "2026-10-07T11:00:00",
+                                         "antwort": "Die Marke ist übernommen.",
+                                         "hinweise": ["Spiegel nicht aktualisiert: x – der Abgleich holt es nach."]}
+    s = rumpf(seite(angemeldet))
+    assert "Die Marke ist übernommen." in s and "Spiegel nicht aktualisiert: x – der Abgleich holt es nach." in s
+
+
+def test_i6_erfolg_ohne_hinweise_bleibt_still_und_laufende_uebernahme_verdeckt_das_alte(angemeldet, pult):
+    pult.zustand["letzte_uebernahme"] = {"status": "fertig", "antwort": "Die Marke ist übernommen.",
+                                         "hinweise": [], "geaendert_am": "2026-10-07T11:00:00"}
+    assert "Die Marke ist übernommen." not in rumpf(seite(angemeldet))
+    pult.zustand["letzte_uebernahme"] = {"status": "fehler", "antwort": "Alter Fehler", "hinweise": [],
+                                         "geaendert_am": "2026-10-07T11:00:00"}
+    pult.zustand["uebernahme"] = "laeuft"
+    pult.zustand["uebernahme_seit"] = datetime.now(timezone.utc).isoformat()
+    s = rumpf(seite(angemeldet))
+    assert "Wird übernommen …" in s and "Alter Fehler" not in s
+
+
+def test_minor3_spiegel_fehler_ohne_stand_wird_gezeigt(angemeldet, pult):
+    pult.zustand["spiegel"] = {"gestalt": {}, "stand": "", "gespiegelt_am": None, "fehler": "Layout ungueltig: x"}
+    s = rumpf(seite(angemeldet))
+    assert "Layout ungueltig: x" in s and "None" not in s
+    assert "Spiegel noch nie gesetzt: Layout ungueltig: x" in s
+
+
+def test_minor4_aktionen_tragen_die_firma_der_oberflaeche(angemeldet, pult):
+    """Ein Tab nach dem Firmenwechsel: die API vergleicht die gewaehlte Firma mit der des Vorschlags."""
+    h = _mit_cookie(angemeldet, "fin2gether")
+    angemeldet.post("/marketing/marke/uebernehmen", headers=h, data={"csrf": ui.CSRF_TOKEN, "vorschlag": VID,
+                                                                    "bestaetigt": "ja"})
+    assert pult.nach("/uebernehmen")[-1][2] == {"von": "mira", "mandant": "fin2gether"}
+    angemeldet.post("/marketing/marke/verwerfen", headers=h, data={"csrf": ui.CSRF_TOKEN, "vorschlag": VID})
+    assert pult.nach("/verwerfen")[-1][2] == {"von": "mira", "mandant": "fin2gether"}
+    angemeldet.get(f"/marketing/marke/vorschau?vorschlag={VID}", headers=h)
+    assert "mandant=fin2gether" in pult.nach("/vorschlaege/")[-1][1]
+
+
+def test_minor4_vorschau_ohne_id_traegt_die_firma(angemeldet, pult):
+    pult.zustand["vorschlag"] = VORSCHLAG
+    angemeldet.get("/marketing/marke/vorschau", headers=HOST)
+    assert "mandant=vibemind" in pult.nach("/vorschlaege/")[-1][1]

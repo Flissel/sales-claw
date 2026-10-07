@@ -115,12 +115,28 @@ def routen(ui) -> list:
         return (f'<p class="schriften">Überschrift: {muster(anzeige, firma)}<br>'
                 f'Text: {muster(text, firma)}</p>')
 
+    def liste(eintraege, klasse: str) -> str:
+        punkte = "".join(f"<li>{e(str(h))}</li>" for h in eintraege or [] if str(h).strip())
+        return f'<ul class="{klasse}">{punkte}</ul>' if punkte else ""
+
+    def spiegel_warnung(sp: dict) -> str:
+        if not sp.get("fehler"):
+            return ""
+        grund = e(str(sp["fehler"]))
+        if not sp.get("gespiegelt_am"):          # noch nie gelungen: es gibt kein "seit"
+            return f'<p class="warnung">Spiegel noch nie gesetzt: {grund}</p>'
+        return f'<p class="warnung">Spiegel veraltet seit {e(_wann(ui, sp.get("gespiegelt_am")))}: {grund}</p>'
+
     def profil_html(d: dict) -> str:
         sp = d.get("spiegel") if isinstance(d.get("spiegel"), dict) else {}
         g = sp.get("gestalt") if isinstance(sp.get("gestalt"), dict) else {}
         stand = str(sp.get("stand") or "")
+        # Lese-Hinweise der Marke.md ("Marke.md: akzent ungültig"), vom Abgleich am PC gemeldet
+        hinweise = liste(d.get("profil_hinweise") if isinstance(d.get("profil_hinweise"), list) else [],
+                         "warnung")
         if not g and not stand:
-            return f'<div class="marke-profil"><p><b>{KEIN_PROFIL}</b></p></div>'
+            return (f'<div class="marke-profil"><p><b>{KEIN_PROFIL}</b></p>'
+                    f'{spiegel_warnung(sp)}{hinweise}</div>')
         teile = []
         firma = str(d.get("name") or d.get("mandant") or "")
         aktuell = d.get("aktuell") if isinstance(d.get("aktuell"), dict) else {}
@@ -141,10 +157,24 @@ def routen(ui) -> list:
                 teile.append(f'<p class="kurz"><b>{titel}:</b> {e(kurz).replace(chr(10), "<br>")}</p>')
         if stand:
             teile.append(f'<p class="meta">Stand: {e(stand)}</p>')
-        if sp.get("fehler"):
-            teile.append(f'<p class="warnung">Spiegel veraltet seit {e(_wann(ui, sp.get("gespiegelt_am")))}: '
-                         f'{e(str(sp["fehler"]))}</p>')
+        teile.append(spiegel_warnung(sp))
+        teile.append(hinweise)
         return f'<div class="marke-profil">{"".join(teile)}</div>'
+
+    def letzte_html(d: dict) -> str:
+        """Ergebnis der letzten Uebernahme: ein Fehlschlag mit Grund, ein Erfolg nur mit Hinweisen.
+        Waehrend eine Uebernahme laeuft, zaehlt nur deren Status."""
+        z = d.get("letzte_uebernahme")
+        if d.get("uebernahme") or not isinstance(z, dict):
+            return ""
+        hinweise = z.get("hinweise") if isinstance(z.get("hinweise"), list) else []
+        antwort = str(z.get("antwort") or "")
+        if z.get("status") == "fehler":
+            return (f'<p class="warnung">Übernehmen fehlgeschlagen: {e(antwort or "ohne Grund")}</p>'
+                    + liste(hinweise, "meta"))
+        if hinweise:
+            return f'<p class="meta">Letzte Übernahme: {e(antwort)}</p>' + liste(hinweise, "meta")
+        return ""
 
     def chat_html(d: dict) -> str:
         runden = []
@@ -198,7 +228,7 @@ def routen(ui) -> list:
                 f'<form method="post" action="/marketing/marke/uebernehmen" class="aktion">{csrf_feld()}'
                 f'<input type="hidden" name="vorschlag" value="{e(vid)}">'
                 f'<label class="haken"><input type="checkbox" name="bestaetigt" value="ja"> '
-                f'Die Marke hat sich geändert – übernehmen?</label>'
+                f'Ja, dieses Profil übernehmen</label>'
                 f'<button class="primaer" type="submit">Übernehmen</button></form>'
                 f'<form method="post" action="/marketing/marke/verwerfen" class="aktion">{csrf_feld()}'
                 f'<input type="hidden" name="vorschlag" value="{e(vid)}">'
@@ -228,7 +258,7 @@ def routen(ui) -> list:
                  + marketing_mandant.umschalter(e, ui.CSRF_TOKEN, m, liste, SEITE)
                  + '<p class="meta">Das Markenprofil bestimmt Farben, Schriften und Logo neuer Newsletter. '
                    'Erzähl dem Marken-Agenten von der Firma; was er vorschlägt, übernimmst du hier.</p>'
-                 + profil_html(d) + status + "<h2>Chat</h2>" + chat_html(d) + formular_html(d)
+                 + profil_html(d) + status + letzte_html(d) + "<h2>Chat</h2>" + chat_html(d) + formular_html(d)
                  + vorschlag_html(d, fmt))
         antwort = ui._seite("Marke", rumpf, refresh=REFRESH_S if arbeitet else None)
         antwort.headers["Content-Security-Policy"] = ui._csp_mit_rahmen("'self'", bilddaten=True, schriften=True)
@@ -245,6 +275,9 @@ def routen(ui) -> list:
                 # Der Rahmen zeigt genau den Vorschlag, den die Karte daneben zeigt - auch wenn
                 # inzwischen ein neuerer offen ist.
                 vid = _uuid_oder_none(request.query_params["vorschlag"])
+                if not vid:
+                    return _gerahmt("<p>Kein Vorschlag offen.</p>", status=404)
+                m, _liste = await marketing_mandant.firma(request)
             else:
                 m, _liste = await marketing_mandant.firma(request)
                 d = await run_in_threadpool(marketing_pult.anfrage, "GET", f"/marke?mandant={urllib.parse.quote(m)}")
@@ -252,7 +285,8 @@ def routen(ui) -> list:
                 vid = _uuid_oder_none(v.get("id")) if isinstance(v, dict) else None
             if not vid:
                 return _gerahmt("<p>Kein Vorschlag offen.</p>", status=404)
-            q = {"format": fmt}
+            # Nur ein Vorschlag der gewaehlten Firma (Minor 4): die API vergleicht und sagt sonst 404
+            q = {"mandant": m, "format": fmt}
             if (basis := ui_editor.bild_basis()):
                 q["bild_basis"] = basis
             inhalt, typ = await run_in_threadpool(
@@ -333,8 +367,11 @@ def routen(ui) -> list:
             if aktion == "uebernehmen" and str(form.get("bestaetigt") or "") != "ja":
                 return abgewiesen(422, "Bitte bestätige das Übernehmen mit dem Haken. Nichts wurde geändert.")
             try:
+                # Die gerade gewaehlte Firma: ein Tab von vor dem Firmenwechsel handelt so nie am
+                # Vorschlag einer anderen Firma (Minor 4, die DB vergleicht)
+                m, _liste = await marketing_mandant.firma(request)
                 await run_in_threadpool(marketing_pult.anfrage, "POST", f"/marke/vorschlaege/{vid}/{aktion}",
-                                        {"von": ui._ui_akteur(request)})
+                                        {"von": ui._ui_akteur(request), "mandant": m})
             except marketing_pult.PultFehler as f:
                 return fehler(f)
             return RedirectResponse(SEITE, status_code=303)
