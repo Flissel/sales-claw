@@ -247,7 +247,7 @@ describe('Stopp', () => {
       '/stopp': [[200, { abgeschlossen: false }]],
       '/c.json': [[200, { laeuft: true, verlauf: [eintrag({ id: 'a7' })], live: live(ZWISCHEN_1, 1, 'behalten'), neueste: null }]],
     });
-    expect(await chatStoppen('behalten')).toBeNull();
+    expect(await chatStoppen('behalten', 'a7')).toBeNull();
     expect(JSON.parse(String(aufruf(f, '/stopp').body))).toEqual({ art: 'behalten', auftrag: 'a7' });
     await vi.advanceTimersByTimeAsync(0);
     expect(adressen(f)).toContain('/c.json');
@@ -257,6 +257,6 @@ describe('Stopp', () => {
   it('Grund des Servers kommt zurueck', async () => {
     pultStore.setState({ chat: { laeuft: true, verlauf: [eintrag({ id: 'a7' })], live: null, neueste: null } });
     netz({ '/stopp': [[422, { grund: 'Der Assistent arbeitet gerade nicht' }]], '/c.json': [[200, { laeuft: false, verlauf: [], live: null, neueste: null }]] });
-    expect(await chatStoppen('verwerfen')).toBe('Der Assistent arbeitet gerade nicht');
+    expect(await chatStoppen('verwerfen', 'a7')).toBe('Der Assistent arbeitet gerade nicht');
   });
 });

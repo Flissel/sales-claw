@@ -104,3 +104,10 @@ def test_paket_kennt_ziehbare_chat_leiste():
     text = (ORDNER / "editor.js").read_text(encoding="utf-8")
     for s in ("vibemind.editor.chatbreite", "Breite der Seitenleiste"):
         assert s in text, s
+
+
+def test_paket_kennt_parallele_runden():
+    # 2026-10-09 parallele Runden (Task 9): Warteschlange, mehrere Runden in der Sperrzeile
+    text = (ORDNER / "editor.js").read_text(encoding="utf-8")
+    for s in ("wartet auf freien Platz", "Runden laufen", "Aus der Warteschlange nehmen"):
+        assert s in text, s

@@ -5,7 +5,7 @@ import {
   chatLaden,
   chatSenden,
   dateiNamen,
-  laufenderChat,
+  laufendeRunden,
   exportieren,
   exportVorschau,
   exportVorschlag,
@@ -305,12 +305,11 @@ describe('sperrText', () => {
   });
 });
 
-describe('laufenderChat', () => {
-  it('der offene oder laufende Chat-Auftrag, nie ein Export', () => {
-    expect(laufenderChat(null)).toBeNull();
-    expect(laufenderChat({ laeuft: true, verlauf: [eintrag({ id: 'x', art: 'export', status: 'in_arbeit' })] })).toBeNull();
-    expect(laufenderChat({ laeuft: false, verlauf: [eintrag({ status: 'fertig' })] })).toBeNull();
-    expect(laufenderChat({ laeuft: true, verlauf: [eintrag({ id: 'f', status: 'fertig' }), eintrag({ id: 'l', status: 'in_arbeit' })] })?.id).toBe('l');
+describe('laufendeRunden', () => {
+  it('alle Chat-Runden offen, in Arbeit und wartend, nie ein Export', () => {
+    const v = [eintrag({ id: 'a', status: 'fertig' }), eintrag({ id: 'b', status: 'in_arbeit' }), eintrag({ id: 'c', status: 'wartet' }),
+      eintrag({ id: 'x', art: 'export', status: 'in_arbeit' }), eintrag({ id: 'd', status: 'offen' })];
+    expect(laufendeRunden({ verlauf: v }).map((e) => e.id)).toEqual(['b', 'c', 'd']);
   });
 });
 
@@ -324,6 +323,9 @@ describe('stoppDialogOffen', () => {
     expect(stoppDialogOffen('a1', { laeuft: false, verlauf: [eintrag({ status: 'fertig' })] })).toBe(false);
     expect(stoppDialogOffen('a1', lauf('a2'))).toBe(false);
   });
+  it('eine wartende Runde oeffnet keinen Dialog (sie endet ohne Nachfrage)', () => {
+    expect(stoppDialogOffen('w', { laeuft: true, verlauf: [eintrag({ id: 'w', status: 'wartet' })] })).toBe(false);
+  });
 });
 
 describe('Stopp', () => {
@@ -336,13 +338,6 @@ describe('Stopp', () => {
     expect(init.method).toBe('POST');
     expect(JSON.parse(String(init.body))).toEqual({ art: 'behalten', auftrag: 'a1' });
     vi.stubGlobal('fetch', vi.fn(async () => antwort(200, { abgeschlossen: false, veraltet: true })));
-    expect(await stoppen(start, 'verwerfen')).toEqual({ ok: true, abgeschlossen: false, veraltet: true });
-  });
-
-  it('stoppen ohne Auftrag schickt nur die Art', async () => {
-    const f = vi.fn(async () => antwort(200, { abgeschlossen: true }));
-    vi.stubGlobal('fetch', f);
-    await stoppen(start, 'verwerfen');
-    expect(JSON.parse(String(aufruf(f)[1].body))).toEqual({ art: 'verwerfen' });
+    expect(await stoppen(start, 'verwerfen', 'a1')).toEqual({ ok: true, abgeschlossen: false, veraltet: true });
   });
 });

@@ -11,7 +11,7 @@ import { schrittText } from '../../live';
 import { chatStoppen, pultStore } from '../../pultZustand';
 import { FARBE, gestaltungThema, UI_SCHRIFT } from '../Gestaltung/gestaltungStil';
 
-export default function StoppDialog({ offen, onClose }: { offen: boolean; onClose: () => void }) {
+export default function StoppDialog({ offen, auftrag, onClose }: { offen: boolean; auftrag: string | null; onClose: () => void }) {
   const thema = useMemo(gestaltungThema, []);
   return (
     <ThemeProvider theme={thema}>
@@ -22,14 +22,14 @@ export default function StoppDialog({ offen, onClose }: { offen: boolean; onClos
         aria-labelledby="stopp-titel"
         PaperProps={{ sx: { width: 440, maxWidth: 'calc(100vw - 32px)', bgcolor: FARBE.panel, backgroundImage: 'none', border: `1px solid ${FARBE.linie}`, borderRadius: '12px', fontFamily: UI_SCHRIFT } }}
       >
-        {offen && <Inhalt onClose={onClose} />}
+        {offen && auftrag && <Inhalt auftrag={auftrag} onClose={onClose} />}
       </Dialog>
     </ThemeProvider>
   );
 }
 
-function Inhalt({ onClose }: { onClose: () => void }) {
-  const zeile = pultStore((p) => schrittText(p.chat?.live ?? null));
+function Inhalt({ auftrag, onClose }: { auftrag: string; onClose: () => void }) {
+  const zeile = pultStore((p) => schrittText(p.chat?.verlauf.find((e) => e.id === auftrag) ?? null));
   const [laeuft, setLaeuft] = useState<StoppArt | null>(null);
   const [fehler, setFehler] = useState<string | null>(null);
 
@@ -37,7 +37,7 @@ function Inhalt({ onClose }: { onClose: () => void }) {
     if (laeuft) return;
     setLaeuft(art);
     setFehler(null);
-    const grund = await chatStoppen(art);
+    const grund = await chatStoppen(art, auftrag);
     setLaeuft(null);
     if (grund) setFehler(grund);
     else onClose();

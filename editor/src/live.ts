@@ -48,7 +48,7 @@ export function zuletztGeaendert(vorher: Dokument, nachher: Dokument): string | 
 }
 
 // „Schritt 3 · Titel links oben setzen“; null vor dem ersten Schritt.
-export function schrittText(live: ChatLive | null): string | null {
+export function schrittText(live: Pick<ChatLive, 'schritt' | 'schritt_nr'> | null): string | null {
   if (!live || live.schritt_nr <= 0) return null;
   const t = live.schritt.trim();
   return t ? `Schritt ${live.schritt_nr} · ${t}` : `Schritt ${live.schritt_nr}`;

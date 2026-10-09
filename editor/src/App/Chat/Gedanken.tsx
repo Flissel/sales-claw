@@ -61,7 +61,7 @@ function Denken({ text, mitlaufen }: { text: string; mitlaufen: boolean }) {
   );
 }
 
-export function GedankenLive({ live, sichtbar, umschalten }: { live: ChatLive; sichtbar: boolean; umschalten: () => void }) {
+export function GedankenLive({ live, sichtbar, umschalten }: { live: Pick<ChatLive, 'denken' | 'schritte'>; sichtbar: boolean; umschalten: () => void }) {
   if (!live.denken.trim() && live.schritte.length === 0) return null;
   return (
     <Box sx={{ ml: 1, pl: 1.25, borderLeft: `2px solid ${FARBE.linie}` }}>

@@ -10,7 +10,6 @@ import {
   chatSenden,
   ChatStand,
   exportLaeuft,
-  laufenderChat,
   laufendeRunden,
   neueFassungNachChat,
   rueckgaengig,
@@ -586,11 +585,11 @@ export function anhangEntfernen(id: string) {
   abbrechen?.();
 }
 
-// Stopp des laufenden Chat-Auftrags; danach zeigt die Abfrage "wird gestoppt …" bis zum Abschluss.
-export async function chatStoppen(art: StoppArt): Promise<string | null> {
-  const { start, chat } = pultStore.getState();
+// Stopp genau dieser Runde (Spec 2026-10-09: Stopp wirkt pro Runde); danach zeigt die Abfrage "wird gestoppt …".
+export async function chatStoppen(art: StoppArt, auftrag: string): Promise<string | null> {
+  const { start } = pultStore.getState();
   if (!start) return 'Keine Verbindung zum Pult';
-  const r = await stoppen(start, art, laufenderChat(chat)?.id);
+  const r = await stoppen(start, art, auftrag);
   chatAbfragen();
   return r.ok ? null : r.grund;
 }

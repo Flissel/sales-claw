@@ -227,15 +227,14 @@ export async function chatLaden(s: Start): Promise<ChatStand | null> {
   }
 }
 
-// Stopp des laufenden Auftrags. auftrag: nur diesen stoppen (laeuft inzwischen ein anderer,
+// Stopp genau dieses Auftrags (Pflicht-ID) (laeuft inzwischen ein anderer,
 // passiert nichts - veraltet). abgeschlossen: sofort erledigt (Auftrag hatte noch nicht begonnen).
 export async function stoppen(
   s: Start,
   art: StoppArt,
-  auftrag?: string,
+  auftrag: string,
 ): Promise<{ ok: true; abgeschlossen: boolean; veraltet: boolean } | Fehler> {
-  const body = auftrag === undefined ? { art } : { art, auftrag };
-  const r = await senden(s, s.chat_stopp_url, body, 'Stoppen gerade nicht möglich');
+  const r = await senden(s, s.chat_stopp_url, { art, auftrag }, 'Stoppen gerade nicht möglich');
   if (!r.ok) return r;
   return { ok: true, abgeschlossen: r.j.abgeschlossen === true, veraltet: r.j.veraltet === true };
 }
@@ -325,12 +324,6 @@ export function laufendeRunden(chat: Pick<ChatStand, 'verlauf'> | null): ChatEin
 
 export function exportLaeuft(chat: Pick<ChatStand, 'verlauf'> | null): boolean {
   return (chat?.verlauf ?? []).some((e) => e.art === 'export' && LAEUFT.includes(e.status));
-}
-
-// Uebergang bis Task 9: die erste laufende Runde (Stopp in der Kopfzeile).
-export function laufenderChat(chat: Pick<ChatStand, 'laeuft' | 'verlauf'> | null): ChatEintrag | null {
-  if (!chat?.laeuft) return null;
-  return laufendeRunden(chat).find((e) => e.status !== 'wartet') ?? null;
 }
 
 // Der Stopp-Dialog gilt nur fuer die Runde, fuer die er geoeffnet wurde: endet sie, geht er zu.

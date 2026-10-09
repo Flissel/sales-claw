@@ -6,7 +6,7 @@ import React, { useEffect, useRef, useState } from 'react';
 
 import { Box } from '@mui/material';
 
-import { laufenderChat, sperrText } from '../../chat';
+import { laufendeRunden, sperrText } from '../../chat';
 import { schrittText } from '../../live';
 import { LIEGT_ZUR_FREIGABE as LIEGT, pultStore } from '../../pultZustand';
 import { FARBE, UI_SCHRIFT } from '../Gestaltung/gestaltungStil';
@@ -30,15 +30,16 @@ export function useGesperrt(): boolean {
   return arbeitet !== null || nurLesen;
 }
 
-// Schritt-Zeile des laufenden Chat-Auftrags (null = kein Chat-Lauf, z. B. Export).
+// Schrittzeile der Sperrschicht (null = keine Chat-Runde laeuft, z. B. Export). Bei mehreren Runden die Anzahl.
 export function useLiveZeile(): string | null {
   return pultStore((p) => {
-    const lauf = laufenderChat(p.chat);
-    if (!lauf) return null;
+    const runden = laufendeRunden(p.chat).filter((e) => e.status !== 'wartet');
+    if (runden.length === 0) return null;
     if (p.chatGetrennt) return 'Verbindung …';
-    const live = p.chat?.live ?? null;
-    if (live?.stopp) return 'Wird gestoppt …';
-    return schrittText(live) ?? (lauf.status === 'offen' ? 'Wartet auf den Assistenten …' : 'Agent denkt nach …');
+    if (runden.length > 1) return `${runden.length} Runden laufen …`;
+    const r = runden[0];
+    if (r.stopp) return 'Wird gestoppt …';
+    return schrittText(r) ?? (r.status === 'offen' ? 'Wartet auf den Assistenten …' : 'Agent denkt nach …');
   });
 }
 

@@ -1,230 +1,28 @@
-// Chat mit dem Gestaltungs-Agenten (Spec 2026-10-02 §4): im Newsletter-Editor in der rechten
-// Seitenleiste, im Gestaltungsfenster unter den Eigenschaften. Aussehen aus gestaltungStil:
-// Betreiber rechts auf der Akzentflaeche, Agent links auf der Panelflaeche, Eingabe unten fest.
-// Waehrend der Agent arbeitet: drei Punkte im 150-ms-Takt; das Dokument sperrt der Aufrufer
-// mit der SperrSchicht (Sperre.tsx).
-// Live-Lauf (Spec 2026-10-02-newsletter-agent-live §2.3, §3): Schritt-Zeile mit ruhiger
-// Fortschritts-Linie, die Eingabe bleibt offen, "Stopp" fragt im StoppDialog nach.
+// Chat mit dem Gestaltungs-Agenten (Spec 2026-10-02 §4): im Newsletter-Editor in der rechten Seitenleiste, im
+// Gestaltungsfenster unter den Eigenschaften. Aussehen aus gestaltungStil: Betreiber rechts auf der Akzentflaeche,
+// Agent links auf der Panelflaeche, Eingabe unten fest.
+// Mehrere Runden (Spec 2026-10-09-editor-parallele-runden §2): "Senden" immer; jede Runde ist ein eigener Eintrag
+// (Runde.tsx) mit eigenem Stopp; der Stopp-Dialog gilt der Runde, fuer die er geoeffnet wurde.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
-import {
-  ArrowUpwardRounded,
-  AutoAwesomeRounded,
-  ErrorOutlineRounded,
-  ExpandMoreRounded,
-  InfoOutlined,
-  IosShareRounded,
-  PhotoLibraryOutlined,
-  StopRounded,
-  UndoRounded,
-} from '@mui/icons-material';
-import { Box, Button, ButtonBase, CircularProgress, IconButton, InputBase, ThemeProvider, Tooltip } from '@mui/material';
+import { ArrowUpwardRounded, AutoAwesomeRounded, ErrorOutlineRounded, ExpandMoreRounded, InfoOutlined } from '@mui/icons-material';
+import { Box, ButtonBase, CircularProgress, IconButton, InputBase, ThemeProvider, Tooltip } from '@mui/material';
 
-import { ChatEintrag, ChatKontext, ChatLive, ExportAuswahl, exportLaeuft, exportVorschlag, laufenderChat, rueckgaengigFuer, stoppDialogOffen } from '../../chat';
+import { ChatEintrag, ChatKontext, ExportAuswahl, exportLaeuft, rueckgaengigFuer, stoppDialogOffen } from '../../chat';
 import { sendenErlaubt } from '../../chatKontext';
-import {
-  chatAbschicken,
-  chatHinweisWeg,
-  chatRueckgaengig,
-  chatTextSetzen,
-  HINWEIS_OFFEN,
-  pultStore,
-} from '../../pultZustand';
+import { chatAbschicken, chatHinweisWeg, chatRueckgaengig, chatStoppen, chatTextSetzen, HINWEIS_OFFEN, pultStore } from '../../pultZustand';
 import { FARBE, FOKUS, gestaltungThema, uebergang, UI_SCHRIFT } from '../Gestaltung/gestaltungStil';
 
 import { useAnhangAblage } from './AnhangAblage';
-import { GedankenAufklapp, GedankenLive, useGedankenSichtbar } from './Gedanken';
+import { useGedankenSichtbar } from './Gedanken';
 import KontextChips from './KontextChips';
-import { LIEGT_ZUR_FREIGABE, Punkte, useAgentArbeitet, useLiveZeile, useNurLesen } from './Sperre';
+import { Eintrag, RundenAktionen } from './Runde';
+import { LIEGT_ZUR_FREIGABE, useAgentArbeitet, useNurLesen } from './Sperre';
 import StoppDialog from './StoppDialog';
 
 export const NACHRICHT_MAX = 2000;
 export const EINGABE_ZEILEN = 8;
 const KOPF = 40;
-
-const laeuftNoch = (e: ChatEintrag) => e.status === 'offen' || e.status === 'in_arbeit';
-
-function Blase({ ich, fehler, children }: { ich: boolean; fehler?: boolean; children: React.ReactNode }) {
-  return (
-    <Box
-      sx={{
-        alignSelf: ich ? 'flex-end' : 'flex-start',
-        maxWidth: '88%',
-        px: 1.5,
-        py: 1,
-        borderRadius: ich ? '12px 12px 4px 12px' : '12px 12px 12px 4px',
-        bgcolor: ich ? FARBE.akzent : FARBE.panel,
-        color: ich ? '#ffffff' : fehler ? FARBE.fehler : FARBE.text,
-        border: ich ? 'none' : `1px solid ${FARBE.linie}`,
-        fontSize: 13,
-        lineHeight: 1.5,
-        whiteSpace: 'pre-wrap',
-        overflowWrap: 'anywhere',
-      }}
-    >
-      {children}
-    </Box>
-  );
-}
-
-const kleinerKnopf = { height: 24, px: 1, fontSize: 12, fontWeight: 500, color: FARBE.gedaempft, minWidth: 0, '&:hover': { color: FARBE.text, bgcolor: FARBE.hover } } as const;
-
-// Laufender Auftrag: Punkte, Schritt-Zeile (blendet bei jedem Schritt sanft ein) und darunter eine
-// ruhig wandernde Fortschritts-Linie - man sieht, dass er lebt, ohne dass es zappelt.
-function LaufBlase({ text }: { text: string }) {
-  return (
-    <Box
-      sx={{
-        alignSelf: 'flex-start',
-        position: 'relative',
-        overflow: 'hidden',
-        maxWidth: '88%',
-        display: 'flex',
-        alignItems: 'center',
-        gap: 1,
-        px: 1.5,
-        minHeight: 36,
-        py: 0.75,
-        borderRadius: '12px 12px 12px 4px',
-        bgcolor: FARBE.panel,
-        border: `1px solid ${FARBE.linie}`,
-      }}
-    >
-      <Punkte />
-      <Box
-        key={text}
-        component="span"
-        sx={{
-          fontSize: 12,
-          lineHeight: 1.4,
-          color: FARBE.text,
-          fontVariantNumeric: 'tabular-nums',
-          '@keyframes schrittAuf': { from: { opacity: 0, transform: 'translateY(3px)' }, to: { opacity: 1, transform: 'none' } },
-          animation: 'schrittAuf 220ms cubic-bezier(0.2, 0, 0, 1)',
-          '@media (prefers-reduced-motion: reduce)': { animation: 'none' },
-        }}
-      >
-        {text}
-      </Box>
-      <Box
-        aria-hidden="true"
-        sx={{
-          position: 'absolute',
-          left: 0,
-          right: 0,
-          bottom: 0,
-          height: '2px',
-          background: `linear-gradient(90deg, transparent 0%, ${FARBE.akzent} 50%, transparent 100%)`,
-          backgroundSize: '50% 100%',
-          backgroundRepeat: 'no-repeat',
-          opacity: 0.7,
-          '@keyframes schrittLinie': { from: { backgroundPosition: '-100% 0' }, to: { backgroundPosition: '200% 0' } },
-          animation: 'schrittLinie 1.8s ease-in-out infinite',
-          '@media (prefers-reduced-motion: reduce)': { animation: 'none', opacity: 0.35, backgroundSize: '100% 100%' },
-        }}
-      />
-    </Box>
-  );
-}
-
-type Aktionen = {
-  rueckSperre: string | null;
-  // Die eine Antwort, die sich rueckgaengig machen laesst (rueckgaengigFuer).
-  rueckId: string | null;
-  rueckLaeuft: string | null;
-  rueckFehler: { id: string; grund: string } | null;
-  onRueckgaengig: (id: string) => void;
-  onExport: (v: ExportAuswahl) => void;
-  // Liegt zur Freigabe: kein Export-Vorschlag, keine Rueckgaengig-Aktion.
-  nurLesen: boolean;
-  // Schritt-Zeile des laufenden Chat-Auftrags (useLiveZeile).
-  liveZeile: string | null;
-  live: ChatLive | null;
-  gedankenSichtbar: boolean;
-  gedankenUmschalten: () => void;
-};
-
-function Eintrag({ e, a }: { e: ChatEintrag; a: Aktionen }) {
-  if (e.art === 'export') {
-    return (
-      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1, fontSize: 12, color: e.status === 'fehler' ? FARBE.fehler : FARBE.gedaempft, textAlign: 'center', px: 2 }}>
-        <PhotoLibraryOutlined sx={{ fontSize: 14, flexShrink: 0 }} />
-        {laeuftNoch(e) ? (
-          <>
-            <span>Newsletter-Bilder werden am PC gerechnet</span>
-            <Punkte />
-          </>
-        ) : (
-          <span>{e.antwort || (e.status === 'fertig' ? 'Export fertig' : 'Export fehlgeschlagen')}</span>
-        )}
-      </Box>
-    );
-  }
-  const vorschlag = e.status === 'fertig' ? exportVorschlag(e) : null;
-  const mitFassung = e.art === 'chat' && e.status === 'fertig' && e.fassung_nachher !== null;
-  const kannZurueck = mitFassung && a.rueckId === e.id;
-  const sperre = a.rueckSperre;
-  return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-      {e.nachricht && <Blase ich>{e.nachricht}</Blase>}
-      {laeuftNoch(e) ? (
-        <>
-          <LaufBlase text={a.liveZeile ?? (e.status === 'offen' ? 'Wartet auf den Assistenten …' : 'Agent denkt nach …')} />
-          {a.live && <GedankenLive live={a.live} sichtbar={a.gedankenSichtbar} umschalten={a.gedankenUmschalten} />}
-        </>
-      ) : (
-        <Blase ich={false} fehler={e.status === 'fehler'}>
-          {e.status === 'fehler' && <ErrorOutlineRounded sx={{ fontSize: 14, mr: 0.75, verticalAlign: '-2px' }} />}
-          {e.antwort || (e.status === 'fehler' ? 'Das hat nicht geklappt.' : 'Erledigt.')}
-          {e.hinweise.length > 0 && (
-            <Box component="ul" sx={{ m: 0, mt: 1, pl: 2, color: FARBE.gedaempft, fontSize: 12, lineHeight: 1.5, '& li::marker': { color: FARBE.warnung } }}>
-              {e.hinweise.map((h, i) => (
-                <li key={i}>{h}</li>
-              ))}
-            </Box>
-          )}
-          <GedankenAufklapp denken={e.denken} schritte={e.schritte} />
-        </Blase>
-      )}
-      {(mitFassung || vorschlag) && (
-        <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 0.5, mt: -0.5 }}>
-          {e.fassung_nachher !== null && (
-            <Box component="span" sx={{ fontSize: 11, color: FARBE.gedaempft, mr: 0.5, fontVariantNumeric: 'tabular-nums' }}>
-              Fassung {e.fassung_nachher}
-              {e.ergebnis.notiz ? ` · ${e.ergebnis.notiz}` : ''}
-            </Box>
-          )}
-          {mitFassung && !kannZurueck && (
-            <Box component="span" sx={{ fontSize: 11, color: FARBE.gedaempft, fontStyle: 'italic' }}>
-              · Spätere Änderungen vorhanden
-            </Box>
-          )}
-          {kannZurueck && (
-            <Tooltip title={sperre ?? 'Legt die Fassung davor als neue Fassung an'}>
-              <span>
-                <Button
-                  size="small"
-                  disabled={sperre !== null || a.rueckLaeuft !== null}
-                  onClick={() => a.onRueckgaengig(e.id)}
-                  startIcon={a.rueckLaeuft === e.id ? <CircularProgress size={12} color="inherit" /> : <UndoRounded sx={{ fontSize: 14 }} />}
-                  sx={kleinerKnopf}
-                >
-                  Rückgängig
-                </Button>
-              </span>
-            </Tooltip>
-          )}
-          {vorschlag && !a.nurLesen && (
-            <Button size="small" onClick={() => a.onExport(vorschlag)} startIcon={<IosShareRounded sx={{ fontSize: 14 }} />} sx={{ ...kleinerKnopf, color: FARBE.akzent }}>
-              Exportieren…
-            </Button>
-          )}
-        </Box>
-      )}
-      {a.rueckFehler?.id === e.id && <Box sx={{ fontSize: 12, color: FARBE.fehler }}>{a.rueckFehler.grund}</Box>}
-    </Box>
-  );
-}
 
 export type ChatLeisteProps = {
   kontext: ChatKontext;
@@ -239,30 +37,26 @@ export type ChatLeisteProps = {
 export default function ChatLeiste({ kontext, sperre: sperreVon = null, hoehe, vorschlaege = [], onExport }: ChatLeisteProps) {
   const thema = useMemo(gestaltungThema, []);
   const chat = pultStore((p) => p.chat);
+  const getrennt = pultStore((p) => p.chatGetrennt);
   const [gedankenSichtbar, gedankenUmschalten] = useGedankenSichtbar();
   const ungespeichert = pultStore((p) => p.ungespeichert);
   const hinweisOffen = pultStore((p) => p.hinweisOffen);
+  const text = pultStore((p) => p.chatText);
   const arbeitet = useAgentArbeitet();
   const nurLesen = useNurLesen();
   const sperre = sperreVon ?? (nurLesen ? LIEGT_ZUR_FREIGABE : null);
-  const liveZeile = useLiveZeile();
-  // Waehrend eines Chat-Laufs: Vormerken statt Senden, Stopp in der Kopfzeile.
-  const laufId = pultStore((p) => laufenderChat(p.chat)?.id ?? null);
-  const chatLauf = laufId !== null;
-  const stoppLaeuft = pultStore((p) => p.chat?.live?.stopp != null);
-  // Stopp-Dialog: id des Laufs, fuer den er geoeffnet wurde (null = zu). Endet der Lauf, geht er zu.
+  // Stopp-Dialog: id der Runde, fuer die er geoeffnet wurde (null = zu). Endet sie, geht er zu.
   const [stoppFuer, setStoppFuer] = useState<string | null>(null);
+  const dialogOffen = stoppDialogOffen(stoppFuer, chat);
   useEffect(() => {
-    if (laufId === null || laufId !== stoppFuer) setStoppFuer(null);
-  }, [laufId, stoppFuer]);
+    if (stoppFuer !== null && !dialogOffen) setStoppFuer(null);
+  }, [stoppFuer, dialogOffen]);
   const eingabe = useRef<HTMLTextAreaElement>(null);
   const [offen, setOffen] = useState(true);
-  const text = pultStore((p) => p.chatText);
-  const setText = chatTextSetzen;
   const [sendet, setSendet] = useState(false);
   const [fehler, setFehler] = useState<string | null>(null);
   const [rueckLaeuft, setRueckLaeuft] = useState<string | null>(null);
-  const [rueckFehler, setRueckFehler] = useState<{ id: string; grund: string } | null>(null);
+  const [fehlerAn, setFehlerAn] = useState<{ id: string; grund: string } | null>(null);
   const liste = useRef<HTMLDivElement>(null);
   const hinweis = pultStore((p) => p.chatHinweis);
   const hochladenLaeuft = pultStore((p) => !sendenErlaubt(p.chatAnhaenge));
@@ -273,7 +67,7 @@ export default function ChatLeiste({ kontext, sperre: sperreVon = null, hoehe, v
   useEffect(() => {
     const el = liste.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [offen, verlauf.length, letzter?.status, liveZeile]);
+  }, [offen, verlauf.length, letzter?.status, letzter?.schritt_nr]);
 
   // Mehrere Runden duerfen laufen; nur ein Newsletter-Export am PC sperrt das Senden.
   const sendSperre =
@@ -289,49 +83,48 @@ export default function ChatLeiste({ kontext, sperre: sperreVon = null, hoehe, v
     const grund = await chatAbschicken(text.trim(), kontext);
     setSendet(false);
     if (grund) setFehler(grund);
-    else setText('');
+    else chatTextSetzen('');
   };
 
-  const aktionen: Aktionen = {
+  const aktionen: RundenAktionen = {
     rueckSperre:
       sperre ??
-      (arbeitet
-        ? 'Der Assistent arbeitet gerade'
-        : hinweisOffen
-          ? HINWEIS_OFFEN
-          : ungespeichert
-            ? 'Erst speichern – sonst gingen deine Änderungen verloren'
-            : null),
+      (arbeitet ? 'Der Assistent arbeitet gerade' : hinweisOffen ? HINWEIS_OFFEN : ungespeichert ? 'Erst speichern – sonst gingen deine Änderungen verloren' : null),
     rueckId: rueckgaengigFuer(verlauf, chat?.neueste ?? null),
     rueckLaeuft,
-    rueckFehler,
+    fehlerAn,
     onRueckgaengig: async (id) => {
       setRueckLaeuft(id);
-      setRueckFehler(null);
+      setFehlerAn(null);
       const grund = await chatRueckgaengig(id);
       setRueckLaeuft(null);
-      if (grund) setRueckFehler({ id, grund });
+      if (grund) setFehlerAn({ id, grund });
     },
     onExport,
+    onStopp: (e: ChatEintrag) => {
+      if (e.status !== 'wartet') {
+        setStoppFuer(e.id);
+        return;
+      }
+      setFehlerAn(null);
+      void chatStoppen('verwerfen', e.id).then((grund) => {
+        if (grund) setFehlerAn({ id: e.id, grund });
+      });
+    },
     nurLesen,
-    liveZeile,
-    live: chat?.live ?? null,
+    getrennt,
     gedankenSichtbar,
     gedankenUmschalten,
   };
 
   return (
     <ThemeProvider theme={thema}>
-      <Box
-        {...ablage}
-        sx={{ position: 'relative', display: 'flex', flexDirection: 'column', bgcolor: FARBE.panel, color: FARBE.text, fontFamily: UI_SCHRIFT, minHeight: 0 }}
-      >
+      <Box {...ablage} sx={{ position: 'relative', display: 'flex', flexDirection: 'column', bgcolor: FARBE.panel, color: FARBE.text, fontFamily: UI_SCHRIFT, minHeight: 0 }}>
         {ablageFlaeche}
-        <Box sx={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
         <ButtonBase
           onClick={() => setOffen((o) => !o)}
           aria-expanded={offen}
-          sx={{ flex: 1, minWidth: 0, height: KOPF, px: 2, gap: 1, justifyContent: 'flex-start', fontFamily: UI_SCHRIFT, transition: uebergang('background-color'), '&:hover': { bgcolor: FARBE.hover }, '&.Mui-focusVisible': FOKUS }}
+          sx={{ flexShrink: 0, height: KOPF, px: 2, gap: 1, justifyContent: 'flex-start', fontFamily: UI_SCHRIFT, transition: uebergang('background-color'), '&:hover': { bgcolor: FARBE.hover }, '&.Mui-focusVisible': FOKUS }}
         >
           <AutoAwesomeRounded sx={{ fontSize: 16, color: FARBE.akzent }} />
           <Box component="span" sx={{ fontSize: 13, fontWeight: 600 }}>
@@ -343,23 +136,7 @@ export default function ChatLeiste({ kontext, sperre: sperreVon = null, hoehe, v
           </Box>
           <ExpandMoreRounded sx={{ ml: 'auto', fontSize: 18, color: FARBE.gedaempft, transform: offen ? 'none' : 'rotate(180deg)', transition: uebergang('transform') }} />
         </ButtonBase>
-        {chatLauf && (
-          <Tooltip title={stoppLaeuft ? 'Wird gestoppt …' : 'Den Assistenten anhalten'}>
-            <span>
-              <Button
-                size="small"
-                disabled={stoppLaeuft}
-                onClick={() => setStoppFuer(laufId)}
-                startIcon={<StopRounded sx={{ fontSize: 14 }} />}
-                sx={{ mr: 1, height: 26, px: 1.25, fontSize: 12, fontWeight: 600, color: FARBE.text, border: `1px solid ${FARBE.linie}`, borderRadius: '13px', '&:hover': { bgcolor: FARBE.hover, borderColor: FARBE.gedaempft }, '&.Mui-disabled': { color: FARBE.gedaempft } }}
-              >
-                {stoppLaeuft ? 'Stoppt …' : 'Stopp'}
-              </Button>
-            </span>
-          </Tooltip>
-        )}
-        </Box>
-        <StoppDialog offen={stoppDialogOffen(stoppFuer, chat)} onClose={() => setStoppFuer(null)} />
+        <StoppDialog offen={dialogOffen} auftrag={stoppFuer} onClose={() => setStoppFuer(null)} />
 
         {offen && (
           <Box sx={{ height: hoehe, display: 'flex', flexDirection: 'column', minHeight: 0, borderTop: `1px solid ${FARBE.linie}` }}>
@@ -372,7 +149,7 @@ export default function ChatLeiste({ kontext, sperre: sperreVon = null, hoehe, v
                     {vorschlaege.map((v) => (
                       <ButtonBase
                         key={v}
-                        onClick={() => setText(v)}
+                        onClick={() => chatTextSetzen(v)}
                         sx={{ px: 1.25, height: 28, borderRadius: '14px', border: `1px solid ${FARBE.linie}`, fontSize: 12, color: FARBE.text, fontFamily: UI_SCHRIFT, transition: uebergang('background-color', 'border-color'), '&:hover': { bgcolor: FARBE.hover, borderColor: FARBE.gedaempft }, '&.Mui-focusVisible': FOKUS }}
                       >
                         {v}
@@ -394,21 +171,7 @@ export default function ChatLeiste({ kontext, sperre: sperreVon = null, hoehe, v
                 </Box>
               )}
               <KontextChips />
-              <Box
-                sx={{
-                  display: 'flex',
-                  alignItems: 'flex-end',
-                  gap: 1,
-                  pl: 1.5,
-                  pr: 0.5,
-                  py: 0.5,
-                  borderRadius: '8px',
-                  bgcolor: FARBE.feld,
-                  border: '1px solid transparent',
-                  transition: uebergang('border-color'),
-                  '&:focus-within': { borderColor: FARBE.akzent },
-                }}
-              >
+              <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: 1, pl: 1.5, pr: 0.5, py: 0.5, borderRadius: '8px', bgcolor: FARBE.feld, border: '1px solid transparent', transition: uebergang('border-color'), '&:focus-within': { borderColor: FARBE.akzent } }}>
                 {bueroklammer}
                 <InputBase
                   multiline
@@ -418,7 +181,7 @@ export default function ChatLeiste({ kontext, sperre: sperreVon = null, hoehe, v
                   inputRef={eingabe}
                   placeholder="Nachricht an den Assistenten"
                   onChange={(ev) => {
-                    setText(ev.target.value.slice(0, NACHRICHT_MAX));
+                    chatTextSetzen(ev.target.value.slice(0, NACHRICHT_MAX));
                     chatHinweisWeg();
                   }}
                   onPaste={beimEinfuegen}
@@ -437,15 +200,7 @@ export default function ChatLeiste({ kontext, sperre: sperreVon = null, hoehe, v
                       aria-label="Senden"
                       disabled={!kannSenden}
                       onClick={() => void senden()}
-                      sx={{
-                        width: 28,
-                        height: 28,
-                        mb: '2px',
-                        bgcolor: FARBE.akzent,
-                        color: '#ffffff',
-                        '&:hover': { bgcolor: '#4a7bf0', color: '#ffffff' },
-                        '&.Mui-disabled': { bgcolor: FARBE.linie, color: FARBE.gedaempft },
-                      }}
+                      sx={{ width: 28, height: 28, mb: '2px', bgcolor: FARBE.akzent, color: '#ffffff', '&:hover': { bgcolor: '#4a7bf0', color: '#ffffff' }, '&.Mui-disabled': { bgcolor: FARBE.linie, color: FARBE.gedaempft } }}
                     >
                       {sendet ? <CircularProgress size={14} color="inherit" /> : <ArrowUpwardRounded sx={{ fontSize: 16 }} />}
                     </IconButton>
