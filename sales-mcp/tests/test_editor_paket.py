@@ -111,3 +111,9 @@ def test_paket_kennt_parallele_runden():
     text = (ORDNER / "editor.js").read_text(encoding="utf-8")
     for s in ("wartet auf freien Platz", "Runden laufen", "Aus der Warteschlange nehmen"):
         assert s in text, s
+
+
+def test_paket_kennt_veraltete_markierung():
+    text = (ORDNER / "editor.js").read_text(encoding="utf-8")
+    for s in ("aus der letzten Nachricht", "Wieder mitschicken"):
+        assert s in text, s

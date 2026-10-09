@@ -4,11 +4,11 @@
 import React from 'react';
 
 import { CloseRounded, DescriptionOutlined, ErrorOutlineRounded, ImageOutlined, LayersOutlined, ViewDayOutlined } from '@mui/icons-material';
-import { Box, CircularProgress, IconButton, Tooltip } from '@mui/material';
+import { Box, ButtonBase, CircularProgress, IconButton, Tooltip } from '@mui/material';
 
-import { AnhangChip, AuswahlChip, MAX_AUSWAHL } from '../../chatKontext';
+import { AnhangChip, AUS_LETZTER, AuswahlChip, MAX_AUSWAHL } from '../../chatKontext';
 import { ANZEIGE } from '../../pult';
-import { anhangEntfernen, anhangVorschau, auswahlEntfernen, pultStore } from '../../pultZustand';
+import { anhangEntfernen, anhangVorschau, auswahlAuffrischen, auswahlEntfernen, chipAuffrischenAuftrag, pultStore } from '../../pultZustand';
 import { FARBE, FOKUS, uebergang } from '../Gestaltung/gestaltungStil';
 
 const HOEHE = 28;
@@ -48,15 +48,48 @@ function Auswahl({ c }: { c: AuswahlChip }) {
   return (
     <Box
       role="listitem"
-      title={c.kurz}
-      sx={{ ...chipRahmen, bgcolor: 'rgba(91,140,255,0.14)', border: '1px solid rgba(91,140,255,0.45)', color: FARBE.text }}
+      title={c.alt ? `${c.kurz} – ${AUS_LETZTER}` : c.kurz}
+      sx={{
+        ...chipRahmen,
+        bgcolor: c.alt ? 'transparent' : 'rgba(91,140,255,0.14)',
+        border: c.alt ? `1px dashed ${FARBE.linie}` : '1px solid rgba(91,140,255,0.45)',
+        color: c.alt ? FARBE.gedaempft : FARBE.text,
+      }}
     >
-      <Symbol sx={{ fontSize: 14, color: FARBE.akzent, flexShrink: 0 }} />
-      <Box component="span" sx={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-        {c.kurz}
-      </Box>
+      {c.alt ? (
+        <ButtonBase onClick={() => chipAuffrischenAuftrag(c)} aria-label={`Wieder mitschicken: ${c.kurz}`} sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, minWidth: 0, fontSize: 12, color: 'inherit', borderRadius: '6px', '&.Mui-focusVisible': FOKUS }}>
+          <Symbol sx={{ fontSize: 14, flexShrink: 0, opacity: 0.6 }} />
+          <Box component="span" sx={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {c.kurz} · {AUS_LETZTER}
+          </Box>
+        </ButtonBase>
+      ) : (
+        <>
+          <Symbol sx={{ fontSize: 14, color: FARBE.akzent, flexShrink: 0 }} />
+          <Box component="span" sx={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {c.kurz}
+          </Box>
+        </>
+      )}
       <Weg titel={c.kurz} onClick={() => auswahlEntfernen(c)} />
     </Box>
+  );
+}
+
+// Die Einzelauswahl der letzten Nachricht: ausgegraut, Anklicken schickt sie wieder mit.
+function Liegengeblieben({ kurz }: { kurz: string }) {
+  return (
+    <ButtonBase
+      role="listitem"
+      onClick={auswahlAuffrischen}
+      aria-label={`Wieder mitschicken: ${kurz}`}
+      sx={{ ...chipRahmen, pr: 0.75, border: `1px dashed ${FARBE.linie}`, color: FARBE.gedaempft, fontSize: 12, '&.Mui-focusVisible': FOKUS }}
+    >
+      <ViewDayOutlined sx={{ fontSize: 14, flexShrink: 0, opacity: 0.6 }} />
+      <Box component="span" sx={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {kurz} · {AUS_LETZTER}
+      </Box>
+    </ButtonBase>
   );
 }
 
@@ -123,12 +156,13 @@ function Anhang({ a }: { a: AnhangChip }) {
   );
 }
 
-export default function KontextChips() {
+export default function KontextChips({ altform = null }: { altform?: { kurz: string } | null }) {
   const auswahl = pultStore((p) => p.chatAuswahl);
   const anhaenge = pultStore((p) => p.chatAnhaenge);
-  if (auswahl.length === 0 && anhaenge.length === 0) return null;
+  if (auswahl.length === 0 && anhaenge.length === 0 && !altform) return null;
   return (
     <Box role="list" aria-label="Kontext für die nächste Nachricht" sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, px: 0.5, pb: 1 }}>
+      {altform && <Liegengeblieben kurz={altform.kurz} />}
       {auswahl.map((c) => (
         <Auswahl key={`${c.art}:${c.flaeche ?? ''}:${c.id}`} c={c} />
       ))}

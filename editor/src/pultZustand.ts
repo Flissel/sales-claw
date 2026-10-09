@@ -19,9 +19,12 @@ import {
 } from './chat';
 import {
   AnhangChip,
+  altformSchluessel,
   AuswahlChip,
+  chipAuffrischen,
   chipHinzu,
   chipsBereinigen,
+  chipsNachSenden,
   dateiPruefen,
   entferntHinweis,
   kontextBauen,
@@ -76,6 +79,8 @@ type TPult = {
   // die naechste Nachricht.
   chatAuswahl: AuswahlChip[];
   chatAnhaenge: AnhangChip[];
+  // Einzelauswahl der letzten Nachricht (fenster|id); dieselbe geht erst nach Anklicken wieder mit.
+  gesendeteAuswahl: string | null;
   // Text im Chat-Eingabefeld (überlebt das Neuladen nach einer Agenten-Fassung).
   chatText: string;
   // Kurzer Hinweis am Eingabefeld (Chip abgelehnt, markierte Elemente weggefallen); null = keiner.
@@ -106,6 +111,7 @@ export const pultStore = create<TPult>(() => ({
   zwischenstand: null,
   chatAuswahl: [],
   chatAnhaenge: [],
+  gesendeteAuswahl: null,
   chatText: '',
   chatHinweis: null,
   nurLesen: false,
@@ -434,30 +440,43 @@ export async function chatAbschicken(nachricht: string, kontext: ChatKontext): P
 
 // Momentaufnahme der Chips beim Senden: kontext mit ihnen und die Chips selbst (zum Leeren danach -
 // was waehrend des Sendens dazukommt, bleibt fuer die naechste Nachricht stehen).
-type MitChips = { ok: true; kontext: ChatKontext; auswahl: AuswahlChip[]; anhaenge: AnhangChip[] };
+type MitChips = { ok: true; kontext: ChatKontext; auswahl: AuswahlChip[]; anhaenge: AnhangChip[]; altform: string | null };
 const KONTEXT_MAX = 4096;
 
 // Vor dem Senden: markierte Elemente, die es im Dokument nicht mehr gibt (Agent, Rueckgaengig,
 // Loeschen), fallen weg - mit Hinweis am Eingabefeld; die Nachricht geht trotzdem.
 function mitChips(kontext: ChatKontext): MitChips | { ok: false; grund: string } {
-  const { chatAnhaenge } = pultStore.getState();
+  const { chatAnhaenge, gesendeteAuswahl } = pultStore.getState();
   if (!sendenErlaubt(chatAnhaenge)) return { ok: false, grund: 'Erst warten, bis die Anhänge hochgeladen sind' };
   const { behalten: chatAuswahl, entfernt } = chipsBereinigen(pultStore.getState().chatAuswahl, getDocument(), null);
   if (entfernt > 0) pultStore.setState({ chatAuswahl, chatHinweis: entferntHinweis(entfernt) });
   const k = kontextBauen(chatAuswahl, chatAnhaenge);
   const neu: ChatKontext = { ...kontext };
+  const altform = altformSchluessel(kontext);
+  // Liegengeblieben: dieselbe Einzelauswahl wie beim letzten Senden geht nicht noch einmal mit.
+  if (altform !== null && altform === gesendeteAuswahl) neu.auswahl = null;
   if (k.auswahl.length > 0) neu.auswahl = k.auswahl;
   if (k.anhaenge.length > 0) neu.anhaenge = k.anhaenge;
   if (kontextBytes(neu) > KONTEXT_MAX) return { ok: false, grund: 'Zu viel Kontext – entferne ein paar Chips' };
-  return { ok: true, kontext: neu, auswahl: chatAuswahl, anhaenge: chatAnhaenge };
+  return { ok: true, kontext: neu, auswahl: chatAuswahl.filter((c) => !c.alt), anhaenge: chatAnhaenge, altform };
 }
 
 function chipsVerbraucht(mit: MitChips) {
   const { chatAuswahl, chatAnhaenge } = pultStore.getState();
   pultStore.setState({
-    chatAuswahl: chatAuswahl.filter((c) => !mit.auswahl.includes(c)),
+    chatAuswahl: chipsNachSenden(chatAuswahl, mit.auswahl),
     chatAnhaenge: chatAnhaenge.filter((a) => !mit.anhaenge.some((m) => m.id === a.id)),
+    // Die Einzelauswahl dieser Nachricht ist ab jetzt "aus der letzten Nachricht" (auch wenn Chips sie ersetzten).
+    ...(mit.altform !== null ? { gesendeteAuswahl: mit.altform } : {}),
   });
+}
+
+export function auswahlAuffrischen() {
+  pultStore.setState({ gesendeteAuswahl: null });
+}
+
+export function chipAuffrischenAuftrag(chip: AuswahlChip) {
+  pultStore.setState({ chatAuswahl: chipAuffrischen(pultStore.getState().chatAuswahl, chip) });
 }
 
 // Vor jedem Start eines Auftrags: ein offener Bildhinweis hielte das Neuladen auf (die

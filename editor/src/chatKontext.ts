@@ -3,7 +3,10 @@
 // als kontext.auswahl / kontext.anhaenge an das Pult geht (Pruefung dort: api/chat.py).
 
 // Markierter Block (Newsletter) oder markierte Ebene (flaeche = Block-id der Gestaltungsflaeche).
-export type AuswahlChip = { art: 'block' | 'ebene'; id: string; flaeche?: string; kurz: string };
+// alt: ging mit der letzten Nachricht mit und geht erst nach Anklicken wieder mit (Spec 2026-10-09 §2).
+export type AuswahlChip = { art: 'block' | 'ebene'; id: string; flaeche?: string; kurz: string; alt?: boolean };
+
+export const AUS_LETZTER = 'aus der letzten Nachricht';
 
 // id: nur hier im Editor (zwei gleichnamige Dateien bleiben zwei Chips). name: waehrend des Uploads
 // der Dateiname, danach der gespeicherte Name aus der Antwort. fortschritt 0..1.
@@ -39,12 +42,28 @@ function kappen(text: string, max: number): string {
   return z.length <= max ? text : z.slice(0, max - 1).join('').trimEnd() + '…';
 }
 
-// Neue Liste mit dem Chip; unveraendert (dieselbe Liste), wenn er schon drin ist, die Liste voll
-// ist oder die id vom Pult abgelehnt wuerde.
+// Neue Liste mit dem Chip; ein alter gleicher Chip wird aufgefrischt. Unveraendert (dieselbe Liste), wenn er
+// frisch schon drin ist, die Liste voll ist oder die id vom Pult abgelehnt wuerde.
 export function chipHinzu(liste: AuswahlChip[], chip: AuswahlChip): AuswahlChip[] {
   if (!ID.test(chip.id) || (chip.flaeche !== undefined && !ID.test(chip.flaeche))) return liste;
-  if (liste.length >= MAX_AUSWAHL || liste.some((c) => gleich(c, chip))) return liste;
+  const da = liste.find((c) => gleich(c, chip));
+  if (da) return da.alt ? chipAuffrischen(liste, da) : liste;
+  if (liste.length >= MAX_AUSWAHL) return liste;
   return [...liste, { ...chip, kurz: kappen(chip.kurz, KURZ_MAX) }];
+}
+
+export function chipAuffrischen(liste: AuswahlChip[], chip: AuswahlChip): AuswahlChip[] {
+  return liste.map((c) => (gleich(c, chip) ? { ...c, alt: false } : c));
+}
+
+// Nach dem Senden: die mitgeschickten Chips bleiben als "aus der letzten Nachricht" stehen.
+export function chipsNachSenden(liste: AuswahlChip[], gesendet: AuswahlChip[]): AuswahlChip[] {
+  return liste.map((c) => (gesendet.some((g) => gleich(g, c)) ? { ...c, alt: true } : c));
+}
+
+// Die Einzelauswahl (Altform: markierter Block bzw. ausgewaehlte Ebene) als Schluessel je Fenster.
+export function altformSchluessel(k: { fenster: string; auswahl: unknown }): string | null {
+  return typeof k.auswahl === 'string' && k.auswahl ? `${k.fenster}|${k.auswahl}` : null;
 }
 
 // Erste nicht leere Zeile (Texte ohne Markdown-Zeichen, Dateinamen unveraendert), auf ein Wortende gekuerzt.
@@ -125,7 +144,7 @@ export function dateiPruefen(f: { name: string; size: number }): { art: 'bild' |
 // Was mit der Nachricht geht: alle Chips (bis 8), nur fertig hochgeladene Anhaenge (bis 5).
 export function kontextBauen(auswahl: AuswahlChip[], anhaenge: AnhangChip[]): { auswahl: AuswahlKontext[]; anhaenge: AnhangKontext[] } {
   return {
-    auswahl: auswahl.slice(0, MAX_AUSWAHL).map((c) => (c.flaeche === undefined ? { art: c.art, id: c.id, kurz: c.kurz } : { art: c.art, id: c.id, flaeche: c.flaeche, kurz: c.kurz })),
+    auswahl: auswahl.filter((c) => !c.alt).slice(0, MAX_AUSWAHL).map((c) => (c.flaeche === undefined ? { art: c.art, id: c.id, kurz: c.kurz } : { art: c.art, id: c.id, flaeche: c.flaeche, kurz: c.kurz })),
     anhaenge: anhaenge
       .filter((a) => a.status === 'fertig')
       .slice(0, MAX_ANHAENGE)

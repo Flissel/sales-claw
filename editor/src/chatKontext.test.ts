@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import {
   AnhangChip,
+  altformSchluessel,
   AuswahlChip,
+  chipAuffrischen,
   chipHinzu,
+  chipsNachSenden,
   chipsBereinigen,
   dateiPruefen,
   entferntHinweis,
@@ -176,5 +179,27 @@ describe('kontextBytes', () => {
   });
   it('Kommas und Doppelpunkte in Texten zaehlen nicht doppelt', () => {
     expect(kontextBytes({ k: 'a, b: c' })).toBe(new TextEncoder().encode('{"k": "a, b: c"}').length);
+  });
+});
+
+describe('Markierungen aus der letzten Nachricht', () => {
+  const t: AuswahlChip = { art: 'block', id: 'titel', kurz: 'Überschrift · Herbst' };
+  const b: AuswahlChip = { art: 'block', id: 'bild', kurz: 'Bild · held' };
+  it('nach dem Senden bleiben die Chips stehen, aber als alt', () => {
+    expect(chipsNachSenden([t, b], [t])).toEqual([{ ...t, alt: true }, b]);
+  });
+  it('alte Chips gehen nicht mit', () => {
+    expect(kontextBauen([{ ...t, alt: true }, b], []).auswahl.map((c) => c.id)).toEqual(['bild']);
+  });
+  it('Anklicken oder erneutes Setzen frischt auf', () => {
+    expect(chipAuffrischen([{ ...t, alt: true }], t)).toEqual([{ ...t, alt: false }]);
+    expect(chipHinzu([{ ...t, alt: true }], t)).toEqual([{ ...t, alt: false }]);
+    const frisch = [t];
+    expect(chipHinzu(frisch, t)).toBe(frisch);
+  });
+  it('Einzelauswahl als Schluessel je Fenster', () => {
+    expect(altformSchluessel({ fenster: 'newsletter', auswahl: 'titel' })).toBe('newsletter|titel');
+    expect(altformSchluessel({ fenster: 'newsletter', auswahl: null })).toBeNull();
+    expect(altformSchluessel({ fenster: 'newsletter', auswahl: [t] })).toBeNull();
   });
 });

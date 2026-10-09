@@ -9,9 +9,11 @@ import type { Start } from './pult';
 import {
   anhangEntfernen,
   anhangHinzu,
+  auswahlAuffrischen,
   auswahlEntfernen,
   blockAlsKontext,
   chatAbschicken,
+  chipAuffrischenAuftrag,
   chipsAbgleichen,
   ebeneAlsKontext,
   pultStore,
@@ -85,6 +87,7 @@ beforeEach(() => {
     chatAuswahl: [],
     chatAnhaenge: [],
     chatHinweis: null,
+    gesendeteAuswahl: null,
     zwischenstand: null,
   });
 });
@@ -117,7 +120,7 @@ describe('Kontext-Chips', () => {
 });
 
 describe('Senden mit Chips', () => {
-  it('chatAbschicken schickt kontext.auswahl und kontext.anhaenge und leert die Chips', async () => {
+  it('chatAbschicken schickt kontext.auswahl und kontext.anhaenge und markiert die Chips als aus der letzten Nachricht', async () => {
     blockAlsKontext('titel');
     pultStore.setState({ chatAnhaenge: [fertig('foto.png'), fertig('preise.pdf', 'dokument')] });
     const f = netz({ '/c': [200, { auftrag: 'a9' }], '/c.json': [200, { laeuft: true, verlauf: [eintrag({ id: 'a9' })] }] });
@@ -133,7 +136,7 @@ describe('Senden mit Chips', () => {
         ],
       },
     });
-    expect(pultStore.getState().chatAuswahl).toEqual([]);
+    expect(pultStore.getState().chatAuswahl).toEqual([{ art: 'block', id: 'titel', kurz: 'Überschrift · Goldener Herbst', alt: true }]);
     expect(pultStore.getState().chatAnhaenge).toEqual([]);
   });
 
@@ -180,7 +183,8 @@ describe('Senden mit Chips', () => {
     blockAlsKontext('bild');
     fertigMelden(new Response(JSON.stringify({ auftrag: 'a9' }), { status: 200 }));
     expect(await p).toBeNull();
-    expect(pultStore.getState().chatAuswahl.map((c) => c.id)).toEqual(['bild']);
+    // Die gesendete Markierung bleibt als alt stehen, die neue ist frisch.
+    expect(pultStore.getState().chatAuswahl.map((c) => [c.id, c.alt ?? false])).toEqual([['titel', true], ['bild', false]]);
   });
 });
 
@@ -304,5 +308,31 @@ describe('Hinweise am Eingabefeld', () => {
     pultStore.setState({ chatAuswahl: [] });
     blockAlsKontext('titel');
     expect(pultStore.getState().chatHinweis).toBeNull();
+  });
+});
+
+describe('Liegengebliebene Markierung', () => {
+  it('veraltete Markierung geht nicht mit; Anklicken schickt sie wieder mit', async () => {
+    const f = netz({ '/c': [200, { auftrag: 'a', status: 'offen' }], '/c.json': [200, { laeuft: false, verlauf: [] }] });
+    const kontext = { fenster: 'newsletter', auswahl: 'titel' };
+    expect(await chatAbschicken('Mach das größer', kontext)).toBeNull();
+    expect(await chatAbschicken('das aber nicht', kontext)).toBeNull();
+    auswahlAuffrischen();
+    expect(await chatAbschicken('doch das', kontext)).toBeNull();
+    const bodies = f.mock.calls.filter((c) => c[0] === '/c').map((c) => JSON.parse(String((c[1] as RequestInit).body)));
+    expect(bodies.map((b) => b.kontext.auswahl)).toEqual(['titel', null, 'titel']);
+  });
+
+  it('gesendete Chips gehen beim naechsten Mal nicht mit, angeklickt wieder', async () => {
+    const f = netz({ '/c': [200, { auftrag: 'a', status: 'offen' }], '/c.json': [200, { laeuft: false, verlauf: [] }] });
+    blockAlsKontext('titel');
+    await chatAbschicken('eins', { fenster: 'newsletter', auswahl: null });
+    await chatAbschicken('zwei', { fenster: 'newsletter', auswahl: null });
+    chipAuffrischenAuftrag(pultStore.getState().chatAuswahl[0]);
+    await chatAbschicken('drei', { fenster: 'newsletter', auswahl: null });
+    const auswahl = f.mock.calls.filter((c) => c[0] === '/c').map((c) => JSON.parse(String((c[1] as RequestInit).body)).kontext.auswahl);
+    expect(auswahl[0]).toEqual([{ art: 'block', id: 'titel', kurz: expect.any(String) }]);
+    expect(auswahl[1]).toBeNull();
+    expect(auswahl[2]).toEqual([{ art: 'block', id: 'titel', kurz: expect.any(String) }]);
   });
 });

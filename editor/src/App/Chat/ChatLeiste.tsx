@@ -9,7 +9,8 @@ import { ArrowUpwardRounded, AutoAwesomeRounded, ErrorOutlineRounded, ExpandMore
 import { Box, ButtonBase, CircularProgress, IconButton, InputBase, ThemeProvider, Tooltip } from '@mui/material';
 
 import { ChatEintrag, ChatKontext, ExportAuswahl, exportLaeuft, rueckgaengigFuer, stoppDialogOffen } from '../../chat';
-import { sendenErlaubt } from '../../chatKontext';
+import { altformSchluessel, kurzText, sendenErlaubt } from '../../chatKontext';
+import { getDocument } from '../../documents/editor/EditorContext';
 import { chatAbschicken, chatHinweisWeg, chatRueckgaengig, chatStoppen, chatTextSetzen, HINWEIS_OFFEN, pultStore } from '../../pultZustand';
 import { FARBE, FOKUS, gestaltungThema, uebergang, UI_SCHRIFT } from '../Gestaltung/gestaltungStil';
 
@@ -34,8 +35,18 @@ export type ChatLeisteProps = {
   onExport: (v: ExportAuswahl) => void;
 };
 
+// Kurztext der Einzelauswahl (Block im Newsletter; im Gestaltungsfenster die Ebenen-id).
+function auswahlKurz(k: ChatKontext): string {
+  const id = typeof k.auswahl === 'string' ? k.auswahl : '';
+  const block = k.fenster === 'newsletter' ? getDocument()[id] : undefined;
+  return block ? kurzText(block as { type: string; data?: unknown }) : id;
+}
+
 export default function ChatLeiste({ kontext, sperre: sperreVon = null, hoehe, vorschlaege = [], onExport }: ChatLeisteProps) {
   const thema = useMemo(gestaltungThema, []);
+  const gesendeteAuswahl = pultStore((p) => p.gesendeteAuswahl);
+  const schluessel = altformSchluessel(kontext);
+  const altform = schluessel !== null && schluessel === gesendeteAuswahl ? { kurz: auswahlKurz(kontext) } : null;
   const chat = pultStore((p) => p.chat);
   const getrennt = pultStore((p) => p.chatGetrennt);
   const [gedankenSichtbar, gedankenUmschalten] = useGedankenSichtbar();
@@ -170,7 +181,7 @@ export default function ChatLeiste({ kontext, sperre: sperreVon = null, hoehe, v
                   <span>{fehler ?? hinweis ?? sperre}</span>
                 </Box>
               )}
-              <KontextChips />
+              <KontextChips altform={altform} />
               <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: 1, pl: 1.5, pr: 0.5, py: 0.5, borderRadius: '8px', bgcolor: FARBE.feld, border: '1px solid transparent', transition: uebergang('border-color'), '&:focus-within': { borderColor: FARBE.akzent } }}>
                 {bueroklammer}
                 <InputBase
