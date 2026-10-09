@@ -33,6 +33,7 @@ ANHAENGE_MAX = 5                     # wie ANHAENGE_MAX der Marketing-API (konte
 REFRESH_S = 5
 FORMATE = {"mail": "Mail", "handy": "Handy"}
 PC_LAEUFT = "Wird übernommen, sobald der PC läuft"
+WISSEN_WARTET = "Wissen wird aktualisiert, sobald der PC läuft"
 KEIN_PROFIL = "Noch kein Branding – erzähl mir von der Firma"
 NEUERES_PROFIL = "Inzwischen gibt es ein neueres Profil – bitte neu laden"
 _FARBE = re.compile(r"#[0-9A-Fa-f]{6}")
@@ -251,10 +252,7 @@ def routen(ui) -> list:
         return (f'<details class="spur"{" open" if offen else ""}><summary>Gedanken &amp; Schritte</summary>'
                 + "".join(teile) + "</details>")
 
-    def laufend_html(d: dict) -> str:
-        l = d.get("laufend")
-        if not isinstance(l, dict):
-            return ""
+    def live_html(l: dict) -> str:
         schritte = _schritte(l.get("schritte"))[-LIVE_SCHRITTE:]
         denken = l.get("denken") if isinstance(l.get("denken"), str) else ""
         ausschnitt = ("…" + denken[-LIVE_ZEICHEN:]) if len(denken) > LIVE_ZEICHEN else denken
@@ -263,6 +261,13 @@ def routen(ui) -> list:
         return ('<div class="spur-live"><p class="meta">Denkt nach …</p>' + _schritt_liste(schritte)
                 + (f'<p class="meta">{e(KENNUNG)}</p><pre class="spur-denken">{e(ausschnitt)}</pre>'
                    if ausschnitt.strip() else "") + "</div>")
+
+    def laufend_html(d: dict) -> str:
+        """Live-Spur im Chat-Bereich. Der Wissens-Lauf hat seine eigene Anzeige (wissen_html)."""
+        l = d.get("laufend")
+        if not isinstance(l, dict) or l.get("art") == "wissen":
+            return ""
+        return live_html(l)
 
     def letzte_html(d: dict) -> str:
         """Ergebnis der letzten Uebernahme: ein Fehlschlag mit Grund, ein Erfolg nur mit Hinweisen.
@@ -279,6 +284,26 @@ def routen(ui) -> list:
             return (f'<p class="meta">Letzte Übernahme: {e(antwort)}</p>' + liste(hinweise, "meta")
                     + spur_html(z))
         return ""
+
+    def wissen_html(d: dict) -> str:
+        """Rowboat-Lauf nach der Uebernahme: Ergebnis mit Dateiliste, Hinweisen, Denken und Schritten."""
+        w = d.get("wissen")
+        if not isinstance(w, dict):
+            return ""
+        status = str(w.get("status") or "")
+        if status == "offen":
+            return f'<p class="meta">{WISSEN_WARTET}</p>'
+        if status == "in_arbeit":
+            return '<p class="meta">Wissen wird aktualisiert …</p>' + live_html(w)
+        zeilen = [z for z in str(w.get("antwort") or "").splitlines() if z.strip()]
+        kopf = zeilen[0] if zeilen else ""
+        hinweise = w.get("hinweise") if isinstance(w.get("hinweise"), list) else []
+        if status == "fehler":
+            return (f'<p class="warnung">Wissen nicht aktualisiert: {e(kopf or "ohne Grund")}</p>'
+                    + liste(hinweise, "meta") + spur_html(w))
+        dateien = [z[2:] for z in zeilen[1:] if z.startswith("- ")]
+        return (f'<div class="marke-wissen"><p class="meta">{e(kopf)}</p>' + liste(dateien, "wissen-dateien")
+                + liste(hinweise, "meta") + spur_html(w) + "</div>")
 
     def chat_html(d: dict) -> str:
         runden = []
@@ -366,12 +391,14 @@ def routen(ui) -> list:
             alter = _alter_s(d.get("uebernahme_seit"))
             wartet = alter is not None and alter > PC_WARTET_NACH_S
             status = f'<p class="status-zeile">{PC_LAEUFT if wartet else "Wird übernommen …"}</p>'
-        arbeitet = bool(d.get("laeuft") or d.get("uebernahme"))
+        wissen = d.get("wissen") if isinstance(d.get("wissen"), dict) else {}
+        im_chat = bool(d.get("laeuft") or d.get("uebernahme"))
+        arbeitet = bool(im_chat or wissen.get("status") == "in_arbeit")
         rumpf = ('<link rel="stylesheet" href="/marketing/schrift/schriften.css">'
                  + marketing_mandant.umschalter(e, ui.CSRF_TOKEN, m, liste, SEITE)
                  + '<p class="meta">Das Markenprofil bestimmt Farben, Schriften und Logo neuer Newsletter. '
                    'Erzähl dem Marken-Agenten von der Firma; was er vorschlägt, übernimmst du hier.</p>'
-                 + profil_html(d) + f'<p><a href="{SEITE}?bearbeiten=1">Profil bearbeiten</a></p>' + status + (laufend_html(d) if arbeitet else "") + letzte_html(d) + "<h2>Chat</h2>" + chat_html(d) + formular_html(d)
+                 + profil_html(d) + f'<p><a href="{SEITE}?bearbeiten=1">Profil bearbeiten</a></p>' + status + (laufend_html(d) if im_chat else "") + letzte_html(d) + wissen_html(d) + "<h2>Chat</h2>" + chat_html(d) + formular_html(d)
                  + vorschlag_html(d, fmt))
         antwort = ui._seite("Marke", rumpf, refresh=REFRESH_S if arbeitet else None)
         antwort.headers["Content-Security-Policy"] = ui._csp_mit_rahmen("'self'", bilddaten=True, schriften=True)

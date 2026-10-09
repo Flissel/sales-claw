@@ -761,3 +761,54 @@ def test_formular_ohne_firma_wird_abgewiesen(angemeldet, pult):
     r = angemeldet.post("/marketing/marke/bearbeiten", headers=HOST,
                         data={"csrf": ui.CSRF_TOKEN, "akzent": "#000000"})
     assert r.status_code == 422 and pult.nach("/marke/bearbeiten") == []
+
+
+WISSEN_FERTIG = {"status": "fertig",
+                 "antwort": "Wissen aktualisiert: 2 Dateien\n- companys/VibeMind/Über uns.md\n- Projekte/Plan.md\n"
+                            "- Markenhandbuch: companys/VibeMind/Markenhandbuch.md",
+                 "hinweise": ["Projekte/X.md: Ausschnitt nicht genau einmal gefunden – verworfen"],
+                 "denken": "Updating <docs>", "schritte": [{"zeit": "14:30:05", "text": "Kandidaten: 5 Dokumente"}],
+                 "geaendert_am": "2026-10-09T14:31:00"}
+
+
+def test_wissens_lauf_fertig_mit_liste_denken_und_schritten(angemeldet, pult):
+    pult.zustand["wissen"] = WISSEN_FERTIG
+    s = rumpf(seite(angemeldet))
+    assert '<p class="meta">Wissen aktualisiert: 2 Dateien</p>' in s
+    assert "<li>Projekte/Plan.md</li>" in s and "<li>Markenhandbuch: companys/VibeMind/Markenhandbuch.md</li>" in s
+    assert "verworfen" in s and "Kandidaten: 5 Dokumente" in s and "Updating &lt;docs&gt;" in s
+
+
+def test_wissens_lauf_wartet_und_laeuft(angemeldet, pult):
+    pult.zustand["wissen"] = {**WISSEN_FERTIG, "status": "offen"}
+    r = seite(angemeldet)
+    assert "Wissen wird aktualisiert, sobald der PC läuft" in r.text and 'http-equiv="refresh"' not in r.text
+    pult.zustand["wissen"] = {**WISSEN_FERTIG, "status": "in_arbeit"}
+    pult.zustand["laufend"] = {"art": "wissen", "denken": "Reading",
+                               "schritte": [{"zeit": "14:30:01", "text": "Frage an Claude"}]}
+    r = seite(angemeldet)
+    assert "Wissen wird aktualisiert …" in r.text and '<meta http-equiv="refresh" content="5">' in r.text
+    assert 'class="spur-live"' in r.text
+
+
+def test_wissens_denken_erscheint_nicht_im_chat_bereich(angemeldet, pult):
+    pult.zustand["wissen"] = {**WISSEN_FERTIG, "status": "in_arbeit", "denken": "NurWissen"}
+    pult.zustand["laufend"] = {"art": "wissen", "denken": "Reading", "schritte": []}
+    s = rumpf(seite(angemeldet))
+    assert s.count('class="spur-live"') == 1 and s.index("marke-chat") > s.index("Wissen wird aktualisiert")
+
+
+def test_wissens_lauf_teilweise_und_fehler(angemeldet, pult):
+    teilweise = ("teilweise: abgebrochen bei Projekte/Plan.md (OSError: Platte voll); geschrieben: "
+                 "companys/VibeMind/Über uns.md – jede Datei ist gesichert")
+    pult.zustand["wissen"] = {**WISSEN_FERTIG, "hinweise": [teilweise]}
+    assert teilweise in rumpf(seite(angemeldet))
+    pult.zustand["wissen"] = {**WISSEN_FERTIG, "status": "fehler",
+                              "antwort": "Wissen-Lauf nicht möglich: companys/VibeMind fehlt"}
+    assert ('<p class="warnung">Wissen nicht aktualisiert: Wissen-Lauf nicht möglich: companys/VibeMind fehlt</p>'
+            in rumpf(seite(angemeldet)))
+
+
+def test_ohne_wissens_lauf_kein_abschnitt(angemeldet):
+    s = rumpf(seite(angemeldet))
+    assert "marke-wissen" not in s and "Wissen wird" not in s

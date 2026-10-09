@@ -1121,6 +1121,8 @@ iframe.layout-bild { position: relative; width: 200%; height: 520px; border: 0;
 .spur-denken { white-space: pre-wrap; font: inherit; font-size: .8rem; color: var(--gedaempft); max-height: 18rem; overflow: auto; margin: .2rem 0; }
 .spur-live { margin: .4rem 0 .8rem; padding: .4rem .6rem; border-left: 2px solid var(--linie); }
 .marke-logo.dunkel { background: #1a1a1a; }
+.marke-wissen { margin: .4rem 0 .8rem; }
+.wissen-dateien { margin: .2rem 0; padding-left: 1.2rem; font-size: .85rem; }
 .logo-fassungen { display: flex; gap: .6rem; flex-wrap: wrap; margin: .4rem 0; }
 .logo-fassung { margin: 0; padding: .4rem; border: 1px solid var(--linie); border-radius: 4px; text-align: center; font-size: .8rem; }
 .logo-fassung img { max-height: 4rem; max-width: 10rem; display: block; margin: 0 auto .2rem; }
