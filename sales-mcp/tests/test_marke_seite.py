@@ -600,3 +600,50 @@ def test_minor4_vorschau_ohne_id_traegt_die_firma(angemeldet, pult):
     pult.zustand["vorschlag"] = VORSCHLAG
     angemeldet.get("/marketing/marke/vorschau", headers=HOST)
     assert "mandant=vibemind" in pult.nach("/vorschlaege/")[-1][1]
+
+
+# --- Denken und Schritte des Agenten ---------------------------------------------
+
+
+def test_runde_mit_spur_hat_details(angemeldet, pult):
+    pult.zustand["auftraege"] = [{"nachricht": "Hallo", "antwort": "Fertig.", "status": "fertig", "hinweise": [],
+                                  "denken": "Let me <think>",
+                                  "schritte": [{"zeit": "08:03:41", "text": "Webseite gelesen (3 Seiten)"}]}]
+    s = rumpf(seite(angemeldet))
+    assert '<details class="spur">' in s
+    assert "Gedanken &amp; Schritte" in s
+    assert "Claudes Gedanken (zusammengefasst, englisch)" in s
+    assert "Let me &lt;think&gt;" in s and "Let me <think>" not in s
+    assert "08:03:41" in s and "Webseite gelesen (3 Seiten)" in s
+
+
+def test_ohne_spur_kein_details(angemeldet, pult):
+    pult.zustand["auftraege"] = [{"nachricht": "Hallo", "antwort": "Fertig.", "status": "fertig", "hinweise": [],
+                                  "denken": "", "schritte": []}]
+    assert "spur" not in rumpf(seite(angemeldet))
+
+
+def test_laufend_zeigt_live_ausschnitt(angemeldet, pult):
+    pult.zustand["laeuft"] = True
+    pult.zustand["laufend"] = {"art": "chat", "denken": "A" * 1000 + "ENDE",
+                               "schritte": [{"zeit": "08:00:01", "text": "Frage an Claude"}]}
+    s = rumpf(seite(angemeldet))
+    assert 'class="spur-live"' in s
+    assert "Denkt nach …" in s
+    assert "ENDE" in s and "A" * 700 not in s
+    assert "Frage an Claude" in s
+
+
+def test_laufende_runde_hat_kein_aufklapp_element(angemeldet, pult):
+    pult.zustand["laeuft"] = True
+    pult.zustand["auftraege"] = [{"nachricht": "Hallo", "antwort": "", "status": "in_arbeit", "hinweise": [],
+                                  "denken": "halb", "schritte": [{"zeit": "08:00:01", "text": "Frage an Claude"}]}]
+    assert "<details" not in rumpf(seite(angemeldet))
+
+
+def test_uebernahme_schritte_in_letzte(angemeldet, pult):
+    pult.zustand["letzte_uebernahme"] = {"status": "fertig", "antwort": "Die Marke ist übernommen.",
+                                         "hinweise": [], "geaendert_am": "2026-10-07T11:00:00",
+                                         "schritte": [{"zeit": "08:02:13", "text": "Rowboat geschrieben"}]}
+    s = rumpf(seite(angemeldet))
+    assert "Rowboat geschrieben" in s and '<details class="spur">' in s

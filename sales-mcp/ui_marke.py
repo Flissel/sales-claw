@@ -161,6 +161,43 @@ def routen(ui) -> list:
         teile.append(hinweise)
         return f'<div class="marke-profil">{"".join(teile)}</div>'
 
+    LIVE_ZEICHEN = 600
+    LIVE_SCHRITTE = 8
+    KENNUNG = "Claudes Gedanken (zusammengefasst, englisch)"
+
+    def _schritte(schritte) -> list[dict]:
+        return [s for s in (schritte or []) if isinstance(s, dict)
+                and isinstance(s.get("zeit"), str) and isinstance(s.get("text"), str)]
+
+    def _schritt_liste(schritte: list[dict]) -> str:
+        return ('<ol class="spur-schritte">'
+                + "".join(f'<li><span class="zeit">{e(s["zeit"])}</span> {e(s["text"])}</li>' for s in schritte)
+                + "</ol>") if schritte else ""
+
+    def spur_html(a: dict, offen: bool = False) -> str:
+        schritte = _schritte(a.get("schritte"))
+        denken = a.get("denken") if isinstance(a.get("denken"), str) else ""
+        if not schritte and not denken.strip():
+            return ""
+        teile = [_schritt_liste(schritte)]
+        if denken.strip():
+            teile.append(f'<p class="meta">{e(KENNUNG)}</p><pre class="spur-denken">{e(denken)}</pre>')
+        return (f'<details class="spur"{" open" if offen else ""}><summary>Gedanken &amp; Schritte</summary>'
+                + "".join(teile) + "</details>")
+
+    def laufend_html(d: dict) -> str:
+        l = d.get("laufend")
+        if not isinstance(l, dict):
+            return ""
+        schritte = _schritte(l.get("schritte"))[-LIVE_SCHRITTE:]
+        denken = l.get("denken") if isinstance(l.get("denken"), str) else ""
+        ausschnitt = ("…" + denken[-LIVE_ZEICHEN:]) if len(denken) > LIVE_ZEICHEN else denken
+        if not schritte and not ausschnitt.strip():
+            return '<div class="spur-live"><p class="meta">Denkt nach …</p></div>'
+        return ('<div class="spur-live"><p class="meta">Denkt nach …</p>' + _schritt_liste(schritte)
+                + (f'<p class="meta">{e(KENNUNG)}</p><pre class="spur-denken">{e(ausschnitt)}</pre>'
+                   if ausschnitt.strip() else "") + "</div>")
+
     def letzte_html(d: dict) -> str:
         """Ergebnis der letzten Uebernahme: ein Fehlschlag mit Grund, ein Erfolg nur mit Hinweisen.
         Waehrend eine Uebernahme laeuft, zaehlt nur deren Status."""
@@ -171,9 +208,10 @@ def routen(ui) -> list:
         antwort = str(z.get("antwort") or "")
         if z.get("status") == "fehler":
             return (f'<p class="warnung">Übernehmen fehlgeschlagen: {e(antwort or "ohne Grund")}</p>'
-                    + liste(hinweise, "meta"))
-        if hinweise:
-            return f'<p class="meta">Letzte Übernahme: {e(antwort)}</p>' + liste(hinweise, "meta")
+                    + liste(hinweise, "meta") + spur_html(z))
+        if hinweise or (z.get("status") == "fertig" and _schritte(z.get("schritte"))):
+            return (f'<p class="meta">Letzte Übernahme: {e(antwort)}</p>' + liste(hinweise, "meta")
+                    + spur_html(z))
         return ""
 
     def chat_html(d: dict) -> str:
@@ -190,7 +228,9 @@ def routen(ui) -> list:
             hinweise = "".join(f"<li>{e(str(h))}</li>" for h in a.get("hinweise") or [])
             runden.append(f'<div class="chat-runde"><p class="chat-du">{e(str(a.get("nachricht") or ""))}</p>'
                           + (f'<p class="chat-agent">{antwort}</p>' if antwort else "")
-                          + (f'<ul class="meta">{hinweise}</ul>' if hinweise else "") + "</div>")
+                          + (f'<ul class="meta">{hinweise}</ul>' if hinweise else "")
+                          + ("" if str(a.get("status") or "") in ("offen", "in_arbeit") else spur_html(a))
+                          + "</div>")
         leer = '<p class="meta">Noch keine Nachrichten.</p>'
         return f'<div class="marke-chat">{"".join(runden) or leer}</div>'
 
@@ -258,7 +298,7 @@ def routen(ui) -> list:
                  + marketing_mandant.umschalter(e, ui.CSRF_TOKEN, m, liste, SEITE)
                  + '<p class="meta">Das Markenprofil bestimmt Farben, Schriften und Logo neuer Newsletter. '
                    'Erzähl dem Marken-Agenten von der Firma; was er vorschlägt, übernimmst du hier.</p>'
-                 + profil_html(d) + status + letzte_html(d) + "<h2>Chat</h2>" + chat_html(d) + formular_html(d)
+                 + profil_html(d) + status + (laufend_html(d) if arbeitet else "") + letzte_html(d) + "<h2>Chat</h2>" + chat_html(d) + formular_html(d)
                  + vorschlag_html(d, fmt))
         antwort = ui._seite("Marke", rumpf, refresh=REFRESH_S if arbeitet else None)
         antwort.headers["Content-Security-Policy"] = ui._csp_mit_rahmen("'self'", bilddaten=True, schriften=True)

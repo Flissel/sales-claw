@@ -1114,6 +1114,12 @@ iframe.layout-bild { position: relative; width: 200%; height: 520px; border: 0;
 .marke-chat { display: grid; gap: .5rem; margin-bottom: .8rem; }
 .chat-du { margin: 0; padding: .4rem .6rem; border-radius: 4px; background: var(--flaeche); }
 .chat-agent { margin: 0 0 0 1.2rem; }
+.spur { margin: .2rem 0 0 1.2rem; font-size: .85rem; }
+.spur summary { cursor: pointer; color: var(--gedaempft); }
+.spur-schritte { margin: .3rem 0; padding-left: 1.2rem; }
+.spur-schritte .zeit { color: var(--gedaempft); font-variant-numeric: tabular-nums; }
+.spur-denken { white-space: pre-wrap; font: inherit; font-size: .8rem; color: var(--gedaempft); max-height: 18rem; overflow: auto; margin: .2rem 0; }
+.spur-live { margin: .4rem 0 .8rem; padding: .4rem .6rem; border-left: 2px solid var(--linie); }
 .status-zeile { font-weight: 700; }
 .pult-felder fieldset.farben { display: grid; gap: 0 1rem;
   grid-template-columns: repeat(2, minmax(0, 1fr)); }
