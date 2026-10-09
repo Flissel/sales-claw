@@ -4,37 +4,31 @@
 // Waehrend der Agent arbeitet: drei Punkte im 150-ms-Takt; das Dokument sperrt der Aufrufer
 // mit der SperrSchicht (Sperre.tsx).
 // Live-Lauf (Spec 2026-10-02-newsletter-agent-live §2.3, §3): Schritt-Zeile mit ruhiger
-// Fortschritts-Linie, die Eingabe bleibt offen ("Vormerken"), die vorgemerkte Nachricht steht als
-// eigene Karte da, "Stopp" fragt im StoppDialog nach.
+// Fortschritts-Linie, die Eingabe bleibt offen, "Stopp" fragt im StoppDialog nach.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   ArrowUpwardRounded,
-  AttachFileRounded,
   AutoAwesomeRounded,
   ErrorOutlineRounded,
   ExpandMoreRounded,
   InfoOutlined,
   IosShareRounded,
   PhotoLibraryOutlined,
-  ScheduleRounded,
   StopRounded,
   UndoRounded,
 } from '@mui/icons-material';
 import { Box, Button, ButtonBase, CircularProgress, IconButton, InputBase, ThemeProvider, Tooltip } from '@mui/material';
 
-import { ChatEintrag, ChatKontext, ChatLive, ExportAuswahl, exportVorschlag, laufenderChat, rueckgaengigFuer, stoppDialogOffen, Vorgemerkt } from '../../chat';
+import { ChatEintrag, ChatKontext, ChatLive, ExportAuswahl, exportLaeuft, exportVorschlag, laufenderChat, rueckgaengigFuer, stoppDialogOffen } from '../../chat';
 import { sendenErlaubt } from '../../chatKontext';
 import {
   chatAbschicken,
   chatHinweisWeg,
   chatRueckgaengig,
-  chatVormerken,
+  chatTextSetzen,
   HINWEIS_OFFEN,
   pultStore,
-  vorgemerkteChipsZurueck,
-  vormerkungLoeschenAuftrag,
-  vormerkungStartenAuftrag,
 } from '../../pultZustand';
 import { FARBE, FOKUS, gestaltungThema, uebergang, UI_SCHRIFT } from '../Gestaltung/gestaltungStil';
 
@@ -71,10 +65,6 @@ function Blase({ ich, fehler, children }: { ich: boolean; fehler?: boolean; chil
       {children}
     </Box>
   );
-}
-
-function mehrzahl(n: number, eins: string, viele: string): string {
-  return n === 0 ? '' : `${n} ${n === 1 ? eins : viele}`;
 }
 
 const kleinerKnopf = { height: 24, px: 1, fontSize: 12, fontWeight: 500, color: FARBE.gedaempft, minWidth: 0, '&:hover': { color: FARBE.text, bgcolor: FARBE.hover } } as const;
@@ -133,97 +123,6 @@ function LaufBlase({ text }: { text: string }) {
           '@media (prefers-reduced-motion: reduce)': { animation: 'none', opacity: 0.35, backgroundSize: '100% 100%' },
         }}
       />
-    </Box>
-  );
-}
-
-// Die vorgemerkte Nachricht: waehrend des Laufs "startet danach", nach Fehler oder Stopp mit
-// "Starten" / "Verwerfen" (sie startet dann nicht von selbst).
-function VorgemerktKarte({
-  v,
-  laeuft,
-  sperre,
-  onBearbeiten,
-}: {
-  v: Vorgemerkt;
-  laeuft: boolean;
-  // Grund, warum nichts gestartet oder geaendert werden darf (null = frei).
-  sperre: string | null;
-  onBearbeiten: (text: string) => void;
-}) {
-  const [aktion, setAktion] = useState<'loeschen' | 'starten' | null>(null);
-  const [fehler, setFehler] = useState<string | null>(null);
-  const tun = async (art: 'loeschen' | 'starten') => {
-    setAktion(art);
-    setFehler(null);
-    const grund = art === 'loeschen' ? await vormerkungLoeschenAuftrag() : await vormerkungStartenAuftrag();
-    setAktion(null);
-    if (grund) setFehler(grund);
-  };
-  const dreher = (art: 'loeschen' | 'starten') => (aktion === art ? <CircularProgress size={12} color="inherit" /> : undefined);
-  const chips = pultStore((p) => (p.vorgemerktChips?.id === v.id ? p.vorgemerktChips : null));
-  const mitgenommen = chips
-    ? [mehrzahl(chips.auswahl.length, 'markiertes Element', 'markierte Elemente'), mehrzahl(chips.anhaenge.length, 'Anhang', 'Anhänge')].filter(Boolean).join(' · ')
-    : '';
-  return (
-    <Box
-      sx={{
-        alignSelf: 'flex-end',
-        maxWidth: '88%',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 0.75,
-        px: 1.5,
-        py: 1,
-        borderRadius: '12px 12px 4px 12px',
-        border: `1px dashed ${FARBE.akzent}`,
-        bgcolor: 'rgba(91,140,255,0.08)',
-        '@keyframes karteAuf': { from: { opacity: 0, transform: 'translateY(4px)' }, to: { opacity: 1, transform: 'none' } },
-        animation: 'karteAuf 200ms cubic-bezier(0.2, 0, 0, 1)',
-        '@media (prefers-reduced-motion: reduce)': { animation: 'none' },
-      }}
-    >
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, fontSize: 11, fontWeight: 600, color: FARBE.akzent, letterSpacing: 0.2 }}>
-        <ScheduleRounded sx={{ fontSize: 13 }} />
-        {laeuft ? 'Vorgemerkt · startet danach' : 'Vorgemerkt · noch nicht gestartet'}
-      </Box>
-      <Box sx={{ fontSize: 13, lineHeight: 1.5, color: FARBE.text, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{v.nachricht}</Box>
-      {mitgenommen && (
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, fontSize: 11, color: FARBE.gedaempft }}>
-          <AttachFileRounded sx={{ fontSize: 12, transform: 'rotate(45deg)' }} />
-          mit {mitgenommen}
-        </Box>
-      )}
-      <Box sx={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 0.5, mr: -0.75 }}>
-        <Button size="small" disabled={aktion !== null || sperre === LIEGT_ZUR_FREIGABE} onClick={() => onBearbeiten(v.nachricht)} sx={kleinerKnopf}>
-          Bearbeiten
-        </Button>
-        {laeuft ? (
-          <Button size="small" disabled={aktion !== null} onClick={() => void tun('loeschen')} startIcon={dreher('loeschen')} sx={kleinerKnopf}>
-            Löschen
-          </Button>
-        ) : (
-          <>
-            <Button size="small" disabled={aktion !== null} onClick={() => void tun('loeschen')} startIcon={dreher('loeschen')} sx={kleinerKnopf}>
-              Verwerfen
-            </Button>
-            <Tooltip title={sperre ?? ''}>
-              <span>
-                <Button
-                  size="small"
-                  disabled={aktion !== null || sperre !== null}
-                  onClick={() => void tun('starten')}
-                  startIcon={dreher('starten')}
-                  sx={{ ...kleinerKnopf, color: FARBE.akzent }}
-                >
-                  Starten
-                </Button>
-              </span>
-            </Tooltip>
-          </>
-        )}
-      </Box>
-      {fehler && <Box sx={{ fontSize: 12, color: FARBE.fehler }}>{fehler}</Box>}
     </Box>
   );
 }
@@ -343,7 +242,6 @@ export default function ChatLeiste({ kontext, sperre: sperreVon = null, hoehe, v
   const [gedankenSichtbar, gedankenUmschalten] = useGedankenSichtbar();
   const ungespeichert = pultStore((p) => p.ungespeichert);
   const hinweisOffen = pultStore((p) => p.hinweisOffen);
-  const basis = pultStore((p) => p.basis);
   const arbeitet = useAgentArbeitet();
   const nurLesen = useNurLesen();
   const sperre = sperreVon ?? (nurLesen ? LIEGT_ZUR_FREIGABE : null);
@@ -352,7 +250,6 @@ export default function ChatLeiste({ kontext, sperre: sperreVon = null, hoehe, v
   const laufId = pultStore((p) => laufenderChat(p.chat)?.id ?? null);
   const chatLauf = laufId !== null;
   const stoppLaeuft = pultStore((p) => p.chat?.live?.stopp != null);
-  const vorgemerkt = chat?.vorgemerkt ?? null;
   // Stopp-Dialog: id des Laufs, fuer den er geoeffnet wurde (null = zu). Endet der Lauf, geht er zu.
   const [stoppFuer, setStoppFuer] = useState<string | null>(null);
   useEffect(() => {
@@ -360,7 +257,8 @@ export default function ChatLeiste({ kontext, sperre: sperreVon = null, hoehe, v
   }, [laufId, stoppFuer]);
   const eingabe = useRef<HTMLTextAreaElement>(null);
   const [offen, setOffen] = useState(true);
-  const [text, setText] = useState('');
+  const text = pultStore((p) => p.chatText);
+  const setText = chatTextSetzen;
   const [sendet, setSendet] = useState(false);
   const [fehler, setFehler] = useState<string | null>(null);
   const [rueckLaeuft, setRueckLaeuft] = useState<string | null>(null);
@@ -375,11 +273,11 @@ export default function ChatLeiste({ kontext, sperre: sperreVon = null, hoehe, v
   useEffect(() => {
     const el = liste.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [offen, verlauf.length, letzter?.status, vorgemerkt?.id, vorgemerkt?.nachricht, liveZeile]);
+  }, [offen, verlauf.length, letzter?.status, liveZeile]);
 
-  // Ein Export am PC sperrt weiter; ein Chat-Lauf nimmt die naechste Nachricht als Vormerkung.
+  // Mehrere Runden duerfen laufen; nur ein Newsletter-Export am PC sperrt das Senden.
   const sendSperre =
-    sperre ?? (arbeitet && !chatLauf ? 'Der Assistent arbeitet gerade' : hochladenLaeuft ? 'Erst warten, bis die Anhänge hochgeladen sind' : null);
+    sperre ?? (exportLaeuft(chat) ? 'Der Assistent arbeitet gerade' : hochladenLaeuft ? 'Erst warten, bis die Anhänge hochgeladen sind' : null);
   const kannSenden = text.trim() !== '' && sendSperre === null && !sendet;
 
   const { ablage, ablageFlaeche, bueroklammer, beimEinfuegen } = useAnhangAblage({ onGrund: setFehler, onAngehaengt: () => setOffen(true) });
@@ -388,8 +286,7 @@ export default function ChatLeiste({ kontext, sperre: sperreVon = null, hoehe, v
     if (!kannSenden) return;
     setSendet(true);
     setFehler(null);
-    // Im Lauf und bei stehender Vormerkung immer ueber die Vormerkung (PUT), nie ein zweiter Auftrag.
-    const grund = chatLauf || vorgemerkt ? await chatVormerken(text.trim(), kontext) : await chatAbschicken(text.trim(), kontext);
+    const grund = await chatAbschicken(text.trim(), kontext);
     setSendet(false);
     if (grund) setFehler(grund);
     else setText('');
@@ -405,7 +302,7 @@ export default function ChatLeiste({ kontext, sperre: sperreVon = null, hoehe, v
           : ungespeichert
             ? 'Erst speichern – sonst gingen deine Änderungen verloren'
             : null),
-    rueckId: rueckgaengigFuer(verlauf, basis),
+    rueckId: rueckgaengigFuer(verlauf, chat?.neueste ?? null),
     rueckLaeuft,
     rueckFehler,
     onRueckgaengig: async (id) => {
@@ -421,12 +318,6 @@ export default function ChatLeiste({ kontext, sperre: sperreVon = null, hoehe, v
     live: chat?.live ?? null,
     gedankenSichtbar,
     gedankenUmschalten,
-  };
-
-  const bearbeiten = (t: string) => {
-    setText(t);
-    vorgemerkteChipsZurueck();
-    eingabe.current?.focus();
   };
 
   return (
@@ -492,7 +383,6 @@ export default function ChatLeiste({ kontext, sperre: sperreVon = null, hoehe, v
               ) : (
                 verlauf.map((e) => <Eintrag key={e.id} e={e} a={aktionen} />)
               )}
-              {vorgemerkt && <VorgemerktKarte v={vorgemerkt} laeuft={chatLauf} sperre={nurLesen ? LIEGT_ZUR_FREIGABE : arbeitet !== null ? 'Der Assistent arbeitet gerade' : null} onBearbeiten={bearbeiten} />}
             </Box>
 
             <Box sx={{ flexShrink: 0, p: 1, borderTop: `1px solid ${FARBE.linie}` }}>
@@ -526,7 +416,7 @@ export default function ChatLeiste({ kontext, sperre: sperreVon = null, hoehe, v
                   maxRows={EINGABE_ZEILEN}
                   value={text}
                   inputRef={eingabe}
-                  placeholder={chatLauf ? (vorgemerkt ? 'Vormerkung ersetzen …' : 'Nächste Nachricht vormerken …') : arbeitet ? 'Der Assistent arbeitet …' : 'Nachricht an den Assistenten'}
+                  placeholder="Nachricht an den Assistenten"
                   onChange={(ev) => {
                     setText(ev.target.value.slice(0, NACHRICHT_MAX));
                     chatHinweisWeg();
@@ -541,32 +431,6 @@ export default function ChatLeiste({ kontext, sperre: sperreVon = null, hoehe, v
                   inputProps={{ 'aria-label': 'Nachricht an den Assistenten', maxLength: NACHRICHT_MAX }}
                   sx={{ flex: 1, py: 0.5, fontSize: 13, lineHeight: 1.5, color: FARBE.text, '& textarea::placeholder': { color: FARBE.gedaempft, opacity: 1 } }}
                 />
-                {chatLauf ? (
-                  <Tooltip title={sendSperre ?? (vorgemerkt ? 'Ersetzt die vorgemerkte Nachricht' : 'Startet, sobald der Assistent fertig ist')}>
-                    <span>
-                      <Button
-                        size="small"
-                        disabled={!kannSenden}
-                        onClick={() => void senden()}
-                        startIcon={sendet ? <CircularProgress size={12} color="inherit" /> : <ScheduleRounded sx={{ fontSize: 14 }} />}
-                        sx={{
-                          height: 28,
-                          mb: '2px',
-                          px: 1.25,
-                          fontSize: 12,
-                          fontWeight: 600,
-                          borderRadius: '14px',
-                          bgcolor: FARBE.akzent,
-                          color: '#ffffff',
-                          '&:hover': { bgcolor: '#4a7bf0' },
-                          '&.Mui-disabled': { bgcolor: FARBE.linie, color: FARBE.gedaempft },
-                        }}
-                      >
-                        Vormerken
-                      </Button>
-                    </span>
-                  </Tooltip>
-                ) : (
                 <Tooltip title={sendSperre ?? 'Senden (Enter)'}>
                   <span>
                     <IconButton
@@ -587,10 +451,9 @@ export default function ChatLeiste({ kontext, sperre: sperreVon = null, hoehe, v
                     </IconButton>
                   </span>
                 </Tooltip>
-                )}
               </Box>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', px: 0.5, pt: 0.5, fontSize: 11, color: FARBE.gedaempft }}>
-                <span>{chatLauf ? 'Enter vormerken' : 'Enter senden'} · Shift+Enter neue Zeile</span>
+                <span>Enter senden · Shift+Enter neue Zeile</span>
                 {text.length > NACHRICHT_MAX - 200 && <span style={{ fontVariantNumeric: 'tabular-nums' }}>{text.length} / {NACHRICHT_MAX}</span>}
               </Box>
             </Box>

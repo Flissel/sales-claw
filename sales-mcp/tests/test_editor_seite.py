@@ -93,14 +93,8 @@ class Falsch:
         if pfad == f"/inhalte/{IID}/gestaltung":
             return self.gestaltung_antwort
         if pfad == f"/inhalte/{IID}/chat":
-            return {"auftrag": "c1"} if methode == "POST" else {
-                "laeuft": True, "verlauf": [{"id": "c1"}],
-                "live": {"schritt": "Titel", "schritt_nr": 2, "zwischenstand": {"b1": {"t": "x"}}, "stopp": None},
-                "vorgemerkt": {"id": "v1", "nachricht": "Danach den Fuss"}}
-        if pfad == f"/inhalte/{IID}/chat/vormerkung":
-            return {"id": "v1", "status": "wartet"} if methode == "PUT" else {"geloescht": True}
-        if pfad == f"/inhalte/{IID}/chat/vormerkung/starten":
-            return {"auftrag": "c2"}
+            return {"auftrag": "c1", "status": "wartet"} if methode == "POST" else {
+                "laeuft": True, "verlauf": [{"id": "c1"}], "live": None, "neueste_fassung": 3}
         if pfad == f"/inhalte/{IID}/chat/stopp":
             return {"abgeschlossen": False}
         if pfad == f"/inhalte/{IID}/chat/rueckgaengig":
@@ -1206,7 +1200,7 @@ def test_start_nennt_chat_und_export_urls(angemeldet):
 
 def test_chat_durchreichen(angemeldet, pult):
     r = _post(angemeldet, "chat", {"nachricht": "Mach den Titel gross", "kontext": {"auswahl": "t1"}})
-    assert r.status_code == 200 and r.json() == {"auftrag": "c1"}
+    assert r.status_code == 200 and r.json() == {"auftrag": "c1", "status": "wartet"}
     assert r.headers["cache-control"] == "no-store"
     assert pult.aufrufe[-1] == ("POST", f"/inhalte/{IID}/chat",
                                 {"nachricht": "Mach den Titel gross", "kontext": {"auswahl": "t1"}})
@@ -1221,11 +1215,8 @@ def test_chat_kontext_ist_optional(angemeldet, pult):
 def test_chat_stand_json(angemeldet, pult):
     r = angemeldet.get(f"/marketing/editor/{IID}/chat.json", headers=HOST)
     assert r.status_code == 200
-    # live und vorgemerkt kommen unveraendert durch.
-    assert r.json() == {
-        "laeuft": True, "verlauf": [{"id": "c1"}],
-        "live": {"schritt": "Titel", "schritt_nr": 2, "zwischenstand": {"b1": {"t": "x"}}, "stopp": None},
-        "vorgemerkt": {"id": "v1", "nachricht": "Danach den Fuss"}}
+    # live und neueste_fassung kommen unveraendert durch.
+    assert r.json() == {"laeuft": True, "verlauf": [{"id": "c1"}], "live": None, "neueste_fassung": 3}
     assert r.headers["cache-control"] == "no-store"
     assert pult.aufrufe[-1] == ("GET", f"/inhalte/{IID}/chat", None)
 
@@ -1338,7 +1329,7 @@ def test_chat_und_export_fehlerabbildung(angemeldet, pult, ende, body):
         assert r.status_code == 503 and r.json() == {"grund": "Assistent gerade nicht erreichbar"}
 
 
-# --- Vormerken und Stopp durchreichen -------------------------------------------------
+# --- Stopp durchreichen -------------------------------------------------
 
 UUID_A = "123e4567-e89b-42d3-a456-426614174000"
 
@@ -1349,31 +1340,17 @@ def _senden(c, methode, ende, body=None, csrf=True):
     return c.request(methode, f"/marketing/editor/{IID}/{ende}", headers=h, **kw)
 
 
-def test_start_nennt_vormerk_und_stopp_urls(angemeldet):
+def test_start_nennt_stopp_url_ohne_vormerkung(angemeldet):
     start = _start(angemeldet.get(f"/marketing/editor/{IID}", headers=HOST).text)
-    assert start["chat_vormerkung_url"] == f"/marketing/editor/{IID}/chat/vormerkung"
-    assert start["chat_vormerkung_starten_url"] == f"/marketing/editor/{IID}/chat/vormerkung/starten"
     assert start["chat_stopp_url"] == f"/marketing/editor/{IID}/chat/stopp"
+    assert "chat_vormerkung_url" not in start and "chat_vormerkung_starten_url" not in start
 
 
-def test_vormerken_put_durchreichen(angemeldet, pult):
-    r = _senden(angemeldet, "PUT", "chat/vormerkung", {"nachricht": "Danach den Fuss", "kontext": {"a": 1}})
-    assert r.status_code == 200 and r.json() == {"id": "v1", "status": "wartet"}
-    assert r.headers["cache-control"] == "no-store"
-    assert pult.aufrufe[-1] == ("PUT", f"/inhalte/{IID}/chat/vormerkung",
-                                {"nachricht": "Danach den Fuss", "kontext": {"a": 1}})
-
-
-def test_vormerkung_loeschen_durchreichen(angemeldet, pult):
-    r = _senden(angemeldet, "DELETE", "chat/vormerkung")
-    assert r.status_code == 200 and r.json() == {"geloescht": True}
-    assert pult.aufrufe[-1] == ("DELETE", f"/inhalte/{IID}/chat/vormerkung", None)
-
-
-def test_vormerkung_starten_durchreichen(angemeldet, pult):
-    r = _senden(angemeldet, "POST", "chat/vormerkung/starten")
-    assert r.status_code == 200 and r.json() == {"auftrag": "c2"}
-    assert pult.aufrufe[-1] == ("POST", f"/inhalte/{IID}/chat/vormerkung/starten", None)
+@pytest.mark.parametrize("methode,ende", [("PUT", "chat/vormerkung"), ("DELETE", "chat/vormerkung"),
+                                          ("POST", "chat/vormerkung/starten")])
+def test_vormerk_routen_gibt_es_nicht_mehr(angemeldet, pult, methode, ende):
+    assert _senden(angemeldet, methode, ende, {"nachricht": "x"} if methode == "PUT" else None).status_code in (404, 405)
+    assert not [a for a in pult.aufrufe if "vormerkung" in a[1]]
 
 
 @pytest.mark.parametrize("body,erwartet", [
@@ -1387,28 +1364,11 @@ def test_stopp_durchreichen(angemeldet, pult, body, erwartet):
 
 
 @pytest.mark.parametrize("methode,ende,body", [
-    ("PUT", "chat/vormerkung", {"nachricht": "x"}),
-    ("DELETE", "chat/vormerkung", None),
-    ("POST", "chat/vormerkung/starten", None),
     ("POST", "chat/stopp", {"art": "behalten"}),
 ])
-def test_vormerk_und_stopp_ohne_csrf(angemeldet, pult, methode, ende, body):
+def test_stopp_ohne_csrf(angemeldet, pult, methode, ende, body):
     assert _senden(angemeldet, methode, ende, body, csrf=False).status_code == 403
     assert not pult.aufrufe or pult.aufrufe[-1][0] == "GET"
-
-
-@pytest.mark.parametrize("nachricht", ["", "   ", None, 5, "x" * 2001])
-def test_vormerken_nachricht_ungueltig(angemeldet, pult, nachricht):
-    r = _senden(angemeldet, "PUT", "chat/vormerkung", {"nachricht": nachricht})
-    assert r.status_code == 422 and r.json()["grund"]
-    assert not [a for a in pult.aufrufe if a[0] == "PUT"]
-
-
-def test_vormerken_kontext_zu_gross_oder_kein_objekt(angemeldet, pult):
-    assert _senden(angemeldet, "PUT", "chat/vormerkung",
-                   {"nachricht": "Hi", "kontext": {"k": "x" * 5000}}).status_code == 422
-    assert _senden(angemeldet, "PUT", "chat/vormerkung", {"nachricht": "Hi", "kontext": [1]}).status_code == 422
-    assert not [a for a in pult.aufrufe if a[0] == "PUT"]
 
 
 @pytest.mark.parametrize("body", [
@@ -1422,12 +1382,9 @@ def test_stopp_formfehler(angemeldet, pult, body):
 
 
 @pytest.mark.parametrize("methode,ende,body", [
-    ("PUT", "chat/vormerkung", {"nachricht": "x"}),
-    ("DELETE", "chat/vormerkung", None),
-    ("POST", "chat/vormerkung/starten", None),
     ("POST", "chat/stopp", {"art": "verwerfen"}),
 ])
-def test_vormerk_und_stopp_fehlerabbildung(angemeldet, pult, methode, ende, body):
+def test_stopp_fehlerabbildung(angemeldet, pult, methode, ende, body):
     pult.fehler = marketing_pult.PultFehler("abgelehnt", "Kein Lauf aktiv")
     r = _senden(angemeldet, methode, ende, body)
     assert r.status_code == 422 and r.json() == {"grund": "Kein Lauf aktiv"}

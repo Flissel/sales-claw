@@ -16,17 +16,15 @@ import {
   anhangHinzu,
   chatAbschicken,
   chatRueckgaengig,
-  chatVormerken,
   fensterWiederOeffnen,
   LIEGT_ZUR_FREIGABE,
   pultStarten,
   pultStore,
-  vormerkungStartenAuftrag,
 } from './pultZustand';
 
 const DOK = { root: { type: 'EmailLayout', data: { childrenIds: [] } } } as TEditorConfiguration;
 const START = { dokument: DOK, betreff: 'B', vorschautext: '', basis_fassung: 1, csrf: 'm', chat_url: '/c', einreichen_url: '/e', zurueckziehen_url: '/z' } as Start;
-const LAEUFT = { laeuft: true, verlauf: [], live: null, vorgemerkt: null };
+const LAEUFT = { laeuft: true, verlauf: [], live: null, neueste: null };
 
 function lesend() {
   resetDocument(DOK);
@@ -193,13 +191,11 @@ describe('Gestaltungsfenster bei nurLesen (T7b)', () => {
 });
 
 describe('Sperren bei nurLesen (Store)', () => {
-  it('chatAbschicken / chatVormerken / vormerkungStartenAuftrag / chatRueckgaengig / anhangHinzu rufen nichts auf', async () => {
+  it('chatAbschicken / chatRueckgaengig / anhangHinzu rufen nichts auf', async () => {
     lesend();
     const f = vi.fn();
     vi.stubGlobal('fetch', f);
     expect(await chatAbschicken('hallo', {} as never)).toBe(LIEGT_ZUR_FREIGABE);
-    expect(await chatVormerken('hallo', {} as never)).toBe(LIEGT_ZUR_FREIGABE);
-    expect(await vormerkungStartenAuftrag()).toBe(LIEGT_ZUR_FREIGABE);
     expect(await chatRueckgaengig('x')).toBe(LIEGT_ZUR_FREIGABE);
     expect(anhangHinzu(new File(['x'], 'a.png', { type: 'image/png' }))).toBe(LIEGT_ZUR_FREIGABE);
     expect(f).not.toHaveBeenCalled();

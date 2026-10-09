@@ -80,7 +80,7 @@ describe('einreichenAuftrag', () => {
   }
 
   it('gesperrt, solange der Agent arbeitet: kein Netzaufruf', async () => {
-    vorbereiten({ chat: { laeuft: true, verlauf: [], live: null, vorgemerkt: null } });
+    vorbereiten({ chat: { laeuft: true, verlauf: [], live: null, neueste: null } });
     const f = vi.fn();
     vi.stubGlobal('fetch', f);
     expect(await einreichenAuftrag()).toBe('Der Assistent arbeitet gerade');
@@ -104,7 +104,7 @@ describe('einreichenAuftrag', () => {
   });
 
   it('Export am PC sperrt wie der Agent', async () => {
-    vorbereiten({ chat: { laeuft: true, verlauf: [{ art: 'export', status: 'offen' } as never], live: null, vorgemerkt: null } });
+    vorbereiten({ chat: { laeuft: true, verlauf: [{ art: 'export', status: 'offen' } as never], live: null, neueste: null } });
     vi.stubGlobal('fetch', vi.fn());
     expect(await einreichenAuftrag()).toBe('Der Assistent arbeitet gerade');
   });

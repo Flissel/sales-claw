@@ -16,9 +16,6 @@ import {
   stoppDialogOffen,
   stoppen,
   titelSlug,
-  vormerken,
-  vormerkungLoeschen,
-  vormerkungStarten,
 } from './chat';
 import type { Start } from './pult';
 
@@ -28,8 +25,6 @@ const start = {
   chat_rueckgaengig_url: '/marketing/editor/abc/chat/rueckgaengig',
   export_vorschau_url: '/marketing/editor/abc/export/vorschau',
   export_url: '/marketing/editor/abc/export',
-  chat_vormerkung_url: '/marketing/editor/abc/chat/vormerkung',
-  chat_vormerkung_starten_url: '/marketing/editor/abc/chat/vormerkung/starten',
   chat_stopp_url: '/marketing/editor/abc/chat/stopp',
   csrf: 'marke-1',
 } as Start;
@@ -56,6 +51,10 @@ function eintrag(teil: Partial<ChatEintrag>): ChatEintrag {
     erstellt_am: '2026-10-02 12:00:00+00',
     denken: '',
     schritte: [],
+    schritt: '',
+    schritt_nr: 0,
+    stopp: null,
+    bild_hinweise: [],
     ...teil,
   };
 }
@@ -63,11 +62,14 @@ function eintrag(teil: Partial<ChatEintrag>): ChatEintrag {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('chatSenden', () => {
-  it('sendet POST mit X-CSRF und {nachricht, kontext} und liefert den Auftrag', async () => {
-    const f = vi.fn(async () => antwort(200, { auftrag: 'c-1' }));
+  it('sendet POST mit X-CSRF und {nachricht, kontext} und liefert Auftrag und Status', async () => {
+    const f = vi.fn(async () => antwort(200, { auftrag: 'a-1', status: 'wartet' }));
     vi.stubGlobal('fetch', f);
     const r = await chatSenden(start, 'Hallo', { fenster: 'flaeche:kopf', auswahl: 'titel' });
-    expect(r).toEqual({ ok: true, auftrag: 'c-1' });
+    expect(r).toEqual({ ok: true, auftrag: 'a-1', status: 'wartet' });
+    vi.stubGlobal('fetch', vi.fn(async () => antwort(200, { auftrag: 'a-2' })));
+    expect(await chatSenden(start, 'x', { fenster: 'newsletter', auswahl: null })).toEqual({ ok: true, auftrag: 'a-2', status: 'offen' });
+    vi.stubGlobal('fetch', f);
     const [adresse, init] = aufruf(f);
     expect(adresse).toBe('/marketing/editor/abc/chat');
     expect(init.method).toBe('POST');
@@ -118,28 +120,20 @@ describe('chatLaden', () => {
     expect(r?.laeuft).toBe(false);
     expect(r?.verlauf).toEqual([gut, { ...gut, id: 'a2', hinweise: [], ergebnis: {}, antwort: '' }]);
     expect(r?.live).toBeNull();
-    expect(r?.vorgemerkt).toBeNull();
+    expect(r?.neueste).toBeNull();
   });
 
-  it('liest live (Schritt, Zwischenstand, Stopp) und die vorgemerkte Nachricht', async () => {
-    const zwischen = { root: { type: 'EmailLayout', data: { childrenIds: [] } } };
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () =>
-        antwort(200, {
-          laeuft: true,
-          verlauf: [],
-          live: { schritt: 'Titel setzen', schritt_nr: 3, zwischenstand: zwischen, stopp: 'behalten' },
-          vorgemerkt: { id: 'v-1', nachricht: 'Danach Farben' },
-        }),
-      ),
-    );
+  it('liest live, neueste_fassung und die Felder laufender und wartender Runden', async () => {
+    const roh = { ...eintrag({ id: 'w', status: 'wartet' }), schritt: 'Titel', schritt_nr: 2, stopp: 'behalten',
+      bild_hinweise: ['Bild für held nicht erzeugt: weg', 5] };
+    vi.stubGlobal('fetch', vi.fn(async () => antwort(200, { laeuft: true, verlauf: [roh], live: null, neueste_fassung: 7 })));
     const r = await chatLaden(start);
-    expect(r?.live).toEqual({ schritt: 'Titel setzen', schritt_nr: 3, zwischenstand: zwischen, stopp: 'behalten', denken: '', schritte: [] });
-    expect(r?.vorgemerkt).toEqual({ id: 'v-1', nachricht: 'Danach Farben' });
+    expect(r?.neueste).toBe(7);
+    expect(r?.verlauf[0]).toMatchObject({ status: 'wartet', schritt: 'Titel', schritt_nr: 2, stopp: 'behalten',
+      bild_hinweise: ['Bild für held nicht erzeugt: weg'] });
   });
 
-  it('kaputtes live/vorgemerkt wird null bzw. vorsichtig gelesen', async () => {
+  it('kaputtes live wird vorsichtig gelesen', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
@@ -147,13 +141,11 @@ describe('chatLaden', () => {
           laeuft: true,
           verlauf: [],
           live: { schritt: 5, schritt_nr: 'x', zwischenstand: [1], stopp: 'egal' },
-          vorgemerkt: { id: 7 },
         }),
       ),
     );
     const r = await chatLaden(start);
     expect(r?.live).toEqual({ schritt: '', schritt_nr: 0, zwischenstand: null, stopp: null, denken: '', schritte: [] });
-    expect(r?.vorgemerkt).toBeNull();
   });
 
   it('null bei Netzfehler', async () => {
@@ -283,30 +275,21 @@ describe('Dateinamen', () => {
 });
 
 describe('rueckgaengigFuer', () => {
-  const alt = eintrag({ id: 'a1', status: 'fertig', fassung_vorher: 3, fassung_nachher: 4 });
-  const neu = eintrag({ id: 'a2', status: 'fertig', fassung_vorher: 4, fassung_nachher: 5 });
-
-  it('nur die neueste fertige Antwort, deren Fassung die aktuelle ist', () => {
-    expect(rueckgaengigFuer([alt, neu], 5)).toBe('a2');
+  const f = (id: string, nachher: number | null, teil: Partial<ChatEintrag> = {}) =>
+    eintrag({ id, status: 'fertig', fassung_nachher: nachher, ...teil });
+  it('die Runde, deren Fassung die neueste ist - auch wenn danach eine Runde ohne Fassung fertig wurde', () => {
+    expect(rueckgaengigFuer([f('a', 5), f('b', 6), f('c', null)], 6)).toBe('b');
   });
-
-  it('aeltere Antworten nie (Rueckgaengig verwuerfe die spaetere Arbeit)', () => {
-    expect(rueckgaengigFuer([alt, neu], 4)).toBeNull();
+  it('parallel: eine aeltere Runde, die zuletzt gespeichert hat', () => {
+    expect(rueckgaengigFuer([f('spaet', 7), f('frueh', 6)], 7)).toBe('spaet');
+    expect(rueckgaengigFuer([f('spaet', 7), f('frueh', 6)], 6)).toBe('frueh');
   });
-
-  it('nichts, wenn danach jemand gespeichert hat', () => {
-    expect(rueckgaengigFuer([alt, neu], 6)).toBeNull();
+  it('nichts, wenn die neueste Fassung von niemandem aus dem Chat ist oder unbekannt', () => {
+    expect(rueckgaengigFuer([f('a', 5)], 6)).toBeNull();
+    expect(rueckgaengigFuer([f('a', 5)], null)).toBeNull();
   });
-
-  it('Antworten ohne Fassung, Fehler und Exporte zaehlen nicht als neueste', () => {
-    const ohne = eintrag({ id: 'a3', status: 'fertig', fassung_nachher: null });
-    const fehl = eintrag({ id: 'a4', status: 'fehler' });
-    const exp = eintrag({ id: 'e1', art: 'export', status: 'fertig', fassung_nachher: null });
-    expect(rueckgaengigFuer([neu, ohne, fehl, exp], 5)).toBe('a2');
-  });
-
-  it('eine laufende neuere Nachricht sperrt nichts weg, aber laeuft wird extra gesperrt', () => {
-    expect(rueckgaengigFuer([neu, eintrag({ id: 'a5', status: 'in_arbeit' })], 5)).toBe('a2');
+  it('Fehler und Exporte zaehlen nicht', () => {
+    expect(rueckgaengigFuer([f('x', 5, { status: 'fehler' }), f('e', 5, { art: 'export' })], 5)).toBeNull();
   });
 });
 
@@ -343,46 +326,7 @@ describe('stoppDialogOffen', () => {
   });
 });
 
-describe('Vormerken und Stopp', () => {
-  it('vormerken: PUT mit CSRF und {nachricht, kontext}, liefert id und status', async () => {
-    const f = vi.fn(async () => antwort(200, { id: 'v-1', status: 'wartet' }));
-    vi.stubGlobal('fetch', f);
-    expect(await vormerken(start, 'Danach Farben', { fenster: 'newsletter', auswahl: null })).toEqual({ ok: true, id: 'v-1', status: 'wartet' });
-    const [adresse, init] = aufruf(f);
-    expect(adresse).toBe('/marketing/editor/abc/chat/vormerkung');
-    expect(init.method).toBe('PUT');
-    expect((init.headers as Record<string, string>)['X-CSRF']).toBe('marke-1');
-    expect(JSON.parse(String(init.body))).toEqual({ nachricht: 'Danach Farben', kontext: { fenster: 'newsletter', auswahl: null } });
-  });
-
-  it('vormerken: status offen (es lief nichts mehr) und unbrauchbare Antwort', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => antwort(200, { id: 'v-2', status: 'offen' })));
-    expect(await vormerken(start, 'x', { fenster: 'newsletter', auswahl: null })).toEqual({ ok: true, id: 'v-2', status: 'offen' });
-    vi.stubGlobal('fetch', vi.fn(async () => antwort(200, { id: 'v-2', status: 'komisch' })));
-    expect((await vormerken(start, 'x', { fenster: 'newsletter', auswahl: null })).ok).toBe(false);
-  });
-
-  it('vormerkungLoeschen: DELETE ohne Body, mit CSRF', async () => {
-    const f = vi.fn(async () => antwort(200, { geloescht: true }));
-    vi.stubGlobal('fetch', f);
-    expect(await vormerkungLoeschen(start)).toEqual({ ok: true, geloescht: true });
-    const [adresse, init] = aufruf(f);
-    expect(adresse).toBe('/marketing/editor/abc/chat/vormerkung');
-    expect(init.method).toBe('DELETE');
-    expect(init.body).toBeUndefined();
-    expect((init.headers as Record<string, string>)['X-CSRF']).toBe('marke-1');
-  });
-
-  it('vormerkungStarten: POST, liefert den Auftrag; 422 liefert den Grund', async () => {
-    const f = vi.fn(async () => antwort(200, { auftrag: 'v-1' }));
-    vi.stubGlobal('fetch', f);
-    expect(await vormerkungStarten(start)).toEqual({ ok: true, auftrag: 'v-1' });
-    expect(aufruf(f)[0]).toBe('/marketing/editor/abc/chat/vormerkung/starten');
-    expect(aufruf(f)[1].method).toBe('POST');
-    vi.stubGlobal('fetch', vi.fn(async () => antwort(422, { grund: 'Der Assistent arbeitet gerade' })));
-    expect(await vormerkungStarten(start)).toEqual({ ok: false, grund: 'Der Assistent arbeitet gerade' });
-  });
-
+describe('Stopp', () => {
   it('stoppen: POST {art, auftrag} an chat_stopp_url, liest abgeschlossen und veraltet', async () => {
     const f = vi.fn(async () => antwort(200, { abgeschlossen: false }));
     vi.stubGlobal('fetch', f);

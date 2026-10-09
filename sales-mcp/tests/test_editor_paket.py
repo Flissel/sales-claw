@@ -63,11 +63,12 @@ def test_paket_kennt_assistenten():
 
 
 def test_paket_kennt_live_ansicht():
-    # 2026-10-02 Newsletter-Agent live (Task 7): Schritt-Zeile, Vormerken, Stopp-Dialog, Routen
+    # 2026-10-02 Live-Ansicht, seit 2026-10-09 ohne Vormerken: Schritt-Zeile, Stopp-Dialog, Routen
     text = (ORDNER / "editor.js").read_text(encoding="utf-8")
-    for s in ("Vormerken", "Bisherige Schritte behalten", "Schritt ", "Wird gestoppt",
-              "chat_vormerkung_url", "chat_vormerkung_starten_url", "chat_stopp_url"):
+    for s in ("Bisherige Schritte behalten", "Schritt ", "Wird gestoppt", "chat_stopp_url"):
         assert s in text, s
+    for s in ("Vormerken", "chat_vormerkung_url", "chat_vormerkung_starten_url"):
+        assert s not in text, s
 
 
 def test_paket_kennt_kontext_und_anhaenge():

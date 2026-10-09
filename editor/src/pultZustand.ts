@@ -9,15 +9,14 @@ import {
   chatLaden,
   chatSenden,
   ChatStand,
+  exportLaeuft,
   laufenderChat,
+  laufendeRunden,
   neueFassungNachChat,
   rueckgaengig,
   sperrText,
   stoppen,
   StoppArt,
-  vormerken,
-  vormerkungLoeschen,
-  vormerkungStarten,
 } from './chat';
 import {
   AnhangChip,
@@ -75,11 +74,11 @@ type TPult = {
   // Block, puls = zaehlt jeden neuen Stand (startet das Aufleuchten neu).
   zwischenstand: { echt: TEditorConfiguration; stand: Dokument; leuchtet: string | null; puls: number } | null;
   // Chips ueber dem Chat-Eingabefeld (Spec 2026-10-06): markierte Bloecke/Ebenen und Anhaenge fuer
-  // die naechste Nachricht. vorgemerktChips: was mit der Vormerkung id mitging (die Karte zeigt die
-  // Anzahl, "Bearbeiten" holt sie zurueck) - das Pult liefert den Kontext der Vormerkung nicht mit.
+  // die naechste Nachricht.
   chatAuswahl: AuswahlChip[];
   chatAnhaenge: AnhangChip[];
-  vorgemerktChips: { id: string; auswahl: AuswahlChip[]; anhaenge: AnhangChip[] } | null;
+  // Text im Chat-Eingabefeld (überlebt das Neuladen nach einer Agenten-Fassung).
+  chatText: string;
   // Kurzer Hinweis am Eingabefeld (Chip abgelehnt, markierte Elemente weggefallen); null = keiner.
   chatHinweis: string | null;
   // Liegt zur Freigabe: Canvas, Werkzeuge, Inspector und Chat sind gesperrt (Zurueckziehen hebt es auf).
@@ -108,7 +107,7 @@ export const pultStore = create<TPult>(() => ({
   zwischenstand: null,
   chatAuswahl: [],
   chatAnhaenge: [],
-  vorgemerktChips: null,
+  chatText: '',
   chatHinweis: null,
   nurLesen: false,
 }));
@@ -236,6 +235,7 @@ export function medienLaden(neu = false) {
 const MERKZETTEL = 'vibemind-neues-bild';
 const NEU_GELADEN = 'vibemind-neu-geladen';
 const FENSTER = 'vibemind-fenster';
+const CHAT_ENTWURF = 'vibemind-chat-entwurf';
 
 function schonGeladenLesen(): number | null {
   try {
@@ -278,11 +278,29 @@ export function neueFassungLaden(fassung: number, auftraege: Auftrag[] = []): bo
     sessionStorage.setItem(NEU_GELADEN, String(fassung));
     if (m) sessionStorage.setItem(MERKZETTEL, JSON.stringify(m));
     if (gestaltungOffen !== null) sessionStorage.setItem(FENSTER, gestaltungOffen);
+    const { chatText } = pultStore.getState();
+    if (chatText.trim()) sessionStorage.setItem(CHAT_ENTWURF, chatText);
   } catch {
     /* ohne Merkzettel wird nur neu geladen */
   }
   window.location.reload();
   return true;
+}
+
+export function chatTextSetzen(text: string) {
+  pultStore.setState({ chatText: text });
+}
+
+// Nach dem Neuladen: ein angefangener Chat-Text steht wieder im Eingabefeld.
+export function chatEntwurfWiederholen() {
+  try {
+    const text = sessionStorage.getItem(CHAT_ENTWURF);
+    if (text === null) return;
+    sessionStorage.removeItem(CHAT_ENTWURF);
+    pultStore.setState({ chatText: text });
+  } catch {
+    /* kein Merkzettel */
+  }
 }
 
 // Nach dem Neuladen: war ein Gestaltungsfenster offen, oeffnet es sich wieder.
@@ -354,8 +372,7 @@ export function chatAbfragen() {
     if (neu) {
       const vorher = pultStore.getState().chat?.verlauf ?? [];
       pultStore.setState({ chat: neu, chatGetrennt: false });
-      vorgemerkteChipsPruefen(neu);
-      // Erst die neue Fassung (auch wenn schon die vorgemerkte Nachricht laeuft) - die Seite laedt neu.
+      // Erst die neue Fassung (auch wenn schon die naechste Runde laeuft) - die Seite laedt neu.
       const f = neueFassungNachChat(vorher, neu.verlauf);
       const laedt = f !== null && neueFassungLaden(f);
       if (!laedt) {
@@ -367,31 +384,23 @@ export function chatAbfragen() {
     }
     // Netzfehler waehrend der Agent arbeitet: weiter fragen, die Sperre bleibt sichtbar.
     const jetzt = pultStore.getState().chat;
-    if (jetzt?.laeuft) chatTakt = setTimeout(holen, laufenderChat(jetzt) ? CHAT_TAKT_MS : EXPORT_TAKT_MS);
+    if (jetzt?.laeuft) chatTakt = setTimeout(holen, laufendeRunden(jetzt).length > 0 ? CHAT_TAKT_MS : EXPORT_TAKT_MS);
   };
   void holen();
 }
 
 // Vorlaeufiger Eintrag fuer einen eben gestarteten Auftrag: sperrt sofort und laesst
 // neueFassungNachChat den Uebergang erkennen; danach wird abgefragt.
-function auftragEintragen(id: string, nachricht: string, rest: Partial<ChatStand> = {}) {
+function auftragEintragen(id: string, nachricht: string, status: 'offen' | 'wartet') {
   const eintrag: ChatEintrag = {
-    id,
-    art: 'chat',
-    nachricht,
-    antwort: '',
-    status: 'offen',
-    hinweise: [],
-    ergebnis: {},
-    fassung_vorher: pultStore.getState().basis,
-    fassung_nachher: null,
-    erstellt_am: new Date().toISOString(),
-    denken: '',
-    schritte: [],
+    id, art: 'chat', nachricht, antwort: '', status, hinweise: [], ergebnis: {},
+    fassung_vorher: status === 'wartet' ? null : pultStore.getState().basis, fassung_nachher: null,
+    erstellt_am: new Date().toISOString(), denken: '', schritte: [], schritt: '', schritt_nr: 0, stopp: null,
+    bild_hinweise: [],
   };
   const alt = pultStore.getState().chat;
   const verlauf = (alt?.verlauf ?? []).filter((e) => e.id !== id);
-  pultStore.setState({ chat: { live: null, vorgemerkt: null, ...alt, ...rest, laeuft: true, verlauf: [...verlauf, eintrag] } });
+  pultStore.setState({ chat: { live: null, neueste: null, ...alt, laeuft: true, verlauf: [...verlauf, eintrag] } });
   chatAbfragen();
 }
 
@@ -404,7 +413,8 @@ export async function chatAbschicken(nachricht: string, kontext: ChatKontext): P
   const { start, chat, nurLesen } = pultStore.getState();
   if (!start) return 'Keine Verbindung zum Pult';
   if (nurLesen) return LIEGT_ZUR_FREIGABE;
-  if (chat?.laeuft) return 'Der Assistent arbeitet gerade';
+  // Mehrere Runden duerfen laufen (Spec 2026-10-09 §2); nur ein Newsletter-Export am PC laeuft allein.
+  if (exportLaeuft(chat)) return 'Der Assistent arbeitet gerade';
   const vorab = mitChips(kontext);
   if (!vorab.ok) return vorab.grund;
   const grund = await vorDemStart();
@@ -412,9 +422,6 @@ export async function chatAbschicken(nachricht: string, kontext: ChatKontext): P
   // Nach dem Speichern neu aufnehmen: was inzwischen dazukam, geht mit.
   const mit = mitChips(kontext);
   if (!mit.ok) return mit.grund;
-  // Steht noch eine Vormerkung (nach Fehler/Stopp), uebernimmt PUT sie und startet sie mit dem
-  // neuen Text. Ein POST legte einen zweiten Auftrag an, und die alte Vormerkung liefe danach mit.
-  if (pultStore.getState().chat?.vorgemerkt) return vormerkungSetzen(start, nachricht, mit);
   const r = await chatSenden(start, nachricht, mit.kontext);
   if (!r.ok) {
     // Z. B. arbeitet der Assistent schon fuer einen anderen Tab: Stand holen, damit die Sperre erscheint.
@@ -422,7 +429,7 @@ export async function chatAbschicken(nachricht: string, kontext: ChatKontext): P
     return r.grund;
   }
   chipsVerbraucht(mit);
-  auftragEintragen(r.auftrag, nachricht);
+  auftragEintragen(r.auftrag, nachricht, r.status);
   return null;
 }
 
@@ -465,64 +472,6 @@ async function vorDemStart(): Promise<string | null> {
     if (!e.ok) return fehlerText(e.grund);
   }
   return null;
-}
-
-// Waehrend eines Chat-Laufs: die naechste Nachricht vormerken (ersetzt eine vorgemerkte).
-// Laeuft nichts (mehr), geht sie wie gewohnt als Auftrag raus. Liefert null oder den Grund.
-export async function chatVormerken(nachricht: string, kontext: ChatKontext): Promise<string | null> {
-  const { start, chat, nurLesen } = pultStore.getState();
-  if (!start) return 'Keine Verbindung zum Pult';
-  if (nurLesen) return LIEGT_ZUR_FREIGABE;
-  if (!laufenderChat(chat)) return chatAbschicken(nachricht, kontext);
-  const mit = mitChips(kontext);
-  if (!mit.ok) return mit.grund;
-  return vormerkungSetzen(start, nachricht, mit);
-}
-
-// PUT an die Vormerkung: 'wartet' = steht als Karte da, 'offen' = lief nichts, ist gestartet.
-// Die Chips gehen mit; bei 'wartet' merkt sich der Editor, welche es waren (fuer Karte und Bearbeiten).
-async function vormerkungSetzen(start: Start, nachricht: string, mit: MitChips): Promise<string | null> {
-  const r = await vormerken(start, nachricht, mit.kontext);
-  if (!r.ok) {
-    chatAbfragen();
-    return r.grund;
-  }
-  chipsVerbraucht(mit);
-  if (r.status === 'offen') {
-    // Es lief nichts (mehr): die Nachricht ist sofort als normaler Auftrag gestartet.
-    pultStore.setState({ vorgemerktChips: null });
-    auftragEintragen(r.id, nachricht, { vorgemerkt: null });
-    return null;
-  }
-  const anhaenge = mit.anhaenge.filter((a) => a.status === 'fertig');
-  pultStore.setState({ vorgemerktChips: mit.auswahl.length + anhaenge.length > 0 ? { id: r.id, auswahl: mit.auswahl, anhaenge } : null });
-  const jetzt = pultStore.getState().chat;
-  if (jetzt) pultStore.setState({ chat: { ...jetzt, vorgemerkt: { id: r.id, nachricht } } });
-  return null;
-}
-
-// "Bearbeiten" an der Vormerk-Karte: die mitgenommenen Chips kommen zurueck ueber das Eingabefeld
-// (ersetzt der Betreiber die Vormerkung, gehen sie wieder mit).
-export function vorgemerkteChipsZurueck() {
-  const { vorgemerktChips: v, chatAuswahl, chatAnhaenge, chat } = pultStore.getState();
-  if (!v || chat?.vorgemerkt?.id !== v.id) return;
-  let auswahl = chatAuswahl;
-  for (const c of v.auswahl) auswahl = chipHinzu(auswahl, c);
-  const da = new Set(chatAnhaenge.map((a) => a.id));
-  const platz = Math.max(0, MAX_ANHAENGE - chatAnhaenge.filter((a) => a.status !== 'fehler').length);
-  const anhaenge = [...chatAnhaenge, ...v.anhaenge.filter((a) => !da.has(a.id)).slice(0, platz)];
-  pultStore.setState({ chatAuswahl: auswahl, chatAnhaenge: anhaenge });
-}
-
-// Die Vormerkung ist verbraucht (ihre id steht als Auftrag im Verlauf) oder durch eine andere ersetzt:
-// ihre Chips vergessen, sonst holte "Bearbeiten" sie spaeter noch einmal. Ein Stand ganz ohne
-// Vormerkung allein reicht nicht - das kann eine Abfrage von vor dem PUT sein.
-function vorgemerkteChipsPruefen(neu: ChatStand) {
-  const v = pultStore.getState().vorgemerktChips;
-  if (!v) return;
-  const verbraucht = neu.verlauf.some((e) => e.id === v.id);
-  const ersetzt = neu.vorgemerkt !== null && neu.vorgemerkt.id !== v.id;
-  if (verbraucht || ersetzt) pultStore.setState({ vorgemerktChips: null });
 }
 
 // Das Dokument wurde ersetzt oder geaendert (Agent, Rueckgaengig, Loeschen): die Chip-Reihe zeigt nur,
@@ -635,35 +584,6 @@ export function anhangEntfernen(id: string) {
   uploads.delete(id);
   pultStore.setState({ chatAnhaenge: pultStore.getState().chatAnhaenge.filter((a) => a.id !== id) });
   abbrechen?.();
-}
-
-export async function vormerkungLoeschenAuftrag(): Promise<string | null> {
-  const { start } = pultStore.getState();
-  if (!start) return 'Keine Verbindung zum Pult';
-  const r = await vormerkungLoeschen(start);
-  if (!r.ok) return r.grund;
-  const jetzt = pultStore.getState().chat;
-  if (jetzt) pultStore.setState({ chat: { ...jetzt, vorgemerkt: null } });
-  pultStore.setState({ vorgemerktChips: null });
-  return null;
-}
-
-// Nach Fehler oder Stopp bleibt die Vormerkung stehen; "Starten" schickt sie von Hand los.
-export async function vormerkungStartenAuftrag(): Promise<string | null> {
-  const { start, chat, nurLesen } = pultStore.getState();
-  if (!start) return 'Keine Verbindung zum Pult';
-  if (nurLesen) return LIEGT_ZUR_FREIGABE;
-  if (chat?.laeuft) return 'Der Assistent arbeitet gerade';
-  const nachricht = chat?.vorgemerkt?.nachricht ?? '';
-  const grund = await vorDemStart();
-  if (grund) return grund;
-  const r = await vormerkungStarten(start);
-  if (!r.ok) {
-    chatAbfragen();
-    return r.grund;
-  }
-  auftragEintragen(r.auftrag, nachricht, { vorgemerkt: null });
-  return null;
 }
 
 // Stopp des laufenden Chat-Auftrags; danach zeigt die Abfrage "wird gestoppt …" bis zum Abschluss.

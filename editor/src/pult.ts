@@ -33,9 +33,7 @@ export type Start = {
   chat_url: string;
   chat_stand_url: string;
   chat_rueckgaengig_url: string;
-  // Live-Lauf (Spec 2026-10-02-newsletter-agent-live §3): Vormerken (PUT/DELETE), Starten, Stopp.
-  chat_vormerkung_url: string;
-  chat_vormerkung_starten_url: string;
+  // Live-Lauf (Spec 2026-10-02-newsletter-agent-live §3): Stopp je Runde (seit 2026-10-09 ohne Vormerken).
   chat_stopp_url: string;
   // Anhaenge fuer den Chat (Spec 2026-10-06 §2.2); fehlt bei aelterem sales-ui.
   anhang_url?: string;

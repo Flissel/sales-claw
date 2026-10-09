@@ -283,8 +283,6 @@ def routen(ui) -> list:
             "anhang_url": f"/marketing/editor/{iid}/anhang",
             "chat_stand_url": f"/marketing/editor/{iid}/chat.json",
             "chat_rueckgaengig_url": f"/marketing/editor/{iid}/chat/rueckgaengig",
-            "chat_vormerkung_url": f"/marketing/editor/{iid}/chat/vormerkung",
-            "chat_vormerkung_starten_url": f"/marketing/editor/{iid}/chat/vormerkung/starten",
             "chat_stopp_url": f"/marketing/editor/{iid}/chat/stopp",
             "export_vorschau_url": f"/marketing/editor/{iid}/export/vorschau",
             "export_url": f"/marketing/editor/{iid}/export",
@@ -530,18 +528,6 @@ def routen(ui) -> list:
     @ui._gesichert_seite
     async def editor_chat_rueckgaengig(request):
         return await _agent_post(request, "chat/rueckgaengig", _rueckgaengig_pruefen)
-
-    @ui._gesichert_seite
-    async def editor_chat_vormerken(request):
-        return await _agent_post(request, "chat/vormerkung", _chat_pruefen, methode="PUT")
-
-    @ui._gesichert_seite
-    async def editor_chat_vormerkung_loeschen(request):
-        return await _agent_post(request, "chat/vormerkung", None, methode="DELETE")
-
-    @ui._gesichert_seite
-    async def editor_chat_vormerkung_starten(request):
-        return await _agent_post(request, "chat/vormerkung/starten", None)
 
     @ui._gesichert_seite
     async def editor_chat_stopp(request):
@@ -899,9 +885,6 @@ def routen(ui) -> list:
         Route("/marketing/editor/{iid}/chat", editor_chat, methods=["POST"]),
         Route("/marketing/editor/{iid}/chat.json", editor_chat_stand),
         Route("/marketing/editor/{iid}/chat/rueckgaengig", editor_chat_rueckgaengig, methods=["POST"]),
-        Route("/marketing/editor/{iid}/chat/vormerkung", editor_chat_vormerken, methods=["PUT"]),
-        Route("/marketing/editor/{iid}/chat/vormerkung", editor_chat_vormerkung_loeschen, methods=["DELETE"]),
-        Route("/marketing/editor/{iid}/chat/vormerkung/starten", editor_chat_vormerkung_starten, methods=["POST"]),
         Route("/marketing/editor/{iid}/chat/stopp", editor_chat_stopp, methods=["POST"]),
         Route("/marketing/editor/{iid}/export/vorschau", editor_export_vorschau, methods=["POST"]),
         Route("/marketing/editor/{iid}/export", editor_export, methods=["POST"]),

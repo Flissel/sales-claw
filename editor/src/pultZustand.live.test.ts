@@ -6,16 +6,12 @@ import type { TEditorConfiguration } from './documents/editor/core';
 import type { Start } from './pult';
 import {
   alsUngespeichert,
-  chatAbschicken,
   CHAT_TAKT_MS,
   chatAbfragen,
   EXPORT_TAKT_MS,
   chatStoppen,
-  chatVormerken,
   newsletterSichern,
   pultStore,
-  vormerkungLoeschenAuftrag,
-  vormerkungStartenAuftrag,
 } from './pultZustand';
 
 const START = {
@@ -23,8 +19,6 @@ const START = {
   chat_url: '/c',
   chat_stand_url: '/c.json',
   chat_rueckgaengig_url: '/c/r',
-  chat_vormerkung_url: '/v',
-  chat_vormerkung_starten_url: '/v/start',
   chat_stopp_url: '/stopp',
   csrf: 'm',
 } as Start;
@@ -62,6 +56,10 @@ function eintrag(teil: Partial<ChatEintrag>): ChatEintrag {
     erstellt_am: 't',
     denken: '',
     schritte: [],
+    schritt: '',
+    schritt_nr: 0,
+    stopp: null,
+    bild_hinweise: [],
     ...teil,
   };
 }
@@ -72,7 +70,7 @@ const live = (zwischenstand: unknown, schritt_nr = 1, stopp: string | null = nul
   zwischenstand,
   stopp,
 });
-const laeuft = (zwischenstand: unknown, nr = 1) => ({ laeuft: true, verlauf: [eintrag({})], live: live(zwischenstand, nr), vorgemerkt: null });
+const laeuft = (zwischenstand: unknown, nr = 1) => ({ laeuft: true, verlauf: [eintrag({})], live: live(zwischenstand, nr), neueste: null });
 
 // Antworten je Adresse, der Reihe nach (die letzte wiederholt sich).
 function netz(antworten: Record<string, Array<[number, unknown]>>) {
@@ -131,7 +129,7 @@ describe('Takt', () => {
       '/c.json': [
         [200, laeuft(null, 0)],
         [200, laeuft(null, 0)],
-        [200, { laeuft: false, verlauf: [eintrag({ status: 'fehler' })], live: null, vorgemerkt: null }],
+        [200, { laeuft: false, verlauf: [eintrag({ status: 'fehler' })], live: null, neueste: null }],
       ],
     });
     chatAbfragen();
@@ -149,7 +147,7 @@ describe('Takt', () => {
 describe('Takt bei Export', () => {
   it('ein Newsletter-Export fragt weiter alle 2 s, nicht jede Sekunde', async () => {
     expect(EXPORT_TAKT_MS).toBe(2000);
-    const exp = { laeuft: true, verlauf: [eintrag({ id: 'x1', art: 'export' })], live: null, vorgemerkt: null };
+    const exp = { laeuft: true, verlauf: [eintrag({ id: 'x1', art: 'export' })], live: null, neueste: null };
     const f = netz({ '/c.json': [[200, exp]] });
     chatAbfragen();
     await vi.advanceTimersByTimeAsync(0);
@@ -194,7 +192,7 @@ describe('Zwischenstand im Canvas', () => {
     netz({
       '/c.json': [
         [200, laeuft(ZWISCHEN_1)],
-        [200, { laeuft: false, verlauf: [eintrag({ status: 'fertig', fassung_nachher: 4 })], live: null, vorgemerkt: null }],
+        [200, { laeuft: false, verlauf: [eintrag({ status: 'fertig', fassung_nachher: 4 })], live: null, neueste: null }],
       ],
     });
     chatAbfragen();
@@ -203,31 +201,11 @@ describe('Zwischenstand im Canvas', () => {
     expect(pultStore.getState().ungespeichert).toBe(false);
   });
 
-  it('fertig und sofort die vorgemerkte Nachricht im Lauf: trotzdem neu laden', async () => {
-    netz({
-      '/c.json': [
-        [200, laeuft(ZWISCHEN_1)],
-        [
-          200,
-          {
-            laeuft: true,
-            verlauf: [eintrag({ status: 'fertig', fassung_nachher: 4 }), eintrag({ id: 'a2', fassung_vorher: 4 })],
-            live: live(ZWISCHEN_2),
-            vorgemerkt: null,
-          },
-        ],
-      ],
-    });
-    chatAbfragen();
-    await vi.advanceTimersByTimeAsync(CHAT_TAKT_MS);
-    expect(reload).toHaveBeenCalledTimes(1);
-  });
-
   it('Lauf endet ohne neue Fassung (Stopp verwerfen, Fehler): das echte Dokument kommt zurueck', async () => {
     netz({
       '/c.json': [
         [200, laeuft(ZWISCHEN_1)],
-        [200, { laeuft: false, verlauf: [eintrag({ status: 'fehler', antwort: 'Gestoppt – nichts übernommen' })], live: null, vorgemerkt: null }],
+        [200, { laeuft: false, verlauf: [eintrag({ status: 'fehler', antwort: 'Gestoppt – nichts übernommen' })], live: null, neueste: null }],
       ],
     });
     chatAbfragen();
@@ -243,7 +221,7 @@ describe('Zwischenstand im Canvas', () => {
     netz({
       '/c.json': [
         [200, laeuft(ZWISCHEN_1)],
-        [200, { laeuft: false, verlauf: [eintrag({ status: 'fertig', fassung_nachher: 4 })], live: null, vorgemerkt: null }],
+        [200, { laeuft: false, verlauf: [eintrag({ status: 'fertig', fassung_nachher: 4 })], live: null, neueste: null }],
       ],
     });
     chatAbfragen();
@@ -262,97 +240,12 @@ describe('Zwischenstand im Canvas', () => {
   });
 });
 
-describe('Vormerken', () => {
-  it('waehrend des Laufs: PUT an die Vormerkung, die Karte erscheint sofort', async () => {
-    pultStore.setState({ chat: { laeuft: true, verlauf: [eintrag({})], live: null, vorgemerkt: null } });
-    const f = netz({ '/v': [[200, { id: 'v-1', status: 'wartet' }]] });
-    expect(await chatVormerken('Danach Farben', { fenster: 'newsletter', auswahl: null })).toBeNull();
-    expect(adressen(f)).toEqual(['/v']);
-    expect(aufruf(f, '/v').method).toBe('PUT');
-    expect(pultStore.getState().chat?.vorgemerkt).toEqual({ id: 'v-1', nachricht: 'Danach Farben' });
-  });
-
-  it('wenn nichts laeuft: normal an chat_url senden', async () => {
-    pultStore.setState({ chat: { laeuft: false, verlauf: [], live: null, vorgemerkt: null } });
-    const f = netz({
-      '/c': [[200, { auftrag: 'neu-1' }]],
-      '/c.json': [[200, { laeuft: true, verlauf: [eintrag({ id: 'neu-1', status: 'offen' })], live: null, vorgemerkt: null }]],
-    });
-    expect(await chatVormerken('Jetzt', { fenster: 'newsletter', auswahl: null })).toBeNull();
-    expect(adressen(f)[0]).toBe('/c');
-    expect(adressen(f)).not.toContain('/v');
-  });
-
-  it('Lauf war inzwischen zu Ende (status offen): als laufender Auftrag eintragen und abfragen', async () => {
-    pultStore.setState({ chat: { laeuft: true, verlauf: [eintrag({})], live: null, vorgemerkt: null } });
-    const f = netz({
-      '/v': [[200, { id: 'v-1', status: 'offen' }]],
-      '/c.json': [[200, { laeuft: true, verlauf: [eintrag({ id: 'v-1', status: 'offen' })], live: null, vorgemerkt: null }]],
-    });
-    expect(await chatVormerken('Danach', { fenster: 'newsletter', auswahl: null })).toBeNull();
-    expect(pultStore.getState().chat?.vorgemerkt).toBeNull();
-    expect(pultStore.getState().chat?.verlauf.map((e) => e.id)).toContain('v-1');
-    await vi.advanceTimersByTimeAsync(0);
-    expect(adressen(f)).toContain('/c.json');
-  });
-
-  it('nach Fehler + vorgemerkt: Senden -> PUT (uebernimmt die Vormerkung), kein POST', async () => {
-    pultStore.setState({
-      ungespeichert: true,
-      chat: { laeuft: false, verlauf: [eintrag({ status: 'fehler' })], live: null, vorgemerkt: { id: 'v-1', nachricht: 'alt' } },
-    });
-    const f = netz({
-      '/s': [[200, { fassung: 4 }]],
-      '/v': [[200, { id: 'v-1', status: 'offen' }]],
-      '/c.json': [[200, { laeuft: true, verlauf: [eintrag({ id: 'v-1', status: 'offen' })], live: null, vorgemerkt: null }]],
-    });
-    expect(await chatVormerken('neu', { fenster: 'newsletter', auswahl: null })).toBeNull();
-    // Ungesichertes zuerst gespeichert (die Nachricht startet sofort), dann PUT - nie POST chat_url.
-    expect(adressen(f).slice(0, 2)).toEqual(['/s', '/v']);
-    expect(adressen(f)).not.toContain('/c');
-    expect(aufruf(f, '/v').method).toBe('PUT');
-    expect(pultStore.getState().chat?.vorgemerkt).toBeNull();
-    expect(pultStore.getState().chat?.verlauf.map((e) => e.id)).toContain('v-1');
-  });
-
-  it('chatAbschicken mit stehender Vormerkung geht ebenfalls ueber PUT', async () => {
-    pultStore.setState({ chat: { laeuft: false, verlauf: [], live: null, vorgemerkt: { id: 'v-1', nachricht: 'alt' } } });
-    const f = netz({
-      '/v': [[200, { id: 'v-1', status: 'offen' }]],
-      '/c.json': [[200, { laeuft: true, verlauf: [eintrag({ id: 'v-1', status: 'offen' })], live: null, vorgemerkt: null }]],
-    });
-    expect(await chatAbschicken('neu', { fenster: 'newsletter', auswahl: null })).toBeNull();
-    expect(adressen(f)).not.toContain('/c');
-    expect(adressen(f)[0]).toBe('/v');
-  });
-
-  it('Vormerkung loeschen: DELETE, Karte weg', async () => {
-    pultStore.setState({ chat: { laeuft: true, verlauf: [eintrag({})], live: null, vorgemerkt: { id: 'v-1', nachricht: 'x' } } });
-    const f = netz({ '/v': [[200, { geloescht: true }]] });
-    expect(await vormerkungLoeschenAuftrag()).toBeNull();
-    expect(aufruf(f, '/v').method).toBe('DELETE');
-    expect(pultStore.getState().chat?.vorgemerkt).toBeNull();
-  });
-
-  it('Vormerkung nach Fehler/Stopp starten: POST, sperrt sofort', async () => {
-    pultStore.setState({ chat: { laeuft: false, verlauf: [eintrag({ status: 'fehler' })], live: null, vorgemerkt: { id: 'v-1', nachricht: 'Danach' } } });
-    const f = netz({
-      '/v/start': [[200, { auftrag: 'v-1' }]],
-      '/c.json': [[200, { laeuft: true, verlauf: [eintrag({ id: 'v-1', status: 'offen' })], live: null, vorgemerkt: null }]],
-    });
-    expect(await vormerkungStartenAuftrag()).toBeNull();
-    expect(adressen(f)[0]).toBe('/v/start');
-    expect(pultStore.getState().chat?.laeuft).toBe(true);
-    expect(pultStore.getState().chat?.vorgemerkt).toBeNull();
-  });
-});
-
 describe('Stopp', () => {
   it('ruft chat_stopp_url mit art und dem laufenden Auftrag und fragt danach ab', async () => {
-    pultStore.setState({ chat: { laeuft: true, verlauf: [eintrag({ id: 'a7' })], live: live(ZWISCHEN_1) as never, vorgemerkt: null } });
+    pultStore.setState({ chat: { laeuft: true, verlauf: [eintrag({ id: 'a7' })], live: live(ZWISCHEN_1) as never, neueste: null } });
     const f = netz({
       '/stopp': [[200, { abgeschlossen: false }]],
-      '/c.json': [[200, { laeuft: true, verlauf: [eintrag({ id: 'a7' })], live: live(ZWISCHEN_1, 1, 'behalten'), vorgemerkt: null }]],
+      '/c.json': [[200, { laeuft: true, verlauf: [eintrag({ id: 'a7' })], live: live(ZWISCHEN_1, 1, 'behalten'), neueste: null }]],
     });
     expect(await chatStoppen('behalten')).toBeNull();
     expect(JSON.parse(String(aufruf(f, '/stopp').body))).toEqual({ art: 'behalten', auftrag: 'a7' });
@@ -362,8 +255,8 @@ describe('Stopp', () => {
   });
 
   it('Grund des Servers kommt zurueck', async () => {
-    pultStore.setState({ chat: { laeuft: true, verlauf: [eintrag({ id: 'a7' })], live: null, vorgemerkt: null } });
-    netz({ '/stopp': [[422, { grund: 'Der Assistent arbeitet gerade nicht' }]], '/c.json': [[200, { laeuft: false, verlauf: [], live: null, vorgemerkt: null }]] });
+    pultStore.setState({ chat: { laeuft: true, verlauf: [eintrag({ id: 'a7' })], live: null, neueste: null } });
+    netz({ '/stopp': [[422, { grund: 'Der Assistent arbeitet gerade nicht' }]], '/c.json': [[200, { laeuft: false, verlauf: [], live: null, neueste: null }]] });
     expect(await chatStoppen('verwerfen')).toBe('Der Assistent arbeitet gerade nicht');
   });
 });

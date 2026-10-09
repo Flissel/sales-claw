@@ -7,7 +7,7 @@ import App from './App';
 import { onDocumentChange, resetDocument } from './documents/editor/EditorContext';
 import { TEditorConfiguration } from './documents/editor/core';
 import { startLesen, zurAnzeige } from './pult';
-import { alsUngespeichert, chatAbfragen, chipsAbgleichen, fensterWiederOeffnen, meldungLesen, pultStarten, standAbfragen } from './pultZustand';
+import { alsUngespeichert, chatAbfragen, chatEntwurfWiederholen, chipsAbgleichen, fensterWiederOeffnen, meldungLesen, pultStarten, standAbfragen } from './pultZustand';
 import { pultThema } from './theme';
 import './editor.css';
 
@@ -43,6 +43,7 @@ if (wurzel) {
     meldungLesen();
     // Nach dem Neuladen wegen einer Agenten-Fassung: offenes Gestaltungsfenster wieder oeffnen.
     fensterWiederOeffnen();
+    chatEntwurfWiederholen();
     onDocumentChange(alsUngespeichert);
     // Kontext-Chips zeigen nur, was es im Dokument noch gibt (Spec 2026-10-06 §1).
     onDocumentChange(chipsAbgleichen);

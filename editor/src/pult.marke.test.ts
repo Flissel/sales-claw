@@ -79,8 +79,8 @@ describe('Uebernehmen', () => {
     expect(pultStore.getState().start?.marke_geaendert).toBe(false);
   });
 
-  it('gesperrt, solange der Agent arbeitet: kein Netzaufruf, Band bleibt', async () => {
-    vorbereiten({}, { chat: { laeuft: true, verlauf: [], live: null, vorgemerkt: null } });
+  it('gesperrt, solange ein Newsletter-Export laeuft: kein Netzaufruf, Band bleibt', async () => {
+    vorbereiten({}, { chat: { laeuft: true, verlauf: [{ art: 'export', status: 'offen' } as never], live: null, neueste: null } });
     const f = vi.fn();
     vi.stubGlobal('fetch', f);
     expect(await markeUebernehmen()).toBe('Der Assistent arbeitet gerade');
@@ -114,7 +114,7 @@ describe('Ausblenden', () => {
   });
 
   it('auch Ausblenden ist gesperrt, solange der Agent arbeitet', async () => {
-    vorbereiten({}, { chat: { laeuft: true, verlauf: [], live: null, vorgemerkt: null } });
+    vorbereiten({}, { chat: { laeuft: true, verlauf: [], live: null, neueste: null } });
     const f = vi.fn();
     vi.stubGlobal('fetch', f);
     expect(await markeHinweisAusblenden()).toBe('Der Assistent arbeitet gerade');

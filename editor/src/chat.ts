@@ -1,6 +1,6 @@
 // Anbindung an den Gestaltungs-Agenten und den Export (Spec 2026-10-02 §4, §6):
 // Chat senden/lesen, Rueckgaengig, Export-Vorschau und bestaetigter Export.
-// Live-Lauf (Spec 2026-10-02-newsletter-agent-live §2.3, §3): Zwischenstand, Vormerken, Stopp.
+// Live-Lauf und mehrere Runden (Spec 2026-10-09-editor-parallele-runden §2): Stopp je Runde, Warteschlange.
 // Nur relative Adressen aus den Startdaten; schreibende Aufrufe mit X-CSRF.
 import type { AnhangKontext, AuswahlKontext } from './chatKontext';
 import type { Dokument, Start } from './pult';
@@ -9,7 +9,9 @@ export type ExportAuswahl = { newsletter: boolean; flaechen: string[] };
 
 export type SpurSchritt = { zeit: string; text: string };
 
-export type ChatStatus = 'offen' | 'in_arbeit' | 'fertig' | 'fehler';
+export type ChatStatus = 'offen' | 'in_arbeit' | 'wartet' | 'fertig' | 'fehler';
+
+export type StoppArt = 'behalten' | 'verwerfen';
 
 export type ChatEintrag = {
   id: string;
@@ -24,17 +26,18 @@ export type ChatEintrag = {
   erstellt_am: string;
   denken: string;
   schritte: SpurSchritt[];
+  // Live-Felder der Runde (gefuellt, solange sie laeuft) und gescheiterte Bildauftraege der Runde.
+  schritt: string;
+  schritt_nr: number;
+  stopp: StoppArt | null;
+  bild_hinweise: string[];
 };
-
-export type StoppArt = 'behalten' | 'verwerfen';
 
 // Stand des laufenden Auftrags. zwischenstand im gespeicherten Format (medien:), null vor dem
 // ersten Schritt; stopp gesetzt = der Betreiber hat gestoppt, der Abschluss steht noch aus.
 export type ChatLive = { schritt: string; schritt_nr: number; zwischenstand: Dokument | null; stopp: StoppArt | null; denken: string; schritte: SpurSchritt[] };
 
-export type Vorgemerkt = { id: string; nachricht: string };
-
-export type ChatStand = { laeuft: boolean; verlauf: ChatEintrag[]; live: ChatLive | null; vorgemerkt: Vorgemerkt | null };
+export type ChatStand = { laeuft: boolean; verlauf: ChatEintrag[]; live: ChatLive | null; neueste: number | null };
 
 // auswahl: die markierten Elemente (Chips) oder - ohne Chips - wie bisher die eine Auswahl im Fenster.
 export type ChatKontext = { fenster: string; auswahl: string | AuswahlKontext[] | null; anhaenge?: AnhangKontext[] };
@@ -96,10 +99,11 @@ export async function chatSenden(
   s: Start,
   nachricht: string,
   kontext: ChatKontext,
-): Promise<{ ok: true; auftrag: string } | Fehler> {
+): Promise<{ ok: true; auftrag: string; status: 'offen' | 'wartet' } | Fehler> {
   const r = await senden(s, s.chat_url, { nachricht, kontext }, 'Der Assistent ist gerade nicht erreichbar');
   if (!r.ok) return r;
-  return typeof r.j.auftrag === 'string' && r.j.auftrag ? { ok: true, auftrag: r.j.auftrag } : { ok: false, grund: UNVERSTAENDLICH };
+  if (typeof r.j.auftrag !== 'string' || !r.j.auftrag) return { ok: false, grund: UNVERSTAENDLICH };
+  return { ok: true, auftrag: r.j.auftrag, status: r.j.status === 'wartet' ? 'wartet' : 'offen' };
 }
 
 export type Hochladen = {
@@ -164,7 +168,7 @@ export function denkAusschnitt(text: string, zeichen = 600): string {
   return text.length > zeichen ? '…' + text.slice(-zeichen) : text;
 }
 
-const STATUS: ReadonlyArray<ChatStatus> = ['offen', 'in_arbeit', 'fertig', 'fehler'];
+const STATUS: ReadonlyArray<ChatStatus> = ['offen', 'in_arbeit', 'wartet', 'fertig', 'fehler'];
 
 // Ein Verlaufseintrag aus der Antwort; null, wenn die Form nicht stimmt.
 function eintragLesen(v: unknown): ChatEintrag | null {
@@ -190,6 +194,10 @@ function eintragLesen(v: unknown): ChatEintrag | null {
     erstellt_am: typeof v.erstellt_am === 'string' ? v.erstellt_am : '',
     denken: typeof v.denken === 'string' ? v.denken : '',
     schritte: schritteLesen(v.schritte),
+    schritt: typeof v.schritt === 'string' ? v.schritt : '',
+    schritt_nr: typeof v.schritt_nr === 'number' && Number.isInteger(v.schritt_nr) && v.schritt_nr > 0 ? v.schritt_nr : 0,
+    stopp: v.stopp === 'behalten' || v.stopp === 'verwerfen' ? v.stopp : null,
+    bild_hinweise: nurTexte(v.bild_hinweise),
   };
 }
 
@@ -206,11 +214,6 @@ function liveLesen(v: unknown): ChatLive | null {
   };
 }
 
-function vorgemerktLesen(v: unknown): Vorgemerkt | null {
-  if (!istObjekt(v) || typeof v.id !== 'string' || !v.id) return null;
-  return { id: v.id, nachricht: typeof v.nachricht === 'string' ? v.nachricht : '' };
-}
-
 export async function chatLaden(s: Start): Promise<ChatStand | null> {
   try {
     const r = await fetch(s.chat_stand_url, { credentials: 'same-origin' });
@@ -218,36 +221,10 @@ export async function chatLaden(s: Start): Promise<ChatStand | null> {
     const j: unknown = await r.json();
     if (!istObjekt(j) || typeof j.laeuft !== 'boolean' || !Array.isArray(j.verlauf)) return null;
     const verlauf = j.verlauf.map(eintragLesen).filter((e): e is ChatEintrag => e !== null);
-    return { laeuft: j.laeuft, verlauf, live: liveLesen(j.live), vorgemerkt: vorgemerktLesen(j.vorgemerkt) };
+    return { laeuft: j.laeuft, verlauf, live: liveLesen(j.live), neueste: typeof j.neueste_fassung === 'number' && Number.isInteger(j.neueste_fassung) ? j.neueste_fassung : null };
   } catch {
     return null;
   }
-}
-
-// Naechste Nachricht vormerken (ersetzt eine schon vorgemerkte). status 'offen': es lief
-// inzwischen nichts mehr, die Nachricht ist sofort als normaler Auftrag gestartet.
-export async function vormerken(
-  s: Start,
-  nachricht: string,
-  kontext: ChatKontext,
-): Promise<{ ok: true; id: string; status: 'wartet' | 'offen' } | Fehler> {
-  const r = await senden(s, s.chat_vormerkung_url, { nachricht, kontext }, 'Vormerken gerade nicht möglich', 'PUT');
-  if (!r.ok) return r;
-  const { id, status } = r.j;
-  if (typeof id !== 'string' || !id || (status !== 'wartet' && status !== 'offen')) return { ok: false, grund: UNVERSTAENDLICH };
-  return { ok: true, id, status };
-}
-
-export async function vormerkungLoeschen(s: Start): Promise<{ ok: true; geloescht: boolean } | Fehler> {
-  const r = await senden(s, s.chat_vormerkung_url, undefined, 'Löschen gerade nicht möglich', 'DELETE');
-  if (!r.ok) return r;
-  return { ok: true, geloescht: r.j.geloescht === true };
-}
-
-export async function vormerkungStarten(s: Start): Promise<{ ok: true; auftrag: string } | Fehler> {
-  const r = await senden(s, s.chat_vormerkung_starten_url, undefined, 'Starten gerade nicht möglich');
-  if (!r.ok) return r;
-  return typeof r.j.auftrag === 'string' && r.j.auftrag ? { ok: true, auftrag: r.j.auftrag } : { ok: false, grund: UNVERSTAENDLICH };
 }
 
 // Stopp des laufenden Auftrags. auftrag: nur diesen stoppen (laeuft inzwischen ein anderer,
@@ -294,11 +271,12 @@ export async function exportieren(
 }
 
 const LAEUFT: ReadonlyArray<ChatStatus> = ['offen', 'in_arbeit'];
+const RUNDE: ReadonlyArray<ChatStatus> = ['offen', 'in_arbeit', 'wartet'];
 
-// fassung_nachher eines Eintrags, der seit der letzten Abfrage fertig geworden ist
-// (vorher offen/in_arbeit); null, wenn keiner eine neue Fassung gebracht hat.
+// fassung_nachher eines Eintrags, der seit der letzten Abfrage fertig geworden ist (vorher offen/in_arbeit/wartet);
+// null, wenn keiner eine neue Fassung gebracht hat.
 export function neueFassungNachChat(vorher: ChatEintrag[], nachher: ChatEintrag[]): number | null {
-  const lief = new Set(vorher.filter((e) => LAEUFT.includes(e.status)).map((e) => e.id));
+  const lief = new Set(vorher.filter((e) => RUNDE.includes(e.status)).map((e) => e.id));
   let neueste: number | null = null;
   for (const e of nachher) {
     if (e.status !== 'fertig' || e.fassung_nachher === null || !lief.has(e.id)) continue;
@@ -331,33 +309,37 @@ export function dateiNamen(slug: string, auswahl: ExportAuswahl): string[] {
   return namen;
 }
 
-// Rueckgaengig stellt die Fassung VOR dieser Antwort wieder her - bei einer aelteren Antwort
-// verschwaende damit alles Spaetere. Erlaubt also nur fuer die neueste fertige Chat-Antwort mit
-// Fassung, und nur solange deren Fassung die aktuelle ist. Liefert deren id oder null.
-export function rueckgaengigFuer(verlauf: ChatEintrag[], basis: number): string | null {
-  for (let i = verlauf.length - 1; i >= 0; i--) {
-    const e = verlauf[i];
-    if (e.art !== 'chat' || e.status !== 'fertig' || e.fassung_nachher === null) continue;
-    return e.fassung_nachher === basis ? e.id : null;
-  }
-  return null;
+// Rueckgaengig stellt die Fassung VOR dieser Runde wieder her (bei nachgespielten Runden die Fassung, auf die
+// nachgespielt wurde). Erlaubt nur an der Runde, deren Fassung die neueste ist - sonst drehte es fremde Arbeit
+// zurueck. Liefert deren id oder null.
+export function rueckgaengigFuer(verlauf: ChatEintrag[], neueste: number | null): string | null {
+  if (neueste === null) return null;
+  const e = verlauf.find((x) => x.art === 'chat' && x.status === 'fertig' && x.fassung_nachher === neueste);
+  return e ? e.id : null;
 }
 
-// Der offene oder laufende Chat-Auftrag (nur Chat, kein Export) - nur dann gibt es Vormerken und Stopp.
+// Alle Chat-Runden, die laufen oder auf einen Platz warten, in Verlaufsreihenfolge.
+export function laufendeRunden(chat: Pick<ChatStand, 'verlauf'> | null): ChatEintrag[] {
+  return (chat?.verlauf ?? []).filter((e) => e.art === 'chat' && RUNDE.includes(e.status));
+}
+
+export function exportLaeuft(chat: Pick<ChatStand, 'verlauf'> | null): boolean {
+  return (chat?.verlauf ?? []).some((e) => e.art === 'export' && LAEUFT.includes(e.status));
+}
+
+// Uebergang bis Task 9: die erste laufende Runde (Stopp in der Kopfzeile).
 export function laufenderChat(chat: Pick<ChatStand, 'laeuft' | 'verlauf'> | null): ChatEintrag | null {
   if (!chat?.laeuft) return null;
-  return chat.verlauf.find((e) => e.art === 'chat' && LAEUFT.includes(e.status)) ?? null;
+  return laufendeRunden(chat).find((e) => e.status !== 'wartet') ?? null;
 }
 
-// Der Stopp-Dialog gilt nur fuer den Lauf, fuer den er geoeffnet wurde: endet der Lauf, geht er zu,
-// und ein spaeterer Lauf oeffnet ihn nicht von selbst.
+// Der Stopp-Dialog gilt nur fuer die Runde, fuer die er geoeffnet wurde: endet sie, geht er zu.
 export function stoppDialogOffen(stoppFuer: string | null, chat: Pick<ChatStand, 'laeuft' | 'verlauf'> | null): boolean {
-  return stoppFuer !== null && laufenderChat(chat)?.id === stoppFuer;
+  return stoppFuer !== null && laufendeRunden(chat).some((e) => e.id === stoppFuer && e.status !== 'wartet');
 }
 
-// Text der Sperre, solange ein Auftrag offen ist (null = frei).
+// Text der Sperre, solange eine Runde laeuft oder wartet (null = frei).
 export function sperrText(chat: Pick<ChatStand, 'laeuft' | 'verlauf'> | null): string | null {
   if (!chat?.laeuft) return null;
-  const exportLaeuft = chat.verlauf.some((e) => e.art === 'export' && LAEUFT.includes(e.status));
-  return exportLaeuft ? 'Newsletter-Bilder werden gerechnet …' : 'Agent arbeitet …';
+  return exportLaeuft(chat) ? 'Newsletter-Bilder werden gerechnet …' : 'Agent arbeitet …';
 }

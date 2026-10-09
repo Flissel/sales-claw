@@ -32,6 +32,10 @@ function eintrag(teil: Partial<ChatEintrag>): ChatEintrag {
     erstellt_am: 't',
     denken: '',
     schritte: [],
+    schritt: '',
+    schritt_nr: 0,
+    stopp: null,
+    bild_hinweise: [],
     ...teil,
   };
 }
@@ -79,7 +83,7 @@ describe('chatAbfragen', () => {
     chatAbfragen();
     await vi.advanceTimersByTimeAsync(CHAT_TAKT_MS * 3);
     expect(adressen(f)).toEqual(['/c.json']);
-    expect(pultStore.getState().chat).toEqual({ laeuft: false, verlauf: [], live: null, vorgemerkt: null });
+    expect(pultStore.getState().chat).toEqual({ laeuft: false, verlauf: [], live: null, neueste: null });
   });
 
   it('fragt im Takt, solange laeuft, und laedt bei fertiger neuer Fassung neu', async () => {
@@ -165,8 +169,8 @@ describe('chatAbschicken', () => {
     expect(f).not.toHaveBeenCalled();
   });
 
-  it('waehrend der Agent arbeitet wird nichts gesendet', async () => {
-    pultStore.setState({ chat: { laeuft: true, verlauf: [], live: null, vorgemerkt: null } });
+  it('waehrend ein Newsletter-Export laeuft wird nichts gesendet', async () => {
+    pultStore.setState({ chat: { laeuft: true, verlauf: [eintrag({ id: 'x', art: 'export' })], live: null, neueste: null } });
     const f = netz({});
     expect(await chatAbschicken('x', { fenster: 'newsletter', auswahl: null })).toBe('Der Assistent arbeitet gerade');
     expect(f).not.toHaveBeenCalled();
