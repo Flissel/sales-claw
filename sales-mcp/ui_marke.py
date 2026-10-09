@@ -152,7 +152,7 @@ def routen(ui) -> list:
             teile.append(bild(dunkel, "Logo auf dunkler Fläche", "dunkel"))
         return f'<div class="logo-fassungen">{"".join(teile)}</div>'
 
-    def bearbeiten_html(d: dict) -> str:
+    def bearbeiten_html(d: dict, mandant: str) -> str:
         if d.get("laeuft") or d.get("uebernahme"):
             return '<p class="meta">Der Marken-Agent arbeitet gerade – bearbeiten geht danach.</p>'
         aktuell = d.get("aktuell") if isinstance(d.get("aktuell"), dict) else {}
@@ -181,7 +181,8 @@ def routen(ui) -> list:
         return ('<h2>Profil bearbeiten</h2><p class="meta">Der Marken-Agent übernimmt deine Angaben wörtlich und '
                 'korrigiert nur Ungültiges (mit Hinweis). Danach Vorschau und Übernehmen wie gewohnt.</p>'
                 f'<form method="post" action="/marketing/marke/bearbeiten" class="pult-felder marke-bearbeiten">'
-                f'{csrf_feld()}<fieldset><legend>Farben</legend>{farben}</fieldset>'
+                f'{csrf_feld()}<input type="hidden" name="mandant" value="{e(mandant)}">'
+                f'<fieldset><legend>Farben</legend>{farben}</fieldset>'
                 f'<fieldset><legend>Schriften</legend>{auswahl("schrift_anzeige", "Überschrift")}'
                 f'{auswahl("schrift_text", "Text")}</fieldset>'
                 f'<label>Webseite <input name="webseite" type="url" value="{e(wert("webseite"))}" '
@@ -356,7 +357,7 @@ def routen(ui) -> list:
         if request.query_params.get("bearbeiten") == "1":
             rumpf = ('<link rel="stylesheet" href="/marketing/schrift/schriften.css">'
                      + marketing_mandant.umschalter(e, ui.CSRF_TOKEN, m, liste, SEITE)
-                     + bearbeiten_html(d) + f'<p><a href="{SEITE}">Zurück zur Marke</a></p>')
+                     + bearbeiten_html(d, m) + f'<p><a href="{SEITE}">Zurück zur Marke</a></p>')
             antwort = ui._seite("Marke", rumpf)
             antwort.headers["Content-Security-Policy"] = ui._csp_mit_rahmen("'self'", bilddaten=True, schriften=True)
             return antwort
@@ -507,6 +508,8 @@ def routen(ui) -> list:
             return abgewiesen(422, "Ein Feld ist zu lang. Nichts wurde geändert.")
         try:
             m, _liste = await marketing_mandant.firma(request)
+            if str(form.get("mandant") or "") != m:      # Tab von vor dem Firmenwechsel (wie vorschlag_aktion)
+                return abgewiesen(422, "Die Firma wurde gewechselt. Nichts wurde geändert – bitte Seite neu laden.")
             await run_in_threadpool(marketing_pult.anfrage, "POST", "/marke/bearbeiten",
                                     {"mandant": m, "formular": formular})
         except marketing_pult.PultFehler as f:

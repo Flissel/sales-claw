@@ -411,7 +411,7 @@ def test_alle_pult_aufrufe_im_threadpool(angemeldet, pult, medienordner):
     angemeldet.post("/marketing/marke/verwerfen", headers=HOST, follow_redirects=False,
                     data={"csrf": ui.CSRF_TOKEN, "vorschlag": VID})
     angemeldet.post("/marketing/marke/bearbeiten", headers=HOST, follow_redirects=False,
-                    data={"csrf": ui.CSRF_TOKEN, "akzent": "#000000"})
+                    data={"csrf": ui.CSRF_TOKEN, "mandant": "vibemind", "akzent": "#000000"})
     pfade = [a[1] for a in pult.aufrufe]
     for teil in ("/marke?mandant=", "/vorschau?", "/medien/zuordnung", "/marke/chat", "/uebernehmen", "/verwerfen", "/marke/bearbeiten"):
         assert any(teil in p for p in pfade), teil
@@ -686,7 +686,7 @@ def test_bearbeiten_waehrend_der_agent_arbeitet(angemeldet, pult):
 
 
 def test_formular_geht_an_den_agenten(angemeldet, pult):
-    daten = {"csrf": ui.CSRF_TOKEN, "akzent": " #b45309 ", "zweitfarbe": "#3b2f2f", "grund": "#faf7f2",
+    daten = {"csrf": ui.CSRF_TOKEN, "mandant": "vibemind", "akzent": " #b45309 ", "zweitfarbe": "#3b2f2f", "grund": "#faf7f2",
              "text": "#2b2724", "schrift_anzeige": "playfair", "schrift_text": "manrope",
              "webseite": "https://radhaus.example/", "ab2": "Ruhig,\r\nper Du.", "ab6": "Tageslicht"}
     r = angemeldet.post("/marketing/marke/bearbeiten", headers=HOST, data=daten, follow_redirects=False)
@@ -709,14 +709,14 @@ def test_kein_direktes_speichern(angemeldet, pult):
     r = angemeldet.post("/marketing/marke/speichern", headers=HOST, data={"csrf": ui.CSRF_TOKEN})
     assert r.status_code not in (200, 303)
     angemeldet.post("/marketing/marke/bearbeiten", headers=HOST, follow_redirects=False,
-                    data={"csrf": ui.CSRF_TOKEN, "akzent": "#000000"})
+                    data={"csrf": ui.CSRF_TOKEN, "mandant": "vibemind", "akzent": "#000000"})
     assert [a[1] for a in pult.aufrufe if a[0] == "POST"] == ["/marke/bearbeiten"]
 
 
 def test_bearbeiten_abgelehnt_zeigt_meldung(angemeldet, pult):
     pult.fehler = marketing_pult.PultFehler("abgelehnt", "Der Assistent arbeitet gerade")
     pult.fehler_pfad = "/marke/bearbeiten"
-    r = angemeldet.post("/marketing/marke/bearbeiten", headers=HOST, data={"csrf": ui.CSRF_TOKEN, "akzent": "#000000"})
+    r = angemeldet.post("/marketing/marke/bearbeiten", headers=HOST, data={"csrf": ui.CSRF_TOKEN, "mandant": "vibemind", "akzent": "#000000"})
     assert r.status_code == 422 and "Der Assistent arbeitet gerade" in r.text
 
 
@@ -743,3 +743,21 @@ def test_logo_fassungen_nur_mit_schlichten_namen(angemeldet, pult):
 def test_profil_zeigt_dunkles_logo_aus_dem_spiegel(angemeldet, pult):
     pult.zustand["spiegel"] = {**SPIEGEL, "gestalt": {**SPIEGEL["gestalt"], "logo_dunkel": LOGO}}
     assert f'<img class="marke-logo dunkel" src="{LOGO}"' in rumpf(seite(angemeldet))
+
+
+def test_formular_traegt_die_firma_als_versteckte_angabe(angemeldet, pult):
+    s = rumpf(seite(angemeldet, "/marketing/layouts?bearbeiten=1"))
+    assert '<input type="hidden" name="mandant" value="vibemind">' in s
+
+
+def test_formular_anderer_firma_wird_abgewiesen(angemeldet, pult):
+    r = angemeldet.post("/marketing/marke/bearbeiten", headers=HOST,
+                        data={"csrf": ui.CSRF_TOKEN, "mandant": "fin2gether", "akzent": "#000000"})
+    assert r.status_code == 422 and "Die Firma wurde gewechselt" in r.text
+    assert pult.nach("/marke/bearbeiten") == []
+
+
+def test_formular_ohne_firma_wird_abgewiesen(angemeldet, pult):
+    r = angemeldet.post("/marketing/marke/bearbeiten", headers=HOST,
+                        data={"csrf": ui.CSRF_TOKEN, "akzent": "#000000"})
+    assert r.status_code == 422 and pult.nach("/marke/bearbeiten") == []
