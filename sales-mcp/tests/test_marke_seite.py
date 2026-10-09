@@ -66,6 +66,8 @@ class Falsch:
             return {"auftrag": "u1"}
         if pfad.endswith("/verwerfen"):
             return {"status": "verworfen"}
+        if pfad == "/marke/bearbeiten":
+            return {"auftrag": "b1"}
         return {}
 
     def nach(self, teil):
@@ -408,8 +410,10 @@ def test_alle_pult_aufrufe_im_threadpool(angemeldet, pult, medienordner):
                     data={"csrf": ui.CSRF_TOKEN, "vorschlag": VID, "bestaetigt": "ja"})
     angemeldet.post("/marketing/marke/verwerfen", headers=HOST, follow_redirects=False,
                     data={"csrf": ui.CSRF_TOKEN, "vorschlag": VID})
+    angemeldet.post("/marketing/marke/bearbeiten", headers=HOST, follow_redirects=False,
+                    data={"csrf": ui.CSRF_TOKEN, "akzent": "#000000"})
     pfade = [a[1] for a in pult.aufrufe]
-    for teil in ("/marke?mandant=", "/vorschau?", "/medien/zuordnung", "/marke/chat", "/uebernehmen", "/verwerfen"):
+    for teil in ("/marke?mandant=", "/vorschau?", "/medien/zuordnung", "/marke/chat", "/uebernehmen", "/verwerfen", "/marke/bearbeiten"):
         assert any(teil in p for p in pfade), teil
     assert pult.im_loop == []
 
@@ -647,3 +651,95 @@ def test_uebernahme_schritte_in_letzte(angemeldet, pult):
                                          "schritte": [{"zeit": "08:02:13", "text": "Rowboat geschrieben"}]}
     s = rumpf(seite(angemeldet))
     assert "Rowboat geschrieben" in s and '<details class="spur">' in s
+
+
+# --- Profil bearbeiten und Logo-Fassungen (Spec 2026-10-09-marke-exakt) -------------------------
+
+AKTUELL_VOLL = {"abschnitte": {"Ton": "warm & klar", "Bildstil": "Tageslicht"},
+                "werte": {"akzent": "#b45309", "zweitfarbe": "#3b2f2f", "grund": "#faf7f2", "text": "#2b2724",
+                          "schrift_anzeige": "playfair", "schrift_text": "manrope",
+                          "webseite": "https://radhaus.example/"}}
+
+
+def test_profil_bearbeiten_link_und_vorbefuelltes_formular(angemeldet, pult):
+    pult.zustand["aktuell"] = AKTUELL_VOLL
+    assert 'href="/marketing/layouts?bearbeiten=1"' in seite(angemeldet).text
+    s = rumpf(seite(angemeldet, "/marketing/layouts?bearbeiten=1"))
+    assert 'action="/marketing/marke/bearbeiten"' in s and "An den Agenten geben" in s
+    assert 'name="akzent" value="#b45309"' in s
+    assert 'name="webseite" type="url" value="https://radhaus.example/"' in s
+    assert '<option value="playfair" selected>' in s and '<option value="manrope" selected>' in s
+    assert ">warm &amp; klar</textarea>" in s and 'name="ab6"' in s
+    assert "<script" not in s
+
+
+def test_profil_bearbeiten_ohne_aktuell_nimmt_den_spiegel(angemeldet, pult):
+    s = rumpf(seite(angemeldet, "/marketing/layouts?bearbeiten=1"))
+    assert 'name="akzent" value="#5eead4"' in s and 'name="zweitfarbe" value="#1d3b39"' in s
+    assert '<option value="manrope" selected>' in s
+
+
+def test_bearbeiten_waehrend_der_agent_arbeitet(angemeldet, pult):
+    pult.zustand["laeuft"] = True
+    s = rumpf(seite(angemeldet, "/marketing/layouts?bearbeiten=1"))
+    assert "/marketing/marke/bearbeiten" not in s and "bearbeiten geht danach" in s
+
+
+def test_formular_geht_an_den_agenten(angemeldet, pult):
+    daten = {"csrf": ui.CSRF_TOKEN, "akzent": " #b45309 ", "zweitfarbe": "#3b2f2f", "grund": "#faf7f2",
+             "text": "#2b2724", "schrift_anzeige": "playfair", "schrift_text": "manrope",
+             "webseite": "https://radhaus.example/", "ab2": "Ruhig,\r\nper Du.", "ab6": "Tageslicht"}
+    r = angemeldet.post("/marketing/marke/bearbeiten", headers=HOST, data=daten, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/marketing/layouts"
+    (methode, _, body), = pult.nach("/marke/bearbeiten")
+    assert methode == "POST" and body["mandant"] == "vibemind"
+    f = body["formular"]
+    assert f["akzent"] == "#b45309" and f["webseite"] == "https://radhaus.example/"
+    assert f["abschnitte"]["Ton"] == "Ruhig,\nper Du." and f["abschnitte"]["Bildstil"] == "Tageslicht"
+    assert f["abschnitte"]["Angebote"] == "" and len(f["abschnitte"]) == 7
+
+
+def test_formular_ohne_csrf_und_zu_lang(angemeldet, pult):
+    assert angemeldet.post("/marketing/marke/bearbeiten", headers=HOST, data={"akzent": "#000000"}).status_code == 403
+    r = angemeldet.post("/marketing/marke/bearbeiten", headers=HOST, data={"csrf": ui.CSRF_TOKEN, "ab0": "x" * 8001})
+    assert r.status_code == 422 and pult.nach("/marke/bearbeiten") == []
+
+
+def test_kein_direktes_speichern(angemeldet, pult):
+    r = angemeldet.post("/marketing/marke/speichern", headers=HOST, data={"csrf": ui.CSRF_TOKEN})
+    assert r.status_code not in (200, 303)
+    angemeldet.post("/marketing/marke/bearbeiten", headers=HOST, follow_redirects=False,
+                    data={"csrf": ui.CSRF_TOKEN, "akzent": "#000000"})
+    assert [a[1] for a in pult.aufrufe if a[0] == "POST"] == ["/marke/bearbeiten"]
+
+
+def test_bearbeiten_abgelehnt_zeigt_meldung(angemeldet, pult):
+    pult.fehler = marketing_pult.PultFehler("abgelehnt", "Der Assistent arbeitet gerade")
+    pult.fehler_pfad = "/marke/bearbeiten"
+    r = angemeldet.post("/marketing/marke/bearbeiten", headers=HOST, data={"csrf": ui.CSRF_TOKEN, "akzent": "#000000"})
+    assert r.status_code == 422 and "Der Assistent arbeitet gerade" in r.text
+
+
+def test_vorschlag_zeigt_drei_logo_fassungen(angemeldet, pult):
+    pult.zustand["vorschlag"] = {**VORSCHLAG, "vorschlag": {**VORSCHLAG["vorschlag"],
+                                 "logo": "marke-vibemind-logo-a1.png", "logo_dunkel": "marke-vibemind-logo-b2.png",
+                                 "logo_original": "karte.png"}}
+    r = seite(angemeldet)
+    s = rumpf(r)
+    for name, titel, klasse in (("karte.png", "Original", "original"),
+                                ("marke-vibemind-logo-a1.png", "Logo auf Weiß", "hell"),
+                                ("marke-vibemind-logo-b2.png", "Logo auf dunkler Fläche", "dunkel")):
+        assert f'<figure class="logo-fassung {klasse}"><img src="/medien/datei/{name}" alt="{titel}">' in s
+    assert ".logo-fassung.dunkel { background: #1a1a1a;" in r.text
+
+
+def test_logo_fassungen_nur_mit_schlichten_namen(angemeldet, pult):
+    pult.zustand["vorschlag"] = {**VORSCHLAG, "vorschlag": {**VORSCHLAG["vorschlag"], "logo": "../geheim.png",
+                                                             "logo_dunkel": "x.svg"}}
+    s = rumpf(seite(angemeldet))
+    assert "logo-fassung" not in s and "/medien/datei/.." not in s
+
+
+def test_profil_zeigt_dunkles_logo_aus_dem_spiegel(angemeldet, pult):
+    pult.zustand["spiegel"] = {**SPIEGEL, "gestalt": {**SPIEGEL["gestalt"], "logo_dunkel": LOGO}}
+    assert f'<img class="marke-logo dunkel" src="{LOGO}"' in rumpf(seite(angemeldet))

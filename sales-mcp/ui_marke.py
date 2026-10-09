@@ -40,6 +40,10 @@ LOGO_BASE64_MAX = 210_000           # Logo <= 140 KB als data-URL = rund 187 000
 _BILD_DATEN = re.compile(rf"data:image/(?:png|jpeg);base64,[A-Za-z0-9+/=]{{1,{LOGO_BASE64_MAX}}}")
 _FARBEN = (("akzent", "Akzent"), ("flaeche", "Fläche"))
 _VORSCHLAG_FARBEN = (("akzent", "Akzent"), ("zweitfarbe", "Zweitfarbe"), ("grund", "Grund"), ("text", "Text"))
+ABSCHNITTE = ("Wer wir sind", "Zielgruppe", "Ton", "Angebote", "Do & Don'ts", "Fakten und Zahlen", "Bildstil")
+FORM_FARBEN = (("akzent", "Akzent"), ("zweitfarbe", "Zweitfarbe"), ("grund", "Grund"), ("text", "Text"))
+FARBE_MAX, SCHRIFT_MAX, WEBSEITE_MAX, ABSCHNITT_MAX = 20, 40, 300, 8000   # wie api/marke.FORMULAR_GRENZEN
+_MEDIENNAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.(?:png|jpe?g)")
 _STATUS = {"offen": "wartet (PC muss laufen)", "in_arbeit": "wird bearbeitet", "fehler": "fehlgeschlagen"}
 
 
@@ -48,6 +52,12 @@ def _uuid_oder_none(wert) -> str | None:
         return str(uuid.UUID(str(wert)))
     except ValueError:
         return None
+
+
+def _medienname(wert) -> str | None:
+    w = str(wert or "")
+    w = w[len("anhang:"):] if w.startswith("anhang:") else w
+    return w if _MEDIENNAME.fullmatch(w) else None
 
 
 def _kurz(text) -> str:
@@ -127,6 +137,58 @@ def routen(ui) -> list:
             return f'<p class="warnung">Spiegel noch nie gesetzt: {grund}</p>'
         return f'<p class="warnung">Spiegel veraltet seit {e(_wann(ui, sp.get("gespiegelt_am")))}: {grund}</p>'
 
+    def logo_fassungen_html(w: dict) -> str:
+        """Original, logo auf Weiss und logo_dunkel auf #1a1a1a (Spec 2026-10-09 §1); ohne dunkle Fassung nur das Logo."""
+        hell, dunkel, original = (_medienname(w.get(k)) for k in ("logo", "logo_dunkel", "logo_original"))
+        if not hell:
+            return ""
+
+        def bild(name: str, titel: str, klasse: str) -> str:
+            return (f'<figure class="logo-fassung {klasse}"><img src="/medien/datei/{e(name)}" alt="{e(titel)}">'
+                    f'<figcaption>{e(titel)}</figcaption></figure>')
+        teile = [bild(original, "Original", "original")] if original and dunkel else []
+        teile.append(bild(hell, "Logo auf Weiß" if dunkel else "Logo", "hell"))
+        if dunkel:
+            teile.append(bild(dunkel, "Logo auf dunkler Fläche", "dunkel"))
+        return f'<div class="logo-fassungen">{"".join(teile)}</div>'
+
+    def bearbeiten_html(d: dict) -> str:
+        if d.get("laeuft") or d.get("uebernahme"):
+            return '<p class="meta">Der Marken-Agent arbeitet gerade – bearbeiten geht danach.</p>'
+        aktuell = d.get("aktuell") if isinstance(d.get("aktuell"), dict) else {}
+        werte = aktuell.get("werte") if isinstance(aktuell.get("werte"), dict) else {}
+        ab = aktuell.get("abschnitte") if isinstance(aktuell.get("abschnitte"), dict) else {}
+        sp = d.get("spiegel") if isinstance(d.get("spiegel"), dict) else {}
+        g = sp.get("gestalt") if isinstance(sp.get("gestalt"), dict) else {}
+        sw = g.get("schriften") if isinstance(g.get("schriften"), dict) else {}
+        vor = {"akzent": werte.get("akzent") or g.get("akzent"), "zweitfarbe": werte.get("zweitfarbe") or g.get("flaeche"),
+               "grund": werte.get("grund"), "text": werte.get("text"),
+               "schrift_anzeige": werte.get("schrift_anzeige") or sw.get("anzeige"),
+               "schrift_text": werte.get("schrift_text") or sw.get("text"), "webseite": werte.get("webseite")}
+
+        def wert(k: str) -> str:
+            return str(vor[k]) if isinstance(vor.get(k), str) else ""
+
+        def auswahl(name: str, titel: str) -> str:
+            optionen = ['<option value="">– bitte wählen –</option>'] + [
+                f'<option value="{e(sid)}"{" selected" if sid == vor.get(name) else ""}>{e(s["familie"])}</option>'
+                for sid, s in schriften.REGISTER.items()]
+            return f'<label>{e(titel)} <select name="{name}">{"".join(optionen)}</select></label>'
+        farben = "".join(f'<label>{e(t)} <input name="{k}" value="{e(wert(k))}" maxlength="{FARBE_MAX}" '
+                         f'placeholder="#RRGGBB"></label>' for k, t in FORM_FARBEN)
+        texte = "".join(f'<label>{e(n)} <textarea name="ab{i}" rows="4" maxlength="{ABSCHNITT_MAX}">'
+                        f'{e(str(ab.get(n) or ""))}</textarea></label>' for i, n in enumerate(ABSCHNITTE))
+        return ('<h2>Profil bearbeiten</h2><p class="meta">Der Marken-Agent übernimmt deine Angaben wörtlich und '
+                'korrigiert nur Ungültiges (mit Hinweis). Danach Vorschau und Übernehmen wie gewohnt.</p>'
+                f'<form method="post" action="/marketing/marke/bearbeiten" class="pult-felder marke-bearbeiten">'
+                f'{csrf_feld()}<fieldset><legend>Farben</legend>{farben}</fieldset>'
+                f'<fieldset><legend>Schriften</legend>{auswahl("schrift_anzeige", "Überschrift")}'
+                f'{auswahl("schrift_text", "Text")}</fieldset>'
+                f'<label>Webseite <input name="webseite" type="url" value="{e(wert("webseite"))}" '
+                f'maxlength="{WEBSEITE_MAX}" placeholder="https://…"></label>{texte}'
+                f'<div class="aktionen"><button class="primaer" type="submit">An den Agenten geben</button> '
+                f'<a href="{SEITE}">Abbrechen</a></div></form>')
+
     def profil_html(d: dict) -> str:
         sp = d.get("spiegel") if isinstance(d.get("spiegel"), dict) else {}
         g = sp.get("gestalt") if isinstance(sp.get("gestalt"), dict) else {}
@@ -150,6 +212,9 @@ def routen(ui) -> list:
         logo = str(g.get("logo") or "")
         if _BILD_DATEN.fullmatch(logo):
             teile.append(f'<p><img class="marke-logo" src="{logo}" alt="Logo"></p>')
+        dunkel = str(g.get("logo_dunkel") or "")
+        if _BILD_DATEN.fullmatch(dunkel):
+            teile.append(f'<p><img class="marke-logo dunkel" src="{dunkel}" alt="Logo für dunkle Flächen"></p>')
         ab = aktuell.get("abschnitte") if isinstance(aktuell.get("abschnitte"), dict) else {}
         for titel in ("Ton", "Zielgruppe"):
             kurz = _kurz(ab.get(titel))
@@ -255,7 +320,7 @@ def routen(ui) -> list:
         farben = "".join(farbfeld(n, w.get(k)) for k, n in _VORSCHLAG_FARBEN)
         schrift = schrift_zeile(w.get("schrift_anzeige"), w.get("schrift_text"),
                                 str(d.get("name") or d.get("mandant") or ""))
-        logo = f'<p>Logo: {e(str(w["logo"]))}</p>' if w.get("logo") else ""
+        logo = logo_fassungen_html(w) or (f'<p>Logo: {e(str(w["logo"]))}</p>' if w.get("logo") else "")
         abschnitte = "".join(
             f'<h3>{e(str(n))}</h3><p>{e(str(t))}</p>'
             for n, t in (w.get("abschnitte") or {}).items() if isinstance(t, str) and t.strip()) \
@@ -288,6 +353,13 @@ def routen(ui) -> list:
             return fehler(f)
         if not isinstance(d, dict):
             return fehler(marketing_pult.PultFehler("unbekannt", "Antwort ohne Marke"))
+        if request.query_params.get("bearbeiten") == "1":
+            rumpf = ('<link rel="stylesheet" href="/marketing/schrift/schriften.css">'
+                     + marketing_mandant.umschalter(e, ui.CSRF_TOKEN, m, liste, SEITE)
+                     + bearbeiten_html(d) + f'<p><a href="{SEITE}">Zurück zur Marke</a></p>')
+            antwort = ui._seite("Marke", rumpf)
+            antwort.headers["Content-Security-Policy"] = ui._csp_mit_rahmen("'self'", bilddaten=True, schriften=True)
+            return antwort
         status = ""
         if d.get("uebernahme"):
             alter = _alter_s(d.get("uebernahme_seit"))
@@ -298,7 +370,7 @@ def routen(ui) -> list:
                  + marketing_mandant.umschalter(e, ui.CSRF_TOKEN, m, liste, SEITE)
                  + '<p class="meta">Das Markenprofil bestimmt Farben, Schriften und Logo neuer Newsletter. '
                    'Erzähl dem Marken-Agenten von der Firma; was er vorschlägt, übernimmst du hier.</p>'
-                 + profil_html(d) + status + (laufend_html(d) if arbeitet else "") + letzte_html(d) + "<h2>Chat</h2>" + chat_html(d) + formular_html(d)
+                 + profil_html(d) + f'<p><a href="{SEITE}?bearbeiten=1">Profil bearbeiten</a></p>' + status + (laufend_html(d) if arbeitet else "") + letzte_html(d) + "<h2>Chat</h2>" + chat_html(d) + formular_html(d)
                  + vorschlag_html(d, fmt))
         antwort = ui._seite("Marke", rumpf, refresh=REFRESH_S if arbeitet else None)
         antwort.headers["Content-Security-Policy"] = ui._csp_mit_rahmen("'self'", bilddaten=True, schriften=True)
@@ -417,6 +489,30 @@ def routen(ui) -> list:
             return RedirectResponse(SEITE, status_code=303)
         return handler
 
+    @ui._gesichert_seite
+    async def bearbeiten(request):
+        """Formular -> Marken-Agent (Art 'bearbeitung'). Es gibt keinen direkten Schreibweg (Spec §2)."""
+        form = await request.form()
+        if not ui._csrf_ok(form):
+            return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
+        formular = {k: str(form.get(k) or "").strip() for k, _ in FORM_FARBEN}
+        formular.update({k: str(form.get(k) or "").strip() for k in ("schrift_anzeige", "schrift_text", "webseite")})
+        formular["abschnitte"] = {n: str(form.get(f"ab{i}") or "").replace("\r\n", "\n").strip()
+                                  for i, n in enumerate(ABSCHNITTE)}
+        zu_lang = (any(len(formular[k]) > FARBE_MAX for k, _ in FORM_FARBEN)
+                   or any(len(formular[k]) > SCHRIFT_MAX for k in ("schrift_anzeige", "schrift_text"))
+                   or len(formular["webseite"]) > WEBSEITE_MAX
+                   or any(len(t) > ABSCHNITT_MAX for t in formular["abschnitte"].values()))
+        if zu_lang:
+            return abgewiesen(422, "Ein Feld ist zu lang. Nichts wurde geändert.")
+        try:
+            m, _liste = await marketing_mandant.firma(request)
+            await run_in_threadpool(marketing_pult.anfrage, "POST", "/marke/bearbeiten",
+                                    {"mandant": m, "formular": formular})
+        except marketing_pult.PultFehler as f:
+            return fehler(f)
+        return RedirectResponse(SEITE, status_code=303)
+
     # --- Alte Layout-Pfade -------------------------------------------------------------------------
 
     async def zur_marke(request):
@@ -430,6 +526,7 @@ def routen(ui) -> list:
         Route("/marketing/marke/senden", senden, methods=["POST"]),
         Route("/marketing/marke/uebernehmen", vorschlag_aktion("uebernehmen"), methods=["POST"]),
         Route("/marketing/marke/verwerfen", vorschlag_aktion("verwerfen"), methods=["POST"]),
+        Route("/marketing/marke/bearbeiten", bearbeiten, methods=["POST"]),
         Route("/marketing/layout/{name}", alt, methods=alle),
         Route("/marketing/layout/{name}/speichern", alt, methods=alle),
         Route("/marketing/layout/{name}/standard", alt, methods=alle),
