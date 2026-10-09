@@ -9,8 +9,8 @@ import react from '@vitejs/plugin-react-swc';
 export default defineConfig({
   plugins: [react()],
   base: '/static/editor/',
-  // vitest nur fuer src/**/*.test.ts; test/*.mjs laufen weiter mit node --test.
-  test: { include: ['src/**/*.test.ts'] },
+  // vitest nur fuer src/**/*.test.{ts,tsx}; test/*.mjs laufen weiter mit node --test.
+  test: { include: ['src/**/*.test.{ts,tsx}'] },
   build: {
     outDir: '../sales-mcp/static/editor',
     emptyOutDir: true,
