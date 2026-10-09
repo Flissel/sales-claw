@@ -168,6 +168,10 @@ def routen(ui) -> list:
     def bearbeiten_html(d: dict, mandant: str) -> str:
         if d.get("laeuft") or d.get("uebernahme"):
             return '<p class="meta">Der Marken-Agent arbeitet gerade – bearbeiten geht danach.</p>'
+        offen = d.get("vorschlag") if isinstance(d.get("vorschlag"), dict) else None
+        warnung = (f'<p class="warnung">Es gibt einen offenen Vorschlag vom {e(_wann(ui, offen.get("erstellt_am")))}'
+                   ' – wenn du das Formular abschickst, ersetzt es ihn. Übernimm oder verwirf ihn vorher, '
+                   'wenn du ihn behalten willst.</p>') if offen else ""
         werte, ab = profil_quelle(d)
         sp = d.get("spiegel") if isinstance(d.get("spiegel"), dict) else {}
         g = sp.get("gestalt") if isinstance(sp.get("gestalt"), dict) else {}
@@ -189,7 +193,7 @@ def routen(ui) -> list:
                          f'placeholder="#RRGGBB"></label>' for k, t in FORM_FARBEN)
         texte = "".join(f'<label>{e(n)} <textarea name="ab{i}" rows="4" maxlength="{ABSCHNITT_MAX}">'
                         f'{e(str(ab.get(n) or ""))}</textarea></label>' for i, n in enumerate(ABSCHNITTE))
-        return ('<h2>Profil bearbeiten</h2><p class="meta">Der Marken-Agent übernimmt deine Angaben wörtlich und '
+        return (warnung + '<h2>Profil bearbeiten</h2><p class="meta">Der Marken-Agent übernimmt deine Angaben wörtlich und '
                 'korrigiert nur Ungültiges (mit Hinweis). Danach Vorschau und Übernehmen wie gewohnt.</p>'
                 f'<form method="post" action="/marketing/marke/bearbeiten" class="pult-felder marke-bearbeiten">'
                 f'{csrf_feld()}<input type="hidden" name="mandant" value="{e(mandant)}">'

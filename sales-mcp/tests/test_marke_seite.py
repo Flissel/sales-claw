@@ -871,3 +871,16 @@ def test_r8_profil_wird_escaped(angemeldet, pult):
                               "abschnitte": {"Ton": "</textarea><script>y</script>"}}
     s = rumpf(seite(angemeldet, "/marketing/layouts?bearbeiten=1"))
     assert "<script" not in s
+
+
+def test_profil_bearbeiten_warnt_vor_offenem_vorschlag(angemeldet, pult, medienordner):
+    pult.zustand["aktuell"] = AKTUELL_VOLL
+    ohne = rumpf(seite(angemeldet, "/marketing/layouts?bearbeiten=1"))
+    assert "offenen Vorschlag" not in ohne
+    pult.zustand["vorschlag"] = {**VORSCHLAG, "erstellt_am": "2026-10-07T10:00:00<b>"}
+    s = rumpf(seite(angemeldet, "/marketing/layouts?bearbeiten=1"))
+    assert "Es gibt einen offenen Vorschlag vom " in s
+    assert ("– wenn du das Formular abschickst, ersetzt es ihn. Übernimm oder verwirf ihn vorher, "
+            "wenn du ihn behalten willst.") in s
+    assert "<b>" not in s.split("offenen Vorschlag vom ")[1].split("</p>")[0]
+    assert s.index("offenen Vorschlag") < s.index("marke-bearbeiten")
