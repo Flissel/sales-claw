@@ -787,15 +787,18 @@ def test_wissens_lauf_wartet_und_laeuft(angemeldet, pult):
     pult.zustand["laufend"] = {"art": "wissen", "denken": "Reading",
                                "schritte": [{"zeit": "14:30:01", "text": "Frage an Claude"}]}
     r = seite(angemeldet)
-    assert "Wissen wird aktualisiert …" in r.text and '<meta http-equiv="refresh" content="5">' in r.text
-    assert 'class="spur-live"' in r.text
+    # R7: ein laufender Wissens-Lauf laedt die Seite nicht neu; Stand mit "Aktualisieren", Denken als Spur
+    assert "Wissen wird aktualisiert …" in r.text and 'http-equiv="refresh"' not in r.text
+    assert '<a href="/marketing/layouts">Aktualisieren</a>' in r.text
+    assert 'class="spur-live"' not in r.text and "Updating &lt;docs&gt;" in r.text
 
 
 def test_wissens_denken_erscheint_nicht_im_chat_bereich(angemeldet, pult):
     pult.zustand["wissen"] = {**WISSEN_FERTIG, "status": "in_arbeit", "denken": "NurWissen"}
     pult.zustand["laufend"] = {"art": "wissen", "denken": "Reading", "schritte": []}
     s = rumpf(seite(angemeldet))
-    assert s.count('class="spur-live"') == 1 and s.index("marke-chat") > s.index("Wissen wird aktualisiert")
+    assert s.count('class="spur-live"') == 0 and "Reading" not in s
+    assert s.index("marke-chat") > s.index("NurWissen") > s.index("Wissen wird aktualisiert")
 
 
 def test_wissens_lauf_teilweise_und_fehler(angemeldet, pult):
@@ -812,3 +815,59 @@ def test_wissens_lauf_teilweise_und_fehler(angemeldet, pult):
 def test_ohne_wissens_lauf_kein_abschnitt(angemeldet):
     s = rumpf(seite(angemeldet))
     assert "marke-wissen" not in s and "Wissen wird" not in s
+
+
+# --- Schlussrunde (final-review.md I1/I2, Rulings R7/R8) ------------------------------------------
+
+
+def test_r7_nur_wissen_laeuft_kein_refresh_chat_formular_offen(angemeldet, pult):
+    """Ein wartender oder laufender Wissens-Lauf haelt weder Chat noch Formular auf und laedt nie neu."""
+    for status in ("offen", "in_arbeit"):
+        pult.zustand["wissen"] = {**WISSEN_FERTIG, "status": status}
+        r = seite(angemeldet)
+        assert 'http-equiv="refresh"' not in r.text, status
+        assert 'action="/marketing/marke/senden"' in r.text, status
+        assert '<a href="/marketing/layouts">Aktualisieren</a>' in r.text, status
+    s = rumpf(seite(angemeldet, "/marketing/layouts?bearbeiten=1"))
+    assert 'action="/marketing/marke/bearbeiten"' in s
+
+
+def test_r7_refresh_bleibt_fuer_chat_bearbeitung_und_uebernahme(angemeldet, pult):
+    pult.zustand["wissen"] = {**WISSEN_FERTIG, "status": "in_arbeit"}
+    pult.zustand["laeuft"] = True
+    assert '<meta http-equiv="refresh" content="5">' in seite(angemeldet).text
+    pult.zustand["laeuft"] = False
+    pult.zustand["uebernahme"] = "laeuft"
+    assert '<meta http-equiv="refresh" content="5">' in seite(angemeldet).text
+
+
+ECHT = {"werte": {"akzent": "#123456", "zweitfarbe": "#3b2f2f", "grund": "#faf7f2", "text": "#2b2724",
+                  "schrift_anzeige": "oxanium", "schrift_text": "manrope", "webseite": "https://echt.example/"},
+        "abschnitte": {"Ton": "Aus der Marke.md", "Angebote": "Nur in Rowboat ergänzt"}}
+
+
+def test_r8_formular_aus_dem_echten_profil_nicht_aus_dem_vorschlag(angemeldet, pult):
+    pult.zustand["aktuell"] = AKTUELL_VOLL
+    pult.zustand["profil"] = ECHT
+    s = rumpf(seite(angemeldet, "/marketing/layouts?bearbeiten=1"))
+    assert 'name="akzent" value="#123456"' in s and 'name="akzent" value="#b45309"' not in s
+    assert 'name="webseite" type="url" value="https://echt.example/"' in s
+    assert '<option value="oxanium" selected>' in s
+    assert ">Aus der Marke.md</textarea>" in s and ">Nur in Rowboat ergänzt</textarea>" in s
+    assert "warm &amp; klar" not in s and "Tageslicht" not in s
+    p = rumpf(seite(angemeldet))                     # die Profilkarte liest dieselbe Quelle
+    assert "Aus der Marke.md" in p and "warm &amp; klar" not in p
+
+
+def test_r8_ohne_profil_rueckfall_auf_den_letzten_vorschlag(angemeldet, pult):
+    pult.zustand["aktuell"] = AKTUELL_VOLL
+    pult.zustand["profil"] = None
+    s = rumpf(seite(angemeldet, "/marketing/layouts?bearbeiten=1"))
+    assert 'name="akzent" value="#b45309"' in s and ">warm &amp; klar</textarea>" in s
+
+
+def test_r8_profil_wird_escaped(angemeldet, pult):
+    pult.zustand["profil"] = {"werte": {"webseite": '"><script>x</script>'},
+                              "abschnitte": {"Ton": "</textarea><script>y</script>"}}
+    s = rumpf(seite(angemeldet, "/marketing/layouts?bearbeiten=1"))
+    assert "<script" not in s

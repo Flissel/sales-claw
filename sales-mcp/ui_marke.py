@@ -3,7 +3,8 @@
 Marken-Agenten, den offenen Vorschlag samt Vorschau und "Uebernehmen"/"Verwerfen".
 
 Wie der Rest von sales-ui ohne JavaScript: Formulare, Verweise (Mail/Handy) und ein
-Meta-Refresh alle 5 s, solange ein Auftrag laeuft. Daten kommen nur ueber marketing_pult;
+Meta-Refresh alle 5 s, solange ein Chat-, Bearbeitungs- oder Uebernahme-Auftrag laeuft (ein Wissens-Lauf
+nie: Link "Aktualisieren"). Daten kommen nur ueber marketing_pult;
 jeder Aufruf laeuft im Threadpool. Der alte Regler-Editor entfaellt, seine Pfade leiten hierher.
 
 Uploads (Plan-Ruling R2): Bilder und Dokumente gehen durch dieselbe Ablage und Pruefung wie
@@ -34,6 +35,8 @@ REFRESH_S = 5
 FORMATE = {"mail": "Mail", "handy": "Handy"}
 PC_LAEUFT = "Wird übernommen, sobald der PC läuft"
 WISSEN_WARTET = "Wissen wird aktualisiert, sobald der PC läuft"
+WISSEN_LAEUFT = "Wissen wird aktualisiert …"
+WISSEN_AKTUALISIEREN = "Aktualisieren"
 KEIN_PROFIL = "Noch kein Branding – erzähl mir von der Firma"
 NEUERES_PROFIL = "Inzwischen gibt es ein neueres Profil – bitte neu laden"
 _FARBE = re.compile(r"#[0-9A-Fa-f]{6}")
@@ -153,12 +156,19 @@ def routen(ui) -> list:
             teile.append(bild(dunkel, "Logo auf dunkler Fläche", "dunkel"))
         return f'<div class="logo-fassungen">{"".join(teile)}</div>'
 
+    def profil_quelle(d: dict) -> tuple[dict, dict]:
+        """(werte, abschnitte) des aktuellen Profils: das echte Profil der Marke.md (`profil`, vom PC gemeldet,
+        Ruling R8), sonst der zuletzt uebernommene Vorschlag (`aktuell`)."""
+        p = d.get("profil") if isinstance(d.get("profil"), dict) else None
+        p = p if p is not None else (d.get("aktuell") if isinstance(d.get("aktuell"), dict) else {})
+        werte = p.get("werte") if isinstance(p.get("werte"), dict) else {}
+        ab = p.get("abschnitte") if isinstance(p.get("abschnitte"), dict) else {}
+        return werte, ab
+
     def bearbeiten_html(d: dict, mandant: str) -> str:
         if d.get("laeuft") or d.get("uebernahme"):
             return '<p class="meta">Der Marken-Agent arbeitet gerade – bearbeiten geht danach.</p>'
-        aktuell = d.get("aktuell") if isinstance(d.get("aktuell"), dict) else {}
-        werte = aktuell.get("werte") if isinstance(aktuell.get("werte"), dict) else {}
-        ab = aktuell.get("abschnitte") if isinstance(aktuell.get("abschnitte"), dict) else {}
+        werte, ab = profil_quelle(d)
         sp = d.get("spiegel") if isinstance(d.get("spiegel"), dict) else {}
         g = sp.get("gestalt") if isinstance(sp.get("gestalt"), dict) else {}
         sw = g.get("schriften") if isinstance(g.get("schriften"), dict) else {}
@@ -203,8 +213,7 @@ def routen(ui) -> list:
                     f'{spiegel_warnung(sp)}{hinweise}</div>')
         teile = []
         firma = str(d.get("name") or d.get("mandant") or "")
-        aktuell = d.get("aktuell") if isinstance(d.get("aktuell"), dict) else {}
-        werte = aktuell.get("werte") if isinstance(aktuell.get("werte"), dict) else {}
+        werte, ab = profil_quelle(d)
         farben = ("".join(farbfeld(n, g.get(k)) for k, n in _FARBEN)
                   + "".join(farbfeld(n, werte.get(k)) for k, n in (("grund", "Grund"), ("text", "Text"))))
         if farben:
@@ -217,7 +226,6 @@ def routen(ui) -> list:
         dunkel = str(g.get("logo_dunkel") or "")
         if _BILD_DATEN.fullmatch(dunkel):
             teile.append(f'<p><img class="marke-logo dunkel" src="{dunkel}" alt="Logo für dunkle Flächen"></p>')
-        ab = aktuell.get("abschnitte") if isinstance(aktuell.get("abschnitte"), dict) else {}
         for titel in ("Ton", "Zielgruppe"):
             kurz = _kurz(ab.get(titel))
             if kurz:
@@ -286,15 +294,19 @@ def routen(ui) -> list:
         return ""
 
     def wissen_html(d: dict) -> str:
-        """Rowboat-Lauf nach der Uebernahme: Ergebnis mit Dateiliste, Hinweisen, Denken und Schritten."""
+        """Rowboat-Lauf nach der Uebernahme: Ergebnis mit Dateiliste, Hinweisen, Denken und Schritten. Ein
+        wartender oder laufender Lauf laedt die Seite NICHT neu (Ruling R7, er dauert Minuten und verwarf sonst
+        alle 5 s die Chat-Eingabe) - sein Stand kommt mit dem naechsten Laden ("Aktualisieren")."""
         w = d.get("wissen")
         if not isinstance(w, dict):
             return ""
         status = str(w.get("status") or "")
+        neu_laden = f' <a href="{SEITE}">{WISSEN_AKTUALISIEREN}</a>'
         if status == "offen":
-            return f'<p class="meta">{WISSEN_WARTET}</p>'
+            return f'<p class="meta marke-wissen-stand">{WISSEN_WARTET}.{neu_laden}</p>'
         if status == "in_arbeit":
-            return '<p class="meta">Wissen wird aktualisiert …</p>' + live_html(w)
+            return (f'<p class="meta marke-wissen-stand">{WISSEN_LAEUFT}{neu_laden}</p>'
+                    + spur_html(w))
         zeilen = [z for z in str(w.get("antwort") or "").splitlines() if z.strip()]
         kopf = zeilen[0] if zeilen else ""
         hinweise = w.get("hinweise") if isinstance(w.get("hinweise"), list) else []
@@ -391,9 +403,9 @@ def routen(ui) -> list:
             alter = _alter_s(d.get("uebernahme_seit"))
             wartet = alter is not None and alter > PC_WARTET_NACH_S
             status = f'<p class="status-zeile">{PC_LAEUFT if wartet else "Wird übernommen …"}</p>'
-        wissen = d.get("wissen") if isinstance(d.get("wissen"), dict) else {}
+        # Neu laden nur fuer Chat, Bearbeitung und Uebernahme; ein Wissens-Lauf nie (Ruling R7)
         im_chat = bool(d.get("laeuft") or d.get("uebernahme"))
-        arbeitet = bool(im_chat or wissen.get("status") == "in_arbeit")
+        arbeitet = im_chat
         rumpf = ('<link rel="stylesheet" href="/marketing/schrift/schriften.css">'
                  + marketing_mandant.umschalter(e, ui.CSRF_TOKEN, m, liste, SEITE)
                  + '<p class="meta">Das Markenprofil bestimmt Farben, Schriften und Logo neuer Newsletter. '
