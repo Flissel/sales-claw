@@ -8,10 +8,11 @@ import { pultStore } from '../pultZustand';
 
 import AbschnittLeiste, { ABSCHNITT_LEISTE_BREITE } from './AbschnittLeiste';
 import ChatLeiste from './Chat/ChatLeiste';
+import SeitenGriff, { useSeitenBreite } from './Chat/SeitenGriff';
 import { Ansagen, SperrSchicht, useAgentArbeitet, useNurLesen } from './Chat/Sperre';
 import ExportDialog from './Export/ExportDialog';
 import GestaltungFenster from './Gestaltung/GestaltungFenster';
-import InspectorDrawer, { INSPECTOR_DRAWER_WIDTH } from './InspectorDrawer';
+import InspectorDrawer from './InspectorDrawer';
 import { PULT_LEISTE_HOEHE } from './PultLeiste';
 import TemplatePanel from './TemplatePanel';
 
@@ -65,12 +66,18 @@ export default function App() {
   const exportOeffnen: Export = (vorbelegt) => setExportDialog({ vorbelegt });
 
   const marginRightTransition = useDrawerTransition('margin-right', inspectorDrawerOpen);
-  const rechts = inspectorDrawerOpen ? INSPECTOR_DRAWER_WIDTH : 0;
+  const [seitenBreite, setSeitenBreite] = useSeitenBreite();
+  const rechts = inspectorDrawerOpen ? seitenBreite : 0;
 
   return (
     <>
       <AbschnittLeiste />
-      <InspectorDrawer gesperrt={arbeitet !== null || nurLesen} chat={<NewsletterChat exportOeffnen={exportOeffnen} />} />
+      <InspectorDrawer
+        breite={seitenBreite}
+        griff={<SeitenGriff breite={seitenBreite} onBreite={setSeitenBreite} />}
+        gesperrt={arbeitet !== null || nurLesen}
+        chat={<NewsletterChat exportOeffnen={exportOeffnen} />}
+      />
 
       <Stack
         sx={{

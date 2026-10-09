@@ -45,6 +45,7 @@ import { LIEGT_ZUR_FREIGABE, Punkte, useAgentArbeitet, useLiveZeile, useNurLesen
 import StoppDialog from './StoppDialog';
 
 export const NACHRICHT_MAX = 2000;
+export const EINGABE_ZEILEN = 8;
 const KOPF = 40;
 
 const laeuftNoch = (e: ChatEintrag) => e.status === 'offen' || e.status === 'in_arbeit';
@@ -522,7 +523,7 @@ export default function ChatLeiste({ kontext, sperre: sperreVon = null, hoehe, v
                 <InputBase
                   multiline
                   disabled={nurLesen}
-                  maxRows={6}
+                  maxRows={EINGABE_ZEILEN}
                   value={text}
                   inputRef={eingabe}
                   placeholder={chatLauf ? (vorgemerkt ? 'Vormerkung ersetzen …' : 'Nächste Nachricht vormerken …') : arbeitet ? 'Der Assistent arbeitet …' : 'Nachricht an den Assistenten'}

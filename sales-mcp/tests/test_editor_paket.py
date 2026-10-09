@@ -96,3 +96,10 @@ def test_paket_kennt_marke_geaendert():
     for s in ("Die Marke hat sich geändert", "Übernimm die neue Marke: Farben, Schriften und Logo, sonst nichts ändern.",
               "marke_hinweis_aus_url"):
         assert s in text, s
+
+
+def test_paket_kennt_ziehbare_chat_leiste():
+    # 2026-10-09 parallele Runden (Task 7): Breite gemerkt, Trenner beschriftet
+    text = (ORDNER / "editor.js").read_text(encoding="utf-8")
+    for s in ("vibemind.editor.chatbreite", "Breite der Seitenleiste"):
+        assert s in text, s
