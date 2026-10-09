@@ -467,8 +467,14 @@ function chipsVerbraucht(mit: MitChips) {
     chatAuswahl: chipsNachSenden(chatAuswahl, mit.auswahl),
     chatAnhaenge: chatAnhaenge.filter((a) => !mit.anhaenge.some((m) => m.id === a.id)),
     // Die Einzelauswahl dieser Nachricht ist ab jetzt "aus der letzten Nachricht" (auch wenn Chips sie ersetzten).
-    ...(mit.altform !== null ? { gesendeteAuswahl: mit.altform } : {}),
+    gesendeteAuswahl: mit.altform,
   });
+}
+
+// Die Einzelauswahl hat sich geaendert (auch auf nichts): was danach gesetzt wird, ist neu und geht mit.
+// Gleicher Schluessel wie beim letzten Senden: bleibt "aus der letzten Nachricht".
+export function auswahlGewechselt(schluessel: string | null) {
+  if (schluessel !== pultStore.getState().gesendeteAuswahl) pultStore.setState({ gesendeteAuswahl: null });
 }
 
 export function auswahlAuffrischen() {

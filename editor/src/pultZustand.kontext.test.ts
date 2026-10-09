@@ -10,6 +10,7 @@ import {
   anhangEntfernen,
   anhangHinzu,
   auswahlAuffrischen,
+  auswahlGewechselt,
   auswahlEntfernen,
   blockAlsKontext,
   chatAbschicken,
@@ -334,5 +335,37 @@ describe('Liegengebliebene Markierung', () => {
     expect(auswahl[0]).toEqual([{ art: 'block', id: 'titel', kurz: expect.any(String) }]);
     expect(auswahl[1]).toBeNull();
     expect(auswahl[2]).toEqual([{ art: 'block', id: 'titel', kurz: expect.any(String) }]);
+  });
+});
+
+describe('Einzelauswahl: neu gesetzt geht mit', () => {
+  const A = { fenster: 'newsletter', auswahl: 'titel' };
+  const gesendet = (f: ReturnType<typeof netz>) =>
+    f.mock.calls.filter((c) => c[0] === '/c').map((c) => JSON.parse(String((c[1] as RequestInit).body)).kontext.auswahl);
+  const antwort = { '/c': [200, { auftrag: 'a', status: 'offen' }], '/c.json': [200, { laeuft: false, verlauf: [] }] } as Record<string, [number, unknown]>;
+
+  it('dazwischen eine Nachricht ohne Auswahl: danach geht A wieder mit', async () => {
+    const f = netz(antwort);
+    await chatAbschicken('eins', A);
+    await chatAbschicken('zwei', { fenster: 'newsletter', auswahl: null });
+    await chatAbschicken('drei', A);
+    expect(gesendet(f)).toEqual(['titel', null, 'titel']);
+  });
+
+  it('Auswahl wechselt auf nichts und zurueck auf A: geht mit', async () => {
+    const f = netz(antwort);
+    await chatAbschicken('eins', A);
+    auswahlGewechselt(null);
+    auswahlGewechselt('newsletter|titel');
+    await chatAbschicken('zwei', A);
+    expect(gesendet(f)).toEqual(['titel', 'titel']);
+  });
+
+  it('Auswahl unveraendert: bleibt ausgegraut und geht nicht mit', async () => {
+    const f = netz(antwort);
+    await chatAbschicken('eins', A);
+    auswahlGewechselt('newsletter|titel');
+    await chatAbschicken('zwei', A);
+    expect(gesendet(f)).toEqual(['titel', null]);
   });
 });

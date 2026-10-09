@@ -11,7 +11,7 @@ import { Box, ButtonBase, CircularProgress, IconButton, InputBase, ThemeProvider
 import { ChatEintrag, ChatKontext, ExportAuswahl, exportLaeuft, rueckgaengigFuer, stoppDialogOffen } from '../../chat';
 import { altformSchluessel, kurzText, sendenErlaubt } from '../../chatKontext';
 import { getDocument } from '../../documents/editor/EditorContext';
-import { chatAbschicken, chatHinweisWeg, chatRueckgaengig, chatStoppen, chatTextSetzen, HINWEIS_OFFEN, pultStore } from '../../pultZustand';
+import { auswahlGewechselt, chatAbschicken, chatHinweisWeg, chatRueckgaengig, chatStoppen, chatTextSetzen, HINWEIS_OFFEN, pultStore } from '../../pultZustand';
 import { FARBE, FOKUS, gestaltungThema, uebergang, UI_SCHRIFT } from '../Gestaltung/gestaltungStil';
 
 import { useAnhangAblage } from './AnhangAblage';
@@ -46,6 +46,7 @@ export default function ChatLeiste({ kontext, sperre: sperreVon = null, hoehe, v
   const thema = useMemo(gestaltungThema, []);
   const gesendeteAuswahl = pultStore((p) => p.gesendeteAuswahl);
   const schluessel = altformSchluessel(kontext);
+  useEffect(() => auswahlGewechselt(schluessel), [schluessel]);
   const altform = schluessel !== null && schluessel === gesendeteAuswahl ? { kurz: auswahlKurz(kontext) } : null;
   const chat = pultStore((p) => p.chat);
   const getrennt = pultStore((p) => p.chatGetrennt);
