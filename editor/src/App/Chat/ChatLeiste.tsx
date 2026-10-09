@@ -23,7 +23,7 @@ import {
 } from '@mui/icons-material';
 import { Box, Button, ButtonBase, CircularProgress, IconButton, InputBase, ThemeProvider, Tooltip } from '@mui/material';
 
-import { ChatEintrag, ChatKontext, ExportAuswahl, exportVorschlag, laufenderChat, rueckgaengigFuer, stoppDialogOffen, Vorgemerkt } from '../../chat';
+import { ChatEintrag, ChatKontext, ChatLive, ExportAuswahl, exportVorschlag, laufenderChat, rueckgaengigFuer, stoppDialogOffen, Vorgemerkt } from '../../chat';
 import { sendenErlaubt } from '../../chatKontext';
 import {
   chatAbschicken,
@@ -39,6 +39,7 @@ import {
 import { FARBE, FOKUS, gestaltungThema, uebergang, UI_SCHRIFT } from '../Gestaltung/gestaltungStil';
 
 import { useAnhangAblage } from './AnhangAblage';
+import { GedankenAufklapp, GedankenLive, useGedankenSichtbar } from './Gedanken';
 import KontextChips from './KontextChips';
 import { LIEGT_ZUR_FREIGABE, Punkte, useAgentArbeitet, useLiveZeile, useNurLesen } from './Sperre';
 import StoppDialog from './StoppDialog';
@@ -238,6 +239,9 @@ type Aktionen = {
   nurLesen: boolean;
   // Schritt-Zeile des laufenden Chat-Auftrags (useLiveZeile).
   liveZeile: string | null;
+  live: ChatLive | null;
+  gedankenSichtbar: boolean;
+  gedankenUmschalten: () => void;
 };
 
 function Eintrag({ e, a }: { e: ChatEintrag; a: Aktionen }) {
@@ -264,7 +268,10 @@ function Eintrag({ e, a }: { e: ChatEintrag; a: Aktionen }) {
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
       {e.nachricht && <Blase ich>{e.nachricht}</Blase>}
       {laeuftNoch(e) ? (
-        <LaufBlase text={a.liveZeile ?? (e.status === 'offen' ? 'Wartet auf den Assistenten …' : 'Agent denkt nach …')} />
+        <>
+          <LaufBlase text={a.liveZeile ?? (e.status === 'offen' ? 'Wartet auf den Assistenten …' : 'Agent denkt nach …')} />
+          {a.live && <GedankenLive live={a.live} sichtbar={a.gedankenSichtbar} umschalten={a.gedankenUmschalten} />}
+        </>
       ) : (
         <Blase ich={false} fehler={e.status === 'fehler'}>
           {e.status === 'fehler' && <ErrorOutlineRounded sx={{ fontSize: 14, mr: 0.75, verticalAlign: '-2px' }} />}
@@ -276,6 +283,7 @@ function Eintrag({ e, a }: { e: ChatEintrag; a: Aktionen }) {
               ))}
             </Box>
           )}
+          <GedankenAufklapp denken={e.denken} schritte={e.schritte} />
         </Blase>
       )}
       {(mitFassung || vorschlag) && (
@@ -331,6 +339,7 @@ export type ChatLeisteProps = {
 export default function ChatLeiste({ kontext, sperre: sperreVon = null, hoehe, vorschlaege = [], onExport }: ChatLeisteProps) {
   const thema = useMemo(gestaltungThema, []);
   const chat = pultStore((p) => p.chat);
+  const [gedankenSichtbar, gedankenUmschalten] = useGedankenSichtbar();
   const ungespeichert = pultStore((p) => p.ungespeichert);
   const hinweisOffen = pultStore((p) => p.hinweisOffen);
   const basis = pultStore((p) => p.basis);
@@ -408,6 +417,9 @@ export default function ChatLeiste({ kontext, sperre: sperreVon = null, hoehe, v
     onExport,
     nurLesen,
     liveZeile,
+    live: chat?.live ?? null,
+    gedankenSichtbar,
+    gedankenUmschalten,
   };
 
   const bearbeiten = (t: string) => {

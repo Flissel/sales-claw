@@ -386,6 +386,8 @@ function auftragEintragen(id: string, nachricht: string, rest: Partial<ChatStand
     fassung_vorher: pultStore.getState().basis,
     fassung_nachher: null,
     erstellt_am: new Date().toISOString(),
+    denken: '',
+    schritte: [],
   };
   const alt = pultStore.getState().chat;
   const verlauf = (alt?.verlauf ?? []).filter((e) => e.id !== id);

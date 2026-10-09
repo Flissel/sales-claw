@@ -7,6 +7,8 @@ import type { Dokument, Start } from './pult';
 
 export type ExportAuswahl = { newsletter: boolean; flaechen: string[] };
 
+export type SpurSchritt = { zeit: string; text: string };
+
 export type ChatStatus = 'offen' | 'in_arbeit' | 'fertig' | 'fehler';
 
 export type ChatEintrag = {
@@ -20,13 +22,15 @@ export type ChatEintrag = {
   fassung_vorher: number | null;
   fassung_nachher: number | null;
   erstellt_am: string;
+  denken: string;
+  schritte: SpurSchritt[];
 };
 
 export type StoppArt = 'behalten' | 'verwerfen';
 
 // Stand des laufenden Auftrags. zwischenstand im gespeicherten Format (medien:), null vor dem
 // ersten Schritt; stopp gesetzt = der Betreiber hat gestoppt, der Abschluss steht noch aus.
-export type ChatLive = { schritt: string; schritt_nr: number; zwischenstand: Dokument | null; stopp: StoppArt | null };
+export type ChatLive = { schritt: string; schritt_nr: number; zwischenstand: Dokument | null; stopp: StoppArt | null; denken: string; schritte: SpurSchritt[] };
 
 export type Vorgemerkt = { id: string; nachricht: string };
 
@@ -147,6 +151,19 @@ function exportAuswahlLesen(v: unknown): ExportAuswahl | null {
   return { newsletter: v.newsletter, flaechen: v.flaechen as string[] };
 }
 
+export function schritteLesen(v: unknown): SpurSchritt[] {
+  if (!Array.isArray(v)) return [];
+  const aus: SpurSchritt[] = [];
+  for (const s of v) {
+    if (istObjekt(s) && typeof s.zeit === 'string' && typeof s.text === 'string') aus.push({ zeit: s.zeit, text: s.text });
+  }
+  return aus.slice(0, 60); // die DB liefert ohnehin hoechstens 60
+}
+
+export function denkAusschnitt(text: string, zeichen = 600): string {
+  return text.length > zeichen ? '…' + text.slice(-zeichen) : text;
+}
+
 const STATUS: ReadonlyArray<ChatStatus> = ['offen', 'in_arbeit', 'fertig', 'fehler'];
 
 // Ein Verlaufseintrag aus der Antwort; null, wenn die Form nicht stimmt.
@@ -171,6 +188,8 @@ function eintragLesen(v: unknown): ChatEintrag | null {
     fassung_vorher: vorher,
     fassung_nachher: nachher,
     erstellt_am: typeof v.erstellt_am === 'string' ? v.erstellt_am : '',
+    denken: typeof v.denken === 'string' ? v.denken : '',
+    schritte: schritteLesen(v.schritte),
   };
 }
 
@@ -182,6 +201,8 @@ function liveLesen(v: unknown): ChatLive | null {
     schritt_nr: typeof nr === 'number' && Number.isInteger(nr) && nr > 0 ? nr : 0,
     zwischenstand: istObjekt(v.zwischenstand) ? v.zwischenstand : null,
     stopp: v.stopp === 'behalten' || v.stopp === 'verwerfen' ? v.stopp : null,
+    denken: typeof v.denken === 'string' ? v.denken : '',
+    schritte: schritteLesen(v.schritte),
   };
 }
 

@@ -67,14 +67,14 @@ describe('zuletztGeaendert', () => {
 
 describe('schrittText', () => {
   it('Schritt N · Text', () => {
-    expect(schrittText({ schritt: 'Titel links oben setzen', schritt_nr: 3, zwischenstand: null, stopp: null })).toBe(
+    expect(schrittText({ schritt: 'Titel links oben setzen', schritt_nr: 3, zwischenstand: null, stopp: null, denken: '', schritte: [] })).toBe(
       'Schritt 3 · Titel links oben setzen',
     );
   });
 
   it('ohne Text nur die Nummer, vor dem ersten Schritt null', () => {
-    expect(schrittText({ schritt: '  ', schritt_nr: 2, zwischenstand: null, stopp: null })).toBe('Schritt 2');
-    expect(schrittText({ schritt: '', schritt_nr: 0, zwischenstand: null, stopp: null })).toBeNull();
+    expect(schrittText({ schritt: '  ', schritt_nr: 2, zwischenstand: null, stopp: null, denken: '', schritte: [] })).toBe('Schritt 2');
+    expect(schrittText({ schritt: '', schritt_nr: 0, zwischenstand: null, stopp: null, denken: '', schritte: [] })).toBeNull();
     expect(schrittText(null)).toBeNull();
   });
 });

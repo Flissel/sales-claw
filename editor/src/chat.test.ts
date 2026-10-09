@@ -54,6 +54,8 @@ function eintrag(teil: Partial<ChatEintrag>): ChatEintrag {
     fassung_vorher: 3,
     fassung_nachher: null,
     erstellt_am: '2026-10-02 12:00:00+00',
+    denken: '',
+    schritte: [],
     ...teil,
   };
 }
@@ -133,7 +135,7 @@ describe('chatLaden', () => {
       ),
     );
     const r = await chatLaden(start);
-    expect(r?.live).toEqual({ schritt: 'Titel setzen', schritt_nr: 3, zwischenstand: zwischen, stopp: 'behalten' });
+    expect(r?.live).toEqual({ schritt: 'Titel setzen', schritt_nr: 3, zwischenstand: zwischen, stopp: 'behalten', denken: '', schritte: [] });
     expect(r?.vorgemerkt).toEqual({ id: 'v-1', nachricht: 'Danach Farben' });
   });
 
@@ -150,7 +152,7 @@ describe('chatLaden', () => {
       ),
     );
     const r = await chatLaden(start);
-    expect(r?.live).toEqual({ schritt: '', schritt_nr: 0, zwischenstand: null, stopp: null });
+    expect(r?.live).toEqual({ schritt: '', schritt_nr: 0, zwischenstand: null, stopp: null, denken: '', schritte: [] });
     expect(r?.vorgemerkt).toBeNull();
   });
 

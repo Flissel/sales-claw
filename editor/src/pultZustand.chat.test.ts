@@ -30,6 +30,8 @@ function eintrag(teil: Partial<ChatEintrag>): ChatEintrag {
     fassung_vorher: 3,
     fassung_nachher: null,
     erstellt_am: 't',
+    denken: '',
+    schritte: [],
     ...teil,
   };
 }
