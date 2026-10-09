@@ -241,6 +241,7 @@ const MERKZETTEL = 'vibemind-neues-bild';
 const NEU_GELADEN = 'vibemind-neu-geladen';
 const FENSTER = 'vibemind-fenster';
 const CHAT_ENTWURF = 'vibemind-chat-entwurf';
+const CHAT_CHIPS = 'vibemind-chat-chips';
 
 function schonGeladenLesen(): number | null {
   try {
@@ -274,9 +275,11 @@ export function meldungLesen() {
 // Schutz gegen Neuladeschleifen: je Fassung hoechstens einmal automatisch (sessionStorage).
 // Ein offenes, unveraendertes Gestaltungsfenster geht dabei nicht verloren - es oeffnet sich wieder.
 // Liefert true, wenn die Seite neu laedt.
+// Waehrend ein Anhang hochlaedt, wartet das Neuladen (der Upload ginge verloren); die Fassung holt danach
+// standAbfragen (alle 15 s).
 export function neueFassungLaden(fassung: number, auftraege: Auftrag[] = []): boolean {
-  const { basis, ungespeichert, hinweisOffen, geladenUm, gestaltungOffen, gestaltungGeaendert } = pultStore.getState();
-  const offen = ungespeichert || hinweisOffen || (gestaltungOffen !== null && gestaltungGeaendert);
+  const { basis, ungespeichert, hinweisOffen, geladenUm, gestaltungOffen, gestaltungGeaendert, chatAnhaenge } = pultStore.getState();
+  const offen = ungespeichert || hinweisOffen || (gestaltungOffen !== null && gestaltungGeaendert) || !sendenErlaubt(chatAnhaenge);
   if (ladeEntscheid(fassung, basis, offen, schonGeladenLesen()) !== 'laden') return false;
   const m = neuesBildMeldung(auftraege, geladenUm);
   try {
@@ -285,6 +288,7 @@ export function neueFassungLaden(fassung: number, auftraege: Auftrag[] = []): bo
     if (gestaltungOffen !== null) sessionStorage.setItem(FENSTER, gestaltungOffen);
     const { chatText } = pultStore.getState();
     if (chatText.trim()) sessionStorage.setItem(CHAT_ENTWURF, chatText);
+    chipsMerken();
   } catch {
     /* ohne Merkzettel wird nur neu geladen */
   }
@@ -292,20 +296,76 @@ export function neueFassungLaden(fassung: number, auftraege: Auftrag[] = []): bo
   return true;
 }
 
+// Chips der naechsten Nachricht fuer das Neuladen: Markierungen (mit "aus der letzten Nachricht") und fertige
+// Anhaenge, ohne Vorschau (eine blob:-Adresse ueberlebt das Neuladen nicht). Was gerade gesendet wird, gilt als
+// gesendet - nach dem Neuladen geht es nicht noch einmal mit.
+function chipsMerken() {
+  const { chatAuswahl, chatAnhaenge } = pultStore.getState();
+  const auswahl = imVersand ? chipsNachSenden(chatAuswahl, imVersand.auswahl) : chatAuswahl;
+  const anhaenge = chatAnhaenge
+    .filter((a) => a.status === 'fertig' && !imVersand?.anhaenge.some((v) => v.id === a.id))
+    .map(({ vorschau: _vorschau, ...a }) => a);
+  if (auswahl.length > 0 || anhaenge.length > 0) sessionStorage.setItem(CHAT_CHIPS, JSON.stringify({ auswahl, anhaenge }));
+}
+
+function istObj(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+function auswahlChipLesen(v: unknown): AuswahlChip | null {
+  if (!istObj(v) || (v.art !== 'block' && v.art !== 'ebene') || typeof v.id !== 'string' || typeof v.kurz !== 'string') return null;
+  if (v.flaeche !== undefined && typeof v.flaeche !== 'string') return null;
+  const c: AuswahlChip = { art: v.art, id: v.id, kurz: v.kurz };
+  if (typeof v.flaeche === 'string') c.flaeche = v.flaeche;
+  if (v.alt === true) c.alt = true;
+  return c;
+}
+
+// Nur fertige Anhaenge; jeder bekommt eine neue id (der Zaehler beginnt nach dem Neuladen wieder bei 1).
+function anhangChipLesen(v: unknown): AnhangChip | null {
+  if (!istObj(v) || typeof v.name !== 'string' || !v.name || (v.art !== 'bild' && v.art !== 'dokument') || v.status !== 'fertig') return null;
+  return { id: `anhang-${++anhangNr}`, name: v.name, art: v.art, status: 'fertig', fortschritt: 1 };
+}
+
 export function chatTextSetzen(text: string) {
   pultStore.setState({ chatText: text });
 }
 
-// Nach dem Neuladen: ein angefangener Chat-Text steht wieder im Eingabefeld.
+// Nach dem Neuladen: ein angefangener Chat-Text und die Chips der naechsten Nachricht stehen wieder da.
 export function chatEntwurfWiederholen() {
   try {
     const text = sessionStorage.getItem(CHAT_ENTWURF);
-    if (text === null) return;
-    sessionStorage.removeItem(CHAT_ENTWURF);
-    pultStore.setState({ chatText: text });
+    if (text !== null) {
+      sessionStorage.removeItem(CHAT_ENTWURF);
+      pultStore.setState({ chatText: text });
+    }
   } catch {
     /* kein Merkzettel */
   }
+  try {
+    const roh = sessionStorage.getItem(CHAT_CHIPS);
+    if (roh === null) return;
+    sessionStorage.removeItem(CHAT_CHIPS);
+    const j: unknown = JSON.parse(roh);
+    if (!istObj(j)) return;
+    const auswahl = (Array.isArray(j.auswahl) ? j.auswahl : []).map(auswahlChipLesen).filter((c): c is AuswahlChip => c !== null);
+    const anhaenge = (Array.isArray(j.anhaenge) ? j.anhaenge : []).map(anhangChipLesen).filter((a): a is AnhangChip => a !== null);
+    pultStore.setState({ chatAuswahl: auswahl.slice(0, MAX_AUSWAHL), chatAnhaenge: anhaenge.slice(0, MAX_ANHAENGE) });
+  } catch {
+    /* kein oder kaputter Merkzettel */
+  }
+}
+
+// Senden aus dem Eingabefeld (Final-Review M2/M3): der Text geht sofort aus dem Feld - ein Neuladen waehrend des
+// Sendens bringt die schon gesendete Bitte nicht zurueck, und was waehrenddessen getippt wird, bleibt stehen.
+// Scheitert das Senden, kommt der Text zurueck, aber nur in ein noch leeres Feld. Liefert null oder den Grund.
+export async function chatEingabeSenden(kontext: ChatKontext): Promise<string | null> {
+  const text = pultStore.getState().chatText;
+  if (!text.trim()) return null;
+  pultStore.setState({ chatText: '' });
+  const grund = await chatAbschicken(text.trim(), kontext);
+  if (grund !== null && pultStore.getState().chatText === '') pultStore.setState({ chatText: text });
+  return grund;
 }
 
 // Nach dem Neuladen: war ein Gestaltungsfenster offen, oeffnet es sich wieder.
@@ -427,7 +487,13 @@ export async function chatAbschicken(nachricht: string, kontext: ChatKontext): P
   // Nach dem Speichern neu aufnehmen: was inzwischen dazukam, geht mit.
   const mit = mitChips(kontext);
   if (!mit.ok) return mit.grund;
-  const r = await chatSenden(start, nachricht, mit.kontext);
+  imVersand = mit;
+  let r: Awaited<ReturnType<typeof chatSenden>>;
+  try {
+    r = await chatSenden(start, nachricht, mit.kontext);
+  } finally {
+    imVersand = null;
+  }
   if (!r.ok) {
     // Z. B. arbeitet der Assistent schon fuer einen anderen Tab: Stand holen, damit die Sperre erscheint.
     chatAbfragen();
@@ -442,6 +508,8 @@ export async function chatAbschicken(nachricht: string, kontext: ChatKontext): P
 // was waehrend des Sendens dazukommt, bleibt fuer die naechste Nachricht stehen).
 type MitChips = { ok: true; kontext: ChatKontext; auswahl: AuswahlChip[]; anhaenge: AnhangChip[]; altform: string | null };
 const KONTEXT_MAX = 4096;
+// Die Chips der Nachricht, die gerade unterwegs ist (chipsMerken: ein Neuladen in dem Moment zaehlt sie als gesendet).
+let imVersand: MitChips | null = null;
 
 // Vor dem Senden: markierte Elemente, die es im Dokument nicht mehr gibt (Agent, Rueckgaengig,
 // Loeschen), fallen weg - mit Hinweis am Eingabefeld; die Nachricht geht trotzdem.

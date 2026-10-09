@@ -11,7 +11,7 @@ import { Box, ButtonBase, CircularProgress, IconButton, InputBase, ThemeProvider
 import { ChatEintrag, ChatKontext, ExportAuswahl, exportLaeuft, rueckgaengigFuer, stoppDialogOffen } from '../../chat';
 import { altformSchluessel, kurzText, sendenErlaubt } from '../../chatKontext';
 import { getDocument } from '../../documents/editor/EditorContext';
-import { auswahlGewechselt, chatAbschicken, chatHinweisWeg, chatRueckgaengig, chatStoppen, chatTextSetzen, HINWEIS_OFFEN, pultStore } from '../../pultZustand';
+import { auswahlGewechselt, chatEingabeSenden, chatHinweisWeg, chatRueckgaengig, chatStoppen, chatTextSetzen, HINWEIS_OFFEN, pultStore } from '../../pultZustand';
 import { FARBE, FOKUS, gestaltungThema, uebergang, UI_SCHRIFT } from '../Gestaltung/gestaltungStil';
 
 import { useAnhangAblage } from './AnhangAblage';
@@ -92,10 +92,10 @@ export default function ChatLeiste({ kontext, sperre: sperreVon = null, hoehe, v
     if (!kannSenden) return;
     setSendet(true);
     setFehler(null);
-    const grund = await chatAbschicken(text.trim(), kontext);
+    // Der Text geht sofort aus dem Feld; was waehrend des Sendens getippt wird, bleibt (chatEingabeSenden).
+    const grund = await chatEingabeSenden(kontext);
     setSendet(false);
     if (grund) setFehler(grund);
-    else chatTextSetzen('');
   };
 
   const aktionen: RundenAktionen = {

@@ -1,8 +1,8 @@
 {
   "quelle": "usewaypoint/email-builder-js@ce3e610",
-  "gebaut": "2026-10-09T17:39:22.518Z",
+  "gebaut": "2026-10-09T18:03:50.579Z",
   "sha256": {
-    "editor.js": "cf7367732ca60e89de3ba7f2ea5ca56a4440d1b1f69d46d87c7211d18f8323bb",
+    "editor.js": "27bce7c90739aec922d6e64f98b4d4a3f652f5ee1ed49419e2beec095db444e8",
     "editor.css": "c84428b180d13a708a62689c67253feea2d93e343efcacf06ed3bde58be0c4a0"
   }
 }
