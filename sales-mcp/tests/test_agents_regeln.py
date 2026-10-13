@@ -73,4 +73,45 @@ def test_berichte_sind_keine_entwuerfe():
     text = " ".join(TEXT.split())
     assert "Berichte sind keine Entwürfe." in text
     assert "mit „Bericht:“ beginnt" in text
-    assert "bezieht sich nie auf einen Bericht" in text
+    assert "zeigt keinen Entwurf zur Freigabe" in text
+
+
+def test_ja_nur_direkt_nach_vollstaendiger_anzeige():
+    # Final-Review C2: ein „ja“ gibt nur frei, wenn die unmittelbar vorige
+    # eigene Nachricht genau diesen Entwurf vollständig zeigte.
+    absatz = _absatz("- **Freigabe im Chat:**")
+    assert "unmittelbar vorige eigene Nachricht" in absatz
+    assert "gibst du nichts frei" in absatz
+    assert "fragst du einmal kurz nach" in absatz
+
+
+def test_bericht_ja_beantwortet_die_frage():
+    absatz = _absatz("- **Berichte sind keine Entwürfe.**")
+    assert "bezieht sich nie auf einen Bericht" not in absatz
+    assert "zuletzt vollständig gezeigten Entwurf" not in absatz
+    assert "beantwortet es diese Frage" in absatz
+    assert "gibt keinen Entwurf frei" in absatz
+
+
+def test_kundenchat_direkt_nur_bei_auto():
+    # Final-Review I2 / Ruling: direkt antworten nur bei Stufe `auto` mit
+    # Zustimmung; bei halbauto/manuell Entwurf per antwort_entwerfen, kein
+    # eigenes Wort im Kundenchat.
+    i = TEXT.index("## Kundenchats")
+    kapitel = " ".join(TEXT[i:TEXT.index("\n## ", i + 1)].split())
+    assert "ohne Entwurf und ohne Freigabe je Nachricht" not in kapitel
+    assert "Nur bei Stufe `auto` mit dokumentierter Zustimmung" in kapitel
+    assert "antwort_entwerfen" in kapitel
+    assert "NO_REPLY" in kapitel
+
+
+def test_freigabe_antworten_nennt_kundenchat_regel():
+    i = TEXT.index("## Antworten nur mit Freigabe")
+    kapitel = " ".join(TEXT[i:TEXT.index("\n## ", i + 1)].split())
+    assert "Kontakt-Freigabe allein" in kapitel
+    assert "halbauto" in kapitel and "manuell" in kapitel
+
+
+def test_auto_betrieb_eigene_nummer_nur_bei_auto():
+    absatz = _absatz("- Schreibt er an **deine eigene Nummer**")
+    assert "Stufe `auto`" in absatz
