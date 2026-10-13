@@ -5237,16 +5237,17 @@ async def kontakt_detail(request):
             f'<button>Privat markieren&hellip;</button></form>')
 
     # Bedarfsstand: beantwortete Leitfaden-Fragen mit Wortlaut, offene als Zahl.
-    bedarf = anreicherung.get("bedarf") or {}
-    teile.append(f"<h2>Bedarfsstand ({len(bedarf)} beantwortet, "
-                 f"{max(len(server.ALLE_FRAGEN) - len(bedarf), 0)} offen)</h2>")
-    if bedarf:
-        teile.append(_tabelle(["Frage", "Antwort"], [
-            [_e(server.ALLE_FRAGEN.get(fid, {}).get("frage", fid)),
-             _e((wert or {}).get("antwort") if isinstance(wert, dict) else wert)]
-            for fid, wert in sorted(bedarf.items())]))
-    else:
-        teile.append("<p>Noch keine Antworten erfasst.</p>")
+    if server.bedarfsanalyse_an():
+        bedarf = anreicherung.get("bedarf") or {}
+        teile.append(f"<h2>Bedarfsstand ({len(bedarf)} beantwortet, "
+                     f"{max(len(server.ALLE_FRAGEN) - len(bedarf), 0)} offen)</h2>")
+        if bedarf:
+            teile.append(_tabelle(["Frage", "Antwort"], [
+                [_e(server.ALLE_FRAGEN.get(fid, {}).get("frage", fid)),
+                 _e((wert or {}).get("antwort") if isinstance(wert, dict) else wert)]
+                for fid, wert in sorted(bedarf.items())]))
+        else:
+            teile.append("<p>Noch keine Antworten erfasst.</p>")
 
     # Vertraege (enrichment.vertraege) — nur wenn es wirklich ein Array ist,
     # Recherche-Arbeit sichtbar machen (Betreiber-Wunsch 01.09.2026):

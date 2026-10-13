@@ -60,7 +60,8 @@ def _lead(name="Max Bestand"):
         "(%s, '+491701234567', 'whatsapp') returning id", (name,))[0]["id"]
 
 
-def test_uebergabe_sammelt_profil_bedarf_und_offene_punkte(tmp_path):
+def test_uebergabe_sammelt_profil_bedarf_und_offene_punkte(tmp_path, monkeypatch):
+    monkeypatch.setenv("SALES_BEDARFSANALYSE", "an")
     lead = _lead()
     server.profil_aktualisieren(str(lead), "beruf", "Schreinermeister")
     # frage_id muss aus dem Leitfaden stammen (bedarf_speichern prueft gegen
@@ -96,7 +97,8 @@ def test_vertraege_stehen_mit_gesellschaft_und_ablauf_im_text():
     assert "?" not in text.split("## Vertraege")[1].split("##")[0]
 
 
-def test_leere_abschnitte_bleiben_lesbar_und_ohne_bewertung():
+def test_leere_abschnitte_bleiben_lesbar_und_ohne_bewertung(monkeypatch):
+    monkeypatch.setenv("SALES_BEDARFSANALYSE", "an")
     """Der haeufigste Fall am Anfang: fast nichts steht drin. Die Uebergabe
     muss trotzdem eine vollstaendige, lesbare Struktur liefern — und den
     §34d-Schlusssatz tragen, der sie als Zusammenstellung ausweist."""

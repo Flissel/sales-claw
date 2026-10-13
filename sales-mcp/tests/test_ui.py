@@ -720,7 +720,8 @@ def test_inbox_linkedin_sonderfall_nennt_den_handversand():
 # Kontakte
 # ---------------------------------------------------------------------------
 
-def test_kontaktliste_und_detailseite():
+def test_kontaktliste_und_detailseite(monkeypatch):
+    monkeypatch.setenv("SALES_BEDARFSANALYSE", "an")
     lead = _lead(name="Anna Beispiel")
     server._q("update leads set enrichment = %s where id = %s returning id",
               (json.dumps({

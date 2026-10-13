@@ -4236,16 +4236,20 @@ def digest() -> str:
     # (F2) genau um die Kontakte gebracht, um die es geht. Sichtbar bleiben
     # Recherche-Kontakte ueber kontakt_suchen und die recherche-Aktivitaeten am
     # Sammelkontakt.
-    unvollstaendig = _q(
-        "select id, name from leads where status not in ('won','lost') "
-        "and coalesce(source, '') not in ('recherche', 'system') "
-        "order by updated_at desc limit 20")
-    offen_je_lead = []
-    for lead in unvollstaendig:
-        o = json.loads(bedarf_offen(str(lead["id"])))
-        if "anzahl_offen" in o and o["anzahl_offen"] > 0:
-            offen_je_lead.append({"lead_id": lead["id"], "name": lead["name"],
-                                  "offene_fragen": o["anzahl_offen"]})
+    # Schalter SALES_BEDARFSANALYSE: aus -> kein Block, keine DB-Arbeit.
+    offen_je_lead = None
+    if bedarfsanalyse_an():
+        unvollstaendig = _q(
+            "select id, name from leads where status not in ('won','lost') "
+            "and coalesce(source, '') not in ('recherche', 'system') "
+            "order by updated_at desc limit 20")
+        offen_je_lead = []
+        for lead in unvollstaendig:
+            o = json.loads(bedarf_offen(str(lead["id"])))
+            if "anzahl_offen" in o and o["anzahl_offen"] > 0:
+                offen_je_lead.append({"lead_id": lead["id"],
+                                      "name": lead["name"],
+                                      "offene_fragen": o["anzahl_offen"]})
     # Offen = wiedervorlage-Aktivitaet, faellig (faellig_am <= heute), OHNE
     # zugehoeriges Gegen-Ereignis wiedervorlage_erledigt (append-only, siehe
     # dort). LIMIT wie bei den anderen Digest-Bloecken: eine Deckelung, damit
@@ -4335,7 +4339,7 @@ def digest() -> str:
         "       not in ('won', 'lost') and not "
         + _archiv_sql("enrichment") +
         " order by score desc, updated_at desc limit 5")
-    return _json({"anzahl_entwuerfe": len(entwuerfe),
+    ergebnis = {"anzahl_entwuerfe": len(entwuerfe),
                   "pipeline": pipeline,
                   "wichtigste_kontakte": [
                       {"lead_id": w["id"], "kontakt": w["name"],
@@ -4343,7 +4347,6 @@ def digest() -> str:
                   "offene_entwuerfe": [
                       {"draft_id": e["id"], "kanal": e["channel"],
                        "kontakt": e["name"]} for e in entwuerfe],
-                  "unvollstaendige_bedarfsanalysen": offen_je_lead,
                   "faellige_wiedervorlagen": [
                       {"aktivitaets_id": w["id"], "lead_id": w["lead_id"],
                        "kontakt": w["name"],
@@ -4353,7 +4356,10 @@ def digest() -> str:
                   "unbeantwortete_eingaenge": unbeantwortet,
                   "unbekannte_absender": unbekannte,
                   "faellige_chat_reports": chat_reports,
-                  "letzte_aktivitaeten": letzte})
+                  "letzte_aktivitaeten": letzte}
+    if offen_je_lead is not None:
+        ergebnis["unvollstaendige_bedarfsanalysen"] = offen_je_lead
+    return _json(ergebnis)
 
 
 # ---------------------------------------------------------------------------
@@ -5191,8 +5197,10 @@ def uebergabe_erstellen(lead_id: str) -> str:
               f"Stand {heute} · Consent: {l['consent_status']} · "
               f"Telefon: {l['phone'] or '—'}", "", "## Profil"]
     zeilen += [f"- {k}: {v}" for k, v in profil.items()] or ["- (leer)"]
-    zeilen += ["", "## Bedarfsanalyse (Angaben des Kunden)"]
-    zeilen += [_bedarf_zeile(k, v) for k, v in bedarf.items()] or ["- (leer)"]
+    if bedarfsanalyse_an():
+        zeilen += ["", "## Bedarfsanalyse (Angaben des Kunden)"]
+        zeilen += ([_bedarf_zeile(k, v) for k, v in bedarf.items()]
+                   or ["- (leer)"])
     zeilen += ["", "## Vertraege (vom Kunden genannt)"]
     # Feldnamen wie von vertrag_speichern geschrieben (sparte/gesellschaft/
     # ablauf). `gesellschaft` und `ablauf` sind dort optional und fehlen dann
@@ -8013,7 +8021,21 @@ WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,
              vorlage_beauftragen, vorlagenauftraege_pruefen, vorlage_urteil,
              terminkarte_erstellen)
 
-for _fn in WERKZEUGE:
+def bedarfsanalyse_an() -> bool:
+    """Schalter SALES_BEDARFSANALYSE (je Aufruf gelesen): nur "an" schaltet
+    die Bedarfsanalyse ein, Vorgabe ist aus. Code und Daten bleiben."""
+    return os.environ.get("SALES_BEDARFSANALYSE", "").strip().lower() == "an"
+
+
+BEDARFS_WERKZEUGE = (bedarf_speichern, bedarf_offen)
+
+
+def aktive_werkzeuge() -> tuple:
+    return tuple(f for f in WERKZEUGE
+                 if bedarfsanalyse_an() or f not in BEDARFS_WERKZEUGE)
+
+
+for _fn in aktive_werkzeuge():
     mcp.tool()(_fn)
 
 if __name__ == "__main__":

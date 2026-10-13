@@ -489,10 +489,11 @@ def test_ohne_sammel_lead_kommt_ein_hinweis_statt_eines_fehlers(monkeypatch):
     assert server._q("select count(*) as n from activities")[0]["n"] == 0
 
 
-def test_recherche_kontakte_verstopfen_den_digest_nicht():
+def test_recherche_kontakte_verstopfen_den_digest_nicht(monkeypatch):
     """Ein recherchierter Firmeneintrag hat nie ein Gespraech gefuehrt — er
     gehoert nicht in den Block „unvollstaendige Bedarfsanalysen" des
     Morgen-Digests, sonst verdraengt er dort die echten Kontakte."""
+    monkeypatch.setenv("SALES_BEDARFSANALYSE", "an")
     server.kontakt_anlegen(name="Echte Kundin", phone="+491701234567",
                            source="whatsapp")
     STUB.antworte_mit([_ort("Alpha GmbH"), _ort("Beta AG",
