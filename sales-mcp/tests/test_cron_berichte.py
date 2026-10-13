@@ -25,9 +25,7 @@ def test_no_reply_bleibt_ohne_praefix():
     for name, job in ANNOUNCE.items():
         msg = job["payload"]["message"]
         if "NO_REPLY" in msg:
-            assert AUSNAHME in msg.split("
-
-", 1)[0], name
+            assert AUSNAHME in msg.split("\n\n", 1)[0], name
             assert "Bericht: NO_REPLY" not in msg, name
 
 
