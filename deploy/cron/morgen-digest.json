@@ -11,7 +11,7 @@
   "name": "morgen-digest",
   "payload": {
     "kind": "agentTurn",
-    "message": "Beginne deine Nachricht mit „Bericht:“ (genau so, dann ein Leerzeichen).\n\nVORBEREITUNG des Tages, 08:00.\n\nRufe digest() auf und fasse die Antwort als kurze, lesbare Liste zusammen, wie in der AGENTS.md-Digest-Regel beschrieben. Faellige Wiedervorlagen nennst du ausdruecklich, ebenso Termine des heutigen Tages.\n\nWas HEUTE ansteht, gehoert nach oben; was liegengeblieben ist, darunter. Schreibe KEINE Entwuerfe — dieser Lauf berichtet nur. Halte die Nachricht kompakt; ist nichts zu berichten, sage genau das in einem Satz, statt eine leere Liste zu schicken."
+    "message": "Beginne deine Nachricht mit „Bericht:“ (genau so, dann ein Leerzeichen). Antwortest du mit NO_REPLY, steht davor kein Präfix.\n\nVORBEREITUNG des Tages, 08:00.\n\nRufe digest() auf und fasse die Antwort als kurze, lesbare Liste zusammen, wie in der AGENTS.md-Digest-Regel beschrieben. Faellige Wiedervorlagen nennst du ausdruecklich, ebenso Termine des heutigen Tages.\n\nWas HEUTE ansteht, gehoert nach oben; was liegengeblieben ist, darunter. Schreibe KEINE Entwuerfe — dieser Lauf berichtet nur. Halte die Nachricht kompakt; ist nichts zu berichten, sage genau das in einem Satz, statt eine leere Liste zu schicken."
   },
   "schedule": {
     "expr": "0 8 * * *",

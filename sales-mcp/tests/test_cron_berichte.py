@@ -3,7 +3,8 @@ import json
 from pathlib import Path
 
 CRON = Path(__file__).resolve().parents[2] / "deploy" / "cron"
-ZEILE = "Beginne deine Nachricht mit „Bericht:“ (genau so, dann ein Leerzeichen)."
+AUSNAHME = "Antwortest du mit NO_REPLY, steht davor kein Präfix."
+ZEILE = "Beginne deine Nachricht mit „Bericht:“ (genau so, dann ein Leerzeichen). " + AUSNAHME
 JOBS = {p.name: json.loads(p.read_text(encoding="utf-8")) for p in sorted(CRON.glob("*.json"))}
 ANNOUNCE = {n: j for n, j in JOBS.items() if j.get("delivery", {}).get("mode") == "announce"}
 
@@ -24,8 +25,10 @@ def test_no_reply_bleibt_ohne_praefix():
     for name, job in ANNOUNCE.items():
         msg = job["payload"]["message"]
         if "NO_REPLY" in msg:
-            assert "NO_REPLY" in msg.split(ZEILE, 1)[1], name
-            assert "„Bericht:“ NO_REPLY" not in msg and "Bericht: NO_REPLY" not in msg, name
+            assert AUSNAHME in msg.split("
+
+", 1)[0], name
+            assert "Bericht: NO_REPLY" not in msg, name
 
 
 def test_uebrige_felder_unveraendert():
