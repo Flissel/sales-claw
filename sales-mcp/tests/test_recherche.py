@@ -566,7 +566,8 @@ def test_beide_werkzeuge_sind_registriert():
     # 22.09.2026: gespraeche_suchen dazugekommen, 84 -> 85.
     # Terminkarten 24.09.2026: vorlage_beauftragen, vorlagenauftraege_pruefen,
     # vorlage_urteil, terminkarte_erstellen — 85 -> 89.
-    assert len(namen) == len(set(namen)) == 90
+    # 13.10.2026: mail_beantworten 89 -> 90, versand_abwarten 90 -> 91.
+    assert len(namen) == len(set(namen)) == 91
 
 # ---------------------------------------------------------------------------
 # Nachbesserungen aus dem Stufe-5-Review (Befunde T1, B2, D2)

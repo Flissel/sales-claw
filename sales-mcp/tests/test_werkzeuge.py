@@ -712,7 +712,8 @@ def test_fuenfundachtzig_werkzeuge_registriert():
     # vorlage_beauftragen, vorlagenauftraege_pruefen, vorlage_urteil,
     # terminkarte_erstellen, 85 -> 89.
     # 13.10.2026: mail_beantworten (Sales-Agent Block A, Task 3), 89 -> 90.
-    assert len(namen) == 90
+    # 13.10.2026: versand_abwarten (Sales-Agent Block A, Task 5), 90 -> 91.
+    assert len(namen) == 91
     assert "termin_konflikte" in namen
     assert "kontakt_aehnlich" in namen
     assert "gespraeche_suchen" in namen

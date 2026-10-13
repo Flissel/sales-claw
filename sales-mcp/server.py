@@ -24,6 +24,7 @@ import logging
 import json
 import os
 import re
+import time
 import urllib.request
 from email.utils import parseaddr
 import uuid
@@ -7857,6 +7858,39 @@ def terminkarte_erstellen(lead_id: str, zusatz: dict | None = None,
     return _json(_mit_link({"datei": name, "leer": r["fehlend"]}, name))
 
 
+_SCHLAF = time.sleep
+_UHR = time.monotonic
+VERSAND_TAKT_S = 3
+
+
+@_gesichert
+def versand_abwarten(draft_id: str, max_s: int = 60) -> str:
+    """Nach einer Freigabe: wartet hoechstens max_s Sekunden, bis der Versanddienst den Entwurf verschickt hat
+    (Spec 2.2). Ergebnis sent | failed (mit Grund) | wartet | nicht_freigegeben | rejected. Versendet selbst nichts."""
+    ende = _UHR() + max(0, min(int(max_s), 120))
+    while True:
+        z = _q("select status, channel, error from drafts where id = %s", (draft_id,))
+        if not z:
+            return _json({"fehler": f"Kein Entwurf {draft_id}."})
+        s, kanal = z[0]["status"], z[0]["channel"]
+        if s == "pending":
+            return _json({"draft_id": draft_id, "ergebnis": "nicht_freigegeben", "kanal": kanal})
+        if s in ("sent", "rejected"):
+            return _json({"draft_id": draft_id, "ergebnis": s, "kanal": kanal})
+        if s == "failed":
+            return _json({"draft_id": draft_id, "ergebnis": "failed", "kanal": kanal, "fehler": z[0]["error"] or ""})
+        if kanal == "email":
+            # Lazy: mail_dispatch importiert server (Ringschluss am Modulkopf).
+            import mail_dispatch
+            if not mail_dispatch.kunden_identitaet().brauchbar():
+                return _json({"draft_id": draft_id, "ergebnis": "wartet", "kanal": kanal,
+                              "hinweis": "Freigegeben, bleibt liegen, bis das Postfach eingetragen ist."})
+        if _UHR() >= ende:
+            return _json({"draft_id": draft_id, "ergebnis": "wartet", "kanal": kanal,
+                          "hinweis": "liegt freigegeben in der Warteschlange"})
+        _SCHLAF(VERSAND_TAKT_S)
+
+
 WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,
              kontakt_anlegen,
              kontakt_aktualisieren,
@@ -7956,6 +7990,8 @@ WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,
              # schreiben (Freigabe=Versand) und INBOX lesen (readonly).
              # Vertraege: tests/test_betreiber_mail.py, test_postfach.py.
              betreiber_mail_entwurf, postfach_lesen, postfach_mail_lesen, mail_beantworten,
+             # Versand abwarten (13.10.2026, Sales-Agent Block A, Task 5).
+             versand_abwarten,
              # Pipeline-Automatik (01.09.2026): beweisbare Stufen
              # nachziehen, nur vorwaerts. Vertraege: tests/test_pipeline.py.
              stufen_abgleichen,
