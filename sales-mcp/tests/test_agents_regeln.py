@@ -67,3 +67,10 @@ def test_email_ankuendigung_durch_versand_abwarten_ersetzt():
 
 def test_versand_abwarten_nur_whatsapp_und_email():
     assert "bei WhatsApp und E-Mail" in _absatz("- **Nach jeder Freigabe")
+
+
+def test_berichte_sind_keine_entwuerfe():
+    text = " ".join(TEXT.split())
+    assert "Berichte sind keine Entwürfe." in text
+    assert "mit „Bericht:“ beginnt" in text
+    assert "bezieht sich nie auf einen Bericht" in text
