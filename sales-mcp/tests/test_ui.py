@@ -3542,3 +3542,23 @@ def test_bei_namensgleichheit_gewinnt_der_menschen_ordner(
     assert antwort.status_code == 303, antwort.text
     assert not (medienordner / "doppelt.pdf").exists()
     assert (erzeugter_ordner / "doppelt.pdf").read_bytes() == b"system"
+
+
+def test_ui_freigabe_hebt_ignorieren_auf():
+    lead = _lead(phone="+4915752415956")
+    server._absender_ereignis(server.ABSENDER_IGNORIERT, "4915752415956@c.us", lead)
+    assert server.absender_ist_ignoriert("4915752415956@c.us")
+    draft = _entwurf(lead)
+    r = _post("/aktion/freigeben", {"draft_id": draft, "csrf": ui.CSRF_TOKEN,
+                                    "stand": _lese_stand(draft)})
+    assert r.status_code == 303
+    assert _zeile(draft)["status"] == "approved"
+    assert not server.absender_ist_ignoriert("4915752415956@c.us")
+
+
+def test_ui_kontakt_freigabe_hebt_ignorieren_auf():
+    lead = _lead(phone="+4915752415957")
+    server._absender_ereignis(server.ABSENDER_IGNORIERT, "4915752415957@c.us", lead)
+    r = _post("/kontakte/freigeben", {"lead_id": lead, "csrf": ui.CSRF_TOKEN})
+    assert r.status_code == 303
+    assert not server.absender_ist_ignoriert("4915752415957@c.us")

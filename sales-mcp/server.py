@@ -538,9 +538,14 @@ def _whatsapp_freigabe_setzen(lead_id: str, freigegeben: bool) -> str:
     _q("insert into activities (lead_id, type, payload) values "
        "(%s, 'kontakt_freigabe', %s) returning id",
        (lead_id, _json({"kanal": "whatsapp", "freigegeben": freigegeben})))
-    return _json({"lead_id": zeilen[0]["id"], "kontakt": zeilen[0]["name"],
-                  "whatsapp_freigabe": freigegeben,
-                  "hinweis": FREIGABE_HINWEIS if freigegeben else ENTZUG_HINWEIS})
+    antwort = {"lead_id": zeilen[0]["id"], "kontakt": zeilen[0]["name"],
+               "whatsapp_freigabe": freigegeben,
+               "hinweis": FREIGABE_HINWEIS if freigegeben else ENTZUG_HINWEIS}
+    if freigegeben:
+        satz = ignorieren_aufheben(lead_id)
+        if satz:
+            antwort["ignorieren_aufgehoben"] = satz
+    return _json(antwort)
 
 
 TELEGRAM_HINWEIS = (
@@ -4545,6 +4550,22 @@ def absender_ist_ignoriert(*kennungen) -> bool:
     return bool(zeilen) and zeilen[0]["type"] == ABSENDER_IGNORIERT
 
 
+def ignorieren_aufheben(lead_id: str) -> str | None:
+    """Spec 1.5: wird ein ignorierter Absender echter Kontakt (Freigabe), faellt die Markierung weg.
+    Schreibt 'absender_beachtet' (juengste Aussage gewinnt; @lid-Bruecke wie absender_ist_ignoriert)."""
+    z = _q("select name, phone from leads where id = %s", (lead_id,))
+    ziffern = re.sub(r"\D", "", (z[0]["phone"] or "") if z else "")
+    if not ziffern:
+        return None
+    kennung = f"{ziffern}@c.us"
+    if not absender_ist_ignoriert(kennung):
+        return None
+    _absender_ereignis(ABSENDER_BEACHTET, kennung, lead_id)
+    _q("insert into activities (lead_id, type, payload) values (%s, 'absender_ignorieren_aufgehoben', %s) returning id",
+       (lead_id, _json({"absender": kennung})))
+    return f"{z[0]['name']} stand auf Ignorieren – aufgehoben, neue Nachrichten sind wieder sichtbar."
+
+
 def _absender_ereignis(typ: str, kennung: str, lead_id=None) -> list:
     """Das Gegen-Ereignis zu einer Einordnung — am Sammelkontakt, und wenn die
     Kennung einem echten Kontakt gehoert, ZUSAETZLICH an dessen Lead.
@@ -5322,7 +5343,11 @@ def entwurf_freigeben(draft_id: str) -> str:
     _q("insert into activities (lead_id, type, payload) values (%s, 'freigabe', %s) "
        "returning id",
        (z["lead_id"], _json({"draft_id": str(z["id"]), "kanal": z["channel"]})))
-    return _json({"draft_id": z["id"], "status": "approved"})
+    antwort = {"draft_id": z["id"], "status": "approved"}
+    satz = ignorieren_aufheben(z["lead_id"]) if z["lead_id"] else None
+    if satz:
+        antwort["ignorieren_aufgehoben"] = satz
+    return _json(antwort)
 
 
 @_gesichert

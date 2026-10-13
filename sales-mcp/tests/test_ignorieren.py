@@ -88,3 +88,75 @@ def test_das_werkzeug_meldet_dasselbe():
     assert lead not in {str(k["lead_id"]) for k in d["kontakte"]}
     r = json.loads(server.chat_reports_faellig())
     assert lead not in {str(k["lead_id"]) for k in r["kontakte"]}
+
+
+# ---------------------------------------------------------------------------
+# Freigabe hebt Ignorieren auf (Block A, Task 4)
+# ---------------------------------------------------------------------------
+
+def _lead_mit_nummer(phone, name="Nina Nummer"):
+    return str(server._q(
+        "insert into leads (name, phone, source) values "
+        "(%s, %s, 'whatsapp') returning id", (name, phone))[0]["id"])
+
+
+def _beachtet_anzahl():
+    return server._q("select count(*) n from activities "
+                     "where type = 'absender_beachtet'")[0]["n"]
+
+
+def test_freigabe_hebt_ignorieren_auf():
+    lead = _lead_mit_nummer("+4915752415952")
+    server._absender_ereignis(server.ABSENDER_IGNORIERT, "4915752415952@c.us", lead)
+    assert server.absender_ist_ignoriert("4915752415952@c.us")
+    a = json.loads(server.kontakt_freigeben(lead))
+    assert "stand auf Ignorieren – aufgehoben" in a["ignorieren_aufgehoben"]
+    assert not server.absender_ist_ignoriert("4915752415952@c.us")
+
+
+def test_entwurf_freigabe_hebt_auf():
+    lead = _lead_mit_nummer("+4915752415953")
+    server._absender_ereignis(server.ABSENDER_IGNORIERT, "4915752415953@c.us", lead)
+    draft = str(server._q(
+        "insert into drafts (lead_id, channel, recipient, body, status) "
+        "values (%s, 'email', 'nina@example.org', 'Hallo', 'pending') "
+        "returning id", (lead,))[0]["id"])
+    a = json.loads(server.entwurf_freigeben(draft))
+    assert a["status"] == "approved"
+    assert "stand auf Ignorieren – aufgehoben" in a["ignorieren_aufgehoben"]
+    assert not server.absender_ist_ignoriert("4915752415953@c.us")
+
+
+def test_entwurf_freigabe_ohne_ignorieren_ohne_schluessel():
+    lead = _lead_mit_nummer("+4915752415954")
+    draft = str(server._q(
+        "insert into drafts (lead_id, channel, recipient, body, status) "
+        "values (%s, 'email', 'nina@example.org', 'Hallo', 'pending') "
+        "returning id", (lead,))[0]["id"])
+    a = json.loads(server.entwurf_freigeben(draft))
+    assert "ignorieren_aufgehoben" not in a
+    assert _beachtet_anzahl() == 0
+
+
+def test_nie_ignoriert_kein_ereignis():
+    lead = _lead_mit_nummer("+4915000000001")
+    a = json.loads(server.kontakt_freigeben(lead))
+    assert "ignorieren_aufgehoben" not in a
+    assert _beachtet_anzahl() == 0
+
+
+def test_kontakt_ohne_nummer():
+    lead = str(server._q(
+        "insert into leads (name, email, source) values "
+        "('Mail Only', 'mo@example.org', 'manual') returning id")[0]["id"])
+    assert server.ignorieren_aufheben(lead) is None
+    a = json.loads(server.kontakt_freigeben(lead))
+    assert "ignorieren_aufgehoben" not in a
+    assert _beachtet_anzahl() == 0
+
+
+def test_entziehen_hebt_nichts_auf():
+    lead = _lead_mit_nummer("+4915752415955")
+    server._absender_ereignis(server.ABSENDER_IGNORIERT, "4915752415955@c.us", lead)
+    server.kontakt_freigabe_entziehen(lead)
+    assert server.absender_ist_ignoriert("4915752415955@c.us")
