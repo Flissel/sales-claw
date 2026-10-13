@@ -144,3 +144,10 @@ def test_widerruf_wirkt_sofort():
     gesperrt = json.loads(server.entwurf_erstellen(
         lead, "whatsapp", "Noch ein Angebot?"))
     assert "fehler" in gesperrt
+
+
+def test_betreiber_auftrag_ist_grundlage():
+    lead = _lead()
+    json.loads(server.einwilligung_erfassen(lead, "betreiber_auftrag", "Betreiber-Auftrag vom 13.10.2026"))
+    antwort = json.loads(server.entwurf_erstellen(lead, "email", "Hallo Udo"))
+    assert "fehler" not in antwort, antwort

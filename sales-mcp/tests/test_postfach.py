@@ -738,3 +738,19 @@ def test_gegenvorschlag_notiz_kappt_einen_sehr_langen_grund(stub):
         "der volle, sehr lange Grund steht ungekuerzt in der Notiz")
     gekuerzt = lang[:postfach.GEGENVORSCHLAG_GRUND_MAXLAENGE] + "…"
     assert gekuerzt in notiz
+
+
+# ---------------------------------------------------------------------------
+# Message-ID (13.10.2026): Voraussetzung dafuer, im selben Faden zu antworten
+# ---------------------------------------------------------------------------
+
+def test_lesen_liefert_message_id_ohne_spitze_klammern(stub):
+    stub.mails[b"5"] = (b"Message-ID: <m1@ex.org>\r\n" + _mail(betreff="Faden"))
+    assert postfach.lesen("5")["message_id"] == "m1@ex.org"
+    treffer = [m for m in postfach.liste(10) if m["uid"] == "5"][0]
+    assert treffer["message_id"] == "m1@ex.org"
+
+
+def test_lesen_ohne_message_id_header_ist_leer(stub):
+    assert postfach.lesen("2")["message_id"] == ""
+    assert all(m["message_id"] == "" for m in postfach.liste(10))

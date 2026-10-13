@@ -6413,7 +6413,7 @@ def kennungen_bericht() -> str:
 # ANTWORTEN bleibt frei, denn wer selbst schrieb, hat den Kanal geoeffnet.
 # ---------------------------------------------------------------------------
 
-EINWILLIGUNG_ARTEN = ("opt_in", "existing_customer")
+EINWILLIGUNG_ARTEN = ("opt_in", "existing_customer", "betreiber_auftrag")
 
 
 def _hat_selbst_geschrieben(lead_id: str) -> bool:

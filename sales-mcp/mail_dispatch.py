@@ -241,7 +241,7 @@ def claim(draft_id):
     zeilen = server._q(
         "update drafts set status = 'failed', error = %s "
         "where id = %s and status = 'approved' and channel = 'email' "
-        "returning id, lead_id, recipient, subject, body, media_ref, cc",
+        "returning id, lead_id, recipient, subject, body, media_ref, cc, antwort_auf",
         (marke, draft_id))
     if not zeilen:
         return None
@@ -280,7 +280,8 @@ def _betreff(roh: str) -> str:
 
 
 def nachricht_bauen(adresse: str, betreff: str, rumpf: str,
-                    cc=None, absender=None) -> EmailMessage:
+                    cc=None, absender=None,
+                    antwort_auf: str = "") -> EmailMessage:
     """Der fertige Text als text/plain, UTF-8.
 
     `EmailMessage` statt zusammengesetzter Zeichenketten: es kodiert
@@ -299,6 +300,10 @@ def nachricht_bauen(adresse: str, betreff: str, rumpf: str,
     if cc_zeile:
         nachricht["Cc"] = cc_zeile
     nachricht["Subject"] = _betreff(betreff)
+    kennung = str(antwort_auf or "").strip().strip("<>")
+    if kennung:
+        nachricht["In-Reply-To"] = f"<{kennung}>"
+        nachricht["References"] = f"<{kennung}>"
     # `cte="quoted-printable"` ist NICHT Geschmack, sondern ein gemessener
     # Fix. Ohne Angabe waehlt `set_content` die Kodierung selbst — und fuer
     # kurze Texte mit Umlauten faellt die Heuristik auf CTE `8bit` zurueck
@@ -411,7 +416,7 @@ def _anhang_anfuegen(nachricht, basis: str, roh: bytes) -> str:
 def nachricht_mit_einladung(adresse: str, betreff: str, rumpf: str,
                             ics_text: str,
                             methode: str = "REQUEST",
-                            cc=None) -> EmailMessage:
+                            cc=None, antwort_auf: str = "") -> EmailMessage:
     """Eine Mail, die eine Kalendereinladung traegt.
 
     Der Kalender reist als ALTERNATIVE zum Text, nicht als Anhang daneben:
@@ -428,7 +433,8 @@ def nachricht_mit_einladung(adresse: str, betreff: str, rumpf: str,
         raise ValueError(f"unbekannte Methode: {methode!r}")
     # `cc` durchgereicht (Merge 12.09.2026): sonst traegt eine Einladung als
     # einzige ausgehende Mailart kein CC, obwohl drafts.cc gefuellt sein kann.
-    nachricht = nachricht_bauen(adresse, betreff, rumpf, cc=cc)
+    nachricht = nachricht_bauen(adresse, betreff, rumpf, cc=cc,
+                                antwort_auf=antwort_auf)
     nachricht.add_alternative(
         ics_text, subtype="calendar", charset="utf-8",
         params={"method": methode, "component": "VEVENT"})
@@ -637,11 +643,13 @@ def verarbeite_draft(draft_id) -> str:
         if ics_text is not None:
             nachricht = nachricht_mit_einladung(adresse, geclaimt["subject"],
                                                 geclaimt["body"], ics_text,
-                                                cc=geclaimt.get("cc"))
+                                                cc=geclaimt.get("cc"),
+                                                antwort_auf=geclaimt.get("antwort_auf") or "")
         else:
             nachricht = nachricht_bauen(adresse, geclaimt["subject"],
                                         geclaimt["body"],
-                                        cc=geclaimt.get("cc"))
+                                        cc=geclaimt.get("cc"),
+                                        antwort_auf=geclaimt.get("antwort_auf") or "")
         if anhang is not None:
             # NACH dem Bauen, VOR dem Senden: schlaegt das Anhaengen fehl
             # (zu gross, unbekannter Typ), geht nichts raus — dieselbe

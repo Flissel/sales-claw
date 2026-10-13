@@ -1245,3 +1245,41 @@ def test_dienst_startet_mit_nur_der_system_identitaet(monkeypatch):
     gemeldet = " ".join(mitschnitt.texte())
     assert "kontomails=ja" in gemeldet
     assert "Entwuerfe bleiben liegen" in gemeldet
+
+
+# ---------------------------------------------------------------------------
+# Mailverlauf: Antwort im selben Faden (13.10.2026)
+# ---------------------------------------------------------------------------
+
+def test_antwort_header_gesetzt():
+    n = mail_dispatch.nachricht_bauen("a@example.org", "Re: Frage", "Hallo",
+                                      antwort_auf="abc123@mail.example.org")
+    assert n["In-Reply-To"] == "<abc123@mail.example.org>"
+    assert n["References"] == "<abc123@mail.example.org>"
+
+
+def test_ohne_antwort_keine_header():
+    n = mail_dispatch.nachricht_bauen("a@example.org", "Hallo", "Text")
+    assert n["In-Reply-To"] is None and n["References"] is None
+
+
+def test_einladung_traegt_antwort_header():
+    n = mail_dispatch.nachricht_mit_einladung(
+        "a@example.org", "Re: Termin", "Hallo", "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n",
+        antwort_auf="<abc@x>")
+    assert n["In-Reply-To"] == "<abc@x>"
+    assert n["References"] == "<abc@x>"
+
+
+def test_versand_reicht_antwort_auf_als_header_durch():
+    lead = _lead()
+    draft = _draft(lead, betreff="Re: Frage")
+    server._q("update drafts set antwort_auf = 'abc@x' where id = %s "
+              "returning id", (draft,))
+
+    mail_dispatch.eine_runde()
+
+    assert _zeile(draft)["status"] == "sent"
+    assert len(STUB.mails) == 1
+    assert "In-Reply-To: <abc@x>" in STUB.mails[0]["roh"]
+    assert "References: <abc@x>" in STUB.mails[0]["roh"]

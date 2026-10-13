@@ -421,6 +421,7 @@ def liste(anzahl: int = 10) -> list:
                 "von": _kopf(nachricht, "From"),
                 "betreff": _kopf(nachricht, "Subject"),
                 "datum": _kopf(nachricht, "Date"),
+                "message_id": _kopf(nachricht, "Message-ID").strip().strip("<>"),
                 "auszug": (text[:AUSZUG_MAX] + "…"
                            if len(text) > AUSZUG_MAX else text),
                 "kalenderteil": bool(_kalender_teil(nachricht)),
@@ -460,7 +461,8 @@ def lesen(uid: str):
         ergebnis = {"uid": str(uid), "von": _kopf(nachricht, "From"),
                    "an": _kopf(nachricht, "To"),
                    "betreff": _kopf(nachricht, "Subject"),
-                   "datum": _kopf(nachricht, "Date"), "text": text}
+                   "datum": _kopf(nachricht, "Date"), "text": text,
+                   "message_id": _kopf(nachricht, "Message-ID").strip().strip("<>")}
         # Antworten auf Einladungen (Aufgabe 4): ein text/calendar-Teil mit
         # METHOD:REPLY/COUNTER wird erkannt und am Kontakt festgehalten.
         # Alles andere (kein Kalenderteil, oder ein Teil ohne METHOD:REPLY/

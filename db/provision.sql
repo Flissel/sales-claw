@@ -209,6 +209,11 @@ begin
     -- CC fuer E-Mail-Entwuerfe (03.09.2026); add column, weil die Tabelle
     -- auf beiden Schemata laengst existiert.
     execute format('alter table %I.drafts add column if not exists cc text', s);
+    -- Mailverlauf (13.10.2026): Message-ID der Mail, auf die der Entwurf antwortet.
+    execute format('alter table %I.drafts add column if not exists antwort_auf text', s);
+    execute format('alter table %I.leads drop constraint if exists leads_consent_status_check', s);
+    execute format($chk$alter table %I.leads add constraint leads_consent_status_check
+      check (consent_status in ('opt_in','existing_customer','inbound','unknown','betreiber_auftrag'))$chk$, s);
     -- Telegram als Kanal (12.09.2026): sales-claw ist seit dem
     -- Betreiber-Entscheid der einzige Versandweg des Hauses, und Marketings
     -- eigener Telegram-Versender ist gesperrt. Ohne diese Zeilen scheiterte
