@@ -72,3 +72,31 @@ def test_mail_ohne_kundenpostfach(monkeypatch):
                         lambda: type("I", (), {"brauchbar": lambda self: False})())
     a = json.loads(server.versand_abwarten(d))
     assert a["ergebnis"] == "wartet" and "bleibt liegen, bis das Postfach eingetragen ist" in a["hinweis"]
+
+
+def test_vorgabe_30_sekunden():
+    import inspect
+    assert inspect.signature(server.versand_abwarten).parameters["max_s"].default == 30
+
+
+def test_claim_marke_ist_noch_unterwegs(monkeypatch):
+    # Final-Review I1: der Dispatcher setzt beim Claim status='failed' mit
+    # error='in Zustellung seit …', waehrend er noch zustellt.
+    import dispatch
+    d = _draft(status="failed", error=dispatch.CLAIM_PRAEFIX + "2026-10-13T22:07:00Z (dispatcher a32f55d2)")
+
+    def schlaf(s):
+        server._q("update drafts set status = 'sent', error = null where id = %s returning id", (d,))
+    monkeypatch.setattr(server, "_SCHLAF", schlaf)
+    assert json.loads(server.versand_abwarten(d))["ergebnis"] == "sent"
+
+
+def test_claim_marke_bis_frist_wartet(monkeypatch):
+    import dispatch
+    d = _draft(status="failed", error=dispatch.CLAIM_PRAEFIX + "2026-10-13T22:07:00Z (dispatcher a32f55d2)")
+    t = [0.0]
+    monkeypatch.setattr(server, "_UHR", lambda: t[0])
+    monkeypatch.setattr(server, "_SCHLAF", lambda s: t.__setitem__(0, t[0] + s))
+    a = json.loads(server.versand_abwarten(d, max_s=10))
+    assert a["ergebnis"] == "wartet" and "Warteschlange" in a["hinweis"]
+    assert "in Zustellung" in a["hinweis"]

@@ -7872,10 +7872,12 @@ VERSAND_TAKT_S = 3
 
 
 @_gesichert
-def versand_abwarten(draft_id: str, max_s: int = 60) -> str:
-    """Nach einer Freigabe: wartet hoechstens max_s Sekunden, bis der Versanddienst den Entwurf verschickt hat
-    (Spec 2.2). Ergebnis sent | failed (mit Grund) | wartet | nicht_freigegeben | rejected. Versendet selbst nichts."""
+def versand_abwarten(draft_id: str, max_s: int = 30) -> str:
+    """Nach einer Freigabe: wartet hoechstens max_s Sekunden (Vorgabe 30), bis der Versanddienst den Entwurf verschickt hat
+    (Spec 2.2). Ergebnis sent | failed (mit Grund) | wartet | nicht_freigegeben | rejected. Versendet selbst nichts.
+    Ein Entwurf mit der Claim-Marke „in Zustellung seit …“ wird gerade zugestellt und gilt als unterwegs, nicht als gescheitert."""
     ende = _UHR() + max(0, min(int(max_s), 120))
+    in_zustellung = False
     while True:
         z = _q("select status, channel, error from drafts where id = %s", (draft_id,))
         if not z:
@@ -7885,9 +7887,12 @@ def versand_abwarten(draft_id: str, max_s: int = 60) -> str:
             return _json({"draft_id": draft_id, "ergebnis": "nicht_freigegeben", "kanal": kanal})
         if s in ("sent", "rejected"):
             return _json({"draft_id": draft_id, "ergebnis": s, "kanal": kanal})
-        if s == "failed":
+        # Claim-Marke (dispatch.CLAIM_PRAEFIX): der Dispatcher bucht at-most-once
+        # VOR dem Zustellen 'failed' mit „in Zustellung seit …“ — das ist kein Fehler.
+        in_zustellung = s == "failed" and (z[0]["error"] or "").startswith(_CLAIM_MARKE_PRAEFIX)
+        if s == "failed" and not in_zustellung:
             return _json({"draft_id": draft_id, "ergebnis": "failed", "kanal": kanal, "fehler": z[0]["error"] or ""})
-        if kanal == "email":
+        if kanal == "email" and not in_zustellung:
             # Lazy: mail_dispatch importiert server (Ringschluss am Modulkopf).
             import mail_dispatch
             if not mail_dispatch.kunden_identitaet().brauchbar():
@@ -7895,7 +7900,8 @@ def versand_abwarten(draft_id: str, max_s: int = 60) -> str:
                               "hinweis": "Freigegeben, bleibt liegen, bis das Postfach eingetragen ist."})
         if _UHR() >= ende:
             return _json({"draft_id": draft_id, "ergebnis": "wartet", "kanal": kanal,
-                          "hinweis": "liegt freigegeben in der Warteschlange"})
+                          "hinweis": "liegt freigegeben in der Warteschlange"
+                                     + (" (in Zustellung, noch nicht bestaetigt)" if in_zustellung else "")})
         _SCHLAF(VERSAND_TAKT_S)
 
 
