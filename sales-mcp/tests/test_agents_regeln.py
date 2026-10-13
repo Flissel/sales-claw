@@ -33,3 +33,37 @@ def test_bedarfsanalyse_raus():
 
 def test_keine_abgeschalteten_werkzeuge():
     assert "bedarf_speichern" not in TEXT and "bedarf_offen" not in TEXT
+
+
+def _absatz(anfang: str) -> str:
+    """Der Aufzaehlungspunkt, der mit `anfang` beginnt (bis zum naechsten Punkt)."""
+    i = TEXT.index(anfang)
+    j = TEXT.find("\n- ", i + 1)
+    return " ".join(TEXT[i:j if j != -1 else len(TEXT)].split())
+
+
+def test_keine_zweite_rueckfrage_vor_freigabe():
+    assert "Rückfrage vor der Freigabe" not in TEXT
+    assert "Rueckfrage vor der Freigabe" not in TEXT
+
+
+def test_nicht_zustellbar_blockiert_freigabe():
+    assert "nicht freigeben" in _absatz("- **Ziel und Einwilligung immer mitnennen.**")
+
+
+def test_stufe_auto_ausnahme():
+    assert "außer bei Kontakten, die der Betreiber ausdrücklich auf Stufe `auto` gestellt hat" in " ".join(TEXT.split())
+
+
+def test_kundenchat_verbot_nennt_neue_werkzeuge():
+    absatz = _absatz("- **Betreiber-Werkzeuge sind im Kundenchat tabu")
+    for name in ("mail_beantworten", "entwurf_bearbeiten", "versand_abwarten", "auftrag_betreiber"):
+        assert name in absatz
+
+
+def test_email_ankuendigung_durch_versand_abwarten_ersetzt():
+    assert "ersetzt die Ankündigung" in _absatz("- **E-Mail ist kein Handversand mehr.**")
+
+
+def test_versand_abwarten_nur_whatsapp_und_email():
+    assert "bei WhatsApp und E-Mail" in _absatz("- **Nach jeder Freigabe")
