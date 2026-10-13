@@ -1306,7 +1306,7 @@ def test_medien_werkzeuge_signaturen_ueberleben_den_dekorator():
     import inspect
     erstellen = inspect.signature(server.entwurf_erstellen).parameters
     assert list(erstellen) == ["lead_id", "kanal", "text", "betreff",
-                               "medien_datei"]
+                               "medien_datei", "auftrag_betreiber"]
     assert erstellen["medien_datei"].default == ""
     assert list(inspect.signature(server.medien_liste).parameters) == []
     assert server.medien_liste in server.WERKZEUGE

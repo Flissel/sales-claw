@@ -26,6 +26,7 @@ import re
 import urllib.request
 import uuid
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import psycopg
@@ -2199,7 +2200,8 @@ def bedarf_offen(lead_id: str) -> str:
 
 @_gesichert
 def entwurf_erstellen(lead_id: str, kanal: str, text: str,
-                      betreff: str = "", medien_datei: str = "") -> str:
+                      betreff: str = "", medien_datei: str = "",
+                      auftrag_betreiber: bool = False) -> str:
     """Beispiel-Nachricht in die Entwurfs-Queue legen. Kanaele: whatsapp,
     linkedin, email. Es wird NICHTS versendet — der Entwurf bleibt 'pending';
     den Versand uebernimmt spaeter eine andere App.
@@ -2221,7 +2223,12 @@ def entwurf_erstellen(lead_id: str, kanal: str, text: str,
     Wer eine Datei per Mail schicken will, sendet sie von Hand und
     quittiert mit entwurf_manuell_gesendet. EINE Ausnahme: eine `.ics` geht
     als Kalendereinladung mit (METHOD:REQUEST) — sie ist kein Anhang im
-    obigen Sinn, siehe `termin_einladen`."""
+    obigen Sinn, siehe `termin_einladen`.
+
+    `auftrag_betreiber=True` nur im Betreiber-Chat, wenn der Betreiber den
+    Kontakt ausdruecklich verlangt; nie im Kundenchat. Fehlt die
+    Einwilligung, wird `betreiber_auftrag` gebucht; der Entwurf bleibt
+    'pending'."""
     if kanal not in ("whatsapp", "linkedin", "email", "telegram"):
         return _json({"fehler": f"Unzulaessiger Kanal '{kanal}'. "
                                 f"Erlaubt: whatsapp, linkedin, email, telegram"})
@@ -2250,6 +2257,8 @@ def entwurf_erstellen(lead_id: str, kanal: str, text: str,
     # Menschen, genau wie WhatsApp und E-Mail. Dass die Person den Bot
     # gestartet hat, macht sie ERREICHBAR — eine Erlaubnis zur Werbung ist
     # das nicht, und die Bot-API kennt den Unterschied nicht.
+    if auftrag_betreiber and kanal in ("whatsapp", "email", "telegram"):
+        _grundlage_aus_auftrag(lead_id)
     if kanal in ("whatsapp", "email", "telegram"):
         zeile = _q("select consent_status from leads where id = %s",
                    (lead_id,))
@@ -6047,7 +6056,8 @@ def antworten_faellig(stunden: int = 48) -> str:
 
 @_gesichert
 def antwort_entwerfen(lead_id: str, text: str,
-                      medien_datei: str = "") -> str:
+                      medien_datei: str = "",
+                      auftrag_betreiber: bool = False) -> str:
     """Eine SELBST GESCHRIEBENE Antwort ablegen — die Stufe entscheidet, wohin.
 
     Dieses Werkzeug formuliert nichts: den Text schreibst du, nachdem du
@@ -6066,7 +6076,12 @@ def antwort_entwerfen(lead_id: str, text: str,
     Agent — auch nicht, indem er sich auf ein gut laufendes Gespraech
     beruft.
 
-    Der Kanal ist WhatsApp; die Kontaktfreigabe wird wie ueberall geprueft."""
+    Der Kanal ist WhatsApp; die Kontaktfreigabe wird wie ueberall geprueft.
+
+    `auftrag_betreiber=True` nur im Betreiber-Chat, wenn der Betreiber den
+    Kontakt ausdruecklich verlangt; nie im Kundenchat. Dann entsteht auch bei
+    'manuell' und 'auto' ein 'pending'-Entwurf (nie ohne Freigabe); bei
+    'ignorieren' bleibt es bei der Ablehnung."""
     leads = _q("select id, name, enrichment from leads where id = %s",
                (lead_id,))
     if not leads:
@@ -6084,6 +6099,16 @@ def antwort_entwerfen(lead_id: str, text: str,
         return _privat_fehler()
 
     stufe = _autonomie(leads[0]["enrichment"])
+    if auftrag_betreiber and stufe != "ignorieren":
+        roh = entwurf_erstellen(lead_id, "whatsapp", text,
+                                medien_datei=medien_datei,
+                                auftrag_betreiber=True)
+        antwort = json.loads(roh)
+        if "fehler" in antwort:
+            return roh
+        return _json({**antwort, "autonomie": stufe,
+                      "hinweis": MANUELL_AUFTRAG_HINWEIS if stufe == "manuell"
+                      else "Entwurf liegt zur Freigabe"})
     if stufe not in ("halbauto", "auto"):
         return _json({"fehler": (
             f"Kontakt steht auf '{stufe}' — {AUTONOMIE_TEXT[stufe]} Es "
@@ -6414,6 +6439,22 @@ def kennungen_bericht() -> str:
 # ---------------------------------------------------------------------------
 
 EINWILLIGUNG_ARTEN = ("opt_in", "existing_customer", "betreiber_auftrag")
+
+
+MANUELL_AUFTRAG_HINWEIS = "Kontakt steht auf manuell – Entwurf liegt zur Freigabe"
+
+
+def _grundlage_aus_auftrag(lead_id: str) -> bool:
+    """Spec 1.4: der Betreiber verlangt den Kontakt – die Grundlage verantwortet
+    er. Bucht nur, wenn keine vorliegt; True heisst, es wurde gebucht."""
+    z = _q("select consent_status from leads where id = %s", (lead_id,))
+    if (not z or z[0]["consent_status"] in EINWILLIGUNG_ARTEN
+            or _hat_selbst_geschrieben(lead_id)):
+        return False
+    roh = einwilligung_erfassen(
+        lead_id, "betreiber_auftrag",
+        f"Betreiber-Auftrag vom {datetime.now(ZoneInfo('Europe/Berlin')):%d.%m.%Y}")
+    return "fehler" not in json.loads(roh)
 
 
 def _hat_selbst_geschrieben(lead_id: str) -> bool:

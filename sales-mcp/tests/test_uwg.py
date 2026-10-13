@@ -151,3 +151,31 @@ def test_betreiber_auftrag_ist_grundlage():
     json.loads(server.einwilligung_erfassen(lead, "betreiber_auftrag", "Betreiber-Auftrag vom 13.10.2026"))
     antwort = json.loads(server.entwurf_erstellen(lead, "email", "Hallo Udo"))
     assert "fehler" not in antwort, antwort
+
+# ---------------------------------------------------------------------------
+# Betreiber-Auftrag (Spec 1.4): der Betreiber verlangt den Kontakt
+# ---------------------------------------------------------------------------
+
+def test_auftrag_bucht_grundlage_und_entwurf_entsteht():
+    lead = _lead()
+    antwort = json.loads(server.entwurf_erstellen(
+        lead, "email", "Hallo Udo", auftrag_betreiber=True))
+    assert "fehler" not in antwort, antwort
+    assert _status(lead) == "betreiber_auftrag"
+    a = server._q("select payload from activities where lead_id = %s "
+                  "and type = 'werbe_einwilligung'", (lead,))
+    assert a and a[0]["payload"]["quelle"].startswith("Betreiber-Auftrag vom ")
+
+
+def test_ohne_auftrag_bleibt_die_sperre():
+    lead = _lead()
+    assert "fehler" in json.loads(
+        server.entwurf_erstellen(lead, "email", "Hallo Udo"))
+    assert _status(lead) == "unknown"
+
+
+def test_vorhandene_grundlage_wird_nicht_ueberschrieben():
+    lead = _lead()
+    server.einwilligung_erfassen(lead, "opt_in", "Formular")
+    server.entwurf_erstellen(lead, "email", "Hallo", auftrag_betreiber=True)
+    assert _status(lead) == "opt_in"

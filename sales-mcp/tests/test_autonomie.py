@@ -367,3 +367,53 @@ def test_faelligkeit_aendert_nichts():
     server.antworten_faellig()
     assert server._q("select count(*) n from activities")[0]["n"] == vorher
     assert _entwuerfe(lead) == []
+
+
+# ---------------------------------------------------------------------------
+# Betreiber-Auftrag (auftrag_betreiber=True) — Spec 1.2: nie ohne Freigabe
+# ---------------------------------------------------------------------------
+
+def test_manuell_mit_auftrag_ergibt_pending():
+    lead = _lead()
+    _freigeben(lead)
+    server.kontakt_autonomie_setzen(lead, "manuell")
+    a = json.loads(server.antwort_entwerfen(lead, "Hallo!",
+                                            auftrag_betreiber=True))
+    assert "fehler" not in a and a["status"] == "pending"
+    assert a["hinweis"] == server.MANUELL_AUFTRAG_HINWEIS
+    zeilen = _entwuerfe(lead)
+    assert len(zeilen) == 1 and zeilen[0]["status"] == "pending"
+    assert zeilen[0]["approved_by"] is None
+
+
+def test_manuell_ohne_auftrag_weiter_nichts():
+    lead = _lead()
+    _freigeben(lead)
+    server.kontakt_autonomie_setzen(lead, "manuell")
+    a = json.loads(server.antwort_entwerfen(lead, "Hallo!"))
+    assert "fehler" in a
+    assert _entwuerfe(lead) == []
+
+
+def test_auftrag_bei_auto_geht_nicht_automatisch_raus():
+    lead = _lead()
+    _freigeben(lead)
+    server.kontakt_autonomie_setzen(lead, "auto")
+    server.zustimmung_erfassen(lead, True, "WhatsApp-Antwort", "Ja gerne")
+    a = json.loads(server.antwort_entwerfen(lead, "Hallo!",
+                                            auftrag_betreiber=True))
+    assert "fehler" not in a and a["status"] == "pending"
+    zeilen = _entwuerfe(lead)
+    assert len(zeilen) == 1
+    assert zeilen[0]["status"] == "pending"
+    assert zeilen[0]["approved_by"] is None
+
+
+def test_ignorieren_bleibt_auch_mit_auftrag_abgelehnt():
+    lead = _lead()
+    _freigeben(lead)
+    server.kontakt_autonomie_setzen(lead, "ignorieren")
+    a = json.loads(server.antwort_entwerfen(lead, "Hallo!",
+                                            auftrag_betreiber=True))
+    assert "fehler" in a
+    assert _entwuerfe(lead) == []
