@@ -24,6 +24,7 @@ import json
 import os
 import re
 import urllib.request
+from email.utils import parseaddr
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -2884,6 +2885,57 @@ def postfach_lesen(anzahl: int = 10) -> str:
             f"Postfach nicht erreichbar ({type(e).__name__}) — Zugang "
             f"und Netz pruefen, Details im Container-Log.")})
     return _json({"anzahl": len(mails), "mails": mails})
+
+
+_NOREPLY = re.compile(r"^(no-?reply|do-?not-?reply|mailer-daemon|postmaster)@", re.I)
+_RE = re.compile(r"^\s*(re|aw|wg|fwd?)\s*:", re.I)
+
+
+def _antwort_betreff(roh: str) -> str:
+    b = (roh or "").strip()
+    if not b:
+        return "Re: (ohne Betreff)"
+    return b if _RE.match(b) else f"Re: {b}"
+
+
+@_gesichert
+def mail_beantworten(uid: str, text: str) -> str:
+    """Auf eine Mail aus dem Betreiber-Postfach antworten (Spec 2026-10-13 §1.1). Nur Betreiber-Chat.
+    Legt einen E-MAIL-Entwurf 'pending' im selben Mailverlauf an — versendet nichts. Kontakt wird ueber die
+    Absenderadresse gefunden oder angelegt; die eingegangene Mail wird als Kundennachricht gebucht."""
+    if not postfach.konfiguriert():
+        return _json({"fehler": "Kein Betreiber-Postfach eingerichtet."})
+    try:
+        mail = postfach.lesen(str(uid))
+    except Exception as e:  # noqa: BLE001 - IMAP-Stoerung wird Meldung
+        return _json({"fehler": f"Postfach nicht erreichbar ({type(e).__name__})."})
+    if not mail:
+        return _json({"fehler": f"Mail nicht mehr im Postfach (uid {uid})."})
+    name, adresse = parseaddr(mail.get("von") or "")
+    adresse = adresse.strip().lower()
+    if not adresse or _NOREPLY.match(adresse):
+        return _json({"frage": f"Die Mail kommt von „{mail.get('von')}“ — eine automatische Adresse. "
+                               "Wohin soll die Antwort gehen?"})
+    z = _q("select id from leads where lower(email) = %s order by created_at limit 1", (adresse,))
+    neu = not z
+    lead_id = str(z[0]["id"]) if z else str(_q(
+        "insert into leads (name, email, source) values (%s, %s, 'email') returning id",
+        ((name or adresse.split("@")[0]).strip()[:120], adresse))[0]["id"])
+    mid = (mail.get("message_id") or "").strip()
+    if not mid or not _q("select 1 from activities where lead_id = %s and type = 'kundenantwort' "
+                         "and payload->>'message_id' = %s limit 1", (lead_id, mid)):
+        _q("insert into activities (lead_id, type, payload, actor) values (%s, 'kundenantwort', %s, 'human') "
+           "returning id", (lead_id, _json({"kanal": "email", "message_id": mid, "betreff": mail.get("betreff") or "",
+                                            "text": (mail.get("text") or "")[:4000], "richtung": "eingehend"})))
+    betreff = _antwort_betreff(mail.get("betreff") or "")
+    roh = entwurf_erstellen(lead_id, "email", text, betreff=betreff, auftrag_betreiber=True)
+    a = json.loads(roh)
+    if "fehler" in a:
+        return roh
+    if mid:
+        _q("update drafts set antwort_auf = %s where id = %s returning id", (mid, a["draft_id"]))
+    return _json({"draft_id": a["draft_id"], "status": a["status"], "lead_id": lead_id, "an": adresse,
+                  "betreff": betreff, "neuer_kontakt": neu})
 
 
 @_gesichert
@@ -7855,7 +7907,7 @@ WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,
              # Betreiber-Postfach (31.08.2026): eigene Korrespondenz
              # schreiben (Freigabe=Versand) und INBOX lesen (readonly).
              # Vertraege: tests/test_betreiber_mail.py, test_postfach.py.
-             betreiber_mail_entwurf, postfach_lesen, postfach_mail_lesen,
+             betreiber_mail_entwurf, postfach_lesen, postfach_mail_lesen, mail_beantworten,
              # Pipeline-Automatik (01.09.2026): beweisbare Stufen
              # nachziehen, nur vorwaerts. Vertraege: tests/test_pipeline.py.
              stufen_abgleichen,
