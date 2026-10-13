@@ -179,3 +179,27 @@ def test_vorhandene_grundlage_wird_nicht_ueberschrieben():
     server.einwilligung_erfassen(lead, "opt_in", "Formular")
     server.entwurf_erstellen(lead, "email", "Hallo", auftrag_betreiber=True)
     assert _status(lead) == "opt_in"
+
+
+def test_auftrag_bucht_nichts_wenn_whatsapp_nicht_freigegeben():
+    # Final-Review M2: scheitert der Entwurf an einer spaeteren Pruefung,
+    # bleibt keine Einwilligung gebucht.
+    lead = str(server._q(
+        "insert into leads (name, phone, email, source) values "
+        "('Nina Nichtfrei', '+491705556688', 'nina@example.org', 'whatsapp') "
+        "returning id")[0]["id"])
+    antwort = json.loads(server.entwurf_erstellen(
+        lead, "whatsapp", "Hallo Nina", auftrag_betreiber=True))
+    assert "fehler" in antwort
+    assert _status(lead) == "unknown"
+    assert not server._q("select 1 from activities where lead_id = %s "
+                         "and type = 'werbe_einwilligung'", (lead,))
+
+
+def test_auftrag_bucht_nichts_wenn_anhang_scheitert():
+    lead = _lead()
+    antwort = json.loads(server.entwurf_erstellen(
+        lead, "email", "Hallo Udo", medien_datei="gibt-es-nicht.pdf",
+        auftrag_betreiber=True))
+    assert "fehler" in antwort
+    assert _status(lead) == "unknown"

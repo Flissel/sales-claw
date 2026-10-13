@@ -2267,14 +2267,21 @@ def entwurf_erstellen(lead_id: str, kanal: str, text: str,
     # Menschen, genau wie WhatsApp und E-Mail. Dass die Person den Bot
     # gestartet hat, macht sie ERREICHBAR — eine Erlaubnis zur Werbung ist
     # das nicht, und die Bot-API kennt den Unterschied nicht.
-    if auftrag_betreiber and kanal in ("whatsapp", "email", "telegram"):
-        _grundlage_aus_auftrag(lead_id)
+    #
+    # Mit Betreiber-Auftrag laesst das Tor hier durch, GEBUCHT wird die
+    # Einwilligung aber erst direkt vor dem Insert (Final-Review M2): scheitert
+    # der Entwurf an einer spaeteren Pruefung (Kontakt-Freigabe, chat_id,
+    # Anhang), bleibt kein betreiber_auftrag fuer einen Kontakt stehen, an den
+    # nie geschrieben wurde.
+    auftrag_buchen = False
     if kanal in ("whatsapp", "email", "telegram"):
         zeile = _q("select consent_status from leads where id = %s",
                    (lead_id,))
         if (zeile and zeile[0]["consent_status"] not in EINWILLIGUNG_ARTEN
                 and not _hat_selbst_geschrieben(lead_id)):
-            return _erstansprache_fehler()
+            if not auftrag_betreiber:
+                return _erstansprache_fehler()
+            auftrag_buchen = True
     # Kontakt-Freigabe VOR dem Insert (frueh sagen statt spaet scheitern,
     # dieselbe Begruendung wie bei CAPTION_MAXLAENGE): ein WhatsApp-Entwurf
     # fuer einen nicht freigegebenen Kontakt soll gar nicht erst in der
@@ -2343,6 +2350,10 @@ def entwurf_erstellen(lead_id: str, kanal: str, text: str,
                 f"Mail gehen hoechstens {MAIL_ANHANG_MAX // 1048576} MB. Es "
                 f"entsteht kein Entwurf.")})
 
+    # Alle Pruefungen bestanden — jetzt erst die Auftrags-Einwilligung buchen.
+    # Schlaegt das Buchen fehl, gilt das UWG-Tor wie ohne Auftrag.
+    if auftrag_buchen and not _grundlage_aus_auftrag(lead_id):
+        return _erstansprache_fehler()
     empfaenger = (leads[0]["phone"] if kanal == "whatsapp" else
                   leads[0]["email"] if kanal == "email" else
                   _telegram_chat_id(leads[0]["enrichment"]) if kanal == "telegram"
