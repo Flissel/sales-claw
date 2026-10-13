@@ -160,3 +160,54 @@ def test_entziehen_hebt_nichts_auf():
     server._absender_ereignis(server.ABSENDER_IGNORIERT, "4915752415955@c.us", lead)
     server.kontakt_freigabe_entziehen(lead)
     assert server.absender_ist_ignoriert("4915752415955@c.us")
+
+
+# --- @lid-Bruecke (Spec 1.5) und Fehlertoleranz --------------------------------
+
+def _lid_zuordnung(lid_ziffern, nummer):
+    return server.lid_zuordnung_speichern(
+        f"{lid_ziffern}@lid", f"{nummer}@c.us", "test", "rufnummer")
+
+
+def test_freigabe_hebt_eindeutig_gebrueckte_lid_auf():
+    lead = _lead_mit_nummer("+4915752415960")
+    _lid_zuordnung("183000000000001", "4915752415960")
+    server._absender_ereignis(server.ABSENDER_IGNORIERT, "183000000000001@lid", lead)
+    assert server.absender_ist_ignoriert("4915752415960@c.us")
+    a = json.loads(server.kontakt_freigeben(lead))
+    assert "stand auf Ignorieren – aufgehoben" in a["ignorieren_aufgehoben"]
+    assert not server.absender_ist_ignoriert("4915752415960@c.us")
+    assert not server.absender_ist_ignoriert("183000000000001@lid")
+    assert not server.absender_ist_ignoriert("183000000000001@lid",
+                                             "4915752415960@c.us")
+
+
+def test_mehrdeutige_bruecke_bleibt_ignoriert():
+    lead = _lead_mit_nummer("+4915752415961")
+    _lid_zuordnung("183000000000002", "4915752415961")
+    _lid_zuordnung("183000000000003", "4915752415961")
+    server._absender_ereignis(server.ABSENDER_IGNORIERT, "4915752415961@c.us", lead)
+    server._absender_ereignis(server.ABSENDER_IGNORIERT, "183000000000002@lid")
+    server._absender_ereignis(server.ABSENDER_IGNORIERT, "183000000000003@lid")
+    json.loads(server.kontakt_freigeben(lead))
+    assert not server.absender_ist_ignoriert("4915752415961@c.us")
+    assert server.absender_ist_ignoriert("183000000000002@lid")
+    assert server.absender_ist_ignoriert("183000000000003@lid")
+
+
+def test_fehler_beim_aufheben_maskiert_freigabe_nicht(monkeypatch):
+    lead = _lead_mit_nummer("+4915752415962")
+    draft = str(server._q(
+        "insert into drafts (lead_id, channel, recipient, body, status) "
+        "values (%s, 'email', 'nina@example.org', 'Hallo', 'pending') "
+        "returning id", (lead,))[0]["id"])
+
+    def kaputt(_lead_id):
+        raise RuntimeError("db weg")
+    monkeypatch.setattr(server, "ignorieren_aufheben", kaputt)
+    a = json.loads(server.entwurf_freigeben(draft))
+    assert a["status"] == "approved"
+    assert "ignorieren_aufgehoben" not in a
+    a = json.loads(server.kontakt_freigeben(lead))
+    assert a["whatsapp_freigabe"] is True
+    assert "ignorieren_aufgehoben" not in a

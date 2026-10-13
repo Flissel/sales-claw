@@ -20,6 +20,7 @@ recherche.py ausführlich; die Regel „Recherche-Leads werden nie automatisch
 angeschrieben" ist eine Rechtsfrage (UWG), keine Stilfrage.
 """
 import functools
+import logging
 import json
 import os
 import re
@@ -63,6 +64,8 @@ import rowboat
 import lead_fluss
 import telegram_chat
 import sperrliste
+
+_LOG = logging.getLogger("sales-mcp")
 # Termine (Stufe 9): ICS-Text und der optionale CalDAV-Eintrag. Wieder ein
 # Modul ohne Datenbank und ohne Rückimport — und der einzige Ort, an dem
 # der neue ausgehende Pfad dieser Stufe steht.
@@ -542,7 +545,7 @@ def _whatsapp_freigabe_setzen(lead_id: str, freigegeben: bool) -> str:
                "whatsapp_freigabe": freigegeben,
                "hinweis": FREIGABE_HINWEIS if freigegeben else ENTZUG_HINWEIS}
     if freigegeben:
-        satz = ignorieren_aufheben(lead_id)
+        satz = ignorieren_aufheben_sicher(lead_id)
         if satz:
             antwort["ignorieren_aufgehoben"] = satz
     return _json(antwort)
@@ -4561,9 +4564,29 @@ def ignorieren_aufheben(lead_id: str) -> str | None:
     if not absender_ist_ignoriert(kennung):
         return None
     _absender_ereignis(ABSENDER_BEACHTET, kennung, lead_id)
+    # Spec 1.5: auch alle der Nummer EINDEUTIG zugeordneten @lid-Kennungen.
+    # Eindeutigkeit wie _BRUECKE_CTE (genau eine LID je Nummer); mehrdeutige
+    # Bruecken bleiben unangetastet. Nur LIDs, die gerade ignoriert sind.
+    lids = _q(
+        "with " + _ZUORDNUNG_CTE + ", " + _BRUECKE_CTE +
+        " select lid from bruecke where nummer = %s", (ziffern,))
+    for zeile in lids:
+        lid_kennung = f"{zeile['lid']}@lid"
+        if absender_ist_ignoriert(lid_kennung):
+            _absender_ereignis(ABSENDER_BEACHTET, lid_kennung, lead_id)
     _q("insert into activities (lead_id, type, payload) values (%s, 'absender_ignorieren_aufgehoben', %s) returning id",
        (lead_id, _json({"absender": kennung})))
     return f"{z[0]['name']} stand auf Ignorieren – aufgehoben, neue Nachrichten sind wieder sichtbar."
+
+
+def ignorieren_aufheben_sicher(lead_id) -> str | None:
+    """Wie `ignorieren_aufheben`, aber ein Fehler maskiert nie die schon
+    gebuchte Freigabe: er wird geloggt und verschluckt (None)."""
+    try:
+        return ignorieren_aufheben(str(lead_id))
+    except Exception:
+        _LOG.exception("ignorieren_aufheben fuer %s fehlgeschlagen", lead_id)
+        return None
 
 
 def _absender_ereignis(typ: str, kennung: str, lead_id=None) -> list:
@@ -5344,7 +5367,7 @@ def entwurf_freigeben(draft_id: str) -> str:
        "returning id",
        (z["lead_id"], _json({"draft_id": str(z["id"]), "kanal": z["channel"]})))
     antwort = {"draft_id": z["id"], "status": "approved"}
-    satz = ignorieren_aufheben(z["lead_id"]) if z["lead_id"] else None
+    satz = ignorieren_aufheben_sicher(z["lead_id"]) if z["lead_id"] else None
     if satz:
         antwort["ignorieren_aufgehoben"] = satz
     return _json(antwort)

@@ -2731,7 +2731,7 @@ async def aktion_freigeben(request):
         return _statusfehler(draft_id, "pending")
     _freigabe_loggen(zeilen[0])
     if zeilen[0]["lead_id"]:
-        server.ignorieren_aufheben(str(zeilen[0]["lead_id"]))
+        server.ignorieren_aufheben_sicher(zeilen[0]["lead_id"])
     return RedirectResponse("/freigaben", status_code=303)
 
 
