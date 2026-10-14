@@ -61,7 +61,8 @@
   },
   "plugins": {
     "allow": [
-      "whatsapp"
+      "whatsapp",
+      "parallel"
     ],
     "slots": {
       "memory": "memory-core"
@@ -114,10 +115,12 @@
     }
   },
   "_kommentar_rowboat": "01.09.2026: mcp.servers.rowboat = Lesezugriff auf die VibeMind-Wissensbasis (Rowboat, MCP-Endpunkt POST /api/mcp; Code in vibemind-os, Branch claude/rowboat-mcp-endpoint-v1). Rowboat laeuft auf derselben VM in einem anderen Compose-Projekt, darum die LAN-IP statt eines Dienstnamens. Der Bearer-Schluessel steht NICHT hier: openclaw kennt fuer mcp.servers.*.headers keine Env-Referenz (Schema geprueft - nur Klartext), er wird per deploy/rowboat-anbinden.sh aus der .env ins Laufzeit-Volume gesetzt. Ohne diesen Schritt antwortet Rowboat -32001 und smoke.sh Pruefung 4 wird rot - absichtlich laut, keine stille Luecke. toolFilter: nur die drei Werkzeuge mit Live-Beweis; rowboat_datei_url kommt dazu, sobald es ein Datei-Dokument gibt. Kommentar-Schluessel stehen bewusst NICHT in mcp.servers - dort waere jeder Schluessel ein Servername.",
+  "_kommentar_websuche": "14.10.2026 (Betreiber-Auftrag 'Websuche freistellen'): web_search an mit Anbieter parallel-free (kostenlos, ohne Schluessel; DuckDuckGo blockt die VM mit Captcha). Braucht das Plugin @openclaw/parallel-plugin@2026.7.1 im Volume (openclaw plugins install ...) und 'parallel' in plugins.allow. web_fetch bleibt AUS: mit Abrufen koennte eine praeparierte Kunden-Mail den Agenten Daten an eine fremde Adresse schicken lassen.",
   "tools": {
     "web": {
       "search": {
-        "enabled": false
+        "enabled": true,
+        "provider": "parallel-free"
       },
       "fetch": {
         "enabled": false
