@@ -214,3 +214,25 @@ def test_laengen_und_typen():
     assert "fehler" in termine_eigen.anlegen("A", _morgen().replace(tzinfo=None), 30)
     assert "fehler" in termine_eigen.anlegen("A", "morgen", 30)
     assert "fehler" in termine_eigen.anlegen(None, _morgen(), 30)
+
+
+def test_provision_vergibt_laden_rollen_das_recht_auf_eigene_termine():
+    """Final-Review C1: provision.sql legt eigene_termine in jedem Laden-Schema
+    an (sales_ivan) — die Laden-Rolle (sales_app_ivan) braucht dort dasselbe
+    Recht wie sales_app, sonst antwortet Ivans Kalender 503 (SQLSTATE 42501).
+    Lokal gibt es keine Laden-Rolle, deshalb prueft der Test den Text der
+    Schleife (Muster wie whatsapp_kopplung)."""
+    import re
+    from pathlib import Path
+    sql = (Path(__file__).resolve().parents[2] / "db" / "provision.sql").read_text(encoding="utf-8")
+    kompakt = re.sub(r"\s+", " ", sql)
+    assert ("execute format('grant select, insert, update, delete on %I.eigene_termine to %I', "
+            "s, 'sales_app_' || substr(s, 7))") in kompakt
+    # Die Laden-Rolle bekommt ihr Recht in derselben Schleife wie whatsapp_kopplung,
+    # also VOR deren Ende (end loop) und nach dem Anlegen der Tabelle.
+    tabelle = kompakt.index("create table if not exists %I.eigene_termine")
+    recht = kompakt.index("on %I.eigene_termine to %I")
+    whatsapp = kompakt.index("on %I.whatsapp_kopplung to %I")
+    schleifen_ende = kompakt.index("end loop", whatsapp)
+    assert tabelle < recht < schleifen_ende
+    assert "elsif s <> 'sales_test' and exists" in kompakt[tabelle:recht]

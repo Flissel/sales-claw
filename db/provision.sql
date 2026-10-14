@@ -223,6 +223,17 @@ begin
       )$ddl$, s);
     execute format('create index if not exists eigene_termine_beginn_idx '
                    'on %I.eigene_termine (beginn)', s);
+    -- Rechte der Laden-Rolle hier in der Schleife (Final-Review C1, 14.10.2026),
+    -- Muster wie whatsapp_kopplung: sonst bekaeme der bestehende Laden (Ivan)
+    -- die Tabelle ohne Zugriff, und sein Kalender antwortete 503 (42501).
+    -- laden-anlegen.sql vergibt dasselbe nur beim Anlegen eines Ladens.
+    if s = 'sales' then
+      execute 'grant select, insert, update, delete on sales.eigene_termine to sales_app';
+    elsif s <> 'sales_test' and exists (
+        select 1 from pg_roles where rolname = 'sales_app_' || substr(s, 7)) then
+      execute format('grant select, insert, update, delete on %I.eigene_termine to %I',
+                     s, 'sales_app_' || substr(s, 7));
+    end if;
     -- CC fuer E-Mail-Entwuerfe (03.09.2026); add column, weil die Tabelle
     -- auf beiden Schemata laengst existiert.
     execute format('alter table %I.drafts add column if not exists cc text', s);
