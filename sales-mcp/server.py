@@ -1727,7 +1727,8 @@ def _termin_einladen(lead_id: str, datum: str, uhrzeit: str,
                      dauer_minuten: int = TERMIN_DAUER_VORGABE,
                      thema: str = "Erstgespraech", ort: str = "",
                      eingeladene: str = "", uid: str = "",
-                     folge: int = 0, auftrag_betreiber: bool = False) -> str:
+                     folge: int = 0, auftrag_betreiber: bool = False,
+                     termin_bezug: bool = False) -> str:
     """Einen Termin als EINLADUNG vorschlagen — der Empfaenger entscheidet.
 
     Anders als `termin_bestaetigen` haelt das hier keinen vereinbarten Termin
@@ -1963,10 +1964,11 @@ def _termin_einladen(lead_id: str, datum: str, uhrzeit: str,
             f"können direkt zusagen, absagen oder einen anderen Termin "
             f"vorschlagen.\n\n"
             f"Viele Grüße")
-    roh = entwurf_erstellen(lead_id, "email", text,
-                            betreff=f"Terminvorschlag: {thema_kurz}",
-                            medien_datei=dateiname,
-                            auftrag_betreiber=auftrag_betreiber)
+    roh = _entwurf_erstellen(lead_id, "email", text,
+                             betreff=f"Terminvorschlag: {thema_kurz}",
+                             medien_datei=dateiname,
+                             auftrag_betreiber=auftrag_betreiber,
+                             termin_bezug=termin_bezug)
     entwurf = json.loads(roh)
     if "fehler" in entwurf:
         # Aufraeumen statt Muell liegen lassen (Fix-Runde 2, 11.09.2026):
@@ -2057,8 +2059,9 @@ def termin_einladen(lead_id: str, datum: str, uhrzeit: str,
 
 
 # Die Beschreibung des Werkzeugs bleibt die der Implementierung. Das
-# Agent-Werkzeug traegt BEWUSST kein `auftrag_betreiber`: den Betreiber-
-# Auftrag setzt nur die Oberflaeche (kunde_benachrichtigen), nie ein Agent.
+# Agent-Werkzeug traegt BEWUSST weder `auftrag_betreiber` noch `termin_bezug`:
+# den Terminbezug setzt nur die Oberflaeche (kunde_benachrichtigen, Einladung
+# aus /kalender), nie ein Agent.
 termin_einladen.__doc__ = _termin_einladen.__doc__
 
 
@@ -2255,6 +2258,25 @@ def entwurf_erstellen(lead_id: str, kanal: str, text: str,
     Kontakt ausdruecklich verlangt; nie im Kundenchat. Fehlt die
     Einwilligung, wird `betreiber_auftrag` gebucht; der Entwurf bleibt
     'pending'."""
+    return _entwurf_erstellen(lead_id, kanal, text, betreff, medien_datei,
+                              auftrag_betreiber)
+
+
+# Kern von entwurf_erstellen. Das Agent-Werkzeug oben traegt BEWUSST kein
+# `termin_bezug` (Final-Review I1, Ruling 14.10.2026): das Schema der
+# MCP-Werkzeuge entsteht aus inspect.signature(), ein Parameter dort waere fuer
+# jeden Agenten sichtbar. `termin_bezug=True` setzt nur die Oberflaeche
+# (kunde_benachrichtigen, Einladung aus /kalender): eine Terminnachricht zu
+# einem Kundentermin passiert das UWG-Erstansprache-Tor, OHNE eine
+# Werbe-Einwilligung zu buchen — Terminabsprache ist keine Werbung, und ein
+# gebuchtes betreiber_auftrag oeffnete das Tor danach fuer JEDEN Entwurf an
+# diesen Kontakt. Verbotsliste, Loeschantrag, privat und Kontakt-Freigabe
+# gelten unveraendert.
+@_gesichert
+def _entwurf_erstellen(lead_id: str, kanal: str, text: str,
+                       betreff: str = "", medien_datei: str = "",
+                       auftrag_betreiber: bool = False,
+                       termin_bezug: bool = False) -> str:
     if kanal not in ("whatsapp", "linkedin", "email", "telegram"):
         return _json({"fehler": f"Unzulaessiger Kanal '{kanal}'. "
                                 f"Erlaubt: whatsapp, linkedin, email, telegram"})
@@ -2295,9 +2317,13 @@ def entwurf_erstellen(lead_id: str, kanal: str, text: str,
                    (lead_id,))
         if (zeile and zeile[0]["consent_status"] not in EINWILLIGUNG_ARTEN
                 and not _hat_selbst_geschrieben(lead_id)):
-            if not auftrag_betreiber:
+            if termin_bezug:
+                # Terminnachricht: durchlassen, nichts buchen (siehe oben).
+                pass
+            elif not auftrag_betreiber:
                 return _erstansprache_fehler()
-            auftrag_buchen = True
+            else:
+                auftrag_buchen = True
     # Kontakt-Freigabe VOR dem Insert (frueh sagen statt spaet scheitern,
     # dieselbe Begruendung wie bei CAPTION_MAXLAENGE): ein WhatsApp-Entwurf
     # fuer einen nicht freigegebenen Kontakt soll gar nicht erst in der
@@ -7008,8 +7034,11 @@ def kunde_benachrichtigen(lead_id: str, alt: dict, neu: dict | None,
     E-Mail + Absage: Text-Entwurf (R2, kein METHOD:CANCEL). Sonst WhatsApp,
     wenn freigegeben; sonst ein Hinweis ohne Entwurf.
 
-    Der Aufruf ist eine ausdrueckliche Betreiber-Handlung der Oberflaeche,
-    deshalb `auftrag_betreiber=True` (kein Agent-Werkzeug)."""
+    Der Aufruf ist eine Betreiber-Handlung der Oberflaeche zu einem bestehenden
+    Kundentermin, deshalb `termin_bezug=True` (Final-Review I1): das UWG-Tor
+    laesst die Terminnachricht durch, OHNE eine Werbe-Einwilligung zu buchen.
+    Verbotsliste, Loeschantrag, privat und Kontakt-Freigabe gelten weiter.
+    Kein Agent-Werkzeug."""
     leads = _q("select name, email, enrichment from leads where id = %s", (lead_id,))
     if not leads:
         return {"fehler": f"Kein Kontakt mit lead_id {lead_id}."}
@@ -7049,12 +7078,12 @@ def kunde_benachrichtigen(lead_id: str, alt: dict, neu: dict | None,
             lead_id, neu["datum"], neu["uhrzeit"],
             int(neu.get("dauer_minuten") or TERMIN_DAUER_VORGABE),
             str(neu.get("thema") or "Termin"), str(neu.get("ort") or ""),
-            auftrag_betreiber=True, **fortsetzung)
+            termin_bezug=True, **fortsetzung)
         return _ergebnis(roh, "email")
     if mail:
-        return _ergebnis(entwurf_erstellen(
+        return _ergebnis(_entwurf_erstellen(
             lead_id, "email", _absagetext(), betreff=f"Termin abgesagt: {thema}",
-            auftrag_betreiber=True), "email")
+            termin_bezug=True), "email")
     if _whatsapp_freigegeben(leads[0]["enrichment"]):
         if neu:
             t = datetime.fromisoformat(str(neu["datum"])[:10])
@@ -7064,8 +7093,8 @@ def kunde_benachrichtigen(lead_id: str, alt: dict, neu: dict | None,
                     f"{', Ort: ' + ort if ort else ''}.")
         else:
             text = _absagetext()
-        return _ergebnis(entwurf_erstellen(
-            lead_id, "whatsapp", text, auftrag_betreiber=True), "whatsapp")
+        return _ergebnis(_entwurf_erstellen(
+            lead_id, "whatsapp", text, termin_bezug=True), "whatsapp")
     return {"hinweis": KEIN_KANAL_HINWEIS}
 
 

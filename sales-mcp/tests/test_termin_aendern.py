@@ -189,3 +189,90 @@ def test_kein_kanal_gibt_hinweis_ohne_entwurf():
     r = server.kunde_benachrichtigen(lead, _payload(_tag()), None, grund="x")
     assert r == {"hinweis": "kein Kanal zum Kunden – bitte selbst Bescheid geben"}
     assert _status(lead) == []
+
+
+# --- Terminbezug statt Betreiber-Auftrag (Final-Review I1, Ruling 14.10.) -----
+# Eine Terminnachricht aus der Oberflaeche passiert das UWG-Erstansprache-Tor,
+# bucht aber KEINE Werbe-Einwilligung: consent_status bleibt, wie er war.
+
+def _lead_ohne_grundlage_mail(name="Uwe Unbekannt"):
+    return str(server._q(
+        "insert into leads (name, email, source) "
+        "values (%s, 'uwe@example.org', 'whatsapp') returning id",
+        (name,))[0]["id"])
+
+
+def _lead_ohne_grundlage_whatsapp(name="Wilma Unbekannt"):
+    return str(server._q(
+        "insert into leads (name, phone, source, enrichment) "
+        "values (%s, '+491701239999', 'whatsapp', %s::jsonb) returning id",
+        (name, json.dumps({"whatsapp_freigabe": {"freigegeben": True}})))[0]["id"])
+
+
+def _grundlage(lead):
+    status = server._q("select consent_status from leads where id = %s",
+                       (lead,))[0]["consent_status"]
+    gebucht = server._q("select 1 from activities where lead_id = %s "
+                        "and type = 'werbe_einwilligung'", (lead,))
+    return status, bool(gebucht)
+
+
+def test_terminbezug_mail_aenderung_ohne_einwilligung_bucht_nichts():
+    lead = _lead_ohne_grundlage_mail()
+    tag = _tag()
+    r = server.kunde_benachrichtigen(
+        lead, _payload(tag), _payload(tag, "16:00", uid="n"))
+    assert r.get("kanal") == "email" and r.get("draft_id"), r
+    assert _status(lead) == ["pending"]
+    assert _grundlage(lead) == ("unknown", False)
+
+
+def test_terminbezug_mail_absage_ohne_einwilligung_bucht_nichts():
+    lead = _lead_ohne_grundlage_mail()
+    r = server.kunde_benachrichtigen(lead, _payload(_tag()), None, grund="x")
+    assert r.get("kanal") == "email" and r.get("draft_id"), r
+    assert _status(lead) == ["pending"]
+    assert _grundlage(lead) == ("unknown", False)
+
+
+def test_terminbezug_whatsapp_ohne_einwilligung_bucht_nichts():
+    lead = _lead_ohne_grundlage_whatsapp()
+    r = server.kunde_benachrichtigen(
+        lead, _payload(_tag()), _payload(_tag(2), "16:00"))
+    assert r.get("kanal") == "whatsapp" and r.get("draft_id"), r
+    assert _status(lead) == ["pending"]
+    assert _grundlage(lead) == ("unknown", False)
+
+
+def test_terminbezug_verbotsliste_sperrt_weiter(monkeypatch):
+    monkeypatch.setattr(server, "_sperre", lambda email="", phone="": "Abmeldung")
+    for lead, neu in ((_lead_ohne_grundlage_mail(), _payload(_tag(), "16:00")),
+                      (_lead_ohne_grundlage_mail("Ulla"), None),
+                      (_lead_ohne_grundlage_whatsapp(), _payload(_tag(), "16:00"))):
+        r = server.kunde_benachrichtigen(lead, _payload(_tag()), neu, grund="x")
+        assert "Verbotsliste" in r.get("fehler", ""), r
+        assert _status(lead) == []
+        assert _grundlage(lead) == ("unknown", False)
+
+
+def test_terminbezug_ersetzt_keine_kontakt_freigabe():
+    # WhatsApp nicht freigegeben, keine Mail: kein Entwurf, nur Hinweis.
+    lead = str(server._q(
+        "insert into leads (name, phone, source) values "
+        "('Nora Nichtfrei', '+491701238888', 'whatsapp') returning id")[0]["id"])
+    r = server.kunde_benachrichtigen(lead, _payload(_tag()), None, grund="x")
+    assert r == {"hinweis": "kein Kanal zum Kunden – bitte selbst Bescheid geben"}
+    assert _grundlage(lead) == ("unknown", False)
+
+
+def test_ohne_terminbezug_bleibt_das_tor_zu():
+    lead = _lead_ohne_grundlage_mail()
+    assert "fehler" in json.loads(server.entwurf_erstellen(lead, "email", "Hallo"))
+    assert _grundlage(lead) == ("unknown", False)
+
+
+def test_terminbezug_ist_kein_parameter_der_agent_werkzeuge():
+    import inspect
+    for fn in server.WERKZEUGE:
+        assert "termin_bezug" not in inspect.signature(fn).parameters, fn.__name__
+    assert "termin_bezug" in inspect.signature(server._termin_einladen).parameters

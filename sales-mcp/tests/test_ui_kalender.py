@@ -357,6 +357,24 @@ def test_post_kundentermin_mit_einladung_legt_pending_entwurf_an():
     assert zeile["payload"]["dauer_minuten"] == 45
 
 
+def test_post_kundentermin_mit_einladung_bucht_keine_einwilligung():
+    # Final-Review I1: die Einladung aus der Oberflaeche hat Terminbezug —
+    # sie passiert das Erstansprache-Tor, bucht aber kein betreiber_auftrag.
+    lead = str(server._q(
+        "insert into leads (name, email, source) values "
+        "('Uwe Unbekannt', 'uwe@example.org', 'whatsapp') returning id")[0]["id"])
+    antwort = _senden("POST", "/kalender/termine", {
+        "art": "kunde", "lead_id": lead, "thema": "Beratung",
+        "beginn": _um(3, 11).isoformat(), "dauer_minuten": 45, "einladung": True})
+    assert antwort.status_code == 201, antwort.text
+    assert antwort.json()["entwurf"]["kanal"] == "email"
+    assert [z["status"] for z in _entwuerfe(lead)] == ["pending"]
+    assert server._q("select consent_status from leads where id = %s",
+                     (lead,))[0]["consent_status"] == "unknown"
+    assert not server._q("select 1 from activities where lead_id = %s "
+                         "and type = 'werbe_einwilligung'", (lead,))
+
+
 def test_post_kundentermin_ohne_einladung_legt_keinen_entwurf_an():
     lead = _lead_mail()
     antwort = _senden("POST", "/kalender/termine", {

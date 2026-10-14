@@ -366,7 +366,7 @@ def routen(ui) -> list:
                 e = json.loads(await run_in_threadpool(
                     functools.partial(server._termin_einladen, lead_id, t["datum"], t["uhrzeit"],
                                       t["dauer_minuten"], t["thema"], t.get("ort") or "",
-                                      auftrag_betreiber=True)))
+                                      termin_bezug=True)))
             except psycopg.Error:
                 e = {"fehler": "Datenbank nicht erreichbar"}
             if "draft_id" in e:
