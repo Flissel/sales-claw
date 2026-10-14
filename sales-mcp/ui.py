@@ -206,6 +206,7 @@ import mailadresse
 import marketing_pult
 import ui_editor
 import ui_freigabe_newsletter
+import ui_kalender
 import ui_marketing
 import verlinken
 
@@ -519,7 +520,10 @@ class HostWache:
 # Entwuerfe und der Posteingang, also der komplette Kundenstamm. Ein
 # Kollege, der nur Termine abgleichen soll, bekommt das nicht.
 # Praefixe, keine Regex: eine Liste, die man vorlesen kann.
-_KALENDER_ROLLE_PFADE = ("/team/kalender", "/kalender", "/logout", "/login",
+# "/static/kalender" (14.10.2026): die zwei Paketdateien der Kalender-Seite
+# (ui_kalender) - ohne sie saehe die Rolle eine leere Seite.
+_KALENDER_ROLLE_PFADE = ("/team/kalender", "/kalender", "/static/kalender",
+                         "/logout", "/login",
                          "/passwort-vergessen", "/passwort-neu")
 
 
@@ -4138,9 +4142,14 @@ def _beginn_aus_payload(payload):
     return roh.replace(tzinfo=ZEITZONE) if ZEITZONE else roh
 
 
-@_gesichert_seite
-async def kalender_seite(request):
-    """Alle Termine an EINER Stelle (01.09.2026, Betreiber-Wunsch).
+def kalender_abschnitte() -> str:
+    """Die serverseitigen Abschnitte unter dem Kalender (R5, 14.10.2026):
+    die Seite selbst baut ui_kalender (Paket /static/kalender), das alte
+    Monatsgitter entfaellt; diese Funktion liefert nur noch das HTML der
+    Listen darunter. Liest `_AKTIVE_ROLLE` - der Aufrufer laeuft unter
+    `_gesichert_seite`.
+
+    Alle Termine an EINER Stelle (01.09.2026, Betreiber-Wunsch).
 
     Drei Quellen, absteigende Verlaesslichkeit: die Termin-Aktivitaeten
     aus der eigenen Datenbank (mit Kontaktbezug), die offenen
@@ -4262,9 +4271,9 @@ async def kalender_seite(request):
     kommend.sort(key=lambda p: p[0])
     vergangen.sort(key=lambda p: p[0], reverse=True)
 
-    # --- Das Gitter (01.09.2026): ein Kalender sieht aus wie ein Kalender.
-    monat = _monat_lesen(request.query_params.get("monat"), heute)
-    teile = [_monatsgitter(monat, zeilen, eintraege)]
+    # Das Monatsgitter (01.09.2026) ist seit 14.10.2026 durch die Wochen-/
+    # Monatsansicht des Pakets ersetzt (ui_kalender, R5).
+    teile = []
 
     kopf = ["Datum", "Zeit", "Kontakt", "Thema", "Ort", "Ändern"]
     teile.append(f"<h2>Kommende Termine ({len(kommend)})</h2>")
@@ -4351,7 +4360,7 @@ async def kalender_seite(request):
                 f'<span title="{_e(grund_voll)}">{_e(_kurz(grund_voll, 80))}</span>'])
         teile.append(_tabelle(
             ["Datum", "Zeit", "Thema", "Grund"], abgesagt_zeilen))
-    return _seite("Kalender", "".join(teile))
+    return "".join(teile)
 
 
 def _termin_aktionen(lead_id: str, uid: str, tag: str, zeit: str) -> str:
@@ -5136,6 +5145,41 @@ async def aktion_profil_anfordern(request):
     return RedirectResponse(f"/kontakte/{lead_id}#profil", status_code=303)
 
 
+def _kontakt_termine(lead_id: str) -> str:
+    """Abschnitt „Termine" der Kontaktseite (14.10.2026): die nicht
+    abgesagten Termine dieses Kontakts, je mit Sprung in die Wochenansicht
+    des Kalenders - dort wird geaendert, nicht hier."""
+    abgesagt = {str((z["payload"] or {}).get("uid") or "") for z in server._q(
+        "select payload from activities where lead_id = %s "
+        "and type = 'termin_abgesagt'", (lead_id,))}
+    termine = []
+    for z in server._q("select payload from activities where lead_id = %s "
+                       "and type = 'termin'", (lead_id,)):
+        p = z["payload"] or {}
+        tag = str(p.get("datum") or "")
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", tag):
+            continue
+        if p.get("uid") and str(p["uid"]) in abgesagt:
+            continue
+        termine.append((tag, str(p.get("uhrzeit") or ""), p))
+    termine.sort(key=lambda t: (t[0], t[1]), reverse=True)
+    teile = [f"<h2>Termine ({len(termine)})</h2>"]
+    if not termine:
+        teile.append("<p>Keine Termine.</p>")
+        return "".join(teile)
+    zeilen = []
+    for tag, zeit, p in termine[:30]:
+        thema = str(p.get("thema") or "")
+        ziel = f"/kalender?datum={tag}&ansicht=woche"
+        zeilen.append([
+            _e(tag_lesbar(tag)), _e(zeit),
+            f'<span title="{_e(thema)}">{_e(_kurz(thema, 80))}</span>',
+            _e(_kurz(str(p.get("ort") or ""), 60)),
+            f'<a href="{_e(ziel)}">im Kalender öffnen</a>'])
+    teile.append(_tabelle(["Datum", "Zeit", "Thema", "Ort", "Kalender"], zeilen))
+    return "".join(teile)
+
+
 @_gesichert_seite
 async def kontakt_detail(request):
     roh = request.path_params["lead_id"]
@@ -5304,6 +5348,8 @@ async def kontakt_detail(request):
             for v in vertraege if isinstance(v, dict)]))
     else:
         teile.append("<p>Keine Verträge erfasst.</p>")
+
+    teile.append(_kontakt_termine(lead_id))
 
     teile.append("<h2>Offene Wiedervorlagen</h2>")
     teile.append(_wiedervorlagen_tabelle(_offene_wiedervorlagen(lead_id),
@@ -6556,7 +6602,8 @@ app = Starlette(routes=[
           methods=["POST"]),
     Route("/pipeline", pipeline),
     Route("/ergebnisse", ergebnisse),
-    Route("/kalender", kalender_seite),
+    # Seite /kalender, JSON-Schnittstelle und Paketdateien (14.10.2026).
+    *ui_kalender.routen(sys.modules[__name__]),
     Route("/kalender/absagen", aktion_termin_absagen, methods=["POST"]),
     Route("/kalender/verschieben", aktion_termin_verschieben,
           methods=["POST"]),

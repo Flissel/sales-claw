@@ -549,13 +549,18 @@ def test_verlaufszeile_termin_auf_freigaben_verwendet_kurz():
     assert f'title="{ui._e(lang_thema)}"' in seite
 
 
-def test_monatsgitter_titel_verwendet_kurz_und_traegt_titel():
-    lang_thema = "Kennenlernen Förderinitiative für kleine Betriebe"
+def test_kalenderliste_thema_verwendet_kurz_und_traegt_titel():
+    # 14.10.2026: vorher am Monatsgitter (_kurz(…, 22)); das Gitter ist durch
+    # das Kalender-Paket ersetzt (R5). Dieselbe Zusage gilt fuer die Liste
+    # darunter, die mit _kurz(…, 80) kuerzt.
+    lang_thema = ("Kennenlernen Förderinitiative für kleine Betriebe mit "
+                  "vielen Details, die eigentlich niemand lesen will")
     lead = _lead("Monat Gitter")
     _termin_aktivitaet(lead, datum="2026-09-05", uhrzeit="10:00",
                        thema=lang_thema)
-    seite = _get("/kalender?monat=2026-09").text
-    assert ui._kurz(lang_thema, 22) in seite
+    seite = _get("/kalender").text
+    assert ui._kurz(lang_thema, 80) in seite
+    assert ui._kurz(lang_thema, 80) != lang_thema
     assert f'title="{ui._e(lang_thema)}"' in seite
 
 

@@ -3334,27 +3334,30 @@ def test_kalender_warnt_bei_terminkollision():
 # ohne Datum, doppelt belegte Zeiten).
 # ---------------------------------------------------------------------------
 
-def test_kalender_hat_ein_monatsgitter():
+# 14.10.2026 (Kalender pflegen, R5): das serverseitige Monatsgitter ist durch
+# das Kalender-Paket ersetzt (Woche/Tag/Monat/Liste, ui_kalender). Gitter,
+# Wochentagskoepfe, data-tag-Kaesten und die ?monat=-Blaetterlinks gibt es
+# nicht mehr; das Paket blaettert selbst und liest /kalender/termine.json
+# (Vertraege: tests/test_ui_kalender.py). Die Listen darunter bleiben.
+
+def test_kalender_bettet_das_paket_statt_des_monatsgitters_ein():
     seite = _get("/kalender").text
-    assert 'class="monat"' in seite
-    for tag in ("Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"):
-        assert f'>{tag}<' in seite
+    assert '<div id="kalender"></div>' in seite
+    assert 'class="monat"' not in seite
 
 
-def test_monatsgitter_zeigt_den_termin_im_richtigen_kasten():
+def test_kalender_zeigt_den_termin_in_der_liste():
     lead = _lead(name="Sabrina Schmidt")
     _termin(lead, "2099-09-04", uhrzeit="13:00", thema="Erstgespraech")
-    seite = _get("/kalender?monat=2099-09").text
-    assert "September 2099" in seite
+    seite = _get("/kalender?datum=2099-09-04&ansicht=monat").text
     assert "13:00" in seite and "Erstgespraech" in seite
-    # Der 4.9.2099 ist ein Freitag — der Kasten traegt sein Datum.
-    assert 'data-tag="2099-09-04"' in seite
+    assert "04.09.2099" in seite
 
 
-def test_monatsgitter_blaettert_vor_und_zurueck():
-    seite = _get("/kalender?monat=2099-09").text
-    assert 'href="/kalender?monat=2099-08"' in seite
-    assert 'href="/kalender?monat=2099-10"' in seite
+def test_kalender_uebernimmt_datum_statt_monatslinks():
+    seite = _get("/kalender?datum=2099-09-04&ansicht=monat").text
+    assert '"datum": "2099-09-04"' in seite and '"ansicht": "monat"' in seite
+    assert "?monat=" not in seite
 
 
 def test_monatsgitter_zeigt_auch_die_kalendertermine(monkeypatch):
