@@ -787,15 +787,21 @@ services:
       - MARKETING_PULT_URL=${MARKETING_PULT_URL:-}
       - MARKETING_PULT_KEY=${MARKETING_PULT_KEY:-}
       # Kalender (01.09.2026): der Tab /kalender liest die Termine des
-      # Betreibers per CalDAV — REIN LESEND (ein REPORT-Aufruf, kein PUT).
-      # Bewusste Ausnahme von der T5a-Liste oben: der Kalenderzugang
-      # traegt KEINE Sendemacht (anders als OPENWA_API_KEY oder SMTP), und
-      # das UI zeigt die Termine ohnehin schon aus der eigenen Datenbank.
-      # Die Alternative — sales-mcp spiegelt den Kalender periodisch in
-      # die DB — waere mehr Code fuer dasselbe Bild.
+      # Betreibers per CalDAV. Seit Kalender pflegen (14.10.2026) schreibt
+      # er auch: eigene Termine und verschobene Kundentermine landen per PUT
+      # im Handy-Kalender, geloescht wird nur, was sales-claw selbst
+      # eingetragen hat. Bewusste Ausnahme von der T5a-Liste oben: der
+      # Kalenderzugang traegt KEINE Sendemacht (anders als OPENWA_API_KEY
+      # oder SMTP) — kein Kunde bekommt dadurch eine Nachricht.
       - CALDAV_URL=${CALDAV_URL:-}
       - CALDAV_USER=${CALDAV_USER:-}
       - CALDAV_PASSWORT=${CALDAV_PASSWORT:-}
+      # Absenderadresse fuer Termin-Einladungen, die der Kalender als
+      # ENTWURF anlegt (Veranstalter im .ics). Nur die Adresse, kein
+      # SMTP-Zugang — versendet wird weiter ausschliesslich ueber die
+      # Freigabe und sales-mail. Ohne sie scheiterte live am 14.10.2026 jede
+      # Einladung aus dem Kalender mit "Kein Absender konfiguriert".
+      - EMAIL_ABSENDER=${EMAIL_ABSENDER:-}
     volumes:
       # DER MEDIENORDNER — und hier OHNE `:ro`, als einziger Dienst im Stack.
       #

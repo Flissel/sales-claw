@@ -338,6 +338,19 @@ def test_anker_deckt_alle_gelesenen_caldav_und_verwandten_variablen_ab():
 
 
 @ohne_docker
+def test_oberflaeche_kennt_den_absender_aber_keinen_sendezugang():
+    """Kalender pflegen (14.10.2026): Einladungen aus dem Kalender brauchen
+    EMAIL_ABSENDER als Veranstalter. Live fehlte sie in sales-ui, jede
+    Einladung scheiterte mit "Kein Absender konfiguriert". Die Adresse ist
+    kein Schluessel; SMTP-Passwort und OpenWA-Sendeschluessel bleiben
+    draussen (T5a)."""
+    umgebung = _aufgeloest("docker-compose.yml")["services"]["sales-ui"]["environment"]
+    assert "EMAIL_ABSENDER" in umgebung
+    for verboten in ("SMTP_PASSWORT", "SMTP_USER", "OPENWA_API_KEY"):
+        assert verboten not in umgebung, verboten
+
+
+@ohne_docker
 def test_ohne_umgebung_bleibt_alles_wie_heute():
     """Der gemessene Stand vom 16.09.2026, wortwoertlich.
 
