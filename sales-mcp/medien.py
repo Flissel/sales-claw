@@ -48,6 +48,11 @@ MEDIA_VERZEICHNIS = os.environ.get("MEDIA_DIR", "/media")
 # `termin_bestaetigen`. media/ bleibt der Menschen-Ordner (nur lesbar,
 # Begruendung im Compose); hierhin schreibt das System selbst.
 ERZEUGT_VERZEICHNIS = os.environ.get("MEDIA_ERZEUGT_DIR", "/media-erzeugt")
+# Chat-Eingang (14.10.2026): der Unterordner media/inbound des Gateway-
+# Volumes, NUR LESEND an sales-mcp (Begruendung im Compose). Dort legt der
+# Agent-Container ab, was im Chat an Bildern/Dateien ankommt — auch die,
+# die der Betreiber an sich selbst schickt und die OpenWA nicht liefert.
+CHAT_EINGANG_VERZEICHNIS = os.environ.get("CHAT_EINGANG_DIR", "/chat-eingang")
 
 # 15 MB. Siehe Moduldocstring: OpenWA wuerde erst bei ~18,7 MB abriegeln, aber
 # eine WhatsApp-Nachricht ist kein Dateiserver, und die Schranke soll sprechen,
@@ -325,6 +330,86 @@ def pruefe_neuen_namen(name: str):
             f"Endung '{endung or '(keine)'}' ist nicht zugelassen. Erlaubt: "
             f"{', '.join(sorted(ERLAUBT))}.")
     return basis, None
+
+
+def ablegen(basis: str, inhalt: bytes, ordner: str) -> str:
+    """Neue Datei atomar in `ordner` ablegen -> endgueltiger Name.
+
+    Geschrieben wird nach `<ziel>.teil` und dann per os.replace umbenannt —
+    ein halber Schreibvorgang taucht so nie unter einem gueltigen Namen in
+    der Liste auf. Ein vorhandener Name wird NIE ueberschrieben (die alte
+    Datei kann an einem freigegebenen Entwurf haengen, siehe liegt_schon),
+    stattdessen -2, -3, … vor der Endung. `basis` muss vorher durch
+    pruefe_neuen_namen gegangen sein. Wirft OSError; die Zwischendatei ist
+    dann wieder weg.
+
+    Gemeinsam fuer den Selbst-Chat-Anhang aus dem Webhook (inbox.py) und
+    das Agent-Werkzeug medien_aus_chat_uebernehmen — eine Regel, zwei Wege.
+    """
+    stamm, endung = os.path.splitext(basis)
+    ziel = os.path.join(ordner, basis)
+    laufnummer = 2
+    while os.path.exists(ziel):
+        basis = f"{stamm}-{laufnummer}{endung}"
+        ziel = os.path.join(ordner, basis)
+        laufnummer += 1
+    zwischen = ziel + ".teil"
+    try:
+        os.makedirs(ordner, exist_ok=True)
+        with open(zwischen, "wb") as datei:
+            datei.write(inhalt)
+        os.replace(zwischen, ziel)
+    except OSError:
+        try:
+            os.unlink(zwischen)
+        except OSError:
+            pass
+        raise
+    return basis
+
+
+def aus_chat_eingang_lesen(datei: str):
+    """Datei aus dem Chat-Eingang -> (quellname, bytes, None) | (None, None, fehler).
+
+    `datei` ist, was der Agent in der Zeile `[media attached: <pfad> …]`
+    sieht — ein Pfad im AGENT-Container, den es hier gar nicht gibt. Genutzt
+    wird deshalb ausschliesslich der letzte Namensteil (beide Trennzeichen,
+    siehe _reiner_dateiname), gesucht nur in CHAT_EINGANG_VERZEICHNIS. Ein
+    Symlink, der aus dem Ordner herauszeigt, wird ueber realpath abgefangen
+    (gleiche Kante wie in `pruefe`).
+    """
+    roh = (datei or "").strip().replace("\\", "/")
+    name = roh.rsplit("/", 1)[-1].strip()
+    if not _reiner_dateiname(name):
+        return None, None, (f"'{datei}' nennt keine Datei aus dem Chat. "
+                            f"Uebergib den Pfad aus der Zeile "
+                            f"[media attached: …] unveraendert.")
+    nicht_da = (f"Datei '{name}' nicht im Chat-Eingang gefunden - bitte das "
+                f"Bild bzw. die Datei erneut schicken.")
+    try:
+        wurzel_eingang = os.path.realpath(CHAT_EINGANG_VERZEICHNIS)
+        quelle = os.path.join(wurzel_eingang, name)
+        if not os.path.realpath(quelle).startswith(wurzel_eingang + os.sep):
+            return None, None, (f"'{name}' zeigt aus dem Chat-Eingang heraus "
+                                f"und wird nicht uebernommen.")
+        if not os.path.isfile(quelle):
+            return None, None, nicht_da
+        groesse = os.path.getsize(quelle)
+        if groesse == 0:
+            return None, None, f"Datei '{name}' ist leer (0 Bytes)."
+        if groesse > MAX_BYTES:
+            return None, None, (f"Datei '{name}' ist {groesse / 1048576:.1f} MB "
+                                f"gross - erlaubt sind hoechstens "
+                                f"{MAX_BYTES // 1048576} MB.")
+        with open(quelle, "rb") as f:
+            inhalt = f.read(MAX_BYTES + 1)
+    except FileNotFoundError:
+        return None, None, nicht_da
+    except (OSError, ValueError) as e:
+        return None, None, f"Chat-Eingang nicht lesbar ({type(e).__name__})."
+    if not inhalt or len(inhalt) > MAX_BYTES:
+        return None, None, f"Datei '{name}' hat sich beim Lesen veraendert."
+    return name, inhalt, None
 
 
 def anhang_art(basis: str):

@@ -965,24 +965,11 @@ def _anhang_sichern(daten: dict, message_id: str):
                  .hexdigest()[:12] + _ANHANG_ENDUNG[mimetype])
     else:
         return None, f"Dateityp {mimetype or 'unbekannt'} ist nicht erlaubt"
-    stamm, endung = os.path.splitext(basis)
-    ziel = os.path.join(ERZEUGT_VERZEICHNIS, basis)
-    laufnummer = 2
-    while os.path.exists(ziel):
-        basis = f"{stamm}-{laufnummer}{endung}"
-        ziel = os.path.join(ERZEUGT_VERZEICHNIS, basis)
-        laufnummer += 1
-    zwischen = ziel + ".teil"
+    # Atomar, nie ueberschreiben, -2/-3 … — seit 14.10.2026 als gemeinsame
+    # Regel in medien.ablegen (auch medien_aus_chat_uebernehmen nutzt sie).
     try:
-        os.makedirs(ERZEUGT_VERZEICHNIS, exist_ok=True)
-        with open(zwischen, "wb") as datei:
-            datei.write(inhalt)
-        os.replace(zwischen, ziel)
+        basis = server.medien.ablegen(basis, inhalt, ERZEUGT_VERZEICHNIS)
     except OSError as e:
-        try:
-            os.unlink(zwischen)
-        except OSError:
-            pass
         return None, f"Medienordner nicht beschreibbar ({type(e).__name__})"
     try:
         server.medien_meta_setzen(basis, herkunft="chat")

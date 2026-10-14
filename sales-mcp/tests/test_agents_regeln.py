@@ -112,6 +112,20 @@ def test_freigabe_antworten_nennt_kundenchat_regel():
     assert "halbauto" in kapitel and "manuell" in kapitel
 
 
+def test_bild_aus_dem_chat_ueber_das_werkzeug():
+    # 14.10.2026: von selbst landet nichts in den Medien (OpenWA liefert
+    # eigene Medien nicht) — der Agent legt sie per Werkzeug ab.
+    absatz = _absatz("- **Bild oder Datei aus dem Chat in die Medien.**")
+    assert "medien_aus_chat_uebernehmen(datei=" in absatz
+    assert "[media attached:" in absatz
+    assert "medien_datei" in absatz and "post_entwurf_erstellen" in absatz
+    assert "fragst du einmal kurz" in absatz
+    text = " ".join(TEXT.split())
+    assert "liegt sie danach in den Medien" not in text
+    assert "medien_aus_chat_uebernehmen" in _absatz(
+        "- **Betreiber-Werkzeuge sind im Kundenchat tabu")
+
+
 def test_auto_betrieb_eigene_nummer_nur_bei_auto():
     absatz = _absatz("- Schreibt er an **deine eigene Nummer**")
     assert "Stufe `auto`" in absatz

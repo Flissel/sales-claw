@@ -713,7 +713,9 @@ def test_fuenfundachtzig_werkzeuge_registriert():
     # terminkarte_erstellen, 85 -> 89.
     # 13.10.2026: mail_beantworten (Sales-Agent Block A, Task 3), 89 -> 90.
     # 13.10.2026: versand_abwarten (Sales-Agent Block A, Task 5), 90 -> 91.
-    assert len(namen) == 91
+    # 14.10.2026: medien_aus_chat_uebernehmen (tests/test_medien_aus_chat.py),
+    # 91 -> 92.
+    assert len(namen) == 92
     assert "termin_konflikte" in namen
     assert "kontakt_aehnlich" in namen
     assert "gespraeche_suchen" in namen

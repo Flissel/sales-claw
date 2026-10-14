@@ -2554,6 +2554,64 @@ def medien_liste() -> str:
                   "gesperrt": gesperrt})
 
 
+@_gesichert
+def medien_aus_chat_uebernehmen(datei: str, name: str = "") -> str:
+    """Legt ein Bild/eine Datei, die im Chat angekommen ist, in die Medien
+    (Herkunft "chat"). `datei` ist der Pfad aus der Zeile
+    `[media attached: <pfad> (<typ>)]` — unveraendert uebergeben, genutzt
+    wird nur der Dateiname. `name` (optional) ist ein sprechender Name,
+    z. B. 'linkedin-teamfoto'; ohne Endung bekommt er die der Quelle.
+    Liefert {"medien_datei": <name>, "bytes": n} — genau diesen Namen nehmen
+    entwurf_erstellen(..., medien_datei=...) und post_entwurf_erstellen(...,
+    medien_datei=...). Ein vorhandener Name wird nie ueberschrieben (-2, -3).
+    Versendet nichts."""
+    # 14.10.2026, live gemessen: OpenWA (whatsapp-web.js) laedt EIGENE
+    # Medien nicht herunter ("Own-send media download failed"), der Webhook
+    # an sales-inbox traegt fuer den Selbst-Chat also keine Bytes und
+    # _anhang_sichern kommt nie zum Zug. Der Agent hat das Bild aber — im
+    # Gateway-Volume unter media/inbound, das hier nur lesend als
+    # Chat-Eingang anliegt (docker-compose.yml, sales-mcp).
+    quelle, inhalt, fehler = medien.aus_chat_eingang_lesen(datei)
+    if fehler:
+        return _json({"fehler": fehler})
+    endung_quelle = os.path.splitext(quelle)[1].lower()
+    wunsch = (name or "").strip()
+    if wunsch and not os.path.splitext(wunsch)[1]:
+        wunsch += endung_quelle
+    basis, fehler = medien.pruefe_neuen_namen(wunsch or quelle)
+    if fehler:
+        return _json({"fehler": fehler})
+    # Derselbe MIME-Typ (jpg/jpeg gelten gleich), sonst schickte der
+    # Versand spaeter ein Bild als PDF. `basis` hat nach der Pruefung oben
+    # sicher eine erlaubte Endung, die Quelle nicht zwingend (-> None).
+    def _mime(endung):
+        return medien.ERLAUBT.get(endung, (None, None))[1]
+    if _mime(os.path.splitext(basis)[1].lower()) != _mime(endung_quelle):
+        return _json({"fehler": (
+            f"'{basis}' hat eine andere Endung als die Datei aus dem Chat "
+            f"('{endung_quelle or '(keine)'}') - bitte denselben Dateityp "
+            f"behalten oder den Namen ohne Endung angeben.")})
+    if medien.intern(basis) or medien.entwurfsbild(basis):
+        return _json({"fehler": (
+            f"'{basis}' ist ein reservierter Name (Terminkarte, Musterblatt "
+            f"oder Entwurfsbild) - bitte einen anderen Namen waehlen.")})
+    try:
+        basis = medien.ablegen(basis, inhalt, medien.ERZEUGT_VERZEICHNIS)
+    except OSError as e:
+        return _json({"fehler": f"Medienordner nicht beschreibbar "
+                                f"({type(e).__name__})."})
+    try:
+        medien_meta_setzen(basis, herkunft="chat")
+    except psycopg.Error as e:
+        # Wie in inbox._anhang_sichern: die Datei liegt, nur die Herkunft
+        # fehlt — medien_liste zeigt sie trotzdem (Vorgabe "hochgeladen").
+        _LOG.warning("Herkunft fuer %s nicht gebucht (%s).", basis,
+                     type(e).__name__)
+    _LOG.info("Datei aus dem Chat in die Medien uebernommen: %s (%d Bytes)",
+              basis, len(inhalt))
+    return _json({"medien_datei": basis, "bytes": len(inhalt)})
+
+
 def medien_meta_lesen() -> dict:
     """dateiname -> {bot_darf_senden, herkunft}. Ohne Zeile gilt: darf
     senden, hochgeladen (der Bestand vor Schritt 4 bleibt unveraendert)."""
@@ -8104,6 +8162,10 @@ WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,
              profil_lesen, profil_aktualisieren,
              bedarf_speichern, bedarf_offen, entwurf_erstellen,
              post_entwurf_erstellen, medien_liste,
+             # Bilder/Dateien aus dem Chat in die Medien (14.10.2026) —
+             # der Selbst-Chat-Weg ueber sales-inbox liefert keine Bytes.
+             # Vertraege: tests/test_medien_aus_chat.py.
+             medien_aus_chat_uebernehmen,
              # Was schon gepostet wurde, samt Schablonen-Melder
              # (25.08.2026). LinkedIn selbst gibt die Historie nicht
              # heraus — 403, die App hat nur Schreibrecht.
