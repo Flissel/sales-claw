@@ -1723,12 +1723,11 @@ def termin_bestaetigen(lead_id: str, datum: str, uhrzeit: str,
                    + hinweis}))
 
 
-@_gesichert
-def termin_einladen(lead_id: str, datum: str, uhrzeit: str,
-                    dauer_minuten: int = TERMIN_DAUER_VORGABE,
-                    thema: str = "Erstgespraech", ort: str = "",
-                    eingeladene: str = "", uid: str = "",
-                    folge: int = 0) -> str:
+def _termin_einladen(lead_id: str, datum: str, uhrzeit: str,
+                     dauer_minuten: int = TERMIN_DAUER_VORGABE,
+                     thema: str = "Erstgespraech", ort: str = "",
+                     eingeladene: str = "", uid: str = "",
+                     folge: int = 0, auftrag_betreiber: bool = False) -> str:
     """Einen Termin als EINLADUNG vorschlagen — der Empfaenger entscheidet.
 
     Anders als `termin_bestaetigen` haelt das hier keinen vereinbarten Termin
@@ -1966,7 +1965,8 @@ def termin_einladen(lead_id: str, datum: str, uhrzeit: str,
             f"Viele Grüße")
     roh = entwurf_erstellen(lead_id, "email", text,
                             betreff=f"Terminvorschlag: {thema_kurz}",
-                            medien_datei=dateiname)
+                            medien_datei=dateiname,
+                            auftrag_betreiber=auftrag_betreiber)
     entwurf = json.loads(roh)
     if "fehler" in entwurf:
         # Aufraeumen statt Muell liegen lassen (Fix-Runde 2, 11.09.2026):
@@ -2044,6 +2044,22 @@ def termin_einladen(lead_id: str, datum: str, uhrzeit: str,
                               "mit der vereinbarten Zeit aufzurufen. "
                               f"Eine Wiedervorlage zum Nachfassen steht am "
                               f"{nachfass_faellig.isoformat()}.")})
+
+
+@_gesichert
+def termin_einladen(lead_id: str, datum: str, uhrzeit: str,
+                    dauer_minuten: int = TERMIN_DAUER_VORGABE,
+                    thema: str = "Erstgespraech", ort: str = "",
+                    eingeladene: str = "", uid: str = "",
+                    folge: int = 0) -> str:
+    return _termin_einladen(lead_id, datum, uhrzeit, dauer_minuten, thema,
+                            ort, eingeladene, uid, folge)
+
+
+# Die Beschreibung des Werkzeugs bleibt die der Implementierung. Das
+# Agent-Werkzeug traegt BEWUSST kein `auftrag_betreiber`: den Betreiber-
+# Auftrag setzt nur die Oberflaeche (kunde_benachrichtigen), nie ein Agent.
+termin_einladen.__doc__ = _termin_einladen.__doc__
 
 
 def _bestaetigungstext(beginn: datetime, dauer: int, thema: str,
@@ -6951,6 +6967,106 @@ def termin_verschieben(lead_id: str, uid: str, datum: str,
         "bestaetigungstext": neu.get("bestaetigungstext"),
         "hinweis": ("Verschoben. Der Kontakt weiss davon NICHTS — wenn er "
                     "es erfahren soll, braucht es einen Entwurf.")}))
+
+@_gesichert
+def termin_aendern(lead_id: str, uid: str, datum: str = "", uhrzeit: str = "",
+                   dauer_minuten: int = 0, thema: str = "",
+                   ort: str = "") -> str:
+    """Kundentermin aendern (Oberflaeche, Spec 2026-10-14 §1.2): technisch wie verschieben — alt absagen, neu
+    bestaetigen, alle Felder uebernehmbar. Versendet nichts; den Kunden-Entwurf legt kunde_benachrichtigen an."""
+    zeile = _termin_zeile(lead_id, uid)
+    if zeile is None:
+        return _json({"fehler": f"Zu diesem Kontakt gibt es keinen Termin mit der Kennung {uid}."})
+    if _termin_abgesagt(lead_id, uid):
+        return _json({"fehler": "Dieser Termin ist abgesagt."})
+    a = zeile["payload"] or {}
+    neu = {"datum": datum or a.get("datum"), "uhrzeit": uhrzeit or a.get("uhrzeit"),
+           "dauer_minuten": int(dauer_minuten or a.get("dauer_minuten") or TERMIN_DAUER_VORGABE),
+           "thema": thema or str(a.get("thema") or ""), "ort": ort if ort else str(a.get("ort") or "")}
+    if all(str(neu[k]) == str(a.get(k) or ("" if k != "dauer_minuten" else TERMIN_DAUER_VORGABE)) for k in neu):
+        return _json({"fehler": "Nichts geändert."})
+    b = json.loads(termin_bestaetigen(lead_id, neu["datum"], neu["uhrzeit"], dauer_minuten=neu["dauer_minuten"],
+                                      thema=neu["thema"], ort=neu["ort"]))
+    if "fehler" in b:
+        return _json(b)
+    absage = json.loads(termin_absagen(lead_id, uid, f"geändert auf {neu['datum']} {neu['uhrzeit']}"))
+    return _json(_ohne_none({**b, "uid_neu": (b.get("termin") or {}).get("uid"),
+                             "verschoben_von": {"uid": uid, "datum": a.get("datum"), "uhrzeit": a.get("uhrzeit")},
+                             "alter_kalendereintrag": absage.get("kalender")}))
+
+
+KEIN_KANAL_HINWEIS = "kein Kanal zum Kunden – bitte selbst Bescheid geben"
+
+
+def kunde_benachrichtigen(lead_id: str, alt: dict, neu: dict | None,
+                          grund: str = "") -> dict:
+    """Legt nach einer Aenderung/Absage eines Kundentermins einen PENDING-
+    Entwurf an den Kunden an (Oberflaeche, Spec 2026-10-14). Versendet nichts.
+
+    E-Mail + neuer Termin: Einladung — mit uid und folge+1 fortgeschrieben,
+    wenn zum alten Slot schon eine Einladung existiert (R3), sonst neu.
+    E-Mail + Absage: Text-Entwurf (R2, kein METHOD:CANCEL). Sonst WhatsApp,
+    wenn freigegeben; sonst ein Hinweis ohne Entwurf.
+
+    Der Aufruf ist eine ausdrueckliche Betreiber-Handlung der Oberflaeche,
+    deshalb `auftrag_betreiber=True` (kein Agent-Werkzeug)."""
+    leads = _q("select name, email, enrichment from leads where id = %s", (lead_id,))
+    if not leads:
+        return {"fehler": f"Kein Kontakt mit lead_id {lead_id}."}
+    name = (leads[0]["name"] or "").strip()
+    vorname = name.split()[0] if name else ""
+    mail = (leads[0]["email"] or "").strip()
+    thema = str((alt or {}).get("thema") or "Termin")
+
+    def _tt_mm(iso: str) -> str:
+        return datetime.fromisoformat(str(iso)[:10]).strftime("%d.%m.")
+
+    def _absagetext() -> str:
+        satz = f" Grund: {grund.strip()}." if (grund or "").strip() else ""
+        return (f"Hallo {vorname},\n\nleider müssen wir unseren Termin am "
+                f"{_tt_mm(alt['datum'])} um {alt['uhrzeit']} absagen.{satz}"
+                f"\n\nViele Grüße")
+
+    def _ergebnis(roh: str, kanal: str) -> dict:
+        antwort = json.loads(roh)
+        if "fehler" in antwort:
+            return {"fehler": antwort["fehler"]}
+        return {"draft_id": antwort["draft_id"], "kanal": kanal}
+
+    if mail and neu:
+        einladung = _q(
+            "select payload from activities where lead_id = %s and "
+            "type = 'einladung_entworfen' and payload->>'datum' = %s and "
+            "payload->>'uhrzeit' = %s "
+            "order by created_at desc, (payload->>'folge')::int desc limit 1",
+            (lead_id, str(alt.get("datum")), str(alt.get("uhrzeit"))))
+        fortsetzung = {}
+        if einladung:
+            p = einladung[0]["payload"] or {}
+            if p.get("uid"):
+                fortsetzung = {"uid": p["uid"], "folge": int(p.get("folge") or 0) + 1}
+        roh = _termin_einladen(
+            lead_id, neu["datum"], neu["uhrzeit"],
+            int(neu.get("dauer_minuten") or TERMIN_DAUER_VORGABE),
+            str(neu.get("thema") or "Termin"), str(neu.get("ort") or ""),
+            auftrag_betreiber=True, **fortsetzung)
+        return _ergebnis(roh, "email")
+    if mail:
+        return _ergebnis(entwurf_erstellen(
+            lead_id, "email", _absagetext(), betreff=f"Termin abgesagt: {thema}",
+            auftrag_betreiber=True), "email")
+    if _whatsapp_freigegeben(leads[0]["enrichment"]):
+        if neu:
+            t = datetime.fromisoformat(str(neu["datum"])[:10])
+            ort = str(neu.get("ort") or "").strip()
+            text = (f"Hallo {vorname}, kleine Änderung: unser Termin ist jetzt am "
+                    f"{WOCHENTAGE[t.weekday()]} {t:%d.%m.} um {neu['uhrzeit']}"
+                    f"{', Ort: ' + ort if ort else ''}.")
+        else:
+            text = _absagetext()
+        return _ergebnis(entwurf_erstellen(
+            lead_id, "whatsapp", text, auftrag_betreiber=True), "whatsapp")
+    return {"hinweis": KEIN_KANAL_HINWEIS}
 
 
 # ---------------------------------------------------------------------------
