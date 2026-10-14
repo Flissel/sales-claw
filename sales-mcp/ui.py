@@ -201,6 +201,7 @@ from starlette.responses import HTMLResponse, RedirectResponse, Response
 from starlette.routing import Route
 
 import kalender
+import kalender_sicht
 import mailadresse
 import marketing_pult
 import ui_editor
@@ -4149,19 +4150,9 @@ async def kalender_seite(request):
     er aus, steht der Rest trotzdem da.
     """
     heute = date.today()
-    zeilen = server._q(
-        "select a.payload, a.created_at, l.id as lead_id, l.name "
-        "from activities a left join leads l on l.id = a.lead_id "
-        "where a.type = 'termin' order by a.created_at desc limit 200")
     # Abgesagte fallen aus der Ansicht (01.09.2026) — sie stehen unten in
     # ihrem eigenen Abschnitt, damit die Absage nachvollziehbar bleibt.
-    abgesagt = {str((z["payload"] or {}).get("uid") or ""): z["payload"] or {}
-                for z in server._q(
-                    "select payload from activities "
-                    " where type = 'termin_abgesagt' order by created_at")}
-    zeilen = [z for z in zeilen
-              if str((z["payload"] or {}).get("uid") or "") not in abgesagt
-              or not (z["payload"] or {}).get("uid")]
+    zeilen, abgesagt = kalender_sicht.kundenzeilen()
     # Der echte Kalender wird schon hier gelesen (statt erst beim Gitter
     # weiter unten), damit seine Termine VOR dem Aufbau von kommend/vergangen
     # mit den eigenen gepaart werden koennen (Aufgabe 4).
