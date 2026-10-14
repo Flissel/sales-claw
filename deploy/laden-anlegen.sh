@@ -249,7 +249,11 @@ echo "brauchen (die uebrigen sieben warten auf Postfach, Telegram-Token,"
 echo "LinkedIn-Zugang bzw. WhatsApp-Pairing, die es fuer '$NAME' noch"
 echo "nicht gibt):"
 echo
+echo "  bash deploy/chat-eingang-anlegen.sh --env-file $ENVDATEI"
 echo "  docker compose --env-file $ENVDATEI up -d --build sales-mcp sales-ui"
+echo
+echo "(Die erste Zeile legt media/inbound im Gateway-Volume an - ohne den"
+echo "Ordner startet sales-mcp nicht, er haengt ihn per subpath ein.)"
 echo
 echo "SPAETER, sobald diese Zugangsdaten vorliegen — alle neun Dienste des"
 echo "Hauptstacks (weiterhin ohne $NAME-auto):"

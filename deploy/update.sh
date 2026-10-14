@@ -243,6 +243,18 @@ if echo "$GEAENDERT" | grep -E '^config/openclaw' >/dev/null; then
   echo "HINWEIS: $HINWEIS"
 fi
 
+# Chat-Eingang (14.10.2026): sales-mcp haengt media/inbound des Gateway-
+# Volumes per `subpath` ein, und Docker startet den Container nicht, wenn der
+# Ordner fehlt. Deshalb vor JEDEM `up` eines Ladens anlegen (idempotent,
+# deploy/chat-eingang-anlegen.sh). Ein Fehlschlag hier bricht das Update
+# nicht ab — das folgende `up` scheitert dann laut und nennt den Ordner.
+chat_eingang_sichern() { # envargs
+  [ -f "$WURZEL/deploy/chat-eingang-anlegen.sh" ] || return 0
+  # shellcheck disable=SC2086
+  bash "$WURZEL/deploy/chat-eingang-anlegen.sh" $1 || \
+    echo "HINWEIS: Chat-Eingang (media/inbound) nicht angelegt - siehe oben." >&2
+}
+
 gateway_neustarten() {
   # Nur anfassen, was laeuft — KERN_BASIS enthaelt sales-claw nur dann.
   # Bewusst nur der Basis-Laden, siehe Kommentar bei KERN_BASIS oben.
@@ -263,6 +275,7 @@ rueckbau() {
   for i in "${!LADEN_PRAEFIXE[@]}"; do
     k="${LADEN_KERN[$i]}"
     [ -n "$k" ] || continue
+    chat_eingang_sichern "${LADEN_ENVARGS[$i]}"
     # shellcheck disable=SC2086
     docker compose ${LADEN_ENVARGS[$i]} up -d --build $k
   done
@@ -317,6 +330,7 @@ for i in "${!LADEN_PRAEFIXE[@]}"; do
   fi
 
   if [ -n "$BAUEN" ]; then
+    chat_eingang_sichern "${LADEN_ENVARGS[$i]}"
     # shellcheck disable=SC2086
     docker compose ${LADEN_ENVARGS[$i]} up -d --build $BAUEN
   fi

@@ -261,6 +261,23 @@ services:
       # ab, der Waechter auf dem Wirt (deploy/auftrag-ausfuehren.sh) holt
       # sie und schreibt Ergebnisse zurueck. Schreibbar, gitignoriert.
       - ./auftraege:/auftraege
+      # Chat-Eingang (14.10.2026): Bilder/Dateien, die im Chat beim Agenten
+      # ankommen, legt der Gateway unter media/inbound seines Volumes ab.
+      # `medien_aus_chat_uebernehmen` kopiert von hier in media-erzeugt —
+      # noetig, weil OpenWA EIGENE Medien (Selbst-Chat) nicht herunterlaedt
+      # und sales-inbox dafuer nie Bytes bekommt (live gemessen).
+      #
+      # NUR dieser Unterordner und NUR lesend, nie das ganze Volume: dort
+      # liegen die WhatsApp-Kopplung und die Modellschluessel des Agenten
+      # (Begruendung T5a am Agent-Container oben). `subpath` verlangt, dass
+      # der Ordner existiert — deploy/chat-eingang-anlegen.sh legt ihn vor
+      # jedem `up` an (deploy/update.sh, admin-auftrag-ausfuehren.sh).
+      - type: volume
+        source: sales-claw-state
+        target: /chat-eingang
+        read_only: true
+        volume:
+          subpath: media/inbound
     # Kein ports:-Eintrag — nur im Compose-Netz erreichbar. Der Dienst kennt
     # die Kundendaten-DB; er hat auf dem Host nichts verloren.
     logging:

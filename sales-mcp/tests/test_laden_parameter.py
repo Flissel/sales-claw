@@ -351,6 +351,35 @@ def test_oberflaeche_kennt_den_absender_aber_keinen_sendezugang():
 
 
 @ohne_docker
+@pytest.mark.parametrize("umgebung", [None, {"LADEN_PRAEFIX": "ivan",
+                                             "LADEN_PROJEKT": "ivan-claw"}])
+def test_werkzeugdienst_sieht_nur_den_chat_eingang_des_agenten(umgebung):
+    """Bilder aus dem Selbst-Chat (14.10.2026): sales-mcp liest NUR den
+    Unterordner media/inbound des Gateway-Volumes, und nur lesend. Im
+    Volume liegen WhatsApp-Kopplung und Modellschluessel — ein Mount des
+    ganzen Volumes (oder ein zweiter) waere genau das Leck, das der Kommentar
+    am Agent-Container (T5a) verhindern will. Fuer jeden Laden dasselbe
+    Volume wie sein eigener Agent, nie das des Basis-Ladens."""
+    cfg = _aufgeloest("docker-compose.yml", umgebung)
+    praefix = (umgebung or {}).get("LADEN_PRAEFIX", "sales")
+    assert cfg["volumes"]["sales-claw-state"]["name"] == f"{praefix}-claw-state"
+
+    def claw_mounts(dienst):
+        return [v for v in (cfg["services"][dienst].get("volumes") or [])
+                if v.get("type") == "volume"
+                and v.get("source") == "sales-claw-state"]
+
+    mcp = claw_mounts("sales-mcp")
+    assert len(mcp) == 1, mcp
+    assert mcp[0]["target"] == "/chat-eingang"
+    assert mcp[0].get("read_only") is True
+    assert (mcp[0].get("volume") or {}).get("subpath") == "media/inbound"
+    for dienst in cfg["services"]:
+        if dienst not in ("sales-claw", "sales-mcp"):
+            assert claw_mounts(dienst) == [], dienst
+
+
+@ohne_docker
 def test_ohne_umgebung_bleibt_alles_wie_heute():
     """Der gemessene Stand vom 16.09.2026, wortwoertlich.
 

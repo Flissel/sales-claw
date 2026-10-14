@@ -200,6 +200,9 @@ if [ "$ART" = "laden_anlegen" ]; then
   # sales-mail seit 24.09.2026: er verschickt Konto-Mails ueber die
   # Betreiber-Identitaet (SYSTEM_*), Kundenentwuerfe erst, wenn das Postfach
   # des Ladens eingetragen ist. DIENSTSCHLUESSEL bleiben woertlich.
+  # Vorher der Chat-Eingang (14.10.2026): sales-mcp haengt media/inbound des
+  # Gateway-Volumes per subpath ein und startet ohne den Ordner nicht.
+  bash deploy/chat-eingang-anlegen.sh --env-file "$ENVDATEI" >/dev/null
   docker compose --env-file "$ENVDATEI" up -d --build sales-mcp sales-ui sales-mail \
     >/dev/null
   ERLEDIGT+=("container")
