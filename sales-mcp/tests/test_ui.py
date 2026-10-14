@@ -3396,47 +3396,31 @@ def _termin_mit_uid(lead, uid="test-uid-1", datum="2099-09-04"):
     return uid
 
 
-def test_kalender_bietet_absagen_und_verschieben():
+def test_kalender_hat_keine_alten_verschieben_absagen_formulare():
+    # 14.10.2026 (Kalender pflegen, Controller-Ruling Fix-Runde 1): die alten
+    # Formulare aenderten Kundentermine OHNE Entwurf an den Kunden (Spec §1.2).
+    # Geaendert wird nur noch im Kalender-Paket (PATCH/DELETE /kalender/
+    # termine, tests/test_ui_kalender.py) oder im Chat.
     lead = _lead()
     _termin_mit_uid(lead)
     seite = _get("/kalender").text
-    assert 'action="/kalender/absagen"' in seite
-    assert 'action="/kalender/verschieben"' in seite
+    assert 'action="/kalender/absagen"' not in seite
+    assert 'action="/kalender/verschieben"' not in seite
+    assert 'href="/kalender?datum=2099-09-04&amp;ansicht=woche"' in seite
 
 
-def test_absagen_ohne_csrf_aendert_nichts():
+def test_alte_verschieben_absagen_routen_gibt_es_nicht_mehr():
     lead = _lead()
     uid = _termin_mit_uid(lead)
-    antwort = _post("/kalender/absagen",
-                    {"lead_id": lead, "uid": uid, "grund": "weg"})
-    assert antwort.status_code == 403
+    for pfad in ("/kalender/absagen", "/kalender/verschieben"):
+        antwort = _post(pfad, {"lead_id": lead, "uid": uid, "grund": "weg",
+                               "datum": "2099-09-11", "uhrzeit": "15:30",
+                               "csrf": ui.CSRF_TOKEN})
+        assert antwort.status_code in (404, 405), pfad
     assert server._q("select count(*) n from activities where "
                      "type = 'termin_abgesagt'")[0]["n"] == 0
-
-
-def test_absagen_ueber_die_oberflaeche_schreibt_den_beweis():
-    lead = _lead()
-    uid = _termin_mit_uid(lead)
-    antwort = _post("/kalender/absagen",
-                    {"lead_id": lead, "uid": uid,
-                     "grund": "Kunde hat abgesagt", "csrf": ui.CSRF_TOKEN})
-    assert antwort.status_code == 303
-    zeilen = server._q("select payload from activities where "
-                       "type = 'termin_abgesagt'")
-    assert len(zeilen) == 1
-    assert zeilen[0]["payload"]["uid"] == uid
-
-
-def test_verschieben_ueber_die_oberflaeche():
-    lead = _lead()
-    uid = _termin_mit_uid(lead)
-    antwort = _post("/kalender/verschieben",
-                    {"lead_id": lead, "uid": uid, "datum": "2099-09-11",
-                     "uhrzeit": "15:30", "csrf": ui.CSRF_TOKEN})
-    assert antwort.status_code == 303
-    neue = server._q("select payload from activities where type = 'termin' "
-                     "order by created_at desc limit 1")[0]["payload"]
-    assert neue["datum"] == "2099-09-11" and neue["uhrzeit"] == "15:30"
+    assert server._q("select count(*) n from activities where "
+                     "type = 'termin'")[0]["n"] == 1
 
 
 def test_abgesagte_termine_verschwinden_aus_dem_kalender():

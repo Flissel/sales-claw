@@ -37,12 +37,24 @@ from ui_editor import _json_im_html
 
 STATIK = Path(__file__).resolve().parent / "static" / "kalender"
 STATIK_DATEIEN = {"kalender.js": "text/javascript", "kalender.css": "text/css"}
-# ui._CSP plus genau das, was das Paket braucht: eigenes Skript, eigenes
-# Stylesheet, Abrufe an dieselbe Herkunft. Test: test_ui_kalender.py.
-CSP_KALENDER = ("default-src 'none'; script-src 'self'; connect-src 'self'; "
-                "style-src 'self' 'unsafe-inline'; img-src 'self'; "
-                "media-src 'self'; form-action 'self'; base-uri 'none'; "
-                "frame-ancestors 'none'")
+# Zusaetze zu ui._CSP - genau das, was das Paket braucht: eigenes Skript,
+# eigenes Stylesheet, Abrufe an dieselbe Herkunft.
+_CSP_ZUSAETZE = {"script-src": "script-src 'self'", "connect-src": "connect-src 'self'",
+                 "style-src": "style-src 'self' 'unsafe-inline'"}
+
+
+def csp_kalender(ui) -> str:
+    """ui._CSP mit ersetzten/ergaenzten Direktiven aus _CSP_ZUSAETZE. Aus
+    ui._CSP abgeleitet, damit jede Verschaerfung dort hier mitgeht."""
+    teile, gesehen = [], set()
+    for d in (t.strip() for t in ui._CSP.split(";")):
+        if not d:
+            continue
+        name = d.split()[0]
+        gesehen.add(name)
+        teile.append(_CSP_ZUSAETZE.get(name, d))
+    teile += [w for n, w in _CSP_ZUSAETZE.items() if n not in gesehen]
+    return "; ".join(teile)
 ANSICHTEN = ("woche", "tag", "monat", "liste")
 SPANNE_MAX_TAGE = 62
 KOERPER_MAX = 32 * 1024
@@ -80,8 +92,11 @@ def _gesichert_json(fn):
 
 
 def _csrf_ok(request, ui) -> bool:
+    # Bytes statt str: compare_digest wirft bei Nicht-ASCII-str einen
+    # TypeError (Starlette dekodiert Koepfe als latin-1) -> waere ein 500.
     marke = request.headers.get("x-csrf", "")
-    return bool(marke) and hmac.compare_digest(marke, ui.CSRF_TOKEN)
+    return bool(marke) and hmac.compare_digest(marke.encode("latin-1", "replace"),
+                                               ui.CSRF_TOKEN.encode())
 
 
 async def _koerper(request):
@@ -183,6 +198,12 @@ def _kundentermin(uid: str):
     return z[0] if z else None
 
 
+def _eigen_stand(uid: str):
+    z = server._q("select beginn, dauer_minuten, geaendert_am from eigene_termine "
+                  "where uid = %s", (uid,))
+    return z[0] if z else None
+
+
 def _name(lead_id: str) -> str:
     z = server._q("select name from leads where id = %s", (lead_id,))
     return (z[0]["name"] or "") if z else ""
@@ -243,7 +264,7 @@ def routen(ui) -> list:
                  '<script src="/static/kalender/kalender.js" defer></script>'
                  + ui.kalender_abschnitte())
         antwort = ui._seite("Kalender", rumpf)
-        antwort.headers["Content-Security-Policy"] = CSP_KALENDER
+        antwort.headers["Content-Security-Policy"] = csp_kalender(ui)
         antwort.headers["Cache-Control"] = "no-store"
         return antwort
 
@@ -322,8 +343,8 @@ def routen(ui) -> list:
             lead_id = str(uuid.UUID(str(lead_id)))
         except ValueError:
             return _grund(422, "lead_id fehlt oder ist ungültig")
-        if not _text(thema):
-            return _grund(422, "Thema ist ungültig oder zu lang (höchstens 200 Zeichen)")
+        if not _text(thema, leer_erlaubt=False):
+            return _grund(422, "Thema fehlt oder ist zu lang (höchstens 200 Zeichen)")
         if not _ganzzahl(dauer, server.TERMIN_DAUER_MIN, server.TERMIN_DAUER_MAX):
             return _grund(422, f"Dauer muss {server.TERMIN_DAUER_MIN}–"
                                f"{server.TERMIN_DAUER_MAX} Minuten sein")
@@ -334,7 +355,7 @@ def routen(ui) -> list:
             return k
         datum, uhrzeit = _ortszeit(beginn)
         b = json.loads(await run_in_threadpool(
-            server.termin_bestaetigen, lead_id, datum, uhrzeit, dauer, thema or "Termin", ort))
+            server.termin_bestaetigen, lead_id, datum, uhrzeit, dauer, thema.strip(), ort))
         if "termin" not in b:
             return _fehler_antwort(str(b.get("fehler") or "Termin nicht angelegt"))
         daten = {"ereignis": _ereignis_kunde(b["termin"], lead_id, await run_in_threadpool(_name, lead_id))}
@@ -378,10 +399,10 @@ def routen(ui) -> list:
                 return _grund(422, "Beginn hat kein gültiges Format oder keine Zeitzone")
 
         if art == "eigen":
-            alt = server._q("select beginn, dauer_minuten, geaendert_am from eigene_termine "
-                            "where uid = %s", (uid,))
-            if not alt:
+            alt = await run_in_threadpool(_eigen_stand, uid)
+            if alt is None:
                 return _grund(404, "Diesen Termin gibt es nicht.")
+            alt = [alt]
             stempel = body.get("geaendert_am")
             if not isinstance(stempel, str) or not stempel:
                 return _grund(422, "geaendert_am fehlt")
@@ -411,6 +432,9 @@ def routen(ui) -> list:
         lead_id, alt = zeile["lead_id"], zeile["payload"] or {}
         if not lead_id:
             return _grund(422, "Dieser Termin hat keinen Kontakt und lässt sich nicht bearbeiten")
+        # Inzwischen ersetzt (zweiter Tab, Chat) oder abgesagt -> neu laden (Spec §3).
+        if await run_in_threadpool(server._termin_abgesagt, lead_id, uid):
+            return _grund(409, VERALTET)
         dauer = body.get("dauer_minuten", 0)
         thema, ort = body.get("titel", ""), body.get("ort", "")
         if "dauer_minuten" in body and not _ganzzahl(dauer, server.TERMIN_DAUER_MIN,
@@ -465,6 +489,8 @@ def routen(ui) -> list:
         if zeile is None or not zeile["lead_id"]:
             return _grund(404, "Diesen Termin gibt es nicht.")
         lead_id, alt = zeile["lead_id"], zeile["payload"] or {}
+        if await run_in_threadpool(server._termin_abgesagt, lead_id, uid):
+            return _grund(409, VERALTET)
         r = json.loads(await run_in_threadpool(server.termin_absagen, lead_id, uid, grund.strip()))
         if "abgesagt" not in r:
             return _fehler_antwort(str(r.get("fehler") or "Termin nicht abgesagt"))

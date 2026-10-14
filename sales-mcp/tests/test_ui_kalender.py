@@ -295,6 +295,10 @@ def test_post_mit_falscher_csrf_ist_403():
      "beginn": "2099-09-02T10:00:00+02:00", "dauer_minuten": 60},
     {"art": "kunde", "lead_id": "00000000-0000-0000-0000-000000000000", "thema": "x",
      "beginn": "2099-09-02T10:00:00+02:00", "dauer_minuten": 10},
+    {"art": "kunde", "lead_id": "00000000-0000-0000-0000-000000000000", "thema": "  ",
+     "beginn": "2099-09-02T10:00:00+02:00", "dauer_minuten": 60},
+    {"art": "kunde", "lead_id": "00000000-0000-0000-0000-000000000000",
+     "beginn": "2099-09-02T10:00:00+02:00", "dauer_minuten": 60},
     [1, 2],
 ])
 def test_post_mit_ungueltigem_koerper_ist_422(body):
@@ -626,3 +630,101 @@ def test_kontaktseite_ohne_termine():
     seite = _get(f"/kontakte/{lead}").text
     assert "<h2>Termine" in seite
     assert 'href="/kalender?datum=' not in seite
+
+
+# --- Fix-Runde 1 -------------------------------------------------------------
+
+def test_csp_kalender_folgt_ui_csp():
+    def _direktiven(csp):
+        return {t.split()[0]: t for t in (d.strip() for d in csp.split(";")) if t}
+    basis, kal = _direktiven(ui._CSP), _direktiven(ui_kalender.csp_kalender(ui))
+    for name, wert in basis.items():
+        if name != "style-src":
+            assert kal[name] == wert, name
+    assert kal["style-src"] == "style-src 'self' 'unsafe-inline'"
+    assert kal["script-src"] == "script-src 'self'"
+    assert kal["connect-src"] == "connect-src 'self'"
+    assert set(kal) == set(basis) | {"script-src", "connect-src"}
+    assert _get("/kalender").headers["content-security-policy"] == ui_kalender.csp_kalender(ui)
+
+
+def test_nicht_ascii_csrf_ist_403_json():
+    antwort = CLIENT.post("/kalender/videoraum", json={},
+                          headers={"host": HOST_OK, "x-csrf": "fälschung".encode("latin-1")})
+    assert antwort.status_code == 403
+    assert antwort.json()["grund"]
+
+
+def test_patch_kunde_zweimal_ist_beim_zweiten_mal_veraltet():
+    lead = _lead_mail()
+    alt = _kundentermin(lead, _um(3, 14, 30))
+    erste = _senden("PATCH", f"/kalender/termine/kunde:{alt['uid']}",
+                    {"beginn": _um(3, 16).isoformat()})
+    assert erste.status_code == 200, erste.text
+    zweite = _senden("PATCH", f"/kalender/termine/kunde:{alt['uid']}",
+                     {"beginn": _um(3, 17).isoformat()})
+    assert zweite.status_code == 409, zweite.text
+    assert zweite.json()["grund"] == "inzwischen geändert – neu laden"
+    assert len(_entwuerfe(lead)) == 1
+
+
+def test_delete_kunde_nach_patch_ist_veraltet():
+    lead = _lead_mail()
+    alt = _kundentermin(lead, _um(3, 14, 30))
+    assert _senden("PATCH", f"/kalender/termine/kunde:{alt['uid']}",
+                   {"beginn": _um(3, 16).isoformat()}).status_code == 200
+    antwort = _senden("DELETE", f"/kalender/termine/kunde:{alt['uid']}", {"grund": "krank"})
+    assert antwort.status_code == 409
+    assert antwort.json()["grund"] == "inzwischen geändert – neu laden"
+    assert len(_entwuerfe(lead)) == 1
+
+
+def test_patch_kunde_nur_dauer():
+    lead = _lead_mail()
+    alt = _kundentermin(lead, _um(3, 14, 30), dauer=60)
+    antwort = _senden("PATCH", f"/kalender/termine/kunde:{alt['uid']}", {"dauer_minuten": 90})
+    assert antwort.status_code == 200, antwort.text
+    e = antwort.json()["ereignis"]
+    assert datetime.fromisoformat(e["beginn"]) == _um(3, 14, 30)
+    assert datetime.fromisoformat(e["ende"]) == _um(3, 16)
+    neu = server._termin_zeile(lead, e["uid"])["payload"]
+    assert neu["dauer_minuten"] == 90 and neu["uhrzeit"] == "14:30"
+    assert neu["thema"] == "Beratung" and neu["ort"] == "Buero"
+
+
+def test_rolle_kalender_patch_und_delete_sind_403(scharf):
+    lead = _lead_mail()
+    alt = _kundentermin(lead, _um(3, 14, 30))
+    client = _anmelden("ivan", "kalender")
+    assert _senden("PATCH", f"/kalender/termine/kunde:{alt['uid']}",
+                   {"dauer_minuten": 90}, client=client).status_code == 403
+    assert _senden("DELETE", f"/kalender/termine/kunde:{alt['uid']}",
+                   {"grund": "x"}, client=client).status_code == 403
+    assert not server._termin_abgesagt(lead, alt["uid"])
+
+
+def test_delete_kunde_db_fehler_beim_benachrichtigen_ist_503(monkeypatch):
+    lead = _lead_mail()
+    alt = _kundentermin(lead, _um(3, 14, 30))
+
+    def _wirft(*a, **k):
+        raise psycopg.OperationalError("weg")
+    monkeypatch.setattr(server, "kunde_benachrichtigen", _wirft)
+    antwort = _senden("DELETE", f"/kalender/termine/kunde:{alt['uid']}", {"grund": "krank"})
+    assert antwort.status_code == 503
+    assert antwort.json()["grund"].startswith("Termin abgesagt, aber")
+    assert "selbst Bescheid geben" in antwort.json()["grund"]
+    assert antwort.json()["geloescht"] is True
+    assert server._termin_abgesagt(lead, alt["uid"])
+
+
+@pytest.mark.parametrize("thema", [None, "", "   "])
+def test_post_kundentermin_ohne_thema_ist_422(thema):
+    lead = _lead_mail()
+    body = {"art": "kunde", "lead_id": lead, "beginn": _um(3, 10).isoformat(),
+            "dauer_minuten": 60}
+    if thema is not None:
+        body["thema"] = thema
+    antwort = _senden("POST", "/kalender/termine", body)
+    assert antwort.status_code == 422, antwort.text
+    assert server._q("select 1 from activities where type = 'termin'") == []

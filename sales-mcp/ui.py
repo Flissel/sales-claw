@@ -4264,8 +4264,10 @@ def kalender_abschnitte() -> str:
             marke + quellen_marke +
             f'<span title="{_e(thema_voll)}">{_e(_kurz(thema_voll, 80))}</span>',
             ort_html,
-            _termin_aktionen(str(z["lead_id"] or ""),
-                             str(last.get("uid") or ""), tag, zeit)]
+            # Geaendert wird nur im Kalender (Paket, mit Entwurf an den
+            # Kunden) oder im Chat - die alten Formulare sind weg (14.10.2026).
+            f'<a href="{_e(f"/kalender?datum={tag}&ansicht=woche")}">'
+            f'im Kalender ändern</a>']
         (kommend if tag >= heute.isoformat() else vergangen).append(
             (tag + zeit, eintrag))
     kommend.sort(key=lambda p: p[0])
@@ -4361,58 +4363,6 @@ def kalender_abschnitte() -> str:
         teile.append(_tabelle(
             ["Datum", "Zeit", "Thema", "Grund"], abgesagt_zeilen))
     return "".join(teile)
-
-
-def _termin_aktionen(lead_id: str, uid: str, tag: str, zeit: str) -> str:
-    """Absagen und Verschieben — beide ueber DIESELBEN Werkzeuge wie der
-    Chat (server.termin_absagen / termin_verschieben). Die Oberflaeche
-    baut keinen zweiten Schreibweg; dasselbe Muster wie bei den
-    Freigaben."""
-    if not (lead_id and uid):
-        # Alt-Termine ohne uid (vor dem 01.09.2026) lassen sich nicht
-        # eindeutig adressieren — lieber kein Knopf als der falsche.
-        return '<span class="meta">—</span>'
-    verborgen = (f'<input type="hidden" name="lead_id" value="{_e(lead_id)}">'
-                 f'<input type="hidden" name="uid" value="{_e(uid)}">'
-                 f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">')
-    return (
-        f'<form class="aktion" method="post" action="/kalender/verschieben">'
-        f'{verborgen}'
-        f'<input type="date" name="datum" value="{_e(tag)}" required>'
-        f'<input type="time" name="uhrzeit" value="{_e(zeit)}" required>'
-        f'<button>Verschieben</button></form>'
-        f'<form class="aktion gefahr" method="post" '
-        f'action="/kalender/absagen">{verborgen}'
-        f'<input name="grund" placeholder="Grund" required>'
-        f'<button class="gefahr">Absagen</button></form>')
-
-
-@_gesichert_seite
-async def aktion_termin_absagen(request):
-    form = await request.form()
-    if not _csrf_ok(form):
-        return _fehlerseite(403, "Abgewiesen",
-                            "Fehlende oder falsche CSRF-Marke.")
-    antwort = json.loads(server.termin_absagen(
-        str(form.get("lead_id") or ""), str(form.get("uid") or ""),
-        str(form.get("grund") or "")))
-    if "fehler" in antwort:
-        return _fehlerseite(400, "Nicht abgesagt", _e(antwort["fehler"]))
-    return RedirectResponse("/kalender", status_code=303)
-
-
-@_gesichert_seite
-async def aktion_termin_verschieben(request):
-    form = await request.form()
-    if not _csrf_ok(form):
-        return _fehlerseite(403, "Abgewiesen",
-                            "Fehlende oder falsche CSRF-Marke.")
-    antwort = json.loads(server.termin_verschieben(
-        str(form.get("lead_id") or ""), str(form.get("uid") or ""),
-        str(form.get("datum") or ""), str(form.get("uhrzeit") or "")))
-    if "fehler" in antwort:
-        return _fehlerseite(400, "Nicht verschoben", _e(antwort["fehler"]))
-    return RedirectResponse("/kalender", status_code=303)
 
 
 # --- Team-Kalender: der Kollege verbindet selbst (Task 5, Spec §2.7) -------
@@ -4751,7 +4701,7 @@ async def aktion_kalender_entfernen(request):
     kalenderquelle_entfernen()s Docstring): unter demselben Namen neu
     verbinden weckt die Zeile von selbst wieder auf, ein Bestaetigungs-
     schritt ist deshalb nicht noetig — dasselbe Muster wie
-    aktion_termin_absagen."""
+    die fruehere Termin-Absage der Oberflaeche."""
     form = await request.form()
     if not _csrf_ok(form):
         return _fehlerseite(403, "Abgewiesen",
@@ -6604,9 +6554,6 @@ app = Starlette(routes=[
     Route("/ergebnisse", ergebnisse),
     # Seite /kalender, JSON-Schnittstelle und Paketdateien (14.10.2026).
     *ui_kalender.routen(sys.modules[__name__]),
-    Route("/kalender/absagen", aktion_termin_absagen, methods=["POST"]),
-    Route("/kalender/verschieben", aktion_termin_verschieben,
-          methods=["POST"]),
     Route("/team/kalender", team_kalender),
     Route("/team/kalender/verbinden", aktion_kalender_verbinden,
           methods=["POST"]),
