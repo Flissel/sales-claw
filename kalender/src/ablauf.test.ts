@@ -64,4 +64,19 @@ describe('schreiben', () => {
     expect(ui.melden).toHaveBeenCalledWith('Dauer muss 15–480 Minuten sein');
     expect(ui.neuLaden).not.toHaveBeenCalled();
   });
+
+  it('503 mit gespeichertem Termin (Entwurf gescheitert) gilt als gespeichert: Fenster zu, Meldung, neu laden', async () => {
+    const ui = oberflaeche();
+    const grund = 'Termin geändert, aber Entwurf an den Kunden nicht angelegt – bitte selbst Bescheid geben';
+    const r = await schreiben(async () => ({ ok: false, status: 503, daten: { grund, ereignis: { id: 'kunde:neu' } } }), ui, '/f');
+    expect(r).toBe(true);
+    expect(ui.melden).toHaveBeenCalledWith(grund);
+    expect(ui.neuLaden).toHaveBeenCalled();
+  });
+
+  it('503 nach erfolgter Absage (geloescht) gilt ebenfalls als gespeichert', async () => {
+    const ui = oberflaeche();
+    const r = await schreiben(async () => ({ ok: false, status: 503, daten: { grund: 'Termin abgesagt, aber …', geloescht: true } }), ui, '/f');
+    expect(r).toBe(true);
+  });
 });

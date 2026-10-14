@@ -60,3 +60,12 @@ def test_statik_route_liefert_das_gebaute_paket():
         assert r.content == (ORDNER / name).read_bytes(), name
     r = client.get("/static/kalender/MANIFEST.json", headers={"host": "127.0.0.1:8791"})
     assert r.status_code == 404
+
+
+def test_paket_ohne_symbolschrift_und_ohne_umleitung():
+    # Fix-Runde 1: die fcicons-Schrift (data:) blockiert die CSP -> Textknoepfe;
+    # abgelaufene Sitzung (303 -> /login) wird nicht gefolgt, sondern gemeldet.
+    # Primaer geprueft in kalender/src/einstellungen.test.ts und api.test.ts.
+    text = _js()
+    for s in ("buttonIcons:!1", 'redirect:"manual"', "Abgemeldet – bitte neu anmelden"):
+        assert s in text, s

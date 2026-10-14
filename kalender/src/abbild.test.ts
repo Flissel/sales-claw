@@ -82,7 +82,8 @@ describe('zuAenderung', () => {
   });
 
   it('ueber die Sommerzeit-Umstellung bleibt 14:00 lokal 14:00', () => {
-    // Samstag 24.10. 14:00 (+02:00) zwei Tage weiter auf Montag 26.10. (+01:00)
+    // FullCalendar liefert nach dem Ziehen die lokale Wandzeit als Date. Liegt das Ziel
+    // nach der Umstellung (26.10., Winterzeit), muss der Offset +01:00 sein, nicht +02:00.
     const r = zuAenderung({ start: new Date(2026, 9, 26, 14, 0), end: new Date(2026, 9, 26, 15, 0) });
     expect(r).toEqual({ beginn: '2026-10-26T14:00:00+01:00', dauer_minuten: 60 });
   });

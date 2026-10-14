@@ -208,3 +208,14 @@ def test_sommerzeit_umstellung_offset():
     assert stand["u2026-10-24"] == "2026-10-24T14:00:00+02:00"
     assert stand["u2026-10-25"] == "2026-10-25T14:00:00+01:00"
     assert stand["u2026-10-26"] == "2026-10-26T14:00:00+01:00"
+
+
+def test_eigener_termin_traegt_kalender_stand():
+    # Spec §1.1: ein gescheiterter CalDAV-Abgleich bleibt nach dem Neuladen sichtbar.
+    fehl = _eigen(_um(1, 9), 30, "Fehlt im Handy")
+    ok = _eigen(_um(1, 11), 30, "Unbekannt")
+    termine_eigen._stand_setzen(fehl["uid"], "fehlgeschlagen: 503")
+    termine_eigen._stand_setzen(ok["uid"], None)
+    nach_uid = {e["uid"]: e for e in kalender_sicht.ereignisse(*_fenster())["ereignisse"]}
+    assert nach_uid[fehl["uid"]]["kalender_stand"] == "fehlgeschlagen: 503"
+    assert "kalender_stand" not in nach_uid[ok["uid"]]

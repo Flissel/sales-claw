@@ -9,6 +9,9 @@ export interface Ergebnis {
 
 let csrf = '';
 
+// Die Anmeldewache leitet GET bei abgelaufener Sitzung per 303 auf /login um.
+export const ABGEMELDET = 'Abgemeldet – bitte neu anmelden';
+
 export function einrichten(marke: string): void {
   csrf = marke;
 }
@@ -30,11 +33,16 @@ async function anfrage(methode: string, url: string, body?: unknown): Promise<Er
     antwort = await fetch(url, {
       method: methode,
       credentials: 'same-origin',
+      // Nie der Umleitung auf /login folgen: deren 200-HTML waere sonst ein "leerer Kalender".
+      redirect: 'manual',
       headers: kopf,
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {
     return { ok: false, status: 0, daten: { grund: 'Server nicht erreichbar' } };
+  }
+  if (antwort.type === 'opaqueredirect' || antwort.redirected || (antwort.status >= 300 && antwort.status < 400)) {
+    return { ok: false, status: antwort.status, daten: { grund: ABGEMELDET } };
   }
   let daten: Ergebnis['daten'] | null = null;
   if ((antwort.headers.get('content-type') ?? '').includes('application/json')) {
@@ -45,7 +53,9 @@ async function anfrage(methode: string, url: string, body?: unknown): Promise<Er
       daten = null;
     }
   }
-  if (daten === null) daten = antwort.ok ? {} : { grund: ersatzGrund(antwort.status) };
+  // Erfolg ohne JSON-Objekt kommt von dieser Schnittstelle nie - das ist die Anmeldeseite.
+  if (daten === null && antwort.ok) return { ok: false, status: antwort.status, daten: { grund: ABGEMELDET } };
+  if (daten === null) daten = { grund: ersatzGrund(antwort.status) };
   else if (!antwort.ok && typeof daten.grund !== 'string') daten.grund = ersatzGrund(antwort.status);
   return { ok: antwort.ok, status: antwort.status, daten };
 }

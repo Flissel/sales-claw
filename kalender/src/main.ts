@@ -12,6 +12,7 @@ import timeGridPlugin from '@fullcalendar/timegrid';
 import { braucheBestaetigung, type Ereignis, zuAenderung, zuEvent } from './abbild';
 import { type Oberflaeche, schreiben } from './ablauf';
 import * as api from './api';
+import { grundOptionen, naechsteVolleStunde } from './einstellungen';
 import { anlegenOeffnen, bearbeitenOeffnen, detailsOeffnen, konfliktFragen, type Kontext, zeitText } from './fenster';
 
 interface Start {
@@ -124,19 +125,17 @@ function starten(): void {
     locale: deLocale,
     initialView: anfangsAnsicht(start),
     initialDate: start.datum || undefined,
-    firstDay: 1,
-    height: 'auto',
-    allDaySlot: false,
-    slotMinTime: '07:00',
-    slotMaxTime: '20:00',
-    scrollTime: '08:00',
-    businessHours: { daysOfWeek: [1, 2, 3, 4, 5], startTime: '08:00', endTime: '18:00' },
-    nowIndicator: true,
-    headerToolbar: { left: 'prev,next today', center: 'title', right: 'timeGridDay,timeGridWeek,dayGridMonth,listWeek' },
-    selectable: darf,
-    selectMirror: darf,
-    editable: darf,
-    eventDurationEditable: darf,
+    ...grundOptionen(darf),
+    customButtons: darf ? {
+      neu: {
+        text: 'Neu',
+        hint: 'Neuer Termin',
+        click: () => {
+          const beginn = naechsteVolleStunde(new Date());
+          anlegenOeffnen(beginn, new Date(beginn.getTime() + 60 * 60000), false, ctx);
+        },
+      },
+    } : {},
     events: (info, ok, fehler) => {
       api.laden(info.startStr, info.endStr).then((r) => {
         if (!r.ok) {

@@ -41,7 +41,9 @@ export async function schreiben(
     ui.melden(r.daten.grund ?? 'Speichern fehlgeschlagen');
     // 503 kann heissen: geaendert, nur der Kunde ist nicht benachrichtigt -> Stand neu holen.
     if (r.status === 503) ui.neuLaden();
-    return false;
+    // Traegt die 503 das Ergebnis (ereignis/geloescht), ist die Aenderung gespeichert:
+    // Fenster schliessen, nicht zuruecksetzen - sonst folgt beim zweiten Speichern VERALTET.
+    return r.status === 503 && (r.daten.ereignis !== undefined || r.daten.geloescht === true);
   }
   if (r.daten.entwurf) ui.melden(ENTWURF_ANGELEGT, freigabenUrl);
   if (typeof r.daten.hinweis === 'string' && r.daten.hinweis) ui.melden(r.daten.hinweis);

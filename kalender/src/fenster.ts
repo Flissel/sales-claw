@@ -99,8 +99,6 @@ export interface Kontext {
   ui: Oberflaeche;
 }
 
-let kontaktSucheVorhanden = true;
-
 type Kind = Node | string | null | undefined | false;
 
 function el<K extends keyof HTMLElementTagNameMap>(
@@ -210,6 +208,9 @@ function formular(v: Vorgabe, ctx: Kontext): void {
     el('label', {}, artEigen, ' eigener Termin'), el('label', {}, artKunde, ' Kundentermin'));
 
   // Kontakt (nur Kunde, nur neu)
+  // Je Fenster neu pruefen: ein einzelnes 403/404 (z. B. Sitzung) schaltet die Suche
+  // nur fuer dieses Fenster auf das Lead-ID-Feld um.
+  let kontaktSucheVorhanden = true;
   let leadId = String(p.lead_id ?? '');
   const gewaehlt = el('div', { class: 'vk-gewaehlt' });
   const suche = el('input', { type: 'search', placeholder: 'Name suchen …', autocomplete: 'off' });

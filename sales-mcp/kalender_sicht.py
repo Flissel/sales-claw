@@ -100,7 +100,10 @@ def _sammeln(von: datetime, bis: datetime) -> tuple[list[dict], list[str], bool]
                     "beginn": e["beginn"],
                     "ende": e["beginn"] + timedelta(minutes=e["dauer_minuten"]),
                     "ort": e.get("ort") or "", "notiz": e.get("notiz") or "",
-                    "geaendert_am": e["geaendert_am"], "bearbeitbar": True})
+                    "geaendert_am": e["geaendert_am"], "bearbeitbar": True,
+                    # NULL = noch nicht abgeglichen; "fehlgeschlagen: …" -> Oberflaeche
+                    # zeigt "nicht im Handy-Kalender" auch nach dem Neuladen (Spec §1.1).
+                    "kalender_stand": e.get("kalender_stand")})
 
     bekannt = {r["uid"] for r in roh if r["uid"]}
     zurueck, voraus = _tage(von, bis)
@@ -153,7 +156,8 @@ def ereignisse(von: datetime, bis: datetime) -> dict:
         e = {"id": f"{r['art']}:{r['uid'] or zaehler}", "art": r["art"], "titel": r["titel"],
              "beginn": _lokal(r["beginn"]).isoformat(), "ende": _lokal(r["ende"]).isoformat(),
              "bearbeitbar": r["bearbeitbar"]}
-        for feld in ("uid", "lead_id", "kontakt", "ort", "notiz", "quelle", "geaendert_am"):
+        for feld in ("uid", "lead_id", "kontakt", "ort", "notiz", "quelle", "geaendert_am",
+                     "kalender_stand"):
             if r.get(feld):
                 e[feld] = r[feld]
         aus.append(e)

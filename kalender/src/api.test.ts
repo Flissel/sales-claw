@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { aendern, einrichten, laden, loeschen } from './api';
+import { ABGEMELDET, aendern, einrichten, laden, loeschen } from './api';
 
 function antwort(status: number, koerper: string, typ = 'application/json') {
   return new Response(koerper, { status, headers: { 'content-type': typ } });
@@ -49,5 +49,41 @@ describe('api', () => {
     vi.stubGlobal('fetch', vi.fn(async () => antwort(409, '{"grund":"Konflikt","konflikte":[],"unvollstaendig":true}')));
     const r = await aendern('eigen:x', {});
     expect(r).toEqual({ ok: false, status: 409, daten: { grund: 'Konflikt', konflikte: [], unvollstaendig: true } });
+  });
+
+  it('folgt keiner Umleitung (redirect manual)', async () => {
+    const f = vi.fn(async () => antwort(200, '{"ereignisse":[]}'));
+    vi.stubGlobal('fetch', f);
+    await laden('a', 'b');
+    expect((f.mock.calls[0] as unknown as [string, RequestInit])[1].redirect).toBe('manual');
+  });
+
+  it('abgelaufene Sitzung: umgeleitete HTML-Seite mit 200 ist ein Fehler, kein leerer Kalender', async () => {
+    const r0 = antwort(200, '<html>Anmelden</html>', 'text/html');
+    Object.defineProperty(r0, 'redirected', { value: true });
+    vi.stubGlobal('fetch', vi.fn(async () => r0));
+    const r = await laden('a', 'b');
+    expect(r).toEqual({ ok: false, status: 200, daten: { grund: ABGEMELDET } });
+    expect(ABGEMELDET).toBe('Abgemeldet – bitte neu anmelden');
+  });
+
+  it('abgelaufene Sitzung: 303 bzw. opaqueredirect wird zu Abgemeldet', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 303, headers: { location: '/login' } })));
+    expect((await laden('a', 'b')).daten.grund).toBe(ABGEMELDET);
+    const opak = new Response(null, { status: 200 });
+    Object.defineProperty(opak, 'type', { value: 'opaqueredirect' });
+    Object.defineProperty(opak, 'status', { value: 0 });
+    Object.defineProperty(opak, 'ok', { value: false });
+    vi.stubGlobal('fetch', vi.fn(async () => opak));
+    const r = await laden('a', 'b');
+    expect(r.ok).toBe(false);
+    expect(r.daten.grund).toBe(ABGEMELDET);
+  });
+
+  it('200 ohne JSON ist ein Fehler', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => antwort(200, '<html></html>', 'text/html')));
+    const r = await laden('a', 'b');
+    expect(r.ok).toBe(false);
+    expect(r.daten.grund).toBe(ABGEMELDET);
   });
 });
