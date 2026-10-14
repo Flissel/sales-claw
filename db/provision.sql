@@ -206,6 +206,23 @@ begin
     execute format('alter table %I.kalender_quellen drop constraint if exists kalender_quellen_url_check', s);
     execute format($chk$alter table %I.kalender_quellen add constraint kalender_quellen_url_check
       check (url is null or url <> '')$chk$, s);
+    -- Eigene Termine des Betreibers (14.10.2026, Spec Kalender pflegen §1.1):
+    -- ohne Kontakt, mit CalDAV-Abgleich. Anders als sonst im Haus mit DELETE-Recht
+    -- (siehe Grants unten): ein geloeschter eigener Termin ist wirklich weg.
+    execute format($ddl$
+      create table if not exists %I.eigene_termine (
+        uid text primary key,
+        titel text not null check (titel <> ''),
+        beginn timestamptz not null,
+        dauer_minuten int not null check (dauer_minuten between 5 and 1440),
+        ort text, notiz text,
+        teilnehmer text[] not null default '{}',
+        kalender_stand text,
+        erstellt_am timestamptz not null default now(),
+        geaendert_am timestamptz not null default now()
+      )$ddl$, s);
+    execute format('create index if not exists eigene_termine_beginn_idx '
+                   'on %I.eigene_termine (beginn)', s);
     -- CC fuer E-Mail-Entwuerfe (03.09.2026); add column, weil die Tabelle
     -- auf beiden Schemata laengst existiert.
     execute format('alter table %I.drafts add column if not exists cc text', s);
@@ -464,6 +481,7 @@ grant select, insert, update on sales.benutzer_mails to sales_app;
 grant select, insert on sales.admin_auftraege to sales_app;
 grant select, insert, update on sales.medien_meta to sales_app;
 grant select, insert, update on sales.kalender_quellen to sales_app;
+grant select, insert, update, delete on sales.eigene_termine to sales_app;
 -- Bewusst NICHT vergeben: DELETE (nirgends), UPDATE/TRUNCATE auf activities.
 
 -- Testschema: voll berechtigt inkl. TRUNCATE — die Test-Fixture setzt
