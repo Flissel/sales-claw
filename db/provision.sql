@@ -482,7 +482,8 @@ grant select, insert on sales.admin_auftraege to sales_app;
 grant select, insert, update on sales.medien_meta to sales_app;
 grant select, insert, update on sales.kalender_quellen to sales_app;
 grant select, insert, update, delete on sales.eigene_termine to sales_app;
--- Bewusst NICHT vergeben: DELETE (nirgends), UPDATE/TRUNCATE auf activities.
+-- Bewusst NICHT vergeben: DELETE nur auf eigene_termine (eigene Termine duerfen
+-- wirklich geloescht werden), sonst nirgends; UPDATE/TRUNCATE auf activities.
 
 -- Testschema: voll berechtigt inkl. TRUNCATE — die Test-Fixture setzt
 -- zwischen Tests zurück. Die Testsuite darf NIE gegen `sales` laufen.

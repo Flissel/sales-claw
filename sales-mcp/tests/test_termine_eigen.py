@@ -172,3 +172,45 @@ def test_loeschen(kalender_konfiguriert):
     t = termine_eigen.anlegen("A", _morgen(), 30)["termin"]
     assert termine_eigen.loeschen(t["uid"]).get("geloescht") is True
     assert termine_eigen.im_zeitraum(_morgen(0), _morgen(23)) == []
+
+
+def _vergangener_termin():
+    return server._q(
+        "insert into eigene_termine (uid, titel, beginn, dauer_minuten) "
+        "values ('alt@sales-claw','Alt', now() - interval '2 hours', 60) "
+        "returning geaendert_am")[0]["geaendert_am"].isoformat()
+
+
+def test_aendern_text_eines_vergangenen_termins_geht():
+    stand = _vergangener_termin()
+    r = termine_eigen.aendern("alt@sales-claw", stand, titel="Neu", notiz="n")
+    assert r["termin"]["titel"] == "Neu"
+
+
+def test_aendern_beginn_in_die_vergangenheit_bleibt_abgelehnt():
+    stand = _vergangener_termin()
+    r = termine_eigen.aendern("alt@sales-claw", stand, beginn=datetime.now(B) - timedelta(hours=5))
+    assert "fehler" in r
+
+
+def test_aendern_caldav_fehler_aktualisiert_datensatz(kalender_konfiguriert):
+    t = termine_eigen.anlegen("A", _morgen(9), 30)["termin"]
+    STUB.status = 500
+    r = termine_eigen.aendern(t["uid"], t["geaendert_am"], titel="B")["termin"]
+    assert r["titel"] == "B" and r["kalender_stand"].startswith("fehlgeschlagen")
+    assert termine_eigen.im_zeitraum(_morgen(0), _morgen(23))[0]["titel"] == "B"
+
+
+def test_aendern_ergebnis_geaendert_am_passt_zum_gespeicherten(kalender_konfiguriert):
+    t = termine_eigen.anlegen("A", _morgen(9), 30)["termin"]
+    r = termine_eigen.aendern(t["uid"], t["geaendert_am"], titel="B")["termin"]
+    assert termine_eigen.aendern(t["uid"], r["geaendert_am"], titel="C")["termin"]["titel"] == "C"
+
+
+def test_laengen_und_typen():
+    assert "fehler" in termine_eigen.anlegen("A", _morgen(), 30, ort="x" * 201)
+    assert "fehler" in termine_eigen.anlegen("A", _morgen(), 30, notiz="x" * 2001)
+    assert "fehler" in termine_eigen.anlegen("A", _morgen(), 30, ort=5)
+    assert "fehler" in termine_eigen.anlegen("A", _morgen().replace(tzinfo=None), 30)
+    assert "fehler" in termine_eigen.anlegen("A", "morgen", 30)
+    assert "fehler" in termine_eigen.anlegen(None, _morgen(), 30)
