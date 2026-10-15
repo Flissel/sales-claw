@@ -1789,6 +1789,27 @@ def _entwurf_kopf(z, zustand: str) -> str:
             f"{anhang}{alter} · draft_id: {_e(z['id'])}</div>")
 
 
+def _markier_block(z) -> str:
+    """Markier-Liste eines LinkedIn-Beitrags (Spec 2026-10-15 4.3), nur lesend."""
+    if z.get("channel") != "linkedin" or z.get("recipient") != "eigenes-profil":
+        return ""
+    try:
+        liste = server.post_markierungen(str(z["id"]))
+    except psycopg.Error:
+        return ""
+    if not liste:
+        return ""
+    zeilen = []
+    for e in liste:
+        art = "Firma" if e.get("art") == "firma" else "Person"
+        link = (f' · <a href="{_e(e["profil"])}" rel="noopener noreferrer" '
+                f'target="_blank">Profil</a>') if e.get("profil") else ""
+        zeilen.append(f"<li>@{_e(e.get('name'))} · {art}{link}</li>")
+    return ('<div class="hinweis"><strong>Nach dem Posten markieren</strong> '
+            '(in der LinkedIn-App: Bearbeiten → @Name):<ul>'
+            + "".join(zeilen) + "</ul></div>")
+
+
 ENTWURF_VORSCHAU = 90
 
 
@@ -1818,6 +1839,7 @@ def _entwurf_karte_offen(z) -> str:
         f'</span></summary>'
         f'{_entwurf_kopf(z, "pending")}'
         f'<div class="text">{_text_html(text)}</div>'
+        f'{_markier_block(z)}'
         f'{_entwurf_bearbeiten_form(z, text)}'
         f'<div class="aktionen">'
         f'{_formular("freigeben", z["id"], "Freigeben", "primaer", stand=_text_stand(text))}'
@@ -2502,9 +2524,9 @@ async def inbox(request):
                 f"</div></div>")
         for z in wartend.get(art, []):
             if z["channel"] == "linkedin":
-                stand = ('<div class="hinweis">LinkedIn: von Hand posten, '
-                         'danach im Chat <code>entwurf_manuell_gesendet</code> '
-                         'melden — automatisch geht hier nichts raus.</div>')
+                stand = ('<div class="hinweis">LinkedIn: der Dienst sales-linkedin '
+                         'veröffentlicht den Beitrag; danach kommen Post-Link und '
+                         'Markier-Liste per WhatsApp.</div>' + _markier_block(z))
             else:
                 stand = ('<div class="meta">wartet auf Dispatcher '
                          '(Versand übernimmt der zuständige Dienst '
