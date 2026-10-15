@@ -77,3 +77,25 @@ Braucht eine Migration in allen `sales*`-Schemas (eigene Freigabe wie bei 068).
   Mehrfachauswahl (anhaken → „Ausgewählte freigeben“). Nie automatisch.
 - **E4 Laden ↔ Firma:** fest je Laden (`MARKETING_MANDANT` in der Laden-Konfiguration).
 - **E5 Obergrenze:** 50 Empfänger je Durchgang.
+
+## Stand der Umsetzung (15.10.2026)
+
+Gebaut auf `claude/newsletter-baukasten` (sales-claw) und vibemind-os master (Marketing: Versandroute
+`GET /api/pult/inhalte/{iid}/versand`, Platzhalter, Brief-Abschnitt). Tests: neue Dateien 21 grün; die
+Nachbardateien liefern auf Basis und Branch dieselben 239 roten Tests (Testumgebung, Name für Name
+verglichen), keine neue rote Zeile.
+
+Abweichungen nach drei Runden Commit-Sicherheitsprüfung:
+- **E2 Abmelden:** eine „Abmelden“-Antwort stoppt nur die Newsletter (`opt_in` → `unknown`, protokolliert
+  als `newsletter_abmeldung`). Sie setzt **nicht** automatisch die gemeinsame Verbotsliste: der Absender
+  einer Mail ist fälschbar, und eine Prüfung über `Authentication-Results` ist nur sicher, wenn der eigene
+  Mailserver fremde Köpfe entfernt — das kann der Code nicht zusichern. Verbotsliste weiter über die
+  menschlichen Wege (Löschantrag, Widerruf).
+- **Freigabe:** der Lese-Stand umfasst bei Newslettern Text **und** HTML.
+- **Neu, gilt für alle Mails:** `mail_dispatch` prüft unmittelbar vor dem Versand erneut Verbotsliste und
+  Löschantrag (bei Newslettern zusätzlich `opt_in`).
+- Bekannte Lücke: Schwarz-weiß-Bilder gehen farbig hinaus (kein Pillow im sales-mcp-Image).
+
+Reihenfolge zum Livegang (jeweils User-OK): 1) `db/provision.sql` auf der VM (neue Spalten in allen
+`sales*`-Schemas; `sales_test` hat sie schon), 2) Branch nach `feat/stufe-1-fundament`, 3) `MARKETING_MANDANT`
+je Laden in die VM-`.env`, 4) `deploy/update.sh`. Ohne 1) bricht die Freigaben-Seite (liest `d.newsletter`).
