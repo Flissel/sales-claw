@@ -77,15 +77,34 @@ def test_andere_mails_bleiben_unberuehrt(betreff):
     assert _consent(lead) == "opt_in"
 
 
-@pytest.mark.parametrize("koepfe, erwartet", [
-    (["mx.example.net; dkim=pass header.d=laden.de; spf=pass"], True),
-    (["mx.example.net; dmarc=pass"], True),
-    (["mx.example.net; dkim=fail; spf=softfail", "faelscher; dkim=pass"], False),   # nur der oberste zaehlt
-    ([], False),
+def test_faelschung_verhindert_echtes_abmelden_nicht():
+    adresse = _adresse()
+    lead = _lead(adresse)
+    assert server._newsletter_abmeldungen([_mail(adresse, bestaetigt=False)]) == 1   # gefaelscht zuerst
+    assert not server._sperre(adresse, "")
+    assert server._newsletter_abmeldungen([_mail(adresse, bestaetigt=True)]) == 1    # echt danach
+    assert server._sperre(adresse, "") and _consent(lead) == "unknown"
+
+
+@pytest.mark.parametrize("koepfe, adresse, erwartet", [
+    (["mx.unser.de; dmarc=pass header.from=laden.de; dkim=pass"], "anna@laden.de", True),
+    (["mx.unser.de; dmarc=pass header.from=boese.de"], "anna@laden.de", False),       # andere Domain
+    (["mx.unser.de; dkim=pass header.d=boese.de; spf=pass"], "anna@laden.de", False), # ohne DMARC
+    (["faelscher.de; dmarc=pass header.from=laden.de"], "anna@laden.de", False),      # fremder Server
+    ([], "anna@laden.de", False),
 ])
-def test_absender_bestaetigt(koepfe, erwartet):
+def test_absender_bestaetigt(monkeypatch, koepfe, adresse, erwartet):
     import email.message
+    monkeypatch.setattr(postfach, "AUTHSERV_ID", "mx.unser.de")
     n = email.message.Message()
     for k in koepfe:
         n["Authentication-Results"] = k
-    assert postfach.absender_bestaetigt(n) is erwartet
+    assert postfach.absender_bestaetigt(n, adresse) is erwartet
+
+
+def test_ohne_eingestellte_kennung_nie_bestaetigt(monkeypatch):
+    import email.message
+    monkeypatch.setattr(postfach, "AUTHSERV_ID", "")
+    n = email.message.Message()
+    n["Authentication-Results"] = "mx.unser.de; dmarc=pass header.from=laden.de"
+    assert postfach.absender_bestaetigt(n, "anna@laden.de") is False

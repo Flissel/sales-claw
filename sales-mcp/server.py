@@ -2470,15 +2470,18 @@ def _newsletter_abmeldungen(mails: list) -> int:
         if _q("select 1 from activities where type = 'newsletter_abmeldung' and payload->>'message_id' = %s "
               "limit 1", (kennung,)):
             continue
-        leads = _q("update leads set consent_status = 'unknown', updated_at = now() "
-                   "where lower(btrim(email)) = %s and consent_status = 'opt_in' returning id", (adresse,))
-        if not leads:
-            continue
         bestaetigt = m.get("absender_bestaetigt") is True
-        if bestaetigt:
+        geaendert = _q("update leads set consent_status = 'unknown', updated_at = now() "
+                       "where lower(btrim(email)) = %s and consent_status = 'opt_in' returning id", (adresse,))
+        # Eine bestaetigte Mail sperrt IMMER - auch wenn eine fruehere (womoeglich gefaelschte) Mail die
+        # Einwilligung schon zurueckgesetzt hat (Commit-Review 15.10.2026, zweite Runde).
+        bekannt = _q("select id from leads where lower(btrim(email)) = %s", (adresse,)) if bestaetigt else []
+        if not geaendert and not bekannt:
+            continue
+        if bekannt:
             sperrliste.sperren(_q, email=adresse, quelle="sales:newsletter-abmeldung", grund="Antwort 'Abmelden'")
         nutzlast = _json({"message_id": kennung, "adresse": adresse, "bestaetigt": bestaetigt})
-        for z in leads:
+        for z in {str(r["id"]): r for r in (geaendert or []) + (bekannt or [])}.values():
             _q("insert into activities (lead_id, type, payload, actor) values (%s, 'newsletter_abmeldung', %s, "
                "'cron') returning id", (z["id"], nutzlast))
         neu += 1

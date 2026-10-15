@@ -111,16 +111,34 @@ def _html_zu_text(html: str) -> str:
     return " ".join(ohne.split())
 
 
-_BESTAETIGT = re.compile(r"\b(?:dmarc|dkim|spf)=pass\b", re.IGNORECASE)
+# Kennung (authserv-id) des EIGENEN empfangenden Mailservers, wie sie in dessen Authentication-Results
+# vorne steht. Ohne Einstellung gilt kein Absender als bestaetigt (fail-closed).
+AUTHSERV_ID = os.environ.get("IMAP_AUTHSERV_ID", "").strip().lower()
+_DMARC_PASS = re.compile(r"(?:^|[;\s])dmarc\s*=\s*pass\b(?P<rest>[^;]*)", re.IGNORECASE)
+_HEADER_FROM = re.compile(r"header\.from\s*=\s*([^\s;()]+)", re.IGNORECASE)
 
 
-def absender_bestaetigt(nachricht) -> bool:
-    """Hat der empfangende Mailserver den Absender geprueft (DKIM/SPF/DMARC pass)?
+def absender_bestaetigt(nachricht, adresse: str = "") -> bool:
+    """Hat UNSER Mailserver den Absender per DMARC bestaetigt?
 
-    Nur der OBERSTE Authentication-Results zaehlt: den setzt unser eigener Server zuletzt; tiefere
-    koennen vom Absender selbst stammen und sind faelschbar (Commit-Review 15.10.2026, Abmelden)."""
-    koepfe = nachricht.get_all("Authentication-Results") or []
-    return bool(koepfe) and bool(_BESTAETIGT.search(str(koepfe[0])))
+    Commit-Review 15.10.2026 (zwei Runden): Kopfzeilen kann der Absender selbst mitbringen. Gezaehlt
+    wird deshalb nur ein Authentication-Results mit der Kennung unseres Servers (IMAP_AUTHSERV_ID),
+    und nur dmarc=pass - DKIM/SPF allein belegen keine Bindung an die From-Domain. Ist header.from
+    angegeben, muss es die Domain der Absenderadresse sein."""
+    if not AUTHSERV_ID:
+        return False
+    domain = (adresse or "").rpartition("@")[2].strip().lower()
+    for kopf in nachricht.get_all("Authentication-Results") or []:
+        kopf = str(kopf)
+        erster = kopf.split(";", 1)[0].split()
+        if not erster or erster[0].lower() != AUTHSERV_ID:
+            continue
+        treffer = _DMARC_PASS.search(kopf)
+        if not treffer:
+            return False
+        von = _HEADER_FROM.search(treffer.group("rest"))
+        return not (von and domain and von.group(1).strip().lower() != domain)
+    return False
 
 
 def _text(nachricht) -> str:
@@ -437,7 +455,8 @@ def liste(anzahl: int = 10) -> list:
                 "auszug": (text[:AUSZUG_MAX] + "…"
                            if len(text) > AUSZUG_MAX else text),
                 "kalenderteil": bool(_kalender_teil(nachricht)),
-                "absender_bestaetigt": absender_bestaetigt(nachricht),
+                "absender_bestaetigt": absender_bestaetigt(
+                    nachricht, email.utils.parseaddr(_kopf(nachricht, "From"))[1]),
             })
         return ergebnis
     finally:
