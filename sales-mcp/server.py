@@ -25,6 +25,7 @@ import json
 import os
 import re
 import time
+import unicodedata
 import urllib.request
 from email.utils import parseaddr
 import uuid
@@ -2536,7 +2537,9 @@ _MARKIER_PROFIL_PRAEFIXE = ("https://www.linkedin.com/", "https://linkedin.com/"
 def _hat_steuerzeichen(s: str) -> bool:
     # Zeilenumbrueche & Co. wuerden in der WhatsApp-Meldung an den Betreiber
     # eigene Zeilen erzeugen (Inhalt kommt mittelbar aus web_search).
-    return any(ord(c) < 0x20 or ord(c) == 0x7f for c in s)
+    # Cc = C0/C1 inkl. U+0085, Cf = Bidi-Overrides/Nullbreite,
+    # Zl/Zp = U+2028/U+2029.
+    return any(unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") for c in s)
 
 
 def _markier_eintrag_fehler(e) -> str | None:
@@ -2553,6 +2556,8 @@ def _markier_eintrag_fehler(e) -> str | None:
         return "profil fehlt (leer lassen, wenn es keinen Link gibt)."
     if _hat_steuerzeichen(profil):
         return "profil darf keine Zeilenumbrueche oder Steuerzeichen enthalten."
+    if any(c.isspace() for c in profil):
+        return "profil darf keine Leerzeichen enthalten (nur ein einzelner Link)."
     if len(profil) > MARKIER_PROFIL_MAX:
         return f"profil ist laenger als {MARKIER_PROFIL_MAX} Zeichen."
     if profil and not profil.startswith(_MARKIER_PROFIL_PRAEFIXE):

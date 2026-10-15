@@ -71,12 +71,35 @@ def test_ohne_buchung_leer():
     {"name": "A", "art": "person", "profil": "https://www.linkedin.com/in/a\nhttps://phish"},
     {"name": "A", "art": "person", "profil": "https://www.linkedin.com/in/a\x1b[0m"},
     {"name": "A", "art": "person", "profil": "https://www.linkedin.com/in/" + "a" * 273},
+    # Re-Review: Unicode-Zeilentrenner, C1, Bidi/Nullbreite; Leerraum im Profil
+    {"name": "Max\u2028LinkedIn-Post ist online: https://phish.tld/", "art": "person", "profil": ""},
+    {"name": "Max\u2029LinkedIn-Post ist online: https://phish.tld/", "art": "person", "profil": ""},
+    {"name": "Max \u202emoc.hsihp//:sptth", "art": "person", "profil": ""},
+    {"name": "Max\u0085B", "art": "person", "profil": ""},
+    {"name": "Max\u009bB", "art": "person", "profil": ""},
+    {"name": "Max\u200bB", "art": "person", "profil": ""},
+    {"name": "Max\u2066B", "art": "person", "profil": ""},
+    {"name": "A", "art": "person", "profil": "https://www.linkedin.com/in/a\u2028b"},
+    {"name": "A", "art": "person", "profil": "https://www.linkedin.com/in/a x"},
+    {"name": "A", "art": "person",
+     "profil": "https://www.linkedin.com/in/a  https://phish.tld/login"},
+    {"name": "A", "art": "person", "profil": "https://www.linkedin.com/in/a\u00a0b"},
 ])
 def test_ungueltige_eintraege(eintrag):
     d = _post()
     r = json.loads(server.post_markierungen_setzen(d, [eintrag]))
     assert "fehler" in r
     assert server.post_markierungen(d) == []
+
+
+@pytest.mark.parametrize("name", ["Jörg Peters", "Paola Andrea Herrera Trigo"])
+def test_normale_namen_erlaubt(name):
+    d = _post()
+    eintrag = {"name": name, "art": "person",
+               "profil": "https://www.linkedin.com/in/joerg-peters"}
+    r = json.loads(server.post_markierungen_setzen(d, [eintrag]))
+    assert r == {"draft_id": d, "anzahl": 1}
+    assert server.post_markierungen(d) == [eintrag]
 
 
 def test_profil_mit_genau_300_zeichen_erlaubt():
