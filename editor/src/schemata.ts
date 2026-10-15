@@ -150,10 +150,17 @@ export const GestaltungSchema = z.object({
 
 const bildProps = ImagePropsSchema.shape.props.unwrap().unwrap();
 export const ImageSchema = z.object({
-  style: ImagePropsSchema.shape.style,
+  // Rundung wie die DB-Grenze (borderRadius 0-32); form "kreis" setzt der Renderer als 50 %.
+  style: ImagePropsSchema.shape.style
+    .unwrap()
+    .unwrap()
+    .extend({ borderRadius: z.number().min(0).max(32).nullable().optional() })
+    .optional()
+    .nullable(),
   props: bildProps
     .extend({ sw: z.boolean().nullable().optional(), grafik: z.boolean().nullable().optional(),
       gestaltung: GestaltungSchema.nullable().optional(),
+      form: z.enum(['kreis']).nullable().optional(),
     })
     .optional()
     .nullable(),

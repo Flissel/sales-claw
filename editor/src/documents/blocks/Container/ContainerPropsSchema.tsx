@@ -25,6 +25,8 @@ const ContainerPropsSchema = z.object({
       grafik: z.boolean().nullable().optional(),
       // Bildhinweis fuer den Bild-Arbeiter (Hintergrund-Slot der Vorlage).
       alt: z.string().nullable().optional(),
+      // Band ueber die ganze Breite statt Karte (Renderer: mj-section full-width).
+      randlos: z.boolean().nullable().optional(),
     })
     .optional()
     .nullable(),

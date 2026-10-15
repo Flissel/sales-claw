@@ -500,6 +500,25 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
       </Stack>
 
       <RadioGroupInput
+        label="Form"
+        defaultValue={data.props?.form === 'kreis' ? 'kreis' : (data.style?.borderRadius ?? 0) > 0 ? 'rund' : 'eckig'}
+        onChange={(f) =>
+          updateData({
+            ...data,
+            style: { ...data.style, borderRadius: f === 'rund' ? 16 : null },
+            props: { ...data.props, form: f === 'kreis' ? 'kreis' : null },
+          })
+        }
+      >
+        <ToggleButton value="eckig">Eckig</ToggleButton>
+        <ToggleButton value="rund">Abgerundet</ToggleButton>
+        <ToggleButton value="kreis">Kreis</ToggleButton>
+      </RadioGroupInput>
+      <Typography variant="caption" color="text.secondary">
+        Kreis passt zu quadratischen Bildern, z. B. einem Porträt neben dem Gruß
+      </Typography>
+
+      <RadioGroupInput
         label="Ausrichtung"
         defaultValue={data.props?.contentAlignment ?? 'middle'}
         onChange={(contentAlignment) => updateData({ ...data, props: { ...data.props, contentAlignment } })}

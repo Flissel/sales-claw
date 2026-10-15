@@ -82,12 +82,20 @@ export function VorlagenButton({ style, props }: ButtonDaten) {
   );
 }
 
-// Schwarz-Weiss nur fuer das Bild selbst (nicht die Hintergrundfarbe des Blocks), s. editor.css.
+// Schwarz-Weiss und Rundung nur fuer das Bild selbst (nicht die Hintergrundfarbe des Blocks), s. editor.css.
+// Rundung wie im Renderer: form "kreis" = 50 %, sonst style.borderRadius in px.
 export function VorlagenImage({ style, props }: ImageDaten) {
   const sw = props?.sw === true;
+  const radius = style?.borderRadius ?? 0;
+  const rund = props?.form === 'kreis' ? '50%' : radius > 0 ? `${radius}px` : null;
+  const klassen = [sw ? 'vorlage-sw' : '', rund ? 'vorlage-rund' : ''].filter(Boolean).join(' ');
+  const { borderRadius: _r, ...grundStil } = style ?? {};
   return (
-    <div className={sw ? 'vorlage-sw' : undefined}>
-      <Image style={style} props={props} />
+    <div
+      className={klassen || undefined}
+      style={rund ? ({ '--rund': rund } as React.CSSProperties) : undefined}
+    >
+      <Image style={style ? grundStil : style} props={props} />
     </div>
   );
 }

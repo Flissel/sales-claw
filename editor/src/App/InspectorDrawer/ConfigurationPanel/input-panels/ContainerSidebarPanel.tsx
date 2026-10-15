@@ -9,6 +9,7 @@ import { ANZEIGE, leereBildwahl, medienName } from '../../../../pult';
 import { medienLaden, pultStore } from '../../../../pultZustand';
 
 import BaseSidebarPanel from './helpers/BaseSidebarPanel';
+import BooleanInput from './helpers/inputs/BooleanInput';
 import { NullableColorInput } from './helpers/inputs/ColorInput';
 import RawSliderInput from './helpers/inputs/raw/RawSliderInput';
 import MultiStylePropertyPanel from './helpers/style-inputs/MultiStylePropertyPanel';
@@ -57,6 +58,14 @@ export default function ContainerSidebarPanel({ data, setData }: ContainerSideba
 
   return (
     <BaseSidebarPanel title="Rahmen">
+      <BooleanInput
+        label="Band über die ganze Breite"
+        defaultValue={data.props?.randlos === true}
+        onChange={(randlos) => updateData({ ...data, props: { ...data.props, randlos: randlos ? true : null } })}
+      />
+      <Typography variant="caption" color="text.secondary">
+        Farbfläche bis an den Rand, ohne Karte und ohne Rundung – gut für eine große Aussage.
+      </Typography>
       <Stack spacing={1}>
         <Typography variant="subtitle2">Hintergrundbild aus Medien</Typography>
         {kacheln.length > 0 && (

@@ -70,6 +70,21 @@ function Skizze({ schluessel }: { schluessel: AbschnittSchluessel }) {
     case 'fussgruss':
       inhalt = <><rect x={8} y={14} width={184} height={1.5} fill={rand} />{L(8, 26, 90, 4)}{L(8, 36, 60, 4)}<rect x={8} y={54} width={70} height={3} rx={1.5} fill={bildFarbe} /></>;
       break;
+    case 'brief':
+      inhalt = <>{L(8, 12, 60, 5)}{L(8, 26, 180)}{L(8, 33, 170)}{L(8, 40, 176)}{L(8, 47, 120)}{L(8, 60, 40)}{L(8, 68, 56, 4)}</>;
+      break;
+    case 'portraet_gruss':
+      inhalt = <><rect x={0} y={4} width={200} height={72} rx={4} fill={rand} /><circle cx={42} cy={40} r={26} fill={bildFarbe} opacity={0.45} />{L(82, 28, 104)}{L(82, 35, 90)}{L(82, 50, 50, 4)}</>;
+      break;
+    case 'kundenstimme':
+      inhalt = <><rect x={8} y={4} width={184} height={72} rx={10} fill={rand} /><circle cx={100} cy={22} r={12} fill={bildFarbe} opacity={0.45} />{L(40, 42, 120, 4)}{L(56, 51, 88, 4)}{L(78, 64, 44)}</>;
+      break;
+    case 'farbband':
+      inhalt = <><rect x={0} y={10} width={200} height={60} fill={bildFarbe} opacity={0.45} /><rect x={20} y={26} width={130} height={8} rx={2} fill={rand} /><rect x={20} y={42} width={90} height={4} rx={2} fill={rand} /></>;
+      break;
+    case 'einladung':
+      inhalt = <><rect x={8} y={4} width={184} height={72} rx={6} fill={rand} />{L(80, 12, 40, 3)}{L(52, 22, 96, 6)}{L(62, 36, 76)}{L(70, 43, 60)}<rect x={70} y={54} width={60} height={14} rx={7} fill={bildFarbe} /></>;
+      break;
   }
   return (
     <svg width="100%" viewBox="0 0 200 80" role="img" aria-hidden="true" style={{ display: 'block' }}>
