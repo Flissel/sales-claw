@@ -1683,7 +1683,10 @@ def termin_bestaetigen(lead_id: str, datum: str, uhrzeit: str,
        (lead_id, _json({"datum": tag.isoformat(), "uhrzeit": f"{zeit:%H:%M}",
                         "dauer_minuten": dauer, "thema": thema_kurz,
                         "ort": ort_kurz, "pfad": pfad, "uid": uid,
-                        "kalender": kalender_stand})))
+                        "kalender": kalender_stand,
+                        # Griff zur Terminerinnerung: beim Absagen wird genau
+                        # diese Wiedervorlage geschlossen.
+                        "wiedervorlage_id": wv_id})))
 
     if anhang_bereit:
         hinweis = (f"Die Kalenderdatei ist versandbereit: haenge sie mit "
@@ -7061,6 +7064,85 @@ def _termin_abgesagt(lead_id: str, uid: str) -> bool:
                    "limit 1", (lead_id, uid)))
 
 
+def _offene_wiedervorlagen(lead_id: str) -> list:
+    """Offene Wiedervorlagen eines Leads: keine wiedervorlage_erledigt-
+    Gegenbuchung, die auf sie verweist."""
+    return _q(
+        "select w.id::text as id, w.payload from activities w "
+        " where w.lead_id = %s and w.type = 'wiedervorlage' "
+        "   and not exists (select 1 from activities e "
+        "                    where e.lead_id = w.lead_id "
+        "                      and e.type = 'wiedervorlage_erledigt' "
+        "                      and e.payload->>'wiedervorlage_id' = w.id::text)",
+        (lead_id,))
+
+
+def _offene_erinnerungen_zum_termin(lead_id: str, termin: dict) -> list:
+    """Die offenen Terminerinnerungs-Wiedervorlagen EINES Termins.
+
+    Gespeicherte wiedervorlage_id gewinnt; aeltere Termine ohne sie werden
+    ueber den Text 'Terminerinnerung: ... am DATUM um ZEIT' zugeordnet — und
+    nur dann, wenn kein anderer, nicht abgesagter Termin desselben Leads
+    denselben Zeitpunkt traegt (sonst waere die Zuordnung mehrdeutig).
+    Andere Wiedervorlagen des Leads bleiben unberuehrt."""
+    offen = _offene_wiedervorlagen(lead_id)
+    payload = termin.get("payload") or {}
+    wv_id = payload.get("wiedervorlage_id")
+    if wv_id:
+        return [w for w in offen if w["id"] == str(wv_id)]
+    datum, uhrzeit = payload.get("datum"), payload.get("uhrzeit")
+    if not datum or not uhrzeit:
+        return []
+    ende = f"am {datum} um {uhrzeit}"
+    for anderer in _q(
+            "select id::text as id, payload from activities "
+            " where lead_id = %s and type = 'termin' and id::text <> %s",
+            (lead_id, termin["id"])):
+        ap = anderer["payload"] or {}
+        if (ap.get("datum") == datum and ap.get("uhrzeit") == uhrzeit
+                and not _termin_abgesagt(lead_id, str(ap.get("uid")))):
+            return []
+    return [w for w in offen
+            if str((w["payload"] or {}).get("notiz") or "").startswith(
+                "Terminerinnerung:")
+            and str((w["payload"] or {}).get("notiz") or "").endswith(ende)]
+
+
+def _terminerinnerung_schliessen(lead_id: str, termin: dict) -> list:
+    """Schliesst die Terminerinnerung(en) eines Termins (append-only) und
+    liefert die geschlossenen ids. Nie doppelt: es werden nur OFFENE
+    geschlossen."""
+    geschlossen = []
+    for w in _offene_erinnerungen_zum_termin(lead_id, termin):
+        _q("insert into activities (lead_id, type, payload) values (%s, "
+           "'wiedervorlage_erledigt', %s) returning id",
+           (lead_id, _json({"wiedervorlage_id": w["id"]})))
+        geschlossen.append(w["id"])
+    return geschlossen
+
+
+def _abgesagte_terminerinnerungen() -> list:
+    """Offene Terminerinnerungen, deren Termin abgesagt wurde (Altlast aus
+    der Zeit vor dem Schliessen beim Absagen). Reine Auskunft fuer den
+    Betreiber zum Aufraeumen — bewusst KEIN Agenten-Werkzeug (nicht in
+    WERKZEUGE) und ohne Schreibzugriff."""
+    ergebnis = []
+    for t in _q(
+            "select t.id::text as id, t.lead_id::text as lead_id, t.payload "
+            "  from activities t where t.type = 'termin' and exists ("
+            "   select 1 from activities a where a.lead_id = t.lead_id "
+            "      and a.type = 'termin_abgesagt' "
+            "      and a.payload->>'uid' = t.payload->>'uid') "
+            " order by t.id"):
+        for w in _offene_erinnerungen_zum_termin(t["lead_id"], t):
+            ergebnis.append({
+                "wiedervorlage_id": w["id"], "lead_id": t["lead_id"],
+                "termin_uid": (t["payload"] or {}).get("uid"),
+                "faellig_am": (w["payload"] or {}).get("faellig_am"),
+                "notiz": (w["payload"] or {}).get("notiz")})
+    return ergebnis
+
+
 @_gesichert
 def termin_absagen(lead_id: str, uid: str, grund: str) -> str:
     """Einen bestaetigten Termin absagen.
@@ -7095,10 +7177,19 @@ def termin_absagen(lead_id: str, uid: str, grund: str) -> str:
                         "uhrzeit": last.get("uhrzeit"),
                         "thema": last.get("thema"),
                         "kalender": kalenderfehler or zustand})))
+    # Die Terminerinnerung ist mit dem Termin gegenstandslos. Scheitert das
+    # Schliessen, bleibt die Absage trotzdem gebucht.
+    erinnerung = []
+    try:
+        erinnerung = _terminerinnerung_schliessen(lead_id, zeile)
+    except Exception as ex:  # noqa: BLE001 — Absage darf nie daran scheitern
+        _LOG.warning("Terminerinnerung zu %s nicht geschlossen: %s: %s",
+                     uid, type(ex).__name__, ex)
     return _json(_ohne_none({
         "abgesagt": {"uid": uid, "datum": last.get("datum"),
                      "uhrzeit": last.get("uhrzeit"),
                      "thema": last.get("thema")},
+        "erinnerung_erledigt": erinnerung[0] if erinnerung else None,
         "kalender": kalenderfehler or zustand,
         "hinweis": ("Abgesagt und im Protokoll vermerkt. Der Kontakt weiss "
                     "davon NICHTS — wenn er es erfahren soll, braucht es "
