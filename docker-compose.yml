@@ -467,9 +467,6 @@ services:
       - SYSTEM_SMTP_USER=${SYSTEM_SMTP_USER:-}
       - SYSTEM_SMTP_PASSWORT=${SYSTEM_SMTP_PASSWORT:-}
       - SYSTEM_ABSENDER=${SYSTEM_ABSENDER:-}
-      # Abmelden per Antwort: Kennung des eigenen Mailservers in Authentication-Results; leer = keine
-      # Abmeldung kommt auf die gemeinsame Verbotsliste (Newsletter stoppen trotzdem).
-      - IMAP_AUTHSERV_ID=${IMAP_AUTHSERV_ID:-}
       # Wohin der Link in der Passwort-Mail zeigt (17.09.2026). KEIN
       # Geheimnis — eine Adresse, kein Schluessel; T5a bleibt gewahrt.
       # Dieser Dienst braucht sie, seit die Konto-Mails hier entstehen

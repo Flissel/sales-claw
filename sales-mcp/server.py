@@ -2450,15 +2450,15 @@ _ABMELDE_BETREFF = re.compile(r"^\s*(?:(?:re|aw|wg|fwd?)\s*:\s*)*abmelden\s*[.!]
 
 
 def _newsletter_abmeldungen(mails: list) -> int:
-    """Abmelden per Antwort (E2): Mails mit Betreff "Abmelden" (auch "AW: Abmelden").
+    """Abmelden per Antwort (E2): Mails mit Betreff "Abmelden" (auch "AW: Abmelden") stoppen die
+    Newsletter - Kontakte mit dieser Adresse und consent_status 'opt_in' fallen auf 'unknown',
+    protokolliert als 'newsletter_abmeldung'. Je Mail genau einmal (Message-ID).
 
-    Der Absender einer Mail ist faelschbar (Commit-Review 15.10.2026). Deshalb in zwei Stufen:
-    * JEDE solche Mail stoppt die Newsletter: Kontakte mit dieser Adresse und consent_status
-      'opt_in' fallen auf 'unknown'. Mehr kann eine Faelschung nicht anrichten.
-    * Auf die gemeinsame Verbotsliste (sperrt ALLE Mails, auch Marketing) kommt die Adresse nur,
-      wenn der Mailserver den Absender bestaetigt hat (`absender_bestaetigt`, postfach.py).
-    Unbekannte Absender und andere Einwilligungen bleiben unberuehrt. Je Mail genau einmal
-    (Message-ID). Rueckgabe: Zahl der Mails, die etwas bewirkt haben."""
+    Bewusst NICHT automatisch auf die gemeinsame Verbotsliste (Commit-Review 15.10.2026, drei
+    Runden): der Absender einer Mail ist faelschbar, und eine Pruefung ueber Authentication-Results
+    haengt davon ab, ob der eigene Mailserver fremde Koepfe entfernt - das kann dieser Code nicht
+    zusichern. So kann eine Faelschung hoechstens Newsletter an einen Kontakt verhindern (die sichere
+    Richtung); die Verbotsliste setzen weiter die menschlichen Wege (Loeschantrag, Widerruf)."""
     neu = 0
     for m in mails or []:
         if not _ABMELDE_BETREFF.match(str(m.get("betreff") or "")):
@@ -2470,18 +2470,12 @@ def _newsletter_abmeldungen(mails: list) -> int:
         if _q("select 1 from activities where type = 'newsletter_abmeldung' and payload->>'message_id' = %s "
               "limit 1", (kennung,)):
             continue
-        bestaetigt = m.get("absender_bestaetigt") is True
         geaendert = _q("update leads set consent_status = 'unknown', updated_at = now() "
                        "where lower(btrim(email)) = %s and consent_status = 'opt_in' returning id", (adresse,))
-        # Eine bestaetigte Mail sperrt IMMER - auch wenn eine fruehere (womoeglich gefaelschte) Mail die
-        # Einwilligung schon zurueckgesetzt hat (Commit-Review 15.10.2026, zweite Runde).
-        bekannt = _q("select id from leads where lower(btrim(email)) = %s", (adresse,)) if bestaetigt else []
-        if not geaendert and not bekannt:
+        if not geaendert:
             continue
-        if bekannt:
-            sperrliste.sperren(_q, email=adresse, quelle="sales:newsletter-abmeldung", grund="Antwort 'Abmelden'")
-        nutzlast = _json({"message_id": kennung, "adresse": adresse, "bestaetigt": bestaetigt})
-        for z in {str(r["id"]): r for r in (geaendert or []) + (bekannt or [])}.values():
+        nutzlast = _json({"message_id": kennung, "adresse": adresse})
+        for z in geaendert:
             _q("insert into activities (lead_id, type, payload, actor) values (%s, 'newsletter_abmeldung', %s, "
                "'cron') returning id", (z["id"], nutzlast))
         neu += 1
