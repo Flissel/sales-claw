@@ -707,13 +707,26 @@ def test_inbox_zeigt_pending_failed_approved_und_gesendete():
     assert 'http-equiv="refresh"' not in seite
 
 
-def test_inbox_linkedin_sonderfall_nennt_den_dienst():
+def test_inbox_linkedin_beitrag_nennt_den_dienst():
     lead = _lead()
-    _entwurf(lead, status="approved", kanal="linkedin",
+    _entwurf(lead, status="approved", kanal="linkedin", empfaenger="eigenes-profil",
              approved_by="betreiber", text="LinkedIn-Post-Text")
     seite = _get("/freigaben").text
     assert "sales-linkedin" in seite
     assert "Markier-Liste" in seite
+
+
+def test_inbox_linkedin_direktnachricht_nennt_den_handversand():
+    # Final-Review I2: der Dienst sales-linkedin holt nur Beitraege
+    # (eigenes-profil); eine LinkedIn-Direktnachricht geht von Hand raus.
+    lead = _lead()
+    _entwurf(lead, status="approved", kanal="linkedin",
+             approved_by="betreiber", text="LinkedIn-DM-Text")
+    seite = _get("/freigaben").text
+    assert "von Hand" in seite
+    assert "entwurf_manuell_gesendet" in seite
+    assert "sales-linkedin" not in seite
+    assert "Markier-Liste" not in seite
 
 
 # ---------------------------------------------------------------------------

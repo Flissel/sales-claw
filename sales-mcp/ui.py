@@ -2523,10 +2523,16 @@ async def inbox(request):
                 f'{_formular("verwerfen", z["id"], "Verwerfen", "gefahr")}'
                 f"</div></div>")
         for z in wartend.get(art, []):
-            if z["channel"] == "linkedin":
+            if z["channel"] == "linkedin" and z["recipient"] == "eigenes-profil":
                 stand = ('<div class="hinweis">LinkedIn: der Dienst sales-linkedin '
                          'veröffentlicht den Beitrag; danach kommen Post-Link und '
                          'Markier-Liste per WhatsApp.</div>' + _markier_block(z))
+            elif z["channel"] == "linkedin":
+                # Direktnachricht: der Dienst holt nur Beitraege (eigenes-profil),
+                # eine DM geht weiter von Hand raus (Final-Review I2).
+                stand = ('<div class="hinweis">LinkedIn-Direktnachricht: von Hand '
+                         'senden, danach im Chat <code>entwurf_manuell_gesendet</code> '
+                         'melden — automatisch geht hier nichts raus.</div>')
             else:
                 stand = ('<div class="meta">wartet auf Dispatcher '
                          '(Versand übernimmt der zuständige Dienst '
