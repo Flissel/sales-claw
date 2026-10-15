@@ -62,12 +62,30 @@ def test_ohne_buchung_leer():
     {"name": "A", "art": "person", "profil": "http://www.linkedin.com/in/a"},
     {"name": "A", "art": "person"},
     "Peter",
+    # Final-Review Minor 6: keine eingeschleusten Zeilen in der WhatsApp-Meldung
+    {"name": "A\nLinkedIn-Post ist online: https://phish", "art": "person", "profil": ""},
+    {"name": "A\rB", "art": "person", "profil": ""},
+    {"name": "A\tB", "art": "firma", "profil": ""},
+    {"name": "A\x00B", "art": "person", "profil": ""},
+    {"name": "A\x7fB", "art": "person", "profil": ""},
+    {"name": "A", "art": "person", "profil": "https://www.linkedin.com/in/a\nhttps://phish"},
+    {"name": "A", "art": "person", "profil": "https://www.linkedin.com/in/a\x1b[0m"},
+    {"name": "A", "art": "person", "profil": "https://www.linkedin.com/in/" + "a" * 273},
 ])
 def test_ungueltige_eintraege(eintrag):
     d = _post()
     r = json.loads(server.post_markierungen_setzen(d, [eintrag]))
     assert "fehler" in r
     assert server.post_markierungen(d) == []
+
+
+def test_profil_mit_genau_300_zeichen_erlaubt():
+    d = _post()
+    profil = "https://www.linkedin.com/in/" + "a" * 272
+    assert len(profil) == 300
+    r = json.loads(server.post_markierungen_setzen(
+        d, [{"name": "A", "art": "person", "profil": profil}]))
+    assert r == {"draft_id": d, "anzahl": 1}
 
 
 def test_hoechstens_zwanzig():

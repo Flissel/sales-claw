@@ -2529,7 +2529,14 @@ def post_entwurf_erstellen(thema: str, text: str, medien_datei: str = "",
 # ihm, wen. Als Aktivitaet gebucht, juengste gilt; kein Schema-Eingriff.
 MARKIER_MAX = 20
 MARKIER_NAME_MAX = 120
+MARKIER_PROFIL_MAX = 300
 _MARKIER_PROFIL_PRAEFIXE = ("https://www.linkedin.com/", "https://linkedin.com/")
+
+
+def _hat_steuerzeichen(s: str) -> bool:
+    # Zeilenumbrueche & Co. wuerden in der WhatsApp-Meldung an den Betreiber
+    # eigene Zeilen erzeugen (Inhalt kommt mittelbar aus web_search).
+    return any(ord(c) < 0x20 or ord(c) == 0x7f for c in s)
 
 
 def _markier_eintrag_fehler(e) -> str | None:
@@ -2538,10 +2545,16 @@ def _markier_eintrag_fehler(e) -> str | None:
     name, art, profil = e.get("name"), e.get("art"), e.get("profil")
     if not isinstance(name, str) or not 1 <= len(name.strip()) <= MARKIER_NAME_MAX:
         return f"name fehlt oder ist laenger als {MARKIER_NAME_MAX} Zeichen."
+    if _hat_steuerzeichen(name):
+        return "name darf keine Zeilenumbrueche oder Steuerzeichen enthalten."
     if art not in ("person", "firma"):
         return "art muss 'person' oder 'firma' sein."
     if not isinstance(profil, str):
         return "profil fehlt (leer lassen, wenn es keinen Link gibt)."
+    if _hat_steuerzeichen(profil):
+        return "profil darf keine Zeilenumbrueche oder Steuerzeichen enthalten."
+    if len(profil) > MARKIER_PROFIL_MAX:
+        return f"profil ist laenger als {MARKIER_PROFIL_MAX} Zeichen."
     if profil and not profil.startswith(_MARKIER_PROFIL_PRAEFIXE):
         return "profil muss leer sein oder mit https://www.linkedin.com/ beginnen."
     return None
