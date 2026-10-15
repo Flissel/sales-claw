@@ -39,6 +39,15 @@ export default function ContainerEditor({ style, props }: ContainerProps) {
 
   const { overlay, ...grundStil } = style ?? {};
   const bild = props?.url;
+  if (props?.randlos === true && (!bild || !bild.startsWith(ANZEIGE))) {
+    // Band wie im Renderer (mj-section full-width): ohne Rundung, Farbe bis an den Rand der Flaeche.
+    const farbe = grundStil.backgroundColor ?? 'transparent';
+    return (
+      <div style={{ backgroundColor: farbe, boxShadow: `0 0 0 100vmax ${farbe}`, clipPath: 'inset(0 -100vmax)' }}>
+        <BaseContainer style={{ ...grundStil, borderRadius: null, borderColor: null }}>{kinder}</BaseContainer>
+      </div>
+    );
+  }
   if (!bild || !bild.startsWith(ANZEIGE)) {
     return <BaseContainer style={style ? grundStil : style}>{kinder}</BaseContainer>;
   }

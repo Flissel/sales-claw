@@ -9,7 +9,15 @@ export function hoehe(f: Format): number {
   return Math.round((BREITE * b) / a);
 }
 
-export type BildEbene = { id: string; art: 'bild'; quelle: string; x: number; y: number; breite: number; drehung: number };
+type Wahl = { deckkraft?: number | null };
+export type BildEbene = {
+  id: string; art: 'bild'; quelle: string; x: number; y: number; breite: number; drehung: number;
+  rahmen?: number | null; rundung?: number | null; kreis?: boolean | null; schatten?: boolean | null;
+} & Wahl;
+export type FormEbene = {
+  id: string; art: 'form'; form: 'rechteck' | 'kreis'; x: number; y: number; breite: number; hoehe: number;
+  farbe: string; rundung?: number | null; drehung: number;
+} & Wahl;
 export type TextEbene = {
   id: string;
   art: 'text';
@@ -24,8 +32,9 @@ export type TextEbene = {
   x: number;
   y: number;
   drehung: number;
-};
-export type Ebene = BildEbene | TextEbene;
+  hintergrund?: string | null;
+} & Wahl;
+export type Ebene = BildEbene | TextEbene | FormEbene;
 export type Gestaltung = { version: 1; format: Format; hintergrund: string; ebenen: Ebene[] };
 
 export function neueGestaltung(hintergrund: string): Gestaltung {
@@ -51,9 +60,9 @@ const klemme = (v: number, lo: number, hi: number): number => Math.min(hi, Math.
 
 export function skalieren(e: Ebene, deltaY: number): Ebene {
   const faktor = Math.pow(1.1, -deltaY / 100);
-  return e.art === 'bild'
-    ? { ...e, breite: klemme(e.breite * faktor, 8, 3000) }
-    : { ...e, groesse: klemme(e.groesse * faktor, 10, 160) };
+  if (e.art === 'bild') return { ...e, breite: klemme(e.breite * faktor, 8, 3000) };
+  if (e.art === 'form') return { ...e, breite: klemme(e.breite * faktor, 8, 3000), hoehe: klemme(e.hoehe * faktor, 8, 3000) };
+  return { ...e, groesse: klemme(e.groesse * faktor, 10, 160) };
 }
 
 export function drehen(e: Ebene, deltaY: number): Ebene {

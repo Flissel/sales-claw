@@ -19,3 +19,8 @@ body {
 .vorlage-sw img {
   filter: grayscale(1);
 }
+
+/* Bildblock mit Rundung (style.borderRadius) oder als Kreis (props.form = "kreis"). */
+.vorlage-rund img {
+  border-radius: var(--rund);
+}

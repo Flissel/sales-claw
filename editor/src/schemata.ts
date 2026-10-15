@@ -24,8 +24,14 @@ export const SCHRIFT_IDS = [
   'josefin',
   'oxanium',
   'rajdhani',
+  'caveat',
 ] as const;
 export type SchriftId = (typeof SCHRIFT_IDS)[number];
+// Schriftpaar einer Vorlage: ohne die Handschrift (DB-Liste c_vorlagenschriften, Migration 058).
+export const VORLAGEN_SCHRIFT_IDS = [
+  'cormorant', 'dm-sans', 'playfair', 'poppins', 'young-serif', 'manrope', 'bodoni', 'montserrat', 'josefin',
+  'oxanium', 'rajdhani',
+] as const;
 
 export const SCHRIFT_FAMILIE: Record<string, string> = {
   cormorant: "'Cormorant Garamond', Georgia, 'Times New Roman', serif",
@@ -39,6 +45,7 @@ export const SCHRIFT_FAMILIE: Record<string, string> = {
   josefin: "'Josefin Sans', 'Trebuchet MS', Arial, sans-serif",
   oxanium: "Oxanium, 'Trebuchet MS', Arial, sans-serif",
   rajdhani: "Rajdhani, 'Arial Narrow', Arial, sans-serif",
+  caveat: "Caveat, 'Segoe Print', 'Bradley Hand', cursive",
 };
 
 const ALT = [
@@ -98,11 +105,15 @@ export const SCHNITTE: Record<SchriftId, Array<[number, boolean]>> = {
   josefin: [[300, false], [700, false]],
   oxanium: [[600, false], [700, false]],
   rajdhani: [[500, false], [600, false]],
+  caveat: [[400, false], [700, false]],
 };
 
 const FARBE = /^#[0-9a-fA-F]{6}$/;
 const EBENE_ID = /^[A-Za-z0-9_-]{1,32}$/;
 const QUELLE = /^medien:[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.(png|jpe?g|gif|webp)$/;
+
+// Optionale Felder (Paket 3) wie claw/gestaltung.py: fehlen sie, sieht die Ebene aus wie bisher.
+const deckkraft = z.number().min(0).max(100).nullable().optional();
 
 const BildEbeneSchema = z.object({
   id: z.string().regex(EBENE_ID),
@@ -112,6 +123,25 @@ const BildEbeneSchema = z.object({
   y: z.number().min(-750).max(1500),
   breite: z.number().min(8).max(3000),
   drehung: z.number().min(-180).max(180),
+  rahmen: z.number().min(0).max(80).nullable().optional(),
+  rundung: z.number().min(0).max(300).nullable().optional(),
+  kreis: z.boolean().nullable().optional(),
+  schatten: z.boolean().nullable().optional(),
+  deckkraft,
+});
+
+const FormEbeneSchema = z.object({
+  id: z.string().regex(EBENE_ID),
+  art: z.literal('form'),
+  form: z.enum(['rechteck', 'kreis']),
+  x: z.number().min(-600).max(1200),
+  y: z.number().min(-750).max(1500),
+  breite: z.number().min(8).max(3000),
+  hoehe: z.number().min(8).max(3000),
+  farbe: z.string().regex(FARBE),
+  rundung: z.number().min(0).max(1500).nullable().optional(),
+  drehung: z.number().min(-180).max(180),
+  deckkraft,
 });
 
 const TextEbeneSchema = z
@@ -133,6 +163,8 @@ const TextEbeneSchema = z
     x: z.number().min(-600).max(1200),
     y: z.number().min(-750).max(1500),
     drehung: z.number().min(-180).max(180),
+    hintergrund: z.string().regex(FARBE).nullable().optional(),
+    deckkraft,
   })
   .refine((t) => SCHNITTE[t.schrift].some(([g, k]) => g === t.gewicht && k === t.kursiv), {
     message: 'Schnitt der Schrift nicht vorhanden',
@@ -143,17 +175,24 @@ export const GestaltungSchema = z.object({
   format: z.enum(['quer', 'quadrat', 'hoch', 'banner']),
   hintergrund: z.string().regex(FARBE),
   ebenen: z
-    .array(z.union([BildEbeneSchema, TextEbeneSchema]))
+    .array(z.union([BildEbeneSchema, TextEbeneSchema, FormEbeneSchema]))
     .max(20)
     .refine((l) => new Set(l.map((e) => e.id)).size === l.length, { message: 'doppelte Ebenen-id' }),
 });
 
 const bildProps = ImagePropsSchema.shape.props.unwrap().unwrap();
 export const ImageSchema = z.object({
-  style: ImagePropsSchema.shape.style,
+  // Rundung wie die DB-Grenze (borderRadius 0-32); form "kreis" setzt der Renderer als 50 %.
+  style: ImagePropsSchema.shape.style
+    .unwrap()
+    .unwrap()
+    .extend({ borderRadius: z.number().min(0).max(32).nullable().optional() })
+    .optional()
+    .nullable(),
   props: bildProps
     .extend({ sw: z.boolean().nullable().optional(), grafik: z.boolean().nullable().optional(),
       gestaltung: GestaltungSchema.nullable().optional(),
+      form: z.enum(['kreis']).nullable().optional(),
     })
     .optional()
     .nullable(),
