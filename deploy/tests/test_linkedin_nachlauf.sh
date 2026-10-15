@@ -13,9 +13,13 @@ cat > "$T/docker" <<'EOF'
 T="$(dirname "$0")"
 { printf 'AUFRUF'; for a in "$@"; do printf '\n<%s>' "$a"; done; printf '\n'; } >> "$T/log"
 case "$*" in
-  *"linkedin_nachlauf.py liste"*) printf 'd-1\n' ;;
+  *"linkedin_nachlauf.py liste"*)
+    if [ -f "$T/zwei" ]; then printf 'd-1\nd-2\n'; else printf 'd-1\n'; fi ;;
   *"linkedin_nachlauf.py text d-1"*) printf 'LinkedIn-Post ist online: https://x/\n- @A & "B" $HOME `id`\n' ;;
-  *"linkedin_nachlauf.py gemeldet d-1"*) echo gebucht >> "$T/gebucht" ;;
+  *"linkedin_nachlauf.py text d-2"*) printf 'LinkedIn-Post ist online: https://y/\n' ;;
+  *"linkedin_nachlauf.py gemeldet "*)
+    [ -f "$T/buchen_scheitert" ] && exit 1
+    echo gebucht >> "$T/gebucht" ;;
   *"message send"*) [ -f "$T/senden_scheitert" ] && exit 1; exit 0 ;;
 esac
 EOF
@@ -52,5 +56,33 @@ aus="$(DOCKER="$T/docker" SALES_BETREIBER_WHATSAPP="+491749708452" bash "$SKRIPT
 echo "$aus" | grep -q "LinkedIn-Post ist online" || fehler "--trocken zeigt keinen Text"
 ! grep -q "message send" "$T/log" || fehler "--trocken hat gesendet"
 [ ! -f "$T/gebucht" ] || fehler "--trocken hat gebucht"
+
+# 5. Jeder docker-Aufruf laeuft unter dem Zeitlimit (Final-Review I3):
+#    ZEITLIMIT ersetzt "timeout 60" durch einen protokollierenden Wrapper.
+rm -f "$T/gebucht"; : > "$T/log"
+cat > "$T/zeit" <<'EOF'
+#!/usr/bin/env bash
+printf 'ZEITLIMIT %s\n' "$1" >> "$(dirname "$0")/log"
+shift; exec "$@"
+EOF
+chmod +x "$T/zeit"
+ZEITLIMIT="$T/zeit 60" DOCKER="$T/docker" SALES_BETREIBER_WHATSAPP="+491749708452" bash "$SKRIPT" >/dev/null
+aufrufe="$(grep -c '^AUFRUF' "$T/log")"
+limits="$(grep -c '^ZEITLIMIT 60$' "$T/log" || true)"
+[ "$aufrufe" = 4 ] || fehler "erwartet 4 docker-Aufrufe, waren $aufrufe"
+[ "$limits" = "$aufrufe" ] || fehler "nicht jeder docker-Aufruf unter Zeitlimit ($limits/$aufrufe)"
+grep -qF -- '- @A & "B" $HOME `id`>' "$T/log" || fehler "Text mit Zeitlimit nicht woertlich"
+grep -qF 'ZEITLIMIT="${ZEITLIMIT-timeout 60}"' "$SKRIPT" || fehler "Vorgabe timeout 60 fehlt"
+grep -q '^TimeoutStartSec=90$' "$WURZEL/deploy/systemd/sales-linkedin-nachlauf.service" \
+  || fehler "Unit ohne TimeoutStartSec=90"
+
+# 6. Gesendet, aber Buchen scheitert: laute WARNUNG, Schleife laeuft weiter
+rm -f "$T/gebucht"; : > "$T/log"; touch "$T/zwei" "$T/buchen_scheitert"
+fehl="$(DOCKER="$T/docker" SALES_BETREIBER_WHATSAPP="+491749708452" bash "$SKRIPT" 2>&1 >/dev/null)" \
+  || fehler "Buchungsfehler hat das Skript abgebrochen"
+echo "$fehl" | grep -q 'WARNUNG: .*d-1.*gesendet aber nicht gebucht' || fehler "keine WARNUNG fuer d-1"
+echo "$fehl" | grep -q 'WARNUNG: .*d-2.*gesendet aber nicht gebucht' || fehler "Schleife nach d-1 abgebrochen"
+[ "$(grep -c -- '^<-m>$' "$T/log")" = 2 ] || fehler "nicht beide Meldungen gesendet"
+rm -f "$T/zwei" "$T/buchen_scheitert"
 
 echo "OK linkedin-nachlauf"

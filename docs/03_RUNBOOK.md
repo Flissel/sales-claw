@@ -3038,10 +3038,29 @@ Basis-Laden, Timer alle 2 Minuten.
 ```bash
 grep -q '^SALES_BETREIBER_WHATSAPP=' ~/sales-claw/.env || echo 'SALES_BETREIBER_WHATSAPP=+491749708452' >> ~/sales-claw/.env
 bash ~/sales-claw/deploy/linkedin-nachlauf.sh --trocken
+```
+
+Jeder Treffer, den `--trocken` zeigt, wuerde beim Einschalten **sofort**
+gemeldet. Alte oder auf LinkedIn geloeschte Posts im 24-h-Fenster daher vorher
+je `draft_id` als gemeldet buchen, danach muss `liste` leer sein:
+
+```bash
+docker exec sales-mcp python linkedin_nachlauf.py gemeldet DRAFT_ID   # je alter Treffer
+docker exec sales-mcp python linkedin_nachlauf.py liste               # muss leer sein
+```
+
+Erst dann einschalten:
+
+```bash
 sudo cp ~/sales-claw/deploy/systemd/sales-linkedin-nachlauf.{service,timer} /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now sales-linkedin-nachlauf.timer
 ```
+
+Jeder docker-Aufruf laeuft unter `timeout 60`, die
+Unit hat `TimeoutStartSec=90`. Steht im Protokoll `WARNUNG: … gesendet aber
+nicht gebucht`, ging die Meldung raus, die Buchung aber nicht — der naechste
+Lauf sendet sie erneut; dann von Hand `gemeldet <draft_id>` buchen.
 
 Protokoll: `journalctl -u sales-linkedin-nachlauf -n 50`. Test:
 `bash deploy/tests/test_linkedin_nachlauf.sh` (ohne Docker, ohne Netz).
