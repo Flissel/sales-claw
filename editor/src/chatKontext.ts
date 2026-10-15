@@ -108,7 +108,7 @@ const BLOCK_ART: Record<string, string> = {
 };
 
 type BlockArtig = { type: string; data?: unknown };
-type EbeneArtig = { art: 'bild'; quelle: string } | { art: 'text'; text: string };
+type EbeneArtig = { art: 'bild'; quelle: string } | { art: 'text'; text: string } | { art: 'form'; form: string };
 
 function istObjekt(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -118,6 +118,7 @@ function istObjekt(v: unknown): v is Record<string, unknown> {
 export function kurzText(x: BlockArtig | EbeneArtig): string {
   if ('art' in x) {
     if (x.art === 'bild') return mit('Bild-Ebene', anfang(dateiStamm(x.quelle), false));
+    if (x.art === 'form') return mit('Form-Ebene', x.form === 'kreis' ? 'Kreis' : 'Rechteck');
     return mit('Text-Ebene', anfang(x.text));
   }
   const props = istObjekt(x.data) && istObjekt(x.data.props) ? x.data.props : {};

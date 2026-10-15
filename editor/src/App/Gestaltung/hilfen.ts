@@ -2,7 +2,7 @@
 // Ladenfarben, Medienreihenfolge, Namen und verstaendliche Pruefgruende.
 import type { ZodError } from 'zod';
 
-import { BildEbene, Ebene, Format, Gestaltung, hoehe, neueGestaltung, TextEbene, BREITE } from '../../gestaltung';
+import { BildEbene, Ebene, FormEbene, Format, Gestaltung, hoehe, neueGestaltung, TextEbene, BREITE } from '../../gestaltung';
 import { ANZEIGE } from '../../pult';
 import { GestaltungSchema, SCHNITTE, SCHRIFT_IDS, SchriftId } from '../../schemata';
 
@@ -36,7 +36,7 @@ export function ladenfarben(root: unknown, g: Gestaltung): { laden: string[]; be
   const d = rootDaten(root);
   const roh = [d.canvasColor, d.backdropColor, d.textColor, d.borderColor, ...Object.values(obj(d.rollen))];
   const laden = [...new Set(roh.filter((f): f is string => typeof f === 'string' && FARBE.test(f)).map((f) => f.toUpperCase()))];
-  const eigene = [g.hintergrund, ...g.ebenen.flatMap((e) => (e.art === 'text' ? [e.farbe] : []))].map((f) => f.toUpperCase());
+  const eigene = [g.hintergrund, ...g.ebenen.flatMap((e) => (e.art === 'bild' ? [] : [e.farbe]))].map((f) => f.toUpperCase());
   const benutzt = [...new Set(eigene)].filter((f) => !laden.includes(f));
   return { laden, benutzt };
 }
@@ -64,6 +64,16 @@ export function neueTextEbene(id: string, g: Gestaltung, root: unknown): TextEbe
   };
 }
 
+// Neue Form: Kreis in der ersten Ladenfarbe (Rolle), sonst in der Textfarbe; Mitte der Flaeche.
+export function neueFormEbene(id: string, g: Gestaltung, root: unknown): FormEbene {
+  const d = rootDaten(root);
+  const rolle = Object.values(obj(d.rollen)).find((f): f is string => typeof f === 'string' && FARBE.test(f));
+  const tc = d.textColor;
+  const farbe = rolle ?? (typeof tc === 'string' && FARBE.test(tc) ? tc : '#1C1B18');
+  return { id, art: 'form', form: 'kreis', x: BREITE / 2, y: hoehe(g.format) / 2, breite: 120, hoehe: 120,
+    farbe: farbe.toUpperCase(), drehung: 0 };
+}
+
 // verhaeltnis = Breite/Hoehe des Bildes, falls bekannt: das Bild passt dann ganz in die Flaeche.
 export function neueBildEbene(id: string, g: Gestaltung, name: string, verhaeltnis?: number): BildEbene {
   const h = hoehe(g.format);
@@ -85,6 +95,7 @@ export function istFreigestellt(name: string): boolean {
 
 export function ebenenName(e: Ebene): string {
   if (e.art === 'bild') return e.quelle.replace(/^medien:/, '').replace(/\.[a-z]+$/i, '');
+  if (e.art === 'form') return e.form === 'kreis' ? 'Kreis' : 'Rechteck';
   const zeile = e.text.split('\n')[0].trim();
   const z = [...zeile];
   return z.length === 0 ? 'Text' : z.length > 28 ? z.slice(0, 27).join('') + '…' : zeile;
@@ -120,6 +131,11 @@ const FELD: Record<string, string> = {
   drehung: 'Drehung −180…180°',
   farbe: 'Farbe ungültig',
   breite: 'Breite 8–3000',
+  hoehe: 'Höhe 8–3000',
+  rahmen: 'Rahmen 0–80',
+  rundung: 'Rundung zu groß',
+  deckkraft: 'Deckkraft 0–100',
+  hintergrund: 'Hintergrundfarbe ungültig',
   x: 'liegt zu weit außerhalb',
   y: 'liegt zu weit außerhalb',
   quelle: 'Bildquelle ungültig',

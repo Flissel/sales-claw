@@ -27,13 +27,60 @@ function scrollPixel(e: WheelEvent): number {
 }
 
 // Inhalt einer Ebene (auch fuer die Live-Vorschau im Canvas, FlaechenVorschau).
+// Wie der Rechner (claw/gestaltung.py): Rahmen weiss aussen, Kreis schneidet die Mitte quadratisch,
+// Schatten weich nach unten, Texthintergrund als Band im Polster, Deckkraft auf die ganze Ebene.
 export function EbenenInhalt({ e }: { e: Ebene }) {
+  const opacity = e.deckkraft != null && e.deckkraft < 100 ? e.deckkraft / 100 : undefined;
+  if (e.art === 'form') {
+    return (
+      <div
+        style={{
+          width: e.breite,
+          height: e.hoehe,
+          backgroundColor: e.farbe,
+          borderRadius: e.form === 'kreis' ? '50%' : e.rundung ? e.rundung : undefined,
+          opacity,
+        }}
+      />
+    );
+  }
   if (e.art === 'bild') {
-    return <img src={quelleAnzeige(e.quelle)} alt="" draggable={false} style={{ display: 'block', width: e.breite, height: 'auto' }} />;
+    const rund = e.kreis ? '50%' : e.rundung ? e.rundung : undefined;
+    const r = e.rahmen ?? 0;
+    return (
+      <div
+        style={{
+          display: 'block',
+          padding: r || undefined,
+          backgroundColor: r ? '#FFFFFF' : undefined,
+          borderRadius: rund,
+          overflow: rund ? 'hidden' : undefined,
+          filter: e.schatten ? 'drop-shadow(0 6px 12px rgba(40,30,20,0.35))' : undefined,
+          opacity,
+        }}
+      >
+        <img
+          src={quelleAnzeige(e.quelle)}
+          alt=""
+          draggable={false}
+          style={{
+            display: 'block',
+            width: e.breite,
+            height: e.kreis ? e.breite : 'auto',
+            objectFit: e.kreis ? 'cover' : undefined,
+            borderRadius: e.kreis ? '50%' : undefined,
+          }}
+        />
+      </div>
+    );
   }
   return (
     <div
       style={{
+        backgroundColor: e.hintergrund ?? undefined,
+        padding: e.hintergrund ? `${0.15 * e.groesse}px ${0.4 * e.groesse}px` : undefined,
+        borderRadius: e.hintergrund ? 0.25 * e.groesse : undefined,
+        opacity,
         whiteSpace: 'pre',
         fontFamily: SCHRIFT_FAMILIE[e.schrift],
         fontWeight: e.gewicht,

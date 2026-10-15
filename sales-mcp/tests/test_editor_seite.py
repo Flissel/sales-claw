@@ -1100,8 +1100,8 @@ def test_schriftdatei_und_nichts_anderes(monkeypatch):
 
 def test_schriften_register_und_dateien_stimmen():
     import schriften
-    assert len(schriften.REGISTER) == 11
-    assert sum(len(s["dateien"]) for s in schriften.REGISTER.values()) == 22
+    assert len(schriften.REGISTER) == 12
+    assert sum(len(s["dateien"]) for s in schriften.REGISTER.values()) == 24
     for sid, s in schriften.REGISTER.items():
         assert (schriften.ORDNER / f"OFL-{sid}.txt").is_file(), sid
         for gewicht, stil in s["dateien"]:

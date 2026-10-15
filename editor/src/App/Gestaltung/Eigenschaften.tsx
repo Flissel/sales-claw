@@ -1,10 +1,10 @@
-// Rechte Spalte: Eigenschaften der Auswahl (Bild oder Text) und der Alt-Text der Flaeche.
+// Rechte Spalte: Eigenschaften der Auswahl (Bild, Text oder Form) und der Alt-Text der Flaeche.
 import React, { useEffect, useRef } from 'react';
 
 import { FormatAlignCenterRounded, FormatAlignLeftRounded, FormatAlignRightRounded } from '@mui/icons-material';
-import { Box, MenuItem, Select, TextField, ToggleButton, ToggleButtonGroup, Typography } from '@mui/material';
+import { Box, MenuItem, Select, Switch, TextField, ToggleButton, ToggleButtonGroup, Typography } from '@mui/material';
 
-import { BildEbene, BREITE, Ebene, FORMATE, hoehe, TextEbene } from '../../gestaltung';
+import { BildEbene, BREITE, Ebene, FormEbene, FORMATE, hoehe, TextEbene } from '../../gestaltung';
 import { SCHNITTE, SCHRIFT_FAMILIE, SCHRIFT_IDS, SchriftId } from '../../schemata';
 
 import { Abschnitt, FarbFeld, Zahl, Zeile } from './Bedienelemente';
@@ -52,15 +52,78 @@ function Lage({ e, aendern }: { e: Ebene; aendern: (f: (x: Ebene) => Ebene, art:
   );
 }
 
-function BildFelder({ e, aendern }: { e: BildEbene; aendern: (f: (x: Ebene) => Ebene, art: Art) => void }) {
+type Aendern = (f: (x: Ebene) => Ebene, art: Art) => void;
+
+// Deckkraft fuer jede Ebene; 100 = Feld weg (wie der Rechner: Standardwerte stehen nicht im Dokument).
+function Deckkraft({ e, aendern }: { e: Ebene; aendern: Aendern }) {
+  return (
+    <Zeile label="Deckkraft">
+      <Zahl label="◐" einheit="%" wert={e.deckkraft ?? 100} min={0} max={100}
+        onChange={(v, art) => aendern((x) => ({ ...x, deckkraft: v >= 100 ? null : v }), art)} />
+    </Zeile>
+  );
+}
+
+function Schalter({ label, an, onChange }: { label: string; an: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <Zeile label={label}>
+      <Switch size="small" checked={an} onChange={(ev) => onChange(ev.target.checked)} inputProps={{ 'aria-label': label }} />
+    </Zeile>
+  );
+}
+
+function BildFelder({ e, aendern }: { e: BildEbene; aendern: Aendern }) {
+  const b = (f: (x: BildEbene) => BildEbene, art: Art = 'sofort') => aendern((x) => (x.art === 'bild' ? f(x) : x), art);
   return (
     <Abschnitt titel="Bild">
       <Typography noWrap sx={{ fontSize: 13, color: FARBE.text, mb: 0.5 }} title={ebenenName(e)}>
         {ebenenName(e)}
       </Typography>
       <Zeile label="Breite">
-        <Zahl label="B" wert={e.breite} min={8} max={3000} onChange={(v, art) => aendern((x) => (x.art === 'bild' ? { ...x, breite: v } : x), art)} />
+        <Zahl label="B" wert={e.breite} min={8} max={3000} onChange={(v, art) => b((x) => ({ ...x, breite: v }), art)} />
       </Zeile>
+      <Zeile label="Rahmen">
+        <Zahl label="▢" wert={e.rahmen ?? 0} min={0} max={80} onChange={(v, art) => b((x) => ({ ...x, rahmen: v || null }), art)} />
+      </Zeile>
+      {!e.kreis && (
+        <Zeile label="Rundung">
+          <Zahl label="◜" wert={e.rundung ?? 0} min={0} max={300} onChange={(v, art) => b((x) => ({ ...x, rundung: v || null }), art)} />
+        </Zeile>
+      )}
+      <Schalter label="Kreis" an={e.kreis === true} onChange={(v) => b((x) => ({ ...x, kreis: v || null }))} />
+      <Schalter label="Schatten" an={e.schatten === true} onChange={(v) => b((x) => ({ ...x, schatten: v || null }))} />
+      <Deckkraft e={e} aendern={aendern} />
+      <Lage e={e} aendern={aendern} />
+    </Abschnitt>
+  );
+}
+
+function FormFelder({ e, aendern, farben }: { e: FormEbene; aendern: Aendern; farben: Props['farben'] }) {
+  const f = (g: (x: FormEbene) => FormEbene, art: Art = 'sofort') => aendern((x) => (x.art === 'form' ? g(x) : x), art);
+  return (
+    <Abschnitt titel="Form">
+      <Zeile label="Form">
+        <ToggleButtonGroup exclusive fullWidth value={e.form} aria-label="Form"
+          onChange={(_, v: FormEbene['form'] | null) => { if (v) f((x) => ({ ...x, form: v })); }}>
+          <ToggleButton value="kreis">Kreis</ToggleButton>
+          <ToggleButton value="rechteck">Rechteck</ToggleButton>
+        </ToggleButtonGroup>
+      </Zeile>
+      <Zeile label="Größe">
+        <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1 }}>
+          <Zahl label="B" wert={e.breite} min={8} max={3000} onChange={(v, art) => f((x) => ({ ...x, breite: v }), art)} />
+          <Zahl label="H" wert={e.hoehe} min={8} max={3000} onChange={(v, art) => f((x) => ({ ...x, hoehe: v }), art)} />
+        </Box>
+      </Zeile>
+      {e.form === 'rechteck' && (
+        <Zeile label="Rundung">
+          <Zahl label="◜" wert={e.rundung ?? 0} min={0} max={1500} onChange={(v, art) => f((x) => ({ ...x, rundung: v || null }), art)} />
+        </Zeile>
+      )}
+      <Zeile label="Farbe">
+        <FarbFeld label="Formfarbe" wert={e.farbe} laden={farben.laden} benutzt={farben.benutzt} onChange={(v, art) => f((x) => ({ ...x, farbe: v }), art)} />
+      </Zeile>
+      <Deckkraft e={e} aendern={aendern} />
       <Lage e={e} aendern={aendern} />
     </Abschnitt>
   );
@@ -162,6 +225,15 @@ function TextFelder({ e, aendern, farben, textRef }: { e: TextEbene; aendern: (f
           </ToggleButtonGroup>
         </Zeile>
       </Abschnitt>
+      <Abschnitt titel="Band dahinter">
+        <Schalter label="Band" an={!!e.hintergrund} onChange={(v) => t((x) => ({ ...x, hintergrund: v ? farben.laden[0] ?? '#1C1B18' : null }))} />
+        {e.hintergrund && (
+          <Zeile label="Farbe">
+            <FarbFeld label="Bandfarbe" wert={e.hintergrund} laden={farben.laden} benutzt={farben.benutzt} onChange={(v, art) => t((x) => ({ ...x, hintergrund: v }), art)} />
+          </Zeile>
+        )}
+        <Deckkraft e={e} aendern={aendern} />
+      </Abschnitt>
       <Abschnitt titel="Lage">
         <Lage e={e} aendern={aendern} />
       </Abschnitt>
@@ -226,6 +298,7 @@ export default function Eigenschaften({ z, farben, alt, setAlt, altFehlt, altRef
       {e === null && <Leer z={z} />}
       {e?.art === 'bild' && <BildFelder key={e.id} e={e} aendern={aendern} />}
       {e?.art === 'text' && <TextFelder key={e.id} e={e} aendern={aendern} farben={farben} textRef={textRef} />}
+      {e?.art === 'form' && <FormFelder key={e.id} e={e} aendern={aendern} farben={farben} />}
       <Abschnitt
         titel="Alternativtext der Fläche"
         rechts={<Typography sx={{ fontSize: 11, color: FARBE.gedaempft, fontVariantNumeric: 'tabular-nums' }}>{laenge(alt)}/{ALT_MAX}</Typography>}

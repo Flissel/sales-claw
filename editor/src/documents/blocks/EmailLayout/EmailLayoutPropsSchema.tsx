@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { SCHRIFT_IDS } from '../../../schemata';
+import { VORLAGEN_SCHRIFT_IDS } from '../../../schemata';
 
 const COLOR_SCHEMA = z
   .string()
@@ -33,7 +33,7 @@ const EmailLayoutPropsSchema = z.object({
   childrenIds: z.array(z.string()).optional().nullable(),
   // Vorlagen-Metadaten (Spec §4): Schriftpaar, Dark-Mode, Rollen der Ladenmarke.
   schriften: z
-    .object({ anzeige: z.enum(SCHRIFT_IDS), text: z.enum(SCHRIFT_IDS) })
+    .object({ anzeige: z.enum(VORLAGEN_SCHRIFT_IDS), text: z.enum(VORLAGEN_SCHRIFT_IDS) })
     .partial()
     .nullable()
     .optional(),

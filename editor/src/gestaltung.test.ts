@@ -76,16 +76,16 @@ describe('gestaltung', () => {
     expect(hinweise({ ...neueGestaltung('#FFFFFF'), ebenen: [{ ...text, text: 'Eins\nZwei', groesse: 18 }] }))
       .toEqual(['Text „Eins“ ist am Handy unter 12 px']);
   });
-  it('SCHNITTE entspricht dem Register (22 Schnitte)', () => {
+  it('SCHNITTE entspricht dem Register (24 Schnitte)', () => {
     const alle = Object.entries(SCHNITTE).flatMap(([id, l]) => l.map(([g, k]) => `${id}:${g}:${k ? 'i' : 'n'}`)).sort();
     expect(alle).toEqual([
       'cormorant:400:n', 'cormorant:400:i', 'dm-sans:400:n', 'dm-sans:700:n', 'playfair:900:n',
       'poppins:400:n', 'poppins:600:n', 'poppins:700:n', 'young-serif:400:n',
       'manrope:300:n', 'manrope:400:n', 'manrope:700:n', 'bodoni:500:n', 'bodoni:500:i',
       'montserrat:400:n', 'montserrat:600:n', 'josefin:300:n', 'josefin:700:n',
-      'oxanium:600:n', 'oxanium:700:n', 'rajdhani:500:n', 'rajdhani:600:n',
+      'oxanium:600:n', 'oxanium:700:n', 'rajdhani:500:n', 'rajdhani:600:n', 'caveat:400:n', 'caveat:700:n',
     ].sort());
-    expect(alle).toHaveLength(22);
+    expect(alle).toHaveLength(24);
   });
 });
 

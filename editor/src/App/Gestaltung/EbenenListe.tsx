@@ -5,6 +5,7 @@ import React, { useEffect, useState } from 'react';
 import {
   AddCommentOutlined,
   AddPhotoAlternateOutlined,
+  CircleOutlined,
   CommentRounded,
   DeleteOutlineRounded,
   TextFieldsRounded,
@@ -19,7 +20,7 @@ import { ANZEIGE, leereBildwahl } from '../../pult';
 import { ebeneAlsKontext, ebeneKontextUmschalten, medienLaden, pultStore } from '../../pultZustand';
 import { SCHRIFT_FAMILIE } from '../../schemata';
 
-import { ebenenName, istFreigestellt, medienFuerEbenen, neueBildEbene, neueTextEbene, quelleAnzeige } from './hilfen';
+import { ebenenName, istFreigestellt, medienFuerEbenen, neueBildEbene, neueFormEbene, neueTextEbene, quelleAnzeige } from './hilfen';
 import { FARBE, FOKUS, SCHACHBRETT, ZEILE_HOEHE, uebergang } from './gestaltungStil';
 import type { GestaltungZustand } from './useGestaltung';
 
@@ -36,6 +37,13 @@ function Vorschau({ e }: { e: Ebene }) {
   const box = { width: 24, height: 24, borderRadius: '4px', flexShrink: 0 } as const;
   if (e.art === 'bild') {
     return <Box component="img" src={quelleAnzeige(e.quelle)} alt="" draggable={false} sx={{ ...box, ...SCHACHBRETT, backgroundSize: '6px 6px', objectFit: 'cover' }} />;
+  }
+  if (e.art === 'form') {
+    return (
+      <Box sx={{ ...box, display: 'grid', placeItems: 'center', bgcolor: FARBE.feld }}>
+        <Box sx={{ width: 14, height: 14, bgcolor: e.farbe, borderRadius: e.form === 'kreis' ? '50%' : '3px' }} />
+      </Box>
+    );
   }
   return (
     <Box sx={{ ...box, display: 'grid', placeItems: 'center', bgcolor: FARBE.feld, color: FARBE.text, fontFamily: SCHRIFT_FAMILIE[e.schrift], fontSize: 14, lineHeight: 1 }}>
@@ -146,7 +154,7 @@ export default function EbenenListe({ z, versteckt, umschalten }: Props) {
           {n}/{MAX_EBENEN}
         </Typography>
       </Box>
-      <Box sx={{ px: 2, pb: 2, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1 }}>
+      <Box sx={{ px: 2, pb: 2, display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 1 }}>
         <Button variant="outlined" color="inherit" disabled={voll} startIcon={<AddPhotoAlternateOutlined sx={{ fontSize: 16 }} />} onClick={(e) => setAnker(e.currentTarget)} sx={{ borderColor: FARBE.linie, color: FARBE.text }}>
           Bild
         </Button>
@@ -159,6 +167,16 @@ export default function EbenenListe({ z, versteckt, umschalten }: Props) {
           sx={{ borderColor: FARBE.linie, color: FARBE.text }}
         >
           Text
+        </Button>
+        <Button
+          variant="outlined"
+          color="inherit"
+          disabled={voll}
+          startIcon={<CircleOutlined sx={{ fontSize: 16 }} />}
+          onClick={() => z.ebeneHinzufuegen(neueFormEbene(neueId(ids()), z.aktuell(), getDocument().root))}
+          sx={{ borderColor: FARBE.linie, color: FARBE.text }}
+        >
+          Form
         </Button>
       </Box>
       <Medienauswahl

@@ -31,6 +31,9 @@ REGISTER: dict[str, dict] = {
                 "dateien": [(600, "normal"), (700, "normal")]},
     "rajdhani": {"familie": "Rajdhani", "slug": "rajdhani",
                  "dateien": [(500, "normal"), (600, "normal")]},
+    # Handschrift fuer Flaechen (Gruss, Notiz, Stoerer) - nur Ebenen-Schrift, kein Vorlagen-Schriftpaar
+    "caveat": {"familie": "Caveat", "slug": "caveat",
+               "dateien": [(400, "normal"), (700, "normal")]},
 }
 
 ORDNER = Path(__file__).resolve().parent / "static" / "schriften"
