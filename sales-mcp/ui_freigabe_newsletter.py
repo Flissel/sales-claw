@@ -11,6 +11,7 @@ Aufklappen per <details>, Mail/Handy per Verweis mit Abfrageparameter.
 Faellt die API aus, zeigt der Abschnitt einen Hinweis - die Seite bleibt."""
 from __future__ import annotations
 
+import os
 import threading
 from functools import partial
 import time
@@ -199,6 +200,8 @@ def _verlauf_zeile(ui, f: dict) -> str:
         else:
             zusatz = ""
         text = f'freigegeben{wer} · {zusatz}' if zusatz else f'freigegeben{wer}'
+        if f.get("art") == "newsletter" and f.get("format") != "felder":
+            text += f' · <a href="/freigaben/newsletter/{iid}/versand">An Kontakte senden …</a>'
     elif status == "abgelehnt":
         text = f'verworfen{wer} · {e(f.get("grund"))}'
     else:
@@ -220,6 +223,11 @@ def _hinweis(ui, request) -> str:
     if art == "export_offen":
         return ('<div class="fehler">Freigegeben - aber der Export hat nicht geklappt. '
                 'Export offen – erneut anstoßen (Knopf im Verlauf).</div>')
+    if art == "entwuerfe":
+        n = request.query_params.get("nl_n", "")
+        n = int(n) if n.isdigit() and len(n) < 6 else 0
+        return (f'<div class="hinweis">{n} Newsletter-Entwürfe angelegt. Sie warten oben in den Freigaben '
+                f'(Kanal E-Mail) - nichts ist verschickt.</div>')
     if art == "ok":
         n = request.query_params.get("nl_flaechen", "")
         n = int(n) if n.isdigit() and len(n) < 6 else 0
@@ -366,7 +374,100 @@ def routen(ui) -> list:
             return ziel("?nl_hinweis=export_offen")
         return ziel()
 
+    async def _versandfassung(iid: str):
+        """Versandfassung von Marketing + Pruefung Laden<->Firma (E4). (fassung, None) oder (None, Antwort)."""
+        try:
+            v = await run_in_threadpool(marketing_pult.anfrage, "GET", f"/inhalte/{iid}/versand")
+        except marketing_pult.PultFehler as f:
+            return None, fehler(f)
+        if not isinstance(v, dict) or not isinstance(v.get("html"), str):
+            return None, ui._fehlerseite(502, "Unklare Antwort", "Marketing lieferte keine Versandfassung.")
+        mandant = os.environ.get("MARKETING_MANDANT", "").strip()
+        if not mandant:
+            return None, ui._fehlerseite(409, "Laden ohne Firma",
+                                         "Für diesen Laden ist keine Marketing-Firma eingestellt "
+                                         "(MARKETING_MANDANT). Nichts wurde angelegt.")
+        if v.get("mandant") != mandant:
+            return None, ui._fehlerseite(409, "Newsletter einer anderen Firma",
+                                         f"Dieser Laden sendet nur Newsletter von „{e(mandant)}“. "
+                                         "Nichts wurde angelegt.")
+        return v, None
+
+    @ui._gesichert_seite
+    async def versand_seite(request):
+        iid = urllib.parse.quote(request.path_params["iid"], safe="")
+        v, antwort = await _versandfassung(iid)
+        if antwort is not None:
+            return antwort
+        alle = await run_in_threadpool(ui.server._newsletter_empfaenger, str(v.get("inhalt") or ""))
+        grenze = ui.server.NEWSLETTER_MAX
+        zeilen = "".join(
+            f'<tr><td><input type="checkbox" name="lead" value="{e(k["id"])}"'
+            f'{" checked" if i < grenze else ""}></td><td>{e(k["name"])}</td><td>{e(k["email"])}</td>'
+            f'<td>{e(k["vorname"]) or "<span class=meta>ohne – „Hallo,“</span>"}</td></tr>'
+            for i, k in enumerate(alle))
+        mehr = (f'<p class="meta">{len(alle)} Kontakte dürfen ihn bekommen; je Durchgang höchstens {grenze}. '
+                f'Die ersten {grenze} sind angehakt.</p>' if len(alle) > grenze else
+                f'<p class="meta">{len(alle)} Kontakte dürfen ihn bekommen.</p>')
+        liste = (f'<form method="post" action="/freigaben/newsletter/{iid}/versand">'
+                 f'<input type="hidden" name="csrf" value="{ui.CSRF_TOKEN}">'
+                 f'<table><thead><tr><th></th><th>Name</th><th>E-Mail</th><th>Anrede mit</th></tr></thead>'
+                 f'<tbody>{zeilen}</tbody></table>'
+                 f'<label class="haken"><input type="checkbox" name="bestaetigt" value="ja"> '
+                 f'Entwürfe anlegen bestätigen (es wird nichts verschickt)</label>'
+                 f'<button class="primaer">Entwürfe anlegen</button></form>') if alle else             '<p>Niemand darf diesen Newsletter (mehr) bekommen.</p>'
+        nr = int(v.get("fassung") or 1)
+        rumpf = (f'<h1>Newsletter an Kontakte senden</h1>'
+                 f'<p>Betreff: <b>{e(v.get("betreff"))}</b> · Fassung {nr}</p>'
+                 f'<p class="meta">Nur Kontakte mit ausdrücklicher Einwilligung (opt_in), nicht gesperrt, '
+                 f'kein Löschantrag, nicht privat oder archiviert, noch ohne diesen Newsletter. Je Kontakt '
+                 f'entsteht ein Entwurf mit eingesetztem Vornamen und Abmelde-Link; jeder Entwurf wird '
+                 f'danach einzeln von einem Menschen freigegeben.</p>'
+                 f'{mehr}{liste}'
+                 f'<iframe class="vorschau mail" sandbox title="Vorschau" '
+                 f'src="/marketing/entwurf/{iid}/vorschau?fassung={nr}&amp;format=mail"></iframe>')
+        return ui._seite("Newsletter senden", rumpf)
+
+    @ui._gesichert_seite
+    async def versand_anlegen(request):
+        form = await request.form()
+        if not ui._csrf_ok(form):
+            return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
+        if form.get("bestaetigt") != "ja":
+            return ui._fehlerseite(400, "Nicht bestätigt", "Der Bestätigungshaken fehlt. Nichts wurde angelegt.")
+        gewaehlt = list(dict.fromkeys(str(x) for x in form.getlist("lead")))
+        grenze = ui.server.NEWSLETTER_MAX
+        if not gewaehlt:
+            return ui._fehlerseite(400, "Niemand gewählt", "Kein Kontakt angehakt. Nichts wurde angelegt.")
+        if len(gewaehlt) > grenze:
+            return ui._fehlerseite(400, "Zu viele", f"Höchstens {grenze} je Durchgang. Nichts wurde angelegt.")
+        iid = urllib.parse.quote(request.path_params["iid"], safe="")
+        v, antwort = await _versandfassung(iid)
+        if antwort is not None:
+            return antwort
+        inhalt = str(v.get("inhalt") or "")
+        erlaubt = {k["id"] for k in await run_in_threadpool(ui.server._newsletter_empfaenger, inhalt)}
+        angelegt, fehlschlaege = 0, []
+        for lead_id in gewaehlt:
+            if lead_id not in erlaubt:
+                fehlschlaege.append(f"{lead_id}: darf ihn nicht (mehr) bekommen")
+                continue
+            r = await run_in_threadpool(ui.server._newsletter_entwurf, lead_id, inhalt, v.get("betreff") or "",
+                                        v["html"], v.get("text") or "", v.get("medien") or [])
+            if r.get("draft_id"):
+                angelegt += 1
+            else:
+                fehlschlaege.append(str(r.get("fehler")))
+        if fehlschlaege:
+            liste = "".join(f"<li>{e(x)}</li>" for x in fehlschlaege)
+            return ui._seite("Newsletter senden", (
+                f'<h1>{angelegt} Entwürfe angelegt</h1><p>Nicht angelegt:</p><ul>{liste}</ul>'
+                f'<p><a href="/freigaben">Zu den Freigaben</a> - nichts ist verschickt.</p>'))
+        return ziel(f"?nl_hinweis=entwuerfe&nl_n={angelegt}")
+
     return [
+        Route("/freigaben/newsletter/{iid}/versand", versand_seite),
+        Route("/freigaben/newsletter/{iid}/versand", versand_anlegen, methods=["POST"]),
         Route("/freigaben/newsletter/{iid}/freigeben", freigeben, methods=["POST"]),
         Route("/freigaben/newsletter/{iid}/zurueckgeben", zurueckgeben, methods=["POST"]),
         Route("/freigaben/newsletter/{iid}/export-nachholen", export_nachholen, methods=["POST"]),

@@ -239,6 +239,15 @@ begin
     execute format('alter table %I.drafts add column if not exists cc text', s);
     -- Mailverlauf (13.10.2026): Message-ID der Mail, auf die der Entwurf antwortet.
     execute format('alter table %I.drafts add column if not exists antwort_auf text', s);
+    -- Newsletter an Kontakte (15.10.2026, Plan 2026-10-15-newsletter-versand-an-kontakte.md):
+    -- Vorname fuer die Anrede, HTML-Fassung + eingebettete Medien je Entwurf, Bezug auf den
+    -- Marketing-Inhalt. Ein Newsletter geht hoechstens einmal an denselben Kontakt (ausser verworfen).
+    execute format('alter table %I.leads add column if not exists vorname text', s);
+    execute format('alter table %I.drafts add column if not exists body_html text', s);
+    execute format('alter table %I.drafts add column if not exists newsletter uuid', s);
+    execute format('alter table %I.drafts add column if not exists newsletter_medien jsonb', s);
+    execute format($idx$create unique index if not exists drafts_newsletter_lead_uidx on %I.drafts
+      (lead_id, newsletter) where newsletter is not null and status <> 'rejected'$idx$, s);
     execute format('alter table %I.leads drop constraint if exists leads_consent_status_check', s);
     execute format($chk$alter table %I.leads add constraint leads_consent_status_check
       check (consent_status in ('opt_in','existing_customer','inbound','unknown','betreiber_auftrag'))$chk$, s);

@@ -437,3 +437,93 @@ def test_m7b_crlf_zaehlt_als_ein_zeichen(pult):
     assert r.status_code == 303, r.text
     gesendet = pult.aktionen()[0][2]["text"]
     assert "\r" not in gesendet and len(gesendet) == 2000
+
+
+# ---------------------------------------------------------------------------
+# Newsletter an Kontakte (15.10.2026, Plan 2026-10-15-newsletter-versand-an-kontakte.md)
+# ---------------------------------------------------------------------------
+
+VERSAND = {"inhalt": IID, "mandant": "vibemind", "fassung": 3, "betreff": "Herbst im Laden",
+           "vorschautext": "", "html": "<p>Hallo {vorname},</p><p>{abmeldelink}</p>",
+           "text": "Hallo {vorname},\n{abmeldelink}\n", "medien": []}
+
+
+def _kontakt(name, email, consent="opt_in", vorname=None):
+    return str(server._q("insert into leads (name, email, consent_status, vorname) values (%s,%s,%s,%s) "
+                         "returning id", (name, email, consent, vorname))[0]["id"])
+
+
+@pytest.fixture
+def versand(pult, monkeypatch):
+    alt = pult.anfrage
+
+    def anfrage(methode, pfad, *a, **k):
+        if methode == "GET" and pfad.endswith("/versand"):
+            pult.aufrufe.append((methode, pfad))
+            return dict(VERSAND)
+        return alt(methode, pfad, *a, **k)
+    monkeypatch.setattr(marketing_pult, "anfrage", anfrage)
+    monkeypatch.setenv("MARKETING_MANDANT", "vibemind")
+    monkeypatch.setenv("EMAIL_ABSENDER", "laden@example.org")
+    return pult
+
+
+def test_empfaenger_nur_opt_in(versand):
+    anna = _kontakt("Anna Weber", "anna@example.com")
+    _kontakt("Ben Bestand", "ben@example.com", consent="existing_customer")
+    _kontakt("Ina Inbound", "ina@example.com", consent="inbound")
+    _kontakt("Ohne Mail", None)
+    ids = [k["id"] for k in server._newsletter_empfaenger(IID)]
+    assert ids == [anna]
+
+
+def test_seite_listet_empfaenger_und_legt_entwuerfe_an(versand):
+    anna = _kontakt("Anna Weber", "anna@example.com")
+    lena = _kontakt("Firma Lena", "lena@example.com", vorname="Lena")
+    s = CLIENT.get(f"/freigaben/newsletter/{IID}/versand", headers=HOST).text
+    assert "Anna Weber" in s and "Firma Lena" in s and "Entwürfe anlegen" in s
+    r = CLIENT.post(f"/freigaben/newsletter/{IID}/versand", headers=HOST, follow_redirects=False,
+                    data={"csrf": ui.CSRF_TOKEN, "lead": [anna, lena], "bestaetigt": "ja"})
+    assert r.status_code == 303 and "nl_hinweis=entwuerfe" in r.headers["location"]
+    d = {str(z["lead_id"]): z for z in server._q("select lead_id, status, body, body_html, newsletter, recipient "
+                                                 "from drafts")}
+    assert d[anna]["status"] == "pending" and str(d[anna]["newsletter"]) == IID
+    assert "Hallo Anna," in d[anna]["body_html"] and "Hallo Lena," in d[lena]["body_html"]
+    assert 'href="mailto:laden@example.org?subject=Abmelden"' in d[anna]["body_html"]
+    # zweites Mal: niemand mehr in der Liste, kein doppelter Entwurf
+    assert server._newsletter_empfaenger(IID) == []
+
+
+def test_anlegen_ohne_bestaetigung_oder_fremde_firma(versand, monkeypatch):
+    anna = _kontakt("Anna Weber", "anna@example.com")
+    r = CLIENT.post(f"/freigaben/newsletter/{IID}/versand", headers=HOST,
+                    data={"csrf": ui.CSRF_TOKEN, "lead": [anna]})
+    assert r.status_code == 400
+    monkeypatch.setenv("MARKETING_MANDANT", "fin2gether")
+    r = CLIENT.post(f"/freigaben/newsletter/{IID}/versand", headers=HOST,
+                    data={"csrf": ui.CSRF_TOKEN, "lead": [anna], "bestaetigt": "ja"})
+    assert r.status_code == 409
+    assert not server._q("select 1 from drafts")
+
+
+def test_kontakt_ohne_einwilligung_wird_nicht_angelegt(versand):
+    ben = _kontakt("Ben Bestand", "ben@example.com", consent="existing_customer")
+    r = server._newsletter_entwurf(ben, IID, "B", VERSAND["html"], VERSAND["text"], [])
+    assert "opt_in" in r["fehler"] and not server._q("select 1 from drafts")
+
+
+def test_newsletter_entwurf_nicht_bearbeitbar_und_mehrfach_freigeben(versand):
+    a = _kontakt("Anna Weber", "anna@example.com")
+    b = _kontakt("Bert Berg", "bert@example.com")
+    for k in (a, b):
+        server._newsletter_entwurf(k, IID, "B", VERSAND["html"], VERSAND["text"], [])
+    entwuerfe = server._q("select id, body from drafts order by recipient")
+    assert "nicht bearbeiten" in server.entwurf_bearbeiten(str(entwuerfe[0]["id"]), "neuer Text")
+    seite = CLIENT.get("/freigaben", headers=HOST).text
+    assert "Ausgewählte freigeben" in seite
+    daten = {"csrf": ui.CSRF_TOKEN, "bestaetigt": "ja", "draft_id": [str(z["id"]) for z in entwuerfe]}
+    for z in entwuerfe:
+        daten[f"stand_{z['id']}"] = ui._text_stand(z["body"])
+    r = CLIENT.post("/aktion/freigeben-auswahl", headers=HOST, data=daten, follow_redirects=False)
+    assert r.status_code == 303
+    assert {z["status"] for z in server._q("select status from drafts")} == {"approved"}

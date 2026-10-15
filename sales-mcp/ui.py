@@ -1840,11 +1840,45 @@ def _entwurf_karte_offen(z) -> str:
         f'{_entwurf_kopf(z, "pending")}'
         f'<div class="text">{_text_html(text)}</div>'
         f'{_markier_block(z)}'
-        f'{_entwurf_bearbeiten_form(z, text)}'
+        f'{_newsletter_ansicht(z) if z.get("newsletter") else _entwurf_bearbeiten_form(z, text)}'
         f'<div class="aktionen">'
         f'{_formular("freigeben", z["id"], "Freigeben", "primaer", stand=_text_stand(text))}'
         f'{_formular("ablehnen", z["id"], "Ablehnen", "gefahr")}'
         f'</div></details>')
+
+
+def _newsletter_ansicht(z) -> str:
+    """Newsletter-Entwurf (15.10.2026): die HTML-Fassung, wie sie hinausgeht, abgeschottet im iframe.
+    Kein Bearbeiten - Text- und HTML-Fassung muessen gleich bleiben; wer etwas aendern will, lehnt ab
+    und aendert den Newsletter im Editor."""
+    return (f'<details class="bearbeiten" open><summary>Newsletter so, wie er hinausgeht</summary>'
+            f'<iframe class="vorschau mail" sandbox title="Newsletter" '
+            f'src="/entwurf/{_e(z["id"])}/html"></iframe>'
+            f'<p class="meta">Nicht bearbeitbar: ändern im Editor, diesen Entwurf ablehnen und neu '
+            f'anlegen.</p></details>')
+
+
+def _newsletter_auswahl(zeilen) -> str:
+    """Mehrfachauswahl fuer Newsletter-Entwuerfe (Entscheidung E3: immer mit Freigabe, mehrere auf
+    einmal anhakbar). Jede Zeile traegt den Stand des gelesenen Textes wie die Einzelfreigabe."""
+    nl = [z for z in zeilen if z.get("newsletter")]
+    if len(nl) < 2:
+        return ""
+    reihen = "".join(
+        f'<tr><td><input type="checkbox" name="draft_id" value="{_e(z["id"])}"></td>'
+        f'<td>{_e(z["name"] or "?")}</td><td>{_e(z["recipient"])}</td><td>{_e(z.get("subject") or "")}</td>'
+        f'<input type="hidden" name="stand_{_e(z["id"])}" value="{_e(_text_stand(z["body"] or ""))}"></tr>'
+        for z in nl)
+    return (f'<details class="karte"><summary><b>Newsletter-Entwürfe: mehrere freigeben</b> '
+            f'<span class="meta">({len(nl)})</span></summary>'
+            f'<form method="post" action="/aktion/freigeben-auswahl">'
+            f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+            f'<table><thead><tr><th></th><th>Kontakt</th><th>E-Mail</th><th>Betreff</th></tr></thead>'
+            f'<tbody>{reihen}</tbody></table>'
+            f'<label class="haken"><input type="checkbox" name="bestaetigt" value="ja"> '
+            f'Ausgewählte gelesen und freigeben</label>'
+            f'<button class="primaer">Ausgewählte freigeben</button></form>'
+            f'<p class="meta">Die Entwürfe einzeln ansehen: unten in der Liste.</p></details>')
 
 
 # Textfeld-Grenzen je Kanal: WhatsApp 4096 (Kanalgrenze), LinkedIn die
@@ -2456,7 +2490,7 @@ async def inbox(request):
     freigegeben) und darunter seinem eigenen Verlauf (UI-Plan Schritt 3,
     Betreiber 02.09.2026: „damit alles seine Ordnung hat")."""
     pending = server._q(
-        "select d.id, d.channel, d.recipient, d.body, d.media_ref, d.subject, d.cc, "
+        "select d.id, d.channel, d.recipient, d.body, d.media_ref, d.subject, d.cc, d.newsletter, "
         "       extract(epoch from (now() - d.created_at)) / 3600 as alter_h, "
         "       l.name, l.consent_status "
         "from drafts d left join leads l on l.id = d.lead_id "
@@ -2505,6 +2539,7 @@ async def inbox(request):
             f'</span></h2>')
         if not (offen.get(art) or kaputt.get(art) or wartend.get(art)):
             teile.append('<p class="meta">Nichts offen.</p>')
+        teile.append(_newsletter_auswahl(offen.get(art, [])))
         for z in offen.get(art, []):
             # „Freigeben" und „Ablehnen" stehen in EINEM `.aktionen`-Kasten:
             # nebeneinander am Desktop, gestapelt ueber die volle Breite am
@@ -2726,6 +2761,78 @@ def _freigabe_loggen(z, erneut: bool = False) -> None:
     server._q("insert into activities (lead_id, type, payload, actor) "
               "values (%s, 'freigabe', %s, 'human') returning id",
               (z["lead_id"], server._json(nutzlast)))
+
+
+def _eines_freigeben(draft_id: str, stand: str, akteur: str):
+    """Ein Entwurf pending -> approved, nur mit passendem Lese-Stand. None oder eine Fehlerseite."""
+    aktuell = server._q("select body, status from drafts where id = %s", (draft_id,))
+    if not aktuell or aktuell[0]["status"] != "pending":
+        return _statusfehler(draft_id, "pending")
+    if not stand or stand != _text_stand(aktuell[0]["body"] or ""):
+        return _fehlerseite(409, "Text wurde geändert",
+                            "Ein Entwurf wurde geändert, seit diese Seite geladen wurde. Ab hier nichts "
+                            "freigegeben — Seite neu laden und den AKTUELLEN Text lesen.")
+    zeilen = server._q(
+        "update drafts set status = 'approved', approved_by = %s, "
+        "approved_at = now() where id = %s and status = 'pending' "
+        "returning id, lead_id, channel", (akteur, draft_id))
+    if not zeilen:
+        return _statusfehler(draft_id, "pending")
+    _freigabe_loggen(zeilen[0])
+    if zeilen[0]["lead_id"]:
+        server.ignorieren_aufheben_sicher(zeilen[0]["lead_id"])
+    return None
+
+
+@_gesichert_seite
+async def aktion_freigeben_auswahl(request):
+    """Mehrere Newsletter-Entwuerfe auf einmal (E3). Jeder einzeln mit seinem Lese-Stand; der erste
+    Fehler haelt an, bereits freigegebene bleiben freigegeben (jede Freigabe ist ein eigener Schritt)."""
+    form = await request.form()
+    if not _csrf_ok(form):
+        return _fehlerseite(403, "CSRF-Token fehlt oder ist ungültig", "Keine Aktion ausgeführt.")
+    if form.get("bestaetigt") != "ja":
+        return _fehlerseite(400, "Nicht bestätigt", "Der Bestätigungshaken fehlt. Nichts freigegeben.")
+    ids = []
+    for roh in form.getlist("draft_id"):
+        try:
+            ids.append(str(uuid.UUID(str(roh).strip())))
+        except ValueError:
+            return _fehlerseite(400, "Unlesbare draft_id", "Keine Aktion ausgeführt.")
+    if not ids:
+        return _fehlerseite(400, "Nichts ausgewählt", "Kein Entwurf angehakt. Nichts freigegeben.")
+    nur_newsletter = server._q("select count(*) as n from drafts where id = any(%s::uuid[]) "
+                               "and newsletter is not null", (ids,))
+    if not nur_newsletter or nur_newsletter[0]["n"] != len(ids):
+        return _fehlerseite(400, "Nur Newsletter", "Mehrfachfreigabe gilt nur für Newsletter-Entwürfe. "
+                            "Nichts freigegeben.")
+    for draft_id in ids:
+        fehler = _eines_freigeben(draft_id, str(form.get(f"stand_{draft_id}") or ""), _ui_akteur(request))
+        if fehler is not None:
+            return fehler
+    return RedirectResponse("/freigaben", status_code=303)
+
+
+@_gesichert_seite
+async def entwurf_html(request):
+    """HTML-Fassung eines Newsletter-Entwurfs fuer die abgeschottete Vorschau. Eingebettete Bilder
+    (cid:) zeigt der Browser nicht - sie werden auf die signierte Bild-Adresse umgeschrieben."""
+    try:
+        draft_id = str(uuid.UUID(request.path_params["draft_id"]))
+    except ValueError:
+        return Response("Nicht gefunden", status_code=404, media_type="text/plain")
+    zeilen = server._q("select body_html from drafts where id = %s and newsletter is not null", (draft_id,))
+    if not zeilen or not zeilen[0]["body_html"]:
+        return Response("Nicht gefunden", status_code=404, media_type="text/plain")
+    import ui_editor
+    basis = ui_editor.bild_basis()
+    html_ = zeilen[0]["body_html"]
+    if basis:
+        html_ = html_.replace('src="cid:', f'src="{basis}')
+    return Response(html_, media_type="text/html", headers={
+        "Content-Security-Policy": "default-src 'none'; img-src https:; style-src 'unsafe-inline'; "
+                                   "font-src https:; frame-ancestors 'self'",
+        "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"})
 
 
 @_gesichert_seite
@@ -6398,7 +6505,7 @@ async def heute(request):
     rechts — Kalender, WhatsApp, Posteingang, Pipeline. Jede Zahl kommt aus
     derselben Quelle wie die Seite, auf die sie verweist."""
     pending = server._q(
-        "select d.id, d.channel, d.recipient, d.body, d.media_ref, d.subject, d.cc, "
+        "select d.id, d.channel, d.recipient, d.body, d.media_ref, d.subject, d.cc, d.newsletter, "
         "       extract(epoch from (now() - d.created_at)) / 3600 as alter_h, "
         "       l.name, l.consent_status "
         "from drafts d left join leads l on l.id = d.lead_id "
@@ -6544,6 +6651,8 @@ app = Starlette(routes=[
     Route("/freigaben", inbox),
     Route("/freigaben/verlauf/{art}", freigaben_verlauf),
     Route("/aktion/freigeben", aktion_freigeben, methods=["POST"]),
+    Route("/aktion/freigeben-auswahl", aktion_freigeben_auswahl, methods=["POST"]),
+    Route("/entwurf/{draft_id}/html", entwurf_html),
     Route("/aktion/ablehnen", aktion_ablehnen, methods=["POST"]),
     Route("/aktion/bearbeiten", aktion_bearbeiten, methods=["POST"]),
     Route("/aktion/erneut-freigeben", aktion_erneut_freigeben,

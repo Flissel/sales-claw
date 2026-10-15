@@ -241,7 +241,8 @@ def claim(draft_id):
     zeilen = server._q(
         "update drafts set status = 'failed', error = %s "
         "where id = %s and status = 'approved' and channel = 'email' "
-        "returning id, lead_id, recipient, subject, body, media_ref, cc, antwort_auf",
+        "returning id, lead_id, recipient, subject, body, media_ref, cc, antwort_auf, "
+        "body_html, newsletter, newsletter_medien",
         (marke, draft_id))
     if not zeilen:
         return None
@@ -331,6 +332,94 @@ def nachricht_bauen(adresse: str, betreff: str, rumpf: str,
         nachricht.add_alternative(_html_fassung(rumpf), subtype="html",
                                   charset="utf-8", cte="quoted-printable")
     return nachricht
+
+
+# NEWSLETTER AN KONTAKTE (15.10.2026, Plan docs/superpowers/plans/2026-10-15-newsletter-versand-an-
+# kontakte.md). Die HTML-Fassung kommt fertig aus dem Entwurf (Marketing hat gerendert, sales-claw hat
+# Vorname und Abmelde-Link eingesetzt - freigegeben wurde genau dieser Wortlaut). Bilder reisen
+# eingebettet (cid), weil es keinen oeffentlich erreichbaren Bild-Server gibt. Abmelden per Antwort
+# (Entscheidung E2), deshalb List-Unsubscribe als mailto. Schwarz-weiss-Bilder gehen farbig hinaus:
+# im Image gibt es kein Pillow (bekannte Luecke, im Plan vermerkt).
+_BILD_TYP = {".jpg": "jpeg", ".jpeg": "jpeg", ".png": "png", ".gif": "gif", ".webp": "webp"}
+
+
+def newsletter_bilder(liste) -> tuple[list, str | None]:
+    """[(cid, roh, subtype)] aus drafts.newsletter_medien - oder (None-Liste, Grund), wenn eins fehlt."""
+    bilder, summe = [], 0
+    for eintrag in liste or []:
+        name = str((eintrag or {}).get("name") or "")
+        cid = str((eintrag or {}).get("cid") or "")
+        subtype = _BILD_TYP.get(os.path.splitext(name)[1].lower())
+        if not name or not cid or not subtype:
+            return [], f"Newsletter-Bild '{name}' ist kein erlaubtes Bild. Es ging NICHTS raus."
+        basis, fehler = medien.pruefe_anzeige(name)
+        if fehler or not basis:
+            return [], f"Newsletter-Bild '{name}' fehlt in den Medien ({fehler}). Es ging NICHTS raus."
+        try:
+            roh = medien.lies(basis)
+        except OSError as e:
+            return [], f"Newsletter-Bild '{name}' nicht lesbar ({type(e).__name__}). Es ging NICHTS raus."
+        summe += len(roh)
+        bilder.append((cid, roh, subtype))
+    if summe > ANHANG_MAX_BYTES:
+        return [], (f"Die Bilder des Newsletters sind zusammen {summe // 1048576} MB gross; per Mail gehen "
+                    f"hoechstens {ANHANG_MAX_BYTES // 1048576} MB. Es ging NICHTS raus.")
+    return bilder, None
+
+
+def nachricht_newsletter(adresse: str, betreff: str, text: str, html: str, bilder: list,
+                         absender=None) -> EmailMessage:
+    """text/plain + text/html (multipart/related mit den Bildern), dazu List-Unsubscribe."""
+    von = absender or EMAIL_ABSENDER
+    nachricht = EmailMessage()
+    nachricht["From"] = von
+    nachricht["To"] = adresse
+    nachricht["Subject"] = _betreff(betreff)
+    nachricht["List-Unsubscribe"] = f"<mailto:{von}?subject=Abmelden>"
+    nachricht.set_content(text or "", subtype="plain", charset="utf-8", cte="quoted-printable")
+    nachricht.add_alternative(html, subtype="html", charset="utf-8", cte="quoted-printable")
+    html_teil = nachricht.get_payload()[1]
+    for cid, roh, subtype in bilder:
+        html_teil.add_related(roh, maintype="image", subtype=subtype, cid=f"<{cid}>")
+    return nachricht
+
+
+def _sendesperre(geclaimt, adresse: str) -> str:
+    """Zweitpruefung unmittelbar vor dem Versand (15.10.2026) - fuer JEDE Mail: zwischen Freigabe und
+    Zustellung kann jemand "nein" gesagt haben (Abmelden, Loeschantrag). Bei Newslettern zusaetzlich die
+    ausdrueckliche Einwilligung (Entscheidung E1). '' = darf raus."""
+    grund = server._sperre(adresse, "")
+    if grund:
+        return f"Empfaenger steht auf der gemeinsamen Verbotsliste ({grund}). Es ging NICHTS raus."
+    if not geclaimt.get("lead_id"):
+        return ""
+    lead = server._q("select consent_status, enrichment from leads where id = %s", (geclaimt["lead_id"],))
+    if not lead:
+        return ""
+    if server._loeschantrag(lead[0]["enrichment"]):
+        return "Fuer diesen Kontakt liegt ein Loeschantrag vor. Es ging NICHTS raus."
+    if geclaimt.get("newsletter") and lead[0]["consent_status"] != "opt_in":
+        return "Keine ausdrueckliche Einwilligung (opt_in) mehr - Newsletter nicht verschickt."
+    return ""
+
+
+ABMELDE_PRUEF_S = float(os.environ.get("ABMELDE_PRUEF_S", "600"))
+
+
+def abmeldungen_pruefen() -> int:
+    """Abmelden per Antwort (E2): sieht ins Postfach und sperrt Absender mit Betreff "Abmelden"
+    (server._newsletter_abmeldungen). Best effort - ein IMAP-Fehler darf den Versand nie aufhalten."""
+    if not postfach.konfiguriert():
+        return 0
+    try:
+        neu = server._newsletter_abmeldungen(postfach.liste(postfach.ANZAHL_MAX))
+    except Exception as e:                  # noqa: BLE001 — bewusst breit, s. oben
+        LOG.warning("Abmeldungen nicht geprueft (%s: %s)", type(e).__name__,
+                    _ohne_geheimnis(_einzeilig(str(e))[:120]))
+        return 0
+    if neu:
+        LOG.info("%s Abmeldung(en) aus dem Postfach verarbeitet", neu)
+    return neu
 
 
 def _html_fassung(rumpf: str) -> str:
@@ -579,6 +668,20 @@ def verarbeite_draft(draft_id) -> str:
         LOG.info("draft=%s nicht zugestellt (%s)", draft_id, fehler)
         return "unzustellbar"
 
+    sperre = _sendesperre(geclaimt, adresse)
+    if sperre:
+        _als_fehler_buchen(draft_id, marke, sperre)
+        LOG.info("draft=%s nicht zugestellt (Sendesperre)", draft_id)
+        return "gesperrt"
+
+    newsletter_bilder_liste = None
+    if geclaimt.get("body_html"):
+        newsletter_bilder_liste, grund = newsletter_bilder(geclaimt.get("newsletter_medien"))
+        if grund:
+            _als_fehler_buchen(draft_id, marke, grund)
+            LOG.info("draft=%s nicht zugestellt (Newsletter-Bild)", draft_id)
+            return "anhang_fehlt"
+
     # Siehe Moduldocstring: lieber ein Entwurf, der auf einen Menschen
     # wartet, als eine Mail ohne die freigegebene Unterlage. Seit dem
     # 12.09.2026 duerfen ausser der Kalenderdatei auch PDF und Bilder mit
@@ -640,7 +743,10 @@ def verarbeite_draft(draft_id) -> str:
         # den Kollegen genauso in Kopie setzen koennen wie bei jeder anderen
         # Mail. Ohne die Durchreichung waere CC bei Einladungen still
         # verschwunden.
-        if ics_text is not None:
+        if newsletter_bilder_liste is not None:
+            nachricht = nachricht_newsletter(adresse, geclaimt["subject"], geclaimt["body"],
+                                             geclaimt["body_html"], newsletter_bilder_liste)
+        elif ics_text is not None:
             nachricht = nachricht_mit_einladung(adresse, geclaimt["subject"],
                                                 geclaimt["body"], ics_text,
                                                 cc=geclaimt.get("cc"),
@@ -936,6 +1042,7 @@ def main() -> int:
              MAIL_ONCE,
              " — warte auf freigegebene E-Mail-Entwuerfe." if kunde_aktiv else "")
 
+    zuletzt_abmeldungen = 0.0
     while not _STOPP.is_set():
         try:
             bilanz = eine_runde()
@@ -944,6 +1051,9 @@ def main() -> int:
         except psycopg.Error as e:
             LOG.error("Datenbankfehler — Runde uebersprungen: %s",
                       _einzeilig(str(e)))
+        if time.monotonic() - zuletzt_abmeldungen >= ABMELDE_PRUEF_S:
+            zuletzt_abmeldungen = time.monotonic()
+            abmeldungen_pruefen()
         if MAIL_ONCE:
             LOG.info("MAIL_ONCE — eine Runde gelaufen, Ende.")
             break

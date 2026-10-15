@@ -24,6 +24,7 @@ import logging
 import json
 import os
 import re
+from email.utils import parseaddr
 import time
 import unicodedata
 import urllib.request
@@ -83,6 +84,7 @@ import lid
 # `entwuerfe_offen` zeigt damit die Adresse an, an die sales-mail
 # tatsächlich zustellen würde.
 import mailadresse
+import newsletter_text
 import postfach
 # Terminkarten (Task 4, docs/superpowers/specs/2026-09-24-terminkarten-
 # design.md): das Setzprogramm fuer die PDF-Karte, die Werteermittlung aus
@@ -2412,6 +2414,102 @@ def _entwurf_erstellen(lead_id: str, kanal: str, text: str,
     hinweis = "Nicht versendet — wartet in der Queue."
     return _json({"draft_id": zeilen[0]["id"], "status": zeilen[0]["status"],
                   "medien_datei": basis, "hinweis": hinweis})
+
+
+# NEWSLETTER AN KONTAKTE (15.10.2026, Plan docs/superpowers/plans/
+# 2026-10-15-newsletter-versand-an-kontakte.md). Entscheidungen des Betreibers:
+# E1 nur consent_status = 'opt_in' — strenger als EINWILLIGUNG_ARTEN, weil ein
+# Newsletter Werbung an viele ist (kein Bestandskunden-, kein Auftragsweg, kein
+# "hat selbst geschrieben"); E3 immer mit Freigabe — hier entstehen nur
+# Entwuerfe (pending); E5 hoechstens NEWSLETTER_MAX je Durchgang.
+# Bewusst KEIN MCP-Werkzeug: nur die Oberflaeche (Freigaben > Newsletter) ruft
+# das, kein Agent kann einen Sammelversand anstossen.
+NEWSLETTER_MAX = 50
+
+
+def _newsletter_empfaenger(newsletter: str) -> list[dict]:
+    """Kontakte, an die dieser Newsletter gehen darf und noch nicht ging (alle, ohne Obergrenze)."""
+    zeilen = _q(
+        "select l.id, l.name, l.vorname, l.company, l.email, l.enrichment from leads l "
+        "where l.consent_status = 'opt_in' and coalesce(btrim(l.email), '') <> '' "
+        f"and not {_archiv_sql('l.enrichment')} "
+        "and not exists (select 1 from drafts d where d.lead_id = l.id and d.newsletter = %s "
+        "and d.status <> 'rejected') order by l.name",
+        (newsletter,))
+    aus = []
+    for z in zeilen:
+        if (_loeschantrag(z["enrichment"]) or _privat(z["enrichment"])
+                or _sperre(z["email"] or "", "") or mailadresse.pruefe(z["email"])[1]):
+            continue
+        aus.append({"id": str(z["id"]), "name": z["name"], "email": z["email"],
+                    "vorname": newsletter_text.vorname(z)})
+    return aus
+
+
+_ABMELDE_BETREFF = re.compile(r"^\s*(?:(?:re|aw|wg|fwd?)\s*:\s*)*abmelden\s*[.!]?\s*$", re.IGNORECASE)
+
+
+def _newsletter_abmeldungen(mails: list) -> int:
+    """Abmelden per Antwort (E2): Mails mit Betreff "Abmelden" (auch "AW: Abmelden") sperren den
+    Absender auf der gemeinsamen Verbotsliste und nehmen bei passenden Kontakten die Einwilligung
+    zurueck. Gezaehlt und protokolliert wird je Mail genau einmal (Message-ID). Unbekannte Absender
+    werden trotzdem gesperrt - wer "nein" sagt, bekommt nichts mehr. Rueckgabe: neu verarbeitete Mails."""
+    neu = 0
+    for m in mails or []:
+        if not _ABMELDE_BETREFF.match(str(m.get("betreff") or "")):
+            continue
+        adresse = parseaddr(str(m.get("von") or ""))[1].strip().lower()
+        kennung = str(m.get("message_id") or "").strip() or f"{adresse}|{m.get('betreff')}"
+        if "@" not in adresse:
+            continue
+        if _q("select 1 from activities where type = 'newsletter_abmeldung' and payload->>'message_id' = %s "
+              "limit 1", (kennung,)):
+            continue
+        sperrliste.sperren(_q, email=adresse, quelle="sales:newsletter-abmeldung", grund="Antwort 'Abmelden'")
+        leads = _q("update leads set consent_status = 'unknown', updated_at = now() "
+                   "where lower(btrim(email)) = %s returning id", (adresse,))
+        nutzlast = _json({"message_id": kennung, "adresse": adresse})
+        for z in leads or [None]:
+            _q("insert into activities (lead_id, type, payload, actor) values (%s, 'newsletter_abmeldung', %s, "
+               "'cron') returning id", ((z or {}).get("id"), nutzlast))
+        neu += 1
+    return neu
+
+
+def _newsletter_entwurf(lead_id: str, newsletter: str, betreff: str, html: str,
+                        text: str, medien_liste: list) -> dict:
+    """Ein Newsletter-Entwurf fuer einen Kontakt — dieselben Tore wie
+    _entwurf_erstellen (Verbotsliste, Loeschantrag, privat) plus E1 (nur
+    opt_in). Vorname und Abmelde-Link werden HIER eingesetzt: wer freigibt,
+    sieht genau, was hinausgeht. Gibt {"draft_id"} oder {"fehler"}."""
+    zeilen = _q("select id, name, vorname, company, email, consent_status, enrichment "
+                "from leads where id = %s", (lead_id,))
+    if not zeilen:
+        return {"fehler": f"Kein Kontakt mit lead_id {lead_id}."}
+    lead = zeilen[0]
+    if _sperre(lead.get("email") or "", ""):
+        return {"fehler": f"{lead['name']} steht auf der gemeinsamen Verbotsliste."}
+    if _loeschantrag(lead["enrichment"]) or _privat(lead["enrichment"]):
+        return {"fehler": f"{lead['name']}: Löschantrag oder privat — kein Newsletter."}
+    if lead["consent_status"] != "opt_in":
+        return {"fehler": f"{lead['name']} hat nicht ausdrücklich eingewilligt (opt_in) — kein Newsletter."}
+    adresse, fehler = mailadresse.pruefe(lead.get("email") or "")
+    if fehler:
+        return {"fehler": f"{lead['name']}: {fehler}"}
+    try:
+        html_fertig, text_fertig = newsletter_text.einsetzen(
+            html, text, newsletter_text.vorname(lead), os.environ.get("EMAIL_ABSENDER", ""))
+    except ValueError as e:
+        return {"fehler": str(e)}
+    try:
+        neu = _q("insert into drafts (lead_id, channel, recipient, subject, body, body_html, "
+                 "newsletter, newsletter_medien) values (%s, 'email', %s, nullif(%s, ''), %s, %s, %s, %s) "
+                 "returning id",
+                 (lead_id, adresse, betreff, text_fertig, html_fertig, newsletter,
+                  json.dumps(medien_liste or [], ensure_ascii=False)))
+    except psycopg.errors.UniqueViolation:
+        return {"fehler": f"{lead['name']} hat diesen Newsletter schon (Entwurf oder versendet)."}
+    return {"draft_id": str(neu[0]["id"])}
 
 
 # Sammelkontakt "LINKEDIN (Eigenes Profil)" — an ihm haengen Post-Entwuerfe
@@ -6142,10 +6240,16 @@ def entwurf_bearbeiten(draft_id: str, text: str, betreff: str = "",
     Sinn der Sache: hinterher muss nachvollziehbar sein, was der Betreiber
     freigegeben hat und was vorher dastand."""
     zeilen = _q("select id, status, channel, body, subject, media_ref, lead_id, "
-                "cc from drafts where id = %s", (draft_id,))
+                "cc, newsletter from drafts where id = %s", (draft_id,))
     if not zeilen:
         return _json({"fehler": f"Kein Entwurf mit draft_id {draft_id}."})
     d = zeilen[0]
+    # Newsletter-Entwurf (15.10.2026): Text- und HTML-Fassung muessen gleich bleiben - geaendert wird
+    # der Newsletter im Editor, dieser Entwurf wird abgelehnt und neu angelegt.
+    if d.get("newsletter"):
+        return _json({"fehler": (
+            "Newsletter-Entwuerfe lassen sich nicht bearbeiten - im Editor aendern, diesen "
+            "Entwurf ablehnen und den Newsletter neu an den Kontakt anlegen.")})
     if d["status"] != "pending":
         return _json({"fehler": (
             f"Entwurf steht auf '{d['status']}' und laesst sich nicht mehr "

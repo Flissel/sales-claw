@@ -803,6 +803,8 @@ services:
       # nie. Leer = Pult zeigt "Marketing nicht verbunden".
       - MARKETING_PULT_URL=${MARKETING_PULT_URL:-}
       - MARKETING_PULT_KEY=${MARKETING_PULT_KEY:-}
+      # Newsletter an Kontakte (15.10.2026, E4): dieser Laden sendet nur Newsletter dieser Marketing-Firma.
+      - MARKETING_MANDANT=${MARKETING_MANDANT:-}
       # Kalender (01.09.2026): der Tab /kalender liest die Termine des
       # Betreibers per CalDAV. Seit Kalender pflegen (14.10.2026) schreibt
       # er auch: eigene Termine und verschobene Kundentermine landen per PUT

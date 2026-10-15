@@ -1283,3 +1283,69 @@ def test_versand_reicht_antwort_auf_als_header_durch():
     assert len(STUB.mails) == 1
     assert "In-Reply-To: <abc@x>" in STUB.mails[0]["roh"]
     assert "References: <abc@x>" in STUB.mails[0]["roh"]
+
+# ---------------------------------------------------------------------------
+# Newsletter an Kontakte (15.10.2026, Plan 2026-10-15-newsletter-versand-an-kontakte.md)
+# ---------------------------------------------------------------------------
+
+NL_HTML = ('<!doctype html><html><body><p>Hallo Anna,</p><img src="cid:held%20bild.jpg" alt="Laden">'
+           '<p><a href="mailto:haus@example.org?subject=Abmelden">Abmelden</a></p></body></html>')
+NL_TEXT = "Hallo Anna,\n\nNeu im Laden.\n--\nmailto:haus@example.org?subject=Abmelden\n"
+
+
+def _nl_lead(consent="opt_in", email="anna@example.com"):
+    return server._q("insert into leads (name, email, consent_status) values ('Anna Weber', %s, %s) "
+                     "returning id", (email, consent))[0]["id"]
+
+
+def _nl_draft(lead_id, medien_liste=None, recipient="anna@example.com"):
+    return server._q(
+        "insert into drafts (lead_id, channel, recipient, subject, body, body_html, newsletter, "
+        "newsletter_medien, status, approved_by, approved_at) values (%s, 'email', %s, 'Herbst im Laden', "
+        "%s, %s, gen_random_uuid(), %s, 'approved', 'betreiber', now()) returning id",
+        (lead_id, recipient, NL_TEXT, NL_HTML,
+         json.dumps(medien_liste if medien_liste is not None else
+                    [{"name": "held bild.jpg", "cid": "held%20bild.jpg", "sw": False}])))[0]["id"]
+
+
+def test_newsletter_geht_als_html_mit_eingebettetem_bild_und_abmeldekopf(tmp_path, monkeypatch):
+    monkeypatch.setattr(medien, "MEDIA_VERZEICHNIS", str(tmp_path))
+    (tmp_path / "held bild.jpg").write_bytes(b"\xff\xd8\xff\xe0JPEGDATA")
+    draft = _nl_draft(_nl_lead())
+    mail_dispatch.eine_runde()
+    assert _zeile(draft)["status"] == "sent"
+    roh = STUB.mails[0]["roh"]
+    nachricht = email.message_from_string(roh, policy=policy.default)
+    assert nachricht["List-Unsubscribe"] == "<mailto:haus@example.org?subject=Abmelden>"
+    teile = {t.get_content_type(): t for t in nachricht.walk()}
+    assert "text/plain" in teile and "text/html" in teile and "image/jpeg" in teile
+    assert teile["image/jpeg"]["Content-ID"] == "<held%20bild.jpg>"
+    assert "Hallo Anna," in teile["text/html"].get_content()
+    assert "Neu im Laden." in teile["text/plain"].get_content()
+
+
+def test_newsletter_ohne_bilddatei_geht_nicht_raus(tmp_path, monkeypatch):
+    monkeypatch.setattr(medien, "MEDIA_VERZEICHNIS", str(tmp_path))
+    draft = _nl_draft(_nl_lead())
+    mail_dispatch.eine_runde()
+    z = _zeile(draft)
+    assert z["status"] == "failed" and "held bild.jpg" in z["error"] and not STUB.mails
+
+
+def test_newsletter_ohne_einwilligung_beim_senden_geht_nicht_raus():
+    lead = _nl_lead()
+    draft = _nl_draft(lead, medien_liste=[])
+    server._q("update leads set consent_status = 'unknown' where id = %s returning id", (lead,))
+    mail_dispatch.eine_runde()
+    z = _zeile(draft)
+    assert z["status"] == "failed" and "Einwilligung" in z["error"] and not STUB.mails
+
+
+def test_gesperrte_adresse_geht_beim_senden_nicht_raus(monkeypatch):
+    # gilt fuer JEDE Mail, nicht nur Newsletter: zwischen Freigabe und Versand kann jemand "nein" sagen
+    lead = _lead(email="gesperrt@example.com")
+    draft = _draft(lead, recipient="gesperrt@example.com")
+    monkeypatch.setattr(server, "_sperre", lambda email="", phone="": "marketing:unsubscribe")
+    mail_dispatch.eine_runde()
+    z = _zeile(draft)
+    assert z["status"] == "failed" and "Verbotsliste" in z["error"] and not STUB.mails
