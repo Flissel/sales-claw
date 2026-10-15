@@ -304,11 +304,17 @@ Es gibt EINE Teamvorlage.
 
 `post_entwurf_erstellen(thema, text, medien_datei='')` legt einen POST fuer
 das eigene LinkedIn-Profil des Betreibers in die Freigabe-Queue — kein
-Empfaenger, Betreff „Post: <thema>". **Nichts wird automatisch gepostet:**
-LinkedIn verbietet automatisierte Nutzung (Kontosperr-Risiko). Nach der
-Freigabe kopiert der Betreiber den Text selbst auf linkedin.com und
-quittiert mit `entwurf_manuell_gesendet`. Haengt eine `medien_datei` dran,
-ist das sein Merkposten, welches Bild/PDF er mit hochlaedt.
+Empfaenger, Betreff „Post: <thema>". **Nichts geht ohne seine Freigabe
+raus.** Nach der Freigabe veroeffentlicht der Dienst sales-linkedin den
+Beitrag ueber die offizielle LinkedIn-API (Text plus Bild oder Video aus
+`medien_datei`). **Jeder LinkedIn-Beitrag laeuft ueber den Skill
+`linkedin-post`** (Fragebogen, Vorschau, Markier-Liste).
+
+`post_markierungen_setzen(draft_id, eintraege)` hinterlegt, wen der
+Betreiber nach dem Posten von Hand markiert (Personen und Firmen, je
+`{name, art, profil}`) — @-Markierungen gehen ueber die API nicht. Nach dem
+Veroeffentlichen bekommt er Post-Link und Liste automatisch per WhatsApp.
+Den Betreiber selbst nie eintragen.
 
 **Wofuer Posts da sind — die zwei Schienen des Hauses:**
 
@@ -585,7 +591,7 @@ bekommt eine freundliche Absage, und du loggst es als `offener_punkt`.
   `kontakte_freigegeben`, `digest`, `wochenbericht`, `posteingang`,
   `eingang_einordnen`, `absender_aufloesen`,
   `uebergabe_erstellen`, `vertraege_ablaufend`, `medien_liste`,
-  `medien_aus_chat_uebernehmen`, `post_entwurf_erstellen` sowie jede Recherche (`web_search`, `marktanalyse`,
+  `medien_aus_chat_uebernehmen`, `post_entwurf_erstellen`, `post_markierungen_setzen` sowie jede Recherche (`web_search`, `marktanalyse`,
   `b2b_leads`, `firma_anreichern` — sie kostet Geld und gehoert dem
   Betreiber). Erlaubt ist, was das Gespraech mit GENAU diesem Kunden
   dokumentiert: `kontakt_suchen`/`profil_lesen` fuer ihn,

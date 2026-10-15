@@ -715,7 +715,8 @@ def test_fuenfundachtzig_werkzeuge_registriert():
     # 13.10.2026: versand_abwarten (Sales-Agent Block A, Task 5), 90 -> 91.
     # 14.10.2026: medien_aus_chat_uebernehmen (tests/test_medien_aus_chat.py),
     # 91 -> 92.
-    assert len(namen) == 92
+    # 15.10.2026: post_markierungen_setzen (Markier-Liste LinkedIn), 92 -> 93.
+    assert len(namen) == 93
     assert "termin_konflikte" in namen
     assert "kontakt_aehnlich" in namen
     assert "gespraeche_suchen" in namen

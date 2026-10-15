@@ -2523,6 +2523,79 @@ def post_entwurf_erstellen(thema: str, text: str, medien_datei: str = "",
                               "quittieren.")})
 
 
+# Markier-Liste (Spec 2026-10-15 §4.2). Echte @-Markierungen gehen ueber die
+# LinkedIn-API nicht (fremde Personen-IDs nicht ermittelbar, Firmen-Lookup
+# 403) — der Betreiber markiert nach dem Posten von Hand; diese Liste sagt
+# ihm, wen. Als Aktivitaet gebucht, juengste gilt; kein Schema-Eingriff.
+MARKIER_MAX = 20
+MARKIER_NAME_MAX = 120
+_MARKIER_PROFIL_PRAEFIXE = ("https://www.linkedin.com/", "https://linkedin.com/")
+
+
+def _markier_eintrag_fehler(e) -> str | None:
+    if not isinstance(e, dict):
+        return "Jeder Eintrag braucht name, art und profil."
+    name, art, profil = e.get("name"), e.get("art"), e.get("profil")
+    if not isinstance(name, str) or not 1 <= len(name.strip()) <= MARKIER_NAME_MAX:
+        return f"name fehlt oder ist laenger als {MARKIER_NAME_MAX} Zeichen."
+    if art not in ("person", "firma"):
+        return "art muss 'person' oder 'firma' sein."
+    if not isinstance(profil, str):
+        return "profil fehlt (leer lassen, wenn es keinen Link gibt)."
+    if profil and not profil.startswith(_MARKIER_PROFIL_PRAEFIXE):
+        return "profil muss leer sein oder mit https://www.linkedin.com/ beginnen."
+    return None
+
+
+@_gesichert
+def post_markierungen_setzen(draft_id: str, eintraege: list) -> str:
+    """Hinterlegt am LinkedIn-BEITRAG, wen der Betreiber nach dem Posten von
+    Hand markiert: Liste aus {name, art: 'person'|'firma', profil: '<https://
+    www.linkedin.com/...>' oder ''}, hoechstens 20. Ersetzt die vorige Liste,
+    eine leere Liste loescht sie. Nur fuer Beitraege (eigenes Profil) im
+    Status pending oder approved. Den Betreiber selbst nie eintragen. Nach
+    dem Veroeffentlichen bekommt er Post-Link und Liste automatisch per
+    WhatsApp. Veroeffentlicht und sendet NICHTS."""
+    try:
+        uuid.UUID(str(draft_id))
+    except ValueError:
+        return _json({"fehler": f"'{draft_id}' ist keine gueltige draft_id."})
+    if not isinstance(eintraege, list):
+        return _json({"fehler": "eintraege muss eine Liste sein."})
+    if len(eintraege) > MARKIER_MAX:
+        return _json({"fehler": f"Hoechstens {MARKIER_MAX} Markierungen."})
+    for e in eintraege:
+        fehler = _markier_eintrag_fehler(e)
+        if fehler:
+            return _json({"fehler": fehler})
+    zeilen = _q("select lead_id, status, channel, recipient from drafts "
+                "where id = %s", (draft_id,))
+    if not zeilen:
+        return _json({"fehler": f"Kein Entwurf mit draft_id {draft_id}."})
+    d = zeilen[0]
+    if d["channel"] != "linkedin" or d["recipient"] != "eigenes-profil":
+        return _json({"fehler": "Markierungen gibt es nur fuer LinkedIn-Beitraege "
+                                "auf dem eigenen Profil."})
+    if d["status"] not in ("pending", "approved"):
+        return _json({"fehler": f"Entwurf steht auf '{d['status']}' — "
+                                "Markierungen nur vor dem Veroeffentlichen."})
+    sauber = [{"name": e["name"].strip(), "art": e["art"], "profil": e["profil"]}
+              for e in eintraege]
+    _q("insert into activities (lead_id, type, payload) values "
+       "(%s, 'linkedin_markierungen', %s) returning id",
+       (d["lead_id"], json.dumps({"draft_id": str(draft_id), "eintraege": sauber},
+                                 ensure_ascii=False)))
+    return _json({"draft_id": str(draft_id), "anzahl": len(sauber)})
+
+
+def post_markierungen(draft_id: str) -> list:
+    """Juengste Markier-Liste eines Beitrags, [] wenn keine (kein Werkzeug)."""
+    z = _q("select payload from activities where type = 'linkedin_markierungen' "
+           "and payload->>'draft_id' = %s order by created_at desc, id desc limit 1",
+           (str(draft_id),))
+    return list((z[0]["payload"] or {}).get("eintraege") or []) if z else []
+
+
 @_gesichert
 def medien_liste() -> str:
     """Welche Unterlagen liegen zum Anhaengen bereit? Nennt Name und Groesse
@@ -8161,7 +8234,11 @@ WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,
              termin_konflikte,
              profil_lesen, profil_aktualisieren,
              bedarf_speichern, bedarf_offen, entwurf_erstellen,
-             post_entwurf_erstellen, medien_liste,
+             post_entwurf_erstellen,
+             # Markier-Liste fuer LinkedIn-Beitraege (15.10.2026), Vertraege:
+             # tests/test_post_markierungen.py.
+             post_markierungen_setzen,
+             medien_liste,
              # Bilder/Dateien aus dem Chat in die Medien (14.10.2026) —
              # der Selbst-Chat-Weg ueber sales-inbox liefert keine Bytes.
              # Vertraege: tests/test_medien_aus_chat.py.

@@ -129,3 +129,13 @@ def test_bild_aus_dem_chat_ueber_das_werkzeug():
 def test_auto_betrieb_eigene_nummer_nur_bei_auto():
     absatz = _absatz("- Schreibt er an **deine eigene Nummer**")
     assert "Stufe `auto`" in absatz
+
+
+def test_linkedin_posts_laufen_ueber_skill_und_nicht_mehr_von_hand():
+    assert "Skill\n`linkedin-post`" in TEXT or "Skill `linkedin-post`" in TEXT
+    assert "kopiert der Betreiber den Text selbst" not in TEXT
+
+
+def test_markierungen_im_kundenchat_tabu():
+    assert "`post_markierungen_setzen`" in _absatz(
+        "- **Betreiber-Werkzeuge sind im Kundenchat tabu")
