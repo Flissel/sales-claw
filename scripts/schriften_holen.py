@@ -36,7 +36,7 @@ def _holen(url: str, ziel: Path, magic: bytes | None = None) -> bool:
 def main() -> None:
     schriften.ORDNER.mkdir(parents=True, exist_ok=True)
     neu = 0
-    for sid, s in schriften.REGISTER.items():
+    for sid, s in schriften.ALLE.items():
         for gewicht, stil in s["dateien"]:
             neu += _holen(FONT_URL.format(slug=s["slug"], gewicht=gewicht, stil=stil),
                           schriften.ORDNER / f"{sid}-{gewicht}-{stil}.woff2", b"wOF2")

@@ -31,10 +31,15 @@ REGISTER: dict[str, dict] = {
                 "dateien": [(600, "normal"), (700, "normal")]},
     "rajdhani": {"familie": "Rajdhani", "slug": "rajdhani",
                  "dateien": [(500, "normal"), (600, "normal")]},
-    # Handschrift fuer Flaechen (Gruss, Notiz, Stoerer) - nur Ebenen-Schrift, kein Vorlagen-Schriftpaar
+}
+
+# Handschrift nur fuer Flaechen-Ebenen (MOS claw/schriften.py HAND). Nicht in REGISTER: das ist die
+# Auswahl der Vorlagen-/Markenschriften (Markenformular, DB-Liste).
+HAND: dict[str, dict] = {
     "caveat": {"familie": "Caveat", "slug": "caveat",
                "dateien": [(400, "normal"), (700, "normal")]},
 }
+ALLE: dict[str, dict] = {**REGISTER, **HAND}
 
 ORDNER = Path(__file__).resolve().parent / "static" / "schriften"
 _DATEI = re.compile(r"^([a-z-]+)-(\d{3})-(normal|italic)\.woff2$")
@@ -42,14 +47,14 @@ _DATEI = re.compile(r"^([a-z-]+)-(\d{3})-(normal|italic)\.woff2$")
 
 def datei_ok(name: str) -> bool:
     m = _DATEI.match(name or "")
-    return bool(m) and m.group(1) in REGISTER \
-        and (int(m.group(2)), m.group(3)) in REGISTER[m.group(1)]["dateien"] \
+    return bool(m) and m.group(1) in ALLE \
+        and (int(m.group(2)), m.group(3)) in ALLE[m.group(1)]["dateien"] \
         and (ORDNER / name).is_file()
 
 
 def css() -> str:
     teile = []
-    for sid, s in REGISTER.items():
+    for sid, s in ALLE.items():
         for gewicht, stil in s["dateien"]:
             teile.append(f"@font-face {{ font-family: '{s['familie']}'; font-style: {stil}; "
                          f"font-weight: {gewicht}; font-display: swap; "
