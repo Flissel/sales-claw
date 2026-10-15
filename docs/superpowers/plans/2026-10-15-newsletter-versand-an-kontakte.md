@@ -68,14 +68,12 @@ Stand 15.10.2026. Noch nichts gebaut. Beim Bauen und Testen wird nichts verschic
 Grobe Größe: 2–3 Arbeitstage. Berührt sales-claw (DB, UI, mail_dispatch, server.py-Tore) und Marketing (Renderer).
 Braucht eine Migration in allen `sales*`-Schemas (eigene Freigabe wie bei 068).
 
-## Entscheidungen, die du treffen musst
+## Entscheidungen (Betreiber, 15.10.2026)
 
-- **E1 Empfängerregel:** nur `opt_in`/`existing_customer`/`betreiber_auftrag` (Vorschlag) — oder auch weitere?
-- **E2 Abmelden:** per Antwort/`mailto` (Vorschlag, ohne öffentlichen Host) — oder öffentliche Abmelde-Seite
-  (z. B. Tailscale Funnel nur für diese eine Route)?
-- **E3 Freigabe:** jeden Entwurf einzeln (wie heute) — oder „alle Entwürfe dieses Newsletters freigeben“ mit
-  einer Bestätigung, die Anzahl und Empfänger zeigt?
-- **E4 Laden ↔ Firma:** Es gibt keine Zuordnung zwischen Laden (sales, sales_ivan) und Marketing-Mandant.
-  Vorschlag: je Laden fest eingestellt (`MARKETING_MANDANT` in der Laden-Konfiguration); ein Laden sendet nur
-  Newsletter seiner Firma.
-- **E5 Obergrenze** je Lauf (Vorschlag 50).
+- **E1 Empfänger:** nur `consent_status = 'opt_in'` (ausdrückliche Einwilligung). Nicht `existing_customer`,
+  nicht `betreiber_auftrag`, nicht `inbound`.
+- **E2 Abmelden:** per Antwort „Abmelden“ (`mailto`-Link + `List-Unsubscribe: <mailto:…>`), Postfach-Erkennung.
+- **E3 Freigabe:** „Immer mit Freigabe“ — jeder Entwurf wird von einem Menschen freigegeben; die Liste erlaubt
+  Mehrfachauswahl (anhaken → „Ausgewählte freigeben“). Nie automatisch.
+- **E4 Laden ↔ Firma:** fest je Laden (`MARKETING_MANDANT` in der Laden-Konfiguration).
+- **E5 Obergrenze:** 50 Empfänger je Durchgang.
