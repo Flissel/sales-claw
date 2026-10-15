@@ -165,7 +165,7 @@ export function bauen(s: AbschnittSchluessel, f: Farben, neueId: () => string): 
         neu(text(`[vibemind.space](${LINK})`, 13, f.text, PAD(0, 40)))] } } }), bloecke: b };
     case 'brief':
       return { oben: neu({ type: 'Container', data: { style: { padding: NULL }, props: { childrenIds: [
-        neu(text('Hallo *Vorname*,', 20, f.akzentText, PAD(32, 12))),
+        neu(text('Hallo {vorname},', 20, f.akzentText, PAD(32, 12))),
         neu(text('Ein paar Sätze, so wie du sie am Ladentisch sagen würdest: was gerade neu ist, worauf du dich '
           + 'freust und warum du an deine Kundschaft gedacht hast.', 17, f.text, PAD(0, 16))),
         neu(text('Herzlich,', 17, f.text, PAD(0, 0))),
