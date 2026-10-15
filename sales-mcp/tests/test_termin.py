@@ -835,3 +835,118 @@ def test_termine_lesen_liefert_auch_das_ende(kalender_konfiguriert):
     termine, fehler = kalender.termine_lesen()
     assert fehler is None, fehler
     assert (termine[0]["ende"] - termine[0]["beginn"]).total_seconds() == 6300
+
+
+# ---------------------------------------------------------------------------
+# Terminerinnerung wird mit dem Termin geschlossen (15.10.2026). Vorher
+# blieb beim Absagen/Verschieben die Wiedervorlage offen — live lagen sechs
+# Erinnerungen fuer abgesagte Termine im Digest.
+# ---------------------------------------------------------------------------
+
+def _offene_erinnerungen(lead):
+    return [w for w in server._offene_wiedervorlagen(lead)
+            if str(w["payload"].get("notiz", "")).startswith(
+                "Terminerinnerung:")]
+
+
+def _erledigt_zaehler(lead, wv_id):
+    return server._q(
+        "select count(*) n from activities where lead_id = %s and "
+        "type = 'wiedervorlage_erledigt' and payload->>'wiedervorlage_id' "
+        "= %s", (lead, wv_id))[0]["n"]
+
+
+def _alt_machen(lead, uid):
+    """Simuliert einen Termin aus der Zeit vor wiedervorlage_id."""
+    server._q("update activities set payload = payload - 'wiedervorlage_id' "
+              "where lead_id = %s and type = 'termin' "
+              "and payload->>'uid' = %s returning id", (lead, uid))
+
+
+def test_absagen_schliesst_die_terminerinnerung():
+    lead = _lead()
+    termin = json.loads(server.termin_bestaetigen(lead, "2099-09-04", "13:00"))
+    uid = _uid_von(termin)
+    wv = _offene_erinnerungen(lead)[0]["id"]
+    antwort = json.loads(server.termin_absagen(lead, uid, "Kunde krank"))
+    assert antwort["erinnerung_erledigt"] == wv
+    assert _offene_erinnerungen(lead) == []
+    assert _erledigt_zaehler(lead, wv) == 1
+
+
+def test_verschieben_laesst_genau_eine_offene_erinnerung_zurueck():
+    lead = _lead()
+    alt = json.loads(server.termin_bestaetigen(lead, "2099-09-04", "13:00"))
+    json.loads(server.termin_verschieben(
+        lead, _uid_von(alt), "2099-09-11", "15:30"))
+    offen = _offene_erinnerungen(lead)
+    assert len(offen) == 1
+    assert "am 2099-09-11 um 15:30" in offen[0]["payload"]["notiz"]
+
+
+def test_altes_termin_ohne_wiedervorlage_id_wird_ueber_den_text_gefunden():
+    lead = _lead()
+    uid = _uid_von(json.loads(server.termin_bestaetigen(
+        lead, "2099-09-04", "13:00")))
+    _alt_machen(lead, uid)
+    wv = _offene_erinnerungen(lead)[0]["id"]
+    json.loads(server.termin_absagen(lead, uid, "egal"))
+    assert _offene_erinnerungen(lead) == []
+    assert _erledigt_zaehler(lead, wv) == 1
+
+
+def test_fremde_erinnerungen_des_leads_bleiben_offen():
+    lead = _lead()
+    uid = _uid_von(json.loads(server.termin_bestaetigen(
+        lead, "2099-09-04", "13:00")))
+    json.loads(server.termin_bestaetigen(lead, "2099-09-05", "13:00"))
+    manuell = server._wiedervorlage_anlegen(
+        lead, datetime(2099, 9, 1).date(), "Angebot nachfassen")
+    _alt_machen(lead, uid)
+    json.loads(server.termin_absagen(lead, uid, "egal"))
+    offen = {w["id"] for w in server._offene_wiedervorlagen(lead)}
+    assert manuell in offen
+    notizen = [w["payload"]["notiz"] for w in _offene_erinnerungen(lead)]
+    assert len(notizen) == 1 and "am 2099-09-05 um 13:00" in notizen[0]
+
+
+def test_zweimal_absagen_bucht_kein_zweites_erledigt():
+    lead = _lead()
+    uid = _uid_von(json.loads(server.termin_bestaetigen(
+        lead, "2099-09-04", "13:00")))
+    wv = _offene_erinnerungen(lead)[0]["id"]
+    server.termin_absagen(lead, uid, "eins")
+    server.termin_absagen(lead, uid, "zwei")
+    assert _erledigt_zaehler(lead, wv) == 1
+
+
+def test_schliessen_scheitert_leise_die_absage_steht(monkeypatch):
+    lead = _lead()
+    uid = _uid_von(json.loads(server.termin_bestaetigen(
+        lead, "2099-09-04", "13:00")))
+
+    def kaputt(*_a, **_k):
+        raise RuntimeError("db weg")
+    monkeypatch.setattr(server, "_terminerinnerung_schliessen", kaputt)
+    antwort = json.loads(server.termin_absagen(lead, uid, "egal"))
+    assert "fehler" not in antwort and "erinnerung_erledigt" not in antwort
+    assert server._termin_abgesagt(lead, uid)
+
+
+def test_abgesagte_terminerinnerungen_listet_altlast_und_ist_kein_werkzeug():
+    lead = _lead()
+    abgesagt = _uid_von(json.loads(server.termin_bestaetigen(
+        lead, "2099-09-04", "13:00")))
+    json.loads(server.termin_bestaetigen(lead, "2099-09-05", "13:00"))
+    # Altlast: Absage OHNE Schliessen und ohne Griff (wie vor dem Fix).
+    _alt_machen(lead, abgesagt)
+    server._q("insert into activities (lead_id, type, payload) values "
+              "(%s, 'termin_abgesagt', %s) returning id",
+              (lead, json.dumps({"uid": abgesagt, "grund": "alt"})))
+    treffer = server._abgesagte_terminerinnerungen()
+    assert len(treffer) == 1
+    assert treffer[0]["lead_id"] == lead
+    assert treffer[0]["termin_uid"] == abgesagt
+    assert "am 2099-09-04 um 13:00" in treffer[0]["notiz"]
+    assert not any(getattr(w, "__name__", "") == "_abgesagte_terminerinnerungen"
+                   for w in server.WERKZEUGE)
