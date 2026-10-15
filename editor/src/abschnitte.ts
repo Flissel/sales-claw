@@ -47,12 +47,15 @@ const bild = (w: number, h: number, alt: string, padding = NULL) => ({
   type: 'Image', data: { style: { padding, textAlign: 'center' },
     props: { url: platzhalter(w, h), alt, width: w, height: h, contentAlignment: 'middle' } } });
 const ueberschrift = (text: string, level: 'h1' | 'h2' | 'h3', color: string, padding = PAD(0, 12)) => ({
-  type: 'Heading', data: { style: { color, fontWeight: 'bold', textAlign: 'left', padding }, props: { level, text } } });
+  type: 'Heading', data: { style: { color, fontWeight: 'bold', textAlign: 'left', padding, fontFamily: 'ANZEIGE' }, props: { level, text } } });
 const text = (t: string, fontSize: number, color: string, padding = PAD(0, 16), textAlign = 'left') => ({
   type: 'Text', data: { style: { color, fontSize, fontWeight: 'normal', textAlign, padding }, props: { text: t, markdown: true } } });
 const knopf = (t: string, f: Farben, padding = PAD(8, 32), buttonStyle = 'rounded', textAlign = 'left') => ({
   type: 'Button', data: { style: { textAlign, padding, fontSize: 16 },
     props: { text: t, url: LINK, buttonBackgroundColor: f.akzent, buttonTextColor: f.aufAkzent, buttonStyle, size: 'large' } } });
+// Satz in der Anzeigeschrift der Vorlage (Zitate); ohne Schriftpaar erbt er die Grundschrift.
+const anzeige = <T extends { data: { style: Record<string, unknown> } }>(b: T): T =>
+  ({ ...b, data: { ...b.data, style: { ...b.data.style, fontFamily: 'ANZEIGE' } } });
 const portraet = (w: number, alt: string, padding = NULL, textAlign = 'center') => ({
   type: 'Image', data: { style: { padding, textAlign },
     props: { url: platzhalter(w, w), alt, width: w, height: w, contentAlignment: 'middle', form: 'kreis' } } });
@@ -144,7 +147,7 @@ export function bauen(s: AbschnittSchluessel, f: Farben, neueId: () => string): 
       return { oben: neu(spalten(listen)), bloecke: b };
     }
     case 'zitat':
-      return { oben: hinein([neu(text('„Ein Satz, der hängen bleibt.“', 20, f.hell, PAD(0, 8, 0, 0))),
+      return { oben: hinein([neu(anzeige(text('„Ein Satz, der hängen bleibt.“', 20, f.hell, PAD(0, 8, 0, 0)))),
         neu(text('— Name, Rolle', 13, f.text, NULL))]), bloecke: b };
     case 'grosse_zahl':
       return { oben: hinein([neu(text('**3×** schneller', 34, f.akzent, PAD(0, 4, 0, 0), 'center')),
@@ -174,7 +177,7 @@ export function bauen(s: AbschnittSchluessel, f: Farben, neueId: () => string): 
     case 'kundenstimme':
       return { oben: neu({ type: 'Container', data: { style: { backgroundColor: f.karte, borderRadius: 16, padding: PAD(28, 28, 32, 32) },
         props: { childrenIds: [neu(portraet(72, 'Foto der Kundin oder des Kunden', PAD(0, 12, 0, 0))),
-          neu(text('„Ein Satz, den eine Kundin wirklich gesagt hat.“', 19, f.hell, PAD(0, 8, 0, 0), 'center')),
+          neu(anzeige(text('„Ein Satz, den eine Kundin wirklich gesagt hat.“', 20, f.hell, PAD(0, 8, 0, 0), 'center'))),
           neu(text('— Vorname, Stadt', 14, f.akzentText, NULL, 'center'))] } } }), bloecke: b };
     case 'farbband':
       return { oben: neu({ type: 'Container', data: { style: { backgroundColor: f.akzent, padding: PAD(48, 44, 40, 40) },
@@ -185,7 +188,7 @@ export function bauen(s: AbschnittSchluessel, f: Farben, neueId: () => string): 
       return { oben: hinein([
         neu({ type: 'Text', data: { style: { color: f.akzentText, fontSize: 13, fontWeight: 'bold', textAlign: 'center',
           letterSpacing: 2, textTransform: 'uppercase', padding: PAD(0, 8, 0, 0) }, props: { text: 'Einladung' } } }),
-        neu({ type: 'Heading', data: { style: { color: f.hell, fontWeight: 'bold', textAlign: 'center', padding: PAD(0, 8, 0, 0) },
+        neu({ type: 'Heading', data: { style: { color: f.hell, fontWeight: 'bold', textAlign: 'center', padding: PAD(0, 8, 0, 0), fontFamily: 'ANZEIGE' },
           props: { level: 'h2', text: 'Ein Abend im Laden' } } }),
         neu(text('**Donnerstag, 18–21 Uhr**  \nMusterstraße 1 · mit Kaffee und Kuchen', 16, f.text, PAD(0, 16, 0, 0), 'center')),
         neu(knopf('Ich komme', f, NULL, 'pill', 'center'))]), bloecke: b };

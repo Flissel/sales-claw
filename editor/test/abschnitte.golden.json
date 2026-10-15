@@ -37,7 +37,8 @@
         "bottom": 12,
         "left": 40,
         "right": 40
-       }
+       },
+       "fontFamily": "ANZEIGE"
       },
       "props": {
        "level": "h1",
@@ -124,7 +125,8 @@
         "bottom": 8,
         "left": 0,
         "right": 0
-       }
+       },
+       "fontFamily": "ANZEIGE"
       },
       "props": {
        "level": "h3",
@@ -225,7 +227,8 @@
         "bottom": 4,
         "left": 0,
         "right": 0
-       }
+       },
+       "fontFamily": "ANZEIGE"
       },
       "props": {
        "level": "h3",
@@ -287,7 +290,8 @@
         "bottom": 4,
         "left": 0,
         "right": 0
-       }
+       },
+       "fontFamily": "ANZEIGE"
       },
       "props": {
        "level": "h3",
@@ -391,7 +395,8 @@
         "bottom": 4,
         "left": 0,
         "right": 0
-       }
+       },
+       "fontFamily": "ANZEIGE"
       },
       "props": {
        "level": "h3",
@@ -453,7 +458,8 @@
         "bottom": 4,
         "left": 0,
         "right": 0
-       }
+       },
+       "fontFamily": "ANZEIGE"
       },
       "props": {
        "level": "h3",
@@ -515,7 +521,8 @@
         "bottom": 4,
         "left": 0,
         "right": 0
-       }
+       },
+       "fontFamily": "ANZEIGE"
       },
       "props": {
        "level": "h3",
@@ -603,7 +610,8 @@
         "bottom": 8,
         "left": 0,
         "right": 0
-       }
+       },
+       "fontFamily": "ANZEIGE"
       },
       "props": {
        "text": "„Ein Satz, der hängen bleibt.“",
@@ -1102,7 +1110,7 @@
      "data": {
       "style": {
        "color": "{{hell}}",
-       "fontSize": 19,
+       "fontSize": 20,
        "fontWeight": "normal",
        "textAlign": "center",
        "padding": {
@@ -1110,7 +1118,8 @@
         "bottom": 8,
         "left": 0,
         "right": 0
-       }
+       },
+       "fontFamily": "ANZEIGE"
       },
       "props": {
        "text": "„Ein Satz, den eine Kundin wirklich gesagt hat.“",
@@ -1178,7 +1187,8 @@
         "bottom": 12,
         "left": 0,
         "right": 0
-       }
+       },
+       "fontFamily": "ANZEIGE"
       },
       "props": {
        "level": "h1",
@@ -1267,7 +1277,8 @@
         "bottom": 8,
         "left": 0,
         "right": 0
-       }
+       },
+       "fontFamily": "ANZEIGE"
       },
       "props": {
        "level": "h2",
