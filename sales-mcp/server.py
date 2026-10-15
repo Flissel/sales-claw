@@ -2450,10 +2450,15 @@ _ABMELDE_BETREFF = re.compile(r"^\s*(?:(?:re|aw|wg|fwd?)\s*:\s*)*abmelden\s*[.!]
 
 
 def _newsletter_abmeldungen(mails: list) -> int:
-    """Abmelden per Antwort (E2): Mails mit Betreff "Abmelden" (auch "AW: Abmelden") sperren den
-    Absender auf der gemeinsamen Verbotsliste und nehmen bei passenden Kontakten die Einwilligung
-    zurueck. Gezaehlt und protokolliert wird je Mail genau einmal (Message-ID). Unbekannte Absender
-    werden trotzdem gesperrt - wer "nein" sagt, bekommt nichts mehr. Rueckgabe: neu verarbeitete Mails."""
+    """Abmelden per Antwort (E2): Mails mit Betreff "Abmelden" (auch "AW: Abmelden").
+
+    Der Absender einer Mail ist faelschbar (Commit-Review 15.10.2026). Deshalb in zwei Stufen:
+    * JEDE solche Mail stoppt die Newsletter: Kontakte mit dieser Adresse und consent_status
+      'opt_in' fallen auf 'unknown'. Mehr kann eine Faelschung nicht anrichten.
+    * Auf die gemeinsame Verbotsliste (sperrt ALLE Mails, auch Marketing) kommt die Adresse nur,
+      wenn der Mailserver den Absender bestaetigt hat (`absender_bestaetigt`, postfach.py).
+    Unbekannte Absender und andere Einwilligungen bleiben unberuehrt. Je Mail genau einmal
+    (Message-ID). Rueckgabe: Zahl der Mails, die etwas bewirkt haben."""
     neu = 0
     for m in mails or []:
         if not _ABMELDE_BETREFF.match(str(m.get("betreff") or "")):
@@ -2465,13 +2470,17 @@ def _newsletter_abmeldungen(mails: list) -> int:
         if _q("select 1 from activities where type = 'newsletter_abmeldung' and payload->>'message_id' = %s "
               "limit 1", (kennung,)):
             continue
-        sperrliste.sperren(_q, email=adresse, quelle="sales:newsletter-abmeldung", grund="Antwort 'Abmelden'")
         leads = _q("update leads set consent_status = 'unknown', updated_at = now() "
-                   "where lower(btrim(email)) = %s returning id", (adresse,))
-        nutzlast = _json({"message_id": kennung, "adresse": adresse})
-        for z in leads or [None]:
+                   "where lower(btrim(email)) = %s and consent_status = 'opt_in' returning id", (adresse,))
+        if not leads:
+            continue
+        bestaetigt = m.get("absender_bestaetigt") is True
+        if bestaetigt:
+            sperrliste.sperren(_q, email=adresse, quelle="sales:newsletter-abmeldung", grund="Antwort 'Abmelden'")
+        nutzlast = _json({"message_id": kennung, "adresse": adresse, "bestaetigt": bestaetigt})
+        for z in leads:
             _q("insert into activities (lead_id, type, payload, actor) values (%s, 'newsletter_abmeldung', %s, "
-               "'cron') returning id", ((z or {}).get("id"), nutzlast))
+               "'cron') returning id", (z["id"], nutzlast))
         neu += 1
     return neu
 

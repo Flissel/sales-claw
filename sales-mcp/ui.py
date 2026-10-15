@@ -1755,6 +1755,15 @@ def _text_stand(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()[:16]
 
 
+def _entwurf_stand(z) -> str:
+    """Lese-Stand eines Entwurfs: der Text - und bei Newslettern zusaetzlich die HTML-Fassung, denn
+    die sehen die meisten Empfaenger (Commit-Review 15.10.2026: sonst haette eine nach dem Lesen
+    geaenderte HTML-Fassung die Freigabe passiert)."""
+    text = z.get("body") or ""
+    html_ = z.get("body_html")
+    return _text_stand(text + "\x00" + html_) if html_ else _text_stand(text)
+
+
 def _formular(aktion: str, draft_id, knopf: str, klasse: str = "",
               checkbox: str | None = None, stand: str | None = None) -> str:
     """Die Knopfklasse steht ZUSAETZLICH am Formular: die Media-Query rueckt
@@ -1842,7 +1851,7 @@ def _entwurf_karte_offen(z) -> str:
         f'{_markier_block(z)}'
         f'{_newsletter_ansicht(z) if z.get("newsletter") else _entwurf_bearbeiten_form(z, text)}'
         f'<div class="aktionen">'
-        f'{_formular("freigeben", z["id"], "Freigeben", "primaer", stand=_text_stand(text))}'
+        f'{_formular("freigeben", z["id"], "Freigeben", "primaer", stand=_entwurf_stand(z))}'
         f'{_formular("ablehnen", z["id"], "Ablehnen", "gefahr")}'
         f'</div></details>')
 
@@ -1867,7 +1876,7 @@ def _newsletter_auswahl(zeilen) -> str:
     reihen = "".join(
         f'<tr><td><input type="checkbox" name="draft_id" value="{_e(z["id"])}"></td>'
         f'<td>{_e(z["name"] or "?")}</td><td>{_e(z["recipient"])}</td><td>{_e(z.get("subject") or "")}</td>'
-        f'<input type="hidden" name="stand_{_e(z["id"])}" value="{_e(_text_stand(z["body"] or ""))}"></tr>'
+        f'<input type="hidden" name="stand_{_e(z["id"])}" value="{_e(_entwurf_stand(z))}"></tr>'
         for z in nl)
     return (f'<details class="karte"><summary><b>Newsletter-Entwürfe: mehrere freigeben</b> '
             f'<span class="meta">({len(nl)})</span></summary>'
@@ -2490,7 +2499,7 @@ async def inbox(request):
     freigegeben) und darunter seinem eigenen Verlauf (UI-Plan Schritt 3,
     Betreiber 02.09.2026: „damit alles seine Ordnung hat")."""
     pending = server._q(
-        "select d.id, d.channel, d.recipient, d.body, d.media_ref, d.subject, d.cc, d.newsletter, "
+        "select d.id, d.channel, d.recipient, d.body, d.media_ref, d.subject, d.cc, d.newsletter, d.body_html, "
         "       extract(epoch from (now() - d.created_at)) / 3600 as alter_h, "
         "       l.name, l.consent_status "
         "from drafts d left join leads l on l.id = d.lead_id "
@@ -2765,10 +2774,10 @@ def _freigabe_loggen(z, erneut: bool = False) -> None:
 
 def _eines_freigeben(draft_id: str, stand: str, akteur: str):
     """Ein Entwurf pending -> approved, nur mit passendem Lese-Stand. None oder eine Fehlerseite."""
-    aktuell = server._q("select body, status from drafts where id = %s", (draft_id,))
+    aktuell = server._q("select body, body_html, status from drafts where id = %s", (draft_id,))
     if not aktuell or aktuell[0]["status"] != "pending":
         return _statusfehler(draft_id, "pending")
-    if not stand or stand != _text_stand(aktuell[0]["body"] or ""):
+    if not stand or stand != _entwurf_stand(aktuell[0]):
         return _fehlerseite(409, "Text wurde geändert",
                             "Ein Entwurf wurde geändert, seit diese Seite geladen wurde. Ab hier nichts "
                             "freigegeben — Seite neu laden und den AKTUELLEN Text lesen.")
@@ -2844,7 +2853,7 @@ async def aktion_freigeben(request):
     # Formular muss zum aktuellen Text passen. Eine seit dem Laden der
     # Seite geaenderte Fassung wird nicht still freigegeben — genau das
     # ist an diesem Tag passiert (Ueberarbeitung zwischen Laden und Klick).
-    aktuell = server._q("select body, status from drafts where id = %s",
+    aktuell = server._q("select body, body_html, status from drafts where id = %s",
                         (draft_id,))
     if not aktuell or aktuell[0]["status"] != "pending":
         return _statusfehler(draft_id, "pending")
@@ -2854,7 +2863,7 @@ async def aktion_freigeben(request):
             400, "Lese-Stand fehlt",
             "Diese Freigabe trägt keinen Stand des gelesenen Textes — "
             "Seite neu laden und aus der aktuellen Ansicht freigeben.")
-    if stand != _text_stand(aktuell[0]["body"] or ""):
+    if stand != _entwurf_stand(aktuell[0]):
         return _fehlerseite(
             409, "Text wurde geändert",
             "Der Entwurf wurde geändert, seit diese Seite geladen wurde. "
@@ -6505,7 +6514,7 @@ async def heute(request):
     rechts — Kalender, WhatsApp, Posteingang, Pipeline. Jede Zahl kommt aus
     derselben Quelle wie die Seite, auf die sie verweist."""
     pending = server._q(
-        "select d.id, d.channel, d.recipient, d.body, d.media_ref, d.subject, d.cc, d.newsletter, "
+        "select d.id, d.channel, d.recipient, d.body, d.media_ref, d.subject, d.cc, d.newsletter, d.body_html, "
         "       extract(epoch from (now() - d.created_at)) / 3600 as alter_h, "
         "       l.name, l.consent_status "
         "from drafts d left join leads l on l.id = d.lead_id "

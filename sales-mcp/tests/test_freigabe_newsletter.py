@@ -517,13 +517,25 @@ def test_newsletter_entwurf_nicht_bearbeitbar_und_mehrfach_freigeben(versand):
     b = _kontakt("Bert Berg", "bert@example.com")
     for k in (a, b):
         server._newsletter_entwurf(k, IID, "B", VERSAND["html"], VERSAND["text"], [])
-    entwuerfe = server._q("select id, body from drafts order by recipient")
+    entwuerfe = server._q("select id, body, body_html from drafts order by recipient")
     assert "nicht bearbeiten" in server.entwurf_bearbeiten(str(entwuerfe[0]["id"]), "neuer Text")
     seite = CLIENT.get("/freigaben", headers=HOST).text
     assert "Ausgewählte freigeben" in seite
     daten = {"csrf": ui.CSRF_TOKEN, "bestaetigt": "ja", "draft_id": [str(z["id"]) for z in entwuerfe]}
     for z in entwuerfe:
-        daten[f"stand_{z['id']}"] = ui._text_stand(z["body"])
+        daten[f"stand_{z['id']}"] = ui._entwurf_stand(z)
     r = CLIENT.post("/aktion/freigeben-auswahl", headers=HOST, data=daten, follow_redirects=False)
     assert r.status_code == 303
     assert {z["status"] for z in server._q("select status from drafts")} == {"approved"}
+
+
+def test_freigabe_bindet_auch_die_html_fassung(versand):
+    a = _kontakt("Anna Weber", "anna@example.com")
+    server._newsletter_entwurf(a, IID, "B", VERSAND["html"], VERSAND["text"], [])
+    z = server._q("select id, body from drafts")[0]
+    # Jemand aendert NACH dem Laden der Seite nur die HTML-Fassung: der alte Text-Stand reicht nicht
+    server._q("update drafts set body_html = '<p>anders</p>' where id = %s returning id", (z["id"],))
+    r = CLIENT.post("/aktion/freigeben", headers=HOST, follow_redirects=False,
+                    data={"csrf": ui.CSRF_TOKEN, "draft_id": str(z["id"]), "stand": ui._text_stand(z["body"])})
+    assert r.status_code == 409
+    assert server._q("select status from drafts")[0]["status"] == "pending"

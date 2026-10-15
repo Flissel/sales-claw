@@ -111,6 +111,18 @@ def _html_zu_text(html: str) -> str:
     return " ".join(ohne.split())
 
 
+_BESTAETIGT = re.compile(r"\b(?:dmarc|dkim|spf)=pass\b", re.IGNORECASE)
+
+
+def absender_bestaetigt(nachricht) -> bool:
+    """Hat der empfangende Mailserver den Absender geprueft (DKIM/SPF/DMARC pass)?
+
+    Nur der OBERSTE Authentication-Results zaehlt: den setzt unser eigener Server zuletzt; tiefere
+    koennen vom Absender selbst stammen und sind faelschbar (Commit-Review 15.10.2026, Abmelden)."""
+    koepfe = nachricht.get_all("Authentication-Results") or []
+    return bool(koepfe) and bool(_BESTAETIGT.search(str(koepfe[0])))
+
+
 def _text(nachricht) -> str:
     """text/plain bevorzugt; sonst text/html gestrippt; sonst leer."""
     kandidaten = (nachricht.walk()
@@ -425,6 +437,7 @@ def liste(anzahl: int = 10) -> list:
                 "auszug": (text[:AUSZUG_MAX] + "…"
                            if len(text) > AUSZUG_MAX else text),
                 "kalenderteil": bool(_kalender_teil(nachricht)),
+                "absender_bestaetigt": absender_bestaetigt(nachricht),
             })
         return ergebnis
     finally:
