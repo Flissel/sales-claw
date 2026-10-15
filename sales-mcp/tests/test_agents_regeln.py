@@ -139,3 +139,12 @@ def test_linkedin_posts_laufen_ueber_skill_und_nicht_mehr_von_hand():
 def test_markierungen_im_kundenchat_tabu():
     assert "`post_markierungen_setzen`" in _absatz(
         "- **Betreiber-Werkzeuge sind im Kundenchat tabu")
+
+
+def test_websuche_personen_auf_die_markier_liste_nicht_in_den_text():
+    # Final-Review I1 (15.10.2026): bestaetigte Personen/Firmen kommen auf die
+    # Markier-Liste, im Beitragstext steht nur der Name — kein Profil-Link.
+    assert "als normaler Link" not in TEXT
+    absatz = _absatz("- **Bei Personen nie raten.**")
+    assert "post_markierungen_setzen" in absatz
+    assert "kein Profil-Link" in absatz

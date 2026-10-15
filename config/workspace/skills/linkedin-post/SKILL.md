@@ -77,6 +77,8 @@ Erst auf sein Ok:
   bestaetigten Liste (leer lassen, wenn niemand markiert wird).
 
 Dann EIN Satz: Entwurf liegt zur Freigabe; nach dem Posten kommen Link und
-Markier-Liste automatisch per WhatsApp. Freigabe und Versand entscheidet der
-Betreiber (Versand per `linkedin_versand_anfordern()` nur auf seine
-ausdrueckliche Bitte).
+Markier-Liste automatisch per WhatsApp. Die Freigabe entscheidet der
+Betreiber, und Freigeben heisst schon veroeffentlichen: der Dienst
+sales-linkedin holt den Beitrag binnen einer Minute (hoechstens einer pro
+Tag). `linkedin_versand_anfordern()` nur, wenn der Betreiber ausdruecklich
+will, dass der Beitrag sofort per Chat veroeffentlicht wird.

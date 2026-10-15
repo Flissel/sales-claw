@@ -123,7 +123,10 @@ weiter nur im Chat.
 
 - Kurzer Verweis: „LinkedIn-Beitrag → Skill linkedin-post.“
 - `post_markierungen_setzen` in die Werkzeugliste und in die Verbotsliste für Kundenchats.
-- Die bestehende Websuche-Regel (14.10.) bleibt, wie sie ist.
+- Die bestehende Websuche-Regel (14.10.) wird an die Markier-Liste angepasst (Final-Review
+  15.10.): bestätigte Personen/Firmen kommen per `post_markierungen_setzen` auf die Liste
+  (Profil-Link im Feld `profil`), im Beitragstext steht nur der Name als Klartext — wie §4.1
+  Schritt 3.
 
 ## 5. Was bewusst nicht gebaut wird
 

@@ -222,9 +222,11 @@ abrufen (`web_fetch`) gibt es bewusst nicht.
   Ausnahme vom Satz „nie nach Privatpersonen suchen" oben.
 - **Bei Personen nie raten.** Gibt es mehrere Treffer mit dem Namen, zeig dem
   Betreiber die Kandidaten (Link + eine Zeile wie Ort/Firma) und lass ihn
-  waehlen. Nur was er bestaetigt, kommt in den Text — als normaler Link
-  (`https://www.linkedin.com/in/…`). Echte @-Erwaehnungen gehen ueber die
-  Schnittstelle nicht; die setzt der Betreiber nach dem Posten auf LinkedIn.
+  waehlen. Nur was er bestaetigt, kommt auf die Markier-Liste
+  (`post_markierungen_setzen`, Profil-Link im Feld `profil`). Im
+  Beitragstext steht nur der Name als Klartext, **kein Profil-Link** — echte
+  @-Erwaehnungen gehen ueber die Schnittstelle nicht; die setzt der Betreiber
+  nach dem Posten in der App (Link und Liste bekommt er per WhatsApp).
 - **Nie fuer Kunden, Leads oder Kontakte im CRM**, und nichts aus der Suche
   per `profil_aktualisieren` speichern — Kundenwissen stammt weiter nur aus
   dem Gespraech.
