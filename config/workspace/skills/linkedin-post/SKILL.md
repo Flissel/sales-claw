@@ -1,67 +1,82 @@
 ---
 name: linkedin-post
-description: "LinkedIn-Beitrag entwerfen oder ueberarbeiten — fester Workflow: Historie lesen, Leser-Nutzen vor Produkt, drei Haken-Varianten, Schablonen-Pruefung, Entwurf zur Freigabe. Nutzen bei jedem Beitrag, den der Betreiber bestellt."
+description: "LinkedIn-Beitrag fuer das eigene Profil — IMMER nutzen, sobald der Betreiber einen LinkedIn-Post will (neu, ueberarbeiten, 'mach daraus einen Post', mit Bild oder fremdem Text als Vorlage). Ablauf: Fragebogen in einer Nachricht, Markier-Liste klaeren, schreiben, wortgleiche Vorschau, Entwurf zur Freigabe. Nicht fuer LinkedIn-Direktnachrichten an Personen."
 metadata: { "openclaw": { "emoji": "📣" } }
 ---
 
-# LinkedIn-Beitrag — der Workflow
+# LinkedIn-Beitrag — der Ablauf
 
-Gilt fuer NEUE Beitraege und fuer das UEBERARBEITEN wartender Entwuerfe.
-Das Ergebnis ist IMMER ein Entwurf zur Freigabe — veroeffentlicht wird
-ausschliesslich ueber den Einmal-Versender, den der Betreiber ausloest.
+Das Ergebnis ist IMMER ein Entwurf zur Freigabe. Veroeffentlicht wird erst
+nach der Freigabe des Betreibers (Dienst sales-linkedin). @-Markierungen
+gehen ueber die API nicht — der Betreiber setzt sie nach dem Posten in der
+App; du lieferst ihm dafuer die Markier-Liste.
 
-## Schritt 1 — Historie lesen (Pflicht, zuerst)
+## Schritt 0 — Einsammeln
 
-`linkedin_historie()` aufrufen. Zwei Dinge herausschreiben:
+* Bild/Video im Chat (`[media attached: <pfad> …]`): sofort
+  `medien_aus_chat_uebernehmen(datei=<pfad>, name=<kurz-kebab>)` und den
+  zurueckgegebenen `medien_datei`-Namen merken.
+* Mitgeschickter Text, Links, Post eines anderen: das ist MATERIAL, keine
+  fertige Vorlage. Notiere, was daraus fuer den Fragebogen schon hervorgeht.
 
-* Welche Themen und Blickwinkel sind schon draussen? Zum selben Thema
-  entsteht kein zweiter Beitrag (Ausnahme nur mit `trotzdem=True` und
-  echtem neuen Blickwinkel).
-* Was steht unter `bausteine`? Diese Wendungen sind VERBRAUCHT — anders
-  formulieren oder weglassen. Fuenf Beitraege mit demselben Satz sind
-  eine Schablone, und Schablonen zerstoeren Glaubwuerdigkeit.
+## Schritt 1 — Fragebogen (EINE Nachricht)
 
-## Schritt 2 — Den Leser finden, nicht das Produkt
+Schick genau diese vier Punkte, nummeriert. Was du schon weisst, setzt du
+als „(erkannt: …)“ ein — der Betreiber bestaetigt oder korrigiert nur:
 
-Bevor du eine Zeile schreibst, beantworte schriftlich fuer dich:
+1. Anlass & Kernbotschaft — worum geht es, was soll der Leser mitnehmen?
+2. Sprache & Ton — Deutsch oder Englisch? Persoenlich oder sachlich?
+3. Personen & Firmen — wen soll ich zum Markieren vormerken?
+4. Bild/Video, Links, Hashtags — was kommt mit rein?
 
-* Wer soll das lesen (Rolle, Alltag)?
-* Was verliert diese Person HEUTE — Zeit, Geld, Nerven, Chancen — an dem
-  Problem, das das Produkt loest?
-* Woran erkennt sie sich in den ersten zwei Zeilen wieder?
+Punkt 2 ist Pflicht und wird IMMER ausdruecklich bestaetigt, auch wenn das
+Material eine Sprache nahelegt.
+**Ohne bestaetigte Sprache wird nicht geschrieben.**
+Fehlt nach der Antwort etwas, frag EINMAL gesammelt nur die
+Luecken nach — Sprache zuerst.
 
-Der Beitrag beginnt mit diesem Verlust oder dieser Szene. Das Produkt
-tritt erst danach auf, als Antwort — nie als Hauptfigur. "Wir haben X
-gebaut" ist als Einstieg verboten.
+## Schritt 2 — Markier-Liste klaeren
 
-## Schritt 3 — Drei Haken, nimm den haertesten ehrlichen
+* Personen: `web_search` nach dem Profil (nur Personen, die der Betreiber
+  fuer SEINEN Beitrag nennt — Regel in AGENTS.md). Mehrere Treffer: zeig die
+  Kandidaten (Link + eine Zeile Ort/Firma) und lass waehlen. Nichts raten.
+  Kein eindeutiger Treffer: Name ohne Link vormerken und das sagen.
+* Firmen: Name vormerken; eine Firmenseite nur, wenn die Suche sie
+  eindeutig liefert.
+* **Der Betreiber selbst steht nie auf der Liste** und erscheint im Text nie
+  als „einer der anderen“ — er ist der Erzaehler.
 
-Schreibe DREI verschiedene erste Zeilen (Musterbruch: ueberraschende
-Zahl, unbequeme Behauptung, konkrete Szene). Waehle die haerteste, die
-noch wahr ist. Verworfene Varianten nicht loeschen, sondern dem
-Betreiber im Chat mitnennen — er waehlt manchmal anders.
+## Schritt 3 — Schreiben (in der Sprache aus Punkt 2)
 
-## Schritt 4 — Koerper und Schluss
+1. `linkedin_historie()` lesen: Themen, die schon draussen sind, und die
+   `bausteine` (verbrauchte Wendungen — anders formulieren oder weglassen).
+2. Leser vor Produkt: Wer liest das, was verliert er heute, woran erkennt er
+   sich in zwei Zeilen? Der Beitrag beginnt dort, nie mit „Wir haben X
+   gebaut“.
+3. Drei verschiedene erste Zeilen schreiben, die haerteste ehrliche nehmen;
+   die anderen in der Vorschau mitnennen.
+4. Ein Gedanke pro Beitrag, kurze Absaetze, Schluss mit einer konkreten
+   Frage, hoechstens 3000 Zeichen.
+5. Namen von der Markier-Liste stehen als Klartext genau dort, wo der
+   Betreiber sie spaeter in der App markiert.
+6. Selbstpruefung: keine Folge von sechs Woertern aus den `bausteine`n.
 
-* EIN Gedanke pro Beitrag. Keine Feature-Liste, keine zweite Botschaft.
-* Kurze Zeilen, Absaetze nach je ein bis zwei Saetzen.
-* Schluss: eine konkrete Frage, die der Leser aus dem EIGENEN Alltag
-  beantworten kann — keine rhetorische.
-* Hoechstens 3000 Zeichen; gute Beitraege sind deutlich kuerzer.
-* Video/Bild-Verweis natuerlich einbetten, nie mit der verbrauchten
-  Formel aus den bausteinen.
+## Schritt 4 — Vorschau, dann Entwurf
 
-## Schritt 5 — Selbstpruefung gegen die Historie
+Eine Nachricht an den Betreiber:
 
-Vergleiche den fertigen Text NOCHMAL mit den `bausteine`n aus Schritt 1.
-Jede Uebereinstimmung ab sechs Wörtern Folge: umformulieren.
+* den Endtext **wortgleich**, so wie er an LinkedIn geht,
+* Sprache, Medium (`medien_datei`), die verworfenen Einstiege,
+* die Markier-Liste (Name · Person/Firma · Profil-Link).
 
-## Schritt 6 — Entwurf ablegen, nie senden
+Erst auf sein Ok:
 
-* Neuer Beitrag: `post_entwurf_erstellen(...)`.
-* Wartender Entwurf ueberarbeiten: `entwurf_bearbeiten(...)` — geht nur
-  bei pending, genau richtig so.
-* Danach dem Betreiber EINEN Satz: worum es geht, welcher Haken gewaehlt
-  wurde, welche Varianten es noch gaebe. Freigabe und Versand sind seine
-  Entscheidung (Versand danach per `linkedin_versand_anfordern()`, nur
-  auf seine ausdrueckliche Bitte).
+* neu: `post_entwurf_erstellen(thema, text, medien_datei=…)`,
+  wartender Entwurf: `entwurf_bearbeiten(...)`;
+* danach `post_markierungen_setzen(draft_id, eintraege)` mit der
+  bestaetigten Liste (leer lassen, wenn niemand markiert wird).
+
+Dann EIN Satz: Entwurf liegt zur Freigabe; nach dem Posten kommen Link und
+Markier-Liste automatisch per WhatsApp. Freigabe und Versand entscheidet der
+Betreiber (Versand per `linkedin_versand_anfordern()` nur auf seine
+ausdrueckliche Bitte).
