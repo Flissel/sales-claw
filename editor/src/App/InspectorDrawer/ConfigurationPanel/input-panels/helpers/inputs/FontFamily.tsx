@@ -18,6 +18,9 @@ const VORLAGE = [
   <MenuItem key="TEXT" value="TEXT">
     Vorlage – Text
   </MenuItem>,
+  <MenuItem key="HAND" value="HAND" sx={{ fontFamily: "Caveat, 'Segoe Print', cursive", fontSize: 18 }}>
+    Handschrift
+  </MenuItem>,
 ];
 
 type NullableProps = {

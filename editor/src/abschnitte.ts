@@ -56,6 +56,9 @@ const knopf = (t: string, f: Farben, padding = PAD(8, 32), buttonStyle = 'rounde
 // Satz in der Anzeigeschrift der Vorlage (Zitate); ohne Schriftpaar erbt er die Grundschrift.
 const anzeige = <T extends { data: { style: Record<string, unknown> } }>(b: T): T =>
   ({ ...b, data: { ...b.data, style: { ...b.data.style, fontFamily: 'ANZEIGE' } } });
+// Unterschrift in Handschrift (Rolle HAND = caveat, unabhaengig vom Schriftpaar).
+const hand = <T extends { data: { style: Record<string, unknown> } }>(b: T): T =>
+  ({ ...b, data: { ...b.data, style: { ...b.data.style, fontFamily: 'HAND' } } });
 const portraet = (w: number, alt: string, padding = NULL, textAlign = 'center') => ({
   type: 'Image', data: { style: { padding, textAlign },
     props: { url: platzhalter(w, w), alt, width: w, height: w, contentAlignment: 'middle', form: 'kreis' } } });
@@ -165,11 +168,13 @@ export function bauen(s: AbschnittSchluessel, f: Farben, neueId: () => string): 
         neu(text('Hallo *Vorname*,', 20, f.akzentText, PAD(32, 12))),
         neu(text('Ein paar Sätze, so wie du sie am Ladentisch sagen würdest: was gerade neu ist, worauf du dich '
           + 'freust und warum du an deine Kundschaft gedacht hast.', 17, f.text, PAD(0, 16))),
-        neu(text('Herzlich,  \n**Vorname**', 17, f.text, PAD(0, 32)))] } } }), bloecke: b };
+        neu(text('Herzlich,', 17, f.text, PAD(0, 0))),
+        neu(hand(text('Vorname', 30, f.akzentText, PAD(0, 32))))] } } }), bloecke: b };
     case 'portraet_gruss': {
       const l = [neu(portraet(140, 'Porträt der Inhaberin oder des Inhabers'))];
       const r = [neu(text('*„Ich packe jede Bestellung selbst ein – und lege manchmal etwas Kleines dazu.“*', 16, f.text,
-        PAD(0, 8, 0, 0))), neu(text('**Vorname**, Inhaberin', 16, f.akzentText, NULL))];
+        PAD(0, 4, 0, 0))), neu(hand(text('Vorname', 28, f.akzentText, PAD(0, 0, 0, 0)))),
+        neu(text('Inhaberin', 13, f.text, NULL))];
       return { oben: neu({ type: 'ColumnsContainer', data: { style: { padding: PAD(28, 28, 32, 32), backgroundColor: f.karte },
         props: { columnsCount: 2, columnsGap: 24, contentAlignment: 'middle', fixedWidths: [140, null, null],
           columns: [{ childrenIds: l }, { childrenIds: r }, { childrenIds: [] }] } } }), bloecke: b };

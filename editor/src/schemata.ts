@@ -60,7 +60,8 @@ const ALT = [
   'MONOSPACE',
 ] as const;
 // ANZEIGE/TEXT = Rolle; die Familie kommt aus root.data.schriften der Vorlage.
-export const FontFamily = z.enum([...ALT, 'ANZEIGE', 'TEXT']).nullable().optional();
+// HAND = Handschrift (caveat), fest - z. B. die Unterschrift unter dem Gruss (Marketing-Migration 068).
+export const FontFamily = z.enum([...ALT, 'ANZEIGE', 'TEXT', 'HAND']).nullable().optional();
 
 const Fein = {
   fontFamily: FontFamily,
@@ -204,6 +205,7 @@ export type Schriftpaar = { anzeige?: string | null; text?: string | null } | nu
 // CSS-Familie fuer style.fontFamily: ANZEIGE/TEXT ueber das Schriftpaar der Vorlage,
 // sonst die 9 Altschluessel; undefined = erben (wie der Renderer: kein font-family).
 export function schriftFamilie(ff: string | null | undefined, paar: Schriftpaar): string | undefined {
+  if (ff === 'HAND') return SCHRIFT_FAMILIE.caveat;
   if (ff === 'ANZEIGE' || ff === 'TEXT') {
     const id = ff === 'ANZEIGE' ? paar?.anzeige : paar?.text;
     return id ? SCHRIFT_FAMILIE[id] : undefined;

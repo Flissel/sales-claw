@@ -72,3 +72,21 @@ describe('Freiere Flaeche: Darstellung und Bedienung', () => {
     expect(ebenenName(e)).toBe('Kreis');
   });
 });
+
+describe('Handschrift in Textbloecken (Rolle HAND, Migration 068)', () => {
+  it('Schema nimmt HAND, die Familie ist Caveat unabhaengig vom Schriftpaar', async () => {
+    const { FontFamily, schriftFamilie, TextSchema } = await import('./schemata');
+    expect(FontFamily.safeParse('HAND').success).toBe(true);
+    expect(TextSchema.safeParse({ style: { fontFamily: 'HAND' }, props: { text: 'Deine Lena' } }).success).toBe(true);
+    expect(schriftFamilie('HAND', { anzeige: 'playfair', text: 'poppins' })).toContain('Caveat');
+    expect(schriftFamilie('HAND', null)).toContain('Caveat');
+  });
+  it('Brief und Portraet unterschreiben in Handschrift', async () => {
+    const { einfuegen } = await import('./abschnitte');
+    const doc = { root: { type: 'EmailLayout', data: { childrenIds: [] } } };
+    for (const s of ['brief', 'portraet_gruss'] as const) {
+      const neu = einfuegen(doc as never, s, 0) as Record<string, { type: string; data: { style?: { fontFamily?: string } } }>;
+      expect(Object.values(neu).some((b) => b.data?.style?.fontFamily === 'HAND'), s).toBe(true);
+    }
+  });
+});
