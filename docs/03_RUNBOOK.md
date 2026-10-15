@@ -3027,6 +3027,25 @@ sind — das ist ein Schutzmechanismus: wer die Fehlerbehandlung nicht versteht 
 `Laden xyz` zweimal hintereinander startet, bekommt eine Fehlermeldung, statt die
 Datenbank aus Versehen zu verwirren.
 
+### LinkedIn-Nachlauf (15.10.2026)
+
+Nach dem Posten eines LinkedIn-Entwurfs meldet der Wirt dem Betreiber per
+WhatsApp den Post-Link samt Markier-Liste. `deploy/linkedin-nachlauf.sh` holt
+die unmeldeten Veroeffentlichungen aus `sales-mcp`, sendet ueber `sales-claw`
+und bucht erst nach erfolgreichem Senden `gemeldet`; ohne Sprachmodell, nur
+Basis-Laden, Timer alle 2 Minuten.
+
+```bash
+grep -q '^SALES_BETREIBER_WHATSAPP=' ~/sales-claw/.env || echo 'SALES_BETREIBER_WHATSAPP=+491749708452' >> ~/sales-claw/.env
+bash ~/sales-claw/deploy/linkedin-nachlauf.sh --trocken
+sudo cp ~/sales-claw/deploy/systemd/sales-linkedin-nachlauf.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now sales-linkedin-nachlauf.timer
+```
+
+Protokoll: `journalctl -u sales-linkedin-nachlauf -n 50`. Test:
+`bash deploy/tests/test_linkedin_nachlauf.sh` (ohne Docker, ohne Netz).
+
 ### 8. Team-Mitglied per Tailscale einladen
 
 **Neu seit 22.09.2026:** Ein Team-Mitglied zum Tailnet hinzufügen — durch einen
