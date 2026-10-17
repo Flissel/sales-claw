@@ -401,10 +401,14 @@ def kontakt_anlegen(name: str, email: str = "", phone: str = "",
             f"Nicht angelegt: diese Kennung steht auf der gemeinsamen "
             f"Verbotsliste ({grund}). Keine Erstansprache — wer sich abgemeldet, "
             f"widerrufen oder Loeschung verlangt hat, wird nicht erneut erfasst.")})
+    # Eine Firma in Klammern am Namensende zeigt eine Firmenvisitenkarte an
+    # (Spec C1 4.1); sonst gilt der Kontakt als Person.
+    art = "firma" if re.search(r"\([^()]+\)\s*$", name or "") else "person"
     zeilen = _q(
-        "insert into leads (name, email, phone, source, notes) "
-        "values (%s, nullif(%s,''), nullif(%s,''), %s, nullif(%s,'')) "
-        "returning id", (name, email, phone, source, notes))
+        "insert into leads (name, email, phone, source, notes, enrichment) "
+        "values (%s, nullif(%s,''), nullif(%s,''), %s, nullif(%s,''), "
+        "jsonb_build_object('art', %s::text)) returning id",
+        (name, email, phone, source, notes, art))
     return _json({"lead_id": zeilen[0]["id"], "angelegt": True})
 
 
@@ -416,7 +420,7 @@ def kontakt_anlegen(name: str, email: str = "", phone: str = "",
 # entsteht aus einer Antwort des Kontakts, siehe bedarf_speichern, nicht aus
 # einem Freitextaufruf), `status`, `score*`, `enrichment` (dafuer gibt es
 # profil_aktualisieren) und `id`.
-KONTAKT_FELDER = ("phone", "email", "name")
+KONTAKT_FELDER = ("phone", "email", "name", "company")
 
 
 @_gesichert
@@ -451,6 +455,8 @@ def kontakt_aktualisieren(lead_id: str, feld: str, wert: str) -> str:
                                 f"Einwilligung nach bedarf_speichern."})
     if feld == "name" and not wert.strip():
         return _json({"fehler": "Ein Kontakt ohne Namen ist nicht vorgesehen."})
+    if feld == "company" and len(wert.strip()) > 200:
+        return _json({"fehler": "Firma ist laenger als 200 Zeichen."})
     vorhanden = _q(f"select {feld} as alt from leads where id = %s", (lead_id,))
     if not vorhanden:
         return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
@@ -1247,6 +1253,30 @@ def kontakt_einordnen(lead_id: str, art: str = "", bereiche_hinzu: list | None =
     Werkzeug ab. Sendet nichts."""
     return _json(_einordnen(lead_id, art or None, bereiche_hinzu or [],
                             bereiche_weg or [], quelle="agent"))
+
+
+def einordnung_bestand() -> dict:
+    """Einmalige Einordnung des Bestands (C1 4.1, NICHT in WERKZEUGE):
+    Kontakte OHNE gesetzte Art bekommen sie nach dem Firmenfeld;
+    Recherche-Firmen zusaetzlich bAV. Privat markierte und Sammelkontakte
+    bleiben unberuehrt. Ein zweiter Lauf aendert nichts."""
+    zahl = {"firmen": 0, "personen": 0, "bav": 0, "uebersprungen": 0}
+    for z in _q("select id::text as id, company, source, enrichment from leads "
+                "where not (coalesce(enrichment, '{}'::jsonb) ? 'art') "
+                "order by created_at"):
+        if _sammelkontakt(z["id"]) or _privat(z["enrichment"] or {}):
+            zahl["uebersprungen"] += 1
+            continue
+        firma = bool((z["company"] or "").strip())
+        hinzu = ["bav"] if firma and z["source"] == "recherche" else []
+        r = _einordnen(z["id"], "firma" if firma else "person", hinzu, (),
+                       quelle="bestand")
+        if "fehler" in r:
+            zahl["uebersprungen"] += 1
+            continue
+        zahl["firmen" if firma else "personen"] += 1
+        zahl["bav"] += len(hinzu)
+    return zahl
 
 
 def _archiv_setzen(lead_id: str, archiviert: bool) -> str:

@@ -129,3 +129,48 @@ def test_profil_lesen_zeigt_einordnung():
     lead = _lead(company="ACME GmbH", enrichment={"bereiche": ["bav"]})
     p = json.loads(server.profil_lesen(lead))
     assert p["art"] == "firma" and p["bereiche"] == ["bav"]
+
+
+# --- Task 2: Art beim Anlegen, Firmenfeld, Bestandslauf -------------------
+
+@pytest.mark.parametrize("name,art", [
+    ("Mario Ries (Conrad Electronic SE)", "firma"),
+    ("Anna Beispiel", "person"),
+    ("Jörg (privat)", "firma"),
+])
+def test_anlegen_setzt_art(name, art):
+    r = json.loads(server.kontakt_anlegen(name, source="visitenkarte"))
+    assert r["angelegt"] is True
+    assert _enrichment(r["lead_id"])["art"] == art
+    assert _protokoll(r["lead_id"]) == []
+
+
+def test_company_bearbeitbar_mit_grenze():
+    lead = _lead()
+    assert "company" in server.KONTAKT_FELDER
+    r = json.loads(server.kontakt_aktualisieren(lead, "company", "ACME GmbH"))
+    assert r == {"gesetzt": {"company": "ACME GmbH"}}
+    assert "fehler" in json.loads(server.kontakt_aktualisieren(lead, "company", "x" * 201))
+
+
+def test_bestand_ordnet_ein_und_ist_idempotent(monkeypatch):
+    rech = _lead("Steuerkanzlei Huber", company="Steuerkanzlei Huber", source="recherche")
+    firma = _lead("Max (ACME)", company="ACME GmbH", source="visitenkarte")
+    person = _lead("Erika Muster")
+    schon = _lead("Schon da", enrichment={"art": "person", "bereiche": ["it"]})
+    privat = _lead("Freund", enrichment={"_privat": {"privat": True}})
+    sammel = _lead("Unbekannte Eingaenge")
+    monkeypatch.setattr(server, "UNBEKANNT_LEAD_ID", sammel)
+    r = server.einordnung_bestand()
+    assert r == {"firmen": 2, "personen": 1, "bav": 1, "uebersprungen": 2}
+    assert _enrichment(rech)["bereiche"] == ["bav"]
+    assert _enrichment(firma)["art"] == "firma" and _enrichment(firma)["bereiche"] == []
+    assert _enrichment(person)["art"] == "person"
+    assert _enrichment(schon)["bereiche"] == ["it"]
+    assert "art" not in _enrichment(privat) and "art" not in _enrichment(sammel)
+    assert _protokoll(rech)[0]["payload"]["weg"] == "bestand"
+    assert _protokoll(rech)[0]["actor"] == "cron"
+    vorher = server._q("select count(*) n from activities where type='einordnung'")[0]["n"]
+    assert server.einordnung_bestand() == {"firmen": 0, "personen": 0, "bav": 0,
+                                           "uebersprungen": 2}
+    assert server._q("select count(*) n from activities where type='einordnung'")[0]["n"] == vorher

@@ -23,7 +23,7 @@ dreierlei, und nichts sonst:
    Auch hier ruft das UI ausschliesslich die Chat-Werkzeuge auf
    (server.kontakt_aktualisieren, server.kontakt_archivieren,
    server.kontakt_wiederherstellen) und baut KEIN eigenes SQL: die Feld-
-   Whitelist (server.KONTAKT_FELDER — phone, email, name; ausdruecklich NICHT
+   Whitelist (server.KONTAKT_FELDER — phone, email, name, company; ausdruecklich NICHT
    status/consent_status/enrichment) und das Archivmerkmal in `enrichment`
    sollen genau einmal existieren.
 
@@ -314,7 +314,8 @@ KONTAKT_FELD_MAX = 200
 # Anzeigenamen der Felder aus server.KONTAKT_FELDER. Die LISTE der Felder
 # steht bewusst NICHT hier — sie kommt aus server.py, sonst haette die
 # Oberflaeche eine zweite, stillschweigend veraltende Whitelist.
-KONTAKT_FELD_TITEL = {"name": "Name", "phone": "Telefon", "email": "E-Mail"}
+KONTAKT_FELD_TITEL = {"name": "Name", "phone": "Telefon", "email": "E-Mail",
+                     "company": "Firma"}
 # Welche Handytastatur ein Feld aufmacht. `type`/`inputmode` entscheiden auf
 # dem Telefon darueber, ob unter dem Finger Ziffern und ein Plus liegen oder
 # das Alphabet — eine Rufnummer auf der Buchstabentastatur einzugeben ist der
@@ -326,6 +327,7 @@ KONTAKT_FELD_EINGABE = {
     "phone": 'type="tel" inputmode="tel" autocomplete="tel"',
     "email": ('type="email" inputmode="email" autocomplete="email" '
               'autocapitalize="none" spellcheck="false"'),
+    "company": 'type="text" autocomplete="organization"',
 }
 # Ein spaeter in server.KONTAKT_FELDER ergaenztes Feld erscheint als
 # gewoehnliches Textfeld, statt zu fehlen.
@@ -3323,7 +3325,7 @@ def _kontakt_feld_reihenfolge() -> list:
     fuer den Versand sortiert (phone zuerst), ein Formular liest sich nach dem
     Namen zuerst.
     """
-    vorne = [f for f in ("name", "phone", "email") if f in server.KONTAKT_FELDER]
+    vorne = [f for f in ("name", "phone", "email", "company") if f in server.KONTAKT_FELDER]
     return vorne + [f for f in server.KONTAKT_FELDER if f not in vorne]
 
 

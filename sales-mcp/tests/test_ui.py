@@ -1445,7 +1445,7 @@ def test_bearbeiten_formular_bietet_genau_die_felder_des_werkzeugs():
     server.KONTAKT_FELDER. Status und Consent stehen bewusst nicht drin: die
     Einwilligung entsteht aus einer Antwort des Kontakts (bedarf_speichern),
     nicht aus einem Formularfeld."""
-    assert set(server.KONTAKT_FELDER) == {"phone", "email", "name"}
+    assert set(server.KONTAKT_FELDER) == {"phone", "email", "name", "company"}
     lead = _lead()
     seite = _get(f"/kontakte/{lead}").text
     for feld in server.KONTAKT_FELDER:
