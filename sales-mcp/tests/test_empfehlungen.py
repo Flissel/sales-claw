@@ -167,3 +167,123 @@ def test_zeile_hinzufuegen_bis_50():
 def test_unbekannte_liste():
     assert em.liste("00000000-0000-0000-0000-000000000000") is None
     assert "fehler" in em.zeile_hinzufuegen("kaputt", Z())
+
+
+# --- Fix-Runde 1 (Review I1-I5) -------------------------------------------
+
+def _kontakt(name="Anna Alt", telefon="+491701234567"):
+    return server.json.loads(server.kontakt_anlegen(name, phone=telefon))["lead_id"]
+
+
+def _einwilligungen(lid):
+    return server._q("select payload from activities where lead_id=%s and "
+                     "type='werbe_einwilligung' order by created_at", (lid,))
+
+
+def test_fremde_einwilligung_wird_beim_abhaken_nicht_widerrufen():
+    lid = _kontakt()
+    server.einwilligung_erfassen(lid, "opt_in", "Messe-Formular")
+    r = _anlegen()                                     # Liste ohne Einwilligung
+    assert r["verknuepft"] == 1
+    assert em.liste(r["liste_id"])["zeilen"][0]["einwilligung"] is False
+    em.zeile_setzen(lid, einwilligung=True)            # schon opt_in: nichts buchen
+    assert len(_einwilligungen(lid)) == 1
+    aus = em.zeile_setzen(lid, einwilligung=False)
+    assert _lead(lid)["consent_status"] == "opt_in"
+    assert any("anderer Quelle" in h for h in aus["hinweise"])
+    assert em.liste(r["liste_id"])["zeilen"][0]["einwilligung"] is False
+
+
+def test_bestandskunde_bleibt_unberuehrt():
+    lid = _kontakt()
+    server.einwilligung_erfassen(lid, "existing_customer", "Vertrag 2024")
+    r = _anlegen(einwilligung=True)
+    assert _lead(lid)["consent_status"] == "existing_customer"
+    assert len(_einwilligungen(lid)) == 1
+    em.zeile_setzen(lid, einwilligung=False)
+    assert _lead(lid)["consent_status"] == "existing_customer"
+    assert r["verknuepft"] == 1
+
+
+def test_frueherer_widerruf_bekommt_keine_empfehlungs_einwilligung():
+    lid = _kontakt()
+    server.einwilligung_erfassen(lid, "opt_in", "Formular")
+    server.einwilligung_widerrufen(lid, "will nicht mehr")
+    r = _anlegen(einwilligung=True)
+    assert r["verknuepft"] == 1 and any("widerrufen" in h for h in r["hinweise"])
+    assert _lead(lid)["consent_status"] == "unknown"
+    assert em.liste(r["liste_id"])["zeilen"][0]["einwilligung"] is False
+    aus = em.zeile_setzen(lid, einwilligung=True)
+    assert _lead(lid)["consent_status"] == "unknown"
+    assert any("widerrufen" in h for h in aus["hinweise"])
+
+
+def test_eigener_haekchen_widerruf_sperrt_nicht():
+    r = _anlegen(einwilligung=True)
+    lid = em.liste(r["liste_id"])["zeilen"][0]["lead_id"]
+    q = _einwilligungen(lid)[0]["payload"]["quelle"]
+    assert q.startswith("Empfehlung:") and r["liste_id"] in q
+    em.zeile_setzen(lid, einwilligung=False)
+    em.zeile_setzen(lid, einwilligung=True)
+    assert _lead(lid)["consent_status"] == "opt_in"
+
+
+def test_verbotsliste_und_loeschantrag_werden_nicht_verknuepft(monkeypatch):
+    gesperrt = _kontakt()
+    geloescht = _kontakt("Lea Loesch", "+491705555555")
+    server._q("update leads set enrichment = enrichment || "
+              "'{\"_loeschantrag\": {\"am\": \"2026-10-01\", \"quelle\": \"Telefonat\"}}'::jsonb "
+              "where id=%s returning id", (geloescht,))
+    monkeypatch.setattr(server, "_sperre", lambda email="", phone="":
+                        "sales:widerruf: am Telefon" if phone == "+491701234567" else "")
+    r = _anlegen(einwilligung=True,
+                 zeilen=[Z(), Z(vorname="Lea", name="Loesch", telefon="+491705555555")])
+    gruende = {a["zeile"]: a["grund"] for a in r["abgewiesen"]}
+    assert "Verbotsliste" in gruende[1] and "Löschantrag" in gruende[2]
+    assert r["verknuepft"] == 0 and r["neu"] == 0
+    for lid in (gesperrt, geloescht):
+        assert "empfehlung" not in (_lead(lid)["enrichment"] or {})
+        assert _lead(lid)["consent_status"] == "unknown"
+
+
+def test_fremde_zeile_nur_lesend_und_nicht_gezaehlt():
+    r1 = _anlegen()
+    lid = em.liste(r1["liste_id"])["zeilen"][0]["lead_id"]
+    em.zeile_setzen(lid, ergebnis="abschluss", liste_id=r1["liste_id"])
+    r2 = _anlegen(empfohlen_von_name="Zweiter", einwilligung=True)
+    z2 = em.liste(r2["liste_id"])["zeilen"][0]
+    assert z2["fremd"] is True and z2["fremd_liste_datum"] == date.today()
+    assert em.liste(r1["liste_id"])["zeilen"][0]["fremd"] is False
+    assert _lead(lid)["consent_status"] == "unknown"   # fremde Zeile bucht nichts
+    zaehler = {l["id"]: l for l in em.listen()}
+    assert zaehler[r1["liste_id"]]["abschluss"] == 1
+    assert zaehler[r2["liste_id"]]["abschluss"] == 0
+    assert zaehler[r2["liste_id"]]["anzahl"] == 1
+    assert "fehler" in em.zeile_setzen(lid, ergebnis="offen", liste_id=r2["liste_id"])
+    assert "fehler" not in em.zeile_setzen(lid, ergebnis="offen", liste_id=r1["liste_id"])
+
+
+def test_datenbankfehler_je_zeile_wird_abgewiesen(monkeypatch):
+    import psycopg
+
+    def kaputt(*a, **kw):
+        raise psycopg.OperationalError("weg")
+    monkeypatch.setattr(server, "kontakt_anlegen", kaputt)
+    r = _anlegen(zeilen=[Z(), Z(vorname="B", telefon="")])
+    assert r["liste_id"] and r["neu"] == 0
+    assert [a["zeile"] for a in r["abgewiesen"]] == [1, 2]
+    assert all("Datenbankfehler" in a["grund"] for a in r["abgewiesen"])
+    monkeypatch.setattr(server, "kontakt_anlegen",
+                        lambda *a, **kw: server._json({"fehler": server.DB_FEHLER}))
+    aus = em.zeile_hinzufuegen(r["liste_id"], Z(telefon=""))
+    assert "Datenbankfehler" in aus["fehler"]
+
+
+def test_fehler_beim_buchen_setzt_kein_haekchen(monkeypatch):
+    r = _anlegen()
+    lid = em.liste(r["liste_id"])["zeilen"][0]["lead_id"]
+    monkeypatch.setattr(server, "einwilligung_erfassen",
+                        lambda *a, **kw: server._json({"fehler": "Datenbankfehler (X): weg"}))
+    aus = em.zeile_setzen(lid, einwilligung=True)
+    assert "fehler" in aus
+    assert em.liste(r["liste_id"])["zeilen"][0]["einwilligung"] is False

@@ -2,12 +2,26 @@
 empfehlungslisten-design.md): Pole Position und Mitarbeitervorschlaege.
 
 Kopf in der Tabelle empfehlungslisten, jede Zeile ist ein Kontakt mit
-enrichment.empfehlung. Erst wird ALLES geprueft, dann geschrieben — ein
-Fehler in Zeile 7 legt nichts an. Listen werden nie geloescht.
+enrichment.empfehlung. Listen werden nie geloescht.
+
+ABWEICHUNG von Spec §4.1 ("Liste und Zeilen in einer Transaktion", Ruling I1):
+die server-Helfer (kontakt_anlegen, _einordnen, einwilligung_*) committen je
+Aufruf auf eigener Verbindung — eine echte Transaktion gibt es hier nicht.
+Gesichert ist: ALLE Zeilen werden vor dem ersten Schreiben geprueft, ein
+Pruef-Fehler (etwa in Zeile 7) legt nichts an. Ein Datenbankfehler WAEHREND
+des Schreibens weist nur die betroffene Zeile ab (Grund DB_GRUND); die Liste
+bleibt stehen und laesst sich per zeile_hinzufuegen heilen.
+
+Gehoert ein verknuepfter Kontakt schon zu einer ANDEREN Liste (seine
+enrichment.empfehlung nennt sie), steht er hier nur als "schon bekannt"
+(fremd=True): nur lesend, ohne Einwilligungsbuchung, nicht in den Zaehlern
+offen/termin/abschluss.
 """
 import json
 import uuid
 from datetime import date
+
+import psycopg
 
 import server
 from nummern import normalisiere_empfaenger
@@ -23,6 +37,9 @@ ERGEBNISSE = {"offen": "offen", "nicht_erreicht": "nicht erreicht",
 TEXT_MAX = 200
 NAME_MAX = 120
 ZEILEN_HART_MAX = 50
+DB_GRUND = "Datenbankfehler – Zeile bitte erneut hinzufügen"
+FREMDE_QUELLE = "Einwilligung stammt aus anderer Quelle – nicht widerrufen"
+WIDERRUF_GRUND = "Empfehlung: Häkchen entfernt"
 _TEXTFELDER = ("vorname", "name", "beruf", "ort", "zeichnet_aus", "interessiert")
 
 
@@ -74,6 +91,14 @@ def _zeile_pruefen(nr: int, z, art: str):
     return sauber, hinweise
 
 
+class _DbFehler(Exception):
+    """Ein @_gesichert-Helfer meldete einen Datenbankfehler als {"fehler"}."""
+
+
+def _ist_db_fehler(text) -> bool:
+    return text == server.DB_FEHLER or str(text).startswith("Datenbankfehler")
+
+
 def _anzeigename(z) -> str:
     return " ".join(t for t in (z["vorname"], z["name"]) if t)
 
@@ -85,44 +110,116 @@ def _empfehlung_setzen(lead_id: str, daten: dict) -> None:
 
 
 def _quelle_einwilligung(kopf) -> str:
+    # Die Listen-ID am Ende macht pruefbar, dass eine Einwilligung aus GENAU
+    # dieser Liste stammt (Ruling I2) — nur dann darf das Abhaken widerrufen.
     return (f"Empfehlung: vorab gefragt von {kopf['empfohlen_von_name']} "
-            f"(Liste {kopf['datum']:%d.%m.%Y})")
+            f"(Liste {kopf['datum']:%d.%m.%Y}) [Liste {kopf['id']}]")
 
 
-def _einwilligung(lead_id: str, an: bool, kopf) -> None:
-    status = server._q("select consent_status from leads where id = %s", (lead_id,))[0]["consent_status"]
-    if an and status not in ("opt_in", "existing_customer"):
-        server.einwilligung_erfassen(lead_id, "opt_in", _quelle_einwilligung(kopf))
-    elif not an and status == "opt_in":
-        server.einwilligung_widerrufen(lead_id, "Empfehlung: Häkchen entfernt")
+def _aus_dieser_liste(lead_id: str, liste_id: str) -> bool:
+    """Stammt die JUENGSTE Einwilligungsbuchung aus dieser Empfehlungsliste?"""
+    z = server._q("select payload->>'quelle' as quelle from activities where lead_id = %s "
+                  "and type = 'werbe_einwilligung' order by created_at desc limit 1",
+                  (lead_id,))
+    q = (z[0]["quelle"] or "") if z else ""
+    return q.startswith("Empfehlung:") and f"[Liste {liste_id}]" in q
+
+
+def _eigener_widerruf(lead_id: str) -> bool:
+    """Hat der Kontakt je SELBST widerrufen? Das Abhaken einer Empfehlungszeile
+    (Grund 'Empfehlung: ...') zaehlt nicht — sonst sperrte sich das Haekchen
+    nach einmal Hin und Her selbst."""
+    return bool(server._q(
+        "select 1 from activities where lead_id = %s and type = "
+        "'werbe_einwilligung_widerrufen' and coalesce(payload->>'grund', '') "
+        "not like 'Empfehlung:%%' limit 1", (lead_id,)))
+
+
+def _sperrgrund(lead_id: str, enrichment) -> str | None:
+    """Loeschantrag oder Verbotsliste — dann weder verknuepfen noch einwilligen."""
+    if server._loeschantrag(enrichment or {}):
+        return "Löschantrag liegt vor — nicht verknüpft"
+    g = server._sperre_fuer_lead(lead_id)
+    if g:
+        return f"steht auf der Verbotsliste ({g}) — nicht verknüpft"
+    return None
+
+
+def _einwilligung(lead_id: str, an: bool, kopf):
+    """-> (Zeilen-Flag, Hinweis | None, Fehler | None). Bucht nur, wenn noetig
+    und erlaubt; widerruft nur eine Einwilligung aus DIESER Liste (Ruling I2)."""
+    l = server._q("select consent_status, enrichment from leads where id = %s", (lead_id,))[0]
+    status = l["consent_status"]
+    if an:
+        if status in ("opt_in", "existing_customer"):
+            return True, None, None
+        grund = _sperrgrund(lead_id, l["enrichment"])
+        if grund:
+            return False, f"Einwilligung nicht gebucht: {grund}.", None
+        if _eigener_widerruf(lead_id):
+            return False, ("Kontakt hat früher selbst widerrufen — Einwilligung aus der "
+                           "Empfehlung nicht gebucht."), None
+        r = json.loads(server.einwilligung_erfassen(lead_id, "opt_in", _quelle_einwilligung(kopf)))
+        if "fehler" in r:
+            return False, None, f"Einwilligung nicht gebucht: {r['fehler']}"
+        return True, None, None
+    if status != "opt_in":
+        return False, None, None
+    if not _aus_dieser_liste(lead_id, kopf["id"]):
+        return False, FREMDE_QUELLE, None
+    r = json.loads(server.einwilligung_widerrufen(lead_id, WIDERRUF_GRUND))
+    if "fehler" in r:
+        return True, None, f"Einwilligung nicht widerrufen: {r['fehler']}"
+    return False, None, None
 
 
 def _zeile_schreiben(kopf, z, bereiche, einwilligung, quelle, gesehen: set):
-    """-> ('neu'|'verknuepft', lead_id) oder ('abgewiesen', grund)."""
+    """-> ('neu'|'verknuepft', lead_id, hinweise) oder ('abgewiesen', grund, [])."""
     if z["chat_id"] and z["chat_id"] in gesehen:
-        return "abgewiesen", "doppelt in der Liste"
+        return "abgewiesen", "doppelt in der Liste", []
     if z["chat_id"]:
         gesehen.add(z["chat_id"])
+    try:
+        return _zeile_schreiben_db(kopf, z, bereiche, einwilligung, quelle)
+    except (psycopg.Error, _DbFehler):
+        return "abgewiesen", DB_GRUND, []
+
+
+def _zeile_schreiben_db(kopf, z, bereiche, einwilligung, quelle):
+    hinweise = []
     bestehend = server._lead_mit_gleicher_nummer(z["chat_id"]) if z["chat_id"] else None
     if bestehend is not None:
         lid = str(bestehend["id"])
         e = server._q("select enrichment from leads where id = %s", (lid,))[0]["enrichment"] or {}
-        if server._privat(e) or server._sammelkontakt(lid):
-            return "abgewiesen", "privat markierter Kontakt — nicht verknüpft"
-        art = None
-        status = "verknuepft"
+        if server._sammelkontakt(lid):
+            return "abgewiesen", "Sammelkontakt — nicht verknüpft", []
+        if server._privat(e):
+            return "abgewiesen", "privat markierter Kontakt — nicht verknüpft", []
+        grund = _sperrgrund(lid, e)
+        if grund:
+            return "abgewiesen", grund, []
+        art, status = None, "verknuepft"
     else:
         r = json.loads(server.kontakt_anlegen(_anzeigename(z), phone=z["telefon"],
                                               source="empfehlung"))
         if "fehler" in r:
-            return "abgewiesen", r["fehler"]
+            if _ist_db_fehler(r["fehler"]):
+                raise _DbFehler(r["fehler"])
+            return "abgewiesen", r["fehler"], []
         lid, e, status = str(r["lead_id"]), {}, "neu"
         art = "firma" if z["firma"] else "person"
-    if "empfehlung" not in e:
+    eigen = "empfehlung" not in e
+    flag = False
+    if not eigen:
+        hinweise.append("schon bekannt aus einer anderen Empfehlungsliste — dort pflegen.")
+    elif einwilligung:
+        flag, hinweis, fehler = _einwilligung(lid, True, kopf)
+        hinweise += [t for t in (hinweis, fehler) if t]
+    if eigen:
         _empfehlung_setzen(lid, {"liste_id": kopf["id"], "beruf": z["beruf"], "alter": z["alter"],
                                  "ort": z["ort"], "zeichnet_aus": z["zeichnet_aus"],
                                  "interessiert": z["interessiert"], "ergebnis": "offen",
-                                 "notiz": "", "einwilligung": bool(einwilligung),
+                                 "notiz": "", "einwilligung": flag,
                                  "vorname": z["vorname"], "nachname": z["name"]})
     hinzu = ["bav"] if z["firma"] else list(bereiche)
     server._einordnen(lid, art if status == "neu" else None, hinzu, (), quelle=quelle)
@@ -130,9 +227,7 @@ def _zeile_schreiben(kopf, z, bereiche, einwilligung, quelle, gesehen: set):
               "returning id", (lid, json.dumps({"liste_id": kopf["id"],
                                                 "empfohlen_von_name": kopf["empfohlen_von_name"]},
                                                ensure_ascii=False)))
-    if einwilligung:
-        _einwilligung(lid, True, kopf)
-    return status, lid
+    return status, lid, hinweise
 
 
 def liste_anlegen(art, empfohlen_von_name, datum, zeilen, empfohlen_von_lead=None,
@@ -165,31 +260,35 @@ def liste_anlegen(art, empfohlen_von_name, datum, zeilen, empfohlen_von_lead=Non
             hinweise += h
     except ValueError as e:
         return {"fehler": str(e)}
-    lead = _uuid(empfohlen_von_lead) if empfohlen_von_lead else None
-    if lead and not server._q("select 1 from leads where id = %s", (lead,)):
-        lead = None
-    if berater_name is None or struktur is None:
-        letzte = server._q("select berater_name, struktur from empfehlungslisten "
-                           "order by erstellt_am desc limit 1")
-        if berater_name is None:
-            berater_name = letzte[0]["berater_name"] if letzte else ""
-        if struktur is None:
-            struktur = letzte[0]["struktur"] if letzte else ""
-    kopf = server._q(
-        "insert into empfehlungslisten (art, empfohlen_von_lead, empfohlen_von_name, datum, "
-        "berater_name, struktur, bereiche, einwilligung, einwilligung_am) values "
-        "(%s, %s, %s, %s, %s, %s, %s::jsonb, %s, case when %s then now() end) "
-        "returning id::text as id, empfohlen_von_name, datum",
-        (art, lead, name, tag, str(berater_name)[:NAME_MAX], str(struktur)[:NAME_MAX],
-         json.dumps(bereiche), bool(einwilligung), bool(einwilligung)))[0]
+    try:
+        lead = _uuid(empfohlen_von_lead) if empfohlen_von_lead else None
+        if lead and not server._q("select 1 from leads where id = %s", (lead,)):
+            lead = None
+        if berater_name is None or struktur is None:
+            letzte = server._q("select berater_name, struktur from empfehlungslisten "
+                               "order by erstellt_am desc limit 1")
+            if berater_name is None:
+                berater_name = letzte[0]["berater_name"] if letzte else ""
+            if struktur is None:
+                struktur = letzte[0]["struktur"] if letzte else ""
+        kopf = server._q(
+            "insert into empfehlungslisten (art, empfohlen_von_lead, empfohlen_von_name, datum, "
+            "berater_name, struktur, bereiche, einwilligung, einwilligung_am) values "
+            "(%s, %s, %s, %s, %s, %s, %s::jsonb, %s, case when %s then now() end) "
+            "returning id::text as id, empfohlen_von_name, datum",
+            (art, lead, name, tag, str(berater_name)[:NAME_MAX], str(struktur)[:NAME_MAX],
+             json.dumps(bereiche), bool(einwilligung), bool(einwilligung)))[0]
+    except psycopg.Error:
+        return {"fehler": "Datenbankfehler – Liste nicht angelegt, bitte erneut versuchen."}
     zahl = {"neu": 0, "verknuepft": 0}
     abgewiesen, gesehen = [], set()
     for nr, z in enumerate(sauber, 1):
-        status, wert = _zeile_schreiben(kopf, z, bereiche, einwilligung, quelle, gesehen)
+        status, wert, h = _zeile_schreiben(kopf, z, bereiche, einwilligung, quelle, gesehen)
         if status == "abgewiesen":
             abgewiesen.append({"zeile": nr, "grund": wert})
         else:
             zahl[status] += 1
+            hinweise += [f"Zeile {nr}: {t}" for t in h]
     return {"liste_id": kopf["id"], **zahl, "abgewiesen": abgewiesen, "hinweise": hinweise}
 
 
@@ -225,12 +324,17 @@ def liste(liste_id) -> dict | None:
                   "einwilligung_am from empfehlungslisten where id = %s", (lid,))
     if not k:
         return None
-    zeilen = []
+    zeilen, fremde_daten = [], {}
     for m in sorted(_mitglieder(lid), key=lambda m: m["created_at"]):
         l = server._q("select name, phone, enrichment from leads where id = %s", (m["lead_id"],))
         if not l:
             continue
         e = (l[0]["enrichment"] or {}).get("empfehlung") or {}
+        heimat = _uuid(e.get("liste_id"))
+        fremd = heimat != lid
+        if fremd and heimat and heimat not in fremde_daten:
+            d = server._q("select datum from empfehlungslisten where id = %s", (heimat,))
+            fremde_daten[heimat] = d[0]["datum"] if d else None
         ergebnis, termin = wirksames_ergebnis(m["lead_id"], e.get("ergebnis") or "offen")
         zeilen.append({"lead_id": m["lead_id"], "name": l[0]["name"],
                        "vorname": e.get("vorname", ""), "nachname": e.get("nachname", ""),
@@ -240,28 +344,47 @@ def liste(liste_id) -> dict | None:
                        "interessiert": e.get("interessiert", ""), "ergebnis": ergebnis,
                        "ergebnis_text": ERGEBNISSE.get(ergebnis, ergebnis),
                        "notiz": e.get("notiz", ""), "einwilligung": bool(e.get("einwilligung")),
-                       "termin_datum": termin})
+                       "termin_datum": termin, "fremd": fremd,
+                       "fremd_liste_id": heimat if fremd else None,
+                       "fremd_liste_datum": fremde_daten.get(heimat) if fremd else None})
     return {"kopf": k[0], "zeilen": zeilen}
 
 
 def listen() -> list:
+    """Uebersicht. `anzahl` zaehlt ALLE Zeilen der Liste (auch "schon bekannt",
+    extra ausgewiesen als `schon_bekannt`), offen/termin/abschluss nur die
+    eigenen — sonst zaehlte ein Abschluss in jeder Liste, die den Kontakt nennt."""
     aus = []
     for k in server._q("select id::text as id, art, datum, empfohlen_von_name, "
                        "empfohlen_von_lead::text as empfohlen_von_lead from empfehlungslisten "
                        "order by datum desc, erstellt_am desc"):
         zs = liste(k["id"])["zeilen"]
-        aus.append({**k, "anzahl": len(zs),
-                    **{s: sum(1 for z in zs if z["ergebnis"] == s)
+        eigene = [z for z in zs if not z["fremd"]]
+        aus.append({**k, "anzahl": len(zs), "schon_bekannt": len(zs) - len(eigene),
+                    **{s: sum(1 for z in eigene if z["ergebnis"] == s)
                        for s in ("offen", "termin", "abschluss")}})
     return aus
 
 
-def zeile_setzen(lead_id, ergebnis=None, notiz=None, einwilligung=None, quelle="ui") -> dict:
+def zeile_setzen(lead_id, ergebnis=None, notiz=None, einwilligung=None, quelle="ui",
+                 liste_id=None) -> dict:
+    """Ergebnis/Notiz/Einwilligung einer Zeile aendern. Mit `liste_id` wird
+    abgelehnt, wenn die Zeile in dieser Liste nur "schon bekannt" ist."""
+    try:
+        return _zeile_setzen(lead_id, ergebnis, notiz, einwilligung, quelle, liste_id)
+    except psycopg.Error:
+        return {"fehler": "Datenbankfehler – nichts geändert, bitte erneut versuchen."}
+
+
+def _zeile_setzen(lead_id, ergebnis, notiz, einwilligung, quelle, liste_id) -> dict:
     lid = _uuid(lead_id)
     l = server._q("select enrichment from leads where id = %s", (lid,)) if lid else []
     if not l or "empfehlung" not in (l[0]["enrichment"] or {}):
         return {"fehler": "Kein Kontakt aus einer Empfehlungsliste."}
     e = dict(l[0]["enrichment"]["empfehlung"])
+    if liste_id is not None and _uuid(liste_id) != e.get("liste_id"):
+        return {"fehler": "Diese Zeile ist hier nur „schon bekannt“ — ändern in der Liste, "
+                          "aus der die Empfehlung stammt."}
     if ergebnis is not None:
         if ergebnis not in ERGEBNISSE:
             return {"fehler": f"Unbekanntes Ergebnis '{ergebnis}'."}
@@ -272,23 +395,32 @@ def zeile_setzen(lead_id, ergebnis=None, notiz=None, einwilligung=None, quelle="
         if len(notiz.strip()) > TEXT_MAX:
             return {"fehler": f"Notiz ist laenger als {TEXT_MAX} Zeichen."}
         e["notiz"] = notiz.strip()
+    hinweise = []
     if einwilligung is not None and bool(einwilligung) != bool(e.get("einwilligung")):
-        k = server._q("select empfohlen_von_name, datum from empfehlungslisten where id = %s",
-                      (e["liste_id"],))
-        if k:
-            _einwilligung(lid, bool(einwilligung), k[0])
-        e["einwilligung"] = bool(einwilligung)
+        k = server._q("select id::text as id, empfohlen_von_name, datum from empfehlungslisten "
+                      "where id = %s", (e["liste_id"],))
+        if not k:
+            return {"fehler": "Die Liste dieser Zeile gibt es nicht mehr."}
+        flag, hinweis, fehler = _einwilligung(lid, bool(einwilligung), k[0])
+        if fehler:
+            return {"fehler": fehler}
+        if hinweis:
+            hinweise.append(hinweis)
+        e["einwilligung"] = flag
     _empfehlung_setzen(lid, e)
     server._q("insert into activities (lead_id, type, payload, actor) values "
               "(%s, 'empfehlung_geaendert', %s, %s) returning id",
               (lid, json.dumps({k: e[k] for k in ("ergebnis", "notiz", "einwilligung")},
                                ensure_ascii=False), "human" if quelle == "ui" else "agent"))
     return {"lead_id": lid, "ergebnis": e["ergebnis"], "notiz": e["notiz"],
-            "einwilligung": e["einwilligung"]}
+            "einwilligung": e["einwilligung"], "hinweise": hinweise}
 
 
 def zeile_hinzufuegen(liste_id, zeile, quelle="ui") -> dict:
-    l = liste(liste_id)
+    try:
+        l = liste(liste_id)
+    except psycopg.Error:
+        return {"fehler": DB_GRUND}
     if l is None:
         return {"fehler": "Diese Liste gibt es nicht."}
     if len(l["zeilen"]) >= ZEILEN_HART_MAX:
@@ -299,7 +431,8 @@ def zeile_hinzufuegen(liste_id, zeile, quelle="ui") -> dict:
     except ValueError as e:
         return {"fehler": str(e)}
     gesehen = {normalisiere_empfaenger(z["telefon"])[0] for z in l["zeilen"] if z["telefon"]}
-    status, wert = _zeile_schreiben(k, s, k["bereiche"] or [], k["einwilligung"], quelle, gesehen)
+    status, wert, h = _zeile_schreiben(k, s, k["bereiche"] or [], k["einwilligung"], quelle,
+                                       gesehen)
     if status == "abgewiesen":
         return {"fehler": wert}
-    return {"lead_id": wert, "status": status, "hinweise": hinweise}
+    return {"lead_id": wert, "status": status, "hinweise": hinweise + h}
