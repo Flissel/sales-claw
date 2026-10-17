@@ -3792,3 +3792,39 @@ def test_vertrag_altform_eintrag_vorbelegt_und_ohne_duplikat():
 def test_euro_zeigt_nan_und_inf_nicht_als_zahl():
     assert ui._euro("1499.00") == "1.499,00 €"
     assert ui._euro("nan") == "nan" and ui._euro("inf") == "inf"
+
+
+def test_freigabe_karte_zeigt_schon_angeschrieben():
+    lead = _lead()
+    ui.server._q("insert into drafts (lead_id, channel, recipient, body, status, thema, sent_at) "
+                 "values (%s,'whatsapp','x','alt','sent','bAV Erstansprache', now() - interval '3 days') "
+                 "returning id", (lead,))
+    ui.server._q("insert into drafts (lead_id, channel, recipient, body, status, thema) "
+                 "values (%s,'whatsapp','x','neu','pending','bav erstansprache') returning id", (lead,))
+    s = _get("/freigaben").text
+    assert "Schon angeschrieben" in s and "bAV Erstansprache" in s
+
+
+def test_freigabe_karte_ohne_andere_treffer_kein_hinweis():
+    lead = _lead()
+    ui.server._q("insert into drafts (lead_id, channel, recipient, body, status, thema) "
+                 "values (%s,'whatsapp','x','neu','pending','Nur ich') returning id", (lead,))
+    assert "Schon angeschrieben" not in _get("/freigaben").text
+
+
+def test_kontaktseite_zeitleiste():
+    lead = _lead()
+    ui.server._q("insert into drafts (lead_id, channel, recipient, body, status, thema, sent_at) "
+                 "values (%s,'email','x','b','sent','Homelab <Angebot>', now()) returning id", (lead,))
+    s = _get(f"/kontakte/{lead}").text
+    assert "Kontakt-Historie" in s and "Homelab &lt;Angebot&gt;" in s
+
+
+def test_kontaktseite_historie_fehler_bricht_seite_nicht(monkeypatch):
+    lead = _lead()
+
+    def kaputt(_):
+        raise ui.psycopg.Error("weg")
+    monkeypatch.setattr(ui.historie, "kontakt_historie", kaputt)
+    r = _get(f"/kontakte/{lead}")
+    assert r.status_code == 200 and "Kontakt-Historie" not in r.text

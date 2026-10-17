@@ -201,6 +201,7 @@ from starlette.middleware import Middleware
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 from starlette.routing import Route
 
+import historie
 import kalender
 import kalender_sicht
 import mailadresse
@@ -1842,6 +1843,54 @@ def _markier_block(z) -> str:
 ENTWURF_VORSCHAU = 90
 
 
+def _tag_kurz(dt, jahr: bool = False) -> str:
+    """Datum in Ortszeit (Europe/Berlin): TT.MM. oder TT.MM.JJJJ."""
+    if not isinstance(dt, datetime):
+        return "—"
+    if ZEITZONE is not None:
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.astimezone(ZEITZONE)
+    return dt.strftime("%d.%m.%Y" if jahr else "%d.%m.")
+
+
+def _schon_angeschrieben(z) -> str:
+    """Hinweis „Schon angeschrieben“ an der Freigabe-Karte (C3).
+
+    Eine Abfrage je Karte mit Thema (kein Sammelaufruf; die Zahl offener
+    Karten ist klein). Der Entwurf selbst zaehlt nicht. Ein DB-Fehler
+    laesst nur den Hinweis entfallen."""
+    if not z.get("thema") or not z.get("lead_id"):
+        return ""
+    try:
+        treffer = [t for t in historie.doppelt_pruefen(z["lead_id"], z["thema"])
+                   if t["draft_id"] != str(z["id"])]
+    except psycopg.Error:
+        return ""
+    if not treffer:
+        return ""
+    teile = " · ".join(
+        f'{_tag_kurz(t["datum"])} · {_e(historie._KANAL.get(t["kanal"], t["kanal"]))} · {_e(t["thema"])}'
+        for t in treffer[:3])
+    return f'<div class="hinweis">Schon angeschrieben: {teile}</div>'
+
+
+def _kontakt_historie_bereich(lead_id, alle: bool) -> str:
+    """Zeitleiste „Kontakt-Historie“ (C3): letzte 20, optional alle."""
+    try:
+        eintraege = historie.kontakt_historie(lead_id)
+    except psycopg.Error:
+        return ""
+    zeilen = "".join(
+        f'<li>{_tag_kurz(e["datum"], True)} · {_e(historie._KANAL.get(e["kanal"], e["kanal"]))} · {_e(e["text"])}</li>'
+        if e["kanal"] else f'<li>{_tag_kurz(e["datum"], True)} · {_e(e["text"])}</li>'
+        for e in (eintraege if alle else eintraege[:20]))
+    mehr = ('' if alle or len(eintraege) <= 20 else
+            f'<p><a href="?historie=alle#historie">Alle {len(eintraege)} anzeigen</a></p>')
+    return (f'<h2 id="historie">Kontakt-Historie</h2>'
+            + (f'<ul>{zeilen}</ul>{mehr}' if eintraege else '<p>Noch kein Kontakt erfasst.</p>'))
+
+
 def _entwurf_karte_offen(z) -> str:
     """Eine Freigabe-Karte zum Aufklappen — mit Bearbeitungsfeld.
 
@@ -1867,6 +1916,7 @@ def _entwurf_karte_offen(z) -> str:
         f'<span class="meta" title="{_e(text_normalisiert)}"> — {_e(vorschau)}'
         f'</span></summary>'
         f'{_entwurf_kopf(z, "pending")}'
+        f'{_schon_angeschrieben(z)}'
         f'<div class="text">{_text_html(text)}</div>'
         f'{_markier_block(z)}'
         f'{_newsletter_ansicht(z) if z.get("newsletter") else _entwurf_bearbeiten_form(z, text)}'
@@ -2521,7 +2571,7 @@ async def inbox(request):
     pending = server._q(
         "select d.id, d.channel, d.recipient, d.body, d.media_ref, d.subject, d.cc, d.newsletter, d.body_html, "
         "       extract(epoch from (now() - d.created_at)) / 3600 as alter_h, "
-        "       l.name, l.consent_status "
+        "       d.lead_id, d.thema, l.name, l.consent_status "
         "from drafts d left join leads l on l.id = d.lead_id "
         "where d.status = 'pending' order by d.created_at desc")
     gescheitert = server._q(
@@ -5774,6 +5824,8 @@ async def kontakt_detail(request):
             'reichert mit firma_anreichern an (Website nötig).</p>')
 
     teile.append(_vertraege_bereich(lead))
+    teile.append(_kontakt_historie_bereich(
+        lead_id, request.query_params.get("historie") == "alle"))
 
     teile.append(_kontakt_termine(lead_id))
 
@@ -6848,7 +6900,7 @@ async def heute(request):
     pending = server._q(
         "select d.id, d.channel, d.recipient, d.body, d.media_ref, d.subject, d.cc, d.newsletter, d.body_html, "
         "       extract(epoch from (now() - d.created_at)) / 3600 as alter_h, "
-        "       l.name, l.consent_status "
+        "       d.lead_id, d.thema, l.name, l.consent_status "
         "from drafts d left join leads l on l.id = d.lead_id "
         "where d.status = 'pending' order by d.created_at desc")
     je_art = {art: [] for art, _ in FREIGABE_ARTEN}
