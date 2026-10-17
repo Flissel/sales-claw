@@ -1256,6 +1256,50 @@ def kontakt_einordnen(lead_id: str, art: str = "", bereiche_hinzu: list | None =
                             bereiche_weg or [], quelle="agent"))
 
 
+@_gesichert
+def empfehlungsliste_anlegen(art: str, empfohlen_von: str, datum: str, zeilen: list,
+                             einwilligung: bool, bereiche: list | None = None,
+                             berater_name: str = "", struktur: str = "") -> str:
+    """Empfehlungsliste anlegen — Vordruck art 'pole_position' (max 15) oder
+    'mitarbeitervorschlaege' (max 25). empfohlen_von: lead_id des
+    Empfehlungsgebers oder sein Name. zeilen: [{vorname, name, beruf, alter,
+    ort, telefon, zeichnet_aus, interessiert, firma: bool}]. einwilligung:
+    hat der Empfehlungsgeber ALLE gefragt, ob der Betreiber sich melden darf
+    (nur dann wird sie gebucht). bereiche (nur Pole Position): bav,
+    mitarbeiter, vorsorge, immobilien, it, homelab. berater_name/struktur leer
+    = von der letzten Liste uebernehmen. NUR nach Ok des Betreibers zur
+    gezeigten Vorschau. Sendet nichts."""
+    import empfehlungen
+    lead = None
+    try:
+        lead = str(uuid.UUID(str(empfohlen_von)))
+    except ValueError:
+        pass
+    name = empfohlen_von
+    if lead:
+        z = _q("select name from leads where id = %s", (lead,))
+        if z:
+            name = z[0]["name"]
+        else:
+            lead = None
+    return _json(empfehlungen.liste_anlegen(
+        art, name, datum, zeilen, empfohlen_von_lead=lead,
+        berater_name=berater_name or None, struktur=struktur or None,
+        bereiche=bereiche or [], einwilligung=bool(einwilligung), quelle="agent"))
+
+
+@_gesichert
+def empfehlungslisten_zeigen(liste_id: str = "") -> str:
+    """Ohne liste_id: Uebersicht aller Empfehlungslisten (Datum, Vordruck,
+    Empfehlungsgeber, Anzahl, offen/Termin/Abschluss). Mit liste_id: Kopf und
+    Zeilen dieser Liste. Liest nur."""
+    import empfehlungen
+    if not liste_id:
+        return _json({"listen": empfehlungen.listen()})
+    l = empfehlungen.liste(liste_id)
+    return _json(l if l else {"fehler": "Diese Liste gibt es nicht."})
+
+
 def einordnung_bestand() -> dict:
     """Einmalige Einordnung des Bestands (C1 4.1, NICHT in WERKZEUGE):
     Kontakte OHNE gesetzte Art bekommen sie nach dem Firmenfeld;
@@ -8582,6 +8626,8 @@ WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,
              kontakt_aktualisieren,
              # Einordnung Art + Bereiche (16.10.2026), Vertraege: tests/test_kontakt_einordnung.py.
              kontakt_einordnen,
+             # Empfehlungslisten (17.10.2026), Vertraege: tests/test_empfehlungen.py.
+             empfehlungsliste_anlegen, empfehlungslisten_zeigen,
              wissensbasis_fragen, recherche_an_marketing,
              uebergaben_pruefen, uebergabe_annehmen, uebergabe_ablehnen,
              # Marketings Versandauftraege (12.09.2026): sales-claw ist der

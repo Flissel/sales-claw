@@ -413,3 +413,31 @@ def test_pdf_folgeseite_nummeriert_weiter():
     em.zeile_hinzufuegen(r["liste_id"], Z(vorname="Nummer26", telefon=""))
     seiten = PdfReader(_io.BytesIO(em.pdf(r["liste_id"]))).pages
     assert "26." in seiten[1].extract_text()
+
+
+import inspect  # noqa: E402
+
+
+def test_werkzeuge_registriert():
+    for f, p in ((server.empfehlungsliste_anlegen,
+                  ["art", "empfohlen_von", "datum", "zeilen", "einwilligung", "bereiche",
+                   "berater_name", "struktur"]),
+                 (server.empfehlungslisten_zeigen, ["liste_id"])):
+        assert f in server.WERKZEUGE
+        assert list(inspect.signature(f).parameters) == p
+
+
+def test_werkzeug_empfohlen_von_lead_oder_name():
+    geber = json.loads(server.kontakt_anlegen("Klaus Kunde", phone="+491705555555"))["lead_id"]
+    r = json.loads(server.empfehlungsliste_anlegen("mitarbeitervorschlaege", geber, HEUTE,
+                                                   [Z()], False))
+    k = em.liste(r["liste_id"])["kopf"]
+    assert k["empfohlen_von_lead"] == geber and k["empfohlen_von_name"] == "Klaus Kunde"
+    r2 = json.loads(server.empfehlungsliste_anlegen("pole_position", "Frau Nachbarin", HEUTE,
+                                                    [Z(telefon="")], True, ["immobilien"],
+                                                    "Felix", "Nord"))
+    assert em.liste(r2["liste_id"])["kopf"]["empfohlen_von_lead"] is None
+    z = json.loads(server.empfehlungslisten_zeigen())
+    assert len(z["listen"]) == 2
+    d = json.loads(server.empfehlungslisten_zeigen(r2["liste_id"]))
+    assert d["kopf"]["empfohlen_von_name"] == "Frau Nachbarin" and len(d["zeilen"]) == 1

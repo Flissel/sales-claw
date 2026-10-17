@@ -586,7 +586,10 @@ def test_beide_werkzeuge_sind_registriert():
     # Terminkarten 24.09.2026: vorlage_beauftragen, vorlagenauftraege_pruefen,
     # vorlage_urteil, terminkarte_erstellen — 85 -> 89.
     # 13.10.2026: mail_beantworten 89 -> 90, versand_abwarten 90 -> 91.
-    assert len(namen) == len(set(namen)) == 91
+    # 14.-16.10.2026: medien_aus_chat_uebernehmen, post_markierungen_setzen,
+    # kontakt_einordnen, 91 -> 94. 17.10.2026: empfehlungsliste_anlegen,
+    # empfehlungslisten_zeigen (C4), 94 -> 96.
+    assert len(namen) == len(set(namen)) == 96
 
 # ---------------------------------------------------------------------------
 # Nachbesserungen aus dem Stufe-5-Review (Befunde T1, B2, D2)
