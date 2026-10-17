@@ -271,6 +271,8 @@ begin
     execute format('alter table %I.drafts add column if not exists body_html text', s);
     execute format('alter table %I.drafts add column if not exists newsletter uuid', s);
     execute format('alter table %I.drafts add column if not exists newsletter_medien jsonb', s);
+    -- Thema des Kundenentwurfs (normalisiert verglichen) fuer die Doppel-Pruefung (C3).
+    execute format('alter table %I.drafts add column if not exists thema text', s);
     execute format($idx$create unique index if not exists drafts_newsletter_lead_uidx on %I.drafts
       (lead_id, newsletter) where newsletter is not null and status <> 'rejected'$idx$, s);
     execute format('alter table %I.leads drop constraint if exists leads_consent_status_check', s);
