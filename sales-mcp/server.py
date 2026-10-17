@@ -426,7 +426,8 @@ KONTAKT_FELDER = ("phone", "email", "name", "company")
 @_gesichert
 def kontakt_aktualisieren(lead_id: str, feld: str, wert: str) -> str:
     """Stammdaten eines bestehenden Kontakts korrigieren oder nachtragen.
-    Erlaubt sind ausschliesslich die Felder phone, email und name — etwa um
+    Erlaubt sind ausschliesslich die Felder phone, email, name und company
+    (Firma, hoechstens 200 Zeichen) — etwa um
     eine fehlende Telefonnummer zu ergaenzen, ohne die ein WhatsApp-Entwurf
     nicht zugestellt werden kann. Telefonnummern immer MIT Landesvorwahl
     erfassen (+49…/+43…): einer national geschriebenen Nummer (0170…) wird

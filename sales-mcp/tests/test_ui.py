@@ -3598,3 +3598,20 @@ def test_freigegebener_linkedin_post_kein_handposten_hinweis_mehr():
              text="Post", approved_by="felix")
     seite = _get("/freigaben").text
     assert "von Hand posten" not in seite
+
+
+def test_bearbeiten_speichert_die_firma():
+    lead = _lead()
+    r = _post("/kontakte/bearbeiten",
+              {"lead_id": lead, "csrf": ui.CSRF_TOKEN, "name": "Max Testperson",
+               "phone": "+491701234567", "email": "", "company": "ACME GmbH"})
+    assert r.status_code == 303
+    assert server._q("select company from leads where id=%s", (lead,))[0]["company"] == "ACME GmbH"
+
+
+def test_bearbeiten_lehnt_zu_lange_firma_ab_statt_zu_kuerzen():
+    lead = _lead()
+    r = _post("/kontakte/bearbeiten",
+              {"lead_id": lead, "csrf": ui.CSRF_TOKEN, "company": "x" * 201})
+    assert r.status_code == 400
+    assert server._q("select company from leads where id=%s", (lead,))[0]["company"] is None

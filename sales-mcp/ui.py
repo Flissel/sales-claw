@@ -3577,7 +3577,8 @@ async def aktion_kontakt_bearbeiten(request):
     if abbruch:
         return abbruch
     leads = server._q(
-        "select id, name, email, phone from leads where id = %s", (lead_id,))
+        "select id, name, email, phone, company from leads where id = %s",
+        (lead_id,))
     if not leads:
         return _fehlerseite(404, "Unbekannter Kontakt",
                             f"Kein Kontakt mit lead_id {_e(lead_id)}.")
@@ -3592,7 +3593,12 @@ async def aktion_kontakt_bearbeiten(request):
     for feld in server.KONTAKT_FELDER:
         if feld not in form:
             continue          # nicht im Formular = unangetastet
-        neu = " ".join(str(form.get(feld) or "").split())[:KONTAKT_FELD_MAX]
+        neu = " ".join(str(form.get(feld) or "").split())
+        if feld == "company" and len(neu) > KONTAKT_FELD_MAX:
+            # Firma wird nicht still gekuerzt, sondern abgelehnt (C1).
+            return _fehlerseite(400, "Nicht gespeichert",
+                                f"Firma ist länger als {KONTAKT_FELD_MAX} Zeichen.")
+        neu = neu[:KONTAKT_FELD_MAX]
         if neu == str(lead[feld] or ""):
             continue          # unveraendert: keine Zeile, kein Protokoll
         fehler = _feld_pruefen(feld, neu)
