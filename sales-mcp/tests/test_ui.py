@@ -1881,6 +1881,7 @@ ERLAUBTE_LABEL = {
     "Stufe",
     "Score", "Zuletzt",   # /kontakte seit Schritt 5 (02.09.2026)
     "Archiv",   # /kontakte, Archiv-Knopf je Zeile
+    "Einordnung",   # /kontakte, Art und Bereiche je Zeile (C1, 16.10.2026)
     "Autonomie",   # /kontakte, Stufe je Zeile (25.08.2026)
     "Profil",   # /einordnung, Link zum Kontaktprofil
     "Quittieren",   # /wiedervorlagen, Erledigt-Knopf je Zeile

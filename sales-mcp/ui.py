@@ -295,6 +295,8 @@ BREMSE_SPERRE_S = 60
 
 GESENDETE_MAX = 20      # letzte gesendete Entwuerfe auf der Inbox
 KONTAKTE_MAX = 500      # Kontaktliste
+KONTAKTE_SEITE = 100    # Kontaktliste: Zeilen je Seite (C1, 16.10.2026)
+KONTAKTE_SUCHE_MAX = 100  # Suchtext der Kontaktliste, Zeichen
 AKTIVITAETEN_MAX = 200  # Verlauf je Kontakt
 WIEDERVORLAGEN_MAX = 200
 PAYLOAD_KURZ = 300      # Payload-Vorschau im Kontakt-Verlauf
@@ -1168,6 +1170,16 @@ iframe.layout-bild { position: relative; width: 200%; height: 520px; border: 0;
    sonnenbeschienenen Telefon ist ein Farbton kein Unterschied. */
 .badge.archiv { background: transparent; color: var(--schrift);
                 border: 1px dashed var(--linie_stark); }
+/* Kontaktliste (C1, 16.10.2026): Reiter und Bereich-Chips als Links. Der
+   aktive trägt aria-current und ist gefüllt statt umrandet — wieder das
+   farbunabhängige zweite Merkmal. */
+.filterleiste { display: flex; flex-wrap: wrap; gap: .4rem; margin: .4rem 0;
+                align-items: center; }
+.filterleiste a { padding: .2rem .6rem; border-radius: 4px;
+                  border: 1px solid var(--linie_stark); text-decoration: none;
+                  font-size: .85rem; color: var(--schrift); }
+.filterleiste a[aria-current] { background: var(--neutral);
+                                color: var(--neutral_auf); font-weight: 700; }
 .badge.zustand.pending { background: var(--achtung); color: var(--achtung_auf);
                          border-color: var(--achtung); }
 .badge.zustand.failed { background: var(--fehler); color: var(--fehler_auf);
@@ -3183,29 +3195,156 @@ def _verwerfen_statusfehler(z) -> HTMLResponse:
 # Kontakte
 # ---------------------------------------------------------------------------
 
+KONTAKTE_ANSICHTEN = {"alle": "Alle", "personen": "Personen", "firmen": "Firmen",
+                      "mitarbeiter": "Mitarbeiter-Kandidaten",
+                      "offen": "Nicht eingeordnet"}
+# Dieselbe Regel wie server._einordnung, als SQL (Spec C1 §3):
+# - Art: gueltiges enrichment.art, sonst Firmenfeld mit mindestens einem
+#   Nicht-Leerzeichen → firma, sonst person (Python: `(company or "").strip()`).
+# - Bereiche: nur ein JSON-Array zaehlt, und darin nur die BEKANNTEN
+#   Schluessel — Python filtert ueber `[b for b in BEREICHE if b in roh]`, ein
+#   Array nur mit Unbekanntem ist dort leer und damit „nicht eingeordnet".
+# Die Schluessel kommen aus server.ARTEN/BEREICHE (Code, keine Fremddaten)
+# und stehen deshalb als Literale im SQL-Text; keiner enthaelt `%` oder `'`.
+_ART_SQL = ("coalesce(case when l.enrichment->>'art' in ("
+            + ", ".join(f"'{a}'" for a in server.ARTEN) + ") "
+            "then l.enrichment->>'art' end, case when coalesce(l.company, '') "
+            "~ '[^[:space:]]' then 'firma' else 'person' end)")
+_BEREICHE_SQL = ("(case when jsonb_typeof(l.enrichment->'bereiche') = 'array' "
+                 "then l.enrichment->'bereiche' else '[]'::jsonb end)")
+_BEREICHE_LISTE_SQL = ("array[" + ", ".join(f"'{b}'" for b in server.BEREICHE)
+                       + "]::text[]")
+_ANSICHT_SQL = {
+    "alle": "true",
+    "personen": f"{_ART_SQL} = 'person'",
+    "firmen": f"{_ART_SQL} = 'firma'",
+    "mitarbeiter": f"{_ART_SQL} = 'person' and {_BEREICHE_SQL} ? 'mitarbeiter'",
+    "offen": f"not ({_BEREICHE_SQL} ?| {_BEREICHE_LISTE_SQL})",
+}
+
+
+def _like_muster(text: str) -> str:
+    r"""Suchtext woertlich fuer ILIKE ... ESCAPE '\'."""
+    return "%" + text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
+def _einordnung_chips(enrichment, company) -> str:
+    """Art und Bereiche als Abzeichen — Liste und Kontaktseite zeigen damit
+    dieselbe Lesart von server._einordnung."""
+    art, bereiche = server._einordnung(enrichment, company)
+    teile = [f'<span class="badge">{_e("Firma" if art == "firma" else "Person")}</span>']
+    teile += [f'<span class="badge archiv">{_e(server.BEREICHE[b])}</span>' for b in bereiche]
+    return " ".join(teile)
+
+
+def _kontakte_url(werte: dict, **aenderung) -> str:
+    """Link auf /kontakte, der die uebrigen Parameter behaelt. Leere Werte
+    und die Vorgaben (Ansicht „alle", Seite 1) fallen weg."""
+    w = {**werte, **aenderung}
+    teile = {k: v for k, v in w.items()
+             if v not in ("", None) and not (k == "ansicht" and v == "alle")
+             and not (k == "seite" and v == 1)}
+    return "/kontakte" + ("?" + urllib.parse.urlencode(teile) if teile else "")
+
+
+def _filter_verweis(text, url, aktiv) -> str:
+    return (f'<a href="{_e(url)}"' + (' aria-current="page"' if aktiv else "")
+            + f">{_e(text)}</a>")
+
+
 @_gesichert_seite
 async def kontakte(request):
+    qp = request.query_params
+    ansicht = qp.get("ansicht", "alle")
+    if ansicht not in KONTAKTE_ANSICHTEN:
+        ansicht = "alle"
+    bereich = qp.get("bereich", "")
+    if bereich not in server.BEREICHE:
+        bereich = ""
+    q = (qp.get("q") or "").strip()[:KONTAKTE_SUCHE_MAX]
+    try:
+        seite = int(qp.get("seite", "1"))
+    except ValueError:
+        seite = 1
     # Archivierte bleiben draussen, solange der Schalter nicht gesetzt ist.
     # Gefiltert wird in SQL (server._archiv_sql — dieselbe Regel wie
-    # server._archiviert in Python), damit KONTAKTE_MAX die SICHTBAREN
-    # Kontakte deckelt und nicht die geladenen: sonst verdraengte ein Archiv
-    # von 500 Karteileichen die lebenden Kontakte aus der Liste.
-    archiv_zeigen = request.query_params.get("archiv") == "1"
-    bedingung = "" if archiv_zeigen else (
-        "where not " + server._archiv_sql("l.enrichment") + " ")
+    # server._archiviert in Python), damit Anzahlen und Seiten die
+    # SICHTBAREN Kontakte zaehlen und nicht die geladenen.
+    archiv_zeigen = qp.get("archiv") == "1"
+    bed = ["true"]
+    p: dict = {}
+    if not archiv_zeigen:
+        bed.append("not " + server._archiv_sql("l.enrichment"))
+    if bereich:
+        bed.append(f"{_BEREICHE_SQL} ? %(bereich)s")
+        p["bereich"] = bereich
+    if q:
+        # Name und Firma woertlich (ESCAPE), die Telefonnummer nur ueber ihre
+        # Ziffern — und erst ab drei Ziffern, sonst traefe „1" fast jede
+        # Nummer. Jedes `%` laeuft als Parameter, nie im SQL-Text.
+        ziffern = re.sub(r"\D", "", q)
+        ziffern = ziffern if len(ziffern) >= 3 else ""
+        p.update(muster=_like_muster(q), ziffern=ziffern,
+                 ziffern_muster="%" + ziffern + "%")
+        bed.append(
+            r"(l.name ilike %(muster)s escape '\' "
+            r"or coalesce(l.company, '') ilike %(muster)s escape '\' "
+            "or (%(ziffern)s <> '' and regexp_replace(coalesce(l.phone, ''), "
+            "'[^0-9]', '', 'g') like %(ziffern_muster)s))")
+    wo = " and ".join(bed)
+    anzahl = server._q(
+        "select " + ", ".join(
+            f"count(*) filter (where {sql}) as {name}"
+            for name, sql in _ANSICHT_SQL.items())
+        + " from leads l where " + wo, p)[0]
+    gesamt = int(anzahl[ansicht])
+    letzte = max(1, -(-gesamt // KONTAKTE_SEITE))
+    seite = min(max(seite, 1), letzte)
+    # `l.id` als letzter Schluessel: ohne eindeutige Ordnung duerfte
+    # Postgres gleichrangige Zeilen je Seite anders sortieren — dann fiele
+    # beim Blaettern ein Kontakt durch oder kaeme doppelt.
     zeilen = server._q(  # noqa: E501 — Spaltenliste bleibt eine Zeile je Feld
         "select l.id, l.name, l.status, l.consent_status, l.enrichment, "
-        "       l.score, "
+        "       l.score, l.company, "
         "       (select max(a.created_at) from activities a "
         "         where a.lead_id = l.id) as letzte "
-        "from leads l " + bedingung +
-        "order by letzte desc nulls last, l.name asc limit %s",
-        (KONTAKTE_MAX,))
+        "from leads l where " + wo + " and " + _ANSICHT_SQL[ansicht] + " "
+        "order by letzte desc nulls last, l.name asc, l.id asc "
+        "limit %(lim)s offset %(off)s",
+        {**p, "lim": KONTAKTE_SEITE, "off": (seite - 1) * KONTAKTE_SEITE})
+    werte = {"ansicht": ansicht, "bereich": bereich, "q": q,
+             "archiv": "1" if archiv_zeigen else "", "seite": 1}
+    reiter = ('<nav class="filterleiste" aria-label="Ansicht">' + "".join(
+        _filter_verweis(f"{label} ({int(anzahl[name])})",
+                        _kontakte_url(werte, ansicht=name), name == ansicht)
+        for name, label in KONTAKTE_ANSICHTEN.items()) + "</nav>")
+    bereiche = (
+        '<nav class="filterleiste" aria-label="Bereich">'
+        + _filter_verweis("alle Bereiche", _kontakte_url(werte, bereich=""),
+                          not bereich)
+        + "".join(_filter_verweis(label, _kontakte_url(werte, bereich=b),
+                                  b == bereich)
+                  for b, label in server.BEREICHE.items()) + "</nav>")
+    versteckt = "".join(
+        f'<input type="hidden" name="{k}" value="{_e(v)}">'
+        for k, v in (("ansicht", "" if ansicht == "alle" else ansicht),
+                     ("bereich", bereich),
+                     ("archiv", "1" if archiv_zeigen else "")) if v)
+    suche = (
+        '<form method="get" action="/kontakte" class="meta">'
+        f'{versteckt}<input type="search" name="q" value="{_e(q)}" '
+        f'maxlength="{KONTAKTE_SUCHE_MAX}" '
+        'placeholder="Name, Firma oder Telefon" aria-label="Kontakte suchen"> '
+        '<button type="submit">Suchen</button>'
+        + (f' <a href="{_e(_kontakte_url(werte, q=""))}">Suche löschen</a>'
+           if q else "") + "</form>")
     schalter = (
-        '<p class="meta"><a href="/kontakte">nur aktive zeigen</a> — '
-        'archivierte Kontakte sind mitgelistet.</p>' if archiv_zeigen else
-        '<p class="meta"><a href="/kontakte?archiv=1">auch archivierte '
-        'zeigen</a></p>')
+        f'<p class="meta"><a href="{_e(_kontakte_url(werte, archiv=""))}">'
+        'nur aktive zeigen</a> — archivierte Kontakte sind mitgelistet.</p>'
+        if archiv_zeigen else
+        f'<p class="meta"><a href="{_e(_kontakte_url(werte, archiv="1"))}">'
+        'auch archivierte zeigen</a></p>')
+    kopf = reiter + bereiche + suche + schalter
     inhalt = []
     for z in zeilen:
         # `archiv` gibt dem Abzeichen einen gestrichelten Umriss statt einer
@@ -3230,6 +3369,7 @@ async def kontakte(request):
         inhalt.append([
             f'<a href="/kontakte/{_e(z["id"])}">{_e(z["name"])}</a>{marke}'
             f'<div class="meta">Consent: {_e(z["consent_status"])}</div>',
+            _einordnung_chips(z["enrichment"], z["company"]),
             f'<span class="stufe {_e(stufe)}">{_e(stufe)}</span>',
             _score_pille(z["score"]), _zeit(z["letzte"]),
             # Am Sammelkontakt keine Stufe: er ist kein Mensch, und eine
@@ -3253,12 +3393,23 @@ async def kontakte(request):
                 '<i>existing_customer</i> entsteht kein Erstansprache-'
                 'Entwurf per WhatsApp/E-Mail; Antworten auf eingehende '
                 'Nachrichten bleiben frei.</p>')
-    rumpf = [schalter, _tabelle(
-        ["Name", "Stufe", "Score", "Zuletzt", "Autonomie", "Archiv"],
-        inhalt), fussnote]
+    blaettern = ""
+    if letzte > 1:
+        zurueck = (_filter_verweis(
+            "← Zurück", _kontakte_url(werte, seite=seite - 1), False)
+            if seite > 1 else "")
+        weiter = (_filter_verweis(
+            "Weiter →", _kontakte_url(werte, seite=seite + 1), False)
+            if seite < letzte else "")
+        blaettern = (f'<nav class="filterleiste" aria-label="Seiten">{zurueck}'
+                     f'<span class="meta">Seite {seite} von {letzte}</span>'
+                     f'{weiter}</nav>')
+    rumpf = [kopf, _tabelle(
+        ["Name", "Einordnung", "Stufe", "Score", "Zuletzt", "Autonomie",
+         "Archiv"], inhalt), blaettern, fussnote]
     if not zeilen:
-        rumpf = [schalter, "<p>Keine Kontakte.</p>"]
-    return _seite(f"Kontakte ({len(zeilen)})", "".join(rumpf))
+        rumpf = [kopf, "<p>Keine Kontakte.</p>"]
+    return _seite(f"Kontakte ({gesamt})", "".join(rumpf))
 
 
 def _offene_wiedervorlagen(lead_id=None):
