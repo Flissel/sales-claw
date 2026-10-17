@@ -238,3 +238,77 @@ def test_einladung_traegt_thema_termin_und_wird_nie_geprueft(monkeypatch):
         assert "fehler" not in a, a
     assert [z["thema"] for z in server._q("select thema from drafts where lead_id=%s", (lead,))] == \
         ["termin", "termin"]
+
+
+# --- Schluss-Fix (Final Review 17.10.2026) ------------------------------
+
+import logging  # noqa: E402
+
+import psycopg  # noqa: E402
+
+
+def _ohne_thema_spalte(monkeypatch):
+    """Simuliert eine Datenbank ohne drafts.thema (provision.sql fehlt)."""
+    echt = server._q
+
+    def _q(sql, params=()):
+        if "thema" in sql:
+            raise psycopg.errors.UndefinedColumn('column "thema" does not exist')
+        return echt(sql, params)
+    monkeypatch.setattr(server, "_q", _q)
+
+
+def test_doppelt_ohne_thema_spalte_leer_mit_warnung(monkeypatch, caplog):
+    lead = _lead()
+    _ohne_thema_spalte(monkeypatch)
+    with caplog.at_level(logging.WARNING):
+        assert hi.doppelt_pruefen(lead, "bAV Erstansprache") == []
+    assert any("thema" in r.getMessage() or "Historie" in r.getMessage()
+               for r in caplog.records if r.levelno >= logging.WARNING)
+
+
+def test_historie_ohne_thema_spalte_laeuft_ohne_entwuerfe_weiter(monkeypatch):
+    lead = _lead()
+    server._q("insert into activities (lead_id, type, payload) values (%s,'termin',%s) returning id",
+              (lead, json.dumps({"datum": "2026-10-20", "uhrzeit": "10:00", "thema": "Erstgespräch"})))
+    _ohne_thema_spalte(monkeypatch)
+    h = hi.kontakt_historie(lead)
+    assert [e["art"] for e in h] == ["termin"]
+    assert hi.zuletzt(lead)["art"] == "termin"
+
+
+def test_profil_lesen_ohne_thema_spalte(monkeypatch):
+    lead = _lead()
+    _ohne_thema_spalte(monkeypatch)
+    p = json.loads(server.profil_lesen(lead))
+    assert "fehler" not in p, p
+    assert p["zuletzt_angeschrieben"] is None and p["historie_kurz"] == []
+    assert json.loads(server.kontakt_historie_lesen(lead)) == {"historie": []}
+
+
+def test_thema_vergleich_nbsp_wie_leerzeichen():
+    lead = _lead()
+    _draft(lead, "bAV\u00a0Erstansprache", tage_alt=2)
+    assert len(hi.doppelt_pruefen(lead, "bAV Erstansprache")) == 1
+    lead2 = _lead()
+    _draft(lead2, "bAV Erstansprache", tage_alt=2)
+    assert len(hi.doppelt_pruefen(lead2, "bAV\u00a0Erstansprache")) == 1
+
+
+def test_thema_vergleich_umlaut_gross_klein():
+    lead = _lead()
+    _draft(lead, "ÜBERPRÜFUNG bAV", tage_alt=2)
+    assert len(hi.doppelt_pruefen(lead, "überprüfung bav")) == 1
+
+
+def test_handy_summe_wortlaut():
+    lead = _lead()
+    server._q("insert into activities (lead_id, type, payload) values "
+              "(%s,'nachricht_ausgehend','{\"text\":\"hi\"}') returning id", (lead,))
+    server._q("insert into activities (lead_id, type, payload) values "
+              "(%s,'nachricht_ausgehend','{\"text\":\"du\"}') returning id", (lead,))
+    handy = [e for e in hi.kontakt_historie(lead) if e["art"] == "handy"]
+    assert len(handy) == 1
+    import re
+    assert re.fullmatch(r"2 gesendete WhatsApp-Nachrichten \(Handy oder System\) im \d{2}/\d{4}",
+                        handy[0]["text"]), handy[0]["text"]

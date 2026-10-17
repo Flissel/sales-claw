@@ -1548,7 +1548,8 @@ def vertrag_speichern(lead_id: str, sparte: str, ablauf: str = "",
 def kontakt_historie_lesen(lead_id: str) -> str:
     """Womit wurde der Kontakt in den letzten 365 Tagen angeschrieben —
     versendete Entwuerfe (mit Thema), Newsletter, Termine/Einladungen,
-    WhatsApp vom Handy als Monatssumme. Neueste zuerst. Liest nur."""
+    gesendete WhatsApp-Nachrichten (Handy oder System) als Monatssumme.
+    Neueste zuerst. Liest nur."""
     import historie
     return _json({"historie": historie.kontakt_historie(lead_id)})
 

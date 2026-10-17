@@ -3789,6 +3789,31 @@ def test_vertrag_altform_eintrag_vorbelegt_und_ohne_duplikat():
     assert len(liste) == 1 and liste[0]["notiz"] == "neu"
 
 
+def test_vertrag_formular_fremd_ohne_statusfelder():
+    fremd = ui._vertrag_formular("00000000-0000-0000-0000-000000000001",
+                                 {"id": "f1", "art": "fremd", "bezeichnung": "KFZ"})
+    assert 'name="status"' not in fremd and 'name="status_datum"' not in fremd
+    eigen = ui._vertrag_formular("00000000-0000-0000-0000-000000000001",
+                                 {"id": "e1", "art": "eigen", "bezeichnung": "NAS"})
+    assert 'name="status"' in eigen and 'name="status_datum"' in eigen
+
+
+def test_kontakt_historie_bereich_ohne_thema_spalte_zeigt_termine(monkeypatch):
+    import psycopg
+    lead = _lead()
+    server._q("insert into activities (lead_id, type, payload) values (%s,'termin',%s) returning id",
+              (lead, json.dumps({"datum": "2026-10-20", "uhrzeit": "10:00", "thema": "Erstgespräch"})))
+    echt = server._q
+
+    def _q(sql, params=()):
+        if "thema" in sql:
+            raise psycopg.errors.UndefinedColumn('column "thema" does not exist')
+        return echt(sql, params)
+    monkeypatch.setattr(server, "_q", _q)
+    s = ui._kontakt_historie_bereich(lead, False)
+    assert "Kontakt-Historie" in s and "Erstgespräch" in s
+    assert ui._schon_angeschrieben({"id": "x", "lead_id": lead, "thema": "bAV"}) == ""
+
 def test_euro_zeigt_nan_und_inf_nicht_als_zahl():
     assert ui._euro("1499.00") == "1.499,00 €"
     assert ui._euro("nan") == "nan" and ui._euro("inf") == "inf"
