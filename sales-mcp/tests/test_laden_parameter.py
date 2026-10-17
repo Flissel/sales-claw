@@ -563,3 +563,16 @@ def test_zweiter_laden_bekommt_eigene_db_und_nicht_die_kanal_zugangsdaten_des_er
         assert umg_erst.get("OPENWA_API_KEY") == GEHEIMNIS_ERSTER_LADEN, (
             f"{dienst}: bekommt nicht einmal seinen EIGENEN Schluessel — "
             f"der Anker liest environment: nicht mehr aus?")
+
+
+@ohne_docker
+def test_oberflaeche_kennt_alle_drei_sammelkontakte():
+    """C1 Kontaktarten (Final-Review I2): die Oberflaeche lehnt das Einordnen
+    von Sammelkontakten ab (server._sammelkontakt). Dafuer muss sales-ui alle
+    drei lead_ids kennen, nicht nur INBOX_UNBEKANNT_LEAD_ID — sonst zeigt die
+    Recherche- und die LinkedIn-Post-Seite die Einordnung und
+    POST /kontakte/einordnen geht durch. Keine Geheimnisse, nur lead_ids."""
+    umgebung = _aufgeloest("docker-compose.yml")["services"]["sales-ui"]["environment"]
+    for name in ("INBOX_UNBEKANNT_LEAD_ID", "RECHERCHE_LEAD_ID",
+                 "LINKEDIN_POST_LEAD_ID"):
+        assert name in umgebung, name

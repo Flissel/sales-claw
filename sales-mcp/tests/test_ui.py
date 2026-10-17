@@ -3671,3 +3671,24 @@ def test_einordnen_manipuliert_422():
         r = _post("/kontakte/einordnen", {"csrf": ui.CSRF_TOKEN, "lead_id": lead, **daten})
         assert r.status_code == 422
     assert "art" not in _einordnung_von(lead)
+
+
+@pytest.mark.parametrize("quelle", ["linkedin", "recherche"])
+def test_einordnen_sammelkontakt_403_und_kein_kasten(monkeypatch, quelle):
+    """Final-Review I2: die Recherche- und LinkedIn-Post-Sammelkontakte
+    sind keine Menschen. Im sales-ui-Container kommen ihre lead_ids aus der
+    Umgebung (docker-compose.yml, Test in test_laden_parameter.py) — hier
+    wird genau dieser Weg nachgestellt, und weder Kasten noch POST
+    duerfen greifen."""
+    lead = _lead()
+    if quelle == "linkedin":
+        monkeypatch.setattr(ui.server, "LINKEDIN_POST_LEAD_ID", lead)
+    else:
+        monkeypatch.setenv("RECHERCHE_LEAD_ID", lead)
+    seite = _get(f"/kontakte/{lead}").text
+    assert 'id="einordnung"' not in seite
+    assert 'action="/kontakte/einordnen"' not in seite
+    r = _post("/kontakte/einordnen", {"csrf": ui.CSRF_TOKEN, "lead_id": lead,
+                                     "art": "person", "bereich_bav": "1"})
+    assert r.status_code == 403
+    assert "art" not in (_einordnung_von(lead) or {})
