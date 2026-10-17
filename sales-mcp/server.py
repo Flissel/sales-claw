@@ -4779,6 +4779,30 @@ def digest() -> str:
         "       not in ('won', 'lost') and not "
         + _archiv_sql("enrichment") +
         " order by score desc, updated_at desc limit 5")
+    # Kampagnenplan (17.10.2026, Marketing-Migration 071): was steht in den
+    # naechsten 7 Tagen an, und wartet ein Vorschlag des Marketing-Agenten auf
+    # Bestaetigung? Nur fuer die Firma dieses Ladens (MARKETING_MANDANT, wie
+    # beim Newsletter-Versand); ein Laden ohne Firma bekommt keinen Block.
+    # Abgesichert wie die Bloecke darueber: fehlt das Recht auf
+    # marketing.plan_anstehend, stimmt der Rest des Digests trotzdem.
+    kampagnenplan = None
+    plan_firma = os.environ.get("MARKETING_MANDANT", "").strip()
+    if plan_firma:
+        try:
+            anstehend = _q("select id::text as id, datum::text as datum, art, titel, status, "
+                           "entwurf_status from marketing.plan_anstehend(7) where mandant = %s",
+                           (plan_firma,))
+            kampagnenplan = {
+                "anzahl": len(anstehend),
+                "vorschlaege": sum(1 for z in anstehend if z["status"] == "vorschlag"),
+                "eintraege": [{"datum": z["datum"], "art": z["art"], "titel": z["titel"],
+                               "status": z["status"], "entwurf": z["entwurf_status"]}
+                              for z in anstehend[:10]],
+                "hinweis": KAMPAGNENPLAN_HINWEIS}
+        except psycopg.Error as e:
+            kampagnenplan = {"anzahl": None, "vorschlaege": None, "eintraege": [],
+                             "hinweis": (f"Nicht lesbar (Datenbankfehler {e.sqlstate}) - "
+                                         f"der Rest des Digests stimmt. {KAMPAGNENPLAN_HINWEIS}")}
     ergebnis = {"anzahl_entwuerfe": len(entwuerfe),
                   "pipeline": pipeline,
                   "wichtigste_kontakte": [
@@ -4799,7 +4823,16 @@ def digest() -> str:
                   "letzte_aktivitaeten": letzte}
     if offen_je_lead is not None:
         ergebnis["unvollstaendige_bedarfsanalysen"] = offen_je_lead
+    if kampagnenplan is not None:
+        ergebnis["kampagnenplan"] = kampagnenplan
     return _json(ergebnis)
+
+
+KAMPAGNENPLAN_HINWEIS = (
+    "Geplante Marketing-Termine der naechsten 7 Tage. Vorschlaege des "
+    "Marketing-Agenten bestaetigt oder verwirft der Betreiber unter "
+    "/marketing/plan; ein Termin ohne fertigen Entwurf (entwurf leer oder "
+    "nicht freigegeben) braucht noch Arbeit. Ein Plan versendet nichts.")
 
 
 # ---------------------------------------------------------------------------
