@@ -1553,7 +1553,10 @@ def abschluss_speichern(lead_id: str, bereich: str, bezeichnung: str, status: st
     (eintrag_id gesetzt = aendern). bereich: bav, mitarbeiter, vorsorge,
     immobilien, it, homelab. status: angeboten, in_arbeit, abgeschlossen,
     beendet (+ status_datum JJJJ-MM-TT). betrag in EUR. wiedervorlage_am
-    legt eine Wiedervorlage genau zu dem Datum an. Vom Kunden nur GENANNTE
+    legt eine Wiedervorlage genau zu dem Datum an. Beim Aendern nur die
+    geaenderten Felder angeben; leere Felder bleiben unveraendert. Leeren
+    geht nur auf der Kontaktseite. Fremde Eintraege lehnt das Werkzeug ab.
+    Vom Kunden nur GENANNTE
     fremde Vertraege weiter mit vertrag_speichern. Nur auf Zuruf oder bei
     eindeutigem Gespraechsinhalt; nie raten; jede Aenderung dem Betreiber
     nennen. Setzt KEINEN Bestandskunden-Status."""

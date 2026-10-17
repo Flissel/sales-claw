@@ -172,3 +172,9 @@ def test_empfehlungslisten_im_prompt_und_tabu():
 def test_vertraege_projekte_im_prompt():
     assert "abschluss_speichern(" in TEXT and "vertrag_speichern(" in TEXT
     assert "`abschluss_speichern`" in _absatz("- **Betreiber-Werkzeuge sind im Kundenchat tabu")
+
+
+def test_vertraege_aendern_ist_merge_im_prompt():
+    absatz = " ".join(TEXT.split("## Verträge & Projekte")[1].split("\n## ")[0].split())
+    assert "Beim Aendern nur die geaenderten Felder angeben; leere Felder bleiben unveraendert." in absatz
+    assert "Leeren geht nur auf der Kontaktseite." in absatz

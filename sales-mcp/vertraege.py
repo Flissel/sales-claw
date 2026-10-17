@@ -14,6 +14,18 @@ STATUS = {"angeboten": "angeboten", "in_arbeit": "in Arbeit",
 ARTEN = ("eigen", "fremd")
 TEXT_MAX = 200
 EINTRAEGE_MAX = 50
+# Fester Namensraum fuer die stabile id id-loser Eintraege (Altform vor dem
+# 17.10.2026). NIE aendern — sonst wechseln die ids aller Altform-Eintraege.
+ID_NAMENSRAUM = uuid.UUID("6f1c2a52-8e0b-4d55-9a57-2b0c1c7e0c17")
+
+
+def _stabile_id(v: dict, n: int = 0) -> str:
+    """Inhaltsbasierte id (Ruling I1): dieselbe Rohzeile ergibt bei jedem Lesen
+    dieselbe id, damit speichern(eintrag_id=...) sie wiederfindet. `n` trennt
+    inhaltsgleiche Zeilen in derselben Liste."""
+    kern = "|".join(str(v.get(k) or "") for k in
+                    ("sparte", "gesellschaft", "ablauf", "erfasst", "notiz"))
+    return str(uuid.uuid5(ID_NAMENSRAUM, kern + (f"#{n}" if n else "")))
 
 
 def betrag_norm(text) -> str | None:
@@ -43,7 +55,9 @@ def _normal(v) -> dict | None:
         aus["bezeichnung"] = str(v.get("sparte") or "")
     if not aus.get("anbieter"):
         aus["anbieter"] = str(v.get("gesellschaft") or "")
-    for k in ("id", "bereich", "bezeichnung", "status", "status_datum", "anbieter", "betrag",
+    if not aus.get("id"):
+        aus["id"] = _stabile_id(v)
+    for k in ("bereich", "bezeichnung", "status", "status_datum", "anbieter", "betrag",
               "wiedervorlage_am", "notiz", "erfasst", "wiedervorlage_id"):
         aus.setdefault(k, "")
     if not (aus["bezeichnung"] or aus["anbieter"] or aus["notiz"]):
@@ -55,7 +69,19 @@ def eintraege_aus(enrichment) -> list:
     roh = (enrichment or {}).get("vertraege") if isinstance(enrichment, dict) else None
     if not isinstance(roh, list):
         return []
-    return [n for n in (_normal(v) for v in roh) if n is not None]
+    aus, gesehen = [], set()
+    for v in roh:
+        n = _normal(v)
+        if n is None:
+            continue
+        if n["id"] in gesehen and not v.get("id"):
+            k = 1
+            while _stabile_id(v, k) in gesehen:
+                k += 1
+            n["id"] = _stabile_id(v, k)
+        gesehen.add(n["id"])
+        aus.append(n)
+    return aus
 
 
 def eintraege(lead_id) -> list:
@@ -85,7 +111,7 @@ def speichern(lead_id, art, bereich, bezeichnung, status="", status_datum="", an
     if status and status not in STATUS:
         return {"fehler": f"Unbekannter Status '{status}' — erlaubt: {', '.join(STATUS)}."}
     bezeichnung = " ".join(str(bezeichnung or "").split())
-    if not 1 <= len(bezeichnung) <= TEXT_MAX:
+    if len(bezeichnung) > TEXT_MAX:
         return {"fehler": f"Bezeichnung fehlt oder ist laenger als {TEXT_MAX} Zeichen."}
     for name, wert in (("Anbieter", anbieter), ("Notiz", notiz)):
         if len(str(wert or "")) > TEXT_MAX:
@@ -100,8 +126,6 @@ def speichern(lead_id, art, bereich, bezeichnung, status="", status_datum="", an
     if f:
         return {"fehler": f}
     heute = datetime.now(timezone.utc).date()
-    if wv and date.fromisoformat(wv) < heute:
-        return {"fehler": f"Wiedervorlage {wv} liegt in der Vergangenheit."}
     if server._sammelkontakt(lead_id):
         return {"fehler": "Sammelkontakte bekommen keine Vertraege."}
     z = server._q("select enrichment from leads where id = %s", (lead_id,))
@@ -111,11 +135,34 @@ def speichern(lead_id, art, bereich, bezeichnung, status="", status_datum="", an
     if server._privat(enr):
         return {"fehler": "Privat markierte Kontakte bekommen keine Vertraege."}
     liste = eintraege_aus(enr)
-    alt = next((e for e in liste if e["id"] and e["id"] == eintrag_id), None) if eintrag_id else None
+    alt = next((e for e in liste if e["id"] == eintrag_id), None) if eintrag_id else None
     if eintrag_id and alt is None:
         return {"fehler": f"Kein Eintrag mit id {eintrag_id}."}
+    # Ruling I2: die Art eines Eintrags wechselt nie ueber speichern.
+    if alt and alt["art"] != art:
+        return {"fehler": ("Fremder Vertrag — als fremd pflegen (vertrag_speichern bzw. "
+                           "Kontaktseite).") if alt["art"] == "fremd" else
+                ("Eigener Abschluss — als eigen pflegen (abschluss_speichern bzw. "
+                 "Kontaktseite).")}
     if alt is None and len(liste) >= EINTRAEGE_MAX:
         return {"fehler": f"Hoechstens {EINTRAEGE_MAX} Eintraege je Kontakt."}
+    # Ruling I3: der Agent aendert per Merge — leere Felder bleiben, wie sie
+    # sind (leeren geht nur ueber die Kontaktseite). Die UI schickt das ganze
+    # Formular und ersetzt vollstaendig.
+    if alt and quelle != "ui":
+        bereich = bereich or alt["bereich"]
+        bezeichnung = bezeichnung or alt["bezeichnung"]
+        status = status or alt["status"]
+        sd = sd or alt["status_datum"]
+        anbieter = anbieter or alt["anbieter"]
+        b = b or alt["betrag"]
+        wv = wv or alt["wiedervorlage_am"]
+        notiz = notiz or alt["notiz"]
+    if not bezeichnung:
+        return {"fehler": f"Bezeichnung fehlt oder ist laenger als {TEXT_MAX} Zeichen."}
+    # Ein unveraendertes, inzwischen ueberfaelliges Datum ist kein Fehler.
+    if wv and date.fromisoformat(wv) < heute and wv != (alt or {}).get("wiedervorlage_am"):
+        return {"fehler": f"Wiedervorlage {wv} liegt in der Vergangenheit."}
     neu = {"id": alt["id"] if alt else str(uuid.uuid4()), "art": art, "bereich": bereich or "",
            "bezeichnung": bezeichnung, "status": status or "", "status_datum": sd,
            "anbieter": " ".join(str(anbieter or "").split()), "betrag": b,
@@ -124,6 +171,10 @@ def speichern(lead_id, art, bereich, bezeichnung, status="", status_datum="", an
            "wiedervorlage_id": alt.get("wiedervorlage_id", "") if alt else ""}
     if alt and alt.get("ablauf"):
         neu["ablauf"] = alt["ablauf"]
+    if art == "fremd":
+        # vertrag_speichern-Dedup (_kern), vertraege_ablaufend und die Kontakt-
+        # seite lesen sparte/gesellschaft — sie spiegeln bezeichnung/anbieter.
+        neu["sparte"], neu["gesellschaft"] = neu["bezeichnung"], neu["anbieter"]
     # Wiedervorlage: alte quittieren, wenn Datum wechselt oder beendet; neue anlegen
     wiedervorlage = None
     alte_wv = neu["wiedervorlage_id"]

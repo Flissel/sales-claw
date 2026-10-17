@@ -146,3 +146,77 @@ def test_uebergabe_und_ablaufend_vertragen_eigene_eintraege():
     text = json.loads(server.uebergabe_erstellen(lead))["text"]
     abschnitt = text.split("## Vertraege")[1].split("\n## ")[0]
     assert "KFZ (HUK)" in abschnitt and "Webshop" in abschnitt and "?" not in abschnitt
+
+
+# --- Fix-Runde 1 (Review task-1, Rulings I1-I3) ---
+
+def test_i1_altform_id_stabil_und_aenderbar_ohne_dublette():
+    lead = _lead({"vertraege": [{"sparte": "KFZ", "gesellschaft": "HUK", "ablauf": "2027-01-01",
+                                 "erfasst": "2026-01-02"}]})
+    a, b = vt.eintraege(lead), vt.eintraege(lead)
+    assert a[0]["id"] and a[0]["id"] == b[0]["id"]
+    r = vt.speichern(lead, "fremd", "", "KFZ", anbieter="HUK24", eintrag_id=a[0]["id"], quelle="ui")
+    assert "fehler" not in r and r["angelegt"] is False
+    es = vt.eintraege(lead)
+    assert len(es) == 1 and es[0]["id"] == a[0]["id"] and es[0]["anbieter"] == "HUK24"
+    roh = server._q("select enrichment->'vertraege' v from leads where id=%s", (lead,))[0]["v"]
+    assert roh[0]["id"] == a[0]["id"] and roh[0]["ablauf"] == "2027-01-01"
+    # fremd bleibt fuer vertraege_ablaufend/Uebergabe lesbar
+    assert roh[0]["sparte"] == "KFZ" and roh[0]["gesellschaft"] == "HUK24"
+
+
+def test_i1_gleiche_altform_eintraege_bekommen_verschiedene_ids():
+    v = {"sparte": "KFZ", "gesellschaft": "HUK"}
+    es = vt.eintraege_aus({"vertraege": [dict(v), dict(v)]})
+    assert es[0]["id"] != es[1]["id"]
+
+
+def test_i2_abschluss_speichern_lehnt_fremden_eintrag_ab():
+    lead = _lead()
+    server.vertrag_speichern(lead, "KFZ", gesellschaft="HUK")
+    fid = vt.eintraege(lead)[0]["id"]
+    r = json.loads(server.abschluss_speichern(lead, "it", "KFZ", "abgeschlossen", eintrag_id=fid))
+    assert r["fehler"] == "Fremder Vertrag — als fremd pflegen (vertrag_speichern bzw. Kontaktseite)."
+    assert vt.eintraege(lead)[0]["art"] == "fremd"
+    eid = vt.speichern(lead, "eigen", "it", "Webshop")["eintrag"]["id"]
+    r2 = vt.speichern(lead, "fremd", "", "Webshop", eintrag_id=eid, quelle="ui")
+    assert "Eigener" in r2["fehler"]
+
+
+def test_i3_agent_nur_status_behaelt_rest():
+    lead = _lead()
+    e = vt.speichern(lead, "eigen", "it", "Webshop", status="in_arbeit", anbieter="Ich",
+                     betrag="500", wiedervorlage_am=SPAETER, notiz="wichtig")["eintrag"]
+    json.loads(server.abschluss_speichern(lead, "", "", "abgeschlossen", eintrag_id=e["id"]))
+    n = vt.eintraege(lead)[0]
+    assert (n["status"], n["betrag"], n["notiz"], n["anbieter"], n["bereich"], n["bezeichnung"]) == \
+        ("abgeschlossen", "500.00", "wichtig", "Ich", "it", "Webshop")
+    wv = _offene_wv(lead)
+    assert len(wv) == 1 and wv[0]["id"] == e["wiedervorlage_id"] == n["wiedervorlage_id"]
+
+
+def test_i3_unveraenderte_vergangene_wiedervorlage_ist_kein_fehler():
+    lead = _lead()
+    e = vt.speichern(lead, "eigen", "it", "Webshop", wiedervorlage_am=MORGEN)["eintrag"]
+    gestern = (date.today() - timedelta(days=1)).isoformat()
+    with server.pool.connection() as conn:
+        conn.execute("update sales_test.leads set enrichment = jsonb_set(enrichment, "
+                     "'{vertraege,0,wiedervorlage_am}', to_jsonb(%s::text)) where id=%s",
+                     (gestern, lead))
+    r = vt.speichern(lead, "eigen", "", "", status="in_arbeit", wiedervorlage_am=gestern,
+                     eintrag_id=e["id"])
+    assert "fehler" not in r
+    assert len(_offene_wv(lead)) == 1
+    assert "fehler" in vt.speichern(lead, "eigen", "it", "Neu", wiedervorlage_am=gestern)
+
+
+def test_i3_ui_ersetzt_vollstaendig_und_quittiert_bei_datum_weg():
+    lead = _lead()
+    e = vt.speichern(lead, "eigen", "it", "Webshop", status="in_arbeit", betrag="500",
+                     wiedervorlage_am=SPAETER, quelle="ui")["eintrag"]
+    vt.speichern(lead, "eigen", "it", "Webshop", status="in_arbeit", betrag="",
+                 wiedervorlage_am=SPAETER, eintrag_id=e["id"], quelle="ui")
+    n = vt.eintraege(lead)[0]
+    assert n["betrag"] == "" and len(_offene_wv(lead)) == 1 and n["wiedervorlage_id"] == e["wiedervorlage_id"]
+    vt.speichern(lead, "eigen", "it", "Webshop", status="in_arbeit", eintrag_id=e["id"], quelle="ui")
+    assert _offene_wv(lead) == [] and vt.eintraege(lead)[0]["wiedervorlage_am"] == ""

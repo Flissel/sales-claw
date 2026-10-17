@@ -416,7 +416,10 @@ der Kunde nur nennt.
 - Eigenes: `abschluss_speichern(lead_id, bereich, bezeichnung, status,
   status_datum, anbieter, betrag, wiedervorlage_am, notiz)` — Status
   angeboten · in_arbeit · abgeschlossen · beendet; zum Aendern die
-  `eintrag_id` aus `profil_lesen` mitgeben.
+  `eintrag_id` aus `profil_lesen` mitgeben. Beim Aendern nur die
+  geaenderten Felder angeben; leere Felder bleiben unveraendert. Leeren
+  geht nur auf der Kontaktseite. Fremde Eintraege (`art: fremd`) aendert
+  `abschluss_speichern` nicht.
 - Fremdes: weiter `vertrag_speichern(lead_id, sparte, ablauf, gesellschaft,
   notiz)` (Wiedervorlage 90 Tage vor Ablauf).
 - Nur auf Zuruf oder bei eindeutigem Gespraechsinhalt; nie raten; jede
