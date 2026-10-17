@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { koerperAendern, koerperAnlegen, mitSperre, pruefen, type Werte } from './fenster';
+import { koerperAendern, koerperAnlegen, mitSperre, pruefen, startWerte, type Werte } from './fenster';
 
 const basis: Werte = {
   art: 'eigen', titel: 'Steuerberater', datum: '2026-10-26', zeit: '14:00', dauer: 60,
@@ -85,5 +85,18 @@ describe('koerperAendern', () => {
   it('kunde: neue Zeit und neuer Ort', () => {
     const w: Werte = { ...basis, art: 'kunde', lead_id: 'L', titel: 'Erstgespräch', zeit: '15:30', ort: 'Video' };
     expect(koerperAendern(w, altKunde)).toEqual({ beginn: '2026-10-26T15:30:00+01:00', ort: 'Video' });
+  });
+});
+
+describe('startWerte (Vorgabe aus dem Link)', () => {
+  it('kunde waehlt Kundentermin und den Kontakt vor', () => {
+    const w = startWerte({ art: 'kunde', kunde: { lead_id: 'abc', name: 'Anna Vorbelegt' } }, {});
+    expect(w).toEqual({ art: 'kunde', leadId: 'abc', gewaehlt: 'Anna Vorbelegt' });
+  });
+  it('ohne Vorgabe bleibt es ein eigener Termin ohne Kontakt', () => {
+    expect(startWerte({}, {})).toEqual({ art: 'eigen', leadId: '', gewaehlt: '' });
+  });
+  it('beim Bearbeiten gilt weiter die Art des Termins', () => {
+    expect(startWerte({ modus: 'bearbeiten' }, { art: 'kunde', lead_id: 'x' }).art).toBe('kunde');
   });
 });

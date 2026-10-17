@@ -22,6 +22,7 @@ interface Start {
   datum: string;
   ansicht: string;
   freigaben_url: string;
+  neu_kunde?: { lead_id: string; name: string };
 }
 
 const SCHLUESSEL = 'vibemind.kalender.ansicht';
@@ -170,6 +171,20 @@ function starten(): void {
     },
   });
   kalender.render();
+  if (start.neu_kunde && darf) {
+    const beginn = naechsteVolleStunde(new Date());
+    anlegenOeffnen(beginn, new Date(beginn.getTime() + 60 * 60000), false, ctx,
+      { art: 'kunde', kunde: start.neu_kunde });
+    // Query entfernen, damit ein Neuladen den Dialog nicht erneut oeffnet.
+    try {
+      const u = new URL(window.location.href);
+      u.searchParams.delete('neu');
+      u.searchParams.delete('lead_id');
+      window.history.replaceState(null, '', u.pathname + u.search + u.hash);
+    } catch {
+      /* ohne History-API bleibt die Query stehen */
+    }
+  }
 }
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', starten);

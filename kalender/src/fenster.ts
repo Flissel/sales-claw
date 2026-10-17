@@ -190,12 +190,28 @@ interface Vorgabe {
   ev?: EventApi;
   start: Date;
   dauer: number;
+  art?: 'eigen' | 'kunde';
+  kunde?: { lead_id: string; name: string };
+}
+
+/** Startart und vorgewaehlter Kontakt des Formulars (rein, ohne DOM). */
+export function startWerte(
+  v: Partial<Vorgabe>, p: Record<string, unknown>,
+): { art: 'eigen' | 'kunde'; leadId: string; gewaehlt: string } {
+  const bearbeiten = v.modus === 'bearbeiten';
+  const art = bearbeiten ? (p.art === 'kunde' ? 'kunde' : 'eigen') : (v.art ?? 'eigen');
+  return {
+    art,
+    leadId: v.kunde && !bearbeiten ? v.kunde.lead_id : String(p.lead_id ?? ''),
+    gewaehlt: v.kunde && !bearbeiten ? v.kunde.name : '',
+  };
 }
 
 function formular(v: Vorgabe, ctx: Kontext): void {
   const p = v.ev?.extendedProps ?? {};
   const bearbeiten = v.modus === 'bearbeiten';
-  let art: 'eigen' | 'kunde' = bearbeiten && p.art === 'kunde' ? 'kunde' : 'eigen';
+  const vorbelegt = startWerte(v, p);
+  let art: 'eigen' | 'kunde' = vorbelegt.art;
   const { fenster, inhalt } = neuesFenster(bearbeiten ? 'Termin bearbeiten' : 'Neuer Termin');
   const form = el('form', { class: 'vk-formular', novalidate: '' });
 
@@ -211,7 +227,7 @@ function formular(v: Vorgabe, ctx: Kontext): void {
   // Je Fenster neu pruefen: ein einzelnes 403/404 (z. B. Sitzung) schaltet die Suche
   // nur fuer dieses Fenster auf das Lead-ID-Feld um.
   let kontaktSucheVorhanden = true;
-  let leadId = String(p.lead_id ?? '');
+  let leadId = vorbelegt.leadId;
   const gewaehlt = el('div', { class: 'vk-gewaehlt' });
   const suche = el('input', { type: 'search', placeholder: 'Name suchen …', autocomplete: 'off' });
   const treffer = el('ul', { class: 'vk-treffer' });
@@ -244,6 +260,10 @@ function formular(v: Vorgabe, ctx: Kontext): void {
       }) : [el('li', {}, 'Kein Treffer')]));
     }, 250);
   });
+  if (vorbelegt.gewaehlt) {
+    gewaehlt.textContent = `Gewählt: ${vorbelegt.gewaehlt}`;
+    suche.value = vorbelegt.gewaehlt;
+  }
   sucheZeigen();
 
   // Felder
@@ -367,14 +387,16 @@ function formular(v: Vorgabe, ctx: Kontext): void {
   titel.focus();
 }
 
-export function anlegenOeffnen(start: Date, ende: Date | null, ganztags: boolean, ctx: Kontext): void {
+export function anlegenOeffnen(
+  start: Date, ende: Date | null, ganztags: boolean, ctx: Kontext, vorgabe: Partial<Vorgabe> = {},
+): void {
   let beginn = start;
   let dauer = ende ? Math.round((ende.getTime() - start.getTime()) / 60000) : 60;
   if (ganztags) {
     beginn = new Date(start.getFullYear(), start.getMonth(), start.getDate(), 9, 0);
     dauer = 60;
   }
-  formular({ modus: 'neu', start: beginn, dauer: Math.max(15, Math.min(dauer, 480)) }, ctx);
+  formular({ ...vorgabe, modus: 'neu', start: beginn, dauer: Math.max(15, Math.min(dauer, 480)) }, ctx);
 }
 
 export function bearbeitenOeffnen(ev: EventApi, ctx: Kontext): void {

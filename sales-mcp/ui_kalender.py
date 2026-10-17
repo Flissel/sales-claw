@@ -253,11 +253,22 @@ def routen(ui) -> list:
         tag = tag or datetime.now(kalender_sicht._zone()).date()
         ansicht = request.query_params.get("ansicht", "")
         rolle = str(request.scope.get("benutzer_rolle") or "")
+        darf_schreiben_rolle = rolle not in ("lesen", "kalender")
         start = {"csrf": ui.CSRF_TOKEN, "rolle": rolle,
-                 "darf_schreiben": rolle not in ("lesen", "kalender"),
+                 "darf_schreiben": darf_schreiben_rolle,
                  "datum": tag.isoformat(),
                  "ansicht": ansicht if ansicht in ANSICHTEN else "woche",
                  "freigaben_url": "/freigaben"}
+        # Link aus den Empfehlungslisten: Kundentermin-Dialog fuer diesen Kontakt vorbelegt.
+        if request.query_params.get("neu") == "kunde" and darf_schreiben_rolle:
+            try:
+                lid = str(uuid.UUID(request.query_params.get("lead_id", "")))
+            except ValueError:
+                lid = None
+            if lid:
+                z = server._q("select name, enrichment from leads where id = %s", (lid,))
+                if z and not server._privat(z[0]["enrichment"] or {})                         and not server._sammelkontakt(lid):
+                    start["neu_kunde"] = {"lead_id": lid, "name": z[0]["name"] or ""}
         rumpf = ('<link rel="stylesheet" href="/static/kalender/kalender.css">'
                  '<div id="kalender"></div>'
                  f'<script type="application/json" id="kalender-start">{_json_im_html(start)}</script>'

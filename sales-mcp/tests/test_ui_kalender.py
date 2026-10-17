@@ -746,3 +746,28 @@ def test_post_kundentermin_ohne_thema_ist_422(thema):
     antwort = _senden("POST", "/kalender/termine", body)
     assert antwort.status_code == 422, antwort.text
     assert server._q("select 1 from activities where type = 'termin'") == []
+
+
+def test_start_mit_neu_kunde_vorbelegung():
+    lead = server._q("insert into leads (name) values ('Anna Vorbelegt') returning id")[0]["id"]
+    s = _start(_get(f"/kalender?neu=kunde&lead_id={lead}").text)
+    assert s["neu_kunde"] == {"lead_id": str(lead), "name": "Anna Vorbelegt"}
+    assert "neu_kunde" not in _start(_get("/kalender?neu=kunde&lead_id=kaputt").text)
+    assert "neu_kunde" not in _start(_get(
+        "/kalender?neu=kunde&lead_id=00000000-0000-0000-0000-000000000000").text)
+
+
+def test_start_neu_kunde_nie_fuer_privat_und_sammelkontakt(monkeypatch):
+    privat = server._q(
+        "insert into leads (name, enrichment) values ('Pia Privat', %s::jsonb) returning id",
+        ('{"_privat": {"privat": true}}',))[0]["id"]
+    assert "neu_kunde" not in _start(_get(f"/kalender?neu=kunde&lead_id={privat}").text)
+    sammel = server._q("insert into leads (name) values ('Sammel') returning id")[0]["id"]
+    monkeypatch.setattr(server, "UNBEKANNT_LEAD_ID", str(sammel))
+    assert "neu_kunde" not in _start(_get(f"/kalender?neu=kunde&lead_id={sammel}").text)
+
+
+def test_start_neu_kunde_nie_fuer_rolle_lesen(scharf):
+    lead = server._q("insert into leads (name) values ('Rolf Lesen') returning id")[0]["id"]
+    lesen = _anmelden("nur-lesen-neu", "lesen")
+    assert "neu_kunde" not in _start(_get(f"/kalender?neu=kunde&lead_id={lead}", client=lesen).text)
