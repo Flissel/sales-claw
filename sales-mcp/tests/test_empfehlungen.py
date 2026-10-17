@@ -287,3 +287,68 @@ def test_fehler_beim_buchen_setzt_kein_haekchen(monkeypatch):
     aus = em.zeile_setzen(lid, einwilligung=True)
     assert "fehler" in aus
     assert em.liste(r["liste_id"])["zeilen"][0]["einwilligung"] is False
+
+
+# --- Fix-Runde 2 (N1: jede eigene Ablehnung blockiert) --------------------
+
+def _blockiert_empfehlungs_einwilligung(lid):
+    r = _anlegen(einwilligung=True)
+    assert r["verknuepft"] == 1 and any("widerrufen" in h for h in r["hinweise"])
+    assert _lead(lid)["consent_status"] == "unknown"
+    assert em.liste(r["liste_id"])["zeilen"][0]["einwilligung"] is False
+    aus = em.zeile_setzen(lid, einwilligung=True)
+    assert _lead(lid)["consent_status"] == "unknown"
+    assert any("widerrufen" in h for h in aus["hinweise"])
+
+
+def test_newsletter_abmeldung_blockiert():
+    lid = _kontakt()
+    server._q("update leads set email='anna@example.com', consent_status='opt_in' "
+              "where id=%s returning id", (lid,))
+    assert server._newsletter_abmeldungen([{"betreff": "Abmelden", "von": "anna@example.com",
+                                             "message_id": "m1@x"}]) == 1
+    _blockiert_empfehlungs_einwilligung(lid)
+
+
+def test_consent_kontakt_nein_blockiert():
+    lid = _kontakt()
+    server.bedarf_speichern(lid, "consent_kontakt", "nein, bitte nicht")
+    _blockiert_empfehlungs_einwilligung(lid)
+
+
+def test_consent_kontakt_ja_blockiert_nicht():
+    lid = _kontakt()
+    server.bedarf_speichern(lid, "consent_kontakt", "ja gern")
+    server._q("update leads set consent_status='unknown' where id=%s returning id", (lid,))
+    r = _anlegen(einwilligung=True)
+    assert _lead(lid)["consent_status"] == "opt_in" and r["verknuepft"] == 1
+
+
+def test_widerruf_mit_empfehlungs_praefix_aber_anderem_text_blockiert():
+    lid = _kontakt()
+    server.einwilligung_erfassen(lid, "opt_in", "Formular")
+    server.einwilligung_widerrufen(lid, "Empfehlung: Kontakt will nicht")
+    _blockiert_empfehlungs_einwilligung(lid)
+
+
+def test_haken_grund_ist_exakt_und_listenbezogen():
+    r = _anlegen(einwilligung=True)
+    lid = em.liste(r["liste_id"])["zeilen"][0]["lead_id"]
+    em.zeile_setzen(lid, einwilligung=False)
+    g = server._q("select payload->>'grund' g from activities where lead_id=%s and "
+                  "type='werbe_einwilligung_widerrufen'", (lid,))[0]["g"]
+    assert g == f"Empfehlung: Häkchen entfernt [Liste {r['liste_id']}]"
+    em.zeile_setzen(lid, einwilligung=True)
+    assert _lead(lid)["consent_status"] == "opt_in"
+
+
+def test_gefaelschtes_tag_im_namen_zaehlt_nicht():
+    lid = _kontakt()
+    andere = _anlegen(empfohlen_von_name="Erste")["liste_id"]   # Heimatliste des Kontakts
+    server.einwilligung_erfassen(
+        lid, "opt_in", f"Empfehlung: vorab gefragt von X [Liste {andere}] (Liste 01.01.2026) "
+                       f"[Liste 00000000-0000-0000-0000-000000000000]")
+    aus = em.zeile_setzen(lid, einwilligung=True)
+    aus = em.zeile_setzen(lid, einwilligung=False)
+    assert _lead(lid)["consent_status"] == "opt_in"
+    assert any("anderer Quelle" in h for h in aus["hinweise"])

@@ -2312,6 +2312,11 @@ def profil_aktualisieren(lead_id: str, feld: str, wert: str) -> str:
     return _json({"gesetzt": {feld: wert}})
 
 
+# Zusage-Anfaenge der consent_kontakt-Antwort — eine Regel fuer das Setzen
+# (bedarf_speichern) und das Lesen (_eigene_ablehnung).
+CONSENT_JA = ("ja", "gern", "ok", "einverstanden")
+
+
 @_gesichert
 def bedarf_speichern(lead_id: str, frage_id: str, antwort: str) -> str:
     """Antwort auf eine Leitfaden-Frage strukturiert ablegen. frage_id muss
@@ -2334,7 +2339,7 @@ def bedarf_speichern(lead_id: str, frage_id: str, antwort: str) -> str:
     if not zeilen:
         return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
     if frage_id == "consent_kontakt":
-        ja = antwort.strip().lower().startswith(("ja", "gern", "ok", "einverstanden"))
+        ja = antwort.strip().lower().startswith(CONSENT_JA)
         _q("update leads set consent_status = %s where id = %s returning id",
            ("opt_in" if ja else "unknown", lead_id))
     _q("insert into activities (lead_id, type, payload) values (%s,'bedarf',%s) "
@@ -7086,6 +7091,27 @@ def einwilligung_widerrufen(lead_id: str, grund: str = "") -> str:
        (lead_id, _json({"grund": (grund or "").strip() or None})))
     return _json({"lead_id": lead_id, "kontakt": zeilen[0]["name"],
                   "consent_status": "unknown"})
+
+
+def _eigene_ablehnung(lead_id: str, ausser_grund: str = "") -> bool:
+    """Hat der Kontakt der Werbung je SELBST widersprochen? (C4, Ruling N1)
+
+    Drei Wege fuehren zu einem eigenen Nein: ein Widerruf
+    (werbe_einwilligung_widerrufen), eine Newsletter-Abmeldung per Mail
+    (newsletter_abmeldung) und die Antwort auf consent_kontakt, die nicht mit
+    einer Zusage beginnt (dieselbe Regel wie in bedarf_speichern). Ein Widerruf,
+    dessen Grund EXAKT `ausser_grund` ist, zaehlt nicht — so nimmt das
+    Abhaken einer Empfehlungszeile sich nicht selbst die Wiederholung."""
+    if _q("select 1 from activities where lead_id = %s and ("
+          " type = 'newsletter_abmeldung' or (type = 'werbe_einwilligung_widerrufen'"
+          " and coalesce(payload->>'grund', '') <> %s)) limit 1",
+          (lead_id, ausser_grund or "")):
+        return True
+    antworten = _q("select payload->>'antwort' as antwort from activities "
+                   "where lead_id = %s and type = 'bedarf' "
+                   "and payload->>'frage_id' = 'consent_kontakt'", (lead_id,))
+    return any(not (a["antwort"] or "").strip().lower().startswith(CONSENT_JA)
+               for a in antworten)
 
 
 # ---------------------------------------------------------------------------

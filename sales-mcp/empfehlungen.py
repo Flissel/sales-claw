@@ -39,7 +39,6 @@ NAME_MAX = 120
 ZEILEN_HART_MAX = 50
 DB_GRUND = "Datenbankfehler – Zeile bitte erneut hinzufügen"
 FREMDE_QUELLE = "Einwilligung stammt aus anderer Quelle – nicht widerrufen"
-WIDERRUF_GRUND = "Empfehlung: Häkchen entfernt"
 _TEXTFELDER = ("vorname", "name", "beruf", "ort", "zeichnet_aus", "interessiert")
 
 
@@ -122,17 +121,15 @@ def _aus_dieser_liste(lead_id: str, liste_id: str) -> bool:
                   "and type = 'werbe_einwilligung' order by created_at desc limit 1",
                   (lead_id,))
     q = (z[0]["quelle"] or "") if z else ""
-    return q.startswith("Empfehlung:") and f"[Liste {liste_id}]" in q
+    # Exakt am Ende: der freie Name des Empfehlungsgebers steht davor und
+    # koennte sonst ein fremdes Tag einschmuggeln.
+    return q.startswith("Empfehlung:") and q.endswith(f"[Liste {liste_id}]")
 
 
-def _eigener_widerruf(lead_id: str) -> bool:
-    """Hat der Kontakt je SELBST widerrufen? Das Abhaken einer Empfehlungszeile
-    (Grund 'Empfehlung: ...') zaehlt nicht — sonst sperrte sich das Haekchen
-    nach einmal Hin und Her selbst."""
-    return bool(server._q(
-        "select 1 from activities where lead_id = %s and type = "
-        "'werbe_einwilligung_widerrufen' and coalesce(payload->>'grund', '') "
-        "not like 'Empfehlung:%%' limit 1", (lead_id,)))
+def _widerruf_grund(liste_id: str) -> str:
+    """Grund beim Abhaken — exakt und listenbezogen; nur GENAU dieser Text
+    zaehlt nicht als eigene Ablehnung des Kontakts (Ruling N1)."""
+    return f"Empfehlung: Häkchen entfernt [Liste {liste_id}]"
 
 
 def _sperrgrund(lead_id: str, enrichment) -> str | None:
@@ -156,9 +153,9 @@ def _einwilligung(lead_id: str, an: bool, kopf):
         grund = _sperrgrund(lead_id, l["enrichment"])
         if grund:
             return False, f"Einwilligung nicht gebucht: {grund}.", None
-        if _eigener_widerruf(lead_id):
-            return False, ("Kontakt hat früher selbst widerrufen — Einwilligung aus der "
-                           "Empfehlung nicht gebucht."), None
+        if server._eigene_ablehnung(lead_id, _widerruf_grund(kopf["id"])):
+            return False, ("Kontakt hat früher selbst widerrufen oder abgelehnt — Einwilligung "
+                           "aus der Empfehlung nicht gebucht."), None
         r = json.loads(server.einwilligung_erfassen(lead_id, "opt_in", _quelle_einwilligung(kopf)))
         if "fehler" in r:
             return False, None, f"Einwilligung nicht gebucht: {r['fehler']}"
@@ -167,7 +164,7 @@ def _einwilligung(lead_id: str, an: bool, kopf):
         return False, None, None
     if not _aus_dieser_liste(lead_id, kopf["id"]):
         return False, FREMDE_QUELLE, None
-    r = json.loads(server.einwilligung_widerrufen(lead_id, WIDERRUF_GRUND))
+    r = json.loads(server.einwilligung_widerrufen(lead_id, _widerruf_grund(kopf["id"])))
     if "fehler" in r:
         return True, None, f"Einwilligung nicht widerrufen: {r['fehler']}"
     return False, None, None
