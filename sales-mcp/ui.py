@@ -1808,6 +1808,12 @@ def _formular(aktion: str, draft_id, knopf: str, klasse: str = "",
 def _entwurf_kopf(z, zustand: str) -> str:
     anhang = (f' · Anhang: <b>{_e(z["media_ref"])}</b>'
               if z.get("media_ref") else "")
+    # Reels und Podcast-Folgen (17.10.2026): vor der Freigabe ansehen bzw. anhoeren koennen, nicht nur
+    # den Dateinamen lesen. Nur Video/Ton - Bilder bleiben beim Namen (die Karte wuerde sonst lang).
+    abspielen = "".join(
+        _medien_vorschau(n) for n in (t.strip() for t in str(z.get("media_ref") or "").split(","))
+        if n and MEDIEN_ANSICHT.get(os.path.splitext(n)[1].lower()) in ("video", "ton")
+        and server.medien.pruefe(n)[1] is None)
     alter = (f' · Alter: {float(z["alter_h"]):.1f} h'
              if z.get("alter_h") is not None else "")
     betreff = (f'<div>Betreff: <b>{_e(z["subject"])}</b></div>'
@@ -1818,7 +1824,7 @@ def _entwurf_kopf(z, zustand: str) -> str:
             f'<b>{_e(z["name"] or "(ohne Kontakt)")}'
             f"</b> &rarr; {_e(z['recipient'])}{betreff}"
             f'<div class="meta">consent: {_e(z.get("consent_status"))}'
-            f"{anhang}{alter} · draft_id: {_e(z['id'])}</div>")
+            f"{anhang}{alter} · draft_id: {_e(z['id'])}</div>{abspielen}")
 
 
 def _markier_block(z) -> str:

@@ -216,3 +216,34 @@ def test_entwurf_fehler_wird_angezeigt(angemeldet, pult, monkeypatch):
     r = angemeldet.post("/marketing/reels/post", headers=HOST, follow_redirects=False, data={
         "csrf": ui.CSRF_TOKEN, "datei": DATEI, "thema": "T", "text": "x"})
     assert r.status_code == 422 and "schon einen Beitrag" in r.text
+
+
+# --- Freigabe-Karte zeigt Video/Ton zum Ansehen --------------------------------
+
+def _z(media_ref):
+    return {"channel": "linkedin", "name": None, "recipient": "eigenes-profil", "id": 7, "media_ref": media_ref,
+            "consent_status": "n/a"}
+
+
+def test_freigabekarte_spielt_reel_ab(monkeypatch):
+    monkeypatch.setattr(server.medien, "pruefe", lambda n: (n, None))
+    s = ui._entwurf_kopf(_z(DATEI), "pending")
+    assert f'<video class="vorschau" controls preload="none" src="/medien/datei/{DATEI}"></video>' in s
+    assert f"Anhang: <b>{DATEI}</b>" in s
+
+
+def test_freigabekarte_bilder_nur_beim_namen(monkeypatch):
+    monkeypatch.setattr(server.medien, "pruefe", lambda n: (n, None))
+    s = ui._entwurf_kopf(_z("a.png,b.jpg"), "pending")
+    assert "<img" not in s and "<video" not in s
+
+
+def test_freigabekarte_fehlende_datei_ohne_vorschau(monkeypatch):
+    monkeypatch.setattr(server.medien, "pruefe", lambda n: (None, "fehlt"))
+    s = ui._entwurf_kopf(_z(DATEI), "pending")
+    assert "<video" not in s and DATEI in s
+
+
+def test_freigabekarte_podcast_anhoeren(monkeypatch):
+    monkeypatch.setattr(server.medien, "pruefe", lambda n: (n, None))
+    assert '<audio controls preload="none" src="/medien/datei/pod-1.mp3">' in ui._entwurf_kopf(_z("pod-1.mp3"), "pending")
