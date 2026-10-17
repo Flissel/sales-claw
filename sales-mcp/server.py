@@ -1156,6 +1156,99 @@ def _archiv_sql(spalte: str) -> str:
             f"'{ARCHIV_SCHLUESSEL}' ->> 'archiviert') = 'true', false)")
 
 
+# ---------------------------------------------------------------------------
+# Einordnung (C1, Spec 2026-10-16): Art + Bereiche je Kontakt. Liegt in
+# leads.enrichment ("art", "bereiche") — kein DDL. Einziger Schreibweg ist
+# _einordnen; jede Aenderung wird als Aktivitaet 'einordnung' gebucht.
+# ---------------------------------------------------------------------------
+
+ARTEN = ("person", "firma")
+BEREICHE = {
+    "bav": "bAV",
+    "mitarbeiter": "Mitarbeiter",
+    "vorsorge": "Private Vorsorge/Versicherung",
+    "immobilien": "Immobilien",
+    "it": "IT-Lösung",
+    "homelab": "Homelab",
+}
+_EINORDNUNG_ACTOR = {"ui": "human", "agent": "agent", "bestand": "cron"}
+
+
+def _sammelkontakt(lead_id) -> bool:
+    """Einer der Sammelkontakte (Unbekannte Eingaenge, LinkedIn-Profil,
+    Recherche) — kein Mensch, also nie einzuordnen."""
+    ids = {str(x).strip() for x in (
+        UNBEKANNT_LEAD_ID, LINKEDIN_POST_LEAD_ID,
+        os.environ.get("RECHERCHE_LEAD_ID", "")) if str(x or "").strip()}
+    return str(lead_id) in ids
+
+
+def _einordnung(enrichment, company) -> tuple:
+    """(wirksame Art, Bereiche in fester Reihenfolge) — rein, ohne DB.
+    Ohne gesetzte Art entscheidet das Firmenfeld; kaputte Werte zaehlen als
+    nicht gesetzt."""
+    e = enrichment if isinstance(enrichment, dict) else {}
+    art = e.get("art")
+    if art not in ARTEN:
+        art = "firma" if (company or "").strip() else "person"
+    roh = e.get("bereiche")
+    roh = roh if isinstance(roh, list) else []
+    return art, [b for b in BEREICHE if b in roh]
+
+
+def _einordnen(lead_id, art=None, hinzu=(), weg=(), quelle="agent") -> dict:
+    try:
+        uuid.UUID(str(lead_id))
+    except ValueError:
+        return {"fehler": f"'{lead_id}' ist keine gueltige lead_id."}
+    hinzu, weg = list(hinzu or []), list(weg or [])
+    if art and art not in ARTEN:
+        return {"fehler": f"Unbekannte Art '{art}' — erlaubt: {', '.join(ARTEN)}."}
+    for b in hinzu + weg:
+        if b not in BEREICHE:
+            return {"fehler": f"Unbekannter Bereich '{b}' — erlaubt: "
+                              f"{', '.join(BEREICHE)}."}
+    if set(hinzu) & set(weg):
+        return {"fehler": "Ein Bereich kann nicht zugleich hinzu und weg."}
+    if _sammelkontakt(lead_id):
+        return {"fehler": "Sammelkontakte werden nicht eingeordnet."}
+    z = _q("select enrichment, company from leads where id = %s", (str(lead_id),))
+    if not z:
+        return {"fehler": f"Kein Kontakt mit lead_id {lead_id}."}
+    e = z[0]["enrichment"] or {}
+    if _privat(e):
+        return {"fehler": "Privat markierte Kontakte werden nicht eingeordnet."}
+    art_vorher = e.get("art") if e.get("art") in ARTEN else None
+    wirksam, bereiche_vorher = _einordnung(e, z[0]["company"])
+    art_neu = art or art_vorher or wirksam
+    neu = [b for b in BEREICHE if (b in bereiche_vorher or b in hinzu) and b not in weg]
+    if art_neu == art_vorher and neu == bereiche_vorher:
+        return {"art": art_neu, "bereiche": neu, "unveraendert": True}
+    _q("update leads set enrichment = jsonb_set(jsonb_set("
+       "coalesce(enrichment, '{}'::jsonb), '{art}', to_jsonb(%s::text), true), "
+       "'{bereiche}', %s::jsonb, true), updated_at = now() where id = %s returning id",
+       (art_neu, json.dumps(neu), str(lead_id)))
+    _q("insert into activities (lead_id, type, payload, actor) values "
+       "(%s, 'einordnung', %s, %s) returning id",
+       (str(lead_id), _json({"art_vorher": art_vorher, "art": art_neu,
+                             "bereiche_vorher": bereiche_vorher, "bereiche": neu,
+                             "weg": quelle}), _EINORDNUNG_ACTOR[quelle]))
+    return {"art": art_neu, "bereiche": neu}
+
+
+@_gesichert
+def kontakt_einordnen(lead_id: str, art: str = "", bereiche_hinzu: list | None = None,
+                      bereiche_weg: list | None = None) -> str:
+    """Kontakt einordnen: Art ('person'|'firma') und Bereiche hinzufuegen/
+    entfernen — bav, mitarbeiter, vorsorge (Private Vorsorge/Versicherung),
+    immobilien, it (IT-Loesung), homelab. Nur auf Zuruf des Betreibers oder
+    bei EINDEUTIGEM Gespraechsinhalt; nie raten. Die Aenderung dem Betreiber
+    im Chat nennen. Privat markierte Kontakte und Sammelkontakte lehnt das
+    Werkzeug ab. Sendet nichts."""
+    return _json(_einordnen(lead_id, art or None, bereiche_hinzu or [],
+                            bereiche_weg or [], quelle="agent"))
+
+
 def _archiv_setzen(lead_id: str, archiviert: bool) -> str:
     zeilen = _q(
         "update leads set enrichment = jsonb_set(enrichment, %s, %s::jsonb, "
@@ -2107,8 +2200,8 @@ def profil_lesen(lead_id: str) -> str:
     Verlauf, ohne ihn doppelt zu erzaehlen. Geloescht ist nichts — die
     Einzelnachrichten liegen weiter in der Datenbank; im Wortlaut liefert sie
     `chat_verlauf(lead_id, alle=True)`."""
-    leads = _q("select id, name, status, consent_status, enrichment, notes "
-               "from leads where id = %s", (lead_id,))
+    leads = _q("select id, name, status, consent_status, enrichment, notes, "
+               "company from leads where id = %s", (lead_id,))
     if not leads:
         return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
     # Zusammengefasste Nachrichten fallen aus der Liste — sonst stuende
@@ -2150,6 +2243,8 @@ def profil_lesen(lead_id: str) -> str:
                   # („profil_lesen zeigt den Volltext") schlicht falsch: der
                   # firma-Knoten laege in enrichment und wuerde nie angezeigt.
                   "firma": e.get("firma", {}),
+                  "art": _einordnung(e, leads[0].get("company"))[0],
+                  "bereiche": _einordnung(e, leads[0].get("company"))[1],
                   "notes": leads[0]["notes"],
                   # Das Kontaktprofil GANZ OBEN und getrennt: es ist die
                   # verdichtete Antwort auf „wer ist der Mensch, was ist ihm
@@ -8414,6 +8509,8 @@ def versand_abwarten(draft_id: str, max_s: int = 30) -> str:
 WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,
              kontakt_anlegen,
              kontakt_aktualisieren,
+             # Einordnung Art + Bereiche (16.10.2026), Vertraege: tests/test_einordnung.py.
+             kontakt_einordnen,
              wissensbasis_fragen, recherche_an_marketing,
              uebergaben_pruefen, uebergabe_annehmen, uebergabe_ablehnen,
              # Marketings Versandauftraege (12.09.2026): sales-claw ist der
