@@ -3648,6 +3648,62 @@ def _archiv_bereich(lead, archiviert: bool) -> str:
             f'Oberfläche.</p></div>')
 
 
+def _einordnung_bereich(lead) -> str:
+    """Kasten „Einordnung“ (Spec C1 §4.2). Nicht für privat markierte und
+    Sammelkontakte; Rollen ohne Schreibrecht sehen nur den Stand."""
+    if server._sammelkontakt(lead["id"]) or server._privat(lead["enrichment"] or {}):
+        return ""
+    art, bereiche = server._einordnung(lead["enrichment"], lead.get("company"))
+    stand = (("Firma" if art == "firma" else "Person") + " · " +
+             (", ".join(server.BEREICHE[b] for b in bereiche) or "kein Bereich"))
+    if _AKTIVE_ROLLE.get() in ("lesen", "kalender"):
+        return (f'<h2 id="einordnung">Einordnung</h2><div class="karte">'
+                f'{_e(stand)}</div>')
+    arten = "".join(
+        f'<label><input type="radio" name="art" value="{a}"'
+        f'{" checked" if a == art else ""}> {_e("Firma" if a == "firma" else "Person")}'
+        f'</label> ' for a in server.ARTEN)
+    haken = "".join(
+        f'<label><input type="checkbox" name="bereich_{b}" value="1"'
+        f'{" checked" if b in bereiche else ""}> {_e(t)}</label> '
+        for b, t in server.BEREICHE.items())
+    return (f'<h2 id="einordnung">Einordnung</h2><div class="karte">'
+            f'<form method="post" action="/kontakte/einordnen">'
+            f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+            f'<input type="hidden" name="lead_id" value="{_e(lead["id"])}">'
+            f'<p>{arten}</p><p>{haken}</p><button type="submit">Speichern</button>'
+            f'</form></div>')
+
+
+@_gesichert_seite
+async def aktion_kontakt_einordnen(request):
+    form, lead_id, abbruch = await _kontakt_vorspann(request)
+    if abbruch:
+        return abbruch
+    zeilen = server._q("select enrichment from leads where id = %s", (lead_id,))
+    if not zeilen:
+        return _fehlerseite(404, "Nicht gefunden", "Diesen Kontakt gibt es nicht.")
+    enrichment = zeilen[0]["enrichment"] or {}
+    if server._sammelkontakt(lead_id) or server._privat(enrichment):
+        return _fehlerseite(403, "Nicht einzuordnen",
+                            "Privat markierte Kontakte und Sammelkontakte werden "
+                            "nicht eingeordnet. Nichts wurde gespeichert.")
+    unbekannt = [k for k in form.keys() if k.startswith("bereich_")
+                 and k[len("bereich_"):] not in server.BEREICHE]
+    art = str(form.get("art") or "")
+    if unbekannt or (art and art not in server.ARTEN):
+        return _fehlerseite(422, "Nicht gespeichert",
+                            "Unbekannte Art oder unbekannter Bereich.")
+    gewaehlt = [b for b in server.BEREICHE if form.get(f"bereich_{b}") == "1"]
+    _, vorher = server._einordnung(enrichment, None)
+    r = server._einordnen(lead_id, art or None,
+                          [b for b in gewaehlt if b not in vorher],
+                          [b for b in vorher if b not in gewaehlt], quelle="ui")
+    if "fehler" in r:
+        return _fehlerseite(422, "Nicht gespeichert", _e(r["fehler"]))
+    return RedirectResponse(f"/kontakte/{lead_id}#einordnung", status_code=303)
+
+
 async def _kontakt_vorspann(request):
     """Gemeinsame Wache aller Kontakt-POSTs — Reihenfolge wie ueberall:
     CSRF VOR der ersten Zeile Datenbank, dann die lead_id."""
@@ -5458,6 +5514,9 @@ async def kontakt_detail(request):
                                      ("E-Mail", "email"), ("Telefon", "phone"),
                                      ("Firma", "company"), ("Titel", "title"),
                                      ("Quelle", "source"), ("Notizen", "notes"))]
+    if not (server._sammelkontakt(lead["id"]) or server._privat(anreicherung)):
+        stammdaten.insert(6, ("Einordnung", _einordnung_chips(
+            lead["enrichment"], lead["company"])))
     teile = []
     if archiviert:
         teile.append(
@@ -5484,6 +5543,7 @@ async def kontakt_detail(request):
     teile.append(_paar_tabelle(
         stammdaten + [("Angelegt", _zeit(lead["created_at"]))]))
     teile.append(_kontakt_formular(lead))
+    teile.append(_einordnung_bereich(lead))
 
     # Pipeline-Stufe (27.08.2026): dasselbe Werkzeug wie der Chat, mit
     # Begruendungsfeld — jeder Wechsel ist eine Beweiszeile. Leeres Feld
@@ -6836,6 +6896,7 @@ app = Starlette(routes=[
     # faengt sonst `/kontakte/bearbeiten` als lead_id ab (Starlette entscheidet
     # in Reihenfolge) und antwortete auf jeden POST mit 405.
     Route("/kontakte/bearbeiten", aktion_kontakt_bearbeiten, methods=["POST"]),
+    Route("/kontakte/einordnen", aktion_kontakt_einordnen, methods=["POST"]),
     Route("/kontakte/archivieren", aktion_kontakt_archivieren,
           methods=["POST"]),
     # Eigene Route fuer den zweiten Schritt, wie bei der Einordnung: der
