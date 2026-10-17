@@ -2223,6 +2223,7 @@ def profil_lesen(lead_id: str) -> str:
               "typen": list(CHAT_NACHRICHT_TYPEN),
               "zeit": grenze_zeit, "id": grenze_id})
     e = leads[0]["enrichment"] or {}
+    _art_bereiche = _einordnung(e, leads[0].get("company"))
     return _json({"lead_id": leads[0]["id"], "name": leads[0]["name"],
                   "status": leads[0]["status"],
                   "consent": leads[0]["consent_status"],
@@ -2243,8 +2244,8 @@ def profil_lesen(lead_id: str) -> str:
                   # („profil_lesen zeigt den Volltext") schlicht falsch: der
                   # firma-Knoten laege in enrichment und wuerde nie angezeigt.
                   "firma": e.get("firma", {}),
-                  "art": _einordnung(e, leads[0].get("company"))[0],
-                  "bereiche": _einordnung(e, leads[0].get("company"))[1],
+                  "art": _art_bereiche[0],
+                  "bereiche": _art_bereiche[1],
                   "notes": leads[0]["notes"],
                   # Das Kontaktprofil GANZ OBEN und getrennt: es ist die
                   # verdichtete Antwort auf „wer ist der Mensch, was ist ihm
@@ -8509,7 +8510,7 @@ def versand_abwarten(draft_id: str, max_s: int = 30) -> str:
 WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,
              kontakt_anlegen,
              kontakt_aktualisieren,
-             # Einordnung Art + Bereiche (16.10.2026), Vertraege: tests/test_einordnung.py.
+             # Einordnung Art + Bereiche (16.10.2026), Vertraege: tests/test_kontakt_einordnung.py.
              kontakt_einordnen,
              wissensbasis_fragen, recherche_an_marketing,
              uebergaben_pruefen, uebergabe_annehmen, uebergabe_ablehnen,
