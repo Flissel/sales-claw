@@ -167,3 +167,8 @@ def test_empfehlungslisten_im_prompt_und_tabu():
     assert "Skill `empfehlungsliste`" in TEXT
     tabu = _absatz("- **Betreiber-Werkzeuge sind im Kundenchat tabu")
     assert "`empfehlungsliste_anlegen`" in tabu and "`empfehlungslisten_zeigen`" in tabu
+
+
+def test_vertraege_projekte_im_prompt():
+    assert "abschluss_speichern(" in TEXT and "vertrag_speichern(" in TEXT
+    assert "`abschluss_speichern`" in _absatz("- **Betreiber-Werkzeuge sind im Kundenchat tabu")

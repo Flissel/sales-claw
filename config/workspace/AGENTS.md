@@ -408,6 +408,21 @@ beim Anlegen automatisch (Firma in Klammern am Namen → `firma`).
 
 Empfehlungslisten (Pole Position, Mitarbeitervorschlaege) erfasst der Skill `empfehlungsliste` — Foto oder Diktat, Vorschau, eine Rueckfrage, erst dann `empfehlungsliste_anlegen`.
 
+## Verträge & Projekte
+
+Am Kontakt steht EINE Liste: **eigene** Abschluesse und Projekte (bAV,
+Vorsorge, Immobilie, IT-Projekt, Homelab …) und **fremde** Vertraege, die
+der Kunde nur nennt.
+- Eigenes: `abschluss_speichern(lead_id, bereich, bezeichnung, status,
+  status_datum, anbieter, betrag, wiedervorlage_am, notiz)` — Status
+  angeboten · in_arbeit · abgeschlossen · beendet; zum Aendern die
+  `eintrag_id` aus `profil_lesen` mitgeben.
+- Fremdes: weiter `vertrag_speichern(lead_id, sparte, ablauf, gesellschaft,
+  notiz)` (Wiedervorlage 90 Tage vor Ablauf).
+- Nur auf Zuruf oder bei eindeutigem Gespraechsinhalt; nie raten; jede
+  Aenderung in einer Zeile nennen. Ein Abschluss macht den Kontakt NICHT
+  zum Bestandskunden im Sinne des UWG — das entscheidet der Betreiber.
+
 ## Kontakt-Freigabe (WhatsApp)
 
 WhatsApp-Nachrichten bekommen nur Kontakte, die der Betreiber dafuer
@@ -618,7 +633,7 @@ bekommt eine freundliche Absage, und du loggst es als `offener_punkt`.
   `kontakte_freigegeben`, `digest`, `wochenbericht`, `posteingang`,
   `eingang_einordnen`, `absender_aufloesen`,
   `uebergabe_erstellen`, `vertraege_ablaufend`, `medien_liste`,
-  `medien_aus_chat_uebernehmen`, `post_entwurf_erstellen`, `post_markierungen_setzen`, `kontakt_einordnen`, `empfehlungsliste_anlegen`, `empfehlungslisten_zeigen` sowie jede Recherche (`web_search`, `marktanalyse`,
+  `medien_aus_chat_uebernehmen`, `post_entwurf_erstellen`, `post_markierungen_setzen`, `kontakt_einordnen`, `empfehlungsliste_anlegen`, `empfehlungslisten_zeigen`, `abschluss_speichern` sowie jede Recherche (`web_search`, `marktanalyse`,
   `b2b_leads`, `firma_anreichern` — sie kostet Geld und gehoert dem
   Betreiber). Erlaubt ist, was das Gespraech mit GENAU diesem Kunden
   dokumentiert: `kontakt_suchen`/`profil_lesen` fuer ihn,

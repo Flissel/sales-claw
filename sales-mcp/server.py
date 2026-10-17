@@ -1480,6 +1480,10 @@ def vertrag_speichern(lead_id: str, sparte: str, ablauf: str = "",
         "notiz": notiz.strip(),
         "erfasst": datetime.now(timezone.utc).date().isoformat(),
     }.items() if v}
+    # C2 (17.10.2026): jeder Eintrag traegt id und art — damit ist er per
+    # eintrag_id aenderbar und steht neben eigenen Abschluessen (vertraege.py).
+    # _kern vergleicht weiter nur Sparte/Gesellschaft/Ablauf.
+    vertrag = {"id": str(uuid.uuid4()), "art": "fremd", **vertrag}
 
     # Dubletten-Kante (Review-Befund B3) — dasselbe Gesetz wie bei
     # kontakt_anlegen: die Kante gehoert in die Werkzeugschicht, nicht ins
@@ -1541,6 +1545,25 @@ def vertrag_speichern(lead_id: str, sparte: str, ablauf: str = "",
 
 
 @_gesichert
+def abschluss_speichern(lead_id: str, bereich: str, bezeichnung: str, status: str,
+                        status_datum: str = "", anbieter: str = "", betrag: str = "",
+                        wiedervorlage_am: str = "", notiz: str = "",
+                        eintrag_id: str = "") -> str:
+    """EIGENEN Abschluss bzw. eigenes Projekt am Kontakt anlegen oder aendern
+    (eintrag_id gesetzt = aendern). bereich: bav, mitarbeiter, vorsorge,
+    immobilien, it, homelab. status: angeboten, in_arbeit, abgeschlossen,
+    beendet (+ status_datum JJJJ-MM-TT). betrag in EUR. wiedervorlage_am
+    legt eine Wiedervorlage genau zu dem Datum an. Vom Kunden nur GENANNTE
+    fremde Vertraege weiter mit vertrag_speichern. Nur auf Zuruf oder bei
+    eindeutigem Gespraechsinhalt; nie raten; jede Aenderung dem Betreiber
+    nennen. Setzt KEINEN Bestandskunden-Status."""
+    import vertraege
+    return _json(vertraege.speichern(lead_id, "eigen", bereich, bezeichnung, status,
+                                     status_datum, anbieter, betrag, wiedervorlage_am,
+                                     notiz, eintrag_id, quelle="agent"))
+
+
+@_gesichert
 def vertraege_ablaufend(tage: int = 90) -> str:
     """Welche Vertraege laufen in den naechsten `tage` Tagen ab? Quelle fuer
     proaktive Bestandsarbeit und den Wochenbericht."""
@@ -1573,7 +1596,8 @@ def vertraege_ablaufend(tage: int = 90) -> str:
     # jsonb_typeof(v)='object' daneben faengt Array-Elemente, die keine
     # Objekte sind — dieselbe Fremddatenklasse, eine Ebene tiefer.
     zeilen = _q(
-        "select l.id as lead_id, l.name, v->>'sparte' as sparte, "
+        "select l.id as lead_id, l.name, "
+        "       coalesce(nullif(v->>'sparte', ''), v->>'bezeichnung') as sparte, "
         "       v->>'ablauf' as ablauf "
         "from leads l, jsonb_array_elements("
         "       case when jsonb_typeof(l.enrichment->'vertraege') = 'array' "
@@ -2298,6 +2322,7 @@ def profil_lesen(lead_id: str) -> str:
               "typen": list(CHAT_NACHRICHT_TYPEN),
               "zeit": grenze_zeit, "id": grenze_id})
     e = leads[0]["enrichment"] or {}
+    import vertraege as _vertraege_mod
     _art_bereiche = _einordnung(e, leads[0].get("company"))
     return _json({"lead_id": leads[0]["id"], "name": leads[0]["name"],
                   "status": leads[0]["status"],
@@ -2314,7 +2339,9 @@ def profil_lesen(lead_id: str) -> str:
                   # Die vom Kunden genannten Vertraege (vertrag_speichern) —
                   # ohne diese Zeile laege der Bestand zwar in enrichment,
                   # tauchte aber in keiner Gespraechsvorbereitung auf.
-                  "vertraege": e.get("vertraege", []),
+                  # C2: normalisiert (eigen + fremd, Altform gemappt, mit id
+                  # fuer abschluss_speichern(eintrag_id=...)).
+                  "vertraege": _vertraege_mod.eintraege_aus(e),
                   # Ohne diese Zeile waere der Hinweis von firma_anreichern
                   # („profil_lesen zeigt den Volltext") schlicht falsch: der
                   # firma-Knoten laege in enrichment und wuerde nie angezeigt.
@@ -5680,6 +5707,23 @@ def _bedarf_zeile(frage_id: str, eintrag) -> str:
     return f"- {beschriftung}: {eintrag}"
 
 
+def _vertrag_zeile(v: dict) -> str:
+    """Eine Uebergabe-Zeile fuer einen normalisierten Eintrag (vertraege.py)."""
+    import vertraege as _vertraege_mod
+    kopf = v.get("bezeichnung") or "(ohne Bezeichnung)"
+    if v.get("anbieter"):
+        kopf += f" ({v['anbieter']})"
+    teile = [("eigen" if v.get("art") == "eigen" else "fremd")]
+    if v.get("status"):
+        teile.append(_vertraege_mod.STATUS.get(v["status"], v["status"])
+                     + (f" {v['status_datum']}" if v.get("status_datum") else ""))
+    if v.get("betrag"):
+        teile.append(f"{v['betrag']} EUR")
+    teile.append(f"Ablauf {v.get('ablauf') or 'unbekannt'}"
+                 if v.get("art") != "eigen" or v.get("ablauf") else "")
+    return f"- {kopf}, " + ", ".join(t for t in teile if t)
+
+
 @_gesichert
 def uebergabe_erstellen(lead_id: str) -> str:
     """Strukturierte Uebergabe eines Kontakts an die Beraterin: Profil,
@@ -5705,9 +5749,10 @@ def uebergabe_erstellen(lead_id: str) -> str:
     # vertraege_ablaufend bereits abfaengt — hier symmetrisch.
     profil = e.get("profil") if isinstance(e.get("profil"), dict) else {}
     bedarf = e.get("bedarf") if isinstance(e.get("bedarf"), dict) else {}
-    roh_vertraege = e.get("vertraege")
-    vertraege = ([v for v in roh_vertraege if isinstance(v, dict)]
-                 if isinstance(roh_vertraege, list) else [])
+    # vertraege.eintraege_aus traegt dieselben Wachen (Nicht-Array, Nicht-
+    # Objekte) und normalisiert eigene Abschluesse und Altform-Eintraege.
+    import vertraege as _vertraege_mod
+    vertraege = _vertraege_mod.eintraege_aus(e)
     offene = _q("select payload, created_at from activities "
                 "where lead_id = %s and type = 'offener_punkt' "
                 "order by created_at", (lead_id,))
@@ -5723,13 +5768,10 @@ def uebergabe_erstellen(lead_id: str) -> str:
         zeilen += ["", "## Bedarfsanalyse (Angaben des Kunden)"]
         zeilen += ([_bedarf_zeile(k, v) for k, v in bedarf.items()]
                    or ["- (leer)"])
-    zeilen += ["", "## Vertraege (vom Kunden genannt)"]
-    # Feldnamen wie von vertrag_speichern geschrieben (sparte/gesellschaft/
-    # ablauf). `gesellschaft` und `ablauf` sind dort optional und fehlen dann
-    # ganz — deshalb die Vorgaben statt eines KeyError.
-    zeilen += [f"- {v.get('sparte','?')} ({v.get('gesellschaft','?')}), "
-               f"Ablauf {v.get('ablauf','unbekannt')}"
-               for v in vertraege] or ["- (keine genannt)"]
+    zeilen += ["", "## Vertraege und Projekte (fremd = vom Kunden genannt)"]
+    # Normalisierte Felder (bezeichnung/anbieter, Altform gemappt). Optionale
+    # Teile fallen weg statt als '?' zu erscheinen.
+    zeilen += [_vertrag_zeile(v) for v in vertraege] or ["- (keine genannt)"]
     # "Fragen des Kunden", nicht "Beratungsbedarf": unter offener_punkt wird
     # die FRAGE protokolliert, nie eine eigene Einschaetzung — die Ueberschrift
     # soll das auch dann sagen, wenn ein Modell sich nicht daran hielt
@@ -8689,7 +8731,10 @@ WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,
              zustimmung_anfragen, zustimmung_erfassen,
              zustimmung_widerrufen,
              aktivitaet_loggen, wiedervorlage_setzen, wiedervorlage_erledigt,
-             vertrag_speichern, vertraege_ablaufend, termin_bestaetigen,
+             vertrag_speichern,
+            # Vertraege & Projekte (17.10.2026), Vertraege: tests/test_vertraege_eigen.py.
+            abschluss_speichern,
+            vertraege_ablaufend, termin_bestaetigen,
              # Einladung statt stillem Eintrag (11.09.2026): schlaegt vor,
              # bindet niemanden — der Kalendereintrag entsteht erst bei der
              # Zusage, siehe Docstring dort.

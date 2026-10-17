@@ -5665,7 +5665,10 @@ async def kontakt_detail(request):
     teile.append(f"<h2>Verträge ({len(vertraege)})</h2>")
     if vertraege:
         teile.append(_tabelle(["Sparte", "Gesellschaft", "Ablauf"], [
-            [_e(v.get("sparte")), _e(v.get("gesellschaft")), _e(v.get("ablauf"))]
+            # C2: eigene Eintraege (abschluss_speichern) tragen bezeichnung/
+            # anbieter statt sparte/gesellschaft.
+            [_e(v.get("sparte") or v.get("bezeichnung")),
+             _e(v.get("gesellschaft") or v.get("anbieter")), _e(v.get("ablauf"))]
             for v in vertraege if isinstance(v, dict)]))
     else:
         teile.append("<p>Keine Verträge erfasst.</p>")

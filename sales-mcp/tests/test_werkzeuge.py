@@ -718,7 +718,8 @@ def test_fuenfundachtzig_werkzeuge_registriert():
     # 15.10.2026: post_markierungen_setzen (Markier-Liste LinkedIn), 92 -> 93.
     # 16.10.2026: kontakt_einordnen (C1 Einordnung), 93 -> 94.
     # 17.10.2026: empfehlungsliste_anlegen, empfehlungslisten_zeigen (C4), 94 -> 96.
-    assert len(namen) == 96
+    # 17.10.2026: abschluss_speichern (C2 Vertraege & Projekte), 96 -> 97.
+    assert len(namen) == 97
     assert "termin_konflikte" in namen
     assert "kontakt_aehnlich" in namen
     assert "gespraeche_suchen" in namen
