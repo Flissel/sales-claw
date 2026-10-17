@@ -93,7 +93,12 @@ def _zeile_pruefen(nr: int, z, art: str):
             hinweise.append(f"Zeile {nr}: Telefon '{tel}' nicht lesbar — ohne Telefon angelegt, bitte prüfen.")
         else:
             sauber["chat_id"], sauber["telefon"] = chat_id, tel
-    sauber["firma"] = bool(z.get("firma"))
+    f = z.get("firma")
+    # Nur ein echtes Ja zaehlt — bool("false") waere sonst True.
+    sauber["firma"] = f is True or f == 1 or (
+        isinstance(f, str) and f.strip().lower() in ("1", "true", "ja"))
+    if sauber["firma"] and art != "pole_position":
+        raise ValueError(f"Zeile {nr}: Firmenzeilen gibt es nur auf der Pole Position.")
     return sauber, hinweise
 
 
@@ -330,10 +335,20 @@ def liste(liste_id) -> dict | None:
         return None
     zeilen, fremde_daten = [], {}
     for m in sorted(_mitglieder(lid), key=lambda m: m["created_at"]):
-        l = server._q("select name, phone, enrichment from leads where id = %s", (m["lead_id"],))
+        l = server._q("select name, phone, consent_status, enrichment from leads where id = %s",
+                      (m["lead_id"],))
         if not l:
             continue
-        e = (l[0]["enrichment"] or {}).get("empfehlung") or {}
+        roh = l[0]["enrichment"] or {}
+        # Zeile entfernen = Kontakt archivieren (Spec §5); Loeschantrag und
+        # privat verschwinden ebenso — aus Liste, Zaehlern und PDF.
+        if server._archiviert(roh) or server._loeschantrag(roh) or server._privat(roh):
+            continue
+        e = roh.get("empfehlung") or {}
+        # Angezeigt wird die WIRKSAME Einwilligung: Flag der Zeile UND der
+        # Kontakt willigt noch ein; sonst (Widerruf, Abmeldung) "widerrufen".
+        flag = bool(e.get("einwilligung"))
+        wirksam = flag and l[0]["consent_status"] in server.EINWILLIGUNG_ARTEN
         heimat = _uuid(e.get("liste_id"))
         fremd = heimat != lid
         if fremd and heimat and heimat not in fremde_daten:
@@ -347,7 +362,8 @@ def liste(liste_id) -> dict | None:
                        "zeichnet_aus": e.get("zeichnet_aus", ""),
                        "interessiert": e.get("interessiert", ""), "ergebnis": ergebnis,
                        "ergebnis_text": ERGEBNISSE.get(ergebnis, ergebnis),
-                       "notiz": e.get("notiz", ""), "einwilligung": bool(e.get("einwilligung")),
+                       "notiz": e.get("notiz", ""), "einwilligung": wirksam,
+                       "einwilligung_widerrufen": flag and not wirksam,
                        "termin_datum": termin, "fremd": fremd,
                        "fremd_liste_id": heimat if fremd else None,
                        "fremd_liste_datum": fremde_daten.get(heimat) if fremd else None})
@@ -420,7 +436,11 @@ def _zeile_setzen(lead_id, ergebnis, notiz, einwilligung, quelle, liste_id) -> d
             "einwilligung": e["einwilligung"], "hinweise": hinweise}
 
 
-def zeile_hinzufuegen(liste_id, zeile, quelle="ui") -> dict:
+def zeile_hinzufuegen(liste_id, zeile, einwilligung=False, quelle="ui") -> dict:
+    """Eine Zeile nachtragen. Die Einwilligung der Liste gilt hier NICHT:
+    gebucht wird nur mit ausdruecklichem `einwilligung=True` (wurde GENAU
+    dieser Mensch vorab gefragt?) — und auch dann nur nach allen Sperr- und
+    Ablehnungspruefungen."""
     try:
         l = liste(liste_id)
     except psycopg.Error:
@@ -435,7 +455,7 @@ def zeile_hinzufuegen(liste_id, zeile, quelle="ui") -> dict:
     except ValueError as e:
         return {"fehler": str(e)}
     gesehen = {normalisiere_empfaenger(z["telefon"])[0] for z in l["zeilen"] if z["telefon"]}
-    status, wert, h = _zeile_schreiben(k, s, k["bereiche"] or [], k["einwilligung"], quelle,
+    status, wert, h = _zeile_schreiben(k, s, k["bereiche"] or [], einwilligung is True, quelle,
                                        gesehen)
     if status == "abgewiesen":
         return {"fehler": wert}

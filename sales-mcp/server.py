@@ -7178,11 +7178,12 @@ def _eigene_ablehnung(lead_id: str, ausser_grund: str = "") -> bool:
     (newsletter_abmeldung) und die Antwort auf consent_kontakt, die nicht mit
     einer Zusage beginnt (dieselbe Regel wie in bedarf_speichern). Ein Widerruf,
     dessen Grund EXAKT `ausser_grund` ist, zaehlt nicht — so nimmt das
-    Abhaken einer Empfehlungszeile sich nicht selbst die Wiederholung."""
+    Abhaken einer Empfehlungszeile sich nicht selbst die Wiederholung. Ohne
+    `ausser_grund` zaehlt JEDER Widerruf, auch einer ohne Grund."""
     if _q("select 1 from activities where lead_id = %s and ("
           " type = 'newsletter_abmeldung' or (type = 'werbe_einwilligung_widerrufen'"
-          " and coalesce(payload->>'grund', '') <> %s)) limit 1",
-          (lead_id, ausser_grund or "")):
+          " and (%s::text = '' or coalesce(payload->>'grund', '') <> %s))) limit 1",
+          (lead_id, ausser_grund or "", ausser_grund or "")):
         return True
     antworten = _q("select payload->>'antwort' as antwort from activities "
                    "where lead_id = %s and type = 'bedarf' "

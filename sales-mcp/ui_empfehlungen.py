@@ -85,15 +85,22 @@ def routen(ui):
                 auswahl = "".join(
                     f'<option value="{s}"{" selected" if s == z["ergebnis"] else ""}>{e(t)}</option>'
                     for s, t in em.ERGEBNISSE.items())
+                if z["einwilligung_widerrufen"]:
+                    # Kontakt hat widerrufen/abbestellt: kein Haken; Speichern
+                    # laesst die Einwilligung unberuehrt (siehe `zeile`).
+                    haken = ('<input type="hidden" name="einwilligung" value="widerrufen">'
+                             '<span class="meta">Einwilligung widerrufen</span> ')
+                else:
+                    haken = (f'<label><input type="checkbox" name="einwilligung" value="1"'
+                             f'{" checked" if z["einwilligung"] else ""}> darf kontaktiert '
+                             f'werden</label> ')
                 ergebnis = (f'<form method="post" action="/empfehlungen/zeile">'
                             f'<input type="hidden" name="csrf" value="{ui.CSRF_TOKEN}">'
                             f'<input type="hidden" name="lead_id" value="{e(z["lead_id"])}">'
                             f'<input type="hidden" name="liste_id" value="{e(lid)}">'
                             f'<select name="ergebnis">{auswahl}</select> '
                             f'<input name="notiz" maxlength="200" value="{e(z["notiz"])}" placeholder="Notiz"> '
-                            f'<label><input type="checkbox" name="einwilligung" value="1"'
-                            f'{" checked" if z["einwilligung"] else ""}> darf kontaktiert werden</label> '
-                            f'<button type="submit">Speichern</button></form>')
+                            f'{haken}<button type="submit">Speichern</button></form>')
             else:
                 ergebnis = e(z["ergebnis_text"]) + (f" · {e(z['notiz'])}" if z["notiz"] else "")
             if art == "pole_position":
@@ -109,7 +116,10 @@ def routen(ui):
             neu = (f'<h2>Zeile hinzufügen</h2><div class="karte"><form method="post" '
                    f'action="/empfehlungen/{e(lid)}/zeile">'
                    f'<input type="hidden" name="csrf" value="{ui.CSRF_TOKEN}">{felder}'
-                   f'<label><input type="checkbox" name="firma" value="1"> Firma</label> '
+                   + ('<label><input type="checkbox" name="firma" value="1"> Firma</label> '
+                      if art == "pole_position" else "") +
+                   '<label><input type="checkbox" name="einwilligung" value="1"> '
+                   'vorab gefragt (darf kontaktiert werden)</label> '
                    f'<button type="submit">Hinzufügen</button></form></div>')
         return ui._seite(em.VORDRUCKE[art]["titel"], kopf + ui._tabelle(spalten, zeilen) + neu)
 
@@ -128,9 +138,12 @@ def routen(ui):
         if abbruch:
             return abbruch
         lid = _uuid(form.get("liste_id"))
+        if not lid:
+            return ui._fehlerseite(422, "Nicht gespeichert", "Liste fehlt oder ist unbekannt.")
+        ein = form.get("einwilligung")
         r = em.zeile_setzen(lead_id, ergebnis=str(form.get("ergebnis") or "offen"),
                             notiz=str(form.get("notiz") or "")[:200],
-                            einwilligung=form.get("einwilligung") == "1",
+                            einwilligung=None if ein == "widerrufen" else ein == "1",
                             liste_id=lid, quelle="ui")
         if "fehler" in r:
             return ui._fehlerseite(422, "Nicht gespeichert", e(r["fehler"]))
@@ -144,7 +157,8 @@ def routen(ui):
         lid = _uuid(request.path_params["liste_id"])
         z = {f: str(form.get(f) or "") for f in _FELDER_ZEILE}
         z["firma"] = form.get("firma") == "1"
-        r = em.zeile_hinzufuegen(lid, z, quelle="ui") if lid else {"fehler": "Liste unbekannt."}
+        r = (em.zeile_hinzufuegen(lid, z, einwilligung=form.get("einwilligung") == "1",
+                                  quelle="ui") if lid else {"fehler": "Liste unbekannt."})
         if "fehler" in r:
             return ui._fehlerseite(422, "Nicht hinzugefügt", e(r["fehler"]))
         return _weiter(lid, r.get("hinweise"))

@@ -441,3 +441,100 @@ def test_werkzeug_empfohlen_von_lead_oder_name():
     assert len(z["listen"]) == 2
     d = json.loads(server.empfehlungslisten_zeigen(r2["liste_id"]))
     assert d["kopf"]["empfohlen_von_name"] == "Frau Nachbarin" and len(d["zeilen"]) == 1
+
+
+# --- Final-Review (I2-I4 + Empfehlungen) ----------------------------------
+
+def test_zeile_hinzufuegen_bucht_einwilligung_nur_mit_haken():
+    r = _anlegen(einwilligung=True, zeilen=[Z(telefon="")])
+    ohne = em.zeile_hinzufuegen(r["liste_id"], Z(vorname="Ohne", telefon="+491702222222"))
+    assert "fehler" not in ohne
+    assert _lead(ohne["lead_id"])["consent_status"] == "unknown"
+    assert _einwilligungen(ohne["lead_id"]) == []
+    mit = em.zeile_hinzufuegen(r["liste_id"], Z(vorname="Mit", telefon="+491703333333"),
+                               einwilligung=True)
+    assert _lead(mit["lead_id"])["consent_status"] == "opt_in"
+    zs = {z["lead_id"]: z for z in em.liste(r["liste_id"])["zeilen"]}
+    assert zs[ohne["lead_id"]]["einwilligung"] is False
+    assert zs[mit["lead_id"]]["einwilligung"] is True
+
+
+def test_zeile_hinzufuegen_mit_haken_respektiert_ablehnung(monkeypatch):
+    r = _anlegen(zeilen=[Z(telefon="")])
+    alt = _kontakt("Rita Widerruf", "+491704444444")
+    server.einwilligung_erfassen(alt, "opt_in", "Formular")
+    server.einwilligung_widerrufen(alt, "will nicht")
+    aus = em.zeile_hinzufuegen(r["liste_id"], Z(vorname="Rita", telefon="+491704444444"),
+                               einwilligung=True)
+    assert any("widerrufen" in h for h in aus["hinweise"])
+    assert _lead(alt)["consent_status"] == "unknown"
+    gesperrt = _kontakt("Gerd Gesperrt", "+491706666666")
+    monkeypatch.setattr(server, "_sperre", lambda email="", phone="":
+                        "sales:widerruf: Telefon" if phone == "+491706666666" else "")
+    aus = em.zeile_hinzufuegen(r["liste_id"], Z(vorname="Gerd", telefon="+491706666666"),
+                               einwilligung=True)
+    assert "Verbotsliste" in aus["fehler"]
+    assert _lead(gesperrt)["consent_status"] == "unknown"
+
+
+def test_anzeige_einwilligung_folgt_dem_live_status():
+    r = _anlegen(einwilligung=True)
+    lid = em.liste(r["liste_id"])["zeilen"][0]["lead_id"]
+    z = em.liste(r["liste_id"])["zeilen"][0]
+    assert z["einwilligung"] is True and z["einwilligung_widerrufen"] is False
+    server.einwilligung_widerrufen(lid, "Kunde will nicht mehr")
+    z = em.liste(r["liste_id"])["zeilen"][0]
+    assert z["einwilligung"] is False and z["einwilligung_widerrufen"] is True
+
+
+def test_anzeige_einwilligung_nach_newsletter_abmeldung():
+    r = _anlegen(einwilligung=True)
+    lid = em.liste(r["liste_id"])["zeilen"][0]["lead_id"]
+    server._q("update leads set email='anna@example.com' where id=%s returning id", (lid,))
+    assert server._newsletter_abmeldungen([{"betreff": "Abmelden", "von": "anna@example.com",
+                                             "message_id": "m2@x"}]) == 1
+    z = em.liste(r["liste_id"])["zeilen"][0]
+    assert z["einwilligung"] is False and z["einwilligung_widerrufen"] is True
+
+
+def test_ohne_haken_ist_nicht_widerrufen():
+    r = _anlegen()
+    z = em.liste(r["liste_id"])["zeilen"][0]
+    assert z["einwilligung"] is False and z["einwilligung_widerrufen"] is False
+
+
+def test_archiviert_loeschantrag_privat_verschwinden_aus_liste_und_zaehlern():
+    r = _anlegen(zeilen=[Z(vorname="Bleibt", telefon=""), Z(vorname="Archiv", telefon=""),
+                         Z(vorname="Loesch", telefon=""), Z(vorname="Privat", telefon="")])
+    zs = {z["vorname"]: z["lead_id"] for z in em.liste(r["liste_id"])["zeilen"]}
+    server.kontakt_archivieren(zs["Archiv"])
+    server.loeschantrag_vermerken(zs["Loesch"], "Telefonat")
+    server.kontakt_privat_setzen(zs["Privat"])
+    zeilen = em.liste(r["liste_id"])["zeilen"]
+    assert [z["vorname"] for z in zeilen] == ["Bleibt"]
+    u = {l["id"]: l for l in em.listen()}[r["liste_id"]]
+    assert u["anzahl"] == 1 and u["offen"] == 1
+    t = _pdf_text(em.pdf(r["liste_id"]))
+    assert "Bleibt" in t and "Archiv" not in t and "Loesch" not in t and "Privat" not in t
+
+
+def test_firmenzeile_nur_auf_pole_position():
+    r = _anlegen(zeilen=[Z(), Z(vorname="", name="Bäckerei", telefon="", firma=True)])
+    assert "fehler" in r and "Zeile 2" in r["fehler"] and "Pole Position" in r["fehler"]
+    assert server._q("select count(*) n from leads")[0]["n"] == 0
+    ok = _anlegen(zeilen=[Z()])
+    aus = em.zeile_hinzufuegen(ok["liste_id"], Z(vorname="", name="Firma X", telefon="",
+                                                 firma=True))
+    assert "fehler" in aus and "Pole Position" in aus["fehler"]
+    pp = _anlegen(art="pole_position", bereiche=["vorsorge"],
+                  zeilen=[Z(vorname="", name="Laden", telefon="", firma="false")])
+    lid = em.liste(pp["liste_id"])["zeilen"][0]["lead_id"]
+    assert _lead(lid)["enrichment"]["art"] == "person"
+
+
+def test_widerruf_ohne_grund_ist_eigene_ablehnung():
+    lid = _kontakt()
+    server.einwilligung_erfassen(lid, "opt_in", "Formular")
+    server.einwilligung_widerrufen(lid)
+    assert server._eigene_ablehnung(lid) is True
+    assert server._eigene_ablehnung(lid, "Empfehlung: Häkchen entfernt [Liste x]") is True

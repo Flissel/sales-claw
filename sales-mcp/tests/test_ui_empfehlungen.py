@@ -146,3 +146,54 @@ def test_hinweis_nach_widerruf_fremder_einwilligung_escaped():
     assert "anderer Quelle" in s and 'class="hinweis"' in s
     h = _get(f"/empfehlungen/{r['liste_id']}?hinweis=%3Cscript%3Ex%3C/script%3E").text
     assert "&lt;script&gt;x" in h and "<script>x" not in h
+
+
+def test_zeile_hinzufuegen_haken_vorab_gefragt():
+    r = _liste(einwilligung=True)
+    s = _get(f"/empfehlungen/{r['liste_id']}").text
+    assert "vorab gefragt (darf kontaktiert werden)" in s
+    neu = s.split("Zeile hinzufügen")[1]
+    assert 'name="einwilligung" value="1">' in neu and "checked" not in neu
+    _post(f"/empfehlungen/{r['liste_id']}/zeile",
+          {"csrf": ui.CSRF_TOKEN, "vorname": "Ohne", "name": "Haken", "telefon": "+491702222222"})
+    _post(f"/empfehlungen/{r['liste_id']}/zeile",
+          {"csrf": ui.CSRF_TOKEN, "vorname": "Mit", "name": "Haken", "telefon": "+491703333333",
+           "einwilligung": "1"})
+    st = {x["name"]: x["consent_status"] for x in server._q("select name, consent_status from leads")}
+    assert st["Ohne Haken"] == "unknown" and st["Mit Haken"] == "opt_in"
+
+
+def test_firma_haken_nur_pole_position():
+    pp = _get(f"/empfehlungen/{_liste()['liste_id']}").text
+    assert 'name="firma"' in pp
+    ma = _get(f"/empfehlungen/{_liste(art='mitarbeitervorschlaege', empfohlen_von_name='X', zeilen=[{'vorname': 'Mo', 'telefon': ''}])['liste_id']}").text
+    assert 'name="firma"' not in ma
+
+
+def test_widerrufene_zeile_zeigt_widerrufen_ohne_haken():
+    r = _liste(einwilligung=True)
+    lead = em.liste(r["liste_id"])["zeilen"][0]["lead_id"]
+    assert "checked" in _get(f"/empfehlungen/{r['liste_id']}").text
+    server.einwilligung_widerrufen(lead, "Kunde")
+    s = _get(f"/empfehlungen/{r['liste_id']}").text
+    assert "widerrufen" in s and "checked" not in s
+    # Speichern einer widerrufenen Zeile laesst den Zustand stehen und bucht nichts
+    a = _post("/empfehlungen/zeile", {"csrf": ui.CSRF_TOKEN, "lead_id": lead,
+                                      "liste_id": r["liste_id"], "ergebnis": "nicht_erreicht",
+                                      "einwilligung": "widerrufen"})
+    assert a.status_code == 303
+    z = em.liste(r["liste_id"])["zeilen"][0]
+    assert z["einwilligung_widerrufen"] is True and z["ergebnis"] == "nicht_erreicht"
+    assert server._q("select consent_status from leads where id=%s", (lead,))[0][
+        "consent_status"] == "unknown"
+
+
+def test_zeile_post_ohne_liste_id_422():
+    r = _liste()
+    lead = em.liste(r["liste_id"])["zeilen"][0]["lead_id"]
+    for lid in (None, "kaputt"):
+        d = {"csrf": ui.CSRF_TOKEN, "lead_id": lead, "ergebnis": "abschluss"}
+        if lid:
+            d["liste_id"] = lid
+        assert _post("/empfehlungen/zeile", d).status_code == 422
+    assert em.liste(r["liste_id"])["zeilen"][0]["ergebnis"] == "offen"
