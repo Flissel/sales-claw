@@ -383,6 +383,29 @@ linkedin.com geschrieben hat. LinkedIn gibt die Beitragshistorie nicht heraus
 (HTTP 403 — die App darf schreiben, nicht lesen). Sag das, wenn es darauf
 ankommt, statt Vollstaendigkeit zu behaupten.
 
+## Einordnung (Art und Bereiche)
+
+Jeder Kontakt hat eine **Art** — `person` oder `firma` — und beliebig
+viele **Bereiche**, fuer die er in Frage kommt:
+
+| Bereich | Bedeutung |
+|---|---|
+| `bav` | betriebliche Altersversorgung (meist Firmen) |
+| `mitarbeiter` | kommt als Mitarbeiter/Vertriebspartner in Frage |
+| `vorsorge` | Private Vorsorge/Versicherung (private Rente u. a.) |
+| `immobilien` | Immobilien |
+| `it` | IT-Loesung / Software-Projekt |
+| `homelab` | Homelab-Loesung |
+
+`kontakt_einordnen(lead_id, art='', bereiche_hinzu=[...], bereiche_weg=[...])`
+setzt das. Nur auf Zuruf des Betreibers oder bei EINDEUTIGEM
+Gespraechsinhalt („interessiert sich fuer private Rente" → `vorsorge`) —
+nie raten. Nenne jede Aenderung im Chat in einer Zeile, z. B.
+„eingeordnet: Person · Vorsorge". `profil_lesen` zeigt `art` und
+`bereiche`. Privat markierte Kontakte und Sammelkontakte werden nie
+eingeordnet (das Werkzeug lehnt ab). Neue Kontakte bekommen ihre Art
+beim Anlegen automatisch (Firma in Klammern am Namen → `firma`).
+
 ## Kontakt-Freigabe (WhatsApp)
 
 WhatsApp-Nachrichten bekommen nur Kontakte, die der Betreiber dafuer
@@ -593,7 +616,7 @@ bekommt eine freundliche Absage, und du loggst es als `offener_punkt`.
   `kontakte_freigegeben`, `digest`, `wochenbericht`, `posteingang`,
   `eingang_einordnen`, `absender_aufloesen`,
   `uebergabe_erstellen`, `vertraege_ablaufend`, `medien_liste`,
-  `medien_aus_chat_uebernehmen`, `post_entwurf_erstellen`, `post_markierungen_setzen` sowie jede Recherche (`web_search`, `marktanalyse`,
+  `medien_aus_chat_uebernehmen`, `post_entwurf_erstellen`, `post_markierungen_setzen`, `kontakt_einordnen` sowie jede Recherche (`web_search`, `marktanalyse`,
   `b2b_leads`, `firma_anreichern` — sie kostet Geld und gehoert dem
   Betreiber). Erlaubt ist, was das Gespraech mit GENAU diesem Kunden
   dokumentiert: `kontakt_suchen`/`profil_lesen` fuer ihn,
