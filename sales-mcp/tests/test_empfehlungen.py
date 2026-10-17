@@ -352,3 +352,50 @@ def test_gefaelschtes_tag_im_namen_zaehlt_nicht():
     aus = em.zeile_setzen(lid, einwilligung=False)
     assert _lead(lid)["consent_status"] == "opt_in"
     assert any("anderer Quelle" in h for h in aus["hinweise"])
+
+
+import io as _io  # noqa: E402
+from pypdf import PdfReader  # noqa: E402
+
+
+def _pdf_text(b):
+    return "".join(s.extract_text() for s in PdfReader(_io.BytesIO(b)).pages)
+
+
+def test_pdf_pole_position_quer_mit_kopf_und_spalten():
+    r = _anlegen(art="pole_position", bereiche=["vorsorge"],
+                 zeilen=[Z(vorname="Jörg", name="Müßig <script>", ort="München")])
+    b = em.pdf(r["liste_id"])
+    seiten = PdfReader(_io.BytesIO(b)).pages
+    assert len(seiten) == 1 and seiten[0].mediabox.width > seiten[0].mediabox.height
+    t = _pdf_text(b)
+    for s in ("Pole Position", "Konzept für den Aufbau von Empfehlungen", "Name", "Vorname",
+              "Beruf", "Alter", "Ort", "Telefon", "Termin", "Ergebnis", "Felix", "Team Nord",
+              "Klaus Kunde", "Jörg", "München", "offen"):
+        assert s in t, s
+
+
+def test_pdf_mitarbeitervorschlaege_spalten_und_folgeseite():
+    r = _anlegen(zeilen=[Z(vorname=f"P{i}", telefon="") for i in range(25)])
+    em.zeile_hinzufuegen(r["liste_id"], Z(vorname="Nummer26", telefon=""))
+    b = em.pdf(r["liste_id"])
+    assert len(PdfReader(_io.BytesIO(b)).pages) == 2
+    t = _pdf_text(b)
+    for s in ("Mitarbeitervorschläge", "Alter (ab 22)", "Was zeichnet aus", "Was interessiert",
+              "Nummer26"):
+        assert s in t, s
+
+
+def test_pdf_unbekannt():
+    assert em.pdf("00000000-0000-0000-0000-000000000000") is None
+
+
+def test_pdf_fremde_zeile_zeigt_schon_bekannt():
+    r1 = _anlegen(art="pole_position", bereiche=["vorsorge"])
+    lid = em.liste(r1["liste_id"])["zeilen"][0]["lead_id"]
+    em.zeile_setzen(lid, ergebnis="abschluss", liste_id=r1["liste_id"])
+    r2 = _anlegen(art="pole_position", bereiche=["vorsorge"], empfohlen_von_name="Zweiter")
+    assert em.liste(r2["liste_id"])["zeilen"][0]["fremd"] is True
+    t = _pdf_text(em.pdf(r2["liste_id"]))
+    assert "schon bekannt" in t and "Anna" in t
+    assert "schon bekannt" not in _pdf_text(em.pdf(r1["liste_id"]))

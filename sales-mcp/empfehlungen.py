@@ -17,12 +17,18 @@ enrichment.empfehlung nennt sie), steht er hier nur als "schon bekannt"
 (fremd=True): nur lesend, ohne Einwilligungsbuchung, nicht in den Zaehlern
 offen/termin/abschluss.
 """
+import io
 import json
 import uuid
 from datetime import date
 
 import psycopg
 
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.units import mm
+from reportlab.pdfgen import canvas
+
+import formular
 import server
 from nummern import normalisiere_empfaenger
 
@@ -433,3 +439,91 @@ def zeile_hinzufuegen(liste_id, zeile, quelle="ui") -> dict:
     if status == "abgewiesen":
         return {"fehler": wert}
     return {"lead_id": wert, "status": status, "hinweise": hinweise + h}
+
+
+# --- PDF im Aufbau des Papier-Vordrucks -------------------------------------
+
+_SPALTEN = {
+    # (Ueberschrift, Breite mm, Feld) — Reihenfolge wie der Papier-Vordruck
+    "pole_position": [("Name", 34, "nachname"), ("Vorname", 30, "vorname"),
+                      ("Beruf", 34, "beruf"), ("Alter", 13, "alter"), ("Ort", 30, "ort"),
+                      ("Telefon", 36, "telefon"), ("Termin", 24, "termin_datum"),
+                      ("Ergebnis", 50, "ergebnis_text")],
+    "mitarbeitervorschlaege": [("Vorname, Name", 46, "name"), ("Alter (ab 22)", 20, "alter"),
+                               ("Beruf", 32, "beruf"), ("Telefon", 34, "telefon"),
+                               ("Was zeichnet aus", 52, "zeichnet_aus"),
+                               ("Was interessiert", 52, "interessiert"),
+                               ("Termin", 24, "termin_datum")],
+}
+_ZEILE_H = 9 * mm
+_PT = 8
+
+
+def _zelle(z, feld) -> str:
+    if feld == "ergebnis_text" and z.get("fremd"):
+        return "schon bekannt"   # das Ergebnis steht auf der anderen Liste
+    w = z.get(feld)
+    if feld == "nachname" and not w and not z.get("vorname"):
+        w = z.get("name")        # nur verknuepfter Kontakt: Anzeigename in die Spalte Name
+    if feld == "termin_datum" and w:
+        w = str(w)
+        return f"{w[8:10]}.{w[5:7]}.{w[0:4]}"
+    return "" if w is None else str(w)
+
+
+def pdf(liste_id) -> bytes | None:
+    """PDF (A4 quer) im Aufbau des Papier-Vordrucks; Folgeseite ab Vordruck-Maximum."""
+    l = liste(liste_id)
+    if l is None:
+        return None
+    k, art = l["kopf"], l["kopf"]["art"]
+    vd, spalten = VORDRUCKE[art], _SPALTEN[art]
+    puffer = io.BytesIO()
+    c = canvas.Canvas(puffer, pagesize=landscape(A4))
+    breite, hoehe = landscape(A4)
+    links = (breite - sum(s[1] for s in spalten) * mm) / 2
+    zeilen = list(l["zeilen"])
+    seiten_zeilen = []
+    while zeilen or not seiten_zeilen:
+        seiten_zeilen.append(zeilen[:vd["max"]])
+        zeilen = zeilen[vd["max"]:]
+    for teil in seiten_zeilen:
+        y = hoehe - 18 * mm
+        c.setFont(formular.FETT, 18)
+        c.drawCentredString(breite / 2, y, formular._druckbar(vd["titel"]))
+        if vd["untertitel"]:
+            y -= 7 * mm
+            c.setFont(formular.SCHRIFT, 12)
+            c.drawCentredString(breite / 2, y, formular._druckbar(vd["untertitel"]))
+        y -= 9 * mm
+        c.setFont(formular.SCHRIFT, 10)
+        kopf = (f"Name: {k['berater_name']}    Struktur: {k['struktur']}    "
+                f"Empfohlen von: {k['empfohlen_von_name']}    Datum: {k['datum']:%d.%m.%Y}")
+        c.drawString(links, y, formular._druckbar(kopf))
+        y -= 8 * mm
+        # Zeilenhoehe so, dass auch 25 Zeilen plus Kopfzeile auf die Seite passen
+        zh = min(_ZEILE_H, (y - 10 * mm) / (vd["max"] + 1))
+        mehrzeilig = zh >= 8 * mm
+        x = links + 8 * mm
+        c.setFont(formular.FETT, _PT)
+        for titel, b, _ in spalten:
+            c.rect(x, y - zh, b * mm, zh)
+            c.drawString(x + 1.5 * mm, y - zh / 2 - 1 * mm, formular._druckbar(titel))
+            x += b * mm
+        y -= zh
+        c.setFont(formular.SCHRIFT, _PT)
+        for nr in range(vd["max"]):
+            z = teil[nr] if nr < len(teil) else {}
+            c.drawRightString(links + 6 * mm, y - zh / 2 - 1 * mm, f"{nr + 1}.")
+            x = links + 8 * mm
+            for _, b, feld in spalten:
+                c.rect(x, y - zh, b * mm, zh)
+                text = formular._druckbar(_zelle(z, feld)) if z else ""
+                zeilen_txt = formular._zeilen(text, b * mm - 3 * mm, _PT)[:2 if mehrzeilig else 1] if text else []
+                for i, t in enumerate(zeilen_txt):
+                    c.drawString(x + 1.5 * mm, y - (4 * mm if mehrzeilig else zh / 2 + 1 * mm) - i * 3.4 * mm, t)
+                x += b * mm
+            y -= zh
+        c.showPage()
+    c.save()
+    return puffer.getvalue()
