@@ -716,7 +716,8 @@ def test_fuenfundachtzig_werkzeuge_registriert():
     # 14.10.2026: medien_aus_chat_uebernehmen (tests/test_medien_aus_chat.py),
     # 91 -> 92.
     # 15.10.2026: post_markierungen_setzen (Markier-Liste LinkedIn), 92 -> 93.
-    assert len(namen) == 93
+    # 16.10.2026: kontakt_einordnen (C1 Einordnung), 93 -> 94.
+    assert len(namen) == 94
     assert "termin_konflikte" in namen
     assert "kontakt_aehnlich" in namen
     assert "gespraeche_suchen" in namen

@@ -148,3 +148,16 @@ def test_websuche_personen_auf_die_markier_liste_nicht_in_den_text():
     absatz = _absatz("- **Bei Personen nie raten.**")
     assert "post_markierungen_setzen" in absatz
     assert "kein Profil-Link" in absatz
+
+
+def test_einordnung_abschnitt():
+    assert "## Einordnung (Art und Bereiche)" in TEXT
+    abschnitt = TEXT.split("## Einordnung (Art und Bereiche)")[1].split("\n## ")[0]
+    assert "kontakt_einordnen(" in abschnitt
+    for b in ("bav", "mitarbeiter", "vorsorge", "immobilien", "it", "homelab"):
+        assert f"`{b}`" in abschnitt
+    assert "nie raten" in abschnitt.lower()
+
+
+def test_einordnen_im_kundenchat_tabu():
+    assert "`kontakt_einordnen`" in _absatz("- **Betreiber-Werkzeuge sind im Kundenchat tabu")

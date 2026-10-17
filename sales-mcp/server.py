@@ -401,10 +401,14 @@ def kontakt_anlegen(name: str, email: str = "", phone: str = "",
             f"Nicht angelegt: diese Kennung steht auf der gemeinsamen "
             f"Verbotsliste ({grund}). Keine Erstansprache — wer sich abgemeldet, "
             f"widerrufen oder Loeschung verlangt hat, wird nicht erneut erfasst.")})
+    # Eine Firma in Klammern am Namensende zeigt eine Firmenvisitenkarte an
+    # (Spec C1 4.1); sonst gilt der Kontakt als Person.
+    art = "firma" if re.search(r"\([^()]+\)\s*$", name or "") else "person"
     zeilen = _q(
-        "insert into leads (name, email, phone, source, notes) "
-        "values (%s, nullif(%s,''), nullif(%s,''), %s, nullif(%s,'')) "
-        "returning id", (name, email, phone, source, notes))
+        "insert into leads (name, email, phone, source, notes, enrichment) "
+        "values (%s, nullif(%s,''), nullif(%s,''), %s, nullif(%s,''), "
+        "jsonb_build_object('art', %s::text)) returning id",
+        (name, email, phone, source, notes, art))
     return _json({"lead_id": zeilen[0]["id"], "angelegt": True})
 
 
@@ -416,13 +420,14 @@ def kontakt_anlegen(name: str, email: str = "", phone: str = "",
 # entsteht aus einer Antwort des Kontakts, siehe bedarf_speichern, nicht aus
 # einem Freitextaufruf), `status`, `score*`, `enrichment` (dafuer gibt es
 # profil_aktualisieren) und `id`.
-KONTAKT_FELDER = ("phone", "email", "name")
+KONTAKT_FELDER = ("phone", "email", "name", "company")
 
 
 @_gesichert
 def kontakt_aktualisieren(lead_id: str, feld: str, wert: str) -> str:
     """Stammdaten eines bestehenden Kontakts korrigieren oder nachtragen.
-    Erlaubt sind ausschliesslich die Felder phone, email und name — etwa um
+    Erlaubt sind ausschliesslich die Felder phone, email, name und company
+    (Firma, hoechstens 200 Zeichen) — etwa um
     eine fehlende Telefonnummer zu ergaenzen, ohne die ein WhatsApp-Entwurf
     nicht zugestellt werden kann. Telefonnummern immer MIT Landesvorwahl
     erfassen (+49…/+43…): einer national geschriebenen Nummer (0170…) wird
@@ -451,6 +456,8 @@ def kontakt_aktualisieren(lead_id: str, feld: str, wert: str) -> str:
                                 f"Einwilligung nach bedarf_speichern."})
     if feld == "name" and not wert.strip():
         return _json({"fehler": "Ein Kontakt ohne Namen ist nicht vorgesehen."})
+    if feld == "company" and len(wert.strip()) > 200:
+        return _json({"fehler": "Firma ist laenger als 200 Zeichen."})
     vorhanden = _q(f"select {feld} as alt from leads where id = %s", (lead_id,))
     if not vorhanden:
         return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
@@ -1154,6 +1161,123 @@ def _archiv_sql(spalte: str) -> str:
     return (f"coalesce(jsonb_typeof({spalte} -> '{ARCHIV_SCHLUESSEL}' -> "
             f"'archiviert') = 'boolean' and ({spalte} -> "
             f"'{ARCHIV_SCHLUESSEL}' ->> 'archiviert') = 'true', false)")
+
+
+# ---------------------------------------------------------------------------
+# Einordnung (C1, Spec 2026-10-16): Art + Bereiche je Kontakt. Liegt in
+# leads.enrichment ("art", "bereiche") — kein DDL. Einziger Schreibweg ist
+# _einordnen; jede Aenderung wird als Aktivitaet 'einordnung' gebucht.
+# ---------------------------------------------------------------------------
+
+ARTEN = ("person", "firma")
+BEREICHE = {
+    "bav": "bAV",
+    "mitarbeiter": "Mitarbeiter",
+    "vorsorge": "Private Vorsorge/Versicherung",
+    "immobilien": "Immobilien",
+    "it": "IT-Lösung",
+    "homelab": "Homelab",
+}
+_EINORDNUNG_ACTOR = {"ui": "human", "agent": "agent", "bestand": "cron"}
+
+
+def _sammelkontakt(lead_id) -> bool:
+    """Einer der Sammelkontakte (Unbekannte Eingaenge, LinkedIn-Profil,
+    Recherche) — kein Mensch, also nie einzuordnen."""
+    ids = {str(x).strip() for x in (
+        UNBEKANNT_LEAD_ID, LINKEDIN_POST_LEAD_ID,
+        os.environ.get("RECHERCHE_LEAD_ID", "")) if str(x or "").strip()}
+    return str(lead_id) in ids
+
+
+def _einordnung(enrichment, company) -> tuple:
+    """(wirksame Art, Bereiche in fester Reihenfolge) — rein, ohne DB.
+    Ohne gesetzte Art entscheidet das Firmenfeld; kaputte Werte zaehlen als
+    nicht gesetzt."""
+    e = enrichment if isinstance(enrichment, dict) else {}
+    art = e.get("art")
+    if art not in ARTEN:
+        art = "firma" if (company or "").strip() else "person"
+    roh = e.get("bereiche")
+    roh = roh if isinstance(roh, list) else []
+    return art, [b for b in BEREICHE if b in roh]
+
+
+def _einordnen(lead_id, art=None, hinzu=(), weg=(), quelle="agent") -> dict:
+    try:
+        uuid.UUID(str(lead_id))
+    except ValueError:
+        return {"fehler": f"'{lead_id}' ist keine gueltige lead_id."}
+    hinzu, weg = list(hinzu or []), list(weg or [])
+    if art and art not in ARTEN:
+        return {"fehler": f"Unbekannte Art '{art}' — erlaubt: {', '.join(ARTEN)}."}
+    for b in hinzu + weg:
+        if b not in BEREICHE:
+            return {"fehler": f"Unbekannter Bereich '{b}' — erlaubt: "
+                              f"{', '.join(BEREICHE)}."}
+    if set(hinzu) & set(weg):
+        return {"fehler": "Ein Bereich kann nicht zugleich hinzu und weg."}
+    if _sammelkontakt(lead_id):
+        return {"fehler": "Sammelkontakte werden nicht eingeordnet."}
+    z = _q("select enrichment, company from leads where id = %s", (str(lead_id),))
+    if not z:
+        return {"fehler": f"Kein Kontakt mit lead_id {lead_id}."}
+    e = z[0]["enrichment"] or {}
+    if _privat(e):
+        return {"fehler": "Privat markierte Kontakte werden nicht eingeordnet."}
+    art_vorher = e.get("art") if e.get("art") in ARTEN else None
+    wirksam, bereiche_vorher = _einordnung(e, z[0]["company"])
+    art_neu = art or art_vorher or wirksam
+    neu = [b for b in BEREICHE if (b in bereiche_vorher or b in hinzu) and b not in weg]
+    if art_neu == art_vorher and neu == bereiche_vorher:
+        return {"art": art_neu, "bereiche": neu, "unveraendert": True}
+    _q("update leads set enrichment = jsonb_set(jsonb_set("
+       "coalesce(enrichment, '{}'::jsonb), '{art}', to_jsonb(%s::text), true), "
+       "'{bereiche}', %s::jsonb, true), updated_at = now() where id = %s returning id",
+       (art_neu, json.dumps(neu), str(lead_id)))
+    _q("insert into activities (lead_id, type, payload, actor) values "
+       "(%s, 'einordnung', %s, %s) returning id",
+       (str(lead_id), _json({"art_vorher": art_vorher, "art": art_neu,
+                             "bereiche_vorher": bereiche_vorher, "bereiche": neu,
+                             "weg": quelle}), _EINORDNUNG_ACTOR[quelle]))
+    return {"art": art_neu, "bereiche": neu}
+
+
+@_gesichert
+def kontakt_einordnen(lead_id: str, art: str = "", bereiche_hinzu: list | None = None,
+                      bereiche_weg: list | None = None) -> str:
+    """Kontakt einordnen: Art ('person'|'firma') und Bereiche hinzufuegen/
+    entfernen — bav, mitarbeiter, vorsorge (Private Vorsorge/Versicherung),
+    immobilien, it (IT-Loesung), homelab. Nur auf Zuruf des Betreibers oder
+    bei EINDEUTIGEM Gespraechsinhalt; nie raten. Die Aenderung dem Betreiber
+    im Chat nennen. Privat markierte Kontakte und Sammelkontakte lehnt das
+    Werkzeug ab. Sendet nichts."""
+    return _json(_einordnen(lead_id, art or None, bereiche_hinzu or [],
+                            bereiche_weg or [], quelle="agent"))
+
+
+def einordnung_bestand() -> dict:
+    """Einmalige Einordnung des Bestands (C1 4.1, NICHT in WERKZEUGE):
+    Kontakte OHNE gesetzte Art bekommen sie nach dem Firmenfeld;
+    Recherche-Firmen zusaetzlich bAV. Privat markierte und Sammelkontakte
+    bleiben unberuehrt. Ein zweiter Lauf aendert nichts."""
+    zahl = {"firmen": 0, "personen": 0, "bav": 0, "uebersprungen": 0}
+    for z in _q("select id::text as id, company, source, enrichment from leads "
+                "where not (coalesce(enrichment, '{}'::jsonb) ? 'art') "
+                "order by created_at"):
+        if _sammelkontakt(z["id"]) or _privat(z["enrichment"] or {}):
+            zahl["uebersprungen"] += 1
+            continue
+        firma = bool((z["company"] or "").strip())
+        hinzu = ["bav"] if firma and z["source"] == "recherche" else []
+        r = _einordnen(z["id"], "firma" if firma else "person", hinzu, (),
+                       quelle="bestand")
+        if "fehler" in r:
+            zahl["uebersprungen"] += 1
+            continue
+        zahl["firmen" if firma else "personen"] += 1
+        zahl["bav"] += len(hinzu)
+    return zahl
 
 
 def _archiv_setzen(lead_id: str, archiviert: bool) -> str:
@@ -2107,8 +2231,8 @@ def profil_lesen(lead_id: str) -> str:
     Verlauf, ohne ihn doppelt zu erzaehlen. Geloescht ist nichts — die
     Einzelnachrichten liegen weiter in der Datenbank; im Wortlaut liefert sie
     `chat_verlauf(lead_id, alle=True)`."""
-    leads = _q("select id, name, status, consent_status, enrichment, notes "
-               "from leads where id = %s", (lead_id,))
+    leads = _q("select id, name, status, consent_status, enrichment, notes, "
+               "company from leads where id = %s", (lead_id,))
     if not leads:
         return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
     # Zusammengefasste Nachrichten fallen aus der Liste — sonst stuende
@@ -2130,6 +2254,7 @@ def profil_lesen(lead_id: str) -> str:
               "typen": list(CHAT_NACHRICHT_TYPEN),
               "zeit": grenze_zeit, "id": grenze_id})
     e = leads[0]["enrichment"] or {}
+    _art_bereiche = _einordnung(e, leads[0].get("company"))
     return _json({"lead_id": leads[0]["id"], "name": leads[0]["name"],
                   "status": leads[0]["status"],
                   "consent": leads[0]["consent_status"],
@@ -2150,6 +2275,8 @@ def profil_lesen(lead_id: str) -> str:
                   # („profil_lesen zeigt den Volltext") schlicht falsch: der
                   # firma-Knoten laege in enrichment und wuerde nie angezeigt.
                   "firma": e.get("firma", {}),
+                  "art": _art_bereiche[0],
+                  "bereiche": _art_bereiche[1],
                   "notes": leads[0]["notes"],
                   # Das Kontaktprofil GANZ OBEN und getrennt: es ist die
                   # verdichtete Antwort auf „wer ist der Mensch, was ist ihm
@@ -4576,6 +4703,9 @@ def digest() -> str:
     letzte = _q("select a.type, a.payload, a.created_at, l.name "
                 "from activities a left join leads l on l.id = a.lead_id "
                 "where a.created_at > now() - interval '48 hours' "
+                # Einordnungen sind Protokoll (C1); der Bestandslauf wuerde
+                # sonst alle 20 Plaetze belegen.
+                "and a.type <> 'einordnung' "
                 "order by a.created_at desc limit 20")
     # Der Support-Ueberblick im Morgen-Digest (Stufe 8). Dasselbe 48-h-Fenster
     # wie „letzte Aktivitaeten", aber eine andere Frage: dort steht, was
@@ -6073,6 +6203,15 @@ def b2b_leads(branche: str, region: str = "Regensburg", limit: int = 20) -> str:
             try:
                 _q("update leads set company = %s where id = %s returning id",
                    (t["name"], antwort["lead_id"]))
+            except psycopg.Error:
+                pass
+            # C1 §4.1: Recherche-Firmen sind Firmen mit Bereich bAV.
+            # kontakt_anlegen hat die Art schon aus dem Namen gesetzt
+            # (ohne Klammer: person) — das wird hier ausdruecklich
+            # korrigiert. Ebenso abgesichert wie der Nachtrag oben.
+            try:
+                _einordnen(antwort["lead_id"], "firma", ["bav"], (),
+                           quelle="agent")
             except psycopg.Error:
                 pass
             angelegt.append(t["name"])
@@ -8415,6 +8554,8 @@ def versand_abwarten(draft_id: str, max_s: int = 30) -> str:
 WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,
              kontakt_anlegen,
              kontakt_aktualisieren,
+             # Einordnung Art + Bereiche (16.10.2026), Vertraege: tests/test_kontakt_einordnung.py.
+             kontakt_einordnen,
              wissensbasis_fragen, recherche_an_marketing,
              uebergaben_pruefen, uebergabe_annehmen, uebergabe_ablehnen,
              # Marketings Versandauftraege (12.09.2026): sales-claw ist der

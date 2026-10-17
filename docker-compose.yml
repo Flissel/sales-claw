@@ -766,6 +766,12 @@ services:
       # lead_id, die auf jeder Kontaktseite steht — die T5a-Ueberlegung oben
       # (keine Schluessel ins UI) bleibt davon unberuehrt.
       - INBOX_UNBEKANNT_LEAD_ID=${INBOX_UNBEKANNT_LEAD_ID:-}
+      # Die beiden anderen Sammelkontakte (Recherche, LinkedIn-Post) — nur
+      # lead_ids, keine Geheimnisse. Ohne sie erkennt die Oberflaeche sie
+      # nicht als Sammelkontakte und liesse sie einordnen (C1 Kontaktarten,
+      # server._sammelkontakt).
+      - RECHERCHE_LEAD_ID=${RECHERCHE_LEAD_ID:-}
+      - LINKEDIN_POST_LEAD_ID=${LINKEDIN_POST_LEAD_ID:-}
       # WhatsApp-Zustand auf /whatsapp (29.08.2026). Bewusst NICHT der
       # OPENWA_API_KEY: der darf senden und wuerde das Freigabe-Gate
       # umgehen (T5a, ausfuehrlich beim Agent-Container). Der VIEWER-

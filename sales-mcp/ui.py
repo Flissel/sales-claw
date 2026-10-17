@@ -23,7 +23,7 @@ dreierlei, und nichts sonst:
    Auch hier ruft das UI ausschliesslich die Chat-Werkzeuge auf
    (server.kontakt_aktualisieren, server.kontakt_archivieren,
    server.kontakt_wiederherstellen) und baut KEIN eigenes SQL: die Feld-
-   Whitelist (server.KONTAKT_FELDER — phone, email, name; ausdruecklich NICHT
+   Whitelist (server.KONTAKT_FELDER — phone, email, name, company; ausdruecklich NICHT
    status/consent_status/enrichment) und das Archivmerkmal in `enrichment`
    sollen genau einmal existieren.
 
@@ -295,6 +295,8 @@ BREMSE_SPERRE_S = 60
 
 GESENDETE_MAX = 20      # letzte gesendete Entwuerfe auf der Inbox
 KONTAKTE_MAX = 500      # Kontaktliste
+KONTAKTE_SEITE = 100    # Kontaktliste: Zeilen je Seite (C1, 16.10.2026)
+KONTAKTE_SUCHE_MAX = 100  # Suchtext der Kontaktliste, Zeichen
 AKTIVITAETEN_MAX = 200  # Verlauf je Kontakt
 WIEDERVORLAGEN_MAX = 200
 PAYLOAD_KURZ = 300      # Payload-Vorschau im Kontakt-Verlauf
@@ -314,7 +316,8 @@ KONTAKT_FELD_MAX = 200
 # Anzeigenamen der Felder aus server.KONTAKT_FELDER. Die LISTE der Felder
 # steht bewusst NICHT hier — sie kommt aus server.py, sonst haette die
 # Oberflaeche eine zweite, stillschweigend veraltende Whitelist.
-KONTAKT_FELD_TITEL = {"name": "Name", "phone": "Telefon", "email": "E-Mail"}
+KONTAKT_FELD_TITEL = {"name": "Name", "phone": "Telefon", "email": "E-Mail",
+                     "company": "Firma"}
 # Welche Handytastatur ein Feld aufmacht. `type`/`inputmode` entscheiden auf
 # dem Telefon darueber, ob unter dem Finger Ziffern und ein Plus liegen oder
 # das Alphabet — eine Rufnummer auf der Buchstabentastatur einzugeben ist der
@@ -326,6 +329,7 @@ KONTAKT_FELD_EINGABE = {
     "phone": 'type="tel" inputmode="tel" autocomplete="tel"',
     "email": ('type="email" inputmode="email" autocomplete="email" '
               'autocapitalize="none" spellcheck="false"'),
+    "company": 'type="text" autocomplete="organization"',
 }
 # Ein spaeter in server.KONTAKT_FELDER ergaenztes Feld erscheint als
 # gewoehnliches Textfeld, statt zu fehlen.
@@ -1166,6 +1170,16 @@ iframe.layout-bild { position: relative; width: 200%; height: 520px; border: 0;
    sonnenbeschienenen Telefon ist ein Farbton kein Unterschied. */
 .badge.archiv { background: transparent; color: var(--schrift);
                 border: 1px dashed var(--linie_stark); }
+/* Kontaktliste (C1, 16.10.2026): Reiter und Bereich-Chips als Links. Der
+   aktive trägt aria-current und ist gefüllt statt umrandet — wieder das
+   farbunabhängige zweite Merkmal. */
+.filterleiste { display: flex; flex-wrap: wrap; gap: .4rem; margin: .4rem 0;
+                align-items: center; }
+.filterleiste a { padding: .2rem .6rem; border-radius: 4px;
+                  border: 1px solid var(--linie_stark); text-decoration: none;
+                  font-size: .85rem; color: var(--schrift); }
+.filterleiste a[aria-current] { background: var(--neutral);
+                                color: var(--neutral_auf); font-weight: 700; }
 .badge.zustand.pending { background: var(--achtung); color: var(--achtung_auf);
                          border-color: var(--achtung); }
 .badge.zustand.failed { background: var(--fehler); color: var(--fehler_auf);
@@ -3181,29 +3195,158 @@ def _verwerfen_statusfehler(z) -> HTMLResponse:
 # Kontakte
 # ---------------------------------------------------------------------------
 
+KONTAKTE_ANSICHTEN = {"alle": "Alle", "personen": "Personen", "firmen": "Firmen",
+                      "mitarbeiter": "Mitarbeiter-Kandidaten",
+                      "offen": "Nicht eingeordnet"}
+# Dieselbe Regel wie server._einordnung, als SQL (Spec C1 §3):
+# - Art: gueltiges enrichment.art, sonst Firmenfeld mit mindestens einem
+#   Nicht-Leerzeichen → firma, sonst person (Python: `(company or "").strip()`).
+# - Bereiche: nur ein JSON-Array zaehlt, und darin nur die BEKANNTEN
+#   Schluessel — Python filtert ueber `[b for b in BEREICHE if b in roh]`, ein
+#   Array nur mit Unbekanntem ist dort leer und damit „nicht eingeordnet".
+# Die Schluessel kommen aus server.ARTEN/BEREICHE (Code, keine Fremddaten)
+# und stehen deshalb als Literale im SQL-Text; keiner enthaelt `%` oder `'`.
+_ART_SQL = ("coalesce(case when l.enrichment->>'art' in ("
+            + ", ".join(f"'{a}'" for a in server.ARTEN) + ") "
+            "then l.enrichment->>'art' end, case when coalesce(l.company, '') "
+            "~ '[^[:space:]]' then 'firma' else 'person' end)")
+_BEREICHE_SQL = ("(case when jsonb_typeof(l.enrichment->'bereiche') = 'array' "
+                 "then l.enrichment->'bereiche' else '[]'::jsonb end)")
+_BEREICHE_LISTE_SQL = ("array[" + ", ".join(f"'{b}'" for b in server.BEREICHE)
+                       + "]::text[]")
+_ANSICHT_SQL = {
+    "alle": "true",
+    "personen": f"{_ART_SQL} = 'person'",
+    "firmen": f"{_ART_SQL} = 'firma'",
+    "mitarbeiter": f"{_ART_SQL} = 'person' and {_BEREICHE_SQL} ? 'mitarbeiter'",
+    "offen": f"not ({_BEREICHE_SQL} ?| {_BEREICHE_LISTE_SQL})",
+}
+
+
+def _like_muster(text: str) -> str:
+    r"""Suchtext woertlich fuer ILIKE ... ESCAPE '\'."""
+    return "%" + text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
+def _einordnung_chips(enrichment, company) -> str:
+    """Art und Bereiche als Abzeichen — Liste und Kontaktseite zeigen damit
+    dieselbe Lesart von server._einordnung."""
+    art, bereiche = server._einordnung(enrichment, company)
+    teile = [f'<span class="badge">{_e("Firma" if art == "firma" else "Person")}</span>']
+    teile += [f'<span class="badge archiv">{_e(server.BEREICHE[b])}</span>' for b in bereiche]
+    return " ".join(teile)
+
+
+def _kontakte_url(werte: dict, **aenderung) -> str:
+    """Link auf /kontakte, der die uebrigen Parameter behaelt. Leere Werte
+    und die Vorgaben (Ansicht „alle", Seite 1) fallen weg."""
+    w = {**werte, **aenderung}
+    teile = {k: v for k, v in w.items()
+             if v not in ("", None) and not (k == "ansicht" and v == "alle")
+             and not (k == "seite" and v == 1)}
+    return "/kontakte" + ("?" + urllib.parse.urlencode(teile) if teile else "")
+
+
+def _filter_verweis(text, url, aktiv) -> str:
+    return (f'<a href="{_e(url)}"' + (' aria-current="page"' if aktiv else "")
+            + f">{_e(text)}</a>")
+
+
 @_gesichert_seite
 async def kontakte(request):
+    qp = request.query_params
+    ansicht = qp.get("ansicht", "alle")
+    if ansicht not in KONTAKTE_ANSICHTEN:
+        ansicht = "alle"
+    bereich = qp.get("bereich", "")
+    if bereich not in server.BEREICHE:
+        bereich = ""
+    q = (qp.get("q") or "").strip()[:KONTAKTE_SUCHE_MAX]
+    try:
+        seite = int(qp.get("seite", "1"))
+    except ValueError:
+        seite = 1
     # Archivierte bleiben draussen, solange der Schalter nicht gesetzt ist.
     # Gefiltert wird in SQL (server._archiv_sql — dieselbe Regel wie
-    # server._archiviert in Python), damit KONTAKTE_MAX die SICHTBAREN
-    # Kontakte deckelt und nicht die geladenen: sonst verdraengte ein Archiv
-    # von 500 Karteileichen die lebenden Kontakte aus der Liste.
-    archiv_zeigen = request.query_params.get("archiv") == "1"
-    bedingung = "" if archiv_zeigen else (
-        "where not " + server._archiv_sql("l.enrichment") + " ")
+    # server._archiviert in Python), damit Anzahlen und Seiten die
+    # SICHTBAREN Kontakte zaehlen und nicht die geladenen.
+    archiv_zeigen = qp.get("archiv") == "1"
+    bed = ["true"]
+    p: dict = {}
+    if not archiv_zeigen:
+        bed.append("not " + server._archiv_sql("l.enrichment"))
+    if bereich:
+        bed.append(f"{_BEREICHE_SQL} ? %(bereich)s")
+        p["bereich"] = bereich
+    if q:
+        # Name und Firma woertlich (ESCAPE), die Telefonnummer nur ueber ihre
+        # Ziffern — und erst ab drei Ziffern, sonst traefe „1" fast jede
+        # Nummer. Jedes `%` laeuft als Parameter, nie im SQL-Text.
+        ziffern = re.sub(r"\D", "", q)
+        ziffern = ziffern if len(ziffern) >= 3 else ""
+        p.update(muster=_like_muster(q), ziffern=ziffern,
+                 ziffern_muster="%" + ziffern + "%")
+        bed.append(
+            r"(l.name ilike %(muster)s escape '\' "
+            r"or coalesce(l.company, '') ilike %(muster)s escape '\' "
+            "or (%(ziffern)s <> '' and regexp_replace(coalesce(l.phone, ''), "
+            "'[^0-9]', '', 'g') like %(ziffern_muster)s))")
+    wo = " and ".join(bed)
+    anzahl = server._q(
+        "select " + ", ".join(
+            f"count(*) filter (where {sql}) as {name}"
+            for name, sql in _ANSICHT_SQL.items())
+        + " from leads l where " + wo, p)[0]
+    gesamt = int(anzahl[ansicht])
+    letzte = max(1, -(-gesamt // KONTAKTE_SEITE))
+    seite = min(max(seite, 1), letzte)
+    # `l.id` als letzter Schluessel: ohne eindeutige Ordnung duerfte
+    # Postgres gleichrangige Zeilen je Seite anders sortieren — dann fiele
+    # beim Blaettern ein Kontakt durch oder kaeme doppelt.
     zeilen = server._q(  # noqa: E501 — Spaltenliste bleibt eine Zeile je Feld
         "select l.id, l.name, l.status, l.consent_status, l.enrichment, "
-        "       l.score, "
+        "       l.score, l.company, "
+        # `einordnung` ist Protokoll, kein Kontaktgeschehen (C1): sonst
+        # stuende nach dem Bestandslauf ueberall der Deploy-Zeitpunkt.
         "       (select max(a.created_at) from activities a "
-        "         where a.lead_id = l.id) as letzte "
-        "from leads l " + bedingung +
-        "order by letzte desc nulls last, l.name asc limit %s",
-        (KONTAKTE_MAX,))
+        "         where a.lead_id = l.id and a.type <> 'einordnung') as letzte "
+        "from leads l where " + wo + " and " + _ANSICHT_SQL[ansicht] + " "
+        "order by letzte desc nulls last, l.name asc, l.id asc "
+        "limit %(lim)s offset %(off)s",
+        {**p, "lim": KONTAKTE_SEITE, "off": (seite - 1) * KONTAKTE_SEITE})
+    werte = {"ansicht": ansicht, "bereich": bereich, "q": q,
+             "archiv": "1" if archiv_zeigen else "", "seite": 1}
+    reiter = ('<nav class="filterleiste" aria-label="Ansicht">' + "".join(
+        _filter_verweis(f"{label} ({int(anzahl[name])})",
+                        _kontakte_url(werte, ansicht=name), name == ansicht)
+        for name, label in KONTAKTE_ANSICHTEN.items()) + "</nav>")
+    bereiche = (
+        '<nav class="filterleiste" aria-label="Bereich">'
+        + _filter_verweis("alle Bereiche", _kontakte_url(werte, bereich=""),
+                          not bereich)
+        + "".join(_filter_verweis(label, _kontakte_url(werte, bereich=b),
+                                  b == bereich)
+                  for b, label in server.BEREICHE.items()) + "</nav>")
+    versteckt = "".join(
+        f'<input type="hidden" name="{k}" value="{_e(v)}">'
+        for k, v in (("ansicht", "" if ansicht == "alle" else ansicht),
+                     ("bereich", bereich),
+                     ("archiv", "1" if archiv_zeigen else "")) if v)
+    suche = (
+        '<form method="get" action="/kontakte" class="meta">'
+        f'{versteckt}<input type="search" name="q" value="{_e(q)}" '
+        f'maxlength="{KONTAKTE_SUCHE_MAX}" '
+        'placeholder="Name, Firma oder Telefon" aria-label="Kontakte suchen"> '
+        '<button type="submit">Suchen</button>'
+        + (f' <a href="{_e(_kontakte_url(werte, q=""))}">Suche löschen</a>'
+           if q else "") + "</form>")
     schalter = (
-        '<p class="meta"><a href="/kontakte">nur aktive zeigen</a> — '
-        'archivierte Kontakte sind mitgelistet.</p>' if archiv_zeigen else
-        '<p class="meta"><a href="/kontakte?archiv=1">auch archivierte '
-        'zeigen</a></p>')
+        f'<p class="meta"><a href="{_e(_kontakte_url(werte, archiv=""))}">'
+        'nur aktive zeigen</a> — archivierte Kontakte sind mitgelistet.</p>'
+        if archiv_zeigen else
+        f'<p class="meta"><a href="{_e(_kontakte_url(werte, archiv="1"))}">'
+        'auch archivierte zeigen</a></p>')
+    kopf = reiter + bereiche + suche + schalter
     inhalt = []
     for z in zeilen:
         # `archiv` gibt dem Abzeichen einen gestrichelten Umriss statt einer
@@ -3228,6 +3371,7 @@ async def kontakte(request):
         inhalt.append([
             f'<a href="/kontakte/{_e(z["id"])}">{_e(z["name"])}</a>{marke}'
             f'<div class="meta">Consent: {_e(z["consent_status"])}</div>',
+            _einordnung_chips(z["enrichment"], z["company"]),
             f'<span class="stufe {_e(stufe)}">{_e(stufe)}</span>',
             _score_pille(z["score"]), _zeit(z["letzte"]),
             # Am Sammelkontakt keine Stufe: er ist kein Mensch, und eine
@@ -3251,12 +3395,23 @@ async def kontakte(request):
                 '<i>existing_customer</i> entsteht kein Erstansprache-'
                 'Entwurf per WhatsApp/E-Mail; Antworten auf eingehende '
                 'Nachrichten bleiben frei.</p>')
-    rumpf = [schalter, _tabelle(
-        ["Name", "Stufe", "Score", "Zuletzt", "Autonomie", "Archiv"],
-        inhalt), fussnote]
+    blaettern = ""
+    if letzte > 1:
+        zurueck = (_filter_verweis(
+            "← Zurück", _kontakte_url(werte, seite=seite - 1), False)
+            if seite > 1 else "")
+        weiter = (_filter_verweis(
+            "Weiter →", _kontakte_url(werte, seite=seite + 1), False)
+            if seite < letzte else "")
+        blaettern = (f'<nav class="filterleiste" aria-label="Seiten">{zurueck}'
+                     f'<span class="meta">Seite {seite} von {letzte}</span>'
+                     f'{weiter}</nav>')
+    rumpf = [kopf, _tabelle(
+        ["Name", "Einordnung", "Stufe", "Score", "Zuletzt", "Autonomie",
+         "Archiv"], inhalt), blaettern, fussnote]
     if not zeilen:
-        rumpf = [schalter, "<p>Keine Kontakte.</p>"]
-    return _seite(f"Kontakte ({len(zeilen)})", "".join(rumpf))
+        rumpf = [kopf, "<p>Keine Kontakte.</p>"]
+    return _seite(f"Kontakte ({gesamt})", "".join(rumpf))
 
 
 def _offene_wiedervorlagen(lead_id=None):
@@ -3323,7 +3478,7 @@ def _kontakt_feld_reihenfolge() -> list:
     fuer den Versand sortiert (phone zuerst), ein Formular liest sich nach dem
     Namen zuerst.
     """
-    vorne = [f for f in ("name", "phone", "email") if f in server.KONTAKT_FELDER]
+    vorne = [f for f in ("name", "phone", "email", "company") if f in server.KONTAKT_FELDER]
     return vorne + [f for f in server.KONTAKT_FELDER if f not in vorne]
 
 
@@ -3495,6 +3650,62 @@ def _archiv_bereich(lead, archiviert: bool) -> str:
             f'Oberfläche.</p></div>')
 
 
+def _einordnung_bereich(lead) -> str:
+    """Kasten „Einordnung“ (Spec C1 §4.2). Nicht für privat markierte und
+    Sammelkontakte; Rollen ohne Schreibrecht sehen nur den Stand."""
+    if server._sammelkontakt(lead["id"]) or server._privat(lead["enrichment"] or {}):
+        return ""
+    art, bereiche = server._einordnung(lead["enrichment"], lead.get("company"))
+    stand = (("Firma" if art == "firma" else "Person") + " · " +
+             (", ".join(server.BEREICHE[b] for b in bereiche) or "kein Bereich"))
+    if _AKTIVE_ROLLE.get() in ("lesen", "kalender"):
+        return (f'<h2 id="einordnung">Einordnung</h2><div class="karte">'
+                f'{_e(stand)}</div>')
+    arten = "".join(
+        f'<label><input type="radio" name="art" value="{a}"'
+        f'{" checked" if a == art else ""}> {_e("Firma" if a == "firma" else "Person")}'
+        f'</label> ' for a in server.ARTEN)
+    haken = "".join(
+        f'<label><input type="checkbox" name="bereich_{b}" value="1"'
+        f'{" checked" if b in bereiche else ""}> {_e(t)}</label> '
+        for b, t in server.BEREICHE.items())
+    return (f'<h2 id="einordnung">Einordnung</h2><div class="karte">'
+            f'<form method="post" action="/kontakte/einordnen">'
+            f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+            f'<input type="hidden" name="lead_id" value="{_e(lead["id"])}">'
+            f'<p>{arten}</p><p>{haken}</p><button type="submit">Speichern</button>'
+            f'</form></div>')
+
+
+@_gesichert_seite
+async def aktion_kontakt_einordnen(request):
+    form, lead_id, abbruch = await _kontakt_vorspann(request)
+    if abbruch:
+        return abbruch
+    zeilen = server._q("select enrichment from leads where id = %s", (lead_id,))
+    if not zeilen:
+        return _fehlerseite(404, "Nicht gefunden", "Diesen Kontakt gibt es nicht.")
+    enrichment = zeilen[0]["enrichment"] or {}
+    if server._sammelkontakt(lead_id) or server._privat(enrichment):
+        return _fehlerseite(403, "Nicht einzuordnen",
+                            "Privat markierte Kontakte und Sammelkontakte werden "
+                            "nicht eingeordnet. Nichts wurde gespeichert.")
+    unbekannt = [k for k in form.keys() if k.startswith("bereich_")
+                 and k[len("bereich_"):] not in server.BEREICHE]
+    art = str(form.get("art") or "")
+    if unbekannt or (art and art not in server.ARTEN):
+        return _fehlerseite(422, "Nicht gespeichert",
+                            "Unbekannte Art oder unbekannter Bereich.")
+    gewaehlt = [b for b in server.BEREICHE if form.get(f"bereich_{b}") == "1"]
+    _, vorher = server._einordnung(enrichment, None)
+    r = server._einordnen(lead_id, art or None,
+                          [b for b in gewaehlt if b not in vorher],
+                          [b for b in vorher if b not in gewaehlt], quelle="ui")
+    if "fehler" in r:
+        return _fehlerseite(422, "Nicht gespeichert", _e(r["fehler"]))
+    return RedirectResponse(f"/kontakte/{lead_id}#einordnung", status_code=303)
+
+
 async def _kontakt_vorspann(request):
     """Gemeinsame Wache aller Kontakt-POSTs — Reihenfolge wie ueberall:
     CSRF VOR der ersten Zeile Datenbank, dann die lead_id."""
@@ -3575,7 +3786,8 @@ async def aktion_kontakt_bearbeiten(request):
     if abbruch:
         return abbruch
     leads = server._q(
-        "select id, name, email, phone from leads where id = %s", (lead_id,))
+        "select id, name, email, phone, company from leads where id = %s",
+        (lead_id,))
     if not leads:
         return _fehlerseite(404, "Unbekannter Kontakt",
                             f"Kein Kontakt mit lead_id {_e(lead_id)}.")
@@ -3590,7 +3802,12 @@ async def aktion_kontakt_bearbeiten(request):
     for feld in server.KONTAKT_FELDER:
         if feld not in form:
             continue          # nicht im Formular = unangetastet
-        neu = " ".join(str(form.get(feld) or "").split())[:KONTAKT_FELD_MAX]
+        neu = " ".join(str(form.get(feld) or "").split())
+        if feld == "company" and len(neu) > KONTAKT_FELD_MAX:
+            # Firma wird nicht still gekuerzt, sondern abgelehnt (C1).
+            return _fehlerseite(400, "Nicht gespeichert",
+                                f"Firma ist länger als {KONTAKT_FELD_MAX} Zeichen.")
+        neu = neu[:KONTAKT_FELD_MAX]
         if neu == str(lead[feld] or ""):
             continue          # unveraendert: keine Zeile, kein Protokoll
         fehler = _feld_pruefen(feld, neu)
@@ -3897,9 +4114,11 @@ def _wa_karten_und_kette(sitzung, sitzung_fehler, letzte) -> str:
     """Drei Zustandskarten und die Kette Handy -> OpenWA -> Webhook ->
     Posteingang -> Datenbank (UI-Plan Schritt 6). Jede Station traegt ihren
     letzten Beweis als Satz; die Farbe kommt dazu, nicht statt dessen."""
+    # `einordnung` (Bestandslauf, actor 'cron') ist kein Lauf der Automatik.
     cron = server._q("select max(created_at) as wann from activities "
-                     "where actor = 'cron' or type in "
-                     "('stufenwechsel', 'transkription')")[0]["wann"]
+                     "where (actor = 'cron' or type in "
+                     "('stufenwechsel', 'transkription')) "
+                     "and type <> 'einordnung'")[0]["wann"]
     anzahl = server._q("select count(*) n from activities "
                        "where type = 'kundenantwort'")[0]["n"]
     # Zwei Zahlen statt einer: `count(*) from leads` zaehlte auch die
@@ -5299,6 +5518,9 @@ async def kontakt_detail(request):
                                      ("E-Mail", "email"), ("Telefon", "phone"),
                                      ("Firma", "company"), ("Titel", "title"),
                                      ("Quelle", "source"), ("Notizen", "notes"))]
+    if not (server._sammelkontakt(lead["id"]) or server._privat(anreicherung)):
+        stammdaten.insert(6, ("Einordnung", _einordnung_chips(
+            lead["enrichment"], lead["company"])))
     teile = []
     if archiviert:
         teile.append(
@@ -5325,6 +5547,7 @@ async def kontakt_detail(request):
     teile.append(_paar_tabelle(
         stammdaten + [("Angelegt", _zeit(lead["created_at"]))]))
     teile.append(_kontakt_formular(lead))
+    teile.append(_einordnung_bereich(lead))
 
     # Pipeline-Stufe (27.08.2026): dasselbe Werkzeug wie der Chat, mit
     # Begruendungsfeld — jeder Wechsel ist eine Beweiszeile. Leeres Feld
@@ -6677,6 +6900,7 @@ app = Starlette(routes=[
     # faengt sonst `/kontakte/bearbeiten` als lead_id ab (Starlette entscheidet
     # in Reihenfolge) und antwortete auf jeden POST mit 405.
     Route("/kontakte/bearbeiten", aktion_kontakt_bearbeiten, methods=["POST"]),
+    Route("/kontakte/einordnen", aktion_kontakt_einordnen, methods=["POST"]),
     Route("/kontakte/archivieren", aktion_kontakt_archivieren,
           methods=["POST"]),
     # Eigene Route fuer den zweiten Schritt, wie bei der Einordnung: der

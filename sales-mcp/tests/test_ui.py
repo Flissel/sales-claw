@@ -1445,7 +1445,7 @@ def test_bearbeiten_formular_bietet_genau_die_felder_des_werkzeugs():
     server.KONTAKT_FELDER. Status und Consent stehen bewusst nicht drin: die
     Einwilligung entsteht aus einer Antwort des Kontakts (bedarf_speichern),
     nicht aus einem Formularfeld."""
-    assert set(server.KONTAKT_FELDER) == {"phone", "email", "name"}
+    assert set(server.KONTAKT_FELDER) == {"phone", "email", "name", "company"}
     lead = _lead()
     seite = _get(f"/kontakte/{lead}").text
     for feld in server.KONTAKT_FELDER:
@@ -1881,6 +1881,7 @@ ERLAUBTE_LABEL = {
     "Stufe",
     "Score", "Zuletzt",   # /kontakte seit Schritt 5 (02.09.2026)
     "Archiv",   # /kontakte, Archiv-Knopf je Zeile
+    "Einordnung",   # /kontakte, Art und Bereiche je Zeile (C1, 16.10.2026)
     "Autonomie",   # /kontakte, Stufe je Zeile (25.08.2026)
     "Profil",   # /einordnung, Link zum Kontaktprofil
     "Quittieren",   # /wiedervorlagen, Erledigt-Knopf je Zeile
@@ -3598,3 +3599,109 @@ def test_freigegebener_linkedin_post_kein_handposten_hinweis_mehr():
              text="Post", approved_by="felix")
     seite = _get("/freigaben").text
     assert "von Hand posten" not in seite
+
+
+def test_bearbeiten_speichert_die_firma():
+    lead = _lead()
+    r = _post("/kontakte/bearbeiten",
+              {"lead_id": lead, "csrf": ui.CSRF_TOKEN, "name": "Max Testperson",
+               "phone": "+491701234567", "email": "", "company": "ACME GmbH"})
+    assert r.status_code == 303
+    assert server._q("select company from leads where id=%s", (lead,))[0]["company"] == "ACME GmbH"
+
+
+def test_bearbeiten_lehnt_zu_lange_firma_ab_statt_zu_kuerzen():
+    lead = _lead()
+    r = _post("/kontakte/bearbeiten",
+              {"lead_id": lead, "csrf": ui.CSRF_TOKEN, "company": "x" * 201})
+    assert r.status_code == 400
+    assert server._q("select company from leads where id=%s", (lead,))[0]["company"] is None
+
+
+# ---------------------------------------------------------------------------
+# Einordnung auf der Kontaktseite (Spec C1 §4.2)
+# ---------------------------------------------------------------------------
+
+def _einordnung_von(lead):
+    return ui.server._q("select enrichment from leads where id=%s", (lead,))[0]["enrichment"]
+
+
+def test_kontaktseite_zeigt_einordnung_und_firma():
+    lead = _lead()
+    seite = _get(f"/kontakte/{lead}").text
+    assert 'id="einordnung"' in seite and 'name="bereich_vorsorge"' in seite
+    assert 'name="company"' in seite
+
+
+def test_einordnen_speichert_und_protokolliert():
+    lead = _lead()
+    r = _post("/kontakte/einordnen", {"csrf": ui.CSRF_TOKEN, "lead_id": lead,
+                                     "art": "person", "bereich_mitarbeiter": "1",
+                                     "bereich_immobilien": "1"})
+    assert r.status_code == 303
+    e = _einordnung_von(lead)
+    assert e["art"] == "person" and e["bereiche"] == ["mitarbeiter", "immobilien"]
+    p = ui.server._q("select payload, actor from activities where lead_id=%s and "
+                     "type='einordnung'", (lead,))
+    assert p[0]["actor"] == "human" and p[0]["payload"]["weg"] == "ui"
+    # Haekchen weg = Bereich weg
+    _post("/kontakte/einordnen", {"csrf": ui.CSRF_TOKEN, "lead_id": lead,
+                                 "art": "person", "bereich_immobilien": "1"})
+    assert _einordnung_von(lead)["bereiche"] == ["immobilien"]
+
+
+def test_einordnen_ohne_csrf_403():
+    lead = _lead()
+    assert _post("/kontakte/einordnen", {"lead_id": lead, "art": "person"}).status_code == 403
+
+
+def test_einordnen_privat_403_und_kein_kasten():
+    lead = _lead()
+    ui.server._q("update leads set enrichment = jsonb_set(coalesce(enrichment,'{}'::jsonb), "
+                 "'{_privat}', '{\"privat\": true}'::jsonb, true) where id=%s returning id",
+                 (lead,))
+    assert 'id="einordnung"' not in _get(f"/kontakte/{lead}").text
+    r = _post("/kontakte/einordnen", {"csrf": ui.CSRF_TOKEN, "lead_id": lead, "art": "person"})
+    assert r.status_code == 403
+
+
+def test_einordnen_manipuliert_422():
+    lead = _lead()
+    for daten in ({"art": "kunde"}, {"art": "person", "bereich_rente": "1"}):
+        r = _post("/kontakte/einordnen", {"csrf": ui.CSRF_TOKEN, "lead_id": lead, **daten})
+        assert r.status_code == 422
+    assert "art" not in _einordnung_von(lead)
+
+
+@pytest.mark.parametrize("quelle", ["linkedin", "recherche"])
+def test_einordnen_sammelkontakt_403_und_kein_kasten(monkeypatch, quelle):
+    """Final-Review I2: die Recherche- und LinkedIn-Post-Sammelkontakte
+    sind keine Menschen. Im sales-ui-Container kommen ihre lead_ids aus der
+    Umgebung (docker-compose.yml, Test in test_laden_parameter.py) — hier
+    wird genau dieser Weg nachgestellt, und weder Kasten noch POST
+    duerfen greifen."""
+    lead = _lead()
+    if quelle == "linkedin":
+        monkeypatch.setattr(ui.server, "LINKEDIN_POST_LEAD_ID", lead)
+    else:
+        monkeypatch.setenv("RECHERCHE_LEAD_ID", lead)
+    seite = _get(f"/kontakte/{lead}").text
+    assert 'id="einordnung"' not in seite
+    assert 'action="/kontakte/einordnen"' not in seite
+    r = _post("/kontakte/einordnen", {"csrf": ui.CSRF_TOKEN, "lead_id": lead,
+                                     "art": "person", "bereich_bav": "1"})
+    assert r.status_code == 403
+    assert "art" not in (_einordnung_von(lead) or {})
+
+
+def test_whatsapp_automatik_zaehlt_keine_einordnung(monkeypatch):
+    """Final-Review I3: der Bestandslauf bucht `einordnung` mit actor 'cron'.
+    Das ist kein Lauf der Automatik und darf die Karte nicht frisch zeigen."""
+    lead = _lead()
+    assert "art" in server._einordnen(lead, "person", ["bav"], quelle="bestand")
+    monkeypatch.setattr(ui, "OPENWA_VIEWER_KEY", "egal")
+    monkeypatch.setattr(ui, "OPENWA_SESSION_ID", "")
+    monkeypatch.setattr(ui, "_openwa_lesen",
+                        lambda pfad: ([{"id": "s1", "status": "ready"}], None))
+    seite = _get("/whatsapp").text
+    assert "noch kein Lauf gebucht" in seite
