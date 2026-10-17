@@ -223,8 +223,16 @@ def _profilblock(lead_id, name) -> str:
     e = (zeilen[0]["enrichment"] or {}) if zeilen else {}
     bedarf = {k: v.get("antwort") for k, v in (e.get("bedarf") or {}).items()
               if isinstance(v, dict)}
+    # Datensparsamkeit im kundennahen Modell (Final Review 17.10.2026): nur
+    # die vom Kunden genannten (fremden) Vertraege, ohne eigene Abschluesse,
+    # Betraege und Notizen. Neue fremde Eintraege tragen das Datum ggf. als
+    # wiedervorlage_am statt ablauf (die Kontaktseite zeigt beide zusammen).
+    import vertraege
+    fremde = [{"bezeichnung": v["bezeichnung"], "anbieter": v["anbieter"],
+               "ablauf": v.get("ablauf") or v.get("wiedervorlage_am") or ""}
+              for v in vertraege.eintraege_aus(e) if v["art"] == "fremd"]
     block = {"name": name, "profil": e.get("profil", {}), "bedarf": bedarf,
-             "vertraege": e.get("vertraege", []),
+             "vertraege": fremde,
              "notizen": (zeilen[0]["notes"] if zeilen else None)}
     return json.dumps(block, ensure_ascii=False, default=str)
 

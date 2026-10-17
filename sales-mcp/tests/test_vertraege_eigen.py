@@ -44,7 +44,8 @@ def _offene_wv(lead):
                                      ("€ 99", "99.00"), ("0", "0.00"), ("", ""),
                                      ("viel", None), ("-5", None), ("1,234", "1.23"),
                                      ("2.500", "2500.00"), ("1.234.567", "1234567.00"),
-                                     ("2.5", "2.50"), ("12.50", "12.50")])
+                                     ("2.5", "2.50"), ("12.50", "12.50"),
+                                     ("0.500", "0.50"), ("0.500.000", None)])
 def test_betrag_norm(ein, aus):
     if aus == "1.23":       # mehr als 2 Nachkommastellen ist ein Fehler
         assert vt.betrag_norm(ein) is None
@@ -229,3 +230,32 @@ def test_abschluss_speichern_versteht_tausenderpunkt():
     r = json.loads(server.abschluss_speichern(lead, "it", "Webshop", "angeboten", betrag="2.500"))
     assert "fehler" not in r
     assert vt.eintraege(lead)[0]["betrag"] == "2500.00"
+
+
+# --- Schluss-Fix: fremde Eintraege tragen keinen Status (Spec §2.1) --------
+
+def test_fremd_erzwingt_leeren_status_und_ordnet_nie_ein(monkeypatch):
+    aufrufe = []
+    monkeypatch.setattr(server, "_einordnen", lambda *a, **kw: aufrufe.append((a, kw)))
+    lead = _lead()
+    r = vt.speichern(lead, "fremd", "homelab", "KFZ", status="abgeschlossen",
+                     status_datum=date.today().isoformat(), anbieter="HUK")
+    e = r["eintrag"]
+    assert (e["status"], e["status_datum"]) == ("", "")
+    assert aufrufe == []
+    gespeichert = vt.eintraege(lead)[0]
+    assert (gespeichert["status"], gespeichert["status_datum"]) == ("", "")
+    # Auch ueber die Kontaktseite (quelle='ui') und beim Aendern
+    r2 = vt.speichern(lead, "fremd", "homelab", "KFZ", status="abgeschlossen",
+                      status_datum=date.today().isoformat(), eintrag_id=e["id"], quelle="ui")
+    assert (r2["eintrag"]["status"], r2["eintrag"]["status_datum"]) == ("", "")
+    assert aufrufe == []
+
+
+def test_fremd_altstatus_wird_beim_agenten_merge_geleert(monkeypatch):
+    monkeypatch.setattr(server, "_einordnen", lambda *a, **kw: (_ for _ in ()).throw(AssertionError))
+    lead = _lead({"vertraege": [{"id": "f1", "art": "fremd", "bezeichnung": "KFZ",
+                                 "status": "abgeschlossen", "status_datum": "2026-01-01",
+                                 "bereich": "homelab"}]})
+    r = vt.speichern(lead, "fremd", "", "", notiz="neu", eintrag_id="f1")
+    assert (r["eintrag"]["status"], r["eintrag"]["status_datum"]) == ("", "")

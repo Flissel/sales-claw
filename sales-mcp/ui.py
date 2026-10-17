@@ -3804,6 +3804,11 @@ def _vertrag_formular(lead_id, v: dict | None) -> str:
     stati = '<option value=""></option>' + "".join(
         f'<option value="{_e(k)}"{" selected" if k == v.get("status") else ""}>{_e(t)}</option>'
         for k, t in vertraege.STATUS.items())
+    # Spec §2.1: fremde Vertraege haben keinen Status (speichern() leert ihn).
+    status_felder = ('' if v.get("art") == "fremd" else
+                     f'<label>Status <select name="status">{stati}</select></label> '
+                     f'<label>Status-Datum <input type="date" name="status_datum" '
+                     f'value="{wert("status_datum")}"></label> ')
     return (
         f'<form method="post" action="/kontakte/vertrag" class="zeile">'
         f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
@@ -3811,9 +3816,7 @@ def _vertrag_formular(lead_id, v: dict | None) -> str:
         f'<label>Bereich <select name="bereich">{bereiche}</select></label> '
         f'<label>Bezeichnung <input name="bezeichnung" value="{wert("bezeichnung")}" '
         f'maxlength="200" required></label> '
-        f'<label>Status <select name="status">{stati}</select></label> '
-        f'<label>Status-Datum <input type="date" name="status_datum" '
-        f'value="{wert("status_datum")}"></label> '
+        f'{status_felder}'
         f'<label>Anbieter <input name="anbieter" value="{wert("anbieter")}" '
         f'maxlength="200"></label> '
         f'<label>Betrag (EUR) <input name="betrag" value="{wert("betrag")}" size="10"></label> '

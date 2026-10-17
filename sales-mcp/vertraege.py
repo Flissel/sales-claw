@@ -35,8 +35,12 @@ def betrag_norm(text) -> str | None:
         return ""
     if "," in t:
         t = t.replace(".", "").replace(",", ".")
-    elif re.fullmatch(r"\d{1,3}(\.\d{3})+", t):
-        t = t.replace(".", "")   # deutscher Tausenderpunkt: '2.500' = 2500
+    elif re.fullmatch(r"[1-9]\d{0,2}(\.\d{3})+", t):
+        # deutscher Tausenderpunkt: '2.500' = 2500; '0.500' bleibt 0,50
+        t = t.replace(".", "")
+    elif re.fullmatch(r"\d+\.\d{3,}", t):
+        # kein Tausenderpunkt ('0.500'): Dezimalpunkt, Nullen hinten zaehlen nicht
+        t = t.rstrip("0").rstrip(".") or "0"
     if not re.fullmatch(r"\d+(\.\d{1,2})?", t):
         return None
     return f"{float(t):.2f}"
@@ -160,6 +164,10 @@ def speichern(lead_id, art, bereich, bezeichnung, status="", status_datum="", an
         b = b or alt["betrag"]
         wv = wv or alt["wiedervorlage_am"]
         notiz = notiz or alt["notiz"]
+    if art == "fremd":
+        # Spec §2.1: fremde Vertraege tragen keinen Status — auch keinen
+        # mitgeschleppten Altstatus aus dem Merge; sie ordnen nie ein.
+        status, sd = "", ""
     if not bezeichnung:
         return {"fehler": f"Bezeichnung fehlt oder ist laenger als {TEXT_MAX} Zeichen."}
     # Ein unveraendertes, inzwischen ueberfaelliges Datum ist kein Fehler.
@@ -198,6 +206,6 @@ def speichern(lead_id, art, bereich, bezeichnung, status="", status_datum="", an
               (lead_id, "vertrag_geaendert" if alt else "vertrag_angelegt",
                json.dumps({"id": neu["id"], **({"vorher": alt} if alt else {}), "nachher": neu},
                           ensure_ascii=False), "human" if quelle == "ui" else "agent"))
-    if status == "abgeschlossen" and bereich:
+    if art == "eigen" and status == "abgeschlossen" and bereich:
         server._einordnen(lead_id, None, [bereich], (), quelle="ui" if quelle == "ui" else "agent")
     return {"eintrag": neu, "angelegt": alt is None, "wiedervorlage": wiedervorlage}

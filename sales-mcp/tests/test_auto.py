@@ -192,6 +192,22 @@ def test_verlauf_und_profil_landen_im_modellauftrag(monkeypatch):
     assert aufrufe[0]["output_config"]["format"]["type"] == "json_schema"
 
 
+def test_auto_kontext_bekommt_nur_fremde_vertraege_ohne_betrag_und_notiz():
+    """Datensparsamkeit im kundennahen Modell (Final Review 17.10.2026):
+    nur fremde Vertraege, nur bezeichnung/anbieter/ablauf."""
+    lead = _lead(name="Anna Beispiel")
+    server._q("update leads set enrichment = jsonb_set(enrichment, '{vertraege}', %s::jsonb, true) "
+              "where id = %s returning id",
+              (json.dumps([{"sparte": "KFZ", "gesellschaft": "HUK", "ablauf": "2027-01-01",
+                            "notiz": "fremd-notiz-geheim"},
+                           {"id": "e1", "art": "eigen", "bezeichnung": "NAS-Projekt",
+                            "betrag": "1499.00", "notiz": "eigen-notiz-geheim"}]), lead))
+    roh = auto._profilblock(lead, "Anna Beispiel")
+    assert json.loads(roh)["vertraege"] == [
+        {"bezeichnung": "KFZ", "anbieter": "HUK", "ablauf": "2027-01-01"}]
+    assert "geheim" not in roh and "1499" not in roh and "NAS-Projekt" not in roh
+
+
 # ---------------------------------------------------------------------------
 # Signale — was der Betreiber sehen muss
 # ---------------------------------------------------------------------------
