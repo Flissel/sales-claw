@@ -441,6 +441,8 @@ ANHANG_TYPEN = {
     ".png": ("image", "png"),
     ".jpg": ("image", "jpeg"),
     ".jpeg": ("image", "jpeg"),
+    # Podcast-Folgen aus Marketing (17.10.2026). Dieselbe 8-MB-Schranke: bei 128 kbit/s etwa 8 Minuten.
+    ".mp3": ("audio", "mpeg"),
 }
 
 # Eigene, ENGERE Schranke als medien.MAX_BYTES (15 MB). Eine Mail waechst
@@ -693,8 +695,8 @@ def verarbeite_draft(draft_id) -> str:
         if not _anhang_erlaubt(geclaimt["media_ref"]):
             grund = (f"Anhang '{geclaimt['media_ref']}' — der E-Mail-Versand "
                      f"kennt diesen Typ nicht. Es ging NICHTS raus (auch kein "
-                     f"Text ohne Anhang). Erlaubt sind .ics, .pdf, .png, .jpg "
-                     f"und .jpeg; alles andere von Hand aus dem Mailprogramm "
+                     f"Text ohne Anhang). Erlaubt sind .ics, .pdf, .png, .jpg, "
+                     f".jpeg und .mp3; alles andere von Hand aus dem Mailprogramm "
                      f"schicken — dieser Entwurf bleibt dann als failed "
                      f"dokumentiert (entwurf_manuell_gesendet gilt NUR fuer "
                      f"LinkedIn).")

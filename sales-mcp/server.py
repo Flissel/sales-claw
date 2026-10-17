@@ -2380,7 +2380,8 @@ def _entwurf_erstellen(lead_id: str, kanal: str, text: str,
     # Drittel drauflegt und viele Empfaenger ueber 25 MB abweisen. Frueh
     # sagen statt spaet scheitern — der Betreiber soll das beim Erstellen
     # erfahren, nicht erst nach der Freigabe.
-    MAIL_ANHANG_ARTEN = (".ics", ".pdf", ".png", ".jpg", ".jpeg")
+    # .mp3 seit 17.10.2026: Podcast-Folgen aus Marketing (pod-*.mp3), Groessenschranke wie unten.
+    MAIL_ANHANG_ARTEN = (".ics", ".pdf", ".png", ".jpg", ".jpeg", ".mp3")
     MAIL_ANHANG_MAX = 8 * 1024 * 1024
     if basis and kanal == "email":
         if not basis.lower().endswith(MAIL_ANHANG_ARTEN):

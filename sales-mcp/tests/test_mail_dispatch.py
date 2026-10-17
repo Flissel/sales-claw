@@ -1349,3 +1349,25 @@ def test_gesperrte_adresse_geht_beim_senden_nicht_raus(monkeypatch):
     mail_dispatch.eine_runde()
     z = _zeile(draft)
     assert z["status"] == "failed" and "Verbotsliste" in z["error"] and not STUB.mails
+
+
+# Podcast (17.10.2026): Marketing legt Folgen als pod-*.mp3 in die erzeugten Medien; sie gehen nur als
+# Anhang eines freigegebenen E-Mail-Entwurfs hinaus.
+MP3_ROH = b"ID3\x04\x00\x00\x00\x00\x00\x00\xff\xfb\x90\x64" + b"\x00" * 4000
+
+
+def test_podcast_mp3_als_entwurf_und_als_audio_anhang(tmp_path, monkeypatch):
+    monkeypatch.setattr(medien, "MEDIA_VERZEICHNIS", str(tmp_path))
+    (tmp_path / "pod-0123abcd-herbst.mp3").write_bytes(MP3_ROH)
+    lead = str(_lead())
+    mit = json.loads(server.entwurf_erstellen(lead, "email", "Unsere neue Folge.",
+                                              betreff="Podcast", medien_datei="pod-0123abcd-herbst.mp3"))
+    assert "fehler" not in mit, mit
+    server._q("update drafts set status = 'approved', approved_by = 'betreiber', approved_at = now() "
+              "where id = %s returning id", (mit["draft_id"],))
+    mail_dispatch.eine_runde()
+    assert _zeile(mit["draft_id"])["status"] == "sent"
+    nachricht = email.message_from_string(STUB.mails[0]["roh"], policy=policy.default)
+    anhaenge = [t for t in nachricht.iter_attachments()]
+    assert len(anhaenge) == 1 and anhaenge[0].get_content_type() == "audio/mpeg"
+    assert anhaenge[0].get_filename() == "pod-0123abcd-herbst.mp3"
