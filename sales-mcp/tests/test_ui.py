@@ -3825,6 +3825,69 @@ def test_kontaktseite_historie_fehler_bricht_seite_nicht(monkeypatch):
 
     def kaputt(_):
         raise ui.psycopg.Error("weg")
+    _gesendet(lead, "Sichtbar")
     monkeypatch.setattr(ui.historie, "kontakt_historie", kaputt)
     r = _get(f"/kontakte/{lead}")
-    assert r.status_code == 200 and "Kontakt-Historie" not in r.text
+    assert r.status_code == 200 and "Kontakt-Historie" not in r.text and "Sichtbar" not in r.text
+
+
+def _gesendet(lead, thema, sent_at="now()", kanal="whatsapp"):
+    ui.server._q("insert into drafts (lead_id, channel, recipient, body, status, thema, sent_at) "
+                 f"values (%s,%s,'x','alt','sent',%s, {sent_at}) returning id", (lead, kanal, thema))
+
+
+def _offen(lead, thema):
+    ui.server._q("insert into drafts (lead_id, channel, recipient, body, status, thema) "
+                 "values (%s,'whatsapp','x','neu','pending',%s) returning id", (lead, thema))
+
+
+def test_freigabe_hinweis_hoechstens_drei_und_escaped():
+    lead = _lead()
+    for i in range(5):
+        _gesendet(lead, "Aktion <b>x</b>", f"now() - interval '{i + 1} days'")
+    _offen(lead, "aktion <b>x</b>")
+    s = _get("/freigaben").text
+    assert s.count("Schon angeschrieben") == 1
+    hinweis = s.split("Schon angeschrieben")[1].split("</div>")[0]
+    assert hinweis.count("WhatsApp") == 3
+    assert "&lt;b&gt;x&lt;/b&gt;" in hinweis and "<b>x</b>" not in hinweis
+
+
+def test_kontaktseite_historie_20_und_alle():
+    lead = _lead()
+    for i in range(25):
+        _gesendet(lead, f"Thema{i:02d}", f"now() - interval '{i + 1} hours'")
+    s = _get(f"/kontakte/{lead}").text
+    teil = s.split('id="historie"')[1]
+    assert teil.count("Thema") == 20 and "Thema20" not in teil
+    assert 'href="?historie=alle#historie"' in s
+    s2 = _get(f"/kontakte/{lead}?historie=alle").text
+    teil2 = s2.split('id="historie"')[1]
+    assert teil2.count("Thema") == 25 and "historie=alle" not in teil2
+
+
+def test_datum_berlin_karte_und_kontaktseite():
+    lead = _lead()
+    _gesendet(lead, "Spaetthema", "'2026-10-16T23:30:00Z'::timestamptz")
+    _offen(lead, "Spaetthema")
+    assert "Schon angeschrieben: 17.10. " in _get("/freigaben").text
+    assert "17.10.2026" in _get(f"/kontakte/{lead}").text
+
+
+def test_heute_seite_zeigt_hinweis():
+    lead = _lead()
+    _gesendet(lead, "Heutethema", "now() - interval '2 days'")
+    _offen(lead, "Heutethema")
+    assert "Schon angeschrieben" in _get("/").text
+
+
+def test_freigabe_doppelt_pruefen_dbfehler_ohne_hinweis(monkeypatch):
+    lead = _lead()
+    _gesendet(lead, "Fehlthema", "now() - interval '2 days'")
+    _offen(lead, "Fehlthema")
+
+    def kaputt(*a, **k):
+        raise ui.psycopg.OperationalError("weg")
+    monkeypatch.setattr(ui.historie, "doppelt_pruefen", kaputt)
+    r = _get("/freigaben")
+    assert r.status_code == 200 and "Schon angeschrieben" not in r.text
