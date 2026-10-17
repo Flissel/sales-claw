@@ -211,6 +211,7 @@ import ui_kalender
 import ui_marketing
 import ui_plan
 import verlinken
+import vertraege
 
 import server
 
@@ -3710,6 +3711,120 @@ async def aktion_kontakt_einordnen(request):
     return RedirectResponse(f"/kontakte/{lead_id}#einordnung", status_code=303)
 
 
+def _euro(betrag) -> str:
+    """'1499.00' -> '1.499,00 €'; Unlesbares wird escaped unveraendert gezeigt."""
+    if betrag in (None, ""):
+        return ""
+    try:
+        zahl = f"{float(str(betrag)):,.2f}"
+    except ValueError:
+        return _e(betrag)
+    return _e(zahl.replace(",", "X").replace(".", ",").replace("X", ".") + " €")
+
+
+def _datum_de(text) -> str:
+    t = str(text or "")
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", t):
+        return f"{t[8:10]}.{t[5:7]}.{t[:4]}"
+    return t
+
+
+def _vertrag_formular(lead_id, v: dict | None) -> str:
+    """Formular fuer einen Vertrags-/Projekteintrag. v=None: leer (neu);
+    sonst vorbelegt — quelle='ui' ersetzt den GANZEN Eintrag, deshalb
+    muessen alle Felder mitgeschickt werden. Die Art bleibt beim Bearbeiten
+    fest (versteckt), speichern() lehnt einen Wechsel ab."""
+    v = v or {}
+    def wert(k):
+        return _e(v.get(k) or "")
+    if v:
+        art = f'<input type="hidden" name="art" value="{_e(v.get("art"))}">'
+        kopf = f'<input type="hidden" name="eintrag_id" value="{_e(v.get("id"))}">'
+    else:
+        art = ('<label>Art <select name="art"><option value="eigen">bei uns</option>'
+               '<option value="fremd">fremd</option></select></label> ')
+        kopf = '<input type="hidden" name="eintrag_id" value="">'
+    bereiche = '<option value=""></option>' + "".join(
+        f'<option value="{_e(b)}"{" selected" if b == v.get("bereich") else ""}>{_e(t)}</option>'
+        for b, t in server.BEREICHE.items())
+    stati = '<option value=""></option>' + "".join(
+        f'<option value="{_e(k)}"{" selected" if k == v.get("status") else ""}>{_e(t)}</option>'
+        for k, t in vertraege.STATUS.items())
+    return (
+        f'<form method="post" action="/kontakte/vertrag" class="zeile">'
+        f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+        f'<input type="hidden" name="lead_id" value="{_e(lead_id)}">{kopf}{art}'
+        f'<label>Bereich <select name="bereich">{bereiche}</select></label> '
+        f'<label>Bezeichnung <input name="bezeichnung" value="{wert("bezeichnung")}" '
+        f'maxlength="200" required></label> '
+        f'<label>Status <select name="status">{stati}</select></label> '
+        f'<label>Status-Datum <input type="date" name="status_datum" '
+        f'value="{wert("status_datum")}"></label> '
+        f'<label>Anbieter <input name="anbieter" value="{wert("anbieter")}" '
+        f'maxlength="200"></label> '
+        f'<label>Betrag (EUR) <input name="betrag" value="{wert("betrag")}" size="10"></label> '
+        f'<label>Wiedervorlage <input type="date" name="wiedervorlage_am" '
+        f'value="{wert("wiedervorlage_am")}"></label> '
+        f'<label>Notiz <input name="notiz" value="{wert("notiz")}" maxlength="200"></label> '
+        f'<button type="submit">Speichern</button></form>')
+
+
+def _vertraege_bereich(lead) -> str:
+    """Kasten „Verträge & Projekte“ (C2): eigene Abschlüsse/Projekte und
+    fremde Verträge in einer Liste. Alles aus enrichment ist Fremddatum."""
+    lead_id = lead["id"]
+    liste = vertraege.eintraege_aus(lead["enrichment"] or {})
+    schreibend = (_AKTIVE_ROLLE.get() not in ("lesen", "kalender")
+                  and not server._sammelkontakt(lead_id)
+                  and not server._privat(lead["enrichment"] or {}))
+    teile = [f'<h2 id="vertraege">Verträge &amp; Projekte ({len(liste)})</h2>']
+    if liste:
+        zeilen = []
+        for v in liste:
+            status = _e(vertraege.STATUS.get(v.get("status"), v.get("status") or ""))
+            if v.get("status_datum"):
+                status += f' {_e(_datum_de(v["status_datum"]))}'
+            wv = _datum_de(v.get("wiedervorlage_am") or v.get("ablauf"))
+            zelle = [_e("bei uns" if v.get("art") == "eigen" else "fremd"),
+                     _e(server.BEREICHE.get(v.get("bereich"), v.get("bereich"))),
+                     _e(v.get("bezeichnung")), status, _e(v.get("anbieter")),
+                     _euro(v.get("betrag")), _e(wv), _e(v.get("notiz"))]
+            if schreibend:
+                zelle.append('<details><summary>Bearbeiten</summary>'
+                             + _vertrag_formular(lead_id, v) + '</details>')
+            zeilen.append(zelle)
+        spalten = ["Art", "Bereich", "Bezeichnung", "Status", "Anbieter", "Betrag",
+                   "Wiedervorlage / Ablauf", "Notiz"]
+        teile.append(_tabelle(spalten + (["Bearbeiten"] if schreibend else []), zeilen))
+    else:
+        teile.append("<p>Keine Verträge oder Projekte erfasst.</p>")
+    if schreibend:
+        teile.append('<details><summary>Neu</summary>'
+                     + _vertrag_formular(lead_id, None) + '</details>')
+    return "".join(teile)
+
+
+@_gesichert_seite
+async def aktion_kontakt_vertrag(request):
+    form, lead_id, abbruch = await _kontakt_vorspann(request)
+    if abbruch:
+        return abbruch
+    def f(k):
+        return str(form.get(k) or "").strip()
+    betrag = f("betrag")
+    # Deutsche Eingabe: „2.500“ ist 2500 (Punkt = Tausender), nicht 2,5. Das
+    # vorbelegte Feld („2500.00“, zwei Nachkommastellen) bleibt davon unberuehrt.
+    if re.fullmatch(r"\d{1,3}(\.\d{3})+", betrag):
+        betrag = betrag.replace(".", "")
+    r = vertraege.speichern(
+        lead_id, f("art"), f("bereich"), f("bezeichnung"), f("status"),
+        f("status_datum"), f("anbieter"), betrag, f("wiedervorlage_am"),
+        f("notiz"), f("eintrag_id"), quelle="ui")
+    if "fehler" in r:
+        return _fehlerseite(422, "Nicht gespeichert", _e(r["fehler"]))
+    return RedirectResponse(f"/kontakte/{lead_id}#vertraege", status_code=303)
+
+
 async def _kontakt_vorspann(request):
     """Gemeinsame Wache aller Kontakt-POSTs — Reihenfolge wie ueberall:
     CSRF VOR der ersten Zeile Datenbank, dann die lead_id."""
@@ -5659,19 +5774,7 @@ async def kontakt_detail(request):
             '<p class="meta">Noch keine Firmendaten — der Assistent '
             'reichert mit firma_anreichern an (Website nötig).</p>')
 
-    # dieselbe Typ-Vorsicht wie vertraege_ablaufend in server.py.
-    vertraege = anreicherung.get("vertraege")
-    vertraege = vertraege if isinstance(vertraege, list) else []
-    teile.append(f"<h2>Verträge ({len(vertraege)})</h2>")
-    if vertraege:
-        teile.append(_tabelle(["Sparte", "Gesellschaft", "Ablauf"], [
-            # C2: eigene Eintraege (abschluss_speichern) tragen bezeichnung/
-            # anbieter statt sparte/gesellschaft.
-            [_e(v.get("sparte") or v.get("bezeichnung")),
-             _e(v.get("gesellschaft") or v.get("anbieter")), _e(v.get("ablauf"))]
-            for v in vertraege if isinstance(v, dict)]))
-    else:
-        teile.append("<p>Keine Verträge erfasst.</p>")
+    teile.append(_vertraege_bereich(lead))
 
     teile.append(_kontakt_termine(lead_id))
 
@@ -6950,6 +7053,7 @@ app = Starlette(routes=[
           methods=["POST"]),
     Route("/kontakte/profil-anfordern", aktion_profil_anfordern,
           methods=["POST"]),
+    Route("/kontakte/vertrag", aktion_kontakt_vertrag, methods=["POST"]),
     Route("/kontakte/{lead_id}", kontakt_detail),
     Route("/posteingang", posteingang),
     Route("/einordnung", einordnung),

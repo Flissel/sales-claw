@@ -1450,6 +1450,9 @@ def test_bearbeiten_formular_bietet_genau_die_felder_des_werkzeugs():
     seite = _get(f"/kontakte/{lead}").text
     for feld in server.KONTAKT_FELDER:
         assert f'name="{feld}"' in seite
+    # Der Kasten „Verträge & Projekte“ (C2) hat ein eigenes Feld `status`
+    # (Vertragsstatus) — das Kontakt-Status-Feld meint dieser Test nicht.
+    seite = re.sub(r'id="vertraege".*?(?=<h2)', "", seite, flags=re.S)
     assert 'name="status"' not in seite
     assert 'name="consent_status"' not in seite
     assert 'name="enrichment"' not in seite
@@ -1888,6 +1891,8 @@ ERLAUBTE_LABEL = {
     "Kontakt", "Fällig am", "Notiz",                        # Wiedervorlagen
     "Frage", "Antwort",                                     # Bedarfsstand
     "Sparte", "Gesellschaft", "Ablauf",                     # Vertraege
+    "Art", "Bereich", "Bezeichnung", "Anbieter", "Betrag",   # Vertraege & Projekte (C2)
+    "Wiedervorlage / Ablauf", "Bearbeiten",
     "Wann", "Was", "Inhalt",   # Verlauf (25.08.2026 lesbar gemacht)
     "Kennung", "Nachrichten", "Zuletzt",                    # Einordnung
     "Zusammenfassung",                                      # Chat-Reports
@@ -3705,3 +3710,62 @@ def test_whatsapp_automatik_zaehlt_keine_einordnung(monkeypatch):
                         lambda pfad: ([{"id": "s1", "status": "ready"}], None))
     seite = _get("/whatsapp").text
     assert "noch kein Lauf gebucht" in seite
+
+
+# --- C2: Vertraege & Projekte auf der Kontaktseite (17.10.2026) --------------
+
+def test_vertraege_kasten_zeigt_beide_arten_escaped():
+    lead = _lead()
+    server._q("update leads set enrichment = jsonb_set(coalesce(enrichment,'{}'::jsonb), "
+              "'{vertraege}', %s::jsonb, true) where id=%s returning id",
+              (json.dumps([{"sparte": "KFZ <b>", "gesellschaft": "HUK"},
+                           {"id": "e1", "art": "eigen", "bereich": "homelab",
+                            "bezeichnung": "NAS", "status": "abgeschlossen",
+                            "betrag": "1499.00"}]), lead))
+    s = _get(f"/kontakte/{lead}").text
+    assert "Verträge &amp; Projekte" in s or "Verträge & Projekte" in s
+    assert "KFZ &lt;b&gt;" in s and "NAS" in s and "fremd" in s and "bei uns" in s
+    assert "1.499,00 €" in s
+    assert 'action="/kontakte/vertrag"' in s
+
+
+def test_vertraege_kaputter_wert_bricht_seite_nicht():
+    lead = _lead()
+    server._q("update leads set enrichment = jsonb_set(coalesce(enrichment,'{}'::jsonb), "
+              "'{vertraege}', %s::jsonb, true) where id=%s returning id",
+              ('"kaputt"', lead))
+    assert _get(f"/kontakte/{lead}").status_code == 200
+
+
+def test_vertraege_lesende_rolle_sieht_keine_formulare():
+    lead = _lead()
+    server._q("update leads set enrichment = jsonb_set(coalesce(enrichment,'{}'::jsonb), "
+              "'{vertraege}', %s::jsonb, true) where id=%s returning id",
+              (json.dumps([{"id": "e1", "art": "eigen", "bezeichnung": "NAS"}]), lead))
+    zeile = server._q("select id, enrichment from leads where id = %s", (lead,))[0]
+    token = ui._AKTIVE_ROLLE.set("lesen")
+    try:
+        s = ui._vertraege_bereich({"id": lead, "enrichment": zeile["enrichment"]})
+    finally:
+        ui._AKTIVE_ROLLE.reset(token)
+    assert "NAS" in s and 'action="/kontakte/vertrag"' not in s
+
+
+def test_vertrag_formular_speichert_und_validiert():
+    lead = _lead()
+    d = {"csrf": ui.CSRF_TOKEN, "lead_id": lead, "eintrag_id": "", "art": "eigen",
+         "bereich": "", "bezeichnung": "Webshop", "status": "in_arbeit", "status_datum": "",
+         "anbieter": "", "betrag": "2.500", "wiedervorlage_am": "", "notiz": ""}
+    assert _post("/kontakte/vertrag", {k: v for k, v in d.items() if k != "csrf"}).status_code == 403
+    r = _post("/kontakte/vertrag", d)
+    assert r.status_code == 303 and r.headers["location"] == f"/kontakte/{lead}#vertraege"
+    import vertraege
+    e = vertraege.eintraege(lead)[0]
+    assert e["bezeichnung"] == "Webshop" and e["betrag"] == "2500.00"
+    # Bearbeiten ersetzt den Eintrag (ganze Felder), kein zweiter Eintrag
+    assert _post("/kontakte/vertrag", {**d, "eintrag_id": e["id"], "bezeichnung": "Webshop 2"}
+                 ).status_code == 303
+    liste = vertraege.eintraege(lead)
+    assert len(liste) == 1 and liste[0]["bezeichnung"] == "Webshop 2"
+    r = _post("/kontakte/vertrag", {**d, "betrag": "viel"})
+    assert r.status_code == 422 and "Euro-Betrag" in r.text
