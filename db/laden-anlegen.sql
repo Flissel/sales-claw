@@ -29,6 +29,9 @@ create table if not exists :"schema".benutzer         (like sales.benutzer      
 create table if not exists :"schema".medien_meta      (like sales.medien_meta      including all);
 create table if not exists :"schema".kalender_quellen (like sales.kalender_quellen including all);
 create table if not exists :"schema".eigene_termine   (like sales.eigene_termine   including all);
+-- Hinweis: like ... including all uebernimmt den Fremdschluessel nicht; empfohlen_von_lead
+-- bleibt hier eine unverknuepfte uuid (gewollt).
+create table if not exists :"schema".empfehlungslisten (like sales.empfehlungslisten including all);
 
 -- Konto-Mails (24.09.2026). Fehlte bisher: ein neuer Laden hatte keine
 -- benutzer_mails, "Passwort vergessen" legte seinen Zettel ins Leere (Ivan
@@ -126,6 +129,7 @@ grant select, insert, update on :"schema".benutzer         to :"rolle";
 grant select, insert, update on :"schema".medien_meta      to :"rolle";
 grant select, insert, update on :"schema".kalender_quellen to :"rolle";
 grant select, insert, update, delete on :"schema".eigene_termine   to :"rolle";
+grant select, insert, update on :"schema".empfehlungslisten to :"rolle";
 grant select, insert, update on :"schema".benutzer_mails   to :"rolle";
 grant select, insert         on :"schema".whatsapp_kopplung to :"rolle";
 

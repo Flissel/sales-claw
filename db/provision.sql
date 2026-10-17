@@ -234,6 +234,31 @@ begin
       execute format('grant select, insert, update, delete on %I.eigene_termine to %I',
                      s, 'sales_app_' || substr(s, 7));
     end if;
+    -- Empfehlungslisten (C4, Spec 2026-10-17): Kopf je Vordruck-Blatt;
+    -- die Zeilen sind Kontakte (enrichment.empfehlung). Kein Delete.
+    execute format($ddl$
+      create table if not exists %I.empfehlungslisten (
+        id uuid primary key default gen_random_uuid(),
+        art text not null check (art in ('pole_position', 'mitarbeitervorschlaege')),
+        empfohlen_von_lead uuid null references %I.leads(id) on delete set null,
+        empfohlen_von_name text not null check (char_length(empfohlen_von_name) between 1 and 120),
+        datum date not null,
+        berater_name text not null default '',
+        struktur text not null default '',
+        bereiche jsonb not null default '[]'::jsonb,
+        einwilligung boolean not null default false,
+        einwilligung_am timestamptz null,
+        erstellt_am timestamptz not null default now()
+      )$ddl$, s, s);
+    execute format('create index if not exists empfehlungslisten_datum_idx '
+                   'on %I.empfehlungslisten (datum desc)', s);
+    if s = 'sales' then
+      execute 'grant select, insert, update on sales.empfehlungslisten to sales_app';
+    elsif s <> 'sales_test' and exists (
+        select 1 from pg_roles where rolname = 'sales_app_' || substr(s, 7)) then
+      execute format('grant select, insert, update on %I.empfehlungslisten to %I',
+                     s, 'sales_app_' || substr(s, 7));
+    end if;
     -- CC fuer E-Mail-Entwuerfe (03.09.2026); add column, weil die Tabelle
     -- auf beiden Schemata laengst existiert.
     execute format('alter table %I.drafts add column if not exists cc text', s);
@@ -502,6 +527,7 @@ grant select, insert on sales.admin_auftraege to sales_app;
 grant select, insert, update on sales.medien_meta to sales_app;
 grant select, insert, update on sales.kalender_quellen to sales_app;
 grant select, insert, update, delete on sales.eigene_termine to sales_app;
+grant select, insert, update on sales.empfehlungslisten to sales_app;
 -- Bewusst NICHT vergeben: DELETE nur auf eigene_termine (eigene Termine duerfen
 -- wirklich geloescht werden), sonst nirgends; UPDATE/TRUNCATE auf activities.
 
