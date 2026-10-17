@@ -183,3 +183,23 @@ def test_sql_ansichten_folgen_genau_server_einordnung():
         gesehen = {f"Fall {i:02d}" for i in range(len(faelle))
                    if f">Fall {i:02d}<" in seite}
         assert gesehen == namen, ansicht
+
+
+def test_einordnung_zaehlt_nicht_als_letzte_aktivitaet():
+    """Final-Review I3: der Bestandslauf bucht je Kontakt eine Aktivitaet
+    `einordnung`. Die darf weder „Zuletzt" noch die Reihenfolge der Liste
+    verschieben — sonst stuende danach ueberall der Deploy-Zeitpunkt."""
+    alt = _lead("Alt Kontakt", "+491700000201")
+    neu = _lead("Neu Kontakt", "+491700000202")
+    for lead, tage in ((alt, 3), (neu, 1)):
+        server._q("insert into activities (lead_id, type, payload, created_at) "
+                  "values (%s, 'kundenantwort', '{}'::jsonb, "
+                  "now() - make_interval(days => %s)) returning id", (lead, tage))
+    assert "art" in server._einordnen(alt, "person", ["bav"], quelle="bestand")
+    nur = _lead("Nur Einordnung", "+491700000203")
+    assert "art" in server._einordnen(nur, "firma", quelle="ui")
+    seite = _get("/kontakte").text
+    assert seite.index("Neu Kontakt") < seite.index("Alt Kontakt")
+    zeile = seite[seite.index("Nur Einordnung"):]
+    zeile = zeile[:zeile.index("</tr>")]
+    assert 'data-label="Zuletzt">—<' in zeile.replace(" ", "")

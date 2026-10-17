@@ -4702,6 +4702,9 @@ def digest() -> str:
     letzte = _q("select a.type, a.payload, a.created_at, l.name "
                 "from activities a left join leads l on l.id = a.lead_id "
                 "where a.created_at > now() - interval '48 hours' "
+                # Einordnungen sind Protokoll (C1); der Bestandslauf wuerde
+                # sonst alle 20 Plaetze belegen.
+                "and a.type <> 'einordnung' "
                 "order by a.created_at desc limit 20")
     # Der Support-Ueberblick im Morgen-Digest (Stufe 8). Dasselbe 48-h-Fenster
     # wie „letzte Aktivitaeten", aber eine andere Frage: dort steht, was

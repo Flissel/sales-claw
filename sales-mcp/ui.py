@@ -3306,8 +3306,10 @@ async def kontakte(request):
     zeilen = server._q(  # noqa: E501 — Spaltenliste bleibt eine Zeile je Feld
         "select l.id, l.name, l.status, l.consent_status, l.enrichment, "
         "       l.score, l.company, "
+        # `einordnung` ist Protokoll, kein Kontaktgeschehen (C1): sonst
+        # stuende nach dem Bestandslauf ueberall der Deploy-Zeitpunkt.
         "       (select max(a.created_at) from activities a "
-        "         where a.lead_id = l.id) as letzte "
+        "         where a.lead_id = l.id and a.type <> 'einordnung') as letzte "
         "from leads l where " + wo + " and " + _ANSICHT_SQL[ansicht] + " "
         "order by letzte desc nulls last, l.name asc, l.id asc "
         "limit %(lim)s offset %(off)s",
@@ -4112,9 +4114,11 @@ def _wa_karten_und_kette(sitzung, sitzung_fehler, letzte) -> str:
     """Drei Zustandskarten und die Kette Handy -> OpenWA -> Webhook ->
     Posteingang -> Datenbank (UI-Plan Schritt 6). Jede Station traegt ihren
     letzten Beweis als Satz; die Farbe kommt dazu, nicht statt dessen."""
+    # `einordnung` (Bestandslauf, actor 'cron') ist kein Lauf der Automatik.
     cron = server._q("select max(created_at) as wann from activities "
-                     "where actor = 'cron' or type in "
-                     "('stufenwechsel', 'transkription')")[0]["wann"]
+                     "where (actor = 'cron' or type in "
+                     "('stufenwechsel', 'transkription')) "
+                     "and type <> 'einordnung'")[0]["wann"]
     anzahl = server._q("select count(*) n from activities "
                        "where type = 'kundenantwort'")[0]["n"]
     # Zwei Zahlen statt einer: `count(*) from leads` zaehlte auch die

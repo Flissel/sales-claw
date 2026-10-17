@@ -174,3 +174,19 @@ def test_bestand_ordnet_ein_und_ist_idempotent(monkeypatch):
     assert server.einordnung_bestand() == {"firmen": 0, "personen": 0, "bav": 0,
                                            "uebersprungen": 2}
     assert server._q("select count(*) n from activities where type='einordnung'")[0]["n"] == vorher
+
+
+def test_digest_listet_keine_einordnung():
+    """Final-Review I3: der Bestandslauf bucht hunderte `einordnung`-Zeilen
+    in Sekunden — sie duerfen die „letzten Aktivitaeten" des Morgen-Digests
+    nicht verdraengen."""
+    lead = _lead()
+    server._q("insert into activities (lead_id, type, payload) values "
+              "(%s, 'kundenantwort', '{}'::jsonb) returning id", (lead,))
+    for _ in range(3):
+        _lead_x = _lead(name="Bestand")
+        assert "art" in server._einordnen(_lead_x, "person", ["bav"], quelle="bestand")
+    letzte = json.loads(server.digest())["letzte_aktivitaeten"]
+    typen = [a["type"] for a in letzte]
+    assert "einordnung" not in typen
+    assert "kundenantwort" in typen

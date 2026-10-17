@@ -3692,3 +3692,16 @@ def test_einordnen_sammelkontakt_403_und_kein_kasten(monkeypatch, quelle):
                                      "art": "person", "bereich_bav": "1"})
     assert r.status_code == 403
     assert "art" not in (_einordnung_von(lead) or {})
+
+
+def test_whatsapp_automatik_zaehlt_keine_einordnung(monkeypatch):
+    """Final-Review I3: der Bestandslauf bucht `einordnung` mit actor 'cron'.
+    Das ist kein Lauf der Automatik und darf die Karte nicht frisch zeigen."""
+    lead = _lead()
+    assert "art" in server._einordnen(lead, "person", ["bav"], quelle="bestand")
+    monkeypatch.setattr(ui, "OPENWA_VIEWER_KEY", "egal")
+    monkeypatch.setattr(ui, "OPENWA_SESSION_ID", "")
+    monkeypatch.setattr(ui, "_openwa_lesen",
+                        lambda pfad: ([{"id": "s1", "status": "ready"}], None))
+    seite = _get("/whatsapp").text
+    assert "noch kein Lauf gebucht" in seite
