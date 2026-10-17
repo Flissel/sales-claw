@@ -399,3 +399,17 @@ def test_pdf_fremde_zeile_zeigt_schon_bekannt():
     t = _pdf_text(em.pdf(r2["liste_id"]))
     assert "schon bekannt" in t and "Anna" in t
     assert "schon bekannt" not in _pdf_text(em.pdf(r1["liste_id"]))
+
+
+def test_pdf_langer_text_wird_nie_still_abgeschnitten():
+    lang = " ".join(f"Wort{i}" for i in range(25))[:150]
+    r = _anlegen(zeilen=[Z(vorname=f"P{i}", telefon="", zeichnet_aus=lang) for i in range(25)])
+    t = _pdf_text(em.pdf(r["liste_id"]))
+    assert lang in t.replace("\n", " ") or "..." in t
+
+
+def test_pdf_folgeseite_nummeriert_weiter():
+    r = _anlegen(zeilen=[Z(vorname=f"P{i}", telefon="") for i in range(25)])
+    em.zeile_hinzufuegen(r["liste_id"], Z(vorname="Nummer26", telefon=""))
+    seiten = PdfReader(_io.BytesIO(em.pdf(r["liste_id"]))).pages
+    assert "26." in seiten[1].extract_text()

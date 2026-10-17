@@ -26,6 +26,7 @@ import psycopg
 
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.units import mm
+from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfgen import canvas
 
 import formular
@@ -471,6 +472,23 @@ def _zelle(z, feld) -> str:
     return "" if w is None else str(w)
 
 
+def _passende_zeilen(text: str, breite: float, max_zeilen: int):
+    """(Zeilen, pt): erst Normalgroesse, dann stufenweise bis 6 pt; passt es dann
+    immer noch nicht, wird die letzte erlaubte Zeile mit '...' gekuerzt."""
+    pt = float(_PT)
+    while True:
+        zeilen = formular._zeilen(text, breite, pt)
+        if len(zeilen) <= max_zeilen:
+            return zeilen, pt
+        if pt <= 6:
+            break
+        pt = max(6.0, pt - 0.5)
+    rest = " ".join(zeilen[max_zeilen - 1:])
+    while rest and stringWidth(rest + "...", formular.SCHRIFT, pt) > breite:
+        rest = rest[:-1]
+    return zeilen[:max_zeilen - 1] + [rest.rstrip() + "..."], pt
+
+
 def pdf(liste_id) -> bytes | None:
     """PDF (A4 quer) im Aufbau des Papier-Vordrucks; Folgeseite ab Vordruck-Maximum."""
     l = liste(liste_id)
@@ -487,7 +505,7 @@ def pdf(liste_id) -> bytes | None:
     while zeilen or not seiten_zeilen:
         seiten_zeilen.append(zeilen[:vd["max"]])
         zeilen = zeilen[vd["max"]:]
-    for teil in seiten_zeilen:
+    for seite, teil in enumerate(seiten_zeilen):
         y = hoehe - 18 * mm
         c.setFont(formular.FETT, 18)
         c.drawCentredString(breite / 2, y, formular._druckbar(vd["titel"]))
@@ -514,14 +532,19 @@ def pdf(liste_id) -> bytes | None:
         c.setFont(formular.SCHRIFT, _PT)
         for nr in range(vd["max"]):
             z = teil[nr] if nr < len(teil) else {}
-            c.drawRightString(links + 6 * mm, y - zh / 2 - 1 * mm, f"{nr + 1}.")
+            c.drawRightString(links + 6 * mm, y - zh / 2 - 1 * mm, f"{seite * vd['max'] + nr + 1}.")
             x = links + 8 * mm
             for _, b, feld in spalten:
                 c.rect(x, y - zh, b * mm, zh)
                 text = formular._druckbar(_zelle(z, feld)) if z else ""
-                zeilen_txt = formular._zeilen(text, b * mm - 3 * mm, _PT)[:2 if mehrzeilig else 1] if text else []
-                for i, t in enumerate(zeilen_txt):
-                    c.drawString(x + 1.5 * mm, y - (4 * mm if mehrzeilig else zh / 2 + 1 * mm) - i * 3.4 * mm, t)
+                if text:
+                    zeilen_txt, pt = _passende_zeilen(text, b * mm - 3 * mm,
+                                                      2 if mehrzeilig else 1)
+                    c.setFont(formular.SCHRIFT, pt)
+                    for i, t in enumerate(zeilen_txt):
+                        c.drawString(x + 1.5 * mm,
+                                     y - (4 * mm if mehrzeilig else zh / 2 + 1 * mm)
+                                     - i * 3.4 * mm * pt / _PT, t)
                 x += b * mm
             y -= zh
         c.showPage()
