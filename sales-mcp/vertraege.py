@@ -35,6 +35,8 @@ def betrag_norm(text) -> str | None:
         return ""
     if "," in t:
         t = t.replace(".", "").replace(",", ".")
+    elif re.fullmatch(r"\d{1,3}(\.\d{3})+", t):
+        t = t.replace(".", "")   # deutscher Tausenderpunkt: '2.500' = 2500
     if not re.fullmatch(r"\d+(\.\d{1,2})?", t):
         return None
     return f"{float(t):.2f}"

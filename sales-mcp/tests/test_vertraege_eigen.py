@@ -42,7 +42,9 @@ def _offene_wv(lead):
 
 @pytest.mark.parametrize("ein,aus", [("1.200,50", "1200.50"), ("1200,5", "1200.50"),
                                      ("€ 99", "99.00"), ("0", "0.00"), ("", ""),
-                                     ("viel", None), ("-5", None), ("1,234", "1.23")])
+                                     ("viel", None), ("-5", None), ("1,234", "1.23"),
+                                     ("2.500", "2500.00"), ("1.234.567", "1234567.00"),
+                                     ("2.5", "2.50"), ("12.50", "12.50")])
 def test_betrag_norm(ein, aus):
     if aus == "1.23":       # mehr als 2 Nachkommastellen ist ein Fehler
         assert vt.betrag_norm(ein) is None
@@ -220,3 +222,10 @@ def test_i3_ui_ersetzt_vollstaendig_und_quittiert_bei_datum_weg():
     assert n["betrag"] == "" and len(_offene_wv(lead)) == 1 and n["wiedervorlage_id"] == e["wiedervorlage_id"]
     vt.speichern(lead, "eigen", "it", "Webshop", status="in_arbeit", eintrag_id=e["id"], quelle="ui")
     assert _offene_wv(lead) == [] and vt.eintraege(lead)[0]["wiedervorlage_am"] == ""
+
+
+def test_abschluss_speichern_versteht_tausenderpunkt():
+    lead = _lead()
+    r = json.loads(server.abschluss_speichern(lead, "it", "Webshop", "angeboten", betrag="2.500"))
+    assert "fehler" not in r
+    assert vt.eintraege(lead)[0]["betrag"] == "2500.00"

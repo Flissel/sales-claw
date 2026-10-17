@@ -178,6 +178,7 @@ import hashlib
 import hmac
 import html
 import json
+import math
 import logging
 import os
 import re
@@ -3716,7 +3717,10 @@ def _euro(betrag) -> str:
     if betrag in (None, ""):
         return ""
     try:
-        zahl = f"{float(str(betrag)):,.2f}"
+        wert = float(str(betrag))
+        if not math.isfinite(wert):
+            return _e(betrag)
+        zahl = f"{wert:,.2f}"
     except ValueError:
         return _e(betrag)
     return _e(zahl.replace(",", "X").replace(".", ",").replace("X", ".") + " €")
@@ -3811,14 +3815,9 @@ async def aktion_kontakt_vertrag(request):
         return abbruch
     def f(k):
         return str(form.get(k) or "").strip()
-    betrag = f("betrag")
-    # Deutsche Eingabe: „2.500“ ist 2500 (Punkt = Tausender), nicht 2,5. Das
-    # vorbelegte Feld („2500.00“, zwei Nachkommastellen) bleibt davon unberuehrt.
-    if re.fullmatch(r"\d{1,3}(\.\d{3})+", betrag):
-        betrag = betrag.replace(".", "")
     r = vertraege.speichern(
         lead_id, f("art"), f("bereich"), f("bezeichnung"), f("status"),
-        f("status_datum"), f("anbieter"), betrag, f("wiedervorlage_am"),
+        f("status_datum"), f("anbieter"), f("betrag"), f("wiedervorlage_am"),
         f("notiz"), f("eintrag_id"), quelle="ui")
     if "fehler" in r:
         return _fehlerseite(422, "Nicht gespeichert", _e(r["fehler"]))

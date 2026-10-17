@@ -3769,3 +3769,26 @@ def test_vertrag_formular_speichert_und_validiert():
     assert len(liste) == 1 and liste[0]["bezeichnung"] == "Webshop 2"
     r = _post("/kontakte/vertrag", {**d, "betrag": "viel"})
     assert r.status_code == 422 and "Euro-Betrag" in r.text
+
+
+def test_vertrag_altform_eintrag_vorbelegt_und_ohne_duplikat():
+    lead = _lead()
+    server._q("update leads set enrichment = jsonb_set(coalesce(enrichment,'{}'::jsonb), "
+              "'{vertraege}', %s::jsonb, true) where id=%s returning id",
+              (json.dumps([{"sparte": "Haftpflicht", "gesellschaft": "Allianz"}]), lead))
+    import vertraege
+    alt = vertraege.eintraege(lead)[0]
+    s = _get(f"/kontakte/{lead}").text
+    assert f'name="eintrag_id" value="{alt["id"]}"' in s
+    assert 'value="Haftpflicht"' in s and 'value="Allianz"' in s
+    d = {"csrf": ui.CSRF_TOKEN, "lead_id": lead, "eintrag_id": alt["id"], "art": "fremd",
+         "bereich": "", "bezeichnung": "Haftpflicht", "status": "", "status_datum": "",
+         "anbieter": "Allianz", "betrag": "", "wiedervorlage_am": "", "notiz": "neu"}
+    assert _post("/kontakte/vertrag", d).status_code == 303
+    liste = vertraege.eintraege(lead)
+    assert len(liste) == 1 and liste[0]["notiz"] == "neu"
+
+
+def test_euro_zeigt_nan_und_inf_nicht_als_zahl():
+    assert ui._euro("1499.00") == "1.499,00 €"
+    assert ui._euro("nan") == "nan" and ui._euro("inf") == "inf"
