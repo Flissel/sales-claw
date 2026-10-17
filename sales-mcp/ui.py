@@ -206,6 +206,7 @@ import mailadresse
 import marketing_pult
 import ui_editor
 import ui_freigabe_newsletter
+import ui_empfehlungen
 import ui_kalender
 import ui_marketing
 import ui_plan
@@ -1418,7 +1419,8 @@ _GRUPPEN = (
                   # Kollegen einrichtet, wie fuer die Rolle `kalender`
                   # selbst — s. _pfad_erlaubt/_seitenleiste).
                   ("/team/kalender", "Kalender verbinden"))),
-    ("Analyse", (("/kontakte", "Kontakte"), ("/pipeline", "Pipeline"),
+    ("Analyse", (("/kontakte", "Kontakte"), ("/empfehlungen", "Empfehlungen"),
+                 ("/pipeline", "Pipeline"),
                  ("/ergebnisse", "Ergebnisse"),
                  ("/posteingang", "Posteingang"))),
     ("Daten", (("/medien", "Medien"),)),
@@ -6926,6 +6928,8 @@ app = Starlette(routes=[
     Route("/ergebnisse", ergebnisse),
     # Seite /kalender, JSON-Schnittstelle und Paketdateien (14.10.2026).
     *ui_kalender.routen(sys.modules[__name__]),
+    # Empfehlungslisten (C4, 17.10.2026).
+    *ui_empfehlungen.routen(sys.modules[__name__]),
     Route("/team/kalender", team_kalender),
     Route("/team/kalender/verbinden", aktion_kalender_verbinden,
           methods=["POST"]),
