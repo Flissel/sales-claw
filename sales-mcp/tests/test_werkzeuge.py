@@ -719,7 +719,8 @@ def test_fuenfundachtzig_werkzeuge_registriert():
     # 16.10.2026: kontakt_einordnen (C1 Einordnung), 93 -> 94.
     # 17.10.2026: empfehlungsliste_anlegen, empfehlungslisten_zeigen (C4), 94 -> 96.
     # 17.10.2026: abschluss_speichern (C2 Vertraege & Projekte), 96 -> 97.
-    assert len(namen) == 97
+    # 17.10.2026: kontakt_historie_lesen (C3 Kontakt-Historie), 97 -> 98.
+    assert len(namen) == 98
     assert "termin_konflikte" in namen
     assert "kontakt_aehnlich" in namen
     assert "gespraeche_suchen" in namen
@@ -1314,7 +1315,8 @@ def test_medien_werkzeuge_signaturen_ueberleben_den_dekorator():
     import inspect
     erstellen = inspect.signature(server.entwurf_erstellen).parameters
     assert list(erstellen) == ["lead_id", "kanal", "text", "betreff",
-                               "medien_datei", "auftrag_betreiber"]
+                               "medien_datei", "auftrag_betreiber",
+                               "thema", "trotzdem"]
     assert erstellen["medien_datei"].default == ""
     assert list(inspect.signature(server.medien_liste).parameters) == []
     assert server.medien_liste in server.WERKZEUGE

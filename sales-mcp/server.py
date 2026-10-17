@@ -1545,6 +1545,15 @@ def vertrag_speichern(lead_id: str, sparte: str, ablauf: str = "",
 
 
 @_gesichert
+def kontakt_historie_lesen(lead_id: str) -> str:
+    """Womit wurde der Kontakt in den letzten 365 Tagen angeschrieben —
+    versendete Entwuerfe (mit Thema), Newsletter, Termine/Einladungen,
+    WhatsApp vom Handy als Monatssumme. Neueste zuerst. Liest nur."""
+    import historie
+    return _json({"historie": historie.kontakt_historie(lead_id)})
+
+
+@_gesichert
 def abschluss_speichern(lead_id: str, bereich: str, bezeichnung: str, status: str,
                         status_datum: str = "", anbieter: str = "", betrag: str = "",
                         wiedervorlage_am: str = "", notiz: str = "",
@@ -2169,7 +2178,7 @@ def _termin_einladen(lead_id: str, datum: str, uhrzeit: str,
                              betreff=f"Terminvorschlag: {thema_kurz}",
                              medien_datei=dateiname,
                              auftrag_betreiber=auftrag_betreiber,
-                             termin_bezug=termin_bezug)
+                             termin_bezug=termin_bezug, thema="termin")
     entwurf = json.loads(roh)
     if "fehler" in entwurf:
         # Aufraeumen statt Muell liegen lassen (Fix-Runde 2, 11.09.2026):
@@ -2326,6 +2335,7 @@ def profil_lesen(lead_id: str) -> str:
               "zeit": grenze_zeit, "id": grenze_id})
     e = leads[0]["enrichment"] or {}
     import vertraege as _vertraege_mod
+    import historie as _historie_mod
     _art_bereiche = _einordnung(e, leads[0].get("company"))
     return _json({"lead_id": leads[0]["id"], "name": leads[0]["name"],
                   "status": leads[0]["status"],
@@ -2345,6 +2355,12 @@ def profil_lesen(lead_id: str) -> str:
                   # C2: normalisiert (eigen + fremd, Altform gemappt, mit id
                   # fuer abschluss_speichern(eintrag_id=...)).
                   "vertraege": _vertraege_mod.eintraege_aus(e),
+                  # C3 Kontakt-Historie: womit zuletzt angeschrieben (ohne
+                  # Handy-Summen), und die fuenf juengsten Eintraege. Alles
+                  # ueber 365 Tage: kontakt_historie_lesen.
+                  "zuletzt_angeschrieben": _historie_mod.zuletzt(lead_id),
+                  "historie_kurz": [h for h in _historie_mod.kontakt_historie(lead_id)
+                                    if h["art"] != "handy"][:5],
                   # Ohne diese Zeile waere der Hinweis von firma_anreichern
                   # („profil_lesen zeigt den Volltext") schlicht falsch: der
                   # firma-Knoten laege in enrichment und wuerde nie angezeigt.
@@ -2442,7 +2458,8 @@ def bedarf_offen(lead_id: str) -> str:
 @_gesichert
 def entwurf_erstellen(lead_id: str, kanal: str, text: str,
                       betreff: str = "", medien_datei: str = "",
-                      auftrag_betreiber: bool = False) -> str:
+                      auftrag_betreiber: bool = False,
+                      thema: str = "", trotzdem: bool = False) -> str:
     """Beispiel-Nachricht in die Entwurfs-Queue legen. Kanaele: whatsapp,
     linkedin, email. Es wird NICHTS versendet — der Entwurf bleibt 'pending';
     den Versand uebernimmt spaeter eine andere App.
@@ -2469,9 +2486,49 @@ def entwurf_erstellen(lead_id: str, kanal: str, text: str,
     `auftrag_betreiber=True` nur im Betreiber-Chat, wenn der Betreiber den
     Kontakt ausdruecklich verlangt; nie im Kundenchat. Fehlt die
     Einwilligung, wird `betreiber_auftrag` gebucht; der Entwurf bleibt
-    'pending'."""
-    return _entwurf_erstellen(lead_id, kanal, text, betreff, medien_datei,
-                              auftrag_betreiber)
+    'pending'.
+
+    `thema`: kurzes Thema (z. B. 'bAV-Erstansprache') bei JEDER Erstansprache
+    und jedem Angebot. Gab es an denselben Kontakt in den letzten 90 Tagen
+    schon einen Entwurf zum selben Thema (wartend, freigegeben, versendet),
+    entsteht KEIN Entwurf; zurueck kommt `doppelt` mit einem `hinweis`. Nur
+    auf ausdrueckliches "trotzdem" des Betreibers erneut mit
+    `trotzdem=True`."""
+    halt, treffer = _doppelt_vorab(lead_id, thema, trotzdem)
+    if halt:
+        return halt
+    roh = _entwurf_erstellen(lead_id, kanal, text, betreff, medien_datei,
+                             auftrag_betreiber, thema=thema)
+    return _doppelt_nachher(roh, lead_id, thema, treffer)
+
+
+# Doppel-Pruefung (C3, Spec 2026-10-17). Nur die Agent-Werkzeuge fuer
+# Kundenentwuerfe (entwurf_erstellen, antwort_entwerfen, mail_beantworten)
+# pruefen - einmal, im aeussersten Werkzeug; ihre inneren Aufrufe gehen
+# deshalb an _entwurf_erstellen direkt. Interne Wege (Termine, Absagen,
+# Versandauftraege) pruefen nie.
+def _doppelt_vorab(lead_id: str, thema: str, trotzdem: bool):
+    """(antwort_oder_None, treffer). Ohne Thema keine Pruefung."""
+    if not (thema or "").strip():
+        return None, []
+    import historie
+    treffer = historie.doppelt_pruefen(lead_id, thema)
+    if treffer and not trotzdem:
+        return _json({"doppelt": treffer,
+                      "hinweis": historie.doppelt_hinweis(treffer)}), treffer
+    return None, treffer
+
+
+def _doppelt_nachher(roh: str, lead_id: str, thema: str, treffer: list) -> str:
+    """Nach erfolgreichem Anlegen trotz Treffer: doppelt_bestaetigt buchen.
+    Treffer gibt es hier nur mit trotzdem=True (sonst hielt _doppelt_vorab)."""
+    if treffer:
+        a = json.loads(roh)
+        if "draft_id" in a:
+            _q("insert into activities (lead_id, type, payload, actor) values "
+               "(%s, 'doppelt_bestaetigt', %s, 'agent') returning id",
+               (lead_id, _json({"draft_id": str(a["draft_id"]), "thema": thema})))
+    return roh
 
 
 # Kern von entwurf_erstellen. Das Agent-Werkzeug oben traegt BEWUSST kein
@@ -2488,7 +2545,8 @@ def entwurf_erstellen(lead_id: str, kanal: str, text: str,
 def _entwurf_erstellen(lead_id: str, kanal: str, text: str,
                        betreff: str = "", medien_datei: str = "",
                        auftrag_betreiber: bool = False,
-                       termin_bezug: bool = False) -> str:
+                       termin_bezug: bool = False, thema: str = "") -> str:
+    thema = (thema or "").strip()[:200]
     if kanal not in ("whatsapp", "linkedin", "email", "telegram"):
         return _json({"fehler": f"Unzulaessiger Kanal '{kanal}'. "
                                 f"Erlaubt: whatsapp, linkedin, email, telegram"})
@@ -2615,9 +2673,10 @@ def _entwurf_erstellen(lead_id: str, kanal: str, text: str,
                   else leads[0]["name"])
     zeilen = _q(
         "insert into drafts (lead_id, channel, recipient, subject, body, "
-        "media_ref) values (%s, %s, %s, nullif(%s,''), %s, %s) "
-        "returning id, status",
-        (lead_id, kanal, empfaenger or leads[0]["name"], betreff, text, basis))
+        "media_ref, thema) values (%s, %s, %s, nullif(%s,''), %s, %s, "
+        "nullif(%s,'')) returning id, status",
+        (lead_id, kanal, empfaenger or leads[0]["name"], betreff, text, basis,
+         thema))
     hinweis = "Nicht versendet — wartet in der Queue."
     return _json({"draft_id": zeilen[0]["id"], "status": zeilen[0]["status"],
                   "medien_datei": basis, "hinweis": hinweis})
@@ -2716,10 +2775,11 @@ def _newsletter_entwurf(lead_id: str, newsletter: str, betreff: str, html: str,
         return {"fehler": str(e)}
     try:
         neu = _q("insert into drafts (lead_id, channel, recipient, subject, body, body_html, "
-                 "newsletter, newsletter_medien) values (%s, 'email', %s, nullif(%s, ''), %s, %s, %s, %s) "
-                 "returning id",
+                 "newsletter, newsletter_medien, thema) values (%s, 'email', %s, nullif(%s, ''), "
+                 "%s, %s, %s, %s, %s) returning id",
                  (lead_id, adresse, betreff, text_fertig, html_fertig, newsletter,
-                  json.dumps(medien_liste or [], ensure_ascii=False)))
+                  json.dumps(medien_liste or [], ensure_ascii=False),
+                  f"Newsletter: {betreff}"[:200]))
     except psycopg.errors.UniqueViolation:
         return {"fehler": f"{lead['name']} hat diesen Newsletter schon (Entwurf oder versendet)."}
     return {"draft_id": str(neu[0]["id"])}
@@ -2825,9 +2885,10 @@ def post_entwurf_erstellen(thema: str, text: str, medien_datei: str = "",
     # LinkedIn-Nachrichten (freigeben -> von Hand -> manuell_gesendet).
     zeilen = _q(
         "insert into drafts (lead_id, channel, recipient, subject, body, "
-        "media_ref) values (%s, 'linkedin', 'eigenes-profil', %s, %s, %s) "
-        "returning id, status",
-        (LINKEDIN_POST_LEAD_ID, f"Post: {thema.strip()}", text, basis))
+        "media_ref, thema) values (%s, 'linkedin', 'eigenes-profil', %s, %s, "
+        "%s, %s) returning id, status",
+        (LINKEDIN_POST_LEAD_ID, f"Post: {thema.strip()}", text, basis,
+         thema.strip()[:200]))
     return _json({"draft_id": zeilen[0]["id"], "status": zeilen[0]["status"],
                   "medien_datei": basis,
                   "hinweis": ("Nicht gepostet — wartet auf Freigabe. Nach der "
@@ -3424,10 +3485,13 @@ def _antwort_betreff(roh: str) -> str:
 
 
 @_gesichert
-def mail_beantworten(uid: str, text: str) -> str:
+def mail_beantworten(uid: str, text: str, thema: str = "",
+                     trotzdem: bool = False) -> str:
     """Auf eine Mail aus dem Betreiber-Postfach antworten (Spec 2026-10-13 §1.1). Nur Betreiber-Chat.
     Legt einen E-MAIL-Entwurf 'pending' im selben Mailverlauf an — versendet nichts. Kontakt wird ueber die
-    Absenderadresse gefunden oder angelegt; die eingegangene Mail wird als Kundennachricht gebucht."""
+    Absenderadresse gefunden oder angelegt; die eingegangene Mail wird als Kundennachricht gebucht.
+    `thema`/`trotzdem` wie bei entwurf_erstellen: Doppel-Warnung, wenn der Kontakt in 90 Tagen
+    schon zum selben Thema angeschrieben wurde."""
     if not postfach.konfiguriert():
         return _json({"fehler": "Kein Betreiber-Postfach eingerichtet."})
     try:
@@ -3446,6 +3510,9 @@ def mail_beantworten(uid: str, text: str) -> str:
     lead_id = str(z[0]["id"]) if z else str(_q(
         "insert into leads (name, email, source) values (%s, %s, 'email') returning id",
         ((name or adresse.split("@")[0]).strip()[:120], adresse))[0]["id"])
+    halt, treffer = _doppelt_vorab(lead_id, thema, trotzdem)
+    if halt:
+        return halt
     mid = (mail.get("message_id") or "").strip()
     if not mid or not _q("select 1 from activities where lead_id = %s and type = 'kundenantwort' "
                          "and payload->>'message_id' = %s limit 1", (lead_id, mid)):
@@ -3453,7 +3520,10 @@ def mail_beantworten(uid: str, text: str) -> str:
            "returning id", (lead_id, _json({"kanal": "email", "message_id": mid, "betreff": mail.get("betreff") or "",
                                             "text": (mail.get("text") or "")[:4000], "richtung": "eingehend"})))
     betreff = _antwort_betreff(mail.get("betreff") or "")
-    roh = entwurf_erstellen(lead_id, "email", text, betreff=betreff, auftrag_betreiber=True)
+    # _entwurf_erstellen direkt: die Doppel-Pruefung lief oben schon (einmal).
+    roh = _doppelt_nachher(_entwurf_erstellen(lead_id, "email", text, betreff=betreff,
+                                              auftrag_betreiber=True, thema=thema),
+                           lead_id, thema, treffer)
     a = json.loads(roh)
     if "fehler" in a:
         return roh
@@ -6748,7 +6818,8 @@ def antworten_faellig(stunden: int = 48) -> str:
 @_gesichert
 def antwort_entwerfen(lead_id: str, text: str,
                       medien_datei: str = "",
-                      auftrag_betreiber: bool = False) -> str:
+                      auftrag_betreiber: bool = False,
+                      thema: str = "", trotzdem: bool = False) -> str:
     """Eine SELBST GESCHRIEBENE Antwort ablegen — die Stufe entscheidet, wohin.
 
     Dieses Werkzeug formuliert nichts: den Text schreibst du, nachdem du
@@ -6772,7 +6843,10 @@ def antwort_entwerfen(lead_id: str, text: str,
     `auftrag_betreiber=True` nur im Betreiber-Chat, wenn der Betreiber den
     Kontakt ausdruecklich verlangt; nie im Kundenchat. Dann entsteht auch bei
     'manuell' und 'auto' ein 'pending'-Entwurf (nie ohne Freigabe); bei
-    'ignorieren' bleibt es bei der Ablehnung."""
+    'ignorieren' bleibt es bei der Ablehnung.
+
+    `thema`/`trotzdem` wie bei entwurf_erstellen: Doppel-Warnung, wenn der
+    Kontakt in 90 Tagen schon zum selben Thema angeschrieben wurde."""
     leads = _q("select id, name, enrichment from leads where id = %s",
                (lead_id,))
     if not leads:
@@ -6790,10 +6864,19 @@ def antwort_entwerfen(lead_id: str, text: str,
         return _privat_fehler()
 
     stufe = _autonomie(leads[0]["enrichment"])
+    # Doppel-Pruefung einmal hier; die inneren Aufrufe gehen deshalb an
+    # _entwurf_erstellen direkt (nicht an das pruefende Werkzeug). Entsteht
+    # ohnehin kein Entwurf (Stufe), zaehlt die Ablehnung - keine Pruefung.
+    entsteht = ((auftrag_betreiber and stufe != "ignorieren")
+                or stufe in ("halbauto", "auto"))
+    halt, treffer = (_doppelt_vorab(lead_id, thema, trotzdem) if entsteht
+                     else (None, []))
+    if halt:
+        return halt
     if auftrag_betreiber and stufe != "ignorieren":
-        roh = entwurf_erstellen(lead_id, "whatsapp", text,
-                                medien_datei=medien_datei,
-                                auftrag_betreiber=True)
+        roh = _doppelt_nachher(_entwurf_erstellen(
+            lead_id, "whatsapp", text, medien_datei=medien_datei,
+            auftrag_betreiber=True, thema=thema), lead_id, thema, treffer)
         antwort = json.loads(roh)
         if "fehler" in antwort:
             return roh
@@ -6807,8 +6890,9 @@ def antwort_entwerfen(lead_id: str, text: str,
             f"Betreiber (kontakt_autonomie_setzen); frag ihn, statt sie "
             f"selbst zu aendern.")})
 
-    roh = entwurf_erstellen(lead_id, "whatsapp", text,
-                            medien_datei=medien_datei)
+    roh = _doppelt_nachher(_entwurf_erstellen(
+        lead_id, "whatsapp", text, medien_datei=medien_datei, thema=thema),
+        lead_id, thema, treffer)
     antwort = json.loads(roh)
     if "fehler" in antwort:
         return roh
@@ -7722,7 +7806,7 @@ def kunde_benachrichtigen(lead_id: str, alt: dict, neu: dict | None,
     if mail:
         return _ergebnis(_entwurf_erstellen(
             lead_id, "email", _absagetext(), betreff=f"Termin abgesagt: {thema}",
-            termin_bezug=True), "email")
+            termin_bezug=True, thema="termin"), "email")
     if _whatsapp_freigegeben(leads[0]["enrichment"]):
         if neu:
             t = datetime.fromisoformat(str(neu["datum"])[:10])
@@ -7733,7 +7817,7 @@ def kunde_benachrichtigen(lead_id: str, alt: dict, neu: dict | None,
         else:
             text = _absagetext()
         return _ergebnis(_entwurf_erstellen(
-            lead_id, "whatsapp", text, termin_bezug=True), "whatsapp")
+            lead_id, "whatsapp", text, termin_bezug=True, thema="termin"), "whatsapp")
     return {"hinweis": KEIN_KANAL_HINWEIS}
 
 
@@ -8737,6 +8821,8 @@ WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,
              vertrag_speichern,
             # Vertraege & Projekte (17.10.2026), Vertraege: tests/test_vertraege_eigen.py.
             abschluss_speichern,
+            # Kontakt-Historie (C3, 17.10.2026): liest nur. tests/test_historie.py.
+            kontakt_historie_lesen,
             vertraege_ablaufend, termin_bestaetigen,
              # Einladung statt stillem Eintrag (11.09.2026): schlaegt vor,
              # bindet niemanden — der Kalendereintrag entsteht erst bei der

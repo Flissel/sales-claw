@@ -98,3 +98,143 @@ def test_thema_mit_tab_und_zeilenumbruch_stimmt_mit_sql_ueberein():
     assert len(hi.doppelt_pruefen(lead, "bav erst ansprache")) == 1
     assert len(hi.doppelt_pruefen(lead, " BAV \t Erst\n ansprache ")) == 1
     assert hi.doppelt_pruefen(lead, "bav erstansprache") == []
+
+
+# --- Task 4: Werkzeuge mit Thema, Doppel-Warnung, Historie lesen ---------
+
+import inspect  # noqa: E402
+
+
+def _kunde_mit_freigabe():
+    """Tore oeffnen wie in tests/test_werkzeuge.py (_wa_freigeben/_anlegen):
+    WhatsApp-Freigabe direkt in enrichment, Einwilligung opt_in."""
+    lead = _lead()
+    server._q("update leads set consent_status = 'opt_in', enrichment = jsonb_set("
+              "coalesce(enrichment, '{}'::jsonb), '{whatsapp_freigabe}', "
+              "'{\"freigegeben\": true}'::jsonb, true) where id = %s returning id", (lead,))
+    return lead
+
+
+def _bestaetigt():
+    return server._q("select count(*) n from activities where type='doppelt_bestaetigt'")[0]["n"]
+
+
+def test_entwurf_mit_thema_warnt_bei_doppelt_und_trotzdem_legt_an():
+    lead = _kunde_mit_freigabe()
+    r1 = json.loads(server.entwurf_erstellen(lead, "whatsapp", "Hallo 1", thema="bAV Erstansprache"))
+    assert "draft_id" in r1, r1
+    assert server._q("select thema from drafts where id=%s", (r1["draft_id"],))[0]["thema"] == "bAV Erstansprache"
+    r2 = json.loads(server.entwurf_erstellen(lead, "whatsapp", "Hallo 2", thema="bav  erstansprache"))
+    assert "draft_id" not in r2 and r2["doppelt"] and r2["hinweis"].endswith("Dann trotzdem=True.")
+    assert r2["doppelt"][0]["draft_id"] == str(r1["draft_id"])
+    r3 = json.loads(server.entwurf_erstellen(lead, "whatsapp", "Hallo 3", thema="bav erstansprache",
+                                             trotzdem=True))
+    assert "draft_id" in r3
+    assert _bestaetigt() == 1
+    p = server._q("select payload from activities where type='doppelt_bestaetigt'")[0]["payload"]
+    assert p["draft_id"] == str(r3["draft_id"]) and p["thema"] == "bav erstansprache"
+
+
+def test_trotzdem_ohne_treffer_bucht_nichts():
+    lead = _kunde_mit_freigabe()
+    assert "draft_id" in json.loads(server.entwurf_erstellen(lead, "whatsapp", "A", thema="neu",
+                                                             trotzdem=True))
+    assert _bestaetigt() == 0
+
+
+def test_ohne_thema_keine_pruefung():
+    lead = _kunde_mit_freigabe()
+    assert "draft_id" in json.loads(server.entwurf_erstellen(lead, "whatsapp", "A"))
+    assert "draft_id" in json.loads(server.entwurf_erstellen(lead, "whatsapp", "B"))
+
+
+def test_thema_wird_auf_200_zeichen_begrenzt():
+    lead = _kunde_mit_freigabe()
+    r = json.loads(server.entwurf_erstellen(lead, "whatsapp", "A", thema="x" * 300))
+    assert len(server._q("select thema from drafts where id=%s", (r["draft_id"],))[0]["thema"]) == 200
+
+
+def test_antwort_entwerfen_prueft_einmal_und_bucht_einmal():
+    lead = _kunde_mit_freigabe()
+    _draft(lead, "Angebot Homelab", status="pending")
+    r = json.loads(server.antwort_entwerfen(lead, "Hallo", auftrag_betreiber=True, thema="angebot homelab"))
+    assert "draft_id" not in r and r["doppelt"]
+    r = json.loads(server.antwort_entwerfen(lead, "Hallo", auftrag_betreiber=True, thema="angebot homelab",
+                                            trotzdem=True))
+    assert "draft_id" in r, r
+    assert server._q("select thema from drafts where id=%s", (r["draft_id"],))[0]["thema"] == "angebot homelab"
+    assert _bestaetigt() == 1
+
+
+def test_mail_beantworten_prueft_und_speichert_thema(monkeypatch):
+    mail = {"uid": "7", "von": "Leo <leo@example.com>", "betreff": "Frage", "text": "Hallo",
+            "message_id": "m-7@example.com"}
+    monkeypatch.setattr(server.postfach, "konfiguriert", lambda: True)
+    monkeypatch.setattr(server.postfach, "lesen", lambda uid: mail)
+    a = json.loads(server.mail_beantworten("7", "Hallo Leo", thema="bAV Angebot"))
+    assert server._q("select thema from drafts where id=%s", (a["draft_id"],))[0]["thema"] == "bAV Angebot"
+    b = json.loads(server.mail_beantworten("7", "Nochmal", thema="bav angebot"))
+    assert "draft_id" not in b and b["doppelt"]
+    c = json.loads(server.mail_beantworten("7", "Nochmal", thema="bav angebot", trotzdem=True))
+    assert "draft_id" in c and _bestaetigt() == 1
+
+
+def test_signaturen():
+    assert list(inspect.signature(server.entwurf_erstellen).parameters) == [
+        "lead_id", "kanal", "text", "betreff", "medien_datei", "auftrag_betreiber", "thema", "trotzdem"]
+    assert list(inspect.signature(server.antwort_entwerfen).parameters) == [
+        "lead_id", "text", "medien_datei", "auftrag_betreiber", "thema", "trotzdem"]
+    assert list(inspect.signature(server.mail_beantworten).parameters) == ["uid", "text", "thema", "trotzdem"]
+    assert list(inspect.signature(server.kontakt_historie_lesen).parameters) == ["lead_id"]
+    assert server.kontakt_historie_lesen in server.WERKZEUGE
+
+
+def test_profil_und_historie_werkzeug():
+    lead = _lead()
+    _draft(lead, "Homelab-Angebot", tage_alt=4)
+    p = json.loads(server.profil_lesen(lead))
+    assert p["zuletzt_angeschrieben"]["text"] == "Homelab-Angebot" and len(p["historie_kurz"]) == 1
+    h = json.loads(server.kontakt_historie_lesen(lead))
+    assert h["historie"][0]["text"] == "Homelab-Angebot"
+
+
+def test_profil_ohne_historie():
+    p = json.loads(server.profil_lesen(_lead()))
+    assert p["zuletzt_angeschrieben"] is None and p["historie_kurz"] == []
+
+
+def test_newsletter_und_post_tragen_thema(monkeypatch):
+    lead = _lead()
+    server._q("update leads set consent_status='opt_in', email='a@example.com' where id=%s returning id", (lead,))
+    monkeypatch.setattr(server.newsletter_text, "einsetzen", lambda h, t, v, a: (h, t))
+    r = server._newsletter_entwurf(lead, "6f1c1d6e-0000-4000-8000-000000000001", "Herbst", "<p>x</p>", "x", [])
+    assert "draft_id" in r, r
+    assert server._q("select thema from drafts where id=%s", (r["draft_id"],))[0]["thema"] == "Newsletter: Herbst"
+    assert r["draft_id"] in [str(t["draft_id"]) for t in hi.doppelt_pruefen(lead, "newsletter: herbst")]
+
+
+def test_post_traegt_thema(monkeypatch):
+    sammel = str(server._q("insert into leads (name, source) values ('LINKEDIN (Eigenes Profil)', 'system') "
+                           "returning id")[0]["id"])
+    monkeypatch.setattr(server, "LINKEDIN_POST_LEAD_ID", sammel)
+    r = json.loads(server.post_entwurf_erstellen("bAV im Handwerk", "Text"))
+    assert server._q("select thema from drafts where id=%s", (r["draft_id"],))[0]["thema"] == "bAV im Handwerk"
+
+
+def test_absage_per_whatsapp_traegt_thema_termin():
+    lead = _kunde_mit_freigabe()
+    server.kunde_benachrichtigen(lead, {"datum": "2026-11-02", "uhrzeit": "10:00", "thema": "Beratung"}, None)
+    assert [z["thema"] for z in server._q("select thema from drafts where lead_id=%s", (lead,))] == ["termin"]
+
+
+def test_einladung_traegt_thema_termin_und_wird_nie_geprueft(monkeypatch):
+    import mail_dispatch
+    monkeypatch.setattr(mail_dispatch, "EMAIL_ABSENDER", "buero@vibemind.space")
+    lead = str(server._q("insert into leads (name, email, phone, source, consent_status) values "
+                         "('Ivan', 'ivan@vibemind.space', '+491701234567', 'whatsapp', "
+                         "'existing_customer') returning id")[0]["id"])
+    for tag in ("2099-11-02", "2099-11-03"):
+        a = json.loads(server.termin_einladen(lead, tag, "14:30", thema="Erstgespräch"))
+        assert "fehler" not in a, a
+    assert [z["thema"] for z in server._q("select thema from drafts where lead_id=%s", (lead,))] == \
+        ["termin", "termin"]

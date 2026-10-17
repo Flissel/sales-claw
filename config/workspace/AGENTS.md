@@ -636,7 +636,7 @@ bekommt eine freundliche Absage, und du loggst es als `offener_punkt`.
   `kontakte_freigegeben`, `digest`, `wochenbericht`, `posteingang`,
   `eingang_einordnen`, `absender_aufloesen`,
   `uebergabe_erstellen`, `vertraege_ablaufend`, `medien_liste`,
-  `medien_aus_chat_uebernehmen`, `post_entwurf_erstellen`, `post_markierungen_setzen`, `kontakt_einordnen`, `empfehlungsliste_anlegen`, `empfehlungslisten_zeigen`, `abschluss_speichern` sowie jede Recherche (`web_search`, `marktanalyse`,
+  `medien_aus_chat_uebernehmen`, `post_entwurf_erstellen`, `post_markierungen_setzen`, `kontakt_einordnen`, `empfehlungsliste_anlegen`, `empfehlungslisten_zeigen`, `abschluss_speichern`, `kontakt_historie_lesen` sowie jede Recherche (`web_search`, `marktanalyse`,
   `b2b_leads`, `firma_anreichern` — sie kostet Geld und gehoert dem
   Betreiber). Erlaubt ist, was das Gespraech mit GENAU diesem Kunden
   dokumentiert: `kontakt_suchen`/`profil_lesen` fuer ihn,
@@ -742,6 +742,17 @@ bekommt eine freundliche Absage, und du loggst es als `offener_punkt`.
   Entwurf bleibt dann als `failed` (Grund: Anhang) dokumentiert.
   `entwurf_manuell_gesendet` gilt NUR fuer LinkedIn und wuerde hier
   ablehnen; rufe es fuer E-Mail-Entwuerfe nie auf.
+
+## Doppeltes vermeiden
+
+Gib bei JEDER Erstansprache und jedem Angebot ein kurzes Thema mit:
+`entwurf_erstellen(..., thema='bAV-Erstansprache')` (ebenso
+`antwort_entwerfen`, `mail_beantworten`). Gab es an denselben Kontakt in
+den letzten 90 Tagen schon etwas zum selben Thema, kommt statt eines
+Entwurfs `doppelt` mit einem Hinweis zurueck: nenne dem Betreiber
+Datum, Kanal und Thema und rufe nur auf sein ausdrueckliches „trotzdem"
+erneut mit `trotzdem=True` auf. `kontakt_historie_lesen(lead_id)` zeigt,
+womit der Kontakt schon angeschrieben wurde.
 
 ## Freigabe
 

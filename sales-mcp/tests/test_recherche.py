@@ -589,7 +589,8 @@ def test_beide_werkzeuge_sind_registriert():
     # 14.-16.10.2026: medien_aus_chat_uebernehmen, post_markierungen_setzen,
     # kontakt_einordnen, 91 -> 94. 17.10.2026: empfehlungsliste_anlegen,
     # empfehlungslisten_zeigen (C4), 94 -> 96. abschluss_speichern (C2), 96 -> 97.
-    assert len(namen) == len(set(namen)) == 97
+    # kontakt_historie_lesen (C3), 97 -> 98.
+    assert len(namen) == len(set(namen)) == 98
 
 # ---------------------------------------------------------------------------
 # Nachbesserungen aus dem Stufe-5-Review (Befunde T1, B2, D2)

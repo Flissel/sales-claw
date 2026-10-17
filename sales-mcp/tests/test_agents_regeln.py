@@ -178,3 +178,10 @@ def test_vertraege_aendern_ist_merge_im_prompt():
     absatz = " ".join(TEXT.split("## Verträge & Projekte")[1].split("\n## ")[0].split())
     assert "Beim Aendern nur die geaenderten Felder angeben; leere Felder bleiben unveraendert." in absatz
     assert "Leeren geht nur auf der Kontaktseite." in absatz
+
+
+def test_doppeltes_vermeiden_im_prompt():
+    assert "## Doppeltes vermeiden" in TEXT
+    abschnitt = TEXT.split("## Doppeltes vermeiden")[1].split("\n## ")[0]
+    assert "thema=" in abschnitt and "trotzdem=True" in abschnitt
+    assert "`kontakt_historie_lesen`" in _absatz("- **Betreiber-Werkzeuge sind im Kundenchat tabu")
