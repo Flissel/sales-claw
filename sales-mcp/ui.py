@@ -208,6 +208,7 @@ import ui_editor
 import ui_freigabe_newsletter
 import ui_kalender
 import ui_marketing
+import ui_plan
 import verlinken
 
 import server
@@ -1427,6 +1428,7 @@ _GRUPPEN = (
     ("Marketing", (("/marketing", "Übersicht"),
                    ("/marketing/entwuerfe", "Entwürfe"),
                    ("/marketing/vorlagen", "Vorlagen"),
+                   ("/marketing/plan", "Plan"),
                    ("/marketing/layouts", "Marke"))),
     # Existiert im Menue NUR fuer Rolle freigeben im Basis-Laden — nicht
     # wegen einer Extra-Pruefung hier, sondern weil _seitenleiste JEDEN
@@ -6963,6 +6965,7 @@ app = Starlette(routes=[
     # zwei Paket-Dateien - vor den Marketing-Routen.
     *ui_editor.routen(sys.modules[__name__]),
     *ui_marketing.routen(sys.modules[__name__]),
+    *ui_plan.routen(sys.modules[__name__]),
     *ui_freigabe_newsletter.routen(sys.modules[__name__]),
     Route("/medien", medien),
     Route("/medien/bot", aktion_medien_bot, methods=["POST"]),
