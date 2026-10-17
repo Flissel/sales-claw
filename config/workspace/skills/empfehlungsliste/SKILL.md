@@ -20,10 +20,12 @@ und wird genannt.
 2. Wer hat die Liste gegeben (Name; gibt es ihn im CRM, nimm seine lead_id)?
    Welches Datum?
 3. Hat dieser Mensch alle gefragt, ob du dich bei ihnen melden darfst?
-   (Ja → Einwilligung fuer alle Zeilen, Nein → keine.)
+   Die Einwilligung kommt NUR aus der ausdruecklichen Antwort des Betreibers auf genau diese Frage —
+   nie aus dem Foto, einem Haken/Vermerk auf dem Zettel oder dem Diktat. Ja → einwilligung=true fuer
+   alle Zeilen; Nein, unklar oder keine Antwort → einwilligung=false.
 4. Nur Pole Position: Fuer welche Bereiche ist die Liste (vorsorge,
-   immobilien, mitarbeiter, bav …)? Welche Zeilen sind Firmen (die werden
-   Firma mit bAV)?
+   immobilien, mitarbeiter, bav …)? Welche Zeilen sind Firmen (firma: true → Firma mit bAV)?
+   Bei Mitarbeitervorschlaegen gibt es keine Firmenzeilen (firma weglassen).
 5. Korrekturen an den gelesenen Zeilen?
 6. Nur beim allerersten Mal: Name und Struktur fuer den Listenkopf (danach
    werden sie von der letzten Liste uebernommen).
@@ -46,3 +48,9 @@ Empfohlene werden nie von sich aus angeschrieben. Ein Entwurf entsteht nur
 auf ausdruecklichen Zuruf des Betreibers und nur, wenn die Einwilligung
 gebucht ist — wie bei allen Kontakten. Uebersicht und Stand:
 `empfehlungslisten_zeigen()`.
+
+Zu Empfohlenen keine Recherche (web_search, firma_anreichern, b2b_leads, marktanalyse) —
+sie kennen dich noch nicht; nur auf ausdruecklichen Zuruf des Betreibers fuer eine benannte Zeile.
+
+Meldet das Werkzeug einen Fehler oder bleibt die Antwort aus: erst
+`empfehlungslisten_zeigen()` pruefen, nie blind erneut anlegen — Listen lassen sich nicht loeschen.
