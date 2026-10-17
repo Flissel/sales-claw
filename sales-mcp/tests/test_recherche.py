@@ -412,6 +412,24 @@ def test_b2b_leads_legt_kontakte_ohne_einwilligung_an():
         assert stichwort in zeilen[0]["notes"]
 
 
+def test_b2b_leads_ordnet_neue_firmen_als_firma_mit_bav_ein():
+    """C1 §4.1: Recherche-Firmen sind Firmen mit Bereich bAV — explizit, weil
+    kontakt_anlegen die Art schon aus dem Namen setzt (ohne Klammer: person).
+    Eine Dublette bleibt, wie sie war."""
+    server.kontakt_anlegen(name="Alpha Inhaber", phone="0049 941 1234567",
+                           source="whatsapp")
+    STUB.antworte_mit([_ort("Alpha GmbH"), _ort("Beta AG",
+                                                telefon="+499419876543")])
+    antwort = _b2b(branche="Handwerksbetrieb", region="Regensburg")
+    assert antwort["angelegt"] == 1
+    neu = server._q("select enrichment from leads where name = 'Beta AG'")[0]
+    assert neu["enrichment"]["art"] == "firma"
+    assert neu["enrichment"]["bereiche"] == ["bav"]
+    alt = server._q("select enrichment from leads where name = 'Alpha Inhaber'")[0]
+    assert (alt["enrichment"] or {}).get("art") != "firma"
+    assert "bav" not in ((alt["enrichment"] or {}).get("bereiche") or [])
+
+
 def test_b2b_leads_ueberspringt_bekannte_nummern():
     """Dieselbe Nummer in anderer Schreibweise — die Dedup-Kante aus
     kontakt_anlegen muss greifen, weil b2b_leads ueber sie geht."""

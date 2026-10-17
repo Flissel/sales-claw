@@ -6201,6 +6201,15 @@ def b2b_leads(branche: str, region: str = "Regensburg", limit: int = 20) -> str:
                    (t["name"], antwort["lead_id"]))
             except psycopg.Error:
                 pass
+            # C1 §4.1: Recherche-Firmen sind Firmen mit Bereich bAV.
+            # kontakt_anlegen hat die Art schon aus dem Namen gesetzt
+            # (ohne Klammer: person) — das wird hier ausdruecklich
+            # korrigiert. Ebenso abgesichert wie der Nachtrag oben.
+            try:
+                _einordnen(antwort["lead_id"], "firma", ["bav"], (),
+                           quelle="agent")
+            except psycopg.Error:
+                pass
             angelegt.append(t["name"])
         else:
             dubletten.append(t["name"])
