@@ -276,7 +276,6 @@ def routen(ui) -> list:
             "medien_zuordnung_url": f"/marketing/editor/{iid}/medien/zuordnung",
             "medien_loeschen_url": "/marketing/editor/medien/loeschen",
             "zurueck_url": f"/marketing/entwurf/{iid}",
-            "bild_url": f"/marketing/editor/{iid}/bild",
             "gestaltung_url": f"/marketing/editor/{iid}/gestaltung",
             "stand_url": f"/marketing/editor/{iid}/stand.json",
             "chat_url": f"/marketing/editor/{iid}/chat",
@@ -366,48 +365,6 @@ def routen(ui) -> list:
         return JSONResponse({"fassung": fassung}, headers={"Cache-Control": "no-store"})
 
     @ui._gesichert_seite
-    async def editor_bild(request):
-        marke = request.headers.get("x-csrf", "")
-        if not marke or not hmac.compare_digest(marke, ui.CSRF_TOKEN):
-            return json_grund(403, "Fehlende oder falsche CSRF-Marke")
-        try:
-            body = json.loads(await request.body() or b"{}")
-        except (ValueError, UnicodeDecodeError):
-            return json_grund(422, "Die Anfrage ist kein gültiges JSON")
-        if not isinstance(body, dict):
-            return json_grund(422, "Die Anfrage ist kein JSON-Objekt")
-        platz, hinweis = body.get("platz"), body.get("hinweis", "")
-        if platz is not None and (not isinstance(platz, str) or not PLATZ_ID.match(platz)):
-            return json_grund(422, "Unbekannter Bildplatz")
-        if not isinstance(hinweis, str) or len(hinweis) > HINWEIS_MAX:
-            return json_grund(422, f"Der Hinweis darf höchstens {HINWEIS_MAX} Zeichen haben")
-        staerke, neu = body.get("staerke", 55), body.get("neu", False)
-        if isinstance(staerke, bool) or not isinstance(staerke, int) or not 0 <= staerke <= 100:
-            return json_grund(422, "Die Stärke muss eine ganze Zahl von 0 bis 100 sein")
-        if not isinstance(neu, bool):
-            return json_grund(422, "neu muss true oder false sein")
-        freistellen = body.get("freistellen", False)
-        if not isinstance(freistellen, bool):
-            return json_grund(422, "freistellen muss true oder false sein")
-        neu = neu or staerke == 100      # Stufe 100 heisst immer "ganz neu"
-        if freistellen:
-            if not platz:
-                return json_grund(422, "Freistellen braucht einen Bildplatz")
-            nutzlast = {"platz": platz, "hinweis": "", "nur_leere": False,
-                        "staerke": 0, "modus": "freistellen"}
-        else:
-            nutzlast = {"platz": platz, "hinweis": hinweis.strip(), "nur_leere": False,
-                        "staerke": 100 if neu else staerke, "modus": "neu" if neu else "ueberarbeiten"}
-        iid = urllib.parse.quote(request.path_params["iid"], safe="")
-        try:
-            r = await run_in_threadpool(marketing_pult.anfrage, "POST", f"/inhalte/{iid}/bilder", nutzlast)
-        except marketing_pult.PultFehler as f:
-            if f.art == "abgelehnt":
-                return json_grund(422, str(f.grund or "Abgelehnt"))
-            return json_grund(503, "Auftrag gerade nicht möglich")
-        return JSONResponse({"auftrag": str((r or {}).get("auftrag") or "")}, headers={"Cache-Control": "no-store"})
-
-    @ui._gesichert_seite
     async def editor_gestaltung(request):
         marke = request.headers.get("x-csrf", "")
         if not marke or not hmac.compare_digest(marke, ui.CSRF_TOKEN):
@@ -437,7 +394,7 @@ def routen(ui) -> list:
     async def _agent_post(request, pfad: str, pruefen, zeitlimit=None, methode: str = "POST"):
         """Gemeinsamer Weg der schreibenden Agent-Routen: CSRF, JSON-Objekt,
         Formpruefung (`pruefen(body)` -> (nutzlast, None) oder (None, grund)),
-        Pult-Aufruf im Threadpool, Fehlerabbildung wie editor_bild. `pruefen=None`:
+        Pult-Aufruf im Threadpool, Fehlerabbildung wie editor_gestaltung. `pruefen=None`:
         Route ohne Koerper (nur CSRF), `methode` ist die Pult-Methode."""
         marke = request.headers.get("x-csrf", "")
         if not marke or not hmac.compare_digest(marke, ui.CSRF_TOKEN):
@@ -875,7 +832,6 @@ def routen(ui) -> list:
         Route("/marketing/editor/medien/loeschen", medien_loeschen, methods=["POST"]),
         Route("/marketing/editor/{iid}", editor_seite),
         Route("/marketing/editor/{iid}/speichern", editor_speichern, methods=["POST"]),
-        Route("/marketing/editor/{iid}/bild", editor_bild, methods=["POST"]),
         Route("/marketing/editor/{iid}/einreichen", editor_einreichen, methods=["POST"]),
         Route("/marketing/editor/{iid}/zurueckziehen", editor_zurueckziehen, methods=["POST"]),
         Route("/marketing/editor/{iid}/marke-hinweis-aus", editor_marke_hinweis_aus, methods=["POST"]),

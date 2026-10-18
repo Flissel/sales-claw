@@ -43,9 +43,10 @@ def test_paket_kennt_vorlagenschriften():
     assert "Vorlage – Anzeige" in text and "Versalien gesperrt" in text and "/marketing/schrift/schriften.css" in text
 
 
-def test_paket_kennt_freistellen():
+def test_paket_bilder_nur_ueber_den_assistenten():
     text = (ORDNER / "editor.js").read_text(encoding="utf-8")
-    assert "Freistellen beauftragt" in text and "freistellen" in text
+    assert "Bild markieren und den Assistenten fragen" in text
+    assert "Ganz neu erzeugen" not in text and "Stärke der Überarbeitung" not in text
 
 
 def test_paket_kennt_gestaltung():

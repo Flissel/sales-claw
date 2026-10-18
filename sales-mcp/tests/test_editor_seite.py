@@ -876,64 +876,16 @@ def test_formularwahl_nach_neuester_fassung(angemeldet, pult):
 
 # --- Bilder: Auftrag und Stand (Newsletter-Bilder Task 8) -----------------------
 
-def test_start_nennt_bild_und_stand_url(angemeldet):
+def test_start_nennt_stand_url_aber_keine_bild_url(angemeldet):
     start = _start(angemeldet.get(f"/marketing/editor/{IID}", headers=HOST).text)
-    assert start["bild_url"] == f"/marketing/editor/{IID}/bild"
+    assert "bild_url" not in start
     assert start["stand_url"] == f"/marketing/editor/{IID}/stand.json"
 
 
-def test_bild_beauftragen(angemeldet, pult):
-    r = angemeldet.post(f"/marketing/editor/{IID}/bild", headers={**HOST, "X-CSRF": ui.CSRF_TOKEN},
-                        json={"platz": "kopf", "hinweis": "waermer"})
-    assert r.status_code == 200 and r.json() == {"auftrag": "a1"}
-    assert pult.aufrufe[-1] == ("POST", f"/inhalte/{IID}/bilder",
-                                {"platz": "kopf", "hinweis": "waermer", "nur_leere": False,
-                                 "staerke": 55, "modus": "ueberarbeiten"})
-
-
-def test_bild_mit_staerke(angemeldet, pult):
-    r = angemeldet.post(f"/marketing/editor/{IID}/bild", headers={**HOST, "X-CSRF": ui.CSRF_TOKEN},
-                        json={"platz": "kopf", "hinweis": "waermer", "staerke": 30})
-    assert r.status_code == 200
-    assert pult.aufrufe[-1][2] == {"platz": "kopf", "hinweis": "waermer", "nur_leere": False,
-                                   "staerke": 30, "modus": "ueberarbeiten"}
-
-
-def test_bild_ganz_neu(angemeldet, pult):
-    angemeldet.post(f"/marketing/editor/{IID}/bild", headers={**HOST, "X-CSRF": ui.CSRF_TOKEN},
-                    json={"platz": "kopf", "neu": True, "staerke": 20})
-    assert pult.aufrufe[-1][2]["staerke"] == 100 and pult.aufrufe[-1][2]["modus"] == "neu"
-
-
-def test_bild_staerke_100_ist_neu(angemeldet, pult):
-    angemeldet.post(f"/marketing/editor/{IID}/bild", headers={**HOST, "X-CSRF": ui.CSRF_TOKEN},
-                    json={"platz": "kopf", "staerke": 100})
-    assert pult.aufrufe[-1][2]["staerke"] == 100 and pult.aufrufe[-1][2]["modus"] == "neu"
-
-
-@pytest.mark.parametrize("body", [{"staerke": 101}, {"staerke": -1}, {"staerke": True},
-                                  {"staerke": "5"}, {"neu": "ja"}])
-def test_bild_formen_staerke_neu(angemeldet, pult, body):
-    r = angemeldet.post(f"/marketing/editor/{IID}/bild", headers={**HOST, "X-CSRF": ui.CSRF_TOKEN},
-                        json={"platz": "kopf", **body})
-    assert r.status_code == 422
-    assert not any(a[0] == "POST" for a in pult.aufrufe)
-
-
-def test_bild_beauftragen_formen_und_csrf(angemeldet, pult):
-    assert angemeldet.post(f"/marketing/editor/{IID}/bild", headers=HOST, json={"platz": "kopf"}).status_code == 403
-    for body in ({"platz": "a b"}, {"platz": 5}, {"hinweis": "x" * 501}, [1]):
-        r = angemeldet.post(f"/marketing/editor/{IID}/bild", headers={**HOST, "X-CSRF": ui.CSRF_TOKEN}, json=body)
-        assert r.status_code == 422, body
-    assert not any(a[0] == "POST" for a in pult.aufrufe)
-
-
-def test_bild_beauftragen_db_grund(angemeldet, pult):
-    pult.fehler = marketing_pult.PultFehler(
-        "abgelehnt", "Bildplatz kopf gibt es in der gespeicherten Fassung nicht - erst speichern")
-    r = angemeldet.post(f"/marketing/editor/{IID}/bild", headers={**HOST, "X-CSRF": ui.CSRF_TOKEN},
-                        json={"platz": "kopf"})
-    assert r.status_code == 422 and "erst speichern" in r.json()["grund"]
+def test_bildauftrag_von_hand_gibt_es_nicht_mehr(angemeldet, pult):
+    r = _senden(angemeldet, "POST", "bild", {"platz": "held", "hinweis": "x"})
+    assert r.status_code in (404, 405)
+    assert not [a for a in pult.aufrufe if a[1].endswith("/bilder") and a[0] == "POST"]
 
 
 # --- Gestaltungsflaeche durchreichen ---------------------------------------------
@@ -1139,29 +1091,6 @@ def test_bild_sw_kaputte_datei_liefert_original(monkeypatch, medien_ordner):
     c = TestClient(ui.app)
     r = c.get(f"/marketing/bild/{ui_editor.bild_token()}/logo.png?sw=1", headers=HOST)
     assert r.status_code == 200 and r.content.startswith(b"\x89PNG")
-
-
-def test_freistellen_nutzlast(angemeldet, pult):
-    r = angemeldet.post(f"/marketing/editor/{IID}/bild", json={"platz": "i", "freistellen": True, "staerke": 30, "neu": True},
-                        headers={**HOST, "X-CSRF": ui.CSRF_TOKEN})
-    assert r.status_code == 200
-    methode, pfad, daten = pult.aufrufe[-1]
-    assert pfad == f"/inhalte/{IID}/bilder"
-    assert daten == {"platz": "i", "hinweis": "", "nur_leere": False, "staerke": 0, "modus": "freistellen"}
-
-
-@pytest.mark.parametrize("body", [{"freistellen": True}, {"platz": "i", "freistellen": "ja"}])
-def test_freistellen_ungueltig(angemeldet, pult, body):
-    r = angemeldet.post(f"/marketing/editor/{IID}/bild", json=body, headers={**HOST, "X-CSRF": ui.CSRF_TOKEN})
-    assert r.status_code == 422
-    assert not any(a[0] == "POST" for a in pult.aufrufe)
-
-
-def test_freistellen_api_grund_durchgereicht(angemeldet, pult):
-    pult.fehler = marketing_pult.PultFehler("abgelehnt", "Dieser Platz hat noch kein echtes Bild")
-    r = angemeldet.post(f"/marketing/editor/{IID}/bild", json={"platz": "i", "freistellen": True},
-                        headers={**HOST, "X-CSRF": ui.CSRF_TOKEN})
-    assert r.status_code == 422 and "kein echtes Bild" in r.json()["grund"]
 
 
 def test_bild_sw_behaelt_alpha(monkeypatch, medien_ordner):

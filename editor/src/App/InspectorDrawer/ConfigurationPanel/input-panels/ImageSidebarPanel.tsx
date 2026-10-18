@@ -11,35 +11,21 @@ import {
 import {
   Box,
   Button,
-  Checkbox,
   Chip,
-  FormControlLabel,
   IconButton,
   Menu,
   MenuItem,
   Stack,
-  TextField,
   ToggleButton,
-  ToggleButtonGroup,
   Typography,
 } from '@mui/material';
 
 import {
-  erzeugenSperre,
   formatText,
-  freistellbar,
-  istLeer,
   istPlatz,
-  knopfText,
-  staerkeWert,
   standFuer,
-  STUFE_FREI,
-  STUFE_NAH,
-  STUFE_NEU,
 } from '../../../../bildfeld';
 import {
-  bildBeauftragen,
-  bildFreistellen,
   ANZEIGE,
   loeschFrage,
   medienLoeschen,
@@ -48,7 +34,7 @@ import {
   MEDIEN_LEER,
   leereBildwahl,
 } from '../../../../pult';
-import { gestaltungOeffnen, medienLaden, pultStore, standAbfragen } from '../../../../pultZustand';
+import { gestaltungOeffnen, medienLaden, pultStore } from '../../../../pultZustand';
 import { useSelectedBlockId } from '../../../../documents/editor/EditorContext';
 import { ImageDaten, ImageSchema } from '../../../../schemata';
 
@@ -75,21 +61,14 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
   const medienHinweis = pultStore((p) => p.medienHinweis);
   const stand = pultStore((p) => p.stand);
   const start = pultStore((p) => p.start);
-  const ungespeichert = pultStore((p) => p.ungespeichert);
   // Wechselt beim Oeffnen/Schliessen des Gestaltungsfensters: der Alt-Text unten liest danach neu.
   const fensterOffen = pultStore((p) => p.gestaltungOffen !== null);
   const selectedBlockId = useSelectedBlockId();
-  const [hinweis, setHinweis] = useState('');
-  const [stufe, setStufe] = useState<number>(STUFE_NAH);
-  const [neu, setNeu] = useState(false);
-  const [laeuft, setLaeuft] = useState(false);
   // Zuordnungsmenue: fuer welche Kachel es offen ist und woran es haengt.
   const [menue, setMenue] = useState<{ name: string; anker: HTMLElement } | null>(null);
   const [rueckmeldung, setRueckmeldung] = useState<{ art: 'ok' | 'fehler'; text: string } | null>(null);
   useEffect(() => {
     medienLaden();
-    // Panel weg (anderer Block gewaehlt): der Hinweis ist verworfen und blockiert das Neuladen nicht mehr.
-    return () => pultStore.setState({ hinweisOffen: false });
   }, []);
 
   // Das freie URL-Feld gibt es hier nicht: Bilder kommen nur aus den Medien.
@@ -107,46 +86,7 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
     return (id ? (mandanten.find((m) => m.id === id)?.name ?? id) : null) ?? 'Gemeinsam';
   };
   const platz = istPlatz(data.props);
-  const leer = istLeer(aktuell);
-  const frei = freistellbar({ url: aktuell, grafik: data.props?.grafik });
-  const sperre = erzeugenSperre(ungespeichert, data.props ?? undefined);
   const s = selectedBlockId ? standFuer(selectedBlockId, stand?.auftraege ?? []) : { text: '', art: null };
-
-  const erzeugen = async () => {
-    if (!start || !selectedBlockId || sperre) return;
-    setLaeuft(true);
-    setRueckmeldung(null);
-    const e = await bildBeauftragen(
-      start,
-      selectedBlockId,
-      hinweis.trim(),
-      staerkeWert(neu || leer ? STUFE_NEU : stufe),
-      neu || leer,
-    );
-    setLaeuft(false);
-    if (e.ok) {
-      setHinweis('');
-      pultStore.setState({ hinweisOffen: false });
-      setRueckmeldung({ art: 'ok', text: 'Beauftragt. Das Bild kommt als neue Fassung, sobald der PC es erzeugt hat.' });
-      standAbfragen();
-    } else {
-      setRueckmeldung({ art: 'fehler', text: e.grund });
-    }
-  };
-
-  const freistellen = async () => {
-    if (!start || !selectedBlockId || ungespeichert) return;
-    setLaeuft(true);
-    setRueckmeldung(null);
-    const e = await bildFreistellen(start, selectedBlockId);
-    setLaeuft(false);
-    if (e.ok) {
-      setRueckmeldung({ art: 'ok', text: 'Freistellen beauftragt – das Bild kommt als neue Fassung.' });
-      standAbfragen();
-    } else {
-      setRueckmeldung({ art: 'fehler', text: e.grund });
-    }
-  };
 
   // Bild aus der Bibliothek loeschen: erst pruefen (Newsletter/Entwuerfe), dann nachfragen, dann loeschen.
   const loeschen = async (n: string) => {
@@ -252,71 +192,9 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
           />
         )}
 
-        <Typography variant="subtitle2">{knopfText(leer)}</Typography>
-        <TextField
-          size="small"
-          fullWidth
-          label="Hinweis (optional)"
-          value={hinweis}
-          onChange={(ev) => {
-            setHinweis(ev.target.value);
-            pultStore.setState({ hinweisOffen: ev.target.value.trim() !== '' });
-          }}
-          inputProps={{ maxLength: 500 }}
-        />
-        {!leer && (
-          <>
-            <ToggleButtonGroup
-              exclusive
-              size="small"
-              value={stufe}
-              disabled={neu}
-              onChange={(_, v: number | null) => {
-                if (v !== null) setStufe(v);
-              }}
-              aria-label="Stärke der Überarbeitung"
-            >
-              <ToggleButton value={STUFE_NAH}>Nah am Original</ToggleButton>
-              <ToggleButton value={STUFE_FREI}>Freier</ToggleButton>
-            </ToggleButtonGroup>
-            <FormControlLabel
-              control={<Checkbox size="small" checked={neu} onChange={(ev) => setNeu(ev.target.checked)} />}
-              label="Ganz neu erzeugen"
-            />
-          </>
-        )}
-        <Button
-          size="small"
-          variant="contained"
-          sx={{ alignSelf: 'flex-start' }}
-          disabled={sperre !== null || laeuft || !start || !selectedBlockId}
-          onClick={erzeugen}
-        >
-          {knopfText(leer)}
-        </Button>
-        {sperre && (
-          <Typography variant="caption" color="text.secondary">
-            {sperre}
-          </Typography>
-        )}
-        {frei && (
-          <>
-            <Button
-              size="small"
-              variant="outlined"
-              sx={{ alignSelf: 'flex-start' }}
-              disabled={ungespeichert || laeuft || !start || !selectedBlockId}
-              onClick={freistellen}
-            >
-              Freistellen
-            </Button>
-            {ungespeichert && (
-              <Typography variant="caption" color="text.secondary">
-                Erst speichern
-              </Typography>
-            )}
-          </>
-        )}
+        <Typography variant="body2" color="text.secondary">
+          Bild erzeugen, ändern oder freistellen: Bild markieren und den Assistenten fragen
+        </Typography>
         {rueckmeldung && (
           <Typography variant="body2" color={rueckmeldung.art === 'fehler' ? 'error' : 'text.secondary'}>
             {rueckmeldung.text}

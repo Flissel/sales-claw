@@ -47,11 +47,6 @@ export function istLeer(url: string | null | undefined): boolean {
   return !url || !url.trim() || PLATZHALTER.test(url);
 }
 
-// Freistellen nur bei einem echten Bild: kein Platzhalter, keine leere Adresse, keine Grafik.
-export function freistellbar(props: { url?: string | null; grafik?: boolean | null; gestaltung?: unknown }): boolean {
-  return !istLeer(props.url) && props.grafik !== true && !istFlaeche(props);
-}
-
 const TEXT: Record<string, [string, 'wartet' | 'laeuft']> = { offen: ['wartet (PC muss laufen)', 'wartet'], in_arbeit: ['wird erzeugt', 'laeuft'] };
 
 export function standFuer(platz: string, auftraege: Auftrag[]): { text: string; art: 'wartet' | 'laeuft' | 'fehler' | null } {
@@ -62,25 +57,6 @@ export function standFuer(platz: string, auftraege: Auftrag[]): { text: string; 
   const neuester = meine.find((a) => a.platz === platz && a.status !== 'verworfen');
   if (neuester?.status === 'fehler') return { text: `fehlgeschlagen: ${neuester.befund ?? ''}`.trim(), art: 'fehler' };
   return { text: '', art: null };
-}
-
-export function erzeugenSperre(ungespeichert: boolean, props: { width?: unknown; height?: unknown; gestaltung?: unknown } | undefined): string | null {
-  if (!istPlatz(props)) return 'Kein Bildplatz – Breite und Höhe setzen';
-  if (ungespeichert) return 'Erst speichern – dieser Platz ist noch nicht gespeichert';
-  return null;
-}
-
-export function knopfText(leer: boolean): string {
-  return leer ? 'Bild erzeugen' : 'Bild überarbeiten';
-}
-
-// Stufen des Bildfelds: "Nah am Original" 35, "Freier" 75, "Ganz neu" 100.
-export const STUFE_NAH = 35;
-export const STUFE_FREI = 75;
-export const STUFE_NEU = 100;
-
-export function staerkeWert(roh: unknown): number {
-  return typeof roh === 'number' && Number.isInteger(roh) && roh >= 0 && roh <= 100 ? roh : 55;
 }
 
 // schonGeladen: Fassung, fuer die diese Sitzung schon einmal automatisch neu geladen hat (Schutz gegen Neuladeschleife).

@@ -25,7 +25,6 @@ export type Start = {
   medien_zuordnung_url?: string;
   // Bilder aus der Bibliothek loeschen (01.10.2026); fehlt bei aelterem sales-ui.
   medien_loeschen_url?: string;
-  bild_url: string;
   // Gestaltungsflaeche flachrechnen (Spec 2026-10-02 §5).
   gestaltung_url: string;
   stand_url: string;
@@ -343,40 +342,6 @@ export async function medienZuordnen(
     const j: unknown = await r.json().catch(() => ({}));
     if (r.ok && istObjekt(j) && j.ok === true) return { ok: true };
     const grund = istObjekt(j) && typeof j.grund === 'string' && j.grund ? j.grund : 'Zuordnung gerade nicht möglich';
-    return { ok: false, grund };
-  } catch {
-    return { ok: false, grund: 'Keine Verbindung zum Pult' };
-  }
-}
-
-export async function bildBeauftragen(s: Start, platz: string, hinweis: string, staerke: number, neu: boolean): Promise<{ ok: true } | { ok: false; grund: string }> {
-  try {
-    const r = await fetch(s.bild_url, {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json', 'X-CSRF': s.csrf },
-      body: JSON.stringify({ platz, hinweis, staerke, neu }),
-    });
-    if (r.ok) return { ok: true };
-    const j: unknown = await r.json().catch(() => ({}));
-    const grund = istObjekt(j) && typeof j.grund === 'string' && j.grund ? j.grund : 'Auftrag gerade nicht möglich';
-    return { ok: false, grund };
-  } catch {
-    return { ok: false, grund: 'Keine Verbindung zum Pult' };
-  }
-}
-
-export async function bildFreistellen(s: Start, platz: string): Promise<{ ok: true } | { ok: false; grund: string }> {
-  try {
-    const r = await fetch(s.bild_url, {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json', 'X-CSRF': s.csrf },
-      body: JSON.stringify({ platz, freistellen: true }),
-    });
-    if (r.ok) return { ok: true };
-    const j: unknown = await r.json().catch(() => ({}));
-    const grund = istObjekt(j) && typeof j.grund === 'string' && j.grund ? j.grund : 'Freistellen gerade nicht möglich';
     return { ok: false, grund };
   } catch {
     return { ok: false, grund: 'Keine Verbindung zum Pult' };
