@@ -111,25 +111,6 @@ def _gerahmt(inhalt, typ: str = "text/html; charset=utf-8", status: int = 200) -
                              "Cache-Control": "private, no-store"})
 
 
-# Auswahlwert "nur leere Bildplaetze": sendet platz None + nur_leere True. Editor-Block-IDs
-# beginnen nie mit "__", eine Kollision mit einem echten Platz ist daher nicht zu erwarten.
-NUR_LEERE = "__leere__"
-
-
-def _bildplaetze(bloecke) -> list[tuple[str, str]]:
-    """(id, alt) je Bildplatz (Image mit Breite und Hoehe) - wie
-    bildplaetze.finde in der Marketing-API, hier nur fuer die Auswahl."""
-    if not isinstance(bloecke, dict):
-        return []
-    aus = []
-    for bid, b in bloecke.items():
-        p = ((b or {}).get("data") or {}).get("props") or {}
-        if (b or {}).get("type") == "Image" and isinstance(p.get("width"), (int, float)) and p.get("width", 0) > 0 \
-                and isinstance(p.get("height"), (int, float)) and p.get("height", 0) > 0:
-            aus.append((str(bid), str(p.get("alt") or bid)))
-    return aus
-
-
 def _fassung_zahl(roh) -> int | None:
     try:
         n = int(str(roh))
@@ -403,20 +384,7 @@ def routen(ui) -> list:
                     for a in auftraege[:10]) or "<li>Noch keine Bild-Aufträge.</li>"
             except marketing_pult.PultFehler:
                 zeilen_b = "<li>Bildstand gerade nicht abrufbar.</li>"
-            optionen = ('<option value="">alle Bildplätze (auch belegte)</option>'
-                        f'<option value="{NUR_LEERE}">nur leere Bildplätze</option>') + "".join(
-                f'<option value="{e(bid)}">{e(alt)}</option>' for bid, alt in _bildplaetze(fassungen[0].get("bloecke")))
-            bilder_html = (
-                f'<div class="karte"><h2>Bilder</h2><ul class="bildstand">{zeilen_b}</ul>'
-                f'<form method="post" action="{basis}/bilder" class="aktion">{csrf}'
-                f'<div class="bild-zeile">'
-                f'<label>Platz <select name="platz">{optionen}</select></label>'
-                f'<label>Stärke <select name="staerke">'
-                f'<option value="35" selected>nah am Original</option><option value="75">freier</option>'
-                f'<option value="100">ganz neu</option></select></label>'
-                f'<label>Hinweis <input type="text" name="hinweis" maxlength="500" placeholder="z. B. wärmer, mehr Menschen"></label>'
-                f'<button type="submit">Bild überarbeiten</button></div>'
-                f'<span class="meta">Erzeugt wird am PC, sobald er läuft. Das Ergebnis ist eine neue Fassung.</span></form></div>')
+            bilder_html = f'<div class="karte"><h2>Bilder</h2><ul class="bildstand">{zeilen_b}</ul></div>'
         wahl_links = "".join(
             f'<a class="{"aktiv" if k == fmt else ""}" href="{basis}?fassung={nr}&amp;format={k}">{t}</a>'
             for k, t in RAHMEN_FORMATE.items())
@@ -438,36 +406,6 @@ def routen(ui) -> list:
         antwort = ui._seite(i["titel"], rumpf, refresh=20 if neu_laden else None)
         antwort.headers["Content-Security-Policy"] = ui._csp_mit_rahmen("'self'")
         return antwort
-
-    @ui._gesichert_seite
-    async def bilder(request):
-        form = await request.form()
-        if not ui._csrf_ok(form):
-            return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
-        iid = request.path_params["iid"]
-        platz = str(form.get("platz") or "").strip() or None
-        nur_leere = platz == NUR_LEERE
-        if nur_leere:
-            platz = None
-        hinweis = str(form.get("hinweis") or "").strip()
-        roh_staerke = str(form.get("staerke") or "").strip()
-        if not roh_staerke:
-            staerke = 55
-        elif roh_staerke.isascii() and roh_staerke.isdigit() and int(roh_staerke) <= 100:
-            staerke = int(roh_staerke)
-        else:
-            return ui._fehlerseite(422, "Nicht möglich", "Die Stärke muss 0 bis 100 sein.")
-        if platz is not None and not ui_editor.PLATZ_ID.match(platz):
-            return ui._fehlerseite(422, "Nicht möglich", "Unbekannter Bildplatz.")
-        if len(hinweis) > ui_editor.HINWEIS_MAX:
-            return ui._fehlerseite(422, "Nicht möglich", "Der Hinweis ist zu lang.")
-        try:
-            await run_in_threadpool(marketing_pult.anfrage, "POST", f"/inhalte/{urllib.parse.quote(iid)}/bilder",
-                                    {"platz": platz, "hinweis": hinweis, "nur_leere": nur_leere,
-                                     "staerke": staerke, "modus": "neu" if staerke == 100 else "ueberarbeiten"})
-        except marketing_pult.PultFehler as f:
-            return fehler(f)
-        return RedirectResponse(f"/marketing/entwurf/{urllib.parse.quote(iid)}", status_code=303)
 
     @ui._gesichert_seite
     async def vorschau(request):
@@ -608,6 +546,5 @@ def routen(ui) -> list:
         Route("/marketing/entwurf/{iid}/einreichen", einreichen, methods=["POST"]),
         Route("/marketing/entwurf/{iid}/zurueckziehen", zurueckziehen, methods=["POST"]),
         Route("/marketing/entwurf/{iid}/verwerfen", verwerfen, methods=["POST"]),
-        Route("/marketing/entwurf/{iid}/bilder", bilder, methods=["POST"]),
         *ui_marke.routen(ui),
     ]

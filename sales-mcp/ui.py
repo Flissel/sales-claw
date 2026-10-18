@@ -1065,12 +1065,6 @@ details.gefahr > summary { cursor: pointer; color: var(--fehler); font-size: .85
 details.gefahr form { display: flex; flex-wrap: wrap; align-items: end; gap: .5rem; }
 details.gefahr label { flex: 1 1 14rem; font-weight: 600; }
 details.gefahr label input { display: block; width: 100%; margin-top: .3rem; }
-form.aktion > .bild-zeile { flex: 1 1 100%; }
-.bild-zeile { display: grid; gap: .6rem 1rem; align-items: end;
-              grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); }
-.bild-zeile label { font-weight: 600; font-size: .9rem; }
-.bild-zeile label select, .bild-zeile label input { display: block; width: 100%;
-                                                     margin-top: .3rem; font-weight: 400; }
 ul.zeitleiste { list-style: none; margin: 0; padding: 0; }
 ul.zeitleiste li { padding: .35rem 0 .35rem 1rem; border-left: 2px solid var(--linie_stark); }
 ul.zeitleiste li.freigegeben { border-left-color: var(--gut); font-weight: 600; }

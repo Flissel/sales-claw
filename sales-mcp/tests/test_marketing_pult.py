@@ -455,16 +455,15 @@ def test_handy_vorschau_mindestens_70vh():
                                        r"\.pult-rechts iframe\.vorschau \{([^}]*)\}", css)]
     assert treffer and "min-height: 70vh" in treffer[0].group(1)
 
-def test_entwurf_zeigt_bildstand_und_formular(angemeldet, pult):
+def test_entwurf_zeigt_bildstand_ohne_formular(angemeldet, pult):
     pult.bloecke = BLOECKE_MIT_PLATZ
     pult.bilder = {"auftraege": [
         {"platz": None, "nur_leere": True, "status": "offen", "befund": "", "hinweis": "", "geaendert_am": "2026-09-29 10:00"},
         {"platz": "kopf", "nur_leere": False, "status": "fehler", "befund": "Schrift im Bild", "hinweis": "", "geaendert_am": "2026-09-29 09:00"}]}
     seite = angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST).text
     assert "Bilder" in seite and "wartet (PC muss laufen)" in seite and "Schrift im Bild" in seite
-    assert f'action="/marketing/entwurf/{IID}/bilder"' in seite and '<option value="kopf">' in seite
-    assert '<option value="">alle Bildplätze (auch belegte)</option>' in seite
-    assert '<option value="__leere__">nur leere Bildplätze</option>' in seite
+    assert "/bilder\"" not in seite and "<form" not in seite.split("Bilder</h2>")[1].split("</div>")[0]
+    assert "Bild überarbeiten" not in seite and "<select" not in seite.split("Bilder</h2>")[1].split("</div>")[0]
     assert "<script" not in seite
 
 
@@ -474,24 +473,6 @@ def test_entwurf_bildstand_fehler_laesst_seite_stehen(angemeldet, pult):
     pult.fehler_pfad = "/bilder"
     r = angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST)
     assert r.status_code == 200 and "Bildstand gerade nicht abrufbar" in r.text
-
-
-def test_entwurf_bilder_formular(angemeldet, pult):
-    r = angemeldet.post(f"/marketing/entwurf/{IID}/bilder", headers=HOST,
-                        data={"csrf": ui.CSRF_TOKEN, "platz": "", "hinweis": "mehr Menschen"},
-                        follow_redirects=False)
-    assert r.status_code == 303 and r.headers["location"] == f"/marketing/entwurf/{IID}"
-    assert pult.aufrufe[-1][2] == {"platz": None, "hinweis": "mehr Menschen", "nur_leere": False,
-                                   "staerke": 55, "modus": "ueberarbeiten"}
-
-
-def test_entwurf_bilder_formular_nur_leere(angemeldet, pult):
-    r = angemeldet.post(f"/marketing/entwurf/{IID}/bilder", headers=HOST,
-                        data={"csrf": ui.CSRF_TOKEN, "platz": "__leere__", "hinweis": ""},
-                        follow_redirects=False)
-    assert r.status_code == 303
-    assert pult.aufrufe[-1][2] == {"platz": None, "hinweis": "", "nur_leere": True,
-                                   "staerke": 55, "modus": "ueberarbeiten"}
 
 
 def test_entwurf_laedt_neu_solange_auftraege_offen(angemeldet, pult):
@@ -509,9 +490,6 @@ def test_entwurf_ohne_offene_auftraege_kein_neuladen_mit_messung(angemeldet, pul
          "messung": {"kopf": {"aehnlich_original": 0.823, "naeher_am_hinweis": 0.04}}}]}
     seite = angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST).text
     assert 'http-equiv="refresh"' not in seite and "kopf: 82 % Themen-Ähnlichkeit" in seite
-    assert '<select name="staerke">' in seite and 'name="neu"' not in seite
-    assert '<option value="35" selected>nah am Original</option>' in seite
-    assert '<option value="75">freier</option>' in seite and '<option value="100">ganz neu</option>' in seite
 
 
 def test_entwurf_messung_nan_inf_stuerzt_nicht_ab(angemeldet, pult):
@@ -529,30 +507,6 @@ def test_entwurf_bildstand_fehler_kein_neuladen(angemeldet, pult):
     pult.fehler = marketing_pult.PultFehler("nicht_erreichbar", "x")
     pult.fehler_pfad = "/bilder"
     assert 'http-equiv="refresh"' not in angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST).text
-
-
-def test_pult_formular_staerke_auswahl(angemeldet, pult):
-    def sende(**extra):
-        return angemeldet.post(f"/marketing/entwurf/{IID}/bilder", headers=HOST, follow_redirects=False,
-                               data={"csrf": ui.CSRF_TOKEN, "platz": "kopf", "hinweis": "", **extra})
-    assert sende(staerke="35").status_code == 303
-    assert pult.aufrufe[-1][2]["staerke"] == 35 and pult.aufrufe[-1][2]["modus"] == "ueberarbeiten"
-    sende(staerke="75")
-    assert pult.aufrufe[-1][2]["staerke"] == 75 and pult.aufrufe[-1][2]["modus"] == "ueberarbeiten"
-    sende(staerke="100")
-    assert pult.aufrufe[-1][2]["staerke"] == 100 and pult.aufrufe[-1][2]["modus"] == "neu"
-    sende(staerke="")
-    assert pult.aufrufe[-1][2]["staerke"] == 55
-    n = len(pult.aufrufe)
-    for schlecht in ("abc", "101", "-1", "3.5"):
-        assert sende(staerke=schlecht).status_code == 422, schlecht
-    assert len(pult.aufrufe) == n
-
-
-def test_entwurf_bilder_formular_ohne_csrf(angemeldet, pult):
-    r = angemeldet.post(f"/marketing/entwurf/{IID}/bilder", headers=HOST, data={"platz": ""},
-                        follow_redirects=False)
-    assert r.status_code == 403 and not any(a[0] == "POST" for a in pult.aufrufe)
 
 
 def test_menue_vorlagen_und_editor():
@@ -758,7 +712,14 @@ def test_entwurf_hat_einreichen_verwerfen_und_editor(angemeldet, pult):
     assert "Zurückziehen" not in s
     assert f'/marketing/editor/{IID}' in s and "Im Editor öffnen" in s
     assert '<details class="gefahr">' in s and 'name="grund"' in s and 'value="ablehnen"' in s
-    assert "Bild überarbeiten" in s
+    assert "Bild überarbeiten" not in s
+
+
+def test_bildauftrag_von_hand_gibt_es_nicht_mehr(angemeldet, pult):
+    r = angemeldet.post(f"/marketing/entwurf/{IID}/bilder", headers=HOST, follow_redirects=False,
+                        data={"csrf": ui.CSRF_TOKEN, "platz": "kopf", "hinweis": "x", "staerke": "55"})
+    assert r.status_code in (404, 405)
+    assert not [a for a in pult.aufrufe if a[1].endswith("/bilder") and a[0] == "POST"]
 
 
 def test_eingereicht_zeigt_zurueckziehen_ohne_bildkarte(angemeldet, pult):
