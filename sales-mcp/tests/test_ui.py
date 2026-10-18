@@ -3916,3 +3916,21 @@ def test_freigabe_doppelt_pruefen_dbfehler_ohne_hinweis(monkeypatch):
     monkeypatch.setattr(ui.historie, "doppelt_pruefen", kaputt)
     r = _get("/freigaben")
     assert r.status_code == 200 and "Schon angeschrieben" not in r.text
+
+
+def test_kopfzellen_und_knoepfe_brechen_nie_mitten_im_wort():
+    """Design-Review 19.10.: das vererbte `overflow-wrap: anywhere` machte die
+    Mindestbreite von Kopfzellen und Knoepfen zu einem Buchstaben - „Conse nt",
+    „Erl edi gt". Fuer sie gilt break-word: umbrechen nur zwischen Woertern,
+    lange Fremddaten in td brechen weiter ueberall."""
+    seite = _get("/freigaben").text
+    assert "th, button, .knopf { overflow-wrap: break-word; }" in seite
+    assert "overflow-wrap: anywhere" in seite
+
+
+def test_kontaktseite_zeigt_status_und_consent_auf_deutsch():
+    lead = _lead(name="Rohwert Probe")
+    seite = _get(f"/kontakte/{lead}").text
+    assert "<th>Stufe</th><td>neu</td>" in seite
+    assert "<th>Einwilligung</th><td>nicht erfasst</td>" in seite
+    assert ">new<" not in seite and ">unknown<" not in seite

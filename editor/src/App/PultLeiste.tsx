@@ -1,8 +1,16 @@
 import React, { useEffect, useState } from 'react';
 
-import { ArrowBackOutlined, PhoneIphoneOutlined, SaveOutlined, MailOutlined, SendOutlined } from '@mui/icons-material';
+import {
+  ArrowBackOutlined,
+  PhoneIphoneOutlined,
+  SaveOutlined,
+  MailOutlined,
+  SendOutlined,
+  VisibilityOutlined,
+} from '@mui/icons-material';
 import {
   Alert,
+  Box,
   Button,
   Chip,
   Dialog,
@@ -10,6 +18,10 @@ import {
   DialogContent,
   DialogContentText,
   DialogTitle,
+  IconButton,
+  ListItemIcon,
+  Menu,
+  MenuItem,
   Snackbar,
   Stack,
   TextField,
@@ -28,7 +40,11 @@ import { LiegtBand, MarkeBand, RueckmeldungBand } from './FreigabeBand';
 
 type Meldung = { art: 'success' | 'error' | 'info'; text: string } | null;
 
-export const PULT_LEISTE_HOEHE = 64;
+// Zwei Zeilen (Design-Review 19.10.): in einer Zeile brauchte die Leiste 1316 px und lief
+// bis 1920 px Fensterbreite ueber ("Vorschau Handy" abgeschnitten). Oben Status und Aktionen,
+// unten Betreff und Vorschautext.
+const ZEILE = 52;
+export const PULT_LEISTE_HOEHE = 2 * ZEILE;
 
 export default function PultLeiste() {
   const start = pultStore((p) => p.start);
@@ -48,6 +64,7 @@ export default function PultLeiste() {
   const [konflikt, setKonflikt] = useState<string | null>(null);
   const [verlassen, setVerlassen] = useState(false);
   const [reicht, setReicht] = useState(false);
+  const [vorschauMenue, setVorschauMenue] = useState<HTMLElement | null>(null);
 
   // Beim Schliessen des Tabs mit ungespeicherten Aenderungen warnt der Browser.
   useEffect(() => {
@@ -120,126 +137,134 @@ export default function PultLeiste() {
     window.location.reload();
   };
 
+  const standText = agent
+    ? `Fassung ${basis} · ${agent}`
+    : ungespeichert
+      ? `Fassung ${basis} · ungespeicherte Änderungen`
+      : `Fassung ${basis} · gespeichert`;
   const vorschauHinweis = ungespeichert ? 'Erst speichern – die Vorschau zeigt die gespeicherte Fassung' : '';
 
   return (
     <>
-      <Stack
-        direction="row"
-        alignItems="center"
-        spacing={1.5}
-        sx={{
-          height: PULT_LEISTE_HOEHE,
-          px: 1.5,
-          borderBottom: 1,
-          borderColor: 'divider',
-          bgcolor: 'background.paper',
-        }}
-      >
-        <Button size="small" startIcon={<ArrowBackOutlined />} onClick={zurueck} sx={{ flexShrink: 0 }}>
-          Zurück zum Entwurf
-        </Button>
-        <Typography variant="subtitle1" sx={{ fontWeight: 700, flexShrink: 0 }}>
-          Newsletter
-        </Typography>
-        {etikett !== null && (
-          <Tooltip title="Firma dieses Newsletters">
-            <Chip size="small" variant="outlined" label={etikett} sx={{ flexShrink: 0 }} />
+      <Box sx={{ height: PULT_LEISTE_HOEHE, borderBottom: 1, borderColor: 'divider', bgcolor: 'background.paper' }}>
+        <Stack direction="row" alignItems="center" spacing={1} sx={{ height: ZEILE, px: 1, minWidth: 0 }}>
+          <Tooltip title="Zurück zum Entwurf">
+            <IconButton size="small" aria-label="Zurück zum Entwurf" onClick={zurueck}>
+              <ArrowBackOutlined fontSize="small" />
+            </IconButton>
           </Tooltip>
-        )}
-        <TextField
-          size="small"
-          label="Betreff"
-          value={betreff}
-          disabled={agent !== null}
-          onChange={(ev) => {
-            pultStore.setState({ betreff: ev.target.value });
-            alsUngespeichert();
-          }}
-          sx={{ flex: 2, minWidth: 160 }}
-        />
-        <TextField
-          size="small"
-          label="Vorschautext"
-          value={vorschautext}
-          disabled={agent !== null}
-          onChange={(ev) => {
-            pultStore.setState({ vorschautext: ev.target.value });
-            alsUngespeichert();
-          }}
-          sx={{ flex: 2, minWidth: 140 }}
-        />
-        <Typography
-          variant="body2"
-          color={ungespeichert ? 'warning.main' : 'text.secondary'}
-          sx={{ flexShrink: 0, minWidth: 190 }}
-        >
-          {agent
-            ? `Fassung ${basis} · ${agent}`
-            : ungespeichert
-              ? `Fassung ${basis} · ungespeicherte Änderungen`
-              : `Fassung ${basis} · gespeichert`}
-        </Typography>
-        <Tooltip title={agent ? 'Gesperrt, bis der Assistent fertig ist' : ''}>
-          <span>
-            <Button
-              variant="contained"
-              size="small"
-              startIcon={<SaveOutlined />}
-              disabled={laeuft || agent !== null || nurLesen}
-              onClick={() => sichern(false)}
-              sx={{ flexShrink: 0 }}
-            >
-              {laeuft ? 'Speichert …' : 'Speichern'}
-            </Button>
-          </span>
-        </Tooltip>
-        {start.einreichen_url && !nurLesen && (
+          <Typography variant="subtitle1" sx={{ fontWeight: 700, flexShrink: 0 }}>
+            Newsletter
+          </Typography>
+          {etikett !== null && (
+            <Tooltip title="Firma dieses Newsletters">
+              <Chip size="small" variant="outlined" label={etikett} sx={{ flexShrink: 0 }} />
+            </Tooltip>
+          )}
+          <Typography
+            variant="body2"
+            noWrap
+            title={standText}
+            color={ungespeichert ? 'warning.main' : 'text.secondary'}
+            sx={{ flex: 1, minWidth: 0 }}
+          >
+            {standText}
+          </Typography>
           <Tooltip title={agent ? 'Gesperrt, bis der Assistent fertig ist' : ''}>
             <span>
               <Button
-                variant="outlined"
+                variant="contained"
                 size="small"
-                color="success"
-                startIcon={<SendOutlined />}
-                disabled={reicht || laeuft || agent !== null}
-                onClick={() => void einreichenKlick()}
-                sx={{ flexShrink: 0 }}
+                startIcon={<SaveOutlined />}
+                disabled={laeuft || agent !== null || nurLesen}
+                onClick={() => sichern(false)}
+                sx={{ flexShrink: 0, whiteSpace: 'nowrap' }}
               >
-                {reicht ? 'Reicht ein …' : 'Zur Freigabe einreichen'}
+                {laeuft ? 'Speichert …' : 'Speichern'}
               </Button>
             </span>
           </Tooltip>
-        )}
-        <Tooltip title={vorschauHinweis}>
-          <span>
-            <Button
-              size="small"
-              variant="outlined"
-              startIcon={<MailOutlined />}
-              disabled={ungespeichert || laeuft}
-              onClick={() => vorschau('mail')}
-              sx={{ flexShrink: 0 }}
+          {start.einreichen_url && !nurLesen && (
+            <Tooltip title={agent ? 'Gesperrt, bis der Assistent fertig ist' : 'Zur Freigabe einreichen'}>
+              <span>
+                <Button
+                  variant="outlined"
+                  size="small"
+                  color="success"
+                  startIcon={<SendOutlined />}
+                  disabled={reicht || laeuft || agent !== null}
+                  onClick={() => void einreichenKlick()}
+                  sx={{ flexShrink: 0, whiteSpace: 'nowrap' }}
+                >
+                  {reicht ? 'Reicht ein …' : 'Einreichen'}
+                </Button>
+              </span>
+            </Tooltip>
+          )}
+          <Tooltip title={vorschauHinweis}>
+            <span>
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<VisibilityOutlined />}
+                disabled={ungespeichert || laeuft}
+                onClick={(ev) => setVorschauMenue(ev.currentTarget)}
+                sx={{ flexShrink: 0, whiteSpace: 'nowrap' }}
+              >
+                Vorschau
+              </Button>
+            </span>
+          </Tooltip>
+          <Menu anchorEl={vorschauMenue} open={vorschauMenue !== null} onClose={() => setVorschauMenue(null)}>
+            <MenuItem
+              onClick={() => {
+                setVorschauMenue(null);
+                vorschau('mail');
+              }}
             >
+              <ListItemIcon>
+                <MailOutlined fontSize="small" />
+              </ListItemIcon>
               Vorschau Mail
-            </Button>
-          </span>
-        </Tooltip>
-        <Tooltip title={vorschauHinweis}>
-          <span>
-            <Button
-              size="small"
-              variant="outlined"
-              startIcon={<PhoneIphoneOutlined />}
-              disabled={ungespeichert || laeuft}
-              onClick={() => vorschau('handy')}
-              sx={{ flexShrink: 0 }}
+            </MenuItem>
+            <MenuItem
+              onClick={() => {
+                setVorschauMenue(null);
+                vorschau('handy');
+              }}
             >
+              <ListItemIcon>
+                <PhoneIphoneOutlined fontSize="small" />
+              </ListItemIcon>
               Vorschau Handy
-            </Button>
-          </span>
-        </Tooltip>
-      </Stack>
+            </MenuItem>
+          </Menu>
+        </Stack>
+        <Stack direction="row" alignItems="center" spacing={1.5} sx={{ height: ZEILE, px: 1.5 }}>
+          <TextField
+            size="small"
+            label="Betreff"
+            value={betreff}
+            disabled={agent !== null}
+            onChange={(ev) => {
+              pultStore.setState({ betreff: ev.target.value });
+              alsUngespeichert();
+            }}
+            sx={{ flex: 1, minWidth: 0 }}
+          />
+          <TextField
+            size="small"
+            label="Vorschautext"
+            value={vorschautext}
+            disabled={agent !== null}
+            onChange={(ev) => {
+              pultStore.setState({ vorschautext: ev.target.value });
+              alsUngespeichert();
+            }}
+            sx={{ flex: 1, minWidth: 0 }}
+          />
+        </Stack>
+      </Box>
       <RueckmeldungBand />
       <LiegtBand />
       <MarkeBand />

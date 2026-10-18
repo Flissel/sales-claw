@@ -1363,6 +1363,10 @@ table { border-collapse: collapse; width: 100%; background: var(--flaeche); }
 th, td { border: 1px solid var(--linie); padding: .5rem .6rem;
          text-align: left; font-size: .9rem; vertical-align: top; }
 thead th { background: var(--kopfzeile); }
+/* Design-Review 19.10.: `anywhere` (vom body geerbt) macht die Mindestbreite
+   zu EINEM Buchstaben - Kopfzellen und Knoepfe brachen mitten im Wort
+   („Conse nt", „Erl edi gt"). Hier nur zwischen Woertern umbrechen. */
+th, button, .knopf { overflow-wrap: break-word; }
 
 /* --- Schmale Schirme ----------------------------------------------------- */
 @media (max-width: 640px) {
@@ -1744,6 +1748,12 @@ def _tabelle(spalten, zeilen) -> str:
         leib.append(f"<tr>{zellen}</tr>")
     return (f'<div class="tabelle"><table><thead><tr>{kopf}</tr></thead>'
             f"<tbody>{''.join(leib)}</tbody></table></div>")
+
+
+_EINWILLIGUNG = {"unknown": "nicht erfasst", "opt_in": "Einwilligung erteilt",
+                 "existing_customer": "Bestandskunde",
+                 "inbound": "hat sich selbst gemeldet",
+                 "betreiber_auftrag": "Auftrag des Betreibers"}
 
 
 def _paar_tabelle(paare) -> str:
@@ -5686,11 +5696,16 @@ async def kontakt_detail(request):
     archiviert = server._archiviert(anreicherung)
 
     stammdaten = [(name, _e(lead[feld]))
-                  for name, feld in (("Name", "name"), ("Status", "status"),
-                                     ("Consent", "consent_status"),
+                  for name, feld in (("Name", "name"),
                                      ("E-Mail", "email"), ("Telefon", "phone"),
                                      ("Firma", "company"), ("Titel", "title"),
                                      ("Quelle", "source"), ("Notizen", "notes"))]
+    # Design-Review 19.10.: keine Rohwerte („new", „unknown") - Stufe wie in
+    # Liste und Pipeline, Einwilligung in Worten (Werte: db/provision.sql).
+    stammdaten[1:1] = [
+        ("Stufe", _e(server._stufe_lesen(lead["status"]))),
+        ("Einwilligung", _e(_EINWILLIGUNG.get(lead["consent_status"],
+                                             lead["consent_status"])))]
     if not (server._sammelkontakt(lead["id"]) or server._privat(anreicherung)):
         stammdaten.insert(6, ("Einordnung", _einordnung_chips(
             lead["enrichment"], lead["company"])))
