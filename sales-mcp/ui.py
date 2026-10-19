@@ -1315,6 +1315,56 @@ nav.reiter a { display: inline-flex; align-items: center; gap: .4rem; min-height
 nav.reiter a[aria-current] { border-bottom-color: var(--akzent);
                              color: var(--akzent_text); font-weight: 700; }
 nav.reiter .zahl { font-size: .8rem; color: var(--gedaempft); }
+/* Kontaktseite (Design-Review S3, Task 3): Kopfkarte über den Reitern,
+   Überblick zweispaltig. Nur Variablen aus :root, keine Hexwerte. */
+.karte.kopfkarte { display: flex; align-items: center; gap: 1.1rem;
+  padding: 1.2rem 1.4rem; margin: 0 0 1rem; border-radius: 14px;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--schrift) 7%, transparent); }
+.kopfkarte .initialen { flex: none; width: 4rem; height: 4rem; border-radius: 18px;
+  display: grid; place-items: center; background: var(--blush);
+  color: var(--blush_text); font-family: var(--schrift_anzeige);
+  font-weight: 700; font-size: 1.6rem; }
+.kopfkarte .kopf-text { flex: 1 1 auto; min-width: 0; }
+.kopfkarte h1 { margin: 0; }
+.chips { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem;
+         margin-top: .5rem; }
+.chip { display: inline-flex; align-items: center; padding: .15rem .65rem;
+        border-radius: 999px; font-size: .8rem; font-weight: 700;
+        background: var(--aktiv); color: var(--akzent_text);
+        border: 1px solid transparent; white-space: nowrap; }
+.chip.gut { background: color-mix(in srgb, var(--gut) 14%, var(--flaeche));
+            color: var(--gut_text); }
+.chip.offen { background: var(--kopfzeile); color: var(--gedaempft); }
+.chip.bereich { background: var(--blush); color: var(--blush_text); }
+.chip.archiv { background: transparent; color: var(--schrift);
+               border: 1px dashed var(--linie_stark); }
+.chip.privat { background: var(--kopfzeile); color: var(--schrift);
+               border-color: var(--linie_stark); }
+.kopf-aktionen { flex: none; display: flex; flex-wrap: wrap; gap: .5rem; }
+.kopf-aktionen a.knopf { display: inline-flex; align-items: center;
+  justify-content: center; min-height: 44px; padding: .55rem 1.1rem;
+  border-radius: 10px; font-weight: 600; text-decoration: none;
+  white-space: nowrap; }
+.kopf-aktionen a.knopf.haupt { background: var(--akzent); color: var(--akzent_auf);
+                               border: 1px solid var(--akzent); }
+.zwei { display: grid; grid-template-columns: minmax(0, 1fr) 22rem;
+        gap: 1.2rem; align-items: start; }
+/* Die Bausteine bringen ihre eigene Karte mit - in der Karte des Überblicks
+   wird sie zur Fläche, sonst stünde Rahmen in Rahmen. */
+.zwei .karte.box .karte { border: 0; padding: 0; margin: .4rem 0 0;
+                          background: transparent; }
+.zwei .karte.box > h2:first-child { margin-top: 0; }
+.zwei .karte.box h2 + .karte { margin-top: 0; }
+.zwei .termin .zeit { width: auto; white-space: nowrap; }
+@media (max-width: 767px) {
+  .zwei { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 639px) {
+  .karte.kopfkarte { flex-wrap: wrap; padding: 1rem; }
+  .kopfkarte .kopf-text { flex-basis: calc(100% - 5.1rem); }
+  .kopf-aktionen { width: 100%; flex-direction: column; }
+  .kopf-aktionen a.knopf { width: 100%; }
+}
 .abzeichen { border: 1px solid var(--gut); color: var(--gut); border-radius: 999px;
              padding: 0 .5rem; font-weight: 700; }
 .marke-profil { border: 1px solid var(--linie); border-radius: 4px; padding: .6rem .8rem;
@@ -1861,7 +1911,10 @@ def _laden_stil() -> str:
 
 
 def _seite(titel: str, rumpf: str, status: int = 200,
-           refresh: int | None = None) -> HTMLResponse:
+           refresh: int | None = None,
+           titel_zeigen: bool = True) -> HTMLResponse:
+    """`titel_zeigen=False`: der Rumpf bringt sein eigenes `<h1>` mit (die
+    Kopfkarte der Kontaktseite); `<title>` bleibt."""
     auffrischen = (f'<meta http-equiv="refresh" content="{int(refresh)}">'
                    if refresh else "")
     # Abmelden nur bei scharfer Anmeldung — vorher gaebe es nichts zu
@@ -1885,7 +1938,8 @@ def _seite(titel: str, rumpf: str, status: int = 200,
         f'<meta name="color-scheme" content="light dark">'
         f"{auffrischen}<title>{_e(titel)} — sales-ui</title>"
         f"<style>{_STIL}</style>{_laden_stil()}</head><body>"
-        f'<div class="rahmen">{nav}<main><h1>{_e(titel)}</h1>{rumpf}'
+        f'<div class="rahmen">{nav}<main>'
+        f'{f"<h1>{_e(titel)}</h1>" if titel_zeigen else ""}{rumpf}'
         f"</main></div>"
         f"</body></html>", status_code=status)
 
@@ -2201,7 +2255,8 @@ def _kontakt_historie_bereich(lead_id, alle: bool) -> str:
         if e["kanal"] else f'<li>{_tag_kurz(e["datum"], True)} · {_e(e["text"])}</li>'
         for e in (eintraege if alle else eintraege[:20]))
     mehr = ('' if alle or len(eintraege) <= 20 else
-            f'<p><a href="?historie=alle#historie">Alle {len(eintraege)} anzeigen</a></p>')
+            f'<p><a href="?reiter=verlauf&amp;historie=alle#historie">'
+            f'Alle {len(eintraege)} anzeigen</a></p>')
     return (f'<h2 id="historie">Kontakt-Historie</h2>'
             + (f'<ul>{zeilen}</ul>{mehr}' if eintraege else '<p>Noch kein Kontakt erfasst.</p>'))
 
@@ -3031,7 +3086,7 @@ def _aufraeumen(pfad: str) -> None:
 
 def _wiedervorlage_formular(lead_id) -> str:
     return (
-        f'<h2>Wiedervorlage</h2><div class="karte">'
+        f'<h2 id="wiedervorlage">Wiedervorlage</h2><div class="karte">'
         f'<form method="post" action="/wiedervorlagen/setzen">'
         f'<input type="hidden" name="lead_id" value="{_e(lead_id)}">'
         f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
@@ -3058,7 +3113,8 @@ async def aktion_wiedervorlage_setzen(request):
         notiz=str(form.get("notiz") or "")))
     if "fehler" in antwort:
         return _fehlerseite(400, "Nicht gemerkt", _e(antwort["fehler"]))
-    return RedirectResponse(f"/kontakte/{lead_id}", status_code=303)
+    return RedirectResponse(_kontakt_ziel(lead_id, "ueberblick", "wiedervorlage"),
+                            status_code=303)
 
 
 @_gesichert_seite
@@ -4200,7 +4256,8 @@ async def aktion_kontakt_freigeben(request):
     antwort = json.loads(server.kontakt_freigeben(lead_id=lead_id))
     if "fehler" in antwort:
         return _fehlerseite(409, "Nicht freigegeben", _e(antwort["fehler"]))
-    return RedirectResponse(f"/kontakte/{lead_id}", status_code=303)
+    return RedirectResponse(_kontakt_ziel(lead_id, "einstellungen", "freigabe"),
+                            status_code=303)
 
 
 @_gesichert_seite
@@ -4211,7 +4268,8 @@ async def aktion_kontakt_freigabe_entziehen(request):
     antwort = json.loads(server.kontakt_freigabe_entziehen(lead_id=lead_id))
     if "fehler" in antwort:
         return _fehlerseite(409, "Nicht entzogen", _e(antwort["fehler"]))
-    return RedirectResponse(f"/kontakte/{lead_id}", status_code=303)
+    return RedirectResponse(_kontakt_ziel(lead_id, "einstellungen", "freigabe"),
+                            status_code=303)
 
 
 def _archiv_bereich(lead, archiviert: bool) -> str:
@@ -4299,7 +4357,8 @@ async def aktion_kontakt_einordnen(request):
                           [b for b in vorher if b not in gewaehlt], quelle="ui")
     if "fehler" in r:
         return _fehlerseite(422, "Nicht gespeichert", _e(r["fehler"]))
-    return RedirectResponse(f"/kontakte/{lead_id}#einordnung", status_code=303)
+    return RedirectResponse(_kontakt_ziel(lead_id, "einstellungen", "einordnung"),
+                            status_code=303)
 
 
 def _euro(betrag) -> str:
@@ -4414,7 +4473,8 @@ async def aktion_kontakt_vertrag(request):
         f("notiz"), f("eintrag_id"), quelle="ui")
     if "fehler" in r:
         return _fehlerseite(422, "Nicht gespeichert", _e(r["fehler"]))
-    return RedirectResponse(f"/kontakte/{lead_id}#abschluss", status_code=303)
+    return RedirectResponse(_kontakt_ziel(lead_id, "vertraege", "abschluss"),
+                            status_code=303)
 
 
 async def _kontakt_vorspann(request):
@@ -4529,7 +4589,8 @@ async def aktion_kontakt_bearbeiten(request):
     # stehen nicht in server.KONTAKT_FELDER und werden hier deshalb gar nicht
     # erst angesehen — mitgeschickt oder nicht.
     if not aenderungen:
-        return RedirectResponse(f"/kontakte/{lead_id}", status_code=303)
+        return RedirectResponse(_kontakt_ziel(lead_id, "einstellungen"),
+                                status_code=303)
 
     gesetzt = []
     for feld in server.KONTAKT_FELDER:
@@ -4548,12 +4609,12 @@ async def aktion_kontakt_bearbeiten(request):
                    if gesetzt else " Nichts geändert."))
         gesetzt.append(feld)
     _kontakt_loggen(lead_id, "korrektur", {"felder": gesetzt})
-    ziel = f"/kontakte/{lead_id}"
+    ziel = _kontakt_ziel(lead_id, "einstellungen")
     if "phone" in aenderungen:
         # Der Hinweis, was eine neue Nummer bewirkt — er steht auf der
         # Kontaktseite, damit er nach dem Umleiten (POST/Redirect/GET) nicht
         # verlorengeht. Uebergeben wird nur die AUSWAHL, nie ein Text.
-        ziel += "?gespeichert=telefon"
+        ziel += "&gespeichert=telefon"
     return RedirectResponse(ziel, status_code=303)
 
 
@@ -4595,7 +4656,7 @@ def _archiv_warnseite(lead) -> HTMLResponse:
         f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
         f'<button class="gefahr">Ja — {_e(lead["name"])} archivieren</button>'
         f'</form></div>'
-        f'<p class="abbrechen"><a href="/kontakte/{_e(lead["id"])}">'
+        f'<p class="abbrechen"><a href="{_e(_kontakt_ziel(lead["id"], "einstellungen"))}">'
         f'Abbrechen, nichts tun</a></p>',
         status=409)
 
@@ -4646,7 +4707,7 @@ def _autonomie_segment(lead_id, stufe: str, freigegeben: bool) -> str:
     if stufe == "auto" and not freigegeben:
         teile.append(f'<div class="meta"><b>ohne Wirkung</b> — keine '
                      f'WhatsApp-Freigabe '
-                     f'(<a href="/kontakte/{_e(lead_id)}#freigabe">erteilen'
+                     f'(<a href="{_e(_kontakt_ziel(lead_id, "einstellungen", "freigabe"))}">erteilen'
                      f'</a>)</div>')
     return "".join(teile)
 
@@ -4669,7 +4730,7 @@ def _autonomie_waehler(lead_id, stufe: str, freigegeben: bool) -> str:
     # Oberflaeche ueberhaupt nicht — nur diesen Satz.
     warnung = (f'<div class="meta"><b>ohne Wirkung</b> — keine '
                f'WhatsApp-Freigabe '
-               f'(<a href="/kontakte/{_e(lead_id)}#freigabe">erteilen</a>)'
+               f'(<a href="{_e(_kontakt_ziel(lead_id, "einstellungen", "freigabe"))}">erteilen</a>)'
                f'</div>'
                if stufe == "auto" and not freigegeben else "")
     return (f'<form class="aktion" method="post" '
@@ -4706,7 +4767,7 @@ def _privat_warnseite(lead) -> HTMLResponse:
         f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
         f'<button class="gefahr">Ja — {_e(lead["name"])} privat markieren'
         f'</button></form></div>'
-        f'<p class="abbrechen"><a href="/kontakte/{_e(lead["id"])}">'
+        f'<p class="abbrechen"><a href="{_e(_kontakt_ziel(lead["id"], "einstellungen"))}">'
         f'Abbrechen</a></p>')
 
 
@@ -4741,7 +4802,8 @@ async def aktion_kontakt_privat_bestaetigen(request):
     antwort = json.loads(server.kontakt_privat_setzen(lead_id))
     if "fehler" in antwort:
         return _fehlerseite(400, "Nicht markiert", _e(antwort["fehler"]))
-    return RedirectResponse(f"/kontakte/{lead_id}", status_code=303)
+    return RedirectResponse(_kontakt_ziel(lead_id, "einstellungen", "privat"),
+                            status_code=303)
 
 
 @_gesichert_seite
@@ -4754,7 +4816,8 @@ async def aktion_kontakt_privat_entziehen(request):
     antwort = json.loads(server.kontakt_privat_entziehen(lead_id))
     if "fehler" in antwort:
         return _fehlerseite(400, "Nicht aufgehoben", _e(antwort["fehler"]))
-    return RedirectResponse(f"/kontakte/{lead_id}", status_code=303)
+    return RedirectResponse(_kontakt_ziel(lead_id, "einstellungen", "privat"),
+                            status_code=303)
 
 
 @_gesichert_seite
@@ -4775,7 +4838,8 @@ async def aktion_kontakt_stufe(request):
         begruendung=begruendung))
     if "fehler" in antwort:
         return _fehlerseite(400, "Nicht gesetzt", _e(antwort["fehler"]))
-    return RedirectResponse(f"/kontakte/{lead_id}#stufe", status_code=303)
+    return RedirectResponse(_kontakt_ziel(lead_id, "einstellungen", "stufe"),
+                            status_code=303)
 
 
 def _wa_zeit(wert) -> str:
@@ -6132,7 +6196,7 @@ async def aktion_kontakt_archivieren_bestaetigen(request):
     if "fehler" in antwort:
         return _fehlerseite(400, "Nicht archiviert", _e(antwort["fehler"]))
     _kontakt_loggen(lead_id, "kontakt_archiviert", {"archiviert": True})
-    return RedirectResponse(f"/kontakte/{lead_id}", status_code=303)
+    return RedirectResponse(_kontakt_ziel(lead_id, "einstellungen"), status_code=303)
 
 
 @_gesichert_seite
@@ -6148,7 +6212,7 @@ async def aktion_kontakt_wiederherstellen(request):
         return _fehlerseite(404, "Nicht wiederhergestellt",
                             _e(antwort["fehler"]))
     _kontakt_loggen(lead_id, "kontakt_archiviert", {"archiviert": False})
-    return RedirectResponse(f"/kontakte/{lead_id}", status_code=303)
+    return RedirectResponse(_kontakt_ziel(lead_id, "einstellungen"), status_code=303)
 
 
 @_gesichert_seite
@@ -6169,10 +6233,116 @@ async def aktion_profil_anfordern(request):
     return RedirectResponse(f"/kontakte/{lead_id}#profil", status_code=303)
 
 
-def _kontakt_termine(lead_id: str) -> str:
-    """Abschnitt „Termine" der Kontaktseite (14.10.2026): die nicht
-    abgesagten Termine dieses Kontakts, je mit Sprung in die Wochenansicht
-    des Kalenders - dort wird geaendert, nicht hier."""
+# ---------------------------------------------------------------------------
+# Kontaktseite (Design-Review S3, Plan 2026-10-19-design-s3-s4.md E7-E9):
+# Kopfkarte und sechs Reiter als Links statt einer 27 000 px langen Seite.
+# Jeder Reiter baut nur seine eigenen Abschnitte; die Abfragen der anderen
+# laufen nicht. `?reiter=` geht gegen die Whitelist KONTAKT_REITER, alles
+# andere ist der Überblick, und der Wert wird nie zurückgespiegelt.
+# ---------------------------------------------------------------------------
+
+KONTAKT_REITER: tuple[tuple[str, str], ...] = (
+    ("ueberblick", "Überblick"),
+    ("verlauf", "Verlauf"),
+    ("vertraege", "Verträge & Projekte"),
+    ("termine", "Termine"),
+    ("recherche", "Recherche"),
+    ("einstellungen", "Einstellungen"),
+)
+# Überblick: so viele Einträge aus der Kontakt-Historie und so viele
+# kommende Termine; der Rest steht in den Reitern Verlauf und Termine.
+KONTAKT_LETZTE = 5
+KONTAKT_NAECHSTE_TERMINE = 3
+# Einwilligungen, die als erteilt gelten (Chip in --gut_text). Werte wie
+# _EINWILLIGUNG (db/provision.sql).
+_EINWILLIGUNG_ERTEILT = ("opt_in", "existing_customer", "inbound",
+                         "betreiber_auftrag")
+
+
+def _kontakt_ziel(lead_id: str, reiter: str = "ueberblick",
+                  anker: str = "") -> str:
+    """Adresse eines Reiters der Kontaktseite (E9) - Ziel jedes Redirects
+    und Ankers auf die Kontaktseite. Der Überblick ohne Anker ist die
+    nackte Adresse; ein unbekannter Reiter wird zum Überblick. `anker` ist
+    immer ein Literal aus diesem Modul."""
+    if reiter not in dict(KONTAKT_REITER):
+        reiter = "ueberblick"
+    if reiter == "ueberblick" and not anker:
+        return f"/kontakte/{lead_id}"
+    return (f"/kontakte/{lead_id}?reiter={reiter}"
+            + (f"#{anker}" if anker else ""))
+
+
+def _initialen(name) -> str:
+    """Bis zu zwei Buchstaben aus dem Namen (erstes und letztes Wort, nur
+    Wörter, die mit Buchstabe oder Ziffer beginnen). Escaped wird beim
+    Einsetzen."""
+    woerter = [w for w in str(name or "").split() if w[:1].isalnum()]
+    if not woerter:
+        return "?"
+    zeichen = woerter[0][0] + (woerter[-1][0] if len(woerter) > 1 else "")
+    return zeichen.upper()
+
+
+def _kontakt_kopfkarte(lead, archiviert: bool) -> str:
+    """Kopf über jedem Reiter: Initialen, Name als einziges <h1>, Chips,
+    Herkunft und die Hauptaktionen.
+
+    E8: KEIN Senden-Knopf (WhatsApp/E-Mail) und keine tel:/mailto:-Links -
+    Schreiben aus der Oberfläche ginge am Freigabe-Gate und am Protokoll
+    vorbei. Die Aktionen sind Links auf Reiter; am Sammelkontakt entfallen
+    Bearbeiten und Wiedervorlage (er ist kein Mensch)."""
+    lead_id = str(lead["id"])
+    anreicherung = lead["enrichment"] or {}
+    sammel = server._sammelkontakt(lead["id"])
+    privat = server._privat(anreicherung)
+    einwilligung = lead["consent_status"]
+    chips = [
+        f'<span class="chip">Stufe: {_e(server._stufe_lesen(lead["status"]))}</span>',
+        f'<span class="chip {"gut" if einwilligung in _EINWILLIGUNG_ERTEILT else "offen"}">'
+        f'{_e(_EINWILLIGUNG.get(einwilligung, einwilligung))}</span>']
+    if not (sammel or privat):
+        art, bereiche = server._einordnung(anreicherung, lead["company"])
+        chips.append(f'<span class="chip art">'
+                     f'{_e("Firma" if art == "firma" else "Person")}</span>')
+        chips += [f'<span class="chip bereich">{_e(server.BEREICHE[b])}</span>'
+                  for b in bereiche]
+    if archiviert:
+        chips.append('<span class="chip archiv">archiviert</span>')
+    if privat:
+        chips.append('<span class="chip privat">privat</span>')
+    zuletzt = server._q("select max(created_at) as zuletzt from activities "
+                        "where lead_id = %s", (lead_id,))[0]["zuletzt"]
+    herkunft = []
+    if lead["source"]:
+        herkunft.append(f"aus {_e(lead['source'])}")
+    if zuletzt:
+        herkunft.append(f"zuletzt {_tag_kurz(zuletzt, True)}")
+    if herkunft:
+        chips.append(f'<span class="meta">{" · ".join(herkunft)}</span>')
+    aktionen = []
+    if not sammel:
+        aktionen.append(
+            f'<a class="knopf haupt" href="'
+            f'{_e(_kontakt_ziel(lead_id, "ueberblick", "wiedervorlage"))}">'
+            f'Wiedervorlage</a>')
+    aktionen.append(f'<a class="knopf leer" href="'
+                    f'{_e(_kontakt_ziel(lead_id, "termine"))}">Termine</a>')
+    if not sammel:
+        aktionen.append(f'<a class="knopf leer" href="'
+                        f'{_e(_kontakt_ziel(lead_id, "einstellungen"))}">'
+                        f'Bearbeiten</a>')
+    return (f'<section class="karte kopfkarte">'
+            f'<span class="initialen">{_e(_initialen(lead["name"]))}</span>'
+            f'<div class="kopf-text"><h1>{_e(lead["name"] or "Kontakt")}</h1>'
+            f'<div class="chips">{"".join(chips)}</div></div>'
+            f'<div class="kopf-aktionen">{"".join(aktionen)}</div></section>')
+
+
+def _kontakt_termine_liste(lead_id) -> list[tuple[str, str, dict]]:
+    """Die nicht abgesagten Termine eines Kontakts als (Tag, Uhrzeit,
+    Payload), neueste zuerst. Gemeinsam für Reiterzahl, Reiter „Termine“
+    und die nächsten Termine im Überblick."""
     abgesagt = {str((z["payload"] or {}).get("uid") or "") for z in server._q(
         "select payload from activities where lead_id = %s "
         "and type = 'termin_abgesagt'", (lead_id,))}
@@ -6187,6 +6357,16 @@ def _kontakt_termine(lead_id: str) -> str:
             continue
         termine.append((tag, str(p.get("uhrzeit") or ""), p))
     termine.sort(key=lambda t: (t[0], t[1]), reverse=True)
+    return termine
+
+
+def _kontakt_termine(lead_id: str, termine=None) -> str:
+    """Reiter „Termine“ der Kontaktseite (14.10.2026): die nicht
+    abgesagten Termine dieses Kontakts, je mit Sprung in die Wochenansicht
+    des Kalenders - dort wird geaendert, nicht hier. `termine`: die schon
+    gelesene `_kontakt_termine_liste` (spart die zweite Abfrage)."""
+    if termine is None:
+        termine = _kontakt_termine_liste(lead_id)
     teile = [f"<h2>Termine ({len(termine)})</h2>"]
     if not termine:
         teile.append("<p>Keine Termine.</p>")
@@ -6204,25 +6384,52 @@ def _kontakt_termine(lead_id: str) -> str:
     return "".join(teile)
 
 
-@_gesichert_seite
-async def kontakt_detail(request):
-    roh = request.path_params["lead_id"]
-    try:
-        lead_id = str(uuid.UUID(roh))
-    except ValueError:
-        return _fehlerseite(404, "Unbekannter Kontakt",
-                            f"&#x27;{_e(roh)}&#x27; ist keine lead_id.")
-    leads = server._q(
-        "select id, name, email, phone, company, title, source, status, "
-        "consent_status, notes, enrichment, created_at from leads "
-        "where id = %s", (lead_id,))
-    if not leads:
-        return _fehlerseite(404, "Unbekannter Kontakt",
-                            f"Kein Kontakt mit lead_id {_e(lead_id)}.")
-    lead = leads[0]
-    anreicherung = lead["enrichment"] or {}
-    archiviert = server._archiviert(anreicherung)
+def _naechste_termine(lead_id, termine) -> str:
+    """Überblick: die nächsten Termine ab heute, früheste zuerst."""
+    heute = date.today().isoformat()
+    kommend = sorted((t for t in termine if t[0] >= heute),
+                     key=lambda t: (t[0], t[1]))[:KONTAKT_NAECHSTE_TERMINE]
+    teile = ['<h2>Nächste Termine</h2>']
+    if not kommend:
+        teile.append('<p class="meta">Keine anstehenden Termine.</p>')
+    for tag, zeit, p in kommend:
+        thema = str(p.get("thema") or "") or "(ohne Thema)"
+        teile.append(
+            f'<div class="termin"><span class="zeit">'
+            f'{_e(tag[8:10] + "." + tag[5:7] + ".")} {_e(zeit)}</span>'
+            f'<span>{_e(_kurz(thema, 80))}</span></div>')
+    teile.append(f'<p class="meta"><a href="'
+                 f'{_e(_kontakt_ziel(lead_id, "termine"))}">Alle Termine</a></p>')
+    return "".join(teile)
 
+
+def _letzte_kontakte(lead_id) -> str:
+    """Überblick: die neuesten Einträge der Kontakt-Historie (C3)."""
+    try:
+        eintraege = historie.kontakt_historie(lead_id)[:KONTAKT_LETZTE]
+    except psycopg.Error:
+        eintraege = None
+    teile = ['<h2>Letzte Kontakte</h2>']
+    if eintraege is None:
+        teile.append('<p class="meta">Gerade nicht lesbar.</p>')
+    elif not eintraege:
+        teile.append('<p class="meta">Noch kein Kontakt erfasst.</p>')
+    else:
+        teile.append('<ul class="zeitleiste">' + "".join(
+            f'<li>{_tag_kurz(e["datum"], True)} · '
+            + (f'{_e(historie._KANAL.get(e["kanal"], e["kanal"]))} · '
+               if e["kanal"] else "")
+            + f'{_e(e["text"])}</li>' for e in eintraege) + '</ul>')
+    teile.append(f'<p class="meta"><a href="'
+                 f'{_e(_kontakt_ziel(lead_id, "verlauf"))}">Ganzer Verlauf</a></p>')
+    return "".join(teile)
+
+
+def _kontakt_ueberblick(lead, termine) -> str:
+    """Reiter „Überblick“: links Stammdaten, Kontaktprofil, Bedarfsstand;
+    rechts Wiedervorlagen, die nächsten Termine und die letzten Kontakte."""
+    lead_id = str(lead["id"])
+    anreicherung = lead["enrichment"] or {}
     stammdaten = [(name, _e(lead[feld]))
                   for name, feld in (("Name", "name"),
                                      ("E-Mail", "email"), ("Telefon", "phone"),
@@ -6237,155 +6444,37 @@ async def kontakt_detail(request):
     if not (server._sammelkontakt(lead["id"]) or server._privat(anreicherung)):
         stammdaten.insert(6, ("Einordnung", _einordnung_chips(
             lead["enrichment"], lead["company"])))
-    teile = []
-    if archiviert:
-        teile.append(
-            '<div class="hinweis">Dieser Kontakt ist <b>archiviert</b>: er '
-            'steht nicht in der Kontaktliste, nicht im Posteingang und nicht '
-            'in der Zuordnungsauswahl der Einordnung. Gelöscht wurde nichts '
-            '— der Verlauf unten ist vollzählig.</div>')
-    # Der Hinweis nach einer Nummernaenderung. Die Seite liest aus dem
-    # Abfrageteil NUR, WELCHER der hier fest verdrahteten Hinweise gezeigt
-    # wird — der Text selbst kommt nie von dort (er waere sonst ein Fremddatum
-    # in der eigenen Seite, und eine praeparierte Verknuepfung koennte dem
-    # Betreiber Beliebiges in den Mund legen).
-    if request.query_params.get("gespeichert") == "telefon":
-        teile.append(
-            '<div class="warnung">Telefonnummer geändert. Damit wechselt der '
-            'Schlüssel, über den eingehende Nachrichten diesem Kontakt '
-            'zugeordnet werden: Nachrichten von der ALTEN Nummer landen ab '
-            'sofort beim Sammelkontakt „Unbekannte Eingänge" und müssen '
-            'unter /einordnung neu zugeordnet werden; ausgehende Entwürfe '
-            'gehen an die NEUE Nummer. Bereits gebuchte Zeilen im Verlauf '
-            'bleiben, wo sie sind (activities ist append-only). Läuft der '
-            'Kontakt im Auto-Betrieb, greift die Änderung dort erst nach '
-            'scripts/sync-allowlist.ps1.</div>')
-    teile.append(_paar_tabelle(
-        stammdaten + [("Angelegt", _zeit(lead["created_at"]))]))
-    teile.append(_kontakt_formular(lead))
-    teile.append(_einordnung_bereich(lead))
-
-    # Pipeline-Stufe (27.08.2026): dasselbe Werkzeug wie der Chat, mit
-    # Begruendungsfeld — jeder Wechsel ist eine Beweiszeile. Leeres Feld
-    # bekommt eine ehrliche Standard-Begruendung statt einer Ablehnung:
-    # der Klick des Betreibers IST die Entscheidung.
-    stufe_jetzt = server._stufe_lesen(lead["status"])
-    stufen_optionen = "".join(
-        f'<option value="{_e(s)}"{" selected" if s == stufe_jetzt else ""}>'
-        f'{_e(s)}</option>' for s in server.PIPELINE_STUFEN)
-    teile.append(
-        f'<h2 id="stufe">Pipeline-Stufe</h2>'
-        f'<form method="post" action="/kontakte/stufe" class="zeile">'
-        f'<input type="hidden" name="lead_id" value="{_e(lead_id)}">'
-        f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
-        f'<select name="stufe" aria-label="Pipeline-Stufe">{stufen_optionen}'
-        f'</select> '
-        f'<input name="begruendung" placeholder="Begründung (empfohlen)" '
-        f'size="34"> <button>Stufe setzen</button></form>')
-
-    # Privat-Markierung (P3, 29.08.2026): setzen fuehrt ueber die
-    # Warnseite (kuenftige Nachrichten sind unwiederbringlich still),
-    # aufheben geht direkt — dabei geht nichts verloren.
-    if server._privat(lead["enrichment"]):
-        teile.append(
-            f'<h2 id="privat">&#128274; Privat</h2>'
-            f'<p class="meta">Dieser Kontakt ist dem System still: nichts '
-            f'wird gespeichert, kein Verlauf, keine Entwürfe. Bestand nur '
-            f'über die Datenauskunft.</p>'
-            f'<form method="post" action="/kontakte/privat-entziehen">'
-            f'<input type="hidden" name="lead_id" value="{_e(lead_id)}">'
-            f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
-            f'<button>Privat-Markierung aufheben</button></form>')
-    else:
-        teile.append(
-            f'<h2 id="privat">Privat</h2>'
-            f'<form method="post" action="/kontakte/privat">'
-            f'<input type="hidden" name="lead_id" value="{_e(lead_id)}">'
-            f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
-            f'<button>Privat markieren&hellip;</button></form>')
-
+    links = [f'<section class="karte box"><h2>Stammdaten</h2>'
+             f'{_paar_tabelle(stammdaten + [("Angelegt", _zeit(lead["created_at"]))])}'
+             f'</section>',
+             f'<section class="karte box">{_kontaktprofil_bereich(lead_id)}</section>']
     # Bedarfsstand: beantwortete Leitfaden-Fragen mit Wortlaut, offene als Zahl.
     if server.bedarfsanalyse_an():
         bedarf = anreicherung.get("bedarf") or {}
-        teile.append(f"<h2>Bedarfsstand ({len(bedarf)} beantwortet, "
-                     f"{max(len(server.ALLE_FRAGEN) - len(bedarf), 0)} offen)</h2>")
+        teil = (f"<h2>Bedarfsstand ({len(bedarf)} beantwortet, "
+                f"{max(len(server.ALLE_FRAGEN) - len(bedarf), 0)} offen)</h2>")
         if bedarf:
-            teile.append(_tabelle(["Frage", "Antwort"], [
+            teil += _tabelle(["Frage", "Antwort"], [
                 [_e(server.ALLE_FRAGEN.get(fid, {}).get("frage", fid)),
                  _e((wert or {}).get("antwort") if isinstance(wert, dict) else wert)]
-                for fid, wert in sorted(bedarf.items())]))
+                for fid, wert in sorted(bedarf.items())])
         else:
-            teile.append("<p>Noch keine Antworten erfasst.</p>")
+            teil += "<p>Noch keine Antworten erfasst.</p>"
+        links.append(f'<section class="karte box">{teil}</section>')
+    rechts = [
+        f'<section class="karte box"><h2>Offene Wiedervorlagen</h2>'
+        f'{_wiedervorlagen_tabelle(_offene_wiedervorlagen(lead_id), mit_kontakt=False)}'
+        f'</section>',
+        f'<section class="karte box">{_wiedervorlage_formular(lead_id)}</section>',
+        f'<section class="karte box">{_naechste_termine(lead_id, termine)}</section>',
+        f'<section class="karte box">{_letzte_kontakte(lead_id)}</section>']
+    return (f'<div class="zwei"><div class="spalte-haupt">{"".join(links)}</div>'
+            f'<div class="spalte-rand">{"".join(rechts)}</div></div>')
 
-    # Vertraege (enrichment.vertraege) — nur wenn es wirklich ein Array ist,
-    # Recherche-Arbeit sichtbar machen (Betreiber-Wunsch 01.09.2026):
-    # firma_anreichern legt unter enrichment.firma ab — bis jetzt zeigte
-    # die Seite davon nichts. Alles Fremddaten von fremden Websites:
-    # escaped und gekuerzt, wie ueberall.
-    teile.append("<h2>Recherche (Firma)</h2>")
-    firma = anreicherung.get("firma")
-    if isinstance(firma, dict) and (firma.get("website")
-                                    or firma.get("seiten")):
-        meta = f'<div class="meta">{_e(firma.get("website") or "")}</div>'
-        seiten = firma.get("seiten")
-        seiten = seiten if isinstance(seiten, list) else []
-        karten = []
-        for s in seiten[:6]:
-            if not isinstance(s, dict):
-                continue
-            text_voll = " ".join(str(s.get("text") or "").split())
-            karten.append(
-                f'<div class="karte"><b>{_e(s.get("titel") or s.get("typ") or "Seite")}</b>'
-                f'<div class="meta">{_e(s.get("url") or "")}</div>'
-                # Merge 12.09.2026, beides behalten: kuerzen mit vollem Text
-                # im `title` (Stufe 1) UND anklickbare Adressen (Konferenz-
-                # Linie). Reihenfolge zwingend: erst `_kurz` auf den ROHEN
-                # Text, dann `_text_html` — das escapet selbst und sucht die
-                # Adressen im bereits escapten Text. Umgekehrt schnitte
-                # `_kurz` in fertiges Markup hinein.
-                # Die Fassung der Konferenz-Linie liess sich hier nicht
-                # woertlich uebernehmen: sie ruft `_text_html(text)` auf, und
-                # `text` gibt es in diesem Block nicht (nur `text_voll`) —
-                # das waere ein NameError auf der Kontaktseite gewesen.
-                f'<div class="text" title="{_e(text_voll)}">'
-                f'{_text_html(_kurz(text_voll, 300))}</div></div>')
-        # Geschaeftsverweise (01.09.2026): die Social-/Business-Links, die
-        # die Firma selbst verlinkt — als anklickbare Absprungpunkte. Der
-        # Text ist eine feste Plattform-Bezeichnung aus dem Code, die URL
-        # Fremddatum (escaped; das href genauso).
-        verweise = firma.get("verweise")
-        verweise = verweise if isinstance(verweise, list) else []
-        verweis_zeile = ""
-        if verweise:
-            knoepfe = "".join(
-                f'<a class="verweis" href="{_e(v.get("url"))}" '
-                f'target="_blank" rel="noopener noreferrer nofollow">'
-                f'{_e(v.get("plattform") or "Link")}</a>'
-                for v in verweise if isinstance(v, dict) and v.get("url"))
-            verweis_zeile = (f'<p class="meta">Verlinkt von der Firma '
-                             f'(nur Absprung, nicht ausgewertet):</p>'
-                             f'<p class="verweise">{knoepfe}</p>')
-        teile.append(meta + "".join(karten) + verweis_zeile)
-    else:
-        teile.append(
-            '<p class="meta">Noch keine Firmendaten — der Assistent '
-            'reichert mit firma_anreichern an (Website nötig).</p>')
 
-    teile.append(_vertraege_bereich(lead))
-    teile.append(_kontakt_historie_bereich(
-        lead_id, request.query_params.get("historie") == "alle"))
-
-    teile.append(_kontakt_termine(lead_id))
-
-    teile.append("<h2>Offene Wiedervorlagen</h2>")
-    teile.append(_wiedervorlagen_tabelle(_offene_wiedervorlagen(lead_id),
-                                         mit_kontakt=False))
-
-    # Das Kontaktprofil VOR den Reports: es ist der Stand, sie sind der
-    # Verlauf. Wer einen Kontakt aufschlaegt, will zuerst wissen, wer das
-    # ist und was gerade los ist.
-    teile.append(_kontaktprofil_bereich(lead_id))
-
+def _kontakt_verlauf(lead_id, alle: bool) -> str:
+    """Reiter „Verlauf“: Kontakt-Historie, Chat-Reports, Verlaufstabelle."""
+    teile = [_kontakt_historie_bereich(lead_id, alle)]
     # Chat-Reports ZUERST (Betreiber-Wunsch 22.08.2026): sie erzaehlen die
     # Vorgeschichte, und die von ihnen abgedeckten Einzelnachrichten fallen
     # unten aus dem Verlauf — sonst stuende derselbe Chat zweimal da. Der
@@ -6422,12 +6511,181 @@ async def kontakt_detail(request):
         teile.append(_tabelle(["Wann", "Was", "Inhalt"], zeilen))
     else:
         teile.append("<p>Noch keine Aktivitäten.</p>")
+    return "".join(teile)
 
-    teile.append(_whatsapp_freigabe_bereich(
-        lead, server._whatsapp_freigegeben(lead["enrichment"])))
-    teile.append(_wiedervorlage_formular(lead_id))
-    teile.append(_archiv_bereich(lead, archiviert))
-    return _seite(lead["name"] or "Kontakt", "".join(teile))
+
+def _recherche_bereich(anreicherung) -> str:
+    """Reiter „Recherche“. Recherche-Arbeit sichtbar machen
+    (Betreiber-Wunsch 01.09.2026): firma_anreichern legt unter
+    enrichment.firma ab. Alles Fremddaten von fremden Websites: escaped und
+    gekuerzt, wie ueberall."""
+    teile = ["<h2>Recherche (Firma)</h2>"]
+    firma = anreicherung.get("firma")
+    if isinstance(firma, dict) and (firma.get("website")
+                                    or firma.get("seiten")):
+        meta = f'<div class="meta">{_e(firma.get("website") or "")}</div>'
+        seiten = firma.get("seiten")
+        seiten = seiten if isinstance(seiten, list) else []
+        karten = []
+        for s in seiten[:6]:
+            if not isinstance(s, dict):
+                continue
+            text_voll = " ".join(str(s.get("text") or "").split())
+            karten.append(
+                f'<div class="karte"><b>{_e(s.get("titel") or s.get("typ") or "Seite")}</b>'
+                f'<div class="meta">{_e(s.get("url") or "")}</div>'
+                # Merge 12.09.2026, beides behalten: kuerzen mit vollem Text
+                # im `title` (Stufe 1) UND anklickbare Adressen (Konferenz-
+                # Linie). Reihenfolge zwingend: erst `_kurz` auf den ROHEN
+                # Text, dann `_text_html` — das escapet selbst und sucht die
+                # Adressen im bereits escapten Text. Umgekehrt schnitte
+                # `_kurz` in fertiges Markup hinein.
+                f'<div class="text" title="{_e(text_voll)}">'
+                f'{_text_html(_kurz(text_voll, 300))}</div></div>')
+        # Geschaeftsverweise (01.09.2026): die Social-/Business-Links, die
+        # die Firma selbst verlinkt — als anklickbare Absprungpunkte. Der
+        # Text ist eine feste Plattform-Bezeichnung aus dem Code, die URL
+        # Fremddatum (escaped; das href genauso).
+        verweise = firma.get("verweise")
+        verweise = verweise if isinstance(verweise, list) else []
+        verweis_zeile = ""
+        if verweise:
+            knoepfe = "".join(
+                f'<a class="verweis" href="{_e(v.get("url"))}" '
+                f'target="_blank" rel="noopener noreferrer nofollow">'
+                f'{_e(v.get("plattform") or "Link")}</a>'
+                for v in verweise if isinstance(v, dict) and v.get("url"))
+            verweis_zeile = (f'<p class="meta">Verlinkt von der Firma '
+                             f'(nur Absprung, nicht ausgewertet):</p>'
+                             f'<p class="verweise">{knoepfe}</p>')
+        teile.append(meta + "".join(karten) + verweis_zeile)
+    else:
+        teile.append(
+            '<p class="meta">Noch keine Firmendaten — der Assistent '
+            'reichert mit firma_anreichern an (Website nötig).</p>')
+    return "".join(teile)
+
+
+def _stufe_bereich(lead) -> str:
+    """Pipeline-Stufe (27.08.2026): dasselbe Werkzeug wie der Chat, mit
+    Begruendungsfeld — jeder Wechsel ist eine Beweiszeile. Leeres Feld
+    bekommt eine ehrliche Standard-Begruendung statt einer Ablehnung: der
+    Klick des Betreibers IST die Entscheidung."""
+    stufe_jetzt = server._stufe_lesen(lead["status"])
+    stufen_optionen = "".join(
+        f'<option value="{_e(s)}"{" selected" if s == stufe_jetzt else ""}>'
+        f'{_e(s)}</option>' for s in server.PIPELINE_STUFEN)
+    return (
+        f'<h2 id="stufe">Pipeline-Stufe</h2>'
+        f'<form method="post" action="/kontakte/stufe" class="zeile">'
+        f'<input type="hidden" name="lead_id" value="{_e(lead["id"])}">'
+        f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+        f'<select name="stufe" aria-label="Pipeline-Stufe">{stufen_optionen}'
+        f'</select> '
+        f'<input name="begruendung" placeholder="Begründung (empfohlen)" '
+        f'size="34"> <button>Stufe setzen</button></form>')
+
+
+def _privat_bereich(lead) -> str:
+    """Privat-Markierung (P3, 29.08.2026): setzen fuehrt ueber die
+    Warnseite (kuenftige Nachrichten sind unwiederbringlich still),
+    aufheben geht direkt — dabei geht nichts verloren."""
+    verborgen = (f'<input type="hidden" name="lead_id" value="{_e(lead["id"])}">'
+                 f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">')
+    if server._privat(lead["enrichment"]):
+        return (f'<h2 id="privat">&#128274; Privat</h2>'
+                f'<p class="meta">Dieser Kontakt ist dem System still: nichts '
+                f'wird gespeichert, kein Verlauf, keine Entwürfe. Bestand nur '
+                f'über die Datenauskunft.</p>'
+                f'<form method="post" action="/kontakte/privat-entziehen">'
+                f'{verborgen}<button>Privat-Markierung aufheben</button></form>')
+    return (f'<h2 id="privat">Privat</h2>'
+            f'<form method="post" action="/kontakte/privat">'
+            f'{verborgen}<button>Privat markieren&hellip;</button></form>')
+
+
+def _kontakt_einstellungen(lead, archiviert: bool) -> str:
+    """Reiter „Einstellungen“: alles, was den Kontakt verändert."""
+    return "".join([
+        _kontakt_formular(lead),
+        _einordnung_bereich(lead),
+        _stufe_bereich(lead),
+        _privat_bereich(lead),
+        _whatsapp_freigabe_bereich(
+            lead, server._whatsapp_freigegeben(lead["enrichment"])),
+        _archiv_bereich(lead, archiviert)])
+
+
+@_gesichert_seite
+async def kontakt_detail(request):
+    roh = request.path_params["lead_id"]
+    try:
+        lead_id = str(uuid.UUID(roh))
+    except ValueError:
+        return _fehlerseite(404, "Unbekannter Kontakt",
+                            f"&#x27;{_e(roh)}&#x27; ist keine lead_id.")
+    leads = server._q(
+        "select id, name, email, phone, company, title, source, status, "
+        "consent_status, notes, enrichment, created_at from leads "
+        "where id = %s", (lead_id,))
+    if not leads:
+        return _fehlerseite(404, "Unbekannter Kontakt",
+                            f"Kein Kontakt mit lead_id {_e(lead_id)}.")
+    lead = leads[0]
+    anreicherung = lead["enrichment"] or {}
+    archiviert = server._archiviert(anreicherung)
+    reiter = request.query_params.get("reiter", "")
+    if reiter not in dict(KONTAKT_REITER):
+        reiter = "ueberblick"
+
+    teile = [_kontakt_kopfkarte(lead, archiviert)]
+    if archiviert:
+        teile.append(
+            '<div class="hinweis">Dieser Kontakt ist <b>archiviert</b>: er '
+            'steht nicht in der Kontaktliste, nicht im Posteingang und nicht '
+            'in der Zuordnungsauswahl der Einordnung. Gelöscht wurde nichts '
+            '— der Verlauf ist vollzählig.</div>')
+    # Der Hinweis nach einer Nummernaenderung. Die Seite liest aus dem
+    # Abfrageteil NUR, WELCHER der hier fest verdrahteten Hinweise gezeigt
+    # wird — der Text selbst kommt nie von dort (er waere sonst ein Fremddatum
+    # in der eigenen Seite, und eine praeparierte Verknuepfung koennte dem
+    # Betreiber Beliebiges in den Mund legen).
+    if request.query_params.get("gespeichert") == "telefon":
+        teile.append(
+            '<div class="warnung">Telefonnummer geändert. Damit wechselt der '
+            'Schlüssel, über den eingehende Nachrichten diesem Kontakt '
+            'zugeordnet werden: Nachrichten von der ALTEN Nummer landen ab '
+            'sofort beim Sammelkontakt „Unbekannte Eingänge" und müssen '
+            'unter /einordnung neu zugeordnet werden; ausgehende Entwürfe '
+            'gehen an die NEUE Nummer. Bereits gebuchte Zeilen im Verlauf '
+            'bleiben, wo sie sind (activities ist append-only). Läuft der '
+            'Kontakt im Auto-Betrieb, greift die Änderung dort erst nach '
+            'scripts/sync-allowlist.ps1.</div>')
+
+    termine = _kontakt_termine_liste(lead_id)
+    zahlen = {
+        "verlauf": server._q("select count(*) as anzahl from activities "
+                             "where lead_id = %s", (lead_id,))[0]["anzahl"],
+        "vertraege": len(vertraege.eintraege_aus(anreicherung)),
+        "termine": len(termine)}
+    teile.append(ui_muster.reiter(
+        [(k, name, zahlen.get(k)) for k, name in KONTAKT_REITER], reiter,
+        lambda k: _kontakt_ziel(lead_id, k)))
+
+    if reiter == "verlauf":
+        teile.append(_kontakt_verlauf(
+            lead_id, request.query_params.get("historie") == "alle"))
+    elif reiter == "vertraege":
+        teile.append(_vertraege_bereich(lead))
+    elif reiter == "termine":
+        teile.append(_kontakt_termine(lead_id, termine))
+    elif reiter == "recherche":
+        teile.append(_recherche_bereich(anreicherung))
+    elif reiter == "einstellungen":
+        teile.append(_kontakt_einstellungen(lead, archiviert))
+    else:
+        teile.append(_kontakt_ueberblick(lead, termine))
+    return _seite(lead["name"] or "Kontakt", "".join(teile), titel_zeigen=False)
 
 
 # Wie eine Verlaufszeile heisst — statt der rohen Typnamen aus der

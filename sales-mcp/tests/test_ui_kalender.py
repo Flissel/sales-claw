@@ -630,14 +630,14 @@ def test_kontaktseite_zeigt_termine_mit_link_in_den_kalender():
     t = _kundentermin(lead, _um(3, 14, 30), thema="Beratung Altersvorsorge")
     weg = _kundentermin(lead, _um(4, 9), thema="Abgesagtes Thema")
     json.loads(server.termin_absagen(lead, weg["uid"], "krank"))
-    seite = _get(f"/kontakte/{lead}").text
+    seite = _get(f"/kontakte/{lead}?reiter=termine").text
     assert "<h2>Termine" in seite
-    assert seite.index("<h2>Termine") < seite.index("Offene Wiedervorlagen")
+    assert "Offene Wiedervorlagen" not in seite
     assert f'href="/kalender?datum={t["datum"]}' in seite
     assert "ansicht=woche" in seite
     # Nur der Abschnitt zaehlt - die Terminerinnerung (Wiedervorlage) traegt
     # das Thema auch des abgesagten Termins weiter.
-    abschnitt = seite[seite.index("<h2>Termine"):seite.index("Offene Wiedervorlagen")]
+    abschnitt = seite[seite.index("<h2>Termine"):]
     assert "Beratung Altersvorsorge" in abschnitt
     assert "Abgesagtes Thema" not in abschnitt
     assert abschnitt.count("im Kalender öffnen") == 1
@@ -645,7 +645,7 @@ def test_kontaktseite_zeigt_termine_mit_link_in_den_kalender():
 
 def test_kontaktseite_ohne_termine():
     lead = _lead_mail()
-    seite = _get(f"/kontakte/{lead}").text
+    seite = _get(f"/kontakte/{lead}?reiter=termine").text
     assert "<h2>Termine" in seite
     assert 'href="/kalender?datum=' not in seite
 

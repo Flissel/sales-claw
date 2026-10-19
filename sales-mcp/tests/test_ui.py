@@ -753,9 +753,11 @@ def test_kontaktliste_und_detailseite(monkeypatch):
     assert "Anna Beispiel" in liste
     detail = _get(f"/kontakte/{lead}").text
     assert "Anna Beispiel" in detail
-    assert "Haftpflicht" in detail            # Vertraege aus enrichment
+    vertraege = _get(f"/kontakte/{lead}?reiter=vertraege").text
+    assert "Haftpflicht" in vertraege         # Vertraege aus enrichment
     assert "34" in detail                     # Bedarfsstand
-    assert "mit Kundin telefoniert" in detail  # Aktivitaeten
+    verlauf = _get(f"/kontakte/{lead}?reiter=verlauf").text
+    assert "mit Kundin telefoniert" in verlauf  # Aktivitaeten
     assert "Vertragsablauf pruefen" in detail  # Wiedervorlage des Kontakts
 
 
@@ -789,7 +791,7 @@ def test_kontaktseite_zeigt_reports_statt_der_abgedeckten_zeilen():
     _chat_nachrichten(lead, 6, ab_minute=1000, praefix="Frueher")
     server.chat_report_speichern(lead, "Kundin fragt nach bAV, Termin offen.")
     _chat_nachrichten(lead, 2, ab_minute=500, praefix="Danach")
-    seite = _get(f"/kontakte/{lead}").text
+    seite = _get(f"/kontakte/{lead}?reiter=verlauf").text
     assert "Chat-Reports (1)" in seite
     assert "Kundin fragt nach bAV, Termin offen." in seite
     assert "Frueher 1" not in seite      # vom Report abgedeckt
@@ -800,7 +802,7 @@ def test_kontaktseite_zeigt_reports_statt_der_abgedeckten_zeilen():
 def test_kontaktseite_ohne_report_zeigt_den_verlauf_unveraendert():
     lead = _lead(name="Anna Beispiel")
     _chat_nachrichten(lead, 3)
-    seite = _get(f"/kontakte/{lead}").text
+    seite = _get(f"/kontakte/{lead}?reiter=verlauf").text
     assert "Chat-Reports" not in seite
     assert "Zeile 1" in seite
 
@@ -811,7 +813,7 @@ def test_kontaktseite_escaped_den_reporttext():
     lead = _lead(name="Anna Beispiel")
     _chat_nachrichten(lead, 3)
     server.chat_report_speichern(lead, '<script>alert("report")</script>')
-    seite = _get(f"/kontakte/{lead}").text
+    seite = _get(f"/kontakte/{lead}?reiter=verlauf").text
     assert "<script" not in seite
     assert "&lt;script&gt;" in seite
 
@@ -1416,7 +1418,7 @@ def test_kontaktpflege_post_mit_fremdem_host_schreibt_nichts(pfad):
 
 def test_kontaktpflege_csrf_token_steht_in_den_formularen():
     lead = _lead()
-    seite = _get(f"/kontakte/{lead}").text
+    seite = _get(f"/kontakte/{lead}?reiter=einstellungen").text
     assert ui.CSRF_TOKEN in seite
     for pfad in ("/kontakte/bearbeiten", "/kontakte/archivieren"):
         assert f'action="{pfad}"' in seite
@@ -1429,7 +1431,7 @@ def test_kontaktdaten_brechen_nicht_aus_dem_formularfeld_aus():
     das Attribut nicht schliessen — sonst waere der Rest der Zeile Markup."""
     lead = _lead(name='Anna"><script>alert(1)</script>',
                  phone='+49"><img src=x onerror=alert(2)>')
-    seite = _get(f"/kontakte/{lead}").text
+    seite = _get(f"/kontakte/{lead}?reiter=einstellungen").text
     assert "<script" not in seite and "<img" not in seite
     assert '"><script' not in seite and '"><img' not in seite
     assert "&lt;script&gt;" in seite and "&quot;&gt;" in seite
@@ -1447,7 +1449,7 @@ def test_bearbeiten_formular_bietet_genau_die_felder_des_werkzeugs():
     nicht aus einem Formularfeld."""
     assert set(server.KONTAKT_FELDER) == {"phone", "email", "name", "company"}
     lead = _lead()
-    seite = _get(f"/kontakte/{lead}").text
+    seite = _get(f"/kontakte/{lead}?reiter=einstellungen").text
     for feld in server.KONTAKT_FELDER:
         assert f'name="{feld}"' in seite
     # Der Kasten „Verträge & Projekte“ (C2) hat ein eigenes Feld `status`
@@ -1558,7 +1560,7 @@ def test_bearbeiten_nennt_die_folgen_einer_neuen_telefonnummer():
                "name": "Max Testperson", "phone": "+491729186846",
                "email": ""})
     assert r.status_code == 303
-    assert r.headers["location"] == f"/kontakte/{lead}?gespeichert=telefon"
+    assert r.headers["location"] == f"/kontakte/{lead}?reiter=einstellungen&gespeichert=telefon"
     seite = _get(r.headers["location"]).text
     assert "Telefonnummer geändert" in seite
     assert "Sammelkontakt" in seite
@@ -1656,7 +1658,7 @@ def test_archivieren_veraendert_keine_einzige_aktivitaet():
                         "order by created_at", (lead,))
     assert nachher == vorher
     # Der Verlauf auf der Kontaktseite zeigt sie weiterhin, alle beide.
-    seite = _get(f"/kontakte/{lead}").text
+    seite = _get(f"/kontakte/{lead}?reiter=verlauf").text
     assert "erstes Gespraech" in seite and "zweites Gespraech" in seite
     assert "archiviert" in seite
 
@@ -1766,12 +1768,13 @@ def test_kontakte_und_verlauf_lassen_sich_nirgends_loeschen():
     lead = _lead()
     # Die Kontaktseite sagt ausdruecklich, dass es kein Loeschen gibt, und
     # nennt den Grund — schweigen waere hier die schlechtere Antwort.
-    seite = _get(f"/kontakte/{lead}").text
+    seite = _get(f"/kontakte/{lead}?reiter=einstellungen").text
     assert "Löschen gibt es hier nicht" in seite
     assert "ON DELETE CASCADE" in seite
     # Auf den Datensatz-Seiten taucht kein Loeschweg auf. /medien steht
     # bewusst NICHT in der Liste: dort geht es um Dateien.
-    for pfad in ("/", "/kontakte", f"/kontakte/{lead}", "/posteingang",
+    for pfad in ("/", "/kontakte", f"/kontakte/{lead}",
+                 f"/kontakte/{lead}?reiter=einstellungen", "/posteingang",
                  "/einordnung", "/wiedervorlagen"):
         assert "/loeschen" not in _get(pfad).text
     # Routen mit „loesch" gibt es nur unter /medien — nirgends fuer
@@ -2105,7 +2108,8 @@ def test_data_label_traegt_nie_fremddaten(sammelkontakt_zurueck):
     _lead(name=boese + " zwei", phone=SOPHIE_PHONE)
 
     for pfad in ("/", "/kontakte", f"/kontakte/{lead}", "/posteingang",
-                 "/einordnung", "/wiedervorlagen"):
+                 "/einordnung", "/wiedervorlagen",
+                 *(f"/kontakte/{lead}?reiter={k}" for k, _ in ui.KONTAKT_REITER)):
         seite = _get(pfad).text
         assert "<script" not in seite, pfad
         assert '"><script' not in seite, pfad
@@ -2125,7 +2129,7 @@ def test_data_label_traegt_nie_fremddaten(sammelkontakt_zurueck):
 ])
 def test_stammdatenfelder_schalten_die_passende_handytastatur(feld, erwartet):
     lead = _lead()
-    tag = _eingabe_tag(_get(f"/kontakte/{lead}").text, feld)
+    tag = _eingabe_tag(_get(f"/kontakte/{lead}?reiter=einstellungen").text, feld)
     for stueck in erwartet:
         assert stueck in tag, (feld, tag)
     # Die Laengenbegrenzung des Werkzeugs bleibt daneben stehen.
@@ -2137,7 +2141,7 @@ def test_jedes_stammdatenfeld_hat_eine_tastatur_auch_ein_neues():
     Feld taucht in der Oberflaeche von selbst auf — es soll dann ein
     gewoehnliches Textfeld sein und nicht ein `<input>` ohne `type`."""
     lead = _lead()
-    seite = _get(f"/kontakte/{lead}").text
+    seite = _get(f"/kontakte/{lead}?reiter=einstellungen").text
     for feld in server.KONTAKT_FELDER:
         assert "type=" in _eingabe_tag(seite, feld), feld
     assert "type=" in ui.KONTAKT_FELD_EINGABE_STANDARD
@@ -2217,7 +2221,7 @@ def test_die_gefaehrlichen_knoepfe_tragen_ihre_klasse_am_formular(
     _kundenantwort(sammel, text="Wer bin ich?", absender=SOPHIE_LID)
     _kundenantwort(sammel, text="Hallo", absender=SOPHIE_NUMMER)
     assert '<form class="aktion gefahr"' in _get("/einordnung").text
-    assert '<form class="aktion gefahr"' in _get(f"/kontakte/{lead}").text
+    assert '<form class="aktion gefahr"' in _get(f"/kontakte/{lead}?reiter=einstellungen").text
     warnung = _post("/einordnung/ignorieren",
                     {"absender": SOPHIE_NUMMER, "csrf": ui.CSRF_TOKEN})
     assert warnung.status_code == 409
@@ -2368,7 +2372,7 @@ def test_echter_kontakt_laesst_sich_weiter_umbenennen(sammelkontakt_zurueck):
 
 def test_sammelkontakt_zeigt_kein_stammdatenformular(sammelkontakt_zurueck):
     sammel = _sammel()
-    seite = _get(f"/kontakte/{sammel}").text
+    seite = _get(f"/kontakte/{sammel}?reiter=einstellungen").text
     assert "Sammelkontakt für unbekannte Eingänge" in seite
     assert 'action="/kontakte/bearbeiten"' not in seite
     assert "Das ist kein Mensch" in seite
@@ -3022,7 +3026,7 @@ def test_loeschen_ohne_csrf_ist_403(medienordner):
 
 def test_kontaktseite_zeigt_die_freigabe_und_den_weg():
     lead = _lead()
-    seite = _get(f"/kontakte/{lead}").text
+    seite = _get(f"/kontakte/{lead}?reiter=einstellungen").text
     assert "WhatsApp-Freigabe" in seite
     assert "Nicht erteilt" in seite
     assert 'action="/kontakte/freigeben"' in seite
@@ -3056,7 +3060,7 @@ def test_auto_ohne_freigabe_verweist_auf_den_weg():
     server.kontakt_autonomie_setzen(lead, "auto")
     seite = _get("/kontakte").text
     assert "ohne Wirkung" in seite
-    assert f'href="/kontakte/{lead}#freigabe"' in seite
+    assert f'href="/kontakte/{lead}?reiter=einstellungen#freigabe"' in seite
 
 
 def test_auto_mit_freigabe_warnt_nicht_mehr():
@@ -3384,7 +3388,7 @@ def test_kontaktseite_zeigt_die_recherche_arbeit():
                                  "typ": "ueber", "titel": "Über uns",
                                  "text": "Wir <script>x</script> beraten."}],
                      "seiten_anzahl": 1}), lead))
-    seite = _get(f"/kontakte/{lead}").text
+    seite = _get(f"/kontakte/{lead}?reiter=recherche").text
     assert "Recherche" in seite
     assert "beispiel-makler.de" in seite
     assert "Über uns" in seite
@@ -3393,7 +3397,7 @@ def test_kontaktseite_zeigt_die_recherche_arbeit():
 
 def test_kontaktseite_ohne_recherche_zeigt_den_leerstand():
     lead = _lead()
-    seite = _get(f"/kontakte/{lead}").text
+    seite = _get(f"/kontakte/{lead}?reiter=recherche").text
     assert "Noch keine Firmendaten" in seite
 
 
@@ -3408,7 +3412,7 @@ def test_kontaktseite_zeigt_die_geschaeftsverweise():
                           "url": "https://linkedin.com/company/x"},
                          {"plattform": "Instagram",
                           "url": "https://instagram.com/x"}]}), lead))
-    seite = _get(f"/kontakte/{lead}").text
+    seite = _get(f"/kontakte/{lead}?reiter=recherche").text
     assert "LinkedIn" in seite and "Instagram" in seite
     assert 'href="https://linkedin.com/company/x"' in seite
     assert 'rel="noopener noreferrer nofollow"' in seite
@@ -3447,7 +3451,7 @@ def test_verlauf_zeigt_sprachnachricht_und_transkription():
               "(%s, 'transkription', %s) returning id",
               (lead, server._json({"text": "Ich haette eine Frage zur Police.",
                                    "message_id": "wa-v-1", "sprache": "de"})))
-    seite = _get(f"/kontakte/{lead}").text
+    seite = _get(f"/kontakte/{lead}?reiter=verlauf").text
     assert "Sprachnachricht" in seite
     assert "abgehört" in seite
     assert "Ich haette eine Frage zur Police." in seite
@@ -3862,7 +3866,7 @@ def _einordnung_von(lead):
 
 def test_kontaktseite_zeigt_einordnung_und_firma():
     lead = _lead()
-    seite = _get(f"/kontakte/{lead}").text
+    seite = _get(f"/kontakte/{lead}?reiter=einstellungen").text
     assert 'id="einordnung"' in seite and 'name="bereich_vorsorge"' in seite
     assert 'name="company"' in seite
 
@@ -3894,7 +3898,7 @@ def test_einordnen_privat_403_und_kein_kasten():
     ui.server._q("update leads set enrichment = jsonb_set(coalesce(enrichment,'{}'::jsonb), "
                  "'{_privat}', '{\"privat\": true}'::jsonb, true) where id=%s returning id",
                  (lead,))
-    assert 'id="einordnung"' not in _get(f"/kontakte/{lead}").text
+    assert 'id="einordnung"' not in _get(f"/kontakte/{lead}?reiter=einstellungen").text
     r = _post("/kontakte/einordnen", {"csrf": ui.CSRF_TOKEN, "lead_id": lead, "art": "person"})
     assert r.status_code == 403
 
@@ -3919,7 +3923,7 @@ def test_einordnen_sammelkontakt_403_und_kein_kasten(monkeypatch, quelle):
         monkeypatch.setattr(ui.server, "LINKEDIN_POST_LEAD_ID", lead)
     else:
         monkeypatch.setenv("RECHERCHE_LEAD_ID", lead)
-    seite = _get(f"/kontakte/{lead}").text
+    seite = _get(f"/kontakte/{lead}?reiter=einstellungen").text
     assert 'id="einordnung"' not in seite
     assert 'action="/kontakte/einordnen"' not in seite
     r = _post("/kontakte/einordnen", {"csrf": ui.CSRF_TOKEN, "lead_id": lead,
@@ -3951,7 +3955,7 @@ def test_vertraege_kasten_zeigt_beide_arten_escaped():
                            {"id": "e1", "art": "eigen", "bereich": "homelab",
                             "bezeichnung": "NAS", "status": "abgeschlossen",
                             "betrag": "1499.00"}]), lead))
-    s = _get(f"/kontakte/{lead}").text
+    s = _get(f"/kontakte/{lead}?reiter=vertraege").text
     assert "Verträge &amp; Projekte" in s or "Verträge & Projekte" in s
     assert "KFZ &lt;b&gt;" in s and "NAS" in s and "fremd" in s and "bei uns" in s
     assert "1.499,00 €" in s
@@ -3963,7 +3967,7 @@ def test_vertraege_kaputter_wert_bricht_seite_nicht():
     server._q("update leads set enrichment = jsonb_set(coalesce(enrichment,'{}'::jsonb), "
               "'{vertraege}', %s::jsonb, true) where id=%s returning id",
               ('"kaputt"', lead))
-    assert _get(f"/kontakte/{lead}").status_code == 200
+    assert _get(f"/kontakte/{lead}?reiter=vertraege").status_code == 200
 
 
 def test_vertraege_lesende_rolle_sieht_keine_formulare():
@@ -3987,7 +3991,7 @@ def test_vertrag_formular_speichert_und_validiert():
          "anbieter": "", "betrag": "2.500", "wiedervorlage_am": "", "notiz": ""}
     assert _post("/kontakte/vertrag", {k: v for k, v in d.items() if k != "csrf"}).status_code == 403
     r = _post("/kontakte/vertrag", d)
-    assert r.status_code == 303 and r.headers["location"] == f"/kontakte/{lead}#abschluss"
+    assert r.status_code == 303 and r.headers["location"] == f"/kontakte/{lead}?reiter=vertraege#abschluss"
     import vertraege
     e = vertraege.eintraege(lead)[0]
     assert e["bezeichnung"] == "Webshop" and e["betrag"] == "2500.00"
@@ -4007,7 +4011,7 @@ def test_vertrag_altform_eintrag_vorbelegt_und_ohne_duplikat():
               (json.dumps([{"sparte": "Haftpflicht", "gesellschaft": "Allianz"}]), lead))
     import vertraege
     alt = vertraege.eintraege(lead)[0]
-    s = _get(f"/kontakte/{lead}").text
+    s = _get(f"/kontakte/{lead}?reiter=vertraege").text
     assert f'name="eintrag_id" value="{alt["id"]}"' in s
     assert 'value="Haftpflicht"' in s and 'value="Allianz"' in s
     d = {"csrf": ui.CSRF_TOKEN, "lead_id": lead, "eintrag_id": alt["id"], "art": "fremd",
@@ -4070,7 +4074,7 @@ def test_kontaktseite_zeitleiste():
     lead = _lead()
     ui.server._q("insert into drafts (lead_id, channel, recipient, body, status, thema, sent_at) "
                  "values (%s,'email','x','b','sent','Homelab <Angebot>', now()) returning id", (lead,))
-    s = _get(f"/kontakte/{lead}").text
+    s = _get(f"/kontakte/{lead}?reiter=verlauf").text
     assert "Kontakt-Historie" in s and "Homelab &lt;Angebot&gt;" in s
 
 
@@ -4081,7 +4085,7 @@ def test_kontaktseite_historie_fehler_bricht_seite_nicht(monkeypatch):
         raise ui.psycopg.Error("weg")
     _gesendet(lead, "Sichtbar")
     monkeypatch.setattr(ui.historie, "kontakt_historie", kaputt)
-    r = _get(f"/kontakte/{lead}")
+    r = _get(f"/kontakte/{lead}?reiter=verlauf")
     assert r.status_code == 200 and "Kontakt-Historie" not in r.text and "Sichtbar" not in r.text
 
 
@@ -4111,11 +4115,11 @@ def test_kontaktseite_historie_20_und_alle():
     lead = _lead()
     for i in range(25):
         _gesendet(lead, f"Thema{i:02d}", f"now() - interval '{i + 1} hours'")
-    s = _get(f"/kontakte/{lead}").text
+    s = _get(f"/kontakte/{lead}?reiter=verlauf").text
     teil = s.split('id="historie"')[1]
     assert teil.count("Thema") == 20 and "Thema20" not in teil
-    assert 'href="?historie=alle#historie"' in s
-    s2 = _get(f"/kontakte/{lead}?historie=alle").text
+    assert 'href="?reiter=verlauf&amp;historie=alle#historie"' in s
+    s2 = _get(f"/kontakte/{lead}?reiter=verlauf&historie=alle").text
     teil2 = s2.split('id="historie"')[1]
     assert teil2.count("Thema") == 25 and "historie=alle" not in teil2
 
@@ -4125,7 +4129,7 @@ def test_datum_berlin_karte_und_kontaktseite():
     _gesendet(lead, "Spaetthema", "'2026-10-16T23:30:00Z'::timestamptz")
     _offen(lead, "Spaetthema")
     assert "Schon angeschrieben: 17.10. " in _get("/freigaben").text
-    assert "17.10.2026" in _get(f"/kontakte/{lead}").text
+    assert "17.10.2026" in _get(f"/kontakte/{lead}?reiter=verlauf").text
 
 
 def test_heute_seite_zeigt_hinweis():

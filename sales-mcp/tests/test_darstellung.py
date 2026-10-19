@@ -644,7 +644,7 @@ def test_firmenrecherche_text_verwendet_kurz_und_traegt_titel():
                      "seiten": [{"url": "https://beispiel.de/ueber",
                                 "typ": "ueber", "titel": "Über uns",
                                 "text": lang}]}), lead))
-    seite = _get(f"/kontakte/{lead}").text
+    seite = _get(f"/kontakte/{lead}?reiter=recherche").text
     text_normalisiert = " ".join(lang.split())
     assert ui._e(ui._kurz(text_normalisiert, 300)) in seite
     assert f'title="{ui._e(text_normalisiert)}"' in seite
@@ -789,7 +789,7 @@ def test_einladungsstand_erscheint_am_kontakt():
         (lead, json.dumps({"uid": "abc-123", "status": "DECLINED",
                            "grund": "Bin beim Kunden in München",
                            "teilnehmer": "ivan@vibemind.space"})))
-    seite = _get(f"/kontakte/{lead}").text
+    seite = _get(f"/kontakte/{lead}?reiter=verlauf").text
     assert "abgesagt" in seite.lower()
     assert "Bin beim Kunden in München" in seite
     assert "<b>abgesagt</b>" in seite, (
@@ -805,7 +805,7 @@ def test_zusage_erscheint_als_zugesagt():
         "(%s, 'einladung_antwort', %s::jsonb)",
         (lead, json.dumps({"uid": "abc-123", "status": "ACCEPTED",
                            "grund": "", "teilnehmer": "ivan@vibemind.space"})))
-    seite = _get(f"/kontakte/{lead}").text
+    seite = _get(f"/kontakte/{lead}?reiter=verlauf").text
     assert "zugesagt" in seite.lower()
 
 
@@ -819,7 +819,7 @@ def test_vorbehalt_erscheint_unter_vorbehalt():
         "(%s, 'einladung_antwort', %s::jsonb)",
         (lead, json.dumps({"uid": "abc-999", "status": "TENTATIVE",
                            "grund": "", "teilnehmer": "tanja@vibemind.space"})))
-    seite = _get(f"/kontakte/{lead}").text
+    seite = _get(f"/kontakte/{lead}?reiter=verlauf").text
     assert "unter Vorbehalt" in seite
     assert "TENTATIVE" not in seite
 
@@ -839,7 +839,7 @@ def test_ablehnungsgrund_wird_gekuerzt_mit_vollem_text_im_title():
         (lead, json.dumps({"uid": "abc-777", "status": "DECLINED",
                            "grund": lang,
                            "teilnehmer": "lena@vibemind.space"})))
-    seite = _get(f"/kontakte/{lead}").text
+    seite = _get(f"/kontakte/{lead}?reiter=verlauf").text
     gekuerzt = ui._kurz(lang, ui.EINLADUNG_GRUND_KURZ)
     assert gekuerzt != lang, (
         "Testannahme verletzt: der lange Grund muesste ueber "
@@ -864,7 +864,7 @@ def test_ablehnungsgrund_script_kommt_escaped_an():
         (lead, json.dumps({"uid": "abc-888", "status": "DECLINED",
                            "grund": grund,
                            "teilnehmer": "boese@vibemind.space"})))
-    seite = _get(f"/kontakte/{lead}").text
+    seite = _get(f"/kontakte/{lead}?reiter=verlauf").text
     assert "<script>boese()</script>" not in seite, "ungekuerztes Skript im Markup"
     assert f'title="{ui._e(grund)}"' in seite
     assert ui._e(ui._kurz(grund, ui.EINLADUNG_GRUND_KURZ)) in seite
@@ -892,7 +892,7 @@ def test_einladung_entworfen_zeigt_termin_lesbar_im_verlauf():
                            "uhrzeit": "14:30", "folge": 0,
                            "eingeladene": ["ivan@vibemind.space"],
                            "thema": "Erstgespräch"})))
-    seite = _get(f"/kontakte/{lead}").text
+    seite = _get(f"/kontakte/{lead}?reiter=verlauf").text
     assert "2026-10-01 14:30" in seite
     assert "<b>2026-10-01 14:30</b>" in seite, (
         "Datum/Uhrzeit stehen nicht als eigenes Element in der Zeile — "
@@ -917,7 +917,7 @@ def test_einladung_entworfen_thema_wird_gekuerzt_mit_vollem_text_im_title():
                            "uhrzeit": "14:30", "folge": 0,
                            "eingeladene": ["lena@vibemind.space"],
                            "thema": lang})))
-    seite = _get(f"/kontakte/{lead}").text
+    seite = _get(f"/kontakte/{lead}?reiter=verlauf").text
     gekuerzt = ui._kurz(lang, ui.EINLADUNG_GRUND_KURZ)
     assert gekuerzt != lang, (
         "Testannahme verletzt: das lange Thema muesste ueber "
