@@ -1783,7 +1783,8 @@ WA_ZUSTAND = {
 def _laden_stil() -> str:
     """Aussehen der Firma dieses Ladens (Paket C4) als zweites Stylesheet; "" = VibeMind-Grundgestaltung."""
     css = laden_marke.stil_aktuell()
-    if laden_marke.logo() is not None:
+    # Logo nur, wenn die Marke von der Grundgestaltung abweicht: der Basis-Laden behaelt sein festes Logo
+    if css and laden_marke.logo() is not None:
         css += "nav.seite .logo { background-image: url(/static/marke/laden-logo); }"
     return f"<style>{css}</style>" if css else ""
 

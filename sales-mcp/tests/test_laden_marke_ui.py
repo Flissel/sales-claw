@@ -55,3 +55,13 @@ def test_logo_route(monkeypatch):
     monkeypatch.setattr(laden_marke, "aussehen", lambda: None)
     assert CLIENT.get("/static/marke/laden-logo", headers={"host": HOST_OK}).status_code == 404
     assert CLIENT.get("/static/marke/vibemind-logo-hell.png", headers={"host": HOST_OK}).status_code == 200
+
+
+
+def test_vibemind_mit_logo_behaelt_das_feste_logo(monkeypatch):
+    """Live 19.10.: der Basis-Laden bekam wegen des gespiegelten VibeMind-Logos ein zweites Stylesheet. Entspricht
+    die Marke der Grundgestaltung, bleibt auch das feste Logo - nichts wird ueberschrieben."""
+    vm = {"name": "VibeMind", "akzent": "#5b3fd6", "zweitfarbe": "#f3e6e3", "schrift_anzeige": "oxanium",
+          "schrift_text": "dm-sans", "logo": FIN["logo"], "logo_dunkel": FIN["logo"]}
+    s = _seite(monkeypatch, vm)
+    assert s.count("<style>") == 1 and "laden-logo" not in s
