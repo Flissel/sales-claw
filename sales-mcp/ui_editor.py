@@ -37,7 +37,7 @@ STATIK = Path(__file__).resolve().parent / "static" / "editor"
 STATIK_DATEIEN = {"editor.js": "text/javascript", "editor.css": "text/css"}
 CSP_EDITOR = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
               "img-src 'self' data:; font-src 'self' data:; connect-src 'self'; "
-              "base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+              "base-uri 'none'; form-action 'self'; frame-src 'self'; frame-ancestors 'none'")
 # Die ausgelieferte Bilddatei: gar keine Quellen, nichts ausfuehrbar (wie
 # ui._CSP_DATEI fuer /medien/datei/).
 CSP_BILD = "default-src 'none'; sandbox"
@@ -56,6 +56,9 @@ HINWEIS_MAX = 500
 NACHRICHT_MAX = 2000
 KONTEXT_MAX = 4 * 1024
 ASSISTENT_WEG = "Assistent gerade nicht erreichbar"
+# Wie viele Fassungen der Verlauf im Start-JSON hoechstens traegt (neueste zuerst).
+VERLAUF_MAX = 30
+BODY_MAX = 16 * 1024          # Vorlage/Wiederherstellen: nur ein paar kurze Felder
 
 
 def _ui():
@@ -285,6 +288,18 @@ def routen(ui) -> list:
             "chat_stopp_url": f"/marketing/editor/{iid}/chat/stopp",
             "export_vorschau_url": f"/marketing/editor/{iid}/export/vorschau",
             "export_url": f"/marketing/editor/{iid}/export",
+            # Vorlagen und Verlauf (19.10.2026): die Vorlagen gehoeren der Firma des Newsletters;
+            # `vorlage_bild_url` ist ein Praefix - der Editor haengt den Vorlagennamen an.
+            "vorlagen_url": f"/marketing/editor/{iid}/vorlagen.json",
+            "vorlage_bild_url": f"/marketing/editor/{iid}/vorlage-bild/",
+            "vorlage_url": f"/marketing/editor/{iid}/vorlage",
+            "wiederherstellen_url": f"/marketing/editor/{iid}/wiederherstellen",
+            "fassungen": [
+                {"fassung": f["fassung"], "urheber": "agent" if f.get("urheber") == "agent" else "betreiber",
+                 "erstellt_am": str(f.get("erstellt_am") or ""), "format": str(f.get("format") or "")}
+                for f in fassungen[:VERLAUF_MAX]
+                if isinstance(f, dict) and isinstance(f.get("fassung"), int)
+                and not isinstance(f.get("fassung"), bool)],
             "csrf": ui.CSRF_TOKEN,
             # Herkunft aus dem alten Freigabeweg - der Editor zeigt denselben
             # Hinweis wie die Entwurfsseite (ui_marketing.alter_hinweis).
@@ -850,6 +865,156 @@ def routen(ui) -> list:
         return RedirectResponse(f"/marketing/editor/{urllib.parse.quote(str(r['id']), safe='')}",
                                 status_code=303)
 
+    async def json_aufruf(request, grenze: int = BODY_MAX):
+        """CSRF (X-CSRF) und JSON-Koerper -> (dict, None) oder (None, Fehlerantwort)."""
+        marke = request.headers.get("x-csrf", "")
+        if not marke or not hmac.compare_digest(marke, ui.CSRF_TOKEN):
+            return None, json_grund(403, "Fehlende oder falsche CSRF-Marke")
+        roh = await request.body()
+        if len(roh) > grenze:
+            return None, json_grund(413, "Die Anfrage ist zu groß")
+        try:
+            body = json.loads(roh or b"{}")
+        except (ValueError, UnicodeDecodeError):
+            return None, json_grund(422, "Die Anfrage ist kein gültiges JSON")
+        if not isinstance(body, dict):
+            return None, json_grund(422, "Die Anfrage ist kein JSON-Objekt")
+        return body, None
+
+    def pult_fehler(f, gerade: str):
+        """API-Ablehnung (Fassung veraltet, Assistent arbeitet, falscher Status ...) als 422 mit
+        Grund - der Editor zeigt ihn und laedt nichts neu; alles andere als 503."""
+        if f.art == "abgelehnt":
+            return json_grund(422, str(f.grund or "Abgelehnt"))
+        return json_grund(503, f"{gerade} gerade nicht möglich")
+
+    def ganze_zahl(wert, ab: int) -> bool:
+        return isinstance(wert, int) and not isinstance(wert, bool) and wert >= ab
+
+    def neue_fassung(r):
+        fassung = r.get("fassung") if isinstance(r, dict) else None
+        if not ganze_zahl(fassung, 0):
+            return None
+        return fassung
+
+    @ui._gesichert_seite
+    async def editor_vorlagen(request):
+        """Freigegebene Vorlagen der Firma des NEWSLETTERS (nicht des Cookies)."""
+        mandant, abgewiesen = await firma_des_inhalts(request.path_params["iid"])
+        if abgewiesen is not None:
+            return abgewiesen
+        q = urllib.parse.urlencode({"mandant": mandant, "status": "freigegeben"})
+        try:
+            r = await run_in_threadpool(marketing_pult.anfrage, "GET", f"/vorlagen?{q}")
+        except marketing_pult.PultFehler:
+            return json_grund(503, "Vorlagen gerade nicht abrufbar")
+        liste = r.get("vorlagen") if isinstance(r, dict) else None
+        if not isinstance(liste, list):
+            return json_grund(503, "Vorlagen gerade nicht abrufbar")
+        vorlagen = [{"name": v["name"], "beschreibung": str(v.get("beschreibung") or ""),
+                     "fassung": v.get("fassung")}
+                    for v in liste if isinstance(v, dict) and isinstance(v.get("name"), str)
+                    and VORLAGE_NAME.match(v["name"])]
+        return JSONResponse({"vorlagen": vorlagen}, headers={"Cache-Control": "no-store"})
+
+    @ui._gesichert_seite
+    async def editor_vorlage_bild(request):
+        """Mini-Vorschau fuer den Reiter: wie /marketing/vorlage-bild/{name}, aber mit der
+        Firma des Newsletters. Gerahmt (Sandbox-CSP), auch Fehler."""
+        name = request.path_params["name"]
+        if not VORLAGE_NAME.match(name):
+            return _gerahmt("<p>Unbekannte Vorlage.</p>", status=404)
+        mandant, abgewiesen = await firma_des_inhalts(request.path_params["iid"])
+        if abgewiesen is not None:
+            return _gerahmt(f"<p>{e(json.loads(abgewiesen.body)['grund'])}</p>", status=abgewiesen.status_code)
+        q = {"format": "mail", "mandant": mandant}
+        if (b := bild_basis()):
+            q["bild_basis"] = b
+        try:
+            inhalt, typ = await run_in_threadpool(
+                marketing_pult.anfrage, "GET",
+                f"/vorlagen/{name}/vorschau?{urllib.parse.urlencode(q)}", roh=True)
+        except marketing_pult.PultFehler as f:
+            if f.art == "abgelehnt":
+                return _gerahmt(f"<p>Vorschau nicht möglich: {e(f.grund)}</p>", status=422)
+            return _gerahmt("<p>Marketing gerade nicht erreichbar.</p>", status=503)
+        return _gerahmt(inhalt, typ)
+
+    @ui._gesichert_seite
+    async def editor_vorlage(request):
+        """Vorlage auf diesen Entwurf anwenden (neue Fassung, Basis wird geprueft) oder als
+        neuen Entwurf anlegen. Beides kann der Editor nur im Status entwurf; die API prueft es."""
+        body, abgewiesen = await json_aufruf(request)
+        if abgewiesen is not None:
+            return abgewiesen
+        vorlage, art = body.get("vorlage"), body.get("art")
+        if not isinstance(vorlage, str) or not VORLAGE_NAME.match(vorlage):
+            return json_grund(422, "Unbekannte Vorlage")
+        if art not in ("anwenden", "neu"):
+            return json_grund(422, "art muss „anwenden“ oder „neu“ sein")
+        try:
+            iid = str(uuid.UUID(str(request.path_params["iid"])))
+        except ValueError:
+            return json_grund(422, "iid ist ungültig")
+        if art == "anwenden":
+            basis = body.get("basis_fassung")
+            if not ganze_zahl(basis, 0):
+                return json_grund(422, "basis_fassung muss eine ganze Zahl ab 0 sein")
+            try:
+                r = await run_in_threadpool(
+                    marketing_pult.anfrage, "POST", f"/inhalte/{iid}/vorlage",
+                    {"vorlage": vorlage, "basis_fassung": basis, "von": ui._ui_akteur(request)})
+            except marketing_pult.PultFehler as f:
+                return pult_fehler(f, "Anwenden")
+            fassung = neue_fassung(r)
+            if fassung is None:
+                return json_grund(503, "Anwenden gerade nicht möglich")
+            return JSONResponse({"fassung": fassung}, headers={"Cache-Control": "no-store"})
+        titel = body.get("titel")
+        if not isinstance(titel, str) or not titel.strip() or len(titel.strip()) > TITEL_MAX:
+            return json_grund(422, f"Der Titel fehlt oder ist länger als {TITEL_MAX} Zeichen.")
+        mandant, abgewiesen = await firma_des_inhalts(iid)
+        if abgewiesen is not None:
+            return abgewiesen
+        try:
+            r = await run_in_threadpool(
+                marketing_pult.anfrage, "POST", "/inhalte/aus_vorlage",
+                {"vorlage": vorlage, "titel": titel.strip(), "mandant": mandant})
+        except marketing_pult.PultFehler as f:
+            return pult_fehler(f, "Anlegen")
+        try:
+            neue_id = str(uuid.UUID(str(r.get("id")))) if isinstance(r, dict) else ""
+        except ValueError:
+            neue_id = ""
+        if not neue_id:
+            return json_grund(503, "Anlegen gerade nicht möglich")
+        return JSONResponse({"editor_url": f"/marketing/editor/{neue_id}"},
+                            headers={"Cache-Control": "no-store"})
+
+    @ui._gesichert_seite
+    async def editor_wiederherstellen(request):
+        """Eine alte Fassung als neue Fassung anlegen (nur Editor-Format, nur Entwurf - die API prueft)."""
+        body, abgewiesen = await json_aufruf(request)
+        if abgewiesen is not None:
+            return abgewiesen
+        fassung, basis = body.get("fassung"), body.get("basis_fassung")
+        if not ganze_zahl(fassung, 1) or not ganze_zahl(basis, 0):
+            return json_grund(422, "fassung (ab 1) und basis_fassung (ab 0) müssen ganze Zahlen sein")
+        try:
+            iid = str(uuid.UUID(str(request.path_params["iid"])))
+        except ValueError:
+            return json_grund(422, "iid ist ungültig")
+        try:
+            r = await run_in_threadpool(
+                marketing_pult.anfrage, "POST", f"/inhalte/{iid}/wiederherstellen",
+                {"fassung": fassung, "basis_fassung": basis, "von": ui._ui_akteur(request)})
+        except marketing_pult.PultFehler as f:
+            return pult_fehler(f, "Wiederherstellen")
+        neu = neue_fassung(r)
+        if neu is None:
+            return json_grund(503, "Wiederherstellen gerade nicht möglich")
+        return JSONResponse({"fassung": neu}, headers={"Cache-Control": "no-store"})
+
     async def statik(request):
         # Nur die zwei Paket-Dateien (MANIFEST.json bleibt Build-Beleg, nicht
         # ausgeliefert). Hinter der Anmeldewache wie alles ausser /login.
@@ -878,6 +1043,10 @@ def routen(ui) -> list:
         Route("/marketing/editor/{iid}/export/vorschau", editor_export_vorschau, methods=["POST"]),
         Route("/marketing/editor/{iid}/export", editor_export, methods=["POST"]),
         Route("/marketing/editor/{iid}/stand.json", editor_stand),
+        Route("/marketing/editor/{iid}/vorlagen.json", editor_vorlagen),
+        Route("/marketing/editor/{iid}/vorlage-bild/{name}", editor_vorlage_bild),
+        Route("/marketing/editor/{iid}/vorlage", editor_vorlage, methods=["POST"]),
+        Route("/marketing/editor/{iid}/wiederherstellen", editor_wiederherstellen, methods=["POST"]),
         Route("/marketing/bild/{token}/{name}", bild),
         Route("/marketing/schrift/{datei}", schrift),
         Route("/marketing/vorlagen", vorlagen_seite),

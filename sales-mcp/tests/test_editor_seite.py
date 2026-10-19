@@ -49,6 +49,8 @@ class Falsch:
         self.verweise = []
         self.inhalt_mandant = "vibemind"    # Firma des Inhalts (None = keine)
         self.platzhalter = {"umgestellt": [], "gesperrt": []}
+        self.pfad_fehler = {}               # Pfad -> Ausnahme (nur dieser Aufruf scheitert)
+        self.zusatz_fassungen = 0           # so viele aeltere Fassungen zusaetzlich
         self.sichtbar = None                # None = alle angefragten Namen sichtbar
         self.zuordnung = {}
         self.gestaltung_antwort = {"url": "/medien/datei/gs-0123456789ab.jpg", "width": 1200,
@@ -57,10 +59,16 @@ class Falsch:
     def anfrage(self, methode, pfad, daten=None, roh=False, zeitlimit=None):
         self.aufrufe.append((methode, pfad, daten))
         self.zeitlimits.append(zeitlimit)
+        if pfad in self.pfad_fehler:
+            raise self.pfad_fehler[pfad]
         if self.fehler:
             raise self.fehler
         if roh:
             return (b"<!doctype html><p>Vorschau</p>", "text/html")
+        if pfad == f"/inhalte/{IID}/vorlage":
+            return {"fassung": 3}
+        if pfad == f"/inhalte/{IID}/wiederherstellen":
+            return {"fassung": 5}
         if pfad == "/mandanten":
             return {"mandanten": [{"id": "vibemind", "name": "VibeMind", "aktiv": True},
                                   {"id": "fin2gether", "name": "fin2gether", "aktiv": True}]}
@@ -82,7 +90,8 @@ class Falsch:
                                "mandant": self.inhalt_mandant, "eingereicht_am": self.eingereicht_am,
                                "eingereicht_von": "mira" if self.eingereicht_am else None,
                                "marke_geaendert_am": self.marke_am},
-                    "fassungen": [neu, alt], "alter_weg": self.alter_weg,
+                    "fassungen": [neu, alt] + [{**alt, "fassung": 0 - n - 1 + 1000} for n in range(self.zusatz_fassungen)],
+                    "alter_weg": self.alter_weg,
                     "rueckmeldungen": self.rueckmeldungen}
         if pfad == f"/inhalte/{IID}/einreichen":
             return {"status": "eingereicht", "fassung": 2}
@@ -1732,3 +1741,173 @@ def test_start_ohne_firma_am_inhalt_ist_null(angemeldet, pult, monkeypatch, wert
     assert r.status_code == 200
     assert _start(r.text)["mandant"] is None
     assert not any(a[1] == "/mandanten" for a in pult.aufrufe)
+
+
+# --- Vorlagen und Verlauf im Editor (19.10.2026) -----------------------------------
+
+VORLAGE = f"/marketing/editor/{IID}/vorlage"
+WIEDERHERSTELLEN = f"/marketing/editor/{IID}/wiederherstellen"
+NEUE_ID = "99999999-9999-9999-9999-999999999999"
+
+
+def _post_json(c, pfad, body, csrf=True):
+    kopf = {**HOST, **({"X-CSRF": ui.CSRF_TOKEN} if csrf else {})}
+    return c.post(pfad, json=body, headers=kopf)
+
+
+def _pult_posts(pult, ziel):
+    return [a for a in pult.aufrufe if a[0] == "POST" and a[1].startswith(ziel)]
+
+
+def test_start_kennt_vorlagen_und_verlauf(angemeldet, pult):
+    pult.zusatz_fassungen = 40
+    start = _start(angemeldet.get(f"/marketing/editor/{IID}", headers=HOST).text)
+    assert start["vorlagen_url"] == f"/marketing/editor/{IID}/vorlagen.json"
+    assert start["vorlage_bild_url"] == f"/marketing/editor/{IID}/vorlage-bild/"
+    assert start["vorlage_url"] == VORLAGE and start["wiederherstellen_url"] == WIEDERHERSTELLEN
+    fassungen = start["fassungen"]
+    assert len(fassungen) == 30                                  # hoechstens 30
+    assert fassungen[0] == {"fassung": 2, "urheber": "betreiber", "erstellt_am": "x", "format": "bloecke"}
+    assert fassungen[1]["fassung"] == 1 and fassungen[1]["urheber"] == "agent"
+    assert set(fassungen[0]) == {"fassung", "urheber", "erstellt_am", "format"}
+
+
+def test_csp_editor_erlaubt_nur_eigene_rahmen(angemeldet):
+    csp = angemeldet.get(f"/marketing/editor/{IID}", headers=HOST).headers["content-security-policy"]
+    assert csp.count("frame-src 'self'") == 1 and "frame-ancestors 'none'" in csp
+    assert csp.count("frame-ancestors") == 1
+
+
+def test_vorlagen_json_nutzt_firma_des_newsletters(angemeldet, pult):
+    pult.inhalt_mandant = "fin2gether"
+    angemeldet.cookies.set("mk_mandant", "vibemind", path="/marketing")
+    r = angemeldet.get(f"/marketing/editor/{IID}/vorlagen.json", headers=HOST)
+    assert r.status_code == 200
+    assert ("GET", "/vorlagen?mandant=fin2gether&status=freigegeben", None) in pult.aufrufe
+    assert r.json() == {"vorlagen": [{"name": "leer", "beschreibung": "Leere Vorlage", "fassung": 1}]}
+
+
+def test_vorlagen_json_ohne_firma_422_und_unsaubere_namen_fallen_weg(angemeldet, pult, monkeypatch):
+    pult.inhalt_mandant = None
+    assert angemeldet.get(f"/marketing/editor/{IID}/vorlagen.json", headers=HOST).status_code == 422
+    assert not any(a[1].startswith("/vorlagen") for a in pult.aufrufe)
+    pult.inhalt_mandant = "vibemind"
+    alt = pult.anfrage
+
+    def mit_boesem_namen(methode, pfad, daten=None, roh=False, zeitlimit=None):
+        if pfad.startswith("/vorlagen?"):
+            return {"vorlagen": [{"name": "../x", "beschreibung": "b", "fassung": 1},
+                                 {"name": "gut-1", "beschreibung": "g", "fassung": 2}]}
+        return alt(methode, pfad, daten, roh, zeitlimit)
+    monkeypatch.setattr(marketing_pult, "anfrage", mit_boesem_namen)
+    namen = [v["name"] for v in angemeldet.get(f"/marketing/editor/{IID}/vorlagen.json", headers=HOST).json()["vorlagen"]]
+    assert namen == ["gut-1"]
+
+
+def test_vorlage_bild_gerahmt_mit_firma_des_newsletters(angemeldet, pult):
+    pult.inhalt_mandant = "fin2gether"
+    r = angemeldet.get(f"/marketing/editor/{IID}/vorlage-bild/leer", headers=HOST)
+    assert r.status_code == 200 and b"Vorschau" in r.content
+    assert "sandbox" in r.headers["content-security-policy"] and r.headers["x-frame-options"] == "SAMEORIGIN"
+    q = next(a[1] for a in pult.aufrufe if a[1].startswith("/vorlagen/leer/vorschau"))
+    assert "mandant=fin2gether" in q
+    assert angemeldet.get(f"/marketing/editor/{IID}/vorlage-bild/..%2Fx", headers=HOST).status_code == 404
+
+
+def test_vorlage_anwenden_ohne_csrf_403_ohne_aufruf(angemeldet, pult):
+    r = _post_json(angemeldet, VORLAGE, {"vorlage": "leer", "art": "anwenden", "basis_fassung": 2}, csrf=False)
+    assert r.status_code == 403
+    assert not _pult_posts(pult, "/inhalte")
+
+
+def test_vorlage_anwenden_reicht_basis_weiter(angemeldet, pult):
+    r = _post_json(angemeldet, VORLAGE, {"vorlage": "leer", "art": "anwenden", "basis_fassung": 2})
+    assert r.status_code == 200 and r.json() == {"fassung": 3}
+    post = _pult_posts(pult, f"/inhalte/{IID}/vorlage")
+    assert len(post) == 1 and post[0][2]["vorlage"] == "leer" and post[0][2]["basis_fassung"] == 2
+    assert isinstance(post[0][2]["von"], str) and post[0][2]["von"]
+    assert "mandant" not in post[0][2]                  # die API nimmt die Firma des Inhalts
+
+
+@pytest.mark.parametrize("basis", [None, "2", -1, 1.5, True])
+def test_vorlage_anwenden_basis_ungueltig_422_ohne_aufruf(angemeldet, pult, basis):
+    body = {"vorlage": "leer", "art": "anwenden", **({} if basis is None else {"basis_fassung": basis})}
+    assert _post_json(angemeldet, VORLAGE, body).status_code == 422
+    assert not _pult_posts(pult, "/inhalte")
+
+
+def test_vorlage_anwenden_ablehnung_wird_422_mit_grund(angemeldet, pult):
+    pult.pfad_fehler[f"/inhalte/{IID}/vorlage"] = marketing_pult.PultFehler("abgelehnt", "Der Assistent arbeitet gerade")
+    r = _post_json(angemeldet, VORLAGE, {"vorlage": "leer", "art": "anwenden", "basis_fassung": 2})
+    assert r.status_code == 422 and r.json()["grund"] == "Der Assistent arbeitet gerade"
+    pult.pfad_fehler[f"/inhalte/{IID}/vorlage"] = marketing_pult.PultFehler("nicht_erreichbar", "URLError")
+    assert _post_json(angemeldet, VORLAGE, {"vorlage": "leer", "art": "anwenden", "basis_fassung": 2}).status_code == 503
+
+
+@pytest.mark.parametrize("titel", [None, "", "   ", "x" * 201, 5])
+def test_vorlage_neu_titel_pflicht_422(angemeldet, pult, titel):
+    body = {"vorlage": "leer", "art": "neu", **({} if titel is None else {"titel": titel})}
+    assert _post_json(angemeldet, VORLAGE, body).status_code == 422
+    assert not _pult_posts(pult, "/inhalte")
+
+
+def test_vorlage_neu_liefert_editor_url_mit_mandant_des_inhalts(angemeldet, pult, monkeypatch):
+    pult.inhalt_mandant = "fin2gether"
+    angemeldet.cookies.set("mk_mandant", "vibemind", path="/marketing")
+    alt = pult.anfrage
+
+    def mit_neuer_id(methode, pfad, daten=None, roh=False, zeitlimit=None):
+        if pfad == "/inhalte/aus_vorlage":
+            pult.aufrufe.append((methode, pfad, daten))
+            return {"id": NEUE_ID}
+        return alt(methode, pfad, daten, roh, zeitlimit)
+    monkeypatch.setattr(marketing_pult, "anfrage", mit_neuer_id)
+    r = _post_json(angemeldet, VORLAGE, {"vorlage": "leer", "art": "neu", "titel": " Mein Titel "})
+    assert r.status_code == 200 and r.json() == {"editor_url": f"/marketing/editor/{NEUE_ID}"}
+    post = _pult_posts(pult, "/inhalte/aus_vorlage")
+    assert post[0][2] == {"vorlage": "leer", "titel": "Mein Titel", "mandant": "fin2gether"}
+
+
+def test_vorlage_neu_ohne_firma_422_ohne_anlegen(angemeldet, pult):
+    pult.inhalt_mandant = None
+    assert _post_json(angemeldet, VORLAGE, {"vorlage": "leer", "art": "neu", "titel": "T"}).status_code == 422
+    assert not _pult_posts(pult, "/inhalte/aus_vorlage")
+
+
+@pytest.mark.parametrize("vorlage", ["../x", "Gross", "", None, 7, "a"])
+def test_vorlage_unbekannter_name_422_ohne_aufruf(angemeldet, pult, vorlage):
+    r = _post_json(angemeldet, VORLAGE, {"vorlage": vorlage, "art": "anwenden", "basis_fassung": 2})
+    assert r.status_code == 422
+    assert not _pult_posts(pult, "/inhalte")
+
+
+def test_vorlage_art_unbekannt_422(angemeldet, pult):
+    assert _post_json(angemeldet, VORLAGE, {"vorlage": "leer", "art": "loeschen"}).status_code == 422
+    assert not _pult_posts(pult, "/inhalte")
+
+
+def test_wiederherstellen_legt_neue_fassung_an(angemeldet, pult):
+    r = _post_json(angemeldet, WIEDERHERSTELLEN, {"fassung": 1, "basis_fassung": 2})
+    assert r.status_code == 200 and r.json() == {"fassung": 5}
+    post = _pult_posts(pult, f"/inhalte/{IID}/wiederherstellen")
+    assert post[0][2]["fassung"] == 1 and post[0][2]["basis_fassung"] == 2 and post[0][2]["von"]
+
+
+def test_wiederherstellen_reicht_ablehnung_als_422_durch(angemeldet, pult):
+    pult.pfad_fehler[f"/inhalte/{IID}/wiederherstellen"] = marketing_pult.PultFehler(
+        "abgelehnt", "Nur Editor-Fassungen lassen sich wiederherstellen")
+    r = _post_json(angemeldet, WIEDERHERSTELLEN, {"fassung": 1, "basis_fassung": 2})
+    assert r.status_code == 422 and r.json()["grund"] == "Nur Editor-Fassungen lassen sich wiederherstellen"
+
+
+@pytest.mark.parametrize("body", [{}, {"fassung": 0, "basis_fassung": 2}, {"fassung": 1},
+                                  {"fassung": "1", "basis_fassung": 2}, {"fassung": 1, "basis_fassung": -1},
+                                  {"fassung": True, "basis_fassung": 2}])
+def test_wiederherstellen_ungueltig_422_ohne_aufruf(angemeldet, pult, body):
+    assert _post_json(angemeldet, WIEDERHERSTELLEN, body).status_code == 422
+    assert not _pult_posts(pult, "/inhalte")
+
+
+def test_wiederherstellen_ohne_csrf_403(angemeldet, pult):
+    assert _post_json(angemeldet, WIEDERHERSTELLEN, {"fassung": 1, "basis_fassung": 2}, csrf=False).status_code == 403
+    assert not _pult_posts(pult, "/inhalte")
