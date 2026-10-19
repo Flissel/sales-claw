@@ -2979,6 +2979,23 @@ def test_marketing_weg_loescht_nicht(medienordner, monkeypatch):
     assert (medienordner / "bild.png").is_file()
 
 
+def test_altes_format_nur_fuer_newsletter(medienordner, monkeypatch):
+    (medienordner / "bild.png").write_bytes(b"x" * 64)
+    _MarketingFalsch(monkeypatch, verweise=[_verweis(format="felder", art="post", titel="Mein Post")])
+    s = _post("/medien/loeschen", {"name": "bild.png", "csrf": ui.CSRF_TOKEN}).text
+    assert "altes Format" not in s and "dem Post „Mein Post“" in s
+    _MarketingFalsch(monkeypatch, verweise=[_verweis(format="felder", art="material", titel="Blatt")])
+    assert "dem Team-Material „Blatt“" in _post("/medien/loeschen", {"name": "bild.png", "csrf": ui.CSRF_TOKEN}).text
+
+
+def test_warnseite_zeigt_status_auf_deutsch(medienordner, monkeypatch):
+    (medienordner / "bild.png").write_bytes(b"x" * 64)
+    _MarketingFalsch(monkeypatch, verweise=[_verweis(titel="Frisch", status="entwurf"),
+                                            _verweis(titel="Alt", status="abgelehnt")])
+    s = _post("/medien/loeschen", {"name": "bild.png", "csrf": ui.CSRF_TOKEN}).text
+    assert "Frisch</li>" not in s and "Frisch · in Arbeit" in s and "Alt · verworfen" in s
+
+
 def test_laden_mandant_nimmt_umgebung_sonst_vorgabe(monkeypatch):
     monkeypatch.delenv("MARKETING_MANDANT", raising=False)
     assert ui.laden_mandant() == "vibemind"

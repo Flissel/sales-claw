@@ -218,8 +218,8 @@ def routen(ui) -> list:
         def haken(i) -> str:
             if i.get("status") not in LOESCHBAR:
                 return ""
-            return (f'<input type="checkbox" name="iid" value="{e(i["id"])}" '
-                    f'aria-label="Auswählen: {e(i["titel"])}">')
+            return (f'<label class="haken"><input type="checkbox" name="iid" value="{e(i["id"])}" '
+                    f'aria-label="Auswählen: {e(i["titel"])}"></label>')
         zeilen = [[haken(i), f'<a href="/marketing/entwurf/{e(i["id"])}">{e(i["titel"])}</a>',
                    e(ARTEN.get(i["art"], i["art"])), e(status_wort(i)), e(i["layout"] or ""),
                    str(int(i["fassungen"])), e(str(i["erstellt_am"])[:10])] for i in inhalte]
@@ -595,16 +595,17 @@ def routen(ui) -> list:
             f'<li>{e(z["titel"]) if z["titel"] else "<i>unbekannter Entwurf</i>"}'
             f'{(" &middot; <b>" + e(z["grund"]) + "</b>") if z["grund"] else ""}</li>' for z in zeilen)
         if ok:
-            versteckt = "".join(f'<input type="hidden" name="iid" value="{e(z["id"])}">' for z in ok)
+            versteckt = "".join(f'<input type="hidden" name="iid" value="{e(z["id"])}">'
+                                f'<input type="hidden" name="titel" value="{e(z["titel"])}">' for z in ok)
             formular = (
                 f'<form method="post" action="/marketing/entwuerfe/loeschen-bestaetigen" class="aktion">'
                 f'<input type="hidden" name="csrf" value="{e(ui.CSRF_TOKEN)}">{versteckt}'
-                f'<label><input type="checkbox" name="bestaetigt" value="ja" required> '
+                f'<label class="haken"><input type="checkbox" name="bestaetigt" value="ja" required> '
                 f'Ja, endgültig löschen</label>'
                 f'<button class="gefahr" type="submit">Löschen</button></form>')
         else:
             formular = "<p>Nichts davon lässt sich löschen.</p>"
-        rumpf = (f'<div class="karte"><h2>Entwürfe löschen</h2>'
+        rumpf = (f'<div class="karte">'
                  f'<p>Das ist ein echtes Löschen: Fassungen, Rückmeldungen und Aufträge dieser Entwürfe '
                  f'verschwinden. Erzeugte Bilder bleiben in den Medien.</p>'
                  f'<ul>{liste_html}</ul>{formular}'
@@ -628,6 +629,10 @@ def routen(ui) -> list:
         except marketing_pult.PultFehler as f:
             return fehler(f)
         wer = von(request)
+        # Die Titel kennt nur Schritt 1; sie stehen nur zur Anzeige im Formular (keine Berechtigung).
+        titel_roh = [str(x) for x in form.getlist("titel")]
+        id_roh = [str(x).lower() for x in form.getlist("iid")]
+        titel_von = dict(zip(id_roh, titel_roh)) if len(titel_roh) == len(id_roh) else {}
 
         def lauf():
             weg, fehl, stopp = [], [], False
@@ -653,7 +658,8 @@ def routen(ui) -> list:
         n = len(weg)
         kopf = f'{n} {"Entwurf" if n == 1 else "Entwürfe"} gelöscht'
         weg_html = "".join(f"<li>{e(t)}</li>" for t in weg)
-        fehl_html = "".join(f'<li>{e(i)} &middot; {e(g)}</li>' for i, g in fehl)
+        fehl_html = "".join(
+            f'<li>{e(titel_von.get(i) or "Unbekannter Inhalt")} &middot; {e(g)}</li>' for i, g in fehl)
         rumpf = (f'<div class="karte"><h2>{kopf}</h2>'
                  f'{("<ul>" + weg_html + "</ul>") if weg else ""}'
                  f'<h3>Nicht gelöscht</h3><ul>{fehl_html}</ul>'

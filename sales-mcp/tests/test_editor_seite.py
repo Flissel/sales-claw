@@ -1811,7 +1811,10 @@ def test_vorlage_bild_gerahmt_mit_firma_des_newsletters(angemeldet, pult):
     assert "sandbox" in r.headers["content-security-policy"] and r.headers["x-frame-options"] == "SAMEORIGIN"
     q = next(a[1] for a in pult.aufrufe if a[1].startswith("/vorlagen/leer/vorschau"))
     assert "mandant=fin2gether" in q
-    assert angemeldet.get(f"/marketing/editor/{IID}/vorlage-bild/..%2Fx", headers=HOST).status_code == 404
+    # Ein Name ohne Slash, der ungueltig ist: erreicht wirklich VORLAGE_NAME (kein Router-404).
+    vorher = len(pult.aufrufe)
+    assert angemeldet.get(f"/marketing/editor/{IID}/vorlage-bild/Gross", headers=HOST).status_code == 404
+    assert len(pult.aufrufe) == vorher
 
 
 def test_vorlage_anwenden_ohne_csrf_403_ohne_aufruf(angemeldet, pult):

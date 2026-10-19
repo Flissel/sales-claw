@@ -2468,8 +2468,12 @@ def _newsletter_sperren(newsletter) -> list[str]:
         elif st == "freigegeben" or v.get("wo") == "freigegeben":
             texte.append(f"Das Bild steckt in der freigegebenen Fassung von {_titel(v)}. "
                          f"Der Versand liest es beim Senden – freigegebene Newsletter bleiben unverändert.")
-        else:
+        elif v.get("art", "newsletter") == "newsletter":
             texte.append(f"Das Bild steckt in {_titel(v)} (altes Format). "
+                         f"Dort erst ein anderes Bild wählen.")
+        else:
+            art = {"post": "Post", "material": "Team-Material"}.get(str(v.get("art")), "Inhalt")
+            texte.append(f"Das Bild steckt in dem {art} {_titel(v)}, der sich nicht umstellen lässt. "
                          f"Dort erst ein anderes Bild wählen.")
     if fremd:
         n = len(fremd)
@@ -2591,7 +2595,7 @@ def _medien_loeschen_warnseite(basis: str, verweise, newsletter=(), sperre=None)
     if newsletter:
         hinweis += ('<p><b>Newsletter mit diesem Bild:</b></p><ul>' + "".join(
             f'<li>{_e(v.get("titel") or ("(andere Firma)" if not v.get("eigen", True) else "(ohne Titel)"))}'
-            f' · {_e(v.get("status") or "")}</li>' for v in newsletter) + '</ul>')
+            f' · {_e(ui_marketing.status_wort(v))}</li>' for v in newsletter) + '</ul>')
     umstellbar = [v for v in newsletter if v.get("umstellbar")]
     if umstellbar and not sperre:
         n = len(umstellbar)

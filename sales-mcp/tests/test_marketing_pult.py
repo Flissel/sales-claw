@@ -1029,6 +1029,32 @@ def test_loeschen_teilweise_abgelehnt_zeigt_grund(angemeldet, pult, monkeypatch)
     assert "Alpha" in r.text and "Zurück zu den Entwürfen" in r.text
 
 
+def test_haken_sind_grosse_ziele(angemeldet, pult, monkeypatch):
+    """Touch-Ziele >= 44 px: label.haken (ui.py) statt blosser Checkbox - Liste und Bestaetigung."""
+    pult.inhalte = [{"id": ID_A, "art": "newsletter", "titel": "Eins", "status": "entwurf",
+                     "erstellt_am": "2026-09-04", "fassungen": 1, "layout": "dunkel"}]
+    liste = angemeldet.get("/marketing/entwuerfe", headers=HOST).text
+    assert f'<label class="haken"><input type="checkbox" name="iid" value="{ID_A}"' in liste
+    assert "label.haken" in liste and "min-height: 44px" in liste
+    _loesch_pult(pult, monkeypatch, {ID_A: {"titel": "Eins", "status": "entwurf"}})
+    s = angemeldet.post(LOESCH_URL, headers=HOST, data={"csrf": ui.CSRF_TOKEN, "iid": [ID_A]}).text
+    assert '<label class="haken"><input type="checkbox" name="bestaetigt"' in s
+    assert s.count("<h2>Entwürfe löschen</h2>") == 0 and s.count("<h1>Entwürfe löschen</h1>") == 1
+
+
+def test_ergebnisseite_nennt_titel_aus_schritt_1(angemeldet, pult, monkeypatch):
+    _loesch_pult(pult, monkeypatch, {ID_A: {"titel": "Alpha", "status": "entwurf"},
+                                     ID_B: {"titel": "Beta", "status": "entwurf"}},
+                 loeschfehler={ID_B: marketing_pult.PultFehler("abgelehnt", "Unbekannter Inhalt")})
+    r = angemeldet.post(BESTAETIGEN_URL, headers=HOST,
+                        data={"csrf": ui.CSRF_TOKEN, "bestaetigt": "ja", "iid": [ID_A, ID_B],
+                              "titel": ["Alpha", "Beta"]})
+    assert "Beta &middot; Unbekannter Inhalt" in r.text and ID_B not in r.text
+    r2 = angemeldet.post(BESTAETIGEN_URL, headers=HOST,       # ohne Titel: nie die rohe UUID
+                         data={"csrf": ui.CSRF_TOKEN, "bestaetigt": "ja", "iid": [ID_A, ID_B]})
+    assert "Unbekannter Inhalt &middot; Unbekannter Inhalt" in r2.text and ID_B not in r2.text
+
+
 def test_loeschen_marketing_weg_stoppt_und_nennt_rest(angemeldet, pult, monkeypatch):
     _loesch_pult(pult, monkeypatch, {ID_A: {"titel": "Alpha", "status": "entwurf"},
                                      ID_B: {"titel": "Beta", "status": "entwurf"}},
