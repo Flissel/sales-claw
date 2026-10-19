@@ -382,3 +382,8 @@ nein) · M5 Verlauf vollständig oder letzte 10.
 (eigenes Kennzeichen / Bereich Mitarbeiter / eigene Liste) · S3 Erfassung (Kontaktseite / Agent / Import
 – welches Format? / aus Mitarbeitervorschlägen) · S4 welcher Laden und wie groß · S5 Funktionen
 (anschauen / Teilbaum / Kennzahlen / Zoomen-Ziehen → JS).
+
+
+## Antworten des Betreibers
+
+- 19.10.2026 S1: **(a) Einladungstiefe relativ zum Betreiber** (Ebene 1 = direkt eingeladen ... Ebene 6). S2-S5 noch offen.
