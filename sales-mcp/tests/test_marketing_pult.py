@@ -3,6 +3,7 @@ Stufe 1). Der Client zur Marketing-API wird gefaelscht."""
 import asyncio
 import json
 import os
+import re
 import urllib.request
 
 os.environ["SALES_DB_SCHEMA"] = "sales_test"
@@ -1036,6 +1037,10 @@ def test_haken_sind_grosse_ziele(angemeldet, pult, monkeypatch):
     liste = angemeldet.get("/marketing/entwuerfe", headers=HOST).text
     assert f'<label class="haken"><input type="checkbox" name="iid" value="{ID_A}"' in liste
     assert "label.haken" in liste and "min-height: 44px" in liste
+    # Final-Review: in der Tabellenzelle steht nur die Checkbox - die Klickflaeche muss auch 44 px breit sein
+    regel = re.search(r"td label\.haken \{([^}]*)\}", liste)
+    assert regel and "min-width: 44px" in regel.group(1) and "justify-content: center" in regel.group(1)
+    assert re.search(r'<td[^>]*><label class="haken"><input type="checkbox" name="iid" value="' + ID_A, liste)
     _loesch_pult(pult, monkeypatch, {ID_A: {"titel": "Eins", "status": "entwurf"}})
     s = angemeldet.post(LOESCH_URL, headers=HOST, data={"csrf": ui.CSRF_TOKEN, "iid": [ID_A]}).text
     assert '<label class="haken"><input type="checkbox" name="bestaetigt"' in s

@@ -586,10 +586,19 @@ export async function vorlageAlsNeu(
 }
 
 // Alte Fassung als neue Fassung anlegen (nur Editor-Format, nur Entwurf - der Server prueft).
-export async function fassungWiederherstellen(s: Start, fassung: number, basis: number): Promise<Ergebnis> {
+// platzhalter: Bilder der alten Fassung, die es nicht mehr gibt und die der Server zu Platzhaltern gemacht hat.
+export type Wiederhergestellt =
+  | { ok: true; fassung: number; platzhalter: string[] }
+  | { ok: false; konflikt: boolean; grund: string };
+
+export async function fassungWiederherstellen(s: Start, fassung: number, basis: number): Promise<Wiederhergestellt> {
   if (!s.wiederherstellen_url) return { ok: false, konflikt: false, grund: 'Wiederherstellen ist hier noch nicht eingerichtet' };
   const a = await postJson(s.wiederherstellen_url, s.csrf, { fassung, basis_fassung: basis });
   if (!a) return { ok: false, konflikt: false, grund: 'Keine Verbindung zum Pult' };
-  if (a.ok && typeof a.j.fassung === 'number') return { ok: true, fassung: a.j.fassung };
+  if (a.ok && typeof a.j.fassung === 'number') {
+    const roh = a.j.platzhalter;
+    const platzhalter = Array.isArray(roh) ? roh.filter((n): n is string => typeof n === 'string' && n !== '') : [];
+    return { ok: true, fassung: a.j.fassung, platzhalter };
+  }
   return { ok: false, konflikt: false, grund: grundAus(a.j, 'Wiederherstellen gerade nicht möglich') };
 }

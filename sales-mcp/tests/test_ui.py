@@ -2985,7 +2985,8 @@ def test_altes_format_nur_fuer_newsletter(medienordner, monkeypatch):
     s = _post("/medien/loeschen", {"name": "bild.png", "csrf": ui.CSRF_TOKEN}).text
     assert "altes Format" not in s and "dem Post „Mein Post“" in s
     _MarketingFalsch(monkeypatch, verweise=[_verweis(format="felder", art="material", titel="Blatt")])
-    assert "dem Team-Material „Blatt“" in _post("/medien/loeschen", {"name": "bild.png", "csrf": ui.CSRF_TOKEN}).text
+    s = _post("/medien/loeschen", {"name": "bild.png", "csrf": ui.CSRF_TOKEN}).text
+    assert "dem Team-Material „Blatt“; das lässt sich nicht umstellen" in s and ", der sich" not in s
 
 
 def test_warnseite_zeigt_status_auf_deutsch(medienordner, monkeypatch):

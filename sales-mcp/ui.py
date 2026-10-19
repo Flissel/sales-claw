@@ -1399,6 +1399,8 @@ form.aktion { display: flex; flex-wrap: wrap; align-items: center;
 label.haken { display: flex; align-items: center; gap: .5rem;
               min-height: 44px; font-size: .95rem; }
 label.haken input[type="checkbox"] { width: 22px; height: 22px; flex: none; }
+/* Haken allein in einer Tabellenzelle (Entwurfsliste): Klickflaeche auch 44 px BREIT, nicht nur hoch. */
+td label.haken { min-width: 44px; justify-content: center; }
 label.feld { display: block; margin: .8rem 0; font-weight: 600; }
 label.feld input { display: block; margin-top: .35rem; max-width: 36rem; }
 /* Nummerierte Schritte (Kalender verbinden): Luft zwischen den Schritten,
@@ -2473,7 +2475,7 @@ def _newsletter_sperren(newsletter) -> list[str]:
                          f"Dort erst ein anderes Bild wählen.")
         else:
             art = {"post": "Post", "material": "Team-Material"}.get(str(v.get("art")), "Inhalt")
-            texte.append(f"Das Bild steckt in dem {art} {_titel(v)}, der sich nicht umstellen lässt. "
+            texte.append(f"Das Bild steckt in dem {art} {_titel(v)}; das lässt sich nicht umstellen. "
                          f"Dort erst ein anderes Bild wählen.")
     if fremd:
         n = len(fremd)

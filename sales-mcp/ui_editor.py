@@ -1013,7 +1013,10 @@ def routen(ui) -> list:
         neu = neue_fassung(r)
         if neu is None:
             return json_grund(503, "Wiederherstellen gerade nicht möglich")
-        return JSONResponse({"fassung": neu}, headers={"Cache-Control": "no-store"})
+        # Final-Review I2: Bilder, die es nicht mehr gibt, setzt die API als Platzhalter ein und nennt sie
+        roh = r.get("platzhalter") if isinstance(r, dict) else None
+        platzhalter = [n for n in roh if isinstance(n, str) and 0 < len(n) <= 200][:50] if isinstance(roh, list) else []
+        return JSONResponse({"fassung": neu, "platzhalter": platzhalter}, headers={"Cache-Control": "no-store"})
 
     async def statik(request):
         # Nur die zwei Paket-Dateien (MANIFEST.json bleibt Build-Beleg, nicht

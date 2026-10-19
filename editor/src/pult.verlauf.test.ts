@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fassungWiederherstellen, FassungInfo, Start } from './pult';
 import {
   fassungZeile,
+  platzhalterHinweis,
   verlaufVorschauUrl,
   wiederherstellenSichtbar,
   wiederherstellenSperre,
@@ -26,12 +27,22 @@ describe('fassungWiederherstellen', () => {
   it('sendet {fassung, basis_fassung} mit X-CSRF', async () => {
     const f = vi.fn(async () => antwort(200, { fassung: 9 }));
     vi.stubGlobal('fetch', f);
-    expect(await fassungWiederherstellen(start, 4, 8)).toEqual({ ok: true, fassung: 9 });
+    expect(await fassungWiederherstellen(start, 4, 8)).toEqual({ ok: true, fassung: 9, platzhalter: [] });
     const [adresse, init] = f.mock.calls[0] as unknown as [string, RequestInit];
     expect(adresse).toBe(start.wiederherstellen_url);
     expect(init.method).toBe('POST');
     expect((init.headers as Record<string, string>)['X-CSRF']).toBe('marke-1');
     expect(JSON.parse(String(init.body))).toEqual({ fassung: 4, basis_fassung: 8 });
+  });
+
+  it('reicht die vom Server gemeldeten Platzhalter durch (nur Namen)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => antwort(200, { fassung: 9, platzhalter: ['weg.jpg', 7, '', 'alt.png'] })));
+    expect(await fassungWiederherstellen(start, 4, 8)).toEqual({ ok: true, fassung: 9, platzhalter: ['weg.jpg', 'alt.png'] });
+  });
+
+  it('kaputte Platzhalter-Angabe zählt als keine', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => antwort(200, { fassung: 9, platzhalter: 'weg.jpg' })));
+    expect(await fassungWiederherstellen(start, 4, 8)).toEqual({ ok: true, fassung: 9, platzhalter: [] });
   });
 
   it('fehlende wiederherstellen_url: nicht eingerichtet, keine Anfrage', async () => {
@@ -92,6 +103,18 @@ describe('Verlauf-Menü', () => {
   it('Bestätigungstext', () => {
     expect(wiederherstellenText(4, 8)).toBe(
       'Fassung 4 als neue Fassung wiederherstellen? Deine jetzige Fassung 8 bleibt im Verlauf.',
+    );
+  });
+});
+
+describe('platzhalterHinweis', () => {
+  it('ohne Platzhalter kein Hinweis', () => {
+    expect(platzhalterHinweis([])).toBeNull();
+  });
+
+  it('nennt Zahl und Namen', () => {
+    expect(platzhalterHinweis(['weg.jpg', 'alt.png'])).toBe(
+      '2 Bild(er) existieren nicht mehr und wurden zu Platzhaltern: weg.jpg, alt.png',
     );
   });
 });

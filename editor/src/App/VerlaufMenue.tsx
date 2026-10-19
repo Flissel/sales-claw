@@ -55,13 +55,21 @@ export function wiederherstellenText(fassung: number, basis: number): string {
   return `Fassung ${fassung} als neue Fassung wiederherstellen? Deine jetzige Fassung ${basis} bleibt im Verlauf.`;
 }
 
+// Hinweis nach dem Wiederherstellen, wenn Bilder der alten Fassung inzwischen geloescht waren (null = keiner).
+export function platzhalterHinweis(namen: string[]): string | null {
+  if (namen.length === 0) return null;
+  return `${namen.length} Bild(er) existieren nicht mehr und wurden zu Platzhaltern: ${namen.join(', ')}`;
+}
+
+type Frage = { fassung: number; grund: string | null; laeuft: boolean; hinweis?: string };
+
 export default function VerlaufMenue({ agent }: { agent: string | null }) {
   const start = pultStore((p) => p.start);
   const basis = pultStore((p) => p.basis);
   const ungespeichert = pultStore((p) => p.ungespeichert);
   const nurLesen = pultStore((p) => p.nurLesen);
   const [anker, setAnker] = useState<HTMLElement | null>(null);
-  const [frage, setFrage] = useState<{ fassung: number; grund: string | null; laeuft: boolean } | null>(null);
+  const [frage, setFrage] = useState<Frage | null>(null);
 
   if (!start?.fassungen) return null;
   const fassungen = start.fassungen;
@@ -74,6 +82,12 @@ export default function VerlaufMenue({ agent }: { agent: string | null }) {
     setFrage({ ...frage, grund: null, laeuft: true });
     const e = await fassungWiederherstellen(start, frage.fassung, pultStore.getState().basis);
     if (e.ok) {
+      // Geloeschte Bilder wurden zu Platzhaltern: erst sagen, dann neu laden ("OK" laedt neu).
+      const hinweis = platzhalterHinweis(e.platzhalter);
+      if (hinweis) {
+        setFrage({ ...frage, grund: null, laeuft: false, hinweis });
+        return;
+      }
       window.location.reload();
       return;
     }
@@ -153,28 +167,49 @@ export default function VerlaufMenue({ agent }: { agent: string | null }) {
           ];
         })}
       </Menu>
-      <Dialog open={frage !== null} onClose={() => !frage?.laeuft && setFrage(null)}>
-        <DialogTitle>Fassung wiederherstellen?</DialogTitle>
+      <Dialog
+        open={frage !== null}
+        onClose={() => {
+          // Nach erfolgreichem Wiederherstellen mit Hinweis: Schliessen laedt die neue Fassung.
+          if (frage?.hinweis) window.location.reload();
+          else if (!frage?.laeuft) setFrage(null);
+        }}
+      >
+        <DialogTitle>{frage?.hinweis ? 'Fassung wiederhergestellt' : 'Fassung wiederherstellen?'}</DialogTitle>
         <DialogContent>
-          <DialogContentText>{frage && wiederherstellenText(frage.fassung, basis)}</DialogContentText>
+          {frage?.hinweis ? (
+            <Alert severity="warning" role="status">
+              {frage.hinweis}
+            </Alert>
+          ) : (
+            <DialogContentText>{frage && wiederherstellenText(frage.fassung, basis)}</DialogContentText>
+          )}
           {frage?.grund && (
             <Alert severity="error" sx={{ mt: 2 }}>
               {frage.grund}
             </Alert>
           )}
         </DialogContent>
-        <DialogActions>
-          <Button disabled={frage?.laeuft} onClick={() => setFrage(null)}>
-            Abbrechen
-          </Button>
-          <Button
-            variant="contained"
-            disabled={frage?.laeuft || ungespeichert || nurLesen || agent !== null}
-            onClick={() => void wiederherstellen()}
-          >
-            {frage?.laeuft ? 'Wird wiederhergestellt …' : 'Wiederherstellen'}
-          </Button>
-        </DialogActions>
+        {frage?.hinweis ? (
+          <DialogActions>
+            <Button variant="contained" onClick={() => window.location.reload()}>
+              OK
+            </Button>
+          </DialogActions>
+        ) : (
+          <DialogActions>
+            <Button disabled={frage?.laeuft} onClick={() => setFrage(null)}>
+              Abbrechen
+            </Button>
+            <Button
+              variant="contained"
+              disabled={frage?.laeuft || ungespeichert || nurLesen || agent !== null}
+              onClick={() => void wiederherstellen()}
+            >
+              {frage?.laeuft ? 'Wird wiederhergestellt …' : 'Wiederherstellen'}
+            </Button>
+          </DialogActions>
+        )}
       </Dialog>
     </>
   );

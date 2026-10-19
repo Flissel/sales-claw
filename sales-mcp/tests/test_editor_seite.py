@@ -1891,9 +1891,33 @@ def test_vorlage_art_unbekannt_422(angemeldet, pult):
 
 def test_wiederherstellen_legt_neue_fassung_an(angemeldet, pult):
     r = _post_json(angemeldet, WIEDERHERSTELLEN, {"fassung": 1, "basis_fassung": 2})
-    assert r.status_code == 200 and r.json() == {"fassung": 5}
+    assert r.status_code == 200 and r.json() == {"fassung": 5, "platzhalter": []}
     post = _pult_posts(pult, f"/inhalte/{IID}/wiederherstellen")
     assert post[0][2]["fassung"] == 1 and post[0][2]["basis_fassung"] == 2 and post[0][2]["von"]
+
+
+def test_wiederherstellen_reicht_platzhalter_durch(angemeldet, pult, monkeypatch):
+    """Final-Review I2: die API meldet geloeschte Bilder, die zu Platzhaltern wurden - der Editor zeigt sie."""
+    alt = pult.anfrage
+
+    def anfrage(methode, pfad, daten=None, roh=False, zeitlimit=None):
+        if pfad == f"/inhalte/{IID}/wiederherstellen":
+            pult.aufrufe.append((methode, pfad, daten))
+            return {"fassung": 5, "platzhalter": ["weg.jpg", "alt.png", 7, "", None]}
+        return alt(methode, pfad, daten, roh, zeitlimit)
+
+    monkeypatch.setattr(marketing_pult, "anfrage", anfrage)
+    r = _post_json(angemeldet, WIEDERHERSTELLEN, {"fassung": 1, "basis_fassung": 2})
+    assert r.status_code == 200 and r.json() == {"fassung": 5, "platzhalter": ["weg.jpg", "alt.png"]}
+
+
+def test_wiederherstellen_platzhalter_kaputt_wird_leer(angemeldet, pult, monkeypatch):
+    def anfrage(methode, pfad, daten=None, roh=False, zeitlimit=None):
+        return {"fassung": 5, "platzhalter": "weg.jpg"}
+
+    monkeypatch.setattr(marketing_pult, "anfrage", anfrage)
+    r = _post_json(angemeldet, WIEDERHERSTELLEN, {"fassung": 1, "basis_fassung": 2})
+    assert r.status_code == 200 and r.json() == {"fassung": 5, "platzhalter": []}
 
 
 def test_wiederherstellen_reicht_ablehnung_als_422_durch(angemeldet, pult):
