@@ -101,7 +101,7 @@ def test_entwurf_mit_gesperrtem_anhang_wird_abgewiesen(ordner):
 
 def test_schalter_in_der_oberflaeche_setzt_und_zeigt(ordner):
     seite = _get("/medien").text
-    assert "Sperren" in seite and "<b>An</b>" in seite
+    assert "Bot darf senden" in seite and "Für Bot sperren" in seite
     assert 'name="name" value="b.pdf"' in seite
     r = _post("/medien/bot", {"name": "b.pdf", "erlaubt": "nein",
                               "csrf": ui.CSRF_TOKEN})
@@ -112,7 +112,7 @@ def test_schalter_in_der_oberflaeche_setzt_und_zeigt(ordner):
     assert zeile["herkunft"] == "hochgeladen"
     seite = _get("/medien").text
     b = seite[seite.index("b.pdf"):]
-    assert "<b>Aus</b>" in b[:1200]
+    assert "<b>Aus</b>" in b[:1200] and "Für Bot freigeben" in b[:1200]
     a = seite[seite.index("a.pdf"):seite.index("b.pdf")]
     assert "<b>An</b>" in a
     # Wieder freigeben.

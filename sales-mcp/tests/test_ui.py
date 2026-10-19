@@ -3560,6 +3560,13 @@ def test_medien_unsinn_faellt_auf_vorgabe(medienordner, q):
     assert r.status_code == 200 and "<x>" not in r.text and "b.png" in r.text
 
 
+def test_medien_seite_zu_gross_wird_auf_die_letzte_geklemmt(medienordner):
+    for i in range(30):
+        (medienordner / f"b{i:02}.png").write_bytes(b"x" * 64)
+    s = _get("/medien?seite=99999").text
+    assert "Seite 2 von 2" in s and s.count('<div class="medienkarte">') == 6
+
+
 def test_medien_ruecksprung_baut_url_selbst(medienordner):
     (medienordner / "b.png").write_bytes(b"x" * 64)
     r = _post("/medien/bot", {"name": "b.png", "erlaubt": "nein", "csrf": ui.CSRF_TOKEN,

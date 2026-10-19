@@ -1445,7 +1445,8 @@ nav.reiter .zahl { font-size: .8rem; color: var(--gedaempft); }
    farbunabhängige zweite Merkmal. */
 .filterleiste { display: flex; flex-wrap: wrap; gap: .4rem; margin: .4rem 0;
                 align-items: center; }
-.filterleiste a { padding: .2rem .6rem; border-radius: 4px;
+.filterleiste a { padding: .2rem .6rem; border-radius: 4px; min-height: 44px;
+                  display: inline-flex; align-items: center;
                   border: 1px solid var(--linie_stark); text-decoration: none;
                   font-size: .85rem; color: var(--schrift); }
 .filterleiste a[aria-current] { background: var(--neutral);
@@ -2587,10 +2588,10 @@ def _medien_schalter(name: str, m, ansicht: str = "") -> str:
     """Das Wort traegt den Zustand (An/Aus), der Knopf die Gegenrichtung.
     `ansicht` (`art|seite`) merkt sich Reiter und Seite fuer den Rücksprung."""
     an = m is None or bool(m["bot_darf_senden"])
-    ziel, knopf = ("nein", "Sperren") if an else ("ja", "Freigeben")
+    ziel, knopf = ("nein", "Für Bot sperren") if an else ("ja", "Für Bot freigeben")
     feld = (f'<input type="hidden" name="ansicht" value="{_e(ansicht)}">'
             if ansicht else "")
-    return (f'<b>{"An" if an else "Aus"}</b> '
+    return (f'Bot darf senden: <b>{"An" if an else "Aus"}</b> '
             f'<form class="aktion" method="post" action="/medien/bot">'
             f'<input type="hidden" name="name" value="{_e(name)}">'
             f'<input type="hidden" name="erlaubt" value="{ziel}">'
