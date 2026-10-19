@@ -136,22 +136,42 @@ def routen(ui) -> list:
         if status in ("erledigt", "abgesagt"):
             return ""
 
-        def knopf(aktion: str, text: str) -> str:
+        def knopf(aktion: str, text: str, primaer: bool = False) -> str:
+            klasse = ' class="primaer"' if primaer else ""
             return (f'<form method="post" action="/marketing/plan/{pid}" class="aktion">{csrf()}'
                     f'<input type="hidden" name="zurueck" value="{e(zurueck)}">'
-                    f'<button type="submit" name="aktion" value="{aktion}">{text}</button></form>')
-        teile = ([knopf("uebernehmen", "Übernehmen"), knopf("absagen", "Verwerfen")] if status == "vorschlag"
+                    f'<button type="submit" name="aktion" value="{aktion}"{klasse}>{text}</button></form>')
+        teile = ([knopf("uebernehmen", "Übernehmen", True), knopf("absagen", "Verwerfen")] if status == "vorschlag"
                  else [knopf("erledigt", "Erledigt"), knopf("absagen", "Absagen")])
-        teile.append(f'<form method="post" action="/marketing/plan/{pid}" class="aktion">{csrf()}'
+        teile.append(f'<details class="verschieben"><summary>Verschieben</summary>'
+                     f'<form method="post" action="/marketing/plan/{pid}" class="aktion">{csrf()}'
                      f'<input type="hidden" name="zurueck" value="{e(zurueck)}">'
                      f'<input type="date" name="datum" value="{e(str(p.get("datum") or ""))}" '
                      f'aria-label="Neues Datum">'
-                     f'<button type="submit" name="aktion" value="verschieben">Verschieben</button></form>')
+                     f'<button type="submit" name="aktion" value="verschieben">Verschieben</button></form>'
+                     '</details>')
         return "".join(teile)
+
+    def karte(p: dict, zurueck: str) -> str:
+        status = str(p.get("status") or "")
+        art = p.get("art")
+        notiz = str(p.get("notiz") or "")
+        chips = [f'<span class="plan-chip art">{e(ARTEN.get(art, ARTEN["sonstiges"]))}</span>',
+                 f'<span class="plan-chip status {e(status)}">{e(STATUS.get(status, status))}</span>']
+        if p.get("angelegt_von") == "agent" and status != "vorschlag":
+            chips.append('<span class="plan-chip">vom Agenten</span>')
+        return (f'<article class="plan-karte plan-{e(status)}"><div class="plan-chips">{"".join(chips)}</div>'
+                f'<p class="plan-titel"><b>{e(str(p.get("titel") or ""))}</b></p>'
+                + (f'<p class="plan-notiz">{e(notiz)}</p>' if notiz else "")
+                + (f'<p><a href="/marketing/entwurf/{e(urllib.parse.quote(str(p["inhalt"]), safe=""))}">'
+                   'Zum Entwurf</a></p>' if p.get("inhalt") else "")
+                + f'<div class="plan-knoepfe">{knoepfe(p, zurueck)}</div></article>')
 
     @ui._gesichert_seite
     async def plan(request):
         erster = monat_lesen(request.query_params.get("monat"))
+        art = art_lesen(request.query_params.get("art"))
+        abgesagte = request.query_params.get("abgesagt") == "1"
         letzter = monat_ende(erster)
         try:
             m, liste = await marketing_mandant.firma(request)
@@ -160,35 +180,65 @@ def routen(ui) -> list:
         except marketing_pult.PultFehler as f:
             return fehler(f)
         eintraege = [p for p in (d.get("eintraege") if isinstance(d, dict) else None) or [] if isinstance(p, dict)]
-        hier = f"/marketing/plan?monat={erster:%Y-%m}"
+        hier = plan_pfad(erster, art, abgesagte)
+        monat_name = f"{MONATE[erster.month - 1]} {erster.year}"
+        z = zaehlen(eintraege, abgesagte)
+        sichtbar = [p for p in eintraege if abgesagte or p.get("status") != "abgesagt"]
+        gewaehlt = [p for p in sichtbar
+                    if art is None or (p.get("art") if p.get("art") in ARTEN else "sonstiges") == art]
         vorschlaege = sum(1 for p in eintraege if p.get("status") == "vorschlag")
-        zeilen = []
-        for p in eintraege:
-            try:
-                tag = date.fromisoformat(str(p.get("datum"))[:10])
-                wann = f"{WOCHENTAGE[tag.weekday()]} {tag:%d.%m.}"
-            except ValueError:
-                wann = e(str(p.get("datum") or ""))
-            notiz = str(p.get("notiz") or "")
-            zeilen.append(
-                f'<tr class="plan-{e(str(p.get("status") or ""))}"><td>{e(wann)}</td>'
-                f'<td>{e(ARTEN.get(p.get("art"), str(p.get("art") or "")))}</td>'
-                f'<td><b>{e(str(p.get("titel") or ""))}</b>'
-                + (f'<br><small>{e(notiz)}</small>' if notiz else "")
-                + (f'<br><a href="/marketing/entwurf/{e(urllib.parse.quote(str(p["inhalt"]), safe=""))}">'
-                   'Zum Entwurf</a>' if p.get("inhalt") else "")
-                + f'</td><td>{e(STATUS.get(p.get("status"), str(p.get("status") or "")))}</td>'
-                f'<td>{knoepfe(p, hier)}</td></tr>')
-        tabelle = ("<table><tr><th>Tag</th><th>Art</th><th>Was</th><th>Status</th><th></th></tr>"
-                   + ("".join(zeilen) or '<tr><td colspan="5">In diesem Monat ist nichts geplant.</td></tr>')
-                   + "</table>")
-        blaettern = (f'<div class="filter"><a href="/marketing/plan?monat={nachbar(erster, -1)}">&larr; Vormonat</a>'
-                     f'<a class="aktiv" href="{e(hier)}">{MONATE[erster.month - 1]} {erster.year}</a>'
-                     f'<a href="/marketing/plan?monat={nachbar(erster, 1)}">Nächster Monat &rarr;</a></div>')
-        hinweis = (f'<p><b>{vorschlaege} Vorschlag{"" if vorschlaege == 1 else "e"} vom Agenten</b> '
-                   'warten auf dich: übernehmen oder verwerfen.</p>' if vorschlaege else "")
+
+        untersatz = (f'<b>{vorschlaege} Vorschlag{"" if vorschlaege == 1 else "e"} vom Agenten</b> '
+                     f'{"wartet" if vorschlaege == 1 else "warten"} in {e(monat_name)} auf dich: '
+                     'übernehmen oder verwerfen.' if vorschlaege else "Alles im Griff: nichts wartet auf dich.")
+        kopf = ('<header class="plan-kopf"><div><h1>Kampagnenplan</h1>'
+                f'<p class="plan-unter">{untersatz}</p></div>'
+                '<a class="knopf" href="#neu">+ Neuer Eintrag</a></header>')
+        # Die Zahl steht in Klammern direkt am Namen ("Podcast (1)"), damit sie ohne Gestaltung lesbar bleibt.
+        reiter = ('<nav class="plan-reiter" aria-label="Art">'
+                  + "".join(
+                      f'<a href="{e(plan_pfad(erster, k, abgesagte))}"'
+                      + (' class="aktiv" aria-current="page"' if k == art else "")
+                      + f'>{e(t)} ({z[k or "alle"]})</a>'
+                      for k, t in [(None, "Alle"), *ARTEN.items()])
+                  + '</nav>')
+        vor = monat_lesen(nachbar(erster, -1))
+        nach = monat_lesen(nachbar(erster, 1))
+        heute = date.today()
+        monatsleiste = ('<div class="plan-monat">'
+                        f'<a href="{e(plan_pfad(vor, art, abgesagte))}">&lsaquo; Vormonat</a>'
+                        f'<span class="plan-monatsname">{e(monat_name)}</span>'
+                        f'<a href="{e(plan_pfad(nach, art, abgesagte))}">Nächster Monat &rsaquo;</a>'
+                        + (f'<a href="{e(plan_pfad(heute.replace(day=1), art, abgesagte))}">Heute</a>'
+                           if erster != heute.replace(day=1) else "")
+                        + (f'<a href="{e(plan_pfad(erster, art, False))}">Abgesagte ausblenden</a>' if abgesagte
+                           else f'<a href="{e(plan_pfad(erster, art, True))}">Abgesagte zeigen</a>')
+                        + '</div>')
+
+        if gewaehlt:
+            agenda = ""
+            for tag, gruppe in nach_tagen(gewaehlt):
+                if tag is None:
+                    kopfzeile = "Ohne Datum"
+                else:
+                    kopfzeile = f"{WOCHENTAGE[tag.weekday()]} {tag.day}. {MONATE[tag.month - 1]}"
+                    if tag == heute:
+                        kopfzeile += ' <span class="plan-chip heute">Heute</span>'
+                agenda += (f'<section class="plan-tag"><h2>{kopfzeile}</h2>'
+                           + "".join(karte(p, hier) for p in gruppe) + '</section>')
+        elif not eintraege:
+            agenda = (f'<div class="plan-leer"><p>In {e(monat_name)} ist noch nichts geplant.</p>'
+                      '<a class="knopf" href="#neu">Ersten Eintrag anlegen</a></div>')
+        elif not sichtbar:
+            agenda = (f'<div class="plan-leer"><p>In {e(monat_name)} gibt es nur abgesagte Einträge.</p>'
+                      f'<a class="knopf" href="{e(plan_pfad(erster, art, True))}">Abgesagte zeigen</a></div>')
+        else:
+            agenda = (f'<div class="plan-leer"><p>Kein {e(ARTEN[art or "sonstiges"])}-Eintrag in {e(monat_name)}.</p>'
+                      f'<a class="knopf" href="{e(plan_pfad(erster, None, abgesagte))}">Alle Arten zeigen</a></div>')
+
         arten = "".join(f'<option value="{k}">{e(t)}</option>' for k, t in ARTEN.items())
-        formular = (f'<h2>Neuer Eintrag</h2><form method="post" action="/marketing/plan/neu" class="aktion">{csrf()}'
+        formular = (f'<section id="neu" class="plan-form"><h2>Neuer Eintrag</h2>'
+                    f'<form method="post" action="/marketing/plan/neu" class="aktion">{csrf()}'
                     f'<input type="hidden" name="zurueck" value="{e(hier)}">'
                     f'<label>Datum <input type="date" name="datum" required min="{date.today().isoformat()}"></label>'
                     f'<label>Art <select name="art">{arten}</select></label>'
@@ -196,9 +246,10 @@ def routen(ui) -> list:
                     '<label>Notiz <textarea name="notiz" maxlength="1000" rows="2"></textarea></label>'
                     '<button type="submit">Eintragen</button></form>'
                     '<p><small>Ein Eintrag ist nur ein Plan, er verschickt nichts. Hinaus geht weiterhin nur, '
-                    'was über Entwurf und Freigabe läuft.</small></p>')
+                    'was über Entwurf und Freigabe läuft.</small></p></section>')
         return ui._seite("Kampagnenplan", marketing_mandant.umschalter(e, ui.CSRF_TOKEN, m, liste, hier)
-                         + blaettern + hinweis + tabelle + formular)
+                         + kopf + reiter + monatsleiste
+                         + f'<div class="plan-spalten"><div class="plan-agenda">{agenda}</div>{formular}</div>')
 
     @ui._gesichert_seite
     async def neu(request):

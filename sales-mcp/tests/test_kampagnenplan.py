@@ -165,6 +165,62 @@ def test_seite_zeigt_monat_und_knoepfe(angemeldet, pult):
     assert 'action="/marketing/plan/neu"' in s
 
 
+def test_reiter_zeigen_anzahl_und_filtern(angemeldet, pult):
+    s = angemeldet.get("/marketing/plan?monat=2026-10&art=podcast", headers=HOST).text
+    # Fixture: Newsletter-Vorschlag, Podcast, erledigter Post = 3 sichtbare, kein abgesagter.
+    assert 'aria-current="page"' in s and "Podcast (1)" in s and "Alle (3)" in s
+    assert "Folge 2" in s and "Herbst-Newsletter" not in s
+    assert "art=podcast" in s.split("Vormonat")[0][-200:] or "monat=2026-09&amp;art=podcast" in s
+
+
+def test_gruppen_nach_tag_mit_wochentag(angemeldet, pult):
+    s = angemeldet.get("/marketing/plan?monat=2026-10", headers=HOST).text
+    assert s.index("Fr 2. Oktober") < s.index("Do 22. Oktober") < s.index("Sa 24. Oktober")
+
+
+def test_leerer_monat_hat_leerzustand_mit_knopf(angemeldet, pult):
+    pult.eintraege = []
+    s = angemeldet.get("/marketing/plan?monat=2026-12", headers=HOST).text
+    assert "plan-leer" in s and 'href="#neu"' in s and "nichts geplant" in s.lower()
+
+
+def test_reiter_ohne_treffer_sagt_welche_art(angemeldet, pult):
+    s = angemeldet.get("/marketing/plan?monat=2026-10&art=video", headers=HOST).text
+    assert "Video" in s and "plan-leer" in s
+
+
+def test_abgesagte_nur_auf_wunsch(angemeldet, pult):
+    pult.eintraege.append({"id": "55555555-5555-5555-5555-555555555555", "datum": "2026-10-25",
+                           "art": "post", "titel": "Alt", "notiz": "", "status": "abgesagt", "inhalt": None})
+    assert "Alt" not in angemeldet.get("/marketing/plan?monat=2026-10", headers=HOST).text
+    assert "Alt" in angemeldet.get("/marketing/plan?monat=2026-10&abgesagt=1", headers=HOST).text
+
+
+def test_nur_abgesagte_hat_eigenen_leerzustand(angemeldet, pult):
+    pult.eintraege = [{"id": "55555555-5555-5555-5555-555555555555", "datum": "2026-10-25",
+                       "art": "post", "titel": "Alt", "notiz": "", "status": "abgesagt", "inhalt": None}]
+    s = angemeldet.get("/marketing/plan?monat=2026-10", headers=HOST).text
+    assert "plan-leer" in s and "Abgesagte zeigen" in s and "Alt" not in s
+
+
+@pytest.mark.parametrize("q", ["art=fax", "art=%3Cscript%3E", "monat=abc", "abgesagt=2"])
+def test_manipulierte_parameter_fallen_zurueck(angemeldet, pult, q):
+    r = angemeldet.get(f"/marketing/plan?{q}", headers=HOST)
+    assert r.status_code == 200 and "<script>" not in r.text
+
+
+def test_unbekannte_art_und_fehlendes_datum_ohne_absturz(angemeldet, pult):
+    pult.eintraege = [{"id": "66666666-6666-6666-6666-666666666666", "datum": None, "art": "fax",
+                       "titel": "Wirr", "notiz": "", "status": "geplant", "inhalt": None}]
+    s = angemeldet.get("/marketing/plan?monat=2026-10", headers=HOST).text
+    assert "Wirr" in s and "Sonstiges (1)" in s and "Alle (1)" in s
+
+
+def test_zurueck_traegt_reiter_in_den_knoepfen(angemeldet, pult):
+    s = angemeldet.get("/marketing/plan?monat=2026-10&art=newsletter", headers=HOST).text
+    assert 'name="zurueck" value="/marketing/plan?monat=2026-10&amp;art=newsletter"' in s
+
+
 def test_seite_api_weg_503(angemeldet, pult):
     pult.fehler = marketing_pult.PultFehler("nicht_erreichbar", "x")
     assert angemeldet.get("/marketing/plan", headers=HOST).status_code == 503
