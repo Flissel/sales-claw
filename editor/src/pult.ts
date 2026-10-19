@@ -256,10 +256,14 @@ async function freigabeSchritt(url: string | undefined, csrf: string, standardGr
   }
 }
 
-// "07.10.2026, 09:30" in der Ortszeit; unlesbares Datum => unveraendert zurueck.
-export function datumKurz(iso: string): string {
+// "07.10.2026, 09:30" in der Ortszeit (ohneJahr: "07.10. 09:30"); unlesbares Datum => unveraendert zurueck.
+export function datumKurz(iso: string, ohneJahr = false): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
+  if (ohneJahr) {
+    const z = (n: number) => String(n).padStart(2, '0');
+    return `${z(d.getDate())}.${z(d.getMonth() + 1)}. ${z(d.getHours())}:${z(d.getMinutes())}`;
+  }
   return d.toLocaleString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
@@ -519,4 +523,13 @@ export async function vorlageAlsNeu(
   const url = a.j.editor_url;
   if (typeof url !== 'string' || !url.startsWith('/marketing/editor/')) return { ok: false, grund: 'Antwort unverständlich' };
   return { ok: true, editorUrl: url };
+}
+
+// Alte Fassung als neue Fassung anlegen (nur Editor-Format, nur Entwurf - der Server prueft).
+export async function fassungWiederherstellen(s: Start, fassung: number, basis: number): Promise<Ergebnis> {
+  if (!s.wiederherstellen_url) return { ok: false, konflikt: false, grund: 'Wiederherstellen ist hier noch nicht eingerichtet' };
+  const a = await postJson(s.wiederherstellen_url, s.csrf, { fassung, basis_fassung: basis });
+  if (!a) return { ok: false, konflikt: false, grund: 'Keine Verbindung zum Pult' };
+  if (a.ok && typeof a.j.fassung === 'number') return { ok: true, fassung: a.j.fassung };
+  return { ok: false, konflikt: false, grund: grundAus(a.j, 'Wiederherstellen gerade nicht möglich') };
 }

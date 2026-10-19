@@ -31,10 +31,12 @@ import {
 } from '@mui/material';
 
 import { fehlerText, firmaEtikett } from '../pult';
+import { BETREFF_MAX, betreffHinweis, VORSCHAU_MAX, vorschautextHinweis, zeichen } from '../zaehler';
 import { alsUngespeichert, einreichenAuftrag, newsletterSichern, pultStore } from '../pultZustand';
 
 import { useAgentArbeitet } from './Chat/Sperre';
 import { LiegtBand, MarkeBand, RueckmeldungBand } from './FreigabeBand';
+import VerlaufMenue from './VerlaufMenue';
 
 // Leiste oben: Betreff, Vorschautext, Speichern, Vorschau, Zurueck.
 // Die Pruefung, ob der Inhalt erlaubt ist, macht das Pult beim Speichern.
@@ -44,8 +46,27 @@ type Meldung = { art: 'success' | 'error' | 'info'; text: string } | null;
 // Zwei Zeilen (Design-Review 19.10.): in einer Zeile brauchte die Leiste 1316 px und lief
 // bis 1920 px Fensterbreite ueber ("Vorschau Handy" abgeschnitten). Oben Status und Aktionen,
 // unten Betreff und Vorschautext.
+// Zeile 2 traegt unter Betreff und Vorschautext die Zaehler (E13) und ist darum hoeher.
 const ZEILE = 52;
-export const PULT_LEISTE_HOEHE = 2 * ZEILE;
+const ZEILE_FELDER = 66;
+export const PULT_LEISTE_HOEHE = ZEILE + ZEILE_FELDER;
+
+// Zaehler "{n}/{max}", mit Hinweis dahinter (nur Hinweis, keine Sperre).
+function Zaehler({ n, max, hinweis }: { n: number; max: number; hinweis: string | null }) {
+  return (
+    <Typography
+      component="span"
+      variant="caption"
+      color={hinweis ? 'warning.main' : 'text.secondary'}
+      title={hinweis ?? undefined}
+      noWrap
+      sx={{ display: 'block' }}
+    >
+      {n}/{max}
+      {hinweis ? ` · ${hinweis}` : ''}
+    </Typography>
+  );
+}
 
 export default function PultLeiste() {
   const start = pultStore((p) => p.start);
@@ -202,6 +223,7 @@ export default function PultLeiste() {
               </span>
             </Tooltip>
           )}
+          <VerlaufMenue agent={agent} />
           <Tooltip title={vorschauHinweis}>
             <span>
               <Button
@@ -253,12 +275,14 @@ export default function PultLeiste() {
             </MenuItem>
           </Menu>
         </Stack>
-        <Stack direction="row" alignItems="center" spacing={1.5} sx={{ height: ZEILE, px: 1.5 }}>
+        <Stack direction="row" alignItems="flex-start" spacing={1.5} sx={{ height: ZEILE_FELDER, px: 1.5, pt: 1 }}>
           <TextField
             size="small"
             label="Betreff"
             value={betreff}
             disabled={agent !== null}
+            helperText={<Zaehler n={zeichen(betreff)} max={BETREFF_MAX} hinweis={betreffHinweis(betreff)} />}
+            FormHelperTextProps={{ sx: { mt: 0.25, mx: 1 } }}
             onChange={(ev) => {
               pultStore.setState({ betreff: ev.target.value });
               alsUngespeichert();
@@ -270,6 +294,8 @@ export default function PultLeiste() {
             label="Vorschautext"
             value={vorschautext}
             disabled={agent !== null}
+            helperText={<Zaehler n={zeichen(vorschautext)} max={VORSCHAU_MAX} hinweis={vorschautextHinweis(vorschautext)} />}
+            FormHelperTextProps={{ sx: { mt: 0.25, mx: 1 } }}
             onChange={(ev) => {
               pultStore.setState({ vorschautext: ev.target.value });
               alsUngespeichert();

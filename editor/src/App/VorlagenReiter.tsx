@@ -168,7 +168,12 @@ export function VorlagenListe({ start, vorlagen, ungespeichert, nurLesen, onAnwe
               </Button>
               <Tooltip title={sperre ?? ''}>
                 <span>
-                  <Button size="small" disabled={sperre !== null} onClick={() => onAnwenden(v.name)}>
+                  <Button
+                    size="small"
+                    disabled={sperre !== null}
+                    onClick={() => onAnwenden(v.name)}
+                    sx={{ px: 0.5, whiteSpace: 'nowrap', letterSpacing: 0 }}
+                  >
                     Auf diesen Entwurf anwenden …
                   </Button>
                 </span>

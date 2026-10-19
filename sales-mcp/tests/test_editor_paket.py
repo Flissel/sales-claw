@@ -133,3 +133,12 @@ def test_paket_kennt_rueckgaengig():
     text = (ORDNER / "editor.js").read_text(encoding="utf-8")
     for s in ("Rückgängig (Strg+Z)", "Wiederholen (Strg+Umschalt+Z)"):
         assert s in text, s
+
+
+def test_paket_kennt_verlauf_und_zaehler():
+    # 2026-10-19 Task 10: Fassungsverlauf in der Pult-Leiste, Zähler für Betreff und Vorschautext
+    text = (ORDNER / "editor.js").read_text(encoding="utf-8")
+    for s in ("Wiederherstellen …", "bleibt im Verlauf.", "wiederherstellen_url",
+              "Mailprogramme kürzen ab etwa 60 Zeichen", "Ohne Vorschautext zeigen Mailprogramme den Anfang der Mail",
+              "Mailprogramme zeigen etwa 40–100 Zeichen"):
+        assert s in text, s
