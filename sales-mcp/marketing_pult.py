@@ -59,7 +59,7 @@ def anfrage(methode: str, pfad: str, daten: dict | None = None, roh: bool = Fals
             raise PultFehler("nicht_verbunden", str(e.code))
         if e.code == 503:
             raise PultFehler("nicht_erreichbar", str(e.code))
-        if e.code in (404, 422):
+        if e.code in (404, 409, 422):
             raise PultFehler("abgelehnt", grund or str(e.code))
         raise PultFehler("unbekannt", str(e.code))
     except (urllib.error.URLError, TimeoutError, OSError) as e:

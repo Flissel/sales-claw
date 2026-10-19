@@ -12,6 +12,8 @@ import server  # noqa: E402
 import ui  # noqa: E402
 import ui_podcast  # noqa: E402
 
+_ECHTER_CLIENT = marketing_pult.anfrage   # vor dem Fixture-Austausch gemerkt
+
 HOST = {"host": "127.0.0.1:8791"}
 AID = "0123abcd-4444-4444-4444-444444444444"
 AID2 = "11112222-4444-4444-4444-444444444444"
@@ -93,11 +95,11 @@ class Falsch:
             {"id": AID, "mandant": "vibemind", "titel": "Herbst-Folge", "sprache": "de",
              "skript": [{"sprecher": "Anna", "text": "Hallo"}, {"sprecher": "Ben", "text": "Hi"}],
              "status": "fertig", "datei": DATEI, "dauer_s": 125, "befund": None, "angelegt_von": "agent",
-             "erstellt_am": "2026-10-19T10:00:00", "geaendert_am": "2026-10-19T10:05:00"},
+             "erstellt_am": "2026-10-19T08:00:00+00:00", "geaendert_am": "2026-10-19T08:05:00+00:00"},
             {"id": AID2, "mandant": "vibemind", "titel": "<script>x</script>", "sprache": "de",
              "skript": [{"sprecher": "Anna", "text": "<b>fett</b>"}], "status": "in_arbeit", "datei": None,
              "dauer_s": None, "befund": None, "angelegt_von": "betreiber",
-             "erstellt_am": "2026-10-19T11:00:00", "geaendert_am": "2026-10-19T11:00:00"}]
+             "erstellt_am": "2026-10-19T09:00:00+00:00", "geaendert_am": "2026-10-19T09:00:00+00:00"}]
 
     def anfrage(self, methode, pfad, daten=None, roh=False):
         self.aufrufe.append((methode, pfad, daten))
@@ -297,3 +299,42 @@ def test_ablehnungsgrund_wird_nur_einmal_escaped(angemeldet, pult):
 def test_formular_und_chips_nutzen_plan_klassen(angemeldet, pult):
     s = angemeldet.get("/marketing/podcast", headers=HOST).text
     assert 'class="plan-form"' in s and 'class="plan-chip erledigt"' in s and 'class="plan-chip gesprochen"' in s
+
+
+def _api_fehler(monkeypatch, code, detail):
+    """Der ECHTE Client (marketing_pult.anfrage), nur das Netz antwortet mit einem HTTP-Fehler."""
+    import io
+    import json
+    import urllib.error
+    import urllib.request
+
+    def urlopen(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, code, "x", {}, io.BytesIO(json.dumps({"detail": detail}).encode()))
+
+    monkeypatch.setattr(marketing_pult, "URL", "http://pult.test")
+    monkeypatch.setattr(marketing_pult, "KEY", "k")
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(marketing_pult, "anfrage", _ECHTER_CLIENT)
+
+
+def test_client_409_ist_ablehnung_mit_text_der_api(monkeypatch):
+    _api_fehler(monkeypatch, 409, "Folge ist nicht mehr offen")
+    with pytest.raises(marketing_pult.PultFehler) as f:
+        marketing_pult.anfrage("POST", f"/ton/{AID}/abbrechen", {})
+    assert f.value.art == "abgelehnt" and f.value.grund == "Folge ist nicht mehr offen"
+
+
+def test_abbrechen_409_der_api_zeigt_meldung_nicht_503(angemeldet, monkeypatch):
+    _api_fehler(monkeypatch, 409, "Folge ist nicht mehr offen")
+    r = angemeldet.post(f"/marketing/podcast/{AID}/abbrechen", headers=HOST, follow_redirects=False,
+                        data={"csrf": ui.CSRF_TOKEN})
+    assert r.status_code == 422 and "Folge ist nicht mehr offen" in r.text
+    assert "nicht erreichbar" not in r.text
+
+
+def test_zeitstempel_utc_wird_ortszeit(angemeldet, pult):
+    if ui.ZEITZONE is None:
+        pytest.skip("keine Zeitzonendaten")
+    pult.auftraege[0]["erstellt_am"] = "2026-10-19T08:00:00+00:00"
+    s = angemeldet.get("/marketing/podcast", headers=HOST).text
+    assert "19.10.2026 10:00" in s and "19.10.2026 08:00" not in s

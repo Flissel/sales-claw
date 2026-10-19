@@ -84,7 +84,7 @@ def routen(ui) -> list:
 
     def datum(roh) -> str:
         try:
-            return datetime.fromisoformat(str(roh)).strftime("%d.%m.%Y %H:%M")
+            return ui._zeit(datetime.fromisoformat(str(roh)))
         except ValueError:
             return str(roh or "")[:16]
 
