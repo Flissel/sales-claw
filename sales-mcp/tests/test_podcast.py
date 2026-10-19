@@ -66,6 +66,16 @@ def test_stand_exakter_name():
     assert server.entwurf_staende_zu_medien([name]) == {name: "pending"}
 
 
+def test_stand_name_mit_prozent_und_unterstrich():
+    _db()
+    name = "pod-aaaaaaaa-a_b%c.mp3"
+    _entwurf_mit_medien("approved", name)
+    _entwurf_mit_medien("sent", "pod-aaaaaaaa-aXb.mp3")        # "_" ist kein Platzhalter
+    _entwurf_mit_medien("sent", "pod-aaaaaaaa-aXbYc.mp3")      # "%" ist kein Platzhalter
+    assert server.entwurf_staende_zu_medien([name, "pod-aaaaaaaa-aXb.mp3"]) == {
+        name: "approved", "pod-aaaaaaaa-aXb.mp3": "sent"}
+
+
 def test_stand_leere_liste_ohne_abfrage(monkeypatch):
     def nie(*a, **k):
         raise AssertionError("keine Abfrage erwartet")
@@ -170,14 +180,17 @@ def test_seite_zeigt_folgen_status_player_skript(angemeldet, pult):
     assert f'<audio controls preload="none" src="/medien/datei/{DATEI}">' in s
     assert "2:05" in s and "zur Freigabe" in s
     assert "<details><summary>Skript</summary>" in s and "Anna: Hallo" in s
-    assert "wird gesprochen" in s and 'http-equiv="refresh"' in s
+    assert "wird gesprochen" in s and 'http-equiv="refresh"' not in s
+    assert '<a href="/marketing/podcast">Aktualisieren</a>' in s and "19.10.2026 10:00" in s
     assert f'action="/marketing/podcast/{AID2}/abbrechen"' in s
     assert f'action="/marketing/podcast/{AID}/abbrechen"' not in s      # fertig: nicht abbrechbar
     assert "Betreiber" in s and "Agent" in s
     assert 'action="/marketing/podcast/neu"' in s
 
 
-def test_ohne_laufende_folge_kein_refresh(angemeldet, pult):
+def test_nie_auto_refresh(angemeldet, pult):
+    # Ein Refresh wuerde ein getipptes Skript verwerfen - auch bei laufender Folge nicht.
+    assert 'http-equiv="refresh"' not in angemeldet.get("/marketing/podcast", headers=HOST).text
     pult.auftraege = pult.auftraege[:1]
     assert 'http-equiv="refresh"' not in angemeldet.get("/marketing/podcast", headers=HOST).text
 
@@ -187,7 +200,8 @@ def test_xss_und_manipulierte_datei(angemeldet, pult):
     assert "&lt;script&gt;x&lt;/script&gt;" in s and "<script>x" not in s
     assert "&lt;b&gt;fett&lt;/b&gt;" in s and "<b>fett" not in s
     pult.auftraege[0]["datei"] = "../x.mp3"
-    assert "<audio" not in angemeldet.get("/marketing/podcast", headers=HOST).text
+    t = angemeldet.get("/marketing/podcast", headers=HOST).text
+    assert "<audio" not in t and "Datei nicht abspielbar" in t
 
 
 def test_andere_firma_nutzt_cookie(angemeldet, pult):
@@ -253,11 +267,33 @@ def test_hinweis_versand_per_assistent(angemeldet, pult):
     s = angemeldet.get("/marketing/podcast", headers=HOST).text
     assert "Zum Versenden den Assistenten bitten" in s and "Stimme: KI" in s
     assert "Zur Freigabe vorbereiten" not in s
+    assert s.count("Assistenten") == 1 and s.count("Stimme: KI") == 1 and s.count("nicht löschen") == 1
 
 
-def test_freigabe_stand_ausfall_zeigt_seite(angemeldet, pult, monkeypatch):
+def test_freigabe_stand_ausfall_zeigt_seite(angemeldet, pult, monkeypatch, caplog):
     def kaputt(namen):
         raise RuntimeError("db weg")
     monkeypatch.setattr(server, "entwurf_staende_zu_medien", kaputt)
-    r = angemeldet.get("/marketing/podcast", headers=HOST)
-    assert r.status_code == 200 and "noch kein Entwurf" in r.text
+    with caplog.at_level("WARNING", logger="sales-ui"):
+        r = angemeldet.get("/marketing/podcast", headers=HOST)
+    assert r.status_code == 200 and "Freigabe-Stand gerade nicht lesbar" in r.text
+    assert "noch kein Entwurf" not in r.text
+    assert any(x.exc_info for x in caplog.records)
+
+
+def test_unbekannter_entwurfsstatus_neutral(angemeldet, pult, monkeypatch):
+    monkeypatch.setattr(server, "entwurf_staende_zu_medien", lambda namen: {DATEI: "<i>neu</i>"})
+    s = angemeldet.get("/marketing/podcast", headers=HOST).text
+    assert "&lt;i&gt;neu&lt;/i&gt;" in s and "<i>neu" not in s and "noch kein Entwurf" not in s
+
+
+def test_ablehnungsgrund_wird_nur_einmal_escaped(angemeldet, pult):
+    pult.fehler = marketing_pult.PultFehler("abgelehnt", "text: <b> & \"x\"")
+    r = angemeldet.post(f"/marketing/podcast/{AID}/abbrechen", headers=HOST, follow_redirects=False,
+                        data={"csrf": ui.CSRF_TOKEN})
+    assert "&lt;b&gt; &amp; &quot;x&quot;" in r.text and "&amp;lt;" not in r.text and "&amp;amp;" not in r.text
+
+
+def test_formular_und_chips_nutzen_plan_klassen(angemeldet, pult):
+    s = angemeldet.get("/marketing/podcast", headers=HOST).text
+    assert 'class="plan-form"' in s and 'class="plan-chip erledigt"' in s and 'class="plan-chip gesprochen"' in s

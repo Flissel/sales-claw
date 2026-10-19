@@ -1150,6 +1150,24 @@ ul.bildstand li { padding: .2rem 0; }
 .plan-chip.erledigt { border-color: var(--gut); color: var(--gut_text); }
 .plan-chip.verschoben { border-color: var(--achtung); color: var(--achtung); }
 .plan-chip.heute { background: var(--akzent); border-color: var(--akzent); color: var(--akzent_auf); }
+/* Podcast-Seite (19.10.2026): Folgenkarten und Formular nach dem Muster des Kampagnenplans. */
+.plan-chip.gesprochen { background: var(--aktiv); border-color: var(--akzent); color: var(--akzent_text); }
+.plan-chip.fehler { background: var(--fehler_flaeche); border-color: var(--fehler_linie); color: var(--fehler_schrift); }
+.plan-chip.abgebrochen { border-style: dashed; }
+.pod-kopf { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+            gap: .4rem 1rem; margin: 0 0 .8rem; }
+.pod-kopf h2 { margin: 0; }
+.pod-kopf a { display: inline-flex; align-items: center; min-height: 44px; font-weight: 600; }
+.pod-karte audio { display: block; width: 100%; max-width: 28rem; margin: .5rem 0 .2rem; }
+.pod-karte details { margin-top: .4rem; }
+.pod-karte summary { display: flex; align-items: center; min-height: 44px; cursor: pointer;
+                     color: var(--akzent_text); font-weight: 600; }
+.pod-karte pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: .3rem 0 .6rem;
+                 font-family: inherit; max-width: 100%; }
+.pod-zeile { display: grid; grid-template-columns: minmax(0, 1fr) 6rem; gap: 0 .8rem; }
+.pod-hinweis { margin: .8rem 0 0; padding-left: 1.1rem; color: var(--gedaempft); font-size: .88rem; }
+.pod-hinweis li { margin: .2rem 0; }
+@media (max-width: 767px) { .pod-zeile { grid-template-columns: minmax(0, 1fr); } }
 .plan-titel { font-size: 1.05rem; }
 .plan-notiz { color: var(--gedaempft); }
 .plan-knoepfe { display: flex; flex-wrap: wrap; align-items: flex-start; gap: .5rem; margin-top: .6rem; }
