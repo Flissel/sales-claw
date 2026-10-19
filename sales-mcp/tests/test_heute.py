@@ -185,7 +185,7 @@ def test_kurzer_entwurf_hat_freigeben_in_der_zeile():
     s = _get("/").text
     assert f'<button class="primaer" form="fz-{d}">Freigeben</button>' in s
     assert f'<form id="fz-{d}" method="post" action="/aktion/freigeben"' in s
-    assert 'name="zurueck" value="/"' in s and "Hallo, passt Donnerstag?" in s
+    assert 'name="danach" value="/"' in s and "Hallo, passt Donnerstag?" in s
 
 
 def test_kein_zeilenknopf_fuer_lange_oder_anhang_entwuerfe():
@@ -209,6 +209,9 @@ def test_direkt_freigebbar_eng_nach_e3(monkeypatch):
     assert not ui._direkt_freigebbar({**basis, "channel": "linkedin"})
     assert not ui._direkt_freigebbar({**basis, "body": "y" * (ui.ZEILE_VOLLTEXT + 1)})
     assert ui._direkt_freigebbar({**basis, "body": "y" * ui.ZEILE_VOLLTEXT})
+    assert not ui._direkt_freigebbar({**basis, "body_html": "<p>Kurz</p>"})
+    assert not ui._direkt_freigebbar({**basis, "body": "   \n  "})
+    assert not ui._direkt_freigebbar({**basis, "body": None})
     monkeypatch.setattr(ui, "_schon_angeschrieben",
                         lambda z: '<div class="hinweis">Schon angeschrieben: x</div>')
     assert not ui._direkt_freigebbar(basis)
@@ -218,7 +221,7 @@ def test_zeilenknopf_traegt_stand_und_scheitert_nach_aenderung():
     lead = _lead(); d = _entwurf(lead, text="Erste Fassung")
     stand = re.search(rf'id="fz-{d}".*?name="stand" value="([0-9a-f]+)"', _get("/").text, re.S).group(1)
     server._q("update drafts set body = 'Zweite Fassung' where id = %s returning id", (d,))
-    r = _post("/aktion/freigeben", {"draft_id": d, "csrf": ui.CSRF_TOKEN, "stand": stand, "zurueck": "/"})
+    r = _post("/aktion/freigeben", {"draft_id": d, "csrf": ui.CSRF_TOKEN, "stand": stand, "danach": "/"})
     assert r.status_code == 409
     assert server._q("select status from drafts where id = %s", (d,))[0]["status"] == "pending"
 
@@ -227,7 +230,7 @@ def test_zeilenknopf_ohne_csrf_wird_abgewiesen():
     lead = _lead(); d = _entwurf(lead, text="Kurz")
     z = server._q("select body, body_html from drafts where id = %s", (d,))[0]
     r = _post("/aktion/freigeben", {"draft_id": d, "stand": ui._entwurf_stand(z),
-                                    "zurueck": "/"})
+                                    "danach": "/"})
     assert r.status_code == 403
     assert server._q("select status from drafts where id = %s", (d,))[0]["status"] == "pending"
 
@@ -236,14 +239,14 @@ def test_freigeben_aus_heute_kehrt_nach_heute_zurueck():
     lead = _lead(); d = _entwurf(lead, text="Kurz")
     z = server._q("select body, body_html from drafts where id = %s", (d,))[0]
     r = _post("/aktion/freigeben", {"draft_id": d, "csrf": ui.CSRF_TOKEN,
-                                    "stand": ui._entwurf_stand(z), "zurueck": "/"})
+                                    "stand": ui._entwurf_stand(z), "danach": "/"})
     assert r.status_code == 303 and r.headers["location"] == "/"
 
 
 @pytest.mark.parametrize("ziel", ["//boese.de", "https://boese.de/", "/kontakte", ""])
-def test_zurueck_nur_aus_der_liste(ziel):
+def test_danach_nur_aus_der_liste(ziel):
     lead = _lead(); d = _entwurf(lead, text="Kurz")
-    r = _post("/aktion/ablehnen", {"draft_id": d, "csrf": ui.CSRF_TOKEN, "zurueck": ziel})
+    r = _post("/aktion/ablehnen", {"draft_id": d, "csrf": ui.CSRF_TOKEN, "danach": ziel})
     assert r.headers["location"] == "/freigaben"
 
 
@@ -256,11 +259,11 @@ def test_wiedervorlage_erledigt_aus_heute_kehrt_nach_heute_zurueck():
     s = _get("/").text
     assert f'name="aktivitaets_id" value="{wv}"' in s
     daten = {"lead_id": lead, "aktivitaets_id": wv, "csrf": ui.CSRF_TOKEN}
-    r = _post("/wiedervorlagen/erledigt", {**daten, "zurueck": "/"})
+    r = _post("/wiedervorlagen/erledigt", {**daten, "danach": "/"})
     assert r.status_code == 303 and r.headers["location"] == "/"
 
 
-def test_wiedervorlage_zurueck_fremd_faellt_auf_vorgabe():
+def test_wiedervorlage_danach_fremd_faellt_auf_vorgabe():
     lead = _lead()
     wv = str(server._q(
         "insert into activities (lead_id, type, payload, actor) values "
@@ -268,7 +271,7 @@ def test_wiedervorlage_zurueck_fremd_faellt_auf_vorgabe():
         (lead, '{"faellig_am": "2026-01-01", "notiz": "x"}'))[0]["id"])
     r = _post("/wiedervorlagen/erledigt", {"lead_id": lead, "aktivitaets_id": wv,
                                            "csrf": ui.CSRF_TOKEN,
-                                           "zurueck": "//boese.de"})
+                                           "danach": "//boese.de"})
     assert r.headers["location"] == "/wiedervorlagen"
 
 
@@ -281,3 +284,28 @@ def test_zeilentitel_ist_escaped():
 def test_rechte_spalte_hat_termine_pipeline_kanaele():
     s = _get("/").text
     assert s.index("<h2>Nächste Termine</h2>") < s.index("<h2>Pipeline</h2>") < s.index("<h2>Kanäle</h2>")
+
+
+def test_media_ref_aus_leerzeichen_zaehlt_nicht_als_anhang(monkeypatch):
+    monkeypatch.setattr(ui, "_schon_angeschrieben", lambda z: "")
+    z = {"id": "1", "channel": "whatsapp", "body": "Kurz", "media_ref": "   ",
+         "cc": "  ", "newsletter": False}
+    assert ui._direkt_freigebbar(z)
+
+
+def test_email_zeile_zeigt_betreff_und_ganzen_text():
+    lead = _lead()
+    d = str(server._q(
+        "insert into drafts (lead_id, channel, recipient, body, status, subject) "
+        "values (%s, 'email', 'x@y.de', 'Kurzer Mailtext', 'pending', %s) returning id",
+        (lead, "Betreff <b>fett</b>"))[0]["id"])
+    s = _get("/").text
+    zeile = s[s.index(f'id="f-{d}"'):s.index("</summary>", s.index(f'id="f-{d}"'))]
+    assert "→ x@y.de · Betreff &lt;b&gt;fett&lt;/b&gt;" in zeile
+    assert "Kurzer Mailtext" in zeile and f'form="fz-{d}"' in zeile
+
+
+def test_kachel_terminanfragen_springt_zum_termine_block():
+    s = _get("/").text
+    assert '<a class="kpi" href="/freigaben#termine"><b>0</b><span>Terminanfragen ohne Datum' in s
+    assert 'id="termine"' in _get("/freigaben").text

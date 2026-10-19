@@ -974,16 +974,17 @@ nav.seite .abmelden { margin-top: auto; padding: 0 .5rem; }
 .liste details.zeile > summary:hover { background: var(--kopfzeile); }
 .liste details.zeile[open] > summary { background: var(--kopfzeile); }
 .zeile > summary > .badge, div.zeile > .badge { margin: 0; flex: none; }
-.zeile .inhalt { flex: 1 1 auto; min-width: 0; }
-.zeile .titel { font-weight: 700; }
+.zeile > summary > .inhalt, div.zeile > .inhalt { flex: 1 1 auto; min-width: 0; }
+.zeile .inhalt > .titel { font-weight: 700; }
 .zeile .titel a { color: inherit; }
-.zeile .vorschau { display: block; color: var(--gedaempft); font-size: .9rem;
+.zeile .inhalt > .vorschau { display: block; color: var(--gedaempft); font-size: .9rem;
                    white-space: nowrap; overflow: hidden;
                    text-overflow: ellipsis; }
 /* Direkt freigebbar (E3): die Zeile zeigt den GANZEN Text, nie gekuerzt. */
-.zeile .vorschau.voll { white-space: normal; color: var(--schrift); }
-.zeile .aktion { display: flex; gap: .5rem; flex: none; align-items: center; }
-.zeile .rumpf { padding: .6rem 1.1rem 1rem; border-top: 1px solid var(--linie); }
+.zeile .inhalt > .vorschau.voll { white-space: normal; color: var(--schrift); }
+.zeile > summary > .aktion, div.zeile > .aktion { display: flex; gap: .5rem;
+  flex: none; align-items: center; }
+.zeile > .rumpf { padding: .6rem 1.1rem 1rem; border-top: 1px solid var(--linie); }
 .knopf.leer, .knopf.sek { display: inline-flex; align-items: center;
   justify-content: center; min-height: 44px; padding: .6rem 1.1rem;
   border-radius: 10px; font-weight: 600; text-decoration: none;
@@ -1018,10 +1019,12 @@ nav.seite .abmelden { margin-top: auto; padding: 0 .5rem; }
 }
 @media (max-width: 639px) {
   .liste details.zeile > summary, .liste div.zeile { flex-wrap: wrap; }
-  .zeile .inhalt { flex-basis: 100%; }
-  .zeile .vorschau { white-space: normal; }
-  .zeile .aktion { flex-direction: column; align-items: stretch; width: 100%; }
-  .zeile .aktion > *, .zeile .aktion form.aktion button { width: 100%; }
+  .zeile > summary > .inhalt, div.zeile > .inhalt { flex-basis: 100%; }
+  .zeile .inhalt > .vorschau { white-space: normal; }
+  .zeile > summary > .aktion, div.zeile > .aktion {
+    flex-direction: column; align-items: stretch; width: 100%; }
+  .zeile > summary > .aktion > *, div.zeile > .aktion > *,
+  div.zeile > .aktion form.aktion button { width: 100%; }
 }
 @media (max-width: 767px) {
   .rahmen { display: block; }
@@ -2077,25 +2080,25 @@ def _entwurf_stand(z) -> str:
 
 def _formular(aktion: str, draft_id, knopf: str, klasse: str = "",
               checkbox: str | None = None, stand: str | None = None,
-              zurueck: str | None = None) -> str:
+              danach: str | None = None) -> str:
     """Die Knopfklasse steht ZUSAETZLICH am Formular: die Media-Query rueckt
     den gefaehrlichen Knopf auf schmalen Schirmen ab, und das geht nur ueber
     das Element, das die ganze Aktion umschliesst.
 
-    `zurueck` (Design-Review S3, E5): wohin die Aktion danach fuehrt. Die
+    `danach` (Design-Review S3, E5): wohin die Aktion danach fuehrt. Die
     Route nimmt den Wert nur aus einer festen Liste (`_ruecksprung`)."""
     haken = (f'<label class="haken">'
              f'<input type="checkbox" name="bestaetigt" value="ja"> '
              f'{checkbox}</label>' if checkbox else "")
     stand_feld = (f'<input type="hidden" name="stand" value="{_e(stand)}">'
                   if stand is not None else "")
-    zurueck_feld = (f'<input type="hidden" name="zurueck" value="{_e(zurueck)}">'
-                    if zurueck is not None else "")
+    danach_feld = (f'<input type="hidden" name="danach" value="{_e(danach)}">'
+                   if danach is not None else "")
     return (f'<form class="aktion {klasse}" method="post" '
             f'action="/aktion/{aktion}">'
             f'<input type="hidden" name="draft_id" value="{_e(draft_id)}">'
             f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
-            f'{stand_feld}{zurueck_feld}{haken}<button class="{klasse}">{knopf}</button>'
+            f'{stand_feld}{danach_feld}{haken}<button class="{klasse}">{knopf}</button>'
             f'</form>')
 
 
@@ -2103,7 +2106,9 @@ def _ruecksprung(form, erlaubt: tuple[str, ...], vorgabe: str) -> str:
     """Ziel nach einer Aktion (E5): nur ein Wert aus `erlaubt`, sonst die
     bisherige Vorgabe. Der Wert wird nie roh weitergereicht, also kein
     offener Redirect (`//fremd.de`, `https://…`)."""
-    wert = str(form.get("zurueck") or "")
+    # Feldname `danach`, nicht `zurueck`: der Name steht in der Seite, und
+    # die Seite traegt keine ASCII-Umschreibungen (test_darstellung).
+    wert = str(form.get("danach") or "")
     return wert if wert in erlaubt else vorgabe
 
 
@@ -2228,11 +2233,11 @@ def _entwurf_karte_offen(z) -> str:
         f'{_entwurf_rumpf(z)}</details>')
 
 
-def _entwurf_rumpf(z, zurueck: str | None = None,
+def _entwurf_rumpf(z, danach: str | None = None,
                    hinweis: str | None = None) -> str:
     """Der aufgeklappte Teil einer Freigabe-Karte: Kopf, Hinweis „Schon
     angeschrieben“, ganzer Text, Bearbeiten, Freigeben/Ablehnen. Gemeinsam
-    fuer /freigaben (Karte) und „Heute“ (Zeile); `zurueck` geht an beide
+    fuer /freigaben (Karte) und „Heute“ (Zeile); `danach` geht an beide
     Entscheidungsknoepfe. `hinweis` ist der schon berechnete
     `_schon_angeschrieben(z)` (spart die zweite Abfrage je Zeile)."""
     text = z["body"] or ""
@@ -2245,8 +2250,8 @@ def _entwurf_rumpf(z, zurueck: str | None = None,
         f'{_markier_block(z)}'
         f'{_newsletter_ansicht(z) if z.get("newsletter") else _entwurf_bearbeiten_form(z, text)}'
         f'<div class="aktionen">'
-        f'{_formular("freigeben", z["id"], "Freigeben", "primaer", stand=_entwurf_stand(z), zurueck=zurueck)}'
-        f'{_formular("ablehnen", z["id"], "Ablehnen", "gefahr", zurueck=zurueck)}'
+        f'{_formular("freigeben", z["id"], "Freigeben", "primaer", stand=_entwurf_stand(z), danach=danach)}'
+        f'{_formular("ablehnen", z["id"], "Ablehnen", "gefahr", danach=danach)}'
         f'</div>')
 
 
@@ -2296,7 +2301,7 @@ def _freigabe_zeile(z) -> str:
                 f'<input type="hidden" name="draft_id" value="{did}">'
                 f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
                 f'<input type="hidden" name="stand" value="{_e(_entwurf_stand(z))}">'
-                f'<input type="hidden" name="zurueck" value="/"></form>'
+                f'<input type="hidden" name="danach" value="/"></form>'
                 if direkt else "")
     voll = " voll" if direkt else ""
     return (
@@ -2307,7 +2312,7 @@ def _freigabe_zeile(z) -> str:
         f'{_e(vorschau)}</span></span>'
         f'<span class="aktion"><span class="knopf leer">Ansehen</span>{knopf}'
         f'</span></summary><div class="rumpf">{formular}'
-        f'{_entwurf_rumpf(z, zurueck="/", hinweis=hinweis)}</div></details>')
+        f'{_entwurf_rumpf(z, danach="/", hinweis=hinweis)}</div></details>')
 
 
 def _newsletter_ansicht(z) -> str:
@@ -3183,7 +3188,7 @@ async def inbox(request):
         "where a.type = 'termin' and coalesce(a.payload->>'datum', '') = '' "
         "order by a.created_at desc limit 20")
     teile.append(
-        f'<section class="block"><h2><span class="badge termin">Termine</span> '
+        f'<section class="block" id="termine"><h2><span class="badge termin">Termine</span> '
         f'Termine <span class="zaehler{" offen" if termine_offen else ""}">'
         f'{len(termine_offen)}</span></h2>')
     if not termine_offen:
@@ -4012,27 +4017,40 @@ def _offene_wiedervorlagen(lead_id=None):
         params)
 
 
-def _wiedervorlagen_tabelle(zeilen, mit_kontakt: bool = True) -> str:
-    heute = date.today().isoformat()
-    spalten = (["Kontakt"] if mit_kontakt else []) + ["Fällig am", "Notiz"]
-    inhalt = []
-    for z in zeilen:
-        nutzlast = z["payload"] or {}
-        faellig = str(nutzlast.get("faellig_am") or "")
-        marke = " <b>(fällig)</b>" if faellig and faellig <= heute else ""
-        zelle = ([f'<a href="/kontakte/{_e(z["lead_id"])}">'
-                  f'{_e(z["name"] or "(ohne Kontakt)")}</a>']
-                 if mit_kontakt else [])
-        quittieren = (
-            f'<form class="aktion" method="post" '
+def _wv_faellig(z) -> tuple[str, str]:
+    """(Faelligkeitsdatum, Marke „(fällig)“ oder "") einer Wiedervorlage —
+    gemeinsam fuer die Tabelle und die Zeile auf „Heute“."""
+    faellig = str((z["payload"] or {}).get("faellig_am") or "")
+    marke = (" <b>(fällig)</b>"
+             if faellig and faellig <= date.today().isoformat() else "")
+    return faellig, marke
+
+
+def _wv_quittieren(z, danach: str | None = None) -> str:
+    """Das Formular „Erledigt“ einer Wiedervorlage. `danach` (E5) nur von
+    „Heute“; die Route nimmt es nur aus ihrer festen Liste."""
+    danach_feld = (f'<input type="hidden" name="danach" value="{_e(danach)}">'
+                   if danach is not None else "")
+    return (f'<form class="aktion" method="post" '
             f'action="/wiedervorlagen/erledigt">'
             f'<input type="hidden" name="lead_id" value="{_e(z["lead_id"])}">'
             f'<input type="hidden" name="aktivitaets_id" '
             f'value="{_e(z["id"])}">'
             f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
-            f'<button>Erledigt</button></form>')
+            f'{danach_feld}<button>Erledigt</button></form>')
+
+
+def _wiedervorlagen_tabelle(zeilen, mit_kontakt: bool = True) -> str:
+    spalten = (["Kontakt"] if mit_kontakt else []) + ["Fällig am", "Notiz"]
+    inhalt = []
+    for z in zeilen:
+        nutzlast = z["payload"] or {}
+        faellig, marke = _wv_faellig(z)
+        zelle = ([f'<a href="/kontakte/{_e(z["lead_id"])}">'
+                  f'{_e(z["name"] or "(ohne Kontakt)")}</a>']
+                 if mit_kontakt else [])
         inhalt.append(zelle + [f"{_e(faellig)}{marke}",
-                               _e(nutzlast.get("notiz")), quittieren])
+                               _e(nutzlast.get("notiz")), _wv_quittieren(z)])
     return (_tabelle(spalten + ["Quittieren"], inhalt) if zeilen
             else "<p>Keine offenen Wiedervorlagen. Eine anlegen: auf der "
                  "Kontaktseite unter „Wiedervorlage“.</p>")
@@ -7505,7 +7523,7 @@ async def heute(request):
     # Reihenfolge, jede ein Link; dieselben Zahlen wie im Satz darueber.
     kennzahlen = ui_muster.kennzahlen([
         (len(pending), "Freigaben offen", "/freigaben"),
-        (termine_offen_gesamt, "Terminanfragen ohne Datum", "/freigaben"),
+        (termine_offen_gesamt, "Terminanfragen ohne Datum", "/freigaben#termine"),
         (wiedervorlagen_gesamt, "Wiedervorlagen offen", "/wiedervorlagen"),
         (einordnung_offen, "Unbekannte Absender", "/einordnung"),
     ])
@@ -7544,7 +7562,7 @@ async def heute(request):
     if termine_offen:
         termine = ['<section class="karte liste"><div class="kopf">'
                    '<h2>Termine ohne festes Datum</h2>'
-                   '<a href="/freigaben">Alle Terminanfragen</a></div>']
+                   '<a href="/freigaben#termine">Alle Terminanfragen</a></div>']
         for z in termine_offen:
             last = z["payload"] or {}
             voll = str(last.get("inhalt") or last.get("thema") or "")
@@ -7573,24 +7591,17 @@ async def heute(request):
           f'<h2>Wiedervorlagen ({wiedervorlagen_gesamt})</h2>'
           f'<a href="/wiedervorlagen">{alle_wv}</a></div>']
     if wiedervorlagen:
-        heute_iso = date.today().isoformat()
         for z in wiedervorlagen[:5]:
             nutzlast = z["payload"] or {}
-            faellig = str(nutzlast.get("faellig_am") or "")
-            marke = " <b>(fällig)</b>" if faellig and faellig <= heute_iso else ""
+            faellig, marke = _wv_faellig(z)
             wv.append(
                 f'<div class="zeile"><span class="inhalt"><b class="titel">'
                 f'<a href="/kontakte/{_e(z["lead_id"])}">'
                 f'{_e(z["name"] or "(ohne Kontakt)")}</a></b>'
                 f' · fällig am {_e(faellig)}{marke}'
                 f'<span class="vorschau">{_e(nutzlast.get("notiz"))}</span></span>'
-                f'<span class="aktion"><form class="aktion" method="post" '
-                f'action="/wiedervorlagen/erledigt">'
-                f'<input type="hidden" name="lead_id" value="{_e(z["lead_id"])}">'
-                f'<input type="hidden" name="aktivitaets_id" value="{_e(z["id"])}">'
-                f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
-                f'<input type="hidden" name="zurueck" value="/">'
-                f'<button>Erledigt</button></form></span></div>')
+                f'<span class="aktion">{_wv_quittieren(z, danach="/")}'
+                f'</span></div>')
     else:
         wv.append('<p class="leer">Keine offene Wiedervorlage.</p>')
     wv.append('</section>')

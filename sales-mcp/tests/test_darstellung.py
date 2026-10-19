@@ -112,6 +112,36 @@ def test_seite_zeigt_echte_umlaute(pfad):
         f"{pfad} zeigt ASCII-Umschreibungen: {gefunden}")
 
 
+@pytest.mark.parametrize("pfad", ["/", "/freigaben", "/wiedervorlagen"])
+def test_seite_mit_offenen_posten_zeigt_echte_umlaute(pfad):
+    """Fix-Runde 1, Task 2 (Design-Review S3, 19.10.2026): „Heute“ traegt
+    Zeilenknopf, Ruecksprungfeld und Erledigt-Formular nur, wenn etwas offen
+    ist. Ohne offene Posten blieb genau dieser Teil ungeprueft — ein
+    Feldname `zurueck` stand im Betrieb auf jeder Startseite."""
+    lead = _lead("Ena Ottenschläger")
+    server._q("insert into drafts (lead_id, channel, recipient, body, status) "
+              "values (%s, 'whatsapp', '+491701234567', 'Passt Donnerstag?', "
+              "'pending') returning id", (lead,))
+    server._q("insert into drafts (lead_id, channel, recipient, body, status, "
+              "subject) values (%s, 'email', 'ena@example.org', 'Kurz', "
+              "'pending', 'Termin') returning id", (lead,))
+    server._q("insert into activities (lead_id, type, payload, actor) values "
+              "(%s, 'wiedervorlage', %s::jsonb, 'human') returning id",
+              (lead, json.dumps({"faellig_am": "2026-01-01",
+                                 "notiz": "Nachfassen"})))
+    server._q("insert into activities (lead_id, type, payload) values "
+              "(%s, 'termin', %s::jsonb) returning id",
+              (lead, json.dumps({"inhalt": "Donnerstag ab 21 Uhr"})))
+    seite = _get(pfad).text
+    if pfad == "/":
+        # Der Test prueft wirklich die Flaechen mit Formularen.
+        assert 'name="danach" value="/"' in seite
+        assert 'form="fz-' in seite and "Im Kalender eintragen" in seite
+    gefunden = [w for w in WOERTER_ASCII if w in seite]
+    assert not gefunden, (
+        f"{pfad} zeigt mit offenen Posten ASCII-Umschreibungen: {gefunden}")
+
+
 def test_csrf_fehlerseite_zeigt_echte_umlaute():
     """Der meisterreichte Fehlerpfad der ganzen Oberflaeche — ein POST ohne
     gueltiges CSRF-Token — steht auf keiner der zehn GET-Seiten und blieb
