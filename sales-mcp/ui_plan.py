@@ -51,13 +51,6 @@ def nachbar(erster: date, schritt: int) -> str:
     return (monat_ende(erster) + timedelta(days=1)).strftime("%Y-%m")
 
 
-def datum_ok(roh) -> str | None:
-    try:
-        return date.fromisoformat(str(roh or "")).isoformat()
-    except ValueError:
-        return None
-
-
 def art_lesen(roh: str | None) -> str | None:
     """Rohwert aus der Adresse -> Art aus ARTEN, sonst None (= Reiter "Alle")."""
     return roh if isinstance(roh, str) and roh in ARTEN else None
@@ -124,7 +117,7 @@ def datum_felder(praefix: str, vorgabe: date, heute: date | None = None) -> str:
     return ('<span class="plan-datum">'
             + wahl("tag", "Tag", [(i, str(i)) for i in range(1, 32)], vorgabe.day)
             + wahl("monat", "Monat", [(i + 1, n) for i, n in enumerate(MONATE)], vorgabe.month)
-            + wahl("jahr", "Jahr", [(j, str(j)) for j in range(heute.year, heute.year + 3)], vorgabe.year)
+            + wahl("jahr", "Jahr", [(j, str(j)) for j in sorted({*range(heute.year, heute.year + 3), vorgabe.year})], vorgabe.year)
             + '</span>')
 
 
@@ -168,7 +161,7 @@ def routen(ui) -> list:
         teile.append(f'<details class="verschieben"><summary>Verschieben</summary>'
                      f'<form method="post" action="/marketing/plan/{pid}" class="aktion">{csrf()}'
                      f'<input type="hidden" name="zurueck" value="{e(zurueck)}">'
-                     f'{datum_felder("neu", _tag(p.get("datum")) or date.today())}'
+                     f'{datum_felder("neu", max(_tag(p.get("datum")) or date.today(), date.today()))}'
                      f'<button type="submit" name="aktion" value="verschieben">Verschieben</button></form>'
                      '</details>')
         return "".join(teile)
@@ -209,7 +202,7 @@ def routen(ui) -> list:
                     if art is None or (p.get("art") if p.get("art") in ARTEN else "sonstiges") == art]
         vorschlaege = sum(1 for p in eintraege if p.get("status") == "vorschlag")
 
-        untersatz = (f'<b>{vorschlaege} Vorschlag{"" if vorschlaege == 1 else "e"} vom Agenten</b> '
+        untersatz = (f'<b>{vorschlaege} {"Vorschlag" if vorschlaege == 1 else "Vorschläge"} vom Agenten</b> '
                      f'{"wartet" if vorschlaege == 1 else "warten"} in {e(monat_name)} auf dich: '
                      'übernehmen oder verwerfen.' if vorschlaege else "Alles im Griff: nichts wartet auf dich.")
         kopf = ('<header class="plan-kopf">'
@@ -260,7 +253,7 @@ def routen(ui) -> list:
         vorgabe_art = art or "newsletter"
         arten = "".join(f'<option value="{k}"{" selected" if k == vorgabe_art else ""}>{e(t)}</option>'
                         for k, t in ARTEN.items())
-        vorgabe = heute if erster == heute.replace(day=1) else erster
+        vorgabe = max(erster, heute)  # nie ein vergangener Tag: das wäre ein 422
         formular = (f'<section id="neu" class="plan-form"><h2>Neuer Eintrag</h2>'
                     f'<form method="post" action="/marketing/plan/neu" class="aktion">{csrf()}'
                     f'<input type="hidden" name="zurueck" value="{e(hier)}">'

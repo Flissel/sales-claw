@@ -4,7 +4,7 @@ ebenso die Abfrage auf marketing.plan_anstehend (die Test-DB kennt kein
 marketing-Schema)."""
 import json
 import os
-from datetime import date
+from datetime import date, timedelta
 
 os.environ["SALES_DB_SCHEMA"] = "sales_test"
 
@@ -18,6 +18,10 @@ import ui  # noqa: E402
 import ui_plan  # noqa: E402
 
 HOST = {"host": "127.0.0.1:8791"}
+# Die Vergangenheitspruefung rechnet mit dem heutigen Tag, daher sind alle Schreib-Tests relativ zu heute.
+ZUKUNFT = date.today() + timedelta(days=40)
+Z_TEILE = {"tag": str(ZUKUNFT.day), "monat": str(ZUKUNFT.month), "jahr": str(ZUKUNFT.year)}
+Z_MONAT = f"{ZUKUNFT:%Y-%m}"
 PID = "22222222-2222-2222-2222-222222222222"
 IID = "11111111-1111-1111-1111-111111111111"
 
@@ -170,7 +174,7 @@ def test_reiter_zeigen_anzahl_und_filtern(angemeldet, pult):
     # Fixture: Newsletter-Vorschlag, Podcast, erledigter Post = 3 sichtbare, kein abgesagter.
     assert 'aria-current="page"' in s and "Podcast (1)" in s and "Alle (3)" in s
     assert "Folge 2" in s and "Herbst-Newsletter" not in s
-    assert "art=podcast" in s.split("Vormonat")[0][-200:] or "monat=2026-09&amp;art=podcast" in s
+    assert "monat=2026-09&amp;art=podcast" in s
 
 
 def test_gruppen_nach_tag_mit_wochentag(angemeldet, pult):
@@ -231,17 +235,17 @@ def test_formular_hat_drei_datumsfelder_keinen_datepicker(angemeldet, pult):
 
 def test_neu_aus_dreierauswahl(angemeldet, pult):
     r = angemeldet.post("/marketing/plan/neu", headers=HOST, follow_redirects=False,
-        data={"csrf": ui.CSRF_TOKEN, "datum_tag": "3", "datum_monat": "11", "datum_jahr": "2026",
+        data={"csrf": ui.CSRF_TOKEN, "datum_tag": Z_TEILE["tag"], "datum_monat": Z_TEILE["monat"], "datum_jahr": Z_TEILE["jahr"],
               "art": "podcast", "titel": "Folge 3", "notiz": "", "reiter": "podcast"})
-    assert r.status_code == 303 and r.headers["location"] == "/marketing/plan?monat=2026-11&art=podcast"
-    assert pult.aufrufe[-1][2]["datum"] == "2026-11-03"
+    assert r.status_code == 303 and r.headers["location"] == f"/marketing/plan?monat={Z_MONAT}&art=podcast"
+    assert pult.aufrufe[-1][2]["datum"] == ZUKUNFT.isoformat()
 
 
 def test_neu_andere_art_als_reiter_geht_auf_alle(angemeldet, pult):
     r = angemeldet.post("/marketing/plan/neu", headers=HOST, follow_redirects=False,
-        data={"csrf": ui.CSRF_TOKEN, "datum_tag": "3", "datum_monat": "11", "datum_jahr": "2026",
+        data={"csrf": ui.CSRF_TOKEN, "datum_tag": Z_TEILE["tag"], "datum_monat": Z_TEILE["monat"], "datum_jahr": Z_TEILE["jahr"],
               "art": "post", "titel": "T", "reiter": "podcast"})
-    assert r.headers["location"] == "/marketing/plan?monat=2026-11"
+    assert r.headers["location"] == f"/marketing/plan?monat={Z_MONAT}"
 
 
 @pytest.mark.parametrize("t, m, j", [("31", "2", "2027"), ("31", "4", "2027"), ("29", "2", "2027"), ("1", "1", "2020")])
@@ -253,8 +257,8 @@ def test_neu_unmoegliches_oder_vergangenes_datum_422(angemeldet, pult, t, m, j):
 
 def test_verschieben_aus_dreierauswahl(angemeldet, pult):
     r = angemeldet.post(f"/marketing/plan/{PID}", headers=HOST, follow_redirects=False,
-        data={"csrf": ui.CSRF_TOKEN, "aktion": "verschieben", "neu_tag": "29", "neu_monat": "10", "neu_jahr": "2026"})
-    assert r.status_code == 303 and pult.aufrufe[-1] == ("POST", f"/plan/{PID}", {"datum": "2026-10-29"})
+        data={"csrf": ui.CSRF_TOKEN, "aktion": "verschieben", "neu_tag": Z_TEILE["tag"], "neu_monat": Z_TEILE["monat"], "neu_jahr": Z_TEILE["jahr"]})
+    assert r.status_code == 303 and pult.aufrufe[-1] == ("POST", f"/plan/{PID}", {"datum": ZUKUNFT.isoformat()})
 
 
 def test_verschieben_in_die_vergangenheit_422(angemeldet, pult):
@@ -279,10 +283,10 @@ def test_seite_api_weg_503(angemeldet, pult):
 def test_neu_legt_fuer_gewaehlte_firma_an(angemeldet, pult):
     angemeldet.cookies.set("mk_mandant", "fin2gether", path="/marketing")
     r = angemeldet.post("/marketing/plan/neu", headers=HOST, follow_redirects=False,
-                        data={"csrf": ui.CSRF_TOKEN, "datum_tag": "3", "datum_monat": "11", "datum_jahr": "2026",
+                        data={"csrf": ui.CSRF_TOKEN, "datum_tag": Z_TEILE["tag"], "datum_monat": Z_TEILE["monat"], "datum_jahr": Z_TEILE["jahr"],
                               "art": "podcast", "titel": " Folge 3 ", "notiz": "Gast"})
-    assert r.status_code == 303 and r.headers["location"] == "/marketing/plan?monat=2026-11"
-    assert pult.aufrufe[-1] == ("POST", "/plan", {"mandant": "fin2gether", "datum": "2026-11-03",
+    assert r.status_code == 303 and r.headers["location"] == f"/marketing/plan?monat={Z_MONAT}"
+    assert pult.aufrufe[-1] == ("POST", "/plan", {"mandant": "fin2gether", "datum": ZUKUNFT.isoformat(),
                                                  "art": "podcast", "titel": "Folge 3", "notiz": "Gast"})
 
 
@@ -298,7 +302,7 @@ def test_neu_prueft_vorher(angemeldet, pult, daten):
 
 def test_neu_ohne_csrf_403(angemeldet, pult):
     r = angemeldet.post("/marketing/plan/neu", headers=HOST, follow_redirects=False,
-                        data={"datum_tag": "3", "datum_monat": "11", "datum_jahr": "2026", "art": "post", "titel": "T"})
+                        data={"datum_tag": Z_TEILE["tag"], "datum_monat": Z_TEILE["monat"], "datum_jahr": Z_TEILE["jahr"], "art": "post", "titel": "T"})
     assert r.status_code == 403 and not pult.aufrufe
 
 
@@ -314,8 +318,8 @@ def test_aktionen(angemeldet, pult, aktion, erwartet):
 
 def test_verschieben_schickt_nur_datum(angemeldet, pult):
     r = angemeldet.post(f"/marketing/plan/{PID}", headers=HOST, follow_redirects=False,
-                        data={"csrf": ui.CSRF_TOKEN, "aktion": "verschieben", "neu_tag": "29", "neu_monat": "10", "neu_jahr": "2026"})
-    assert r.status_code == 303 and pult.aufrufe[-1] == ("POST", f"/plan/{PID}", {"datum": "2026-10-29"})
+                        data={"csrf": ui.CSRF_TOKEN, "aktion": "verschieben", "neu_tag": Z_TEILE["tag"], "neu_monat": Z_TEILE["monat"], "neu_jahr": Z_TEILE["jahr"]})
+    assert r.status_code == 303 and pult.aufrufe[-1] == ("POST", f"/plan/{PID}", {"datum": ZUKUNFT.isoformat()})
 
 
 @pytest.mark.parametrize("daten", [
@@ -394,3 +398,40 @@ def test_digest_ohne_recht_bleibt_ganz(monkeypatch):
     d = json.loads(server.digest())
     assert d["kampagnenplan"]["anzahl"] is None and "42501" in d["kampagnenplan"]["hinweis"]
     assert "pipeline" in d and "offene_entwuerfe" in d
+
+
+def test_hinweis_mit_umlaut_im_plural(angemeldet, pult):
+    pult.eintraege.append({"id": "77777777-7777-7777-7777-777777777777", "datum": "2026-10-23", "art": "post",
+                           "titel": "Zweiter", "notiz": "", "status": "vorschlag", "inhalt": None})
+    s = angemeldet.get("/marketing/plan?monat=2026-10", headers=HOST).text
+    assert "2 Vorschläge vom Agenten" in s and "Vorschlage" not in s
+
+
+def test_heute_chip_am_heutigen_tag(angemeldet, pult):
+    h = date.today()
+    pult.eintraege = [{"id": PID, "datum": h.isoformat(), "art": "post", "titel": "Jetzt", "notiz": "",
+                       "status": "geplant", "inhalt": None}]
+    s = angemeldet.get(f"/marketing/plan?monat={h:%Y-%m}", headers=HOST).text
+    assert 'plan-chip heute">Heute</span>' in s
+    pult.eintraege[0]["datum"] = (h + timedelta(days=1 if h.day < 28 else -1)).isoformat()
+    assert 'plan-chip heute' not in angemeldet.get(f"/marketing/plan?monat={h:%Y-%m}", headers=HOST).text
+
+
+def test_vorgaben_sind_nie_vergangen(angemeldet, pult):
+    h = date.today()
+    s = angemeldet.get("/marketing/plan?monat=2026-01", headers=HOST).text
+    assert f'<option value="{h.day}" selected>' in s and f'<option value="{h.year}" selected>' in s
+
+
+def test_verschieben_vorgabe_bei_vergangenem_eintrag_ist_heute(angemeldet, pult):
+    h = date.today()
+    pult.eintraege = [{"id": PID, "datum": "2026-01-05", "art": "post", "titel": "Alt", "notiz": "",
+                       "status": "geplant", "inhalt": None}]
+    s = angemeldet.get("/marketing/plan?monat=2026-01", headers=HOST).text
+    teil = s.split('name="neu_tag"')[1].split("</select>")[0]
+    assert f'<option value="{h.day}" selected>' in teil
+
+
+def test_datum_felder_jahr_enthaelt_vorgabejahr():
+    h = ui_plan.datum_felder("x", date(2031, 1, 2), heute=date(2026, 10, 19))
+    assert '<option value="2031" selected>' in h
