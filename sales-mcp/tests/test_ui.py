@@ -1452,7 +1452,7 @@ def test_bearbeiten_formular_bietet_genau_die_felder_des_werkzeugs():
         assert f'name="{feld}"' in seite
     # Der Kasten „Verträge & Projekte“ (C2) hat ein eigenes Feld `status`
     # (Vertragsstatus) — das Kontakt-Status-Feld meint dieser Test nicht.
-    seite = re.sub(r'id="vertraege".*?(?=<h2)', "", seite, flags=re.S)
+    seite = re.sub(r'id="abschluss".*?(?=<h2)', "", seite, flags=re.S)
     assert 'name="status"' not in seite
     assert 'name="consent_status"' not in seite
     assert 'name="enrichment"' not in seite
@@ -3758,7 +3758,7 @@ def test_vertrag_formular_speichert_und_validiert():
          "anbieter": "", "betrag": "2.500", "wiedervorlage_am": "", "notiz": ""}
     assert _post("/kontakte/vertrag", {k: v for k, v in d.items() if k != "csrf"}).status_code == 403
     r = _post("/kontakte/vertrag", d)
-    assert r.status_code == 303 and r.headers["location"] == f"/kontakte/{lead}#vertraege"
+    assert r.status_code == 303 and r.headers["location"] == f"/kontakte/{lead}#abschluss"
     import vertraege
     e = vertraege.eintraege(lead)[0]
     assert e["bezeichnung"] == "Webshop" and e["betrag"] == "2500.00"
@@ -3934,3 +3934,45 @@ def test_kontaktseite_zeigt_status_und_consent_auf_deutsch():
     assert "<th>Stufe</th><td>neu</td>" in seite
     assert "<th>Einwilligung</th><td>nicht erfasst</td>" in seite
     assert ">new<" not in seite and ">unknown<" not in seite
+
+
+# --- Design-Review S2 (19.10.2026): VibeMind-Marke -----------------------------
+
+def _token(satz: str, name: str) -> str:
+    return re.search(rf"--{name}: (#[0-9a-f]{{6}})", satz).group(1)
+
+
+def _kontrast(a: str, b: str) -> float:
+    def lum(h):
+        k = [int(h[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+        k = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in k]
+        return 0.2126 * k[0] + 0.7152 * k[1] + 0.0722 * k[2]
+    hell, dunkel = sorted((lum(a), lum(b)), reverse=True)
+    return (hell + 0.05) / (dunkel + 0.05)
+
+
+def test_markenfarben_halten_den_kontrast_in_beiden_saetzen():
+    """Text >= 4.5:1, Rahmen >= 3:1 (Entscheidung 1 oben) - auch fuer den
+    neuen Akzent und die Seitenleiste, hell wie dunkel."""
+    hell, dunkel = ui._STIL.split("@media (prefers-color-scheme: dark)", 1)
+    for satz in (hell, dunkel):
+        t = lambda n: _token(satz, n)
+        for vorne, hinten in (("schrift", "grund"), ("schrift", "flaeche"), ("gedaempft", "flaeche"),
+                              ("gedaempft", "grund"), ("verweis", "flaeche"), ("akzent_auf", "akzent"),
+                              ("akzent_text", "flaeche"), ("balken_schrift", "balken"),
+                              ("blush_text", "blush")):
+            assert _kontrast(t(vorne), t(hinten)) >= 4.5, (vorne, hinten)
+        assert _kontrast(t("linie_stark"), t("flaeche")) >= 3, "linie_stark"
+    assert _token(hell, "akzent") == "#5b3fd6"
+
+
+def test_seiten_tragen_vibemind_logo_und_schriften():
+    r = _get("/freigaben")
+    assert "url(/static/marke/vibemind-logo-hell.png)" in r.text
+    assert '<span class="logo" aria-hidden="true"></span>' in r.text
+    assert "url(/marketing/schrift/oxanium-600-normal.woff2)" in r.text
+    assert "font-src 'self'" in r.headers["content-security-policy"]
+    logo = _get("/static/marke/vibemind-logo-hell.png")
+    assert logo.status_code == 200 and logo.content.startswith(b"\x89PNG")
+    assert _get("/static/marke/..%2Fui.py").status_code == 404
+    assert _get("/static/marke/andere.png").status_code == 404

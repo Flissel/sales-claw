@@ -16,7 +16,7 @@ type TEditorBlockWrapperProps = {
 // Live-Ansicht (Spec 2026-10-02-newsletter-agent-live §2.3): der zuletzt vom Agenten geaenderte
 // Block leuchtet kurz in Akzentfarbe auf (600 ms, ruhig) und rollt sanft in die Sicht, falls er
 // ausserhalb liegt. puls startet das Leuchten bei jedem neuen Zwischenstand neu.
-const AKZENT = '#5b8cff';
+const AKZENT = '#6d52e8';
 const LEUCHTEN_MS = 600;
 
 function inSicht(el: HTMLElement): boolean {

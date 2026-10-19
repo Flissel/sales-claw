@@ -184,6 +184,7 @@ import os
 import re
 import urllib.error
 import urllib.parse
+from pathlib import Path
 import urllib.request
 import secrets
 import shutil
@@ -434,7 +435,7 @@ def _zeit(dt) -> str:
 # geladen. PDFs werden NICHT eingebettet, sondern verlinkt: ein PDF kann
 # JavaScript enthalten, und ein `object-src` dafuer waere ein deutlich
 # groesserer Schritt als ein Verweis.
-_CSP = ("default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; "
+_CSP = ("default-src 'none'; style-src 'unsafe-inline'; font-src 'self'; img-src 'self'; "
         "media-src 'self'; form-action 'self'; base-uri 'none'; "
         "frame-ancestors 'none'")
 
@@ -471,7 +472,7 @@ def _csp_mit_rahmen(origin: str, bilddaten: bool = False, schriften: bool = Fals
     if bilddaten:
         csp = csp.replace("img-src 'self';", "img-src 'self' data:;")
     if schriften:
-        csp = csp.replace("style-src 'unsafe-inline';", "style-src 'unsafe-inline' 'self'; font-src 'self';")
+        csp = csp.replace("style-src 'unsafe-inline';", "style-src 'unsafe-inline' 'self';")
     return f"{csp}; frame-src {origin}"
 
 
@@ -533,6 +534,7 @@ class HostWache:
 # "/static/kalender" (14.10.2026): die zwei Paketdateien der Kalender-Seite
 # (ui_kalender) - ohne sie saehe die Rolle eine leere Seite.
 _KALENDER_ROLLE_PFADE = ("/team/kalender", "/kalender", "/static/kalender",
+                         "/static/marke",
                          "/logout", "/login",
                          "/passwort-vergessen", "/passwort-neu")
 
@@ -812,12 +814,17 @@ _STIL = """
    auseinander, sobald jemand irgendwo ein #fff nachträgt. */
 :root {
   color-scheme: light dark;
-  --grund: #f5f4f0; --flaeche: #ffffff; --kopfzeile: #f0eee8;
-  --aktiv: #e4e1d9;
-  --schrift: #1c1b18; --gedaempft: #5c574c;
-  --linie: #d8d4cc; --linie_stark: #8a8578;
-  --balken: #2f2a24; --balken_schrift: #f5f4f0;
-  --verweis: #14507f;
+  /* VibeMind-Marke (Design-Review S2, 19.10.2026; Marke.md: Akzent #5b3fd6,
+     Blush #f3e6e3, Text #14121a, Oxanium/DM Sans). Violett ist Handlung
+     und Navigation, NIE Status - Status bleibt gut/achtung/fehler. */
+  --grund: #f7f6fb; --flaeche: #ffffff; --kopfzeile: #f1eff8;
+  --aktiv: #ece8fc;
+  --schrift: #14121a; --gedaempft: #5d5872;
+  --linie: #e2dfec; --linie_stark: #8a85a0;
+  --balken: #14121a; --balken_schrift: #e8e5f3;
+  --verweis: #4a30c0;
+  --akzent: #5b3fd6; --akzent_auf: #ffffff; --akzent_text: #4a30c0;
+  --blush: #f3e6e3; --blush_text: #7a3b2e;
   --gut: #1a6b43; --gut_auf: #ffffff; --gut_text: #14603a;
   --info: #1f5b7a; --info_auf: #ffffff;
   --lila: #52447a; --lila_auf: #ffffff;
@@ -830,12 +837,14 @@ _STIL = """
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --grund: #171512; --flaeche: #26221d; --kopfzeile: #2a2721;
-    --aktiv: #2e2a24;
-    --schrift: #ece8e0; --gedaempft: #b0a99c;
-    --linie: #4a443a; --linie_stark: #847d6e;
-    --balken: #0d0c0a; --balken_schrift: #ece8e0;
-    --verweis: #8cc0f0;
+    --grund: #121019; --flaeche: #1c1926; --kopfzeile: #221e2e;
+    --aktiv: #2a2540;
+    --schrift: #ece9f5; --gedaempft: #aaa4c0;
+    --linie: #3a3550; --linie_stark: #77708f;
+    --balken: #0b0a10; --balken_schrift: #e8e5f3;
+    --verweis: #b5a6ff;
+    --akzent: #9a86f5; --akzent_auf: #120c2e; --akzent_text: #b5a6ff;
+    --blush: #3a2a2e; --blush_text: #f3d6cf;
     --gut: #5fc98f; --gut_auf: #0c2418; --gut_text: #6ad39b;
     --info: #6fb6e0; --info_auf: #08202e;
     --lila: #b09ce0; --lila_auf: #191030;
@@ -849,6 +858,14 @@ _STIL = """
   }
 }
 
+@font-face { font-family: "Oxanium"; font-weight: 600; font-display: swap;
+  src: url(/marketing/schrift/oxanium-600-normal.woff2) format("woff2"); }
+@font-face { font-family: "Oxanium"; font-weight: 700; font-display: swap;
+  src: url(/marketing/schrift/oxanium-700-normal.woff2) format("woff2"); }
+@font-face { font-family: "DM Sans"; font-weight: 400; font-display: swap;
+  src: url(/marketing/schrift/dm-sans-400-normal.woff2) format("woff2"); }
+@font-face { font-family: "DM Sans"; font-weight: 700; font-display: swap;
+  src: url(/marketing/schrift/dm-sans-700-normal.woff2) format("woff2"); }
 *, *::before, *::after { box-sizing: border-box; }
 /* Kein Auto-Vergrößern beim Drehen ins Querformat (iOS). */
 html { -webkit-text-size-adjust: 100%; }
@@ -857,7 +874,7 @@ html { -webkit-text-size-adjust: 100%; }
    verkleinert auch die Mindestbreite von Tabellenzellen — genau das, was eine
    500 Zeichen lange URL sonst zur waagerechten Bildlaufleiste macht. */
 html, body { overflow-x: hidden; }
-body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+body { font-family: "DM Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
        margin: 0; background: var(--grund); color: var(--schrift);
        font-size: 16px; line-height: 1.45; overflow-wrap: anywhere; }
 main { flex: 1 1 auto; min-width: 0; max-width: 80rem;
@@ -877,9 +894,8 @@ nav.seite { width: 15rem; flex: none; background: var(--balken);
 nav.seite .marke { display: flex; align-items: center; gap: .6rem;
                    padding: 0 .5rem; font-weight: 700; }
 nav.seite .logo { width: 1.9rem; height: 1.9rem; border-radius: 6px;
-                  background: var(--gut); color: var(--gut_auf);
-                  display: flex; align-items: center;
-                  justify-content: center; }
+                  background: url(/static/marke/vibemind-logo-hell.png) center / contain
+                  no-repeat; }
 .gruppe { display: flex; flex-direction: column; gap: .15rem; }
 .gruppenname { font-size: .7rem; letter-spacing: .08em;
                text-transform: uppercase; color: var(--gedaempft);
@@ -888,13 +904,14 @@ nav.seite a { color: var(--balken_schrift); text-decoration: none;
               font-weight: 600; display: flex; align-items: center;
               gap: .6rem; min-height: 44px; padding: .5rem .7rem;
               border-radius: 6px; }
-nav.seite a.aktiv { background: var(--aktiv); color: var(--gut); }
+nav.seite a.aktiv { background: var(--akzent); color: var(--akzent_auf); }
+nav.seite a.aktiv .zaehler { background: rgba(255,255,255,.22); color: inherit; }
 .zaehler { margin-left: auto; font-family: ui-monospace, SFMono-Regular,
            Menlo, Consolas, monospace; font-variant-numeric: tabular-nums;
            font-size: .78rem; font-weight: 600; padding: .05rem .5rem;
            border-radius: 999px; background: var(--kopfzeile);
            color: var(--gedaempft); }
-.zaehler.offen { background: var(--achtung); color: var(--achtung_auf);
+.zaehler.offen { background: var(--blush); color: var(--blush_text);
                  font-weight: 700; }
 nav.seite .abmelden { margin-top: auto; padding: 0 .5rem; }
 /* Vier-Tab-Leiste (Schritt 7): am Desktop unsichtbar. */
@@ -965,8 +982,10 @@ nav.seite .abmelden { margin-top: auto; padding: 0 .5rem; }
   nav.tabs a { font-size: .62rem; letter-spacing: 0; }
 }
 
-h1 { font-size: 1.3rem; margin: .2rem 0 .8rem; }
-h2 { font-size: 1.05rem; margin-top: 2rem; }
+h1, h2, h3, .gruppenname, nav.seite .marke {
+  font-family: "Oxanium", "DM Sans", system-ui, sans-serif; letter-spacing: .01em; }
+h1 { font-size: 1.5rem; margin: .2rem 0 .8rem; }
+h2 { font-size: 1.1rem; margin-top: 2rem; }
 
 .karte { background: var(--flaeche); border: 1px solid var(--linie);
          border-radius: 6px; padding: .8rem 1rem; margin: .7rem 0; }
@@ -1033,8 +1052,8 @@ h2 { font-size: 1.05rem; margin-top: 2rem; }
    lokal nicht reproduzierbar): der Inhalt stand im Screenshot ~280 px nach links
    verschoben, d. h. die Seite war waagerecht gescrollt. body mit overflow-x: hidden
    ist ein eigener Bildlauf-Behaelter, den Fokus/Anker verschieben koennen; `clip`
-   auf main ist nie verschiebbar. Die Regel gilt fuer ALLE Seiten (main ist das
-   gemeinsame Geruest), nicht nur fuer das Marketing-Pult. ------------------- */
+   auf main ist nie verschiebbar. Die Regel gilt für ALLE Seiten (main ist das
+   gemeinsame Gerüst), nicht nur für das Marketing-Pult. ------------------- */
 main { overflow-x: clip; }
 .kopfzeile { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .7rem;
              margin: 0 0 .8rem; }
@@ -1082,14 +1101,14 @@ ul.bildstand li { padding: .2rem 0; }
 .mandant { border: 1px solid var(--linie); border-radius: 999px;
            padding: .2rem .8rem; font-weight: 600; }
 .mandant.aus { color: var(--gedaempft); font-weight: 400; border-style: dashed; }
-.mandant.aktiv { border-color: var(--gut); border-width: 2px; background: var(--aktiv); }
+.mandant.aktiv { border-color: var(--akzent); border-width: 2px; background: var(--aktiv); }
 .nl-vorschau iframe.vorschau.handy { max-width: 400px; display: block; }
 .filter, .vorschau-wahl { display: flex; flex-wrap: wrap; gap: .4rem;
                           margin: .5rem 0 1rem; }
 .filter a, .vorschau-wahl a { padding: .3rem .8rem; border: 1px solid
                               var(--linie); border-radius: 999px; }
 .filter a.aktiv, .vorschau-wahl a.aktiv { background: var(--aktiv);
-                                          color: var(--gut); font-weight: 700; }
+                                          color: var(--akzent_text); font-weight: 700; }
 /* Layout-Galerie und -Editor (Task 5): Karten mit verkleinerter Vorschau.
    Der Rahmen rendert in doppelter Breite und wird auf die Haelfte skaliert,
    damit die Karte das ganze Layout zeigt; Klicks gehen an die Karte. */
@@ -1336,18 +1355,18 @@ textarea { width: 100%; box-sizing: border-box; padding: .6rem;
            background: var(--flaeche); color: var(--schrift);
            font-size: 1rem; line-height: 1.45; resize: vertical;
            font-weight: 400; }
-button { min-height: 44px; padding: .6rem 1.1rem; border-radius: 6px;
+button { min-height: 44px; padding: .6rem 1.1rem; border-radius: 10px;
          border: 1px solid var(--linie_stark); background: var(--flaeche);
          color: var(--schrift); cursor: pointer; font-weight: 600;
          font-size: 1rem; }
-button.primaer { background: var(--gut); border-color: var(--gut);
-                 color: var(--gut_auf); }
+button.primaer { background: var(--akzent); border-color: var(--akzent);
+                 color: var(--akzent_auf); }
 button.gefahr { background: var(--flaeche); border-color: var(--fehler);
                 color: var(--fehler); border-width: 2px; }
 /* Verweis, der wie ein Hauptknopf aussieht (Im Editor öffnen, Neu aus Vorlage). */
 a.knopf { display: inline-block; min-height: 44px; padding: .6rem 1.1rem;
-          border-radius: 6px; border: 1px solid var(--gut); background: var(--gut);
-          color: var(--gut_auf); font-weight: 600; text-decoration: none; }
+          border-radius: 10px; border: 1px solid var(--akzent); background: var(--akzent);
+          color: var(--akzent_auf); font-weight: 600; text-decoration: none; }
 /* 16px ist die Schwelle: darunter zoomt iOS beim Fokussieren von selbst in
    das Feld hinein und lässt die Seite verschoben zurück. */
 select, input[type="text"], input[type="tel"], input[type="email"] {
@@ -1535,7 +1554,8 @@ def _seitenleiste(abmelden: str) -> str:
         for gruppe, eintraege in _GRUPPEN)
     gruppen = tuple(g for g in gruppen if g[1])
     teile = ['<nav class="seite"><div class="marke">'
-             '<span class="logo">S</span><span>sales-claw</span></div>']
+             '<span class="logo" aria-hidden="true"></span>'
+             '<span>VibeMind</span></div>']
     # Die Gruppe der aktiven Seite: am Handy die einzige, die oben als
     # Zeile bleibt (Schritt 7); ohne Treffer die erste (Aufgaben).
     aktiver_pfad = _aktiver_eintrag(
@@ -1748,6 +1768,23 @@ def _tabelle(spalten, zeilen) -> str:
         leib.append(f"<tr>{zellen}</tr>")
     return (f'<div class="tabelle"><table><thead><tr>{kopf}</tr></thead>'
             f"<tbody>{''.join(leib)}</tbody></table></div>")
+
+
+_MARKE_DATEIEN = {"vibemind-logo-hell.png": "image/png"}
+
+
+async def marke_statik(request):
+    """Das VibeMind-Logo fuer die Seitenleiste - nur Dateien aus der festen
+    Liste, nie ein frei gewaehlter Pfad (img-src 'self' erlaubt nur eigene
+    Herkunft, data:-Bilder bleiben gesperrt)."""
+    datei = request.path_params["datei"]
+    typ = _MARKE_DATEIEN.get(datei)
+    if typ is None:
+        return Response("Nicht gefunden", status_code=404, media_type="text/plain")
+    pfad = Path(__file__).resolve().parent / "static" / "marke" / datei
+    return Response(pfad.read_bytes(), media_type=typ,
+                    headers={"Cache-Control": "public, max-age=86400",
+                             "X-Content-Type-Options": "nosniff"})
 
 
 _EINWILLIGUNG = {"unknown": "nicht erfasst", "opt_in": "Einwilligung erteilt",
@@ -3846,7 +3883,7 @@ def _vertraege_bereich(lead) -> str:
     schreibend = (_AKTIVE_ROLLE.get() not in ("lesen", "kalender")
                   and not server._sammelkontakt(lead_id)
                   and not server._privat(lead["enrichment"] or {}))
-    teile = [f'<h2 id="vertraege">Verträge &amp; Projekte ({len(liste)})</h2>']
+    teile = [f'<h2 id="abschluss">Verträge &amp; Projekte ({len(liste)})</h2>']
     if liste:
         zeilen = []
         for v in liste:
@@ -3886,7 +3923,7 @@ async def aktion_kontakt_vertrag(request):
         f("notiz"), f("eintrag_id"), quelle="ui")
     if "fehler" in r:
         return _fehlerseite(422, "Nicht gespeichert", _e(r["fehler"]))
-    return RedirectResponse(f"/kontakte/{lead_id}#vertraege", status_code=303)
+    return RedirectResponse(f"/kontakte/{lead_id}#abschluss", status_code=303)
 
 
 async def _kontakt_vorspann(request):
@@ -7143,6 +7180,8 @@ app = Starlette(routes=[
           methods=["POST"]),
     Route("/wiedervorlagen/erledigt", aktion_wiedervorlage_erledigt,
           methods=["POST"]),
+    # Markenlogo der Seitenleiste (Design-Review S2): feste Liste, kein Pfad.
+    Route("/static/marke/{datei}", marke_statik),
     # Editor (einzige Seite mit Skript), signierte Bilder, Vorlagen und die
     # zwei Paket-Dateien - vor den Marketing-Routen.
     *ui_editor.routen(sys.modules[__name__]),

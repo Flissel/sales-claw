@@ -5,12 +5,12 @@ import { alpha, createTheme, Theme } from '@mui/material/styles';
 
 // Palette aus den Global Constraints (woertlich).
 export const FARBE = {
-  geruest: '#0f0f11',
-  panel: '#17171b',
-  linie: '#2a2a31',
+  geruest: '#0f0e14',
+  panel: '#17151f',
+  linie: '#2a2637',
   text: '#ececf1',
   gedaempft: '#8d8d99',
-  akzent: '#5b8cff',
+  akzent: '#6d52e8',
   // abgeleitet, nicht neu: Flaechen fuer Eingaben/Hover und die Warnfarbe der Hinweise
   feld: '#1f1f25',
   hover: '#222229',
@@ -18,7 +18,7 @@ export const FARBE = {
   fehler: '#ff8b8b',
 } as const;
 
-export const UI_SCHRIFT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+export const UI_SCHRIFT = '"DM Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
 
 // 8-px-Raster
 export const RASTER = 8;

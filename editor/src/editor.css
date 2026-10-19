@@ -1,3 +1,8 @@
+/* VibeMind-Schriften (Design-Review S2) - dieselben Dateien wie sales-ui, gleiche Herkunft. */
+@font-face { font-family: "DM Sans"; font-weight: 400; font-display: swap;
+  src: url(/marketing/schrift/dm-sans-400-normal.woff2) format("woff2"); }
+@font-face { font-family: "DM Sans"; font-weight: 700; font-display: swap;
+  src: url(/marketing/schrift/dm-sans-700-normal.woff2) format("woff2"); }
 /* Fuellt das Fenster der Editor-Seite (sales-ui, Task 6). Frueher im
    <style> der index.html des Beispiels; jetzt Teil von editor.css. */
 html {

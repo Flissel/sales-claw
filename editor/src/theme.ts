@@ -10,7 +10,7 @@ export function pultThema(dunkel: boolean): Theme {
   const BASE_THEME = createTheme({
     palette: {
       mode: dunkel ? 'dark' : 'light',
-      primary: { main: f.verweis },
+      primary: { main: f.akzent },
       success: { main: f.gut },
       error: { main: f.fehler },
       warning: { main: f.achtung },
