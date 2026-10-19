@@ -34,7 +34,7 @@ import {
   MAX_AUSWAHL,
   sendenErlaubt,
 } from './chatKontext';
-import { getDocument, resetDocument, setDocument, setSelectedBlockId } from './documents/editor/EditorContext';
+import { dokumentZeigen, getDocument, setDocumentOhneVerlauf, setSelectedBlockId } from './documents/editor/EditorContext';
 import type { Ebene } from './gestaltung';
 import type { TEditorConfiguration } from './documents/editor/core';
 import { anzeigbar, zuletztGeaendert } from './live';
@@ -216,7 +216,8 @@ export async function newsletterSichern(
     const nachher = pultStore.getState();
     // Nur als gespeichert markieren, wenn waehrend des Speicherns nichts geaendert wurde.
     const unveraendert = getDocument() === vorher && nachher.betreff === b && nachher.vorschautext === v;
-    if (aenderung) setDocument(unveraendert ? zuSichern : aenderung(getDocument()));
+    // Uebernahme nach dem Speichern - kein eigener Rueckgaengig-Schritt.
+    if (aenderung) setDocumentOhneVerlauf(unveraendert ? zuSichern : aenderung(getDocument()));
     pultStore.setState({ basis: e.fassung, ungespeichert: !unveraendert });
   }
   return e;
@@ -224,15 +225,31 @@ export async function newsletterSichern(
 
 // Nach dem Loeschen eines Bildes (E14): steckte es im offenen Newsletter, hat der Server eine neue Fassung
 // mit Platzhalter angelegt. Dann den Stand uebernehmen und den "neue Fassung"-Weg gehen (laedt neu oder
-// zeigt das Band, wenn hier Ungespeichertes liegt). Liefert, ob es eine neuere Fassung gab.
-export async function neueFassungNachBildLoeschen(): Promise<boolean> {
+// zeigt das Band, wenn hier Ungespeichertes liegt). meldung ueberlebt ein Neuladen (Merkzettel);
+// nurAnzeigen (Fehler steht noch im Dialog): nur das Band, nie neu laden. Liefert, ob es eine neuere Fassung gab.
+export async function neueFassungNachBildLoeschen(meldung: string | null, nurAnzeigen = false): Promise<boolean> {
   const { start, basis } = pultStore.getState();
   if (!start) return false;
   const s = await standLaden(start);
   if (!s) return false;
   pultStore.setState({ stand: s });
-  if (s.fassung <= basis) return false;
-  neueFassungLaden(s.fassung, s.auftraege);
+  if (s.fassung <= basis || nurAnzeigen) return s.fassung > basis;
+  let gemerkt = false;
+  if (meldung) {
+    try {
+      sessionStorage.setItem(MERKZETTEL, JSON.stringify({ platz: '', text: meldung }));
+      gemerkt = true;
+    } catch {
+      /* ohne Merkzettel nur ohne Meldung */
+    }
+  }
+  if (!neueFassungLaden(s.fassung, s.auftraege) && gemerkt) {
+    try {
+      sessionStorage.removeItem(MERKZETTEL);
+    } catch {
+      /* nichts */
+    }
+  }
   return true;
 }
 
@@ -420,14 +437,14 @@ function zwischenstandZeigen(stand: Dokument) {
   pultStore.setState({
     zwischenstand: { echt: z?.echt ?? vorher, stand, leuchtet: zuletztGeaendert(vorher, anzeige), puls: (z?.puls ?? 0) + 1 },
   });
-  resetDocument(anzeige);
+  dokumentZeigen(anzeige);
 }
 
 // Lauf ohne (geladene) neue Fassung zu Ende: das echte Dokument kommt zurueck, wie es war.
 function zwischenstandBeenden() {
   const z = pultStore.getState().zwischenstand;
   if (!z) return;
-  resetDocument(z.echt);
+  dokumentZeigen(z.echt);
   pultStore.setState({ zwischenstand: null });
   chipsAbgleichen();
 }

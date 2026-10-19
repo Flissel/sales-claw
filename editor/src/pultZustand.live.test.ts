@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ChatEintrag } from './chat';
-import { getDocument, onDocumentChange, resetDocument } from './documents/editor/EditorContext';
+import { getDocument, onDocumentChange, resetDocument, rueckgaengig, setDocument } from './documents/editor/EditorContext';
 import type { TEditorConfiguration } from './documents/editor/core';
 import type { Start } from './pult';
 import {
@@ -214,6 +214,24 @@ describe('Zwischenstand im Canvas', () => {
     expect(getDocument()).toBe(ECHT);
     expect(pultStore.getState().zwischenstand).toBeNull();
     expect(pultStore.getState().ungespeichert).toBe(false);
+  });
+
+  it('Lauf ohne neue Fassung leert den Rückgängig-Verlauf nicht', async () => {
+    const eigen = { ...ECHT, root: { type: 'EmailLayout', data: { childrenIds: [] } } } as TEditorConfiguration;
+    setDocument(eigen);
+    const meins = getDocument();
+    netz({
+      '/c.json': [
+        [200, laeuft(ZWISCHEN_1)],
+        [200, { laeuft: false, verlauf: [eintrag({ status: 'fehler', antwort: 'Gestoppt – nichts übernommen' })], live: null, neueste: null }],
+      ],
+    });
+    chatAbfragen();
+    await vi.advanceTimersByTimeAsync(CHAT_TAKT_MS);
+    expect(pultStore.getState().zwischenstand).toBeNull();
+    expect(getDocument()).toBe(meins);
+    expect(rueckgaengig()).toBe(true);
+    expect(getDocument()).toEqual(ECHT);
   });
 
   it('Neuladen aufgehalten (ungesicherte Aenderungen): das echte Dokument kommt zurueck, ungespeichert bleibt', async () => {

@@ -162,6 +162,23 @@ export function dokumentErsetzen(document: TValue['document']) {
   });
 }
 
+// Zeigt ein Dokument, ohne den Verlauf zu beruehren (Zwischenstand des Agenten und das Zurueckholen
+// des echten Dokuments danach): ein Lauf ohne neue Fassung laesst Rueckgaengig/Wiederholen stehen.
+export function dokumentZeigen(document: TValue['document']) {
+  zuletztAbgelegt = Number.NEGATIVE_INFINITY;
+  return editorStateStore.setState({
+    document,
+    selectedSidebarTab: 'styles',
+    selectedBlockId: null,
+  });
+}
+
+// Wie setDocument, aber ohne Rueckgaengig-Schritt (Uebernahme nach dem Speichern).
+export function setDocumentOhneVerlauf(document: TValue['document']) {
+  const originalDocument = editorStateStore.getState().document;
+  return editorStateStore.setState({ document: { ...originalDocument, ...document } });
+}
+
 export function setDocument(document: TValue['document']) {
   const originalDocument = editorStateStore.getState().document;
   ablegen(originalDocument);

@@ -23,6 +23,8 @@ import {
 import { datumKurz, fassungWiederherstellen, FassungInfo, Start } from '../pult';
 import { LIEGT_ZUR_FREIGABE, pultStore } from '../pultZustand';
 
+const SCHMAL = '@media (max-width: 1439.98px)';
+
 export function fassungZeile(f: FassungInfo): string {
   return `Fassung ${f.fassung} · ${f.urheber === 'agent' ? 'Agent' : 'du'} · ${datumKurz(f.erstellt_am, true)}`;
 }
@@ -32,12 +34,17 @@ export function verlaufVorschauUrl(s: Pick<Start, 'vorschau_url'>, fassung: numb
   return `${s.vorschau_url}${trenner}fassung=${fassung}&format=mail`;
 }
 
-type Lage = { neueste: number; ungespeichert: boolean; nurLesen: boolean; agent: string | null };
+type Lage = { ungespeichert: boolean; nurLesen: boolean; agent: string | null };
 
-// Warum diese Fassung gerade nicht wiederhergestellt werden kann (null = frei).
+// Ob eine Fassung "Wiederherstellen …" bekommt: alle aelteren. Die neueste nicht - sie ist ja offen.
+export function wiederherstellenSichtbar(f: FassungInfo, neueste: number): boolean {
+  return f.fassung < neueste;
+}
+
+// Warum diese (aeltere) Fassung gerade nicht wiederhergestellt werden kann (null = frei). Das alte
+// Format steht gesperrt mit Grund im Menue statt zu fehlen - sonst sieht es aus, als fehle der Eintrag.
 export function wiederherstellenSperre(f: FassungInfo, l: Lage): string | null {
   if (f.format !== 'bloecke') return 'Altes Format – lässt sich hier nicht wiederherstellen';
-  if (f.fassung >= l.neueste) return 'Das ist die neueste Fassung';
   if (l.nurLesen) return LIEGT_ZUR_FREIGABE;
   if (l.agent !== null) return 'Gesperrt, bis der Assistent fertig ist';
   if (l.ungespeichert) return 'Erst speichern';
@@ -60,7 +67,7 @@ export default function VerlaufMenue({ agent }: { agent: string | null }) {
   const fassungen = start.fassungen;
   // Die neueste bekannte Fassung: aus der Liste oder die eben gespeicherte (basis).
   const neueste = Math.max(basis, ...fassungen.map((f) => f.fassung));
-  const lage: Lage = { neueste, ungespeichert, nurLesen, agent };
+  const lage: Lage = { ungespeichert, nurLesen, agent };
 
   const wiederherstellen = async () => {
     if (!frage) return;
@@ -81,10 +88,16 @@ export default function VerlaufMenue({ agent }: { agent: string | null }) {
           variant="outlined"
           startIcon={<HistoryOutlined />}
           onClick={(ev) => setAnker(ev.currentTarget)}
-          sx={{ flexShrink: 0, whiteSpace: 'nowrap' }}
+          aria-label="Verlauf"
           aria-haspopup="menu"
+          sx={{
+            flexShrink: 0,
+            whiteSpace: 'nowrap',
+            // Unter 1440 px nur das Symbol: sonst laeuft Zeile 1 neben offenem Chat ueber ("Vorschau" abgeschnitten).
+            [SCHMAL]: { minWidth: 0, px: 1, '& .MuiButton-startIcon': { m: 0 }, '& .verlauf-text': { display: 'none' } },
+          }}
         >
-          Verlauf
+          <span className="verlauf-text">Verlauf</span>
         </Button>
       </Tooltip>
       <Menu
@@ -96,7 +109,7 @@ export default function VerlaufMenue({ agent }: { agent: string | null }) {
         {fassungen.length === 0 && <MenuItem disabled>Noch keine Fassungen</MenuItem>}
         {fassungen.flatMap((f, i) => {
           const sperre = wiederherstellenSperre(f, lage);
-          const zeigen = f.format === 'bloecke' && f.fassung < neueste;
+          const zeigen = wiederherstellenSichtbar(f, neueste);
           return [
             i > 0 ? <Divider key={`t${f.fassung}`} component="li" /> : null,
             <ListSubheader key={`k${f.fassung}`} sx={{ lineHeight: '32px', bgcolor: 'background.paper' }}>

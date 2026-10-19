@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { fassungWiederherstellen, FassungInfo, Start } from './pult';
-import { fassungZeile, verlaufVorschauUrl, wiederherstellenSperre, wiederherstellenText } from './App/VerlaufMenue';
+import {
+  fassungZeile,
+  verlaufVorschauUrl,
+  wiederherstellenSichtbar,
+  wiederherstellenSperre,
+  wiederherstellenText,
+} from './App/VerlaufMenue';
 
 const IID = 'b12c46b9-8f87-412b-b2e7-7215b354a75b';
 const start = {
@@ -68,10 +74,15 @@ describe('Verlauf-Menü', () => {
     expect(verlaufVorschauUrl({ vorschau_url: '/v?x=1' } as Start, 4)).toBe('/v?x=1&fassung=4&format=mail');
   });
 
-  it('Wiederherstellen nur für ältere Editor-Fassungen ohne Sperre', () => {
-    const frei = { neueste: 8, ungespeichert: false, nurLesen: false, agent: null };
+  it('Wiederherstellen erscheint für alle älteren Fassungen, nie für die neueste', () => {
+    expect(wiederherstellenSichtbar(f(4), 8)).toBe(true);
+    expect(wiederherstellenSichtbar(f(4, { format: 'felder' }), 8)).toBe(true);
+    expect(wiederherstellenSichtbar(f(8), 8)).toBe(false);
+  });
+
+  it('gesperrt mit Grund: altes Format, ungespeichert, nurLesen, Agent', () => {
+    const frei = { ungespeichert: false, nurLesen: false, agent: null };
     expect(wiederherstellenSperre(f(4), frei)).toBeNull();
-    expect(wiederherstellenSperre(f(8), frei)).toBe('Das ist die neueste Fassung');
     expect(wiederherstellenSperre(f(4, { format: 'felder' }), frei)).toBe('Altes Format – lässt sich hier nicht wiederherstellen');
     expect(wiederherstellenSperre(f(4), { ...frei, ungespeichert: true })).toBe('Erst speichern');
     expect(wiederherstellenSperre(f(4), { ...frei, nurLesen: true })).toBe('Liegt zur Freigabe – erst zurückziehen');

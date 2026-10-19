@@ -57,6 +57,8 @@ export type Start = {
   // Praefix (Vorlagenname wird angehaengt), fassungen: hoechstens 30, neueste zuerst.
   vorlagen_url?: string;
   vorlage_bild_url?: string;
+  // id dieses Newsletters, falls sales-ui sie mitschickt (sonst aus speichern_url gelesen).
+  iid?: string;
   vorlage_url?: string;
   wiederherstellen_url?: string;
   fassungen?: FassungInfo[];
@@ -416,7 +418,9 @@ export type Umgestellt = { id: string; titel: string; fassung: number };
 
 // id dieses Newsletters aus den Startdaten (die Routen tragen sie: /marketing/editor/<id>/...).
 const INHALT_ID = /\/marketing\/editor\/([0-9a-fA-F-]{36})\//;
-export function inhaltId(s: Pick<Start, 'speichern_url'>): string | null {
+const UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+export function inhaltId(s: Pick<Start, 'speichern_url' | 'iid'>): string | null {
+  if (typeof s.iid === 'string' && UUID.test(s.iid)) return s.iid;
   const m = INHALT_ID.exec(s.speichern_url ?? '');
   return m ? m[1] : null;
 }
@@ -431,6 +435,9 @@ function umgestelltLesen(v: unknown): Umgestellt[] {
     : [];
 }
 
+export const LOESCHEN_OHNE_FIRMA =
+  'Löschen hier gesperrt: Die Firma dieses Newsletters ist unbekannt. Bitte über Medien im Pult löschen.';
+
 // Zwei Schritte wie die Medienseite: bestaetigt=false prueft nur (nichts wird geloescht).
 // iid geht immer mit: ohne sie prueft sales-ui still mit der Firma des Ladens (E6).
 export async function medienLoeschen(
@@ -440,12 +447,14 @@ export async function medienLoeschen(
 ): Promise<{ ok: true; info: LoeschInfo | null; umgestellt: Umgestellt[] } | { ok: false; grund: string; umgestellt?: Umgestellt[] }> {
   if (!s.medien_loeschen_url) return { ok: false, grund: 'Löschen ist hier noch nicht eingerichtet' };
   const iid = inhaltId(s);
+  // Ohne iid pruefte sales-ui still mit der Firma des Ladens - dann lieber gar nicht.
+  if (!iid) return { ok: false, grund: LOESCHEN_OHNE_FIRMA };
   try {
     const r = await fetch(s.medien_loeschen_url, {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json', 'X-CSRF': s.csrf },
-      body: JSON.stringify(iid ? { name, bestaetigt, iid } : { name, bestaetigt }),
+      body: JSON.stringify({ name, bestaetigt, iid }),
     });
     const j: unknown = await r.json().catch(() => ({}));
     if (!r.ok) {

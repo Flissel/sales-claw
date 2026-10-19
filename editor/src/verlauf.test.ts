@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   dokumentErsetzen,
+  dokumentZeigen,
+  setDocumentOhneVerlauf,
   getDocument,
   onDocumentChange,
   resetDocument,
@@ -118,6 +120,28 @@ describe('Rückgängig/Wiederholen', () => {
     expect(getDocument()).toEqual(AUSGANG);
     expect(rueckgaengig()).toBe(true);
     expect(stand()).toBe('Stand 1');
+  });
+
+  it('setDocumentOhneVerlauf legt keinen Schritt ab und lässt Wiederholen stehen', () => {
+    setDocument(text(1));
+    vi.advanceTimersByTime(600);
+    setDocument(text(2));
+    rueckgaengig();
+    setDocumentOhneVerlauf(text(5));
+    expect(stand()).toBe('Stand 5');
+    expect(rueckgaengig()).toBe(true);
+    expect(getDocument()).toEqual(AUSGANG);
+    expect(rueckgaengig()).toBe(false);
+  });
+
+  it('dokumentZeigen (Zwischenstand des Agenten) lässt beide Stapel stehen', () => {
+    setDocument(text(1));
+    const meins = getDocument();
+    dokumentZeigen(text(7));
+    expect(stand()).toBe('Stand 7');
+    dokumentZeigen(meins);
+    expect(rueckgaengig()).toBe(true);
+    expect(getDocument()).toEqual(AUSGANG);
   });
 
   it('Rückgängig meldet eine Änderung (ungespeichert-Anzeige)', () => {

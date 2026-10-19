@@ -4,6 +4,7 @@ import {
   firmaEtikett,
   geloeschtText,
   inhaltId,
+  LOESCHEN_OHNE_FIRMA,
   leereBildwahl,
   LoeschInfo,
   loeschFrage,
@@ -293,17 +294,67 @@ describe('loeschFrage', () => {
 });
 
 describe('neueFassungNachBildLoeschen', () => {
-  it('neuere Fassung des offenen Newsletters: Stand übernehmen, „neue Fassung“-Weg', async () => {
+  function speicherFaelschen() {
+    const speicher = new Map<string, string>();
+    vi.stubGlobal('sessionStorage', {
+      getItem: (k: string) => speicher.get(k) ?? null,
+      setItem: (k: string, v: string) => void speicher.set(k, v),
+      removeItem: (k: string) => void speicher.delete(k),
+    });
+    const reload = vi.fn();
+    vi.stubGlobal('window', { location: { reload } });
+    return { speicher, reload };
+  }
+
+  it('neuere Fassung, Ungespeichertes: Stand übernehmen (Band), kein Neuladen, kein Merkzettel', async () => {
+    const { speicher, reload } = speicherFaelschen();
     vi.stubGlobal('fetch', vi.fn(async () => antwort(200, { fassung: 9, auftraege: [] })));
     pultStore.setState({ start: loeschStart, basis: 8, ungespeichert: true, stand: null });
-    expect(await neueFassungNachBildLoeschen()).toBe(true);
+    expect(await neueFassungNachBildLoeschen('„a.png“ gelöscht.')).toBe(true);
     expect(pultStore.getState().stand?.fassung).toBe(9);
+    expect(reload).not.toHaveBeenCalled();
+    expect(speicher.get('vibemind-neues-bild')).toBeUndefined();
+  });
+
+  it('neuere Fassung ohne Ungespeichertes: lädt neu, die Meldung überlebt das Neuladen', async () => {
+    const { speicher, reload } = speicherFaelschen();
+    vi.stubGlobal('fetch', vi.fn(async () => antwort(200, { fassung: 9, auftraege: [] })));
+    pultStore.setState({ start: loeschStart, basis: 8, ungespeichert: false, hinweisOffen: false, gestaltungOffen: null, chatAnhaenge: [], stand: null });
+    expect(await neueFassungNachBildLoeschen('„a.png“ gelöscht – 1 Entwurf zeigt jetzt einen Platzhalter.')).toBe(true);
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(speicher.get('vibemind-neues-bild') ?? '{}').text).toBe('„a.png“ gelöscht – 1 Entwurf zeigt jetzt einen Platzhalter.');
+  });
+
+  it('nurAnzeigen (Fehler im Dialog): Stand übernehmen, nie neu laden', async () => {
+    const { reload } = speicherFaelschen();
+    vi.stubGlobal('fetch', vi.fn(async () => antwort(200, { fassung: 9, auftraege: [] })));
+    pultStore.setState({ start: loeschStart, basis: 8, ungespeichert: false, stand: null });
+    expect(await neueFassungNachBildLoeschen(null, true)).toBe(true);
+    expect(pultStore.getState().stand?.fassung).toBe(9);
+    expect(reload).not.toHaveBeenCalled();
   });
 
   it('keine neuere Fassung: nichts', async () => {
+    speicherFaelschen();
     vi.stubGlobal('fetch', vi.fn(async () => antwort(200, { fassung: 8, auftraege: [] })));
     pultStore.setState({ start: loeschStart, basis: 8, ungespeichert: true, stand: null });
-    expect(await neueFassungNachBildLoeschen()).toBe(false);
+    expect(await neueFassungNachBildLoeschen('x')).toBe(false);
+  });
+});
+
+describe('medienLoeschen ohne Firma', () => {
+  it('ohne iid wird nichts gesendet, Löschen ist gesperrt', async () => {
+    const f = vi.fn();
+    vi.stubGlobal('fetch', f);
+    const ohne = { ...loeschStart, speichern_url: '/irgendwo/speichern' } as Start;
+    expect(inhaltId(ohne)).toBeNull();
+    expect(await medienLoeschen(ohne, 'a.png', false)).toEqual({ ok: false, grund: LOESCHEN_OHNE_FIRMA });
+    expect(await medienLoeschen(ohne, 'a.png', true)).toEqual({ ok: false, grund: LOESCHEN_OHNE_FIRMA });
+    expect(f).not.toHaveBeenCalled();
+  });
+
+  it('ein iid-Feld im Start geht vor', () => {
+    expect(inhaltId({ ...loeschStart, iid: '0b6c2c1e-7a39-4f5f-8a39-6a9f7d1c2b3e' } as Start)).toBe('0b6c2c1e-7a39-4f5f-8a39-6a9f7d1c2b3e');
   });
 });
 
@@ -312,5 +363,7 @@ describe('geloeschtText', () => {
     expect(geloeschtText('a.png', 0)).toBe('„a.png“ gelöscht.');
     expect(geloeschtText('a.png', 2)).toBe('„a.png“ gelöscht – 2 Entwürfe zeigen jetzt einen Platzhalter.');
     expect(geloeschtText('a.png', 1)).toBe('„a.png“ gelöscht – 1 Entwurf zeigt jetzt einen Platzhalter.');
+    // Gezaehlt wird, was der Server umgestellt hat - nie die Vorhersage aus der Pruefung.
+    expect(geloeschtText('a.png', [].length)).not.toContain('Platzhalter');
   });
 });

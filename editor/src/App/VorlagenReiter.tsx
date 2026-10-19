@@ -40,6 +40,28 @@ export function anwendenSperre(ungespeichert: boolean, nurLesen: boolean): strin
   return null;
 }
 
+// "Als neuer Entwurf" fuehrt aus dem Editor hinaus: erst speichern (sonst haengt der Weg an der
+// Verlassen-Warnung und ein verwaister Entwurf bleibt). nurLesen sperrt nicht - der neue Entwurf
+// beruehrt den eingereichten nicht (die Leiste ist dann ohnehin inert).
+export function alsNeuSperre(ungespeichert: boolean): string | null {
+  return ungespeichert ? 'Erst speichern' : null;
+}
+
+// Anzeigename einer Vorlage (Karte und Dialoge gleich): "bild-kopf" -> "Bild kopf".
+export function vorlageLabel(name: string): string {
+  const t = name.replace(/-/g, ' ');
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
+export type NeuDialog = { name: string; titel: string; grund: string | null; laeuft: boolean };
+
+// Naechster Zustand des Titel-Dialogs nach "Anlegen": null (zu) bei Erfolg - die Navigation laeuft,
+// und bleibt die Seite (Verlassen-Warnung), haengt nichts auf "Wird angelegt …"; sonst frei mit Grund.
+export async function neuDialogNach(start: Start, neu: NeuDialog): Promise<NeuDialog | null> {
+  const grund = await alsNeuAusfuehren(start, neu.name, neu.titel);
+  return grund === null ? null : { ...neu, grund, laeuft: false };
+}
+
 export function titelFehler(titel: string): string | null {
   const t = titel.trim();
   if (!t) return 'Bitte einen Titel eingeben';
@@ -147,6 +169,7 @@ export function VorlagenListe({ start, vorlagen, ungespeichert, nurLesen, onAnwe
     );
   }
   const sperre = anwendenSperre(ungespeichert, nurLesen);
+  const neuSperre = alsNeuSperre(ungespeichert);
   const bildUrl = start.vorlage_bild_url;
   return (
     <Stack spacing={1.5}>
@@ -154,8 +177,8 @@ export function VorlagenListe({ start, vorlagen, ungespeichert, nurLesen, onAnwe
         <Card key={v.name} variant="outlined">
           <CardContent sx={{ p: 1, '&:last-child': { pb: 1 } }}>
             <Vorschau src={bildUrl + encodeURIComponent(v.name)} name={v.name} />
-            <Typography variant="subtitle2" sx={{ mt: 1, textTransform: 'capitalize' }}>
-              {v.name}
+            <Typography variant="subtitle2" sx={{ mt: 1 }}>
+              {vorlageLabel(v.name)}
             </Typography>
             {v.beschreibung && (
               <Typography variant="caption" color="text.secondary" component="p">
@@ -163,9 +186,13 @@ export function VorlagenListe({ start, vorlagen, ungespeichert, nurLesen, onAnwe
               </Typography>
             )}
             <Stack spacing={0.5} sx={{ mt: 1 }} alignItems="flex-start">
-              <Button size="small" variant="outlined" disabled={nurLesen} onClick={() => onAlsNeu(v.name)}>
-                Als neuer Entwurf
-              </Button>
+              <Tooltip title={neuSperre ?? ''}>
+                <span>
+                  <Button size="small" variant="outlined" disabled={neuSperre !== null} onClick={() => onAlsNeu(v.name)}>
+                    Als neuer Entwurf
+                  </Button>
+                </span>
+              </Tooltip>
               <Tooltip title={sperre ?? ''}>
                 <span>
                   <Button
@@ -191,7 +218,7 @@ export function AnwendenFrage({ name, basis, grund }: { name: string; basis: num
   return (
     <>
       <DialogContentText>
-        Die Vorlage „{name}“ wird auf diesen Entwurf angewendet. {anwendenText(basis)}
+        Die Vorlage „{vorlageLabel(name)}“ wird auf diesen Entwurf angewendet. {anwendenText(basis)}
       </DialogContentText>
       {grund && (
         <Alert severity="error" sx={{ mt: 2 }}>
@@ -209,7 +236,7 @@ export default function VorlagenReiter() {
   const basis = pultStore((p) => p.basis);
   const [vorlagen, setVorlagen] = useState<VorlageInfo[] | null | 'laedt'>('laedt');
   const [anwenden, setAnwenden] = useState<{ name: string; grund: string | null; laeuft: boolean } | null>(null);
-  const [neu, setNeu] = useState<{ name: string; titel: string; grund: string | null; laeuft: boolean } | null>(null);
+  const [neu, setNeu] = useState<NeuDialog | null>(null);
 
   const laden = useCallback(() => {
     if (!start) return;
@@ -233,9 +260,11 @@ export default function VorlagenReiter() {
 
   const neuAnlegen = async () => {
     if (!neu) return;
+    if (alsNeuSperre(pultStore.getState().ungespeichert)) return;
     setNeu({ ...neu, grund: null, laeuft: true });
-    const grund = await alsNeuAusfuehren(start, neu.name, neu.titel);
-    if (grund !== null) setNeu({ ...neu, grund, laeuft: false });
+    const naechster = await neuDialogNach(start, neu);
+    // Inzwischen geschlossen: nicht wieder oeffnen.
+    setNeu((jetzt) => (jetzt === null ? null : naechster));
   };
 
   const titelHinweis = neu ? titelFehler(neu.titel) : null;
@@ -256,7 +285,7 @@ export default function VorlagenReiter() {
       />
 
       <Dialog open={anwenden !== null} onClose={() => !anwenden?.laeuft && setAnwenden(null)}>
-        <DialogTitle>Vorlage anwenden?</DialogTitle>
+        <DialogTitle>Vorlage „{anwenden ? vorlageLabel(anwenden.name) : ''}“ anwenden?</DialogTitle>
         <DialogContent>{anwenden && <AnwendenFrage name={anwenden.name} basis={basis} grund={anwenden.grund} />}</DialogContent>
         <DialogActions>
           <Button disabled={anwenden?.laeuft} onClick={() => setAnwenden(null)}>
@@ -272,8 +301,9 @@ export default function VorlagenReiter() {
         </DialogActions>
       </Dialog>
 
-      <Dialog open={neu !== null} onClose={() => !neu?.laeuft && setNeu(null)} fullWidth maxWidth="xs">
-        <DialogTitle>Neuer Entwurf aus „{neu?.name}“</DialogTitle>
+      {/* Schliessen geht immer - auch waehrend "Wird angelegt …" (die Navigation laeuft dann ohne Dialog weiter). */}
+      <Dialog open={neu !== null} onClose={() => setNeu(null)} fullWidth maxWidth="xs">
+        <DialogTitle>Neuer Entwurf aus „{neu ? vorlageLabel(neu.name) : ''}“</DialogTitle>
         <DialogContent>
           <DialogContentText sx={{ mb: 2 }}>
             Der neue Entwurf gehört derselben Firma und öffnet sich danach im Editor. Dieser Entwurf bleibt, wie er ist.
@@ -298,10 +328,12 @@ export default function VorlagenReiter() {
           )}
         </DialogContent>
         <DialogActions>
-          <Button disabled={neu?.laeuft} onClick={() => setNeu(null)}>
-            Abbrechen
-          </Button>
-          <Button variant="contained" disabled={neu?.laeuft || titelHinweis !== null} onClick={() => void neuAnlegen()}>
+          <Button onClick={() => setNeu(null)}>Abbrechen</Button>
+          <Button
+            variant="contained"
+            disabled={neu?.laeuft || titelHinweis !== null || alsNeuSperre(ungespeichert) !== null}
+            onClick={() => void neuAnlegen()}
+          >
             {neu?.laeuft ? 'Wird angelegt …' : 'Anlegen und öffnen'}
           </Button>
         </DialogActions>

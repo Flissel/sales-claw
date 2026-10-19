@@ -6,6 +6,9 @@ import { Start } from '../pult';
 
 import {
   alsNeuAusfuehren,
+  alsNeuSperre,
+  neuDialogNach,
+  vorlageLabel,
   anwendenAusfuehren,
   AnwendenFrage,
   anwendenSperre,
@@ -76,10 +79,27 @@ describe('Reiter Vorlagen', () => {
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Auf diesen Entwurf anwenden …/);
   });
 
-  it('„Anwenden“ und „Als neuer Entwurf“ sind bei nurLesen gesperrt', () => {
+  it('nurLesen sperrt „Anwenden“, „Als neuer Entwurf“ bleibt (berührt den eingereichten nicht)', () => {
     expect(anwendenSperre(false, true)).toBe('Liegt zur Freigabe – erst zurückziehen');
+    expect(alsNeuSperre(false)).toBeNull();
     const html = liste({ nurLesen: true });
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Auf diesen Entwurf anwenden …/);
+    expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>Als neuer Entwurf/);
+    expect(html).toMatch(/<button[^>]*>Als neuer Entwurf/);
+  });
+
+  it('ungespeicherte Änderungen sperren auch „Als neuer Entwurf“ (Erst speichern)', () => {
+    expect(alsNeuSperre(true)).toBe('Erst speichern');
+    const html = liste({ ungespeichert: true });
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Als neuer Entwurf/);
+    expect(liste()).not.toMatch(/<button[^>]*disabled=""[^>]*>Als neuer Entwurf/);
+  });
+
+  it('Karte und Dialog zeigen denselben Namen (Label statt Schlüssel)', () => {
+    expect(vorlageLabel('klassik')).toBe('Klassik');
+    expect(vorlageLabel('bild-kopf')).toBe('Bild kopf');
+    expect(liste()).toContain('>Klassik<');
+    expect(renderToStaticMarkup(<AnwendenFrage name="klassik" basis={7} grund={null} />)).toContain('„Klassik“');
   });
 
   it('frei ohne ungespeicherte Änderungen und ohne nurLesen', () => {
@@ -155,6 +175,19 @@ describe('Als neuer Entwurf', () => {
     vi.stubGlobal('fetch', vi.fn(async () => antwort(200, { editor_url: '/marketing/editor/neu-1' })));
     expect(await alsNeuAusfuehren(start, 'studio', 'Herbstpost')).toBeNull();
     expect(fenster.href).toBe('/marketing/editor/neu-1');
+  });
+
+  it('Dialog hängt nie auf „Wird angelegt …“: Erfolg schließt ihn, Fehler gibt ihn frei', async () => {
+    const fenster = fensterFaelschen();
+    vi.stubGlobal('fetch', vi.fn(async () => antwort(200, { editor_url: '/marketing/editor/neu-1' })));
+    const offen = { name: 'studio', titel: 'Herbstpost', grund: null, laeuft: true };
+    // Erfolg: Navigation angestossen, Dialog zu (bleibt die Seite, etwa nach der Verlassen-Warnung, ist nichts gesperrt).
+    expect(await neuDialogNach(start, offen)).toBeNull();
+    expect(fenster.href).toBe('/marketing/editor/neu-1');
+    vi.stubGlobal('fetch', vi.fn(async () => antwort(422, { grund: 'Unbekannte Vorlage' })));
+    expect(await neuDialogNach(start, offen)).toEqual({ ...offen, grund: 'Unbekannte Vorlage', laeuft: false });
+    vi.stubGlobal('fetch', vi.fn(async () => Promise.reject(new Error('x'))));
+    expect(await neuDialogNach(start, offen)).toMatchObject({ laeuft: false, grund: 'Keine Verbindung zum Pult' });
   });
 
   it('Ablehnung bleibt im Dialog', async () => {

@@ -34,6 +34,8 @@ import {
 import {
   ANZEIGE,
   geloeschtText,
+  inhaltId,
+  LOESCHEN_OHNE_FIRMA,
   LoeschInfo,
   loeschFrage,
   medienLoeschen,
@@ -98,6 +100,9 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
   const platz = istPlatz(data.props);
   const s = selectedBlockId ? standFuer(selectedBlockId, stand?.auftraege ?? []) : { text: '', art: null };
 
+  // Ohne id des Newsletters ist die Firma unbekannt: Loeschen gesperrt (sonst gaelte still die des Ladens).
+  const ohneFirma = start !== null && inhaltId(start) === null;
+
   // Bild aus der Bibliothek loeschen: erst pruefen (Newsletter/Entwuerfe), dann im Dialog nachfragen.
   const loeschen = async (n: string) => {
     if (!start) return;
@@ -118,15 +123,18 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
     if (!e.ok) {
       const schon = e.umgestellt && e.umgestellt.length > 0 ? ` Schon umgestellt: ${e.umgestellt.map((u) => u.titel).join(', ')}.` : '';
       setLoeschDialog({ info, grund: e.grund + schon, laeuft: false });
-      if (e.umgestellt && e.umgestellt.length > 0) void neueFassungNachBildLoeschen();
+      // Der Fehler steht im Dialog: nur das Band "neue Fassung", nie neu laden.
+      if (e.umgestellt && e.umgestellt.length > 0) void neueFassungNachBildLoeschen(null, true);
       return;
     }
     setLoeschDialog(null);
-    const platzhalter = e.umgestellt.length > 0 ? e.umgestellt.length : info.umstellbar;
-    setRueckmeldung({ art: 'ok', text: geloeschtText(info.name, platzhalter) });
+    // Gezaehlt wird, was der Server umgestellt hat - nie die Vorhersage aus der Pruefung.
+    const text = geloeschtText(info.name, e.umgestellt.length);
+    setRueckmeldung({ art: 'ok', text });
     medienLaden(true);
-    // Steckte das Bild im offenen Newsletter, gibt es dort jetzt eine neue Fassung mit Platzhalter.
-    if (platzhalter > 0) void neueFassungNachBildLoeschen();
+    // Steckte das Bild im offenen Newsletter, gibt es dort jetzt eine neue Fassung mit Platzhalter;
+    // laedt die Seite deshalb neu, kommt die Meldung ueber den Merkzettel mit.
+    if (e.umgestellt.length > 0) void neueFassungNachBildLoeschen(text);
   };
 
   // Bild einer Firma zuordnen (null = Gemeinsam); danach Liste neu laden.
@@ -254,8 +262,8 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
                     <IconButton
                       size="small"
                       aria-label={`${n} löschen`}
-                      title="Aus den Medien löschen"
-                      onClick={() => loeschen(n)}
+                      title={ohneFirma ? LOESCHEN_OHNE_FIRMA : 'Aus den Medien löschen'}
+                      onClick={() => (ohneFirma ? setRueckmeldung({ art: 'fehler', text: LOESCHEN_OHNE_FIRMA }) : loeschen(n))}
                       sx={{
                         position: 'absolute',
                         top: 2,

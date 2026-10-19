@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { getDocument, resetDocument } from './documents/editor/EditorContext';
+import { getDocument, resetDocument, rueckgaengig } from './documents/editor/EditorContext';
 import type { TEditorConfiguration } from './documents/editor/core';
 import type { Start } from './pult';
 import { newsletterSichern, pultStore } from './pultZustand';
@@ -40,6 +40,8 @@ describe('newsletterSichern', () => {
     expect(body).toMatchObject({ basis_fassung: 3, betreff: 'B', vorschautext: 'V', als_kopie: false });
     expect(body.dokument.b.data.props.alt).toBe('neu');
     expect((getDocument().b.data as { props: { alt: string } }).props.alt).toBe('neu');
+    // Das Uebernehmen nach dem Speichern ist kein Rueckgaengig-Schritt.
+    expect(rueckgaengig()).toBe(false);
   });
 
   it('422: Grund zurueck, Basis und Dokument bleiben', async () => {

@@ -48,7 +48,8 @@ type Meldung = { art: 'success' | 'error' | 'info'; text: string } | null;
 // unten Betreff und Vorschautext.
 // Zeile 2 traegt unter Betreff und Vorschautext die Zaehler (E13) und ist darum hoeher.
 const ZEILE = 52;
-const ZEILE_FELDER = 66;
+// 80 px: der Hinweis darf in eine zweite Zeile umbrechen statt abgeschnitten zu werden.
+const ZEILE_FELDER = 80;
 export const PULT_LEISTE_HOEHE = ZEILE + ZEILE_FELDER;
 
 // Zaehler "{n}/{max}", mit Hinweis dahinter (nur Hinweis, keine Sperre).
@@ -58,9 +59,7 @@ function Zaehler({ n, max, hinweis }: { n: number; max: number; hinweis: string 
       component="span"
       variant="caption"
       color={hinweis ? 'warning.main' : 'text.secondary'}
-      title={hinweis ?? undefined}
-      noWrap
-      sx={{ display: 'block' }}
+      sx={{ display: 'block', fontWeight: hinweis ? 600 : undefined, lineHeight: 1.3, whiteSpace: 'normal' }}
     >
       {n}/{max}
       {hinweis ? ` · ${hinweis}` : ''}

@@ -24,6 +24,8 @@ import { useInert } from '../Chat/sperren';
 // -Download, "Share" und die Vorlagen-Seitenleiste. Die massgebliche Vorschau
 // ist die des Pults (Knoepfe "Vorschau Mail"/"Vorschau Handy").
 const WERKZEUG_HOEHE = 49;
+// Trefferflaeche mindestens 44 px (Touch-Ziele).
+const ZIEL_44 = { minWidth: 44, minHeight: 44 } as const;
 
 // Ein Zwischenstand des Agenten ist nicht vom Validator geprueft: laesst er sich trotz Vorpruefung
 // nicht zeichnen, bleibt der Editor stehen und zeigt einen ruhigen Hinweis bis zum naechsten Stand.
@@ -128,7 +130,13 @@ export default function TemplatePanel() {
             <Stack direction="row" spacing={0.5} alignItems="center">
               <Tooltip title="Rückgängig (Strg+Z)">
                 <span>
-                  <IconButton size="small" aria-label="Rückgängig (Strg+Z)" disabled={!kannZurueck} onClick={() => rueckgaengig()}>
+                  <IconButton
+                    size="small"
+                    aria-label="Rückgängig (Strg+Z)"
+                    disabled={!kannZurueck}
+                    onClick={() => rueckgaengig()}
+                    sx={ZIEL_44}
+                  >
                     <UndoOutlined fontSize="small" />
                   </IconButton>
                 </span>
@@ -140,6 +148,7 @@ export default function TemplatePanel() {
                     aria-label="Wiederholen (Strg+Umschalt+Z)"
                     disabled={!kannVor}
                     onClick={() => wiederholen()}
+                    sx={ZIEL_44}
                   >
                     <RedoOutlined fontSize="small" />
                   </IconButton>

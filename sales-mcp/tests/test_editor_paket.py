@@ -148,5 +148,5 @@ def test_paket_kennt_loeschdialog():
     # 2026-10-19 Task 11: Löschdialog statt window.confirm, Platzhalter-Warnung, iid geht mit
     text = (ORDNER / "editor.js").read_text(encoding="utf-8")
     for s in ("Bild endgültig löschen?", "Endgültig löschen", "Dort wird der Platz zum Platzhalter",
-              "zeigen jetzt einen Platzhalter"):
+              "zeigen jetzt einen Platzhalter", "Die Firma dieses Newsletters ist unbekannt"):
         assert s in text, s
