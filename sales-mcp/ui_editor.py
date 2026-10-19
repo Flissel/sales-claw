@@ -524,12 +524,31 @@ def routen(ui) -> list:
                              "auftraege": (b or {}).get("auftraege") or []},
                             headers={"Cache-Control": "no-store"})
 
+    async def firma_des_inhalts(iid_roh) -> tuple[str | None, JSONResponse | None]:
+        """Die Firma des INHALTS (nie die Cookie-Wahl): (mandant, None) oder (None, Fehlerantwort).
+        Ohne Firma kein Rueckfall auf eine andere - fail-closed."""
+        try:
+            iid = str(uuid.UUID(str(iid_roh)))
+        except ValueError:
+            return None, json_grund(422, "iid fehlt oder ist ungültig")
+        try:
+            d = await run_in_threadpool(marketing_pult.anfrage, "GET", f"/inhalte/{iid}")
+        except marketing_pult.PultFehler:
+            return None, json_grund(503, "Der Newsletter lässt sich gerade nicht lesen")
+        inhalt = d.get("inhalt") if isinstance(d, dict) else None
+        mandant = inhalt.get("mandant") if isinstance(inhalt, dict) else None
+        if not isinstance(mandant, str) or not mandant:
+            return None, json_grund(422, "Dieser Inhalt gehört zu keiner Firma")
+        return mandant, None
+
     @ui._gesichert_seite
     async def medien_loeschen(request):
         """Bild aus der Bibliothek loeschen (Betreiber 01.10.2026). Zwei Schritte
         wie /medien: ohne "bestaetigt" nur pruefen und berichten, mit
         "bestaetigt" erneut pruefen und loeschen. Gesperrt wie dort, dazu
-        Bilder in Newslettern (ui.medien_loeschsperre)."""
+        Bilder in Newslettern (ui.medien_loeschsperre); eigene Entwuerfe im
+        Editor-Format werden auf Platzhalter umgestellt (19.10.2026, E4-E7).
+        Optional "iid": die Firma dieses Newsletters gilt (E6), sonst die des Ladens."""
         marke = request.headers.get("x-csrf", "")
         if not marke or not hmac.compare_digest(marke, ui.CSRF_TOKEN):
             return json_grund(403, "Fehlende oder falsche CSRF-Marke")
@@ -542,27 +561,41 @@ def routen(ui) -> list:
         name, bestaetigt = body.get("name"), body.get("bestaetigt", False)
         if not isinstance(name, str) or not isinstance(bestaetigt, bool):
             return json_grund(422, "name (Text) und bestaetigt (true/false) erwartet")
+        iid = body.get("iid")
+        if iid is None:
+            mandant = ui.laden_mandant()
+        else:
+            mandant, abgewiesen = await firma_des_inhalts(iid)
+            if abgewiesen is not None:
+                return abgewiesen
         basis, fehler = await run_in_threadpool(ui.server.medien.pruefe, name)
         if fehler:
             return json_grund(404, str(fehler))
         if basis.startswith("platzhalter-"):
             return json_grund(422, "Platzhalter gehören zu den Vorlagen und bleiben")
-        try:
-            entwuerfe, newsletter, sperre = await run_in_threadpool(ui.medien_loeschsperre, basis)
-        except Exception:   # noqa: BLE001 - Sales-DB weg: unbekannt ist nicht unbenutzt
-            return json_grund(503, "Prüfung gerade nicht möglich")
         if not bestaetigt:
+            try:
+                entwuerfe, newsletter, sperre = await run_in_threadpool(ui.medien_loeschsperre, basis, mandant)
+            except Exception:   # noqa: BLE001 - Sales-DB weg: unbekannt ist nicht unbenutzt
+                return json_grund(503, "Prüfung gerade nicht möglich")
             return JSONResponse({"name": basis, "entwuerfe": len(entwuerfe), "sperre": sperre,
-                                 "newsletter": [{"titel": v.get("titel"), "status": v.get("status")}
+                                 "umstellbar": sum(1 for v in newsletter if v.get("umstellbar")),
+                                 "newsletter": [{"titel": v.get("titel"), "status": v.get("status"),
+                                                 "umstellbar": bool(v.get("umstellbar"))}
                                                 for v in newsletter]},
                                 headers={"Cache-Control": "no-store"})
-        if sperre:
-            return json_grund(409, sperre)
-        fehler = await run_in_threadpool(ui.medien_datei_loeschen, basis)
+        try:
+            umgestellt, fehler = await run_in_threadpool(
+                ui.medien_endgueltig_loeschen, basis, mandant, ui._ui_akteur(request))
+        except Exception:   # noqa: BLE001 - Sales-DB weg: unbekannt ist nicht unbenutzt
+            return json_grund(503, "Prüfung gerade nicht möglich")
         if fehler:
-            return json_grund(500, fehler)
-        ui.LOG.warning("Medien (Editor): %s gelöscht (%d Entwürfe verwiesen darauf)", basis, len(entwuerfe))
-        return JSONResponse({"geloescht": basis}, headers={"Cache-Control": "no-store"})
+            return json_grund(500 if fehler.startswith(ui.DATEI_NICHT_LOESCHBAR) else 409, fehler,
+                              umgestellt=umgestellt)
+        ui.LOG.warning("Medien (Editor): %s gelöscht (%d Marketing-Entwürfe auf Platzhalter umgestellt)",
+                       basis, len(umgestellt))
+        return JSONResponse({"geloescht": basis, "umgestellt": umgestellt},
+                            headers={"Cache-Control": "no-store"})
 
     @ui._gesichert_seite
     async def editor_anhang(request):

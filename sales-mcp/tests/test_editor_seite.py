@@ -47,6 +47,8 @@ class Falsch:
         self.speichern_antwort = {"fassung": 3}
         self.bilder = {"auftraege": []}
         self.verweise = []
+        self.inhalt_mandant = "vibemind"    # Firma des Inhalts (None = keine)
+        self.platzhalter = {"umgestellt": [], "gesperrt": []}
         self.sichtbar = None                # None = alle angefragten Namen sichtbar
         self.zuordnung = {}
         self.gestaltung_antwort = {"url": "/medien/datei/gs-0123456789ab.jpg", "width": 1200,
@@ -77,7 +79,7 @@ class Falsch:
             alt = {"fassung": 1, "felder": FELDER, "layout": "dunkel", "urheber": "agent",
                    "erstellt_am": "y", "format": self.alt_format, "bloecke": None}
             return {"inhalt": {"id": IID, "art": self.art, "titel": "Oktober", "status": self.status,
-                               "mandant": "vibemind", "eingereicht_am": self.eingereicht_am,
+                               "mandant": self.inhalt_mandant, "eingereicht_am": self.eingereicht_am,
                                "eingereicht_von": "mira" if self.eingereicht_am else None,
                                "marke_geaendert_am": self.marke_am},
                     "fassungen": [neu, alt], "alter_weg": self.alter_weg,
@@ -124,6 +126,10 @@ class Falsch:
             return {"dateiname": daten["dateiname"], "mandant": daten["mandant"]}
         if pfad.startswith("/medien/verweise?name="):
             return {"verweise": self.verweise}
+        if pfad == "/medien/platzhalter":
+            return self.platzhalter
+        if pfad == "/medien/vergessen":
+            return {"entfernt": 1}
         return {}
 
 
@@ -966,9 +972,10 @@ def bibliothek(monkeypatch, tmp_path):
     return tmp_path
 
 
-def _loeschen(c, name, bestaetigt=False, csrf=True):
+def _loeschen(c, name, bestaetigt=False, csrf=True, iid=None):
     kopf = {**HOST, **({"X-CSRF": ui.CSRF_TOKEN} if csrf else {})}
-    return c.post(LOESCHEN, json={"name": name, "bestaetigt": bestaetigt}, headers=kopf)
+    body = {"name": name, "bestaetigt": bestaetigt, **({"iid": iid} if iid is not None else {})}
+    return c.post(LOESCHEN, json=body, headers=kopf)
 
 
 def test_start_kennt_die_loesch_adresse(angemeldet):
@@ -979,21 +986,85 @@ def test_start_kennt_die_loesch_adresse(angemeldet):
 def test_pruefen_loescht_nichts_und_berichtet(angemeldet, pult, bibliothek):
     r = _loeschen(angemeldet, "nl-1234abcd-kopf.jpg")
     assert r.status_code == 200
-    assert r.json() == {"name": "nl-1234abcd-kopf.jpg", "entwuerfe": 0, "sperre": None, "newsletter": []}
+    assert r.json() == {"name": "nl-1234abcd-kopf.jpg", "entwuerfe": 0, "sperre": None, "umstellbar": 0,
+                        "newsletter": []}
     assert (bibliothek / "nl-1234abcd-kopf.jpg").is_file()
-    assert ("GET", "/medien/verweise?name=nl-1234abcd-kopf.jpg", None) in pult.aufrufe
+    assert ("GET", f"/medien/verweise?name=nl-1234abcd-kopf.jpg&mandant={ui.laden_mandant()}",
+            None) in pult.aufrufe
 
 
 def test_bestaetigt_loescht_die_datei(angemeldet, pult, bibliothek):
     r = _loeschen(angemeldet, "nl-1234abcd-kopf.jpg", bestaetigt=True)
-    assert r.status_code == 200 and r.json() == {"geloescht": "nl-1234abcd-kopf.jpg"}
+    assert r.status_code == 200 and r.json() == {"geloescht": "nl-1234abcd-kopf.jpg", "umgestellt": []}
     assert not (bibliothek / "nl-1234abcd-kopf.jpg").exists()
+    # Reihenfolge: pruefen -> Platzhalter -> (Datei loeschen) -> vergessen
+    pfade = [a[1].split("?")[0] for a in pult.aufrufe if a[1].startswith("/medien/")]
+    assert pfade == ["/medien/verweise", "/medien/platzhalter", "/medien/vergessen"]
 
 
-def test_bild_im_newsletter_sperrt(angemeldet, pult, bibliothek):
-    pult.verweise = [{"id": IID, "titel": "Herbst-Update", "status": "entwurf", "art": "newsletter", "wo": "aktuell"}]
+def _entwurf_verweis(**kw):
+    return {"id": IID, "titel": "Herbst-Update", "status": "entwurf", "art": "newsletter", "wo": "aktuell",
+            "format": "bloecke", "eigen": True, "fassung": 2, **kw}
+
+
+def test_bild_im_entwurf_wird_platzhalter(angemeldet, pult, bibliothek):
+    pult.inhalt_mandant = "fin2gether"
+    pult.verweise = [_entwurf_verweis()]
+    pult.platzhalter = {"umgestellt": [{"id": IID, "titel": "Herbst-Update", "fassung": 3}], "gesperrt": []}
+    info = _loeschen(angemeldet, "nl-1234abcd-kopf.jpg", iid=IID).json()
+    assert info["sperre"] is None and info["umstellbar"] == 1
+    assert info["newsletter"] == [{"titel": "Herbst-Update", "status": "entwurf", "umstellbar": True}]
+    assert (bibliothek / "nl-1234abcd-kopf.jpg").is_file()
+    r = _loeschen(angemeldet, "nl-1234abcd-kopf.jpg", bestaetigt=True, iid=IID)
+    assert r.status_code == 200
+    assert r.json() == {"geloescht": "nl-1234abcd-kopf.jpg",
+                        "umgestellt": [{"id": IID, "titel": "Herbst-Update", "fassung": 3}]}
+    assert not (bibliothek / "nl-1234abcd-kopf.jpg").exists()
+    post = next(a for a in pult.aufrufe if a[1] == "/medien/platzhalter")
+    assert post[2]["mandant"] == "fin2gether" and post[2]["name"] == "nl-1234abcd-kopf.jpg" and post[2]["von"]
+
+
+def test_editor_loeschen_nutzt_firma_des_newsletters(angemeldet, pult, bibliothek):
+    pult.inhalt_mandant = "fin2gether"
+    _loeschen(angemeldet, "nl-1234abcd-kopf.jpg", iid=IID)
+    assert ("GET", "/medien/verweise?name=nl-1234abcd-kopf.jpg&mandant=fin2gether", None) in pult.aufrufe
+    assert not any("mandant=vibemind" in a[1] for a in pult.aufrufe if a[1].startswith("/medien/verweise"))
+
+
+def test_editor_loeschen_iid_ohne_firma_oder_ungueltig(angemeldet, pult, bibliothek):
+    pult.inhalt_mandant = None
+    assert _loeschen(angemeldet, "nl-1234abcd-kopf.jpg", iid=IID).status_code == 422
+    assert _loeschen(angemeldet, "nl-1234abcd-kopf.jpg", iid="../x").status_code == 422
+    assert (bibliothek / "nl-1234abcd-kopf.jpg").is_file()
+    assert not any(a[1].startswith("/medien/") for a in pult.aufrufe)
+
+
+def test_eingereicht_sperrt_im_editor(angemeldet, pult, bibliothek):
+    pult.verweise = [_entwurf_verweis(status="eingereicht")]
+    info = _loeschen(angemeldet, "nl-1234abcd-kopf.jpg", iid=IID).json()
+    assert "Erst zurückziehen" in info["sperre"] and info["umstellbar"] == 0
+    r = _loeschen(angemeldet, "nl-1234abcd-kopf.jpg", bestaetigt=True, iid=IID)
+    assert r.status_code == 409 and "Erst zurückziehen" in r.json()["grund"]
+    assert (bibliothek / "nl-1234abcd-kopf.jpg").is_file()
+    assert not any(a[1] == "/medien/platzhalter" for a in pult.aufrufe)
+
+
+def test_platzhalter_gesperrt_loescht_im_editor_nicht(angemeldet, pult, bibliothek):
+    pult.verweise = [_entwurf_verweis()]
+    pult.platzhalter = {"umgestellt": [{"id": "a", "titel": "Schon", "fassung": 4}],
+                        "gesperrt": [{"id": IID, "titel": "Herbst-Update", "grund": "Der Assistent arbeitet gerade"}]}
+    r = _loeschen(angemeldet, "nl-1234abcd-kopf.jpg", bestaetigt=True, iid=IID)
+    assert r.status_code == 409 and "Der Assistent arbeitet gerade" in r.json()["grund"]
+    assert r.json()["umgestellt"] == [{"id": "a", "titel": "Schon", "fassung": 4}]
+    assert (bibliothek / "nl-1234abcd-kopf.jpg").is_file()
+    assert not any(a[1] == "/medien/vergessen" for a in pult.aufrufe)
+
+
+def test_bild_im_altformat_sperrt(angemeldet, pult, bibliothek):
+    pult.verweise = [_entwurf_verweis(format="felder")]
     info = _loeschen(angemeldet, "nl-1234abcd-kopf.jpg").json()
-    assert "Herbst-Update" in info["sperre"] and info["newsletter"] == [{"titel": "Herbst-Update", "status": "entwurf"}]
+    assert "Herbst-Update" in info["sperre"] and info["newsletter"] == [
+        {"titel": "Herbst-Update", "status": "entwurf", "umstellbar": False}]
     r = _loeschen(angemeldet, "nl-1234abcd-kopf.jpg", bestaetigt=True)
     assert r.status_code == 409 and "Herbst-Update" in r.json()["grund"]
     assert (bibliothek / "nl-1234abcd-kopf.jpg").is_file()

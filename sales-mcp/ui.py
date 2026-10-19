@@ -197,6 +197,7 @@ import passwort_reset
 import psycopg
 import uvicorn
 from starlette.applications import Starlette
+from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.middleware import Middleware
 from starlette.responses import HTMLResponse, RedirectResponse, Response
@@ -2385,20 +2386,37 @@ async def medien_datei(request):
 
 
 def _medien_verweise(basis: str):
-    """Welche Entwuerfe haengen an dieser Datei? -> Zeilen mit Status.
+    """Welche Sales-Entwuerfe haengen an dieser Datei? -> Zeilen mit Status.
 
     Der Grund fuer die ganze Zweistufigkeit beim Loeschen: `drafts.media_ref`
     haelt nur den NAMEN. Verschwindet die Datei, faellt es erst beim
     Zustellen auf — und bei einem freigegebenen Entwurf ist das nach der
     Entscheidung des Betreibers, also am schlechtesten Zeitpunkt.
+
+    Dasselbe gilt fuer `drafts.newsletter_medien` (Newsletter-Entwuerfe je
+    Kontakt, `mail_dispatch.newsletter_bilder` liest die Dateien beim
+    Zustellen): Zeilen mit `quelle = 'newsletter'`, nur die noch nicht
+    erledigten (Versandte brauchen die Datei nicht mehr).
     """
     return server._q(
-        "select d.id, d.status, d.channel, l.name from drafts d "
-        "left join leads l on l.id = d.lead_id "
-        "where d.media_ref = %s order by d.created_at", (basis,))
+        "select * from ("
+        "select d.id, d.status, d.channel, l.name, d.created_at, 'media_ref' as quelle "
+        "from drafts d left join leads l on l.id = d.lead_id where d.media_ref = %s "
+        "union all "
+        "select d.id, d.status, d.channel, l.name, d.created_at, 'newsletter' as quelle "
+        "from drafts d left join leads l on l.id = d.lead_id "
+        "where d.status in ('pending', 'approved', 'failed') "
+        "and d.newsletter_medien @> jsonb_build_array(jsonb_build_object('name', %s::text))"
+        ") z order by created_at", (basis, basis))
 
 
-def _newsletter_verweise(basis: str):
+def laden_mandant() -> str:
+    """Die Firma dieses Ladens (MARKETING_MANDANT), sonst der Rueckfall der Marketing-Seiten."""
+    import marketing_mandant
+    return os.environ.get("MARKETING_MANDANT", "").strip() or marketing_mandant.VORGABE
+
+
+def _newsletter_verweise(basis: str, mandant: str | None = None):
     """Welche Marketing-Inhalte tragen die Datei noch? -> (liste, fehler).
 
     Betreiber 01.10.2026 („Bilder in der UI loeschen"): Newsletter-Bilder
@@ -2406,22 +2424,66 @@ def _newsletter_verweise(basis: str):
     Namen. Ohne Marketing-Anbindung gibt es keine Newsletter -> nichts zu
     pruefen. Antwortet Marketing nicht, ist "benutzt?" unbekannt -> fehler,
     und der Aufrufer loescht NICHT (fail-closed).
+
+    Jeder Eintrag traegt `umstellbar`: nur ein eigener Entwurf im Editor-Format,
+    dessen NEUESTE Fassung das Bild haelt, laesst sich auf Platzhalter umstellen
+    (Betreiber 19.10.2026). Alles andere sperrt (medien_loeschsperre).
     """
     if not marketing_pult.eingerichtet():
         return [], None
     try:
-        return marketing_pult.medien_verweise(basis), None
+        verweise = marketing_pult.medien_verweise(basis, mandant)
     except marketing_pult.PultFehler:
         return [], ("Marketing antwortet gerade nicht – ob ein Newsletter "
                     "dieses Bild noch nutzt, ist unbekannt. Deshalb wird "
                     "nichts gelöscht; bitte später erneut versuchen.")
+    aus = []
+    for v in verweise:
+        eigen = v.get("eigen", True) is not False
+        umstellbar = (eigen and v.get("status") == "entwurf" and v.get("format") == "bloecke"
+                      and v.get("wo", "aktuell") == "aktuell")
+        # Ein fremder Titel wird nie angezeigt, auch wenn die API ihn schickte.
+        aus.append({**v, "eigen": eigen, "umstellbar": bool(umstellbar),
+                    **({} if eigen else {"titel": ""})})
+    return aus, None
 
 
-def medien_loeschsperre(basis: str):
+def _titel(v) -> str:
+    return f"„{v.get('titel') or '(ohne Titel)'}“"
+
+
+def _newsletter_sperren(newsletter) -> list[str]:
+    """Klartext je Grund, warum ein Marketing-Inhalt das Loeschen sperrt (leer = nichts sperrt)."""
+    texte = []
+    fremd = [v for v in newsletter if not v.get("eigen", True)]
+    for v in newsletter:
+        if not v.get("eigen", True) or v.get("umstellbar"):
+            continue
+        st = v.get("status")
+        if st == "abgelehnt":
+            continue                     # Abgelehnte sperren wie bisher nicht
+        if st == "eingereicht":
+            texte.append(f"{_titel(v)} liegt zur Freigabe und trägt das Bild. "
+                         f"Erst zurückziehen, dann löschen.")
+        elif st == "freigegeben" or v.get("wo") == "freigegeben":
+            texte.append(f"Das Bild steckt in der freigegebenen Fassung von {_titel(v)}. "
+                         f"Der Versand liest es beim Senden – freigegebene Newsletter bleiben unverändert.")
+        else:
+            texte.append(f"Das Bild steckt in {_titel(v)} (altes Format). "
+                         f"Dort erst ein anderes Bild wählen.")
+    if fremd:
+        n = len(fremd)
+        texte.append(f"Das Bild steckt in {n} {'Entwurf' if n == 1 else 'Entwürfen'} "
+                     f"einer anderen Firma. Dort zuerst ein anderes Bild wählen.")
+    return texte
+
+
+def medien_loeschsperre(basis: str, mandant: str):
     """Gemeinsame Pruefung fuer /medien und den Editor -> (entwuerfe,
-    newsletter, sperre). sperre ist Klartext (nicht HTML) oder None."""
+    newsletter, sperre). sperre ist Klartext (nicht HTML) oder None.
+    `mandant` ist die Firma, in deren Namen geloescht wird (Laden bzw. Newsletter)."""
     entwuerfe = _medien_verweise(basis)
-    newsletter, fehler = _newsletter_verweise(basis)
+    newsletter, fehler = _newsletter_verweise(basis, mandant)
     if fehler:
         return entwuerfe, newsletter, fehler
     freigegeben = [z for z in entwuerfe if z["status"] == "approved"]
@@ -2432,12 +2494,9 @@ def medien_loeschsperre(basis: str):
             f"und kann das jeden Moment tun — dann ginge eine Nachricht "
             f"ohne ihre Unterlage raus oder scheiterte. Erst die Entwürfe "
             f"ablehnen, dann die Datei löschen.")
-    if newsletter:
-        titel = ", ".join(f"„{v.get('titel') or '(ohne Titel)'}“" for v in newsletter[:5])
-        return entwuerfe, newsletter, (
-            f"Das Bild steckt noch in {len(newsletter)} Newsletter/Inhalt(en): "
-            f"{titel}. Dort erst ein anderes Bild wählen (oder den Inhalt "
-            f"ablehnen), dann löschen.")
+    texte = _newsletter_sperren(newsletter)
+    if texte:
+        return entwuerfe, newsletter, " ".join(texte)
     return entwuerfe, newsletter, None
 
 
@@ -2460,13 +2519,70 @@ def medien_datei_loeschen(basis: str):
     return None
 
 
+DATEI_NICHT_LOESCHBAR = "Datei nicht löschbar"
+
+
+def medien_endgueltig_loeschen(basis: str, mandant: str, von: str):
+    """Loescht ein Bild endgueltig, auch wenn Entwuerfe es tragen (Betreiber 19.10.2026).
+
+    Reihenfolge (E7), fail-closed: pruefen -> Platzhalter-Fassungen -> Datei
+    loeschen -> Zuordnung vergessen. Scheitert ein Schritt vor dem Loeschen, bleibt
+    die Datei; schon umgestellte Entwuerfe tragen dann harmlose Platzhalter und
+    werden im Text genannt. Scheitert nur das Vergessen, wird geloggt (verwaiste
+    Zeile, kein Schaden).
+
+    -> (umgestellte Entwuerfe [{id, titel, fassung}], Fehlertext | None)"""
+    _entwuerfe, newsletter, sperre = medien_loeschsperre(basis, mandant)
+    if sperre:
+        return [], sperre
+    umgestellt: list[dict] = []
+
+    def mit_stand(text: str) -> str:
+        if not umgestellt:
+            return text
+        namen = ", ".join(_titel(z) for z in umgestellt)
+        return (f"{text} Schon umgestellt (Platzhalter statt Bild, die Datei bleibt): {namen}.")
+
+    marketing = marketing_pult.eingerichtet()
+    if marketing:
+        # Immer, auch ohne gesehene Verweise: zwischen Pruefen und Loeschen kann ein
+        # Entwurf das Bild bekommen haben; die API entscheidet endgueltig.
+        try:
+            r = marketing_pult.medien_platzhalter(basis, mandant, von)
+        except marketing_pult.PultFehler as f:
+            if isinstance(f.koerper, dict) and isinstance(f.koerper.get("umgestellt"), list):
+                umgestellt = [z for z in f.koerper["umgestellt"] if isinstance(z, dict)]
+            if f.art in ("nicht_verbunden", "nicht_erreichbar"):
+                return umgestellt, mit_stand("Marketing antwortet gerade nicht – die Datei wurde NICHT gelöscht.")
+            if f.art == "unbekannt" and f.grund == "403":
+                return umgestellt, "Das Bild gehört einer anderen Firma und lässt sich hier nicht löschen."
+            return umgestellt, mit_stand(
+                f"Die Platzhalter ließen sich nicht anlegen ({f.grund or f.art}) – die Datei wurde NICHT gelöscht.")
+        umgestellt = r["umgestellt"]
+        if r["gesperrt"]:
+            gruende = " ".join(
+                f"{_titel(z)}: {z.get('grund') or 'gesperrt'}." for z in r["gesperrt"])
+            return umgestellt, mit_stand(f"Die Datei wurde NICHT gelöscht. {gruende}")
+    fehler = medien_datei_loeschen(basis)
+    if fehler:
+        return umgestellt, mit_stand(fehler)
+    if marketing:
+        try:
+            marketing_pult.medien_vergessen(basis)
+        except marketing_pult.PultFehler as f:
+            LOG.warning("Medien: Zuordnung von %s nicht vergessen (%s: %s) - verwaiste Zeile",
+                        basis, f.art, f.grund)
+    return umgestellt, None
+
+
 def _medien_loeschen_warnseite(basis: str, verweise, newsletter=(), sperre=None) -> HTMLResponse:
     if verweise:
         liste = "".join(
             f'<li>{_e(z["status"])} · {_e(z["channel"])} · '
-            f'{_e(z["name"] or "(ohne Kontakt)")}</li>' for z in verweise)
+            f'{_e(z["name"] or "(ohne Kontakt)")}</li>' for z in verweise[:20])
+        mehr = (f'<li>… und {len(verweise) - 20} weitere</li>' if len(verweise) > 20 else "")
         hinweis = (f'<p><b>An dieser Datei hängen {len(verweise)} '
-                   f'Entwürfe:</b></p><ul>{liste}</ul>'
+                   f'Entwürfe:</b></p><ul>{liste}{mehr}</ul>'
                    f'<p>Nach dem Löschen scheitern sie beim Zustellen — '
                    f'`drafts.media_ref` hält nur den Namen, nicht die '
                    f'Datei.</p>')
@@ -2474,8 +2590,15 @@ def _medien_loeschen_warnseite(basis: str, verweise, newsletter=(), sperre=None)
         hinweis = "<p>Kein Entwurf verweist auf diese Datei.</p>"
     if newsletter:
         hinweis += ('<p><b>Newsletter mit diesem Bild:</b></p><ul>' + "".join(
-            f'<li>{_e(v.get("titel") or "(ohne Titel)")} · {_e(v.get("status") or "")}</li>'
-            for v in newsletter) + '</ul>')
+            f'<li>{_e(v.get("titel") or ("(andere Firma)" if not v.get("eigen", True) else "(ohne Titel)"))}'
+            f' · {_e(v.get("status") or "")}</li>' for v in newsletter) + '</ul>')
+    umstellbar = [v for v in newsletter if v.get("umstellbar")]
+    if umstellbar and not sperre:
+        n = len(umstellbar)
+        titel = ", ".join(_titel(v) for v in umstellbar)
+        hinweis += (f'<p class="warnung">Das Bild wird in {n} {"Entwurf" if n == 1 else "Entwürfen"} '
+                    f'verwendet: {_e(titel)}. Dort wird der Platz zum Platzhalter (neue Fassung); '
+                    f'ältere Fassungen bleiben unverändert.</p>')
     if sperre:
         return _seite(
             "Nicht löschbar",
@@ -2512,7 +2635,7 @@ async def aktion_medien_loeschen(request):
     basis, fehler = server.medien.pruefe(str(form.get("name") or ""))
     if fehler:
         return _fehlerseite(404, "Nicht gefunden", _e(fehler))
-    entwuerfe, newsletter, sperre = medien_loeschsperre(basis)
+    entwuerfe, newsletter, sperre = medien_loeschsperre(basis, laden_mandant())
     return _medien_loeschen_warnseite(basis, entwuerfe, newsletter, sperre)
 
 
@@ -2538,14 +2661,13 @@ async def aktion_medien_loeschen_bestaetigen(request):
             "Ohne den auf der Warnseite gelesenen Dateinamen wird nichts "
             "gelöscht."))
 
-    verweise, _newsletter, sperre = medien_loeschsperre(basis)
-    if sperre:
-        return _fehlerseite(409, "Nicht gelöscht", _e(sperre))
-    fehler = medien_datei_loeschen(basis)
+    umgestellt, fehler = await run_in_threadpool(
+        medien_endgueltig_loeschen, basis, laden_mandant(), _ui_akteur(request))
     if fehler:
-        return _fehlerseite(500, "Nicht gelöscht", _e(fehler))
-    LOG.warning("Medien: %s gelöscht (%d Entwürfe verwiesen darauf)",
-                basis, len(verweise))
+        return _fehlerseite(500 if fehler.startswith(DATEI_NICHT_LOESCHBAR) else 409,
+                            "Nicht gelöscht", _e(fehler))
+    LOG.warning("Medien: %s gelöscht (%d Marketing-Entwürfe auf Platzhalter umgestellt)",
+                basis, len(umgestellt))
     return RedirectResponse("/medien", status_code=303)
 
 

@@ -2762,19 +2762,228 @@ def test_freigegebener_entwurf_blockiert_das_loeschen(medienordner):
     assert (medienordner / "bild.png").is_file()
 
 
+class _MarketingFalsch:
+    """Faelscht die Medien-Aufrufe zur Marketing-API und merkt sich die Reihenfolge."""
+
+    def __init__(self, monkeypatch, verweise=(), platzhalter=None, platzhalter_fehler=None,
+                 vergessen_fehler=None, ordner=None, name="bild.png"):
+        self.aufrufe = []
+        self.verweise, self.ordner, self.name = list(verweise), ordner, name
+        self.platzhalter = platzhalter or {"umgestellt": [], "gesperrt": []}
+        self.platzhalter_fehler, self.vergessen_fehler = platzhalter_fehler, vergessen_fehler
+        self.datei_bei_platzhalter = self.datei_bei_vergessen = None
+        mp = ui.marketing_pult
+        monkeypatch.setattr(mp, "eingerichtet", lambda: True)
+        monkeypatch.setattr(mp, "medien_verweise", self._verweise)
+        monkeypatch.setattr(mp, "medien_platzhalter", self._platzhalter)
+        monkeypatch.setattr(mp, "medien_vergessen", self._vergessen)
+
+    def _verweise(self, name, mandant=None):
+        self.aufrufe.append(("verweise", name, mandant))
+        return self.verweise
+
+    def _platzhalter(self, name, mandant, von):
+        self.aufrufe.append(("platzhalter", name, mandant, von))
+        if self.ordner is not None:
+            self.datei_bei_platzhalter = (self.ordner / self.name).exists()
+        if self.platzhalter_fehler:
+            raise self.platzhalter_fehler
+        return self.platzhalter
+
+    def _vergessen(self, name):
+        self.aufrufe.append(("vergessen", name))
+        if self.ordner is not None:
+            self.datei_bei_vergessen = (self.ordner / self.name).exists()
+        if self.vergessen_fehler:
+            raise self.vergessen_fehler
+
+    def namen(self):
+        return [a[0] for a in self.aufrufe]
+
+
+def _bestaetigen(name="bild.png"):
+    return _post("/medien/loeschen-bestaetigen",
+                 {"name": name, "name_bestaetigt": name, "csrf": ui.CSRF_TOKEN})
+
+
+def _verweis(**kw):
+    return {"id": "11111111-1111-1111-1111-111111111111", "titel": "Herbst", "status": "entwurf",
+            "art": "newsletter", "wo": "aktuell", "format": "bloecke", "eigen": True, "fassung": 2, **kw}
+
+
 def test_newsletter_bild_ist_nicht_loeschbar(medienordner, monkeypatch):
-    """Betreiber 01.10.2026: Newsletter-Bilder liegen hier, die Fassungen in
-    Marketing halten nur den Namen - ein Bild im Newsletter bleibt."""
+    """Betreiber 01.10.2026: ein Bild in einem Newsletter, den man nicht umstellen kann
+    (hier: altes Feld-Format), bleibt."""
     (medienordner / "bild.png").write_bytes(b"x" * 64)
-    monkeypatch.setattr(ui.marketing_pult, "eingerichtet", lambda: True)
-    monkeypatch.setattr(ui.marketing_pult, "medien_verweise",
-                        lambda n: [{"titel": "Herbst", "status": "entwurf"}])
+    _MarketingFalsch(monkeypatch, verweise=[_verweis(format="felder")])
     warn = _post("/medien/loeschen", {"name": "bild.png", "csrf": ui.CSRF_TOKEN})
     assert "Nicht löschbar" in warn.text and "Herbst" in warn.text and "Ja —" not in warn.text
-    antwort = _post("/medien/loeschen-bestaetigen",
-                    {"name": "bild.png", "name_bestaetigt": "bild.png", "csrf": ui.CSRF_TOKEN})
+    assert "altes Format" in warn.text
+    antwort = _bestaetigen()
     assert antwort.status_code == 409
     assert (medienordner / "bild.png").is_file()
+
+
+def _newsletter_entwurf(status, medien):
+    lead = _lead()
+    d = _entwurf(lead, status=status)
+    server._q("update drafts set newsletter_medien = %s::jsonb where id = %s",
+              (json.dumps(medien), d))
+    return d
+
+
+def test_newsletter_medien_approved_sperrt(medienordner):
+    (medienordner / "kopf.jpg").write_bytes(b"x" * 64)
+    _newsletter_entwurf("approved", [{"name": "kopf.jpg", "cid": "kopf.jpg", "sw": False}])
+    warn = _post("/medien/loeschen", {"name": "kopf.jpg", "csrf": ui.CSRF_TOKEN})
+    assert warn.status_code == 409 and "Nicht löschbar" in warn.text and "Ja —" not in warn.text
+    assert _bestaetigen("kopf.jpg").status_code == 409
+    assert (medienordner / "kopf.jpg").is_file()
+
+
+def test_newsletter_medien_pending_nur_warnung(medienordner):
+    (medienordner / "kopf.jpg").write_bytes(b"x" * 64)
+    _newsletter_entwurf("pending", [{"name": "kopf.jpg", "cid": "kopf.jpg", "sw": False}])
+    warn = _post("/medien/loeschen", {"name": "kopf.jpg", "csrf": ui.CSRF_TOKEN})
+    assert "Löschen bestätigen" in warn.text and "hängen 1" in warn.text and "Ja —" in warn.text
+    assert _bestaetigen("kopf.jpg").status_code == 303
+    assert not (medienordner / "kopf.jpg").exists()
+
+
+def test_newsletter_medien_versandt_zaehlt_nicht(medienordner):
+    (medienordner / "kopf.jpg").write_bytes(b"x" * 64)
+    _newsletter_entwurf("sent", [{"name": "kopf.jpg", "cid": "kopf.jpg", "sw": False}])
+    warn = _post("/medien/loeschen", {"name": "kopf.jpg", "csrf": ui.CSRF_TOKEN})
+    assert "Kein Entwurf verweist" in warn.text
+
+
+def test_medien_warnseite_nennt_umstellbare_entwuerfe(medienordner, monkeypatch):
+    (medienordner / "bild.png").write_bytes(b"x" * 64)
+    f = _MarketingFalsch(monkeypatch, verweise=[_verweis(titel="Herbst-Update")])
+    warn = _post("/medien/loeschen", {"name": "bild.png", "csrf": ui.CSRF_TOKEN})
+    assert warn.status_code == 409
+    assert "wird in 1 Entwurf verwendet" in warn.text and "Herbst-Update" in warn.text
+    assert "Platzhalter" in warn.text and "ältere Fassungen bleiben unverändert" in warn.text
+    assert "Ja —" in warn.text and "Nicht löschbar" not in warn.text
+    assert f.aufrufe == [("verweise", "bild.png", ui.laden_mandant())]       # nur gelesen
+    assert (medienordner / "bild.png").is_file()
+
+
+def test_warnseite_mehrere_entwuerfe_im_plural(medienordner, monkeypatch):
+    (medienordner / "bild.png").write_bytes(b"x" * 64)
+    _MarketingFalsch(monkeypatch, verweise=[_verweis(titel="A-Titel"), _verweis(titel="B-Titel")])
+    warn = _post("/medien/loeschen", {"name": "bild.png", "csrf": ui.CSRF_TOKEN})
+    assert "wird in 2 Entwürfen verwendet" in warn.text
+
+
+def test_eingereicht_sperrt_mit_zurueckziehen(medienordner, monkeypatch):
+    (medienordner / "bild.png").write_bytes(b"x" * 64)
+    _MarketingFalsch(monkeypatch, verweise=[_verweis(status="eingereicht", titel="Liegt vor")])
+    warn = _post("/medien/loeschen", {"name": "bild.png", "csrf": ui.CSRF_TOKEN})
+    assert warn.status_code == 409 and "Ja —" not in warn.text
+    assert "„Liegt vor“ liegt zur Freigabe und trägt das Bild. Erst zurückziehen, dann löschen." in warn.text
+    assert _bestaetigen().status_code == 409
+    assert (medienordner / "bild.png").is_file()
+
+
+def test_freigegeben_sperrt(medienordner, monkeypatch):
+    (medienordner / "bild.png").write_bytes(b"x" * 64)
+    _MarketingFalsch(monkeypatch, verweise=[_verweis(status="freigegeben", wo="freigegeben", titel="Raus")])
+    warn = _post("/medien/loeschen", {"name": "bild.png", "csrf": ui.CSRF_TOKEN})
+    assert warn.status_code == 409
+    assert "Das Bild steckt in der freigegebenen Fassung von „Raus“." in warn.text
+    assert "freigegebene Newsletter bleiben unverändert" in warn.text
+    assert _bestaetigen().status_code == 409
+    assert (medienordner / "bild.png").is_file()
+
+
+def test_fremde_firma_sperrt_ohne_titel(medienordner, monkeypatch):
+    (medienordner / "bild.png").write_bytes(b"x" * 64)
+    _MarketingFalsch(monkeypatch, verweise=[_verweis(titel="Geheim-Titel", eigen=False)])
+    warn = _post("/medien/loeschen", {"name": "bild.png", "csrf": ui.CSRF_TOKEN})
+    assert warn.status_code == 409 and "einer anderen Firma" in warn.text
+    assert "1 Entwurf einer anderen Firma" in warn.text
+    assert "Geheim-Titel" not in warn.text and "Ja —" not in warn.text
+    assert _bestaetigen().status_code == 409 and (medienordner / "bild.png").is_file()
+
+
+def test_bestaetigen_stellt_um_dann_loescht_dann_vergisst(medienordner, monkeypatch):
+    (medienordner / "bild.png").write_bytes(b"x" * 64)
+    f = _MarketingFalsch(monkeypatch, verweise=[_verweis()], ordner=medienordner,
+                         platzhalter={"umgestellt": [{"id": "x", "titel": "Herbst", "fassung": 3}],
+                                      "gesperrt": []})
+    antwort = _bestaetigen()
+    assert antwort.status_code == 303
+    assert f.namen() == ["verweise", "platzhalter", "vergessen"]
+    assert f.datei_bei_platzhalter is True           # beim Umstellen gibt es die Datei noch
+    assert f.datei_bei_vergessen is False            # vergessen erst NACH dem Loeschen
+    assert not (medienordner / "bild.png").exists()
+    umstellung = next(a for a in f.aufrufe if a[0] == "platzhalter")
+    assert umstellung[2] == ui.laden_mandant() and umstellung[3]          # Firma des Ladens, "von"
+
+
+def test_platzhalter_gesperrt_loescht_datei_nicht(medienordner, monkeypatch):
+    (medienordner / "bild.png").write_bytes(b"x" * 64)
+    f = _MarketingFalsch(
+        monkeypatch, verweise=[_verweis()],
+        platzhalter={"umgestellt": [{"id": "a", "titel": "Schon-Umgestellt", "fassung": 4}],
+                     "gesperrt": [{"id": "b", "titel": "Gesperrt-Titel",
+                                   "grund": "Der Assistent arbeitet gerade"}]})
+    antwort = _bestaetigen()
+    assert antwort.status_code == 409
+    assert "Der Assistent arbeitet gerade" in antwort.text and "Schon-Umgestellt" in antwort.text
+    assert (medienordner / "bild.png").is_file()
+    assert "vergessen" not in f.namen()
+
+
+def test_platzhalter_fehler_loescht_datei_nicht(medienordner, monkeypatch):
+    (medienordner / "bild.png").write_bytes(b"x" * 64)
+    f = _MarketingFalsch(monkeypatch, verweise=[_verweis()], platzhalter_fehler=ui.marketing_pult.PultFehler(
+        "nicht_erreichbar", "503", {"umgestellt": [{"id": "a", "titel": "Schon-Da", "fassung": 2}]}))
+    antwort = _bestaetigen()
+    assert antwort.status_code == 409 and "NICHT gelöscht" in antwort.text and "Schon-Da" in antwort.text
+    assert (medienordner / "bild.png").is_file() and "vergessen" not in f.namen()
+
+
+def test_fremdes_bild_403_loescht_nicht(medienordner, monkeypatch):
+    (medienordner / "bild.png").write_bytes(b"x" * 64)
+    _MarketingFalsch(monkeypatch, platzhalter_fehler=ui.marketing_pult.PultFehler("unbekannt", "403"))
+    antwort = _bestaetigen()
+    assert antwort.status_code == 409 and "anderen Firma" in antwort.text
+    assert (medienordner / "bild.png").is_file()
+
+
+def test_vergessen_scheitert_ist_kein_fehler(medienordner, monkeypatch):
+    (medienordner / "bild.png").write_bytes(b"x" * 64)
+    _MarketingFalsch(monkeypatch, vergessen_fehler=ui.marketing_pult.PultFehler("abgelehnt", "x"))
+    assert _bestaetigen().status_code == 303
+    assert not (medienordner / "bild.png").exists()
+
+
+def test_datei_nicht_loeschbar_laesst_vergessen_aus(medienordner, monkeypatch):
+    (medienordner / "bild.png").write_bytes(b"x" * 64)
+    f = _MarketingFalsch(monkeypatch)
+    monkeypatch.setattr(ui, "medien_datei_loeschen", lambda b: "Datei nicht löschbar (PermissionError) in /media.")
+    antwort = _bestaetigen()
+    assert antwort.status_code == 500 and "vergessen" not in f.namen()
+
+
+def test_marketing_weg_loescht_nicht(medienordner, monkeypatch):
+    (medienordner / "bild.png").write_bytes(b"x" * 64)
+    monkeypatch.setattr(ui.marketing_pult, "eingerichtet", lambda: True)
+
+    def kaputt(name, mandant=None):
+        raise ui.marketing_pult.PultFehler("nicht_erreichbar", "URLError")
+    monkeypatch.setattr(ui.marketing_pult, "medien_verweise", kaputt)
+    assert _bestaetigen().status_code == 409
+    assert (medienordner / "bild.png").is_file()
+
+
+def test_laden_mandant_nimmt_umgebung_sonst_vorgabe(monkeypatch):
+    monkeypatch.delenv("MARKETING_MANDANT", raising=False)
+    assert ui.laden_mandant() == "vibemind"
+    monkeypatch.setenv("MARKETING_MANDANT", " fin2gether ")
+    assert ui.laden_mandant() == "fin2gether"
 
 
 def test_loeschen_ohne_csrf_ist_403(medienordner):

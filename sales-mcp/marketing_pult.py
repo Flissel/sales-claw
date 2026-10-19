@@ -14,9 +14,12 @@ ZEITLIMIT_S = 8
 
 
 class PultFehler(Exception):
-    def __init__(self, art: str, grund: str = ""):
+    def __init__(self, art: str, grund: str = "", koerper: dict | None = None):
         super().__init__(f"{art}: {grund}")
         self.art, self.grund = art, grund
+        # Der Fehlerkoerper der API (nur bei HTTP-Fehlern): /medien/platzhalter nennt dort
+        # bei 503 die schon umgestellten Entwuerfe.
+        self.koerper = koerper if isinstance(koerper, dict) else None
 
 
 def eingerichtet() -> bool:
@@ -58,25 +61,46 @@ def anfrage(methode: str, pfad: str, daten: dict | None = None, roh: bool = Fals
         if e.code == 401 or (e.code == 503 and grund.startswith("misconfigured")):
             raise PultFehler("nicht_verbunden", str(e.code))
         if e.code == 503:
-            raise PultFehler("nicht_erreichbar", str(e.code))
+            raise PultFehler("nicht_erreichbar", str(e.code), koerper_fehler)
         if e.code in (404, 409, 422):
-            raise PultFehler("abgelehnt", grund or str(e.code))
-        raise PultFehler("unbekannt", str(e.code))
+            raise PultFehler("abgelehnt", grund or str(e.code), koerper_fehler)
+        raise PultFehler("unbekannt", str(e.code), koerper_fehler)
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         raise PultFehler("nicht_erreichbar", type(e).__name__)
 
 
-def medien_verweise(name: str) -> list:
+def medien_verweise(name: str, mandant: str | None = None) -> list:
     """Welche Marketing-Inhalte tragen diese Mediendatei noch (neueste Fassung
-    eines nicht abgelehnten Inhalts oder die freigegebene)? Wirft PultFehler -
+    eines nicht abgelehnten Inhalts oder die freigegebene)? Mit `mandant` kommen
+    Treffer anderer Firmen ohne Titel und mit "eigen": false. Wirft PultFehler -
     der Aufrufer loescht dann NICHT (unbekannt ist nicht unbenutzt)."""
     from urllib.parse import quote
-    r = anfrage("GET", f"/medien/verweise?name={quote(name, safe='')}")
+    pfad = f"/medien/verweise?name={quote(name, safe='')}"
+    if mandant:
+        pfad += f"&mandant={quote(mandant, safe='')}"
+    r = anfrage("GET", pfad)
     verweise = r.get("verweise") if isinstance(r, dict) else None
     if not isinstance(verweise, list):
         raise PultFehler("unbekannt", "Antwort ohne Verweisliste")
     return [v for v in verweise if isinstance(v, dict)]
 
+
+def medien_platzhalter(name: str, mandant: str, von: str) -> dict:
+    """Stellt jeden Entwurf der Firma, der das Bild traegt, auf Platzhalter um (neue
+    Fassung). -> {"umgestellt": [{id, titel, fassung}], "gesperrt": [{id, titel, grund}]}.
+    Die Datei darf nur geloescht werden, wenn "gesperrt" leer ist."""
+    r = anfrage("POST", "/medien/platzhalter", {"name": name, "mandant": mandant, "von": von})
+    if (not isinstance(r, dict) or not isinstance(r.get("umgestellt"), list)
+            or not isinstance(r.get("gesperrt"), list)):
+        raise PultFehler("unbekannt", "Antwort ohne Platzhalter-Ergebnis")
+    return {"umgestellt": [z for z in r["umgestellt"] if isinstance(z, dict)],
+            "gesperrt": [z for z in r["gesperrt"] if isinstance(z, dict)]}
+
+
+def medien_vergessen(name: str) -> None:
+    """Entfernt die Firmen-Zuordnung der Datei. Die API erlaubt das NUR, nachdem die
+    Datei geloescht ist (sonst 409 -> PultFehler("abgelehnt"))."""
+    anfrage("POST", "/medien/vergessen", {"name": name})
 
 def inhalt_loeschen(iid: str, mandant: str, von: str) -> dict:
     """Loescht einen Entwurf endgueltig (POST /inhalte/{iid}/loeschen). Die
