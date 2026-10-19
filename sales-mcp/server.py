@@ -2801,6 +2801,35 @@ LINKEDIN_POST_LEAD_ID = os.environ.get("LINKEDIN_POST_LEAD_ID", "").strip()
 POST_MAXLAENGE = 3000
 
 
+# Reihenfolge der Entwurfszustaende, "weitester" zuerst (Podcast-Seite).
+_STAND_RANG = ("sent", "approved", "pending", "failed", "rejected")
+
+
+def entwurf_staende_zu_medien(namen: list[str]) -> dict[str, str]:
+    """Je Mediendatei der weiteste Entwurfszustand (sent > approved > pending > failed > rejected).
+
+    Nur lesend. Treffer nur bei exaktem Namen in der Komma-Liste von drafts.media_ref;
+    Namen ohne Entwurf fehlen im Ergebnis."""
+    namen = [n for n in dict.fromkeys(namen or []) if n]
+    if not namen:
+        return {}
+    muster = ["%" + n.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%" for n in namen]
+    zeilen = _q("select status, media_ref from drafts where media_ref ilike any(%s)", (muster,))
+    gesucht = set(namen)
+    ergebnis: dict[str, str] = {}
+    for z in zeilen:
+        status = str(z["status"])
+        rang = _STAND_RANG.index(status) if status in _STAND_RANG else len(_STAND_RANG)
+        for teil in str(z["media_ref"] or "").split(","):
+            n = teil.strip()
+            if n in gesucht:
+                alt = ergebnis.get(n)
+                alt_rang = (_STAND_RANG.index(alt) if alt in _STAND_RANG else len(_STAND_RANG)) if alt else 99
+                if rang < alt_rang:
+                    ergebnis[n] = status
+    return ergebnis
+
+
 @_gesichert
 def post_entwurf_erstellen(thema: str, text: str, medien_datei: str = "",
                           trotzdem: bool = False) -> str:
