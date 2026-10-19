@@ -207,6 +207,7 @@ import historie
 import kalender
 import kalender_sicht
 import mailadresse
+import laden_marke
 import marketing_pult
 import ui_editor
 import ui_freigabe_newsletter
@@ -836,6 +837,9 @@ _STIL = """
   --fehler_flaeche: #fbe4e4; --fehler_linie: #b35a5a; --fehler_schrift: #6b1212;
   --hinweis_flaeche: #fdf3d7; --hinweis_linie: #a8892e;
   --hinweis_schrift: #4a3c10;
+  /* Schriften der Marke (Paket C4): laden_marke setzt sie je Laden neu */
+  --schrift_anzeige: "Oxanium", "DM Sans", system-ui, sans-serif;
+  --schrift_text: "DM Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -876,7 +880,7 @@ html { -webkit-text-size-adjust: 100%; }
    verkleinert auch die Mindestbreite von Tabellenzellen — genau das, was eine
    500 Zeichen lange URL sonst zur waagerechten Bildlaufleiste macht. */
 html, body { overflow-x: hidden; }
-body { font-family: "DM Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+body { font-family: var(--schrift_text);
        margin: 0; background: var(--grund); color: var(--schrift);
        font-size: 16px; line-height: 1.45; overflow-wrap: anywhere; }
 main { flex: 1 1 auto; min-width: 0; max-width: 80rem;
@@ -985,7 +989,7 @@ nav.seite .abmelden { margin-top: auto; padding: 0 .5rem; }
 }
 
 h1, h2, h3, .gruppenname, nav.seite .marke {
-  font-family: "Oxanium", "DM Sans", system-ui, sans-serif; letter-spacing: .01em; }
+  font-family: var(--schrift_anzeige); letter-spacing: .01em; }
 h1 { font-size: 1.5rem; margin: .2rem 0 .8rem; }
 h2 { font-size: 1.1rem; margin-top: 2rem; }
 
@@ -1126,7 +1130,7 @@ ul.bildstand li { padding: .2rem 0; }
 .plan-monat { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem 1rem;
               margin: 0 0 1.2rem; padding-bottom: .8rem; border-bottom: 1px solid var(--linie); }
 .plan-monat a { display: inline-flex; align-items: center; min-height: 44px; white-space: nowrap; }
-.plan-monatsname { font-family: "Oxanium", "DM Sans", system-ui, sans-serif;
+.plan-monatsname { font-family: var(--schrift_anzeige);
                    font-weight: 700; font-size: 1.15rem; }
 .plan-spalten { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.5rem; align-items: start; }
 @media (min-width: 900px) {
@@ -1217,6 +1221,29 @@ ul.bildstand li { padding: .2rem 0; }
 iframe.layout-bild { position: relative; width: 200%; height: 520px; border: 0;
                      transform: scale(.5); transform-origin: 0 0;
                      pointer-events: none; }
+/* Newsletter-Galerie /marketing (Design-Review S3, 19.10.2026): dieselbe Karte
+   wie die Vorlagen, darunter Status und Knopf; die letzte Karte startet neu.
+   Nur Farb-Variablen aus :root. */
+.nl-kopf { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem 1.2rem;
+           margin: 0 0 1rem; }
+.nl-karte { display: flex; flex-direction: column; gap: .3rem; min-width: 0; }
+.nl-karte strong { overflow-wrap: anywhere; }
+.nl-karte .fuss { display: flex; flex-wrap: wrap; align-items: center;
+                  justify-content: space-between; gap: .4rem; margin-top: auto; }
+a.knopf.sek { background: var(--flaeche); color: var(--akzent_text); }
+.layout-karte.neu { display: flex; align-items: center; justify-content: center;
+                    min-height: 260px; border-style: dashed; border-color: var(--linie_stark);
+                    font-weight: 600; text-decoration: none; color: var(--akzent_text); }
+/* Reiter als Links (ui_muster.reiter): eine Zeile, die im eigenen Kasten
+   waagerecht scrollt statt die Seite; aktiv = aria-current mit Unterstrich. */
+nav.reiter { display: flex; gap: .2rem; overflow-x: auto; margin: 0 0 1rem;
+             border-bottom: 1px solid var(--linie); }
+nav.reiter a { display: inline-flex; align-items: center; gap: .4rem; min-height: 44px;
+               padding: 0 .8rem; white-space: nowrap; text-decoration: none;
+               color: var(--schrift); border-bottom: 3px solid transparent; }
+nav.reiter a[aria-current] { border-bottom-color: var(--akzent);
+                             color: var(--akzent_text); font-weight: 700; }
+nav.reiter .zahl { font-size: .8rem; color: var(--gedaempft); }
 .abzeichen { border: 1px solid var(--gut); color: var(--gut); border-radius: 999px;
              padding: 0 .5rem; font-weight: 700; }
 .marke-profil { border: 1px solid var(--linie); border-radius: 4px; padding: .6rem .8rem;
@@ -1547,7 +1574,7 @@ _GRUPPEN = (
     ("Monitoring", (("/whatsapp", "WhatsApp"),)),
     # Marketing-Pult (29.09.2026): wie Admin nur fuer freigeben im
     # Basis-Laden (_ADMIN_BASIS_PFADE). /marketing/layouts kommt mit Task 5.
-    ("Marketing", (("/marketing", "Übersicht"),
+    ("Marketing", (("/marketing", "Newsletter"),
                    ("/marketing/entwuerfe", "Entwürfe"),
                    ("/marketing/vorlagen", "Vorlagen"),
                    ("/marketing/plan", "Plan"),
@@ -1683,7 +1710,7 @@ def _seitenleiste(abmelden: str) -> str:
     gruppen = tuple(g for g in gruppen if g[1])
     teile = ['<nav class="seite"><div class="marke">'
              '<span class="logo" aria-hidden="true"></span>'
-             '<span>VibeMind</span></div>']
+             f'<span>{_e(laden_marke.name())}</span></div>']
     # Die Gruppe der aktiven Seite: am Handy die einzige, die oben als
     # Zeile bleibt (Schritt 7); ohne Treffer die erste (Aufgaben).
     aktiver_pfad = _aktiver_eintrag(
@@ -1753,6 +1780,15 @@ WA_ZUSTAND = {
 }
 
 
+def _laden_stil() -> str:
+    """Aussehen der Firma dieses Ladens (Paket C4) als zweites Stylesheet; "" = VibeMind-Grundgestaltung."""
+    css = laden_marke.stil_aktuell()
+    # Logo nur, wenn die Marke von der Grundgestaltung abweicht: der Basis-Laden behaelt sein festes Logo
+    if css and laden_marke.logo() is not None:
+        css += "nav.seite .logo { background-image: url(/static/marke/laden-logo); }"
+    return f"<style>{css}</style>" if css else ""
+
+
 def _seite(titel: str, rumpf: str, status: int = 200,
            refresh: int | None = None) -> HTMLResponse:
     auffrischen = (f'<meta http-equiv="refresh" content="{int(refresh)}">'
@@ -1777,7 +1813,7 @@ def _seite(titel: str, rumpf: str, status: int = 200,
         # hell in die dunkle Seite.
         f'<meta name="color-scheme" content="light dark">'
         f"{auffrischen}<title>{_e(titel)} — sales-ui</title>"
-        f"<style>{_STIL}</style></head><body>"
+        f"<style>{_STIL}</style>{_laden_stil()}</head><body>"
         f'<div class="rahmen">{nav}<main><h1>{_e(titel)}</h1>{rumpf}'
         f"</main></div>"
         f"</body></html>", status_code=status)
@@ -1914,6 +1950,13 @@ async def marke_statik(request):
     Liste, nie ein frei gewaehlter Pfad (img-src 'self' erlaubt nur eigene
     Herkunft, data:-Bilder bleiben gesperrt)."""
     datei = request.path_params["datei"]
+    if datei == "laden-logo":         # Logo der Firma dieses Ladens (Paket C4), aus laden_marke
+        logo = laden_marke.logo()
+        if logo is None:
+            return Response("Nicht gefunden", status_code=404, media_type="text/plain")
+        return Response(logo[0], media_type=logo[1],
+                        headers={"Cache-Control": "private, max-age=300",
+                                 "X-Content-Type-Options": "nosniff"})
     typ = _MARKE_DATEIEN.get(datei)
     if typ is None:
         return Response("Nicht gefunden", status_code=404, media_type="text/plain")

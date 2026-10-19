@@ -130,7 +130,7 @@ def _aktive(pfad: str, rolle: str = "freigeben") -> list:
 
 
 @pytest.mark.parametrize("pfad, erwartet", [
-    ("/marketing", "Übersicht"),
+    ("/marketing", "Newsletter"),
     ("/marketing/entwuerfe", "Entwürfe"),
     ("/marketing/entwurf/241a281c-ebe2-4e25-b1b6-e1a84b94d66a", "Entwürfe"),
     ("/marketing/layouts", "Marke"),

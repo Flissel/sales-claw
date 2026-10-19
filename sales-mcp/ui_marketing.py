@@ -26,6 +26,7 @@ import marketing_mandant
 import marketing_pult
 import ui_editor
 import ui_marke
+import ui_muster
 
 ARTEN = {"newsletter": "Newsletter", "post": "Post", "material": "Team-Material"}
 # Anzeige-Status in Worten (Spec 2026-10-07 §5): "zurückgegeben" ist kein DB-Status,
@@ -127,6 +128,54 @@ def _fassung_zahl(roh) -> int | None:
     return n if n >= 1 else None
 
 
+# Newsletter-Galerie (/marketing): Karten je Seite.
+GALERIE_SEITE = 12
+
+
+def _ganzzahl(roh) -> int | None:
+    """Ganzzahl aus Abfrage oder API, sonst None (kein bool, keine Kommazahl)."""
+    if isinstance(roh, bool):
+        return None
+    try:
+        return int(str(roh))
+    except (TypeError, ValueError):
+        return None
+
+
+def _tag_monat(roh) -> str:
+    """Datum der API als TT.MM. (2026-10-01 -> 01.10.); Unlesbares bleibt gekuerzt stehen."""
+    try:
+        d = datetime.fromisoformat(str(roh)[:10])
+    except ValueError:
+        return str(roh or "")[:10]
+    return d.strftime("%d.%m.")
+
+
+def _newsletter_karte(e, i: dict) -> str:
+    """Eine Karte der Galerie: verkleinerte, gesandboxte Vorschau der neuesten
+    Fassung (E11, dieselbe Route wie die Entwurfsseite), Titel, Fassung, Datum,
+    Status. Ohne Fassung nur der Platzhalter. In Arbeit oeffnet den Editor,
+    alles andere die Entwurfsseite."""
+    iid = urllib.parse.quote(str(i.get("id") or ""), safe="")
+    titel = str(i.get("titel") or "")
+    n = _ganzzahl(i.get("fassungen")) or 0
+    rahmen = (f'<iframe class="layout-bild" sandbox tabindex="-1" loading="lazy" '
+              f'title="Vorschau {e(titel)}" '
+              f'src="{e(f"/marketing/entwurf/{iid}/vorschau?fassung={n}&format=mail")}"></iframe>'
+              if n >= 1 else "")
+    if i.get("status") == "entwurf":
+        ziel, wort = f"/marketing/editor/{iid}", "Öffnen"
+    else:
+        ziel, wort = f"/marketing/entwurf/{iid}", "Ansehen"
+    fassung = f"Fassung {n}" if n >= 1 else "Noch keine Fassung"
+    return (f'<div class="layout-karte nl-karte"><div class="layout-rahmen">'
+            f'<span class="layout-platzhalter">{e(titel)}</span>{rahmen}</div>'
+            f'<strong>{e(titel)}</strong>'
+            f'<span class="meta">{fassung} &middot; erstellt {e(_tag_monat(i.get("erstellt_am")))}</span>'
+            f'<div class="fuss">{_pill(i, None, e)}'
+            f'<a class="knopf sek" href="{e(ziel)}">{wort}</a></div></div>')
+
+
 def routen(ui) -> list:
     e = ui._e
 
@@ -166,20 +215,55 @@ def routen(ui) -> list:
 
     @ui._gesichert_seite
     async def uebersicht(request):
+        # Newsletter-Galerie (Design-Review S3, E10): Status-Reiter und Karten aus EINER
+        # Liste aller Newsletter der Firma - so zaehlt ein Reiter genau die Karten darunter
+        # (/uebersicht zaehlt alle Arten). Beide Abfrageparameter laufen gegen Whitelist
+        # bzw. Klemme und werden nie roh zurueckgespiegelt.
+        status = request.query_params.get("status", "")
+        if status not in STATUS:
+            status = "entwurf"
         try:
             m, liste = await marketing_mandant.firma(request)
-            d = await run_in_threadpool(marketing_pult.anfrage, "GET",
-                                        f"/uebersicht?mandant={urllib.parse.quote(m)}")
+            q = urllib.parse.urlencode({"mandant": m, "art": "newsletter"})
+            dl = await run_in_threadpool(marketing_pult.anfrage, "GET", f"/inhalte?{q}")
         except marketing_pult.PultFehler as f:
             return fehler(f)
-        z = d["zaehler"]
-        karten = "".join(
-            f'<a class="kachel" href="/marketing/entwuerfe?status={k}"><b>{int(z.get(k, 0))}</b>'
-            f'<span>{e(t)}</span></a>' for k, t in STATUS.items())
-        return ui._seite("Marketing", umschalter(m, liste, "/marketing") +
-                                      f'<div class="kacheln fuenf">{karten}</div>'
-                                      '<p><a class="knopf" href="/marketing/vorlagen">'
-                                      'Neuer Newsletter aus Vorlage</a></p>')
+        alle = [i for i in dl.get("inhalte") or []
+                if isinstance(i, dict) and i.get("art") == "newsletter"]
+
+        def reiter_von(i: dict) -> str:
+            # Wie in entwuerfe: "zurueckgegeben" ist ein Entwurf mit offener Rueckmeldung.
+            st = i.get("status")
+            return "zurueckgegeben" if st == "entwurf" and _hat_offene(i) else str(st)
+        zahlen = {k: sum(1 for i in alle if reiter_von(i) == k) for k in STATUS}
+        inhalte = [i for i in alle if reiter_von(i) == status]
+        letzte = max(1, math.ceil(len(inhalte) / GALERIE_SEITE))
+        seite = min(max(_ganzzahl(request.query_params.get("seite")) or 1, 1), letzte)
+
+        def verweis(st: str, s: int = 1) -> str:
+            # Nur aus geprueften Werten; die Vorgabe (in Arbeit, Seite 1) ist /marketing selbst.
+            if st == "entwurf" and s <= 1:
+                return "/marketing"
+            return "/marketing?" + urllib.parse.urlencode(
+                [("status", st)] + ([("seite", str(s))] if s > 1 else []))
+
+        reiter = ui_muster.reiter([(k, t, zahlen[k]) for k, t in STATUS.items()],
+                                  status, verweis)
+        karten = "".join(_newsletter_karte(e, i) for i in
+                         inhalte[(seite - 1) * GALERIE_SEITE:seite * GALERIE_SEITE])
+        leer = "" if karten else '<p class="meta">Keine Newsletter mit diesem Status.</p>'
+        rumpf = (umschalter(m, liste, verweis(status, seite))
+                 + '<p class="nl-kopf"><a class="knopf" href="/marketing/vorlagen">'
+                 'Neuer Newsletter aus Vorlage</a>'
+                 '<a href="/marketing/entwuerfe">Alle Entwürfe als Liste</a></p>'
+                 + reiter + leer
+                 + f'<div class="galerie">{karten}'
+                 '<a class="layout-karte neu" href="/marketing/vorlagen">+ Aus Vorlage starten</a></div>'
+                 + ui_muster.blaettern(seite, letzte, lambda s: verweis(status, s)))
+        antwort = ui._seite("Newsletter", rumpf)
+        # Die Vorschauen sind eigene, gesandboxte Rahmen (wie die Vorlagen-Galerie).
+        antwort.headers["Content-Security-Policy"] = ui._csp_mit_rahmen("'self'")
+        return antwort
 
     @ui._gesichert_seite
     async def entwuerfe(request):

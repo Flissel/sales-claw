@@ -814,6 +814,13 @@ services:
       - MARKETING_PULT_KEY=${MARKETING_PULT_KEY:-}
       # Newsletter an Kontakte (15.10.2026, E4): dieser Laden sendet nur Newsletter dieser Marketing-Firma.
       - MARKETING_MANDANT=${MARKETING_MANDANT:-}
+      # Aussehen je Laden (Paket C4, 19.10.2026, laden_marke.py): LADEN_MARKE waehlt die Firma, deren
+      # Farben/Schriften/Logo die Oberflaeche traegt (leer = MARKETING_MANDANT). Laeden OHNE Pult-Zugang
+      # (zweite Laeden, --env-file) lesen das Aussehen mit dem schmalen Schluessel, der NUR
+      # /api/pult/marke/aussehen oeffnet - nie mit dem Pult-Schluessel (der oeffnet alle Firmen).
+      - LADEN_MARKE=${LADEN_MARKE:-}
+      - MARKETING_AUSSEHEN_URL=${MARKETING_AUSSEHEN_URL:-}
+      - MARKETING_AUSSEHEN_KEY=${MARKETING_AUSSEHEN_KEY:-}
       # Kalender (01.09.2026): der Tab /kalender liest die Termine des
       # Betreibers per CalDAV. Seit Kalender pflegen (14.10.2026) schreibt
       # er auch: eigene Termine und verschobene Kundentermine landen per PUT
