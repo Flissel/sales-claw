@@ -3536,6 +3536,55 @@ def test_medien_gruppiert_nach_art(medienordner):
     assert "film.mp4" in seite and "unterlage.pdf" in seite
 
 
+def test_medien_raster_mit_seiten(medienordner):
+    for i in range(30):
+        (medienordner / f"b{i:02}.png").write_bytes(b"x" * 64)
+    s = _get("/medien").text
+    assert s.count('<div class="medienkarte">') == 24
+    assert 'loading="lazy"' in s and "Seite 1 von 2" in s
+    assert _get("/medien?seite=2").text.count('<div class="medienkarte">') == 6
+
+
+def test_medien_reiter_nach_art(medienordner):
+    (medienordner / "a.pdf").write_bytes(b"x" * 64)
+    (medienordner / "b.png").write_bytes(b"x" * 64)
+    s = _get("/medien?art=bilder").text
+    assert "b.png" in s and "a.pdf" not in s.split('<div class="medienraster">')[1]
+    assert 'aria-current="page">Bilder <span class="zahl">1</span>' in s
+
+
+@pytest.mark.parametrize("q", ["art=<x>", "seite=-3", "seite=abc", "seite=99999"])
+def test_medien_unsinn_faellt_auf_vorgabe(medienordner, q):
+    (medienordner / "b.png").write_bytes(b"x" * 64)
+    r = _get(f"/medien?{q}")
+    assert r.status_code == 200 and "<x>" not in r.text and "b.png" in r.text
+
+
+def test_medien_ruecksprung_baut_url_selbst(medienordner):
+    (medienordner / "b.png").write_bytes(b"x" * 64)
+    r = _post("/medien/bot", {"name": "b.png", "erlaubt": "nein", "csrf": ui.CSRF_TOKEN,
+                              "ansicht": "bilder|2"})
+    assert r.headers["location"] == "/medien?art=bilder&seite=2"
+    for boese in ("//boese.de|1", "bilder|x", "xyz|2", "bilder", "bilder|2|3"):
+        r = _post("/medien/bot", {"name": "b.png", "erlaubt": "ja", "csrf": ui.CSRF_TOKEN,
+                                  "ansicht": boese})
+        assert r.headers["location"] == "/medien", boese
+
+
+def test_medien_formulare_tragen_die_ansicht(medienordner):
+    (medienordner / "b.png").write_bytes(b"x" * 64)
+    s = _get("/medien?art=bilder").text
+    assert 'name="ansicht" value="bilder|1"' in s
+    # Das Loeschen laeuft weiter ueber die Warnseite, Ruecksprung bleibt /medien.
+    assert 'action="/medien/loeschen"' in s
+
+
+def test_medien_name_wird_im_raster_escaped(medienordner):
+    (medienordner / "a&b.pdf").write_bytes(b"x" * 64)
+    s = _get("/medien").text
+    assert "a&amp;b.pdf" in s and "a&b.pdf" not in s
+
+
 def test_medien_zeigt_erzeugte_getrennt(medienordner, tmp_path, monkeypatch):
     erzeugt = tmp_path / "erzeugt"
     erzeugt.mkdir()

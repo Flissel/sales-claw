@@ -1315,6 +1315,21 @@ nav.reiter a { display: inline-flex; align-items: center; gap: .4rem; min-height
 nav.reiter a[aria-current] { border-bottom-color: var(--akzent);
                              color: var(--akzent_text); font-weight: 700; }
 nav.reiter .zahl { font-size: .8rem; color: var(--gedaempft); }
+/* Medien-Raster (Design-Review S3, Task 5): Karten statt Tabelle. */
+.medienraster { display: grid; gap: 1rem; margin: 0 0 1rem;
+                grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr)); }
+.medienkarte { display: flex; flex-direction: column; gap: .4rem; min-width: 0;
+               background: var(--flaeche); border: 1px solid var(--linie);
+               border-radius: 10px; padding: .8rem; }
+.medienkarte > b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.medienbild { aspect-ratio: 4 / 3; border-radius: 6px; overflow: hidden;
+              display: grid; place-items: center; background: var(--kopfzeile); }
+.medienbild a { display: grid; place-items: center; width: 100%; height: 100%; }
+.medienbild img.vorschau, .medienbild video.vorschau { width: 100%; height: 100%;
+              max-width: none; max-height: none; object-fit: cover; border-radius: 0; }
+.medienbild audio { max-width: 90%; }
+.medienkarte .aktionen { display: flex; flex-wrap: wrap; align-items: center;
+                         gap: .5rem; margin-top: auto; }
 /* Kontaktseite (Design-Review S3, Task 3): Kopfkarte über den Reitern,
    Überblick zweispaltig. Nur Variablen aus :root, keine Hexwerte. */
 .karte.kopfkarte { display: flex; align-items: center; gap: 1.1rem;
@@ -2494,7 +2509,46 @@ def _medien_art(name: str) -> str:
     return "Sonstige"
 
 
-def _medien_tabelle():
+# Reiter und Seitengroesse der Medien-Seite (Design-Review S3, E12). Die
+# Schluessel sind die einzige Quelle fuer `?art=` und das Formularfeld
+# `ansicht`: alles andere faellt auf „alle" zurueck.
+MEDIEN_SEITE = 24
+_MEDIEN_REITER = (("alle", "Alle"),
+                  *((art.lower(), art) for art, _ in _MEDIEN_ARTEN),
+                  ("sonstige", "Sonstige"))
+
+
+def _medien_url(art: str, seite: int) -> str:
+    """Adresse einer Medien-Ansicht, nur aus geprueften Werten gebaut."""
+    teile = {}
+    if art in dict(_MEDIEN_REITER) and art != "alle":
+        teile["art"] = art
+    if isinstance(seite, int) and seite > 1:
+        teile["seite"] = seite
+    return "/medien" + ("?" + urllib.parse.urlencode(teile) if teile else "")
+
+
+def _medien_ansicht_pruefen(art, seite) -> tuple[str, int]:
+    """Art aus der Whitelist, Seite als Ganzzahl >= 1 — sonst Vorgabe."""
+    art = art if art in dict(_MEDIEN_REITER) else "alle"
+    seite = str(seite or "")
+    return art, (int(seite) if seite.isascii() and seite.isdigit()
+                 and 0 < int(seite) < 10 ** 6 else 1)
+
+
+def _medien_karte(name: str, groesse: int, m, zuletzt, ansicht: str) -> str:
+    wann = f" · zuletzt {_e(_zeit(zuletzt[name]))}" if name in zuletzt else ""
+    return (f'<div class="medienkarte"><div class="medienbild">'
+            f'{_medien_vorschau(name)}</div>'
+            f'<b title="{_e(name)}">{_e(name)}</b>'
+            f'<span class="meta">{_e(_medien_groesse(groesse))} · '
+            f'{_e(server._medien_herkunft(name, m))}{wann}</span>'
+            f'<div class="aktionen">{_medien_schalter(name, m, ansicht)}'
+            f'{_medien_loeschen_knopf(name)}</div></div>')
+
+
+def _medien_raster(art: str, seite: int) -> str:
+    art, seite = _medien_ansicht_pruefen(art, seite)
     try:
         eintraege = server.medien.liste()
     except OSError as e:
@@ -2502,42 +2556,45 @@ def _medien_tabelle():
                 f'liegt der Ordner am Container an?</p>')
     if not eintraege:
         return "<p>Noch keine Unterlagen.</p>"
-    # Schritt 4 (02.09.2026): Herkunft, Schalter „Bot darf senden" und der
-    # letzte Versand je Datei — aus drafts, nicht aus einer eigenen Spalte.
+    # Herkunft, Schalter „Bot darf senden" und der letzte Versand je Datei —
+    # aus drafts, nicht aus einer eigenen Spalte.
     meta = server.medien_meta_lesen()
     zuletzt = {str(z["media_ref"]): z["wann"] for z in server._q(
         "select media_ref, max(sent_at) as wann from drafts "
         "where status = 'sent' and media_ref is not null "
         "group by media_ref")}
-    gruppen = {}
-    for name, groesse in eintraege:
-        gruppen.setdefault(_medien_art(name), []).append((name, groesse))
-    teile = []
-    for art, _ in _MEDIEN_ARTEN + (("Sonstige", ()),):
-        dateien = gruppen.get(art)
-        if not dateien:
-            continue
-        teile.append(f"<h2>{_e(art)} ({len(dateien)})</h2>")
-        teile.append(_tabelle(
-            ["Datei", "Größe", "Herkunft", "Bot darf senden",
-             "Zuletzt gesendet", "Ansicht", "Löschen"],
-            [[_e(name), _e(_medien_groesse(groesse)),
-              _e(server._medien_herkunft(name, meta.get(name))),
-              _medien_schalter(name, meta.get(name)),
-              _e(_zeit(zuletzt[name])) if name in zuletzt else "—",
-              _medien_vorschau(name), _medien_loeschen_knopf(name)]
-             for name, groesse in dateien]))
-    return "".join(teile)
+    zaehler = {k: 0 for k, _ in _MEDIEN_REITER}
+    zaehler["alle"] = len(eintraege)
+    for name, _ in eintraege:
+        zaehler[_medien_art(name).lower()] += 1
+    gewaehlt = sorted((e for e in eintraege
+                       if art == "alle" or _medien_art(e[0]).lower() == art),
+                      key=lambda e: e[0].lower())
+    letzte = max(1, math.ceil(len(gewaehlt) / MEDIEN_SEITE))
+    seite = min(seite, letzte)
+    ansicht = f"{art}|{seite}"
+    ausschnitt = gewaehlt[(seite - 1) * MEDIEN_SEITE:seite * MEDIEN_SEITE]
+    karten = "".join(_medien_karte(n, g, meta.get(n), zuletzt, ansicht)
+                     for n, g in ausschnitt) or "<p>Keine Dateien dieser Art.</p>"
+    return (ui_muster.reiter([(k, n, zaehler[k]) for k, n in _MEDIEN_REITER],
+                             art, lambda k: _medien_url(k, 1))
+            + f'<div class="medienraster">{karten}</div>'
+            + ui_muster.blaettern(seite, letzte,
+                                  lambda s: _medien_url(art, s)))
 
 
-def _medien_schalter(name: str, m) -> str:
-    """Das Wort traegt den Zustand (An/Aus), der Knopf die Gegenrichtung."""
+def _medien_schalter(name: str, m, ansicht: str = "") -> str:
+    """Das Wort traegt den Zustand (An/Aus), der Knopf die Gegenrichtung.
+    `ansicht` (`art|seite`) merkt sich Reiter und Seite fuer den Rücksprung."""
     an = m is None or bool(m["bot_darf_senden"])
     ziel, knopf = ("nein", "Sperren") if an else ("ja", "Freigeben")
+    feld = (f'<input type="hidden" name="ansicht" value="{_e(ansicht)}">'
+            if ansicht else "")
     return (f'<b>{"An" if an else "Aus"}</b> '
             f'<form class="aktion" method="post" action="/medien/bot">'
             f'<input type="hidden" name="name" value="{_e(name)}">'
             f'<input type="hidden" name="erlaubt" value="{ziel}">'
+            f'{feld}'
             f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
             f'<button>{knopf}</button></form>')
 
@@ -2601,8 +2658,8 @@ def _medien_vorschau(name: str) -> str:
     art = MEDIEN_ANSICHT.get(endung)
     if art == "bild":
         return (f'<a href="{_e(quelle)}" target="_blank" rel="noreferrer">'
-                f'<img src="{_e(quelle)}" alt="{_e(name)}" '
-                f'class="vorschau"></a>')
+                f'<img src="{_e(quelle)}" loading="lazy" '
+                f'alt="{_e(name)}" class="vorschau"></a>')
     if art == "video":
         return (f'<video class="vorschau" controls preload="none" '
                 f'src="{_e(quelle)}"></video>')
@@ -2938,7 +2995,9 @@ async def aktion_medien_loeschen_bestaetigen(request):
 
 @_gesichert_seite
 async def medien(request):
-    return _seite("Medien", _medien_tabelle() + _medien_formular())
+    qp = request.query_params
+    art, seite = _medien_ansicht_pruefen(qp.get("art"), qp.get("seite"))
+    return _seite("Medien", _medien_raster(art, seite) + _medien_formular())
 
 
 async def medien_ablegen(datei, basis: str, ersetzen: bool = True):
@@ -3060,7 +3119,14 @@ async def aktion_medien_bot(request):
     server.medien_meta_setzen(basis, bot_darf_senden=(erlaubt == "ja"))
     LOG.info("Medien: %s für den Bot %s", basis,
              "freigegeben" if erlaubt == "ja" else "gesperrt")
-    return RedirectResponse("/medien", status_code=303)
+    # Rücksprung auf Reiter und Seite: die Adresse wird aus geprüften Werten
+    # selbst gebaut, nie aus dem Formularwert übernommen (kein offener Redirect).
+    teile = str(form.get("ansicht") or "").split("|")
+    ziel = "/medien"
+    if (len(teile) == 2 and teile[0] in dict(_MEDIEN_REITER)
+            and teile[1].isascii() and teile[1].isdigit()):
+        ziel = _medien_url(*_medien_ansicht_pruefen(*teile))
+    return RedirectResponse(ziel, status_code=303)
 
 
 def _aufraeumen(pfad: str) -> None:
@@ -4059,17 +4125,8 @@ async def kontakte(request):
                 '<i>Bestandskunde</i> entsteht kein Erstansprache-'
                 'Entwurf per WhatsApp/E-Mail; Antworten auf eingehende '
                 'Nachrichten bleiben frei.</p>')
-    blaettern = ""
-    if letzte > 1:
-        zurueck = (_filter_verweis(
-            "← Zurück", _kontakte_url(werte, seite=seite - 1), False)
-            if seite > 1 else "")
-        weiter = (_filter_verweis(
-            "Weiter →", _kontakte_url(werte, seite=seite + 1), False)
-            if seite < letzte else "")
-        blaettern = (f'<nav class="filterleiste" aria-label="Seiten">{zurueck}'
-                     f'<span class="meta">Seite {seite} von {letzte}</span>'
-                     f'{weiter}</nav>')
+    blaettern = ui_muster.blaettern(
+        seite, letzte, lambda s: _kontakte_url(werte, seite=s))
     rumpf = [kopf, _tabelle(
         ["Name", "Einordnung", "Stufe", "Score", "Zuletzt", "Autonomie",
          "Archiv"], inhalt, filterzeile=filterzeile, leer="Keine Kontakte."),

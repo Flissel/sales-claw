@@ -101,7 +101,7 @@ def test_entwurf_mit_gesperrtem_anhang_wird_abgewiesen(ordner):
 
 def test_schalter_in_der_oberflaeche_setzt_und_zeigt(ordner):
     seite = _get("/medien").text
-    assert "Bot darf senden" in seite
+    assert "Sperren" in seite and "<b>An</b>" in seite
     assert 'name="name" value="b.pdf"' in seite
     r = _post("/medien/bot", {"name": "b.pdf", "erlaubt": "nein",
                               "csrf": ui.CSRF_TOKEN})
@@ -140,7 +140,9 @@ def test_herkunft_und_letzter_versand_stehen_in_der_tabelle(ordner):
               "media_ref, sent_at) values (%s, 'whatsapp', '+491701234567', "
               "'Anbei', 'sent', 'a.pdf', now()) returning id", (lead,))
     seite = _get("/medien").text
-    assert "Zuletzt gesendet" in seite
+    # Raster (Task 5): „zuletzt …" steht in der Meta-Zeile der Karte, und
+    # nur bei Dateien, die schon verschickt wurden.
     a = seite[seite.index("a.pdf"):seite.index("b.pdf")]
-    assert "—" not in a.split("</tr>")[0] or "Zuletzt" not in a
+    assert " · zuletzt " in a
+    assert " · zuletzt " not in seite[seite.index("b.pdf"):seite.index("termin-test")]
     assert "system" in seite[seite.index("termin-test"):]
