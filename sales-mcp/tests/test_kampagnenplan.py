@@ -102,6 +102,41 @@ def test_monat_grenzen():
     assert ui_plan.nachbar(date(2026, 12, 1), 1) == "2027-01"
 
 
+@pytest.mark.parametrize("roh, erwartet", [("podcast", "podcast"), ("fax", None), ("", None),
+                                           (None, None), ("<script>", None)])
+def test_art_lesen(roh, erwartet):
+    assert ui_plan.art_lesen(roh) == erwartet
+
+
+def test_zaehlen_ohne_abgesagte():
+    e = [{"art": "post", "status": "geplant"}, {"art": "post", "status": "abgesagt"},
+         {"art": "video", "status": "erledigt"}, {"art": "gibtsnicht", "status": "geplant"}]
+    z = ui_plan.zaehlen(e, abgesagte=False)
+    assert z["alle"] == 3 and z["post"] == 1 and z["video"] == 1 and z["sonstiges"] == 1
+    assert ui_plan.zaehlen(e, abgesagte=True)["alle"] == 4
+
+
+def test_nach_tagen_gruppiert_und_sortiert():
+    e = [{"datum": "2026-10-24", "titel": "b"}, {"datum": "2026-10-22", "titel": "a"},
+         {"datum": "2026-10-24", "titel": "c"}, {"datum": "kaputt", "titel": "d"}]
+    g = ui_plan.nach_tagen(e)
+    assert [t for t, _ in g] == [date(2026, 10, 22), date(2026, 10, 24), None]
+    assert [p["titel"] for p in g[1][1]] == ["b", "c"]
+
+
+@pytest.mark.parametrize("t, m, j, erwartet", [
+    ("22", "10", "2026", "2026-10-22"), ("31", "2", "2026", None), ("31", "4", "2026", None),
+    ("29", "2", "2027", None), ("29", "2", "2028", "2028-02-29"), ("x", "10", "2026", None),
+    ("", "", "", None)])
+def test_datum_aus_teilen(t, m, j, erwartet):
+    assert ui_plan.datum_aus_teilen(t, m, j) == erwartet
+
+
+def test_plan_pfad():
+    assert ui_plan.plan_pfad(date(2026, 10, 1), None, False) == "/marketing/plan?monat=2026-10"
+    assert ui_plan.plan_pfad(date(2026, 10, 1), "post", True) == "/marketing/plan?monat=2026-10&art=post&abgesagt=1"
+
+
 # --- Seite ----------------------------------------------------------------
 
 def test_menue_hat_plan():

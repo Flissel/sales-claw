@@ -58,6 +58,59 @@ def datum_ok(roh) -> str | None:
         return None
 
 
+def art_lesen(roh: str | None) -> str | None:
+    """Rohwert aus der Adresse -> Art aus ARTEN, sonst None (= Reiter "Alle")."""
+    return roh if isinstance(roh, str) and roh in ARTEN else None
+
+
+def zaehlen(eintraege: list[dict], abgesagte: bool) -> dict[str, int]:
+    """Anzahl je Reiter. Unbekannte Arten zaehlen als "sonstiges"; Abgesagte nur auf Wunsch."""
+    z = {"alle": 0, **{k: 0 for k in ARTEN}}
+    for p in eintraege:
+        if p.get("status") == "abgesagt" and not abgesagte:
+            continue
+        art = p.get("art")
+        z["alle"] += 1
+        z[art if art in ARTEN else "sonstiges"] += 1
+    return z
+
+
+def _tag(roh) -> date | None:
+    try:
+        return date.fromisoformat(str(roh or "")[:10])
+    except ValueError:
+        return None
+
+
+def nach_tagen(eintraege: list[dict]) -> list[tuple[date | None, list[dict]]]:
+    """Gruppen je Tag aufsteigend; Eintraege ohne lesbares Datum am Ende als (None, [...])."""
+    gruppen: dict[date | None, list[dict]] = {}
+    for p in eintraege:
+        gruppen.setdefault(_tag(p.get("datum")), []).append(p)
+    fertig = [(t, gruppen[t]) for t in sorted(k for k in gruppen if k is not None)]
+    if None in gruppen:
+        fertig.append((None, gruppen[None]))
+    return fertig
+
+
+def datum_aus_teilen(tag, monat, jahr) -> str | None:
+    """Tag/Monat/Jahr aus dem Formular -> ISO-Datum, sonst None (31. Februar usw.)."""
+    try:
+        return date(int(jahr), int(monat), int(tag)).isoformat()
+    except (ValueError, TypeError):
+        return None
+
+
+def plan_pfad(erster: date, art: str | None, abgesagte: bool) -> str:
+    """Adresse der Seite mit Monat, Reiter und Abgesagte-Schalter in fester Reihenfolge."""
+    q = [("monat", f"{erster:%Y-%m}")]
+    if art in ARTEN:
+        q.append(("art", art))
+    if abgesagte:
+        q.append(("abgesagt", "1"))
+    return "/marketing/plan?" + urllib.parse.urlencode(q)
+
+
 def routen(ui) -> list:
     e = ui._e
 
