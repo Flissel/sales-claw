@@ -1062,7 +1062,7 @@ main { overflow-x: clip; }
 .status-pill { border-radius: 999px; padding: .1rem .8rem; font-weight: 700;
                font-size: .85rem; background: var(--kopfzeile);
                color: var(--schrift); border: 1px solid var(--linie_stark); }
-.status-pill.st-zurueckgegeben { background: var(--achtung); color: var(--achtung_auf);
+.status-pill.st-rueckgabe { background: var(--achtung); color: var(--achtung_auf);
                                  border-color: var(--achtung); }
 .status-pill.st-eingereicht { background: var(--hinweis_flaeche);
                               color: var(--hinweis_schrift); border-color: var(--hinweis_linie); }
@@ -1513,29 +1513,57 @@ _ZAEHLER_OFFEN = ("/", "/freigaben", "/wiedervorlagen", "/einordnung")
 
 def _zaehler_abfragen() -> dict:
     """Die Zahlen am Menue — aus DENSELBEN Quellen wie die Seiten selbst,
-    damit Menue und Seite nie zwei verschiedene Wahrheiten zeigen."""
-    koerbe = server._einzuordnende(text_max=EINORDNUNG_TEXT_MAX)
-    offen = {
-        "/freigaben": server._q("select count(*) n from drafts "
-                                "where status = 'pending'")[0]["n"],
-        "/wiedervorlagen": len(_offene_wiedervorlagen()),
-        "/einordnung": len(koerbe["neu"]) + len(koerbe["bereits_gefragt"]),
-    }
-    return {
-        # „Heute" zaehlt, was eine Entscheidung braucht — die Summe der
-        # drei Aufgaben-Zaehler, damit Menue und Startseite dasselbe sagen.
-        "/": sum(offen.values()),
-        **offen,
+    damit Menue und Seite nie zwei verschiedene Wahrheiten zeigen.
+    Jeder Zaehler faellt einzeln aus: scheitert eine Quelle, fehlt nur
+    ihr Schluessel."""
+    ergebnis: dict = {}
+
+    def _versuch(schluessel, fn):
+        try:
+            return fn()
+        except Exception:
+            LOG.warning("Menue-Zaehler %s nicht lesbar", schluessel,
+                        exc_info=True)
+            return None
+
+    def _koerbe():
+        k = server._einzuordnende(text_max=EINORDNUNG_TEXT_MAX)
+        return len(k["neu"]) + len(k["bereits_gefragt"])
+
+    offen = {}
+    for schluessel, fn in (
+        ("/freigaben", lambda: server._q(
+            "select count(*) n from drafts where status = 'pending'")[0]["n"]),
+        ("/wiedervorlagen", lambda: len(_offene_wiedervorlagen())),
+        ("/einordnung", _koerbe),
+    ):
+        wert = _versuch(schluessel, fn)
+        if wert is not None:
+            offen[schluessel] = wert
+    ergebnis.update(offen)
+    # „Heute" zaehlt, was eine Entscheidung braucht — die Summe der lesbaren
+    # Aufgaben-Zaehler, damit Menue und Startseite dasselbe sagen.
+    ergebnis["/"] = sum(offen.values())
+    if "/freigaben" in offen:
         # Eingereichte Marketing-Inhalte NUR hier im Menue-Zaehler, nicht in
         # der Heute-Summe (R10); nur Zwischenspeicher, kein Netzwerk.
-        "/freigaben": offen["/freigaben"] + ui_freigabe_newsletter.anzahl_offen(sys.modules[__name__]),
-        "/kontakte": server._q(
+        extra = _versuch("/freigaben", lambda: offen["/freigaben"]
+                         + ui_freigabe_newsletter.anzahl_offen(
+                             sys.modules[__name__]))
+        if extra is not None:
+            ergebnis["/freigaben"] = extra
+    for schluessel, fn in (
+        ("/kontakte", lambda: server._q(
             "select count(*) n from leads l where not "
-            + server._archiv_sql("l.enrichment"))[0]["n"],
-        "/posteingang": json.loads(server.posteingang())
-        ["anzahl_unbeantwortet"],
-        "/medien": len(server.medien.liste()),
-    }
+            + server._archiv_sql("l.enrichment"))[0]["n"]),
+        ("/posteingang", lambda: json.loads(server.posteingang())
+         ["anzahl_unbeantwortet"]),
+        ("/medien", lambda: len(server.medien.liste())),
+    ):
+        wert = _versuch(schluessel, fn)
+        if wert is not None:
+            ergebnis[schluessel] = wert
+    return ergebnis
 
 
 def _zaehler() -> dict:

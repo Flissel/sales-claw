@@ -69,7 +69,7 @@ def status_wort(inhalt, rueckmeldungen=None) -> str:
 
 def _pill(inhalt, rueckmeldungen, e) -> str:
     wort = status_wort(inhalt, rueckmeldungen)
-    klasse = "zurueckgegeben" if wort == STATUS["zurueckgegeben"] else e(str(inhalt.get("status") or ""))
+    klasse = "rueckgabe" if wort == STATUS["zurueckgegeben"] else e(str(inhalt.get("status") or ""))
     return f'<span class="status-pill st-{klasse}">{e(wort)}</span>'
 
 

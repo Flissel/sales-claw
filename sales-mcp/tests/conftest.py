@@ -72,12 +72,13 @@ def _dateiverzeichnisse_geleert(monkeypatch):
     `recherche.REPORT_VERZEICHNIS` zeigen waehrend der Suite immer auf das
     (frisch geleerte) Testverzeichnis oben, nie auf die Standardpfade.
 
-    `medien.MEDIA_VERZEICHNIS` (der UPLOAD-Ordner, von Menschen befuellt)
-    bleibt bewusst UNANGETASTET — dort legt kein Test in dieser Suite
-    etwas ab, ihn zu leeren waere eine Aenderung ohne Bezug zu diesem
-    Mangel."""
+    `medien.MEDIA_VERZEICHNIS` (der UPLOAD-Ordner) zeigt auf einen eigenen
+    **leeren** Ordner; die Suite leert nie den echten. Tests mit eigenem
+    `medienordner` ueberschreiben das weiter per `monkeypatch`."""
     monkeypatch.setattr(medien, "ERZEUGT_VERZEICHNIS",
                         _geleert(_MEDIEN_ERZEUGT_TEST))
+    monkeypatch.setattr(medien, "MEDIA_VERZEICHNIS",
+                        _geleert(os.path.join(_TESTORDNER, "media")))
     monkeypatch.setattr(recherche, "REPORT_VERZEICHNIS",
                         _geleert(_REPORTS_TEST))
     yield

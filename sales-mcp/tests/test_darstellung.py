@@ -894,3 +894,8 @@ def test_einladung_entworfen_thema_wird_gekuerzt_mit_vollem_text_im_title():
         "EINLADUNG_GRUND_KURZ hinausgehen, sonst kuerzt _kurz gar nichts")
     assert ui._e(gekuerzt) in seite
     assert f'title="{ui._e(lang)}"' in seite
+
+
+def test_stil_traegt_keine_ascii_umschreibung():
+    """Das Inline-CSS steht in JEDER Seite – Klassennamen zählen mit."""
+    assert not [w for w in WOERTER_ASCII if w in ui._STIL]

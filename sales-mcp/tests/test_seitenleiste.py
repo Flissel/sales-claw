@@ -180,3 +180,12 @@ def test_ganz_schmal_kleinere_reiterschrift():
     anfang = css.index("@media (max-width: 399px)")
     block = css[anfang:css.index("}", css.index("nav.tabs a", anfang))]
     assert "font-size: .62rem" in block and "letter-spacing: 0" in block
+
+
+def test_kaputter_medienzaehler_nimmt_die_anderen_nicht_mit(monkeypatch):
+    def weg(*a, **k):
+        raise FileNotFoundError("/media")
+    monkeypatch.setattr(server.medien, "liste", weg)
+    seite = _get("/kontakte").text
+    assert 'Freigaben</span><span class="zaehler">0</span>' in seite
+    assert 'Medien</span><span class="zaehler"' not in seite
