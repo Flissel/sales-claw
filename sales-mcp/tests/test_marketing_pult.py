@@ -170,6 +170,70 @@ def test_uebersicht(angemeldet):
     assert "in Arbeit" in s and ">7<" in s and "zur Freigabe" in s and ">2<" in s
 
 
+# --- Design-Review S3, Task 4: Newsletter-Galerie statt Zahlen-Übersicht --------
+
+def test_uebersicht_ist_galerie_mit_vorschau(angemeldet, pult):
+    r = angemeldet.get("/marketing", headers=HOST); s = r.text
+    assert '<iframe class="layout-bild" sandbox tabindex="-1" loading="lazy"' in s
+    assert f'src="/marketing/entwurf/{IID}/vorschau?fassung=2&amp;format=mail"' in s
+    assert "Early Access" in s and f'href="/marketing/editor/{IID}"' in s
+    assert "frame-src 'self'" in r.headers["content-security-policy"]
+    assert ("GET", "/inhalte?mandant=vibemind&art=newsletter&status=entwurf", None) in pult.aufrufe
+    assert 'href="/marketing/vorlagen"' in s and 'href="/marketing/entwuerfe"' in s
+    assert "<script" not in s
+
+
+def test_galerie_status_reiter_mit_zahlen(angemeldet, pult):
+    s = angemeldet.get("/marketing?status=eingereicht", headers=HOST).text
+    assert 'aria-current="page">zur Freigabe <span class="zahl">2</span>' in s
+    assert ("GET", "/inhalte?mandant=vibemind&art=newsletter&status=eingereicht", None) in pult.aufrufe
+
+
+@pytest.mark.parametrize("q", ["status=<b>", "status=alle", "seite=-1", "seite=9999"])
+def test_galerie_unsinn_faellt_auf_vorgabe(angemeldet, pult, q):
+    r = angemeldet.get(f"/marketing?{q}", headers=HOST)
+    assert r.status_code == 200 and "<b>" not in r.text.split("<main>")[1]
+
+
+def test_galerie_titel_escaped_und_ohne_fassung_kein_rahmen(angemeldet, pult):
+    pult.inhalte = [{"id": IID, "art": "newsletter", "titel": "<img src=x>", "status": "entwurf",
+                     "erstellt_am": "2026-10-01", "fassungen": 0, "layout": None}]
+    s = angemeldet.get("/marketing", headers=HOST).text
+    assert "<img src=x>" not in s and "&lt;img src=x&gt;" in s
+    assert "/vorschau?fassung=" not in s
+
+
+def test_galerie_zwoelf_je_seite_mit_blaettern(angemeldet, pult):
+    pult.inhalte = [_zeile(f"NL-{n:02}", 0) for n in range(15)]
+    s = _rumpf(angemeldet.get("/marketing", headers=HOST).text)
+    assert s.count('<div class="layout-karte nl-karte">') == 12
+    assert "Seite 1 von 2" in s and 'href="/marketing?status=entwurf&amp;seite=2"' in s
+    s2 = _rumpf(angemeldet.get("/marketing?seite=2", headers=HOST).text)
+    assert s2.count('<div class="layout-karte nl-karte">') == 3 and "NL-14" in s2
+    # Zu große Seitenzahl wird auf die letzte geklemmt, nicht leer.
+    s9 = _rumpf(angemeldet.get("/marketing?seite=9999", headers=HOST).text)
+    assert s9.count('<div class="layout-karte nl-karte">') == 3 and "9999" not in s9
+
+
+def test_galerie_trennt_zurueckgegeben_und_verlinkt_nach_status(angemeldet, pult):
+    _liste(pult, _zeile("Offen-A", 1), _zeile("Ruhig-B", 0))
+    z = _rumpf(angemeldet.get("/marketing?status=zurueckgegeben", headers=HOST).text)
+    assert "status=entwurf" in pult.aufrufe[-1][1]                  # API kennt nur DB-Status
+    assert "Offen-A" in z and "Ruhig-B" not in z
+    a = _rumpf(angemeldet.get("/marketing", headers=HOST).text)
+    assert "Ruhig-B" in a and "Offen-A" not in a
+    # Eingereichtes öffnet die Entwurfsseite (Ansehen), nicht den Editor.
+    _liste(pult, _zeile("Zur-Freigabe", 0, status="eingereicht"))
+    e = _rumpf(angemeldet.get("/marketing?status=eingereicht", headers=HOST).text)
+    assert f'href="/marketing/entwurf/{IID}">Ansehen</a>' in e and "/marketing/editor/" not in e
+
+
+def test_galerie_zeigt_nur_newsletter(angemeldet, pult):
+    _liste(pult, {**_zeile("Ein Post", 0), "art": "post"}, _zeile("Ein Newsletter", 0))
+    s = _rumpf(angemeldet.get("/marketing", headers=HOST).text)
+    assert "Ein Newsletter" in s and "Ein Post" not in s
+
+
 def test_entwuerfe_liste(angemeldet):
     s = angemeldet.get("/marketing/entwuerfe", headers=HOST).text
     assert "Early Access" in s and f'href="/marketing/entwurf/{IID}"' in s and "Newsletter" in s
@@ -814,9 +878,10 @@ def test_entwuerfe_liste_nutzt_status_woerter_und_eingereicht_filter(angemeldet,
 
 
 def test_uebersicht_kacheln_in_worten(angemeldet):
+    # Seit der Newsletter-Galerie (S3, Task 4) sind die Kacheln Status-Reiter.
     s = angemeldet.get("/marketing", headers=HOST).text
     for wort in ("in Arbeit", "zurückgegeben", "zur Freigabe", "freigegeben", "verworfen"):
-        assert f"<span>{wort}</span>" in s
+        assert f'>{wort} <span class="zahl">' in s
     assert "status=zurueckgegeben" in s and ">1<" in s
     assert "status=eingereicht" in s and "Zur Freigabe</span>" not in s
 

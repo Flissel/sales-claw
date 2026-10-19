@@ -1217,6 +1217,29 @@ ul.bildstand li { padding: .2rem 0; }
 iframe.layout-bild { position: relative; width: 200%; height: 520px; border: 0;
                      transform: scale(.5); transform-origin: 0 0;
                      pointer-events: none; }
+/* Newsletter-Galerie /marketing (Design-Review S3, 19.10.2026): dieselbe Karte
+   wie die Vorlagen, darunter Status und Knopf; die letzte Karte startet neu.
+   Nur Farb-Variablen aus :root. */
+.nl-kopf { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem 1.2rem;
+           margin: 0 0 1rem; }
+.nl-karte { display: flex; flex-direction: column; gap: .3rem; min-width: 0; }
+.nl-karte strong { overflow-wrap: anywhere; }
+.nl-karte .fuss { display: flex; flex-wrap: wrap; align-items: center;
+                  justify-content: space-between; gap: .4rem; margin-top: auto; }
+a.knopf.sek { background: var(--flaeche); color: var(--akzent_text); }
+.layout-karte.neu { display: flex; align-items: center; justify-content: center;
+                    min-height: 260px; border-style: dashed; border-color: var(--linie_stark);
+                    font-weight: 600; text-decoration: none; color: var(--akzent_text); }
+/* Reiter als Links (ui_muster.reiter): eine Zeile, die im eigenen Kasten
+   waagerecht scrollt statt die Seite; aktiv = aria-current mit Unterstrich. */
+nav.reiter { display: flex; gap: .2rem; overflow-x: auto; margin: 0 0 1rem;
+             border-bottom: 1px solid var(--linie); }
+nav.reiter a { display: inline-flex; align-items: center; gap: .4rem; min-height: 44px;
+               padding: 0 .8rem; white-space: nowrap; text-decoration: none;
+               color: var(--schrift); border-bottom: 3px solid transparent; }
+nav.reiter a[aria-current] { border-bottom-color: var(--akzent);
+                             color: var(--akzent_text); font-weight: 700; }
+nav.reiter .zahl { font-size: .8rem; color: var(--gedaempft); }
 .abzeichen { border: 1px solid var(--gut); color: var(--gut); border-radius: 999px;
              padding: 0 .5rem; font-weight: 700; }
 .marke-profil { border: 1px solid var(--linie); border-radius: 4px; padding: .6rem .8rem;
@@ -1547,7 +1570,7 @@ _GRUPPEN = (
     ("Monitoring", (("/whatsapp", "WhatsApp"),)),
     # Marketing-Pult (29.09.2026): wie Admin nur fuer freigeben im
     # Basis-Laden (_ADMIN_BASIS_PFADE). /marketing/layouts kommt mit Task 5.
-    ("Marketing", (("/marketing", "Übersicht"),
+    ("Marketing", (("/marketing", "Newsletter"),
                    ("/marketing/entwuerfe", "Entwürfe"),
                    ("/marketing/vorlagen", "Vorlagen"),
                    ("/marketing/plan", "Plan"),
