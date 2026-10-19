@@ -9,9 +9,15 @@ import {
   VerticalAlignTopOutlined,
 } from '@mui/icons-material';
 import {
+  Alert,
   Box,
   Button,
   Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogContentText,
+  DialogTitle,
   IconButton,
   Menu,
   MenuItem,
@@ -27,6 +33,8 @@ import {
 } from '../../../../bildfeld';
 import {
   ANZEIGE,
+  geloeschtText,
+  LoeschInfo,
   loeschFrage,
   medienLoeschen,
   medienName,
@@ -34,7 +42,7 @@ import {
   MEDIEN_LEER,
   leereBildwahl,
 } from '../../../../pult';
-import { gestaltungOeffnen, medienLaden, pultStore } from '../../../../pultZustand';
+import { gestaltungOeffnen, medienLaden, neueFassungNachBildLoeschen, pultStore } from '../../../../pultZustand';
 import { useSelectedBlockId } from '../../../../documents/editor/EditorContext';
 import { ImageDaten, ImageSchema } from '../../../../schemata';
 
@@ -67,6 +75,8 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
   // Zuordnungsmenue: fuer welche Kachel es offen ist und woran es haengt.
   const [menue, setMenue] = useState<{ name: string; anker: HTMLElement } | null>(null);
   const [rueckmeldung, setRueckmeldung] = useState<{ art: 'ok' | 'fehler'; text: string } | null>(null);
+  // Loesch-Dialog (E14): Pruefergebnis, Fehler des Loeschens, laeuft.
+  const [loeschDialog, setLoeschDialog] = useState<{ info: LoeschInfo; grund: string | null; laeuft: boolean } | null>(null);
   useEffect(() => {
     medienLaden();
   }, []);
@@ -88,7 +98,7 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
   const platz = istPlatz(data.props);
   const s = selectedBlockId ? standFuer(selectedBlockId, stand?.auftraege ?? []) : { text: '', art: null };
 
-  // Bild aus der Bibliothek loeschen: erst pruefen (Newsletter/Entwuerfe), dann nachfragen, dann loeschen.
+  // Bild aus der Bibliothek loeschen: erst pruefen (Newsletter/Entwuerfe), dann im Dialog nachfragen.
   const loeschen = async (n: string) => {
     if (!start) return;
     setRueckmeldung(null);
@@ -97,18 +107,26 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
       setRueckmeldung({ art: 'fehler', text: p.ok ? 'Prüfung fehlgeschlagen' : p.grund });
       return;
     }
-    if (p.info.sperre) {
-      setRueckmeldung({ art: 'fehler', text: p.info.sperre });
+    setLoeschDialog({ info: p.info, grund: null, laeuft: false });
+  };
+
+  const loeschenBestaetigt = async () => {
+    if (!start || !loeschDialog || loeschDialog.info.sperre) return;
+    const { info } = loeschDialog;
+    setLoeschDialog({ ...loeschDialog, grund: null, laeuft: true });
+    const e = await medienLoeschen(start, info.name, true);
+    if (!e.ok) {
+      const schon = e.umgestellt && e.umgestellt.length > 0 ? ` Schon umgestellt: ${e.umgestellt.map((u) => u.titel).join(', ')}.` : '';
+      setLoeschDialog({ info, grund: e.grund + schon, laeuft: false });
+      if (e.umgestellt && e.umgestellt.length > 0) void neueFassungNachBildLoeschen();
       return;
     }
-    if (!window.confirm(loeschFrage(p.info))) return;
-    const e = await medienLoeschen(start, n, true);
-    if (e.ok) {
-      setRueckmeldung({ art: 'ok', text: `„${n}“ gelöscht.` });
-      medienLaden(true);
-    } else {
-      setRueckmeldung({ art: 'fehler', text: e.grund });
-    }
+    setLoeschDialog(null);
+    const platzhalter = e.umgestellt.length > 0 ? e.umgestellt.length : info.umstellbar;
+    setRueckmeldung({ art: 'ok', text: geloeschtText(info.name, platzhalter) });
+    medienLaden(true);
+    // Steckte das Bild im offenen Newsletter, gibt es dort jetzt eine neue Fassung mit Platzhalter.
+    if (platzhalter > 0) void neueFassungNachBildLoeschen();
   };
 
   // Bild einer Firma zuordnen (null = Gemeinsam); danach Liste neu laden.
@@ -300,6 +318,39 @@ export default function ImageSidebarPanel({ data, setData }: ImageSidebarPanelPr
             Gemeinsam
           </MenuItem>
         </Menu>
+        <Dialog
+          open={loeschDialog !== null}
+          onClose={() => !loeschDialog?.laeuft && setLoeschDialog(null)}
+          aria-labelledby="bild-loeschen-titel"
+        >
+          <DialogTitle id="bild-loeschen-titel">Bild endgültig löschen?</DialogTitle>
+          <DialogContent>
+            {loeschDialog && <DialogContentText>{loeschFrage(loeschDialog.info)}</DialogContentText>}
+            {loeschDialog?.info.sperre && (
+              <Alert severity="warning" sx={{ mt: 2 }}>
+                {loeschDialog.info.sperre}
+              </Alert>
+            )}
+            {loeschDialog?.grund && (
+              <Alert severity="error" sx={{ mt: 2 }}>
+                {loeschDialog.grund}
+              </Alert>
+            )}
+          </DialogContent>
+          <DialogActions>
+            <Button disabled={loeschDialog?.laeuft} onClick={() => setLoeschDialog(null)}>
+              Abbrechen
+            </Button>
+            <Button
+              color="error"
+              variant="contained"
+              disabled={!loeschDialog || loeschDialog.laeuft || loeschDialog.info.sperre !== null}
+              onClick={() => void loeschenBestaetigt()}
+            >
+              {loeschDialog?.laeuft ? 'Wird gelöscht …' : 'Endgültig löschen'}
+            </Button>
+          </DialogActions>
+        </Dialog>
         <Typography variant="caption" color="text.secondary">
           {medien === null
             ? 'Medien werden geladen …'

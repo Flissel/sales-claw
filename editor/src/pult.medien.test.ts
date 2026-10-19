@@ -1,7 +1,19 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { firmaEtikett, leereBildwahl, MEDIEN_LEER, medienListe, medienZuordnen, Start } from './pult';
-import { medienLaden, pultStore } from './pultZustand';
+import {
+  firmaEtikett,
+  geloeschtText,
+  inhaltId,
+  leereBildwahl,
+  LoeschInfo,
+  loeschFrage,
+  MEDIEN_LEER,
+  medienListe,
+  medienLoeschen,
+  medienZuordnen,
+  Start,
+} from './pult';
+import { medienLaden, neueFassungNachBildLoeschen, pultStore } from './pultZustand';
 
 const start = {
   medien_url: '/marketing/editor/medien.json?iid=abc',
@@ -150,5 +162,155 @@ describe('firmaEtikett', () => {
     expect(firmaEtikett(undefined)).toBeNull();
     expect(firmaEtikett({ id: '', name: '' })).toBeNull();
     expect(firmaEtikett({ id: '  ', name: 'X' })).toBeNull();
+  });
+});
+
+const IID = 'b12c46b9-8f87-412b-b2e7-7215b354a75b';
+const loeschStart = {
+  csrf: 'marke-1',
+  speichern_url: `/marketing/editor/${IID}/speichern`,
+  stand_url: `/marketing/editor/${IID}/stand.json`,
+  medien_loeschen_url: '/marketing/editor/medien/loeschen',
+} as Start;
+
+describe('medienLoeschen', () => {
+  it('schickt die iid dieses Newsletters mit (sonst gilt still die Firma des Ladens)', async () => {
+    expect(inhaltId(loeschStart)).toBe(IID);
+    const f = vi.fn(async () => antwort(200, { name: 'a.png', entwuerfe: 0, sperre: null, umstellbar: 0, newsletter: [] }));
+    vi.stubGlobal('fetch', f);
+    await medienLoeschen(loeschStart, 'a.png', false);
+    await medienLoeschen(loeschStart, 'a.png', true);
+    for (const call of f.mock.calls as unknown as [string, RequestInit][]) {
+      expect(call[0]).toBe('/marketing/editor/medien/loeschen');
+      expect((call[1].headers as Record<string, string>)['X-CSRF']).toBe('marke-1');
+      expect(JSON.parse(String(call[1].body)).iid).toBe(IID);
+    }
+    expect(JSON.parse(String((f.mock.calls[1] as unknown as [string, RequestInit])[1].body))).toEqual({
+      name: 'a.png',
+      bestaetigt: true,
+      iid: IID,
+    });
+  });
+
+  it('liest umstellbar und Newsletter mit umstellbar', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        antwort(200, {
+          name: 'a.png',
+          entwuerfe: 1,
+          sperre: null,
+          umstellbar: 2,
+          newsletter: [
+            { titel: 'Herbst', status: 'entwurf', umstellbar: true },
+            { titel: 'Alt', status: 'freigegeben', umstellbar: false },
+          ],
+        }),
+      ),
+    );
+    const r = await medienLoeschen(loeschStart, 'a.png', false);
+    expect(r).toEqual({
+      ok: true,
+      umgestellt: [],
+      info: {
+        name: 'a.png',
+        entwuerfe: 1,
+        sperre: null,
+        umstellbar: 2,
+        newsletter: [
+          { titel: 'Herbst', status: 'entwurf', umstellbar: true },
+          { titel: 'Alt', status: 'freigegeben', umstellbar: false },
+        ],
+      },
+    });
+  });
+
+  it('ältere Antwort ohne umstellbar: 0, kein Absturz', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => antwort(200, { name: 'a.png', entwuerfe: 0, sperre: null, newsletter: [{ titel: 'X', status: 'entwurf' }] })),
+    );
+    const r = await medienLoeschen(loeschStart, 'a.png', false);
+    expect(r.ok && r.info?.umstellbar).toBe(0);
+    expect(r.ok && r.info?.newsletter[0].umstellbar).toBe(false);
+    expect(r.ok && r.info && loeschFrage(r.info)).toContain('Das lässt sich nicht rückgängig machen.');
+  });
+
+  it('Sperre wird unverändert durchgereicht', async () => {
+    const sperre = 'Das Bild steckt im Newsletter „Herbst“, der zur Freigabe liegt – erst zurückziehen.';
+    vi.stubGlobal('fetch', vi.fn(async () => antwort(200, { name: 'a.png', entwuerfe: 0, sperre, umstellbar: 0, newsletter: [] })));
+    const r = await medienLoeschen(loeschStart, 'a.png', false);
+    expect(r.ok && r.info?.sperre).toBe(sperre);
+  });
+
+  it('bestätigt: umgestellte Entwürfe kommen mit', async () => {
+    const umgestellt = [{ id: IID, titel: 'Herbst', fassung: 9 }];
+    vi.stubGlobal('fetch', vi.fn(async () => antwort(200, { geloescht: 'a.png', umgestellt })));
+    expect(await medienLoeschen(loeschStart, 'a.png', true)).toEqual({ ok: true, info: null, umgestellt });
+  });
+
+  it('409 nennt den Grund und die schon umgestellten', async () => {
+    const umgestellt = [{ id: 'x', titel: 'Herbst', fassung: 9 }];
+    vi.stubGlobal('fetch', vi.fn(async () => antwort(409, { grund: 'Der Assistent arbeitet gerade', umgestellt })));
+    expect(await medienLoeschen(loeschStart, 'a.png', true)).toEqual({ ok: false, grund: 'Der Assistent arbeitet gerade', umgestellt });
+  });
+});
+
+describe('loeschFrage', () => {
+  const info = (teil: Partial<LoeschInfo> = {}): LoeschInfo => ({
+    name: 'a.png',
+    entwuerfe: 0,
+    sperre: null,
+    umstellbar: 2,
+    newsletter: [
+      { titel: 'Herbst-Newsletter', status: 'entwurf', umstellbar: true },
+      { titel: 'Einladung Hausmesse', status: 'entwurf', umstellbar: true },
+      { titel: 'Längst verschickt', status: 'freigegeben', umstellbar: false },
+    ],
+    ...teil,
+  });
+
+  it('nennt die Zahl, beide Titel und den Platzhalter', () => {
+    const t = loeschFrage(info());
+    expect(t).toContain('„a.png“ endgültig aus den Medien löschen?');
+    expect(t).toContain('in 2 Entwürfen verwendet');
+    expect(t).toContain('Herbst-Newsletter');
+    expect(t).toContain('Einladung Hausmesse');
+    expect(t).not.toContain('Längst verschickt');
+    expect(t).toContain('Platzhalter');
+    expect(t.endsWith('Das lässt sich nicht rückgängig machen.')).toBe(true);
+  });
+
+  it('ein Entwurf in der Einzahl, Sales-Entwürfe dazu', () => {
+    const t = loeschFrage(info({ umstellbar: 1, entwuerfe: 3, newsletter: [{ titel: 'Herbst', status: 'entwurf', umstellbar: true }] }));
+    expect(t).toContain('in 1 Entwurf verwendet: Herbst.');
+    expect(t).toContain('3 Sales-Entwurf/Entwürfe nennen diese Datei');
+  });
+
+  it('ohne umstellbare Entwürfe keine Platzhalter-Warnung', () => {
+    expect(loeschFrage(info({ umstellbar: 0, newsletter: [] }))).not.toContain('Platzhalter');
+  });
+});
+
+describe('neueFassungNachBildLoeschen', () => {
+  it('neuere Fassung des offenen Newsletters: Stand übernehmen, „neue Fassung“-Weg', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => antwort(200, { fassung: 9, auftraege: [] })));
+    pultStore.setState({ start: loeschStart, basis: 8, ungespeichert: true, stand: null });
+    expect(await neueFassungNachBildLoeschen()).toBe(true);
+    expect(pultStore.getState().stand?.fassung).toBe(9);
+  });
+
+  it('keine neuere Fassung: nichts', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => antwort(200, { fassung: 8, auftraege: [] })));
+    pultStore.setState({ start: loeschStart, basis: 8, ungespeichert: true, stand: null });
+    expect(await neueFassungNachBildLoeschen()).toBe(false);
+  });
+});
+
+describe('geloeschtText', () => {
+  it('nennt die Entwürfe mit Platzhalter', () => {
+    expect(geloeschtText('a.png', 0)).toBe('„a.png“ gelöscht.');
+    expect(geloeschtText('a.png', 2)).toBe('„a.png“ gelöscht – 2 Entwürfe zeigen jetzt einen Platzhalter.');
+    expect(geloeschtText('a.png', 1)).toBe('„a.png“ gelöscht – 1 Entwurf zeigt jetzt einen Platzhalter.');
   });
 });

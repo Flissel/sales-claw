@@ -222,6 +222,20 @@ export async function newsletterSichern(
   return e;
 }
 
+// Nach dem Loeschen eines Bildes (E14): steckte es im offenen Newsletter, hat der Server eine neue Fassung
+// mit Platzhalter angelegt. Dann den Stand uebernehmen und den "neue Fassung"-Weg gehen (laedt neu oder
+// zeigt das Band, wenn hier Ungespeichertes liegt). Liefert, ob es eine neuere Fassung gab.
+export async function neueFassungNachBildLoeschen(): Promise<boolean> {
+  const { start, basis } = pultStore.getState();
+  if (!start) return false;
+  const s = await standLaden(start);
+  if (!s) return false;
+  pultStore.setState({ stand: s });
+  if (s.fassung <= basis) return false;
+  neueFassungLaden(s.fassung, s.auftraege);
+  return true;
+}
+
 let medienLaeuft: Promise<void> | null = null;
 export function medienLaden(neu = false) {
   const { start } = pultStore.getState();

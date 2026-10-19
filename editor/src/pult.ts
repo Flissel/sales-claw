@@ -403,38 +403,72 @@ export async function standLaden(s: Start): Promise<{ fassung: number; auftraege
 }
 
 
-export type LoeschInfo = { name: string; entwuerfe: number; sperre: string | null; newsletter: { titel: string; status: string }[] };
+export type LoeschNewsletter = { titel: string; status: string; umstellbar: boolean };
+export type LoeschInfo = {
+  name: string;
+  entwuerfe: number;
+  sperre: string | null;
+  // Eigene Entwuerfe im Editor-Format, deren Platz beim Loeschen zum Platzhalter wird (E4).
+  umstellbar: number;
+  newsletter: LoeschNewsletter[];
+};
+export type Umgestellt = { id: string; titel: string; fassung: number };
+
+// id dieses Newsletters aus den Startdaten (die Routen tragen sie: /marketing/editor/<id>/...).
+const INHALT_ID = /\/marketing\/editor\/([0-9a-fA-F-]{36})\//;
+export function inhaltId(s: Pick<Start, 'speichern_url'>): string | null {
+  const m = INHALT_ID.exec(s.speichern_url ?? '');
+  return m ? m[1] : null;
+}
+
+function umgestelltLesen(v: unknown): Umgestellt[] {
+  return Array.isArray(v)
+    ? v.filter(istObjekt).map((u) => ({
+        id: String(u.id ?? ''),
+        titel: String(u.titel ?? ''),
+        fassung: typeof u.fassung === 'number' ? u.fassung : 0,
+      }))
+    : [];
+}
 
 // Zwei Schritte wie die Medienseite: bestaetigt=false prueft nur (nichts wird geloescht).
+// iid geht immer mit: ohne sie prueft sales-ui still mit der Firma des Ladens (E6).
 export async function medienLoeschen(
   s: Start,
   name: string,
   bestaetigt: boolean,
-): Promise<{ ok: true; info: LoeschInfo | null } | { ok: false; grund: string }> {
+): Promise<{ ok: true; info: LoeschInfo | null; umgestellt: Umgestellt[] } | { ok: false; grund: string; umgestellt?: Umgestellt[] }> {
   if (!s.medien_loeschen_url) return { ok: false, grund: 'Löschen ist hier noch nicht eingerichtet' };
+  const iid = inhaltId(s);
   try {
     const r = await fetch(s.medien_loeschen_url, {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json', 'X-CSRF': s.csrf },
-      body: JSON.stringify({ name, bestaetigt }),
+      body: JSON.stringify(iid ? { name, bestaetigt, iid } : { name, bestaetigt }),
     });
     const j: unknown = await r.json().catch(() => ({}));
     if (!r.ok) {
       const grund = istObjekt(j) && typeof j.grund === 'string' && j.grund ? j.grund : 'Löschen gerade nicht möglich';
-      return { ok: false, grund };
+      return istObjekt(j) && Array.isArray(j.umgestellt) ? { ok: false, grund, umgestellt: umgestelltLesen(j.umgestellt) } : { ok: false, grund };
     }
-    if (bestaetigt) return { ok: true, info: null };
+    if (bestaetigt) return { ok: true, info: null, umgestellt: istObjekt(j) ? umgestelltLesen(j.umgestellt) : [] };
     if (!istObjekt(j) || typeof j.name !== 'string') return { ok: false, grund: 'Antwort unverständlich' };
     const newsletter = Array.isArray(j.newsletter)
-      ? j.newsletter.filter(istObjekt).map((v) => ({ titel: String(v.titel ?? ''), status: String(v.status ?? '') }))
+      ? j.newsletter.filter(istObjekt).map((v) => ({
+          titel: String(v.titel ?? ''),
+          status: String(v.status ?? ''),
+          umstellbar: v.umstellbar === true,
+        }))
       : [];
     return {
       ok: true,
+      umgestellt: [],
       info: {
         name: j.name,
         entwuerfe: typeof j.entwuerfe === 'number' ? j.entwuerfe : 0,
         sperre: typeof j.sperre === 'string' && j.sperre ? j.sperre : null,
+        umstellbar: typeof j.umstellbar === 'number' && j.umstellbar > 0 ? j.umstellbar : 0,
         newsletter,
       },
     };
@@ -443,14 +477,31 @@ export async function medienLoeschen(
   }
 }
 
-// Text fuer die Rueckfrage vor dem Loeschen.
+// Text fuer die Rueckfrage vor dem Loeschen (wie die Medienseite von sales-ui).
 export function loeschFrage(info: LoeschInfo): string {
   const teile = [`„${info.name}“ endgültig aus den Medien löschen?`];
+  if (info.umstellbar > 0) {
+    const n = info.umstellbar;
+    const titel = info.newsletter.filter((v) => v.umstellbar).map((v) => v.titel || '(ohne Titel)');
+    teile.push(
+      `Das Bild wird in ${n} ${n === 1 ? 'Entwurf' : 'Entwürfen'} verwendet` +
+        (titel.length > 0 ? `: ${titel.join(', ')}.` : '.') +
+        ' Dort wird der Platz zum Platzhalter (neue Fassung); ältere Fassungen bleiben unverändert.',
+    );
+  }
   if (info.entwuerfe > 0) {
     teile.push(`${info.entwuerfe} Sales-Entwurf/Entwürfe nennen diese Datei und scheitern danach beim Zustellen.`);
   }
   teile.push('Das lässt sich nicht rückgängig machen.');
   return teile.join(' ');
+}
+
+// Rueckmeldung nach dem Loeschen.
+export function geloeschtText(name: string, platzhalter: number): string {
+  if (platzhalter <= 0) return `„${name}“ gelöscht.`;
+  return platzhalter === 1
+    ? `„${name}“ gelöscht – 1 Entwurf zeigt jetzt einen Platzhalter.`
+    : `„${name}“ gelöscht – ${platzhalter} Entwürfe zeigen jetzt einen Platzhalter.`;
 }
 
 // POST mit X-CSRF an eine Editor-Route; liefert Status und Antwort (null = keine Verbindung).
