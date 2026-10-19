@@ -164,10 +164,24 @@ def angemeldet(pult):
     ui.ANMELDE_BREMSE.update({"fehler": 0, "gesperrt_bis": 0.0})
 
 
-def test_uebersicht(angemeldet):
+def _nl(n, status, art="newsletter"):
+    return {"id": f"{n:08d}-0000-0000-0000-000000000000", "art": art, "titel": f"T{n}", "status": status,
+            "erstellt_am": "2026-10-01", "fassungen": 1, "layout": None}
+
+
+def test_uebersicht(angemeldet, pult):
+    pult.inhalte = [_nl(n, "entwurf") for n in range(7)] + [_nl(10 + n, "eingereicht") for n in range(2)]
     s = angemeldet.get("/marketing", headers=HOST).text
     assert "VibeMind" in s and "fin2gether" in s
     assert "in Arbeit" in s and ">7<" in s and "zur Freigabe" in s and ">2<" in s
+
+
+def test_reiterzahl_zaehlt_nur_newsletter(angemeldet, pult):
+    """Die Zahl am Reiter und die Karten darunter kommen aus derselben Liste (Review zu Task 4)."""
+    pult.inhalte = [_nl(1, "eingereicht"), _nl(2, "eingereicht", art="kampagne"), _nl(3, "entwurf")]
+    s = angemeldet.get("/marketing?status=eingereicht", headers=HOST).text
+    assert 'aria-current="page">zur Freigabe <span class="zahl">1</span>' in s
+    assert s.count('<div class="layout-karte nl-karte">') == 1
 
 
 # --- Design-Review S3, Task 4: Newsletter-Galerie statt Zahlen-Übersicht --------
@@ -178,15 +192,16 @@ def test_uebersicht_ist_galerie_mit_vorschau(angemeldet, pult):
     assert f'src="/marketing/entwurf/{IID}/vorschau?fassung=2&amp;format=mail"' in s
     assert "Early Access" in s and f'href="/marketing/editor/{IID}"' in s
     assert "frame-src 'self'" in r.headers["content-security-policy"]
-    assert ("GET", "/inhalte?mandant=vibemind&art=newsletter&status=entwurf", None) in pult.aufrufe
+    assert ("GET", "/inhalte?mandant=vibemind&art=newsletter", None) in pult.aufrufe
     assert 'href="/marketing/vorlagen"' in s and 'href="/marketing/entwuerfe"' in s
     assert "<script" not in s
 
 
 def test_galerie_status_reiter_mit_zahlen(angemeldet, pult):
+    pult.inhalte = [_nl(1, "eingereicht"), _nl(2, "eingereicht"), _nl(3, "entwurf")]
     s = angemeldet.get("/marketing?status=eingereicht", headers=HOST).text
     assert 'aria-current="page">zur Freigabe <span class="zahl">2</span>' in s
-    assert ("GET", "/inhalte?mandant=vibemind&art=newsletter&status=eingereicht", None) in pult.aufrufe
+    assert ("GET", "/inhalte?mandant=vibemind&art=newsletter", None) in pult.aufrufe
 
 
 @pytest.mark.parametrize("q", ["status=<b>", "status=alle", "seite=-1", "seite=9999"])
@@ -218,7 +233,7 @@ def test_galerie_zwoelf_je_seite_mit_blaettern(angemeldet, pult):
 def test_galerie_trennt_zurueckgegeben_und_verlinkt_nach_status(angemeldet, pult):
     _liste(pult, _zeile("Offen-A", 1), _zeile("Ruhig-B", 0))
     z = _rumpf(angemeldet.get("/marketing?status=zurueckgegeben", headers=HOST).text)
-    assert "status=entwurf" in pult.aufrufe[-1][1]                  # API kennt nur DB-Status
+    assert pult.aufrufe[-1][1] == "/inhalte?mandant=vibemind&art=newsletter"   # eine Liste, getrennt wird hier
     assert "Offen-A" in z and "Ruhig-B" not in z
     a = _rumpf(angemeldet.get("/marketing", headers=HOST).text)
     assert "Ruhig-B" in a and "Offen-A" not in a
@@ -356,7 +371,7 @@ def test_i1_kein_api_aufruf_im_event_loop(angemeldet, pult):
     angemeldet.post(f"/marketing/entwurf/{IID}/entscheiden", headers=HOST, follow_redirects=False,
                     data={"csrf": ui.CSRF_TOKEN, "fassung": "2", "urteil": "ablehnen", "grund": "weg"})
     pfade = [a[1] for a in pult.aufrufe]
-    for teil in ("/uebersicht", "/inhalte?", f"/inhalte/{IID}", "/layouts?", "/vorschau?",
+    for teil in ("/inhalte?", f"/inhalte/{IID}", "/layouts?", "/vorschau?",
                  "/fassungen", "/entscheiden"):
         assert any(teil in p for p in pfade), teil
     assert pult.im_loop == []
@@ -648,7 +663,7 @@ def test_cookie_fin2gether_fragt_liste_und_layouts_an(angemeldet, pult):
     angemeldet.get("/marketing/entwuerfe", headers=h)
     angemeldet.get("/marketing/layouts", headers=h)
     fragen = _mandant_fragen(pult)
-    assert "/uebersicht?mandant=fin2gether" in fragen
+    assert "/inhalte?mandant=fin2gether&art=newsletter" in fragen
     assert any(p.startswith("/inhalte?") and "mandant=fin2gether" in p for p in fragen)
     assert "/marke?mandant=fin2gether" in fragen
     assert not any("mandant=vibemind" in p for p in fragen)
@@ -660,7 +675,7 @@ def test_boeses_cookie_faellt_auf_vibemind(angemeldet, pult, wert):
     assert r.status_code == 200 and "<script" not in r.text
     angemeldet.get("/marketing/layouts", headers=_mit_firma(angemeldet, wert))
     fragen = _mandant_fragen(pult)
-    assert "/uebersicht?mandant=vibemind" in fragen and "/marke?mandant=vibemind" in fragen
+    assert "/inhalte?mandant=vibemind&art=newsletter" in fragen and "/marke?mandant=vibemind" in fragen
     assert all(p.endswith("mandant=vibemind") or "mandant=vibemind&" in p for p in fragen)
 
 

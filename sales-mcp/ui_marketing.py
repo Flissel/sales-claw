@@ -215,27 +215,28 @@ def routen(ui) -> list:
 
     @ui._gesichert_seite
     async def uebersicht(request):
-        # Newsletter-Galerie (Design-Review S3, E10): Status-Reiter mit den Zaehlern
-        # aus /uebersicht, Karten nur fuer Newsletter. Beide Abfrageparameter laufen
-        # gegen Whitelist bzw. Klemme und werden nie roh zurueckgespiegelt.
+        # Newsletter-Galerie (Design-Review S3, E10): Status-Reiter und Karten aus EINER
+        # Liste aller Newsletter der Firma - so zaehlt ein Reiter genau die Karten darunter
+        # (/uebersicht zaehlt alle Arten). Beide Abfrageparameter laufen gegen Whitelist
+        # bzw. Klemme und werden nie roh zurueckgespiegelt.
         status = request.query_params.get("status", "")
         if status not in STATUS:
             status = "entwurf"
-        api_status = "entwurf" if status == "zurueckgegeben" else status
         try:
             m, liste = await marketing_mandant.firma(request)
-            d = await run_in_threadpool(marketing_pult.anfrage, "GET",
-                                        f"/uebersicht?mandant={urllib.parse.quote(m)}")
-            q = urllib.parse.urlencode({"mandant": m, "art": "newsletter", "status": api_status})
+            q = urllib.parse.urlencode({"mandant": m, "art": "newsletter"})
             dl = await run_in_threadpool(marketing_pult.anfrage, "GET", f"/inhalte?{q}")
         except marketing_pult.PultFehler as f:
             return fehler(f)
-        z = d.get("zaehler") or {}
-        inhalte = [i for i in dl.get("inhalte") or []
-                   if isinstance(i, dict) and i.get("art") == "newsletter"]
-        # Wie in entwuerfe: "zurueckgegeben" ist ein Entwurf mit offener Rueckmeldung.
-        if status in ("entwurf", "zurueckgegeben"):
-            inhalte = [i for i in inhalte if _hat_offene(i) == (status == "zurueckgegeben")]
+        alle = [i for i in dl.get("inhalte") or []
+                if isinstance(i, dict) and i.get("art") == "newsletter"]
+
+        def reiter_von(i: dict) -> str:
+            # Wie in entwuerfe: "zurueckgegeben" ist ein Entwurf mit offener Rueckmeldung.
+            st = i.get("status")
+            return "zurueckgegeben" if st == "entwurf" and _hat_offene(i) else str(st)
+        zahlen = {k: sum(1 for i in alle if reiter_von(i) == k) for k in STATUS}
+        inhalte = [i for i in alle if reiter_von(i) == status]
         letzte = max(1, math.ceil(len(inhalte) / GALERIE_SEITE))
         seite = min(max(_ganzzahl(request.query_params.get("seite")) or 1, 1), letzte)
 
@@ -246,7 +247,7 @@ def routen(ui) -> list:
             return "/marketing?" + urllib.parse.urlencode(
                 [("status", st)] + ([("seite", str(s))] if s > 1 else []))
 
-        reiter = ui_muster.reiter([(k, t, _ganzzahl(z.get(k)) or 0) for k, t in STATUS.items()],
+        reiter = ui_muster.reiter([(k, t, zahlen[k]) for k, t in STATUS.items()],
                                   status, verweis)
         karten = "".join(_newsletter_karte(e, i) for i in
                          inhalte[(seite - 1) * GALERIE_SEITE:seite * GALERIE_SEITE])
