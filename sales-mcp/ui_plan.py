@@ -179,6 +179,7 @@ def routen(ui) -> list:
                 + (f'<p class="plan-notiz">{e(notiz)}</p>' if notiz else "")
                 + (f'<p><a href="/marketing/entwurf/{e(urllib.parse.quote(str(p["inhalt"]), safe=""))}">'
                    'Zum Entwurf</a></p>' if p.get("inhalt") else "")
+                + ('<p><a href="/marketing/podcast">Folgen ansehen</a></p>' if art == "podcast" else "")
                 + f'<div class="plan-knoepfe">{knoepfe(p, zurueck)}</div></article>')
 
     @ui._gesichert_seite

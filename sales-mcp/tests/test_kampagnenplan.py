@@ -177,6 +177,15 @@ def test_reiter_zeigen_anzahl_und_filtern(angemeldet, pult):
     assert "monat=2026-09&amp;art=podcast" in s
 
 
+def test_podcast_eintrag_verweist_auf_die_podcast_seite(angemeldet, pult):
+    s = angemeldet.get("/marketing/plan?monat=2026-10", headers=HOST).text
+    # Fixture: genau ein Podcast-Eintrag, daneben Newsletter und Post - nur der Podcast bekommt den Link.
+    assert s.count("Folgen ansehen") == 1
+    assert '<a href="/marketing/podcast">Folgen ansehen</a>' in s
+    nur_post = angemeldet.get("/marketing/plan?monat=2026-10&art=post", headers=HOST).text
+    assert "Folgen ansehen" not in nur_post
+
+
 def test_gruppen_nach_tag_mit_wochentag(angemeldet, pult):
     s = angemeldet.get("/marketing/plan?monat=2026-10", headers=HOST).text
     assert s.index("Fr 2. Oktober") < s.index("Do 22. Oktober") < s.index("Sa 24. Oktober")
