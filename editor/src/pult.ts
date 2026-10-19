@@ -53,7 +53,16 @@ export type Start = {
   marke_hinweis_aus_url?: string;
   // Herkunft aus dem alten Freigabeweg (broadcast_proposals): Status und Kanal, sonst null.
   alter_weg?: { status?: string | null; kanal?: string | null } | null;
+  // Vorlagen und Verlauf (19.10.2026); fehlen bei aelterem sales-ui. vorlage_bild_url ist ein
+  // Praefix (Vorlagenname wird angehaengt), fassungen: hoechstens 30, neueste zuerst.
+  vorlagen_url?: string;
+  vorlage_bild_url?: string;
+  vorlage_url?: string;
+  wiederherstellen_url?: string;
+  fassungen?: FassungInfo[];
 };
+
+export type FassungInfo = { fassung: number; urheber: 'agent' | 'betreiber'; erstellt_am: string; format: string };
 
 // Wie die Entwurfsseite (ui_marketing.py): nur solange der alte Weg noch offen ist.
 export function alterWegHinweis(s: Pick<Start, 'alter_weg'>): string | null {
@@ -438,4 +447,76 @@ export function loeschFrage(info: LoeschInfo): string {
   }
   teile.push('Das lässt sich nicht rückgängig machen.');
   return teile.join(' ');
+}
+
+// POST mit X-CSRF an eine Editor-Route; liefert Status und Antwort (null = keine Verbindung).
+async function postJson(url: string, csrf: string, body: unknown): Promise<{ status: number; ok: boolean; j: Record<string, unknown> } | null> {
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF': csrf },
+      body: JSON.stringify(body),
+    });
+    const j: unknown = await r.json().catch(() => ({}));
+    return { status: r.status, ok: r.ok, j: istObjekt(j) ? j : {} };
+  } catch {
+    return null;
+  }
+}
+
+function grundAus(j: Record<string, unknown>, standard: string): string {
+  return typeof j.grund === 'string' && j.grund ? j.grund : standard;
+}
+
+export type VorlageInfo = { name: string; beschreibung: string; fassung: number };
+
+const VORLAGEN_FEHLEN = 'Vorlagen sind hier noch nicht eingerichtet';
+
+// Freigegebene Vorlagen der Firma dieses Newsletters; null = nicht erreichbar (oder nicht eingerichtet).
+export async function vorlagenListe(s: Start): Promise<VorlageInfo[] | null> {
+  if (!s.vorlagen_url) return null;
+  try {
+    const r = await fetch(s.vorlagen_url, { credentials: 'same-origin' });
+    if (!r.ok) return null;
+    const j: unknown = await r.json();
+    if (!istObjekt(j) || !Array.isArray(j.vorlagen)) return null;
+    return j.vorlagen.filter(istObjekt).flatMap((v) =>
+      typeof v.name === 'string' && v.name
+        ? [
+            {
+              name: v.name,
+              beschreibung: typeof v.beschreibung === 'string' ? v.beschreibung : '',
+              fassung: typeof v.fassung === 'number' ? v.fassung : 0,
+            },
+          ]
+        : [],
+    );
+  } catch {
+    return null;
+  }
+}
+
+// Vorlage auf diesen Entwurf anwenden: neue Fassung; Ablehnung (Assistent arbeitet, veraltete Basis) als Grund.
+export async function vorlageAnwenden(s: Start, vorlage: string, basis: number): Promise<Ergebnis> {
+  if (!s.vorlage_url) return { ok: false, konflikt: false, grund: VORLAGEN_FEHLEN };
+  const a = await postJson(s.vorlage_url, s.csrf, { vorlage, art: 'anwenden', basis_fassung: basis });
+  if (!a) return { ok: false, konflikt: false, grund: 'Keine Verbindung zum Pult' };
+  if (a.ok && typeof a.j.fassung === 'number') return { ok: true, fassung: a.j.fassung };
+  return { ok: false, konflikt: false, grund: grundAus(a.j, 'Anwenden gerade nicht möglich') };
+}
+
+// Neuer Entwurf aus der Vorlage (Firma dieses Newsletters); editorUrl nur als eigene Editor-Adresse.
+export async function vorlageAlsNeu(
+  s: Start,
+  vorlage: string,
+  titel: string,
+): Promise<{ ok: true; editorUrl: string } | { ok: false; grund: string }> {
+  if (!s.vorlage_url) return { ok: false, grund: VORLAGEN_FEHLEN };
+  const a = await postJson(s.vorlage_url, s.csrf, { vorlage, art: 'neu', titel });
+  if (!a) return { ok: false, grund: 'Keine Verbindung zum Pult' };
+  if (!a.ok) return { ok: false, grund: grundAus(a.j, 'Anlegen gerade nicht möglich') };
+  const url = a.j.editor_url;
+  if (typeof url !== 'string' || !url.startsWith('/marketing/editor/')) return { ok: false, grund: 'Antwort unverständlich' };
+  return { ok: true, editorUrl: url };
 }

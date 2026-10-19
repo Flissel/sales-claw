@@ -1,12 +1,13 @@
-import React from 'react';
+import React, { useState } from 'react';
 
-import { Box, Button, Card, CardContent, Drawer, Typography, useTheme } from '@mui/material';
+import { Box, Card, CardContent, Drawer, Tab, Tabs, Tooltip, Typography, useTheme } from '@mui/material';
 
 import { ABSCHNITTE, AbschnittSchluessel, DRAG_TYP, einfuegen } from '../abschnitte';
 import { getDocument, setDocument, setSelectedBlockId } from '../documents/editor/EditorContext';
 
 import { useGesperrt } from './Chat/Sperre';
 import { useInert } from './Chat/sperren';
+import VorlagenReiter from './VorlagenReiter';
 
 export const ABSCHNITT_LEISTE_BREITE = 240;
 
@@ -94,8 +95,64 @@ function Skizze({ schluessel }: { schluessel: AbschnittSchluessel }) {
   );
 }
 
+function AbschnittKarten() {
+  return (
+    <>
+      <Typography variant="caption" color="text.secondary" component="p" sx={{ mb: 1.5 }}>
+        In den Newsletter ziehen oder anklicken, um sie ans Ende zu setzen.
+      </Typography>
+      <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1 }}>
+        {ABSCHNITTE.map((a) => (
+          <Tooltip key={a.schluessel} title={a.beschreibung} placement="right">
+            <Card
+              variant="outlined"
+              draggable
+              role="button"
+              tabIndex={0}
+              aria-label={`${a.titel} einfügen`}
+              onDragStart={(e) => {
+                e.dataTransfer.setData(DRAG_TYP, a.schluessel);
+                e.dataTransfer.effectAllowed = 'copy';
+              }}
+              onClick={() => abschnittEinsetzen(a.schluessel, Infinity)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  abschnittEinsetzen(a.schluessel, Infinity);
+                }
+              }}
+              sx={{
+                cursor: 'grab',
+                '&:hover': { borderColor: 'primary.main' },
+                '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: 1 },
+              }}
+            >
+              <CardContent sx={{ p: 0.75, '&:last-child': { pb: 0.75 } }}>
+                <Skizze schluessel={a.schluessel} />
+                <Typography variant="subtitle2" sx={{ mt: 0.5, fontSize: 12, lineHeight: 1.25 }}>
+                  {a.titel}
+                </Typography>
+              </CardContent>
+            </Card>
+          </Tooltip>
+        ))}
+      </Box>
+      <Box component="details" sx={{ mt: 2 }}>
+        <Typography component="summary" variant="subtitle2" sx={{ cursor: 'pointer' }}>
+          Einzelbausteine
+        </Typography>
+        <Typography variant="caption" color="text.secondary" component="p" sx={{ mt: 0.5 }}>
+          Einzelne Blöcke fügst du über „+“ im Newsletter ein.
+        </Typography>
+      </Box>
+    </>
+  );
+}
+
 export default function AbschnittLeiste() {
+  // Die Sperre (Assistent arbeitet, liegt zur Freigabe) gilt fuer beide Reiter.
   const inertRef = useInert<HTMLDivElement>(useGesperrt());
+  const [reiter, setReiter] = useState<'abschnitte' | 'vorlagen'>('abschnitte');
   return (
     <Drawer
       variant="permanent"
@@ -106,47 +163,23 @@ export default function AbschnittLeiste() {
         '& .MuiDrawer-paper': { width: ABSCHNITT_LEISTE_BREITE, boxSizing: 'border-box' },
       }}
     >
-      <Box sx={{ p: 2, overflow: 'auto', height: '100%' }}>
-        <Box ref={inertRef}>
-        <Typography variant="h6" sx={{ mb: 0.5 }}>
-          Abschnitte
-        </Typography>
-        <Typography variant="caption" color="text.secondary" component="p" sx={{ mb: 1.5 }}>
-          In den Newsletter ziehen oder per Knopf ans Ende setzen.
-        </Typography>
-        {ABSCHNITTE.map((a) => (
-          <Card
-            key={a.schluessel}
-            variant="outlined"
-            draggable
-            onDragStart={(e) => {
-              e.dataTransfer.setData(DRAG_TYP, a.schluessel);
-              e.dataTransfer.effectAllowed = 'copy';
-            }}
-            sx={{ mb: 1.5, cursor: 'grab' }}
-          >
-            <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
-              <Skizze schluessel={a.schluessel} />
-              <Typography variant="subtitle2" sx={{ mt: 1 }}>
-                {a.titel}
-              </Typography>
-              <Typography variant="caption" color="text.secondary" component="p">
-                {a.beschreibung}
-              </Typography>
-              <Button size="small" sx={{ mt: 0.5 }} onClick={() => abschnittEinsetzen(a.schluessel, Infinity)}>
-                Einfügen
-              </Button>
-            </CardContent>
-          </Card>
-        ))}
-        <Box component="details" sx={{ mt: 2 }}>
-          <Typography component="summary" variant="subtitle2" sx={{ cursor: 'pointer' }}>
-            Einzelbausteine
-          </Typography>
-          <Typography variant="caption" color="text.secondary" component="p" sx={{ mt: 0.5 }}>
-            Einzelne Blöcke fügst du über „+“ im Newsletter ein.
-          </Typography>
-        </Box>
+      <Box ref={inertRef} sx={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+        <Tabs
+          value={reiter}
+          onChange={(_, v: 'abschnitte' | 'vorlagen') => setReiter(v)}
+          variant="fullWidth"
+          sx={{ borderBottom: 1, borderColor: 'divider', flexShrink: 0 }}
+        >
+          <Tab value="abschnitte" label="Abschnitte" id="reiter-abschnitte" aria-controls="leiste-abschnitte" />
+          <Tab value="vorlagen" label="Vorlagen" id="reiter-vorlagen" aria-controls="leiste-vorlagen" />
+        </Tabs>
+        <Box
+          role="tabpanel"
+          id={`leiste-${reiter}`}
+          aria-labelledby={`reiter-${reiter}`}
+          sx={{ p: 1.5, overflow: 'auto', flex: 1, minHeight: 0 }}
+        >
+          {reiter === 'abschnitte' ? <AbschnittKarten /> : <VorlagenReiter />}
         </Box>
       </Box>
     </Drawer>

@@ -118,3 +118,11 @@ def test_paket_kennt_veraltete_markierung():
     text = (ORDNER / "editor.js").read_text(encoding="utf-8")
     for s in ("aus der letzten Nachricht", "Wieder mitschicken"):
         assert s in text, s
+
+
+def test_paket_kennt_vorlagen_reiter():
+    # 2026-10-19 Task 8: linke Leiste mit Reitern, Vorlagen anwenden oder als neuer Entwurf
+    text = (ORDNER / "editor.js").read_text(encoding="utf-8")
+    for s in ("Auf diesen Entwurf anwenden …", "Als neuer Entwurf", "Vorlagen sind hier noch nicht eingerichtet",
+              "vorlage_bild_url", "Betreff und Vorschautext bleiben."):
+        assert s in text, s
