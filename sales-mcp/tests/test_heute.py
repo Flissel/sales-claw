@@ -5,6 +5,7 @@ Die Freigabe-Inbox zieht nach /freigaben; „/“ zeigt, was eine Entscheidung
 braucht, und rechts die Lage. Jede Zahl auf der Startseite kommt aus
 derselben Quelle wie die Seite, auf die sie verweist.
 """
+import re
 from datetime import datetime, timedelta
 
 import pytest
@@ -60,11 +61,11 @@ def _lead(name="Max Testperson", phone="+491701234567"):
 
 
 def _entwurf(lead, status="pending", kanal="whatsapp", text="Hallo?",
-             empfaenger="+491701234567"):
+             empfaenger="+491701234567", media_ref=None):
     return str(server._q(
-        "insert into drafts (lead_id, channel, recipient, body, status) "
-        "values (%s, %s, %s, %s, %s) returning id",
-        (lead, kanal, empfaenger, text, status))[0]["id"])
+        "insert into drafts (lead_id, channel, recipient, body, status, media_ref) "
+        "values (%s, %s, %s, %s, %s, %s) returning id",
+        (lead, kanal, empfaenger, text, status, media_ref))[0]["id"])
 
 
 def test_startseite_ist_heute():
@@ -165,3 +166,118 @@ def test_wiedervorlagen_und_einordnung_stehen_mit_zahl_da():
     # Aufgabe 8 (10.09.2026): bei genau einem offenen Posten nennt der Satz
     # die Art statt eines nichtssagenden „1 Entscheidung wartet".
     assert "1 Wiedervorlage wartet auf dich." in seite
+
+
+# --- Design-Review S3, Task 2 (19.10.2026): Kennzahlen, Zeilen mit Aktion,
+# rechte Spalte. E3 eng: Freigeben in der Zeile nur, wenn die Zeile den
+# GANZEN Entwurf zeigt; Lese-Stand und 409 gelten weiter.
+
+def test_kacheln_oben_in_fester_reihenfolge():
+    lead = _lead(); _entwurf(lead, text="Kurz")
+    s = _get("/").text
+    assert '<a class="kpi haupt" href="/freigaben"><b>1</b><span>Freigaben offen</span>' in s
+    assert (s.index("Freigaben offen") < s.index("Terminanfragen ohne Datum")
+            < s.index("Wiedervorlagen offen") < s.index("Unbekannte Absender"))
+
+
+def test_kurzer_entwurf_hat_freigeben_in_der_zeile():
+    lead = _lead(); d = _entwurf(lead, text="Hallo, passt Donnerstag?")
+    s = _get("/").text
+    assert f'<button class="primaer" form="fz-{d}">Freigeben</button>' in s
+    assert f'<form id="fz-{d}" method="post" action="/aktion/freigeben"' in s
+    assert 'name="zurueck" value="/"' in s and "Hallo, passt Donnerstag?" in s
+
+
+def test_kein_zeilenknopf_fuer_lange_oder_anhang_entwuerfe():
+    lead = _lead()
+    lang = _entwurf(lead, text="x " * 200)
+    anhang = _entwurf(lead, text="kurz", media_ref="a.pdf")
+    li = _entwurf(lead, kanal="linkedin", text="kurz")
+    s = _get("/").text
+    for d in (lang, anhang, li):
+        assert f'form="fz-{d}"' not in s
+        assert f'id="f-{d}"' in s           # aufklappbar, Freigeben im Rumpf
+
+
+def test_direkt_freigebbar_eng_nach_e3(monkeypatch):
+    monkeypatch.setattr(ui, "_schon_angeschrieben", lambda z: "")
+    basis = {"id": "1", "channel": "email", "body": "Kurz", "media_ref": None,
+             "cc": None, "newsletter": False}
+    assert ui._direkt_freigebbar(basis)
+    assert not ui._direkt_freigebbar({**basis, "cc": "a@b.de"})
+    assert not ui._direkt_freigebbar({**basis, "newsletter": True})
+    assert not ui._direkt_freigebbar({**basis, "channel": "linkedin"})
+    assert not ui._direkt_freigebbar({**basis, "body": "y" * (ui.ZEILE_VOLLTEXT + 1)})
+    assert ui._direkt_freigebbar({**basis, "body": "y" * ui.ZEILE_VOLLTEXT})
+    monkeypatch.setattr(ui, "_schon_angeschrieben",
+                        lambda z: '<div class="hinweis">Schon angeschrieben: x</div>')
+    assert not ui._direkt_freigebbar(basis)
+
+
+def test_zeilenknopf_traegt_stand_und_scheitert_nach_aenderung():
+    lead = _lead(); d = _entwurf(lead, text="Erste Fassung")
+    stand = re.search(rf'id="fz-{d}".*?name="stand" value="([0-9a-f]+)"', _get("/").text, re.S).group(1)
+    server._q("update drafts set body = 'Zweite Fassung' where id = %s returning id", (d,))
+    r = _post("/aktion/freigeben", {"draft_id": d, "csrf": ui.CSRF_TOKEN, "stand": stand, "zurueck": "/"})
+    assert r.status_code == 409
+    assert server._q("select status from drafts where id = %s", (d,))[0]["status"] == "pending"
+
+
+def test_zeilenknopf_ohne_csrf_wird_abgewiesen():
+    lead = _lead(); d = _entwurf(lead, text="Kurz")
+    z = server._q("select body, body_html from drafts where id = %s", (d,))[0]
+    r = _post("/aktion/freigeben", {"draft_id": d, "stand": ui._entwurf_stand(z),
+                                    "zurueck": "/"})
+    assert r.status_code == 403
+    assert server._q("select status from drafts where id = %s", (d,))[0]["status"] == "pending"
+
+
+def test_freigeben_aus_heute_kehrt_nach_heute_zurueck():
+    lead = _lead(); d = _entwurf(lead, text="Kurz")
+    z = server._q("select body, body_html from drafts where id = %s", (d,))[0]
+    r = _post("/aktion/freigeben", {"draft_id": d, "csrf": ui.CSRF_TOKEN,
+                                    "stand": ui._entwurf_stand(z), "zurueck": "/"})
+    assert r.status_code == 303 and r.headers["location"] == "/"
+
+
+@pytest.mark.parametrize("ziel", ["//boese.de", "https://boese.de/", "/kontakte", ""])
+def test_zurueck_nur_aus_der_liste(ziel):
+    lead = _lead(); d = _entwurf(lead, text="Kurz")
+    r = _post("/aktion/ablehnen", {"draft_id": d, "csrf": ui.CSRF_TOKEN, "zurueck": ziel})
+    assert r.headers["location"] == "/freigaben"
+
+
+def test_wiedervorlage_erledigt_aus_heute_kehrt_nach_heute_zurueck():
+    lead = _lead()
+    wv = str(server._q(
+        "insert into activities (lead_id, type, payload, actor) values "
+        "(%s, 'wiedervorlage', %s::jsonb, 'human') returning id",
+        (lead, '{"faellig_am": "2026-01-01", "notiz": "Nachfassen"}'))[0]["id"])
+    s = _get("/").text
+    assert f'name="aktivitaets_id" value="{wv}"' in s
+    daten = {"lead_id": lead, "aktivitaets_id": wv, "csrf": ui.CSRF_TOKEN}
+    r = _post("/wiedervorlagen/erledigt", {**daten, "zurueck": "/"})
+    assert r.status_code == 303 and r.headers["location"] == "/"
+
+
+def test_wiedervorlage_zurueck_fremd_faellt_auf_vorgabe():
+    lead = _lead()
+    wv = str(server._q(
+        "insert into activities (lead_id, type, payload, actor) values "
+        "(%s, 'wiedervorlage', %s::jsonb, 'human') returning id",
+        (lead, '{"faellig_am": "2026-01-01", "notiz": "x"}'))[0]["id"])
+    r = _post("/wiedervorlagen/erledigt", {"lead_id": lead, "aktivitaets_id": wv,
+                                           "csrf": ui.CSRF_TOKEN,
+                                           "zurueck": "//boese.de"})
+    assert r.headers["location"] == "/wiedervorlagen"
+
+
+def test_zeilentitel_ist_escaped():
+    lead = _lead(name='<img src=x onerror="alert(1)">'); _entwurf(lead, text="Kurz")
+    s = _get("/").text
+    assert "<img src=x" not in s and "&lt;img" in s
+
+
+def test_rechte_spalte_hat_termine_pipeline_kanaele():
+    s = _get("/").text
+    assert s.index("<h2>Nächste Termine</h2>") < s.index("<h2>Pipeline</h2>") < s.index("<h2>Kanäle</h2>")

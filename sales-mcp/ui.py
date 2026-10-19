@@ -214,6 +214,7 @@ import ui_freigabe_newsletter
 import ui_empfehlungen
 import ui_kalender
 import ui_marketing
+import ui_muster
 import ui_plan
 import ui_podcast
 import ui_reels
@@ -922,15 +923,75 @@ nav.seite a.aktiv .zaehler { background: rgba(255,255,255,.22); color: inherit; 
 nav.seite .abmelden { margin-top: auto; padding: 0 .5rem; }
 /* Vier-Tab-Leiste (Schritt 7): am Desktop unsichtbar. */
 .tabs { display: none; }
-/* --- Startseite „Heute" (UI-Plan Schritt 2): Aufgaben links, Lage
-       rechts. Unter 768 px eine Spalte. ------------------------------ */
-.heute { display: flex; gap: 1.6rem; align-items: flex-start; }
-.heute .haupt { flex: 1 1 auto; min-width: 0; }
-.heute .rand { width: 20rem; flex: none; display: flex;
-               flex-direction: column; gap: 1.4rem; }
-.heute .rand h2 { margin-top: 0; font-size: .72rem; letter-spacing: .08em;
-                  text-transform: uppercase; color: var(--gedaempft); }
-.heute .haupt h2 { margin-top: 1.4rem; }
+/* --- Startseite „Heute" (UI-Plan Schritt 2; Design-Review S3, 19.10.2026):
+       Kennzahlen oben, Aufgaben links als Karten mit Zeilen, Lage rechts.
+       Unter 768 px eine Spalte. Nur Variablen aus :root, keine Hexwerte. -- */
+.kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: .9rem; margin: 1rem 0 1.4rem; }
+.kpi { display: block; background: var(--flaeche); color: var(--schrift);
+       border: 1px solid var(--linie); border-radius: 14px;
+       padding: 1rem 1.1rem; text-decoration: none; min-height: 44px;
+       box-shadow: 0 1px 2px color-mix(in srgb, var(--schrift) 7%, transparent); }
+.kpi b { display: block; font-family: var(--schrift_anzeige);
+         font-size: 1.8rem; font-weight: 700; line-height: 1.2;
+         font-variant-numeric: tabular-nums; }
+.kpi span { color: var(--gedaempft); font-size: .85rem; }
+.kpi:hover { border-color: var(--akzent); }
+.kpi.haupt { background: var(--akzent); border-color: var(--akzent);
+             color: var(--akzent_auf); }
+.kpi.haupt span { color: var(--akzent_auf); opacity: .85; }
+.raster { display: grid; grid-template-columns: minmax(0, 1fr) 20rem;
+          gap: 1.4rem; align-items: start; }
+.spalte-haupt, .spalte-rand { display: flex; flex-direction: column;
+                              gap: 1.1rem; min-width: 0; }
+.spalte-haupt > .karte, .spalte-rand > .karte { margin: 0; }
+.karte.liste, .karte.box { border-radius: 14px;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--schrift) 7%, transparent); }
+.karte.liste { padding: 0; overflow: hidden; }
+.karte.liste .kopf { display: flex; align-items: baseline; flex-wrap: wrap;
+                     justify-content: space-between; gap: .3rem 1rem;
+                     padding: 1rem 1.1rem .4rem; }
+.karte.liste .kopf h2, .karte.box h2 { margin: 0; font-size: 1.05rem; }
+.karte.liste .kopf a { text-decoration: none; font-weight: 600;
+                       color: var(--akzent_text); }
+.karte.liste .arten { padding: 0 1.1rem .5rem; margin: .2rem 0 0; }
+.karte.liste > p.leer, .karte.liste > p.mehr { padding: .2rem 1.1rem 1rem;
+                                               margin: 0; }
+.karte.box { padding: 1rem 1.1rem; }
+.karte.box h2 { margin-bottom: .6rem; }
+.karte.box h3 { font-size: .72rem; letter-spacing: .08em; margin: .8rem 0 .2rem;
+                text-transform: uppercase; color: var(--gedaempft); }
+.karte.box h2 + h3 { margin-top: 0; }
+.karte.box p { margin: .3rem 0; }
+/* Eine Zeile: Kanal, Inhalt, Aktion rechts. <details> für Entwürfe
+   (aufklappbar), <div> für Terminanfragen und Wiedervorlagen. */
+.liste details.zeile, .liste div.zeile { border-top: 1px solid var(--linie); }
+.liste details.zeile > summary, .liste div.zeile {
+  display: flex; align-items: center; gap: .8rem; padding: .8rem 1.1rem;
+  min-height: 44px; }
+.liste details.zeile > summary { cursor: pointer; list-style: none; }
+.liste details.zeile > summary::-webkit-details-marker { display: none; }
+.liste details.zeile > summary:hover { background: var(--kopfzeile); }
+.liste details.zeile[open] > summary { background: var(--kopfzeile); }
+.zeile > summary > .badge, div.zeile > .badge { margin: 0; flex: none; }
+.zeile .inhalt { flex: 1 1 auto; min-width: 0; }
+.zeile .titel { font-weight: 700; }
+.zeile .titel a { color: inherit; }
+.zeile .vorschau { display: block; color: var(--gedaempft); font-size: .9rem;
+                   white-space: nowrap; overflow: hidden;
+                   text-overflow: ellipsis; }
+/* Direkt freigebbar (E3): die Zeile zeigt den GANZEN Text, nie gekuerzt. */
+.zeile .vorschau.voll { white-space: normal; color: var(--schrift); }
+.zeile .aktion { display: flex; gap: .5rem; flex: none; align-items: center; }
+.zeile .rumpf { padding: .6rem 1.1rem 1rem; border-top: 1px solid var(--linie); }
+.knopf.leer, .knopf.sek { display: inline-flex; align-items: center;
+  justify-content: center; min-height: 44px; padding: .6rem 1.1rem;
+  border-radius: 10px; font-weight: 600; text-decoration: none;
+  white-space: nowrap; }
+.knopf.leer { background: transparent; color: var(--schrift);
+              border: 1px solid var(--linie_stark); }
+.zeile a.knopf.sek { background: var(--aktiv); color: var(--akzent_text);
+                    border: 1px solid var(--aktiv); }
 .arten { display: flex; flex-wrap: wrap; gap: .8rem; align-items: center;
          margin: .2rem 0 .6rem; }
 .art { display: inline-flex; align-items: center; gap: .4rem;
@@ -952,8 +1013,15 @@ nav.seite .abmelden { margin-top: auto; padding: 0 .5rem; }
             Menlo, Consolas, monospace; font-size: 1.1rem; }
 .kachel span { font-size: .72rem; color: var(--gedaempft); }
 @media (max-width: 767px) {
-  .heute { display: block; }
-  .heute .rand { width: auto; margin-top: 1.5rem; }
+  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem; }
+  .raster { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 639px) {
+  .liste details.zeile > summary, .liste div.zeile { flex-wrap: wrap; }
+  .zeile .inhalt { flex-basis: 100%; }
+  .zeile .vorschau { white-space: normal; }
+  .zeile .aktion { flex-direction: column; align-items: stretch; width: 100%; }
+  .zeile .aktion > *, .zeile .aktion form.aktion button { width: 100%; }
 }
 @media (max-width: 767px) {
   .rahmen { display: block; }
@@ -2008,21 +2076,35 @@ def _entwurf_stand(z) -> str:
 
 
 def _formular(aktion: str, draft_id, knopf: str, klasse: str = "",
-              checkbox: str | None = None, stand: str | None = None) -> str:
+              checkbox: str | None = None, stand: str | None = None,
+              zurueck: str | None = None) -> str:
     """Die Knopfklasse steht ZUSAETZLICH am Formular: die Media-Query rueckt
     den gefaehrlichen Knopf auf schmalen Schirmen ab, und das geht nur ueber
-    das Element, das die ganze Aktion umschliesst."""
+    das Element, das die ganze Aktion umschliesst.
+
+    `zurueck` (Design-Review S3, E5): wohin die Aktion danach fuehrt. Die
+    Route nimmt den Wert nur aus einer festen Liste (`_ruecksprung`)."""
     haken = (f'<label class="haken">'
              f'<input type="checkbox" name="bestaetigt" value="ja"> '
              f'{checkbox}</label>' if checkbox else "")
     stand_feld = (f'<input type="hidden" name="stand" value="{_e(stand)}">'
                   if stand is not None else "")
+    zurueck_feld = (f'<input type="hidden" name="zurueck" value="{_e(zurueck)}">'
+                    if zurueck is not None else "")
     return (f'<form class="aktion {klasse}" method="post" '
             f'action="/aktion/{aktion}">'
             f'<input type="hidden" name="draft_id" value="{_e(draft_id)}">'
             f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
-            f'{stand_feld}{haken}<button class="{klasse}">{knopf}</button>'
+            f'{stand_feld}{zurueck_feld}{haken}<button class="{klasse}">{knopf}</button>'
             f'</form>')
+
+
+def _ruecksprung(form, erlaubt: tuple[str, ...], vorgabe: str) -> str:
+    """Ziel nach einer Aktion (E5): nur ein Wert aus `erlaubt`, sonst die
+    bisherige Vorgabe. Der Wert wird nie roh weitergereicht, also kein
+    offener Redirect (`//fremd.de`, `https://…`)."""
+    wert = str(form.get("zurueck") or "")
+    return wert if wert in erlaubt else vorgabe
 
 
 def _entwurf_kopf(z, zustand: str) -> str:
@@ -2143,15 +2225,89 @@ def _entwurf_karte_offen(z) -> str:
         f'<b>{_e(z["name"] or "(ohne Kontakt)")}</b>'
         f'<span class="meta" title="{_e(text_normalisiert)}"> — {_e(vorschau)}'
         f'</span></summary>'
+        f'{_entwurf_rumpf(z)}</details>')
+
+
+def _entwurf_rumpf(z, zurueck: str | None = None,
+                   hinweis: str | None = None) -> str:
+    """Der aufgeklappte Teil einer Freigabe-Karte: Kopf, Hinweis „Schon
+    angeschrieben“, ganzer Text, Bearbeiten, Freigeben/Ablehnen. Gemeinsam
+    fuer /freigaben (Karte) und „Heute“ (Zeile); `zurueck` geht an beide
+    Entscheidungsknoepfe. `hinweis` ist der schon berechnete
+    `_schon_angeschrieben(z)` (spart die zweite Abfrage je Zeile)."""
+    text = z["body"] or ""
+    if hinweis is None:
+        hinweis = _schon_angeschrieben(z)
+    return (
         f'{_entwurf_kopf(z, "pending")}'
-        f'{_schon_angeschrieben(z)}'
+        f'{hinweis}'
         f'<div class="text">{_text_html(text)}</div>'
         f'{_markier_block(z)}'
         f'{_newsletter_ansicht(z) if z.get("newsletter") else _entwurf_bearbeiten_form(z, text)}'
         f'<div class="aktionen">'
-        f'{_formular("freigeben", z["id"], "Freigeben", "primaer", stand=_entwurf_stand(z))}'
-        f'{_formular("ablehnen", z["id"], "Ablehnen", "gefahr")}'
-        f'</div></details>')
+        f'{_formular("freigeben", z["id"], "Freigeben", "primaer", stand=_entwurf_stand(z), zurueck=zurueck)}'
+        f'{_formular("ablehnen", z["id"], "Ablehnen", "gefahr", zurueck=zurueck)}'
+        f'</div>')
+
+
+# Design-Review S3, E3 (19.10.2026): Freigeben direkt in der Zeile nur, wenn
+# die Zeile den GANZEN Entwurf zeigt. Sonst waere der Knopf eine Freigabe
+# ohne Lesen.
+ZEILE_VOLLTEXT = 280
+_ZEILE_KANAELE = ("whatsapp", "email")
+
+
+def _direkt_freigebbar(z, hinweis: str | None = None) -> bool:
+    """E3 eng: nur WhatsApp/E-Mail, kurzer Text (<= ZEILE_VOLLTEXT nach
+    Normalisierung), kein Anhang, kein CC, kein Newsletter, keine HTML-Fassung
+    (die die Zeile nicht zeigt) und kein Hinweis „Schon angeschrieben“.
+    LinkedIn bleibt aussen vor (oeffentlicher Beitrag, Markier-Block)."""
+    if str(z.get("channel") or "") not in _ZEILE_KANAELE:
+        return False
+    if z.get("newsletter") or z.get("body_html"):
+        return False
+    if str(z.get("media_ref") or "").strip() or str(z.get("cc") or "").strip():
+        return False
+    text = " ".join(str(z.get("body") or "").split())
+    if not text or len(text) > ZEILE_VOLLTEXT:
+        return False
+    if hinweis is None:
+        hinweis = _schon_angeschrieben(z)
+    return hinweis == ""
+
+
+def _freigabe_zeile(z) -> str:
+    """Ein offener Entwurf als Zeile auf „Heute“ (E3/E4). Zugeklappt: Kanal,
+    Kontakt → Empfaenger (bei E-Mail mit Betreff) und Text, rechts „Ansehen“
+    und – nur wenn `_direkt_freigebbar` – „Freigeben“. Der Zeilenknopf steckt
+    nicht in einem Formular in `<summary>` (das waere verschachtelt), sondern
+    traegt `form="fz-<id>"`; das Formular mit Lese-Stand steht im Rumpf und
+    geht an dieselbe Route wie jede Freigabe (CSRF, Stand, 409)."""
+    hinweis = _schon_angeschrieben(z)
+    direkt = _direkt_freigebbar(z, hinweis)
+    did = _e(z["id"])
+    text = " ".join(str(z.get("body") or "").split())
+    vorschau = text if direkt else _kurz(text, ENTWURF_VORSCHAU)
+    betreff = (f' · {_e(z["subject"])}'
+               if z.get("channel") == "email" and z.get("subject") else "")
+    knopf = (f'<button class="primaer" form="fz-{did}">Freigeben</button>'
+             if direkt else "")
+    formular = (f'<form id="fz-{did}" method="post" action="/aktion/freigeben">'
+                f'<input type="hidden" name="draft_id" value="{did}">'
+                f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+                f'<input type="hidden" name="stand" value="{_e(_entwurf_stand(z))}">'
+                f'<input type="hidden" name="zurueck" value="/"></form>'
+                if direkt else "")
+    voll = " voll" if direkt else ""
+    return (
+        f'<details class="zeile" id="f-{did}"><summary>{_badge(z["channel"])}'
+        f'<span class="inhalt"><b class="titel">'
+        f'{_e(z["name"] or "(ohne Kontakt)")}</b> → {_e(z["recipient"])}'
+        f'{betreff}<span class="vorschau{voll}" title="{_e(text)}">'
+        f'{_e(vorschau)}</span></span>'
+        f'<span class="aktion"><span class="knopf leer">Ansehen</span>{knopf}'
+        f'</span></summary><div class="rumpf">{formular}'
+        f'{_entwurf_rumpf(z, zurueck="/", hinweis=hinweis)}</div></details>')
 
 
 def _newsletter_ansicht(z) -> str:
@@ -2912,7 +3068,9 @@ async def aktion_wiedervorlage_erledigt(request):
         aktivitaets_id=str(form.get("aktivitaets_id") or "")))
     if "fehler" in antwort:
         return _fehlerseite(409, "Nicht quittiert", _e(antwort["fehler"]))
-    return RedirectResponse("/wiedervorlagen", status_code=303)
+    return RedirectResponse(
+        _ruecksprung(form, ("/", "/wiedervorlagen"), "/wiedervorlagen"),
+        status_code=303)
 
 
 @_gesichert_seite
@@ -3267,6 +3425,10 @@ async def entwurf_html(request):
         "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"})
 
 
+# Erlaubte Ruecksprungziele nach Freigeben/Ablehnen (E5).
+_FREIGABE_ZIELE = ("/", "/freigaben")
+
+
 @_gesichert_seite
 async def aktion_freigeben(request):
     form, draft_id, abbruch = await _aktions_vorspann(request)
@@ -3304,7 +3466,8 @@ async def aktion_freigeben(request):
     _freigabe_loggen(zeilen[0])
     if zeilen[0]["lead_id"]:
         server.ignorieren_aufheben_sicher(zeilen[0]["lead_id"])
-    return RedirectResponse("/freigaben", status_code=303)
+    return RedirectResponse(_ruecksprung(form, _FREIGABE_ZIELE, "/freigaben"),
+                            status_code=303)
 
 
 @_gesichert_seite
@@ -3331,7 +3494,7 @@ async def aktion_bearbeiten(request):
 
 @_gesichert_seite
 async def aktion_ablehnen(request):
-    _form, draft_id, abbruch = await _aktions_vorspann(request)
+    form, draft_id, abbruch = await _aktions_vorspann(request)
     if abbruch:
         return abbruch
     # SQL wie server.entwurf_ablehnen.
@@ -3347,7 +3510,8 @@ async def aktion_ablehnen(request):
               (z["lead_id"], server._json({"draft_id": str(z["id"]),
                                            "kanal": z["channel"],
                                            "weg": "ui"})))
-    return RedirectResponse("/freigaben", status_code=303)
+    return RedirectResponse(_ruecksprung(form, _FREIGABE_ZIELE, "/freigaben"),
+                            status_code=303)
 
 
 @_gesichert_seite
@@ -7262,7 +7426,11 @@ async def heute(request):
     """Startseite (UI-Plan Schritt 2, 02.09.2026): was eine Entscheidung
     braucht, links — Freigaben je Art, Wiedervorlagen, Einordnung; die Lage
     rechts — Kalender, WhatsApp, Posteingang, Pipeline. Jede Zahl kommt aus
-    derselben Quelle wie die Seite, auf die sie verweist."""
+    derselben Quelle wie die Seite, auf die sie verweist.
+
+    Design-Review S3 (19.10.2026): oben vier Kennzahl-Kacheln, links Karten
+    mit Zeilen (Freigaben mit Aktion rechts, E3/E4), rechts „Nächste
+    Termine“, „Pipeline“ und „Kanäle“."""
     pending = server._q(
         "select d.id, d.channel, d.recipient, d.body, d.media_ref, d.subject, d.cc, d.newsletter, d.body_html, "
         "       extract(epoch from (now() - d.created_at)) / 3600 as alter_h, "
@@ -7330,76 +7498,123 @@ async def heute(request):
     satz = ("Nichts wartet auf dich. Alles läuft." if not offen else
             f"{offen} Posten warten auf dich: {', '.join(posten)}."
             if offen > 1 else f"{posten[0]} wartet auf dich.")
-    haupt = [f'<p class="meta">{WOCHENTAGE[jetzt.weekday()]}, {jetzt.day}. '
-             f'{MONATE[jetzt.month - 1]} {jetzt.year} · '
-             f'{jetzt.strftime("%H:%M")}</p><p>{_e(satz)}</p>']
+    kopf = (f'<p class="meta">{WOCHENTAGE[jetzt.weekday()]}, {jetzt.day}. '
+            f'{MONATE[jetzt.month - 1]} {jetzt.year} · '
+            f'{jetzt.strftime("%H:%M")}</p><p>{_e(satz)}</p>')
+    # Design-Review S3, E6 (19.10.2026): vier Kennzahlen in fester
+    # Reihenfolge, jede ein Link; dieselben Zahlen wie im Satz darueber.
+    kennzahlen = ui_muster.kennzahlen([
+        (len(pending), "Freigaben offen", "/freigaben"),
+        (termine_offen_gesamt, "Terminanfragen ohne Datum", "/freigaben"),
+        (wiedervorlagen_gesamt, "Wiedervorlagen offen", "/wiedervorlagen"),
+        (einordnung_offen, "Unbekannte Absender", "/einordnung"),
+    ])
 
-    haupt.append('<h2>Freigaben</h2><div class="arten">')
+    haupt = []
+    freigaben = ['<section class="karte liste"><div class="kopf">'
+                 '<h2>Freigaben</h2><a href="/freigaben">Alle Freigaben</a>'
+                 '</div><div class="arten">']
     for art, name in FREIGABE_ARTEN:
-        haupt.append(f'<span class="art">'
-                     f'<span class="badge {_e(art)}">{_e(name)}</span>'
-                     f'<b>{len(je_art.get(art, []))}</b></span>')
-    haupt.append(f'<span class="art"><span class="badge termin">Termine</span>'
-                 f'<b>{termine_offen_gesamt}</b></span>'
-                 f'<a href="/freigaben">Alle Freigaben</a></div>')
+        freigaben.append(f'<span class="art">'
+                         f'<span class="badge {_e(art)}">{_e(name)}</span>'
+                         f'<b>{len(je_art.get(art, []))}</b></span>')
+    freigaben.append(f'<span class="art"><span class="badge termin">Termine</span>'
+                     f'<b>{termine_offen_gesamt}</b></span></div>')
     # Chips und Satz speisen aus denselben Zahlen (Betreiber-Klarstellung
     # 10.09.2026): der Chip „Termine 2" und „Keine offenen Entwürfe" kamen
     # bisher aus getrennten Rechnungen (`pending` allein) und konnten sich
     # deshalb widersprechen.
     if not pending and not termine_offen_gesamt:
-        haupt.append("<p>Keine offenen Entwürfe.</p>")
+        freigaben.append('<p class="leer">Keine offenen Entwürfe.</p>')
     for art, name in FREIGABE_ARTEN:
         zeilen = je_art.get(art, [])
         for z in zeilen[:HEUTE_JE_ART]:
-            haupt.append(_entwurf_karte_offen(z))
+            freigaben.append(_freigabe_zeile(z))
         if len(zeilen) > HEUTE_JE_ART:
-            haupt.append(f'<p class="meta">+ {len(zeilen) - HEUTE_JE_ART} '
-                         f'weitere {_e(name)}-Entwürfe unter '
-                         f'<a href="/freigaben">Freigaben</a>.</p>')
+            freigaben.append(f'<p class="meta mehr">+ {len(zeilen) - HEUTE_JE_ART} '
+                             f'weitere {_e(name)}-Entwürfe unter '
+                             f'<a href="/freigaben">Freigaben</a>.</p>')
     for art in je_art:
         if art not in dict(FREIGABE_ARTEN):
             for z in je_art[art][:HEUTE_JE_ART]:
-                haupt.append(_entwurf_karte_offen(z))
+                freigaben.append(_freigabe_zeile(z))
+    freigaben.append('</section>')
+    haupt.append("".join(freigaben))
+
     if termine_offen:
-        haupt.append('<h2>Termine ohne festes Datum</h2>')
+        termine = ['<section class="karte liste"><div class="kopf">'
+                   '<h2>Termine ohne festes Datum</h2>'
+                   '<a href="/freigaben">Alle Terminanfragen</a></div>']
         for z in termine_offen:
             last = z["payload"] or {}
             voll = str(last.get("inhalt") or last.get("thema") or "")
-            haupt.append(
-                f'<div class="karte"><b><a href="/kontakte/{_e(z["lead_id"])}">'
-                f'{_e(z["name"] or "?")}</a></b> '
-                f'<span class="meta" title="{_e(voll)}">{_e(_kurz(voll, 160))}'
-                f'</span> · <a href="/kalender">im Kalender</a></div>')
-        # Die Kacheln bleiben gedeckelt (limit 5) — steht die Gesamtzahl im
+            termine.append(
+                f'<div class="zeile"><span class="badge termin">Termin</span>'
+                f'<span class="inhalt"><b class="titel">'
+                f'<a href="/kontakte/{_e(z["lead_id"])}">{_e(z["name"] or "?")}'
+                f'</a></b><span class="vorschau" title="{_e(voll)}">'
+                f'{_e(_kurz(voll, 160))}</span></span>'
+                f'<span class="aktion"><a class="knopf sek" href="/kalender">'
+                f'Im Kalender eintragen</a></span></div>')
+        # Die Zeilen bleiben gedeckelt (limit 5) — steht die Gesamtzahl im
         # Kopfsatz hoeher, muss sichtbar sein, dass hier nur ein Teil steht
         # (sonst fragt der Betreiber sich, wo die uebrigen sind).
         if termine_offen_gesamt > len(termine_offen):
-            haupt.append(f'<p class="meta">{len(termine_offen)} von '
-                         f'{termine_offen_gesamt} gezeigt — den Rest zeigt '
-                         f'<a href="/freigaben">Freigaben</a>.</p>')
+            termine.append(f'<p class="meta mehr">{len(termine_offen)} von '
+                           f'{termine_offen_gesamt} gezeigt — den Rest zeigt '
+                           f'<a href="/freigaben">Freigaben</a>.</p>')
+        termine.append('</section>')
+        haupt.append("".join(termine))
 
-    haupt.append(f'<h2>Wiedervorlagen ({wiedervorlagen_gesamt})</h2>')
+    gezeigt_auf_seite = min(wiedervorlagen_gesamt, WIEDERVORLAGEN_MAX)
+    alle_wv = (f"Alle {gezeigt_auf_seite} Wiedervorlagen"
+               if wiedervorlagen_gesamt > 5 else "Alle Wiedervorlagen")
+    wv = [f'<section class="karte liste"><div class="kopf">'
+          f'<h2>Wiedervorlagen ({wiedervorlagen_gesamt})</h2>'
+          f'<a href="/wiedervorlagen">{alle_wv}</a></div>']
     if wiedervorlagen:
-        haupt.append(_wiedervorlagen_tabelle(wiedervorlagen[:5]))
-        if wiedervorlagen_gesamt > 5:
-            gezeigt_auf_seite = min(wiedervorlagen_gesamt, WIEDERVORLAGEN_MAX)
-            haupt.append(f'<p class="meta"><a href="/wiedervorlagen">Alle '
-                         f'{gezeigt_auf_seite} Wiedervorlagen</a></p>')
+        heute_iso = date.today().isoformat()
+        for z in wiedervorlagen[:5]:
+            nutzlast = z["payload"] or {}
+            faellig = str(nutzlast.get("faellig_am") or "")
+            marke = " <b>(fällig)</b>" if faellig and faellig <= heute_iso else ""
+            wv.append(
+                f'<div class="zeile"><span class="inhalt"><b class="titel">'
+                f'<a href="/kontakte/{_e(z["lead_id"])}">'
+                f'{_e(z["name"] or "(ohne Kontakt)")}</a></b>'
+                f' · fällig am {_e(faellig)}{marke}'
+                f'<span class="vorschau">{_e(nutzlast.get("notiz"))}</span></span>'
+                f'<span class="aktion"><form class="aktion" method="post" '
+                f'action="/wiedervorlagen/erledigt">'
+                f'<input type="hidden" name="lead_id" value="{_e(z["lead_id"])}">'
+                f'<input type="hidden" name="aktivitaets_id" value="{_e(z["id"])}">'
+                f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+                f'<input type="hidden" name="zurueck" value="/">'
+                f'<button>Erledigt</button></form></span></div>')
     else:
-        haupt.append("<p>Keine offene Wiedervorlage.</p>")
+        wv.append('<p class="leer">Keine offene Wiedervorlage.</p>')
+    wv.append('</section>')
+    haupt.append("".join(wv))
 
-    haupt.append(f'<h2>Einordnung ({einordnung_offen})</h2>')
-    haupt.append(
-        f'<p>{"Kein unbekannter Absender wartet." if not einordnung_offen else f"{einordnung_offen} unbekannte Absender warten auf eine Entscheidung."} '
-        f'<a href="/einordnung">Einordnung öffnen</a></p>')
+    einordnung_satz = ("Kein unbekannter Absender wartet." if not einordnung_offen
+                       else f"{einordnung_offen} unbekannte Absender warten auf "
+                            f"eine Entscheidung.")
+    haupt.append(f'<section class="karte liste"><div class="kopf">'
+                 f'<h2>Einordnung ({einordnung_offen})</h2>'
+                 f'<a href="/einordnung">Einordnung öffnen</a></div>'
+                 f'<p class="leer">{einordnung_satz}</p></section>')
 
-    rand = (f'<div><h2>Kalender</h2>{_heute_kalender()}</div>'
-            f'<div><h2>WhatsApp</h2>{_heute_whatsapp()}</div>'
-            f'<div><h2>Posteingang</h2>{_heute_posteingang()}</div>'
-            f'<div><h2>Pipeline</h2>{_heute_pipeline()}</div>')
+    rand = (f'<section class="karte box"><h2>Nächste Termine</h2>'
+            f'{_heute_kalender()}</section>'
+            f'<section class="karte box"><h2>Pipeline</h2>'
+            f'{_heute_pipeline()}</section>'
+            f'<section class="karte box"><h2>Kanäle</h2>'
+            f'<h3>WhatsApp</h3>{_heute_whatsapp()}'
+            f'<h3>Posteingang</h3>{_heute_posteingang()}</section>')
     return _seite("Heute",
-                  f'<div class="heute"><div class="haupt">{"".join(haupt)}'
-                  f'</div><aside class="rand">{rand}</aside></div>')
+                  f'{kopf}{kennzahlen}<div class="raster">'
+                  f'<div class="spalte-haupt">{"".join(haupt)}</div>'
+                  f'<aside class="spalte-rand">{rand}</aside></div>')
 
 
 app = Starlette(routes=[

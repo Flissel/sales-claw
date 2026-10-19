@@ -28,3 +28,15 @@ def test_blaettern_ohne_zurueck_auf_seite_eins_und_ohne_weiter_am_ende():
     assert "Zurück" not in erste and '<a href="/m?seite=2">Weiter →</a>' in erste
     letzte = ui_muster.blaettern(2, 2, lambda s: f"/m?seite={s}")
     assert "Weiter" not in letzte and '<a href="/m?seite=1">← Zurück</a>' in letzte
+
+
+def test_kennzahlen_erste_ist_haupt_und_escaped():
+    h = ui_muster.kennzahlen([(4, "Freigaben offen", "/freigaben"), (0, "A & B", "/x")])
+    assert h.startswith('<div class="kpis"><a class="kpi haupt" href="/freigaben"><b>4</b>')
+    assert '<a class="kpi" href="/x"><b>0</b><span>A &amp; B</span></a>' in h
+    assert h.endswith("</div>")
+
+
+def test_kennzahlen_escaped_auch_den_pfad():
+    h = ui_muster.kennzahlen([(1, "x", '/a"><script>')])
+    assert "<script>" not in h and "&quot;&gt;&lt;script&gt;" in h

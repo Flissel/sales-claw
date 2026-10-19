@@ -1,5 +1,5 @@
 """Wiederkehrende Seitenbausteine von sales-ui (Design-Review S3, Plan
-2026-10-19-design-s3-s4.md E2): Reiter und Seitenblättern.
+2026-10-19-design-s3-s4.md E2): Kennzahlen, Reiter und Seitenblättern.
 
 Nur reine Funktionen: kein `import ui`, kein DB-Zugriff. Wer sie aufruft,
 liefert die fertigen Adressen (aus geprüften Werten gebaut); hier wird alles
@@ -14,6 +14,17 @@ from typing import Callable
 
 def _e(wert) -> str:
     return html.escape("" if wert is None else str(wert), quote=True)
+
+
+def kennzahlen(kacheln: list[tuple[int, str, str]]) -> str:
+    """Kennzahl-Kacheln als Links: `(zahl, beschriftung, href)` je Kachel.
+    Die erste trägt `haupt` (gefüllt, Akzentfarbe)."""
+    teile = []
+    for i, (zahl, beschriftung, href) in enumerate(kacheln):
+        klasse = "kpi haupt" if i == 0 else "kpi"
+        teile.append(f'<a class="{klasse}" href="{_e(href)}"><b>{_e(zahl)}</b>'
+                     f'<span>{_e(beschriftung)}</span></a>')
+    return f'<div class="kpis">{"".join(teile)}</div>'
 
 
 def reiter(eintraege: list[tuple[str, str, int | None]], aktiv: str,
