@@ -31,6 +31,7 @@ def test_fin2gether_hell_ist_lesbar():
     assert lm.kontrast(v["akzent_text"], v["grund"]) >= 4.5
     assert lm.kontrast(v["blush_text"], v["blush"]) >= 4.5
     assert v["akzent"] != "#f66c1e" and v["akzent"].startswith("#")   # abgedunkelt
+    assert lm.kontrast(v["linie_stark"], "#ffffff") >= 3.0 and lm.kontrast(v["gedaempft"], "#ffffff") >= 4.5
 
 
 def test_fin2gether_dunkel_ist_lesbar():
@@ -39,6 +40,7 @@ def test_fin2gether_dunkel_ist_lesbar():
     assert lm.kontrast(v["akzent_text"], v["aktiv"]) >= 4.5
     assert lm.kontrast(v["akzent_text"], v["flaeche"]) >= 4.5
     assert lm.kontrast(v["blush_text"], v["blush"]) >= 4.5
+    assert lm.kontrast(v["linie_stark"], v["flaeche"]) >= 3.0 and lm.kontrast(v["gedaempft"], v["flaeche"]) >= 4.5
 
 
 def test_schriften_der_marke():

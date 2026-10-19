@@ -119,6 +119,9 @@ def stil(m: dict | None) -> str:
     hell = {
         "grund": mischen(akzent, "#ffffff", 0.035), "kopfzeile": mischen(akzent, "#ffffff", 0.07),
         "aktiv": aktiv, "linie": mischen(akzent, "#ffffff", 0.16),
+        # Rahmen (3:1) und gedaempfter Text (4,5:1) ohne den Lila-Stich der Grundgestaltung
+        "linie_stark": dunkler_bis(mischen(akzent, "#9a9a9a", 0.15), "#ffffff", 3.0),
+        "gedaempft": dunkler_bis(mischen(akzent, "#6a6a6a", 0.1), "#ffffff"),
         "akzent": dunkler_bis(akzent, "#ffffff"), "akzent_auf": "#ffffff", "akzent_text": akzent_text,
         "verweis": akzent_text, "blush": blush, "blush_text": dunkler_bis(zweit, blush),
     }
@@ -130,6 +133,8 @@ def stil(m: dict | None) -> str:
     dunkel = {
         "grund": mischen(akzent, "#101012", 0.05), "flaeche": mischen(akzent, "#18181c", 0.06),
         "kopfzeile": mischen(akzent, "#1c1c20", 0.09), "aktiv": aktiv_d, "linie": mischen(akzent, "#2e2e34", 0.15),
+        "linie_stark": heller_bis(mischen(akzent, "#6e6e6e", 0.15), "#18181c", 3.0),
+        "gedaempft": heller_bis(mischen(akzent, "#a8a8a8", 0.1), "#18181c"),
         "akzent": heller_bis(akzent, auf_d), "akzent_auf": auf_d, "akzent_text": akzent_text_d,
         "verweis": akzent_text_d, "blush": blush_d, "blush_text": heller_bis(zweit, blush_d),
     }
