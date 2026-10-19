@@ -221,6 +221,56 @@ def test_zurueck_traegt_reiter_in_den_knoepfen(angemeldet, pult):
     assert 'name="zurueck" value="/marketing/plan?monat=2026-10&amp;art=newsletter"' in s
 
 
+def test_formular_hat_drei_datumsfelder_keinen_datepicker(angemeldet, pult):
+    s = angemeldet.get("/marketing/plan?monat=2026-10&art=video", headers=HOST).text
+    assert 'name="datum_tag"' in s and 'name="datum_monat"' in s and 'name="datum_jahr"' in s
+    assert 'type="date"' not in s
+    assert '<option value="video" selected>' in s          # E5: Reiter = Vorgabe-Art
+    assert 'name="reiter" value="video"' in s
+
+
+def test_neu_aus_dreierauswahl(angemeldet, pult):
+    r = angemeldet.post("/marketing/plan/neu", headers=HOST, follow_redirects=False,
+        data={"csrf": ui.CSRF_TOKEN, "datum_tag": "3", "datum_monat": "11", "datum_jahr": "2026",
+              "art": "podcast", "titel": "Folge 3", "notiz": "", "reiter": "podcast"})
+    assert r.status_code == 303 and r.headers["location"] == "/marketing/plan?monat=2026-11&art=podcast"
+    assert pult.aufrufe[-1][2]["datum"] == "2026-11-03"
+
+
+def test_neu_andere_art_als_reiter_geht_auf_alle(angemeldet, pult):
+    r = angemeldet.post("/marketing/plan/neu", headers=HOST, follow_redirects=False,
+        data={"csrf": ui.CSRF_TOKEN, "datum_tag": "3", "datum_monat": "11", "datum_jahr": "2026",
+              "art": "post", "titel": "T", "reiter": "podcast"})
+    assert r.headers["location"] == "/marketing/plan?monat=2026-11"
+
+
+@pytest.mark.parametrize("t, m, j", [("31", "2", "2027"), ("31", "4", "2027"), ("29", "2", "2027"), ("1", "1", "2020")])
+def test_neu_unmoegliches_oder_vergangenes_datum_422(angemeldet, pult, t, m, j):
+    r = angemeldet.post("/marketing/plan/neu", headers=HOST, follow_redirects=False,
+        data={"csrf": ui.CSRF_TOKEN, "datum_tag": t, "datum_monat": m, "datum_jahr": j, "art": "post", "titel": "T"})
+    assert r.status_code == 422 and not any(a[0] == "POST" for a in pult.aufrufe)
+
+
+def test_verschieben_aus_dreierauswahl(angemeldet, pult):
+    r = angemeldet.post(f"/marketing/plan/{PID}", headers=HOST, follow_redirects=False,
+        data={"csrf": ui.CSRF_TOKEN, "aktion": "verschieben", "neu_tag": "29", "neu_monat": "10", "neu_jahr": "2026"})
+    assert r.status_code == 303 and pult.aufrufe[-1] == ("POST", f"/plan/{PID}", {"datum": "2026-10-29"})
+
+
+def test_verschieben_in_die_vergangenheit_422(angemeldet, pult):
+    r = angemeldet.post(f"/marketing/plan/{PID}", headers=HOST, follow_redirects=False,
+        data={"csrf": ui.CSRF_TOKEN, "aktion": "verschieben", "neu_tag": "1", "neu_monat": "1", "neu_jahr": "2020"})
+    assert r.status_code == 422 and not pult.aufrufe
+
+
+def test_datum_felder_vorgabe_und_jahre():
+    h = ui_plan.datum_felder("datum", date(2026, 10, 22), heute=date(2026, 10, 19))
+    assert 'name="datum_tag"' in h and 'name="datum_monat"' in h and 'name="datum_jahr"' in h
+    assert '<option value="22" selected>' in h and '<option value="10" selected>Oktober</option>' in h
+    assert '<option value="2026" selected>' in h and '<option value="2028"' in h and '"2029"' not in h
+    assert 'aria-label="Tag"' in h and 'aria-label="Monat"' in h and 'aria-label="Jahr"' in h
+
+
 def test_seite_api_weg_503(angemeldet, pult):
     pult.fehler = marketing_pult.PultFehler("nicht_erreichbar", "x")
     assert angemeldet.get("/marketing/plan", headers=HOST).status_code == 503
@@ -229,26 +279,26 @@ def test_seite_api_weg_503(angemeldet, pult):
 def test_neu_legt_fuer_gewaehlte_firma_an(angemeldet, pult):
     angemeldet.cookies.set("mk_mandant", "fin2gether", path="/marketing")
     r = angemeldet.post("/marketing/plan/neu", headers=HOST, follow_redirects=False,
-                        data={"csrf": ui.CSRF_TOKEN, "datum": "2026-11-03", "art": "podcast",
-                              "titel": " Folge 3 ", "notiz": "Gast"})
+                        data={"csrf": ui.CSRF_TOKEN, "datum_tag": "3", "datum_monat": "11", "datum_jahr": "2026",
+                              "art": "podcast", "titel": " Folge 3 ", "notiz": "Gast"})
     assert r.status_code == 303 and r.headers["location"] == "/marketing/plan?monat=2026-11"
     assert pult.aufrufe[-1] == ("POST", "/plan", {"mandant": "fin2gether", "datum": "2026-11-03",
                                                  "art": "podcast", "titel": "Folge 3", "notiz": "Gast"})
 
 
 @pytest.mark.parametrize("daten", [
-    {"datum": "03.11.2026", "art": "post", "titel": "T"},
-    {"datum": "2026-11-03", "art": "fax", "titel": "T"},
-    {"datum": "2026-11-03", "art": "post", "titel": "  "}])
+    {"art": "fax", "titel": "T"},
+    {"art": "post", "titel": "  "}])
 def test_neu_prueft_vorher(angemeldet, pult, daten):
     r = angemeldet.post("/marketing/plan/neu", headers=HOST, follow_redirects=False,
-                        data={"csrf": ui.CSRF_TOKEN, **daten})
+                        data={"csrf": ui.CSRF_TOKEN, "datum_tag": "3", "datum_monat": "11",
+                              "datum_jahr": "2026", **daten})
     assert r.status_code == 422 and not any(a[0] == "POST" for a in pult.aufrufe)
 
 
 def test_neu_ohne_csrf_403(angemeldet, pult):
     r = angemeldet.post("/marketing/plan/neu", headers=HOST, follow_redirects=False,
-                        data={"datum": "2026-11-03", "art": "post", "titel": "T"})
+                        data={"datum_tag": "3", "datum_monat": "11", "datum_jahr": "2026", "art": "post", "titel": "T"})
     assert r.status_code == 403 and not pult.aufrufe
 
 
@@ -264,12 +314,12 @@ def test_aktionen(angemeldet, pult, aktion, erwartet):
 
 def test_verschieben_schickt_nur_datum(angemeldet, pult):
     r = angemeldet.post(f"/marketing/plan/{PID}", headers=HOST, follow_redirects=False,
-                        data={"csrf": ui.CSRF_TOKEN, "aktion": "verschieben", "datum": "2026-10-29"})
+                        data={"csrf": ui.CSRF_TOKEN, "aktion": "verschieben", "neu_tag": "29", "neu_monat": "10", "neu_jahr": "2026"})
     assert r.status_code == 303 and pult.aufrufe[-1] == ("POST", f"/plan/{PID}", {"datum": "2026-10-29"})
 
 
 @pytest.mark.parametrize("daten", [
-    {"aktion": "vorschlag"}, {"aktion": ""}, {"aktion": "verschieben", "datum": "morgen"}])
+    {"aktion": "vorschlag"}, {"aktion": ""}, {"aktion": "verschieben", "neu_tag": "31", "neu_monat": "2", "neu_jahr": "2027"}])
 def test_aktion_unbekannt_oder_ohne_datum_422(angemeldet, pult, daten):
     r = angemeldet.post(f"/marketing/plan/{PID}", headers=HOST, follow_redirects=False,
                         data={"csrf": ui.CSRF_TOKEN, **daten})

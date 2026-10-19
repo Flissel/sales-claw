@@ -111,6 +111,28 @@ def plan_pfad(erster: date, art: str | None, abgesagte: bool) -> str:
     return "/marketing/plan?" + urllib.parse.urlencode(q)
 
 
+def datum_felder(praefix: str, vorgabe: date, heute: date | None = None) -> str:
+    """Drei Auswahlfelder Tag / Monat (ausgeschrieben) / Jahr statt <input type=date>.
+
+    Der Browser zeigt type=date in der Sprache des Betriebssystems, nicht der Seite;
+    die Auswahl bleibt deutsch. Namen: {praefix}_tag, _monat, _jahr."""
+    heute = heute or date.today()
+
+    def wahl(name: str, label: str, werte: list[tuple[int, str]], aktuell: int) -> str:
+        opt = "".join(f'<option value="{v}"{" selected" if v == aktuell else ""}>{t}</option>' for v, t in werte)
+        return f'<select name="{praefix}_{name}" aria-label="{label}">{opt}</select>'
+    return ('<span class="plan-datum">'
+            + wahl("tag", "Tag", [(i, str(i)) for i in range(1, 32)], vorgabe.day)
+            + wahl("monat", "Monat", [(i + 1, n) for i, n in enumerate(MONATE)], vorgabe.month)
+            + wahl("jahr", "Jahr", [(j, str(j)) for j in range(heute.year, heute.year + 3)], vorgabe.year)
+            + '</span>')
+
+
+def vergangen(iso: str) -> bool:
+    """Gestern ist noch erlaubt (gleiche Grenze wie plan_anlegen in der Marketing-API)."""
+    return date.fromisoformat(iso) < date.today() - timedelta(days=1)
+
+
 def routen(ui) -> list:
     e = ui._e
 
@@ -146,8 +168,7 @@ def routen(ui) -> list:
         teile.append(f'<details class="verschieben"><summary>Verschieben</summary>'
                      f'<form method="post" action="/marketing/plan/{pid}" class="aktion">{csrf()}'
                      f'<input type="hidden" name="zurueck" value="{e(zurueck)}">'
-                     f'<input type="date" name="datum" value="{e(str(p.get("datum") or ""))}" '
-                     f'aria-label="Neues Datum">'
+                     f'{datum_felder("neu", _tag(p.get("datum")) or date.today())}'
                      f'<button type="submit" name="aktion" value="verschieben">Verschieben</button></form>'
                      '</details>')
         return "".join(teile)
@@ -236,15 +257,20 @@ def routen(ui) -> list:
             agenda = (f'<div class="plan-leer"><p>Kein {e(ARTEN[art or "sonstiges"])}-Eintrag in {e(monat_name)}.</p>'
                       f'<a class="knopf" href="{e(plan_pfad(erster, None, abgesagte))}">Alle Arten zeigen</a></div>')
 
-        arten = "".join(f'<option value="{k}">{e(t)}</option>' for k, t in ARTEN.items())
+        vorgabe_art = art or "newsletter"
+        arten = "".join(f'<option value="{k}"{" selected" if k == vorgabe_art else ""}>{e(t)}</option>'
+                        for k, t in ARTEN.items())
+        vorgabe = heute if erster == heute.replace(day=1) else erster
         formular = (f'<section id="neu" class="plan-form"><h2>Neuer Eintrag</h2>'
                     f'<form method="post" action="/marketing/plan/neu" class="aktion">{csrf()}'
                     f'<input type="hidden" name="zurueck" value="{e(hier)}">'
-                    f'<label>Datum <input type="date" name="datum" required min="{date.today().isoformat()}"></label>'
+                    f'<input type="hidden" name="reiter" value="{e(art or "")}">'
+                    f'<fieldset><legend>Wann</legend>{datum_felder("datum", vorgabe, heute)}</fieldset>'
+                    '<fieldset><legend>Was</legend>'
                     f'<label>Art <select name="art">{arten}</select></label>'
                     '<label>Titel <input type="text" name="titel" required maxlength="120"></label>'
                     '<label>Notiz <textarea name="notiz" maxlength="1000" rows="2"></textarea></label>'
-                    '<button type="submit">Eintragen</button></form>'
+                    '</fieldset><button type="submit">Eintragen</button></form>'
                     '<p><small>Ein Eintrag ist nur ein Plan, er verschickt nichts. Hinaus geht weiterhin nur, '
                     'was über Entwurf und Freigabe läuft.</small></p></section>')
         return ui._seite("Kampagnenplan", marketing_mandant.umschalter(e, ui.CSRF_TOKEN, m, liste, hier)
@@ -256,11 +282,15 @@ def routen(ui) -> list:
         form = await request.form()
         if not ui._csrf_ok(form):
             return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
-        datum = datum_ok(form.get("datum"))
+        datum = datum_aus_teilen(form.get("datum_tag"), form.get("datum_monat"), form.get("datum_jahr"))
         art = str(form.get("art") or "")
         titel = str(form.get("titel") or "").strip()
-        if not datum or art not in ARTEN or not titel:
+        if not datum:
+            return ui._fehlerseite(422, "Nicht möglich", "Dieses Datum gibt es nicht. Bitte Tag, Monat und Jahr prüfen.")
+        if art not in ARTEN or not titel:
             return ui._fehlerseite(422, "Nicht möglich", "Datum, Art und Titel sind nötig.")
+        if vergangen(datum):
+            return ui._fehlerseite(422, "Nicht möglich", "Das Datum liegt in der Vergangenheit.")
         try:
             m, _ = await marketing_mandant.firma(request)
             await run_in_threadpool(marketing_pult.anfrage, "POST", "/plan",
@@ -268,7 +298,9 @@ def routen(ui) -> list:
                                      "notiz": str(form.get("notiz") or "")})
         except marketing_pult.PultFehler as f:
             return fehler(f)
-        return RedirectResponse(f"/marketing/plan?monat={datum[:7]}", status_code=303)
+        reiter = art_lesen(str(form.get("reiter") or ""))
+        return RedirectResponse(plan_pfad(date.fromisoformat(datum).replace(day=1),
+                                          art if reiter == art else None, False), status_code=303)
 
     @ui._gesichert_seite
     async def aendern(request):
@@ -277,9 +309,11 @@ def routen(ui) -> list:
             return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
         aktion = str(form.get("aktion") or "")
         if aktion == "verschieben":
-            datum = datum_ok(form.get("datum"))
+            datum = datum_aus_teilen(form.get("neu_tag"), form.get("neu_monat"), form.get("neu_jahr"))
             if not datum:
                 return ui._fehlerseite(422, "Nicht möglich", "Bitte ein gültiges neues Datum wählen.")
+            if vergangen(datum):
+                return ui._fehlerseite(422, "Nicht möglich", "Das Datum liegt in der Vergangenheit.")
             daten = {"datum": datum}
         elif aktion in AKTIONEN:
             daten = {"status": AKTIONEN[aktion]}
