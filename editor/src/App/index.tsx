@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 
-import { Stack, useTheme } from '@mui/material';
+import { Stack, useMediaQuery, useTheme } from '@mui/material';
 
 import type { ExportAuswahl } from '../chat';
-import { useInspectorDrawerOpen, useSelectedBlockId } from '../documents/editor/EditorContext';
+import { useInspectorDrawerOpen } from '../documents/editor/EditorContext';
+import { HANDY_GRENZE } from '../handy';
 import { pultStore } from '../pultZustand';
 
 import AbschnittLeiste, { ABSCHNITT_LEISTE_BREITE } from './AbschnittLeiste';
@@ -12,7 +13,9 @@ import SeitenGriff, { useSeitenBreite } from './Chat/SeitenGriff';
 import { Ansagen, SperrSchicht, useAgentArbeitet, useNurLesen } from './Chat/Sperre';
 import ExportDialog from './Export/ExportDialog';
 import GestaltungFenster from './Gestaltung/GestaltungFenster';
+import HandyApp from './Handy/HandyApp';
 import InspectorDrawer from './InspectorDrawer';
+import NewsletterChat, { Export } from './NewsletterChat';
 import { PULT_LEISTE_HOEHE } from './PultLeiste';
 import TemplatePanel from './TemplatePanel';
 
@@ -24,22 +27,7 @@ function useDrawerTransition(cssProperty: 'margin-left' | 'margin-right', open: 
   });
 }
 
-type Export = (v: ExportAuswahl | null) => void;
-
-const NEWSLETTER_VORSCHLAEGE = ['Mach den Kopf ruhiger', 'Farben aus dem Laden übernehmen', 'Bilder in Medien exportieren'];
 const FLAECHE_VORSCHLAEGE = ['Titel größer und mittig', 'Mehr Weißraum', 'Text gut lesbar auf dem Bild'];
-
-function NewsletterChat({ exportOeffnen }: { exportOeffnen: Export }) {
-  const auswahl = useSelectedBlockId();
-  return (
-    <ChatLeiste
-      kontext={{ fenster: 'newsletter', auswahl }}
-      hoehe="min(440px, 48vh)"
-      vorschlaege={NEWSLETTER_VORSCHLAEGE}
-      onExport={exportOeffnen}
-    />
-  );
-}
 
 function FensterChat({ exportOeffnen }: { exportOeffnen: Export }) {
   const id = pultStore((p) => p.gestaltungOffen);
@@ -68,6 +56,21 @@ export default function App() {
   const marginRightTransition = useDrawerTransition('margin-right', inspectorDrawerOpen);
   const [seitenBreite, setSeitenBreite] = useSeitenBreite();
   const rechts = inspectorDrawerOpen ? seitenBreite : 0;
+  // Handy (Design-Review S4, E15): nur Vorschau und Assistent; Export-Dialog und Ansagen bleiben.
+  const handy = useMediaQuery(HANDY_GRENZE);
+  const exportFenster = (
+    <ExportDialog offen={exportDialog !== null} vorbelegt={exportDialog?.vorbelegt ?? null} onClose={() => setExportDialog(null)} />
+  );
+
+  if (handy) {
+    return (
+      <>
+        <HandyApp exportOeffnen={exportOeffnen} />
+        <Ansagen />
+        {exportFenster}
+      </>
+    );
+  }
 
   return (
     <>
@@ -98,7 +101,7 @@ export default function App() {
         chat={<FensterChat exportOeffnen={exportOeffnen} />}
       />
       <Ansagen />
-      <ExportDialog offen={exportDialog !== null} vorbelegt={exportDialog?.vorbelegt ?? null} onClose={() => setExportDialog(null)} />
+      {exportFenster}
     </>
   );
 }

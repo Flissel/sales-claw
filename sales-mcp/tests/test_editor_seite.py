@@ -196,18 +196,18 @@ def test_editor_seite_einzige_mit_skript(angemeldet):
     assert start["vorschau_url"] == f"/marketing/entwurf/{IID}/vorschau"
     assert start["medien_url"] == f"/marketing/editor/medien.json?iid={IID}"
     assert start["zurueck_url"] == f"/marketing/entwurf/{IID}"
-    assert "Der Editor braucht einen größeren Bildschirm" in r.text
     # Nur ein Skript: das Paket. Das Datenelement ist kein Skript.
     assert len(re.findall(r"<script(?![^>]*application/json)", r.text)) == 1
 
 
-def test_schmal_hinweis_regel_vor_media_query(angemeldet):
-    """Die Grundregel .schmal{display:none} muss VOR der Media-Query stehen,
-    sonst ueberstimmt sie bei gleicher Spezifitaet das display:block (im
-    Browser-Smoke gemessen: Hinweis bei 390 px unsichtbar)."""
-    s = angemeldet.get(f"/marketing/editor/{IID}", headers=HOST).text
-    stil = re.search(r"<style>(.*?)</style>", s, re.S).group(1)
-    assert stil.index(".schmal{display:none") < stil.index("@media (max-width:767px)")
+def test_editor_seite_ohne_schmal_sperre_und_mit_rahmen(angemeldet):
+    """Design-Review S4 (19.10.2026, E15): am Handy zeigt der Editor selbst
+    Vorschau und Assistent - kein Sperr-Hinweis mehr. Die Vorschau ist ein
+    iframe derselben Herkunft, deshalb frame-src 'self'."""
+    r = angemeldet.get(f"/marketing/editor/{IID}", headers=HOST)
+    assert "größeren Bildschirm" not in r.text and 'class="schmal"' not in r.text
+    csp = r.headers["content-security-policy"]
+    assert "frame-src 'self'" in csp and "frame-ancestors 'none'" in csp
 
 
 def test_andere_pult_seiten_bleiben_skriptfrei(angemeldet):

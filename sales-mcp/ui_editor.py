@@ -310,13 +310,9 @@ def routen(ui) -> list:
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
             f'<title>Editor – {e(i.get("titel") or "")}</title>'
             '<link rel="stylesheet" href="/static/editor/editor.css">'
-            # Grundregel VOR der Media-Query - sonst gewinnt das spaetere
-            # display:none bei gleicher Spezifitaet (Smoke 29.09.: Hinweis
-            # blieb bei 390 px unsichtbar).
-            '<style>.schmal{display:none;padding:2rem;font-family:system-ui} '
-            '@media (max-width:767px){#root{display:none}.schmal{display:block}}</style></head><body>'
-            '<p class="schmal">Der Editor braucht einen größeren Bildschirm. '
-            f'<a href="/marketing/entwurf/{e(iid)}">Zurück zum Entwurf</a></p>'
+            # Kein Schmal-Hinweis mehr (Design-Review S4, 19.10.2026): unter
+            # 768 px zeigt der Editor selbst Vorschau und Assistent (HandyApp).
+            '</head><body>'
             '<div id="root"></div>'
             f'<script type="application/json" id="editor-start">{_json_im_html(start)}</script>'
             '<script src="/static/editor/editor.js" defer></script></body></html>')
