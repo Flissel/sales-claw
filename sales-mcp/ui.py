@@ -537,8 +537,10 @@ class HostWache:
 # Praefixe, keine Regex: eine Liste, die man vorlesen kann.
 # "/static/kalender" (14.10.2026): die zwei Paketdateien der Kalender-Seite
 # (ui_kalender) - ohne sie saehe die Rolle eine leere Seite.
+# "/mehr" (19.10.2026, Design-Review S4): am Handy der einzige Weg zu
+# Abmelden und zum (gefilterten) Menue - die Seite zeigt nur Erlaubtes.
 _KALENDER_ROLLE_PFADE = ("/team/kalender", "/kalender", "/static/kalender",
-                         "/static/marke",
+                         "/static/marke", "/mehr",
                          "/logout", "/login",
                          "/passwort-vergessen", "/passwort-neu")
 
@@ -921,8 +923,18 @@ nav.seite a.aktiv .zaehler { background: rgba(255,255,255,.22); color: inherit; 
 .zaehler.offen { background: var(--blush); color: var(--blush_text);
                  font-weight: 700; }
 nav.seite .abmelden { margin-top: auto; padding: 0 .5rem; }
-/* Vier-Tab-Leiste (Schritt 7): am Desktop unsichtbar. */
+/* Tab-Leiste (Design-Review S4): am Desktop unsichtbar. */
 .tabs { display: none; }
+/* Seite /mehr: das ganze Menue als Liste im Inhalt. */
+.menue { display: flex; flex-direction: column; gap: 1.1rem; }
+.menue .gruppe { background: var(--flaeche); border: 1px solid var(--linie);
+                 border-radius: 14px; padding: .7rem .4rem; }
+.menue a { color: var(--schrift); text-decoration: none; font-weight: 600;
+           display: flex; align-items: center; gap: .6rem;
+           min-height: 44px; padding: .5rem .7rem; border-radius: 6px; }
+.menue a:hover { background: var(--kopfzeile); }
+.menue-abmelden { margin-top: 1.4rem; }
+.menue-abmelden button { min-height: 44px; }
 /* --- Startseite „Heute" (UI-Plan Schritt 2; Design-Review S3, 19.10.2026):
        Kennzahlen oben, Aufgaben links als Karten mit Zeilen, Lage rechts.
        Unter 768 px eine Spalte. Nur Variablen aus :root, keine Hexwerte. -- */
@@ -1028,22 +1040,17 @@ nav.seite .abmelden { margin-top: auto; padding: 0 .5rem; }
 }
 @media (max-width: 767px) {
   .rahmen { display: block; }
-  nav.seite { display: flex; flex-direction: row; flex-wrap: wrap;
-              width: auto; height: auto; position: static;
-              gap: .15rem; padding: .3rem .5rem; }
-  nav.seite .marke, .gruppenname { display: none; }
-  .gruppe { display: contents; }
-  /* Oben bleibt nur die aktive Gruppe — die anderen drei sitzen unten. */
-  nav.seite .gruppe:not(.aktiv-gruppe) { display: none; }
-  nav.seite a { padding: .5rem .8rem; }
-  nav.seite .abmelden { margin-left: auto; padding: 0; }
+  /* Design-Review S4 (E13): EINE Navigation am Handy - die Tab-Leiste
+     unten. Oben steht nur noch die Seitenueberschrift, alles Weitere
+     auf /mehr. */
+  nav.seite { display: none; }
   nav.tabs { display: flex; position: fixed; bottom: 0; left: 0; right: 0;
-             z-index: 5; background: var(--balken);
+             z-index: 5; background: var(--flaeche);
              border-top: 1px solid var(--linie);
-             padding: .25rem .4rem calc(.4rem + env(safe-area-inset-bottom)); }
+             padding: 0 .4rem env(safe-area-inset-bottom); }
   nav.tabs a { flex: 1 1 0; display: flex; flex-direction: column;
                align-items: center; justify-content: center; gap: .1rem;
-               min-height: 56px; font-size: .7rem; font-weight: 600;
+               min-height: 56px; font-size: .78rem; font-weight: 600;
                letter-spacing: .04em; color: var(--gedaempft);
                text-decoration: none; min-width: 0; white-space: nowrap;
                overflow: hidden; text-overflow: ellipsis; }
@@ -1051,7 +1058,10 @@ nav.seite .abmelden { margin-top: auto; padding: 0 .5rem; }
      Beschriftung ist ein Flex-Kind - die Auslassung muss am <span> sitzen. */
   nav.tabs a > span:first-child { max-width: 100%; white-space: nowrap;
                                   overflow: hidden; text-overflow: ellipsis; }
-  nav.tabs a.aktiv { color: var(--balken_schrift); }
+  /* Aktiver Tab: Akzentfarbe mit Strich oben (nur Variablen - die Marke
+     des Ladens, _laden_stil, faerbt die Leiste mit). */
+  nav.tabs a { border-top: 3px solid transparent; }
+  nav.tabs a.aktiv { color: var(--akzent_text); border-top-color: var(--akzent); }
   nav.tabs .zaehler { margin-left: 0; }
   main { padding-bottom: 6rem; }
 }
@@ -1832,37 +1842,35 @@ def _zaehler() -> dict:
         return {}
 
 
-def _seitenleiste(abmelden: str) -> str:
-    aktiv = _AKTIVER_PFAD.get()
-    zaehler = _zaehler()
-    # Task 5: fuer die schmale Rolle `kalender` bleibt vom Menue nur, was
-    # `_pfad_erlaubt` auch betreten darf — sonst wuerde die Seitenleiste
-    # Verweise auf Kontakte/Freigaben/Posteingang zeigen, die alle in einem
-    # 403 enden. Fuer jede andere Rolle (leer/`lesen`/`freigeben`) liefert
-    # `_pfad_erlaubt` immer True, die Liste bleibt also unveraendert.
-    rolle = _AKTIVE_ROLLE.get()
+# Handy (Design-Review S4, 19.10.2026, E13): unter 768 px ist die Tab-Leiste
+# unten die EINZIGE Navigation - fuenf feste Ziele, alles Weitere auf /mehr.
+_HANDY_TABS = (("/", "Heute"), ("/freigaben", "Freigaben"),
+               ("/kontakte", "Kontakte"), ("/kalender", "Kalender"),
+               ("/mehr", "Mehr"))
+# Nur diese Tabs tragen einen Zaehler (Achtung-Farbe, wenn > 0).
+_HANDY_TAB_ZAEHLER = ("/", "/freigaben")
+
+
+def _menue_gruppen(rolle: str) -> tuple:
+    """`_GRUPPEN`, gefiltert durch `_pfad_erlaubt` - gemeinsam fuer die
+    Seitenleiste und /mehr. Task 5 (12.09.2026): fuer die schmale Rolle
+    `kalender` bleibt nur, was sie auch betreten darf (sonst Verweise, die
+    alle in einem 403 enden); fuer jede andere Rolle bleibt die Liste
+    unveraendert. Leere Gruppen fallen weg."""
     gruppen = tuple(
         (gruppe, tuple(e for e in eintraege if _pfad_erlaubt(rolle, e[0])))
         for gruppe, eintraege in _GRUPPEN)
-    gruppen = tuple(g for g in gruppen if g[1])
-    teile = ['<nav class="seite"><div class="marke">'
-             '<span class="logo" aria-hidden="true"></span>'
-             f'<span>{_e(laden_marke.name())}</span></div>']
-    # Die Gruppe der aktiven Seite: am Handy die einzige, die oben als
-    # Zeile bleibt (Schritt 7); ohne Treffer die erste (Aufgaben).
-    aktiver_pfad = _aktiver_eintrag(
-        aktiv, [pfad for _, eintraege in gruppen for pfad, _ in eintraege])
-    gruppe_aktiv = gruppen[0][0]
+    return tuple(g for g in gruppen if g[1])
+
+
+def _menue_links(gruppen, zaehler: dict, aktiver_pfad) -> str:
+    """Die Gruppen mit ihren Eintraegen und Zaehlern als HTML."""
+    teile = []
     for gruppe, eintraege in gruppen:
-        if any(pfad == aktiver_pfad for pfad, _ in eintraege):
-            gruppe_aktiv = gruppe
-    for gruppe, eintraege in gruppen:
-        marke = " aktiv-gruppe" if gruppe == gruppe_aktiv else ""
-        teile.append(f'<div class="gruppe{marke}"><div class="gruppenname">'
+        teile.append(f'<div class="gruppe"><div class="gruppenname">'
                      f'{_e(gruppe)}</div>')
         for pfad, name in eintraege:
-            ist_aktiv = pfad == aktiver_pfad
-            klasse = ' class="aktiv"' if ist_aktiv else ""
+            klasse = ' class="aktiv"' if pfad == aktiver_pfad else ""
             zahl = ""
             if pfad in zaehler:
                 n = int(zaehler[pfad])
@@ -1871,22 +1879,67 @@ def _seitenleiste(abmelden: str) -> str:
             teile.append(f'<a{klasse} href="{pfad}"><span>{_e(name)}</span>'
                          f'{zahl}</a>')
         teile.append("</div>")
-    teile.append(abmelden)
-    teile.append("</nav>")
-    # Vier-Tab-Leiste (Schritt 7): immer im HTML, am Desktop per CSS
-    # verborgen, am Handy fest am unteren Rand. Jeder Tab fuehrt auf die
-    # erste Seite seiner Gruppe; der Aufgaben-Tab traegt den Heute-Zaehler.
-    teile.append('<nav class="tabs">')
-    for gruppe, eintraege in gruppen:
-        pfad = eintraege[0][0]
-        klasse = "tab aktiv" if gruppe == gruppe_aktiv else "tab"
+    return "".join(teile)
+
+
+def _handy_tabs(rolle: str, aktiv: str, zaehler: dict) -> str:
+    """Die Tab-Leiste: immer im HTML, am Desktop per CSS verborgen, am
+    Handy fest am unteren Rand. Jedes Ziel laeuft durch `_pfad_erlaubt`
+    (Rolle `kalender`: Kalender + Mehr). Aktiv ist der passende Tab, sonst
+    - jede Seite ohne eigenen Tab - "Mehr"."""
+    tabs = tuple(t for t in _HANDY_TABS if _pfad_erlaubt(rolle, t[0]))
+    aktiver = _aktiver_eintrag(
+        aktiv, [p for p, _ in tabs if p != "/mehr"]) or "/mehr"
+    teile = ['<nav class="tabs">']
+    for pfad, name in tabs:
+        klasse = "tab aktiv" if pfad == aktiver else "tab"
         zahl = ""
-        if pfad == "/" and int(zaehler.get("/", 0) or 0) > 0:
-            zahl = f'<span class="zaehler offen">{int(zaehler["/"])}</span>'
-        teile.append(f'<a class="{klasse}" href="{pfad}"><span>{_e(gruppe)}'
+        if pfad in _HANDY_TAB_ZAEHLER and int(zaehler.get(pfad, 0) or 0) > 0:
+            zahl = f'<span class="zaehler offen">{int(zaehler[pfad])}</span>'
+        teile.append(f'<a class="{klasse}" href="{pfad}"><span>{_e(name)}'
                      f'</span>{zahl}</a>')
     teile.append("</nav>")
     return "".join(teile)
+
+
+def _seitenleiste(abmelden: str) -> str:
+    aktiv = _AKTIVER_PFAD.get()
+    zaehler = _zaehler()
+    rolle = _AKTIVE_ROLLE.get()
+    gruppen = _menue_gruppen(rolle)
+    aktiver_pfad = _aktiver_eintrag(
+        aktiv, [pfad for _, eintraege in gruppen for pfad, _ in eintraege])
+    return ('<nav class="seite"><div class="marke">'
+            '<span class="logo" aria-hidden="true"></span>'
+            f'<span>{_e(laden_marke.name())}</span></div>'
+            f'{_menue_links(gruppen, zaehler, aktiver_pfad)}{abmelden}</nav>'
+            f'{_handy_tabs(rolle, aktiv, zaehler)}')
+
+
+def _abmelden_formular() -> str:
+    """Abmelden nur bei scharfer Anmeldung - vorher gaebe es nichts zu
+    beenden, und der Knopf waere eine Luege."""
+    if not UI_SESSION_SECRET:
+        return ""
+    return (f'<form method="post" action="/logout" class="abmelden">'
+            f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+            f'<button type="submit">Abmelden</button></form>')
+
+
+def _mehr_rumpf() -> str:
+    """Seite /mehr (S4): das ganze Menue (gleiche Gruppen, gleiche Zaehler,
+    gleiche Rollenfilterung wie die Seitenleiste) plus Abmelden."""
+    gruppen = _menue_gruppen(_AKTIVE_ROLLE.get())
+    abmelden = _abmelden_formular()
+    if abmelden:
+        abmelden = f'<div class="menue-abmelden">{abmelden}</div>'
+    return (f'<div class="menue">{_menue_links(gruppen, _zaehler(), None)}'
+            f'</div>{abmelden}')
+
+
+@_gesichert_seite
+async def mehr(request):
+    return _seite("Mehr", _mehr_rumpf())
 
 # --- WhatsApp-Zustand (29.08.2026) ------------------------------------------
 # Gelesen wird mit einem VIEWER-Schluessel: er darf GET, aber kein send-text
@@ -1933,14 +1986,7 @@ def _seite(titel: str, rumpf: str, status: int = 200,
     Kopfkarte der Kontaktseite); `<title>` bleibt."""
     auffrischen = (f'<meta http-equiv="refresh" content="{int(refresh)}">'
                    if refresh else "")
-    # Abmelden nur bei scharfer Anmeldung — vorher gaebe es nichts zu
-    # beenden, und der Knopf waere eine Luege.
-    abmelden = ""
-    if UI_SESSION_SECRET:
-        abmelden = (f'<form method="post" action="/logout" class="abmelden">'
-                    f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
-                    f'<button type="submit">Abmelden</button></form>')
-    nav = _seitenleiste(abmelden)
+    nav = _seitenleiste(_abmelden_formular())
     return HTMLResponse(
         f'<!doctype html><html lang="de"><head><meta charset="utf-8">'
         # Ohne diese Zeile legt Safari eine 980px breite Desktop-Leinwand an
@@ -8028,6 +8074,8 @@ app = Starlette(routes=[
           methods=["POST"]),
     Route("/pipeline", pipeline),
     Route("/ergebnisse", ergebnisse),
+    # Handy (Design-Review S4): das ganze Menue hinter dem Tab "Mehr".
+    Route("/mehr", mehr),
     # Seite /kalender, JSON-Schnittstelle und Paketdateien (14.10.2026).
     *ui_kalender.routen(sys.modules[__name__]),
     # Empfehlungslisten (C4, 17.10.2026).

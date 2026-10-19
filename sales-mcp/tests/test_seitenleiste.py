@@ -100,12 +100,13 @@ def test_zaehler_fallen_leise_aus(monkeypatch):
     assert '<div class="gruppenname">Aufgaben</div>' in antwort.text
 
 
-def test_auf_dem_handy_wird_die_leiste_zur_zeile():
-    """Unter 768 px gibt es keine Seitenleiste; die Gruppen werden zur
-    umbrechenden Zeile wie bisher (die Vier-Tab-Leiste ist Schritt 7)."""
+def test_auf_dem_handy_gibt_es_oben_keine_leiste():
+    """Unter 768 px gibt es keine Seitenleiste mehr (Design-Review S4,
+    E13): die Tab-Leiste unten ist die einzige Navigation, der Rest steht
+    auf /mehr. Vorher wurde die Leiste oben zur umbrechenden Zeile."""
     seite = _get("/kontakte").text
-    assert ("nav.seite { display: flex; flex-direction: row; flex-wrap: wrap;"
-            in seite)
+    assert "nav.seite { display: none; }" in seite
+    assert "flex-direction: row; flex-wrap: wrap;" not in seite
     assert "@media (max-width: 767px)" in seite
 
 
@@ -144,7 +145,7 @@ def test_genau_der_laengste_passende_eintrag_ist_aktiv(pfad, erwartet):
     assert _aktive(pfad) == [erwartet]
 
 
-def test_detailseite_markiert_ihre_gruppe_als_aktiv_tab():
+def test_detailseite_ohne_eigenen_tab_markiert_mehr():
     t_pfad = ui._AKTIVER_PFAD.set("/marketing/entwurf/abc")
     t_rolle = ui._AKTIVE_ROLLE.set("freigeben")
     try:
@@ -152,7 +153,9 @@ def test_detailseite_markiert_ihre_gruppe_als_aktiv_tab():
     finally:
         ui._AKTIVER_PFAD.reset(t_pfad)
         ui._AKTIVE_ROLLE.reset(t_rolle)
-    assert '<a class="tab aktiv" href="/marketing"><span>Marketing' in leiste
+    # Marketing hat seit S4 (E13) keinen eigenen Tab: es liegt unter "Mehr".
+    assert '<a class="tab aktiv" href="/mehr"><span>Mehr' in leiste
+    assert '<a class="aktiv" href="/marketing/entwuerfe">' in leiste
 
 
 def _handy_block(css: str, selektor: str) -> str:

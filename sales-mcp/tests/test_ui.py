@@ -2059,10 +2059,13 @@ def test_die_seite_selbst_scrollt_nie_waagerecht():
     assert ".tabelle { overflow-x: auto;" in seite
 
 
-def test_navigation_umbricht_statt_ueberzulaufen():
+def test_navigation_laeuft_am_handy_nie_ueber():
+    """Seit dem Design-Review S4 (19.10.2026, E13) gibt es oben am Handy
+    keine Navigation mehr, die umbrechen muesste: die Seitenleiste ist
+    ausgeblendet, die fuenf Tabs unten teilen sich die Breite."""
     seite = _get("/freigaben").text
-    assert ("nav.seite { display: flex; flex-direction: row; flex-wrap: wrap;"
-            in seite)
+    assert "nav.seite { display: none; }" in seite
+    assert "nav.tabs a { flex: 1 1 0;" in seite
 
 
 # --- Tabellen: Spaltenueberschrift je Zelle, und NIE Fremddaten darin -------
