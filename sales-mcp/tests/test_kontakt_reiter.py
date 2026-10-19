@@ -276,3 +276,72 @@ def test_historie_alle_link_bleibt_im_verlauf():
                   (lead, f"Thema {i}"))
     s = _get(f"/kontakte/{lead}?reiter=verlauf").text
     assert 'href="?reiter=verlauf&amp;historie=alle#historie"' in s
+
+
+# --- Fix-Runde 1 (Review Task 3) ------------------------------------------------
+
+def _wiedervorlage(lead):
+    server.wiedervorlage_setzen(lead_id=lead, faellig_am="2099-01-01", notiz="Rückruf")
+    return str(server._q("select id from activities where lead_id = %s and type = 'wiedervorlage'",
+                         (lead,))[0]["id"])
+
+
+def test_erledigt_im_ueberblick_fuehrt_zurueck_zum_kontakt():
+    lead = _lead()
+    wv = _wiedervorlage(lead)
+    s = _get(f"/kontakte/{lead}").text
+    assert f'name="danach" value="/kontakte/{lead}?reiter=ueberblick"' in s
+    r = _post("/wiedervorlagen/erledigt", {"lead_id": lead, "aktivitaets_id": wv,
+                                           "danach": f"/kontakte/{lead}?reiter=ueberblick",
+                                           "csrf": ui.CSRF_TOKEN})
+    assert r.status_code == 303
+    assert r.headers["location"] == f"/kontakte/{lead}?reiter=ueberblick#wiedervorlage"
+
+
+@pytest.mark.parametrize("danach", [
+    "//boese.de", "https://boese.de", "/kontakte", "/kontakte/x?reiter=ueberblick",
+    "/kontakte/{anderer}?reiter=ueberblick", "/kontakte/{lead}?reiter=einstellungen",
+    "/kontakte/{lead}?reiter=ueberblick#x", "/kontakte/{lead}?reiter=ueberblick&a=b",
+    "/kontakte/{LEAD}?reiter=ueberblick", " /kontakte/{lead}?reiter=ueberblick"])
+def test_erledigt_kontaktziel_nur_nach_festem_muster(danach):
+    lead = _lead()
+    anderer = _lead(name="Andere Person", phone="+491709999999")
+    wv = _wiedervorlage(lead)
+    wert = danach.format(lead=lead, anderer=anderer, LEAD=lead.upper())
+    r = _post("/wiedervorlagen/erledigt", {"lead_id": lead, "aktivitaets_id": wv,
+                                           "danach": wert, "csrf": ui.CSRF_TOKEN})
+    assert r.status_code == 303 and r.headers["location"] == "/wiedervorlagen"
+
+
+def test_erledigt_von_wiedervorlagen_und_heute_unveraendert():
+    lead = _lead()
+    for danach, ziel in (("/", "/"), ("/wiedervorlagen", "/wiedervorlagen"), (None, "/wiedervorlagen")):
+        wv = _wiedervorlage(lead)
+        daten = {"lead_id": lead, "aktivitaets_id": wv, "csrf": ui.CSRF_TOKEN}
+        if danach is not None:
+            daten["danach"] = danach
+        assert _post("/wiedervorlagen/erledigt", daten).headers["location"] == ziel
+    # Die Liste /wiedervorlagen trägt weiter kein Rücksprungfeld.
+    wv = _wiedervorlage(lead)
+    assert wv and 'name="danach"' not in _get("/wiedervorlagen").text
+
+
+def test_letzte_kontakte_fehler_bricht_ueberblick_nicht(monkeypatch):
+    lead = _lead()
+
+    def kaputt(_):
+        raise ui.psycopg.Error("weg")
+    monkeypatch.setattr(ui.historie, "kontakt_historie", kaputt)
+    r = _get(f"/kontakte/{lead}")
+    assert r.status_code == 200
+    teil = r.text.split("<h2>Letzte Kontakte</h2>")[1]
+    assert "Gerade nicht lesbar." in teil and "Ganzer Verlauf" in teil
+
+
+def test_kontakt_ziel_haengt_abfrage_sauber_an():
+    lid = "11111111-1111-1111-1111-111111111111"
+    assert ui._kontakt_ziel(lid, "einstellungen", gespeichert="telefon") == \
+        f"/kontakte/{lid}?reiter=einstellungen&gespeichert=telefon"
+    assert ui._kontakt_ziel(lid, gespeichert="telefon") == f"/kontakte/{lid}?gespeichert=telefon"
+    assert ui._kontakt_ziel(lid, "einstellungen", "stufe", gespeichert="telefon") == \
+        f"/kontakte/{lid}?reiter=einstellungen&gespeichert=telefon#stufe"

@@ -1431,10 +1431,12 @@ def test_kontaktdaten_brechen_nicht_aus_dem_formularfeld_aus():
     das Attribut nicht schliessen — sonst waere der Rest der Zeile Markup."""
     lead = _lead(name='Anna"><script>alert(1)</script>',
                  phone='+49"><img src=x onerror=alert(2)>')
-    seite = _get(f"/kontakte/{lead}?reiter=einstellungen").text
-    assert "<script" not in seite and "<img" not in seite
-    assert '"><script' not in seite and '"><img' not in seite
-    assert "&lt;script&gt;" in seite and "&quot;&gt;" in seite
+    # Einstellungen: Formularfelder; Überblick: Stammdaten-Tabelle und Kopfkarte.
+    for reiter in ("einstellungen", "ueberblick"):
+        seite = _get(f"/kontakte/{lead}?reiter={reiter}").text
+        assert "<script" not in seite and "<img" not in seite, reiter
+        assert '"><script' not in seite and '"><img' not in seite, reiter
+        assert "&lt;script&gt;" in seite and "&quot;&gt;" in seite, reiter
     # Auch in der Liste (dort steht der Name neben einem href).
     liste = _get("/kontakte").text
     assert '"><script' not in liste and "&lt;script&gt;" in liste
@@ -1773,9 +1775,9 @@ def test_kontakte_und_verlauf_lassen_sich_nirgends_loeschen():
     assert "ON DELETE CASCADE" in seite
     # Auf den Datensatz-Seiten taucht kein Loeschweg auf. /medien steht
     # bewusst NICHT in der Liste: dort geht es um Dateien.
-    for pfad in ("/", "/kontakte", f"/kontakte/{lead}",
-                 f"/kontakte/{lead}?reiter=einstellungen", "/posteingang",
-                 "/einordnung", "/wiedervorlagen"):
+    for pfad in ("/", "/kontakte", f"/kontakte/{lead}", "/posteingang",
+                 "/einordnung", "/wiedervorlagen",
+                 *(f"/kontakte/{lead}?reiter={k}" for k, _ in ui.KONTAKT_REITER)):
         assert "/loeschen" not in _get(pfad).text
     # Routen mit „loesch" gibt es nur unter /medien — nirgends fuer
     # Kontakte, Entwuerfe oder Aktivitaeten.

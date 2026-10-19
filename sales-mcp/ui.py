@@ -3130,8 +3130,32 @@ async def aktion_wiedervorlage_erledigt(request):
     if "fehler" in antwort:
         return _fehlerseite(409, "Nicht quittiert", _e(antwort["fehler"]))
     return RedirectResponse(
-        _ruecksprung(form, ("/", "/wiedervorlagen"), "/wiedervorlagen"),
+        _kontakt_ruecksprung(form, lead_id)
+        or _ruecksprung(form, ("/", "/wiedervorlagen"), "/wiedervorlagen"),
         status_code=303)
+
+
+# Rücksprung auf die Kontaktseite (Review Task 3, E9): nur genau dieser
+# Kontakt, nur der Überblick, UUID nach festem Muster - kein freier Pfad.
+_KONTAKT_DANACH = re.compile(
+    r"/kontakte/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
+    r"\?reiter=ueberblick")
+
+
+def _kontakt_danach(lead_id) -> str:
+    """Wert des Feldes `danach` für Formulare im Überblick des Kontakts."""
+    return f"/kontakte/{lead_id}?reiter=ueberblick"
+
+
+def _kontakt_ruecksprung(form, lead_id: str) -> str | None:
+    """Ziel `/kontakte/<lead_id>?reiter=ueberblick#wiedervorlage`, wenn
+    `danach` genau auf den Überblick DIESES Kontakts zeigt; sonst None.
+    Die Adresse wird aus der geprüften lead_id neu gebaut, nie aus dem
+    Formularwert übernommen."""
+    treffer = _KONTAKT_DANACH.fullmatch(str(form.get("danach") or ""))
+    if treffer and treffer.group(1) == lead_id:
+        return _kontakt_ziel(lead_id, "ueberblick", "wiedervorlage")
+    return None
 
 
 @_gesichert_seite
@@ -4096,7 +4120,8 @@ def _wv_quittieren(z, danach: str | None = None) -> str:
             f'{danach_feld}<button>Erledigt</button></form>')
 
 
-def _wiedervorlagen_tabelle(zeilen, mit_kontakt: bool = True) -> str:
+def _wiedervorlagen_tabelle(zeilen, mit_kontakt: bool = True,
+                            danach: str | None = None) -> str:
     spalten = (["Kontakt"] if mit_kontakt else []) + ["Fällig am", "Notiz"]
     inhalt = []
     for z in zeilen:
@@ -4106,7 +4131,7 @@ def _wiedervorlagen_tabelle(zeilen, mit_kontakt: bool = True) -> str:
                   f'{_e(z["name"] or "(ohne Kontakt)")}</a>']
                  if mit_kontakt else [])
         inhalt.append(zelle + [f"{_e(faellig)}{marke}",
-                               _e(nutzlast.get("notiz")), _wv_quittieren(z)])
+                               _e(nutzlast.get("notiz")), _wv_quittieren(z, danach)])
     return (_tabelle(spalten + ["Quittieren"], inhalt) if zeilen
             else "<p>Keine offenen Wiedervorlagen. Eine anlegen: auf der "
                  "Kontaktseite unter „Wiedervorlage“.</p>")
@@ -4609,13 +4634,15 @@ async def aktion_kontakt_bearbeiten(request):
                    if gesetzt else " Nichts geändert."))
         gesetzt.append(feld)
     _kontakt_loggen(lead_id, "korrektur", {"felder": gesetzt})
-    ziel = _kontakt_ziel(lead_id, "einstellungen")
+    gespeichert = None
     if "phone" in aenderungen:
         # Der Hinweis, was eine neue Nummer bewirkt — er steht auf der
         # Kontaktseite, damit er nach dem Umleiten (POST/Redirect/GET) nicht
         # verlorengeht. Uebergeben wird nur die AUSWAHL, nie ein Text.
-        ziel += "&gespeichert=telefon"
-    return RedirectResponse(ziel, status_code=303)
+        gespeichert = "telefon"
+    return RedirectResponse(
+        _kontakt_ziel(lead_id, "einstellungen", gespeichert=gespeichert),
+        status_code=303)
 
 
 def _archiv_warnseite(lead) -> HTMLResponse:
@@ -6260,17 +6287,28 @@ _EINWILLIGUNG_ERTEILT = ("opt_in", "existing_customer", "inbound",
 
 
 def _kontakt_ziel(lead_id: str, reiter: str = "ueberblick",
-                  anker: str = "") -> str:
+                  anker: str = "", gespeichert: str | None = None) -> str:
     """Adresse eines Reiters der Kontaktseite (E9) - Ziel jedes Redirects
     und Ankers auf die Kontaktseite. Der Überblick ohne Anker ist die
     nackte Adresse; ein unbekannter Reiter wird zum Überblick. `anker` ist
     immer ein Literal aus diesem Modul."""
     if reiter not in dict(KONTAKT_REITER):
         reiter = "ueberblick"
-    if reiter == "ueberblick" and not anker:
-        return f"/kontakte/{lead_id}"
-    return (f"/kontakte/{lead_id}?reiter={reiter}"
+    abfrage = {}
+    if reiter != "ueberblick" or anker:
+        abfrage["reiter"] = reiter
+    if gespeichert:
+        abfrage["gespeichert"] = gespeichert
+    return (f"/kontakte/{lead_id}"
+            + ("?" + urllib.parse.urlencode(abfrage) if abfrage else "")
             + (f"#{anker}" if anker else ""))
+
+
+def _aktivitaeten_stand(lead_id) -> dict:
+    """Zahl (Reiter „Verlauf“, laut Brief `count(*)`) und jüngster
+    Zeitpunkt (Kopfkarte „zuletzt“) der activities - eine Abfrage."""
+    return server._q("select count(*) as anzahl, max(created_at) as zuletzt "
+                     "from activities where lead_id = %s", (lead_id,))[0]
 
 
 def _initialen(name) -> str:
@@ -6284,7 +6322,7 @@ def _initialen(name) -> str:
     return zeichen.upper()
 
 
-def _kontakt_kopfkarte(lead, archiviert: bool) -> str:
+def _kontakt_kopfkarte(lead, archiviert: bool, stand: dict | None = None) -> str:
     """Kopf über jedem Reiter: Initialen, Name als einziges <h1>, Chips,
     Herkunft und die Hauptaktionen.
 
@@ -6303,7 +6341,7 @@ def _kontakt_kopfkarte(lead, archiviert: bool) -> str:
         f'{_e(_EINWILLIGUNG.get(einwilligung, einwilligung))}</span>']
     if not (sammel or privat):
         art, bereiche = server._einordnung(anreicherung, lead["company"])
-        chips.append(f'<span class="chip art">'
+        chips.append(f'<span class="chip">'
                      f'{_e("Firma" if art == "firma" else "Person")}</span>')
         chips += [f'<span class="chip bereich">{_e(server.BEREICHE[b])}</span>'
                   for b in bereiche]
@@ -6311,8 +6349,7 @@ def _kontakt_kopfkarte(lead, archiviert: bool) -> str:
         chips.append('<span class="chip archiv">archiviert</span>')
     if privat:
         chips.append('<span class="chip privat">privat</span>')
-    zuletzt = server._q("select max(created_at) as zuletzt from activities "
-                        "where lead_id = %s", (lead_id,))[0]["zuletzt"]
+    zuletzt = (stand or _aktivitaeten_stand(lead_id))["zuletzt"]
     herkunft = []
     if lead["source"]:
         herkunft.append(f"aus {_e(lead['source'])}")
@@ -6463,7 +6500,7 @@ def _kontakt_ueberblick(lead, termine) -> str:
         links.append(f'<section class="karte box">{teil}</section>')
     rechts = [
         f'<section class="karte box"><h2>Offene Wiedervorlagen</h2>'
-        f'{_wiedervorlagen_tabelle(_offene_wiedervorlagen(lead_id), mit_kontakt=False)}'
+        f'{_wiedervorlagen_tabelle(_offene_wiedervorlagen(lead_id), mit_kontakt=False, danach=_kontakt_danach(lead_id))}'
         f'</section>',
         f'<section class="karte box">{_wiedervorlage_formular(lead_id)}</section>',
         f'<section class="karte box">{_naechste_termine(lead_id, termine)}</section>',
@@ -6638,7 +6675,8 @@ async def kontakt_detail(request):
     if reiter not in dict(KONTAKT_REITER):
         reiter = "ueberblick"
 
-    teile = [_kontakt_kopfkarte(lead, archiviert)]
+    stand = _aktivitaeten_stand(lead_id)
+    teile = [_kontakt_kopfkarte(lead, archiviert, stand)]
     if archiviert:
         teile.append(
             '<div class="hinweis">Dieser Kontakt ist <b>archiviert</b>: er '
@@ -6664,8 +6702,7 @@ async def kontakt_detail(request):
 
     termine = _kontakt_termine_liste(lead_id)
     zahlen = {
-        "verlauf": server._q("select count(*) as anzahl from activities "
-                             "where lead_id = %s", (lead_id,))[0]["anzahl"],
+        "verlauf": stand["anzahl"],
         "vertraege": len(vertraege.eintraege_aus(anreicherung)),
         "termine": len(termine)}
     teile.append(ui_muster.reiter(
