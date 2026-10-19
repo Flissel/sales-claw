@@ -1109,6 +1109,74 @@ ul.bildstand li { padding: .2rem 0; }
                               var(--linie); border-radius: 999px; }
 .filter a.aktiv, .vorschau-wahl a.aktiv { background: var(--aktiv);
                                           color: var(--akzent_text); font-weight: 700; }
+/* Kampagnenplan (19.10.2026): Agenda mit Art-Reitern, Tageskarten und Formularkarte.
+   Nur Farb-Variablen aus :root; Violett ist Handlung (Reiter, Knopf), Status bleibt gut/achtung. */
+.plan-kopf { display: flex; flex-wrap: wrap; align-items: flex-end;
+             justify-content: space-between; gap: .8rem 1.5rem; margin: .4rem 0 1rem; }
+.plan-unter { margin: 0; color: var(--gedaempft); }
+.plan-reiter { display: flex; flex-wrap: wrap; gap: .4rem; margin: 0 0 .8rem; }
+.plan-reiter a { display: inline-flex; align-items: center; min-height: 44px;
+                 padding: .3rem 1rem; border: 1px solid var(--linie);
+                 border-radius: 999px; background: var(--flaeche);
+                 text-decoration: none; white-space: nowrap; font-weight: 600; }
+.plan-reiter a.aktiv { background: var(--aktiv); border-color: var(--akzent);
+                       color: var(--akzent_text); }
+.plan-monat { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem 1rem;
+              margin: 0 0 1.2rem; padding-bottom: .8rem; border-bottom: 1px solid var(--linie); }
+.plan-monat a { display: inline-flex; align-items: center; min-height: 44px; white-space: nowrap; }
+.plan-monatsname { font-family: "Oxanium", "DM Sans", system-ui, sans-serif;
+                   font-weight: 700; font-size: 1.15rem; }
+.plan-spalten { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.5rem; align-items: start; }
+@media (min-width: 900px) {
+  .plan-spalten { grid-template-columns: minmax(0, 2fr) minmax(18rem, 1fr); }
+  .plan-form { position: sticky; top: 1rem; } }
+.plan-tag h2 { margin: 1.4rem 0 .5rem; font-weight: 600; color: var(--gedaempft);
+               display: flex; align-items: center; gap: .6rem; }
+.plan-tag:first-child h2 { margin-top: 0; }
+.plan-karte { background: var(--flaeche); border: 1px solid var(--linie);
+              border-radius: 14px; padding: .9rem 1.1rem; margin: 0 0 .7rem;
+              box-shadow: 0 1px 3px var(--linie); }
+.plan-karte p { margin: .3rem 0; }
+.plan-karte.plan-vorschlag { background: var(--blush); border-left: 4px solid var(--blush_text); }
+.plan-karte.plan-erledigt { opacity: .7; }
+.plan-karte.plan-abgesagt .plan-titel b { text-decoration: line-through; }
+.plan-karte.plan-abgesagt { opacity: .6; }
+.plan-chips { display: flex; flex-wrap: wrap; gap: .4rem; }
+.plan-chip { display: inline-block; padding: .1rem .6rem; border-radius: 999px;
+             border: 1px solid var(--linie_stark); font-size: .78rem; font-weight: 600;
+             color: var(--gedaempft); white-space: nowrap; }
+.plan-chip.vorschlag { background: var(--blush); border-color: var(--blush_text); color: var(--blush_text); }
+.plan-chip.erledigt { border-color: var(--gut); color: var(--gut_text); }
+.plan-chip.verschoben { border-color: var(--achtung); color: var(--achtung); }
+.plan-chip.heute { background: var(--akzent); border-color: var(--akzent); color: var(--akzent_auf); }
+.plan-titel { font-size: 1.05rem; }
+.plan-notiz { color: var(--gedaempft); }
+.plan-knoepfe { display: flex; flex-wrap: wrap; align-items: flex-start; gap: .5rem; margin-top: .6rem; }
+.plan-knoepfe form.aktion { margin: 0; }
+.verschieben { flex: 1 1 100%; }
+.verschieben summary { display: inline-flex; align-items: center; min-height: 44px;
+                       cursor: pointer; color: var(--akzent_text); font-weight: 600; }
+.verschieben form.aktion { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.plan-datum { display: flex; flex-wrap: wrap; gap: .4rem; }
+.plan-datum select { width: auto; min-width: 4.5rem; max-width: 100%; }
+.plan-leer { background: var(--flaeche); border: 1px dashed var(--linie_stark);
+             border-radius: 14px; padding: 1.6rem 1.2rem; text-align: center; }
+.plan-leer p { margin: 0 0 .8rem; font-size: 1.05rem; }
+.plan-form { background: var(--flaeche); border: 1px solid var(--linie);
+             border-radius: 14px; padding: 1rem 1.2rem; box-shadow: 0 1px 3px var(--linie); }
+.plan-form h2 { margin-top: 0; }
+.plan-form fieldset { border: 0; margin: 0 0 .8rem; padding: 0; min-width: 0; }
+.plan-form legend { padding: 0; margin-bottom: .3rem; font-weight: 700; color: var(--gedaempft);
+                    font-size: .8rem; text-transform: uppercase; letter-spacing: .05em; }
+.plan-form label { display: block; margin: .5rem 0; font-weight: 600; }
+.plan-form label select, .plan-form label input, .plan-form label textarea {
+  display: block; width: 100%; max-width: none; margin-top: .3rem; }
+.plan-form textarea { min-height: 44px; }
+.plan-form button[type="submit"] { background: var(--akzent); border-color: var(--akzent);
+                                   color: var(--akzent_auf); width: 100%; }
+@media (max-width: 767px) {
+  .plan-knoepfe form.aktion, .plan-knoepfe form.aktion button { flex: 1 1 100%; width: 100%; }
+  .plan-kopf a.knopf { width: 100%; text-align: center; } }
 /* Layout-Galerie und -Editor (Task 5): Karten mit verkleinerter Vorschau.
    Der Rahmen rendert in doppelter Breite und wird auf die Haelfte skaliert,
    damit die Karte das ganze Layout zeigt; Klicks gehen an die Karte. */

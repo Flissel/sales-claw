@@ -212,8 +212,8 @@ def routen(ui) -> list:
         untersatz = (f'<b>{vorschlaege} Vorschlag{"" if vorschlaege == 1 else "e"} vom Agenten</b> '
                      f'{"wartet" if vorschlaege == 1 else "warten"} in {e(monat_name)} auf dich: '
                      'übernehmen oder verwerfen.' if vorschlaege else "Alles im Griff: nichts wartet auf dich.")
-        kopf = ('<header class="plan-kopf"><div><h1>Kampagnenplan</h1>'
-                f'<p class="plan-unter">{untersatz}</p></div>'
+        kopf = ('<header class="plan-kopf">'
+                f'<p class="plan-unter">{untersatz}</p>'
                 '<a class="knopf" href="#neu">+ Neuer Eintrag</a></header>')
         # Die Zahl steht in Klammern direkt am Namen ("Podcast (1)"), damit sie ohne Gestaltung lesbar bleibt.
         reiter = ('<nav class="plan-reiter" aria-label="Art">'

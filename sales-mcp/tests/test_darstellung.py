@@ -899,3 +899,17 @@ def test_einladung_entworfen_thema_wird_gekuerzt_mit_vollem_text_im_title():
 def test_stil_traegt_keine_ascii_umschreibung():
     """Das Inline-CSS steht in JEDER Seite – Klassennamen zählen mit."""
     assert not [w for w in WOERTER_ASCII if w in ui._STIL]
+
+
+def _plan_stil() -> str:
+    start = ui._STIL.find("/* Kampagnenplan (19.10.2026)")
+    assert start >= 0, "CSS-Block 'Kampagnenplan (19.10.2026)' fehlt in ui._STIL"
+    ende = ui._STIL.find("\n/* ", start + 10)
+    return ui._STIL[start:ende if ende > 0 else None]
+
+
+def test_kampagnenplan_stil_nur_tokens_und_reiter_definiert():
+    """Farben nur über Variablen (Hell/Dunkel kommen aus :root) und die Reiter sind gestaltet."""
+    block = _plan_stil()
+    assert not re.findall(r"#[0-9a-fA-F]{3,8}\b", block)
+    assert ".plan-reiter" in block and ".plan-karte" in block and ".plan-spalten" in block
