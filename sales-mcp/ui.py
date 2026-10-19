@@ -1382,6 +1382,13 @@ table { border-collapse: collapse; width: 100%; background: var(--flaeche); }
 th, td { border: 1px solid var(--linie); padding: .5rem .6rem;
          text-align: left; font-size: .9rem; vertical-align: top; }
 thead th { background: var(--kopfzeile); }
+/* Filterzeile im Tabellenkopf (Kontakte): Suche, Art, Bereich. */
+tr.filterzeile td { background: var(--kopfzeile); vertical-align: middle; }
+tr.filterzeile .filtergruppe { display: flex; flex-wrap: wrap; gap: .4rem;
+                               align-items: center; }
+tr.filterzeile select, tr.filterzeile input[type="search"] {
+  min-height: 40px; max-width: 16rem; width: auto; }
+tr.filterzeile input[type="search"] { width: 100%; min-width: 12rem; }
 /* Design-Review 19.10.: `anywhere` (vom body geerbt) macht die Mindestbreite
    zu EINEM Buchstaben - Kopfzellen und Knoepfe brachen mitten im Wort
    („Conse nt", „Erl edi gt"). Hier nur zwischen Woertern umbrechen. */
@@ -1396,6 +1403,8 @@ th, button, .knopf { overflow-wrap: break-word; }
      mehr, sondern ein Rest. */
   .tabelle { overflow-x: visible; }
   .tabelle thead { display: none; }
+  .tabelle thead.mit-filter { display: block; }
+  .tabelle thead.mit-filter tr.kopfzeile-namen { display: none; }
   .tabelle table, .tabelle tbody, .tabelle tr, .tabelle th, .tabelle td {
     display: block; width: auto; }
   .tabelle table { border: 0; background: transparent; }
@@ -1743,7 +1752,7 @@ def _zustand_badge(zustand: str) -> str:
             f'</span>')
 
 
-def _tabelle(spalten, zeilen) -> str:
+def _tabelle(spalten, zeilen, filterzeile=None, leer=None) -> str:
     """Die EINE Tabellenform dieser Oberflaeche — breit auf dem Desktop,
     gestapelte Karten auf dem Handy (Media-Query in `_STIL`).
 
@@ -1760,14 +1769,22 @@ def _tabelle(spalten, zeilen) -> str:
     Namen darin), nicht hier — sonst waere das zweite Escapen sichtbar.
     """
     kopf = "".join(f"<th>{_e(s)}</th>" for s in spalten)
+    # Optionale Filterzeile im Kopf (Kontakte, 19.10.2026): fertige Zellen aus
+    # eigenem Code; sie bleibt am Handy sichtbar (CSS `thead.mit-filter`).
+    filter_html = ("" if filterzeile is None else
+                   '<tr class="filterzeile">'
+                   + "".join(f"<td>{z}</td>" for z in filterzeile) + "</tr>")
     leib = []
     for zeile in zeilen:
         zellen = "".join(
             f'<td data-label="{_e(spalten[i]) if i < len(spalten) else ""}">'
             f"{inhalt}</td>" for i, inhalt in enumerate(zeile))
         leib.append(f"<tr>{zellen}</tr>")
-    return (f'<div class="tabelle"><table><thead><tr>{kopf}</tr></thead>'
-            f"<tbody>{''.join(leib)}</tbody></table></div>")
+    if not zeilen and leer:
+        leib.append(f'<tr><td colspan="{len(spalten)}">{_e(leer)}</td></tr>')
+    thead = ('<thead class="mit-filter">' if filter_html else "<thead>")
+    return (f'<div class="tabelle"><table>{thead}<tr class="kopfzeile-namen">{kopf}</tr>'
+            f"{filter_html}</thead><tbody>{''.join(leib)}</tbody></table></div>")
 
 
 _MARKE_DATEIEN = {"vibemind-logo-hell.png": "image/png"}
@@ -3339,6 +3356,8 @@ def _einordnung_chips(enrichment, company) -> str:
     art, bereiche = server._einordnung(enrichment, company)
     teile = [f'<span class="badge">{_e("Firma" if art == "firma" else "Person")}</span>']
     teile += [f'<span class="badge archiv">{_e(server.BEREICHE[b])}</span>' for b in bereiche]
+    if not bereiche:
+        teile.append('<span class="meta">kein Bereich</span>')
     return " ".join(teile)
 
 
@@ -3421,37 +3440,41 @@ async def kontakte(request):
         {**p, "lim": KONTAKTE_SEITE, "off": (seite - 1) * KONTAKTE_SEITE})
     werte = {"ansicht": ansicht, "bereich": bereich, "q": q,
              "archiv": "1" if archiv_zeigen else "", "seite": 1}
-    reiter = ('<nav class="filterleiste" aria-label="Ansicht">' + "".join(
-        _filter_verweis(f"{label} ({int(anzahl[name])})",
-                        _kontakte_url(werte, ansicht=name), name == ansicht)
-        for name, label in KONTAKTE_ANSICHTEN.items()) + "</nav>")
-    bereiche = (
-        '<nav class="filterleiste" aria-label="Bereich">'
-        + _filter_verweis("alle Bereiche", _kontakte_url(werte, bereich=""),
-                          not bereich)
-        + "".join(_filter_verweis(label, _kontakte_url(werte, bereich=b),
-                                  b == bereich)
-                  for b, label in server.BEREICHE.items()) + "</nav>")
-    versteckt = "".join(
-        f'<input type="hidden" name="{k}" value="{_e(v)}">'
-        for k, v in (("ansicht", "" if ansicht == "alle" else ansicht),
-                     ("bereich", bereich),
-                     ("archiv", "1" if archiv_zeigen else "")) if v)
-    suche = (
-        '<form method="get" action="/kontakte" class="meta">'
-        f'{versteckt}<input type="search" name="q" value="{_e(q)}" '
-        f'maxlength="{KONTAKTE_SUCHE_MAX}" '
-        'placeholder="Name, Firma oder Telefon" aria-label="Kontakte suchen"> '
-        '<button type="submit">Suchen</button>'
-        + (f' <a href="{_e(_kontakte_url(werte, q=""))}">Suche löschen</a>'
-           if q else "") + "</form>")
-    schalter = (
-        f'<p class="meta"><a href="{_e(_kontakte_url(werte, archiv=""))}">'
-        'nur aktive zeigen</a> — archivierte Kontakte sind mitgelistet.</p>'
+    # Filter IM Tabellenkopf (Betreiber 19.10.2026: „die Ordnung sollte mit in
+    # der Tabelle sein"). Seiten haben kein Skript: die Felder gehoeren per
+    # form="kfilter" zu EINEM GET-Formular ueber der Tabelle, „Filtern" schickt ab.
+    def _option(wert, text, gewaehlt):
+        return (f'<option value="{_e(wert)}"' + (" selected" if gewaehlt else "")
+                + f">{_e(text)}</option>")
+    art_wahl = ('<select name="ansicht" form="kfilter" aria-label="Art">' + "".join(
+        _option(name, f"{label} ({int(anzahl[name])})", name == ansicht)
+        for name, label in KONTAKTE_ANSICHTEN.items()) + "</select>")
+    bereich_wahl = ('<select name="bereich" form="kfilter" aria-label="Bereich">'
+                    + _option("", "alle Bereiche", not bereich)
+                    + "".join(_option(b, label, b == bereich)
+                              for b, label in server.BEREICHE.items()) + "</select>")
+    suchfeld = (f'<input type="search" name="q" form="kfilter" value="{_e(q)}" '
+                f'maxlength="{KONTAKTE_SUCHE_MAX}" '
+                'placeholder="Name, Firma oder Telefon" aria-label="Kontakte suchen">')
+    archiv_verweis = (
+        f'<a href="{_e(_kontakte_url(werte, archiv=""))}">nur aktive zeigen</a>'
         if archiv_zeigen else
-        f'<p class="meta"><a href="{_e(_kontakte_url(werte, archiv="1"))}">'
-        'auch archivierte zeigen</a></p>')
-    kopf = reiter + bereiche + suche + schalter
+        f'<a href="{_e(_kontakte_url(werte, archiv="1"))}">auch archivierte zeigen</a>')
+    filterzeile = [
+        suchfeld,
+        f'<div class="filtergruppe">{art_wahl}{bereich_wahl}'
+        '<button type="submit" form="kfilter">Filtern</button></div>',
+        "", "", "", "", archiv_verweis]
+    formular = ('<form id="kfilter" method="get" action="/kontakte">'
+                + ('<input type="hidden" name="archiv" value="1">' if archiv_zeigen else "")
+                + "</form>")
+    gefiltert = ansicht != "alle" or bereich or q
+    kopf = formular + (
+        f'<p class="meta"><a href="{_e(_kontakte_url(werte, ansicht="alle", bereich="", q=""))}">'
+        "Filter zurücksetzen</a></p>" if gefiltert else "")
+    if archiv_zeigen:
+        kopf += '<p class="meta">Archivierte Kontakte sind mitgelistet.</p>'
+
     inhalt = []
     for z in zeilen:
         # `archiv` gibt dem Abzeichen einen gestrichelten Umriss statt einer
@@ -3475,7 +3498,7 @@ async def kontakte(request):
         stufe = server._stufe_lesen(z["status"])
         inhalt.append([
             f'<a href="/kontakte/{_e(z["id"])}">{_e(z["name"])}</a>{marke}'
-            f'<div class="meta">Consent: {_e(z["consent_status"])}</div>',
+            f'<div class="meta">Einwilligung: {_e(_EINWILLIGUNG.get(z["consent_status"], z["consent_status"]))}</div>',
             _einordnung_chips(z["enrichment"], z["company"]),
             f'<span class="stufe {_e(stufe)}">{_e(stufe)}</span>',
             _score_pille(z["score"]), _zeit(z["letzte"]),
@@ -3493,11 +3516,11 @@ async def kontakte(request):
     # deshalb steht die Bedeutung jetzt unter der Tabelle. Seit F5
     # (31.08.2026) blockiert sie tatsaechlich: Erstansprachen brauchen
     # opt_in oder existing_customer.
-    fussnote = ('<p class="meta"><b>Consent</b> ist die dokumentierte '
-                'Werbe-Einwilligung nach UWG — <i>unknown</i> heißt: nie '
+    fussnote = ('<p class="meta"><b>Einwilligung</b> ist die dokumentierte '
+                'Werbe-Einwilligung nach UWG — <i>nicht erfasst</i> heißt: nie '
                 'erfasst. Sie ist NICHT die WhatsApp-Freigabe (die steht auf '
-                'der Kontaktseite). Ohne <i>opt_in</i> oder '
-                '<i>existing_customer</i> entsteht kein Erstansprache-'
+                'der Kontaktseite). Ohne <i>Einwilligung erteilt</i> oder '
+                '<i>Bestandskunde</i> entsteht kein Erstansprache-'
                 'Entwurf per WhatsApp/E-Mail; Antworten auf eingehende '
                 'Nachrichten bleiben frei.</p>')
     blaettern = ""
@@ -3513,9 +3536,8 @@ async def kontakte(request):
                      f'{weiter}</nav>')
     rumpf = [kopf, _tabelle(
         ["Name", "Einordnung", "Stufe", "Score", "Zuletzt", "Autonomie",
-         "Archiv"], inhalt), blaettern, fussnote]
-    if not zeilen:
-        rumpf = [kopf, "<p>Keine Kontakte.</p>"]
+         "Archiv"], inhalt, filterzeile=filterzeile, leer="Keine Kontakte."),
+        blaettern, fussnote if zeilen else ""]
     return _seite(f"Kontakte ({gesamt})", "".join(rumpf))
 
 

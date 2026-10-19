@@ -59,7 +59,8 @@ def test_consent_steht_als_meta_unter_dem_namen():
     _lead("Anna Beispiel", "+491700000004")
     seite = _get("/kontakte").text
     zeile = seite[seite.index("Anna Beispiel"):]
-    assert "Consent: unknown" in zeile[:600]
+    assert "Einwilligung: nicht erfasst" in zeile[:600]
+    assert "Consent: unknown" not in seite
 
 
 def test_autonomie_ist_ein_segment_ohne_auswahlfeld():
@@ -203,3 +204,37 @@ def test_einordnung_zaehlt_nicht_als_letzte_aktivitaet():
     zeile = seite[seite.index("Nur Einordnung"):]
     zeile = zeile[:zeile.index("</tr>")]
     assert 'data-label="Zuletzt">—<' in zeile.replace(" ", "")
+
+
+
+# --- Filter im Tabellenkopf (19.10.2026, Betreiber: "die Ordnung sollte mit in der Tabelle sein") ---
+
+def test_filter_stehen_im_tabellenkopf():
+    _lead_e("Ina IT", enrichment={"bereiche": ["it"]})
+    seite = _get("/kontakte?ansicht=personen&bereich=it&q=Ina").text
+    kopf = seite[seite.index("<thead"):seite.index("</thead>")]
+    assert '<tr class="filterzeile">' in kopf
+    assert '<select name="ansicht" form="kfilter"' in kopf
+    assert '<option value="personen" selected>Personen (1)</option>' in kopf
+    assert '<select name="bereich" form="kfilter"' in kopf
+    assert '<option value="it" selected>IT-Lösung</option>' in kopf
+    assert 'name="q" form="kfilter" value="Ina"' in kopf
+    assert '<form id="kfilter" method="get" action="/kontakte">' in seite
+    assert '<nav class="filterleiste" aria-label="Ansicht">' not in seite
+    assert '<nav class="filterleiste" aria-label="Bereich">' not in seite
+    assert "Filter zurücksetzen" in seite
+
+
+def test_filterzeile_bleibt_auch_ohne_treffer():
+    seite = _get("/kontakte?q=gibtesnicht").text
+    assert '<tr class="filterzeile">' in seite and "Keine Kontakte." in seite
+
+
+def test_einordnung_zeigt_bereiche_oder_hinweis():
+    _lead_e("Ina IT", enrichment={"bereiche": ["it", "bav"]})
+    _lead_e("Offen Otto")
+    seite = _get("/kontakte").text
+    ina = seite[seite.index(">Ina IT<"):][:1500]
+    assert ">IT-Lösung<" in ina and ">bAV<" in ina
+    otto = seite[seite.index(">Offen Otto<"):][:1500]
+    assert "kein Bereich" in otto
