@@ -1,10 +1,18 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 
-import { MonitorOutlined, PhoneIphoneOutlined } from '@mui/icons-material';
-import { Alert, Box, Stack, SxProps, ToggleButton, ToggleButtonGroup, Tooltip, Typography } from '@mui/material';
+import { MonitorOutlined, PhoneIphoneOutlined, RedoOutlined, UndoOutlined } from '@mui/icons-material';
+import { Alert, Box, IconButton, Stack, SxProps, ToggleButton, ToggleButtonGroup, Tooltip, Typography } from '@mui/material';
 
 import EditorBlock from '../../documents/editor/EditorBlock';
-import { setSelectedScreenSize, useSelectedScreenSize } from '../../documents/editor/EditorContext';
+import {
+  rueckgaengig,
+  setSelectedScreenSize,
+  useKannRueckgaengig,
+  useKannWiederholen,
+  useSelectedScreenSize,
+  wiederholen,
+} from '../../documents/editor/EditorContext';
+import { verlaufTaste } from '../../verlaufTasten';
 import ToggleInspectorPanelButton from '../InspectorDrawer/ToggleInspectorPanelButton';
 import { alterWegHinweis } from '../../pult';
 import { pultStore } from '../../pultZustand';
@@ -50,6 +58,24 @@ export default function TemplatePanel() {
   const puls = pultStore((p) => p.zwischenstand?.puls ?? 0);
   // Wie die Entwurfsseite: der alte Freigabeweg (Telegram -> n8n) laeuft unabhaengig weiter.
   const alterWeg = start ? alterWegHinweis(start) : null;
+  // Rueckgaengig/Wiederholen (E11): gesperrt umfasst Assistent und "liegt zur Freigabe".
+  const zurueckDa = useKannRueckgaengig();
+  const vorDa = useKannWiederholen();
+  const kannZurueck = zurueckDa && !gesperrt;
+  const kannVor = vorDa && !gesperrt;
+  useEffect(() => {
+    const taste = (ev: KeyboardEvent) => {
+      const { nurLesen, gestaltungOffen } = pultStore.getState();
+      // Im Gestaltungsfenster gelten dessen eigene Tasten.
+      const aktion = verlaufTaste(ev, gesperrt || nurLesen || gestaltungOffen !== null);
+      if (!aktion) return;
+      ev.preventDefault();
+      if (aktion === 'rueckgaengig') rueckgaengig();
+      else wiederholen();
+    };
+    window.addEventListener('keydown', taste);
+    return () => window.removeEventListener('keydown', taste);
+  }, [gesperrt]);
 
   let mainBoxSx: SxProps = {
     my: 3,
@@ -99,6 +125,27 @@ export default function TemplatePanel() {
             Abschnitte links hineinziehen, Block anklicken zum Bearbeiten.
           </Typography>
           <Stack direction="row" spacing={2} alignItems="center">
+            <Stack direction="row" spacing={0.5} alignItems="center">
+              <Tooltip title="Rückgängig (Strg+Z)">
+                <span>
+                  <IconButton size="small" aria-label="Rückgängig (Strg+Z)" disabled={!kannZurueck} onClick={() => rueckgaengig()}>
+                    <UndoOutlined fontSize="small" />
+                  </IconButton>
+                </span>
+              </Tooltip>
+              <Tooltip title="Wiederholen (Strg+Umschalt+Z)">
+                <span>
+                  <IconButton
+                    size="small"
+                    aria-label="Wiederholen (Strg+Umschalt+Z)"
+                    disabled={!kannVor}
+                    onClick={() => wiederholen()}
+                  >
+                    <RedoOutlined fontSize="small" />
+                  </IconButton>
+                </span>
+              </Tooltip>
+            </Stack>
             <ToggleButtonGroup value={selectedScreenSize} exclusive size="small" onChange={handleScreenSizeChange}>
               <ToggleButton value="desktop">
                 <Tooltip title="Breite Ansicht">

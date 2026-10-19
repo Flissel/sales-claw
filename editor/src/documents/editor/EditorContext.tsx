@@ -75,7 +75,86 @@ export function setSidebarTab(selectedSidebarTab: TValue['selectedSidebarTab']) 
   return editorStateStore.setState({ selectedSidebarTab });
 }
 
+// Rueckgaengig/Wiederholen (Plan 2026-10-19 E11): hoechstens VERLAUF_MAX Schritte; Aenderungen
+// innerhalb von ZUSAMMENFASSEN_MS nach dem letzten Ablegen zaehlen als ein Schritt (Tippen).
+// resetDocument (Laden, Zwischenstand oder Fassung des Agenten) leert beide Stapel.
+export const VERLAUF_MAX = 50;
+export const ZUSAMMENFASSEN_MS = 500;
+
+let zurueckStapel: TEditorConfiguration[] = [];
+let vorStapel: TEditorConfiguration[] = [];
+let zuletztAbgelegt = Number.NEGATIVE_INFINITY;
+
+const verlaufStore = create(() => ({ kannZurueck: false, kannVor: false }));
+
+function verlaufMelden() {
+  verlaufStore.setState({ kannZurueck: zurueckStapel.length > 0, kannVor: vorStapel.length > 0 });
+}
+
+// Legt den Stand vor einer Aenderung ab und leert "Wiederholen".
+function ablegen(vorher: TEditorConfiguration) {
+  const jetzt = Date.now();
+  if (zurueckStapel.length === 0 || jetzt - zuletztAbgelegt >= ZUSAMMENFASSEN_MS) {
+    zurueckStapel.push(vorher);
+    if (zurueckStapel.length > VERLAUF_MAX) zurueckStapel = zurueckStapel.slice(-VERLAUF_MAX);
+    zuletztAbgelegt = jetzt;
+  }
+  vorStapel = [];
+  verlaufMelden();
+}
+
+// Stand aus einem Stapel zeigen; eine Auswahl, die es dort nicht gibt, faellt weg.
+function standZeigen(document: TEditorConfiguration) {
+  const { selectedBlockId } = editorStateStore.getState();
+  // Die naechste Aenderung beginnt immer einen neuen Schritt.
+  zuletztAbgelegt = Number.NEGATIVE_INFINITY;
+  if (selectedBlockId !== null && !(selectedBlockId in document)) {
+    editorStateStore.setState({ document, selectedBlockId: null, selectedSidebarTab: 'styles' });
+  } else {
+    editorStateStore.setState({ document });
+  }
+  verlaufMelden();
+}
+
+export function rueckgaengig(): boolean {
+  const vorher = zurueckStapel.pop();
+  if (!vorher) return false;
+  vorStapel.push(getDocument());
+  standZeigen(vorher);
+  return true;
+}
+
+export function wiederholen(): boolean {
+  const nachher = vorStapel.pop();
+  if (!nachher) return false;
+  zurueckStapel.push(getDocument());
+  standZeigen(nachher);
+  return true;
+}
+
+export function useKannRueckgaengig(): boolean {
+  return verlaufStore((s) => s.kannZurueck);
+}
+
+export function useKannWiederholen(): boolean {
+  return verlaufStore((s) => s.kannVor);
+}
+
 export function resetDocument(document: TValue['document']) {
+  zurueckStapel = [];
+  vorStapel = [];
+  zuletztAbgelegt = Number.NEGATIVE_INFINITY;
+  verlaufMelden();
+  return editorStateStore.setState({
+    document,
+    selectedSidebarTab: 'styles',
+    selectedBlockId: null,
+  });
+}
+
+// Wie resetDocument, aber als Schritt im Verlauf (Block duplizieren, loeschen, verschieben).
+export function dokumentErsetzen(document: TValue['document']) {
+  ablegen(getDocument());
   return editorStateStore.setState({
     document,
     selectedSidebarTab: 'styles',
@@ -85,6 +164,7 @@ export function resetDocument(document: TValue['document']) {
 
 export function setDocument(document: TValue['document']) {
   const originalDocument = editorStateStore.getState().document;
+  ablegen(originalDocument);
   return editorStateStore.setState({
     document: {
       ...originalDocument,

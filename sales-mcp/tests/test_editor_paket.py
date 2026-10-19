@@ -126,3 +126,10 @@ def test_paket_kennt_vorlagen_reiter():
     for s in ("Auf diesen Entwurf anwenden …", "Als neuer Entwurf", "Vorlagen sind hier noch nicht eingerichtet",
               "vorlage_bild_url", "Betreff und Vorschautext bleiben."):
         assert s in text, s
+
+
+def test_paket_kennt_rueckgaengig():
+    # 2026-10-19 Task 9: Rückgängig/Wiederholen in der Werkzeugleiste
+    text = (ORDNER / "editor.js").read_text(encoding="utf-8")
+    for s in ("Rückgängig (Strg+Z)", "Wiederholen (Strg+Umschalt+Z)"):
+        assert s in text, s

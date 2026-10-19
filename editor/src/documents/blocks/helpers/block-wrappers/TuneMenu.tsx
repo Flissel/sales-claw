@@ -4,7 +4,7 @@ import { ArrowDownwardOutlined, ArrowUpwardOutlined, ContentCopyOutlined, Delete
 import { IconButton, Paper, Stack, SxProps, Tooltip } from '@mui/material';
 
 import { TEditorBlock, TEditorConfiguration } from '../../../editor/core';
-import { resetDocument, setSelectedBlockId, useDocument } from '../../../editor/EditorContext';
+import { dokumentErsetzen, setSelectedBlockId, useDocument } from '../../../editor/EditorContext';
 import { mitNachfahren } from '../../../../pult';
 import { ColumnsContainerProps } from '../../ColumnsContainer/ColumnsContainerPropsSchema';
 import cloneDocumentBlock from '../cloneDocumentBlock';
@@ -93,7 +93,7 @@ export default function TuneMenu({ blockId }: Props) {
           break;
       }
 
-      resetDocument(newDocument);
+      dokumentErsetzen(newDocument);
       setSelectedBlockId(newBlockId);
     }
   };
@@ -159,7 +159,7 @@ export default function TuneMenu({ blockId }: Props) {
     for (const id of weg) {
       delete nDocument[id];
     }
-    resetDocument(nDocument);
+    dokumentErsetzen(nDocument);
   };
 
   const handleMoveClick = (direction: 'up' | 'down') => {
@@ -229,7 +229,7 @@ export default function TuneMenu({ blockId }: Props) {
       }
     }
 
-    resetDocument(nDocument);
+    dokumentErsetzen(nDocument);
     setSelectedBlockId(blockId);
   };
 
