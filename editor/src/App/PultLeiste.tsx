@@ -3,6 +3,7 @@ import React, { useEffect, useState } from 'react';
 import {
   ArrowBackOutlined,
   PhoneIphoneOutlined,
+  PictureAsPdfOutlined,
   SaveOutlined,
   MailOutlined,
   SendOutlined,
@@ -112,7 +113,7 @@ export default function PultLeiste() {
     }
   };
 
-  const vorschau = (format: 'mail' | 'handy') => {
+  const vorschau = (format: 'mail' | 'handy' | 'pdf') => {
     const trenner = start.vorschau_url.includes('?') ? '&' : '?';
     window.open(`${start.vorschau_url}${trenner}fassung=${basis}&format=${format}`, '_blank', 'noopener');
   };
@@ -237,6 +238,18 @@ export default function PultLeiste() {
                 <PhoneIphoneOutlined fontSize="small" />
               </ListItemIcon>
               Vorschau Handy
+            </MenuItem>
+            {/* Paket C3 (19.10.2026): derselbe Newsletter als A4-PDF, von der API mit Chromium gesetzt */}
+            <MenuItem
+              onClick={() => {
+                setVorschauMenue(null);
+                vorschau('pdf');
+              }}
+            >
+              <ListItemIcon>
+                <PictureAsPdfOutlined fontSize="small" />
+              </ListItemIcon>
+              Als PDF
             </MenuItem>
           </Menu>
         </Stack>
