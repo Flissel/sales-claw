@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import html as _html
 import math
+import re
 import urllib.parse
 from datetime import datetime
 
@@ -31,6 +32,13 @@ ARTEN = {"newsletter": "Newsletter", "post": "Post", "material": "Team-Material"
 # sondern ein Entwurf mit offener Rückmeldung (status_wort).
 STATUS = {"entwurf": "in Arbeit", "zurueckgegeben": "zurückgegeben", "eingereicht": "zur Freigabe",
           "freigegeben": "freigegeben", "abgelehnt": "verworfen"}
+
+
+# Loeschbar sind nur Entwuerfe (auch "zurueckgegeben") und verworfene; die DB
+# prueft es nochmals (marketing.pult_inhalt_loeschen). Hoechstens so viele je Durchgang.
+LOESCHBAR = ("entwurf", "abgelehnt")
+LOESCH_MAX = 50
+_UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
 def _offen(rueckmeldungen) -> list[dict]:
@@ -207,17 +215,24 @@ def routen(ui) -> list:
         inhalte = d["inhalte"]
         if status in ("entwurf", "zurueckgegeben"):
             inhalte = [i for i in inhalte if _hat_offene(i) == (status == "zurueckgegeben")]
-        zeilen = "".join(
-            f'<tr><td><a href="/marketing/entwurf/{e(i["id"])}">{e(i["titel"])}</a></td>'
-            f'<td>{e(ARTEN.get(i["art"], i["art"]))}</td><td>{e(status_wort(i))}</td>'
-            f'<td>{e(i["layout"] or "")}</td><td>{int(i["fassungen"])}</td><td>{e(str(i["erstellt_am"])[:10])}</td></tr>'
-            for i in inhalte) or '<tr><td colspan="6">Keine Entwürfe.</td></tr>'
+        def haken(i) -> str:
+            if i.get("status") not in LOESCHBAR:
+                return ""
+            return (f'<input type="checkbox" name="iid" value="{e(i["id"])}" '
+                    f'aria-label="Auswählen: {e(i["titel"])}">')
+        zeilen = [[haken(i), f'<a href="/marketing/entwurf/{e(i["id"])}">{e(i["titel"])}</a>',
+                   e(ARTEN.get(i["art"], i["art"])), e(status_wort(i)), e(i["layout"] or ""),
+                   str(int(i["fassungen"])), e(str(i["erstellt_am"])[:10])] for i in inhalte]
+        tabelle = ui._tabelle([" ", "Titel", "Art", "Status", "Layout", "Fassungen", "Datum"],
+                              zeilen, leer="Keine Entwürfe.")
+        if any(i.get("status") in LOESCHBAR for i in inhalte):
+            tabelle = (f'<form method="post" action="/marketing/entwuerfe/loeschen">'
+                       f'<input type="hidden" name="csrf" value="{e(ui.CSRF_TOKEN)}">{tabelle}'
+                       f'<p><button class="gefahr" type="submit">Ausgewählte löschen …</button></p></form>')
         return ui._seite("Entwürfe", umschalter(m, liste, "/marketing/entwuerfe?" + urllib.parse.urlencode(
                                        [(k, v) for k, v in (("art", art), ("status", status)) if v])) +
                          f'<div class="filter">{filter_}</div>'
-                         f'<div class="filter">{filter_status}</div>'
-                         '<table><tr><th>Titel</th><th>Art</th><th>Status</th><th>Layout</th>'
-                         f'<th>Fassungen</th><th>Datum</th></tr>{zeilen}</table>')
+                         f'<div class="filter">{filter_status}</div>{tabelle}')
 
     @ui._gesichert_seite
     async def entwurf(request):
@@ -345,6 +360,13 @@ def routen(ui) -> list:
             aktionen = (f'{zeile_status}<div class="aktionen">{editor_knopf}{haupt}</div>{verwerfen_karte}')
         else:
             aktionen = f'{zeile_status}<div class="aktionen">{editor_knopf}</div>' if (zeile_status or editor_knopf) else ""
+        if status in LOESCHBAR:
+            aktionen += (
+                f'<details class="gefahr"><summary>Löschen …</summary>'
+                f'<form method="post" action="/marketing/entwuerfe/loeschen" class="aktion">{csrf}'
+                f'<input type="hidden" name="iid" value="{e(i["id"])}">'
+                f'<button class="gefahr" type="submit">Löschen …</button>'
+                f'<span class="meta">Du siehst vorher, was verschwindet.</span></form></details>')
         aktionskarte = f'<div class="karte"><h2>Aktionen</h2>{aktionen}</div>' if aktionen else ""
         # Feld-Newsletter (z.B. aus dem alten Weg ueber die Bruecke): einmalig
         # ins Editor-Format uebernehmen (marketing.pult_in_bloecke_uebernehmen).
@@ -515,6 +537,129 @@ def routen(ui) -> list:
         form = {"fassung": form.get("fassung"), "grund": form.get("grund"), "urteil": "ablehnen"}
         return await verwerfen_senden(request, form)
 
+    def _iids(form) -> list[str] | Response:
+        """Die angehakten ids: ohne Haken, zu viele oder eine ungueltige = 400, ohne
+        dass irgendein Aufruf hinausgeht. Doppelte fallen weg (Reihenfolge bleibt)."""
+        roh = [str(x) for x in form.getlist("iid")]
+        if not roh:
+            return ui._fehlerseite(400, "Nichts gewählt", "Es wurde kein Entwurf angehakt. Nichts wurde gelöscht.")
+        ids = list(dict.fromkeys(x.lower() for x in roh))
+        if len(ids) > LOESCH_MAX:
+            return ui._fehlerseite(400, "Zu viele auf einmal",
+                                   f"Höchstens {LOESCH_MAX} Entwürfe je Durchgang. Nichts wurde gelöscht.")
+        if not all(_UUID.match(x) for x in ids):
+            return ui._fehlerseite(400, "Abgewiesen", "Eine Entwurfs-ID ist ungültig. Nichts wurde gelöscht.")
+        return ids
+
+    def _titel_laden(ids: list[str], mandant: str) -> list[dict]:
+        """Anzeige fuer Schritt 1: je id Titel und Status (nur Lesen). Eine fremde Firma
+        bekommt keinen Titel."""
+        aus = []
+        for iid in ids:
+            try:
+                d = marketing_pult.anfrage("GET", f"/inhalte/{urllib.parse.quote(iid, safe='')}")
+                inh = d.get("inhalt") if isinstance(d, dict) else None
+                if not isinstance(inh, dict):
+                    raise marketing_pult.PultFehler("unbekannt", "Antwort ohne Inhalt")
+            except marketing_pult.PultFehler as f:
+                if f.art in ("nicht_verbunden", "nicht_erreichbar"):
+                    raise
+                aus.append({"id": iid, "titel": "", "grund": "nicht gefunden"})
+                continue
+            if inh.get("mandant") != mandant:
+                aus.append({"id": iid, "titel": "", "grund": "nicht löschbar: gehört einer anderen Firma"})
+            elif inh.get("status") not in LOESCHBAR:
+                wort = {"eingereicht": "zur Freigabe", "freigegeben": "freigegeben"}.get(
+                    str(inh.get("status")), str(inh.get("status") or "?"))
+                aus.append({"id": iid, "titel": str(inh.get("titel") or ""), "grund": f"nicht löschbar: {wort}"})
+            else:
+                aus.append({"id": iid, "titel": str(inh.get("titel") or ""), "grund": ""})
+        return aus
+
+    @ui._gesichert_seite
+    async def entwuerfe_loeschen(request):
+        """Schritt 1: zeigt, was weg ginge. Loescht nichts."""
+        form = await request.form()
+        if not ui._csrf_ok(form):
+            return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
+        ids = _iids(form)
+        if isinstance(ids, Response):
+            return ids
+        try:
+            m, _ = await marketing_mandant.firma(request)
+            zeilen = await run_in_threadpool(_titel_laden, ids, m)
+        except marketing_pult.PultFehler as f:
+            return fehler(f)
+        ok = [z for z in zeilen if not z["grund"]]
+        liste_html = "".join(
+            f'<li>{e(z["titel"]) if z["titel"] else "<i>unbekannter Entwurf</i>"}'
+            f'{(" &middot; <b>" + e(z["grund"]) + "</b>") if z["grund"] else ""}</li>' for z in zeilen)
+        if ok:
+            versteckt = "".join(f'<input type="hidden" name="iid" value="{e(z["id"])}">' for z in ok)
+            formular = (
+                f'<form method="post" action="/marketing/entwuerfe/loeschen-bestaetigen" class="aktion">'
+                f'<input type="hidden" name="csrf" value="{e(ui.CSRF_TOKEN)}">{versteckt}'
+                f'<label><input type="checkbox" name="bestaetigt" value="ja" required> '
+                f'Ja, endgültig löschen</label>'
+                f'<button class="gefahr" type="submit">Löschen</button></form>')
+        else:
+            formular = "<p>Nichts davon lässt sich löschen.</p>"
+        rumpf = (f'<div class="karte"><h2>Entwürfe löschen</h2>'
+                 f'<p>Das ist ein echtes Löschen: Fassungen, Rückmeldungen und Aufträge dieser Entwürfe '
+                 f'verschwinden. Erzeugte Bilder bleiben in den Medien.</p>'
+                 f'<ul>{liste_html}</ul>{formular}'
+                 f'<p><a href="/marketing/entwuerfe">Abbrechen, nichts tun</a></p></div>')
+        return ui._seite("Entwürfe löschen", rumpf)
+
+    @ui._gesichert_seite
+    async def entwuerfe_loeschen_bestaetigt(request):
+        """Schritt 2: loescht je id ueber die API (die DB prueft Status, Firma, laufenden
+        Assistenten). Alles geloescht = zurueck zur Liste; sonst eine Ergebnisseite mit Gruenden."""
+        form = await request.form()
+        if not ui._csrf_ok(form):
+            return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
+        if str(form.get("bestaetigt") or "") != "ja":
+            return ui._fehlerseite(400, "Nicht bestätigt", "Ohne den Haken „Ja, endgültig löschen“ wird nichts gelöscht.")
+        ids = _iids(form)
+        if isinstance(ids, Response):
+            return ids
+        try:
+            m, _ = await marketing_mandant.firma(request)
+        except marketing_pult.PultFehler as f:
+            return fehler(f)
+        wer = von(request)
+
+        def lauf():
+            weg, fehl, stopp = [], [], False
+            for iid in ids:
+                if stopp:
+                    fehl.append((iid, "nicht versucht (Marketing nicht erreichbar)"))
+                    continue
+                try:
+                    r = marketing_pult.inhalt_loeschen(iid, m, wer)
+                except marketing_pult.PultFehler as f:
+                    if f.art in ("nicht_verbunden", "nicht_erreichbar"):
+                        stopp = True
+                        fehl.append((iid, "Marketing gerade nicht erreichbar"))
+                    else:
+                        fehl.append((iid, f.grund or "abgelehnt"))
+                    continue
+                ui.LOG.warning("Marketing: Entwurf %s gelöscht von %s", iid, wer)
+                weg.append(str(r.get("titel") or iid))
+            return weg, fehl
+        weg, fehl = await run_in_threadpool(lauf)
+        if not fehl:
+            return RedirectResponse("/marketing/entwuerfe", status_code=303)
+        n = len(weg)
+        kopf = f'{n} {"Entwurf" if n == 1 else "Entwürfe"} gelöscht'
+        weg_html = "".join(f"<li>{e(t)}</li>" for t in weg)
+        fehl_html = "".join(f'<li>{e(i)} &middot; {e(g)}</li>' for i, g in fehl)
+        rumpf = (f'<div class="karte"><h2>{kopf}</h2>'
+                 f'{("<ul>" + weg_html + "</ul>") if weg else ""}'
+                 f'<h3>Nicht gelöscht</h3><ul>{fehl_html}</ul>'
+                 f'<p><a class="knopf" href="/marketing/entwuerfe">Zurück zu den Entwürfen</a></p></div>')
+        return ui._seite("Entwürfe löschen", rumpf)
+
     def einfache_aktion(aktion: str):
         """einreichen / zurueckziehen: nur {von}, die Regeln liegen in der DB."""
         @ui._gesichert_seite
@@ -538,6 +683,8 @@ def routen(ui) -> list:
         Route("/marketing", uebersicht),
         Route("/marketing/mandant", mandant_waehlen, methods=["POST"]),
         Route("/marketing/entwuerfe", entwuerfe),
+        Route("/marketing/entwuerfe/loeschen", entwuerfe_loeschen, methods=["POST"]),
+        Route("/marketing/entwuerfe/loeschen-bestaetigen", entwuerfe_loeschen_bestaetigt, methods=["POST"]),
         Route("/marketing/entwurf/{iid}", entwurf),
         Route("/marketing/entwurf/{iid}/vorschau", vorschau),
         Route("/marketing/entwurf/{iid}/speichern", speichern, methods=["POST"]),

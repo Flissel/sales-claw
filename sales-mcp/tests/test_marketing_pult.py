@@ -735,7 +735,9 @@ def test_eingereicht_zeigt_zurueckziehen_ohne_bildkarte(angemeldet, pult):
 def test_freigegeben_und_verworfen_ohne_aktionen(angemeldet, pult):
     for st in ("freigegeben", "abgelehnt"):
         s = _rumpf(_seite(angemeldet, pult, st))
-        assert "/einreichen" not in s and "/zurueckziehen" not in s and "gefahr" not in s
+        assert "/einreichen" not in s and "/zurueckziehen" not in s and "/verwerfen" not in s
+        # Loeschen (Task 5) ist die einzige Gefahr-Aktion, und nur bei verworfen
+        assert ("gefahr" in s) is (st == "abgelehnt")
 
 
 def test_fassungen_zeitleiste_markiert_freigegebene(angemeldet, pult):
@@ -807,7 +809,7 @@ def test_entwuerfe_liste_nutzt_status_woerter_und_eingereicht_filter(angemeldet,
     s = angemeldet.get("/marketing/entwuerfe?status=eingereicht", headers=HOST).text
     assert "status=eingereicht" in pult.aufrufe[-1][1]
     assert 'class="aktiv" href="/marketing/entwuerfe?status=eingereicht"' in s
-    assert "<td>in Arbeit</td>" in s
+    assert '<td data-label="Status">in Arbeit</td>' in s
 
 
 def test_uebersicht_kacheln_in_worten(angemeldet):
@@ -847,10 +849,10 @@ def test_liste_zeigt_zurueckgegeben_und_trennt_die_filter(angemeldet, pult):
     _liste(pult, _zeile("Offen-A", 1), _zeile("Ruhig-B", 0))
     z = angemeldet.get("/marketing/entwuerfe?status=zurueckgegeben", headers=HOST).text
     assert "status=entwurf" in pult.aufrufe[-1][1]                  # API kennt nur DB-Status
-    assert "Offen-A" in z and "Ruhig-B" not in z and "<td>zurückgegeben</td>" in z
+    assert "Offen-A" in z and "Ruhig-B" not in z and '<td data-label="Status">zurückgegeben</td>' in z
     assert 'class="aktiv" href="/marketing/entwuerfe?status=zurueckgegeben"' in z
     a = angemeldet.get("/marketing/entwuerfe?status=entwurf", headers=HOST).text
-    assert "Ruhig-B" in a and "Offen-A" not in a and "<td>in Arbeit</td>" in a
+    assert "Ruhig-B" in a and "Offen-A" not in a and '<td data-label="Status">in Arbeit</td>' in a
     alle = angemeldet.get("/marketing/entwuerfe?status=alle", headers=HOST).text
     assert "Offen-A" in alle and "Ruhig-B" in alle
 
@@ -877,3 +879,178 @@ def test_bilder_statuspunkte_je_status(angemeldet, pult):
 def test_navigation_zeigt_marke_nicht_layouts(angemeldet):
     s = angemeldet.get("/marketing", headers=HOST).text
     assert 'href="/marketing/layouts"' in s and ">Marke<" in s and ">Layouts<" not in s
+
+
+# --- Entwuerfe loeschen (Task 5) -------------------------------------------
+ID_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+ID_B = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+ID_C = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+LOESCH_URL = "/marketing/entwuerfe/loeschen"
+BESTAETIGEN_URL = "/marketing/entwuerfe/loeschen-bestaetigen"
+
+
+def _loesch_pult(pult, monkeypatch, inhalte, loeschfehler=None):
+    """Erweitert die Faelschung um mehrere Inhalte (iid -> {titel, status, mandant})
+    und um POST .../loeschen; loeschfehler: iid -> PultFehler."""
+    alt = pult.anfrage
+    loeschfehler = loeschfehler or {}
+
+    def anfrage(methode, pfad, daten=None, roh=False):
+        for iid, z in inhalte.items():
+            if pfad == f"/inhalte/{iid}" and methode == "GET":
+                pult.aufrufe.append((methode, pfad, daten))
+                return {"inhalt": {"id": iid, "titel": z["titel"], "status": z["status"],
+                                   "mandant": z.get("mandant", "vibemind"), "art": "newsletter"},
+                        "fassungen": []}
+            if pfad == f"/inhalte/{iid}/loeschen" and methode == "POST":
+                pult.aufrufe.append((methode, pfad, daten))
+                if iid in loeschfehler:
+                    raise loeschfehler[iid]
+                return {"geloescht": iid, "titel": z["titel"]}
+        return alt(methode, pfad, daten, roh)
+    monkeypatch.setattr(marketing_pult, "anfrage", anfrage)
+
+
+def _loesch_posts(pult):
+    return [a for a in pult.aufrufe if a[0] == "POST" and a[1].endswith("/loeschen")]
+
+
+def test_liste_hat_haken_nur_fuer_loeschbare(angemeldet, pult):
+    pult.inhalte = [
+        {"id": ID_A, "art": "newsletter", "titel": "Entwurf eins", "status": "entwurf",
+         "erstellt_am": "2026-09-04", "fassungen": 1, "layout": "dunkel"},
+        {"id": ID_B, "art": "newsletter", "titel": "Liegt vor", "status": "eingereicht",
+         "erstellt_am": "2026-09-04", "fassungen": 1, "layout": "dunkel"},
+        {"id": ID_C, "art": "newsletter", "titel": "Verworfen", "status": "abgelehnt",
+         "erstellt_am": "2026-09-04", "fassungen": 1, "layout": "dunkel"}]
+    s = angemeldet.get("/marketing/entwuerfe?status=alle", headers=HOST).text
+    assert s.count('name="iid"') == 2
+    assert f'value="{ID_A}"' in s and f'value="{ID_C}"' in s and f'name="iid" value="{ID_B}"' not in s
+    assert "Ausgewählte löschen …" in s
+    assert 'aria-label="Auswählen: Entwurf eins"' in s
+    assert f'action="{LOESCH_URL}"' in s
+
+
+def test_liste_ohne_loeschbare_hat_keinen_knopf(angemeldet, pult):
+    pult.inhalte = [{"id": ID_B, "art": "newsletter", "titel": "Liegt vor", "status": "eingereicht",
+                     "erstellt_am": "2026-09-04", "fassungen": 1, "layout": "dunkel"}]
+    s = angemeldet.get("/marketing/entwuerfe?status=eingereicht", headers=HOST).text
+    assert 'name="iid"' not in s and "Ausgewählte löschen" not in s
+
+
+def test_liste_nutzt_tabelle(angemeldet):
+    s = angemeldet.get("/marketing/entwuerfe", headers=HOST).text
+    assert 'class="tabelle"' in s and 'data-label="Titel"' in s
+
+
+def test_loeschen_schritt1_zeigt_titel_und_loescht_nicht(angemeldet, pult, monkeypatch):
+    _loesch_pult(pult, monkeypatch, {ID_A: {"titel": "Alpha-Test", "status": "entwurf"},
+                                     ID_B: {"titel": "Beta-Test", "status": "abgelehnt"}})
+    r = angemeldet.post(LOESCH_URL, headers=HOST, data={"csrf": ui.CSRF_TOKEN, "iid": [ID_A, ID_B]})
+    assert r.status_code == 200
+    assert "Alpha-Test" in r.text and "Beta-Test" in r.text
+    assert 'name="bestaetigt"' in r.text and "Ja, endgültig löschen" in r.text
+    assert "Entwürfe löschen" in r.text and "Abbrechen, nichts tun" in r.text
+    assert 'class="gefahr"' in r.text
+    assert f'action="{BESTAETIGEN_URL}"' in r.text
+    assert _loesch_posts(pult) == []
+
+
+def test_loeschen_schritt1_nennt_nicht_loeschbare_und_gibt_sie_nicht_weiter(angemeldet, pult, monkeypatch):
+    _loesch_pult(pult, monkeypatch, {ID_A: {"titel": "Alpha-Test", "status": "entwurf"},
+                                     ID_B: {"titel": "Liegt-vor", "status": "eingereicht"},
+                                     ID_C: {"titel": "Frei-Gegeben", "status": "freigegeben"}})
+    s = angemeldet.post(LOESCH_URL, headers=HOST,
+                        data={"csrf": ui.CSRF_TOKEN, "iid": [ID_A, ID_B, ID_C]}).text
+    assert "nicht löschbar: zur Freigabe" in s and "nicht löschbar: freigegeben" in s
+    assert s.count('name="iid" value=') == 1 and f'name="iid" value="{ID_A}"' in s
+
+
+def test_loeschen_schritt1_fremde_firma_ohne_titel(angemeldet, pult, monkeypatch):
+    _loesch_pult(pult, monkeypatch, {ID_A: {"titel": "Geheim-Titel", "status": "entwurf",
+                                            "mandant": "fin2gether"}})
+    s = angemeldet.post(LOESCH_URL, headers=HOST, data={"csrf": ui.CSRF_TOKEN, "iid": [ID_A]}).text
+    assert "Geheim-Titel" not in s and "anderen Firma" in s and 'name="bestaetigt"' not in s
+
+
+def test_loeschen_ohne_haken_400_ohne_aufruf(angemeldet, pult):
+    vorher = len(pult.aufrufe)
+    r = angemeldet.post(LOESCH_URL, headers=HOST, data={"csrf": ui.CSRF_TOKEN})
+    assert r.status_code == 400
+    r2 = angemeldet.post(BESTAETIGEN_URL, headers=HOST, data={"csrf": ui.CSRF_TOKEN, "bestaetigt": "ja"})
+    assert r2.status_code == 400
+    assert [a for a in pult.aufrufe[vorher:] if "/inhalte/" in a[1]] == []
+
+
+def test_loeschen_mehr_als_50_400(angemeldet, pult):
+    ids = [f"{n:08x}-0000-0000-0000-000000000000" for n in range(51)]
+    for url, extra in ((LOESCH_URL, {}), (BESTAETIGEN_URL, {"bestaetigt": "ja"})):
+        r = angemeldet.post(url, headers=HOST, data={"csrf": ui.CSRF_TOKEN, "iid": ids, **extra})
+        assert r.status_code == 400
+    assert _loesch_posts(pult) == []
+
+
+def test_loeschen_ungueltige_uuid_400_ohne_aufruf(angemeldet, pult):
+    for url, extra in ((LOESCH_URL, {}), (BESTAETIGEN_URL, {"bestaetigt": "ja"})):
+        r = angemeldet.post(url, headers=HOST,
+                            data={"csrf": ui.CSRF_TOKEN, "iid": [ID_A, "../x"], **extra})
+        assert r.status_code == 400
+    assert _loesch_posts(pult) == []
+    assert not [a for a in pult.aufrufe if "x" == a[1][-1:] and "inhalte" in a[1]]
+
+
+def test_loeschen_ohne_bestaetigung_loescht_nichts(angemeldet, pult, monkeypatch):
+    _loesch_pult(pult, monkeypatch, {ID_A: {"titel": "Alpha", "status": "entwurf"}})
+    r = angemeldet.post(BESTAETIGEN_URL, headers=HOST, data={"csrf": ui.CSRF_TOKEN, "iid": [ID_A]})
+    assert r.status_code == 400 and _loesch_posts(pult) == []
+
+
+def test_loeschen_bestaetigt_ruft_je_iid_mit_mandant_des_cookies(angemeldet, pult, monkeypatch):
+    _loesch_pult(pult, monkeypatch, {ID_A: {"titel": "Alpha", "status": "entwurf", "mandant": "fin2gether"},
+                                     ID_B: {"titel": "Beta", "status": "abgelehnt", "mandant": "fin2gether"}})
+    angemeldet.cookies.set("mk_mandant", "fin2gether", path="/marketing")
+    r = angemeldet.post(BESTAETIGEN_URL, headers=HOST, follow_redirects=False,
+                        data={"csrf": ui.CSRF_TOKEN, "bestaetigt": "ja", "iid": [ID_A, ID_B, ID_A]})
+    assert r.status_code == 303 and r.headers["location"] == "/marketing/entwuerfe"
+    posts = _loesch_posts(pult)
+    assert [p[1] for p in posts] == [f"/inhalte/{ID_A}/loeschen", f"/inhalte/{ID_B}/loeschen"]
+    for p in posts:
+        assert p[2]["mandant"] == "fin2gether" and isinstance(p[2]["von"], str) and p[2]["von"]
+
+
+def test_loeschen_teilweise_abgelehnt_zeigt_grund(angemeldet, pult, monkeypatch):
+    _loesch_pult(pult, monkeypatch, {ID_A: {"titel": "Alpha", "status": "entwurf"},
+                                     ID_B: {"titel": "Beta", "status": "entwurf"}},
+                 loeschfehler={ID_B: marketing_pult.PultFehler("abgelehnt", "Unbekannter Inhalt")})
+    r = angemeldet.post(BESTAETIGEN_URL, headers=HOST, follow_redirects=False,
+                        data={"csrf": ui.CSRF_TOKEN, "bestaetigt": "ja", "iid": [ID_A, ID_B]})
+    assert r.status_code == 200
+    assert "1 Entwurf gelöscht" in r.text and "Unbekannter Inhalt" in r.text
+    assert "Alpha" in r.text and "Zurück zu den Entwürfen" in r.text
+
+
+def test_loeschen_marketing_weg_stoppt_und_nennt_rest(angemeldet, pult, monkeypatch):
+    _loesch_pult(pult, monkeypatch, {ID_A: {"titel": "Alpha", "status": "entwurf"},
+                                     ID_B: {"titel": "Beta", "status": "entwurf"}},
+                 loeschfehler={ID_A: marketing_pult.PultFehler("nicht_erreichbar", "503")})
+    r = angemeldet.post(BESTAETIGEN_URL, headers=HOST, follow_redirects=False,
+                        data={"csrf": ui.CSRF_TOKEN, "bestaetigt": "ja", "iid": [ID_A, ID_B]})
+    assert r.status_code == 200 and "0 Entwürfe gelöscht" in r.text
+    assert len(_loesch_posts(pult)) == 1 and "nicht versucht" in r.text
+
+
+def test_entwurfsseite_hat_loeschen_nur_bei_entwurf_und_verworfen(angemeldet, pult):
+    for status, soll in (("entwurf", True), ("abgelehnt", True), ("eingereicht", False),
+                         ("freigegeben", False)):
+        pult.status = status
+        s = angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST).text
+        assert (f'action="{LOESCH_URL}"' in s) is soll, status
+        if soll:
+            assert f'name="iid" value="{IID}"' in s and "Löschen …" in s
+
+
+def test_loeschen_ohne_csrf_403(angemeldet, pult):
+    for url in (LOESCH_URL, BESTAETIGEN_URL):
+        r = angemeldet.post(url, headers=HOST, data={"iid": [ID_A], "bestaetigt": "ja"})
+        assert r.status_code == 403
+    assert _loesch_posts(pult) == []

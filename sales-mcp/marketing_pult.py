@@ -76,3 +76,16 @@ def medien_verweise(name: str) -> list:
     if not isinstance(verweise, list):
         raise PultFehler("unbekannt", "Antwort ohne Verweisliste")
     return [v for v in verweise if isinstance(v, dict)]
+
+
+def inhalt_loeschen(iid: str, mandant: str, von: str) -> dict:
+    """Loescht einen Entwurf endgueltig (POST /inhalte/{iid}/loeschen). Die
+    Regeln (Status, Firma, laufender Assistent) liegen in der DB; ihre
+    Klartext-Ablehnung kommt als PultFehler("abgelehnt", Grund). Antwort:
+    {"geloescht": iid, "titel": ...}."""
+    from urllib.parse import quote
+    r = anfrage("POST", f"/inhalte/{quote(iid, safe='')}/loeschen",
+                {"mandant": mandant, "von": von})
+    if not isinstance(r, dict) or "geloescht" not in r:
+        raise PultFehler("unbekannt", "Antwort ohne Loeschbestaetigung")
+    return r

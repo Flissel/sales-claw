@@ -1779,10 +1779,12 @@ def test_kontakte_und_verlauf_lassen_sich_nirgends_loeschen():
     # Erweitert 01.10.2026 (Betreiber: Bilder im Editor loeschen): auch
     # /marketing/editor/medien/ loescht nur DATEIEN aus dem Medienordner -
     # dieselbe Pruefung wie /medien (ui.medien_loeschsperre), kein Datensatz.
+    # Erweitert 19.10.2026 (Betreiber: Entwuerfe aus der Liste loeschen): /marketing/entwuerfe/loeschen*
+    # loescht nur Marketing-Entwuerfe (zweistufig, CSRF); Kontakte und Aktivitaeten bleiben ohne Loeschweg.
     pfade = [getattr(r, "path", "") for r in ui.app.routes]
     verdaechtig = [p for p in pfade
                    if ("loesch" in p or "delete" in p)
-                   and not p.startswith(("/medien/", "/marketing/editor/medien/"))]
+                   and not p.startswith(("/medien/", "/marketing/editor/medien/", "/marketing/entwuerfe/loeschen"))]
     assert not verdaechtig, verdaechtig
     # Auch kein Chat-Werkzeug — sonst koennte der Agent, was die Oberflaeche
     # bewusst nicht kann. Hier bleibt die Zusage vollstaendig: der Agent
