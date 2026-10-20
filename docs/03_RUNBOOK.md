@@ -2624,13 +2624,13 @@ vorliegen.
 docker compose --env-file deploy/laeden/ivan.env up -d --build \
   sales-mcp sales-ui sales-mail
 
-# Später, sobald Postfach/Telegram-Token/LinkedIn vorliegen — alle neun
+# Später, sobald Postfach/Telegram-Token/LinkedIn vorliegen — alle acht
 # Dienste des Hauptstacks (weiterhin OHNE ivan-auto; sales-mail steht hier
 # erneut, das ist unschaedlich — Compose erzeugt einen unveraenderten
 # Container nicht neu):
 docker compose --env-file deploy/laeden/ivan.env up -d --build \
   sales-mcp sales-ui sales-inbox sales-dispatch sales-mail \
-  sales-claw sales-telegram sales-linkedin sales-stt
+  sales-claw sales-telegram sales-linkedin
 
 # OpenWA (WhatsApp) — eigene Compose-Datei, braucht das WhatsApp-Pairing
 # (neuer QR-Code) des neuen Ladens:
@@ -3215,3 +3215,20 @@ Nur der Basis-Laden sieht die Seite.
 
 Betrieb auf dem MiniPC (nach dem Cutover): siehe [04_BETRIEB_MINIPC.md](04_BETRIEB_MINIPC.md),
 Bedienung fuer Nicht-Programmierer: [05_BEDIENUNG.md](05_BEDIENUNG.md).
+
+## Sprache zu Text: sales-stt am PC (seit 20.10.2026)
+
+Regel des Betreibers: keine Modelle auf dem Mini-PC. sales-stt (faster-whisper `base`)
+laeuft deshalb am PC des Betreibers, nicht mehr als Container auf der VM.
+
+- PC: `sales-stt/stt.py` aus dem Betriebs-Worktree `C:/Users/User/ClaudeWork/sales-stt-betrieb`,
+  gestartet von der Aufgabe *VibeMind Sales-STT* (bei Anmeldung und alle 5 Minuten, idempotent
+  = Waechter) ueber `scripts/sales_stt_pc.ps1` im Repo Vibemind_V1. Bindet nur `127.0.0.1:2790`,
+  Schluessel `STT_SCHLUESSEL` aus `Vibemind_V1/.env` ist Pflicht. Ins Tailnet per
+  `tailscale serve --bg --tcp 2790 tcp://127.0.0.1:2790`.
+- VM: `~/sales-claw/.env` traegt `STT_URL=http://<pc>.ts.net:2790` und denselben
+  `STT_SCHLUESSEL`; sales-mcp schickt ihn als `X-STT-Key`.
+- PC aus: nur das Umschreiben scheitert (`gruende: URLError`), die Sprachnachricht bleibt liegen
+  und ist beim naechsten Lauf wieder dran. Falscher Schluessel: `HTTPError` (401).
+- Rueckweg (nur ausdruecklich): `STT_URL`/`STT_SCHLUESSEL` in der VM-`.env` leeren, dann
+  `docker compose --profile stt-lokal up -d --build sales-stt` und sales-mcp neu erzeugen.
