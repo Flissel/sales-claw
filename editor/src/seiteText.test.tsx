@@ -13,6 +13,9 @@ describe('SeiteText', () => {
     expect(h).not.toContain('javascript:');
     expect(h).toContain('böse');
   });
+  it('Kursiv umschliesst fette Gruppe', () => {
+    expect(renderToStaticMarkup(<SeiteText text={'*a **b** c*'} />)).toContain('<em>a <strong>b</strong> c</em>');
+  });
   it('Zeilenumbruch', () => {
     expect(renderToStaticMarkup(<SeiteText text={'a\nb'} />)).toContain('<br/>');
   });

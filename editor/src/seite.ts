@@ -125,6 +125,7 @@ export function neueEbene(art: SeitenEbene['art'], s: Seite, quelle?: string): S
 const TEXTLINK = /\[[^\]]*\]\(([^)]*)\)/g;
 export const HTTPS = /^https:\/\/[^\s"'<>]+$/;
 const ANREDE = '{vorname}';
+const QUELLE = /^medien:[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.(png|jpe?g|gif|webp)$/;
 
 function laenge(t: string): number {
   return [...t].length;
@@ -149,6 +150,10 @@ export function speicherGrund(s: Seite): string | null {
         return `${kontext}: Links im Text gehen nur in Fließtext (Rolle TEXT, nicht gedreht)`;
       }
       if (ziele.some((z) => !HTTPS.test(z))) return `${kontext} Link: nur https://-Links erlaubt`;
+    } else if (e.art === 'bild') {
+      if (!QUELLE.test(e.quelle) || e.quelle.includes('..')) {
+        return `${kontext} quelle: nur Bilder aus der Mediathek (medien:…) erlaubt`;
+      }
     } else if (e.art === 'knopf') {
       if (laenge(e.text) < 1 || laenge(e.text) > 60) return `${kontext} text: Text mit 1 bis 60 Zeichen erwartet`;
       if (!HTTPS.test(e.link)) return `${kontext} link: nur https://-Links erlaubt`;

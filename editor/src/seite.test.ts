@@ -65,7 +65,14 @@ describe('speicherGrund', () => {
   it('Link bei Drehung', () => {
     const s = leer();
     s.ebenen = [text({ text: '[x](https://a.de)', drehung: 5 })];
-    expect(speicherGrund(s)).not.toBeNull();
+    expect(speicherGrund(s)).toContain('Links im Text gehen nur in Fließtext');
+  });
+  it('Bild ohne gueltige Quelle', () => {
+    const s = leer();
+    s.ebenen = [neueEbene('bild', s)];
+    expect(speicherGrund(s)).toContain('nur Bilder aus der Mediathek (medien:…) erlaubt');
+    s.ebenen = [neueEbene('bild', s, 'medien:a.png')];
+    expect(speicherGrund(s)).toBeNull();
   });
   it('Link nur https', () => {
     const s = leer();

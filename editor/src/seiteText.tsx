@@ -29,13 +29,24 @@ function teile(t: string, re: RegExp, innen: Macher, aussen: Macher, k: string):
   return aus;
 }
 
-const schlicht: Macher = (t, k) => <Fragment key={k}>{umbrueche(t, k)}</Fragment>;
-const kursiv: Macher = (t, k) => <em key={k}>{umbrueche(t, k)}</em>;
-const fettAussen: Macher = (t, k) => <Fragment key={k}>{teile(t, KURSIV, kursiv, schlicht, k)}</Fragment>;
-const fett: Macher = (t, k) => <strong key={k}>{umbrueche(t, k)}</strong>;
+const PLATZ = /(\d+)/;
 
+// Wie seite_html._auszeichnung: erst **fett** herausloesen (Platzhalter ohne Sternchen), dann *kursiv* ueber
+// das ganze Ergebnis, damit Kursiv auch eine fette Gruppe umschliessen kann.
 function auszeichnung(t: string, k: string): ReactNode {
-  return <Fragment key={k}>{teile(t, FETT, fett, fettAussen, k)}</Fragment>;
+  const fette: string[] = [];
+  const ohne = t.replace(FETT, (_g, inhalt: string) => `${fette.push(inhalt) - 1}`);
+  const blatt: Macher = (s, kk) => (
+    <Fragment key={kk}>
+      {s.split(new RegExp(PLATZ.source, 'g')).map((teil, i) =>
+        i % 2 === 0 ? <Fragment key={`${kk}t${i}`}>{umbrueche(teil, `${kk}t${i}`)}</Fragment> : (
+          <strong key={`${kk}f${i}`}>{umbrueche(fette[Number(teil)], `${kk}f${i}`)}</strong>
+        ),
+      )}
+    </Fragment>
+  );
+  const kursiv: Macher = (s, kk) => <em key={kk}>{blatt(s, `${kk}e`)}</em>;
+  return <Fragment key={k}>{teile(ohne, KURSIV, kursiv, blatt, k)}</Fragment>;
 }
 
 export function SeiteText({ text }: { text: string }): JSX.Element {
