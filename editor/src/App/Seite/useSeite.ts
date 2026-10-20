@@ -6,8 +6,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { verlauf } from '../../gestaltung';
 import type { Seite, SeitenEbene } from '../../seite';
+import { hoeheZiehen } from '../../seiteGeometrie';
 import {
-  ebeneDazu, ebeneGeaendert, ebeneVerschoben, ebeneWeg, hoheGesetzt,
+  ebeneDazu, ebeneGeaendert, ebeneVerschoben, ebeneWeg, type EbenenTeil,
 } from './seiteAenderungen';
 
 export type SeitenArt = 'sofort' | 'gleiten' | 'live';
@@ -67,7 +68,7 @@ export function useSeite(anfang: Seite) {
   );
 
   const ebeneAendern = useCallback(
-    (id: string, teil: Partial<SeitenEbene>, modus: SeitenArt = 'sofort') =>
+    (id: string, teil: EbenenTeil, modus: SeitenArt = 'sofort') =>
       setzen(ebeneGeaendert(jetzt.current, id, teil), modus),
     [setzen]
   );
@@ -93,7 +94,7 @@ export function useSeite(anfang: Seite) {
   const nachOben = useCallback((id: string) => setzen(ebeneVerschoben(jetzt.current, id, 1)), [setzen]);
   const nachUnten = useCallback((id: string) => setzen(ebeneVerschoben(jetzt.current, id, -1)), [setzen]);
   const hoeheSetzen = useCallback(
-    (h: number, modus: SeitenArt = 'sofort') => setzen(hoheGesetzt(jetzt.current, h), modus),
+    (h: number, modus: SeitenArt = 'sofort') => setzen(hoeheZiehen(jetzt.current, h), modus),
     [setzen]
   );
 
@@ -119,6 +120,7 @@ export function useSeite(anfang: Seite) {
     aktuell: () => jetzt.current,
     auswahl: gewaehlt,
     waehlen: setAuswahl,
+    festschreiben,
     ebeneAendern,
     hinzufuegen,
     loeschen,

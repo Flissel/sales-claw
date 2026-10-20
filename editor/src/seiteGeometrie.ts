@@ -82,13 +82,11 @@ export function griffZiehen(
   let b = klemme(e.breite + sx * ldx, 1, 1200);
   let h = klemme(e.hoehe + sy * ldy, 1, 6000);
   if (festesVerhaeltnis) {
-    const v = e.breite / e.hoehe;
-    if (sx !== 0 && sy !== 0) {
-      const f = Math.max(b / e.breite, h / e.hoehe);
-      b = klemme(e.breite * f, 1, 1200);
-      h = b / v;
-    } else if (sx !== 0) h = b / v;
-    else b = h * v;
+    // Ein gemeinsamer Faktor, gegen die Grenzen BEIDER Seiten geklemmt: Verhaeltnis und feste Kante bleiben.
+    const wunsch = sx !== 0 && sy !== 0 ? Math.max(b / e.breite, h / e.hoehe) : sx !== 0 ? b / e.breite : h / e.hoehe;
+    const f = klemme(wunsch, Math.max(1 / e.breite, 1 / e.hoehe), Math.min(1200 / e.breite, 6000 / e.hoehe));
+    b = e.breite * f;
+    h = e.hoehe * f;
   }
   // Mittelpunktverschiebung im Ebenenrahmen, dann um +drehung zurueck in Seitenkoordinaten.
   const mx = (sx * (b - e.breite)) / 2;

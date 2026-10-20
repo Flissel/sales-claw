@@ -42,6 +42,13 @@ describe('griffZiehen', () => {
     const e = griffZiehen(form(), 'so', 20, 3, true);
     expect(e.breite / e.hoehe).toBeCloseTo(2);
   });
+  it('festes Verhaeltnis an der Grenze: Verhaeltnis und feste Ecke bleiben', () => {
+    const e = griffZiehen(form({ breite: 100, hoehe: 1000, x: 300, y: 200 }), 'so', 1000, 10000, true);
+    expect(e.hoehe).toBe(6000);
+    expect(e.breite).toBeCloseTo(600);
+    expect(e.x - e.breite / 2).toBeCloseTo(250);
+    expect(e.y - e.hoehe / 2).toBeCloseTo(-300);
+  });
   it('90 Grad gedreht: gegenueberliegende Ecke bleibt in Seitenkoordinaten stehen', () => {
     const ecke = (e: SeitenEbene, sx: number, sy: number) => {
       const r = ((e.drehung ?? 0) * Math.PI) / 180;

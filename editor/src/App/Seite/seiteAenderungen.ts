@@ -1,12 +1,15 @@
 // Reine Aenderungen an einer Seite (ohne React), von useSeite genutzt. Jede laeuft durch klemmen.
 import { MAX_EBENEN, type Seite, type SeitenEbene } from '../../seite';
-import { hoeheZiehen, klemmen } from '../../seiteGeometrie';
+import { klemmen } from '../../seiteGeometrie';
 
-export function ebeneGeaendert(s: Seite, id: string, teil: Partial<SeitenEbene>): Seite {
+// Aenderung ohne id und art: eine Ebene kann so nie ihre Art wechseln.
+export type EbenenTeil = SeitenEbene extends infer E ? (E extends unknown ? Omit<Partial<E>, 'id' | 'art'> : never) : never;
+
+export function ebeneGeaendert(s: Seite, id: string, teil: EbenenTeil): Seite {
   if (!s.ebenen.some((e) => e.id === id)) return s;
   return {
     ...s,
-    ebenen: s.ebenen.map((e) => (e.id === id ? klemmen({ ...e, ...teil, id: e.id } as SeitenEbene) : e)),
+    ebenen: s.ebenen.map((e) => (e.id === id ? klemmen({ ...e, ...teil, id: e.id, art: e.art } as SeitenEbene) : e)),
   };
 }
 
@@ -29,6 +32,3 @@ export function ebeneVerschoben(s: Seite, id: string, richtung: 1 | -1): Seite {
   return { ...s, ebenen: liste };
 }
 
-export function hoheGesetzt(s: Seite, h: number): Seite {
-  return hoeheZiehen(s, h);
-}

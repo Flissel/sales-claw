@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import type { FormEbeneS, Seite } from '../../seite';
-import { ebeneDazu, ebeneGeaendert, ebeneVerschoben, ebeneWeg } from './seiteAenderungen';
+import { type FormEbeneS, type Seite } from '../../seite';
+import { MAX_EBENEN } from '../../seite';
+import { type EbenenTeil, ebeneDazu, ebeneGeaendert, ebeneVerschoben, ebeneWeg } from './seiteAenderungen';
 
 const f = (id: string): FormEbeneS => ({
   id, art: 'form', form: 'rechteck', farbe: '#000000', x: 300, y: 200, breite: 100, hoehe: 50, drehung: 0,
@@ -13,7 +14,7 @@ const s: Seite = {
 
 describe('seiteAenderungen', () => {
   it('klemmt geaenderte Ebenen und laesst die id', () => {
-    const n = ebeneGeaendert(s, 'a', { x: 9999, id: 'z' });
+    const n = ebeneGeaendert(s, 'a', { x: 9999, id: 'z' } as unknown as EbenenTeil);
     expect(n.ebenen[0].x).toBe(1200);
     expect(n.ebenen[0].id).toBe('a');
     expect(ebeneGeaendert(s, 'fehlt', { x: 1 })).toBe(s);
@@ -26,5 +27,9 @@ describe('seiteAenderungen', () => {
   it('fuegt hinzu und loescht', () => {
     expect(ebeneDazu(s, f('d')).ebenen).toHaveLength(4);
     expect(ebeneWeg(s, 'b').ebenen.map((e) => e.id)).toEqual(['a', 'c']);
+  });
+  it('ignoriert Hinzufuegen ueber MAX_EBENEN', () => {
+    const voll = { ...s, ebenen: Array.from({ length: MAX_EBENEN }, (_, i) => f('e' + i)) };
+    expect(ebeneDazu(voll, f('extra'))).toBe(voll);
   });
 });
