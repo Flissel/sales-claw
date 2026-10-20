@@ -554,9 +554,11 @@ def routen(ui) -> list:
                 d = await run_in_threadpool(marketing_pult.anfrage, "GET", f"/inhalte/{iid}")
             except marketing_pult.PultFehler as f:
                 return im_rahmen(f)
-            fassungen = d.get("fassungen") if isinstance(d, dict) else None
-            treffer = next((f for f in fassungen or [] if isinstance(f, dict)
-                            and _ganzzahl(f.get("fassung")) == fassung), None)
+            fassungen = [f for f in (d.get("fassungen") if isinstance(d, dict) else None) or []
+                         if isinstance(f, dict)]
+            # die gefragte Fassung, sonst die neueste (fassungen[0]) - eine Collage nie als Mail
+            treffer = next((f for f in fassungen if _ganzzahl(f.get("fassung")) == fassung),
+                           fassungen[0] if fassungen else None)
             fmt = "seite" if isinstance(treffer, dict) and treffer.get("format") == "seite" else "mail"
         q_teile = {"fassung": fassung, "format": fmt}
         # Bilder der Editor-Newsletter: signierte Adresse, weil der
@@ -566,8 +568,10 @@ def routen(ui) -> list:
             q_teile["bild_basis"] = bild_basis
         q = urllib.parse.urlencode(q_teile)
         try:
+            # mail/handy einer Collage rendern beim ersten Mal die Bildstuecke (Chromium): langes Zeitlimit
             inhalt, typ = await run_in_threadpool(
-                marketing_pult.anfrage, "GET", f"/inhalte/{iid}/vorschau?{q}", roh=True)
+                marketing_pult.anfrage, "GET", f"/inhalte/{iid}/vorschau?{q}", roh=True,
+                zeitlimit=marketing_pult.LANG_ZEITLIMIT_S if fmt in ("mail", "handy") else None)
         except marketing_pult.PultFehler as f:
             # Das PDF oeffnet als eigene Seite (neuer Tab): dort die normale Fehlerseite.
             return fehler(f) if fmt == "pdf" else im_rahmen(f)
@@ -795,8 +799,9 @@ def routen(ui) -> list:
                 return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
             iid = urllib.parse.quote(request.path_params["iid"], safe="")
             try:
-                await run_in_threadpool(marketing_pult.anfrage, "POST",
-                                        f"/inhalte/{iid}/{aktion}", {"von": von(request)})
+                await run_in_threadpool(
+                    marketing_pult.anfrage, "POST", f"/inhalte/{iid}/{aktion}", {"von": von(request)},
+                    zeitlimit=marketing_pult.LANG_ZEITLIMIT_S if aktion == "einreichen" else None)
             except marketing_pult.PultFehler as f:
                 return fehler(f)
             return RedirectResponse(f"/marketing/entwurf/{iid}", status_code=303)

@@ -168,7 +168,7 @@ async def anhang_speichern(ui, datei):
     med = ui.server.medien
     for n in range(1, 1000):
         basis = f"{stamm}{endung}" if n == 1 else f"{stamm}-{n}{endung}"
-        if med.intern(basis) or med.entwurfsbild(basis):
+        if med.intern(basis) or med.verborgen(basis):
             # Das Suffix machte daraus einen internen Namen (terminkarte-2.pdf):
             # fuer alle weiteren Kandidaten mit Praefix, sonst unsichtbar.
             stamm = "anhang-" + stamm[:_STAMM_FUER_PRAEFIX]
@@ -722,8 +722,9 @@ def routen(ui) -> list:
             return json_grund(403, "Fehlende oder falsche CSRF-Marke")
         iid = urllib.parse.quote(request.path_params["iid"], safe="")
         try:
-            r = await run_in_threadpool(marketing_pult.anfrage, "POST", f"/inhalte/{iid}/{schritt}",
-                                        {"von": ui._ui_akteur(request)})
+            r = await run_in_threadpool(
+                marketing_pult.anfrage, "POST", f"/inhalte/{iid}/{schritt}", {"von": ui._ui_akteur(request)},
+                zeitlimit=marketing_pult.LANG_ZEITLIMIT_S if schritt == "einreichen" else None)
         except marketing_pult.PultFehler as f:
             if f.art == "abgelehnt":
                 return json_grund(422, str(f.grund or "Abgelehnt"))

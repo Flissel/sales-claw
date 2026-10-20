@@ -22,10 +22,12 @@ type AnsichtProps = {
   exportOeffnen?: Export;
   // Eigener Assistent im Reiter (Collage: der Seiten-Chat); ohne = der Newsletter-Chat.
   assistent?: React.ReactNode;
+  // Collage: live die Seite (format=seite) statt der Mail, dazu ein Link auf die Mail-Vorschau (format=handy).
+  collage?: boolean;
 };
 
 // Die reine Ansicht (Props statt Store - beim Server-Rendern im Test liest zustand nur den Anfangszustand).
-export function HandyAnsicht({ start, basis, betreff, reiter: anfang = 'vorschau', exportOeffnen = nichts, assistent }: AnsichtProps) {
+export function HandyAnsicht({ start, basis, betreff, reiter: anfang = 'vorschau', exportOeffnen = nichts, assistent, collage = false }: AnsichtProps) {
   const [reiter, setReiter] = useState<HandyReiter>(anfang);
   return (
     <Stack sx={{ height: '100vh', overflow: 'hidden' }}>
@@ -33,9 +35,19 @@ export function HandyAnsicht({ start, basis, betreff, reiter: anfang = 'vorschau
         <Button href={start?.zurueck_url ?? '#'} sx={{ minHeight: 44, flex: 'none' }}>
           Zurück
         </Button>
-        <Typography variant="subtitle1" noWrap sx={{ fontWeight: 600, minWidth: 0 }}>
+        <Typography variant="subtitle1" noWrap sx={{ fontWeight: 600, minWidth: 0, flex: 1 }}>
           {betreff || 'Newsletter'}
         </Typography>
+        {collage && start ? (
+          <Button
+            href={vorschauAdresse(start.vorschau_url, basis, 'handy')}
+            target="_blank"
+            rel="noopener noreferrer"
+            sx={{ minHeight: 44, flex: 'none' }}
+          >
+            Mail-Vorschau
+          </Button>
+        ) : null}
       </Stack>
       <Tabs value={reiter} onChange={(_, v: HandyReiter) => setReiter(v)} variant="fullWidth" sx={{ minHeight: 48, borderBottom: 1, borderColor: 'divider' }}>
         <Tab value="vorschau" label="Vorschau" sx={{ minHeight: 48 }} />
@@ -49,7 +61,7 @@ export function HandyAnsicht({ start, basis, betreff, reiter: anfang = 'vorschau
               key={basis}
               sandbox=""
               title="Vorschau Handy"
-              src={vorschauAdresse(start.vorschau_url, basis)}
+              src={vorschauAdresse(start.vorschau_url, basis, collage ? 'seite' : 'handy')}
               style={{ width: '100%', height: INHALT_HOEHE, border: 0, display: 'block' }}
             />
           ) : null

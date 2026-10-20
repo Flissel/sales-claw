@@ -62,3 +62,32 @@ def test_newsletter_bilder_liest_collage_stueck_aus_media_erzeugt(ordner):
     (ordner / MS).write_bytes(JPEG)
     bilder, fehler = mail_dispatch.newsletter_bilder([{"name": MS, "cid": MS}])
     assert fehler is None and bilder == [(MS, JPEG, "jpeg")]
+
+
+# Bildstuecke sind wie Entwurfsbilder kein Medium (Gesamtpruefung Stufe 4): unsichtbar in Listen und im
+# Picker, nie Kundenanhang, als Name reserviert - Anzeige und Versand lesen sie weiter.
+@pytest.mark.parametrize("nur_anhaenge", [False, True])
+def test_liste_laesst_collage_stuecke_weg(ordner, nur_anhaenge):
+    for n in (MS, "ms-0c80e26a-2-01-2.jpg"):
+        (ordner / n).write_bytes(JPEG)
+    assert [n for n, _ in medien.liste(nur_anhaenge)] == ["nl-12345678-x.jpg"]
+
+
+def test_pruefe_anhang_lehnt_collage_stueck_ab(ordner):
+    (ordner / MS).write_bytes(JPEG)
+    basis, fehler = medien.pruefe_anhang(MS)
+    assert basis is None and "Bildstück" in fehler
+
+
+def test_collage_stueck_ist_reserviert(ordner):
+    assert medien.pruefe_neuen_namen(MS)[0] is None
+    assert medien.pruefe_neuen_namen(GS)[0] is None
+    assert medien.pruefe_neuen_namen("ms-urlaub.jpg") == ("ms-urlaub.jpg", None)
+    stamm, endung = medien.anhang_name(MS)
+    assert stamm + endung != MS and not medien.verborgen(stamm + endung)
+
+
+@pytest.mark.parametrize("name", ["ms-0C80E26A-2-01.jpg", "ms-0c80e26a-2-1.jpg", "ms-0c80e26a-2-01.png",
+                                  "xms-0c80e26a-2-01.jpg", "ms-0c80e26a.jpg"])
+def test_nur_die_exakte_form_ist_mailstueck(name):
+    assert not medien.mailstueck(name)

@@ -3087,10 +3087,11 @@ def medien_aus_chat_uebernehmen(datei: str, name: str = "") -> str:
             f"'{basis}' hat eine andere Endung als die Datei aus dem Chat "
             f"('{endung_quelle or '(keine)'}') - bitte denselben Dateityp "
             f"behalten oder den Namen ohne Endung angeben.")})
-    if medien.intern(basis) or medien.entwurfsbild(basis):
+    if medien.intern(basis) or medien.verborgen(basis):
         return _json({"fehler": (
-            f"'{basis}' ist ein reservierter Name (Terminkarte, Musterblatt "
-            f"oder Entwurfsbild) - bitte einen anderen Namen waehlen.")})
+            f"'{basis}' ist ein reservierter Name (Terminkarte, Musterblatt, "
+            f"Entwurfsbild oder Bildstueck einer Collage-Mail) - bitte einen "
+            f"anderen Namen waehlen.")})
     try:
         basis = medien.ablegen(basis, inhalt, medien.ERZEUGT_VERZEICHNIS)
     except OSError as e:

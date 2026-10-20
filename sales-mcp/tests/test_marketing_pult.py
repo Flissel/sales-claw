@@ -53,9 +53,12 @@ class Falsch:
         self.extra = {}                    # weitere Felder am Inhalt (freigegebene_fassung, ...)
         self.inhalte = None                # gesetzt: Zeilen der Entwurfsliste
         self.format = None                 # gesetzt: Format der neuesten Fassung (z. B. "seite")
+        self.zeitlimits = []               # zeitlimit je Aufruf (None = Vorgabe 8 s)
+        self.ohne_treffer = False          # gesetzt: die Fassungsliste kennt die gefragte Fassung nicht
 
-    def anfrage(self, methode, pfad, daten=None, roh=False):
+    def anfrage(self, methode, pfad, daten=None, roh=False, zeitlimit=None):
         self.aufrufe.append((methode, pfad, daten))
+        self.zeitlimits.append(zeitlimit)
         try:
             asyncio.get_running_loop()
             self.im_loop.append(pfad)
@@ -90,6 +93,10 @@ class Falsch:
             neu_extra = {"format": "bloecke", "bloecke": self.bloecke} if self.bloecke else {}
             if self.format:
                 neu_extra = {**neu_extra, "format": self.format}
+            if self.ohne_treffer:
+                return {"inhalt": {"id": IID, "status": self.status, "mandant": self.inhalt_mandant},
+                        "fassungen": [{"fassung": 7, "felder": FELDER, **neu_extra},
+                                      {"fassung": 6, "felder": FELDER, "format": "bloecke"}]}
             return {"inhalt": {"id": IID, "art": "newsletter", "titel": "Early Access",
                                "status": self.status, "mandant": self.inhalt_mandant,
                                "freigegebene_fassung": None, "entschieden_von": None,
@@ -847,6 +854,16 @@ def test_einreichen_sendet_pult_aufruf(angemeldet, pult):
     assert pult.aufrufe[-1] == ("POST", f"/inhalte/{IID}/einreichen", {"von": "mira"})
 
 
+def test_einreichen_mit_langem_zeitlimit(angemeldet, pult):
+    """Collage-Einreichen rendert Bildstuecke in Chromium (bis ~60 s): nicht nach 8 s abbrechen."""
+    angemeldet.post(f"/marketing/entwurf/{IID}/einreichen", headers=HOST, follow_redirects=False,
+                    data={"csrf": ui.CSRF_TOKEN})
+    assert pult.zeitlimits[-1] == marketing_pult.LANG_ZEITLIMIT_S == 120
+    angemeldet.post(f"/marketing/entwurf/{IID}/zurueckziehen", headers=HOST, follow_redirects=False,
+                    data={"csrf": ui.CSRF_TOKEN})
+    assert pult.zeitlimits[-1] is None
+
+
 def test_zurueckziehen_sendet_pult_aufruf(angemeldet, pult):
     r = angemeldet.post(f"/marketing/entwurf/{IID}/zurueckziehen", headers=HOST, follow_redirects=False,
                         data={"csrf": ui.CSRF_TOKEN})
@@ -1198,6 +1215,20 @@ def test_vorschau_karte_bloecke_holt_die_mail(angemeldet, pult):
     angemeldet.get(f"/marketing/entwurf/{IID}/vorschau?fassung=2&format=karte", headers=HOST)
     pfade = _vorschau_pfade(pult)
     assert len(pfade) == 1 and "format=mail" in pfade[0]
+
+
+def test_vorschau_karte_ohne_treffer_nimmt_die_neueste_fassung(angemeldet, pult):
+    # Die Fassung steht nicht in der Liste: die neueste (fassungen[0]) entscheidet - eine Collage nie als Mail.
+    pult.format, pult.ohne_treffer = "seite", True
+    angemeldet.get(f"/marketing/entwurf/{IID}/vorschau?fassung=2&format=karte", headers=HOST)
+    pfade = _vorschau_pfade(pult)
+    assert len(pfade) == 1 and "format=seite" in pfade[0]
+
+
+@pytest.mark.parametrize("fmt, lang", [("mail", True), ("handy", True), ("seite", False), ("pdf", False)])
+def test_vorschau_mail_mit_langem_zeitlimit(angemeldet, pult, fmt, lang):
+    angemeldet.get(f"/marketing/entwurf/{IID}/vorschau?fassung=2&format={fmt}", headers=HOST)
+    assert pult.zeitlimits[-1] == (marketing_pult.LANG_ZEITLIMIT_S if lang else None)
 
 
 def test_vorschau_seite_wird_durchgereicht(angemeldet, pult):

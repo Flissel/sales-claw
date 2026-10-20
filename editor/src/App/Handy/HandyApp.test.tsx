@@ -43,6 +43,24 @@ describe('HandyAnsicht mit eigenem Assistenten (Collage)', () => {
   });
 });
 
+describe('HandyAnsicht einer Collage', () => {
+  it('zeigt live die Seite (format=seite, kein Chromium) und verlinkt die Mail-Vorschau (format=handy)', () => {
+    const html = renderToStaticMarkup(<HandyAnsicht start={start} basis={5} betreff="Collage" collage />);
+    expect(html).toContain('src="/marketing/entwurf/' + IID + '/vorschau?fassung=5&amp;format=seite"');
+    expect(html).toContain('Mail-Vorschau');
+    expect(html).toContain('href="/marketing/entwurf/' + IID + '/vorschau?fassung=5&amp;format=handy"');
+    expect(html).toContain('target="_blank"');
+    expect(html).toContain('rel="noopener noreferrer"');
+  });
+
+  it('Block-Newsletter: weiter die Handy-Mail, kein eigener Mail-Vorschau-Link', () => {
+    const html = renderToStaticMarkup(<HandyAnsicht start={start} basis={5} betreff="Blöcke" />);
+    expect(html).toContain('fassung=5&amp;format=handy');
+    expect(html).not.toContain('format=seite');
+    expect(html).not.toContain('Mail-Vorschau');
+  });
+});
+
 describe('HandyApp', () => {
   it('liest den Pult-Zustand und rendert ohne Start nur Kopf und Reiter', () => {
     const html = renderToStaticMarkup(<HandyApp />);

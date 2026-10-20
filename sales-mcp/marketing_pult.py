@@ -11,6 +11,9 @@ import urllib.request
 URL = os.environ.get("MARKETING_PULT_URL", "").strip().rstrip("/")
 KEY = os.environ.get("MARKETING_PULT_KEY", "").strip()
 ZEITLIMIT_S = 8
+# Einreichen und Mail-Vorschau einer Collage rendern die Bildstuecke in Chromium (die API wartet selbst bis zu
+# 60 s auf Chromium und bis zu 90 s auf eine laufende Erzeugung): nicht nach 8 s abbrechen.
+LANG_ZEITLIMIT_S = 120
 
 
 class PultFehler(Exception):

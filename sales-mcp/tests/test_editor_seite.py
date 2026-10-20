@@ -426,6 +426,14 @@ def test_einreichen_route_leitet_mit_akteur_weiter(angemeldet, pult, ziel):
     assert pult.aufrufe[-1] == ("POST", f"/inhalte/{IID}/{ziel}", {"von": "mira"})
 
 
+def test_einreichen_route_mit_langem_zeitlimit(angemeldet, pult):
+    kopf = {**HOST, "X-CSRF": ui.CSRF_TOKEN}
+    angemeldet.post(f"/marketing/editor/{IID}/einreichen", headers=kopf)
+    assert pult.zeitlimits[-1] == marketing_pult.LANG_ZEITLIMIT_S == 120
+    angemeldet.post(f"/marketing/editor/{IID}/zurueckziehen", headers=kopf)
+    assert pult.zeitlimits[-1] is None
+
+
 @pytest.mark.parametrize("ziel", ["einreichen", "zurueckziehen"])
 def test_einreichen_pultfehler_wird_422_oder_503(angemeldet, pult, ziel):
     kopf = {**HOST, "X-CSRF": ui.CSRF_TOKEN}
@@ -1142,7 +1150,7 @@ def test_medien_json_ohne_entwurfsbilder(angemeldet, monkeypatch, tmp_path):
     erzeugt = tmp_path / "erzeugt"
     erzeugt.mkdir()
     (tmp_path / "leer").mkdir()
-    for name in ("gs-0123456789ab.jpg", "nl-12345678-x.jpg"):
+    for name in ("gs-0123456789ab.jpg", "nl-12345678-x.jpg", "ms-0c80e26a-2-01.jpg"):
         (erzeugt / name).write_bytes(bytes([0xFF, 0xD8]) + b"x" * 64)
     monkeypatch.setattr(server.medien, "MEDIA_VERZEICHNIS", str(tmp_path / "leer"))
     monkeypatch.setattr(server.medien, "ERZEUGT_VERZEICHNIS", str(erzeugt))

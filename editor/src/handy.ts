@@ -4,8 +4,9 @@
 // Dieselbe Grenze wie die Media-Queries von sales-ui (max-width: 767px).
 export const HANDY_GRENZE = '(max-width:767.98px)';
 
-// Pult-Vorschau einer gespeicherten Fassung im Handy-Format (wie "Vorschau Handy" in der PultLeiste).
-export function vorschauAdresse(vorschauUrl: string, basis: number): string {
+// Pult-Vorschau einer gespeicherten Fassung, Vorgabe im Handy-Format (wie "Vorschau Handy" in der PultLeiste).
+// Collagen zeigen live die Seite selbst (format=seite, billig); die Handy-Mail rendert Bildstücke in Chromium.
+export function vorschauAdresse(vorschauUrl: string, basis: number, format: 'handy' | 'seite' = 'handy'): string {
   const trenner = vorschauUrl.includes('?') ? '&' : '?';
-  return `${vorschauUrl}${trenner}fassung=${basis}&format=handy`;
+  return `${vorschauUrl}${trenner}fassung=${basis}&format=${format}`;
 }

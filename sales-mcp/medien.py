@@ -266,6 +266,23 @@ def entwurfsbild(basis: str) -> bool:
     return bool(ENTWURF_MUSTER.match(basis or ""))
 
 
+# Bildstuecke der Collage-Mail (Freie Flaeche Stufe 4): das Pult legt sie als
+# ms-<inhalt 8 hex>-<fassung>-<nr>[-n].jpg in den Erzeugt-Ordner. Wie die
+# Entwurfsbilder kein Medium: nicht in Listen/Picker, nie Kundenanhang, als
+# Name reserviert. `pruefe_anzeige` (Vorschau) und der Newsletter-Versand
+# (mail_dispatch.newsletter_bilder) lesen sie weiter.
+MAILSTUECK_MUSTER = re.compile(r"^ms-[0-9a-f]{8}-[0-9]{1,6}-[0-9]{2,3}(?:-[0-9]{1,3})?\.jpg$")
+
+
+def mailstueck(basis: str) -> bool:
+    return bool(MAILSTUECK_MUSTER.match(basis or ""))
+
+
+def verborgen(basis: str) -> bool:
+    """Entwurfsbild oder Bildstueck: kein Medium (Listen, Picker, Anhang, Namenswahl)."""
+    return entwurfsbild(basis) or mailstueck(basis)
+
+
 def intern(basis: str) -> bool:
     """Ist das eine interne Unterlage (Terminkarte, Musterblatt)?"""
     return bool(INTERN_MUSTER.match(basis or ""))
@@ -284,6 +301,9 @@ def pruefe_anhang(name: str):
     if entwurfsbild(basis):
         return None, (f"'{basis}' ist ein Entwurfsbild einer Gestaltungsflaeche "
                       f"(Entwurfsbild) und kein Medium - es geht nicht als Anhang.")
+    if mailstueck(basis):
+        return None, (f"'{basis}' ist ein Bildstück einer Collage-Mail und kein Medium - "
+                      f"es geht nicht als Anhang.")
     if intern(basis):
         return None, (f"'{basis}' ist eine interne Unterlage (Terminkarte oder "
                       f"Musterblatt) und geht nicht an Kunden - sie ist nur fuer "
@@ -329,6 +349,11 @@ def pruefe_neuen_namen(name: str):
         return None, (
             f"Endung '{endung or '(keine)'}' ist nicht zugelassen. Erlaubt: "
             f"{', '.join(sorted(ERLAUBT))}.")
+    if verborgen(basis):
+        # Sonst laege eine hochgeladene Datei unsichtbar unter einem Namen, den
+        # Marketing fuer Entwurfsbilder/Bildstuecke der Mail vergibt.
+        return None, (f"'{basis}' ist ein reservierter Name (Entwurfsbild oder Bildstück "
+                      f"einer Collage-Mail) - bitte einen anderen Namen wählen.")
     return basis, None
 
 
@@ -449,7 +474,7 @@ def anhang_name(roh: str):
     stamm = stamm[:_ANHANG_STAMM_MAX].rstrip("._-")
     if not stamm:
         stamm = "anhang"
-    if intern(stamm + endung) or entwurfsbild(stamm + endung):
+    if intern(stamm + endung) or verborgen(stamm + endung):
         stamm = "anhang-" + stamm      # sonst waere die Datei in der Liste unsichtbar
     return stamm, endung
 
@@ -500,7 +525,7 @@ def liste(nur_anhaenge: bool = False):
                 raise
     eintraege = []
     for name in sorted(namen):
-        if entwurfsbild(name):
+        if verborgen(name):
             continue
         basis, fehler = (pruefe_anhang if nur_anhaenge else pruefe)(name)
         if fehler is None:

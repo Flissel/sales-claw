@@ -6,7 +6,7 @@ import type { Start } from '../../pult';
 import { LIEGT_ZUR_FREIGABE, pultStarten, pultStore } from '../../pultZustand';
 import type { Seite } from '../../seite';
 
-import SeiteApp, { ARBEITET_HINWEIS, NEUE_FASSUNG_HINWEIS, seiteEinreichen } from './SeiteApp';
+import SeiteApp, { ARBEITET_HINWEIS, NEUE_FASSUNG_HINWEIS, nurEinmal, seiteEinreichen } from './SeiteApp';
 import SeitenChat from './SeitenChat';
 
 const IID = 'b12c46b9-8f87-412b-b2e7-7215b354a75b';
@@ -264,5 +264,30 @@ describe('SeiteApp einreichen und nur lesend', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ status: 'eingereicht', fassung: 3 }), { status: 200, headers: { 'Content-Type': 'application/json' } })));
     expect(await seiteEinreichen()).toEqual({ art: 'success', text: 'Zur Freigabe eingereicht' });
     expect(pultStore.getState().nurLesen).toBe(true);
+  });
+});
+
+describe('Einreichen: Doppelklick-Schutz', () => {
+  it('ein zweiter Klick, solange das erste Einreichen läuft, löst nichts aus; danach wieder', async () => {
+    const sperre = { current: false };
+    let fertig: (wert: string) => void = () => undefined;
+    const lauf = vi.fn(() => new Promise<string>((r) => { fertig = r; }));
+    const erster = nurEinmal(sperre, lauf);
+    // zweiter Klick im selben Takt (React hat noch nicht neu gerendert)
+    expect(await nurEinmal(sperre, lauf)).toBeUndefined();
+    expect(lauf).toHaveBeenCalledTimes(1);
+    fertig('ok');
+    expect(await erster).toBe('ok');
+    expect(sperre.current).toBe(false);
+    const dritter = nurEinmal(sperre, lauf);
+    fertig('wieder');
+    expect(await dritter).toBe('wieder');
+    expect(lauf).toHaveBeenCalledTimes(2);
+  });
+
+  it('gibt die Sperre auch nach einem Fehler frei', async () => {
+    const sperre = { current: false };
+    await expect(nurEinmal(sperre, () => Promise.reject(new Error('weg')))).rejects.toThrow('weg');
+    expect(sperre.current).toBe(false);
   });
 });

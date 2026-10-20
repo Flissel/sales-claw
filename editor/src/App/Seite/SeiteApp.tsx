@@ -44,6 +44,18 @@ export async function seiteEinreichen(): Promise<Meldung> {
   return grund === null ? { art: 'success', text: 'Zur Freigabe eingereicht' } : { art: 'error', text: grund };
 }
 
+// Doppelklick-Schutz: ein zweiter Klick, bevor React neu gerendert hat, sähe den State noch auf false -
+// die Sperre steht deshalb in einem Ref (sperre), nicht im State.
+export async function nurEinmal<T>(sperre: { current: boolean }, lauf: () => Promise<T>): Promise<T | undefined> {
+  if (sperre.current) return undefined;
+  sperre.current = true;
+  try {
+    return await lauf();
+  } finally {
+    sperre.current = false;
+  }
+}
+
 export function pdfAdresse(vorschauUrl: string, basis: number): string {
   const trenner = vorschauUrl.includes('?') ? '&' : '?';
   return `${vorschauUrl}${trenner}fassung=${basis}&format=pdf`;
@@ -70,7 +82,7 @@ export default function SeiteApp({ start }: { start: Start }) {
   // verwirft keine ungespeicherten Änderungen.
   return (
     <>
-      {handy && <HandyAnsicht start={start} basis={basis} betreff={start.betreff} assistent={<SeitenChat ebene={null} hoehe={INHALT_HOEHE} />} />}
+      {handy && <HandyAnsicht start={start} basis={basis} betreff={start.betreff} collage assistent={<SeitenChat ebene={null} hoehe={INHALT_HOEHE} />} />}
       <ThemeProvider theme={thema}>
         <Arbeitsplatz start={start} anfang={seite} basis={basis} setBasis={setBasis} versteckt={handy} />
       </ThemeProvider>
@@ -94,6 +106,7 @@ function Arbeitsplatz({ start, anfang, basis, setBasis, versteckt }: Arbeitsplat
   };
   const [konflikt, setKonflikt] = useState(false);
   const [reicht, setReicht] = useState(false);
+  const reichtSperre = useRef(false);
   const [zieht, setZieht] = useState(false);
   const ungespeichert = z.geaendert || betreff !== gesichert.betreff || vorschautext !== gesichert.vorschautext;
   // Assistent: läuft eine Runde, ist Bearbeiten gesperrt; die Fläche zeigt den Zwischenstand nur an.
@@ -192,10 +205,12 @@ function Arbeitsplatz({ start, anfang, basis, setBasis, versteckt }: Arbeitsplat
 
   const einreichenKlick = async () => {
     if (reicht || laeuft || gesperrt) return;
-    setReicht(true);
-    const m = await seiteEinreichen();
-    setReicht(false);
-    setMeldung(m);
+    await nurEinmal(reichtSperre, async () => {
+      setReicht(true);
+      const m = await seiteEinreichen();
+      setReicht(false);
+      setMeldung(m);
+    });
   };
 
   const zurueckziehenKlick = async () => {
