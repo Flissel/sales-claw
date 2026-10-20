@@ -54,3 +54,6 @@ gruppen:
     titel: Einwilligung
     fragen:
       - { id: consent_kontakt, frage: "Dürfen wir Sie zu passenden Themen aktiv kontaktieren?" }
+      # 20.10.2026: eigene Newsletter-Frage. Setzt NICHT selbst opt_in - die Antwort erscheint
+      # unter /newsletter/einwilligung, das Ja erfasst ein Mensch mit Quelle und Wortlaut.
+      - { id: newsletter_einwilligung, frage: "Dürfen wir Ihnen unseren Newsletter per E-Mail schicken? Abmelden geht jederzeit." }

@@ -7329,6 +7329,96 @@ def einwilligung_widerrufen(lead_id: str, grund: str = "") -> str:
                   "consent_status": "unknown"})
 
 
+# ---------------------------------------------------------------------------
+# Newsletter-Einwilligung im Gespraech einholen (Betreiber 20.10.2026, A2 a).
+# Ein Newsletter geht nur an opt_in (E1). Gefragt werden NUR Kontakte, mit
+# denen schon ein Gespraech laeuft (selbst geschrieben) oder die eine andere
+# Grundlage haben - eine Einwilligungsanfrage an Fremde waere selbst Werbung.
+# Die Frage geht als Entwurf durch die Freigabe; das Ja erfasst ein MENSCH mit
+# Quelle und Wortlaut (einwilligung_erfassen). Bewusst KEINE MCP-Werkzeuge:
+# nur die Oberflaeche (/newsletter/einwilligung) ruft das.
+# Die Selbst-Anmeldung per Mail (Double-Opt-in) steht in newsletter_anmeldung.py.
+# ---------------------------------------------------------------------------
+
+NEWSLETTER_FRAGE_BETREFF = "Kurze Frage: unser Newsletter"
+NEWSLETTER_FRAGE = (
+    "Kurze Frage: Dürfen wir Ihnen unseren Newsletter per E-Mail schicken? Er kommt "
+    "selten, und abmelden können Sie sich jederzeit mit einer Mail mit dem Betreff "
+    "\"Abmelden\". Ein kurzes Ja oder Nein genügt - beides ist völlig in Ordnung.")
+NEWSLETTER_ANFRAGE_PAUSE_TAGE = 30
+NEWSLETTER_QUELLEN = ("E-Mail-Antwort", "WhatsApp-Antwort", "Telefonat", "Im Termin")
+
+
+def _newsletter_kandidaten() -> list[dict]:
+    """Kontakte, die man nach der Newsletter-Einwilligung fragen darf - mit E-Mail,
+    ohne opt_in, im Gespraech (selbst geschrieben) oder mit anderer Grundlage, ohne
+    Verbotsliste/Loeschantrag/privat/Archiv und ohne eigenes fruehreres Nein."""
+    zeilen = _q(
+        "select l.id, l.name, l.company, l.email, l.consent_status, l.enrichment, "
+        " (select max(a.created_at) from activities a where a.lead_id = l.id "
+        "   and a.type = 'kundenantwort') as zuletzt, "
+        " (select max(a.created_at) from activities a where a.lead_id = l.id "
+        "   and a.type = 'newsletter_angefragt') as angefragt "
+        "from leads l where l.consent_status <> 'opt_in' "
+        "and coalesce(btrim(l.email), '') <> '' "
+        f"and not {_archiv_sql('l.enrichment')} "
+        "and (l.consent_status in ('existing_customer', 'betreiber_auftrag') or exists ("
+        " select 1 from activities k where k.lead_id = l.id and k.type = 'kundenantwort')) "
+        "order by zuletzt desc nulls last, l.name")
+    aus = []
+    for z in zeilen:
+        if (_loeschantrag(z["enrichment"]) or _privat(z["enrichment"])
+                or _sperre(z["email"] or "", "") or _eigene_ablehnung(str(z["id"]))):
+            continue
+        leitfaden = ((z["enrichment"] or {}).get("bedarf") or {}).get("newsletter_einwilligung") or {}
+        aus.append({"id": str(z["id"]), "name": z["name"], "company": z["company"] or "",
+                    "email": z["email"], "consent_status": z["consent_status"],
+                    "zuletzt": z["zuletzt"], "angefragt": z["angefragt"],
+                    "leitfaden_antwort": str(leitfaden.get("antwort") or "")})
+    return aus
+
+
+def _newsletter_einwilligung_anfragen(lead_id: str) -> dict:
+    """Die Newsletter-Frage als E-Mail-ENTWURF anlegen (Freigabe!). {"draft_id"} oder {"fehler"}."""
+    kandidat = next((k for k in _newsletter_kandidaten() if k["id"] == lead_id), None)
+    if kandidat is None:
+        return {"fehler": ("Diesen Kontakt fragen wir nicht: schon eingewilligt, ohne E-Mail, "
+                           "noch nie selbst geschrieben, gesperrt oder er hat schon Nein gesagt.")}
+    if kandidat["angefragt"] and _q(
+            "select 1 from activities where lead_id = %s and type = 'newsletter_angefragt' "
+            "and created_at > now() - make_interval(days => %s) limit 1",
+            (lead_id, NEWSLETTER_ANFRAGE_PAUSE_TAGE)):
+        return {"fehler": (f"{kandidat['name']} wurde in den letzten "
+                           f"{NEWSLETTER_ANFRAGE_PAUSE_TAGE} Tagen schon gefragt.")}
+    antwort = json.loads(entwurf_erstellen(lead_id, "email", NEWSLETTER_FRAGE,
+                                           betreff=NEWSLETTER_FRAGE_BETREFF,
+                                           thema="Newsletter-Einwilligung"))
+    if "fehler" in antwort:
+        return {"fehler": antwort["fehler"]}
+    _q("insert into activities (lead_id, type, payload, actor) values "
+       "(%s, 'newsletter_angefragt', %s, 'human') returning id",
+       (lead_id, _json({"draft_id": str(antwort["draft_id"])})))
+    return {"draft_id": str(antwort["draft_id"])}
+
+
+def _newsletter_einwilligung_erfassen(lead_id: str, quelle: str, wortlaut: str) -> dict:
+    """Ein Ja zum Newsletter festhalten - durch den Betreiber, mit Quelle UND Wortlaut."""
+    if quelle not in NEWSLETTER_QUELLEN:
+        return {"fehler": f"Quelle unbekannt - gueltig: {', '.join(NEWSLETTER_QUELLEN)}."}
+    wortlaut = " ".join(str(wortlaut or "").split())[:500]
+    if len(wortlaut) < 2:
+        return {"fehler": "Ohne Wortlaut kein Nachweis - was hat der Kontakt gesagt?"}
+    zeile = _q("select email, enrichment from leads where id = %s", (lead_id,))
+    if not zeile:
+        return {"fehler": f"Kein Kontakt mit lead_id {lead_id}."}
+    if (_sperre(zeile[0]["email"] or "", "") or _loeschantrag(zeile[0]["enrichment"])
+            or _privat(zeile[0]["enrichment"])):
+        return {"fehler": "Verbotsliste, Loeschantrag oder privat - keine Einwilligung erfassbar."}
+    antwort = json.loads(einwilligung_erfassen(lead_id, "opt_in",
+                                               f"Newsletter-Einwilligung: {quelle}", wortlaut))
+    return {"fehler": antwort["fehler"]} if "fehler" in antwort else {"consent_status": "opt_in"}
+
+
 def _eigene_ablehnung(lead_id: str, ausser_grund: str = "") -> bool:
     """Hat der Kontakt der Werbung je SELBST widersprochen? (C4, Ruling N1)
 
