@@ -15,9 +15,8 @@ Seite bleibt."""
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
-import threading
-import time
 import urllib.parse
 from functools import partial
 
@@ -26,6 +25,7 @@ from starlette.responses import RedirectResponse, Response
 from starlette.routing import Route
 
 import bewerbung_pult
+import pult_cache
 from ui_freigabe_newsletter import _vor
 
 ADMIN_PFAD = "/freigaben/bewerbung"
@@ -35,9 +35,11 @@ GRUND_MAX = 500
 KOMMENTAR_MAX = 2000
 TEXT_MAX = 15000
 VERLAUF_MAX = 10
-ZAEHLER_ALTER_S = 60
-ZAEHLER_ZEITLIMIT_S = 2
+# Abschnitt und Menue-Zaehler lesen mit demselben Zeitlimit: ein Zaehler-Abruf, der
+# scheitert, sperrt den Abschnitt 60 s (pult_cache) - mit einem kuerzeren Zeitlimit
+# als der Abschnitt selbst taete er das zu frueh.
 LESE_ZEITLIMIT_S = 3
+PDF_ZEITLIMIT_S = 8
 # Freigeben/Nicht bewerben verbucht die Zentrale samt Kommando unter einer Schreibsperre.
 ENTSCHEIDUNG_ZEITLIMIT_S = 30
 FEEDBACK_ZEITLIMIT_S = 8
@@ -68,24 +70,15 @@ _ABLEHNUNGEN = ("fassung_veraltet", "schon_entschieden", "wartet_auf_durchsicht"
 _WEG = "Die Bewerbungs-Zentrale ist gerade nicht erreichbar."
 _NICHT_VERBUNDEN = "Die Bewerbungs-Zentrale ist nicht verbunden."
 
-_cache_lock = threading.Lock()
-_cache: dict = {"stand": None, "wert": 0, "ok": True}
-_laeuft = {"thread": None}
+# Derselbe Logger wie ui.LOG. Ins Protokoll kommen nur Art und Grund eines Fehlers,
+# Kennung, Fassung und Aktion - nie der Schluessel, ein Antwortrumpf, das Anschreiben
+# oder ein Kommentar.
+LOG = logging.getLogger("sales-ui")
 
-
-def _cache_leeren() -> None:
-    with _cache_lock:
-        _cache.update(stand=None, wert=0, ok=True)
-
-
-def _merken(wert: int, ok: bool) -> None:
-    with _cache_lock:
-        _cache.update(stand=time.monotonic(), wert=wert, ok=ok)
-
-
-def _frisch() -> bool:
-    with _cache_lock:
-        return _cache["stand"] is not None and time.monotonic() - _cache["stand"] < ZAEHLER_ALTER_S
+# Zahl fuer den Menue-Zaehler und Ausgang der letzten Lesung, 60 s gueltig (pult_cache).
+_speicher = pult_cache.PultCache("bewerbung-zaehler")
+_cache_leeren = _speicher.leeren
+_laeuft = _speicher.laeuft
 
 
 def _darf(ui) -> bool:
@@ -112,11 +105,16 @@ def _laden() -> int:
     """Blockierend (nur im Thread aufrufen): holt die Zahl und merkt sie - auch den
     Fehlerfall, damit eine tote Zentrale nicht jede Seite warten laesst."""
     try:
-        wert = len(_liste(bewerbung_pult.anfrage("GET", _OFFEN, zeitlimit=ZAEHLER_ZEITLIMIT_S)))
-        _merken(wert, True)
+        wert = len(_liste(bewerbung_pult.anfrage("GET", _OFFEN, zeitlimit=LESE_ZEITLIMIT_S)))
+    except bewerbung_pult.PultFehler as f:
+        LOG.warning("Bewerbungs-Zaehler nicht lesbar: %s (%r)", f.art, f.grund)
+        _speicher.merken(0, f.art)
+        return 0
     except Exception:  # noqa: BLE001 - ein Zaehler darf nie die Seite reissen
-        wert = 0
-        _merken(0, False)
+        LOG.warning("Bewerbungs-Zaehler nicht lesbar", exc_info=True)
+        _speicher.merken(0, "fehler")
+        return 0
+    _speicher.merken(wert)
     return wert
 
 
@@ -124,17 +122,7 @@ def anzahl_offen(ui) -> int:
     """Zahl der wartenden Bewerbungen fuer den Menue-Zaehler. NUR Zwischenspeicher
     (der Render-Weg laeuft im Event-Loop); ist er aelter als 60 s, frischt ein
     Hintergrund-Thread ihn auf. Nicht sichtbar: 0, und es startet kein Thread."""
-    if not sichtbar(ui):
-        return 0
-    with _cache_lock:
-        wert = int(_cache["wert"])
-    if not _frisch():
-        t = _laeuft["thread"]
-        if t is None or not t.is_alive():
-            t = threading.Thread(target=_laden, daemon=True, name="bewerbung-zaehler")
-            _laeuft["thread"] = t
-            t.start()
-    return wert
+    return _speicher.anzahl(_laden) if sichtbar(ui) else 0
 
 
 async def _lesen(pfad: str) -> list[dict]:
@@ -266,8 +254,9 @@ def _karte(ui, k: dict) -> str:
                     f'<textarea name="kommentar" maxlength="{KOMMENTAR_MAX}" rows="3" '
                     f'placeholder="Was soll anders werden?"></textarea></label>'
                     f'{aendern}<button>Feedback senden</button></form>')
-    return (f'<details class="karte" open><summary>'
-            f'<span class="badge">{e(_label(KANAELE, k.get("kanal")))}</span>'
+    kanal = k.get("kanal")
+    etikett = f'<span class="badge">{e(_label(KANAELE, kanal))}</span>' if kanal else ""
+    return (f'<details class="karte" open><summary>{etikett}'
             f'<b>{e(k.get("firma"))} – {e(k.get("rolle"))}</b></summary>'
             f'<div class="meta">{" · ".join(angaben)}</div>{luecke}'
             f'{verweise}{pruef}{was_neu}{entscheiden}{feedback}</details>')
@@ -319,26 +308,34 @@ async def abschnitt(ui, request=None) -> str:
     def kurz(text: str) -> str:
         return f'{kopf}</h2>{hinweis}<p class="meta">{text} Sales läuft normal weiter.</p></section>'
 
-    if _frisch() and not _cache["ok"]:
-        return kurz(_WEG)                       # kuerzlich gescheitert: sofort
+    def weg(art: str) -> str:
+        return kurz(_NICHT_VERBUNDEN if art == "nicht_verbunden" else _WEG)
+
+    if (art := _speicher.frisch_fehler()):
+        return weg(art)                         # kuerzlich gescheitert: sofort
     try:
         offen = await _lesen(_OFFEN)
-        _merken(len(offen), True)
+        _speicher.merken(len(offen))
         verlauf = await _lesen(_ENTSCHIEDEN)
+        # Auch die Darstellung steht im Schutz: ein kaputter Wert der Zentrale kostet
+        # den Abschnitt, nie die ganze Seite.
+        karten = "".join(_karte(ui, k) for k in offen)
+        zeilen = "".join(_verlauf_zeile(ui, v) for v in verlauf[:VERLAUF_MAX])
     except bewerbung_pult.PultFehler as f:
-        _merken(0, False)
-        return kurz(_NICHT_VERBUNDEN if f.art == "nicht_verbunden" else _WEG)
+        LOG.warning("Bewerbungen auf /freigaben nicht lesbar: %s (%r)", f.art, f.grund)
+        _speicher.merken(0, f.art)
+        return weg(f.art)
     except Exception:  # noqa: BLE001 - die Seite darf daran nie scheitern
-        _merken(0, False)
-        return kurz(_WEG)
+        LOG.warning("Bewerbungen auf /freigaben nicht lesbar oder nicht darstellbar", exc_info=True)
+        _speicher.merken(0, "fehler")
+        return weg("fehler")
     n = len(offen)
     teile = [f'{kopf} <span class="zaehler{" offen" if n else ""}">{n}</span></h2>', hinweis]
     if not offen:
         teile.append('<p class="meta">Keine Bewerbung wartet auf deine Entscheidung.</p>')
-    teile.extend(_karte(ui, k) for k in offen)
+    teile.append(karten)
     teile.append('<h3 class="verlauftitel">Zuletzt entschieden</h3>')
-    teile.append("".join(_verlauf_zeile(ui, v) for v in verlauf[:VERLAUF_MAX])
-                 or '<p class="meta">Noch nichts entschieden.</p>')
+    teile.append(zeilen or '<p class="meta">Noch nichts entschieden.</p>')
     teile.append("</section>")
     return "".join(teile)
 
@@ -373,7 +370,16 @@ def routen(ui) -> list:
                                f"laden und nachsehen.")
 
     async def senden(request, aktion: str, daten: dict, zeitlimit: float, was: str, erfolg: str):
-        bid = urllib.parse.quote(request.path_params["bid"], safe="")
+        kennung = request.path_params["bid"]
+        bid = urllib.parse.quote(kennung, safe="")
+
+        def unklar_protokolliert(warum: str, *args):
+            # Zum spaeteren Abgleich mit der Zentrale: welche Bewerbung, welche Fassung,
+            # welche Aktion. Die Kennung als repr - sie kommt aus der Adresse.
+            LOG.warning("Bewerbung %r Fassung %s: Ausgang von %s unklar (" + warum + ")",
+                        kennung, daten["fassung"], aktion, *args)
+            return unklar(was)
+
         try:
             r = await run_in_threadpool(partial(
                 bewerbung_pult.anfrage, "POST", f"/bewerbungen/{bid}/{aktion}", daten,
@@ -386,10 +392,10 @@ def routen(ui) -> list:
                 if f.grund in _ABLEHNUNGEN:
                     return ziel(f.grund)
                 return ziel("abgelehnt", f.grund if _CODE.fullmatch(f.grund) else "")
-            return unklar(was)
+            return unklar_protokolliert("%s: %r", f.art, f.grund)
         _cache_leeren()
         if not (isinstance(r, dict) and r.get("status") == _ERFOLG[aktion]):
-            return unklar(was)
+            return unklar_protokolliert("Antwort ohne erwarteten Status")
         return ziel(erfolg)
 
     async def entscheiden(request, aktion: str):
@@ -464,7 +470,7 @@ def routen(ui) -> list:
         try:
             inhalt, typ = await run_in_threadpool(partial(
                 bewerbung_pult.anfrage, "GET", f"/bewerbungen/{bid}/anschreiben.pdf?fassung={fassung}",
-                roh=True, zeitlimit=LESE_ZEITLIMIT_S))
+                roh=True, zeitlimit=PDF_ZEITLIMIT_S))
         except bewerbung_pult.PultFehler as f:
             if f.art == "nicht_verbunden":
                 return nicht_verbunden()

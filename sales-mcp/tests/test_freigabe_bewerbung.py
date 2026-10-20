@@ -5,6 +5,7 @@ test_freigabe_newsletter.py; es gibt kein JavaScript. Review Focus 1 (veraltete 
 3 (wartet auf Durchsicht), 4 (Zentrale weg, unklares Ergebnis) und 5 (feindlicher Text)."""
 import asyncio
 import html
+import logging
 import os
 import re
 
@@ -542,7 +543,7 @@ def test_pdf_mit_sandbox_csp(client, falsch):
     assert r.headers["content-security-policy"] == ui._CSP_DATEI
     assert r.headers["content-disposition"].startswith("inline")
     i = falsch.aufrufe.index(("GET", f"/bewerbungen/{BID}/anschreiben.pdf?fassung=1", None))
-    assert falsch.roh[i] is True and falsch.zeitlimits[i][2] == 3
+    assert falsch.roh[i] is True and falsch.zeitlimits[i][2] == 8        # Fix-Runde 1: 8 s
     assert falsch.im_loop == []
 
 
@@ -558,11 +559,13 @@ def test_pdf_ohne_gueltige_fassung_ruft_nichts(client, falsch, abfrage):
     (PultFehler("abgelehnt", "unbekannt"), 404, "Nicht gefunden"),
     (PultFehler("nicht_verbunden", "401"), 503, "nicht verbunden"),
     (PultFehler("nicht_erreichbar", "TimeoutError"), 503, "gerade nicht erreichbar"),
+    (PultFehler("abgelehnt", BOESE), 422, "&lt;script&gt;x&lt;/script&gt;"),
 ])
 def test_pdf_fehler(client, falsch, fehler, status, text):
     falsch.fehler_pdf = fehler
     r = client.get(f"/freigaben/bewerbung/{BID}/anschreiben.pdf?fassung=1")
     assert r.status_code == status and text in r.text
+    assert "<script" not in r.text
 
 
 def test_pdf_nur_als_pdf(client, falsch):
@@ -626,3 +629,112 @@ def test_zeitlimits(client, falsch):
     lesen = [t for m, p, t in falsch.zeitlimits if m == "GET"]
     assert lesen and all(t is not None and t <= 3 for t in lesen)
     assert falsch.im_loop == []
+
+
+# --- Fix-Runde 1 (Review Task 5) ---------------------------------------------------
+
+SCHLUESSEL = "GEHEIM-PULT-SCHLUESSEL-4711"
+
+
+def _meldungen(caplog) -> list[str]:
+    return [x.getMessage() for x in caplog.records if x.name == "sales-ui"]
+
+
+def test_ohne_kanal_kein_leeres_etikett(client, falsch):                          # F7
+    falsch.karten = [karte(kanal=""), karte(application_id=BID2, kanal=None, firma="Zwei")]
+    s = _abschnitt(client)
+    assert 'class="badge"></span>' not in s
+    assert "<summary><b>Muster GmbH – Data Engineer</b></summary>" in s
+    assert "<summary><b>Zwei – Data Engineer</b></summary>" in s
+
+
+def test_kaputte_karte_reisst_die_seite_nicht(client, falsch, caplog):             # F5, Review Focus 4
+    lead = str(server._q("insert into leads (name, phone, source) values ('Max', '+491', 'whatsapp') "
+                         "returning id")[0]["id"])
+    server._q("insert into drafts (lead_id, channel, recipient, body, status) values "
+              "(%s, 'whatsapp', '+491', 'Hallo Welt', 'pending') returning id", (lead,))
+    falsch.karten = [karte(score=10 ** 400)]                    # OverflowError beim Formatieren
+    with caplog.at_level(logging.WARNING, logger="sales-ui"):
+        r = client.get("/freigaben")
+    assert r.status_code == 200 and "Hallo Welt" in r.text and 'id="termine"' in r.text
+    assert "Bewerbungs-Zentrale ist gerade nicht erreichbar" in _abschnitt(client)
+    assert any(x.exc_info for x in caplog.records if x.name == "sales-ui")
+
+
+def test_nicht_verbunden_bleibt_im_zwischenspeicher_nicht_verbunden(client, falsch):   # F3
+    falsch.fehler = PultFehler("nicht_verbunden", "401")
+    assert "Bewerbungs-Zentrale ist nicht verbunden" in _abschnitt(client)
+    n = len(falsch.aufrufe)
+    s = _abschnitt(client)                                       # < 60 s: aus dem Zwischenspeicher
+    assert "Bewerbungs-Zentrale ist nicht verbunden" in s and "nicht erreichbar" not in s
+    assert len(falsch.aufrufe) == n
+
+
+def test_zaehlerfehler_zeigt_seine_art_im_abschnitt(client, falsch):                # F3
+    falsch.fehler = PultFehler("nicht_verbunden", "401")
+    assert ui_freigabe_bewerbung._laden() == 0
+    n = len(falsch.aufrufe)
+    s = _abschnitt(client)
+    assert "Bewerbungs-Zentrale ist nicht verbunden" in s and len(falsch.aufrufe) == n
+
+
+def test_zaehler_liest_mit_dem_zeitlimit_des_abschnitts(falsch):                     # F4
+    assert ui_freigabe_bewerbung._laden() == 1
+    assert falsch.zeitlimits[-1] == ("GET", OFFEN, ui_freigabe_bewerbung.LESE_ZEITLIMIT_S)
+    assert ui_freigabe_bewerbung.LESE_ZEITLIMIT_S == 3
+
+
+@pytest.mark.parametrize("art", ["nicht_erreichbar", "unbekannt"])
+@pytest.mark.parametrize("pfad,daten", [
+    ("freigeben", {"fassung": "1", "bindung": B, "bestaetigt": "ja"}),
+    ("nicht-bewerben", {"fassung": "1", "bindung": B, "bestaetigt": "ja", "grund": "GRUND-XYZ"}),
+    ("feedback", {"fassung": "1", "kommentar": "KOMMENTAR-XYZ", "text": "BRIEFTEXT-XYZ"}),
+])
+def test_unklarer_ausgang_wird_protokolliert_ohne_schluessel(client, falsch, monkeypatch, caplog,
+                                                            pfad, daten, art):       # F2
+    monkeypatch.setattr(bewerbung_pult, "KEY", SCHLUESSEL)
+    falsch.fehler_post = PultFehler(art, "TimeoutError")
+    with caplog.at_level(logging.WARNING, logger="sales-ui"):
+        r = _post(client, pfad, **daten)
+    assert r.status_code == 504
+    zeilen = [m for m in _meldungen(caplog) if BID in m]
+    assert len(zeilen) == 1, _meldungen(caplog)
+    assert "Fassung 1" in zeilen[0] and pfad in zeilen[0] and art in zeilen[0] and "TimeoutError" in zeilen[0]
+    for geheim in (SCHLUESSEL, "GRUND-XYZ", "KOMMENTAR-XYZ", "BRIEFTEXT-XYZ", B):
+        assert geheim not in caplog.text
+
+
+def test_unklare_erfolgsantwort_wird_ohne_rumpf_protokolliert(client, falsch, caplog):   # F2
+    falsch.antwort["freigeben"] = {"status": "komisch", "rumpf": "RUMPF-XYZ"}
+    with caplog.at_level(logging.WARNING, logger="sales-ui"):
+        r = _post(client, "freigeben", fassung="1", bindung=B, bestaetigt="ja")
+    assert r.status_code == 504
+    zeilen = [m for m in _meldungen(caplog) if BID in m]
+    assert len(zeilen) == 1 and "Fassung 1" in zeilen[0] and "freigeben" in zeilen[0]
+    assert "RUMPF-XYZ" not in caplog.text and "komisch" not in caplog.text
+
+
+def test_lesefehler_wird_protokolliert(client, falsch, monkeypatch, caplog):          # F2
+    monkeypatch.setattr(bewerbung_pult, "KEY", SCHLUESSEL)
+    falsch.fehler = PultFehler("nicht_erreichbar", "URLError", {"detail": "RUMPF-XYZ"})
+    with caplog.at_level(logging.WARNING, logger="sales-ui"):
+        client.get("/freigaben")
+    assert any("nicht_erreichbar" in m and "URLError" in m for m in _meldungen(caplog))
+    assert SCHLUESSEL not in caplog.text and "RUMPF-XYZ" not in caplog.text
+
+
+def test_unerwarteter_lesefehler_mit_stapel(client, falsch, caplog):                 # F2
+    falsch.fehler = RuntimeError("kaputt")
+    with caplog.at_level(logging.WARNING, logger="sales-ui"):
+        assert client.get("/freigaben").status_code == 200
+    assert any(x.exc_info for x in caplog.records if x.name == "sales-ui")
+
+
+def test_zaehlerfehler_wird_protokolliert(falsch, caplog):                           # F2
+    with caplog.at_level(logging.WARNING, logger="sales-ui"):
+        falsch.fehler = PultFehler("nicht_erreichbar", "TimeoutError")
+        assert ui_freigabe_bewerbung._laden() == 0
+        falsch.fehler = RuntimeError("kaputt")
+        assert ui_freigabe_bewerbung._laden() == 0
+    assert any("nicht_erreichbar" in m and "TimeoutError" in m for m in _meldungen(caplog))
+    assert any(x.exc_info for x in caplog.records if x.name == "sales-ui")
