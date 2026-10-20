@@ -526,6 +526,16 @@ begin
       admin_auftraege_eingeladen_von_check
       check (eingeladen_von is null
              or eingeladen_von ~ '^[a-z][a-z0-9_]{0,30}$')$chk$, s);
+    -- Struktur-Graph, Betreiber 20.10.2026: das Level (1-6) ist eine
+    -- Karrierestufe des Mitglieds, NICHT seine Tiefe im Einladungsbaum (der
+    -- darf beliebig tief werden). Bestehende Zeilen und Nachtraege bekommen
+    -- ueber den Vorgabewert Level 1.
+    execute format('alter table %I.admin_auftraege '
+                   'add column if not exists level smallint not null default 1', s);
+    execute format('alter table %I.admin_auftraege '
+                   'drop constraint if exists admin_auftraege_level_check', s);
+    execute format($chk$alter table %I.admin_auftraege add constraint
+      admin_auftraege_level_check check (level between 1 and 6)$chk$, s);
   end loop;
 end $$;
 
@@ -543,6 +553,9 @@ grant select, insert on sales.admin_auftraege to sales_app;
 -- auf /team/struktur — nur die Spalte eingeladen_von ist veraenderbar.
 -- Status, Ergebnis und Name bleiben beim Wirt.
 grant update (eingeladen_von) on sales.admin_auftraege to sales_app;
+-- Betreiber 20.10.2026: das Level des Mitglieds setzt die Oberflaeche
+-- ebenfalls (/team/struktur, Laden anlegen) - genau diese eine Spalte.
+grant update (level) on sales.admin_auftraege to sales_app;
 grant select, insert, update on sales.medien_meta to sales_app;
 grant select, insert, update on sales.kalender_quellen to sales_app;
 grant select, insert, update, delete on sales.eigene_termine to sales_app;

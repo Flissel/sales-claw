@@ -51,12 +51,12 @@ def _get(pfad, host=HOST_OK, client=None):
     return (client or CLIENT).get(pfad, headers={"host": host})
 
 
-def _erfolg(name, einlader=None, ergebnis=None):
+def _erfolg(name, einlader=None, ergebnis=None, level=1):
     server._q(
         "insert into admin_auftraege (art, name, angefordert_von, status, "
-        "ergebnis, erledigt_am, eingeladen_von) values ('laden_anlegen', %s, "
-        "'test', 'erfolg', %s::jsonb, now(), %s) returning id",
-        (name, ergebnis, einlader))
+        "ergebnis, erledigt_am, eingeladen_von, level) values ('laden_anlegen', %s, "
+        "'test', 'erfolg', %s::jsonb, now(), %s, %s) returning id",
+        (name, ergebnis, einlader, level))
 
 
 def _angemeldet(name, rolle, passwort="struktur-passwort-9"):
@@ -74,7 +74,7 @@ def _angemeldet(name, rolle, passwort="struktur-passwort-9"):
 # --- Task 3: Seite, Tor, Menü, SVG, Liste -----------------------------------
 
 def test_tor_wie_laden_anlegen(monkeypatch):
-    for p in ("/team/struktur", "/team/struktur/einlader"):
+    for p in ("/team/struktur", "/team/struktur/einlader", "/team/struktur/level"):
         assert ui._pfad_erlaubt("freigeben", p) is True
         assert ui._pfad_erlaubt("lesen", p) is False and ui._pfad_erlaubt("kalender", p) is False
     monkeypatch.setattr(server, "SCHEMA", "sales_ivan")
@@ -110,6 +110,9 @@ def test_ivans_laden_sieht_und_oeffnet_struktur_nicht(scharf, monkeypatch):
     r = _post("/team/struktur/einlader",
               {"name": "lena", "einlader": "", "csrf": ui.CSRF_TOKEN}, client=client)
     assert r.status_code == 403
+    r = _post("/team/struktur/level",
+              {"name": "lena", "level": "2", "csrf": ui.CSRF_TOKEN}, client=client)
+    assert r.status_code == 403
 
 
 def test_leerer_zustand():
@@ -118,12 +121,15 @@ def test_leerer_zustand():
 
 
 def test_graph_und_liste():
-    _erfolg("ivan"); _erfolg("lena", "ivan")
+    _erfolg("ivan", level=5); _erfolg("lena", "ivan", level=2)
     r = _get("/team/struktur"); t = r.text
     assert r.status_code == 200 and "<script" not in t.lower()
     svg = t[t.index("<svg"):t.index("</svg>")]
     assert svg.count("<circle") == 3 and svg.count("<line") == 2
     assert '<text class="zahl"' in svg and ">Ich<" in svg and ">ivan<" in svg and ">lena<" in svg
+    # Betreiber 20.10.: im Kreis steht das LEVEL, nicht die Tiefe.
+    assert re.search(r'<g class="knoten level-5 tiefe-1"><title>ivan – Level 5</title>.*?<text class="zahl"[^>]*>5</text>', svg)
+    assert re.search(r'<g class="knoten level-2 tiefe-2"><title>lena – Level 2</title>.*?<text class="zahl"[^>]*>2</text>', svg)
     assert not re.search(r"#[0-9a-fA-F]{3,8}\b", svg) and "style=" not in svg
     assert t.index('class="struktur-liste"') > t.index("</svg>")
     assert r.headers["content-security-policy"] == ui._CSP
@@ -150,13 +156,17 @@ def test_svg_escaped_namen():
 def test_langer_name_gekuerzt_mit_vollem_titel():
     n = "a" * 31
     svg = ui_struktur.svg_zeichnen(struktur.baum_bauen({n: None}))
-    assert f">{'a' * 13}…<" in svg and f"<title>{n} – Ebene 1</title>" in svg
+    assert f">{'a' * 13}…<" in svg and f"<title>{n} – Level 1</title>" in svg
 
 
 def test_css_nur_variablen():
     teil = ui._STIL[ui._STIL.index("/* Struktur-Graph"):]
     teil = teil[:teil.index("/* Ende Struktur-Graph */")]
     assert "var(--akzent" in teil and not re.search(r"#[0-9a-fA-F]{3,8}\b", teil)
+    # Großer Baum: der Graph scrollt waagerecht UND senkrecht.
+    graph = teil[teil.index(".struktur-graph {"):]
+    graph = graph[:graph.index("}")]
+    assert "overflow: auto" in graph and "max-height" in graph
 
 
 def test_nachtrag_zeile_erscheint_im_graph():
@@ -261,14 +271,14 @@ def test_post_ring_wird_abgewiesen():
     assert _umhaengen("lena", "lena").status_code == 400
 
 
-def test_post_zu_tief_wird_abgewiesen():
+def test_post_beliebig_tief_ist_erlaubt():
+    """Betreiber 20.10.: keine Tiefengrenze mehr, nur Ringe sind verboten."""
     _erfolg("x"); _erfolg("x1", "x"); _erfolg("x2", "x1")
     vorher = None
-    for n in ("a1", "a2", "a3", "a4"):
-        _erfolg(n, vorher); vorher = n
-    r = _umhaengen("x", "a4")
-    assert r.status_code == 400 and "Ebene 7" in r.text and _einlader("x") is None
-    assert _umhaengen("x", "a3").status_code == 303 and _einlader("x") == "a3"
+    for i in range(1, 16):
+        _erfolg(f"k{i}", vorher); vorher = f"k{i}"
+    assert _umhaengen("x", "k15").status_code == 303 and _einlader("x") == "k15"
+    assert _umhaengen("k3", "x2").status_code == 400 and _einlader("k3") == "k2"
 
 
 def test_post_aendert_nur_erfolg_zeilen():
@@ -291,3 +301,115 @@ def test_ausgeblendeter_laden_laesst_sich_nicht_umhaengen():
     assert _umhaengen("probelauf", "ivan").status_code == 400
     assert _umhaengen("ivan", "probelauf").status_code == 400
     assert _einlader("probelauf") is None and _einlader("ivan") is None
+
+
+# --- Betreiber 20.10.2026: Level je Mitglied, beliebig tiefer Baum ----------
+
+def _level_setzen(name, level, csrf=True):
+    d = {"name": name}
+    if level is not None:
+        d["level"] = level
+    if csrf:
+        d["csrf"] = ui.CSRF_TOKEN
+    return _post("/team/struktur/level", d)
+
+
+def _level(name, status="erfolg"):
+    return server._q("select level from admin_auftraege where name=%s and status=%s",
+                     (name, status))[0]["level"]
+
+
+def test_liste_zeigt_level_je_eintrag():
+    _erfolg("ivan", level=4); _erfolg("lena", "ivan")
+    t = _get("/team/struktur").text
+    liste = t[t.index('class="struktur-liste"'):]
+    assert '<span class="level-chip level-4">Level 4</span> <b>ivan</b>' in liste
+    assert '<span class="level-chip level-1">Level 1</span> <b>lena</b>' in liste
+
+
+def test_liste_hat_level_formular_mit_aktuellem_wert():
+    _erfolg("ivan", level=4); _erfolg("lena", "ivan")
+    t = _get("/team/struktur").text
+    assert t.count('action="/team/struktur/level"') == 2
+    form = t[t.index('action="/team/struktur/level"'):]
+    form = form[:form.index("</form>")]
+    assert 'name="name" value="ivan"' in form and 'name="csrf"' in form
+    assert '<option value="4" selected>Level 4</option>' in form
+    assert form.count("<option") == 6
+
+
+def test_level_setzen_und_zurueck():
+    _erfolg("ivan")
+    r = _level_setzen("ivan", "6")
+    assert r.status_code == 303 and r.headers["location"] == "/team/struktur"
+    assert _level("ivan") == 6
+    assert _level_setzen("ivan", "1").status_code == 303 and _level("ivan") == 1
+
+
+@pytest.mark.parametrize("schlecht", ["0", "7", "-1", "abc", "2.5", "", None])
+def test_level_ausserhalb_eins_bis_sechs_ist_422(schlecht):
+    _erfolg("ivan", level=3)
+    r = _level_setzen("ivan", schlecht)
+    assert r.status_code == 422 and "Nichts wurde geändert" in r.text
+    assert _level("ivan") == 3
+
+
+def test_level_ohne_csrf():
+    _erfolg("ivan", level=3)
+    assert _level_setzen("ivan", "5", csrf=False).status_code == 400 and _level("ivan") == 3
+
+
+def test_level_unbekannter_oder_ausgeblendeter_laden():
+    _erfolg("probelauf", ergebnis='{"ausgeblendet": true}')
+    server._q("insert into admin_auftraege (art,name,angefordert_von) values ('laden_anlegen','offen1','t')")
+    assert _level_setzen("nemo", "2").status_code == 400
+    assert _level_setzen("offen1", "2").status_code == 400
+    assert _level_setzen("probelauf", "2").status_code == 400
+    assert _level("probelauf") == 1 and _level("offen1", "offen") == 1
+
+
+def test_level_aendert_nur_erfolg_zeilen():
+    _erfolg("lena")
+    server._q("insert into admin_auftraege (art,name,angefordert_von,status) values ('laden_anlegen','lena','t','fehler')")
+    _level_setzen("lena", "5")
+    assert _level("lena") == 5 and _level("lena", "fehler") == 1
+
+
+def test_grosser_baum_vierzig_knoten_acht_tiefen():
+    """Betreiber 20.10.: Schneeball - etwa 40 Knoten über 8 Tiefen."""
+    namen = _grosser_baum()
+    t = _get("/team/struktur").text
+    svg = t[t.index("<svg"):t.index("</svg>")]
+    assert svg.count("<circle") == len(namen) + 1 and svg.count("<line") == len(namen)
+    assert 'class="knoten level-' in svg and "tiefe-8" in svg
+    breite = int(re.search(r'<svg[^>]* width="(\d+)"', svg).group(1))
+    hoehe = int(re.search(r'<svg[^>]* height="(\d+)"', svg).group(1))
+    with server.pool.connection() as conn:
+        baum = struktur.baum_bauen(ui_struktur.laeden_lesen(conn))
+    blaetter = [n for n in namen if n not in baum.kinder]
+    assert breite == len(blaetter) * struktur.SPALTE + 2 * struktur.RAND
+    assert hoehe >= 8 * struktur.ZEILE
+    assert t.count('action="/team/struktur/einlader"') == len(namen)
+
+
+def test_fuenfzehn_tiefen_werden_gezeichnet():
+    vorher = None
+    for i in range(1, 16):
+        _erfolg(f"k{i}", vorher); vorher = f"k{i}"
+    t = _get("/team/struktur").text
+    svg = t[t.index("<svg"):t.index("</svg>")]
+    assert "tiefe-15" in svg and svg.count("<line") == 15
+    assert "Ebene 7" not in t and "höchstens 6" not in t
+
+
+def _grosser_baum() -> list[str]:
+    """40 Läden über 8 Tiefen, Level reihum 1..6 - auch für die Sichtprüfung."""
+    namen, eltern = [], [None]
+    for tiefe in range(1, 9):
+        neu = []
+        for i in range(5):
+            name = f"t{tiefe}_{i}"
+            _erfolg(name, eltern[i % len(eltern)], level=(len(namen) % 6) + 1)
+            namen.append(name); neu.append(name)
+        eltern = neu[:3]
+    return namen

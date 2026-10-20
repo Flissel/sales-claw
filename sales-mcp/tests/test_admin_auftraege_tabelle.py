@@ -24,7 +24,7 @@ def test_tabelle_existiert_mit_den_erwarteten_spalten():
     spalten = [z["column_name"] for z in zeilen]
     assert spalten == ["id", "art", "name", "angefordert_von", "status",
                         "ergebnis", "fehler", "erstellt_am", "erledigt_am",
-                        "email", "eingeladen_von"]
+                        "email", "eingeladen_von", "level"]
 
 
 def test_art_erlaubt_nur_die_beiden_bekannten_werte():
@@ -173,14 +173,45 @@ def test_eingeladen_von_erzwingt_das_namensmuster():
         conn.rollback()
 
 
-def test_sales_app_darf_auf_sales_nur_eingeladen_von_aendern():
+def test_level_ist_eins_bis_sechs_mit_vorgabe_eins():
+    """Betreiber 20.10.2026: das Level ist ein Merkmal des Mitglieds (1-6);
+    bestehende und nachgetragene Zeilen bekommen den Vorgabewert 1."""
+    with server.pool.connection() as conn:
+        z = conn.execute("insert into admin_auftraege (art, name, angefordert_von) "
+                         "values ('laden_anlegen', 'lena', 'test') returning level").fetchone()
+        assert z["level"] == 1
+        conn.rollback()
+        for schlecht in (0, 7, -1):
+            ok = False
+            try:
+                conn.execute("insert into admin_auftraege (art, name, angefordert_von, level) "
+                             "values ('laden_anlegen', 'lena', 'test', %s)", (schlecht,))
+            except Exception as e:
+                ok = "23514" in str(getattr(e, "sqlstate", "") or e)
+            assert ok, schlecht
+            conn.rollback()
+        ok = False
+        try:
+            conn.execute("insert into admin_auftraege (art, name, angefordert_von, level) "
+                         "values ('laden_anlegen', 'lena', 'test', null)")
+        except Exception as e:
+            ok = "23502" in str(getattr(e, "sqlstate", "") or e)
+        assert ok
+        conn.rollback()
+        for gut in (1, 6):
+            conn.execute("insert into admin_auftraege (art, name, angefordert_von, level) "
+                         "values ('laden_anlegen', 'lena', 'test', %s)", (gut,))
+            conn.rollback()
+
+
+def test_sales_app_darf_auf_sales_nur_eingeladen_von_und_level_aendern():
     """E3: Status und Ergebnis schreibt nur der Wirt; die Oberfläche darf
-    ausschließlich den Einlader umhängen."""
-    spalten = [z["column_name"] for z in server._q(
+    ausschließlich den Einlader umhängen und das Level setzen."""
+    spalten = sorted(z["column_name"] for z in server._q(
         "select column_name from information_schema.column_privileges "
         "where table_schema='sales' and table_name='admin_auftraege' "
-        "and grantee='sales_app' and privilege_type='UPDATE'")]
-    assert spalten == ["eingeladen_von"]
+        "and grantee='sales_app' and privilege_type='UPDATE'"))
+    assert spalten == ["eingeladen_von", "level"]
     tabelle = {z["privilege_type"] for z in server._q(
         "select privilege_type from information_schema.role_table_grants "
         "where table_schema='sales' and table_name='admin_auftraege' and grantee='sales_app'")}

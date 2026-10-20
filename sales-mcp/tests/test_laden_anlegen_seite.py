@@ -232,21 +232,22 @@ def test_ohne_adresse_bleibt_alles_wie_bisher():
 
 # --- Struktur-Graph (Plan 2026-10-20-struktur-graph, Task 2) ---------------
 
-def _erfolg(name, einlader=None, ergebnis=None):
+def _erfolg(name, einlader=None, ergebnis=None, level=1):
     """Eine fertig angelegte Laden-Zeile (status 'erfolg') mit Einlader."""
     server._q(
         "insert into admin_auftraege (art, name, angefordert_von, status, "
-        "ergebnis, erledigt_am, eingeladen_von) values ('laden_anlegen', %s, "
-        "'test', 'erfolg', %s::jsonb, now(), %s) returning id",
-        (name, ergebnis, einlader))
+        "ergebnis, erledigt_am, eingeladen_von, level) values ('laden_anlegen', %s, "
+        "'test', 'erfolg', %s::jsonb, now(), %s, %s) returning id",
+        (name, ergebnis, einlader, level))
 
 
 def test_auswahl_nur_erfolg():
-    _erfolg("ivan")
+    _erfolg("ivan", level=3)
     server._q("insert into admin_auftraege (art, name, angefordert_von) values ('laden_anlegen','offen1','t')")
     t = _get("/team/laden-anlegen").text
     assert '<select name="einlader"' in t and '<option value="">Ich</option>' in t
-    assert '<option value="ivan">ivan (Ebene 1)</option>' in t
+    # Betreiber 20.10.: in Klammern steht das Level des Mitglieds, nicht die Tiefe.
+    assert '<option value="ivan">ivan (Level 3)</option>' in t
     assert 'value="offen1"' not in t
 
 
@@ -268,13 +269,42 @@ def test_anlegen_unbekannter_einlader_wird_abgewiesen():
     assert server._q("select count(*) as n from admin_auftraege")[0]["n"] == 0
 
 
-def test_anlegen_unter_ebene_sechs_wird_abgewiesen():
+def test_anlegen_unter_tiefe_fuenfzehn_ist_erlaubt():
+    """Betreiber 20.10.: keine Tiefengrenze mehr (Schneeball)."""
     vorher = None
-    for n in ("e1", "e2", "e3", "e4", "e5", "e6"):
-        _erfolg(n, vorher); vorher = n
-    r = _post("/team/laden-anlegen/anfordern", {"name": "lena", "einlader": "e6", "csrf": ui.CSRF_TOKEN})
-    assert r.status_code == 400 and "Ebene 7" in r.text
-    assert server._q("select count(*) as n from admin_auftraege where name='lena'")[0]["n"] == 0
+    for i in range(1, 16):
+        _erfolg(f"k{i}", vorher); vorher = f"k{i}"
+    r = _post("/team/laden-anlegen/anfordern", {"name": "lena", "einlader": "k15", "csrf": ui.CSRF_TOKEN})
+    assert r.status_code == 303
+    assert server._q("select eingeladen_von from admin_auftraege where name='lena'")[0]["eingeladen_von"] == "k15"
+
+
+def test_formular_hat_level_auswahl_mit_vorgabe_eins():
+    t = _get("/team/laden-anlegen").text
+    assert '<select name="level" class="level-wahl">' in t
+    teil = t[t.index('<select name="level"'):]
+    teil = teil[:teil.index("</select>")]
+    assert teil.count("<option") == 6
+    assert '<option value="1" selected>Level 1</option>' in teil
+    assert '<option value="6">Level 6</option>' in teil
+
+
+def test_anlegen_ohne_level_feld_ist_level_eins():
+    assert _post("/team/laden-anlegen/anfordern", {"name": "lena", "csrf": ui.CSRF_TOKEN}).status_code == 303
+    assert server._q("select level from admin_auftraege")[0]["level"] == 1
+
+
+def test_anlegen_mit_level_speichert_es():
+    r = _post("/team/laden-anlegen/anfordern", {"name": "lena", "level": "4", "csrf": ui.CSRF_TOKEN})
+    assert r.status_code == 303
+    assert server._q("select level from admin_auftraege where name='lena'")[0]["level"] == 4
+
+
+@pytest.mark.parametrize("schlecht", ["0", "7", "-1", "abc", "2.5", ""])
+def test_anlegen_mit_falschem_level_ist_422(schlecht):
+    r = _post("/team/laden-anlegen/anfordern", {"name": "lena", "level": schlecht, "csrf": ui.CSRF_TOKEN})
+    assert r.status_code == 422 and "Nichts wurde angelegt" in r.text
+    assert server._q("select count(*) as n from admin_auftraege")[0]["n"] == 0
 
 
 def test_nachtrag_zeigt_keinen_passwort_platzhalter():   # E14

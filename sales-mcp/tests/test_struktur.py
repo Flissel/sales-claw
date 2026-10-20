@@ -2,8 +2,8 @@
 
 Keine DB, kein ui: nur `import struktur`.
 """
-from struktur import (MAX_EBENE, anordnen, baum_bauen, fehler_neuer_laden,
-                      fehler_umhaengen, nachfahren, teilbaum_tiefe)
+from struktur import (LEVEL_MAX, LEVEL_MIN, anordnen, baum_bauen, fehler_neuer_laden,
+                      fehler_umhaengen, level_lesen, nachfahren, teilbaum_tiefe)
 
 KETTE = {"ivan": None, "lena": "ivan", "otto": "lena"}
 
@@ -38,13 +38,16 @@ def test_nachfahren_und_teilbaum_tiefe():
     assert teilbaum_tiefe(b, "ivan") == 2 and teilbaum_tiefe(b, "otto") == 0
 
 
-def test_neuer_laden_unter_ebene_fuenf_ok_unter_sechs_nicht():
-    kette = {"e1": None, "e2": "e1", "e3": "e2", "e4": "e3", "e5": "e4", "e6": "e5"}
-    b = baum_bauen(kette)
+# Betreiber 20.10.2026: "es können unendlich viele Nodes generiert werden -
+# quasi ein Schneeball". Keine Tiefengrenze mehr; die Ringprüfung bleibt.
+KETTE_15 = {f"k{i}": (f"k{i - 1}" if i > 1 else None) for i in range(1, 16)}
+
+
+def test_neuer_laden_unter_tiefe_fuenfzehn_ist_erlaubt():
+    b = baum_bauen(KETTE_15)
+    assert b.ebene["k15"] == 15
     assert fehler_neuer_laden(b, None) is None
-    assert fehler_neuer_laden(b, "e5") is None
-    assert "Ebene 7" in fehler_neuer_laden(b, "e6")
-    assert MAX_EBENE == 6
+    assert fehler_neuer_laden(b, "k15") is None
 
 
 def test_neuer_laden_unbekannter_einlader():
@@ -65,13 +68,46 @@ def test_umhaengen_unbekannt():
     assert "gibt es nicht" in fehler_umhaengen(b, "lena", "nemo")
 
 
-def test_umhaengen_tiefe_grenze_genau_sechs():
-    # x hat zwei Ebenen Nachfahren; a1..a4 ist eine Kette (Ebenen 1..4)
-    d = {"x": None, "x1": "x", "x2": "x1",
-         "a1": None, "a2": "a1", "a3": "a2", "a4": "a3"}
+def test_umhaengen_beliebig_tief_ist_erlaubt():
+    # x hat zwei Ebenen Nachfahren; unter k15 landet x2 auf Tiefe 18.
+    d = {**KETTE_15, "x": None, "x1": "x", "x2": "x1"}
     b = baum_bauen(d)
-    assert fehler_umhaengen(b, "x", "a3") is None          # 3+1+2 = 6
-    assert "Ebene 7" in fehler_umhaengen(b, "x", "a4")      # 4+1+2 = 7
+    assert fehler_umhaengen(b, "x", "k15") is None
+
+
+def test_ring_bleibt_auch_in_tiefer_kette_verboten():
+    b = baum_bauen(KETTE_15)
+    assert "abstammt" in fehler_umhaengen(b, "k3", "k15")
+
+
+def test_anordnen_tiefe_kette_waechst_nach_unten():
+    a = anordnen(baum_bauen(KETTE_15))
+    assert a.punkte["k15"][1] > a.punkte["k14"][1] > a.punkte[None][1]
+    assert a.hoehe >= a.punkte["k15"][1] + 18
+    assert a.breite == 120 + 2 * 30
+
+
+def test_sehr_tiefe_kette_ohne_rekursionsgrenze():
+    kette = {f"t{i}": (f"t{i - 1}" if i > 1 else None) for i in range(1, 3001)}
+    b = baum_bauen(kette)
+    a = anordnen(b)
+    assert b.ebene["t3000"] == 3000 and teilbaum_tiefe(b, "t1") == 2999
+    assert a.punkte["t3000"][0] == a.punkte[None][0]
+
+
+def test_anordnen_breiter_baum_waechst_zur_seite():
+    d = {f"m{i:02d}": None for i in range(40)}
+    a = anordnen(baum_bauen(d))
+    assert a.breite == 40 * 120 + 2 * 30
+    assert len({p for p in a.punkte.values()}) == 41     # keine zwei Knoten übereinander
+
+
+def test_level_lesen():
+    assert (LEVEL_MIN, LEVEL_MAX) == (1, 6)
+    for gut in ("1", "6", " 3 ", 4):
+        assert level_lesen(gut) == int(str(gut).strip())
+    for schlecht in ("0", "7", "-1", "", None, "abc", "2.5", "1e1", "³"):
+        assert level_lesen(schlecht) is None
 
 
 def test_umhaengen_zum_betreiber_ok():

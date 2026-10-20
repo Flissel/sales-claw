@@ -1388,9 +1388,13 @@ nav.reiter .zahl { font-size: .8rem; color: var(--gedaempft); }
 .zwei .termin .zeit { width: auto; white-space: nowrap; }
 /* Struktur-Graph (20.10.2026, /team/struktur): SVG-Baum und Liste. Nur
    Variablen, deshalb gelten hell und dunkel ohne eigene Regeln. Am Handy
-   steht die Liste oben (E8), der Graph scrollt waagerecht. */
-.struktur { display: flex; flex-direction: column; gap: 1rem; }
-.struktur-graph { overflow-x: auto; background: var(--flaeche);
+   steht die Liste oben (E8). Der Baum hat keine Tiefengrenze (Betreiber
+   20.10.: Schneeball) - der Graph scrollt deshalb waagerecht UND senkrecht.
+   Im Kreis steht das Level 1–6; die Füllung wird je Level kräftiger
+   (color-mix aus --akzent und --flaeche, ältere Browser: --aktiv). */
+.struktur { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+.struktur-graph { overflow: auto; max-height: 75vh; max-width: 100%;
+                  background: var(--flaeche);
                   border: 1px solid var(--linie); border-radius: 12px; }
 .struktur-svg { display: block; max-width: none; }
 .struktur-svg .kante { stroke: var(--linie_stark); stroke-width: 1.5; }
@@ -1399,6 +1403,14 @@ nav.reiter .zahl { font-size: .8rem; color: var(--gedaempft); }
 .struktur-svg .zahl { fill: var(--akzent_text); font: 700 14px var(--schrift_anzeige);
                       text-anchor: middle; dominant-baseline: central; }
 .struktur-svg .wurzel .zahl { fill: var(--akzent_auf); }
+.struktur-svg .level-1 circle { fill: color-mix(in srgb, var(--akzent) 10%, var(--flaeche)); }
+.struktur-svg .level-2 circle { fill: color-mix(in srgb, var(--akzent) 22%, var(--flaeche)); }
+.struktur-svg .level-3 circle { fill: color-mix(in srgb, var(--akzent) 36%, var(--flaeche)); }
+.struktur-svg .level-4 circle { fill: color-mix(in srgb, var(--akzent) 72%, var(--flaeche)); }
+.struktur-svg .level-5 circle { fill: color-mix(in srgb, var(--akzent) 86%, var(--flaeche)); }
+.struktur-svg .level-6 circle { fill: var(--akzent); }
+.struktur-svg .level-4 .zahl, .struktur-svg .level-5 .zahl,
+.struktur-svg .level-6 .zahl { fill: var(--akzent_auf); }
 .struktur-svg .name { fill: var(--schrift); font: 12px var(--schrift_text);
                       text-anchor: middle; paint-order: stroke;
                       stroke: var(--flaeche); stroke-width: 4px;
@@ -1407,22 +1419,34 @@ nav.reiter .zahl { font-size: .8rem; color: var(--gedaempft); }
 .struktur-liste ul { margin-left: 1.2rem; border-left: 2px solid var(--linie);
                      padding-left: .8rem; }
 .struktur-liste li { min-height: 44px; padding: .3rem 0; }
-.struktur-liste .ebene-zahl { display: inline-flex; align-items: center;
-                              justify-content: center; min-width: 1.6rem;
-                              height: 1.6rem; border-radius: 999px;
+.struktur-liste .level-chip { display: inline-flex; align-items: center;
+                              padding: .1rem .55rem; border-radius: 999px;
                               background: var(--aktiv); color: var(--akzent_text);
-                              font-weight: 700; font-size: .85rem; }
-.einlader-form { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
-.einlader-form label { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
-.einlader-form select, .einlader-form button { min-height: 44px; }
-.einlader-form select { width: auto; max-width: 16rem; }
+                              border: 1px solid var(--akzent);
+                              font-weight: 700; font-size: .8rem; white-space: nowrap; }
+.struktur-liste .level-chip.level-2 { background: color-mix(in srgb, var(--akzent) 22%, var(--flaeche)); }
+.struktur-liste .level-chip.level-3 { background: color-mix(in srgb, var(--akzent) 36%, var(--flaeche)); }
+.struktur-liste .level-chip.level-4 { background: color-mix(in srgb, var(--akzent) 72%, var(--flaeche));
+                                      color: var(--akzent_auf); }
+.struktur-liste .level-chip.level-5 { background: color-mix(in srgb, var(--akzent) 86%, var(--flaeche));
+                                      color: var(--akzent_auf); }
+.struktur-liste .level-chip.level-6 { background: var(--akzent); color: var(--akzent_auf); }
 .struktur-liste b { overflow-wrap: anywhere; }
+.laden-formulare { display: flex; flex-wrap: wrap; gap: .4rem 1rem; align-items: center;
+                   margin-top: .2rem; }
+.einlader-form, .level-form { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
+.einlader-form label, .level-form label { display: flex; flex-wrap: wrap; gap: .4rem;
+                                          align-items: center; }
+.einlader-form select, .einlader-form button,
+.level-form select, .level-form button { min-height: 44px; }
+.einlader-form select { width: auto; max-width: 16rem; }
+.level-form select { width: auto; }
 @media (max-width: 767px) {
   .struktur-liste { order: -1; }
   .struktur-liste ul { margin-left: .5rem; padding-left: .5rem; }
   .einlader-form select { max-width: 12rem; }
-}
-/* Ende Struktur-Graph */
+  .struktur-graph { max-height: 70vh; }
+}/* Ende Struktur-Graph */
 @media (max-width: 767px) {
   .zwei { grid-template-columns: minmax(0, 1fr); }
 }
@@ -5771,7 +5795,9 @@ async def laden_anlegen_seite(request):
         tabelle = "<p>Noch kein Auftrag.</p>"
     # Struktur-Graph (20.10.2026): wer den neuen Laden eingeladen hat.
     with server.pool.connection() as conn:
-        baum = struktur.baum_bauen(ui_struktur.laeden_lesen(conn))
+        mitglieder = ui_struktur.mitglieder_lesen(conn)
+    baum = struktur.baum_bauen({n: e for n, (e, _) in mitglieder.items()})
+    level = {n: s for n, (_, s) in mitglieder.items()}
     rumpf = (
         '<form method="post" action="/team/laden-anlegen/anfordern">'
         f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
@@ -5782,7 +5808,9 @@ async def laden_anlegen_seite(request):
         'Willkommensmail mit Link zum Passwort-Setzen)<br>'
         '<input type="email" name="email" '
         'placeholder="z. B. lena@example.com"></label> '
-        f'<label>Eingeladen von<br>{ui_struktur.einlader_wahl(baum, None)}</label> '
+        f'<label>Eingeladen von<br>{ui_struktur.einlader_wahl(baum, None, level=level)}</label> '
+        # Betreiber 20.10.2026: Level des neuen Mitglieds (1-6), Vorgabe 1.
+        f'<label>Level<br>{ui_struktur.level_wahl(struktur.LEVEL_MIN)}</label> '
         '<button type="submit">Anlegen</button>'
         '</form>'
         f'<h2>Bisherige Aufträge</h2>{tabelle}')
@@ -5817,6 +5845,15 @@ async def aktion_laden_anlegen(request):
             return _fehlerseite(
                 400, "Ungültige E-Mail-Adresse",
                 f"{fehler}. Nichts wurde angelegt.")
+    # Betreiber 20.10.2026: Level 1-6; fehlt das Feld (alte Formulare), gilt 1.
+    level = struktur.LEVEL_MIN
+    if "level" in form:
+        level = struktur.level_lesen(form.get("level"))
+        if level is None:
+            return _fehlerseite(
+                422, "Ungültiges Level",
+                f"Das Level ist eine Zahl von {struktur.LEVEL_MIN} bis "
+                f"{struktur.LEVEL_MAX}. Nichts wurde angelegt.")
     # Struktur-Graph (20.10.2026, E9/E10): fehlt das Feld, gilt "Ich".
     # Pruefen und Einfuegen in EINER Transaktion, die erfolg-Zeilen gesperrt.
     einlader = str(form.get("einlader") or "").strip() or None
@@ -5828,9 +5865,9 @@ async def aktion_laden_anlegen(request):
                                 _e(text) + " Nichts wurde angelegt.")
         conn.execute(
             "insert into admin_auftraege "
-            "(art, name, email, angefordert_von, eingeladen_von) "
-            "values ('laden_anlegen', %s, %s, %s, %s)",
-            (name, email, _ui_akteur(request), einlader))
+            "(art, name, email, angefordert_von, eingeladen_von, level) "
+            "values ('laden_anlegen', %s, %s, %s, %s, %s)",
+            (name, email, _ui_akteur(request), einlader, level))
     return RedirectResponse("/team/laden-anlegen", status_code=303)
 
 

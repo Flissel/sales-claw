@@ -2,10 +2,17 @@
 
 Reine Funktionen ohne Seiteneffekte: keine DB, kein ui. Eingabe ist eine
 Zuordnung ``Laden -> gespeicherter Einlader`` (``None`` = Betreiber). Daraus
-entstehen der wirksame Baum mit Ebenen (E5: unbekannte Einlader und Ringe in
+entstehen der wirksame Baum mit Tiefen (E5: unbekannte Einlader und Ringe in
 den Daten werden deterministisch aufgebrochen), die Prüfungen für neue Läden
-und fürs Umhängen (höchstens ``MAX_EBENE`` Ebenen, keine Ringe) und die
-Anordnung für das SVG (E6, „Blatt-Spalten“).
+und fürs Umhängen (keine Ringe) und die Anordnung für das SVG (E6,
+„Blatt-Spalten“).
+
+Betreiber 20.10.2026: „die Ebenen sind die Level des einzelnen Mitarbeiters,
+die Struktur ist das Einladungsverhältnis, es können unendlich viele Nodes
+generiert werden – quasi ein Schneeball.“ Deshalb gibt es KEINE Tiefengrenze;
+``Baum.ebene`` ist nur noch die Tiefe im Einladungsbaum (Reihe im Graph). Das
+Level (``LEVEL_MIN``..``LEVEL_MAX``) ist ein Merkmal des Mitglieds und steht in
+der DB-Spalte ``admin_auftraege.level``.
 
 Fehlertexte sind deutsche Sätze, unescaped und ohne „Nichts wurde …“; beides
 ergänzt die Oberfläche.
@@ -16,7 +23,7 @@ from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-MAX_EBENE: int = 6
+LEVEL_MIN, LEVEL_MAX = 1, 6
 SPALTE, ZEILE, RADIUS, RAND = 120, 90, 18, 30
 
 
@@ -24,7 +31,7 @@ SPALTE, ZEILE, RADIUS, RAND = 120, 90, 18, 30
 class Baum:
     kinder: dict[str | None, tuple[str, ...]]  # None = Betreiber; Kinder nach Name sortiert; nur Eltern mit Kindern
     einlader: dict[str, str | None]            # WIRKSAMER Einlader je Laden (nach E5-Reparatur)
-    ebene: dict[str, int]                      # Kind des Betreibers = 1
+    ebene: dict[str, int]                      # Tiefe im Baum: Kind des Betreibers = 1 (nicht das Level!)
     verwaist: frozenset[str]                   # gespeicherter Einlader unbekannt oder Ring
 
 
@@ -99,23 +106,27 @@ def teilbaum_tiefe(baum: Baum, name: str) -> int:
     return max(baum.ebene[n] for n in unten) - baum.ebene[name]
 
 
-def _ebene_von(baum: Baum, einlader: str | None) -> int:
-    return 0 if einlader is None else baum.ebene[einlader]
+def level_lesen(roh) -> int | None:
+    """Formularwert -> Level ``LEVEL_MIN``..``LEVEL_MAX``, sonst None.
+    Nur ASCII-Ziffern zählen (``int("³")`` o. Ä. wird nicht angenommen)."""
+    text = str("" if roh is None else roh).strip()
+    if not (text.isascii() and text.isdigit()):
+        return None
+    wert = int(text)
+    return wert if LEVEL_MIN <= wert <= LEVEL_MAX else None
 
 
 def fehler_neuer_laden(baum: Baum, einlader: str | None) -> str | None:
-    """Fehlertext, falls ein neuer Laden nicht unter ``einlader`` darf, sonst None."""
+    """Fehlertext, falls ein neuer Laden nicht unter ``einlader`` darf, sonst None.
+    Keine Tiefengrenze (Betreiber 20.10.2026) - nur der Einlader muss existieren."""
     if einlader is not None and einlader not in baum.ebene:
         return f"„{einlader}“ gibt es nicht als angelegten Laden."
-    e = _ebene_von(baum, einlader)
-    if e + 1 > MAX_EBENE:
-        return (f"{einlader} steht auf Ebene {e}. Ein neuer Laden darunter läge auf "
-                f"Ebene {e + 1}; erlaubt sind höchstens {MAX_EBENE} Ebenen.")
     return None
 
 
 def fehler_umhaengen(baum: Baum, name: str, einlader: str | None) -> str | None:
-    """Fehlertext, falls ``name`` samt Teilbaum nicht unter ``einlader`` darf, sonst None."""
+    """Fehlertext, falls ``name`` samt Teilbaum nicht unter ``einlader`` darf, sonst None.
+    Geprüft wird nur noch auf Ringe, nicht mehr auf Tiefe (Betreiber 20.10.2026)."""
     if name not in baum.ebene:
         return f"Den Laden „{name}“ gibt es nicht als angelegten Laden."
     if einlader is not None and einlader not in baum.ebene:
@@ -125,30 +136,27 @@ def fehler_umhaengen(baum: Baum, name: str, einlader: str | None) -> str | None:
     if einlader is not None and einlader in nachfahren(baum, name):
         return (f"{name} kann nicht unter {einlader} hängen, weil {einlader} "
                 f"selbst von {name} abstammt.")
-    n = _ebene_von(baum, einlader) + 1 + teilbaum_tiefe(baum, name)
-    if n > MAX_EBENE:
-        return (f"Unter {einlader} läge der Teilbaum von {name} bis Ebene {n}; "
-                f"erlaubt sind höchstens {MAX_EBENE} Ebenen.")
     return None
 
 
 def anordnen(baum: Baum) -> Anordnung:
     """Blatt-Spalten (E6): jedes Blatt eine Spalte, Eltern mittig über ihren Kindern."""
+    # Ohne Rekursion: der Baum darf beliebig tief werden (Betreiber
+    # 20.10.2026), Pythons Rekursionsgrenze liegt bei ~1000.
     spalte: dict[str | None, float] = {}
     frei = 0
-
-    def setze(k: str | None) -> None:
-        nonlocal frei
+    stapel: list[tuple[str | None, bool]] = [(None, False)]
+    while stapel:
+        k, fertig = stapel.pop()
         ks = baum.kinder.get(k, ())
         if not ks:
             spalte[k] = frei
             frei += 1
-            return
-        for kind in ks:
-            setze(kind)
-        spalte[k] = (spalte[ks[0]] + spalte[ks[-1]]) / 2
-
-    setze(None)
+        elif fertig:
+            spalte[k] = (spalte[ks[0]] + spalte[ks[-1]]) / 2
+        else:
+            stapel.append((k, True))
+            stapel.extend((kind, False) for kind in reversed(ks))
     punkte: dict[str | None, tuple[float, float]] = {}
     for k, s in spalte.items():
         e = 0 if k is None else baum.ebene[k]
