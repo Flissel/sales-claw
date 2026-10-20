@@ -190,7 +190,7 @@ def _verlauf_zeile(ui, f: dict) -> str:
             zusatz = "Export läuft"
         elif auftrag == "fertig":
             zusatz = "Newsletter-Bilder fertig"
-        elif f.get("art") == "newsletter" and f.get("format") != "felder":
+        elif f.get("art") == "newsletter" and f.get("format") not in ("felder", "seite"):
             # Feld-Format: es gibt keinen Newsletter-Export und keine Flaechen - kein Knopf
             zusatz = (
                 f'Export offen – erneut anstoßen <form class="aktion" method="post" '
@@ -200,7 +200,7 @@ def _verlauf_zeile(ui, f: dict) -> str:
         else:
             zusatz = ""
         text = f'freigegeben{wer} · {zusatz}' if zusatz else f'freigegeben{wer}'
-        if f.get("art") == "newsletter" and f.get("format") != "felder":
+        if f.get("art") == "newsletter" and f.get("format") not in ("felder", "seite"):
             text += f' · <a href="/freigaben/newsletter/{iid}/versand">An Kontakte senden …</a>'
     elif status == "abgelehnt":
         text = f'verworfen{wer} · {e(f.get("grund"))}'

@@ -124,6 +124,8 @@ class Falsch:
             return {"fassung": 3}
         if pfad == "/inhalte/aus_vorlage":
             return {"id": IID}
+        if pfad == "/inhalte/collage":
+            return {"inhalt": IID, "fassung": 1}
         if pfad.startswith("/vorlagen?"):
             return {"vorlagen": [{"name": "leer", "beschreibung": "Leere Vorlage", "status": "freigegeben",
                                   "fassung": 1}]}
@@ -765,6 +767,51 @@ def test_aus_vorlage_ablehnung_zeigt_grund(angemeldet, pult):
     r = angemeldet.post("/marketing/aus-vorlage", headers=HOST,
                         data={"csrf": ui.CSRF_TOKEN, "vorlage": "leer", "titel": "T"})
     assert r.status_code == 422 and "Unbekannte Vorlage" in r.text
+
+
+# --- Neue Collage (Stufe 2) -------------------------------------------------------
+def test_neue_collage_leitet_in_editor(angemeldet, pult):
+    r = angemeldet.post("/marketing/neue-collage", headers=HOST, follow_redirects=False,
+                        data={"csrf": ui.CSRF_TOKEN, "titel": "  Herbst  "})
+    assert r.status_code == 303 and r.headers["location"] == f"/marketing/editor/{IID}"
+    assert pult.aufrufe[-1] == ("POST", "/inhalte/collage", {"mandant": "vibemind", "titel": "Herbst"})
+
+
+def test_neue_collage_ohne_titel(angemeldet, pult):
+    r = angemeldet.post("/marketing/neue-collage", headers=HOST, data={"csrf": ui.CSRF_TOKEN, "titel": "   "})
+    assert r.status_code == 422 and "Bitte einen Titel angeben" in r.text
+    assert not any(a[1] == "/inhalte/collage" for a in pult.aufrufe)
+
+
+def test_neue_collage_ohne_csrf(angemeldet, pult):
+    r = angemeldet.post("/marketing/neue-collage", headers=HOST, data={"titel": "T"})
+    assert r.status_code == 403
+    assert not any(a[1] == "/inhalte/collage" for a in pult.aufrufe)
+
+
+def test_neue_collage_ablehnung_zeigt_grund(angemeldet, pult):
+    pult.fehler = marketing_pult.PultFehler("abgelehnt", "Titel zu lang")
+    r = angemeldet.post("/marketing/neue-collage", headers=HOST, data={"csrf": ui.CSRF_TOKEN, "titel": "T"})
+    assert r.status_code == 422 and "Titel zu lang" in r.text
+
+
+def test_galerie_hat_knopf_neue_collage(angemeldet, pult):
+    s = angemeldet.get("/marketing", headers=HOST).text
+    assert 'action="/marketing/neue-collage"' in s and 'name="titel"' in s
+
+
+def test_vorlagenseite_hat_karte_neue_collage(angemeldet, pult):
+    s = angemeldet.get("/marketing/vorlagen", headers=HOST).text
+    assert 'action="/marketing/neue-collage"' in s
+
+
+def test_entwurf_collage_zeigt_editor_ohne_feldformular(angemeldet, pult):
+    pult.format = "seite"
+    s = angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST).text
+    assert f'href="/marketing/editor/{IID}"' in s and "Im Editor öffnen" in s
+    assert "Ins Editor-Format übernehmen" not in s and 'name="abschnitt_text"' not in s
+    assert f'action="/marketing/entwurf/{IID}/speichern"' not in s
+    assert not any(a[1].endswith("/bilder") for a in pult.aufrufe)
 
 
 # --- Statik ------------------------------------------------------------------

@@ -44,6 +44,7 @@ CSP_BILD = "default-src 'none'; sandbox"
 # Wie der Name einer Vorlage in der API geprueft wird (pult.py _VORLAGE).
 VORLAGE_NAME = re.compile(r"^[a-z][a-z0-9-]{1,40}$")
 TITEL_MAX = 200
+TITEL_MAX_COLLAGE = 120
 KONFLIKT = "Inzwischen gibt es Fassung"
 # Obergrenze fuer den Speichern-Koerper: die DB nimmt hoechstens 256 KB
 # Dokument an, dazu Betreff/Vorschautext und JSON-Rahmen.
@@ -828,7 +829,13 @@ def routen(ui) -> list:
                     f'placeholder="z. B. Newsletter Oktober"></label>'
                     f'<button class="primaer" type="submit">Neu aus Vorlage</button></form></div>')
 
-        karten = "".join(karte(v) for v in d.get("vorlagen") or [])
+        collage = (f'<div class="layout-karte"><b>Neue Collage</b>'
+                   f'<span class="meta">Freie Fläche: Bilder, Texte, Formen und Knöpfe frei platzieren.</span>'
+                   f'<form method="post" action="/marketing/neue-collage" class="aktion">{csrf}'
+                   f'<label>Titel <input name="titel" required maxlength="{TITEL_MAX_COLLAGE}" '
+                   f'placeholder="z. B. Herbst-Collage"></label>'
+                   f'<button class="primaer" type="submit">Neue Collage</button></form></div>')
+        karten = collage + "".join(karte(v) for v in d.get("vorlagen") or [])
         rumpf = (marketing_mandant.umschalter(e, ui.CSRF_TOKEN, m, liste, "/marketing/vorlagen")
                  + f'<p class="meta">Eine Vorlage wählen, einen Titel geben - der neue Entwurf öffnet '
                  f'sich im Editor.</p>'
@@ -875,6 +882,26 @@ def routen(ui) -> list:
         except marketing_pult.PultFehler as f:
             return _fehler(ui, f)
         return RedirectResponse(f"/marketing/editor/{urllib.parse.quote(str(r['id']), safe='')}",
+                                status_code=303)
+
+    @ui._gesichert_seite
+    async def neue_collage(request):
+        form = await request.form()
+        if not ui._csrf_ok(form):
+            return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
+        titel = str(form.get("titel") or "").strip()
+        if not titel:
+            return ui._fehlerseite(422, "Nicht möglich", "Bitte einen Titel angeben.")
+        if len(titel) > TITEL_MAX_COLLAGE:
+            return ui._fehlerseite(422, "Nicht möglich",
+                                   f"Der Titel ist länger als {TITEL_MAX_COLLAGE} Zeichen.")
+        try:
+            m, _liste = await marketing_mandant.firma(request)
+            r = await run_in_threadpool(marketing_pult.anfrage, "POST", "/inhalte/collage",
+                                        {"mandant": m, "titel": titel})
+        except marketing_pult.PultFehler as f:
+            return _fehler(ui, f)
+        return RedirectResponse(f"/marketing/editor/{urllib.parse.quote(str(r['inhalt']), safe='')}",
                                 status_code=303)
 
     async def json_aufruf(request, grenze: int = BODY_MAX):
@@ -1068,5 +1095,6 @@ def routen(ui) -> list:
         Route("/marketing/vorlagen", vorlagen_seite),
         Route("/marketing/vorlage-bild/{name}", vorlage_bild),
         Route("/marketing/aus-vorlage", aus_vorlage, methods=["POST"]),
+        Route("/marketing/neue-collage", neue_collage, methods=["POST"]),
         Route("/static/editor/{datei}", statik),
     ]

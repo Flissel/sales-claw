@@ -255,6 +255,10 @@ def routen(ui) -> list:
         rumpf = (umschalter(m, liste, verweis(status, seite))
                  + '<p class="nl-kopf"><a class="knopf" href="/marketing/vorlagen">'
                  'Neuer Newsletter aus Vorlage</a>'
+                 f'<form method="post" action="/marketing/neue-collage" class="aktion">'
+                 f'<input type="hidden" name="csrf" value="{e(ui.CSRF_TOKEN)}">'
+                 '<label>Titel <input name="titel" required maxlength="120" placeholder="Titel der Collage"></label>'
+                 '<button type="submit">Neue Collage</button></form>'
                  '<a href="/marketing/entwuerfe">Alle Entwürfe als Liste</a></p>'
                  + reiter + leer
                  + f'<div class="galerie">{karten}'
@@ -421,7 +425,7 @@ def routen(ui) -> list:
         # Feldformular wuerde die Bloecke nicht kennen (die DB lehnt eine
         # Felder-Fassung darauf ohnehin ab). Massgeblich ist das Format der
         # NEUESTEN Fassung - auch wenn eine aeltere gezeigt wird.
-        im_editor = fassungen[0].get("format") == "bloecke"
+        im_editor = fassungen[0].get("format") in ("bloecke", "seite")
         editor_knopf = (f'<a class="knopf" href="/marketing/editor/{e(i["id"])}">'
                         f'{"Im Editor öffnen" if in_arbeit else "Im Editor ansehen"}</a>') if im_editor else ""
         if status == "eingereicht":
@@ -474,7 +478,7 @@ def routen(ui) -> list:
                 f'<button type="submit">Als neue Fassung speichern</button></form></div>')
         bilder_html = ""
         neu_laden = False
-        if im_editor and in_arbeit:
+        if fassungen[0].get("format") == "bloecke" and in_arbeit:
             try:
                 stand = await run_in_threadpool(marketing_pult.anfrage, "GET",
                                                 f"/inhalte/{urllib.parse.quote(iid)}/bilder")
@@ -494,7 +498,7 @@ def routen(ui) -> list:
         wahl_links = "".join(
             f'<a class="{"aktiv" if k == fmt else ""}" href="{basis}?fassung={nr}&amp;format={k}">{t}</a>'
             for k, t in RAHMEN_FORMATE.items())
-        if akt.get("format") != "bloecke":
+        if akt.get("format") not in ("bloecke", "seite"):
             # Fuer Editor-Fassungen gibt es (noch) kein PDF - die API sagt 422.
             wahl_links += (f'<a href="{basis}/vorschau?fassung={nr}&amp;format=pdf" target="_blank" '
                            f'rel="noopener noreferrer">PDF &#8599;</a>')

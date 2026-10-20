@@ -430,6 +430,15 @@ def test_m2_feldformat_ohne_export_knopf(pult):
     assert "Export offen" not in felder[:felder.index("</div>")]
 
 
+def test_freigabe_collage_ohne_versand(pult):
+    pult.entschieden = [_verlauf(id="c", titel="Collage", format="seite", export={"auftrag_status": None})]
+    s = _seite().text
+    zeile = s[s.index("Collage</b>"):]
+    zeile = zeile[:zeile.index("</div>")]
+    assert "Export anstoßen" not in zeile and "An Kontakte senden" not in zeile
+    assert "/freigaben/newsletter/c/export-nachholen" not in s
+
+
 def test_m7b_crlf_zaehlt_als_ein_zeichen(pult):
     text = "a\r\n" * 999 + "ab"                      # 2000 Zeichen mit LF, 2999 mit CRLF
     r = CLIENT.post(f"/freigaben/newsletter/{IID}/zurueckgeben", headers=HOST, follow_redirects=False,
