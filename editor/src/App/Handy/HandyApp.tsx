@@ -10,7 +10,7 @@ import NewsletterChat, { Export } from '../NewsletterChat';
 export type HandyReiter = 'vorschau' | 'assistent';
 
 // Kopfzeile (56 px) + Reiter (48 px) + Rand: der Rest gehoert Vorschau bzw. Chat.
-const INHALT_HOEHE = 'calc(100vh - 112px)';
+export const INHALT_HOEHE = 'calc(100vh - 112px)';
 
 const nichts: Export = () => undefined;
 
@@ -20,14 +20,13 @@ type AnsichtProps = {
   betreff: string;
   reiter?: HandyReiter;
   exportOeffnen?: Export;
-  // Collage (Stufe 2): kein Assistent - nur der Reiter Vorschau.
-  ohneAssistent?: boolean;
+  // Eigener Assistent im Reiter (Collage: der Seiten-Chat); ohne = der Newsletter-Chat.
+  assistent?: React.ReactNode;
 };
 
 // Die reine Ansicht (Props statt Store - beim Server-Rendern im Test liest zustand nur den Anfangszustand).
-export function HandyAnsicht({ start, basis, betreff, reiter: anfang = 'vorschau', exportOeffnen = nichts, ohneAssistent = false }: AnsichtProps) {
-  const [gewaehlt, setReiter] = useState<HandyReiter>(anfang);
-  const reiter: HandyReiter = ohneAssistent ? 'vorschau' : gewaehlt;
+export function HandyAnsicht({ start, basis, betreff, reiter: anfang = 'vorschau', exportOeffnen = nichts, assistent }: AnsichtProps) {
+  const [reiter, setReiter] = useState<HandyReiter>(anfang);
   return (
     <Stack sx={{ height: '100vh', overflow: 'hidden' }}>
       <Stack direction="row" alignItems="center" spacing={1} sx={{ minHeight: 56, px: 1.5, borderBottom: 1, borderColor: 'divider' }}>
@@ -40,7 +39,7 @@ export function HandyAnsicht({ start, basis, betreff, reiter: anfang = 'vorschau
       </Stack>
       <Tabs value={reiter} onChange={(_, v: HandyReiter) => setReiter(v)} variant="fullWidth" sx={{ minHeight: 48, borderBottom: 1, borderColor: 'divider' }}>
         <Tab value="vorschau" label="Vorschau" sx={{ minHeight: 48 }} />
-        {!ohneAssistent && <Tab value="assistent" label="Assistent" sx={{ minHeight: 48 }} />}
+        <Tab value="assistent" label="Assistent" sx={{ minHeight: 48 }} />
       </Tabs>
       <Box sx={{ flex: 1, minHeight: 0 }}>
         {reiter === 'vorschau' ? (
@@ -55,7 +54,7 @@ export function HandyAnsicht({ start, basis, betreff, reiter: anfang = 'vorschau
             />
           ) : null
         ) : (
-          <NewsletterChat exportOeffnen={exportOeffnen} hoehe={INHALT_HOEHE} />
+          assistent ?? <NewsletterChat exportOeffnen={exportOeffnen} hoehe={INHALT_HOEHE} />
         )}
       </Box>
     </Stack>

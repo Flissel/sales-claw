@@ -1,6 +1,7 @@
 // Collage-Editor (Freie Fläche Stufe 2, Spec 4.6): Leiste oben, Ebenen links, Seite in der Mitte,
-// Eigenschaften rechts. Kein Assistent und kein Einreichen für Collagen (die API sperrt beides).
-// Am Handy (unter HANDY_GRENZE) nur die Vorschau der gespeicherten Fassung.
+// Eigenschaften rechts, darunter der Assistent (Stufe 3). Kein Einreichen für Collagen (die API sperrt es).
+// Am Handy (unter HANDY_GRENZE) die Vorschau der gespeicherten Fassung und der Assistent.
+// Während einer Runde zeigt die Fläche den Zwischenstand nur zur Anzeige; Bearbeiten ist gesperrt.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 import { ArrowBackRounded, PictureAsPdfOutlined, RedoRounded, SaveOutlined, UndoRounded } from '@mui/icons-material';
@@ -11,18 +12,23 @@ import {
 
 import { HANDY_GRENZE } from '../../handy';
 import { fehlerText, type Start } from '../../pult';
+import { chipsAbgleichen, editorEinstecken, pultStore } from '../../pultZustand';
 import { speicherGrund, type Seite } from '../../seite';
+import { seitenSicherung, type SeitenStand } from '../../seiteChat';
 import { seiteSpeichern } from '../../seitePult';
-import { HandyAnsicht } from '../Handy/HandyApp';
+import { SperrSchicht, useAgentArbeitet } from '../Chat/Sperre';
+import { useInert } from '../Chat/sperren';
+import { HandyAnsicht, INHALT_HOEHE } from '../Handy/HandyApp';
 import { FARBE, gestaltungThema, KOPF_HOEHE, LINKS_BREITE, RECHTS_BREITE, UI_SCHRIFT } from '../Gestaltung/gestaltungStil';
 
 import SeiteEbenen from './SeiteEbenen';
 import SeiteEigenschaften from './SeiteEigenschaften';
 import SeiteFlaeche from './SeiteFlaeche';
+import SeitenChat from './SeitenChat';
 import { useSeiteTasten } from './seiteTasten';
 import { useSeite } from './useSeite';
 
-export const ASSISTENT_HINWEIS = 'Der Assistent kommt für Collage-Newsletter in der nächsten Stufe.';
+export const ARBEITET_HINWEIS = 'Der Assistent arbeitet';
 export const KONFLIKT_TITEL = 'Inzwischen gibt es eine neuere Fassung';
 
 type Meldung = { art: 'success' | 'error'; text: string } | null;
@@ -38,6 +44,10 @@ export default function SeiteApp({ start }: { start: Start }) {
   const seite = start.seite;
   // Basis hier oben: am Handy zeigt die Vorschau die zuletzt gespeicherte Fassung.
   const [basis, setBasis] = useState(start.basis_fassung);
+  // Die Chat-Runden (fassung_vorher, neueFassungLaden) rechnen mit der Basis im Pult-Zustand.
+  useEffect(() => {
+    pultStore.setState({ basis });
+  }, [basis]);
   if (!seite) {
     return (
       <Typography sx={{ p: 4 }}>
@@ -49,7 +59,7 @@ export default function SeiteApp({ start }: { start: Start }) {
   // verwirft keine ungespeicherten Änderungen.
   return (
     <>
-      {handy && <HandyAnsicht start={start} basis={basis} betreff={start.betreff} ohneAssistent />}
+      {handy && <HandyAnsicht start={start} basis={basis} betreff={start.betreff} assistent={<SeitenChat ebene={null} hoehe={INHALT_HOEHE} />} />}
       <ThemeProvider theme={thema}>
         <Arbeitsplatz start={start} anfang={seite} basis={basis} setBasis={setBasis} versteckt={handy} />
       </ThemeProvider>
@@ -73,8 +83,50 @@ function Arbeitsplatz({ start, anfang, basis, setBasis, versteckt }: Arbeitsplat
   };
   const [konflikt, setKonflikt] = useState(false);
   const ungespeichert = z.geaendert || betreff !== gesichert.betreff || vorschautext !== gesichert.vorschautext;
+  // Assistent: läuft eine Runde, ist Bearbeiten gesperrt; die Fläche zeigt den Zwischenstand nur an.
+  const arbeitet = useAgentArbeitet();
+  const zwischenstand = pultStore((p) => p.seitenZwischenstand);
+  const gesperrt = arbeitet !== null || zwischenstand !== null;
+  const ebenenRef = useInert<HTMLDivElement>(gesperrt);
+  const mitteRef = useInert<HTMLDivElement>(gesperrt);
+  const eigenschaftenRef = useInert<HTMLDivElement>(gesperrt);
+  const anzeige = zwischenstand ? { ...z, seite: zwischenstand, auswahl: null } : z;
+  const gewaehlt = z.auswahl === null ? null : (z.seite.ebenen.find((e) => e.id === z.auswahl) ?? null);
 
-  useSeiteTasten(z, !versteckt);
+  useSeiteTasten(z, !versteckt && !gesperrt);
+
+  // Neue Fassungen nach einer Runde laden nur ohne Ungespeichertes neu (neueFassungLaden).
+  useEffect(() => {
+    pultStore.setState({ ungespeichert });
+  }, [ungespeichert]);
+  // Chips zeigen nur Ebenen, die es auf der Seite noch gibt.
+  useEffect(() => chipsAbgleichen(), [z.seite]);
+
+  // Vor dem Senden an den Assistenten: Ungespeichertes als neue Fassung speichern (Konflikt = Dialog,
+  // nichts wird gesendet). Eingesteckt in den Chat-Weg des Pult-Zustands, mit dem jeweils neuesten Stand.
+  const aktuellRef = useRef({ z, betreff, vorschautext, basis, ungespeichert });
+  aktuellRef.current = { z, betreff, vorschautext, basis, ungespeichert };
+  useEffect(() => {
+    let gesendet: { seite: Seite; betreff: string; vorschautext: string } | null = null;
+    const holen = (): SeitenStand => {
+      const a = aktuellRef.current;
+      a.z.festschreiben();
+      const s = a.z.aktuell();
+      gesendet = { seite: s, betreff: a.betreff, vorschautext: a.vorschautext };
+      return { seite: s, betreff: a.betreff, vorschautext: a.vorschautext, basis: a.basis, ungespeichert: a.ungespeichert };
+    };
+    const sichern = seitenSicherung(start, holen, {
+      gespeichert: (fassung) => {
+        setKonflikt(false);
+        setBasis(fassung);
+        if (!gesendet) return;
+        setGesichert({ betreff: gesendet.betreff, vorschautext: gesendet.vorschautext });
+        if (aktuellRef.current.z.aktuell() === gesendet.seite) aktuellRef.current.z.gespeichert();
+      },
+      konflikt: () => setKonflikt(true),
+    });
+    return editorEinstecken({ sichern, dokument: () => ({ ...aktuellRef.current.z.aktuell() }) });
+  }, [start, setBasis]);
 
   // Tab schliessen oder weggehen mit ungespeicherten Änderungen: der Browser fragt nach.
   const ungespeichertRef = useRef(ungespeichert);
@@ -92,7 +144,7 @@ function Arbeitsplatz({ start, anfang, basis, setBasis, versteckt }: Arbeitsplat
   }, []);
 
   const sichern = async (alsKopie: boolean) => {
-    if (laeuft) return;
+    if (laeuft || gesperrt) return;
     z.festschreiben();
     const s = z.aktuell();
     const grund = speicherGrund(s);
@@ -140,22 +192,23 @@ function Arbeitsplatz({ start, anfang, basis, setBasis, versteckt }: Arbeitsplat
           placeholder="Betreff"
           value={betreff}
           onChange={(ev) => setBetreff(ev.target.value)}
+          disabled={gesperrt}
           inputProps={{ 'aria-label': 'Betreff' }}
           sx={{ flex: '1 1 240px', minWidth: 120, maxWidth: 480 }}
         />
-        <Typography sx={{ flex: '1 1 auto', minWidth: 0, fontSize: 12, color: FARBE.gedaempft }} noWrap title={ASSISTENT_HINWEIS}>
-          {ASSISTENT_HINWEIS}
+        <Typography sx={{ flex: '1 1 auto', minWidth: 0, fontSize: 12, color: FARBE.gedaempft }} noWrap>
+          {gesperrt ? ARBEITET_HINWEIS : ''}
         </Typography>
         <Tooltip title="Rückgängig (Strg+Z)">
           <span>
-            <IconButton aria-label="Rückgängig" onClick={z.zurueck} disabled={!z.kannZurueck}>
+            <IconButton aria-label="Rückgängig" onClick={z.zurueck} disabled={gesperrt || !z.kannZurueck}>
               <UndoRounded sx={{ fontSize: 18 }} />
             </IconButton>
           </span>
         </Tooltip>
         <Tooltip title="Wiederholen (Strg+Y)">
           <span>
-            <IconButton aria-label="Wiederholen" onClick={z.vor} disabled={!z.kannVor}>
+            <IconButton aria-label="Wiederholen" onClick={z.vor} disabled={gesperrt || !z.kannVor}>
               <RedoRounded sx={{ fontSize: 18 }} />
             </IconButton>
           </span>
@@ -177,7 +230,7 @@ function Arbeitsplatz({ start, anfang, basis, setBasis, versteckt }: Arbeitsplat
         <Button
           variant="contained"
           disableElevation
-          disabled={laeuft}
+          disabled={laeuft || gesperrt}
           onClick={() => void sichern(false)}
           startIcon={laeuft ? <CircularProgress size={14} color="inherit" /> : <SaveOutlined sx={{ fontSize: 16 }} />}
           sx={{ flex: 'none', mr: 1 }}
@@ -186,16 +239,27 @@ function Arbeitsplatz({ start, anfang, basis, setBasis, versteckt }: Arbeitsplat
         </Button>
       </Box>
 
-      <Box sx={{ bgcolor: FARBE.panel, borderRight: `1px solid ${FARBE.linie}`, minHeight: 0, overflow: 'auto' }}>
+      <Box ref={ebenenRef} sx={{ bgcolor: FARBE.panel, borderRight: `1px solid ${FARBE.linie}`, minHeight: 0, overflow: 'auto' }}>
         <SeiteEbenen z={z} />
       </Box>
 
-      <Box component="main" sx={{ display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}>
-        <SeiteFlaeche z={z} />
+      <Box ref={mitteRef} component="main" sx={{ display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}>
+        <SeiteFlaeche z={anzeige} />
       </Box>
 
-      <Box component="aside" aria-label="Eigenschaften" sx={{ bgcolor: FARBE.panel, borderLeft: `1px solid ${FARBE.linie}`, minHeight: 0, overflowY: 'auto' }}>
-        <SeiteEigenschaften z={z} vorschautext={vorschautext} setVorschautext={setVorschautext} />
+      {/* Während einer Runde: Ebenen und Fläche gesperrt (absolut - nimmt keine Rasterzelle) */}
+      {gesperrt && <SperrSchicht text={ARBEITET_HINWEIS} lage={{ position: 'absolute', top: KOPF_HOEHE, left: 0, right: RECHTS_BREITE, bottom: 0, zIndex: 2 }} />}
+
+      {/* Rechts: Eigenschaften, darunter der Assistent */}
+      <Box component="aside" aria-label="Eigenschaften" sx={{ bgcolor: FARBE.panel, borderLeft: `1px solid ${FARBE.linie}`, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+        <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+          <Box ref={eigenschaftenRef} aria-disabled={gesperrt ? true : undefined} sx={{ opacity: gesperrt ? 0.4 : 1, pointerEvents: gesperrt ? 'none' : 'auto', transition: 'opacity 150ms ease-out' }}>
+            <SeiteEigenschaften z={z} vorschautext={vorschautext} setVorschautext={setVorschautext} />
+          </Box>
+        </Box>
+        <Box sx={{ borderTop: `1px solid ${FARBE.linie}`, flexShrink: 0 }}>
+          <SeitenChat ebene={gewaehlt} />
+        </Box>
       </Box>
 
       <Snackbar open={meldungOffen} autoHideDuration={meldung?.art === 'error' ? null : 4000} onClose={() => setMeldung(null)} anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}>

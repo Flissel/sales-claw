@@ -38,6 +38,7 @@ import { dokumentZeigen, getDocument, setDocumentOhneVerlauf, setSelectedBlockId
 import type { Ebene } from './gestaltung';
 import type { TEditorConfiguration } from './documents/editor/core';
 import { anzeigbar, zuletztGeaendert } from './live';
+import type { Seite } from './seite';
 
 // Liegt zur Freigabe: der Editor ist nur lesend (Zurueckziehen hebt es auf).
 export const LIEGT_ZUR_FREIGABE = 'Liegt zur Freigabe – erst zurückziehen';
@@ -75,6 +76,9 @@ type TPult = {
   // stand = der gezeigte Zwischenstand im gespeicherten Format, leuchtet = zuletzt geaenderter
   // Block, puls = zaehlt jeden neuen Stand (startet das Aufleuchten neu).
   zwischenstand: { echt: TEditorConfiguration; stand: Dokument; leuchtet: string | null; puls: number } | null;
+  // Collage (Freie Fläche Stufe 3): Zwischenstand der Seite, nur zur Anzeige auf der Fläche - die Seite im
+  // Editor (useSeite) und ihr Verlauf bleiben unberuehrt; null = keiner.
+  seitenZwischenstand: Seite | null;
   // Chips ueber dem Chat-Eingabefeld (Spec 2026-10-06): markierte Bloecke/Ebenen und Anhaenge fuer
   // die naechste Nachricht.
   chatAuswahl: AuswahlChip[];
@@ -109,6 +113,7 @@ export const pultStore = create<TPult>(() => ({
   chat: null,
   chatGetrennt: false,
   zwischenstand: null,
+  seitenZwischenstand: null,
   chatAuswahl: [],
   chatAnhaenge: [],
   gesendeteAuswahl: null,
@@ -429,6 +434,10 @@ export function standAbfragen() {
 // Zwischenstand des Agenten im Canvas zeigen - nur Anzeige: das echte Dokument liegt beiseite,
 // alsUngespeichert und newsletterSichern sehen den Zwischenstand und tun nichts.
 function zwischenstandZeigen(stand: Dokument) {
+  if (pultStore.getState().start?.format === 'seite') {
+    seitenZwischenstandZeigen(stand);
+    return;
+  }
   const z = pultStore.getState().zwischenstand;
   if (z && JSON.stringify(z.stand) === JSON.stringify(stand)) return;
   if (!anzeigbar(stand)) return;
@@ -440,8 +449,19 @@ function zwischenstandZeigen(stand: Dokument) {
   dokumentZeigen(anzeige);
 }
 
+// Collage: der Arbeiter schickt {seite: …}. Nur eine Seite mit Ebenen-Liste wird gezeigt, sonst bleibt der
+// letzte Stand stehen. Kein Dokument wird ersetzt - SeiteApp zeigt sie anstelle der eigenen Seite an.
+function seitenZwischenstandZeigen(stand: Dokument) {
+  const s = stand.seite;
+  if (!istObj(s) || !Array.isArray(s.ebenen) || typeof s.breite !== 'number' || typeof s.hoehe !== 'number' || !istObj(s.hintergrund)) return;
+  const alt = pultStore.getState().seitenZwischenstand;
+  if (alt && JSON.stringify(alt) === JSON.stringify(s)) return;
+  pultStore.setState({ seitenZwischenstand: s as unknown as Seite });
+}
+
 // Lauf ohne (geladene) neue Fassung zu Ende: das echte Dokument kommt zurueck, wie es war.
 function zwischenstandBeenden() {
+  if (pultStore.getState().seitenZwischenstand !== null) pultStore.setState({ seitenZwischenstand: null });
   const z = pultStore.getState().zwischenstand;
   if (!z) return;
   dokumentZeigen(z.echt);
@@ -547,7 +567,7 @@ let imVersand: MitChips | null = null;
 function mitChips(kontext: ChatKontext): MitChips | { ok: false; grund: string } {
   const { chatAnhaenge, gesendeteAuswahl } = pultStore.getState();
   if (!sendenErlaubt(chatAnhaenge)) return { ok: false, grund: 'Erst warten, bis die Anhänge hochgeladen sind' };
-  const { behalten: chatAuswahl, entfernt } = chipsBereinigen(pultStore.getState().chatAuswahl, getDocument(), null);
+  const { behalten: chatAuswahl, entfernt } = chipsBereinigen(pultStore.getState().chatAuswahl, chipDokument(), null);
   if (entfernt > 0) pultStore.setState({ chatAuswahl, chatHinweis: entferntHinweis(entfernt) });
   const k = kontextBauen(chatAuswahl, chatAnhaenge);
   const neu: ChatKontext = { ...kontext };
@@ -584,12 +604,35 @@ export function chipAuffrischenAuftrag(chip: AuswahlChip) {
   pultStore.setState({ chatAuswahl: chipAuffrischen(pultStore.getState().chatAuswahl, chip) });
 }
 
+// Einsteckbarer Editor (Collage, Freie Fläche Stufe 3): der Block-Editor arbeitet mit getDocument und
+// newsletterSichern; ein anderer Editor steckt sein Speichern vor dem Senden (null oder Grund - bei Grund
+// geht nichts an den Assistenten) und sein Dokument fuer die Chips ein. Liefert das Ausstecken.
+export type EditorWeg = { sichern: () => Promise<string | null>; dokument: () => Record<string, unknown> };
+let eingesteckt: EditorWeg | null = null;
+export function editorEinstecken(weg: EditorWeg): () => void {
+  eingesteckt = weg;
+  return () => {
+    if (eingesteckt === weg) eingesteckt = null;
+  };
+}
+
+function chipDokument(): Record<string, unknown> {
+  return eingesteckt ? eingesteckt.dokument() : getDocument();
+}
+
+// Angebotener Chip (z. B. die gewaehlte Ebene der Collage) wird angenommen. Liefert null oder den Grund.
+export function chipAnnehmen(chip: AuswahlChip): string | null {
+  return auswahlHinzu(chip);
+}
+
 // Vor jedem Start eines Auftrags: ein offener Bildhinweis hielte das Neuladen auf (die
 // Agenten-Fassung bliebe ungeladen); Ungesichertes wird gespeichert - der Agent arbeitet mit
 // der gespeicherten Fassung. Liefert null oder den Grund fuer den Betreiber.
 async function vorDemStart(): Promise<string | null> {
   const { ungespeichert, hinweisOffen } = pultStore.getState();
   if (hinweisOffen) return HINWEIS_OFFEN;
+  // Eingesteckter Editor (Collage): er weiss selbst, ob etwas ungespeichert ist, und speichert es.
+  if (eingesteckt) return eingesteckt.sichern();
   if (ungespeichert) {
     const e = await newsletterSichern(false);
     if (!e.ok) return fehlerText(e.grund);
@@ -603,7 +646,7 @@ async function vorDemStart(): Promise<string | null> {
 export function chipsAbgleichen() {
   const { zwischenstand, chatAuswahl, gestaltungOffen } = pultStore.getState();
   if (zwischenstand !== null || chatAuswahl.length === 0) return;
-  const { behalten, entfernt } = chipsBereinigen(chatAuswahl, getDocument(), gestaltungOffen);
+  const { behalten, entfernt } = chipsBereinigen(chatAuswahl, chipDokument(), gestaltungOffen);
   if (entfernt > 0) pultStore.setState({ chatAuswahl: behalten, chatHinweis: entferntHinweis(entfernt) });
 }
 

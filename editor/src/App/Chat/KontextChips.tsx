@@ -3,12 +3,12 @@
 // Fortschrittsring; Fehler mit Grund am Chip. Jeder Chip mit ✕.
 import React from 'react';
 
-import { CloseRounded, DescriptionOutlined, ErrorOutlineRounded, ImageOutlined, LayersOutlined, ViewDayOutlined } from '@mui/icons-material';
+import { AddRounded, CloseRounded, DescriptionOutlined, ErrorOutlineRounded, ImageOutlined, LayersOutlined, ViewDayOutlined } from '@mui/icons-material';
 import { Box, ButtonBase, CircularProgress, IconButton, Tooltip } from '@mui/material';
 
 import { AnhangChip, AUS_LETZTER, AuswahlChip, MAX_AUSWAHL } from '../../chatKontext';
 import { ANZEIGE } from '../../pult';
-import { anhangEntfernen, anhangVorschau, auswahlAuffrischen, auswahlEntfernen, chipAuffrischenAuftrag, pultStore } from '../../pultZustand';
+import { anhangEntfernen, anhangVorschau, auswahlAuffrischen, auswahlEntfernen, chipAnnehmen, chipAuffrischenAuftrag, pultStore } from '../../pultZustand';
 import { FARBE, FOKUS, uebergang } from '../Gestaltung/gestaltungStil';
 
 const HOEHE = 28;
@@ -93,6 +93,25 @@ function Liegengeblieben({ kurz }: { kurz: string }) {
   );
 }
 
+// Angebot (Collage: die gewaehlte Ebene): gestrichelt mit +, Anklicken haengt sie als Chip an.
+function Angebot({ c }: { c: AuswahlChip }) {
+  return (
+    <Tooltip title="Als Kontext an den Chat hängen">
+      <ButtonBase
+        role="listitem"
+        onClick={() => chipAnnehmen(c)}
+        aria-label={`Als Kontext anhängen: ${c.kurz}`}
+        sx={{ ...chipRahmen, pr: 0.75, border: `1px dashed ${FARBE.linie}`, color: FARBE.gedaempft, fontSize: 12, transition: uebergang('color', 'border-color'), '&:hover': { color: FARBE.text, borderColor: FARBE.gedaempft }, '&.Mui-focusVisible': FOKUS }}
+      >
+        <AddRounded sx={{ fontSize: 14, flexShrink: 0 }} />
+        <Box component="span" sx={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {c.kurz}
+        </Box>
+      </ButtonBase>
+    </Tooltip>
+  );
+}
+
 // Kleines Bild links im Chip; waehrend des Uploads liegt der Fortschrittsring darum.
 function Kopf({ a }: { a: AnhangChip }) {
   const fertigBild = a.art === 'bild' && a.status === 'fertig' ? ANZEIGE + encodeURIComponent(a.name) : undefined;
@@ -156,13 +175,17 @@ function Anhang({ a }: { a: AnhangChip }) {
   );
 }
 
-export default function KontextChips({ altform = null }: { altform?: { kurz: string } | null }) {
+// angebot: ein Chip, den der Betreiber per Klick anhaengen kann (nur solange er noch nicht dran ist).
+export default function KontextChips({ altform = null, angebot = null }: { altform?: { kurz: string } | null; angebot?: AuswahlChip | null }) {
   const auswahl = pultStore((p) => p.chatAuswahl);
   const anhaenge = pultStore((p) => p.chatAnhaenge);
-  if (auswahl.length === 0 && anhaenge.length === 0 && !altform) return null;
+  const zeigeAngebot =
+    angebot !== null && auswahl.length < MAX_AUSWAHL && !auswahl.some((c) => c.art === angebot.art && c.id === angebot.id && (c.flaeche ?? '') === (angebot.flaeche ?? ''));
+  if (auswahl.length === 0 && anhaenge.length === 0 && !altform && !zeigeAngebot) return null;
   return (
     <Box role="list" aria-label="Kontext für die nächste Nachricht" sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, px: 0.5, pb: 1 }}>
       {altform && <Liegengeblieben kurz={altform.kurz} />}
+      {zeigeAngebot && angebot && <Angebot c={angebot} />}
       {auswahl.map((c) => (
         <Auswahl key={`${c.art}:${c.flaeche ?? ''}:${c.id}`} c={c} />
       ))}

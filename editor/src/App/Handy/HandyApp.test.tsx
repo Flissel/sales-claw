@@ -2,6 +2,8 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
+import SeitenChat from '../Seite/SeitenChat';
+
 import HandyApp, { HandyAnsicht } from './HandyApp';
 
 const IID = 'b12c46b9-8f87-412b-b2e7-7215b354a75b';
@@ -28,15 +30,16 @@ describe('HandyAnsicht', () => {
   });
 });
 
-describe('HandyAnsicht ohneAssistent (Collage)', () => {
-  it('zeigt keinen Reiter Assistent und auch mit reiter="assistent" keinen Chat', () => {
-    const html = renderToStaticMarkup(<HandyAnsicht start={start} basis={4} betreff="Collage" ohneAssistent />);
+describe('HandyAnsicht mit eigenem Assistenten (Collage)', () => {
+  it('zeigt den Reiter Assistent und darin den übergebenen Seiten-Chat', () => {
+    const chat = <SeitenChat ebene={null} />;
+    const html = renderToStaticMarkup(<HandyAnsicht start={start} basis={4} betreff="Collage" assistent={chat} />);
     expect(html).toContain('Vorschau');
-    expect(html).not.toContain('Assistent');
+    expect(html).toContain('Assistent');
     expect(html).toContain('fassung=4&amp;format=handy');
-    const h2 = renderToStaticMarkup(<HandyAnsicht start={start} basis={4} betreff="" reiter="assistent" ohneAssistent />);
-    expect(h2).not.toContain('Nachricht an den Assistenten');
-    expect(h2).toContain('sandbox=""');
+    const h2 = renderToStaticMarkup(<HandyAnsicht start={start} basis={4} betreff="" reiter="assistent" assistent={chat} />);
+    expect(h2).toContain('Nachricht an den Assistenten');
+    expect(h2).not.toContain('sandbox=""');
   });
 });
 

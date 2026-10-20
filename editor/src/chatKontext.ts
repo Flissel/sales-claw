@@ -2,7 +2,8 @@
 // Chips fuer markierte Bloecke/Ebenen und hochgeladene Dateien, und was davon mit der Nachricht
 // als kontext.auswahl / kontext.anhaenge an das Pult geht (Pruefung dort: api/chat.py).
 
-// Markierter Block (Newsletter) oder markierte Ebene (flaeche = Block-id der Gestaltungsflaeche).
+// Markierter Block (Newsletter) oder markierte Ebene (flaeche = Block-id der Gestaltungsflaeche;
+// ohne flaeche = Ebene der Collage-Seite, Freie Fläche Stufe 3).
 // alt: ging mit der letzten Nachricht mit und geht erst nach Anklicken wieder mit (Spec 2026-10-09 §2).
 export type AuswahlChip = { art: 'block' | 'ebene'; id: string; flaeche?: string; kurz: string; alt?: boolean };
 
@@ -108,7 +109,11 @@ const BLOCK_ART: Record<string, string> = {
 };
 
 type BlockArtig = { type: string; data?: unknown };
-type EbeneArtig = { art: 'bild'; quelle: string } | { art: 'text'; text: string } | { art: 'form'; form: string };
+type EbeneArtig =
+  | { art: 'bild'; quelle: string }
+  | { art: 'text'; text: string }
+  | { art: 'knopf'; text: string }
+  | { art: 'form'; form: string };
 
 function istObjekt(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -119,6 +124,7 @@ export function kurzText(x: BlockArtig | EbeneArtig): string {
   if ('art' in x) {
     if (x.art === 'bild') return mit('Bild-Ebene', anfang(dateiStamm(x.quelle), false));
     if (x.art === 'form') return mit('Form-Ebene', x.form === 'kreis' ? 'Kreis' : 'Rechteck');
+    if (x.art === 'knopf') return mit('Knopf-Ebene', anfang(x.text));
     return mit('Text-Ebene', anfang(x.text));
   }
   const props = istObjekt(x.data) && istObjekt(x.data.props) ? x.data.props : {};
@@ -129,6 +135,11 @@ export function kurzText(x: BlockArtig | EbeneArtig): string {
     return mit('Bild', name || anfang(text('alt')));
   }
   return mit(BLOCK_ART[x.type] ?? 'Block', anfang(text('text')));
+}
+
+// Chip fuer eine Ebene der Collage-Seite: art 'ebene' ohne flaeche (die Seite ist das ganze Dokument).
+export function seitenChip(e: EbeneArtig & { id: string }): AuswahlChip {
+  return { art: 'ebene', id: e.id, kurz: kurzText(e) };
 }
 
 // Vorpruefung vor dem Upload (dieselben Grenzen wie die Anhang-Route).
@@ -155,10 +166,11 @@ export function kontextBauen(auswahl: AuswahlChip[], anhaenge: AnhangChip[]): { 
 
 // Gibt es das markierte Element im Dokument noch? Bloecke: id vorhanden (nie root). Ebenen: die
 // Flaeche ist noch eine Gestaltungsflaeche mit dieser Ebene. Die Flaeche `offen` wird nicht geprueft -
-// ihr Fenster haelt ungesicherte Ebenen, die im Dokument noch fehlen.
+// ihr Fenster haelt ungesicherte Ebenen, die im Dokument noch fehlen. Ebenen ohne flaeche gehoeren zur
+// Collage: doc ist dann die Seite (mit der Liste ebenen; ein Block-Dokument hat keine).
 function chipGibtEs(c: AuswahlChip, doc: Record<string, unknown>, offen: string | null): boolean {
   if (c.art === 'block') return c.id !== 'root' && istObjekt(doc[c.id]);
-  if (c.flaeche === undefined) return false;
+  if (c.flaeche === undefined) return Array.isArray(doc.ebenen) && doc.ebenen.some((e) => istObjekt(e) && e.id === c.id);
   if (c.flaeche === offen) return true;
   const block = doc[c.flaeche];
   const daten = istObjekt(block) && istObjekt(block.data) ? block.data : null;

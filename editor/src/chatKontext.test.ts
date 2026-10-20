@@ -18,6 +18,7 @@ import {
   MAX_AUSWAHL,
   MAX_DATEI,
   sendenErlaubt,
+  seitenChip,
 } from './chatKontext';
 
 const block = (id: string, kurz = 'Text · x'): AuswahlChip => ({ art: 'block', id, kurz });
@@ -76,6 +77,13 @@ describe('kurzText', () => {
   it('Ebenen', () => {
     expect(kurzText({ id: 'e-1', art: 'text', text: 'Neu im Oktober\nmehr' } as never)).toBe('Text-Ebene · Neu im Oktober');
     expect(kurzText({ id: 'e-2', art: 'bild', quelle: 'medien:held_bild.png' } as never)).toBe('Bild-Ebene · held_bild');
+    expect(kurzText({ id: 'k', art: 'knopf', text: 'Mehr erfahren' } as never)).toBe('Knopf-Ebene · Mehr erfahren');
+  });
+
+  it('seitenChip: Ebene der Collage ohne flaeche, Kurzname aus Art und Textanfang', () => {
+    expect(seitenChip({ id: 'text1', art: 'text', text: 'Hallo **Welt**' })).toEqual({ art: 'ebene', id: 'text1', kurz: 'Text-Ebene · Hallo Welt' });
+    expect(seitenChip({ id: 'f1', art: 'form', form: 'kreis' })).toEqual({ art: 'ebene', id: 'f1', kurz: 'Form-Ebene · Kreis' });
+    expect('flaeche' in seitenChip({ id: 'k1', art: 'knopf', text: 'Los' })).toBe(false);
   });
 
   it('nie laenger als KURZ_MAX', () => {
@@ -163,6 +171,16 @@ describe('chipsBereinigen', () => {
   it('nichts zu tun: dieselbe Liste', () => {
     const l = [block('h')];
     expect(chipsBereinigen(l, doc, null).behalten).toBe(l);
+  });
+
+  it('Seiten-Ebenen (ohne flaeche): nur, wenn die Collage sie noch hat', () => {
+    const seite = { version: 1, breite: 600, hoehe: 900, ebenen: [{ id: 'text1' }, { id: 'bild1' }] };
+    const c = (id: string): AuswahlChip => ({ art: 'ebene', id, kurz: 'k' });
+    const r = chipsBereinigen([c('text1'), c('weg'), block('text1')], seite, null);
+    expect(r.behalten).toEqual([c('text1')]);
+    expect(r.entfernt).toBe(2);
+    // Im Block-Dokument gibt es keine Seiten-Ebenen.
+    expect(chipsBereinigen([c('e-1')], doc, null).entfernt).toBe(1);
   });
 
   it('Hinweistext', () => {

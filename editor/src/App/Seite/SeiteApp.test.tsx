@@ -1,11 +1,13 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import type { Start } from '../../pult';
+import { pultStore } from '../../pultZustand';
 import type { Seite } from '../../seite';
 
-import SeiteApp, { ASSISTENT_HINWEIS } from './SeiteApp';
+import SeiteApp, { ARBEITET_HINWEIS } from './SeiteApp';
+import SeitenChat from './SeitenChat';
 
 const IID = 'b12c46b9-8f87-412b-b2e7-7215b354a75b';
 
@@ -90,10 +92,10 @@ describe('SeiteApp', () => {
     expect(html).not.toContain('href="https://example.com"');
   });
 
-  it('zeigt den Hinweis zum Assistenten, aber weder Assistent noch Einreichen', () => {
-    expect(ASSISTENT_HINWEIS).toBe('Der Assistent kommt für Collage-Newsletter in der nächsten Stufe.');
-    expect(html).toContain(ASSISTENT_HINWEIS);
-    expect(html).not.toContain('Nachricht an den Assistenten');
+  it('zeigt den Assistenten (Chat) statt des Hinweises, aber kein Einreichen', () => {
+    expect(html).toContain('Nachricht an den Assistenten');
+    expect(html).not.toContain('Der Assistent kommt');
+    expect(html).not.toContain(ARBEITET_HINWEIS);
     expect(html).not.toContain('einreichen');
     expect(html).not.toContain('Einreichen');
   });
@@ -125,5 +127,45 @@ describe('SeiteApp', () => {
   it('ohne Seite: verständlicher Fehler statt Absturz', () => {
     const s = { ...seitenStart(), seite: undefined };
     expect(renderToStaticMarkup(<SeiteApp start={s} />)).toContain('Die Collage konnte nicht geladen werden');
+  });
+});
+
+// zustand rendert auf dem Server den INITIAL-Zustand; fuer den Aufruf auf den aktuellen Stand setzen.
+const INITIAL = { ...pultStore.getInitialState() };
+function rendern(el: React.ReactElement): string {
+  Object.assign(pultStore.getInitialState(), pultStore.getState());
+  try {
+    return renderToStaticMarkup(el);
+  } finally {
+    Object.assign(pultStore.getInitialState(), INITIAL);
+  }
+}
+
+describe('SeiteApp mit Assistent', () => {
+  afterEach(() => pultStore.setState({ chat: null, seitenZwischenstand: null, chatAuswahl: [] }));
+
+  it('bietet die gewählte Ebene als Chip an (Kurzname aus Art und Textanfang)', () => {
+    const h = rendern(<SeitenChat ebene={SEITE.ebenen[1]} />);
+    expect(h).toContain('Text-Ebene · Hallo Welt');
+    expect(h).toContain('Als Kontext anhängen: Text-Ebene · Hallo Welt');
+    // Schon als Chip dran: kein zweites Angebot.
+    pultStore.setState({ chatAuswahl: [{ art: 'ebene', id: 'text1', kurz: 'Text-Ebene · Hallo Welt' }] });
+    expect(rendern(<SeitenChat ebene={SEITE.ebenen[1]} />)).not.toContain('Als Kontext anhängen');
+    // Ohne Auswahl kein Angebot.
+    pultStore.setState({ chatAuswahl: [] });
+    expect(rendern(<SeitenChat ebene={null} />)).not.toContain('Als Kontext anhängen');
+  });
+
+  it('während einer Runde: Zwischenstand nur zur Anzeige, Hinweis „Der Assistent arbeitet“', () => {
+    expect(ARBEITET_HINWEIS).toBe('Der Assistent arbeitet');
+    pultStore.setState({
+      chat: { laeuft: true, verlauf: [], live: null, neueste: null },
+      seitenZwischenstand: { ...SEITE, hintergrund: { farbe: '#123456', bild: null }, ebenen: [SEITE.ebenen[1]] },
+    });
+    const h = rendern(<SeiteApp start={seitenStart()} />);
+    expect(h).toContain(ARBEITET_HINWEIS);
+    expect(h).toContain('background-color:#123456');
+    // Die Fläche zeigt den Zwischenstand, nicht die eigene Seite; die Ebenenliste bleibt beim echten Stand.
+    expect(h).not.toContain('data-ebene="bild1"');
   });
 });
