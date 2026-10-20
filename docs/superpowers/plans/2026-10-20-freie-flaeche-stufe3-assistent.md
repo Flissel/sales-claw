@@ -10,7 +10,7 @@
   - Prompt: `claw/seite_prompt.py`
   - Prüfbild: `workers/seite_pruefbild.py`, rendert `seite_html.html` mit Playwright in Kacheln
   - Ablauf: im Chat-Arbeiter ein Zweig `_bearbeiten_seite`
-- **Datenbank:** Migration 078 bekommt Speicher- und Stopp-Funktionen für Seiten, Bildaufträge für Seiten-Ebenen und eine Abfrage der letzten Kompositionen.
+- **Datenbank:** Migration 079 bekommt Speicher- und Stopp-Funktionen für Seiten, Bildaufträge für Seiten-Ebenen und eine Abfrage der letzten Kompositionen.
 - **API:** Die API hebt die Chat-Sperre für Collagen auf. Einreichen und Versand bleiben gesperrt bis Stufe 4.
 - **Editor:** Der Editor hängt den vorhandenen Chat (`ChatLeiste`) in `SeiteApp` ein.
 
@@ -57,7 +57,7 @@
 - Einreichen und Versand bleiben für Collagen gesperrt (Stufe 4).
 - Prompt für Seiten höchstens **14000** Zeichen (eigener Test). Der Block-Prompt bleibt bei 13000.
 - Fehlermeldungen und Schritt-Texte auf Deutsch mit echten Umlauten.
-- Livegang (Migration auf der VM, Marketing-API, PC-Arbeiter, sales `update.sh`) nur mit User-OK. **078 muss vor dem Code live sein.**
+- Livegang (Migration auf der VM, Marketing-API, PC-Arbeiter, sales `update.sh`) nur mit User-OK. **079 muss vor dem Code live sein. Die Nummer 078 belegt der Marken-Chat (cc-marken-chat); 079 ist davon unabhängig.**
 
 ## Review Focus
 
@@ -69,9 +69,9 @@
 
 ---
 
-### Task 1: Migration 078 – Speichern, Stopp, Bildaufträge und Kompositionen für Seiten
+### Task 1: Migration 079 – Speichern, Stopp, Bildaufträge und Kompositionen für Seiten
 
-**Files:** Create `db/078_seite_assistent.sql`, `db/verify_078.sql`
+**Files:** Create `db/079_seite_assistent.sql`, `db/verify_079.sql`
 
 **Interfaces – Produces:**
 - `marketing.pult_chat_fertig_seite(p_auftrag uuid, p_antwort text, p_seite jsonb, p_hinweise jsonb, p_ergebnis jsonb, p_basis int DEFAULT NULL) RETURNS jsonb`
@@ -86,17 +86,17 @@
   - Liefert die Seiten der neuesten Fassung der letzten 5 Collage-Inhalte dieser Firma (nach `erstellt_am` absteigend), ohne `p_ausser`.
   - Form: `[{"inhalt": uuid, "seite": {...}}]`.
 
-- [ ] **Step 1:** `verify_078.sql` schreiben, mit eigenen Probe-Inhalten nach dem Muster von `verify_077.sql`.
+- [ ] **Step 1:** `verify_079.sql` schreiben, mit eigenen Probe-Inhalten nach dem Muster von `verify_077.sql`.
   - **Fertig:** speichert eine neue Seiten-Fassung mit `urheber = 'agent'`. Mit veralteter Basis kommt `veraltet`.
   - **Stopp-Abschluss:** speichert.
   - **Bildauftrag:** wird für eine Bild-Ebene angelegt, für eine Text-Ebene oder unbekannte ID gibt es eine Ausnahme mit deutschem Grund.
   - **Einsetzen:** setzt `quelle`.
   - **Kompositionen:** liefert höchstens 5 Einträge, ohne den eigenen, nur für dieselbe Firma.
   - **Block-Wege unverändert:** `pult_chat_fertig` und Block-Bildauftrag laufen wie vorher.
-- [ ] **Step 2:** Probe mit nur `verify_078.sql`. Expected: FAIL.
-- [ ] **Step 3:** `078_seite_assistent.sql` schreiben. RUNBOOK-Kopf „nach 077“, idempotent, Rechte wie 077.
-- [ ] **Step 4:** Probe `078 verify_078 078 verify_078`. Expected: `PROBE OK`.
-- [ ] **Step 5:** Commit `feat(marketing): Migration 078 Assistent fuer Collagen (Speichern, Stopp, Bilder, Kompositionen)`
+- [ ] **Step 2:** Probe mit nur `verify_079.sql`. Expected: FAIL.
+- [ ] **Step 3:** `079_seite_assistent.sql` schreiben. RUNBOOK-Kopf „nach 077, unabhängig von 078 (Marken-Chat)“, idempotent, Rechte wie 077.
+- [ ] **Step 4:** Probe `079 verify_079 079 verify_079`. Expected: `PROBE OK`.
+- [ ] **Step 5:** Commit `feat(marketing): Migration 079 Assistent fuer Collagen (Speichern, Stopp, Bilder, Kompositionen)`
 
 ### Task 2: API – Chat für Collagen freigeben, Arbeiter-Routen seitenfähig
 
@@ -288,7 +288,7 @@ Tests: `SeiteApp.test.tsx`, `HandyApp.test.tsx`, `pultZustand`-Tests, `chatKonte
 - [ ] **Step 2:** User-OK einholen.
 - [ ] **Step 3: Datenbank.**
   - `marketing`-Schema sichern (`pg_dump -n marketing`).
-  - 078 einspielen und `verify_078` per Probe prüfen. Expected: `PROBE OK`.
+  - 079 einspielen und `verify_079` per Probe prüfen. Expected: `PROBE OK`.
 - [ ] **Step 4: Ausrollen.**
   - vibemind-os pushen.
   - `marketing-aktualisieren.sh` auf der VM ausführen.
