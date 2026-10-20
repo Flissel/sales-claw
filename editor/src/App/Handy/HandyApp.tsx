@@ -20,11 +20,14 @@ type AnsichtProps = {
   betreff: string;
   reiter?: HandyReiter;
   exportOeffnen?: Export;
+  // Collage (Stufe 2): kein Assistent - nur der Reiter Vorschau.
+  ohneAssistent?: boolean;
 };
 
 // Die reine Ansicht (Props statt Store - beim Server-Rendern im Test liest zustand nur den Anfangszustand).
-export function HandyAnsicht({ start, basis, betreff, reiter: anfang = 'vorschau', exportOeffnen = nichts }: AnsichtProps) {
-  const [reiter, setReiter] = useState<HandyReiter>(anfang);
+export function HandyAnsicht({ start, basis, betreff, reiter: anfang = 'vorschau', exportOeffnen = nichts, ohneAssistent = false }: AnsichtProps) {
+  const [gewaehlt, setReiter] = useState<HandyReiter>(anfang);
+  const reiter: HandyReiter = ohneAssistent ? 'vorschau' : gewaehlt;
   return (
     <Stack sx={{ height: '100vh', overflow: 'hidden' }}>
       <Stack direction="row" alignItems="center" spacing={1} sx={{ minHeight: 56, px: 1.5, borderBottom: 1, borderColor: 'divider' }}>
@@ -37,7 +40,7 @@ export function HandyAnsicht({ start, basis, betreff, reiter: anfang = 'vorschau
       </Stack>
       <Tabs value={reiter} onChange={(_, v: HandyReiter) => setReiter(v)} variant="fullWidth" sx={{ minHeight: 48, borderBottom: 1, borderColor: 'divider' }}>
         <Tab value="vorschau" label="Vorschau" sx={{ minHeight: 48 }} />
-        <Tab value="assistent" label="Assistent" sx={{ minHeight: 48 }} />
+        {!ohneAssistent && <Tab value="assistent" label="Assistent" sx={{ minHeight: 48 }} />}
       </Tabs>
       <Box sx={{ flex: 1, minHeight: 0 }}>
         {reiter === 'vorschau' ? (

@@ -3,6 +3,7 @@
 // nur relative Adressen von sales-ui.
 import type { Auftrag } from './bildfeld';
 import type { Gestaltung } from './gestaltung';
+import type { Seite } from './seite';
 
 export type Dokument = Record<string, unknown>;
 
@@ -12,7 +13,11 @@ export type Firma = { id: string; name: string };
 export type Rueckmeldung = { text: string; von: string; am: string; fassung: number };
 
 export type Start = {
-  dokument: Dokument;
+  // Collage (Freie Fläche Stufe 2): format "seite", das Seitenmodell in seite, dokument null.
+  // Fehlt format (älteres sales-ui) oder ist es nicht "seite", gilt der Block-Editor.
+  format?: string;
+  seite?: Seite | null;
+  dokument: Dokument | null;
   betreff: string;
   vorschautext: string;
   basis_fassung: number;

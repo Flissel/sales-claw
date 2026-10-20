@@ -98,6 +98,14 @@ export function useSeite(anfang: Seite) {
     [setzen]
   );
 
+  const hintergrundSetzen = useCallback(
+    (farbe: string, modus: SeitenArt = 'sofort') => {
+      const s = jetzt.current;
+      setzen({ ...s, hintergrund: { ...s.hintergrund, farbe } }, modus);
+    },
+    [setzen]
+  );
+
   const zurueck = useCallback(() => {
     festschreiben();
     if (v.zurueck()) zeigen(v.jetzt());
@@ -127,6 +135,7 @@ export function useSeite(anfang: Seite) {
     nachOben,
     nachUnten,
     hoeheSetzen,
+    hintergrundSetzen,
     zurueck,
     vor,
     geaendert: seite !== gespeicherterStand,

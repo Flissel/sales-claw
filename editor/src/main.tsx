@@ -4,9 +4,10 @@ import ReactDOM from 'react-dom/client';
 import { CssBaseline, ThemeProvider } from '@mui/material';
 
 import App from './App';
+import SeiteApp from './App/Seite/SeiteApp';
 import { onDocumentChange, resetDocument } from './documents/editor/EditorContext';
 import { TEditorConfiguration } from './documents/editor/core';
-import { startLesen, zurAnzeige } from './pult';
+import { type Start, startLesen, zurAnzeige } from './pult';
 import { alsUngespeichert, chatAbfragen, chatEntwurfWiederholen, chipsAbgleichen, fensterWiederOeffnen, meldungLesen, pultStarten, standAbfragen } from './pultZustand';
 import { pultThema } from './theme';
 import './editor.css';
@@ -32,29 +33,37 @@ if (!document.querySelector(`link[href="${SCHRIFTEN_CSS}"]`)) {
   document.head.appendChild(link);
 }
 
+// Block-Editor (alle Block-Newsletter): Dokument laden, Stand und Chat abfragen.
+function blockEditorStarten(start: Start): React.ReactNode {
+  standAbfragen();
+  // Dokument aus dem Pult laden; Bilder "medien:<name>" zeigen wir ueber die
+  // Medien-Adresse von sales-ui an (zurSpeicherung macht es beim Speichern rueckgaengig).
+  resetDocument(zurAnzeige(start.dokument ?? {}) as TEditorConfiguration);
+  meldungLesen();
+  // Nach dem Neuladen wegen einer Agenten-Fassung: offenes Gestaltungsfenster wieder oeffnen.
+  fensterWiederOeffnen();
+  chatEntwurfWiederholen();
+  onDocumentChange(alsUngespeichert);
+  // Kontext-Chips zeigen nur, was es im Dokument noch gibt (Spec 2026-10-06 §1).
+  onDocumentChange(chipsAbgleichen);
+  // Chat-Verlauf einmal laden; laeuft ein Auftrag, fragt chatAbfragen weiter (Chat 1 s, Export 2 s).
+  chatAbfragen();
+  return <App />;
+}
+
 if (wurzel) {
   try {
     const start = startLesen();
     pultStarten(start);
-    standAbfragen();
-    // Dokument aus dem Pult laden; Bilder "medien:<name>" zeigen wir ueber die
-    // Medien-Adresse von sales-ui an (zurSpeicherung macht es beim Speichern rueckgaengig).
-    resetDocument(zurAnzeige(start.dokument) as TEditorConfiguration);
-    meldungLesen();
-    // Nach dem Neuladen wegen einer Agenten-Fassung: offenes Gestaltungsfenster wieder oeffnen.
-    fensterWiederOeffnen();
-    chatEntwurfWiederholen();
-    onDocumentChange(alsUngespeichert);
-    // Kontext-Chips zeigen nur, was es im Dokument noch gibt (Spec 2026-10-06 §1).
-    onDocumentChange(chipsAbgleichen);
-    // Chat-Verlauf einmal laden; laeuft ein Auftrag, fragt chatAbfragen weiter (Chat 1 s, Export 2 s).
-    chatAbfragen();
+    // Collage (Freie Fläche Stufe 2): eigener Editor ohne Block-Dokument, Assistent, Stand- und
+    // Chat-Abfrage (die API sperrt den Assistenten für Collagen).
+    const inhalt = start.format === 'seite' ? <SeiteApp start={start} /> : blockEditorStarten(start);
 
     ReactDOM.createRoot(wurzel).render(
       <React.StrictMode>
         <ThemeProvider theme={pultThema(dunkel)}>
           <CssBaseline />
-          <App />
+          {inhalt}
         </ThemeProvider>
       </React.StrictMode>
     );
@@ -62,4 +71,3 @@ if (wurzel) {
     fehlerZeigen(wurzel, 'Der Editor konnte den Entwurf nicht laden. Bitte die Seite neu laden oder zurück zum Entwurf gehen.');
   }
 }
-

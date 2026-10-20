@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { FormEbeneS, Seite, SeitenEbene } from './seite';
-import { drehenZu, einrastenSeite, griffZiehen, hoeheZiehen, klemmen } from './seiteGeometrie';
+import { drehenAmGriff, drehenZu, einrastenSeite, griffZiehen, hoeheZiehen, klemmen } from './seiteGeometrie';
 
 const form = (t: Partial<FormEbeneS> = {}): FormEbeneS => ({
   id: 'a', art: 'form', form: 'rechteck', farbe: '#000000', x: 300, y: 200, breite: 100, hoehe: 50, drehung: 0, ...t,
@@ -75,6 +75,18 @@ describe('drehenZu', () => {
   it('rastet auf 15 Grad', () => {
     const w = (44 * Math.PI) / 180;
     expect(drehenZu(form(), 300 + 100 * Math.cos(w), 200 + 100 * Math.sin(w), true).drehung).toBe(45);
+  });
+});
+
+describe('drehenAmGriff', () => {
+  it('Maus senkrecht ueber dem Mittelpunkt = 0, rechts davon = 90, links = -90', () => {
+    expect(drehenAmGriff(form(), 300, 100, false).drehung).toBeCloseTo(0);
+    expect(drehenAmGriff(form(), 400, 200, false).drehung).toBeCloseTo(90);
+    expect(drehenAmGriff(form(), 200, 200, false).drehung).toBeCloseTo(-90);
+  });
+  it('rastet mit Umschalt auf 15 Grad', () => {
+    const w = (-90 + 44) * (Math.PI / 180);
+    expect(drehenAmGriff(form(), 300 + 100 * Math.cos(w), 200 + 100 * Math.sin(w), true).drehung).toBe(45);
   });
 });
 

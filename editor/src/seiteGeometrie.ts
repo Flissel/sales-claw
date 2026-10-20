@@ -102,6 +102,16 @@ export function drehenZu(e: SeitenEbene, mausX: number, mausY: number, einrasten
   return klemmen({ ...e, drehung: w });
 }
 
+/**
+ * Drehen am Drehgriff, der ungedreht genau OBERHALB des Mittelpunkts sitzt: Maus senkrecht ueber dem
+ * Mittelpunkt = 0 Grad. Der Mausvektor wird um +90 Grad gedreht und an drehenZu gegeben.
+ */
+export function drehenAmGriff(e: SeitenEbene, mausX: number, mausY: number, einrasten15: boolean): SeitenEbene {
+  const vx = mausX - e.x;
+  const vy = mausY - e.y;
+  return drehenZu(e, e.x - vy, e.y + vx, einrasten15);
+}
+
 export function hoeheZiehen(s: Seite, neueHoehe: number): Seite {
   return { ...s, hoehe: klemme(Math.round(neueHoehe), HOEHE_MIN, HOEHE_MAX) };
 }

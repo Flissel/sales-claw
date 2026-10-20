@@ -52,7 +52,7 @@ function Vorschau({ e }: { e: Ebene }) {
   );
 }
 
-function Medienauswahl({ anker, schliessen, waehlen }: { anker: HTMLElement | null; schliessen: () => void; waehlen: (name: string, verhaeltnis?: number) => void }) {
+export function Medienauswahl({ anker, schliessen, waehlen }: { anker: HTMLElement | null; schliessen: () => void; waehlen: (name: string, verhaeltnis?: number) => void }) {
   const medien = pultStore((p) => p.medien);
   useEffect(() => {
     if (anker) medienLaden(true);

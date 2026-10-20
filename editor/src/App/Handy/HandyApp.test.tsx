@@ -28,6 +28,18 @@ describe('HandyAnsicht', () => {
   });
 });
 
+describe('HandyAnsicht ohneAssistent (Collage)', () => {
+  it('zeigt keinen Reiter Assistent und auch mit reiter="assistent" keinen Chat', () => {
+    const html = renderToStaticMarkup(<HandyAnsicht start={start} basis={4} betreff="Collage" ohneAssistent />);
+    expect(html).toContain('Vorschau');
+    expect(html).not.toContain('Assistent');
+    expect(html).toContain('fassung=4&amp;format=handy');
+    const h2 = renderToStaticMarkup(<HandyAnsicht start={start} basis={4} betreff="" reiter="assistent" ohneAssistent />);
+    expect(h2).not.toContain('Nachricht an den Assistenten');
+    expect(h2).toContain('sandbox=""');
+  });
+});
+
 describe('HandyApp', () => {
   it('liest den Pult-Zustand und rendert ohne Start nur Kopf und Reiter', () => {
     const html = renderToStaticMarkup(<HandyApp />);
