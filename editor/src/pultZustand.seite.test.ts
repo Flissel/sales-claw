@@ -1,12 +1,15 @@
 // Assistent im Collage-Editor (Freie Fläche Stufe 3, Task 7): Speichern vor dem Senden über den
 // eingesteckten Seiten-Weg, Chips gegen die Seite, Zwischenstand nur zur Anzeige.
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ChatEintrag } from './chat';
 import { getDocument, resetDocument } from './documents/editor/EditorContext';
 import type { TEditorConfiguration } from './documents/editor/core';
 import type { Start } from './pult';
-import { chatAbfragen, chatAbschicken, chatEntwurfWiederholen, chipsAbgleichen, editorEinstecken, pultStore } from './pultZustand';
+import { chatAbfragen, chatAbschicken, chatEntwurfWiederholen, chipsAbgleichen, editorEinstecken, pultStore, standAbfragen } from './pultZustand';
 import type { Seite } from './seite';
 import { SEITE_KONFLIKT, seitenKontext, seitenSicherung, type SeitenStand } from './seiteChat';
 
@@ -283,5 +286,48 @@ describe('Neuladen nach der Runde wartet (Collage)', () => {
     expect(pultStore.getState().fassungWartet).toBeNull();
     pultStore.setState({ ungespeichert: false });
     expect(reload).not.toHaveBeenCalled();
+  });
+});
+
+// Gesamtpruefung Stufe 3: der Bild-Arbeiter speichert nach einer Runde neue Fassungen - der Collage-Editor
+// holt sie wie der Block-Editor ueber standAbfragen, ohne Ungespeichertes zu verwerfen.
+describe('neue Bildfassung über den Stand (Collage)', () => {
+  const MIT_STAND = { ...START, stand_url: '/st.json' } as Start;
+  const bildFertig = { id: 'b1', platz: 'held', status: 'fertig', geaendert_am: new Date(Date.now() + 60000).toISOString() };
+
+  it('nichts ungespeichert: lädt die neue Fassung', async () => {
+    pultStore.setState({ start: MIT_STAND, ungespeichert: false });
+    netz({ '/st.json': [[200, { fassung: 4, auftraege: [bildFertig] }]] });
+    standAbfragen();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(pultStore.getState().stand?.fassung).toBe(4);
+  });
+
+  it('mit Ungespeichertem: kein Neuladen, Hinweis wartet; lädt erst, wenn nichts mehr ungespeichert ist', async () => {
+    pultStore.setState({ start: MIT_STAND, ungespeichert: true });
+    netz({ '/st.json': [[200, { fassung: 4, auftraege: [bildFertig] }]] });
+    standAbfragen();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reload).not.toHaveBeenCalled();
+    expect(pultStore.getState().fassungWartet).toBe(4);
+    pultStore.setState({ ungespeichert: false });
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it('gleiche Fassung: nichts passiert', async () => {
+    pultStore.setState({ start: MIT_STAND, ungespeichert: false });
+    netz({ '/st.json': [[200, { fassung: 3, auftraege: [] }]] });
+    standAbfragen();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reload).not.toHaveBeenCalled();
+    expect(pultStore.getState().fassungWartet).toBeNull();
+  });
+
+  it('main.tsx fragt den Stand auch für Collagen ab', () => {
+    const quelle = readFileSync(join(__dirname, 'main.tsx'), 'utf8');
+    const seite = quelle.slice(quelle.indexOf('function seitenEditorStarten'), quelle.indexOf('if (wurzel)'));
+    expect(seite).toContain('standAbfragen();');
+    expect(quelle).not.toContain('keine Stand-Abfrage');
   });
 });

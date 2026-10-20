@@ -429,7 +429,10 @@ export function standAbfragen() {
     const s = await standLaden(start);
     if (!s) return;
     pultStore.setState({ stand: s });
-    neueFassungLaden(s.fassung, s.auftraege);
+    const laedt = neueFassungLaden(s.fassung, s.auftraege);
+    // Eingesteckter Editor (Collage): wie nach einer Chat-Runde wartet das Neuladen, bis nichts Ungespeichertes
+    // mehr da ist (fassungWartet, Hinweis in der Leiste) - die Arbeit des Betreibers geht nie verloren.
+    if (!laedt && eingesteckt && s.fassung > pultStore.getState().basis) pultStore.setState({ fassungWartet: s.fassung });
   };
   void holen();
   if (!standTakt) standTakt = setInterval(holen, 15000);

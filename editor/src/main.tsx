@@ -52,8 +52,10 @@ function blockEditorStarten(start: Start): React.ReactNode {
 }
 
 // Collage-Editor: Chat-Entwurf wiederholen und den Chat-Verlauf laden (laeuft eine Runde, fragt
-// chatAbfragen weiter). Bildauftraege gibt es fuer Collagen nicht - keine Stand-Abfrage.
+// chatAbfragen weiter). Der Stand (alle 15 s) holt Fassungen, die der Bild-Arbeiter nach einer Runde
+// speichert; mit Ungespeichertem wartet das Neuladen (fassungWartet) wie nach einer Chat-Runde.
 function seitenEditorStarten(start: Start): React.ReactNode {
+  standAbfragen();
   chatEntwurfWiederholen();
   chatAbfragen();
   return <SeiteApp start={start} />;
@@ -63,8 +65,8 @@ if (wurzel) {
   try {
     const start = startLesen();
     pultStarten(start);
-    // Collage (Freie Fläche Stufe 2/3): eigener Editor ohne Block-Dokument und ohne Stand-Abfrage, aber mit
-    // dem Assistenten (Chat-Abfrage, angefangener Chat-Text und Chips nach dem Neuladen).
+    // Collage (Freie Fläche Stufe 2/3): eigener Editor ohne Block-Dokument, mit Stand-Abfrage (neue
+    // Bildfassungen) und dem Assistenten (Chat-Abfrage, angefangener Chat-Text und Chips nach dem Neuladen).
     const inhalt = start.format === 'seite' ? seitenEditorStarten(start) : blockEditorStarten(start);
 
     ReactDOM.createRoot(wurzel).render(
