@@ -15,7 +15,11 @@ ZEITLIMIT_S = 8
 
 
 def eingerichtet() -> bool:
-    return bool(URL and KEY)
+    # Ein Schluessel mit Steuerzeichen, Leerraum oder Nicht-ASCII ist als HTTP-Kopf nicht
+    # sendbar (http.client wirft einen ValueError, der den Schluessel im Text traegt):
+    # lieber "nicht eingerichtet" als ein Versuch.
+    return bool(URL and KEY and KEY.isascii() and KEY.isprintable()
+                and not any(z.isspace() for z in KEY))
 
 
 def anfrage(methode: str, pfad: str, daten: dict | None = None, roh: bool = False,

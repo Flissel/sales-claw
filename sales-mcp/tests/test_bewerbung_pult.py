@@ -3,10 +3,12 @@ gemeinsame HTTP-Kern `pult_http`. Gegenstelle ist die Zentrale des Bewerbungs-Bo
 (`/api/pult`, Kopf `X-Pult-Key`, Fehler als `{"detail": "<text>"}`), also derselbe Vertrag
 wie beim Marketing-Pult. Gefaelscht wird nur `urlopen`; die Umleitungsprobe laeuft gegen
 echte lokale Server."""
+import http.client
 import importlib.util
 import io
 import json
 import threading
+import traceback
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -22,11 +24,14 @@ BASIS = "http://zentrale.test"
 
 
 class _Antwort:
-    def __init__(self, inhalt: bytes, typ: str = "application/json"):
+    def __init__(self, inhalt: bytes, typ: str = "application/json", lesefehler: Exception | None = None):
         self._inhalt = inhalt
+        self._lesefehler = lesefehler          # gesetzt: der Rumpf bricht beim Lesen ab
         self.headers = {"Content-Type": typ}
 
     def read(self):
+        if self._lesefehler is not None:
+            raise self._lesefehler
         return self._inhalt
 
     def __enter__(self):
@@ -65,10 +70,28 @@ def _http_fehler(code: int, detail) -> urllib.error.HTTPError:
     return urllib.error.HTTPError(f"{BASIS}/api/pult/x", code, "x", {}, io.BytesIO(koerper))
 
 
+def _sichtbar(fehler: BaseException) -> str:
+    """Alles, was ein Fehler preisgibt: str/repr/args (und bei PultFehler art/grund/koerper)
+    jeder Ausnahme der __cause__/__context__-Kette, dazu der formatierte Traceback."""
+    texte, offen, gesehen = [], [fehler], set()
+    while offen:
+        e = offen.pop()
+        if e is None or id(e) in gesehen:
+            continue
+        gesehen.add(id(e))
+        texte += [str(e), repr(e), repr(e.args)]
+        if isinstance(e, pult_http.PultFehler):
+            texte += [e.art, e.grund, repr(e.koerper)]
+        offen += [e.__cause__, e.__context__]
+    texte.append("".join(traceback.format_exception(fehler)))
+    return "\n".join(texte)
+
+
 # --- eingerichtet() -----------------------------------------------------------
 
 @pytest.mark.parametrize("url,key,erwartet", [
     ("http://zentrale.test", "k", True),
+    ("http://zentrale.test", "aB3-_.~+/=:xYz", True),        # uebliche Schluesselzeichen
     ("", "k", False),
     ("http://zentrale.test", "", False),
     ("", "", False),
@@ -77,6 +100,22 @@ def test_eingerichtet_braucht_url_und_schluessel(monkeypatch, url, key, erwartet
     monkeypatch.setattr(bewerbung_pult, "URL", url)
     monkeypatch.setattr(bewerbung_pult, "KEY", key)
     assert bewerbung_pult.eingerichtet() is erwartet
+
+
+@pytest.mark.parametrize("key", [
+    "geheim\nzwei", "geheim\r\nzwei", "geheim\tzwei", "geheim zwei", "geheim\x00", "geheim\x7f",
+    "geheim zwei", "geheim zwei", "geheimä", "geheim€",
+])
+def test_unbrauchbarer_schluessel_gilt_als_nicht_eingerichtet(netz, monkeypatch, key):
+    # Steuerzeichen, Leerraum und Nicht-ASCII liessen http.client den Kopf ablehnen
+    # (ValueError mit dem ganzen Schluessel im Text) - also gar nicht erst senden.
+    monkeypatch.setattr(bewerbung_pult, "KEY", key)
+    assert bewerbung_pult.eingerichtet() is False
+    with pytest.raises(bewerbung_pult.PultFehler) as f:
+        bewerbung_pult.anfrage("GET", "/bewerbungen")
+    assert f.value.art == "nicht_verbunden"
+    assert netz.anfragen == []
+    assert "geheim" not in _sichtbar(f.value)
 
 
 def test_ohne_einrichtung_geht_nichts_ins_netz(netz, monkeypatch):
@@ -185,6 +224,13 @@ def zwei_server():
 
 def test_schluessel_geht_nicht_an_das_ziel_einer_umleitung(zwei_server, monkeypatch):
     erster, zweiter = zwei_server
+    # Hermetisch: kein Proxy aus der Umgebung dazwischen. urlopen merkt sich seinen Opener
+    # (und damit die Proxy-Umgebung vom ersten Aufruf) - ihn zuruecksetzen; monkeypatch stellt ihn her.
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+    monkeypatch.setattr(urllib.request, "_opener", None)
     monkeypatch.setattr(bewerbung_pult, "URL", f"http://127.0.0.1:{erster.server_port}")
     monkeypatch.setattr(bewerbung_pult, "KEY", SCHLUESSEL)
     assert bewerbung_pult.anfrage("GET", "/start") == {"angekommen": True}
@@ -214,6 +260,25 @@ def test_kern_nimmt_adresse_schluessel_und_zeitlimit_vom_aufrufer(netz):
     assert zeitlimit == 8
     pult_http.anfrage("http://anders.test", "k", "GET", "/x", zeitlimit=2.5)
     assert netz.anfragen[-1][1] == 2.5
+
+
+@pytest.mark.parametrize("basis", ["http://anders.test/", "http://anders.test//"])
+def test_kern_ignoriert_schraegstriche_am_ende_der_adresse(netz, basis):
+    pult_http.anfrage(basis, "k", "GET", "/x")
+    assert netz.anfragen[-1][0].full_url == "http://anders.test/api/pult/x"
+
+
+def test_kern_laesst_einen_query_string_im_pfad_zu(netz):
+    pult_http.anfrage("http://anders.test", "k", "GET", "/bewerbungen?status=entschieden&limit=10")
+    assert netz.anfragen[-1][0].full_url == "http://anders.test/api/pult/bewerbungen?status=entschieden&limit=10"
+
+
+@pytest.mark.parametrize("pfad", ["bewerbungen", "", "?status=offen", "/x#anker", "/x?a=1#anker"])
+def test_kern_weist_ungueltige_pfade_ab_ohne_ins_netz_zu_gehen(netz, pfad):
+    with pytest.raises(pult_http.PultFehler) as f:
+        pult_http.anfrage("http://anders.test", "k", "GET", pfad)
+    assert (f.value.art, f.value.grund) == ("unbekannt", "Pfad ungueltig")
+    assert netz.anfragen == []
 
 
 # --- Antworten ----------------------------------------------------------------
@@ -298,15 +363,77 @@ def test_zeitueberschreitung_und_netzfehler_sind_nicht_erreichbar(netz, fehler):
 
 
 @pytest.mark.parametrize("fehler", [
+    http.client.IncompleteRead(b"%PDF-1.7 ab", 4096),
+    http.client.BadStatusLine(""),
+    http.client.RemoteDisconnected("Remote end closed connection without response"),
+    http.client.InvalidURL("nonnumeric port: 'x'"),
+])
+def test_abbruch_im_protokoll_ist_nicht_erreichbar(netz, fehler):
+    # http.client.HTTPException ist KEIN OSError und darf trotzdem nie roh herauskommen:
+    # bei einem POST heisst das fuer den Aufrufer "Ergebnis unklar".
+    netz.fehler = fehler
+    with pytest.raises(bewerbung_pult.PultFehler) as f:
+        bewerbung_pult.anfrage("POST", "/bewerbungen/b-1/freigeben", {"fassung": 1})
+    assert f.value.art == "nicht_erreichbar" and f.value.grund == type(fehler).__name__
+
+
+def test_rumpf_bricht_beim_lesen_ab(netz):
+    netz.antwort = _Antwort(b"", "application/pdf", lesefehler=http.client.IncompleteRead(b"%PDF", 4096))
+    with pytest.raises(bewerbung_pult.PultFehler) as f:
+        bewerbung_pult.anfrage("GET", "/bewerbungen/b-1/anschreiben.pdf?fassung=3", roh=True)
+    assert (f.value.art, f.value.grund) == ("nicht_erreichbar", "IncompleteRead")
+
+
+class _AbbrechenderRumpf(io.BytesIO):
+    def read(self, *a):
+        raise http.client.IncompleteRead(b'{"detail": "schon', 4096)
+
+
+def test_fehlerrumpf_bricht_beim_lesen_ab(netz):
+    netz.fehler = urllib.error.HTTPError(f"{BASIS}/api/pult/x", 409, "x", {}, _AbbrechenderRumpf())
+    with pytest.raises(bewerbung_pult.PultFehler) as f:
+        bewerbung_pult.anfrage("POST", "/bewerbungen/b-1/freigeben", {"fassung": 1})
+    # Der Status 409 ist angekommen, nur der Grund fehlt: abgelehnt mit dem Statuscode.
+    assert (f.value.art, f.value.grund) == ("abgelehnt", "409")
+
+
+@pytest.mark.parametrize("schluessel,teile", [
+    ("GEHEIM-ALPHA\nBETA", ["GEHEIM-ALPHA", "BETA"]),
+    ("GEHEIM-ALPHA\r\nBETA", ["GEHEIM-ALPHA", "BETA"]),
+    ("GEHEIM-ALPHA€BETA", ["GEHEIM-ALPHA", "BETA"]),        # nicht latin-1: UnicodeEncodeError
+])
+def test_kopf_mit_unzulaessigem_schluessel_wird_ein_pultfehler_ohne_schluesseltext(schluessel, teile):
+    # Echtes urlopen gegen einen Host, den es nie gibt: http.client lehnt den Kopf ab (ValueError
+    # mit dem ganzen Schluessel im Text), bevor irgendetwas verbunden wird.
+    with pytest.raises(pult_http.PultFehler) as f:
+        pult_http.anfrage("http://pult.invalid", schluessel, "GET", "/bewerbungen")
+    assert (f.value.art, f.value.grund) == ("unbekannt", "Anfrage ungueltig")
+    assert f.value.__cause__ is None and f.value.__context__ is None
+    sichtbar = _sichtbar(f.value)
+    for teil in [*teile, repr(schluessel)]:
+        assert teil not in sichtbar
+
+
+def test_marketing_client_bekommt_dieselbe_haertung(monkeypatch):
+    monkeypatch.setattr(marketing_pult, "URL", "http://pult.invalid")
+    monkeypatch.setattr(marketing_pult, "KEY", "GEHEIM-ALPHA\nBETA")
+    with pytest.raises(marketing_pult.PultFehler) as f:
+        marketing_pult.anfrage("GET", "/uebersicht")
+    assert (f.value.art, f.value.grund) == ("unbekannt", "Anfrage ungueltig")
+    assert "GEHEIM-ALPHA" not in _sichtbar(f.value)
+
+
+@pytest.mark.parametrize("fehler", [
     _http_fehler(401, "unauthorized"),
     _http_fehler(409, "schon_entschieden"),
     _http_fehler(500, "fehler"),
     TimeoutError("timed out"),
     urllib.error.URLError("refused"),
+    http.client.IncompleteRead(b"%PDF", 4096),
+    http.client.BadStatusLine(""),
 ])
 def test_schluessel_steht_in_keinem_fehler(netz, fehler):
     netz.fehler = fehler
     with pytest.raises(bewerbung_pult.PultFehler) as f:
         bewerbung_pult.anfrage("GET", "/bewerbungen")
-    sichtbar = " ".join([str(f.value), repr(f.value), f.value.art, f.value.grund, repr(f.value.koerper)])
-    assert SCHLUESSEL not in sichtbar
+    assert SCHLUESSEL not in _sichtbar(f.value)
