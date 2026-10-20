@@ -98,7 +98,7 @@ const RUECKFALL = 'dm-sans';
 export function familieFuer(rolle: Rolle, s: Seite): string {
   if (rolle === 'HAND') return SCHRIFT_FAMILIE.caveat;
   const gewaehlt = rolle === 'ANZEIGE' ? s.schriften.anzeige : s.schriften.text;
-  const id = gewaehlt in MAIL_STAPEL ? gewaehlt : RUECKFALL;
+  const id = Object.prototype.hasOwnProperty.call(MAIL_STAPEL, gewaehlt) ? gewaehlt : RUECKFALL;
   if (rolle === 'TEXT') return MAIL_STAPEL[id];
   return SCHRIFT_FAMILIE[id];
 }

@@ -42,6 +42,8 @@ export function knopfSchrift(s: Seite, e: KnopfEbeneS): CSSProperties {
     fontFamily: familieFuer(e.rolle ?? 'TEXT', s),
     fontSize: e.groesse ?? 16,
     fontWeight: e.gewicht ?? 600,
+    lineHeight: 'normal',
+    letterSpacing: 'normal',
   };
 }
 

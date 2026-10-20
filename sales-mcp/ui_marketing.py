@@ -438,8 +438,11 @@ def routen(ui) -> list:
                      f'<button type="submit">Zurückziehen</button></form>')
         elif in_arbeit:
             zeile_status = '<p>Dieser Newsletter wird im Editor bearbeitet.</p>' if im_editor else ""
-            haupt = (f'<form method="post" action="{basis}/einreichen" class="aktion">{csrf}'
-                     f'<button type="submit">Zur Freigabe einreichen</button></form>')
+            if fassungen[0].get("format") == "seite":
+                haupt = '<p class="meta">Einreichen kommt für Collage-Newsletter in einer späteren Stufe.</p>'
+            else:
+                haupt = (f'<form method="post" action="{basis}/einreichen" class="aktion">{csrf}'
+                         f'<button type="submit">Zur Freigabe einreichen</button></form>')
         else:
             zeile_status = f'<p class="meta">{e(status_wort(i, rueck))[:1].upper()}{e(status_wort(i, rueck))[1:]}.' \
                            f'{(" Grund: " + e(i.get("grund"))) if status == "abgelehnt" and i.get("grund") else ""}</p>'

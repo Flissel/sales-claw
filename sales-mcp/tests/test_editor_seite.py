@@ -814,6 +814,39 @@ def test_entwurf_collage_zeigt_editor_ohne_feldformular(angemeldet, pult):
     assert f'action="/marketing/entwurf/{IID}/speichern"' not in s
     assert not any(a[1].endswith("/bilder") for a in pult.aufrufe)
     assert "format=pdf" in s   # Collagen haben ein PDF (Stufe 1 live)
+    assert "Zur Freigabe einreichen" not in s and f'action="/marketing/entwurf/{IID}/einreichen"' not in s
+    assert "Einreichen kommt für Collage-Newsletter in einer späteren Stufe." in s
+
+
+def test_entwurf_bloecke_zeigt_einreichen_knopf(angemeldet, pult):
+    s = angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST).text
+    assert "Zur Freigabe einreichen" in s and "späteren Stufe" not in s
+
+
+def test_vorlagenseite_ohne_vorlagen_zeigt_hinweis_neben_collage(angemeldet, pult, monkeypatch):
+    echt = pult.anfrage
+
+    def anfrage(methode, pfad, daten=None, roh=False, zeitlimit=None):
+        if pfad.startswith("/vorlagen?"):
+            return {"vorlagen": []}
+        return echt(methode, pfad, daten, roh, zeitlimit)
+    monkeypatch.setattr(marketing_pult, "anfrage", anfrage)
+    s = angemeldet.get("/marketing/vorlagen", headers=HOST).text
+    assert 'action="/marketing/neue-collage"' in s and "Keine freigegebenen Vorlagen" in s
+
+
+@pytest.mark.parametrize("antwort", [{}, {"inhalt": None}, {"inhalt": 5}, {"inhalt": ""}, []])
+def test_neue_collage_kaputte_antwort_gibt_fehlerseite(angemeldet, pult, monkeypatch, antwort):
+    echt = pult.anfrage
+
+    def anfrage(methode, pfad, daten=None, roh=False, zeitlimit=None):
+        if pfad == "/inhalte/collage":
+            return antwort
+        return echt(methode, pfad, daten, roh, zeitlimit)
+    monkeypatch.setattr(marketing_pult, "anfrage", anfrage)
+    r = angemeldet.post("/marketing/neue-collage", headers=HOST, follow_redirects=False,
+                        data={"csrf": ui.CSRF_TOKEN, "titel": "T"})
+    assert r.status_code == 503 and "Marketing gerade nicht erreichbar" in r.text
 
 
 # --- Statik ------------------------------------------------------------------

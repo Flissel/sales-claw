@@ -56,6 +56,11 @@ describe('SeiteApp', () => {
     expect([...lagen].sort((a, b) => a - b)).toEqual(lagen);
   });
 
+  it('Knopf erbt keine MUI-Zeilenhöhe/-Laufweite (PDF: normal)', () => {
+    expect(html).toMatch(/data-ebene="knopf1"[^>]*line-height:normal/);
+    expect(html).toMatch(/data-ebene="knopf1"[^>]*letter-spacing:normal/);
+  });
+
   it('zeigt Bilder über die Medien-Adresse, nie als medien:', () => {
     expect(html).toContain('src="/medien/datei/foto-1.png"');
     expect(html).not.toContain('src="medien:');

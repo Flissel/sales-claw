@@ -28,6 +28,13 @@ describe('familieFuer', () => {
     expect(f.startsWith('Montserrat')).toBe(true);
     expect(f.endsWith('Arial, Helvetica, sans-serif')).toBe(true);
   });
+  it('Objekt-Eigenschaften wie constructor sind keine Schrift-IDs', () => {
+    const s = leer();
+    s.schriften.text = 'constructor';
+    s.schriften.anzeige = 'constructor';
+    expect(familieFuer('TEXT', s)).toBe('Arial, Helvetica, sans-serif');
+    expect(familieFuer('ANZEIGE', s)).toBe(familieFuer('ANZEIGE', { ...s, schriften: { anzeige: 'dm-sans', text: 'dm-sans' } }));
+  });
   it('HAND ist Caveat', () => expect(familieFuer('HAND', leer()).startsWith('Caveat')).toBe(true));
   it('unbekannte ID faellt auf dm-sans zurueck', () => {
     const s = leer();

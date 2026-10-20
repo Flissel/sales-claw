@@ -835,11 +835,13 @@ def routen(ui) -> list:
                    f'<label>Titel <input name="titel" required maxlength="{TITEL_MAX_COLLAGE}" '
                    f'placeholder="z. B. Herbst-Collage"></label>'
                    f'<button class="primaer" type="submit">Neue Collage</button></form></div>')
-        karten = collage + "".join(karte(v) for v in d.get("vorlagen") or [])
+        vorlagenkarten = "".join(karte(v) for v in d.get("vorlagen") or [])
+        karten = collage + vorlagenkarten
         rumpf = (marketing_mandant.umschalter(e, ui.CSRF_TOKEN, m, liste, "/marketing/vorlagen")
                  + f'<p class="meta">Eine Vorlage wählen, einen Titel geben - der neue Entwurf öffnet '
                  f'sich im Editor.</p>'
-                 + (f'<div class="galerie">{karten}</div>' if karten else "<p>Keine freigegebenen Vorlagen.</p>"))
+                 + (f'<div class="galerie">{karten}</div>'
+                    + ("" if vorlagenkarten else "<p>Keine freigegebenen Vorlagen.</p>")))
         antwort = ui._seite("Neuer Newsletter aus Vorlage", rumpf)
         antwort.headers["Content-Security-Policy"] = ui._csp_mit_rahmen("'self'")
         return antwort
@@ -901,7 +903,9 @@ def routen(ui) -> list:
                                         {"mandant": m, "titel": titel})
         except marketing_pult.PultFehler as f:
             return _fehler(ui, f)
-        return RedirectResponse(f"/marketing/editor/{urllib.parse.quote(str(r['inhalt']), safe='')}",
+        if not isinstance(r, dict) or not isinstance(r.get("inhalt"), str) or not r["inhalt"]:
+            return _fehler(ui, marketing_pult.PultFehler("nicht_erreichbar", "Unerwartete Antwort"))
+        return RedirectResponse(f"/marketing/editor/{urllib.parse.quote(r['inhalt'], safe='')}",
                                 status_code=303)
 
     async def json_aufruf(request, grenze: int = BODY_MAX):
