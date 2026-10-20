@@ -551,8 +551,11 @@ _KALENDER_ROLLE_PFADE = ("/team/kalender", "/kalender", "/static/kalender",
 # der Marketing-API des Betreibers — dieselbe Huerde wie die Admin-Seiten.
 # "/freigaben/newsletter" (07.10.2026): die Freigabe-Knoepfe fuer Marketing-
 # Inhalte handeln ueber dieselbe Marketing-API - dieselbe Huerde wie /marketing.
+# "/team/struktur" (20.10.2026, Struktur-Graph): zeigt, wer welchen Laden
+# eingeladen hat, und haengt Laeden um - liest und schreibt admin_auftraege,
+# die es nur im Basis-Laden gibt. Dieselbe Huerde wie "Laden anlegen".
 _ADMIN_BASIS_PFADE = ("/team/laden-anlegen", "/team/tailscale-einladen",
-                      "/marketing", "/freigaben/newsletter")
+                      "/marketing", "/freigaben/newsletter", "/team/struktur")
 
 
 # Newsletter-Editor (29.09.2026): die abgeschottete Vorschau (sandbox, eigene
@@ -1383,6 +1386,32 @@ nav.reiter .zahl { font-size: .8rem; color: var(--gedaempft); }
 .zwei .karte.box > h2:first-child { margin-top: 0; }
 .zwei .karte.box h2 + .karte { margin-top: 0; }
 .zwei .termin .zeit { width: auto; white-space: nowrap; }
+/* Struktur-Graph (20.10.2026, /team/struktur): SVG-Baum und Liste. Nur
+   Variablen, deshalb gelten hell und dunkel ohne eigene Regeln. Am Handy
+   steht die Liste oben (E8), der Graph scrollt waagerecht. */
+.struktur { display: flex; flex-direction: column; gap: 1rem; }
+.struktur-graph { overflow-x: auto; background: var(--flaeche);
+                  border: 1px solid var(--linie); border-radius: 12px; }
+.struktur-svg { display: block; max-width: none; }
+.struktur-svg .kante { stroke: var(--linie_stark); stroke-width: 1.5; }
+.struktur-svg circle { fill: var(--aktiv); stroke: var(--akzent); stroke-width: 2; }
+.struktur-svg .wurzel circle { fill: var(--akzent); }
+.struktur-svg .zahl { fill: var(--akzent_text); font: 700 14px var(--schrift_anzeige);
+                      text-anchor: middle; dominant-baseline: central; }
+.struktur-svg .wurzel .zahl { fill: var(--akzent_auf); }
+.struktur-svg .name { fill: var(--schrift); font: 12px var(--schrift_text);
+                      text-anchor: middle; }
+.struktur-liste, .struktur-liste ul { list-style: none; padding-left: 0; margin: 0; }
+.struktur-liste ul { margin-left: 1.2rem; border-left: 2px solid var(--linie);
+                     padding-left: .8rem; }
+.struktur-liste li { min-height: 44px; padding: .3rem 0; }
+.struktur-liste .ebene-zahl { display: inline-flex; align-items: center;
+                              justify-content: center; min-width: 1.6rem;
+                              height: 1.6rem; border-radius: 999px;
+                              background: var(--aktiv); color: var(--akzent_text);
+                              font-weight: 700; font-size: .85rem; }
+@media (max-width: 767px) { .struktur-liste { order: -1; } }
+/* Ende Struktur-Graph */
 @media (max-width: 767px) {
   .zwei { grid-template-columns: minmax(0, 1fr); }
 }
@@ -1718,7 +1747,11 @@ _GRUPPEN = (
     ("Analyse", (("/kontakte", "Kontakte"), ("/empfehlungen", "Empfehlungen"),
                  ("/pipeline", "Pipeline"),
                  ("/ergebnisse", "Ergebnisse"),
-                 ("/posteingang", "Posteingang"))),
+                 ("/posteingang", "Posteingang"),
+                 # Struktur-Graph (Betreiber 20.10.2026: Gruppe Analyse statt
+                 # Admin). Sichtbar bleibt er nur fuer freigeben im
+                 # Basis-Laden - _pfad_erlaubt filtert (_ADMIN_BASIS_PFADE).
+                 ("/team/struktur", "Struktur"))),
     ("Daten", (("/medien", "Medien"),)),
     ("Monitoring", (("/whatsapp", "WhatsApp"),)),
     # Marketing-Pult (29.09.2026): wie Admin nur fuer freigeben im
@@ -8143,6 +8176,7 @@ app = Starlette(routes=[
     *ui_editor.routen(sys.modules[__name__]),
     *ui_marketing.routen(sys.modules[__name__]),
     *ui_plan.routen(sys.modules[__name__]),
+    *ui_struktur.routen(sys.modules[__name__]),
     *ui_reels.routen(sys.modules[__name__]),
     *ui_podcast.routen(sys.modules[__name__]),
     *ui_freigabe_newsletter.routen(sys.modules[__name__]),

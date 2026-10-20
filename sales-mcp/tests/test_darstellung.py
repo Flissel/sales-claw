@@ -98,7 +98,8 @@ WOERTER_ASCII = [
 ]
 
 SEITEN = ["/", "/freigaben", "/einordnung", "/kalender", "/kontakte",
-          "/pipeline", "/ergebnisse", "/posteingang", "/medien", "/whatsapp"]
+          "/pipeline", "/ergebnisse", "/posteingang", "/medien", "/whatsapp",
+          "/team/struktur"]
 
 
 @pytest.mark.parametrize("pfad", SEITEN)

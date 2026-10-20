@@ -13,8 +13,15 @@ erscheinen nirgends; ihre Datenzeilen bleiben unverändert stehen.
 from __future__ import annotations
 
 import html
+from collections.abc import Mapping
 
+from starlette.routing import Route
+
+import server
 import struktur
+
+# E7: ab dieser Länge kürzt das SVG den Namen (Spalte 120 px); voll im <title>.
+_KURZ_AB, _KURZ_AUF = 15, 13
 
 
 def _e(wert) -> str:
@@ -68,3 +75,86 @@ def einlader_wahl(baum: struktur.Baum, gewaehlt: str | None,
                      f'(Ebene {baum.ebene[name]})</option>')
     teile.append("</select>")
     return "".join(teile)
+
+
+def _kurzname(name: str) -> str:
+    return name[:_KURZ_AUF] + "…" if len(name) >= _KURZ_AB else name
+
+
+def svg_zeichnen(baum: struktur.Baum) -> str:
+    """Der Baum als Inline-SVG (E6). Keine Farben, keine style=-Attribute:
+    gestaltet wird nur über Klassen im Stylesheet (`ui._STIL`)."""
+    a = struktur.anordnen(baum)
+    r = struktur.RADIUS
+    teile = [f'<svg class="struktur-svg" xmlns="http://www.w3.org/2000/svg" '
+             f'width="{a.breite}" height="{a.hoehe}" viewBox="0 0 {a.breite} {a.hoehe}" '
+             f'role="img" aria-label="Struktur: wer wen eingeladen hat">']
+    for name in sorted(baum.einlader):
+        x1, y1 = a.punkte[baum.einlader[name]]
+        x2, y2 = a.punkte[name]
+        teile.append(f'<line class="kante" x1="{x1:g}" y1="{y1 + r:g}" '
+                     f'x2="{x2:g}" y2="{y2 - r:g}"/>')
+    x, y = a.punkte[None]
+    teile.append(f'<g class="knoten wurzel"><title>Ich</title>'
+                 f'<circle cx="{x:g}" cy="{y:g}" r="{r}"/>'
+                 f'<text class="zahl" x="{x:g}" y="{y:g}">Ich</text></g>')
+    for name in sorted(baum.ebene, key=lambda n: (baum.ebene[n], n)):
+        n = baum.ebene[name]
+        x, y = a.punkte[name]
+        teile.append(f'<g class="knoten ebene-{n}"><title>{_e(name)} – Ebene {n}</title>'
+                     f'<circle cx="{x:g}" cy="{y:g}" r="{r}"/>'
+                     f'<text class="zahl" x="{x:g}" y="{y:g}">{n}</text>'
+                     f'<text class="name" x="{x:g}" y="{y + r + 16:g}">{_e(_kurzname(name))}</text></g>')
+    teile.append("</svg>")
+    return "".join(teile)
+
+
+def liste_zeichnen(baum: struktur.Baum, csrf: str,
+                   gespeichert: Mapping[str, str | None] | None = None) -> str:
+    """Derselbe Baum als verschachtelte Liste (immer volle Namen).
+
+    `gespeichert` ist die Zuordnung aus `laeden_lesen`; aus ihr kommt bei
+    verwaisten Läden der Name des nicht gefundenen Einladers (E5)."""
+    gespeichert = gespeichert or {}
+
+    def zweig(eltern: str | None) -> str:
+        kinder = baum.kinder.get(eltern, ())
+        if not kinder:
+            return ""
+        teile = ["<ul>"]
+        for name in kinder:
+            teile.append(f'<li><span class="ebene-zahl">{baum.ebene[name]}</span> '
+                         f'<b>{_e(name)}</b>')
+            if name in baum.verwaist:
+                alt = gespeichert.get(name)
+                wer = f"Einlader „{_e(alt)}“" if alt else "Einlader"
+                teile.append(f' <span class="meta">{wer} nicht gefunden – hängt '
+                             f'vorläufig direkt unter dir.</span>')
+            teile.append(zweig(name))
+            teile.append("</li>")
+        teile.append("</ul>")
+        return "".join(teile)
+
+    return f'<ul class="struktur-liste"><li class="wurzel">Ich{zweig(None)}</li></ul>'
+
+
+def routen(ui) -> list:
+    """Die Seite /team/struktur. `ui` wird hereingereicht, nie importiert."""
+
+    @ui._gesichert_seite
+    async def seite(request):
+        with server.pool.connection() as conn:
+            laeden = laeden_lesen(conn)
+        baum = struktur.baum_bauen(laeden)
+        if not laeden:
+            rumpf = ('<p class="leer-hinweis">Noch keine Mitglieder. Sobald du einen '
+                     'Laden anlegst, erscheint er hier. '
+                     '<a href="/team/laden-anlegen">Laden anlegen</a></p>')
+        else:
+            rumpf = ('<p class="meta">Wer wen eingeladen hat. Ebene 1 = von dir '
+                     f'eingeladen, höchstens {struktur.MAX_EBENE} Ebenen.</p>'
+                     f'<div class="struktur"><div class="struktur-graph">{svg_zeichnen(baum)}</div>'
+                     f'{liste_zeichnen(baum, ui.CSRF_TOKEN, laeden)}</div>')
+        return ui._seite("Struktur", rumpf)
+
+    return [Route("/team/struktur", seite)]
