@@ -409,7 +409,7 @@ def routen(ui) -> list:
                 + (f'<p class="meta">Was er nicht kann:</p>{liste(nicht, "nicht")}' if nicht else "")
                 + "</details>")
 
-    def aenderung_html(a: dict) -> str:
+    def aenderung_html(a: dict, d: dict) -> str:
         """Karte "Geändert: Ton, Wörter" einer direkt uebernommenen Textaenderung (E10.5). Nur fuer direkt UND
         angenommen; ist das direkte Annehmen gescheitert (offen), zeigt die Runde die Vorschlagskarte."""
         z = a.get("aenderung")
@@ -431,6 +431,8 @@ def routen(ui) -> list:
         knopf = (f'<form method="post" action="/marketing/marke/rueckgaengig" class="aktion">{csrf_feld()}'
                  f'<input type="hidden" name="vorschlag" value="{e(vid)}">'
                  '<button type="submit">Rückgängig</button></form>') if z.get("rueckgaengig_moeglich") and vid else ""
+        if knopf and (d.get("uebernahme") or d.get("laeuft")):    # der Agent arbeitet: erst danach (Review)
+            knopf = '<p class="meta">Rückgängig geht, sobald der Agent fertig ist.</p>'
         if z.get("rueckgaengig_gemacht") is True:      # die API kennt einen Gegenvorschlag zu dieser Aenderung
             knopf = '<p class="meta">Rückgängig gemacht</p>'
         return (f'<div class="diff-karte"><p><b>Geändert{": " + e(namen) if namen else ""}</b></p>'
@@ -452,7 +454,10 @@ def routen(ui) -> list:
         umschalter = " &middot; ".join(
             (f'<b>{t}</b>' if k == fmt else f'<a href="{e(adresse("chat", alle, k, "#vorschlag"))}">{t}</a>')
             for k, t in FORMATE.items())
-        return (f'<div class="vorschlag-karte" id="vorschlag"><h3>Vorschlag</h3>'
+        # Ein offener Gegenvorschlag (API: ist_rueckgaengig) ist das Rueckgaengig einer Aenderung, die noch
+        # uebernommen wird (z. B. nach gescheiterter Direktannahme) - sonst gleiche Karte.
+        titel = "Rückgängig wird übernommen" if v.get("ist_rueckgaengig") is True else "Vorschlag"
+        return (f'<div class="vorschlag-karte" id="vorschlag"><h3>{titel}</h3>'
                 f'<p class="meta">Vorschau als {umschalter}</p>'
                 f'<div class="pult"><div class="pult-links"><div class="marke-profil">'
                 f'<div class="farben-zeile">{farben}</div>{schrift}{logo}{abschnitte}</div>'
@@ -496,7 +501,7 @@ def routen(ui) -> list:
         agent = (f'<div class="blase-agent"><span class="blase-kopf">Agent{uhr}</span>{inhalt}{hinweise}{schritte}</div>'
                  if (inhalt or hinweise or schritte) else "")
         z = a.get("aenderung")
-        rest = aenderung_html(a)
+        rest = aenderung_html(a, d)
         if not rest and not karte and isinstance(z, dict):      # verworfen/ersetzt auch bei direkt (Review)
             wort = _VORSCHLAG_STATUS.get(str(z.get("status") or ""))
             rest = f'<p class="systemzeile">{wort}</p>' if wort else ""

@@ -1179,3 +1179,31 @@ def test_fehlerseite_fuehrt_zurueck_in_den_chat(angemeldet, pult):
     assert r.status_code == 422 and '<a href="/marketing/layouts?reiter=chat#ende">Zur Marke</a>' in r.text
     r = angemeldet.post("/marketing/marke/senden", headers=HOST, data={"csrf": ui.CSRF_TOKEN, "nachricht": " "})
     assert r.status_code == 422 and '<a href="/marketing/layouts?reiter=chat#ende">Zur Marke</a>' in r.text
+
+
+# --- Abschluss-Review --------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("schalter", [{"uebernahme": "laeuft"}, {"laeuft": True}])
+def test_rueckgaengig_knopf_versteckt_solange_der_agent_arbeitet(angemeldet, pult, schalter):
+    """Minor 1: waehrend einer Uebernahme oder Chat-Runde kein Rueckgaengig-Knopf, nur ein Hinweis."""
+    pult.zustand["auftraege"] = [_runde(1, vorschlag=VID_A, aenderung=_aenderung())]
+    pult.zustand.update(schalter)
+    s = rumpf(seite(angemeldet))
+    assert "Geändert: Ton" in s
+    assert "Rückgängig</button>" not in s and 'action="/marketing/marke/rueckgaengig"' not in s
+    assert '<p class="meta">Rückgängig geht, sobald der Agent fertig ist.</p>' in s
+    pult.zustand.update({"uebernahme": None, "laeuft": False})
+    s = rumpf(seite(angemeldet))
+    assert "Rückgängig</button>" in s and "sobald der Agent fertig ist" not in s
+
+
+def test_offener_gegenvorschlag_heisst_rueckgaengig_wird_uebernommen(angemeldet, pult):
+    pult.zustand["vorschlag"] = {**VORSCHLAG, "id": VID_A, "ist_rueckgaengig": True}
+    s = rumpf(seite(angemeldet))
+    assert "<h3>Rückgängig wird übernommen</h3>" in s and "<h3>Vorschlag</h3>" not in s
+    assert 'action="/marketing/marke/uebernehmen"' in s and 'action="/marketing/marke/verwerfen"' in s
+    for wert in (False, None, "ja"):
+        pult.zustand["vorschlag"] = {**VORSCHLAG, "id": VID_A, "ist_rueckgaengig": wert}
+        s = rumpf(seite(angemeldet))
+        assert "<h3>Vorschlag</h3>" in s and "Rückgängig wird übernommen" not in s, wert
