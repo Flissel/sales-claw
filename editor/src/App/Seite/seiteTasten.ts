@@ -44,11 +44,15 @@ export function seiteTaste(ev: SeiteTasteEreignis, el: Ziel, z: Zustand): void {
   z.ebeneAendern(id, { x: e.x + dx, y: e.y + dy }, 'gleiten');
 }
 
-export function useSeiteTasten(z: SeiteZustand): void {
+// aktiv = false (Arbeitsplatz am Handy versteckt): keine Taste wirkt auf die unsichtbare Seite.
+export function useSeiteTasten(z: SeiteZustand, aktiv = true): void {
   const zRef = useRef(z);
   zRef.current = z;
+  const aktivRef = useRef(aktiv);
+  aktivRef.current = aktiv;
   useEffect(() => {
     const taste = (ev: KeyboardEvent) => {
+      if (!aktivRef.current) return;
       const el = ev.target instanceof HTMLElement && ev.target !== document.body ? ev.target : null;
       seiteTaste(ev, el, zRef.current);
     };

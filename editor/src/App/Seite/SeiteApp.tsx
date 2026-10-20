@@ -36,6 +36,8 @@ export default function SeiteApp({ start }: { start: Start }) {
   const handy = useMediaQuery(HANDY_GRENZE);
   const thema = useMemo(gestaltungThema, []);
   const seite = start.seite;
+  // Basis hier oben: am Handy zeigt die Vorschau die zuletzt gespeicherte Fassung.
+  const [basis, setBasis] = useState(start.basis_fassung);
   if (!seite) {
     return (
       <Typography sx={{ p: 4 }}>
@@ -43,17 +45,22 @@ export default function SeiteApp({ start }: { start: Start }) {
       </Typography>
     );
   }
-  if (handy) return <HandyAnsicht start={start} basis={start.basis_fassung} betreff={start.betreff} ohneAssistent />;
+  // Der Arbeitsplatz bleibt auch am Handy montiert (nur versteckt): ein schmaleres Fenster
+  // verwirft keine ungespeicherten Änderungen.
   return (
-    <ThemeProvider theme={thema}>
-      <Arbeitsplatz start={start} anfang={seite} />
-    </ThemeProvider>
+    <>
+      {handy && <HandyAnsicht start={start} basis={basis} betreff={start.betreff} ohneAssistent />}
+      <ThemeProvider theme={thema}>
+        <Arbeitsplatz start={start} anfang={seite} basis={basis} setBasis={setBasis} versteckt={handy} />
+      </ThemeProvider>
+    </>
   );
 }
 
-function Arbeitsplatz({ start, anfang }: { start: Start; anfang: Seite }) {
+type ArbeitsplatzProps = { start: Start; anfang: Seite; basis: number; setBasis: (b: number) => void; versteckt: boolean };
+
+function Arbeitsplatz({ start, anfang, basis, setBasis, versteckt }: ArbeitsplatzProps) {
   const z = useSeite(anfang);
-  const [basis, setBasis] = useState(start.basis_fassung);
   const [betreff, setBetreff] = useState(start.betreff ?? '');
   const [vorschautext, setVorschautext] = useState(start.vorschautext ?? '');
   const [gesichert, setGesichert] = useState({ betreff: start.betreff ?? '', vorschautext: start.vorschautext ?? '' });
@@ -67,7 +74,7 @@ function Arbeitsplatz({ start, anfang }: { start: Start; anfang: Seite }) {
   const [konflikt, setKonflikt] = useState(false);
   const ungespeichert = z.geaendert || betreff !== gesichert.betreff || vorschautext !== gesichert.vorschautext;
 
-  useSeiteTasten(z);
+  useSeiteTasten(z, !versteckt);
 
   // Tab schliessen oder weggehen mit ungespeicherten Änderungen: der Browser fragt nach.
   const ungespeichertRef = useRef(ungespeichert);
@@ -118,7 +125,7 @@ function Arbeitsplatz({ start, anfang }: { start: Start; anfang: Seite }) {
       tabIndex={-1}
       aria-label="Collage bearbeiten"
       sx={{
-        position: 'fixed', inset: 0, display: 'grid', outline: 'none',
+        position: 'fixed', inset: 0, display: versteckt ? 'none' : 'grid', outline: 'none',
         gridTemplateColumns: `${LINKS_BREITE}px minmax(0, 1fr) ${RECHTS_BREITE}px`,
         gridTemplateRows: `${KOPF_HOEHE}px minmax(0, 1fr)`,
         bgcolor: FARBE.geruest, color: FARBE.text, fontFamily: UI_SCHRIFT,

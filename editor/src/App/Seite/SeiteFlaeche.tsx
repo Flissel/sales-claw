@@ -28,7 +28,8 @@ const GRIFFE: Array<[Griff, number, number, string]> = [
   ['so', 1, 1, 'nwse-resize'], ['s', 0.5, 1, 'ns-resize'], ['sw', 0, 1, 'nesw-resize'], ['w', 0, 0.5, 'ew-resize'],
 ];
 
-const zehntel = (v: number) => Math.round(v * 10) / 10;
+// Ganze Einheiten: die Zahlenfelder rechts zeigen ganze Zahlen und runden sonst schon beim Verlassen.
+const ganz = Math.round;
 // Im Browser vor dem Zeichnen messen; beim Server-Rendern (Tests) nichts tun und nicht warnen.
 const useMessEffekt = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
@@ -54,7 +55,7 @@ export default function SeiteFlaeche({ z }: { z: SeiteZustand }) {
   useMessEffekt(() => {
     const el = buehne.current;
     if (!el) return;
-    const messen = () => setZoom(Math.min(2, Math.max(0.25, (el.clientWidth - 2 * RAND) / s.breite)));
+    const messen = () => setZoom(Math.min(1.5, Math.max(0.25, (el.clientWidth - 2 * RAND) / s.breite)));
     const ro = new ResizeObserver(messen);
     ro.observe(el);
     messen();
@@ -101,14 +102,17 @@ export default function SeiteFlaeche({ z }: { z: SeiteZustand }) {
     if (zg.art === 'schieben') {
       const ziel = { ...zg.start, x: zg.start.x + dx, y: zg.start.y + dy };
       const r = ev.altKey ? { x: ziel.x, y: ziel.y, linien: [] } : einrastenSeite(ziel, z.aktuell().ebenen, s.hoehe, 6 / zoom);
-      z.ebeneAendern(zg.id, { x: zehntel(r.x), y: zehntel(r.y) }, 'live');
+      // Eingerastete Achse exakt lassen (Kante an Kante), sonst auf ganze Einheiten.
+      const x = r.linien.some((l) => l.art === 'senkrecht') ? r.x : ganz(r.x);
+      const y = r.linien.some((l) => l.art === 'waagrecht') ? r.y : ganz(r.y);
+      z.ebeneAendern(zg.id, { x, y }, 'live');
       setLinien(r.linien);
     } else if (zg.art === 'griff') {
       const n = griffZiehen(zg.start, zg.griff, dx, dy, ev.shiftKey);
-      z.ebeneAendern(zg.id, { x: zehntel(n.x), y: zehntel(n.y), breite: zehntel(n.breite), hoehe: zehntel(n.hoehe) }, 'live');
+      z.ebeneAendern(zg.id, { x: ganz(n.x), y: ganz(n.y), breite: ganz(n.breite), hoehe: ganz(n.hoehe) }, 'live');
     } else {
       const p = seitenPunkt(ev);
-      z.ebeneAendern(zg.id, { drehung: zehntel(drehenAmGriff(zg.start, p.x, p.y, ev.shiftKey).drehung ?? 0) }, 'live');
+      z.ebeneAendern(zg.id, { drehung: ganz(drehenAmGriff(zg.start, p.x, p.y, ev.shiftKey).drehung ?? 0) }, 'live');
     }
   };
 
@@ -137,7 +141,7 @@ export default function SeiteFlaeche({ z }: { z: SeiteZustand }) {
         buehne.current?.focus({ preventScroll: true });
         z.waehlen(null);
       }}
-      sx={{ flex: 1, minHeight: 0, overflow: 'auto', outline: 'none', bgcolor: FARBE.geruest, userSelect: 'none' }}
+      sx={{ flex: 1, minHeight: 0, overflow: 'auto', scrollbarGutter: 'stable', outline: 'none', bgcolor: FARBE.geruest, userSelect: 'none' }}
     >
       <div style={{ position: 'relative', width: s.breite * zoom, height: s.hoehe * zoom, margin: `${RAND}px auto`, boxShadow: FLAECHE_SCHATTEN }}>
         <div ref={blatt} style={{ position: 'absolute', left: 0, top: 0, width: s.breite, height: s.hoehe, transform: `scale(${zoom})`, transformOrigin: '0 0' }}>

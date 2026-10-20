@@ -56,7 +56,7 @@ export default function SeiteEbenen({ z }: { z: SeiteZustand }) {
         <Typography component="h3" sx={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase', color: FARBE.gedaempft, mb: 1 }}>
           Hinzufügen
         </Typography>
-        <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1 }}>
+        <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 1 }}>
           <Button variant="outlined" color="inherit" disabled={voll} onClick={() => neu('text')}>Text</Button>
           <Button variant="outlined" color="inherit" disabled={voll} onClick={(ev) => setAnker(ev.currentTarget)}>Bild</Button>
           <Button variant="outlined" color="inherit" disabled={voll} onClick={() => neu('form')}>Form</Button>

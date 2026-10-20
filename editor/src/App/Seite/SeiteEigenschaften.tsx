@@ -15,7 +15,7 @@ import type { EbenenTeil } from './seiteAenderungen';
 import { seitenFarben } from './seiteStil';
 import type { SeitenArt, SeiteZustand } from './useSeite';
 
-export const ROLLEN_HINWEIS = 'Anrede ({vorname}) und Links gehen nur im Fließtext (Rolle Text) ohne Drehung.';
+export const ROLLEN_HINWEIS = 'Anrede ({vorname}) und Links gehen nur in der Rolle Fließtext ohne Drehung.';
 const ROLLEN: Array<[Rolle, string]> = [['TEXT', 'Fließtext'], ['ANZEIGE', 'Anzeige (Markenschrift)'], ['HAND', 'Handschrift']];
 
 type Aendern = (teil: EbenenTeil, art?: SeitenArt) => void;
@@ -40,7 +40,7 @@ function Farbe({ label, wert, farben, onChange }: { label: string; wert: string;
 function Lage({ e, aendern }: { e: SeitenEbene; aendern: Aendern }) {
   return (
     <Abschnitt titel="Lage">
-      <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1 }}>
+      <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 1 }}>
         <Zahl label="X" wert={e.x} min={-600} max={1200} onChange={(v, art) => aendern({ x: v }, art)} />
         <Zahl label="Y" wert={e.y} min={-1000} max={7000} onChange={(v, art) => aendern({ y: v }, art)} />
         <Zahl label="B" wert={e.breite} min={1} max={1200} onChange={(v, art) => aendern({ breite: v }, art)} />
@@ -126,7 +126,7 @@ function TextFelder({ e, aendern, farben }: { e: TextEbeneS; aendern: Aendern; f
         </Select>
       </Zeile>
       <Typography sx={{ fontSize: 11, color: FARBE.gedaempft }}>{ROLLEN_HINWEIS}</Typography>
-      <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1 }}>
+      <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 1 }}>
         <Zahl label="Gr" einheit="px" wert={e.groesse} min={10} max={160} onChange={(v, art) => aendern({ groesse: v }, art)} />
         <Zahl label="Gw" wert={e.gewicht ?? 400} min={300} max={900} schritt={100} onChange={(v, art) => aendern({ gewicht: v }, art)} />
         <Zahl label="Zl" wert={e.zeilenabstand ?? 1.3} min={0.8} max={2.5} schritt={0.05} onChange={(v, art) => aendern({ zeilenabstand: v }, art)} />
@@ -161,13 +161,18 @@ function KnopfFelder({ e, aendern, farben }: { e: KnopfEbeneS; aendern: Aendern;
           <MenuItem value="ANZEIGE">Anzeige (Markenschrift)</MenuItem>
         </Select>
       </Zeile>
-      <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1 }}>
+      <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 1 }}>
         <Zahl label="Gr" einheit="px" wert={e.groesse ?? 16} min={10} max={40} onChange={(v, art) => aendern({ groesse: v }, art)} />
         <Zahl label="Gw" wert={e.gewicht ?? 600} min={300} max={900} schritt={100} onChange={(v, art) => aendern({ gewicht: v }, art)} />
       </Box>
       <Zeile label="Rundung"><Zahl label="◜" einheit="px" wert={e.rundung ?? 6} min={0} max={60} onChange={(v, art) => aendern({ rundung: v }, art)} /></Zeile>
     </Abschnitt>
   );
+}
+
+// Die Spalte ist 320 breit: das Raster in jedem Abschnitt darf nicht mit langen Hinweisen mitwachsen.
+function Spalte({ children }: { children: React.ReactNode }) {
+  return <Box sx={{ '& section > div:last-child': { gridTemplateColumns: 'minmax(0, 1fr)' } }}>{children}</Box>;
 }
 
 type Props = { z: SeiteZustand; vorschautext: string; setVorschautext: (v: string) => void };
@@ -178,7 +183,7 @@ export default function SeiteEigenschaften({ z, vorschautext, setVorschautext }:
   const farben: Farben = { laden: [], benutzt: seitenFarben(s) };
   if (!e) {
     return (
-      <>
+      <Spalte>
         <Abschnitt titel="Seite">
           <Zeile label="Höhe"><Zahl label="H" einheit="px" wert={s.hoehe} min={HOEHE_MIN} max={HOEHE_MAX} onChange={(v, art) => z.hoeheSetzen(v, art)} /></Zeile>
           <Farbe label="Hintergrund" wert={s.hintergrund.farbe} farben={farben} onChange={(v, art) => z.hintergrundSetzen(v, art)} />
@@ -187,17 +192,17 @@ export default function SeiteEigenschaften({ z, vorschautext, setVorschautext }:
           <Mehrzeilig label="Vorschautext" wert={vorschautext} max={1000} zeilen={1} onChange={setVorschautext} />
           <Typography sx={{ fontSize: 12, color: FARBE.gedaempft }}>Eine Ebene anklicken, um sie zu bearbeiten.</Typography>
         </Abschnitt>
-      </>
+      </Spalte>
     );
   }
   const aendern: Aendern = (teil, art = 'sofort') => z.ebeneAendern(e.id, teil, art);
   return (
-    <>
+    <Spalte>
       {e.art === 'bild' && <BildFelder e={e} aendern={aendern} farben={farben} />}
       {e.art === 'form' && <FormFelder e={e} aendern={aendern} farben={farben} />}
       {e.art === 'text' && <TextFelder e={e} aendern={aendern} farben={farben} />}
       {e.art === 'knopf' && <KnopfFelder e={e} aendern={aendern} farben={farben} />}
       <Lage e={e} aendern={aendern} />
-    </>
+    </Spalte>
   );
 }
