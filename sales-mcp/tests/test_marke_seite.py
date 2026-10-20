@@ -2,6 +2,7 @@
 Der Client zur Marketing-API wird gefaelscht (wie in test_marketing_pult.py)."""
 import asyncio
 import os
+import re
 import urllib.parse
 from datetime import datetime, timedelta, timezone
 
@@ -32,6 +33,9 @@ NAMEN = ("Kurz gesagt", "Wer wir sind", "Menschen", "Zielgruppe", "Ton", "Wörte
 FAEHIG = {"kann": ["Webseiten lesen, die du nennst oder die ich finde", "im Web suchen (mit Quellen)"],
           "nicht": ["keine Beiträge veröffentlichen oder Mails senden"]}
 ZIEL = "/marketing/layouts?reiter=chat#ende"
+# Review-Fix 1: der Refresh zielt immer auf eine NEUE Adresse (stand=<Sekunden>) - ein Ziel, das sich nur im
+# Anker von der Seite unterscheidet, ist in Firefox/Safari nur ein Sprung ohne Neuladen.
+REFRESH_CHAT = re.compile(r'<meta http-equiv="refresh" content="5;url=/marketing/layouts\?reiter=chat&amp;stand=\d+#ende">')
 PROFIL = "/marketing/layouts?reiter=profil"
 
 
@@ -186,11 +190,11 @@ def test_firma_aus_cookie(angemeldet, pult):
 def test_refresh_nur_bei_laufendem_auftrag(angemeldet, pult):
     assert 'http-equiv="refresh"' not in seite(angemeldet).text
     pult.zustand["laeuft"] = True
-    assert f'<meta http-equiv="refresh" content="5;url={ZIEL}">' in seite(angemeldet).text
+    assert REFRESH_CHAT.search(seite(angemeldet).text)
     pult.zustand["laeuft"] = False
     pult.zustand["uebernahme"] = "laeuft"
     s = seite(angemeldet).text
-    assert f'<meta http-equiv="refresh" content="5;url={ZIEL}">' in s and "Wird übernommen …" in s
+    assert REFRESH_CHAT.search(s) and "Wird übernommen …" in s
 
 
 def test_kein_refresh_ohne_uebernahme_und_ohne_lauf_mit_vorschlag(angemeldet, pult):
@@ -360,7 +364,7 @@ def test_uebernehmen_konflikt_zeigt_meldung(angemeldet, pult):
                         data={"csrf": ui.CSRF_TOKEN, "vorschlag": VID, "bestaetigt": "ja"})
     assert r.status_code == 422
     assert "Inzwischen gibt es ein neueres Profil – bitte neu laden" in r.text
-    assert 'href="/marketing/layouts"' in r.text
+    assert 'href="/marketing/layouts?reiter=chat#ende"' in r.text
 
 
 @pytest.mark.parametrize("pfad", ["uebernehmen", "verwerfen"])
@@ -855,10 +859,10 @@ def test_r7_nur_wissen_laeuft_kein_refresh_chat_formular_offen(angemeldet, pult)
 def test_r7_refresh_bleibt_fuer_chat_bearbeitung_und_uebernahme(angemeldet, pult):
     pult.zustand["wissen"] = {**WISSEN_FERTIG, "status": "in_arbeit"}
     pult.zustand["laeuft"] = True
-    assert f'<meta http-equiv="refresh" content="5;url={ZIEL}">' in seite(angemeldet).text
+    assert REFRESH_CHAT.search(seite(angemeldet).text)
     pult.zustand["laeuft"] = False
     pult.zustand["uebernahme"] = "laeuft"
-    assert f'<meta http-equiv="refresh" content="5;url={ZIEL}">' in seite(angemeldet).text
+    assert REFRESH_CHAT.search(seite(angemeldet).text)
 
 
 ECHT = {"werte": {"akzent": "#123456", "zweitfarbe": "#3b2f2f", "grund": "#faf7f2", "text": "#2b2724",
@@ -1088,7 +1092,11 @@ def test_bearbeitung_als_systemzeile(angemeldet, pult):
 
 def test_refresh_mit_anker(angemeldet, pult):
     pult.zustand["laeuft"] = True
-    assert 'content="5;url=/marketing/layouts?reiter=chat#ende"' in seite(angemeldet).text
+    assert REFRESH_CHAT.search(seite(angemeldet).text)
+    s = seite(angemeldet, "/marketing/layouts?reiter=chat&alle=1").text
+    assert re.search(r'content="5;url=/marketing/layouts\?reiter=chat&amp;alle=1&amp;stand=\d+#ende"', s)
+    p = seite(angemeldet, PROFIL).text
+    assert re.search(r'content="5;url=/marketing/layouts\?reiter=profil&amp;stand=\d+"', p)
     pult.zustand["laeuft"] = False
     pult.zustand["wissen"] = {**WISSEN_FERTIG, "status": "in_arbeit"}
     assert 'http-equiv="refresh"' not in seite(angemeldet).text
@@ -1139,3 +1147,35 @@ def test_laufende_runde_zeigt_denkt_nach_in_der_runde(angemeldet, pult):
     s = rumpf(seite(angemeldet))
     assert s.count("Denkt nach …") == 1
     assert s.index("Frage Nummer 2") < s.index("Denkt nach …") < s.index('id="ende"')
+
+
+# --- Review-Fixes Task 5 -----------------------------------------------------------------------------
+
+
+def test_rueckgaengig_gemacht_zeigt_das_und_keinen_knopf(angemeldet, pult):
+    pult.zustand["auftraege"] = [_runde(1, vorschlag=VID_A, aenderung=_aenderung(
+        rueckgaengig_moeglich=False, rueckgaengig_gemacht=True))]
+    s = rumpf(seite(angemeldet))
+    assert "Geändert: Ton" in s and "Rückgängig gemacht" in s
+    assert "/marketing/marke/rueckgaengig" not in s and "Rückgängig</button>" not in s
+    pult.zustand["auftraege"] = [_runde(1, vorschlag=VID_A, aenderung=_aenderung())]
+    assert "Rückgängig gemacht" not in rumpf(seite(angemeldet))
+
+
+@pytest.mark.parametrize("direkt", [True, False])
+@pytest.mark.parametrize("status,wort", [("verworfen", "Vorschlag verworfen"),
+                                          ("ersetzt", "Vorschlag durch einen neueren ersetzt")])
+def test_verworfen_oder_ersetzt_zeigt_die_statuszeile(angemeldet, pult, direkt, status, wort):
+    pult.zustand["auftraege"] = [_runde(1, vorschlag=VID_A, aenderung=_aenderung(
+        status=status, direkt=direkt, rueckgaengig_moeglich=False))]
+    s = rumpf(seite(angemeldet))
+    assert f'<p class="systemzeile">{wort}</p>' in s and "Geändert:" not in s
+
+
+def test_fehlerseite_fuehrt_zurueck_in_den_chat(angemeldet, pult):
+    pult.fehler = marketing_pult.PultFehler("abgelehnt", "Der Assistent arbeitet gerade")
+    pult.fehler_pfad = "/marke/chat"
+    r = angemeldet.post("/marketing/marke/senden", headers=HOST, data={"csrf": ui.CSRF_TOKEN, "nachricht": "x"})
+    assert r.status_code == 422 and '<a href="/marketing/layouts?reiter=chat#ende">Zur Marke</a>' in r.text
+    r = angemeldet.post("/marketing/marke/senden", headers=HOST, data={"csrf": ui.CSRF_TOKEN, "nachricht": " "})
+    assert r.status_code == 422 and '<a href="/marketing/layouts?reiter=chat#ende">Zur Marke</a>' in r.text

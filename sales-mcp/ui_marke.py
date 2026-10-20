@@ -20,6 +20,7 @@ der Editor-Anhang (ui_editor.anhang_speichern), gehoeren aber der gewaehlten Fir
 from __future__ import annotations
 
 import re
+import time
 import urllib.parse
 import uuid
 from datetime import datetime, timezone
@@ -105,13 +106,16 @@ def _texte(wert) -> list[str]:
     return [str(x) for x in wert if str(x).strip()] if isinstance(wert, list) else []
 
 
-def adresse(reiter: str = "chat", alle: bool = False, fmt: str | None = None, anker: str = "") -> str:
-    """Seitenadresse aus geprueften Werten (Reiter, alle, Vorschau-Format)."""
+def adresse(reiter: str = "chat", alle: bool = False, fmt: str | None = None, anker: str = "",
+            stand: int | None = None) -> str:
+    """Seitenadresse aus geprueften Werten (Reiter, alle, Vorschau-Format, stand)."""
     q = {"reiter": reiter}
     if alle:
         q["alle"] = "1"
     if fmt:
         q["format"] = fmt
+    if stand is not None:
+        q["stand"] = str(int(stand))
     return f"{SEITE}?{urllib.parse.urlencode(q)}{anker}"
 
 
@@ -132,12 +136,12 @@ def routen(ui) -> list:
             return ui._fehlerseite(503, "Marketing nicht verbunden",
                                    "Die Verbindung zur Marketing-API ist nicht eingerichtet oder der Schlüssel stimmt nicht.")
         if f.art == "abgelehnt":
-            return ui._fehlerseite(422, "Nicht möglich", f'{e(f.grund)}<p><a href="{SEITE}">Zur Marke</a></p>')
+            return ui._fehlerseite(422, "Nicht möglich", f'{e(f.grund)}<p><a href="{ZIEL}">Zur Marke</a></p>')
         return ui._fehlerseite(503, "Marketing gerade nicht erreichbar",
                                "Die Marketing-API antwortet nicht. Sales läuft normal weiter.")
 
     def abgewiesen(status: int, text: str):
-        return ui._fehlerseite(status, "Nicht möglich", f'{e(text)}<p><a href="{SEITE}">Zur Marke</a></p>')
+        return ui._fehlerseite(status, "Nicht möglich", f'{e(text)}<p><a href="{ZIEL}">Zur Marke</a></p>')
 
     def csrf_feld() -> str:
         return f'<input type="hidden" name="csrf" value="{e(ui.CSRF_TOKEN)}">'
@@ -427,6 +431,8 @@ def routen(ui) -> list:
         knopf = (f'<form method="post" action="/marketing/marke/rueckgaengig" class="aktion">{csrf_feld()}'
                  f'<input type="hidden" name="vorschlag" value="{e(vid)}">'
                  '<button type="submit">Rückgängig</button></form>') if z.get("rueckgaengig_moeglich") and vid else ""
+        if z.get("rueckgaengig_gemacht") is True:      # die API kennt einen Gegenvorschlag zu dieser Aenderung
+            knopf = '<p class="meta">Rückgängig gemacht</p>'
         return (f'<div class="diff-karte"><p><b>Geändert{": " + e(namen) if namen else ""}</b></p>'
                 f'{einzeln}{knopf}</div>')
 
@@ -491,7 +497,7 @@ def routen(ui) -> list:
                  if (inhalt or hinweise or schritte) else "")
         z = a.get("aenderung")
         rest = aenderung_html(a)
-        if not rest and not karte and isinstance(z, dict) and z.get("direkt") is not True:
+        if not rest and not karte and isinstance(z, dict):      # verworfen/ersetzt auch bei direkt (Review)
             wort = _VORSCHLAG_STATUS.get(str(z.get("status") or ""))
             rest = f'<p class="systemzeile">{wort}</p>' if wort else ""
         return f'<div class="chat-runde">{kopf}{agent}{rest}{karte}</div>'
@@ -576,13 +582,16 @@ def routen(ui) -> list:
             return antwort
         nav = ui_muster.reiter(list(REITER), reiter,
                                lambda k: adresse(k, anker="#ende") if k == "chat" else adresse(k))
+        # Der Refresh zielt immer auf eine NEUE Adresse (stand=<Sekunden>): unterscheidet sich das Ziel nur im Anker,
+        # ist es nach HTML-Spec nur ein Sprung ohne Neuladen (Firefox/Safari, Review Task 5).
+        stand = int(time.time())
         if reiter == "profil":
             rumpf = (kopf + nav + '<p class="meta">Das Markenprofil bestimmt Farben, Schriften, Logo und Texte neuer '
                      'Newsletter. Ändern geht im Chat oder mit „Profil bearbeiten“.</p>' + profil_html(d))
-            ziel = adresse("profil")
+            ziel = adresse("profil", stand=stand)
         else:
             rumpf = kopf + nav + chat_html(d, alle, fmt) + eingabe_html(d) + wissen_zeile_html(d) + ENDE
-            ziel = adresse("chat", alle, fmt if fmt != "mail" else None, "#ende")
+            ziel = adresse("chat", alle, fmt if fmt != "mail" else None, "#ende", stand)
         # Neu laden nur fuer Chat, Bearbeitung und Uebernahme; ein Wissens-Lauf nie (Ruling R7)
         arbeitet = bool(d.get("laeuft") or d.get("uebernahme"))
         antwort = ui._seite("Marke", rumpf, refresh=(REFRESH_S, ziel) if arbeitet else None)
