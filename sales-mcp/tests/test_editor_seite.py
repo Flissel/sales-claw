@@ -814,8 +814,37 @@ def test_entwurf_collage_zeigt_editor_ohne_feldformular(angemeldet, pult):
     assert f'action="/marketing/entwurf/{IID}/speichern"' not in s
     assert not any(a[1].endswith("/bilder") for a in pult.aufrufe)
     assert "format=pdf" in s   # Collagen haben ein PDF (Stufe 1 live)
-    assert "Zur Freigabe einreichen" not in s and f'action="/marketing/entwurf/{IID}/einreichen"' not in s
-    assert "Einreichen kommt für Collage-Newsletter in einer späteren Stufe." in s
+
+
+def test_entwurf_collage_zeigt_einreichen(angemeldet, pult):
+    # Stufe 4: Collagen werden wie Bloecke eingereicht; der alte Hinweis ist weg.
+    pult.format = "seite"
+    s = angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST).text
+    assert "Zur Freigabe einreichen" in s and f'action="/marketing/entwurf/{IID}/einreichen"' in s
+    assert "späteren Stufe" not in s
+
+
+def test_entwurf_collage_rahmen_zeigt_die_seite_mail_nur_auf_wunsch(angemeldet, pult):
+    # Der Rahmen zeigt die billige Seite (kein Chromium); die echte Mail erst nach Klick auf "Mail-Vorschau".
+    pult.format = "seite"
+    s = angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST).text
+    assert f'src="/marketing/entwurf/{IID}/vorschau?fassung=2&amp;format=seite"' in s
+    assert "format=mail\"></iframe>" not in s and "format=handy\"></iframe>" not in s
+    assert f'href="/marketing/entwurf/{IID}?fassung=2&amp;format=mail">Mail-Vorschau</a>' in s
+    s = angemeldet.get(f"/marketing/entwurf/{IID}?format=mail", headers=HOST).text
+    assert f'src="/marketing/entwurf/{IID}/vorschau?fassung=2&amp;format=mail"' in s
+
+
+def test_entwurf_bloecke_kennt_kein_format_seite(angemeldet, pult):
+    s = angemeldet.get(f"/marketing/entwurf/{IID}?format=seite", headers=HOST).text
+    assert "format=seite" not in s
+    assert f'src="/marketing/entwurf/{IID}/vorschau?fassung=2&amp;format=mail"' in s
+
+
+def test_entwurf_collage_eingereicht_zeigt_zurueckziehen(angemeldet, pult):
+    pult.format, pult.status, pult.eingereicht_am = "seite", "eingereicht", "2026-10-20T08:00:00+00:00"
+    s = angemeldet.get(f"/marketing/entwurf/{IID}", headers=HOST).text
+    assert f'action="/marketing/entwurf/{IID}/zurueckziehen"' in s and "Im Editor ansehen" in s
 
 
 def test_entwurf_bloecke_zeigt_einreichen_knopf(angemeldet, pult):

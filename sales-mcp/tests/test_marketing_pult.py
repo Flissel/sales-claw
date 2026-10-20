@@ -52,6 +52,7 @@ class Falsch:
         self.rueckmeldungen = []           # neueste zuerst: {text, von, am, fassung, erledigt}
         self.extra = {}                    # weitere Felder am Inhalt (freigegebene_fassung, ...)
         self.inhalte = None                # gesetzt: Zeilen der Entwurfsliste
+        self.format = None                 # gesetzt: Format der neuesten Fassung (z. B. "seite")
 
     def anfrage(self, methode, pfad, daten=None, roh=False):
         self.aufrufe.append((methode, pfad, daten))
@@ -87,6 +88,8 @@ class Falsch:
             return {"auftrag": "a1"} if methode == "POST" else self.bilder
         if pfad == f"/inhalte/{IID}":
             neu_extra = {"format": "bloecke", "bloecke": self.bloecke} if self.bloecke else {}
+            if self.format:
+                neu_extra = {**neu_extra, "format": self.format}
             return {"inhalt": {"id": IID, "art": "newsletter", "titel": "Early Access",
                                "status": self.status, "mandant": self.inhalt_mandant,
                                "freigegebene_fassung": None, "entschieden_von": None,
@@ -189,7 +192,8 @@ def test_reiterzahl_zaehlt_nur_newsletter(angemeldet, pult):
 def test_uebersicht_ist_galerie_mit_vorschau(angemeldet, pult):
     r = angemeldet.get("/marketing", headers=HOST); s = r.text
     assert '<iframe class="layout-bild" sandbox tabindex="-1" loading="lazy"' in s
-    assert f'src="/marketing/entwurf/{IID}/vorschau?fassung=2&amp;format=mail"' in s
+    # Die Liste nennt kein Format: die Karte fragt "karte" - sales-ui waehlt Seite (Collage) oder Mail.
+    assert f'src="/marketing/entwurf/{IID}/vorschau?fassung=2&amp;format=karte"' in s
     assert "Early Access" in s and f'href="/marketing/editor/{IID}"' in s
     assert "frame-src 'self'" in r.headers["content-security-policy"]
     assert ("GET", "/inhalte?mandant=vibemind&art=newsletter", None) in pult.aufrufe
@@ -1165,3 +1169,53 @@ def test_loeschen_ohne_csrf_403(angemeldet, pult):
         r = angemeldet.post(url, headers=HOST, data={"iid": [ID_A], "bestaetigt": "ja"})
         assert r.status_code == 403
     assert _loesch_posts(pult) == []
+
+
+# --- Freie Fläche Stufe 4: Collagen in Galerie und Vorschau -----------------------
+
+@pytest.mark.parametrize("fmt, erwartet", [("seite", "seite"), ("bloecke", "mail"), ("felder", "mail")])
+def test_galerie_karte_nimmt_format_aus_der_liste(angemeldet, pult, fmt, erwartet):
+    pult.inhalte = [{**_nl(1, "entwurf"), "format": fmt}]
+    s = angemeldet.get("/marketing", headers=HOST).text
+    assert f'vorschau?fassung=1&amp;format={erwartet}"' in s
+
+
+def _vorschau_pfade(pult):
+    return [a[1] for a in pult.aufrufe if "/vorschau?" in a[1]]
+
+
+def test_vorschau_karte_collage_holt_die_seite(angemeldet, pult):
+    pult.format = "seite"
+    r = angemeldet.get(f"/marketing/entwurf/{IID}/vorschau?fassung=2&format=karte", headers=HOST)
+    assert r.status_code == 200 and b"Vorschau" in r.content
+    assert r.headers["x-frame-options"] == "SAMEORIGIN"
+    pfade = _vorschau_pfade(pult)
+    assert len(pfade) == 1 and "format=seite" in pfade[0]
+
+
+def test_vorschau_karte_bloecke_holt_die_mail(angemeldet, pult):
+    pult.bloecke = {"root": {"type": "EmailLayout", "data": {"childrenIds": []}}}
+    angemeldet.get(f"/marketing/entwurf/{IID}/vorschau?fassung=2&format=karte", headers=HOST)
+    pfade = _vorschau_pfade(pult)
+    assert len(pfade) == 1 and "format=mail" in pfade[0]
+
+
+def test_vorschau_seite_wird_durchgereicht(angemeldet, pult):
+    r = angemeldet.get(f"/marketing/entwurf/{IID}/vorschau?fassung=2&format=seite", headers=HOST)
+    assert r.status_code == 200 and "format=seite" in _vorschau_pfade(pult)[0]
+
+
+def test_vorschau_fehler_steht_im_rahmen(angemeldet, pult):
+    # Eine Collage-Mail kann scheitern (422 mit Grund): der Grund steht im Rahmen, nicht ein leerer Rahmen.
+    pult.fehler = marketing_pult.PultFehler("abgelehnt", "Die Anrede steht in einem Bildbereich – <frei>")
+    r = angemeldet.get(f"/marketing/entwurf/{IID}/vorschau?fassung=2&format=mail", headers=HOST)
+    assert r.status_code == 422 and r.headers["x-frame-options"] == "SAMEORIGIN"
+    assert "frame-ancestors 'self'" in r.headers["content-security-policy"]
+    assert "Die Anrede steht in einem Bildbereich – &lt;frei&gt;" in r.text
+
+
+def test_vorschau_api_weg_steht_im_rahmen(angemeldet, pult):
+    pult.fehler = marketing_pult.PultFehler("weg", "x")
+    r = angemeldet.get(f"/marketing/entwurf/{IID}/vorschau?fassung=2&format=handy", headers=HOST)
+    assert r.status_code == 503 and r.headers["x-frame-options"] == "SAMEORIGIN"
+    assert "Marketing gerade nicht erreichbar" in r.text

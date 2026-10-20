@@ -1,12 +1,12 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Start } from '../../pult';
-import { pultStore } from '../../pultZustand';
+import { LIEGT_ZUR_FREIGABE, pultStarten, pultStore } from '../../pultZustand';
 import type { Seite } from '../../seite';
 
-import SeiteApp, { ARBEITET_HINWEIS, NEUE_FASSUNG_HINWEIS } from './SeiteApp';
+import SeiteApp, { ARBEITET_HINWEIS, NEUE_FASSUNG_HINWEIS, seiteEinreichen } from './SeiteApp';
 import SeitenChat from './SeitenChat';
 
 const IID = 'b12c46b9-8f87-412b-b2e7-7215b354a75b';
@@ -92,11 +92,10 @@ describe('SeiteApp', () => {
     expect(html).not.toContain('href="https://example.com"');
   });
 
-  it('zeigt den Assistenten (Chat) statt des Hinweises, aber kein Einreichen', () => {
+  it('zeigt den Assistenten (Chat); ohne einreichen_url kein Einreichen', () => {
     expect(html).toContain('Nachricht an den Assistenten');
     expect(html).not.toContain('Der Assistent kommt');
     expect(html).not.toContain(ARBEITET_HINWEIS);
-    expect(html).not.toContain('einreichen');
     expect(html).not.toContain('Einreichen');
   });
 
@@ -199,5 +198,71 @@ describe('SeiteApp mit Assistent', () => {
     expect(NEUE_FASSUNG_HINWEIS).toBe('Neue Fassung vom Assistenten – bitte speichern und neu laden');
     pultStore.setState({ fassungWartet: 5 });
     expect(rendern(<SeiteApp start={seitenStart()} />)).toContain(NEUE_FASSUNG_HINWEIS);
+  });
+});
+
+// Freie Fläche Stufe 4: Einreichen aus dem Collage-Editor; eingereicht = nur lesend.
+describe('SeiteApp einreichen und nur lesend', () => {
+  const mitUrls = (teil: Partial<Start> = {}): Start => ({
+    ...seitenStart(),
+    einreichen_url: `/marketing/editor/${IID}/einreichen`,
+    zurueckziehen_url: `/marketing/editor/${IID}/zurueckziehen`,
+    ...teil,
+  });
+  const knopf = (h: string, text: string) => {
+    const i = h.indexOf(text);
+    const start = h.lastIndexOf('<button', i);
+    return h.slice(start, h.indexOf('>', start) + 1);
+  };
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    pultStore.setState({ start: null, nurLesen: false, chat: null, ungespeichert: false });
+  });
+
+  it('Entwurf mit einreichen_url: Einreichen-Knopf in der Leiste, kein Hinweis', () => {
+    pultStarten(mitUrls({ status: 'entwurf' }));
+    const h = rendern(<SeiteApp start={mitUrls({ status: 'entwurf' })} />);
+    expect(h).toContain('>Einreichen</button>');
+    expect(knopf(h, '>Einreichen</button>')).not.toContain('disabled');
+    expect(h).not.toContain(LIEGT_ZUR_FREIGABE);
+    expect(h).toContain('aria-label="Seitenhöhe"');
+  });
+
+  it('eingereicht: Speichern und Rückgängig gesperrt, keine Griffe, Hinweis und Zurückziehen, kein Einreichen', () => {
+    expect(LIEGT_ZUR_FREIGABE).toBe('Liegt zur Freigabe – erst zurückziehen');
+    const s = mitUrls({ status: 'eingereicht', eingereicht_am: '2026-10-20T08:00:00+00:00' });
+    pultStarten(s);
+    const h = rendern(<SeiteApp start={s} />);
+    expect(knopf(h, 'Speichern</button>')).toContain('disabled');
+    expect(knopf(h, 'aria-label="Rückgängig"')).toContain('disabled');
+    expect(h).not.toContain('aria-label="Seitenhöhe"');
+    expect(h).not.toContain('aria-label="Größe');
+    expect(h).not.toContain('aria-label="Drehen"');
+    expect(h).toContain(LIEGT_ZUR_FREIGABE);
+    expect(h).toContain('>Zurückziehen</button>');
+    expect(h).not.toContain('>Einreichen</button>');
+    // Betreff gesperrt, die Seite bleibt sichtbar
+    const i = h.indexOf('aria-label="Betreff"');
+    expect(h.slice(h.lastIndexOf('<input', i), h.indexOf('>', i) + 1)).toContain('disabled');
+    expect(h).toContain('data-ebene="bild1"');
+  });
+
+  it('Einreichen ruft einreichenAuftrag: der 422-Grund wird zur Fehlermeldung', async () => {
+    pultStarten(mitUrls({ status: 'entwurf' }));
+    pultStore.setState({ chat: null });
+    const grund = 'Die Anrede steht in einem Bildbereich – sie muss in frei stehendem Fließtext stehen';
+    const f = vi.fn(async () => new Response(JSON.stringify({ grund }), { status: 422, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', f);
+    expect(await seiteEinreichen()).toEqual({ art: 'error', text: grund });
+    expect((f.mock.calls[0] as unknown as [string])[0]).toBe(`/marketing/editor/${IID}/einreichen`);
+    expect(pultStore.getState().nurLesen).toBe(false);
+  });
+
+  it('Einreichen erfolgreich: Meldung und nur lesend', async () => {
+    pultStarten(mitUrls({ status: 'entwurf' }));
+    pultStore.setState({ chat: null });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ status: 'eingereicht', fassung: 3 }), { status: 200, headers: { 'Content-Type': 'application/json' } })));
+    expect(await seiteEinreichen()).toEqual({ art: 'success', text: 'Zur Freigabe eingereicht' });
+    expect(pultStore.getState().nurLesen).toBe(true);
   });
 });

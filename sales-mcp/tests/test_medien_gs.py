@@ -45,3 +45,20 @@ def test_pruefe_liefert_entwurfsbild_weiter_aus(ordner):
                                   "xgs-0123456789ab.jpg"])
 def test_nur_die_exakte_form_ist_entwurf(name):
     assert not medien.ENTWURF_MUSTER.match(name)
+
+
+# Bildstuecke der Collage-Mail (Freie Flaeche Stufe 4): ms-<inhalt 8 hex>-<fassung>-<nr>.jpg im
+# Erzeugt-Ordner. Der Versand liest sie wie die Export-Bilder; die Vorschau zeigt sie.
+MS = "ms-0c80e26a-2-01.jpg"
+
+
+def test_collage_stueck_ist_anzeigbar(ordner):
+    (ordner / MS).write_bytes(JPEG)
+    assert medien.pruefe_anzeige(MS) == (MS, None)
+
+
+def test_newsletter_bilder_liest_collage_stueck_aus_media_erzeugt(ordner):
+    import mail_dispatch
+    (ordner / MS).write_bytes(JPEG)
+    bilder, fehler = mail_dispatch.newsletter_bilder([{"name": MS, "cid": MS}])
+    assert fehler is None and bilder == [(MS, JPEG, "jpeg")]

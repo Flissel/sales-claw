@@ -40,7 +40,8 @@ function EbenenInhalt({ e }: { e: SeitenEbene }) {
   return null;
 }
 
-// gesperrt (der Assistent arbeitet, die Flaeche zeigt evtl. seinen Zwischenstand): ein laufendes Ziehen endet,
+// gesperrt (der Assistent arbeitet, die Flaeche zeigt evtl. seinen Zwischenstand, oder der Newsletter liegt zur
+// Freigabe): ein laufendes Ziehen endet,
 // ein offenes Textfeld schliesst ohne zu schreiben - nichts aus der Anzeige landet in der echten Seite.
 export default function SeiteFlaeche({ z, gesperrt = false }: { z: SeiteZustand; gesperrt?: boolean }) {
   const { seite: s, auswahl } = z;
@@ -236,22 +237,24 @@ export default function SeiteFlaeche({ z, gesperrt = false }: { z: SeiteZustand;
             />
           )}
         </div>
-        {/* Seitenhoehe: Griff am unteren Rand */}
-        <Box
-          role="slider"
-          aria-label="Seitenhöhe"
-          aria-valuenow={s.hoehe}
-          aria-valuemin={400}
-          aria-valuemax={6000}
-          title="Seitenhöhe ziehen"
-          {...zugGriffe}
-          onPointerDown={(ev: React.PointerEvent<HTMLElement>) => fangen(ev, { art: 'hoehe', px: ev.clientX, py: ev.clientY, startHoehe: s.hoehe, bewegt: false })}
-          sx={{
-            position: 'absolute', left: '50%', bottom: -14, transform: 'translateX(-50%)', width: 64, height: 10, borderRadius: 5,
-            bgcolor: FARBE.linie, border: `1px solid ${FARBE.gedaempft}`, cursor: 'ns-resize', touchAction: 'none',
-            '&:hover': { bgcolor: FARBE.akzent },
-          }}
-        />
+        {/* Seitenhoehe: Griff am unteren Rand (gesperrt - Assistent oder zur Freigabe - kein Griff) */}
+        {!gesperrt && (
+          <Box
+            role="slider"
+            aria-label="Seitenhöhe"
+            aria-valuenow={s.hoehe}
+            aria-valuemin={400}
+            aria-valuemax={6000}
+            title="Seitenhöhe ziehen"
+            {...zugGriffe}
+            onPointerDown={(ev: React.PointerEvent<HTMLElement>) => fangen(ev, { art: 'hoehe', px: ev.clientX, py: ev.clientY, startHoehe: s.hoehe, bewegt: false })}
+            sx={{
+              position: 'absolute', left: '50%', bottom: -14, transform: 'translateX(-50%)', width: 64, height: 10, borderRadius: 5,
+              bgcolor: FARBE.linie, border: `1px solid ${FARBE.gedaempft}`, cursor: 'ns-resize', touchAction: 'none',
+              '&:hover': { bgcolor: FARBE.akzent },
+            }}
+          />
+        )}
       </div>
     </Box>
   );

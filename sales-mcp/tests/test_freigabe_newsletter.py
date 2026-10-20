@@ -430,13 +430,22 @@ def test_m2_feldformat_ohne_export_knopf(pult):
     assert "Export offen" not in felder[:felder.index("</div>")]
 
 
-def test_freigabe_collage_ohne_versand(pult):
+def test_freigabe_collage_mit_versand_ohne_export(pult):
+    # Stufe 4: freigegebene Collagen gehen an Kontakte (Mail-Fassung); einen Export gibt es nur fuer Bloecke.
     pult.entschieden = [_verlauf(id="c", titel="Collage", format="seite", export={"auftrag_status": None})]
     s = _seite().text
     zeile = s[s.index("Collage</b>"):]
     zeile = zeile[:zeile.index("</div>")]
-    assert "Export anstoßen" not in zeile and "An Kontakte senden" not in zeile
+    assert "An Kontakte senden" in zeile and 'href="/freigaben/newsletter/c/versand"' in zeile
+    assert "Export anstoßen" not in zeile and "Export offen" not in zeile
     assert "/freigaben/newsletter/c/export-nachholen" not in s
+
+
+def test_freigabe_felder_ohne_versand(pult):
+    pult.entschieden = [_verlauf(id="f", titel="Felder", format="felder", export={"auftrag_status": None})]
+    s = _seite().text
+    zeile = s[s.index("Felder</b>"):]
+    assert "An Kontakte senden" not in zeile[:zeile.index("</div>")]
 
 
 def test_m7b_crlf_zaehlt_als_ein_zeichen(pult):

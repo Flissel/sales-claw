@@ -1,18 +1,21 @@
 // Collage-Editor (Freie Fläche Stufe 2, Spec 4.6): Leiste oben, Ebenen links, Seite in der Mitte,
-// Eigenschaften rechts, darunter der Assistent (Stufe 3). Kein Einreichen für Collagen (die API sperrt es).
+// Eigenschaften rechts, darunter der Assistent (Stufe 3). Einreichen wie im Block-Editor (Stufe 4): die API
+// erzeugt dabei die Mail-Fassung und nennt Gründe, wenn es nicht geht (Anrede im Bild, zu groß, Bild fehlt).
 // Am Handy (unter HANDY_GRENZE) die Vorschau der gespeicherten Fassung und der Assistent.
 // Während einer Runde zeigt die Fläche den Zwischenstand nur zur Anzeige; Bearbeiten ist gesperrt.
+// Eingereicht (nurLesen): alles nur lesend - Fläche ohne Griffe, Ebenen, Eigenschaften, Tasten, Speichern
+// und Chat gesperrt -, bis der Newsletter zurückgezogen ist.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
-import { ArrowBackRounded, PictureAsPdfOutlined, RedoRounded, SaveOutlined, UndoRounded } from '@mui/icons-material';
+import { ArrowBackRounded, PictureAsPdfOutlined, RedoRounded, SaveOutlined, SendOutlined, UndoRounded } from '@mui/icons-material';
 import {
   Alert, Box, Button, CircularProgress, Dialog, DialogActions, DialogContent, DialogContentText, DialogTitle,
   IconButton, Snackbar, TextField, ThemeProvider, Tooltip, Typography, useMediaQuery,
 } from '@mui/material';
 
 import { HANDY_GRENZE } from '../../handy';
-import { fehlerText, type Start } from '../../pult';
-import { chipsAbgleichen, editorEinstecken, pultStore } from '../../pultZustand';
+import { fehlerText, zurueckziehen, type Start } from '../../pult';
+import { chipsAbgleichen, editorEinstecken, einreichenAuftrag, LIEGT_ZUR_FREIGABE, pultStore } from '../../pultZustand';
 import { speicherGrund, type Seite } from '../../seite';
 import { seitenSicherung, type SeitenStand } from '../../seiteChat';
 import { seiteSpeichern } from '../../seitePult';
@@ -33,6 +36,13 @@ export const NEUE_FASSUNG_HINWEIS = 'Neue Fassung vom Assistenten – bitte spei
 export const KONFLIKT_TITEL = 'Inzwischen gibt es eine neuere Fassung';
 
 type Meldung = { art: 'success' | 'error'; text: string } | null;
+
+// Einreichen aus der Leiste (wie PultLeiste): Ungespeichertes speichert der eingesteckte Editor vorher;
+// der Grund der API (422) wird zur Fehlermeldung.
+export async function seiteEinreichen(): Promise<Meldung> {
+  const grund = await einreichenAuftrag();
+  return grund === null ? { art: 'success', text: 'Zur Freigabe eingereicht' } : { art: 'error', text: grund };
+}
 
 export function pdfAdresse(vorschauUrl: string, basis: number): string {
   const trenner = vorschauUrl.includes('?') ? '&' : '?';
@@ -83,17 +93,23 @@ function Arbeitsplatz({ start, anfang, basis, setBasis, versteckt }: Arbeitsplat
     setMeldungOffen(m !== null);
   };
   const [konflikt, setKonflikt] = useState(false);
+  const [reicht, setReicht] = useState(false);
+  const [zieht, setZieht] = useState(false);
   const ungespeichert = z.geaendert || betreff !== gesichert.betreff || vorschautext !== gesichert.vorschautext;
   // Assistent: läuft eine Runde, ist Bearbeiten gesperrt; die Fläche zeigt den Zwischenstand nur an.
   const arbeitet = useAgentArbeitet();
   const zwischenstand = pultStore((p) => p.seitenZwischenstand);
   const fassungWartet = pultStore((p) => p.fassungWartet);
-  const gesperrt = arbeitet !== null || zwischenstand !== null;
+  // Liegt zur Freigabe: nur lesend, bis zurückgezogen (die API lehnt Speichern dann ohnehin ab).
+  const nurLesen = pultStore((p) => p.nurLesen);
+  const agentSperre = arbeitet !== null || zwischenstand !== null;
+  const gesperrt = agentSperre || nurLesen;
   const ebenenRef = useInert<HTMLDivElement>(gesperrt);
-  const mitteRef = useInert<HTMLDivElement>(gesperrt);
+  // Die Mitte bleibt bei nurLesen bedienbar zum Scrollen; die Fläche selbst ist gesperrt (keine Auswahl, keine Griffe).
+  const mitteRef = useInert<HTMLDivElement>(agentSperre);
   const eigenschaftenRef = useInert<HTMLDivElement>(gesperrt);
-  const anzeige = zwischenstand ? { ...z, seite: zwischenstand, auswahl: null } : z;
-  const gewaehlt = z.auswahl === null ? null : (z.seite.ebenen.find((e) => e.id === z.auswahl) ?? null);
+  const anzeige = zwischenstand ? { ...z, seite: zwischenstand, auswahl: null } : nurLesen ? { ...z, auswahl: null } : z;
+  const gewaehlt = nurLesen || z.auswahl === null ? null : (z.seite.ebenen.find((e) => e.id === z.auswahl) ?? null);
 
   useSeiteTasten(z, !versteckt && !gesperrt);
 
@@ -174,6 +190,26 @@ function Arbeitsplatz({ start, anfang, basis, setBasis, versteckt }: Arbeitsplat
     }
   };
 
+  const einreichenKlick = async () => {
+    if (reicht || laeuft || gesperrt) return;
+    setReicht(true);
+    const m = await seiteEinreichen();
+    setReicht(false);
+    setMeldung(m);
+  };
+
+  const zurueckziehenKlick = async () => {
+    setZieht(true);
+    const r = await zurueckziehen(start);
+    if (r.ok) {
+      verlassenErlaubt.current = true;
+      window.location.reload();
+      return;
+    }
+    setZieht(false);
+    setMeldung({ art: 'error', text: r.grund });
+  };
+
   return (
     <Box
       data-tasten
@@ -200,7 +236,7 @@ function Arbeitsplatz({ start, anfang, basis, setBasis, versteckt }: Arbeitsplat
           sx={{ flex: '1 1 240px', minWidth: 120, maxWidth: 480 }}
         />
         <Typography sx={{ flex: '1 1 auto', minWidth: 0, fontSize: 12, color: FARBE.gedaempft }} noWrap>
-          {gesperrt ? ARBEITET_HINWEIS : fassungWartet !== null ? NEUE_FASSUNG_HINWEIS : ''}
+          {nurLesen ? LIEGT_ZUR_FREIGABE : agentSperre ? ARBEITET_HINWEIS : fassungWartet !== null ? NEUE_FASSUNG_HINWEIS : ''}
         </Typography>
         <Tooltip title="Rückgängig (Strg+Z)">
           <span>
@@ -240,6 +276,33 @@ function Arbeitsplatz({ start, anfang, basis, setBasis, versteckt }: Arbeitsplat
         >
           Speichern
         </Button>
+        {start.einreichen_url && !nurLesen && (
+          <Tooltip title={agentSperre ? 'Gesperrt, bis der Assistent fertig ist' : 'Zur Freigabe einreichen'}>
+            <span>
+              <Button
+                variant="outlined"
+                color="success"
+                disabled={reicht || laeuft || gesperrt}
+                onClick={() => void einreichenKlick()}
+                startIcon={reicht ? <CircularProgress size={14} color="inherit" /> : <SendOutlined sx={{ fontSize: 16 }} />}
+                sx={{ flex: 'none', mr: 1, whiteSpace: 'nowrap' }}
+              >
+                {reicht ? 'Reicht ein …' : 'Einreichen'}
+              </Button>
+            </span>
+          </Tooltip>
+        )}
+        {nurLesen && start.zurueckziehen_url && (
+          <Button
+            variant="outlined"
+            color="inherit"
+            disabled={zieht}
+            onClick={() => void zurueckziehenKlick()}
+            sx={{ flex: 'none', mr: 1, whiteSpace: 'nowrap' }}
+          >
+            {zieht ? 'Zieht zurück …' : 'Zurückziehen'}
+          </Button>
+        )}
       </Box>
 
       <Box ref={ebenenRef} sx={{ bgcolor: FARBE.panel, borderRight: `1px solid ${FARBE.linie}`, minHeight: 0, overflow: 'auto' }}>
@@ -251,7 +314,7 @@ function Arbeitsplatz({ start, anfang, basis, setBasis, versteckt }: Arbeitsplat
       </Box>
 
       {/* Während einer Runde: Ebenen und Fläche gesperrt (absolut - nimmt keine Rasterzelle) */}
-      {gesperrt && <SperrSchicht text={ARBEITET_HINWEIS} lage={{ position: 'absolute', top: KOPF_HOEHE, left: 0, right: RECHTS_BREITE, bottom: 0, zIndex: 2 }} />}
+      {agentSperre && <SperrSchicht text={ARBEITET_HINWEIS} lage={{ position: 'absolute', top: KOPF_HOEHE, left: 0, right: RECHTS_BREITE, bottom: 0, zIndex: 2 }} />}
 
       {/* Rechts: Eigenschaften, darunter der Assistent */}
       <Box component="aside" aria-label="Eigenschaften" sx={{ bgcolor: FARBE.panel, borderLeft: `1px solid ${FARBE.linie}`, minHeight: 0, display: 'flex', flexDirection: 'column' }}>

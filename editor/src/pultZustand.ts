@@ -154,7 +154,11 @@ export async function einreichenAuftrag(): Promise<string | null> {
   // Dasselbe Kriterium wie die Sperre in der Oberflaeche (Agent oder Newsletter-Export).
   if (sperrText(chat) !== null) return 'Der Assistent arbeitet gerade';
   if (hinweisOffen) return HINWEIS_OFFEN;
-  if (ungespeichert) {
+  if (eingesteckt) {
+    // Collage-Editor: er weiss selbst, ob etwas ungespeichert ist, und speichert es (Konflikt = Dialog).
+    const grund = await eingesteckt.sichern();
+    if (grund !== null) return grund;
+  } else if (ungespeichert) {
     const e = await newsletterSichern(false);
     if (!e.ok) return fehlerText(e.grund);
   }

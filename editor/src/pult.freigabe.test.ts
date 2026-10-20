@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { resetDocument } from './documents/editor/EditorContext';
 import type { TEditorConfiguration } from './documents/editor/core';
 import { einreichen, fehlerText, speichern, Start, zurueckziehen } from './pult';
-import { einreichenAuftrag, pultStarten, pultStore } from './pultZustand';
+import { editorEinstecken, einreichenAuftrag, pultStarten, pultStore } from './pultZustand';
 
 const DOK = {
   root: { type: 'EmailLayout', data: { childrenIds: [] } },
@@ -151,5 +151,41 @@ describe('Speichern bei eingereicht (Review Focus 5)', () => {
     expect(fehlerText(e.ok ? '' : e.grund)).toBe(
       'Nicht gespeichert: Liegt zur Freigabe – erst zurückziehen. Deine Änderungen sind noch da.',
     );
+  });
+});
+
+describe('einreichenAuftrag im Collage-Editor (eingesteckter Editor)', () => {
+  afterEach(() => pultStore.setState({ ungespeichert: false }));
+
+  it('speichert über den eingesteckten Editor; scheitert das, wird nicht eingereicht', async () => {
+    pultStarten(start({ format: 'seite' } as Partial<Start>));
+    pultStore.setState({ chat: null, ungespeichert: true });
+    const sichern = vi.fn(async () => 'Inzwischen gibt es eine neuere Fassung');
+    const ab = editorEinstecken({ sichern, dokument: () => ({}) });
+    const f = vi.fn();
+    vi.stubGlobal('fetch', f);
+    try {
+      expect(await einreichenAuftrag()).toBe('Inzwischen gibt es eine neuere Fassung');
+      expect(sichern).toHaveBeenCalledTimes(1);
+      expect(f).not.toHaveBeenCalled();
+      expect(pultStore.getState().nurLesen).toBe(false);
+    } finally {
+      ab();
+    }
+  });
+
+  it('nach dem Sichern: Einreichen geht an einreichen_url (nicht an den Block-Speicherweg)', async () => {
+    pultStarten(start({ format: 'seite' } as Partial<Start>));
+    pultStore.setState({ chat: null, ungespeichert: true });
+    const ab = editorEinstecken({ sichern: vi.fn(async () => null), dokument: () => ({}) });
+    const f = vi.fn(async () => antwort(200, { status: 'eingereicht', fassung: 3 }));
+    vi.stubGlobal('fetch', f);
+    try {
+      expect(await einreichenAuftrag()).toBeNull();
+      expect(f.mock.calls.map((c) => (c as unknown as [string])[0])).toEqual(['/e']);
+      expect(pultStore.getState().nurLesen).toBe(true);
+    } finally {
+      ab();
+    }
   });
 });

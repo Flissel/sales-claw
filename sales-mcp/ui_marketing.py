@@ -4,8 +4,13 @@ marketing_pult; diese Datei kennt keine Marketing-Tabelle.
 
 Wie der Rest von sales-ui: kein JavaScript (die Seiten-CSP sagt
 `default-src 'none'`). Die Wahl Mail/Handy ist deshalb ein normaler Verweis,
-der die Seite mit `format=` neu laedt; das PDF wird verlinkt, nicht
-eingebettet (wie auf der Medienseite).
+der die Seite mit `format=` neu laedt; das PDF (Collagen, Felder) wird
+verlinkt, nicht eingebettet (wie auf der Medienseite).
+
+Collagen (Freie Flaeche Stufe 4): mail/handy sind die echte Mail - die API
+erzeugt sie bei Bedarf (Chromium, langsam, kann mit Grund scheitern). Rahmen,
+die von selbst laden (Galeriekarten, Entwurfsseite ohne Wahl), zeigen deshalb
+die billige Seite (`format=seite`); die Mail nur auf Klick ("Mail-Vorschau").
 
 Marke (Task 6): ui_marke.py - Profil, Chat, Vorschlag; die alten Layout-Pfade
 leiten dorthin.
@@ -98,6 +103,11 @@ BILD_STATUS = {"offen": "wartet (PC muss laufen)", "in_arbeit": "wird erzeugt", 
                "fehler": "fehlgeschlagen", "verworfen": "verworfen"}
 # Was im Rahmen gezeigt wird; das PDF bekommt einen Verweis (s. oben).
 RAHMEN_FORMATE = {"mail": "Mail", "handy": "Handy"}
+# Collagen: die Seite (Vorgabe, billig) und die echte Mail nur auf Klick.
+RAHMEN_FORMATE_COLLAGE = {"seite": "Seite", "mail": "Mail-Vorschau", "handy": "Handy"}
+# Was die Vorschau-Route annimmt. "karte" (Galerie): sales-ui waehlt selbst - Seite fuer eine
+# Collage, sonst Mail -, weil die Liste der API das Format nicht nennt.
+VORSCHAU_FORMATE = ("mail", "handy", "pdf", "seite", "karte")
 
 # Die Vorschau ist fremdes, gerendertes HTML: `sandbox` nimmt ihm Skripte,
 # Formulare und die eigene Herkunft. `frame-ancestors 'self'` erlaubt genau
@@ -159,9 +169,11 @@ def _newsletter_karte(e, i: dict) -> str:
     iid = urllib.parse.quote(str(i.get("id") or ""), safe="")
     titel = str(i.get("titel") or "")
     n = _ganzzahl(i.get("fassungen")) or 0
+    # Collagen nie als echte Mail (Chromium je Karte): die Seite. Ohne Format in der Liste waehlt die Route.
+    fmt = {"seite": "seite", "bloecke": "mail", "felder": "mail"}.get(str(i.get("format") or ""), "karte")
     rahmen = (f'<iframe class="layout-bild" sandbox tabindex="-1" loading="lazy" '
               f'title="Vorschau {e(titel)}" '
-              f'src="{e(f"/marketing/entwurf/{iid}/vorschau?fassung={n}&format=mail")}"></iframe>'
+              f'src="{e(f"/marketing/entwurf/{iid}/vorschau?fassung={n}&format={fmt}")}"></iframe>'
               if n >= 1 else "")
     if i.get("status") == "entwurf":
         ziel, wort = f"/marketing/editor/{iid}", "Öffnen"
@@ -351,9 +363,11 @@ def routen(ui) -> list:
         akt = next((f for f in fassungen if int(f["fassung"]) == wahl), fassungen[0])
         nr = int(akt["fassung"])
         ist_neueste = nr == neueste
-        fmt = request.query_params.get("format", "mail")
-        if fmt not in RAHMEN_FORMATE:
-            fmt = "mail"
+        collage = akt.get("format") == "seite"
+        rahmen_formate = RAHMEN_FORMATE_COLLAGE if collage else RAHMEN_FORMATE
+        fmt = request.query_params.get("format", "")
+        if fmt not in rahmen_formate:
+            fmt = "seite" if collage else "mail"
         fe = akt["felder"] or {}
         abschnitte = "".join(
             f'<fieldset><input name="abschnitt_titel" value="{e(a.get("titel"))}" placeholder="Überschrift">'
@@ -438,11 +452,8 @@ def routen(ui) -> list:
                      f'<button type="submit">Zurückziehen</button></form>')
         elif in_arbeit:
             zeile_status = '<p>Dieser Newsletter wird im Editor bearbeitet.</p>' if im_editor else ""
-            if fassungen[0].get("format") == "seite":
-                haupt = '<p class="meta">Einreichen kommt für Collage-Newsletter in einer späteren Stufe.</p>'
-            else:
-                haupt = (f'<form method="post" action="{basis}/einreichen" class="aktion">{csrf}'
-                         f'<button type="submit">Zur Freigabe einreichen</button></form>')
+            haupt = (f'<form method="post" action="{basis}/einreichen" class="aktion">{csrf}'
+                     f'<button type="submit">Zur Freigabe einreichen</button></form>')
         else:
             zeile_status = f'<p class="meta">{e(status_wort(i, rueck))[:1].upper()}{e(status_wort(i, rueck))[1:]}.' \
                            f'{(" Grund: " + e(i.get("grund"))) if status == "abgelehnt" and i.get("grund") else ""}</p>'
@@ -500,9 +511,9 @@ def routen(ui) -> list:
             bilder_html = f'<div class="karte"><h2>Bilder</h2><ul class="bildstand">{zeilen_b}</ul></div>'
         wahl_links = "".join(
             f'<a class="{"aktiv" if k == fmt else ""}" href="{basis}?fassung={nr}&amp;format={k}">{t}</a>'
-            for k, t in RAHMEN_FORMATE.items())
+            for k, t in rahmen_formate.items())
         if akt.get("format") != "bloecke":
-            # Bloecke-Fassungen haben kein PDF (die API sagt 422); Collagen (seite) schon.
+            # Bloecke-Fassungen haben kein PDF (die API sagt 422); Collagen und Felder schon.
             wahl_links += (f'<a href="{basis}/vorschau?fassung={nr}&amp;format=pdf" target="_blank" '
                            f'rel="noopener noreferrer">PDF &#8599;</a>')
         kopf = (f'<div class="entwurf-kopf">'
@@ -525,8 +536,28 @@ def routen(ui) -> list:
         iid = urllib.parse.quote(request.path_params["iid"])
         fassung = _fassung_zahl(request.query_params.get("fassung", "1"))
         fmt = request.query_params.get("format", "mail")
-        if fassung is None or fmt not in ("mail", "handy", "pdf"):
+        if fassung is None or fmt not in VORSCHAU_FORMATE:
             return ui._fehlerseite(400, "Ungültige Vorschau", "Fassung oder Format fehlt.")
+
+        def im_rahmen(f: marketing_pult.PultFehler) -> Response:
+            # Fehler einer gerahmten Vorschau stehen IM Rahmen (mit den Seiten-Koepfen, DENY, bliebe er
+            # leer). Eine Collage-Mail kann mit Grund scheitern ("Die Anrede steht in einem Bildbereich ...").
+            if f.art == "abgelehnt":
+                return _gerahmt(f"<p>Vorschau nicht möglich: {e(f.grund)}</p>", status=422)
+            if f.art == "nicht_verbunden":
+                return _gerahmt("<p>Marketing nicht verbunden.</p>", status=503)
+            return _gerahmt("<p>Marketing gerade nicht erreichbar.</p>", status=503)
+
+        if fmt == "karte":
+            # Galeriekarte: Collage -> die Seite (kein Chromium je Karte), alles andere -> die Mail.
+            try:
+                d = await run_in_threadpool(marketing_pult.anfrage, "GET", f"/inhalte/{iid}")
+            except marketing_pult.PultFehler as f:
+                return im_rahmen(f)
+            fassungen = d.get("fassungen") if isinstance(d, dict) else None
+            treffer = next((f for f in fassungen or [] if isinstance(f, dict)
+                            and _ganzzahl(f.get("fassung")) == fassung), None)
+            fmt = "seite" if isinstance(treffer, dict) and treffer.get("format") == "seite" else "mail"
         q_teile = {"fassung": fassung, "format": fmt}
         # Bilder der Editor-Newsletter: signierte Adresse, weil der
         # abgeschottete Rahmen keine Anmelde-Cookies schickt. Leer (kein
@@ -538,17 +569,15 @@ def routen(ui) -> list:
             inhalt, typ = await run_in_threadpool(
                 marketing_pult.anfrage, "GET", f"/inhalte/{iid}/vorschau?{q}", roh=True)
         except marketing_pult.PultFehler as f:
-            return fehler(f)
+            # Das PDF oeffnet als eigene Seite (neuer Tab): dort die normale Fehlerseite.
+            return fehler(f) if fmt == "pdf" else im_rahmen(f)
         if str(typ).startswith("application/pdf"):
             # Wie die Medienseite: eigene Datei-Richtlinie, verlinkt statt gerahmt.
             return Response(inhalt, media_type="application/pdf",
                             headers={"Content-Security-Policy": ui._CSP_DATEI,
                                      "Content-Disposition": 'inline; filename="vorschau.pdf"',
                                      "Cache-Control": "private, no-store"})
-        return Response(inhalt, media_type=typ,
-                        headers={"Content-Security-Policy": _CSP_VORSCHAU,
-                                 "X-Frame-Options": "SAMEORIGIN",
-                                 "Cache-Control": "private, no-store"})
+        return _gerahmt(inhalt, typ)
 
     @ui._gesichert_seite
     async def speichern(request):
