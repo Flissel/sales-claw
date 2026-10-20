@@ -7855,7 +7855,8 @@ def kunde_benachrichtigen(lead_id: str, alt: dict, neu: dict | None,
 # Sprachnachrichten (01.09.2026). Gemessen: 16 Stueck in 30 Tagen, und der
 # Assistent war fuer alle blind. sales-inbox legt das Audio ab (es kommt
 # inline im Webhook), hier wird es NACHTRAEGLICH transkribiert — durch
-# sales-stt auf derselben VM. Die Stimme eines Kunden geht an keinen
+# sales-stt (seit 20.10.2026 am PC des Betreibers, ueber das Tailnet - keine Modelle auf der VM; vorher auf
+# derselben VM). Beides ist im Haus: die Stimme eines Kunden geht an keinen
 # Fremddienst; das waere eine Auftragsverarbeitung mehr im AVV.
 #
 # Die Transkription ist eine EIGENE Aktivitaet: `activities` ist
@@ -7865,6 +7866,8 @@ def kunde_benachrichtigen(lead_id: str, alt: dict, neu: dict | None,
 
 SPRACH_VERZEICHNIS = os.environ.get("SPRACH_DIR", "/sprachnachrichten")
 STT_URL = os.environ.get("STT_URL", "http://sales-stt:2790")
+# Seit 20.10.2026 laeuft sales-stt am PC (keine Modelle auf der VM); der Schluessel schuetzt ihn im Tailnet.
+STT_SCHLUESSEL = os.environ.get("STT_SCHLUESSEL", "").strip()
 STT_ZEITBUDGET_S = float(os.environ.get("STT_TIMEOUT_S", "180"))
 SPRACH_JE_LAUF = 5      # ein Routinelauf arbeitet hoechstens so viele ab
 SPRACH_TEXT_MAX = 2000  # wie inbox.TEXT_MAXLAENGE — Fremddatum bleibt gedeckelt
@@ -7873,9 +7876,11 @@ SPRACH_TEXT_MAX = 2000  # wie inbox.TEXT_MAXLAENGE — Fremddatum bleibt gedecke
 def _stt_aufrufen(audio: bytes) -> dict:
     """Audio -> {text, sprache, dauer_s}. Wirft bei Ausfall (der Aufrufer
     macht daraus einen gezaehlten Fehlschlag, keinen Datenverlust)."""
+    kopf = {"Content-Type": "application/octet-stream"}
+    if STT_SCHLUESSEL:
+        kopf["X-STT-Key"] = STT_SCHLUESSEL
     anfrage = urllib.request.Request(
-        f"{STT_URL.rstrip('/')}/transkribieren", data=audio,
-        headers={"Content-Type": "application/octet-stream"}, method="POST")
+        f"{STT_URL.rstrip('/')}/transkribieren", data=audio, headers=kopf, method="POST")
     with urllib.request.urlopen(anfrage, timeout=STT_ZEITBUDGET_S) as antwort:
         return json.loads(antwort.read())
 

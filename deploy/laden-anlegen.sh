@@ -255,12 +255,12 @@ echo
 echo "(Die erste Zeile legt media/inbound im Gateway-Volume an - ohne den"
 echo "Ordner startet sales-mcp nicht, er haengt ihn per subpath ein.)"
 echo
-echo "SPAETER, sobald diese Zugangsdaten vorliegen — alle neun Dienste des"
+echo "SPAETER, sobald diese Zugangsdaten vorliegen — alle acht Dienste des"
 echo "Hauptstacks (weiterhin ohne $NAME-auto):"
 echo
 echo "  docker compose --env-file $ENVDATEI up -d --build \\"
 echo "    sales-mcp sales-ui sales-inbox sales-dispatch sales-mail \\"
-echo "    sales-claw sales-telegram sales-linkedin sales-stt"
+echo "    sales-claw sales-telegram sales-linkedin"
 echo
 echo "SOBALD DER AGENT LAEUFT ($NAME-claw) — seine Routinelaeufe saeen."
 echo "Ohne diesen Schritt hat der neue Laden einen Agenten, der NIE von"

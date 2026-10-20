@@ -88,11 +88,12 @@ def test_clean_committed_compose_has_no_startable_linkedin_service(tmp_path: Pat
         "sales-inbox",
         "sales-dispatch",
         "sales-mail",
-        # sales-stt (01.09.2026): Dauerdienst, aber inert — das Modell
-        # wird erst beim ersten Auftrag geladen.
-        "sales-stt",
     }
     assert all(services[name]["restart"] == "unless-stopped" for name in automatic)
+    # sales-stt (01.09.2026) war hier Dauerdienst. Seit 20.10.2026 laeuft
+    # er am PC (keine Modelle auf der VM) und startet nur noch mit dem
+    # Profil stt-lokal, also nie von selbst.
+    assert "sales-stt" not in services
     assert services["sales-claw"]["restart"] == "no"
     assert services["sales-auto"]["restart"] == "no"
     # UMGEDREHT am 30.08.2026 auf Betreiber-Entscheid „freigabe soll gleich
@@ -601,7 +602,8 @@ def test_stt_hat_keine_geheimnisse_und_keinen_port(tmp_path: Path) -> None:
     Kein env_file, keine Datenbank, kein Port nach draussen (dieselbe
     T5a-Haltung wie bei sales-ui, nur strenger: hier gibt es nicht einmal
     einen Viewer-Schluessel)."""
-    dienst = rendered_config(tmp_path)["services"]["sales-stt"]
+    # Nur noch der Rueckweg (Profil stt-lokal) — der muss trotzdem dicht sein.
+    dienst = rendered_config(tmp_path, {"COMPOSE_PROFILES": "stt-lokal"})["services"]["sales-stt"]
     umgebung = dienst.get("environment") or {}
     verboten = ("SALES_DB_URL", "OPENWA_API_KEY", "OPENWA_VIEWER_KEY",
                 "INBOX_WEBHOOK_SECRET", "SMTP_PASSWORT", "APIFY_TOKEN",

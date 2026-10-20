@@ -273,12 +273,12 @@ assert erst["name"] == "sales-claw", erst["name"]
 erwartete_container = {
     "sales-claw", "sales-mcp", "sales-dispatch", "sales-inbox",
     "sales-mail", "sales-telegram", "sales-linkedin", "sales-auto",
-    "sales-stt", "sales-ui"}
+    "sales-ui"}  # sales-stt seit 20.10.2026 am PC, hier nur per Profil stt-lokal
 ist = {d["container_name"] for d in erst["services"].values()}
 assert ist == erwartete_container, ist
 istv = {v["name"] for v in erst["volumes"].values()}
 assert istv == {"sales-claw-state", "sales-claw-keys",
-                 "sales-sprachnachrichten", "sales-stt-modelle"}, istv
+                 "sales-sprachnachrichten"}, istv
 assert hostports(erst["services"]["sales-claw"]) == {"127.0.0.1:18894"}, \
     hostports(erst["services"]["sales-claw"])
 assert hostports(erst["services"]["sales-ui"]) == {"127.0.0.1:8791"}, \
@@ -321,9 +321,10 @@ assert not ueberschneidung_ports1, ueberschneidung_ports1
 ueberschneidung_ports2 = ports(erst_wa) & ports(zweit_wa)
 assert not ueberschneidung_ports2, ueberschneidung_ports2
 
-# sales-stt-modelle ist die AUSNAHME: geteilt, nicht vervielfacht.
+# Frueher war sales-stt-modelle die AUSNAHME (geteilt). Seit 20.10.2026
+# liegt kein Modell mehr auf der VM — also teilen sich zwei Laeden nichts.
 gemeinsam = volumes(erst) & volumes(zweit)
-assert gemeinsam == {"sales-stt-modelle"}, gemeinsam
+assert not gemeinsam, gemeinsam
 
 print("compose-aufloesung ok")
 PYEOF

@@ -27,12 +27,17 @@ import signal
 import sys
 import tempfile
 import threading
+import hmac
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LOG = logging.getLogger("sales-stt")
 
 PORT = int(os.environ.get("STT_PORT", "2790"))
+# Am PC (20.10.2026, keine Modelle auf der VM): nur 127.0.0.1, davor tailscale serve - und ein Schluessel,
+# weil der Dienst dort im Tailnet steht und nicht mehr in einem eigenen Container-Netz.
+HOST = os.environ.get("STT_HOST", "0.0.0.0")
+SCHLUESSEL = os.environ.get("STT_SCHLUESSEL", "").strip()
 MODELL = os.environ.get("STT_MODELL", "base")
 SPRACHE = os.environ.get("STT_SPRACHE", "de")
 # 25 MB: eine WhatsApp-Sprachnachricht ist typisch 10-60 kB je Minute.
@@ -103,6 +108,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.path != "/transkribieren":
             self._antwort(404, {"fehler": "unbekannter Pfad"})
             return
+        if SCHLUESSEL:
+            gegeben = (self.headers.get("X-STT-Key") or "").strip()
+            if not hmac.compare_digest(gegeben.encode("utf-8", "replace"), SCHLUESSEL.encode("utf-8", "replace")):
+                self._antwort(401, {"fehler": "Schluessel fehlt oder falsch"})
+                return
         try:
             laenge = int(self.headers.get("Content-Length") or 0)
         except ValueError:
@@ -134,7 +144,7 @@ class Dienst(ThreadingHTTPServer):
 def main() -> int:
     logging.basicConfig(stream=sys.stdout, level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    dienst = Dienst(("0.0.0.0", PORT), Handler)
+    dienst = Dienst((HOST, PORT), Handler)
     signal.signal(signal.SIGTERM, lambda *_: dienst.shutdown())
     signal.signal(signal.SIGINT, lambda *_: dienst.shutdown())
     LOG.info("Start: Port %d, Modell '%s' (wird beim ersten Auftrag "

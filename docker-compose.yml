@@ -110,6 +110,11 @@ x-sales-mcp-umgebung: &sales_mcp_umgebung
   # fuer jeden Laden leer, dieser Nachtrag aendert daran nichts, macht sie
   # nur laden-scharf FUER DEN TAG, an dem sie befuellt wird.
   BETREIBER_MAIL_LEAD_ID: ${BETREIBER_MAIL_LEAD_ID:-}
+  # 20.10.2026: sales-stt laeuft am PC (keine Modelle auf der VM). STT_URL
+  # zeigt dorthin (Tailnet), STT_SCHLUESSEL geht als X-STT-Key mit. Ohne
+  # Werte: der alte Container im eigenen Netz, ohne Schluessel (Rueckweg).
+  STT_URL: ${STT_URL:-http://sales-stt:2790}
+  STT_SCHLUESSEL: ${STT_SCHLUESSEL:-}
 
 services:
   sales-claw:
@@ -704,7 +709,12 @@ services:
   # Das Modell (~300 MB) liegt im Volume und wird beim ERSTEN Auftrag
   # geladen — nicht beim Start. Ein Stack, in dem nie jemand eine
   # Sprachnachricht schickt, zahlt dafuer keinen Speicher.
+  # Seit 20.10.2026 NICHT mehr auf der VM (Betreiber-Regel: keine Modelle auf dem Mini-PC). Der Dienst laeuft
+  # am PC des Betreibers (sales-stt/stt.py, 127.0.0.1:2790 + tailscale serve), sales-mcp erreicht ihn ueber
+  # STT_URL/STT_SCHLUESSEL aus der .env. Dieser Eintrag bleibt nur als Rueckweg und startet ausschliesslich
+  # ausdruecklich: `docker compose --profile stt-lokal up -d sales-stt` (und STT_URL zuruecksetzen).
   sales-stt:
+    profiles: ["stt-lokal"]
     build: ./sales-stt
     image: sales-claw-sales-stt:local
     container_name: ${LADEN_PRAEFIX:-sales}-stt

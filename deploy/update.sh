@@ -26,7 +26,10 @@ STATUS="$BETRIEB/update-status.json"
 #
 # telegram/linkedin/stt fehlten hier bis zum 16.09.2026 — ein Update hat
 # sie stillschweigend uebersprungen, obwohl sie seit dem 12.09.2026 laufen.
-KERN_ALLE="sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw sales-telegram sales-linkedin sales-stt"
+# sales-stt fehlt seit 20.10.2026 BEWUSST: er laeuft am PC (keine Modelle auf
+# der VM), sales-mcp erreicht ihn ueber STT_URL. Der Compose-Eintrag ist nur
+# noch Rueckweg (Profil stt-lokal) und wird von einem Update nie hochgezogen.
+KERN_ALLE="sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw sales-telegram sales-linkedin"
 
 # Praefix und --env-file-Argument je Laden, PARALLELE Arrays (Index i
 # gehoert zusammen). Der bestehende Laden ("sales", Vorgabewerte aus den
