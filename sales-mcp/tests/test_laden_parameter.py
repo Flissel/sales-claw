@@ -394,14 +394,14 @@ def test_ohne_umgebung_bleibt_alles_wie_heute():
     assert set(cfg["services"]) == {
         "sales-claw", "sales-mcp", "sales-dispatch", "sales-inbox",
         "sales-mail", "sales-telegram", "sales-linkedin", "sales-auto",
-        "sales-stt", "sales-ui"}
+        "sales-ui"}  # sales-stt seit 20.10.2026 am PC (Profil stt-lokal)
     assert {d["container_name"] for d in cfg["services"].values()} == {
         "sales-claw", "sales-mcp", "sales-dispatch", "sales-inbox",
         "sales-mail", "sales-telegram", "sales-linkedin", "sales-auto",
-        "sales-stt", "sales-ui"}
+        "sales-ui"}  # sales-stt seit 20.10.2026 am PC (Profil stt-lokal)
     assert {v["name"] for v in cfg["volumes"].values()} == {
         "sales-claw-state", "sales-claw-keys",
-        "sales-sprachnachrichten", "sales-stt-modelle"}
+        "sales-sprachnachrichten"}
     assert _hostports(cfg["services"]["sales-claw"]) == {"127.0.0.1:18894"}
     assert _hostports(cfg["services"]["sales-ui"]) == {"127.0.0.1:8791"}
 
@@ -436,7 +436,7 @@ def test_zweiter_laden_kollidiert_in_nichts():
     einem halb gestarteten zweiten Laden.
 
     Kaputte Fassung, die dieser Test faengt: irgendein container_name,
-    Volume-Name (ausser sales-stt-modelle) oder Host-Port, der NICHT von
+    Volume-Name oder Host-Port, der NICHT von
     LADEN_PRAEFIX/LADEN_PROJEKT/PORT_* abhaengt und deshalb beim zweiten
     Laden mit dem ersten kollidiert.
     """
@@ -462,10 +462,10 @@ def test_zweiter_laden_kollidiert_in_nichts():
     assert not ports(erst) & ports(zweit)
     assert not ports(erst_wa) & ports(zweit_wa)
 
-    # sales-stt-modelle ist die AUSNAHME: geteilt, nicht vervielfacht.
+    # Frueher war sales-stt-modelle die AUSNAHME (geteilt). Seit 20.10.2026
+    # liegt kein Modell mehr auf der VM, also teilen sich zwei Laeden nichts.
     gemeinsam = volumes(erst) & volumes(zweit)
-    assert gemeinsam == {"sales-stt-modelle"}, (
-        "genau ein Volume darf geteilt sein — das Modellverzeichnis")
+    assert not gemeinsam, gemeinsam
 
 
 @ohne_docker
