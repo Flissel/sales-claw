@@ -387,3 +387,4 @@ nein) · M5 Verlauf vollständig oder letzte 10.
 ## Antworten des Betreibers
 
 - 19.10.2026 S1 zunaechst als Einladungstiefe verstanden; **korrigiert 20.10.2026: (b) Level 1-6 = Karrierestufe je Mitglied**, die Struktur ist das Einladungsverhaeltnis ohne Tiefengrenze (Schneeball). Mitglieder = Leute mit eigenem sales-claw-Laden, Kante Einlader -> Neuer. Umsetzung: Plan 2026-10-20-struktur-graph.md.
+- 20.10.2026 Marken-Chat: M1 „schöner wie in Claude Code, Verlauf unter dem Chat wachsen lassen, sieht noch messy aus“; M2 alle drei Nutzungen; M3 Text sofort; M4 Websuche mit Quellen (eingebaute WebSearch der CLI, kein Tavily); Profil um Kurz gesagt, Menschen, Wörter, Abgrenzung, Kanäle, Kontakt und Impressum, Stimme erweitert. Umsetzung: Plan 2026-10-20-marken-chat-neu.md, live 20.10. (Migration 078).
