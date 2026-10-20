@@ -16,6 +16,16 @@ describe('SeiteText', () => {
   it('Kursiv umschliesst fette Gruppe', () => {
     expect(renderToStaticMarkup(<SeiteText text={'*a **b** c*'} />)).toContain('<em>a <strong>b</strong> c</em>');
   });
+  it('Ziffern ohne Fett bleiben Text', () => {
+    expect(renderToStaticMarkup(<SeiteText text={'Preis 5 Euro'} />)).toBe('Preis 5 Euro');
+  });
+  it('Ziffer neben Fett', () => {
+    expect(renderToStaticMarkup(<SeiteText text={'Tel 0 **b**'} />)).toBe('Tel 0 <strong>b</strong>');
+  });
+  it('Platzhalterzeichen im Text stoeren nicht', () => {
+    const h = renderToStaticMarkup(<SeiteText text={'x0 **b** '} />);
+    expect(h).toBe('x0 <strong>b</strong> ');
+  });
   it('Zeilenumbruch', () => {
     expect(renderToStaticMarkup(<SeiteText text={'a\nb'} />)).toContain('<br/>');
   });

@@ -29,16 +29,21 @@ function teile(t: string, re: RegExp, innen: Macher, aussen: Macher, k: string):
   return aus;
 }
 
-const PLATZ = /(\d+)/;
+// Platzhalter aus Zeichen des privaten Bereichs; kommen sie im Nutzertext vor, werden sie vorher entfernt.
+const AUF = '\uE000';
+const ZU = '\uE001';
+const PLATZ = new RegExp(AUF + '(\\d+)' + ZU, 'g');
+const PRIVAT = new RegExp('[' + AUF + ZU + ']', 'g');
 
 // Wie seite_html._auszeichnung: erst **fett** herausloesen (Platzhalter ohne Sternchen), dann *kursiv* ueber
 // das ganze Ergebnis, damit Kursiv auch eine fette Gruppe umschliessen kann.
-function auszeichnung(t: string, k: string): ReactNode {
+function auszeichnung(roh: string, k: string): ReactNode {
   const fette: string[] = [];
-  const ohne = t.replace(FETT, (_g, inhalt: string) => `${fette.push(inhalt) - 1}`);
+  const t = roh.replace(PRIVAT, '');
+  const ohne = t.replace(FETT, (_g, inhalt: string) => `${AUF}${fette.push(inhalt) - 1}${ZU}`);
   const blatt: Macher = (s, kk) => (
     <Fragment key={kk}>
-      {s.split(new RegExp(PLATZ.source, 'g')).map((teil, i) =>
+      {s.split(PLATZ).map((teil, i) =>
         i % 2 === 0 ? <Fragment key={`${kk}t${i}`}>{umbrueche(teil, `${kk}t${i}`)}</Fragment> : (
           <strong key={`${kk}f${i}`}>{umbrueche(fette[Number(teil)], `${kk}f${i}`)}</strong>
         ),
