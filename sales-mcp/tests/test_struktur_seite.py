@@ -197,3 +197,97 @@ def test_laeden_lesen_filtert_ausgeblendete():
     with server.pool.connection() as conn:
         assert ui_struktur.laeden_lesen(conn) == {"ivan": None}
         assert ui_struktur.laeden_lesen(conn, sperren=True) == {"ivan": None}
+
+
+# --- Task 4: Einlader ändern ------------------------------------------------
+
+def _umhaengen(name, einlader, csrf=True):
+    d = {"name": name, "einlader": einlader}
+    if csrf: d["csrf"] = ui.CSRF_TOKEN
+    return _post("/team/struktur/einlader", d)
+
+
+def _einlader(name):
+    return server._q("select eingeladen_von from admin_auftraege where name=%s and status='erfolg'", (name,))[0]["eingeladen_von"]
+
+
+def test_liste_escaped_namen():
+    html = ui_struktur.liste_zeichnen(struktur.baum_bauen({'a"><img': None, "b": None}), "tok")
+    assert "<img" not in html and 'value="a&quot;&gt;&lt;img"' in html
+
+
+def test_liste_hat_formular_je_laden_ohne_eigene_nachfahren():
+    _erfolg("ivan"); _erfolg("lena", "ivan")
+    t = _get("/team/struktur").text
+    assert t.count('action="/team/struktur/einlader"') == 2
+    form_ivan = t[t.index('name="name" value="ivan"'):]
+    form_ivan = form_ivan[:form_ivan.index("</form>")]
+    assert 'value="lena"' not in form_ivan and '<option value="">Ich</option>' in form_ivan.replace(" selected", "")
+
+
+def test_formular_waehlt_den_aktuellen_einlader_vor():
+    _erfolg("ivan"); _erfolg("lena", "ivan")
+    t = _get("/team/struktur").text
+    form_lena = t[t.index('name="name" value="lena"'):]
+    form_lena = form_lena[:form_lena.index("</form>")]
+    assert '<option value="ivan" selected>' in form_lena
+
+
+def test_post_haengt_um_und_springt_zurueck():
+    _erfolg("ivan"); _erfolg("lena")
+    r = _umhaengen("lena", "ivan")
+    assert r.status_code == 303 and r.headers["location"] == "/team/struktur"
+    assert _einlader("lena") == "ivan"
+    assert _umhaengen("lena", "").status_code == 303 and _einlader("lena") is None
+
+
+def test_post_ohne_csrf():
+    _erfolg("ivan"); _erfolg("lena")
+    assert _umhaengen("lena", "ivan", csrf=False).status_code == 400 and _einlader("lena") is None
+
+
+def test_post_unbekannt():
+    _erfolg("ivan")
+    server._q("insert into admin_auftraege (art,name,angefordert_von) values ('laden_anlegen','offen1','t')")
+    assert _umhaengen("offen1", "ivan").status_code == 400
+    r = _umhaengen("ivan", "nemo")
+    assert r.status_code == 400 and "Nichts wurde geändert" in r.text and _einlader("ivan") is None
+
+
+def test_post_ring_wird_abgewiesen():
+    _erfolg("ivan"); _erfolg("lena", "ivan"); _erfolg("otto", "lena")
+    r = _umhaengen("ivan", "otto")
+    assert r.status_code == 400 and "abstammt" in r.text and _einlader("ivan") is None
+    assert _umhaengen("lena", "lena").status_code == 400
+
+
+def test_post_zu_tief_wird_abgewiesen():
+    _erfolg("x"); _erfolg("x1", "x"); _erfolg("x2", "x1")
+    vorher = None
+    for n in ("a1", "a2", "a3", "a4"):
+        _erfolg(n, vorher); vorher = n
+    r = _umhaengen("x", "a4")
+    assert r.status_code == 400 and "Ebene 7" in r.text and _einlader("x") is None
+    assert _umhaengen("x", "a3").status_code == 303 and _einlader("x") == "a3"
+
+
+def test_post_aendert_nur_erfolg_zeilen():
+    _erfolg("ivan"); _erfolg("lena")
+    server._q("insert into admin_auftraege (art,name,angefordert_von,status) values ('laden_anlegen','lena','t','fehler')")
+    _umhaengen("lena", "ivan")
+    assert server._q("select eingeladen_von from admin_auftraege where name='lena' and status='fehler'")[0]["eingeladen_von"] is None
+
+
+def test_ausgeblendeter_laden_fehlt_in_den_umhaengen_auswahlen():
+    _erfolg("ivan"); _erfolg("lena")
+    _erfolg("probelauf", ergebnis='{"ausgeblendet": true}')
+    t = _get("/team/struktur").text
+    assert 'value="probelauf"' not in t and t.count('action="/team/struktur/einlader"') == 2
+
+
+def test_ausgeblendeter_laden_laesst_sich_nicht_umhaengen():
+    _erfolg("ivan")
+    _erfolg("probelauf", ergebnis='{"ausgeblendet": true}')
+    assert _umhaengen("probelauf", "ivan").status_code == 400
+    assert _umhaengen("ivan", "probelauf").status_code == 400
+    assert _einlader("probelauf") is None and _einlader("ivan") is None

@@ -1400,7 +1400,9 @@ nav.reiter .zahl { font-size: .8rem; color: var(--gedaempft); }
                       text-anchor: middle; dominant-baseline: central; }
 .struktur-svg .wurzel .zahl { fill: var(--akzent_auf); }
 .struktur-svg .name { fill: var(--schrift); font: 12px var(--schrift_text);
-                      text-anchor: middle; }
+                      text-anchor: middle; paint-order: stroke;
+                      stroke: var(--flaeche); stroke-width: 4px;
+                      stroke-linejoin: round; }
 .struktur-liste, .struktur-liste ul { list-style: none; padding-left: 0; margin: 0; }
 .struktur-liste ul { margin-left: 1.2rem; border-left: 2px solid var(--linie);
                      padding-left: .8rem; }
@@ -1410,7 +1412,16 @@ nav.reiter .zahl { font-size: .8rem; color: var(--gedaempft); }
                               height: 1.6rem; border-radius: 999px;
                               background: var(--aktiv); color: var(--akzent_text);
                               font-weight: 700; font-size: .85rem; }
-@media (max-width: 767px) { .struktur-liste { order: -1; } }
+.einlader-form { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
+.einlader-form label { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
+.einlader-form select, .einlader-form button { min-height: 44px; }
+.einlader-form select { width: auto; max-width: 16rem; }
+.struktur-liste b { overflow-wrap: anywhere; }
+@media (max-width: 767px) {
+  .struktur-liste { order: -1; }
+  .struktur-liste ul { margin-left: .5rem; padding-left: .5rem; }
+  .einlader-form select { max-width: 12rem; }
+}
 /* Ende Struktur-Graph */
 @media (max-width: 767px) {
   .zwei { grid-template-columns: minmax(0, 1fr); }

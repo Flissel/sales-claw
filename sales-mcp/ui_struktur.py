@@ -15,6 +15,7 @@ from __future__ import annotations
 import html
 from collections.abc import Mapping
 
+from starlette.responses import RedirectResponse
 from starlette.routing import Route
 
 import server
@@ -22,6 +23,8 @@ import struktur
 
 # E7: ab dieser Länge kürzt das SVG den Namen (Spalte 120 px); voll im <title>.
 _KURZ_AB, _KURZ_AUF = 15, 13
+# Grundlinie des Namens unter dem Kreisrand (px).
+_NAME_ABSTAND = 16
 
 
 def _e(wert) -> str:
@@ -90,9 +93,13 @@ def svg_zeichnen(baum: struktur.Baum) -> str:
              f'width="{a.breite}" height="{a.hoehe}" viewBox="0 0 {a.breite} {a.hoehe}" '
              f'role="img" aria-label="Struktur: wer wen eingeladen hat">']
     for name in sorted(baum.einlader):
-        x1, y1 = a.punkte[baum.einlader[name]]
+        eltern = baum.einlader[name]
+        x1, y1 = a.punkte[eltern]
+        # Sichtprüfung 20.10.: unter einem Laden steht sein Name - die Kante
+        # beginnt deshalb unter dem Namen, sonst kreuzt sie die Schrift.
+        y1 += r if eltern is None else r + _NAME_ABSTAND + 6
         x2, y2 = a.punkte[name]
-        teile.append(f'<line class="kante" x1="{x1:g}" y1="{y1 + r:g}" '
+        teile.append(f'<line class="kante" x1="{x1:g}" y1="{y1:g}" '
                      f'x2="{x2:g}" y2="{y2 - r:g}"/>')
     x, y = a.punkte[None]
     teile.append(f'<g class="knoten wurzel"><title>Ich</title>'
@@ -104,7 +111,7 @@ def svg_zeichnen(baum: struktur.Baum) -> str:
         teile.append(f'<g class="knoten ebene-{n}"><title>{_e(name)} – Ebene {n}</title>'
                      f'<circle cx="{x:g}" cy="{y:g}" r="{r}"/>'
                      f'<text class="zahl" x="{x:g}" y="{y:g}">{n}</text>'
-                     f'<text class="name" x="{x:g}" y="{y + r + 16:g}">{_e(_kurzname(name))}</text></g>')
+                     f'<text class="name" x="{x:g}" y="{y + r + _NAME_ABSTAND:g}">{_e(_kurzname(name))}</text></g>')
     teile.append("</svg>")
     return "".join(teile)
 
@@ -130,6 +137,15 @@ def liste_zeichnen(baum: struktur.Baum, csrf: str,
                 wer = f"Einlader „{_e(alt)}“" if alt else "Einlader"
                 teile.append(f' <span class="meta">{wer} nicht gefunden – hängt '
                              f'vorläufig direkt unter dir.</span>')
+            # Task 4: umhängen. Der Laden selbst und seine Nachfahren fehlen
+            # in der Auswahl (E9); zu tiefe Ziele lehnt erst der Server ab.
+            ohne = struktur.nachfahren(baum, name) | {name}
+            teile.append(
+                '<form method="post" action="/team/struktur/einlader" class="einlader-form">'
+                f'<input type="hidden" name="csrf" value="{_e(csrf)}">'
+                f'<input type="hidden" name="name" value="{_e(name)}">'
+                f'<label>Einlader ändern {einlader_wahl(baum, baum.einlader[name], ohne)}</label>'
+                '<button type="submit">Ändern</button></form>')
             teile.append(zweig(name))
             teile.append("</li>")
         teile.append("</ul>")
@@ -157,4 +173,30 @@ def routen(ui) -> list:
                      f'{liste_zeichnen(baum, ui.CSRF_TOKEN, laeden)}</div>')
         return ui._seite("Struktur", rumpf)
 
-    return [Route("/team/struktur", seite)]
+    @ui._gesichert_seite
+    async def einlader(request):
+        """Einen Laden samt Teilbaum umhängen. Prüfen und Schreiben in einer
+        Transaktion mit gesperrten erfolg-Zeilen (E10); geschrieben wird nur
+        `eingeladen_von`, auf ALLEN erfolg-Zeilen dieses Namens (E1/E3)."""
+        form = await request.form()
+        if not ui._csrf_ok(form):
+            return ui._fehlerseite(
+                400, "Ungültige Anfrage",
+                "Die Anfrage trägt keine gültige Marke dieser Oberfläche. "
+                "Seite neu laden und erneut versuchen.")
+        name = str(form.get("name") or "").strip()
+        neu = str(form.get("einlader") or "").strip() or None
+        with server.pool.connection() as conn:
+            baum = struktur.baum_bauen(laeden_lesen(conn, sperren=True))
+            text = struktur.fehler_umhaengen(baum, name, neu)
+            if text:
+                return ui._fehlerseite(400, "Einlader nicht geändert",
+                                       ui._e(text) + " Nichts wurde geändert.")
+            conn.execute(
+                "update admin_auftraege set eingeladen_von = %s "
+                "where art = 'laden_anlegen' and status = 'erfolg' and name = %s",
+                (neu, name))
+        return RedirectResponse("/team/struktur", status_code=303)
+
+    return [Route("/team/struktur", seite),
+            Route("/team/struktur/einlader", einlader, methods=["POST"])]
