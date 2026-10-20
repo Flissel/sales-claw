@@ -253,13 +253,13 @@ def routen(ui) -> list:
                          inhalte[(seite - 1) * GALERIE_SEITE:seite * GALERIE_SEITE])
         leer = "" if karten else '<p class="meta">Keine Newsletter mit diesem Status.</p>'
         rumpf = (umschalter(m, liste, verweis(status, seite))
-                 + '<p class="nl-kopf"><a class="knopf" href="/marketing/vorlagen">'
+                 + '<div class="nl-kopf"><a class="knopf" href="/marketing/vorlagen">'
                  'Neuer Newsletter aus Vorlage</a>'
                  f'<form method="post" action="/marketing/neue-collage" class="aktion">'
                  f'<input type="hidden" name="csrf" value="{e(ui.CSRF_TOKEN)}">'
-                 '<label>Titel <input name="titel" required maxlength="120" placeholder="Titel der Collage"></label>'
+                 f'<label>Titel <input name="titel" required maxlength="{ui_editor.TITEL_MAX_COLLAGE}" placeholder="Titel der Collage"></label>'
                  '<button type="submit">Neue Collage</button></form>'
-                 '<a href="/marketing/entwuerfe">Alle Entwürfe als Liste</a></p>'
+                 '<a href="/marketing/entwuerfe">Alle Entwürfe als Liste</a></div>'
                  + reiter + leer
                  + f'<div class="galerie">{karten}'
                  '<a class="layout-karte neu" href="/marketing/vorlagen">+ Aus Vorlage starten</a></div>'
@@ -498,8 +498,8 @@ def routen(ui) -> list:
         wahl_links = "".join(
             f'<a class="{"aktiv" if k == fmt else ""}" href="{basis}?fassung={nr}&amp;format={k}">{t}</a>'
             for k, t in RAHMEN_FORMATE.items())
-        if akt.get("format") not in ("bloecke", "seite"):
-            # Fuer Editor-Fassungen gibt es (noch) kein PDF - die API sagt 422.
+        if akt.get("format") != "bloecke":
+            # Bloecke-Fassungen haben kein PDF (die API sagt 422); Collagen (seite) schon.
             wahl_links += (f'<a href="{basis}/vorschau?fassung={nr}&amp;format=pdf" target="_blank" '
                            f'rel="noopener noreferrer">PDF &#8599;</a>')
         kopf = (f'<div class="entwurf-kopf">'

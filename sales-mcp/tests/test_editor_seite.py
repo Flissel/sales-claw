@@ -798,6 +798,7 @@ def test_neue_collage_ablehnung_zeigt_grund(angemeldet, pult):
 def test_galerie_hat_knopf_neue_collage(angemeldet, pult):
     s = angemeldet.get("/marketing", headers=HOST).text
     assert 'action="/marketing/neue-collage"' in s and 'name="titel"' in s
+    assert f'maxlength="{ui_editor.TITEL_MAX_COLLAGE}"' in s and '<p class="nl-kopf"' not in s
 
 
 def test_vorlagenseite_hat_karte_neue_collage(angemeldet, pult):
@@ -812,6 +813,7 @@ def test_entwurf_collage_zeigt_editor_ohne_feldformular(angemeldet, pult):
     assert "Ins Editor-Format übernehmen" not in s and 'name="abschnitt_text"' not in s
     assert f'action="/marketing/entwurf/{IID}/speichern"' not in s
     assert not any(a[1].endswith("/bilder") for a in pult.aufrufe)
+    assert "format=pdf" in s   # Collagen haben ein PDF (Stufe 1 live)
 
 
 # --- Statik ------------------------------------------------------------------
