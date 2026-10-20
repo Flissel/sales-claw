@@ -289,12 +289,11 @@ Tests: `SeiteApp.test.tsx`, `HandyApp.test.tsx`, `pultZustand`-Tests, `chatKonte
 - [ ] **Step 3: Datenbank.**
   - `marketing`-Schema sichern (`pg_dump -n marketing`).
   - 080 einspielen und `verify_080` per Probe prüfen. Expected: `PROBE OK`.
-- [ ] **Step 4: Ausrollen.**
-  - vibemind-os pushen.
-  - `marketing-aktualisieren.sh` auf der VM ausführen.
-  - Im PC-Haupt-Checkout die eigenen Dateien nach dem Byte-Vergleich-Muster mit `git restore --source` nachziehen. Bei fremder Abweichung abbrechen.
-  - `:5510` und `marketing_chat_arbeiter :8134` mit `beende_dienst` und `-Nur` neu starten.
-  - sales-claw pushen und `update.sh` ausführen.
+- [ ] **Step 4: Ausrollen, in genau dieser Reihenfolge** (Gesamtprüfung 20.10.: neue Arbeiter sind mit der alten API harmlos, umgekehrt nicht).
+  1. vibemind-os pushen.
+  2. **PC-Arbeiter zuerst:** Im PC-Haupt-Checkout die eigenen Dateien nach dem Byte-Vergleich-Muster mit `git restore --source` nachziehen. Bei fremder Abweichung abbrechen. Danach `marketing_chat_arbeiter :8134` **und** `marketing_bild_arbeiter :8133` mit `beende_dienst` und `-Nur` neu starten.
+  3. **Dann die API:** `marketing-aktualisieren.sh` auf der VM, danach PC `:5510` neu starten.
+  4. **Zuletzt der Editor:** sales-claw pushen und `update.sh` ausführen.
 - [ ] **Step 5: Echte Probe.**
   - Eine Probe-Collage über die API anlegen.
   - Eine Chat-Runde mit dem Auftrag „Gestalte einen Herbst-Newsletter für drei neue Kurse, hochwertig und frei“ über die Agent-Route starten.
