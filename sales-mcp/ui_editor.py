@@ -234,7 +234,9 @@ def routen(ui) -> list:
             return _fehler(ui, f)
         i, fassungen = d.get("inhalt") or {}, d.get("fassungen") or []
         neueste = fassungen[0] if fassungen else {}
-        if (neueste.get("format") != "bloecke" or not isinstance(neueste.get("bloecke"), dict)
+        format_ = neueste.get("format")
+        inhalt_feld = {"bloecke": "bloecke", "seite": "seite"}.get(format_)
+        if (inhalt_feld is None or not isinstance(neueste.get(inhalt_feld), dict)
                 or i.get("art") != "newsletter" or i.get("status") not in ("entwurf", "eingereicht")):
             return ui._fehlerseite(422, "Nicht im Editor", e(nicht_im_editor) +
                                    f' <a href="/marketing/entwurf/{e(iid)}">Zurück zum Entwurf</a>')
@@ -269,11 +271,14 @@ def routen(ui) -> list:
             "einreichen_url": f"/marketing/editor/{iid}/einreichen",
             "zurueckziehen_url": f"/marketing/editor/{iid}/zurueckziehen",
             "mandant": mandant,
-            "dokument": neueste["bloecke"],
+            # Collage (format "seite"): das Seitenmodell statt des Block-Dokuments.
+            "format": format_,
+            "dokument": neueste["bloecke"] if format_ == "bloecke" else None,
+            "seite": neueste["seite"] if format_ == "seite" else None,
             "betreff": str(felder.get("betreff") or ""),
             "vorschautext": str(felder.get("vorschautext") or ""),
             "basis_fassung": int(neueste["fassung"]),
-            "speichern_url": f"/marketing/editor/{iid}/speichern",
+            "speichern_url": f"/marketing/editor/{iid}/" + ("seite" if format_ == "seite" else "speichern"),
             "vorschau_url": f"/marketing/entwurf/{iid}/vorschau",
             "medien_url": f"/marketing/editor/medien.json?iid={iid}",
             "medien_zuordnung_url": f"/marketing/editor/{iid}/medien/zuordnung",
@@ -319,8 +324,11 @@ def routen(ui) -> list:
         return HTMLResponse(seite, headers={"Content-Security-Policy": CSP_EDITOR,
                                             "Cache-Control": "no-store"})
 
-    @ui._gesichert_seite
-    async def editor_speichern(request):
+    async def _speichern_weiterleiten(request, feld: str, ende: str):
+        """Gemeinsamer Weg fuer Block- und Collagen-Speichern: CSRF, 300-KB-Grenze,
+        Koerperpruefung, Weiterleitung an die Marketing-API, Fehlerabbildung.
+        `feld` = Name im Koerper (dokument/seite); `ende` = API-Endpunkt, der
+        zugleich der Schluessel im API-Koerper ist (bloecke/seite)."""
         marke = request.headers.get("x-csrf", "")
         if not marke or not hmac.compare_digest(marke, ui.CSRF_TOKEN):
             return json_grund(403, "Fehlende oder falsche CSRF-Marke")
@@ -343,7 +351,7 @@ def routen(ui) -> list:
         if not isinstance(body, dict):
             return json_grund(422, "Die Anfrage ist kein JSON-Objekt")
         basis = body.get("basis_fassung")
-        dokument = body.get("dokument")
+        dokument = body.get(feld)
         betreff = body.get("betreff", "")
         vorschautext = body.get("vorschautext", "")
         als_kopie = body.get("als_kopie", False)
@@ -358,9 +366,9 @@ def routen(ui) -> list:
         iid = urllib.parse.quote(request.path_params["iid"], safe="")
         try:
             r = await run_in_threadpool(
-                marketing_pult.anfrage, "POST", f"/inhalte/{iid}/bloecke",
+                marketing_pult.anfrage, "POST", f"/inhalte/{iid}/{ende}",
                 {"basis_fassung": basis, "betreff": betreff, "vorschautext": vorschautext,
-                 "bloecke": dokument, "als_kopie": als_kopie, "urheber": "betreiber"})
+                 ende: dokument, "als_kopie": als_kopie, "urheber": "betreiber"})
         except marketing_pult.PultFehler as f:
             if f.art == "abgelehnt":
                 grund = str(f.grund or "")
@@ -374,6 +382,14 @@ def routen(ui) -> list:
             # wir das nicht bestaetigen; der Editor behaelt die Aenderungen.
             return json_grund(503, "Speichern gerade nicht möglich")
         return JSONResponse({"fassung": fassung}, headers={"Cache-Control": "no-store"})
+
+    @ui._gesichert_seite
+    async def editor_speichern(request):
+        return await _speichern_weiterleiten(request, "dokument", "bloecke")
+
+    @ui._gesichert_seite
+    async def editor_seite_speichern(request):
+        return await _speichern_weiterleiten(request, "seite", "seite")
 
     @ui._gesichert_seite
     async def editor_gestaltung(request):
@@ -1029,6 +1045,7 @@ def routen(ui) -> list:
         Route("/marketing/editor/medien/loeschen", medien_loeschen, methods=["POST"]),
         Route("/marketing/editor/{iid}", editor_seite),
         Route("/marketing/editor/{iid}/speichern", editor_speichern, methods=["POST"]),
+        Route("/marketing/editor/{iid}/seite", editor_seite_speichern, methods=["POST"]),
         Route("/marketing/editor/{iid}/einreichen", editor_einreichen, methods=["POST"]),
         Route("/marketing/editor/{iid}/zurueckziehen", editor_zurueckziehen, methods=["POST"]),
         Route("/marketing/editor/{iid}/marke-hinweis-aus", editor_marke_hinweis_aus, methods=["POST"]),

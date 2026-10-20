@@ -20,6 +20,8 @@ HOST = {"host": "127.0.0.1:8791"}
 IID = "11111111-1111-1111-1111-111111111111"
 DOK = {"root": {"type": "EmailLayout", "data": {"childrenIds": ["i"]}},
        "i": {"type": "Image", "data": {"props": {"url": "medien:logo.png"}}}}
+SEITE = {"breite": 600, "hoehe": 800, "hintergrund": "#ffffff",
+         "ebenen": [{"art": "bild", "quelle": "medien:logo.png", "x": 300, "y": 100, "breite": 200, "hoehe": 100}]}
 FELDER = {"betreff": "Early Access", "vorschautext": "", "abschnitte": [{"titel": "", "text": "Hallo"}],
           "knopf_text": "", "knopf_link": ""}
 
@@ -81,9 +83,11 @@ class Falsch:
                                  "layout": None}]}
         if pfad == f"/inhalte/{IID}":
             bloecke = self.format == "bloecke"
-            neu = {"fassung": 2, "felder": {"betreff": self.betreff, "vorschautext": "Kurz"} if bloecke else FELDER,
-                   "layout": None if bloecke else "dunkel", "urheber": "betreiber", "erstellt_am": self.fassung_am,
-                   "format": self.format, "bloecke": DOK if bloecke else None}
+            collage = self.format == "seite"
+            neu = {"fassung": 2, "felder": {"betreff": self.betreff, "vorschautext": "Kurz"} if (bloecke or collage) else FELDER,
+                   "layout": None if (bloecke or collage) else "dunkel", "urheber": "betreiber", "erstellt_am": self.fassung_am,
+                   "format": self.format, "bloecke": DOK if bloecke else None,
+                   "seite": SEITE if collage else None}
             alt = {"fassung": 1, "felder": FELDER, "layout": "dunkel", "urheber": "agent",
                    "erstellt_am": "y", "format": self.alt_format, "bloecke": None}
             return {"inhalt": {"id": IID, "art": self.art, "titel": "Oktober", "status": self.status,
@@ -114,7 +118,7 @@ class Falsch:
             return {"flaechen": {"kopf": {"handy": "medien:gs-0123456789ab.jpg", "tablet": "x", "pc": "y"}}}
         if pfad == f"/inhalte/{IID}/export":
             return {"dateien": ["oktober-handy.jpg"], "auftrag": "e1"}
-        if pfad == f"/inhalte/{IID}/bloecke":
+        if pfad in (f"/inhalte/{IID}/bloecke", f"/inhalte/{IID}/seite"):
             return self.speichern_antwort
         if pfad == f"/inhalte/{IID}/in_bloecke":
             return {"fassung": 3}
@@ -234,6 +238,21 @@ def test_editor_nur_fuer_bloecke_newsletter_entwurf(angemeldet, pult):
         r = angemeldet.get(f"/marketing/editor/{IID}", headers=HOST)
         assert r.status_code == 422 and "lässt sich nicht im Editor öffnen" in r.text, feld
         assert "script-src" not in r.headers["content-security-policy"], feld
+
+
+def test_editor_oeffnet_collage(angemeldet, pult):
+    pult.format = "seite"
+    r = angemeldet.get(f"/marketing/editor/{IID}", headers=HOST)
+    assert r.status_code == 200 and "script-src" in r.headers["content-security-policy"]
+    start = _start(r.text)
+    assert start["format"] == "seite" and start["seite"] == SEITE and start["dokument"] is None
+    assert start["speichern_url"] == f"/marketing/editor/{IID}/seite"
+    assert start["basis_fassung"] == 2 and start["betreff"] == "Oktober-Ausgabe"
+
+
+def test_editor_bloecke_start_hat_format_bloecke(angemeldet, pult):
+    start = _start(angemeldet.get(f"/marketing/editor/{IID}", headers=HOST).text)
+    assert start["format"] == "bloecke" and start["seite"] is None and start["dokument"] == DOK
 
 
 def test_editor_marketing_nicht_erreichbar(angemeldet, pult):
@@ -803,6 +822,63 @@ def test_speichern_koerper_hoechstens_300_kb(angemeldet, pult):
     klein = {"root": {"type": "EmailLayout", "data": {"childrenIds": []}},
              "t": {"type": "Text", "data": {"props": {"text": "x" * (250 * 1024)}}}}
     assert _speichern(angemeldet, {"X-CSRF": ui.CSRF_TOKEN}, dokument=klein).status_code == 200
+
+
+# --- Collage speichern ----------------------------------------------------------
+
+def _seite_speichern(c, headers=None, **mehr):
+    body = {"basis_fassung": 2, "betreff": "B", "vorschautext": "", "seite": SEITE, **mehr}
+    return c.post(f"/marketing/editor/{IID}/seite", headers={**HOST, **(headers or {})}, json=body)
+
+
+def test_seite_speichern_leitet_weiter(angemeldet, pult):
+    r = _seite_speichern(angemeldet, {"X-CSRF": ui.CSRF_TOKEN})
+    assert r.status_code == 200 and r.json() == {"fassung": 3}
+    m, p, d = pult.aufrufe[-1]
+    assert (m, p) == ("POST", f"/inhalte/{IID}/seite")
+    assert d["urheber"] == "betreiber" and d["seite"] == SEITE
+    assert d == {"basis_fassung": 2, "betreff": "B", "vorschautext": "", "seite": SEITE,
+                 "als_kopie": False, "urheber": "betreiber"}
+
+
+def test_seite_speichern_konflikt_409(angemeldet, pult):
+    grund = "Inzwischen gibt es Fassung 3 - neu laden oder als Kopie behalten"
+    pult.fehler = marketing_pult.PultFehler("abgelehnt", grund)
+    r = _seite_speichern(angemeldet, {"X-CSRF": ui.CSRF_TOKEN})
+    assert r.status_code == 409 and r.json() == {"konflikt": True, "grund": grund}
+
+
+def test_seite_speichern_422_grund(angemeldet, pult):
+    grund = "Anrede und Links nur in Textebenen ohne Drehung"
+    pult.fehler = marketing_pult.PultFehler("abgelehnt", grund)
+    r = _seite_speichern(angemeldet, {"X-CSRF": ui.CSRF_TOKEN})
+    assert r.status_code == 422 and r.json() == {"grund": grund}
+
+
+def test_seite_speichern_nicht_erreichbar_503(angemeldet, pult):
+    pult.fehler = marketing_pult.PultFehler("nicht_erreichbar", "timeout")
+    assert _seite_speichern(angemeldet, {"X-CSRF": ui.CSRF_TOKEN}).status_code == 503
+
+
+def test_seite_speichern_ohne_csrf_403(angemeldet, pult):
+    r = _seite_speichern(angemeldet)
+    assert r.status_code == 403 and r.json() == {"grund": "Fehlende oder falsche CSRF-Marke"}
+    assert not any(a[1].endswith("/seite") for a in pult.aufrufe)
+
+
+def test_seite_speichern_zu_gross_413(angemeldet, pult):
+    gross = {**SEITE, "x": "x" * (300 * 1024)}
+    r = _seite_speichern(angemeldet, {"X-CSRF": ui.CSRF_TOKEN}, seite=gross)
+    assert r.status_code == 413 and "300 KB" in r.json()["grund"]
+    assert not any(a[1].endswith("/seite") for a in pult.aufrufe)
+
+
+def test_seite_speichern_prueft_den_koerper(angemeldet, pult):
+    kopf = {"X-CSRF": ui.CSRF_TOKEN}
+    for schlecht in ({"seite": "nein"}, {"seite": []}, {"basis_fassung": True}, {"betreff": 5}):
+        r = _seite_speichern(angemeldet, kopf, **schlecht)
+        assert r.status_code == 422 and r.json()["grund"], schlecht
+    assert not any(a[1].endswith("/seite") for a in pult.aufrufe)
 
 
 def test_speichern_kaputte_api_antwort_503(angemeldet, pult):
