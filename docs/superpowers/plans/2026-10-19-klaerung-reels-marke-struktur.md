@@ -386,4 +386,4 @@ nein) · M5 Verlauf vollständig oder letzte 10.
 
 ## Antworten des Betreibers
 
-- 19.10.2026 S1: **(a) Einladungstiefe relativ zum Betreiber** (Ebene 1 = direkt eingeladen ... Ebene 6). S2-S5 noch offen.
+- 19.10.2026 S1 zunaechst als Einladungstiefe verstanden; **korrigiert 20.10.2026: (b) Level 1-6 = Karrierestufe je Mitglied**, die Struktur ist das Einladungsverhaeltnis ohne Tiefengrenze (Schneeball). Mitglieder = Leute mit eigenem sales-claw-Laden, Kante Einlader -> Neuer. Umsetzung: Plan 2026-10-20-struktur-graph.md.
