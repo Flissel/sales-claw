@@ -3189,6 +3189,28 @@ sudo systemctl enable --now sales-token-waechter.timer
 bash deploy/token-ablauf-waechter.sh --probe   # schickt eine Probenachricht
 ```
 
+
+### 9. Struktur-Graph (20.10.2026)
+
+`/team/struktur` zeigt, wer welchen Laden eingeladen hat (Spalte
+`admin_auftraege.eingeladen_von`, NULL = Betreiber), und das Level 1–6 je
+Mitglied (Spalte `admin_auftraege.level`). Der Baum hat keine Tiefengrenze.
+Nur der Basis-Laden sieht die Seite.
+
+- **`provision.sql` vor `update.sh`.** `update.sh` spielt die Datei nicht
+  ein. Ohne die zwei Spalten scheitert `/team/laden-anlegen` mit SQLSTATE
+  42703. Einspielen als `supabase_admin` in einer Transaktion:
+  `ssh offload-vm 'docker exec -i debian-supabase-db-1 psql -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -1 -q' < db/provision.sql`
+- **Spaltenrechte:** `sales_app` darf in `admin_auftraege` nur
+  `eingeladen_von` und `level` ändern, sonst nichts.
+- **Ausblenden:** Läden mit `ergebnis->>'ausgeblendet' = 'true'` erscheinen
+  weder im Graph noch in „Bisherige Aufträge“ (so seit 20.10. probelauf und
+  probemail).
+- **Nachtrag:** Läden, die vor der Oberfläche per Skript entstanden sind,
+  bekommen eine Zeile `status='erfolg'`, `angefordert_von='nachtrag-struktur'`,
+  `ergebnis={"nachtrag": true}` (so seit 20.10. ivan). Der Wirt nimmt nur
+  `offen`-Zeilen, der Nachtrag löst also nichts aus.
+
 ---
 
 Betrieb auf dem MiniPC (nach dem Cutover): siehe [04_BETRIEB_MINIPC.md](04_BETRIEB_MINIPC.md),
