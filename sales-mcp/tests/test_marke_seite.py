@@ -2,6 +2,7 @@
 Der Client zur Marketing-API wird gefaelscht (wie in test_marketing_pult.py)."""
 import asyncio
 import os
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 
 os.environ["SALES_DB_SCHEMA"] = "sales_test"
@@ -26,6 +27,14 @@ VORSCHLAG = {"id": VID, "erstellt_am": "2026-10-07T10:00:00",
                            "mustertext": {"betreff": "Hallo", "ueberschrift": "Kaffee", "absatz": "Frisch."}}}
 
 
+NAMEN = ("Kurz gesagt", "Wer wir sind", "Menschen", "Zielgruppe", "Ton", "Wörter", "Angebote", "Abgrenzung",
+         "Do & Don'ts", "Fakten und Zahlen", "Bildstil", "Kanäle", "Kontakt und Impressum", "Stimme")
+FAEHIG = {"kann": ["Webseiten lesen, die du nennst oder die ich finde", "im Web suchen (mit Quellen)"],
+          "nicht": ["keine Beiträge veröffentlichen oder Mails senden"]}
+ZIEL = "/marketing/layouts?reiter=chat#ende"
+PROFIL = "/marketing/layouts?reiter=profil"
+
+
 @pytest.fixture(scope="session", autouse=True)
 def schema_wache():
     assert server.SCHEMA == "sales_test"
@@ -39,7 +48,8 @@ class Falsch:
         self.im_loop = []
         self.zustand = {"mandant": "vibemind", "name": "VibeMind", "spiegel": dict(SPIEGEL),
                         "auftraege": [], "laeuft": False, "vorschlag": None, "uebernahme": None,
-                        "uebernahme_seit": None, "aktuell": None}
+                        "uebernahme_seit": None, "aktuell": None, "abschnitt_namen": list(NAMEN),
+                        "faehigkeiten": FAEHIG, "runden_gesamt": 0}
 
     def anfrage(self, methode, pfad, daten=None, roh=False, zeitlimit=None):
         self.aufrufe.append((methode, pfad, daten))
@@ -57,7 +67,7 @@ class Falsch:
             return {"mandanten": [{"id": "vibemind", "name": "VibeMind", "aktiv": True},
                                   {"id": "fin2gether", "name": "fin2gether", "aktiv": True}]}
         if pfad.startswith("/marke?mandant="):
-            return {**self.zustand, "mandant": pfad.split("=", 1)[1]}
+            return {**self.zustand, "mandant": urllib.parse.parse_qs(pfad.split("?", 1)[1])["mandant"][0]}
         if pfad == "/marke/chat":
             return {"auftrag": "a1"}
         if pfad == "/medien/zuordnung":
@@ -66,6 +76,8 @@ class Falsch:
             return {"auftrag": "u1"}
         if pfad.endswith("/verwerfen"):
             return {"status": "verworfen"}
+        if pfad.endswith("/rueckgaengig"):
+            return {"auftrag": "r1"}
         if pfad == "/marke/bearbeiten":
             return {"auftrag": "b1"}
         return {}
@@ -122,7 +134,7 @@ def rumpf(r):
 # --- Profil -------------------------------------------------------------------
 
 def test_profil_mit_kopfteil(angemeldet):
-    r = seite(angemeldet)
+    r = seite(angemeldet, PROFIL)
     s = r.text
     assert r.status_code == 200 and "<h1>Marke</h1>" in s
     assert "#5eead4" in s and "#1d3b39" in s
@@ -139,14 +151,14 @@ def test_profil_mit_kopfteil(angemeldet):
 
 def test_profil_ohne_kopfteil(angemeldet, pult):
     pult.zustand["spiegel"] = {"gestalt": {}, "stand": "", "gespiegelt_am": None, "fehler": None}
-    s = rumpf(seite(angemeldet))
+    s = rumpf(seite(angemeldet, PROFIL))
     assert "Noch kein Branding – erzähl mir von der Firma" in s
     assert "Stand:" not in s and "marke-logo" not in s
 
 
 def test_logo_nur_als_bilddaten_url(angemeldet, pult):
     pult.zustand["spiegel"]["gestalt"]["logo"] = 'javascript:alert(1)"><script>'
-    s = rumpf(seite(angemeldet))
+    s = rumpf(seite(angemeldet, PROFIL))
     assert "javascript:" not in s and "<script" not in s and "marke-logo" not in s
 
 
@@ -155,8 +167,9 @@ def test_spiegel_veraltet_und_hinweise(angemeldet, pult):
     pult.zustand["auftraege"] = [{"id": "x", "nachricht": "Mach es wärmer", "antwort": "Fertig, <b>hier</b>",
                                   "status": "fertig", "hinweise": ["Marke.md: akzent ungültig"],
                                   "vorschlag": None, "erstellt_am": "2026-10-07T09:00:00"}]
+    p = seite(angemeldet, PROFIL).text
+    assert "Spiegel veraltet seit" in p and "akzent ungültig &lt;i&gt;" in p
     s = seite(angemeldet).text
-    assert "Spiegel veraltet seit" in s and "akzent ungültig &lt;i&gt;" in s
     assert "Mach es wärmer" in s and "Fertig, &lt;b&gt;hier&lt;/b&gt;" in s
     assert "Marke.md: akzent ungültig" in s
 
@@ -173,11 +186,11 @@ def test_firma_aus_cookie(angemeldet, pult):
 def test_refresh_nur_bei_laufendem_auftrag(angemeldet, pult):
     assert 'http-equiv="refresh"' not in seite(angemeldet).text
     pult.zustand["laeuft"] = True
-    assert '<meta http-equiv="refresh" content="5">' in seite(angemeldet).text
+    assert f'<meta http-equiv="refresh" content="5;url={ZIEL}">' in seite(angemeldet).text
     pult.zustand["laeuft"] = False
     pult.zustand["uebernahme"] = "laeuft"
     s = seite(angemeldet).text
-    assert '<meta http-equiv="refresh" content="5">' in s and "Wird übernommen …" in s
+    assert f'<meta http-equiv="refresh" content="5;url={ZIEL}">' in s and "Wird übernommen …" in s
 
 
 def test_kein_refresh_ohne_uebernahme_und_ohne_lauf_mit_vorschlag(angemeldet, pult):
@@ -191,7 +204,7 @@ def test_kein_refresh_ohne_uebernahme_und_ohne_lauf_mit_vorschlag(angemeldet, pu
 def test_senden_schickt_nachricht_mit_firma(angemeldet, pult):
     r = angemeldet.post("/marketing/marke/senden", headers=HOST, follow_redirects=False,
                         data={"csrf": ui.CSRF_TOKEN, "nachricht": "Wir sind warm und modern"})
-    assert r.status_code == 303 and r.headers["location"] == "/marketing/layouts"
+    assert r.status_code == 303 and r.headers["location"] == ZIEL
     m, p, d = pult.nach("/marke/chat")[-1]
     assert (m, p) == ("POST", "/marke/chat")
     assert d["mandant"] == "vibemind" and d["nachricht"] == "Wir sind warm und modern"
@@ -272,7 +285,7 @@ def test_vorschlag_karte_und_rahmen(angemeldet, pult):
     s = seite(angemeldet).text
     assert '<iframe class="vorschau" sandbox' in s
     assert f'src="/marketing/marke/vorschau?format=mail&amp;vorschlag={VID}"' in s
-    assert 'href="/marketing/layouts?format=handy"' in s
+    assert 'href="/marketing/layouts?reiter=chat&amp;format=handy#vorschlag"' in s
     assert "#ff6600" in s and "Eine kleine Rösterei." in s and "&lt;b&gt;warm&lt;/b&gt;" in s
     assert "<b>warm</b>" not in s
     assert 'action="/marketing/marke/uebernehmen"' in s and 'action="/marketing/marke/verwerfen"' in s
@@ -286,7 +299,7 @@ def test_handy_umschalter(angemeldet, pult):
     pult.zustand["vorschlag"] = VORSCHLAG
     s = seite(angemeldet, "/marketing/layouts?format=handy").text
     assert f'src="/marketing/marke/vorschau?format=handy&amp;vorschlag={VID}"' in s
-    assert 'href="/marketing/layouts?format=mail"' in s
+    assert 'href="/marketing/layouts?reiter=chat&amp;format=mail#vorschlag"' in s
 
 
 def test_kein_vorschlag_keine_knoepfe(angemeldet):
@@ -329,7 +342,7 @@ def test_uebernehmen_ohne_haken_ruft_nichts_auf(angemeldet, pult):
 def test_uebernehmen_mit_haken(angemeldet, pult):
     r = angemeldet.post("/marketing/marke/uebernehmen", headers=HOST, follow_redirects=False,
                         data={"csrf": ui.CSRF_TOKEN, "vorschlag": VID, "bestaetigt": "ja"})
-    assert r.status_code == 303 and r.headers["location"] == "/marketing/layouts"
+    assert r.status_code == 303 and r.headers["location"] == ZIEL
     assert pult.nach("/uebernehmen")[-1] == ("POST", f"/marke/vorschlaege/{VID}/uebernehmen",
                                              {"von": "mira", "mandant": "vibemind"})
 
@@ -360,7 +373,7 @@ def test_vorschlag_id_muss_uuid_sein(angemeldet, pult, pfad):
 def test_verwerfen(angemeldet, pult):
     r = angemeldet.post("/marketing/marke/verwerfen", headers=HOST, follow_redirects=False,
                         data={"csrf": ui.CSRF_TOKEN, "vorschlag": VID})
-    assert r.status_code == 303 and r.headers["location"] == "/marketing/layouts"
+    assert r.status_code == 303 and r.headers["location"] == ZIEL
     assert pult.nach("/verwerfen")[-1] == ("POST", f"/marke/vorschlaege/{VID}/verwerfen",
                                            {"von": "mira", "mandant": "vibemind"})
 
@@ -425,24 +438,24 @@ AKTUELL = {"abschnitte": {"Ton": "warm und klar\n\nimmer per Du\ndritte Zeile",
            "werte": {"grund": "#faf7f2", "text": "#2b2724", "akzent": "#b45309"}}
 
 
-def test_ton_und_zielgruppe_aus_aktuell_gekuerzt(angemeldet, pult):
+def test_profilkarten_zeigen_den_vollen_text_aus_aktuell(angemeldet, pult):
     pult.zustand["aktuell"] = AKTUELL
-    s = rumpf(seite(angemeldet))
-    assert "<b>Ton:</b> warm und klar<br>immer per Du" in s and "dritte Zeile" not in s
-    ziel = s[s.index("<b>Zielgruppe:</b>"):]
-    ziel = ziel[:ziel.index("</p>")]
-    assert "Radfahrer in der Stadt" in ziel and ziel.endswith("…") and len(ziel) < 200
+    s = rumpf(seite(angemeldet, PROFIL))
+    ton = s[s.index("<h3>Ton</h3>"):]
+    ton = ton[:ton.index("</section>")]
+    assert "warm und klar<br><br>immer per Du<br>dritte Zeile" in ton
+    assert "Radfahrer in der Stadt " + "x" * 300 in s
     assert "Grund #faf7f2" in s and "Text #2b2724" in s
 
 
-def test_ohne_aktuell_keine_ton_zeilen(angemeldet):
-    s = rumpf(seite(angemeldet))
-    assert "<b>Ton:</b>" not in s and "<b>Zielgruppe:</b>" not in s and "Grund #" not in s
+def test_ohne_aktuell_leere_karten(angemeldet):
+    s = rumpf(seite(angemeldet, PROFIL))
+    assert s.count("Noch leer – frag den Agenten") == 14 and "Grund #" not in s
 
 
 def test_aktuell_wird_escaped(angemeldet, pult):
     pult.zustand["aktuell"] = {"abschnitte": {"Ton": "<script>x</script>"}, "werte": {}}
-    s = rumpf(seite(angemeldet))
+    s = rumpf(seite(angemeldet, PROFIL))
     assert "<script" not in s and "&lt;script&gt;" in s
 
 
@@ -482,7 +495,7 @@ def test_schriftmuster_in_der_schrift(angemeldet, pult):
 
 def test_unbekannte_schrift_id_wird_nicht_in_css_gesetzt(angemeldet, pult):
     pult.zustand["spiegel"]["gestalt"]["schriften"] = {"anzeige": "x';}</style><b>", "text": "manrope"}
-    s = rumpf(seite(angemeldet))
+    s = rumpf(seite(angemeldet, PROFIL))
     assert "</style><b>" not in s and "&lt;/style&gt;" in s
     assert "font-family:'x" not in s
 
@@ -490,9 +503,9 @@ def test_unbekannte_schrift_id_wird_nicht_in_css_gesetzt(angemeldet, pult):
 def test_logo_grenze(angemeldet, pult):
     rand = "data:image/png;base64," + "A" * 210_000
     pult.zustand["spiegel"]["gestalt"]["logo"] = rand
-    assert 'class="marke-logo"' in rumpf(seite(angemeldet))
+    assert 'class="marke-logo"' in rumpf(seite(angemeldet, PROFIL))
     pult.zustand["spiegel"]["gestalt"]["logo"] = rand + "A"
-    assert 'class="marke-logo"' not in rumpf(seite(angemeldet))
+    assert 'class="marke-logo"' not in rumpf(seite(angemeldet, PROFIL))
 
 
 def test_formular_weg_solange_agent_laeuft(angemeldet, pult):
@@ -540,8 +553,8 @@ def _mit_cookie(c, firma):
 
 def test_i3_profil_zeigt_die_lesehinweise_der_marke_md(angemeldet, pult):
     pult.zustand["profil_hinweise"] = ["Marke.md: akzent ungültig", "Marke.md: <b>logo</b> ungültig"]
-    s = rumpf(seite(angemeldet))
-    profil = s[s.index('class="marke-profil"'):s.index("<h2>Chat</h2>")]
+    s = rumpf(seite(angemeldet, PROFIL))
+    profil = s[s.index('class="marke-profil"'):s.index('class="profil-karten"')]
     assert "Marke.md: akzent ungültig" in profil and "Marke.md: &lt;b&gt;logo&lt;/b&gt; ungültig" in profil
     assert "<b>logo</b>" not in s
 
@@ -549,7 +562,7 @@ def test_i3_profil_zeigt_die_lesehinweise_der_marke_md(angemeldet, pult):
 def test_i3_hinweise_auch_ohne_gespiegeltes_profil(angemeldet, pult):
     pult.zustand["spiegel"] = {"gestalt": {}, "stand": "", "gespiegelt_am": None, "fehler": None}
     pult.zustand["profil_hinweise"] = ["Marke.md: akzent ungültig"]
-    s = rumpf(seite(angemeldet))
+    s = rumpf(seite(angemeldet, PROFIL))
     assert "Noch kein Branding" in s and "Marke.md: akzent ungültig" in s
 
 
@@ -583,7 +596,7 @@ def test_i6_erfolg_ohne_hinweise_bleibt_still_und_laufende_uebernahme_verdeckt_d
 
 def test_minor3_spiegel_fehler_ohne_stand_wird_gezeigt(angemeldet, pult):
     pult.zustand["spiegel"] = {"gestalt": {}, "stand": "", "gespiegelt_am": None, "fehler": "Layout ungueltig: x"}
-    s = rumpf(seite(angemeldet))
+    s = rumpf(seite(angemeldet, PROFIL))
     assert "Layout ungueltig: x" in s and "None" not in s
     assert "Spiegel noch nie gesetzt: Layout ungueltig: x" in s
 
@@ -614,8 +627,8 @@ def test_runde_mit_spur_hat_details(angemeldet, pult):
                                   "denken": "Let me <think>",
                                   "schritte": [{"zeit": "08:03:41", "text": "Webseite gelesen (3 Seiten)"}]}]
     s = rumpf(seite(angemeldet))
-    assert '<details class="spur">' in s
-    assert "Gedanken &amp; Schritte" in s
+    assert '<details class="schritte">' in s
+    assert "<summary>1 Schritt</summary>" in s
     assert "Claudes Gedanken (zusammengefasst, englisch)" in s
     assert "Let me &lt;think&gt;" in s and "Let me <think>" not in s
     assert "08:03:41" in s and "Webseite gelesen (3 Seiten)" in s
@@ -624,7 +637,8 @@ def test_runde_mit_spur_hat_details(angemeldet, pult):
 def test_ohne_spur_kein_details(angemeldet, pult):
     pult.zustand["auftraege"] = [{"nachricht": "Hallo", "antwort": "Fertig.", "status": "fertig", "hinweise": [],
                                   "denken": "", "schritte": []}]
-    assert "spur" not in rumpf(seite(angemeldet))
+    s = rumpf(seite(angemeldet))
+    assert '<details class="schritte"' not in s and "spur" not in s
 
 
 def test_laufend_zeigt_live_ausschnitt(angemeldet, pult):
@@ -642,7 +656,8 @@ def test_laufende_runde_hat_kein_aufklapp_element(angemeldet, pult):
     pult.zustand["laeuft"] = True
     pult.zustand["auftraege"] = [{"nachricht": "Hallo", "antwort": "", "status": "in_arbeit", "hinweise": [],
                                   "denken": "halb", "schritte": [{"zeit": "08:00:01", "text": "Frage an Claude"}]}]
-    assert "<details" not in rumpf(seite(angemeldet))
+    s = rumpf(seite(angemeldet))
+    assert '<details class="schritte"' not in s and '<details class="spur"' not in s
 
 
 def test_uebernahme_schritte_in_letzte(angemeldet, pult):
@@ -650,7 +665,7 @@ def test_uebernahme_schritte_in_letzte(angemeldet, pult):
                                          "hinweise": [], "geaendert_am": "2026-10-07T11:00:00",
                                          "schritte": [{"zeit": "08:02:13", "text": "Rowboat geschrieben"}]}
     s = rumpf(seite(angemeldet))
-    assert "Rowboat geschrieben" in s and '<details class="spur">' in s
+    assert "Rowboat geschrieben" in s and '<details class="schritte"><summary>1 Schritt</summary>' in s
 
 
 # --- Profil bearbeiten und Logo-Fassungen (Spec 2026-10-09-marke-exakt) -------------------------
@@ -663,13 +678,13 @@ AKTUELL_VOLL = {"abschnitte": {"Ton": "warm & klar", "Bildstil": "Tageslicht"},
 
 def test_profil_bearbeiten_link_und_vorbefuelltes_formular(angemeldet, pult):
     pult.zustand["aktuell"] = AKTUELL_VOLL
-    assert 'href="/marketing/layouts?bearbeiten=1"' in seite(angemeldet).text
+    assert 'href="/marketing/layouts?bearbeiten=1"' in seite(angemeldet, PROFIL).text
     s = rumpf(seite(angemeldet, "/marketing/layouts?bearbeiten=1"))
     assert 'action="/marketing/marke/bearbeiten"' in s and "An den Agenten geben" in s
     assert 'name="akzent" value="#b45309"' in s
     assert 'name="webseite" type="url" value="https://radhaus.example/"' in s
     assert '<option value="playfair" selected>' in s and '<option value="manrope" selected>' in s
-    assert ">warm &amp; klar</textarea>" in s and 'name="ab6"' in s
+    assert ">warm &amp; klar</textarea>" in s and 'name="abschnitt::Bildstil"' in s
     assert "<script" not in s
 
 
@@ -688,20 +703,22 @@ def test_bearbeiten_waehrend_der_agent_arbeitet(angemeldet, pult):
 def test_formular_geht_an_den_agenten(angemeldet, pult):
     daten = {"csrf": ui.CSRF_TOKEN, "mandant": "vibemind", "akzent": " #b45309 ", "zweitfarbe": "#3b2f2f", "grund": "#faf7f2",
              "text": "#2b2724", "schrift_anzeige": "playfair", "schrift_text": "manrope",
-             "webseite": "https://radhaus.example/", "ab2": "Ruhig,\r\nper Du.", "ab6": "Tageslicht"}
+             "webseite": "https://radhaus.example/", "abschnitt::Ton": "Ruhig,\r\nper Du.",
+             "abschnitt::Bildstil": "Tageslicht", "abschnitt::Angebote": ""}
     r = angemeldet.post("/marketing/marke/bearbeiten", headers=HOST, data=daten, follow_redirects=False)
-    assert r.status_code == 303 and r.headers["location"] == "/marketing/layouts"
+    assert r.status_code == 303 and r.headers["location"] == ZIEL
     (methode, _, body), = pult.nach("/marke/bearbeiten")
     assert methode == "POST" and body["mandant"] == "vibemind"
     f = body["formular"]
     assert f["akzent"] == "#b45309" and f["webseite"] == "https://radhaus.example/"
     assert f["abschnitte"]["Ton"] == "Ruhig,\nper Du." and f["abschnitte"]["Bildstil"] == "Tageslicht"
-    assert f["abschnitte"]["Angebote"] == "" and len(f["abschnitte"]) == 7
+    assert f["abschnitte"] == {"Ton": "Ruhig,\nper Du.", "Bildstil": "Tageslicht", "Angebote": ""}
 
 
 def test_formular_ohne_csrf_und_zu_lang(angemeldet, pult):
     assert angemeldet.post("/marketing/marke/bearbeiten", headers=HOST, data={"akzent": "#000000"}).status_code == 403
-    r = angemeldet.post("/marketing/marke/bearbeiten", headers=HOST, data={"csrf": ui.CSRF_TOKEN, "ab0": "x" * 8001})
+    r = angemeldet.post("/marketing/marke/bearbeiten", headers=HOST, data={"csrf": ui.CSRF_TOKEN, "mandant": "vibemind",
+                                                                         "abschnitt::Kurz gesagt": "x" * 8001})
     assert r.status_code == 422 and pult.nach("/marke/bearbeiten") == []
 
 
@@ -742,7 +759,7 @@ def test_logo_fassungen_nur_mit_schlichten_namen(angemeldet, pult):
 
 def test_profil_zeigt_dunkles_logo_aus_dem_spiegel(angemeldet, pult):
     pult.zustand["spiegel"] = {**SPIEGEL, "gestalt": {**SPIEGEL["gestalt"], "logo_dunkel": LOGO}}
-    assert f'<img class="marke-logo dunkel" src="{LOGO}"' in rumpf(seite(angemeldet))
+    assert f'<img class="marke-logo dunkel" src="{LOGO}"' in rumpf(seite(angemeldet, PROFIL))
 
 
 def test_formular_traegt_die_firma_als_versteckte_angabe(angemeldet, pult):
@@ -774,6 +791,7 @@ WISSEN_FERTIG = {"status": "fertig",
 def test_wissens_lauf_fertig_mit_liste_denken_und_schritten(angemeldet, pult):
     pult.zustand["wissen"] = WISSEN_FERTIG
     s = rumpf(seite(angemeldet))
+    assert "<summary>Firmenwissen: aktuell</summary>" in s
     assert '<p class="meta">Wissen aktualisiert: 2 Dateien</p>' in s
     assert "<li>Projekte/Plan.md</li>" in s and "<li>Markenhandbuch: companys/VibeMind/Markenhandbuch.md</li>" in s
     assert "verworfen" in s and "Kandidaten: 5 Dokumente" in s and "Updating &lt;docs&gt;" in s
@@ -789,7 +807,8 @@ def test_wissens_lauf_wartet_und_laeuft(angemeldet, pult):
     r = seite(angemeldet)
     # R7: ein laufender Wissens-Lauf laedt die Seite nicht neu; Stand mit "Aktualisieren", Denken als Spur
     assert "Wissen wird aktualisiert …" in r.text and 'http-equiv="refresh"' not in r.text
-    assert '<a href="/marketing/layouts">Aktualisieren</a>' in r.text
+    assert '<a href="/marketing/layouts?reiter=chat#ende">Aktualisieren</a>' in r.text
+    assert "<summary>Firmenwissen: wird aufgefrischt</summary>" in r.text
     assert 'class="spur-live"' not in r.text and "Updating &lt;docs&gt;" in r.text
 
 
@@ -798,7 +817,7 @@ def test_wissens_denken_erscheint_nicht_im_chat_bereich(angemeldet, pult):
     pult.zustand["laufend"] = {"art": "wissen", "denken": "Reading", "schritte": []}
     s = rumpf(seite(angemeldet))
     assert s.count('class="spur-live"') == 0 and "Reading" not in s
-    assert s.index("marke-chat") > s.index("NurWissen") > s.index("Wissen wird aktualisiert")
+    assert s.index('class="chat-eingabe"') < s.index("Wissen wird aktualisiert") < s.index("NurWissen") < s.index('id="ende"')
 
 
 def test_wissens_lauf_teilweise_und_fehler(angemeldet, pult):
@@ -808,13 +827,14 @@ def test_wissens_lauf_teilweise_und_fehler(angemeldet, pult):
     assert teilweise in rumpf(seite(angemeldet))
     pult.zustand["wissen"] = {**WISSEN_FERTIG, "status": "fehler",
                               "antwort": "Wissen-Lauf nicht möglich: companys/VibeMind fehlt"}
+    s = rumpf(seite(angemeldet))
     assert ('<p class="warnung">Wissen nicht aktualisiert: Wissen-Lauf nicht möglich: companys/VibeMind fehlt</p>'
-            in rumpf(seite(angemeldet)))
+            in s) and "<summary>Firmenwissen: Fehler</summary>" in s
 
 
 def test_ohne_wissens_lauf_kein_abschnitt(angemeldet):
     s = rumpf(seite(angemeldet))
-    assert "marke-wissen" not in s and "Wissen wird" not in s
+    assert "marke-wissen" not in s and "Wissen wird" not in s and "Firmenwissen" not in s
 
 
 # --- Schlussrunde (final-review.md I1/I2, Rulings R7/R8) ------------------------------------------
@@ -827,7 +847,7 @@ def test_r7_nur_wissen_laeuft_kein_refresh_chat_formular_offen(angemeldet, pult)
         r = seite(angemeldet)
         assert 'http-equiv="refresh"' not in r.text, status
         assert 'action="/marketing/marke/senden"' in r.text, status
-        assert '<a href="/marketing/layouts">Aktualisieren</a>' in r.text, status
+        assert '<a href="/marketing/layouts?reiter=chat#ende">Aktualisieren</a>' in r.text, status
     s = rumpf(seite(angemeldet, "/marketing/layouts?bearbeiten=1"))
     assert 'action="/marketing/marke/bearbeiten"' in s
 
@@ -835,10 +855,10 @@ def test_r7_nur_wissen_laeuft_kein_refresh_chat_formular_offen(angemeldet, pult)
 def test_r7_refresh_bleibt_fuer_chat_bearbeitung_und_uebernahme(angemeldet, pult):
     pult.zustand["wissen"] = {**WISSEN_FERTIG, "status": "in_arbeit"}
     pult.zustand["laeuft"] = True
-    assert '<meta http-equiv="refresh" content="5">' in seite(angemeldet).text
+    assert f'<meta http-equiv="refresh" content="5;url={ZIEL}">' in seite(angemeldet).text
     pult.zustand["laeuft"] = False
     pult.zustand["uebernahme"] = "laeuft"
-    assert '<meta http-equiv="refresh" content="5">' in seite(angemeldet).text
+    assert f'<meta http-equiv="refresh" content="5;url={ZIEL}">' in seite(angemeldet).text
 
 
 ECHT = {"werte": {"akzent": "#123456", "zweitfarbe": "#3b2f2f", "grund": "#faf7f2", "text": "#2b2724",
@@ -855,7 +875,7 @@ def test_r8_formular_aus_dem_echten_profil_nicht_aus_dem_vorschlag(angemeldet, p
     assert '<option value="oxanium" selected>' in s
     assert ">Aus der Marke.md</textarea>" in s and ">Nur in Rowboat ergänzt</textarea>" in s
     assert "warm &amp; klar" not in s and "Tageslicht" not in s
-    p = rumpf(seite(angemeldet))                     # die Profilkarte liest dieselbe Quelle
+    p = rumpf(seite(angemeldet, PROFIL))             # die Profilkarten lesen dieselbe Quelle
     assert "Aus der Marke.md" in p and "warm &amp; klar" not in p
 
 
@@ -884,3 +904,238 @@ def test_profil_bearbeiten_warnt_vor_offenem_vorschlag(angemeldet, pult, medieno
             "wenn du ihn behalten willst.") in s
     assert "<b>" not in s.split("offenen Vorschlag vom ")[1].split("</p>")[0]
     assert s.index("offenen Vorschlag") < s.index("marke-bearbeiten")
+
+
+# --- Marken-Chat neu (Plan 2026-10-20, Task 5: Reiter, Chat wie Claude Code, Profil vollständig) ----------
+
+VID_A = "55555555-5555-5555-5555-555555555555"
+
+
+def _runde(n, **kw):
+    a = {"id": f"a{n}", "nachricht": f"Frage Nummer {n}", "antwort": f"Antwort Nummer {n}", "status": "fertig",
+         "hinweise": [], "vorschlag": None, "denken": "", "schritte": [], "art": "chat", "quellen": [],
+         "aenderung": None, "erstellt_am": f"2026-10-20T09:{n:02d}:00"}
+    a.update(kw)
+    return a
+
+
+def _aenderung(vid=VID_A, **kw):
+    z = {"vid": vid, "status": "angenommen", "direkt": True, "rueckgaengig_moeglich": True,
+         "aenderungen": [{"feld": "Ton", "vorher": "kühl <i>", "nachher": "warm und klar"}]}
+    z.update(kw)
+    return z
+
+
+def test_reiter_chat_ist_vorgabe(angemeldet, pult):
+    s = rumpf(seite(angemeldet))
+    assert '<nav class="reiter"' in s
+    assert 'href="/marketing/layouts?reiter=chat#ende" aria-current="page">Chat</a>' in s
+    assert 'href="/marketing/layouts?reiter=profil">Profil</a>' in s
+    assert 'class="profil-karten"' not in s and 'id="ende"' in s
+    p = rumpf(seite(angemeldet, PROFIL))
+    assert 'href="/marketing/layouts?reiter=profil" aria-current="page">Profil</a>' in p
+    assert 'class="profil-karten"' in p and 'id="ende"' not in p
+
+
+def test_profil_reiter_zeigt_leere_neue_abschnitte(angemeldet, pult):
+    pult.zustand["profil"] = {"werte": {}, "abschnitte": {"Ton": "warm", "Bildstil": "hell"}}
+    s = rumpf(seite(angemeldet, PROFIL))
+    assert s.count('<section class="profil-karte">') == 14
+    assert s.count("Noch leer – frag den Agenten") == 12
+    positionen = [s.index(f"<h3>{ui._e(n)}</h3>") for n in NAMEN]
+    assert positionen == sorted(positionen)
+    assert "<h3>Kanäle</h3>" in s and "<h3>Do &amp; Don&#x27;ts</h3>" in s
+
+
+def test_profil_ohne_namensliste_zeigt_die_vorhandenen_abschnitte(angemeldet, pult):
+    pult.zustand.pop("abschnitt_namen")
+    pult.zustand["profil"] = {"werte": {}, "abschnitte": {"Ton": "warm", "Notizen": "eigene"}}
+    s = rumpf(seite(angemeldet, PROFIL))
+    assert s.count('<section class="profil-karte">') == 2
+    assert s.index("<h3>Ton</h3>") < s.index("<h3>Notizen</h3>")
+
+
+def test_dunkles_logo_auf_dunkler_flaeche(angemeldet, pult):
+    pult.zustand["spiegel"] = {**SPIEGEL, "gestalt": {**SPIEGEL["gestalt"], "logo": LOGO, "logo_dunkel": LOGO}}
+    s = rumpf(seite(angemeldet, PROFIL))
+    dunkel = s[s.index('class="logo-dunkel-flaeche"'):]
+    assert dunkel.index(f'<img class="marke-logo dunkel" src="{LOGO}"') < dunkel.index("</div>")
+    hell = s[s.index('class="logo-hell-flaeche"'):]
+    assert hell.index(f'<img class="marke-logo" src="{LOGO}"') < hell.index("</div>")
+
+
+def test_verlauf_aelteste_oben_eingabe_unten(angemeldet, pult):
+    pult.zustand["auftraege"] = [_runde(1), _runde(2)]
+    s = rumpf(seite(angemeldet))
+    verlauf = s.index('class="chat-verlauf"')
+    assert verlauf < s.index("Frage Nummer 1") < s.index("Frage Nummer 2") < s.index('id="ende"')
+    assert '<form method="post" action="/marketing/marke/senden"' in s
+    eingabe = s.index('action="/marketing/marke/senden"')
+    assert s.index("Antwort Nummer 2") < eingabe < s.index('class="chat-eingabe"') < s.index('id="ende"')
+    assert 'class="blase-du"' in s and 'class="blase-agent"' in s
+    assert "20.10.2026 09:01" in s or "20.10.2026 11:01" in s          # Uhrzeit an der Du-Blase
+
+
+def test_aeltere_anzeigen_link(angemeldet, pult):
+    pult.zustand["auftraege"] = [_runde(i) for i in range(5, 15)]
+    pult.zustand["runden_gesamt"] = 14
+    s = rumpf(seite(angemeldet))
+    assert 'href="/marketing/layouts?reiter=chat&amp;alle=1#ende">Ältere anzeigen' in s
+    assert s.index("Ältere anzeigen") < s.index("Frage Nummer 5")
+    assert pult.nach("/marke?mandant=")[-1][1] == "/marke?mandant=vibemind"
+    s = rumpf(seite(angemeldet, "/marketing/layouts?reiter=chat&alle=1"))
+    assert pult.nach("/marke?mandant=")[-1][1] == "/marke?mandant=vibemind&alle=1"
+    pult.zustand["runden_gesamt"] = 10
+    assert "Ältere anzeigen" not in rumpf(seite(angemeldet))
+
+
+def test_schritte_eine_zeile(angemeldet, pult):
+    schritte = [{"zeit": "09:00:0" + str(i), "text": t} for i, t in
+                enumerate(["Frage an Claude", "Websuche genutzt", "Antwort geprüft: ok", "Vorschlag abgelegt"])]
+    quellen = [{"titel": "Rösterei Startseite", "url": "https://roesterei.example/", "art": "gelesen"},
+               {"titel": "Branchenbericht", "url": "http://bericht.example/a", "art": "websuche"}]
+    pult.zustand["auftraege"] = [_runde(1, schritte=schritte, quellen=quellen, denken="Thinking")]
+    s = rumpf(seite(angemeldet))
+    assert '<details class="schritte"><summary>4 Schritte · Websuche · 2 Quellen</summary>' in s
+    assert ('<a href="https://roesterei.example/" rel="noopener noreferrer" target="_blank">'
+            'Rösterei Startseite</a>') in s
+    assert "Branchenbericht</a> <span class=\"meta\">Websuche</span>" in s
+    assert "Claudes Gedanken (zusammengefasst, englisch)" in s and "Thinking" in s
+    pult.zustand["auftraege"] = [_runde(1, schritte=schritte[:1])]
+    assert "<summary>1 Schritt</summary>" in rumpf(seite(angemeldet))
+
+
+def test_quelle_javascript_wird_kein_link(angemeldet, pult):
+    quellen = [{"titel": "<script>alert(2)</script>", "url": "javascript:alert(1)", "art": "websuche"},
+               {"titel": "Daten", "url": "data:text/html,x", "art": "websuche"},
+               {"titel": "Gut", "url": 'https://a.example/"><b>', "art": "gelesen"}]
+    pult.zustand["auftraege"] = [_runde(1, quellen=quellen, schritte=[{"zeit": "09:00:00", "text": "x"}])]
+    s = rumpf(seite(angemeldet))
+    assert 'href="javascript' not in s and 'href="data:' not in s
+    assert "<script" not in s and "&lt;script&gt;alert(2)&lt;/script&gt;" in s
+    assert "javascript:alert(1)" in s                                   # als Text sichtbar
+    assert 'href="https://a.example/&quot;&gt;&lt;b&gt;"' in s and "<b>" not in s
+
+
+def test_aenderung_mit_rueckgaengig(angemeldet, pult):
+    pult.zustand["auftraege"] = [_runde(1, vorschlag=VID_A, aenderung=_aenderung(
+        aenderungen=[{"feld": "Ton", "vorher": "kühl <i>", "nachher": "warm und klar"},
+                     {"feld": "Wörter", "vorher": "", "nachher": "Bohne, Röstung"}]))]
+    s = rumpf(seite(angemeldet))
+    assert "Geändert: Ton, Wörter" in s
+    assert "kühl &lt;i&gt;" in s and "warm und klar" in s and "Bohne, Röstung" in s
+    assert "<summary>Ton</summary>" in s and "vorher" in s and "nachher" in s
+    assert 'action="/marketing/marke/rueckgaengig"' in s
+    assert f'name="vorschlag" value="{VID_A}"' in s and "Rückgängig</button>" in s
+    karte = s[s.index("Geändert: Ton"):]
+    assert 'name="csrf"' in karte[:karte.index("Rückgängig</button>")]
+    pult.zustand["auftraege"] = [_runde(1, vorschlag=VID_A, aenderung=_aenderung(rueckgaengig_moeglich=False))]
+    s = rumpf(seite(angemeldet))
+    assert "Geändert: Ton" in s and "/marketing/marke/rueckgaengig" not in s
+
+
+def test_direkt_aber_offen_zeigt_die_vorschlagskarte(angemeldet, pult):
+    """Ruling: scheitert das direkte Annehmen, bleibt der Vorschlag offen - dann die normale Karte."""
+    pult.zustand["vorschlag"] = {**VORSCHLAG, "id": VID_A}
+    pult.zustand["auftraege"] = [_runde(1, vorschlag=VID_A, aenderung=_aenderung(status="offen",
+                                                                                 rueckgaengig_moeglich=False))]
+    s = rumpf(seite(angemeldet))
+    assert "Geändert:" not in s and "/marketing/marke/rueckgaengig" not in s
+    assert 'action="/marketing/marke/uebernehmen"' in s and 'name="bestaetigt"' in s
+
+
+def test_rueckgaengig_post(angemeldet, pult):
+    r = angemeldet.post("/marketing/marke/rueckgaengig", headers=HOST, follow_redirects=False,
+                        data={"csrf": ui.CSRF_TOKEN, "vorschlag": VID_A})
+    assert r.status_code == 303 and r.headers["location"] == ZIEL
+    assert pult.nach("/rueckgaengig")[-1] == ("POST", f"/marke/vorschlaege/{VID_A}/rueckgaengig",
+                                              {"von": "mira", "mandant": "vibemind"})
+    r = angemeldet.post("/marketing/marke/rueckgaengig", headers=HOST, data={"vorschlag": VID_A})
+    assert r.status_code == 403 and len(pult.nach("/rueckgaengig")) == 1
+    r = angemeldet.post("/marketing/marke/rueckgaengig", headers=HOST,
+                        data={"csrf": ui.CSRF_TOKEN, "vorschlag": "../x"})
+    assert r.status_code == 422 and len(pult.nach("/rueckgaengig")) == 1
+    meldung = "Inzwischen gibt es eine neuere Änderung – Rückgängig geht nur für die letzte."
+    pult.fehler = marketing_pult.PultFehler("abgelehnt", meldung)
+    pult.fehler_pfad = "/rueckgaengig"
+    r = angemeldet.post("/marketing/marke/rueckgaengig", headers=HOST,
+                        data={"csrf": ui.CSRF_TOKEN, "vorschlag": VID_A})
+    assert r.status_code == 422 and meldung in r.text
+
+
+def test_offener_vorschlag_in_seiner_runde(angemeldet, pult):
+    pult.zustand["vorschlag"] = VORSCHLAG
+    pult.zustand["auftraege"] = [_runde(1, vorschlag=VID), _runde(2)]
+    s = rumpf(seite(angemeldet))
+    karte = s.index('action="/marketing/marke/uebernehmen"')
+    assert s.index("Antwort Nummer 1") < karte < s.index("Frage Nummer 2") < s.index('id="ende"')
+    assert s.count('action="/marketing/marke/uebernehmen"') == 1
+
+
+def test_offener_vorschlag_ohne_runde_steht_vor_der_eingabe(angemeldet, pult):
+    pult.zustand["vorschlag"] = VORSCHLAG
+    pult.zustand["auftraege"] = [_runde(1), _runde(2)]
+    s = rumpf(seite(angemeldet))
+    assert s.index("Antwort Nummer 2") < s.index('action="/marketing/marke/uebernehmen"') < s.index('id="ende"')
+
+
+def test_bearbeitung_als_systemzeile(angemeldet, pult):
+    pult.zustand["auftraege"] = [_runde(1, art="bearbeitung", nachricht="Formular", antwort="Übernommen.")]
+    s = rumpf(seite(angemeldet))
+    assert '<p class="systemzeile">Profil von Hand bearbeitet' in s
+    assert 'class="blase-du"' not in s and "Übernommen." in s
+
+
+def test_refresh_mit_anker(angemeldet, pult):
+    pult.zustand["laeuft"] = True
+    assert 'content="5;url=/marketing/layouts?reiter=chat#ende"' in seite(angemeldet).text
+    pult.zustand["laeuft"] = False
+    pult.zustand["wissen"] = {**WISSEN_FERTIG, "status": "in_arbeit"}
+    assert 'http-equiv="refresh"' not in seite(angemeldet).text
+
+
+def test_seite_refresh_bleibt_rueckwaertsvertraeglich():
+    assert '<meta http-equiv="refresh" content="7">' in ui._seite("X", "<p>x</p>", refresh=7).body.decode()
+    alt = ui._seite("X", "<p>x</p>", refresh=(5, "/a?b=1&c=2#ende")).body.decode()
+    assert '<meta http-equiv="refresh" content="5;url=/a?b=1&amp;c=2#ende">' in alt
+    assert 'http-equiv="refresh"' not in ui._seite("X", "<p>x</p>").body.decode()
+
+
+def test_bearbeiten_felder_nach_namen(angemeldet, pult):
+    pult.zustand["profil"] = {"werte": {}, "abschnitte": {"Kurz gesagt": "Röstet <gut>"}}
+    s = rumpf(seite(angemeldet, "/marketing/layouts?bearbeiten=1"))
+    for n in NAMEN:
+        assert f'name="abschnitt::{ui._e(n)}"' in s, n
+    assert ">Röstet &lt;gut&gt;</textarea>" in s and 'name="ab0"' not in s
+    r = angemeldet.post("/marketing/marke/bearbeiten", headers=HOST, follow_redirects=False,
+                        data={"csrf": ui.CSRF_TOKEN, "mandant": "vibemind", "abschnitt::Kurz gesagt": "Kurz",
+                              "abschnitt::Wörter": "Bohne", "abschnitt::Kanäle": "Instagram"})
+    assert r.status_code == 303 and r.headers["location"] == ZIEL
+    f = pult.nach("/marke/bearbeiten")[-1][2]["formular"]
+    assert f["abschnitte"] == {"Kurz gesagt": "Kurz", "Wörter": "Bohne", "Kanäle": "Instagram"}
+
+
+def test_bearbeiten_altes_formular_wird_abgewiesen(angemeldet, pult):
+    """Ein Tab mit dem alten Formular (ab0..ab6) leerte sonst alle Abschnitte."""
+    r = angemeldet.post("/marketing/marke/bearbeiten", headers=HOST,
+                        data={"csrf": ui.CSRF_TOKEN, "mandant": "vibemind", "ab0": "Wer"})
+    assert r.status_code == 422 and pult.nach("/marke/bearbeiten") == []
+
+
+def test_faehigkeiten_eingeklappt_oben(angemeldet, pult):
+    pult.zustand["auftraege"] = [_runde(1)]
+    s = rumpf(seite(angemeldet))
+    f = s.index('<details class="faehigkeiten">')
+    assert f < s.index('class="chat-verlauf"')
+    assert "im Web suchen (mit Quellen)" in s and "keine Beiträge veröffentlichen oder Mails senden" in s
+    pult.zustand.pop("faehigkeiten")
+    assert "faehigkeiten" not in rumpf(seite(angemeldet))
+
+
+def test_laufende_runde_zeigt_denkt_nach_in_der_runde(angemeldet, pult):
+    pult.zustand["laeuft"] = True
+    pult.zustand["laufend"] = {"art": "chat", "denken": "", "schritte": [{"zeit": "09:00:01", "text": "Frage an Claude"}]}
+    pult.zustand["auftraege"] = [_runde(1), _runde(2, antwort="", status="in_arbeit")]
+    s = rumpf(seite(angemeldet))
+    assert s.count("Denkt nach …") == 1
+    assert s.index("Frage Nummer 2") < s.index("Denkt nach …") < s.index('id="ende"')

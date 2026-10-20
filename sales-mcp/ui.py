@@ -845,6 +845,9 @@ _STIL = """
   --fehler_flaeche: #fbe4e4; --fehler_linie: #b35a5a; --fehler_schrift: #6b1212;
   --hinweis_flaeche: #fdf3d7; --hinweis_linie: #a8892e;
   --hinweis_schrift: #4a3c10;
+  /* Logo-Untergründe der Marken-Seite: in beiden Themen gleich, denn das
+     helle Logo ist für Weiß gemacht und das dunkle für eine dunkle Fläche */
+  --logo_grund_hell: #ffffff; --logo_grund_dunkel: #1a1a1a;
   /* Schriften der Marke (Paket C4): laden_marke setzt sie je Laden neu */
   --schrift_anzeige: "Oxanium", "DM Sans", system-ui, sans-serif;
   --schrift_text: "DM Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -1477,11 +1480,6 @@ nav.reiter .zahl { font-size: .8rem; color: var(--gedaempft); }
             border: 1px solid var(--linie); }
 .marke-logo { max-height: 4rem; max-width: 12rem; background: #ffffff; padding: .2rem; }
 .schriftmuster { font-weight: 700; }
-.marke-chat { display: grid; gap: .5rem; margin-bottom: .8rem; }
-.chat-du { margin: 0; padding: .4rem .6rem; border-radius: 4px; background: var(--flaeche); }
-.chat-agent { margin: 0 0 0 1.2rem; }
-.spur { margin: .2rem 0 0 1.2rem; font-size: .85rem; }
-.spur summary { cursor: pointer; color: var(--gedaempft); }
 .spur-schritte { margin: .3rem 0; padding-left: 1.2rem; }
 .spur-schritte .zeit { color: var(--gedaempft); font-variant-numeric: tabular-nums; }
 .spur-denken { white-space: pre-wrap; font: inherit; font-size: .8rem; color: var(--gedaempft); max-height: 18rem; overflow: auto; margin: .2rem 0; }
@@ -1495,6 +1493,69 @@ nav.reiter .zahl { font-size: .8rem; color: var(--gedaempft); }
 .logo-fassung.hell { background: #ffffff; color: #1a1a1a; }
 .logo-fassung.dunkel { background: #1a1a1a; color: #ffffff; }
 .marke-bearbeiten textarea { width: 100%; }
+/* Marken-Chat (Plan 2026-10-20 E10): Verlauf wie in Claude Code, das
+   Älteste oben, die Eingabe klebt unten. Farben nur über Variablen. */
+.chat-verlauf { display: flex; flex-direction: column; gap: 1rem; margin: .6rem 0 1rem; }
+.chat-runde { display: flex; flex-direction: column; gap: .45rem; }
+.blase-kopf { display: block; font-size: .75rem; color: var(--gedaempft); margin-bottom: .15rem; }
+.blase-du { align-self: flex-end; max-width: min(42rem, 88%); padding: .5rem .8rem;
+            background: var(--aktiv); color: var(--schrift); border-radius: 14px 14px 4px 14px; }
+.blase-agent { align-self: flex-start; max-width: min(50rem, 94%); padding: .5rem .8rem;
+               background: var(--flaeche); color: var(--schrift); border: 1px solid var(--linie);
+               border-radius: 14px 14px 14px 4px; }
+.blase-du p, .blase-agent > p { margin: 0 0 .3rem; white-space: pre-wrap; }
+.blase-agent .spur-live { margin: .2rem 0; }
+.systemzeile { align-self: center; margin: 0; padding: .2rem .8rem; font-size: .85rem;
+               color: var(--gedaempft); border: 1px dashed var(--linie_stark); border-radius: 999px; }
+.systemblock { align-self: stretch; }
+.schritte { font-size: .85rem; margin-top: .2rem; }
+.schritte > summary, .faehigkeiten > summary, .wissen-zeile summary, .diff-karte summary {
+  cursor: pointer; color: var(--gedaempft); min-height: 44px; padding: .6rem 0; }
+.quellen { margin: .2rem 0 .4rem; padding-left: 1.2rem; }
+.faehigkeiten { margin: 0 0 .4rem; font-size: .9rem; }
+.faehigkeiten ul { margin: .2rem 0 .4rem; padding-left: 1.2rem; }
+.aeltere { align-self: center; margin: 0; }
+.aeltere a { display: inline-flex; align-items: center; min-height: 44px; }
+.diff-karte { align-self: flex-start; max-width: min(50rem, 94%); padding: .4rem .8rem;
+              background: var(--flaeche); border: 1px solid var(--linie);
+              border-left: 4px solid var(--gut); border-radius: 6px; }
+.diff-karte > p { margin: .2rem 0; }
+.diff-karte .vorher, .diff-karte .nachher { padding: .3rem .5rem; border-radius: 4px; white-space: pre-wrap; }
+.diff-karte .vorher { background: var(--fehler_flaeche); color: var(--fehler_schrift); }
+.diff-karte .nachher { background: color-mix(in srgb, var(--gut) 16%, var(--flaeche)); color: var(--schrift); }
+.diff-karte form { margin: .4rem 0 .2rem; }
+.vorschlag-karte { align-self: stretch; padding: .5rem .8rem; background: var(--flaeche);
+                   border: 1px solid var(--akzent); border-radius: 6px; }
+.vorschlag-karte h3 { margin: .2rem 0; }
+/* body mit overflow-x: hidden ist ein eigener Bildlauf-Behälter, der nie
+   scrollt: daran klebt sticky nicht (gemessen, 20.10.2026). `clip` schneidet
+   genauso ab, ohne Behälter; nur auf der Marken-Seite, andere Seiten bleiben. */
+body:has(.chat-eingabe) { overflow-x: clip; }
+.chat-eingabe { position: sticky; bottom: 0; z-index: 4; display: grid; gap: .4rem;
+                margin: 0; padding: .6rem 0 .7rem; background: var(--grund);
+                border-top: 1px solid var(--linie); }
+/* Am Handy liegt unten die feste Tab-Leiste (56 px): die Eingabe klebt darüber. */
+@media (max-width: 767px) {
+  .chat-eingabe { bottom: calc(57px + env(safe-area-inset-bottom)); } }
+.chat-eingabe textarea { width: 100%; min-height: 44px; resize: vertical; }
+.chat-eingabe-zeile { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center;
+                      justify-content: space-between; }
+.chat-eingabe-zeile button { min-height: 44px; }
+.wissen-zeile { display: flex; flex-wrap: wrap; gap: .2rem .8rem; align-items: baseline;
+                font-size: .85rem; margin: .4rem 0 1rem; }
+.profil-karten { display: grid; grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
+                 gap: .7rem; margin: .8rem 0; }
+.profil-karte { padding: .6rem .8rem; background: var(--flaeche); border: 1px solid var(--linie);
+                border-radius: 6px; }
+.profil-karte h3 { margin: 0 0 .3rem; font-size: 1rem; }
+.profil-karte p { margin: 0; }
+.profil-karte .leer { color: var(--gedaempft); font-style: italic; }
+.profil-logos { display: flex; flex-wrap: wrap; gap: .6rem; margin: .4rem 0; }
+.logo-hell-flaeche, .logo-dunkel-flaeche { padding: .5rem .8rem; border-radius: 6px;
+                                           border: 1px solid var(--linie); }
+.logo-hell-flaeche { background: var(--logo_grund_hell); }
+.logo-dunkel-flaeche { background: var(--logo_grund_dunkel); }
+.profil-logos .marke-logo { background: transparent; padding: 0; display: block; }
 .status-zeile { font-weight: 700; }
 .pult-felder fieldset.farben { display: grid; gap: 0 1rem;
   grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -2061,12 +2122,19 @@ def _laden_stil() -> str:
 
 
 def _seite(titel: str, rumpf: str, status: int = 200,
-           refresh: int | None = None,
+           refresh: int | tuple[int, str] | None = None,
            titel_zeigen: bool = True) -> HTMLResponse:
     """`titel_zeigen=False`: der Rumpf bringt sein eigenes `<h1>` mit (die
-    Kopfkarte der Kontaktseite); `<title>` bleibt."""
-    auffrischen = (f'<meta http-equiv="refresh" content="{int(refresh)}">'
-                   if refresh else "")
+    Kopfkarte der Kontaktseite); `<title>` bleibt. `refresh=(5, url)` lädt
+    nach 5 s die Adresse `url` (mit Sprunganker, Plan Marken-Chat E11);
+    eine Zahl allein lädt dieselbe Seite neu."""
+    if isinstance(refresh, tuple):
+        sekunden, ziel = refresh
+        auffrischen = (f'<meta http-equiv="refresh" '
+                       f'content="{int(sekunden)};url={_e(ziel)}">')
+    else:
+        auffrischen = (f'<meta http-equiv="refresh" content="{int(refresh)}">'
+                       if refresh else "")
     nav = _seitenleiste(_abmelden_formular())
     return HTMLResponse(
         f'<!doctype html><html lang="de"><head><meta charset="utf-8">'
