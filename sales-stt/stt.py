@@ -3,8 +3,10 @@
 Warum lokal und nicht per API: eine Sprachnachricht ist die Stimme eines
 Kunden. Sie an einen Fremddienst zu geben waere eine Auftragsverarbeitung
 mehr im AVV, eine Uebermittlung mehr in den TOMs und ein Gespraech mehr
-mit dem Datenschutz. Das Modell laeuft auf der VM (gemessen: 12 s Audio
-in 4 s auf 4 Kernen) — die Stimme verlaesst das Haus nicht.
+mit dem Datenschutz. Das Modell lief bis 20.10.2026 auf der VM (gemessen:
+12 s Audio in 4 s auf 4 Kernen); seitdem laeuft es am PC des Betreibers
+(Regel: keine Modelle auf dem Mini-PC), erreichbar nur ueber das eigene
+Tailnet — die Stimme verlaesst das Haus weiterhin nicht.
 
 Schnittstelle, bewusst winzig:
 
@@ -12,8 +14,9 @@ Schnittstelle, bewusst winzig:
         -> {"text": "...", "sprache": "de", "dauer_s": 12.3}
     GET  /gesundheit       -> {"bereit": true, "modell": "base"}
 
-Der Dienst hat KEINE Datenbank, KEINE Schluessel, KEINEN Zugang nach
-draussen. Er bekommt Audio, gibt Text — mehr kann er nicht, und das ist
+Der Dienst hat KEINE Datenbank, KEINE Geheimnisse ausser seinem eigenen
+Zugangsschluessel (STT_SCHLUESSEL -> Kopf X-STT-Key, am PC Pflicht, im
+Container-Rueckweg leer) und KEINEN Zugang nach draussen. Er bekommt Audio, gibt Text — mehr kann er nicht, und das ist
 die Absicht (dieselbe T5a-Ueberlegung wie bei sales-ui).
 
 Das Modell wird beim ERSTEN Aufruf geladen (~15 s), nicht beim Start:
