@@ -24,7 +24,7 @@ def test_tabelle_existiert_mit_den_erwarteten_spalten():
     spalten = [z["column_name"] for z in zeilen]
     assert spalten == ["id", "art", "name", "angefordert_von", "status",
                         "ergebnis", "fehler", "erstellt_am", "erledigt_am",
-                        "email"]
+                        "email", "eingeladen_von"]
 
 
 def test_art_erlaubt_nur_die_beiden_bekannten_werte():
@@ -153,6 +153,38 @@ def test_laden_anlegen_mit_kaputter_adresse_scheitert_am_check():
             hat_sqlstate = "23514" in str(getattr(e, "sqlstate", "") or e)
         assert hat_sqlstate
         conn.rollback()
+
+
+def test_eingeladen_von_erzwingt_das_namensmuster():
+    """Struktur-Graph (Plan 2026-10-20, E2): kein FK möglich, aber ein CHECK
+    mit dem Namensmuster — so gelangt kein Markup in die Spalte."""
+    with server.pool.connection() as conn:
+        for schlecht in ("Ivan", "<script>", "a b", ""):
+            ok = False
+            try:
+                conn.execute("insert into admin_auftraege (art, name, angefordert_von, eingeladen_von) "
+                             "values ('laden_anlegen', 'lena', 'test', %s)", (schlecht,))
+            except Exception as e:
+                ok = "23514" in str(getattr(e, "sqlstate", "") or e)
+            assert ok, schlecht
+            conn.rollback()
+        conn.execute("insert into admin_auftraege (art, name, angefordert_von, eingeladen_von) "
+                     "values ('laden_anlegen', 'lena', 'test', null)")
+        conn.rollback()
+
+
+def test_sales_app_darf_auf_sales_nur_eingeladen_von_aendern():
+    """E3: Status und Ergebnis schreibt nur der Wirt; die Oberfläche darf
+    ausschließlich den Einlader umhängen."""
+    spalten = [z["column_name"] for z in server._q(
+        "select column_name from information_schema.column_privileges "
+        "where table_schema='sales' and table_name='admin_auftraege' "
+        "and grantee='sales_app' and privilege_type='UPDATE'")]
+    assert spalten == ["eingeladen_von"]
+    tabelle = {z["privilege_type"] for z in server._q(
+        "select privilege_type from information_schema.role_table_grants "
+        "where table_schema='sales' and table_name='admin_auftraege' and grantee='sales_app'")}
+    assert tabelle == {"INSERT", "SELECT"}
 
 
 def test_laden_anlegen_ohne_adresse_bleibt_erlaubt():

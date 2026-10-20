@@ -230,6 +230,78 @@ def test_ohne_adresse_bleibt_alles_wie_bisher():
     assert "Probe-ABC" in _get("/team/laden-anlegen").text
 
 
+# --- Struktur-Graph (Plan 2026-10-20-struktur-graph, Task 2) ---------------
+
+def _erfolg(name, einlader=None, ergebnis=None):
+    """Eine fertig angelegte Laden-Zeile (status 'erfolg') mit Einlader."""
+    server._q(
+        "insert into admin_auftraege (art, name, angefordert_von, status, "
+        "ergebnis, erledigt_am, eingeladen_von) values ('laden_anlegen', %s, "
+        "'test', 'erfolg', %s::jsonb, now(), %s) returning id",
+        (name, ergebnis, einlader))
+
+
+def test_auswahl_nur_erfolg():
+    _erfolg("ivan")
+    server._q("insert into admin_auftraege (art, name, angefordert_von) values ('laden_anlegen','offen1','t')")
+    t = _get("/team/laden-anlegen").text
+    assert '<select name="einlader"' in t and '<option value="">Ich</option>' in t
+    assert '<option value="ivan">ivan (Ebene 1)</option>' in t
+    assert 'value="offen1"' not in t
+
+
+def test_anlegen_ohne_einlader_feld_ist_ich():      # alte Formulare, E9
+    assert _post("/team/laden-anlegen/anfordern", {"name": "lena", "csrf": ui.CSRF_TOKEN}).status_code == 303
+    assert server._q("select eingeladen_von from admin_auftraege")[0]["eingeladen_von"] is None
+
+
+def test_anlegen_mit_einlader_speichert_ihn():
+    _erfolg("ivan")
+    r = _post("/team/laden-anlegen/anfordern", {"name": "lena", "einlader": "ivan", "csrf": ui.CSRF_TOKEN})
+    assert r.status_code == 303
+    assert server._q("select eingeladen_von from admin_auftraege where name='lena'")[0]["eingeladen_von"] == "ivan"
+
+
+def test_anlegen_unbekannter_einlader_wird_abgewiesen():
+    r = _post("/team/laden-anlegen/anfordern", {"name": "lena", "einlader": "nemo", "csrf": ui.CSRF_TOKEN})
+    assert r.status_code == 400 and "gibt es nicht" in r.text and "Nichts wurde angelegt" in r.text
+    assert server._q("select count(*) as n from admin_auftraege")[0]["n"] == 0
+
+
+def test_anlegen_unter_ebene_sechs_wird_abgewiesen():
+    vorher = None
+    for n in ("e1", "e2", "e3", "e4", "e5", "e6"):
+        _erfolg(n, vorher); vorher = n
+    r = _post("/team/laden-anlegen/anfordern", {"name": "lena", "einlader": "e6", "csrf": ui.CSRF_TOKEN})
+    assert r.status_code == 400 and "Ebene 7" in r.text
+    assert server._q("select count(*) as n from admin_auftraege where name='lena'")[0]["n"] == 0
+
+
+def test_nachtrag_zeigt_keinen_passwort_platzhalter():   # E14
+    server._q("insert into admin_auftraege (art,name,angefordert_von,status,ergebnis,erledigt_am) "
+              "values ('laden_anlegen','ivan','nachtrag-struktur','erfolg','{\"nachtrag\": true}'::jsonb, now())")
+    t = _get("/team/laden-anlegen").text
+    assert "Bestehender Laden, für die Struktur nachgetragen." in t and "Wegwerf-Passwort" not in t
+
+
+def test_ausgeblendeter_laden_fehlt_in_der_auswahl():
+    """Betreiber 20.10.: ergebnis->>'ausgeblendet' = 'true' (Probe-Läden)
+    erscheint in keiner Einlader-Auswahl; die Datenzeile bleibt."""
+    _erfolg("ivan")
+    _erfolg("probelauf", ergebnis='{"ausgeblendet": true}')
+    t = _get("/team/laden-anlegen").text
+    assert '<option value="ivan">' in t
+    assert 'value="probelauf"' not in t
+    assert server._q("select count(*) as n from admin_auftraege where name='probelauf'")[0]["n"] == 1
+
+
+def test_ausgeblendeter_laden_ist_kein_einlader():
+    _erfolg("probelauf", ergebnis='{"ausgeblendet": true}')
+    r = _post("/team/laden-anlegen/anfordern", {"name": "lena", "einlader": "probelauf", "csrf": ui.CSRF_TOKEN})
+    assert r.status_code == 400 and "gibt es nicht" in r.text
+    assert server._q("select count(*) as n from admin_auftraege where name='lena'")[0]["n"] == 0
+
+
 def test_mit_willkommensmail_wird_kein_passwort_angezeigt():
     server._q(
         "insert into admin_auftraege (art, name, email, angefordert_von, "

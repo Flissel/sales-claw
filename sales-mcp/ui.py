@@ -218,6 +218,8 @@ import ui_muster
 import ui_plan
 import ui_podcast
 import ui_reels
+import struktur
+import ui_struktur
 import verlinken
 import vertraege
 
@@ -5691,6 +5693,10 @@ def _admin_auftrag_ergebnis_text(zeile) -> str:
         erledigt = ", ".join(info.get("erledigt", [])) or "nichts"
         grund = zeile["fehler"] or "kein Grund vermerkt"
         return f"FEHLER — erledigt: {_e(erledigt)}. {_e(grund)}"
+    if info.get("nachtrag"):
+        # Struktur-Graph (20.10.2026, E14): Bestandslaeden ohne Auftragszeile
+        # werden nachgetragen - sie haben kein Wegwerf-Passwort.
+        return "Bestehender Laden, für die Struktur nachgetragen."
     port = _e(str(info.get("port_serve", "?")))
     hinweis = _e(info.get("hinweis", ""))
     willkommen = info.get("willkommen")
@@ -5719,6 +5725,9 @@ async def laden_anlegen_seite(request):
               _admin_auftrag_ergebnis_text(z)] for z in zeilen])
     else:
         tabelle = "<p>Noch kein Auftrag.</p>"
+    # Struktur-Graph (20.10.2026): wer den neuen Laden eingeladen hat.
+    with server.pool.connection() as conn:
+        baum = struktur.baum_bauen(ui_struktur.laeden_lesen(conn))
     rumpf = (
         '<form method="post" action="/team/laden-anlegen/anfordern">'
         f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
@@ -5729,6 +5738,7 @@ async def laden_anlegen_seite(request):
         'Willkommensmail mit Link zum Passwort-Setzen)<br>'
         '<input type="email" name="email" '
         'placeholder="z. B. lena@example.com"></label> '
+        f'<label>Eingeladen von<br>{ui_struktur.einlader_wahl(baum, None)}</label> '
         '<button type="submit">Anlegen</button>'
         '</form>'
         f'<h2>Bisherige Aufträge</h2>{tabelle}')
@@ -5763,10 +5773,20 @@ async def aktion_laden_anlegen(request):
             return _fehlerseite(
                 400, "Ungültige E-Mail-Adresse",
                 f"{fehler}. Nichts wurde angelegt.")
-    server._q(
-        "insert into admin_auftraege (art, name, email, angefordert_von) "
-        "values ('laden_anlegen', %s, %s, %s) returning id",
-        (name, email, _ui_akteur(request)))
+    # Struktur-Graph (20.10.2026, E9/E10): fehlt das Feld, gilt "Ich".
+    # Pruefen und Einfuegen in EINER Transaktion, die erfolg-Zeilen gesperrt.
+    einlader = str(form.get("einlader") or "").strip() or None
+    with server.pool.connection() as conn:
+        baum = struktur.baum_bauen(ui_struktur.laeden_lesen(conn, sperren=True))
+        text = struktur.fehler_neuer_laden(baum, einlader)
+        if text:
+            return _fehlerseite(400, "Einlader nicht möglich",
+                                _e(text) + " Nichts wurde angelegt.")
+        conn.execute(
+            "insert into admin_auftraege "
+            "(art, name, email, angefordert_von, eingeladen_von) "
+            "values ('laden_anlegen', %s, %s, %s, %s)",
+            (name, email, _ui_akteur(request), einlader))
     return RedirectResponse("/team/laden-anlegen", status_code=303)
 
 

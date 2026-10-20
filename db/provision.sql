@@ -513,6 +513,19 @@ begin
       check ((email is null and art <> 'tailscale_einladen')
              or (email is not null
                  and email ~ '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$'))$chk$, s);
+    -- Struktur-Graph (Plan docs/superpowers/plans/2026-10-20-struktur-graph.md,
+    -- 20.10.2026): wer diesen Laden eingeladen hat. NULL = der Betreiber.
+    -- Kein Fremdschluessel, weil `name` hier nicht eindeutig ist (E1/E2);
+    -- stattdessen dasselbe Muster wie admin_auftraege_name_check, damit kein
+    -- Markup in die Spalte gelangt.
+    execute format('alter table %I.admin_auftraege '
+                   'add column if not exists eingeladen_von text', s);
+    execute format('alter table %I.admin_auftraege '
+                   'drop constraint if exists admin_auftraege_eingeladen_von_check', s);
+    execute format($chk$alter table %I.admin_auftraege add constraint
+      admin_auftraege_eingeladen_von_check
+      check (eingeladen_von is null
+             or eingeladen_von ~ '^[a-z][a-z0-9_]{0,30}$')$chk$, s);
   end loop;
 end $$;
 
@@ -526,6 +539,10 @@ grant select, insert, update on sales.benutzer_mails to sales_app;
 -- Kein update, kein delete: die Oberflaeche legt einen Auftrag an, sie
 -- aendert ihn nie wieder — nur der Wirt (als supabase_admin) tut das.
 grant select, insert on sales.admin_auftraege to sales_app;
+-- Struktur-Graph (20.10.2026, E3): die einzige Ausnahme ist das Umhaengen
+-- auf /team/struktur — nur die Spalte eingeladen_von ist veraenderbar.
+-- Status, Ergebnis und Name bleiben beim Wirt.
+grant update (eingeladen_von) on sales.admin_auftraege to sales_app;
 grant select, insert, update on sales.medien_meta to sales_app;
 grant select, insert, update on sales.kalender_quellen to sales_app;
 grant select, insert, update, delete on sales.eigene_termine to sales_app;
