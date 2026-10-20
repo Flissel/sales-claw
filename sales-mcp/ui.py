@@ -1391,18 +1391,21 @@ nav.reiter .zahl { font-size: .8rem; color: var(--gedaempft); }
    steht die Liste oben (E8). Der Baum hat keine Tiefengrenze (Betreiber
    20.10.: Schneeball) - der Graph scrollt deshalb waagerecht UND senkrecht.
    Im Kreis steht das Level 1–6; die Füllung wird je Level kräftiger
-   (color-mix aus --akzent und --flaeche, ältere Browser: --aktiv). */
+   (color-mix aus --akzent und --flaeche). Browser ohne color-mix()
+   (vor Chrome 111 / Safari 16.2 / Firefox 113) zeigen einheitlich --aktiv;
+   die Zahl im Kreis bleibt lesbar, nur die Abstufung fehlt. */
 .struktur { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
 .struktur-graph { overflow: auto; max-height: 75vh; max-width: 100%;
                   background: var(--flaeche);
                   border: 1px solid var(--linie); border-radius: 12px; }
 .struktur-svg { display: block; max-width: none; }
-.struktur-svg .kante { stroke: var(--linie_stark); stroke-width: 1.5; }
+.struktur-svg .kante { fill: none; stroke: var(--linie_stark); stroke-width: 1.5; }
 .struktur-svg circle { fill: var(--aktiv); stroke: var(--akzent); stroke-width: 2; }
-.struktur-svg .wurzel circle { fill: var(--akzent); }
+/* „Ich“ hebt sich von Level 6 (volle Akzentfarbe) ab: Schriftfarbe als Füllung. */
+.struktur-svg .wurzel circle { fill: var(--schrift); stroke: var(--schrift); }
 .struktur-svg .zahl { fill: var(--akzent_text); font: 700 14px var(--schrift_anzeige);
                       text-anchor: middle; dominant-baseline: central; }
-.struktur-svg .wurzel .zahl { fill: var(--akzent_auf); }
+.struktur-svg .wurzel .zahl { fill: var(--flaeche); }
 .struktur-svg .level-1 circle { fill: color-mix(in srgb, var(--akzent) 10%, var(--flaeche)); }
 .struktur-svg .level-2 circle { fill: color-mix(in srgb, var(--akzent) 22%, var(--flaeche)); }
 .struktur-svg .level-3 circle { fill: color-mix(in srgb, var(--akzent) 36%, var(--flaeche)); }
@@ -1446,7 +1449,15 @@ nav.reiter .zahl { font-size: .8rem; color: var(--gedaempft); }
   .struktur-liste ul { margin-left: .5rem; padding-left: .5rem; }
   .einlader-form select { max-width: 12rem; }
   .struktur-graph { max-height: 70vh; }
-}/* Ende Struktur-Graph */
+}
+/* Formular „Laden anlegen“ (Review 20.10.2026): eine Spalte, jede
+   Beschriftung über ihrem Feld. */
+.anlege-form { display: flex; flex-direction: column; align-items: stretch;
+               gap: .9rem; max-width: 34rem; }
+.anlege-form label { display: flex; flex-direction: column; gap: .3rem; }
+.anlege-form input, .anlege-form select { width: 100%; min-height: 44px; }
+.anlege-form button { align-self: flex-start; min-height: 44px; }
+/* Ende Struktur-Graph */
 @media (max-width: 767px) {
   .zwei { grid-template-columns: minmax(0, 1fr); }
 }
@@ -5784,6 +5795,9 @@ async def laden_anlegen_seite(request):
     zeilen = server._q(
         "select art, name, status, ergebnis, fehler, erstellt_am "
         "from admin_auftraege where art = 'laden_anlegen' "
+        # Betreiber 20.10.2026: ausgeblendete Probe-Laeden erscheinen
+        # nirgends - auch nicht in dieser Auftragsliste.
+        "and coalesce(ergebnis->>'ausgeblendet', '') <> 'true' "
         "order by erstellt_am desc limit 10")
     wartet = any(z["status"] in ("offen", "laeuft") for z in zeilen)
     if zeilen:
@@ -5798,19 +5812,23 @@ async def laden_anlegen_seite(request):
         mitglieder = ui_struktur.mitglieder_lesen(conn)
     baum = struktur.baum_bauen({n: e for n, (e, _) in mitglieder.items()})
     level = {n: s for n, (_, s) in mitglieder.items()}
+    # Review 20.10.2026: jede Beschriftung steht UEBER ihrem Feld, ein Feld je
+    # Zeile (.anlege-form) - vorher lief der Text neben das vorige Feld.
     rumpf = (
-        '<form method="post" action="/team/laden-anlegen/anfordern">'
+        '<form method="post" action="/team/laden-anlegen/anfordern" '
+        'class="anlege-form">'
         f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
-        '<label>Name des neuen Ladens<br>'
+        '<label><span>Name des neuen Ladens</span>'
         '<input type="text" name="name" pattern="[a-z][a-z0-9_]{0,30}" '
-        'required placeholder="z. B. lena"></label> '
-        '<label>Private E-Mail-Adresse (optional — bekommt eine '
-        'Willkommensmail mit Link zum Passwort-Setzen)<br>'
+        'required placeholder="z. B. lena"></label>'
+        '<label><span>Private E-Mail-Adresse (optional — bekommt eine '
+        'Willkommensmail mit Link zum Passwort-Setzen)</span>'
         '<input type="email" name="email" '
-        'placeholder="z. B. lena@example.com"></label> '
-        f'<label>Eingeladen von<br>{ui_struktur.einlader_wahl(baum, None, level=level)}</label> '
+        'placeholder="z. B. lena@example.com"></label>'
+        '<label><span>Eingeladen von</span>'
+        f'{ui_struktur.einlader_wahl(baum, None, level=level)}</label>'
         # Betreiber 20.10.2026: Level des neuen Mitglieds (1-6), Vorgabe 1.
-        f'<label>Level<br>{ui_struktur.level_wahl(struktur.LEVEL_MIN)}</label> '
+        f'<label><span>Level</span>{ui_struktur.level_wahl(struktur.LEVEL_MIN)}</label>'
         '<button type="submit">Anlegen</button>'
         '</form>'
         f'<h2>Bisherige Aufträge</h2>{tabelle}')

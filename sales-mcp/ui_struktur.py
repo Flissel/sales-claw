@@ -84,7 +84,7 @@ def einlader_wahl(baum: struktur.Baum, gewaehlt: str | None,
     level = level or {}
     teile = ['<select name="einlader" class="einlader-wahl">',
              '<option value="">Ich</option>']
-    for name in sorted(baum.ebene):
+    for name in sorted(baum.tiefe):
         if name in ohne:
             continue
         sel = " selected" if gewaehlt is not None and name == gewaehlt else ""
@@ -126,14 +126,19 @@ def svg_zeichnen(baum: struktur.Baum, level: Mapping[str, int] | None = None) ->
         # beginnt deshalb unter dem Namen, sonst kreuzt sie die Schrift.
         y1 += r if eltern is None else r + _NAME_ABSTAND + 6
         x2, y2 = a.punkte[name]
-        teile.append(f'<line class="kante" x1="{x1:g}" y1="{y1:g}" '
-                     f'x2="{x2:g}" y2="{y2 - r:g}"/>')
+        oben = y2 - r
+        # Review 20.10.: Winkellinie (senkrecht - waagerecht - senkrecht).
+        # Der Baum ist linksbündig, schräge Kanten liefen dort quer über
+        # die Reihe; der waagerechte Teil liegt mitten zwischen den Reihen.
+        ym = (y1 + oben) / 2
+        teile.append(f'<path class="kante" d="M {x1:g} {y1:g} V {ym:g} '
+                     f'H {x2:g} V {oben:g}"/>')
     x, y = a.punkte[None]
     teile.append(f'<g class="knoten wurzel"><title>Ich</title>'
                  f'<circle cx="{x:g}" cy="{y:g}" r="{r}"/>'
                  f'<text class="zahl" x="{x:g}" y="{y:g}">Ich</text></g>')
-    for name in sorted(baum.ebene, key=lambda n: (baum.ebene[n], n)):
-        tiefe = baum.ebene[name]
+    for name in sorted(baum.tiefe, key=lambda n: (baum.tiefe[n], n)):
+        tiefe = baum.tiefe[name]
         stufe = level.get(name, struktur.LEVEL_MIN)
         x, y = a.punkte[name]
         teile.append(f'<g class="knoten level-{stufe} tiefe-{tiefe}">'
@@ -276,7 +281,9 @@ def routen(ui) -> list:
                 f"Das Level ist eine Zahl von {struktur.LEVEL_MIN} bis "
                 f"{struktur.LEVEL_MAX}. Nichts wurde geändert.")
         with server.pool.connection() as conn:
-            if name not in mitglieder_lesen(conn, sperren=True):
+            # Ohne Sperre (Review 20.10.): ein Level-Wechsel kann keinen
+            # Ring erzeugen und haengt von keinem anderen Laden ab.
+            if name not in mitglieder_lesen(conn):
                 return ui._fehlerseite(
                     400, "Level nicht geändert",
                     f"Den Laden „{ui._e(name)}“ gibt es nicht als angelegten "

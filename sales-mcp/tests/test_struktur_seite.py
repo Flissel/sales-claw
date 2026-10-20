@@ -125,7 +125,11 @@ def test_graph_und_liste():
     r = _get("/team/struktur"); t = r.text
     assert r.status_code == 200 and "<script" not in t.lower()
     svg = t[t.index("<svg"):t.index("</svg>")]
-    assert svg.count("<circle") == 3 and svg.count("<line") == 2
+    assert svg.count("<circle") == 3 and svg.count('<path class="kante"') == 2
+    assert "<line" not in svg
+    # Review 20.10.: „Ich“ links oben, Kanten als Winkellinien.
+    assert '<g class="knoten wurzel"><title>Ich</title><circle cx="90" cy="48"' in svg
+    assert re.search(r'<path class="kante" d="M 90 66 V [\d.]+ H 90 V 120"/>', svg)
     assert '<text class="zahl"' in svg and ">Ich<" in svg and ">ivan<" in svg and ">lena<" in svg
     # Betreiber 20.10.: im Kreis steht das LEVEL, nicht die Tiefe.
     assert re.search(r'<g class="knoten level-5 tiefe-1"><title>ivan – Level 5</title>.*?<text class="zahl"[^>]*>5</text>', svg)
@@ -176,7 +180,7 @@ def test_nachtrag_zeile_erscheint_im_graph():
     _erfolg("lena", "ivan")
     t = _get("/team/struktur").text
     svg = t[t.index("<svg"):t.index("</svg>")]
-    assert ">ivan<" in svg and ">lena<" in svg and svg.count("<line") == 2
+    assert ">ivan<" in svg and ">lena<" in svg and svg.count('<path class="kante"') == 2
 
 
 def test_ausgeblendeter_laden_fehlt_in_graph_und_liste():
@@ -380,7 +384,7 @@ def test_grosser_baum_vierzig_knoten_acht_tiefen():
     namen = _grosser_baum()
     t = _get("/team/struktur").text
     svg = t[t.index("<svg"):t.index("</svg>")]
-    assert svg.count("<circle") == len(namen) + 1 and svg.count("<line") == len(namen)
+    assert svg.count("<circle") == len(namen) + 1 and svg.count('<path class="kante"') == len(namen)
     assert 'class="knoten level-' in svg and "tiefe-8" in svg
     breite = int(re.search(r'<svg[^>]* width="(\d+)"', svg).group(1))
     hoehe = int(re.search(r'<svg[^>]* height="(\d+)"', svg).group(1))
@@ -398,7 +402,7 @@ def test_fuenfzehn_tiefen_werden_gezeichnet():
         _erfolg(f"k{i}", vorher); vorher = f"k{i}"
     t = _get("/team/struktur").text
     svg = t[t.index("<svg"):t.index("</svg>")]
-    assert "tiefe-15" in svg and svg.count("<line") == 15
+    assert "tiefe-15" in svg and svg.count('<path class="kante"') == 15
     assert "Ebene 7" not in t and "höchstens 6" not in t
 
 

@@ -10,11 +10,11 @@ KETTE = {"ivan": None, "lena": "ivan", "otto": "lena"}
 
 def test_leer_ergibt_nur_betreiber():
     b = baum_bauen({})
-    assert b.ebene == {} and b.kinder == {} and b.verwaist == frozenset()
+    assert b.tiefe == {} and b.kinder == {} and b.verwaist == frozenset()
 
 
-def test_ebenen_relativ_zum_betreiber():
-    assert baum_bauen(KETTE).ebene == {"ivan": 1, "lena": 2, "otto": 3}
+def test_tiefen_relativ_zum_betreiber():
+    assert baum_bauen(KETTE).tiefe == {"ivan": 1, "lena": 2, "otto": 3}
 
 
 def test_kinder_nach_name_sortiert():
@@ -23,13 +23,13 @@ def test_kinder_nach_name_sortiert():
 
 def test_unbekannter_einlader_wird_verwaist():
     b = baum_bauen({"lena": "gibtsnicht"})
-    assert b.ebene == {"lena": 1} and b.einlader == {"lena": None}
+    assert b.tiefe == {"lena": 1} and b.einlader == {"lena": None}
     assert b.verwaist == frozenset({"lena"})
 
 
 def test_ring_in_daten_wird_aufgebrochen():
     b = baum_bauen({"b": "a", "a": "b"})
-    assert b.ebene == {"a": 1, "b": 2} and b.verwaist == frozenset({"a"})
+    assert b.tiefe == {"a": 1, "b": 2} and b.verwaist == frozenset({"a"})
 
 
 def test_nachfahren_und_teilbaum_tiefe():
@@ -45,7 +45,7 @@ KETTE_15 = {f"k{i}": (f"k{i - 1}" if i > 1 else None) for i in range(1, 16)}
 
 def test_neuer_laden_unter_tiefe_fuenfzehn_ist_erlaubt():
     b = baum_bauen(KETTE_15)
-    assert b.ebene["k15"] == 15
+    assert b.tiefe["k15"] == 15
     assert fehler_neuer_laden(b, None) is None
     assert fehler_neuer_laden(b, "k15") is None
 
@@ -91,7 +91,7 @@ def test_sehr_tiefe_kette_ohne_rekursionsgrenze():
     kette = {f"t{i}": (f"t{i - 1}" if i > 1 else None) for i in range(1, 3001)}
     b = baum_bauen(kette)
     a = anordnen(b)
-    assert b.ebene["t3000"] == 3000 and teilbaum_tiefe(b, "t1") == 2999
+    assert b.tiefe["t3000"] == 3000 and teilbaum_tiefe(b, "t1") == 2999
     assert a.punkte["t3000"][0] == a.punkte[None][0]
 
 
@@ -114,14 +114,22 @@ def test_umhaengen_zum_betreiber_ok():
     assert fehler_umhaengen(baum_bauen(KETTE), "otto", None) is None
 
 
-def test_anordnen_kinder_unter_elternteil_und_reihen_je_ebene():
+def test_anordnen_kinder_unter_elternteil_und_reihen_je_tiefe():
     a = anordnen(baum_bauen({"ivan": None, "lena": "ivan", "mia": "ivan", "zora": None}))
     (xi, yi), (xl, yl), (xm, ym) = a.punkte["ivan"], a.punkte["lena"], a.punkte["mia"]
-    assert xi == (xl + xm) / 2 and yl == ym > yi
+    assert xi == xl and yl == ym > yi              # linksbündig über dem ersten Kind
     assert a.punkte["zora"][1] == yi
     assert a.punkte[None][1] < yi
     assert xl < xm < a.punkte["zora"][0]          # Sortierung nach Name, Gruppierung
     assert a.breite == 3 * 120 + 2 * 30            # drei Blätter
+
+
+def test_wurzel_liegt_immer_links_oben_bei_x_90():
+    """Review 20.10.: „Ich“ muss beim Öffnen sichtbar sein, egal wie breit."""
+    for d in ({}, KETTE, {f"m{i:02d}": None for i in range(40)},
+              {"zora": None, "anna": "zora", "bert": "zora", "carl": None}):
+        a = anordnen(baum_bauen(d))
+        assert a.punkte[None] == (90, 30 + 18)
 
 
 def test_anordnen_deterministisch():

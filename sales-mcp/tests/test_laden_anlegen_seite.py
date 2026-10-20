@@ -342,3 +342,34 @@ def test_mit_willkommensmail_wird_kein_passwort_angezeigt():
     text = _get("/team/laden-anlegen").text
     assert "Willkommensmail an lena@privat.example: verschickt" in text
     assert "Wegwerf-Passwort" not in text
+
+
+def test_auftragsliste_zeigt_ausgeblendete_laeden_nicht():
+    """Review 20.10.: auch die Liste „Bisherige Aufträge“ blendet Probe-Läden aus."""
+    _erfolg("ivan")
+    _erfolg("probelauf", ergebnis='{"ausgeblendet": true}')
+    _erfolg("probemail", ergebnis='{"ausgeblendet": "true"}')
+    t = _get("/team/laden-anlegen").text
+    tabelle = t[t.index("Bisherige Aufträge"):]
+    assert ">ivan<" in tabelle
+    assert "probelauf" not in t and "probemail" not in t
+    assert server._q("select count(*) as n from admin_auftraege")[0]["n"] == 3
+
+
+def test_formular_beschriftung_steht_ueber_ihrem_feld():
+    """Review 20.10.: jede Beschriftung steht ÜBER ihrem Feld, ein Feld je Zeile."""
+    t = _get("/team/laden-anlegen").text
+    form = t[t.index('<form method="post" action="/team/laden-anlegen/anfordern"'):]
+    form = form[:form.index("</form>")]
+    assert 'class="anlege-form"' in form and "<br>" not in form
+    for text, feld in (("Name des neuen Ladens", '<input type="text" name="name"'),
+                       ("Private E-Mail-Adresse", '<input type="email" name="email"'),
+                       ("Eingeladen von", '<select name="einlader"'),
+                       ("Level", '<select name="level"')):
+        label = form[form.index(f"<label><span>{text}"):]
+        label = label[:label.index("</label>")]
+        assert label.index("</span>") < label.index(feld), text
+    stil = ui._STIL[ui._STIL.index(".anlege-form {"):]
+    assert "flex-direction: column" in stil[:stil.index("}")]
+    stil = ui._STIL[ui._STIL.index(".anlege-form label {"):]
+    assert "flex-direction: column" in stil[:stil.index("}")]
