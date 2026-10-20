@@ -18,6 +18,7 @@ import hashlib
 import logging
 import re
 import urllib.parse
+from datetime import datetime
 from functools import partial
 
 from starlette.concurrency import run_in_threadpool
@@ -187,6 +188,18 @@ def _score(wert) -> str:
     return "–"
 
 
+def _erfasst_am(ui, wert) -> str:
+    """Zeitpunkt der Zentrale (ISO, UTC) in Ortszeit, maskiert. Laesst er sich nicht
+    lesen, steht er maskiert so da, wie er kam; kein Text: "" (dann steht nichts da)."""
+    if not isinstance(wert, str) or not wert.strip():
+        return ""
+    try:
+        zeitpunkt = datetime.fromisoformat(wert.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return ui._e(wert)
+    return ui._e(ui._zeit(zeitpunkt))
+
+
 def _link(href: str, text: str) -> str:
     """`href` ist schon maskiert bzw. nur aus gequoteten Teilen gebaut."""
     return f'<a href="{href}" target="_blank" rel="noopener noreferrer">{text}</a>'
@@ -240,6 +253,9 @@ def _karte(ui, k: dict) -> str:
             f'Nicht bewerben bestätigen</label>'
             f'<button class="gefahr">Nicht bewerben</button></form></div>')
     feedback = ""
+    if (am := _erfasst_am(ui, k.get("feedback_offen_seit"))):
+        # Angekommen, aber noch nicht umgesetzt (offenes Feedback der Zentrale).
+        feedback = f'<p class="meta">Feedback zu Fassung {nr if nr else "?"} erfasst am {am}</p>'
     if nr:
         brief = k.get("anschreiben")
         if isinstance(brief, str) and brief.strip():
@@ -249,7 +265,7 @@ def _karte(ui, k: dict) -> str:
                        f'</details>')
         else:
             aendern = '<p class="meta">Anschreiben nicht lesbar</p>'
-        feedback = (f'<form method="post" action="{basis}/feedback">{felder}'
+        feedback += (f'<form method="post" action="{basis}/feedback">{felder}'
                     f'<label class="feld">Feedback zu Fassung {nr}'
                     f'<textarea name="kommentar" maxlength="{KOMMENTAR_MAX}" rows="3" '
                     f'placeholder="Was soll anders werden?"></textarea></label>'

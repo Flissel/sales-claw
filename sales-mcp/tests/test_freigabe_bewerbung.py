@@ -8,6 +8,7 @@ import html
 import logging
 import os
 import re
+from datetime import datetime
 
 os.environ["SALES_DB_SCHEMA"] = "sales_test"
 
@@ -38,7 +39,8 @@ def karte(**kw):
          "bindung": B, "score": 4.2, "luecke": "Kein Spark-Projekt",
          "anzeige_url": "https://jobs.example.org/4711", "ort": "Berlin", "kanal": "email",
          "pruefhinweise": ["Gehaltswunsch fehlt"], "was_neu": None, "anschreiben": BRIEF,
-         "wartet_auf_durchsicht": False, "seit": "2026-10-20T08:00:00+00:00"}
+         "wartet_auf_durchsicht": False, "seit": "2026-10-20T08:00:00+00:00",
+         "feedback_offen_seit": None}
     k.update(kw)
     return k
 
@@ -46,7 +48,7 @@ def karte(**kw):
 def verlauf(**kw):
     v = {"application_id": BID2, "firma": "Alt AG", "rolle": "Analyst", "fassung": 2,
          "entscheidung": "approve", "von": "mira", "am": "2026-10-19T08:00:00+00:00",
-         "status": "archiviert"}
+         "status": "archiviert", "anzeige_url": None}
     v.update(kw)
     return v
 
@@ -203,7 +205,8 @@ def test_abschnitt_zeigt_karte_maskiert(client, falsch):            # Review Foc
     falsch.karten = [karte(firma=BOESE, rolle=BOESE2, luecke=BOESE, ort=BOESE2, kanal=BOESE,
                            pruefhinweise=[BOESE], was_neu=[BOESE2], fassung=2,
                            anschreiben="</textarea>" + BOESE, anzeige_url="javascript:alert(1)",
-                           application_id='x"><script>y</script>', seit=BOESE)]
+                           application_id='x"><script>y</script>', seit=BOESE,
+                           feedback_offen_seit=BOESE2)]
     falsch.verlauf = [verlauf(firma=BOESE, rolle=BOESE2, von=BOESE2, entscheidung=BOESE,
                               status="blockiert", anzeige_url="javascript:alert(2)", am=BOESE),
                       verlauf(application_id="bw-9", firma="Neun", entscheidung="approve",
@@ -260,6 +263,35 @@ def test_wartet_auf_durchsicht_ohne_freigeben_formular(client, falsch):   # Revi
     assert f'action="/freigaben/bewerbung/{BID}/nicht-bewerben"' not in s
     assert f'action="/freigaben/bewerbung/{BID}/feedback"' in s           # Feedback bleibt
     assert f'action="/freigaben/bewerbung/{BID2}/freigeben"' in s
+
+
+def test_offenes_feedback_steht_auf_der_karte(client, falsch):
+    """Die Zentrale meldet `feedback_offen_seit`: Felix sieht, dass sein Feedback zu
+    dieser Fassung angekommen ist und noch umgesetzt wird. Fehlt es, steht nichts da."""
+    am = "2026-10-20T08:30:00+00:00"
+    falsch.karten = [karte(fassung=2, feedback_offen_seit=am),
+                     karte(application_id=BID2, bindung=B2, firma="Ohne GmbH"),
+                     karte(application_id="bw-3", firma="Fehlt GmbH")]
+    del falsch.karten[2]["feedback_offen_seit"]                         # aeltere Zentrale
+    s = _abschnitt(client)
+    zeit = ui._zeit(datetime.fromisoformat(am))
+    mit, ohne, fehlt = s.split("<details class=\"karte\"")[1:]
+    assert f"Feedback zu Fassung 2 erfasst am {ui._e(zeit)}" in mit
+    assert "erfasst am" not in ohne and "erfasst am" not in fehlt
+
+
+@pytest.mark.parametrize("wert", [BOESE, BOESE2, "morgen <b>früh</b>"])
+def test_offenes_feedback_seit_wird_maskiert(client, falsch, wert):        # Review Focus 5
+    falsch.karten = [karte(feedback_offen_seit=wert)]
+    s = _abschnitt(client)
+    assert f"Feedback zu Fassung 1 erfasst am {ui._e(wert)}" in s
+    assert "<script" not in s and '"><img' not in s and "<b>früh</b>" not in s
+
+
+@pytest.mark.parametrize("wert", ["", "   ", 7, ["2026-10-20"], {"x": 1}])
+def test_offenes_feedback_seit_ohne_text_zeigt_nichts(client, falsch, wert):
+    falsch.karten = [karte(feedback_offen_seit=wert)]
+    assert "erfasst am" not in _abschnitt(client)
 
 
 def test_anschreiben_nicht_lesbar(client, falsch):
