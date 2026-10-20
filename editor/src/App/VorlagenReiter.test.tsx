@@ -2,7 +2,7 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { Start } from '../pult';
+import { Start, type VorlageInfo } from '../pult';
 
 import {
   alsNeuAusfuehren,
@@ -11,6 +11,7 @@ import {
   vorlageLabel,
   anwendenAusfuehren,
   AnwendenFrage,
+  AngelegtHinweis,
   anwendenSperre,
   anwendenText,
   titelFehler,
@@ -25,10 +26,11 @@ const start = {
   vorlage_url: `/marketing/editor/${IID}/vorlage`,
 } as Start;
 
-const VORLAGEN = [
-  { name: 'klassik', beschreibung: 'Ruhig und klar, mit großem Kopfbild', fassung: 3 },
-  { name: 'studio', beschreibung: 'Dunkel und kräftig', fassung: 1 },
+const VORLAGEN: VorlageInfo[] = [
+  { name: 'klassik', beschreibung: 'Ruhig und klar, mit großem Kopfbild', fassung: 3, format: 'bloecke' },
+  { name: 'studio', beschreibung: 'Dunkel und kräftig', fassung: 1, format: 'bloecke' },
 ];
+const COLLAGE: VorlageInfo = { name: 'split', beschreibung: 'Split mit Bild', fassung: 2, format: 'seite' };
 
 function antwort(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -195,5 +197,40 @@ describe('Als neuer Entwurf', () => {
     vi.stubGlobal('fetch', vi.fn(async () => antwort(422, { grund: 'Unbekannte Vorlage' })));
     expect(await alsNeuAusfuehren(start, 'studio', 'Herbstpost')).toBe('Unbekannte Vorlage');
     expect(fenster.href).toBe('/marketing/editor/' + IID);
+  });
+});
+
+describe('Reiter Vorlagen: Collage-Vorlagen (Stufe 5)', () => {
+  it('Collage-Vorlage: Seitenvorschau, nur „Als neuer Entwurf“, kein Anwenden auf Blöcke', () => {
+    const html = liste({ vorlagen: [COLLAGE] });
+    expect(html).toContain(`src="/marketing/editor/${IID}/vorlage-bild/split?format=seite"`);
+    expect(html).toContain('Collage-Vorlage');
+    expect(html).toContain('Als neuer Entwurf');
+    expect(html).not.toContain('Auf diesen Entwurf anwenden');
+  });
+
+  it('Block-Vorlage behält die Mail-Vorschau ohne Format', () => {
+    const html = liste({ vorlagen: [VORLAGEN[0]] });
+    expect(html).toContain(`src="/marketing/editor/${IID}/vorlage-bild/klassik"`);
+    expect(html).not.toContain('format=seite');
+  });
+
+  it('Anlegen mit Warnungen: nicht weiter, der Dialog zeigt die Hinweise', async () => {
+    const fenster = fensterFaelschen();
+    vi.stubGlobal('fetch', vi.fn(async () => antwort(200, { editor_url: '/marketing/editor/neu-1', warnungen: ['Logo fehlt'] })));
+    const offen = { name: 'split', titel: 'Herbst', grund: null, laeuft: true };
+    expect(await neuDialogNach(start, offen)).toEqual({
+      ...offen,
+      laeuft: false,
+      angelegt: { editorUrl: '/marketing/editor/neu-1', warnungen: ['Logo fehlt'] },
+    });
+    expect(fenster.href).toBe('/marketing/editor/' + IID);
+  });
+
+  it('Hinweis nach dem Anlegen: Warnungen und Verweis in den Editor', () => {
+    const html = renderToStaticMarkup(<AngelegtHinweis warnungen={['Logo <fehlt>', 'Bild für motiv1 fehlt']} />);
+    expect(html).toContain('Logo &lt;fehlt&gt;');
+    expect(html).toContain('Bild für motiv1 fehlt');
+    expect(html).toContain('ist angelegt');
   });
 });

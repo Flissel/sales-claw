@@ -264,9 +264,19 @@ def routen(ui) -> list:
         karten = "".join(_newsletter_karte(e, i) for i in
                          inhalte[(seite - 1) * GALERIE_SEITE:seite * GALERIE_SEITE])
         leer = "" if karten else '<p class="meta">Keine Newsletter mit diesem Status.</p>'
+        # Nur noch Collagen (Stufe 5): mit einer freigegebenen Collage-Vorlage fuehren die Knoepfe zu
+        # Collage-Vorlagen. Die Liste ist ein Zusatz - nicht lesbar heisst: Knoepfe wie bisher.
+        try:
+            dv = await run_in_threadpool(marketing_pult.anfrage, "GET", "/vorlagen?" + urllib.parse.urlencode(
+                {"mandant": m, "status": "freigegeben"}))
+            nur_collagen = bool(ui_editor.vorlagen_teilen(dv.get("vorlagen") if isinstance(dv, dict) else None)[0])
+        except marketing_pult.PultFehler:
+            nur_collagen = False
+        aus_vorlage = "Neu aus Collage-Vorlage" if nur_collagen else "Neuer Newsletter aus Vorlage"
+        aus_vorlage_karte = "+ Aus Collage-Vorlage starten" if nur_collagen else "+ Aus Vorlage starten"
         rumpf = (umschalter(m, liste, verweis(status, seite))
                  + '<div class="nl-kopf"><a class="knopf" href="/marketing/vorlagen">'
-                 'Neuer Newsletter aus Vorlage</a>'
+                 f'{aus_vorlage}</a>'
                  f'<form method="post" action="/marketing/neue-collage" class="aktion">'
                  f'<input type="hidden" name="csrf" value="{e(ui.CSRF_TOKEN)}">'
                  f'<label>Titel <input name="titel" required maxlength="{ui_editor.TITEL_MAX_COLLAGE}" placeholder="Titel der Collage"></label>'
@@ -274,7 +284,7 @@ def routen(ui) -> list:
                  '<a href="/marketing/entwuerfe">Alle Entwürfe als Liste</a></div>'
                  + reiter + leer
                  + f'<div class="galerie">{karten}'
-                 '<a class="layout-karte neu" href="/marketing/vorlagen">+ Aus Vorlage starten</a></div>'
+                 f'<a class="layout-karte neu" href="/marketing/vorlagen">{aus_vorlage_karte}</a></div>'
                  + ui_muster.blaettern(seite, letzte, lambda s: verweis(status, s)))
         antwort = ui._seite("Newsletter", rumpf)
         # Die Vorschauen sind eigene, gesandboxte Rahmen (wie die Vorlagen-Galerie).

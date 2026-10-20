@@ -28,14 +28,16 @@ describe('vorlagenListe', () => {
             { beschreibung: 'ohne Namen', fassung: 1 },
             { name: '', beschreibung: 'leer', fassung: 1 },
             { name: 'studio' },
+            { name: 'split', beschreibung: 'Collage', fassung: 2, format: 'seite' },
             'quatsch',
           ],
         }),
       ),
     );
     expect(await vorlagenListe(start)).toEqual([
-      { name: 'klassik', beschreibung: 'Ruhig und klar', fassung: 3 },
-      { name: 'studio', beschreibung: '', fassung: 0 },
+      { name: 'klassik', beschreibung: 'Ruhig und klar', fassung: 3, format: 'bloecke' },
+      { name: 'studio', beschreibung: '', fassung: 0, format: 'bloecke' },
+      { name: 'split', beschreibung: 'Collage', fassung: 2, format: 'seite' },
     ]);
   });
 
@@ -118,6 +120,7 @@ describe('vorlageAlsNeu', () => {
     expect(await vorlageAlsNeu(start, 'studio', 'Herbstpost')).toEqual({
       ok: true,
       editorUrl: '/marketing/editor/0b6c2c1e-7a39-4f5f-8a39-6a9f7d1c2b3e',
+      warnungen: [],
     });
     const [adresse, init] = f.mock.calls[0] as unknown as [string, RequestInit];
     expect(adresse).toBe(start.vorlage_url);
@@ -131,6 +134,11 @@ describe('vorlageAlsNeu', () => {
       const r = await vorlageAlsNeu(start, 'studio', 'Herbstpost');
       expect(r.ok).toBe(false);
     }
+  });
+
+  it('Collage-Vorlage: Warnungen (nur Text) kommen mit', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => antwort(200, { editor_url: '/marketing/editor/neu-1', warnungen: ['Logo fehlt', 3, ''] })));
+    expect(await vorlageAlsNeu(start, 'split', 'Herbst')).toEqual({ ok: true, editorUrl: '/marketing/editor/neu-1', warnungen: ['Logo fehlt'] });
   });
 
   it('422 liefert den Grund', async () => {

@@ -244,7 +244,8 @@ def test_galerie_zwoelf_je_seite_mit_blaettern(angemeldet, pult):
 def test_galerie_trennt_zurueckgegeben_und_verlinkt_nach_status(angemeldet, pult):
     _liste(pult, _zeile("Offen-A", 1), _zeile("Ruhig-B", 0))
     z = _rumpf(angemeldet.get("/marketing?status=zurueckgegeben", headers=HOST).text)
-    assert pult.aufrufe[-1][1] == "/inhalte?mandant=vibemind&art=newsletter"   # eine Liste, getrennt wird hier
+    # eine Liste, getrennt wird hier (der Menue-Zaehler fragt im Hintergrund /freigaben, die Galerie /vorlagen)
+    assert [a[1] for a in pult.aufrufe if a[1].startswith("/inhalte")] == ["/inhalte?mandant=vibemind&art=newsletter"]
     assert "Offen-A" in z and "Ruhig-B" not in z
     a = _rumpf(angemeldet.get("/marketing", headers=HOST).text)
     assert "Ruhig-B" in a and "Offen-A" not in a

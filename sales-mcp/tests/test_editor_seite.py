@@ -1979,7 +1979,8 @@ def test_vorlagen_json_nutzt_firma_des_newsletters(angemeldet, pult):
     r = angemeldet.get(f"/marketing/editor/{IID}/vorlagen.json", headers=HOST)
     assert r.status_code == 200
     assert ("GET", "/vorlagen?mandant=fin2gether&status=freigegeben", None) in pult.aufrufe
-    assert r.json() == {"vorlagen": [{"name": "leer", "beschreibung": "Leere Vorlage", "fassung": 1}]}
+    assert r.json() == {"vorlagen": [{"name": "leer", "beschreibung": "Leere Vorlage", "fassung": 1,
+                                      "format": "bloecke"}]}
 
 
 def test_vorlagen_json_ohne_firma_422_und_unsaubere_namen_fallen_weg(angemeldet, pult, monkeypatch):
@@ -2133,3 +2134,243 @@ def test_wiederherstellen_ungueltig_422_ohne_aufruf(angemeldet, pult, body):
 def test_wiederherstellen_ohne_csrf_403(angemeldet, pult):
     assert _post_json(angemeldet, WIEDERHERSTELLEN, {"fassung": 1, "basis_fassung": 2}, csrf=False).status_code == 403
     assert not _pult_posts(pult, "/inhalte")
+
+
+# --- Stufe 5: Collage-Vorlagen, Vorlagen-Freigabe, Pruefung -----------------------
+
+BLOCK_V = {"name": "leer", "beschreibung": "Leere Vorlage", "status": "freigegeben", "fassung": 1, "format": "bloecke"}
+COLLAGE_V = {"name": "split", "beschreibung": "Split mit Bild", "status": "freigegeben", "fassung": 2, "format": "seite"}
+VORSCHLAG_V = {"name": "plakat", "beschreibung": "Schrift-Plakat", "status": "vorschlag", "fassung": 1, "format": "seite"}
+PRUEFUNG = f"/marketing/editor/{IID}/pruefung"
+
+
+def _vorlagen_falsch(monkeypatch, pult, freigegeben, vorschlaege=(), weitere=None):
+    alt = pult.anfrage
+
+    def anfrage(methode, pfad, daten=None, roh=False, zeitlimit=None):
+        if pfad.startswith("/vorlagen?"):
+            pult.aufrufe.append((methode, pfad, daten))
+            if "status=vorschlag" in pfad:
+                return {"vorlagen": list(vorschlaege)}
+            return {"vorlagen": list(freigegeben)}
+        if weitere and pfad in weitere:
+            pult.aufrufe.append((methode, pfad, daten))
+            pult.zeitlimits.append(zeitlimit)
+            antwort = weitere[pfad]
+            if isinstance(antwort, Exception):
+                raise antwort
+            return antwort
+        return alt(methode, pfad, daten, roh, zeitlimit)
+    monkeypatch.setattr(marketing_pult, "anfrage", anfrage)
+
+
+def test_vorlagenseite_collage_vorlagen_zuerst_mit_seitenvorschau(angemeldet, pult, monkeypatch):
+    _vorlagen_falsch(monkeypatch, pult, [BLOCK_V, COLLAGE_V])
+    s = angemeldet.get("/marketing/vorlagen", headers=HOST).text
+    assert 'src="/marketing/vorlage-bild/split?format=seite"' in s
+    # Collage-Vorlage vor der Karte "Neue Collage"; eine freigegebene Collage-Vorlage blendet Block-Vorlagen aus
+    assert s.index("Split mit Bild") < s.index('action="/marketing/neue-collage"')
+    assert "Leere Vorlage" not in s and 'value="leer"' not in s
+    assert "Neue Newsletter entstehen als Collage" in s
+
+
+def test_vorlagenseite_ohne_collage_vorlage_bleiben_block_vorlagen(angemeldet, pult, monkeypatch):
+    _vorlagen_falsch(monkeypatch, pult, [BLOCK_V])
+    s = angemeldet.get("/marketing/vorlagen", headers=HOST).text
+    assert 'src="/marketing/vorlage-bild/leer"' in s and "format=seite" not in s
+    assert 'name="vorlage" value="leer"' in s
+    assert "Neue Newsletter entstehen als Collage" not in s
+    assert "Vorschläge" not in s       # keine Vorschlaege -> kein Abschnitt
+
+
+def test_vorlagenseite_zeigt_vorschlaege_mit_freigeben_und_verwerfen(angemeldet, pult, monkeypatch):
+    _vorlagen_falsch(monkeypatch, pult, [BLOCK_V], [VORSCHLAG_V, {"name": "../x", "format": "seite"}])
+    s = angemeldet.get("/marketing/vorlagen", headers=HOST).text
+    assert "Vorschläge" in s and "Schrift-Plakat" in s
+    assert 'src="/marketing/vorlage-bild/plakat?format=seite"' in s
+    assert s.count('action="/marketing/vorlage-entscheiden"') == 2
+    assert 'name="urteil" value="freigeben"' in s and 'name="urteil" value="zurueckziehen"' in s
+    assert ">Freigeben</button>" in s and ">Verwerfen</button>" in s
+    assert "../x" not in s
+    assert ("GET", "/vorlagen?mandant=vibemind&status=vorschlag", None) in pult.aufrufe
+    # Vorschlaege sind noch nicht freigegeben: Block-Vorlagen bleiben
+    assert 'name="vorlage" value="leer"' in s
+
+
+def test_vorlagenseite_vorschlaege_nicht_lesbar_seite_bleibt(angemeldet, pult, monkeypatch):
+    alt = pult.anfrage
+
+    def anfrage(methode, pfad, daten=None, roh=False, zeitlimit=None):
+        if "status=vorschlag" in pfad:
+            raise marketing_pult.PultFehler("nicht_erreichbar", "URLError")
+        return alt(methode, pfad, daten, roh, zeitlimit)
+    monkeypatch.setattr(marketing_pult, "anfrage", anfrage)
+    r = angemeldet.get("/marketing/vorlagen", headers=HOST)
+    assert r.status_code == 200 and "Leere Vorlage" in r.text and "Vorschläge" not in r.text
+
+
+@pytest.mark.parametrize("fmt,erwartet", [("seite", "format=seite"), ("mail", "format=mail"),
+                                          ("boese", "format=mail"), (None, "format=mail")])
+def test_vorlage_bild_format_aus_der_adresse(angemeldet, pult, fmt, erwartet):
+    q = "" if fmt is None else f"?format={fmt}"
+    assert angemeldet.get(f"/marketing/vorlage-bild/split{q}", headers=HOST).status_code == 200
+    pfad = next(a[1] for a in pult.aufrufe if a[1].startswith("/vorlagen/split/vorschau"))
+    assert pfad.startswith(f"/vorlagen/split/vorschau?{erwartet}")
+
+
+def test_vorlage_entscheiden_freigeben_und_verwerfen(angemeldet, pult, monkeypatch):
+    ziel = "/vorlagen/plakat/entscheiden"
+    _vorlagen_falsch(monkeypatch, pult, [], weitere={ziel: {"name": "plakat", "status": "freigegeben"}})
+    for urteil in ("freigeben", "zurueckziehen"):
+        r = angemeldet.post("/marketing/vorlage-entscheiden", headers=HOST, follow_redirects=False,
+                            data={"csrf": ui.CSRF_TOKEN, "name": "plakat", "urteil": urteil})
+        assert r.status_code == 303 and r.headers["location"] == "/marketing/vorlagen"
+        assert pult.aufrufe[-1] == ("POST", ziel, {"urteil": urteil, "von": "mira"})
+
+
+def test_vorlage_entscheiden_ohne_csrf_oder_mit_schlechten_werten(angemeldet, pult):
+    r = angemeldet.post("/marketing/vorlage-entscheiden", headers=HOST, data={"name": "plakat", "urteil": "freigeben"})
+    assert r.status_code == 403
+    for daten in ({"name": "../x", "urteil": "freigeben"}, {"name": "plakat", "urteil": "loeschen"},
+                  {"name": "plakat"}):
+        r = angemeldet.post("/marketing/vorlage-entscheiden", headers=HOST, data={"csrf": ui.CSRF_TOKEN, **daten})
+        assert r.status_code == 422, daten
+    assert not any("/entscheiden" in a[1] for a in pult.aufrufe)
+
+
+def test_vorlage_entscheiden_ablehnung_zeigt_grund(angemeldet, pult, monkeypatch):
+    ziel = "/vorlagen/plakat/entscheiden"
+    _vorlagen_falsch(monkeypatch, pult, [], weitere={
+        ziel: marketing_pult.PultFehler("abgelehnt", "Vorlage ist schon zurückgezogen")})
+    r = angemeldet.post("/marketing/vorlage-entscheiden", headers=HOST,
+                        data={"csrf": ui.CSRF_TOKEN, "name": "plakat", "urteil": "freigeben"})
+    assert r.status_code == 422 and "Vorlage ist schon zurückgezogen" in r.text
+
+
+def test_aus_vorlage_mit_warnungen_zeigt_hinweise_und_editor_verweis(angemeldet, pult, monkeypatch):
+    _vorlagen_falsch(monkeypatch, pult, [], weitere={"/inhalte/aus_vorlage": {
+        "id": NEUE_ID, "warnungen": ["Bild für motiv1 konnte nicht beauftragt werden: <weg>", 5]}})
+    r = angemeldet.post("/marketing/aus-vorlage", headers=HOST, follow_redirects=False,
+                        data={"csrf": ui.CSRF_TOKEN, "vorlage": "split", "titel": "Herbst"})
+    assert r.status_code == 200
+    assert "Bild für motiv1 konnte nicht beauftragt werden: &lt;weg&gt;" in r.text and "<weg>" not in r.text
+    assert f'href="/marketing/editor/{NEUE_ID}"' in r.text
+
+
+def test_aus_vorlage_ohne_warnungen_leitet_weiter(angemeldet, pult, monkeypatch):
+    _vorlagen_falsch(monkeypatch, pult, [], weitere={"/inhalte/aus_vorlage": {"id": NEUE_ID, "warnungen": []}})
+    r = angemeldet.post("/marketing/aus-vorlage", headers=HOST, follow_redirects=False,
+                        data={"csrf": ui.CSRF_TOKEN, "vorlage": "split", "titel": "Herbst"})
+    assert r.status_code == 303 and r.headers["location"] == f"/marketing/editor/{NEUE_ID}"
+
+
+def test_aus_vorlage_nur_collagen_409_zeigt_grund(angemeldet, pult, monkeypatch):
+    grund = "Neue Newsletter entstehen als Collage – bitte eine Collage-Vorlage wählen"
+    _vorlagen_falsch(monkeypatch, pult, [], weitere={
+        "/inhalte/aus_vorlage": marketing_pult.PultFehler("abgelehnt", grund)})
+    r = angemeldet.post("/marketing/aus-vorlage", headers=HOST,
+                        data={"csrf": ui.CSRF_TOKEN, "vorlage": "leer", "titel": "T"})
+    assert r.status_code == 422 and grund in r.text
+
+
+def test_galerie_nur_collagen_wenn_collage_vorlage_freigegeben(angemeldet, pult, monkeypatch):
+    _vorlagen_falsch(monkeypatch, pult, [COLLAGE_V])
+    s = angemeldet.get("/marketing", headers=HOST).text
+    assert 'href="/marketing/vorlagen"' in s and "Neu aus Collage-Vorlage" in s
+    assert "Neuer Newsletter aus Vorlage" not in s and 'action="/marketing/neue-collage"' in s
+
+
+def test_galerie_vorlagen_nicht_lesbar_bleibt_wie_bisher(angemeldet, pult, monkeypatch):
+    alt = pult.anfrage
+
+    def anfrage(methode, pfad, daten=None, roh=False, zeitlimit=None):
+        if pfad.startswith("/vorlagen?"):
+            raise marketing_pult.PultFehler("nicht_erreichbar", "URLError")
+        return alt(methode, pfad, daten, roh, zeitlimit)
+    monkeypatch.setattr(marketing_pult, "anfrage", anfrage)
+    r = angemeldet.get("/marketing", headers=HOST)
+    assert r.status_code == 200 and "Neuer Newsletter aus Vorlage" in r.text
+
+
+def test_vorlagen_json_nur_collagen_blendet_block_vorlagen_aus(angemeldet, pult, monkeypatch):
+    _vorlagen_falsch(monkeypatch, pult, [BLOCK_V, COLLAGE_V])
+    r = angemeldet.get(f"/marketing/editor/{IID}/vorlagen.json", headers=HOST)
+    assert r.json() == {"vorlagen": [{"name": "split", "beschreibung": "Split mit Bild", "fassung": 2,
+                                      "format": "seite"}]}
+
+
+def test_editor_vorlage_bild_format_seite(angemeldet, pult):
+    assert angemeldet.get(f"/marketing/editor/{IID}/vorlage-bild/split?format=seite", headers=HOST).status_code == 200
+    pfad = next(a[1] for a in pult.aufrufe if a[1].startswith("/vorlagen/split/vorschau"))
+    assert pfad.startswith("/vorlagen/split/vorschau?format=seite&")
+
+
+def test_vorlage_neu_reicht_warnungen_weiter(angemeldet, pult, monkeypatch):
+    _vorlagen_falsch(monkeypatch, pult, [], weitere={"/inhalte/aus_vorlage": {
+        "id": NEUE_ID, "warnungen": ["Logo fehlt", 7, "x" * 600]}})
+    r = _post_json(angemeldet, VORLAGE, {"vorlage": "split", "art": "neu", "titel": "Herbst"})
+    assert r.status_code == 200
+    assert r.json() == {"editor_url": f"/marketing/editor/{NEUE_ID}", "warnungen": ["Logo fehlt"]}
+
+
+def test_start_kennt_pruefung(angemeldet, pult):
+    pult.format = "seite"
+    start = _start(angemeldet.get(f"/marketing/editor/{IID}", headers=HOST).text)
+    assert start["pruefung_url"] == PRUEFUNG
+
+
+def test_pruefung_reicht_befunde_durch_mit_langem_zeitlimit(angemeldet, pult, monkeypatch):
+    ziel = f"/inhalte/{IID}/pruefung?fassung=4"
+    _vorlagen_falsch(monkeypatch, pult, [], weitere={ziel: {"befunde": [
+        {"schwere": "hart", "punkt": "titel", "satz": "titel: Kontrast 2,1:1 auf dem Bild – mindestens 3:1"},
+        {"schwere": "weich", "punkt": "seite", "satz": "Kein Knopf"},
+        {"schwere": "boese", "punkt": "x", "satz": "y"}, {"schwere": "hart", "punkt": 3, "satz": "z"}, "quatsch"]}})
+    r = angemeldet.get(f"{PRUEFUNG}?fassung=4", headers=HOST)
+    assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
+    assert r.json() == {"befunde": [
+        {"schwere": "hart", "punkt": "titel", "satz": "titel: Kontrast 2,1:1 auf dem Bild – mindestens 3:1"},
+        {"schwere": "weich", "punkt": "seite", "satz": "Kein Knopf"}]}
+    assert pult.zeitlimits[-1] == marketing_pult.LANG_ZEITLIMIT_S == 120
+
+
+def test_pruefung_ohne_fassung_fragt_die_neueste(angemeldet, pult, monkeypatch):
+    ziel = f"/inhalte/{IID}/pruefung"
+    _vorlagen_falsch(monkeypatch, pult, [], weitere={ziel: {"befunde": []}})
+    r = angemeldet.get(PRUEFUNG, headers=HOST)
+    assert r.status_code == 200 and r.json() == {"befunde": []}
+    assert ("GET", ziel, None) in pult.aufrufe
+
+
+@pytest.mark.parametrize("q", ["?fassung=0", "?fassung=abc", "?fassung=-1", "?fassung=1.5"])
+def test_pruefung_fassung_ungueltig_422_ohne_aufruf(angemeldet, pult, q):
+    assert angemeldet.get(PRUEFUNG + q, headers=HOST).status_code == 422
+    assert not any("/pruefung" in a[1] for a in pult.aufrufe)
+
+
+def test_pruefung_iid_ungueltig_422(angemeldet, pult):
+    assert angemeldet.get("/marketing/editor/kein-uuid/pruefung", headers=HOST).status_code == 422
+    assert not any("/pruefung" in a[1] for a in pult.aufrufe)
+
+
+def test_pruefung_fehler_422_und_503_mit_grund(angemeldet, pult, monkeypatch):
+    ziel = f"/inhalte/{IID}/pruefung"
+    _vorlagen_falsch(monkeypatch, pult, [], weitere={
+        ziel: marketing_pult.PultFehler("abgelehnt", "Das ist keine Collage")})
+    r = angemeldet.get(PRUEFUNG, headers=HOST)
+    assert r.status_code == 422 and r.json()["grund"] == "Das ist keine Collage"
+    _vorlagen_falsch(monkeypatch, pult, [], weitere={ziel: marketing_pult.PultFehler(
+        "nicht_erreichbar", "503", {"detail": "Chromium ist gerade beschäftigt"})})
+    r = angemeldet.get(PRUEFUNG, headers=HOST)
+    assert r.status_code == 503 and r.json()["grund"] == "Chromium ist gerade beschäftigt"
+    _vorlagen_falsch(monkeypatch, pult, [], weitere={
+        ziel: marketing_pult.PultFehler("nicht_erreichbar", "URLError")})
+    r = angemeldet.get(PRUEFUNG, headers=HOST)
+    assert r.status_code == 503 and r.json()["grund"] == "Prüfung gerade nicht möglich"
+
+
+def test_pruefung_ohne_anmeldung_kein_aufruf(pult, monkeypatch):
+    monkeypatch.setattr(ui, "UI_SESSION_SECRET", "test-geheimnis-nur-fuer-die-suite")
+    c = TestClient(ui.app)
+    r = c.get(PRUEFUNG, headers=HOST, follow_redirects=False)
+    assert r.status_code != 200      # ohne Anmeldung (oder ohne Geheimnis) nie die Befunde
+    assert not any("/pruefung" in a[1] for a in pult.aufrufe)

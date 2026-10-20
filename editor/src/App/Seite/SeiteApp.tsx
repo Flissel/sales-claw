@@ -1,20 +1,22 @@
 // Collage-Editor (Freie Fläche Stufe 2, Spec 4.6): Leiste oben, Ebenen links, Seite in der Mitte,
 // Eigenschaften rechts, darunter der Assistent (Stufe 3). Einreichen wie im Block-Editor (Stufe 4): die API
 // erzeugt dabei die Mail-Fassung und nennt Gründe, wenn es nicht geht (Anrede im Bild, zu groß, Bild fehlt).
+// "Prüfen" (Stufe 5): speichert Ungespeichertes und zeigt die Befunde der Schönheitsprüfung rechts; scheitert
+// das Einreichen, erscheinen sie von selbst (der Grund der API steht weiter in der Meldung).
 // Am Handy (unter HANDY_GRENZE) die Vorschau der gespeicherten Fassung und der Assistent.
 // Während einer Runde zeigt die Fläche den Zwischenstand nur zur Anzeige; Bearbeiten ist gesperrt.
 // Eingereicht (nurLesen): alles nur lesend - Fläche ohne Griffe, Ebenen, Eigenschaften, Tasten, Speichern
 // und Chat gesperrt -, bis der Newsletter zurückgezogen ist.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
-import { ArrowBackRounded, PictureAsPdfOutlined, RedoRounded, SaveOutlined, SendOutlined, UndoRounded } from '@mui/icons-material';
+import { ArrowBackRounded, FactCheckOutlined, PictureAsPdfOutlined, RedoRounded, SaveOutlined, SendOutlined, UndoRounded } from '@mui/icons-material';
 import {
   Alert, Box, Button, CircularProgress, Dialog, DialogActions, DialogContent, DialogContentText, DialogTitle,
   IconButton, Snackbar, TextField, ThemeProvider, Tooltip, Typography, useMediaQuery,
 } from '@mui/material';
 
 import { HANDY_GRENZE } from '../../handy';
-import { fehlerText, zurueckziehen, type Start } from '../../pult';
+import { fehlerText, pruefungLaden, zurueckziehen, type Start } from '../../pult';
 import { chipsAbgleichen, editorEinstecken, einreichenAuftrag, LIEGT_ZUR_FREIGABE, pultStore } from '../../pultZustand';
 import { speicherGrund, type Seite } from '../../seite';
 import { seitenSicherung, type SeitenStand } from '../../seiteChat';
@@ -27,6 +29,7 @@ import { FARBE, gestaltungThema, KOPF_HOEHE, LINKS_BREITE, RECHTS_BREITE, UI_SCH
 import SeiteEbenen from './SeiteEbenen';
 import SeiteEigenschaften from './SeiteEigenschaften';
 import SeiteFlaeche from './SeiteFlaeche';
+import SeitePruefung, { type PruefStand } from './SeitePruefung';
 import SeitenChat from './SeitenChat';
 import { useSeiteTasten } from './seiteTasten';
 import { useSeite } from './useSeite';
@@ -108,6 +111,8 @@ function Arbeitsplatz({ start, anfang, basis, setBasis, versteckt }: Arbeitsplat
   const [reicht, setReicht] = useState(false);
   const reichtSperre = useRef(false);
   const [zieht, setZieht] = useState(false);
+  const [pruefung, setPruefung] = useState<PruefStand | null>(null);
+  const pruefSperre = useRef(false);
   const ungespeichert = z.geaendert || betreff !== gesichert.betreff || vorschautext !== gesichert.vorschautext;
   // Assistent: läuft eine Runde, ist Bearbeiten gesperrt; die Fläche zeigt den Zwischenstand nur an.
   const arbeitet = useAgentArbeitet();
@@ -175,14 +180,15 @@ function Arbeitsplatz({ start, anfang, basis, setBasis, versteckt }: Arbeitsplat
     return () => window.removeEventListener('beforeunload', warnen);
   }, []);
 
-  const sichern = async (alsKopie: boolean) => {
-    if (laeuft || gesperrt) return;
+  // Liefert die neue Fassung oder null (nicht gespeichert; die Meldung bzw. der Konflikt-Dialog steht dann da).
+  const sichern = async (alsKopie: boolean): Promise<number | null> => {
+    if (laeuft || gesperrt) return null;
     z.festschreiben();
     const s = z.aktuell();
     const grund = speicherGrund(s);
     if (grund) {
       setMeldung({ art: 'error', text: fehlerText(grund) });
-      return;
+      return null;
     }
     setLaeuft(true);
     const stand = { betreff, vorschautext };
@@ -195,12 +201,35 @@ function Arbeitsplatz({ start, anfang, basis, setBasis, versteckt }: Arbeitsplat
       // Nur wenn seither nichts mehr geändert wurde, gilt der Stand als gespeichert.
       if (z.aktuell() === s) z.gespeichert();
       setMeldung({ art: 'success', text: alsKopie ? `Als Kopie gespeichert als Fassung ${r.fassung}` : `Gespeichert als Fassung ${r.fassung}` });
-    } else if ('konflikt' in r) {
+      return r.fassung;
+    }
+    if ('konflikt' in r) {
       setKonflikt(true);
     } else {
       setKonflikt(false);
       setMeldung({ art: 'error', text: fehlerText(r.grund) });
     }
+    return null;
+  };
+
+  // Befunde einer Fassung (ohne Fassung: die neueste) in die rechte Spalte.
+  const pruefungZeigen = async (fassung?: number) => {
+    setPruefung({ art: 'laedt' });
+    const r = await pruefungLaden(start, fassung);
+    setPruefung(r.ok ? { art: 'befunde', befunde: r.befunde } : { art: 'fehler', grund: r.grund });
+  };
+
+  // "Prüfen": geprüft wird immer eine gespeicherte Fassung - Ungespeichertes wird vorher gespeichert.
+  const pruefenKlick = async () => {
+    await nurEinmal(pruefSperre, async () => {
+      let fassung = basis;
+      if (ungespeichert) {
+        const neu = await sichern(false);
+        if (neu === null) return;
+        fassung = neu;
+      }
+      await pruefungZeigen(fassung);
+    });
   };
 
   const einreichenKlick = async () => {
@@ -210,6 +239,8 @@ function Arbeitsplatz({ start, anfang, basis, setBasis, versteckt }: Arbeitsplat
       const m = await seiteEinreichen();
       setReicht(false);
       setMeldung(m);
+      // Abgelehnt (z. B. harter Befund): die Befunde der neuesten Fassung gleich daneben zeigen.
+      if (m?.art === 'error' && start.pruefung_url) void pruefungZeigen();
     });
   };
 
@@ -281,6 +312,21 @@ function Arbeitsplatz({ start, anfang, basis, setBasis, versteckt }: Arbeitsplat
             </Button>
           </span>
         </Tooltip>
+        {start.pruefung_url && (
+          <Tooltip title={ungespeichert ? 'Speichert und prüft die Collage' : `Fassung ${basis} prüfen`}>
+            <span>
+              <Button
+                color="inherit"
+                disabled={pruefung?.art === 'laedt' || laeuft || (ungespeichert && gesperrt)}
+                onClick={() => void pruefenKlick()}
+                startIcon={pruefung?.art === 'laedt' ? <CircularProgress size={14} color="inherit" /> : <FactCheckOutlined sx={{ fontSize: 16 }} />}
+                sx={{ flex: 'none' }}
+              >
+                Prüfen
+              </Button>
+            </span>
+          </Tooltip>
+        )}
         <Button
           variant="contained"
           disableElevation
@@ -334,6 +380,16 @@ function Arbeitsplatz({ start, anfang, basis, setBasis, versteckt }: Arbeitsplat
       {/* Rechts: Eigenschaften, darunter der Assistent */}
       <Box component="aside" aria-label="Eigenschaften" sx={{ bgcolor: FARBE.panel, borderLeft: `1px solid ${FARBE.linie}`, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
         <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+          {pruefung && (
+            <SeitePruefung
+              stand={pruefung}
+              ebenen={new Set(z.seite.ebenen.map((e) => e.id))}
+              onWaehlen={(id) => {
+                if (!gesperrt) z.waehlen(id);
+              }}
+              onSchliessen={() => setPruefung(null)}
+            />
+          )}
           <Box ref={eigenschaftenRef} aria-disabled={gesperrt ? true : undefined} sx={{ opacity: gesperrt ? 0.4 : 1, pointerEvents: gesperrt ? 'none' : 'auto', transition: 'opacity 150ms ease-out' }}>
             <SeiteEigenschaften z={z} vorschautext={vorschautext} setVorschautext={setVorschautext} />
           </Box>

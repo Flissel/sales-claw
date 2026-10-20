@@ -53,13 +53,19 @@ export function vorlageLabel(name: string): string {
   return t.charAt(0).toUpperCase() + t.slice(1);
 }
 
-export type NeuDialog = { name: string; titel: string; grund: string | null; laeuft: boolean };
+// angelegt: Collage-Vorlage mit Hinweisen beim Fuellen (Stufe 5) - der Entwurf ist da, der Dialog zeigt die
+// Hinweise und oeffnet ihn erst auf Klick.
+export type Angelegt = { editorUrl: string; warnungen: string[] };
+export type NeuDialog = { name: string; titel: string; grund: string | null; laeuft: boolean; angelegt?: Angelegt };
 
 // Naechster Zustand des Titel-Dialogs nach "Anlegen": null (zu) bei Erfolg - die Navigation laeuft,
-// und bleibt die Seite (Verlassen-Warnung), haengt nichts auf "Wird angelegt …"; sonst frei mit Grund.
+// und bleibt die Seite (Verlassen-Warnung), haengt nichts auf "Wird angelegt …"; sonst frei mit Grund
+// oder (mit Warnungen) mit dem angelegten Entwurf.
 export async function neuDialogNach(start: Start, neu: NeuDialog): Promise<NeuDialog | null> {
-  const grund = await alsNeuAusfuehren(start, neu.name, neu.titel);
-  return grund === null ? null : { ...neu, grund, laeuft: false };
+  const ergebnis = await alsNeuAusfuehren(start, neu.name, neu.titel);
+  if (ergebnis === null) return null;
+  if (typeof ergebnis === 'string') return { ...neu, grund: ergebnis, laeuft: false };
+  return { ...neu, grund: null, laeuft: false, angelegt: ergebnis };
 }
 
 export function titelFehler(titel: string): string | null {
@@ -77,14 +83,30 @@ export async function anwendenAusfuehren(start: Start, vorlage: string, basis: n
   return null;
 }
 
-// Neuer Entwurf aus der Vorlage; Erfolg oeffnet ihn. Liefert null oder den Grund.
-export async function alsNeuAusfuehren(start: Start, vorlage: string, titel: string): Promise<string | null> {
+// Neuer Entwurf aus der Vorlage; Erfolg oeffnet ihn. Liefert null, den Grund oder - mit Warnungen
+// (Collage-Vorlage) - den angelegten Entwurf, ohne ihn schon zu oeffnen.
+export async function alsNeuAusfuehren(start: Start, vorlage: string, titel: string): Promise<string | null | Angelegt> {
   const fehler = titelFehler(titel);
   if (fehler) return fehler;
   const e = await vorlageAlsNeu(start, vorlage, titel.trim());
   if (!e.ok) return e.grund;
+  if (e.warnungen.length > 0) return { editorUrl: e.editorUrl, warnungen: e.warnungen };
   window.location.href = e.editorUrl;
   return null;
+}
+
+// Nach dem Anlegen aus einer Collage-Vorlage mit Hinweisen (getrennt, damit er sich ohne Portal pruefen laesst).
+export function AngelegtHinweis({ warnungen }: { warnungen: string[] }) {
+  return (
+    <Alert severity="warning">
+      Der neue Entwurf ist angelegt. Beim Füllen der Vorlage gab es Hinweise:
+      <Box component="ul" sx={{ m: 0, mt: 0.5, pl: 2.5 }}>
+        {warnungen.map((w, i) => (
+          <li key={i}>{w}</li>
+        ))}
+      </Box>
+    </Alert>
+  );
 }
 
 function Vorschau({ src, name }: { src: string; name: string }) {
@@ -176,10 +198,16 @@ export function VorlagenListe({ start, vorlagen, ungespeichert, nurLesen, onAnwe
       {vorlagen.map((v) => (
         <Card key={v.name} variant="outlined">
           <CardContent sx={{ p: 1, '&:last-child': { pb: 1 } }}>
-            <Vorschau src={bildUrl + encodeURIComponent(v.name)} name={v.name} />
+            {/* Collage-Vorlagen zeigen die gefuellte Seite (format=seite), Block-Vorlagen die Mail. */}
+            <Vorschau src={bildUrl + encodeURIComponent(v.name) + (v.format === 'seite' ? '?format=seite' : '')} name={v.name} />
             <Typography variant="subtitle2" sx={{ mt: 1 }}>
               {vorlageLabel(v.name)}
             </Typography>
+            {v.format === 'seite' && (
+              <Typography variant="caption" color="text.secondary" component="p">
+                Collage-Vorlage – legt eine neue Collage an
+              </Typography>
+            )}
             {v.beschreibung && (
               <Typography variant="caption" color="text.secondary" component="p">
                 {v.beschreibung}
@@ -193,18 +221,21 @@ export function VorlagenListe({ start, vorlagen, ungespeichert, nurLesen, onAnwe
                   </Button>
                 </span>
               </Tooltip>
-              <Tooltip title={sperre ?? ''}>
-                <span>
-                  <Button
-                    size="small"
-                    disabled={sperre !== null}
-                    onClick={() => onAnwenden(v.name)}
-                    sx={{ px: 0.5, whiteSpace: 'nowrap', letterSpacing: 0 }}
-                  >
-                    Auf diesen Entwurf anwenden …
-                  </Button>
-                </span>
-              </Tooltip>
+              {/* Eine Collage-Vorlage laesst sich nicht auf einen Block-Newsletter anwenden (die API lehnt ab). */}
+              {v.format !== 'seite' && (
+                <Tooltip title={sperre ?? ''}>
+                  <span>
+                    <Button
+                      size="small"
+                      disabled={sperre !== null}
+                      onClick={() => onAnwenden(v.name)}
+                      sx={{ px: 0.5, whiteSpace: 'nowrap', letterSpacing: 0 }}
+                    >
+                      Auf diesen Entwurf anwenden …
+                    </Button>
+                  </span>
+                </Tooltip>
+              )}
             </Stack>
           </CardContent>
         </Card>
@@ -308,19 +339,22 @@ export default function VorlagenReiter() {
           <DialogContentText sx={{ mb: 2 }}>
             Der neue Entwurf gehört derselben Firma und öffnet sich danach im Editor. Dieser Entwurf bleibt, wie er ist.
           </DialogContentText>
-          <TextField
-            autoFocus
-            fullWidth
-            size="small"
-            label="Titel des neuen Entwurfs"
-            value={neu?.titel ?? ''}
-            error={neu !== null && neu.titel !== '' && titelHinweis !== null}
-            helperText={neu && neu.titel !== '' && titelHinweis ? titelHinweis : `1 bis ${TITEL_MAX} Zeichen`}
-            onChange={(ev) => neu && setNeu({ ...neu, titel: ev.target.value })}
-            onKeyDown={(ev) => {
-              if (ev.key === 'Enter' && titelHinweis === null && !neu?.laeuft) void neuAnlegen();
-            }}
-          />
+          {neu?.angelegt && <AngelegtHinweis warnungen={neu.angelegt.warnungen} />}
+          {!neu?.angelegt && (
+            <TextField
+              autoFocus
+              fullWidth
+              size="small"
+              label="Titel des neuen Entwurfs"
+              value={neu?.titel ?? ''}
+              error={neu !== null && neu.titel !== '' && titelHinweis !== null}
+              helperText={neu && neu.titel !== '' && titelHinweis ? titelHinweis : `1 bis ${TITEL_MAX} Zeichen`}
+              onChange={(ev) => neu && setNeu({ ...neu, titel: ev.target.value })}
+              onKeyDown={(ev) => {
+                if (ev.key === 'Enter' && titelHinweis === null && !neu?.laeuft) void neuAnlegen();
+              }}
+            />
+          )}
           {neu?.grund && (
             <Alert severity="error" sx={{ mt: 2 }}>
               {neu.grund}
@@ -328,14 +362,20 @@ export default function VorlagenReiter() {
           )}
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setNeu(null)}>Abbrechen</Button>
-          <Button
-            variant="contained"
-            disabled={neu?.laeuft || titelHinweis !== null || alsNeuSperre(ungespeichert) !== null}
-            onClick={() => void neuAnlegen()}
-          >
-            {neu?.laeuft ? 'Wird angelegt …' : 'Anlegen und öffnen'}
-          </Button>
+          <Button onClick={() => setNeu(null)}>{neu?.angelegt ? 'Schließen' : 'Abbrechen'}</Button>
+          {neu?.angelegt ? (
+            <Button variant="contained" href={neu.angelegt.editorUrl}>
+              Im Editor öffnen
+            </Button>
+          ) : (
+            <Button
+              variant="contained"
+              disabled={neu?.laeuft || titelHinweis !== null || alsNeuSperre(ungespeichert) !== null}
+              onClick={() => void neuAnlegen()}
+            >
+              {neu?.laeuft ? 'Wird angelegt …' : 'Anlegen und öffnen'}
+            </Button>
+          )}
         </DialogActions>
       </Dialog>
     </>

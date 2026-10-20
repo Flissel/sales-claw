@@ -60,6 +60,41 @@ ASSISTENT_WEG = "Assistent gerade nicht erreichbar"
 # Wie viele Fassungen der Verlauf im Start-JSON hoechstens traegt (neueste zuerst).
 VERLAUF_MAX = 30
 BODY_MAX = 16 * 1024          # Vorlage/Wiederherstellen: nur ein paar kurze Felder
+# Stufe 5: Warnungen beim Anlegen aus einer Collage-Vorlage und Befunde der Pruefung (nur kurze Saetze).
+WARNUNG_MAX, WARNUNGEN_MAX = 500, 20
+BEFUND_SATZ_MAX, BEFUNDE_MAX, PUNKT_MAX = 500, 100, 64
+PRUEFUNG_WEG = "Prüfung gerade nicht möglich"
+NUR_COLLAGEN_HINWEIS = "Neue Newsletter entstehen als Collage – bitte eine Collage-Vorlage wählen."
+
+
+def vorlagen_teilen(liste) -> tuple[list[dict], list[dict]]:
+    """(Collage-Vorlagen, Block-Vorlagen) mit gueltigem Namen; ohne `format` gilt Block (aeltere API)."""
+    gut = [v for v in (liste if isinstance(liste, list) else [])
+           if isinstance(v, dict) and isinstance(v.get("name"), str) and VORLAGE_NAME.match(v["name"])]
+    return [v for v in gut if v.get("format") == "seite"], [v for v in gut if v.get("format") != "seite"]
+
+
+def vorlage_bild_format(request) -> str:
+    """Vorschau-Format der Mini-Vorschau: nur "seite" (Collage-Vorlage) oder "mail" (Block-Vorlage)."""
+    return "seite" if request.query_params.get("format") == "seite" else "mail"
+
+
+def warnungen_aus(r) -> list[str]:
+    roh = r.get("warnungen") if isinstance(r, dict) else None
+    if not isinstance(roh, list):
+        return []
+    return [w for w in roh if isinstance(w, str) and 0 < len(w) <= WARNUNG_MAX][:WARNUNGEN_MAX]
+
+
+def befunde_aus(r) -> list[dict] | None:
+    """Befunde der Pruefung in fester Form; None = Antwort unverstaendlich."""
+    roh = r.get("befunde") if isinstance(r, dict) else None
+    if not isinstance(roh, list):
+        return None
+    return [{"schwere": b["schwere"], "punkt": b["punkt"], "satz": b["satz"]} for b in roh
+            if isinstance(b, dict) and b.get("schwere") in ("hart", "weich")
+            and isinstance(b.get("punkt"), str) and 0 < len(b["punkt"]) <= PUNKT_MAX
+            and isinstance(b.get("satz"), str) and 0 < len(b["satz"]) <= BEFUND_SATZ_MAX][:BEFUNDE_MAX]
 
 
 def _ui():
@@ -300,6 +335,8 @@ def routen(ui) -> list:
             "vorlage_bild_url": f"/marketing/editor/{iid}/vorlage-bild/",
             "vorlage_url": f"/marketing/editor/{iid}/vorlage",
             "wiederherstellen_url": f"/marketing/editor/{iid}/wiederherstellen",
+            # Stufe 5: Schoenheitspruefung einer Collage-Fassung (nur lesen, ohne CSRF).
+            "pruefung_url": f"/marketing/editor/{iid}/pruefung",
             "fassungen": [
                 {"fassung": f["fassung"], "urheber": "agent" if f.get("urheber") == "agent" else "betreiber",
                  "erstellt_am": str(f.get("erstellt_am") or ""), "format": str(f.get("format") or "")}
@@ -811,24 +848,51 @@ def routen(ui) -> list:
                                         f"/vorlagen?mandant={urllib.parse.quote(m)}&status=freigegeben")
         except marketing_pult.PultFehler as f:
             return _fehler(ui, f)
+        # Vorschlaege (Stufe 5) sind ein Zusatz: nicht lesbar -> der Abschnitt fehlt, die Seite bleibt.
+        try:
+            dv = await run_in_threadpool(marketing_pult.anfrage, "GET",
+                                         f"/vorlagen?mandant={urllib.parse.quote(m)}&status=vorschlag")
+        except marketing_pult.PultFehler:
+            dv = {}
         csrf = f'<input type="hidden" name="csrf" value="{e(ui.CSRF_TOKEN)}">'
 
-        def karte(v: dict) -> str:
-            n = str(v.get("name") or "")
-            if not VORLAGE_NAME.match(n):
-                return ""
-            beschreibung = str(v.get("beschreibung") or n)
-            return (f'<div class="layout-karte"><div class="layout-rahmen">'
+        def rahmen(v: dict) -> str:
+            n, beschreibung = str(v["name"]), str(v.get("beschreibung") or v["name"])
+            seite = v.get("format") == "seite"
+            return (f'<div class="layout-rahmen">'
                     f'<span class="layout-platzhalter">{e(beschreibung)}</span>'
                     f'<iframe class="layout-bild" sandbox tabindex="-1" loading="lazy" title="Vorschau {e(beschreibung)}" '
-                    f'src="/marketing/vorlage-bild/{e(n)}"></iframe></div>'
-                    f'<b>{e(beschreibung)}</b><span class="meta">{e(n)} &middot; Fassung '
-                    f'{int(v.get("fassung") or 1)}</span>'
+                    f'src="/marketing/vorlage-bild/{e(n)}{"?format=seite" if seite else ""}"></iframe></div>'
+                    f'<b>{e(beschreibung)}</b><span class="meta">{e(n)} &middot; '
+                    f'{"Collage" if seite else "Blöcke"} &middot; Fassung {int(v.get("fassung") or 1)}</span>')
+
+        def karte(v: dict) -> str:
+            return (f'<div class="layout-karte">{rahmen(v)}'
                     f'<form method="post" action="/marketing/aus-vorlage" class="aktion">{csrf}'
-                    f'<input type="hidden" name="vorlage" value="{e(n)}">'
+                    f'<input type="hidden" name="vorlage" value="{e(str(v["name"]))}">'
                     f'<label>Titel <input name="titel" required maxlength="{TITEL_MAX}" '
                     f'placeholder="z. B. Newsletter Oktober"></label>'
                     f'<button class="primaer" type="submit">Neu aus Vorlage</button></form></div>')
+
+        def entscheiden_knopf(name: str, urteil: str, text: str, klasse: str) -> str:
+            return (f'<form method="post" action="/marketing/vorlage-entscheiden" class="aktion">{csrf}'
+                    f'<input type="hidden" name="name" value="{e(name)}">'
+                    f'<input type="hidden" name="urteil" value="{urteil}">'
+                    f'<button{klasse} type="submit">{text}</button></form>')
+
+        def vorschlag(v: dict) -> str:
+            n = str(v["name"])
+            return (f'<div class="layout-karte">{rahmen(v)}'
+                    + entscheiden_knopf(n, "freigeben", "Freigeben", ' class="primaer"')
+                    + entscheiden_knopf(n, "zurueckziehen", "Verwerfen", "") + '</div>')
+
+        collagen, bloecke = vorlagen_teilen(d.get("vorlagen") if isinstance(d, dict) else None)
+        # Nur noch Collagen (Stufe 5): mit einer freigegebenen Collage-Vorlage lehnt die API Block-Vorlagen ab.
+        nur_collagen = bool(collagen)
+        if nur_collagen:
+            bloecke = []
+        vorschlaege = [v for teil in vorlagen_teilen(dv.get("vorlagen") if isinstance(dv, dict) else None)
+                       for v in teil]
 
         collage = (f'<div class="layout-karte"><b>Neue Collage</b>'
                    f'<span class="meta">Freie Fläche: Bilder, Texte, Formen und Knöpfe frei platzieren.</span>'
@@ -836,23 +900,46 @@ def routen(ui) -> list:
                    f'<label>Titel <input name="titel" required maxlength="{TITEL_MAX_COLLAGE}" '
                    f'placeholder="z. B. Herbst-Collage"></label>'
                    f'<button class="primaer" type="submit">Neue Collage</button></form></div>')
-        vorlagenkarten = "".join(karte(v) for v in d.get("vorlagen") or [])
-        karten = collage + vorlagenkarten
+        # Zuerst die Collage-Vorlagen, dann "Neue Collage", dann (falls noch angeboten) die Block-Vorlagen.
+        karten = "".join(karte(v) for v in collagen) + collage + "".join(karte(v) for v in bloecke)
         rumpf = (marketing_mandant.umschalter(e, ui.CSRF_TOKEN, m, liste, "/marketing/vorlagen")
-                 + f'<p class="meta">Eine Vorlage wählen, einen Titel geben - der neue Entwurf öffnet '
-                 f'sich im Editor.</p>'
-                 + (f'<div class="galerie">{karten}</div>'
-                    + ("" if vorlagenkarten else "<p>Keine freigegebenen Vorlagen.</p>")))
+                 + '<p class="meta">Eine Vorlage wählen, einen Titel geben - der neue Entwurf öffnet '
+                 'sich im Editor.</p>'
+                 + (f'<p class="meta">{e(NUR_COLLAGEN_HINWEIS)}</p>' if nur_collagen else "")
+                 + f'<div class="galerie">{karten}</div>'
+                 + ("" if collagen or bloecke else "<p>Keine freigegebenen Vorlagen.</p>")
+                 + ('<h2>Vorschläge</h2><p class="meta">Neue Vorlagen, die noch niemand freigegeben hat. '
+                    'Angeboten werden nur freigegebene Vorlagen.</p>'
+                    f'<div class="galerie">{"".join(vorschlag(v) for v in vorschlaege)}</div>'
+                    if vorschlaege else ""))
         antwort = ui._seite("Neuer Newsletter aus Vorlage", rumpf)
         antwort.headers["Content-Security-Policy"] = ui._csp_mit_rahmen("'self'")
         return antwort
+
+    @ui._gesichert_seite
+    async def vorlage_entscheiden(request):
+        """Vorschlag freigeben oder verwerfen (urteil zurueckziehen); die Uebergaenge prueft die API/DB."""
+        form = await request.form()
+        if not ui._csrf_ok(form):
+            return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
+        name, urteil = str(form.get("name") or ""), str(form.get("urteil") or "")
+        if not VORLAGE_NAME.match(name):
+            return ui._fehlerseite(422, "Nicht möglich", "Unbekannte Vorlage.")
+        if urteil not in ("freigeben", "zurueckziehen"):
+            return ui._fehlerseite(422, "Nicht möglich", "Unbekannte Entscheidung.")
+        try:
+            await run_in_threadpool(marketing_pult.anfrage, "POST", f"/vorlagen/{name}/entscheiden",
+                                    {"urteil": urteil, "von": ui._ui_akteur(request)})
+        except marketing_pult.PultFehler as f:
+            return _fehler(ui, f)
+        return RedirectResponse("/marketing/vorlagen", status_code=303)
 
     @ui._gesichert_seite
     async def vorlage_bild(request):
         name = request.path_params["name"]
         if not VORLAGE_NAME.match(name):
             return _gerahmt("<p>Unbekannte Vorlage.</p>", status=404)
-        q = {"format": "mail"}
+        q = {"format": vorlage_bild_format(request)}
         if (b := bild_basis()):
             q["bild_basis"] = b
         try:
@@ -884,8 +971,15 @@ def routen(ui) -> list:
                                         {"vorlage": vorlage, "titel": titel, "mandant": m})
         except marketing_pult.PultFehler as f:
             return _fehler(ui, f)
-        return RedirectResponse(f"/marketing/editor/{urllib.parse.quote(str(r['id']), safe='')}",
-                                status_code=303)
+        ziel = f"/marketing/editor/{urllib.parse.quote(str(r['id']), safe='')}"
+        warnungen = warnungen_aus(r)
+        if not warnungen:
+            return RedirectResponse(ziel, status_code=303)
+        # Collage-Vorlage (Stufe 5): angelegt, aber mit Hinweisen (z. B. ein Bildauftrag ging nicht) - erst zeigen.
+        punkte = "".join(f"<li>{e(w)}</li>" for w in warnungen)
+        return ui._seite("Collage angelegt", (
+            f'<p>Die Collage „{e(titel)}“ ist angelegt. Beim Füllen der Vorlage gab es Hinweise:</p>'
+            f'<ul>{punkte}</ul><p><a class="knopf" href="{e(ziel)}">Im Editor öffnen</a></p>'))
 
     @ui._gesichert_seite
     async def neue_collage(request):
@@ -955,10 +1049,11 @@ def routen(ui) -> list:
         liste = r.get("vorlagen") if isinstance(r, dict) else None
         if not isinstance(liste, list):
             return json_grund(503, "Vorlagen gerade nicht abrufbar")
+        collagen, bloecke = vorlagen_teilen(liste)
+        # Nur noch Collagen: mit einer freigegebenen Collage-Vorlage bietet der Reiter keine Block-Vorlagen an.
         vorlagen = [{"name": v["name"], "beschreibung": str(v.get("beschreibung") or ""),
-                     "fassung": v.get("fassung")}
-                    for v in liste if isinstance(v, dict) and isinstance(v.get("name"), str)
-                    and VORLAGE_NAME.match(v["name"])]
+                     "fassung": v.get("fassung"), "format": "seite" if v.get("format") == "seite" else "bloecke"}
+                    for v in (collagen if collagen else bloecke)]
         return JSONResponse({"vorlagen": vorlagen}, headers={"Cache-Control": "no-store"})
 
     @ui._gesichert_seite
@@ -971,7 +1066,7 @@ def routen(ui) -> list:
         mandant, abgewiesen = await firma_des_inhalts(request.path_params["iid"])
         if abgewiesen is not None:
             return _gerahmt(f"<p>{e(json.loads(abgewiesen.body)['grund'])}</p>", status=abgewiesen.status_code)
-        q = {"format": "mail", "mandant": mandant}
+        q = {"format": vorlage_bild_format(request), "mandant": mandant}
         if (b := bild_basis()):
             q["bild_basis"] = b
         try:
@@ -1032,8 +1127,38 @@ def routen(ui) -> list:
             neue_id = ""
         if not neue_id:
             return json_grund(503, "Anlegen gerade nicht möglich")
-        return JSONResponse({"editor_url": f"/marketing/editor/{neue_id}"},
-                            headers={"Cache-Control": "no-store"})
+        antwort = {"editor_url": f"/marketing/editor/{neue_id}"}
+        if (warnungen := warnungen_aus(r)):
+            antwort["warnungen"] = warnungen
+        return JSONResponse(antwort, headers={"Cache-Control": "no-store"})
+
+    @ui._gesichert_seite
+    async def editor_pruefung(request):
+        """Schoenheitspruefung einer Collage-Fassung (Stufe 5). Nur lesen: ohne CSRF, hinter der Anmeldung.
+        Die API rendert in Chromium - langes Zeitlimit wie beim Einreichen."""
+        try:
+            iid = str(uuid.UUID(str(request.path_params["iid"])))
+        except ValueError:
+            return json_grund(422, "iid ist ungültig")
+        roh = request.query_params.get("fassung")
+        pfad = f"/inhalte/{iid}/pruefung"
+        if roh is not None:
+            if not roh.isdigit() or len(roh) > 9 or int(roh) < 1:
+                return json_grund(422, "fassung muss eine ganze Zahl ab 1 sein")
+            pfad += f"?fassung={int(roh)}"
+        try:
+            r = await run_in_threadpool(functools.partial(
+                marketing_pult.anfrage, "GET", pfad, zeitlimit=marketing_pult.LANG_ZEITLIMIT_S))
+        except marketing_pult.PultFehler as f:
+            if f.art == "abgelehnt":
+                return json_grund(422, str(f.grund or "Abgelehnt"))
+            detail = (f.koerper or {}).get("detail")
+            return json_grund(503, detail if isinstance(detail, str) and 0 < len(detail) <= WARNUNG_MAX
+                              else PRUEFUNG_WEG)
+        befunde = befunde_aus(r)
+        if befunde is None:
+            return json_grund(503, PRUEFUNG_WEG)
+        return JSONResponse({"befunde": befunde}, headers={"Cache-Control": "no-store"})
 
     @ui._gesichert_seite
     async def editor_wiederherstellen(request):
@@ -1095,11 +1220,13 @@ def routen(ui) -> list:
         Route("/marketing/editor/{iid}/vorlage-bild/{name}", editor_vorlage_bild),
         Route("/marketing/editor/{iid}/vorlage", editor_vorlage, methods=["POST"]),
         Route("/marketing/editor/{iid}/wiederherstellen", editor_wiederherstellen, methods=["POST"]),
+        Route("/marketing/editor/{iid}/pruefung", editor_pruefung),
         Route("/marketing/bild/{token}/{name}", bild),
         Route("/marketing/schrift/{datei}", schrift),
         Route("/marketing/vorlagen", vorlagen_seite),
         Route("/marketing/vorlage-bild/{name}", vorlage_bild),
         Route("/marketing/aus-vorlage", aus_vorlage, methods=["POST"]),
+        Route("/marketing/vorlage-entscheiden", vorlage_entscheiden, methods=["POST"]),
         Route("/marketing/neue-collage", neue_collage, methods=["POST"]),
         Route("/static/editor/{datei}", statik),
     ]

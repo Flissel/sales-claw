@@ -291,3 +291,16 @@ describe('Einreichen: Doppelklick-Schutz', () => {
     expect(sperre.current).toBe(false);
   });
 });
+
+describe('Knopf „Prüfen“ in der Leiste', () => {
+  it('mit pruefung_url: Knopf da, Liste erst nach dem Klick', () => {
+    const html = renderToStaticMarkup(<SeiteApp start={{ ...seitenStart(), pruefung_url: '/marketing/editor/x/pruefung' }} />);
+    expect(html).toMatch(/<button[^>]*>(<span[^>]*>.*?<\/span>)?Prüfen<\/button>/);
+    expect(html).not.toContain('aria-label="Prüfung"');
+  });
+
+  it('ohne pruefung_url (älteres sales-ui): kein Knopf', () => {
+    const html = renderToStaticMarkup(<SeiteApp start={seitenStart()} />);
+    expect(html).not.toContain('>Prüfen<');
+  });
+});

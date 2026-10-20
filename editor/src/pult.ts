@@ -67,6 +67,8 @@ export type Start = {
   vorlage_url?: string;
   wiederherstellen_url?: string;
   fassungen?: FassungInfo[];
+  // Schoenheitspruefung einer Collage-Fassung (Stufe 5, GET ?fassung=n); fehlt bei aelterem sales-ui.
+  pruefung_url?: string;
 };
 
 export type FassungInfo = { fassung: number; urheber: 'agent' | 'betreiber'; erstellt_am: string; format: string };
@@ -538,7 +540,8 @@ function grundAus(j: Record<string, unknown>, standard: string): string {
   return typeof j.grund === 'string' && j.grund ? j.grund : standard;
 }
 
-export type VorlageInfo = { name: string; beschreibung: string; fassung: number };
+// format "seite" = Collage-Vorlage (Stufe 5): legt eine Collage an, laesst sich nicht auf Bloecke anwenden.
+export type VorlageInfo = { name: string; beschreibung: string; fassung: number; format: 'seite' | 'bloecke' };
 
 const VORLAGEN_FEHLEN = 'Vorlagen sind hier noch nicht eingerichtet';
 
@@ -557,6 +560,7 @@ export async function vorlagenListe(s: Start): Promise<VorlageInfo[] | null> {
               name: v.name,
               beschreibung: typeof v.beschreibung === 'string' ? v.beschreibung : '',
               fassung: typeof v.fassung === 'number' ? v.fassung : 0,
+              format: v.format === 'seite' ? ('seite' as const) : ('bloecke' as const),
             },
           ]
         : [],
@@ -580,14 +584,43 @@ export async function vorlageAlsNeu(
   s: Start,
   vorlage: string,
   titel: string,
-): Promise<{ ok: true; editorUrl: string } | { ok: false; grund: string }> {
+): Promise<{ ok: true; editorUrl: string; warnungen: string[] } | { ok: false; grund: string }> {
   if (!s.vorlage_url) return { ok: false, grund: VORLAGEN_FEHLEN };
   const a = await postJson(s.vorlage_url, s.csrf, { vorlage, art: 'neu', titel });
   if (!a) return { ok: false, grund: 'Keine Verbindung zum Pult' };
   if (!a.ok) return { ok: false, grund: grundAus(a.j, 'Anlegen gerade nicht möglich') };
   const url = a.j.editor_url;
   if (typeof url !== 'string' || !url.startsWith('/marketing/editor/')) return { ok: false, grund: 'Antwort unverständlich' };
-  return { ok: true, editorUrl: url };
+  // Collage-Vorlage: Hinweise beim Fuellen (z. B. ein Bildauftrag ging nicht) - der Reiter zeigt sie vor dem Oeffnen.
+  const roh = a.j.warnungen;
+  const warnungen = Array.isArray(roh) ? roh.filter((w): w is string => typeof w === 'string' && w !== '') : [];
+  return { ok: true, editorUrl: url, warnungen };
+}
+
+// Ein Befund der Schoenheitspruefung (Stufe 5): punkt ist eine Ebenen-id oder "seite".
+export type Befund = { schwere: 'hart' | 'weich'; punkt: string; satz: string };
+export type PruefErgebnis = { ok: true; befunde: Befund[] } | { ok: false; grund: string };
+
+// Befunde einer Fassung (ohne fassung: die neueste). Nur lesen, ohne CSRF; die Pruefung rendert und darf dauern.
+export async function pruefungLaden(s: Start, fassung?: number): Promise<PruefErgebnis> {
+  if (!s.pruefung_url) return { ok: false, grund: 'Prüfen ist hier noch nicht eingerichtet' };
+  const url = fassung === undefined ? s.pruefung_url : `${s.pruefung_url}?fassung=${fassung}`;
+  let r: Response;
+  try {
+    r = await fetch(url, { credentials: 'same-origin' });
+  } catch {
+    return { ok: false, grund: 'Keine Verbindung zum Pult' };
+  }
+  const j: unknown = await r.json().catch(() => ({}));
+  const a = istObjekt(j) ? j : {};
+  if (!r.ok) return { ok: false, grund: grundAus(a, 'Prüfung gerade nicht möglich') };
+  if (!Array.isArray(a.befunde)) return { ok: false, grund: 'Antwort unverständlich' };
+  const befunde = a.befunde.filter(istObjekt).flatMap((b): Befund[] =>
+    (b.schwere === 'hart' || b.schwere === 'weich') && typeof b.punkt === 'string' && typeof b.satz === 'string' && b.satz
+      ? [{ schwere: b.schwere, punkt: b.punkt, satz: b.satz }]
+      : [],
+  );
+  return { ok: true, befunde };
 }
 
 // Alte Fassung als neue Fassung anlegen (nur Editor-Format, nur Entwurf - der Server prueft).
