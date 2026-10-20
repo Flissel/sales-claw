@@ -212,6 +212,7 @@ import marketing_pult
 import ui_editor
 import ui_freigabe_newsletter
 import ui_empfehlungen
+import ui_newsletter_einwilligung
 import ui_kalender
 import ui_marketing
 import ui_muster
@@ -1791,6 +1792,8 @@ _GRUPPEN = (
                   # selbst — s. _pfad_erlaubt/_seitenleiste).
                   ("/team/kalender", "Kalender verbinden"))),
     ("Analyse", (("/kontakte", "Kontakte"), ("/empfehlungen", "Empfehlungen"),
+                 # Newsletter-Reichweite (20.10.2026): fragen + Selbst-Anmeldung.
+                 ("/newsletter/einwilligung", "Newsletter-Einwilligung"),
                  ("/pipeline", "Pipeline"),
                  ("/ergebnisse", "Ergebnisse"),
                  ("/posteingang", "Posteingang"),
@@ -8199,6 +8202,7 @@ app = Starlette(routes=[
     *ui_kalender.routen(sys.modules[__name__]),
     # Empfehlungslisten (C4, 17.10.2026).
     *ui_empfehlungen.routen(sys.modules[__name__]),
+    *ui_newsletter_einwilligung.routen(sys.modules[__name__]),
     Route("/team/kalender", team_kalender),
     Route("/team/kalender/verbinden", aktion_kalender_verbinden,
           methods=["POST"]),

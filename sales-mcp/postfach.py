@@ -102,6 +102,20 @@ def _kopf(nachricht, name: str) -> str:
     return "".join(teile).strip()
 
 
+def _automatisch(nachricht) -> bool:
+    """Von einer Maschine geschickt (Abwesenheitsnotiz, Unzustellbar, Liste)? RFC 3834 und
+    die verbreiteten Eigenkoepfe. Fuer den Double-Opt-in (20.10.2026): eine solche Mail ist
+    nie ein Ja, auch wenn sie den Code im Betreff zuruecktraegt."""
+    auto = _kopf(nachricht, "Auto-Submitted").lower()
+    if auto and auto != "no":
+        return True
+    if _kopf(nachricht, "X-Autoreply") or _kopf(nachricht, "X-Autorespond"):
+        return True
+    if _kopf(nachricht, "Precedence").lower() in ("auto_reply", "bulk", "junk", "list"):
+        return True
+    return _kopf(nachricht, "Return-Path").replace(" ", "") == "<>"
+
+
 def _html_zu_text(html: str) -> str:
     # Script/Style samt Inhalt weg, dann alle Tags — grob, aber ehrlich:
     # das ist eine Lesehilfe, kein Browser.
@@ -425,6 +439,7 @@ def liste(anzahl: int = 10) -> list:
                 "auszug": (text[:AUSZUG_MAX] + "…"
                            if len(text) > AUSZUG_MAX else text),
                 "kalenderteil": bool(_kalender_teil(nachricht)),
+                "automatisch": _automatisch(nachricht),
             })
         return ergebnis
     finally:

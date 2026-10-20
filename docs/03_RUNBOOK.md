@@ -3232,3 +3232,23 @@ laeuft deshalb am PC des Betreibers, nicht mehr als Container auf der VM.
   und ist beim naechsten Lauf wieder dran. Falscher Schluessel: `HTTPError` (401).
 - Rueckweg (nur ausdruecklich): `STT_URL`/`STT_SCHLUESSEL` in der VM-`.env` leeren, dann
   `docker compose --profile stt-lokal up -d --build sales-stt` und sales-mcp neu erzeugen.
+
+## Newsletter-Einwilligung: fragen und selbst anmelden (seit 20.10.2026)
+
+Ein Newsletter geht nur an `consent_status = 'opt_in'` (E1). Zwei Wege dorthin, beide auf
+`/newsletter/einwilligung` (Menue Analyse):
+
+- **Im Gespraech fragen.** Die Liste zeigt nur Kontakte, die selbst geschrieben haben oder eine
+  andere Grundlage haben, ohne Verbotsliste/Loeschantrag/privat und ohne eigenes frueheres Nein.
+  "Anfragen" legt eine E-Mail in die Freigabe (hoechstens alle 30 Tage). Das Ja traegt der Betreiber
+  mit Quelle und Wortlaut ein (`einwilligung_erfassen`, Nachweis `werbe_einwilligung`). Die
+  Leitfaden-Frage `newsletter_einwilligung` setzt nichts selbst, ihre Antwort steht nur als Vorschlag da.
+- **Selbst anmelden (Double-Opt-in, ohne Webformular).** Mail mit Betreff `Anmelden` an
+  `EMAIL_ABSENDER` (Link `mailto:...?subject=Anmelden`, QR-Code auf der Seite). sales-mail prueft
+  das Postfach mit dem Abmelden zusammen (`ABMELDE_PRUEF_S`, Vorgabe 600 s) und schickt OHNE Freigabe
+  eine Bestaetigungsmail mit festem Text und Einmal-Code im Betreff (hoechstens eine je Adresse und
+  24 h). Erst die Antwort von derselben Adresse mit diesem Code (7 Tage gueltig, keine automatische
+  Antwort) setzt `opt_in`. Nachweis: Aktivitaet `werbe_einwilligung` mit `weg: double_opt_in`, beiden
+  Message-IDs und Zeitpunkten; der Code liegt nur als sha256 in `newsletter_anmeldung`.
+- Unbekannte Absender werden Kontakt mit `source = 'newsletter_anmeldung'`.
+- Rechtlich: Wortlaut und Ablauf vor breitem Einsatz pruefen lassen (DSGVO/UWG).

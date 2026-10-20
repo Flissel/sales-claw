@@ -91,6 +91,7 @@ import dispatch
 import mailadresse
 import passwort_reset
 import medien
+import newsletter_anmeldung
 import postfach
 import server
 import verlinken
@@ -408,18 +409,68 @@ ABMELDE_PRUEF_S = float(os.environ.get("ABMELDE_PRUEF_S", "600"))
 
 def abmeldungen_pruefen() -> int:
     """Abmelden per Antwort (E2): sieht ins Postfach und sperrt Absender mit Betreff "Abmelden"
-    (server._newsletter_abmeldungen). Best effort - ein IMAP-Fehler darf den Versand nie aufhalten."""
+    (server._newsletter_abmeldungen). Best effort - ein IMAP-Fehler darf den Versand nie aufhalten.
+
+    Seit 20.10.2026 im selben Blick ins Postfach: Newsletter-Anmeldungen per Mail
+    (Double-Opt-in, newsletter_anmeldung.py) - erst die Bestaetigungen, dann neue
+    Anmeldungen. Gibt die Zahl der Abmeldungen zurueck (wie bisher)."""
     if not postfach.konfiguriert():
         return 0
     try:
-        neu = server._newsletter_abmeldungen(postfach.liste(postfach.ANZAHL_MAX))
+        mails = postfach.liste(postfach.ANZAHL_MAX)
+        neu = server._newsletter_abmeldungen(mails)
     except Exception as e:                  # noqa: BLE001 — bewusst breit, s. oben
         LOG.warning("Abmeldungen nicht geprueft (%s: %s)", type(e).__name__,
                     _ohne_geheimnis(_einzeilig(str(e))[:120]))
         return 0
     if neu:
         LOG.info("%s Abmeldung(en) aus dem Postfach verarbeitet", neu)
+    anmeldungen_pruefen(mails)
     return neu
+
+
+def anmeldungen_pruefen(mails: list) -> dict:
+    """Double-Opt-in (20.10.2026): Antworten mit Code -> opt_in, neue "Anmelden"-Mails ->
+    Bestaetigungsmail. Die Bestaetigungsmail geht OHNE Freigabe raus (Betreiber-Entscheid):
+    fester Text (newsletter_anmeldung.RUMPF), einziger Parameter ist der Code, Empfaenger
+    ist nur der Absender der Anmeldung. Vermerkt wird erst NACH dem Versand - scheitert er,
+    versucht es der naechste Lauf erneut. Best effort wie das Abmelden."""
+    bilanz = {"bestaetigt": 0, "gesendet": 0, "fehler": 0}
+    try:
+        bilanz["bestaetigt"] = newsletter_anmeldung.bestaetigungen(mails)
+        anfragen = newsletter_anmeldung.anfragen(mails)
+    except Exception as e:                  # noqa: BLE001 — bewusst breit, s. abmeldungen_pruefen
+        LOG.warning("Anmeldungen nicht geprueft (%s: %s)", type(e).__name__,
+                    _ohne_geheimnis(_einzeilig(str(e))[:120]))
+        return bilanz
+    ident = kunden_identitaet()
+    if anfragen and not ident.brauchbar():
+        LOG.warning("%s Newsletter-Anmeldung(en) warten: Postfach des Ladens nicht eingerichtet",
+                    len(anfragen))
+        return bilanz
+    for anfrage in anfragen:
+        code, code_sha256 = newsletter_anmeldung.code_neu()
+        betreff, rumpf = newsletter_anmeldung.mailtext(code)
+        # Nur eine echte Message-ID wird zum In-Reply-To (fehlt sie, ist die Kennung Ersatz).
+        bezug = anfrage["message_id"] if "|" not in anfrage["message_id"] else ""
+        nachricht = nachricht_bauen(anfrage["adresse"], betreff, rumpf, absender=ident.absender,
+                                    antwort_auf=bezug)
+        try:
+            senden(nachricht, ident)
+        except VersandFehler as e:
+            bilanz["fehler"] += 1
+            LOG.warning("Bestaetigungsmail an %s nicht zugestellt: %s",
+                        _maskiert(anfrage["adresse"]), _ohne_geheimnis(_einzeilig(str(e))[:160]))
+            continue
+        newsletter_anmeldung.vermerken(anfrage, code_sha256)
+        bilanz["gesendet"] += 1
+        try:                                # Kopie im Postfach als Nachweis - best effort
+            _sent_ablegen(nachricht)
+        except Exception as e:              # noqa: BLE001
+            LOG.warning("Bestaetigungsmail gesendet, Sent-Kopie scheiterte (%s)", type(e).__name__)
+    if any(bilanz.values()):
+        LOG.info("Newsletter-Anmeldung: %s", bilanz)
+    return bilanz
 
 
 def _html_fassung(rumpf: str) -> str:
