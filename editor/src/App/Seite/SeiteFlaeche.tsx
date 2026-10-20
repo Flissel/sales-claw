@@ -40,7 +40,9 @@ function EbenenInhalt({ e }: { e: SeitenEbene }) {
   return null;
 }
 
-export default function SeiteFlaeche({ z }: { z: SeiteZustand }) {
+// gesperrt (der Assistent arbeitet, die Flaeche zeigt evtl. seinen Zwischenstand): ein laufendes Ziehen endet,
+// ein offenes Textfeld schliesst ohne zu schreiben - nichts aus der Anzeige landet in der echten Seite.
+export default function SeiteFlaeche({ z, gesperrt = false }: { z: SeiteZustand; gesperrt?: boolean }) {
   const { seite: s, auswahl } = z;
   const buehne = useRef<HTMLDivElement | null>(null);
   const blatt = useRef<HTMLDivElement | null>(null);
@@ -50,6 +52,18 @@ export default function SeiteFlaeche({ z }: { z: SeiteZustand }) {
   const [linien, setLinien] = useState<Linie[]>([]);
   const [hoeheGemessen, setHoeheGemessen] = useState<number | null>(null);
   const [bearbeitet, setBearbeitet] = useState<string | null>(null);
+  const gesperrtRef = useRef(gesperrt);
+  gesperrtRef.current = gesperrt;
+  const zRef = useRef(z);
+  zRef.current = z;
+  useEffect(() => {
+    if (!gesperrt) return;
+    // Was bis eben gezogen wurde, gehoerte noch zur echten Seite: festschreiben, dann loslassen.
+    if (zug.current?.bewegt) zRef.current.festschreiben();
+    zug.current = null;
+    setLinien([]);
+    setBearbeitet(null);
+  }, [gesperrt]);
 
   // Freie Breite der Buehne -> Zoom (vor dem Messen 1:1, so rendert auch der Server).
   useMessEffekt(() => {
@@ -77,7 +91,7 @@ export default function SeiteFlaeche({ z }: { z: SeiteZustand }) {
   };
 
   const fangen = (ev: React.PointerEvent<HTMLElement>, neu: Zug) => {
-    if (ev.button !== 0) return false;
+    if (ev.button !== 0 || gesperrtRef.current) return false;
     ev.stopPropagation();
     ev.preventDefault();
     buehne.current?.focus({ preventScroll: true });
@@ -90,7 +104,7 @@ export default function SeiteFlaeche({ z }: { z: SeiteZustand }) {
 
   const bewegen = (ev: React.PointerEvent<HTMLElement>) => {
     const zg = zug.current;
-    if (!zg) return;
+    if (!zg || gesperrtRef.current) return;
     if (!zg.bewegt && Math.hypot(ev.clientX - zg.px, ev.clientY - zg.py) < 3) return;
     zg.bewegt = true;
     const dx = (ev.clientX - zg.px) / zoom;
@@ -156,7 +170,7 @@ export default function SeiteFlaeche({ z }: { z: SeiteZustand }) {
                   if (fangen(ev, { art: 'schieben', id: e.id, px: ev.clientX, py: ev.clientY, start: e, bewegt: false })) z.waehlen(e.id);
                 }}
                 {...zugGriffe}
-                onDoubleClick={() => (e.art === 'text' || e.art === 'knopf') && setBearbeitet(e.id)}
+                onDoubleClick={() => !gesperrtRef.current && (e.art === 'text' || e.art === 'knopf') && setBearbeitet(e.id)}
                 style={{ ...aussehen(s, e, i), cursor: 'move', touchAction: 'none', visibility: e.id === editiert?.id ? 'hidden' : undefined }}
               >
                 <EbenenInhalt e={e} />
@@ -216,6 +230,7 @@ export default function SeiteFlaeche({ z }: { z: SeiteZustand }) {
               rand={px}
               fertig={(text) => {
                 setBearbeitet(null);
+                if (gesperrtRef.current) return;
                 if (text !== null && text !== editiert.text) z.ebeneAendern(editiert.id, { text }, 'sofort');
               }}
             />

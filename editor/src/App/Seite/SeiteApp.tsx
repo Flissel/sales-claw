@@ -29,6 +29,7 @@ import { useSeiteTasten } from './seiteTasten';
 import { useSeite } from './useSeite';
 
 export const ARBEITET_HINWEIS = 'Der Assistent arbeitet';
+export const NEUE_FASSUNG_HINWEIS = 'Neue Fassung vom Assistenten – bitte speichern und neu laden';
 export const KONFLIKT_TITEL = 'Inzwischen gibt es eine neuere Fassung';
 
 type Meldung = { art: 'success' | 'error'; text: string } | null;
@@ -86,6 +87,7 @@ function Arbeitsplatz({ start, anfang, basis, setBasis, versteckt }: Arbeitsplat
   // Assistent: läuft eine Runde, ist Bearbeiten gesperrt; die Fläche zeigt den Zwischenstand nur an.
   const arbeitet = useAgentArbeitet();
   const zwischenstand = pultStore((p) => p.seitenZwischenstand);
+  const fassungWartet = pultStore((p) => p.fassungWartet);
   const gesperrt = arbeitet !== null || zwischenstand !== null;
   const ebenenRef = useInert<HTMLDivElement>(gesperrt);
   const mitteRef = useInert<HTMLDivElement>(gesperrt);
@@ -99,8 +101,6 @@ function Arbeitsplatz({ start, anfang, basis, setBasis, versteckt }: Arbeitsplat
   useEffect(() => {
     pultStore.setState({ ungespeichert });
   }, [ungespeichert]);
-  // Chips zeigen nur Ebenen, die es auf der Seite noch gibt.
-  useEffect(() => chipsAbgleichen(), [z.seite]);
 
   // Vor dem Senden an den Assistenten: Ungespeichertes als neue Fassung speichern (Konflikt = Dialog,
   // nichts wird gesendet). Eingesteckt in den Chat-Weg des Pult-Zustands, mit dem jeweils neuesten Stand.
@@ -127,6 +127,9 @@ function Arbeitsplatz({ start, anfang, basis, setBasis, versteckt }: Arbeitsplat
     });
     return editorEinstecken({ sichern, dokument: () => ({ ...aktuellRef.current.z.aktuell() }) });
   }, [start, setBasis]);
+  // Chips zeigen nur Ebenen, die es auf der Seite noch gibt. Erst NACH dem Einstecken (Effekte laufen in
+  // dieser Reihenfolge): vorher kennt der Abgleich die Seite nicht.
+  useEffect(() => chipsAbgleichen(), [z.seite]);
 
   // Tab schliessen oder weggehen mit ungespeicherten Änderungen: der Browser fragt nach.
   const ungespeichertRef = useRef(ungespeichert);
@@ -197,7 +200,7 @@ function Arbeitsplatz({ start, anfang, basis, setBasis, versteckt }: Arbeitsplat
           sx={{ flex: '1 1 240px', minWidth: 120, maxWidth: 480 }}
         />
         <Typography sx={{ flex: '1 1 auto', minWidth: 0, fontSize: 12, color: FARBE.gedaempft }} noWrap>
-          {gesperrt ? ARBEITET_HINWEIS : ''}
+          {gesperrt ? ARBEITET_HINWEIS : fassungWartet !== null ? NEUE_FASSUNG_HINWEIS : ''}
         </Typography>
         <Tooltip title="Rückgängig (Strg+Z)">
           <span>
@@ -244,7 +247,7 @@ function Arbeitsplatz({ start, anfang, basis, setBasis, versteckt }: Arbeitsplat
       </Box>
 
       <Box ref={mitteRef} component="main" sx={{ display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}>
-        <SeiteFlaeche z={anzeige} />
+        <SeiteFlaeche z={anzeige} gesperrt={gesperrt} />
       </Box>
 
       {/* Während einer Runde: Ebenen und Fläche gesperrt (absolut - nimmt keine Rasterzelle) */}

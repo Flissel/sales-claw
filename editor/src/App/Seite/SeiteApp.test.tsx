@@ -6,7 +6,7 @@ import type { Start } from '../../pult';
 import { pultStore } from '../../pultZustand';
 import type { Seite } from '../../seite';
 
-import SeiteApp, { ARBEITET_HINWEIS } from './SeiteApp';
+import SeiteApp, { ARBEITET_HINWEIS, NEUE_FASSUNG_HINWEIS } from './SeiteApp';
 import SeitenChat from './SeitenChat';
 
 const IID = 'b12c46b9-8f87-412b-b2e7-7215b354a75b';
@@ -142,7 +142,7 @@ function rendern(el: React.ReactElement): string {
 }
 
 describe('SeiteApp mit Assistent', () => {
-  afterEach(() => pultStore.setState({ chat: null, seitenZwischenstand: null, chatAuswahl: [] }));
+  afterEach(() => pultStore.setState({ chat: null, seitenZwischenstand: null, chatAuswahl: [], fassungWartet: null }));
 
   it('bietet die gewählte Ebene als Chip an (Kurzname aus Art und Textanfang)', () => {
     const h = rendern(<SeitenChat ebene={SEITE.ebenen[1]} />);
@@ -165,7 +165,39 @@ describe('SeiteApp mit Assistent', () => {
     const h = rendern(<SeiteApp start={seitenStart()} />);
     expect(h).toContain(ARBEITET_HINWEIS);
     expect(h).toContain('background-color:#123456');
-    // Die Fläche zeigt den Zwischenstand, nicht die eigene Seite; die Ebenenliste bleibt beim echten Stand.
+    // Die Fläche zeigt den Zwischenstand, nicht die eigene Seite ...
     expect(h).not.toContain('data-ebene="bild1"');
+    expect(h).toContain('data-ebene="text1"');
+    // ... die Ebenenliste bleibt beim echten Stand (vier Ebenen, je ein Löschen-Knopf).
+    expect(h.split('aria-label="Löschen"').length - 1).toBe(4);
+  });
+
+  it('gesperrt: Speichern, Rückgängig, Wiederholen und Betreff sind deaktiviert (frei: Speichern und Betreff nicht)', () => {
+    const knopf = (h: string, text: string) => {
+      const i = h.indexOf(text);
+      const start = h.lastIndexOf('<button', i);
+      return h.slice(start, h.indexOf('>', start) + 1);
+    };
+    const eingabe = (h: string) => {
+      const i = h.indexOf('aria-label="Betreff"');
+      const start = h.lastIndexOf('<input', i);
+      return h.slice(start, h.indexOf('>', i) + 1);
+    };
+    const frei = rendern(<SeiteApp start={seitenStart()} />);
+    expect(knopf(frei, 'Speichern</button>')).not.toContain('disabled');
+    expect(eingabe(frei)).not.toContain('disabled');
+
+    pultStore.setState({ chat: { laeuft: true, verlauf: [], live: null, neueste: null } });
+    const h = rendern(<SeiteApp start={seitenStart()} />);
+    expect(knopf(h, 'Speichern</button>')).toContain('disabled');
+    expect(knopf(h, 'aria-label="Rückgängig"')).toContain('disabled');
+    expect(knopf(h, 'aria-label="Wiederholen"')).toContain('disabled');
+    expect(eingabe(h)).toContain('disabled');
+  });
+
+  it('wartende neue Fassung des Assistenten: Hinweis zum Speichern und Neuladen', () => {
+    expect(NEUE_FASSUNG_HINWEIS).toBe('Neue Fassung vom Assistenten – bitte speichern und neu laden');
+    pultStore.setState({ fassungWartet: 5 });
+    expect(rendern(<SeiteApp start={seitenStart()} />)).toContain(NEUE_FASSUNG_HINWEIS);
   });
 });

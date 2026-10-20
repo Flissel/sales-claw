@@ -79,6 +79,9 @@ type TPult = {
   // Collage (Freie Fläche Stufe 3): Zwischenstand der Seite, nur zur Anzeige auf der Fläche - die Seite im
   // Editor (useSeite) und ihr Verlauf bleiben unberuehrt; null = keiner.
   seitenZwischenstand: Seite | null;
+  // Eingesteckter Editor (Collage): neue Fassung des Assistenten, deren Neuladen noch wartet (Ungespeichertes
+  // oder ein laufender Upload). Wird frei, laedt die Seite nach; null = keine.
+  fassungWartet: number | null;
   // Chips ueber dem Chat-Eingabefeld (Spec 2026-10-06): markierte Bloecke/Ebenen und Anhaenge fuer
   // die naechste Nachricht.
   chatAuswahl: AuswahlChip[];
@@ -114,6 +117,7 @@ export const pultStore = create<TPult>(() => ({
   chatGetrennt: false,
   zwischenstand: null,
   seitenZwischenstand: null,
+  fassungWartet: null,
   chatAuswahl: [],
   chatAnhaenge: [],
   gesendeteAuswahl: null,
@@ -491,6 +495,8 @@ export function chatAbfragen() {
       // Erst die neue Fassung (auch wenn schon die naechste Runde laeuft) - die Seite laedt neu.
       const f = neueFassungNachChat(vorher, neu.verlauf);
       const laedt = f !== null && neueFassungLaden(f);
+      // Eingesteckter Editor: abgewiesenes Neuladen merken - es folgt, sobald nichts mehr dagegen spricht.
+      if (f !== null && !laedt && eingesteckt && f > pultStore.getState().basis) pultStore.setState({ fassungWartet: f });
       if (!laedt) {
         if (neu.live?.zwischenstand) zwischenstandZeigen(neu.live.zwischenstand);
         else if (!neu.live) zwischenstandBeenden();
@@ -567,7 +573,8 @@ let imVersand: MitChips | null = null;
 function mitChips(kontext: ChatKontext): MitChips | { ok: false; grund: string } {
   const { chatAnhaenge, gesendeteAuswahl } = pultStore.getState();
   if (!sendenErlaubt(chatAnhaenge)) return { ok: false, grund: 'Erst warten, bis die Anhänge hochgeladen sind' };
-  const { behalten: chatAuswahl, entfernt } = chipsBereinigen(pultStore.getState().chatAuswahl, chipDokument(), null);
+  const doc = chipDokument();
+  const { behalten: chatAuswahl, entfernt } = doc ? chipsBereinigen(pultStore.getState().chatAuswahl, doc, null) : { behalten: pultStore.getState().chatAuswahl, entfernt: 0 };
   if (entfernt > 0) pultStore.setState({ chatAuswahl, chatHinweis: entferntHinweis(entfernt) });
   const k = kontextBauen(chatAuswahl, chatAnhaenge);
   const neu: ChatKontext = { ...kontext };
@@ -607,17 +614,34 @@ export function chipAuffrischenAuftrag(chip: AuswahlChip) {
 // Einsteckbarer Editor (Collage, Freie Fläche Stufe 3): der Block-Editor arbeitet mit getDocument und
 // newsletterSichern; ein anderer Editor steckt sein Speichern vor dem Senden (null oder Grund - bei Grund
 // geht nichts an den Assistenten) und sein Dokument fuer die Chips ein. Liefert das Ausstecken.
+// Beim Einstecken werden die Chips gleich gegen sein Dokument abgeglichen (z. B. nach dem Neuladen
+// wiederhergestellte); solange haelt chipDokument still. Eingesteckt wartet ein abgewiesenes Neuladen nach
+// einer Runde (fassungWartet) darauf, dass nichts Ungespeichertes und kein Upload mehr da ist.
 export type EditorWeg = { sichern: () => Promise<string | null>; dokument: () => Record<string, unknown> };
 let eingesteckt: EditorWeg | null = null;
 export function editorEinstecken(weg: EditorWeg): () => void {
   eingesteckt = weg;
+  const frei = (p: TPult) => !p.ungespeichert && sendenErlaubt(p.chatAnhaenge);
+  const abmelden = pultStore.subscribe((p, vorher) => {
+    if (p.fassungWartet === null) return;
+    if (p.fassungWartet <= p.basis) {
+      pultStore.setState({ fassungWartet: null });
+      return;
+    }
+    if (frei(p) && !frei(vorher) && neueFassungLaden(p.fassungWartet)) pultStore.setState({ fassungWartet: null });
+  });
+  chipsAbgleichen();
   return () => {
+    abmelden();
     if (eingesteckt === weg) eingesteckt = null;
   };
 }
 
-function chipDokument(): Record<string, unknown> {
-  return eingesteckt ? eingesteckt.dokument() : getDocument();
+// Dokument fuer den Chip-Abgleich; null = noch keins (Collage, deren Editor noch nicht eingesteckt ist -
+// das Block-Dokument waere leer und wuerfe jede Ebenen-Markierung weg).
+function chipDokument(): Record<string, unknown> | null {
+  if (eingesteckt) return eingesteckt.dokument();
+  return pultStore.getState().start?.format === 'seite' ? null : getDocument();
 }
 
 // Angebotener Chip (z. B. die gewaehlte Ebene der Collage) wird angenommen. Liefert null oder den Grund.
@@ -645,8 +669,9 @@ async function vorDemStart(): Promise<string | null> {
 // kommt danach zurueck - zwischenstandBeenden gleicht dann ab). In main.tsx an onDocumentChange.
 export function chipsAbgleichen() {
   const { zwischenstand, chatAuswahl, gestaltungOffen } = pultStore.getState();
-  if (zwischenstand !== null || chatAuswahl.length === 0) return;
-  const { behalten, entfernt } = chipsBereinigen(chatAuswahl, chipDokument(), gestaltungOffen);
+  const doc = chipDokument();
+  if (zwischenstand !== null || chatAuswahl.length === 0 || doc === null) return;
+  const { behalten, entfernt } = chipsBereinigen(chatAuswahl, doc, gestaltungOffen);
   if (entfernt > 0) pultStore.setState({ chatAuswahl: behalten, chatHinweis: entferntHinweis(entfernt) });
 }
 
