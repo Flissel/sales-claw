@@ -166,8 +166,8 @@ Die Code-Fakten mit Datei und Zeile stehen in `E:/Temp/claude/c--Users-User-Desk
   - `marketing.video_poster(uuid, text) returns boolean`.
   - `marketing.video_naechster(interval)` mit den zusätzlichen Schlüsseln `aenderungswunsch` und `vorgaenger` (`{id, titel, protokoll, datei}` oder null).
 
-- [ ] **Step 0:** Prüfen, dass 082 auf `origin/master` noch frei ist (`git fetch`, `git ls-tree`). `072_video_auftraege.sql` vollständig lesen.
-- [ ] **Step 1:** `verify_085.sql` zuerst schreiben, mit dem Probe-Mandanten `probe_082`. Fälle:
+- [ ] **Step 0:** Prüfen, dass 085 auf `origin/master` noch frei ist (`git fetch`, `git ls-tree`). `072_video_auftraege.sql` vollständig lesen.
+- [ ] **Step 1:** `verify_085.sql` zuerst schreiben, mit dem Probe-Mandanten `probe_085`. Fälle:
   - (a) Die Spalten existieren, und die Checks gelten: ein Wunsch mit 501 Zeichen und ein falscher Poster-Name werden abgelehnt.
   - (b) `video_nochmal`:
     - Aus einem fertigen Auftrag mit Wunsch entsteht ein neuer `offen`-Auftrag mit kopiertem Briefing, `vorgaenger` und `aenderungswunsch`.
@@ -180,7 +180,7 @@ Die Code-Fakten mit Datei und Zeile stehen in `E:/Temp/claude/c--Users-User-Desk
   - Am Ende `raise notice 'verify_085: ok'`.
 - [ ] **Step 2:** Rollback-Probe nur mit `verify_085`. Erwartet: FAIL.
 - [ ] **Step 3:** `085_reels_galerie.sql` schreiben.
-- [ ] **Step 4:** Probe mit 082 und verify_085. Erwartet: `verify_085: ok`. Danach eine zweite Probe mit 072, 082 und verify_085 (Wiederholung), ebenfalls grün.
+- [ ] **Step 4:** Probe mit 085 und verify_085. Erwartet: `verify_085: ok`. Danach eine zweite Probe mit 072, 085 und verify_085 (Wiederholung), ebenfalls grün.
 - [ ] **Step 5: Commit.** `feat(reels): Migration 085 Vorgaenger, Archiv, Vorschaubild`
 
 ### Task 2: API – Material, Stimme, nochmal, Archiv, Befund, Poster (MOS)
@@ -328,8 +328,8 @@ Die Code-Fakten mit Datei und Zeile stehen in `E:/Temp/claude/c--Users-User-Desk
 
 ### Task 6: Ausliefern (nur nach Betreiber-OK)
 
-- [ ] **Step 1:** Rollback-Probe von 082 mit verify_085 gegen die Live-DB. Danach 082 echt einspielen (`_db._run_psql(…, streng=True)`) und die Probe mit verify_085 wiederholen.
-- [ ] **Step 2:** VM-Env der Marketing-API: `MARKETING_STIMMEN=eigene-a,eigene-b,eigene-c` in `~/marketing-api.env` eintragen, vorher eine Sicherung als `.vor-stimmen`, nur diese Zeile. Die PC-API nutzt die Vorgabe.
+- [ ] **Step 1:** Rollback-Probe von 085 mit verify_085 gegen die Live-DB. Danach 085 echt einspielen (`_db._run_psql(…, streng=True)`) und die Probe mit verify_085 wiederholen.
+- [ ] **Step 2:** Keine Env-Zeile setzen. `MARKETING_STIMMEN` gilt mit der Vorgabe `eigene-a,eigene-b,eigene-c` auf PC und VM gleich. Wer die Liste ändert, muss sie auf dem PC (Marken- und Video-Arbeiter) UND auf der VM (API) gleich setzen.
 - [ ] **Step 3:** MOS pushen. Am PC die Dateien des Haupt-Checkouts als alt, neu oder FREMD einordnen. Bei FREMD wird abgebrochen. Dann `git restore --source`. Neu starten: `marketing_api` (:5510), `marketing_chat_arbeiter` (:8134, wegen der Marke) und `marketing_video_claw`, über `claw/scripts/marketing-dienste-starten.ps1 -Nur`.
 - [ ] **Step 4:** SC pushen und `update.sh` laufen lassen. Das zieht die VM-API nach. Erwartet: „ALLE PRUEFUNGEN GRUEN“.
 - [ ] **Step 5: Echter Lauf.**
