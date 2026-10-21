@@ -166,8 +166,13 @@ def routen(ui) -> list:
         d = await run_in_threadpool(marketing_pult.anfrage, "GET", f"/video?{urllib.parse.urlencode(q)}")
         return _auftraege(d)
 
-    def kopf(m: str, firmen: list) -> str:
-        return marketing_mandant.umschalter(e, ui.CSRF_TOKEN, m, firmen, SEITE)
+    def kopf(m: str, firmen: list, ziel: str = SEITE) -> str:
+        return marketing_mandant.umschalter(e, ui.CSRF_TOKEN, m, firmen, ziel)
+
+    def bestell_kopf(m: str, firmen: list) -> str:
+        """Review Task 5: die Firma steht auf jedem Schritt; ein Wechsel beginnt die Bestellung neu."""
+        return (kopf(m, firmen, NEU_SEITE)
+                + f'<p class="meta">Bestellung für <b>{e(marketing_mandant.name_von(m, firmen))}</b></p>')
 
     def chip(status: str) -> str:
         return f'<span class="chip {STATUS_CHIP.get(status, "offen")}">{e(STATUS.get(status, status))}</span>'
@@ -192,8 +197,8 @@ def routen(ui) -> list:
     async def galerie(request):
         try:
             m, firmen = await marketing_mandant.firma(request)
-            aktuell = await liste(m, False)
-            archiv = await liste(m, True)
+            aktuell = await liste(m, False, DETAIL_LIMIT)
+            archiv = await liste(m, True, DETAIL_LIMIT)
         except marketing_pult.PultFehler as f:
             return fehler(f)
         je_reiter = {k: [a for a in aktuell if a.get("status") in st] for k, _, st in REITER if st}
@@ -504,18 +509,15 @@ def routen(ui) -> list:
             if logo:
                 punkte.append(f"<li>Logo: {e(logo)}</li>")
         elif videos:
-            namen = {}
-            try:
-                liste_, _ = await laura_videos()
-                namen = {str(v["kennung"]): str(v.get("name") or "") for v in liste_}
-            except marketing_pult.PultFehler:
-                pass
+            liste_, _ = await laura_videos()        # Laura weg: leere Liste, dann stehen die Kennungen da
+            namen = {str(v["kennung"]): str(v.get("name") or "") for v in liste_}
             punkte = [f"<li>{e(namen.get(v) or v)}</li>" for v in videos]
         else:
             punkte = ["<li>Keine Auswahl – der Claw sucht selbst passendes Material.</li>"]
         pflicht = "" if art == "kurzfassung" else " required"
         return (schritte(3) + f"<h2>{e(ARTEN[art])}</h2>"
-                f'<form method="post" action="{NEU_SEITE}" class="reel-form">{csrf()}{felder}'
+                f'<form method="post" action="{NEU_SEITE}" class="reel-form">{csrf()}'
+                f'<input type="hidden" name="mandant" value="{e(m)}">{felder}'
                 f'<div class="reel-auswahl"><h3>Deine Auswahl</h3><ul>{"".join(punkte)}</ul>'
                 f'<a href="{e(zurueck_zu)}">Ändern</a></div>'
                 '<label>Titel <input type="text" name="titel" required maxlength="120"></label>'
@@ -531,21 +533,26 @@ def routen(ui) -> list:
     async def bestellung(request):
         q = request.query_params
         art = q.get("art", "")
-        if art not in ARTEN:
-            return ui._seite("Neues Reel", schritt1())
         bilder = _texte(q.getlist("bild")) if art == "bilder" else []
         logo = str(q.get("logo") or "").strip() if art == "bilder" else ""
         videos = _texte(q.getlist("video")) if art != "bilder" else []
         if logo and not _BILD.fullmatch(logo):
             logo = ""
         try:
-            m, _ = await marketing_mandant.firma(request)
+            m, firmen = await marketing_mandant.firma(request)
+            kopf_ = bestell_kopf(m, firmen)
+            if art not in ARTEN:
+                return ui._seite("Neues Reel", kopf_ + schritt1())
             if q.get("schritt") == "3":
                 warnung = auswahl_fehler(art, bilder, videos)
                 if not warnung:
-                    return ui._seite("Neues Reel", await schritt3(art, m, bilder, logo, videos))
-                return ui._seite("Neues Reel", await schritt2(art, m, [], logo, [], warnung), status=422)
-            return ui._seite("Neues Reel", await schritt2(art, m, bilder, logo, videos, ""))
+                    return ui._seite("Neues Reel", kopf_ + await schritt3(art, m, bilder, logo, videos))
+                # Review Task 5: der gueltige Teil der Auswahl bleibt angehakt
+                bleibt = [n for n in bilder if _BILD.fullmatch(n)][:AUSWAHL_MAX]
+                bleiben_v = [v for v in videos if _LAURA_ID.fullmatch(v)][:1 if art == "kurzfassung" else AUSWAHL_MAX]
+                return ui._seite("Neues Reel", kopf_ + await schritt2(art, m, bleibt, logo, bleiben_v, warnung),
+                                 status=422)
+            return ui._seite("Neues Reel", kopf_ + await schritt2(art, m, bilder, logo, videos, ""))
         except marketing_pult.PultFehler as f:
             return fehler(f)
 
@@ -557,12 +564,15 @@ def routen(ui) -> list:
         art, titel, briefing = briefing_aus_formular(form)
         if art not in ARTEN or not titel or not briefing["thema"]:
             return ui._fehlerseite(422, "Nicht möglich", "Art, Titel und Thema sind nötig.")
-        warnung = auswahl_fehler(art, briefing.get("bilder") or [],
-                                 briefing.get("videos") or ([briefing["video"]] if briefing.get("video") else []))
+        # die rohe Auswahl: bei der Kurzfassung nahm das Briefing sonst still das erste von mehreren Videos
+        warnung = auswahl_fehler(art, _texte(form.getlist("bild")) if art == "bilder" else [],
+                                 _texte(form.getlist("video")) if art != "bilder" else [])
         if warnung:
             return ui._fehlerseite(422, "Nicht möglich", e(warnung))
         try:
             m, _ = await marketing_mandant.firma(request)
+            if str(form.get("mandant") or "") != m:      # Tab von vor dem Firmenwechsel (wie ui_marke.bearbeiten)
+                return ui._fehlerseite(422, "Nicht möglich", "Die Firma wurde inzwischen gewechselt – bitte neu bestellen.")
             d = await run_in_threadpool(marketing_pult.anfrage, "POST", "/video",
                                         {"mandant": m, "art": art, "titel": titel, "briefing": briefing})
         except marketing_pult.PultFehler as f:

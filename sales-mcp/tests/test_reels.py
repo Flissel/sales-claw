@@ -210,7 +210,7 @@ def test_galerie_reiter_und_vorgabe(angemeldet, pult):
     r = get(angemeldet, "/marketing/reels")
     s = rumpf(r)
     assert r.status_code == 200
-    assert ("GET", "/video?mandant=vibemind&archiv=false", None) in pult.aufrufe
+    assert ("GET", "/video?mandant=vibemind&archiv=false&limit=200", None) in pult.aufrufe
     assert '<nav class="reiter"' in s
     assert '<a href="/marketing/reels?reiter=fertig" aria-current="page">Fertig <span class="zahl">1</span></a>' in s
     assert '<a href="/marketing/reels?reiter=arbeit">In Arbeit <span class="zahl">1</span></a>' in s
@@ -260,7 +260,7 @@ def test_karte_ohne_poster(angemeldet, pult, poster):
 
 def test_archiv_reiter_fragt_archiv_true(angemeldet, pult):
     s = rumpf(get(angemeldet, "/marketing/reels?reiter=archiv"))
-    assert ("GET", "/video?mandant=vibemind&archiv=true", None) in pult.aufrufe
+    assert ("GET", "/video?mandant=vibemind&archiv=true&limit=200", None) in pult.aufrufe
     assert f'href="/marketing/reels/{AID_ARCHIV}"' in s and f'href="/marketing/reels/{AID}"' not in s
     assert '<a href="/marketing/reels?reiter=archiv" aria-current="page">' in s
 
@@ -521,7 +521,7 @@ def test_bestellung_material_ohne_laura(angemeldet, pult, material, fehler):
     assert ">Weiter</button>" in s and "sucht der Claw selbst" in s
     r = get(angemeldet, "/marketing/reels/neu?art=material&schritt=3")
     assert r.status_code == 200 and ">Bestellen</button>" in r.text
-    r = post(angemeldet, "/marketing/reels/neu", {"csrf": ui.CSRF_TOKEN, "art": "material", "titel": "T",
+    r = post(angemeldet, "/marketing/reels/neu", {"csrf": ui.CSRF_TOKEN, "mandant": "vibemind", "art": "material", "titel": "T",
                                                   "thema": "t", "sprechertext": "s"})
     assert r.status_code == 303
     assert pult.posts()[-1][2]["briefing"]["videos"] == []
@@ -532,7 +532,7 @@ def test_kurzfassung_braucht_auswahl(angemeldet, pult):
     assert '<input type="radio" name="video" value="a1b2c3d4-0000">' in s and 'type="checkbox"' not in s
     r = get(angemeldet, "/marketing/reels/neu?art=kurzfassung&schritt=3")
     assert r.status_code == 422 and "genau ein Video" in r.text
-    r = post(angemeldet, "/marketing/reels/neu", {"csrf": ui.CSRF_TOKEN, "art": "kurzfassung", "titel": "T",
+    r = post(angemeldet, "/marketing/reels/neu", {"csrf": ui.CSRF_TOKEN, "mandant": "vibemind", "art": "kurzfassung", "titel": "T",
                                                   "thema": "t"})
     assert r.status_code == 422 and "genau ein Video" in r.text and not pult.posts()
     pult.material = {"videos": [], "hinweis": "Laura ist gerade nicht erreichbar."}
@@ -572,7 +572,7 @@ def test_schritt3_api_marke_weg_bleibt_bestellbar(angemeldet, pult):
 
 def test_bestellen_post_an_api_ohne_farben_und_stimme(angemeldet, pult):
     r = post(angemeldet, "/marketing/reels/neu", {
-        "csrf": ui.CSRF_TOKEN, "art": "bilder", "titel": "Herbst", "thema": "bAV", "sprechertext": "Drei.",
+        "csrf": ui.CSRF_TOKEN, "mandant": "vibemind", "art": "bilder", "titel": "Herbst", "thema": "bAV", "sprechertext": "Drei.",
         "bild": ["team.png", "buero.jpg"], "logo": "logo.png", "dauer_s": "20", "stimme": "eigene-c",
         "farbe_hintergrund": "#000000"})
     assert r.status_code == 303 and r.headers["location"] == f"/marketing/reels/{NEU}"
@@ -588,13 +588,13 @@ def test_bestellen_post_an_api_ohne_farben_und_stimme(angemeldet, pult):
                                    {"art": "bilder", "titel": "T", "thema": "", "bild": "a.png"},
                                    {"art": "bilder", "titel": "T", "thema": "t"}])
 def test_neu_prueft_vorher(angemeldet, pult, daten):
-    r = post(angemeldet, "/marketing/reels/neu", {"csrf": ui.CSRF_TOKEN, **daten})
+    r = post(angemeldet, "/marketing/reels/neu", {"csrf": ui.CSRF_TOKEN, "mandant": "vibemind", **daten})
     assert r.status_code == 422 and not pult.posts()
 
 
 def test_api_ablehnung_zeigt_meldung(angemeldet, pult):
     pult.fehler = marketing_pult.PultFehler("abgelehnt", "Bild gehoert einer anderen Firma: x.png")
-    r = post(angemeldet, "/marketing/reels/neu", {"csrf": ui.CSRF_TOKEN, "art": "bilder", "titel": "T",
+    r = post(angemeldet, "/marketing/reels/neu", {"csrf": ui.CSRF_TOKEN, "mandant": "vibemind", "art": "bilder", "titel": "T",
                                                   "thema": "t", "sprechertext": "s", "bild": "x.png"})
     assert r.status_code == 422 and "anderen Firma" in r.text
     pult.fehler = marketing_pult.PultFehler("abgelehnt", "Nur fertige oder fehlgeschlagene Reels lassen sich neu bauen")
@@ -676,3 +676,45 @@ def test_freigabekarte_fehlende_datei_ohne_vorschau(monkeypatch):
 def test_freigabekarte_podcast_anhoeren(monkeypatch):
     monkeypatch.setattr(server.medien, "pruefe", lambda n: (n, None))
     assert '<audio controls preload="none" src="/medien/datei/pod-1.mp3">' in ui._entwurf_kopf(_z("pod-1.mp3"), "pending")
+
+
+# --- Review Task 5: Firma sichtbar und festgehalten, Auswahl bleibt, Kurzfassung roh geprueft ---------
+
+@pytest.mark.parametrize("pfad", ["/marketing/reels/neu", "/marketing/reels/neu?art=bilder",
+                                  "/marketing/reels/neu?art=bilder&schritt=3&bild=team.png"])
+def test_bestellung_zeigt_die_firma(angemeldet, pult, pfad):
+    s = rumpf(get(angemeldet, pfad))
+    assert 'value="vibemind" aria-pressed="true"' in s and "Bestellung für <b>VibeMind</b>" in s
+
+
+def test_bestellung_haelt_die_firma_fest(angemeldet, pult):
+    s = rumpf(get(angemeldet, "/marketing/reels/neu?art=bilder&schritt=3&bild=team.png"))
+    assert '<input type="hidden" name="mandant" value="vibemind">' in s
+    basis = {"csrf": ui.CSRF_TOKEN, "art": "bilder", "titel": "T", "thema": "t", "sprechertext": "s",
+             "bild": "team.png"}
+    for daten in ({**basis, "mandant": "fin2gether"}, basis):
+        r = post(angemeldet, "/marketing/reels/neu", daten)
+        assert r.status_code == 422 and "Die Firma wurde inzwischen gewechselt – bitte neu bestellen." in r.text
+    assert not pult.posts()
+    angemeldet.cookies.set("mk_mandant", "fin2gether", path="/marketing")
+    r = post(angemeldet, "/marketing/reels/neu", {**basis, "mandant": "fin2gether"})
+    assert r.status_code == 303 and pult.posts()[-1][2]["mandant"] == "fin2gether"
+
+
+def test_falscher_schritt3_behaelt_die_gueltige_auswahl(angemeldet, pult):
+    r = get(angemeldet, "/marketing/reels/neu?art=bilder&schritt=3&bild=team.png&bild=..%2Fx.png&logo=logo.png")
+    s = rumpf(r)
+    assert r.status_code == 422 and "Ungültige Auswahl" in s
+    assert '<input type="checkbox" name="bild" value="team.png" checked>' in s and "../x" not in s
+    assert '<option value="logo.png" selected>' in s
+    r = get(angemeldet, "/marketing/reels/neu?art=kurzfassung&schritt=3&video=a1b2c3d4-0000&video=b2c3d4e5-0000")
+    s = rumpf(r)
+    assert r.status_code == 422 and s.count(" checked>") == 1
+    assert '<input type="radio" name="video" value="a1b2c3d4-0000" checked>' in s
+
+
+def test_kurzfassung_post_prueft_die_rohe_auswahl(angemeldet, pult):
+    r = post(angemeldet, "/marketing/reels/neu", {"csrf": ui.CSRF_TOKEN, "mandant": "vibemind", "art": "kurzfassung",
+                                                  "titel": "T", "thema": "t",
+                                                  "video": ["a1b2c3d4-0000", "b2c3d4e5-0000"]})
+    assert r.status_code == 422 and "genau ein Video" in r.text and not pult.posts()
