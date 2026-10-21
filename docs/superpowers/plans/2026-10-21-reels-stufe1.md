@@ -4,7 +4,7 @@
 
 **Goal:** Die Reels-Seite wird eine Galerie mit Detailseite und geführter Bestellung. Jede Firma bekommt eine feste Markenstimme. Ein Reel lässt sich mit einem Änderungssatz neu bauen, archivieren und herunterladen. Laura bleibt unverändert.
 
-**Architecture:** Die Kette bleibt, wie sie ist: Seite → Marketing-API (`api/video.py`) → `marketing.video_auftraege` → Video-Claw (PC) → Laura. Migration 082 bekommt vier Spalten: Vorgänger, Änderungswunsch, Archiv und Vorschaubild. Dazu kommen zwei SQL-Funktionen (nochmal, archivieren) und eine Erweiterung von `video_naechster`. Die API liefert der Seite Material-Listen (Medienbilder der Firma, Laura-Videos) und setzt die Markenstimme beim Anlegen ein. Der Video-Claw liest den Änderungswunsch und legt nach dem Rendern ein Vorschaubild ab. Die Seite (sales-ui) bleibt ohne JavaScript.
+**Architecture:** Die Kette bleibt, wie sie ist: Seite → Marketing-API (`api/video.py`) → `marketing.video_auftraege` → Video-Claw (PC) → Laura. Migration 085 bekommt vier Spalten: Vorgänger, Änderungswunsch, Archiv und Vorschaubild. Dazu kommen zwei SQL-Funktionen (nochmal, archivieren) und eine Erweiterung von `video_naechster`. Die API liefert der Seite Material-Listen (Medienbilder der Firma, Laura-Videos) und setzt die Markenstimme beim Anlegen ein. Der Video-Claw liest den Änderungswunsch und legt nach dem Rendern ein Vorschaubild ab. Die Seite (sales-ui) bleibt ohne JavaScript.
 
 **Tech Stack:** Python 3.12, FastAPI, Starlette (sales-ui), PostgreSQL (Schema `marketing`), ffmpeg auf dem PC, pytest.
 
@@ -22,7 +22,7 @@ Die Code-Fakten mit Datei und Zeile stehen in `E:/Temp/claude/c--Users-User-Desk
 
 ## Entscheidungen (E1–E12)
 
-- **E1 – Migration `082_reels_galerie.sql`** (die Nummer ist im WORKBOARD reserviert). Sie ändert `marketing.video_auftraege` und legt drei Funktionen an.
+- **E1 – Migration `085_reels_galerie.sql`** (die Nummer ist im WORKBOARD reserviert). Sie ändert `marketing.video_auftraege` und legt drei Funktionen an.
 
   Neue Spalten:
   - `vorgaenger uuid null references marketing.video_auftraege(id) on delete set null`
@@ -44,7 +44,7 @@ Die Code-Fakten mit Datei und Zeile stehen in `E:/Temp/claude/c--Users-User-Desk
     - `aenderungswunsch`
     - `vorgaenger`: `{id, titel, protokoll, datei}` oder null, aus einem Join auf die Vorgängerzeile.
 
-  Rechte wie bei den Nachbarn in `072` (`REVOKE ALL FROM PUBLIC`). Dazu kommt `verify_082.sql` nach dem Muster `verify_078.sql`.
+  Rechte wie bei den Nachbarn in `072` (`REVOKE ALL FROM PUBLIC`). Dazu kommt `verify_085.sql` nach dem Muster `verify_078.sql`.
 - **E2 – Markenstimme.** Sie ist ein neuer Profilwert `stimme`, also ein Kopfschlüssel in `Marke.md` und ein Eintrag in `werte`.
   - **Name:** Er muss dem Muster `^[a-z0-9][a-z0-9_-]{0,39}$` folgen und in der Liste `MARKETING_STIMMEN` stehen. Die Liste ist eine Env-Variable der API, Vorgabe `eigene-a,eigene-b,eigene-c`. Das sind die Dateien in `E:\marketing-stimmen`.
   - **Wo er eingetragen wird:**
@@ -130,7 +130,7 @@ Die Code-Fakten mit Datei und Zeile stehen in `E:/Temp/claude/c--Users-User-Desk
 - **Commits:** Conventional Commits. Die letzte Zeile lautet `Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>`.
 - **Dateiendungen:** Keine CRLF-Änderungen an Dateien, die man nicht inhaltlich ändert.
 - **MOS-Tests** laufen aus dem Worktree-Wurzelverzeichnis: `python -m pytest spaces/marketing/<pfad> -q --basetemp C:/Temp/pt-reels`. Als bekannte Umgebungsfehler erlaubt sind die drei `SALES_CLAW_DIR`-Tests und die 14 vorbestehenden Fehler aus `cockpit_contract`, `tools/tests` und `test_bilder_api`. Neue Routen kommen in die Routenlisten der 401-Tests, sofern die Testdatei solche Listen hat.
-- **Migration:** idempotent, eine Transaktion, mit RUNBOOK-Kopf. Geprüft wird nur per Rollback-Probe: `$env:SUPABASE_SSH_HOST='offload-vm'; $env:SUPABASE_DB_CONTAINER='debian-supabase-db-1'; python -m spaces.marketing.scripts.migration_probe spaces/marketing/db/082_reels_galerie.sql spaces/marketing/db/verify_082.sql`. Die Probe muss mit `verify_082: ok` enden. Niemals echt einspielen außer in Task 6.
+- **Migration:** idempotent, eine Transaktion, mit RUNBOOK-Kopf. Geprüft wird nur per Rollback-Probe: `$env:SUPABASE_SSH_HOST='offload-vm'; $env:SUPABASE_DB_CONTAINER='debian-supabase-db-1'; python -m spaces.marketing.scripts.migration_probe spaces/marketing/db/085_reels_galerie.sql spaces/marketing/db/verify_085.sql`. Die Probe muss mit `verify_085: ok` enden. Niemals echt einspielen außer in Task 6.
 - **API-Routen** schreiben nur über SQL-Funktionen. Werte gehen über `lit()` oder `_db._sql_literal` wie bei den Nachbarn.
 - **SC-Tests** (aus `sales-mcp`, der DB-Klon `sales_struktur` auf `127.0.0.1:55600` muss laufen, Container `sales-testdb-fwd`):
   `$env:SALES_DB_URL='postgresql://postgres:ci@127.0.0.1:55600/sales_struktur'; $env:SALES_DB_SCHEMA='sales_test'; & E:/Temp/claude/c--Users-User-Desktop-Vibemind-V1/09346339-4318-4647-a968-36a3579400b7/scratchpad/venv-sales/Scripts/python.exe -m pytest tests/<datei> -q`.
@@ -147,16 +147,16 @@ Die Code-Fakten mit Datei und Zeile stehen in `E:/Temp/claude/c--Users-User-Desk
 ## Review Focus
 
 1. **Fremde Firma.** Detailseite, nochmal, archivieren und abbrechen eines Auftrags einer anderen Firma führen zu 404 bzw. werden abgelehnt, in der API (Mandant passt nicht) und auf der Seite. Tests: `test_nochmal_fremder_mandant_404` (T2) und `test_detail_fremde_firma_404` (T5).
-2. **Nochmal bei laufendem oder fertigem Auftrag ohne Wunsch.** „Nochmal“ bei `in_arbeit` wird abgelehnt. Bei `fertig` mit leerem Wunsch kommt 422. Bei `fehler` mit leerem Wunsch entsteht ein neuer Auftrag. Tests in `verify_082` (b) und `test_nochmal_regeln` (T2).
+2. **Nochmal bei laufendem oder fertigem Auftrag ohne Wunsch.** „Nochmal“ bei `in_arbeit` wird abgelehnt. Bei `fertig` mit leerem Wunsch kommt 422. Bei `fehler` mit leerem Wunsch entsteht ein neuer Auftrag. Tests in `verify_085` (b) und `test_nochmal_regeln` (T2).
 3. **Stimme gelöscht oder unbekannt.** Steht im Profil eine Stimme, die nicht mehr in `MARKETING_STIMMEN` ist, fällt `_anlegen` auf „standard“ zurück, statt den Auftrag scheitern zu lassen, und schreibt eine Notiz ins Protokoll. Ein unbekannter Name im Briefing führt zu 422. Test: `test_anlegen_stimme_aus_marke_und_rueckfall` (T2).
 4. **Vorschaubild scheitert.** ffmpeg fehlt, das Video lädt nicht oder `/poster` antwortet 413 oder 422: Der Auftrag wird trotzdem `fertig`, und die Galerie zeigt die Titel-Fläche. Tests: `test_poster_fehler_bricht_nicht_ab` (T4) und `test_karte_ohne_poster` (T5).
 5. **Laura nicht erreichbar bei der Bestellung.** Schritt 2 für `material` zeigt den Hinweis, kein 500. Bestellen ohne Auswahl bleibt möglich, dann sucht der Claw selbst. Bei `kurzfassung` ist die Auswahl Pflicht, und es kommt eine verständliche Meldung. Tests: `test_material_laura_aus` (T2) und `test_bestellung_material_ohne_laura` (T5).
 
 ---
 
-### Task 1: Migration 082 (MOS)
+### Task 1: Migration 085 (MOS)
 
-**Files:** Create `spaces/marketing/db/082_reels_galerie.sql`, `spaces/marketing/db/verify_082.sql`
+**Files:** Create `spaces/marketing/db/085_reels_galerie.sql`, `spaces/marketing/db/verify_085.sql`
 
 **Interfaces:**
 - **Produces** (E1):
@@ -167,7 +167,7 @@ Die Code-Fakten mit Datei und Zeile stehen in `E:/Temp/claude/c--Users-User-Desk
   - `marketing.video_naechster(interval)` mit den zusätzlichen Schlüsseln `aenderungswunsch` und `vorgaenger` (`{id, titel, protokoll, datei}` oder null).
 
 - [ ] **Step 0:** Prüfen, dass 082 auf `origin/master` noch frei ist (`git fetch`, `git ls-tree`). `072_video_auftraege.sql` vollständig lesen.
-- [ ] **Step 1:** `verify_082.sql` zuerst schreiben, mit dem Probe-Mandanten `probe_082`. Fälle:
+- [ ] **Step 1:** `verify_085.sql` zuerst schreiben, mit dem Probe-Mandanten `probe_082`. Fälle:
   - (a) Die Spalten existieren, und die Checks gelten: ein Wunsch mit 501 Zeichen und ein falscher Poster-Name werden abgelehnt.
   - (b) `video_nochmal`:
     - Aus einem fertigen Auftrag mit Wunsch entsteht ein neuer `offen`-Auftrag mit kopiertem Briefing, `vorgaenger` und `aenderungswunsch`.
@@ -177,11 +177,11 @@ Die Code-Fakten mit Datei und Zeile stehen in `E:/Temp/claude/c--Users-User-Desk
   - (c) `video_archivieren`: Bei fertig gibt es `true` und die Spalte wird gesetzt. Bei offen gibt es `false` und nichts ändert sich.
   - (d) `video_poster`: Ein falsches Präfix ergibt `false` oder eine Ausnahme, ein passender Name `true`.
   - (e) `video_naechster` liefert für den neuen Auftrag `vorgaenger.titel` und `aenderungswunsch`.
-  - Am Ende `raise notice 'verify_082: ok'`.
-- [ ] **Step 2:** Rollback-Probe nur mit `verify_082`. Erwartet: FAIL.
-- [ ] **Step 3:** `082_reels_galerie.sql` schreiben.
-- [ ] **Step 4:** Probe mit 082 und verify_082. Erwartet: `verify_082: ok`. Danach eine zweite Probe mit 072, 082 und verify_082 (Wiederholung), ebenfalls grün.
-- [ ] **Step 5: Commit.** `feat(reels): Migration 082 Vorgaenger, Archiv, Vorschaubild`
+  - Am Ende `raise notice 'verify_085: ok'`.
+- [ ] **Step 2:** Rollback-Probe nur mit `verify_085`. Erwartet: FAIL.
+- [ ] **Step 3:** `085_reels_galerie.sql` schreiben.
+- [ ] **Step 4:** Probe mit 082 und verify_085. Erwartet: `verify_085: ok`. Danach eine zweite Probe mit 072, 082 und verify_085 (Wiederholung), ebenfalls grün.
+- [ ] **Step 5: Commit.** `feat(reels): Migration 085 Vorgaenger, Archiv, Vorschaubild`
 
 ### Task 2: API – Material, Stimme, nochmal, Archiv, Befund, Poster (MOS)
 
@@ -328,7 +328,7 @@ Die Code-Fakten mit Datei und Zeile stehen in `E:/Temp/claude/c--Users-User-Desk
 
 ### Task 6: Ausliefern (nur nach Betreiber-OK)
 
-- [ ] **Step 1:** Rollback-Probe von 082 mit verify_082 gegen die Live-DB. Danach 082 echt einspielen (`_db._run_psql(…, streng=True)`) und die Probe mit verify_082 wiederholen.
+- [ ] **Step 1:** Rollback-Probe von 082 mit verify_085 gegen die Live-DB. Danach 082 echt einspielen (`_db._run_psql(…, streng=True)`) und die Probe mit verify_085 wiederholen.
 - [ ] **Step 2:** VM-Env der Marketing-API: `MARKETING_STIMMEN=eigene-a,eigene-b,eigene-c` in `~/marketing-api.env` eintragen, vorher eine Sicherung als `.vor-stimmen`, nur diese Zeile. Die PC-API nutzt die Vorgabe.
 - [ ] **Step 3:** MOS pushen. Am PC die Dateien des Haupt-Checkouts als alt, neu oder FREMD einordnen. Bei FREMD wird abgebrochen. Dann `git restore --source`. Neu starten: `marketing_api` (:5510), `marketing_chat_arbeiter` (:8134, wegen der Marke) und `marketing_video_claw`, über `claw/scripts/marketing-dienste-starten.ps1 -Nur`.
 - [ ] **Step 4:** SC pushen und `update.sh` laufen lassen. Das zieht die VM-API nach. Erwartet: „ALLE PRUEFUNGEN GRUEN“.
