@@ -2720,6 +2720,22 @@ def test_unbekannte_datei_ist_404(medienordner):
     assert _get("/medien/datei/gibtsnicht.png").status_code == 404
 
 
+def test_medien_datei_laden_attachment(medienordner):
+    """Reels Stufe 1, E10: ?laden=1 laedt herunter, statt im Browser zu zeigen."""
+    (medienordner / "clip.mp4").write_bytes(b"MP4")
+    antwort = _get("/medien/datei/clip.mp4?laden=1")
+    assert antwort.status_code == 200 and antwort.content == b"MP4"
+    assert antwort.headers["content-disposition"] == 'attachment; filename="clip.mp4"'
+    assert "sandbox" in antwort.headers["content-security-policy"]
+
+
+@pytest.mark.parametrize("abfrage", ["", "?laden=0", "?laden=ja"])
+def test_medien_datei_ohne_laden_inline(medienordner, abfrage):
+    (medienordner / "clip.mp4").write_bytes(b"MP4")
+    antwort = _get(f"/medien/datei/clip.mp4{abfrage}")
+    assert antwort.headers["content-disposition"] == 'inline; filename="clip.mp4"'
+
+
 def test_loeschen_zeigt_erst_die_warnseite(medienordner):
     (medienordner / "bild.png").write_bytes(b"x" * 64)
     antwort = _post("/medien/loeschen",

@@ -57,6 +57,9 @@ _PROFIL_FARBEN = (("akzent", "Akzent"), ("zweitfarbe", "Fläche"), ("grund", "Gr
 _VORSCHLAG_FARBEN = (("akzent", "Akzent"), ("zweitfarbe", "Zweitfarbe"), ("grund", "Grund"), ("text", "Text"))
 FORM_FARBEN = (("akzent", "Akzent"), ("zweitfarbe", "Zweitfarbe"), ("grund", "Grund"), ("text", "Text"))
 FARBE_MAX, SCHRIFT_MAX, WEBSEITE_MAX, ABSCHNITT_MAX = 20, 40, 300, 8000   # wie api/marke.FORMULAR_GRENZEN
+STIMME_MAX = 40                      # wie api/marke.FORMULAR_OPTIONAL (Reels Stufe 1, E11)
+STANDARD_STIMME = "standard"         # steht nie in der Liste und gilt immer (claw/stimmen.py)
+_STIMME = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}")
 FELD_ABSCHNITT = "abschnitt::"       # Formularfeld je Abschnitt: abschnitt::<Name> (E2)
 ABSCHNITTE_MAX, ABSCHNITT_NAME_MAX = 40, 100   # Obergrenzen fuer Fremdeingaben; die API prueft die Namen
 _ALTES_FELD = re.compile(r"ab\d+")   # Formular von vor E2 (ab0..ab6): wuerde alle Abschnitte leeren
@@ -206,7 +209,23 @@ def routen(ui) -> list:
         p = p if p is not None else _dict(d.get("aktuell"))
         return _dict(p.get("werte")), _dict(p.get("abschnitte"))
 
-    def bearbeiten_html(d: dict, mandant: str) -> str:
+    def stimme_feld(werte: dict, stimmen: list[str] | None) -> str:
+        """E11: Auswahl aus GET /stimmen mit leerer Option "keine" ("" entfernt die Stimme). Ohne Liste
+        kein Feld: dann schickt das Formular keine Stimme, und sie bleibt, wie sie ist."""
+        if stimmen is None:
+            return ('<p class="meta">Die Liste der Stimmen ist gerade nicht erreichbar – die Stimme bleibt, '
+                    'wie sie ist.</p>')
+        jetzt = werte.get("stimme") if isinstance(werte.get("stimme"), str) else ""
+        optionen = ['<option value="">keine</option>'] + [
+            f'<option value="{e(n)}"{" selected" if n == jetzt else ""}>{e(n)}</option>' for n in stimmen]
+        if jetzt and jetzt not in stimmen:
+            # Sonst loeschte ein Abschicken ohne Blick auf das Feld die Stimme still
+            zusatz = "" if jetzt == STANDARD_STIMME else " (nicht mehr verfügbar)"
+            optionen.append(f'<option value="{e(jetzt)}" selected>{e(jetzt)}{zusatz}</option>')
+        return ('<fieldset><legend>Stimme für Reels und Podcast</legend><label>Stimme '
+                f'<select name="stimme">{"".join(optionen)}</select></label></fieldset>')
+
+    def bearbeiten_html(d: dict, mandant: str, stimmen: list[str] | None = None) -> str:
         if d.get("laeuft") or d.get("uebernahme"):
             return '<p class="meta">Der Marken-Agent arbeitet gerade – bearbeiten geht danach.</p>'
         offen = d.get("vorschlag") if isinstance(d.get("vorschlag"), dict) else None
@@ -234,13 +253,13 @@ def routen(ui) -> list:
         texte = "".join(f'<label>{e(n)} <textarea name="{e(FELD_ABSCHNITT + n)}" rows="4" maxlength="{ABSCHNITT_MAX}">'
                         f'{e(str(ab.get(n) or ""))}</textarea></label>' for n in abschnitt_namen(d, ab))
         return (warnung + '<h2>Profil bearbeiten</h2><p class="meta">Der Marken-Agent übernimmt deine Angaben wörtlich und '
-                'korrigiert nur Ungültiges (mit Hinweis). Reine Texte gelten sofort, Farben, Schriften und die '
-                'Webseite kommen als Vorschlag zum Übernehmen.</p>'
+                'korrigiert nur Ungültiges (mit Hinweis). Reine Texte gelten sofort, Farben, Schriften, die '
+                'Stimme und die Webseite kommen als Vorschlag zum Übernehmen.</p>'
                 f'<form method="post" action="/marketing/marke/bearbeiten" class="pult-felder marke-bearbeiten">'
                 f'{csrf_feld()}<input type="hidden" name="mandant" value="{e(mandant)}">'
                 f'<fieldset><legend>Farben</legend>{farben}</fieldset>'
                 f'<fieldset><legend>Schriften</legend>{auswahl("schrift_anzeige", "Überschrift")}'
-                f'{auswahl("schrift_text", "Text")}</fieldset>'
+                f'{auswahl("schrift_text", "Text")}</fieldset>{stimme_feld(werte, stimmen)}'
                 f'<label>Webseite <input name="webseite" type="url" value="{e(wert("webseite"))}" '
                 f'maxlength="{WEBSEITE_MAX}" placeholder="https://…"></label>{texte}'
                 f'<div class="aktionen"><button class="primaer" type="submit">An den Agenten geben</button> '
@@ -281,7 +300,11 @@ def routen(ui) -> list:
                 teile.append(f'<p class="meta">Stand: {e(stand)}</p>')
         teile.append(spiegel_warnung(sp))
         teile.append(hinweise)
-        karten = "".join(
+        stimme = werte.get("stimme") if isinstance(werte.get("stimme"), str) else ""
+        stimme_karte = ('<section class="profil-karte stimme-karte"><h3>Stimme für Reels und Podcast</h3>'
+                        + (f'<p>{e(stimme)}</p>' if stimme.strip() else '<p class="leer">Noch keine festgelegt</p>')
+                        + '</section>')
+        karten = stimme_karte + "".join(
             f'<section class="profil-karte"><h3>{e(n)}</h3>'
             + (f'<p>{absaetze(ab[n])}</p>' if isinstance(ab.get(n), str) and ab[n].strip()
                else f'<p class="leer">{NOCH_LEER}</p>') + "</section>"
@@ -564,6 +587,17 @@ def routen(ui) -> list:
                 f'<input type="file" name="datei" multiple></label>'
                 f'<button class="primaer" type="submit">Senden</button></div></form>')
 
+    async def stimmen_holen() -> list[str] | None:
+        """Namen aus GET /stimmen (MARKETING_STIMMEN der API) oder None, wenn die Liste fehlt."""
+        try:
+            d = await run_in_threadpool(marketing_pult.anfrage, "GET", "/stimmen")
+        except marketing_pult.PultFehler:
+            return None
+        roh = d.get("stimmen") if isinstance(d, dict) else None
+        if not isinstance(roh, list):
+            return None
+        return [n for n in roh if isinstance(n, str) and _STIMME.fullmatch(n)]
+
     @ui._gesichert_seite
     async def marke(request):
         fmt = request.query_params.get("format", "mail")
@@ -581,7 +615,7 @@ def routen(ui) -> list:
         kopf = ('<link rel="stylesheet" href="/marketing/schrift/schriften.css">'
                 + marketing_mandant.umschalter(e, ui.CSRF_TOKEN, m, liste_, SEITE))
         if request.query_params.get("bearbeiten") == "1":
-            rumpf = kopf + bearbeiten_html(d, m) + f'<p><a href="{e(adresse("profil"))}">Zurück zur Marke</a></p>'
+            rumpf = kopf + bearbeiten_html(d, m, await stimmen_holen()) + f'<p><a href="{e(adresse("profil"))}">Zurück zur Marke</a></p>'
             antwort = ui._seite("Marke", rumpf)
             antwort.headers["Content-Security-Policy"] = ui._csp_mit_rahmen("'self'", bilddaten=True, schriften=True)
             return antwort
@@ -732,9 +766,12 @@ def routen(ui) -> list:
         formular.update({k: str(form.get(k) or "").strip() for k in ("schrift_anzeige", "schrift_text", "webseite")})
         formular["abschnitte"] = {k[len(FELD_ABSCHNITT):]: str(form.get(k) or "").replace("\r\n", "\n").strip()
                                   for k in form.keys() if k.startswith(FELD_ABSCHNITT)}
+        if "stimme" in form:             # E11: "" entfernt die Stimme, ein fehlendes Feld laesst sie
+            formular["stimme"] = str(form.get("stimme") or "").strip()
         zu_lang = (any(len(formular[k]) > FARBE_MAX for k, _ in FORM_FARBEN)
                    or any(len(formular[k]) > SCHRIFT_MAX for k in ("schrift_anzeige", "schrift_text"))
                    or len(formular["webseite"]) > WEBSEITE_MAX
+                   or len(formular.get("stimme", "")) > STIMME_MAX
                    or len(formular["abschnitte"]) > ABSCHNITTE_MAX
                    or any(len(n) > ABSCHNITT_NAME_MAX or len(t) > ABSCHNITT_MAX
                           for n, t in formular["abschnitte"].items()))

@@ -1324,6 +1324,87 @@ a.knopf.sek { background: var(--flaeche); color: var(--akzent_text); }
 .layout-karte.neu { display: flex; align-items: center; justify-content: center;
                     min-height: 260px; border-style: dashed; border-color: var(--linie_stark);
                     font-weight: 600; text-decoration: none; color: var(--akzent_text); }
+/* Reels (Stufe 1, 21.10.2026): Galerie im Format 9:16, Detailseite und
+   gefuehrte Bestellung in drei Schritten. Nur Farb-Variablen aus :root. */
+.reel-kopf { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem 1.2rem;
+             margin: 0 0 1rem; }
+.reel-kopf p { margin: 0; }
+.reel-raster { display: grid; grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+               gap: 1rem; }
+.reel-karte { display: flex; flex-direction: column; gap: .4rem; min-width: 0; padding: .5rem;
+              border: 1px solid var(--linie); border-radius: 14px; background: var(--flaeche);
+              color: var(--schrift); text-decoration: none; }
+.reel-karte:hover { border-color: var(--akzent); }
+.reel-karte video, .reel-flaeche { display: block; width: 100%; aspect-ratio: 9 / 16;
+                                   object-fit: cover; border-radius: 10px;
+                                   background: var(--kopfzeile); }
+.reel-flaeche { display: flex; align-items: center; justify-content: center; padding: 1rem;
+                text-align: center; font-family: var(--schrift_anzeige); font-weight: 700;
+                color: var(--akzent_text);
+                background: linear-gradient(160deg, var(--aktiv), var(--blush)); }
+.reel-titel { font-weight: 700; }
+.reel-fuss { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .6rem; }
+.chip.fehler { background: var(--fehler_flaeche); color: var(--fehler_schrift); }
+.reel-detail { display: grid; grid-template-columns: minmax(0, 22rem) minmax(0, 1fr);
+               gap: 1.5rem; align-items: start; }
+.reel-bild > .reel-gross { width: 100%; max-height: 80vh; aspect-ratio: 9 / 16;
+                           border-radius: 14px; }
+video.reel-gross { display: block; background: var(--balken); object-fit: contain; }
+.reel-text h2 { margin: 0 0 .3rem; }
+.reel-angaben { display: grid; grid-template-columns: max-content minmax(0, 1fr);
+                gap: .3rem 1rem; margin: .8rem 0; }
+.reel-angaben dt { color: var(--gedaempft); font-weight: 600; }
+.reel-angaben dd { margin: 0; white-space: pre-wrap; }
+.reel-form { display: flex; flex-direction: column; gap: .6rem; margin: 1rem 0; max-width: 40rem; }
+.reel-form label { display: flex; flex-direction: column; gap: .3rem; font-weight: 600; }
+.reel-form .meta { margin: 0; }
+.reel-form button { align-self: flex-start; }
+.reel-form input[type="number"] { min-height: 44px; padding: .5rem .6rem; border-radius: 6px;
+  border: 1px solid var(--linie_stark); background: var(--flaeche); color: var(--schrift);
+  font-size: 16px; max-width: 8rem; }
+.reel-text .aktionen a, .reel-wahl .aktionen a { display: inline-flex; align-items: center;
+                                                 min-height: 44px; }
+.reel-protokoll { margin-top: 1.2rem; border-top: 1px solid var(--linie); }
+.reel-protokoll > summary { cursor: pointer; min-height: 44px; padding: .7rem 0;
+                            font-weight: 600; }
+.reel-schritte { display: flex; flex-wrap: wrap; gap: .4rem; padding: 0; margin: 0 0 1rem;
+                 list-style: none; counter-reset: schritt; }
+.reel-schritte li { counter-increment: schritt; padding: .3rem .8rem; border-radius: 999px;
+                    border: 1px solid var(--linie); color: var(--gedaempft); font-size: .9rem; }
+.reel-schritte li::before { content: counter(schritt) ". "; }
+.reel-schritte li[aria-current] { background: var(--akzent); border-color: var(--akzent);
+                                  color: var(--akzent_auf); font-weight: 700; }
+.reel-arten { display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+              gap: 1rem; }
+.reel-art { display: flex; flex-direction: column; gap: .4rem; min-height: 44px;
+            padding: 1rem 1.1rem; border: 1px solid var(--linie); border-radius: 14px;
+            background: var(--flaeche); color: var(--schrift); text-decoration: none; }
+.reel-art b { font-size: 1.1rem; color: var(--akzent_text); }
+.reel-art span { color: var(--gedaempft); }
+.reel-art:hover { border-color: var(--akzent); }
+.bild-raster { display: grid; grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+               gap: .7rem; margin: .8rem 0; }
+.bild-wahl { position: relative; display: flex; flex-direction: column; gap: .3rem;
+             padding: .4rem; border: 2px solid var(--linie); border-radius: 10px;
+             background: var(--flaeche); cursor: pointer; font-size: .8rem; }
+.bild-wahl img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px;
+                 background: var(--kopfzeile); }
+.bild-wahl input { position: absolute; top: .6rem; left: .6rem; width: 26px; height: 26px; }
+.reel-wahl label > select { display: block; margin-top: .3rem; }
+.reel-wahl td { vertical-align: middle; }
+.reel-wahl label.haken { justify-content: flex-start; }
+.reel-auswahl { border: 1px solid var(--linie); border-radius: 10px; padding: .6rem .8rem;
+                background: var(--flaeche); }
+.reel-auswahl h3 { margin: 0 0 .3rem; font-size: 1rem; }
+.reel-auswahl ul { margin: 0 0 .3rem; padding-left: 1.2rem; }
+.reel-auswahl img { width: 2.5rem; height: 2.5rem; object-fit: cover; border-radius: 4px;
+                    vertical-align: middle; }
+.reel-auswahl a { display: inline-block; min-height: 44px; padding: .6rem .1rem; }
+@media (max-width: 767px) {
+  .reel-detail { grid-template-columns: minmax(0, 1fr); }
+  .reel-bild > .reel-gross { max-height: 70vh; }
+  .reel-raster { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem; }
+  .reel-form button { align-self: stretch; } }
 /* Reiter als Links (ui_muster.reiter): eine Zeile, die im eigenen Kasten
    waagerecht scrollt statt die Seite; aktiv = aria-current mit Unterstrich. */
 nav.reiter { display: flex; gap: .2rem; overflow-x: auto; margin: 0 0 1rem;
@@ -2890,12 +2971,14 @@ async def medien_datei(request):
     except OSError as e:
         return _fehlerseite(404, "Nicht lesbar",
                             f"Datei nicht lesbar ({_e(type(e).__name__)}).")
+    art = "attachment" if request.query_params.get("laden") == "1" else "inline"
     return Response(
         inhalt, media_type=mimetyp,
         headers={
             # Nur der Basisname, und der ist geprueft: keine Pfadangabe,
             # kein Zeilenumbruch, also keine Kopfzeilen-Injektion.
-            "Content-Disposition": f'inline; filename="{basis}"',
+            # ?laden=1 (Reels Stufe 1, E10): herunterladen statt ansehen.
+            "Content-Disposition": f'{art}; filename="{basis}"',
             "Content-Security-Policy": _CSP_DATEI,
             # Nicht im Zwischenspeicher der Zwischenstationen: die Datei
             # kann Kundenunterlagen enthalten.

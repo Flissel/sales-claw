@@ -54,6 +54,7 @@ class Falsch:
                         "auftraege": [], "laeuft": False, "vorschlag": None, "uebernahme": None,
                         "uebernahme_seit": None, "aktuell": None, "abschnitt_namen": list(NAMEN),
                         "faehigkeiten": FAEHIG, "runden_gesamt": 0}
+        self.stimmen = ["eigene-a", "eigene-b", "eigene-c"]
 
     def anfrage(self, methode, pfad, daten=None, roh=False, zeitlimit=None):
         self.aufrufe.append((methode, pfad, daten))
@@ -84,6 +85,8 @@ class Falsch:
             return {"auftrag": "r1"}
         if pfad == "/marke/bearbeiten":
             return {"auftrag": "b1"}
+        if pfad == "/stimmen":
+            return {"stimmen": list(self.stimmen)}
         return {}
 
     def nach(self, teil):
@@ -1207,3 +1210,47 @@ def test_offener_gegenvorschlag_heisst_rueckgaengig_wird_uebernommen(angemeldet,
         pult.zustand["vorschlag"] = {**VORSCHLAG, "id": VID_A, "ist_rueckgaengig": wert}
         s = rumpf(seite(angemeldet))
         assert "<h3>Vorschlag</h3>" in s and "Rückgängig wird übernommen" not in s, wert
+
+
+# --- Reels Stufe 1, E11: Stimme fuer Reels und Podcast ------------------------------------
+
+def test_profil_zeigt_stimme_karte(angemeldet, pult):
+    pult.zustand["profil"] = {"werte": {"stimme": "eigene-b"}, "abschnitte": {}}
+    s = rumpf(seite(angemeldet, PROFIL))
+    assert '<section class="profil-karte stimme-karte"><h3>Stimme für Reels und Podcast</h3><p>eigene-b</p>' in s
+    pult.zustand["profil"] = {"werte": {"stimme": "<b>x</b>"}, "abschnitte": {}}
+    assert "&lt;b&gt;x&lt;/b&gt;" in rumpf(seite(angemeldet, PROFIL))
+    pult.zustand["profil"] = {"werte": {}, "abschnitte": {}}
+    s = rumpf(seite(angemeldet, PROFIL))
+    assert '<h3>Stimme für Reels und Podcast</h3><p class="leer">Noch keine festgelegt</p>' in s
+
+
+def test_bearbeiten_hat_stimmen_auswahl_aus_api(angemeldet, pult):
+    pult.zustand["profil"] = {"werte": {"stimme": "eigene-b"}, "abschnitte": {}}
+    s = rumpf(seite(angemeldet, "/marketing/layouts?bearbeiten=1"))
+    assert ("GET", "/stimmen", None) in pult.aufrufe
+    assert ('<select name="stimme"><option value="">keine</option><option value="eigene-a">eigene-a</option>'
+            '<option value="eigene-b" selected>eigene-b</option><option value="eigene-c">eigene-c</option>'
+            '</select>') in s
+    # eine Stimme, die es nicht mehr gibt, bleibt gewaehlt (sonst loescht ein Abschicken sie still)
+    pult.zustand["profil"] = {"werte": {"stimme": "alt"}, "abschnitte": {}}
+    s = rumpf(seite(angemeldet, "/marketing/layouts?bearbeiten=1"))
+    assert '<option value="alt" selected>alt (nicht mehr verfügbar)</option>' in s
+    # Liste nicht erreichbar: kein Feld, also bleibt die Stimme unveraendert
+    pult.fehler, pult.fehler_pfad = marketing_pult.PultFehler("nicht_erreichbar", "x"), "/stimmen"
+    r = seite(angemeldet, "/marketing/layouts?bearbeiten=1")
+    assert r.status_code == 200 and 'name="stimme"' not in rumpf(r) and "An den Agenten geben" in r.text
+
+
+def test_bearbeiten_schickt_stimme(angemeldet, pult):
+    basis = {"csrf": ui.CSRF_TOKEN, "mandant": "vibemind", "akzent": "#000000"}
+    r = angemeldet.post("/marketing/marke/bearbeiten", headers=HOST, follow_redirects=False,
+                        data={**basis, "stimme": " eigene-c "})
+    assert r.status_code == 303 and pult.nach("/marke/bearbeiten")[-1][2]["formular"]["stimme"] == "eigene-c"
+    angemeldet.post("/marketing/marke/bearbeiten", headers=HOST, follow_redirects=False, data={**basis, "stimme": ""})
+    assert pult.nach("/marke/bearbeiten")[-1][2]["formular"]["stimme"] == ""          # "" = entfernen
+    angemeldet.post("/marketing/marke/bearbeiten", headers=HOST, follow_redirects=False, data=basis)
+    assert "stimme" not in pult.nach("/marke/bearbeiten")[-1][2]["formular"]          # fehlt = unveraendert
+    r = angemeldet.post("/marketing/marke/bearbeiten", headers=HOST, follow_redirects=False,
+                        data={**basis, "stimme": "x" * 41})
+    assert r.status_code == 422 and len(pult.nach("/marke/bearbeiten")) == 3
