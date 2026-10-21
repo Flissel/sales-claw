@@ -57,6 +57,7 @@ REFRESH_S = 30
 SEITE = "/marketing/reels"
 NEU_SEITE = "/marketing/reels/neu"
 MARKE_PROFIL = "/marketing/layouts?reiter=profil"
+STANDARD_STIMME = "standard"       # steht nie in GET /stimmen und gilt immer (claw/stimmen.py)
 
 
 def _texte(werte) -> list[str]:
@@ -485,6 +486,15 @@ def routen(ui) -> list:
         teile.append(weiter_form(art, tabelle))
         return "".join(teile)
 
+    async def stimmen_liste() -> list[str] | None:
+        """Namen aus GET /stimmen oder None, wenn die Liste nicht lesbar ist (dann nichts behaupten)."""
+        try:
+            d = await run_in_threadpool(marketing_pult.anfrage, "GET", "/stimmen")
+        except marketing_pult.PultFehler:
+            return None
+        roh = d.get("stimmen") if isinstance(d, dict) else None
+        return [n for n in roh if isinstance(n, str)] if isinstance(roh, list) else None
+
     async def stimme_zeile(m: str) -> str:
         """E2: Die Stimme kommt aus der Marke; ohne Markenstimme gilt Standard."""
         try:
@@ -495,6 +505,10 @@ def routen(ui) -> list:
         profil = d.get("profil") if isinstance(d, dict) and isinstance(d.get("profil"), dict) else {}
         werte = profil.get("werte") if isinstance(profil.get("werte"), dict) else {}
         stimme = str(werte.get("stimme") or "").strip()
+        if stimme and stimme != STANDARD_STIMME and (liste := await stimmen_liste()) is not None                 and stimme not in liste:
+            # wie die API (_stimme_einsetzen): eine Markenstimme ohne Stimmprobe wird zu Standard
+            return (f'<p class="meta">Stimme: Standard (die Markenstimme „{e(stimme)}“ '
+                    f'gibt es nicht mehr)</p>')
         if stimme:
             return f'<p class="meta">Stimme: <b>{e(stimme)}</b> (aus der Marke)</p>'
         return f'<p class="meta">Stimme: Standard – <a href="{MARKE_PROFIL}">in der Marke festlegen</a></p>'

@@ -278,9 +278,27 @@ def mailstueck(basis: str) -> bool:
     return bool(MAILSTUECK_MUSTER.match(basis or ""))
 
 
+# Reels (Reels Stufe 1): der Video-Claw legt das Reel als vid-<id 8 hex>-<slug>.mp4 und sein
+# Vorschaubild als vid-<id 8 hex>-<slug>.jpg in den Erzeugt-Ordner (Form wie die Marketing-API,
+# api/video.py _DATEI und Migration 085). Sie gehoeren zur Reels-Seite, nicht in /medien und nicht in den
+# Picker; die Namen sind reserviert. Die Reels-Seiten zeigen beide ueber /medien/datei (`pruefe_anzeige`).
+# Das Vorschaubild geht nie als Anhang; das Reel-MP4 schon - "Als LinkedIn-Post vorbereiten" auf der
+# Reels-Seite gibt seinen Namen direkt an den Beitrag (pruefe_anhang im Entwurf und im LinkedIn-Versand).
+REEL_MUSTER = re.compile(r"^vid-[0-9a-f]{8}-[a-z0-9-]{1,40}\.(?:jpg|mp4)$")
+
+
+def reeldatei(basis: str) -> bool:
+    return bool(REEL_MUSTER.match(basis or ""))
+
+
+def reel_vorschaubild(basis: str) -> bool:
+    return reeldatei(basis) and basis.endswith(".jpg")
+
+
 def verborgen(basis: str) -> bool:
-    """Entwurfsbild oder Bildstueck: kein Medium (Listen, Picker, Anhang, Namenswahl)."""
-    return entwurfsbild(basis) or mailstueck(basis)
+    """Entwurfsbild, Bildstueck oder Reel-Datei: kein Medium (Listen, Picker, Namenswahl; als Anhang
+    sperrt `pruefe_anhang` alle ausser dem Reel-MP4)."""
+    return entwurfsbild(basis) or mailstueck(basis) or reeldatei(basis)
 
 
 def intern(basis: str) -> bool:
@@ -303,6 +321,9 @@ def pruefe_anhang(name: str):
                       f"(Entwurfsbild) und kein Medium - es geht nicht als Anhang.")
     if mailstueck(basis):
         return None, (f"'{basis}' ist ein Bildstück einer Collage-Mail und kein Medium - "
+                      f"es geht nicht als Anhang.")
+    if reel_vorschaubild(basis):
+        return None, (f"'{basis}' ist das Vorschaubild eines Reels und kein Medium - "
                       f"es geht nicht als Anhang.")
     if intern(basis):
         return None, (f"'{basis}' ist eine interne Unterlage (Terminkarte oder "
@@ -352,8 +373,8 @@ def pruefe_neuen_namen(name: str):
     if verborgen(basis):
         # Sonst laege eine hochgeladene Datei unsichtbar unter einem Namen, den
         # Marketing fuer Entwurfsbilder/Bildstuecke der Mail vergibt.
-        return None, (f"'{basis}' ist ein reservierter Name (Entwurfsbild oder Bildstück "
-                      f"einer Collage-Mail) - bitte einen anderen Namen wählen.")
+        return None, (f"'{basis}' ist ein reservierter Name (Entwurfsbild, Bildstück "
+                      f"einer Collage-Mail oder Reel) - bitte einen anderen Namen wählen.")
     return basis, None
 
 

@@ -3090,7 +3090,7 @@ def medien_aus_chat_uebernehmen(datei: str, name: str = "") -> str:
     if medien.intern(basis) or medien.verborgen(basis):
         return _json({"fehler": (
             f"'{basis}' ist ein reservierter Name (Terminkarte, Musterblatt, "
-            f"Entwurfsbild oder Bildstueck einer Collage-Mail) - bitte einen "
+            f"Entwurfsbild, Bildstueck einer Collage-Mail oder Reel) - bitte einen "
             f"anderen Namen waehlen.")})
     try:
         basis = medien.ablegen(basis, inhalt, medien.ERZEUGT_VERZEICHNIS)

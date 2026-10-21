@@ -74,6 +74,7 @@ class Falsch:
             {"kennung": "a1b2c3d4-0000", "name": "Messe 2026 <lang>", "projekt": "Messe", "dauer_s": 312.4},
             {"kennung": "b2c3d4e5-0000", "name": "Interview Ivan", "projekt": "Team", "dauer_s": 95}]}
         self.markenstimme = "eigene-a"
+        self.stimmen = ["eigene-a", "eigene-b"]
         self.archiv_ok = True
 
     def anfrage(self, methode, pfad, daten=None, roh=False, zeitlimit=None):
@@ -95,6 +96,8 @@ class Falsch:
             return self.material
         if pfad.startswith("/marke?mandant="):
             return {"profil": {"werte": {"stimme": self.markenstimme} if self.markenstimme else {}}}
+        if pfad == "/stimmen":
+            return {"stimmen": self.stimmen} if self.stimmen is not None else {}
         if pfad == "/video":
             return {"auftrag": NEU}
         if pfad.endswith("/nochmal"):
@@ -562,6 +565,25 @@ def test_schritt3_traegt_auswahl_versteckt_und_zeigt_stimme(angemeldet, pult):
     s = rumpf(get(angemeldet, "/marketing/reels/neu?art=kurzfassung&schritt=3&video=a1b2c3d4-0000"))
     assert '<input type="hidden" name="video" value="a1b2c3d4-0000">' in s and "Messe 2026 &lt;lang&gt;" in s
     assert 'name="sprechertext" rows="4" maxlength="900">' in s
+
+
+def test_schritt3_markenstimme_gibt_es_nicht_mehr(angemeldet, pult):
+    pult.markenstimme = "weg-<x>"
+    s = rumpf(get(angemeldet, "/marketing/reels/neu?art=bilder&schritt=3&bild=team.png"))
+    assert "Stimme: Standard (die Markenstimme „weg-&lt;x&gt;“ gibt es nicht mehr)" in s
+    assert "(aus der Marke)" not in s
+    # 'standard' steht nie in der Liste und gilt immer
+    pult.markenstimme = "standard"
+    s = rumpf(get(angemeldet, "/marketing/reels/neu?art=bilder&schritt=3&bild=team.png"))
+    assert "gibt es nicht mehr" not in s
+    # Liste nicht lesbar: wie bisher die Markenstimme zeigen, nichts behaupten
+    pult.markenstimme, pult.stimmen = "weg", None
+    s = rumpf(get(angemeldet, "/marketing/reels/neu?art=bilder&schritt=3&bild=team.png"))
+    assert "Stimme: <b>weg</b> (aus der Marke)" in s
+    pult.stimmen = ["eigene-a"]
+    pult.fehler, pult.fehler_pfad = marketing_pult.PultFehler("nicht_erreichbar", "x"), "/stimmen"
+    s = rumpf(get(angemeldet, "/marketing/reels/neu?art=bilder&schritt=3&bild=team.png"))
+    assert "Stimme: <b>weg</b> (aus der Marke)" in s and ">Bestellen</button>" in s
 
 
 def test_schritt3_api_marke_weg_bleibt_bestellbar(angemeldet, pult):

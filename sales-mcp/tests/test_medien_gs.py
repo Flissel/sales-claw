@@ -91,3 +91,52 @@ def test_collage_stueck_ist_reserviert(ordner):
                                   "xms-0c80e26a-2-01.jpg", "ms-0c80e26a.jpg"])
 def test_nur_die_exakte_form_ist_mailstueck(name):
     assert not medien.mailstueck(name)
+
+
+# Reels (Reels Stufe 1): Vorschaubild vid-<id8>-<slug>.jpg und Reel vid-<id8>-<slug>.mp4 im Erzeugt-Ordner.
+# Beide stehen nicht in /medien und nicht im Anhang-Picker, die Namen sind reserviert; die Reels-Seiten
+# zeigen sie ueber /medien/datei (pruefe/pruefe_anzeige). Das Vorschaubild geht nie als Anhang; das Reel-MP4
+# darf weiter in einen Beitrag (Reels-Seite "Als LinkedIn-Post vorbereiten" -> pruefe_anhang).
+VID_JPG, VID_MP4 = "vid-0123abcd-herbst-reel.jpg", "vid-0123abcd-herbst-reel.mp4"
+MP4 = b"\x00\x00\x00\x20ftypisom" + b"\x00" * 64
+
+
+@pytest.mark.parametrize("nur_anhaenge", [False, True])
+def test_liste_laesst_reel_dateien_weg(ordner, nur_anhaenge):
+    (ordner / VID_JPG).write_bytes(JPEG)
+    (ordner / VID_MP4).write_bytes(MP4)
+    assert [n for n, _ in medien.liste(nur_anhaenge)] == ["nl-12345678-x.jpg"]
+
+
+def test_reel_dateien_bleiben_anzeigbar(ordner):
+    (ordner / VID_JPG).write_bytes(JPEG)
+    (ordner / VID_MP4).write_bytes(MP4)
+    for n in (VID_JPG, VID_MP4):
+        assert medien.pruefe(n) == (n, None)
+        assert medien.pruefe_anzeige(n) == (n, None)
+
+
+def test_reel_vorschaubild_nie_als_anhang(ordner):
+    (ordner / VID_JPG).write_bytes(JPEG)
+    basis, fehler = medien.pruefe_anhang(VID_JPG)
+    assert basis is None and "Vorschaubild" in fehler
+
+
+def test_reel_mp4_bleibt_fuer_den_beitrag(ordner):
+    (ordner / VID_MP4).write_bytes(MP4)
+    assert medien.pruefe_anhang(VID_MP4) == (VID_MP4, None)
+
+
+def test_reel_namen_sind_reserviert(ordner):
+    for n in (VID_JPG, VID_MP4):
+        assert medien.pruefe_neuen_namen(n)[0] is None and medien.verborgen(n)
+    stamm, endung = medien.anhang_name(VID_JPG)
+    assert stamm + endung != VID_JPG and not medien.verborgen(stamm + endung)
+    assert medien.pruefe_neuen_namen("vid-urlaub.jpg") == ("vid-urlaub.jpg", None)
+
+
+@pytest.mark.parametrize("name", ["vid-0123ABCD-x.jpg", "vid-0123abc-x.jpg", "vid-0123abcd-x.png",
+                                  "xvid-0123abcd-x.jpg", "vid-0123abcd-.jpg", "vid-0123abcd-X.mp4",
+                                  "vid-0123abcd-" + "a" * 41 + ".jpg"])
+def test_nur_die_exakte_form_ist_reeldatei(name):
+    assert not medien.reeldatei(name)
