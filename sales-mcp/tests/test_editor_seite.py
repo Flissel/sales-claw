@@ -1980,7 +1980,7 @@ def test_vorlagen_json_nutzt_firma_des_newsletters(angemeldet, pult):
     assert r.status_code == 200
     assert ("GET", "/vorlagen?mandant=fin2gether&status=freigegeben", None) in pult.aufrufe
     assert r.json() == {"vorlagen": [{"name": "leer", "beschreibung": "Leere Vorlage", "fassung": 1,
-                                      "format": "bloecke"}]}
+                                      "format": "bloecke", "neu": True}]}
 
 
 def test_vorlagen_json_ohne_firma_422_und_unsaubere_namen_fallen_weg(angemeldet, pult, monkeypatch):
@@ -2292,11 +2292,20 @@ def test_galerie_vorlagen_nicht_lesbar_bleibt_wie_bisher(angemeldet, pult, monke
     assert r.status_code == 200 and "Neuer Newsletter aus Vorlage" in r.text
 
 
-def test_vorlagen_json_nur_collagen_blendet_block_vorlagen_aus(angemeldet, pult, monkeypatch):
+def test_vorlagen_json_nur_collagen_block_vorlagen_bleiben_zum_anwenden(angemeldet, pult, monkeypatch):
+    """Gesamtpruefung Stufe 5: mit einer freigegebenen Collage-Vorlage bleiben Block-Vorlagen fuer "Auf diesen
+    Entwurf anwenden" (bestehende Block-Entwuerfe) - nur "neu" ist bei ihnen aus."""
     _vorlagen_falsch(monkeypatch, pult, [BLOCK_V, COLLAGE_V])
     r = angemeldet.get(f"/marketing/editor/{IID}/vorlagen.json", headers=HOST)
-    assert r.json() == {"vorlagen": [{"name": "split", "beschreibung": "Split mit Bild", "fassung": 2,
-                                      "format": "seite"}]}
+    assert r.json() == {"vorlagen": [
+        {"name": "split", "beschreibung": "Split mit Bild", "fassung": 2, "format": "seite", "neu": True},
+        {"name": "leer", "beschreibung": "Leere Vorlage", "fassung": 1, "format": "bloecke", "neu": False}]}
+
+
+def test_vorlagen_json_ohne_collage_vorlage_block_vorlagen_mit_neu(angemeldet, pult, monkeypatch):
+    _vorlagen_falsch(monkeypatch, pult, [BLOCK_V])
+    r = angemeldet.get(f"/marketing/editor/{IID}/vorlagen.json", headers=HOST)
+    assert [(v["name"], v["neu"]) for v in r.json()["vorlagen"]] == [("leer", True)]
 
 
 def test_editor_vorlage_bild_format_seite(angemeldet, pult):
@@ -2341,7 +2350,8 @@ def test_pruefung_ohne_fassung_fragt_die_neueste(angemeldet, pult, monkeypatch):
     assert ("GET", ziel, None) in pult.aufrufe
 
 
-@pytest.mark.parametrize("q", ["?fassung=0", "?fassung=abc", "?fassung=-1", "?fassung=1.5"])
+@pytest.mark.parametrize("q", ["?fassung=0", "?fassung=abc", "?fassung=-1", "?fassung=1.5", "?fassung=²",
+                               "?fassung=%C2%B2", "?fassung=%D9%A3", "?fassung=01", "?fassung=1234567890"])
 def test_pruefung_fassung_ungueltig_422_ohne_aufruf(angemeldet, pult, q):
     assert angemeldet.get(PRUEFUNG + q, headers=HOST).status_code == 422
     assert not any("/pruefung" in a[1] for a in pult.aufrufe)
@@ -2372,5 +2382,49 @@ def test_pruefung_ohne_anmeldung_kein_aufruf(pult, monkeypatch):
     monkeypatch.setattr(ui, "UI_SESSION_SECRET", "test-geheimnis-nur-fuer-die-suite")
     c = TestClient(ui.app)
     r = c.get(PRUEFUNG, headers=HOST, follow_redirects=False)
-    assert r.status_code != 200      # ohne Anmeldung (oder ohne Geheimnis) nie die Befunde
+    assert r.status_code == 303 and r.headers["location"] == "/login"     # ohne Anmeldung nie die Befunde
     assert not any("/pruefung" in a[1] for a in pult.aufrufe)
+
+
+# --- Gesamtpruefung Stufe 5 ---
+
+VORSCHLAG_ALLE = {**VORSCHLAG_V, "fuer_alle": True, "entschieden_von": None, "entschieden_am": None}
+
+
+def test_vorschlag_fuer_alle_nennt_die_folge(angemeldet, pult, monkeypatch):
+    _vorlagen_falsch(monkeypatch, pult, [BLOCK_V], [VORSCHLAG_ALLE, {**VORSCHLAG_V, "name": "eigen"}])
+    s = angemeldet.get("/marketing/vorlagen", headers=HOST).text
+    assert s.count("gilt für alle Firmen – danach entstehen neue Newsletter nur noch als Collage") == 1
+    vorne = s.index("gilt für alle Firmen")
+    assert s.index("Schrift-Plakat") < vorne < s.index('name="urteil" value="freigeben"')
+
+
+def test_entschiedene_vorlage_zeigt_wer_und_wann(angemeldet, pult, monkeypatch):
+    v = {**COLLAGE_V, "fuer_alle": True, "entschieden_von": "Felix <Admin>", "entschieden_am": "2026-10-21 09:15:00+00"}
+    _vorlagen_falsch(monkeypatch, pult, [v, {**COLLAGE_V, "name": "alt", "entschieden_am": "kaputt"}])
+    s = angemeldet.get("/marketing/vorlagen", headers=HOST).text
+    assert "entschieden von Felix &lt;Admin&gt; am 21.10.2026" in s and "<Admin>" not in s
+    assert s.count("entschieden von") == 1                  # ohne lesbare Angaben kein Text
+
+
+@pytest.mark.parametrize("roh,erwartet", [
+    ({"entschieden_von": "Mira", "entschieden_am": "2026-10-21T09:15:00+00:00"}, "entschieden von Mira am 21.10.2026"),
+    ({"entschieden_von": "Mira", "entschieden_am": None}, "entschieden von Mira"),
+    ({"entschieden_von": None, "entschieden_am": "2026-10-21 09:15:00+00"}, ""),
+    ({"entschieden_von": "  ", "entschieden_am": "2026-10-21"}, ""),
+    ({}, ""), ({"entschieden_von": 5}, "")])
+def test_entschieden_text(roh, erwartet):
+    assert ui_editor.entschieden_text(roh) == erwartet
+
+
+def test_vorlage_entscheiden_nur_rolle_freigeben(angemeldet, pult):
+    """Rolle lesen darf die Seite sehen, aber nicht entscheiden (403, kein Aufruf der API)."""
+    server._q("insert into benutzer (name, rolle, passwort_hash, aktiv) values (%s,%s,%s,true)",
+              ("leo", "lesen", ui._passwort_hashen("anderes-pferd-7")))
+    c = TestClient(ui.app)
+    assert c.post("/login", data={"name": "leo", "passwort": "anderes-pferd-7", "csrf": ui.CSRF_TOKEN},
+                  headers=HOST, follow_redirects=False).status_code == 303
+    r = c.post("/marketing/vorlage-entscheiden", headers=HOST, follow_redirects=False,
+               data={"csrf": ui.CSRF_TOKEN, "name": "plakat", "urteil": "freigeben"})
+    assert r.status_code == 403
+    assert not any("/entscheiden" in a[1] for a in pult.aufrufe)

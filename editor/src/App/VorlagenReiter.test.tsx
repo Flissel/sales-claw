@@ -14,6 +14,7 @@ import {
   AngelegtHinweis,
   anwendenSperre,
   anwendenText,
+  NUR_ANWENDEN,
   titelFehler,
   VorlagenListe,
 } from './VorlagenReiter';
@@ -27,10 +28,10 @@ const start = {
 } as Start;
 
 const VORLAGEN: VorlageInfo[] = [
-  { name: 'klassik', beschreibung: 'Ruhig und klar, mit großem Kopfbild', fassung: 3, format: 'bloecke' },
-  { name: 'studio', beschreibung: 'Dunkel und kräftig', fassung: 1, format: 'bloecke' },
+  { name: 'klassik', beschreibung: 'Ruhig und klar, mit großem Kopfbild', fassung: 3, format: 'bloecke', neu: true },
+  { name: 'studio', beschreibung: 'Dunkel und kräftig', fassung: 1, format: 'bloecke', neu: true },
 ];
-const COLLAGE: VorlageInfo = { name: 'split', beschreibung: 'Split mit Bild', fassung: 2, format: 'seite' };
+const COLLAGE: VorlageInfo = { name: 'split', beschreibung: 'Split mit Bild', fassung: 2, format: 'seite', neu: true };
 
 function antwort(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -232,5 +233,33 @@ describe('Reiter Vorlagen: Collage-Vorlagen (Stufe 5)', () => {
     expect(html).toContain('Logo &lt;fehlt&gt;');
     expect(html).toContain('Bild für motiv1 fehlt');
     expect(html).toContain('ist angelegt');
+  });
+});
+
+describe('Reiter Vorlagen: nur noch Collagen (Gesamtprüfung Stufe 5)', () => {
+  const BLOCK_NUR_ANWENDEN: VorlageInfo = { ...VORLAGEN[0], neu: false };
+
+  it('mit freigegebener Collage-Vorlage bleibt die Block-Vorlage zum Anwenden, nur „Als neuer Entwurf“ fehlt', () => {
+    const html = liste({ vorlagen: [COLLAGE, BLOCK_NUR_ANWENDEN] });
+    const block = html.slice(html.indexOf('>Klassik<'));
+    expect(block).toContain('Auf diesen Entwurf anwenden …');
+    expect(block).not.toContain('Als neuer Entwurf');
+    expect(block).toContain(NUR_ANWENDEN);
+    // die Collage-Vorlage davor bietet weiter „Als neuer Entwurf“
+    expect(html.slice(0, html.indexOf('>Klassik<'))).toContain('Als neuer Entwurf');
+    expect(html.match(/Als neuer Entwurf/g)?.length).toBe(1);
+  });
+
+  it('Block-Vorlage mit neu behält beide Wege und keinen Hinweis', () => {
+    const html = liste({ vorlagen: [VORLAGEN[0]] });
+    expect(html).toContain('Als neuer Entwurf');
+    expect(html).toContain('Auf diesen Entwurf anwenden …');
+    expect(html).not.toContain(NUR_ANWENDEN);
+  });
+
+  it('Anwenden-Sperren gelten auch für Block-Vorlagen ohne „neu“', () => {
+    expect(liste({ vorlagen: [BLOCK_NUR_ANWENDEN], ungespeichert: true })).toMatch(
+      /<button[^>]*disabled=""[^>]*>Auf diesen Entwurf anwenden …/,
+    );
   });
 });

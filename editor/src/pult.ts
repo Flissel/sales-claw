@@ -541,7 +541,9 @@ function grundAus(j: Record<string, unknown>, standard: string): string {
 }
 
 // format "seite" = Collage-Vorlage (Stufe 5): legt eine Collage an, laesst sich nicht auf Bloecke anwenden.
-export type VorlageInfo = { name: string; beschreibung: string; fassung: number; format: 'seite' | 'bloecke' };
+// neu: "Als neuer Entwurf" angeboten? Mit einer freigegebenen Collage-Vorlage nicht mehr fuer Block-Vorlagen -
+// sie bleiben zum Anwenden auf bestehende Block-Entwuerfe (Stufe 5). Fehlt das Feld (aelteres sales-ui): ja.
+export type VorlageInfo = { name: string; beschreibung: string; fassung: number; format: 'seite' | 'bloecke'; neu: boolean };
 
 const VORLAGEN_FEHLEN = 'Vorlagen sind hier noch nicht eingerichtet';
 
@@ -561,6 +563,7 @@ export async function vorlagenListe(s: Start): Promise<VorlageInfo[] | null> {
               beschreibung: typeof v.beschreibung === 'string' ? v.beschreibung : '',
               fassung: typeof v.fassung === 'number' ? v.fassung : 0,
               format: v.format === 'seite' ? ('seite' as const) : ('bloecke' as const),
+              neu: v.neu !== false,
             },
           ]
         : [],

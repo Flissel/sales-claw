@@ -5,7 +5,14 @@ import { describe, expect, it } from 'vitest';
 import type { Befund } from '../../pult';
 import { FARBE } from '../Gestaltung/gestaltungStil';
 
-import SeitePruefung, { befundeOrdnen, befundZusammenfassung, KEINE_BEFUNDE, type PruefStand } from './SeitePruefung';
+import SeitePruefung, {
+  befundeOrdnen,
+  befundeVeraltet,
+  befundZusammenfassung,
+  KEINE_BEFUNDE,
+  veraltetText,
+  type PruefStand,
+} from './SeitePruefung';
 
 const BEFUNDE: Befund[] = [
   { schwere: 'weich', punkt: 'seite', satz: 'Kein Knopf auf der Seite' },
@@ -14,8 +21,10 @@ const BEFUNDE: Befund[] = [
 ];
 
 const leer = () => undefined;
-const zeigen = (stand: PruefStand) =>
-  renderToStaticMarkup(<SeitePruefung stand={stand} ebenen={new Set(['text1', 'bild1'])} onWaehlen={leer} onSchliessen={leer} />);
+const zeigen = (stand: PruefStand, veraltet = false) =>
+  renderToStaticMarkup(
+    <SeitePruefung stand={stand} veraltet={veraltet} ebenen={new Set(['text1', 'bild1'])} onWaehlen={leer} onSchliessen={leer} />,
+  );
 
 // MUI schreibt Farben als rgb(...) oder hex - hier reicht die Hex-Form im Stil.
 function rgb(hex: string): string {
@@ -25,7 +34,7 @@ function rgb(hex: string): string {
 
 describe('Prüfung in der rechten Spalte', () => {
   it('harte Befunde zuerst in der Fehlerfarbe, weiche gedämpft', () => {
-    const html = zeigen({ art: 'befunde', befunde: BEFUNDE });
+    const html = zeigen({ art: 'befunde', befunde: BEFUNDE, fassung: 4 });
     const hart = html.indexOf('Kontrast 2,1:1');
     expect(hart).toBeGreaterThan(-1);
     expect(hart).toBeLessThan(html.indexOf('Kein Knopf'));
@@ -41,12 +50,12 @@ describe('Prüfung in der rechten Spalte', () => {
   });
 
   it('nur Befunde zu vorhandenen Ebenen sind wählbar', () => {
-    const html = zeigen({ art: 'befunde', befunde: BEFUNDE });
+    const html = zeigen({ art: 'befunde', befunde: BEFUNDE, fassung: 4 });
     expect(html.match(/<button[^>]*title="Ebene auswählen"/g)?.length).toBe(1);
   });
 
   it('ohne Befunde, beim Laden und bei Fehlern: Text', () => {
-    expect(zeigen({ art: 'befunde', befunde: [] })).toContain(KEINE_BEFUNDE);
+    expect(zeigen({ art: 'befunde', befunde: [], fassung: 4 })).toContain(KEINE_BEFUNDE);
     expect(zeigen({ art: 'laedt' })).toContain('Wird geprüft …');
     expect(zeigen({ art: 'fehler', grund: 'Chromium ist gerade beschäftigt' })).toContain('Chromium ist gerade beschäftigt');
   });
@@ -57,5 +66,25 @@ describe('Prüfung in der rechten Spalte', () => {
     expect(befundZusammenfassung([BEFUNDE[0]])).toBe('1 Hinweis');
     expect(befundZusammenfassung([])).toBe('');
     expect(befundeOrdnen(BEFUNDE).map((b) => b.schwere)).toEqual(['hart', 'weich', 'weich']);
+  });
+});
+
+describe('Prüfung: welche Fassung (Gesamtprüfung Stufe 5)', () => {
+  it('nennt die geprüfte Fassung', () => {
+    expect(zeigen({ art: 'befunde', befunde: BEFUNDE, fassung: 4 })).toContain('Prüfung · Fassung 4');
+    expect(zeigen({ art: 'laedt' })).not.toContain('Fassung');
+  });
+
+  it('nach einer Änderung: Hinweis, dass die Befunde für die alte Fassung gelten', () => {
+    const stand: PruefStand = { art: 'befunde', befunde: BEFUNDE, fassung: 4 };
+    expect(befundeVeraltet(stand, false, 4)).toBe(false);
+    expect(befundeVeraltet(stand, true, 4)).toBe(true);
+    expect(befundeVeraltet(stand, false, 5)).toBe(true);
+    expect(befundeVeraltet({ art: 'laedt' }, true, 4)).toBe(false);
+    expect(zeigen(stand)).not.toContain('data-veraltet');
+    const html = zeigen(stand, true);
+    expect(html).toContain('data-veraltet');
+    expect(html).toContain(veraltetText(4));
+    expect(veraltetText(4)).toBe('Die Seite wurde seither geändert – die Befunde gelten für Fassung 4. Bitte erneut prüfen.');
   });
 });

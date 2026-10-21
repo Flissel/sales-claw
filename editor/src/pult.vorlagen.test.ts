@@ -29,15 +29,17 @@ describe('vorlagenListe', () => {
             { name: '', beschreibung: 'leer', fassung: 1 },
             { name: 'studio' },
             { name: 'split', beschreibung: 'Collage', fassung: 2, format: 'seite' },
+            { name: 'leer', beschreibung: '', fassung: 1, format: 'bloecke', neu: false },
             'quatsch',
           ],
         }),
       ),
     );
     expect(await vorlagenListe(start)).toEqual([
-      { name: 'klassik', beschreibung: 'Ruhig und klar', fassung: 3, format: 'bloecke' },
-      { name: 'studio', beschreibung: '', fassung: 0, format: 'bloecke' },
-      { name: 'split', beschreibung: 'Collage', fassung: 2, format: 'seite' },
+      { name: 'klassik', beschreibung: 'Ruhig und klar', fassung: 3, format: 'bloecke', neu: true },
+      { name: 'studio', beschreibung: '', fassung: 0, format: 'bloecke', neu: true },
+      { name: 'split', beschreibung: 'Collage', fassung: 2, format: 'seite', neu: true },
+      { name: 'leer', beschreibung: '', fassung: 1, format: 'bloecke', neu: false },
     ]);
   });
 

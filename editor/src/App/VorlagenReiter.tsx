@@ -23,6 +23,7 @@ import { Start, vorlageAlsNeu, vorlageAnwenden, VorlageInfo, vorlagenListe } fro
 import { LIEGT_ZUR_FREIGABE, pultStore } from '../pultZustand';
 
 export const TITEL_MAX = 200;
+export const NUR_ANWENDEN = 'Nur zum Anwenden auf bestehende Entwürfe – neue Newsletter entstehen als Collage';
 // Mini-Vorschau: die Vorlage wird 600 px breit gezeichnet und auf 0,34 verkleinert.
 const RAHMEN_BREITE = 600;
 const MASSSTAB = 0.34;
@@ -208,19 +209,26 @@ export function VorlagenListe({ start, vorlagen, ungespeichert, nurLesen, onAnwe
                 Collage-Vorlage – legt eine neue Collage an
               </Typography>
             )}
+            {!v.neu && (
+              <Typography variant="caption" color="text.secondary" component="p">
+                {NUR_ANWENDEN}
+              </Typography>
+            )}
             {v.beschreibung && (
               <Typography variant="caption" color="text.secondary" component="p">
                 {v.beschreibung}
               </Typography>
             )}
             <Stack spacing={0.5} sx={{ mt: 1 }} alignItems="flex-start">
-              <Tooltip title={neuSperre ?? ''}>
-                <span>
-                  <Button size="small" variant="outlined" disabled={neuSperre !== null} onClick={() => onAlsNeu(v.name)}>
-                    Als neuer Entwurf
-                  </Button>
-                </span>
-              </Tooltip>
+              {v.neu && (
+                <Tooltip title={neuSperre ?? ''}>
+                  <span>
+                    <Button size="small" variant="outlined" disabled={neuSperre !== null} onClick={() => onAlsNeu(v.name)}>
+                      Als neuer Entwurf
+                    </Button>
+                  </span>
+                </Tooltip>
+              )}
               {/* Eine Collage-Vorlage laesst sich nicht auf einen Block-Newsletter anwenden (die API lehnt ab). */}
               {v.format !== 'seite' && (
                 <Tooltip title={sperre ?? ''}>

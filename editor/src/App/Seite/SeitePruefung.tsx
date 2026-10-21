@@ -9,9 +9,22 @@ import { Box, ButtonBase, CircularProgress, IconButton, Typography } from '@mui/
 import type { Befund } from '../../pult';
 import { FARBE, FOKUS, uebergang } from '../Gestaltung/gestaltungStil';
 
-export type PruefStand = { art: 'laedt' } | { art: 'befunde'; befunde: Befund[] } | { art: 'fehler'; grund: string };
+// fassung: die geprüfte Fassung (die Liste nennt sie; ist die Seite seither anders, sagt sie es).
+export type PruefStand =
+  | { art: 'laedt' }
+  | { art: 'befunde'; befunde: Befund[]; fassung: number }
+  | { art: 'fehler'; grund: string };
 
 export const KEINE_BEFUNDE = 'Keine Befunde – die Collage kann eingereicht werden.';
+
+export function veraltetText(fassung: number): string {
+  return `Die Seite wurde seither geändert – die Befunde gelten für Fassung ${fassung}. Bitte erneut prüfen.`;
+}
+
+// Gelten die Befunde nicht mehr für das, was man sieht? (ungespeichert oder inzwischen eine andere Fassung)
+export function befundeVeraltet(stand: PruefStand, ungespeichert: boolean, basis: number): boolean {
+  return stand.art === 'befunde' && (ungespeichert || stand.fassung !== basis);
+}
 
 // "2 harte, 1 Hinweis" - leer, wenn es nichts gibt.
 export function befundZusammenfassung(befunde: Befund[]): string {
@@ -31,17 +44,18 @@ export function befundeOrdnen(befunde: Befund[]): Befund[] {
 
 type Props = {
   stand: PruefStand;
+  veraltet: boolean;
   ebenen: ReadonlySet<string>;
   onWaehlen: (id: string) => void;
   onSchliessen: () => void;
 };
 
-export default function SeitePruefung({ stand, ebenen, onWaehlen, onSchliessen }: Props) {
+export default function SeitePruefung({ stand, veraltet, ebenen, onWaehlen, onSchliessen }: Props) {
   return (
     <Box component="section" aria-label="Prüfung" sx={{ px: 2, pt: 2, pb: 1.5, borderBottom: `1px solid ${FARBE.linie}` }}>
       <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
         <Typography component="h3" sx={{ flex: 1, fontSize: 11, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase', color: FARBE.gedaempft }}>
-          Prüfung
+          {stand.art === 'befunde' ? `Prüfung · Fassung ${stand.fassung}` : 'Prüfung'}
         </Typography>
         <IconButton size="small" aria-label="Prüfung schließen" onClick={onSchliessen}>
           <CloseRounded sx={{ fontSize: 16 }} />
@@ -51,6 +65,11 @@ export default function SeitePruefung({ stand, ebenen, onWaehlen, onSchliessen }
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, color: FARBE.gedaempft, fontSize: 13 }}>
           <CircularProgress size={14} color="inherit" /> Wird geprüft …
         </Box>
+      )}
+      {stand.art === 'befunde' && veraltet && (
+        <Typography data-veraltet="" sx={{ fontSize: 12, color: FARBE.fehler, mb: 1 }}>
+          {veraltetText(stand.fassung)}
+        </Typography>
       )}
       {stand.art === 'fehler' && <Typography sx={{ fontSize: 13, color: FARBE.fehler }}>{stand.grund}</Typography>}
       {stand.art === 'befunde' && stand.befunde.length === 0 && (

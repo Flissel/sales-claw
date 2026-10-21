@@ -65,6 +65,9 @@ WARNUNG_MAX, WARNUNGEN_MAX = 500, 20
 BEFUND_SATZ_MAX, BEFUNDE_MAX, PUNKT_MAX = 500, 100, 64
 PRUEFUNG_WEG = "Prüfung gerade nicht möglich"
 NUR_COLLAGEN_HINWEIS = "Neue Newsletter entstehen als Collage – bitte eine Collage-Vorlage wählen."
+FUER_ALLE_HINWEIS = "gilt für alle Firmen – danach entstehen neue Newsletter nur noch als Collage"
+FASSUNG_ZAHL = re.compile(r"[1-9][0-9]{0,8}")      # nur ASCII-Ziffern ("²".isdigit() waere wahr)
+ENTSCHIEDEN_VON_MAX = 120
 
 
 def vorlagen_teilen(liste) -> tuple[list[dict], list[dict]]:
@@ -72,6 +75,22 @@ def vorlagen_teilen(liste) -> tuple[list[dict], list[dict]]:
     gut = [v for v in (liste if isinstance(liste, list) else [])
            if isinstance(v, dict) and isinstance(v.get("name"), str) and VORLAGE_NAME.match(v["name"])]
     return [v for v in gut if v.get("format") == "seite"], [v for v in gut if v.get("format") != "seite"]
+
+
+def entschieden_text(v) -> str:
+    """ "entschieden von X am TT.MM.JJJJ" aus entschieden_von/entschieden_am der API (082); ohne Namen "", ohne
+    lesbares Datum nur der Name."""
+    von = v.get("entschieden_von") if isinstance(v, dict) else None
+    if not isinstance(von, str) or not von.strip() or len(von) > ENTSCHIEDEN_VON_MAX:
+        return ""
+    text = f"entschieden von {von.strip()}"
+    am = v.get("entschieden_am")
+    if isinstance(am, str):
+        try:
+            text += " am " + datetime.date.fromisoformat(am.strip()[:10]).strftime("%d.%m.%Y")
+        except ValueError:
+            pass
+    return text
 
 
 def vorlage_bild_format(request) -> str:
@@ -864,7 +883,8 @@ def routen(ui) -> list:
                     f'<iframe class="layout-bild" sandbox tabindex="-1" loading="lazy" title="Vorschau {e(beschreibung)}" '
                     f'src="/marketing/vorlage-bild/{e(n)}{"?format=seite" if seite else ""}"></iframe></div>'
                     f'<b>{e(beschreibung)}</b><span class="meta">{e(n)} &middot; '
-                    f'{"Collage" if seite else "Blöcke"} &middot; Fassung {int(v.get("fassung") or 1)}</span>')
+                    f'{"Collage" if seite else "Blöcke"} &middot; Fassung {int(v.get("fassung") or 1)}</span>'
+                    + (f'<span class="meta">{e(entschieden)}</span>' if (entschieden := entschieden_text(v)) else ""))
 
         def karte(v: dict) -> str:
             return (f'<div class="layout-karte">{rahmen(v)}'
@@ -882,7 +902,9 @@ def routen(ui) -> list:
 
         def vorschlag(v: dict) -> str:
             n = str(v["name"])
-            return (f'<div class="layout-karte">{rahmen(v)}'
+            # Freigeben einer Vorlage fuer alle schaltet bei JEDER Firma auf "nur noch Collagen" - vorher sagen.
+            folge = f'<span class="meta"><b>{e(FUER_ALLE_HINWEIS)}</b></span>' if v.get("fuer_alle") is True else ""
+            return (f'<div class="layout-karte">{rahmen(v)}{folge}'
                     + entscheiden_knopf(n, "freigeben", "Freigeben", ' class="primaer"')
                     + entscheiden_knopf(n, "zurueckziehen", "Verwerfen", "") + '</div>')
 
@@ -1050,10 +1072,12 @@ def routen(ui) -> list:
         if not isinstance(liste, list):
             return json_grund(503, "Vorlagen gerade nicht abrufbar")
         collagen, bloecke = vorlagen_teilen(liste)
-        # Nur noch Collagen: mit einer freigegebenen Collage-Vorlage bietet der Reiter keine Block-Vorlagen an.
+        # Nur noch Collagen: mit einer freigegebenen Collage-Vorlage entstehen aus Block-Vorlagen keine NEUEN
+        # Entwuerfe mehr (neu: false) - auf bestehende Block-Entwuerfe anwenden bleibt (Entscheidung 11).
         vorlagen = [{"name": v["name"], "beschreibung": str(v.get("beschreibung") or ""),
-                     "fassung": v.get("fassung"), "format": "seite" if v.get("format") == "seite" else "bloecke"}
-                    for v in (collagen if collagen else bloecke)]
+                     "fassung": v.get("fassung"), "format": "seite" if v.get("format") == "seite" else "bloecke",
+                     "neu": v.get("format") == "seite" or not collagen}
+                    for v in collagen + bloecke]
         return JSONResponse({"vorlagen": vorlagen}, headers={"Cache-Control": "no-store"})
 
     @ui._gesichert_seite
@@ -1143,7 +1167,7 @@ def routen(ui) -> list:
         roh = request.query_params.get("fassung")
         pfad = f"/inhalte/{iid}/pruefung"
         if roh is not None:
-            if not roh.isdigit() or len(roh) > 9 or int(roh) < 1:
+            if not FASSUNG_ZAHL.fullmatch(roh):
                 return json_grund(422, "fassung muss eine ganze Zahl ab 1 sein")
             pfad += f"?fassung={int(roh)}"
         try:

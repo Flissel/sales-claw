@@ -29,7 +29,7 @@ import { FARBE, gestaltungThema, KOPF_HOEHE, LINKS_BREITE, RECHTS_BREITE, UI_SCH
 import SeiteEbenen from './SeiteEbenen';
 import SeiteEigenschaften from './SeiteEigenschaften';
 import SeiteFlaeche from './SeiteFlaeche';
-import SeitePruefung, { type PruefStand } from './SeitePruefung';
+import SeitePruefung, { befundeVeraltet, type PruefStand } from './SeitePruefung';
 import SeitenChat from './SeitenChat';
 import { useSeiteTasten } from './seiteTasten';
 import { useSeite } from './useSeite';
@@ -212,11 +212,11 @@ function Arbeitsplatz({ start, anfang, basis, setBasis, versteckt }: Arbeitsplat
     return null;
   };
 
-  // Befunde einer Fassung (ohne Fassung: die neueste) in die rechte Spalte.
-  const pruefungZeigen = async (fassung?: number) => {
+  // Befunde einer Fassung in die rechte Spalte (beim gescheiterten Einreichen: die gespeicherte = neueste).
+  const pruefungZeigen = async (fassung: number) => {
     setPruefung({ art: 'laedt' });
     const r = await pruefungLaden(start, fassung);
-    setPruefung(r.ok ? { art: 'befunde', befunde: r.befunde } : { art: 'fehler', grund: r.grund });
+    setPruefung(r.ok ? { art: 'befunde', befunde: r.befunde, fassung } : { art: 'fehler', grund: r.grund });
   };
 
   // "Prüfen": geprüft wird immer eine gespeicherte Fassung - Ungespeichertes wird vorher gespeichert.
@@ -240,7 +240,7 @@ function Arbeitsplatz({ start, anfang, basis, setBasis, versteckt }: Arbeitsplat
       setReicht(false);
       setMeldung(m);
       // Abgelehnt (z. B. harter Befund): die Befunde der neuesten Fassung gleich daneben zeigen.
-      if (m?.art === 'error' && start.pruefung_url) void pruefungZeigen();
+      if (m?.art === 'error' && start.pruefung_url) void pruefungZeigen(pultStore.getState().basis);
     });
   };
 
@@ -383,6 +383,7 @@ function Arbeitsplatz({ start, anfang, basis, setBasis, versteckt }: Arbeitsplat
           {pruefung && (
             <SeitePruefung
               stand={pruefung}
+              veraltet={befundeVeraltet(pruefung, ungespeichert, basis)}
               ebenen={new Set(z.seite.ebenen.map((e) => e.id))}
               onWaehlen={(id) => {
                 if (!gesperrt) z.waehlen(id);
