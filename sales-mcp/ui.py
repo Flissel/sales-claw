@@ -210,6 +210,7 @@ import mailadresse
 import laden_marke
 import marketing_pult
 import ui_editor
+import ui_freigabe_bewerbung
 import ui_freigabe_newsletter
 import ui_empfehlungen
 import ui_newsletter_einwilligung
@@ -555,8 +556,12 @@ _KALENDER_ROLLE_PFADE = ("/team/kalender", "/kalender", "/static/kalender",
 # "/team/struktur" (20.10.2026, Struktur-Graph): zeigt, wer welchen Laden
 # eingeladen hat, und haengt Laeden um - liest und schreibt admin_auftraege,
 # die es nur im Basis-Laden gibt. Dieselbe Huerde wie "Laden anlegen".
+# "/freigaben/bewerbung" (20.10.2026, Hermes H1): Freigeben/Nicht bewerben/Feedback
+# fuer die Bewerbungen des Betreibers ueber die Pult-API seines Bewerbungs-Bots -
+# nur im eigenen Laden des Betreibers, nie in einem zweiten.
 _ADMIN_BASIS_PFADE = ("/team/laden-anlegen", "/team/tailscale-einladen",
-                      "/marketing", "/freigaben/newsletter", "/team/struktur")
+                      "/marketing", "/freigaben/newsletter", "/team/struktur",
+                      "/freigaben/bewerbung")
 
 
 # Newsletter-Editor (29.09.2026): die abgeschottete Vorschau (sandbox, eigene
@@ -2036,10 +2041,13 @@ def _zaehler_abfragen() -> dict:
     # Aufgaben-Zaehler, damit Menue und Startseite dasselbe sagen.
     ergebnis["/"] = sum(offen.values())
     if "/freigaben" in offen:
-        # Eingereichte Marketing-Inhalte NUR hier im Menue-Zaehler, nicht in
-        # der Heute-Summe (R10); nur Zwischenspeicher, kein Netzwerk.
+        # Eingereichte Marketing-Inhalte und wartende Bewerbungen NUR hier im
+        # Menue-Zaehler, nicht in der Heute-Summe (R10); nur Zwischenspeicher,
+        # kein Netzwerk.
         extra = _versuch("/freigaben", lambda: offen["/freigaben"]
                          + ui_freigabe_newsletter.anzahl_offen(
+                             sys.modules[__name__])
+                         + ui_freigabe_bewerbung.anzahl_offen(
                              sys.modules[__name__]))
         if extra is not None:
             ergebnis["/freigaben"] = extra
@@ -3633,6 +3641,9 @@ async def inbox(request):
     teile.append("</section>")
     # Marketing (R7): eingereichte Inhalte aller Firmen und Arten.
     teile.append(await ui_freigabe_newsletter.abschnitt(
+        sys.modules[__name__], request))
+    # Bewerbungen (Hermes H1): was der Bewerbungs-Bot zur Freigabe vorlegt.
+    teile.append(await ui_freigabe_bewerbung.abschnitt(
         sys.modules[__name__], request))
     # KEIN Auto-Refresh mehr (Betreiber 03.09.2026: „ich bearbeite einen Text
     # und werde wie bei einem Reload in die Mitte der Seite gezogen") — auf
@@ -8401,6 +8412,7 @@ app = Starlette(routes=[
     *ui_reels.routen(sys.modules[__name__]),
     *ui_podcast.routen(sys.modules[__name__]),
     *ui_freigabe_newsletter.routen(sys.modules[__name__]),
+    *ui_freigabe_bewerbung.routen(sys.modules[__name__]),
     Route("/medien", medien),
     Route("/medien/bot", aktion_medien_bot, methods=["POST"]),
     Route("/medien/datei/{name}", medien_datei),

@@ -822,6 +822,12 @@ services:
       # nie. Leer = Pult zeigt "Marketing nicht verbunden".
       - MARKETING_PULT_URL=${MARKETING_PULT_URL:-}
       - MARKETING_PULT_KEY=${MARKETING_PULT_KEY:-}
+      # Bewerbungs-Pult (20.10.2026, Hermes H1): Adresse und Schluessel der
+      # Pult-API in der Zentrale des Bewerbungs-Bots (/api/pult). NUR in der
+      # Haupt-.env des Basis-Ladens setzen. Leer = kein Abschnitt
+      # "Bewerbungen" auf /freigaben.
+      - BEWERBUNG_PULT_URL=${BEWERBUNG_PULT_URL:-}
+      - BEWERBUNG_PULT_KEY=${BEWERBUNG_PULT_KEY:-}
       # Newsletter an Kontakte (15.10.2026, E4): dieser Laden sendet nur Newsletter dieser Marketing-Firma.
       - MARKETING_MANDANT=${MARKETING_MANDANT:-}
       # Aussehen je Laden (Paket C4, 19.10.2026, laden_marke.py): LADEN_MARKE waehlt die Firma, deren

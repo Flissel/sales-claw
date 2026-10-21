@@ -12,9 +12,7 @@ Faellt die API aus, zeigt der Abschnitt einen Hinweis - die Seite bleibt."""
 from __future__ import annotations
 
 import os
-import threading
 from functools import partial
-import time
 import urllib.parse
 from datetime import datetime, timezone
 
@@ -23,6 +21,7 @@ from starlette.responses import RedirectResponse
 from starlette.routing import Route
 
 import marketing_pult
+import pult_cache
 
 ARTEN = {"newsletter": "Newsletter", "post": "Post", "material": "Team-Material"}
 FORMATE = ("mail", "handy")
@@ -30,7 +29,6 @@ KOMMENTAR_MAX = 2000
 ERLEDIGT_MAX = 3            # erledigte Rueckmeldungen je Karte
 VERLAUF_MAX = 10
 OFFEN_MAX = 100
-ZAEHLER_ALTER_S = 60
 ZAEHLER_ZEITLIMIT_S = 2
 LESE_ZEITLIMIT_S = 3
 # Freigeben exportiert danach alle Flaechen x 3 Geraete auf der VM - wie die
@@ -41,24 +39,10 @@ UNKLAR_TITEL = "Ergebnis unklar – Seite neu laden"
 _EINGEREICHT = f"/freigaben?status=eingereicht&limit={OFFEN_MAX}"
 _ENTSCHIEDEN = f"/freigaben?status=entschieden&limit={VERLAUF_MAX}"
 
-_cache_lock = threading.Lock()
-_cache: dict = {"stand": None, "wert": 0, "ok": True}
-_laeuft = {"thread": None}
-
-
-def _cache_leeren() -> None:
-    with _cache_lock:
-        _cache.update(stand=None, wert=0, ok=True)
-
-
-def _merken(wert: int, ok: bool) -> None:
-    with _cache_lock:
-        _cache.update(stand=time.monotonic(), wert=wert, ok=ok)
-
-
-def _frisch() -> bool:
-    with _cache_lock:
-        return _cache["stand"] is not None and time.monotonic() - _cache["stand"] < ZAEHLER_ALTER_S
+# Zahl fuer den Menue-Zaehler und Ausgang der letzten Lesung, 60 s gueltig (pult_cache).
+_speicher = pult_cache.PultCache("freigabe-zaehler")
+_cache_leeren = _speicher.leeren
+_laeuft = _speicher.laeuft
 
 
 def sichtbar(ui) -> bool:
@@ -77,10 +61,13 @@ def _laden() -> int:
         antwort = marketing_pult.anfrage("GET", _EINGEREICHT, zeitlimit=ZAEHLER_ZEITLIMIT_S)
         liste = antwort.get("freigaben") if isinstance(antwort, dict) else None
         wert = len(liste) if isinstance(liste, list) else 0
-        _merken(wert, isinstance(liste, list))
+        _speicher.merken(wert, None if isinstance(liste, list) else "unbekannt")
+    except marketing_pult.PultFehler as f:
+        wert = 0
+        _speicher.merken(0, f.art)
     except Exception:  # noqa: BLE001 - ein Zaehler darf nie die Seite reissen
         wert = 0
-        _merken(0, False)
+        _speicher.merken(0, "fehler")
     return wert
 
 
@@ -90,17 +77,7 @@ def anzahl_offen(ui) -> int:
     Event-Loop). Ist der Speicher aelter als 60 s, stoesst ein Hintergrund-
     Thread die Auffrischung an; bis dahin gilt der alte Wert (leer => 0).
     Nicht sichtbar (s. sichtbar): 0, und es startet kein Thread."""
-    if not sichtbar(ui):
-        return 0
-    with _cache_lock:
-        wert = int(_cache["wert"])
-    if not _frisch():
-        t = _laeuft["thread"]
-        if t is None or not t.is_alive():
-            t = threading.Thread(target=_laden, daemon=True, name="freigabe-zaehler")
-            _laeuft["thread"] = t
-            t.start()
-    return wert
+    return _speicher.anzahl(_laden) if sichtbar(ui) else 0
 
 
 def _vor(iso) -> str:
@@ -246,20 +223,20 @@ async def abschnitt(ui, request=None) -> str:
         fmt = request.query_params["nl_format"]
     hinweis_weg = ('{k}</h2><p class="meta">Marketing gerade nicht erreichbar. '
                    'Sales läuft normal weiter.</p></section>')
-    if _frisch() and not _cache["ok"]:
+    if _speicher.frisch_fehler():
         return hinweis_weg.format(k=kopf)          # kuerzlich gescheitert: sofort
     try:
         offen = await _lesen(_EINGEREICHT)
-        _merken(len(offen), True)
+        _speicher.merken(len(offen))
         verlauf = await _lesen(_ENTSCHIEDEN)
     except marketing_pult.PultFehler as f:
-        _merken(0, False)
+        _speicher.merken(0, f.art)
         if f.art == "nicht_verbunden":
             return (f'{kopf}</h2><p class="meta">Marketing nicht verbunden. '
                     f'Sales läuft normal weiter.</p></section>')
         return hinweis_weg.format(k=kopf)
     except Exception:  # noqa: BLE001 - die Seite darf daran nie scheitern
-        _merken(0, False)
+        _speicher.merken(0, "fehler")
         return hinweis_weg.format(k=kopf)
     n = len(offen)
     teile = [f'{kopf}<span class="zaehler{" offen" if n else ""}">{n}</span></h2>',
