@@ -55,6 +55,8 @@ class Falsch:
                         "uebernahme_seit": None, "aktuell": None, "abschnitt_namen": list(NAMEN),
                         "faehigkeiten": FAEHIG, "runden_gesamt": 0}
         self.stimmen = ["eigene-a", "eigene-b", "eigene-c"]
+        self.einrichtungen = []          # GET /mandanten?einrichtung=1 (086)
+        self.chat_antwort = {"auftrag": "a1"}
 
     def anfrage(self, methode, pfad, daten=None, roh=False, zeitlimit=None):
         self.aufrufe.append((methode, pfad, daten))
@@ -71,10 +73,14 @@ class Falsch:
         if pfad == "/mandanten":
             return {"mandanten": [{"id": "vibemind", "name": "VibeMind", "aktiv": True},
                                   {"id": "fin2gether", "name": "fin2gether", "aktiv": True}]}
+        if pfad == "/mandanten?einrichtung=1":
+            return {"mandanten": list(self.einrichtungen)}
         if pfad.startswith("/marke?mandant="):
             return {**self.zustand, "mandant": urllib.parse.parse_qs(pfad.split("?", 1)[1])["mandant"][0]}
         if pfad == "/marke/chat":
-            return {"auftrag": "a1"}
+            return self.chat_antwort
+        if pfad.startswith("/marke/einrichtung/"):
+            return {"ok": True}
         if pfad == "/medien/zuordnung":
             return {"dateiname": daten["dateiname"], "mandant": daten["mandant"]}
         if pfad.endswith("/uebernehmen"):
@@ -1254,3 +1260,184 @@ def test_bearbeiten_schickt_stimme(angemeldet, pult):
     r = angemeldet.post("/marketing/marke/bearbeiten", headers=HOST, follow_redirects=False,
                         data={**basis, "stimme": "x" * 41})
     assert r.status_code == 422 and len(pult.nach("/marke/bearbeiten")) == 3
+
+
+# --- /marke_neu: Einrichtung einer neuen Marke (Plan 2026-10-21-marke-neu-skill, Task 8) -----------------
+
+BEFEHLE = [{"befehl": "/marke_neu", "beschreibung": "neue Marke einrichten"}]
+PROBE = {"id": "probe_gmbh", "name": "Probe GmbH", "aktiv": False, "einrichtung": "laeuft"}
+TITEL = ("Name und Webseite", "Pflichtangaben für Newsletter", "Wer und was", "Aussehen", "Stimme", "Belege",
+         "Zusammenfassung und Bestätigung")
+EINRICHTUNG = "/marketing/layouts?einrichtung=probe_gmbh"
+
+
+def _stand(abschliessbar=False):
+    return {"schritte": [{"nr": i, "titel": t, "erledigt": i <= 2, "offen": [] if i <= 2 else ["etwas"]}
+                         for i, t in enumerate(TITEL, 1)],
+            "naechster": 3, "abschliessbar": abschliessbar}
+
+
+def _in_einrichtung(pult, abschliessbar=False):
+    pult.einrichtungen = [dict(PROBE)]
+    pult.zustand.update({"name": "Probe GmbH", "einrichtung": "laeuft", "einrichtung_stand": _stand(abschliessbar),
+                         "befehle": BEFEHLE})
+
+
+def test_befehlszeile_unter_eingabe(angemeldet, pult):
+    pult.zustand["befehle"] = BEFEHLE
+    s = rumpf(seite(angemeldet))
+    assert "Befehle: /marke_neu – neue Marke einrichten" in s
+    assert s.index('name="nachricht"') < s.index("Befehle: /marke_neu")
+
+
+def test_senden_marke_neu_leitet_zur_einrichtung(angemeldet, pult):
+    pult.chat_antwort = {"auftrag": "a9", "einrichtung": {"id": "probe_gmbh", "name": "Probe GmbH",
+                                                          "fortgesetzt": False}}
+    r = angemeldet.post("/marketing/marke/senden", headers=HOST, follow_redirects=False,
+                        data={"csrf": ui.CSRF_TOKEN, "nachricht": "/marke_neu Probe GmbH https://probe.de"})
+    assert r.status_code == 303
+    assert r.headers["location"] == "/marketing/layouts?einrichtung=probe_gmbh&reiter=chat#ende"
+    d = pult.nach("/marke/chat")[-1][2]
+    assert d["von"] == "mira" and d["nachricht"] == "/marke_neu Probe GmbH https://probe.de"
+
+
+def test_senden_traegt_immer_von(angemeldet, pult):
+    angemeldet.post("/marketing/marke/senden", headers=HOST, follow_redirects=False,
+                    data={"csrf": ui.CSRF_TOKEN, "nachricht": "Hallo"})
+    assert pult.nach("/marke/chat")[-1][2]["von"] == "mira"
+
+
+def test_befehl_mit_anhang_abgewiesen_ohne_ablage(angemeldet, pult, medienordner):
+    r = angemeldet.post("/marketing/marke/senden", headers=HOST, follow_redirects=False,
+                        data={"csrf": ui.CSRF_TOKEN, "nachricht": "  /marke_neu Probe GmbH"},
+                        files=[("datei", ("logo.png", b"P" * 10, "image/png"))])
+    assert r.status_code == 422 and "Befehle bitte ohne Dateien senden" in r.text
+    assert list(medienordner.iterdir()) == []
+    assert pult.aufrufe == []
+
+
+def test_unbekannter_befehl_zeigt_grund(angemeldet, pult):
+    grund = "Unbekannter Befehl. Verfügbar: /marke_neu – neue Marke einrichten"
+    pult.fehler = marketing_pult.PultFehler("unbekannt", "400", {"detail": grund})
+    pult.fehler_pfad = "/marke/chat"
+    r = angemeldet.post("/marketing/marke/senden", headers=HOST,
+                        data={"csrf": ui.CSRF_TOKEN, "nachricht": "/gibtsnicht"})
+    assert r.status_code == 422 and grund in r.text
+
+
+def test_einrichtung_kopf_fortschritt_knoepfe(angemeldet, pult):
+    _in_einrichtung(pult)
+    r = seite(angemeldet, EINRICHTUNG)
+    s = rumpf(r)
+    assert r.status_code == 200
+    assert ("GET", "/marke?mandant=probe_gmbh") in [a[:2] for a in pult.aufrufe]
+    assert "Probe GmbH – in Einrichtung" in s
+    assert '<a href="/marketing/layouts">Zurück zu VibeMind</a>' in s
+    assert "Schritt 3 von 7" in s and "Name und Webseite" in s and "Zusammenfassung und Bestätigung" in s
+    assert "Einrichtung abbrechen" in s and "Marke anlegen" not in s
+    assert 'action="/marketing/mandant"' not in s      # der Umschalter setzt das Cookie - hier nicht
+    _in_einrichtung(pult, abschliessbar=True)
+    s = rumpf(seite(angemeldet, EINRICHTUNG))
+    assert "Marke anlegen" in s and "Einrichtung abbrechen" in s
+    assert 'action="/marketing/marke/einrichtung/abschliessen"' in s
+
+
+def test_formulare_tragen_einrichtung(angemeldet, pult):
+    _in_einrichtung(pult)
+    pult.zustand["vorschlag"] = VORSCHLAG
+    pult.zustand["auftraege"] = [{"id": "x", "nachricht": "n", "antwort": "a", "status": "fertig",
+                                  "vorschlag": VID, "erstellt_am": "2026-10-07T09:00:00"}]
+    feld = 'name="einrichtung" value="probe_gmbh"'
+    for pfad in (EINRICHTUNG, EINRICHTUNG + "&reiter=profil", EINRICHTUNG + "&bearbeiten=1"):
+        s = rumpf(seite(angemeldet, pfad))
+        formulare = s.split("<form")[1:]
+        assert formulare, pfad
+        for f in formulare:
+            assert feld in f[:f.index("</form>")], (pfad, f[:200])
+    s = rumpf(seite(angemeldet, EINRICHTUNG))
+    assert "einrichtung=probe_gmbh" in s[s.index("<iframe"):]     # die Vorschau zeigt dieselbe Firma
+    assert 'href="/marketing/layouts?einrichtung=probe_gmbh&amp;reiter=profil"' in s
+    p = rumpf(seite(angemeldet, EINRICHTUNG + "&reiter=profil"))
+    assert "einrichtung=probe_gmbh&amp;bearbeiten=1" in p
+
+
+def test_senden_in_einrichtung(angemeldet, pult):
+    _in_einrichtung(pult)
+    r = angemeldet.post("/marketing/marke/senden", headers=HOST, follow_redirects=False,
+                        data={"csrf": ui.CSRF_TOKEN, "nachricht": "Unsere Webseite ist probe.de",
+                              "einrichtung": "probe_gmbh"})
+    assert r.status_code == 303
+    assert r.headers["location"] == "/marketing/layouts?einrichtung=probe_gmbh&reiter=chat#ende"
+    assert pult.nach("/marke/chat")[-1][2]["mandant"] == "probe_gmbh"
+
+
+def test_cookie_auf_einrichtung_faellt_auf_vorgabe(angemeldet, pult):
+    _in_einrichtung(pult)
+    angemeldet.get("/marketing/layouts", headers=_mit_cookie(angemeldet, "probe_gmbh"))
+    assert ("GET", "/marke?mandant=vibemind") in [a[:2] for a in pult.aufrufe]
+    assert not any("mandant=probe_gmbh" in a[1] for a in pult.aufrufe)
+
+
+def test_get_mit_unbekannter_einrichtung_wie_ohne(angemeldet, pult):
+    r = seite(angemeldet, "/marketing/layouts?einrichtung=alt_weg")
+    assert r.status_code == 200
+    assert ("GET", "/marke?mandant=vibemind") in [a[:2] for a in pult.aufrufe]
+    assert "in Einrichtung" not in rumpf(r)
+
+
+def test_post_mit_veralteter_einrichtung_422(angemeldet, pult):
+    r = angemeldet.post("/marketing/marke/senden", headers=HOST, follow_redirects=False,
+                        data={"csrf": ui.CSRF_TOKEN, "nachricht": "Hallo", "einrichtung": "alt_weg"})
+    assert r.status_code == 422
+    assert "Die Einrichtung ist abgeschlossen oder abgebrochen – bitte Seite neu laden. Nichts wurde geändert." in r.text
+    assert pult.nach("/marke/chat") == []
+
+
+def test_abschliessen_setzt_cookie_und_leitet(angemeldet, pult):
+    _in_einrichtung(pult, abschliessbar=True)
+    r = angemeldet.post("/marketing/marke/einrichtung/abschliessen", headers=HOST, follow_redirects=False,
+                        data={"csrf": ui.CSRF_TOKEN, "einrichtung": "probe_gmbh"})
+    assert r.status_code == 303 and r.headers["location"] == "/marketing/layouts?reiter=profil"
+    assert pult.nach("/marke/einrichtung/")[-1] == ("POST", "/marke/einrichtung/abschliessen",
+                                                    {"mandant": "probe_gmbh", "von": "mira"})
+    kopf = r.headers["set-cookie"]
+    assert kopf.startswith("mk_mandant=probe_gmbh") and "Path=/marketing" in kopf
+    pult.fehler = marketing_pult.PultFehler("abgelehnt", "Impressum fehlt")
+    pult.fehler_pfad = "/abschliessen"
+    r = angemeldet.post("/marketing/marke/einrichtung/abschliessen", headers=HOST, follow_redirects=False,
+                        data={"csrf": ui.CSRF_TOKEN, "einrichtung": "probe_gmbh"})
+    assert r.status_code == 422 and "Impressum fehlt" in r.text and "set-cookie" not in r.headers
+
+
+@pytest.mark.parametrize("aktion", ["abschliessen", "abbrechen"])
+def test_einrichtung_aktion_braucht_csrf_und_feld(angemeldet, pult, aktion):
+    _in_einrichtung(pult)
+    r = angemeldet.post(f"/marketing/marke/einrichtung/{aktion}", headers=HOST, data={"einrichtung": "probe_gmbh"})
+    assert r.status_code == 403
+    r = angemeldet.post(f"/marketing/marke/einrichtung/{aktion}", headers=HOST, data={"csrf": ui.CSRF_TOKEN})
+    assert r.status_code == 422
+    r = angemeldet.post(f"/marketing/marke/einrichtung/{aktion}", headers=HOST,
+                        data={"csrf": ui.CSRF_TOKEN, "einrichtung": "alt_weg"})
+    assert r.status_code == 422
+    assert pult.nach("/marke/einrichtung/") == []
+
+
+def test_abbrechen_nennt_ordner(angemeldet, pult):
+    _in_einrichtung(pult)
+    r = angemeldet.post("/marketing/marke/einrichtung/abbrechen", headers=HOST, follow_redirects=False,
+                        data={"csrf": ui.CSRF_TOKEN, "einrichtung": "probe_gmbh"})
+    assert pult.nach("/marke/einrichtung/")[-1] == ("POST", "/marke/einrichtung/abbrechen",
+                                                    {"mandant": "probe_gmbh", "von": "mira"})
+    assert r.status_code == 200 and "set-cookie" not in r.headers
+    assert "companys/Probe GmbH/" in r.text and 'href="/marketing/layouts"' in r.text
+
+
+def test_liste_in_einrichtung_auf_normaler_seite(angemeldet, pult):
+    assert "In Einrichtung" not in rumpf(seite(angemeldet))
+    pult.einrichtungen = [dict(PROBE)]
+    s = rumpf(seite(angemeldet))
+    assert "In Einrichtung" in s and f'<a href="{EINRICHTUNG}">Probe GmbH</a>' in s
+    pult.fehler = marketing_pult.PultFehler("nicht_erreichbar", "x")
+    pult.fehler_pfad = "einrichtung=1"
+    r = seite(angemeldet)
+    assert r.status_code == 200 and "In Einrichtung" not in rumpf(r)
