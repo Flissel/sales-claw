@@ -1390,6 +1390,12 @@ def test_abgewiesen_in_einrichtung_fuehrt_zurueck(angemeldet, pult):
     assert r.status_code == 422 and zurueck in r.text
 
 
+def test_einrichtung_css_vorhanden():
+    for klasse in (".einrichtung-kopf", ".einrichtung-schritte li.erledigt", ".einrichtung-schritte li.offen",
+                   ".einrichtung-angaben", ".in-einrichtung", ".befehle"):
+        assert klasse in ui._STIL, klasse
+
+
 def test_formulare_tragen_einrichtung(angemeldet, pult):
     _in_einrichtung(pult)
     pult.zustand["vorschlag"] = VORSCHLAG
