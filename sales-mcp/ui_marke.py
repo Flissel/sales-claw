@@ -155,8 +155,11 @@ def routen(ui) -> list:
         return ui._fehlerseite(503, "Marketing gerade nicht erreichbar",
                                "Die Marketing-API antwortet nicht. Sales läuft normal weiter.")
 
-    def abgewiesen(status: int, text: str):
-        return ui._fehlerseite(status, "Nicht möglich", f'{e(text)}<p><a href="{ZIEL}">Zur Marke</a></p>')
+    def abgewiesen(status: int, text: str, form=None):
+        """Wie `fehler`: in einer Einrichtung (Formularfeld) fuehrt der Link zurueck in sie. Eine unbekannte id
+        ist harmlos - die Seite faellt dann auf die gewaehlte Firma zurueck (marken_firma)."""
+        ein = (str(form.get("einrichtung") or "") or None) if form is not None else None
+        return ui._fehlerseite(status, "Nicht möglich", f'{e(text)}<p><a href="{e(ziel(ein))}">Zur Marke</a></p>')
 
     def csrf_feld(ein: str | None = None) -> str:
         """CSRF-Marke und, in einer Einrichtung, deren id: jedes Formular der Seite traegt sie (sonst handelte
@@ -624,9 +627,27 @@ def routen(ui) -> list:
                  if isinstance(b, dict) and isinstance(b.get("befehl"), str) and b["befehl"].startswith("/")]
         return f'<p class="meta befehle">Befehle: {" · ".join(teile)}</p>' if teile else ""
 
+    def rechtsangaben_html(d: dict) -> str:
+        """Die gespeicherten Rechtsangaben woertlich (E-Mail-Pflichtteil der Einrichtung, 086): so bestaetigt der
+        Betreiber vor "Marke anlegen" genau das, was in jedem Newsletter steht. Leer = "fehlt"."""
+        pflicht = _dict(d.get("pflichtteil"))
+        vermittler = d.get("einrichtung_vermittler")
+
+        def wert(titel: str, roh) -> str:
+            text = str(roh).strip() if isinstance(roh, str) else ""
+            inhalt = f'<dd class="woertlich">{e(text)}</dd>' if text else '<dd class="fehlt">fehlt</dd>'
+            return f"<dt>{e(titel)}</dt>{inhalt}"
+        zeilen = [wert("Impressum", pflicht.get("impressum")), wert("Abmeldehinweis", pflicht.get("abmelde_hinweis")),
+                  "<dt>Vermittler</dt><dd>"
+                  + ("ja" if vermittler is True else "nein" if vermittler is False else "noch offen") + "</dd>"]
+        if vermittler is True:
+            zeilen.append(wert("Vermittlerangaben", pflicht.get("vermittlerangaben")))
+        return f'<dl class="einrichtung-angaben">{"".join(zeilen)}</dl>'
+
     def einrichtung_kopf_html(d: dict, eintrag: dict, bisher: str) -> str:
         """Ueber dem Chat einer Einrichtung (086): Name, Rueckweg zur gewaehlten Firma, Fortschritt je Schritt,
-        "Marke anlegen" nur wenn die API es erlaubt, "Einrichtung abbrechen" immer."""
+        die gespeicherten Rechtsangaben, "Marke anlegen" nur wenn die API es erlaubt und der Assistent nicht
+        arbeitet, "Einrichtung abbrechen" immer."""
         ein = eintrag["id"]
         name = str(d.get("name") or eintrag.get("name") or ein)
         stand = _dict(d.get("einrichtung_stand"))
@@ -645,8 +666,12 @@ def routen(ui) -> list:
                               f'{e(str(s.get("titel") or ""))}{fehlt}</li>')
             teile.append(f'<p class="meta">Schritt {n} von {len(schritte)}</p>'
                          f'<ol class="einrichtung-schritte">{"".join(punkte)}</ol>')
+        teile.append(rechtsangaben_html(d))
         knoepfe = []
-        if stand.get("abschliessbar") is True:
+        if d.get("laeuft") or d.get("uebernahme"):
+            # Anlegen waehrend einer Runde lehnt die DB ohnehin ab; der Stand oben kann gleich noch wechseln
+            knoepfe.append('<p class="meta">Der Assistent arbeitet gerade – anlegen geht, sobald er fertig ist.</p>')
+        elif stand.get("abschliessbar") is True:
             knoepfe.append(f'<form method="post" action="/marketing/marke/einrichtung/abschliessen" class="aktion">'
                            f'{csrf_feld(ein)}<button class="primaer" type="submit">Marke anlegen</button></form>')
         knoepfe.append(f'<form method="post" action="/marketing/marke/einrichtung/abbrechen" class="aktion">'
@@ -783,15 +808,15 @@ def routen(ui) -> list:
             return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
         nachricht = str(form.get("nachricht") or "")
         if not nachricht.strip():
-            return abgewiesen(422, "Ohne Nachricht kein Auftrag.")
+            return abgewiesen(422, "Ohne Nachricht kein Auftrag.", form=form)
         if len(nachricht) > NACHRICHT_MAX:
-            return abgewiesen(422, f"Die Nachricht darf höchstens {NACHRICHT_MAX} Zeichen haben.")
+            return abgewiesen(422, f"Die Nachricht darf höchstens {NACHRICHT_MAX} Zeichen haben.", form=form)
         dateien = [d for d in form.getlist("datei") if getattr(d, "filename", "")]
         if len(dateien) > ANHAENGE_MAX:
-            return abgewiesen(422, f"Höchstens {ANHAENGE_MAX} Dateien je Nachricht.")
+            return abgewiesen(422, f"Höchstens {ANHAENGE_MAX} Dateien je Nachricht.", form=form)
         if dateien and nachricht.lstrip().startswith("/"):
             # Vor dem Ablegen: die API lehnt Befehle mit Anhang ab, die Dateien blieben sonst verwaist
-            return abgewiesen(422, BEFEHLE_MIT_DATEIEN)
+            return abgewiesen(422, BEFEHLE_MIT_DATEIEN, form=form)
         try:
             m, _liste, eintrag = await marken_firma(request, form)
         except marketing_pult.PultFehler as f:
@@ -808,7 +833,7 @@ def routen(ui) -> list:
             basis, groesse, abgelehnt = await ui_editor.anhang_speichern(ui, datei)
             if abgelehnt:
                 await aufraeumen()
-                return abgewiesen(*abgelehnt)
+                return abgewiesen(*abgelehnt, form=form)
             abgelegt.append(basis)
             # Ohne Zeile gilt eine Datei als Gemeinsam und waere fuer jede Firma sichtbar:
             # sie gehoert der gewaehlten Firma. Gelingt das nicht, bleibt keine Datei liegen.
@@ -831,7 +856,7 @@ def routen(ui) -> list:
             await aufraeumen()           # abgelehnt (z. B. es laeuft schon einer): keine Kopien anhaeufen
             grund = f.koerper.get("detail") if f.koerper else None
             if f.art == "unbekannt" and f.grund == "400" and isinstance(grund, str) and grund.strip():
-                return abgewiesen(422, grund)      # Befehl unbekannt / ohne Namen: die API nennt die Befehle
+                return abgewiesen(422, grund, form=form)      # Befehl unbekannt / ohne Namen: die API nennt die Befehle
             return fehler(f)
         neu = _dict(r).get("einrichtung")
         if isinstance(neu, dict) and isinstance(neu.get("id"), str) and neu["id"]:
@@ -848,9 +873,9 @@ def routen(ui) -> list:
                 return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
             vid = _uuid_oder_none(form.get("vorschlag"))
             if not vid:
-                return abgewiesen(422, "Welcher Vorschlag gemeint ist, fehlt. Seite neu laden.")
+                return abgewiesen(422, "Welcher Vorschlag gemeint ist, fehlt. Seite neu laden.", form=form)
             if aktion == "uebernehmen" and str(form.get("bestaetigt") or "") != "ja":
-                return abgewiesen(422, "Bitte bestätige das Übernehmen mit dem Haken. Nichts wurde geändert.")
+                return abgewiesen(422, "Bitte bestätige das Übernehmen mit dem Haken. Nichts wurde geändert.", form=form)
             try:
                 # Die gerade gewaehlte Firma: ein Tab von vor dem Firmenwechsel handelt so nie am
                 # Vorschlag einer anderen Firma (Minor 4, die DB vergleicht). Rueckgaengig (E7): jede
@@ -873,7 +898,7 @@ def routen(ui) -> list:
         if not ui._csrf_ok(form):
             return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
         if any(_ALTES_FELD.fullmatch(k) for k in form.keys()):
-            return abgewiesen(422, "Das Formular ist veraltet. Nichts wurde geändert – bitte Seite neu laden.")
+            return abgewiesen(422, "Das Formular ist veraltet. Nichts wurde geändert – bitte Seite neu laden.", form=form)
         formular = {k: str(form.get(k) or "").strip() for k, _ in FORM_FARBEN}
         formular.update({k: str(form.get(k) or "").strip() for k in ("schrift_anzeige", "schrift_text", "webseite")})
         formular["abschnitte"] = {k[len(FELD_ABSCHNITT):]: str(form.get(k) or "").replace("\r\n", "\n").strip()
@@ -888,11 +913,11 @@ def routen(ui) -> list:
                    or any(len(n) > ABSCHNITT_NAME_MAX or len(t) > ABSCHNITT_MAX
                           for n, t in formular["abschnitte"].items()))
         if zu_lang:
-            return abgewiesen(422, "Ein Feld ist zu lang. Nichts wurde geändert.")
+            return abgewiesen(422, "Ein Feld ist zu lang. Nichts wurde geändert.", form=form)
         try:
             m, _liste, eintrag = await marken_firma(request, form)
             if str(form.get("mandant") or "") != m:      # Tab von vor dem Firmenwechsel (wie vorschlag_aktion)
-                return abgewiesen(422, "Die Firma wurde gewechselt. Nichts wurde geändert – bitte Seite neu laden.")
+                return abgewiesen(422, "Die Firma wurde gewechselt. Nichts wurde geändert – bitte Seite neu laden.", form=form)
             await run_in_threadpool(marketing_pult.anfrage, "POST", "/marke/bearbeiten",
                                     {"mandant": m, "formular": formular})
         except marketing_pult.PultFehler as f:
@@ -908,7 +933,7 @@ def routen(ui) -> list:
             if not ui._csrf_ok(form):
                 return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
             if not str(form.get("einrichtung") or ""):
-                return abgewiesen(422, "Welche Einrichtung gemeint ist, fehlt. Seite neu laden.")
+                return abgewiesen(422, "Welche Einrichtung gemeint ist, fehlt. Seite neu laden.", form=form)
             try:
                 m, _liste, eintrag = await marken_firma(request, form)
                 await run_in_threadpool(marketing_pult.anfrage, "POST", f"/marke/einrichtung/{aktion}",

@@ -1342,6 +1342,54 @@ def test_einrichtung_kopf_fortschritt_knoepfe(angemeldet, pult):
     assert 'action="/marketing/marke/einrichtung/abschliessen"' in s
 
 
+def test_einrichtung_kopf_zeigt_rechtsangaben_woertlich(angemeldet, pult):
+    """Vor "Marke anlegen" stehen die gespeicherten Rechtsangaben woertlich (escaped, Umbrueche erhalten)."""
+    _in_einrichtung(pult, abschliessbar=True)
+    pult.zustand.update({"pflichtteil": {"impressum": "Probe <GmbH>\nWeg 1", "abmelde_hinweis":
+                                         "Abmelden: {abmeldelink}", "vermittlerangaben": "Reg. D-1"},
+                         "einrichtung_vermittler": True})
+    s = rumpf(seite(angemeldet, EINRICHTUNG))
+    block = s[s.index('<dl class="einrichtung-angaben">'):]
+    assert s.index('<dl class="einrichtung-angaben">') < s.index("Marke anlegen")
+    assert '<dt>Impressum</dt><dd class="woertlich">Probe &lt;GmbH&gt;\nWeg 1</dd>' in block
+    assert '<dt>Abmeldehinweis</dt><dd class="woertlich">Abmelden: {abmeldelink}</dd>' in block
+    assert "<dt>Vermittler</dt><dd>ja</dd>" in block
+    assert '<dt>Vermittlerangaben</dt><dd class="woertlich">Reg. D-1</dd>' in block
+    pult.zustand.update({"pflichtteil": {"impressum": " ", "abmelde_hinweis": ""}, "einrichtung_vermittler": None})
+    s = rumpf(seite(angemeldet, EINRICHTUNG))
+    assert '<dt>Impressum</dt><dd class="fehlt">fehlt</dd>' in s
+    assert '<dt>Abmeldehinweis</dt><dd class="fehlt">fehlt</dd>' in s
+    assert "<dt>Vermittler</dt><dd>noch offen</dd>" in s and "Vermittlerangaben" not in s
+    pult.zustand.update({"einrichtung_vermittler": False})
+    s = rumpf(seite(angemeldet, EINRICHTUNG))
+    assert "<dt>Vermittler</dt><dd>nein</dd>" in s and "Vermittlerangaben" not in s
+    pult.zustand.update({"einrichtung_vermittler": True})
+    assert '<dt>Vermittlerangaben</dt><dd class="fehlt">fehlt</dd>' in rumpf(seite(angemeldet, EINRICHTUNG))
+
+
+@pytest.mark.parametrize("schalter", [{"laeuft": True}, {"uebernahme": "laeuft"}])
+def test_marke_anlegen_versteckt_solange_der_assistent_arbeitet(angemeldet, pult, schalter):
+    _in_einrichtung(pult, abschliessbar=True)
+    pult.zustand.update(schalter)
+    s = rumpf(seite(angemeldet, EINRICHTUNG))
+    assert "Marke anlegen" not in s and 'action="/marketing/marke/einrichtung/abschliessen"' not in s
+    assert '<p class="meta">Der Assistent arbeitet gerade' in s and "Einrichtung abbrechen" in s
+
+
+def test_abgewiesen_in_einrichtung_fuehrt_zurueck(angemeldet, pult):
+    _in_einrichtung(pult)
+    zurueck = '<a href="/marketing/layouts?einrichtung=probe_gmbh&amp;reiter=chat#ende">Zur Marke</a>'
+    r = angemeldet.post("/marketing/marke/senden", headers=HOST,
+                        data={"csrf": ui.CSRF_TOKEN, "nachricht": " ", "einrichtung": "probe_gmbh"})
+    assert r.status_code == 422 and zurueck in r.text
+    r = angemeldet.post("/marketing/marke/uebernehmen", headers=HOST,
+                        data={"csrf": ui.CSRF_TOKEN, "vorschlag": VID, "einrichtung": "probe_gmbh"})
+    assert r.status_code == 422 and zurueck in r.text
+    r = angemeldet.post("/marketing/marke/bearbeiten", headers=HOST,
+                        data={"csrf": ui.CSRF_TOKEN, "mandant": "vibemind", "einrichtung": "probe_gmbh"})
+    assert r.status_code == 422 and zurueck in r.text
+
+
 def test_formulare_tragen_einrichtung(angemeldet, pult):
     _in_einrichtung(pult)
     pult.zustand["vorschlag"] = VORSCHLAG
