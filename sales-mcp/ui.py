@@ -1358,7 +1358,9 @@ a.knopf.sek { background: var(--flaeche); color: var(--akzent_text); }
                            border-radius: 14px; }
 .reel-bild > .reel-gross.f-quadrat { aspect-ratio: 1 / 1; }
 .reel-bild > .reel-gross.f-quer { aspect-ratio: 16 / 9; max-height: none; }
-.reel-detail.f-quer { grid-template-columns: minmax(0, 38rem) minmax(0, 1fr); }
+.reel-detail.f-quer { grid-template-columns: minmax(0, 3fr) minmax(16rem, 2fr); }
+@media (max-width: 1099px) {
+  .reel-detail.f-quer { grid-template-columns: minmax(0, 1fr); } }
 video.reel-gross { display: block; background: var(--balken); object-fit: contain; }
 .reel-text h2 { margin: 0 0 .3rem; }
 .reel-angaben { display: grid; grid-template-columns: max-content minmax(0, 1fr);

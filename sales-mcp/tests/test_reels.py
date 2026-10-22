@@ -832,3 +832,25 @@ def test_detail_zeigt_format(angemeldet, pult):
     assert "<dt>Format</dt><dd>Hochformat 9:16 – Instagram, TikTok, Shorts</dd>" in rumpf(
         get(angemeldet, f"/marketing/reels/{AID}"))
     assert "<dt>Format</dt><dd>Hochformat 9:16" in rumpf(get(angemeldet, f"/marketing/reels/{AID_X}"))
+
+
+def test_klassen_laesst_leere_teile_weg():
+    assert ui_reels.klassen("a", "", "b c") == "a b c" and ui_reels.klassen("", "") == ""
+
+
+@pytest.mark.parametrize("fmt", ["<x>", "9:16"])
+def test_fremdes_format_beim_bestellen_zeigt_api_422_escaped(angemeldet, pult, fmt):
+    pult.fehler = marketing_pult.PultFehler("abgelehnt", "format: reel, quadrat oder quer <b>" + fmt)
+    pult.fehler_pfad = "/video"
+    r = post(angemeldet, "/marketing/reels/neu", {"csrf": ui.CSRF_TOKEN, "mandant": "vibemind", "art": "bilder",
+                                                  "titel": "T", "thema": "t", "sprechertext": "s", "bild": "x.png",
+                                                  "format": fmt})
+    assert r.status_code == 422 and "format: reel, quadrat oder quer" in r.text and "<b>" not in r.text
+    (_, _, daten), = pult.posts()
+    assert daten["briefing"]["format"] == fmt           # die Seite erfindet nichts, die API entscheidet
+
+
+def test_quer_detail_stil_hat_schmalen_pfad():
+    """Zwischen Handy und breitem Schirm darf die Textspalte nicht auf null schrumpfen."""
+    assert re.search(r"\.reel-detail\.f-quer \{ grid-template-columns: minmax\(0, 3fr\) minmax\(16rem, 2fr\)", ui._STIL)
+    assert re.search(r"max-width: 1099px\) \{\s*\.reel-detail\.f-quer \{ grid-template-columns: minmax\(0, 1fr\)", ui._STIL)

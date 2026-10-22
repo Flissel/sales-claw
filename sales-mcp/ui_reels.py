@@ -68,6 +68,11 @@ def format_von(briefing) -> str:
     return f if isinstance(f, str) and f in FORMATE else "reel"
 
 
+def klassen(*teile) -> str:
+    """CSS-Klassen zusammenfuegen, leere Teile faellt weg."""
+    return " ".join(t for t in teile if t)
+
+
 def format_klasse(briefing) -> str:
     return _FORMAT_KLASSE.get(format_von(briefing), "")
 
@@ -207,7 +212,7 @@ def routen(ui) -> list:
         else:
             bild = f'<div class="reel-flaeche"><span>{e(titel)}</span></div>'
         angaben = " · ".join(t for t in (dauer_text(a.get("dauer_s")), datum_text(a.get("erstellt_am"))) if t)
-        klasse = " ".join(t for t in ("reel-karte", format_klasse(a.get("briefing"))) if t)
+        klasse = klassen("reel-karte", format_klasse(a.get("briefing")))
         return (f'<a class="{klasse}" href="{e(detail_url(aid))}">{bild}'
                 f'<span class="reel-titel">{e(titel)}</span>'
                 f'<span class="reel-fuss">{chip(str(a.get("status") or ""))}'
@@ -307,10 +312,10 @@ def routen(ui) -> list:
         poster_attr = f' poster="{datei_url(poster)}"' if _POSTER.fullmatch(poster) else ""
         fk = format_klasse(briefing)
         if status == "fertig" and _DATEI.fullmatch(datei):
-            bild = (f'<video class="{" ".join(t for t in ("reel-gross", fk) if t)}" controls preload="metadata"{poster_attr} '
+            bild = (f'<video class="{klassen("reel-gross", fk)}" controls preload="metadata"{poster_attr} '
                     f'src="{datei_url(datei)}"></video>')
         else:
-            bild = f'<div class="{" ".join(t for t in ("reel-flaeche reel-gross", fk) if t)}"><span>{e(titel)}</span></div>'
+            bild = f'<div class="{klassen("reel-flaeche reel-gross", fk)}"><span>{e(titel)}</span></div>'
         satz = str(a.get("befund_text") or "").strip()
         teile = [f'<h2>{e(titel)}</h2><p>{chip(status)}</p>']
         if satz:
@@ -344,7 +349,7 @@ def routen(ui) -> list:
             innen += f'<p class="meta">Befund: {e(befund)}</p>'
         teile.append(f'<details class="reel-protokoll"><summary>Was der Claw gemacht hat</summary>{innen}</details>')
         return (f'<p><a href="{SEITE}">Alle Reels</a></p>'
-                f'<div class="{" ".join(t for t in ("reel-detail", fk) if t)}"><div class="reel-bild">{bild}</div>'
+                f'<div class="{klassen("reel-detail", fk)}"><div class="reel-bild">{bild}</div>'
                 f'<div class="reel-text">{"".join(teile)}</div></div>')
 
     @ui._gesichert_seite
