@@ -26,7 +26,7 @@
 - **MOS** (aus dem Worktree-Root): `C:/Users/User/Desktop/Vibemind_V1/.venv/Scripts/python.exe -m pytest spaces/marketing/tests spaces/marketing/claw/tests -q -p no:cacheprovider --basetemp C:/Temp/pt-marke-neu` (einzelne Dateien statt der Ordner während TDD). `--basetemp` muss auf C: liegen. Vorbestehend rot: `test_cockpit_contract`, `test_abschnitte`, `test_formular_entwurf`, `test_gestaltung_pruefen`.
 - **Migration:** `…python.exe -m spaces.marketing.scripts.migration_probe spaces/marketing/db/086_marke_einrichtung.sql spaces/marketing/db/verify_086.sql` → `PROBE OK (zurueckgerollt)`. Läuft immer in einer Transaktion mit ROLLBACK.
 - **SC** (PowerShell, aus `sales-mcp`, DB-Klon `sales_struktur` im Container `sales-testdb` auf `127.0.0.1:55600`):
-  `$env:SALES_DB_URL='postgresql://postgres:ci@127.0.0.1:55600/sales_struktur'; $env:SALES_DB_SCHEMA='sales_test'; & E:/Temp/claude/c--Users-User-Desktop-Vibemind-V1/09346339-4318-4647-a968-36a3579400b7/scratchpad/venv-sales/Scripts/python.exe -m pytest tests/<datei> -q -p no:cacheprovider`. Jede Datei einzeln. Vorbestehend rot: `test_bild_route_entschluesselt_nur_einmal`.
+  `$env:SALES_DB_URL='postgresql://postgres:ci@127.0.0.1:55600/sales_struktur'; $env:SALES_DB_SCHEMA='sales_test'; & E:/Temp/claude/c--Users-User-Desktop-Vibemind-V1/09346339-4318-4647-a968-36a3579400b7/scratchpad/venv-sales/Scripts/python.exe -m pytest tests/<datei> -q -p no:cacheprovider`. Lauscht 55600 nicht (Weiterleitung `sales-testdb-fwd` nach Docker-Neustart tot), direkt `127.0.0.1:55432` nehmen. Jede Datei einzeln. Vorbestehend rot: `test_bild_route_entschluesselt_nur_einmal`.
 
 ## Global Constraints
 
