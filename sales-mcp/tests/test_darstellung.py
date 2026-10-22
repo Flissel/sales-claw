@@ -944,3 +944,16 @@ def test_kampagnenplan_stil_nur_tokens_und_reiter_definiert():
     block = _plan_stil()
     assert not re.findall(r"#[0-9a-fA-F]{3,8}\b", block)
     assert ".plan-reiter" in block and ".plan-karte" in block and ".plan-spalten" in block
+
+
+def test_reel_formate_stil_nur_tokens_und_touchziele():
+    """Formatklassen der Reels (Stufe 2): Farben nur über Variablen, Radioknöpfe mit 44 px Zeile."""
+    start = ui._STIL.find(".reel-karte.f-quadrat")
+    assert start >= 0, "CSS für .f-quadrat/.f-quer fehlt"
+    ende = ui._STIL.find("\n/* ", start)
+    block = ui._STIL[start:ende if ende > 0 else None]
+    assert not re.findall(r"#[0-9a-fA-F]{3,8}\b", block)
+    assert re.search(r"\.f-quadrat[^{]*\{[^}]*aspect-ratio: 1 / 1", block)
+    assert re.search(r"\.f-quer[^{]*\{[^}]*aspect-ratio: 16 / 9", block)
+    assert re.search(r"\.reel-formate label \{[^}]*min-height: 44px", block)
+    assert not [w for w in WOERTER_ASCII if w in block]

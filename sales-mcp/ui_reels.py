@@ -57,6 +57,21 @@ REFRESH_S = 30
 SEITE = "/marketing/reels"
 NEU_SEITE = "/marketing/reels/neu"
 MARKE_PROFIL = "/marketing/layouts?reiter=profil"
+FORMATE = {"reel": "Hochformat 9:16 – Instagram, TikTok, Shorts", "quadrat": "Quadrat 1:1 – LinkedIn",
+           "quer": "Querformat 16:9 – Website, Präsentation"}
+_FORMAT_KLASSE = {"quadrat": "f-quadrat", "quer": "f-quer"}      # reel = keine Klasse (Hochformat)
+
+
+def format_von(briefing) -> str:
+    """Das Format eines Auftrags: nur ein bekanntes Wort zaehlt, alles andere ist Hochformat (E7)."""
+    f = briefing.get("format") if isinstance(briefing, dict) else None
+    return f if isinstance(f, str) and f in FORMATE else "reel"
+
+
+def format_klasse(briefing) -> str:
+    return _FORMAT_KLASSE.get(format_von(briefing), "")
+
+
 STANDARD_STIMME = "standard"       # steht nie in GET /stimmen und gilt immer (claw/stimmen.py)
 
 
@@ -76,6 +91,9 @@ def briefing_aus_formular(form) -> tuple[str, str, dict]:
     b: dict = {"thema": str(form.get("thema") or "").strip(),
                "sprechertext": str(form.get("sprechertext") or "").strip(),
                "hook": str(form.get("hook") or "").strip(), "dauer_s": dauer}
+    fmt = str(form.get("format") or "reel")
+    if fmt != "reel":
+        b["format"] = fmt                    # die Marketing-API prueft (eine Wahrheit), die Vorgabe schickt nichts
     if art == "bilder":
         b["bilder"] = _texte(form.getlist("bild"))
         if str(form.get("logo") or "").strip():
@@ -189,7 +207,8 @@ def routen(ui) -> list:
         else:
             bild = f'<div class="reel-flaeche"><span>{e(titel)}</span></div>'
         angaben = " · ".join(t for t in (dauer_text(a.get("dauer_s")), datum_text(a.get("erstellt_am"))) if t)
-        return (f'<a class="reel-karte" href="{e(detail_url(aid))}">{bild}'
+        klasse = " ".join(t for t in ("reel-karte", format_klasse(a.get("briefing"))) if t)
+        return (f'<a class="{klasse}" href="{e(detail_url(aid))}">{bild}'
                 f'<span class="reel-titel">{e(titel)}</span>'
                 f'<span class="reel-fuss">{chip(str(a.get("status") or ""))}'
                 f'<span class="meta">{e(angaben)}</span></span></a>')
@@ -286,11 +305,12 @@ def routen(ui) -> list:
         datei = str(a.get("datei") or "")
         poster = str(a.get("poster") or "")
         poster_attr = f' poster="{datei_url(poster)}"' if _POSTER.fullmatch(poster) else ""
+        fk = format_klasse(briefing)
         if status == "fertig" and _DATEI.fullmatch(datei):
-            bild = (f'<video class="reel-gross" controls preload="metadata"{poster_attr} '
+            bild = (f'<video class="{" ".join(t for t in ("reel-gross", fk) if t)}" controls preload="metadata"{poster_attr} '
                     f'src="{datei_url(datei)}"></video>')
         else:
-            bild = f'<div class="reel-flaeche reel-gross"><span>{e(titel)}</span></div>'
+            bild = f'<div class="{" ".join(t for t in ("reel-flaeche reel-gross", fk) if t)}"><span>{e(titel)}</span></div>'
         satz = str(a.get("befund_text") or "").strip()
         teile = [f'<h2>{e(titel)}</h2><p>{chip(status)}</p>']
         if satz:
@@ -308,7 +328,7 @@ def routen(ui) -> list:
                      + angabe("Art", ARTEN.get(str(a.get("art")), str(a.get("art") or "")))
                      + angabe("Thema", briefing.get("thema")) + angabe("Sprechertext", briefing.get("sprechertext"))
                      + angabe("Einstieg", briefing.get("hook")) + angabe("Stimme", briefing.get("stimme"))
-                     + angabe("Länge", laenge) + angabe("Bestellt", bestellt) + "</dl>")
+                     + angabe("Format", FORMATE[format_von(briefing)]) + angabe("Länge", laenge) + angabe("Bestellt", bestellt) + "</dl>")
         vorgaenger = str(a.get("vorgaenger") or "")
         if _AID.fullmatch(vorgaenger):
             name = str(a.get("vorgaenger_titel") or "") or "voriges Reel"
@@ -324,7 +344,7 @@ def routen(ui) -> list:
             innen += f'<p class="meta">Befund: {e(befund)}</p>'
         teile.append(f'<details class="reel-protokoll"><summary>Was der Claw gemacht hat</summary>{innen}</details>')
         return (f'<p><a href="{SEITE}">Alle Reels</a></p>'
-                f'<div class="reel-detail"><div class="reel-bild">{bild}</div>'
+                f'<div class="{" ".join(t for t in ("reel-detail", fk) if t)}"><div class="reel-bild">{bild}</div>'
                 f'<div class="reel-text">{"".join(teile)}</div></div>')
 
     @ui._gesichert_seite
@@ -513,6 +533,12 @@ def routen(ui) -> list:
             return f'<p class="meta">Stimme: <b>{e(stimme)}</b> (aus der Marke)</p>'
         return f'<p class="meta">Stimme: Standard – <a href="{MARKE_PROFIL}">in der Marke festlegen</a></p>'
 
+    def formate_wahl() -> str:
+        punkte = "".join(
+            f'<label><input type="radio" name="format" value="{k}"{" checked" if k == "reel" else ""}> {e(t)}</label>'
+            for k, t in FORMATE.items())
+        return f'<fieldset class="reel-formate"><legend>Format</legend>{punkte}</fieldset>'
+
     async def schritt3(art: str, m: str, bilder: list[str], logo: str, videos: list[str]) -> str:
         versteckt = [("art", art)] + [("bild", n) for n in bilder] + ([("logo", logo)] if logo else []) + [
             ("video", v) for v in videos]
@@ -539,6 +565,7 @@ def routen(ui) -> list:
                 f'<label>Sprechertext <textarea name="sprechertext" rows="4" maxlength="900"{pflicht}></textarea></label>'
                 '<label>Einstieg (eine Zeile) <input type="text" name="hook" maxlength="120"></label>'
                 '<label>Länge in Sekunden <input type="number" name="dauer_s" min="15" max="60" value="30"></label>'
+                + formate_wahl()
                 + await stimme_zeile(m)
                 + '<p class="meta">Das Reel bekommt Untertitel, die Farben der Marke und den Hinweis „Stimme: KI“.</p>'
                 '<div class="aktionen"><button class="primaer" type="submit">Bestellen</button></div></form>')

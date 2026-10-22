@@ -2,6 +2,7 @@
 gefuehrte Bestellung, Herunterladen). Der Client zur Marketing-API wird gefaelscht."""
 import json
 import os
+import re
 import urllib.parse
 
 os.environ["SALES_DB_SCHEMA"] = "sales_test"
@@ -740,3 +741,94 @@ def test_kurzfassung_post_prueft_die_rohe_auswahl(angemeldet, pult):
                                                   "titel": "T", "thema": "t",
                                                   "video": ["a1b2c3d4-0000", "b2c3d4e5-0000"]})
     assert r.status_code == 422 and "genau ein Video" in r.text and not pult.posts()
+
+
+# --- Formate (Stufe 2, E7) -------------------------------------------------------
+
+def _format_reel(aid: str, fmt, titel: str) -> dict:
+    briefing = {"thema": "t"}
+    if fmt is not None:
+        briefing["format"] = fmt
+    return {"id": aid, "mandant": "vibemind", "titel": titel, "art": "bilder", "status": "fertig",
+            "datei": f"vid-{aid[:8]}-x.mp4", "poster": f"vid-{aid[:8]}-x.jpg", "dauer_s": 20,
+            "archiviert": False, "erstellt_am": "2026-10-20T08:00:00", "befund": "", "befund_text": "",
+            "briefing": briefing, "protokoll": []}
+
+
+AID_Q = "0a0a0a0a-4444-4444-4444-444444444444"
+AID_W = "0b0b0b0b-4444-4444-4444-444444444444"
+AID_X = "0c0c0c0c-4444-4444-4444-444444444444"
+
+
+def _karte_von(s: str, aid: str) -> str:
+    ort = s.index(f'href="/marketing/reels/{aid}"')
+    teil = s[s.rindex("<a ", 0, ort):]
+    return teil[:teil.index("</a>")]
+
+
+def test_schritt3_drei_formate_hochformat_vorgabe(angemeldet, pult):
+    s = rumpf(get(angemeldet, "/marketing/reels/neu?art=bilder&schritt=3&bild=team.png"))
+    reihe = re.findall(r'<input type="radio" name="format" value="(\w+)"( checked)?', s)
+    assert reihe == [("reel", " checked"), ("quadrat", ""), ("quer", "")]
+    for text in ("Hochformat 9:16 – Instagram, TikTok, Shorts", "Quadrat 1:1 – LinkedIn",
+                 "Querformat 16:9 – Website, Präsentation"):
+        assert text in s, text
+    # Bestellschritt 3 bleibt: versteckte Auswahl und Stimmzeile
+    assert '<input type="hidden" name="bild" value="team.png">' in s and "Stimme: <b>eigene-a</b>" in s
+    assert s.index('name="dauer_s"') < s.index('name="format"') < s.index("Stimme:")
+
+
+def test_bestellen_schickt_format_nur_wenn_nicht_hochformat(angemeldet, pult):
+    basis = {"csrf": ui.CSRF_TOKEN, "mandant": "vibemind", "art": "bilder", "titel": "T", "thema": "t",
+             "sprechertext": "x", "bild": ["team.png"]}
+    for form, erwartet in (({}, None), ({"format": "reel"}, None), ({"format": "quadrat"}, "quadrat"),
+                           ({"format": "quer"}, "quer")):
+        pult.aufrufe.clear()
+        r = post(angemeldet, "/marketing/reels/neu", {**basis, **form})
+        assert r.status_code == 303, form
+        (_, pfad, daten), = pult.posts()
+        assert pfad == "/video"
+        assert daten["briefing"].get("format") == erwartet and ("format" in daten["briefing"]) == (erwartet is not None)
+
+
+def test_karte_und_detail_klasse_je_format(angemeldet, pult):
+    pult.auftraege += [_format_reel(AID_Q, "quadrat", "Quadrat-Reel"), _format_reel(AID_W, "quer", "Quer-Reel")]
+    s = rumpf(get(angemeldet, "/marketing/reels"))
+    assert 'class="reel-karte f-quadrat"' in _karte_von(s, AID_Q)
+    assert 'class="reel-karte f-quer"' in _karte_von(s, AID_W)
+    assert 'class="reel-karte"' in _karte_von(s, AID)
+    d = rumpf(get(angemeldet, f"/marketing/reels/{AID_W}"))
+    assert 'class="reel-gross f-quer"' in d and "f-quadrat" not in d
+    d = rumpf(get(angemeldet, f"/marketing/reels/{AID_Q}"))
+    assert 'class="reel-gross f-quadrat"' in d and "f-quer" not in d
+    d = rumpf(get(angemeldet, f"/marketing/reels/{AID}"))
+    assert 'class="reel-gross"' in d and "f-quer" not in d and "f-quadrat" not in d
+    # laufender Auftrag ohne Datei: die Fläche trägt die Klasse mit
+    pult.auftraege.append({**_format_reel(AID_X, "quer", "Laeuft quer"), "status": "in_arbeit", "datei": ""})
+    d = rumpf(get(angemeldet, f"/marketing/reels/{AID_X}"))
+    assert 'class="reel-flaeche reel-gross f-quer"' in d
+    # die Darstellung gibt es wirklich
+    assert re.search(r"\.f-quadrat[^{]*\{[^}]*aspect-ratio: 1 / 1", ui._STIL)
+    assert re.search(r"\.f-quer[^{]*\{[^}]*aspect-ratio: 16 / 9", ui._STIL)
+
+
+@pytest.mark.parametrize("fmt", ["9:16", "<x>", "", None, 7, "QUER", ["quer"], {"a": 1}])
+def test_karte_unbekanntes_format_faellt_auf_hochformat(angemeldet, pult, fmt):
+    pult.auftraege.append(_format_reel(AID_X, fmt, "Komisch"))
+    s = rumpf(get(angemeldet, "/marketing/reels"))
+    karte = _karte_von(s, AID_X)
+    assert 'class="reel-karte"' in karte and "f-quer" not in karte and "f-quadrat" not in karte
+    d = rumpf(get(angemeldet, f"/marketing/reels/{AID_X}"))
+    assert 'class="reel-gross"' in d and "f-quer" not in d and "f-quadrat" not in d
+    assert "<x>" not in d and "<x>" not in s
+
+
+def test_detail_zeigt_format(angemeldet, pult):
+    pult.auftraege += [_format_reel(AID_Q, "quadrat", "Q"), _format_reel(AID_W, "quer", "W"),
+                       _format_reel(AID_X, "<x>", "X")]
+    assert "<dt>Format</dt><dd>Quadrat 1:1 – LinkedIn</dd>" in rumpf(get(angemeldet, f"/marketing/reels/{AID_Q}"))
+    assert "<dt>Format</dt><dd>Querformat 16:9 – Website, Präsentation</dd>" in rumpf(
+        get(angemeldet, f"/marketing/reels/{AID_W}"))
+    assert "<dt>Format</dt><dd>Hochformat 9:16 – Instagram, TikTok, Shorts</dd>" in rumpf(
+        get(angemeldet, f"/marketing/reels/{AID}"))
+    assert "<dt>Format</dt><dd>Hochformat 9:16" in rumpf(get(angemeldet, f"/marketing/reels/{AID_X}"))

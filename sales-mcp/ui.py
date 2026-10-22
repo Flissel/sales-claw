@@ -1343,6 +1343,8 @@ a.knopf.sek { background: var(--flaeche); color: var(--akzent_text); }
 .reel-karte video, .reel-flaeche { display: block; width: 100%; aspect-ratio: 9 / 16;
                                    object-fit: cover; border-radius: 10px;
                                    background: var(--kopfzeile); }
+.reel-karte.f-quadrat video, .reel-karte.f-quadrat .reel-flaeche { aspect-ratio: 1 / 1; }
+.reel-karte.f-quer video, .reel-karte.f-quer .reel-flaeche { aspect-ratio: 16 / 9; }
 .reel-flaeche { display: flex; align-items: center; justify-content: center; padding: 1rem;
                 text-align: center; font-family: var(--schrift_anzeige); font-weight: 700;
                 color: var(--akzent_text);
@@ -1354,6 +1356,9 @@ a.knopf.sek { background: var(--flaeche); color: var(--akzent_text); }
                gap: 1.5rem; align-items: start; }
 .reel-bild > .reel-gross { width: 100%; max-height: 80vh; aspect-ratio: 9 / 16;
                            border-radius: 14px; }
+.reel-bild > .reel-gross.f-quadrat { aspect-ratio: 1 / 1; }
+.reel-bild > .reel-gross.f-quer { aspect-ratio: 16 / 9; max-height: none; }
+.reel-detail.f-quer { grid-template-columns: minmax(0, 38rem) minmax(0, 1fr); }
 video.reel-gross { display: block; background: var(--balken); object-fit: contain; }
 .reel-text h2 { margin: 0 0 .3rem; }
 .reel-angaben { display: grid; grid-template-columns: max-content minmax(0, 1fr);
@@ -1367,6 +1372,12 @@ video.reel-gross { display: block; background: var(--balken); object-fit: contai
 .reel-form input[type="number"] { min-height: 44px; padding: .5rem .6rem; border-radius: 6px;
   border: 1px solid var(--linie_stark); background: var(--flaeche); color: var(--schrift);
   font-size: 16px; max-width: 8rem; }
+.reel-form .reel-formate { display: flex; flex-direction: column; gap: .2rem; margin: 0; padding: 0;
+                           border: 0; min-width: 0; }
+.reel-form .reel-formate legend { font-weight: 600; padding: 0 0 .3rem; }
+.reel-form .reel-formate label { flex-direction: row; align-items: center; gap: .6rem;
+                                 min-height: 44px; font-weight: 400; }
+.reel-form .reel-formate input { width: 1.2rem; height: 1.2rem; flex: none; accent-color: var(--akzent); }
 .reel-text .aktionen a, .reel-wahl .aktionen a { display: inline-flex; align-items: center;
                                                  min-height: 44px; }
 .reel-protokoll { margin-top: 1.2rem; border-top: 1px solid var(--linie); }
@@ -1406,7 +1417,7 @@ video.reel-gross { display: block; background: var(--balken); object-fit: contai
                     vertical-align: middle; }
 .reel-auswahl a { display: inline-block; min-height: 44px; padding: .6rem .1rem; }
 @media (max-width: 767px) {
-  .reel-detail { grid-template-columns: minmax(0, 1fr); }
+  .reel-detail, .reel-detail.f-quer { grid-template-columns: minmax(0, 1fr); }
   .reel-bild > .reel-gross { max-height: 70vh; }
   .reel-raster { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem; }
   .reel-form button { align-self: stretch; } }
