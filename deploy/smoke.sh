@@ -674,24 +674,57 @@ fi
 # "Einen zweiten Laden anlegen", Schritt 4) — der Container laeuft dann
 # schon, bevor ein Mensch das Secret gesetzt hat.
 #
-# Ueber ALLE laufenden *-ui-Container (docker ps), nicht nur
-# deploy/laeden/*.env — dasselbe Muster wie Abschnitt 12 ("Absenderadressen
-# sind je Laden verschieden"): der Basis-Laden "sales" hat keine
-# Umgebungsdatei, der Wert kommt deshalb immer aus dem LAUFENDEN Container
-# selbst (printenv), nie aus einer Datei.
+# Ueber die LAUFENDEN Container (docker ps), nicht nur deploy/laeden/*.env
+# — dasselbe Muster wie Abschnitt 12 ("Absenderadressen sind je Laden
+# verschieden"): der Basis-Laden "sales" hat keine Umgebungsdatei, der Wert
+# kommt deshalb immer aus dem LAUFENDEN Container selbst (printenv), nie
+# aus einer Datei.
 #
-# Kein laufender *-ui-Container ist KEIN Fehler dieses Abschnitts (wie bei
-# Abschnitt 12) — dann gibt es nichts zu pruefen. Dieselbe --nur-basis-Gate
-# wie 11-14: ein leeres Secret in einem EINZELNEN Zweitladen darf keinen
-# Rueckbau DES PRODUKTIONSLADENS in deploy/update.sh ausloesen (W2); die
-# volle Pruefung laeuft ueber deploy/wache.sh alle 15 Minuten.
+# NUR die Oberflaechen der Laeden, nicht jeder *-ui-Container (Befund
+# 14.10.2026): auf der VM laeuft das fremde Compose-Projekt bewerbung-bot
+# mit "bewerbung-zentrale-ui" (Dienst zentrale-ui, bewusst ohne
+# UI_SESSION_SECRET). Der Filter `grep -- '-ui$'` machte daraus ein
+# dauerhaftes ROT in jeder vollen Abnahme und damit in deploy/wache.sh —
+# ein Fehlalarm, der echte Befunde verdeckte. Ein Laden-UI ist, was
+# EINES von beiden erfuellt:
+#   * Compose-Dienst "sales-ui" (Etikett com.docker.compose.service) —
+#     JEDER Laden laeuft aus demselben docker-compose.yml, egal unter
+#     welchem Projekt (sales-claw, <name>-claw) und Praefix. Faengt auch
+#     einen Laden, dessen Umgebungsdatei in deploy/laeden/ fehlt oder
+#     kaputt ist (verwaist, von Hand anderswo gestartet).
+#   * Name <praefix>-ui eines bekannten Ladens: "sales" plus jedes
+#     brauchbare LADEN_PRAEFIX aus deploy/laeden/*.env (dieselbe Quelle wie
+#     die Abschnitte 11, 13 und 14) — faengt einen Laden-Container ohne
+#     Compose-Etiketten (z. B. per docker run nachgestellt).
+# Ein unbrauchbares LADEN_PRAEFIX zaehlen die Abschnitte 11, 13 und 14
+# bereits als ROT; hier faellt es nur aus der Namensliste.
+#
+# Kein laufender Laden-UI-Container ist KEIN Fehler dieses Abschnitts (wie
+# bei Abschnitt 12) — dann gibt es nichts zu pruefen. Dieselbe
+# --nur-basis-Gate wie 11-14: ein leeres Secret in einem EINZELNEN
+# Zweitladen darf keinen Rueckbau DES PRODUKTIONSLADENS in deploy/update.sh
+# ausloesen (W2); die volle Pruefung laeuft ueber deploy/wache.sh alle 15
+# Minuten.
 echo "== UI_SESSION_SECRET je laufender Oberflaeche =="
 if [ "$MODUS" = "basis" ]; then
   melde "ui_session_secret je laden" "uebersprungen (--nur-basis; volle Pruefung ueber deploy/wache.sh alle 15 Minuten)"
 else
-  ui_container="$(docker ps --format '{{.Names}}' | grep -- '-ui$' || true)"
+  laden_ui_namen=" sales-ui "
+  for e in "$WURZEL"/deploy/laeden/*.env; do
+    [ -e "$e" ] || continue
+    [ "$(basename "$e")" = "beispiel.env" ] && continue
+    p="$(grep -E '^LADEN_PRAEFIX=' "$e" | cut -d= -f2 | tr -d '[:space:]')"
+    [[ "$p" =~ ^[a-z][a-z0-9_]{0,30}$ ]] && laden_ui_namen="$laden_ui_namen$p-ui "
+  done
+  ui_container=""
+  while read -r name dienst; do
+    [ -n "$name" ] || continue
+    if [ "$dienst" = "sales-ui" ] || [[ "$laden_ui_namen" == *" $name "* ]]; then
+      ui_container="$ui_container $name"
+    fi
+  done < <(docker ps --format '{{.Names}} {{.Label "com.docker.compose.service"}}' 2>/dev/null || true)
   if [ -z "$ui_container" ]; then
-    melde "ui_session_secret je laden" "uebersprungen (kein *-ui-Container laeuft)"
+    melde "ui_session_secret je laden" "uebersprungen (kein Laden-UI-Container laeuft)"
   else
     for c in $ui_container; do
       wert="$(docker exec "$c" printenv UI_SESSION_SECRET 2>/dev/null || true)"
