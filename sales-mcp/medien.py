@@ -295,6 +295,18 @@ def reel_vorschaubild(basis: str) -> bool:
     return reeldatei(basis) and basis.endswith(".jpg")
 
 
+# KI-Bilder der Reels (Reels Stufe 3, Migration 090): die Marketing-API legt jeden Versuch als
+# ki-<auftrag 8 hex>-<nr>-<versuch>.jpg in den Erzeugt-Ordner, auch spaeter verworfene. Ob ein Versuch
+# verworfen ist, steht nur in marketing.reel_bilder, die Sales nicht liest. Darum: alle ki-* fehlen in der
+# Anhangsliste des Bots (liste(nur_anhaenge=True)) und im Picker "Aus Bildern" (ui_reels); /medien zeigt
+# sie weiter, mit Hinweis, damit der Betreiber sie loeschen kann.
+KI_REEL_MUSTER = re.compile(r"^ki-[0-9a-f]{8}-[1-5]-[0-9]{1,3}\.jpg$")    # wie der Check in 090
+
+
+def ki_reelbild(basis: str) -> bool:
+    return bool(KI_REEL_MUSTER.match(basis or ""))
+
+
 def verborgen(basis: str) -> bool:
     """Entwurfsbild, Bildstueck oder Reel-Datei: kein Medium (Listen, Picker, Namenswahl; als Anhang
     sperrt `pruefe_anhang` alle ausser dem Reel-MP4)."""
@@ -524,8 +536,8 @@ def liste(nur_anhaenge: bool = False):
     """Anhaengbare Dateien im Medienordner: [(name, groesse_bytes)], sortiert.
 
     `nur_anhaenge=True` (fuer das Bot-Werkzeug medien_liste) laesst die
-    internen Unterlagen weg, die `pruefe_anhang` ablehnt; die Oberflaeche
-    zeigt sie weiter.
+    internen Unterlagen weg, die `pruefe_anhang` ablehnt, und die KI-Bilder
+    der Reels (ki-*, s. KI_REEL_MUSTER); die Oberflaeche zeigt beide weiter.
 
     Gefiltert ueber DIESELBE Pruefung, die `entwurf_erstellen` anwendet — die
     Liste ist ein Versprechen ("genau diese Namen nimmt entwurf_erstellen"),
@@ -546,7 +558,7 @@ def liste(nur_anhaenge: bool = False):
                 raise
     eintraege = []
     for name in sorted(namen):
-        if verborgen(name):
+        if verborgen(name) or (nur_anhaenge and ki_reelbild(name)):
             continue
         basis, fehler = (pruefe_anhang if nur_anhaenge else pruefe)(name)
         if fehler is None:

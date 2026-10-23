@@ -3252,3 +3252,10 @@ Ein Newsletter geht nur an `consent_status = 'opt_in'` (E1). Zwei Wege dorthin, 
   Message-IDs und Zeitpunkten; der Code liegt nur als sha256 in `newsletter_anmeldung`.
 - Unbekannte Absender werden Kontakt mit `source = 'newsletter_anmeldung'`.
 - Rechtlich: Wortlaut und Ablauf vor breitem Einsatz pruefen lassen (DSGVO/UWG).
+
+## Reels aus KI-Bildern (seit 23.10.2026)
+
+- Rueckweg: Bevor sales-mcp hinter den Commit "fix(reels): KI-Pruefseite glaetten" (bzw. die
+  KI-Bilder-Stufe) zurueckgerollt wird, offene KI-Auftraege abbrechen (Status `ideen`,
+  `bilder_laufen`, `bilder_pruefen` - Reels-Seite "Abbrechen"); die alte Oberflaeche kennt diese
+  Status nicht. Migration 090 braucht keinen Rueckbau.

@@ -117,6 +117,11 @@ def ki_bilder(a: dict) -> list[dict]:
     return sorted(bilder, key=lambda b: b.get("nr") if isinstance(b.get("nr"), int) else 99)
 
 
+def fertige_ki_bilder(a: dict) -> list[dict]:
+    """Die fertigen KI-Bilder mit gueltiger Datei - eine Regel fuer den Knopf "Reel bauen" und die Route."""
+    return [b for b in ki_bilder(a) if b.get("status") == "fertig" and _KI_DATEI.fullmatch(str(b.get("datei") or ""))]
+
+
 def status_text(a: dict) -> str:
     """Status als Satz; waehrend der Erzeugung mit Fortschritt "Bilder entstehen (2 von 4)" (E7)."""
     status = str(a.get("status") or "")
@@ -405,8 +410,10 @@ def routen(ui) -> list:
         if befund:
             innen += f'<p class="meta">Befund: {e(befund)}</p>'
         teile.append(f'<details class="reel-protokoll"><summary>Was der Claw gemacht hat</summary>{innen}</details>')
+        # KI-Vorstufen: noch kein Reel - am Handy faellt die leere Flaeche weg, die Bilder rutschen nach oben
+        vorstufe = "ki-vorstufe" if ist_ki(a) and status in KI_VORSTUFEN else ""
         return (f'<p><a href="{SEITE}">Alle Reels</a></p>'
-                f'<div class="{klassen("reel-detail", fk)}"><div class="reel-bild">{bild}</div>'
+                f'<div class="{klassen("reel-detail", fk, vorstufe)}"><div class="reel-bild">{bild}</div>'
                 f'<div class="reel-text">{"".join(teile)}</div></div>' + ki_html(a, m))
 
     # --- KI-Bilder ansehen, neu erzeugen, Reel bauen (Stufe 3, E7) -------------------------
@@ -454,7 +461,7 @@ def routen(ui) -> list:
                          'lädt sich von selbst neu.</p>')
         teile.append(f'<div class="{klassen("ki-raster", format_klasse(a.get("briefing")))}">{raster}</div>')
         if pruefen:
-            fertig = sum(1 for b in bilder if b.get("status") == "fertig" and _KI_DATEI.fullmatch(str(b.get("datei") or "")))
+            fertig = len(fertige_ki_bilder(a))
             if fertig:
                 menge = "dem fertigen Bild" if fertig == 1 else f"den {fertig} fertigen Bildern"
                 rest = (" Fehlgeschlagene Bilder bleiben draußen."
@@ -568,11 +575,12 @@ def routen(ui) -> list:
             if str(form.get("mandant") or "") != m:      # Tab von vor dem Firmenwechsel (wie bei der Bestellung)
                 return firma_gewechselt()
             a = await auftrag_der_firma(m, aid)
-            if a is None or not _AID.fullmatch(bid) or bid not in {str(b.get("id")) for b in ki_bilder(a)}:
+            if a is None or not _AID.fullmatch(bid):
                 return nicht_gefunden()
-            if a.get("status") != "bilder_pruefen":
-                return ui._fehlerseite(422, "Nicht möglich",
-                                       "Neu erzeugen geht nur, solange die Bilder zum Ansehen bereitstehen.")
+            # Doppelklick oder alter Tab: Pruefung vorbei bzw. Bild schon verworfen -> zurueck zur Seite.
+            # Erst der Status: nach dem Bau stehen die Bilder nicht mehr zur Wahl.
+            if a.get("status") != "bilder_pruefen" or bid not in {str(b.get("id")) for b in ki_bilder(a)}:
+                return RedirectResponse(detail_url(aid), status_code=303)
             await run_in_threadpool(marketing_pult.anfrage, "POST", f"/video/{aid}/ki/neu",
                                     {"bild": bid, "mandant": m, "idee": idee})
         except marketing_pult.PultFehler as f:
@@ -596,7 +604,9 @@ def routen(ui) -> list:
             a = await auftrag_der_firma(m, aid)
             if a is None:
                 return nicht_gefunden()
-            if a.get("status") != "bilder_pruefen" or not any(b.get("status") == "fertig" for b in ki_bilder(a)):
+            if a.get("status") != "bilder_pruefen":      # schon gebaut/abgebrochen (Doppelklick, alter Tab)
+                return RedirectResponse(detail_url(aid), status_code=303)
+            if not fertige_ki_bilder(a):
                 return ui._fehlerseite(422, "Nicht möglich", nur_fertige)
             d = await run_in_threadpool(marketing_pult.anfrage, "POST", f"/video/{aid}/ki/freigeben", {"mandant": m})
         except marketing_pult.PultFehler as f:
@@ -622,7 +632,9 @@ def routen(ui) -> list:
         d = await run_in_threadpool(marketing_pult.anfrage, "GET",
                                     f"/video/bilder?{urllib.parse.urlencode({'mandant': m})}")
         roh = d.get("bilder") if isinstance(d, dict) else None
-        return [str(b.get("name")) for b in roh or [] if isinstance(b, dict) and _BILD.fullmatch(str(b.get("name") or ""))]
+        # KI-Bilder (ki-*) sind keine Auswahl: verworfene Versuche kennt nur die Marketing-DB (medien.KI_REEL_MUSTER)
+        return [str(b.get("name")) for b in roh or [] if isinstance(b, dict) and _BILD.fullmatch(str(b.get("name") or ""))
+                and not _KI_DATEI.fullmatch(str(b.get("name")))]
 
     async def laura_videos() -> tuple[list[dict], str]:
         """(videos, hinweis). Laura oder die API weg: leere Liste mit Hinweis statt Fehlerseite (Review

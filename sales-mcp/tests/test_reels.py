@@ -1022,10 +1022,16 @@ def test_neu_erzeugen_post(angemeldet, pult):
     r = post(angemeldet, pfad, {**basis, "mandant": "fin2gether"})
     assert r.status_code == 422 and "Die Firma wurde inzwischen gewechselt" in r.text
     assert not pult.posts()
-    # nur waehrend der Pruefung
-    pult.auftraege[-1] = _ki_auftrag("bilder_laufen", [_ki_bild(i, "fertig") for i in range(4)])
+    # nur waehrend der Pruefung; sonst (Doppelklick, alter Tab) zurueck zur Detailseite statt Fehlerseite
+    for status in ("bilder_laufen", "offen", "fertig", "abgebrochen"):
+        pult.auftraege[-1] = _ki_auftrag(status, [_ki_bild(i, "fertig") for i in range(4)])
+        r = post(angemeldet, pfad, basis)
+        assert r.status_code == 303 and r.headers["location"] == f"/marketing/reels/{AID_KI}", status
+    # der Status zaehlt vor der Bild-Zugehoerigkeit: nach dem Bau ist das Bild ggf. weg
+    pult.auftraege[-1] = _ki_auftrag("offen", [])
     r = post(angemeldet, pfad, basis)
-    assert r.status_code == 422 and not pult.posts()
+    assert r.status_code == 303 and r.headers["location"] == f"/marketing/reels/{AID_KI}"
+    assert not pult.posts()
     # die Ablehnung der API kommt als Meldung an
     pult.auftraege[-1] = _pruefen()
     pult.fehler, pult.fehler_pfad = marketing_pult.PultFehler("abgelehnt", "Bild ist nicht fertig <x>"), "/ki/neu"
@@ -1043,6 +1049,55 @@ def test_reel_bauen_post(angemeldet, pult):
     assert post(angemeldet, pfad, {"mandant": "vibemind"}).status_code == 403 and not pult.aufrufe
     r = post(angemeldet, pfad, {"csrf": ui.CSRF_TOKEN, "mandant": "fin2gether"})
     assert r.status_code == 422 and "Die Firma wurde inzwischen gewechselt" in r.text and not pult.posts()
+
+
+@pytest.mark.parametrize("status", ["offen", "in_arbeit", "fertig", "abgebrochen", "bilder_laufen", "ideen"])
+def test_reel_bauen_doppelt_fuehrt_zur_detailseite(angemeldet, pult, status):
+    """Zweiter Klick / alter Tab: der Auftrag ist nicht mehr bei der Pruefung -> 303 statt Fehlerseite."""
+    pult.auftraege.append({**_pruefen(), "status": status})
+    r = post(angemeldet, f"/marketing/reels/{AID_KI}/ki/bauen", {"csrf": ui.CSRF_TOKEN, "mandant": "vibemind"})
+    assert r.status_code == 303 and r.headers["location"] == f"/marketing/reels/{AID_KI}"
+    assert not pult.posts()
+
+
+def test_neu_erzeugen_verworfenes_bild_fuehrt_zur_detailseite(angemeldet, pult):
+    """Das Bild wurde schon neu erzeugt (alte Kennung verworfen, alter Tab): 303 ohne API-Aufruf."""
+    pult.auftraege.append(_pruefen())
+    r = post(angemeldet, f"/marketing/reels/{AID_KI}/ki/neu",
+             {"csrf": ui.CSRF_TOKEN, "mandant": "vibemind", "bild": FREMDES_BILD})
+    assert r.status_code == 303 and r.headers["location"] == f"/marketing/reels/{AID_KI}"
+    assert not pult.posts()
+
+
+def test_fertige_ki_bilder_eine_regel():
+    a = _ki_auftrag("bilder_pruefen", [_ki_bild(0, "fertig"), _ki_bild(1, "fehler"),
+                                       {**_ki_bild(2, "fertig"), "datei": "../x.jpg"}, _ki_bild(3, "in_arbeit")])
+    assert [b["id"] for b in ui_reels.fertige_ki_bilder(a)] == [KI_B[0]]
+
+
+def test_reel_bauen_ohne_gueltige_datei_422(angemeldet, pult):
+    """fertig, aber ohne gueltigen Dateinamen zaehlt nicht - wie auf der Seite (kein Knopf)."""
+    pult.auftraege.append(_ki_auftrag("bilder_pruefen", [{**_ki_bild(0, "fertig"), "datei": None}]))
+    s = rumpf(get(angemeldet, f"/marketing/reels/{AID_KI}"))
+    assert "/ki/bauen" not in s
+    r = post(angemeldet, f"/marketing/reels/{AID_KI}/ki/bauen", {"csrf": ui.CSRF_TOKEN, "mandant": "vibemind"})
+    assert r.status_code == 422 and not pult.posts()
+
+
+@pytest.mark.parametrize("status, klein", [("ideen", True), ("bilder_laufen", True), ("bilder_pruefen", True),
+                                           ("offen", False), ("fertig", False)])
+def test_ki_vorstufe_markiert_detail_fuer_handy(angemeldet, pult, status, klein):
+    pult.auftraege.append({**_pruefen(), "status": status})
+    s = rumpf(get(angemeldet, f"/marketing/reels/{AID_KI}"))
+    assert ('class="reel-detail f-quer ki-vorstufe"' in s) is klein
+    css = get(angemeldet, f"/marketing/reels/{AID_KI}").text
+    assert ".reel-detail.ki-vorstufe > .reel-bild { display: none; }" in css
+
+
+def test_aus_bildern_zeigt_keine_ki_bilder(angemeldet, pult):
+    pult.bilder = [{"name": "team.png"}, {"name": "ki-0d0d0d0d-1-1.jpg"}, {"name": "ki-0d0d0d0d-2-3.jpg"}]
+    s = rumpf(get(angemeldet, "/marketing/reels/neu?art=bilder"))
+    assert "team.png" in s and "ki-0d0d0d0d" not in s
 
 
 def test_bauen_nur_mit_fertigem_bild(angemeldet, pult):
@@ -1072,8 +1127,8 @@ def test_galerie_chip_bilder_pruefen(angemeldet, pult):
 
 def test_fremdes_bild_404(angemeldet, pult):
     pult.auftraege.append(_pruefen())
-    # ein Bild, das nicht zu diesem Auftrag gehoert, und eine kaputte Kennung: 404 ohne Auftrag an die API
-    for bild in (FREMDES_BILD, "../x", ""):
+    # eine kaputte Kennung: 404 ohne Auftrag an die API (ein fremdes, gueltiges Bild -> 303, s. verworfen)
+    for bild in ("../x", ""):
         r = post(angemeldet, f"/marketing/reels/{AID_KI}/ki/neu",
                  {"csrf": ui.CSRF_TOKEN, "mandant": "vibemind", "bild": bild})
         assert r.status_code == 404, bild
@@ -1130,3 +1185,10 @@ def test_nochmal_bei_ki_reel_nennt_dieselben_bilder(angemeldet, pult):
     s = rumpf(get(angemeldet, f"/marketing/reels/{AID_KI}"))
     assert "Nochmal mit Änderung" in s and "Für neue KI-Bilder bestelle ein neues Reel." in s
     assert "/ki/neu" not in s and "/ki/bauen" not in s
+
+
+def test_medien_karte_markiert_ki_bilder():
+    karte = ui._medien_karte("ki-0d0d0d0d-2-3.jpg", 2048, {"herkunft": "system", "bot_darf_senden": True}, {}, "")
+    assert "KI-Bild eines Reels" in karte and "nicht im Anhang" in karte
+    andere = ui._medien_karte("team.png", 2048, {"herkunft": "hochgeladen", "bot_darf_senden": True}, {}, "")
+    assert "KI-Bild" not in andere

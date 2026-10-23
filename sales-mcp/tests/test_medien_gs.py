@@ -140,3 +140,23 @@ def test_reel_namen_sind_reserviert(ordner):
                                   "vid-0123abcd-" + "a" * 41 + ".jpg"])
 def test_nur_die_exakte_form_ist_reeldatei(name):
     assert not medien.reeldatei(name)
+
+
+# KI-Bilder der Reels (Reels Stufe 3): ki-<auftrag8>-<nr>-<versuch>.jpg im Erzeugt-Ordner, auch verworfene
+# Versuche. Ob ein Versuch verworfen ist, weiss nur die Marketing-DB - darum fehlen ALLE ki-* in der
+# Anhangsliste (Bot) und im Picker "Aus Bildern"; /medien zeigt sie weiter, mit Hinweis.
+KI = "ki-0d0d0d0d-2-3.jpg"
+
+
+def test_ki_bilder_nicht_in_der_anhangsliste(ordner):
+    (ordner / KI).write_bytes(JPEG)
+    assert [n for n, _ in medien.liste(True)] == ["nl-12345678-x.jpg"]
+    assert [n for n, _ in medien.liste(False)] == [KI, "nl-12345678-x.jpg"]
+    assert medien.pruefe_anzeige(KI) == (KI, None)
+
+
+@pytest.mark.parametrize("name, ja", [(KI, True), ("ki-0d0d0d0d-1-1.jpg", True), ("ki-0D0D0D0D-1-1.jpg", False),
+                                      ("ki-0d0d0d0d-6-1.jpg", False), ("ki-0d0d0d0d-1-1.png", False),
+                                      ("xki-0d0d0d0d-1-1.jpg", False), ("ki-urlaub.jpg", False)])
+def test_nur_die_exakte_form_ist_ki_reelbild(name, ja):
+    assert medien.ki_reelbild(name) is ja

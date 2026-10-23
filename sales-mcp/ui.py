@@ -1458,7 +1458,9 @@ video.reel-gross { display: block; background: var(--balken); object-fit: contai
 .ki-neu button { min-height: 44px; }
 @media (max-width: 767px) {
   .ki-raster { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem; }
-  .ki-raster.f-quer { grid-template-columns: minmax(0, 1fr); } }
+  .ki-raster.f-quer { grid-template-columns: minmax(0, 1fr); }
+  /* Vor dem Bau gibt es noch kein Reel: die leere Fläche weg, damit die Bilder oben stehen */
+  .reel-detail.ki-vorstufe > .reel-bild { display: none; } }
 /* Reiter als Links (ui_muster.reiter): eine Zeile, die im eigenen Kasten
    waagerecht scrollt statt die Seite; aktiv = aria-current mit Unterstrich. */
 nav.reiter { display: flex; gap: .2rem; overflow-x: auto; margin: 0 0 1rem;
@@ -2890,11 +2892,14 @@ def _medien_ansicht_pruefen(art, seite) -> tuple[str, int]:
 
 def _medien_karte(name: str, groesse: int, m, zuletzt, ansicht: str) -> str:
     wann = f" · zuletzt {_e(_zeit(zuletzt[name]))}" if name in zuletzt else ""
+    # KI-Bilder der Reels (auch verworfene Versuche): sichtbar zum Aufräumen, aber nicht im Anhang/Picker
+    ki = ('<span class="meta">KI-Bild eines Reels – nicht im Anhang und nicht bei „Aus Bildern“</span>'
+          if server.medien.ki_reelbild(name) else "")
     return (f'<div class="medienkarte"><div class="medienbild">'
             f'{_medien_vorschau(name)}</div>'
             f'<b title="{_e(name)}">{_e(name)}</b>'
             f'<span class="meta">{_e(_medien_groesse(groesse))} · '
-            f'{_e(server._medien_herkunft(name, m))}{wann}</span>'
+            f'{_e(server._medien_herkunft(name, m))}{wann}</span>{ki}'
             f'<div class="aktionen">{_medien_schalter(name, m, ansicht)}'
             f'{_medien_loeschen_knopf(name)}</div></div>')
 
