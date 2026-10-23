@@ -20,6 +20,16 @@ def mandanten() -> list[dict]:
     return [m for m in liste if isinstance(m, dict) and isinstance(m.get("id"), str)]
 
 
+def einrichtungen() -> list[dict]:
+    """GET /mandanten?einrichtung=1: Marken mit laufender Einrichtung (086); wirft PultFehler.
+    Nur hiergegen prueft /marketing/layouts ?einrichtung=<id> - das Cookie bleibt bei den aktiven."""
+    r = marketing_pult.anfrage("GET", "/mandanten?einrichtung=1")
+    liste = r.get("mandanten") if isinstance(r, dict) else None
+    if not isinstance(liste, list):
+        raise marketing_pult.PultFehler("unbekannt", "Antwort ohne Mandantenliste")
+    return [m for m in liste if isinstance(m, dict) and isinstance(m.get("id"), str)]
+
+
 def waehlen(cookie: str | None, liste: list[dict]) -> str:
     """Die Cookie-id, wenn sie ein aktiver Mandant ist, sonst VORGABE."""
     if cookie and any(m.get("id") == cookie and m.get("aktiv") for m in liste):

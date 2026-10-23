@@ -1627,6 +1627,21 @@ nav.reiter .zahl { font-size: .8rem; color: var(--gedaempft); }
 .vorschlag-karte { align-self: stretch; padding: .5rem .8rem; background: var(--flaeche);
                    border: 1px solid var(--akzent); border-radius: 6px; }
 .vorschlag-karte h3 { margin: .2rem 0; }
+/* Einrichtung einer neuen Marke (/marke_neu, 086): Kopf über dem Chat. */
+.einrichtung-kopf { padding: .6rem .8rem; margin: .5rem 0 .8rem; background: var(--flaeche);
+                    border: 1px solid var(--linie); border-left: 4px solid var(--akzent); border-radius: 6px; }
+.einrichtung-kopf h2 { margin: .2rem 0 .4rem; }
+.einrichtung-schritte { margin: .3rem 0 .6rem; padding-left: 1.4rem; }
+.einrichtung-schritte li.erledigt { color: var(--gut); }
+.einrichtung-schritte li.offen { color: var(--schrift); }
+.einrichtung-angaben { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .2rem .8rem;
+                       margin: .4rem 0 .6rem; font-size: .9rem; }
+.einrichtung-angaben dt { font-weight: 700; }
+.einrichtung-angaben dd { margin: 0; }
+.einrichtung-angaben .woertlich { white-space: pre-wrap; overflow-wrap: anywhere; }
+.einrichtung-angaben .fehlt { color: var(--fehler_schrift); font-style: italic; }
+.in-einrichtung { margin: .2rem 0 .6rem; }
+.befehle { margin: .2rem 0 0; font-size: .8rem; }
 /* body mit overflow-x: hidden ist ein eigener Bildlauf-Behälter, der nie
    scrollt: daran klebt sticky nicht (gemessen, 20.10.2026). `clip` schneidet
    genauso ab, ohne Behälter; nur auf der Marken-Seite, andere Seiten bleiben. */

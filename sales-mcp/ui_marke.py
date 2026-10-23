@@ -36,7 +36,9 @@ import ui_editor
 import ui_muster
 
 SEITE = "/marketing/layouts"
-ZIEL = f"{SEITE}?reiter=chat#ende"            # E11: jede Weiterleitung nach einem POST
+ZIEL = f"{SEITE}?reiter=chat#ende"            # E11: Ziel ohne Einrichtung (= ziel(None))
+EINRICHTUNG_VORBEI = "Die Einrichtung ist abgeschlossen oder abgebrochen – bitte Seite neu laden. Nichts wurde geändert."
+BEFEHLE_MIT_DATEIEN = "Befehle bitte ohne Dateien senden"
 NACHRICHT_MAX = 2000
 PC_WARTET_NACH_S = 60                # danach: "sobald der PC läuft"
 ANHAENGE_MAX = 5                     # wie ANHAENGE_MAX der Marketing-API (kontext.anhaenge)
@@ -110,9 +112,10 @@ def _texte(wert) -> list[str]:
 
 
 def adresse(reiter: str = "chat", alle: bool = False, fmt: str | None = None, anker: str = "",
-            stand: int | None = None) -> str:
-    """Seitenadresse aus geprueften Werten (Reiter, alle, Vorschau-Format, stand)."""
-    q = {"reiter": reiter}
+            stand: int | None = None, einrichtung: str | None = None) -> str:
+    """Seitenadresse aus geprueften Werten (Einrichtung, Reiter, alle, Vorschau-Format, stand)."""
+    q = {"einrichtung": einrichtung} if einrichtung else {}
+    q["reiter"] = reiter
     if alle:
         q["alle"] = "1"
     if fmt:
@@ -120,6 +123,15 @@ def adresse(reiter: str = "chat", alle: bool = False, fmt: str | None = None, an
     if stand is not None:
         q["stand"] = str(int(stand))
     return f"{SEITE}?{urllib.parse.urlencode(q)}{anker}"
+
+
+def ziel(einrichtung: str | None) -> str:
+    """Weiterleitung nach einem POST (E11): der Chat, in einer Einrichtung mit ?einrichtung=<id>."""
+    return adresse("chat", anker="#ende", einrichtung=einrichtung)
+
+
+def einrichtung_adresse(eid: str) -> str:
+    return f"{SEITE}?{urllib.parse.urlencode({'einrichtung': eid})}"
 
 
 def abschnitt_namen(d: dict, abschnitte: dict) -> list[str]:
@@ -134,20 +146,44 @@ def routen(ui) -> list:
     from ui_marketing import _gerahmt, _wann
     e = ui._e
 
-    def fehler(f: marketing_pult.PultFehler):
+    def fehler(f: marketing_pult.PultFehler, ein: str | None = None):
         if f.art == "nicht_verbunden":
             return ui._fehlerseite(503, "Marketing nicht verbunden",
                                    "Die Verbindung zur Marketing-API ist nicht eingerichtet oder der Schlüssel stimmt nicht.")
         if f.art == "abgelehnt":
-            return ui._fehlerseite(422, "Nicht möglich", f'{e(f.grund)}<p><a href="{ZIEL}">Zur Marke</a></p>')
+            return ui._fehlerseite(422, "Nicht möglich", f'{e(f.grund)}<p><a href="{e(ziel(ein))}">Zur Marke</a></p>')
         return ui._fehlerseite(503, "Marketing gerade nicht erreichbar",
                                "Die Marketing-API antwortet nicht. Sales läuft normal weiter.")
 
-    def abgewiesen(status: int, text: str):
-        return ui._fehlerseite(status, "Nicht möglich", f'{e(text)}<p><a href="{ZIEL}">Zur Marke</a></p>')
+    def abgewiesen(status: int, text: str, form=None):
+        """Wie `fehler`: in einer Einrichtung (Formularfeld) fuehrt der Link zurueck in sie. Eine unbekannte id
+        ist harmlos - die Seite faellt dann auf die gewaehlte Firma zurueck (marken_firma)."""
+        ein = (str(form.get("einrichtung") or "") or None) if form is not None else None
+        return ui._fehlerseite(status, "Nicht möglich", f'{e(text)}<p><a href="{e(ziel(ein))}">Zur Marke</a></p>')
 
-    def csrf_feld() -> str:
-        return f'<input type="hidden" name="csrf" value="{e(ui.CSRF_TOKEN)}">'
+    def csrf_feld(ein: str | None = None) -> str:
+        """CSRF-Marke und, in einer Einrichtung, deren id: jedes Formular der Seite traegt sie (sonst handelte
+        ein POST an der Firma aus dem Cookie)."""
+        feld = f'<input type="hidden" name="einrichtung" value="{e(ein)}">' if ein else ""
+        return f'<input type="hidden" name="csrf" value="{e(ui.CSRF_TOKEN)}">{feld}'
+
+    async def marken_firma(request, form=None) -> tuple[str, list[dict], dict | None]:
+        """Die Firma der Seite: ohne `einrichtung` (Query bei GET, Formularfeld bei POST) die aus dem Cookie wie
+        ueberall (marketing_mandant.firma, dritter Wert None). Mit `einrichtung` nur eine id aus GET
+        /mandanten?einrichtung=1 -> (id, liste, eintrag). Unbekannt: GET wie ohne, POST 422 (PultFehler
+        "abgelehnt"). Das Cookie bleibt unberuehrt - eine Einrichtung ist nie die gewaehlte Firma."""
+        m, liste_ = await marketing_mandant.firma(request)
+        quelle = form if form is not None else request.query_params
+        wert = str(quelle.get("einrichtung") or "")
+        if not wert:
+            return m, liste_, None
+        eintrag = next((x for x in await run_in_threadpool(marketing_mandant.einrichtungen)
+                        if x["id"] == wert), None)
+        if eintrag is None:
+            if form is not None:
+                raise marketing_pult.PultFehler("abgelehnt", EINRICHTUNG_VORBEI)
+            return m, liste_, None
+        return wert, liste_, eintrag
 
     def farbfeld(name: str, wert) -> str:
         w = str(wert or "")
@@ -225,7 +261,7 @@ def routen(ui) -> list:
         return ('<fieldset><legend>Stimme für Reels und Podcast</legend><label>Stimme '
                 f'<select name="stimme">{"".join(optionen)}</select></label></fieldset>')
 
-    def bearbeiten_html(d: dict, mandant: str, stimmen: list[str] | None = None) -> str:
+    def bearbeiten_html(d: dict, mandant: str, stimmen: list[str] | None = None, ein: str | None = None) -> str:
         if d.get("laeuft") or d.get("uebernahme"):
             return '<p class="meta">Der Marken-Agent arbeitet gerade – bearbeiten geht danach.</p>'
         offen = d.get("vorschlag") if isinstance(d.get("vorschlag"), dict) else None
@@ -256,16 +292,16 @@ def routen(ui) -> list:
                 'korrigiert nur Ungültiges (mit Hinweis). Reine Texte gelten sofort, Farben, Schriften, die '
                 'Stimme und die Webseite kommen als Vorschlag zum Übernehmen.</p>'
                 f'<form method="post" action="/marketing/marke/bearbeiten" class="pult-felder marke-bearbeiten">'
-                f'{csrf_feld()}<input type="hidden" name="mandant" value="{e(mandant)}">'
+                f'{csrf_feld(ein)}<input type="hidden" name="mandant" value="{e(mandant)}">'
                 f'<fieldset><legend>Farben</legend>{farben}</fieldset>'
                 f'<fieldset><legend>Schriften</legend>{auswahl("schrift_anzeige", "Überschrift")}'
                 f'{auswahl("schrift_text", "Text")}</fieldset>{stimme_feld(werte, stimmen)}'
                 f'<label>Webseite <input name="webseite" type="url" value="{e(wert("webseite"))}" '
                 f'maxlength="{WEBSEITE_MAX}" placeholder="https://…"></label>{texte}'
                 f'<div class="aktionen"><button class="primaer" type="submit">An den Agenten geben</button> '
-                f'<a href="{e(adresse("profil"))}">Abbrechen</a></div></form>')
+                f'<a href="{e(adresse("profil", einrichtung=ein))}">Abbrechen</a></div></form>')
 
-    def profil_html(d: dict) -> str:
+    def profil_html(d: dict, ein: str | None = None) -> str:
         """Reiter "Profil" (E10): Farben, Schriften, helles Logo auf --flaeche-Ton, dunkles auf dunklem Grund, dann
         jeder Abschnitt als Karte in der Reihenfolge der API; leere Karten laden zum Fragen ein."""
         sp = _dict(d.get("spiegel"))
@@ -311,7 +347,12 @@ def routen(ui) -> list:
             for n in abschnitt_namen(d, ab))
         return (f'<div class="marke-profil">{"".join(teile)}</div>'
                 f'<div class="profil-karten">{karten}</div>'
-                f'<p><a class="knopf sek" href="{SEITE}?bearbeiten=1">Profil bearbeiten</a></p>')
+                f'<p><a class="knopf sek" href="{e(bearbeiten_adresse(ein))}">Profil bearbeiten</a></p>')
+
+    def bearbeiten_adresse(ein: str | None) -> str:
+        q = {"einrichtung": ein} if ein else {}
+        q["bearbeiten"] = "1"
+        return f"{SEITE}?{urllib.parse.urlencode(q)}"
 
     # --- Chat ------------------------------------------------------------------------------
 
@@ -394,7 +435,7 @@ def routen(ui) -> list:
                     + liste(hinweise, "meta") + spur_html(z) + "</div>")
         return ""
 
-    def wissen_zeile_html(d: dict) -> str:
+    def wissen_zeile_html(d: dict, ein: str | None = None) -> str:
         """Statuszeile "Firmenwissen" unter der Eingabe (E10.9), Einzelheiten eingeklappt. Ein wartender oder
         laufender Lauf laedt die Seite NICHT neu (Ruling R7, er dauert Minuten und verwarf sonst alle 5 s die
         Chat-Eingabe) - sein Stand kommt mit dem naechsten Laden ("Aktualisieren")."""
@@ -402,7 +443,7 @@ def routen(ui) -> list:
         if not isinstance(w, dict):
             return ""
         status = str(w.get("status") or "")
-        neu_laden = f' <a href="{ZIEL}">{WISSEN_AKTUALISIEREN}</a>'
+        neu_laden = f' <a href="{e(ziel(ein))}">{WISSEN_AKTUALISIEREN}</a>'
         hinweise = w.get("hinweise") if isinstance(w.get("hinweise"), list) else []
         zeilen = [z for z in str(w.get("antwort") or "").splitlines() if z.strip()]
         kopf = zeilen[0] if zeilen else ""
@@ -432,7 +473,7 @@ def routen(ui) -> list:
                 + (f'<p class="meta">Was er nicht kann:</p>{liste(nicht, "nicht")}' if nicht else "")
                 + "</details>")
 
-    def aenderung_html(a: dict, d: dict) -> str:
+    def aenderung_html(a: dict, d: dict, ein: str | None = None) -> str:
         """Karte "Geändert: Ton, Wörter" einer direkt uebernommenen Textaenderung (E10.5). Nur fuer direkt UND
         angenommen; ist das direkte Annehmen gescheitert (offen), zeigt die Runde die Vorschlagskarte."""
         z = a.get("aenderung")
@@ -451,7 +492,7 @@ def routen(ui) -> list:
             for x in felder)
         namen = ", ".join(x["feld"] for x in felder)
         vid = _uuid_oder_none(z.get("vid"))
-        knopf = (f'<form method="post" action="/marketing/marke/rueckgaengig" class="aktion">{csrf_feld()}'
+        knopf = (f'<form method="post" action="/marketing/marke/rueckgaengig" class="aktion">{csrf_feld(ein)}'
                  f'<input type="hidden" name="vorschlag" value="{e(vid)}">'
                  '<button type="submit">Rückgängig</button></form>') if z.get("rueckgaengig_moeglich") and vid else ""
         if knopf and (d.get("uebernahme") or d.get("laeuft")):    # der Agent arbeitet: erst danach (Review)
@@ -461,7 +502,7 @@ def routen(ui) -> list:
         return (f'<div class="diff-karte"><p><b>Geändert{": " + e(namen) if namen else ""}</b></p>'
                 f'{einzeln}{knopf}</div>')
 
-    def vorschlag_html(d: dict, fmt: str, alle: bool) -> str:
+    def vorschlag_html(d: dict, fmt: str, alle: bool, ein: str | None = None) -> str:
         v = d.get("vorschlag")
         if not isinstance(v, dict) or not _uuid_oder_none(v.get("id")):
             return ""
@@ -475,7 +516,8 @@ def routen(ui) -> list:
             f'<h4>{e(str(n))}</h4><p>{absaetze(t)}</p>'
             for n, t in _dict(w.get("abschnitte")).items() if isinstance(t, str) and t.strip())
         umschalter = " &middot; ".join(
-            (f'<b>{t}</b>' if k == fmt else f'<a href="{e(adresse("chat", alle, k, "#vorschlag"))}">{t}</a>')
+            (f'<b>{t}</b>' if k == fmt else
+             f'<a href="{e(adresse("chat", alle, k, "#vorschlag", einrichtung=ein))}">{t}</a>')
             for k, t in FORMATE.items())
         # Ein offener Gegenvorschlag (API: ist_rueckgaengig) ist das Rueckgaengig einer Aenderung, die noch
         # uebernommen wird (z. B. nach gescheiterter Direktannahme) - sonst gleiche Karte.
@@ -484,22 +526,28 @@ def routen(ui) -> list:
                 f'<p class="meta">Vorschau als {umschalter}</p>'
                 f'<div class="pult"><div class="pult-links"><div class="marke-profil">'
                 f'<div class="farben-zeile">{farben}</div>{schrift}{logo}{abschnitte}</div>'
-                f'<form method="post" action="/marketing/marke/uebernehmen" class="aktion">{csrf_feld()}'
+                f'<form method="post" action="/marketing/marke/uebernehmen" class="aktion">{csrf_feld(ein)}'
                 f'<input type="hidden" name="vorschlag" value="{e(vid)}">'
                 f'<label class="haken"><input type="checkbox" name="bestaetigt" value="ja"> '
                 f'Ja, dieses Profil übernehmen</label>'
                 f'<button class="primaer" type="submit">Übernehmen</button></form>'
-                f'<form method="post" action="/marketing/marke/verwerfen" class="aktion">{csrf_feld()}'
+                f'<form method="post" action="/marketing/marke/verwerfen" class="aktion">{csrf_feld(ein)}'
                 f'<input type="hidden" name="vorschlag" value="{e(vid)}">'
                 f'<button type="submit">Verwerfen</button></form></div>'
                 f'<div class="pult-rechts"><iframe class="vorschau" sandbox title="Vorschau" '
-                f'src="{e(f"/marketing/marke/vorschau?format={fmt}&vorschlag={vid}")}"></iframe></div></div></div>')
+                f'src="{e(vorschau_adresse(fmt, vid, ein))}"></iframe></div></div></div>')
+
+    def vorschau_adresse(fmt: str, vid: str, ein: str | None) -> str:
+        q = {"format": fmt, "vorschlag": vid}
+        if ein:
+            q["einrichtung"] = ein
+        return f"/marketing/marke/vorschau?{urllib.parse.urlencode(q)}"
 
     def offene_vid(d: dict) -> str | None:
         v = d.get("vorschlag")
         return _uuid_oder_none(v.get("id")) if isinstance(v, dict) else None
 
-    def runde_html(a: dict, d: dict, *, live: dict | None = None, karte: str = "") -> str:
+    def runde_html(a: dict, d: dict, *, live: dict | None = None, karte: str = "", ein: str | None = None) -> str:
         """Eine Runde (E10.3–6): Du-Blase rechts (bei einer Bearbeitung die Systemzeile), Agent-Blase links mit
         Schritten, dann die Aenderungskarte oder die Vorschlagskarte dieser Runde. `live`: die laufende Spur."""
         wann = e(_wann(ui, a.get("erstellt_am"))) if a.get("erstellt_am") else ""
@@ -524,13 +572,13 @@ def routen(ui) -> list:
         agent = (f'<div class="blase-agent"><span class="blase-kopf">Agent{uhr}</span>{inhalt}{hinweise}{schritte}</div>'
                  if (inhalt or hinweise or schritte) else "")
         z = a.get("aenderung")
-        rest = aenderung_html(a, d)
+        rest = aenderung_html(a, d, ein)
         if not rest and not karte and isinstance(z, dict):      # verworfen/ersetzt auch bei direkt (Review)
             wort = _VORSCHLAG_STATUS.get(str(z.get("status") or ""))
             rest = f'<p class="systemzeile">{wort}</p>' if wort else ""
         return f'<div class="chat-runde">{kopf}{agent}{rest}{karte}</div>'
 
-    def chat_html(d: dict, alle: bool, fmt: str = "mail") -> str:
+    def chat_html(d: dict, alle: bool, fmt: str = "mail", ein: str | None = None) -> str:
         """Reiter "Chat" bis vor die Eingabe (E10.1–7): Faehigkeiten, Verlauf mit dem Aeltesten oben (bei mehr
         Runden als gezeigt oben "Ältere anzeigen"), die laufende Runde mit "Denkt nach …", Uebernahme-Status."""
         runden = [a for a in d.get("auftraege") or [] if isinstance(a, dict)] \
@@ -544,11 +592,11 @@ def routen(ui) -> list:
         live_in_runde = (laufend is not None and laufende is not None
                          and laufend.get("art") in ("chat", "bearbeitung"))
         vid = offene_vid(d)
-        karte = vorschlag_html(d, fmt, alle)
+        karte = vorschlag_html(d, fmt, alle, ein)
         teile = []
         gesamt = d.get("runden_gesamt")
         if not alle and isinstance(gesamt, int) and gesamt > len(runden):
-            teile.append(f'<p class="aeltere"><a href="{e(adresse("chat", True, None, "#ende"))}">Ältere anzeigen'
+            teile.append(f'<p class="aeltere"><a href="{e(adresse("chat", True, None, "#ende", einrichtung=ein))}">Ältere anzeigen'
                          f'</a> <span class="meta">({gesamt - len(runden)} weitere)</span></p>')
         karte_gesetzt = False
         for i, a in enumerate(runden):
@@ -557,7 +605,8 @@ def routen(ui) -> list:
             direkt_fertig = isinstance(z, dict) and z.get("direkt") is True and z.get("status") == "angenommen"
             if karte and not karte_gesetzt and vid and not direkt_fertig and _uuid_oder_none(a.get("vorschlag")) == vid:
                 hier, karte_gesetzt = karte, True
-            teile.append(runde_html(a, d, live=laufend if live_in_runde and i == laufende else None, karte=hier))
+            teile.append(runde_html(a, d, live=laufend if live_in_runde and i == laufende else None, karte=hier,
+                                    ein=ein))
         if not runden:
             teile.append('<p class="meta">Noch keine Nachrichten.</p>')
         if karte and not karte_gesetzt:             # Runde nicht (mehr) im Verlauf: die Karte geht nie verloren
@@ -571,7 +620,72 @@ def routen(ui) -> list:
         teile.append(letzte_html(d))
         return faehigkeiten_html(d) + f'<div class="chat-verlauf">{"".join(teile)}</div>'
 
-    def eingabe_html(d: dict) -> str:
+    def befehle_html(d: dict) -> str:
+        """Zeile "Befehle: /marke_neu – neue Marke einrichten" aus `befehle` der API (Skills des Marken-Chats)."""
+        roh = d.get("befehle") if isinstance(d.get("befehle"), list) else []
+        teile = [f'{e(b["befehl"])} – {e(str(b.get("beschreibung") or ""))}' for b in roh
+                 if isinstance(b, dict) and isinstance(b.get("befehl"), str) and b["befehl"].startswith("/")]
+        return f'<p class="meta befehle">Befehle: {" · ".join(teile)}</p>' if teile else ""
+
+    def rechtsangaben_html(d: dict) -> str:
+        """Die gespeicherten Rechtsangaben woertlich (E-Mail-Pflichtteil der Einrichtung, 086): so bestaetigt der
+        Betreiber vor "Marke anlegen" genau das, was in jedem Newsletter steht. Leer = "fehlt"."""
+        pflicht = _dict(d.get("pflichtteil"))
+        vermittler = d.get("einrichtung_vermittler")
+
+        def wert(titel: str, roh) -> str:
+            text = str(roh).strip() if isinstance(roh, str) else ""
+            inhalt = f'<dd class="woertlich">{e(text)}</dd>' if text else '<dd class="fehlt">fehlt</dd>'
+            return f"<dt>{e(titel)}</dt>{inhalt}"
+        zeilen = [wert("Impressum", pflicht.get("impressum")), wert("Abmeldehinweis", pflicht.get("abmelde_hinweis")),
+                  "<dt>Vermittler</dt><dd>"
+                  + ("ja" if vermittler is True else "nein" if vermittler is False else "noch offen") + "</dd>"]
+        if vermittler is True:
+            zeilen.append(wert("Vermittlerangaben", pflicht.get("vermittlerangaben")))
+        return f'<dl class="einrichtung-angaben">{"".join(zeilen)}</dl>'
+
+    def einrichtung_kopf_html(d: dict, eintrag: dict, bisher: str) -> str:
+        """Ueber dem Chat einer Einrichtung (086): Name, Rueckweg zur gewaehlten Firma, Fortschritt je Schritt,
+        die gespeicherten Rechtsangaben, "Marke anlegen" nur wenn die API es erlaubt und der Assistent nicht
+        arbeitet, "Einrichtung abbrechen" immer."""
+        ein = eintrag["id"]
+        name = str(d.get("name") or eintrag.get("name") or ein)
+        stand = _dict(d.get("einrichtung_stand"))
+        schritte = [s for s in stand.get("schritte") or [] if isinstance(s, dict)] \
+            if isinstance(stand.get("schritte"), list) else []
+        teile = [f'<p><a href="{SEITE}">Zurück zu {e(bisher)}</a></p>',
+                 f'<h2>{e(name)} – in Einrichtung</h2>']
+        if schritte:
+            n = stand.get("naechster") if isinstance(stand.get("naechster"), int) else len(schritte)
+            punkte = []
+            for s in schritte:
+                fertig = s.get("erledigt") is True
+                offen = _texte(s.get("offen"))
+                fehlt = f' <span class="meta">– fehlt: {e(", ".join(offen))}</span>' if offen and not fertig else ""
+                punkte.append(f'<li class="{"erledigt" if fertig else "offen"}">{"✓ " if fertig else ""}'
+                              f'{e(str(s.get("titel") or ""))}{fehlt}</li>')
+            teile.append(f'<p class="meta">Schritt {n} von {len(schritte)}</p>'
+                         f'<ol class="einrichtung-schritte">{"".join(punkte)}</ol>')
+        teile.append(rechtsangaben_html(d))
+        knoepfe = []
+        if d.get("laeuft") or d.get("uebernahme"):
+            # Anlegen waehrend einer Runde lehnt die DB ohnehin ab; der Stand oben kann gleich noch wechseln
+            knoepfe.append('<p class="meta">Der Assistent arbeitet gerade – anlegen geht, sobald er fertig ist.</p>')
+        elif stand.get("abschliessbar") is True:
+            knoepfe.append(f'<form method="post" action="/marketing/marke/einrichtung/abschliessen" class="aktion">'
+                           f'{csrf_feld(ein)}<button class="primaer" type="submit">Marke anlegen</button></form>')
+        knoepfe.append(f'<form method="post" action="/marketing/marke/einrichtung/abbrechen" class="aktion">'
+                       f'{csrf_feld(ein)}<button type="submit">Einrichtung abbrechen</button></form>')
+        teile.append(f'<div class="aktionen">{"".join(knoepfe)}</div>')
+        return f'<div class="einrichtung-kopf">{"".join(teile)}</div>'
+
+    def in_einrichtung_html(offene: list[dict]) -> str:
+        """Kleine Liste "In Einrichtung" auf der normalen Seite: Links auf ?einrichtung=<id>."""
+        links = " · ".join(f'<a href="{e(einrichtung_adresse(x["id"]))}">{e(str(x.get("name") or x["id"]))}</a>'
+                           for x in offene)
+        return f'<p class="meta in-einrichtung">In Einrichtung: {links}</p>' if links else ""
+
+    def eingabe_html(d: dict, ein: str | None = None) -> str:
         """Die feste Eingabe unten (E10.8, CSS sticky). Das Sprungziel #ende steht NICHT hier, sondern als leeres
         Element ganz unten (ENDE): ein Sprung auf ein klebendes Element landet dort, wo es gerade klebt, nicht am
         Ende des Verlaufs (gemessen mit Playwright, 20.10.2026)."""
@@ -579,13 +693,13 @@ def routen(ui) -> list:
             return ('<div class="chat-eingabe"><p class="meta">Der Marken-Agent arbeitet gerade – die Seite '
                     'lädt sich selbst neu. Eine neue Nachricht geht erst danach.</p></div>')
         return (f'<form method="post" action="/marketing/marke/senden" enctype="multipart/form-data" '
-                f'class="chat-eingabe">{csrf_feld()}'
+                f'class="chat-eingabe">{csrf_feld(ein)}'
                 f'<textarea aria-label="Nachricht an den Marken-Agenten" name="nachricht" rows="3" maxlength="{NACHRICHT_MAX}" required '
                 f'placeholder="Frag den Marken-Agenten – z. B. Mach den Ton wärmer. Unsere Webseite: https://…">'
                 f'</textarea><div class="chat-eingabe-zeile">'
                 f'<label class="meta">Dateien (Logo, Bilder, Dokumente; höchstens {ANHAENGE_MAX}) '
                 f'<input type="file" name="datei" multiple></label>'
-                f'<button class="primaer" type="submit">Senden</button></div></form>')
+                f'<button class="primaer" type="submit">Senden</button></div>{befehle_html(d)}</form>')
 
     async def stimmen_holen() -> list[str] | None:
         """Namen aus GET /stimmen (MARKETING_STIMMEN der API) oder None, wenn die Liste fehlt."""
@@ -605,35 +719,47 @@ def routen(ui) -> list:
         reiter = "profil" if request.query_params.get("reiter") == "profil" else "chat"
         alle = request.query_params.get("alle") == "1"
         try:
-            m, liste_ = await marketing_mandant.firma(request)
+            m, liste_, eintrag = await marken_firma(request)
             pfad = f"/marke?mandant={urllib.parse.quote(m)}" + ("&alle=1" if alle else "")
             d = await run_in_threadpool(marketing_pult.anfrage, "GET", pfad)
         except marketing_pult.PultFehler as f:
             return fehler(f)
         if not isinstance(d, dict):
             return fehler(marketing_pult.PultFehler("unbekannt", "Antwort ohne Marke"))
-        kopf = ('<link rel="stylesheet" href="/marketing/schrift/schriften.css">'
-                + marketing_mandant.umschalter(e, ui.CSRF_TOKEN, m, liste_, SEITE))
+        ein = eintrag["id"] if eintrag else None
+        kopf = '<link rel="stylesheet" href="/marketing/schrift/schriften.css">'
+        if eintrag:
+            # Kein Umschalter: er setzt das Cookie, und jedes Formular hier muss die Einrichtung tragen
+            bisher = marketing_mandant.waehlen(request.cookies.get(marketing_mandant.COOKIE), liste_)
+            kopf += einrichtung_kopf_html(d, eintrag, marketing_mandant.name_von(bisher, liste_))
+        else:
+            try:
+                offene = await run_in_threadpool(marketing_mandant.einrichtungen)
+            except marketing_pult.PultFehler:
+                offene = []                    # die Liste ist Beiwerk: ein Fehler blendet sie nur aus
+            kopf += marketing_mandant.umschalter(e, ui.CSRF_TOKEN, m, liste_, SEITE) + in_einrichtung_html(offene)
         if request.query_params.get("bearbeiten") == "1":
-            rumpf = kopf + bearbeiten_html(d, m, await stimmen_holen()) + f'<p><a href="{e(adresse("profil"))}">Zurück zur Marke</a></p>'
+            rumpf = (kopf + bearbeiten_html(d, m, await stimmen_holen(), ein)
+                     + f'<p><a href="{e(adresse("profil", einrichtung=ein))}">Zurück zur Marke</a></p>')
             antwort = ui._seite("Marke", rumpf)
             antwort.headers["Content-Security-Policy"] = ui._csp_mit_rahmen("'self'", bilddaten=True, schriften=True)
             return antwort
         nav = ui_muster.reiter(list(REITER), reiter,
-                               lambda k: adresse(k, anker="#ende") if k == "chat" else adresse(k))
+                               lambda k: adresse(k, anker="#ende" if k == "chat" else "", einrichtung=ein))
         # Der Refresh zielt immer auf eine NEUE Adresse (stand=<Sekunden>): unterscheidet sich das Ziel nur im Anker,
         # ist es nach HTML-Spec nur ein Sprung ohne Neuladen (Firefox/Safari, Review Task 5).
         stand = int(time.time())
         if reiter == "profil":
             rumpf = (kopf + nav + '<p class="meta">Das Markenprofil bestimmt Farben, Schriften, Logo und Texte neuer '
-                     'Newsletter. Ändern geht im Chat oder mit „Profil bearbeiten“.</p>' + profil_html(d))
-            ziel = adresse("profil", stand=stand)
+                     'Newsletter. Ändern geht im Chat oder mit „Profil bearbeiten“.</p>' + profil_html(d, ein))
+            neu = adresse("profil", stand=stand, einrichtung=ein)
         else:
-            rumpf = kopf + nav + chat_html(d, alle, fmt) + eingabe_html(d) + wissen_zeile_html(d) + ENDE
-            ziel = adresse("chat", alle, fmt if fmt != "mail" else None, "#ende", stand)
+            rumpf = (kopf + nav + chat_html(d, alle, fmt, ein) + eingabe_html(d, ein) + wissen_zeile_html(d, ein)
+                     + ENDE)
+            neu = adresse("chat", alle, fmt if fmt != "mail" else None, "#ende", stand, einrichtung=ein)
         # Neu laden nur fuer Chat, Bearbeitung und Uebernahme; ein Wissens-Lauf nie (Ruling R7)
         arbeitet = bool(d.get("laeuft") or d.get("uebernahme"))
-        antwort = ui._seite("Marke", rumpf, refresh=(REFRESH_S, ziel) if arbeitet else None)
+        antwort = ui._seite("Marke", rumpf, refresh=(REFRESH_S, neu) if arbeitet else None)
         antwort.headers["Content-Security-Policy"] = ui._csp_mit_rahmen("'self'", bilddaten=True, schriften=True)
         return antwort
 
@@ -650,9 +776,9 @@ def routen(ui) -> list:
                 vid = _uuid_oder_none(request.query_params["vorschlag"])
                 if not vid:
                     return _gerahmt("<p>Kein Vorschlag offen.</p>", status=404)
-                m, _liste = await marketing_mandant.firma(request)
+                m, _liste, _e = await marken_firma(request)
             else:
-                m, _liste = await marketing_mandant.firma(request)
+                m, _liste, _e = await marken_firma(request)
                 d = await run_in_threadpool(marketing_pult.anfrage, "GET", f"/marke?mandant={urllib.parse.quote(m)}")
                 v = d.get("vorschlag") if isinstance(d, dict) else None
                 vid = _uuid_oder_none(v.get("id")) if isinstance(v, dict) else None
@@ -682,16 +808,20 @@ def routen(ui) -> list:
             return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
         nachricht = str(form.get("nachricht") or "")
         if not nachricht.strip():
-            return abgewiesen(422, "Ohne Nachricht kein Auftrag.")
+            return abgewiesen(422, "Ohne Nachricht kein Auftrag.", form=form)
         if len(nachricht) > NACHRICHT_MAX:
-            return abgewiesen(422, f"Die Nachricht darf höchstens {NACHRICHT_MAX} Zeichen haben.")
+            return abgewiesen(422, f"Die Nachricht darf höchstens {NACHRICHT_MAX} Zeichen haben.", form=form)
         dateien = [d for d in form.getlist("datei") if getattr(d, "filename", "")]
         if len(dateien) > ANHAENGE_MAX:
-            return abgewiesen(422, f"Höchstens {ANHAENGE_MAX} Dateien je Nachricht.")
+            return abgewiesen(422, f"Höchstens {ANHAENGE_MAX} Dateien je Nachricht.", form=form)
+        if dateien and nachricht.lstrip().startswith("/"):
+            # Vor dem Ablegen: die API lehnt Befehle mit Anhang ab, die Dateien blieben sonst verwaist
+            return abgewiesen(422, BEFEHLE_MIT_DATEIEN, form=form)
         try:
-            m, _liste = await marketing_mandant.firma(request)
+            m, _liste, eintrag = await marken_firma(request, form)
         except marketing_pult.PultFehler as f:
             return fehler(f)
+        ein = eintrag["id"] if eintrag else None
 
         abgelegt: list[str] = []
 
@@ -703,7 +833,7 @@ def routen(ui) -> list:
             basis, groesse, abgelehnt = await ui_editor.anhang_speichern(ui, datei)
             if abgelehnt:
                 await aufraeumen()
-                return abgewiesen(*abgelehnt)
+                return abgewiesen(*abgelehnt, form=form)
             abgelegt.append(basis)
             # Ohne Zeile gilt eine Datei als Gemeinsam und waere fuer jede Firma sichtbar:
             # sie gehoert der gewaehlten Firma. Gelingt das nicht, bleibt keine Datei liegen.
@@ -719,12 +849,19 @@ def routen(ui) -> list:
             ui.LOG.info("Medien (Marke-Anhang): %s abgelegt (%d Byte)", basis, groesse)
         anhaenge = [{"name": n, "art": ui.server.medien.anhang_art(n)} for n in abgelegt]
         try:
-            await run_in_threadpool(marketing_pult.anfrage, "POST", "/marke/chat",
-                                    {"mandant": m, "nachricht": nachricht, "kontext": {"anhaenge": anhaenge}})
+            r = await run_in_threadpool(marketing_pult.anfrage, "POST", "/marke/chat",
+                                        {"mandant": m, "nachricht": nachricht, "kontext": {"anhaenge": anhaenge},
+                                         "von": ui._ui_akteur(request)})
         except marketing_pult.PultFehler as f:
             await aufraeumen()           # abgelehnt (z. B. es laeuft schon einer): keine Kopien anhaeufen
+            grund = f.koerper.get("detail") if f.koerper else None
+            if f.art == "unbekannt" and f.grund == "400" and isinstance(grund, str) and grund.strip():
+                return abgewiesen(422, grund, form=form)      # Befehl unbekannt / ohne Namen: die API nennt die Befehle
             return fehler(f)
-        return RedirectResponse(ZIEL, status_code=303)
+        neu = _dict(r).get("einrichtung")
+        if isinstance(neu, dict) and isinstance(neu.get("id"), str) and neu["id"]:
+            return RedirectResponse(ziel(neu["id"]), status_code=303)      # /marke_neu: in die Einrichtung
+        return RedirectResponse(ziel(ein), status_code=303)
 
     # --- Uebernehmen / Verwerfen / Rueckgaengig ---------------------------------------------------
 
@@ -736,19 +873,19 @@ def routen(ui) -> list:
                 return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
             vid = _uuid_oder_none(form.get("vorschlag"))
             if not vid:
-                return abgewiesen(422, "Welcher Vorschlag gemeint ist, fehlt. Seite neu laden.")
+                return abgewiesen(422, "Welcher Vorschlag gemeint ist, fehlt. Seite neu laden.", form=form)
             if aktion == "uebernehmen" and str(form.get("bestaetigt") or "") != "ja":
-                return abgewiesen(422, "Bitte bestätige das Übernehmen mit dem Haken. Nichts wurde geändert.")
+                return abgewiesen(422, "Bitte bestätige das Übernehmen mit dem Haken. Nichts wurde geändert.", form=form)
             try:
                 # Die gerade gewaehlte Firma: ein Tab von vor dem Firmenwechsel handelt so nie am
                 # Vorschlag einer anderen Firma (Minor 4, die DB vergleicht). Rueckgaengig (E7): jede
                 # Ablehnung der DB (neuere Aenderung, Assistent arbeitet, zu gross) kommt als Meldung an.
-                m, _liste = await marketing_mandant.firma(request)
+                m, _liste, eintrag = await marken_firma(request, form)
                 await run_in_threadpool(marketing_pult.anfrage, "POST", f"/marke/vorschlaege/{vid}/{aktion}",
                                         {"von": ui._ui_akteur(request), "mandant": m})
             except marketing_pult.PultFehler as f:
                 return fehler(f)
-            return RedirectResponse(ZIEL, status_code=303)
+            return RedirectResponse(ziel(eintrag["id"] if eintrag else None), status_code=303)
         return handler
 
     # Rueckgaengig (E7): wie Uebernehmen/Verwerfen, ohne Haken - die API legt den Gegenvorschlag an
@@ -761,7 +898,7 @@ def routen(ui) -> list:
         if not ui._csrf_ok(form):
             return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
         if any(_ALTES_FELD.fullmatch(k) for k in form.keys()):
-            return abgewiesen(422, "Das Formular ist veraltet. Nichts wurde geändert – bitte Seite neu laden.")
+            return abgewiesen(422, "Das Formular ist veraltet. Nichts wurde geändert – bitte Seite neu laden.", form=form)
         formular = {k: str(form.get(k) or "").strip() for k, _ in FORM_FARBEN}
         formular.update({k: str(form.get(k) or "").strip() for k in ("schrift_anzeige", "schrift_text", "webseite")})
         formular["abschnitte"] = {k[len(FELD_ABSCHNITT):]: str(form.get(k) or "").replace("\r\n", "\n").strip()
@@ -776,16 +913,47 @@ def routen(ui) -> list:
                    or any(len(n) > ABSCHNITT_NAME_MAX or len(t) > ABSCHNITT_MAX
                           for n, t in formular["abschnitte"].items()))
         if zu_lang:
-            return abgewiesen(422, "Ein Feld ist zu lang. Nichts wurde geändert.")
+            return abgewiesen(422, "Ein Feld ist zu lang. Nichts wurde geändert.", form=form)
         try:
-            m, _liste = await marketing_mandant.firma(request)
+            m, _liste, eintrag = await marken_firma(request, form)
             if str(form.get("mandant") or "") != m:      # Tab von vor dem Firmenwechsel (wie vorschlag_aktion)
-                return abgewiesen(422, "Die Firma wurde gewechselt. Nichts wurde geändert – bitte Seite neu laden.")
+                return abgewiesen(422, "Die Firma wurde gewechselt. Nichts wurde geändert – bitte Seite neu laden.", form=form)
             await run_in_threadpool(marketing_pult.anfrage, "POST", "/marke/bearbeiten",
                                     {"mandant": m, "formular": formular})
         except marketing_pult.PultFehler as f:
             return fehler(f)
-        return RedirectResponse(ZIEL, status_code=303)
+        return RedirectResponse(ziel(eintrag["id"] if eintrag else None), status_code=303)
+
+    # --- Einrichtung abschliessen / abbrechen (086) -------------------------------------------------
+
+    def einrichtung_aktion(aktion: str):
+        @ui._gesichert_seite
+        async def handler(request):
+            form = await request.form()
+            if not ui._csrf_ok(form):
+                return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
+            if not str(form.get("einrichtung") or ""):
+                return abgewiesen(422, "Welche Einrichtung gemeint ist, fehlt. Seite neu laden.", form=form)
+            try:
+                m, _liste, eintrag = await marken_firma(request, form)
+                await run_in_threadpool(marketing_pult.anfrage, "POST", f"/marke/einrichtung/{aktion}",
+                                        {"mandant": m, "von": ui._ui_akteur(request)})
+            except marketing_pult.PultFehler as f:
+                # Abschluss abgelehnt (z. B. Impressum fehlt): der Link fuehrt zurueck in die Einrichtung
+                return fehler(f, str(form.get("einrichtung")))
+            if aktion == "abschliessen":
+                # Jetzt aktiv: wie /marketing/mandant (ui_marketing.mandant_waehlen) wird sie die gewaehlte Firma
+                antwort = RedirectResponse(adresse("profil"), status_code=303)
+                antwort.set_cookie(marketing_mandant.COOKIE, m, max_age=365 * 24 * 3600,
+                                   httponly=True, samesite="lax", path="/marketing")
+                return antwort
+            name = str((eintrag or {}).get("name") or m)
+            return ui._seite("Einrichtung abgebrochen",
+                             f'<p>Die Einrichtung von <b>{e(name)}</b> ist abgebrochen. Gelöscht wurde nichts: '
+                             f'der Ordner <code>companys/{e(name)}/</code> bleibt liegen. Mit '
+                             f'<code>/marke_neu {e(name)}</code> im Marken-Chat geht es später weiter.</p>'
+                             f'<p><a href="{SEITE}">Zur Marke</a></p>')
+        return handler
 
     # --- Alte Layout-Pfade -------------------------------------------------------------------------
 
@@ -802,6 +970,8 @@ def routen(ui) -> list:
         Route("/marketing/marke/verwerfen", vorschlag_aktion("verwerfen"), methods=["POST"]),
         Route("/marketing/marke/rueckgaengig", rueckgaengig, methods=["POST"]),
         Route("/marketing/marke/bearbeiten", bearbeiten, methods=["POST"]),
+        Route("/marketing/marke/einrichtung/abschliessen", einrichtung_aktion("abschliessen"), methods=["POST"]),
+        Route("/marketing/marke/einrichtung/abbrechen", einrichtung_aktion("abbrechen"), methods=["POST"]),
         Route("/marketing/layout/{name}", alt, methods=alle_methoden),
         Route("/marketing/layout/{name}/speichern", alt, methods=alle_methoden),
         Route("/marketing/layout/{name}/standard", alt, methods=alle_methoden),
