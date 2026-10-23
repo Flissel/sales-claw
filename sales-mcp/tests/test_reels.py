@@ -26,6 +26,7 @@ NEU = "aaaabbbb-3333-3333-3333-333333333333"
 DATEI = "vid-0123abcd-herbst-reel.mp4"
 POSTER = "vid-0123abcd-herbst-reel.jpg"
 ROHBEFUND = "Render: ffmpeg exit 1 (stderr: moov atom not found)"
+BILD_NEU = "eeeeffff-3333-3333-3333-333333333333"
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -77,6 +78,7 @@ class Falsch:
         self.markenstimme = "eigene-a"
         self.stimmen = ["eigene-a", "eigene-b"]
         self.archiv_ok = True
+        self.freigabe_ok = True
 
     def anfrage(self, methode, pfad, daten=None, roh=False, zeitlimit=None):
         self.aufrufe.append((methode, pfad, daten))
@@ -107,6 +109,10 @@ class Falsch:
             return {"ok": self.archiv_ok}
         if pfad.endswith("/abbrechen"):
             return {"status": "abgebrochen"}
+        if pfad.endswith("/ki/neu"):
+            return {"bild": BILD_NEU}
+        if pfad.endswith("/ki/freigeben"):
+            return {"ok": self.freigabe_ok}
         return {}
 
     def posts(self):
@@ -463,14 +469,14 @@ def test_entwurf_fehler_wird_angezeigt(angemeldet, pult, monkeypatch):
 
 # --- Gefuehrte Bestellung ------------------------------------------------------------
 
-def test_bestellung_schritt1_drei_karten(angemeldet, pult):
+def test_bestellung_schritt1_vier_karten(angemeldet, pult):
     r = get(angemeldet, "/marketing/reels/neu")
     s = rumpf(r)
     assert r.status_code == 200
     for art, name in (("bilder", "Aus Bildern"), ("material", "Aus Videomaterial"),
-                      ("kurzfassung", "Kurzfassung eines Videos")):
+                      ("kurzfassung", "Kurzfassung eines Videos"), ("ki", "Aus KI-Bildern")):
         assert f'<a class="reel-art" href="/marketing/reels/neu?art={art}"><b>{name}</b>' in s
-    assert s.count('<a class="reel-art"') == 3
+    assert s.count('<a class="reel-art"') == 4
     assert not [a for a in pult.aufrufe if a[1].startswith("/video")]
 
 
@@ -854,3 +860,273 @@ def test_quer_detail_stil_hat_schmalen_pfad():
     """Zwischen Handy und breitem Schirm darf die Textspalte nicht auf null schrumpfen."""
     assert re.search(r"\.reel-detail\.f-quer \{ grid-template-columns: minmax\(0, 3fr\) minmax\(16rem, 2fr\)", ui._STIL)
     assert re.search(r"max-width: 1099px\) \{\s*\.reel-detail\.f-quer \{ grid-template-columns: minmax\(0, 1fr\)", ui._STIL)
+
+
+# --- KI-Bilder (Stufe 3, E7) ------------------------------------------------------
+
+AID_KI = "0d0d0d0d-5555-5555-5555-555555555555"
+KI_B = ["b1b1b1b1-5555-5555-5555-555555555555", "b2b2b2b2-5555-5555-5555-555555555555",
+        "b3b3b3b3-5555-5555-5555-555555555555", "b4b4b4b4-5555-5555-5555-555555555555"]
+FREMDES_BILD = "f0f0f0f0-5555-5555-5555-555555555555"
+
+
+def _ki_bild(i: int, status: str, versuch: int = 1) -> dict:
+    nr = i + 1
+    return {"id": KI_B[i], "nr": nr, "idee": f"Idee {nr}: Team am Tisch <b>", "status": status,
+            "datei": f"ki-0d0d0d0d-{nr}-{versuch}.jpg" if status == "fertig" else None,
+            "befund": "FLUX.2: Zeitlimit" if status == "fehler" else ""}
+
+
+def _ki_auftrag(status: str, bilder: list[dict], fmt: str | None = None, aid: str = AID_KI) -> dict:
+    briefing = {"thema": "bAV", "sprechertext": "Drei.", "ki": {"anzahl": 4}}
+    if fmt:
+        briefing["format"] = fmt
+    return {"id": aid, "mandant": "vibemind", "titel": "KI-Reel", "art": "bilder", "status": status,
+            "archiviert": False, "erstellt_am": "2026-10-23T08:00:00", "befund": "", "befund_text": "",
+            "briefing": briefing, "protokoll": [], "ki_bilder": bilder}
+
+
+def _pruefen(fmt: str | None = "quer") -> dict:
+    return _ki_auftrag("bilder_pruefen", [_ki_bild(0, "fertig"), _ki_bild(1, "fehler"),
+                                          _ki_bild(2, "fertig", 2), _ki_bild(3, "fertig")], fmt)
+
+
+def test_schritt1_hat_ki_karte(angemeldet, pult):
+    s = rumpf(get(angemeldet, "/marketing/reels/neu"))
+    karte = s[s.index('href="/marketing/reels/neu?art=ki"'):]
+    karte = karte[:karte.index("</a>")]
+    assert "<b>Aus KI-Bildern</b>" in karte and "Ich entwerfe 3 bis 5 Bilder im Bildstil deiner Marke." in karte
+
+
+def test_schritt2_ki_anzahl_vorgabe_vier(angemeldet, pult):
+    r = get(angemeldet, "/marketing/reels/neu?art=ki")
+    s = rumpf(r)
+    assert r.status_code == 200
+    reihe = re.findall(r'<input type="radio" name="anzahl" value="(\d)"( checked)?', s)
+    assert reihe == [("3", ""), ("4", " checked"), ("5", "")]
+    assert "dauert etwa 2 Minuten je Bild" in s
+    assert '<input type="hidden" name="art" value="ki">' in s and '<input type="hidden" name="schritt" value="3">' in s
+    assert not [a for a in pult.aufrufe if a[1].startswith("/video")]       # keine Medien, kein Laura
+    # zurueck aus Schritt 3: die gewaehlte Zahl bleibt
+    s = rumpf(get(angemeldet, "/marketing/reels/neu?art=ki&anzahl=5"))
+    assert '<input type="radio" name="anzahl" value="5" checked>' in s
+    # Schritt 3: Zahl versteckt, Auswahl als Satz, Format und Stimme wie bisher
+    r = get(angemeldet, "/marketing/reels/neu?art=ki&schritt=3&anzahl=3")
+    s = rumpf(r)
+    assert r.status_code == 200 and '<input type="hidden" name="anzahl" value="3">' in s
+    assert "3 KI-Bilder im Bildstil deiner Marke" in s and 'name="format"' in s and "Stimme:" in s
+    assert '<a href="/marketing/reels/neu?art=ki&amp;anzahl=3">' in s
+    assert 'name="sprechertext" rows="4" maxlength="900" required' in s
+    # unsinnige Zahl: zurueck zu Schritt 2 mit Vorgabe
+    for roh in ("7", "x", ""):
+        r = get(angemeldet, f"/marketing/reels/neu?art=ki&schritt=3&anzahl={roh}")
+        assert r.status_code == 422 and "Wähle 3, 4 oder 5 Bilder." in r.text, roh
+        assert '<input type="radio" name="anzahl" value="4" checked>' in rumpf(r)
+
+
+def test_bestellen_ki_sendet_anzahl_ohne_bilder(angemeldet, pult):
+    basis = {"csrf": ui.CSRF_TOKEN, "mandant": "vibemind", "art": "ki", "titel": "KI", "thema": "bAV",
+             "sprechertext": "Drei.", "dauer_s": "20"}
+    r = post(angemeldet, "/marketing/reels/neu", {**basis, "anzahl": "5", "format": "quer",
+                                                   "bild": "team.png", "logo": "logo.png"})
+    assert r.status_code == 303 and r.headers["location"] == f"/marketing/reels/{NEU}"
+    (methode, pfad, daten), = pult.posts()
+    assert (methode, pfad) == ("POST", "/video")
+    assert daten == {"mandant": "vibemind", "art": "bilder", "titel": "KI",
+                     "briefing": {"thema": "bAV", "sprechertext": "Drei.", "hook": "", "dauer_s": 20,
+                                  "format": "quer", "ki": {"anzahl": 5}}}
+    pult.aufrufe.clear()
+    for roh in ("2", "6", "x", ""):
+        r = post(angemeldet, "/marketing/reels/neu", {**basis, "anzahl": roh})
+        assert r.status_code == 422 and "Wähle 3, 4 oder 5 Bilder." in r.text, roh
+    r = post(angemeldet, "/marketing/reels/neu", {**basis, "anzahl": "4", "mandant": "fin2gether"})
+    assert r.status_code == 422 and "Die Firma wurde inzwischen gewechselt" in r.text
+    assert not pult.posts()
+
+
+def test_detail_status_texte_ki(angemeldet, pult):
+    pult.auftraege.append(_ki_auftrag("ideen", []))
+    r = get(angemeldet, f"/marketing/reels/{AID_KI}")
+    s = rumpf(r)
+    assert "Bildideen werden geschrieben" in s and 'http-equiv="refresh"' in r.text
+    assert "<dt>Art</dt><dd>Aus KI-Bildern</dd>" in s
+    assert f'action="/marketing/reels/{AID_KI}/abbrechen"' in s
+    pult.auftraege[-1] = _ki_auftrag("bilder_laufen", [_ki_bild(0, "fertig"), _ki_bild(1, "fehler"),
+                                                       _ki_bild(2, "in_arbeit"), _ki_bild(3, "offen")])
+    r = get(angemeldet, f"/marketing/reels/{AID_KI}")
+    s = rumpf(r)
+    assert "Bilder entstehen (2 von 4)" in s and 'http-equiv="refresh"' in r.text
+    assert "/ki/neu" not in s and "/ki/bauen" not in s          # waehrend der Erzeugung nur ansehen
+    assert '<img src="/medien/datei/ki-0d0d0d0d-1-1.jpg"' in s
+    pult.auftraege[-1] = _pruefen()
+    s = rumpf(get(angemeldet, f"/marketing/reels/{AID_KI}"))
+    assert '<span class="chip bereich">Bilder prüfen</span>' in s
+    assert f'action="/marketing/reels/{AID_KI}/abbrechen"' in s
+
+
+def test_pruefen_raster_im_format_mit_neu_und_bauen(angemeldet, pult):
+    pult.auftraege.append(_pruefen("quer"))
+    s = rumpf(get(angemeldet, f"/marketing/reels/{AID_KI}"))
+    assert '<div class="ki-raster f-quer">' in s
+    for nr, versuch in ((1, 1), (3, 2), (4, 1)):
+        assert f'<img src="/medien/datei/ki-0d0d0d0d-{nr}-{versuch}.jpg" alt="Bild {nr}" loading="lazy">' in s
+    assert s.count("<img ") == 3
+    # die Idee ausklappbar und escaped, der Fehlschlag mit Befund
+    assert "<details><summary>Idee</summary><p>Idee 1: Team am Tisch &lt;b&gt;</p></details>" in s
+    assert "Fehlgeschlagen: FLUX.2: Zeitlimit" in s
+    # Neu erzeugen je Bild (auch beim fehlgeschlagenen), mit CSRF, Firma und optionaler Idee
+    for bid in KI_B:
+        form = s[s.rindex("<form ", 0, s.index(f'<input type="hidden" name="bild" value="{bid}">')):]
+        form = form[:form.index("</form>")]
+        assert f'<form method="post" action="/marketing/reels/{AID_KI}/ki/neu"' in form
+        assert f'<input type="hidden" name="csrf" value="{ui._e(ui.CSRF_TOKEN)}">' in form
+        assert '<input type="hidden" name="mandant" value="vibemind">' in form
+        assert '<input type="text" name="idee" maxlength="600"' in form and "required" not in form
+        assert ">Neu erzeugen</button>" in form
+    assert "andere Idee" in s
+    # ein Knopf Reel bauen mit CSRF und Firma; nur die drei fertigen gehen hinein
+    bauen = s[s.index(f'action="/marketing/reels/{AID_KI}/ki/bauen"'):]
+    bauen = bauen[:bauen.index("</form>")]
+    assert f'name="csrf" value="{ui._e(ui.CSRF_TOKEN)}"' in bauen and 'name="mandant" value="vibemind"' in bauen
+    assert '<button class="primaer" type="submit">Reel bauen</button>' in bauen
+    assert "3 fertigen Bildern" in s
+    # Hochformat: Raster ohne Formatklasse
+    pult.auftraege[-1] = _pruefen(None)
+    s = rumpf(get(angemeldet, f"/marketing/reels/{AID_KI}"))
+    assert '<div class="ki-raster">' in s
+
+
+def test_kein_refresh_bei_bilder_pruefen(angemeldet, pult):
+    pult.auftraege = [_pruefen()]
+    assert 'http-equiv="refresh"' not in get(angemeldet, f"/marketing/reels/{AID_KI}").text
+    assert 'http-equiv="refresh"' not in get(angemeldet, "/marketing/reels").text
+    pult.auftraege = [_ki_auftrag("bilder_laufen", [_ki_bild(0, "in_arbeit")])]
+    assert 'http-equiv="refresh"' in get(angemeldet, "/marketing/reels").text
+
+
+def test_neu_erzeugen_post(angemeldet, pult):
+    pult.auftraege.append(_pruefen())
+    pfad = f"/marketing/reels/{AID_KI}/ki/neu"
+    basis = {"csrf": ui.CSRF_TOKEN, "mandant": "vibemind", "bild": KI_B[1]}
+    r = post(angemeldet, pfad, {**basis, "idee": "  Team draußen  "})
+    assert r.status_code == 303 and r.headers["location"] == f"/marketing/reels/{AID_KI}"
+    assert pult.posts() == [("POST", f"/video/{AID_KI}/ki/neu",
+                             {"bild": KI_B[1], "mandant": "vibemind", "idee": "Team draußen"})]
+    r = post(angemeldet, pfad, basis)                       # ohne andere Idee: dieselbe
+    assert r.status_code == 303 and pult.posts()[-1][2] == {"bild": KI_B[1], "mandant": "vibemind", "idee": ""}
+    pult.aufrufe.clear()
+    assert post(angemeldet, pfad, {"mandant": "vibemind", "bild": KI_B[1]}).status_code == 403
+    assert not pult.aufrufe
+    r = post(angemeldet, pfad, {**basis, "idee": "x" * 601})
+    assert r.status_code == 422 and "höchstens 600 Zeichen" in r.text
+    r = post(angemeldet, pfad, {**basis, "mandant": "fin2gether"})
+    assert r.status_code == 422 and "Die Firma wurde inzwischen gewechselt" in r.text
+    assert not pult.posts()
+    # nur waehrend der Pruefung
+    pult.auftraege[-1] = _ki_auftrag("bilder_laufen", [_ki_bild(i, "fertig") for i in range(4)])
+    r = post(angemeldet, pfad, basis)
+    assert r.status_code == 422 and not pult.posts()
+    # die Ablehnung der API kommt als Meldung an
+    pult.auftraege[-1] = _pruefen()
+    pult.fehler, pult.fehler_pfad = marketing_pult.PultFehler("abgelehnt", "Bild ist nicht fertig <x>"), "/ki/neu"
+    r = post(angemeldet, pfad, basis)
+    assert r.status_code == 422 and "Bild ist nicht fertig &lt;x&gt;" in r.text
+
+
+def test_reel_bauen_post(angemeldet, pult):
+    pult.auftraege.append(_pruefen())
+    pfad = f"/marketing/reels/{AID_KI}/ki/bauen"
+    r = post(angemeldet, pfad, {"csrf": ui.CSRF_TOKEN, "mandant": "vibemind"})
+    assert r.status_code == 303 and r.headers["location"] == f"/marketing/reels/{AID_KI}"
+    assert pult.posts() == [("POST", f"/video/{AID_KI}/ki/freigeben", {"mandant": "vibemind"})]
+    pult.aufrufe.clear()
+    assert post(angemeldet, pfad, {"mandant": "vibemind"}).status_code == 403 and not pult.aufrufe
+    r = post(angemeldet, pfad, {"csrf": ui.CSRF_TOKEN, "mandant": "fin2gether"})
+    assert r.status_code == 422 and "Die Firma wurde inzwischen gewechselt" in r.text and not pult.posts()
+
+
+def test_bauen_nur_mit_fertigem_bild(angemeldet, pult):
+    pult.auftraege.append(_ki_auftrag("bilder_pruefen", [_ki_bild(i, "fehler") for i in range(4)]))
+    s = rumpf(get(angemeldet, f"/marketing/reels/{AID_KI}"))
+    assert "/ki/bauen" not in s and "Reel bauen" not in s
+    assert "Noch kein Bild ist fertig" in s and s.count(">Neu erzeugen</button>") == 4
+    r = post(angemeldet, f"/marketing/reels/{AID_KI}/ki/bauen", {"csrf": ui.CSRF_TOKEN, "mandant": "vibemind"})
+    assert r.status_code == 422 and "mindestens ein Bild fertig" in r.text and not pult.posts()
+    # Die API hat das letzte Wort: lehnt sie ab (ok false), kommt keine Erfolgsmeldung
+    pult.auftraege[-1] = _pruefen()
+    pult.freigabe_ok = False
+    r = post(angemeldet, f"/marketing/reels/{AID_KI}/ki/bauen", {"csrf": ui.CSRF_TOKEN, "mandant": "vibemind"})
+    assert r.status_code == 422 and "mindestens ein Bild fertig" in r.text
+
+
+def test_galerie_chip_bilder_pruefen(angemeldet, pult):
+    pult.auftraege = [_ki_auftrag("ideen", [], aid=AID_Q), _ki_auftrag("bilder_laufen", [], aid=AID_W),
+                      _pruefen()]
+    s = rumpf(get(angemeldet, "/marketing/reels?reiter=arbeit"))
+    assert '<a href="/marketing/reels?reiter=arbeit" aria-current="page">In Arbeit <span class="zahl">3</span></a>' in s
+    assert '<span class="chip bereich">Bilder prüfen</span>' in _karte_von(s, AID_KI)
+    assert 'class="reel-karte f-quer"' in _karte_von(s, AID_KI)
+    assert "Bildideen werden geschrieben" in _karte_von(s, AID_Q)
+    assert "Bilder entstehen" in _karte_von(s, AID_W)
+
+
+def test_fremdes_bild_404(angemeldet, pult):
+    pult.auftraege.append(_pruefen())
+    # ein Bild, das nicht zu diesem Auftrag gehoert, und eine kaputte Kennung: 404 ohne Auftrag an die API
+    for bild in (FREMDES_BILD, "../x", ""):
+        r = post(angemeldet, f"/marketing/reels/{AID_KI}/ki/neu",
+                 {"csrf": ui.CSRF_TOKEN, "mandant": "vibemind", "bild": bild})
+        assert r.status_code == 404, bild
+    # ein Auftrag einer anderen Firma: 404 auf beiden Wegen
+    for pfad, daten in ((f"/marketing/reels/{AID_FREMD}/ki/neu", {"bild": KI_B[0]}),
+                        (f"/marketing/reels/{AID_FREMD}/ki/bauen", {})):
+        r = post(angemeldet, pfad, {"csrf": ui.CSRF_TOKEN, "mandant": "vibemind", **daten})
+        assert r.status_code == 404 and "Fremd-Reel" not in r.text, pfad
+    assert not pult.posts()
+    # die API sieht es anders (404 = abgelehnt): Meldung statt Erfolg
+    pult.fehler, pult.fehler_pfad = marketing_pult.PultFehler("abgelehnt", "Unbekanntes Bild"), "/ki/"
+    r = post(angemeldet, f"/marketing/reels/{AID_KI}/ki/neu",
+             {"csrf": ui.CSRF_TOKEN, "mandant": "vibemind", "bild": KI_B[0]})
+    assert r.status_code == 422 and "Unbekanntes Bild" in r.text
+
+
+def test_ki_seiten_ohne_javascript_und_ohne_verbotene_staemme(angemeldet, pult):
+    from test_darstellung import WOERTER_ASCII
+    pult.auftraege += [_pruefen(), _ki_auftrag("ideen", [], aid=AID_Q)]
+    for pfad in ("/marketing/reels?reiter=arbeit", f"/marketing/reels/{AID_KI}", f"/marketing/reels/{AID_Q}",
+                 "/marketing/reels/neu", "/marketing/reels/neu?art=ki",
+                 "/marketing/reels/neu?art=ki&schritt=3&anzahl=4"):
+        r = get(angemeldet, pfad)
+        assert r.status_code == 200, pfad
+        assert "<script" not in r.text and "onclick" not in r.text, pfad
+        s = rumpf(r).replace('name="zurueck"', "")
+        gefunden = [w for w in WOERTER_ASCII if w in s]
+        assert not gefunden, (pfad, gefunden)
+
+
+def test_ki_aufrufe_im_threadpool(angemeldet, pult, monkeypatch):
+    import asyncio
+    pult.auftraege.append(_pruefen())
+    im_loop = []
+    alt = pult.anfrage
+
+    def wache(*a, **k):
+        try:
+            asyncio.get_running_loop()
+            im_loop.append(a[1])
+        except RuntimeError:
+            pass
+        return alt(*a, **k)
+    monkeypatch.setattr(marketing_pult, "anfrage", wache)
+    get(angemeldet, f"/marketing/reels/{AID_KI}")
+    post(angemeldet, f"/marketing/reels/{AID_KI}/ki/neu", {"csrf": ui.CSRF_TOKEN, "mandant": "vibemind", "bild": KI_B[0]})
+    post(angemeldet, f"/marketing/reels/{AID_KI}/ki/bauen", {"csrf": ui.CSRF_TOKEN, "mandant": "vibemind"})
+    assert im_loop == []
+
+
+def test_nochmal_bei_ki_reel_nennt_dieselben_bilder(angemeldet, pult):
+    fertig = {**_pruefen(), "status": "fertig", "datei": "vid-0d0d0d0d-ki.mp4"}
+    pult.auftraege.append(fertig)
+    s = rumpf(get(angemeldet, f"/marketing/reels/{AID_KI}"))
+    assert "Nochmal mit Änderung" in s and "Für neue KI-Bilder bestelle ein neues Reel." in s
+    assert "/ki/neu" not in s and "/ki/bauen" not in s

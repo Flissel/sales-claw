@@ -1423,6 +1423,42 @@ video.reel-gross { display: block; background: var(--balken); object-fit: contai
   .reel-bild > .reel-gross { max-height: 70vh; }
   .reel-raster { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem; }
   .reel-form button { align-self: stretch; } }
+/* KI-Bilder (Reels Stufe 3, 23.10.2026): Anzahl wählen, Bilder im Format des
+   Reels ansehen, einzeln neu erzeugen. Nur Farb-Variablen aus :root. */
+.ki-anzahl { display: flex; flex-wrap: wrap; gap: .2rem 1.4rem; margin: 0 0 .6rem;
+             padding: 0; border: 0; min-width: 0; }
+.ki-anzahl legend { font-weight: 600; padding: 0 0 .3rem; }
+.ki-anzahl label { display: inline-flex; align-items: center; gap: .6rem; min-height: 44px; }
+.ki-anzahl input { width: 1.2rem; height: 1.2rem; flex: none; accent-color: var(--akzent); }
+.ki-bilder { margin: 1.5rem 0 0; }
+.ki-bilder h3 { margin: 0 0 .3rem; }
+.ki-raster { display: grid; grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr));
+             gap: 1rem; margin: .8rem 0; align-items: start; }
+.ki-raster.f-quer { grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr)); }
+.ki-bild { display: flex; flex-direction: column; gap: .5rem; min-width: 0; margin: 0;
+           padding: .5rem; border: 1px solid var(--linie); border-radius: 14px;
+           background: var(--flaeche); }
+.ki-bild img, .ki-leer { display: block; width: 100%; aspect-ratio: 9 / 16; object-fit: cover;
+                         border-radius: 10px; background: var(--kopfzeile); }
+.ki-raster.f-quadrat img, .ki-raster.f-quadrat .ki-leer { aspect-ratio: 1 / 1; }
+.ki-raster.f-quer img, .ki-raster.f-quer .ki-leer { aspect-ratio: 16 / 9; }
+.ki-leer { display: flex; align-items: center; justify-content: center; padding: 1rem;
+           text-align: center; color: var(--gedaempft); overflow-wrap: anywhere; }
+.ki-leer.fehlt { background: var(--fehler_flaeche); color: var(--fehler_schrift); }
+.ki-bild figcaption { display: flex; flex-direction: column; gap: .3rem; min-width: 0; }
+.ki-bild figcaption .meta { margin: 0; }
+.ki-bild details > summary { display: flex; align-items: center; min-height: 44px;
+                             cursor: pointer; font-weight: 600; }
+.ki-bild details p { margin: 0 0 .4rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ki-neu { display: flex; flex-direction: column; gap: .4rem; }
+.ki-neu label { display: flex; flex-direction: column; gap: .3rem; font-size: .9rem; }
+.ki-neu input[type="text"] { min-height: 44px; padding: .5rem .6rem; border-radius: 6px;
+  border: 1px solid var(--linie_stark); background: var(--flaeche); color: var(--schrift);
+  font-size: 16px; min-width: 0; }
+.ki-neu button { min-height: 44px; }
+@media (max-width: 767px) {
+  .ki-raster { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem; }
+  .ki-raster.f-quer { grid-template-columns: minmax(0, 1fr); } }
 /* Reiter als Links (ui_muster.reiter): eine Zeile, die im eigenen Kasten
    waagerecht scrollt statt die Seite; aktiv = aria-current mit Unterstrich. */
 nav.reiter { display: flex; gap: .2rem; overflow-x: auto; margin: 0 0 1rem;

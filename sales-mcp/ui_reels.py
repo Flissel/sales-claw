@@ -28,21 +28,33 @@ import marketing_mandant
 import marketing_pult
 import ui_muster
 
-ARTEN = {"bilder": "Aus Bildern", "material": "Aus Videomaterial", "kurzfassung": "Kurzfassung eines Videos"}
+# "ki" gibt es nur auf dieser Seite: an die API geht art "bilder" mit briefing.ki (Stufe 3, E2)
+ARTEN = {"bilder": "Aus Bildern", "material": "Aus Videomaterial", "kurzfassung": "Kurzfassung eines Videos",
+         "ki": "Aus KI-Bildern"}
 ARTEN_TEXT = {
     "bilder": "Bilder aus deinen Medien werden zum Reel mit Sprechertext, Untertiteln und deinen Markenfarben.",
     "material": "Ausschnitte aus Videos in Laura werden neu geschnitten und vertont.",
     "kurzfassung": "Ein langes Video aus Laura wird auf 15 bis 60 Sekunden gekürzt.",
+    "ki": "Ich entwerfe 3 bis 5 Bilder im Bildstil deiner Marke. Du siehst sie dir an, bevor das Reel entsteht.",
 }
 STATUS = {"offen": "wartet", "in_arbeit": "wird gebaut", "fertig": "fertig", "fehler": "Fehler",
-          "abgebrochen": "abgebrochen"}
+          "abgebrochen": "abgebrochen", "ideen": "Bildideen werden geschrieben",
+          "bilder_laufen": "Bilder entstehen", "bilder_pruefen": "Bilder prüfen"}
+# bilder_pruefen wartet auf den Betreiber: eigener, auffaelliger Chip (E7)
 STATUS_CHIP = {"offen": "offen", "in_arbeit": "offen", "fertig": "gut", "fehler": "fehler",
-               "abgebrochen": "archiv"}
+               "abgebrochen": "archiv", "ideen": "offen", "bilder_laufen": "offen", "bilder_pruefen": "bereich"}
+KI_VORSTUFEN = ("ideen", "bilder_laufen", "bilder_pruefen")
 # (Schluessel, Name, Status) je Reiter; das Archiv fragt die API mit archiv=true
-REITER = (("fertig", "Fertig", ("fertig",)), ("arbeit", "In Arbeit", ("offen", "in_arbeit")),
+REITER = (("fertig", "Fertig", ("fertig",)), ("arbeit", "In Arbeit", ("offen", "in_arbeit") + KI_VORSTUFEN),
           ("fehler", "Fehlgeschlagen", ("fehler", "abgebrochen")), ("archiv", "Archiv", None))
-LAUFEND = ("offen", "in_arbeit")
+# frischt sich auf; nie bei bilder_pruefen - dort tippt der Betreiber vielleicht gerade eine Idee (E7)
+LAUFEND = ("offen", "in_arbeit", "ideen", "bilder_laufen")
+ABBRECHBAR = LAUFEND + ("bilder_pruefen",)       # video_abbrechen (090) nimmt alle drei KI-Vorstufen
 ERLEDIGT = ("fertig", "fehler", "abgebrochen")
+KI_ANZAHLEN = (3, 4, 5)
+KI_VORGABE = 4
+IDEE_MAX = 600                     # wie reel_bilder.idee (090) und die Pult-Route ki/neu
+_KI_DATEI = re.compile(r"^ki-[0-9a-f]{8}-[1-5]-[0-9]{1,3}\.jpg$")    # wie der Check in 090
 _DATEI = re.compile(r"^vid-[0-9a-f]{8}-[a-z0-9-]{1,40}\.mp4$")
 _POSTER = re.compile(r"^vid-[0-9a-f]{8}-[a-z0-9-]{1,40}\.jpg$")
 _AID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
@@ -84,9 +96,45 @@ def _texte(werte) -> list[str]:
     return [str(w).strip() for w in werte if str(w or "").strip()]
 
 
+def ki_anzahl(roh) -> int | None:
+    """Die Zahl der KI-Bilder aus dem Formular (3, 4 oder 5) oder None."""
+    try:
+        n = int(str(roh or "").strip())
+    except ValueError:
+        return None
+    return n if n in KI_ANZAHLEN else None
+
+
+def ist_ki(a: dict) -> bool:
+    b = a.get("briefing")
+    return isinstance(b, dict) and isinstance(b.get("ki"), dict)
+
+
+def ki_bilder(a: dict) -> list[dict]:
+    """Die aktiven KI-Bilder eines Auftrags (die API laesst verworfene weg), nach nr."""
+    roh = a.get("ki_bilder")
+    bilder = [b for b in roh if isinstance(b, dict)] if isinstance(roh, list) else []
+    return sorted(bilder, key=lambda b: b.get("nr") if isinstance(b.get("nr"), int) else 99)
+
+
+def status_text(a: dict) -> str:
+    """Status als Satz; waehrend der Erzeugung mit Fortschritt "Bilder entstehen (2 von 4)" (E7)."""
+    status = str(a.get("status") or "")
+    text = STATUS.get(status, status)
+    if status == "bilder_laufen":
+        bilder = ki_bilder(a)
+        ki = a["briefing"]["ki"] if ist_ki(a) else {}
+        gesamt = len(bilder) or (ki.get("anzahl") if isinstance(ki.get("anzahl"), int) else 0)
+        fertig = sum(1 for b in bilder if b.get("status") in ("fertig", "fehler"))
+        if gesamt:
+            text += f" ({fertig} von {gesamt})"
+    return text
+
+
 def briefing_aus_formular(form) -> tuple[str, str, dict]:
     """(art, titel, briefing) aus dem Formular. Farben und Stimme gibt es nicht mehr: beides kommt aus
-    der Marke der Firma (E2, E9). Geprueft wird in der Marketing-API (eine Wahrheit)."""
+    der Marke der Firma (E2, E9). Geprueft wird in der Marketing-API (eine Wahrheit). Bei "ki" traegt
+    das Briefing nur die Zahl (briefing.ki), keine Bilderliste und kein Logo."""
     art = str(form.get("art") or "")
     titel = str(form.get("titel") or "").strip()
     try:
@@ -107,12 +155,16 @@ def briefing_aus_formular(form) -> tuple[str, str, dict]:
         b["videos"] = _texte(form.getlist("video"))
     elif art == "kurzfassung":
         b["video"] = (_texte(form.getlist("video")) or [""])[0]
+    elif art == "ki":
+        b["ki"] = {"anzahl": ki_anzahl(form.get("anzahl"))}
     return art, titel, b
 
 
-def auswahl_fehler(art: str, bilder: list[str], videos: list[str]) -> str:
+def auswahl_fehler(art: str, bilder: list[str], videos: list[str], anzahl: int | None = None) -> str:
     """Die Auswahl aus Schritt 2 als Satz, wenn sie nicht passt, sonst "". Die API prueft noch einmal
     (fremde Bilder, unbekannte Videos); hier geht es um eine verstaendliche Meldung vor dem Bestellen."""
+    if art == "ki":
+        return "" if anzahl in KI_ANZAHLEN else "Wähle 3, 4 oder 5 Bilder."
     if art == "bilder":
         if any(not _BILD.fullmatch(n) for n in bilder):
             return "Ungültige Auswahl. Bitte wähle die Bilder neu."
@@ -198,8 +250,9 @@ def routen(ui) -> list:
         return (kopf(m, firmen, NEU_SEITE)
                 + f'<p class="meta">Bestellung für <b>{e(marketing_mandant.name_von(m, firmen))}</b></p>')
 
-    def chip(status: str) -> str:
-        return f'<span class="chip {STATUS_CHIP.get(status, "offen")}">{e(STATUS.get(status, status))}</span>'
+    def chip(a: dict) -> str:
+        status = str(a.get("status") or "")
+        return f'<span class="chip {STATUS_CHIP.get(status, "offen")}">{e(status_text(a))}</span>'
 
     # --- Galerie ---------------------------------------------------------------------------
 
@@ -215,7 +268,7 @@ def routen(ui) -> list:
         klasse = klassen("reel-karte", format_klasse(a.get("briefing")))
         return (f'<a class="{klasse}" href="{e(detail_url(aid))}">{bild}'
                 f'<span class="reel-titel">{e(titel)}</span>'
-                f'<span class="reel-fuss">{chip(str(a.get("status") or ""))}'
+                f'<span class="reel-fuss">{chip(a)}'
                 f'<span class="meta">{e(angaben)}</span></span></a>')
 
     @ui._gesichert_seite
@@ -280,12 +333,15 @@ def routen(ui) -> list:
             else:
                 teile.append('<p class="meta">Posten kann nur der Laden dieser Firma.</p>')
         if status == "fertig":
+            # E2: "Nochmal" nimmt die gewaehlten KI-Bilder mit; neue KI-Bilder gibt es nur mit neuer Bestellung
+            ki_satz = (" Die Bilder bleiben dieselben. Für neue KI-Bilder bestelle ein neues Reel."
+                       if ist_ki(a) else "")
             teile.append(
                 f'<form method="post" action="{basis}/nochmal" class="reel-form">{csrf()}'
                 f'<label>Was soll anders werden? <textarea name="wunsch" rows="3" maxlength="{WUNSCH_MAX}" required '
                 'placeholder="z. B. kürzer, anderer Einstieg, mehr Bilder vom Team"></textarea></label>'
                 '<button class="primaer" type="submit">Nochmal mit Änderung</button>'
-                '<p class="meta">Baut ein neues Reel; dieses bleibt, wie es ist.</p></form>')
+                f'<p class="meta">Baut ein neues Reel; dieses bleibt, wie es ist.{ki_satz}</p></form>')
         elif status == "fehler":
             teile.append(f'<form method="post" action="{basis}/nochmal" class="aktion">{csrf()}'
                          '<input type="hidden" name="wunsch" value="">'
@@ -295,7 +351,7 @@ def routen(ui) -> list:
             an, text = ("0", "Wieder anzeigen") if a.get("archiviert") else ("1", "Archivieren")
             knoepfe.append(f'<form method="post" action="{basis}/archiv" class="aktion">{csrf()}'
                            f'<input type="hidden" name="an" value="{an}"><button type="submit">{text}</button></form>')
-        if status in LAUFEND:
+        if status in ABBRECHBAR:
             knoepfe.append(f'<form method="post" action="{basis}/abbrechen" class="aktion">{csrf()}'
                            '<button class="gefahr" type="submit">Abbrechen</button></form>')
         if knoepfe:
@@ -317,7 +373,7 @@ def routen(ui) -> list:
         else:
             bild = f'<div class="{klassen("reel-flaeche reel-gross", fk)}"><span>{e(titel)}</span></div>'
         satz = str(a.get("befund_text") or "").strip()
-        teile = [f'<h2>{e(titel)}</h2><p>{chip(status)}</p>']
+        teile = [f'<h2>{e(titel)}</h2><p>{chip(a)}</p>']
         if satz:
             teile.append(f'<p class="{"warnung" if status == "fehler" else "meta"}">{e(satz)}</p>')
         hinweis = str(briefing.get("stimme_hinweis") or "").strip()
@@ -329,8 +385,9 @@ def routen(ui) -> list:
         laenge = " · ".join(t for t in (dauer_text(a.get("dauer_s")), groesse) if t)
         bestellt = " · ".join(t for t in (datum_text(a.get("erstellt_am")),
                                           "Agent" if a.get("angelegt_von") == "agent" else "Betreiber") if t)
+        art = ARTEN["ki"] if ist_ki(a) else ARTEN.get(str(a.get("art")), str(a.get("art") or ""))
         teile.append('<dl class="reel-angaben">'
-                     + angabe("Art", ARTEN.get(str(a.get("art")), str(a.get("art") or "")))
+                     + angabe("Art", art)
                      + angabe("Thema", briefing.get("thema")) + angabe("Sprechertext", briefing.get("sprechertext"))
                      + angabe("Einstieg", briefing.get("hook")) + angabe("Stimme", briefing.get("stimme"))
                      + angabe("Format", FORMATE[format_von(briefing)]) + angabe("Länge", laenge) + angabe("Bestellt", bestellt) + "</dl>")
@@ -350,7 +407,67 @@ def routen(ui) -> list:
         teile.append(f'<details class="reel-protokoll"><summary>Was der Claw gemacht hat</summary>{innen}</details>')
         return (f'<p><a href="{SEITE}">Alle Reels</a></p>'
                 f'<div class="{klassen("reel-detail", fk)}"><div class="reel-bild">{bild}</div>'
-                f'<div class="reel-text">{"".join(teile)}</div></div>')
+                f'<div class="reel-text">{"".join(teile)}</div></div>' + ki_html(a, m))
+
+    # --- KI-Bilder ansehen, neu erzeugen, Reel bauen (Stufe 3, E7) -------------------------
+
+    def ki_zelle(a: dict, b: dict, m: str, pruefen: bool) -> str:
+        nr = b.get("nr") if isinstance(b.get("nr"), int) else 0
+        status = str(b.get("status") or "")
+        datei = str(b.get("datei") or "")
+        if status == "fertig" and _KI_DATEI.fullmatch(datei):
+            bild = f'<img src="{datei_url(datei)}" alt="Bild {nr}" loading="lazy">'
+        elif status == "fehler":
+            befund = str(b.get("befund") or "").strip()
+            satz = f"Fehlgeschlagen: {befund}" if befund else "Fehlgeschlagen"
+            bild = f'<div class="ki-leer fehlt"><span>{e(satz)}</span></div>'
+        else:
+            bild = f'<div class="ki-leer"><span>{"entsteht gerade" if status == "in_arbeit" else "wartet"}</span></div>'
+        idee = str(b.get("idee") or "").strip()
+        teile = [f'<span class="meta">Bild {nr}</span>']
+        if idee:
+            teile.append(f"<details><summary>Idee</summary><p>{e(idee)}</p></details>")
+        bid = str(b.get("id") or "")
+        if pruefen and status in ("fertig", "fehler") and _AID.fullmatch(bid):
+            teile.append(
+                f'<form method="post" action="{e(detail_url(str(a.get("id") or "")))}/ki/neu" class="ki-neu">'
+                f'{csrf()}<input type="hidden" name="mandant" value="{e(m)}">'
+                f'<input type="hidden" name="bild" value="{e(bid)}">'
+                f'<label>andere Idee (freiwillig) <input type="text" name="idee" maxlength="{IDEE_MAX}" '
+                'placeholder="leer = dieselbe Idee"></label>'
+                '<button type="submit">Neu erzeugen</button></form>')
+        return f'<figure class="ki-bild">{bild}<figcaption>{"".join(teile)}</figcaption></figure>'
+
+    def ki_html(a: dict, m: str) -> str:
+        status = str(a.get("status") or "")
+        bilder = ki_bilder(a)
+        if not ist_ki(a) or status not in ("bilder_laufen", "bilder_pruefen") or not bilder:
+            return ""
+        pruefen = status == "bilder_pruefen"
+        raster = "".join(ki_zelle(a, b, m, pruefen) for b in bilder)
+        teile = ['<section class="ki-bilder"><h3>Deine KI-Bilder</h3>']
+        if pruefen:
+            teile.append('<p class="meta">Sieh dir die Bilder an. Gefällt dir eins nicht, lass es neu erzeugen – '
+                         'mit derselben oder einer anderen Idee.</p>')
+        else:
+            teile.append('<p class="meta">Die Bilder entstehen nacheinander, etwa 2 Minuten je Bild. Die Seite '
+                         'lädt sich von selbst neu.</p>')
+        teile.append(f'<div class="{klassen("ki-raster", format_klasse(a.get("briefing")))}">{raster}</div>')
+        if pruefen:
+            fertig = sum(1 for b in bilder if b.get("status") == "fertig" and _KI_DATEI.fullmatch(str(b.get("datei") or "")))
+            if fertig:
+                menge = "dem fertigen Bild" if fertig == 1 else f"den {fertig} fertigen Bildern"
+                rest = (" Fehlgeschlagene Bilder bleiben draußen."
+                        if any(b.get("status") == "fehler" for b in bilder) else "")
+                teile.append(
+                    f'<form method="post" action="{e(detail_url(str(a.get("id") or "")))}/ki/bauen" class="reel-form">'
+                    f'{csrf()}<input type="hidden" name="mandant" value="{e(m)}">'
+                    f'<p class="meta">Gebaut wird mit {menge}, in dieser Reihenfolge.{rest}</p>'
+                    '<button class="primaer" type="submit">Reel bauen</button></form>')
+            else:
+                teile.append('<p class="hinweis">Noch kein Bild ist fertig. Lass mindestens eins neu erzeugen, '
+                             'erst dann kann das Reel entstehen.</p>')
+        return "".join(teile) + "</section>"
 
     @ui._gesichert_seite
     async def detail(request):
@@ -426,6 +543,68 @@ def routen(ui) -> list:
             return fehler(f)
         return RedirectResponse(detail_url(aid), status_code=303)
 
+    def nicht_gefunden():
+        return ui._fehlerseite(404, "Nicht gefunden", "Dieses Reel gibt es bei der gewählten Firma nicht.")
+
+    def firma_gewechselt():
+        return ui._fehlerseite(422, "Nicht möglich", "Die Firma wurde inzwischen gewechselt – bitte die Seite neu laden.")
+
+    @ui._gesichert_seite
+    async def ki_neu(request):
+        """Ein KI-Bild neu erzeugen lassen (E6/E7): nur ein Bild dieses Auftrags der gewaehlten Firma,
+        nur waehrend der Pruefung. Die API prueft noch einmal (eine Wahrheit)."""
+        form = await request.form()
+        if not ui._csrf_ok(form):
+            return abgewiesen()
+        aid = aid_aus(request)
+        if not aid:
+            return nicht_gefunden()
+        idee = str(form.get("idee") or "").strip()
+        if len(idee) > IDEE_MAX:
+            return ui._fehlerseite(422, "Nicht möglich", f"Die Idee darf höchstens {IDEE_MAX} Zeichen haben.")
+        bid = str(form.get("bild") or "")
+        try:
+            m, _ = await marketing_mandant.firma(request)
+            if str(form.get("mandant") or "") != m:      # Tab von vor dem Firmenwechsel (wie bei der Bestellung)
+                return firma_gewechselt()
+            a = await auftrag_der_firma(m, aid)
+            if a is None or not _AID.fullmatch(bid) or bid not in {str(b.get("id")) for b in ki_bilder(a)}:
+                return nicht_gefunden()
+            if a.get("status") != "bilder_pruefen":
+                return ui._fehlerseite(422, "Nicht möglich",
+                                       "Neu erzeugen geht nur, solange die Bilder zum Ansehen bereitstehen.")
+            await run_in_threadpool(marketing_pult.anfrage, "POST", f"/video/{aid}/ki/neu",
+                                    {"bild": bid, "mandant": m, "idee": idee})
+        except marketing_pult.PultFehler as f:
+            return fehler(f)
+        return RedirectResponse(detail_url(aid), status_code=303)
+
+    @ui._gesichert_seite
+    async def ki_bauen(request):
+        """Reel bauen freigeben (E6/E7): die fertigen Bilder gehen nach nr ins Briefing, der Auftrag auf offen."""
+        form = await request.form()
+        if not ui._csrf_ok(form):
+            return abgewiesen()
+        aid = aid_aus(request)
+        if not aid:
+            return nicht_gefunden()
+        nur_fertige = "Reel bauen geht erst, wenn die Bilder bereitstehen und mindestens ein Bild fertig ist."
+        try:
+            m, _ = await marketing_mandant.firma(request)
+            if str(form.get("mandant") or "") != m:
+                return firma_gewechselt()
+            a = await auftrag_der_firma(m, aid)
+            if a is None:
+                return nicht_gefunden()
+            if a.get("status") != "bilder_pruefen" or not any(b.get("status") == "fertig" for b in ki_bilder(a)):
+                return ui._fehlerseite(422, "Nicht möglich", nur_fertige)
+            d = await run_in_threadpool(marketing_pult.anfrage, "POST", f"/video/{aid}/ki/freigeben", {"mandant": m})
+        except marketing_pult.PultFehler as f:
+            return fehler(f)
+        if not (isinstance(d, dict) and d.get("ok")):
+            return ui._fehlerseite(422, "Nicht möglich", nur_fertige)
+        return RedirectResponse(detail_url(aid), status_code=303)
+
     # --- Gefuehrte Bestellung --------------------------------------------------------------
 
     def schritte(aktiv: int) -> str:
@@ -466,10 +645,23 @@ def routen(ui) -> list:
                 f'<input type="hidden" name="art" value="{e(art)}"><input type="hidden" name="schritt" value="3">'
                 f'{innen}<div class="aktionen">{knopf}<a href="{NEU_SEITE}">Andere Art</a></div></form>')
 
-    async def schritt2(art: str, m: str, bilder: list[str], logo: str, videos: list[str], warnung: str) -> str:
+    def ki_anzahl_wahl(anzahl: int | None) -> str:
+        gewaehlt = anzahl if anzahl in KI_ANZAHLEN else KI_VORGABE
+        punkte = "".join(
+            f'<label><input type="radio" name="anzahl" value="{n}"{" checked" if n == gewaehlt else ""}> {n} Bilder</label>'
+            for n in KI_ANZAHLEN)
+        return (f'<fieldset class="ki-anzahl"><legend>Wie viele Bilder?</legend>{punkte}</fieldset>'
+                '<p class="meta">Das dauert etwa 2 Minuten je Bild. Die Bilder folgen dem Bildstil deiner Marke; '
+                'du siehst sie dir an, bevor das Reel gebaut wird.</p>')
+
+    async def schritt2(art: str, m: str, bilder: list[str], logo: str, videos: list[str], warnung: str,
+                       anzahl: int | None = None) -> str:
         teile = [schritte(2), f"<h2>{e(ARTEN[art])}</h2>"]
         if warnung:
             teile.append(f'<p class="warnung">{e(warnung)}</p>')
+        if art == "ki":
+            teile.append(weiter_form(art, ki_anzahl_wahl(anzahl)))
+            return "".join(teile)
         if art == "bilder":
             namen = await bilder_der_firma(m)
             if not namen:
@@ -544,12 +736,15 @@ def routen(ui) -> list:
             for k, t in FORMATE.items())
         return f'<fieldset class="reel-formate"><legend>Format</legend>{punkte}</fieldset>'
 
-    async def schritt3(art: str, m: str, bilder: list[str], logo: str, videos: list[str]) -> str:
+    async def schritt3(art: str, m: str, bilder: list[str], logo: str, videos: list[str],
+                       anzahl: int | None = None) -> str:
         versteckt = [("art", art)] + [("bild", n) for n in bilder] + ([("logo", logo)] if logo else []) + [
-            ("video", v) for v in videos]
+            ("video", v) for v in videos] + ([("anzahl", str(anzahl))] if art == "ki" else [])
         felder = "".join(f'<input type="hidden" name="{k}" value="{e(v)}">' for k, v in versteckt)
         zurueck_zu = f"{NEU_SEITE}?{urllib.parse.urlencode([(k, v) for k, v in versteckt])}"
-        if art == "bilder":
+        if art == "ki":
+            punkte = [f"<li>{anzahl} KI-Bilder im Bildstil deiner Marke – du siehst sie vor dem Bau.</li>"]
+        elif art == "bilder":
             punkte = [f'<li><img src="{datei_url(n)}" loading="lazy" alt=""> {e(n)}</li>' for n in bilder]
             if logo:
                 punkte.append(f"<li>Logo: {e(logo)}</li>")
@@ -581,7 +776,8 @@ def routen(ui) -> list:
         art = q.get("art", "")
         bilder = _texte(q.getlist("bild")) if art == "bilder" else []
         logo = str(q.get("logo") or "").strip() if art == "bilder" else ""
-        videos = _texte(q.getlist("video")) if art != "bilder" else []
+        videos = _texte(q.getlist("video")) if art in ("material", "kurzfassung") else []
+        anzahl = ki_anzahl(q.get("anzahl")) if art == "ki" else None
         if logo and not _BILD.fullmatch(logo):
             logo = ""
         try:
@@ -590,15 +786,15 @@ def routen(ui) -> list:
             if art not in ARTEN:
                 return ui._seite("Neues Reel", kopf_ + schritt1())
             if q.get("schritt") == "3":
-                warnung = auswahl_fehler(art, bilder, videos)
+                warnung = auswahl_fehler(art, bilder, videos, anzahl)
                 if not warnung:
-                    return ui._seite("Neues Reel", kopf_ + await schritt3(art, m, bilder, logo, videos))
+                    return ui._seite("Neues Reel", kopf_ + await schritt3(art, m, bilder, logo, videos, anzahl))
                 # Review Task 5: der gueltige Teil der Auswahl bleibt angehakt
                 bleibt = [n for n in bilder if _BILD.fullmatch(n)][:AUSWAHL_MAX]
                 bleiben_v = [v for v in videos if _LAURA_ID.fullmatch(v)][:1 if art == "kurzfassung" else AUSWAHL_MAX]
-                return ui._seite("Neues Reel", kopf_ + await schritt2(art, m, bleibt, logo, bleiben_v, warnung),
+                return ui._seite("Neues Reel", kopf_ + await schritt2(art, m, bleibt, logo, bleiben_v, warnung, anzahl),
                                  status=422)
-            return ui._seite("Neues Reel", kopf_ + await schritt2(art, m, bilder, logo, videos, ""))
+            return ui._seite("Neues Reel", kopf_ + await schritt2(art, m, bilder, logo, videos, "", anzahl))
         except marketing_pult.PultFehler as f:
             return fehler(f)
 
@@ -612,15 +808,18 @@ def routen(ui) -> list:
             return ui._fehlerseite(422, "Nicht möglich", "Art, Titel und Thema sind nötig.")
         # die rohe Auswahl: bei der Kurzfassung nahm das Briefing sonst still das erste von mehreren Videos
         warnung = auswahl_fehler(art, _texte(form.getlist("bild")) if art == "bilder" else [],
-                                 _texte(form.getlist("video")) if art != "bilder" else [])
+                                 _texte(form.getlist("video")) if art in ("material", "kurzfassung") else [],
+                                 ki_anzahl(form.get("anzahl")) if art == "ki" else None)
         if warnung:
             return ui._fehlerseite(422, "Nicht möglich", e(warnung))
         try:
             m, _ = await marketing_mandant.firma(request)
             if str(form.get("mandant") or "") != m:      # Tab von vor dem Firmenwechsel (wie ui_marke.bearbeiten)
                 return ui._fehlerseite(422, "Nicht möglich", "Die Firma wurde inzwischen gewechselt – bitte neu bestellen.")
+            # KI-Bilder sind fuer die API Art "bilder" mit briefing.ki (E2)
             d = await run_in_threadpool(marketing_pult.anfrage, "POST", "/video",
-                                        {"mandant": m, "art": art, "titel": titel, "briefing": briefing})
+                                        {"mandant": m, "art": "bilder" if art == "ki" else art, "titel": titel,
+                                         "briefing": briefing})
         except marketing_pult.PultFehler as f:
             return fehler(f)
         aid = str(d.get("auftrag") or "") if isinstance(d, dict) else ""
@@ -665,4 +864,6 @@ def routen(ui) -> list:
         Route(SEITE + "/{aid}/nochmal", nochmal, methods=["POST"]),
         Route(SEITE + "/{aid}/archiv", archiv, methods=["POST"]),
         Route(SEITE + "/{aid}/abbrechen", abbrechen, methods=["POST"]),
+        Route(SEITE + "/{aid}/ki/neu", ki_neu, methods=["POST"]),
+        Route(SEITE + "/{aid}/ki/bauen", ki_bauen, methods=["POST"]),
     ]

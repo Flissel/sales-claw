@@ -957,3 +957,18 @@ def test_reel_formate_stil_nur_tokens_und_touchziele():
     assert re.search(r"\.f-quer[^{]*\{[^}]*aspect-ratio: 16 / 9", block)
     assert re.search(r"\.reel-formate label \{[^}]*min-height: 44px", block)
     assert not [w for w in WOERTER_ASCII if w in block]
+
+
+def test_ki_bilder_stil_nur_tokens_und_touchziele():
+    """KI-Bilder der Reels (Stufe 3): Farben nur über Variablen, Raster je Format, 44 px Touch-Ziele."""
+    start = ui._STIL.find("/* KI-Bilder (Reels Stufe 3")
+    assert start >= 0, "CSS-Block 'KI-Bilder (Reels Stufe 3' fehlt in ui._STIL"
+    ende = ui._STIL.find("\n/* ", start + 10)
+    block = ui._STIL[start:ende if ende > 0 else None]
+    assert not re.findall(r"#[0-9a-fA-F]{3,8}\b", block)
+    assert re.search(r"\.ki-raster\.f-quadrat[^{]*\{[^}]*aspect-ratio: 1 / 1", block)
+    assert re.search(r"\.ki-raster\.f-quer[^{]*\{[^}]*aspect-ratio: 16 / 9", block)
+    for teil in (r"\.ki-anzahl label \{", r"\.ki-bild details > summary \{", r'\.ki-neu input\[type="text"\] \{',
+                 r"\.ki-neu button \{"):
+        assert re.search(teil + r"[^}]*min-height: 44px", block), teil
+    assert not [w for w in WOERTER_ASCII if w in block]
