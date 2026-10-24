@@ -33,6 +33,11 @@ create table if not exists :"schema".eigene_termine   (like sales.eigene_termine
 -- bleibt hier eine unverknuepfte uuid (gewollt).
 create table if not exists :"schema".empfehlungslisten (like sales.empfehlungslisten including all);
 
+-- Kanal-Status (24.10.2026): verbunden ja/nein je Kanal fuer eigene Beitraege.
+-- Der Dienst sales-kanaele laeuft nur im Haupt-Laden; die Tabelle gibt es
+-- trotzdem ueberall, damit der Code einheitlich bleibt.
+create table if not exists :"schema".kanal_status (like sales.kanal_status including all);
+
 -- Konto-Mails (24.09.2026). Fehlte bisher: ein neuer Laden hatte keine
 -- benutzer_mails, "Passwort vergessen" legte seinen Zettel ins Leere (Ivan
 -- bekam sie erst durch einen spaeteren provision.sql-Lauf, die Rechte von
@@ -130,6 +135,7 @@ grant select, insert, update on :"schema".medien_meta      to :"rolle";
 grant select, insert, update on :"schema".kalender_quellen to :"rolle";
 grant select, insert, update, delete on :"schema".eigene_termine   to :"rolle";
 grant select, insert, update on :"schema".empfehlungslisten to :"rolle";
+grant select, insert, update on :"schema".kanal_status to :"rolle";
 grant select, insert, update on :"schema".benutzer_mails   to :"rolle";
 grant select, insert         on :"schema".whatsapp_kopplung to :"rolle";
 

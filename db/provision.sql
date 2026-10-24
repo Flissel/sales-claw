@@ -259,6 +259,25 @@ begin
       execute format('grant select, insert, update on %I.empfehlungslisten to %I',
                      s, 'sales_app_' || substr(s, 7));
     end if;
+    -- Kanal-Status (24.10.2026, Spec 2026-10-24-kanaele-posten, Praezisierung 1):
+    -- nur der Dienst sales-kanaele kennt die Zugaenge und schreibt je Kanal,
+    -- ob er verbunden ist. Server und Oberflaeche lesen nur diese Tabelle.
+    -- letzter_fehler nennt nur Namen, nie Werte. Fehlt eine Zeile, gilt der
+    -- Kanal als nicht verbunden. Kein Delete.
+    execute format($ddl$
+      create table if not exists %I.kanal_status (
+        kanal text primary key,
+        verbunden boolean not null default false,
+        geprueft_am timestamptz not null default now(),
+        letzter_fehler text
+      )$ddl$, s);
+    if s = 'sales' then
+      execute 'grant select, insert, update on sales.kanal_status to sales_app';
+    elsif s <> 'sales_test' and exists (
+        select 1 from pg_roles where rolname = 'sales_app_' || substr(s, 7)) then
+      execute format('grant select, insert, update on %I.kanal_status to %I',
+                     s, 'sales_app_' || substr(s, 7));
+    end if;
     -- CC fuer E-Mail-Entwuerfe (03.09.2026); add column, weil die Tabelle
     -- auf beiden Schemata laengst existiert.
     execute format('alter table %I.drafts add column if not exists cc text', s);
@@ -285,9 +304,13 @@ begin
     -- lange nachdem der Agent den Text geschrieben hat. Drop+Add statt
     -- „add column if not exists", weil man einen CHECK nicht nachruesten
     -- kann; idempotent ueber `drop constraint if exists`.
+    -- Eigene Beitraege auf weiteren Kanaelen (24.10.2026): bluesky, mastodon,
+    -- telegram_kanal (getrennt von telegram = Direktnachrichten), discord und
+    -- devto, alle mit recipient='eigenes-profil' (Spec 2026-10-24-kanaele-posten).
     execute format('alter table %I.drafts drop constraint if exists drafts_channel_check', s);
     execute format($chk$alter table %I.drafts add constraint drafts_channel_check
-      check (channel in ('email','whatsapp','linkedin','voice','video','meeting_invite','telegram'))$chk$, s);
+      check (channel in ('email','whatsapp','linkedin','voice','video','meeting_invite','telegram',
+                         'bluesky','mastodon','telegram_kanal','discord','devto'))$chk$, s);
 
     -- Passwort-Vergessen (16.09.2026): eine Adresse, an die ein Einmal-Link
     -- gehen kann, und der Token selbst — GEHASHT, nie im Klartext. Wer die
@@ -560,6 +583,7 @@ grant select, insert, update on sales.medien_meta to sales_app;
 grant select, insert, update on sales.kalender_quellen to sales_app;
 grant select, insert, update, delete on sales.eigene_termine to sales_app;
 grant select, insert, update on sales.empfehlungslisten to sales_app;
+grant select, insert, update on sales.kanal_status to sales_app;
 -- Bewusst NICHT vergeben: DELETE nur auf eigene_termine (eigene Termine duerfen
 -- wirklich geloescht werden), sonst nirgends; UPDATE/TRUNCATE auf activities.
 
