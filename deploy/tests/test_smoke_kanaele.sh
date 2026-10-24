@@ -11,7 +11,7 @@ cat > "$T/docker" <<'EOF2'
 if [ "${1:-}" = inspect ]; then
   for a in "$@"; do last="$a"; done
   if [ "$last" = sales-kanaele ]; then
-    [ -n "${KANAELE:-}" ] || exit 1
+    [ -n "${KANAELE:-}" ] || { echo; exit 1; }  # wie das echte docker: leere Zeile + rc=1
     echo "$KANAELE"; exit 0
   fi
   echo running; exit 0

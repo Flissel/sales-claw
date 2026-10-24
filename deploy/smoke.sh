@@ -55,7 +55,13 @@ BIND="${BIND:-127.0.0.1}"
 # sales-kanaele (24.10.2026) muss laufen; ob ein Kanal einen Zugang hat,
 # prueft smoke bewusst NICHT — ohne Zugang heisst es „nicht verbunden".
 for c in sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw sales-openwa sales-kanaele; do
-  z="$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo fehlt)"
+  # Das echte docker gibt bei fehlendem Container eine LEERE Zeile auf stdout
+  # aus UND endet mit rc=1; ein "|| echo fehlt" im Substitut ergaebe Zeilenumbruch + fehlt.
+  if z="$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null)"; then
+    z="$(printf '%s' "$z" | tr -d '[:space:]')"
+  else
+    z=fehlt
+  fi
   if [ "$z" = "fehlt" ] && [ "$c" = "sales-kanaele" ]; then
     # Erster Deploy: das alte, im Speicher laufende update.sh kennt den
     # Container noch nicht und startet ihn nicht, ruft aber dieses neue
