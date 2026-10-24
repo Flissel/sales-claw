@@ -1694,6 +1694,11 @@ body:has(.chat-eingabe) { overflow-x: clip; }
 .chat-eingabe-zeile { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center;
                       justify-content: space-between; }
 .chat-eingabe-zeile button { min-height: 44px; }
+.neue-marke { margin: 0 0 1rem; }
+.neue-marke summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; }
+.neue-marke form { display: grid; gap: .5rem; max-width: 28rem; padding: .6rem 0; }
+.neue-marke label { display: grid; gap: .2rem; }
+.neue-marke input { width: 100%; min-height: 44px; }
 .wissen-zeile { display: flex; flex-wrap: wrap; gap: .2rem .8rem; align-items: baseline;
                 font-size: .85rem; margin: .4rem 0 1rem; }
 .profil-karten { display: grid; grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));

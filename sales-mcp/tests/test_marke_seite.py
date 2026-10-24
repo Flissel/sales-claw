@@ -1495,3 +1495,58 @@ def test_liste_in_einrichtung_auf_normaler_seite(angemeldet, pult):
     pult.fehler_pfad = "einrichtung=1"
     r = seite(angemeldet)
     assert r.status_code == 200 and "In Einrichtung" not in rumpf(r)
+
+
+# --- Knopf "+ Neue Marke" -------------------------------------------------------------
+
+def _neu(angemeldet, **felder):
+    return angemeldet.post("/marketing/marke/neu", headers=HOST, follow_redirects=False,
+                           data={"csrf": ui.CSRF_TOKEN, **felder})
+
+
+def test_knopf_neue_marke_auf_normaler_seite(angemeldet, pult):
+    s = rumpf(seite(angemeldet))
+    assert "<summary>+ Neue Marke</summary>" in s
+    form = s[s.index('action="/marketing/marke/neu"'):]
+    form = form[:form.index("</form>")]
+    assert 'name="name"' in form and 'maxlength="80"' in form and "required" in form
+    assert 'name="webseite"' in form and 'type="url"' in form and "Einrichtung starten" in form
+    assert 'name="csrf"' in form
+    _in_einrichtung(pult)
+    e = rumpf(seite(angemeldet, EINRICHTUNG))
+    assert "Neue Marke" not in e and "/marketing/marke/neu" not in e
+
+
+def test_neue_marke_formular_startet_einrichtung(angemeldet, pult):
+    pult.chat_antwort = {"auftrag": "a9", "einrichtung": {"id": "baeckerei_sonnig", "name": "Bäckerei Sonnig",
+                                                          "fortgesetzt": False}}
+    r = _neu(angemeldet, name="Bäckerei Sonnig", webseite="https://b.de")
+    assert r.status_code == 303
+    assert r.headers["location"] == "/marketing/layouts?einrichtung=baeckerei_sonnig&reiter=chat#ende"
+    m, p, d = pult.nach("/marke/chat")[-1]
+    assert (m, p) == ("POST", "/marke/chat")
+    assert d["nachricht"] == "/marke_neu Bäckerei Sonnig https://b.de" and d["von"] == "mira"
+
+
+def test_neue_marke_ohne_webseite(angemeldet, pult):
+    pult.chat_antwort = {"auftrag": "a9", "einrichtung": {"id": "x_gmbh", "name": "X GmbH", "fortgesetzt": False}}
+    r = _neu(angemeldet, name="  X GmbH  ", webseite="  ")
+    assert r.status_code == 303 and "einrichtung=x_gmbh" in r.headers["location"]
+    assert pult.nach("/marke/chat")[-1][2]["nachricht"] == "/marke_neu X GmbH"
+
+
+def test_neue_marke_leerer_name_422_ohne_api(angemeldet, pult):
+    r = _neu(angemeldet, name="   ", webseite="")
+    assert r.status_code == 422 and pult.nach("/marke/chat") == []
+
+
+@pytest.mark.parametrize("web", ["b.de", "ftp://b.de", "https://b .de", "javascript:alert(1)"])
+def test_neue_marke_ungueltige_webseite_422_ohne_api(angemeldet, pult, web):
+    r = _neu(angemeldet, name="X GmbH", webseite=web)
+    assert r.status_code == 422 and "Bitte eine Webseite mit https:// angeben oder leer lassen" in r.text
+    assert pult.nach("/marke/chat") == []
+
+
+def test_neue_marke_braucht_csrf(angemeldet, pult):
+    r = angemeldet.post("/marketing/marke/neu", headers=HOST, data={"name": "X GmbH"})
+    assert r.status_code == 403 and pult.nach("/marke/chat") == []

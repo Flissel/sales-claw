@@ -38,6 +38,7 @@ import ui_muster
 SEITE = "/marketing/layouts"
 ZIEL = f"{SEITE}?reiter=chat#ende"            # E11: Ziel ohne Einrichtung (= ziel(None))
 EINRICHTUNG_VORBEI = "Die Einrichtung ist abgeschlossen oder abgebrochen – bitte Seite neu laden. Nichts wurde geändert."
+NAME_MAX = 80
 BEFEHLE_MIT_DATEIEN = "Befehle bitte ohne Dateien senden"
 NACHRICHT_MAX = 2000
 PC_WARTET_NACH_S = 60                # danach: "sobald der PC läuft"
@@ -685,6 +686,14 @@ def routen(ui) -> list:
                            for x in offene)
         return f'<p class="meta in-einrichtung">In Einrichtung: {links}</p>' if links else ""
 
+    def neue_marke_html() -> str:
+        """Aufklappbarer Knopf "+ Neue Marke" (nur auf der normalen Seite): startet die Einrichtung wie /marke_neu."""
+        return ('<details class="neue-marke"><summary>+ Neue Marke</summary>'
+                f'<form method="post" action="/marketing/marke/neu">{csrf_feld()}'
+                f'<label>Firmenname <input type="text" name="name" maxlength="{NAME_MAX}" required></label>'
+                '<label>Webseite (optional) <input type="url" name="webseite" placeholder="https://…"></label>'
+                '<button class="primaer" type="submit">Einrichtung starten</button></form></details>')
+
     def eingabe_html(d: dict, ein: str | None = None) -> str:
         """Die feste Eingabe unten (E10.8, CSS sticky). Das Sprungziel #ende steht NICHT hier, sondern als leeres
         Element ganz unten (ENDE): ein Sprung auf ein klebendes Element landet dort, wo es gerade klebt, nicht am
@@ -737,7 +746,8 @@ def routen(ui) -> list:
                 offene = await run_in_threadpool(marketing_mandant.einrichtungen)
             except marketing_pult.PultFehler:
                 offene = []                    # die Liste ist Beiwerk: ein Fehler blendet sie nur aus
-            kopf += marketing_mandant.umschalter(e, ui.CSRF_TOKEN, m, liste_, SEITE) + in_einrichtung_html(offene)
+            kopf += (marketing_mandant.umschalter(e, ui.CSRF_TOKEN, m, liste_, SEITE)
+                     + neue_marke_html() + in_einrichtung_html(offene))
         if request.query_params.get("bearbeiten") == "1":
             rumpf = (kopf + bearbeiten_html(d, m, await stimmen_holen(), ein)
                      + f'<p><a href="{e(adresse("profil", einrichtung=ein))}">Zurück zur Marke</a></p>')
@@ -817,6 +827,10 @@ def routen(ui) -> list:
         if dateien and nachricht.lstrip().startswith("/"):
             # Vor dem Ablegen: die API lehnt Befehle mit Anhang ab, die Dateien blieben sonst verwaist
             return abgewiesen(422, BEFEHLE_MIT_DATEIEN, form=form)
+        return await abschicken(request, form, nachricht, dateien)
+
+    async def abschicken(request, form, nachricht: str, dateien: list):
+        """Gemeinsamer Weg von `senden` und `neue_marke`: Firma bestimmen, Anhaenge ablegen, an die API."""
         try:
             m, _liste, eintrag = await marken_firma(request, form)
         except marketing_pult.PultFehler as f:
@@ -862,6 +876,23 @@ def routen(ui) -> list:
         if isinstance(neu, dict) and isinstance(neu.get("id"), str) and neu["id"]:
             return RedirectResponse(ziel(neu["id"]), status_code=303)      # /marke_neu: in die Einrichtung
         return RedirectResponse(ziel(ein), status_code=303)
+
+    @ui._gesichert_seite
+    async def neue_marke(request):
+        """Knopf "+ Neue Marke": baut denselben Befehl wie /marke_neu im Chat und nimmt denselben Weg."""
+        form = await request.form()
+        if not ui._csrf_ok(form):
+            return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
+        name = " ".join(str(form.get("name") or "").split())
+        if not name:
+            return abgewiesen(422, "Bitte einen Firmennamen angeben.", form=form)
+        if len(name) > NAME_MAX:
+            return abgewiesen(422, f"Der Firmenname darf höchstens {NAME_MAX} Zeichen haben.", form=form)
+        web = str(form.get("webseite") or "").strip()
+        if web and not (re.match(r"https?://\S+$", web, re.IGNORECASE)):
+            return abgewiesen(422, "Bitte eine Webseite mit https:// angeben oder leer lassen", form=form)
+        nachricht = "/marke_neu " + name + (" " + web if web else "")
+        return await abschicken(request, form, nachricht, [])
 
     # --- Uebernehmen / Verwerfen / Rueckgaengig ---------------------------------------------------
 
@@ -966,6 +997,7 @@ def routen(ui) -> list:
         Route(SEITE, marke),
         Route("/marketing/marke/vorschau", vorschau),
         Route("/marketing/marke/senden", senden, methods=["POST"]),
+        Route("/marketing/marke/neu", neue_marke, methods=["POST"]),
         Route("/marketing/marke/uebernehmen", vorschlag_aktion("uebernehmen"), methods=["POST"]),
         Route("/marketing/marke/verwerfen", vorschlag_aktion("verwerfen"), methods=["POST"]),
         Route("/marketing/marke/rueckgaengig", rueckgaengig, methods=["POST"]),
