@@ -467,6 +467,107 @@ def test_entwurf_fehler_wird_angezeigt(angemeldet, pult, monkeypatch):
     assert r.status_code == 422 and "schon einen Beitrag" in r.text
 
 
+# --- Auf Kanaelen teilen (Beitraege auf weitere Kanaele, Task 8) ---------------------
+
+def _verbunden(monkeypatch, *namen):
+    import kanaele
+    monkeypatch.setattr(kanaele, "status_lesen",
+                        lambda q: {k: {"verbunden": k in namen, "geprueft_am": None,
+                                       "letzter_fehler": None} for k in kanaele.KANAELE})
+
+
+def _kanal_faelschung(monkeypatch):
+    aufrufe = []
+
+    def falsch(kanal, thema, text, titel="", medien_dateien="", trotzdem=False):
+        aufrufe.append({"kanal": kanal, "thema": thema, "text": text, "medien": medien_dateien})
+        return json.dumps({"draft_id": len(aufrufe)})
+    monkeypatch.setattr(server, "kanal_post_entwurf", falsch)
+    return aufrufe
+
+
+def test_kanaele_knopf_nur_eigene_firma(angemeldet, pult):
+    s = rumpf(get(angemeldet, f"/marketing/reels/{AID}"))
+    assert 'action="/marketing/reels/kanaele"' in s and "Auf Kanälen teilen" in s
+    angemeldet.cookies.set("mk_mandant", "fin2gether", path="/marketing")
+    s = rumpf(get(angemeldet, f"/marketing/reels/{AID_FREMD}"))
+    assert 'action="/marketing/reels/kanaele"' not in s and "Auf Kanälen teilen" not in s
+
+
+def test_kanaele_teilen_nur_verbundene_mit_video(angemeldet, pult, monkeypatch):
+    _verbunden(monkeypatch, "mastodon", "discord", "bluesky")
+    aufrufe = _kanal_faelschung(monkeypatch)
+    r = post(angemeldet, "/marketing/reels/kanaele",
+             {"csrf": ui.CSRF_TOKEN, "datei": DATEI, "thema": "Herbst-Reel", "text": "Drei Fehler."})
+    assert r.status_code == 200
+    assert [a["kanal"] for a in aufrufe] == ["mastodon", "discord"]
+    assert all(a["medien"] == DATEI and a["thema"] == "Herbst-Reel" for a in aufrufe)
+    s = rumpf(r)
+    assert "angelegt" in s and 'href="/freigaben"' in s
+
+
+def test_kanaele_teilen_kuerzt_und_haengt_link(angemeldet, pult, monkeypatch):
+    _verbunden(monkeypatch, "discord")
+    aufrufe = _kanal_faelschung(monkeypatch)
+    text = ("wort " * 600)[:3000]
+    r = post(angemeldet, "/marketing/reels/kanaele",
+             {"csrf": ui.CSRF_TOKEN, "datei": DATEI, "thema": "Herbst-Reel", "text": text,
+              "link": "https://vibemind.de/r"})
+    assert r.status_code == 200
+    fassung = aufrufe[0]["text"]
+    assert len(fassung) <= 2000 and fassung.endswith(chr(10) * 2 + "https://vibemind.de/r")
+
+
+def test_kanaele_teilen_grund_wird_escaped(angemeldet, pult, monkeypatch):
+    _verbunden(monkeypatch, "discord")
+    monkeypatch.setattr(server, "kanal_post_entwurf",
+                        lambda *a, **k: json.dumps({"fehler": "<b>schon da</b>"}))
+    r = post(angemeldet, "/marketing/reels/kanaele",
+             {"csrf": ui.CSRF_TOKEN, "datei": DATEI, "thema": "Herbst-Reel", "text": "x"})
+    assert r.status_code == 200
+    assert "<b>schon da</b>" not in r.text and "&lt;b&gt;schon da&lt;/b&gt;" in r.text
+
+
+def test_kanaele_teilen_ohne_verbundenen_422(angemeldet, pult, monkeypatch):
+    _verbunden(monkeypatch, "bluesky", "devto")
+    monkeypatch.setattr(server, "kanal_post_entwurf", lambda *a, **k: pytest.fail("kein Entwurf"))
+    r = post(angemeldet, "/marketing/reels/kanaele",
+             {"csrf": ui.CSRF_TOKEN, "datei": DATEI, "thema": "Herbst-Reel", "text": "x"})
+    assert r.status_code == 422
+    assert "Kein verbundener Kanal nimmt dieses Reel (Video)" in r.text and "/einstellungen/kanaele" in r.text
+
+
+@pytest.mark.parametrize("daten", [
+    {"link": "javascript:x"},
+    {"link": "http://vibemind.de"},
+    {"link": "https://vibemind.de/" + "x" * 300},
+    {"datei": "vid-88889999-fremd-reel.mp4"},
+    {"csrf": "falsch"},
+])
+def test_kanaele_teilen_link_nur_https(angemeldet, pult, monkeypatch, daten):
+    _verbunden(monkeypatch, "mastodon", "discord")
+    monkeypatch.setattr(server, "kanal_post_entwurf", lambda *a, **k: pytest.fail("kein Entwurf"))
+    r = post(angemeldet, "/marketing/reels/kanaele",
+             {"csrf": ui.CSRF_TOKEN, "datei": DATEI, "thema": "Herbst-Reel", "text": "x", **daten})
+    assert r.status_code == (403 if daten.get("csrf") else 422)
+
+
+def test_kanaele_teilen_nur_eigene_firma(angemeldet, pult, monkeypatch):
+    _verbunden(monkeypatch, "mastodon")
+    monkeypatch.setattr(server, "kanal_post_entwurf", lambda *a, **k: pytest.fail("kein Entwurf"))
+    angemeldet.cookies.set("mk_mandant", "fin2gether", path="/marketing")
+    r = post(angemeldet, "/marketing/reels/kanaele",
+             {"csrf": ui.CSRF_TOKEN, "datei": DATEI, "thema": "T", "text": "x"})
+    assert r.status_code == 422
+
+
+def test_kuerzen():
+    assert ui_reels.kuerzen("aa bb cc dd", 7) == "aa bb…"
+    assert len(ui_reels.kuerzen("aa bb cc dd", 7)) <= 7
+    assert ui_reels.kuerzen("kurz", 10) == "kurz"
+    assert len(ui_reels.kuerzen("x" * 50, 10)) <= 10
+
+
 # --- Gefuehrte Bestellung ------------------------------------------------------------
 
 def test_bestellung_schritt1_vier_karten(angemeldet, pult):

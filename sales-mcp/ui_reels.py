@@ -24,8 +24,10 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import RedirectResponse
 from starlette.routing import Route
 
+import kanaele
 import marketing_mandant
 import marketing_pult
+import medien
 import ui_muster
 
 # "ki" gibt es nur auf dieser Seite: an die API geht art "bilder" mit briefing.ki (Stufe 3, E2)
@@ -61,6 +63,8 @@ _AID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 _BILD = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.(?:png|jpe?g|webp)$", re.IGNORECASE)
 _LAURA_ID = re.compile(r"^[0-9a-f][0-9a-f-]{7,63}$")       # wie _LAURA_ID der Marketing-API
 POST_TEXT_MAX = 3000
+LINK_MAX = 300                     # "Auf Kanaelen teilen": optionaler Link, nur https:// (Task 8)
+_LINK = re.compile(r"^https://[^\s<>\"']+$")
 WUNSCH_MAX = 500
 AUSWAHL_MAX = 8
 DETAIL_LIMIT = 200                 # Hoechstwert der API: so findet die Detailseite auch aeltere Reels
@@ -208,6 +212,20 @@ def datum_text(roh) -> str:
     return f"{m.group(3)}.{m.group(2)}.{m.group(1)}" if m else ""
 
 
+def kuerzen(text: str, grenze: int) -> str:
+    """Zu langer Text wird am letzten Leerzeichen vor `grenze - 1` gekuerzt und bekommt "…" -
+    das Ergebnis hat hoechstens `grenze` Zeichen. Ohne Leerzeichen wird hart geschnitten."""
+    if len(text) <= grenze:
+        return text
+    if grenze < 1:
+        return ""
+    stueck = text[:grenze - 1]
+    leer = stueck.rfind(" ")
+    if leer > 0:
+        stueck = stueck[:leer]
+    return stueck.rstrip() + "…"
+
+
 def eigene_firma() -> str:
     return os.environ.get("MARKETING_MANDANT", "").strip()
 
@@ -335,6 +353,18 @@ def routen(ui) -> list:
                     '<button type="submit">Als LinkedIn-Post vorbereiten</button>'
                     '<p class="meta">Legt einen Entwurf in die Freigaben – gepostet wird erst nach deiner '
                     'Freigabe.</p></form>')
+                titel = str(a.get("titel") or "")
+                teile.append(
+                    f'<form method="post" action="{SEITE}/kanaele" class="reel-form">{csrf()}'
+                    f'<input type="hidden" name="datei" value="{e(datei)}">'
+                    f'<input type="hidden" name="thema" value="{e(titel)}">'
+                    f'<label>Text für die Kanäle <textarea name="text" rows="3" maxlength="{POST_TEXT_MAX}">'
+                    f'{e(titel)}</textarea></label>'
+                    f'<label>Link (optional, nur https://) <input type="url" name="link" maxlength="{LINK_MAX}" '
+                    'placeholder="https://"></label>'
+                    '<button type="submit">Auf Kanälen teilen</button>'
+                    '<p class="meta">Legt je verbundenem Kanal, der Videos nimmt, einen Entwurf in die Freigaben. '
+                    'Zu lange Texte werden gekürzt. <a href="/einstellungen/kanaele">Kanäle</a></p></form>')
             else:
                 teile.append('<p class="meta">Posten kann nur der Laden dieser Firma.</p>')
         if status == "fertig":
@@ -839,16 +869,9 @@ def routen(ui) -> list:
 
     # --- LinkedIn-Entwurf ------------------------------------------------------------------
 
-    @ui._gesichert_seite
-    async def post_vorbereiten(request):
-        form = await request.form()
-        if not ui._csrf_ok(form):
-            return abgewiesen()
-        datei = str(form.get("datei") or "")
-        thema = str(form.get("thema") or "").strip()
-        text = str(form.get("text") or "").strip()
-        if not _DATEI.fullmatch(datei) or not thema or not text or len(text) > POST_TEXT_MAX:
-            return ui._fehlerseite(422, "Nicht möglich", "Reel-Datei, Thema und Text (bis 3000 Zeichen) sind nötig.")
+    async def nicht_eigenes_reel(request, datei: str):
+        """None, wenn `datei` ein fertiges Reel der Firma dieses Ladens ist (aktuell oder Archiv)
+        und genau diese Firma gewaehlt ist; sonst die Fehlerseite (Review Focus 1)."""
         firma = eigene_firma()
         if not firma:
             return ui._fehlerseite(422, "Nicht möglich", "Dieser Laden ist keiner Marketing-Firma zugeordnet.")
@@ -862,16 +885,77 @@ def routen(ui) -> list:
         eigene = {str(a.get("datei")) for a in alle if a.get("status") == "fertig"}
         if datei not in eigene:
             return ui._fehlerseite(422, "Nicht möglich", "Dieses Reel gehört nicht zur Firma dieses Ladens.")
+        return None
+
+    @ui._gesichert_seite
+    async def post_vorbereiten(request):
+        form = await request.form()
+        if not ui._csrf_ok(form):
+            return abgewiesen()
+        datei = str(form.get("datei") or "")
+        thema = str(form.get("thema") or "").strip()
+        text = str(form.get("text") or "").strip()
+        if not _DATEI.fullmatch(datei) or not thema or not text or len(text) > POST_TEXT_MAX:
+            return ui._fehlerseite(422, "Nicht möglich", "Reel-Datei, Thema und Text (bis 3000 Zeichen) sind nötig.")
+        abgelehnt = await nicht_eigenes_reel(request, datei)
+        if abgelehnt is not None:
+            return abgelehnt
         ergebnis = json.loads(await run_in_threadpool(ui.server.post_entwurf_erstellen, thema, text, datei))
         if ergebnis.get("fehler"):
             return ui._fehlerseite(422, "Nicht möglich", e(str(ergebnis["fehler"])))
         return RedirectResponse("/freigaben", status_code=303)
+
+    # --- Auf Kanaelen teilen (Beitraege auf weitere Kanaele, Task 8) ------------------------
+
+    @ui._gesichert_seite
+    async def kanaele_teilen(request):
+        """Je verbundenem Kanal, der diese Medienart nimmt, ein Entwurf ueber
+        server.kanal_post_entwurf - veroeffentlicht wird erst nach der Freigabe. dev.to nie."""
+        form = await request.form()
+        if not ui._csrf_ok(form):
+            return abgewiesen()
+        datei = str(form.get("datei") or "")
+        thema = str(form.get("thema") or "").strip()
+        text = str(form.get("text") or "").strip()
+        link = str(form.get("link") or "").strip()
+        if not _DATEI.fullmatch(datei) or not thema or not text or len(text) > POST_TEXT_MAX:
+            return ui._fehlerseite(422, "Nicht möglich", "Reel-Datei, Thema und Text (bis 3000 Zeichen) sind nötig.")
+        if link and (len(link) > LINK_MAX or not _LINK.fullmatch(link)):
+            return ui._fehlerseite(422, "Nicht möglich",
+                                   f"Der Link muss mit https:// beginnen und darf höchstens {LINK_MAX} Zeichen haben.")
+        abgelehnt = await nicht_eigenes_reel(request, datei)
+        if abgelehnt is not None:
+            return abgelehnt
+        art = "video" if medien.endpunkt_und_typ(datei)[1].startswith("video/") else "bild"
+        status = await run_in_threadpool(kanaele.status_lesen, ui.server._q)
+        ziele = [info for k, info in kanaele.KANAELE.items()
+                 if k != "devto" and (status.get(k) or {}).get("verbunden")
+                 and (info.video_max if art == "video" else info.bilder_max) >= 1]
+        if not ziele:
+            return ui._fehlerseite(
+                422, "Nicht möglich",
+                f"Kein verbundener Kanal nimmt dieses Reel ({'Video' if art == 'video' else 'Bild'}). "
+                'Kanäle: <a href="/einstellungen/kanaele">/einstellungen/kanaele</a>')
+        zeilen = []
+        for info in ziele:
+            platz = info.max_zeichen_mit_medien - (len(link) + 2 if link else 0)
+            fassung = kuerzen(text, platz) + ("\n\n" + link if link else "")
+            antwort = json.loads(await run_in_threadpool(
+                ui.server.kanal_post_entwurf, info.name, thema, fassung, medien_dateien=datei))
+            grund = antwort.get("fehler") if isinstance(antwort, dict) else "unerwartete Antwort"
+            zeilen.append(f"<li><strong>{e(info.anzeige)}</strong>: "
+                          + (e(str(grund)) if grund else "angelegt") + "</li>")
+        rumpf = (f'<ul>{"".join(zeilen)}</ul>'
+                 '<p class="meta">Veröffentlicht wird erst nach deiner Freigabe.</p>'
+                 '<p><a class="knopf" href="/freigaben">Zu den Freigaben</a></p>')
+        return ui._seite("Auf Kanälen teilen", rumpf)
 
     return [
         Route(SEITE, galerie),
         Route(NEU_SEITE, bestellung),
         Route(NEU_SEITE, neu, methods=["POST"]),
         Route(f"{SEITE}/post", post_vorbereiten, methods=["POST"]),
+        Route(f"{SEITE}/kanaele", kanaele_teilen, methods=["POST"]),
         Route(SEITE + "/{aid}", detail),
         Route(SEITE + "/{aid}/nochmal", nochmal, methods=["POST"]),
         Route(SEITE + "/{aid}/archiv", archiv, methods=["POST"]),

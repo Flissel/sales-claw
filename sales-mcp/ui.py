@@ -222,6 +222,7 @@ import ui_plan
 import ui_podcast
 import ui_reels
 import struktur
+import ui_kanaele
 import ui_struktur
 import verlinken
 import vertraege
@@ -560,9 +561,11 @@ _KALENDER_ROLLE_PFADE = ("/team/kalender", "/kalender", "/static/kalender",
 # "/freigaben/bewerbung" (20.10.2026, Hermes H1): Freigeben/Nicht bewerben/Feedback
 # fuer die Bewerbungen des Betreibers ueber die Pult-API seines Bewerbungs-Bots -
 # nur im eigenen Laden des Betreibers, nie in einem zweiten.
+# "/einstellungen/kanaele" (24.10.2026, Beitraege auf weitere Kanaele): der
+# Dienst sales-kanaele laeuft nur im Basis-Laden (Praezisierung 5).
 _ADMIN_BASIS_PFADE = ("/team/laden-anlegen", "/team/tailscale-einladen",
                       "/marketing", "/freigaben/newsletter", "/team/struktur",
-                      "/freigaben/bewerbung")
+                      "/freigaben/bewerbung", "/einstellungen/kanaele")
 
 
 # Newsletter-Editor (29.09.2026): die abgeschottete Vorschau (sandbox, eigene
@@ -2054,7 +2057,8 @@ _GRUPPEN = (
     # Eintrag durch _pfad_erlaubt filtert (s. dort), und die faellt fuer
     # jede andere Kombination durch.
     ("Admin", (("/team/laden-anlegen", "Laden anlegen"),
-               ("/team/tailscale-einladen", "Team-Mitglied einladen"))),
+               ("/team/tailscale-einladen", "Team-Mitglied einladen"),
+               ("/einstellungen/kanaele", "Kanäle"))),
 )
 _NAV = tuple(eintrag for _, eintraege in _GRUPPEN for eintrag in eintraege)
 # Detailseiten gehoeren zu ihrer Liste (Browser-Durchlauf 29.09.2026): die
@@ -8588,6 +8592,7 @@ app = Starlette(routes=[
     *ui_marketing.routen(sys.modules[__name__]),
     *ui_plan.routen(sys.modules[__name__]),
     *ui_struktur.routen(sys.modules[__name__]),
+    *ui_kanaele.routen(sys.modules[__name__]),
     *ui_reels.routen(sys.modules[__name__]),
     *ui_podcast.routen(sys.modules[__name__]),
     *ui_freigabe_newsletter.routen(sys.modules[__name__]),
