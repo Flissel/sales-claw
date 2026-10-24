@@ -52,7 +52,9 @@ BIND="${BIND:-127.0.0.1}"
 # ERSTEN Deploy haette das die Abnahme rot gemacht und einen automatischen
 # Rueckbau ausgeloest, dessen Abnahme AUCH rot geblieben waere: "openwa"
 # existiert nach der Umstellung nicht mehr).
-for c in sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw sales-openwa; do
+# sales-kanaele (24.10.2026) muss laufen; ob ein Kanal einen Zugang hat,
+# prueft smoke bewusst NICHT — ohne Zugang heisst es „nicht verbunden".
+for c in sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw sales-openwa sales-kanaele; do
   z="$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo fehlt)"
   [ "$z" = "running" ] && gut "container $c" || fehl "container $c" "$z"
 done
@@ -272,8 +274,8 @@ erst = aufgeloest("docker-compose.yml")
 assert erst["name"] == "sales-claw", erst["name"]
 erwartete_container = {
     "sales-claw", "sales-mcp", "sales-dispatch", "sales-inbox",
-    "sales-mail", "sales-telegram", "sales-linkedin", "sales-auto",
-    "sales-ui"}  # sales-stt seit 20.10.2026 am PC, hier nur per Profil stt-lokal
+    "sales-mail", "sales-telegram", "sales-linkedin", "sales-kanaele",
+    "sales-auto", "sales-ui"}  # sales-stt seit 20.10.2026 am PC, hier nur per Profil stt-lokal
 ist = {d["container_name"] for d in erst["services"].values()}
 assert ist == erwartete_container, ist
 istv = {v["name"] for v in erst["volumes"].values()}

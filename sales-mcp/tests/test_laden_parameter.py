@@ -393,12 +393,12 @@ def test_ohne_umgebung_bleibt_alles_wie_heute():
     assert cfg["name"] == "sales-claw"
     assert set(cfg["services"]) == {
         "sales-claw", "sales-mcp", "sales-dispatch", "sales-inbox",
-        "sales-mail", "sales-telegram", "sales-linkedin", "sales-auto",
-        "sales-ui"}  # sales-stt seit 20.10.2026 am PC (Profil stt-lokal)
+        "sales-mail", "sales-telegram", "sales-linkedin", "sales-kanaele",
+        "sales-auto", "sales-ui"}  # sales-stt seit 20.10.2026 am PC (Profil stt-lokal)
     assert {d["container_name"] for d in cfg["services"].values()} == {
         "sales-claw", "sales-mcp", "sales-dispatch", "sales-inbox",
-        "sales-mail", "sales-telegram", "sales-linkedin", "sales-auto",
-        "sales-ui"}  # sales-stt seit 20.10.2026 am PC (Profil stt-lokal)
+        "sales-mail", "sales-telegram", "sales-linkedin", "sales-kanaele",
+        "sales-auto", "sales-ui"}  # sales-stt seit 20.10.2026 am PC (Profil stt-lokal)
     assert {v["name"] for v in cfg["volumes"].values()} == {
         "sales-claw-state", "sales-claw-keys",
         "sales-sprachnachrichten"}

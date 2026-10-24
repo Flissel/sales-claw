@@ -24,7 +24,7 @@ private Betriebsprotokoll: Datum, Schlüssel, Anlass — ohne Werte.
 
 | Schlüssel | Wozu / wo rotieren | Nach der Rotation neu aufsetzen |
 |---|---|---|
-| `SALES_DB_URL` | Kundendaten-DB (Passwort der DB-Rolle `sales_app`; ändern per `alter role` im DB-Container) | alle Kerndienste: `sales-mcp sales-dispatch sales-inbox sales-mail sales-ui sales-linkedin` |
+| `SALES_DB_URL` | Kundendaten-DB (Passwort der DB-Rolle `sales_app`; ändern per `alter role` im DB-Container) | alle Kerndienste: `sales-mcp sales-dispatch sales-inbox sales-mail sales-ui sales-linkedin sales-kanaele` |
 | `OPENROUTER_API_KEY` | Sprachmodell des Agenten — openrouter.ai | `sales-claw` |
 | `OPENWA_API_KEY` | WhatsApp-Server-API (sendefähig!) — Wert selbst erzeugen, steht auch in der OpenWA-Konfiguration | `openwa` und Vertrauensdomäne + `sales-linkedin` |
 | `OPENWA_VIEWER_KEY` | Nur-Lese-Schlüssel der /whatsapp-Seite | `openwa sales-ui` |
@@ -34,12 +34,24 @@ private Betriebsprotokoll: Datum, Schlüssel, Anlass — ohne Werte.
 | `APIFY_TOKEN` | Recherche — apify.com | Vertrauensdomäne |
 | `LINKEDIN_CLIENT_ID` / `_CLIENT_SECRET` / `_ACCESS_TOKEN` | LinkedIn-App — developer.linkedin.com (Token läuft ohnehin ab; Erneuerungs-Ablauf in docs/05_LINKEDIN…) | `sales-linkedin` und Vertrauensdomäne |
 | `UI_SESSION_SECRET` | Signatur der UI-Sitzungen — Rotation wirft ALLE angemeldeten Benutzer raus (gewollt bei Verdacht); neuen Wert erzeugt `deploy/benutzer-anlegen.sh`-Muster: `docker exec sales-mcp python -c 'import secrets; print(secrets.token_urlsafe(32))'` | `sales-ui` |
+| `BLUESKY_HANDLE` / `BLUESKY_APP_PASSWORD` | Bluesky — App-Passwort unter bsky.app → Einstellungen → Datenschutz und Sicherheit → App-Passwörter. Rotation = neues App-Passwort erzeugen, `deploy/kanal-zugang-eintragen.sh bluesky` erneut, altes widerrufen | `sales-kanaele` (macht das Skript) |
+| `MASTODON_INSTANCE` / `MASTODON_TOKEN` | Mastodon — auf der eigenen Instanz unter Einstellungen → Entwicklung → Neue Anwendung (Recht `write:statuses`, `write:media`). Rotation = Zugangstoken neu erzeugen, `deploy/kanal-zugang-eintragen.sh mastodon` erneut | `sales-kanaele` (macht das Skript) |
+| `TELEGRAM_KANAL_ID` / `TELEGRAM_KANAL_BOT_TOKEN` | Telegram-Kanal — Bot bei @BotFather, als Admin mit Posting-Recht in den Kanal. Rotation = `/revoke` bei @BotFather, `deploy/kanal-zugang-eintragen.sh telegram_kanal` erneut | `sales-kanaele` (macht das Skript) |
+| `DISCORD_ANKUENDIGUNG_WEBHOOK` | Discord — Servereinstellungen → Integrationen → Webhooks (die URL selbst ist das Geheimnis). Rotation = Webhook löschen, neu anlegen, `deploy/kanal-zugang-eintragen.sh discord` erneut | `sales-kanaele` (macht das Skript) |
+| `DEVTO_API_KEY` | dev.to — Settings → Extensions → DEV Community API Keys. Rotation = neuen Schlüssel erzeugen, `deploy/kanal-zugang-eintragen.sh devto` erneut, alten widerrufen | `sales-kanaele` (macht das Skript) |
 | `OPENAI_API_KEY` / `LLM_9ROUTER_API_KEY` | in der `.env` vorhanden, im Compose NICHT verdrahtet — Kandidaten zum ENTFERNEN statt Rotieren (erst prüfen, ob die OpenClaw-Konfiguration im Volume sie nutzt) | — |
 
 Kein Geheimnis (nur Konfiguration): `TZ`, `SMTP_HOST/PORT`,
 `EMAIL_ABSENDER`, `CALDAV_URL`, `UI_TAILSCALE_IP`, `OPENWA_SESSION_ID`,
 `LINKEDIN_PERSON_URN`, `INBOX_UNBEKANNT_LEAD_ID`, `RECHERCHE_LEAD_ID`,
-`LINKEDIN_POST_LEAD_ID`.
+`LINKEDIN_POST_LEAD_ID`, `BLUESKY_PDS`. Handle, Instanz und Kanal-ID
+(`BLUESKY_HANDLE`, `MASTODON_INSTANCE`, `TELEGRAM_KANAL_ID`) sind keine
+Geheimnisse, werden aber trotzdem nie in UI oder Log ausgegeben.
+
+Eigene Kanäle (24.10.2026) weichen von Schritt 2–3 des Verfahrens ab: statt
+`nano` und `up -d` immer `bash ~/sales-claw/deploy/kanal-zugang-eintragen.sh
+<kanal>` — liest verdeckt, legt `.env.vor-<kanal>-<Zeitstempel>` (600) an
+und erzeugt nur `sales-kanaele` neu. Abnahme: `/einstellungen/kanaele`.
 
 ## Ausserhalb der .env
 

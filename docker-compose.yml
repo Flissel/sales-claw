@@ -627,6 +627,54 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Eigene Beitraege auf weiteren Kanaelen (24.10.2026, Plan
+  # 2026-10-24-kanaele-posten): Bluesky, Mastodon, Telegram-Kanal, Discord
+  # (Webhook) und dev.to (dort nur als Entwurf). Dauerdienst nach dem Muster
+  # von sales-linkedin: freigegebene Entwuerfe mit recipient='eigenes-profil'
+  # werden hoechstens einmal veroeffentlicht, mit Beleg und Kadenz je Kanal
+  # (Kopf von sales-mcp/kanal_dispatch.py).
+  #
+  # NUR im Basis-Laden (Praezisierung 5): kein Eintrag in laden-anlegen.sh
+  # oder deploy/laeden/beispiel.env. Laeuft auch OHNE Zugaenge — ein Kanal
+  # ohne Werte heisst „noch nicht verbunden", nie Fehler. Zugaenge traegt
+  # deploy/kanal-zugang-eintragen.sh <kanal> ein (verdeckt, erzeugt nur
+  # diesen Dienst neu).
+  sales-kanaele:
+    build: ./sales-mcp
+    image: sales-claw-sales-mcp:local
+    container_name: ${LADEN_PRAEFIX:-sales}-kanaele
+    command: python kanal_dispatch.py
+    restart: unless-stopped
+    # KEIN env_file — wie bei sales-linkedin: nur die Kundendaten-DB und die
+    # Kanal-Zugaenge, keine fremden Schluessel.
+    environment:
+      - SALES_DB_URL=${SALES_DB_URL}
+      - BLUESKY_HANDLE=${BLUESKY_HANDLE:-}
+      - BLUESKY_APP_PASSWORD=${BLUESKY_APP_PASSWORD:-}
+      - BLUESKY_PDS=${BLUESKY_PDS:-https://bsky.social}
+      - MASTODON_INSTANCE=${MASTODON_INSTANCE:-}
+      - MASTODON_TOKEN=${MASTODON_TOKEN:-}
+      - TELEGRAM_KANAL_ID=${TELEGRAM_KANAL_ID:-}
+      - TELEGRAM_KANAL_BOT_TOKEN=${TELEGRAM_KANAL_BOT_TOKEN:-}
+      - DISCORD_ANKUENDIGUNG_WEBHOOK=${DISCORD_ANKUENDIGUNG_WEBHOOK:-}
+      - DEVTO_API_KEY=${DEVTO_API_KEY:-}
+      - KANAL_INTERVAL_S=60
+      - TZ=${TZ:-Europe/Berlin}
+    volumes:
+      # Read-only wie bei sales-linkedin: was gepostet werden kann, legt
+      # ausschliesslich ein Mensch (oder die Erzeugung) auf dem Host ab.
+      - ${MEDIEN_ORDNER:-./media}:/media:ro
+      - ${MEDIEN_ERZEUGT_ORDNER:-./media-erzeugt}:/media-erzeugt:ro
+    # Ein laufender Medien-Upload (Mastodon-Video bis 40 MiB) soll nicht per
+    # SIGKILL zerrissen werden. Wird er doch abgeschnitten, bleibt der
+    # Entwurf geclaimt liegen — der sichere Ausgang.
+    stop_grace_period: 120s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   # Die Antwort-Bruecke des Auto-Betriebs (sales-mcp/auto.py, Moduldocstring
   # dort): beantwortet unbeantwortete Kundennachrichten von Kontakten MIT
   # Kontakt-Freigabe selbst — Antwort per Anthropic-API erzeugen, Entwurf

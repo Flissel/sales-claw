@@ -29,7 +29,9 @@ STATUS="$BETRIEB/update-status.json"
 # sales-stt fehlt seit 20.10.2026 BEWUSST: er laeuft am PC (keine Modelle auf
 # der VM), sales-mcp erreicht ihn ueber STT_URL. Der Compose-Eintrag ist nur
 # noch Rueckweg (Profil stt-lokal) und wird von einem Update nie hochgezogen.
-KERN_ALLE="sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw sales-telegram sales-linkedin"
+# sales-kanaele (24.10.2026) steht nur im Basis-Laden; in anderen Laeden
+# laeuft er nie und wird deshalb auch nie angefasst (nur was VORHER lief).
+KERN_ALLE="sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw sales-telegram sales-linkedin sales-kanaele"
 
 # Praefix und --env-file-Argument je Laden, PARALLELE Arrays (Index i
 # gehoert zusammen). Der bestehende Laden ("sales", Vorgabewerte aus den
@@ -323,8 +325,9 @@ for i in "${!LADEN_PRAEFIXE[@]}"; do
   # bleibt als explizites Gegenlesen derselben Bedingung stehen, jetzt mit
   # containername() PRO LADEN statt — wie vor Korrekturrunde 1 — gegen den
   # bloss fuer den Basis-Laden korrekten Dienstschluessel selbst.
+  # sales-kanaele (24.10.2026) teilt dasselbe Image und gehoert dazu.
   if $MCP_GEAENDERT; then
-    for _dienst in sales-linkedin sales-telegram; do
+    for _dienst in sales-linkedin sales-telegram sales-kanaele; do
       c="$(containername "$_dienst" "$P")"
       if [ "$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null)" = "running" ]; then
         BAUEN="$BAUEN $_dienst"
