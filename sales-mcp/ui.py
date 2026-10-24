@@ -923,6 +923,17 @@ nav.seite .logo { width: 1.9rem; height: 1.9rem; border-radius: 6px;
 .gruppenname { font-size: .7rem; letter-spacing: .08em;
                text-transform: uppercase; color: var(--gedaempft);
                padding: 0 .7rem .2rem; font-weight: 600; }
+/* Aufklappbare Gruppen (24.10.2026): <details> ohne JavaScript. */
+summary.gruppenname { display: flex; align-items: center; gap: .5rem;
+                      min-height: 44px; cursor: pointer; list-style: none;
+                      border-radius: 6px; }
+summary.gruppenname::-webkit-details-marker { display: none; }
+summary.gruppenname::before { content: "▸"; font-size: .8rem;
+                              transition: transform .15s; }
+details.gruppe[open] > summary.gruppenname::before { transform: rotate(90deg); }
+summary.gruppenname:hover { color: var(--balken_schrift); }
+summary.gruppenname:focus-visible { outline: 2px solid var(--akzent); }
+details.gruppe[open] > summary .zaehler { display: none; }
 nav.seite a { color: var(--balken_schrift); text-decoration: none;
               font-weight: 600; display: flex; align-items: center;
               gap: .6rem; min-height: 44px; padding: .5rem .7rem;
@@ -2163,12 +2174,29 @@ def _menue_gruppen(rolle: str) -> tuple:
     return tuple(g for g in gruppen if g[1])
 
 
+def _kopf_zaehler(eintraege, zaehler: dict) -> str:
+    """Summe der offenen Zaehler einer Gruppe fuer ihre Kopfzeile, "" ohne
+    Offenes. "Heute" (/) ist schon die Summe der Aufgaben - dann nur sie."""
+    pfade = [p for p, _ in eintraege if p in _ZAEHLER_OFFEN and p in zaehler]
+    if "/" in pfade:
+        pfade = ["/"]
+    n = sum(int(zaehler[p] or 0) for p in pfade)
+    return f'<span class="zaehler offen">{n}</span>' if n > 0 else ""
+
+
 def _menue_links(gruppen, zaehler: dict, aktiver_pfad) -> str:
-    """Die Gruppen mit ihren Eintraegen und Zaehlern als HTML."""
+    """Die Gruppen mit ihren Eintraegen und Zaehlern als HTML. Jede Gruppe
+    ist ein <details> (Betreiber 24.10.2026, ohne JavaScript): offen sind
+    die Gruppe der aktuellen Seite und "Aufgaben", auf /mehr
+    (aktiver_pfad None) alle."""
     teile = []
     for gruppe, eintraege in gruppen:
-        teile.append(f'<div class="gruppe"><div class="gruppenname">'
-                     f'{_e(gruppe)}</div>')
+        offen = (aktiver_pfad is None or gruppe == "Aufgaben"
+                 or any(p == aktiver_pfad for p, _ in eintraege))
+        teile.append(f'<details class="gruppe"{" open" if offen else ""}>'
+                     f'<summary class="gruppenname"><span class="gruppentitel">'
+                     f'{_e(gruppe)}</span>{_kopf_zaehler(eintraege, zaehler)}'
+                     f'</summary>')
         for pfad, name in eintraege:
             klasse = ' class="aktiv"' if pfad == aktiver_pfad else ""
             zahl = ""
@@ -2178,7 +2206,7 @@ def _menue_links(gruppen, zaehler: dict, aktiver_pfad) -> str:
                 zahl = f'<span class="zaehler{art}">{n}</span>'
             teile.append(f'<a{klasse} href="{pfad}"><span>{_e(name)}</span>'
                          f'{zahl}</a>')
-        teile.append("</div>")
+        teile.append("</details>")
     return "".join(teile)
 
 

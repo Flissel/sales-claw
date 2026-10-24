@@ -86,7 +86,7 @@ def test_mehr_zeigt_das_ganze_menue_und_abmelden(monkeypatch):
     for pfad in ("/pipeline", "/medien", "/whatsapp", "/einordnung"):
         assert f'href="{pfad}"' in haupt, pfad
     for gruppe in ("Aufgaben", "Analyse", "Daten", "Monitoring"):
-        assert f'<div class="gruppenname">{gruppe}</div>' in haupt, gruppe
+        assert f'<span class="gruppentitel">{gruppe}</span>' in haupt, gruppe
     # Abmelden nur bei scharfer Anmeldung - wie in der Seitenleiste.
     assert 'action="/logout"' not in haupt
     monkeypatch.setattr(ui, "UI_SESSION_SECRET", "scharf")

@@ -51,16 +51,16 @@ def _entwurf(lead, status="pending", kanal="whatsapp", text="Hallo?"):
 def test_vier_gruppen_mit_allen_seiten():
     seite = _get("/kontakte").text
     for gruppe in ("Aufgaben", "Analyse", "Daten", "Monitoring"):
-        assert f'<div class="gruppenname">{gruppe}</div>' in seite, gruppe
+        assert f'<span class="gruppentitel">{gruppe}</span>' in seite, gruppe
     for pfad in ("/", "/freigaben", "/wiedervorlagen", "/einordnung", "/kalender",
                  "/kontakte", "/pipeline", "/ergebnisse", "/posteingang",
                  "/medien", "/whatsapp"):
         assert f'href="{pfad}"' in seite, pfad
     # Reihenfolge der Gruppen ist Teil des Entwurfs.
-    assert (seite.index('<div class="gruppenname">Aufgaben')
-            < seite.index('<div class="gruppenname">Analyse')
-            < seite.index('<div class="gruppenname">Daten')
-            < seite.index('<div class="gruppenname">Monitoring'))
+    assert (seite.index('<span class="gruppentitel">Aufgaben')
+            < seite.index('<span class="gruppentitel">Analyse')
+            < seite.index('<span class="gruppentitel">Daten')
+            < seite.index('<span class="gruppentitel">Monitoring'))
 
 
 def test_aktiver_menuepunkt_ist_markiert():
@@ -97,7 +97,7 @@ def test_zaehler_fallen_leise_aus(monkeypatch):
     antwort = _get("/kontakte")
     assert antwort.status_code == 200
     assert 'class="zaehler' not in antwort.text
-    assert '<div class="gruppenname">Aufgaben</div>' in antwort.text
+    assert '<span class="gruppentitel">Aufgaben</span>' in antwort.text
 
 
 def test_auf_dem_handy_gibt_es_oben_keine_leiste():
@@ -192,3 +192,64 @@ def test_kaputter_medienzaehler_nimmt_die_anderen_nicht_mit(monkeypatch):
     seite = _get("/kontakte").text
     assert 'Freigaben</span><span class="zaehler">0</span>' in seite
     assert 'Medien</span><span class="zaehler"' not in seite
+
+
+# --- Aufklappbare Gruppen (Betreiber 24.10.2026) -----------------------------
+# Jede Gruppe ist ein <details> (kein JavaScript, CSP). Offen sind beim Laden
+# die Gruppe der aktuellen Seite und "Aufgaben"; auf /mehr (aktiver_pfad None)
+# alle. Zugeklappt traegt die Kopfzeile die Summe der offenen Zaehler.
+
+_G = (("Aufgaben", (("/", "Heute"), ("/freigaben", "Freigaben"))),
+      ("Analyse", (("/kontakte", "Kontakte"), ("/pipeline", "Pipeline"))),
+      ("Daten", (("/medien", "Medien"),)))
+
+
+def _gruppe(html, name):
+    start = html.index(f'<span class="gruppentitel">{name}</span>')
+    kopf = html.rindex("<details", 0, start)
+    return html[kopf:html.index("</details>", start)]
+
+
+def test_gruppen_sind_aufklappbar_ohne_javascript():
+    html = ui._menue_links(_G, {}, "/kontakte")
+    assert html.count('<details class="gruppe"') == 3
+    assert html.count('<summary class="gruppenname">') == 3
+    assert "<script" not in html and "onclick" not in html
+
+
+def test_offen_sind_aktive_gruppe_und_aufgaben():
+    html = ui._menue_links(_G, {}, "/kontakte")
+    assert _gruppe(html, "Aufgaben").startswith('<details class="gruppe" open>')
+    assert _gruppe(html, "Analyse").startswith('<details class="gruppe" open>')
+    assert _gruppe(html, "Daten").startswith('<details class="gruppe">')
+    # Daten aktiv: Daten offen, Analyse zu, Aufgaben weiter offen
+    html = ui._menue_links(_G, {}, "/medien")
+    assert _gruppe(html, "Daten").startswith('<details class="gruppe" open>')
+    assert _gruppe(html, "Analyse").startswith('<details class="gruppe">')
+
+
+def test_auf_der_mehr_seite_sind_alle_gruppen_offen():
+    html = ui._menue_links(_G, {}, None)
+    assert html.count('<details class="gruppe" open>') == 3
+
+
+def test_kopfzeile_traegt_summe_der_offenen_zaehler():
+    zaehler = {"/": 9, "/freigaben": 7, "/kontakte": 569, "/medien": 133}
+    html = ui._menue_links(_G, zaehler, "/medien")
+    kopf = _gruppe(html, "Aufgaben").split("</summary>")[0]
+    # "Heute" ist schon die Summe der Aufgaben - also nicht doppelt zaehlen
+    assert '<span class="zaehler offen">9</span>' in kopf
+    # Bestandszahlen (Kontakte, Medien) gehoeren nicht an die Kopfzeile
+    assert "zaehler" not in _gruppe(html, "Analyse").split("</summary>")[0]
+    assert "zaehler" not in _gruppe(html, "Daten").split("</summary>")[0]
+
+
+def test_kopf_zaehler_nur_bei_offenem():
+    html = ui._menue_links(_G, {"/": 0, "/freigaben": 0}, "/medien")
+    assert "zaehler" not in _gruppe(html, "Aufgaben").split("</summary>")[0]
+
+
+def test_kopf_zaehler_verschwindet_bei_offener_gruppe_per_css():
+    seite = _get("/kontakte").text
+    assert "details.gruppe[open] > summary .zaehler { display: none; }" in seite
+    assert "summary.gruppenname" in seite and "min-height: 44px" in seite
