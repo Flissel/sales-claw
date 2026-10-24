@@ -46,7 +46,12 @@ Kein Geheimnis (nur Konfiguration): `TZ`, `SMTP_HOST/PORT`,
 `LINKEDIN_PERSON_URN`, `INBOX_UNBEKANNT_LEAD_ID`, `RECHERCHE_LEAD_ID`,
 `LINKEDIN_POST_LEAD_ID`, `BLUESKY_PDS`. Handle, Instanz und Kanal-ID
 (`BLUESKY_HANDLE`, `MASTODON_INSTANCE`, `TELEGRAM_KANAL_ID`) sind keine
-Geheimnisse, werden aber trotzdem nie in UI oder Log ausgegeben.
+Geheimnisse. Als Zugangswert erscheinen sie nie in UI oder Log (auch nicht
+in Fehlertexten, die nennen nur den Namen). Ausnahme mit Absicht: die
+öffentlichen Beleg-URLs der Beiträge (`https://bsky.app/profile/<handle>/…`,
+die Mastodon-URL auf der Instanz, `https://t.me/<name>/…`) stehen im Verlauf
+von `/freigaben` und auf der Statusseite `/einstellungen/kanaele` und
+verraten damit Handle, Instanz bzw. Kanalnamen.
 
 Eigene Kanäle (24.10.2026) weichen von Schritt 2–3 des Verfahrens ab: statt
 `nano` und `up -d` immer `bash ~/sales-claw/deploy/kanal-zugang-eintragen.sh

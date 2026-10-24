@@ -17,9 +17,11 @@ Muster und ausfuehrliche Begruendung: linkedin_dispatch.py. Kurz:
 Jede Runde schreibt je Kanal eine Zeile in kanal_status. Kein Fehlertext,
 kein Log enthaelt einen Zugangswert (`kanal_api.ohne_geheimnisse`).
 """
+import datetime
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import threading
@@ -44,6 +46,10 @@ KANAL_ONCE = os.environ.get("KANAL_ONCE", "").strip().lower() in (
 
 WEG = "kanal-dispatcher"
 LOG = logging.getLogger("sales-kanaele")
+
+# Kanal -> Tag der letzten zu_alt-Warnung (hoechstens eine je Kanal und Tag,
+# sonst stuende sie jede Minute im Log).
+_ZU_ALT_GEWARNT: dict[str, datetime.date] = {}
 
 # Normalzustand: kein Log je Runde.
 _RUHIG = ("nichts", "kadenz", "nicht_verbunden")
@@ -75,8 +81,18 @@ def _alle_geheim() -> list[str]:
     return [w for info in KANAELE.values() for w in _geheim(info)]
 
 
+# Steuerzeichen (inkl. NUL) aus Anbieterantworten: PostgreSQL nimmt kein
+# NUL in text, jsonb kein \u0000 - sonst scheitert die Buchung am Text.
+_STEUERZEICHEN = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _ohne_steuerzeichen(text: str) -> str:
+    return _STEUERZEICHEN.sub("", text)
+
+
 def _sauber(text: str, geheim: list[str], laenge: int = 500) -> str:
-    return _einzeilig(ohne_geheimnisse(str(text), geheim))[:laenge]
+    return _einzeilig(_ohne_steuerzeichen(
+        ohne_geheimnisse(str(text), geheim)))[:laenge]
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +123,9 @@ def _beleg_schreiben(kanal: str, geclaimt: dict, payload: dict) -> None:
         "values (%s, 'versand', %s) returning id",
         (geclaimt["lead_id"],
          json.dumps({"draft_id": str(geclaimt["id"]), "kanal": kanal,
-                     "weg": WEG, "empfaenger": "eigenes-profil", **payload},
+                     "weg": WEG, "empfaenger": "eigenes-profil",
+                     **{k: _ohne_steuerzeichen(v) if isinstance(v, str) else v
+                        for k, v in payload.items()}},
                     ensure_ascii=False)))
 
 
@@ -362,7 +380,9 @@ def eine_runde_kanal(kanal: str) -> str:
         ausgang, fehlertext = ergebnis, text
         break
     else:
-        if zu_alt:
+        heute = datetime.date.today()
+        if zu_alt and _ZU_ALT_GEWARNT.get(kanal) != heute:
+            _ZU_ALT_GEWARNT[kanal] = heute
             LOG.warning("%s: %d freigegebene(r) Beitrag/Beitraege sind aelter "
                         "als %d Tage und bleiben liegen - wer sie will, gibt "
                         "sie erneut frei. Es wurde NICHTS veroeffentlicht.",

@@ -184,3 +184,27 @@ def test_badge_zeigt_anzeigenamen():
     assert [a for a, _ in ui.FREIGABE_ARTEN] == [
         "whatsapp", "linkedin", "email", "bluesky", "mastodon",
         "telegram_kanal", "discord", "devto"]
+
+
+def test_verlauf_andere_kanaele_ohne_beleg_link(sammelkontakt):
+    """Der Beleg-Link gehoert nur zu den Beitrags-Kanaelen; WhatsApp und Co.
+    bleiben wie vorher ohne Link (und ohne Lateral-Join)."""
+    d = _entwurf(sammelkontakt, "whatsapp", text="hallo", status="sent")
+    _beleg(sammelkontakt, d, "https://example.org/x")
+    antwort = _get("/freigaben/verlauf/whatsapp")
+    assert antwort.status_code == 200
+    assert "hallo" in antwort.text
+    assert "Beitrag ansehen" not in antwort.text
+
+
+def test_freigaben_ueberlebt_kanal_status_rechtefehler(sammelkontakt, monkeypatch):
+    import psycopg
+
+    def verboten(q):
+        raise psycopg.errors.InsufficientPrivilege("permission denied")
+    monkeypatch.setattr(kanaele, "status_lesen", verboten)
+    _entwurf(sammelkontakt, "mastodon", status="approved")
+    antwort = _get("/freigaben")
+    assert antwort.status_code == 200
+    assert "Kanal nicht verbunden" in antwort.text
+    assert _get("/").status_code == 200

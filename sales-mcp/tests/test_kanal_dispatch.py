@@ -407,3 +407,42 @@ def test_main_once_endet_sauber_ohne_werte(umgebung, monkeypatch, caplog, mit_zu
     if not mit_zugaengen:
         zeilen = server._q("select verbunden from kanal_status")
         assert len(zeilen) == 5 and not any(z["verbunden"] for z in zeilen)
+
+
+def test_zu_alt_warnung_hoechstens_einmal_je_tag(umgebung, monkeypatch, caplog):
+    monkeypatch.setattr(kd, "_ZU_ALT_GEWARNT", {}, raising=False)
+    _entwurf("bluesky", approved_vor_tagen=8)
+    _entwurf("mastodon", approved_vor_tagen=8)
+    with caplog.at_level(logging.INFO, logger="sales-kanaele"):
+        for _ in range(3):
+            kd.eine_runde_kanal("bluesky")
+            kd.eine_runde_kanal("mastodon")
+    warnungen = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnungen) == 2
+    assert {r.args[0] for r in warnungen} == {"bluesky", "mastodon"}
+
+
+def test_nul_in_anbieterantwort_dauerhaft(umgebung):
+    umgebung.fehler["bluesky"] = KanalFehler("kaputt\x00antwort\x07")
+    d = _entwurf("bluesky")
+    assert kd.verarbeite_draft("bluesky", d) == "fehler"
+    fehler = _draft(d)["error"]
+    assert "\x00" not in fehler and "\x07" not in fehler
+    assert "kaputt" in fehler and "antwort" in fehler
+
+
+def test_nul_in_anbieterantwort_ungewiss(umgebung):
+    umgebung.fehler["bluesky"] = KanalFehler("weg\x00", ungewiss=True)
+    d = _entwurf("bluesky")
+    assert kd.verarbeite_draft("bluesky", d) == "ungewiss"
+    (beleg,) = _belege(d)
+    assert "\x00" not in beleg["grund"]
+
+
+def test_nul_im_beleg_des_anbieters(umgebung, monkeypatch):
+    monkeypatch.setitem(kanal_adapter.SENDER, "bluesky",
+                        lambda *a: Beleg("at://x/\x00/1", BS_URL + "\x00"))
+    d = _entwurf("bluesky")
+    assert kd.verarbeite_draft("bluesky", d) == "veroeffentlicht"
+    (beleg,) = _belege(d)
+    assert beleg["beitrag"] == "at://x//1" and beleg["url"] == BS_URL

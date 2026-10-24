@@ -2717,6 +2717,19 @@ def _devto_hinweis_offen(z) -> str:
             'dev.to an – veröffentlicht wird dort von Hand.</div>')
 
 
+def _kanal_status_sicher() -> dict:
+    """kanal_status fuer /freigaben: ein DB-Fehler beim Lesen (fehlende
+    Rechte, Tabelle kaputt) darf die Seite nie umwerfen - dann gilt jeder
+    Kanal als nicht verbunden. Geloggt wird nur die Fehlerart, kein Wert.
+    Das Werkzeug kanal_post_entwurf bleibt strikt."""
+    try:
+        return kanaele.status_lesen(server._q)
+    except psycopg.Error as e:
+        LOG.warning("kanal_status nicht lesbar (%s) - alle Kanaele gelten "
+                    "als nicht verbunden", type(e).__name__)
+        return {}
+
+
 def _kanal_hinweis_freigegeben(z, status: dict) -> str:
     """Was mit einem freigegebenen Beitrag der fuenf Kanaele passiert
     (Spec 2026-10-24): verbunden heisst, der Dienst sales-kanaele holt ihn;
@@ -3703,7 +3716,7 @@ async def inbox(request):
     # Die fuenf Beitrags-Kanaele zeigen ihren Block nur, wenn darin etwas
     # steht oder der Kanal verbunden ist - fuenf leere Bloecke "Nichts offen"
     # fuer Kanaele ohne Zugang waeren nur Rauschen.
-    kanal_status = kanaele.status_lesen(server._q)
+    kanal_status = _kanal_status_sicher()
     arten = [
         (a, n) for a, n in FREIGABE_ARTEN
         if a not in kanaele.KANAELE
@@ -3825,19 +3838,30 @@ VERLAUF_MAX = 200       # Eintraege auf der Verlaufsseite einer Art
 def _verlauf_entwuerfe(art: str, limit: int):
     """Gesendet und abgelehnt sind Verlauf; fehlgeschlagen ist offen
     (Erneut freigeben / Verwerfen) und steht darum NICHT hier."""
+    kopf = ("select d.id, d.channel, d.recipient, d.body, d.status, d.error, "
+            "       coalesce(d.sent_at, d.approved_at, d.created_at) as wann, "
+            "       l.name, ")
+    rest = ("where d.channel = %s and d.status in ('sent', 'rejected') "
+            "order by wann desc limit %s")
+    if art not in kanaele.KANAELE:
+        # Andere Kanaele: kein Beleg-Link (wie vor den Beitrags-Kanaelen),
+        # also auch kein Join auf activities.
+        return server._q(kopf + "null as beleg_url "
+                         "from drafts d left join leads l on l.id = d.lead_id "
+                         + rest, (art, limit))
     return server._q(
-        "select d.id, d.channel, d.recipient, d.body, d.status, d.error, "
-        "       coalesce(d.sent_at, d.approved_at, d.created_at) as wann, "
-        "       l.name, b.beleg_url "
+        kopf + "b.beleg_url "
         "from drafts d left join leads l on l.id = d.lead_id "
         # Beleg des Dienstes (juengste versand-Zeile zum Entwurf): bei den
-        # Beitrags-Kanaelen steht dort die oeffentliche URL.
+        # Beitrags-Kanaelen steht dort die oeffentliche URL. lead_id grenzt
+        # auf activities_lead_idx ein (der Beleg haengt am Kontakt des
+        # Entwurfs), draft_id trifft activities_versand_draft_idx.
         "left join lateral (select a.payload->>'url' as beleg_url "
         "    from activities a where a.type = 'versand' "
+        "    and a.lead_id = d.lead_id "
         "    and a.payload->>'draft_id' = d.id::text "
-        "    order by a.created_at desc limit 1) b on true "
-        "where d.channel = %s and d.status in ('sent', 'rejected') "
-        "order by wann desc limit %s", (art, limit))
+        "    order by a.created_at desc limit 1) b on true " + rest,
+        (art, limit))
 
 
 def _verlauf_termine(limit: int):

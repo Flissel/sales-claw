@@ -413,6 +413,10 @@ begin
     execute format('create index if not exists leads_name_trgm_idx '
                    'on %I.leads using gin (name extensions.gin_trgm_ops)', s);
     execute format('create index if not exists activities_lead_idx on %I.activities (lead_id, created_at desc)', s);
+    -- Beitrags-Kanaele (24.10.2026): Belege des Dienstes sales-kanaele werden
+    -- ueber payload->>'draft_id' gesucht (bereits_veroeffentlicht, Verlauf).
+    execute format($idx$create index if not exists activities_versand_draft_idx on
+      %I.activities ((payload->>'draft_id')) where type = 'versand'$idx$, s);
 
     -- Volltextsuche ueber den Gespraechsverlauf (22.09.2026), deutsch.
     --

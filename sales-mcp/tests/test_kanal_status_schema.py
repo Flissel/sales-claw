@@ -84,3 +84,16 @@ def test_andere_db_fehler_gehen_weiter():
         raise psycopg.OperationalError("weg")
     with pytest.raises(psycopg.OperationalError):
         kanaele.status_lesen(q)
+
+
+def test_teilindex_fuer_versand_belege():
+    """bereits_veroeffentlicht/heute_anzahl und der Verlauf suchen Belege
+    ueber payload->>'draft_id' - Teilindex je Laden-Schema."""
+    assert ("create index if not exists activities_versand_draft_idx on "
+            "%I.activities ((payload->>'draft_id')) where type = 'versand'"
+            in " ".join(PROVISION.split()))
+    zeilen = server._q(
+        "select indexdef from pg_indexes where schemaname = 'sales_test' "
+        "and indexname = 'activities_versand_draft_idx'")
+    assert len(zeilen) == 1
+    assert "draft_id" in zeilen[0]["indexdef"]
