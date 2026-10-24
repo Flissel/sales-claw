@@ -185,3 +185,11 @@ def test_doppeltes_vermeiden_im_prompt():
     abschnitt = TEXT.split("## Doppeltes vermeiden")[1].split("\n## ")[0]
     assert "thema=" in abschnitt and "trotzdem=True" in abschnitt
     assert "`kontakt_historie_lesen`" in _absatz("- **Betreiber-Werkzeuge sind im Kundenchat tabu")
+
+
+def test_kanal_post_im_kundenchat_tabu():
+    assert "`kanal_post_entwurf`" in _absatz("- **Betreiber-Werkzeuge sind im Kundenchat tabu")
+
+
+def test_kanal_post_ueber_skill():
+    assert "Skill `kanal-post`" in TEXT

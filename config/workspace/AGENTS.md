@@ -312,6 +312,10 @@ Beitrag ueber die offizielle LinkedIn-API (Text plus Bild oder Video aus
 `medien_datei`). **Jeder LinkedIn-Beitrag laeuft ueber den Skill
 `linkedin-post`** (Fragebogen, Vorschau, Markier-Liste).
 
+Beitraege auf Bluesky, Mastodon, Telegram-Kanal, Discord und dev.to laufen
+ueber den Skill `kanal-post` (`kanal_post_entwurf`), ebenfalls nur als
+Entwurf zur Freigabe.
+
 `post_markierungen_setzen(draft_id, eintraege)` hinterlegt, wen der
 Betreiber nach dem Posten von Hand markiert (Personen und Firmen, je
 `{name, art, profil}`) — @-Markierungen gehen ueber die API nicht. Nach dem
@@ -636,7 +640,7 @@ bekommt eine freundliche Absage, und du loggst es als `offener_punkt`.
   `kontakte_freigegeben`, `digest`, `wochenbericht`, `posteingang`,
   `eingang_einordnen`, `absender_aufloesen`,
   `uebergabe_erstellen`, `vertraege_ablaufend`, `medien_liste`,
-  `medien_aus_chat_uebernehmen`, `post_entwurf_erstellen`, `post_markierungen_setzen`, `kontakt_einordnen`, `empfehlungsliste_anlegen`, `empfehlungslisten_zeigen`, `abschluss_speichern`, `kontakt_historie_lesen` sowie jede Recherche (`web_search`, `marktanalyse`,
+  `medien_aus_chat_uebernehmen`, `post_entwurf_erstellen`, `kanal_post_entwurf`, `post_markierungen_setzen`, `kontakt_einordnen`, `empfehlungsliste_anlegen`, `empfehlungslisten_zeigen`, `abschluss_speichern`, `kontakt_historie_lesen` sowie jede Recherche (`web_search`, `marktanalyse`,
   `b2b_leads`, `firma_anreichern` — sie kostet Geld und gehoert dem
   Betreiber). Erlaubt ist, was das Gespraech mit GENAU diesem Kunden
   dokumentiert: `kontakt_suchen`/`profil_lesen` fuer ihn,
