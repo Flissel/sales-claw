@@ -56,6 +56,14 @@ BIND="${BIND:-127.0.0.1}"
 # prueft smoke bewusst NICHT — ohne Zugang heisst es „nicht verbunden".
 for c in sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw sales-openwa sales-kanaele; do
   z="$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo fehlt)"
+  if [ "$z" = "fehlt" ] && [ "$c" = "sales-kanaele" ]; then
+    # Erster Deploy: das alte, im Speicher laufende update.sh kennt den
+    # Container noch nicht und startet ihn nicht, ruft aber dieses neue
+    # smoke.sh von der Platte. Nie angelegt = Hinweis, kein Rueckbau.
+    # Angelegt, aber nicht running (z. B. exited) bleibt ROT.
+    melde "container $c" "HINWEIS: sales-kanaele noch nie gestartet – einmalig: docker compose up -d --no-deps sales-kanaele"
+    continue
+  fi
   [ "$z" = "running" ] && gut "container $c" || fehl "container $c" "$z"
 done
 
