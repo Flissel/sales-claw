@@ -20,26 +20,10 @@ BILD = Medium("a.jpg", "image/jpeg", b"\xff\xd8bild", "bild")
 VIDEO = Medium("v.mp4", "video/mp4", b"\x00\x00video", "video")
 
 
-class Rekorder:
-    def __init__(self):
-        self.vorrat = []
-        self.anfragen = []
-
-    def __call__(self, anfrage):
-        self.anfragen.append(anfrage)
-        if not self.vorrat:
-            pytest.fail(f"unerwarteter HTTP-Aufruf Nr. {len(self.anfragen)}")
-        naechste = self.vorrat.pop(0)
-        if isinstance(naechste, BaseException):
-            raise naechste
-        return naechste
-
-
 @pytest.fixture(autouse=True)
-def rek(monkeypatch):
-    r = Rekorder()
-    monkeypatch.setattr(kanal_api, "HTTP", r)
-    return r
+def rek(kanal_http):
+    # Rekorder mit Riegel aus conftest.py: nie echtes Netz.
+    return kanal_http
 
 
 def _json(obj, status=200):

@@ -150,6 +150,12 @@ def ruf(anfrage: Anfrage, *, kanal: str, was: str, veroeffentlicht: bool,
     anzeige = _anzeige(kanal)
     try:
         antwort = HTTP(anfrage)
+    except ValueError:
+        # Entsteht VOR dem Senden (urllib "unknown url type: <volle URL>",
+        # http.client "Invalid header value b'<key>'"): sicher nichts
+        # veroeffentlicht. str(e) traegt URL oder Schluessel - nie ausgeben.
+        raise KanalFehler(f"{anzeige}: Anfrage bei {was} ungültig (Adresse oder "
+                          f"Kopf) – nicht gesendet") from None
     except (TimeoutError, urllib.error.URLError, OSError,
             http.client.HTTPException):
         # "Keine Antwort" heisst NICHT "nicht angekommen".

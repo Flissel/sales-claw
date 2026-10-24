@@ -12,26 +12,10 @@ TOKEN = "123456:ABCdef"
 URL = f"https://api.telegram.org/bot{TOKEN}/sendPhoto"
 
 
-class Rekorder:
-    def __init__(self):
-        self.vorrat = []
-        self.anfragen = []
-
-    def __call__(self, anfrage):
-        self.anfragen.append(anfrage)
-        if not self.vorrat:
-            pytest.fail(f"unerwarteter HTTP-Aufruf Nr. {len(self.anfragen)}")
-        naechste = self.vorrat.pop(0)
-        if isinstance(naechste, BaseException):
-            raise naechste
-        return naechste
-
-
 @pytest.fixture(autouse=True)
-def rek(monkeypatch):
-    r = Rekorder()
-    monkeypatch.setattr(kanal_api, "HTTP", r)
-    return r
+def rek(kanal_http):
+    # Rekorder mit Riegel aus conftest.py: nie echtes Netz.
+    return kanal_http
 
 
 def _anfrage():
@@ -180,3 +164,23 @@ def test_urllib_http_wirft_netzfehler_weiter(monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", falsch_urlopen)
     with pytest.raises(urllib.error.URLError):
         kanal_api._urllib_http(_anfrage())
+
+
+def test_ruf_valueerror_dauerhaft_ohne_url(rek):
+    webhook = "https://discord.com/api/webhooks/1/geheimSegment99"
+    rek.vorrat.append(ValueError(f"unknown url type: {webhook}"))
+    with pytest.raises(KanalFehler) as e:
+        _ruf(veroeffentlicht=True)
+    assert e.value.art == "dauerhaft"
+    assert webhook not in str(e.value)
+    assert "geheimSegment99" not in str(e.value)
+    assert e.value.__cause__ is None and e.value.__suppress_context__
+
+
+def test_ruf_http_exception_ungewiss(rek):
+    import http.client
+    rek.vorrat.append(http.client.IncompleteRead(b""))
+    with pytest.raises(KanalFehler) as e:
+        _ruf(veroeffentlicht=True)
+    assert e.value.art == "ungewiss"
+    assert "UNBEKANNT" in str(e.value)

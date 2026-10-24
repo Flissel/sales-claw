@@ -82,3 +82,35 @@ def _dateiverzeichnisse_geleert(monkeypatch):
     monkeypatch.setattr(recherche, "REPORT_VERZEICHNIS",
                         _geleert(_REPORTS_TEST))
     yield
+
+
+class KanalHttpRekorder:
+    """Ersatz fuer kanal_api.HTTP (Kanal-Adapter, Spec 2026-10-24-kanaele-posten).
+
+    `vorrat` haelt vorbereitete `kanal_api.Antwort`en oder Ausnahmen (werden
+    geworfen), `anfragen` jede gesehene `kanal_api.Anfrage`. Riegel: ein
+    Aufruf ueber den Vorrat hinaus laesst den Test scheitern - es gibt nie
+    ein echtes Netz."""
+
+    def __init__(self):
+        self.vorrat = []
+        self.anfragen = []
+
+    def __call__(self, anfrage):
+        self.anfragen.append(anfrage)
+        if not self.vorrat:
+            pytest.fail(f"unerwarteter HTTP-Aufruf Nr. {len(self.anfragen)}")
+        naechste = self.vorrat.pop(0)
+        if isinstance(naechste, BaseException):
+            raise naechste
+        return naechste
+
+
+@pytest.fixture
+def kanal_http(monkeypatch):
+    """Biegt kanal_api.HTTP auf einen KanalHttpRekorder um. Nicht autouse:
+    Kanal-Testdateien binden sie selbst (autouse-Fixture `rek`)."""
+    import kanal_api
+    rekorder = KanalHttpRekorder()
+    monkeypatch.setattr(kanal_api, "HTTP", rekorder)
+    return rekorder
