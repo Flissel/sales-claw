@@ -69,7 +69,7 @@ def test_entwurf_pending_am_sammelkontakt(sammelkontakt):
 def test_nicht_verbunden_klare_ablehnung():
     antwort = _kp("mastodon", "Herbst", "Hallo")
     assert "noch nicht verbunden" in antwort["fehler"]
-    assert "kanal-zugang-eintragen.sh mastodon" in antwort["fehler"]
+    assert "kanal-zugang speichern mastodon" in antwort["fehler"]
     assert _anzahl() == 0
 
 

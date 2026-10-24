@@ -34,11 +34,11 @@ private Betriebsprotokoll: Datum, Schlüssel, Anlass — ohne Werte.
 | `APIFY_TOKEN` | Recherche — apify.com | Vertrauensdomäne |
 | `LINKEDIN_CLIENT_ID` / `_CLIENT_SECRET` / `_ACCESS_TOKEN` | LinkedIn-App — developer.linkedin.com (Token läuft ohnehin ab; Erneuerungs-Ablauf in docs/05_LINKEDIN…) | `sales-linkedin` und Vertrauensdomäne |
 | `UI_SESSION_SECRET` | Signatur der UI-Sitzungen — Rotation wirft ALLE angemeldeten Benutzer raus (gewollt bei Verdacht); neuen Wert erzeugt `deploy/benutzer-anlegen.sh`-Muster: `docker exec sales-mcp python -c 'import secrets; print(secrets.token_urlsafe(32))'` | `sales-ui` |
-| `BLUESKY_HANDLE` / `BLUESKY_APP_PASSWORD` | Bluesky — App-Passwort unter bsky.app → Einstellungen → Datenschutz und Sicherheit → App-Passwörter. Rotation = neues App-Passwort erzeugen, `deploy/kanal-zugang-eintragen.sh bluesky` erneut, altes widerrufen | `sales-kanaele` (macht das Skript) |
-| `MASTODON_INSTANCE` / `MASTODON_TOKEN` | Mastodon — auf der eigenen Instanz unter Einstellungen → Entwicklung → Neue Anwendung (Recht `write:statuses`, `write:media`). Rotation = Zugangstoken neu erzeugen, `deploy/kanal-zugang-eintragen.sh mastodon` erneut | `sales-kanaele` (macht das Skript) |
-| `TELEGRAM_KANAL_ID` / `TELEGRAM_KANAL_BOT_TOKEN` | Telegram-Kanal — Bot bei @BotFather, als Admin mit Posting-Recht in den Kanal. Rotation = `/revoke` bei @BotFather, `deploy/kanal-zugang-eintragen.sh telegram_kanal` erneut | `sales-kanaele` (macht das Skript) |
-| `DISCORD_ANKUENDIGUNG_WEBHOOK` | Discord — Servereinstellungen → Integrationen → Webhooks (die URL selbst ist das Geheimnis). Rotation = Webhook löschen, neu anlegen, `deploy/kanal-zugang-eintragen.sh discord` erneut | `sales-kanaele` (macht das Skript) |
-| `DEVTO_API_KEY` | dev.to — Settings → Extensions → DEV Community API Keys. Rotation = neuen Schlüssel erzeugen, `deploy/kanal-zugang-eintragen.sh devto` erneut, alten widerrufen | `sales-kanaele` (macht das Skript) |
+| `BLUESKY_HANDLE` / `BLUESKY_APP_PASSWORD` | Bluesky — App-Passwort unter bsky.app → Einstellungen → Datenschutz und Sicherheit → App-Passwörter. Rotation = neues App-Passwort erzeugen, am PC `kanal-zugang speichern bluesky` erneut, altes widerrufen | `sales-kanaele` (macht das Skript) |
+| `MASTODON_INSTANCE` / `MASTODON_TOKEN` | Mastodon — auf der eigenen Instanz unter Einstellungen → Entwicklung → Neue Anwendung (Recht `write:statuses`, `write:media`). Rotation = Zugangstoken neu erzeugen, am PC `kanal-zugang speichern mastodon` erneut | `sales-kanaele` (macht das Skript) |
+| `TELEGRAM_KANAL_ID` / `TELEGRAM_KANAL_BOT_TOKEN` | Telegram-Kanal — Bot bei @BotFather, als Admin mit Posting-Recht in den Kanal. Rotation = `/revoke` bei @BotFather, am PC `kanal-zugang speichern telegram_kanal` erneut | `sales-kanaele` (macht das Skript) |
+| `DISCORD_ANKUENDIGUNG_WEBHOOK` | Discord — Servereinstellungen → Integrationen → Webhooks (die URL selbst ist das Geheimnis). Rotation = Webhook löschen, neu anlegen, am PC `kanal-zugang speichern discord` erneut | `sales-kanaele` (macht das Skript) |
+| `DEVTO_API_KEY` | dev.to — Settings → Extensions → DEV Community API Keys. Rotation = neuen Schlüssel erzeugen, am PC `kanal-zugang speichern devto` erneut, alten widerrufen | `sales-kanaele` (macht das Skript) |
 | `OPENAI_API_KEY` / `LLM_9ROUTER_API_KEY` | in der `.env` vorhanden, im Compose NICHT verdrahtet — Kandidaten zum ENTFERNEN statt Rotieren (erst prüfen, ob die OpenClaw-Konfiguration im Volume sie nutzt) | — |
 
 Kein Geheimnis (nur Konfiguration): `TZ`, `SMTP_HOST/PORT`,
@@ -53,10 +53,23 @@ die Mastodon-URL auf der Instanz, `https://t.me/<name>/…`) stehen im Verlauf
 von `/freigaben` und auf der Statusseite `/einstellungen/kanaele` und
 verraten damit Handle, Instanz bzw. Kanalnamen.
 
-Eigene Kanäle (24.10.2026) weichen von Schritt 2–3 des Verfahrens ab: statt
-`nano` und `up -d` immer `bash ~/sales-claw/deploy/kanal-zugang-eintragen.sh
-<kanal>` — liest verdeckt, legt `.env.vor-<kanal>-<Zeitstempel>` (600) an
-und erzeugt nur `sales-kanaele` neu. Abnahme: `/einstellungen/kanaele`.
+Eigene Kanäle (24.10.2026) weichen von Schritt 2–3 des Verfahrens ab. Die
+Wahrheit ist der OpenFang-Tresor am PC (Referenzen `KANAL_<ENV-NAME>`), die
+VM hält nur eine Kopie, damit sie auch bei ausgeschaltetem PC postet:
+
+- Neu oder Rotation: am PC `kanal-zugang speichern <kanal>` (Vibemind_V1,
+  `scripts/kanal-zugang.cmd`) — fragt verdeckt, speichert im Tresor und
+  gleicht gleich ab.
+- Nur abgleichen: `kanal-zugang abgleichen <kanal>` oder `--alle`.
+- Der Abgleich reicht die Werte per ssh-stdin an
+  `bash ~/sales-claw/deploy/kanal-zugang-eintragen.sh <kanal>` — das liest
+  verdeckt, legt `.env.vor-<kanal>-<Zeitstempel>` (600) an und erzeugt nur
+  `sales-kanaele` neu. Welche Namen ein Kanal braucht, liefert
+  `kanal-zugang-eintragen.sh --namen <kanal>`.
+- Notweg (PC aus): das Skript auf der VM von Hand aufrufen, danach den Wert
+  am PC im Tresor speichern — sonst überschreibt der nächste Abgleich ihn.
+
+Abnahme: `/einstellungen/kanaele`.
 
 ## Ausserhalb der .env
 

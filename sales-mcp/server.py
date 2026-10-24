@@ -2991,7 +2991,7 @@ def kanal_post_entwurf(kanal: str, thema: str, text: str, titel: str = "",
     if not kanaele.verbunden(_q, kanal):
         return _json({"fehler": (
             f"Kanal {info.anzeige} ist noch nicht verbunden – es entsteht kein "
-            f"Entwurf. Zugang eintragen: bash deploy/kanal-zugang-eintragen.sh "
+            f"Entwurf. Zugang am PC speichern: kanal-zugang speichern "
             f"{kanal}")})
 
     # Doppel-Thema je Kanal; abgelehnte zaehlen nicht (wie bei LinkedIn).

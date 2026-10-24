@@ -72,8 +72,8 @@ def _zeile(info: kanaele.KanalInfo, status: dict | None, beleg: dict | None) -> 
     hinweis = []
     if not ist_verbunden:
         namen = ", ".join(f"<code>{_e(n)}</code>" for n in info.env_namen)
-        hinweis.append(f"Zugang fehlt: {namen}. Eintragen mit "
-                       f"<code>bash deploy/kanal-zugang-eintragen.sh {_e(info.name)}</code>")
+        hinweis.append(f"Zugang fehlt: {namen}. Am PC speichern mit "
+                       f"<code>kanal-zugang speichern {_e(info.name)}</code>")
     fehler = status.get("letzter_fehler") if status else None
     if fehler:
         hinweis.append(f'<span class="fehler">{_e(fehler)}</span>')

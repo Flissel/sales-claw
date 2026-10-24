@@ -119,6 +119,28 @@ printf 'abc123\n' > "$F/in"; lauf devto
 grep -qx 'DEVTO_API_KEY=abc123' "$F/.env" || fehler "docker rot: Wert fehlt"
 ! grep -q 'abc123' "$F/out" "$F/err" || fehler "docker rot: Wert in der Ausgabe"
 
+# 8. Abfragen ohne Geheimnis fuer den PC-Befehl kanal-zugang: nur Namen,
+#    weder .env noch docker werden angefasst, keine Eingabe gelesen.
+fall namen
+vorher="$(cat "$F/.env")"
+: > "$F/in"; lauf --kanaele
+[ "$RC" = 0 ] || fehler "--kanaele: Exit $RC"
+[ "$(cat "$F/out")" = "bluesky mastodon telegram_kanal discord devto" ] || fehler "--kanaele: $(cat "$F/out")"
+set +e; DOCKER="$F/docker" SALES_ENV_DATEI="$F/.env" bash "$SKRIPT" --namen bluesky <"$F/in" >"$F/out" 2>"$F/err"; RC=$?; set -e
+[ "$RC" = 0 ] || fehler "--namen: Exit $RC"
+[ "$(cat "$F/out")" = "BLUESKY_HANDLE BLUESKY_APP_PASSWORD" ] || fehler "--namen: $(cat "$F/out")"
+set +e; DOCKER="$F/docker" SALES_ENV_DATEI="$F/.env" bash "$SKRIPT" --namen devto <"$F/in" >"$F/out" 2>"$F/err"; RC=$?; set -e
+[ "$(cat "$F/out")" = "DEVTO_API_KEY" ] || fehler "--namen devto: $(cat "$F/out")"
+set +e; DOCKER="$F/docker" SALES_ENV_DATEI="$F/.env" bash "$SKRIPT" --namen instagram <"$F/in" >"$F/out" 2>"$F/err"; RC=$?; set -e
+[ "$RC" = 2 ] || fehler "--namen unbekannt: Exit $RC statt 2"
+[ "$(cat "$F/.env")" = "$vorher" ] || fehler "Abfrage hat .env veraendert"
+[ "$(sicherungen)" = 0 ] || fehler "Abfrage hat Sicherung angelegt"
+[ ! -f "$F/log" ] || fehler "Abfrage hat docker aufgerufen"
+# braucht nicht einmal eine .env
+rm -f "$F/.env"
+set +e; DOCKER="$F/docker" SALES_ENV_DATEI="$F/.env" bash "$SKRIPT" --namen mastodon <"$F/in" >"$F/out" 2>"$F/err"; RC=$?; set -e
+[ "$RC" = 0 ] && [ "$(cat "$F/out")" = "MASTODON_INSTANCE MASTODON_TOKEN" ] || fehler "--namen ohne .env"
+
 # Statische Waechter
 ! grep -Eq '^[^#]*set -[a-z]*x' "$SKRIPT" || fehler "set -x im Skript"
 grep -q 'IFS= read -r -s -p' "$SKRIPT" || fehler "read -s fehlt"

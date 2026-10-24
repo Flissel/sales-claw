@@ -63,9 +63,9 @@ def test_alle_fuenf_nicht_verbunden_ohne_status():
     for kanal, info in kanaele.KANAELE.items():
         z = _zeile(seite, kanal)
         assert info.anzeige in z and "Nein" in z
-        assert f"kanal-zugang-eintragen.sh {kanal}" in z
+        assert f"kanal-zugang speichern {kanal}" in z
     assert "<code>BLUESKY_APP_PASSWORD</code>" in seite
-    assert "kanal-zugang-eintragen.sh bluesky" in seite
+    assert "kanal-zugang speichern bluesky" in seite
 
 
 def test_kein_env_wert_auf_der_seite(monkeypatch):
@@ -84,7 +84,7 @@ def test_verbunden_mit_letztem_beitrag():
     z = _zeile(seite, "bluesky")
     assert "Ja" in z and "geprüft am" in z
     assert 'href="https://bsky.app/profile/x/post/abc"' in z and "ansehen" in z
-    assert "kanal-zugang-eintragen.sh" not in z
+    assert "kanal-zugang speichern" not in z
 
 
 def test_ungewisser_beleg_ohne_link():

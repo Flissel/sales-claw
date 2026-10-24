@@ -6,6 +6,16 @@
 #   bash ~/sales-claw/deploy/kanal-zugang-eintragen.sh <kanal>
 #   kanal: bluesky | mastodon | telegram_kanal | discord | devto
 #
+# Regelweg ist der PC-Befehl `kanal-zugang speichern <kanal>` (Vibemind_V1,
+# scripts/kanal_zugang.py): der OpenFang-Tresor am PC ist die Wahrheit, der
+# Befehl reicht die Werte ueber ssh-stdin an dieses Skript. Von Hand
+# aufgerufen ist es der Notweg (PC aus) — danach den Wert auch im Tresor
+# speichern, sonst ueberschreibt der naechste Abgleich ihn.
+#
+# Abfragen ohne Geheimnis (fuer den PC-Befehl, lesen nichts, schreiben nichts):
+#   --kanaele          alle Kanaele, durch Leerzeichen getrennt
+#   --namen <kanal>    die Env-Namen des Kanals in Eingabe-Reihenfolge
+#
 # Sicherheit (Plan 2026-10-24-kanaele-posten, Task 9):
 # * Werte werden verdeckt gelesen (read -s) und NIE ausgegeben, auch nicht
 #   teilweise — weder in Meldungen noch im Fehlerfall. Kein set -x.
@@ -28,6 +38,16 @@ DOCKER="${DOCKER:-docker}"
 ERLAUBT='^[A-Za-z0-9._:/@+=~%?&-]+$'
 KANAL_LISTE="bluesky mastodon telegram_kanal discord devto"
 
+if [ "${1:-}" = "--kanaele" ]; then
+  echo "$KANAL_LISTE"
+  exit 0
+fi
+nur_namen=0
+if [ "${1:-}" = "--namen" ]; then
+  nur_namen=1
+  shift
+fi
+
 kanal="${1:-}"
 case "$kanal" in
   bluesky)        NAMEN=(BLUESKY_HANDLE BLUESKY_APP_PASSWORD) ;;
@@ -39,6 +59,11 @@ case "$kanal" in
     echo "Aufruf: $0 <kanal> — bekannte Kanäle: $KANAL_LISTE" >&2
     exit 2 ;;
 esac
+
+if [ "$nur_namen" = 1 ]; then
+  echo "${NAMEN[*]}"
+  exit 0
+fi
 
 if [ ! -f "$ENV_DATEI" ]; then
   echo "Env-Datei $ENV_DATEI fehlt – abgebrochen, nichts geändert." >&2
