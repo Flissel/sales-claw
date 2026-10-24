@@ -206,6 +206,7 @@ from starlette.routing import Route
 import historie
 import kalender
 import kalender_sicht
+import kanaele
 import mailadresse
 import laden_marke
 import marketing_pult
@@ -1756,6 +1757,9 @@ body:has(.chat-eingabe) { overflow-x: clip; }
                   border-color: var(--lila); }
 .badge.lid { background: var(--achtung); color: var(--achtung_auf);
              border-color: var(--achtung); }
+/* Die fünf Beitrags-Kanäle (24.10.2026): Umriss statt Füllung als
+   farbunabhängiges Merkmal; das Wort nennt den Kanal. */
+.badge.bluesky, .badge.mastodon, .badge.telegram_kanal, .badge.discord, .badge.devto { background: transparent; color: var(--schrift); border: 1px solid var(--lila); }
 /* Archiviert und die vier Entwurfszustände tragen ihr Wort im HTML; Füllung
    gegen Umriss kommt als zweites, FARBUNABHÄNGIGES Merkmal dazu — auf einem
    sonnenbeschienenen Telefon ist ein Farbton kein Unterschied. */
@@ -2371,8 +2375,15 @@ async def favicon(request):
                     headers={"cache-control": "public, max-age=86400"})
 
 
+# Anzeigenamen nur fuer die fuenf Beitrags-Kanaele: "telegram_kanal" oder
+# "devto" als Abzeichen liest sich wie ein Programmwert. Die alten Kanaele
+# behalten ihren Rohwert (Tests und Gewohnheit haengen daran).
+KANAL_ANZEIGE: dict[str, str] = {k: i.anzeige for k, i in kanaele.KANAELE.items()}
+
+
 def _badge(kanal) -> str:
-    return f'<span class="badge {_e(kanal)}">{_e(kanal)}</span>'
+    text = KANAL_ANZEIGE.get(str(kanal), kanal)
+    return f'<span class="badge {_e(kanal)}">{_e(text)}</span>'
 
 
 def _nachricht_inhalt(text, typ) -> str:
@@ -2691,7 +2702,37 @@ def _entwurf_karte_offen(z) -> str:
         f'<b>{_e(z["name"] or "(ohne Kontakt)")}</b>'
         f'<span class="meta" title="{_e(text_normalisiert)}"> — {_e(vorschau)}'
         f'</span></summary>'
+        f'{_devto_hinweis_offen(z)}'
         f'{_entwurf_rumpf(z)}</details>')
+
+
+def _devto_hinweis_offen(z) -> str:
+    if z.get("channel") != "devto":
+        return ""
+    return ('<div class="hinweis">Freigeben legt den Artikel als Entwurf bei '
+            'dev.to an – veröffentlicht wird dort von Hand.</div>')
+
+
+def _kanal_hinweis_freigegeben(z, status: dict) -> str:
+    """Was mit einem freigegebenen Beitrag der fuenf Kanaele passiert
+    (Spec 2026-10-24): verbunden heisst, der Dienst sales-kanaele holt ihn;
+    sonst bleibt er liegen. "verbunden" kommt nur aus kanal_status."""
+    info = kanaele.KANAELE[str(z["channel"])]
+    eintrag = status.get(info.name)
+    if eintrag and eintrag.get("verbunden"):
+        satz = (f'Der Dienst sales-kanaele veröffentlicht den Beitrag '
+                f'(höchstens {info.kadenz_pro_tag} pro Tag). Freigaben, die '
+                f'älter als 7 Tage sind, bleiben liegen.')
+    else:
+        satz = 'Kanal nicht verbunden – bleibt liegen, bis der Zugang eingetragen ist.'
+    teile = [f'<div class="hinweis">{_e(satz)}</div>']
+    if info.name == "devto":
+        teile.append('<div class="hinweis">dev.to: wird als Entwurf bei dev.to '
+                     'angelegt.</div>')
+    if z.get("zu_alt"):
+        teile.append('<div class="hinweis">Älter als 7 Tage freigegeben – wird '
+                     'nicht mehr automatisch veröffentlicht.</div>')
+    return "".join(teile)
 
 
 def _entwurf_rumpf(z, danach: str | None = None,
@@ -3641,7 +3682,8 @@ async def inbox(request):
         (server.FEHLGESCHLAGEN_MAX,))
     freigegeben = server._q(
         "select d.id, d.channel, d.recipient, d.body, d.media_ref, "
-        "       d.approved_by, d.approved_at, l.name, l.consent_status "
+        "       d.approved_by, d.approved_at, l.name, l.consent_status, "
+        "       coalesce(d.approved_at < now() - interval '7 days', false) as zu_alt "
         "from drafts d left join leads l on l.id = d.lead_id "
         "where d.status = 'approved' order by d.created_at desc")
 
@@ -3654,7 +3696,16 @@ async def inbox(request):
     bekannt = dict(FREIGABE_ARTEN)
     # Unbekannte Kanaele (falls je einer dazukommt) haengen sich hinten an,
     # statt unsichtbar zu bleiben.
-    arten = list(FREIGABE_ARTEN) + [
+    # Die fuenf Beitrags-Kanaele zeigen ihren Block nur, wenn darin etwas
+    # steht oder der Kanal verbunden ist - fuenf leere Bloecke "Nichts offen"
+    # fuer Kanaele ohne Zugang waeren nur Rauschen.
+    kanal_status = kanaele.status_lesen(server._q)
+    arten = [
+        (a, n) for a, n in FREIGABE_ARTEN
+        if a not in kanaele.KANAELE
+        or offen.get(a) or kaputt.get(a) or wartend.get(a)
+        or (kanal_status.get(a) or {}).get("verbunden")]
+    arten += [
         (a, a) for a in sorted(set(offen) | set(kaputt) | set(wartend))
         if a not in bekannt]
 
@@ -3663,7 +3714,7 @@ async def inbox(request):
     # Stufe 1 hat die ASCII-Umschreibungen in ALLEN Anzeigetexten beseitigt,
     # und der Waechter-Test in test_darstellung.py laesst „Verlaeufe" hier
     # nicht mehr durch. Beides behalten heisst: ihr Text, meine Schreibweise.
-    teile = ['<p class="meta">Vier Arten, vier Listen, vier Verläufe. '
+    teile = ['<p class="meta">Jede Art hat ihre Liste und ihren Verlauf. '
              'Freigeben heißt senden; nichts geht ohne dich raus. '
              'Diese Seite lädt nicht von selbst neu, damit dir beim '
              'Tippen nichts verloren geht — '
@@ -3699,6 +3750,9 @@ async def inbox(request):
                 stand = ('<div class="hinweis">LinkedIn: der Dienst sales-linkedin '
                          'veröffentlicht den Beitrag; danach kommen Post-Link und '
                          'Markier-Liste per WhatsApp.</div>' + _markier_block(z))
+            elif (z["channel"] in kanaele.KANAELE
+                  and z["recipient"] == "eigenes-profil"):
+                stand = _kanal_hinweis_freigegeben(z, kanal_status)
             elif z["channel"] == "linkedin":
                 # Direktnachricht: der Dienst holt nur Beitraege (eigenes-profil),
                 # eine DM geht weiter von Hand raus (Final-Review I2).
@@ -3770,7 +3824,14 @@ def _verlauf_entwuerfe(art: str, limit: int):
     return server._q(
         "select d.id, d.channel, d.recipient, d.body, d.status, d.error, "
         "       coalesce(d.sent_at, d.approved_at, d.created_at) as wann, "
-        "       l.name from drafts d left join leads l on l.id = d.lead_id "
+        "       l.name, b.beleg_url "
+        "from drafts d left join leads l on l.id = d.lead_id "
+        # Beleg des Dienstes (juengste versand-Zeile zum Entwurf): bei den
+        # Beitrags-Kanaelen steht dort die oeffentliche URL.
+        "left join lateral (select a.payload->>'url' as beleg_url "
+        "    from activities a where a.type = 'versand' "
+        "    and a.payload->>'draft_id' = d.id::text "
+        "    order by a.created_at desc limit 1) b on true "
         "where d.channel = %s and d.status in ('sent', 'rejected') "
         "order by wann desc limit %s", (art, limit))
 
@@ -3789,9 +3850,14 @@ def _verlauf_zeile_entwurf(z) -> str:
     text_voll = str(z["body"] or "")
     text = (f'<span title="{_e(text_voll)}">'
             f'{_e(_kurz(text_voll, ENTWURF_VORSCHAU))}</span>')
+    # Nur https-Links: die URL kommt von einem fremden Dienst, ein
+    # javascript:-Wert wuerde sonst zum klickbaren Skript.
+    url = str(z.get("beleg_url") or "")
+    link = (f' · <a href="{_e(url)}" rel="noopener">Beitrag ansehen</a>'
+            if url.startswith("https://") else "")
     return (f'<div class="eintrag"><span class="wann">{_e(_zeit(z["wann"]))}'
             f'</span><span class="was"><b>{_e(z["name"] or "(ohne Kontakt)")}'
-            f'</b> &rarr; {_e(z["recipient"])} · {text}</span>'
+            f'</b> &rarr; {_e(z["recipient"])} · {text}{link}</span>'
             f'{_zustand_badge(str(z["status"]))}</div>')
 
 
@@ -3841,8 +3907,9 @@ async def freigaben_verlauf(request):
         rumpf = "".join(_verlauf_zeile_entwurf(z) for z in zeilen)
     else:
         return _fehlerseite(404, "Unbekannte Art",
-                            "Verläufe gibt es für whatsapp, linkedin, email "
-                            "und termine.")
+                            "Verläufe gibt es für "
+                            + ", ".join(a for a, _ in FREIGABE_ARTEN)
+                            + " und termine.")
     if not zeilen:
         rumpf = '<p class="meta">Noch nichts im Verlauf.</p>'
     kopf = (f'<p class="meta">{len(zeilen)} Einträge (höchstens {VERLAUF_MAX}) '
@@ -8126,8 +8193,11 @@ HEUTE_TERMINE_TAGE = 14
 # der Betrieb darueber, zaehlt der Kopfsatz wieder zu wenig (kein `count(*)`
 # moeglich, siehe oben) — dieser Rest-Deckel ist dokumentiert, nicht behoben.
 EINORDNUNG_ZAEHL_LIMIT = 1000
+# Beitraege auf weitere Kanaele (24.10.2026): die fuenf Kanaele der Registry
+# haengen sich in deren Reihenfolge hinten an.
 FREIGABE_ARTEN = (("whatsapp", "WhatsApp"), ("linkedin", "LinkedIn"),
-                  ("email", "E-Mail"))
+                  ("email", "E-Mail")) + tuple(
+                      (k, i.anzeige) for k, i in kanaele.KANAELE.items())
 
 
 def _heute_kalender() -> str:
@@ -8322,6 +8392,9 @@ async def heute(request):
                  '<h2>Freigaben</h2><a href="/freigaben">Alle Freigaben</a>'
                  '</div><div class="arten">']
     for art, name in FREIGABE_ARTEN:
+        # Beitrags-Kanaele nur mit offenen Entwuerfen (sonst fuenf Nullen).
+        if art in kanaele.KANAELE and not je_art.get(art):
+            continue
         freigaben.append(f'<span class="art">'
                          f'<span class="badge {_e(art)}">{_e(name)}</span>'
                          f'<b>{len(je_art.get(art, []))}</b></span>')
