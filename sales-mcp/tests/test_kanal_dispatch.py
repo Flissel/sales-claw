@@ -309,3 +309,101 @@ def test_kein_geheimnis_bei_ausnahme_in_runde(umgebung, monkeypatch):
     monkeypatch.setattr(kd, "heute_anzahl", kaputt)
     assert kd.eine_runde()["mastodon"] == "ausnahme"
     assert MASTO_TOKEN not in _status("mastodon")["letzter_fehler"]
+
+
+# --- Review Task 4 ------------------------------------------------------------
+
+import logging  # noqa: E402
+
+import psycopg  # noqa: E402
+
+
+def test_liveness_ungewisser_wird_uebersprungen_frischer_gesendet(umgebung):
+    umgebung.fehler["bluesky"] = KanalFehler("Bluesky: keine Antwort",
+                                             ungewiss=True)
+    alt = _entwurf("bluesky")
+    assert kd.verarbeite_draft("bluesky", alt) == "ungewiss"
+    del umgebung.fehler["bluesky"]
+    # erneut freigegeben, aelter als der frische -> steht vorn in der Liste
+    server._q("update drafts set status = 'approved', error = null, "
+              "approved_at = now() - interval '1 day' where id = %s "
+              "returning id", (alt,))
+    frisch = _entwurf("bluesky")
+    assert kd.eine_runde_kanal("bluesky") == "veroeffentlicht"
+    assert _draft(frisch)["status"] == "sent"
+    zeile = _draft(alt)
+    assert zeile["status"] == "failed"
+    assert "schon veröffentlicht laut Beleg" in zeile["error"]
+    assert "in Zustellung" not in zeile["error"]
+    assert len(umgebung.aufrufe["bluesky"]) == 2   # 1x ungewiss, 1x frisch
+
+
+def test_schon_veroeffentlicht_wird_zurueckgebucht_ohne_warning(umgebung, caplog):
+    d = _entwurf("bluesky")
+    assert kd.verarbeite_draft("bluesky", d) == "veroeffentlicht"
+    server._q("update drafts set status = 'approved' where id = %s returning id", (d,))
+    with caplog.at_level(logging.INFO, logger="sales-kanaele"):
+        assert kd.eine_runde_kanal("bluesky") == "nichts"
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert _draft(d)["status"] == "failed"
+    assert kd.eine_runde_kanal("bluesky") == "nichts"   # liegt nicht mehr an
+
+
+def test_unerwartete_ausnahme_vor_dem_senden_ist_fehler(umgebung, monkeypatch):
+    def kaputt(*_a, **_k):
+        raise RuntimeError("kaputt")
+
+    monkeypatch.setattr(kd, "pruefe_entwurf", kaputt)
+    d = _entwurf("bluesky")
+    assert kd.verarbeite_draft("bluesky", d) == "fehler"
+    assert umgebung.aufrufe["bluesky"] == []
+    assert "NICHTS" in _draft(d)["error"] and "RuntimeError" in _draft(d)["error"]
+    assert _belege(d) == []
+
+
+def test_db_fehler_beim_beleg_veroeffentlicht_ohne_nachweis(umgebung, monkeypatch, caplog):
+    def kaputt(*_a, **_k):
+        raise psycopg.OperationalError(f"weg, passwort {BS_PASSWORT}")
+
+    monkeypatch.setattr(kd, "_beleg_schreiben", kaputt)
+    d = _entwurf("bluesky")
+    with caplog.at_level(logging.INFO, logger="sales-kanaele"):
+        assert kd.verarbeite_draft("bluesky", d) == "veroeffentlicht_ohne_nachweis"
+    assert BS_PASSWORT not in caplog.text
+    assert "at://x/app.bsky.feed.post/1" in caplog.text
+    assert _draft(d)["status"] == "failed"     # bleibt geclaimt liegen
+
+
+def test_db_fehler_bei_buchung_veroeffentlicht_ohne_buchung(umgebung, monkeypatch, caplog):
+    def kaputt(*_a, **_k):
+        raise psycopg.OperationalError(f"weg, passwort {BS_PASSWORT}")
+
+    monkeypatch.setattr(kd, "_als_gesendet_buchen", kaputt)
+    d = _entwurf("bluesky")
+    with caplog.at_level(logging.INFO, logger="sales-kanaele"):
+        assert kd.verarbeite_draft("bluesky", d) == "veroeffentlicht_ohne_buchung"
+    assert BS_PASSWORT not in caplog.text
+    assert _belege(d)[0]["beitrag"] == "at://x/app.bsky.feed.post/1"
+    assert kd.verarbeite_draft("bluesky", d) == "schon_veroeffentlicht"
+
+
+@pytest.mark.parametrize("mit_zugaengen", [False, True])
+def test_main_once_endet_sauber_ohne_werte(umgebung, monkeypatch, caplog, mit_zugaengen):
+    if not mit_zugaengen:
+        for info in KANAELE.values():
+            for name in info.env_namen:
+                monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(kd, "KANAL_ONCE", True)
+    monkeypatch.setattr(kd, "_logging_einrichten", lambda: None)
+    monkeypatch.setattr(kd.signal, "signal", lambda *_a: None)
+    with caplog.at_level(logging.INFO, logger="sales-kanaele"):
+        assert kd.main() == 0
+    start = [r.getMessage() for r in caplog.records
+             if r.getMessage().startswith("Start:")]
+    assert len(start) == 1
+    assert f"verbunden={2 if mit_zugaengen else 0}/5" in start[0]
+    for wert in (BS_PASSWORT, MASTO_TOKEN, "vibemind.bsky.social", "mastodon.social"):
+        assert wert not in caplog.text
+    if not mit_zugaengen:
+        zeilen = server._q("select verbunden from kanal_status")
+        assert len(zeilen) == 5 and not any(z["verbunden"] for z in zeilen)

@@ -208,8 +208,18 @@ def _verarbeite(kanal: str, draft_id: str) -> tuple[str, str | None]:
 
     schon = bereits_veroeffentlicht(kanal, draft_id)
     if schon:
-        LOG.warning("%s draft=%s NICHT erneut gepostet - bereits "
-                    "veroeffentlicht als %s", kanal, draft_id, schon)
+        # Steht der Entwurf (erneut freigegeben) noch auf `approved`, wird er
+        # in EINEM Schritt ohne Claim-Marke auf failed gebucht - sonst laege
+        # er jede Runde wieder vorn und blockierte die naechsten.
+        hinweis = _sauber(f"schon veröffentlicht laut Beleg ({schon}) – nicht "
+                          f"erneut gesendet", geheim)
+        if server._q(
+                "update drafts set status = 'failed', error = %s "
+                "where id = %s and status = 'approved' and channel = %s "
+                "and recipient = 'eigenes-profil' returning id",
+                (hinweis, draft_id, info.name)):
+            LOG.info("%s draft=%s NICHT erneut gepostet - %s", kanal,
+                     draft_id, hinweis)
         return "schon_veroeffentlicht", None
 
     # Zugang VOR dem Claim: ein nicht verbundener Kanal laesst den Entwurf
@@ -238,14 +248,20 @@ def _verarbeite(kanal: str, draft_id: str) -> tuple[str, str | None]:
                               f"NICHTS raus.")
     try:
         liste = medien_laden(kanal, geclaimt["media_ref"])
+        grund = pruefe_entwurf(info, text, titel,
+                               [(m.name, m.art, len(m.daten)) for m in liste])
     except BeitragFehler as e:
         return fehler("medien_unbrauchbar", str(e))
     except OSError as e:
         return fehler("medien_unbrauchbar",
                       f"Medienordner nicht lesbar ({type(e).__name__}) - es "
                       f"ging NICHTS raus.")
-    grund = pruefe_entwurf(info, text, titel,
-                           [(m.name, m.art, len(m.daten)) for m in liste])
+    except Exception as e:                  # noqa: BLE001 - bewusst breit
+        # Vor dem Senden: sicher nichts draussen. Ohne diese Buchung bliebe
+        # der Entwurf mit Claim-Marke liegen (wie linkedin_dispatch).
+        return fehler("fehler", f"Beitrag nicht konstruierbar "
+                                f"({type(e).__name__}: {e}) - es ging NICHTS "
+                                f"raus.")
     if grund:
         return fehler("zu_lang", f"{grund} - es ging NICHTS raus.")
 
@@ -273,7 +289,7 @@ def _verarbeite(kanal: str, draft_id: str) -> tuple[str, str | None]:
                          "liess sich nicht schreiben (%s) - auf dem Kanal "
                          "nachsehen, BEVOR dieser Entwurf erneut angefasst "
                          "wird. Grund: %s", kanal, draft_id,
-                         _einzeilig(str(db)), grund_u)
+                         _sauber(str(db), geheim), grund_u)
             return "ungewiss_ohne_nachweis", f"UNGEWISS ohne Nachweis: {grund_u}"
         meldung = _sauber(
             f"UNGEWISS: keine verwertbare Antwort von {info.anzeige} gesehen. "
@@ -294,7 +310,7 @@ def _verarbeite(kanal: str, draft_id: str) -> tuple[str, str | None]:
         LOG.critical("%s draft=%s VEROEFFENTLICHT als %s, aber der Nachweis "
                      "liess sich nicht schreiben: %s - diese Kennung von Hand "
                      "sichern, bevor der Entwurf erneut angefasst wird",
-                     kanal, draft_id, beleg.beitrag, _einzeilig(str(e)))
+                     kanal, draft_id, beleg.beitrag, _sauber(str(e), geheim))
         return ("veroeffentlicht_ohne_nachweis",
                 f"veroeffentlicht als {beleg.beitrag}, Nachweis fehlt")
 
@@ -303,7 +319,7 @@ def _verarbeite(kanal: str, draft_id: str) -> tuple[str, str | None]:
     except psycopg.Error as e:
         gebucht = False
         LOG.critical("%s draft=%s VEROEFFENTLICHT (%s), Buchung scheiterte: "
-                     "%s", kanal, draft_id, beleg.beitrag, _einzeilig(str(e)))
+                     "%s", kanal, draft_id, beleg.beitrag, _sauber(str(e), geheim))
     if not gebucht:
         LOG.critical("%s draft=%s VEROEFFENTLICHT als %s, aber nicht auf "
                      "'sent' gebucht - Entwurf bleibt geclaimt liegen, kein "
@@ -333,12 +349,17 @@ def eine_runde_kanal(kanal: str) -> str:
         status_schreiben(server._q, kanal, True, None)
         return "kadenz"
 
+    # Hoechstens EIN Versand je Runde. Schon veroeffentlichte oder fremd
+    # geclaimte Eintraege blockieren die Runde nicht: weiter zum naechsten.
     ausgang, fehlertext, zu_alt = "nichts", None, 0
     for eintrag in wartende(kanal):
         if eintrag["zu_alt"]:
             zu_alt += 1
             continue
-        ausgang, fehlertext = _verarbeite(kanal, str(eintrag["id"]))
+        ergebnis, text = _verarbeite(kanal, str(eintrag["id"]))
+        if ergebnis in ("schon_veroeffentlicht", "uebersprungen"):
+            continue
+        ausgang, fehlertext = ergebnis, text
         break
     else:
         if zu_alt:
