@@ -1495,3 +1495,99 @@ def test_liste_in_einrichtung_auf_normaler_seite(angemeldet, pult):
     pult.fehler_pfad = "einrichtung=1"
     r = seite(angemeldet)
     assert r.status_code == 200 and "In Einrichtung" not in rumpf(r)
+
+
+# --- Knopf "+ Neue Marke" -------------------------------------------------------------
+
+def _neu(angemeldet, **felder):
+    return angemeldet.post("/marketing/marke/neu", headers=HOST, follow_redirects=False,
+                           data={"csrf": ui.CSRF_TOKEN, **felder})
+
+
+def test_knopf_neue_marke_auf_normaler_seite(angemeldet, pult):
+    s = rumpf(seite(angemeldet))
+    assert "<summary>+ Neue Marke</summary>" in s
+    form = s[s.index('action="/marketing/marke/neu"'):]
+    form = form[:form.index("</form>")]
+    assert 'name="name"' in form and 'maxlength="80"' in form and "required" in form
+    assert 'name="webseite"' in form and 'type="url"' in form and "Einrichtung starten" in form
+    assert 'name="csrf"' in form
+    _in_einrichtung(pult)
+    e = rumpf(seite(angemeldet, EINRICHTUNG))
+    assert "Neue Marke" not in e and "/marketing/marke/neu" not in e
+
+
+def test_neue_marke_formular_startet_einrichtung(angemeldet, pult):
+    pult.chat_antwort = {"auftrag": "a9", "einrichtung": {"id": "baeckerei_sonnig", "name": "Bäckerei Sonnig",
+                                                          "fortgesetzt": False}}
+    r = _neu(angemeldet, name="Bäckerei Sonnig", webseite="https://b.de")
+    assert r.status_code == 303
+    assert r.headers["location"] == "/marketing/layouts?einrichtung=baeckerei_sonnig&reiter=chat#ende"
+    m, p, d = pult.nach("/marke/chat")[-1]
+    assert (m, p) == ("POST", "/marke/chat")
+    assert d["nachricht"] == "/marke_neu Bäckerei Sonnig https://b.de" and d["von"] == "mira"
+
+
+def test_neue_marke_ohne_webseite(angemeldet, pult):
+    pult.chat_antwort = {"auftrag": "a9", "einrichtung": {"id": "x_gmbh", "name": "X GmbH", "fortgesetzt": False}}
+    r = _neu(angemeldet, name="  X GmbH  ", webseite="  ")
+    assert r.status_code == 303 and "einrichtung=x_gmbh" in r.headers["location"]
+    assert pult.nach("/marke/chat")[-1][2]["nachricht"] == "/marke_neu X GmbH"
+
+
+def test_neue_marke_leerer_name_422_ohne_api(angemeldet, pult):
+    r = _neu(angemeldet, name="   ", webseite="")
+    assert r.status_code == 422 and pult.nach("/marke/chat") == []
+
+
+@pytest.mark.parametrize("web", ["b.de", "ftp://b.de", "https://b .de", "javascript:alert(1)"])
+def test_neue_marke_ungueltige_webseite_422_ohne_api(angemeldet, pult, web):
+    r = _neu(angemeldet, name="X GmbH", webseite=web)
+    assert r.status_code == 422 and "Bitte eine Webseite mit https:// angeben oder leer lassen" in r.text
+    assert pult.nach("/marke/chat") == []
+
+
+def test_neue_marke_braucht_csrf(angemeldet, pult):
+    r = angemeldet.post("/marketing/marke/neu", headers=HOST, data={"name": "X GmbH"})
+    assert r.status_code == 403 and pult.nach("/marke/chat") == []
+
+
+# --- Pflichtangaben (Impressum, Vermittlerangaben, Abmeldehinweis) ------------------------------
+
+def test_profil_zeigt_pflichtangaben_woertlich(angemeldet, pult):
+    pult.zustand["pflichtteil"] = {"impressum": "Muster <b>GmbH</b>\nMusterweg 1",
+                                   "abmelde_hinweis": "Abmelden: antworte mit STOP"}
+    s = rumpf(seite(angemeldet, PROFIL))
+    assert "Pflichtangaben" in s
+    assert "Muster &lt;b&gt;GmbH&lt;/b&gt;\nMusterweg 1" in s and "<b>GmbH</b>" not in s   # escaped, Umbruch bleibt
+    assert 'class="woertlich"' in s and "Abmelden: antworte mit STOP" in s
+    assert "Vermittlerangaben" in s and "fehlt – im Chat ergänzen" in s                  # leeres Feld
+
+
+def test_profil_ohne_pflichtteil_alles_fehlt(angemeldet, pult):
+    s = rumpf(seite(angemeldet, PROFIL))
+    assert s.count("fehlt – im Chat ergänzen") == 3
+
+
+def test_vorschlag_mit_pflichtteil_zeigt_texte_vor_uebernehmen(angemeldet, pult):
+    pult.zustand["vorschlag"] = {**VORSCHLAG, "vorschlag": {**VORSCHLAG["vorschlag"], "pflichtteil": {
+        "impressum": "Neu <i>Impressum</i>\nZeile 2", "abmelde_hinweis": "Bitte STOP senden"}}}
+    s = rumpf(seite(angemeldet))
+    assert "Neue Pflichtangaben (wörtlich)" in s
+    assert "Neu &lt;i&gt;Impressum&lt;/i&gt;\nZeile 2" in s and "<i>Impressum</i>" not in s
+    assert "Bitte STOP senden" in s
+    assert s.index("Neue Pflichtangaben (wörtlich)") < s.index("Bitte STOP senden") < s.index('name="bestaetigt"')
+    assert s.index("Neu &lt;i&gt;Impressum") < s.index(">Übernehmen</button>")
+
+
+def test_vorschlag_nur_pflichtteil_ohne_vorschau_iframe(angemeldet, pult):
+    pult.zustand["vorschlag"] = {"id": VID, "erstellt_am": "2026-10-07T10:00:00", "direkt": False,
+                                 "vorschlag": {"pflichtteil": {"impressum": "Nur Impressum"}}}
+    s = rumpf(seite(angemeldet))
+    assert "Nur Impressum" in s and 'name="bestaetigt"' in s
+    assert "<iframe" not in s and 'class="farben-zeile"' not in s
+
+
+def test_vorschlag_ohne_pflichtteil_hat_keinen_block(angemeldet, pult):
+    pult.zustand["vorschlag"] = VORSCHLAG
+    assert "Neue Pflichtangaben" not in rumpf(seite(angemeldet))

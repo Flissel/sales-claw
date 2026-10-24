@@ -1676,6 +1676,10 @@ nav.reiter .zahl { font-size: .8rem; color: var(--gedaempft); }
 .vorschlag-karte { align-self: stretch; padding: .5rem .8rem; background: var(--flaeche);
                    border: 1px solid var(--akzent); border-radius: 6px; }
 .vorschlag-karte h3 { margin: .2rem 0; }
+.pflicht-vorschlag { margin: .5rem 0; padding: .4rem .6rem; border: 1px solid var(--linie);
+                     border-left: 4px solid var(--akzent); border-radius: 4px; }
+.pflicht-vorschlag h4 { margin: .1rem 0 .3rem; }
+.pflichtangaben .einrichtung-angaben { grid-template-columns: minmax(0, 1fr); }
 /* Einrichtung einer neuen Marke (/marke_neu, 086): Kopf über dem Chat. */
 .einrichtung-kopf { padding: .6rem .8rem; margin: .5rem 0 .8rem; background: var(--flaeche);
                     border: 1px solid var(--linie); border-left: 4px solid var(--akzent); border-radius: 6px; }
@@ -1705,6 +1709,11 @@ body:has(.chat-eingabe) { overflow-x: clip; }
 .chat-eingabe-zeile { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center;
                       justify-content: space-between; }
 .chat-eingabe-zeile button { min-height: 44px; }
+.neue-marke { margin: 0 0 1rem; }
+.neue-marke summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; }
+.neue-marke form { display: grid; gap: .5rem; max-width: 28rem; padding: .6rem 0; }
+.neue-marke label { display: grid; gap: .2rem; }
+.neue-marke input { width: 100%; min-height: 44px; }
 .wissen-zeile { display: flex; flex-wrap: wrap; gap: .2rem .8rem; align-items: baseline;
                 font-size: .85rem; margin: .4rem 0 1rem; }
 .profil-karten { display: grid; grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));

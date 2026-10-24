@@ -38,6 +38,7 @@ import ui_muster
 SEITE = "/marketing/layouts"
 ZIEL = f"{SEITE}?reiter=chat#ende"            # E11: Ziel ohne Einrichtung (= ziel(None))
 EINRICHTUNG_VORBEI = "Die Einrichtung ist abgeschlossen oder abgebrochen – bitte Seite neu laden. Nichts wurde geändert."
+NAME_MAX = 80
 BEFEHLE_MIT_DATEIEN = "Befehle bitte ohne Dateien senden"
 NACHRICHT_MAX = 2000
 PC_WARTET_NACH_S = 60                # danach: "sobald der PC läuft"
@@ -56,6 +57,8 @@ _FARBE = re.compile(r"#[0-9A-Fa-f]{6}")
 LOGO_BASE64_MAX = 210_000           # Logo <= 140 KB als data-URL = rund 187 000 Zeichen, plus Luft
 _BILD_DATEN = re.compile(rf"data:image/(?:png|jpeg);base64,[A-Za-z0-9+/=]{{1,{LOGO_BASE64_MAX}}}")
 _PROFIL_FARBEN = (("akzent", "Akzent"), ("zweitfarbe", "Fläche"), ("grund", "Grund"), ("text", "Text"))
+_PFLICHT_FELDER = (("impressum", "Impressum"), ("vermittlerangaben", "Vermittlerangaben"),
+                   ("abmelde_hinweis", "Abmeldehinweis"))
 _VORSCHLAG_FARBEN = (("akzent", "Akzent"), ("zweitfarbe", "Zweitfarbe"), ("grund", "Grund"), ("text", "Text"))
 FORM_FARBEN = (("akzent", "Akzent"), ("zweitfarbe", "Zweitfarbe"), ("grund", "Grund"), ("text", "Text"))
 FARBE_MAX, SCHRIFT_MAX, WEBSEITE_MAX, ABSCHNITT_MAX = 20, 40, 300, 8000   # wie api/marke.FORMULAR_GRENZEN
@@ -194,6 +197,21 @@ def routen(ui) -> list:
 
     def absaetze(text) -> str:
         return e(str(text)).replace("\n", "<br>")
+
+    def pflicht_wert(titel: str, roh, fehlt: str = "fehlt") -> str:
+        """Eine Pflichtangabe woertlich als dt/dd (Umbrueche sichtbar per CSS); leer = Hinweis `fehlt`."""
+        text = str(roh).strip() if isinstance(roh, str) else ""
+        inhalt = f'<dd class="woertlich">{e(text)}</dd>' if text else f'<dd class="fehlt">{e(fehlt)}</dd>'
+        return f"<dt>{e(titel)}</dt>{inhalt}"
+
+    def pflichtangaben_html(pflicht: dict) -> str:
+        """Profil-Abschnitt "Pflichtangaben": Impressum, Vermittlerangaben, Abmeldehinweis wortgetreu."""
+        fehlt = "fehlt – im Chat ergänzen"
+        zeilen = "".join((pflicht_wert("Impressum", pflicht.get("impressum"), fehlt),
+                          pflicht_wert("Vermittlerangaben", pflicht.get("vermittlerangaben"), fehlt),
+                          pflicht_wert("Abmeldehinweis", pflicht.get("abmelde_hinweis"), fehlt)))
+        return (f'<section class="profil-karte pflichtangaben"><h3>Pflichtangaben</h3>'
+                f'<dl class="einrichtung-angaben">{zeilen}</dl></section>')
 
     # --- Profil ----------------------------------------------------------------------------
 
@@ -340,7 +358,7 @@ def routen(ui) -> list:
         stimme_karte = ('<section class="profil-karte stimme-karte"><h3>Stimme für Reels und Podcast</h3>'
                         + (f'<p>{e(stimme)}</p>' if stimme.strip() else '<p class="leer">Noch keine festgelegt</p>')
                         + '</section>')
-        karten = stimme_karte + "".join(
+        karten = stimme_karte + pflichtangaben_html(_dict(d.get("pflichtteil"))) + "".join(
             f'<section class="profil-karte"><h3>{e(n)}</h3>'
             + (f'<p>{absaetze(ab[n])}</p>' if isinstance(ab.get(n), str) and ab[n].strip()
                else f'<p class="leer">{NOCH_LEER}</p>') + "</section>"
@@ -515,6 +533,13 @@ def routen(ui) -> list:
         abschnitte = "".join(
             f'<h4>{e(str(n))}</h4><p>{absaetze(t)}</p>'
             for n, t in _dict(w.get("abschnitte")).items() if isinstance(t, str) and t.strip())
+        pflicht = _dict(w.get("pflichtteil"))
+        pflicht_zeilen = "".join(pflicht_wert(t, pflicht.get(k)) for k, t in _PFLICHT_FELDER
+                                 if isinstance(pflicht.get(k), str) and pflicht[k].strip())
+        pflicht_block = (f'<div class="pflicht-vorschlag"><h4>Neue Pflichtangaben (wörtlich)</h4>'
+                         f'<dl class="einrichtung-angaben">{pflicht_zeilen}</dl></div>') if pflicht_zeilen else ""
+        hat_vorschau = bool(farben or schrift or logo or abschnitte or any(
+            w.get(k) for k in ("mustertext", "schrift_anzeige", "schrift_text")))
         umschalter = " &middot; ".join(
             (f'<b>{t}</b>' if k == fmt else
              f'<a href="{e(adresse("chat", alle, k, "#vorschlag", einrichtung=ein))}">{t}</a>')
@@ -522,10 +547,14 @@ def routen(ui) -> list:
         # Ein offener Gegenvorschlag (API: ist_rueckgaengig) ist das Rueckgaengig einer Aenderung, die noch
         # uebernommen wird (z. B. nach gescheiterter Direktannahme) - sonst gleiche Karte.
         titel = "Rückgängig wird übernommen" if v.get("ist_rueckgaengig") is True else "Vorschlag"
+        profil_block = (f'<div class="marke-profil"><div class="farben-zeile">{farben}</div>'
+                        f'{schrift}{logo}{abschnitte}</div>') if hat_vorschau else ""
+        vorschau_teil = (f'<div class="pult-rechts"><iframe class="vorschau" sandbox title="Vorschau" '
+                         f'src="{e(vorschau_adresse(fmt, vid, ein))}"></iframe></div>') if hat_vorschau else ""
+        umschalter_zeile = f'<p class="meta">Vorschau als {umschalter}</p>' if hat_vorschau else ""
         return (f'<div class="vorschlag-karte" id="vorschlag"><h3>{titel}</h3>'
-                f'<p class="meta">Vorschau als {umschalter}</p>'
-                f'<div class="pult"><div class="pult-links"><div class="marke-profil">'
-                f'<div class="farben-zeile">{farben}</div>{schrift}{logo}{abschnitte}</div>'
+                f'{umschalter_zeile}'
+                f'<div class="pult"><div class="pult-links">{profil_block}{pflicht_block}'
                 f'<form method="post" action="/marketing/marke/uebernehmen" class="aktion">{csrf_feld(ein)}'
                 f'<input type="hidden" name="vorschlag" value="{e(vid)}">'
                 f'<label class="haken"><input type="checkbox" name="bestaetigt" value="ja"> '
@@ -534,8 +563,7 @@ def routen(ui) -> list:
                 f'<form method="post" action="/marketing/marke/verwerfen" class="aktion">{csrf_feld(ein)}'
                 f'<input type="hidden" name="vorschlag" value="{e(vid)}">'
                 f'<button type="submit">Verwerfen</button></form></div>'
-                f'<div class="pult-rechts"><iframe class="vorschau" sandbox title="Vorschau" '
-                f'src="{e(vorschau_adresse(fmt, vid, ein))}"></iframe></div></div></div>')
+                f'{vorschau_teil}</div></div>')
 
     def vorschau_adresse(fmt: str, vid: str, ein: str | None) -> str:
         q = {"format": fmt, "vorschlag": vid}
@@ -633,10 +661,7 @@ def routen(ui) -> list:
         pflicht = _dict(d.get("pflichtteil"))
         vermittler = d.get("einrichtung_vermittler")
 
-        def wert(titel: str, roh) -> str:
-            text = str(roh).strip() if isinstance(roh, str) else ""
-            inhalt = f'<dd class="woertlich">{e(text)}</dd>' if text else '<dd class="fehlt">fehlt</dd>'
-            return f"<dt>{e(titel)}</dt>{inhalt}"
+        wert = pflicht_wert
         zeilen = [wert("Impressum", pflicht.get("impressum")), wert("Abmeldehinweis", pflicht.get("abmelde_hinweis")),
                   "<dt>Vermittler</dt><dd>"
                   + ("ja" if vermittler is True else "nein" if vermittler is False else "noch offen") + "</dd>"]
@@ -684,6 +709,14 @@ def routen(ui) -> list:
         links = " · ".join(f'<a href="{e(einrichtung_adresse(x["id"]))}">{e(str(x.get("name") or x["id"]))}</a>'
                            for x in offene)
         return f'<p class="meta in-einrichtung">In Einrichtung: {links}</p>' if links else ""
+
+    def neue_marke_html() -> str:
+        """Aufklappbarer Knopf "+ Neue Marke" (nur auf der normalen Seite): startet die Einrichtung wie /marke_neu."""
+        return ('<details class="neue-marke"><summary>+ Neue Marke</summary>'
+                f'<form method="post" action="/marketing/marke/neu">{csrf_feld()}'
+                f'<label>Firmenname <input type="text" name="name" maxlength="{NAME_MAX}" required></label>'
+                '<label>Webseite (optional) <input type="url" name="webseite" placeholder="https://…"></label>'
+                '<button class="primaer" type="submit">Einrichtung starten</button></form></details>')
 
     def eingabe_html(d: dict, ein: str | None = None) -> str:
         """Die feste Eingabe unten (E10.8, CSS sticky). Das Sprungziel #ende steht NICHT hier, sondern als leeres
@@ -737,7 +770,8 @@ def routen(ui) -> list:
                 offene = await run_in_threadpool(marketing_mandant.einrichtungen)
             except marketing_pult.PultFehler:
                 offene = []                    # die Liste ist Beiwerk: ein Fehler blendet sie nur aus
-            kopf += marketing_mandant.umschalter(e, ui.CSRF_TOKEN, m, liste_, SEITE) + in_einrichtung_html(offene)
+            kopf += (marketing_mandant.umschalter(e, ui.CSRF_TOKEN, m, liste_, SEITE)
+                     + neue_marke_html() + in_einrichtung_html(offene))
         if request.query_params.get("bearbeiten") == "1":
             rumpf = (kopf + bearbeiten_html(d, m, await stimmen_holen(), ein)
                      + f'<p><a href="{e(adresse("profil", einrichtung=ein))}">Zurück zur Marke</a></p>')
@@ -817,6 +851,10 @@ def routen(ui) -> list:
         if dateien and nachricht.lstrip().startswith("/"):
             # Vor dem Ablegen: die API lehnt Befehle mit Anhang ab, die Dateien blieben sonst verwaist
             return abgewiesen(422, BEFEHLE_MIT_DATEIEN, form=form)
+        return await abschicken(request, form, nachricht, dateien)
+
+    async def abschicken(request, form, nachricht: str, dateien: list):
+        """Gemeinsamer Weg von `senden` und `neue_marke`: Firma bestimmen, Anhaenge ablegen, an die API."""
         try:
             m, _liste, eintrag = await marken_firma(request, form)
         except marketing_pult.PultFehler as f:
@@ -862,6 +900,23 @@ def routen(ui) -> list:
         if isinstance(neu, dict) and isinstance(neu.get("id"), str) and neu["id"]:
             return RedirectResponse(ziel(neu["id"]), status_code=303)      # /marke_neu: in die Einrichtung
         return RedirectResponse(ziel(ein), status_code=303)
+
+    @ui._gesichert_seite
+    async def neue_marke(request):
+        """Knopf "+ Neue Marke": baut denselben Befehl wie /marke_neu im Chat und nimmt denselben Weg."""
+        form = await request.form()
+        if not ui._csrf_ok(form):
+            return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
+        name = " ".join(str(form.get("name") or "").split())
+        if not name:
+            return abgewiesen(422, "Bitte einen Firmennamen angeben.", form=form)
+        if len(name) > NAME_MAX:
+            return abgewiesen(422, f"Der Firmenname darf höchstens {NAME_MAX} Zeichen haben.", form=form)
+        web = str(form.get("webseite") or "").strip()
+        if web and not (re.match(r"https?://\S+$", web, re.IGNORECASE)):
+            return abgewiesen(422, "Bitte eine Webseite mit https:// angeben oder leer lassen", form=form)
+        nachricht = "/marke_neu " + name + (" " + web if web else "")
+        return await abschicken(request, form, nachricht, [])
 
     # --- Uebernehmen / Verwerfen / Rueckgaengig ---------------------------------------------------
 
@@ -966,6 +1021,7 @@ def routen(ui) -> list:
         Route(SEITE, marke),
         Route("/marketing/marke/vorschau", vorschau),
         Route("/marketing/marke/senden", senden, methods=["POST"]),
+        Route("/marketing/marke/neu", neue_marke, methods=["POST"]),
         Route("/marketing/marke/uebernehmen", vorschlag_aktion("uebernehmen"), methods=["POST"]),
         Route("/marketing/marke/verwerfen", vorschlag_aktion("verwerfen"), methods=["POST"]),
         Route("/marketing/marke/rueckgaengig", rueckgaengig, methods=["POST"]),
