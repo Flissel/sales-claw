@@ -720,7 +720,9 @@ def test_fuenfundachtzig_werkzeuge_registriert():
     # 17.10.2026: empfehlungsliste_anlegen, empfehlungslisten_zeigen (C4), 94 -> 96.
     # 17.10.2026: abschluss_speichern (C2 Vertraege & Projekte), 96 -> 97.
     # 17.10.2026: kontakt_historie_lesen (C3 Kontakt-Historie), 97 -> 98.
-    assert len(namen) == 98
+    # 24.10.2026: kanal_post_entwurf (Beitraege auf weitere Kanaele), 98 -> 99.
+    assert len(namen) == 99
+    assert "kanal_post_entwurf" in namen
     assert "termin_konflikte" in namen
     assert "kontakt_aehnlich" in namen
     assert "gespraeche_suchen" in namen

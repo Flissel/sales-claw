@@ -324,6 +324,99 @@ def test_linkedin_post_geht_ohne_kontakt_und_nimmt_den_betreff_als_thema(monkeyp
     assert all("insert into activities" not in sql for sql, _ in q.aufrufe)
 
 
+# --- Beitraege auf weitere Kanaele (24.10.2026) ------------------------------
+
+def test_postkanaele_sind_eine_zuordnung():
+    assert lead_fluss.POST_KANAL["bluesky_post"] == "bluesky"
+    assert lead_fluss.POST_KANAL["linkedin_post"] == "linkedin"
+    assert len(lead_fluss.POST_KANAL) == 6
+
+
+def _kanal_post_faelschen(monkeypatch, antwort=None):
+    gesehen = []
+
+    def falscher_kanal_post(kanal, thema, text, titel="", medien_dateien="",
+                            trotzdem=False):
+        gesehen.append((kanal, thema, text, titel, medien_dateien))
+        return json.dumps(antwort or {"draft_id": "d-k", "status": "pending"})
+
+    def kein_linkedin(*a, **kw):
+        raise AssertionError("post_entwurf_erstellen darf nicht gerufen werden")
+
+    monkeypatch.setattr(server, "kanal_post_entwurf", falscher_kanal_post)
+    monkeypatch.setattr(server, "post_entwurf_erstellen", kein_linkedin)
+    monkeypatch.setattr(lead_fluss, "empfaenger_leads", lambda *a, **kw: (
+        _ for _ in ()).throw(AssertionError("empfaenger_leads gerufen")))
+    return gesehen
+
+
+def test_bluesky_auftrag_geht_an_kanal_post_entwurf(monkeypatch):
+    gesehen = _kanal_post_faelschen(monkeypatch)
+    auftrag = {**AUFTRAG, "kanal": "bluesky_post", "empfaenger": "",
+               "betreff": "Herbst", "nachricht": "Hallo", "medien_datei": ""}
+    q = verteiler([_offene(auftrag),
+                   ("versandauftrag_erledigen", [{"ok": True}])])
+    monkeypatch.setattr(server, "_q", q)
+
+    out = json.loads(server.versandauftrag_uebernehmen("a-1"))
+    assert gesehen == [("bluesky", "Herbst", "Hallo", "", "")]
+    assert out["draft_id"] == "d-k" and out["kanal"] == "bluesky_post"
+    erledigt = [p for sql, p in q.aufrufe if "versandauftrag_erledigen" in sql][0]
+    assert erledigt[1] == "angenommen" and erledigt[2] == "d-k"
+    assert all("from leads" not in sql for sql, _ in q.aufrufe)
+
+
+def test_devto_auftrag_betreff_wird_titel(monkeypatch):
+    gesehen = _kanal_post_faelschen(monkeypatch)
+    auftrag = {**AUFTRAG, "kanal": "devto_post", "empfaenger": "",
+               "betreff": "Unser Herbst", "nachricht": "# Text",
+               "medien_datei": ""}
+    q = verteiler([_offene(auftrag),
+                   ("versandauftrag_erledigen", [{"ok": True}])])
+    monkeypatch.setattr(server, "_q", q)
+
+    server.versandauftrag_uebernehmen("a-1")
+    assert gesehen == [("devto", "Unser Herbst", "# Text", "Unser Herbst", "")]
+
+
+def test_nicht_verbundener_kanal_wird_abgesagt_mit_grund(monkeypatch):
+    grund = "Kanal Discord ist noch nicht verbunden – es entsteht kein Entwurf."
+    _kanal_post_faelschen(monkeypatch, {"fehler": grund})
+    auftrag = {**AUFTRAG, "kanal": "discord_post", "empfaenger": "",
+               "betreff": "Herbst", "nachricht": "Hallo"}
+    q = verteiler([_offene(auftrag),
+                   ("versandauftrag_erledigen", [{"ok": True}])])
+    monkeypatch.setattr(server, "_q", q)
+
+    out = json.loads(server.versandauftrag_uebernehmen("a-1"))
+    assert out == {"abgelehnt": True, "grund": grund}
+    erledigt = [p for sql, p in q.aufrufe if "versandauftrag_erledigen" in sql][0]
+    assert erledigt[1] == "abgelehnt" and erledigt[3] == grund
+
+
+def test_linkedin_post_bleibt_beim_alten_weg(monkeypatch):
+    gerufen = []
+
+    def falscher_post(thema, text, medien_datei="", trotzdem=False):
+        gerufen.append(thema)
+        return json.dumps({"draft_id": "d-post", "status": "pending"})
+
+    def kein_kanal_post(*a, **kw):
+        raise AssertionError("kanal_post_entwurf darf nicht gerufen werden")
+
+    monkeypatch.setattr(server, "post_entwurf_erstellen", falscher_post)
+    monkeypatch.setattr(server, "kanal_post_entwurf", kein_kanal_post)
+    auftrag = {**AUFTRAG, "kanal": "linkedin_post", "empfaenger": "",
+               "betreff": "Warum bAV"}
+    q = verteiler([_offene(auftrag),
+                   ("versandauftrag_erledigen", [{"ok": True}])])
+    monkeypatch.setattr(server, "_q", q)
+
+    out = json.loads(server.versandauftrag_uebernehmen("a-1"))
+    assert out["draft_id"] == "d-post"
+    assert gerufen == ["Warum bAV"]
+
+
 def test_ablehnen_braucht_einen_grund(monkeypatch):
     q = verteiler([])
     monkeypatch.setattr(server, "_q", q)

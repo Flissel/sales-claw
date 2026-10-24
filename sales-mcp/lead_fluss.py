@@ -118,7 +118,16 @@ def uebergabe_notiz(u: dict) -> str:
 # Marketing hat. Welcher Kontakt dazu gehoert, ob er archiviert, privat oder
 # gesperrt ist, steht bei uns. Ein Auftrag ist eine Bitte, kein Befehl.
 
-POST_KANAL = "linkedin_post"          # Beitrag aufs eigene Profil, ohne Empfaenger
+# Beitraege aufs eigene Profil bzw. den eigenen Kanal, ohne Empfaenger:
+# Auftragskanal -> Zielkanal (24.10.2026: weitere Kanaele, Migration 092).
+POST_KANAL: dict[str, str] = {
+    "linkedin_post": "linkedin",
+    "bluesky_post": "bluesky",
+    "mastodon_post": "mastodon",
+    "telegram_kanal_post": "telegram_kanal",
+    "discord_post": "discord",
+    "devto_post": "devto",
+}
 
 
 def versandauftraege_offen(q, limit: int = 20) -> list:

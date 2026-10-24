@@ -59,6 +59,7 @@ from nummern import normalisiere_empfaenger
 # ein Anhang überhaupt in einen Entwurf darf — und im Dispatcher ein zweites
 # Mal, unmittelbar vor dem Senden. Import statt Kopie (siehe medien.py).
 import medien
+import kanaele
 # Die Apify-Anbindung (Stufe 5). Ebenfalls ein eigenes Modul, und ebenfalls
 # eines ohne Rückimport: recherche.py kennt weder Datenbank noch Werkzeuge,
 # nur HTTP, Normalisierung und Markdown (Begründung im Moduldocstring).
@@ -2548,6 +2549,11 @@ def _entwurf_erstellen(lead_id: str, kanal: str, text: str,
                        auftrag_betreiber: bool = False,
                        termin_bezug: bool = False, thema: str = "") -> str:
     thema = (thema or "").strip()[:200]
+    # Beitragskanaele (24.10.2026) haben keinen Empfaenger - eigener Weg.
+    if kanal in kanaele.KANAELE:
+        return _json({"fehler": (
+            f"{kanaele.KANAELE[kanal].anzeige} ist ein Beitragskanal ohne "
+            f"Empfänger – kanal_post_entwurf nutzen.")})
     if kanal not in ("whatsapp", "linkedin", "email", "telegram"):
         return _json({"fehler": f"Unzulaessiger Kanal '{kanal}'. "
                                 f"Erlaubt: whatsapp, linkedin, email, telegram"})
@@ -2927,6 +2933,118 @@ def post_entwurf_erstellen(thema: str, text: str, medien_datei: str = "",
                               "laeuft der Dienst nicht, von Hand posten "
                               "und mit entwurf_manuell_gesendet "
                               "quittieren.")})
+
+
+# Beitraege auf weitere Kanaele (24.10.2026, Spec 2026-10-24-kanaele-posten).
+# Medienart je OpenWA-Endpunkt - dieselbe Zuordnung wie kanal_dispatch._ART.
+_KANAL_MEDIENART = {"send-image": "bild", "send-video": "video"}
+
+
+def _kanal_medien(info, roh: str):
+    """Komma-Liste -> (basisnamen, [(name, art, bytes)], fehler). Jeder Name
+    durch pruefe_anhang und den Bot-Schalter; nur Bilder und Videos."""
+    basen, medien_liste = [], []
+    for name in [t.strip() for t in (roh or "").split(",") if t.strip()]:
+        basis, fehler = medien.pruefe_anhang(name)
+        if fehler:
+            return None, None, fehler
+        gesperrt = _anhang_gesperrt(basis)
+        if gesperrt:
+            return None, None, gesperrt
+        endpunkt, _mime = medien.endpunkt_und_typ(basis)
+        art = _KANAL_MEDIENART.get(endpunkt)
+        if art is None:
+            return None, None, (
+                f"'{basis}' passt nicht zu einem Beitrag auf {info.anzeige} - "
+                f"nur Bilder oder ein Video.")
+        basen.append(basis)
+        medien_liste.append((basis, art, os.path.getsize(medien.pfad(basis))))
+    return basen, medien_liste, None
+
+
+@_gesichert
+def kanal_post_entwurf(kanal: str, thema: str, text: str, titel: str = "",
+                       medien_dateien: str = "", trotzdem: bool = False) -> str:
+    """Eigenen BEITRAG (ohne Empfaenger) fuer bluesky, mastodon,
+    telegram_kanal, discord oder devto in die Freigabe legen. Es geht NICHTS
+    raus: nach der Freigabe veroeffentlicht der Dienst sales-kanaele, dev.to
+    nur als Entwurf dort. LinkedIn: post_entwurf_erstellen.
+
+    VORHER den Skill `kanal-post` lesen. Eine eigene Fassung je Kanal (ein
+    Aufruf je Kanal). Grenzen: Bluesky 300 Zeichen, Mastodon 500,
+    Telegram-Kanal 4096 (mit Medium 1024), Discord 2000, dev.to mit `titel`
+    (Pflicht, hoechstens 128) und Markdown. `medien_dateien`: Komma-Liste aus
+    medien_liste, nur Bilder oder ein Video. Kein Kundenname, keine
+    Kundendaten, keine Produkt-/Tarifempfehlung. Gibt es zum Thema auf
+    diesem Kanal schon einen Beitrag, nur mit trotzdem=True."""
+    kanal = (kanal or "").strip()
+    info = kanaele.KANAELE.get(kanal)
+    if info is None:
+        return _json({"fehler": (
+            f"Unbekannter Beitragskanal '{kanal}'. Möglich: "
+            f"{', '.join(kanaele.KANAELE)}. LinkedIn: post_entwurf_erstellen")})
+    thema = (thema or "").strip()
+    if not thema:
+        return _json({"fehler": "Kein Thema angegeben."})
+    if not (text or "").strip():
+        return _json({"fehler": "Kein Text angegeben."})
+    if not kanaele.verbunden(_q, kanal):
+        return _json({"fehler": (
+            f"Kanal {info.anzeige} ist noch nicht verbunden – es entsteht kein "
+            f"Entwurf. Zugang eintragen: bash deploy/kanal-zugang-eintragen.sh "
+            f"{kanal}")})
+
+    # Doppel-Thema je Kanal; abgelehnte zaehlen nicht (wie bei LinkedIn).
+    doppelt = _q(
+        "select status, created_at from drafts where channel = %s "
+        "and recipient = 'eigenes-profil' and status <> 'rejected' "
+        "and lower(btrim(thema)) = lower(%s) order by created_at desc limit 1",
+        (kanal, thema))
+    if doppelt and not trotzdem:
+        d = doppelt[0]
+        return _json({"fehler": (
+            f"Zum Thema '{thema}' gibt es auf {info.anzeige} schon einen "
+            f"Beitrag (Zustand '{d['status']}', vom "
+            f"{d['created_at'].strftime('%d.%m.%Y')}). Zwei Beitraege zum "
+            f"selben Thema fallen auf. Ist es wirklich ein neuer Beitrag "
+            f"(Fortsetzung, anderer Blickwinkel), ruf erneut auf mit "
+            f"trotzdem=True.")})
+
+    basen, medien_liste, fehler = _kanal_medien(info, medien_dateien)
+    if fehler:
+        return _json({"fehler": fehler})
+    grund = kanaele.pruefe_entwurf(info, text, titel, medien_liste)
+    if grund:
+        return _json({"fehler": grund})
+
+    if not LINKEDIN_POST_LEAD_ID:
+        return _json({"fehler": (
+            "LINKEDIN_POST_LEAD_ID ist nicht gesetzt (.env) — der "
+            "Sammelkontakt 'LINKEDIN (Eigenes Profil)' fehlt. Ohne ihn "
+            "entsteht kein Post-Entwurf, sonst hinge er an keinem Kontakt.")})
+    sammel = _q("select id from leads where id = %s", (LINKEDIN_POST_LEAD_ID,))
+    if not sammel:
+        return _json({"fehler": (
+            f"Der Sammelkontakt {LINKEDIN_POST_LEAD_ID} existiert nicht in "
+            f"der Datenbank — LINKEDIN_POST_LEAD_ID in der .env pruefen.")})
+
+    betreff = (titel or "").strip() if kanal == "devto" else f"Post: {thema}"
+    media_ref = ",".join(basen) or None
+    zeilen = _q(
+        "insert into drafts (lead_id, channel, recipient, subject, body, "
+        "media_ref, thema) values (%s, %s, 'eigenes-profil', %s, %s, %s, %s) "
+        "returning id, status",
+        (LINKEDIN_POST_LEAD_ID, kanal, betreff, text, media_ref, thema[:200]))
+    if kanal == "devto":
+        hinweis = ("Nicht veröffentlicht – wartet auf Freigabe. Der Beitrag "
+                   "wird nach der Freigabe als Entwurf bei dev.to angelegt.")
+    else:
+        hinweis = (f"Nicht veröffentlicht – wartet auf Freigabe. Den Beitrag "
+                   f"auf {info.anzeige} veröffentlicht sales-kanaele nach der "
+                   f"Freigabe.")
+    return _json({"draft_id": zeilen[0]["id"], "status": zeilen[0]["status"],
+                  "kanal": kanal, "medien_dateien": media_ref,
+                  "hinweis": hinweis})
 
 
 # Markier-Liste (Spec 2026-10-15 §4.2). Echte @-Markierungen gehen ueber die
@@ -6613,8 +6731,8 @@ def entwurf_bearbeiten(draft_id: str, text: str, betreff: str = "",
     Die Aenderung wird mit ALTEM UND NEUEM TEXT protokolliert. Das ist der
     Sinn der Sache: hinterher muss nachvollziehbar sein, was der Betreiber
     freigegeben hat und was vorher dastand."""
-    zeilen = _q("select id, status, channel, body, subject, media_ref, lead_id, "
-                "cc, newsletter from drafts where id = %s", (draft_id,))
+    zeilen = _q("select id, status, channel, recipient, body, subject, media_ref, "
+                "lead_id, cc, newsletter from drafts where id = %s", (draft_id,))
     if not zeilen:
         return _json({"fehler": f"Kein Entwurf mit draft_id {draft_id}."})
     d = zeilen[0]
@@ -6642,12 +6760,29 @@ def entwurf_bearbeiten(draft_id: str, text: str, betreff: str = "",
     # Anhang: '-' entfernt, leer laesst stehen, alles andere wird geprueft.
     basis = d["media_ref"]
     roh_medien = str(medien_datei or "").strip()
+    kanal_info = (kanaele.KANAELE.get(d["channel"])
+                  if d.get("recipient") == "eigenes-profil" else None)
     if roh_medien == "-":
         basis = None
-    elif roh_medien:
+    elif roh_medien and kanal_info is None:
         basis, fehler = medien.pruefe_anhang(roh_medien)
         if fehler:
             return _json({"fehler": fehler})
+
+    # Beitragskanaele (24.10.2026): dieselben Kanalgrenzen wie beim Anlegen -
+    # sonst entstuende ein freigebbarer Entwurf, der erst beim Versand
+    # scheitert. Medien als Komma-Liste, devto-Titel = Betreff.
+    if kanal_info is not None:
+        roh_ergebnis = roh_medien if roh_medien and roh_medien != "-" else (basis or "")
+        basen, medien_liste, fehler = _kanal_medien(kanal_info, roh_ergebnis)
+        if fehler:
+            return _json({"fehler": fehler})
+        basis = ",".join(basen) or None
+        titel = ((str(betreff or "").strip() or d["subject"] or "")
+                 if d["channel"] == "devto" else "")
+        grund = kanaele.pruefe_entwurf(kanal_info, neu, titel, medien_liste)
+        if grund:
+            return _json({"fehler": grund})
 
     # Dieselben Grenzen wie beim Erstellen — sonst entstuende beim
     # Bearbeiten ein Entwurf, den entwurf_erstellen nie zugelassen haette.
@@ -8614,7 +8749,12 @@ def versandauftrag_uebernehmen(auftrag_id: str) -> str:
     mehrere Kontakte, wird ebenfalls abgelehnt, mit beiden Namen im Grund.
 
     Bei linkedin_post entsteht ein Beitrag aufs eigene Profil: kein
-    Empfaenger, kein Kontakt, Thema aus dem Feld betreff."""
+    Empfaenger, kein Kontakt, Thema aus dem Feld betreff.
+
+    Ebenso bei bluesky_post, mastodon_post, telegram_kanal_post,
+    discord_post und devto_post (24.10.2026): kanal_post_entwurf mit dem
+    betreff als Thema, bei devto_post auch als Titel. Ist der Kanal nicht
+    verbunden, wird der Auftrag mit diesem Grund abgesagt."""
     auftrag = _auftrag_holen(auftrag_id)
     if not auftrag:
         return _json({"fehler": f"Kein offener Versandauftrag {auftrag_id}."})
@@ -8624,8 +8764,15 @@ def versandauftrag_uebernehmen(auftrag_id: str) -> str:
     betreff = auftrag.get("betreff") or ""
     datei = auftrag.get("medien_datei") or ""
 
-    if kanal == lead_fluss.POST_KANAL:
-        out = json.loads(post_entwurf_erstellen(betreff, text, medien_datei=datei))
+    if kanal in lead_fluss.POST_KANAL:
+        ziel = lead_fluss.POST_KANAL[kanal]
+        if ziel == "linkedin":
+            out = json.loads(post_entwurf_erstellen(betreff, text, medien_datei=datei))
+        else:
+            out = json.loads(kanal_post_entwurf(
+                ziel, betreff, text,
+                titel=betreff if ziel == "devto" else "",
+                medien_dateien=datei))
         if "fehler" in out:
             return _auftrag_absagen(auftrag_id, out["fehler"])
         ok = lead_fluss.versandauftrag_erledigen(
@@ -8962,6 +9109,9 @@ WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,
              profil_lesen, profil_aktualisieren,
              bedarf_speichern, bedarf_offen, entwurf_erstellen,
              post_entwurf_erstellen,
+             # Beitraege auf weitere Kanaele (24.10.2026), Vertraege:
+             # tests/test_kanal_post_entwurf.py.
+             kanal_post_entwurf,
              # Markier-Liste fuer LinkedIn-Beitraege (15.10.2026), Vertraege:
              # tests/test_post_markierungen.py.
              post_markierungen_setzen,

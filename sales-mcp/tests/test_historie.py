@@ -312,3 +312,9 @@ def test_handy_summe_wortlaut():
     import re
     assert re.fullmatch(r"2 gesendete WhatsApp-Nachrichten \(Handy oder System\) im \d{2}/\d{4}",
                         handy[0]["text"]), handy[0]["text"]
+
+
+def test_kanal_namen_der_beitragskanaele():
+    assert hi._KANAL["telegram_kanal"] == "Telegram-Kanal"
+    assert hi._KANAL["devto"] == "dev.to"
+    assert hi._KANAL["bluesky"] == "Bluesky"
