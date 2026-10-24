@@ -1665,6 +1665,10 @@ nav.reiter .zahl { font-size: .8rem; color: var(--gedaempft); }
 .vorschlag-karte { align-self: stretch; padding: .5rem .8rem; background: var(--flaeche);
                    border: 1px solid var(--akzent); border-radius: 6px; }
 .vorschlag-karte h3 { margin: .2rem 0; }
+.pflicht-vorschlag { margin: .5rem 0; padding: .4rem .6rem; border: 1px solid var(--linie);
+                     border-left: 4px solid var(--akzent); border-radius: 4px; }
+.pflicht-vorschlag h4 { margin: .1rem 0 .3rem; }
+.pflichtangaben .einrichtung-angaben { grid-template-columns: minmax(0, 1fr); }
 /* Einrichtung einer neuen Marke (/marke_neu, 086): Kopf über dem Chat. */
 .einrichtung-kopf { padding: .6rem .8rem; margin: .5rem 0 .8rem; background: var(--flaeche);
                     border: 1px solid var(--linie); border-left: 4px solid var(--akzent); border-radius: 6px; }

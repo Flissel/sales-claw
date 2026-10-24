@@ -1550,3 +1550,44 @@ def test_neue_marke_ungueltige_webseite_422_ohne_api(angemeldet, pult, web):
 def test_neue_marke_braucht_csrf(angemeldet, pult):
     r = angemeldet.post("/marketing/marke/neu", headers=HOST, data={"name": "X GmbH"})
     assert r.status_code == 403 and pult.nach("/marke/chat") == []
+
+
+# --- Pflichtangaben (Impressum, Vermittlerangaben, Abmeldehinweis) ------------------------------
+
+def test_profil_zeigt_pflichtangaben_woertlich(angemeldet, pult):
+    pult.zustand["pflichtteil"] = {"impressum": "Muster <b>GmbH</b>\nMusterweg 1",
+                                   "abmelde_hinweis": "Abmelden: antworte mit STOP"}
+    s = rumpf(seite(angemeldet, PROFIL))
+    assert "Pflichtangaben" in s
+    assert "Muster &lt;b&gt;GmbH&lt;/b&gt;\nMusterweg 1" in s and "<b>GmbH</b>" not in s   # escaped, Umbruch bleibt
+    assert 'class="woertlich"' in s and "Abmelden: antworte mit STOP" in s
+    assert "Vermittlerangaben" in s and "fehlt – im Chat ergänzen" in s                  # leeres Feld
+
+
+def test_profil_ohne_pflichtteil_alles_fehlt(angemeldet, pult):
+    s = rumpf(seite(angemeldet, PROFIL))
+    assert s.count("fehlt – im Chat ergänzen") == 3
+
+
+def test_vorschlag_mit_pflichtteil_zeigt_texte_vor_uebernehmen(angemeldet, pult):
+    pult.zustand["vorschlag"] = {**VORSCHLAG, "vorschlag": {**VORSCHLAG["vorschlag"], "pflichtteil": {
+        "impressum": "Neu <i>Impressum</i>\nZeile 2", "abmelde_hinweis": "Bitte STOP senden"}}}
+    s = rumpf(seite(angemeldet))
+    assert "Neue Pflichtangaben (wörtlich)" in s
+    assert "Neu &lt;i&gt;Impressum&lt;/i&gt;\nZeile 2" in s and "<i>Impressum</i>" not in s
+    assert "Bitte STOP senden" in s
+    assert s.index("Neue Pflichtangaben (wörtlich)") < s.index("Bitte STOP senden") < s.index('name="bestaetigt"')
+    assert s.index("Neu &lt;i&gt;Impressum") < s.index(">Übernehmen</button>")
+
+
+def test_vorschlag_nur_pflichtteil_ohne_vorschau_iframe(angemeldet, pult):
+    pult.zustand["vorschlag"] = {"id": VID, "erstellt_am": "2026-10-07T10:00:00", "direkt": False,
+                                 "vorschlag": {"pflichtteil": {"impressum": "Nur Impressum"}}}
+    s = rumpf(seite(angemeldet))
+    assert "Nur Impressum" in s and 'name="bestaetigt"' in s
+    assert "<iframe" not in s and 'class="farben-zeile"' not in s
+
+
+def test_vorschlag_ohne_pflichtteil_hat_keinen_block(angemeldet, pult):
+    pult.zustand["vorschlag"] = VORSCHLAG
+    assert "Neue Pflichtangaben" not in rumpf(seite(angemeldet))
