@@ -401,12 +401,13 @@ def test_main_once_endet_sauber_ohne_werte(umgebung, monkeypatch, caplog, mit_zu
     start = [r.getMessage() for r in caplog.records
              if r.getMessage().startswith("Start:")]
     assert len(start) == 1
-    assert f"verbunden={2 if mit_zugaengen else 0}/5" in start[0]
+    assert f"verbunden={2 if mit_zugaengen else 0}/{len(KANAELE)}" in start[0]
+    assert len(KANAELE) == 6
     for wert in (BS_PASSWORT, MASTO_TOKEN, "vibemind.bsky.social", "mastodon.social"):
         assert wert not in caplog.text
     if not mit_zugaengen:
         zeilen = server._q("select verbunden from kanal_status")
-        assert len(zeilen) == 5 and not any(z["verbunden"] for z in zeilen)
+        assert len(zeilen) == 6 and not any(z["verbunden"] for z in zeilen)
 
 
 def test_zu_alt_warnung_hoechstens_einmal_je_tag(umgebung, monkeypatch, caplog):
