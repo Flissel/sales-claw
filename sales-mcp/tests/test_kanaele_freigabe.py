@@ -114,6 +114,13 @@ def test_devto_hinweis_entwurf_bei_devto(sammelkontakt):
             "veröffentlicht wird dort von Hand.") in seite
 
 
+def test_youtube_hinweis_privat_bei_youtube(sammelkontakt):
+    _entwurf(sammelkontakt, "youtube", text="Beschreibung")
+    seite = _get("/freigaben").text
+    assert ("Freigeben lädt das Video als Short bei YouTube hoch – zunächst "
+            "nicht öffentlich (Vorgabe privat).") in seite
+
+
 def test_freigegeben_nicht_verbunden_hinweis(sammelkontakt):
     _entwurf(sammelkontakt, "discord", status="approved")
     seite = _get("/freigaben").text
@@ -183,7 +190,7 @@ def test_badge_zeigt_anzeigenamen():
     assert ui._ZEILE_KANAELE == ("whatsapp", "email")
     assert [a for a, _ in ui.FREIGABE_ARTEN] == [
         "whatsapp", "linkedin", "email", "bluesky", "mastodon",
-        "telegram_kanal", "discord", "devto"]
+        "telegram_kanal", "discord", "devto", "youtube"]
 
 
 def test_verlauf_andere_kanaele_ohne_beleg_link(sammelkontakt):

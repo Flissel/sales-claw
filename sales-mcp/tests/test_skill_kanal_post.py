@@ -44,6 +44,15 @@ def test_vorschau_wortgleich_vor_anlegen():
     assert "Ok" in t
 
 
+def test_youtube_short_privat_mit_video_und_titel():
+    t = _text()
+    assert "YouTube" in t.split("---")[1]
+    zeile = next(z for z in t.splitlines() if z.startswith("* YouTube"))
+    assert "GENAU EIN" in zeile and "3 Minuten" in zeile and "100" in zeile
+    assert "privat" in zeile
+    assert "`youtube`" in t
+
+
 def test_devto_als_entwurf():
     t = _text()
     assert "Entwurf bei dev.to" in t and "Titel" in t

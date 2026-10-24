@@ -1762,7 +1762,7 @@ body:has(.chat-eingabe) { overflow-x: clip; }
              border-color: var(--achtung); }
 /* Die fünf Beitrags-Kanäle (24.10.2026): Umriss statt Füllung als
    farbunabhängiges Merkmal; das Wort nennt den Kanal. */
-.badge.bluesky, .badge.mastodon, .badge.telegram_kanal, .badge.discord, .badge.devto { background: transparent; color: var(--schrift); border: 1px solid var(--lila); }
+.badge.bluesky, .badge.mastodon, .badge.telegram_kanal, .badge.discord, .badge.devto, .badge.youtube { background: transparent; color: var(--schrift); border: 1px solid var(--lila); }
 /* Archiviert und die vier Entwurfszustände tragen ihr Wort im HTML; Füllung
    gegen Umriss kommt als zweites, FARBUNABHÄNGIGES Merkmal dazu — auf einem
    sonnenbeschienenen Telefon ist ein Farbton kein Unterschied. */
@@ -2711,6 +2711,9 @@ def _entwurf_karte_offen(z) -> str:
 
 
 def _devto_hinweis_offen(z) -> str:
+    if z.get("channel") == "youtube":
+        return ('<div class="hinweis">Freigeben lädt das Video als Short bei '
+                'YouTube hoch – zunächst nicht öffentlich (Vorgabe privat).</div>')
     if z.get("channel") != "devto":
         return ""
     return ('<div class="hinweis">Freigeben legt den Artikel als Entwurf bei '
@@ -2746,6 +2749,10 @@ def _kanal_hinweis_freigegeben(z, status: dict) -> str:
     if info.name == "devto":
         teile.append('<div class="hinweis">dev.to: wird als Entwurf bei dev.to '
                      'angelegt.</div>')
+    if info.name == "youtube":
+        teile.append('<div class="hinweis">YouTube: wird als Short hochgeladen, '
+                     'zunächst nicht öffentlich – freischalten in YouTube '
+                     'Studio.</div>')
     if z.get("zu_alt"):
         teile.append('<div class="hinweis">Älter als 7 Tage freigegeben – wird '
                      'nicht mehr automatisch veröffentlicht.</div>')

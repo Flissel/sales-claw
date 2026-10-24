@@ -111,6 +111,18 @@ printf 'abc123\n' > "$F/in"; lauf devto
 grep -qx 'ANDERES=1' "$F/.env" && grep -qx 'DEVTO_API_KEY=abc123' "$F/.env" \
   || fehler "ohne Zeilenende: Zeilen verklebt"
 
+# YouTube: vier Werte, Refresh-Token mit "//" und Client-ID mit Punkten
+fall youtube
+printf '%s\n' '1-abc.apps.googleusercontent.com' 'GOCSPX-geheim_1' '1//0gRefresh-Tok_en' \
+  'UCb2EuqM9XueyXlLzQM0fTvQ' > "$F/in"; lauf youtube
+[ "$RC" = 0 ] || fehler "youtube: Exit $RC ($(cat "$F/err"))"
+grep -qx 'YOUTUBE_REFRESH_TOKEN=1//0gRefresh-Tok_en' "$F/.env" \
+  && grep -qx 'YOUTUBE_CHANNEL_ID=UCb2EuqM9XueyXlLzQM0fTvQ' "$F/.env" \
+  && grep -qx 'YOUTUBE_CLIENT_ID=1-abc.apps.googleusercontent.com' "$F/.env" \
+  || fehler "youtube: Werte nicht eingetragen"
+! grep -q 'GOCSPX\|Refresh-Tok' "$F/out" "$F/err" || fehler "youtube: Wert in der Ausgabe"
+grep -q '^4 Wert(e) für youtube eingetragen' "$F/out" || fehler "youtube: Meldung"
+
 # docker scheitert: Exit != 0, Werte stehen trotzdem (Sicherung vorhanden)
 fall docker_rot
 printf '#!/usr/bin/env bash\nexit 1\n' > "$F/docker"
@@ -125,7 +137,10 @@ fall namen
 vorher="$(cat "$F/.env")"
 : > "$F/in"; lauf --kanaele
 [ "$RC" = 0 ] || fehler "--kanaele: Exit $RC"
-[ "$(cat "$F/out")" = "bluesky mastodon telegram_kanal discord devto" ] || fehler "--kanaele: $(cat "$F/out")"
+[ "$(cat "$F/out")" = "bluesky mastodon telegram_kanal discord devto youtube" ] || fehler "--kanaele: $(cat "$F/out")"
+set +e; DOCKER="$F/docker" SALES_ENV_DATEI="$F/.env" bash "$SKRIPT" --namen youtube <"$F/in" >"$F/out" 2>"$F/err"; RC=$?; set -e
+[ "$(cat "$F/out")" = "YOUTUBE_CLIENT_ID YOUTUBE_CLIENT_SECRET YOUTUBE_REFRESH_TOKEN YOUTUBE_CHANNEL_ID" ] \
+  || fehler "--namen youtube: $(cat "$F/out")"
 set +e; DOCKER="$F/docker" SALES_ENV_DATEI="$F/.env" bash "$SKRIPT" --namen bluesky <"$F/in" >"$F/out" 2>"$F/err"; RC=$?; set -e
 [ "$RC" = 0 ] || fehler "--namen: Exit $RC"
 [ "$(cat "$F/out")" = "BLUESKY_HANDLE BLUESKY_APP_PASSWORD" ] || fehler "--namen: $(cat "$F/out")"

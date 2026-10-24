@@ -317,4 +317,5 @@ def test_handy_summe_wortlaut():
 def test_kanal_namen_der_beitragskanaele():
     assert hi._KANAL["telegram_kanal"] == "Telegram-Kanal"
     assert hi._KANAL["devto"] == "dev.to"
+    assert hi._KANAL["youtube"] == "YouTube"
     assert hi._KANAL["bluesky"] == "Bluesky"

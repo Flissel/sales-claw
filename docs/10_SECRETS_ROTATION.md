@@ -39,13 +39,16 @@ private Betriebsprotokoll: Datum, Schlüssel, Anlass — ohne Werte.
 | `TELEGRAM_KANAL_ID` / `TELEGRAM_KANAL_BOT_TOKEN` | Telegram-Kanal — Bot bei @BotFather, als Admin mit Posting-Recht in den Kanal. Rotation = `/revoke` bei @BotFather, am PC `kanal-zugang speichern telegram_kanal` erneut | `sales-kanaele` (macht das Skript) |
 | `DISCORD_ANKUENDIGUNG_WEBHOOK` | Discord — Servereinstellungen → Integrationen → Webhooks (die URL selbst ist das Geheimnis). Rotation = Webhook löschen, neu anlegen, am PC `kanal-zugang speichern discord` erneut | `sales-kanaele` (macht das Skript) |
 | `DEVTO_API_KEY` | dev.to — Settings → Extensions → DEV Community API Keys. Rotation = neuen Schlüssel erzeugen, am PC `kanal-zugang speichern devto` erneut, alten widerrufen | `sales-kanaele` (macht das Skript) |
+| `YOUTUBE_CLIENT_ID` / `YOUTUBE_CLIENT_SECRET` / `YOUTUBE_REFRESH_TOKEN` / `YOUTUBE_CHANNEL_ID` | YouTube — GCP-Projekt `vibemind-publisher`, OAuth-Client „Desktop“, Rechte `youtube.upload` + `youtube.readonly`. Den Refresh-Token erzeugt am PC `scripts\youtube-oauth.cmd <client.json>` (Vibemind_V1; Kanal VibeMind wählen) und speichert alle vier Werte über `kanal-zugang`. Rotation = Client-Secret in der GCP-Konsole neu erzeugen bzw. Zugriff unter myaccount.google.com → Sicherheit → Drittanbieter-Zugriff entziehen, dann das Skript erneut. Achtung: Steht der Zustimmungsbildschirm auf „Testen“, läuft der Refresh-Token nach 7 Tagen ab | `sales-kanaele` (macht das Skript) |
 | `OPENAI_API_KEY` / `LLM_9ROUTER_API_KEY` | in der `.env` vorhanden, im Compose NICHT verdrahtet — Kandidaten zum ENTFERNEN statt Rotieren (erst prüfen, ob die OpenClaw-Konfiguration im Volume sie nutzt) | — |
 
 Kein Geheimnis (nur Konfiguration): `TZ`, `SMTP_HOST/PORT`,
 `EMAIL_ABSENDER`, `CALDAV_URL`, `UI_TAILSCALE_IP`, `OPENWA_SESSION_ID`,
 `LINKEDIN_PERSON_URN`, `INBOX_UNBEKANNT_LEAD_ID`, `RECHERCHE_LEAD_ID`,
-`LINKEDIN_POST_LEAD_ID`, `BLUESKY_PDS`. Handle, Instanz und Kanal-ID
-(`BLUESKY_HANDLE`, `MASTODON_INSTANCE`, `TELEGRAM_KANAL_ID`) sind keine
+`LINKEDIN_POST_LEAD_ID`, `BLUESKY_PDS`, `YOUTUBE_SICHTBARKEIT` (private |
+unlisted | public, Vorgabe private). Handle, Instanz und Kanal-ID
+(`BLUESKY_HANDLE`, `MASTODON_INSTANCE`, `TELEGRAM_KANAL_ID`,
+`YOUTUBE_CHANNEL_ID`, `YOUTUBE_CLIENT_ID`) sind keine
 Geheimnisse. Als Zugangswert erscheinen sie nie in UI oder Log (auch nicht
 in Fehlertexten, die nennen nur den Namen). Ausnahme mit Absicht: die
 öffentlichen Beleg-URLs der Beiträge (`https://bsky.app/profile/<handle>/…`,

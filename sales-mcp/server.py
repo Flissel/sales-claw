@@ -2966,14 +2966,17 @@ def _kanal_medien(info, roh: str):
 def kanal_post_entwurf(kanal: str, thema: str, text: str, titel: str = "",
                        medien_dateien: str = "", trotzdem: bool = False) -> str:
     """Eigenen BEITRAG (ohne Empfaenger) fuer bluesky, mastodon,
-    telegram_kanal, discord oder devto in die Freigabe legen. Es geht NICHTS
-    raus: nach der Freigabe veroeffentlicht der Dienst sales-kanaele, dev.to
-    nur als Entwurf dort. LinkedIn: post_entwurf_erstellen.
+    telegram_kanal, discord, devto oder youtube in die Freigabe legen. Es
+    geht NICHTS raus: nach der Freigabe veroeffentlicht der Dienst
+    sales-kanaele, dev.to nur als Entwurf dort, YouTube zunaechst privat.
+    LinkedIn: post_entwurf_erstellen.
 
     VORHER den Skill `kanal-post` lesen. Eine eigene Fassung je Kanal (ein
     Aufruf je Kanal). Grenzen: Bluesky 300 Zeichen, Mastodon 500,
     Telegram-Kanal 4096 (mit Medium 1024), Discord 2000, dev.to mit `titel`
-    (Pflicht, hoechstens 128) und Markdown. `medien_dateien`: Komma-Liste aus
+    (Pflicht, hoechstens 128) und Markdown, YouTube mit `titel` (Pflicht,
+    hoechstens 100), Text = Beschreibung (5000) und GENAU EIN Reel-Video
+    (hochkant oder quadratisch, hoechstens 3 Minuten). `medien_dateien`: Komma-Liste aus
     medien_liste, nur Bilder oder ein Video. Kein Kundenname, keine
     Kundendaten, keine Produkt-/Tarifempfehlung. Gibt es zum Thema auf
     diesem Kanal schon einen Beitrag, nur mit trotzdem=True."""
@@ -3028,7 +3031,7 @@ def kanal_post_entwurf(kanal: str, thema: str, text: str, titel: str = "",
             f"Der Sammelkontakt {LINKEDIN_POST_LEAD_ID} existiert nicht in "
             f"der Datenbank — LINKEDIN_POST_LEAD_ID in der .env pruefen.")})
 
-    betreff = (titel or "").strip() if kanal == "devto" else f"Post: {thema}"
+    betreff = (titel or "").strip() if info.titel_pflicht else f"Post: {thema}"
     media_ref = ",".join(basen) or None
     zeilen = _q(
         "insert into drafts (lead_id, channel, recipient, subject, body, "
@@ -3038,6 +3041,10 @@ def kanal_post_entwurf(kanal: str, thema: str, text: str, titel: str = "",
     if kanal == "devto":
         hinweis = ("Nicht veröffentlicht – wartet auf Freigabe. Der Beitrag "
                    "wird nach der Freigabe als Entwurf bei dev.to angelegt.")
+    elif kanal == "youtube":
+        hinweis = ("Nicht veröffentlicht – wartet auf Freigabe. Nach der "
+                   "Freigabe lädt sales-kanaele das Video als Short bei YouTube "
+                   "hoch, zunächst nicht öffentlich (Vorgabe privat).")
     else:
         hinweis = (f"Nicht veröffentlicht – wartet auf Freigabe. Den Beitrag "
                    f"auf {info.anzeige} veröffentlicht sales-kanaele nach der "
@@ -6771,7 +6778,7 @@ def entwurf_bearbeiten(draft_id: str, text: str, betreff: str = "",
 
     # Beitragskanaele (24.10.2026): dieselben Kanalgrenzen wie beim Anlegen -
     # sonst entstuende ein freigebbarer Entwurf, der erst beim Versand
-    # scheitert. Medien als Komma-Liste, devto-Titel = Betreff.
+    # scheitert. Medien als Komma-Liste, Titel (dev.to, YouTube) = Betreff.
     if kanal_info is not None:
         roh_ergebnis = roh_medien if roh_medien and roh_medien != "-" else (basis or "")
         basen, medien_liste, fehler = _kanal_medien(kanal_info, roh_ergebnis)
@@ -6779,7 +6786,7 @@ def entwurf_bearbeiten(draft_id: str, text: str, betreff: str = "",
             return _json({"fehler": fehler})
         basis = ",".join(basen) or None
         titel = ((str(betreff or "").strip() or d["subject"] or "")
-                 if d["channel"] == "devto" else "")
+                 if kanal_info.titel_pflicht else "")
         grund = kanaele.pruefe_entwurf(kanal_info, neu, titel, medien_liste)
         if grund:
             return _json({"fehler": grund})
@@ -8771,7 +8778,7 @@ def versandauftrag_uebernehmen(auftrag_id: str) -> str:
         else:
             out = json.loads(kanal_post_entwurf(
                 ziel, betreff, text,
-                titel=betreff if ziel == "devto" else "",
+                titel=betreff if kanaele.KANAELE[ziel].titel_pflicht else "",
                 medien_dateien=datei))
         if "fehler" in out:
             return _auftrag_absagen(auftrag_id, out["fehler"])

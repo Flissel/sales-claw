@@ -117,6 +117,25 @@ def test_devto_titel_ist_betreff():
     assert _anzahl() == 1
 
 
+def test_youtube_titel_ist_betreff_und_video_pflicht(tmp_path):
+    """YouTube (Nachtrag 25.10.2026): Titel Pflicht wie dev.to, dazu genau
+    ein Video; ohne Video entsteht kein Entwurf."""
+    kanaele.status_schreiben(server._q, "youtube", True, None)
+    (tmp_path / "vid-1.mp4").write_bytes(b"\x00\x00\x00\x18ftypisom" + b"0" * 20)
+    (tmp_path / "a.png").write_bytes(b"\x89PNG" + b"0" * 10)
+    antwort = _kp("youtube", "Herbst", "Beschreibung #KI", titel="Unser Short",
+                  medien_dateien="vid-1.mp4")
+    assert "YouTube" in antwort["hinweis"]
+    zeile = server._q("select subject, media_ref, thema from drafts where id = %s",
+                      (antwort["draft_id"],))[0]
+    assert zeile["subject"] == "Unser Short"
+    assert zeile["media_ref"] == "vid-1.mp4"
+    assert "Video ist Pflicht" in _kp("youtube", "Winter", "B", titel="T")["fehler"]
+    assert "Titel" in _kp("youtube", "Winter", "B", medien_dateien="vid-1.mp4")["fehler"]
+    assert "fehler" in _kp("youtube", "Winter", "B", titel="T", medien_dateien="a.png")
+    assert _anzahl() == 1
+
+
 def test_medien_werden_geprueft(tmp_path):
     (tmp_path / "a.png").write_bytes(b"\x89PNG" + b"0" * 10)
     (tmp_path / "b.jpg").write_bytes(b"\xff\xd8" + b"0" * 10)

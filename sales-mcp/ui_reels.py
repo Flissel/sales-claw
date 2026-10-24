@@ -940,8 +940,11 @@ def routen(ui) -> list:
         for info in ziele:
             platz = info.max_zeichen_mit_medien - (len(link) + 2 if link else 0)
             fassung = kuerzen(text, platz) + ("\n\n" + link if link else "")
+            # YouTube: Titel ist Pflicht - das Thema, gekuerzt.
+            titel = kuerzen(thema, info.titel_max) if info.titel_pflicht else ""
             antwort = json.loads(await run_in_threadpool(
-                ui.server.kanal_post_entwurf, info.name, thema, fassung, medien_dateien=datei))
+                ui.server.kanal_post_entwurf, info.name, thema, fassung, titel=titel,
+                medien_dateien=datei))
             grund = antwort.get("fehler") if isinstance(antwort, dict) else "unerwartete Antwort"
             zeilen.append(f"<li><strong>{e(info.anzeige)}</strong>: "
                           + (e(str(grund)) if grund else "angelegt") + "</li>")

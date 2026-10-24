@@ -13,7 +13,9 @@ sind bei jedem Fehler dauerhaft: es ist sicher nichts entstanden.
 import json
 import os
 import re
+import struct
 import time
+import urllib.parse
 from datetime import datetime, timezone
 from typing import Mapping
 
@@ -319,11 +321,193 @@ def senden_devto(zugang: Mapping[str, str], text: str,
     return Beleg(str(kennung), url if isinstance(url, str) else "")
 
 
+# --- YouTube (Shorts) ---------------------------------------------------------------
+
+YOUTUBE_TOKEN = "https://oauth2.googleapis.com/token"
+YOUTUBE_KANAL = "https://www.googleapis.com/youtube/v3/channels?part=id&mine=true"
+YOUTUBE_HOCHLADEN = ("https://www.googleapis.com/upload/youtube/v3/videos"
+                     "?uploadType=resumable&part=snippet,status")
+YOUTUBE_SHORT_MAX_S = 180
+YOUTUBE_BESCHREIBUNG_MAX_BYTES = 5000
+# Kategorie "Wissenschaft & Technik".
+YOUTUBE_KATEGORIE = "28"
+_YOUTUBE_SICHTBARKEIT = ("private", "unlisted", "public")
+
+
+def youtube_sichtbarkeit() -> str:
+    """privacyStatus aus YOUTUBE_SICHTBARKEIT (nicht geheim, je Aufruf frisch
+    gelesen). Leer oder unbekannt = private: als Sicherung, bis der Betreiber
+    ausdruecklich unlisted oder public eintraegt."""
+    wert = (os.environ.get("YOUTUBE_SICHTBARKEIT") or "").strip().lower()
+    return wert if wert in _YOUTUBE_SICHTBARKEIT else "private"
+
+
+def _mp4_boxen(daten: bytes, start: int, ende: int):
+    """(typ, inhalt_von, inhalt_bis) der Boxen in daten[start:ende]. Eine
+    Box, deren Groesse nicht passt, beendet die Suche (kein Haenger)."""
+    pos = start
+    while pos + 8 <= ende:
+        groesse, typ = struct.unpack_from(">I4s", daten, pos)
+        kopf = 8
+        if groesse == 1:
+            if pos + 16 > ende:
+                return
+            groesse, kopf = struct.unpack_from(">Q", daten, pos + 8)[0], 16
+        elif groesse == 0:
+            groesse = ende - pos
+        if groesse < kopf or pos + groesse > ende:
+            return
+        yield typ, pos + kopf, pos + groesse
+        pos += groesse
+
+
+def mp4_eckdaten(daten: bytes) -> tuple[float, int, int] | None:
+    """(Sekunden, Breite, Hoehe) aus moov/mvhd und dem ersten tkhd mit
+    Bildgroesse; None, wenn das kein lesbares MP4 ist. Eine Drehmatrix wird
+    nicht ausgewertet - die Reels rendert Laura ohne."""
+    try:
+        moov = next(((a, b) for t, a, b in _mp4_boxen(daten, 0, len(daten))
+                     if t == b"moov"), None)
+        if moov is None:
+            return None
+        sekunden, breite, hoehe = None, 0, 0
+        for typ, a, b in _mp4_boxen(daten, *moov):
+            if typ == b"mvhd":
+                if daten[a] == 1:
+                    zeitbasis, dauer = struct.unpack_from(">IQ", daten, a + 20)
+                else:
+                    zeitbasis, dauer = struct.unpack_from(">II", daten, a + 12)
+                if zeitbasis:
+                    sekunden = dauer / zeitbasis
+            elif typ == b"trak" and not breite:
+                for typ2, a2, b2 in _mp4_boxen(daten, a, b):
+                    versatz = 88 if typ2 == b"tkhd" and daten[a2] == 1 else 76
+                    if typ2 == b"tkhd" and a2 + versatz + 8 <= b2:
+                        w, h = struct.unpack_from(">II", daten, a2 + versatz)
+                        if w >> 16 and h >> 16:
+                            breite, hoehe = w >> 16, h >> 16
+    except (struct.error, IndexError):
+        return None
+    if sekunden is None or not breite:
+        return None
+    return sekunden, breite, hoehe
+
+
+def _ohne_spitze_klammern(text: str) -> str:
+    # YouTube lehnt "<" und ">" in Titel und Beschreibung ab.
+    return text.replace("<", "‹").replace(">", "›")
+
+
+def _kopf(antwort: kanal_api.Antwort, name: str) -> str | None:
+    for k, v in antwort.kopf.items():
+        if k.lower() == name.lower():
+            return v
+    return None
+
+
+def senden_youtube(zugang: Mapping[str, str], text: str,
+                   medien: list[Medium], titel: str, schluessel: str) -> Beleg:
+    """Ein Reel als Short: MP4 pruefen (hochkant/quadratisch, <= 3 min),
+    Zugriffsschluessel per Refresh-Token, Kanal pruefen (gehoert der Zugang
+    zu YOUTUBE_CHANNEL_ID?), resumable Upload starten, Video in EINEM PUT
+    hochladen. Nur der PUT veroeffentlicht; alles davor ist dauerhaft.
+    YouTube kennt keinen Idempotenzschluessel - die Sperre gegen Doppel
+    liegt allein im Dienst. Sichtbarkeit: youtube_sichtbarkeit()."""
+    kanal = "youtube"
+    if len(medien) != 1 or medien[0].art != "video":
+        raise KanalFehler("YouTube: genau ein Video nötig – hochgeladen wurde nichts")
+    medium = medien[0]
+    eckdaten = mp4_eckdaten(medium.daten)
+    if eckdaten is None:
+        raise KanalFehler(f"YouTube: {medium.name} ist als MP4 nicht lesbar (Dauer "
+                          f"oder Bildgröße fehlen) – hochgeladen wurde nichts")
+    sekunden, breite, hoehe = eckdaten
+    if sekunden > YOUTUBE_SHORT_MAX_S:
+        raise KanalFehler(f"YouTube: das Video dauert {sekunden:.0f} s, ein Short "
+                          f"höchstens 3 Minuten – hochgeladen wurde nichts")
+    if breite > hoehe:
+        raise KanalFehler(f"YouTube: das Video ist quer ({breite}x{hoehe}), ein Short "
+                          f"ist hochkant oder quadratisch – hochgeladen wurde nichts")
+    beschreibung = _ohne_spitze_klammern(text)
+    if len(beschreibung.encode("utf-8")) > YOUTUBE_BESCHREIBUNG_MAX_BYTES:
+        raise KanalFehler(f"YouTube: die Beschreibung hat mehr als "
+                          f"{YOUTUBE_BESCHREIBUNG_MAX_BYTES} Bytes – hochgeladen "
+                          f"wurde nichts")
+
+    client_id = (zugang.get("YOUTUBE_CLIENT_ID") or "").strip()
+    kanal_id = (zugang.get("YOUTUBE_CHANNEL_ID") or "").strip()
+    # Client-ID und Kanal-ID sind nicht geheim, sollen aber nie in UI/Log.
+    geheim = _geheimnisse(kanal, zugang) + [client_id, kanal_id]
+    token = kanal_api.json_ruf(
+        Anfrage("POST", YOUTUBE_TOKEN,
+                {"Content-Type": "application/x-www-form-urlencoded"},
+                urllib.parse.urlencode({
+                    "grant_type": "refresh_token", "client_id": client_id,
+                    "client_secret": (zugang.get("YOUTUBE_CLIENT_SECRET") or "").strip(),
+                    "refresh_token": (zugang.get("YOUTUBE_REFRESH_TOKEN") or "").strip(),
+                }).encode("ascii"), kanal_api.FRIST_JSON),
+        kanal=kanal, was="Anmeldung", veroeffentlicht=False, geheimnisse=geheim)
+    zugriff = token.get("access_token")
+    if not isinstance(zugriff, str) or not zugriff:
+        raise KanalFehler("YouTube: Anmeldung ohne Zugriffsschlüssel – hochgeladen "
+                          "wurde nichts")
+    geheim.append(zugriff)
+    auth = {"Authorization": f"Bearer {zugriff}"}
+
+    # Ein Token des persoenlichen Kanals statt der Marke wuerde sonst
+    # klaglos dort hochladen.
+    eigene = kanal_api.json_ruf(
+        Anfrage("GET", YOUTUBE_KANAL, dict(auth), None, kanal_api.FRIST_JSON),
+        kanal=kanal, was="Kanal prüfen", veroeffentlicht=False, geheimnisse=geheim)
+    eintraege = eigene.get("items")
+    kennungen = ([e.get("id") for e in eintraege if isinstance(e, dict)]
+                 if isinstance(eintraege, list) else [])
+    if kanal_id not in kennungen:
+        raise KanalFehler("YouTube: der Zugang gehört zu einem anderen Kanal als "
+                          "YOUTUBE_CHANNEL_ID – hochgeladen wurde nichts")
+
+    meta = {"snippet": {"title": _ohne_spitze_klammern(titel.strip()),
+                        "description": beschreibung,
+                        "categoryId": YOUTUBE_KATEGORIE,
+                        "defaultLanguage": "de", "defaultAudioLanguage": "de"},
+            # Reels sprechen mit KI-Stimme: Offenlegung als KI-Inhalt.
+            "status": {"privacyStatus": youtube_sichtbarkeit(),
+                       "selfDeclaredMadeForKids": False,
+                       "containsSyntheticMedia": True}}
+    start = kanal_api.ruf(
+        Anfrage("POST", YOUTUBE_HOCHLADEN,
+                {**auth, "Content-Type": "application/json; charset=UTF-8",
+                 "X-Upload-Content-Type": medium.mimetyp,
+                 "X-Upload-Content-Length": str(len(medium.daten))},
+                json.dumps(meta, ensure_ascii=False).encode("utf-8"),
+                kanal_api.FRIST_JSON),
+        kanal=kanal, was="Hochladen vorbereiten", veroeffentlicht=False,
+        geheimnisse=geheim)
+    ziel = (_kopf(start, "Location") or "").strip()
+    if not ziel.startswith("https://"):
+        raise KanalFehler("YouTube: Hochladen vorbereiten ohne Upload-Adresse – "
+                          "hochgeladen wurde nichts")
+    # Die Upload-Adresse traegt die Sitzung: wie ein Schluessel behandeln.
+    geheim += [ziel] + urllib.parse.parse_qs(
+        urllib.parse.urlsplit(ziel).query).get("upload_id", [])
+
+    video = kanal_api.json_ruf(
+        Anfrage("PUT", ziel, {**auth, "Content-Type": medium.mimetyp}, medium.daten,
+                kanal_api.FRIST_UPLOAD),
+        kanal=kanal, was="Video hochladen", veroeffentlicht=True, geheimnisse=geheim)
+    kennung = video.get("id")
+    if not isinstance(kennung, str) or not kennung:
+        raise KanalFehler("YouTube: Antwort ohne lesbare Kennung bei Video hochladen",
+                          ungewiss=True)
+    return Beleg(kennung, f"https://youtube.com/shorts/{kennung}")
+
+
 SENDER: dict[str, Sender] = {
     "bluesky": senden_bluesky,
     "mastodon": senden_mastodon,
     "telegram_kanal": senden_telegram_kanal,
     "discord": senden_discord,
     "devto": senden_devto,
+    "youtube": senden_youtube,
 }
 assert set(SENDER) == set(KANAELE)

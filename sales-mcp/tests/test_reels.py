@@ -480,7 +480,8 @@ def _kanal_faelschung(monkeypatch):
     aufrufe = []
 
     def falsch(kanal, thema, text, titel="", medien_dateien="", trotzdem=False):
-        aufrufe.append({"kanal": kanal, "thema": thema, "text": text, "medien": medien_dateien})
+        aufrufe.append({"kanal": kanal, "thema": thema, "text": text, "medien": medien_dateien,
+                        "titel": titel})
         return json.dumps({"draft_id": len(aufrufe)})
     monkeypatch.setattr(server, "kanal_post_entwurf", falsch)
     return aufrufe
@@ -516,6 +517,21 @@ def test_kanaele_teilen_kuerzt_und_haengt_link(angemeldet, pult, monkeypatch):
     assert r.status_code == 200
     fassung = aufrufe[0]["text"]
     assert len(fassung) <= 2000 and fassung.endswith(chr(10) * 2 + "https://vibemind.de/r")
+
+
+def test_kanaele_teilen_youtube_bekommt_thema_als_titel(angemeldet, pult, monkeypatch):
+    """YouTube (Nachtrag 25.10.2026): Titel ist Pflicht (hoechstens 100) -
+    das Thema wird Titel, gekuerzt. Die anderen Kanaele bekommen keinen."""
+    _verbunden(monkeypatch, "discord", "youtube")
+    aufrufe = _kanal_faelschung(monkeypatch)
+    thema = "Herbst " * 30
+    r = post(angemeldet, "/marketing/reels/kanaele",
+             {"csrf": ui.CSRF_TOKEN, "datei": DATEI, "thema": thema, "text": "Drei Fehler."})
+    assert r.status_code == 200
+    assert [a["kanal"] for a in aufrufe] == ["discord", "youtube"]
+    assert aufrufe[0]["titel"] == ""
+    assert 0 < len(aufrufe[1]["titel"]) <= 100
+    assert aufrufe[1]["titel"].startswith("Herbst Herbst")
 
 
 def test_kanaele_teilen_grund_wird_escaped(angemeldet, pult, monkeypatch):

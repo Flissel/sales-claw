@@ -307,10 +307,11 @@ begin
     -- Eigene Beitraege auf weiteren Kanaelen (24.10.2026): bluesky, mastodon,
     -- telegram_kanal (getrennt von telegram = Direktnachrichten), discord und
     -- devto, alle mit recipient='eigenes-profil' (Spec 2026-10-24-kanaele-posten).
+    -- youtube (25.10.2026): Shorts aus den Reels, ebenso eigenes-profil.
     execute format('alter table %I.drafts drop constraint if exists drafts_channel_check', s);
     execute format($chk$alter table %I.drafts add constraint drafts_channel_check
       check (channel in ('email','whatsapp','linkedin','voice','video','meeting_invite','telegram',
-                         'bluesky','mastodon','telegram_kanal','discord','devto'))$chk$, s);
+                         'bluesky','mastodon','telegram_kanal','discord','devto','youtube'))$chk$, s);
 
     -- Passwort-Vergessen (16.09.2026): eine Adresse, an die ein Einmal-Link
     -- gehen kann, und der Token selbst — GEHASHT, nie im Klartext. Wer die

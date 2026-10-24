@@ -6,13 +6,16 @@ MIB = 1024 * 1024
 
 
 def test_registry_reihenfolge_und_werte():
-    assert list(KANAELE) == ["bluesky", "mastodon", "telegram_kanal", "discord", "devto"]
+    assert list(KANAELE) == ["bluesky", "mastodon", "telegram_kanal", "discord", "devto",
+                             "youtube"]
     erwartet = {
         "bluesky": (300, 3, ("BLUESKY_HANDLE", "BLUESKY_APP_PASSWORD")),
         "mastodon": (500, 3, ("MASTODON_INSTANCE", "MASTODON_TOKEN")),
         "telegram_kanal": (4096, 3, ("TELEGRAM_KANAL_ID", "TELEGRAM_KANAL_BOT_TOKEN")),
         "discord": (2000, 3, ("DISCORD_ANKUENDIGUNG_WEBHOOK",)),
         "devto": (100_000, 1, ("DEVTO_API_KEY",)),
+        "youtube": (5000, 2, ("YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET",
+                              "YOUTUBE_REFRESH_TOKEN", "YOUTUBE_CHANNEL_ID")),
     }
     for name, (max_zeichen, kadenz, env) in erwartet.items():
         info = KANAELE[name]
@@ -21,12 +24,12 @@ def test_registry_reihenfolge_und_werte():
         assert info.kadenz_pro_tag == kadenz
         assert info.env_namen == env
     assert [i.anzeige for i in KANAELE.values()] == [
-        "Bluesky", "Mastodon", "Telegram-Kanal", "Discord", "dev.to"]
+        "Bluesky", "Mastodon", "Telegram-Kanal", "Discord", "dev.to", "YouTube"]
     assert KANAELE["devto"].titel_pflicht is True
     assert KANAELE["devto"].titel_max == 128
     assert KANAELE["telegram_kanal"].max_zeichen_mit_medien == 1024
-    assert [i.medien_max for i in KANAELE.values()] == [4, 4, 1, 1, 0]
-    assert [i.hashtags for i in KANAELE.values()] == [True, True, False, False, False]
+    assert [i.medien_max for i in KANAELE.values()] == [4, 4, 1, 1, 0, 1]
+    assert [i.hashtags for i in KANAELE.values()] == [True, True, False, False, False, True]
 
 
 def test_geheim_namen_sind_teilmenge():
@@ -86,7 +89,8 @@ def test_instanz_normalisieren():
 
 
 def test_pruefe_entwurf_grenzen():
-    bs, ma, tg, dc, dv = (KANAELE[k] for k in KANAELE)
+    bs, ma, tg, dc, dv = (KANAELE[k] for k in ("bluesky", "mastodon", "telegram_kanal",
+                                              "discord", "devto"))
     bild = ("a.png", "bild", 1000)
     video = ("v.mp4", "video", 1000)
     grund = pruefe_entwurf(bs, "x" * 301, "", [])

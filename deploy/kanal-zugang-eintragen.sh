@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Traegt den Zugang eines eigenen Kanals (Bluesky, Mastodon, Telegram-Kanal,
-# Discord, dev.to) in die .env des Basis-Ladens ein und erzeugt NUR den
-# Dienst sales-kanaele neu.
+# Discord, dev.to, YouTube) in die .env des Basis-Ladens ein und erzeugt
+# NUR den Dienst sales-kanaele neu.
 #
 #   bash ~/sales-claw/deploy/kanal-zugang-eintragen.sh <kanal>
-#   kanal: bluesky | mastodon | telegram_kanal | discord | devto
+#   kanal: bluesky | mastodon | telegram_kanal | discord | devto | youtube
 #
 # Regelweg ist der PC-Befehl `kanal-zugang speichern <kanal>` (Vibemind_V1,
 # scripts/kanal_zugang.py): der OpenFang-Tresor am PC ist die Wahrheit, der
@@ -36,7 +36,7 @@ ENV_DATEI="${SALES_ENV_DATEI:-$HOME/sales-claw/.env}"
 PROJEKT="$(dirname "$ENV_DATEI")"
 DOCKER="${DOCKER:-docker}"
 ERLAUBT='^[A-Za-z0-9._:/@+=~%?&-]+$'
-KANAL_LISTE="bluesky mastodon telegram_kanal discord devto"
+KANAL_LISTE="bluesky mastodon telegram_kanal discord devto youtube"
 
 if [ "${1:-}" = "--kanaele" ]; then
   echo "$KANAL_LISTE"
@@ -55,6 +55,7 @@ case "$kanal" in
   telegram_kanal) NAMEN=(TELEGRAM_KANAL_ID TELEGRAM_KANAL_BOT_TOKEN) ;;
   discord)        NAMEN=(DISCORD_ANKUENDIGUNG_WEBHOOK) ;;
   devto)          NAMEN=(DEVTO_API_KEY) ;;
+  youtube)        NAMEN=(YOUTUBE_CLIENT_ID YOUTUBE_CLIENT_SECRET YOUTUBE_REFRESH_TOKEN YOUTUBE_CHANNEL_ID) ;;
   *)
     echo "Aufruf: $0 <kanal> — bekannte Kanäle: $KANAL_LISTE" >&2
     exit 2 ;;

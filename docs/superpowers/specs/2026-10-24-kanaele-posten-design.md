@@ -146,3 +146,14 @@ Bei dev.to legt der Versand den Artikel nur als **Entwurf bei dev.to** an (`publ
 8. **Medien:** dev.to zunächst ohne Titelbild, weil Bilder nur als öffentliche URL gehen. Bluesky und Mastodon bekommen leeren Alt-Text, bis es ein Alt-Text-Feld gibt.
 9. **Dauerdienst ohne Zugänge:** `sales-kanaele` läuft auch ohne jeden Zugang weiter. Er meldet dann alle Kanäle als „nicht verbunden“ und beendet sich nicht.
 10. **Beleg:** `activities.payload` enthält `{draft_id, kanal, weg:'kanal-dispatcher', empfaenger:'eigenes-profil', beitrag:<id>, url:<öffentliche URL>, medienart}`. Die Statusseite verlinkt `url`.
+
+## Nachtrag 25.10.2026: YouTube-Shorts als sechster Kanal
+
+- **Kanalwert** `youtube` (CHECK in `provision.sql`), `recipient='eigenes-profil'` wie die übrigen.
+- **Zugang:** `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET`, `YOUTUBE_REFRESH_TOKEN` und `YOUTUBE_CHANNEL_ID` (Kanal VibeMind @vibemindos). Geheim sind Secret und Refresh-Token. Den Refresh-Token erzeugt am PC einmalig `scripts\youtube-oauth.cmd` (Vibemind_V1, Desktop-OAuth, Rechte `youtube.upload` und `youtube.readonly`). Das Skript gibt die Werte nur an `kanal-zugang` weiter, nie an argv, Log oder Chat.
+- **Beitrag:** genau ein Video, Titel Pflicht (höchstens 100 Zeichen, = Betreff wie bei dev.to), Text = Beschreibung (5000). `<` und `>` werden durch `‹ ›` ersetzt, weil YouTube sie ablehnt. Kadenz 2 pro Tag (Kontingent: ein Upload kostet viel).
+- **Short-Prüfung im Adapter** an den MP4-Eckdaten (moov/mvhd, tkhd): höchstens 180 s, nicht quer. Sonst dauerhaft abgelehnt, nichts hochgeladen.
+- **Ablauf:** Token per Refresh-Token, dann `channels?mine=true` (gehört der Zugang zu `YOUTUBE_CHANNEL_ID`? Sonst Abbruch ohne Upload), dann resumable Upload starten (`videos.insert`) und das Video in einem PUT hochladen. Nur der PUT veröffentlicht. Er ist bei fehlender Antwort `ungewiss`, alles davor ist `dauerhaft`. YouTube kennt keinen Idempotenzschlüssel, die Sperre gegen Doppel liegt allein im Dienst.
+- **Sichtbarkeit:** `YOUTUBE_SICHTBARKEIT` (nur `sales-kanaele`, kein Geheimnis), `private` (Vorgabe), `unlisted` oder `public`. Ein leerer oder unbekannter Wert ergibt `private`. Hinweis: Google hält Uploads aus ungeprüften API-Projekten ohnehin privat, bis das Projekt das YouTube-API-Audit bestanden hat. `containsSyntheticMedia=true` (die Reels sprechen mit KI-Stimme), `selfDeclaredMadeForKids=false`.
+- **Reels teilen:** Der Knopf „Auf Kanälen teilen“ gibt YouTube das Thema als Titel (gekürzt auf 100).
+- **Nicht enthalten:** Auftragskanal `youtube_post` im Marketing (bräuchte eine Marketing-Migration). Bis dahin entstehen YouTube-Entwürfe über das Werkzeug oder die Reels-Seite.

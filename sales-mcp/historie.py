@@ -9,7 +9,7 @@ FRIST_TAGE = 90
 THEMA_MAX = 80
 _KANAL = {"whatsapp": "WhatsApp", "email": "Mail", "linkedin": "LinkedIn", "telegram": "Telegram",
           "bluesky": "Bluesky", "mastodon": "Mastodon", "telegram_kanal": "Telegram-Kanal",
-          "discord": "Discord", "devto": "dev.to"}
+          "discord": "Discord", "devto": "dev.to", "youtube": "YouTube"}
 
 
 def thema_norm(text) -> str:

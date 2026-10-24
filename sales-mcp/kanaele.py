@@ -1,6 +1,6 @@
 """Kanal-Registry fuer eigene Beitraege (Spec docs/superpowers/specs/
 2026-10-24-kanaele-posten-design.md): Bluesky, Mastodon, Telegram-Kanal,
-Discord, dev.to.
+Discord, dev.to und (Nachtrag 25.10.2026) YouTube-Shorts.
 
 Dieses Modul haelt nur Metadaten (Grenzen, Medien, Kadenz, Env-NAMEN) und
 liest/schreibt die Tabelle kanal_status. Es macht keinen Netzaufruf und
@@ -42,6 +42,8 @@ class KanalInfo:
     titel_pflicht: bool
     titel_max: int
     hashtags: bool
+    # Ohne genau ein Video kein Beitrag (YouTube).
+    video_pflicht: bool = False
 
 
 # Reihenfolge = Reihenfolge in UI, Freigabe und Dienst.
@@ -88,7 +90,25 @@ KANAELE: dict[str, KanalInfo] = {
         bilder_max=0, video_max=0, medien_max=0,
         bild_max_bytes=0, video_max_bytes=0,
         kadenz_pro_tag=1, titel_pflicht=True, titel_max=128, hashtags=False),
+    # YouTube (Nachtrag 25.10.2026): nur Shorts aus den Reels - genau ein
+    # Video, Titel Pflicht (YouTube: hoechstens 100 Zeichen), der Text ist
+    # die Beschreibung. Ob es ein Short ist (hochkant/quadratisch, <= 3 min),
+    # prueft der Adapter an den MP4-Eckdaten. Die Sichtbarkeit (Vorgabe
+    # privat) steht nicht hier, sondern in YOUTUBE_SICHTBARKEIT beim Dienst.
+    "youtube": KanalInfo(
+        name="youtube", anzeige="YouTube",
+        env_namen=("YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET",
+                   "YOUTUBE_REFRESH_TOKEN", "YOUTUBE_CHANNEL_ID"),
+        geheim_namen=("YOUTUBE_CLIENT_SECRET", "YOUTUBE_REFRESH_TOKEN"),
+        max_zeichen=5000, max_zeichen_mit_medien=5000,
+        bilder_max=0, video_max=1, medien_max=1,
+        bild_max_bytes=0, video_max_bytes=256 * MIB,
+        kadenz_pro_tag=2, titel_pflicht=True, titel_max=100, hashtags=True,
+        video_pflicht=True),
 }
+
+# "dev.to und YouTube" - fuer den Satz an Kanaele ohne Titel.
+_TITEL_KANAELE = " und ".join(i.anzeige for i in KANAELE.values() if i.titel_pflicht)
 
 
 # --- Zugaenge (nur Formpruefung, nie Werte im Text) -------------------------
@@ -97,6 +117,8 @@ _INSTANZ = re.compile(r"^https://[a-z0-9.-]+\.[a-z]{2,}/?$")
 _TELEGRAM_ID = re.compile(r"^(@[A-Za-z0-9_]{5,32}|-100[0-9]{5,15})$")
 _DISCORD_WEBHOOK = re.compile(
     r"^https://(discord|discordapp)\.com/api/webhooks/[0-9]+/[A-Za-z0-9_-]+$")
+_YOUTUBE_KANAL = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
+_GOOGLE_CLIENT = re.compile(r"^[0-9]+-[A-Za-z0-9_]+\.apps\.googleusercontent\.com$")
 
 
 def zugang_lesen(info: KanalInfo, env: Mapping[str, str]) -> dict[str, str]:
@@ -129,6 +151,10 @@ def zugang_pruefen(info: KanalInfo, zugang: Mapping[str, str]) -> str | None:
             ok = bool(_TELEGRAM_ID.fullmatch(wert))
         elif n == "DISCORD_ANKUENDIGUNG_WEBHOOK":
             ok = bool(_DISCORD_WEBHOOK.fullmatch(wert))
+        elif n == "YOUTUBE_CHANNEL_ID":
+            ok = bool(_YOUTUBE_KANAL.fullmatch(wert))
+        elif n == "YOUTUBE_CLIENT_ID":
+            ok = bool(_GOOGLE_CLIENT.fullmatch(wert))
         elif n == "BLUESKY_HANDLE":
             handle = wert[1:] if wert.startswith("@") else wert
             ok = "." in handle and not handle.startswith("@")
@@ -156,7 +182,7 @@ def pruefe_entwurf(info: KanalInfo, text: str, titel: str,
             return (f"{info.anzeige}: der Titel hat {len(titel)} Zeichen, "
                     f"erlaubt sind höchstens {info.titel_max}")
     elif titel:
-        return f"{info.anzeige}: titel gibt es nur bei dev.to"
+        return f"{info.anzeige}: titel gibt es nur bei {_TITEL_KANAELE}"
 
     grenze = info.max_zeichen_mit_medien if medien else info.max_zeichen
     if len(text) > grenze:
@@ -165,6 +191,8 @@ def pruefe_entwurf(info: KanalInfo, text: str, titel: str,
                 f"sind{zusatz} höchstens {grenze}")
 
     if not medien:
+        if info.video_pflicht:
+            return f"{info.anzeige}: ein Video ist Pflicht"
         return None
     if info.medien_max == 0:
         return f"{info.anzeige}: Medien sind hier nicht möglich"

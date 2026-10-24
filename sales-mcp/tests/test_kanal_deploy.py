@@ -35,6 +35,8 @@ def test_compose_dienst_hat_alle_kanal_variablen_mit_leerer_vorgabe():
     for n in _alle_namen():
         assert f"{n}=${{{n}:-}}" in abschnitt, n
     assert "BLUESKY_PDS=${BLUESKY_PDS:-https://bsky.social}" in abschnitt
+    # YouTube: ohne ausdrueckliche Wahl des Betreibers privat.
+    assert "YOUTUBE_SICHTBARKEIT=${YOUTUBE_SICHTBARKEIT:-private}" in abschnitt
     assert "SALES_DB_URL=${SALES_DB_URL}" in abschnitt
     assert "KANAL_INTERVAL_S=60" in abschnitt
     assert "container_name: ${LADEN_PRAEFIX:-sales}-kanaele" in abschnitt
@@ -82,7 +84,7 @@ def test_eintrage_skript_kennt_dieselben_namen():
 def test_env_example_nennt_namen():
     beispiel = _lesen(".env.example")
     doku = _lesen("docs/10_SECRETS_ROTATION.md")
-    for n in _alle_namen() + ["BLUESKY_PDS"]:
+    for n in _alle_namen() + ["BLUESKY_PDS", "YOUTUBE_SICHTBARKEIT"]:
         assert re.search(rf"^{n}=$", beispiel, re.M), n
         assert n in doku, n
     assert "kanal-zugang-eintragen.sh" in beispiel

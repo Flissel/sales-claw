@@ -1,6 +1,6 @@
 ---
 name: kanal-post
-description: "Beitrag fuer Bluesky, Mastodon, den Telegram-Kanal, Discord oder dev.to — IMMER nutzen, sobald der Betreiber auf einem dieser Kanaele etwas veroeffentlichen will (auch 'teil das auf allen Kanaelen'). Ablauf: einsammeln, Kanaele waehlen, je Kanal eine eigene Fassung, wortgleiche Vorschau, nach Ok Entwurf zur Freigabe. dev.to nur als Entwurf bei dev.to. Nicht fuer LinkedIn (dafuer linkedin-post) und nicht fuer Direktnachrichten."
+description: "Beitrag fuer Bluesky, Mastodon, den Telegram-Kanal, Discord, dev.to oder YouTube (Shorts) — IMMER nutzen, sobald der Betreiber auf einem dieser Kanaele etwas veroeffentlichen will (auch 'teil das auf allen Kanaelen'). Ablauf: einsammeln, Kanaele waehlen, je Kanal eine eigene Fassung, wortgleiche Vorschau, nach Ok Entwurf zur Freigabe. dev.to nur als Entwurf bei dev.to, YouTube zunaechst privat. Nicht fuer LinkedIn (dafuer linkedin-post) und nicht fuer Direktnachrichten."
 metadata: { "openclaw": { "emoji": "📡" } }
 ---
 
@@ -34,6 +34,7 @@ Nicht denselben Text kopieren. Jede Fassung haelt Grenze, Ton und Hashtag-Regel:
 * Telegram-Kanal: Text bis 4096 Zeichen, mit Bild oder Video nur 1024; 1 Medium; ohne Hashtags.
 * Discord: hoechstens 2000 Zeichen, 1 Medium; ohne Hashtags, kein @everyone/@here.
 * dev.to: Artikel mit Titel (1 bis 128 Zeichen) und Markdown-Text, keine Medien. Er wird als Entwurf bei dev.to angelegt, nie dort veroeffentlicht.
+* YouTube: nur als Short — GENAU EIN Reel-Video (hochkant oder quadratisch, hoechstens 3 Minuten), Titel (1 bis 100 Zeichen) und Text als Beschreibung (bis 5000 Zeichen, Hashtags erlaubt). Ohne Video geht es nicht. Hochgeladen wird zunaechst nicht oeffentlich (privat); freigeschaltet wird in YouTube Studio.
 
 Bilder und Video nie mischen. Bei Telegram und Discord hoechstens ein Medium.
 Zaehle die Zeichen vor der Vorschau.
@@ -41,15 +42,18 @@ Zaehle die Zeichen vor der Vorschau.
 ## Schritt 4 — Vorschau
 
 EINE Nachricht an den Betreiber mit allen Fassungen **wortgleich**, so wie sie
-rausgehen: Kanal, Text (bei dev.to Titel und Artikel), Medium, Zeichenzahl.
+rausgehen: Kanal, Text (bei dev.to Titel und Artikel, bei YouTube Titel und
+Beschreibung), Medium, Zeichenzahl.
 
 ## Schritt 5 — Anlegen
 
 Erst nach dem Ok des Betreibers (Pflicht, je Kanal), pro Kanal:
 `kanal_post_entwurf(kanal, thema, text, titel="", medien_dateien="", trotzdem=False)`.
-`kanal` ist `bluesky`, `mastodon`, `telegram_kanal`, `discord` oder `devto`.
+`kanal` ist `bluesky`, `mastodon`, `telegram_kanal`, `discord`, `devto` oder
+`youtube` (`titel` Pflicht bei dev.to und YouTube).
 Nenne danach die `draft_id`s; EIN Satz: liegt zur Freigabe, Freigeben heisst
-veroeffentlichen (bei dev.to: Entwurf bei dev.to anlegen).
+veroeffentlichen (bei dev.to: Entwurf bei dev.to anlegen; bei YouTube: als
+privates Short hochladen).
 
 ## Regeln
 
