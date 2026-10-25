@@ -82,6 +82,19 @@ def test_zugang_falsche_form_nennt_nur_namen():
     assert grund and "BLUESKY_HANDLE" in grund and "ohnepunkt" not in grund
 
 
+def test_zugangsfehler_saetze_sind_die_von_zugang_pruefen():
+    from kanaele import zugangsfehler_saetze
+    info = KANAELE["mastodon"]
+    saetze = zugangsfehler_saetze(info)
+    assert "MASTODON_INSTANCE fehlt" in saetze
+    assert "MASTODON_TOKEN hat kein gültiges Format" in saetze
+    # Was zugang_pruefen liefert, ist immer einer davon.
+    assert zugang_pruefen(info, {}) in saetze
+    assert zugang_pruefen(info, {"MASTODON_INSTANCE": "http://x.example",
+                                 "MASTODON_TOKEN": "t"}) in saetze
+    assert "Mastodon: HTTP 400 bei Status veröffentlichen" not in saetze
+
+
 def test_instanz_normalisieren():
     from kanaele import instanz_normalisieren
     assert instanz_normalisieren("mastodon.social") == "https://mastodon.social"

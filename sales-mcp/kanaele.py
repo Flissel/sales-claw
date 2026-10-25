@@ -137,12 +137,21 @@ def instanz_normalisieren(wert: str) -> str:
     return w.rstrip("/")
 
 
+_FEHLT = "{} fehlt"
+_FORMAT = "{} hat kein gültiges Format"
+
+
+def zugangsfehler_saetze(info: KanalInfo) -> list[str]:
+    """Jeder Satz, den zugang_pruefen fuer diesen Kanal liefern kann."""
+    return [m.format(n) for n in info.env_namen for m in (_FEHLT, _FORMAT)]
+
+
 def zugang_pruefen(info: KanalInfo, zugang: Mapping[str, str]) -> str | None:
     """None = vollstaendig und in gueltiger Form (verbunden). Sonst ein
     deutscher Satz, der nur Namen nennt."""
     for n in info.env_namen:
         if not (zugang.get(n) or "").strip():
-            return f"{n} fehlt"
+            return _FEHLT.format(n)
     for n in info.env_namen:
         wert = (zugang.get(n) or "").strip()
         if n == "MASTODON_INSTANCE":
@@ -161,7 +170,7 @@ def zugang_pruefen(info: KanalInfo, zugang: Mapping[str, str]) -> str | None:
         else:
             ok = True
         if not ok:
-            return f"{n} hat kein gültiges Format"
+            return _FORMAT.format(n)
     return None
 
 
@@ -238,6 +247,14 @@ def verbunden(q, kanal: str) -> bool:
     """Fehlende Zeile (oder Tabelle) = nicht verbunden."""
     eintrag = status_lesen(q).get(kanal)
     return bool(eintrag and eintrag["verbunden"])
+
+
+def zugangsfehler_loeschen(q, info: KanalInfo) -> None:
+    """Ein Zugangsfehler ("X fehlt") ist erledigt, sobald der Zugang stimmt -
+    anders als ein Versandfehler, der bis zum naechsten Erfolg stehen bleibt."""
+    q("update kanal_status set letzter_fehler = null "
+      "where kanal = %s and letzter_fehler = any(%s) returning kanal",
+      (info.name, zugangsfehler_saetze(info)))
 
 
 def status_schreiben(q, kanal: str, verbunden: bool, fehler: str | None, *,

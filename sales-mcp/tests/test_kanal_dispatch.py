@@ -13,6 +13,7 @@ import pytest
 
 # HART, nicht setdefault (Begruendung in test_linkedin_dispatch.py).
 os.environ["SALES_DB_SCHEMA"] = "sales_test"
+import kanaele  # noqa: E402
 import kanal_adapter  # noqa: E402
 import kanal_api  # noqa: E402
 import kanal_dispatch as kd  # noqa: E402
@@ -290,6 +291,29 @@ def test_verbundener_kanal_status_und_fehler_geloescht(umgebung):
     _entwurf("bluesky")
     assert kd.eine_runde_kanal("bluesky") == "veroeffentlicht"
     assert _status("bluesky") == {"verbunden": True, "letzter_fehler": None}
+
+
+def test_zugangsfehler_verschwindet_sobald_verbunden(umgebung, monkeypatch):
+    """Alter Satz "BLUESKY_HANDLE fehlt" aus der Zeit ohne Zugang darf nach dem
+    Eintragen nicht stehen bleiben, bis zufaellig ein Beitrag klappt (25.10.:
+    5 verbundene Kanaele zeigten weiter "... fehlt")."""
+    kanaele.status_schreiben(server._q, "bluesky", False, "BLUESKY_HANDLE fehlt")
+    kanaele.status_schreiben(server._q, "mastodon", True,
+                             "MASTODON_INSTANCE hat kein gültiges Format")
+    assert kd.eine_runde_kanal("bluesky") == "nichts"
+    assert _status("bluesky") == {"verbunden": True, "letzter_fehler": None}
+    # Auch wenn die Runde an der Kadenz endet.
+    monkeypatch.setattr(kd, "heute_anzahl", lambda kanal: 99)
+    assert kd.eine_runde_kanal("mastodon") == "kadenz"
+    assert _status("mastodon") == {"verbunden": True, "letzter_fehler": None}
+
+
+def test_versandfehler_bleibt_bis_zum_erfolg(umgebung):
+    umgebung.fehler["bluesky"] = KanalFehler("Bluesky: HTTP 400 bei createRecord")
+    _entwurf("bluesky")
+    assert kd.eine_runde_kanal("bluesky") == "fehler"
+    assert kd.eine_runde_kanal("bluesky") == "nichts"
+    assert "createRecord" in _status("bluesky")["letzter_fehler"]
 
 
 def test_kein_geheimnis_in_status_und_fehler(umgebung):

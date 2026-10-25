@@ -36,7 +36,7 @@ import server
 from dispatch import (_als_fehler_buchen, _als_gesendet_buchen, _claim_marke,
                       _einzeilig)
 from kanaele import (KANAELE, KanalInfo, pruefe_entwurf, status_schreiben,
-                     zugang_lesen, zugang_pruefen)
+                     zugang_lesen, zugang_pruefen, zugangsfehler_loeschen)
 from kanal_api import KanalFehler, Medium, ohne_geheimnisse
 
 KANAL_INTERVAL_S = float(os.environ.get("KANAL_INTERVAL_S", "60"))
@@ -362,6 +362,7 @@ def eine_runde_kanal(kanal: str) -> str:
     if grund:
         status_schreiben(server._q, kanal, False, grund)
         return "nicht_verbunden"
+    zugangsfehler_loeschen(server._q, info)
 
     if heute_anzahl(kanal) >= info.kadenz_pro_tag:
         status_schreiben(server._q, kanal, True, None)
