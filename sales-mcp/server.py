@@ -8759,9 +8759,11 @@ def versandauftrag_uebernehmen(auftrag_id: str) -> str:
     Empfaenger, kein Kontakt, Thema aus dem Feld betreff.
 
     Ebenso bei bluesky_post, mastodon_post, telegram_kanal_post,
-    discord_post und devto_post (24.10.2026): kanal_post_entwurf mit dem
-    betreff als Thema, bei devto_post auch als Titel. Ist der Kanal nicht
-    verbunden, wird der Auftrag mit diesem Grund abgesagt."""
+    discord_post und devto_post (24.10.2026) sowie youtube_post (25.10.2026):
+    kanal_post_entwurf mit dem betreff als Thema, bei devto_post und
+    youtube_post auch als Titel; bei youtube_post ist medien_datei das Reel.
+    Ist der Kanal nicht verbunden, wird der Auftrag mit diesem Grund
+    abgesagt."""
     auftrag = _auftrag_holen(auftrag_id)
     if not auftrag:
         return _json({"fehler": f"Kein offener Versandauftrag {auftrag_id}."})

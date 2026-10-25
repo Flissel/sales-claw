@@ -119,7 +119,8 @@ def uebergabe_notiz(u: dict) -> str:
 # gesperrt ist, steht bei uns. Ein Auftrag ist eine Bitte, kein Befehl.
 
 # Beitraege aufs eigene Profil bzw. den eigenen Kanal, ohne Empfaenger:
-# Auftragskanal -> Zielkanal (24.10.2026: weitere Kanaele, Migration 092).
+# Auftragskanal -> Zielkanal (24.10.2026: weitere Kanaele, Migration 092;
+# 25.10.2026: youtube_post, Migration 093 - Reel in medien_datei).
 POST_KANAL: dict[str, str] = {
     "linkedin_post": "linkedin",
     "bluesky_post": "bluesky",
@@ -127,6 +128,7 @@ POST_KANAL: dict[str, str] = {
     "telegram_kanal_post": "telegram_kanal",
     "discord_post": "discord",
     "devto_post": "devto",
+    "youtube_post": "youtube",
 }
 
 

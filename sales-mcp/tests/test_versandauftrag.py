@@ -329,7 +329,11 @@ def test_linkedin_post_geht_ohne_kontakt_und_nimmt_den_betreff_als_thema(monkeyp
 def test_postkanaele_sind_eine_zuordnung():
     assert lead_fluss.POST_KANAL["bluesky_post"] == "bluesky"
     assert lead_fluss.POST_KANAL["linkedin_post"] == "linkedin"
-    assert len(lead_fluss.POST_KANAL) == 6
+    assert lead_fluss.POST_KANAL["youtube_post"] == "youtube"
+    assert len(lead_fluss.POST_KANAL) == 7
+    # Jeder Zielkanal ausser LinkedIn steht in der Kanal-Registry.
+    import kanaele
+    assert set(lead_fluss.POST_KANAL.values()) - {"linkedin"} == set(kanaele.KANAELE)
 
 
 def _kanal_post_faelschen(monkeypatch, antwort=None):
@@ -377,6 +381,23 @@ def test_devto_auftrag_betreff_wird_titel(monkeypatch):
 
     server.versandauftrag_uebernehmen("a-1")
     assert gesehen == [("devto", "Unser Herbst", "# Text", "Unser Herbst", "")]
+
+
+def test_youtube_auftrag_betreff_wird_titel_und_reel_wird_medium(monkeypatch):
+    """youtube_post (Marketing-Migration 093): Titel = Betreff wie bei dev.to,
+    das Reel aus medien_datei wird das Video."""
+    gesehen = _kanal_post_faelschen(monkeypatch)
+    auftrag = {**AUFTRAG, "kanal": "youtube_post", "empfaenger": "",
+               "betreff": "Unser Short", "nachricht": "Beschreibung #KI",
+               "medien_datei": "vid-0123abcd-herbst.mp4"}
+    q = verteiler([_offene(auftrag),
+                   ("versandauftrag_erledigen", [{"ok": True}])])
+    monkeypatch.setattr(server, "_q", q)
+
+    out = json.loads(server.versandauftrag_uebernehmen("a-1"))
+    assert gesehen == [("youtube", "Unser Short", "Beschreibung #KI", "Unser Short",
+                        "vid-0123abcd-herbst.mp4")]
+    assert out["kanal"] == "youtube_post"
 
 
 def test_nicht_verbundener_kanal_wird_abgesagt_mit_grund(monkeypatch):
