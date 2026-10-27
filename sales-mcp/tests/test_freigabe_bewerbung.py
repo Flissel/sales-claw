@@ -849,6 +849,28 @@ def test_der_weg_kommt_aus_versand_nicht_aus_dem_aufnahmekanal(client, falsch): 
     assert "Versand: fax" in f
 
 
+def test_etikett_folgt_dem_versandweg(client, falsch):
+    """Das Etikett oben auf der Karte widerspricht der Versandzeile nicht: mit `versand`
+    kommt es aus `versand.kanal`, sonst (Zentrale vor H4, kaputt) wie bisher aus `kanal`."""
+    falsch.karten = [
+        karte(firma="A", kanal="portal", versand=weg()),                       # Aufnahme Portal, Weg E-Mail
+        karte(application_id=BID2, firma="B", kanal="email", versand=weg("portal", None)),
+        karte(application_id="bw-3", firma="C", kanal="email"),                  # ohne `versand`
+        karte(application_id="bw-4", firma="D", kanal="portal", versand="kaputt"),
+        karte(application_id="bw-5", firma="E", kanal="email", versand=weg(BOESE, None)),
+        karte(application_id="bw-6", firma="F", kanal="portal", versand={"an": None}),
+    ]
+    s = _abschnitt(client)
+    a, b, c, d, f, g = _karten(s)
+    assert '<summary><span class="badge">E-Mail</span><b>A – Data Engineer</b>' in a
+    assert '<summary><span class="badge">Portal</span><b>B – Data Engineer</b>' in b
+    assert '<summary><span class="badge">E-Mail</span><b>C – Data Engineer</b>' in c
+    assert '<summary><span class="badge">Portal</span><b>D – Data Engineer</b>' in d
+    assert '<span class="badge">&lt;script&gt;x&lt;/script&gt;</span><b>E – ' in f
+    assert '<summary><span class="badge">Portal</span><b>F – Data Engineer</b>' in g
+    assert "<script" not in s
+
+
 def test_versandangaben_werden_maskiert(client, falsch):                         # Review Focus 5
     falsch.karten = [karte(versand=weg(an=BOESE, warnung=BOESE2)),
                      karte(application_id=BID2, versand=weg(BOESE, BOESE2, BOESE)),
@@ -1095,6 +1117,62 @@ def test_verlauf_text_je_ausgang(client, falsch):                               
     assert "Nicht bewerben" in fuenf and "Versend" not in fuenf and "von Hand" not in fuenf
     sechs = _zeile(v, "Sechs")                      # `offen` schlaegt den Status: noch nicht verarbeitet
     assert "Freigegeben" in sechs and "von Hand" not in sechs and "Wird versendet" not in sechs
+
+
+WARTET_TEXT = "Versand wartet auf deine Freigabe – Link in der Mail"
+HAENGT_TEXT = "Versand hängt – bitte von Hand einreichen oder archivieren"
+
+
+def test_verlauf_wartet_auf_freigabe_per_mail_und_haengt(client, falsch):
+    falsch.verlauf = [
+        verlauf(application_id="bw-1", firma="Eins", ausgang="freigabe_per_mail",
+                status="wartet_auf_absendefreigabe", versand_an=ADRESSE,
+                anzeige_url="https://jobs.example.org/1"),
+        verlauf(application_id="bw-2", firma="Zwei", ausgang="haengt", status="wartet_auf_absendefreigabe",
+                fassung=4, versand_an=ADRESSE, anzeige_url="https://jobs.example.org/2"),
+        verlauf(application_id="bw-3", firma="Drei", ausgang="haengt", status="wartet_auf_absendefreigabe",
+                fassung="x", anzeige_url=None),
+    ]
+    v = _abschnitt(client)
+    eins = _zeile(v, "Eins")
+    assert WARTET_TEXT in eins and "von Hand" not in eins and "Wird versendet" not in eins
+    assert "anschreiben.pdf" not in eins and "Anzeige" not in eins       # Felix klickt in der Mail
+    zwei = _zeile(v, "Zwei")
+    assert HAENGT_TEXT in zwei and "Freigegeben" not in zwei and "Wird versendet" not in zwei
+    assert ('<a href="/freigaben/bewerbung/bw-2/anschreiben.pdf?fassung=4" target="_blank" '
+            'rel="noopener noreferrer">') in zwei
+    assert '<a href="https://jobs.example.org/2" target="_blank" rel="noopener noreferrer">' in zwei
+    drei = _zeile(v, "Drei")                                     # ohne Fassung und Anzeige: keine Links
+    assert HAENGT_TEXT in drei and "anschreiben.pdf" not in drei and "Anzeige" not in drei
+
+
+def test_verlauf_haengt_maskiert_kennung_und_anzeige(client, falsch):            # Review Focus 5
+    falsch.verlauf = [verlauf(application_id='bw"><script>k</script>', firma="Eins", ausgang="haengt",
+                              fassung=2, anzeige_url='https://x.example/"><script>z</script>',
+                              versand_an=BOESE)]
+    s = _abschnitt(client)
+    assert "<script" not in s and HAENGT_TEXT in _zeile(s, "Eins")
+    assert "/freigaben/bewerbung/bw%22%3E%3Cscript%3Ek%3C%2Fscript%3E/anschreiben.pdf?fassung=2" in s
+    assert 'href="https://x.example/&quot;&gt;&lt;script&gt;z&lt;/script&gt;"' in s
+
+
+def test_handarbeit_beim_email_weg_nennt_die_adresse(client, falsch):
+    falsch.verlauf = [
+        verlauf(application_id="bw-1", firma="Mail", ausgang="handarbeit", status="blockiert", fassung=3,
+                versand_an=ADRESSE, anzeige_url="https://jobs.example.org/1"),
+        verlauf(application_id="bw-2", firma="Portal", ausgang="handarbeit", status="blockiert",
+                versand_an=None),
+        verlauf(application_id="bw-3", firma="Boese", ausgang="handarbeit", status="blockiert",
+                versand_an=BOESE),
+    ]
+    s = _abschnitt(client)
+    mail = _zeile(s, "Mail")
+    assert f"Freigegeben – bitte von Hand einreichen (per E-Mail an {ADRESSE})" in mail
+    assert "anschreiben.pdf?fassung=3" in mail and "Anzeige" in mail
+    portal = _zeile(s, "Portal")
+    assert "Freigegeben – bitte von Hand einreichen" in portal and "E-Mail an" not in portal
+    boese = _zeile(s, "Boese")
+    assert "<script" not in s and "per E-Mail an &lt;script&gt;x&lt;/script&gt;" in boese
 
 
 def test_verlauf_ohne_ausgang_bleibt_wie_vor_h4(client, falsch):

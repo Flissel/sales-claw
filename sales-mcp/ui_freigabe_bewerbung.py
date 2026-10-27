@@ -10,7 +10,8 @@ reicht weiter. Jede Entscheidung ist an Fassung und Bindung der Karte gebunden.
 Hermes H4 (Versand per E-Mail): Die Karte zeigt den Versandweg (`versand`), Felix setzt die
 Bewerbungsadresse in einem eigenen Formular, und "Freigeben" traegt die angezeigte Adresse als
 `versand_an` mit - die Zentrale sendet nur an genau diese Adresse. "Zuletzt entschieden" sagt,
-was daraus wurde (`ausgang`: versendet, unklar, Handarbeit, wird versendet).
+was daraus wurde (`ausgang`: versendet, unklar, Handarbeit, wird versendet, wartet auf die
+Freigabe per Mail, haengt).
 
 Wie der Rest von sales-ui: kein JavaScript, CSRF-Marke in jedem Formular, das
 Anschreiben-PDF nur verlinkt (eigene Datei-Richtlinie, nie gerahmt). Die Texte
@@ -54,6 +55,11 @@ UNKLAR_TITEL = "Ergebnis unklar – Seite neu laden"
 # Ausgang `unklar`: Die Mail ist womoeglich raus (der Dienst antwortete nicht mehr). Die Zentrale
 # wiederholt nichts, Felix schaut selbst in Gmail nach.
 UNKLAR_VERSAND = "Versand unklar – in Gmail ‚Gesendet' prüfen"
+# Ausgang `freigabe_per_mail`: Die Zentrale hat Felix die Versand-Freigabe gemailt (etwa weil
+# sich die Adresse nach der Freigabe noch geaendert hat); gesendet wird erst nach seinem Klick.
+WARTET_AUF_FREIGABE = "Versand wartet auf deine Freigabe – Link in der Mail"
+# Ausgang `haengt`: Keine Freigabe wirkt mehr, von selbst geht nichts raus.
+HAENGT = "Versand hängt – bitte von Hand einreichen oder archivieren"
 # Genau eine Adresse, ASCII, wie in der Zentrale (Plan Hermes H4, Global Constraints).
 ADRESSE_MAX = 254
 
@@ -351,12 +357,25 @@ def _karte(ui, k: dict) -> str:
                     f'<textarea name="kommentar" maxlength="{KOMMENTAR_MAX}" rows="3" '
                     f'placeholder="Was soll anders werden?"></textarea></label>'
                     f'{aendern}<button>Feedback senden</button></form>')
-    kanal = k.get("kanal")
+    # Das Etikett folgt dem Versandweg wie die Versandzeile; ohne `versand` (Zentrale vor H4)
+    # der Kanal der Aufnahme.
+    weg = k.get("versand") if isinstance(k.get("versand"), dict) else {}
+    kanal = _nur_text(weg.get("kanal")) or k.get("kanal")
     etikett = f'<span class="badge">{e(_label(KANAELE, kanal))}</span>' if kanal else ""
     return (f'<details class="karte" open><summary>{etikett}'
             f'<b>{e(k.get("firma"))} – {e(k.get("rolle"))}</b></summary>'
             f'<div class="meta">{" · ".join(angaben)}</div>{luecke}'
             f'{verweise}{pruef}{was_neu}{versand}{entscheiden}{feedback}</details>')
+
+
+def _von_hand_links(ui, v: dict, nr) -> str:
+    """Anschreiben-PDF und Anzeige: was Felix zum Einreichen von Hand braucht."""
+    zusatz = ""
+    if nr:
+        zusatz += " · " + _link(f"{_basis(v)}/anschreiben.pdf?fassung={nr}", "Anschreiben (PDF)")
+    if (url := _anzeige(v.get("anzeige_url"))):
+        zusatz += " · " + _link(ui._e(url), "Anzeige ↗")
+    return zusatz
 
 
 def _verlauf_zeile(ui, v: dict) -> str:
@@ -374,13 +393,19 @@ def _verlauf_zeile(ui, v: dict) -> str:
         was = UNKLAR_VERSAND
     elif ausgang == "wird_versendet":
         was = "Wird versendet …"
+    elif ausgang == "freigabe_per_mail":
+        was = WARTET_AUF_FREIGABE
+    elif ausgang == "haengt":
+        # Keine Freigabe wirkt mehr (etwa eine geaenderte Vorlage): von Hand oder archivieren.
+        was = HAENGT
+        zusatz = _von_hand_links(ui, v, nr)
     elif von_hand:
-        # Nicht automatisch rausgegangen: Felix reicht selbst ein und braucht dafuer beides.
+        # Nicht automatisch rausgegangen: Felix reicht selbst ein und braucht dafuer beides,
+        # beim E-Mail-Weg auch die Adresse.
         was = "Freigegeben – bitte von Hand einreichen"
-        if nr:
-            zusatz += " · " + _link(f"{_basis(v)}/anschreiben.pdf?fassung={nr}", "Anschreiben (PDF)")
-        if (url := _anzeige(v.get("anzeige_url"))):
-            zusatz += " · " + _link(e(url), "Anzeige ↗")
+        if (an := _nur_text(v.get("versand_an"))):
+            was += f" (per E-Mail an {e(an)})"
+        zusatz = _von_hand_links(ui, v, nr)
     elif ausgang in (None, "", "abgelehnt", "offen"):
         was = e(_label(ENTSCHEIDUNGEN, v.get("entscheidung")))
     else:
