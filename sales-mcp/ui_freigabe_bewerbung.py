@@ -7,6 +7,12 @@ Knoepfen Freigeben / Nicht bewerben / Feedback. Daten und Entscheidung gehoeren
 der Zentrale des Bots (Pult-API, bewerbung_pult); diese Datei zeigt nur an und
 reicht weiter. Jede Entscheidung ist an Fassung und Bindung der Karte gebunden.
 
+Hermes H4 (Versand per E-Mail): Die Karte zeigt den Versandweg (`versand`), Felix setzt die
+Bewerbungsadresse in einem eigenen Formular, und "Freigeben" traegt die angezeigte Adresse als
+`versand_an` mit - die Zentrale sendet nur an genau diese Adresse. "Zuletzt entschieden" sagt,
+was daraus wurde (`ausgang`: versendet, unklar, Handarbeit, wird versendet, wartet auf die
+Freigabe per Mail, haengt).
+
 Wie der Rest von sales-ui: kein JavaScript, CSRF-Marke in jedem Formular, das
 Anschreiben-PDF nur verlinkt (eigene Datei-Richtlinie, nie gerahmt). Die Texte
 der Zentrale sind bereinigt, aber nicht HTML-maskiert: jede Ausgabe laeuft
@@ -44,20 +50,36 @@ PDF_ZEITLIMIT_S = 8
 # Freigeben/Nicht bewerben verbucht die Zentrale samt Kommando unter einer Schreibsperre.
 ENTSCHEIDUNG_ZEITLIMIT_S = 30
 FEEDBACK_ZEITLIMIT_S = 8
+VERSANDZIEL_ZEITLIMIT_S = 8
 UNKLAR_TITEL = "Ergebnis unklar – Seite neu laden"
+# Ausgang `unklar`: Die Mail ist womoeglich raus (der Dienst antwortete nicht mehr). Die Zentrale
+# wiederholt nichts, Felix schaut selbst in Gmail nach.
+UNKLAR_VERSAND = "Versand unklar – in Gmail ‚Gesendet' prüfen"
+# Ausgang `freigabe_per_mail`: Die Zentrale hat Felix die Versand-Freigabe gemailt (etwa weil
+# sich die Adresse nach der Freigabe noch geaendert hat); gesendet wird erst nach seinem Klick.
+WARTET_AUF_FREIGABE = "Versand wartet auf deine Freigabe – Link in der Mail"
+# Ausgang `haengt`: Keine Freigabe wirkt mehr, von selbst geht nichts raus.
+HAENGT = "Versand hängt – bitte von Hand einreichen oder archivieren"
+# Genau eine Adresse, ASCII, wie in der Zentrale (Plan Hermes H4, Global Constraints).
+ADRESSE_MAX = 254
 
 _OFFEN = "/bewerbungen?status=offen"
 _ENTSCHIEDEN = "/bewerbungen?status=entschieden"
 _FASSUNG = re.compile(r"[1-9][0-9]{0,8}")
 _BINDUNG = re.compile(r"sha256:[0-9a-fA-F]{64}")
 _NICHT_VON = re.compile(r"[^A-Za-z0-9_.@-]")
+_ADRESSE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 # Ein Ablehnungscode der Zentrale (`nicht_offen`, `unbekannt`, ...). Nur so etwas kommt
 # aus der Adresse in die Seite - kein freier Text, den jemand in einen Link schreibt.
 _CODE = re.compile(r"[a-z0-9_]{1,40}")
-_ERFOLG = {"freigeben": "freigegeben", "nicht-bewerben": "abgelehnt", "feedback": "erfasst"}
-# bw_hinweis -> (Klasse, fester Text). Die drei 409-Codes der Zentrale heissen hier gleich.
+_ERFOLG = {"freigeben": "freigegeben", "nicht-bewerben": "abgelehnt", "feedback": "erfasst",
+           "versandziel": "gesetzt"}
+# bw_hinweis -> (Klasse, fester Text). Die 409-Codes der Zentrale (_ABLEHNUNGEN) heissen hier gleich.
 _HINWEISE = {
     "freigegeben": ("hinweis", "Freigegeben – die Zentrale hat die Entscheidung verbucht."),
+    "adresse_gespeichert": ("hinweis", "Bewerbungsadresse gespeichert."),
+    "weg_portal": ("hinweis", "Versandweg auf Portal gestellt – nach der Freigabe ist "
+                              "Handarbeit nötig."),
     "nicht_beworben": ("hinweis", "Nicht bewerben – die Zentrale hat die Entscheidung verbucht."),
     "feedback": ("hinweis", "Feedback erfasst. Die Durchsicht setzt es um."),
     "kein_feedback": ("warnung", "Kein Feedback eingegeben – weder ein Kommentar noch ein "
@@ -66,8 +88,11 @@ _HINWEISE = {
     "schon_entschieden": ("warnung", "Schon entschieden – Seite neu laden."),
     "wartet_auf_durchsicht": ("warnung", "Wartet auf Durchsicht – entscheiden geht erst "
                                          "nach dem GO der Durchsicht."),
+    # Freigeben mit einer Adresse, die inzwischen nicht mehr die der Karte ist: nichts verbucht.
+    "versandziel_geaendert": ("warnung", "Bewerbungsadresse hat sich geändert – Seite neu laden"),
 }
-_ABLEHNUNGEN = ("fassung_veraltet", "schon_entschieden", "wartet_auf_durchsicht")
+_ABLEHNUNGEN = ("fassung_veraltet", "schon_entschieden", "wartet_auf_durchsicht",
+                "versandziel_geaendert")
 _WEG = "Die Bewerbungs-Zentrale ist gerade nicht erreichbar."
 _NICHT_VERBUNDEN = "Die Bewerbungs-Zentrale ist nicht verbunden."
 
@@ -158,6 +183,12 @@ def _text(roh) -> str:
     return roh.replace("\r\n", "\n").replace("\r", "\n").strip()
 
 
+def _adresse_ok(wert) -> bool:
+    """Genau eine E-Mail-Adresse, wie die Zentrale sie annimmt. Die Laenge zuerst: das Muster
+    laeuft nie auf Beliebig-Langem."""
+    return isinstance(wert, str) and len(wert) <= ADRESSE_MAX and _ADRESSE.fullmatch(wert) is not None
+
+
 def _fingerabdruck(text) -> str:
     """Kennt das Formular das Anschreiben, wie es vorbefuellt war? Der Hash statt des
     Textes selbst: ein verstecktes Feld mit 15000 Zeichen je Karte waere doppelte Last."""
@@ -209,6 +240,61 @@ def _basis(eintrag: dict) -> str:
     return f'{ADMIN_PFAD}/{urllib.parse.quote(str(eintrag.get("application_id") or ""), safe="")}'
 
 
+def _nur_text(wert) -> str:
+    return wert.strip() if isinstance(wert, str) else ""
+
+
+def _adressformulare(ui, kanal: str, an: str, basis: str, felder: str) -> str:
+    """Die Adresse setzen (E-Mail-Weg) und, vom E-Mail-Weg aus, auf Portal zurueckstellen.
+    Eigene Formulare, nie zusammen mit Freigeben: die Adresse wird erst gespeichert, dann sieht
+    Felix die Karte mit ihr, dann gibt er frei."""
+    e = ui._e
+    fehlt = kanal == "email" and not an
+    eingabe = (f'<label class="feld">Bewerbungsadresse (E-Mail)'
+               f'<input type="email" name="an" value="{e(an)}" maxlength="{ADRESSE_MAX}" required '
+               f'placeholder="bewerbung@firma.example"></label>')
+    klasse = "aktion primaer adresse" if fehlt else "aktion"
+    knopf = '<button class="primaer">' if fehlt else "<button>"
+    speichern = (f'<form class="{klasse}" method="post" action="{basis}/versandziel">{felder}{eingabe}'
+                 f'{knopf}Adresse speichern</button></form>')
+    portal = (f'<form class="aktion" method="post" action="{basis}/versandziel">{felder}'
+              f'<input type="hidden" name="kanal" value="portal">'
+              f'<button>Kein E-Mail-Weg (Portal)</button></form>') if kanal == "email" else ""
+    if fehlt:
+        return speichern + portal               # die Karte braucht erst eine Adresse: nicht eingeklappt
+    titel = "Bewerbungsadresse ändern" if kanal == "email" else "Bewerbungsadresse eintragen"
+    return f'<details class="bearbeiten"><summary>{titel}</summary>{speichern}{portal}</details>'
+
+
+def _weg(ui, k: dict, basis: str, nr, felder: str) -> tuple[str, str, str]:
+    """Versandweg der Karte: (Zeile samt Adressformular, verstecktes `versand_an`, Knopfbeschriftung).
+    Massgeblich ist allein `versand` - `kanal` oben auf der Karte ist der Kanal der Aufnahme und
+    kann ein anderer sein. `versand_an` traegt die angezeigte Adresse mit zur Freigabe (Portal: leer);
+    ohne Adresse oder ohne `versand` (Zentrale vor H4) fehlt das Feld, dann fragt die Zentrale wie
+    bisher selbst per Mail."""
+    e = ui._e
+    v = k.get("versand") if isinstance(k.get("versand"), dict) else {}
+    kanal, an, warnung = _nur_text(v.get("kanal")), _nur_text(v.get("an")), _nur_text(v.get("warnung"))
+    feld, knopf = "", "Freigeben"
+    if kanal == "email" and an:
+        zeile, knopf = f"<div>Versand: E-Mail an {e(an)}</div>", "Freigeben und senden"
+        feld = f'<input type="hidden" name="versand_an" value="{e(an)}">'
+    elif kanal == "email":
+        zeile = '<div class="hinweis">Versand: E-Mail – Adresse fehlt</div>'
+    elif kanal == "portal":
+        zeile = '<div class="hinweis">Versand: Portal – nach Freigabe Handarbeit nötig</div>'
+        feld = '<input type="hidden" name="versand_an" value="">'
+    elif kanal:
+        zeile = f"<div>Versand: {e(kanal)}</div>"            # unbekannter Weg: gezeigt, nicht geraten
+    else:
+        return "", "", knopf
+    if warnung:
+        zeile += f'<div class="warnung">{e(warnung)}</div>'
+    if nr and kanal in ("email", "portal"):
+        zeile += _adressformulare(ui, kanal, an if kanal == "email" else "", basis, felder)
+    return zeile, feld, knopf
+
+
 def _karte(ui, k: dict) -> str:
     e = ui._e
     basis = _basis(k)
@@ -233,6 +319,7 @@ def _karte(ui, k: dict) -> str:
                if neu else "")
     felder = (f'<input type="hidden" name="csrf" value="{ui.CSRF_TOKEN}">'
               f'<input type="hidden" name="fassung" value="{nr}">')
+    versand, versand_an, freigeben = _weg(ui, k, basis, nr, felder)
     if k.get("wartet_auf_durchsicht"):
         # Die Zentrale lehnt beides mit 409 ab, solange das GO der Durchsicht fehlt.
         entscheiden = ('<div class="hinweis">Wartet auf Durchsicht – Freigeben und Nicht bewerben '
@@ -243,10 +330,10 @@ def _karte(ui, k: dict) -> str:
         gebunden = f'{felder}<input type="hidden" name="bindung" value="{e(bindung)}">'
         entscheiden = (
             f'<div class="aktionen">'
-            f'<form class="aktion primaer" method="post" action="{basis}/freigeben">{gebunden}'
+            f'<form class="aktion primaer" method="post" action="{basis}/freigeben">{gebunden}{versand_an}'
             f'<label class="haken"><input type="checkbox" name="bestaetigt" value="ja"> '
             f'Fassung {nr} freigeben bestätigen</label>'
-            f'<button class="primaer">Freigeben</button></form>'
+            f'<button class="primaer">{freigeben}</button></form>'
             f'<form class="aktion gefahr" method="post" action="{basis}/nicht-bewerben">{gebunden}'
             f'<input type="text" name="grund" maxlength="{GRUND_MAX}" placeholder="Grund (optional)">'
             f'<label class="haken"><input type="checkbox" name="bestaetigt" value="ja"> '
@@ -270,27 +357,59 @@ def _karte(ui, k: dict) -> str:
                     f'<textarea name="kommentar" maxlength="{KOMMENTAR_MAX}" rows="3" '
                     f'placeholder="Was soll anders werden?"></textarea></label>'
                     f'{aendern}<button>Feedback senden</button></form>')
-    kanal = k.get("kanal")
+    # Das Etikett folgt dem Versandweg wie die Versandzeile; ohne `versand` (Zentrale vor H4)
+    # der Kanal der Aufnahme.
+    weg = k.get("versand") if isinstance(k.get("versand"), dict) else {}
+    kanal = _nur_text(weg.get("kanal")) or k.get("kanal")
     etikett = f'<span class="badge">{e(_label(KANAELE, kanal))}</span>' if kanal else ""
     return (f'<details class="karte" open><summary>{etikett}'
             f'<b>{e(k.get("firma"))} – {e(k.get("rolle"))}</b></summary>'
             f'<div class="meta">{" · ".join(angaben)}</div>{luecke}'
-            f'{verweise}{pruef}{was_neu}{entscheiden}{feedback}</details>')
+            f'{verweise}{pruef}{was_neu}{versand}{entscheiden}{feedback}</details>')
+
+
+def _von_hand_links(ui, v: dict, nr) -> str:
+    """Anschreiben-PDF und Anzeige: was Felix zum Einreichen von Hand braucht."""
+    zusatz = ""
+    if nr:
+        zusatz += " · " + _link(f"{_basis(v)}/anschreiben.pdf?fassung={nr}", "Anschreiben (PDF)")
+    if (url := _anzeige(v.get("anzeige_url"))):
+        zusatz += " · " + _link(ui._e(url), "Anzeige ↗")
+    return zusatz
 
 
 def _verlauf_zeile(ui, v: dict) -> str:
     e = ui._e
     nr = _nr(v.get("fassung"))
     zusatz = ""
-    if v.get("entscheidung") == "approve" and v.get("status") == "blockiert":
-        # Versand bis H4 gesperrt: Felix reicht selbst ein und braucht dafuer beides.
+    # `ausgang` sagt die Zentrale (H4). Fehlt es ganz (aeltere Zentrale), gilt wie vor H4 der Status.
+    ausgang = v.get("ausgang")
+    von_hand = ausgang == "handarbeit" or (
+        ausgang in (None, "") and v.get("entscheidung") == "approve" and v.get("status") == "blockiert")
+    if ausgang == "versendet":
+        an = _nur_text(v.get("versand_an"))
+        was = f"Versendet an {e(an)}" if an else "Versendet"
+    elif ausgang == "unklar":
+        was = UNKLAR_VERSAND
+    elif ausgang == "wird_versendet":
+        was = "Wird versendet …"
+    elif ausgang == "freigabe_per_mail":
+        was = WARTET_AUF_FREIGABE
+    elif ausgang == "haengt":
+        # Keine Freigabe wirkt mehr (etwa eine geaenderte Vorlage): von Hand oder archivieren.
+        was = HAENGT
+        zusatz = _von_hand_links(ui, v, nr)
+    elif von_hand:
+        # Nicht automatisch rausgegangen: Felix reicht selbst ein und braucht dafuer beides,
+        # beim E-Mail-Weg auch die Adresse.
         was = "Freigegeben – bitte von Hand einreichen"
-        if nr:
-            zusatz += " · " + _link(f"{_basis(v)}/anschreiben.pdf?fassung={nr}", "Anschreiben (PDF)")
-        if (url := _anzeige(v.get("anzeige_url"))):
-            zusatz += " · " + _link(e(url), "Anzeige ↗")
-    else:
+        if (an := _nur_text(v.get("versand_an"))):
+            was += f" (per E-Mail an {e(an)})"
+        zusatz = _von_hand_links(ui, v, nr)
+    elif ausgang in (None, "", "abgelehnt", "offen"):
         was = e(_label(ENTSCHEIDUNGEN, v.get("entscheidung")))
+    else:
+        was = e(ausgang)                       # ein Ausgang, den diese Seite nicht kennt: wie geliefert
     teile = [f"Fassung {nr if nr else '?'}", was]
     if v.get("von"):
         teile.append(f"von {e(v.get('von'))}")
@@ -423,10 +542,18 @@ def routen(ui) -> list:
         fassung, bindung = _fassung(form.get("fassung")), _bindung(form.get("bindung"))
         if fassung is None or bindung is None:
             return ungueltig("Fassung oder Bindung fehlt oder ist ungültig – Seite neu laden.")
+        daten = {"fassung": fassung, "bindung": bindung, "von": _von(ui._ui_akteur(request))}
+        if aktion == "freigeben" and "versand_an" in form:
+            # Die Adresse, die die Karte gezeigt hat (Portal: leer). Fehlt das Feld ganz, schickt die
+            # Karte keine: dann fragt die Zentrale wie vor H4 per Mail. Nichts wird zurechtgebogen.
+            versand_an = form.get("versand_an")
+            if versand_an != "" and not _adresse_ok(versand_an):
+                return ungueltig("Die bestätigte Bewerbungsadresse ist keine gültige Adresse – "
+                                 "Seite neu laden.")
+            daten["versand_an"] = versand_an
         if form.get("bestaetigt") != "ja":
             return ui._fehlerseite(400, "Nicht bestätigt", "Der Bestätigungshaken fehlt. "
                                    "Nichts wurde gesendet.")
-        daten = {"fassung": fassung, "bindung": bindung, "von": _von(ui._ui_akteur(request))}
         if aktion == "freigeben":
             return await senden(request, aktion, daten, ENTSCHEIDUNG_ZEITLIMIT_S,
                                 "freigegeben wurde", "freigegeben")
@@ -475,6 +602,30 @@ def routen(ui) -> list:
                             "das Feedback erfasst wurde", "feedback")
 
     @ui._gesichert_seite
+    async def versandziel(request):
+        form = await request.form()
+        if not ui._csrf_ok(form):
+            return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
+        if not _darf(ui):
+            return verboten()
+        fassung = _fassung(form.get("fassung"))
+        if fassung is None:
+            return ungueltig("Welche Fassung gemeint ist, fehlt – Seite neu laden.")
+        daten = {"fassung": fassung, "von": _von(ui._ui_akteur(request))}
+        kanal = form.get("kanal", "email")         # das Adressformular schickt keinen `kanal`
+        if kanal == "portal":
+            daten["kanal"], erfolg = "portal", "weg_portal"        # nie mit Adresse: Portal hat keine
+        elif kanal == "email":
+            an = _text(form.get("an"))
+            if not _adresse_ok(an):
+                return ungueltig("Das ist keine einzelne gültige E-Mail-Adresse.")
+            daten["kanal"], daten["an"], erfolg = "email", an, "adresse_gespeichert"
+        else:
+            return ungueltig("Der Versandweg ist unbekannt – Seite neu laden.")
+        return await senden(request, "versandziel", daten, VERSANDZIEL_ZEITLIMIT_S,
+                            "die Bewerbungsadresse gespeichert wurde", erfolg)
+
+    @ui._gesichert_seite
     async def anschreiben_pdf(request):
         if not _darf(ui):
             return verboten()
@@ -512,5 +663,6 @@ def routen(ui) -> list:
         Route(ADMIN_PFAD + "/{bid}/freigeben", freigeben, methods=["POST"]),
         Route(ADMIN_PFAD + "/{bid}/nicht-bewerben", nicht_bewerben, methods=["POST"]),
         Route(ADMIN_PFAD + "/{bid}/feedback", feedback, methods=["POST"]),
+        Route(ADMIN_PFAD + "/{bid}/versandziel", versandziel, methods=["POST"]),
         Route(ADMIN_PFAD + "/{bid}/anschreiben.pdf", anschreiben_pdf),
     ]

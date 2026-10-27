@@ -70,7 +70,9 @@ class Falsch:
         self.pdf = (b"%PDF-1.7 Anschreiben", "application/pdf")
         self.antwort = {"freigeben": {"status": "freigegeben", "kommando": "k-1"},
                         "nicht-bewerben": {"status": "abgelehnt", "kommando": "k-2"},
-                        "feedback": {"status": "erfasst"}}
+                        "feedback": {"status": "erfasst"},
+                        "versandziel": {"status": "gesetzt", "versand": {
+                            "kanal": "email", "an": "neu@muster.example", "warnung": None}}}
 
     def anfrage(self, methode, pfad, daten=None, roh=False, zeitlimit=None):
         self.aufrufe.append((methode, pfad, daten))
@@ -190,7 +192,8 @@ def _wert(seite: str, name: str) -> str:
 ENTSCHEIDUNG = {"csrf": ui.CSRF_TOKEN, "fassung": "1", "bindung": B, "bestaetigt": "ja"}
 POSTS = [("freigeben", {"fassung": "1", "bindung": B, "bestaetigt": "ja"}),
          ("nicht-bewerben", {"fassung": "1", "bindung": B, "bestaetigt": "ja"}),
-         ("feedback", {"fassung": "1", "kommentar": "Bitte kürzer"})]
+         ("feedback", {"fassung": "1", "kommentar": "Bitte kürzer"}),
+         ("versandziel", {"fassung": "1", "an": "bewerbung@muster.example"})]
 
 
 def _post(c, pfad, **daten):
@@ -443,6 +446,7 @@ def test_kennung_wird_im_pfad_maskiert(client, falsch):
     ("fassung_veraltet", "Diese Fassung ist veraltet – Seite neu laden"),
     ("schon_entschieden", "Schon entschieden"),
     ("wartet_auf_durchsicht", "Wartet auf Durchsicht"),
+    ("versandziel_geaendert", "Bewerbungsadresse hat sich geändert – Seite neu laden"),
 ])
 @pytest.mark.parametrize("pfad,daten", POSTS)
 def test_veraltet_wird_als_hinweis_gezeigt(client, falsch, pfad, daten, grund, text):   # Review Focus 1
@@ -451,7 +455,7 @@ def test_veraltet_wird_als_hinweis_gezeigt(client, falsch, pfad, daten, grund, t
     assert r.status_code == 303 and r.headers["location"] == f"/freigaben?bw_hinweis={grund}#bewerbungen"
     s = _abschnitt(client, r.headers["location"])
     assert text in s
-    for erfolg in ("freigegeben", "nicht_beworben", "feedback"):
+    for erfolg in ("freigegeben", "nicht_beworben", "feedback", "adresse_gespeichert", "weg_portal"):
         assert ui_freigabe_bewerbung._HINWEISE[erfolg][1] not in s
 
 
@@ -505,7 +509,7 @@ def test_zeitueberschreitung_nach_post_ist_unklar(client, falsch, pfad, daten, a
     assert r.status_code == 504 and ui_freigabe_bewerbung.UNKLAR_TITEL in r.text
     assert "Ergebnis unklar – Seite neu laden" in r.text
     assert "location" not in r.headers and "Nichts wurde" not in r.text
-    for erfolg in ("freigegeben", "nicht_beworben", "feedback"):              # nie eine Erfolgsmeldung
+    for erfolg in ("freigegeben", "nicht_beworben", "feedback", "adresse_gespeichert", "weg_portal"):   # nie eine Erfolgsmeldung
         assert ui_freigabe_bewerbung._HINWEISE[erfolg][1] not in r.text
 
 
@@ -658,6 +662,7 @@ def test_zeitlimits(client, falsch):
     assert z[("POST", f"/bewerbungen/{BID}/freigeben")] == 30
     assert z[("POST", f"/bewerbungen/{BID}/nicht-bewerben")] == 30
     assert z[("POST", f"/bewerbungen/{BID}/feedback")] == 8
+    assert z[("POST", f"/bewerbungen/{BID}/versandziel")] == 8
     lesen = [t for m, p, t in falsch.zeitlimits if m == "GET"]
     assert lesen and all(t is not None and t <= 3 for t in lesen)
     assert falsch.im_loop == []
@@ -718,9 +723,10 @@ def test_zaehler_liest_mit_dem_zeitlimit_des_abschnitts(falsch):                
 
 @pytest.mark.parametrize("art", ["nicht_erreichbar", "unbekannt"])
 @pytest.mark.parametrize("pfad,daten", [
-    ("freigeben", {"fassung": "1", "bindung": B, "bestaetigt": "ja"}),
+    ("freigeben", {"fassung": "1", "bindung": B, "bestaetigt": "ja", "versand_an": "geheim-an@example.org"}),
     ("nicht-bewerben", {"fassung": "1", "bindung": B, "bestaetigt": "ja", "grund": "GRUND-XYZ"}),
     ("feedback", {"fassung": "1", "kommentar": "KOMMENTAR-XYZ", "text": "BRIEFTEXT-XYZ"}),
+    ("versandziel", {"fassung": "1", "an": "geheim-an@example.org"}),
 ])
 def test_unklarer_ausgang_wird_protokolliert_ohne_schluessel(client, falsch, monkeypatch, caplog,
                                                             pfad, daten, art):       # F2
@@ -732,7 +738,7 @@ def test_unklarer_ausgang_wird_protokolliert_ohne_schluessel(client, falsch, mon
     zeilen = [m for m in _meldungen(caplog) if BID in m]
     assert len(zeilen) == 1, _meldungen(caplog)
     assert "Fassung 1" in zeilen[0] and pfad in zeilen[0] and art in zeilen[0] and "TimeoutError" in zeilen[0]
-    for geheim in (SCHLUESSEL, "GRUND-XYZ", "KOMMENTAR-XYZ", "BRIEFTEXT-XYZ", B):
+    for geheim in (SCHLUESSEL, "GRUND-XYZ", "KOMMENTAR-XYZ", "BRIEFTEXT-XYZ", B, "geheim-an@example.org"):
         assert geheim not in caplog.text
 
 
@@ -770,3 +776,432 @@ def test_zaehlerfehler_wird_protokolliert(falsch, caplog):                      
         assert ui_freigabe_bewerbung._laden() == 0
     assert any("nicht_erreichbar" in m and "TimeoutError" in m for m in _meldungen(caplog))
     assert any(x.exc_info for x in caplog.records if x.name == "sales-ui")
+
+
+# --- H4: Versandweg auf Karte und Verlauf (Plan 2026-10-27, Task 6) ------------------
+
+ADRESSE = "bewerbung@muster.example"
+UNKLAR_TEXT = "Versand unklar – in Gmail ‚Gesendet' prüfen"
+
+
+def weg(kanal="email", an=ADRESSE, warnung=None):
+    """Das `versand`-Objekt der Karte (Vertrag Task 4)."""
+    return {"kanal": kanal, "an": an, "warnung": warnung}
+
+
+def _karten(s: str) -> list[str]:
+    """Der Abschnitt in seine Karten zerlegt, ohne den Verlauf."""
+    return s.split("Zuletzt entschieden")[0].split('<details class="karte"')[1:]
+
+
+def _formulare(k: str) -> list[tuple[str, str]]:
+    return [(m.group(1).rsplit("/", 1)[1], m.group(0))
+            for m in re.finditer(r'<form[^>]*action="([^"]*)".*?</form>', k, re.S)]
+
+
+def _form(k: str, suffix: str, enthaelt: str = "") -> str:
+    treffer = [f for s, f in _formulare(k) if s == suffix and enthaelt in f]
+    assert len(treffer) == 1, (suffix, enthaelt, [s for s, _ in _formulare(k)])
+    return treffer[0]
+
+
+def _ohne_form(k: str, suffix: str, enthaelt: str = "") -> bool:
+    return not [f for s, f in _formulare(k) if s == suffix and enthaelt in f]
+
+
+def test_kartenzeile_je_weg(client, falsch):
+    falsch.karten = [
+        karte(firma="Mail", versand=weg(warnung="Freemail-Adresse – passt sie zur Firma?")),
+        karte(application_id=BID2, firma="Ohne", versand=weg(an=None, warnung="Versandziel nicht lesbar")),
+        karte(application_id="bw-3", firma="Portal", versand=weg("portal", None)),
+    ]
+    mail, ohne, portal = _karten(_abschnitt(client))
+    assert "Versand: E-Mail an bewerbung@muster.example" in mail
+    assert '<div class="warnung">Freemail-Adresse – passt sie zur Firma?</div>' in mail
+    assert "Adresse fehlt" not in mail and "Handarbeit" not in mail
+    assert "Versand: E-Mail – Adresse fehlt" in ohne and "E-Mail an" not in ohne
+    assert '<div class="warnung">Versandziel nicht lesbar</div>' in ohne
+    assert "Versand: Portal – nach Freigabe Handarbeit nötig" in portal
+    assert "E-Mail an" not in portal and "Adresse fehlt" not in portal and "warnung" not in portal
+
+
+def test_ohne_warnung_kein_warnkasten(client, falsch):
+    falsch.karten = [karte(versand=weg())]
+    assert 'class="warnung"' not in _abschnitt(client)
+
+
+def test_der_weg_kommt_aus_versand_nicht_aus_dem_aufnahmekanal(client, falsch):    # Ruling 1
+    falsch.karten = [
+        karte(firma="A", kanal="portal", versand=weg()),                       # Aufnahme Portal, Weg E-Mail
+        karte(application_id=BID2, firma="B", kanal="email", versand=weg("portal", None)),
+        karte(application_id="bw-3", firma="C", kanal="email"),                  # Zentrale ohne `versand`
+        karte(application_id="bw-4", firma="D", kanal="email", versand="kaputt"),
+        karte(application_id="bw-5", firma="E", kanal="email", versand=weg("fax", None)),
+    ]
+    a, b, c, d, f = _karten(_abschnitt(client))
+    assert "Versand: E-Mail an bewerbung@muster.example" in a and ">Freigeben und senden<" in a
+    assert "Versand: Portal" in b and ">Freigeben<" in b and ">Freigeben und senden<" not in b
+    for unbekannt in (c, d, f):                       # nichts raten: wie vor H4
+        assert ">Freigeben<" in unbekannt and ">Freigeben und senden<" not in unbekannt
+        assert 'name="versand_an"' not in unbekannt
+        assert _ohne_form(unbekannt, "versandziel")
+    assert "Versand:" not in c and "Versand:" not in d
+    assert "Versand: fax" in f
+
+
+def test_etikett_folgt_dem_versandweg(client, falsch):
+    """Das Etikett oben auf der Karte widerspricht der Versandzeile nicht: mit `versand`
+    kommt es aus `versand.kanal`, sonst (Zentrale vor H4, kaputt) wie bisher aus `kanal`."""
+    falsch.karten = [
+        karte(firma="A", kanal="portal", versand=weg()),                       # Aufnahme Portal, Weg E-Mail
+        karte(application_id=BID2, firma="B", kanal="email", versand=weg("portal", None)),
+        karte(application_id="bw-3", firma="C", kanal="email"),                  # ohne `versand`
+        karte(application_id="bw-4", firma="D", kanal="portal", versand="kaputt"),
+        karte(application_id="bw-5", firma="E", kanal="email", versand=weg(BOESE, None)),
+        karte(application_id="bw-6", firma="F", kanal="portal", versand={"an": None}),
+    ]
+    s = _abschnitt(client)
+    a, b, c, d, f, g = _karten(s)
+    assert '<summary><span class="badge">E-Mail</span><b>A – Data Engineer</b>' in a
+    assert '<summary><span class="badge">Portal</span><b>B – Data Engineer</b>' in b
+    assert '<summary><span class="badge">E-Mail</span><b>C – Data Engineer</b>' in c
+    assert '<summary><span class="badge">Portal</span><b>D – Data Engineer</b>' in d
+    assert '<span class="badge">&lt;script&gt;x&lt;/script&gt;</span><b>E – ' in f
+    assert '<summary><span class="badge">Portal</span><b>F – Data Engineer</b>' in g
+    assert "<script" not in s
+
+
+def test_versandangaben_werden_maskiert(client, falsch):                         # Review Focus 5
+    falsch.karten = [karte(versand=weg(an=BOESE, warnung=BOESE2)),
+                     karte(application_id=BID2, versand=weg(BOESE, BOESE2, BOESE)),
+                     karte(application_id="bw-3", versand=weg(an=BOESE2, warnung=BOESE))]
+    seite = client.get("/freigaben").text
+    assert "<script" not in seite and '"><img' not in seite
+    assert "Versand: E-Mail an &lt;script&gt;x&lt;/script&gt;" in seite
+    assert "&quot;&gt;&lt;img onerror=1&gt;" in seite
+    assert 'name="versand_an" value="&lt;script&gt;x&lt;/script&gt;"' in seite
+    assert 'name="an" value="&lt;script&gt;x&lt;/script&gt;"' in seite          # Adressfeld vorbefuellt
+    assert "Versand: &lt;script&gt;x&lt;/script&gt;" in seite                  # unbekannter Kanal
+
+
+def test_freigeben_formular_traegt_den_angezeigten_weg(client, falsch):          # Ruling 2 und 4
+    falsch.karten = [karte(firma="Mail", versand=weg()),
+                     karte(application_id=BID2, bindung=B2, firma="Ohne", versand=weg(an=None)),
+                     karte(application_id="bw-3", firma="Portal", versand=weg("portal", None))]
+    mail, ohne, portal = _karten(_abschnitt(client))
+    freigeben = _form(mail, "freigeben")
+    assert ">Freigeben und senden</button>" in freigeben
+    assert f'name="versand_an" value="{ADRESSE}"' in freigeben and mail.count('name="versand_an"') == 1
+    freigeben = _form(ohne, "freigeben")
+    assert ">Freigeben</button>" in freigeben and "Freigeben und senden" not in ohne
+    assert 'name="versand_an"' not in ohne                    # weglassen: Zentrale fragt selbst per Mail
+    freigeben = _form(portal, "freigeben")
+    assert ">Freigeben</button>" in freigeben and "Freigeben und senden" not in portal
+    assert 'name="versand_an" value=""' in freigeben and portal.count('name="versand_an"') == 1
+    for k in (mail, ohne, portal):
+        for suffix in ("nicht-bewerben", "feedback", "versandziel"):
+            assert 'name="versand_an"' not in "".join(f for s, f in _formulare(k) if s == suffix)
+
+
+def test_adressformular_je_weg(client, falsch):
+    falsch.karten = [karte(firma="Mail", fassung=3, versand=weg()),
+                     karte(application_id=BID2, bindung=B2, firma="Ohne", fassung=4, versand=weg(an=None)),
+                     karte(application_id="bw-3", firma="Portal", fassung=5, versand=weg("portal", None))]
+    mail, ohne, portal = _karten(_abschnitt(client))
+    for k, nr, bid in ((mail, 3, BID), (ohne, 4, BID2), (portal, 5, "bw-3")):
+        f = _form(k, "versandziel", 'name="an"')
+        assert f'method="post" action="/freigaben/bewerbung/{bid}/versandziel"' in f
+        assert f'name="csrf" value="{ui.CSRF_TOKEN}"' in f and f'name="fassung" value="{nr}"' in f
+        assert 'type="email" name="an"' in f and 'maxlength="254"' in f
+        assert 'name="kanal"' not in f and 'name="bindung"' not in f
+    assert 'name="an" value="bewerbung@muster.example"' in _form(mail, "versandziel", 'name="an"')
+    assert 'name="an" value=""' in _form(ohne, "versandziel", 'name="an"')
+    assert 'name="an" value=""' in _form(portal, "versandziel", 'name="an"')
+    # Fehlt die Adresse, ist das Formular nicht eingeklappt; sonst unter einer Ueberschrift.
+    assert _form(ohne, "versandziel", 'name="an"').startswith('<form class="aktion primaer adresse"')
+    assert "<summary>Bewerbungsadresse" not in ohne
+    assert "<summary>Bewerbungsadresse ändern</summary>" in mail
+    assert "<summary>Bewerbungsadresse eintragen</summary>" in portal
+
+
+def test_kein_email_weg_knopf_nur_auf_email_karten(client, falsch):                # Ruling 3 (optional)
+    falsch.karten = [karte(firma="Mail", fassung=3, versand=weg()),
+                     karte(application_id=BID2, bindung=B2, firma="Ohne", versand=weg(an=None)),
+                     karte(application_id="bw-3", firma="Portal", versand=weg("portal", None))]
+    mail, ohne, portal = _karten(_abschnitt(client))
+    f = _form(mail, "versandziel", 'name="kanal" value="portal"')
+    assert f'name="csrf" value="{ui.CSRF_TOKEN}"' in f and 'name="fassung" value="3"' in f
+    assert 'name="an"' not in f and ">Kein E-Mail-Weg (Portal)</button>" in f
+    assert _form(ohne, "versandziel", 'name="kanal" value="portal"')
+    assert "Kein E-Mail-Weg" not in portal
+
+
+def test_wartet_auf_durchsicht_zeigt_weg_und_adresse_aber_kein_freigeben(client, falsch):
+    falsch.karten = [karte(wartet_auf_durchsicht=True, versand=weg())]
+    k, = _karten(_abschnitt(client))
+    assert "Versand: E-Mail an bewerbung@muster.example" in k
+    assert _form(k, "versandziel", 'name="an"')                       # die Adresse geht schon jetzt
+    assert _ohne_form(k, "freigeben") and 'name="versand_an"' not in k
+
+
+def test_ohne_gueltige_fassung_kein_adressformular(client, falsch):
+    falsch.karten = [karte(fassung="x", versand=weg())]
+    k, = _karten(_abschnitt(client))
+    assert "Versand: E-Mail an" in k and _ohne_form(k, "versandziel")
+
+
+def test_jedes_formular_hat_die_csrf_marke(client, falsch):
+    falsch.karten = [karte(versand=weg()),
+                     karte(application_id=BID2, versand=weg(an=None)),
+                     karte(application_id="bw-3", versand=weg("portal", None)),
+                     karte(application_id="bw-4", wartet_auf_durchsicht=True, versand=weg())]
+    s = _abschnitt(client)
+    assert s.count("<form") == 17 == s.count(f'name="csrf" value="{ui.CSRF_TOKEN}"')
+
+
+# --- Adresse setzen ------------------------------------------------------------------
+
+
+def test_adressformular_reicht_fassung_kanal_an_von_weiter(client, falsch):
+    r = _post(client, "versandziel", fassung="2", an="  Bewerbung@Muster.example \r\n")
+    assert r.status_code == 303
+    assert r.headers["location"] == "/freigaben?bw_hinweis=adresse_gespeichert#bewerbungen"
+    assert falsch.aktionen() == [("POST", f"/bewerbungen/{BID}/versandziel",
+                                  {"fassung": 2, "kanal": "email", "an": "Bewerbung@Muster.example",
+                                   "von": "mira"})]
+    assert falsch.im_loop == []
+    assert "Bewerbungsadresse gespeichert" in _abschnitt(client, r.headers["location"])
+
+
+@pytest.mark.parametrize("an", ["a@b.de", "Vor.Name+bew@Sub.Firma-X.example", "a_b%c-d@x.io", "x" * 249 + "@b.de"])
+def test_gueltige_adresse_geht_durch(client, falsch, an):
+    assert _post(client, "versandziel", fassung="1", an=an).status_code == 303
+    assert falsch.aktionen()[-1][2]["an"] == an
+
+
+@pytest.mark.parametrize("an", [
+    "", "   ", "kein-at", "a@b", "a@b.c", "Felix <a@b.de>", "a@b.de, c@d.de", "a@b.de;c@d.de",
+    "a@b.de\nc@d.de", "a b@c.de", "ä@b.de", "a@bü.de", "a@@b.de", "@b.de", "a@.de",
+    "x" * 250 + "@b.de", BOESE,
+])
+def test_adresse_wird_lokal_geprueft(client, falsch, an):
+    r = _post(client, "versandziel", fassung="1", an=an)
+    assert r.status_code == 422 and falsch.aktionen() == []
+
+
+def test_adresse_fehlt_im_formular(client, falsch):
+    r = client.post(f"/freigaben/bewerbung/{BID}/versandziel", data={"csrf": ui.CSRF_TOKEN, "fassung": "1"},
+                    follow_redirects=False)
+    assert r.status_code == 422 and falsch.aktionen() == []
+
+
+@pytest.mark.parametrize("fassung", ["0", "x", "", "²", "1" * 12])
+def test_versandziel_prueft_die_fassung(client, falsch, fassung):
+    r = _post(client, "versandziel", fassung=fassung, an=ADRESSE)
+    assert r.status_code == 422 and falsch.aktionen() == []
+
+
+def test_kein_email_weg_setzt_portal_ohne_adresse(client, falsch):
+    r = _post(client, "versandziel", fassung="1", kanal="portal", an="ignoriert@x.example")
+    assert r.status_code == 303 and r.headers["location"] == "/freigaben?bw_hinweis=weg_portal#bewerbungen"
+    assert falsch.aktionen() == [("POST", f"/bewerbungen/{BID}/versandziel",
+                                  {"fassung": 1, "kanal": "portal", "von": "mira"})]
+    assert "Portal" in _abschnitt(client, r.headers["location"])
+
+
+@pytest.mark.parametrize("kanal", ["fax", "EMAIL", "Portal", " portal", "email,portal", ""])
+def test_unbekannter_kanal_ist_422(client, falsch, kanal):
+    r = _post(client, "versandziel", fassung="1", kanal=kanal, an=ADRESSE)
+    assert r.status_code == 422 and falsch.aktionen() == []
+
+
+@pytest.mark.parametrize("grund", ["nicht_offen", "eingabe_ungueltig", "unbekannt"])
+def test_versandziel_andere_ablehnung_ist_ein_allgemeiner_hinweis(client, falsch, grund):
+    falsch.fehler_post = PultFehler("abgelehnt", grund)
+    r = _post(client, "versandziel", fassung="1", an=ADRESSE)
+    assert r.status_code == 303
+    assert r.headers["location"] == f"/freigaben?bw_hinweis=abgelehnt&bw_grund={grund}#bewerbungen"
+    s = _abschnitt(client, r.headers["location"])
+    assert "nicht angenommen" in s and ui_freigabe_bewerbung._HINWEISE["adresse_gespeichert"][1] not in s
+
+
+def test_versandziel_antwort_ohne_gesetzt_ist_unklar(client, falsch):
+    falsch.antwort["versandziel"] = {"status": "freigegeben"}
+    r = _post(client, "versandziel", fassung="1", an=ADRESSE)
+    assert r.status_code == 504 and ui_freigabe_bewerbung.UNKLAR_TITEL in r.text
+
+
+# --- Freigeben mit der bestaetigten Adresse -------------------------------------------
+
+
+def test_freigeben_schickt_das_angezeigte_versand_an(client, falsch):
+    falsch.karten = [karte(versand=weg())]
+    seite = client.get("/freigaben").text
+    r = _post(client, "freigeben", fassung="1", bindung=B, bestaetigt="ja", versand_an=_wert(seite, "versand_an"))
+    assert r.status_code == 303 and r.headers["location"] == "/freigaben?bw_hinweis=freigegeben#bewerbungen"
+    assert falsch.aktionen() == [("POST", f"/bewerbungen/{BID}/freigeben",
+                                  {"fassung": 1, "bindung": B, "von": "mira", "versand_an": ADRESSE})]
+    assert falsch.im_loop == []
+
+
+def test_freigeben_beim_portal_schickt_leeres_versand_an(client, falsch):
+    falsch.karten = [karte(versand=weg("portal", None))]
+    seite = client.get("/freigaben").text
+    assert _wert(seite, "versand_an") == ""
+    r = _post(client, "freigeben", fassung="1", bindung=B, bestaetigt="ja", versand_an="")
+    assert r.status_code == 303
+    assert falsch.aktionen()[-1][2] == {"fassung": 1, "bindung": B, "von": "mira", "versand_an": ""}
+
+
+def test_freigeben_ohne_adresse_laesst_versand_an_weg(client, falsch):
+    falsch.karten = [karte(versand=weg(an=None))]
+    seite = client.get("/freigaben").text
+    assert 'name="versand_an"' not in seite                           # also kein Feld im Formular
+    assert _post(client, "freigeben", fassung="1", bindung=B, bestaetigt="ja").status_code == 303
+    assert "versand_an" not in falsch.aktionen()[-1][2]
+
+
+@pytest.mark.parametrize("wert", [
+    "a@b", " ", "a@b.de,c@d.de", "Felix <a@b.de>", "a@b.de ", " a@b.de", "a@b.de\n", "ä@b.de",
+    "x" * 250 + "@b.de", BOESE,
+])
+def test_freigeben_prueft_versand_an_lokal(client, falsch, wert):
+    r = _post(client, "freigeben", fassung="1", bindung=B, bestaetigt="ja", versand_an=wert)
+    assert r.status_code == 422 and falsch.aktionen() == []
+
+
+def test_nicht_bewerben_gibt_versand_an_nie_weiter(client, falsch):
+    r = _post(client, "nicht-bewerben", fassung="1", bindung=B, bestaetigt="ja", versand_an=ADRESSE)
+    assert r.status_code == 303
+    assert falsch.aktionen()[-1][2] == {"fassung": 1, "bindung": B, "von": "mira"}
+
+
+def test_adresse_geaendert_ist_ein_hinweis_nie_eine_erfolgsmeldung(client, falsch):      # Ruling 5
+    falsch.fehler_post = PultFehler("abgelehnt", "versandziel_geaendert", {"detail": "versandziel_geaendert"})
+    r = _post(client, "freigeben", fassung="1", bindung=B, bestaetigt="ja", versand_an=ADRESSE)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/freigaben?bw_hinweis=versandziel_geaendert#bewerbungen"
+    s = _abschnitt(client, r.headers["location"])
+    assert '<div class="warnung">Bewerbungsadresse hat sich geändert – Seite neu laden</div>' in s
+    assert ui_freigabe_bewerbung._HINWEISE["freigegeben"][1] not in s
+
+
+# --- Zuletzt entschieden ---------------------------------------------------------------
+
+
+def test_verlauf_text_je_ausgang(client, falsch):                                   # Ruling 6
+    falsch.verlauf = [
+        verlauf(application_id="bw-1", firma="Eins", ausgang="versendet", versand_an=ADRESSE),
+        verlauf(application_id="bw-2", firma="Zwei", ausgang="unklar", versand_an=ADRESSE),
+        verlauf(application_id="bw-3", firma="Drei", ausgang="handarbeit", status="blockiert", fassung=3,
+                anzeige_url="https://jobs.example.org/3"),
+        verlauf(application_id="bw-4", firma="Vier", ausgang="wird_versendet"),
+        verlauf(application_id="bw-5", firma="Fuenf", ausgang="abgelehnt", entscheidung="reject"),
+        verlauf(application_id="bw-6", firma="Sechs", ausgang="offen", status="blockiert"),
+    ]
+    s = _abschnitt(client)
+    v = s[s.index("Zuletzt entschieden"):]
+    eins = _zeile(v, "Eins")
+    assert "Versendet an bewerbung@muster.example" in eins and "von Hand" not in eins
+    assert "von mira" in eins and "Fassung 2" in eins
+    zwei = _zeile(v, "Zwei")
+    assert UNKLAR_TEXT in zwei and "Versendet" not in zwei and "von Hand" not in zwei
+    drei = _zeile(v, "Drei")
+    assert "Freigegeben – bitte von Hand einreichen" in drei
+    assert ('<a href="/freigaben/bewerbung/bw-3/anschreiben.pdf?fassung=3" target="_blank" '
+            'rel="noopener noreferrer">') in drei
+    assert '<a href="https://jobs.example.org/3" target="_blank" rel="noopener noreferrer">' in drei
+    vier = _zeile(v, "Vier")
+    assert "Wird versendet …" in vier and "von Hand" not in vier and "Versendet" not in vier
+    fuenf = _zeile(v, "Fuenf")
+    assert "Nicht bewerben" in fuenf and "Versend" not in fuenf and "von Hand" not in fuenf
+    sechs = _zeile(v, "Sechs")                      # `offen` schlaegt den Status: noch nicht verarbeitet
+    assert "Freigegeben" in sechs and "von Hand" not in sechs and "Wird versendet" not in sechs
+
+
+WARTET_TEXT = "Versand wartet auf deine Freigabe – Link in der Mail"
+HAENGT_TEXT = "Versand hängt – bitte von Hand einreichen oder archivieren"
+
+
+def test_verlauf_wartet_auf_freigabe_per_mail_und_haengt(client, falsch):
+    falsch.verlauf = [
+        verlauf(application_id="bw-1", firma="Eins", ausgang="freigabe_per_mail",
+                status="wartet_auf_absendefreigabe", versand_an=ADRESSE,
+                anzeige_url="https://jobs.example.org/1"),
+        verlauf(application_id="bw-2", firma="Zwei", ausgang="haengt", status="wartet_auf_absendefreigabe",
+                fassung=4, versand_an=ADRESSE, anzeige_url="https://jobs.example.org/2"),
+        verlauf(application_id="bw-3", firma="Drei", ausgang="haengt", status="wartet_auf_absendefreigabe",
+                fassung="x", anzeige_url=None),
+    ]
+    v = _abschnitt(client)
+    eins = _zeile(v, "Eins")
+    assert WARTET_TEXT in eins and "von Hand" not in eins and "Wird versendet" not in eins
+    assert "anschreiben.pdf" not in eins and "Anzeige" not in eins       # Felix klickt in der Mail
+    zwei = _zeile(v, "Zwei")
+    assert HAENGT_TEXT in zwei and "Freigegeben" not in zwei and "Wird versendet" not in zwei
+    assert ('<a href="/freigaben/bewerbung/bw-2/anschreiben.pdf?fassung=4" target="_blank" '
+            'rel="noopener noreferrer">') in zwei
+    assert '<a href="https://jobs.example.org/2" target="_blank" rel="noopener noreferrer">' in zwei
+    drei = _zeile(v, "Drei")                                     # ohne Fassung und Anzeige: keine Links
+    assert HAENGT_TEXT in drei and "anschreiben.pdf" not in drei and "Anzeige" not in drei
+
+
+def test_verlauf_haengt_maskiert_kennung_und_anzeige(client, falsch):            # Review Focus 5
+    falsch.verlauf = [verlauf(application_id='bw"><script>k</script>', firma="Eins", ausgang="haengt",
+                              fassung=2, anzeige_url='https://x.example/"><script>z</script>',
+                              versand_an=BOESE)]
+    s = _abschnitt(client)
+    assert "<script" not in s and HAENGT_TEXT in _zeile(s, "Eins")
+    assert "/freigaben/bewerbung/bw%22%3E%3Cscript%3Ek%3C%2Fscript%3E/anschreiben.pdf?fassung=2" in s
+    assert 'href="https://x.example/&quot;&gt;&lt;script&gt;z&lt;/script&gt;"' in s
+
+
+def test_handarbeit_beim_email_weg_nennt_die_adresse(client, falsch):
+    falsch.verlauf = [
+        verlauf(application_id="bw-1", firma="Mail", ausgang="handarbeit", status="blockiert", fassung=3,
+                versand_an=ADRESSE, anzeige_url="https://jobs.example.org/1"),
+        verlauf(application_id="bw-2", firma="Portal", ausgang="handarbeit", status="blockiert",
+                versand_an=None),
+        verlauf(application_id="bw-3", firma="Boese", ausgang="handarbeit", status="blockiert",
+                versand_an=BOESE),
+    ]
+    s = _abschnitt(client)
+    mail = _zeile(s, "Mail")
+    assert f"Freigegeben – bitte von Hand einreichen (per E-Mail an {ADRESSE})" in mail
+    assert "anschreiben.pdf?fassung=3" in mail and "Anzeige" in mail
+    portal = _zeile(s, "Portal")
+    assert "Freigegeben – bitte von Hand einreichen" in portal and "E-Mail an" not in portal
+    boese = _zeile(s, "Boese")
+    assert "<script" not in s and "per E-Mail an &lt;script&gt;x&lt;/script&gt;" in boese
+
+
+def test_verlauf_ohne_ausgang_bleibt_wie_vor_h4(client, falsch):
+    falsch.verlauf = [verlauf(application_id="bw-1", firma="Alt", status="blockiert"),
+                      verlauf(application_id="bw-2", firma="Neu", status="archiviert")]
+    v = _abschnitt(client)
+    assert "Freigegeben – bitte von Hand einreichen" in _zeile(v, "Alt")
+    assert "von Hand" not in _zeile(v, "Neu") and "Freigegeben" in _zeile(v, "Neu")
+
+
+def test_verlauf_versendet_ohne_adresse(client, falsch):
+    falsch.verlauf = [verlauf(firma="Ohne", ausgang="versendet", versand_an=None)]
+    z = _zeile(_abschnitt(client), "Ohne")
+    assert "Versendet" in z and "Versendet an" not in z
+
+
+def test_verlauf_maskiert_adresse_und_unbekannten_ausgang(client, falsch):          # Review Focus 5
+    falsch.verlauf = [
+        verlauf(application_id="bw-1", firma="Eins", ausgang="versendet", versand_an=BOESE),
+        verlauf(application_id="bw-2", firma="Zwei", ausgang=BOESE2),
+        verlauf(application_id="bw-3", firma="Drei", ausgang="vielleicht <b>"),
+        verlauf(application_id="bw-4", firma="Vier", ausgang=7),
+        verlauf(application_id="bw-5", firma="Fuenf", ausgang="versendet", versand_an=BOESE2),
+    ]
+    s = _abschnitt(client)
+    assert "<script" not in s and '"><img' not in s and "vielleicht <b>" not in s
+    assert "Versendet an &lt;script&gt;x&lt;/script&gt;" in _zeile(s, "Eins")
+    assert "&quot;&gt;&lt;img onerror=1&gt;" in _zeile(s, "Zwei")
+    assert "vielleicht &lt;b&gt;" in _zeile(s, "Drei")
+    assert "Freigegeben" not in _zeile(s, "Drei")                    # unbekannt: wie geliefert
+    assert "7" in _zeile(s, "Vier")
+    assert "Versendet an &quot;&gt;&lt;img onerror=1&gt;" in _zeile(s, "Fuenf")
