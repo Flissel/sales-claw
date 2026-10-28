@@ -143,7 +143,15 @@ dann `deploy/update.sh`. AGENTS.md geht mit (Rückfrage nach dem Termin, Postfac
 
 ## Zum Schluss
 
-- [ ] **U** Kampagnen-Runde, danach Newsletter-Erstellung und Marke (Betreiber: „hinten anstellen, letzter Schritt").
+- [x] **U** Kampagnen-Runde (28.10.): entschieden „echte Kampagne" — Ziel, Zielgruppe per Auswahl (Kontakte aus
+  Sales | öffentlich über Kanäle | Newsletter-Verteiler), Zeitraum; **der Agent plant komplett**; je Kampagne
+  Stand je Beitrag, Reaktionen, Reichweite. Gebaut: Migration 095 + API + Agent-Werkzeuge + Planungsrunde im
+  Telegram-Bot (vibemind-os `ae6021b7`), Oberfläche auf `/marketing/plan` (sales-claw `e5d023c`). Reichweite
+  zählt gesendete Mails und veröffentlichte Beiträge; Klicks/Aufrufe liefern die Kanäle per API noch nicht.
+  **Live 28.10.:** Migration 095 auf der VM (verify_095 grün), update.sh grün, PC-Dienste (API :5510, MCP
+  :8130, Telegram :8143/:8144) neu gestartet. Probe-Kampagne Ende-zu-Ende: angelegt → Agent schlug 2 Beiträge
+  vor → geplant → abgesagt (samt Beiträgen). Hinweis: der Agent fragt nach, wenn eine Kampagne seltsam wirkt.
+- [ ] **U** Newsletter-Erstellung und Marke gemeinsam ansehen (eigene Runden, nach Wunsch des Betreibers).
 - [ ] GMX-Freigabelink am echten Konto prüfen (Weg steht auf „Kalender verbinden"; sonst CalDAV `caldav.gmx.net`).
 
 ## Stand 28.10.2026
