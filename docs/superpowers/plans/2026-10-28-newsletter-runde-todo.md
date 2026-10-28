@@ -48,6 +48,11 @@ Offen ist noch der Rest des Rundgangs (Vorlagen, Entwürfe-Liste, Freigabe, Vers
       Rundgang 28.10.“ als Betreff raus. Bestätigt: der Assistent kann Betreff/Vorschautext NICHT setzen
       (kein Werkzeug) und verweist falsch aufs „Versand-Tool“. Lösung: Werkzeug `betreff_setzen`
       (Betreff + Vorschautext) für den Collage-Agenten, oder Pflichtfeld beim Einreichen.
+- [ ] **Das Betreff-Feld sieht aus wie ein Dateititel**: oben links im Editor, ohne sichtbare Beschriftung
+      (nur aria-label „Betreff“), vorbelegt mit dem Arbeitstitel. Deshalb blieb der Betreff unbemerkt der
+      interne Titel. Sichtbar „Betreff“ davorschreiben; beim Einreichen warnen, wenn Betreff == Titel.
+      Für den Rundgang von Hand gesetzt (Fassung 8): „Dein Newsletter schreibt sich ab jetzt selbst“,
+      Vorschautext „VibeMind startet in die Beta – 3 Monate kostenlos testen.“
 - [ ] **Prüfrunden bauen um, obwohl nichts zu ändern war**: Rückgabe-Lauf f915337e sagte „Seite bleibt
       unverändert“, die Nachbesserung baute wegen „Abwechslung“ trotzdem auf Split um und endete unfertig
       (Fassung 6; Fassung 5 per Rückgängig holbar). Verglichen wurde korrekt mit dem ANDEREN Newsletter
