@@ -889,6 +889,9 @@ services:
       # (zweite Laeden, --env-file) lesen das Aussehen mit dem schmalen Schluessel, der NUR
       # /api/pult/marke/aussehen oeffnet - nie mit dem Pult-Schluessel (der oeffnet alle Firmen).
       - LADEN_MARKE=${LADEN_MARKE:-}
+      # Sprachnachrichten und Bilder unbekannter Absender NUR LESEN (28.10.2026):
+      # /einordnung spielt sie ab bzw. zeigt sie, damit erkennbar ist, wer schreibt.
+      - SPRACH_DIR=/sprachnachrichten
       - MARKETING_AUSSEHEN_URL=${MARKETING_AUSSEHEN_URL:-}
       - MARKETING_AUSSEHEN_KEY=${MARKETING_AUSSEHEN_KEY:-}
       # Kalender (01.09.2026): der Tab /kalender liest die Termine des
@@ -934,6 +937,8 @@ services:
       # HOCHGELADEN wird weiterhin NUR nach media/: der Upload-Pfad geht
       # ueber `medien.wurzel()`, nicht ueber diesen Ordner.
       - ${MEDIEN_ERZEUGT_ORDNER:-./media-erzeugt}:/media-erzeugt
+      # Sprachnachrichten + Bilder unbekannter Absender, NUR LESEN (28.10.2026).
+      - sales-sprachnachrichten:/sprachnachrichten:ro
     ports:
       # Loopback IMMER. Die zweite Zeile bindet den Port zusaetzlich an die
       # Tailscale-Adresse dieses Rechners — ausdruecklich NICHT an 0.0.0.0:

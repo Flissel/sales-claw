@@ -446,6 +446,62 @@ def liste(anzahl: int = 10) -> list:
         kasten.logout()
 
 
+# Aufraeumen (Rundgang 27.10.2026): Betrug sofort in den Spam-Ordner,
+# Unwichtiges erst nach Bestaetigung in den Ordner UNWICHTIG_ORDNER.
+# Geloescht wird nie - verschoben ist jederzeit zurueckholbar.
+UNWICHTIG_ORDNER = os.environ.get("POSTFACH_UNWICHTIG", "Unwichtig")
+_SPAM_NAMEN = ("Spam", "Junk", "INBOX.Spam", "INBOX.Junk", "Junk-E-Mail")
+
+
+def _ordner_liste(kasten) -> list:
+    status, daten = kasten.list()
+    if status != "OK":
+        return []
+    ergebnis = []
+    for zeile in daten or []:
+        text = zeile.decode("utf-8", errors="replace") if isinstance(zeile, bytes) else str(zeile)
+        merkmale = text.split(")")[0]
+        name = text.rsplit(" ", 1)[-1].strip().strip('"')
+        ergebnis.append((merkmale, name))
+    return ergebnis
+
+
+def _spam_ordner(kasten) -> str | None:
+    ordner = _ordner_liste(kasten)
+    for merkmale, name in ordner:
+        if "\\Junk" in merkmale:
+            return name
+    namen = {n for _, n in ordner}
+    return next((n for n in _SPAM_NAMEN if n in namen), None)
+
+
+def verschieben(uid: str, ziel: str) -> str:
+    """Mail `uid` aus der INBOX nach `ziel` ('spam' | 'unwichtig') verschieben.
+    -> Name des Zielordners. Wirft bei Verbindungsproblemen; ValueError, wenn
+    es keinen Spam-Ordner gibt oder die uid unlesbar ist."""
+    if not str(uid).isdigit():
+        raise ValueError("uid ist keine Zahl")
+    kasten = _verbinden()
+    try:
+        if ziel == "spam":
+            ordner = _spam_ordner(kasten)
+            if not ordner:
+                raise ValueError("kein Spam-Ordner im Postfach")
+        else:
+            ordner = UNWICHTIG_ORDNER
+            if ordner not in {n for _, n in _ordner_liste(kasten)}:
+                kasten.create(ordner)
+        kasten.select("INBOX")
+        status, _ = kasten.uid("copy", str(uid).encode("ascii"), ordner)
+        if status != "OK":
+            raise ValueError("Kopieren abgelehnt")
+        kasten.uid("store", str(uid).encode("ascii"), "+FLAGS", "(\\Deleted)")
+        kasten.expunge()
+        return ordner
+    finally:
+        kasten.logout()
+
+
 def lesen(uid: str):
     """Eine Mail im Volltext (gedeckelt) — oder None, wenn es sie nicht
     gibt.

@@ -48,7 +48,8 @@ def test_fremde_quelle_erscheint_mit_namen(monkeypatch):
     assert luecken == []
     assert len(eintraege) == 1
     assert eintraege[0]["quelle"] == "Ivan"
-    assert eintraege[0]["titel"] == "Kundentermin"
+    # Team-Kalender nur belegt/frei (Betreiber 28.10.2026): kein fremder Titel.
+    assert eintraege[0]["titel"] == "belegt"
 
 
 def test_eigener_und_fremder_kalender_zusammen(monkeypatch):
@@ -60,7 +61,7 @@ def test_eigener_und_fremder_kalender_zusammen(monkeypatch):
         {"beginn": _t(1, 9), "ende": _t(1, 10), "titel": "Ivans",
          "ort": "", "uid": "i"}], None))
     eintraege, _ = server.belegungen()
-    assert [e["titel"] for e in eintraege] == ["Ivans", "Eigener"]
+    assert [e["titel"] for e in eintraege] == ["belegt", "Eigener"]
     assert {e["quelle"] for e in eintraege} == {"Ivan", "Betreiber"}
 
 
@@ -202,7 +203,7 @@ def test_teilweise_verstandene_quelle_behaelt_ihre_gueltigen_termine(
         "1 Serientermin (RRULE) wird nicht aufgeloest — dort kann etwas "
         "liegen, das hier fehlt."))
     eintraege, luecken = server.belegungen()
-    assert [e["titel"] for e in eintraege] == ["Normaler Termin"]
+    assert [e["titel"] for e in eintraege] == ["belegt"]
     assert len(luecken) == 1
     assert luecken[0]["quelle"] == "Ivan"
     assert "Serientermin" in luecken[0]["grund"]

@@ -200,7 +200,8 @@ def _hinweis(ui, request) -> str:
     art = request.query_params.get("nl_hinweis")
     if art == "export_offen":
         return ('<div class="fehler">Freigegeben - aber der Export hat nicht geklappt. '
-                'Export offen – erneut anstoßen (Knopf im Verlauf).</div>')
+                'Export offen – erneut anstoßen (Knopf unter '
+                '<a href="/monitoring/verlauf">Monitoring → Verlauf</a>).</div>')
     if art == "entwuerfe":
         n = request.query_params.get("nl_n", "")
         n = int(n) if n.isdigit() and len(n) < 6 else 0
@@ -213,8 +214,24 @@ def _hinweis(ui, request) -> str:
     return ""
 
 
-async def abschnitt(ui, request=None) -> str:
-    """HTML des Abschnitts "Marketing" (offene Karten + Verlauf); "" wenn nicht sichtbar."""
+async def abschnitt(ui, request=None, offen: bool = True, verlauf: bool = True) -> str:
+    """HTML des Abschnitts "Marketing" (offene Karten + Verlauf); "" wenn nicht sichtbar.
+
+    Rundgang 27.10.2026: /freigaben zeigt nur Offenes (verlauf=False), der
+    Verlauf steht unter Monitoring -> Verlauf (offen=False)."""
+    teil = await _abschnitt(ui, request)
+    if not teil or "verlauftitel" not in teil:
+        return teil if offen else ""
+    vorne, _, hinten = teil.partition('<h3 class="verlauftitel">')
+    if offen and verlauf:
+        return teil
+    if offen:
+        return vorne + "</section>"
+    kopf = vorne.split("</h2>")[0].split('<span class="zaehler')[0]
+    return f'{kopf}</h2><h3 class="verlauftitel">{hinten}'
+
+
+async def _abschnitt(ui, request=None) -> str:
     if not sichtbar(ui):
         return ""
     kopf ='<section class="block" id="marketing"><h2>Marketing '

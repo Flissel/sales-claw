@@ -126,7 +126,8 @@ def test_seite_zeigt_liste_link_und_ist_escaped():
     assert "&lt;script&gt;" in s.text and "<script>x" not in s.text
     assert "mailto:haus@example.org?subject=Anmelden" in s.text
     assert "Anfragen" in s.text and "Ja erfassen" in s.text
-    assert 'href="/newsletter/einwilligung"' in s.text                    # im Menue
+    # Seit 28.10.2026 nicht mehr im Menue, sondern aus der Pipeline verlinkt.
+    assert 'href="/newsletter/einwilligung"' in CLIENT.get("/pipeline", headers=HOST).text
 
 
 def test_qr_code_ist_svg():

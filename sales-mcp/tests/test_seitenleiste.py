@@ -80,7 +80,7 @@ def test_offene_freigaben_zaehlen_am_menue():
     assert 'Freigaben</span><span class="zaehler offen">2</span>' in seite
     # „Heute" ist die Summe der Aufgaben-Zaehler.
     assert 'Heute</span><span class="zaehler offen">2</span>' in seite
-    assert 'Kontakte</span><span class="zaehler">1</span>' in seite
+    assert 'Kontaktliste</span><span class="zaehler">1</span>' in seite
 
 
 def test_nichts_offen_ist_ein_neutraler_nullzaehler():
@@ -137,7 +137,7 @@ def _aktive(pfad: str, rolle: str = "freigeben") -> list:
     ("/marketing/layouts", "Marke"),
     ("/marketing/layout/dunkel", "Marke"),
     ("/marketing/layout-bild/dunkel", "Marke"),
-    ("/kontakte", "Kontakte"),
+    ("/kontakte", "Kontaktliste"),
     ("/team/kalender", "Kalender verbinden"),
     ("/kalender", "Kalender"),
 ])

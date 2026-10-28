@@ -140,6 +140,11 @@ def _seite():
     return CLIENT.get("/freigaben", headers=HOST)
 
 
+def _verlauf_seite():
+    """Der Marketing-Verlauf steht seit 28.10.2026 unter Monitoring -> Verlauf."""
+    return CLIENT.get("/monitoring/verlauf", headers=HOST)
+
+
 def test_abschnitt_zeigt_karten_mit_firmen_und_art_etikett(pult):
     r = _seite()
     s = r.text
@@ -183,7 +188,7 @@ def test_verlauf(pult):
                  rueckmeldungen=[{"text": "Bitte kuerzen", "von": "m", "am": "x", "fassung": 1,
                                   "erledigt": False}]),
     ]
-    s = _seite().text
+    s = _verlauf_seite().text
     assert "Export läuft" in s and "Newsletter-Bilder fertig" in s
     assert "Export offen – erneut anstoßen" in s
     assert "/freigaben/newsletter/c/export-nachholen" in s
@@ -191,12 +196,14 @@ def test_verlauf(pult):
     assert ("GET", "/freigaben?status=entschieden&limit=10", None) in pult.aufrufe
 
 
-def test_zaehler_addiert_nur_im_menue_nicht_in_heute(pult, monkeypatch, rolle_freigeben):
+def test_zaehler_gleich_in_menue_und_heute(pult, monkeypatch, rolle_freigeben):
+    """Seit 28.10.2026 (Rundgang: 11 gegen 5 gegen 19) zaehlt „Heute" dieselben
+    Freigaben wie das Menue - eingereichte Marketing-Inhalte eingeschlossen."""
     monkeypatch.setattr(server.medien, "liste", lambda *a, **k: [])   # Medienordner gibt es hier nicht
     assert ui_freigabe_newsletter._laden() == 2
     z = ui._zaehler_abfragen()
     assert z["/freigaben"] == 2
-    assert z["/"] == z["/freigaben"] - 2 + z["/wiedervorlagen"] + z["/einordnung"]   # R10
+    assert z["/"] == z["/freigaben"] + z["/wiedervorlagen"] + z["/einordnung"]
 
 
 def test_anzahl_offen_ist_nur_zwischenspeicher(pult, rolle_freigeben):
@@ -413,7 +420,7 @@ def test_m1_verlauf_zurueckgegeben_neuester_kommentar_und_wer(pult):
         {"text": "Neuer Punkt", "von": "ivan", "am": "2026-10-07T10:00:00+00:00", "fassung": 2, "erledigt": False},
         {"text": "Alter Punkt", "von": "mira", "am": "2026-10-06T10:00:00+00:00", "fassung": 1, "erledigt": True},
     ])]
-    s = _seite().text
+    s = _verlauf_seite().text
     zeile = s[s.index("Zurueck</b>"):]
     zeile = zeile[:zeile.index("</div>")]
     assert "zurückgegeben" in zeile and "ivan" in zeile and "Neuer Punkt" in zeile
@@ -423,7 +430,7 @@ def test_m1_verlauf_zurueckgegeben_neuester_kommentar_und_wer(pult):
 def test_m2_feldformat_ohne_export_knopf(pult):
     pult.entschieden = [_verlauf(id="f", titel="Felder", format="felder", export={"auftrag_status": None}),
                         _verlauf(id="b", titel="Bloecke", format="bloecke", export={"auftrag_status": None})]
-    s = _seite().text
+    s = _verlauf_seite().text
     assert "/freigaben/newsletter/f/export-nachholen" not in s
     assert "/freigaben/newsletter/b/export-nachholen" in s
     felder = s[s.index("Felder</b>"):]
@@ -433,7 +440,7 @@ def test_m2_feldformat_ohne_export_knopf(pult):
 def test_freigabe_collage_mit_versand_ohne_export(pult):
     # Stufe 4: freigegebene Collagen gehen an Kontakte (Mail-Fassung); einen Export gibt es nur fuer Bloecke.
     pult.entschieden = [_verlauf(id="c", titel="Collage", format="seite", export={"auftrag_status": None})]
-    s = _seite().text
+    s = _verlauf_seite().text
     zeile = s[s.index("Collage</b>"):]
     zeile = zeile[:zeile.index("</div>")]
     assert "An Kontakte senden" in zeile and 'href="/freigaben/newsletter/c/versand"' in zeile
@@ -443,7 +450,7 @@ def test_freigabe_collage_mit_versand_ohne_export(pult):
 
 def test_freigabe_felder_ohne_versand(pult):
     pult.entschieden = [_verlauf(id="f", titel="Felder", format="felder", export={"auftrag_status": None})]
-    s = _seite().text
+    s = _verlauf_seite().text
     zeile = s[s.index("Felder</b>"):]
     assert "An Kontakte senden" not in zeile[:zeile.index("</div>")]
 

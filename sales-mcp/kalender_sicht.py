@@ -125,16 +125,21 @@ def _sammeln(von: datetime, bis: datetime) -> tuple[list[dict], list[str], bool]
         quellen = []
         hinweise.append("Kollegen-Kalender gerade nicht abrufbar")
         luecke = True
+    # Team-Ebenen (Betreiber 28.10.2026): je Mitglied an/aus, und gezeigt wird
+    # nur belegt/frei - kein Titel, kein Ort.
+    aus = set(server.team_kalender_aus())
     for q in quellen:
+        if q["anzeigename"] in aus:
+            continue
         termine, f = kalenderquellen.hole(q["url"], zurueck, voraus)
         if f:
             hinweise.append(f"Kalender von {q['anzeigename']} gerade nicht abrufbar")
             luecke = True
         for t in termine:
-            roh.append({"art": "kollege", "uid": t.get("uid") or "", "titel": t["titel"],
+            roh.append({"art": "kollege", "uid": t.get("uid") or "",
+                        "titel": f"{q['anzeigename']}: belegt",
                         "beginn": t["beginn"], "ende": t["ende"],
-                        "ort": t.get("ort") or "", "quelle": q["anzeigename"],
-                        "bearbeitbar": False})
+                        "quelle": q["anzeigename"], "bearbeitbar": False})
 
     roh = [r for r in roh if _ueberlappt(r["beginn"], r["ende"], von, bis)]
     roh.sort(key=lambda r: r["beginn"])

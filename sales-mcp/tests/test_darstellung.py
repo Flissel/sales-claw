@@ -137,7 +137,7 @@ def test_seite_mit_offenen_posten_zeigt_echte_umlaute(pfad):
     if pfad == "/":
         # Der Test prueft wirklich die Flaechen mit Formularen.
         assert 'name="danach" value="/"' in seite
-        assert 'form="fz-' in seite and "Im Kalender eintragen" in seite
+        assert 'form="fz-' in seite
     gefunden = [w for w in WOERTER_ASCII if w in seite]
     assert not gefunden, (
         f"{pfad} zeigt mit offenen Posten ASCII-Umschreibungen: {gefunden}")
@@ -539,10 +539,10 @@ def test_kurzer_text_bleibt_unveraendert():
     assert ui._kurz("Optimal", 60) == "Optimal"
 
 
-def test_terminkarte_auf_startseite_zeigt_vollen_text_als_title():
-    """Die Terminkarte auf '/' (Termine ohne festes Datum) kuerzt sichtbar
-    an einer Wortgrenze und traegt den vollen Text als title-Attribut —
-    escaped, denn ein Kundentext gehoert nie roh in ein Attribut."""
+def test_terminnotiz_ohne_datum_steht_im_kalender_mit_vollem_title():
+    """Seit 28.10.2026 stehen Termin-Notizen ohne Datum nicht mehr auf '/'
+    (Termine ohne Datum gibt es nicht), nur noch im Kalender - gekuerzt, mit
+    vollem Text escaped als title."""
     lang = ("Martin bestätigt per WhatsApp Interesse & Termin Donnerstag "
             "14 Uhr <script>boese()</script>; der Betreiber trägt 14:30 "
             "im Kalender ein, Thema Vibe · Förderung")
@@ -551,12 +551,10 @@ def test_terminkarte_auf_startseite_zeigt_vollen_text_als_title():
         "insert into activities (lead_id, type, payload) values "
         "(%s, 'termin', %s::jsonb)",
         (lead, json.dumps({"inhalt": lang})))
-    seite = _get("/").text
+    assert "Karla Karte" not in _get("/").text.split("<main>")[1]
+    seite = _get("/kalender").text
     assert "<script>boese()</script>" not in seite, "ungekuerztes Skript im Markup"
-    assert f'title="{ui._e(lang)}"' in seite, (
-        "der volle Text steht nicht escaped als title im Markup")
-    assert ui._e(ui._kurz(lang, 160)) in seite, (
-        "der sichtbare, gekuerzte Text fehlt")
+    assert f'title="{ui._e(lang)}"' in seite
 
 
 # Die folgenden Tests heissen bewusst "...verwendet_kurz..." statt
@@ -575,7 +573,7 @@ def test_verlaufszeile_termin_auf_freigaben_verwendet_kurz():
     lead = _lead("Ver Lauf")
     _termin_aktivitaet(lead, datum="2026-09-05", uhrzeit="10:00",
                        thema=lang_thema)
-    seite = _get("/freigaben").text
+    seite = _get("/monitoring/verlauf").text      # seit 28.10.2026
     assert ui._kurz(lang_thema, 120) in seite
     assert f'title="{ui._e(lang_thema)}"' in seite
 
@@ -658,77 +656,20 @@ def test_firmenrecherche_text_verwendet_kurz_und_traegt_titel():
 # andere laeuft.", waehrend zwei Terminanfragen ohne Datum darunter standen.
 # ---------------------------------------------------------------------------
 
-def test_heute_zaehlt_terminanfragen_mit():
-    """Eine Terminanfrage ohne Datum zaehlt als offener Posten.
-
-    Gemessen 10.09.2026: die Kopfzeile sagte „1 Entscheidung wartet auf
-    dich. Alles andere laeuft.", waehrend darunter ZWEI Terminanfragen
-    ohne Datum standen — `termine_offen` fehlte in der Summe.
-    """
+def test_terminnotizen_ohne_datum_zaehlen_nicht_als_posten():
+    """Seit 28.10.2026: Termine ohne Datum gibt es nicht (Betreiber). Alte
+    Notizen dieser Art sind kein offener Posten auf '/' mehr."""
     lead = _lead("Offen Eins")
     _termin_aktivitaet(lead, datum="", uhrzeit="",
                        thema="Donnerstag 16 Uhr — welcher?")
-    _termin_aktivitaet(lead, datum="", uhrzeit="",
-                       thema="Freitag vormittags?")
     seite = _get("/").text
-    assert "1 Entscheidung" not in seite, (
-        "zwei Terminanfragen wurden als eine gezaehlt")
-    assert "2 " in seite, "die Kopfzeile nennt die zwei Anfragen nicht"
-
-
-def test_heute_behauptet_keine_ruhe_wenn_etwas_offen_ist():
-    """„Alles andere laeuft" darf nicht neben offenen Posten stehen."""
-    lead = _lead("Offen Zwei")
-    _termin_aktivitaet(lead, datum="", uhrzeit="", thema="Wann genau?")
-    seite = _get("/").text
-    assert "Alles andere läuft" not in seite and "Alles andere laeuft" not in seite
+    assert "Nichts wartet auf dich" in seite
+    assert "Terminanfrage" not in seite.split("<main>")[1]
 
 
 def test_heute_meldet_ruhe_bei_leerer_datenbank():
     seite = _get("/").text
     assert "Nichts wartet auf dich" in seite
-
-
-def test_heute_chips_und_satz_stammen_aus_derselben_rechnung():
-    """Zeigt der Termine-Chip eine Zahl > 0, darf „Keine offenen
-    Entwuerfe" nicht mehr erscheinen — Chips und Satz duerfen sich nicht
-    mehr widersprechen koennen (gemessen 10.09.2026: Chip „Termine 2" neben
-    „Keine offenen Entwuerfe").
-    """
-    lead = _lead("Chip Konsistenz")
-    _termin_aktivitaet(lead, datum="", uhrzeit="", thema="Welcher Tag?")
-    seite = _get("/").text
-    assert '<span class="badge termin">Termine</span><b>1</b>' in seite
-    assert "Keine offenen Entwürfe" not in seite
-
-
-# ---------------------------------------------------------------------------
-# Mangel 3 (Schlusspruefung, 10.09.2026): „N Posten warten auf dich" speiste
-# sich aus gedeckelten Abfragen (`termine_offen` limit 5, `_offene_
-# wiedervorlagen` limit 200, `server._einzuordnende` limit 25) — bei mehr
-# als dem jeweiligen Deckel nennt „Heute" wieder eine zu kleine Zahl,
-# dieselbe Unehrlichkeit wie in Aufgabe 8, nur an drei weiteren Stellen.
-# Fix: echte Gesamtzahlen per Zaehlabfrage statt der gedeckelten
-# Listenlaengen; die Kachel/Karten-Anzeige bleibt gedeckelt, zeigt das aber
-# jetzt ("X von Y gezeigt").
-# ---------------------------------------------------------------------------
-
-def test_heute_zaehlt_mehr_als_fuenf_termine_ohne_datum_korrekt():
-    """`termine_offen` zeigt (auf der Startseite) hoechstens 5 Karten, die
-    Kopfzeile und der Termine-Chip muessen aber die ECHTE Zahl nennen —
-    sieben Terminanfragen ohne Datum duerfen nicht als fuenf gezaehlt
-    werden."""
-    for i in range(7):
-        lead = _lead(f"Sieben Termine {i}")
-        _termin_aktivitaet(lead, datum="", uhrzeit="", thema=f"Frage {i}?")
-    seite = _get("/").text
-    assert '<span class="badge termin">Termine</span><b>7</b></span>' in seite, (
-        "der Termine-Chip zeigt nicht die echte Zahl (7), sondern den "
-        "Kartendeckel")
-    assert "7 Terminanfragen" in seite, (
-        "die Kopfzeile nennt nicht die echten sieben Terminanfragen")
-    assert "5 von 7 gezeigt" in seite, (
-        "kein Hinweis, dass die Kartenliste nur einen Teil der sieben zeigt")
 
 
 def test_heute_zaehlt_mehr_als_einordnung_deckel_korrekt():

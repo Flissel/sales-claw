@@ -278,6 +278,57 @@ begin
       execute format('grant select, insert, update on %I.kanal_status to %I',
                      s, 'sales_app_' || substr(s, 7));
     end if;
+    -- Einstellungen (28.10.2026, Sales-UI-Rundgang): kleine Schluessel-Wert-
+    -- Ablage fuer Betreiber-Vorgaben, zuerst die Standard-Autonomiestufe je
+    -- Beziehungsart. Kein Delete - ein fehlender Schluessel heisst Vorgabe.
+    execute format($ddl$
+      create table if not exists %I.einstellungen (
+        schluessel text primary key,
+        wert jsonb not null,
+        geaendert_am timestamptz not null default now(),
+        geaendert_von text
+      )$ddl$, s);
+    if s = 'sales' then
+      execute 'grant select, insert, update on sales.einstellungen to sales_app';
+    elsif s <> 'sales_test' and exists (
+        select 1 from pg_roles where rolname = 'sales_app_' || substr(s, 7)) then
+      execute format('grant select, insert, update on %I.einstellungen to %I',
+                     s, 'sales_app_' || substr(s, 7));
+    end if;
+    -- Postfach aufraeumen + durchsuchen (28.10.2026, Sales-UI-Rundgang):
+    -- je gesehene Mail eine Zeile. art: 'spam' (Betrug, sofort verschoben),
+    -- 'unwichtig' (nur Vorschlag, verschoben erst nach Bestaetigung) oder
+    -- null (normal). Der Suchtext ist deutsch gestemmt; Tippfehler faengt
+    -- pg_trgm auf betreff/von. Kein Delete.
+    execute format($ddl$
+      create table if not exists %I.postfach_mails (
+        message_id text primary key,
+        uid text,
+        von text not null default '',
+        betreff text not null default '',
+        datum text not null default '',
+        auszug text not null default '',
+        art text check (art in ('spam', 'unwichtig')),
+        status text not null default 'gesehen'
+          check (status in ('gesehen', 'vorgeschlagen', 'bestaetigt',
+                            'verschoben', 'behalten')),
+        grund text,
+        ordner text,
+        gesehen_am timestamptz not null default now(),
+        geaendert_am timestamptz not null default now(),
+        suchtext tsvector generated always as (to_tsvector('german'::regconfig,
+          coalesce(betreff, '') || ' ' || coalesce(von, '') || ' ' ||
+          coalesce(auszug, ''))) stored
+      )$ddl$, s);
+    execute format('create index if not exists postfach_mails_such_idx '
+                   'on %I.postfach_mails using gin (suchtext)', s);
+    if s = 'sales' then
+      execute 'grant select, insert, update on sales.postfach_mails to sales_app';
+    elsif s <> 'sales_test' and exists (
+        select 1 from pg_roles where rolname = 'sales_app_' || substr(s, 7)) then
+      execute format('grant select, insert, update on %I.postfach_mails to %I',
+                     s, 'sales_app_' || substr(s, 7));
+    end if;
     -- CC fuer E-Mail-Entwuerfe (03.09.2026); add column, weil die Tabelle
     -- auf beiden Schemata laengst existiert.
     execute format('alter table %I.drafts add column if not exists cc text', s);
@@ -589,6 +640,8 @@ grant select, insert, update on sales.kalender_quellen to sales_app;
 grant select, insert, update, delete on sales.eigene_termine to sales_app;
 grant select, insert, update on sales.empfehlungslisten to sales_app;
 grant select, insert, update on sales.kanal_status to sales_app;
+grant select, insert, update on sales.einstellungen to sales_app;
+grant select, insert, update on sales.postfach_mails to sales_app;
 -- Bewusst NICHT vergeben: DELETE nur auf eigene_termine (eigene Termine duerfen
 -- wirklich geloescht werden), sonst nirgends; UPDATE/TRUNCATE auf activities.
 

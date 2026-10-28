@@ -20,13 +20,16 @@ erscheinen nirgends; ihre Datenzeilen bleiben unverändert stehen.
 from __future__ import annotations
 
 import html
+import json
 from collections.abc import Mapping
+from pathlib import Path
 
-from starlette.responses import RedirectResponse
+from starlette.responses import RedirectResponse, Response
 from starlette.routing import Route
 
 import server
 import struktur
+import ui_kalender
 
 # E7: ab dieser Länge kürzt das SVG den Namen (Spalte 120 px); voll im <title>.
 _KURZ_AB, _KURZ_AUF = 15, 13
@@ -169,7 +172,10 @@ def liste_zeichnen(baum: struktur.Baum, csrf: str,
 
     def eintrag(name: str) -> str:
         stufe = level.get(name, struktur.LEVEL_MIN)
-        teile = [f'<li><span class="level-chip level-{stufe}">Level {stufe}</span> '
+        # Drag and Drop (Betreiber 28.10.2026): jeder Eintrag ist ziehbar und
+        # Ziel; die Formulare darunter bleiben der Weg ohne Maus.
+        teile = [f'<li draggable="true" data-name="{_e(name)}">'
+                 f'<span class="level-chip level-{stufe}">Level {stufe}</span> '
                  f'<b>{_e(name)}</b>']
         if name in baum.verwaist:
             alt = gespeichert.get(name)
@@ -192,7 +198,7 @@ def liste_zeichnen(baum: struktur.Baum, csrf: str,
             '<button type="submit">Setzen</button></form></div>')
         return "".join(teile)
 
-    teile = ['<ul class="struktur-liste"><li class="wurzel">Ich']
+    teile = ['<ul class="struktur-liste"><li class="wurzel" data-name="">Ich']
     stapel: list[tuple[str, str | None]] = [("kinder", None)]
     while stapel:
         art, k = stapel.pop()
@@ -214,6 +220,50 @@ def liste_zeichnen(baum: struktur.Baum, csrf: str,
     return "".join(teile)
 
 
+# „Ich" unter einem hoeheren Knoten (Betreiber 28.10.2026: „Ivan ist mein
+# hoeherer Knoten"). Der Einladungsbaum sagt nur, wer wen ins SYSTEM geholt
+# hat; in der Geschaeftsstruktur kann ein solcher Laden UEBER dem Betreiber
+# stehen. Gespeichert in der Tabelle einstellungen.
+EINSTELLUNG_UEBER_MIR = "struktur_ueber_mir"
+STATIK_JS = Path(__file__).resolve().parent / "static" / "struktur" / "struktur.js"
+
+
+def ueber_mir_lesen(conn, mitglieder) -> str | None:
+    z = conn.execute("select wert from einstellungen where schluessel = %s",
+                     (EINSTELLUNG_UEBER_MIR,)).fetchone()
+    name = (z["wert"] or {}).get("name") if z and isinstance(z["wert"], dict) else None
+    return name if name in mitglieder else None
+
+
+def ohne_ueber_mir(laeden: dict, ueber: str | None) -> dict:
+    """Der Baum unter „Ich": der hoehere Knoten faellt heraus, wer an ihm
+    hing, haengt jetzt direkt unter dem Betreiber."""
+    if not ueber:
+        return laeden
+    return {n: (None if e == ueber else e) for n, e in laeden.items() if n != ueber}
+
+
+def ueber_mir_zeichnen(ueber: str | None, level: Mapping[str, int], csrf: str,
+                       namen) -> str:
+    optionen = ['<option value="">— keiner —</option>'] + [
+        f'<option value="{_e(n)}"{" selected" if n == ueber else ""}>{_e(n)}</option>'
+        for n in sorted(namen)]
+    knoten = (f'<div class="upline-knoten" data-name="{_e(ueber)}">'
+              f'<span class="level-chip level-{level.get(ueber, struktur.LEVEL_MIN)}">'
+              f'Level {level.get(ueber, struktur.LEVEL_MIN)}</span> <b>{_e(ueber)}</b>'
+              f'<div class="meta">über mir</div></div><div class="upline-linie"></div>'
+              if ueber else "")
+    return ('<div class="upline" data-ziel="ueber">'
+            f'{knoten}'
+            '<form method="post" action="/team/struktur/ueber" class="upline-form">'
+            f'<input type="hidden" name="csrf" value="{_e(csrf)}">'
+            f'<label>Mein höherer Knoten <select name="ueber">{"".join(optionen)}'
+            '</select></label><button type="submit">Setzen</button></form>'
+            '<p class="meta">Mitglieder per Ziehen umhängen: einen Eintrag auf einen '
+            'anderen ziehen. Auf dieses Feld gezogen, wird er dein höherer Knoten.</p>'
+            '</div>')
+
+
 def routen(ui) -> list:
     """Die Seite /team/struktur. `ui` wird hereingereicht, nie importiert."""
 
@@ -227,21 +277,62 @@ def routen(ui) -> list:
     async def seite(request):
         with server.pool.connection() as conn:
             mitglieder = mitglieder_lesen(conn)
+            ueber = ueber_mir_lesen(conn, mitglieder)
         laeden = {n: e for n, (e, _) in mitglieder.items()}
         level = {n: s for n, (_, s) in mitglieder.items()}
-        baum = struktur.baum_bauen(laeden)
+        unter = ohne_ueber_mir(laeden, ueber)
+        baum = struktur.baum_bauen(unter)
         if not laeden:
             rumpf = ('<p class="leer-hinweis">Noch keine Mitglieder. Sobald du einen '
                      'Laden anlegst, erscheint er hier. '
                      '<a href="/team/laden-anlegen">Laden anlegen</a></p>')
         else:
-            rumpf = ('<p class="meta">Wer wen eingeladen hat: jede Reihe ist eine '
-                     'Einladung weiter, beliebig tief. Im Kreis steht das Level des '
-                     f'Mitglieds ({struktur.LEVEL_MIN}–{struktur.LEVEL_MAX}).</p>'
-                     '<div class="struktur">'
+            rumpf = ('<p class="meta">Deine Struktur: über dir dein höherer Knoten, '
+                     'unter dir jede Reihe eine Ebene weiter, beliebig tief. Im Kreis '
+                     f'steht das Level des Mitglieds ({struktur.LEVEL_MIN}–'
+                     f'{struktur.LEVEL_MAX}).</p>'
+                     + ueber_mir_zeichnen(ueber, level, ui.CSRF_TOKEN, laeden)
+                     + '<div class="struktur">'
                      f'<div class="struktur-graph">{svg_zeichnen(baum, level)}</div>'
-                     f'{liste_zeichnen(baum, ui.CSRF_TOKEN, laeden, level)}</div>')
-        return ui._seite("Struktur", rumpf)
+                     f'{liste_zeichnen(baum, ui.CSRF_TOKEN, unter, level)}</div>'
+                     # Versteckte Formulare fuer das Ziehen (struktur.js fuellt sie).
+                     '<form method="post" action="/team/struktur/einlader?dnd=1" id="dnd-einlader" hidden>'
+                     f'<input type="hidden" name="csrf" value="{_e(ui.CSRF_TOKEN)}">'
+                     '<input type="hidden" name="name"><input type="hidden" name="einlader"></form>'
+                     '<form method="post" action="/team/struktur/ueber" id="dnd-ueber" hidden>'
+                     f'<input type="hidden" name="csrf" value="{_e(ui.CSRF_TOKEN)}">'
+                     '<input type="hidden" name="ueber"></form>'
+                     '<script src="/team/struktur/struktur.js" defer></script>')
+        antwort = ui._seite("Struktur", rumpf)
+        antwort.headers["Content-Security-Policy"] = ui_kalender.csp_kalender(ui)
+        return antwort
+
+    @ui._gesichert_seite
+    async def skript(request):
+        return Response(STATIK_JS.read_bytes(), media_type="text/javascript",
+                        headers={"cache-control": "no-cache",
+                                 "X-Content-Type-Options": "nosniff"})
+
+    @ui._gesichert_seite
+    async def ueber_setzen(request):
+        form = await request.form()
+        if not ui._csrf_ok(form):
+            return ungueltig()
+        name = str(form.get("ueber") or "").strip() or None
+        with server.pool.connection() as conn:
+            mitglieder = mitglieder_lesen(conn)
+            if name is not None and name not in mitglieder:
+                return ui._fehlerseite(400, "Nicht geändert",
+                                       f"Den Laden „{ui._e(name)}“ gibt es nicht. "
+                                       "Nichts wurde geändert.")
+            conn.execute(
+                "insert into einstellungen (schluessel, wert, geaendert_von) "
+                "values (%s, %s, %s) on conflict (schluessel) do update set "
+                "wert = excluded.wert, geaendert_am = now(), "
+                "geaendert_von = excluded.geaendert_von",
+                (EINSTELLUNG_UEBER_MIR, json.dumps({"name": name}),
+                 ui._ui_akteur(request)))
+        return RedirectResponse("/team/struktur", status_code=303)
 
     @ui._gesichert_seite
     async def einlader(request):
@@ -295,5 +386,7 @@ def routen(ui) -> list:
         return RedirectResponse("/team/struktur", status_code=303)
 
     return [Route("/team/struktur", seite),
+            Route("/team/struktur/struktur.js", skript),
+            Route("/team/struktur/ueber", ueber_setzen, methods=["POST"]),
             Route("/team/struktur/einlader", einlader, methods=["POST"]),
             Route("/team/struktur/level", level_setzen, methods=["POST"])]

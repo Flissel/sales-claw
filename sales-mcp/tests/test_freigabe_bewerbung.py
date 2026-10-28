@@ -174,10 +174,17 @@ def rolle_freigeben():
 
 
 def _abschnitt(c, pfad="/freigaben") -> str:
-    r = c.get(pfad)
-    assert r.status_code == 200
-    s = r.text[r.text.index('<section class="block" id="bewerbungen">'):]
-    return s[:s.index("</section>")]
+    """Offenes von /freigaben, „Zuletzt entschieden" seit 28.10.2026 von
+    Monitoring -> Verlauf - hintereinander, wie vorher in einem Abschnitt."""
+    teile = []
+    for p in (pfad, "/monitoring/verlauf"):
+        r = c.get(p)
+        assert r.status_code == 200
+        if '<section class="block" id="bewerbungen">' not in r.text:
+            continue
+        s = r.text[r.text.index('<section class="block" id="bewerbungen">'):]
+        teile.append(s[:s.index("</section>")])
+    return "".join(teile)
 
 
 def _zeile(s: str, firma: str) -> str:
@@ -478,7 +485,7 @@ def test_api_weg_seite_bleibt(client, falsch):                     # Review Focu
     r = client.get("/freigaben")
     assert r.status_code == 200
     assert "Bewerbungs-Zentrale ist gerade nicht erreichbar" in r.text
-    assert "Hallo Welt" in r.text and 'id="termine"' in r.text      # Sales-Abschnitte da
+    assert "Hallo Welt" in r.text                                   # Sales-Abschnitte da
     assert len(falsch.aufrufe) == 1
     assert "gerade nicht erreichbar" in client.get("/freigaben").text
     assert len(falsch.aufrufe) == 1                                  # < 60 s: kein neuer Versuch
@@ -644,7 +651,8 @@ def test_zaehler_addiert_nur_im_menue_nicht_in_heute(falsch, monkeypatch, rolle_
     assert ui_freigabe_bewerbung._laden() == 2
     z = ui._zaehler_abfragen()
     assert z["/freigaben"] == 2
-    assert z["/"] == z["/freigaben"] - 2 + z["/wiedervorlagen"] + z["/einordnung"]
+    # Seit 28.10.2026 zaehlt „Heute" dieselben Freigaben wie das Menue.
+    assert z["/"] == z["/freigaben"] + z["/wiedervorlagen"] + z["/einordnung"]
 
 
 def test_laden_fehler_gibt_0(falsch):
@@ -693,7 +701,7 @@ def test_kaputte_karte_reisst_die_seite_nicht(client, falsch, caplog):          
     falsch.karten = [karte(score=10 ** 400)]                    # OverflowError beim Formatieren
     with caplog.at_level(logging.WARNING, logger="sales-ui"):
         r = client.get("/freigaben")
-    assert r.status_code == 200 and "Hallo Welt" in r.text and 'id="termine"' in r.text
+    assert r.status_code == 200 and "Hallo Welt" in r.text
     assert "Bewerbungs-Zentrale ist gerade nicht erreichbar" in _abschnitt(client)
     assert any(x.exc_info for x in caplog.records if x.name == "sales-ui")
 
