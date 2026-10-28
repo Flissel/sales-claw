@@ -782,6 +782,7 @@ def _gesichert_seite(fn):
     async def innen(request):
         _AKTIVER_PFAD.set(request.url.path)
         _AKTIVE_ROLLE.set(str(request.scope.get("benutzer_rolle") or ""))
+        _ANGEMELDET.set(bool(request.scope.get("benutzer_name")))
         try:
             return await fn(request)
         except psycopg.OperationalError:
@@ -903,7 +904,7 @@ html { -webkit-text-size-adjust: 100%; }
 html, body { overflow-x: hidden; }
 body { font-family: var(--schrift_text);
        margin: 0; background: var(--grund); color: var(--schrift);
-       font-size: 16px; line-height: 1.45; overflow-wrap: anywhere; }
+       font-size: 17px; line-height: 1.5; overflow-wrap: anywhere; }
 main { flex: 1 1 auto; min-width: 0; max-width: 80rem;
        padding: 1.2rem 2rem 4rem; }
 a { color: var(--verweis); }
@@ -924,7 +925,7 @@ nav.seite .logo { width: 1.9rem; height: 1.9rem; border-radius: 6px;
                   background: url(/static/marke/vibemind-logo-hell.png) center / contain
                   no-repeat; }
 .gruppe { display: flex; flex-direction: column; gap: .15rem; }
-.gruppenname { font-size: .7rem; letter-spacing: .08em;
+.gruppenname { font-size: .78rem; letter-spacing: .08em;
                text-transform: uppercase; color: var(--gedaempft);
                padding: 0 .7rem .2rem; font-weight: 600; }
 /* Aufklappbare Gruppen (24.10.2026): <details> ohne JavaScript. */
@@ -939,7 +940,7 @@ summary.gruppenname:hover { color: var(--balken_schrift); }
 summary.gruppenname:focus-visible { outline: 2px solid var(--akzent); }
 details.gruppe[open] > summary .zaehler { display: none; }
 nav.seite a { color: var(--balken_schrift); text-decoration: none;
-              font-weight: 600; display: flex; align-items: center;
+              font-size: 1.05rem; font-weight: 600; display: flex; align-items: center;
               gap: .6rem; min-height: 44px; padding: .5rem .7rem;
               border-radius: 6px; }
 nav.seite a.aktiv { background: var(--akzent); color: var(--akzent_auf); }
@@ -1114,7 +1115,7 @@ h2 { font-size: 1.1rem; margin-top: 2rem; }
 .spalte { min-width: 11rem; flex: 1 0 11rem; }
 .spalte h2 { margin-top: .4rem; font-size: .95rem; }
 .spalte .karte { margin: .45rem 0; padding: .5rem .7rem; }
-.meta { color: var(--gedaempft); font-size: .85rem; }
+.meta { color: var(--gedaempft); font-size: .92rem; }
 
 /* --- Monatsgitter (01.09.2026): ein Kalender sieht aus wie ein Kalender.
        Sieben Spalten, ein Kasten je Tag; bei Enge scrollt der Container
@@ -1555,6 +1556,20 @@ nav.reiter .zahl { font-size: .8rem; color: var(--gedaempft); }
                   background: var(--flaeche);
                   border: 1px solid var(--linie); border-radius: 12px; }
 .struktur-svg { display: block; max-width: none; }
+/* Hoeherer Knoten + Ziehen (28.10.2026). */
+.upline { border: 1px dashed var(--linie_stark); border-radius: 12px;
+             padding: .8rem 1rem; margin: 0 0 1rem; }
+.upline-knoten { display: inline-block; padding: .4rem .8rem; border-radius: 8px;
+                background: var(--flaeche); border: 1px solid var(--akzent); }
+.upline-linie { width: 2px; height: 1.2rem; background: var(--linie_stark);
+               margin: .2rem 0 .4rem 1.5rem; }
+.struktur-liste li[draggable="true"] { cursor: grab; }
+.struktur-liste .wird-gezogen { opacity: .5; }
+.ablage { outline: 2px dashed var(--akzent); outline-offset: 2px; }
+/* Einordnung: Bild und Abschrift unbekannter Absender (28.10.2026). */
+.eingang-bild { max-width: 14rem; max-height: 14rem; border-radius: 6px;
+                display: block; margin: .3rem 0; }
+.abschrift { font-style: italic; margin: .2rem 0; }
 .struktur-svg .kante { fill: none; stroke: var(--linie_stark); stroke-width: 1.5; }
 .struktur-svg circle { fill: var(--aktiv); stroke: var(--akzent); stroke-width: 2; }
 /* „Ich“ hebt sich von Level 6 (volle Akzentfarbe) ab: Schriftfarbe als Füllung. */
@@ -2031,9 +2046,10 @@ _GRUPPEN = (
                   # Kollegen einrichtet, wie fuer die Rolle `kalender`
                   # selbst — s. _pfad_erlaubt/_seitenleiste).
                   ("/team/kalender", "Kalender verbinden"))),
-    ("Analyse", (("/kontakte", "Kontakte"), ("/empfehlungen", "Empfehlungen"),
-                 # Newsletter-Reichweite (20.10.2026): fragen + Selbst-Anmeldung.
-                 ("/newsletter/einwilligung", "Newsletter-Einwilligung"),
+    # Rundgang 27.10.2026: Kontaktliste und Empfehlungen zusammengelegt
+    # (Empfehlungen sind ein Filter der Liste, die Vordrucke per Verweis),
+    # Newsletter-Einwilligung in die Pipeline integriert.
+    ("Analyse", (("/kontakte", "Kontaktliste"),
                  ("/pipeline", "Pipeline"),
                  ("/ergebnisse", "Ergebnisse"),
                  ("/posteingang", "Posteingang"),
@@ -2042,7 +2058,9 @@ _GRUPPEN = (
                  # Basis-Laden - _pfad_erlaubt filtert (_ADMIN_BASIS_PFADE).
                  ("/team/struktur", "Struktur"))),
     ("Daten", (("/medien", "Medien"),)),
-    ("Monitoring", (("/whatsapp", "WhatsApp"),)),
+    # Rundgang 27.10.2026: Verlauf (aus Freigaben) und Kanaele (aus Admin).
+    ("Monitoring", (("/whatsapp", "WhatsApp"), ("/monitoring/verlauf", "Verlauf"),
+                    ("/einstellungen/kanaele", "Kanäle"))),
     # Marketing-Pult (29.09.2026): wie Admin nur fuer freigeben im
     # Basis-Laden (_ADMIN_BASIS_PFADE). /marketing/layouts kommt mit Task 5.
     ("Marketing", (("/marketing", "Newsletter"),
@@ -2057,8 +2075,7 @@ _GRUPPEN = (
     # Eintrag durch _pfad_erlaubt filtert (s. dort), und die faellt fuer
     # jede andere Kombination durch.
     ("Admin", (("/team/laden-anlegen", "Laden anlegen"),
-               ("/team/tailscale-einladen", "Team-Mitglied einladen"),
-               ("/einstellungen/kanaele", "Kanäle"))),
+               ("/team/tailscale-einladen", "Team-Mitglied einladen"))),
 )
 _NAV = tuple(eintrag for _, eintraege in _GRUPPEN for eintrag in eintraege)
 # Detailseiten gehoeren zu ihrer Liste (Browser-Durchlauf 29.09.2026): die
@@ -2097,6 +2114,10 @@ _AKTIVER_PFAD = contextvars.ContextVar("aktiver_pfad", default="")
 # Kontakte/Freigaben/Posteingang, die alle in einem 403 enden — die Rolle
 # soll schmal AUSSEHEN, nicht nur schmal SEIN.
 _AKTIVE_ROLLE = contextvars.ContextVar("aktive_rolle", default="")
+# Rundgang 27.10.2026: ohne Sitzung (Anmeldemaske, Passwort vergessen) kein
+# Menue - die Zaehler verrieten sonst jedem im Tailnet Kontakt- und
+# Posteingangszahlen.
+_ANGEMELDET = contextvars.ContextVar("angemeldet", default=False)
 # Pfade, deren Zaehler "offen" bedeutet (Achtung-Farbe, wenn > 0).
 _ZAEHLER_OFFEN = ("/", "/freigaben", "/wiedervorlagen", "/einordnung")
 
@@ -2117,7 +2138,8 @@ def _zaehler_abfragen() -> dict:
             return None
 
     def _koerbe():
-        k = server._einzuordnende(text_max=EINORDNUNG_TEXT_MAX)
+        k = server._einzuordnende(limit=EINORDNUNG_ZAEHL_LIMIT,
+                                  text_max=EINORDNUNG_TEXT_MAX)
         return len(k["neu"]) + len(k["bereits_gefragt"])
 
     offen = {}
@@ -2139,12 +2161,11 @@ def _zaehler_abfragen() -> dict:
         # Menue-Zaehler, nicht in der Heute-Summe (R10); nur Zwischenspeicher,
         # kein Netzwerk.
         extra = _versuch("/freigaben", lambda: offen["/freigaben"]
-                         + ui_freigabe_newsletter.anzahl_offen(
-                             sys.modules[__name__])
-                         + ui_freigabe_bewerbung.anzahl_offen(
-                             sys.modules[__name__]))
+                         + _freigaben_zusatz())
         if extra is not None:
             ergebnis["/freigaben"] = extra
+            # Heute = dieselbe Summe wie die Startseite (Rundgang 27.10.2026).
+            ergebnis["/"] = ergebnis["/"] - offen["/freigaben"] + extra
     for schluessel, fn in (
         ("/kontakte", lambda: server._q(
             "select count(*) n from leads l where not "
@@ -2157,6 +2178,16 @@ def _zaehler_abfragen() -> dict:
         if wert is not None:
             ergebnis[schluessel] = wert
     return ergebnis
+
+
+def _freigaben_zusatz() -> int:
+    """Was ausser den Entwuerfen auf /freigaben wartet - EINE Rechnung fuer
+    Seitenleiste und Heute (Rundgang 27.10.2026: 11 gegen 5 gegen 19)."""
+    modul = sys.modules[__name__]
+    mails = server._q("select count(*) as n from postfach_mails "
+                      "where status = 'vorgeschlagen'")[0]["n"]
+    return (ui_freigabe_newsletter.anzahl_offen(modul)
+            + ui_freigabe_bewerbung.anzahl_offen(modul) + int(mails))
 
 
 def _zaehler() -> dict:
@@ -2338,7 +2369,8 @@ def _seite(titel: str, rumpf: str, status: int = 200,
     else:
         auffrischen = (f'<meta http-equiv="refresh" content="{int(refresh)}">'
                        if refresh else "")
-    nav = _seitenleiste(_abmelden_formular())
+    menue_erlaubt = not UI_SESSION_SECRET or _ANGEMELDET.get()
+    nav = _seitenleiste(_abmelden_formular()) if menue_erlaubt else ""
     return HTMLResponse(
         f'<!doctype html><html lang="de"><head><meta charset="utf-8">'
         # Ohne diese Zeile legt Safari eine 980px breite Desktop-Leinwand an
@@ -3797,38 +3829,19 @@ async def inbox(request):
                 f'<div class="aktionen">'
                 f'{_formular("verwerfen", z["id"], "Verwerfen", "gefahr")}'
                 f'</div></div>')
-        teile.append(_verlauf_block(art, name))
+        # Verlauf je Art steht seit dem Rundgang 27.10.2026 unter
+        # Monitoring -> Verlauf (/monitoring/verlauf): hier nur, was offen ist.
         teile.append("</section>")
 
-    # Termine: offen = Anfragen ohne festes Datum; Verlauf = bestaetigt,
-    # verschoben, abgesagt.
-    termine_offen = server._q(
-        "select l.id as lead_id, l.name, a.payload from activities a "
-        "left join leads l on l.id = a.lead_id "
-        "where a.type = 'termin' and coalesce(a.payload->>'datum', '') = '' "
-        "order by a.created_at desc limit 20")
-    teile.append(
-        f'<section class="block" id="termine"><h2><span class="badge termin">Termine</span> '
-        f'Termine <span class="zaehler{" offen" if termine_offen else ""}">'
-        f'{len(termine_offen)}</span></h2>')
-    if not termine_offen:
-        teile.append('<p class="meta">Keine Terminanfrage ohne festes Datum.</p>')
-    for z in termine_offen:
-        last = z["payload"] or {}
-        voll = str(last.get("inhalt") or last.get("thema") or "")
-        teile.append(
-            f'<div class="karte"><b><a href="/kontakte/{_e(z["lead_id"])}">'
-            f'{_e(z["name"] or "?")}</a></b> '
-            f'<span class="meta" title="{_e(voll)}">{_e(_kurz(voll, 160))}'
-            f'</span> · <a href="/kalender">im Kalender</a></div>')
-    teile.append(_verlauf_block("termine", "Termine"))
-    teile.append("</section>")
+    # Termine sind keine Freigaben (Rundgang 27.10.2026): Termine ohne Datum
+    # gibt es nicht, ihr Verlauf steht unter Monitoring -> Verlauf.
+    teile.append(_mails_aufraeumen_abschnitt())
     # Marketing (R7): eingereichte Inhalte aller Firmen und Arten.
     teile.append(await ui_freigabe_newsletter.abschnitt(
-        sys.modules[__name__], request))
+        sys.modules[__name__], request, verlauf=False))
     # Bewerbungen (Hermes H1): was der Bewerbungs-Bot zur Freigabe vorlegt.
     teile.append(await ui_freigabe_bewerbung.abschnitt(
-        sys.modules[__name__], request))
+        sys.modules[__name__], request, verlauf=False))
     # KEIN Auto-Refresh mehr (Betreiber 03.09.2026: „ich bearbeite einen Text
     # und werde wie bei einem Reload in die Mitte der Seite gezogen") — auf
     # dieser Seite wird getippt, und ein Neuladen wirft den Text weg.
@@ -3948,8 +3961,26 @@ async def freigaben_verlauf(request):
     if not zeilen:
         rumpf = '<p class="meta">Noch nichts im Verlauf.</p>'
     kopf = (f'<p class="meta">{len(zeilen)} Einträge (höchstens {VERLAUF_MAX}) '
-            f'· <a href="/freigaben">Zurück zu den Freigaben</a></p>')
+            f'· <a href="/monitoring/verlauf">Zurück zum Verlauf</a></p>')
     return _seite(f"Verlauf {name}", kopf + rumpf)
+
+
+@_gesichert_seite
+async def monitoring_verlauf(request):
+    """Was wann gesendet, gepostet, entschieden wurde (Rundgang 27.10.2026):
+    ausgelagert aus /freigaben, damit dort nur Offenes steht."""
+    teile = ['<p class="meta">Gesendet, gepostet, abgelehnt und entschieden — '
+             'je Art die letzten Einträge. Offenes steht unter '
+             '<a href="/freigaben">Freigaben</a>.</p>']
+    for art, name in FREIGABE_ARTEN + (("termine", "Termine"),):
+        teile.append(f'<section class="block">{_verlauf_block(art, name)}</section>')
+    teile.append(await ui_freigabe_newsletter.abschnitt(
+        sys.modules[__name__], request, offen=False))
+    teile.append(await ui_freigabe_bewerbung.abschnitt(
+        sys.modules[__name__], request, offen=False))
+    antwort = _seite("Verlauf", "".join(teile))
+    antwort.headers["Content-Security-Policy"] = _csp_mit_rahmen("'self'")
+    return antwort
 
 
 # ---------------------------------------------------------------------------
@@ -4513,11 +4544,25 @@ async def kontakte(request):
         ziffern = ziffern if len(ziffern) >= 3 else ""
         p.update(muster=_like_muster(q), ziffern=ziffern,
                  ziffern_muster="%" + ziffern + "%")
+        # Tippfehler erlaubt (Rundgang 27.10.2026): „Löfelman" findet
+        # „Löffelmann" ueber Trigramm-Naehe (pg_trgm, s. provision.sql) -
+        # zusaetzlich zur woertlichen Teilsuche, nie statt ihrer.
+        p["roh"] = q
         bed.append(
             r"(l.name ilike %(muster)s escape '\' "
             r"or coalesce(l.company, '') ilike %(muster)s escape '\' "
+            "or (length(%(roh)s) >= 3 and (similarity(l.name, %(roh)s) >= 0.3 "
+            "    or word_similarity(%(roh)s, l.name) >= 0.5 "
+            "    or similarity(coalesce(l.company, ''), %(roh)s) >= 0.4)) "
             "or (%(ziffern)s <> '' and regexp_replace(coalesce(l.phone, ''), "
             "'[^0-9]', '', 'g') like %(ziffern_muster)s))")
+    empfohlen = (qp.get("empfohlen") or "").strip()[:200]
+    if empfohlen:
+        # Kontaktliste und Empfehlungen zusammengelegt (Betreiber 27.10.2026):
+        # „empfohlen von …" ist ein Filter der Liste.
+        p["empfohlen"] = empfohlen
+        bed.append("l.enrichment->'empfehlung'->>'liste_id' in (select id::text "
+                   "from empfehlungslisten where empfohlen_von_name = %(empfohlen)s)")
     wo = " and ".join(bed)
     anzahl = server._q(
         "select " + ", ".join(
@@ -4532,16 +4577,31 @@ async def kontakte(request):
     # beim Blaettern ein Kontakt durch oder kaeme doppelt.
     zeilen = server._q(  # noqa: E501 — Spaltenliste bleibt eine Zeile je Feld
         "select l.id, l.name, l.status, l.consent_status, l.enrichment, "
-        "       l.score, l.company, "
+        "       l.score, l.company, l.phone, "
+        # Kontaktliste nach Papiervorlage (27.10.2026): bis zu fuenf Termine,
+        # Empfehlungszahl (Kontakte aus Listen, die dieser Kontakt gab).
+        "       (select coalesce(jsonb_agg(t order by t->>'datum'), '[]'::jsonb) "
+        "          from (select jsonb_build_object('datum', a.payload->>'datum', "
+        "                  'uhrzeit', a.payload->>'uhrzeit') as t "
+        "                  from activities a where a.lead_id = l.id "
+        "                   and a.type = 'termin' "
+        "                   and coalesce(a.payload->>'datum', '') <> '' "
+        "                 order by a.payload->>'datum' desc limit 5) x) as termine, "
+        "       (select count(*) from leads e "
+        "         where e.enrichment->'empfehlung'->>'liste_id' in ("
+        "           select id::text from empfehlungslisten x "
+        "            where x.empfohlen_von_lead = l.id)) as empf_zahl, "
         # `einordnung` ist Protokoll, kein Kontaktgeschehen (C1): sonst
         # stuende nach dem Bestandslauf ueberall der Deploy-Zeitpunkt.
         "       (select max(a.created_at) from activities a "
-        "         where a.lead_id = l.id and a.type <> 'einordnung') as letzte "
+        "         where a.lead_id = l.id and a.type not in "
+        "               ('einordnung', 'beziehung', 'kontaktliste')) as letzte "
         "from leads l where " + wo + " and " + _ANSICHT_SQL[ansicht] + " "
         "order by letzte desc nulls last, l.name asc, l.id asc "
         "limit %(lim)s offset %(off)s",
         {**p, "lim": KONTAKTE_SEITE, "off": (seite - 1) * KONTAKTE_SEITE})
     werte = {"ansicht": ansicht, "bereich": bereich, "q": q,
+             "empfohlen": empfohlen,
              "archiv": "1" if archiv_zeigen else "", "seite": 1}
     # Filter IM Tabellenkopf (Betreiber 19.10.2026: „die Ordnung sollte mit in
     # der Tabelle sein"). Seiten haben kein Skript: die Felder gehoeren per
@@ -4563,17 +4623,24 @@ async def kontakte(request):
         f'<a href="{_e(_kontakte_url(werte, archiv=""))}">nur aktive zeigen</a>'
         if archiv_zeigen else
         f'<a href="{_e(_kontakte_url(werte, archiv="1"))}">auch archivierte zeigen</a>')
+    empfehler = [z["n"] for z in server._q(
+        "select distinct empfohlen_von_name as n from empfehlungslisten "
+        "order by 1 limit 200")]
+    empf_wahl = ('<select name="empfohlen" form="kfilter" aria-label="Empfohlen von">'
+                 + _option("", "alle Empfehler", not empfohlen)
+                 + "".join(_option(n, f"empfohlen von {n}", n == empfohlen)
+                           for n in empfehler) + "</select>") if empfehler else ""
     filterzeile = [
-        suchfeld,
-        f'<div class="filtergruppe">{art_wahl}{bereich_wahl}'
+        suchfeld, "",
+        f'<div class="filtergruppe">{art_wahl}{bereich_wahl}{empf_wahl}'
         '<button type="submit" form="kfilter">Filtern</button></div>',
-        "", "", "", "", archiv_verweis]
+        "", "", "", "", "", "", archiv_verweis]
     formular = ('<form id="kfilter" method="get" action="/kontakte">'
                 + ('<input type="hidden" name="archiv" value="1">' if archiv_zeigen else "")
                 + "</form>")
-    gefiltert = ansicht != "alle" or bereich or q
+    gefiltert = ansicht != "alle" or bereich or q or empfohlen
     kopf = formular + (
-        f'<p class="meta"><a href="{_e(_kontakte_url(werte, ansicht="alle", bereich="", q=""))}">'
+        f'<p class="meta"><a href="{_e(_kontakte_url(werte, ansicht="alle", bereich="", q="", empfohlen=""))}">'
         "Filter zurücksetzen</a></p>" if gefiltert else "")
     if archiv_zeigen:
         kopf += '<p class="meta">Archivierte Kontakte sind mitgelistet.</p>'
@@ -4598,13 +4665,42 @@ async def kontakte(request):
         # Die Stufe deutsch wie auf /pipeline (29.08.2026); seit Schritt 5
         # (02.09.2026) als Chip, der Score als Pille, Consent als Meta-Zeile
         # unter dem Namen, die Autonomie als Segment statt Auswahlfeld.
+        # Kontaktliste nach der Papier-Namensliste des Betreibers (27.10.2026):
+        # Name/Anschrift · Telefon · Alter/Familie/Kinder · Beruf & Hobbys ·
+        # Termine (bis 5) · Abschluss · Empf.-Zahl · Bemerkung FK/analysiert,
+        # dazu Autonomie und Archiv.
+        e = z["enrichment"] or {}
+        liste = server._kontaktliste(e)
+        beziehung = server._beziehung(e)
         stufe = server._stufe_lesen(z["status"])
+        termine = z["termine"] or []
+        abschluss = [v.get("bezeichnung") for v in vertraege.eintraege_aus(e)
+                     if v.get("art") == "eigen" and v.get("bezeichnung")]
+        bearbeiten = ("" if sammel else
+                      '<details><summary>Bearbeiten</summary>'
+                      + _kontaktliste_formular(z["id"], liste, beziehung)
+                      + '</details>')
         inhalt.append([
             f'<a href="/kontakte/{_e(z["id"])}">{_e(z["name"])}</a>{marke}'
-            f'<div class="meta">Einwilligung: {_e(_EINWILLIGUNG.get(z["consent_status"], z["consent_status"]))}</div>',
-            _einordnung_chips(z["enrichment"], z["company"]),
-            f'<span class="stufe {_e(stufe)}">{_e(stufe)}</span>',
-            _score_pille(z["score"]), _zeit(z["letzte"]),
+            + (f'<div>{_e(liste.get("anschrift"))}</div>' if liste.get("anschrift") else "")
+            + (f' <span class="badge">{_e(server.BEZIEHUNGEN[beziehung])}</span>'
+               if beziehung else "")
+            + f' <span class="stufe {_e(stufe)}">{_e(stufe)}</span>'
+            f'<div class="meta">Newsletter: {"ja" if z["consent_status"] == "opt_in" else "nein"}'
+            f' · {_einordnung_chips(e, z["company"])}</div>',
+            _e(z["phone"] or ""),
+            _e(" · ".join(str(liste.get(k)) for k in ("alter", "familie", "kinder")
+                          if liste.get(k))),
+            _e(" · ".join(str(liste.get(k)) for k in ("beruf", "hobbys")
+                          if liste.get(k))),
+            "".join(f'<div>{i}) {_e(_datum_de(t.get("datum")))} '
+                    f'{_e(t.get("uhrzeit") or "")}</div>'
+                    for i, t in enumerate(termine, 1)) or '<span class="meta">—</span>',
+            _e(", ".join(abschluss)) or '<span class="meta">—</span>',
+            _e(int(z["empf_zahl"] or 0)),
+            (_e(liste.get("bemerkung_fk") or "")
+             + (' <span class="badge">analysiert ✓</span>'
+                if liste.get("analysiert") else "")) + bearbeiten,
             # Am Sammelkontakt keine Stufe: er ist kein Mensch, und eine
             # Stufe darauf liesse den Agenten allen Fremden antworten.
             "" if sammel else _autonomie_segment(
@@ -4628,11 +4724,49 @@ async def kontakte(request):
                 'Nachrichten bleiben frei.</p>')
     blaettern = ui_muster.blaettern(
         seite, letzte, lambda s: _kontakte_url(werte, seite=s))
-    rumpf = [kopf, _tabelle(
-        ["Name", "Einordnung", "Stufe", "Score", "Zuletzt", "Autonomie",
-         "Archiv"], inhalt, filterzeile=filterzeile, leer="Keine Kontakte."),
+    rumpf = [kopf,
+             '<p class="meta"><a href="/empfehlungen">Empfehlungslisten '
+             '(Vordrucke, PDF)</a></p>',
+             _beziehung_autonomie_kasten(),
+             _tabelle(
+        ["Name / Anschrift", "Telefon", "Alter / Fam. / Kinder",
+         "Beruf & Hobbys", "Termine", "Abschluss", "Empf.-Zahl",
+         "Bemerkung FK", "Autonomie", "Archiv"],
+        inhalt, filterzeile=filterzeile, leer="Keine Kontakte."),
         blaettern, fussnote if zeilen else ""]
-    return _seite(f"Kontakte ({gesamt})", "".join(rumpf))
+    return _seite(f"Kontaktliste ({gesamt})", "".join(rumpf))
+
+
+def _kontaktliste_formular(lead_id, liste: dict, beziehung) -> str:
+    """Felder der Papier-Namensliste je Kontakt, ohne JavaScript."""
+    def feld(k, text, breite=18):
+        return (f'<label>{_e(text)} <input name="{k}" size="{breite}" '
+                f'maxlength="{server.KONTAKTLISTE_MAX}" '
+                f'value="{_e(liste.get(k) or "")}"></label> ')
+    return (f'<form method="post" action="/kontakte/liste" class="zeile">'
+            f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+            f'<input type="hidden" name="lead_id" value="{_e(lead_id)}">'
+            + feld("anschrift", "Anschrift", 30) + feld("alter", "Alter", 4)
+            + feld("familie", "Familie", 10) + feld("kinder", "Kinder", 6)
+            + feld("beruf", "Beruf") + feld("hobbys", "Hobbys")
+            + feld("bemerkung_fk", "Bemerkung FK", 30)
+            + f'<label><input type="checkbox" name="analysiert" value="1"'
+              f'{" checked" if liste.get("analysiert") else ""}> analysiert</label> '
+            + f'<button type="submit">Speichern</button></form>'
+            + _beziehung_waehler(lead_id, beziehung, "/kontakte"))
+
+
+@_gesichert_seite
+async def aktion_kontaktliste(request):
+    form, lead_id, abbruch = await _kontakt_vorspann(request)
+    if abbruch:
+        return abbruch
+    werte = {k: str(form.get(k) or "") for k in server.KONTAKTLISTE_FELDER}
+    werte["analysiert"] = form.get("analysiert") == "1"
+    r = server._kontaktliste_setzen(lead_id, werte, quelle="ui")
+    if "fehler" in r:
+        return _fehlerseite(422, "Nicht gespeichert", _e(r["fehler"]))
+    return RedirectResponse("/kontakte", status_code=303)
 
 
 def _offene_wiedervorlagen(lead_id=None):
@@ -4942,6 +5076,82 @@ async def aktion_kontakt_einordnen(request):
         return _fehlerseite(422, "Nicht gespeichert", _e(r["fehler"]))
     return RedirectResponse(_kontakt_ziel(lead_id, "einstellungen", "einordnung"),
                             status_code=303)
+
+
+def _beziehungen_je_lead(lead_ids) -> dict:
+    """lead_id -> Beziehung (nur gesetzte), eine Abfrage fuer eine Liste."""
+    ids = [str(i) for i in lead_ids if i]
+    if not ids:
+        return {}
+    zeilen = server._q("select id::text as id, enrichment from leads "
+                       "where id::text = any(%s)", (ids,))
+    return {z["id"]: b for z in zeilen
+            if (b := server._beziehung(z["enrichment"]))}
+
+
+def _sicheres_ziel(danach: str, vorgabe: str) -> str:
+    """Nur Pfade dieser Oberflaeche - nie eine fremde Adresse (`//host`)."""
+    danach = str(danach or "")
+    if danach.startswith("/") and not danach.startswith("//") \
+            and "\\" not in danach and len(danach) < 300:
+        return danach
+    return vorgabe
+
+
+@_gesichert_seite
+async def aktion_kontakt_beziehung(request):
+    """Beziehung setzen (Rundgang 27./28.10.2026) - aus Einordnung und
+    Kontaktliste."""
+    form, lead_id, abbruch = await _kontakt_vorspann(request)
+    if abbruch:
+        return abbruch
+    r = server._beziehung_setzen(lead_id, str(form.get("beziehung") or ""),
+                                 quelle="ui")
+    if "fehler" in r:
+        return _fehlerseite(422, "Nicht gespeichert", _e(r["fehler"]))
+    return RedirectResponse(
+        _sicheres_ziel(form.get("danach"), f"/kontakte/{lead_id}"),
+        status_code=303)
+
+
+@_gesichert_seite
+async def aktion_beziehung_autonomie(request):
+    """Standard-Autonomiestufe je Beziehungsart (Betreiber 27.10.2026)."""
+    form = await request.form()
+    if not _csrf_ok(form):
+        return _fehlerseite(403, "CSRF-Token fehlt oder ist ungültig",
+                            "Nichts gespeichert. Seite neu laden.")
+    if _AKTIVE_ROLLE.get() in ("lesen", "kalender"):
+        return _fehlerseite(403, "Nicht für diese Anmeldung",
+                            "Nur die Rolle „freigeben“ ändert Vorgaben.")
+    r = server.beziehung_autonomie_setzen(
+        str(form.get("beziehung") or ""), str(form.get("standard") or ""),
+        _ui_akteur(request))
+    if "fehler" in r:
+        return _fehlerseite(422, "Nicht gespeichert", _e(r["fehler"]))
+    return RedirectResponse("/kontakte#autonomie-vorgaben", status_code=303)
+
+
+def _beziehung_autonomie_kasten() -> str:
+    """Kasten auf /kontakte: Standardstufe je Beziehungsart, aufklappbar."""
+    werte = server.beziehung_autonomie()
+    zeilen = []
+    for b, name in server.BEZIEHUNGEN.items():
+        optionen = "".join(
+            f'<option value="{s}"{" selected" if s == werte.get(b) else ""}>'
+            f'{_e(s)}</option>' for s in server.BEZIEHUNG_STUFEN)
+        zeilen.append(
+            f'<form class="zeile" method="post" action="/kontakte/beziehung-autonomie">'
+            f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+            f'<input type="hidden" name="beziehung" value="{_e(b)}">'
+            f'<span class="inhalt"><b>{_e(name)}</b></span>'
+            f'<select name="standard" aria-label="Standardstufe {_e(name)}">'
+            f'{optionen}</select><button>Setzen</button></form>')
+    return ('<details class="karte" id="autonomie-vorgaben"><summary>'
+            'Standard-Autonomie je Beziehung</summary>'
+            '<p class="meta">Gilt für jeden Kontakt dieser Beziehung ohne eigene '
+            'Stufe. Automatisch antwortet der Agent nur bei „auto“.</p>'
+            + "".join(zeilen) + '</details>')
 
 
 def _euro(betrag) -> str:
@@ -5737,40 +5947,114 @@ async def pipeline(request):
     # Kontakte mit (34 statt 28, im Browser gemessen). Filter und Anzeige
     # duerfen nie verschiedene Regeln benutzen; genau davor warnt der
     # Kommentar an _archiv_sql.
+    # Rundgang 27./28.10.2026: drei Pipelines (Kontakte, Firmen, Privat) mit
+    # denselben Phasen nach dem Zwei-Termin-Ablauf; Mitarbeiter stehen in
+    # keiner. Newsletter-Einwilligung als Ja/Nein je Karte (die Seite
+    # /newsletter/einwilligung ist hier hineingewandert).
+    qp = request.query_params
+    art = qp.get("art", "kontakte")
+    if art not in server.PIPELINE_ARTEN:
+        art = "kontakte"
+    q = (qp.get("q") or "").strip()[:KONTAKTE_SUCHE_MAX]
+    nl = qp.get("newsletter", "")
     zeilen = server._q(
-        "select l.id, l.name, l.status, "
+        "select l.id, l.name, l.status, l.enrichment, l.company, "
+        "       l.consent_status, "
         "  (select max(a.created_at) from activities a "
         "   where a.lead_id = l.id and a.type in "
         "   ('kundenantwort', 'nachricht_ausgehend', 'versand')) letzter "
         "from leads l "
         "where not " + server._archiv_sql("l.enrichment") +
-        " order by l.name")
-    spalten = {s: [] for s in server.PIPELINE_STUFEN}
+        " and (%(q)s = '' or l.name ilike %(muster)s escape '\\' "
+        "      or similarity(l.name, %(q)s) >= 0.3) "
+        " order by letzter desc nulls last, l.name",
+        {"q": q, "muster": _like_muster(q)})
+    je_art = {a: {p: [] for p in server.PHASEN} for a in server.PIPELINE_ARTEN}
     for z in zeilen:
-        spalten[server._stufe_lesen(z["status"])].append(z)
-    # Nur der FLUSS (neu … termin) — acht Spalten ueberragten jeden
-    # Bildschirm und die Seite wirkte abgeschnitten (Betreiber-Feedback
-    # 01.09.2026). Die Endzustaende stehen auf /ergebnisse.
-    aktive = server.PIPELINE_STUFEN[:-2]
-    abgeschlossen = sum(len(spalten[s]) for s in server.PIPELINE_STUFEN[-2:])
-    teile = [f'<p class="meta">Stufe setzen: auf der Kontaktseite. '
-             f'Jeder Wechsel steht mit Begründung im Protokoll. '
-             f'Abgeschlossene ({abgeschlossen}) stehen unter '
-             f'<a href="/ergebnisse">Ergebnisse</a>.</p>',
+        if _ist_sammelkontakt(z["id"]):
+            continue
+        a = server._pipeline_art(z["enrichment"], z["company"])
+        if a is None:
+            continue
+        if nl == "ja" and z["consent_status"] != "opt_in":
+            continue
+        if nl == "nein" and z["consent_status"] == "opt_in":
+            continue
+        je_art[a][server._phase(z["status"], z["enrichment"])].append(z)
+    reiter = "".join(
+        f'<a href="/pipeline?art={a}"'
+        + (' aria-current="page"' if a == art else "")
+        + f'>{_e(name)} <span class="zahl">'
+        f'{sum(len(v) for p, v in je_art[a].items() if p != "verloren")}</span></a>'
+        for a, name in server.PIPELINE_ARTEN.items())
+    filter_form = (
+        f'<form method="get" action="/pipeline" class="filter">'
+        f'<input type="hidden" name="art" value="{_e(art)}">'
+        f'<input type="search" name="q" value="{_e(q)}" placeholder="Name suchen" '
+        f'aria-label="Pipeline durchsuchen">'
+        f'<select name="newsletter" aria-label="Newsletter">'
+        f'<option value="">Newsletter: alle</option>'
+        f'<option value="ja"{" selected" if nl == "ja" else ""}>Newsletter: ja</option>'
+        f'<option value="nein"{" selected" if nl == "nein" else ""}>Newsletter: nein</option>'
+        f'</select><button>Filtern</button></form>')
+    spalten = je_art[art]
+    teile = [f'<nav class="reiter">{reiter}</nav>', filter_form,
+             '<p class="meta">Termin 1 ist die Aufnahme mit Bedarfsanalyse, '
+             'Termin 2 das Verkaufsgespräch. Firmen bekommen eine eigene '
+             'Bedarfsanalyse. Mitarbeiter stehen in keiner Pipeline. '
+             f'Verloren: {len(spalten["verloren"])}. Selbst-Anmeldung zum '
+             'Newsletter: <a href="/newsletter/einwilligung">Link und QR-Code</a>.</p>',
              '<div class="spalten">']
-    for stufe in aktive:
-        karten = "".join(
-            f'<div class="karte"><a href="/kontakte/{_e(str(k["id"]))}">'
-            f'{_e(k["name"] or "(ohne Namen)")}</a>'
-            f'<div class="meta">{_e(_zeit(k["letzter"])) if k["letzter"] else "noch kein Kontakt"}'
-            f'</div></div>'
-            for k in spalten[stufe])
+    for phase, name in server.PHASEN.items():
+        if phase == "verloren":
+            continue
+        karten = []
+        for k in spalten[phase][:PIPELINE_JE_SPALTE]:
+            nl_marke = (' <span class="badge" title="Newsletter-Einwilligung erteilt">'
+                        'Newsletter ✓</span>' if k["consent_status"] == "opt_in" else "")
+            karten.append(
+                f'<div class="karte"><a href="/kontakte/{_e(str(k["id"]))}">'
+                f'{_e(k["name"] or "(ohne Namen)")}</a>{nl_marke}'
+                f'<div class="meta">{_e(_zeit(k["letzter"])) if k["letzter"] else "noch kein Kontakt"}'
+                f'</div>{_phase_waehler(k["id"], phase, art)}</div>')
+        rest = len(spalten[phase]) - PIPELINE_JE_SPALTE
+        if rest > 0:
+            karten.append(f'<p class="meta">+ {rest} weitere — '
+                          f'<a href="/kontakte">in der Kontaktliste</a> oder suchen.</p>')
         teile.append(
-            f'<div class="spalte"><h2>{_e(stufe)} '
-            f'({len(spalten[stufe])})</h2>{karten or "<p class=meta>—</p>"}'
-            f'</div>')
+            f'<div class="spalte"><h2>{_e(name)} ({len(spalten[phase])})</h2>'
+            f'{"".join(karten) or "<p class=meta>—</p>"}</div>')
     teile.append("</div>")
     return _seite("Pipeline", "".join(teile))
+
+
+PIPELINE_JE_SPALTE = 15
+
+
+def _phase_waehler(lead_id, phase: str, art: str) -> str:
+    optionen = "".join(
+        f'<option value="{p}"{" selected" if p == phase else ""}>{_e(n)}</option>'
+        for p, n in server.PHASEN.items())
+    return (f'<form class="phase" method="post" action="/pipeline/phase">'
+            f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+            f'<input type="hidden" name="lead_id" value="{_e(lead_id)}">'
+            f'<input type="hidden" name="art" value="{_e(art)}">'
+            f'<select name="phase" aria-label="Phase">{optionen}</select>'
+            f'<button>Setzen</button></form>')
+
+
+@_gesichert_seite
+async def aktion_phase(request):
+    form, lead_id, abbruch = await _kontakt_vorspann(request)
+    if abbruch:
+        return abbruch
+    r = server._phase_setzen(lead_id, str(form.get("phase") or ""), quelle="ui")
+    if "fehler" in r:
+        return _fehlerseite(422, "Nicht gespeichert", _e(r["fehler"]))
+    art = str(form.get("art") or "")
+    return RedirectResponse(
+        "/pipeline" + (f"?art={art}" if art in server.PIPELINE_ARTEN else ""),
+        status_code=303)
 
 
 # Toleranz beim Paaren: dieselbe Buchung kann in zwei Quellen um ein paar
@@ -5863,6 +6147,46 @@ def _beginn_aus_payload(payload):
     except ValueError:
         return None
     return roh.replace(tzinfo=ZEITZONE) if ZEITZONE else roh
+
+
+def _team_ebenen() -> str:
+    """Team-Kalender je Mitglied an/aus (Betreiber 28.10.2026): eingeblendet
+    als „belegt" im Kalender und fuer die Planung des Agenten genutzt."""
+    if _AKTIVE_ROLLE.get() in ("lesen", "kalender"):
+        return ""
+    try:
+        quellen = server.kalenderquellen_lesen(nur_aktive=True)
+    except psycopg.Error:
+        return ""
+    if not quellen:
+        return ('<p class="meta">Kein Team-Kalender verbunden — '
+                '<a href="/team/kalender">Kalender verbinden</a>.</p>')
+    aus = set(server.team_kalender_aus())
+    felder = "".join(
+        f'<label><input type="checkbox" name="an" value="{_e(q["anzeigename"])}"'
+        f'{"" if q["anzeigename"] in aus else " checked"}> {_e(q["anzeigename"])}</label> '
+        for q in quellen)
+    return (f'<form class="karte" method="post" action="/kalender/team">'
+            f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+            f'<b>Team-Ebenen</b> <span class="meta">— nur belegt/frei; '
+            f'eingeschaltete plant der Agent mit.</span><div>{felder}'
+            f'<button>Übernehmen</button></div></form>')
+
+
+@_gesichert_seite
+async def aktion_team_ebenen(request):
+    form = await request.form()
+    if not _csrf_ok(form):
+        return _fehlerseite(403, "CSRF-Token fehlt oder ist ungültig",
+                            "Nichts geändert. Seite neu laden.")
+    if _AKTIVE_ROLLE.get() in ("lesen", "kalender"):
+        return _fehlerseite(403, "Nicht für diese Anmeldung",
+                            "Nur die Rolle „freigeben“ schaltet Team-Ebenen.")
+    an = set(form.getlist("an"))
+    alle = [q["anzeigename"] for q in server.kalenderquellen_lesen(nur_aktive=True)]
+    server.team_kalender_aus_setzen([n for n in alle if n not in an],
+                                    _ui_akteur(request))
+    return RedirectResponse("/kalender", status_code=303)
 
 
 def kalender_abschnitte() -> str:
@@ -5998,7 +6322,7 @@ def kalender_abschnitte() -> str:
 
     # Das Monatsgitter (01.09.2026) ist seit 14.10.2026 durch die Wochen-/
     # Monatsansicht des Pakets ersetzt (ui_kalender, R5).
-    teile = []
+    teile = [_team_ebenen()]
 
     kopf = ["Datum", "Zeit", "Kontakt", "Thema", "Ort", "Ändern"]
     teile.append(f"<h2>Kommende Termine ({len(kommend)})</h2>")
@@ -6110,6 +6434,14 @@ _ANBIETER_WEGE = (
      "Unter „Kalender veröffentlichen“ deinen Kalender und „Kann alle "
      "Details anzeigen“ wählen → „Veröffentlichen“ → <b>ICS-Link</b> kopieren. "
      "Mit Firmenkonto: dieselbe Seite unter outlook.office.com"),
+    # Betreiber 27.10.2026: GMX dazu. Der Freigabe-Link wird bei GMX (wie bei
+    # 1&1) je Nutzer und Kalender erzeugt - Weg noch am echten Konto pruefen.
+    ("GMX",
+     "https://kalender.gmx.net",
+     "Im GMX-Kalender links neben deinem Kalender auf die drei Punkte → "
+     "„Kalender freigeben“ bzw. „Teilen“ → <b>Link (iCal/ICS)</b> erzeugen und "
+     "kopieren. Fehlt die Option in deinem Tarif, gib Bescheid — dann binden "
+     "wir GMX über CalDAV an"),
 )
 
 
@@ -6597,9 +6929,46 @@ async def ergebnisse(request):
         "from leads l "
         "where l.status in ('won', 'lost') and not "
         + server._archiv_sql("l.enrichment") + " order by l.updated_at desc")
-    teile = []
-    for status, titel in (("won", "Gewonnen"), ("lost", "Verloren")):
+    # Rundgang 28.10.2026: Ergebnisse nach Verkaufsgespraechen. Oben die
+    # Termine, nach denen noch gefragt wird (der Bot fragt im Chat, hier
+    # geht es auch per Klick), darunter jedes Gespraech mit Ergebnis.
+    teile = [_rueckfragen_block()]
+    gespraeche = server._q(
+        "select e.created_at, e.payload, l.id as lead_id, l.name, "
+        "       t.payload->>'datum' as datum, t.payload->>'uhrzeit' as uhrzeit "
+        "  from activities e join leads l on l.id = e.lead_id "
+        "  left join activities t on t.id::text = e.payload->>'termin_id' "
+        " where e.type = 'termin_ergebnis' "
+        " order by e.created_at desc limit 200")
+    verkauf = [g for g in gespraeche
+               if (g["payload"] or {}).get("art") == "verkaufsgespraech"]
+    teile.append(f"<h2>Verkaufsgespräche ({len(verkauf)})</h2>")
+    if verkauf:
+        zeilen_v = []
+        for g in verkauf:
+            p = g["payload"] or {}
+            if not p.get("stattgefunden"):
+                ausgang = '<span class="badge archiv">nicht stattgefunden</span>'
+            elif p.get("erfolg"):
+                ausgang = '<span class="badge">Erfolg</span>'
+            else:
+                ausgang = '<span class="badge achtung">kein Abschluss</span>'
+            zeilen_v.append([
+                f'<a href="/kontakte/{_e(g["lead_id"])}">{_e(g["name"])}</a>',
+                _e(_datum_de(g["datum"])) + " " + _e(g["uhrzeit"] or ""),
+                ausgang, _e(p.get("was") or p.get("grund") or "")])
+        teile.append(_tabelle(["Kontakt", "Termin", "Ergebnis", "Was / Grund"],
+                              zeilen_v))
+    else:
+        teile.append('<p class="meta">Noch kein Verkaufsgespräch gebucht.</p>')
+    aufnahmen = len(gespraeche) - len(verkauf)
+    teile.append(f'<p class="meta">Dazu {aufnahmen} Aufnahmen (Termin 1). '
+                 f'Stand in der Pipeline: <a href="/pipeline">Pipeline</a>.</p>')
+    for status, titel in (("won", "Gewonnen (alte Stufe)"),
+                          ("lost", "Verloren (alte Stufe)")):
         gruppe = [z for z in zeilen if z["status"] == status]
+        if not gruppe:
+            continue
         teile.append(f"<h2>{titel} ({len(gruppe)})</h2>")
         if not gruppe:
             teile.append("<p class=meta>—</p>")
@@ -6616,6 +6985,53 @@ async def ergebnisse(request):
         teile.append(_tabelle(
             ["Kontakt", "Seit", "Begründung"], ergebnis_zeilen))
     return _seite("Ergebnisse", "".join(teile))
+
+
+def _rueckfragen_block() -> str:
+    """Vorbeigegangene Termine ohne Ergebnis - mit Antwortformular."""
+    offen = server._termine_ohne_ergebnis()
+    teile = [f'<h2 id="rueckfragen">Wie lief der Termin? ({len(offen)})</h2>']
+    if not offen:
+        return teile[0] + '<p class="meta">Keine offene Rückfrage.</p>'
+    for t in offen:
+        art = ("Termin 2 · Verkaufsgespräch" if t["art"] == "verkaufsgespraech"
+               else "Termin 1 · Aufnahme")
+        erfolg = ('<label><input type="radio" name="erfolg" value="1"> Erfolg</label> '
+                  '<label><input type="radio" name="erfolg" value="0"> kein Abschluss</label> '
+                  '<label>Was abgeschlossen? <input name="was" maxlength="300"></label> '
+                  if t["art"] == "verkaufsgespraech" else "")
+        teile.append(
+            f'<form class="karte" method="post" action="/ergebnisse/termin">'
+            f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+            f'<input type="hidden" name="termin_id" value="{_e(t["termin_id"])}">'
+            f'<b><a href="/kontakte/{_e(t["lead_id"])}">{_e(t["name"])}</a></b> · '
+            f'{_e(_datum_de(t["datum"]))} {_e(t["uhrzeit"] or "")} · '
+            f'<span class="badge">{_e(art)}</span>'
+            f'<div><label><input type="radio" name="stattgefunden" value="1" required> '
+            f'hat stattgefunden</label> <label><input type="radio" '
+            f'name="stattgefunden" value="0"> nicht stattgefunden</label></div>'
+            f'<div>{erfolg}<label>Grund/Notiz <input name="grund" maxlength="300">'
+            f'</label> <button>Speichern</button></div></form>')
+    return "".join(teile)
+
+
+@_gesichert_seite
+async def aktion_termin_ergebnis(request):
+    form = await request.form()
+    if not _csrf_ok(form):
+        return _fehlerseite(403, "CSRF-Token fehlt oder ist ungültig",
+                            "Nichts gespeichert. Seite neu laden.")
+    if _AKTIVE_ROLLE.get() in ("lesen", "kalender"):
+        return _fehlerseite(403, "Nicht für diese Anmeldung",
+                            "Nur die Rolle „freigeben“ bucht Ergebnisse.")
+    erfolg_roh = form.get("erfolg")
+    r = server._termin_ergebnis(
+        str(form.get("termin_id") or ""), form.get("stattgefunden") == "1",
+        None if erfolg_roh not in ("0", "1") else erfolg_roh == "1",
+        str(form.get("was") or ""), str(form.get("grund") or ""), quelle="ui")
+    if "fehler" in r:
+        return _fehlerseite(422, "Nicht gespeichert", _e(r["fehler"]))
+    return RedirectResponse("/ergebnisse", status_code=303)
 
 
 @_gesichert_seite
@@ -7493,8 +7909,18 @@ async def posteingang(request):
     daten = json.loads(server.posteingang())
     if "fehler" in daten:
         return _fehlerseite(503, "Posteingang nicht lesbar", _e(daten["fehler"]))
-    teile = [f'<p class="meta">Fenster: {_e(daten["fenster_stunden"])} h · '
-             f'unbeantwortet: {_e(daten["anzahl_unbeantwortet"])}</p>']
+    # Rundgang 27./28.10.2026: EIN Posteingang - Chats (WhatsApp, Telegram),
+    # Mails des Betreiber-Postfachs und weitere Benachrichtigungen, mit Suche.
+    # Betrug liegt im Spam-Ordner, Unwichtiges nur als Vorschlag in Freigaben.
+    such = (request.query_params.get("q") or "").strip()[:120]
+    teile = [f'<form method="get" action="/posteingang" class="filter">'
+             f'<input type="search" name="q" value="{_e(such)}" '
+             f'placeholder="Mails und Nachrichten durchsuchen" '
+             f'aria-label="Posteingang durchsuchen"><button>Suchen</button></form>']
+    if such:
+        teile.append(_posteingang_suche(such))
+    teile.append(f'<h2>Unbeantwortet ({_e(daten["anzahl_unbeantwortet"])})</h2>'
+                 f'<p class="meta">Fenster: {_e(daten["fenster_stunden"])} Std.</p>')
     if not daten["eintraege"]:
         teile.append("<p>Keine unbeantworteten Eingänge.</p>")
     for e in daten["eintraege"]:
@@ -7515,13 +7941,134 @@ async def posteingang(request):
             absender = f'<div class="meta">Absender: {_e(e["absender"])}{lid}</div>'
         inhalt_zeile = _nachricht_inhalt(e.get("text_kurz"),
                                          e.get("nachrichtentyp"))
+        kanal = str(e.get("kanal") or "whatsapp")
         teile.append(
-            f'<div class="karte"><b><a href="/kontakte/{_e(e["lead_id"])}">'
+            f'<div class="karte">{_badge(kanal)} '
+            f'<b><a href="/kontakte/{_e(e["lead_id"])}">'
             f'{_e(e["kontakt"] or "(ohne Kontakt)")}</a></b> — wartet seit '
-            f'{_e(e["wartet_stunden"])} h{absender}{inhalt_zeile}</div>')
+            f'{_e(_wartezeit(e["wartet_stunden"]))}{absender}{inhalt_zeile}'
+            f'<div class="aktionen"><a class="knopf sek" '
+            f'href="/kontakte/{_e(e["lead_id"])}#verlauf">Antworten</a></div></div>')
     if "hinweis" in daten:
         teile.append(f'<div class="hinweis">{_e(daten["hinweis"])}</div>')
+    teile.append(_postfach_block())
     return _seite("Posteingang", "".join(teile))
+
+
+def _wartezeit(stunden) -> str:
+    """14.3 -> „14 Std.", 0.4 -> „24 Min." (Rundgang 27.10.2026)."""
+    try:
+        h = float(stunden)
+    except (TypeError, ValueError):
+        return str(stunden)
+    if h < 1:
+        return f"{max(1, round(h * 60))} Min."
+    if h >= 48:
+        return f"{round(h / 24)} Tagen"
+    return f"{round(h)} Std."
+
+
+def _postfach_block() -> str:
+    """Mails aus dem Betreiber-Postfach (Index postfach_mails) und Spam."""
+    mails = server._q(
+        "select message_id, von, betreff, datum, auszug, art, status, grund "
+        "from postfach_mails order by gesehen_am desc limit 30")
+    normal = [m for m in mails if m["status"] not in ("verschoben",)]
+    spam = [m for m in mails if m["art"] == "spam" and m["status"] == "verschoben"]
+    teile = [f"<h2>Mails ({len(normal)})</h2>"]
+    if not normal:
+        teile.append('<p class="meta">Noch keine Mail gesehen — der Agent liest '
+                     'das Postfach im Routinelauf.</p>')
+    for m in normal:
+        marke = (' <span class="badge achtung">Vorschlag: unwichtig</span>'
+                 if m["status"] == "vorgeschlagen" else "")
+        teile.append(
+            f'<div class="karte">{_badge("email")}{marke} <b>{_e(m["betreff"] or "(ohne Betreff)")}</b>'
+            f'<div class="meta">{_e(m["von"])} · {_e(m["datum"])}</div>'
+            f'<div class="text">{_e(_kurz(m["auszug"] or "", 300))}</div></div>')
+    teile.append(f'<details class="karte"><summary>Spam-Ordner ({len(spam)})</summary>'
+                 '<p class="meta">Vom Agenten als Betrug erkannt und in den '
+                 'Spam-Ordner des Postfachs verschoben — nichts gelöscht. '
+                 'Zurückholen im Mailprogramm.</p>'
+                 + "".join(f'<div class="zeile"><b>{_e(m["betreff"])}</b> · '
+                           f'{_e(m["von"])} · <span class="meta">{_e(m["grund"] or "")}'
+                           f'</span></div>' for m in spam)
+                 + '</details>')
+    return "".join(teile)
+
+
+def _posteingang_suche(such: str) -> str:
+    """Mails und Nachrichten durchsuchen: deutsche Wortstaemme (Volltext)
+    plus Tippfehler-Toleranz ueber Trigramme."""
+    mails = server._q(
+        "select betreff, von, datum, auszug from postfach_mails "
+        "where suchtext @@ websearch_to_tsquery('german', %(q)s) "
+        "   or similarity(betreff, %(q)s) >= 0.3 or similarity(von, %(q)s) >= 0.3 "
+        "order by ts_rank(suchtext, websearch_to_tsquery('german', %(q)s)) desc "
+        "limit 20", {"q": such})
+    chats = server._q(
+        "select a.created_at, a.payload->>'text' as text, l.id as lead_id, l.name "
+        "  from activities a join leads l on l.id = a.lead_id "
+        " where a.type in ('kundenantwort', 'transkription') "
+        "   and a.suchtext @@ websearch_to_tsquery('german', %(q)s) "
+        " order by a.created_at desc limit 20", {"q": such})
+    teile = [f"<h2>Treffer für „{_e(such)}“ ({len(mails) + len(chats)})</h2>"]
+    for m in mails:
+        teile.append(f'<div class="karte">{_badge("email")} <b>{_e(m["betreff"])}</b>'
+                     f'<div class="meta">{_e(m["von"])} · {_e(m["datum"])}</div>'
+                     f'<div class="text">{_e(_kurz(m["auszug"] or "", 300))}</div></div>')
+    for c in chats:
+        teile.append(f'<div class="karte"><a href="/kontakte/{_e(c["lead_id"])}">'
+                     f'{_e(c["name"])}</a> · <span class="meta">{_zeit(c["created_at"])}'
+                     f'</span><div class="text">{_e(_kurz(c["text"] or "", 300))}</div></div>')
+    if not mails and not chats:
+        teile.append('<p class="meta">Nichts gefunden.</p>')
+    return "".join(teile)
+
+
+def _mails_aufraeumen_abschnitt() -> str:
+    """Freigaben: unwichtige Mails, die der Agent zum Wegraeumen vorschlaegt."""
+    vorschlaege = server._q(
+        "select message_id, von, betreff, grund from postfach_mails "
+        "where status = 'vorgeschlagen' order by gesehen_am desc limit 50")
+    n = len(vorschlaege)
+    teile = [f'<section class="block" id="mails-ordnen"><h2>{_badge("email")} '
+             f'Mails aufräumen <span class="zaehler{" offen" if n else ""}">{n}</span></h2>']
+    if not vorschlaege:
+        teile.append('<p class="meta">Kein Aufräum-Vorschlag.</p>')
+    for m in vorschlaege:
+        teile.append(
+            f'<div class="karte"><b>{_e(m["betreff"])}</b>'
+            f'<div class="meta">{_e(m["von"])} — {_e(m["grund"] or "")}</div>'
+            f'<div class="aktionen">'
+            f'<form method="post" action="/posteingang/aufraeumen">'
+            f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+            f'<input type="hidden" name="message_id" value="{_e(m["message_id"])}">'
+            f'<button name="entscheidung" value="verschieben" class="primaer">'
+            f'In „Unwichtig“ verschieben</button>'
+            f'<button name="entscheidung" value="behalten">Behalten</button>'
+            f'</form></div></div>')
+    teile.append("</section>")
+    return "".join(teile)
+
+
+@_gesichert_seite
+async def aktion_mail_aufraeumen(request):
+    form = await request.form()
+    if not _csrf_ok(form):
+        return _fehlerseite(403, "CSRF-Token fehlt oder ist ungültig",
+                            "Nichts geändert. Seite neu laden.")
+    if _AKTIVE_ROLLE.get() in ("lesen", "kalender"):
+        return _fehlerseite(403, "Nicht für diese Anmeldung",
+                            "Nur die Rolle „freigeben“ räumt auf.")
+    neu = {"verschieben": "bestaetigt", "behalten": "behalten"}.get(
+        str(form.get("entscheidung") or ""))
+    if not neu:
+        return _fehlerseite(422, "Unbekannte Entscheidung", "Nichts geändert.")
+    server._q("update postfach_mails set status = %s, geaendert_am = now() "
+              "where message_id = %s and status = 'vorgeschlagen' returning 1",
+              (neu, str(form.get("message_id") or "")))
+    return RedirectResponse("/freigaben#mails-ordnen", status_code=303)
 
 
 # ---------------------------------------------------------------------------
@@ -7608,6 +8155,77 @@ def _einordnung_aktionen(absender, optionen: str) -> str:
         f"</div>")
 
 
+# Rundgang 27.10.2026: Sprachnachrichten und Bilder unbekannter Absender
+# abspielbar/sichtbar. Dateinamen sind sha256-Stuecke aus inbox.py - nur
+# genau diese Form wird ausgeliefert, nie ein Pfad aus fremder Hand.
+_EINGANG_DATEI = re.compile(r"[0-9a-f]{32}\.(ogg|jpg|png|webp)")
+_EINGANG_TYP = {"ogg": "audio/ogg", "jpg": "image/jpeg", "png": "image/png",
+                "webp": "image/webp"}
+EINORDNUNG_KARTE_NACHRICHTEN = 3
+
+
+def _eingang_medien(z) -> str:
+    """Bild, Audio-Spieler und Abschrift zu einer eingegangenen Nachricht."""
+    teile = []
+    bild = str(z.get("bild_datei") or "")
+    if _EINGANG_DATEI.fullmatch(bild):
+        teile.append(f'<a href="/einordnung/datei/{bild}"><img class="eingang-bild" '
+                     f'src="/einordnung/datei/{bild}" alt="Bild des Absenders" '
+                     f'loading="lazy"></a>')
+    audio = str(z.get("audio_datei") or "")
+    if _EINGANG_DATEI.fullmatch(audio):
+        teile.append(f'<audio controls preload="none" '
+                     f'src="/einordnung/datei/{audio}"></audio>')
+    abschrift = " ".join(str(z.get("transkript") or "").split())
+    if abschrift:
+        teile.append(f'<div class="abschrift"><span class="meta">Abschrift:'
+                     f'</span> {_e(abschrift)}</div>')
+    return "".join(teile)
+
+
+@_gesichert_seite
+async def einordnung_datei(request):
+    name = str(request.path_params.get("name") or "")
+    if not _EINGANG_DATEI.fullmatch(name):
+        return _fehlerseite(404, "Unbekannte Datei", "Diese Datei gibt es nicht.")
+    pfad = os.path.join(server.SPRACH_VERZEICHNIS, name)
+    if not os.path.isfile(pfad):
+        return _fehlerseite(404, "Datei fehlt",
+                            "Die Datei liegt nicht (mehr) im Eingangsordner.")
+    with open(pfad, "rb") as datei:
+        inhalt = datei.read()
+    return Response(inhalt, media_type=_EINGANG_TYP[name.rsplit(".", 1)[1]],
+                    headers={"Content-Security-Policy": _CSP_DATEI,
+                             "X-Content-Type-Options": "nosniff",
+                             "cache-control": "private, max-age=3600"})
+
+
+def _kennung_lesbar(absender) -> str:
+    """`4917661696700@c.us` -> `+49 176 61696700`; LIDs bleiben, was sie sind."""
+    roh = str(absender or "")
+    if "@lid" in roh:
+        return roh
+    ziffern = "".join(c for c in roh.split("@")[0] if c.isdigit())
+    if not ziffern:
+        return roh
+    if ziffern.startswith("49") and len(ziffern) > 6:
+        return f"+49 {ziffern[2:5]} {ziffern[5:]}"
+    return f"+{ziffern}"
+
+
+def _beziehung_waehler(lead_id, beziehung, danach: str) -> str:
+    """Auswahl + Knopf ohne JavaScript (wie die Autonomie-Auswahl)."""
+    optionen = ['<option value="">— offen —</option>'] + [
+        f'<option value="{_e(k)}"{" selected" if k == beziehung else ""}>'
+        f'{_e(n)}</option>' for k, n in server.BEZIEHUNGEN.items()]
+    return (f'<form class="beziehung" method="post" action="/kontakte/beziehung">'
+            f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+            f'<input type="hidden" name="lead_id" value="{_e(lead_id)}">'
+            f'<input type="hidden" name="danach" value="{_e(danach)}">'
+            f'<select name="beziehung" aria-label="Beziehung">{"".join(optionen)}'
+            f'</select><button>Setzen</button></form>')
+
+
 def _einordnung_karte(eintrag, optionen: str) -> str:
     absender = eintrag["absender"]
     lid_marke = (' <span class="badge lid">LID-Pseudo-Kennung, keine '
@@ -7627,13 +8245,23 @@ def _einordnung_karte(eintrag, optionen: str) -> str:
     # Die Anzahl ist der Link auf den ganzen Faden (31.08.2026): die
     # Kurzfassung der letzten Nachricht reicht nicht immer, um zu
     # entscheiden, wer da schreibt.
-    return (f'<div class="karte"><b>{_e(absender)}</b>{lid_marke}'
+    # Rundgang 27.10.2026: die letzten Nachrichten MIT Typ, Bild, Audio und
+    # Abschrift - ein leerer Text bei einer Sprachnachricht liess nicht
+    # erkennen, wer schreibt.
+    letzte = server._absender_nachrichten(eintrag["kennung"])[
+        -EINORDNUNG_KARTE_NACHRICHTEN:]
+    nachrichten = "".join(
+        f'<div class="nachricht"><span class="meta">{_zeit(z["created_at"])}'
+        f'</span>{_nachricht_inhalt(_kurz(str(z["text"] or ""), EINORDNUNG_TEXT_MAX), z["nachrichtentyp"])}'
+        f'{_eingang_medien(z)}</div>' for z in letzte
+    ) or f'<div class="text">{_e(eintrag["text_kurz"])}</div>'
+    return (f'<div class="karte"><b>{_badge("whatsapp")} '
+            f'{_e(_kennung_lesbar(absender))}</b>{lid_marke}'
             f'<div class="meta">'
             f'<a href="/einordnung/nachrichten/{_e(eintrag["kennung"])}">'
             f'{_e(eintrag["anzahl_nachrichten"])} Nachricht(en)</a>'
             f' · zuletzt {_zeit(eintrag["zuletzt"])}{gefragt}'
-            f'</div>{warnung}'
-            f'<div class="text">{_e(eintrag["text_kurz"])}</div>'
+            f'</div>{warnung}{nachrichten}'
             f'{_einordnung_aktionen(absender, optionen)}</div>')
 
 
@@ -7643,7 +8271,11 @@ async def einordnung(request):
     # beim Seitenaufruf den Rueckfrage-Anspruch beanspruchen. Aus demselben
     # Grund traegt diese Seite KEINEN Meta-Refresh — er wuerde ausserdem ein
     # halb getipptes Namensfeld unter den Fingern des Betreibers wegraeumen.
-    koerbe = server._einzuordnende(text_max=EINORDNUNG_TEXT_MAX)
+    # Dieselbe Obergrenze wie Heute (Rundgang 27.10.2026): mit dem Chat-Deckel
+    # (25 juengste Kennungen) fielen aeltere offene Absender hier heraus,
+    # waehrend Heute sie zaehlte - „Einordnung (2)" gegen „Wartet (0)".
+    koerbe = server._einzuordnende(limit=EINORDNUNG_ZAEHL_LIMIT,
+                                   text_max=EINORDNUNG_TEXT_MAX)
     # Im Chat sind 'neu' und 'bereits_gefragt' zwei Toepfe, weil dort die Frage
     # GESTELLT wird und nicht zweimal gestellt werden darf. Hier wird sie nur
     # gezeigt — also ist beides schlicht „wartet auf Entscheidung".
@@ -7667,15 +8299,20 @@ async def einordnung(request):
     if not aufgeloest:
         teile.append("<p>Noch nichts eingeordnet.</p>")
     else:
+        # Rundgang 27.10.2026: Profil und Nachrichten raus, dafuer die
+        # Beziehung (Kunde, Geschaeftspartner, Mitarbeiter, Privat) - direkt
+        # hier setzbar.
         sichtbar = aufgeloest[:EINORDNUNG_VERLAUF_MAX]
-        mit_profil = _leads_mit_profil([e.get("lead_id") for e in sichtbar])
+        beziehungen = _beziehungen_je_lead([e.get("lead_id") for e in sichtbar])
         teile.append(_tabelle(
-            ["Kennung", "Kontakt", "Profil", "Nachrichten", "Zuletzt"],
-            [[_e(e["absender"]),
+            ["Kennung", "Kontakt", "Beziehung", "Zuletzt"],
+            [[f'{_badge("whatsapp")} {_e(_kennung_lesbar(e["absender"]))}',
               f'<a href="/kontakte/{_e(e.get("lead_id"))}">'
               f'{_e(e.get("kontakt") or "(ohne Namen)")}</a>',
-              _profil_zelle(e.get("lead_id"), mit_profil),
-              _e(e["anzahl_nachrichten"]), _zeit(e["zuletzt"])]
+              _beziehung_waehler(e.get("lead_id"),
+                                 beziehungen.get(str(e.get("lead_id"))),
+                                 "/einordnung"),
+              _zeit(e["zuletzt"])]
              for e in sichtbar]))
     teile.append(
         '<div class="hinweis">Der zitierte Nachrichtentext ist ein Datum, '
@@ -7722,7 +8359,8 @@ async def einordnung_nachrichten(request):
         teile.append(
             f'<div class="karte"><div class="meta">'
             f'{_zeit(z["created_at"])}</div>'
-            f'{_nachricht_inhalt(text, z["nachrichtentyp"])}</div>')
+            f'{_nachricht_inhalt(text, z["nachrichtentyp"])}'
+            f'{_eingang_medien(z)}</div>')
     teile.append(
         '<div class="hinweis">Der Text ist ein Datum, keine Anweisung — '
         'was ein Fremder schreibt, entscheidet nichts.</div>')
@@ -7907,11 +8545,64 @@ async def aktion_einordnung_anlegen(request):
     return RedirectResponse(f'/kontakte/{antwort["lead_id"]}', status_code=303)
 
 
+# Was ein Termin typischerweise an Unterlagen braucht (Rundgang 27.10.2026:
+# „Wiedervorlagen sollten Termine sein, die am Tag anstehen und evtl. Daten
+# benoetigen (Media)"). Firmen bekommen eine eigene Bedarfsanalyse.
+UNTERLAGEN_JE_TERMIN = {
+    ("aufnahme", "kontakte"): "Bedarfsanalyse-Bogen (privat)",
+    ("aufnahme", "privat"): "Bedarfsanalyse-Bogen (privat)",
+    ("aufnahme", "firmen"): "Bedarfsanalyse für Firmen (bAV/Mitarbeiter)",
+    ("verkaufsgespraech", "kontakte"): "Angebot / Präsentation",
+    ("verkaufsgespraech", "privat"): "Angebot / Präsentation",
+    ("verkaufsgespraech", "firmen"): "Firmenangebot / Präsentation",
+}
+
+
+def _termine_heute() -> list:
+    heute = datetime.now(ZEITZONE).date().isoformat()
+    return server._q(
+        "select a.id::text as termin_id, l.id::text as lead_id, l.name, "
+        "       l.enrichment, l.company, a.payload "
+        "  from activities a join leads l on l.id = a.lead_id "
+        " where a.type = 'termin' and a.payload->>'datum' = %s "
+        " order by a.payload->>'uhrzeit'", (heute,))
+
+
+def _unterlagen_des_kontakts(lead_id) -> list:
+    """Dateien, die schon an Entwuerfe dieses Kontakts gehaengt waren."""
+    return [z["m"] for z in server._q(
+        "select distinct d.media_ref as m from drafts d where d.lead_id = %s "
+        "and coalesce(d.media_ref, '') <> '' limit 10", (lead_id,))]
+
+
 @_gesichert_seite
 async def wiedervorlagen(request):
+    termine = _termine_heute()
+    teile = [f"<h2>Heute anstehende Termine ({len(termine)})</h2>",
+             '<p class="meta">Was zu jedem Termin gebraucht wird und was schon '
+             'beim Kontakt liegt. Fehlendes hochladen unter '
+             '<a href="/medien">Medien</a>.</p>']
+    if not termine:
+        teile.append('<p>Heute steht kein Termin an.</p>')
+    for t in termine:
+        p = t["payload"] or {}
+        art = server._termin_art(t["lead_id"], t["termin_id"])
+        pipeline = server._pipeline_art(t["enrichment"], t["company"]) or "kontakte"
+        braucht = UNTERLAGEN_JE_TERMIN.get((art, pipeline), "")
+        da = _unterlagen_des_kontakts(t["lead_id"])
+        da_html = ("".join(f'<li><a href="/medien">{_e(m)}</a></li>' for m in da)
+                   if da else '<li class="meta">noch nichts beim Kontakt</li>')
+        teile.append(
+            f'<div class="karte"><b>{_e(p.get("uhrzeit") or "")}</b> '
+            f'<a href="/kontakte/{_e(t["lead_id"])}">{_e(t["name"])}</a> · '
+            f'<span class="badge">{_e("Termin 2 · Verkaufsgespräch" if art == "verkaufsgespraech" else "Termin 1 · Aufnahme")}</span>'
+            f' {_e(p.get("thema") or "")}'
+            f'<div class="meta">Braucht: {_e(braucht)}</div>'
+            f'<ul>{da_html}</ul></div>')
     zeilen = _offene_wiedervorlagen()
-    return _seite(f"Offene Wiedervorlagen ({len(zeilen)})",
-                  _wiedervorlagen_tabelle(zeilen))
+    teile.append(f"<h2>Erinnerungen ({len(zeilen)})</h2>")
+    teile.append(_wiedervorlagen_tabelle(zeilen))
+    return _seite("Wiedervorlagen", "".join(teile))
 
 
 # ---------------------------------------------------------------------------
@@ -8360,14 +9051,13 @@ async def heute(request):
     # wieder zu wenig, dieselbe Unehrlichkeit wie in Aufgabe 8, nur an zwei
     # weiteren Stellen. Drei zusaetzliche Zaehlabfragen fallen bei einer
     # Startseite, die ohnehin mehrfach abfragt, nicht ins Gewicht.
-    termine_offen = server._q(
-        "select l.id as lead_id, l.name, a.payload from activities a "
-        "left join leads l on l.id = a.lead_id "
-        "where a.type = 'termin' and coalesce(a.payload->>'datum', '') = '' "
-        "order by a.created_at desc limit 5")
-    termine_offen_gesamt = server._q(
+    # Rundgang 27.10.2026: Termine ohne Datum gibt es nicht - die alten
+    # Termin-Notizen ohne Tag stehen nur noch im Kalender, nicht mehr hier.
+    # Statt ihrer zaehlt die Kennzahl die Termine des heutigen Tages.
+    termine_heute = server._q(
         "select count(*) as n from activities a where a.type = 'termin' "
-        "and coalesce(a.payload->>'datum', '') = ''")[0]["n"]
+        "and a.payload->>'datum' = %s",
+        (datetime.now(ZEITZONE).date().isoformat(),))[0]["n"]
     wiedervorlagen = _offene_wiedervorlagen()
     wiedervorlagen_gesamt = server._q(
         "select count(*) as n from activities w where w.type = 'wiedervorlage' "
@@ -8385,28 +9075,22 @@ async def heute(request):
     einordnung_offen = len(koerbe["neu"]) + len(koerbe["bereits_gefragt"])
 
     jetzt = datetime.now(ZEITZONE)
-    # `termine_offen` gehoert in die Summe: es stand eine Zeile weiter
-    # oben schon bereit und wurde nur in der Anzeige benutzt. Dadurch
-    # meldete die Kopfzeile „1 Entscheidung … Alles andere laeuft",
-    # waehrend zwei Terminanfragen ohne Datum darunter standen
-    # (gemessen 10.09.2026).
+    try:
+        freigaben_offen = len(pending) + _freigaben_zusatz()
+    except Exception:  # noqa: BLE001 - die Startseite faellt nicht mit
+        freigaben_offen = len(pending)
     posten = []
-    if pending:
-        posten.append(f"{len(pending)} Entwurf" if len(pending) == 1
-                      else f"{len(pending)} Entwürfe")
+    if freigaben_offen:
+        posten.append(f"{freigaben_offen} Freigabe" if freigaben_offen == 1
+                      else f"{freigaben_offen} Freigaben")
     if einordnung_offen:
         posten.append(f"{einordnung_offen} Einordnung" if einordnung_offen == 1
                       else f"{einordnung_offen} Einordnungen")
-    if termine_offen_gesamt:
-        posten.append(f"{termine_offen_gesamt} Terminanfrage"
-                      if termine_offen_gesamt == 1
-                      else f"{termine_offen_gesamt} Terminanfragen")
     if wiedervorlagen_gesamt:
         posten.append(f"{wiedervorlagen_gesamt} Wiedervorlage"
                       if wiedervorlagen_gesamt == 1
                       else f"{wiedervorlagen_gesamt} Wiedervorlagen")
-    offen = (len(pending) + wiedervorlagen_gesamt + einordnung_offen
-             + termine_offen_gesamt)
+    offen = freigaben_offen + wiedervorlagen_gesamt + einordnung_offen
     satz = ("Nichts wartet auf dich. Alles läuft." if not offen else
             f"{offen} Posten warten auf dich: {', '.join(posten)}."
             if offen > 1 else f"{posten[0]} wartet auf dich.")
@@ -8416,8 +9100,8 @@ async def heute(request):
     # Design-Review S3, E6 (19.10.2026): vier Kennzahlen in fester
     # Reihenfolge, jede ein Link; dieselben Zahlen wie im Satz darueber.
     kennzahlen = ui_muster.kennzahlen([
-        (len(pending), "Freigaben offen", "/freigaben"),
-        (termine_offen_gesamt, "Terminanfragen ohne Datum", "/freigaben#termine"),
+        (freigaben_offen, "Freigaben offen", "/freigaben"),
+        (termine_heute, "Termine heute", "/kalender?ansicht=tag"),
         (wiedervorlagen_gesamt, "Wiedervorlagen offen", "/wiedervorlagen"),
         (einordnung_offen, "Unbekannte Absender", "/einordnung"),
     ])
@@ -8433,13 +9117,8 @@ async def heute(request):
         freigaben.append(f'<span class="art">'
                          f'<span class="badge {_e(art)}">{_e(name)}</span>'
                          f'<b>{len(je_art.get(art, []))}</b></span>')
-    freigaben.append(f'<span class="art"><span class="badge termin">Termine</span>'
-                     f'<b>{termine_offen_gesamt}</b></span></div>')
-    # Chips und Satz speisen aus denselben Zahlen (Betreiber-Klarstellung
-    # 10.09.2026): der Chip „Termine 2" und „Keine offenen Entwürfe" kamen
-    # bisher aus getrennten Rechnungen (`pending` allein) und konnten sich
-    # deshalb widersprechen.
-    if not pending and not termine_offen_gesamt:
+    freigaben.append('</div>')
+    if not pending:
         freigaben.append('<p class="leer">Keine offenen Entwürfe.</p>')
     for art, name in FREIGABE_ARTEN:
         zeilen = je_art.get(art, [])
@@ -8455,31 +9134,6 @@ async def heute(request):
                 freigaben.append(_freigabe_zeile(z))
     freigaben.append('</section>')
     haupt.append("".join(freigaben))
-
-    if termine_offen:
-        termine = ['<section class="karte liste"><div class="kopf">'
-                   '<h2>Termine ohne festes Datum</h2>'
-                   '<a href="/freigaben#termine">Alle Terminanfragen</a></div>']
-        for z in termine_offen:
-            last = z["payload"] or {}
-            voll = str(last.get("inhalt") or last.get("thema") or "")
-            termine.append(
-                f'<div class="zeile"><span class="badge termin">Termin</span>'
-                f'<span class="inhalt"><b class="titel">'
-                f'<a href="/kontakte/{_e(z["lead_id"])}">{_e(z["name"] or "?")}'
-                f'</a></b><span class="vorschau" title="{_e(voll)}">'
-                f'{_e(_kurz(voll, 160))}</span></span>'
-                f'<span class="aktion"><a class="knopf sek" href="/kalender">'
-                f'Im Kalender eintragen</a></span></div>')
-        # Die Zeilen bleiben gedeckelt (limit 5) — steht die Gesamtzahl im
-        # Kopfsatz hoeher, muss sichtbar sein, dass hier nur ein Teil steht
-        # (sonst fragt der Betreiber sich, wo die uebrigen sind).
-        if termine_offen_gesamt > len(termine_offen):
-            termine.append(f'<p class="meta mehr">{len(termine_offen)} von '
-                           f'{termine_offen_gesamt} gezeigt — den Rest zeigt '
-                           f'<a href="/freigaben">Freigaben</a>.</p>')
-        termine.append('</section>')
-        haupt.append("".join(termine))
 
     gezeigt_auf_seite = min(wiedervorlagen_gesamt, WIEDERVORLAGEN_MAX)
     alle_wv = (f"Alle {gezeigt_auf_seite} Wiedervorlagen"
@@ -8532,6 +9186,7 @@ app = Starlette(routes=[
     Route("/favicon.ico", favicon),
     Route("/freigaben", inbox),
     Route("/freigaben/verlauf/{art}", freigaben_verlauf),
+    Route("/monitoring/verlauf", monitoring_verlauf),
     Route("/aktion/freigeben", aktion_freigeben, methods=["POST"]),
     Route("/aktion/freigeben-auswahl", aktion_freigeben_auswahl, methods=["POST"]),
     Route("/entwurf/{draft_id}/html", entwurf_html),
@@ -8551,6 +9206,10 @@ app = Starlette(routes=[
     # in Reihenfolge) und antwortete auf jeden POST mit 405.
     Route("/kontakte/bearbeiten", aktion_kontakt_bearbeiten, methods=["POST"]),
     Route("/kontakte/einordnen", aktion_kontakt_einordnen, methods=["POST"]),
+    Route("/kontakte/beziehung", aktion_kontakt_beziehung, methods=["POST"]),
+    Route("/kontakte/liste", aktion_kontaktliste, methods=["POST"]),
+    Route("/kontakte/beziehung-autonomie", aktion_beziehung_autonomie,
+          methods=["POST"]),
     Route("/kontakte/archivieren", aktion_kontakt_archivieren,
           methods=["POST"]),
     # Eigene Route fuer den zweiten Schritt, wie bei der Einordnung: der
@@ -8571,6 +9230,10 @@ app = Starlette(routes=[
     Route("/kontakte/privat-entziehen", aktion_kontakt_privat_entziehen,
           methods=["POST"]),
     Route("/pipeline", pipeline),
+    Route("/pipeline/phase", aktion_phase, methods=["POST"]),
+    Route("/ergebnisse/termin", aktion_termin_ergebnis, methods=["POST"]),
+    Route("/kalender/team", aktion_team_ebenen, methods=["POST"]),
+    Route("/posteingang/aufraeumen", aktion_mail_aufraeumen, methods=["POST"]),
     Route("/ergebnisse", ergebnisse),
     # Handy (Design-Review S4): das ganze Menue hinter dem Tab "Mehr".
     Route("/mehr", mehr),
@@ -8601,6 +9264,7 @@ app = Starlette(routes=[
     Route("/posteingang", posteingang),
     Route("/einordnung", einordnung),
     Route("/einordnung/nachrichten/{kennung}", einordnung_nachrichten),
+    Route("/einordnung/datei/{name}", einordnung_datei),
     Route("/einordnung/zuordnen", aktion_einordnung_zuordnen,
           methods=["POST"]),
     Route("/einordnung/anlegen", aktion_einordnung_anlegen, methods=["POST"]),

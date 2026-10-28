@@ -44,22 +44,20 @@ def test_spalten_stufe_score_zuletzt_autonomie():
     _lead("Mittel Score", "+491700000002", status="replied", score=35)
     _lead("Ohne Score", "+491700000003")
     seite = _get("/kontakte").text
-    for spalte in ("Name", "Stufe", "Score", "Zuletzt", "Autonomie"):
+    # Kontaktliste nach der Papiervorlage (28.10.2026): Score und Zuletzt sind
+    # keine eigenen Spalten mehr, die Stufe steht als Chip beim Namen.
+    for spalte in ("Name / Anschrift", "Telefon", "Termine", "Autonomie"):
         assert f'data-label="{spalte}"' in seite, spalte
     assert 'data-label="Consent"' not in seite
-    assert '<span class="score hoch">72</span>' in seite
-    assert '<span class="score mittel">35</span>' in seite
     assert '<span class="stufe termin">termin</span>' in seite
     assert '<span class="stufe geantwortet">geantwortet</span>' in seite
-    ohne = seite[seite.index("Ohne Score"):]
-    assert '<span class="score leer">—</span>' in ohne[:1500]
 
 
 def test_consent_steht_als_meta_unter_dem_namen():
     _lead("Anna Beispiel", "+491700000004")
     seite = _get("/kontakte").text
     zeile = seite[seite.index("Anna Beispiel"):]
-    assert "Einwilligung: nicht erfasst" in zeile[:600]
+    assert "Newsletter: nein" in zeile[:600]      # Ja/Nein seit 28.10.2026
     assert "Consent: unknown" not in seite
 
 
@@ -200,10 +198,10 @@ def test_einordnung_zaehlt_nicht_als_letzte_aktivitaet():
     nur = _lead("Nur Einordnung", "+491700000203")
     assert "art" in server._einordnen(nur, "firma", quelle="ui")
     seite = _get("/kontakte").text
-    assert seite.index("Neu Kontakt") < seite.index("Alt Kontakt")
-    zeile = seite[seite.index("Nur Einordnung"):]
-    zeile = zeile[:zeile.index("</tr>")]
-    assert 'data-label="Zuletzt">—<' in zeile.replace(" ", "")
+    # Sortiert nach letztem Kontaktgeschehen; die Einordnung zaehlt nicht -
+    # „Nur Einordnung" steht deshalb hinter beiden.
+    assert seite.index("Neu Kontakt") < seite.index("Alt Kontakt") \
+        < seite.index("Nur Einordnung")
 
 
 

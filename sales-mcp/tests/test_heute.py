@@ -96,7 +96,7 @@ def test_heute_zeigt_freigaben_je_art_in_fester_reihenfolge():
     # dich. Alles andere laeuft." behauptete Ruhe, die es bei offenen
     # Terminanfragen/Einordnungen nicht gab. Der neue Satz schluesselt die
     # Posten auf, statt sie unter „Entscheidungen" zu verstecken.
-    assert "4 Posten warten auf dich: 4 Entwürfe." in seite
+    assert "4 Posten warten auf dich: 4 Freigaben." in seite
 
 
 def test_heute_deckelt_je_art_und_verweist_auf_freigaben():
@@ -176,7 +176,7 @@ def test_kacheln_oben_in_fester_reihenfolge():
     lead = _lead(); _entwurf(lead, text="Kurz")
     s = _get("/").text
     assert '<a class="kpi haupt" href="/freigaben"><b>1</b><span>Freigaben offen</span>' in s
-    assert (s.index("Freigaben offen") < s.index("Terminanfragen ohne Datum")
+    assert (s.index("Freigaben offen") < s.index("Termine heute")
             < s.index("Wiedervorlagen offen") < s.index("Unbekannte Absender"))
 
 
@@ -305,7 +305,8 @@ def test_email_zeile_zeigt_betreff_und_ganzen_text():
     assert "Kurzer Mailtext" in zeile and f'form="fz-{d}"' in zeile
 
 
-def test_kachel_terminanfragen_springt_zum_termine_block():
+def test_kachel_termine_heute_springt_in_die_tagesansicht():
+    """Seit 28.10.2026: Termine ohne Datum gibt es nicht; die Kachel zaehlt
+    die Termine des heutigen Tages und fuehrt in die Tagesansicht."""
     s = _get("/").text
-    assert '<a class="kpi" href="/freigaben#termine"><b>0</b><span>Terminanfragen ohne Datum' in s
-    assert 'id="termine"' in _get("/freigaben").text
+    assert '<a class="kpi" href="/kalender?ansicht=tag"><b>0</b><span>Termine heute' in s

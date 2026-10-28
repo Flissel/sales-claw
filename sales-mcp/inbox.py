@@ -851,6 +851,44 @@ def _textteil(daten: dict, message_id: str) -> dict:
     }
 
 
+# Bilder unbekannter Absender (Rundgang 27.10.2026): ohne das Bild war bei
+# der Einordnung kaum zu erkennen, wer da schreibt. NUR fuer den
+# Sammelkontakt - bei bekannten Kontakten bleibt es bei der bisherigen
+# Datensparsamkeit. Gleicher Ordner wie die Sprachnachrichten.
+BILD_ENDUNG = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
+BILD_MAX_BYTES = 5 * 1024 * 1024
+
+
+def _bild_sichern(daten: dict, message_id: str):
+    """Bild eines unbekannten Absenders -> Dateiname, oder None."""
+    if str(daten.get("type") or "").lower() != "image":
+        return None
+    medien = daten.get("media")
+    if not isinstance(medien, dict) or not medien.get("data"):
+        return None
+    endung = BILD_ENDUNG.get(str(medien.get("mimetype") or "").split(";")[0]
+                             .strip().lower())
+    if not endung:
+        return None
+    try:
+        bild = base64.b64decode(medien["data"], validate=True)
+    except (ValueError, TypeError):
+        return None
+    if not bild or len(bild) > BILD_MAX_BYTES:
+        return None
+    name = (hashlib.sha256(message_id.encode("utf-8")).hexdigest()[:32]
+            + endung)
+    try:
+        os.makedirs(SPRACH_VERZEICHNIS, exist_ok=True)
+        with open(os.path.join(SPRACH_VERZEICHNIS, name), "wb") as datei:
+            datei.write(bild)
+    except OSError as e:
+        LOG.warning("Bild nicht gespeichert (%s) — die Nachricht selbst ist "
+                    "gebucht.", type(e).__name__)
+        return None
+    return name
+
+
 def _audio_sichern(daten: dict, message_id: str):
     """Sprachnachricht -> Dateiname im Sprachordner, oder None.
 
@@ -1023,6 +1061,10 @@ def _buchen(typ: str, actor: str, chat_id, nummern_fehler, nutzlast: dict,
                 name = _audio_sichern(audio_daten, nutzlast["message_id"])
                 if name:
                     nutzlast["audio_datei"] = name
+                if lead is None:
+                    bild = _bild_sichern(audio_daten, nutzlast["message_id"])
+                    if bild:
+                        nutzlast["bild_datei"] = bild
 
             akt_id = speichern(lead_id, nutzlast, typ, actor)
     except psycopg.Error as e:

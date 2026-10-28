@@ -657,9 +657,10 @@ def test_csp_kalender_folgt_ui_csp():
         return {t.split()[0]: t for t in (d.strip() for d in csp.split(";")) if t}
     basis, kal = _direktiven(ui._CSP), _direktiven(ui_kalender.csp_kalender(ui))
     for name, wert in basis.items():
-        if name != "style-src":
+        if name not in ("style-src", "font-src"):
             assert kal[name] == wert, name
     assert kal["style-src"] == "style-src 'self' 'unsafe-inline'"
+    assert kal["font-src"] == "font-src 'self' data:"
     assert kal["script-src"] == "script-src 'self'"
     assert kal["connect-src"] == "connect-src 'self'"
     assert set(kal) == set(basis) | {"script-src", "connect-src"}

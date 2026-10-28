@@ -40,7 +40,10 @@ STATIK_DATEIEN = {"kalender.js": "text/javascript", "kalender.css": "text/css"}
 # Zusaetze zu ui._CSP - genau das, was das Paket braucht: eigenes Skript,
 # eigenes Stylesheet, Abrufe an dieselbe Herkunft.
 _CSP_ZUSAETZE = {"script-src": "script-src 'self'", "connect-src": "connect-src 'self'",
-                 "style-src": "style-src 'self' 'unsafe-inline'"}
+                 "style-src": "style-src 'self' 'unsafe-inline'",
+                 # Rundgang 27.10.2026: das Paket bettet seine Pfeil-Symbole als
+                 # data:-Schrift ein; mit font-src 'self' blockte der Browser sie.
+                 "font-src": "font-src 'self' data:"}
 
 
 def csp_kalender(ui) -> str:

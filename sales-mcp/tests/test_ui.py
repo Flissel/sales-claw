@@ -701,7 +701,9 @@ def test_inbox_zeigt_pending_failed_approved_und_gesendete():
     assert "Pending-Text hier" in seite
     assert "Nummer nicht zustellbar" in seite
     assert "wartet auf Dispatcher" in seite
-    assert "Schon gesendeter Text" in seite
+    # Gesendetes steht seit 28.10.2026 unter Monitoring -> Verlauf.
+    assert "Schon gesendeter Text" not in seite
+    assert "Schon gesendeter Text" in _get("/monitoring/verlauf").text
     # Seit 03.09.2026 KEIN Auto-Refresh auf der Freigabe-Seite (dort wird
     # getippt); Vertrag in test_freigaben.py.
     assert 'http-equiv="refresh"' not in seite
@@ -1894,6 +1896,9 @@ ERLAUBTE_LABEL = {
     "Einordnung",   # /kontakte, Art und Bereiche je Zeile (C1, 16.10.2026)
     "Autonomie",   # /kontakte, Stufe je Zeile (25.08.2026)
     "Profil",   # /einordnung, Link zum Kontaktprofil
+    # Kontaktliste nach Papiervorlage + Einordnung mit Beziehung (28.10.2026).
+    "Name / Anschrift", "Telefon", "Alter / Fam. / Kinder", "Beruf &amp; Hobbys",
+    "Termine", "Abschluss", "Empf.-Zahl", "Bemerkung FK", "Beziehung",
     "Quittieren",   # /wiedervorlagen, Erledigt-Knopf je Zeile
     "Kontakt", "Fällig am", "Notiz",                        # Wiedervorlagen
     "Frage", "Antwort",                                     # Bedarfsstand
@@ -2082,8 +2087,8 @@ def test_jede_tabellenzelle_traegt_ihre_spaltenueberschrift():
     # „Stufe" statt „Status" seit 29.08.2026 — die Spalte zeigt die
     # Pipeline-Stufe und stand als „Status" verwirrend neben der
     # Autonomie-Stufe in derselben Zeile.
-    for pfad, spalten in (("/kontakte", ["Name", "Stufe", "Score",
-                                         "Zuletzt"]),
+    for pfad, spalten in (("/kontakte", ["Name / Anschrift", "Telefon",
+                                         "Termine", "Empf.-Zahl"]),
                           ("/wiedervorlagen", ["Kontakt", "Fällig am",
                                                "Notiz"])):
         seite = _get(pfad).text
@@ -2175,7 +2180,8 @@ def test_jede_entwurfskarte_nennt_ihren_zustand_als_wort():
     _entwurf(lead, status="rejected", text="Abgelehnter Text")
     server._q("update drafts set sent_at = now() where id = %s returning id",
               (_entwurf(lead, status="sent"),))
-    seite = _get("/freigaben").text
+    # Offenes auf /freigaben, Erledigtes unter Monitoring -> Verlauf (28.10.2026).
+    seite = _get("/freigaben").text + _get("/monitoring/verlauf").text
     for zustand, wort in ui.ZUSTAND_TITEL.items():
         assert f'<span class="badge zustand {zustand}">{wort}</span>' in seite
 
@@ -2299,24 +2305,17 @@ def test_links_und_dateien_stehen_im_profil():
     assert "Angebot.pdf" in seite
 
 
-def test_einordnung_verlinkt_das_profil(sammelkontakt_zurueck):
+def test_einordnung_zeigt_beziehung_statt_profil(sammelkontakt_zurueck):
+    """Betreiber 27.10.2026: Profil-Spalte raus, Beziehung rein."""
     sammel = _sammel()
     lead = _lead(name="Sophie Beispiel", phone=SOPHIE_PHONE)
     _kundenantwort(sammel, absender=SOPHIE_NUMMER)
     _kundenantwort(lead)
     _profil_anlegen(lead)
     seite = _get("/einordnung").text
-    assert "Profil" in seite
-    assert f'href="/kontakte/{lead}#profil"' in seite
-
-
-def test_einordnung_zeigt_fehlendes_profil_ehrlich(sammelkontakt_zurueck):
-    sammel = _sammel()
-    lead = _lead(name="Sophie Beispiel", phone=SOPHIE_PHONE)
-    _kundenantwort(sammel, absender=SOPHIE_NUMMER)
-    seite = _get("/einordnung").text
-    assert "noch keins" in seite
     assert f'href="/kontakte/{lead}#profil"' not in seite
+    assert "noch keins" not in seite
+    assert 'action="/kontakte/beziehung"' in seite
 
 
 def test_kontaktliste_hat_den_archiv_knopf():
@@ -3104,8 +3103,10 @@ def test_die_pipeline_zeigt_die_aktiven_stufen_als_spalten():
     lead = _lead(name="Paula Pipelinefrau")
     server.kontakt_stufe_setzen(lead, "termin", "Termin steht")
     seite = _get("/pipeline").text
-    for stufe in server.PIPELINE_STUFEN[:-2]:
-        assert stufe in seite
+    # Seit 28.10.2026 die Phasen des Zwei-Termin-Ablaufs.
+    for phase, name in server.PHASEN.items():
+        if phase != "verloren":
+            assert f"<h2>{name} " in seite
     assert "Paula Pipelinefrau" in seite
 
 
@@ -3372,12 +3373,10 @@ def test_nachrichtenliste_kaputte_kennung_wird_abgewiesen(
 def test_pipeline_zeigt_nur_die_aktiven_stufen():
     _lead()
     seite = _get("/pipeline").text
-    for aktiv in ("neu", "recherchiert", "qualifiziert", "kontaktiert",
-                  "geantwortet", "termin"):
+    for aktiv in ("neu", "kontaktiert", "Termin 1 · Aufnahme", "Bedarfsanalyse",
+                  "Termin 2 · Verkaufsgespräch", "Abschluss", "Empfehlung"):
         assert f"<h2>{aktiv} " in seite
-    assert "<h2>gewonnen " not in seite
-    assert "<h2>verloren " not in seite
-    assert 'href="/ergebnisse"' in seite      # Verweis statt Spalte
+    assert "<h2>verloren " not in seite      # nur als Zahl im Kopf
 
 
 def test_ergebnisse_zeigt_gewonnen_und_verloren():

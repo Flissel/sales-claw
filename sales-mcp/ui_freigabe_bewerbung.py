@@ -668,9 +668,29 @@ def _hinweis(ui, request) -> str:
     return ""
 
 
-async def abschnitt(ui, request=None) -> str:
+async def abschnitt(ui, request=None, offen: bool = True, verlauf: bool = True) -> str:
     """HTML des Abschnitts "Bewerbungen" (Kopf mit Hermes und Lauf, Karten, zuletzt entschieden);
-    "" wenn nicht sichtbar."""
+    "" wenn nicht sichtbar.
+
+    Rundgang 27.10.2026: /freigaben zeigt nur Offenes (verlauf=False), "Zuletzt
+    entschieden" steht unter Monitoring -> Verlauf (offen=False). Lauf-Kasten, Karten und
+    Formulare stehen vor dem Verlaufstitel und damit nur auf /freigaben: die Verlauf-Sicht
+    behaelt von allem davor nur die Ueberschrift."""
+    teil = await _abschnitt(ui, request)
+    if not teil or "verlauftitel" not in teil:
+        return teil if offen else ""
+    vorne, _, hinten = teil.partition('<h3 class="verlauftitel">')
+    if offen and verlauf:
+        return teil
+    if offen:
+        return vorne + "</section>"
+    kopf = vorne.split("</h2>")[0].split('<span class="zaehler')[0]
+    return f'{kopf}</h2><h3 class="verlauftitel">{hinten}'
+
+
+async def _abschnitt(ui, request=None) -> str:
+    """Der ganze Abschnitt in einem Stueck: Kopf, Hinweis, Lauf-Kasten, Karten - dann, ab dem
+    Verlaufstitel, "Zuletzt entschieden". `abschnitt` schneidet daran auf."""
     if not sichtbar(ui):
         return ""
     kopf = '<section class="block" id="bewerbungen"><h2>Bewerbungen'

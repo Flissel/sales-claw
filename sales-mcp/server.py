@@ -989,10 +989,163 @@ ANTWORT_TEXT_MAX = 300      # Zeichen je Nachricht im Antwort-Kontext
 
 
 def _autonomie(enrichment) -> str:
-    """Die Stufe eines Kontakts. Alles Unklare ist `manuell` (fail-closed)."""
+    """Die Stufe eines Kontakts. Alles Unklare ist `manuell` (fail-closed).
+
+    Ohne eigene Stufe gilt die Standardstufe seiner Beziehungsart
+    (Betreiber 28.10.2026), ohne Beziehung die Vorgabe."""
     eintrag = (enrichment or {}).get(AUTONOMIE_SCHLUESSEL)
     stufe = eintrag.get("stufe") if isinstance(eintrag, dict) else None
-    return stufe if stufe in AUTONOMIE_STUFEN else AUTONOMIE_VORGABE
+    if stufe in AUTONOMIE_STUFEN:
+        return stufe
+    beziehung = _beziehung(enrichment)
+    if beziehung:
+        return beziehung_autonomie().get(beziehung, AUTONOMIE_VORGABE)
+    return AUTONOMIE_VORGABE
+
+
+# ---------------------------------------------------------------------------
+# Beziehung (Sales-UI-Rundgang 27./28.10.2026): WER der Kontakt fuer den
+# Betreiber ist - eine eigene Dimension neben Art (person/firma) und Bereichen.
+# Liegt in leads.enrichment ("beziehung"), einziger Schreibweg ist
+# _beziehung_setzen; jede Aenderung wird als Aktivitaet 'beziehung' gebucht.
+# Jede Beziehungsart traegt eine Standard-Autonomiestufe (Tabelle
+# einstellungen); die Stufe am Kontakt geht immer vor.
+# ---------------------------------------------------------------------------
+
+BEZIEHUNGEN = {
+    "kunde": "Kunde / Interessent",
+    "partner": "Geschäftspartner / Firma",
+    "mitarbeiter": "Mitarbeiter / Team",
+    "privat": "Privat (Freund/Familie)",
+}
+# `ignorieren` ist als Standard ausgeschlossen: eine Beziehungsart darf nie
+# still dazu fuehren, dass von einem Menschen kein Wort mehr gespeichert wird.
+BEZIEHUNG_STUFEN = ("manuell", "halbauto", "auto")
+BEZIEHUNG_AUTONOMIE_VORGABE = {"kunde": "halbauto", "partner": "halbauto",
+                               "mitarbeiter": "manuell", "privat": "manuell"}
+EINSTELLUNG_BEZIEHUNG_AUTONOMIE = "autonomie_je_beziehung"
+_BEZIEHUNG_CACHE = {"wert": None, "bis": 0.0}
+_BEZIEHUNG_CACHE_S = 30
+
+
+def _beziehung(enrichment) -> str | None:
+    e = enrichment if isinstance(enrichment, dict) else {}
+    wert = e.get("beziehung")
+    return wert if wert in BEZIEHUNGEN else None
+
+
+def beziehung_autonomie() -> dict:
+    """Standardstufe je Beziehungsart - gespeicherte Werte ueber der Vorgabe,
+    Kaputtes zaehlt als nicht gesetzt. Kurz zwischengespeichert, weil Listen
+    die Stufe je Zeile fragen; faellt die Tabelle aus, gilt die Vorgabe."""
+    jetzt = time.time()
+    if _BEZIEHUNG_CACHE["wert"] is not None and jetzt < _BEZIEHUNG_CACHE["bis"]:
+        return dict(_BEZIEHUNG_CACHE["wert"])
+    wert = dict(BEZIEHUNG_AUTONOMIE_VORGABE)
+    try:
+        z = _q("select wert from einstellungen where schluessel = %s",
+               (EINSTELLUNG_BEZIEHUNG_AUTONOMIE,))
+    except psycopg.Error:
+        z = []
+    gespeichert = z[0]["wert"] if z and isinstance(z[0]["wert"], dict) else {}
+    for b, s in gespeichert.items():
+        if b in BEZIEHUNGEN and s in BEZIEHUNG_STUFEN:
+            wert[b] = s
+    _BEZIEHUNG_CACHE.update(wert=wert, bis=jetzt + _BEZIEHUNG_CACHE_S)
+    return dict(wert)
+
+
+def beziehung_autonomie_setzen(beziehung: str, stufe: str, von: str) -> dict:
+    if beziehung not in BEZIEHUNGEN:
+        return {"fehler": f"Unbekannte Beziehung '{beziehung}'."}
+    if stufe not in BEZIEHUNG_STUFEN:
+        return {"fehler": f"Als Standard erlaubt: {', '.join(BEZIEHUNG_STUFEN)}."}
+    neu = beziehung_autonomie()
+    neu[beziehung] = stufe
+    _q("insert into einstellungen (schluessel, wert, geaendert_von) "
+       "values (%s, %s, %s) on conflict (schluessel) do update set "
+       "wert = excluded.wert, geaendert_am = now(), "
+       "geaendert_von = excluded.geaendert_von returning schluessel",
+       (EINSTELLUNG_BEZIEHUNG_AUTONOMIE, _json(neu), von))
+    _BEZIEHUNG_CACHE.update(wert=None, bis=0.0)
+    return {"autonomie_je_beziehung": neu}
+
+
+def _beziehung_setzen(lead_id, beziehung: str, quelle: str = "ui") -> dict:
+    try:
+        uuid.UUID(str(lead_id))
+    except ValueError:
+        return {"fehler": f"'{lead_id}' ist keine gueltige lead_id."}
+    beziehung = (beziehung or "").strip()
+    if beziehung and beziehung not in BEZIEHUNGEN:
+        return {"fehler": f"Unbekannte Beziehung '{beziehung}' — erlaubt: "
+                          f"{', '.join(BEZIEHUNGEN)}."}
+    if _sammelkontakt(lead_id):
+        return {"fehler": "Sammelkontakte bekommen keine Beziehung."}
+    z = _q("select enrichment from leads where id = %s", (str(lead_id),))
+    if not z:
+        return {"fehler": f"Kein Kontakt mit lead_id {lead_id}."}
+    vorher = _beziehung(z[0]["enrichment"])
+    neu = beziehung or None
+    if neu == vorher:
+        return {"beziehung": neu, "unveraendert": True}
+    _q("update leads set enrichment = case when %s::text is null "
+       "then coalesce(enrichment, '{}'::jsonb) - 'beziehung' "
+       "else jsonb_set(coalesce(enrichment, '{}'::jsonb), '{beziehung}', "
+       "to_jsonb(%s::text), true) end, updated_at = now() "
+       "where id = %s returning id", (neu, neu, str(lead_id)))
+    _q("insert into activities (lead_id, type, payload, actor) values "
+       "(%s, 'beziehung', %s, %s) returning id",
+       (str(lead_id), _json({"vorher": vorher, "beziehung": neu, "weg": quelle}),
+        _EINORDNUNG_ACTOR.get(quelle, "human")))
+    return {"beziehung": neu}
+
+
+# Kontaktliste nach der Papier-Namensliste (Betreiber 27.10.2026). Liegt in
+# leads.enrichment ("liste"). Alter und Beruf aus einer Empfehlungsliste
+# gelten, solange hier nichts Eigenes steht.
+KONTAKTLISTE_FELDER = ("anschrift", "alter", "familie", "kinder", "beruf",
+                       "hobbys", "bemerkung_fk")
+KONTAKTLISTE_MAX = 300
+
+
+def _kontaktliste(enrichment) -> dict:
+    e = enrichment if isinstance(enrichment, dict) else {}
+    roh = e.get("liste") if isinstance(e.get("liste"), dict) else {}
+    empf = e.get("empfehlung") if isinstance(e.get("empfehlung"), dict) else {}
+    werte = {k: str(roh.get(k) or "").strip() for k in KONTAKTLISTE_FELDER}
+    for k, quelle in (("alter", "alter"), ("beruf", "beruf"), ("anschrift", "ort")):
+        if not werte[k] and empf.get(quelle) not in (None, ""):
+            werte[k] = str(empf.get(quelle))
+    werte["analysiert"] = roh.get("analysiert") is True
+    return werte
+
+
+def _kontaktliste_setzen(lead_id, werte: dict, quelle: str = "ui") -> dict:
+    try:
+        uuid.UUID(str(lead_id))
+    except ValueError:
+        return {"fehler": f"'{lead_id}' ist keine gueltige lead_id."}
+    if _sammelkontakt(lead_id):
+        return {"fehler": "Sammelkontakte stehen nicht in der Kontaktliste."}
+    neu = {}
+    for k in KONTAKTLISTE_FELDER:
+        wert = " ".join(str(werte.get(k) or "").split())
+        if len(wert) > KONTAKTLISTE_MAX:
+            return {"fehler": f"'{k}' ist laenger als {KONTAKTLISTE_MAX} Zeichen."}
+        if wert:
+            neu[k] = wert
+    neu["analysiert"] = bool(werte.get("analysiert"))
+    z = _q("update leads set enrichment = jsonb_set(coalesce(enrichment, "
+           "'{}'::jsonb), '{liste}', %s::jsonb, true), updated_at = now() "
+           "where id = %s returning id", (_json(neu), str(lead_id)))
+    if not z:
+        return {"fehler": f"Kein Kontakt mit lead_id {lead_id}."}
+    _q("insert into activities (lead_id, type, payload, actor) values "
+       "(%s, 'kontaktliste', %s, %s) returning id",
+       (str(lead_id), _json({**neu, "weg": quelle}),
+        _EINORDNUNG_ACTOR.get(quelle, "human")))
+    return {"liste": neu}
 
 
 def _autonomie_sql(spalte: str = "l.enrichment") -> str:
@@ -1386,8 +1539,17 @@ def kontakt_wiederherstellen(lead_id: str) -> str:
 
 @_gesichert
 def aktivitaet_loggen(lead_id: str, typ: str, inhalt: str) -> str:
-    """Interaktion unveraenderlich protokollieren (nachricht, notiz, termin,
-    offener_punkt, bedarf). Nach JEDER Kundeninteraktion aufrufen."""
+    """Interaktion unveraenderlich protokollieren (nachricht, notiz,
+    offener_punkt, bedarf). Nach JEDER Kundeninteraktion aufrufen.
+    Termine NICHT hierueber: einen Termin gibt es nur mit Datum und Uhrzeit
+    (termin_bestaetigen) - eine Terminanfrage ohne Tag ist eine `notiz`."""
+    if str(typ or "").strip().lower() == "termin":
+        # Betreiber 27.10.2026: „Es gibt keine Termine ohne festes Datum, die
+        # sind nicht erlaubt." Hier entstanden genau diese Freitext-Termine.
+        return _json({"fehler": (
+            "Termine ohne festes Datum gibt es nicht. Steht Tag und Uhrzeit "
+            "fest: termin_bestaetigen. Sonst als typ='notiz' buchen und den "
+            "Kunden nach einem Termin fragen.")})
     _q("insert into activities (lead_id, type, payload) values (%s, %s, %s) "
        "returning id", (lead_id, typ, json.dumps({"inhalt": inhalt},
                                                  ensure_ascii=False)))
@@ -3266,6 +3428,30 @@ def kalenderquellen_lesen(nur_aktive: bool = True) -> list:
         f"{bedingung} order by anzeigename")]
 
 
+EINSTELLUNG_TEAM_KALENDER_AUS = "kalender_team_aus"
+
+
+def team_kalender_aus() -> list:
+    """Anzeigenamen der Team-Kalender, die der Betreiber ausgeschaltet hat
+    (Betreiber 28.10.2026: an/aus je Mitglied, fuer Anzeige UND Planung).
+    Faellt die Tabelle aus, ist nichts ausgeschaltet."""
+    try:
+        z = _q("select wert from einstellungen where schluessel = %s",
+               (EINSTELLUNG_TEAM_KALENDER_AUS,))
+    except psycopg.Error:
+        return []
+    wert = z[0]["wert"] if z else []
+    return [str(n) for n in wert] if isinstance(wert, list) else []
+
+
+def team_kalender_aus_setzen(namen: list, von: str) -> None:
+    _q("insert into einstellungen (schluessel, wert, geaendert_von) "
+       "values (%s, %s, %s) on conflict (schluessel) do update set "
+       "wert = excluded.wert, geaendert_am = now(), "
+       "geaendert_von = excluded.geaendert_von returning schluessel",
+       (EINSTELLUNG_TEAM_KALENDER_AUS, _json(sorted(set(namen))), von))
+
+
 def kalenderquelle_speichern(anzeigename: str, url: str) -> str:
     """Anlegen oder die Adresse eines bekannten Namens ersetzen.
 
@@ -3353,6 +3539,11 @@ def belegungen(tage_voraus: int = 60):
             f"liegen, die hier fehlen.")})
         fremde_quellen = []
 
+    # Team-Ebene ausgeschaltet (Betreiber 28.10.2026): dann plant der Agent
+    # ohne diesen Kalender - bewusst, nicht als Luecke.
+    ausgeschaltet = set(team_kalender_aus())
+    fremde_quellen = [q for q in fremde_quellen
+                      if q["anzeigename"] not in ausgeschaltet]
     for quelle in fremde_quellen:
         # Dasselbe Fenster wie beim eigenen Kalender oben (K2/W1,
         # Schlusspruefung 13.09.2026): `tage_zurueck=0` hier explizit statt
@@ -3373,7 +3564,10 @@ def belegungen(tage_voraus: int = 60):
             # AELTEREN Fehlerpfad (unerreichbar, HTTP-Fehler, ...) ist
             # `termine` ohnehin leer — die Schleife unten tut dort nichts.
         for t in termine:
-            eintraege.append({**t, "quelle": quelle["anzeigename"]})
+            # Nur belegt/frei (Betreiber 28.10.2026): Titel und Ort eines
+            # Team-Kalenders gehen weder in die Liste noch an den Agenten.
+            eintraege.append({**t, "titel": "belegt", "ort": "",
+                              "quelle": quelle["anzeigename"]})
 
     eintraege.sort(key=lambda e: e["beginn"])
     return eintraege, luecken
@@ -3626,7 +3820,88 @@ def postfach_lesen(anzahl: int = 10) -> str:
         return _json({"fehler": (
             f"Postfach nicht erreichbar ({type(e).__name__}) — Zugang "
             f"und Netz pruefen, Details im Container-Log.")})
+    # Suchindex (28.10.2026): jede gesehene Mail landet in postfach_mails,
+    # damit /posteingang sie durchsuchen kann. Das IMAP-Postfach bleibt
+    # unberuehrt; ein Fehler hier kostet nur den Index.
+    try:
+        _postfach_merken(mails)
+    except psycopg.Error:
+        pass
     return _json({"anzahl": len(mails), "mails": mails})
+
+
+def _postfach_merken(mails: list) -> None:
+    for m in mails:
+        mid = str(m.get("message_id") or "").strip() or f"uid:{m.get('uid')}"
+        _q("insert into postfach_mails (message_id, uid, von, betreff, datum, auszug) "
+           "values (%s, %s, %s, %s, %s, %s) on conflict (message_id) do update "
+           "set uid = excluded.uid, auszug = excluded.auszug returning message_id",
+           (mid[:300], str(m.get("uid") or ""), str(m.get("von") or "")[:300],
+            str(m.get("betreff") or "")[:300], str(m.get("datum") or "")[:80],
+            str(m.get("auszug") or "")[:600]))
+
+
+MAIL_ARTEN = ("spam", "unwichtig")
+
+
+@_gesichert
+def mail_einstufen(uid: str, art: str, grund: str) -> str:
+    """Eine Mail aus postfach_lesen aufraeumen (Betreiber 27.10.2026).
+    art='spam' NUR bei eindeutigem Betrug/Phishing/Scam: die Mail wandert
+    SOFORT in den Spam-Ordner (zurueckholbar, nie geloescht).
+    art='unwichtig' (Werbung, Newsletter, Benachrichtigungen ohne Belang):
+    nur ein VORSCHLAG - er steht in /freigaben, verschoben wird erst nach
+    Bestaetigung (mail_aufraeumen_ausfuehren). Im Zweifel: gar nichts tun.
+    `grund` in einem Satz. Sendet nichts."""
+    if art not in MAIL_ARTEN:
+        return _json({"fehler": f"art muss {' oder '.join(MAIL_ARTEN)} sein."})
+    grund = " ".join(str(grund or "").split())[:300]
+    if not grund:
+        return _json({"fehler": "Bitte einen Grund in einem Satz nennen."})
+    if not postfach.konfiguriert():
+        return _json({"fehler": "Kein Betreiber-Postfach eingerichtet."})
+    try:
+        mail = postfach.lesen(str(uid))
+    except Exception as e:  # noqa: BLE001
+        return _json({"fehler": f"Postfach nicht erreichbar ({type(e).__name__})."})
+    if not mail:
+        return _json({"fehler": f"Mail nicht mehr im Postfach (uid {uid})."})
+    _postfach_merken([{**mail, "auszug": (mail.get("text") or "")[:600]}])
+    mid = (str(mail.get("message_id") or "").strip() or f"uid:{uid}")[:300]
+    if art == "unwichtig":
+        _q("update postfach_mails set art = 'unwichtig', status = 'vorgeschlagen', "
+           "grund = %s, geaendert_am = now() where message_id = %s returning 1",
+           (grund, mid))
+        return _json({"vorgeschlagen": True, "betreff": mail.get("betreff")})
+    try:
+        ordner = postfach.verschieben(str(uid), "spam")
+    except Exception as e:  # noqa: BLE001
+        return _json({"fehler": f"Nicht verschoben ({type(e).__name__}: {e})."})
+    _q("update postfach_mails set art = 'spam', status = 'verschoben', grund = %s, "
+       "ordner = %s, geaendert_am = now() where message_id = %s returning 1",
+       (grund, ordner, mid))
+    return _json({"verschoben": True, "ordner": ordner,
+                  "betreff": mail.get("betreff")})
+
+
+@_gesichert
+def mail_aufraeumen_ausfuehren() -> str:
+    """Vom Betreiber bestaetigte Aufraeum-Vorschlaege (unwichtige Mails) in
+    den Ordner „Unwichtig" verschieben. Im Routinelauf aufrufen; tut nichts
+    ohne Bestaetigung."""
+    offen = _q("select message_id, uid from postfach_mails where status = 'bestaetigt'")
+    erledigt, fehler = 0, []
+    for z in offen:
+        try:
+            ordner = postfach.verschieben(z["uid"], "unwichtig")
+        except Exception as e:  # noqa: BLE001
+            fehler.append(type(e).__name__)
+            continue
+        _q("update postfach_mails set status = 'verschoben', ordner = %s, "
+           "geaendert_am = now() where message_id = %s returning 1",
+           (ordner, z["message_id"]))
+        erledigt += 1
+    return _json({"verschoben": erledigt, "fehler": sorted(set(fehler))})
 
 
 _NOREPLY = re.compile(r"^(no-?reply|do-?not-?reply|mailer-daemon|postmaster)@", re.I)
@@ -4046,6 +4321,7 @@ def posteingang(stunden: int = 48) -> str:
                    # den Typ steht dort eine leere Zeile, als waere nichts
                    # angekommen (Browser-Durchgang 29.08.2026).
                    "nachrichtentyp": nutzlast.get("nachrichtentyp") or "text",
+                   "kanal": nutzlast.get("kanal") or "whatsapp",
                    "wartet_seit": z["created_at"],
                    "wartet_stunden": round(float(z["wartet_h"]), 1)}
         # `absender` steht NUR beim Sammelkontakt: bei einem echten Kontakt
@@ -5485,10 +5761,19 @@ def _absender_nachrichten(kennung: str, limit: int = 200) -> list:
     kennung = str(kennung or "")
     if not UNBEKANNT_LEAD_ID or not kennung.isdigit():
         return []
+    # Audio und Transkript (Rundgang 27.10.2026): ohne sie stand bei einer
+    # Sprachnachricht nur das Wort „Sprachnachricht" da - wer schreibt, war so
+    # kaum zu erkennen.
     return _q(
         "select a.created_at, a." + _ABSENDER_SPALTE + " as absender,"
         "       a.payload->>'text' as text,"
-        "       a.payload->>'nachrichtentyp' as nachrichtentyp"
+        "       a.payload->>'nachrichtentyp' as nachrichtentyp,"
+        "       a.payload->>'audio_datei' as audio_datei,"
+        "       a.payload->>'bild_datei' as bild_datei,"
+        "       (select t.payload->>'text' from activities t"
+        "         where t.lead_id = a.lead_id and t.type = 'transkription'"
+        "           and t.payload->>'message_id' = a.payload->>'message_id'"
+        "         order by t.created_at desc limit 1) as transkript"
         "  from activities a"
         " where a.type = 'kundenantwort' and a.lead_id::text = %(sammel)s"
         "   and coalesce(a." + _ABSENDER_SPALTE + ", '') <> ''"
@@ -7753,6 +8038,177 @@ DB_STUFEN = {v: k for k, v in STUFEN_DB.items()}
 PIPELINE_STUFEN = tuple(STUFEN_DB)
 
 
+# Pipeline nach dem Zwei-Termin-Ablauf (Betreiber 28.10.2026): fuer Firmen,
+# Kontakte und Privat dieselben Phasen. Termin 1 ist die Aufnahme mit
+# Bedarfsanalyse, Termin 2 das Verkaufsgespraech. Die Phase liegt in
+# leads.enrichment ("pipeline"); ohne gesetzte Phase gilt die Abbildung der
+# alten Stufe (leads.status) - die 569 Bestandskontakte bleiben unangetastet.
+PHASEN = {"neu": "neu", "kontaktiert": "kontaktiert",
+          "aufnahme": "Termin 1 · Aufnahme", "bedarfsanalyse": "Bedarfsanalyse",
+          "verkaufsgespraech": "Termin 2 · Verkaufsgespräch",
+          "abschluss": "Abschluss", "empfehlung": "Empfehlung",
+          "verloren": "verloren"}
+_STATUS_ZU_PHASE = {"new": "neu", "researched": "neu", "qualified": "neu",
+                    "contacted": "kontaktiert", "replied": "kontaktiert",
+                    "meeting": "aufnahme", "won": "abschluss", "lost": "verloren"}
+PIPELINE_ARTEN = {"kontakte": "Kontakte", "firmen": "Firmen", "privat": "Privat"}
+
+
+def _phase(status, enrichment) -> str:
+    e = enrichment if isinstance(enrichment, dict) else {}
+    p = e.get("pipeline") if isinstance(e.get("pipeline"), dict) else {}
+    if p.get("phase") in PHASEN:
+        return p["phase"]
+    return _STATUS_ZU_PHASE.get(str(status or "new"), "neu")
+
+
+def _pipeline_art(enrichment, company) -> str | None:
+    """Welche Pipeline: Mitarbeiter stehen in keiner (Betreiber 28.10.2026:
+    „Mitarbeitern brauch ich nichts zu verkaufen")."""
+    b = _beziehung(enrichment)
+    if b == "mitarbeiter":
+        return None
+    if b == "privat":
+        return "privat"
+    if b == "partner":
+        return "firmen"
+    if b == "kunde":
+        return "kontakte"
+    art, _ = _einordnung(enrichment, company)
+    return "firmen" if art == "firma" else "kontakte"
+
+
+def _phase_setzen(lead_id, phase: str, quelle: str = "ui") -> dict:
+    try:
+        uuid.UUID(str(lead_id))
+    except ValueError:
+        return {"fehler": f"'{lead_id}' ist keine gueltige lead_id."}
+    if phase not in PHASEN:
+        return {"fehler": f"Unbekannte Phase '{phase}'."}
+    z = _q("select status, enrichment from leads where id = %s", (str(lead_id),))
+    if not z:
+        return {"fehler": f"Kein Kontakt mit lead_id {lead_id}."}
+    vorher = _phase(z[0]["status"], z[0]["enrichment"])
+    if vorher == phase:
+        return {"phase": phase, "unveraendert": True}
+    _q("update leads set enrichment = jsonb_set(coalesce(enrichment, '{}'::jsonb), "
+       "'{pipeline}', %s::jsonb, true), updated_at = now() where id = %s "
+       "returning id", (_json({"phase": phase, "seit": _jetzt()}), str(lead_id)))
+    _q("insert into activities (lead_id, type, payload, actor) values "
+       "(%s, 'phase', %s, %s) returning id",
+       (str(lead_id), _json({"vorher": vorher, "phase": phase, "weg": quelle}),
+        _EINORDNUNG_ACTOR.get(quelle, "human")))
+    return {"phase": phase}
+
+
+# Rueckfrage nach dem Termin (Betreiber 28.10.2026): „Trigger kommt vom
+# Kalender mit Frage, ob das Gespraech stattgefunden hat." Ein Termin ist
+# NACHFRAGE_AB_MIN nach seinem Ende faellig, bis ein termin_ergebnis zu ihm
+# gebucht ist. Termin 1 = Aufnahme, Termin 2 = Verkaufsgespraech.
+NACHFRAGE_AB_MIN = 30
+NACHFRAGE_TAGE_ZURUECK = 30
+TERMIN_ARTEN = ("aufnahme", "verkaufsgespraech")
+
+
+def _termin_art(lead_id, termin_id) -> str:
+    """Erster Termin eines Kontakts = Aufnahme, jeder weitere = Verkauf."""
+    z = _q("select count(*) as n from activities where lead_id = %s "
+           "and type = 'termin_ergebnis' and payload->>'stattgefunden' = 'true' "
+           "and payload->>'termin_id' <> %s", (str(lead_id), str(termin_id)))
+    return "aufnahme" if not z or int(z[0]["n"]) == 0 else "verkaufsgespraech"
+
+
+def _termine_ohne_ergebnis(jetzt: datetime | None = None) -> list:
+    jetzt = jetzt or datetime.now(ZoneInfo(os.environ.get("TZ") or "Europe/Berlin"))
+    zeilen = _q(
+        "select a.id::text as termin_id, a.lead_id::text as lead_id, l.name, "
+        "       a.payload->>'datum' as datum, a.payload->>'uhrzeit' as uhrzeit, "
+        "       coalesce((a.payload->>'dauer_minuten')::int, 60) as dauer, "
+        "       a.payload->>'thema' as thema "
+        "  from activities a join leads l on l.id = a.lead_id "
+        " where a.type = 'termin' and coalesce(a.payload->>'datum', '') <> '' "
+        "   and a.payload->>'datum' >= %s and a.payload->>'datum' <= %s "
+        "   and not exists (select 1 from activities t where t.type = 'termin_abgesagt' "
+        "         and t.lead_id = a.lead_id and t.payload->>'uid' = a.payload->>'uid') "
+        "   and not exists (select 1 from activities e where e.type = 'termin_ergebnis' "
+        "         and e.payload->>'termin_id' = a.id::text) "
+        " order by a.payload->>'datum', a.payload->>'uhrzeit'",
+        ((jetzt - timedelta(days=NACHFRAGE_TAGE_ZURUECK)).date().isoformat(),
+         jetzt.date().isoformat()))
+    faellig = []
+    for z in zeilen:
+        try:
+            beginn = datetime.fromisoformat(f"{z['datum']}T{z['uhrzeit'] or '00:00'}")
+        except ValueError:
+            continue
+        ende = beginn + timedelta(minutes=int(z["dauer"] or 60))
+        if ende + timedelta(minutes=NACHFRAGE_AB_MIN) <= jetzt.replace(tzinfo=None):
+            faellig.append({**z, "art": _termin_art(z["lead_id"], z["termin_id"])})
+    return faellig
+
+
+@_gesichert
+def termin_rueckfragen() -> str:
+    """Termine, die vorbei sind und zu denen der Betreiber noch nicht gesagt
+    hat, wie es lief. Rufe es im Routinelauf auf und frage den Betreiber je
+    Termin: „Hat das Gespraech mit <Name> am <Datum> stattgefunden?" Bei
+    art='aufnahme' danach den Bedarf und den zweiten Termin; bei
+    art='verkaufsgespraech' „Erfolg?" und wenn ja „Was wurde
+    abgeschlossen?". Die Antwort mit termin_ergebnis_speichern buchen. Liest
+    nur, sendet nichts."""
+    return _json({"rueckfragen": _termine_ohne_ergebnis()})
+
+
+def _termin_ergebnis(termin_id: str, stattgefunden: bool, erfolg=None,
+                     was: str = "", grund: str = "", quelle: str = "agent") -> dict:
+    try:
+        uuid.UUID(str(termin_id))
+    except ValueError:
+        return {"fehler": f"'{termin_id}' ist keine gueltige termin_id."}
+    z = _q("select lead_id::text as lead_id from activities where id = %s "
+           "and type = 'termin'", (str(termin_id),))
+    if not z:
+        return {"fehler": "Diesen Termin gibt es nicht."}
+    if _q("select 1 from activities where type = 'termin_ergebnis' "
+          "and payload->>'termin_id' = %s", (str(termin_id),)):
+        return {"fehler": "Zu diesem Termin ist das Ergebnis schon gebucht."}
+    lead_id = z[0]["lead_id"]
+    art = _termin_art(lead_id, termin_id)
+    was = " ".join(str(was or "").split())[:300]
+    grund = " ".join(str(grund or "").split())[:300]
+    if stattgefunden and art == "verkaufsgespraech" and erfolg and not was:
+        return {"fehler": "Bei Erfolg bitte sagen, WAS abgeschlossen wurde."}
+    nutzlast = {"termin_id": str(termin_id), "art": art,
+                "stattgefunden": bool(stattgefunden),
+                "erfolg": (bool(erfolg) if erfolg is not None else None),
+                "was": was, "grund": grund, "weg": quelle}
+    _q("insert into activities (lead_id, type, payload, actor) values "
+       "(%s, 'termin_ergebnis', %s, %s) returning id",
+       (lead_id, _json(nutzlast), _EINORDNUNG_ACTOR.get(quelle, "human")))
+    if stattgefunden:
+        if art == "aufnahme":
+            _phase_setzen(lead_id, "bedarfsanalyse", quelle)
+        elif erfolg:
+            _phase_setzen(lead_id, "abschluss", quelle)
+        else:
+            _phase_setzen(lead_id, "verkaufsgespraech", quelle)
+    return {"gebucht": True, **nutzlast}
+
+
+@_gesichert
+def termin_ergebnis_speichern(termin_id: str, stattgefunden: bool,
+                              erfolg: bool | None = None, was: str = "",
+                              grund: str = "") -> str:
+    """Antwort des Betreibers zu einer termin_rueckfragen-Zeile buchen.
+    stattgefunden=False: nicht stattgefunden (grund nennen, neu terminieren
+    anbieten). Beim Verkaufsgespraech erfolg=True|False, bei Erfolg `was`
+    (Produkt/Vertrag) PFLICHT, bei Misserfolg kurz `grund`. Setzt die
+    Pipeline-Phase nach (Aufnahme -> Bedarfsanalyse, Erfolg -> Abschluss).
+    NUR mit der Antwort des Betreibers, nie geraten. Sendet nichts."""
+    return _json(_termin_ergebnis(termin_id, stattgefunden, erfolg, was,
+                                  grund, quelle="agent"))
+
+
 def _stufe_lesen(status) -> str:
     """DB-Wert (englisch, Constraint-Wortschatz) -> deutscher Stufenname."""
     if status in (None, ""):
@@ -9106,6 +9562,10 @@ WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,
             # Kontakt-Historie (C3, 17.10.2026): liest nur. tests/test_historie.py.
             kontakt_historie_lesen,
             vertraege_ablaufend, termin_bestaetigen,
+            # Rueckfrage nach dem Termin (28.10.2026), tests/test_ui_todo.py.
+            termin_rueckfragen, termin_ergebnis_speichern,
+            # Postfach aufraeumen (28.10.2026), tests/test_ui_todo.py.
+            mail_einstufen, mail_aufraeumen_ausfuehren,
              # Einladung statt stillem Eintrag (11.09.2026): schlaegt vor,
              # bindet niemanden — der Kalendereintrag entsteht erst bei der
              # Zusage, siehe Docstring dort.

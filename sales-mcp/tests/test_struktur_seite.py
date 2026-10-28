@@ -18,6 +18,7 @@ import pytest  # noqa: E402
 from starlette.testclient import TestClient  # noqa: E402
 
 import struktur  # noqa: E402
+import ui_kalender  # noqa: E402
 import ui_struktur  # noqa: E402
 
 CLIENT = TestClient(ui.app)
@@ -123,7 +124,9 @@ def test_leerer_zustand():
 def test_graph_und_liste():
     _erfolg("ivan", level=5); _erfolg("lena", "ivan", level=2)
     r = _get("/team/struktur"); t = r.text
-    assert r.status_code == 200 and "<script" not in t.lower()
+    # Seit 28.10.2026 genau EIN Skript: Ziehen zum Umhaengen (eigene Herkunft).
+    assert r.status_code == 200 and t.lower().count("<script") == 1
+    assert '<script src="/team/struktur/struktur.js" defer></script>' in t
     svg = t[t.index("<svg"):t.index("</svg>")]
     assert svg.count("<circle") == 3 and svg.count('<path class="kante"') == 2
     assert "<line" not in svg
@@ -136,7 +139,8 @@ def test_graph_und_liste():
     assert re.search(r'<g class="knoten level-2 tiefe-2"><title>lena – Level 2</title>.*?<text class="zahl"[^>]*>2</text>', svg)
     assert not re.search(r"#[0-9a-fA-F]{3,8}\b", svg) and "style=" not in svg
     assert t.index('class="struktur-liste"') > t.index("</svg>")
-    assert r.headers["content-security-policy"] == ui._CSP
+    # Seit 28.10.2026 mit eigenem Skript (Ziehen) - dieselbe Richtlinie wie /kalender.
+    assert r.headers["content-security-policy"] == ui_kalender.csp_kalender(ui)
 
 
 def test_nur_erfolg_erscheint():

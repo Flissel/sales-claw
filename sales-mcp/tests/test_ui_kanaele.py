@@ -118,9 +118,9 @@ def test_nur_freigeben_im_basis_laden(monkeypatch):
     assert ui._pfad_erlaubt("freigeben", "/einstellungen/kanaele") is False
 
 
-def test_im_menue_unter_admin():
-    admin = dict(ui._GRUPPEN)["Admin"]
-    assert ("/einstellungen/kanaele", "Kanäle") in admin
+def test_im_menue_unter_monitoring():
+    """Betreiber 27.10.2026: Kanaele gehoeren zum Monitoring, nicht zu Admin."""
+    assert ("/einstellungen/kanaele", "Kanäle") in dict(ui._GRUPPEN)["Monitoring"]
 
 
 def test_ohne_tabelle_kein_absturz(monkeypatch):

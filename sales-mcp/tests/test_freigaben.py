@@ -64,16 +64,16 @@ def test_vier_bloecke_in_fester_reihenfolge_mit_zaehlern():
     _entwurf(lead, text="WA offen zwei")
     _entwurf(lead, kanal="linkedin", text="LI offen")
     seite = _get("/freigaben").text
-    assert (seite.index("Verlauf WhatsApp") < seite.index("Verlauf LinkedIn")
-            < seite.index("Verlauf E-Mail") < seite.index("Verlauf Termine"))
+    # Seit 28.10.2026: nur Offenes; die Verlaeufe stehen unter Monitoring ->
+    # Verlauf, Termine sind keine Freigaben mehr.
     assert 'WhatsApp <span class="zaehler offen">2</span>' in seite
     assert 'LinkedIn <span class="zaehler offen">1</span>' in seite
     assert 'E-Mail <span class="zaehler">0</span>' in seite
-    assert 'Termine <span class="zaehler">0</span>' in seite
-    # Die offenen Karten stehen in ihrem Block, vor dem Verlauf der Art.
-    assert seite.index("WA offen eins") < seite.index("Verlauf WhatsApp")
-    assert (seite.index("Verlauf WhatsApp") < seite.index("LI offen")
-            < seite.index("Verlauf LinkedIn"))
+    assert 'id="termine"' not in seite and "Verlauf WhatsApp" not in seite
+    assert seite.index("WA offen eins") < seite.index("LI offen")
+    verlauf = _get("/monitoring/verlauf").text
+    assert (verlauf.index("Verlauf WhatsApp") < verlauf.index("Verlauf LinkedIn")
+            < verlauf.index("Verlauf E-Mail") < verlauf.index("Verlauf Termine"))
 
 
 def test_verlauf_je_art_trennt_gesendetes_abgelehntes_und_gescheitertes():
@@ -83,14 +83,14 @@ def test_verlauf_je_art_trennt_gesendetes_abgelehntes_und_gescheitertes():
              text="Abgelehnter Beitrag")
     _entwurf(lead, status="failed", kanal="email", text="Mail kaputt",
              fehler="SMTP antwortet nicht", empfaenger="x@y.de")
-    seite = _get("/freigaben").text
-    assert (seite.index("Verlauf WhatsApp") < seite.index("Schon raus per WhatsApp")
-            < seite.index("Verlauf LinkedIn") < seite.index("Abgelehnter Beitrag")
-            < seite.index("Verlauf E-Mail"))
-    assert 'class="badge zustand rejected">abgelehnt</span>' in seite
+    verlauf = _get("/monitoring/verlauf").text
+    assert (verlauf.index("Verlauf WhatsApp") < verlauf.index("Schon raus per WhatsApp")
+            < verlauf.index("Verlauf LinkedIn") < verlauf.index("Abgelehnter Beitrag")
+            < verlauf.index("Verlauf E-Mail"))
+    assert 'class="badge zustand rejected">abgelehnt</span>' in verlauf
     # Gescheitertes ist offen (Erneut freigeben / Verwerfen), nicht Verlauf.
-    assert "SMTP antwortet nicht" in seite
-    assert seite.index("Mail kaputt") < seite.index("Verlauf E-Mail")
+    seite = _get("/freigaben").text
+    assert "SMTP antwortet nicht" in seite and "Mail kaputt" not in verlauf
     assert 'action="/aktion/erneut-freigeben"' in seite
 
 
@@ -116,10 +116,10 @@ def test_termine_block_mit_offenem_und_verlauf():
                 '"thema": "Erstgespraech Video", "uid": "u1"}')
     _aktivitaet(lead, "termin_abgesagt",
                 '{"uid": "u1", "grund": "Kunde krank"}')
-    seite = _get("/freigaben").text
-    assert 'Termine <span class="zaehler offen">1</span>' in seite
-    assert "Datum noch offen" in seite
-    assert seite.index("Datum noch offen") < seite.index("Verlauf Termine")
+    # Termine ohne Datum gibt es nicht mehr als Freigabe (28.10.2026); der
+    # Verlauf steht unter Monitoring -> Verlauf.
+    assert "Datum noch offen" not in _get("/freigaben").text
+    seite = _get("/monitoring/verlauf").text
     verlauf = seite[seite.index("Verlauf Termine"):]
     assert "Erstgespraech Video" in verlauf
     assert "bestätigt" in verlauf

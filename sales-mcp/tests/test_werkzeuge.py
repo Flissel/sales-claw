@@ -721,7 +721,12 @@ def test_fuenfundachtzig_werkzeuge_registriert():
     # 17.10.2026: abschluss_speichern (C2 Vertraege & Projekte), 96 -> 97.
     # 17.10.2026: kontakt_historie_lesen (C3 Kontakt-Historie), 97 -> 98.
     # 24.10.2026: kanal_post_entwurf (Beitraege auf weitere Kanaele), 98 -> 99.
-    assert len(namen) == 99
+    # 28.10.2026: termin_rueckfragen, termin_ergebnis_speichern (Rueckfrage
+    # nach dem Termin, Sales-UI-Rundgang), 99 -> 101.
+    # 28.10.2026: mail_einstufen, mail_aufraeumen_ausfuehren (Postfach
+    # aufraeumen), 101 -> 103.
+    assert len(namen) == 103
+    assert {"termin_rueckfragen", "termin_ergebnis_speichern"} <= namen
     assert "kanal_post_entwurf" in namen
     assert "termin_konflikte" in namen
     assert "kontakt_aehnlich" in namen
