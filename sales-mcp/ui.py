@@ -7131,13 +7131,18 @@ def _kontaktprofil_bereich(lead_id) -> str:
     Geschrieben wird hier nichts. Das Profil entsteht im Chat
     (`chat_report_speichern`), weil dort das Sprachmodell sitzt.
     """
+    # Nur der Betreiber (Rolle freigeben) sieht das Profil (28.10.2026: „nur
+    # fuer den Admin und den Bot"); `lesen` und `kalender` nicht.
+    if _AKTIVE_ROLLE.get() in ("lesen", "kalender"):
+        return ""
     profil = server._juengstes_profil(lead_id)
+    anhaenge = _profil_anhaenge_bereich(lead_id)
     if not profil:
         return ('<h2 id="profil">Kontaktprofil</h2><div class="karte">'
                 '<p>Noch keins. Es entsteht von selbst, sobald seit der '
                 f'letzten Fassung {server.PROFIL_SCHWELLE} Nachrichten '
                 'aufgelaufen sind — oder jetzt, auf Zuruf.</p>'
-                + _profil_knopf(lead_id) + '</div>')
+                + _profil_knopf(lead_id) + '</div>' + anhaenge)
     zeilen = [f'<h3>{_e(server.PROFIL_FRAGEN[feld])}</h3>'
               f'<p>{_e(profil.get(feld) or "—")}</p>'
               for feld in server.PROFIL_FELDER]
@@ -7148,14 +7153,93 @@ def _kontaktprofil_bereich(lead_id) -> str:
         punkte = "".join(f"<li>{_e(x)}</li>" for x in eintraege)
         return f"<h3>{titel}</h3><ul>{punkte}</ul>"
 
+    # Erweitertes Profil (28.10.2026): Steckbrief, Menschen im Umfeld,
+    # Kommunikation, Bedarf - nur wenn der Agent sie geschrieben hat.
+    for feld, frage in server.PROFIL_ZUSATZ.items():
+        wert = profil.get(feld)
+        if isinstance(wert, list):
+            zeilen.append(liste(_e(frage), wert))
+        elif wert:
+            zeilen.append(f'<h3>{_e(frage)}</h3><p>{_e(wert)}</p>')
     zeilen.append(liste("Links", profil.get("links") or []))
     zeilen.append(liste("Dateien", profil.get("dateien") or []))
     return (f'<h2 id="profil">Kontaktprofil</h2><div class="karte">'
             f'{"".join(zeilen)}'
             f'<p class="meta">Stand vom {_zeit(profil.get("stand_vom"))} — '
             f'aus dem Nachrichtenverlauf erschlossen, nicht bestätigt. '
-            f'Bestätigte Angaben stehen oben unter den Stammdaten.</p>'
-            f'{_profil_knopf(lead_id)}</div>')
+            f'Bestätigte Angaben stehen oben unter den Stammdaten. Nur für '
+            f'dich und den Agenten sichtbar.</p>'
+            f'{_profil_knopf(lead_id)}</div>' + anhaenge)
+
+
+def _profil_anhaenge_bereich(lead_id) -> str:
+    """Wichtige Links, PDFs, Bilder, Videos am Profil (28.10.2026) - mit
+    Formular zum Hochladen bzw. Verlinken. Gesperrt fuer den Versand."""
+    if _ist_sammelkontakt(lead_id):
+        return ""
+    z = server._q("select enrichment from leads where id = %s", (lead_id,))
+    anhaenge = server._profil_anhaenge(z[0]["enrichment"] if z else {})
+    punkte = []
+    for a in anhaenge:
+        ziel = str(a.get("ziel") or "")
+        if a.get("art") == "link" and ziel.startswith(("https://", "http://")):
+            verweis = f'<a href="{_e(ziel)}" rel="noopener noreferrer">{_e(a.get("titel"))}</a>'
+        else:
+            verweis = (f'<a href="/medien/datei/{_e(urllib.parse.quote(ziel))}">'
+                       f'{_e(a.get("titel"))}</a>')
+        notiz = f' — {_e(a["notiz"])}' if a.get("notiz") else ""
+        punkte.append(f'<li><span class="badge">{_e(a.get("art"))}</span> {verweis}{notiz}</li>')
+    liste_html = f'<ul>{"".join(punkte)}</ul>' if punkte else '<p class="meta">Noch nichts abgelegt.</p>'
+    return (f'<h3 id="profil-anhaenge">Links und Dateien ({len(anhaenge)})</h3>{liste_html}'
+            f'<details><summary>Link oder Datei hinzufügen</summary>'
+            f'<form method="post" action="/kontakte/profil-anhang" enctype="multipart/form-data" class="zeile">'
+            f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+            f'<input type="hidden" name="lead_id" value="{_e(lead_id)}">'
+            f'<label>Titel <input name="titel" maxlength="200"></label> '
+            f'<label>Link <input type="url" name="link" placeholder="Webadresse"></label> '
+            f'<label>oder Datei (PDF, Bild, Video) <input type="file" name="datei"></label> '
+            f'<label>Notiz <input name="notiz" maxlength="500"></label> '
+            f'<button type="submit">Ablegen</button></form>'
+            f'<p class="meta">Dateien landen im Medienordner und sind für den '
+            f'Versand gesperrt.</p></details>')
+
+
+_ANHANG_ART_JE_ENDUNG = {".pdf": "pdf", ".jpg": "bild", ".jpeg": "bild",
+                         ".png": "bild", ".webp": "bild", ".gif": "bild",
+                         ".mp4": "video", ".mov": "video", ".webm": "video"}
+
+
+@_gesichert_seite
+async def aktion_profil_anhang(request):
+    if _AKTIVE_ROLLE.get() in ("lesen", "kalender"):
+        return _fehlerseite(403, "Nicht für diese Anmeldung",
+                            "Nur die Rolle „freigeben“ legt Profil-Anhänge ab.")
+    form, lead_id, abbruch = await _kontakt_vorspann(request)
+    if abbruch:
+        return abbruch
+    titel = str(form.get("titel") or "")
+    notiz = str(form.get("notiz") or "")
+    link = str(form.get("link") or "").strip()
+    datei = form.get("datei")
+    if datei is not None and getattr(datei, "filename", ""):
+        basis, fehler = server.medien.pruefe_neuen_namen(datei.filename)
+        if fehler:
+            return _fehlerseite(400, "Nicht abgelegt", _e(fehler))
+        if server.medien.liegt_schon(basis):
+            stamm, endung = os.path.splitext(basis)
+            basis = f"{stamm}-{lead_id[:8]}{endung}"
+        geschrieben, abgelehnt = await medien_ablegen(datei, basis)
+        if abgelehnt:
+            return _fehlerseite(abgelehnt[0], "Nicht abgelegt", _e(abgelehnt[1]))
+        art = _ANHANG_ART_JE_ENDUNG.get(os.path.splitext(basis)[1].lower(), "datei")
+        r = server._profil_anhang_hinzu(lead_id, art, titel or basis, basis, notiz, "ui")
+    elif link:
+        r = server._profil_anhang_hinzu(lead_id, "link", titel, link, notiz, "ui")
+    else:
+        return _fehlerseite(400, "Nichts abgelegt", "Weder Link noch Datei angegeben.")
+    if "fehler" in r:
+        return _fehlerseite(422, "Nicht abgelegt", _e(r["fehler"]))
+    return RedirectResponse(f"/kontakte/{lead_id}#profil-anhaenge", status_code=303)
 
 
 def _chat_report_bereich(lead_id) -> str:
@@ -9208,6 +9292,7 @@ app = Starlette(routes=[
     Route("/kontakte/einordnen", aktion_kontakt_einordnen, methods=["POST"]),
     Route("/kontakte/beziehung", aktion_kontakt_beziehung, methods=["POST"]),
     Route("/kontakte/liste", aktion_kontaktliste, methods=["POST"]),
+    Route("/kontakte/profil-anhang", aktion_profil_anhang, methods=["POST"]),
     Route("/kontakte/beziehung-autonomie", aktion_beziehung_autonomie,
           methods=["POST"]),
     Route("/kontakte/archivieren", aktion_kontakt_archivieren,

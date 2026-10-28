@@ -2539,6 +2539,8 @@ def profil_lesen(lead_id: str) -> str:
                   # den Reports darunter steht es auch — dort aber je
                   # Fassung, also als Verlauf statt als Stand.
                   "kontaktprofil": _juengstes_profil(lead_id),
+                  # Links/PDFs/Bilder/Videos am Profil (28.10.2026).
+                  "profil_anhaenge": _profil_anhaenge(e),
                   # Reports ZUERST — sie erzaehlen die Vorgeschichte, die
                   # `aktivitaeten` darunter nicht mehr enthaelt.
                   "chat_reports": [_chat_report_anzeige(r) for r in reports],
@@ -4463,7 +4465,21 @@ PROFIL_SCHWELLE = 5
 PROFIL_FAELLIG_LIMIT = 25
 PROFIL_ANGEFORDERT_TYP = "profil_angefordert"
 
-PROFIL_FELD_MAXLAENGE = 800
+PROFIL_FELD_MAXLAENGE = 1500
+# Erweitertes Profil (Betreiber 28.10.2026: „so viel wie moeglich ueber den
+# Menschen und seine Beziehungen zu anderen Menschen", ausformuliert). Diese
+# Abschnitte sind freiwillig - die vier Leitfragen bleiben Pflicht.
+# `menschen` ist eine Liste, je Zeile „Name – Beziehung – was man weiss".
+PROFIL_ZUSATZ = {
+    "steckbrief": "Steckbrief (Alter, Familie, Wohnort, Beruf, Hobbys)",
+    "menschen": "Menschen im Umfeld und ihre Beziehung zu ihm/ihr",
+    "kommunikation": "Wie kommuniziert er/sie (Du/Sie, Ton, Länge, Zeiten)?",
+    "bedarf": "Bedarf, Ziele und offene Punkte",
+}
+# Anhaenge am Profil (Links, PDFs, Bilder, Videos): nur fuer den Betreiber
+# und den Agenten, nie zum Versenden.
+PROFIL_ANHANG_ARTEN = ("link", "pdf", "bild", "video", "datei")
+PROFIL_ANHAENGE_MAX = 100
 # Links und Dateien aus dem Verlauf. Gedeckelt wie jede Liste hier.
 PROFIL_LISTE_MAX = 40
 PROFIL_EINTRAG_MAXLAENGE = 300
@@ -4497,8 +4513,10 @@ def _profil_liste(roh: str):
     return liste
 
 
-def _profil_bauen(wer, beziehung, wichtig, aktuell, links, dateien):
+def _profil_bauen(wer, beziehung, wichtig, aktuell, links, dateien, **zusatz):
     """(profil_dict | None, fehler | None) aus den Rohangaben.
+
+    `zusatz` traegt die freiwilligen Abschnitte aus PROFIL_ZUSATZ.
 
     ENTWEDER ALLE VIER ODER KEINE. Ein Profil mit drei beantworteten und
     einer leeren Leitfrage ist kein Profil, sondern ein halbes — und es
@@ -4529,6 +4547,18 @@ def _profil_bauen(wer, beziehung, wichtig, aktuell, links, dateien):
     profil = dict(gefuellt)
     profil["links"] = _profil_liste(links)
     profil["dateien"] = _profil_liste(dateien)
+    for k in PROFIL_ZUSATZ:
+        roh_z = str(zusatz.get(k) or "").strip()
+        if not roh_z:
+            continue
+        if k == "menschen":
+            profil[k] = _profil_liste(roh_z if chr(10) in roh_z else roh_z.replace(";", chr(10)))
+            continue
+        wert = " ".join(roh_z.split())
+        if len(wert) > PROFIL_FELD_MAXLAENGE:
+            return None, _json({"fehler": (
+                f"Zu lang ({PROFIL_FELD_MAXLAENGE} Zeichen): {k}. Nichts gespeichert.")})
+        profil[k] = wert
     return profil, None
 
 
@@ -4639,6 +4669,79 @@ def _juengstes_profil(lead_id):
                        "auf_anforderung"):
         p.pop(schluessel, None)
     return {"stand_vom": z["created_at"], "aktivitaets_id": z["id"], **p}
+
+
+def _profil_anhaenge(enrichment) -> list:
+    e = enrichment if isinstance(enrichment, dict) else {}
+    roh = e.get("profil_anhaenge")
+    return [a for a in roh if isinstance(a, dict)] if isinstance(roh, list) else []
+
+
+def _profil_anhang_hinzu(lead_id, art: str, titel: str, ziel: str,
+                         notiz: str = "", quelle: str = "agent") -> dict:
+    """Link oder Datei (PDF, Bild, Video) am Profil ablegen (28.10.2026).
+    `ziel` ist eine https-URL (art link) oder ein Dateiname aus den Medien."""
+    try:
+        uuid.UUID(str(lead_id))
+    except ValueError:
+        return {"fehler": f"'{lead_id}' ist keine gueltige lead_id."}
+    if art not in PROFIL_ANHANG_ARTEN:
+        return {"fehler": f"art muss eins von {', '.join(PROFIL_ANHANG_ARTEN)} sein."}
+    ziel = str(ziel or "").strip()[:500]
+    titel = " ".join(str(titel or "").split())[:200] or ziel[:200]
+    if art == "link":
+        if not re.match(r"https?://[^\s<>\"']+$", ziel):
+            return {"fehler": "Ein Link muss mit http:// oder https:// beginnen."}
+    else:
+        basis, fehler = medien.pruefe_anhang(ziel)
+        if fehler:
+            return {"fehler": fehler}
+        ziel = basis
+    if _sammelkontakt(lead_id):
+        return {"fehler": "Sammelkontakte haben kein Profil."}
+    z = _q("select enrichment from leads where id = %s", (str(lead_id),))
+    if not z:
+        return {"fehler": f"Kein Kontakt mit lead_id {lead_id}."}
+    liste = _profil_anhaenge(z[0]["enrichment"])
+    if any(a.get("ziel") == ziel for a in liste):
+        return {"schon_da": True, "ziel": ziel}
+    if len(liste) >= PROFIL_ANHAENGE_MAX:
+        return {"fehler": f"Hoechstens {PROFIL_ANHAENGE_MAX} Anhaenge je Profil."}
+    eintrag = {"art": art, "titel": titel, "ziel": ziel,
+               "notiz": " ".join(str(notiz or "").split())[:500],
+               "am": _jetzt(), "von": quelle}
+    _q("update leads set enrichment = jsonb_set(coalesce(enrichment, '{}'::jsonb), "
+       "'{profil_anhaenge}', %s::jsonb, true), updated_at = now() where id = %s "
+       "returning id", (_json(liste + [eintrag]), str(lead_id)))
+    if art != "link":
+        # Profilmaterial ist kein Versandmaterial.
+        try:
+            medien_meta_setzen(ziel, bot_darf_senden=False)
+        except psycopg.Error:
+            pass
+    return {"gespeichert": eintrag}
+
+
+@_gesichert
+def profil_anhang_speichern(lead_id: str, art: str, titel: str, ziel: str,
+                            notiz: str = "") -> str:
+    """Wichtigen Link oder eine Datei am Kontaktprofil ablegen (Betreiber
+    28.10.2026). art: link | pdf | bild | video | datei. `ziel`: die https-URL
+    oder der Dateiname aus medien_liste (Chat-Anhaenge vorher mit
+    medien_aus_chat_uebernehmen holen). Nur fuer Betreiber und Agent - die
+    Datei wird fuer den Versand gesperrt. Sendet nichts."""
+    return _json(_profil_anhang_hinzu(lead_id, art, titel, ziel, notiz, "agent"))
+
+
+def _profil_fuer_antwort(lead_id) -> dict:
+    """Was der Agent zum Antworten ueber den Menschen wissen muss: das
+    juengste Profil, bestaetigte Profilfelder und die Anhaenge (Titel)."""
+    z = _q("select enrichment from leads where id = %s", (str(lead_id),))
+    e = (z[0]["enrichment"] or {}) if z else {}
+    return {"kontaktprofil": _juengstes_profil(lead_id),
+            "bestaetigt": e.get("profil", {}),
+            "anhaenge": [{"art": a.get("art"), "titel": a.get("titel"),
+                          "notiz": a.get("notiz")} for a in _profil_anhaenge(e)]}
 
 
 def _profil_grenze(lead_id):
@@ -4935,8 +5038,20 @@ def profil_anfordern(lead_id: str) -> str:
 def kontaktprofil_schreiben(lead_id: str, wer: str, beziehung: str,
                             wichtig: str, aktuell: str,
                             bis_aktivitaet_id: str = "",
-                            links: str = "", dateien: str = "") -> str:
+                            links: str = "", dateien: str = "",
+                            steckbrief: str = "", menschen: str = "",
+                            kommunikation: str = "", bedarf: str = "") -> str:
     """Ein SELBST GESCHRIEBENES Kontaktprofil ablegen — vier Leitfragen.
+
+    AUSFORMULIERT UND KUMULATIV (Betreiber 28.10.2026): ganze Saetze, alles
+    aus dem GESAMTEN Verlauf, nicht nur aus den letzten Nachrichten. Was die
+    vorige Fassung (profil_lesen) schon wusste, bleibt drin und wird ergaenzt.
+    Freiwillig dazu, und so ausfuehrlich wie belegt: `steckbrief` (Alter,
+    Familie, Wohnort, Beruf, Hobbys), `menschen` (je Zeile „Name – Beziehung
+    zu ihm/ihr – was man ueber die Person weiss", z. B. Partnerin, Kinder,
+    Chef, wer ihn empfohlen hat), `kommunikation` (Du/Sie, Ton, Laenge,
+    Uhrzeiten - damit Antworten passen), `bedarf` (Ziele, offene Punkte).
+    Das Profil sehen nur der Betreiber und du; es geht nie an den Kunden.
 
       wer       — Wer ist der Mensch?
       beziehung — In welcher Beziehung stehe ich zu ihm/ihr?
@@ -4972,7 +5087,9 @@ def kontaktprofil_schreiben(lead_id: str, wer: str, beziehung: str,
             "(eingang_einordnen), dann je Kontakt. Nichts gespeichert.")})
 
     profil, fehler = _profil_bauen(wer, beziehung, wichtig, aktuell,
-                                   links, dateien)
+                                   links, dateien, steckbrief=steckbrief,
+                                   menschen=menschen, kommunikation=kommunikation,
+                                   bedarf=bedarf)
     if fehler:
         return fehler
     if not profil:
@@ -5079,7 +5196,9 @@ def chat_report_speichern(lead_id: str, zusammenfassung: str,
                           bis_aktivitaet_id: str = "",
                           wer: str = "", beziehung: str = "",
                           wichtig: str = "", aktuell: str = "",
-                          links: str = "", dateien: str = "") -> str:
+                          links: str = "", dateien: str = "",
+                          steckbrief: str = "", menschen: str = "",
+                          kommunikation: str = "", bedarf: str = "") -> str:
     """Eine SELBST GESCHRIEBENE Zusammenfassung eines langen Chats ablegen und
     festhalten, bis zu welcher Nachricht sie reicht — auf Wunsch mit dem
     strukturierten KONTAKTPROFIL.
@@ -5091,8 +5210,10 @@ def chat_report_speichern(lead_id: str, zusammenfassung: str,
       wichtig   — Was ist dem Menschen wichtig?
       aktuell   — Was ist gerade los?
     Dazu `links` und `dateien`: was im Verlauf an URLs, PDFs und Anhaengen
-    vorkam, je Eintrag eine Zeile (oder mit Komma getrennt). Hoechstens 800
-    Zeichen je Leitfrage — ein Profil verdichtet.
+    vorkam, je Eintrag eine Zeile (oder mit Komma getrennt). Hoechstens 1500
+    Zeichen je Leitfrage. Ausformuliert und kumulativ, freiwillig erweitert um
+    `steckbrief`, `menschen`, `kommunikation`, `bedarf` - siehe
+    kontaktprofil_schreiben.
 
     Jeder Aufruf legt eine NEUE Fassung an; die vorige bleibt lesbar. Wer nur
     einen Abschnitt neu fassen will, uebernimmt die anderen drei unveraendert
@@ -5142,7 +5263,9 @@ def chat_report_speichern(lead_id: str, zusammenfassung: str,
     # Das Profil VOR der Grenzbestimmung pruefen: schlaegt es fehl, soll
     # nichts passiert sein — kein Report ohne das Profil, das mitgemeint war.
     profil, profil_fehler = _profil_bauen(wer, beziehung, wichtig, aktuell,
-                                          links, dateien)
+                                          links, dateien, steckbrief=steckbrief,
+                                          menschen=menschen,
+                                          kommunikation=kommunikation, bedarf=bedarf)
     if profil_fehler:
         return profil_fehler
 
@@ -7247,9 +7370,13 @@ def antworten_faellig(stunden: int = 48) -> str:
         # erlaubt. Automatisch geschieht nur noch, was ausdruecklich auf
         # `auto` steht.
         if stufe == "auto":
+            # Das Profil reist mit (Betreiber 28.10.2026: „fuer den Bot, um
+            # akkurat zu antworten") - vorher kannte die Antwort nur den Verlauf.
             faellig.append({**e, "autonomie": stufe,
                             "verlauf": _letzte_nachrichten(
-                                kennung, ANTWORT_VERLAUF, e.get("absender"))})
+                                kennung, ANTWORT_VERLAUF, e.get("absender")),
+                            "profil": _profil_fuer_antwort(e["lead_id"])
+                            if e.get("lead_id") else None})
     return _json({"fenster_stunden": postfach.get("fenster_stunden"),
                   "anzahl": len(faellig),
                   "uebersprungen_weil_entwurf_offen": wegen_entwurf,
@@ -9570,6 +9697,8 @@ WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,
             termin_rueckfragen, termin_ergebnis_speichern,
             # Postfach aufraeumen (28.10.2026), tests/test_ui_todo.py.
             mail_einstufen, mail_aufraeumen_ausfuehren,
+            # Anhaenge am Kontaktprofil (28.10.2026), tests/test_ui_todo.py.
+            profil_anhang_speichern,
              # Einladung statt stillem Eintrag (11.09.2026): schlaegt vor,
              # bindet niemanden — der Kalendereintrag entsteht erst bei der
              # Zusage, siehe Docstring dort.

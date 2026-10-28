@@ -640,7 +640,7 @@ bekommt eine freundliche Absage, und du loggst es als `offener_punkt`.
   `kontakte_freigegeben`, `digest`, `wochenbericht`, `posteingang`,
   `eingang_einordnen`, `absender_aufloesen`,
   `uebergabe_erstellen`, `vertraege_ablaufend`, `medien_liste`,
-  `medien_aus_chat_uebernehmen`, `post_entwurf_erstellen`, `kanal_post_entwurf`, `post_markierungen_setzen`, `kontakt_einordnen`, `empfehlungsliste_anlegen`, `empfehlungslisten_zeigen`, `abschluss_speichern`, `kontakt_historie_lesen`, `termin_rueckfragen`, `termin_ergebnis_speichern`, `mail_einstufen`, `mail_aufraeumen_ausfuehren` sowie jede Recherche (`web_search`, `marktanalyse`,
+  `medien_aus_chat_uebernehmen`, `post_entwurf_erstellen`, `kanal_post_entwurf`, `post_markierungen_setzen`, `kontakt_einordnen`, `empfehlungsliste_anlegen`, `empfehlungslisten_zeigen`, `abschluss_speichern`, `kontakt_historie_lesen`, `termin_rueckfragen`, `termin_ergebnis_speichern`, `mail_einstufen`, `mail_aufraeumen_ausfuehren`, `profil_anhang_speichern` sowie jede Recherche (`web_search`, `marktanalyse`,
   `b2b_leads`, `firma_anreichern` — sie kostet Geld und gehoert dem
   Betreiber). Erlaubt ist, was das Gespraech mit GENAU diesem Kunden
   dokumentiert: `kontakt_suchen`/`profil_lesen` fuer ihn,
@@ -995,7 +995,28 @@ Die vier Leitfragen, **alle vier oder keine**:
 | `aktuell` | Was ist gerade los? |
 
 Dazu `links` und `dateien`: was im Verlauf an URLs, PDFs und Anhaengen
-vorkam — je Eintrag eine Zeile. Hoechstens 800 Zeichen je Frage.
+vorkam — je Eintrag eine Zeile. Hoechstens 1500 Zeichen je Frage.
+
+**Ausformuliert und kumulativ (Betreiber 28.10.2026).** Ganze Saetze, keine
+Stichpunkt-Stummel. Das Profil sammelt ALLES, was ueber den Menschen belegt
+ist — aus dem gesamten Verlauf (`chat_verlauf(lead_id, alle=True)` und den
+Reports), nicht nur aus den letzten Nachrichten. Was die vorige Fassung schon
+wusste, bleibt drin und wird ergaenzt. Freiwillig, aber so ausfuehrlich wie
+belegt:
+
+| Feld | Inhalt |
+|---|---|
+| `steckbrief` | Alter, Familie, Wohnort, Beruf/Arbeitgeber, Hobbys |
+| `menschen` | je Zeile „Name – Beziehung zu ihm/ihr – was man ueber die Person weiss" (Partner, Kinder, Eltern, Chef, Kollegen, wer ihn empfohlen hat; ist die Person selbst Kontakt, den Namen wie im CRM) |
+| `kommunikation` | Du oder Sie, Ton, Laenge, Emojis, wann er/sie schreibt — damit Antworten passen |
+| `bedarf` | Ziele, Wuensche, offene Punkte |
+
+Wichtige Links und Dateien (PDFs, Bilder, Videos) aus dem Chat legst du
+zusaetzlich mit `profil_anhang_speichern(lead_id, art, titel, ziel, notiz)` am
+Profil ab (Chat-Anhaenge vorher mit `medien_aus_chat_uebernehmen` holen). Das
+Profil sehen nur der Betreiber und du — es ist dein Wissen zum Antworten:
+`antworten_faellig` liefert es je Kontakt unter `profil` mit. Lies es vor
+jeder Antwort und schreib im Stil von `kommunikation`.
 
 **Drei beantwortete Fragen und eine leere gehen nicht.** Ein halbes Profil
 sieht aus wie ein vollstaendiges mit einer Luecke, und niemand weiss dann,

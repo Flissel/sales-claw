@@ -428,6 +428,78 @@ def test_marke_loeschen_nur_mit_bestaetigung(monkeypatch):
                                                     "von": "betreiber-ui"})]
 
 
+# --- Kontaktprofil (28.10.2026) ------------------------------------------------------
+
+def _nachricht(lead, text="Hallo"):
+    import json
+    server._q("insert into activities (lead_id, type, payload, actor) values "
+              "(%s, 'kundenantwort', %s, 'human') returning id",
+              (lead, json.dumps({"text": text, "nachrichtentyp": "chat"})))
+
+def test_profil_mit_steckbrief_menschen_und_kommunikation():
+    import json
+    lead = _lead(name="Paul Profil")
+    _nachricht(lead)
+    r = json.loads(server.kontaktprofil_schreiben(
+        lead, wer="Paul ist Logistikleiter.", beziehung="Kunde seit 2025.",
+        wichtig="Sicherheit fuer die Familie.", aktuell="Plant ein Haus.",
+        steckbrief="38 Jahre, verheiratet, zwei Kinder, wohnt in Augsburg.",
+        menschen="Anna – Ehefrau – Lehrerin\nLeo – Sohn – 6 Jahre",
+        kommunikation="Du, kurze Nachrichten, abends.", bedarf="Baufinanzierung."))
+    assert "fehler" not in r, r
+    p = server._juengstes_profil(lead)
+    assert p["menschen"] == ["Anna – Ehefrau – Lehrerin", "Leo – Sohn – 6 Jahre"]
+    s = _get(f"/kontakte/{lead}").text
+    assert "Menschen im Umfeld" in s and "Anna – Ehefrau – Lehrerin" in s
+    assert "Du, kurze Nachrichten, abends." in s
+
+
+def test_profil_anhang_link_und_datei(tmp_path, monkeypatch):
+    lead = _lead(name="Anja Anhang")
+    monkeypatch.setattr(server.medien, "MEDIA_VERZEICHNIS", str(tmp_path))
+    r = _post("/kontakte/profil-anhang", {"lead_id": lead, "titel": "Exposé",
+                                          "link": "https://example.org/haus"})
+    assert r.status_code == 303
+    r = CLIENT.post("/kontakte/profil-anhang", headers={"host": HOST_OK},
+                    data={"csrf": ui.CSRF_TOKEN, "lead_id": lead, "titel": "Vertrag"},
+                    files={"datei": ("vertrag.pdf", b"%PDF-1.4 probe", "application/pdf")},
+                    follow_redirects=False)
+    assert r.status_code == 303, r.text
+    e = server._q("select enrichment from leads where id = %s", (lead,))[0]["enrichment"]
+    arten = [a["art"] for a in e["profil_anhaenge"]]
+    assert arten == ["link", "pdf"]
+    s = _get(f"/kontakte/{lead}").text
+    assert 'href="https://example.org/haus"' in s and "Vertrag" in s
+    assert "fehler" in server._profil_anhang_hinzu(lead, "link", "x", "javascript:alert(1)")
+
+
+def test_profil_nur_fuer_den_betreiber(monkeypatch):
+    lead = _lead(name="Geheim Gerd")
+    server._profil_anhang_hinzu(lead, "link", "Privat", "https://example.org/p")
+    monkeypatch.setattr(ui, "_pfad_erlaubt", lambda rolle, pfad: True)
+    token = ui._AKTIVE_ROLLE.set("lesen")
+    try:
+        assert ui._kontaktprofil_bereich(lead) == ""
+    finally:
+        ui._AKTIVE_ROLLE.reset(token)
+
+
+def test_antworten_faellig_bringt_das_profil_mit(monkeypatch):
+    import json
+    lead = _lead(name="Bot Berta")
+    _nachricht(lead)
+    server.kontaktprofil_schreiben(lead, wer="Berta.", beziehung="Kundin.",
+                                   wichtig="Ruhe.", aktuell="Urlaub.",
+                                   kommunikation="Sie, foermlich.")
+    monkeypatch.setattr(server, "posteingang", lambda *a, **k: json.dumps({
+        "fenster_stunden": 48, "eintraege": [{"lead_id": lead, "kontakt": "Bot Berta"}]}))
+    server.kontakt_autonomie_setzen(lead, "auto")
+    monkeypatch.setattr(server, "_letzte_nachrichten", lambda *a, **k: [])
+    r = json.loads(server.antworten_faellig())
+    eintraege = r.get("faellig") or r.get("eintraege") or []
+    assert eintraege and eintraege[0]["profil"]["kontaktprofil"]["kommunikation"] == "Sie, foermlich."
+
+
 def test_mit_sitzung_bleibt_das_menue(monkeypatch):
     monkeypatch.setattr(ui, "UI_SESSION_SECRET", "test-geheimnis")
     server._q("insert into benutzer (name, passwort_hash, rolle, aktiv) "

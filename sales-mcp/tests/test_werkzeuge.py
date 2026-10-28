@@ -725,7 +725,8 @@ def test_fuenfundachtzig_werkzeuge_registriert():
     # nach dem Termin, Sales-UI-Rundgang), 99 -> 101.
     # 28.10.2026: mail_einstufen, mail_aufraeumen_ausfuehren (Postfach
     # aufraeumen), 101 -> 103.
-    assert len(namen) == 103
+    # 28.10.2026: profil_anhang_speichern (Anhaenge am Kontaktprofil), 103 -> 104.
+    assert len(namen) == 104
     assert {"termin_rueckfragen", "termin_ergebnis_speichern"} <= namen
     assert "kanal_post_entwurf" in namen
     assert "termin_konflikte" in namen
