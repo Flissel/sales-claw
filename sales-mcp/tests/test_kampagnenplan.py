@@ -155,7 +155,8 @@ def test_seite_zeigt_monat_und_knoepfe(angemeldet, pult):
     r = angemeldet.get("/marketing/plan?monat=2026-10", headers=HOST)
     s = r.text
     assert r.status_code == 200 and "<script" not in s.lower().replace("&lt;script&gt;", "")
-    methode, pfad, _ = pult.aufrufe[-1]
+    # Seit 28.10.2026 holt die Seite danach noch die Kampagnen - der Kalender-Abruf ist der vorletzte.
+    methode, pfad, _ = [a for a in pult.aufrufe if a[1].startswith("/plan?")][-1]
     assert methode == "GET" and pfad.startswith("/plan?") and "mandant=vibemind" in pfad
     assert "von=2026-10-01" in pfad and "bis=2026-10-31" in pfad
     assert "Oktober 2026" in s and "monat=2026-09" in s and "monat=2026-11" in s
@@ -444,3 +445,54 @@ def test_verschieben_vorgabe_bei_vergangenem_eintrag_ist_heute(angemeldet, pult)
 def test_datum_felder_jahr_enthaelt_vorgabejahr():
     h = ui_plan.datum_felder("x", date(2031, 1, 2), heute=date(2026, 10, 19))
     assert '<option value="2031" selected>' in h
+
+
+# --- Echte Kampagnen (28.10.2026, Marketing-Migration 095) -------------------------
+
+KID = "55555555-5555-5555-5555-555555555555"
+
+
+@pytest.fixture
+def mit_kampagne(pult, monkeypatch):
+    alt = pult.anfrage
+
+    def anfrage(methode, pfad, daten=None, roh=False):
+        if pfad.startswith("/kampagnen?"):
+            pult.aufrufe.append((methode, pfad, daten))
+            return {"kampagnen": [{"id": KID, "name": "Herbst <b>", "ziel": "bAV-Termine", "zielgruppe": "sales",
+                                   "von": "2026-11-01", "bis": "2026-11-30", "status": "geplant",
+                                   "beitraege": [{"id": PID, "datum": "2026-11-03", "art": "newsletter",
+                                                  "titel": "Auftakt", "status": "vorschlag", "inhalt": None}]}]}
+        if pfad.startswith("/kampagnen"):
+            pult.aufrufe.append((methode, pfad, daten))
+            return {"id": KID, "status": (daten or {}).get("status") or "in_planung"}
+        return alt(methode, pfad, daten, roh)
+    monkeypatch.setattr(marketing_pult, "anfrage", anfrage)
+    return pult
+
+
+def test_kampagnen_stehen_ueber_dem_kalender(angemeldet, mit_kampagne):
+    s = angemeldet.get("/marketing/plan", headers=HOST).text
+    assert '<section class="kampagnen" id="kampagnen">' in s
+    assert "Herbst &lt;b&gt;" in s and "Kontakte aus Sales" in s and "Stand: 1 Vorschlag vom Agenten" in s
+    assert "Reichweite:" in s and "Reaktionen:" in s
+    assert '<select name="zielgruppe">' in s and "Newsletter-Verteiler" in s
+    assert s.index('id="kampagnen"') < s.index("<h2>Kalender</h2>")
+
+
+def test_kampagne_anlegen_und_status(angemeldet, mit_kampagne):
+    bis = ZUKUNFT + timedelta(days=10)
+    r = angemeldet.post("/marketing/plan/kampagne", headers=HOST, follow_redirects=False, data={
+        "csrf": ui.CSRF_TOKEN, "name": "Herbst", "ziel": "Termine", "zielgruppe": "verteiler",
+        "von_tag": Z_TEILE["tag"], "von_monat": Z_TEILE["monat"], "von_jahr": Z_TEILE["jahr"],
+        "bis_tag": str(bis.day), "bis_monat": str(bis.month), "bis_jahr": str(bis.year)})
+    assert r.status_code == 303 and r.headers["location"].endswith("#kampagnen")
+    methode, pfad, daten = mit_kampagne.aufrufe[-1]
+    assert (methode, pfad) == ("POST", "/kampagnen") and daten["zielgruppe"] == "verteiler"
+    r = angemeldet.post(f"/marketing/plan/kampagne/{KID}/status", headers=HOST, follow_redirects=False,
+                        data={"csrf": ui.CSRF_TOKEN, "aktion": "neu_planen"})
+    assert r.status_code == 303
+    assert mit_kampagne.aufrufe[-1] == ("POST", f"/kampagnen/{KID}/status", {"status": "in_planung"})
+    r = angemeldet.post("/marketing/plan/kampagne", headers=HOST, follow_redirects=False,
+                        data={"csrf": ui.CSRF_TOKEN, "name": "X", "zielgruppe": "alle"})
+    assert r.status_code == 422

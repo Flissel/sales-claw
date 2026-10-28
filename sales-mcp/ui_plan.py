@@ -126,6 +126,36 @@ def vergangen(iso: str) -> bool:
     return date.fromisoformat(iso) < date.today() - timedelta(days=1)
 
 
+# Echte Kampagnen (Betreiber 28.10.2026, Marketing-Migration 095): Ziel, Zielgruppe per Auswahl,
+# Zeitraum; der Agent plant die Beitraege komplett. Stand, Reaktionen, Reichweite je Kampagne.
+ZIELGRUPPEN = {"sales": "Kontakte aus Sales", "oeffentlich": "Öffentlich (Kanäle)",
+               "verteiler": "Newsletter-Verteiler"}
+KAMPAGNEN_STATUS = {"in_planung": "Agent plant", "geplant": "geplant", "laeuft": "läuft",
+                    "abgeschlossen": "abgeschlossen", "abgesagt": "abgesagt"}
+KAMPAGNEN_AKTIONEN = {"neu_planen": "in_planung", "starten": "laeuft", "abschliessen": "abgeschlossen",
+                      "absagen": "abgesagt"}
+
+
+def kampagnen_wirkung(beitraege: list[dict]) -> dict:
+    """Reichweite und Reaktionen aus der Sales-Datenbank: Newsletter-Beitraege mit Entwurf -> gesendete
+    Mails an Kontakte (Reichweite) und Kontakte, die danach geantwortet haben (Reaktionen). Posts zaehlen
+    als veroeffentlicht, sobald der Plan-Eintrag erledigt ist; Klicks/Aufrufe liefern die Kanaele noch nicht."""
+    import server
+    inhalte = [str(b["inhalt"]) for b in beitraege if b.get("inhalt")]
+    gesendet = reaktionen = 0
+    if inhalte:
+        z = server._q(
+            "select count(*) filter (where d.status = 'sent') as gesendet, "
+            "       count(distinct d.lead_id) filter (where exists (select 1 from activities a "
+            "         where a.lead_id = d.lead_id and a.type = 'kundenantwort' "
+            "           and a.created_at > coalesce(d.sent_at, d.created_at))) as reaktionen "
+            "  from drafts d where d.newsletter::text = any(%s)", (inhalte,))[0]
+        gesendet, reaktionen = int(z["gesendet"] or 0), int(z["reaktionen"] or 0)
+    veroeffentlicht = sum(1 for b in beitraege if b.get("status") == "erledigt"
+                          and b.get("art") in ("post", "video", "podcast"))
+    return {"gesendet": gesendet, "reaktionen": reaktionen, "veroeffentlicht": veroeffentlicht}
+
+
 def routen(ui) -> list:
     e = ui._e
 
@@ -182,6 +212,108 @@ def routen(ui) -> list:
                 + ('<p><a href="/marketing/podcast">Folgen ansehen</a></p>' if art == "podcast" else "")
                 + f'<div class="plan-knoepfe">{knoepfe(p, zurueck)}</div></article>')
 
+    def kampagnen_html(kampagnen: list[dict], zurueck: str) -> str:
+        teile = ['<section class="kampagnen" id="kampagnen"><h2>Kampagnen</h2>']
+        if not kampagnen:
+            teile.append('<p class="meta">Noch keine Kampagne. Leg eine an: Ziel, Zielgruppe, Zeitraum - '
+                         'den Rest plant der Agent.</p>')
+        for k in kampagnen:
+            kid = e(urllib.parse.quote(str(k.get("id") or ""), safe=""))
+            beitraege = [b for b in k.get("beitraege") or [] if isinstance(b, dict)]
+            try:
+                w = kampagnen_wirkung(beitraege)
+            except Exception:  # noqa: BLE001 - die Zahlen sind Beiwerk, die Seite faellt nicht mit
+                w = None
+            stand = {}
+            for b in beitraege:
+                stand[b.get("status")] = stand.get(b.get("status"), 0) + 1
+            stand_text = ", ".join(f"{n} {STATUS.get(s, s)}" for s, n in stand.items()) or "noch keine Beiträge"
+            zeilen = "".join(
+                f'<li>{e(str(b.get("datum") or ""))} · {e(ARTEN.get(b.get("art"), "Sonstiges"))} · '
+                f'<b>{e(str(b.get("titel") or ""))}</b> · {e(STATUS.get(b.get("status"), b.get("status") or ""))}'
+                + (f' · Entwurf: {e(str(b.get("inhalt_status")))}' if b.get("inhalt_status") else "")
+                + '</li>' for b in beitraege)
+            wirkung = ('<p class="meta">Wirkung: nicht lesbar.</p>' if w is None else
+                       f'<p class="meta">Reichweite: {w["gesendet"]} Mails gesendet, {w["veroeffentlicht"]} '
+                       f'Beiträge veröffentlicht (Klicks/Aufrufe liefern die Kanäle noch nicht) · '
+                       f'Reaktionen: {w["reaktionen"]} Kontakte haben geantwortet</p>')
+
+            def knopf(aktion: str, text: str) -> str:
+                return (f'<form method="post" action="/marketing/plan/kampagne/{kid}/status" class="aktion">'
+                        f'{csrf()}<input type="hidden" name="zurueck" value="{e(zurueck)}">'
+                        f'<button type="submit" name="aktion" value="{aktion}">{text}</button></form>')
+            status = str(k.get("status") or "")
+            knoepfe = "" if status in ("abgeschlossen", "abgesagt") else (
+                knopf("neu_planen", "Neu planen lassen") + knopf("starten", "Läuft")
+                + knopf("abschliessen", "Abschließen") + knopf("absagen", "Absagen"))
+            teile.append(
+                f'<article class="plan-karte kampagne"><div class="plan-chips">'
+                f'<span class="plan-chip status">{e(KAMPAGNEN_STATUS.get(status, status))}</span>'
+                f'<span class="plan-chip art">{e(ZIELGRUPPEN.get(k.get("zielgruppe"), k.get("zielgruppe") or ""))}</span>'
+                f'</div><p class="plan-titel"><b>{e(str(k.get("name") or ""))}</b> · '
+                f'{e(str(k.get("von") or ""))} bis {e(str(k.get("bis") or ""))}</p>'
+                + (f'<p class="plan-notiz">{e(str(k.get("ziel")))}</p>' if k.get("ziel") else "")
+                + f'<p class="meta">Stand: {e(stand_text)}</p>{wirkung}'
+                + (f'<details><summary>Beiträge ({len(beitraege)})</summary><ul>{zeilen}</ul></details>'
+                   if beitraege else "")
+                + f'<div class="plan-knoepfe">{knoepfe}</div></article>')
+        heute = date.today()
+        gruppen = "".join(f'<option value="{k}">{e(t)}</option>' for k, t in ZIELGRUPPEN.items())
+        teile.append(
+            '<details class="plan-form"><summary>+ Neue Kampagne</summary>'
+            f'<form method="post" action="/marketing/plan/kampagne" class="aktion">{csrf()}'
+            f'<input type="hidden" name="zurueck" value="{e(zurueck)}">'
+            '<label>Name <input type="text" name="name" required maxlength="120"></label>'
+            '<label>Ziel <textarea name="ziel" maxlength="2000" rows="2" '
+            'placeholder="Was soll die Kampagne erreichen?"></textarea></label>'
+            f'<label>Zielgruppe <select name="zielgruppe">{gruppen}</select></label>'
+            f'<fieldset><legend>Von</legend>{datum_felder("von", heute, heute)}</fieldset>'
+            f'<fieldset><legend>Bis</legend>{datum_felder("bis", heute + timedelta(days=28), heute)}</fieldset>'
+            '<button type="submit" class="primaer">Anlegen - Agent plant</button></form>'
+            '<p><small>Der Marketing-Agent schlägt die Beiträge vor (meist innerhalb von 10 Minuten) und '
+            'meldet sich im Telegram-Chat. Versendet wird nichts ohne Freigabe.</small></p></details>')
+        teile.append('</section>')
+        return "".join(teile)
+
+    @ui._gesichert_seite
+    async def kampagne_neu(request):
+        form = await request.form()
+        if not ui._csrf_ok(form):
+            return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
+        name = str(form.get("name") or "").strip()
+        gruppe = str(form.get("zielgruppe") or "")
+        von = datum_aus_teilen(form.get("von_tag"), form.get("von_monat"), form.get("von_jahr"))
+        bis = datum_aus_teilen(form.get("bis_tag"), form.get("bis_monat"), form.get("bis_jahr"))
+        if not name or gruppe not in ZIELGRUPPEN or not von or not bis:
+            return ui._fehlerseite(422, "Nicht möglich", "Name, Zielgruppe und ein gültiger Zeitraum sind nötig.")
+        if bis < von:
+            return ui._fehlerseite(422, "Nicht möglich", "Das Ende liegt vor dem Beginn.")
+        try:
+            m, _ = await marketing_mandant.firma(request)
+            await run_in_threadpool(marketing_pult.anfrage, "POST", "/kampagnen",
+                                    {"mandant": m, "name": name, "ziel": str(form.get("ziel") or ""),
+                                     "zielgruppe": gruppe, "von": von, "bis": bis,
+                                     "von_wer": ui._ui_akteur(request)})
+        except marketing_pult.PultFehler as f:
+            return fehler(f)
+        return RedirectResponse(zurueck_ziel(form) + "#kampagnen", status_code=303)
+
+    @ui._gesichert_seite
+    async def kampagne_status(request):
+        form = await request.form()
+        if not ui._csrf_ok(form):
+            return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
+        status = KAMPAGNEN_AKTIONEN.get(str(form.get("aktion") or ""))
+        if not status:
+            return ui._fehlerseite(422, "Nicht möglich", "Unbekannte Aktion.")
+        kid = urllib.parse.quote(request.path_params["kid"], safe="")
+        try:
+            await run_in_threadpool(marketing_pult.anfrage, "POST", f"/kampagnen/{kid}/status",
+                                    {"status": status})
+        except marketing_pult.PultFehler as f:
+            return fehler(f)
+        return RedirectResponse(zurueck_ziel(form) + "#kampagnen", status_code=303)
+
     @ui._gesichert_seite
     async def plan(request):
         erster = monat_lesen(request.query_params.get("monat"))
@@ -194,6 +326,13 @@ def routen(ui) -> list:
             d = await run_in_threadpool(marketing_pult.anfrage, "GET", f"/plan?{q}")
         except marketing_pult.PultFehler as f:
             return fehler(f)
+        try:
+            kd = await run_in_threadpool(marketing_pult.anfrage, "GET",
+                                         f"/kampagnen?{urllib.parse.urlencode({'mandant': m})}")
+            kampagnen = [k for k in (kd.get("kampagnen") if isinstance(kd, dict) else None) or []
+                         if isinstance(k, dict)]
+        except marketing_pult.PultFehler:
+            kampagnen = []      # Kampagnen sind ein Zusatz: der Kalender bleibt sichtbar
         eintraege = [p for p in (d.get("eintraege") if isinstance(d, dict) else None) or [] if isinstance(p, dict)]
         hier = plan_pfad(erster, art, abgesagte)
         monat_name = f"{MONATE[erster.month - 1]} {erster.year}"
@@ -268,7 +407,8 @@ def routen(ui) -> list:
                     '<p><small>Ein Eintrag ist nur ein Plan, er verschickt nichts. Hinaus geht weiterhin nur, '
                     'was über Entwurf und Freigabe läuft.</small></p></section>')
         return ui._seite("Kampagnenplan", marketing_mandant.umschalter(e, ui.CSRF_TOKEN, m, liste, hier)
-                         + kopf + reiter + monatsleiste
+                         + kampagnen_html(kampagnen, hier)
+                         + '<h2>Kalender</h2>' + kopf + reiter + monatsleiste
                          + f'<div class="plan-spalten"><div class="plan-agenda">{agenda}</div>{formular}</div>')
 
     @ui._gesichert_seite
@@ -323,5 +463,8 @@ def routen(ui) -> list:
     return [
         Route("/marketing/plan", plan),
         Route("/marketing/plan/neu", neu, methods=["POST"]),
+        # Vor /marketing/plan/{pid}: sonst faengt die Platzhalter-Route „kampagne" als pid ab.
+        Route("/marketing/plan/kampagne", kampagne_neu, methods=["POST"]),
+        Route("/marketing/plan/kampagne/{kid}/status", kampagne_status, methods=["POST"]),
         Route("/marketing/plan/{pid}", aendern, methods=["POST"]),
     ]
