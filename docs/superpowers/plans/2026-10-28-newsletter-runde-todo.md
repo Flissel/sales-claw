@@ -33,6 +33,32 @@ Offen ist noch der Rest des Rundgangs (Vorlagen, Entwürfe-Liste, Freigabe, Vers
 - Gestrichen: „Titel uneinheitlich“. Der Betreff heißt tatsächlich „VIbemind“, das ist ein Tippfehler
   im Entwurf, kein Programmfehler.
 
+## 2b. Neuer Newsletter per Assistent (Rundgang, 28.10. abends)
+
+- [x] Nach den Prompt-Fixes: neuer Entwurf „Beta Marketing Space – Rundgang 28.10.“ — Fließtext mit
+      Anrede steht unter dem Bild, Runde 3/3 „Finale Prüfung bestanden“, Prüfen: **keine Befunde**, keine
+      neue Fassung durch Prüfen. Vorschautext: der Assistent sagt ehrlich, dass er ihn nicht setzen kann
+      (die Mail nimmt dann den ersten Satz).
+- [x] Aufmacherbild: der Assistent HAT beim ersten Lauf ein Bild beauftragt (fertig 3 min später als
+      neue Fassung, FLUX.2). Der „leere Platzhalter“ war nur zu früh angesehen — mein Fehlbefund.
+      Ein zweites Bild (heller Arbeitsplatz) wurde nachgefordert und ist ebenfalls fertig.
+- [x] Eingereicht (Fassung 5, Prüfung ohne Befund), in den Freigaben unter Marketing sichtbar,
+      zurückgegeben mit „Betreff fehlt“.
+- [ ] **Betreff = interner Titel**: niemand setzt ihn, die Mail ginge mit „Beta Marketing Space –
+      Rundgang 28.10.“ als Betreff raus. Bestätigt: der Assistent kann Betreff/Vorschautext NICHT setzen
+      (kein Werkzeug) und verweist falsch aufs „Versand-Tool“. Lösung: Werkzeug `betreff_setzen`
+      (Betreff + Vorschautext) für den Collage-Agenten, oder Pflichtfeld beim Einreichen.
+- [ ] **Prüfrunden bauen um, obwohl nichts zu ändern war**: Rückgabe-Lauf f915337e sagte „Seite bleibt
+      unverändert“, die Nachbesserung baute wegen „Abwechslung“ trotzdem auf Split um und endete unfertig
+      (Fassung 6; Fassung 5 per Rückgängig holbar). Verglichen wurde korrekt mit dem ANDEREN Newsletter
+      („VIbemind“, ähnlicher Aufbau) — `pult_seite_kompositionen` schließt den eigenen Entwurf aus
+      (geprüft; meine erste Vermutung „vergleicht mit sich selbst“ war falsch). Fehler: der Prompt sagt
+      „Soll nur etwas geändert werden, behalte den Aufbau“, die Prüfrunden wenden Abwechslung trotzdem an.
+- [ ] **Kein Testversand**: nach dem Freigeben entstehen gleich Entwürfe für alle opt_in-Kontakte;
+      eine Testmail nur an den Betreiber gibt es nicht.
+- [ ] Gesundheitsanzeige des Chat-Arbeiters (:8134) meldet alle Plätze „leer“, während ein Lauf
+      (f915337e, >11 min) aktiv Denkschritte an die API schickt — irreführend.
+
 ## 3. Prüfen
 
 - [x] **Kontakte im Markenwissen** (Datenschutz): 557 der 569 Dateien im Markenordner waren
