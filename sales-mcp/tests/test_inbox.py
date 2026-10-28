@@ -821,6 +821,22 @@ def test_privater_kontakt_wird_nicht_gespeichert():
     assert zeilen[0]["n"] == 0
 
 
+def test_autonomie_ignorieren_speichert_keinen_text():
+    """28.10.2026: die Stufe `ignorieren` versprach „kein Wort wird
+    gespeichert" - gebucht wurde aber der volle Text, und der Kontakt stand im
+    Posteingang. Jetzt nur noch die Tatsache, ohne Text."""
+    lead = _lead("Ignaz Ignoriert")
+    server.kontakt_autonomie_setzen(lead, "ignorieren")
+    status, antwort = _post(_ereignis(id="wa-ign-1"))
+    assert status == 200
+    zeilen = server._q("select type, payload from activities where lead_id = %s "
+                       "and type in ('kundenantwort', 'eingang_ignoriert')", (lead,))
+    assert [z["type"] for z in zeilen] == ["eingang_ignoriert"]
+    assert zeilen[0]["payload"]["text"] == "" and zeilen[0]["payload"]["ohne_text"]
+    assert all(e.get("kontakt") != "Ignaz Ignoriert"
+               for e in json.loads(server.posteingang())["eintraege"])
+
+
 def test_auch_die_eigene_richtung_bleibt_ungespeichert():
     lead = _lead("Pia Privat")
     server.kontakt_privat_setzen(lead)

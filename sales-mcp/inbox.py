@@ -1041,6 +1041,17 @@ def _buchen(typ: str, actor: str, chat_id, nummern_fehler, nutzlast: dict,
             if lead is not None and server._privat(lead.get("enrichment")):
                 LOG.info("privater kontakt — inhalt nicht gespeichert")
                 return 200, {"privat": True}
+            # Autonomiestufe `ignorieren` (28.10.2026): sie versprach „kein
+            # Wort wird gespeichert", gebucht wurde aber der volle Text -
+            # Kontakte mit dieser Stufe standen im Posteingang. Jetzt wie beim
+            # Absender-Ignorieren: nur die Tatsache, ohne Text und ohne Audio.
+            if (lead is not None and typ in ("kundenantwort", "nachricht_ausgehend")
+                    and server._autonomie(lead.get("enrichment")) == "ignorieren"):
+                typ = (EINGANG_IGNORIERT if typ == "kundenantwort"
+                       else AUSGANG_IGNORIERT)
+                nutzlast = {**nutzlast, "text": "", "gekuerzt": False,
+                            "ohne_text": True}
+                audio_daten = None
             if lead is None:
                 if not UNBEKANNT_LEAD_ID:
                     LOG.critical(

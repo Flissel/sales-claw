@@ -4297,6 +4297,10 @@ def posteingang(stunden: int = 48) -> str:
         # `anzahl_unbeantwortet` sonst Eintraege zaehlte, die niemand mehr
         # sieht (`count(*) over ()` wird nach dem WHERE berechnet).
         "   and not " + _archiv_sql("l.enrichment") +
+        # Autonomiestufe `ignorieren` (28.10.2026): solche Kontakte stehen
+        # nicht im Posteingang - auch nicht mit Altzeilen von vor der Stufe.
+        "   and (j.gruppe is not null or "
+        + _autonomie_sql("l.enrichment") + " <> 'ignorieren')"
         "   and not exists ("
         "        select 1 from activities b"
         "         where b.lead_id = j.lead_id"
