@@ -45,5 +45,13 @@ Offen ist noch der Rest des Rundgangs (Vorlagen, Entwürfe-Liste, Freigabe, Vers
       schickten den Text selbst neben das Bild. Prompt korrigiert (Text unter das Bild).
 - [ ] Echte Spalten in der Mail (Bild neben echtem Text, MJML `mj-column`). Erst nötig, wenn der
       Betreiber geteilte Aufbauten mit Text daneben wirklich will.
+- [ ] Gespeicherte Collage-Vorlagen (gemessen 28.10. mit `seite_mail._im_bild`): bei „Split“,
+      „Versetztes Zwei-Bild-Raster“ und „Zitat-Bühne“ liegt JEDER Fließtext in einem Bildstreifen –
+      eine Anrede dort scheitert immer an der Prüfung. Die übrigen fünf haben je mindestens einen freien
+      Fließtext. Keine Vorlage enthält selbst eine Anrede. Reparatur (Fließtext unter das Bild, neue
+      Fassung zur Freigabe) erst nach der Besprechung der Vorlagen-Seite.
+- [ ] Vorlagen-Seite: Kartenbeschriftung klebt zusammen (Name + technischer Kurzname + „Fassung 3entschieden“),
+      untere Vorschauen laden erst beim Scrollen. Mit dem Betreiber noch nicht besprochen
+      („erst das mit Tailscale klären“).
 - [ ] Prüfen legte einmal eine Fassung an (Höhe 730 → 726), ohne dass etwas geändert wurde. Seitdem
       nicht nachstellbar; beim sauberen Entwurf speichert Prüfen laut Code nicht. Beobachten.
