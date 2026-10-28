@@ -5857,8 +5857,10 @@ async def whatsapp(request):
             f'die Anmeldung bleibt auf diesem Gerät erhalten. '
             f'<a href="{_e(OPENWA_DASHBOARD_URL)}" target="_blank" '
             f'rel="noreferrer">In eigenem Tab öffnen &rarr;</a></p>')
-        antwort = _seite("WhatsApp", "".join(teile))
-        antwort.headers["Content-Security-Policy"] = _csp_mit_rahmen(origin)
+        # Waehrend der Kopplung doch neu laden: der QR-Code gilt nur ~20 s (Sophies Laden 28.10.2026 -
+        # sonst blieb der abgelaufene Code stehen). data:-Bilder nur dann, der QR-Code ist eins.
+        antwort = _seite("WhatsApp", "".join(teile), refresh=3 if kopplung_wartet else None)
+        antwort.headers["Content-Security-Policy"] = _csp_mit_rahmen(origin, bilddaten=kopplung_wartet)
         return antwort
     teile.append(
         f'<h2>Koppeln und Neustarten</h2>'
@@ -5870,8 +5872,12 @@ async def whatsapp(request):
         f'rel="noreferrer">OpenWA-Oberfläche öffnen &rarr;</a></p>')
     # Waehrend der Kopplung alle 3 s: ein QR-Code gilt nur ~20 s, und der
     # Wirt schreibt jeden neuen sofort in die Zeile.
-    return _seite("WhatsApp", "".join(teile),
-                  refresh=3 if kopplung_wartet else 60)
+    antwort = _seite("WhatsApp", "".join(teile),
+                     refresh=3 if kopplung_wartet else 60)
+    if kopplung_wartet:
+        # Der QR-Code kommt als data:-PNG; img-src 'self' allein liess den Browser nur den Alt-Text zeigen.
+        antwort.headers["Content-Security-Policy"] = _CSP.replace("img-src 'self';", "img-src 'self' data:;")
+    return antwort
 
 
 # Nur ein PNG als Data-URL in Base64 — alles andere (Anfuehrungszeichen,

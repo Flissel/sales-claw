@@ -123,6 +123,32 @@ def test_qr_wird_angezeigt():
     assert 'http-equiv="refresh"' in seite
 
 
+def _img_src(antwort) -> str:
+    csp = antwort.headers["content-security-policy"]
+    return next(t.strip() for t in csp.split(";") if t.strip().startswith("img-src"))
+
+
+def test_qr_darf_der_browser_auch_anzeigen():
+    """Sophies Laden 28.10.2026: das <img> stand im HTML, aber img-src 'self' verbot data:-Bilder - der
+    Browser zeigte nur den Alt-Text. Der Test oben pruefte nur das HTML."""
+    _zeile("qr", QR)
+    assert "data:" in _img_src(_get())
+
+
+def test_ohne_qr_bleibt_img_src_streng():
+    assert "data:" not in _img_src(_get())
+
+
+def test_qr_mit_eingebetteter_openwa_oberflaeche(monkeypatch):
+    monkeypatch.setattr(ui, "OPENWA_DASHBOARD_URL", "https://openwa.beispiel.ts.net:8448/")
+    _zeile("qr", QR)
+    antwort = _get()
+    assert "data:" in _img_src(antwort)
+    assert "frame-src https://openwa.beispiel.ts.net:8448" in antwort.headers["content-security-policy"]
+    # Der Code gilt ~20 s: waehrend der Kopplung laedt auch diese Fassung der Seite neu.
+    assert 'http-equiv="refresh"' in antwort.text
+
+
 def test_ein_kaputter_qr_wird_nicht_eingebettet():
     _zeile("qr", 'data:image/png;base64,AAAA" onerror="alert(1)')
     seite = _get().text
