@@ -45,11 +45,11 @@ Offen ist noch der Rest des Rundgangs (Vorlagen, Entwürfe-Liste, Freigabe, Vers
       schickten den Text selbst neben das Bild. Prompt korrigiert (Text unter das Bild).
 - [ ] Echte Spalten in der Mail (Bild neben echtem Text, MJML `mj-column`). Erst nötig, wenn der
       Betreiber geteilte Aufbauten mit Text daneben wirklich will.
-- [ ] Gespeicherte Collage-Vorlagen (gemessen 28.10. mit `seite_mail._im_bild`): bei „Split“,
+- [x] Gespeicherte Collage-Vorlagen (gemessen 28.10. mit `seite_mail._im_bild`): bei „Split“,
       „Versetztes Zwei-Bild-Raster“ und „Zitat-Bühne“ liegt JEDER Fließtext in einem Bildstreifen –
       eine Anrede dort scheitert immer an der Prüfung. Die übrigen fünf haben je mindestens einen freien
-      Fließtext. Keine Vorlage enthält selbst eine Anrede. Reparatur (Fließtext unter das Bild, neue
-      Fassung zur Freigabe) erst nach der Besprechung der Vorlagen-Seite.
+      Fließtext. Keine Vorlage enthält selbst eine Anrede. **Entscheidung des Betreibers (28.10.): die
+      Vorlagen bleiben so**; der Agent achtet über den korrigierten Prompt selbst darauf.
 - [x] Vorlagen-Seite: die Kartenbeschriftung ist jetzt eine Zeile „Collage · Fassung 2 · entschieden von …“,
       ohne technischen Kurznamen. Die Vorschauen laden weiter erst beim Scrollen, weil jede auf dem Server
       gerendert wird.
