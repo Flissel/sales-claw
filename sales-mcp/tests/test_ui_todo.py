@@ -410,6 +410,24 @@ def test_team_ebene_aus_gilt_fuer_planung(monkeypatch):
     assert eintraege == []
 
 
+# --- Marketing: Marke loeschen -----------------------------------------------------
+
+def test_marke_loeschen_nur_mit_bestaetigung(monkeypatch):
+    import marketing_pult
+    aufrufe = []
+    monkeypatch.setattr(ui, "_pfad_erlaubt", lambda rolle, pfad: True)
+    monkeypatch.setattr(marketing_pult, "anfrage",
+                        lambda methode, pfad, daten=None, **k: aufrufe.append((methode, pfad, daten))
+                        or {"ok": True})
+    r = _post("/marketing/marke/loeschen", {"mandant": "probe_gmbh", "bestaetigung": "falsch"})
+    assert r.status_code == 422 and aufrufe == []
+    r = _post("/marketing/marke/loeschen", {"mandant": "probe_gmbh", "bestaetigung": "probe_gmbh"})
+    assert r.status_code == 303 and r.headers["location"] == "/marketing/layouts"
+    assert aufrufe == [("POST", "/marke/loeschen", {"mandant": "probe_gmbh",
+                                                    "bestaetigung": "probe_gmbh",
+                                                    "von": "betreiber-ui"})]
+
+
 def test_mit_sitzung_bleibt_das_menue(monkeypatch):
     monkeypatch.setattr(ui, "UI_SESSION_SECRET", "test-geheimnis")
     server._q("insert into benutzer (name, passwort_hash, rolle, aktiv) "

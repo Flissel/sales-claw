@@ -105,8 +105,9 @@ dann `deploy/update.sh`. AGENTS.md geht mit (Rückfrage nach dem Termin, Postfac
 
 ## Marketing
 
-- [ ] **U** **Marke löschen** — **offen, braucht Entscheidung:** hart löschen oder ausblenden, und was mit
-  Inhalten/Vorlagen der Marke passiert. Braucht eine Marketing-Migration in `vibemind-os`.
+- [x] **U** **Marke löschen** (entschieden 28.10.: endgültig) — „Marke löschen“ auf `/marketing/layouts`,
+  Bestätigung durch Eintippen der Kennung; Migration 094 (`pult_mandant_loeschen`, vibemind-os `682adbab`)
+  lehnt Marken mit Verteiler (z. B. vibemind → sales) und mit laufenden Aufträgen ab. Dateien bleiben liegen.
 - [ ] **U** Kampagnen, Newsletter-Erstellung, Marke — **eigene Runden mit dem Betreiber** (so vereinbart).
 - [ ] **U** Reels → Higgsfield über Laura — **offen:** Zugang/Kosten von Higgsfield.
 - [ ] **U** Podcast → ElevenLabs — **offen:** API-Schlüssel + Budget (eigener Bezahldienst).
@@ -125,4 +126,11 @@ dann `deploy/update.sh`. AGENTS.md geht mit (Rückfrage nach dem Termin, Postfac
   Mit den neuen Standardstufen je Beziehung lässt sich das jetzt gezielt einschalten.
 - [ ] **C** Auffällig: Kevin schmidt und Klara Weindorf stehen auf `ignorieren`, erscheinen aber im Posteingang —
   prüfen, ob die Stufe nach den Nachrichten gesetzt wurde oder der Filter greift nicht.
-- [ ] Live-Test per WhatsApp Web (Testnachricht an den Bot) — nach dem Deploy.
+- [ ] Live-Test per WhatsApp Web (Testnachricht an den Bot) — erst sinnvoll, wenn ein Kontakt auf `auto`
+  steht (Betreiber-Entscheidung, welche Beziehung/welcher Kontakt).
+
+## Stand 28.10.2026
+
+- sales-claw `eb94063` live (provision.sql eingespielt, update.sh ALLE PRÜFUNGEN GRÜN, 17 Seiten 200 im
+  Browser geprüft, Login ohne Menü). Suite 4319 grün / 43 rot = exakt die 43 von 59f4f89 (Zeitbomben,
+  fehlende Dateien), keine neuen.

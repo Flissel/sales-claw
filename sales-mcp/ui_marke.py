@@ -718,6 +718,19 @@ def routen(ui) -> list:
                 '<label>Webseite (optional) <input type="url" name="webseite" placeholder="https://…"></label>'
                 '<button class="primaer" type="submit">Einrichtung starten</button></form></details>')
 
+    def marke_loeschen_html(m: str) -> str:
+        """Aufklappbar „Marke löschen“ (Betreiber 28.10.2026: endgültig). Bestätigt wird durch Eintippen der
+        Kennung; die Marketing-DB lehnt Marken mit Verteiler und laufenden Aufträgen ab (094)."""
+        return ('<details class="gefahr marke-loeschen"><summary>Marke löschen</summary>'
+                f'<form method="post" action="/marketing/marke/loeschen">{csrf_feld()}'
+                f'<input type="hidden" name="mandant" value="{e(m)}">'
+                '<p class="warnung">Löscht die Marke <strong>endgültig</strong> samt Inhalten, Vorlagen, Layouts, '
+                'Entwürfen, Reels und Podcasts. Das lässt sich nicht rückgängig machen. Dateien im '
+                'Medienordner bleiben liegen.</p>'
+                f'<label>Zur Bestätigung die Kennung <code>{e(m)}</code> eintippen '
+                '<input type="text" name="bestaetigung" autocomplete="off" required></label>'
+                '<button class="gefahr" type="submit">Endgültig löschen</button></form></details>')
+
     def eingabe_html(d: dict, ein: str | None = None) -> str:
         """Die feste Eingabe unten (E10.8, CSS sticky). Das Sprungziel #ende steht NICHT hier, sondern als leeres
         Element ganz unten (ENDE): ein Sprung auf ein klebendes Element landet dort, wo es gerade klebt, nicht am
@@ -771,7 +784,7 @@ def routen(ui) -> list:
             except marketing_pult.PultFehler:
                 offene = []                    # die Liste ist Beiwerk: ein Fehler blendet sie nur aus
             kopf += (marketing_mandant.umschalter(e, ui.CSRF_TOKEN, m, liste_, SEITE)
-                     + neue_marke_html() + in_einrichtung_html(offene))
+                     + neue_marke_html() + marke_loeschen_html(m) + in_einrichtung_html(offene))
         if request.query_params.get("bearbeiten") == "1":
             rumpf = (kopf + bearbeiten_html(d, m, await stimmen_holen(), ein)
                      + f'<p><a href="{e(adresse("profil", einrichtung=ein))}">Zurück zur Marke</a></p>')
@@ -902,6 +915,28 @@ def routen(ui) -> list:
         return RedirectResponse(ziel(ein), status_code=303)
 
     @ui._gesichert_seite
+    async def marke_loeschen(request):
+        """Marke endgültig löschen (094). Danach zurück auf die Marke-Seite; das Cookie der gelöschten
+        Firma wird entfernt, damit die Seite auf die erste verbliebene Firma fällt."""
+        form = await request.form()
+        if not ui._csrf_ok(form):
+            return ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
+        m = str(form.get("mandant") or "").strip()
+        bestaetigung = str(form.get("bestaetigung") or "").strip()
+        if not m or bestaetigung != m:
+            return abgewiesen(422, "Die Bestätigung stimmt nicht mit der Kennung der Marke überein. "
+                                   "Nichts wurde gelöscht.")
+        try:
+            await run_in_threadpool(marketing_pult.anfrage, "POST", "/marke/loeschen",
+                                    {"mandant": m, "bestaetigung": bestaetigung,
+                                     "von": ui._ui_akteur(request)})
+        except marketing_pult.PultFehler as f:
+            return fehler(f)
+        antwort = RedirectResponse(SEITE, status_code=303)
+        antwort.delete_cookie(marketing_mandant.COOKIE, path="/marketing")
+        return antwort
+
+    @ui._gesichert_seite
     async def neue_marke(request):
         """Knopf "+ Neue Marke": baut denselben Befehl wie /marke_neu im Chat und nimmt denselben Weg."""
         form = await request.form()
@@ -1028,6 +1063,7 @@ def routen(ui) -> list:
         Route("/marketing/marke/bearbeiten", bearbeiten, methods=["POST"]),
         Route("/marketing/marke/einrichtung/abschliessen", einrichtung_aktion("abschliessen"), methods=["POST"]),
         Route("/marketing/marke/einrichtung/abbrechen", einrichtung_aktion("abbrechen"), methods=["POST"]),
+        Route("/marketing/marke/loeschen", marke_loeschen, methods=["POST"]),
         Route("/marketing/layout/{name}", alt, methods=alle_methoden),
         Route("/marketing/layout/{name}/speichern", alt, methods=alle_methoden),
         Route("/marketing/layout/{name}/standard", alt, methods=alle_methoden),
