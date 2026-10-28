@@ -1371,7 +1371,9 @@ def test_lauf_kasten_unbekannte_werte_werden_nicht_geraten(client, falsch):
     kopf = _kopf(_abschnitt(client))
     assert "Lauf vom ?: wartet" in kopf
     assert "bewertet ? · unter 3,5: ? · Sperrfrist: ? · Lauf voll: ?" in kopf
-    assert "Eins – R (Score –): neu" in kopf and "Zwei – R (Score –): " in kopf
+    # Ein Stand, den die Seite nicht kennt (oder gar keiner), steht nicht roh da.
+    assert "Eins – R (Score –): Stand unbekannt<" in kopf and "Zwei – R (Score –): Stand unbekannt<" in kopf
+    assert ">neu<" not in kopf and ": neu" not in kopf
     assert "Dauer ? min" in kopf and "Modellaufrufe" not in kopf
 
 
@@ -1384,11 +1386,66 @@ def test_lauf_kasten_maskiert_alles(client, falsch):                            
         zustand="pausiert", grund=BOESE, moeglich=False)
     seite = client.get("/freigaben").text
     assert "<script" not in seite and '"><img' not in seite and "vielleicht <b>" not in seite
-    assert "&lt;script&gt;x&lt;/script&gt; – &quot;&gt;&lt;img onerror=1&gt; (Score 4,0): &lt;script&gt;" in seite
-    assert "Zwei – R (Score –): vielleicht &lt;b&gt;" in seite
+    assert "&lt;script&gt;x&lt;/script&gt; – &quot;&gt;&lt;img onerror=1&gt; (Score 4,0): Stand unbekannt" in seite
+    assert "Zwei – R (Score –): Stand unbekannt" in seite
+    assert "vielleicht" not in seite  # ein unbekannter Stand wird nicht wiedergegeben, auch nicht maskiert
     assert "Begründung: &lt;script&gt;x&lt;/script&gt;" in seite
     assert "Lauf vom &quot;&gt;&lt;img onerror=1&gt;: läuft" in seite
     assert 'action="/freigaben/bewerbung/lauf/x%22%3E%3Cscript%3Ey%3C%2Fscript%3E/abbrechen"' in seite
+
+
+STAND_TEXTE = {"offen": "offen", "in_arbeit": "in Arbeit", "wird_verarbeitet": "wird verarbeitet",
+               "vorgelegt": "vorgelegt", "blockiert": "blockiert – bitte prüfen",
+               "aufgegeben": "aufgegeben", "archiviert": "archiviert"}
+
+
+@pytest.mark.parametrize("stand,text", list(STAND_TEXTE.items()))
+def test_lauf_kasten_stand_je_wert(client, falsch, stand, text):
+    falsch.uebersicht = uebersicht(lauf(bewerbungen=[
+        {"application_id": "bw-1", "firma": "Eins", "rolle": "R", "score": 4.0, "stand": stand}]))
+    assert f"Eins – R (Score 4,0): {ui._e(text)}</li>" in _kopf(_abschnitt(client))
+
+
+@pytest.mark.parametrize("stand", ["neu", "fertig", "", "VORGELEGT", "wird_verarbeitet ", None, 7, ["offen"], BOESE])
+def test_lauf_kasten_unbekannter_stand_wird_nicht_roh_ausgegeben(client, falsch, stand):
+    falsch.uebersicht = uebersicht(lauf(bewerbungen=[
+        {"application_id": "bw-1", "firma": "Eins", "rolle": "R", "score": 4.0, "stand": stand}]))
+    kopf = _kopf(_abschnitt(client))
+    assert "Eins – R (Score 4,0): Stand unbekannt</li>" in kopf
+    assert "<script" not in kopf and "&lt;script" not in kopf
+
+
+ENDE_TEXTE = [("fertig", "alle Bewerbungen bearbeitet"),
+              ("keine_geeigneten", "keine geeignete Stelle gefunden"),
+              ("auswahl_gescheitert", "Auswahl zweimal gescheitert"),
+              ("kontingent_erschoepft", "Kontingent erschöpft"),
+              ("abgebrochen_von:sales-ui:felix", "von dir abgebrochen"),
+              ("abgebrochen_von:felix", "von dir abgebrochen")]
+
+
+@pytest.mark.parametrize("status", ["fertig", "abgebrochen"])
+@pytest.mark.parametrize("grund,text", ENDE_TEXTE)
+def test_lauf_kasten_zeigt_das_ende(client, falsch, status, grund, text):
+    falsch.uebersicht = uebersicht(lauf(status=status, ende_grund=grund, beendet_am=LAUF_AM))
+    kopf = _kopf(_abschnitt(client))
+    assert f"<p>Ende: {text}</p>" in kopf
+    assert f"Ende: {grund}" not in kopf and "_" not in kopf.split("Ende:")[1].split("</p>")[0]  # nie der Rohwert
+
+
+@pytest.mark.parametrize("grund", [None, "", "   ", "irgendwas", "abgebrochen_von", "Abgebrochen_von:x",
+                                   "fertig ", BOESE, BOESE2, 7, ["fertig"]])
+def test_lauf_kasten_unbekanntes_ende_zeigt_nichts(client, falsch, grund):
+    falsch.uebersicht = uebersicht(lauf(status="abgebrochen", ende_grund=grund))
+    kopf = _kopf(_abschnitt(client))
+    assert "Ende:" not in kopf
+    if isinstance(grund, str) and grund.strip():
+        assert grund not in kopf and ui._e(grund) not in kopf
+
+
+def test_lauf_kasten_ende_nur_bei_beendetem_lauf(client, falsch):
+    for status in ("angefordert", "laeuft"):
+        falsch.uebersicht = uebersicht(lauf(status=status, ende_grund="fertig"), moeglich=False)
+        assert "Ende:" not in _kopf(_abschnitt(client))
 
 
 # --- Knoepfe: Neuer Lauf / Lauf abbrechen --------------------------------------------------
@@ -1417,6 +1474,24 @@ def test_lauf_abbrechen_nur_fuer_offene_laeufe(client, falsch, status, da):
         assert f'name="csrf" value="{ui.CSRF_TOKEN}"' in f and ">Lauf abbrechen</button>" in f
     else:
         assert _ohne_form(s, "abbrechen") and "Lauf abbrechen" not in s
+
+
+ABBRECHEN_HINWEIS = ("Bewerbungen, für die Hermes noch keinen Entwurf eingereicht hat, werden archiviert "
+                     "und kommen nicht wieder.")
+
+
+@pytest.mark.parametrize("status", ["angefordert", "laeuft"])
+def test_lauf_abbrechen_warnt_direkt_am_knopf(client, falsch, status):
+    falsch.uebersicht = uebersicht(lauf(status=status), moeglich=False)
+    f = _form(_kopf(_abschnitt(client)), "abbrechen")
+    assert ui._e(ABBRECHEN_HINWEIS) in f              # im Formular, direkt am Knopf
+    assert f.index(ui._e(ABBRECHEN_HINWEIS)) < f.index(">Lauf abbrechen</button>")
+
+
+def test_der_abbrechen_hinweis_steht_nur_mit_dem_knopf(client, falsch):
+    for u in (uebersicht(None), uebersicht(lauf(status="fertig")), uebersicht(lauf(status="abgebrochen"))):
+        falsch.uebersicht = u
+        assert "noch keinen Entwurf eingereicht" not in _abschnitt(client)
 
 
 def test_ohne_lauf_id_kein_abbrechen_knopf(client, falsch):

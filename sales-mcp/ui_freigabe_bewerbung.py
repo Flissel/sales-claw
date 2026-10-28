@@ -15,7 +15,9 @@ Freigabe per Mail, haengt).
 
 Hermes H2 (Schreiber und Pruefer, Plan 2026-10-27 Task 10): Der Kopf des Abschnitts zeigt, was Hermes
 tut (`GET /laeufe/aktuell`: Zustand, der Lauf mit Zaehlern und Staenden) und hat die Knoepfe "Neuer
-Lauf" und "Lauf abbrechen". Auf der Karte steht die Pruefnotiz von Hermes samt den offenen Fragen; die
+Lauf" und "Lauf abbrechen". Bei einem beendeten Lauf steht dort "Ende: ..." (der `ende_grund` in
+Worten, nie der Rohwert), und am Knopf "Lauf abbrechen" steht, dass Bewerbungen ohne eingereichten Entwurf
+archiviert werden. Auf der Karte steht die Pruefnotiz von Hermes samt den offenen Fragen; die
 Antworten (einzeilig, hoechstens 500 Zeichen) gelten nur fuer diese Bewerbung. Faellt der Lauf-Status
 aus, steht im Kopf der Hinweis - die Karten bleiben.
 
@@ -81,11 +83,26 @@ ADRESSE_MAX = 254
 _OFFEN = "/bewerbungen?status=offen"
 _ENTSCHIEDEN = "/bewerbungen?status=entschieden"
 _LAUF = "/laeufe/aktuell"
-# Lauf `status` und Bewerbung `stand` der Zentrale -> Text im Lauf-Kasten (Unbekanntes steht maskiert so da).
+# Lauf `status` der Zentrale -> Text im Lauf-Kasten (Unbekanntes steht maskiert so da).
 LAUF_STATUS = {"angefordert": "angefordert", "laeuft": "läuft", "fertig": "fertig",
                "abgebrochen": "abgebrochen"}
-STAENDE = {"vorgelegt": "vorgelegt", "in_arbeit": "in Arbeit", "aufgegeben": "aufgegeben", "offen": "offen"}
+# Bewerbung `stand` der Zentrale (laeufe._stand) -> Text. Ein Stand, den diese Seite nicht kennt, wird
+# nicht wiedergegeben: es steht STAND_UNBEKANNT da.
+STAENDE = {"offen": "offen", "in_arbeit": "in Arbeit", "wird_verarbeitet": "wird verarbeitet",
+           "vorgelegt": "vorgelegt", "blockiert": "blockiert – bitte prüfen", "aufgegeben": "aufgegeben",
+           "archiviert": "archiviert"}
+STAND_UNBEKANNT = "Stand unbekannt"
+# Lauf `ende_grund` der Zentrale -> Zeile "Ende: ..." bei einem beendeten Lauf. `abgebrochen_von:<wer>`
+# (Felix im Pult) hat ein Praefix. Jeder andere Wert zeigt nichts - nie den Rohwert.
+ENDE_GRUENDE = {"fertig": "alle Bewerbungen bearbeitet", "keine_geeigneten": "keine geeignete Stelle gefunden",
+                "auswahl_gescheitert": "Auswahl zweimal gescheitert",
+                "kontingent_erschoepft": "Kontingent erschöpft"}
+ENDE_ABGEBROCHEN_PRAEFIX = "abgebrochen_von:"
+ENDE_ABGEBROCHEN = "von dir abgebrochen"
 _LAUF_OFFEN = ("angefordert", "laeuft")
+# Steht direkt am Knopf "Lauf abbrechen": was der Abbruch mit den Bewerbungen im Lauf tut.
+ABBRECHEN_HINWEIS = ("Bewerbungen, für die Hermes noch keinen Entwurf eingereicht hat, werden archiviert "
+                     "und kommen nicht wieder.")
 FRAGEN_HINWEIS = "Gilt nur für diese Bewerbung. Soll es allgemein gelten, am PC in profil/ übernehmen."
 _ANTWORT_PRAEFIX = "antwort_"
 # Kennung einer Frage (die Zentrale vergibt f1 .. f5): nur so etwas wird Feldname und Pfadteil.
@@ -547,17 +564,35 @@ def _hermes_zeile(ui, hermes) -> str:
     return '<p class="meta">Hermes: Status unbekannt</p>'
 
 
+def _stand_text(stand) -> str:
+    """Der Text zu einem Stand der Zentrale; ein unbekannter (auch ein Nicht-Text) wird nicht roh gezeigt."""
+    return STAENDE.get(stand, STAND_UNBEKANNT) if isinstance(stand, str) else STAND_UNBEKANNT
+
+
+def _ende_text(lauf: dict) -> str | None:
+    """Warum ein beendeter Lauf endete, in Worten; sonst None (offener Lauf, kein oder unbekannter Grund)."""
+    grund = lauf.get("ende_grund")
+    if lauf.get("status") not in ("fertig", "abgebrochen") or not isinstance(grund, str):
+        return None
+    if grund in ENDE_GRUENDE:
+        return ENDE_GRUENDE[grund]
+    return ENDE_ABGEBROCHEN if grund.startswith(ENDE_ABGEBROCHEN_PRAEFIX) else None
+
+
 def _lauf_kasten(ui, lauf: dict) -> str:
-    """Der Lauf in Worten: Anforderung und Status, je Bewerbung Stand, die Zaehler der Bewertung, die
-    Begruendung von Hermes und was der Lauf gekostet hat (`modellaufrufe` kennt die Zentrale nicht immer)."""
+    """Der Lauf in Worten: Anforderung und Status, je Bewerbung Stand, bei einem beendeten Lauf das Ende,
+    die Zaehler der Bewertung, die Begruendung von Hermes und was der Lauf gekostet hat (`modellaufrufe`
+    kennt die Zentrale nicht immer)."""
     e = ui._e
     am = _erfasst_am(ui, lauf.get("angefordert_am")) or "?"
     kopf = f"Lauf vom {am}: {e(_label(LAUF_STATUS, lauf.get('status')))}"
     bewerbungen = "".join(
         f"<li>{e(b.get('firma'))} – {e(b.get('rolle'))} (Score {_score_kurz(b.get('score'))}): "
-        f"{e(_label(STAENDE, b.get('stand')))}</li>"
+        f"{e(_stand_text(b.get('stand')))}</li>"
         for b in _dicts(lauf.get("bewerbungen")))
     liste = f"<ul>{bewerbungen}</ul>" if bewerbungen else ""
+    ende = _ende_text(lauf)
+    ende = f"<p>Ende: {e(ende)}</p>" if ende else ""
     zaehler = (f"bewertet {_zahl(lauf.get('bewertet'))} · unter 3,5: {_zahl(lauf.get('unter_schwelle'))}"
                f" · Sperrfrist: {_zahl(lauf.get('sperrfrist'))} · Lauf voll: {_zahl(lauf.get('lauf_voll'))}")
     begruendung = _nur_text(lauf.get("begruendung"))
@@ -565,7 +600,7 @@ def _lauf_kasten(ui, lauf: dict) -> str:
     dauer = f"Dauer {_minuten(lauf.get('dauer_s'))} min"
     if _ganz(lauf.get("modellaufrufe")):
         dauer += f" · {lauf['modellaufrufe']} Modellaufrufe"
-    return (f'<div class="karte lauf"><b>{kopf}</b>{liste}<p class="meta">{zaehler}</p>{warum}'
+    return (f'<div class="karte lauf"><b>{kopf}</b>{liste}{ende}<p class="meta">{zaehler}</p>{warum}'
             f'<p class="meta">{dauer}</p></div>')
 
 
@@ -583,6 +618,7 @@ def _lauf_knoepfe(ui, neuer_lauf_moeglich: bool, lauf: dict | None) -> str:
     if lauf and lauf.get("status") in _LAUF_OFFEN and isinstance(lauf_id, str) and lauf_id:
         abbrechen = (f'<form class="aktion gefahr" method="post" '
                      f'action="{ADMIN_PFAD}/lauf/{urllib.parse.quote(lauf_id, safe="")}/abbrechen">{csrf}'
+                     f'<p class="meta">{ui._e(ABBRECHEN_HINWEIS)}</p>'
                      f'<button class="gefahr">Lauf abbrechen</button></form>')
     return f'<div class="aktionen">{neu}{abbrechen}</div>'
 
