@@ -12,7 +12,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowBackRounded, FactCheckOutlined, PictureAsPdfOutlined, RedoRounded, SaveOutlined, SendOutlined, UndoRounded } from '@mui/icons-material';
 import {
   Alert, Box, Button, CircularProgress, Dialog, DialogActions, DialogContent, DialogContentText, DialogTitle,
-  IconButton, Snackbar, TextField, ThemeProvider, Tooltip, Typography, useMediaQuery,
+  IconButton, InputAdornment, Snackbar, TextField, ThemeProvider, Tooltip, Typography, useMediaQuery,
 } from '@mui/material';
 
 import { HANDY_GRENZE } from '../../handy';
@@ -279,6 +279,9 @@ function Arbeitsplatz({ start, anfang, basis, setBasis, versteckt }: Arbeitsplat
           onChange={(ev) => setBetreff(ev.target.value)}
           disabled={gesperrt}
           inputProps={{ 'aria-label': 'Betreff' }}
+          // Sichtbar beschriftet (Newsletter-Runde 28.10.2026): das Feld sah aus wie ein Dateititel, und der
+          // Arbeitstitel blieb unbemerkt der Betreff der Mail.
+          InputProps={{ startAdornment: <InputAdornment position="start">Betreff:</InputAdornment> }}
           sx={{ flex: '1 1 240px', minWidth: 120, maxWidth: 480 }}
         />
         <Typography sx={{ flex: '1 1 auto', minWidth: 0, fontSize: 12, color: FARBE.gedaempft }} noWrap>

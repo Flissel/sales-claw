@@ -101,6 +101,8 @@ describe('SeiteApp', () => {
 
   it('hat Leiste mit Betreff, Speichern, Als PDF, Rückgängig und die Ebenen-Knöpfe', () => {
     expect(html).toContain('value="Oktober-Collage"');
+    // Newsletter-Runde 28.10.2026: sichtbar als Betreff beschriftet - ohne das blieb der Arbeitstitel unbemerkt Betreff
+    expect(html).toMatch(/>Betreff:<\/p>/);
     expect(html).toContain('Speichern');
     expect(html).toContain('Als PDF');
     expect(html).toContain('aria-label="Rückgängig"');
