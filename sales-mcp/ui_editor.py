@@ -887,9 +887,12 @@ def routen(ui) -> list:
                     f'<span class="layout-platzhalter">{e(beschreibung)}</span>'
                     f'<iframe class="layout-bild" sandbox tabindex="-1" loading="lazy" title="Vorschau {e(beschreibung)}" '
                     f'src="/marketing/vorlage-bild/{e(n)}{"?format=seite" if seite else ""}"></iframe></div>'
-                    f'<b>{e(beschreibung)}</b><span class="meta">{e(n)} &middot; '
-                    f'{"Collage" if seite else "Blöcke"} &middot; Fassung {int(v.get("fassung") or 1)}</span>'
-                    + (f'<span class="meta">{e(entschieden)}</span>' if (entschieden := entschieden_text(v)) else ""))
+                    # Newsletter-Runde 28.10.2026: eine eigene Zeile unter dem Namen - vorher klebten Kurzname,
+                    # Fassung und "entschieden von" als Inline-Spans ohne Abstand aneinander.
+                    f'<b>{e(beschreibung)}</b><div class="meta">'
+                    + " &middot; ".join([("Collage" if seite else "Blöcke"), f'Fassung {int(v.get("fassung") or 1)}',
+                                         *([e(t)] if (t := entschieden_text(v)) else [])])
+                    + '</div>')
 
         def karte(v: dict) -> str:
             return (f'<div class="layout-karte">{rahmen(v)}'

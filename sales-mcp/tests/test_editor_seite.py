@@ -2419,6 +2419,10 @@ def test_entschiedene_vorlage_zeigt_wer_und_wann(angemeldet, pult, monkeypatch):
     s = angemeldet.get("/marketing/vorlagen", headers=HOST).text
     assert "entschieden von Felix &lt;Admin&gt; am 21.10.2026" in s and "<Admin>" not in s
     assert s.count("entschieden von") == 1                  # ohne lesbare Angaben kein Text
+    # Newsletter-Runde 28.10.2026: eine Zeile mit Abstaenden, ohne technischen Kurznamen
+    assert '<div class="meta">Collage &middot; Fassung' in s
+    assert "&middot; entschieden von Felix" in s
+    assert f'<span class="meta">{COLLAGE_V["name"]}' not in s
 
 
 @pytest.mark.parametrize("roh,erwartet", [

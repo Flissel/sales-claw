@@ -50,8 +50,8 @@ Offen ist noch der Rest des Rundgangs (Vorlagen, Entwürfe-Liste, Freigabe, Vers
       eine Anrede dort scheitert immer an der Prüfung. Die übrigen fünf haben je mindestens einen freien
       Fließtext. Keine Vorlage enthält selbst eine Anrede. Reparatur (Fließtext unter das Bild, neue
       Fassung zur Freigabe) erst nach der Besprechung der Vorlagen-Seite.
-- [ ] Vorlagen-Seite: Kartenbeschriftung klebt zusammen (Name + technischer Kurzname + „Fassung 3entschieden“),
-      untere Vorschauen laden erst beim Scrollen. Mit dem Betreiber noch nicht besprochen
-      („erst das mit Tailscale klären“).
+- [x] Vorlagen-Seite: die Kartenbeschriftung ist jetzt eine Zeile „Collage · Fassung 2 · entschieden von …“,
+      ohne technischen Kurznamen. Die Vorschauen laden weiter erst beim Scrollen, weil jede auf dem Server
+      gerendert wird.
 - [ ] Prüfen legte einmal eine Fassung an (Höhe 730 → 726), ohne dass etwas geändert wurde. Seitdem
       nicht nachstellbar; beim sauberen Entwurf speichert Prüfen laut Code nicht. Beobachten.
