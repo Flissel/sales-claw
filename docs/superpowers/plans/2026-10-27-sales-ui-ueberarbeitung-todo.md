@@ -94,8 +94,8 @@ dann `deploy/update.sh`. AGENTS.md geht mit (Rückfrage nach dem Termin, Postfac
 - [x] **U** Unwichtiges nur als Vorschlag in Freigaben; verschoben erst nach Klick (`mail_aufraeumen_ausfuehren`).
 - [x] **U** Mails durchsuchbar (deutscher Volltext mit Wortstämmen + Tippfehler-Toleranz).
 - [x] **C** Wartezeit „14 Std.“, Knopf „Antworten“.
-- [ ] **U** Weitere Quellen (Reddit, Benachrichtigungen anderer Dienste) — **offen**: Reddit hat keinen
-  Zugang (Konto legt der Betreiber an, API gesperrt); landen solche Mails im Postfach, erscheinen sie schon.
+- [x] **U** Weitere Quellen: Benachrichtigungen anderer Dienste landen als Mail im Postfach und erscheinen dort.
+  Reddit gestrichen (Betreiber 28.10.: kein API-Zugang).
 
 ## Struktur (`/team/struktur`)
 
@@ -109,8 +109,11 @@ dann `deploy/update.sh`. AGENTS.md geht mit (Rückfrage nach dem Termin, Postfac
   Bestätigung durch Eintippen der Kennung; Migration 094 (`pult_mandant_loeschen`, vibemind-os `682adbab`)
   lehnt Marken mit Verteiler (z. B. vibemind → sales) und mit laufenden Aufträgen ab. Dateien bleiben liegen.
 - [ ] **U** Kampagnen, Newsletter-Erstellung, Marke — **eigene Runden mit dem Betreiber** (so vereinbart).
-- [ ] **U** Reels → Higgsfield über Laura — **offen:** Zugang/Kosten von Higgsfield.
-- [ ] **U** Podcast → ElevenLabs — **offen:** API-Schlüssel + Budget (eigener Bezahldienst).
+- [x] **U** Reels → Higgsfield — **vorbereitet** (vibemind-os `2c04bbd5`, `spaces/marketing/claw/higgsfield.py`,
+  aus ohne Schlüssel): `HIGGSFIELD_API_KEY_ID`, `HIGGSFIELD_API_KEY_SECRET`, `HIGGSFIELD_MODELL_PFAD` (Modellseite
+  in docs.higgsfield.ai). Fehlt nur: Schlüssel + Budget, dann Laura-MCP-Werkzeug darauf.
+- [x] **U** Podcast → ElevenLabs — **vorbereitet** (`ton_dienst.py`, aus ohne Schlüssel): `TON_ENGINE=elevenlabs`,
+  `ELEVENLABS_API_KEY`, `TON_ELEVENLABS_STIMMEN` (JSON Name → voice_id); Rückfall Chatterbox. Fehlt nur: Schlüssel.
 
 ## Monitoring
 
@@ -124,10 +127,24 @@ dann `deploy/update.sh`. AGENTS.md geht mit (Rückfrage nach dem Termin, Postfac
 - [x] **U** Geprüft 28.10. (nur lesend): **kein Fehler im Bot** — kein einziger Kontakt steht auf `auto`
   (553 Vorgabe manuell, 9 halbauto, 14 ignorieren, 1 manuell). Seit 22.09. antwortet der Bot nur bei `auto`.
   Mit den neuen Standardstufen je Beziehung lässt sich das jetzt gezielt einschalten.
-- [ ] **C** Auffällig: Kevin schmidt und Klara Weindorf stehen auf `ignorieren`, erscheinen aber im Posteingang —
-  prüfen, ob die Stufe nach den Nachrichten gesetzt wurde oder der Filter greift nicht.
-- [ ] Live-Test per WhatsApp Web (Testnachricht an den Bot) — erst sinnvoll, wenn ein Kontakt auf `auto`
-  steht (Betreiber-Entscheidung, welche Beziehung/welcher Kontakt).
+- [x] **C** Kevin schmidt / Klara Weindorf: echter Fehler — die Stufe `ignorieren` speicherte trotzdem den vollen
+  Text und der Posteingang filterte sie nicht. Behoben (`92d7334`, live): nur noch die Tatsache, kein Text.
+- [x] Anna Steer auf `auto` gesetzt (28.10., WhatsApp-Freigabe seit 23.09. vorhanden). **Hinweis:** automatisch
+  zugestellt wird erst mit Annas eigener Zustimmung (`zustimmung_anfragen` → Antwort → `zustimmung_erfassen`);
+  bis dahin fällt sie auf halbauto zurück (Entwurf zur Freigabe). Live-Test: Anna schreibt dem Bot.
+
+## Kontaktprofil (neu 28.10.)
+
+- [x] **U** Ausführlicher und ausformuliert, kumulativ über den ganzen Verlauf; neu: Steckbrief, **Menschen im
+  Umfeld** (Name – Beziehung – Wissen), Kommunikation (Du/Sie, Ton), Bedarf (`f99c7b5`).
+- [x] **U** Wichtige Links, PDFs, Bilder, Videos am Profil (Hochladen/Verlinken auf der Kontaktseite, Werkzeug
+  `profil_anhang_speichern`; Dateien für den Versand gesperrt).
+- [x] **U** Nur für dich (Rolle freigeben) und den Bot: `antworten_faellig` liefert das Profil je Kontakt mit.
+
+## Zum Schluss
+
+- [ ] **U** Kampagnen-Runde, danach Newsletter-Erstellung und Marke (Betreiber: „hinten anstellen, letzter Schritt").
+- [ ] GMX-Freigabelink am echten Konto prüfen (Weg steht auf „Kalender verbinden"; sonst CalDAV `caldav.gmx.net`).
 
 ## Stand 28.10.2026
 
