@@ -30,6 +30,7 @@ private Betriebsprotokoll: Datum, Schlüssel, Anlass — ohne Werte.
 | `OPENWA_VIEWER_KEY` | Nur-Lese-Schlüssel der /whatsapp-Seite | `openwa sales-ui` |
 | `INBOX_WEBHOOK_SECRET` | OpenWA→Inbox-Webhook | `openwa sales-inbox` |
 | `SMTP_USER` / `SMTP_PASSWORT` | E-Mail-Versand — beim Mail-Anbieter (GMX) | `sales-mail` und Vertrauensdomäne |
+| `POSTFACH_GMX_PASSWORT` / `POSTFACH_GMAIL_PASSWORT` | Weitere Postfächer des Betreibers (28.10.2026) — GMX-Passwort bzw. Gmail-App-Passwort; neu setzen NUR mit `deploy/postfach-zugang.sh gmx\|gmail` (Probe-Anmeldung, dann Eintrag) | `sales-mail` und Vertrauensdomäne |
 | `CALDAV_USER` / `CALDAV_PASSWORT` | Kalender — beim Kalender-Anbieter | Vertrauensdomäne |
 | `APIFY_TOKEN` | Recherche — apify.com | Vertrauensdomäne |
 | `LINKEDIN_CLIENT_ID` / `_CLIENT_SECRET` / `_ACCESS_TOKEN` | LinkedIn-App — developer.linkedin.com (Token läuft ohnehin ab; Erneuerungs-Ablauf in docs/05_LINKEDIN…) | `sales-linkedin` und Vertrauensdomäne |

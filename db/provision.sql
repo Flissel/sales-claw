@@ -334,6 +334,9 @@ begin
     execute format('alter table %I.drafts add column if not exists cc text', s);
     -- Mailverlauf (13.10.2026): Message-ID der Mail, auf die der Entwurf antwortet.
     execute format('alter table %I.drafts add column if not exists antwort_auf text', s);
+    -- Mehrere Postfaecher (28.10.2026): aus welchem Zusatzpostfach (gmx, gmail) die
+    -- Antwort hinausgeht. NULL = Postfach des Ladens, wie bisher.
+    execute format('alter table %I.drafts add column if not exists postfach text', s);
     -- Newsletter an Kontakte (15.10.2026, Plan 2026-10-15-newsletter-versand-an-kontakte.md):
     -- Vorname fuer die Anrede, HTML-Fassung + eingebettete Medien je Entwurf, Bezug auf den
     -- Marketing-Inhalt. Ein Newsletter geht hoechstens einmal an denselben Kontakt (ausser verworfen).

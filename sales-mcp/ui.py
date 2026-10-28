@@ -2634,6 +2634,9 @@ def _entwurf_kopf(z, zustand: str) -> str:
                if z.get("subject") else "")
     betreff += (f'<div>CC: <b>{_e(z["cc"])}</b></div>'
                 if z.get("cc") else "")
+    # Mehrere Postfaecher (28.10.2026): wer sieht, von wo die Antwort hinausgeht.
+    betreff += (f'<div>Absender: <b>{_e(server.postfach.name(z["postfach"]))}</b></div>'
+                if z.get("postfach") else "")
     return (f'{_zustand_badge(zustand)}{_badge(z["channel"])}'
             f'<b>{_e(z["name"] or "(ohne Kontakt)")}'
             f"</b> &rarr; {_e(z['recipient'])}{betreff}"
@@ -3726,7 +3729,7 @@ async def inbox(request):
     pending = server._q(
         "select d.id, d.channel, d.recipient, d.body, d.media_ref, d.subject, d.cc, d.newsletter, d.body_html, "
         "       extract(epoch from (now() - d.created_at)) / 3600 as alter_h, "
-        "       d.lead_id, d.thema, l.name, l.consent_status "
+        "       d.lead_id, d.thema, d.postfach, l.name, l.consent_status "
         "from drafts d left join leads l on l.id = d.lead_id "
         "where d.status = 'pending' order by d.created_at desc")
     gescheitert = server._q(
@@ -8055,7 +8058,7 @@ def _wartezeit(stunden) -> str:
 def _postfach_block() -> str:
     """Mails aus dem Betreiber-Postfach (Index postfach_mails) und Spam."""
     mails = server._q(
-        "select message_id, von, betreff, datum, auszug, art, status, grund "
+        "select message_id, uid, von, betreff, datum, auszug, art, status, grund "
         "from postfach_mails order by gesehen_am desc limit 30")
     normal = [m for m in mails if m["status"] not in ("verschoben",)]
     spam = [m for m in mails if m["art"] == "spam" and m["status"] == "verschoben"]
@@ -8067,7 +8070,8 @@ def _postfach_block() -> str:
         marke = (' <span class="badge achtung">Vorschlag: unwichtig</span>'
                  if m["status"] == "vorgeschlagen" else "")
         teile.append(
-            f'<div class="karte">{_badge("email")}{marke} <b>{_e(m["betreff"] or "(ohne Betreff)")}</b>'
+            f'<div class="karte">{_badge("email")}{_postfach_marke(m["uid"])}{marke} '
+            f'<b>{_e(m["betreff"] or "(ohne Betreff)")}</b>'
             f'<div class="meta">{_e(m["von"])} · {_e(m["datum"])}</div>'
             f'<div class="text">{_e(_kurz(m["auszug"] or "", 300))}</div></div>')
     teile.append(f'<details class="karte"><summary>Spam-Ordner ({len(spam)})</summary>'
@@ -8081,11 +8085,23 @@ def _postfach_block() -> str:
     return "".join(teile)
 
 
+def _postfach_marke(uid) -> str:
+    """Herkunft einer Mail (28.10.2026): GMX/Gmail als Abzeichen, das
+    Laden-Postfach ohne - es ist der Normalfall."""
+    try:
+        kennung, _ = server.postfach.zerlegen(uid)
+    except ValueError:
+        return ""
+    if kennung == server.postfach.HAUPT:
+        return ""
+    return f' <span class="badge">{_e(server.postfach.name(kennung))}</span>'
+
+
 def _posteingang_suche(such: str) -> str:
     """Mails und Nachrichten durchsuchen: deutsche Wortstaemme (Volltext)
     plus Tippfehler-Toleranz ueber Trigramme."""
     mails = server._q(
-        "select betreff, von, datum, auszug from postfach_mails "
+        "select uid, betreff, von, datum, auszug from postfach_mails "
         "where suchtext @@ websearch_to_tsquery('german', %(q)s) "
         "   or similarity(betreff, %(q)s) >= 0.3 or similarity(von, %(q)s) >= 0.3 "
         "order by ts_rank(suchtext, websearch_to_tsquery('german', %(q)s)) desc "
@@ -8098,7 +8114,8 @@ def _posteingang_suche(such: str) -> str:
         " order by a.created_at desc limit 20", {"q": such})
     teile = [f"<h2>Treffer für „{_e(such)}“ ({len(mails) + len(chats)})</h2>"]
     for m in mails:
-        teile.append(f'<div class="karte">{_badge("email")} <b>{_e(m["betreff"])}</b>'
+        teile.append(f'<div class="karte">{_badge("email")}{_postfach_marke(m["uid"])} '
+                     f'<b>{_e(m["betreff"])}</b>'
                      f'<div class="meta">{_e(m["von"])} · {_e(m["datum"])}</div>'
                      f'<div class="text">{_e(_kurz(m["auszug"] or "", 300))}</div></div>')
     for c in chats:
@@ -9121,7 +9138,7 @@ async def heute(request):
     pending = server._q(
         "select d.id, d.channel, d.recipient, d.body, d.media_ref, d.subject, d.cc, d.newsletter, d.body_html, "
         "       extract(epoch from (now() - d.created_at)) / 3600 as alter_h, "
-        "       d.lead_id, d.thema, l.name, l.consent_status "
+        "       d.lead_id, d.thema, d.postfach, l.name, l.consent_status "
         "from drafts d left join leads l on l.id = d.lead_id "
         "where d.status = 'pending' order by d.created_at desc")
     je_art = {art: [] for art, _ in FREIGABE_ARTEN}

@@ -188,6 +188,19 @@ def system_identitaet() -> Identitaet:
     return eigen if eigen.brauchbar() else kunden_identitaet()
 
 
+def postfach_identitaet(kennung: str):
+    """Antworten aus einem Zusatzpostfach (28.10.2026): die Antwort auf eine
+    GMX-Mail geht ueber GMX, mit der GMX-Adresse als Absender - sonst saehe
+    der Empfaenger einen Adresswechsel. None, wenn das Postfach nicht (mehr)
+    eingerichtet ist; dann geht NICHTS raus (kein stiller Rueckfall auf das
+    Laden-Postfach)."""
+    konto = postfach.konto(kennung)
+    if konto is None:
+        return None
+    return Identitaet(f"postfach-{kennung}", konto.anbieter["smtp"], postfach.SMTP_SSL_PORT,
+                      konto.adresse, konto.passwort, konto.adresse)
+
+
 class VersandFehler(Exception):
     """Fehlgeschlagener Zustellversuch mit menschenlesbarem Grund."""
 
@@ -199,9 +212,11 @@ def _ohne_geheimnis(text: str) -> str:
     Chat. Fremde Antworttexte spiegeln Anfragen manchmal zurueck; die Zeile
     kostet nichts und schliesst die Klasse Vorfall aus.
     """
-    # Seit 24.09.2026 fuer BEIDE Identitaeten.
-    for user, passwort in ((SMTP_USER, SMTP_PASSWORT),
-                           (SYSTEM_SMTP_USER, SYSTEM_SMTP_PASSWORT)):
+    # Seit 24.09.2026 fuer BEIDE Identitaeten, seit 28.10.2026 auch fuer
+    # die Zusatzpostfaecher (GMX, Gmail).
+    zusatz = [(k.adresse, k.passwort) for k in map(postfach.konto, postfach.ANBIETER) if k]
+    for user, passwort in [(SMTP_USER, SMTP_PASSWORT),
+                           (SYSTEM_SMTP_USER, SYSTEM_SMTP_PASSWORT), *zusatz]:
         if not passwort:
             continue
         # Auch die kodierten Formen (Review-Befund H2): auf der Leitung
@@ -243,7 +258,7 @@ def claim(draft_id):
         "update drafts set status = 'failed', error = %s "
         "where id = %s and status = 'approved' and channel = 'email' "
         "returning id, lead_id, recipient, subject, body, media_ref, cc, antwort_auf, "
-        "body_html, newsletter, newsletter_medien",
+        "body_html, newsletter, newsletter_medien, postfach",
         (marke, draft_id))
     if not zeilen:
         return None
@@ -616,7 +631,8 @@ def senden(nachricht: EmailMessage, identitaet=None) -> None:
     dieselbe Ursache (gleiche Ueberlegung wie `dispatch._senden`).
     """
     ident = identitaet or kunden_identitaet()
-    praefix = "SYSTEM_SMTP" if ident.art == "system" else "SMTP"
+    praefix = ("SYSTEM_SMTP" if ident.art == "system" else
+               ident.art.replace("-", "_").upper() if ident.art.startswith("postfach-") else "SMTP")
     verbindung = None
     try:
         verbindung = _verbindung(ident)
@@ -695,8 +711,10 @@ def _sent_ordner(kasten) -> str:
     return "Sent"
 
 
-def _sent_ablegen(nachricht: EmailMessage) -> None:
-    kasten = _sent_verbinden()
+def _sent_ablegen(nachricht: EmailMessage, kennung: str = "") -> None:
+    """`kennung` (28.10.2026): Kopie in den Gesendet-Ordner dieses
+    Zusatzpostfachs statt in den des Ladens."""
+    kasten = postfach.oeffnen(kennung) if kennung else _sent_verbinden()
     try:
         ordner = _sent_ordner(kasten)
         kasten.append(f'"{ordner}"', "\\Seen",
@@ -726,6 +744,19 @@ def verarbeite_draft(draft_id) -> str:
         _als_fehler_buchen(draft_id, marke, sperre)
         LOG.info("draft=%s nicht zugestellt (Sendesperre)", draft_id)
         return "gesperrt"
+
+    # Mehrere Postfaecher (28.10.2026): eine Antwort auf eine GMX-/Gmail-Mail
+    # geht vom selben Postfach hinaus. Ohne Zugang dorthin geht NICHTS raus.
+    kennung = geclaimt.get("postfach") or ""
+    ident = None
+    if kennung:
+        ident = postfach_identitaet(kennung)
+        if ident is None:
+            _als_fehler_buchen(draft_id, marke, (
+                f"Postfach {postfach.name(kennung)} ist nicht eingerichtet - die Antwort "
+                f"sollte von dort hinausgehen. Es ging NICHTS raus."))
+            LOG.info("draft=%s nicht zugestellt (Postfach %s fehlt)", draft_id, kennung)
+            return "fehler"
 
     newsletter_bilder_liste = None
     if geclaimt.get("body_html"):
@@ -796,10 +827,15 @@ def verarbeite_draft(draft_id) -> str:
         # den Kollegen genauso in Kopie setzen koennen wie bei jeder anderen
         # Mail. Ohne die Durchreichung waere CC bei Einladungen still
         # verschwunden.
+        absender = ident.absender if ident else None
         if newsletter_bilder_liste is not None:
             nachricht = nachricht_newsletter(adresse, geclaimt["subject"], geclaimt["body"],
-                                             geclaimt["body_html"], newsletter_bilder_liste)
+                                             geclaimt["body_html"], newsletter_bilder_liste,
+                                             absender=absender)
         elif ics_text is not None:
+            # Einladungen bleiben beim Laden-Postfach: dort steht der ORGANIZER,
+            # und dorthin kommen Zu- und Absagen zurueck.
+            kennung, ident = "", None
             nachricht = nachricht_mit_einladung(adresse, geclaimt["subject"],
                                                 geclaimt["body"], ics_text,
                                                 cc=geclaimt.get("cc"),
@@ -807,7 +843,7 @@ def verarbeite_draft(draft_id) -> str:
         else:
             nachricht = nachricht_bauen(adresse, geclaimt["subject"],
                                         geclaimt["body"],
-                                        cc=geclaimt.get("cc"),
+                                        cc=geclaimt.get("cc"), absender=absender,
                                         antwort_auf=geclaimt.get("antwort_auf") or "")
         if anhang is not None:
             # NACH dem Bauen, VOR dem Senden: schlaegt das Anhaengen fehl
@@ -819,7 +855,7 @@ def verarbeite_draft(draft_id) -> str:
                 LOG.info("draft=%s nicht zugestellt (%s)", draft_id,
                          _einzeilig(fehler_anhang)[:120])
                 return "anhang_nicht_unterstuetzt"
-        senden(nachricht)
+        senden(nachricht, ident)
     except VersandFehler as e:
         _als_fehler_buchen(draft_id, marke, str(e))
         LOG.info("draft=%s fehlgeschlagen an %s (%s)", draft_id,
@@ -842,9 +878,12 @@ def verarbeite_draft(draft_id) -> str:
 
     # Sent-Kopie NACH dem Versand und VOR der Buchung — die Mail ist raus,
     # die Kopie gehoert ins Postfach, selbst wenn die Buchung scheitert.
-    if _sent_moeglich():
+    # Zusatzpostfach: in dessen Gesendet-Ordner - ausser Gmail, das legt selbst ab.
+    if kennung and not postfach.ANBIETER[kennung]["sent_kopie"]:
+        pass
+    elif kennung or _sent_moeglich():
         try:
-            _sent_ablegen(nachricht)
+            _sent_ablegen(nachricht, kennung)
         except Exception as e:              # noqa: BLE001 — best effort
             LOG.warning("draft=%s gesendet, Sent-Kopie scheiterte (%s: %s)",
                         draft_id, type(e).__name__,

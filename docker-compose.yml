@@ -62,6 +62,12 @@ x-sales-mcp-umgebung: &sales_mcp_umgebung
   SMTP_USER: ${SMTP_USER:-}
   SMTP_PASSWORT: ${SMTP_PASSWORT:-}
   EMAIL_ABSENDER: ${EMAIL_ABSENDER:-}
+  # Weitere Postfaecher des Betreibers (28.10.2026, sales-mcp/postfach.py):
+  # lesen, aufraeumen, Antwort vom selben Postfach. Leer = nicht eingerichtet.
+  POSTFACH_GMX_ADRESSE: ${POSTFACH_GMX_ADRESSE:-}
+  POSTFACH_GMX_PASSWORT: ${POSTFACH_GMX_PASSWORT:-}
+  POSTFACH_GMAIL_ADRESSE: ${POSTFACH_GMAIL_ADRESSE:-}
+  POSTFACH_GMAIL_PASSWORT: ${POSTFACH_GMAIL_PASSWORT:-}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   ROWBOAT_URL: ${ROWBOAT_URL:-}
   ROWBOAT_PROJECT_ID: ${ROWBOAT_PROJECT_ID:-}
@@ -468,6 +474,11 @@ services:
       - SMTP_USER=${SMTP_USER:-}
       - SMTP_PASSWORT=${SMTP_PASSWORT:-}
       - EMAIL_ABSENDER=${EMAIL_ABSENDER:-}
+      # Antworten aus GMX/Gmail gehen ueber deren SMTP (28.10.2026).
+      - POSTFACH_GMX_ADRESSE=${POSTFACH_GMX_ADRESSE:-}
+      - POSTFACH_GMX_PASSWORT=${POSTFACH_GMX_PASSWORT:-}
+      - POSTFACH_GMAIL_ADRESSE=${POSTFACH_GMAIL_ADRESSE:-}
+      - POSTFACH_GMAIL_PASSWORT=${POSTFACH_GMAIL_PASSWORT:-}
       # Betreiber-Identitaet NUR fuer Konto-Mails (Spec 2026-09-24). Nur
       # dieser Dienst bekommt sie - nie sales-ui/sales-mcp (T5a).
       - SYSTEM_SMTP_HOST=${SYSTEM_SMTP_HOST:-}

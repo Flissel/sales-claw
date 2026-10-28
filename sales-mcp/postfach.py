@@ -8,7 +8,9 @@ nie eine Mail kosten.
 Konfiguration: IMAP_HOST/IMAP_PORT/IMAP_USER/IMAP_PASSWORT, mit
 Rueckfall auf die SMTP-Werte — bei Namecheap Private Email (dem Konto
 des Betreibers) sind Host und Zugangsdaten fuer beide Wege identisch,
-nur der Port unterscheidet sich (993 statt 465).
+nur der Port unterscheidet sich (993 statt 465). Dazu seit 28.10.2026
+GMX und Gmail des Betreibers (POSTFACH_GMX_*/POSTFACH_GMAIL_*, siehe
+„Weitere Postfaecher" unten).
 
 Alles, was aus einer Mail kommt, ist FREMDDATUM: Header werden
 dekodiert und gedeckelt, HTML wird zu Text gestrippt, und nichts davon
@@ -31,6 +33,7 @@ import logging
 import os
 import re
 import ssl
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 import kalender
@@ -90,13 +93,122 @@ def _verbinden():
     return kasten
 
 
+# --- Weitere Postfaecher (28.10.2026) ---------------------------------------
+# Neben dem Postfach des Ladens (IMAP_*/SMTP_*, Kennung "haupt") liest der
+# Agent auf Wunsch des Betreibers auch dessen GMX- und Gmail-Postfach. Je
+# Anbieter genuegen Adresse und Passwort (POSTFACH_GMX_ADRESSE/_PASSWORT,
+# POSTFACH_GMAIL_...); Server und Ports sind fest. Mails daraus tragen die
+# uid "gmx:123" — Index (postfach_mails), Aufraeumen und Antworten wissen so,
+# wohin sie gehoeren, ohne eigene Spalte. Das Hauptpostfach behaelt die
+# nackte Nummer, damit alte Index-Eintraege gueltig bleiben.
+HAUPT = "haupt"
+ANBIETER = {
+    "gmx": {"name": "GMX", "imap": "imap.gmx.net", "smtp": "mail.gmx.net",
+            "sent_kopie": True},
+    # Gmail legt per SMTP Versandtes selbst unter „Gesendet" ab - eine
+    # eigene Kopie stuende dort doppelt.
+    "gmail": {"name": "Gmail", "imap": "imap.gmail.com", "smtp": "smtp.gmail.com",
+              "sent_kopie": False},
+}
+IMAP_SSL_PORT = 993
+SMTP_SSL_PORT = 465
+
+
+@dataclass(frozen=True)
+class Konto:
+    kennung: str
+    adresse: str
+    passwort: str = field(repr=False)   # nie in Log oder Fehlertext
+
+    @property
+    def anbieter(self) -> dict:
+        return ANBIETER[self.kennung]
+
+
+def konto(kennung: str):
+    """Das eingerichtete Zusatzpostfach - oder None. Liest die Umgebung bei
+    jedem Aufruf; strip() auch beim Passwort, denn eine .env mit CRLF haengt
+    sonst ein \\r an (gemessen 2026, siehe Rollout-Notizen)."""
+    if kennung not in ANBIETER:
+        return None
+    gross = kennung.upper()
+    adresse = os.environ.get(f"POSTFACH_{gross}_ADRESSE", "").strip()
+    passwort = os.environ.get(f"POSTFACH_{gross}_PASSWORT", "").strip()
+    return Konto(kennung, adresse, passwort) if adresse and passwort else None
+
+
+def kennungen() -> list:
+    """Alle eingerichteten Postfaecher, Hauptpostfach zuerst."""
+    return ([HAUPT] if konfiguriert() else []) + [k for k in ANBIETER if konto(k)]
+
+
+def zerlegen(uid) -> tuple:
+    """"gmx:12" -> ("gmx", "12"), "12" -> ("haupt", "12"). ValueError bei
+    einer unbekannten Kennung - lieber eine Meldung als das falsche Postfach."""
+    kennung, _, nummer = str(uid or "").strip().rpartition(":")
+    kennung = kennung or HAUPT
+    if kennung != HAUPT and kennung not in ANBIETER:
+        raise ValueError(f"unbekanntes Postfach '{kennung}'")
+    return kennung, nummer
+
+
+def eingerichtet(uid="") -> bool:
+    """Ohne uid: gibt es ueberhaupt ein Postfach? Mit uid: das dieser Mail?"""
+    if not str(uid or "").strip():
+        return bool(kennungen())
+    try:
+        kennung, _ = zerlegen(uid)
+    except ValueError:
+        return False
+    return kennung in kennungen()
+
+
+def name(kennung: str) -> str:
+    """Fuer Anzeige und Meldungen: "GMX", "Gmail", "Hauptpostfach"."""
+    return ANBIETER.get(kennung, {}).get("name", "Hauptpostfach")
+
+
+def _imap_oeffnen(k: Konto):
+    kasten = imaplib.IMAP4_SSL(k.anbieter["imap"], IMAP_SSL_PORT,
+                               ssl_context=ssl.create_default_context())
+    kasten.login(k.adresse, k.passwort)
+    return kasten
+
+
+def oeffnen(kennung: str):
+    """Angemeldete IMAP-Verbindung zum Postfach `kennung`."""
+    if kennung == HAUPT:
+        return _verbinden()
+    k = konto(kennung)
+    if k is None:
+        raise ValueError(f"Postfach {name(kennung)} ist nicht eingerichtet")
+    return _imap_oeffnen(k)
+
+
+def _uid_aussen(kennung: str, nummer) -> str:
+    nummer = nummer.decode("ascii", errors="replace") if isinstance(nummer, bytes) else str(nummer)
+    return nummer if kennung == HAUPT else f"{kennung}:{nummer}"
+
+
+def _imap_name(ordner: str) -> str:
+    """Ordnernamen fuer IMAP-Befehle immer in Anfuehrungszeichen: Gmail heisst
+    "[Gmail]/Spam", andere tragen Leerzeichen - imaplib zitiert nicht selbst."""
+    return '"' + ordner.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def _kopf(nachricht, name: str) -> str:
     roh = nachricht.get(name, "")
     teile = []
     for wert, zeichensatz in email.header.decode_header(roh):
         if isinstance(wert, bytes):
-            teile.append(wert.decode(zeichensatz or "utf-8",
-                                     errors="replace"))
+            # Rohe Umlaute im Kopf (ohne =?utf-8?...?=) meldet Python als
+            # "unknown-8bit" - kein Zeichensatz, den decode() kennt. Gemessen
+            # mit einer GMX-Mail im Test (28.10.2026); sonst riss ein einziger
+            # solcher Betreff die ganze Liste ab.
+            try:
+                teile.append(wert.decode(zeichensatz or "utf-8", errors="replace"))
+            except LookupError:
+                teile.append(wert.decode("utf-8", errors="replace"))
         else:
             teile.append(wert)
     return "".join(teile).strip()
@@ -399,7 +511,7 @@ def _holen(kasten, uid: bytes):
     return None
 
 
-def liste(anzahl: int = 10) -> list:
+def liste(anzahl: int = 10, postfach: str = HAUPT) -> list:
     """Die neuesten Mails der INBOX, neueste zuerst — uid, von, betreff,
     datum, auszug, kalenderteil. Wirft bei Verbindungsproblemen (der
     Aufrufer in server.py macht daraus die lesbare Meldung).
@@ -415,9 +527,12 @@ def liste(anzahl: int = 10) -> list:
     `lesen()` vorbehalten, das die Antwort auch tatsaechlich festhaelt —
     zwei Stellen, die denselben ICS-Text unterschiedlich weit auswerten,
     driften sonst leicht auseinander (dieselbe Erwaegung wie bei
-    `_ics_tzid`, siehe kalender.py)."""
+    `_ics_tzid`, siehe kalender.py).
+
+    `postfach` (28.10.2026): welches Postfach; ohne Angabe das des Ladens -
+    so lesen Abmeldungen und Newsletter-Anmeldungen wie bisher nur dort."""
     anzahl = max(1, min(int(anzahl), ANZAHL_MAX))
-    kasten = _verbinden()
+    kasten = oeffnen(postfach)
     try:
         kasten.select("INBOX", readonly=True)
         status, daten = kasten.uid("search", None, "ALL")
@@ -431,7 +546,8 @@ def liste(anzahl: int = 10) -> list:
                 continue
             text = " ".join(_text(nachricht).split())
             ergebnis.append({
-                "uid": uid.decode("ascii", errors="replace"),
+                "uid": _uid_aussen(postfach, uid),
+                "postfach": postfach,
                 "von": _kopf(nachricht, "From"),
                 "betreff": _kopf(nachricht, "Subject"),
                 "datum": _kopf(nachricht, "Date"),
@@ -446,11 +562,37 @@ def liste(anzahl: int = 10) -> list:
         kasten.logout()
 
 
+def _zeitpunkt(mail: dict) -> float:
+    try:
+        return email.utils.parsedate_to_datetime(mail.get("datum") or "").timestamp()
+    except (TypeError, ValueError, IndexError):
+        return 0.0
+
+
+def liste_alle(anzahl: int = 10) -> tuple:
+    """Die neuesten Mails ALLER eingerichteten Postfaecher, neueste zuerst
+    -> (mails, nicht_erreichbar). Ein kaputtes Postfach kostet die anderen
+    nicht: es steht mit seiner Fehlerklasse (nie dem Text - der koennte
+    Zugangsdaten spiegeln) in `nicht_erreichbar`."""
+    mails, nicht_erreichbar = [], {}
+    for kennung in kennungen():
+        try:
+            mails.extend(liste(anzahl, kennung))
+        except Exception as e:      # noqa: BLE001 - je Postfach, s. oben
+            nicht_erreichbar[kennung] = type(e).__name__
+            LOG.warning("Postfach %s nicht lesbar (%s)", kennung, type(e).__name__)
+    mails.sort(key=_zeitpunkt, reverse=True)
+    return mails, nicht_erreichbar
+
+
 # Aufraeumen (Rundgang 27.10.2026): Betrug sofort in den Spam-Ordner,
 # Unwichtiges erst nach Bestaetigung in den Ordner UNWICHTIG_ORDNER.
 # Geloescht wird nie - verschoben ist jederzeit zurueckholbar.
 UNWICHTIG_ORDNER = os.environ.get("POSTFACH_UNWICHTIG", "Unwichtig")
-_SPAM_NAMEN = ("Spam", "Junk", "INBOX.Spam", "INBOX.Junk", "Junk-E-Mail")
+_SPAM_NAMEN = ("Spam", "Junk", "INBOX.Spam", "INBOX.Junk", "Junk-E-Mail",
+               "Spamverdacht", "[Gmail]/Spam")
+# (Merkmale) "Trenner" Name - der Name mit oder ohne Anfuehrungszeichen.
+_LIST_ZEILE = re.compile(r'^\((?P<merkmale>[^)]*)\)\s+(?:"[^"]*"|NIL)\s+(?P<name>.+)$')
 
 
 def _ordner_liste(kasten) -> list:
@@ -460,9 +602,13 @@ def _ordner_liste(kasten) -> list:
     ergebnis = []
     for zeile in daten or []:
         text = zeile.decode("utf-8", errors="replace") if isinstance(zeile, bytes) else str(zeile)
-        merkmale = text.split(")")[0]
-        name = text.rsplit(" ", 1)[-1].strip().strip('"')
-        ergebnis.append((merkmale, name))
+        treffer = _LIST_ZEILE.match(text.strip())
+        if not treffer:
+            continue
+        name = treffer["name"].strip()
+        if name.startswith('"') and name.endswith('"'):
+            name = name[1:-1].replace('\\"', '"').replace("\\\\", "\\")
+        ergebnis.append((treffer["merkmale"], name))
     return ergebnis
 
 
@@ -478,10 +624,13 @@ def _spam_ordner(kasten) -> str | None:
 def verschieben(uid: str, ziel: str) -> str:
     """Mail `uid` aus der INBOX nach `ziel` ('spam' | 'unwichtig') verschieben.
     -> Name des Zielordners. Wirft bei Verbindungsproblemen; ValueError, wenn
-    es keinen Spam-Ordner gibt oder die uid unlesbar ist."""
-    if not str(uid).isdigit():
+    es keinen Spam-Ordner gibt oder die uid unlesbar ist.
+
+    Seit 28.10.2026 auch "gmx:12" - verschoben wird im Postfach der Mail."""
+    kennung, nummer = zerlegen(uid)
+    if not nummer.isdigit():
         raise ValueError("uid ist keine Zahl")
-    kasten = _verbinden()
+    kasten = oeffnen(kennung)
     try:
         if ziel == "spam":
             ordner = _spam_ordner(kasten)
@@ -490,12 +639,12 @@ def verschieben(uid: str, ziel: str) -> str:
         else:
             ordner = UNWICHTIG_ORDNER
             if ordner not in {n for _, n in _ordner_liste(kasten)}:
-                kasten.create(ordner)
+                kasten.create(_imap_name(ordner))
         kasten.select("INBOX")
-        status, _ = kasten.uid("copy", str(uid).encode("ascii"), ordner)
+        status, _ = kasten.uid("copy", nummer.encode("ascii"), _imap_name(ordner))
         if status != "OK":
             raise ValueError("Kopieren abgelehnt")
-        kasten.uid("store", str(uid).encode("ascii"), "+FLAGS", "(\\Deleted)")
+        kasten.uid("store", nummer.encode("ascii"), "+FLAGS", "(\\Deleted)")
         kasten.expunge()
         return ordner
     finally:
@@ -518,18 +667,22 @@ def lesen(uid: str):
     (Fehlerklasse, keine Details — die stehen im Container-Log), statt
     ungefangen bis zu `postfach_mail_lesen` durchzuschlagen, wo sie sonst
     als „Postfach nicht erreichbar" gemeldet wuerde — eine falsche
-    Ursache, das IMAP-Postfach war erreichbar."""
-    kasten = _verbinden()
+    Ursache, das IMAP-Postfach war erreichbar.
+
+    Seit 28.10.2026 auch "gmx:12": gelesen wird im Postfach der Mail, das
+    Ergebnis traegt es unter `postfach`."""
+    kennung, nummer = zerlegen(uid)
+    kasten = oeffnen(kennung)
     try:
         kasten.select("INBOX", readonly=True)
-        nachricht = _holen(kasten, str(uid).encode("ascii",
-                                                   errors="replace"))
+        nachricht = _holen(kasten, nummer.encode("ascii", errors="replace"))
         if nachricht is None:
             return None
         text = _text(nachricht)
         if len(text) > TEXT_MAX:
             text = text[:TEXT_MAX] + "…"
-        ergebnis = {"uid": str(uid), "von": _kopf(nachricht, "From"),
+        ergebnis = {"uid": str(uid), "postfach": kennung,
+                    "von": _kopf(nachricht, "From"),
                    "an": _kopf(nachricht, "To"),
                    "betreff": _kopf(nachricht, "Subject"),
                    "datum": _kopf(nachricht, "Date"), "text": text,

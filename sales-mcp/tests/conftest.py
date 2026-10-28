@@ -84,6 +84,23 @@ def _dateiverzeichnisse_geleert(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _keine_echten_zusatzpostfaecher(monkeypatch):
+    """Weitere Postfaecher (GMX, Gmail, 28.10.2026): laeuft die Suite mit der
+    echten .env, stuenden dort echte Zugangsdaten. Kein Test liest sie, und
+    keiner oeffnet je eine echte Verbindung — wer ein Zusatzpostfach braucht,
+    setzt Umgebung und `postfach._imap_oeffnen` selbst."""
+    import postfach
+    for name in list(os.environ):
+        if name.startswith("POSTFACH_") and name.endswith(("_ADRESSE", "_PASSWORT")):
+            monkeypatch.delenv(name)
+
+    def nie(konto):
+        raise AssertionError(f"echte Verbindung zu {konto.kennung} im Test")
+    monkeypatch.setattr(postfach, "_imap_oeffnen", nie)
+    yield
+
+
 class KanalHttpRekorder:
     """Ersatz fuer kanal_api.HTTP (Kanal-Adapter, Spec 2026-10-24-kanaele-posten).
 
