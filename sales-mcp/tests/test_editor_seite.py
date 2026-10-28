@@ -42,6 +42,7 @@ class Falsch:
         self.status = "entwurf"
         self.eingereicht_am = None
         self.rueckmeldungen = []
+        self.pflichtteil = None              # None = aeltere Marketing-API ohne Pflichtteil
         self.alter_weg = None
         self.marke_am = None                # inhalt.marke_geaendert_am
         self.fassung_am = "x"               # erstellt_am der neuesten Fassung
@@ -96,7 +97,8 @@ class Falsch:
                                "marke_geaendert_am": self.marke_am},
                     "fassungen": [neu, alt] + [{**alt, "fassung": 0 - n - 1 + 1000} for n in range(self.zusatz_fassungen)],
                     "alter_weg": self.alter_weg,
-                    "rueckmeldungen": self.rueckmeldungen}
+                    "rueckmeldungen": self.rueckmeldungen,
+                    **({"pflichtteil": self.pflichtteil} if self.pflichtteil is not None else {})}
         if pfad == f"/inhalte/{IID}/einreichen":
             return {"status": "eingereicht", "fassung": 2}
         if pfad == f"/inhalte/{IID}/marke_hinweis_aus":
@@ -411,6 +413,18 @@ def test_start_enthaelt_status_urls_und_nur_offene_rueckmeldungen(angemeldet, pu
     assert start["zurueckziehen_url"] == f"/marketing/editor/{IID}/zurueckziehen"
     assert start["rueckmeldungen"] == [
         {"text": "Betreff kuerzen", "von": "chef", "am": "2026-10-07T10:00:00+00:00", "fassung": 2}]
+
+
+def test_start_traegt_pflichtteil_fuer_den_festen_fuss(angemeldet, pult):
+    """Newsletter-Runde 28.10.2026: Impressum & Co. unter der Seite wie in Uebersicht und PDF - nur die drei Texte."""
+    pult.pflichtteil = {"impressum": "Felix Baumann", "abmelde_hinweis": "Abmelden: {abmeldelink}", "geheim": "x"}
+    start = _start(angemeldet.get(f"/marketing/editor/{IID}", headers=HOST).text)
+    assert start["pflichtteil"] == {"impressum": "Felix Baumann", "abmelde_hinweis": "Abmelden: {abmeldelink}",
+                                    "vermittlerangaben": ""}
+
+
+def test_start_ohne_pflichtteil_bei_aelterer_api(angemeldet, pult):
+    assert _start(angemeldet.get(f"/marketing/editor/{IID}", headers=HOST).text)["pflichtteil"] is None
 
 
 @pytest.mark.parametrize("ziel", ["einreichen", "zurueckziehen"])

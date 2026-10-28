@@ -326,6 +326,11 @@ def routen(ui) -> list:
             "einreichen_url": f"/marketing/editor/{iid}/einreichen",
             "zurueckziehen_url": f"/marketing/editor/{iid}/zurueckziehen",
             "mandant": mandant,
+            # Newsletter-Runde 28.10.2026: Impressum & Co. als fester Fuss unter der Seite, wie in
+            # Uebersicht und PDF. Fehlt er (aeltere Marketing-API), zeigt der Editor keinen Fuss.
+            "pflichtteil": {k: str((d.get("pflichtteil") or {}).get(k) or "")
+                            for k in ("impressum", "abmelde_hinweis", "vermittlerangaben")}
+                           if isinstance(d.get("pflichtteil"), dict) else None,
             # Collage (format "seite"): das Seitenmodell statt des Block-Dokuments.
             "format": format_,
             "dokument": neueste["bloecke"] if format_ == "bloecke" else None,

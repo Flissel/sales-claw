@@ -27,6 +27,8 @@ export type Start = {
   // Firma dieses Newsletters und Zuordnung der Bilder zu Firmen; fehlen bei aelterem sales-ui.
   // null = Inhalt ohne Firma (alter Entwurf): kein Etikett, nie eine Vorgabe-Firma.
   mandant?: Firma | null;
+  // Impressum & Co. der Marke als fester Fuss unter der Seite (28.10.2026); fehlt bei aelterem sales-ui.
+  pflichtteil?: { impressum: string; abmelde_hinweis: string; vermittlerangaben: string } | null;
   medien_zuordnung_url?: string;
   // Bilder aus der Bibliothek loeschen (01.10.2026); fehlt bei aelterem sales-ui.
   medien_loeschen_url?: string;

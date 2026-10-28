@@ -14,6 +14,7 @@ import { quelleAnzeige } from '../Gestaltung/hilfen';
 import { FARBE, FLAECHE_SCHATTEN } from '../Gestaltung/gestaltungStil';
 
 import { aussehen, bildPassung, seitenStil } from './seiteStil';
+import SeitenFuss, { type Pflichtteil } from './SeitenFuss';
 import SeiteTextfeld from './SeiteTextfeld';
 import type { SeiteZustand } from './useSeite';
 
@@ -43,7 +44,7 @@ function EbenenInhalt({ e }: { e: SeitenEbene }) {
 // gesperrt (der Assistent arbeitet, die Flaeche zeigt evtl. seinen Zwischenstand, oder der Newsletter liegt zur
 // Freigabe): ein laufendes Ziehen endet,
 // ein offenes Textfeld schliesst ohne zu schreiben - nichts aus der Anzeige landet in der echten Seite.
-export default function SeiteFlaeche({ z, gesperrt = false }: { z: SeiteZustand; gesperrt?: boolean }) {
+export default function SeiteFlaeche({ z, gesperrt = false, pflichtteil = null }: { z: SeiteZustand; gesperrt?: boolean; pflichtteil?: Pflichtteil | null }) {
   const { seite: s, auswahl } = z;
   const buehne = useRef<HTMLDivElement | null>(null);
   const blatt = useRef<HTMLDivElement | null>(null);
@@ -158,7 +159,7 @@ export default function SeiteFlaeche({ z, gesperrt = false }: { z: SeiteZustand;
       }}
       sx={{ flex: 1, minHeight: 0, overflow: 'auto', scrollbarGutter: 'stable', outline: 'none', bgcolor: FARBE.geruest, userSelect: 'none' }}
     >
-      <div style={{ position: 'relative', width: s.breite * zoom, height: s.hoehe * zoom, margin: `${RAND}px auto`, boxShadow: FLAECHE_SCHATTEN }}>
+      <div style={{ position: 'relative', width: s.breite * zoom, height: s.hoehe * zoom, margin: `${RAND}px auto ${pflichtteil ? 0 : RAND}px`, boxShadow: FLAECHE_SCHATTEN }}>
         <div ref={blatt} style={{ position: 'absolute', left: 0, top: 0, width: s.breite, height: s.hoehe, transform: `scale(${zoom})`, transformOrigin: '0 0' }}>
           {/* Die Seite wie seite_html; Links in Texten fuehren im Editor nirgendwohin. */}
           <div data-seite style={seitenStil(s)} onClickCapture={(ev) => ev.preventDefault()}>
@@ -256,6 +257,7 @@ export default function SeiteFlaeche({ z, gesperrt = false }: { z: SeiteZustand;
           />
         )}
       </div>
+      {pflichtteil && <SeitenFuss s={s} p={pflichtteil} zoom={zoom} />}
     </Box>
   );
 }

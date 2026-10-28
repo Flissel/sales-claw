@@ -371,7 +371,7 @@ function Arbeitsplatz({ start, anfang, basis, setBasis, versteckt }: Arbeitsplat
       </Box>
 
       <Box ref={mitteRef} component="main" sx={{ display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}>
-        <SeiteFlaeche z={anzeige} gesperrt={gesperrt} />
+        <SeiteFlaeche z={anzeige} gesperrt={gesperrt} pflichtteil={start.pflichtteil ?? null} />
       </Box>
 
       {/* Während einer Runde: Ebenen und Fläche gesperrt (absolut - nimmt keine Rasterzelle) */}
