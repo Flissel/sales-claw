@@ -720,8 +720,12 @@ services:
     # Der Anker schliesst genau diese Luecke mit.
     environment:
       <<: *sales_mcp_umgebung
-      # Dasselbe Primaermodell wie der Agent (config/openclaw.json).
-      AUTO_MODELL: ${AUTO_MODELL:-claude-sonnet-5}
+      # Modellweg seit 29.10.2026: das OpenClaw-Gateway DES EIGENEN Ladens
+      # (Agent `auto`, ohne Werkzeuge); das Modell steht in dessen
+      # openclaw.json. Der Gateway-Token ist Operator-Zugriff und steht NUR
+      # hier, nicht im Anker (deploy/auto-anbinden.sh traegt ihn ein).
+      OPENCLAW_URL: http://${LADEN_PRAEFIX:-sales}-claw:18894
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
       # Sammelfenster: so alt muss die juengste Kundennachricht sein, bevor
       # geantwortet wird — mehrere schnelle Nachrichten bekommen EINE Antwort.
       AUTO_SAMMELFENSTER_S: ${AUTO_SAMMELFENSTER_S:-90}

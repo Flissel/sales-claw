@@ -5,8 +5,14 @@
     "bind": "lan",
     "auth": {
       "mode": "token"
+    },
+    "http": {
+      "endpoints": {
+        "chatCompletions": { "enabled": true }
+      }
     }
   },
+  "_kommentar_auto": "29.10.2026: sales-auto ruft das Gateway synchron ueber /v1/chat/completions (Agent auto). Der Agent auto hat KEIN Werkzeug (tools.deny ['*'], gemessen: auch exec/message weg, die mitgeschickte Funktion antwort_abgeben bleibt) und einen eigenen, fast leeren Arbeitsordner - die Regeln schickt sales-auto als Systemnachricht mit. main bleibt erster Eintrag = Standard-Agent. Der Endpunkt ist Operator-Zugriff: Port 18894 bleibt im Compose-Netz bzw. auf 127.0.0.1.",
   "agents": {
     "defaults": {
       "model": {
@@ -23,6 +29,11 @@
     "list": [
       {
         "id": "main"
+      },
+      {
+        "id": "auto",
+        "workspace": "/home/node/.openclaw/workspace-auto",
+        "tools": { "deny": ["*"] }
       }
     ]
   },
