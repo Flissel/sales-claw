@@ -55,7 +55,9 @@ jobs:
   # Docker-Attrappen. Beide sind an die Betreiber-Maschine gebunden und
   # laufen dort weiter (python -m pytest scripts/tests) — CI prueft die
   # portablen Compose- und Preflight-Vertraege, darunter die Wache gegen
-  # einen startbaren sales-linkedin-Geist und die restart-Politik.
+  # einen startbaren sales-linkedin-Geist und die restart-Politik. Seit
+  # 23.10.2026 dazu deploy/smoke.sh Abschnitt 15 (UI_SESSION_SECRET nur fuer
+  # Laden-Oberflaechen) — bringt seine eigenen bash-Attrappen mit.
   host-suite:
     runs-on: ubuntu-latest
     steps:
@@ -65,7 +67,8 @@ jobs:
           python-version: "3.12"
       - name: Abhaengigkeiten
         run: pip install --quiet pytest pyyaml requests
-      - name: Portable Compose- und Preflight-Vertraege
+      - name: Portable Compose-, Preflight- und Smoke-Vertraege
         run: >-
           python -m pytest scripts/tests/test_proxmox_compose.py
-          scripts/tests/test_proxmox_preflight.py -q --tb=short
+          scripts/tests/test_proxmox_preflight.py
+          scripts/tests/test_smoke_ui_session_secret.py -q --tb=short
