@@ -182,6 +182,9 @@ def test_anbinde_skript_gibt_den_token_nie_aus_und_startet_nichts():
     assert '"deny": ["*"]' in code or 'deny: ["*"]' in code
     assert "docker restart" not in code.replace("(docker restart $CONTAINER, mit dem Betreiber", "")
     assert "compose up" not in code.replace("docker compose up -d sales-auto (bzw.", "")
+    # Gemessen 30.10.2026: das Neuladen kommt erst Sekunden nach `config set` -
+    # eine einmalige Probe meldete faelschlich rot.
+    assert "for (let i = 0; i < 30; i++)" in code and "setTimeout" in code
 
 
 def test_saat_kennt_agent_auto_ohne_werkzeuge_und_den_endpunkt():
