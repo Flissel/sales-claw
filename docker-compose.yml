@@ -231,6 +231,15 @@ services:
       # Kampagnenplan im Morgen-Digest (17.10.2026): dieselbe Firma wie beim
       # Newsletter-Versand in sales-ui. Leer = kein Block (zweite Laeden).
       MARKETING_MANDANT: ${MARKETING_MANDANT:-}
+      # Bewerbungs-Eingang (29.10.2026, bewerbungs_eingang.py): der Timer
+      # sales-bewerbungs-eingang startet ihn per `docker exec` in DIESEM
+      # Dienst, weil hier die Postfach-Zugaenge schon liegen. Der Schluessel
+      # oeffnet nur /api/eingang/* der Zentrale (nicht den Pult) und steht
+      # bewusst NICHT im Anker oben - Versender, Inbox und Agent brauchen ihn
+      # nicht. NUR in der Haupt-.env des Basis-Ladens setzen. Leer = Lauf
+      # meldet "nicht eingerichtet" und tut nichts.
+      BEWERBUNG_PULT_URL: ${BEWERBUNG_PULT_URL:-}
+      BEWERBUNG_EINGANG_KEY: ${BEWERBUNG_EINGANG_KEY:-}
     # Der Medienordner (Stufe 4, F4). Hier liegen die Unterlagen, die der
     # Betreiber an Entwürfe hängen kann; `medien_liste` liest genau dieses
     # Verzeichnis und `entwurf_erstellen` prüft eine Datei gegen es, bevor ein

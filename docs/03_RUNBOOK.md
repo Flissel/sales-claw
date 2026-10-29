@@ -3065,6 +3065,61 @@ Lauf sendet sie erneut; dann von Hand `gemeldet <draft_id>` buchen.
 Protokoll: `journalctl -u sales-linkedin-nachlauf -n 50`. Test:
 `bash deploy/tests/test_linkedin_nachlauf.sh` (ohne Docker, ohne Netz).
 
+### Bewerbungs-Eingang (29.10.2026)
+
+Taeglich um 19:45 Europe/Berlin (vor Hermes' Auswertung um 20:00) holt
+`sales-mcp/bewerbungs_eingang.py` die Warteliste der Bewerbungs-Zentrale
+(`GET {BEWERBUNG_PULT_URL}/api/eingang/warteliste`), liest die Postfaecher
+**nur lesend** (EXAMINE, BODY.PEEK, nichts markiert/verschoben/beantwortet) und
+meldet je passender Mail `POST /api/eingang/mails` (Vertrag v1). Passend heisst:
+Firmen-Domain (oder Subdomain) einer wartenden Bewerbung, Portal-Absender mit
+Firmenname, oder Kalendereinladung mit Organisator der Firma. Alle anderen
+Mails verlassen sales-claw nie; das Protokoll zeigt nur Zahlen. Nur
+Basis-Laden, kein Sprachmodell, kein Versand.
+
+Voraussetzungen (Werte traegt **Felix selbst** ein, nie ausgeben):
+
+- Die Zentrale hat `/api/eingang/*` (Repo `bewerbung`). Vorher meldet der Lauf
+  „zentrale nicht bereit" und schiebt nichts weiter.
+- `.env`: `BEWERBUNG_PULT_URL` (steht schon) und `BEWERBUNG_EINGANG_KEY` - ein
+  **eigener** Schluessel, nicht der Pult-Schluessel.
+- Postfaecher: felix@vibemind.space ueber `IMAP_*`/`SMTP_*` wie bisher; Gmail
+  und GMX ueber `deploy/postfach-zugang.sh` (`POSTFACH_GMAIL_*`,
+  `POSTFACH_GMX_*`, App-Passwort; bei GMX vorher IMAP im Konto erlauben). Ein
+  fehlendes Postfach wird uebersprungen („nicht eingerichtet").
+- Tabelle `einstellungen` (provision.sql, 28.10.2026): dort liegt je Postfach
+  der Cursor unter `bewerbungs_eingang_cursor`.
+- `sales-mcp` neu erzeugt (`deploy/update.sh`), damit die beiden Variablen im
+  Container stehen.
+
+Erst trocken (zaehlt nur, meldet nichts, Cursor bleibt):
+
+```bash
+bash ~/sales-claw/deploy/bewerbungs-eingang.sh --trocken
+```
+
+Die Ausgabe nennt je Postfach `geprueft`/`passend`; der erste echte Lauf meldet
+alles Passende seit dem fruehesten `gesendet_am` minus einem Tag. Dann
+einschalten:
+
+```bash
+sudo cp ~/sales-claw/deploy/systemd/sales-bewerbungs-eingang.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now sales-bewerbungs-eingang.timer
+systemctl list-timers sales-bewerbungs-eingang.timer
+```
+
+Verhalten bei Fehlern: Netzfehler oder eine Zentrale, die nicht bereit ist
+(401/403/404/408/429/5xx), beenden den Lauf **ohne** den Cursor zu schieben -
+der naechste Lauf holt dieselben Mails, die Zentrale antwortet `bekannt`. Lehnt
+sie eine einzelne Mail ab (400/409/413/415/422), steht nur Code und
+`message_id` im Protokoll und der Lauf geht weiter. Ein nicht lesbares Postfach
+behaelt seinen Cursor, die anderen laufen weiter (Exit 1, Unit „failed").
+
+Protokoll: `journalctl -u sales-bewerbungs-eingang -n 50`. Tests:
+`pytest sales-mcp/tests/test_bewerbungs_eingang.py` (IMAP und Zentrale als
+Attrappen) und `bash deploy/tests/test_bewerbungs_eingang.sh`.
+
 ### 8. Team-Mitglied per Tailscale einladen
 
 **Neu seit 22.09.2026:** Ein Team-Mitglied zum Tailnet hinzufügen — durch einen
