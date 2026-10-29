@@ -28,6 +28,7 @@ class Attrappe:
         self.status_modelle = 200
         self.status_chat = 200
         self.chat_koerper = None
+        self.chat_fehler = None
         self.anfragen = []
 
 
@@ -57,7 +58,8 @@ def gateway(monkeypatch):
             koerper = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
             a.anfragen.append(("POST", self.path, dict(self.headers), koerper))
             if a.status_chat != 200:
-                return self._senden(a.status_chat, {"error": {"message": f"kaputt Bearer {TOKEN}"}})
+                return self._senden(a.status_chat, {"error": {
+                    "message": a.chat_fehler or f"kaputt Bearer {TOKEN}", "type": "api_error"}})
             self._senden(200, a.chat_koerper or {"choices": [{"finish_reason": "tool_calls", "message": {
                 "tool_calls": [{"function": {"name": "antwort_abgeben", "arguments": json.dumps(
                     {"antwort": "Gern!", "beraterin_noetig": False, "stopp_wunsch": False,
@@ -115,6 +117,24 @@ def test_fehlerordnung_beim_chat(gateway, status, art):
     with pytest.raises(art) as e:
         auto._api_aufruf({}, SCHLUESSEL)
     assert TOKEN not in str(e.value)                            # landet sonst in DB und Log
+
+
+def test_fehlender_funktionsaufruf_ist_endgueltig_trotz_502(gateway):
+    """Gemessen 29.10.2026: liefert das Modell keinen gueltigen Aufruf von
+    antwort_abgeben, antwortet das Gateway 502 'tool_choice required ... did not
+    produce one'. Passten die Argumente nicht zum Schema, fragte es davor das
+    Modell bis zum Kontextueberlauf neu an (283 Aufrufe) - also NIE wiederholen."""
+    gateway.status_chat = 502
+    gateway.chat_fehler = ("tool_choice required a antwort_abgeben tool call, "
+                           "but the agent did not produce one")
+    with pytest.raises(auto.AutoFehler, match="did not produce one"):
+        auto._api_aufruf({}, SCHLUESSEL)
+
+
+def test_gewoehnliches_502_bleibt_voruebergehend(gateway):
+    gateway.status_chat = 502
+    with pytest.raises(auto.AutoTransient):
+        auto._api_aufruf({}, SCHLUESSEL)
 
 
 def test_gateway_nicht_erreichbar_ist_voruebergehend(monkeypatch):

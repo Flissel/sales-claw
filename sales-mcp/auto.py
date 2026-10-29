@@ -101,6 +101,8 @@ OPENCLAW_GATEWAY_TOKEN = os.environ.get("OPENCLAW_GATEWAY_TOKEN", "").strip()
 # still einen Agenten mit ALLEN Werkzeugen an (gemessen 29.10.2026).
 AUTO_AGENT = "auto"
 AUTO_FUNKTION = "antwort_abgeben"
+# Woertlich aus OpenClaw 2026.7.1 (HTTP 502), siehe _http.
+KEIN_FUNKTIONSAUFRUF = "but the agent did not produce one"
 HTTP_TIMEOUT_S = float(os.environ.get("AUTO_TIMEOUT_S", "90"))
 AUTO_INTERVAL_S = float(os.environ.get("AUTO_INTERVAL_S", "20"))
 AUTO_ONCE = os.environ.get("AUTO_ONCE", "").strip().lower() in (
@@ -300,6 +302,12 @@ def _http(methode: str, pfad: str, nutzlast=None, kopf=None) -> dict:
             # auto_antwort.fehler (DB) und im Log.
             detail = detail.replace(OPENCLAW_GATEWAY_TOKEN, "<token>")
         detail = " ".join(detail.split())[:FEHLER_MAXLAENGE]
+        if KEIN_FUNKTIONSAUFRUF in detail:
+            # 502, aber deterministisch fuer DIESE Nachricht: das Modell lieferte
+            # keinen gueltigen Aufruf von antwort_abgeben. Passten die Argumente
+            # nicht zum Schema, fragte das Gateway davor bis zum Kontextueberlauf
+            # neu an (gemessen 283 Aufrufe) - nie wiederholen, Mensch uebernimmt.
+            raise AutoFehler(f"Gateway HTTP {e.code}: {detail}") from None
         if e.code in (408, 429) or e.code >= 500:
             raise AutoTransient(f"Gateway HTTP {e.code}: {detail}") from None
         raise AutoFehler(f"Gateway HTTP {e.code}: {detail}") from None
