@@ -2,12 +2,16 @@
 
 Der Client zur Pult-API der Zentrale (bewerbung_pult.anfrage) wird gefaelscht wie in
 test_freigabe_newsletter.py; es gibt kein JavaScript. Review Focus 1 (veraltete Fassung),
-3 (wartet auf Durchsicht), 4 (Zentrale weg, unklares Ergebnis) und 5 (feindlicher Text)."""
+3 (wartet auf Durchsicht), 4 (Zentrale weg, unklares Ergebnis) und 5 (feindlicher Text).
+
+Hermes H2 (Plan 2026-10-27, Task 10): Hermes-Zeile, Lauf-Kasten mit Neuer Lauf / Lauf abbrechen,
+Pruefnotiz und Antworten auf der Karte (am Ende der Datei)."""
 import asyncio
 import html
 import logging
 import os
 import re
+import urllib.parse
 from datetime import datetime
 
 os.environ["SALES_DB_SCHEMA"] = "sales_test"
@@ -32,6 +36,9 @@ OFFEN = "/bewerbungen?status=offen"
 ENTSCHIEDEN = "/bewerbungen?status=entschieden"
 BOESE = "<script>x</script>"
 BOESE2 = '"><img onerror=1>'
+LAUF_AKTUELL = "/laeufe/aktuell"
+LAUF_ID = "hl-20261028-a1b2c3"
+LAUF_AM = "2026-10-28T08:00:00+00:00"
 
 
 def karte(**kw):
@@ -53,6 +60,29 @@ def verlauf(**kw):
     return v
 
 
+def lauf(**kw):
+    """Der Lauf in `/laeufe/aktuell` (Vertrag Task 7: laeufe.lauf_zusammenfassung)."""
+    eintraege = [("bw-1", "Alpha GmbH", "Data Engineer", 4.3, "vorgelegt"),
+                 ("bw-2", "Beta AG", "Analyst", 4.0, "in_arbeit"),
+                 ("bw-3", "Gamma SE", "ML Engineer", 3.6, "aufgegeben"),
+                 ("bw-4", "Delta KG", "Architect", 3.5, "offen")]
+    l = {"lauf_id": LAUF_ID, "status": "laeuft", "ziel": 5, "angefordert_am": LAUF_AM,
+         "gestartet_am": "2026-10-28T08:00:05+00:00", "beendet_am": None, "ende_grund": None,
+         "begruendung": "Zwei Stellen passen zum Profil",
+         "bewerbungen": [{"application_id": a, "firma": f, "rolle": r, "score": sc, "stand": st}
+                         for a, f, r, sc, st in eintraege],
+         "bewertet": 9, "unter_schwelle": 5, "sperrfrist": 1, "lauf_voll": 1,
+         "dauer_s": 720.0, "modellaufrufe": 31}
+    l.update(kw)
+    return l
+
+
+def uebersicht(l=None, zustand="bereit", grund=None, moeglich=True):
+    """Die ganze Antwort von `GET /laeufe/aktuell`."""
+    return {"lauf": l, "neuer_lauf_moeglich": moeglich,
+            "hermes": {"zustand": zustand, "grund": grund, "gesehen_am": "2026-10-28T08:05:00+00:00"}}
+
+
 class Falsch:
     """Attrappe fuer bewerbung_pult.anfrage: merkt Aufrufe, Zeitlimits und ob sie im
     Event-Loop liefen (der Render-Weg darf nie blockierend ins Netz)."""
@@ -65,6 +95,8 @@ class Falsch:
         self.fehler = None          # jede Anfrage
         self.fehler_post = None     # nur POST
         self.fehler_pdf = None      # nur das PDF
+        self.fehler_lauf = None     # nur GET /laeufe/aktuell
+        self.uebersicht = uebersicht()
         self.karten = [karte()]
         self.verlauf = []
         self.pdf = (b"%PDF-1.7 Anschreiben", "application/pdf")
@@ -72,7 +104,10 @@ class Falsch:
                         "nicht-bewerben": {"status": "abgelehnt", "kommando": "k-2"},
                         "feedback": {"status": "erfasst"},
                         "versandziel": {"status": "gesetzt", "versand": {
-                            "kanal": "email", "an": "neu@muster.example", "warnung": None}}}
+                            "kanal": "email", "an": "neu@muster.example", "warnung": None}},
+                        "antworten": {"status": "erfasst", "anzahl": 1},
+                        "laeufe": {"lauf": lauf(status="angefordert", bewerbungen=[])},
+                        "abbrechen": {"lauf": lauf(status="abgebrochen")}}
 
     def anfrage(self, methode, pfad, daten=None, roh=False, zeitlimit=None):
         self.aufrufe.append((methode, pfad, daten))
@@ -93,6 +128,10 @@ class Falsch:
             return {"bewerbungen": self.karten}
         if pfad == ENTSCHIEDEN:
             return {"bewerbungen": self.verlauf}
+        if pfad == LAUF_AKTUELL:
+            if self.fehler_lauf:
+                raise self.fehler_lauf
+            return self.uebersicht
         if "/anschreiben.pdf?" in pfad and roh:
             if self.fehler_pdf:
                 raise self.fehler_pdf
@@ -200,7 +239,8 @@ ENTSCHEIDUNG = {"csrf": ui.CSRF_TOKEN, "fassung": "1", "bindung": B, "bestaetigt
 POSTS = [("freigeben", {"fassung": "1", "bindung": B, "bestaetigt": "ja"}),
          ("nicht-bewerben", {"fassung": "1", "bindung": B, "bestaetigt": "ja"}),
          ("feedback", {"fassung": "1", "kommentar": "Bitte kürzer"}),
-         ("versandziel", {"fassung": "1", "an": "bewerbung@muster.example"})]
+         ("versandziel", {"fassung": "1", "an": "bewerbung@muster.example"}),
+         ("antworten", {"fassung": "1", "antwort_f1": "Ab sofort"})]
 
 
 def _post(c, pfad, **daten):
@@ -242,7 +282,7 @@ def test_karte_zeigt_angaben_links_und_formulare(client, falsch):
     assert "<iframe" not in s and "<embed" not in s and "<object" not in s   # PDF nur verlinkt
     for pfad in ("freigeben", "nicht-bewerben", "feedback"):
         assert f'method="post" action="/freigaben/bewerbung/{BID}/{pfad}"' in s
-    assert s.count(f'name="csrf" value="{ui.CSRF_TOKEN}"') == 3
+    assert s.count(f'name="csrf" value="{ui.CSRF_TOKEN}"') == 3 + 1       # dazu "Neuer Lauf" im Kopf (H2)
     assert s.count(f'name="bindung" value="{B}"') == 2 and s.count('name="fassung" value="2"') == 3
     assert s.count('name="bestaetigt" value="ja"') == 2
     assert 'name="grund" maxlength="500"' in s
@@ -671,6 +711,7 @@ def test_zeitlimits(client, falsch):
     assert z[("POST", f"/bewerbungen/{BID}/nicht-bewerben")] == 30
     assert z[("POST", f"/bewerbungen/{BID}/feedback")] == 8
     assert z[("POST", f"/bewerbungen/{BID}/versandziel")] == 8
+    assert z[("POST", f"/bewerbungen/{BID}/antworten")] == 8
     lesen = [t for m, p, t in falsch.zeitlimits if m == "GET"]
     assert lesen and all(t is not None and t <= 3 for t in lesen)
     assert falsch.im_loop == []
@@ -964,7 +1005,8 @@ def test_jedes_formular_hat_die_csrf_marke(client, falsch):
                      karte(application_id="bw-3", versand=weg("portal", None)),
                      karte(application_id="bw-4", wartet_auf_durchsicht=True, versand=weg())]
     s = _abschnitt(client)
-    assert s.count("<form") == 17 == s.count(f'name="csrf" value="{ui.CSRF_TOKEN}"')
+    # 4 Karten (17 Formulare) und im Kopf "Neuer Lauf" (H2): jedes traegt die CSRF-Marke.
+    assert s.count("<form") == 18 == s.count(f'name="csrf" value="{ui.CSRF_TOKEN}"')
 
 
 # --- Adresse setzen ------------------------------------------------------------------
@@ -1213,3 +1255,690 @@ def test_verlauf_maskiert_adresse_und_unbekannten_ausgang(client, falsch):      
     assert "Freigegeben" not in _zeile(s, "Drei")                    # unbekannt: wie geliefert
     assert "7" in _zeile(s, "Vier")
     assert "Versendet an &quot;&gt;&lt;img onerror=1&gt;" in _zeile(s, "Fuenf")
+
+
+# --- H2: Hermes-Zeile, Lauf-Kasten, Pruefnotiz und Antworten (Plan 2026-10-27, Task 10) --------------
+
+HERMES_TEXTE = {"bereit": "Hermes: bereit", "arbeitet": "Hermes arbeitet …",
+                "pausiert": "Hermes pausiert: Kontingent", "nicht_erreichbar": "Hermes nicht erreichbar",
+                "unbekannt": "Hermes: Status unbekannt"}
+WEG_TEXT = "Bewerbungs-Zentrale ist gerade nicht erreichbar"
+NICHT_VERBUNDEN_TEXT = "Bewerbungs-Zentrale ist nicht verbunden"
+FRAGEN_HINWEIS = "Gilt nur für diese Bewerbung. Soll es allgemein gelten, am PC in profil/ übernehmen."
+
+
+def notiz(**kw):
+    """Die `pruefnotiz` einer Karte (Vertrag Task 7: Pruefnotiz.als_dict() mit `fragen[].antwort`)."""
+    n = {"zusammenfassung": "Der Brief passt zur Stelle, zwei Angaben sind nicht belegt.",
+         "geprueft": ["Anschrift stimmt", "Datum heute"], "geaendert": ["Absatz 2 gekürzt"],
+         "quellen": ["https://firma.example/karriere"],
+         "fragen": [{"id": "f1", "frage": "Ab wann bist du verfügbar?", "antwort": None},
+                    {"id": "f2", "frage": "Welches Gehalt erwartest du?", "antwort": None}]}
+    n.update(kw)
+    return n
+
+
+def _kopf(s: str) -> str:
+    """Was vor den Karten und dem Verlauf steht: Hinweis, Hermes-Zeile, Lauf-Kasten, Knoepfe."""
+    return s.split('<details class="karte"')[0].split("Zuletzt entschieden")[0]
+
+
+def _tag(html_text: str, name: str) -> str:
+    return re.search(rf'<input[^>]*name="{name}"[^>]*>', html_text).group(0)
+
+
+def _post_lauf(c, pfad, **daten):
+    return c.post(f"/freigaben/bewerbung/{pfad}", data={"csrf": ui.CSRF_TOKEN, **daten},
+                  follow_redirects=False)
+
+
+# --- Hermes-Zeile -----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("zustand,grund", [("bereit", None), ("arbeitet", None), ("pausiert", "kontingent"),
+                                           ("nicht_erreichbar", None), ("unbekannt", None)])
+def test_hermes_zeile_je_zustand(client, falsch, zustand, grund):
+    falsch.uebersicht = uebersicht(zustand=zustand, grund=grund)
+    kopf = _kopf(_abschnitt(client))
+    assert HERMES_TEXTE[zustand] in kopf
+    for anderer, text in HERMES_TEXTE.items():
+        if anderer != zustand:
+            assert text not in kopf
+
+
+@pytest.mark.parametrize("zustand,grund,text", [
+    ("pausiert", "Quota <b>leer</b>", "Hermes pausiert: Quota &lt;b&gt;leer&lt;/b&gt;"),
+    ("pausiert", BOESE, "Hermes pausiert: &lt;script&gt;x&lt;/script&gt;"),
+    ("pausiert", None, "Hermes pausiert<"),
+    ("pausiert", "  ", "Hermes pausiert<"),
+    (BOESE, None, "Hermes: Status unbekannt"),
+    (BOESE2, BOESE, "Hermes: Status unbekannt"),
+    (None, None, "Hermes: Status unbekannt"),
+    (7, None, "Hermes: Status unbekannt"),
+    ("schläft", None, "Hermes: Status unbekannt"),
+])
+def test_hermes_zeile_maskiert_und_raet_nicht(client, falsch, zustand, grund, text):    # Review Focus 5
+    falsch.uebersicht = uebersicht(zustand=zustand, grund=grund)
+    s = _abschnitt(client)
+    assert text in s
+    assert "<script" not in s and '"><img' not in s and "<b>leer</b>" not in s
+    if "unbekannt" in text:                       # ein unbekannter Zustand wird nicht wiedergegeben
+        assert "schläft" not in s and "&lt;script" not in s
+
+
+def test_hermes_zeile_ohne_hermes_objekt(client, falsch):
+    for hermes in ("kaputt", None, 3, {}):
+        falsch.uebersicht = {**uebersicht(), "hermes": hermes}
+        assert HERMES_TEXTE["unbekannt"] in _kopf(_abschnitt(client))
+
+
+# --- Lauf-Kasten ------------------------------------------------------------------------
+
+
+def test_lauf_kasten_zeigt_zaehler_staende_begruendung_und_dauer(client, falsch):
+    falsch.uebersicht = uebersicht(lauf(), moeglich=False)
+    kopf = _kopf(_abschnitt(client))
+    am = ui._e(ui._zeit(datetime.fromisoformat(LAUF_AM)))
+    assert f"Lauf vom {am}: läuft" in kopf
+    assert "Alpha GmbH – Data Engineer (Score 4,3): vorgelegt" in kopf
+    assert "Beta AG – Analyst (Score 4,0): in Arbeit" in kopf
+    assert "Gamma SE – ML Engineer (Score 3,6): aufgegeben" in kopf
+    assert "Delta KG – Architect (Score 3,5): offen" in kopf
+    assert "bewertet 9 · unter 3,5: 5 · Sperrfrist: 1 · Lauf voll: 1" in kopf
+    assert "Zwei Stellen passen zum Profil" in kopf
+    assert "Dauer 12 min · 31 Modellaufrufe" in kopf
+    assert kopf.index("Alpha GmbH") < kopf.index("Beta AG") < kopf.index("Gamma SE") < kopf.index("Delta KG")
+    assert falsch.im_loop == []
+
+
+@pytest.mark.parametrize("status,text", [("angefordert", "angefordert"), ("laeuft", "läuft"),
+                                         ("fertig", "fertig"), ("abgebrochen", "abgebrochen")])
+def test_lauf_kasten_status(client, falsch, status, text):
+    falsch.uebersicht = uebersicht(lauf(status=status), moeglich=status in ("fertig", "abgebrochen"))
+    am = ui._e(ui._zeit(datetime.fromisoformat(LAUF_AM)))
+    assert f"Lauf vom {am}: {text}<" in _kopf(_abschnitt(client))
+
+
+def test_lauf_kasten_ohne_lauf_und_ohne_bewerbungen(client, falsch):
+    falsch.uebersicht = uebersicht(None)
+    kopf = _kopf(_abschnitt(client))
+    assert "Lauf vom" not in kopf and "Noch kein Lauf" in kopf and HERMES_TEXTE["bereit"] in kopf
+    falsch.uebersicht = uebersicht(lauf(bewerbungen=[], bewertet=0, unter_schwelle=0, sperrfrist=0,
+                                       lauf_voll=0, begruendung=None, dauer_s=0.0, modellaufrufe=None))
+    kopf = _kopf(_abschnitt(client))
+    assert "bewertet 0 · unter 3,5: 0 · Sperrfrist: 0 · Lauf voll: 0" in kopf
+    assert "Dauer 0 min" in kopf and "Modellaufrufe" not in kopf and "Begründung" not in kopf
+
+
+def test_lauf_kasten_unbekannte_werte_werden_nicht_geraten(client, falsch):
+    falsch.uebersicht = uebersicht(lauf(
+        angefordert_am=None, status="wartet", bewertet=None, unter_schwelle="viel", sperrfrist=True,
+        lauf_voll=-1, dauer_s="lang", modellaufrufe="x",
+        bewerbungen=["kaputt", {"firma": "Eins", "rolle": "R", "score": None, "stand": "neu"},
+                     {"firma": "Zwei", "rolle": "R", "score": True, "stand": None}]))
+    kopf = _kopf(_abschnitt(client))
+    assert "Lauf vom ?: wartet" in kopf
+    assert "bewertet ? · unter 3,5: ? · Sperrfrist: ? · Lauf voll: ?" in kopf
+    # Ein Stand, den die Seite nicht kennt (oder gar keiner), steht nicht roh da.
+    assert "Eins – R (Score –): Stand unbekannt<" in kopf and "Zwei – R (Score –): Stand unbekannt<" in kopf
+    assert ">neu<" not in kopf and ": neu" not in kopf
+    assert "Dauer ? min" in kopf and "Modellaufrufe" not in kopf
+
+
+def test_lauf_kasten_maskiert_alles(client, falsch):                                  # Review Focus 5
+    falsch.uebersicht = uebersicht(lauf(
+        lauf_id='x"><script>y</script>', angefordert_am=BOESE2, begruendung=BOESE,
+        bewerbungen=[{"application_id": "bw-1", "firma": BOESE, "rolle": BOESE2, "score": 4.0, "stand": BOESE},
+                     {"application_id": "bw-2", "firma": "Zwei", "rolle": "R", "score": "hoch",
+                      "stand": "vielleicht <b>"}]),
+        zustand="pausiert", grund=BOESE, moeglich=False)
+    seite = client.get("/freigaben").text
+    assert "<script" not in seite and '"><img' not in seite and "vielleicht <b>" not in seite
+    assert "&lt;script&gt;x&lt;/script&gt; – &quot;&gt;&lt;img onerror=1&gt; (Score 4,0): Stand unbekannt" in seite
+    assert "Zwei – R (Score –): Stand unbekannt" in seite
+    assert "vielleicht" not in seite  # ein unbekannter Stand wird nicht wiedergegeben, auch nicht maskiert
+    assert "Begründung: &lt;script&gt;x&lt;/script&gt;" in seite
+    assert "Lauf vom &quot;&gt;&lt;img onerror=1&gt;: läuft" in seite
+    assert 'action="/freigaben/bewerbung/lauf/x%22%3E%3Cscript%3Ey%3C%2Fscript%3E/abbrechen"' in seite
+
+
+STAND_TEXTE = {"offen": "offen", "in_arbeit": "in Arbeit", "wird_verarbeitet": "wird verarbeitet",
+               "vorgelegt": "vorgelegt", "blockiert": "blockiert – bitte prüfen",
+               "aufgegeben": "aufgegeben", "archiviert": "archiviert"}
+
+
+@pytest.mark.parametrize("stand,text", list(STAND_TEXTE.items()))
+def test_lauf_kasten_stand_je_wert(client, falsch, stand, text):
+    falsch.uebersicht = uebersicht(lauf(bewerbungen=[
+        {"application_id": "bw-1", "firma": "Eins", "rolle": "R", "score": 4.0, "stand": stand}]))
+    assert f"Eins – R (Score 4,0): {ui._e(text)}</li>" in _kopf(_abschnitt(client))
+
+
+@pytest.mark.parametrize("stand", ["neu", "fertig", "", "VORGELEGT", "wird_verarbeitet ", None, 7, ["offen"], BOESE])
+def test_lauf_kasten_unbekannter_stand_wird_nicht_roh_ausgegeben(client, falsch, stand):
+    falsch.uebersicht = uebersicht(lauf(bewerbungen=[
+        {"application_id": "bw-1", "firma": "Eins", "rolle": "R", "score": 4.0, "stand": stand}]))
+    kopf = _kopf(_abschnitt(client))
+    assert "Eins – R (Score 4,0): Stand unbekannt</li>" in kopf
+    assert "<script" not in kopf and "&lt;script" not in kopf
+
+
+ENDE_TEXTE = [("fertig", "alle Bewerbungen bearbeitet"),
+              ("keine_geeigneten", "keine geeignete Stelle gefunden"),
+              ("auswahl_gescheitert", "Auswahl zweimal gescheitert"),
+              ("kontingent_erschoepft", "Kontingent erschöpft"),
+              ("abgebrochen_von:sales-ui:felix", "von dir abgebrochen"),
+              ("abgebrochen_von:felix", "von dir abgebrochen")]
+
+
+@pytest.mark.parametrize("status", ["fertig", "abgebrochen"])
+@pytest.mark.parametrize("grund,text", ENDE_TEXTE)
+def test_lauf_kasten_zeigt_das_ende(client, falsch, status, grund, text):
+    falsch.uebersicht = uebersicht(lauf(status=status, ende_grund=grund, beendet_am=LAUF_AM))
+    kopf = _kopf(_abschnitt(client))
+    assert f"<p>Ende: {text}</p>" in kopf
+    assert f"Ende: {grund}" not in kopf and "_" not in kopf.split("Ende:")[1].split("</p>")[0]  # nie der Rohwert
+
+
+@pytest.mark.parametrize("grund", [None, "", "   ", "irgendwas", "abgebrochen_von", "Abgebrochen_von:x",
+                                   "fertig ", BOESE, BOESE2, 7, ["fertig"]])
+def test_lauf_kasten_unbekanntes_ende_zeigt_nichts(client, falsch, grund):
+    falsch.uebersicht = uebersicht(lauf(status="abgebrochen", ende_grund=grund))
+    kopf = _kopf(_abschnitt(client))
+    assert "Ende:" not in kopf
+    if isinstance(grund, str) and grund.strip():
+        assert grund not in kopf and ui._e(grund) not in kopf
+
+
+def test_lauf_kasten_ende_nur_bei_beendetem_lauf(client, falsch):
+    for status in ("angefordert", "laeuft"):
+        falsch.uebersicht = uebersicht(lauf(status=status, ende_grund="fertig"), moeglich=False)
+        assert "Ende:" not in _kopf(_abschnitt(client))
+
+
+# --- Knoepfe: Neuer Lauf / Lauf abbrechen --------------------------------------------------
+
+
+def test_neuer_lauf_nur_wenn_moeglich(client, falsch):
+    falsch.uebersicht = uebersicht(None, moeglich=True)
+    s = _abschnitt(client)
+    f = _form(_kopf(s), "lauf")
+    assert 'method="post" action="/freigaben/bewerbung/lauf"' in f
+    assert f'name="csrf" value="{ui.CSRF_TOKEN}"' in f and ">Neuer Lauf</button>" in f
+    assert "Lauf läuft" not in s and _ohne_form(s, "abbrechen")
+    falsch.uebersicht = uebersicht(lauf(), moeglich=False)
+    s = _abschnitt(client)
+    assert _ohne_form(s, "lauf") and "Neuer Lauf" not in s and "Lauf läuft" in _kopf(s)
+
+
+@pytest.mark.parametrize("status,da", [("angefordert", True), ("laeuft", True), ("fertig", False),
+                                       ("abgebrochen", False), ("komisch", False)])
+def test_lauf_abbrechen_nur_fuer_offene_laeufe(client, falsch, status, da):
+    falsch.uebersicht = uebersicht(lauf(status=status), moeglich=not da)
+    s = _abschnitt(client)
+    if da:
+        f = _form(_kopf(s), "abbrechen")
+        assert f'method="post" action="/freigaben/bewerbung/lauf/{LAUF_ID}/abbrechen"' in f
+        assert f'name="csrf" value="{ui.CSRF_TOKEN}"' in f and ">Lauf abbrechen</button>" in f
+    else:
+        assert _ohne_form(s, "abbrechen") and "Lauf abbrechen" not in s
+
+
+ABBRECHEN_HINWEIS = ("Bewerbungen, für die Hermes noch keinen Entwurf eingereicht hat, werden archiviert "
+                     "und kommen nicht wieder.")
+
+
+@pytest.mark.parametrize("status", ["angefordert", "laeuft"])
+def test_lauf_abbrechen_warnt_direkt_am_knopf(client, falsch, status):
+    falsch.uebersicht = uebersicht(lauf(status=status), moeglich=False)
+    f = _form(_kopf(_abschnitt(client)), "abbrechen")
+    assert ui._e(ABBRECHEN_HINWEIS) in f              # im Formular, direkt am Knopf
+    assert f.index(ui._e(ABBRECHEN_HINWEIS)) < f.index(">Lauf abbrechen</button>")
+
+
+def test_der_abbrechen_hinweis_steht_nur_mit_dem_knopf(client, falsch):
+    for u in (uebersicht(None), uebersicht(lauf(status="fertig")), uebersicht(lauf(status="abgebrochen"))):
+        falsch.uebersicht = u
+        assert "noch keinen Entwurf eingereicht" not in _abschnitt(client)
+
+
+def test_ohne_lauf_id_kein_abbrechen_knopf(client, falsch):
+    for kaputt in (None, "", 7, [LAUF_ID]):
+        falsch.uebersicht = uebersicht(lauf(lauf_id=kaputt), moeglich=False)
+        assert _ohne_form(_abschnitt(client), "abbrechen")
+
+
+def test_lauf_knoepfe_sind_nur_fuer_freigeben_sichtbar(client_lesen, falsch):
+    s = client_lesen.get("/freigaben").text
+    assert "Neuer Lauf" not in s and "Hermes" not in s and falsch.aufrufe == []
+
+
+# --- Lauf starten und abbrechen -----------------------------------------------------------
+
+
+def test_neuer_lauf_reicht_von_weiter(client, falsch):
+    r = _post_lauf(client, "lauf")
+    assert r.status_code == 303
+    assert r.headers["location"] == "/freigaben?bw_hinweis=lauf_gestartet#bewerbungen"
+    assert falsch.aktionen() == [("POST", "/laeufe", {"von": "mira"})]
+    assert falsch.im_loop == []
+    assert "Neuer Lauf angefordert" in _abschnitt(client, r.headers["location"])
+
+
+def test_lauf_abbrechen_reicht_von_weiter(client, falsch):
+    r = _post_lauf(client, f"lauf/{LAUF_ID}/abbrechen")
+    assert r.status_code == 303
+    assert r.headers["location"] == "/freigaben?bw_hinweis=lauf_abgebrochen#bewerbungen"
+    assert falsch.aktionen() == [("POST", f"/laeufe/{LAUF_ID}/abbrechen", {"von": "mira"})]
+    assert falsch.im_loop == []
+    assert "Lauf abgebrochen" in _abschnitt(client, r.headers["location"])
+
+
+def test_lauf_kennung_wird_im_pfad_maskiert(client, falsch):
+    r = _post_lauf(client, "lauf/hl-1%3Fx%3D1%23y/abbrechen")
+    assert r.status_code == 303
+    assert falsch.aktionen()[-1][1] == "/laeufe/hl-1%3Fx%3D1%23y/abbrechen"
+
+
+def test_lauf_zeitlimits(client, falsch):
+    assert _post_lauf(client, "lauf").status_code == 303
+    assert _post_lauf(client, f"lauf/{LAUF_ID}/abbrechen").status_code == 303
+    client.get("/freigaben")
+    z = {(m, p): t for m, p, t in falsch.zeitlimits}
+    assert z[("POST", "/laeufe")] == 8
+    assert z[("POST", f"/laeufe/{LAUF_ID}/abbrechen")] == 30
+    assert z[("GET", LAUF_AKTUELL)] <= 3
+    assert falsch.im_loop == []
+
+
+LAUF_POSTS = [("lauf", "laeufe"), (f"lauf/{LAUF_ID}/abbrechen", "abbrechen")]
+
+
+@pytest.mark.parametrize("pfad,_", LAUF_POSTS)
+def test_lauf_ohne_csrf_403(client, falsch, pfad, _):
+    for daten in ({}, {"csrf": "falsch"}):
+        r = client.post(f"/freigaben/bewerbung/{pfad}", data=daten, follow_redirects=False)
+        assert r.status_code == 403
+    assert falsch.aktionen() == []
+
+
+@pytest.mark.parametrize("pfad,_", LAUF_POSTS)
+def test_lauf_rolle_lesen_darf_nicht_posten(client_lesen, falsch, pfad, _):
+    r = _post_lauf(client_lesen, pfad)
+    assert r.status_code == 403 and "Nicht für diese Anmeldung" in r.text and falsch.aufrufe == []
+    assert ui._pfad_erlaubt("freigeben", f"/freigaben/bewerbung/{pfad}") is True
+    assert ui._pfad_erlaubt("lesen", f"/freigaben/bewerbung/{pfad}") is False
+
+
+@pytest.mark.parametrize("pfad,_", LAUF_POSTS)
+def test_lauf_ohne_anmeldung_nichts(falsch, monkeypatch, pfad, _):
+    monkeypatch.setattr(ui, "UI_SESSION_SECRET", "")
+    c = TestClient(ui.app, headers=HOST)
+    assert _post_lauf(c, pfad).status_code == 403
+    assert falsch.aufrufe == []
+
+
+@pytest.mark.parametrize("pfad,grund,text", [
+    ("lauf", "lauf_laeuft", "Es läuft schon ein Lauf."),
+    (f"lauf/{LAUF_ID}/abbrechen", "lauf_unbekannt", "Diesen Lauf gibt es nicht – Seite neu laden."),
+    (f"lauf/{LAUF_ID}/abbrechen", "lauf_nicht_offen", "Dieser Lauf ist schon beendet – Seite neu laden."),
+])
+def test_lauf_ablehnung_wird_als_hinweis_gezeigt(client, falsch, pfad, grund, text):
+    falsch.fehler_post = PultFehler("abgelehnt", grund, {"detail": grund})
+    r = _post_lauf(client, pfad)
+    assert r.status_code == 303 and r.headers["location"] == f"/freigaben?bw_hinweis={grund}#bewerbungen"
+    s = _abschnitt(client, r.headers["location"])
+    assert f'<div class="warnung">{text}</div>' in s
+    for erfolg in ("lauf_gestartet", "lauf_abgebrochen"):
+        assert ui_freigabe_bewerbung._HINWEISE[erfolg][1] not in s
+
+
+@pytest.mark.parametrize("pfad,_", LAUF_POSTS)
+def test_lauf_andere_ablehnung_ist_ein_allgemeiner_hinweis(client, falsch, pfad, _):
+    falsch.fehler_post = PultFehler("abgelehnt", "eingabe_ungueltig")
+    r = _post_lauf(client, pfad)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/freigaben?bw_hinweis=abgelehnt&bw_grund=eingabe_ungueltig#bewerbungen"
+    assert "nicht angenommen" in _abschnitt(client, r.headers["location"])
+
+
+@pytest.mark.parametrize("art", ["nicht_erreichbar", "unbekannt"])
+@pytest.mark.parametrize("pfad,_", LAUF_POSTS)
+def test_lauf_zeitueberschreitung_ist_unklar(client, falsch, pfad, _, art):             # Review Focus 4
+    falsch.fehler_post = PultFehler(art, "TimeoutError")
+    r = _post_lauf(client, pfad)
+    assert r.status_code == 504 and ui_freigabe_bewerbung.UNKLAR_TITEL in r.text
+    assert "location" not in r.headers and "Nichts wurde" not in r.text
+    for erfolg in ("lauf_gestartet", "lauf_abgebrochen"):
+        assert ui_freigabe_bewerbung._HINWEISE[erfolg][1] not in r.text
+
+
+@pytest.mark.parametrize("antwort", [{}, {"lauf": None}, {"lauf": "x"}, [], "ok"])
+@pytest.mark.parametrize("pfad,schluessel", LAUF_POSTS)
+def test_lauf_unklare_erfolgsantwort_ist_unklar(client, falsch, pfad, schluessel, antwort):
+    falsch.antwort[schluessel] = antwort
+    r = _post_lauf(client, pfad)
+    assert r.status_code == 504 and ui_freigabe_bewerbung.UNKLAR_TITEL in r.text
+
+
+@pytest.mark.parametrize("pfad,_", LAUF_POSTS)
+def test_lauf_nicht_verbunden_nach_post_503(client, falsch, pfad, _):
+    falsch.fehler_post = PultFehler("nicht_verbunden", "401")
+    r = _post_lauf(client, pfad)
+    assert r.status_code == 503 and "nicht verbunden" in r.text
+
+
+@pytest.mark.parametrize("pfad,_", LAUF_POSTS)
+def test_lauf_unklarer_ausgang_wird_protokolliert_ohne_schluessel(client, falsch, monkeypatch, caplog, pfad, _):
+    monkeypatch.setattr(bewerbung_pult, "KEY", SCHLUESSEL)
+    falsch.fehler_post = PultFehler("nicht_erreichbar", "TimeoutError", {"detail": "RUMPF-XYZ"})
+    with caplog.at_level(logging.WARNING, logger="sales-ui"):
+        assert _post_lauf(client, pfad).status_code == 504
+    zeilen = [m for m in _meldungen(caplog) if "Lauf" in m]
+    assert len(zeilen) == 1 and "nicht_erreichbar" in zeilen[0] and "TimeoutError" in zeilen[0]
+    assert SCHLUESSEL not in caplog.text and "RUMPF-XYZ" not in caplog.text
+
+
+# --- Faellt /laeufe/aktuell aus, bleiben die Karten ----------------------------------------
+
+
+@pytest.mark.parametrize("fehler,text", [
+    (PultFehler("nicht_erreichbar", "TimeoutError"), WEG_TEXT),
+    (PultFehler("unbekannt", "500"), WEG_TEXT),
+    (PultFehler("abgelehnt", "Not Found"), WEG_TEXT),       # eine Zentrale ohne die neue Route
+    (PultFehler("nicht_verbunden", "401"), NICHT_VERBUNDEN_TEXT),
+    (RuntimeError("kaputt"), WEG_TEXT),
+])
+def test_ausfall_von_laeufe_aktuell_laesst_die_karten_stehen(client, falsch, fehler, text):   # Review Focus 4
+    falsch.fehler_lauf = fehler
+    falsch.verlauf = [verlauf()]
+    s = _abschnitt(client)
+    assert text in _kopf(s)
+    assert "Muster GmbH – Data Engineer" in s and "Alt AG" in s
+    assert f'action="/freigaben/bewerbung/{BID}/freigeben"' in s                 # die Karte ist bedienbar
+    assert not any(t in s for t in HERMES_TEXTE.values())
+    assert _ohne_form(s, "lauf") and _ohne_form(s, "abbrechen") and "Neuer Lauf" not in s
+
+
+@pytest.mark.parametrize("antwort", [
+    "kaputt", [], {}, None,
+    {"lauf": None, "hermes": {"zustand": "bereit"}},                          # neuer_lauf_moeglich fehlt
+    {"lauf": None, "hermes": {"zustand": "bereit"}, "neuer_lauf_moeglich": "ja"},
+    {"lauf": "x", "hermes": {"zustand": "bereit"}, "neuer_lauf_moeglich": True},
+])
+def test_kaputte_antwort_von_laeufe_aktuell_zeigt_keinen_lauf_status(client, falsch, antwort):
+    falsch.uebersicht = antwort
+    s = _abschnitt(client)
+    assert WEG_TEXT in _kopf(s) and "Muster GmbH – Data Engineer" in s
+    assert not any(t in s for t in HERMES_TEXTE.values()) and "Neuer Lauf" not in s
+
+
+def test_kaputter_lauf_reisst_nur_den_kopf_nicht_den_abschnitt(client, falsch):
+    falsch.uebersicht = uebersicht(lauf(bewerbungen=[{"firma": "A", "rolle": "B", "score": 10 ** 400}]))
+    s = _abschnitt(client)                                                  # OverflowError beim Formatieren
+    assert WEG_TEXT in _kopf(s) and "Muster GmbH – Data Engineer" in s
+
+
+def test_ausfall_von_laeufe_aktuell_wird_protokolliert(client, falsch, monkeypatch, caplog):
+    monkeypatch.setattr(bewerbung_pult, "KEY", SCHLUESSEL)
+    falsch.fehler_lauf = PultFehler("nicht_erreichbar", "TimeoutError", {"detail": "RUMPF-XYZ"})
+    with caplog.at_level(logging.WARNING, logger="sales-ui"):
+        client.get("/freigaben")
+    assert any("nicht_erreichbar" in m and "TimeoutError" in m and "Lauf" in m for m in _meldungen(caplog))
+    assert SCHLUESSEL not in caplog.text and "RUMPF-XYZ" not in caplog.text
+    falsch.fehler_lauf = RuntimeError("kaputt")
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="sales-ui"):
+        assert client.get("/freigaben").status_code == 200
+    assert any(x.exc_info for x in caplog.records if x.name == "sales-ui")
+
+
+def test_ausfall_von_laeufe_aktuell_sperrt_den_abschnitt_nicht(client, falsch):
+    """Anders als die Liste (60 s Sperre im Zwischenspeicher) wird der Lauf-Status jedes Mal neu gelesen."""
+    falsch.fehler_lauf = PultFehler("nicht_erreichbar", "TimeoutError")
+    assert WEG_TEXT in _kopf(_abschnitt(client))
+    falsch.fehler_lauf = None
+    assert HERMES_TEXTE["bereit"] in _kopf(_abschnitt(client))
+    assert ui_freigabe_bewerbung._speicher.frisch_fehler() is None
+
+
+def test_lauf_wird_nach_der_liste_gelesen(client, falsch):
+    client.get("/freigaben")
+    gets = [p for m, p, _ in falsch.aufrufe if m == "GET"]
+    assert gets == [OFFEN, ENTSCHIEDEN, LAUF_AKTUELL]
+    assert ("GET", LAUF_AKTUELL, ui_freigabe_bewerbung.LESE_ZEITLIMIT_S) in falsch.zeitlimits
+
+
+# --- Pruefnotiz und offene Fragen auf der Karte ------------------------------------------------
+
+
+def test_karte_zeigt_pruefnotiz_und_offene_fragen(client, falsch):
+    falsch.karten = [karte(fassung=2, pruefnotiz=notiz(fragen=[
+        {"id": "f1", "frage": "Ab wann bist du verfügbar?", "antwort": None},
+        {"id": "f2", "frage": "Welches Gehalt erwartest du?", "antwort": "65.000 EUR"}]))]
+    k, = _karten(_abschnitt(client))
+    assert "<b>Prüfnotiz</b>" in k and "Der Brief passt zur Stelle, zwei Angaben sind nicht belegt." in k
+    for titel in ("Geprüft", "Geändert", "Quellen"):
+        assert f"<b>{titel}</b>" in k
+    for eintrag in ("Anschrift stimmt", "Datum heute", "Absatz 2 gekürzt", "https://firma.example/karriere"):
+        assert f"<li>{eintrag}</li>" in k
+    assert "<b>Offene Fragen</b>" in k
+    f = _form(k, "antworten")
+    assert f'method="post" action="/freigaben/bewerbung/{BID}/antworten"' in f
+    assert f'name="csrf" value="{ui.CSRF_TOKEN}"' in f and 'name="fassung" value="2"' in f
+    eingabe = _tag(f, "antwort_f1")
+    assert 'type="text"' in eingabe and 'maxlength="500"' in eingabe and "required" not in eingabe
+    assert "Ab wann bist du verfügbar?" in f
+    assert 'name="antwort_f2"' not in k and "Welches Gehalt erwartest du?" in k    # beantwortet: Text, kein Feld
+    assert "Deine Antwort: 65.000 EUR" in k
+    assert FRAGEN_HINWEIS in k
+    assert (k.index("<b>Prüfnotiz</b>") < k.index("<b>Offene Fragen</b>")
+            < k.index(f'action="/freigaben/bewerbung/{BID}/freigeben"'))
+
+
+def test_alle_fragen_beantwortet_kein_formular(client, falsch):
+    falsch.karten = [karte(pruefnotiz=notiz(fragen=[
+        {"id": "f1", "frage": "Ab wann?", "antwort": "Sofort"},
+        {"id": "f2", "frage": "Gehalt?", "antwort": "65.000 EUR"}]))]
+    k, = _karten(_abschnitt(client))
+    assert "Deine Antwort: Sofort" in k and "Deine Antwort: 65.000 EUR" in k
+    assert _ohne_form(k, "antworten") and 'name="antwort_' not in k
+    assert FRAGEN_HINWEIS in k
+
+
+def test_pruefnotiz_ohne_fragen_und_leere_listen(client, falsch):
+    falsch.karten = [karte(pruefnotiz=notiz(geprueft=[], geaendert=[], quellen=[], fragen=[]))]
+    k, = _karten(_abschnitt(client))
+    assert "<b>Prüfnotiz</b>" in k and "Der Brief passt zur Stelle" in k
+    for titel in ("Geprüft", "Geändert", "Quellen", "Offene Fragen"):
+        assert f"<b>{titel}</b>" not in k
+    assert _ohne_form(k, "antworten") and FRAGEN_HINWEIS not in k
+
+
+@pytest.mark.parametrize("wert", ["MISSING", None, "kaputt", [], {}, 7])
+def test_ohne_brauchbare_pruefnotiz_nichts_neues_auf_der_karte(client, falsch, wert):
+    falsch.karten = [karte() if wert == "MISSING" else karte(pruefnotiz=wert)]
+    k, = _karten(_abschnitt(client))
+    assert "Prüfnotiz" not in k and "Offene Fragen" not in k and _ohne_form(k, "antworten")
+    assert _form(k, "feedback") and _form(k, "freigeben")                         # der Rest der Karte bleibt
+
+
+def test_pruefnotiz_ueberspringt_kaputte_eintraege(client, falsch):
+    falsch.karten = [karte(pruefnotiz=notiz(
+        zusammenfassung=7, geprueft=["ok", 3, None, ""], geaendert="kaputt", quellen=None,
+        fragen=["kaputt", {"id": "f1"}, {"id": 5, "frage": "x"}, {"frage": "ohne Kennung"},
+                {"id": "f2", "frage": "Echte Frage?", "antwort": 7},
+                {"id": "f3", "frage": "Leer?", "antwort": ""}]))]
+    k, = _karten(_abschnitt(client))
+    assert "<li>ok</li>" in k
+    assert "Echte Frage?" in k and "Leer?" in k and "ohne Kennung" not in k
+    assert 'name="antwort_f2"' in k and 'name="antwort_f3"' in k                  # 7 und "" zaehlen als unbeantwortet
+    assert 'name="antwort_f1"' not in k
+
+
+def test_pruefnotiz_und_fragen_werden_maskiert(client, falsch):                    # Review Focus 5
+    falsch.karten = [karte(pruefnotiz=notiz(
+        zusammenfassung=BOESE, geprueft=[BOESE2], geaendert=[BOESE], quellen=["javascript:alert(1)", BOESE2],
+        fragen=[{"id": "f1", "frage": BOESE, "antwort": BOESE2},
+                {"id": 'f2"><script>k</script>', "frage": BOESE2, "antwort": None},
+                {"id": "f3", "frage": BOESE2, "antwort": None}]))]
+    seite = client.get("/freigaben").text
+    assert "<script" not in seite and '"><img' not in seite
+    assert "&lt;script&gt;x&lt;/script&gt;" in seite and "Deine Antwort: &quot;&gt;&lt;img onerror=1&gt;" in seite
+    assert '<a href="javascript:' not in seite                                    # Quellen sind Text, nie Links
+    assert 'name="antwort_f3"' in seite and "antwort_f2" not in seite             # Kennung nicht erlaubt: kein Feld
+
+
+def test_ohne_gueltige_fassung_keine_antwortfelder(client, falsch):
+    falsch.karten = [karte(fassung="x", pruefnotiz=notiz())]
+    k, = _karten(_abschnitt(client))
+    assert "Ab wann bist du verfügbar?" in k and _ohne_form(k, "antworten") and 'name="antwort_' not in k
+
+
+def test_antwortfelder_auch_waehrend_wartet_auf_durchsicht(client, falsch):
+    falsch.karten = [karte(wartet_auf_durchsicht=True, pruefnotiz=notiz())]
+    k, = _karten(_abschnitt(client))
+    assert _form(k, "antworten") and _ohne_form(k, "freigeben")
+
+
+# --- Antworten abschicken ----------------------------------------------------------------------
+
+
+def test_antworten_senden_nur_nicht_leere_felder(client, falsch):
+    r = _post(client, "antworten", fassung="2", antwort_f1="  ab sofort  ", antwort_f2="",
+              antwort_f3="   ", antwort_f4="40 h")
+    assert r.status_code == 303
+    assert r.headers["location"] == "/freigaben?bw_hinweis=antworten_erfasst#bewerbungen"
+    assert falsch.aktionen() == [("POST", f"/bewerbungen/{BID}/antworten", {
+        "fassung": 2, "von": "mira",
+        "antworten": [{"frage_id": "f1", "antwort": "ab sofort"}, {"frage_id": "f4", "antwort": "40 h"}]})]
+    assert falsch.im_loop == []
+    assert "Antworten erfasst" in _abschnitt(client, r.headers["location"])
+
+
+def test_antworten_aus_dem_gerenderten_formular(client, falsch):
+    """Ende zu Ende: die Felder der Seite abschicken, eines leer lassen."""
+    falsch.karten = [karte(fassung=3, pruefnotiz=notiz(fragen=[
+        {"id": "f1", "frage": "A?", "antwort": None}, {"id": "f2", "frage": "B?", "antwort": "schon da"},
+        {"id": "f3", "frage": "C?", "antwort": None}]))]
+    k, = _karten(_abschnitt(client))
+    f = _form(k, "antworten")
+    namen = re.findall(r'name="(antwort_[^"]*)"', f)
+    assert namen == ["antwort_f1", "antwort_f3"]
+    daten = {"fassung": _wert(f, "fassung"), namen[0]: "", namen[1]: "Dritte Antwort"}
+    r = _post(client, "antworten", **daten)
+    assert r.status_code == 303
+    assert falsch.aktionen()[-1][2] == {"fassung": 3, "von": "mira",
+                                        "antworten": [{"frage_id": "f3", "antwort": "Dritte Antwort"}]}
+
+
+def test_antworten_alle_leer_ist_ein_hinweis_ohne_aufruf(client, falsch):
+    for daten in ({}, {"antwort_f1": ""}, {"antwort_f1": "  ", "antwort_f2": "\r\n"}, {"quatsch": "x"}):
+        r = _post(client, "antworten", fassung="1", **daten)
+        assert r.status_code == 303 and r.headers["location"] == "/freigaben?bw_hinweis=keine_antwort#bewerbungen"
+    assert falsch.aktionen() == []
+    assert "Keine Antwort eingegeben" in _abschnitt(client, "/freigaben?bw_hinweis=keine_antwort")
+
+
+def test_antworten_grenzen_und_einzeilig(client, falsch):
+    r = _post(client, "antworten", fassung="1", antwort_f1="x" * 500)
+    assert r.status_code == 303 and r.headers["location"].endswith("antworten_erfasst#bewerbungen")
+    assert falsch.aktionen()[-1][2]["antworten"] == [{"frage_id": "f1", "antwort": "x" * 500}]
+    r = _post(client, "antworten", fassung="1", antwort_f1="  ok \r\n")        # Rand-Leerraum faellt weg
+    assert falsch.aktionen()[-1][2]["antworten"] == [{"frage_id": "f1", "antwort": "ok"}]
+    n = len(falsch.aktionen())
+    for zu_lang_oder_mehrzeilig in ("x" * 501, "zwei\nZeilen", "zwei\r\nZeilen", "zwei\rZeilen"):
+        r = _post(client, "antworten", fassung="1", antwort_f1="gut", antwort_f2=zu_lang_oder_mehrzeilig)
+        assert r.status_code == 303
+        assert r.headers["location"] == "/freigaben?bw_hinweis=antwort_ungueltig#bewerbungen"
+    assert len(falsch.aktionen()) == n                       # nichts davon geht an die Zentrale (alle oder keine)
+    assert "Antwort ungültig – höchstens 500 Zeichen." in _abschnitt(client, "/freigaben?bw_hinweis=antwort_ungueltig")
+
+
+@pytest.mark.parametrize("fassung", ["0", "x", "", "²", "1" * 12])
+def test_antworten_prueft_die_fassung(client, falsch, fassung):
+    r = _post(client, "antworten", fassung=fassung, antwort_f1="Ja")
+    assert r.status_code == 422 and falsch.aktionen() == []
+
+
+@pytest.mark.parametrize("feld", ['antwort_f1"x', "antwort_f 1", "antwort_" + "f" * 41, "antwort_ä", "antwort_f1/../x"])
+def test_antworten_prueft_die_fragekennung(client, falsch, feld):
+    r = _post(client, "antworten", fassung="1", **{feld: "Ja"})
+    assert r.status_code == 422 and falsch.aktionen() == []
+
+
+def test_antworten_hoechstens_fuenf_und_keine_doppelten(client, falsch):
+    sechs = {f"antwort_f{i}": "Ja" for i in range(1, 7)}
+    r = _post(client, "antworten", fassung="1", **sechs)
+    assert r.status_code == 422 and falsch.aktionen() == []
+    fuenf = {f"antwort_f{i}": "Ja" for i in range(1, 6)}
+    assert _post(client, "antworten", fassung="1", **fuenf).status_code == 303
+    assert len(falsch.aktionen()[-1][2]["antworten"]) == 5
+    n = len(falsch.aktionen())
+    doppelt = urllib.parse.urlencode([("csrf", ui.CSRF_TOKEN), ("fassung", "1"),
+                                      ("antwort_f1", "a"), ("antwort_f1", "b")])
+    r = client.post(f"/freigaben/bewerbung/{BID}/antworten", follow_redirects=False, content=doppelt,
+                    headers={"content-type": "application/x-www-form-urlencoded"})
+    assert r.status_code == 422 and len(falsch.aktionen()) == n
+
+
+@pytest.mark.parametrize("grund,text", [
+    ("fassung_veraltet", "Diese Fassung ist veraltet – Seite neu laden"),
+    ("antwort_ungueltig", "Antwort ungültig – höchstens 500 Zeichen."),
+    ("frage_unbekannt", "Diese Frage gibt es nicht mehr – Seite neu laden."),
+])
+def test_antworten_ablehnung_wird_als_hinweis_gezeigt(client, falsch, grund, text):
+    falsch.fehler_post = PultFehler("abgelehnt", grund, {"detail": grund})
+    r = _post(client, "antworten", fassung="1", antwort_f1="Ja")
+    assert r.status_code == 303 and r.headers["location"] == f"/freigaben?bw_hinweis={grund}#bewerbungen"
+    s = _abschnitt(client, r.headers["location"])
+    assert f'<div class="warnung">{text}</div>' in s
+    assert ui_freigabe_bewerbung._HINWEISE["antworten_erfasst"][1] not in s
+
+
+@pytest.mark.parametrize("grund", ["bewerbung_unbekannt", "eingabe_ungueltig", "Eingabe ungueltig", "409"])
+def test_antworten_andere_ablehnung_ist_ein_allgemeiner_hinweis(client, falsch, grund):
+    falsch.fehler_post = PultFehler("abgelehnt", grund)
+    r = _post(client, "antworten", fassung="1", antwort_f1="Ja")
+    assert r.status_code == 303 and r.headers["location"].startswith("/freigaben?bw_hinweis=abgelehnt")
+    assert "nicht angenommen" in _abschnitt(client, r.headers["location"])
+
+
+def test_antworttext_steht_in_keinem_protokoll(client, falsch, caplog):
+    falsch.fehler_post = PultFehler("nicht_erreichbar", "TimeoutError")
+    with caplog.at_level(logging.WARNING, logger="sales-ui"):
+        assert _post(client, "antworten", fassung="1", antwort_f1="ANTWORT-XYZ").status_code == 504
+    assert "ANTWORT-XYZ" not in caplog.text
+    assert any(BID in m and "Fassung 1" in m and "antworten" in m for m in _meldungen(caplog))
+
+
+# --- Rundgang 27.10.2026: Offenes auf /freigaben, Verlauf unter Monitoring ----------------------
+
+
+def test_lauf_kasten_steht_auf_freigaben_nicht_im_verlauf(client, falsch):
+    """/freigaben zeigt Hermes-Zeile, Lauf-Kasten samt Knoepfen und die Karten mit Pruefnotiz und
+    Antwortformular - aber nicht "Zuletzt entschieden". Monitoring -> Verlauf zeigt genau das und
+    sonst nichts aus dem Abschnitt: keine Hermes-Zeile, kein "Neuer Lauf", keine Formulare."""
+    falsch.uebersicht = uebersicht(lauf(), moeglich=False)
+    falsch.karten = [karte(versand=weg(), pruefnotiz=notiz())]
+    falsch.verlauf = [verlauf(firma="Alt AG")]
+
+    offen = client.get("/freigaben").text
+    assert HERMES_TEXTE["bereit"] in offen
+    assert "Lauf vom" in offen and ">Lauf abbrechen</button>" in offen
+    assert "Prüfnotiz" in offen and 'name="antwort_f1"' in offen
+    assert "Zuletzt entschieden" not in offen and "Alt AG" not in offen
+
+    falsch.uebersicht = uebersicht(None, moeglich=True)
+    assert ">Neuer Lauf</button>" in client.get("/freigaben").text
+
+    for ansicht in (uebersicht(None, moeglich=True), uebersicht(lauf(), moeglich=False)):
+        falsch.uebersicht = ansicht
+        r = client.get("/monitoring/verlauf")
+        assert r.status_code == 200
+        v = r.text
+        assert "Zuletzt entschieden" in v and "Alt AG" in v
+        assert "Neuer Lauf" not in v and "Lauf abbrechen" not in v and "Lauf vom" not in v
+        assert not any(t in v for t in HERMES_TEXTE.values())
+        assert "Prüfnotiz" not in v and 'name="antwort_f1"' not in v
+        assert 'action="/freigaben/bewerbung/' not in v
