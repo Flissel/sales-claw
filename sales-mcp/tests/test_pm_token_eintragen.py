@@ -108,4 +108,8 @@ def test_kein_set_x_und_kein_echo_des_tokens():
     assert "set -x" not in code
     assert "read -r -s" in code
     assert 'echo "$token' not in code and "echo $token" not in code
-    assert "pm-claw/.env" not in code      # der Token wird NICHT aus pm-claw gelesen
+    # Der Token wird NICHT aus pm-claw gelesen: der Pfad steht nur im Hinweis
+    # der Eingabeaufforderung, nie in einem Zugriff.
+    for zeile in code.splitlines():
+        if "pm-claw/" in zeile:
+            assert "read -r -s -p" in zeile, zeile
