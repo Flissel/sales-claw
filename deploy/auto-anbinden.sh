@@ -86,12 +86,24 @@ chmod 600 "$NEU"; mv -f "$NEU" "$ENV_DATEI"; trap - EXIT
 echo "   eingetragen (Sicherung: $(basename "$SICHERUNG"))"
 
 # 5) Probe aus dem Gateway selbst: listet /v1/models den Agenten auto?
-echo "3) Probe"
+# Gemessen 30.10.2026 am echten sales-claw: das Gateway laedt die Aenderung
+# erst ~1-4 s nach `config set` neu (Endpunkt an = interner Neustart des
+# Gateways). Die Probe fragt deshalb bis zu 30 s lang jede Sekunde.
+echo "3) Probe (bis 30 s)"
 ERGEBNIS="$(docker exec -e T="$TOKEN" "$CONTAINER" node -e '
-  fetch("http://127.0.0.1:18894/v1/models", { headers: { Authorization: "Bearer " + process.env.T } })
-    .then(async (r) => { if (r.status !== 200) { console.log("HTTP " + r.status); return; }
-      const d = await r.json(); console.log((d.data || []).map((m) => m.id).join(" ")); })
-    .catch((e) => console.log("FEHLER " + e.message));' 2>&1 | sed "s#${TOKEN}#<token>#g")"
+  const frage = () => fetch("http://127.0.0.1:18894/v1/models", { headers: { Authorization: "Bearer " + process.env.T } })
+    .then(async (r) => { if (r.status !== 200) return "HTTP " + r.status;
+      const d = await r.json(); return (d.data || []).map((m) => m.id).join(" "); })
+    .catch((e) => "FEHLER " + e.message);
+  (async () => {
+    let zuletzt = "";
+    for (let i = 0; i < 30; i++) {
+      zuletzt = await frage();
+      if (zuletzt.split(" ").includes("openclaw/auto")) break;
+      await new Promise((ok) => setTimeout(ok, 1000));
+    }
+    console.log(zuletzt);
+  })();' 2>&1 | sed "s#${TOKEN}#<token>#g")"
 unset TOKEN
 if printf '%s' "$ERGEBNIS" | grep -w "openclaw/auto" >/dev/null; then
   echo "   ok: $ERGEBNIS"

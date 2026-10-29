@@ -22,7 +22,7 @@ höchstens ein Versuch je Kundennachricht (Anspruch und Entwurf in einer Transak
 | Antwortet das Modell nur mit Text? | 1 Modellaufruf, dann HTTP 502 „tool_choice required a antwort_abgeben tool call, but the agent did not produce one“. |
 | Argumente passen nicht zum Schema? | Das Gateway fragt das Modell **bis zum Kontextüberlauf** neu an (283 Aufrufe in 10 s), dann dasselbe 502. Die Schleifenbremse `tools.loopDetection` greift dabei nicht; eine Zeitgrenze je Agent (`timeoutSeconds`) lehnt die Version ab. |
 | Sitzungsdatei | `<state>/agents/auto/sessions/<id>.jsonl`, `sessionKey` mit Lead-ID, `usage` je Assistenten-Nachricht (`input`, `output`, `cacheRead`, `cacheWrite`). |
-| Neustart nötig? | Nein: `openclaw config set` für Endpunkt und `agents.list` wirkt sofort. |
+| Neustart nötig? | Nein: `openclaw config set` für Endpunkt und `agents.list` wirkt ohne Container-Neustart, aber erst nach dem Neuladen (am echten sales-claw 30.10. gemessen: ~1-4 s, der Endpunkt startet das Gateway intern neu). |
 | Systemprompt | ~21.500 Zeichen OpenClaw-Rahmen je Lauf zusätzlich zu unseren Regeln (bei `main` mit 100.000 Zeichen AGENTS.md über 245.000 Tokens aus dem Zwischenspeicher je Lauf). |
 | Ende zu Ende | `deploy/auto-anbinden.sh` gegen ein frisches Gateway, dann `auto.antwort_erzeugen` über HTTP: 1 Modellaufruf, Ergebnis übernommen. |
 
