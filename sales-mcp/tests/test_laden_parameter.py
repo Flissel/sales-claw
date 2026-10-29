@@ -351,6 +351,23 @@ def test_oberflaeche_kennt_den_absender_aber_keinen_sendezugang():
 
 
 @ohne_docker
+def test_eingangsschluessel_nur_im_werkzeugdienst():
+    """Bewerbungs-Eingang (29.10.2026): der Timer startet bewerbungs_eingang.py
+    per `docker exec` in sales-mcp - nur dort liegt BEWERBUNG_EINGANG_KEY.
+    Kaeme er in den Anker, erbten ihn Versender, Inbox und Agent-Automatik;
+    ein zweiter Laden bekommt ihn nie aus der Basis-.env."""
+    cfg = _aufgeloest("docker-compose.yml", {
+        "BEWERBUNG_EINGANG_KEY": "eingang-testwert",
+        "BEWERBUNG_PULT_URL": "https://zentrale.test"})
+    mcp = cfg["services"]["sales-mcp"]["environment"]
+    assert mcp.get("BEWERBUNG_EINGANG_KEY") == "eingang-testwert"
+    assert mcp.get("BEWERBUNG_PULT_URL") == "https://zentrale.test"
+    for dienst, werte in cfg["services"].items():
+        if dienst != "sales-mcp":
+            assert "BEWERBUNG_EINGANG_KEY" not in (werte.get("environment") or {}), dienst
+
+
+@ohne_docker
 @pytest.mark.parametrize("umgebung", [None, {"LADEN_PRAEFIX": "ivan",
                                              "LADEN_PROJEKT": "ivan-claw"}])
 def test_werkzeugdienst_sieht_nur_den_chat_eingang_des_agenten(umgebung):

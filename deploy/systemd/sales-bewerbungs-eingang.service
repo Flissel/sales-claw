@@ -1,0 +1,9 @@
+[Unit]
+Description=sales-claw: Bewerbungsantworten aus den Postfaechern an die Zentrale melden
+
+[Service]
+Type=oneshot
+User=debian
+ExecStart=/usr/bin/bash /home/debian/sales-claw/deploy/bewerbungs-eingang.sh
+# Das Skript selbst begrenzt den Lauf auf 900 s; das hier faengt den Rest.
+TimeoutStartSec=960
