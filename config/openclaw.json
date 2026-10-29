@@ -111,9 +111,19 @@
         "toolFilter": {
           "include": ["rowboat_wissensquellen", "rowboat_wissensquelle", "rowboat_dokumente"]
         }
+      },
+      "pm": {
+        "url": "http://pm-mcp:8765/mcp",
+        "transport": "streamable-http",
+        "connectionTimeoutMs": 30000,
+        "requestTimeoutMs": 60000,
+        "toolFilter": {
+          "include": ["aufnahme_anstossen", "aufnahme_status"]
+        }
       }
     }
   },
+  "_kommentar_pm": "29.10.2026: mcp.servers.pm = Tuerklingel zu pm-claw (Projektaufnahme anstossen, pm-claw Stufe 2 §8). pm-mcp laeuft im Compose-Projekt pm-claw; erreichbar nur, weil der Dienst sales-claw dem Netz pm-claw_default beitritt (docker-compose.yml). Der Bearer-Token der Rolle sales steht NICHT hier (keine Env-Referenz fuer headers, wie bei rowboat): deploy/pm-anbinden.sh setzt ihn aus PM_TOKEN_SALES der .env ins Laufzeit-Volume. toolFilter = zweiter Riegel neben dem Rollentor in pm-mcp: nur aufnahme_anstossen und aufnahme_status.",
   "_kommentar_rowboat": "01.09.2026: mcp.servers.rowboat = Lesezugriff auf die VibeMind-Wissensbasis (Rowboat, MCP-Endpunkt POST /api/mcp; Code in vibemind-os, Branch claude/rowboat-mcp-endpoint-v1). Rowboat laeuft auf derselben VM in einem anderen Compose-Projekt, darum die LAN-IP statt eines Dienstnamens. Der Bearer-Schluessel steht NICHT hier: openclaw kennt fuer mcp.servers.*.headers keine Env-Referenz (Schema geprueft - nur Klartext), er wird per deploy/rowboat-anbinden.sh aus der .env ins Laufzeit-Volume gesetzt. Ohne diesen Schritt antwortet Rowboat -32001 und smoke.sh Pruefung 4 wird rot - absichtlich laut, keine stille Luecke. toolFilter: nur die drei Werkzeuge mit Live-Beweis; rowboat_datei_url kommt dazu, sobald es ein Datei-Dokument gibt. Kommentar-Schluessel stehen bewusst NICHT in mcp.servers - dort waere jeder Schluessel ein Servername.",
   "_kommentar_websuche": "14.10.2026 (Betreiber-Auftrag 'Websuche freistellen'): web_search an mit Anbieter parallel-free (kostenlos, ohne Schluessel; DuckDuckGo blockt die VM mit Captcha). Braucht das Plugin @openclaw/parallel-plugin@2026.7.1 im Volume (openclaw plugins install ...) und 'parallel' in plugins.allow. web_fetch bleibt AUS: mit Abrufen koennte eine praeparierte Kunden-Mail den Agenten Daten an eine fremde Adresse schicken lassen.",
   "tools": {
