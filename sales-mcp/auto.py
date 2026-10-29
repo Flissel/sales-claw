@@ -7,9 +7,31 @@ Luecke ueber die Wege, die es schon gibt — er oeffnet KEINEN neuen
 Versandweg:
 
     OpenWA-Webhook -> sales-inbox -> activities('kundenantwort')
-        -> sales-auto: Antwort erzeugen (Anthropic Messages API)
+        -> sales-auto: Antwort erzeugen (OpenClaw-Gateway, Agent `auto`)
         -> drafts(status='approved', approved_by='auto-betrieb')
         -> sales-dispatch stellt zu (wie jeden anderen freigegebenen Entwurf)
+
+DER MODELLWEG (seit 29.10.2026): nicht mehr direkt an die Anthropic-API,
+sondern synchron ueber das OpenClaw-Gateway des eigenen Ladens
+(`POST /v1/chat/completions`, OpenClaw 2026.7.1). Grund: ein Modell- und
+Schluesselort (config/openclaw.json) und ein Protokoll - pm-claw zaehlt
+Tokens aus den Sitzungsdateien. Gemessen in einem Wegwerf-Gateway:
+- Der Lauf geht an den eigenen Agenten `auto` (tools.deny ["*"]: KEIN
+  Werkzeug, auch kein exec/message) nur, wenn der Sitzungsschluessel mit
+  `agent:auto:` beginnt; ohne Praefix landet er bei `main` mit allen
+  Werkzeugen. Ein unbekannter Agentenname legt still einen neuen Agenten MIT
+  allen Werkzeugen an - deshalb ist AUTO_AGENT eine Konstante, und vor jedem
+  Lauf muss `openclaw/auto` in GET /v1/models stehen, sonst wird nichts
+  gesendet.
+- Die Lead-ID steht im Sitzungsschluessel
+  (`agent:auto:sales-auto:lead:<uuid>:nachricht:<ms>`), `usage` je
+  Assistenten-Nachricht in agents/auto/sessions/*.jsonl.
+- Strukturierte Antwort: statt output_config.format eine Funktion
+  `antwort_abgeben` mit festem tool_choice - das Gateway gibt den Aufruf an
+  uns zurueck, ausgefuehrt wird er hier (Entwurf), nicht im Agenten.
+- Der Gateway-Token ist laut OpenClaw-Doku Operator-Zugriff auf das Gateway
+  (Betreiber-Entscheidung 29.10.2026: in Kauf genommen). Er steht nur in der
+  Umgebung DIESES Dienstes (deploy/auto-anbinden.sh).
 
 Versendet wird also weiterhin ausschliesslich vom Dispatcher, der die
 Kontakt-Freigabe ohnehin erneut prueft. Neu ist allein, WER freigibt: fuer
@@ -71,11 +93,16 @@ import server
 from nummern import normalisiere_empfaenger
 
 # --- Konfiguration (Modulkonstanten, damit Tests sie umbiegen koennen) ------
-ANTHROPIC_URL = os.environ.get("ANTHROPIC_URL", "https://api.anthropic.com")
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-# Dasselbe Primaermodell wie OpenClaw (config/openclaw.json) — bewusst kein
-# eigener Geschmack je Dienst.
-AUTO_MODELL = os.environ.get("AUTO_MODELL", "claude-sonnet-5")
+# Das Gateway DES EIGENEN Ladens (Compose setzt <praefix>-claw) - nie das eines
+# anderen; das Modell kommt aus dessen config/openclaw.json.
+OPENCLAW_URL = os.environ.get("OPENCLAW_URL", "http://sales-claw:18894")
+OPENCLAW_GATEWAY_TOKEN = os.environ.get("OPENCLAW_GATEWAY_TOKEN", "").strip()
+# FEST, nie aus der Umgebung: ein Tippfehler im Agentennamen legt im Gateway
+# still einen Agenten mit ALLEN Werkzeugen an (gemessen 29.10.2026).
+AUTO_AGENT = "auto"
+AUTO_FUNKTION = "antwort_abgeben"
+# Woertlich aus OpenClaw 2026.7.1 (HTTP 502), siehe _http.
+KEIN_FUNKTIONSAUFRUF = "but the agent did not produce one"
 HTTP_TIMEOUT_S = float(os.environ.get("AUTO_TIMEOUT_S", "90"))
 AUTO_INTERVAL_S = float(os.environ.get("AUTO_INTERVAL_S", "20"))
 AUTO_ONCE = os.environ.get("AUTO_ONCE", "").strip().lower() in (
@@ -126,8 +153,8 @@ Wuenscht der Kunde keine Nachrichten mehr (auch sinngemaess): stopp_wunsch \
 auf true, und deine antwort ist NUR eine kurze, freundliche Bestaetigung des \
 Wunsches — kein Rueckgewinnungsversuch, keine Nachfrage nach dem Grund.
 
-Antworte ausschliesslich mit dem geforderten JSON. `antwort` ist die fertige \
-Nachricht an den Kunden, so wie sie ankommt."""
+Antworte ausschliesslich ueber die Funktion antwort_abgeben. `antwort` ist die \
+fertige Nachricht an den Kunden, so wie sie ankommt."""
 
 ANTWORT_SCHEMA = {
     "type": "json_schema",
@@ -147,6 +174,12 @@ ANTWORT_SCHEMA = {
         "additionalProperties": False,
     },
 }
+# Dasselbe Schema als Funktion fuer /v1/chat/completions: das Gateway kennt
+# kein response_format, aber ein festes tool_choice (gemessen 29.10.2026).
+ANTWORT_FUNKTION = {"type": "function", "function": {
+    "name": AUTO_FUNKTION,
+    "description": "Die eine WhatsApp-Antwort an den Kunden abgeben, samt Signalen fuer den Betreiber.",
+    "parameters": ANTWORT_SCHEMA["schema"]}}
 
 
 class AutoFehler(Exception):
@@ -238,24 +271,25 @@ def _profilblock(lead_id, name) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Modellaufruf — Anthropic Messages API, roh (urllib wie ueberall im Haus)
+# Modellaufruf — OpenClaw-Gateway des Ladens, roh (urllib wie ueberall im Haus)
 # ---------------------------------------------------------------------------
 
-def _api_aufruf(nutzlast: dict) -> dict:
-    """POST /v1/messages. Wirft AutoTransient/AutoFehler, nie rohe Exceptions.
+def _http(methode: str, pfad: str, nutzlast=None, kopf=None) -> dict:
+    """Eine Anfrage ans Gateway. Wirft AutoTransient/AutoFehler, nie rohe
+    Exceptions; der Token steht in keiner Meldung.
 
     Fehlerordnung nach Statuscode: 408/429/5xx und Netzfehler sind
     voruebergehend (es wurde nichts gesendet, die naechste Runde darf es
-    erneut versuchen); alles andere (400, 401, 403, 404) ist ein
-    Konfigurations- oder Anfragefehler und wiederholt sich identisch —
-    also endgueltig."""
+    erneut versuchen); alles andere (400, 401, 403, 404) wiederholt sich
+    identisch - also endgueltig. 401/403 faengt aber schon _agent_bereit ab
+    (dort voruebergehend: ein Konfigurationsfehler des Dienstes ist kein
+    Fehler DIESER Kundennachricht)."""
     try:
         anfrage = urllib.request.Request(
-            f"{ANTHROPIC_URL.rstrip('/')}/v1/messages", method="POST",
-            data=json.dumps(nutzlast).encode("utf-8"),
+            f"{OPENCLAW_URL.rstrip('/')}{pfad}", method=methode,
+            data=json.dumps(nutzlast).encode("utf-8") if nutzlast is not None else None,
             headers={"Content-Type": "application/json",
-                     "x-api-key": ANTHROPIC_API_KEY,
-                     "anthropic-version": "2023-06-01"})
+                     "Authorization": f"Bearer {OPENCLAW_GATEWAY_TOKEN}", **(kopf or {})})
         with urllib.request.urlopen(anfrage, timeout=HTTP_TIMEOUT_S) as antwort:
             return json.loads(antwort.read().decode("utf-8"))
     except urllib.error.HTTPError as e:      # muss vor URLError stehen
@@ -263,22 +297,64 @@ def _api_aufruf(nutzlast: dict) -> dict:
             detail = e.read().decode("utf-8", "replace")
         except Exception:                    # noqa: BLE001 — Detail ist Beiwerk
             detail = ""
+        if OPENCLAW_GATEWAY_TOKEN:
+            # Spiegelt das Gateway die Anfrage, stuende der Token sonst in
+            # auto_antwort.fehler (DB) und im Log.
+            detail = detail.replace(OPENCLAW_GATEWAY_TOKEN, "<token>")
         detail = " ".join(detail.split())[:FEHLER_MAXLAENGE]
+        if KEIN_FUNKTIONSAUFRUF in detail:
+            # 502, aber deterministisch fuer DIESE Nachricht: das Modell lieferte
+            # keinen gueltigen Aufruf von antwort_abgeben. Passten die Argumente
+            # nicht zum Schema, fragte das Gateway davor bis zum Kontextueberlauf
+            # neu an (gemessen 283 Aufrufe) - nie wiederholen, Mensch uebernimmt.
+            raise AutoFehler(f"Gateway HTTP {e.code}: {detail}") from None
         if e.code in (408, 429) or e.code >= 500:
-            raise AutoTransient(f"Anthropic HTTP {e.code}: {detail}") from None
-        raise AutoFehler(f"Anthropic HTTP {e.code}: {detail}") from None
+            raise AutoTransient(f"Gateway HTTP {e.code}: {detail}") from None
+        raise AutoFehler(f"Gateway HTTP {e.code}: {detail}") from None
     except socket.timeout:
         raise AutoTransient(
-            f"Anthropic Zeitueberschreitung nach {HTTP_TIMEOUT_S:g} s") from None
+            f"Gateway Zeitueberschreitung nach {HTTP_TIMEOUT_S:g} s") from None
     except urllib.error.URLError as e:
         if isinstance(e.reason, socket.timeout):
             raise AutoTransient(
-                f"Anthropic Zeitueberschreitung nach {HTTP_TIMEOUT_S:g} s") from None
+                f"Gateway Zeitueberschreitung nach {HTTP_TIMEOUT_S:g} s") from None
         raise AutoTransient(
-            f"Anthropic nicht erreichbar: {str(e.reason)[:FEHLER_MAXLAENGE]}") from None
+            f"Gateway nicht erreichbar: {str(e.reason)[:FEHLER_MAXLAENGE]}") from None
     except Exception as e:                   # noqa: BLE001 — nie als Traceback sterben
         raise AutoFehler(
             f"Anfragefehler {type(e).__name__}: {str(e)[:FEHLER_MAXLAENGE]}") from None
+
+
+def _agent_bereit() -> None:
+    """Fail-closed vor jedem Lauf: `openclaw/auto` muss in GET /v1/models
+    stehen (dort erscheinen nur eingetragene Agenten, nie still angelegte).
+    Sonst AutoTransient - nichts gesendet, nichts verbucht."""
+    try:
+        daten = _http("GET", "/v1/models")
+    except AutoFehler as e:
+        raise AutoTransient(f"Gateway verweigert die Pruefung ({e}) - Token/Endpunkt pruefen, "
+                            f"deploy/auto-anbinden.sh") from None
+    ids = [m.get("id") for m in daten.get("data") or [] if isinstance(m, dict)]
+    if f"openclaw/{AUTO_AGENT}" not in ids:
+        raise AutoTransient(f"Agent '{AUTO_AGENT}' fehlt im Gateway (deploy/auto-anbinden.sh) "
+                            f"- ohne ihn liefe der Lauf mit Werkzeugen, also nichts gesendet.")
+
+
+def _sitzungsschluessel(kandidat) -> str:
+    """`agent:auto:` zuerst - sonst laeuft es bei `main` (gemessen). Die
+    Lead-ID darin ordnet pm-claw die Tokens zu; die Millisekunde der
+    Kundennachricht macht je Antwort eine eigene Sitzung (der Verlauf kommt
+    ohnehin mit der Anfrage)."""
+    ms = int(kandidat["created_at"].timestamp() * 1000)
+    return f"agent:{AUTO_AGENT}:sales-auto:lead:{kandidat['lead_id']}:nachricht:{ms}"
+
+
+def _api_aufruf(nutzlast: dict, sitzungsschluessel: str) -> dict:
+    """POST /v1/chat/completions an den Agenten `auto`. Naht fuer die Tests."""
+    _agent_bereit()
+    return _http("POST", "/v1/chat/completions", nutzlast,
+                 {"x-openclaw-session-key": sitzungsschluessel,
+                  "x-openclaw-agent-id": AUTO_AGENT})
 
 
 def antwort_erzeugen(kandidat) -> dict:
@@ -291,26 +367,25 @@ def antwort_erzeugen(kandidat) -> dict:
         f"Der Kunde wartet auf eine Antwort auf seine letzte(n) "
         f"Nachricht(en). Verfasse jetzt die eine WhatsApp-Antwort.")
     daten = _api_aufruf({
-        "model": AUTO_MODELL,
-        "max_tokens": 1500,
-        "system": SYSTEM_PROMPT,
-        "messages": [{"role": "user", "content": auftrag}],
-        "output_config": {"format": ANTWORT_SCHEMA},
-    })
-    stop = daten.get("stop_reason")
-    if stop == "refusal":
-        raise AutoFehler("Modell hat die Anfrage abgelehnt (stop_reason refusal) "
-                         "— dieser Eingang gehoert einem Menschen.")
-    if stop != "end_turn":
-        raise AutoFehler(f"Unerwarteter stop_reason '{stop}' — nicht gesendet.")
+        "model": f"openclaw/{AUTO_AGENT}",
+        "max_completion_tokens": 1500,
+        "messages": [{"role": "system", "content": SYSTEM_PROMPT},
+                     {"role": "user", "content": auftrag}],
+        "tools": [ANTWORT_FUNKTION],
+        "tool_choice": {"type": "function", "function": {"name": AUTO_FUNKTION}},
+    }, _sitzungsschluessel(kandidat))
+    wahl = (daten.get("choices") or [{}])[0] or {}
+    if wahl.get("finish_reason") != "tool_calls":
+        raise AutoFehler(f"Gateway-Antwort ohne Funktionsaufruf (finish_reason "
+                         f"'{wahl.get('finish_reason')}') — dieser Eingang gehoert einem Menschen.")
     try:
-        text = next(b["text"] for b in daten.get("content", [])
-                    if b.get("type") == "text")
-        ergebnis = json.loads(text)
+        aufruf = next(t for t in (wahl.get("message") or {}).get("tool_calls") or []
+                      if (t.get("function") or {}).get("name") == AUTO_FUNKTION)
+        ergebnis = json.loads(aufruf["function"]["arguments"])
         antwort = str(ergebnis["antwort"]).strip()
     except (StopIteration, KeyError, ValueError, TypeError):
-        raise AutoFehler("Modellantwort ohne verwertbares JSON — nicht "
-                         "gesendet.") from None
+        raise AutoFehler("Modellantwort ohne verwertbaren Aufruf von "
+                         f"{AUTO_FUNKTION} — nicht gesendet.") from None
     if not antwort:
         raise AutoFehler("Modellantwort mit leerem Text — nicht gesendet.")
     if len(antwort) > ANTWORT_MAXLAENGE:
@@ -450,9 +525,9 @@ def _logging_einrichten() -> None:
 
 def main() -> int:
     _logging_einrichten()
-    if not ANTHROPIC_API_KEY:
-        LOG.error("ANTHROPIC_API_KEY fehlt in der Umgebung — es wird nichts "
-                  "beantwortet.")
+    if not OPENCLAW_GATEWAY_TOKEN:
+        LOG.error("OPENCLAW_GATEWAY_TOKEN fehlt in der Umgebung "
+                  "(deploy/auto-anbinden.sh) — es wird nichts beantwortet.")
         return 2
 
     _STOPP.clear()
@@ -461,8 +536,8 @@ def main() -> int:
             signal.signal(sig, _stoppen)
         except ValueError:
             pass    # nicht im Hauptthread (Tests) — dann eben ohne Handler
-    LOG.info("Start: schema=%s modell=%s intervall=%gs sammelfenster=%ds "
-             "once=%s", server.SCHEMA, AUTO_MODELL, AUTO_INTERVAL_S,
+    LOG.info("Start: schema=%s gateway=%s agent=%s intervall=%gs sammelfenster=%ds "
+             "once=%s", server.SCHEMA, OPENCLAW_URL, AUTO_AGENT, AUTO_INTERVAL_S,
              SAMMELFENSTER_S, AUTO_ONCE)
 
     while not _STOPP.is_set():

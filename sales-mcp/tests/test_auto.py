@@ -1,7 +1,8 @@
 """Vertragstests der Auto-Antwort-Bruecke (sales-auto) gegen sales_test.
 
 Der Modellaufruf ist gestubbt (auto._api_aufruf) — es geht in diesen Tests
-zu keinem Zeitpunkt eine Anfrage an die Anthropic-API raus, und versendet
+zu keinem Zeitpunkt eine Anfrage an ein Gateway oder Modell raus (den
+HTTP-Weg selbst prueft test_auto_gateway.py gegen eine Attrappe), und versendet
 wird ohnehin nie (auto.py schreibt nur drafts/activities; die Zustellung
 gehoert sales-dispatch und dessen Tests).
 
@@ -63,17 +64,28 @@ def _kundenantwort(lead_id, text="Was kostet bei Ihnen eine Absicherung?",
          vor_sekunden))[0]["id"]
 
 
+def _gateway_antwort(ergebnis, name="antwort_abgeben", finish="tool_calls"):
+    """Wie /v1/chat/completions des Gateways antwortet (gemessen 29.10.2026)."""
+    return {"object": "chat.completion", "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            "choices": [{"index": 0, "finish_reason": finish, "message": {
+                "role": "assistant", "content": "",
+                "tool_calls": [{"id": "c1", "type": "function", "function": {
+                    "name": name, "arguments": json.dumps(ergebnis)}}]}}]}
+
+
+def _ergebnis(antwort="Gern!", beraterin=False, stopp=False, begruendung=""):
+    return {"antwort": antwort, "beraterin_noetig": beraterin, "stopp_wunsch": stopp,
+            "begruendung": begruendung}
+
+
 def _modell_ok(monkeypatch, antwort="Gern! Passt Ihnen Donnerstag 14 Uhr?",
                beraterin=False, stopp=False, begruendung=""):
-    """Stub: eine wohlgeformte Messages-API-Antwort mit dem JSON-Ergebnis."""
+    """Stub: eine wohlgeformte Gateway-Antwort mit dem Funktionsaufruf."""
     aufrufe = []
 
-    def _stub(nutzlast):
-        aufrufe.append(nutzlast)
-        return {"stop_reason": "end_turn", "content": [
-            {"type": "text", "text": json.dumps({
-                "antwort": antwort, "beraterin_noetig": beraterin,
-                "stopp_wunsch": stopp, "begruendung": begruendung})}]}
+    def _stub(nutzlast, sitzungsschluessel):
+        aufrufe.append((nutzlast, sitzungsschluessel))
+        return _gateway_antwort(_ergebnis(antwort, beraterin, stopp, begruendung))
     monkeypatch.setattr(auto, "_api_aufruf", _stub)
     return aufrufe
 
@@ -184,12 +196,27 @@ def test_verlauf_und_profil_landen_im_modellauftrag(monkeypatch):
     _kundenantwort(lead, text="Wie sichere ich meinen Betrieb ab?",
                    vor_sekunden=0)
     auto.eine_runde()
-    auftrag = aufrufe[0]["messages"][0]["content"]
+    nutzlast, schluessel = aufrufe[0]
+    assert nutzlast["messages"][0] == {"role": "system", "content": auto.SYSTEM_PROMPT}
+    auftrag = nutzlast["messages"][1]["content"]
     assert "Baeckermeisterin" in auftrag
     assert "Kunde: Wie sichere ich meinen Betrieb ab?" in auftrag
     assert "Wir: Guten Tag, Frau Beispiel!" in auftrag
-    assert aufrufe[0]["model"] == auto.AUTO_MODELL
-    assert aufrufe[0]["output_config"]["format"]["type"] == "json_schema"
+    # Agent `auto` (ohne Werkzeuge), Antwort ueber die feste Funktion.
+    assert nutzlast["model"] == "openclaw/auto"
+    assert [t["function"]["name"] for t in nutzlast["tools"]] == ["antwort_abgeben"]
+    assert nutzlast["tool_choice"] == {"type": "function", "function": {"name": "antwort_abgeben"}}
+    assert nutzlast["tools"][0]["function"]["parameters"] == auto.ANTWORT_SCHEMA["schema"]
+    # agent:auto: zuerst (sonst laeuft es bei main), Lead-ID fuer pm-claw.
+    assert schluessel.startswith(f"agent:auto:sales-auto:lead:{lead}:nachricht:")
+
+
+def test_agentenname_ist_fest():
+    """Ein Tippfehler im Namen legte im Gateway still einen Agenten MIT allen
+    Werkzeugen an (gemessen) - deshalb keine Umgebungsvariable dafuer."""
+    assert auto.AUTO_AGENT == "auto"
+    quelle = open(auto.__file__, encoding="utf-8").read()
+    assert 'AUTO_AGENT = "auto"' in quelle and "AUTO_AGENT = os.environ" not in quelle
 
 
 def test_auto_kontext_bekommt_nur_fremde_vertraege_ohne_betrag_und_notiz():
@@ -242,9 +269,9 @@ def test_beraterin_noetig_erzeugt_offenen_punkt(monkeypatch):
 def test_endgueltiger_fehler_wird_verbucht_und_nie_wiederholt(monkeypatch):
     aufrufe = []
 
-    def _kaputt(nutzlast):
+    def _kaputt(nutzlast, sitzungsschluessel):
         aufrufe.append(nutzlast)
-        raise auto.AutoFehler("Anthropic HTTP 400: kaputtes Schema")
+        raise auto.AutoFehler("Gateway HTTP 400: kaputtes Schema")
     monkeypatch.setattr(auto, "_api_aufruf", _kaputt)
     lead = _lead()
     _kundenantwort(lead)
@@ -261,14 +288,11 @@ def test_transienter_fehler_laesst_keinen_anspruch_zurueck(monkeypatch):
     darf es erneut versuchen, und dann klappt es."""
     versuche = []
 
-    def _erst_kaputt_dann_ok(nutzlast):
+    def _erst_kaputt_dann_ok(nutzlast, sitzungsschluessel):
         versuche.append(1)
         if len(versuche) == 1:
-            raise auto.AutoTransient("Anthropic HTTP 529: ueberlastet")
-        return {"stop_reason": "end_turn", "content": [
-            {"type": "text", "text": json.dumps({
-                "antwort": "Gern!", "beraterin_noetig": False,
-                "stopp_wunsch": False, "begruendung": ""})}]}
+            raise auto.AutoTransient("Gateway HTTP 529: ueberlastet")
+        return _gateway_antwort(_ergebnis())
     monkeypatch.setattr(auto, "_api_aufruf", _erst_kaputt_dann_ok)
     lead = _lead()
     _kundenantwort(lead)
@@ -277,18 +301,21 @@ def test_transienter_fehler_laesst_keinen_anspruch_zurueck(monkeypatch):
     assert auto.eine_runde() == {"beantwortet": 1}
 
 
-def test_refusal_und_kaputtes_json_sind_endgueltig(monkeypatch):
+@pytest.mark.parametrize("antwort", [
+    # Text statt Funktionsaufruf (das Modell hat sich geweigert oder geplaudert)
+    {"choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "Nein."}}]},
+    # falsche Funktion
+    _gateway_antwort(_ergebnis(), name="exec"),
+    # kaputte Argumente
+    {"choices": [{"finish_reason": "tool_calls", "message": {"tool_calls": [
+        {"function": {"name": "antwort_abgeben", "arguments": "kein json"}}]}}]},
+    # gar nichts
+    {},
+])
+def test_antwort_ohne_verwertbaren_funktionsaufruf_ist_endgueltig(monkeypatch, antwort):
     lead = _lead()
     _kundenantwort(lead)
-    monkeypatch.setattr(auto, "_api_aufruf",
-                        lambda n: {"stop_reason": "refusal", "content": []})
-    assert auto.eine_runde() == {"fehler_verbucht": 1}
-
-    lead2 = _lead(name="Zweite Person", phone="+491702222222")
-    _kundenantwort(lead2, message_id="wamid-2")
-    monkeypatch.setattr(auto, "_api_aufruf", lambda n: {
-        "stop_reason": "end_turn",
-        "content": [{"type": "text", "text": "kein json"}]})
+    monkeypatch.setattr(auto, "_api_aufruf", lambda n, s: antwort)
     assert auto.eine_runde() == {"fehler_verbucht": 1}
     assert _drafts() == []
 
