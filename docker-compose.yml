@@ -180,6 +180,17 @@ services:
     volumes:
       - sales-claw-state:/home/node/.openclaw
       - sales-claw-keys:/home/node/.config/openclaw
+    # Anbindung an pm-claw (29.10.2026, pm-claw Stufe 2 §8): NUR das Gateway
+    # tritt dem Netz von pm-claw bei und erreicht dort pm-mcp unter
+    # http://pm-mcp:8765/mcp (Token per deploy/pm-anbinden.sh). `default`
+    # muss ausdruecklich mit dabei sein, sonst verliert der Dienst
+    # sales-claw_default und damit sales-mcp. Laeuft der pm-claw-Stack nicht,
+    # scheitert `up` laut ("network pm-claw_default ... could not be found").
+    # Entscheidung Betreiber: gilt fuer ALLE Laeden (Vorlage dieses Dienstes);
+    # andere Laeden sehen pm-mcp ohne Token nur als 401 und erreichen pm-stt.
+    networks:
+      - default
+      - pm-claw
     ports:
       # Nur Loopback. Der Gateway hält WhatsApp-Session und Modellschlüssel.
       # HOST-Port ist seit 16.09.2026 ein Parameter (PORT_GATEWAY), der
@@ -970,6 +981,13 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+networks:
+  # Netz des Compose-Projekts pm-claw (Projektname dort gepinnt). Nur der
+  # Dienst sales-claw haengt daran, siehe dort.
+  pm-claw:
+    external: true
+    name: pm-claw_default
 
 volumes:
   # Explizite name:-Angabe, sonst prefixt Compose mit dem Projektnamen

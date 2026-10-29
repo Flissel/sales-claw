@@ -110,6 +110,21 @@ for server in sales rowboat; do
     fehl "mcp $server" "'$server' fehlt in mcp list"
   fi
 done
+# 4b) pm-claw (29.10.2026, deploy/pm-anbinden.sh): nur pruefen, wenn der Token
+# in der .env steht — vorher ist die Anbindung bewusst noch nicht gemacht, und
+# ein rotes `pm` wuerde jedes update.sh blockieren. Mit Token: Server sichtbar
+# und genau die zwei Werkzeuge (toolFilter + Rollentor).
+if grep -E '^PM_TOKEN_SALES=.' "$WURZEL/.env" >/dev/null 2>&1; then
+  pm_probe="$(docker exec sales-claw sh -c "openclaw mcp probe pm --json 2>/dev/null" || true)"
+  pm_anzahl="$(printf '%s' "$pm_probe" | grep -o 'pm__[a-z_]*' | sort -u | wc -l | tr -d ' ')"
+  if printf '%s' "$pm_probe" | grep "pm__aufnahme_status" >/dev/null && [ "$pm_anzahl" = "2" ]; then
+    gut "mcp pm"
+  else
+    fehl "mcp pm" "$pm_anzahl pm-Werkzeuge statt 2 — deploy/pm-anbinden.sh erneut laufen lassen"
+  fi
+else
+  melde "mcp pm" "uebersprungen (PM_TOKEN_SALES fehlt in .env — Anbindung noch nicht gemacht)"
+fi
 if docker logs --since 10m sales-claw 2>&1 | grep -i "failed to start server" >/dev/null; then
   fehl "mcp verbindung" "Startfehler in den letzten 10 Min."
 else
