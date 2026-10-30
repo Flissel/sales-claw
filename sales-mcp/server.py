@@ -7882,11 +7882,11 @@ def _grundlage_vorgabe(lead_id: str, quelle: str) -> bool:
     es wurde gebucht."""
     z = _q("select consent_status, email, phone, enrichment from leads "
            "where id = %s", (lead_id,))
-    if not z or (z[0]["consent_status"] or "unknown") != "unknown":
+    if not z or (z[0].get("consent_status") or "unknown") != "unknown":
         return False
     lead = z[0]
-    if (_loeschantrag(lead["enrichment"]) or _privat(lead["enrichment"])
-            or _sperre(lead["email"] or "", lead["phone"] or "")):
+    if (_loeschantrag(lead.get("enrichment")) or _privat(lead.get("enrichment"))
+            or _sperre(lead.get("email") or "", lead.get("phone") or "")):
         return False
     if _q("select 1 from activities where lead_id = %s and "
           "type = 'werbe_einwilligung_widerrufen' limit 1", (lead_id,)):

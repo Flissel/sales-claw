@@ -62,7 +62,7 @@ def saubere_tabellen():
 def _anlegen(mit_einwilligung=True, mit_chat=True):
     lead = json.loads(server.kontakt_anlegen(
         name="Max Testperson", phone="+491701234567",
-        email="max@example.com"))["lead_id"]
+        email="max@example.com", einwilligung=False))["lead_id"]
     if mit_einwilligung:
         server._q("update leads set consent_status = 'existing_customer' "
                   "where id = %s returning id", (lead,))
