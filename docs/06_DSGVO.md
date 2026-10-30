@@ -81,6 +81,14 @@ Bestandskunden-Ausnahme des § 7 Abs. 3 UWG.
   quelle, wortlaut)` — die Quelle ist Pflicht, alles landet als
   `werbe_einwilligung` im Protokoll (activities). Der Bot ruft es nur auf
   ausdrückliche Nennung durch den Betreiber auf, nie aus eigener Deutung.
+- **Betreiber-Vorgabe (30.10.2026, ausdrückliche Entscheidung des
+  Betreibers):** jeder Kontakt trägt die Grundlage `betreiber_auftrag` —
+  neue bei `kontakt_anlegen`, eingeordnete per vorab gesetztem Haken,
+  bestehende per einmaliger Sammelbestätigung. Das ist KEIN opt_in: der
+  Eintrag dokumentiert, dass der Betreiber die Grundlage verantwortet; das
+  Abmahnrisiko bei fehlender echter Einwilligung trägt er. Nie gebucht bei
+  Löschantrag, Privat, Verbotsliste oder nach Widerruf
+  (`server._grundlage_vorgabe`, Tests `test_einwilligung_vorgabe.py`).
 - **Widerruf:** `einwilligung_widerrufen(lead_id, grund)` wirkt sofort;
   „keine Werbung mehr" im Chat zählt als Widerruf.
 - **Abgrenzung:** die Zustimmung (`zustimmung_*`) erlaubt die automatische

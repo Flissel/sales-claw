@@ -380,8 +380,15 @@ def _lead_sperren(lead_id: str, quelle: str, grund: str = "") -> int:
 
 @_gesichert
 def kontakt_anlegen(name: str, email: str = "", phone: str = "",
-                    source: str = "whatsapp", notes: str = "") -> str:
+                    source: str = "whatsapp", notes: str = "",
+                    einwilligung: bool = True) -> str:
     """Neuen Kontakt anlegen. Nur verwenden, wenn kontakt_suchen leer war.
+
+    Werbe-Einwilligung (Betreiber-Vorgabe 30.10.2026): ein NEUER Kontakt
+    bekommt die Grundlage `betreiber_auftrag` gleich mit — der Betreiber
+    verantwortet sie, die Quelle steht im Protokoll. `einwilligung=False`
+    nur, wenn der Betreiber ausdruecklich sagt, dass dieser Kontakt nicht
+    angeschrieben werden darf.
 
     Dedup-Kante (Demo-Befund B1): traegt phone eine Nummer, die normalisiert
     (nummern.py) bereits zu einem bestehenden Lead gehoert — gleich in
@@ -413,7 +420,12 @@ def kontakt_anlegen(name: str, email: str = "", phone: str = "",
         "values (%s, nullif(%s,''), nullif(%s,''), %s, nullif(%s,''), "
         "jsonb_build_object('art', %s::text)) returning id",
         (name, email, phone, source, notes, art))
-    return _json({"lead_id": zeilen[0]["id"], "angelegt": True})
+    lead_id = str(zeilen[0]["id"])
+    gebucht = einwilligung and _grundlage_vorgabe(
+        lead_id, f"Betreiber-Vorgabe ab 30.10.2026: neue Kontakte gelten als "
+                 f"freigegeben (angelegt ueber {source}, {_heute_text()})")
+    return _json({"lead_id": zeilen[0]["id"], "angelegt": True,
+                  "einwilligung": bool(gebucht)})
 
 
 # Stammdatenfelder, die korrigiert werden duerfen — buchstabengenau und
@@ -7854,6 +7866,33 @@ def _grundlage_aus_auftrag(lead_id: str) -> bool:
         lead_id, "betreiber_auftrag",
         f"Betreiber-Auftrag vom {datetime.now(ZoneInfo('Europe/Berlin')):%d.%m.%Y}")
     return "fehler" not in json.loads(roh)
+
+
+def _heute_text() -> str:
+    return f"{datetime.now(ZoneInfo('Europe/Berlin')):%d.%m.%Y}"
+
+
+def _grundlage_vorgabe(lead_id: str, quelle: str) -> bool:
+    """Betreiber-Vorgabe 30.10.2026: „diese Einwilligungen sollten ab sofort
+    erstmal immer auf ja gesetzt sein". Bucht `betreiber_auftrag` — NICHT
+    opt_in, das hiesse, der Kontakt selbst habe eingewilligt.
+
+    Nur auf `unknown` und nie gegen ein Nein: Loeschantrag, Privat,
+    Verbotsliste und ein frueherer Widerruf schlagen die Vorgabe. True heisst,
+    es wurde gebucht."""
+    z = _q("select consent_status, email, phone, enrichment from leads "
+           "where id = %s", (lead_id,))
+    if not z or (z[0]["consent_status"] or "unknown") != "unknown":
+        return False
+    lead = z[0]
+    if (_loeschantrag(lead["enrichment"]) or _privat(lead["enrichment"])
+            or _sperre(lead["email"] or "", lead["phone"] or "")):
+        return False
+    if _q("select 1 from activities where lead_id = %s and "
+          "type = 'werbe_einwilligung_widerrufen' limit 1", (lead_id,)):
+        return False
+    return "fehler" not in json.loads(
+        einwilligung_erfassen(lead_id, "betreiber_auftrag", quelle))
 
 
 def _hat_selbst_geschrieben(lead_id: str) -> bool:
