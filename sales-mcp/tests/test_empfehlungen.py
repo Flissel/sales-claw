@@ -172,7 +172,10 @@ def test_unbekannte_liste():
 # --- Fix-Runde 1 (Review I1-I5) -------------------------------------------
 
 def _kontakt(name="Anna Alt", telefon="+491701234567"):
-    return server.json.loads(server.kontakt_anlegen(name, phone=telefon))["lead_id"]
+    # Ein schon vorhandener Kontakt aus der Zeit vor der Betreiber-Vorgabe
+    # (30.10.2026): ohne Grundlage, die Tests setzen sie selbst.
+    return server.json.loads(server.kontakt_anlegen(name, phone=telefon,
+                                                    einwilligung=False))["lead_id"]
 
 
 def _einwilligungen(lid):

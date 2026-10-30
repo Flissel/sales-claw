@@ -30,8 +30,8 @@ def test_kontakt_anlegen_lehnt_gesperrte_ab(monkeypatch):
 def test_kontakt_anlegen_ohne_sperre_legt_an(monkeypatch):
     monkeypatch.setattr(sperrliste, "gesperrt", lambda q, email="", phone="": None)
     monkeypatch.setattr(server, "_q", lambda sql, params=(): [{"id": "lead-1"}])
-    out = json.loads(server.kontakt_anlegen("Max", email="max@x.de"))
-    assert out == {"lead_id": "lead-1", "angelegt": True}
+    out = json.loads(server.kontakt_anlegen("Max", email="max@x.de", einwilligung=False))
+    assert out == {"lead_id": "lead-1", "angelegt": True, "einwilligung": False}
 
 
 def test_entwurf_erstellen_lehnt_gesperrte_ab(monkeypatch):

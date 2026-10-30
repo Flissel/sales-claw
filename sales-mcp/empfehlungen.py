@@ -209,8 +209,10 @@ def _zeile_schreiben_db(kopf, z, bereiche, einwilligung, quelle):
             return "abgewiesen", grund, []
         art, status = None, "verknuepft"
     else:
+        # Der Einwilligungs-Haken der Liste entscheidet (unten), nicht die
+        # Betreiber-Vorgabe aus kontakt_anlegen (30.10.2026).
         r = json.loads(server.kontakt_anlegen(_anzeigename(z), phone=z["telefon"],
-                                              source="empfehlung"))
+                                              source="empfehlung", einwilligung=False))
         if "fehler" in r:
             if _ist_db_fehler(r["fehler"]):
                 raise _DbFehler(r["fehler"])

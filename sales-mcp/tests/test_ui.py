@@ -1339,6 +1339,71 @@ def test_anlegen_legt_keinen_zweiten_kontakt_zur_selben_nummer_an(
                      ("Sophie Doppelt",)) == []
 
 
+# --- Werbe-Einwilligung beim Einordnen (Betreiber-Vorgabe 30.10.2026) -------
+#
+# „das soll beim Einordnen mit abgehakt werden": ein vorab gesetzter Haken bei
+# Zuordnen und Neu anlegen. Abgewaehlt bucht er nichts.
+
+def _consent(lead):
+    return server._q("select consent_status from leads where id = %s",
+                     (lead,))[0]["consent_status"]
+
+
+def test_einordnung_zeigt_den_haken_vorab_gesetzt(sammelkontakt_zurueck):
+    sammel = _sammel()
+    _kundenantwort(sammel, text="Hallo", absender=SOPHIE_NUMMER)
+    seite = _get("/einordnung").text
+    haken = re.findall(r'<input type="checkbox" name="einwilligung" value="ja" checked>',
+                       seite)
+    assert len(haken) == 2   # Zuordnen und Neu anlegen
+
+
+def test_zuordnen_mit_haken_bucht_die_grundlage(sammelkontakt_zurueck):
+    sammel = _sammel()
+    ziel = _lead(name="Sophie Beispiel", phone=SOPHIE_PHONE)
+    _kundenantwort(sammel, text="Hallo", absender=SOPHIE_LID)
+    r = _post("/einordnung/zuordnen", {"absender": SOPHIE_LID, "csrf": ui.CSRF_TOKEN,
+                                       "lead_id": ziel, "einwilligung": "ja"})
+    assert r.status_code == 303
+    assert _consent(ziel) == "betreiber_auftrag"
+    (eintrag,) = _aktivitaeten("werbe_einwilligung")
+    assert eintrag["payload"]["quelle"].startswith("Einordnung durch den Betreiber")
+
+
+def test_zuordnen_ohne_haken_bucht_nichts(sammelkontakt_zurueck):
+    sammel = _sammel()
+    ziel = _lead(name="Sophie Beispiel", phone=SOPHIE_PHONE)
+    _kundenantwort(sammel, text="Hallo", absender=SOPHIE_LID)
+    r = _post("/einordnung/zuordnen", {"absender": SOPHIE_LID, "csrf": ui.CSRF_TOKEN,
+                                       "lead_id": ziel})
+    assert r.status_code == 303
+    assert _consent(ziel) == "unknown"
+    assert _aktivitaeten("werbe_einwilligung") == []
+
+
+def test_anlegen_mit_haken_bucht_die_grundlage(sammelkontakt_zurueck):
+    sammel = _sammel()
+    _kundenantwort(sammel, text="Hallo", absender=SOPHIE_NUMMER)
+    r = _post("/einordnung/anlegen", {"absender": SOPHIE_NUMMER, "csrf": ui.CSRF_TOKEN,
+                                      "name": "Sophie Neu", "einwilligung": "ja"})
+    assert r.status_code == 303
+    neu = server._q("select id from leads where name = %s", ("Sophie Neu",))[0]["id"]
+    assert _consent(str(neu)) == "betreiber_auftrag"
+    (eintrag,) = _aktivitaeten("werbe_einwilligung")
+    assert eintrag["payload"]["quelle"].startswith("Einordnung durch den Betreiber")
+
+
+def test_anlegen_ohne_haken_bucht_nichts(sammelkontakt_zurueck):
+    sammel = _sammel()
+    _kundenantwort(sammel, text="Hallo", absender=SOPHIE_NUMMER)
+    r = _post("/einordnung/anlegen", {"absender": SOPHIE_NUMMER, "csrf": ui.CSRF_TOKEN,
+                                      "name": "Sophie Neu"})
+    assert r.status_code == 303
+    neu = server._q("select id from leads where name = %s", ("Sophie Neu",))[0]["id"]
+    assert _consent(str(neu)) == "unknown"
+    assert _aktivitaeten("werbe_einwilligung") == []
+
+
 # ---------------------------------------------------------------------------
 # Kontaktpflege (/kontakte/{id}): bearbeiten und archivieren
 #

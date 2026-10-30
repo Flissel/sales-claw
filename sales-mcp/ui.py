@@ -8245,17 +8245,21 @@ def _einordnung_aktionen(absender, optionen: str) -> str:
     """
     verborgen = (f'<input type="hidden" name="absender" '
                  f'value="{_e(absender)}">{_einordnung_kopf()}')
+    # Betreiber-Vorgabe 30.10.2026: „das soll beim Einordnen mit abgehakt
+    # werden" — vorab gesetzt, abwaehlbar (abgewaehlt bucht nichts).
+    haken = ('<label class="meta"><input type="checkbox" name="einwilligung" '
+             'value="ja" checked> darf angeschrieben werden</label>')
     return (
         f'<div class="aktionen">'
         f'<form class="aktion" method="post" action="/einordnung/zuordnen">'
         f'{verborgen}<select name="lead_id">'
         f'<option value="">— bestehender Kontakt —</option>{optionen}'
-        f'</select><button class="primaer">Zuordnen</button></form>'
+        f'</select>{haken}<button class="primaer">Zuordnen</button></form>'
         f'<form class="aktion" method="post" action="/einordnung/anlegen">'
         f'{verborgen}<input type="text" name="name" autocomplete="off" '
         f'autocapitalize="words" '
         f'maxlength="{EINORDNUNG_NAME_MAX}" placeholder="Name des Kontakts">'
-        f'<button>Neu anlegen</button></form>'
+        f'{haken}<button>Neu anlegen</button></form>'
         f'<form class="aktion gefahr" method="post" '
         f'action="/einordnung/ignorieren">'
         f'{verborgen}<button class="gefahr">Ignorieren</button></form>'
@@ -8599,7 +8603,17 @@ async def aktion_einordnung_zuordnen(request):
         absender=absender, entscheidung="zuordnen", lead_id=lead_id))
     if "fehler" in antwort:
         return _einordnung_fehler(antwort, "Nicht zugeordnet")
+    _einordnung_einwilligung(form, lead_id)
     return RedirectResponse("/einordnung", status_code=303)
+
+
+def _einordnung_einwilligung(form, lead_id: str) -> None:
+    """Der Haken „darf angeschrieben werden" (Betreiber-Vorgabe 30.10.2026).
+    Die Ausnahmen (Loeschantrag, Privat, Verbotsliste, Widerruf) prueft
+    server._grundlage_vorgabe."""
+    if str(form.get("einwilligung") or "") == "ja":
+        server._grundlage_vorgabe(
+            lead_id, f"Einordnung durch den Betreiber ({server._heute_text()})")
 
 
 @_gesichert_seite
@@ -8646,9 +8660,11 @@ async def aktion_einordnung_anlegen(request):
     antwort = json.loads(server.kontakt_anlegen(
         name=name, phone="+" + server.lid.ziffern(aufgeloest),
         source="whatsapp",
-        notes="aus der Einordnung eines unbekannten Absenders (sales-ui)"))
+        notes="aus der Einordnung eines unbekannten Absenders (sales-ui)",
+        einwilligung=False))
     if "fehler" in antwort:
         return _einordnung_fehler(antwort, "Kontakt nicht angelegt")
+    _einordnung_einwilligung(form, str(antwort["lead_id"]))
     return RedirectResponse(f'/kontakte/{antwort["lead_id"]}', status_code=303)
 
 
