@@ -21,6 +21,8 @@
           "openrouter/free"
         ]
       },
+      "_kommentar_bildmodell": "30.10.2026: Ohne imageModel fiel das Bild-Werkzeug auf die eingebaute Vorgabe anthropic/claude-opus-4-8 zurueck - die gibt es nicht ('Unknown model'), Fotos im Chat blieben unlesbar. Der Modelleintrag braucht input [text, image], sonst gilt er als reines Textmodell. Gemessen: image describe ueber claude-haiku-5-5, 200 in 0,6 s.",
+      "imageModel": "anthropic/claude-haiku-5-5",
       "workspace": "/home/node/.openclaw/workspace",
       "_kommentar_bootstrap": "GEMESSEN 22.08.2026: AGENTS.md ist ~47000 Zeichen. Mit den Vorgaben (20000 je Datei, 60000 gesamt) wurden davon nur 19184 in den Systemprompt eingespritzt - 41 Prozent. Abgeschnitten wurde alles ab 'Kundenchats (Auto-Betrieb)', DARUNTER DER ABSCHNITT 'Verbote - ohne Ausnahme'. Der Agent kannte seine eigenen absoluten Verbote also nicht; dass er sich trotzdem regelkonform verhielt, war das Urteil des Modells und nicht diese Datei. Der Fehler ist still: OpenClaw meldet ihn nur im JSON-Bericht eines Laufs (bootstrapTruncation), nicht im Log. Wer AGENTS.md kuerzt, darf diese Werte wieder senken - wer sie waechst, muss hier nachziehen. NACHGEZOGEN 27.08.2026: AGENTS.md wuchs mit Update-/LinkedIn-/DSGVO-/Pipeline-Abschnitten auf ~60300 Zeichen - smoke.sh Pruefung 8 schlug korrekt an; beide Grenzen angehoben (100000/150000), Laufzeit per config set gleichgezogen.",
       "bootstrapMaxChars": 100000,
@@ -52,6 +54,11 @@
           {
             "id": "claude-sonnet-5",
             "name": "claude-sonnet-5"
+          },
+          {
+            "id": "claude-haiku-5-5",
+            "name": "claude-haiku-5-5",
+            "input": ["text", "image"]
           }
         ]
       }
