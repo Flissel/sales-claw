@@ -15,7 +15,7 @@ import logging
 import os
 import re
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 os.environ["SALES_DB_SCHEMA"] = "sales_test"
@@ -552,6 +552,12 @@ def test_andere_ablehnung_ist_ein_allgemeiner_hinweis(client, falsch, grund):
     assert "nicht angenommen" in s and ui_freigabe_bewerbung._HINWEISE["freigegeben"][1] not in s
 
 
+def _listen_aufrufe(falsch) -> list:
+    """Die Abrufe der Kartenlisten. Seit A2 liest der Fehlerweg zusätzlich den Not-Aus (die Bremse bleibt gerade
+    dann sichtbar, mit 1 s Zeitlimit); gesperrt wird nur die Liste."""
+    return [a for a in falsch.aufrufe if a[1] in (OFFEN, ENTSCHIEDEN)]
+
+
 def test_api_weg_seite_bleibt(client, falsch):                     # Review Focus 4
     lead = str(server._q("insert into leads (name, phone, source) values ('Max', '+491', 'whatsapp') "
                          "returning id")[0]["id"])
@@ -562,9 +568,10 @@ def test_api_weg_seite_bleibt(client, falsch):                     # Review Focu
     assert r.status_code == 200
     assert "Bewerbungs-Zentrale ist gerade nicht erreichbar" in r.text
     assert "Hallo Welt" in r.text                                   # Sales-Abschnitte da
-    assert len(falsch.aufrufe) == 1
+    assert len(_listen_aufrufe(falsch)) == 1
     assert "gerade nicht erreichbar" in client.get("/freigaben").text
-    assert len(falsch.aufrufe) == 1                                  # < 60 s: kein neuer Versuch
+    assert len(_listen_aufrufe(falsch)) == 1                         # < 60 s: kein neuer Versuch (der Liste)
+    assert [a[1] for a in falsch.aufrufe].count(NOT_AUS) == 2        # der Not-Aus dagegen bei jeder Seite
 
 
 @pytest.mark.parametrize("fehler,text", [
@@ -786,18 +793,18 @@ def test_kaputte_karte_reisst_die_seite_nicht(client, falsch, caplog):          
 def test_nicht_verbunden_bleibt_im_zwischenspeicher_nicht_verbunden(client, falsch):   # F3
     falsch.fehler = PultFehler("nicht_verbunden", "401")
     assert "Bewerbungs-Zentrale ist nicht verbunden" in _abschnitt(client)
-    n = len(falsch.aufrufe)
+    n = len(_listen_aufrufe(falsch))
     s = _abschnitt(client)                                       # < 60 s: aus dem Zwischenspeicher
     assert "Bewerbungs-Zentrale ist nicht verbunden" in s and "nicht erreichbar" not in s
-    assert len(falsch.aufrufe) == n
+    assert len(_listen_aufrufe(falsch)) == n
 
 
 def test_zaehlerfehler_zeigt_seine_art_im_abschnitt(client, falsch):                # F3
     falsch.fehler = PultFehler("nicht_verbunden", "401")
     assert ui_freigabe_bewerbung._laden() == 0
-    n = len(falsch.aufrufe)
+    n = len(_listen_aufrufe(falsch))
     s = _abschnitt(client)
-    assert "Bewerbungs-Zentrale ist nicht verbunden" in s and len(falsch.aufrufe) == n
+    assert "Bewerbungs-Zentrale ist nicht verbunden" in s and len(_listen_aufrufe(falsch)) == n
 
 
 def test_zaehler_liest_mit_dem_zeitlimit_des_abschnitts(falsch):                     # F4
@@ -1998,10 +2005,15 @@ GRUENDE = {"kein_email_weg": "kein E-Mail-Weg", "keine_adresse": "keine Adresse"
            "domain_unbelegt": "Domain nicht durch ein Impressum belegt"}
 
 
+JETZT = datetime(2026, 10, 30, 8, 0, tzinfo=timezone.utc)             # 09:00 in Berlin, Freitag
+
+
 @pytest.fixture
 def berlin(monkeypatch):
-    """Ortszeit fest auf Europe/Berlin: die Tests nennen die Uhrzeiten als Zahl."""
+    """Ortszeit fest auf Europe/Berlin und "heute" fest auf den 30.10.2026: die Tests nennen Uhrzeit und Datum
+    als Zahl."""
     monkeypatch.setattr(ui, "ZEITZONE", ZoneInfo("Europe/Berlin"))
+    monkeypatch.setattr(ui_freigabe_bewerbung, "_jetzt", lambda: JETZT)
 
 
 def autonom(stand="bereit", grund=None, faellig_am=None, verfaellt_am=None):
@@ -2016,6 +2028,9 @@ def autonom_stand(stand):
 
 
 def _post_not_aus(c, aktion, **daten):
+    """"Lösen" trägt den Bestätigungshaken wie das Formular (ein Test ohne ihn postet selbst)."""
+    if aktion == "loesen":
+        daten.setdefault("bestaetigt", "ja")
     return c.post(f"/freigaben/bewerbung/not-aus/{aktion}", data={"csrf": ui.CSRF_TOKEN, **daten},
                   follow_redirects=False)
 
@@ -2050,6 +2065,9 @@ def test_not_aus_schalter(client, falsch, berlin):
     assert "sales-ui:" not in kopf
     loesen = _form(kopf, "loesen")
     assert ">Lösen</button>" in loesen and f'name="csrf" value="{ui.CSRF_TOKEN}"' in loesen
+    assert 'name="bestaetigt" value="ja"' in loesen and "Lösen bestätigen" in loesen          # wie Freigeben/Stoppen
+    assert "Danach gehen fällige Bewerbungen raus." in loesen
+    assert loesen.index("Danach gehen fällige Bewerbungen raus.") < loesen.index(">Lösen</button>")
     assert _ohne_form(kopf, "setzen") and "Not-Aus setzen" not in kopf
 
     r = _post_not_aus(client, "loesen")
@@ -2278,17 +2296,52 @@ def test_karte_autonom_je_karte(client, falsch, berlin):
 
 
 @pytest.mark.parametrize("faellig,uhr", [
-    ("2026-10-30T12:00:00+00:00", "13:00"),                         # MEZ
-    ("2026-07-01T12:00:00+00:00", "14:00"),                         # MESZ
-    ("2026-12-01T06:05:00Z", "07:05"),                              # "Z" statt +00:00
+    ("2026-10-30T12:00:00+00:00", "13:00"),                         # MEZ, heute
     ("2026-10-30T12:00:00", "13:00"),                               # ohne Zone: gilt als UTC
     ("2026-10-30T14:00:00+02:00", "13:00"),                         # andere Zone: auf Berlin gerechnet
-    ("2026-10-30T23:30:00+00:00", "00:30"),                         # über Mitternacht
+    ("2026-10-30T22:59:00+00:00", "23:59"),                         # heute, letzte Minute
+    ("2026-10-30T23:00:00+00:00", "00:00 (31.10.)"),                # Mitternacht Berlin: schon morgen
+    ("2026-10-30T23:30:00+00:00", "00:30 (31.10.)"),                # morgen
+    ("2026-10-29T22:59:00+00:00", "23:59 (29.10.)"),                # gestern (Berlin 29.10.)
+    ("2026-10-29T23:00:00+00:00", "00:00"),                         # Berlin 30.10. 00:00: heute
+    ("2026-12-01T06:05:00Z", "07:05 (01.12.)"),                     # "Z" statt +00:00
+    ("2026-07-01T12:00:00+00:00", "14:00 (01.07.)"),                # MESZ, anderer Tag
 ])
-def test_bereit_zeigt_die_uhrzeit_in_berlin(client, falsch, berlin, faellig, uhr):
+def test_bereit_zeigt_die_uhrzeit_in_berlin_und_bei_einem_anderen_tag_das_datum(client, falsch, berlin, faellig, uhr):
     falsch.karten = [karte(autonom=autonom("bereit", faellig_am=faellig))]
     k, = _karten(_abschnitt(client))
-    assert f"Geht automatisch raus um {uhr}" in k
+    assert f'<div class="hinweis">Geht automatisch raus um {uhr}</div>' in k
+
+
+@pytest.mark.parametrize("jetzt,faellig,uhr", [
+    # In UTC ist es noch der 30., in Berlin (MEZ) schon der 31.: "heute" ist der 31.
+    (datetime(2026, 10, 30, 23, 10, tzinfo=timezone.utc), "2026-10-30T23:30:00+00:00", "00:30"),
+    (datetime(2026, 10, 30, 23, 10, tzinfo=timezone.utc), "2026-10-30T22:30:00+00:00", "23:30 (30.10.)"),
+    (datetime(2026, 10, 30, 23, 10, tzinfo=timezone.utc), "2026-10-31T10:00:00+00:00", "11:00"),
+    # Sommerzeit: 22:30 UTC ist 00:30 Berlin am Folgetag
+    (datetime(2026, 7, 1, 21, 59, tzinfo=timezone.utc), "2026-07-01T21:59:00+00:00", "23:59"),
+    (datetime(2026, 7, 1, 21, 59, tzinfo=timezone.utc), "2026-07-01T22:00:00+00:00", "00:00 (02.07.)"),
+    (datetime(2026, 7, 1, 22, 30, tzinfo=timezone.utc), "2026-07-01T22:00:00+00:00", "00:00"),
+    # `jetzt` ohne Zone gilt wie überall als UTC
+    (datetime(2026, 10, 30, 23, 10), "2026-10-30T23:30:00+00:00", "00:30"),
+])
+def test_bereit_datum_vergleicht_den_berliner_tag_nicht_den_utc_tag(client, falsch, monkeypatch, berlin,
+                                                                  jetzt, faellig, uhr):
+    monkeypatch.setattr(ui_freigabe_bewerbung, "_jetzt", lambda: jetzt)
+    falsch.karten = [karte(autonom=autonom("bereit", faellig_am=faellig))]
+    k, = _karten(_abschnitt(client))
+    assert f'<div class="hinweis">Geht automatisch raus um {uhr}</div>' in k
+
+
+def test_bereit_zeitpunkt_ohne_ortszeit_zone_nimmt_utc(client, falsch, monkeypatch):
+    """Ohne `tzdata` (ui.ZEITZONE None) bleibt es bei UTC: nie eine Ausnahme, nie eine erfundene Zeit."""
+    monkeypatch.setattr(ui, "ZEITZONE", None)
+    monkeypatch.setattr(ui_freigabe_bewerbung, "_jetzt", lambda: JETZT)
+    falsch.karten = [karte(autonom=autonom("bereit", faellig_am="2026-10-30T12:00:00+00:00")),
+                     karte(application_id=BID2, autonom=autonom("bereit", faellig_am="2026-10-31T12:00:00+01:00"))]
+    heute, morgen = _karten(_abschnitt(client))
+    assert 'Geht automatisch raus um 12:00</div>' in heute
+    assert 'Geht automatisch raus um 11:00 (31.10.)</div>' in morgen
 
 
 @pytest.mark.parametrize("verfall,tag", [
@@ -2521,3 +2574,226 @@ def test_stoppen_grund_steht_in_keinem_protokoll(client, falsch, caplog):
         assert _post(client, "stoppen", **STOPPEN, grund="GRUND-XYZ").status_code == 504
     assert "GRUND-XYZ" not in caplog.text
     assert any(BID in m and "Fassung 1" in m for m in _meldungen(caplog))
+
+
+# --- Fix-Runde 1 (Review Task 10) -------------------------------------------------------------------
+#
+# 1. Eine Karte, die "bereit" ist, geht nicht raus, solange der Not-Aus an ist: sie sagt es selbst.
+# 2. Der Not-Aus-Kasten bleibt auch stehen, wenn die Kartenliste ausfällt (die Bremse gerade dann).
+# 3. "Lösen" lässt gehaltene Bewerbungen raus: Haken wie bei Freigeben/Stoppen, mit Folgehinweis.
+
+NOT_AUS_PULT = {"an": True, "quelle": "pult", "von": "sales-ui:felix", "seit": NOT_AUS_SEIT, "grund": "Urlaub"}
+NOT_AUS_ENV = {"an": True, "quelle": "bot.env", "von": None, "seit": None, "grund": None}
+NOT_AUS_ZUSATZ = " – nicht, solange der Not-Aus an ist"
+
+
+@pytest.mark.parametrize("not_aus", [NOT_AUS_PULT, NOT_AUS_ENV], ids=["pult", "bot.env"])
+def test_bereit_sagt_bei_gesetztem_not_aus_dass_es_nicht_rausgeht(client, falsch, berlin, not_aus):
+    falsch.not_aus = dict(not_aus)
+    falsch.karten = [karte(autonom=autonom_stand("bereit"))]
+    k, = _karten(_abschnitt(client))
+    # Der Brieftext bleibt vorn, der Zusatz kommt dahinter.
+    assert f'<div class="hinweis">Geht automatisch raus um 13:00{NOT_AUS_ZUSATZ}</div>' in k
+
+
+def test_bereit_zusatz_steht_auch_bei_datum_und_ohne_zeit(client, falsch, berlin):
+    falsch.not_aus = dict(NOT_AUS_PULT)
+    falsch.karten = [karte(autonom=autonom("bereit", faellig_am="2026-10-30T23:30:00+00:00")),
+                     karte(application_id=BID2, autonom=autonom("bereit", faellig_am=None)),
+                     karte(application_id="bw-3", autonom=autonom("bereit", faellig_am="morgen"))]
+    datum, ohne, kaputt = _karten(_abschnitt(client))
+    assert f"Geht automatisch raus um 00:30 (31.10.){NOT_AUS_ZUSATZ}</div>" in datum
+    assert f"Geht automatisch raus (Zeitpunkt steht noch nicht fest){NOT_AUS_ZUSATZ}</div>" in ohne
+    assert f"Geht automatisch raus (Zeitpunkt steht noch nicht fest){NOT_AUS_ZUSATZ}</div>" in kaputt
+    assert "morgen" not in kaputt
+
+
+def test_ohne_zeitpunkt_ohne_not_aus_bleibt_die_zeile_kurz(client, falsch):
+    falsch.karten = [karte(autonom=autonom("bereit", faellig_am=None))]
+    k, = _karten(_abschnitt(client))
+    assert '<div class="hinweis">Geht automatisch raus (Zeitpunkt steht noch nicht fest)</div>' in k
+
+
+def test_ohne_not_aus_kein_zusatz(client, falsch, berlin):
+    falsch.not_aus = dict(NOT_AUS_AUS)
+    falsch.karten = [karte(autonom=autonom_stand("bereit"))]
+    k, = _karten(_abschnitt(client))
+    assert '<div class="hinweis">Geht automatisch raus um 13:00</div>' in k and "Not-Aus" not in k
+
+
+def test_not_aus_geloest_dann_kein_zusatz_mehr(client, falsch, berlin):
+    """Der Zustand wird bei jeder Seite neu gelesen: Setzen und Lösen zeigen sich sofort auf der Karte."""
+    falsch.karten = [karte(autonom=autonom_stand("bereit"))]
+    assert NOT_AUS_ZUSATZ not in _abschnitt(client)
+    assert _post_not_aus(client, "setzen").status_code == 303
+    assert NOT_AUS_ZUSATZ in _karten(_abschnitt(client))[0]
+    assert _post_not_aus(client, "loesen").status_code == 303
+    assert NOT_AUS_ZUSATZ not in _abschnitt(client)
+
+
+@pytest.mark.parametrize("stand", ["offene_fragen", "empfaenger_pruefen", "feedback_offen"])
+def test_andere_staende_aendern_sich_bei_not_aus_nicht(client, falsch, berlin, stand):
+    """Nur "bereit" verspricht einen Versand; die anderen Stände sagen, worauf die Karte wartet."""
+    falsch.not_aus = dict(NOT_AUS_PULT)
+    falsch.karten = [karte(autonom=autonom_stand(stand))]
+    k, = _karten(_abschnitt(client))
+    assert f'{AUTONOM_TEXTE[stand]}</div>' in k and "solange" not in k
+
+
+def test_karte_ohne_autonom_sagt_zum_not_aus_nichts(client, falsch):
+    falsch.not_aus = dict(NOT_AUS_PULT)
+    falsch.karten = [karte(versand=weg())]
+    k, = _karten(_abschnitt(client))
+    assert "solange" not in k and "Not-Aus" not in k and "automatisch" not in k
+
+
+@pytest.mark.parametrize("fehler,antwort", [
+    (PultFehler("nicht_erreichbar", "TimeoutError"), None), (PultFehler("nicht_verbunden", "401"), None),
+    (RuntimeError("kaputt"), None), (None, "an"), (None, {"an": "ja"}), (None, {})])
+def test_ist_der_not_aus_nicht_lesbar_behauptet_die_karte_nichts(client, falsch, berlin, fehler, antwort):
+    """Ein Zustand, den die Seite nicht kennt, ist weder "an" noch "aus": die Karte bleibt bei ihrem Brieftext."""
+    falsch.fehler_not_aus, falsch.not_aus = fehler, antwort
+    falsch.karten = [karte(autonom=autonom_stand("bereit"))]
+    k, = _karten(_abschnitt(client))
+    assert '<div class="hinweis">Geht automatisch raus um 13:00</div>' in k and "solange" not in k
+
+
+def test_not_aus_wird_vor_den_karten_gelesen(client, falsch, monkeypatch):
+    """Die Karten brauchen den Zustand: erst Listen und Not-Aus, dann die Darstellung (und der Lauf zuletzt)."""
+    ereignisse = []
+    echt = ui_freigabe_bewerbung._karte
+
+    def karte_gebaut(ui_, k, *args, **kw):
+        ereignisse.append("karte")
+        return echt(ui_, k, *args, **kw)
+
+    monkeypatch.setattr(ui_freigabe_bewerbung, "_karte", karte_gebaut)
+    anfrage = falsch.anfrage
+
+    def anfrage_mit_merker(methode, pfad, daten=None, roh=False, zeitlimit=None):
+        ereignisse.append(f"{methode} {pfad}")
+        return anfrage(methode, pfad, daten, roh, zeitlimit)
+
+    monkeypatch.setattr(bewerbung_pult, "anfrage", anfrage_mit_merker)
+    client.get("/freigaben")
+    assert ereignisse.index(f"GET {NOT_AUS}") < ereignisse.index("karte") < ereignisse.index(f"GET {LAUF_AKTUELL}")
+
+
+# --- Not-Aus bleibt sichtbar, wenn die Liste ausfällt ------------------------------------------------
+
+
+def test_not_aus_bleibt_sichtbar_wenn_die_kartenliste_unbrauchbar_ist(client, falsch, berlin):
+    falsch.karten = "kaputt"                                       # Antwort ohne Liste: PultFehler "unbekannt"
+    s = _abschnitt(client)
+    assert WEG_TEXT in s and "Muster GmbH" not in s
+    assert _not_aus_zeile(s) == "Not-Aus: aus"
+    assert ">Not-Aus setzen</button>" in _form(s, "setzen")
+    assert s.index("Not-Aus: aus") < s.index(WEG_TEXT)             # vor der Fehlermeldung, nicht darunter versteckt
+    # Und er lässt sich auch jetzt setzen und wieder lösen.
+    assert _post_not_aus(client, "setzen", grund="Liste kaputt").status_code == 303
+    s = _abschnitt(client)
+    assert WEG_TEXT in s and _not_aus_zeile(s).startswith("Not-Aus: an seit 30.10.2026 20:29") and ">Lösen</button>" in s
+    assert "Danach gehen fällige Bewerbungen raus." in s
+
+
+@pytest.mark.parametrize("not_aus", [NOT_AUS_PULT, NOT_AUS_ENV], ids=["pult", "bot.env"])
+def test_not_aus_an_bleibt_sichtbar_wenn_die_liste_ausfaellt(client, falsch, not_aus):
+    falsch.karten = "kaputt"
+    falsch.not_aus = dict(not_aus)
+    s = _abschnitt(client)
+    assert WEG_TEXT in s and "Not-Aus: an" in s
+    assert ("gesetzt in bot.env" in s) == (not_aus["quelle"] == "bot.env")
+    assert (">Lösen</button>" in s) == (not_aus["quelle"] != "bot.env")
+
+
+def test_not_aus_bleibt_sichtbar_wenn_die_darstellung_der_karten_scheitert(client, falsch, monkeypatch, caplog):
+    def kaputt(ui_, k, *args, **kw):
+        raise RuntimeError("Karte nicht darstellbar")
+
+    monkeypatch.setattr(ui_freigabe_bewerbung, "_karte", kaputt)
+    with caplog.at_level(logging.WARNING, logger="sales-ui"):
+        s = _abschnitt(client)
+    assert WEG_TEXT in s and _not_aus_zeile(s) == "Not-Aus: aus" and ">Not-Aus setzen</button>" in _form(s, "setzen")
+    assert any("nicht darstellbar" in m for m in _meldungen(caplog))
+
+
+def test_not_aus_bleibt_im_zwischengespeicherten_fehler_sichtbar(client, falsch):
+    """Die Liste wird 60 s nicht neu versucht; der Not-Aus schon (der Zustand von eben, nie ein alter)."""
+    falsch.karten = "kaputt"
+    assert _not_aus_zeile(client.get("/freigaben").text) == "Not-Aus: aus"
+    falsch.not_aus = dict(NOT_AUS_PULT)
+    s = client.get("/freigaben").text
+    assert WEG_TEXT in s and _not_aus_zeile(s).startswith("Not-Aus: an seit")
+    assert [a[1] for a in falsch.aufrufe].count(OFFEN) == 1               # die Liste wurde nur einmal gefragt
+    assert [a[1] for a in falsch.aufrufe].count(NOT_AUS) == 2             # der Not-Aus bei jeder Seite
+
+
+def test_not_aus_auf_dem_fehlerweg_liest_mit_kurzem_zeitlimit(client, falsch):
+    falsch.karten = "kaputt"
+    _abschnitt(client)
+    z = [t for m, p, t in falsch.zeitlimits if (m, p) == ("GET", NOT_AUS)]
+    assert z and all(t is not None and t <= 1 for t in z)
+    assert falsch.im_loop == []
+
+
+@pytest.mark.parametrize("fehler,text", [
+    (PultFehler("nicht_erreichbar", "TimeoutError"), WEG_TEXT),
+    (PultFehler("nicht_verbunden", "401"), NICHT_VERBUNDEN_TEXT),
+    (PultFehler("unbekannt", "500"), WEG_TEXT)])
+def test_ist_auch_der_not_aus_nicht_lesbar_steht_das_da_statt_knoepfen(client, falsch, fehler, text):
+    falsch.fehler = fehler                                          # alles fällt aus, auch der Not-Aus
+    s = _abschnitt(client)
+    assert text in s and '<div class="warnung">Not-Aus-Status nicht lesbar' in s
+    assert "Not-Aus: aus" not in s and _ohne_form(s, "setzen") and _ohne_form(s, "loesen")
+
+
+def test_not_aus_ohne_route_auf_dem_fehlerweg_zeigt_nichts(client, falsch):
+    falsch.karten = "kaputt"
+    falsch.fehler_not_aus = PultFehler("abgelehnt", "Not Found")
+    s = _abschnitt(client)
+    assert WEG_TEXT in s and "Not-Aus" not in s
+
+
+def test_fehlerweg_not_aus_steht_nicht_im_verlauf(client, falsch):
+    falsch.karten = "kaputt"
+    v = client.get("/monitoring/verlauf").text
+    assert "Not-Aus" not in v and WEG_TEXT not in v
+
+
+def test_fehlerweg_not_aus_nur_fuer_freigeben(client_lesen, falsch):
+    falsch.karten = "kaputt"
+    assert "Not-Aus" not in client_lesen.get("/freigaben").text and falsch.aufrufe == []
+
+
+# --- Lösen verlangt den Haken ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("daten", [{}, {"bestaetigt": ""}, {"bestaetigt": "nein"}, {"bestaetigt": "on"},
+                                   {"bestaetigt": "JA"}])
+def test_loesen_ohne_haken_ruft_nichts(client, falsch, daten):
+    r = client.post("/freigaben/bewerbung/not-aus/loesen", data={"csrf": ui.CSRF_TOKEN, **daten},
+                    follow_redirects=False)
+    assert r.status_code == 400 and "Der Bestätigungshaken fehlt" in r.text and "Nichts wurde gesendet" in r.text
+    assert falsch.aktionen() == []
+
+
+def test_loesen_mit_haken_geht_durch_und_setzen_braucht_keinen(client, falsch):
+    assert _post_not_aus(client, "setzen").status_code == 303                       # eine Bremse, kein Haken
+    assert _post_not_aus(client, "loesen", bestaetigt="ja").status_code == 303
+    assert [a[2]["an"] for a in falsch.aktionen()] == [True, False]
+
+
+def test_loesen_ohne_csrf_und_haken_ist_403_nicht_400(client, falsch):
+    """Erst CSRF und Rolle, dann der Haken: eine fremde Anfrage erfährt nichts über die Formularfelder."""
+    r = client.post("/freigaben/bewerbung/not-aus/loesen", data={}, follow_redirects=False)
+    assert r.status_code == 403 and falsch.aktionen() == []
+
+
+def test_loesen_formular_nur_ein_haken_und_der_folgehinweis_nur_dort(client, falsch):
+    falsch.not_aus = dict(NOT_AUS_PULT)
+    kopf = _kopf(_abschnitt(client))
+    loesen = _form(kopf, "loesen")
+    assert loesen.count('name="bestaetigt"') == 1 and loesen.count("Danach gehen fällige Bewerbungen raus.") == 1
+    assert kopf.count("Danach gehen fällige Bewerbungen raus.") == 1
+    falsch.not_aus = dict(NOT_AUS_AUS)
+    assert "Danach gehen fällige Bewerbungen raus." not in _abschnitt(client)

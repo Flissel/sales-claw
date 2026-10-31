@@ -29,6 +29,11 @@ nicht lösbar und hat keinen Knopf. Auf der Karte sagt eine Zeile, wann und waru
 autonom - dort heißt "Nicht bewerben" "Stoppen" und der Grund ist Pflicht. Karten ohne `autonom` und eine
 Zentrale ohne Not-Aus-Route (404) sehen aus wie vorher.
 
+Der Not-Aus wird vor den Karten gelesen: ist er an, sagt eine "bereit"-Karte dazu, dass sie dann nicht rausgeht.
+Er steht auch da, wenn die Kartenliste ausfällt - die Bremse gerade dann. "Lösen" lässt gehaltene Bewerbungen
+raus und verlangt wie Freigeben den Bestätigungshaken. Fällt der Tag einer "bereit"-Zeit nicht auf heute, steht
+das Datum dabei.
+
 Wie der Rest von sales-ui: kein JavaScript, CSRF-Marke in jedem Formular, das
 Anschreiben-PDF nur verlinkt (eigene Datei-Richtlinie, nie gerahmt). Die Texte
 der Zentrale sind bereinigt, aber nicht HTML-maskiert: jede Ausgabe laeuft
@@ -41,7 +46,7 @@ import logging
 import math
 import re
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import partial
 
 from starlette.concurrency import run_in_threadpool
@@ -94,6 +99,14 @@ _LAUF = "/laeufe/aktuell"
 _NOT_AUS = "/not-aus"
 # Der Not-Aus aendert nur einen Schalter in der Zentrale (kein Archivieren): wie "Neuer Lauf".
 NOT_AUS_ZEITLIMIT_S = 8
+# Faellt die Kartenliste aus, wird der Not-Aus trotzdem gelesen - aber mit kurzem Zeitlimit: die Liste sperrt den
+# Abschnitt 60 s (pult_cache), damit eine tote Zentrale nicht jede Seite warten laesst; der Not-Aus kostet dann
+# je Seite hoechstens diese eine Sekunde.
+NOT_AUS_FEHLERWEG_ZEITLIMIT_S = 1
+# Steht hinter "Geht automatisch raus ...", solange der Not-Aus an ist: die Karte geht dann nicht raus.
+NOT_AUS_ZUSATZ = " – nicht, solange der Not-Aus an ist"
+# Steht im Formular "Loesen" direkt am Knopf: was das Loesen tut.
+LOESEN_HINWEIS = "Danach gehen fällige Bewerbungen raus."
 # Die Zentrale liefert `von` mit dem Praefix der Quelle (`sales-ui:felix`); gezeigt wird der Name.
 NOT_AUS_VON_PRAEFIX = "sales-ui:"
 # Steht der Not-Aus in bot.env, haelt ihn das Pult nicht auf: kein Knopf "Loesen", und ein "Loesen" auf einer
@@ -303,6 +316,29 @@ def _score(wert) -> str:
     return "–"
 
 
+def _jetzt() -> datetime:
+    """Jetzt (UTC). Eigene Funktion, damit die Tests "heute" festlegen koennen."""
+    return datetime.now(timezone.utc)
+
+
+def _ortszeit(ui, zeitpunkt: datetime) -> datetime:
+    """Zeitpunkt in der Ortszeit der Seite (ui.ZEITZONE, Europe/Berlin); ohne Zone gilt er als UTC, und ohne
+    Zeitzonen-Datenbank (ui.ZEITZONE None) bleibt es bei UTC."""
+    if zeitpunkt.tzinfo is None:
+        zeitpunkt = zeitpunkt.replace(tzinfo=timezone.utc)
+    return zeitpunkt.astimezone(ui.ZEITZONE if ui.ZEITZONE is not None else timezone.utc)
+
+
+def _uhrzeit(ui, zeitpunkt: datetime) -> str:
+    """"HH:MM" in Ortszeit; liegt der Berliner Tag nicht auf heute (morgen, gestern), steht " (TT.MM.)" dahinter.
+    Verglichen wird der Tag in Ortszeit, nicht der in UTC (um Mitternacht liegen sie auseinander)."""
+    ort = _ortszeit(ui, zeitpunkt)
+    text = ort.strftime("%H:%M")
+    if ort.date() != _ortszeit(ui, _jetzt()).date():
+        text += ort.strftime(" (%d.%m.)")
+    return text
+
+
 def _in_ortszeit(wert, darstellen) -> str | None:
     """Zeitpunkt der Zentrale (ISO-Text, UTC; ohne Zone gilt UTC) mit `darstellen` (ui._zeit, ui._tag_kurz)
     in Ortszeit gezeigt. Kein Text, nicht lesbar oder nicht umzurechnen (Jahr 9999): None."""
@@ -440,21 +476,22 @@ def _weg(ui, k: dict, basis: str, nr, felder: str) -> tuple[str, str, str]:
     return zeile, feld, knopf
 
 
-def _autonom(ui, k: dict) -> tuple[str, str | None]:
+def _autonom(ui, k: dict, not_aus: bool = False) -> tuple[str, str | None]:
     """Autonomie-Zeile der Karte und ihr Stand: (Zeile, Stand). Autonom ist eine Karte genau dann, wenn die
     Zentrale `autonom` als Objekt liefert; sonst ("", None) und die Karte bleibt, wie sie war. Der Stand ist
     einer der vier der Zentrale, bei einem unbekannten "" (die Karte geht trotzdem von allein raus: neutrale
     Zeile, kein Rohwert). Zeiten in Ortszeit; ohne lesbaren Zeitpunkt steht keiner da. Ein Grund steht nur
-    in Worten da (EMPFAENGER_GRUENDE); alles andere ist Text der Seite."""
+    in Worten da (EMPFAENGER_GRUENDE); alles andere ist Text der Seite. `not_aus`: die Zentrale hat den Not-Aus als
+    an gemeldet - eine "bereit"-Karte sagt dann dazu, dass sie so nicht rausgeht (nur sie verspricht einen Versand)."""
     a = k.get("autonom")
     if not isinstance(a, dict):
         return "", None
     stand = a.get("stand")
     if stand == "bereit":
-        uhr = _in_ortszeit(a.get("faellig_am"), lambda z: ui._zeit(z).rsplit(" ", 1)[-1])
+        uhr = _in_ortszeit(a.get("faellig_am"), lambda z: _uhrzeit(ui, z))
         text = (f"Geht automatisch raus um {ui._e(uhr)}" if uhr
-                else "Geht automatisch raus – der Zeitpunkt steht noch nicht fest")
-        return f'<div class="hinweis">{text}</div>', "bereit"
+                else "Geht automatisch raus (Zeitpunkt steht noch nicht fest)")
+        return f'<div class="hinweis">{text}{NOT_AUS_ZUSATZ if not_aus else ""}</div>', "bereit"
     if stand == "offene_fragen":
         tag = _in_ortszeit(a.get("verfaellt_am"), ui._tag_kurz)
         text = f"Wartet auf deine Antworten, verfällt am {ui._e(tag)}" if tag else "Wartet auf deine Antworten"
@@ -469,7 +506,7 @@ def _autonom(ui, k: dict) -> tuple[str, str | None]:
     return f'<div class="hinweis">{AUTONOM_UNBEKANNT}</div>', ""
 
 
-def _karte(ui, k: dict) -> str:
+def _karte(ui, k: dict, not_aus: bool = False) -> str:
     e = ui._e
     basis = _basis(k)
     nr = _nr(k.get("fassung"))
@@ -494,7 +531,7 @@ def _karte(ui, k: dict) -> str:
     felder = (f'<input type="hidden" name="csrf" value="{ui.CSRF_TOKEN}">'
               f'<input type="hidden" name="fassung" value="{nr}">')
     versand, versand_an, freigeben = _weg(ui, k, basis, nr, felder)
-    autonom_zeile, autonom_stand = _autonom(ui, k)
+    autonom_zeile, autonom_stand = _autonom(ui, k, not_aus)
     if autonom_stand == "empfaenger_pruefen":
         freigeben = EMPFAENGER_FREIGEBEN        # die Karte geht nicht von allein raus: Felix bestätigt den Empfänger
     pruefnotiz = _pruefnotiz(ui, k, felder, basis, nr)
@@ -761,27 +798,31 @@ def _not_aus_html(ui, antwort) -> str:
         teile.append(f"Grund: {ui._e(grund)}")
     return (f'<div class="notaus"><div class="warnung">{" · ".join(teile)}</div><div class="aktionen">'
             f'<form class="aktion" method="post" action="{ADMIN_PFAD}/not-aus/loesen">{csrf}'
+            f'<label class="haken"><input type="checkbox" name="bestaetigt" value="ja"> Lösen bestätigen</label>'
+            f'<p class="meta">{LOESEN_HINWEIS}</p>'
             f'<button>Lösen</button></form></div></div>')
 
 
-async def _not_aus_kopf(ui) -> str:
-    """Der Not-Aus im Kopf des Abschnitts. Wie der Lauf-Status mit eigenem Schutz und ohne Sperre im
-    Zwischenspeicher: scheitert das Lesen oder Darstellen, steht hier der Hinweis (ohne Knöpfe) und der Rest
-    des Abschnitts bleibt. Eine Zentrale ohne die Route (404, vor A2) hat keinen Not-Aus: dann steht nichts da."""
+async def _not_aus_lesen(ui, zeitlimit: float = LESE_ZEITLIMIT_S) -> tuple[str, bool]:
+    """Der Not-Aus im Kopf des Abschnitts: (HTML, `an`). Wie der Lauf-Status mit eigenem Schutz und ohne Sperre im
+    Zwischenspeicher: scheitert das Lesen oder Darstellen, steht hier der Hinweis (ohne Knöpfe), und der Rest des
+    Abschnitts bleibt. Eine Zentrale ohne die Route (404, vor A2) hat keinen Not-Aus: dann steht nichts da.
+    `an` ist nur wahr, wenn die Zentrale den Not-Aus als gesetzt gemeldet hat; in jedem anderen Fall (aus, nicht
+    lesbar, keine Route) ist es falsch - die Karten behaupten dann nichts über ihn."""
     try:
         antwort = await run_in_threadpool(partial(bewerbung_pult.anfrage, "GET", _NOT_AUS,
-                                                  zeitlimit=LESE_ZEITLIMIT_S))
-        return _not_aus_html(ui, antwort)
+                                                  zeitlimit=zeitlimit))
+        return _not_aus_html(ui, antwort), antwort["an"] is True
     except bewerbung_pult.PultFehler as f:
         if f.art == "abgelehnt":
             LOG.debug("Not-Aus: die Zentrale kennt die Route nicht (%r)", f.grund)
-            return ""
+            return "", False
         LOG.warning("Not-Aus auf /freigaben nicht lesbar: %s (%r)", f.art, f.grund)
         text = _NICHT_VERBUNDEN if f.art == "nicht_verbunden" else _WEG
     except Exception:  # noqa: BLE001 - der Not-Aus darf nie die Karten reissen
         LOG.warning("Not-Aus auf /freigaben nicht lesbar oder nicht darstellbar", exc_info=True)
         text = _WEG
-    return f'<div class="warnung">Not-Aus-Status nicht lesbar: {text}</div>'
+    return f'<div class="warnung">Not-Aus-Status nicht lesbar: {text}</div>', False
 
 
 def _hinweis(ui, request) -> str:
@@ -827,33 +868,35 @@ async def _abschnitt(ui, request=None) -> str:
     kopf = '<section class="block" id="bewerbungen"><h2>Bewerbungen'
     hinweis = _hinweis(ui, request)
 
-    def kurz(text: str) -> str:
-        return f'{kopf}</h2>{hinweis}<p class="meta">{text} Sales läuft normal weiter.</p></section>'
-
-    def weg(art: str) -> str:
-        return kurz(_NICHT_VERBUNDEN if art == "nicht_verbunden" else _WEG)
+    async def weg(art: str) -> str:
+        # Die Bremse gerade dann: auch wenn die Karten fehlen, steht der Not-Aus da (frisch gelesen, kurzes Zeitlimit).
+        not_aus, _ = await _not_aus_lesen(ui, NOT_AUS_FEHLERWEG_ZEITLIMIT_S)
+        text = _NICHT_VERBUNDEN if art == "nicht_verbunden" else _WEG
+        return f'{kopf}</h2>{hinweis}{not_aus}<p class="meta">{text} Sales läuft normal weiter.</p></section>'
 
     if (art := _speicher.frisch_fehler()):
-        return weg(art)                         # kuerzlich gescheitert: sofort
+        return await weg(art)                   # kuerzlich gescheitert: die Liste sofort, der Not-Aus frisch
     try:
         offen = await _lesen(_OFFEN)
         _speicher.merken(len(offen))
         verlauf = await _lesen(_ENTSCHIEDEN)
+        # Der Not-Aus vor den Karten: eine "bereit"-Karte muss wissen, ob er an ist.
+        not_aus, not_aus_an = await _not_aus_lesen(ui)
         # Auch die Darstellung steht im Schutz: ein kaputter Wert der Zentrale kostet
         # den Abschnitt, nie die ganze Seite.
-        karten = "".join(_karte(ui, k) for k in offen)
+        karten = "".join(_karte(ui, k, not_aus_an) for k in offen)
         zeilen = "".join(_verlauf_zeile(ui, v) for v in verlauf[:VERLAUF_MAX])
     except bewerbung_pult.PultFehler as f:
         LOG.warning("Bewerbungen auf /freigaben nicht lesbar: %s (%r)", f.art, f.grund)
         _speicher.merken(0, f.art)
-        return weg(f.art)
+        return await weg(f.art)
     except Exception:  # noqa: BLE001 - die Seite darf daran nie scheitern
         LOG.warning("Bewerbungen auf /freigaben nicht lesbar oder nicht darstellbar", exc_info=True)
         _speicher.merken(0, "fehler")
-        return weg("fehler")
+        return await weg("fehler")
     n = len(offen)
     teile = [f'{kopf} <span class="zaehler{" offen" if n else ""}">{n}</span></h2>', hinweis,
-             await _not_aus_kopf(ui), await _lauf_kopf(ui)]
+             not_aus, await _lauf_kopf(ui)]
     if not offen:
         teile.append('<p class="meta">Keine Bewerbung wartet auf deine Entscheidung.</p>')
     teile.append(karten)
@@ -993,12 +1036,16 @@ def routen(ui) -> list:
         return await entscheiden(request, "stoppen")
 
     async def not_aus_schalten(request, an: bool):
-        """Den Not-Aus der Zentrale setzen (mit freiwilligem Grund, eine Zeile) oder lösen. Gelungen heißt:
+        """Den Not-Aus der Zentrale setzen (mit freiwilligem Grund, eine Zeile) oder lösen (mit Haken). Gelungen heißt:
         `an` kommt als echtes bool so zurück, wie gewollt - beim Lösen auch `an: true` mit Quelle bot.env
         (die Zentrale hält ihn dann, das Pult sagt es). Der Grund steht in keinem Protokoll."""
         form, fehler = await formular(request)
         if fehler is not None:
             return fehler
+        if not an and form.get("bestaetigt") != "ja":
+            # Lösen lässt gehaltene Bewerbungen raus: wie Freigeben nur mit dem Haken. Setzen ist die sichere
+            # Richtung und braucht keinen.
+            return ui._fehlerseite(400, "Nicht bestätigt", "Der Bestätigungshaken fehlt. Nichts wurde gesendet.")
         grund = None
         if an:
             text = _text(form.get("grund"))
