@@ -5,7 +5,10 @@ test_freigabe_newsletter.py; es gibt kein JavaScript. Review Focus 1 (veraltete 
 3 (wartet auf Durchsicht), 4 (Zentrale weg, unklares Ergebnis) und 5 (feindlicher Text).
 
 Hermes H2 (Plan 2026-10-27, Task 10): Hermes-Zeile, Lauf-Kasten mit Neuer Lauf / Lauf abbrechen,
-Pruefnotiz und Antworten auf der Karte (am Ende der Datei)."""
+Pruefnotiz und Antworten auf der Karte.
+
+Hermes A2 (Plan 2026-10-30, Task 10): Not-Aus im Kopf, Autonomie-Zeile und "Stoppen" auf der Karte
+(Abschnitt "A2" am Ende der Datei)."""
 import asyncio
 import html
 import logging
@@ -13,6 +16,7 @@ import os
 import re
 import urllib.parse
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 os.environ["SALES_DB_SCHEMA"] = "sales_test"
 
@@ -39,6 +43,10 @@ BOESE2 = '"><img onerror=1>'
 LAUF_AKTUELL = "/laeufe/aktuell"
 LAUF_ID = "hl-20261028-a1b2c3"
 LAUF_AM = "2026-10-28T08:00:00+00:00"
+# A2 (Plan 2026-10-30, Task 10): Not-Aus und Autonomie-Stand. Die Antwort von GET/POST /not-aus (Task 9).
+NOT_AUS = "/not-aus"
+NOT_AUS_AUS = {"an": False, "quelle": None, "von": None, "seit": None, "grund": None}
+NOT_AUS_SEIT = "2026-10-30T19:29:53.687538+00:00"          # 20:29 in Berlin (MEZ seit 25.10.)
 
 
 def karte(**kw):
@@ -96,6 +104,9 @@ class Falsch:
         self.fehler_post = None     # nur POST
         self.fehler_pdf = None      # nur das PDF
         self.fehler_lauf = None     # nur GET /laeufe/aktuell
+        self.fehler_not_aus = None  # nur GET /not-aus
+        self.not_aus = dict(NOT_AUS_AUS)      # der Not-Aus in der Zentrale (A2); POST aendert ihn
+        self.antwort_not_aus = None           # erzwingt eine bestimmte Antwort auf POST /not-aus
         self.uebersicht = uebersicht()
         self.karten = [karte()]
         self.verlauf = []
@@ -123,11 +134,19 @@ class Falsch:
         if methode == "POST":
             if self.fehler_post:
                 raise self.fehler_post
+            if pfad == NOT_AUS:
+                if self.antwort_not_aus is not None:
+                    return self.antwort_not_aus
+                return self._not_aus_umschalten(daten)
             return self.antwort[pfad.rsplit("/", 1)[1]]
         if pfad == OFFEN:
             return {"bewerbungen": self.karten}
         if pfad == ENTSCHIEDEN:
             return {"bewerbungen": self.verlauf}
+        if pfad == NOT_AUS:
+            if self.fehler_not_aus:
+                raise self.fehler_not_aus
+            return dict(self.not_aus) if isinstance(self.not_aus, dict) else self.not_aus
         if pfad == LAUF_AKTUELL:
             if self.fehler_lauf:
                 raise self.fehler_lauf
@@ -140,6 +159,23 @@ class Falsch:
 
     def aktionen(self):
         return [a for a in self.aufrufe if a[0] == "POST"]
+
+    def _not_aus_umschalten(self, daten):
+        """POST /not-aus wie die Zentrale (Task 9): genau `an` (echtes bool), `von`, `grund`; `von` bekommt
+        dort das Praefix `sales-ui:`. Steht der Not-Aus in bot.env, aendert sich nichts - die Antwort bleibt
+        `an: true, quelle: bot.env`, auch auf `an: false`."""
+        if (not isinstance(daten, dict) or set(daten) != {"an", "von", "grund"}
+                or not isinstance(daten["an"], bool) or not isinstance(daten["von"], str)
+                or not (daten["grund"] is None or isinstance(daten["grund"], str))):
+            raise PultFehler("abgelehnt", "eingabe_ungueltig")
+        if self.not_aus.get("quelle") == "bot.env":
+            return dict(self.not_aus)
+        if daten["an"]:
+            self.not_aus = {"an": True, "quelle": "pult", "von": "sales-ui:" + daten["von"],
+                            "seit": NOT_AUS_SEIT, "grund": daten["grund"]}
+        else:
+            self.not_aus = {**self.not_aus, "an": False, "seit": NOT_AUS_SEIT, "grund": None}
+        return dict(self.not_aus)
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -282,7 +318,7 @@ def test_karte_zeigt_angaben_links_und_formulare(client, falsch):
     assert "<iframe" not in s and "<embed" not in s and "<object" not in s   # PDF nur verlinkt
     for pfad in ("freigeben", "nicht-bewerben", "feedback"):
         assert f'method="post" action="/freigaben/bewerbung/{BID}/{pfad}"' in s
-    assert s.count(f'name="csrf" value="{ui.CSRF_TOKEN}"') == 3 + 1       # dazu "Neuer Lauf" im Kopf (H2)
+    assert s.count(f'name="csrf" value="{ui.CSRF_TOKEN}"') == 3 + 1 + 1   # dazu "Neuer Lauf" (H2) und "Not-Aus setzen" (A2) im Kopf
     assert s.count(f'name="bindung" value="{B}"') == 2 and s.count('name="fassung" value="2"') == 3
     assert s.count('name="bestaetigt" value="ja"') == 2
     assert 'name="grund" maxlength="500"' in s
@@ -1005,8 +1041,8 @@ def test_jedes_formular_hat_die_csrf_marke(client, falsch):
                      karte(application_id="bw-3", versand=weg("portal", None)),
                      karte(application_id="bw-4", wartet_auf_durchsicht=True, versand=weg())]
     s = _abschnitt(client)
-    # 4 Karten (17 Formulare) und im Kopf "Neuer Lauf" (H2): jedes traegt die CSRF-Marke.
-    assert s.count("<form") == 18 == s.count(f'name="csrf" value="{ui.CSRF_TOKEN}"')
+    # 4 Karten (17 Formulare) und im Kopf "Neuer Lauf" (H2) und "Not-Aus setzen" (A2): jedes traegt die CSRF-Marke.
+    assert s.count("<form") == 19 == s.count(f'name="csrf" value="{ui.CSRF_TOKEN}"')
 
 
 # --- Adresse setzen ------------------------------------------------------------------
@@ -1705,7 +1741,7 @@ def test_ausfall_von_laeufe_aktuell_sperrt_den_abschnitt_nicht(client, falsch):
 def test_lauf_wird_nach_der_liste_gelesen(client, falsch):
     client.get("/freigaben")
     gets = [p for m, p, _ in falsch.aufrufe if m == "GET"]
-    assert gets == [OFFEN, ENTSCHIEDEN, LAUF_AKTUELL]
+    assert gets == [OFFEN, ENTSCHIEDEN, NOT_AUS, LAUF_AKTUELL]
     assert ("GET", LAUF_AKTUELL, ui_freigabe_bewerbung.LESE_ZEITLIMIT_S) in falsch.zeitlimits
 
 
@@ -1942,3 +1978,546 @@ def test_lauf_kasten_steht_auf_freigaben_nicht_im_verlauf(client, falsch):
         assert not any(t in v for t in HERMES_TEXTE.values())
         assert "Prüfnotiz" not in v and 'name="antwort_f1"' not in v
         assert 'action="/freigaben/bewerbung/' not in v
+
+
+# --- A2: Not-Aus und Autonomie-Stand (Plan 2026-10-30, Task 10) --------------------------------------
+#
+# Mit A2 geht eine Bewerbung vier Stunden nach "bereit" von allein raus (BEWERBUNG_AUTONOM). Der Kopf des
+# Abschnitts zeigt den Not-Aus (GET /not-aus) mit den Knoepfen "Not-Aus setzen" / "Lösen"; jede Karte, die
+# die Zentrale als autonom meldet (`autonom` nicht null), sagt, wann und warum - und ihr "Nicht bewerben"
+# heisst dann "Stoppen" (Grund Pflicht). Ohne `autonom` bleibt die Karte, wie sie war.
+
+FAELLIG = "2026-10-30T12:00:00+00:00"                  # 13:00 in Berlin (MEZ seit 25.10.)
+VERFALL = "2026-11-06T19:29:53.499119+00:00"           # 06.11., 20:29 in Berlin
+AUTONOM_TEXTE = {"bereit": "Geht automatisch raus um 13:00",
+                 "offene_fragen": "Wartet auf deine Antworten, verfällt am 06.11.",
+                 "empfaenger_pruefen": "Empfänger prüfen: Domain nicht durch ein Impressum belegt",
+                 "feedback_offen": "Überarbeitung läuft"}
+GRUENDE = {"kein_email_weg": "kein E-Mail-Weg", "keine_adresse": "keine Adresse",
+           "nicht_in_anzeige": "Adresse steht nicht in der Anzeige", "freemail": "Freemail-Adresse",
+           "domain_unbelegt": "Domain nicht durch ein Impressum belegt"}
+
+
+@pytest.fixture
+def berlin(monkeypatch):
+    """Ortszeit fest auf Europe/Berlin: die Tests nennen die Uhrzeiten als Zahl."""
+    monkeypatch.setattr(ui, "ZEITZONE", ZoneInfo("Europe/Berlin"))
+
+
+def autonom(stand="bereit", grund=None, faellig_am=None, verfaellt_am=None):
+    """Das Kartenfeld `autonom` (Task 9): immer genau diese vier Schluessel."""
+    return {"stand": stand, "grund": grund, "faellig_am": faellig_am, "verfaellt_am": verfaellt_am}
+
+
+def autonom_stand(stand):
+    return autonom(stand, grund="domain_unbelegt" if stand == "empfaenger_pruefen" else None,
+                   faellig_am=FAELLIG if stand == "bereit" else None,
+                   verfaellt_am=VERFALL if stand == "offene_fragen" else None)
+
+
+def _post_not_aus(c, aktion, **daten):
+    return c.post(f"/freigaben/bewerbung/not-aus/{aktion}", data={"csrf": ui.CSRF_TOKEN, **daten},
+                  follow_redirects=False)
+
+
+def _not_aus_zeile(kopf: str) -> str:
+    """Die Zeile "Not-Aus: ..." im Kopf, bis zum naechsten Tag."""
+    return re.search(r"Not-Aus: [^<]*", kopf).group(0)
+
+
+# --- Not-Aus im Kopf ---------------------------------------------------------------------------
+
+
+def test_not_aus_schalter(client, falsch, berlin):
+    kopf = _kopf(_abschnitt(client))
+    assert _not_aus_zeile(kopf) == "Not-Aus: aus"
+    setzen = _form(kopf, "setzen")
+    assert ">Not-Aus setzen</button>" in setzen
+    assert 'name="grund"' in setzen and 'maxlength="500"' in setzen                    # mit Grund
+    assert f'name="csrf" value="{ui.CSRF_TOKEN}"' in setzen
+    assert 'action="/freigaben/bewerbung/not-aus/setzen"' in setzen
+    assert _ohne_form(kopf, "loesen") and "Lösen" not in kopf
+    assert kopf.index("Not-Aus: aus") < kopf.index(HERMES_TEXTE["bereit"])             # vor Hermes und Lauf
+
+    r = _post_not_aus(client, "setzen", grund="  Urlaub \r\n")
+    assert r.status_code == 303 and r.headers["location"] == "/freigaben?bw_hinweis=not_aus_gesetzt#bewerbungen"
+    assert falsch.aktionen() == [("POST", NOT_AUS, {"an": True, "von": "mira", "grund": "Urlaub"})]
+    assert falsch.im_loop == []
+    s = _abschnitt(client, r.headers["location"])
+    assert ui_freigabe_bewerbung._HINWEISE["not_aus_gesetzt"][1] in s
+    kopf = _kopf(s)
+    assert _not_aus_zeile(kopf) == "Not-Aus: an seit 30.10.2026 20:29 · von mira · Grund: Urlaub"
+    assert "sales-ui:" not in kopf
+    loesen = _form(kopf, "loesen")
+    assert ">Lösen</button>" in loesen and f'name="csrf" value="{ui.CSRF_TOKEN}"' in loesen
+    assert _ohne_form(kopf, "setzen") and "Not-Aus setzen" not in kopf
+
+    r = _post_not_aus(client, "loesen")
+    assert r.status_code == 303 and r.headers["location"] == "/freigaben?bw_hinweis=not_aus_geloest#bewerbungen"
+    assert falsch.aktionen()[-1] == ("POST", NOT_AUS, {"an": False, "von": "mira", "grund": None})
+    kopf = _kopf(_abschnitt(client, r.headers["location"]))
+    assert _not_aus_zeile(kopf) == "Not-Aus: aus" and ">Not-Aus setzen</button>" in kopf
+    assert "Lösen" not in kopf and _ohne_form(kopf, "loesen")
+
+
+def test_not_aus_aus_bot_env_ist_im_pult_nicht_loesbar(client, falsch):
+    falsch.not_aus = {"an": True, "quelle": "bot.env", "von": None, "seit": None, "grund": None}
+    kopf = _kopf(_abschnitt(client))
+    assert _not_aus_zeile(kopf) == "Not-Aus: an – gesetzt in bot.env, im Pult nicht lösbar"
+    assert _ohne_form(kopf, "loesen") and _ohne_form(kopf, "setzen")
+    assert "Lösen" not in kopf and "Not-Aus setzen" not in kopf and "Not-Aus: aus" not in kopf
+
+    # Eine veraltete Seite schickt trotzdem "Lösen": die Zentrale hält den Schalter (`an` bleibt wahr).
+    r = _post_not_aus(client, "loesen")
+    assert r.status_code == 303 and r.headers["location"] == "/freigaben?bw_hinweis=not_aus_bot_env#bewerbungen"
+    assert falsch.aktionen() == [("POST", NOT_AUS, {"an": False, "von": "mira", "grund": None})]
+    s = _abschnitt(client, r.headers["location"])
+    assert '<div class="warnung">Der Not-Aus steht in bot.env und lässt sich im Pult nicht lösen.</div>' in s
+    assert ui_freigabe_bewerbung._HINWEISE["not_aus_geloest"][1] not in s
+    assert "gesetzt in bot.env" in _kopf(s) and _ohne_form(_kopf(s), "loesen")
+
+
+def test_not_aus_zeigt_wer_wann_und_warum_maskiert(client, falsch, berlin):                # Review Focus 5
+    falsch.not_aus = {"an": True, "quelle": "pult", "von": "sales-ui:" + BOESE, "seit": BOESE2, "grund": BOESE}
+    s = _abschnitt(client)
+    assert "<script" not in s and '"><img' not in s
+    assert _not_aus_zeile(_kopf(s)) == ("Not-Aus: an seit &quot;&gt;&lt;img onerror=1&gt; · "      # unlesbare Zeit: wie geliefert
+                                        "von &lt;script&gt;x&lt;/script&gt; · Grund: &lt;script&gt;x&lt;/script&gt;")
+    assert "sales-ui:" not in s                                                           # Präfix weg, Rest maskiert
+    # Ohne Präfix, ohne Grund, ohne Zeit: nur das, was da ist.
+    falsch.not_aus = {"an": True, "quelle": "pult", "von": "felix", "seit": None, "grund": "   "}
+    kopf = _kopf(_abschnitt(client))
+    assert _not_aus_zeile(kopf) == "Not-Aus: an · von felix" and ">Lösen</button>" in kopf
+    falsch.not_aus = {"an": True, "quelle": "pult", "von": None, "seit": NOT_AUS_SEIT, "grund": None}
+    assert _not_aus_zeile(_kopf(_abschnitt(client))) == "Not-Aus: an seit 30.10.2026 20:29"
+
+
+@pytest.mark.parametrize("antwort", [None, [], "an", {}, {"an": "ja"}, {"an": 1}, {"an": None}, {"quelle": "pult"}])
+def test_not_aus_antwort_in_falscher_form_ist_ein_fehler_kein_aus(client, falsch, antwort):
+    """Nur ein echtes bool in `an` sagt etwas. Alles andere zeigt weder "aus" noch Knöpfe."""
+    falsch.not_aus = antwort
+    s = _abschnitt(client)
+    kopf = _kopf(s)
+    assert '<div class="warnung">Not-Aus-Status nicht lesbar' in kopf and WEG_TEXT in kopf
+    assert "Not-Aus: aus" not in kopf and "Not-Aus setzen" not in kopf and "Lösen" not in kopf
+    assert _ohne_form(kopf, "setzen") and _ohne_form(kopf, "loesen")
+    assert HERMES_TEXTE["bereit"] in kopf and "Muster GmbH" in s                    # Lauf-Kasten und Karten bleiben
+
+
+@pytest.mark.parametrize("fehler,text", [
+    (PultFehler("nicht_erreichbar", "TimeoutError"), WEG_TEXT),
+    (PultFehler("unbekannt", "500"), WEG_TEXT),
+    (PultFehler("nicht_verbunden", "401"), NICHT_VERBUNDEN_TEXT),
+    (RuntimeError("kaputt"), WEG_TEXT),
+])
+def test_ausfall_von_not_aus_sperrt_den_abschnitt_nicht(client, falsch, fehler, text, caplog):
+    falsch.fehler_not_aus = fehler
+    with caplog.at_level(logging.WARNING, logger="sales-ui"):
+        s = _abschnitt(client)
+    kopf = _kopf(s)
+    assert '<div class="warnung">Not-Aus-Status nicht lesbar' in kopf and text in kopf
+    assert "Not-Aus: aus" not in kopf and _ohne_form(kopf, "setzen") and _ohne_form(kopf, "loesen")
+    assert HERMES_TEXTE["bereit"] in kopf and "Muster GmbH – Data Engineer" in s
+    assert any("Not-Aus" in m for m in _meldungen(caplog))
+    falsch.fehler_not_aus = None                       # kein Zwischenspeicher: jede Seite fragt neu
+    assert "Not-Aus: aus" in _kopf(_abschnitt(client))
+    assert ui_freigabe_bewerbung._speicher.frisch_fehler() is None
+
+
+def test_zentrale_ohne_not_aus_zeigt_keinen_kasten(client, falsch):
+    """Eine Zentrale vor A2 kennt die Route nicht (404): kein Kasten, kein Hinweis, der Rest wie sonst."""
+    falsch.fehler_not_aus = PultFehler("abgelehnt", "Not Found")
+    s = _abschnitt(client)
+    assert "Not-Aus" not in s and 'class="warnung"' not in s
+    assert HERMES_TEXTE["bereit"] in _kopf(s) and "Muster GmbH – Data Engineer" in s
+
+
+def test_not_aus_wird_im_threadpool_mit_kurzem_zeitlimit_gelesen(client, falsch):
+    _abschnitt(client)
+    gets = [(p, t) for m, p, t in falsch.zeitlimits if m == "GET"]
+    assert (NOT_AUS, ui_freigabe_bewerbung.LESE_ZEITLIMIT_S) in gets
+    assert _post_not_aus(client, "setzen").status_code == 303
+    assert _post_not_aus(client, "loesen").status_code == 303
+    assert [t for m, p, t in falsch.zeitlimits if (m, p) == ("POST", NOT_AUS)] == [8, 8]
+    assert falsch.im_loop == []
+
+
+def test_not_aus_steht_auf_freigaben_aber_nicht_im_verlauf(client, falsch):
+    assert "Not-Aus: aus" in client.get("/freigaben").text
+    v = client.get("/monitoring/verlauf").text
+    assert "Not-Aus" not in v and 'action="/freigaben/bewerbung/' not in v
+
+
+def test_not_aus_ist_nur_fuer_freigeben_sichtbar(client_lesen, falsch):
+    assert "Not-Aus" not in client_lesen.get("/freigaben").text and falsch.aufrufe == []
+
+
+# --- Not-Aus setzen und lösen ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("grund,gesendet", [
+    ("Urlaub", "Urlaub"), ("  Urlaub bis Montag  ", "Urlaub bis Montag"), ("Pause – Bali ☀", "Pause – Bali ☀"),
+    ("", None), ("   ", None), ("\r\n", None), ("g" * 500, "g" * 500)])
+def test_not_aus_setzen_grund_ist_optional(client, falsch, grund, gesendet):
+    r = _post_not_aus(client, "setzen", grund=grund)
+    assert r.status_code == 303 and r.headers["location"].startswith("/freigaben?bw_hinweis=not_aus_gesetzt")
+    assert falsch.aktionen() == [("POST", NOT_AUS, {"an": True, "von": "mira", "grund": gesendet})]
+    assert falsch.aktionen()[0][2]["an"] is True                    # ein echtes bool, nie "ja"
+
+
+def test_not_aus_setzen_ohne_grundfeld(client, falsch):
+    assert _post_not_aus(client, "setzen").status_code == 303
+    assert falsch.aktionen() == [("POST", NOT_AUS, {"an": True, "von": "mira", "grund": None})]
+
+
+@pytest.mark.parametrize("grund", ["g" * 501, "zwei\nZeilen", "Tab\there", "Glocke\x07", "Null\x00"])
+def test_not_aus_setzen_ungueltiger_grund_geht_nicht_hin(client, falsch, grund):
+    r = _post_not_aus(client, "setzen", grund=grund)
+    assert r.status_code == 422 and "Nichts wurde gesendet" in r.text and falsch.aktionen() == []
+
+
+def test_not_aus_loesen_schickt_nie_einen_grund(client, falsch):
+    assert _post_not_aus(client, "loesen", grund="egal").status_code == 303
+    assert falsch.aktionen() == [("POST", NOT_AUS, {"an": False, "von": "mira", "grund": None})]
+
+
+@pytest.mark.parametrize("aktion", ["setzen", "loesen"])
+def test_not_aus_ohne_csrf_403(client, falsch, aktion):
+    for token in (None, "falsch"):
+        d = {} if token is None else {"csrf": token}
+        r = client.post(f"/freigaben/bewerbung/not-aus/{aktion}", data=d, follow_redirects=False)
+        assert r.status_code == 403
+    assert falsch.aktionen() == []
+
+
+@pytest.mark.parametrize("aktion", ["setzen", "loesen"])
+def test_not_aus_rolle_lesen_darf_nicht_schalten(client_lesen, falsch, aktion):
+    r = _post_not_aus(client_lesen, aktion)
+    assert r.status_code == 403 and "Nicht für diese Anmeldung" in r.text and falsch.aufrufe == []
+    assert ui._pfad_erlaubt("freigeben", f"/freigaben/bewerbung/not-aus/{aktion}") is True
+    assert ui._pfad_erlaubt("lesen", f"/freigaben/bewerbung/not-aus/{aktion}") is False
+
+
+@pytest.mark.parametrize("aktion", ["setzen", "loesen"])
+def test_not_aus_ohne_anmeldung_nichts(falsch, monkeypatch, aktion):
+    monkeypatch.setattr(ui, "UI_SESSION_SECRET", "")
+    c = TestClient(ui.app, headers=HOST)
+    assert _post_not_aus(c, aktion).status_code == 403
+    assert falsch.aufrufe == []
+
+
+@pytest.mark.parametrize("aktion", ["setzen", "loesen"])
+def test_not_aus_nur_per_post(client, falsch, aktion):
+    assert client.get(f"/freigaben/bewerbung/not-aus/{aktion}").status_code == 405
+    assert falsch.aufrufe == []
+
+
+@pytest.mark.parametrize("aktion", ["setzen", "loesen"])
+@pytest.mark.parametrize("art", ["nicht_erreichbar", "unbekannt"])
+def test_not_aus_zeitueberschreitung_ist_unklar(client, falsch, aktion, art):
+    falsch.fehler_post = PultFehler(art, "TimeoutError")
+    r = _post_not_aus(client, aktion, grund="Urlaub")
+    assert r.status_code == 504 and ui_freigabe_bewerbung.UNKLAR_TITEL in r.text and "location" not in r.headers
+    for erfolg in ("not_aus_gesetzt", "not_aus_geloest"):                       # nie eine Erfolgsmeldung
+        assert ui_freigabe_bewerbung._HINWEISE[erfolg][1] not in r.text
+
+
+@pytest.mark.parametrize("aktion", ["setzen", "loesen"])
+def test_not_aus_nicht_verbunden_503(client, falsch, aktion):
+    falsch.fehler_post = PultFehler("nicht_verbunden", "401")
+    r = _post_not_aus(client, aktion)
+    assert r.status_code == 503 and "nicht verbunden" in r.text
+
+
+@pytest.mark.parametrize("aktion,antwort", [
+    ("setzen", {"an": False, "quelle": "pult"}), ("setzen", {}), ("setzen", {"an": "ja"}), ("setzen", "ok"),
+    ("loesen", {"an": True, "quelle": "pult"}), ("loesen", {"an": 0}), ("loesen", {}), ("loesen", [])])
+def test_not_aus_unklare_antwort_ist_unklar(client, falsch, aktion, antwort):
+    """Gelungen heißt: `an` kommt als echtes bool so zurück, wie es gewollt war (oder bot.env hält ihn)."""
+    falsch.antwort_not_aus = antwort
+    r = _post_not_aus(client, aktion)
+    assert r.status_code == 504 and ui_freigabe_bewerbung.UNKLAR_TITEL in r.text
+
+
+def test_not_aus_ablehnung_ist_ein_allgemeiner_hinweis(client, falsch):
+    falsch.fehler_post = PultFehler("abgelehnt", "eingabe_ungueltig")
+    r = _post_not_aus(client, "setzen", grund="Urlaub")
+    assert r.status_code == 303 and r.headers["location"].startswith("/freigaben?bw_hinweis=abgelehnt")
+    assert "nicht angenommen" in _abschnitt(client, r.headers["location"])
+
+
+def test_not_aus_grund_steht_in_keinem_protokoll(client, falsch, caplog):
+    falsch.fehler_post = PultFehler("nicht_erreichbar", "TimeoutError")
+    with caplog.at_level(logging.WARNING, logger="sales-ui"):
+        assert _post_not_aus(client, "setzen", grund="GRUND-XYZ").status_code == 504
+    assert "GRUND-XYZ" not in caplog.text
+    assert any("Not-Aus" in m for m in _meldungen(caplog))
+
+
+# --- Autonomie-Zeile auf der Karte ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize("stand", list(AUTONOM_TEXTE))
+def test_karte_autonom_zeile(client, falsch, berlin, stand):
+    falsch.karten = [karte(autonom=autonom_stand(stand))]
+    k, = _karten(_abschnitt(client))
+    assert AUTONOM_TEXTE[stand] in k
+    for anderer, text in AUTONOM_TEXTE.items():                     # je Stand genau eine Zeile
+        if anderer != stand:
+            assert text not in k
+    assert k.index(AUTONOM_TEXTE[stand]) < k.index("<form")        # oben auf der Karte, vor den Knöpfen
+
+
+def test_karte_autonom_je_karte(client, falsch, berlin):
+    falsch.karten = [karte(application_id=f"bw-{i}", firma=f"Firma{i}", autonom=autonom_stand(st))
+                     for i, st in enumerate(AUTONOM_TEXTE)]
+    karten = _karten(_abschnitt(client))
+    assert len(karten) == 4
+    for k, stand in zip(karten, AUTONOM_TEXTE):
+        assert AUTONOM_TEXTE[stand] in k
+
+
+@pytest.mark.parametrize("faellig,uhr", [
+    ("2026-10-30T12:00:00+00:00", "13:00"),                         # MEZ
+    ("2026-07-01T12:00:00+00:00", "14:00"),                         # MESZ
+    ("2026-12-01T06:05:00Z", "07:05"),                              # "Z" statt +00:00
+    ("2026-10-30T12:00:00", "13:00"),                               # ohne Zone: gilt als UTC
+    ("2026-10-30T14:00:00+02:00", "13:00"),                         # andere Zone: auf Berlin gerechnet
+    ("2026-10-30T23:30:00+00:00", "00:30"),                         # über Mitternacht
+])
+def test_bereit_zeigt_die_uhrzeit_in_berlin(client, falsch, berlin, faellig, uhr):
+    falsch.karten = [karte(autonom=autonom("bereit", faellig_am=faellig))]
+    k, = _karten(_abschnitt(client))
+    assert f"Geht automatisch raus um {uhr}" in k
+
+
+@pytest.mark.parametrize("verfall,tag", [
+    ("2026-11-06T19:29:53.499119+00:00", "06.11."), ("2026-11-06T23:30:00+00:00", "07.11."),
+    ("2026-12-31T23:59:00Z", "01.01."), ("2026-07-01T10:00:00+00:00", "01.07.")])
+def test_offene_fragen_zeigt_das_datum_in_berlin(client, falsch, berlin, verfall, tag):
+    falsch.karten = [karte(autonom=autonom("offene_fragen", verfaellt_am=verfall))]
+    k, = _karten(_abschnitt(client))
+    assert f"Wartet auf deine Antworten, verfällt am {tag}" in k
+
+
+@pytest.mark.parametrize("wert", [None, "", "   ", "morgen", BOESE, BOESE2, 7, [], {"a": 1}, "0000-00-00T00:00:00",
+                                  "9999-12-31T23:59:00+00:00"])        # die letzte läuft beim Umrechnen über
+def test_ohne_lesbaren_zeitpunkt_steht_keine_zeit_da(client, falsch, berlin, wert):
+    """Kein Zeitpunkt, kein erfundener: die Zeile nennt dann keine Zeit - und nie den Rohwert."""
+    falsch.karten = [karte(autonom=autonom("bereit", faellig_am=wert)),
+                     karte(application_id=BID2, autonom=autonom("offene_fragen", verfaellt_am=wert))]
+    bereit, fragen = _karten(_abschnitt(client))
+    assert "Geht automatisch raus" in bereit and "Geht automatisch raus um" not in bereit
+    assert "Wartet auf deine Antworten" in fragen and "verfällt am" not in fragen
+    for k in (bereit, fragen):
+        assert "<script" not in k and '"><img' not in k and "&lt;script" not in k and "morgen" not in k
+
+
+@pytest.mark.parametrize("code,wort", list(GRUENDE.items()))
+def test_empfaenger_pruefen_nennt_den_grund_in_worten(client, falsch, code, wort):
+    falsch.karten = [karte(autonom=autonom("empfaenger_pruefen", grund=code))]
+    k, = _karten(_abschnitt(client))
+    assert f"Empfänger prüfen: {wort}" in k
+
+
+@pytest.mark.parametrize("code", [None, "", "unbekannt_neu", BOESE, BOESE2, 7, ["freemail"], {"freemail": 1}])
+def test_empfaenger_pruefen_ohne_bekannten_grund_raet_nicht(client, falsch, code):
+    falsch.karten = [karte(autonom=autonom("empfaenger_pruefen", grund=code))]
+    k, = _karten(_abschnitt(client))
+    assert "Empfänger prüfen" in k and "Empfänger prüfen:" not in k
+    assert "unbekannt_neu" not in k and "<script" not in k and "&lt;script" not in k and '"><img' not in k
+    assert ">Empfänger bestätigen und freigeben</button>" in k
+
+
+def test_empfaenger_pruefen_aendert_den_freigabe_knopf(client, falsch, berlin):
+    falsch.karten = [karte(application_id=f"bw-{i}", firma=f"Firma{i}", versand=weg(), autonom=autonom_stand(st))
+                     for i, st in enumerate(AUTONOM_TEXTE)]
+    karten = _karten(_abschnitt(client))
+    assert len(karten) == 4
+    for k, stand in zip(karten, AUTONOM_TEXTE):
+        freigeben = _form(k, "freigeben")
+        if stand == "empfaenger_pruefen":
+            assert ">Empfänger bestätigen und freigeben</button>" in freigeben
+            assert "Freigeben und senden" not in freigeben
+            assert f'name="versand_an" value="{ADRESSE}"' in freigeben           # die Adresse geht weiter mit
+        else:
+            assert ">Freigeben und senden</button>" in freigeben and "Empfänger bestätigen" not in freigeben
+
+
+def test_empfaenger_pruefen_knopf_auch_ohne_versandweg(client, falsch):
+    falsch.karten = [karte(autonom=autonom("empfaenger_pruefen", grund="keine_adresse"))]      # kein `versand`
+    k, = _karten(_abschnitt(client))
+    assert ">Empfänger bestätigen und freigeben</button>" in _form(k, "freigeben")
+
+
+@pytest.mark.parametrize("wert", [None, "bereit", [], 5, True, "", [{"stand": "bereit"}]])
+def test_ohne_autonom_bleibt_die_karte_wie_sie_war(client, falsch, wert):
+    falsch.karten = [karte(versand=weg(), autonom=wert), karte(application_id=BID2, versand=weg())]   # 2. ohne Feld
+    karten = _karten(_abschnitt(client))
+    assert len(karten) == 2
+    for k in karten:
+        assert "automatisch" not in k and "Wartet auf deine Antworten" not in k and "Überarbeitung" not in k
+        assert "Empfänger prüfen" not in k and "Empfänger bestätigen" not in k
+        assert ">Freigeben und senden</button>" in k and ">Nicht bewerben</button>" in k and "Stoppen" not in k
+        assert _ohne_form(k, "stoppen") and _form(k, "nicht-bewerben")
+        assert 'placeholder="Grund (optional)"' in k
+
+
+@pytest.mark.parametrize("stand", ["unbekannt_neu", BOESE, BOESE2, None, 7, "", ["bereit"]])
+def test_unbekannter_stand_wird_nicht_wiedergegeben(client, falsch, stand):
+    """Die Zentrale meldet die Karte als autonom, den Stand kennt die Seite nicht: neutrale Zeile, nie der
+    Rohwert - und das Stoppen bleibt (die Karte geht ja von allein raus)."""
+    falsch.karten = [karte(autonom=autonom(stand))]
+    k, = _karten(_abschnitt(client))
+    assert "Automatischer Versand: Stand unbekannt" in k
+    assert "unbekannt_neu" not in k and "<script" not in k and "&lt;script" not in k and '"><img' not in k
+    assert ">Stoppen</button>" in k and _ohne_form(k, "nicht-bewerben")
+
+
+def test_autonom_werte_sind_fremd_und_werden_nie_roh_ausgegeben(client, falsch):                   # Review Focus 5
+    falsch.karten = [karte(autonom={"stand": BOESE, "grund": BOESE2, "faellig_am": BOESE, "verfaellt_am": BOESE2}),
+                     karte(application_id=BID2, autonom=autonom("empfaenger_pruefen", grund=BOESE)),
+                     karte(application_id="bw-3", autonom=autonom("bereit", faellig_am=BOESE2)),
+                     karte(application_id="bw-4", autonom=autonom("offene_fragen", verfaellt_am=BOESE))]
+    s = _abschnitt(client)
+    assert "<script" not in s and '"><img' not in s and "&lt;script" not in s and "onerror" not in s
+
+
+def test_autonom_zeile_steht_auf_freigaben_nicht_im_verlauf(client, falsch, berlin):
+    """Monitoring -> Verlauf zeigt keine Karten: dort steht keine Autonomie-Zeile."""
+    falsch.karten = [karte(autonom=autonom_stand("bereit"))]
+    falsch.verlauf = [verlauf(firma="Alt AG")]
+    assert AUTONOM_TEXTE["bereit"] in client.get("/freigaben").text
+    v = client.get("/monitoring/verlauf").text
+    assert "Alt AG" in v and "Geht automatisch raus" not in v
+
+
+# --- Ablehnen heißt Stoppen ------------------------------------------------------------------------
+
+
+def test_ablehnen_heisst_stoppen(client, falsch, berlin):
+    falsch.karten = [karte(firma="Auto", autonom=autonom_stand("bereit")),
+                     karte(application_id=BID2, bindung=B2, firma="Hand")]
+    auto, hand = _karten(_abschnitt(client))
+    # Mit `autonom`: "Stoppen", und der Grund ist Pflicht.
+    stoppen = _form(auto, "stoppen")
+    assert ">Stoppen</button>" in stoppen and "Nicht bewerben" not in auto and _ohne_form(auto, "nicht-bewerben")
+    grund = _tag(stoppen, "grund")
+    assert " required" in grund and 'maxlength="500"' in grund and 'placeholder="Grund (Pflicht)"' in grund
+    assert 'placeholder="Grund (optional)"' not in auto
+    assert 'name="fassung" value="1"' in stoppen and f'name="bindung" value="{B}"' in stoppen
+    assert 'name="bestaetigt" value="ja"' in stoppen and "Stoppen bestätigen" in stoppen
+    assert f'name="csrf" value="{ui.CSRF_TOKEN}"' in stoppen
+    # Ohne `autonom`: wie vorher.
+    assert ">Nicht bewerben</button>" in hand and "Stoppen" not in hand and _ohne_form(hand, "stoppen")
+    ablehnen = _form(hand, "nicht-bewerben")
+    assert 'placeholder="Grund (optional)"' in ablehnen and " required" not in _tag(ablehnen, "grund")
+
+
+@pytest.mark.parametrize("stand", list(AUTONOM_TEXTE))
+def test_jeder_autonome_stand_hat_stoppen(client, falsch, stand):
+    falsch.karten = [karte(autonom=autonom_stand(stand))]
+    k, = _karten(_abschnitt(client))
+    assert ">Stoppen</button>" in k and ">Nicht bewerben</button>" not in k
+
+
+def test_ohne_entscheiden_keine_stoppen_knoepfe(client, falsch):
+    falsch.karten = [karte(autonom=autonom_stand("feedback_offen"), wartet_auf_durchsicht=True),
+                     karte(application_id=BID2, autonom=autonom_stand("feedback_offen"), bindung=None)]
+    warten, ohne = _karten(_abschnitt(client))
+    assert "Überarbeitung läuft" in warten and "Überarbeitung läuft" in ohne
+    assert "Stoppen" not in warten and "Stoppen" not in ohne            # wie "Nicht bewerben" sonst auch
+
+
+STOPPEN = {"fassung": "1", "bindung": B, "bestaetigt": "ja"}
+
+
+def test_stoppen_geht_als_nicht_bewerben_mit_grund_an_die_zentrale(client, falsch):
+    r = _post(client, "stoppen", **STOPPEN, grund="  Stelle ist inzwischen besetzt \r\n")
+    assert r.status_code == 303 and r.headers["location"] == "/freigaben?bw_hinweis=gestoppt#bewerbungen"
+    assert falsch.aktionen() == [("POST", f"/bewerbungen/{BID}/nicht-bewerben",
+                                  {"fassung": 1, "bindung": B, "von": "mira", "grund": "Stelle ist inzwischen besetzt"})]
+    assert falsch.im_loop == [] and falsch.zeitlimits[-1] == ("POST", f"/bewerbungen/{BID}/nicht-bewerben", 30)
+    s = _abschnitt(client, r.headers["location"])
+    assert "Gestoppt – die Zentrale hat die Entscheidung verbucht. Die Bewerbung geht nicht raus." in s
+
+
+@pytest.mark.parametrize("daten", [{}, {"grund": ""}, {"grund": "   "}, {"grund": "\r\n"}, {"grund": " \t "}])
+def test_stoppen_ohne_grund_sendet_nichts(client, falsch, daten):
+    r = _post(client, "stoppen", **STOPPEN, **daten)
+    assert r.status_code == 303 and r.headers["location"] == "/freigaben?bw_hinweis=grund_fehlt#bewerbungen"
+    assert falsch.aktionen() == []
+    s = _abschnitt(client, r.headers["location"])
+    assert ('<div class="warnung">Kein Grund eingegeben – zum Stoppen ist ein Grund nötig. '
+            'Nichts wurde gesendet.</div>') in s
+    assert ui_freigabe_bewerbung._HINWEISE["gestoppt"][1] not in s
+
+
+def test_stoppen_grenzen(client, falsch):
+    assert _post(client, "stoppen", **STOPPEN, grund="g" * 501).status_code == 422 and falsch.aktionen() == []
+    assert _post(client, "stoppen", **STOPPEN, grund="g" * 500).status_code == 303
+    assert falsch.aktionen()[-1][2]["grund"] == "g" * 500
+    assert _post(client, "stoppen", fassung="x", bindung=B, bestaetigt="ja", grund="g").status_code == 422
+    assert _post(client, "stoppen", fassung="1", bindung="sha256:zz", bestaetigt="ja", grund="g").status_code == 422
+    assert len(falsch.aktionen()) == 1
+
+
+def test_stoppen_ohne_haken_ruft_nichts(client, falsch):
+    r = _post(client, "stoppen", fassung="1", bindung=B, grund="Besetzt")
+    assert r.status_code == 400 and falsch.aktionen() == []
+
+
+def test_stoppen_ohne_csrf_403(client, falsch):
+    for token in (None, "falsch"):
+        d = {**STOPPEN, "grund": "Besetzt", **({} if token is None else {"csrf": token})}
+        r = client.post(f"/freigaben/bewerbung/{BID}/stoppen", data=d, follow_redirects=False)
+        assert r.status_code == 403
+    assert falsch.aktionen() == []
+
+
+def test_stoppen_rolle_lesen_darf_nicht(client_lesen, falsch):
+    r = _post(client_lesen, "stoppen", **STOPPEN, grund="Besetzt")
+    assert r.status_code == 403 and "Nicht für diese Anmeldung" in r.text and falsch.aufrufe == []
+    assert ui._pfad_erlaubt("freigeben", f"/freigaben/bewerbung/{BID}/stoppen") is True
+    assert ui._pfad_erlaubt("lesen", f"/freigaben/bewerbung/{BID}/stoppen") is False
+
+
+def test_stoppen_ohne_anmeldung_nichts(falsch, monkeypatch):
+    monkeypatch.setattr(ui, "UI_SESSION_SECRET", "")
+    c = TestClient(ui.app, headers=HOST)
+    assert _post(c, "stoppen", **STOPPEN, grund="Besetzt").status_code == 403
+    assert falsch.aufrufe == []
+
+
+@pytest.mark.parametrize("art", ["nicht_erreichbar", "unbekannt"])
+def test_stoppen_zeitueberschreitung_ist_unklar(client, falsch, art):
+    falsch.fehler_post = PultFehler(art, "TimeoutError")
+    r = _post(client, "stoppen", **STOPPEN, grund="Besetzt")
+    assert r.status_code == 504 and ui_freigabe_bewerbung.UNKLAR_TITEL in r.text and "location" not in r.headers
+    assert ui_freigabe_bewerbung._HINWEISE["gestoppt"][1] not in r.text
+
+
+def test_stoppen_unklare_antwort_ist_unklar(client, falsch):
+    falsch.antwort["nicht-bewerben"] = {}
+    r = _post(client, "stoppen", **STOPPEN, grund="Besetzt")
+    assert r.status_code == 504 and ui_freigabe_bewerbung.UNKLAR_TITEL in r.text
+
+
+@pytest.mark.parametrize("grund,text", [
+    ("fassung_veraltet", "Diese Fassung ist veraltet – Seite neu laden"),
+    ("schon_entschieden", "Schon entschieden"),
+])
+def test_stoppen_ablehnung_wird_als_hinweis_gezeigt(client, falsch, grund, text):
+    falsch.fehler_post = PultFehler("abgelehnt", grund, {"detail": grund})
+    r = _post(client, "stoppen", **STOPPEN, grund="Besetzt")
+    assert r.status_code == 303 and r.headers["location"] == f"/freigaben?bw_hinweis={grund}#bewerbungen"
+    s = _abschnitt(client, r.headers["location"])
+    assert text in s and ui_freigabe_bewerbung._HINWEISE["gestoppt"][1] not in s
+
+
+def test_stoppen_grund_steht_in_keinem_protokoll(client, falsch, caplog):
+    falsch.fehler_post = PultFehler("nicht_erreichbar", "TimeoutError")
+    with caplog.at_level(logging.WARNING, logger="sales-ui"):
+        assert _post(client, "stoppen", **STOPPEN, grund="GRUND-XYZ").status_code == 504
+    assert "GRUND-XYZ" not in caplog.text
+    assert any(BID in m and "Fassung 1" in m for m in _meldungen(caplog))

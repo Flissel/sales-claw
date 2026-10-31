@@ -21,6 +21,14 @@ archiviert werden. Auf der Karte steht die Pruefnotiz von Hermes samt den offene
 Antworten (einzeilig, hoechstens 500 Zeichen) gelten nur fuer diese Bewerbung. Faellt der Lauf-Status
 aus, steht im Kopf der Hinweis - die Karten bleiben.
 
+Hermes A2 (autonomer Versand, Plan 2026-10-30 Task 10): Mit `BEWERBUNG_AUTONOM` geht eine Bewerbung vier
+Stunden nach "bereit" von allein raus. Der Kopf zeigt den Not-Aus der Zentrale (`GET /not-aus`: "Not-Aus: aus"
+mit "Not-Aus setzen" samt Grund, "Not-Aus: an seit ..." mit "Lösen"); steht er in bot.env, ist er im Pult
+nicht lösbar und hat keinen Knopf. Auf der Karte sagt eine Zeile, wann und warum eine Bewerbung rausgeht
+(`autonom`: bereit, offene Fragen, Empfänger prüfen, Überarbeitung); nur eine Karte mit `autonom` ist
+autonom - dort heißt "Nicht bewerben" "Stoppen" und der Grund ist Pflicht. Karten ohne `autonom` und eine
+Zentrale ohne Not-Aus-Route (404) sehen aus wie vorher.
+
 Wie der Rest von sales-ui: kein JavaScript, CSRF-Marke in jedem Formular, das
 Anschreiben-PDF nur verlinkt (eigene Datei-Richtlinie, nie gerahmt). Die Texte
 der Zentrale sind bereinigt, aber nicht HTML-maskiert: jede Ausgabe laeuft
@@ -83,6 +91,23 @@ ADRESSE_MAX = 254
 _OFFEN = "/bewerbungen?status=offen"
 _ENTSCHIEDEN = "/bewerbungen?status=entschieden"
 _LAUF = "/laeufe/aktuell"
+_NOT_AUS = "/not-aus"
+# Der Not-Aus aendert nur einen Schalter in der Zentrale (kein Archivieren): wie "Neuer Lauf".
+NOT_AUS_ZEITLIMIT_S = 8
+# Die Zentrale liefert `von` mit dem Praefix der Quelle (`sales-ui:felix`); gezeigt wird der Name.
+NOT_AUS_VON_PRAEFIX = "sales-ui:"
+# Steht der Not-Aus in bot.env, haelt ihn das Pult nicht auf: kein Knopf "Loesen", und ein "Loesen" auf einer
+# veralteten Seite beantwortet die Zentrale weiter mit `an: true, quelle: bot.env`.
+NOT_AUS_QUELLE_ENV = "bot.env"
+# Karte `autonom.grund` (Empfaenger-Regel der Zentrale) -> Wort; dieselben Texte wie die Tagesuebersicht. Ein
+# Code, den diese Seite nicht kennt, wird nicht wiedergegeben: es steht nur "Empfänger prüfen" da.
+EMPFAENGER_GRUENDE = {"kein_email_weg": "kein E-Mail-Weg", "keine_adresse": "keine Adresse",
+                      "nicht_in_anzeige": "Adresse steht nicht in der Anzeige",
+                      "freemail": "Freemail-Adresse",
+                      "domain_unbelegt": "Domain nicht durch ein Impressum belegt"}
+EMPFAENGER_FREIGEBEN = "Empfänger bestätigen und freigeben"
+# Die Zentrale meldet die Karte als autonom (`autonom` nicht null), der Stand ist aber keiner, den diese Seite kennt.
+AUTONOM_UNBEKANNT = "Automatischer Versand: Stand unbekannt"
 # Lauf `status` der Zentrale -> Text im Lauf-Kasten (Unbekanntes steht maskiert so da).
 LAUF_STATUS = {"angefordert": "angefordert", "laeuft": "läuft", "fertig": "fertig",
                "abgebrochen": "abgebrochen"}
@@ -142,6 +167,12 @@ _HINWEISE = {
     "lauf_nicht_offen": ("warnung", "Dieser Lauf ist schon beendet – Seite neu laden."),
     "antwort_ungueltig": ("warnung", "Antwort ungültig – höchstens 500 Zeichen."),
     "frage_unbekannt": ("warnung", "Diese Frage gibt es nicht mehr – Seite neu laden."),
+    # Hermes A2: Not-Aus und Stoppen einer autonomen Bewerbung.
+    "not_aus_gesetzt": ("hinweis", "Not-Aus gesetzt – es geht nichts mehr automatisch raus."),
+    "not_aus_geloest": ("hinweis", "Not-Aus gelöst."),
+    "not_aus_bot_env": ("warnung", "Der Not-Aus steht in bot.env und lässt sich im Pult nicht lösen."),
+    "gestoppt": ("hinweis", "Gestoppt – die Zentrale hat die Entscheidung verbucht. Die Bewerbung geht nicht raus."),
+    "grund_fehlt": ("warnung", "Kein Grund eingegeben – zum Stoppen ist ein Grund nötig. Nichts wurde gesendet."),
 }
 _ABLEHNUNGEN = ("fassung_veraltet", "schon_entschieden", "wartet_auf_durchsicht",
                 "versandziel_geaendert", "lauf_laeuft", "lauf_unbekannt", "lauf_nicht_offen",
@@ -272,16 +303,24 @@ def _score(wert) -> str:
     return "–"
 
 
+def _in_ortszeit(wert, darstellen) -> str | None:
+    """Zeitpunkt der Zentrale (ISO-Text, UTC; ohne Zone gilt UTC) mit `darstellen` (ui._zeit, ui._tag_kurz)
+    in Ortszeit gezeigt. Kein Text, nicht lesbar oder nicht umzurechnen (Jahr 9999): None."""
+    if not isinstance(wert, str) or not wert.strip():
+        return None
+    try:
+        return darstellen(datetime.fromisoformat(wert.strip().replace("Z", "+00:00")))
+    except (ValueError, OverflowError):
+        return None
+
+
 def _erfasst_am(ui, wert) -> str:
     """Zeitpunkt der Zentrale (ISO, UTC) in Ortszeit, maskiert. Laesst er sich nicht
     lesen, steht er maskiert so da, wie er kam; kein Text: "" (dann steht nichts da)."""
     if not isinstance(wert, str) or not wert.strip():
         return ""
-    try:
-        zeitpunkt = datetime.fromisoformat(wert.strip().replace("Z", "+00:00"))
-    except ValueError:
-        return ui._e(wert)
-    return ui._e(ui._zeit(zeitpunkt))
+    zeit = _in_ortszeit(wert, ui._zeit)
+    return ui._e(zeit if zeit is not None else wert)
 
 
 def _link(href: str, text: str) -> str:
@@ -401,6 +440,35 @@ def _weg(ui, k: dict, basis: str, nr, felder: str) -> tuple[str, str, str]:
     return zeile, feld, knopf
 
 
+def _autonom(ui, k: dict) -> tuple[str, str | None]:
+    """Autonomie-Zeile der Karte und ihr Stand: (Zeile, Stand). Autonom ist eine Karte genau dann, wenn die
+    Zentrale `autonom` als Objekt liefert; sonst ("", None) und die Karte bleibt, wie sie war. Der Stand ist
+    einer der vier der Zentrale, bei einem unbekannten "" (die Karte geht trotzdem von allein raus: neutrale
+    Zeile, kein Rohwert). Zeiten in Ortszeit; ohne lesbaren Zeitpunkt steht keiner da. Ein Grund steht nur
+    in Worten da (EMPFAENGER_GRUENDE); alles andere ist Text der Seite."""
+    a = k.get("autonom")
+    if not isinstance(a, dict):
+        return "", None
+    stand = a.get("stand")
+    if stand == "bereit":
+        uhr = _in_ortszeit(a.get("faellig_am"), lambda z: ui._zeit(z).rsplit(" ", 1)[-1])
+        text = (f"Geht automatisch raus um {ui._e(uhr)}" if uhr
+                else "Geht automatisch raus – der Zeitpunkt steht noch nicht fest")
+        return f'<div class="hinweis">{text}</div>', "bereit"
+    if stand == "offene_fragen":
+        tag = _in_ortszeit(a.get("verfaellt_am"), ui._tag_kurz)
+        text = f"Wartet auf deine Antworten, verfällt am {ui._e(tag)}" if tag else "Wartet auf deine Antworten"
+        return f'<div class="hinweis">{text}</div>', "offene_fragen"
+    if stand == "empfaenger_pruefen":
+        grund = a.get("grund")
+        wort = EMPFAENGER_GRUENDE.get(grund) if isinstance(grund, str) else None
+        text = f"Empfänger prüfen: {ui._e(wort)}" if wort else "Empfänger prüfen"
+        return f'<div class="warnung">{text}</div>', "empfaenger_pruefen"
+    if stand == "feedback_offen":
+        return '<div class="hinweis">Überarbeitung läuft</div>', "feedback_offen"
+    return f'<div class="hinweis">{AUTONOM_UNBEKANNT}</div>', ""
+
+
 def _karte(ui, k: dict) -> str:
     e = ui._e
     basis = _basis(k)
@@ -426,6 +494,9 @@ def _karte(ui, k: dict) -> str:
     felder = (f'<input type="hidden" name="csrf" value="{ui.CSRF_TOKEN}">'
               f'<input type="hidden" name="fassung" value="{nr}">')
     versand, versand_an, freigeben = _weg(ui, k, basis, nr, felder)
+    autonom_zeile, autonom_stand = _autonom(ui, k)
+    if autonom_stand == "empfaenger_pruefen":
+        freigeben = EMPFAENGER_FREIGEBEN        # die Karte geht nicht von allein raus: Felix bestätigt den Empfänger
     pruefnotiz = _pruefnotiz(ui, k, felder, basis, nr)
     if k.get("wartet_auf_durchsicht"):
         # Die Zentrale lehnt beides mit 409 ab, solange das GO der Durchsicht fehlt.
@@ -435,17 +506,28 @@ def _karte(ui, k: dict) -> str:
         entscheiden = '<p class="meta">Fassung oder Bindung fehlt – Seite neu laden.</p>'
     else:
         gebunden = f'{felder}<input type="hidden" name="bindung" value="{e(bindung)}">'
+        if autonom_stand is None:
+            ablehnen = (
+                f'<form class="aktion gefahr" method="post" action="{basis}/nicht-bewerben">{gebunden}'
+                f'<input type="text" name="grund" maxlength="{GRUND_MAX}" placeholder="Grund (optional)">'
+                f'<label class="haken"><input type="checkbox" name="bestaetigt" value="ja"> '
+                f'Nicht bewerben bestätigen</label>'
+                f'<button class="gefahr">Nicht bewerben</button></form>')
+        else:
+            # Eine autonome Karte geht von allein raus: das Ablehnen heißt Stoppen, und warum, steht im Grund.
+            ablehnen = (
+                f'<form class="aktion gefahr" method="post" action="{basis}/stoppen">{gebunden}'
+                f'<input type="text" name="grund" maxlength="{GRUND_MAX}" required placeholder="Grund (Pflicht)">'
+                f'<label class="haken"><input type="checkbox" name="bestaetigt" value="ja"> '
+                f'Stoppen bestätigen</label>'
+                f'<button class="gefahr">Stoppen</button></form>')
         entscheiden = (
             f'<div class="aktionen">'
             f'<form class="aktion primaer" method="post" action="{basis}/freigeben">{gebunden}{versand_an}'
             f'<label class="haken"><input type="checkbox" name="bestaetigt" value="ja"> '
             f'Fassung {nr} freigeben bestätigen</label>'
             f'<button class="primaer">{freigeben}</button></form>'
-            f'<form class="aktion gefahr" method="post" action="{basis}/nicht-bewerben">{gebunden}'
-            f'<input type="text" name="grund" maxlength="{GRUND_MAX}" placeholder="Grund (optional)">'
-            f'<label class="haken"><input type="checkbox" name="bestaetigt" value="ja"> '
-            f'Nicht bewerben bestätigen</label>'
-            f'<button class="gefahr">Nicht bewerben</button></form></div>')
+            f'{ablehnen}</div>')
     feedback = ""
     if (am := _erfasst_am(ui, k.get("feedback_offen_seit"))):
         # Angekommen, aber noch nicht umgesetzt (offenes Feedback der Zentrale).
@@ -471,7 +553,7 @@ def _karte(ui, k: dict) -> str:
     etikett = f'<span class="badge">{e(_label(KANAELE, kanal))}</span>' if kanal else ""
     return (f'<details class="karte" open><summary>{etikett}'
             f'<b>{e(k.get("firma"))} – {e(k.get("rolle"))}</b></summary>'
-            f'<div class="meta">{" · ".join(angaben)}</div>{luecke}'
+            f'<div class="meta">{" · ".join(angaben)}</div>{autonom_zeile}{luecke}'
             f'{verweise}{pruef}{was_neu}{pruefnotiz}{versand}{entscheiden}{feedback}</details>')
 
 
@@ -653,6 +735,55 @@ async def _lauf_kopf(ui) -> str:
     return f'<p class="meta">Lauf-Status: {text}</p>'
 
 
+def _not_aus_html(ui, antwort) -> str:
+    """Der Not-Aus aus der Antwort von `GET /not-aus`. Aus: "Not-Aus: aus" und der Knopf "Not-Aus setzen"
+    samt (freiwilligem) Grund. An: seit wann, von wem und warum, und der Knopf "Lösen" - außer der Not-Aus
+    steht in bot.env, dann hält ihn das Pult nicht auf: "gesetzt in bot.env" und kein Knopf. Nur ein echtes
+    bool in `an` sagt etwas; eine andere Form ist ein Fehler (PultFehler), kein "aus" und kein Knopf auf
+    Verdacht. Alles aus der Zentrale ist maskiert."""
+    if not isinstance(antwort, dict) or not isinstance(antwort.get("an"), bool):
+        raise bewerbung_pult.PultFehler("unbekannt", "Antwort ohne an")
+    csrf = f'<input type="hidden" name="csrf" value="{ui.CSRF_TOKEN}">'
+    if not antwort["an"]:
+        return (f'<div class="notaus"><p class="meta">Not-Aus: aus</p><div class="aktionen">'
+                f'<form class="aktion gefahr" method="post" action="{ADMIN_PFAD}/not-aus/setzen">{csrf}'
+                f'<input type="text" name="grund" maxlength="{GRUND_MAX}" placeholder="Grund (optional)">'
+                f'<button class="gefahr">Not-Aus setzen</button></form></div></div>')
+    if antwort.get("quelle") == NOT_AUS_QUELLE_ENV:
+        return ('<div class="notaus"><div class="warnung">Not-Aus: an – gesetzt in bot.env, '
+                'im Pult nicht lösbar</div></div>')
+    seit, grund = _erfasst_am(ui, antwort.get("seit")), _nur_text(antwort.get("grund"))
+    von = _nur_text(antwort.get("von")).removeprefix(NOT_AUS_VON_PRAEFIX)
+    teile = [f"Not-Aus: an seit {seit}" if seit else "Not-Aus: an"]
+    if von:
+        teile.append(f"von {ui._e(von)}")
+    if grund:
+        teile.append(f"Grund: {ui._e(grund)}")
+    return (f'<div class="notaus"><div class="warnung">{" · ".join(teile)}</div><div class="aktionen">'
+            f'<form class="aktion" method="post" action="{ADMIN_PFAD}/not-aus/loesen">{csrf}'
+            f'<button>Lösen</button></form></div></div>')
+
+
+async def _not_aus_kopf(ui) -> str:
+    """Der Not-Aus im Kopf des Abschnitts. Wie der Lauf-Status mit eigenem Schutz und ohne Sperre im
+    Zwischenspeicher: scheitert das Lesen oder Darstellen, steht hier der Hinweis (ohne Knöpfe) und der Rest
+    des Abschnitts bleibt. Eine Zentrale ohne die Route (404, vor A2) hat keinen Not-Aus: dann steht nichts da."""
+    try:
+        antwort = await run_in_threadpool(partial(bewerbung_pult.anfrage, "GET", _NOT_AUS,
+                                                  zeitlimit=LESE_ZEITLIMIT_S))
+        return _not_aus_html(ui, antwort)
+    except bewerbung_pult.PultFehler as f:
+        if f.art == "abgelehnt":
+            LOG.debug("Not-Aus: die Zentrale kennt die Route nicht (%r)", f.grund)
+            return ""
+        LOG.warning("Not-Aus auf /freigaben nicht lesbar: %s (%r)", f.art, f.grund)
+        text = _NICHT_VERBUNDEN if f.art == "nicht_verbunden" else _WEG
+    except Exception:  # noqa: BLE001 - der Not-Aus darf nie die Karten reissen
+        LOG.warning("Not-Aus auf /freigaben nicht lesbar oder nicht darstellbar", exc_info=True)
+        text = _WEG
+    return f'<div class="warnung">Not-Aus-Status nicht lesbar: {text}</div>'
+
+
 def _hinweis(ui, request) -> str:
     if request is None:
         return ""
@@ -722,7 +853,7 @@ async def _abschnitt(ui, request=None) -> str:
         return weg("fehler")
     n = len(offen)
     teile = [f'{kopf} <span class="zaehler{" offen" if n else ""}">{n}</span></h2>', hinweis,
-             await _lauf_kopf(ui)]
+             await _not_aus_kopf(ui), await _lauf_kopf(ui)]
     if not offen:
         teile.append('<p class="meta">Keine Bewerbung wartet auf deine Entscheidung.</p>')
     teile.append(karten)
@@ -761,12 +892,14 @@ def routen(ui) -> list:
                                f"geantwortet. Ob {was}, ist offen – bitte die Freigaben-Seite neu "
                                f"laden und nachsehen.")
 
-    async def abschicken(pfad: str, daten: dict, zeitlimit: float, was: str, erfolg: str, gelungen,
+    async def abschicken(pfad: str, daten: dict, zeitlimit: float, was: str, erfolg, gelungen,
                          beschreibung: str):
         """Eine Aenderung an die Zentrale. `gelungen(antwort)` sagt, ob die Antwort der Erfolg ist, den
-        diese Aktion meldet; `beschreibung` steht im Protokoll, wenn der Ausgang unklar bleibt (zum
-        spaeteren Abgleich mit der Zentrale: welche Bewerbung oder welcher Lauf, welche Aktion - die
-        Kennung als repr, sie kommt aus der Adresse; nie Schluessel, Rumpf oder Eingabetext)."""
+        diese Aktion meldet; `erfolg` ist der Hinweis dazu (oder eine Funktion der Antwort, die ihn nennt:
+        der Not-Aus kann gelungen sein und trotzdem an bleiben); `beschreibung` steht im Protokoll, wenn der
+        Ausgang unklar bleibt (zum spaeteren Abgleich mit der Zentrale: welche Bewerbung oder welcher Lauf,
+        welche Aktion - die Kennung als repr, sie kommt aus der Adresse; nie Schluessel, Rumpf oder
+        Eingabetext)."""
 
         def unklar_protokolliert(warum: str, *args):
             LOG.warning("%s unklar (" + warum + ")", beschreibung, *args)
@@ -787,7 +920,7 @@ def routen(ui) -> list:
         _cache_leeren()
         if not (isinstance(r, dict) and gelungen(r)):
             return unklar_protokolliert("Antwort ohne erwarteten Status")
-        return ziel(erfolg)
+        return ziel(erfolg(r) if callable(erfolg) else erfolg)
 
     async def senden(request, aktion: str, daten: dict, zeitlimit: float, was: str, erfolg: str):
         kennung = request.path_params["bid"]
@@ -834,6 +967,14 @@ def routen(ui) -> list:
         grund = _text(form.get("grund"))
         if len(grund) > GRUND_MAX:
             return ungueltig(f"Der Grund hat mehr als {GRUND_MAX} Zeichen.")
+        if aktion == "stoppen":
+            # Eine autonome Bewerbung stoppen: dieselbe Entscheidung wie "Nicht bewerben" in der Zentrale,
+            # aber hier ist der Grund Pflicht - ohne ihn geht nichts hin.
+            if not grund:
+                return ziel("grund_fehlt")
+            daten["grund"] = grund
+            return await senden(request, "nicht-bewerben", daten, ENTSCHEIDUNG_ZEITLIMIT_S,
+                                "die Bewerbung gestoppt wurde", "gestoppt")
         if grund:
             daten["grund"] = grund
         return await senden(request, aktion, daten, ENTSCHEIDUNG_ZEITLIMIT_S,
@@ -846,6 +987,44 @@ def routen(ui) -> list:
     @ui._gesichert_seite
     async def nicht_bewerben(request):
         return await entscheiden(request, "nicht-bewerben")
+
+    @ui._gesichert_seite
+    async def stoppen(request):
+        return await entscheiden(request, "stoppen")
+
+    async def not_aus_schalten(request, an: bool):
+        """Den Not-Aus der Zentrale setzen (mit freiwilligem Grund, eine Zeile) oder lösen. Gelungen heißt:
+        `an` kommt als echtes bool so zurück, wie gewollt - beim Lösen auch `an: true` mit Quelle bot.env
+        (die Zentrale hält ihn dann, das Pult sagt es). Der Grund steht in keinem Protokoll."""
+        form, fehler = await formular(request)
+        if fehler is not None:
+            return fehler
+        grund = None
+        if an:
+            text = _text(form.get("grund"))
+            if len(text) > GRUND_MAX:
+                return ungueltig(f"Der Grund hat mehr als {GRUND_MAX} Zeichen.")
+            if not text.isprintable():             # mehrzeilig oder mit Steuerzeichen: die Zentrale lehnt es ab
+                return ungueltig("Der Grund darf nur eine Zeile ohne Steuerzeichen sein.")
+            grund = text or None
+        daten = {"an": an, "von": _von(ui._ui_akteur(request)), "grund": grund}
+        if an:
+            return await abschicken(
+                _NOT_AUS, daten, NOT_AUS_ZEITLIMIT_S, "der Not-Aus gesetzt wurde", "not_aus_gesetzt",
+                lambda r: r.get("an") is True, "Not-Aus setzen: Ausgang")
+        return await abschicken(
+            _NOT_AUS, daten, NOT_AUS_ZEITLIMIT_S, "der Not-Aus gelöst wurde",
+            lambda r: "not_aus_geloest" if r.get("an") is False else "not_aus_bot_env",
+            lambda r: r.get("an") is False or (r.get("an") is True and r.get("quelle") == NOT_AUS_QUELLE_ENV),
+            "Not-Aus lösen: Ausgang")
+
+    @ui._gesichert_seite
+    async def not_aus_setzen(request):
+        return await not_aus_schalten(request, True)
+
+    @ui._gesichert_seite
+    async def not_aus_loesen(request):
+        return await not_aus_schalten(request, False)
 
     @ui._gesichert_seite
     async def feedback(request):
@@ -993,6 +1172,9 @@ def routen(ui) -> list:
     return [
         Route(ADMIN_PFAD + "/{bid}/freigeben", freigeben, methods=["POST"]),
         Route(ADMIN_PFAD + "/{bid}/nicht-bewerben", nicht_bewerben, methods=["POST"]),
+        Route(ADMIN_PFAD + "/{bid}/stoppen", stoppen, methods=["POST"]),
+        Route(ADMIN_PFAD + "/not-aus/setzen", not_aus_setzen, methods=["POST"]),
+        Route(ADMIN_PFAD + "/not-aus/loesen", not_aus_loesen, methods=["POST"]),
         Route(ADMIN_PFAD + "/{bid}/feedback", feedback, methods=["POST"]),
         Route(ADMIN_PFAD + "/{bid}/versandziel", versandziel, methods=["POST"]),
         Route(ADMIN_PFAD + "/{bid}/antworten", antworten, methods=["POST"]),
