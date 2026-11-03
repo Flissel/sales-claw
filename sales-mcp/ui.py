@@ -8098,8 +8098,18 @@ def _posteingang_suche(such: str) -> str:
     return "".join(teile)
 
 
+SPAM_LISTE_MAX = 20
+
+
 def _mails_aufraeumen_abschnitt() -> str:
-    """Freigaben: unwichtige Mails, die der Agent zum Wegraeumen vorschlaegt."""
+    """Freigaben: unwichtige Mails, die der Agent zum Wegraeumen vorschlaegt,
+    und (I5, 03.11.2026) die Mails, die er als Betrug sofort in den Spam-Ordner
+    verschoben hat - die Uebersicht stand frueher auf /posteingang und fiel mit
+    R14 weg. Beides kommt aus postfach_mails OHNE Besitzer (Absender/Betreff
+    auch privater GMX/Gmail-Post): darum nur fuer die Rolle, die aufraeumt
+    (freigeben; ohne Anmeldung wie aktion_mail_aufraeumen), nie fuer lesen."""
+    if _AKTIVE_ROLLE.get() in ("lesen", "kalender"):
+        return ""
     vorschlaege = server._q(
         "select message_id, von, betreff, grund from postfach_mails "
         "where status = 'vorgeschlagen' order by gesehen_am desc limit 50")
@@ -8120,6 +8130,25 @@ def _mails_aufraeumen_abschnitt() -> str:
             f'In „Unwichtig“ verschieben</button>'
             f'<button name="entscheidung" value="behalten">Behalten</button>'
             f'</form></div></div>')
+    # Nur zur Kontrolle, ohne Knopf: verschoben ist zurueckholbar (im
+    # Postfach aus dem Spam-Ordner ziehen), geloescht wird nie.
+    spam = server._q(
+        "select von, betreff, grund, ordner, geaendert_am from postfach_mails "
+        "where art = 'spam' and status = 'verschoben' "
+        "order by geaendert_am desc nulls last limit %s", (SPAM_LISTE_MAX,))
+    teile.append(f'<h3 id="mails-spam">Als Betrug in den Spam-Ordner verschoben '
+                 f'<span class="zaehler">{len(spam)}</span></h3>')
+    if not spam:
+        teile.append('<p class="meta">Nichts verschoben.</p>')
+    else:
+        teile.append('<p class="meta">Zurückholen: im Postfach aus dem Spam-Ordner '
+                     'ziehen – gelöscht wird nie.</p>')
+    for m in spam:
+        teile.append(
+            f'<div class="karte"><b>{_e(m["betreff"])}</b>'
+            f'<div class="meta">{_e(m["von"])} — {_e(m["grund"] or "")}'
+            f'{" · Ordner " + _e(m["ordner"]) if m["ordner"] else ""}'
+            f'{" · " + _zeit(m["geaendert_am"]) if m["geaendert_am"] else ""}</div></div>')
     teile.append("</section>")
     return "".join(teile)
 
