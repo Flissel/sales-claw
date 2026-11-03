@@ -1,0 +1,74 @@
+"""Versiegelte Postfach-Zugaenge (Post-Sammelstelle, Stufe 1).
+
+Die Web-Oberflaeche kennt nur den OEFFENTLICHEN Schluessel: ein Passwort, das dort
+eingegeben wird, wird sofort versiegelt (RSA-3072, OAEP mit SHA-256) und so
+gespeichert. Nur der Abholdienst haelt den PRIVATEN Schluessel und kann es oeffnen.
+Wer die Datenbank oder die UI-Umgebung liest, bekommt kein Klartext-Passwort.
+
+Beide Schluessel liegen in der Umgebung als base64 des PEM (eine Zeile, .env-tauglich).
+Fehlermeldungen nennen nie Klartext oder Schluessel - TresorFehler traegt nur den Grund.
+"""
+from __future__ import annotations
+
+import base64
+import os
+
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding
+
+ENV_OEFFENTLICH = "POST_SCHLUESSEL_OEFFENTLICH"
+ENV_PRIVAT = "POST_SCHLUESSEL_PRIVAT"
+MAX_ZEICHEN = 300  # Postfach-Passwoerter sind kurz; OAEP-3072 fasst ohnehin nur 318 Bytes
+
+
+class TresorFehler(Exception):
+    """Versiegeln/Oeffnen gescheitert. Die Meldung enthaelt nie Geheimnisse."""
+
+
+def _oaep() -> padding.OAEP:
+    return padding.OAEP(
+        mgf=padding.MGF1(algorithm=hashes.SHA256()),
+        algorithm=hashes.SHA256(),
+        label=None,
+    )
+
+
+def _pem(pem: str | None, env_name: str, was: str) -> bytes:
+    """PEM-Bytes: aus dem Argument (Klartext-PEM) oder base64 aus der Umgebung."""
+    if pem:
+        return pem.encode("utf-8")
+    roh = (os.environ.get(env_name) or "").strip()
+    if not roh:
+        raise TresorFehler(f"{was} fehlt ({env_name} nicht gesetzt)")
+    try:
+        return base64.b64decode(roh, validate=True)
+    except ValueError:
+        raise TresorFehler(f"{was} ist nicht lesbar (kein base64)") from None
+
+
+def versiegeln(klartext: str, oeffentlich_pem: str | None = None) -> str:
+    daten = klartext.encode("utf-8")
+    if len(klartext) > MAX_ZEICHEN or len(daten) > 318:
+        raise TresorFehler(f"Passwort zu lang (hoechstens {MAX_ZEICHEN} Zeichen)")
+    try:
+        schluessel = serialization.load_pem_public_key(
+            _pem(oeffentlich_pem, ENV_OEFFENTLICH, "oeffentlicher Schluessel")
+        )
+        return base64.b64encode(schluessel.encrypt(daten, _oaep())).decode("ascii")
+    except TresorFehler:
+        raise
+    except Exception:
+        raise TresorFehler("Versiegeln fehlgeschlagen (Schluessel unbrauchbar)") from None
+
+
+def oeffnen(versiegelt: str, privat_pem: str | None = None) -> str:
+    try:
+        schluessel = serialization.load_pem_private_key(
+            _pem(privat_pem, ENV_PRIVAT, "privater Schluessel"), password=None
+        )
+        roh = base64.b64decode(versiegelt, validate=True)
+        return schluessel.decrypt(roh, _oaep()).decode("utf-8")
+    except TresorFehler:
+        raise
+    except Exception:
+        raise TresorFehler("Oeffnen fehlgeschlagen (Schluessel passt nicht oder Daten defekt)") from None
