@@ -7,6 +7,8 @@ Das Modell wird nie gerufen: `nach_modell` ist per autouse-Fixture gesperrt.
 """
 import os
 import re
+import shutil
+import subprocess
 import sys
 from email.message import EmailMessage
 from pathlib import Path
@@ -63,6 +65,7 @@ class Attrappe:
         self.selects = []
         self.geholt = []
         self.verboten = []
+        self.ablehnen = set()      # UIDs, deren naechster Abruf mit NO endet
 
     def select(self, mailbox="INBOX", readonly=False):
         if readonly is not True:
@@ -89,7 +92,10 @@ class Attrappe:
         if befehl == "fetch":
             uid = int(args[0])
             self.geholt.append(uid)
-            if uid not in self.mails:
+            if uid in self.ablehnen:
+                self.ablehnen.discard(uid)
+                return "NO", [b"Server busy"]
+            if self.mails.get(uid) is None:
                 return "OK", [None]
             return "OK", [(f"1 (UID {uid} RFC822 {{1}}".encode(), self.mails[uid]), b")"]
         self._verboten(f"uid {befehl}")
@@ -324,17 +330,17 @@ def test_transient_laesst_mail_neu(monkeypatch, caplog):
     post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({
         1: _mail("<a@x>", betreff="Geheimer Betreff Eins"),
         2: _mail("<b@x>", betreff="Geheimer Betreff Zwei")}))
-    for fehler in (gateway.GatewayTransient("Gateway nicht erreichbar"),
-                   OSError("Verbindung zurueckgesetzt"), ValueError("kaputt")):
+    for _ in range(post_abholen.VERSUCHE_MAX + 1):
         aufrufe = []
 
-        def einordnen(mail, fehler=fehler):
+        def einordnen(mail):
             aufrufe.append(mail["id"])
-            raise fehler
+            raise gateway.GatewayTransient("Gateway nicht erreichbar")
         monkeypatch.setattr(post_einordnung, "einordnen", einordnen)
         assert post_abholen.einordnen_offene(10) == 0
         assert len(aufrufe) == 1                     # Runde endet beim ersten
-        assert {r["status"] for r in _mails()} == {"neu"}
+        # Transient zaehlt keinen Versuch: das Gateway, nicht die Mail ist schuld.
+        assert {(r["status"], r["versuche"]) for r in _mails()} == {("neu", 0)}
 
     # Endgueltiger Fehler: diese Mail -> fehler/Unklar, die naechste laeuft weiter.
     reihe = iter([gateway.GatewayFehler("Gateway HTTP 400: Geheimer Betreff Eins"),
@@ -352,6 +358,70 @@ def test_transient_laesst_mail_neu(monkeypatch, caplog):
     assert "Geheim" not in (r1["fehler"] or "") and r1["fehler"]
     assert r2["status"] == "eingeordnet"
     assert "Geheim" not in caplog.text and "anna@example.org" not in caplog.text
+
+
+def test_kaputte_mail_blockiert_die_einordnung_nicht(monkeypatch, caplog):
+    _konto()
+    post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({
+        1: _mail("<a@x>", betreff="Geheimer Betreff Eins"),
+        2: _mail("<b@x>", betreff="Geheimer Betreff Zwei")}))
+    aufrufe = []
+
+    def einordnen(mail):
+        aufrufe.append(mail["betreff"])
+        if mail["betreff"].endswith("Eins"):
+            raise ValueError("Geheimer Betreff Eins kaputt")
+        return _einordnung()
+    monkeypatch.setattr(post_einordnung, "einordnen", einordnen)
+    # Versuch 1 und 2: Runde endet bei der kaputten Mail, sie bleibt neu.
+    for versuch in (1, 2):
+        assert post_abholen.einordnen_offene(10) == 0
+        r1, r2 = _mails()
+        assert (r1["status"], r1["versuche"], r2["status"]) == ("neu", versuch, "neu")
+    # Versuch 3: aufgegeben -> fehler/privat/Unklar, und die naechste Mail laeuft.
+    assert post_abholen.einordnen_offene(10) == 2
+    r1, r2 = _mails()
+    assert (r1["status"], r1["bereich"], r1["fach"], r1["versuche"]) == \
+        ("fehler", "privat", "Unklar", 3)
+    assert r1["fehler"] and "Geheim" not in r1["fehler"]
+    assert r2["status"] == "eingeordnet"
+    assert len(aufrufe) == 4
+    assert "Geheim" not in caplog.text and "ValueError" in caplog.text
+
+
+def test_abgelehnter_abruf_wird_naechste_runde_wiederholt(caplog):
+    _konto()
+    kasten = Attrappe({1: _mail("<a@x>"), 2: _mail("<b@x>"), 3: _mail("<c@x>")})
+    kasten.ablehnen = {2}
+    with pytest.raises(Exception):
+        post_abholen.konto_abholen(_zeile("gmx-test"), kasten)
+    # Mail 1 ist da, Mail 2 nicht uebersprungen: letzte_uid steht vor ihr.
+    assert _zeile("gmx-test")["letzte_uid"] == 1
+    assert [r["imap_uid"] for r in _mails()] == [1]
+    kasten.geholt.clear()
+    assert post_abholen.konto_abholen(_zeile("gmx-test"), kasten) == 2
+    assert kasten.geholt == [2, 3]
+    assert [r["imap_uid"] for r in _mails()] == [1, 2, 3]
+
+    # OK ohne Daten = entfernt: weiter, mit Kennung und UID im Protokoll.
+    kasten.mails[4] = None
+    kasten.mails[5] = _mail("<e@x>")
+    caplog.set_level("INFO")
+    assert post_abholen.konto_abholen(_zeile("gmx-test"), kasten) == 1
+    assert _zeile("gmx-test")["letzte_uid"] == 5
+    assert "gmx-test" in caplog.text and "UID 4" in caplog.text
+
+
+def test_gatewayfehler_zaehlt_zur_tagesgrenze(monkeypatch):
+    _konto()
+    post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({1: _mail("<a@x>")}))
+
+    def einordnen(mail):
+        raise gateway.GatewayFehler("Gateway HTTP 400")
+    monkeypatch.setattr(post_einordnung, "einordnen", einordnen)
+    assert post_abholen.einordnen_offene(5) == 1
+    assert _mails()[0]["status"] == "fehler"
+    assert post_abholen.modellaufrufe_heute() == 1
 
 
 # --- Runde: Vorrang und Tagesgrenze ------------------------------------------
@@ -440,6 +510,8 @@ def test_ohne_besitzer_startet_der_dienst_nicht(monkeypatch):
     monkeypatch.setattr(post_abholen, "POST_BESITZER", "")
     monkeypatch.setattr(post_abholen, "_logging_einrichten", lambda: None)
     monkeypatch.setattr(post_abholen.signal, "signal", lambda *a: None)
+    zeitgrenzen = []
+    monkeypatch.setattr(post_abholen.socket, "setdefaulttimeout", zeitgrenzen.append)
     monkeypatch.setattr(post_abholen.post_konten, "env_konten_uebernehmen",
                         lambda b: aufgerufen.append(("env", b)) or 0)
     monkeypatch.setattr(post_abholen, "eine_runde", lambda: aufgerufen.append("runde") or {})
@@ -450,6 +522,8 @@ def test_ohne_besitzer_startet_der_dienst_nicht(monkeypatch):
     monkeypatch.setattr(post_abholen, "POST_ONCE", True)
     assert post_abholen.main() == 0
     assert aufgerufen == [("env", "felix"), "runde"]
+    # IMAP verbindet ohne eigene Zeitgrenze - main setzt die Vorgabe fuer Sockets.
+    assert zeitgrenzen and set(zeitgrenzen) == {post_abholen.IMAP_TIMEOUT_S}
 
 
 # --- Compose / Deploy ------------------------------------------------------
@@ -490,7 +564,8 @@ def test_compose_sales_post_ladenfest():
 
     update = (WURZEL / "deploy" / "update.sh").read_text(encoding="utf-8")
     kern = re.search(r'^KERN_ALLE="([^"]*)"', update, re.M).group(1).split()
-    assert "sales-post" in kern and kern[-2:] == ["sales-linkedin", "sales-kanaele"]
+    optional = re.search(r'^KERN_OPTIONAL="([^"]*)"', update, re.M).group(1).split()
+    assert "sales-post" in optional and "sales-post" not in kern
     smoke = (WURZEL / "deploy" / "smoke.sh").read_text(encoding="utf-8")
     assert '"sales-post"' in re.search(r"erwartete_container = \{(.*?)\}", smoke, re.S).group(1)
     # Muss nicht laufen: der Betreiber startet ihn erst, wenn POST_BESITZER steht.
@@ -517,3 +592,35 @@ def test_schluessel_nur_bei_sales_post():
     for datei in WURZEL.glob("docker-compose*.yml"):
         if datei.name != "docker-compose.yml":
             assert "POST_SCHLUESSEL_PRIVAT" not in datei.read_text(encoding="utf-8"), datei
+
+
+def _update_logik() -> str:
+    """Die Teile von deploy/update.sh, die entscheiden, was laeuft und ob die
+    Abnahme (mit automatischem Rueckbau) laeuft - woertlich ausgeschnitten."""
+    update = (WURZEL / "deploy" / "update.sh").read_text(encoding="utf-8")
+    teile = [re.search(rf'^{n}="[^"]*"$', update, re.M).group(0)
+             for n in ("KERN_ALLE", "KERN_OPTIONAL")]
+    for f in ("ohne_optionale", "containername", "laufende_kerndienste"):
+        teile.append(re.search(rf"^{f}\(\) \{{.*?^\}}$", update, re.M | re.S).group(0))
+    bedingung = re.search(r'^if (\[ .*"\$KERN_ALLE" \]); then$', update, re.M)
+    assert bedingung, "Abnahme-Bedingung nicht gefunden"
+    teile.append('KERN_BASIS="$(laufende_kerndienste sales)"\necho "LAEUFT:$KERN_BASIS"\n'
+                 f"if {bedingung.group(1)}; then echo ABNAHME; else echo UEBERSPRUNGEN; fi")
+    return "\n".join(teile)
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="braucht bash")
+@pytest.mark.parametrize("gestoppt, erwartet, post_laeuft", [
+    ("sales-post", "ABNAHME", False),        # sales-post aus: volle Abnahme + Rueckbau
+    ("", "ABNAHME", True),                   # alles an: ebenso, sales-post wird mitgebaut
+    ("sales-post sales-mail", "UEBERSPRUNGEN", False),   # echter Teilstack
+])
+def test_update_abnahme_auch_ohne_sales_post(gestoppt, erwartet, post_laeuft):
+    attrappe = ('docker() { case " %s " in *" $4 "*) echo exited ;; *) echo running ;; esac; }\n'
+                % gestoppt)
+    ergebnis = subprocess.run(["bash", "-c", attrappe + _update_logik()],
+                              capture_output=True, text=True, timeout=30)
+    assert ergebnis.returncode == 0, ergebnis.stderr
+    assert ergebnis.stdout.strip().endswith(erwartet), ergebnis.stdout
+    laeuft = ergebnis.stdout.split("LAEUFT:")[1].splitlines()[0].split()
+    assert ("sales-post" in laeuft) is post_laeuft

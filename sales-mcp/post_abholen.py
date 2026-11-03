@@ -43,6 +43,7 @@ import logging
 import os
 import re
 import signal
+import socket
 import sys
 import threading
 
@@ -63,6 +64,10 @@ POST_ONCE = os.environ.get("POST_ONCE", "").strip().lower() in ("1", "true", "ye
 EINORDNEN_JE_RUNDE = 25
 KUNDE_PAUSE_S = 120
 IMAP_TIMEOUT_S = 120          # ein haengender Anbieter darf die Runde nicht ewig halten
+# Ein Fehler ausserhalb des Gateways (kaputte Mail, Netz-Eigenheit) darf die
+# aelteste offene Mail nicht ewig vorne halten: nach so vielen Versuchen wird
+# sie `fehler` und die Runde geht weiter (Ruling R8).
+VERSUCHE_MAX = 3
 KOPF_MAX = 1000               # Absender/Empfaenger/Betreff: Fremddaten, gedeckelt
 ANHANG_NAME_MAX = 200
 ANHAENGE_MAX = 50
@@ -158,6 +163,20 @@ def _unlesbar(kennung: str, uid: int, fehlertyp: str) -> dict:
             "fehler": f"Mail nicht lesbar ({fehlertyp})"}
 
 
+def _holen(kasten, uid: int):
+    """Wie postfach._holen, aber streng: ein abgelehnter Abruf (NO/BAD) wirft.
+    postfach._holen liefert dann None - hier hiesse das „Mail entfernt“, und
+    letzte_uid liefe still an einer Mail vorbei, die es noch gibt. So scheitert
+    das Konto in dieser Runde und holt dieselbe UID in der naechsten erneut."""
+    status, daten = kasten.uid("fetch", str(uid).encode("ascii"), "(RFC822)")
+    if status != "OK":
+        raise RuntimeError("IMAP-Abruf abgelehnt")
+    for teil in daten or ():
+        if isinstance(teil, tuple) and len(teil) >= 2 and teil[1]:
+            return email.message_from_bytes(teil[1])
+    return None              # OK ohne Daten: die Mail gibt es nicht mehr
+
+
 def _uidvalidity(kasten) -> int | None:
     try:
         _typ, daten = kasten.response("UIDVALIDITY")
@@ -233,10 +252,6 @@ def konto_abholen(zeile: dict, kasten=None, stapel: int = 50) -> int:
     eigener = kasten is None
     if eigener:
         kasten = post_konten.verbinden(zeile)
-        try:
-            kasten.sock.settimeout(IMAP_TIMEOUT_S)
-        except AttributeError:
-            pass
     try:
         kasten.select("INBOX", readonly=True)
         letzte = _uidvalidity_pruefen(zeile, _uidvalidity(kasten))
@@ -251,9 +266,12 @@ def konto_abholen(zeile: dict, kasten=None, stapel: int = 50) -> int:
         for uid in dieser_stapel:
             if _STOPP.is_set():
                 return neu
-            nachricht = postfach._holen(kasten, str(uid).encode("ascii"))
+            nachricht = _holen(kasten, uid)
             mail = None
-            if nachricht is not None:      # None: inzwischen entfernt - weiter
+            if nachricht is None:
+                LOG.info("Konto %s: UID %s ohne Inhalt (entfernt) - uebersprungen",
+                         zeile["kennung"], uid)
+            else:
                 try:
                     mail = _mail_zerlegen(nachricht, zeile["kennung"], uid)
                 except Exception as e:  # noqa: BLE001 - sonst haengt das Konto ewig an dieser UID
@@ -323,11 +341,25 @@ def einordnen_offene(grenze: int) -> int:
             server._q(
                 "update post_mails set status = 'fehler', bereich = 'privat', fach = %s, "
                 "fehler = 'Einordnung durch das Modell endgueltig fehlgeschlagen', "
+                # Der Aufruf hat das Modell erreicht: zaehlt zur Tagesgrenze.
+                "einordnung_quelle = 'modell', "
                 "eingeordnet_am = now() where id = %s and status = 'neu'",
                 (post_struktur.UNKLAR, mail["id"]))
             erledigt += 1
             continue
         except Exception as e:  # noqa: BLE001 - Netz-/JSON-Eigenheiten (Task-4-Luecke)
+            versuche = server._q(
+                "update post_mails set versuche = versuche + 1 where id = %s "
+                "returning versuche", (mail["id"],))
+            if versuche and versuche[0]["versuche"] >= VERSUCHE_MAX:
+                LOG.warning("Mail %s: Einordnung nach %d Versuchen aufgegeben (%s)",
+                            mail["id"], VERSUCHE_MAX, type(e).__name__)
+                server._q(
+                    "update post_mails set status = 'fehler', bereich = 'privat', fach = %s, "
+                    "fehler = 'Einordnung wiederholt fehlgeschlagen', eingeordnet_am = now() "
+                    "where id = %s and status = 'neu'", (post_struktur.UNKLAR, mail["id"]))
+                erledigt += 1
+                continue
             LOG.warning("Einordnen abgebrochen (%s) - naechste Runde erneut",
                         type(e).__name__)
             break
@@ -399,6 +431,11 @@ def _logging_einrichten() -> None:
 
 def main() -> int:
     _logging_einrichten()
+    # imaplib.IMAP4_SSL (postfach._imap_oeffnen) verbindet und meldet sich ohne
+    # Zeitgrenze an: ein haengender Anbieter hielte den Dienst fuer immer fest.
+    # Die Vorgabe gilt fuer jeden danach geoeffneten Python-Socket; psycopg
+    # (libpq) bleibt unberuehrt, das Gateway setzt seine Zeitgrenze selbst.
+    socket.setdefaulttimeout(IMAP_TIMEOUT_S)
     if not POST_BESITZER:
         # Ohne Besitzer waere jede Mail niemandem zugeordnet - und privat
         # heisst „nur der Besitzer“ (Spec §6). Lieber gar nicht starten.

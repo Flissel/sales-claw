@@ -62,6 +62,10 @@ create table if not exists :"schema".post_mails (
     case when sensibel then '' else coalesce(text,'') end)) stored,
   unique (konto_id, imap_uid)
 );
+-- Ruling R8: Fehlversuche ausserhalb des Gateways je Mail; ab 3 wird die Mail
+-- `fehler`, damit eine einzelne kaputte Mail die Einordnung nicht blockiert.
+alter table :"schema".post_mails
+  add column if not exists versuche int not null default 0;
 create index if not exists post_mails_such_idx
   on :"schema".post_mails using gin (suchtext);
 create index if not exists post_mails_besitzer_msg_idx
