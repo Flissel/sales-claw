@@ -347,10 +347,13 @@ def routen(ui) -> list:
                 f"status = 'eingeordnet', fehler = null, begruendung = null{leeren} "
                 "where id = %s", (bereich, fach, sensibel, m["id"]))
             if muster:
+                # R13: die Regel gehoert dem Besitzer der Mail (nicht der
+                # korrigierenden Leitung) und gilt nur fuer dessen Post.
                 conn.execute(
                     "insert into post_regeln (muster, feld, bereich, fach, "
-                    "sensibel, angelegt_von) values (%s, 'von', %s, %s, %s, %s)",
-                    (muster, bereich, fach, sensibel, b.name))
+                    "sensibel, angelegt_von, besitzer) "
+                    "values (%s, 'von', %s, %s, %s, %s, %s)",
+                    (muster, bereich, fach, sensibel, b.name, m["besitzer"]))
         return RedirectResponse(f"/post/mail/{m['id']}", status_code=303)
 
     # --- Postfach hinzufügen ---------------------------------------------

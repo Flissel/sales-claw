@@ -52,8 +52,18 @@ def _regeln_laden() -> list[dict]:
     # diesen Absender immer so“, soll seine letzte Entscheidung gelten, nicht
     # eine ältere Regel für denselben Absender.
     return list(server._q(
-        "select muster, feld, bereich, fach, sensibel from post_regeln "
-        "order by angelegt_am desc, id desc"))
+        "select muster, feld, bereich, fach, sensibel, besitzer from post_regeln "
+        "order by angelegt_am desc nulls last, id desc"))
+
+
+def _regel_gilt(zeile: dict, mail: dict) -> bool:
+    """Ruling R13: eine Regel mit Besitzer gilt nur fuer dessen Post. Kennt die
+    Mail ihren Besitzer nicht, gilt sie nicht (fail closed); nur Regeln ohne
+    Besitzer (global) gelten fuer alle."""
+    eigner = zeile.get("besitzer")
+    if eigner is None:
+        return True
+    return bool(mail.get("besitzer")) and mail.get("besitzer") == eigner
 
 
 def nach_regel(mail: dict) -> Einordnung | None:
@@ -62,6 +72,8 @@ def nach_regel(mail: dict) -> Einordnung | None:
             bereich, fach = SENSIBEL_FACH
             return Einordnung(bereich, fach, True, "regel", f"sensibel-muster:{feld}:{i}")
     for zeile in _regeln_laden():
+        if not _regel_gilt(zeile, mail):
+            continue
         bereich, fach = zeile.get("bereich"), zeile.get("fach")
         if not post_struktur.fach_gueltig(bereich or "", fach or ""):
             LOG.warning("Regel uebersprungen: ungueltiges Fach/Bereich")

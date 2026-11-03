@@ -85,6 +85,12 @@ create table if not exists :"schema".post_regeln (
   angelegt_von text,
   angelegt_am timestamptz default now()
 );
+-- Ruling R13: eine Regel aus „für diesen Absender immer so“ gilt nur fuer die
+-- Post ihres Besitzers - sonst ordnete Annas Entscheidung auch Bens Mails ein
+-- (und machte sie z. B. privat oder business). NULL = globale Regel, nur fuer
+-- spaetere Betreiber-Pflege; die Oberflaeche legt keine an.
+alter table :"schema".post_regeln
+  add column if not exists besitzer text;
 
 create table if not exists :"schema".post_abteilungen (
   name text primary key

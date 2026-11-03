@@ -353,7 +353,7 @@ def test_korrektur_mit_regel_legt_regel_an():
                "regel": "ja"})
     assert r.status_code == 303
     regeln = server._q("select muster, feld, bereich, fach, sensibel, "
-                       "angelegt_von from post_regeln")
+                       "angelegt_von, besitzer from post_regeln")
     assert len(regeln) == 1
     g = regeln[0]
     assert g["muster"] == (r'(^|[<\s"])' + re.escape("max+news@firma.de")
@@ -362,12 +362,13 @@ def test_korrektur_mit_regel_legt_regel_an():
     assert (g["bereich"], g["fach"], g["sensibel"]) == (
         "business", "Newsletter & Branche", False)
     assert g["angelegt_von"] == "t8_anna"
+    assert g["besitzer"] == "t8_anna"
     assert re.search(g["muster"], von, re.IGNORECASE)
     assert not re.search(g["muster"], "max-news@firma.de", re.IGNORECASE)
-    # Die Einordnung wendet die neue Regel auf die naechste Mail an.
+    # Die Einordnung wendet die neue Regel auf Annas naechste Mail an.
     import post_einordnung as pe
-    e = pe.nach_regel({"id": "x", "von": von, "betreff": "Neu", "datum": "",
-                       "text": ""})
+    e = pe.nach_regel({"id": "x", "besitzer": "t8_anna", "von": von,
+                       "betreff": "Neu", "datum": "", "text": ""})
     assert (e.bereich, e.fach, e.quelle) == ("business", "Newsletter & Branche",
                                              "regel")
     # Ohne Haken: keine Regel.
@@ -386,8 +387,8 @@ def test_regel_trifft_genau_die_adresse():
                   "regel": "ja"}).status_code == 303
 
     def treffer(von):
-        e = pe.nach_regel({"id": "x", "von": von, "betreff": "b", "datum": "",
-                           "text": ""})
+        e = pe.nach_regel({"id": "x", "besitzer": "t8_anna", "von": von,
+                           "betreff": "b", "datum": "", "text": ""})
         return e is not None and e.fach == "Rechnungen"
 
     assert treffer("Anna <a@x.de>")
@@ -396,6 +397,51 @@ def test_regel_trifft_genau_die_adresse():
     assert not treffer("ba@x.de")
     assert not treffer("a@x.de.evil.com")
     assert not treffer("Anna <ba@x.de>")
+
+
+def test_regel_gilt_nicht_fuer_fremde_konten(monkeypatch):
+    """Ruling R13: Annas „immer so“ fuer Absender X ordnet nur Annas Post ein,
+    nie Bens Mail von X - auch nicht ueber den Abholdienst."""
+    import post_abholen
+    import post_einordnung as pe
+    m = _mail("t8_anna", "business", ps.UNKLAR, von="X <x@absender.de>")
+    assert _post("t8_anna", f"/post/mail/{m}/korrigieren",
+                 {"bereich": "privat", "fach": "Abos & Newsletter",
+                  "regel": "ja"}).status_code == 303
+
+    def kopf(besitzer):
+        d = {"id": "x", "von": "X <x@absender.de>", "betreff": "b",
+             "datum": "", "text": ""}
+        if besitzer is not None:
+            d["besitzer"] = besitzer
+        return d
+
+    eigen = pe.nach_regel(kopf("t8_anna"))
+    assert (eigen.bereich, eigen.fach) == ("privat", "Abos & Newsletter")
+    assert pe.nach_regel(kopf("t8_ben")) is None
+    assert pe.nach_regel(kopf(None)) is None          # fail closed
+    assert pe.nach_regel(kopf("")) is None
+
+    # Ende zu Ende ueber den Abholdienst: zwei neue Mails von X.
+    monkeypatch.setattr(pe, "nach_modell", lambda mail: pe.Einordnung(
+        "business", ps.UNKLAR, False, "modell", "attrappe"))
+    annas = _mail("t8_anna", None, None, status="neu", von="X <x@absender.de>")
+    bens = _mail("t8_ben", None, None, status="neu", von="X <x@absender.de>")
+    assert post_abholen.einordnen_offene(10) == 2
+    a, b = _zeile(annas), _zeile(bens)
+    assert (a["bereich"], a["fach"], a["einordnung_quelle"]) == (
+        "privat", "Abos & Newsletter", "regel")
+    assert (b["bereich"], b["fach"], b["einordnung_quelle"]) == (
+        "business", ps.UNKLAR, "modell")
+
+
+def test_leitung_korrektur_legt_regel_fuer_den_besitzer_an():
+    m = _mail("t8_ben", "business", ps.UNKLAR, von="y@lieferant.de")
+    assert _post("t8_lea", f"/post/mail/{m}/korrigieren",
+                 {"bereich": "business", "fach": "Rechnungen",
+                  "regel": "ja"}).status_code == 303
+    g = server._q("select besitzer, angelegt_von from post_regeln")[0]
+    assert (g["besitzer"], g["angelegt_von"]) == ("t8_ben", "t8_lea")
 
 
 # ---------------------------------------------------------------------------

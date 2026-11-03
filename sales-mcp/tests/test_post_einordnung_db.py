@@ -49,3 +49,25 @@ def test_menschliche_korrektur_schlaegt_aeltere_regel():
     e = pe.nach_regel({"id": "x", "von": "Firma <news@firma.de>", "betreff": "b",
                        "datum": "", "text": ""})
     assert (e.bereich, e.fach) == ("business", "Rechnungen")
+
+
+def test_regel_ohne_zeitpunkt_kommt_zuletzt():
+    # `desc` allein setzte NULL nach vorn - eine Zeile ohne angelegt_am haette
+    # jede datierte (also jede echte menschliche) Regel verdeckt.
+    server._q("insert into post_regeln (muster, feld, bereich, fach, sensibel, "
+              "angelegt_am) values (%s, 'von', 'privat', 'Werbung', false, null)",
+              (r"@laden\.example",))
+    _regel(r"@laden\.example", "Käufe & Bestellungen", "2026-11-01 10:00+00")
+    e = pe.nach_regel({"id": "x", "von": "a@laden.example", "betreff": "b",
+                       "datum": "", "text": ""})
+    assert e.fach == "Käufe & Bestellungen"
+
+
+def test_regel_mit_besitzer_nur_fuer_dessen_post():
+    server._q("insert into post_regeln (muster, feld, bereich, fach, sensibel, "
+              "besitzer) values (%s, 'von', 'privat', 'Werbung', false, 'anna')",
+              (r"@laden\.example",))
+    mail = {"id": "x", "von": "a@laden.example", "betreff": "b", "datum": "", "text": ""}
+    assert pe.nach_regel({**mail, "besitzer": "anna"}).fach == "Werbung"
+    assert pe.nach_regel({**mail, "besitzer": "ben"}) is None
+    assert pe.nach_regel(mail) is None           # ohne Besitzer: fail closed

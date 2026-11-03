@@ -350,13 +350,16 @@ def test_posteingang_mails_suche_und_aufraeumen():
     server._q("update postfach_mails set art = 'unwichtig', status = 'vorgeschlagen', "
               "grund = 'Werbung' where message_id = 'a1'")
     s = _get("/posteingang").text
-    # Ruling R10 (03.11.2026): die Mail-Liste ist in den Reiter /post gezogen,
-    # der Posteingang verweist nur noch darauf; die Suche bleibt hier.
+    # Rulings R10/R14 (03.11.2026): Mails stehen im Reiter /post; der
+    # Posteingang verweist darauf und sucht nur noch Chats - postfach_mails
+    # hat keinen Besitzer, private Post waere hier fuer jeden auffindbar.
     assert '<a href="/post">Mails →</a>' in s
     assert "Rabattaktion Herbst" not in s and "Konto gesperrt" not in s
-    assert "Rabattaktionen" in _get("/posteingang?q=Rabattaktionen").text or \
-        "Rabattaktion Herbst" in _get("/posteingang?q=Rabattaktionen").text
-    assert "Rabattaktion Herbst" in _get("/posteingang?q=Rabbataktion").text
+    such = _get("/posteingang?q=Rabattaktion").text
+    assert "Rabattaktion Herbst" not in such
+    assert '<a href="/post?q=Rabattaktion">In Mails suchen →</a>' in such
+    boese = _get("/posteingang?q=%3Cb%3E%26x").text
+    assert 'href="/post?q=%3Cb%3E%26x"' in boese and "<b>&x" not in boese
     f = _get("/freigaben").text
     assert "Mails aufräumen" in f and "Rabattaktion Herbst" in f
     r = _post("/posteingang/aufraeumen", {"message_id": "a1",

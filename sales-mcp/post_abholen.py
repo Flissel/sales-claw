@@ -326,13 +326,16 @@ def einordnen_offene(grenze: int) -> int:
     if grenze <= 0:
         return 0
     offene = server._q(
-        "select id, von, betreff, datum, text from post_mails where status = 'neu' "
+        "select id, besitzer, von, betreff, datum, text from post_mails where status = 'neu' "
         "order by gesehen_am, imap_uid limit %s", (int(grenze),))
     erledigt = 0
     for zeile in offene:
         if _STOPP.is_set():
             break
-        mail = {"id": str(zeile["id"]), "von": zeile["von"] or "",
+        # besitzer nur fuer die Regelauswahl (R13); an das Modell geht er nicht
+        # (post_einordnung._auftrag nimmt nur Absender, Betreff, Datum, Text).
+        mail = {"id": str(zeile["id"]), "besitzer": zeile["besitzer"],
+                "von": zeile["von"] or "",
                 "betreff": zeile["betreff"] or "",
                 "datum": zeile["datum"].isoformat() if zeile["datum"] else "",
                 "text": zeile["text"] or ""}

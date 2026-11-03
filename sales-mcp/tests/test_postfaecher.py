@@ -287,20 +287,22 @@ def test_passwort_des_zusatzpostfachs_nie_im_fehlertext(gmx):
 
 # --- Oberflaeche -------------------------------------------------------------
 
-def test_posteingang_zeigt_herkunft(leer):
+def test_posteingang_zeigt_keine_private_postfach_mail(leer):
+    """Rulings R10/R14 (03.11.2026): postfach_mails hat keinen Besitzer -
+    private GMX-Post darf auf /posteingang weder in der Liste noch in der
+    Suche stehen. Mails gibt es nur im Reiter /post (Sichtbarkeit je Person)."""
     server._postfach_merken([
         {"uid": "gmx:2", "message_id": "gmx-2@x", "von": "f@beispiel.org", "betreff": "Privat",
          "datum": "", "auszug": "Hallo"},
         {"uid": "7", "message_id": "laden-7@x", "von": "k@beispiel.org", "betreff": "Laden",
          "datum": "", "auszug": "Hallo"}])
-    # Ruling R10 (03.11.2026): die Liste steht im Reiter /post; der
-    # Posteingang verweist darauf. Die Herkunft zeigt weiter die Suche.
     seite = TestClient(ui.app).get("/posteingang", headers=HOST_OK).text
     assert '<a href="/post">Mails →</a>' in seite
-    assert "<b>Privat</b>" not in seite
+    assert "<b>Privat</b>" not in seite and "f@beispiel.org" not in seite
     seite = TestClient(ui.app).get("/posteingang?q=Privat", headers=HOST_OK).text
-    assert '<span class="badge">GMX</span> <b>Privat</b>' in seite
-    assert '<span class="badge">Hauptpostfach</span>' not in seite
+    assert "<b>Privat</b>" not in seite and "f@beispiel.org" not in seite
+    assert '<span class="badge">GMX</span>' not in seite
+    assert '<a href="/post?q=Privat">In Mails suchen →</a>' in seite
 
 
 def test_freigabe_zeigt_absender_postfach(leer):

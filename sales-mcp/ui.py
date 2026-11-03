@@ -8074,45 +8074,27 @@ def _mails_verweis() -> str:
             'durchsuchbar: <a href="/post">Mails →</a></p>')
 
 
-def _postfach_marke(uid) -> str:
-    """Herkunft einer Mail (28.10.2026): GMX/Gmail als Abzeichen, das
-    Laden-Postfach ohne - es ist der Normalfall."""
-    try:
-        kennung, _ = server.postfach.zerlegen(uid)
-    except ValueError:
-        return ""
-    if kennung == server.postfach.HAUPT:
-        return ""
-    return f' <span class="badge">{_e(server.postfach.name(kennung))}</span>'
-
-
 def _posteingang_suche(such: str) -> str:
-    """Mails und Nachrichten durchsuchen: deutsche Wortstaemme (Volltext)
-    plus Tippfehler-Toleranz ueber Trigramme."""
-    mails = server._q(
-        "select uid, betreff, von, datum, auszug from postfach_mails "
-        "where suchtext @@ websearch_to_tsquery('german', %(q)s) "
-        "   or similarity(betreff, %(q)s) >= 0.3 or similarity(von, %(q)s) >= 0.3 "
-        "order by ts_rank(suchtext, websearch_to_tsquery('german', %(q)s)) desc "
-        "limit 20", {"q": such})
+    """Nachrichten (Chats) durchsuchen, deutsche Wortstaemme (Volltext).
+
+    Mails sucht diese Seite nicht mehr (Ruling R14, 03.11.2026): postfach_mails
+    hat keinen Besitzer, private GMX/Gmail-Post waere hier fuer jede Anmeldung
+    auffindbar. Mails sucht der Reiter /post - nach Sichtbarkeit je Person."""
     chats = server._q(
         "select a.created_at, a.payload->>'text' as text, l.id as lead_id, l.name "
         "  from activities a join leads l on l.id = a.lead_id "
         " where a.type in ('kundenantwort', 'transkription') "
         "   and a.suchtext @@ websearch_to_tsquery('german', %(q)s) "
         " order by a.created_at desc limit 20", {"q": such})
-    teile = [f"<h2>Treffer für „{_e(such)}“ ({len(mails) + len(chats)})</h2>"]
-    for m in mails:
-        teile.append(f'<div class="karte">{_badge("email")}{_postfach_marke(m["uid"])} '
-                     f'<b>{_e(m["betreff"])}</b>'
-                     f'<div class="meta">{_e(m["von"])} · {_e(m["datum"])}</div>'
-                     f'<div class="text">{_e(_kurz(m["auszug"] or "", 300))}</div></div>')
+    mails_link = _e("/post?" + urllib.parse.urlencode({"q": such}))
+    teile = [f"<h2>Treffer für „{_e(such)}“ ({len(chats)})</h2>",
+             f'<p class="meta"><a href="{mails_link}">In Mails suchen →</a></p>']
     for c in chats:
         teile.append(f'<div class="karte"><a href="/kontakte/{_e(c["lead_id"])}">'
                      f'{_e(c["name"])}</a> · <span class="meta">{_zeit(c["created_at"])}'
                      f'</span><div class="text">{_e(_kurz(c["text"] or "", 300))}</div></div>')
-    if not mails and not chats:
-        teile.append('<p class="meta">Nichts gefunden.</p>')
+    if not chats:
+        teile.append('<p class="meta">Keine Nachricht gefunden.</p>')
     return "".join(teile)
 
 
