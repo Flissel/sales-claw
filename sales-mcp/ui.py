@@ -8048,7 +8048,7 @@ async def posteingang(request):
             f'href="/kontakte/{_e(e["lead_id"])}#verlauf">Antworten</a></div></div>')
     if "hinweis" in daten:
         teile.append(f'<div class="hinweis">{_e(daten["hinweis"])}</div>')
-    teile.append(_postfach_block())
+    teile.append(_mails_verweis())
     return _seite("Posteingang", "".join(teile))
 
 
@@ -8065,34 +8065,13 @@ def _wartezeit(stunden) -> str:
     return f"{round(h)} Std."
 
 
-def _postfach_block() -> str:
-    """Mails aus dem Betreiber-Postfach (Index postfach_mails) und Spam."""
-    mails = server._q(
-        "select message_id, uid, von, betreff, datum, auszug, art, status, grund "
-        "from postfach_mails order by gesehen_am desc limit 30")
-    normal = [m for m in mails if m["status"] not in ("verschoben",)]
-    spam = [m for m in mails if m["art"] == "spam" and m["status"] == "verschoben"]
-    teile = [f"<h2>Mails ({len(normal)})</h2>"]
-    if not normal:
-        teile.append('<p class="meta">Noch keine Mail gesehen — der Agent liest '
-                     'das Postfach im Routinelauf.</p>')
-    for m in normal:
-        marke = (' <span class="badge achtung">Vorschlag: unwichtig</span>'
-                 if m["status"] == "vorgeschlagen" else "")
-        teile.append(
-            f'<div class="karte">{_badge("email")}{_postfach_marke(m["uid"])}{marke} '
-            f'<b>{_e(m["betreff"] or "(ohne Betreff)")}</b>'
-            f'<div class="meta">{_e(m["von"])} · {_e(m["datum"])}</div>'
-            f'<div class="text">{_e(_kurz(m["auszug"] or "", 300))}</div></div>')
-    teile.append(f'<details class="karte"><summary>Spam-Ordner ({len(spam)})</summary>'
-                 '<p class="meta">Vom Agenten als Betrug erkannt und in den '
-                 'Spam-Ordner des Postfachs verschoben — nichts gelöscht. '
-                 'Zurückholen im Mailprogramm.</p>'
-                 + "".join(f'<div class="zeile"><b>{_e(m["betreff"])}</b> · '
-                           f'{_e(m["von"])} · <span class="meta">{_e(m["grund"] or "")}'
-                           f'</span></div>' for m in spam)
-                 + '</details>')
-    return "".join(teile)
+def _mails_verweis() -> str:
+    """Mails stehen seit der Post-Sammelstelle (Ruling R10, 03.11.2026) im
+    eigenen Reiter /post - nur mit Anmeldung und nach Sichtbarkeit je Person.
+    Der alte Block las postfach_mails ohne Besitzer; private GMX/Gmail-Post
+    stand damit fuer jede Anmeldung auf dieser Seite. Die Chats bleiben hier."""
+    return ('<h2>Mails</h2><p class="meta">Alle Postfächer, einsortiert und '
+            'durchsuchbar: <a href="/post">Mails →</a></p>')
 
 
 def _postfach_marke(uid) -> str:

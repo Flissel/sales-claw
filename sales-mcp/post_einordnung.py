@@ -48,9 +48,12 @@ class Einordnung:
 def _regeln_laden() -> list[dict]:
     # server erst hier: das Modul bleibt ohne Datenbank importier- und testbar.
     import server
+    # Neueste zuerst (Ruling R11): korrigiert ein Mensch im Mail-Reiter „für
+    # diesen Absender immer so“, soll seine letzte Entscheidung gelten, nicht
+    # eine ältere Regel für denselben Absender.
     return list(server._q(
         "select muster, feld, bereich, fach, sensibel from post_regeln "
-        "order by angelegt_am, id"))
+        "order by angelegt_am desc, id desc"))
 
 
 def nach_regel(mail: dict) -> Einordnung | None:

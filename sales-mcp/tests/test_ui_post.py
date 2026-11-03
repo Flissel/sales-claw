@@ -356,18 +356,46 @@ def test_korrektur_mit_regel_legt_regel_an():
                        "angelegt_von from post_regeln")
     assert len(regeln) == 1
     g = regeln[0]
-    assert g["muster"] == re.escape("max+news@firma.de")
+    assert g["muster"] == (r'(^|[<\s"])' + re.escape("max+news@firma.de")
+                           + r'($|[>\s"])')
     assert g["feld"] == "von"
     assert (g["bereich"], g["fach"], g["sensibel"]) == (
         "business", "Newsletter & Branche", False)
     assert g["angelegt_von"] == "t8_anna"
     assert re.search(g["muster"], von, re.IGNORECASE)
     assert not re.search(g["muster"], "max-news@firma.de", re.IGNORECASE)
+    # Die Einordnung wendet die neue Regel auf die naechste Mail an.
+    import post_einordnung as pe
+    e = pe.nach_regel({"id": "x", "von": von, "betreff": "Neu", "datum": "",
+                       "text": ""})
+    assert (e.bereich, e.fach, e.quelle) == ("business", "Newsletter & Branche",
+                                             "regel")
     # Ohne Haken: keine Regel.
     m2 = _mail("t8_anna", "business", ps.UNKLAR, von="b@c.de")
     _post("t8_anna", f"/post/mail/{m2}/korrigieren",
           {"bereich": "business", "fach": "Rechnungen"})
     assert server._q("select count(*) n from post_regeln")[0]["n"] == 1
+
+
+def test_regel_trifft_genau_die_adresse():
+    """Ruling R12: die Regel fuer a@x.de trifft keine laengere Adresse."""
+    import post_einordnung as pe
+    m = _mail("t8_anna", "business", ps.UNKLAR, von="a@x.de")
+    assert _post("t8_anna", f"/post/mail/{m}/korrigieren",
+                 {"bereich": "business", "fach": "Rechnungen",
+                  "regel": "ja"}).status_code == 303
+
+    def treffer(von):
+        e = pe.nach_regel({"id": "x", "von": von, "betreff": "b", "datum": "",
+                           "text": ""})
+        return e is not None and e.fach == "Rechnungen"
+
+    assert treffer("Anna <a@x.de>")
+    assert treffer("a@x.de")
+    assert treffer("A@X.DE")
+    assert not treffer("ba@x.de")
+    assert not treffer("a@x.de.evil.com")
+    assert not treffer("Anna <ba@x.de>")
 
 
 # ---------------------------------------------------------------------------
@@ -448,3 +476,16 @@ def test_menue_fuehrt_zum_mail_reiter():
     menue = re.search(r'<nav class="seite".*?</nav>', seite, re.S).group(0)
     assert '<a class="aktiv" href="/post">' in menue
     assert "Mails" in menue
+
+
+def test_posteingang_bleibt_chatseite_mit_verweis():
+    """Ruling R10: keine Umleitung; /posteingang bleibt die Chat-Seite und
+    verweist fuer Mails auf /post. Im Menue steht Mails direkt danach."""
+    r = _get("t8_anna", "/posteingang")
+    assert r.status_code == 200
+    assert "Unbeantwortet" in r.text
+    assert '<a href="/post">Mails →</a>' in r.text
+    menue = re.search(r'<nav class="seite".*?</nav>', r.text, re.S).group(0)
+    assert menue.index('href="/posteingang"') < menue.index('href="/post"')
+    links = re.findall(r'href="(/[^"]*)"', menue)
+    assert links[links.index("/posteingang") + 1] == "/post"

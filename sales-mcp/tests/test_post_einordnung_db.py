@@ -21,13 +21,31 @@ def saubere_tabelle():
         conn.execute("truncate sales_test.post_regeln")
 
 
-def test_regeln_aus_tabelle_aelteste_zuerst_kaputte_uebersprungen():
-    for muster, fach in (("(", "Werbung"), (r"@shop\.example", "Nirgends"),
-                         (r"@shop\.example", "Käufe & Bestellungen"),
-                         (r"@shop\.example", "Werbung")):
-        server._q("insert into post_regeln (muster, feld, bereich, fach, sensibel) "
-                  "values (%s, 'von', 'privat', %s, false)", (muster, fach))
+def _regel(muster, fach, zeit, bereich="privat"):
+    # Feste Zeitpunkte statt now(): die Reihenfolge darf nicht an Mikrosekunden
+    # zwischen zwei Transaktionen haengen.
+    server._q("insert into post_regeln (muster, feld, bereich, fach, sensibel, "
+              "angelegt_am) values (%s, 'von', %s, %s, false, %s)",
+              (muster, bereich, fach, zeit))
+
+
+def test_regeln_aus_tabelle_neueste_zuerst_kaputte_uebersprungen():
+    # Ruling R11: die neueste gueltige Regel gewinnt; neuere kaputte Zeilen
+    # (ungueltiges Muster, unbekanntes Fach) werden uebersprungen.
+    _regel(r"@shop\.example", "Werbung", "2026-11-01 10:00+00")
+    _regel(r"@shop\.example", "Käufe & Bestellungen", "2026-11-02 10:00+00")
+    _regel(r"@shop\.example", "Nirgends", "2026-11-03 10:00+00")
+    _regel("(", "Werbung", "2026-11-03 11:00+00")
     mail = {"id": "x", "von": "Info@SHOP.example", "betreff": "b", "datum": "", "text": ""}
     e = pe.nach_regel(mail)
     assert (e.bereich, e.fach, e.quelle) == ("privat", "Käufe & Bestellungen", "regel")
     assert pe.nach_regel({**mail, "von": "x@y.org"}) is None
+
+
+def test_menschliche_korrektur_schlaegt_aeltere_regel():
+    _regel(r"news@firma\.de", "Abos & Newsletter", "2026-10-01 10:00+00")
+    _regel(r"news@firma\.de", "Rechnungen", "2026-11-03 09:00+00",
+           bereich="business")
+    e = pe.nach_regel({"id": "x", "von": "Firma <news@firma.de>", "betreff": "b",
+                       "datum": "", "text": ""})
+    assert (e.bereich, e.fach) == ("business", "Rechnungen")

@@ -350,7 +350,10 @@ def test_posteingang_mails_suche_und_aufraeumen():
     server._q("update postfach_mails set art = 'unwichtig', status = 'vorgeschlagen', "
               "grund = 'Werbung' where message_id = 'a1'")
     s = _get("/posteingang").text
-    assert "Rabattaktion Herbst" in s and "Spam-Ordner (1)" in s
+    # Ruling R10 (03.11.2026): die Mail-Liste ist in den Reiter /post gezogen,
+    # der Posteingang verweist nur noch darauf; die Suche bleibt hier.
+    assert '<a href="/post">Mails →</a>' in s
+    assert "Rabattaktion Herbst" not in s and "Konto gesperrt" not in s
     assert "Rabattaktionen" in _get("/posteingang?q=Rabattaktionen").text or \
         "Rabattaktion Herbst" in _get("/posteingang?q=Rabattaktionen").text
     assert "Rabattaktion Herbst" in _get("/posteingang?q=Rabbataktion").text

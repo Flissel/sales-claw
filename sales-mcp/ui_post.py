@@ -63,6 +63,16 @@ def _ganzzahl(roh, vorgabe: int, kleinste: int, groesste: int) -> int:
     return max(kleinste, min(wert, groesste))
 
 
+def absender_muster(adresse: str) -> str:
+    """Regel-Muster, das GENAU diese Adresse trifft (Ruling R12).
+
+    Wörtlich (re.escape): „+“ und „.“ sind keine Musterzeichen. Verankert an
+    Anfang/Ende oder an <, >, Leerzeichen, Anführungszeichen, weil
+    post_einordnung re.search benutzt: sonst träfe a@x.de auch ba@x.de oder
+    a@x.de.evil.com. Groß/klein ignoriert die Einordnung selbst."""
+    return r'(^|[<\s"])' + re.escape(adresse) + r'($|[>\s"])'
+
+
 def _adresse(link_basis: str, **werte) -> str:
     teile = {k: v for k, v in werte.items() if v not in ("", None, 1)}
     return link_basis + ("?" + urllib.parse.urlencode(teile) if teile else "")
@@ -324,9 +334,7 @@ def routen(ui) -> list:
                 return ui._fehlerseite(400, "Keine Regel möglich",
                                        "Der Absender hat keine Mailadresse. "
                                        "Nichts geändert.")
-            # Wörtlich, nicht als Muster: eine Adresse mit „+“ oder „.“ soll
-            # genau sich selbst treffen (post_einordnung nutzt re.search).
-            muster = re.escape(adresse)
+            muster = absender_muster(adresse)
         # R9: wird eine Mail sensibel, verschwinden Text, Auszug, Empfänger
         # und Anhangnamen sofort und endgültig, nicht erst in der Anzeige.
         leeren = (", text = null, auszug = null, an = null, anhaenge = '{}'"

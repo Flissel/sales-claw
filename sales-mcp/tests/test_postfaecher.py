@@ -293,7 +293,12 @@ def test_posteingang_zeigt_herkunft(leer):
          "datum": "", "auszug": "Hallo"},
         {"uid": "7", "message_id": "laden-7@x", "von": "k@beispiel.org", "betreff": "Laden",
          "datum": "", "auszug": "Hallo"}])
+    # Ruling R10 (03.11.2026): die Liste steht im Reiter /post; der
+    # Posteingang verweist darauf. Die Herkunft zeigt weiter die Suche.
     seite = TestClient(ui.app).get("/posteingang", headers=HOST_OK).text
+    assert '<a href="/post">Mails →</a>' in seite
+    assert "<b>Privat</b>" not in seite
+    seite = TestClient(ui.app).get("/posteingang?q=Privat", headers=HOST_OK).text
     assert '<span class="badge">GMX</span> <b>Privat</b>' in seite
     assert '<span class="badge">Hauptpostfach</span>' not in seite
 
