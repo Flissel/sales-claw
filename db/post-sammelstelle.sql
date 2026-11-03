@@ -115,17 +115,25 @@ insert into :"schema".post_abteilung_faecher (abteilung, fach) values
   on conflict do nothing;
 
 -- Rechte wie bei postfach_mails (provision.sql): sales_app fuer `sales`,
--- sales_app_<laden> fuer sales_<laden> falls die Rolle existiert, sales_test
--- bekommt keine (die Tests laufen als Admin). Kein delete.
+-- sales_app_<laden> fuer sales_<laden> falls die Rolle existiert. Kein delete.
+-- Ausnahme sales_test: die Tests laufen als sales_app (ohne Rechte sieht sie
+-- die Tabellen nicht einmal in information_schema), und die Fixtures raeumen
+-- auf -> volle Rechte wie im Testschema-Block von provision.sql (~Zeile 654).
+-- Der dortige `all tables`-Grant ist eine Momentaufnahme und erfasst neue
+-- Tabellen nicht, darum hier ausdruecklich.
 do $$
 declare
   s text := current_setting('post.schema');
   rolle text;
+  rechte text := 'select, insert, update';
   t text;
 begin
   if s = 'sales' then
     rolle := 'sales_app';
-  elsif s <> 'sales_test' and exists (
+  elsif s = 'sales_test' then
+    rolle := 'sales_app';
+    rechte := 'select, insert, update, delete, truncate';
+  elsif exists (
       select 1 from pg_roles where rolname = 'sales_app_' || substr(s, 7)) then
     rolle := 'sales_app_' || substr(s, 7);
   end if;
@@ -134,6 +142,6 @@ begin
   end if;
   foreach t in array array['post_konten','post_mails','post_regeln',
       'post_abteilungen','post_abteilung_faecher','benutzer_abteilungen'] loop
-    execute format('grant select, insert, update on %I.%I to %I', s, t, rolle);
+    execute format('grant %s on %I.%I to %I', rechte, s, t, rolle);
   end loop;
 end $$;
