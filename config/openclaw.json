@@ -36,6 +36,11 @@
         "id": "auto",
         "workspace": "/home/node/.openclaw/workspace-auto",
         "tools": { "deny": ["*"] }
+      },
+      {
+        "id": "post",
+        "workspace": "/home/node/.openclaw/workspace-post",
+        "tools": { "deny": ["*"] }
       }
     ]
   },

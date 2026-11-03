@@ -768,6 +768,33 @@ else
   fi
 fi
 
+# 20) Post-Sammelstelle (sales-post, 03.11.2026). Nur wenn der Dienst laeuft:
+# vor dem Ausrollen (post-anbinden.sh, Betreiber-OK) ist er bewusst nicht da,
+# und ein rotes Ergebnis wuerde jedes update.sh blockieren.
+# Signal "letzte Runde": der Dienst schreibt im Leerlauf KEINE Zeile (Protokoll
+# nur bei Abgeholtem/Eingeordnetem) und post_mails.gesehen_am bewegt sich nur
+# mit neuen Mails - beides taugt nicht als Herzschlag. Billig und ehrlich:
+# laeuft (nicht "restarting"), die laufende Instanz ist seit >= 120 s oben -
+# eine Absturzschleife (restart: unless-stopped) setzt StartedAt dauernd zurueck
+# und faellt so auf - und post_mails ist lesbar.
+post_zustand="$(docker inspect -f '{{.State.Status}}' sales-post 2>/dev/null | tr -d '[:space:]' || true)"
+if [ "$post_zustand" != "running" ]; then
+  melde "sales-post" "uebersprungen (Container laeuft nicht — Post-Sammelstelle noch nicht ausgerollt)"
+else
+  post_start="$(docker inspect -f '{{.State.StartedAt}}' sales-post 2>/dev/null || true)"
+  post_s="$(date -d "$post_start" +%s 2>/dev/null || true)"
+  if [ -z "$post_s" ]; then
+    fehl "sales-post laeuft" "Startzeit nicht lesbar"
+  elif [ $(( $(date +%s) - post_s )) -lt 120 ]; then
+    fehl "sales-post laeuft" "seit weniger als 120 s oben (Absturzschleife?) — docker logs sales-post"
+  else
+    gut "sales-post laeuft"
+  fi
+  if docker exec -e SALES_DB_SCHEMA=sales sales-mcp python -c \
+    "import sys;sys.path.insert(0,'/app');import server;server._q('select count(*) from post_mails')" \
+    >/dev/null 2>&1; then gut "post_mails lesbar"; else fehl "post_mails lesbar" "select scheitert (db/post-sammelstelle.sql eingespielt?)"; fi
+fi
+
 echo "---"
 if [ "$ROT" -eq 0 ]; then echo "ALLE PRUEFUNGEN GRUEN"; else echo "$ROT PRUEFUNG(EN) ROT"; fi
 exit "$ROT"

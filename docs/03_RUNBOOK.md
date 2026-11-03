@@ -3259,3 +3259,30 @@ Ein Newsletter geht nur an `consent_status = 'opt_in'` (E1). Zwei Wege dorthin, 
   KI-Bilder-Stufe) zurueckgerollt wird, offene KI-Auftraege abbrechen (Status `ideen`,
   `bilder_laufen`, `bilder_pruefen` - Reels-Seite "Abbrechen"); die alte Oberflaeche kennt diese
   Status nicht. Migration 090 braucht keinen Rueckbau.
+
+## Post-Sammelstelle (Stufe 1, seit 03.11.2026)
+
+Ein Dienst `sales-post` holt die Mails aller Postfaecher (Env-Konten + ueber `/post/konten` angelegte) in
+eine Sammelstelle (`post_mails`) und ordnet sie in Bereich + Fach ein. Stufe 1 liest nur: IMAP nur
+`readonly`, im echten Postfach wird nichts verschoben, archiviert oder geloescht.
+
+Ausrollen - Reihenfolge, jeder Schritt nur mit Betreiber-OK:
+
+1. `POST_BESITZER=<Benutzername>` in die `.env` des Ladens (ohne Wert bricht `post-anbinden.sh` ab).
+2. `bash deploy/update.sh` (neuer Code, UI mit Reiter Mails).
+3. `bash deploy/post-anbinden.sh [laden]` - erzeugt bei Bedarf das Schluesselpaar, spielt
+   `db/post-sammelstelle.sql` fuer das Schema des Ladens ein (idempotent; `sales` fuer den Basis-Laden,
+   sonst `sales_<praefix>`), setzt `benutzer.leitung` fuer den Besitzer, uebernimmt die Env-Postfaecher,
+   traegt den Agenten `post` (keine Werkzeuge) ins Gateway ein und prueft `/v1/models`. Zeigt die
+   Ausgabe "OHNE Modell", hat das Gateway `agents.list[].model` abgelehnt: dann gilt das Standardmodell
+   des Ladens.
+4. `docker compose up -d sales-post` (bzw. mit `--env-file deploy/laeden/<laden>.env`).
+5. `bash deploy/smoke.sh`: Abschnitt `sales-post` (laeuft, >= 120 s oben, `post_mails` lesbar; ohne
+   laufenden Dienst "uebersprungen"). Der Dienst schreibt im Leerlauf keinen Herzschlag - ein Haenger
+   ohne Absturz faellt hier nicht auf; Gegenprobe: `docker logs --since 10m sales-post`.
+
+R13: Regeln aus "fuer diesen Absender immer so" gelten nur fuer Mails ihres Besitzers
+(`post_regeln.besitzer`; NULL = global). Die Tabelle ist neu, alte besitzerlose Regeln gibt es nicht.
+
+Stoppen / Rueckweg: `docker compose stop sales-post`. In den Postfaechern wurde nichts veraendert; die
+Tabellen koennen liegen bleiben. Der Agent `post` im Gateway ist harmlos (keine Werkzeuge).
