@@ -241,6 +241,58 @@ def test_mail_ohne_message_id_bekommt_ersatz():
     assert rows[0]["datum"] is None
 
 
+def test_ersatz_message_id_ist_markiert():
+    _konto()
+    post_abholen.konto_abholen(_zeile("gmx-test"),
+                               Attrappe({1: _mail(None), 2: _mail("<echt@x>")}))
+    rows = _mails()
+    assert [r["message_id_ersatz"] for r in rows] == [True, False]
+
+
+def test_ohne_message_id_nach_uidvalidity_wechsel_keine_dubletten():
+    """M3: der Platzhalter enthaelt die alte UID - wiedererkannt wird ueber
+    Konto + Absender + Betreff + Datum; verschiedene Mails bleiben getrennt."""
+    _konto()
+    a = _mail(None, betreff="Ohne ID A")
+    b = _mail(None, betreff="Ohne ID B")
+    post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({1: a, 2: b}, uidvalidity=7))
+    neu = Attrappe({5: b, 6: a, 7: _mail(None, betreff="Ohne ID C")}, uidvalidity=8)
+    assert post_abholen.konto_abholen(_zeile("gmx-test"), neu) == 1
+    rows = {r["betreff"]: r for r in _mails()}
+    assert set(rows) == {"Ohne ID A", "Ohne ID B", "Ohne ID C"}
+    assert (rows["Ohne ID A"]["imap_uid"], rows["Ohne ID B"]["imap_uid"]) == (6, 5)
+    # Der Platzhalter zieht mit der UID mit, die Markierung bleibt.
+    assert rows["Ohne ID A"]["message_id"] == "gmx-test:6@sales-post"
+    assert all(r["message_id_ersatz"] for r in rows.values())
+
+
+def test_unlesbare_mails_werden_nie_zusammengelegt(monkeypatch):
+    _konto()
+    monkeypatch.setattr(post_abholen, "_mail_zerlegen",
+                        lambda *a: (_ for _ in ()).throw(ValueError("kaputt")))
+    post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({1: _mail(), 2: _mail()},
+                                                             uidvalidity=1))
+    post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({1: _mail(), 2: _mail()},
+                                                             uidvalidity=2))
+    assert len(_mails()) == 4 and all(r["message_id_ersatz"] for r in _mails())
+
+
+def test_kalenderteil_wird_beim_abholen_gespeichert():
+    """I1: ob eine Mail einen text/calendar-Teil traegt, steht in der Zeile -
+    postfach_lesen zeigt es, postfach_mail_lesen wertet die Antwort aus."""
+    _konto()
+    m = EmailMessage()
+    m["From"] = "ivan@example.org"
+    m["Subject"] = "Angenommen"
+    m["Message-ID"] = "<kal@x>"
+    m.set_content("Siehe Anhang")
+    m.add_attachment(b"BEGIN:VCALENDAR\r\nMETHOD:REPLY\r\nEND:VCALENDAR\r\n",
+                     maintype="text", subtype="calendar", filename="r.ics")
+    post_abholen.konto_abholen(_zeile("gmx-test"),
+                               Attrappe({1: m.as_bytes(), 2: _mail("<ohne@x>")}))
+    assert [r["kalenderteil"] for r in _mails()] == [True, False]
+
+
 def test_message_id_fremder_besitzer_wird_nicht_zusammengelegt():
     _konto("felix", "gmx-felix")
     _konto("felix", "gmail-felix")

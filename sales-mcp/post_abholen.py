@@ -151,7 +151,13 @@ def _mail_zerlegen(nachricht, kennung: str, uid: int) -> dict:
     else:
         sensibel_treffer = False
     return {
-        "message_id": message_id or f"{kennung}:{uid}@sales-post",
+        "message_id": message_id or _ersatz_id(kennung, uid),
+        # M3: Platzhalter merken - er beweist bei Antworten keine Identitaet und
+        # ist nach einem UIDVALIDITY-Wechsel kein Wiedererkennungsmerkmal.
+        "message_id_ersatz": not message_id,
+        # I1: nur das Vorhandensein; ausgewertet wird die Antwort erst, wenn der
+        # Bot die Mail oeffnet (postfach_mail_lesen) - wie frueher postfach.lesen.
+        "kalenderteil": _kalender_sicher(nachricht),
         "von": von,
         # Sensibel: weder Empfaenger noch Anhaenge speichern (Spec §5).
         "an": None if sensibel_treffer else _rein(postfach._kopf(nachricht, "To"), KOPF_MAX),
@@ -160,10 +166,23 @@ def _mail_zerlegen(nachricht, kennung: str, uid: int) -> dict:
     }
 
 
+def _ersatz_id(kennung: str, uid: int) -> str:
+    return f"{kennung}:{uid}@sales-post"
+
+
+def _kalender_sicher(nachricht) -> bool:
+    try:
+        return bool(postfach._kalender_teil(nachricht))
+    except (LookupError, UnicodeError):
+        # Unbekannter Zeichensatz im Kalenderteil: vorhanden ist er trotzdem.
+        return True
+
+
 def _unlesbar(kennung: str, uid: int, fehlertyp: str) -> dict:
     """Platzhalter fuer eine Mail, die sich nicht zerlegen liess: sie geht
     nicht verloren (Spec: keine Mail verschwindet), steht aber als fehler da."""
-    return {"message_id": f"{kennung}:{uid}@sales-post", "von": None, "an": None,
+    return {"message_id": _ersatz_id(kennung, uid), "message_id_ersatz": True,
+            "kalenderteil": False, "von": None, "an": None,
             "betreff": None, "datum": None, "text": None, "auszug": None, "anhaenge": [],
             "fehler": f"Mail nicht lesbar ({fehlertyp})"}
 
@@ -215,37 +234,62 @@ def _uidvalidity_pruefen(zeile: dict, aktuell: int | None) -> int:
     return 0
 
 
+def _ersatz_wiederfinden(conn, zeile: dict, mail: dict):
+    """M3: eine Mail OHNE Message-ID nach einem UIDVALIDITY-Wechsel
+    wiedererkennen. Der Platzhalter enthaelt die alte UID und taugt dafuer
+    nicht; stattdessen gleiches Konto + Absender + Betreff + Datum unter den
+    alten Zeilen (negative UID). Nicht lesbare Mails (alles NULL) werden nie
+    zusammengelegt - zwei kaputte Mails waeren sonst eine."""
+    if mail.get("fehler") or not (mail.get("von") or mail.get("betreff") or mail.get("datum")):
+        return None
+    return conn.execute(
+        "select id, konto_id, imap_uid from post_mails where konto_id = %s "
+        "and message_id_ersatz and imap_uid < 0 "
+        "and von is not distinct from %s and betreff is not distinct from %s "
+        "and datum is not distinct from %s order by imap_uid desc limit 1",
+        (zeile["id"], mail["von"], mail["betreff"], mail["datum"])).fetchone()
+
+
 def _speichern(zeile: dict, uid: int, mail: dict | None) -> bool:
     """Eine Mail und der neue Stand `letzte_uid` in EINER Transaktion: bricht
     die Runde ab, ist weder eine Mail doppelt noch eine uebersprungen."""
     neu = False
     with server.pool.connection() as conn, conn.transaction():
         if mail is not None:
-            vorhanden = conn.execute(
-                "select id, konto_id, imap_uid from post_mails where besitzer = %s "
-                "and message_id = %s and von is not distinct from %s "
-                "and betreff is not distinct from %s "
-                "order by (konto_id = %s and imap_uid < 0) desc limit 1",
-                (zeile["besitzer"], mail["message_id"], mail["von"], mail["betreff"],
-                 zeile["id"])).fetchone()
+            ersatz = bool(mail.get("message_id_ersatz"))
+            if ersatz:
+                vorhanden = _ersatz_wiederfinden(conn, zeile, mail)
+            else:
+                vorhanden = conn.execute(
+                    "select id, konto_id, imap_uid from post_mails where besitzer = %s "
+                    "and message_id = %s and not message_id_ersatz "
+                    "and von is not distinct from %s "
+                    "and betreff is not distinct from %s "
+                    "order by (konto_id = %s and imap_uid < 0) desc limit 1",
+                    (zeile["besitzer"], mail["message_id"], mail["von"], mail["betreff"],
+                     zeile["id"])).fetchone()
             if vorhanden is None:
                 neu = conn.execute(
                     "insert into post_mails (konto_id, imap_uid, message_id, besitzer, "
                     "von, an, betreff, datum, text, auszug, anhaenge, status, fehler, "
-                    "bereich, fach) values "
-                    "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                    "bereich, fach, message_id_ersatz, kalenderteil) values "
+                    "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
                     "on conflict (konto_id, imap_uid) do nothing returning id",
                     (zeile["id"], uid, mail["message_id"], zeile["besitzer"], mail["von"],
                      mail["an"], mail["betreff"], mail["datum"], mail["text"],
                      mail["auszug"], mail["anhaenge"],
                      "fehler" if mail.get("fehler") else "neu", mail.get("fehler"),
                      "privat" if mail.get("fehler") else None,
-                     post_struktur.UNKLAR if mail.get("fehler") else None)
+                     post_struktur.UNKLAR if mail.get("fehler") else None,
+                     ersatz, bool(mail.get("kalenderteil")))
                 ).fetchone() is not None
             elif str(vorhanden["konto_id"]) == str(zeile["id"]) and vorhanden["imap_uid"] < 0:
-                # Nach UIDVALIDITY-Wechsel wiedergefunden: neuer Fundort, keine Dublette.
-                conn.execute("update post_mails set imap_uid = %s where id = %s",
-                             (uid, vorhanden["id"]))
+                # Nach UIDVALIDITY-Wechsel wiedergefunden: neuer Fundort, keine
+                # Dublette. Ein Platzhalter traegt die UID im Namen - er zieht mit.
+                conn.execute(
+                    "update post_mails set imap_uid = %s, message_id = case when "
+                    "message_id_ersatz then %s else message_id end where id = %s",
+                    (uid, mail["message_id"], vorhanden["id"]))
         conn.execute(
             "update post_konten set letzte_uid = greatest(coalesce(letzte_uid, 0), %s) "
             "where id = %s", (uid, zeile["id"]))

@@ -104,7 +104,7 @@ def _lesen_spion(monkeypatch, mid=None):
     geholt = []
     monkeypatch.setattr(server.postfach, "eingerichtet", lambda uid="": True)
     monkeypatch.setattr(server.postfach, "lesen",
-                        lambda uid: geholt.append(uid) or {
+                        lambda uid, protokollieren=True: geholt.append(uid) or {
                             "uid": uid, "von": "k@kunde.de", "betreff": "Hi",
                             "text": "t", "message_id": mid or "<m@x>",
                             "postfach": "haupt"})
@@ -239,14 +239,163 @@ def test_passende_message_id_normalisiert(monkeypatch):
 
 
 def test_ersatz_message_id_passt_nie(monkeypatch):
-    _lesen_spion(monkeypatch, mid="<haupt:17@sales-post>")
+    """M3: der ECHTE Platzhalter (wie post_abholen ihn fuer Mails ohne
+    Message-ID schreibt). Liegt unter der Nummer inzwischen eine Mail, deren
+    Message-ID zufaellig/gefaelscht genau so lautet, darf sie trotzdem nicht als
+    dieselbe gelten - die post:-uid wird vor jedem IMAP-Zugriff abgelehnt."""
+    geholt = _lesen_spion(monkeypatch, mid="<haupt:17@sales-post>")
     konto = _env_konto("haupt", "env")
     mid = str(server._q(
+        "insert into post_mails (konto_id, imap_uid, message_id, message_id_ersatz, "
+        "besitzer, von, betreff, bereich, fach, sensibel, datum) values (%s, 17, "
+        "'haupt:17@sales-post', true, 't9_anna', 'k@kunde.de', 'x', 'business', "
+        "'Kunden & Anfragen', false, now()) returning id", (konto,))[0]["id"])
+    vorher = _zaehler_aktionen()
+    for r in (server.mail_beantworten(f"post:{mid}", "x"),
+              server.mail_einstufen(f"post:{mid}", "spam", "g")):
+        assert "keine Message-ID" in json.loads(r)["fehler"]
+    assert geholt == [] and _zaehler_aktionen() == vorher
+
+
+def test_alte_gmx_uids_auch_bei_leerer_sammelstelle_gesperrt(monkeypatch):
+    """M1 / R15: GMX/Gmail nie live - auch nicht ueber Antworten/Aufraeumen,
+    solange die Sammelstelle leer ist. Das Hauptpostfach bleibt erreichbar."""
+    geholt = _lesen_spion(monkeypatch)
+    assert server._sammelstelle_leer()
+    for uid in ("gmx:12", "gmail:3", "GMX:4"):
+        assert json.loads(server.mail_beantworten(uid, "x")) == {
+            "fehler": "nicht verfuegbar"}, uid
+        assert json.loads(server.mail_einstufen(uid, "unwichtig", "g")) == {
+            "fehler": "nicht verfuegbar"}, uid
+    assert geholt == []
+    server.mail_einstufen("42", "unwichtig", "Werbung")
+    assert geholt == ["42"]
+
+
+# --- I1/M2: Kalenderantworten aus der Sammelstelle --------------------------
+
+class _Kasten:
+    """IMAP-Attrappe fuer postfach.lesen: nur select(readonly) und fetch."""
+
+    def __init__(self, mails):
+        self.mails = mails
+
+    def select(self, ordner, readonly=False):
+        assert readonly is True
+        return "OK", [b"1"]
+
+    def uid(self, befehl, *args):
+        assert befehl == "fetch", befehl
+        roh = self.mails.get(args[0])
+        return ("OK", [(args[0] + b" (RFC822 ...)", roh)]) if roh else ("NO", [None])
+
+    def logout(self):
+        return "BYE", []
+
+
+def _kalender_mail(message_id, von="Ivan Beispiel <ivan@t9.example>"):
+    import email.message
+    ics = ("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REPLY\r\nBEGIN:VEVENT\r\n"
+           "UID:t9-termin-1\r\nSEQUENCE:0\r\n"
+           "ATTENDEE;PARTSTAT=ACCEPTED:mailto:ivan@t9.example\r\n"
+           "END:VEVENT\r\nEND:VCALENDAR\r\n")
+    n = email.message.EmailMessage()
+    n["From"] = von
+    n["To"] = "buero@t9.example"
+    n["Subject"] = "Angenommen: Erstgespraech"
+    n["Message-ID"] = f"<{message_id}>"
+    n.set_content("Siehe Anhang.")
+    n.add_attachment(ics.encode(), maintype="text", subtype="calendar", filename="r.ics")
+    return n.as_bytes()
+
+
+@pytest.fixture
+def kalender_welt(monkeypatch):
+    """Hauptpostfach als env-Konto, Ivan als Kontakt, IMAP als Attrappe mit
+    einer Kalenderantwort unter Nummer 17."""
+    pf = server.postfach
+    monkeypatch.setattr(pf, "IMAP_HOST", "imap.t9.invalid")
+    monkeypatch.setattr(pf, "IMAP_USER", "buero@t9.example")
+    kasten = _Kasten({})
+    monkeypatch.setattr(pf, "_verbinden", lambda: kasten)
+    with server.pool.connection() as conn:
+        conn.execute("delete from activities where lead_id in (select id from leads "
+                      "where email = 'ivan@t9.example')")
+        conn.execute("delete from leads where email = 'ivan@t9.example'")
+    lead = str(server._q("insert into leads (name, email, source) values "
+                         "('Ivan T9', 'ivan@t9.example', 'email') returning id")[0]["id"])
+    konto = _env_konto("haupt", "env")
+    mail_id = str(server._q(
         "insert into post_mails (konto_id, imap_uid, message_id, besitzer, von, "
-        "betreff, bereich, fach, sensibel, datum) values (%s, 17, '', 't9_anna', "
-        "'k@kunde.de', 'x', 'business', 'Kunden & Anfragen', false, now()) "
-        "returning id", (konto,))[0]["id"])
-    assert "fehler" in json.loads(server.mail_beantworten(f"post:{mid}", "x"))
+        "betreff, text, bereich, fach, sensibel, datum, kalenderteil) values "
+        "(%s, 17, 't9-antwort@x', 't9_anna', 'Ivan Beispiel <ivan@t9.example>', "
+        "'Angenommen: Erstgespraech', 'Siehe Anhang.', 'business', "
+        "'Kunden & Anfragen', false, now(), true) returning id", (konto,))[0]["id"])
+    yield {"kasten": kasten, "lead": lead, "mail": mail_id, "konto": konto}
+    with server.pool.connection() as conn:
+        conn.execute("delete from activities where lead_id = %s", (lead,))
+        conn.execute("delete from leads where id = %s", (lead,))
+        conn.execute("delete from postfach_mails where message_id = 't9-antwort@x'")
+
+
+def _antworten(lead):
+    return server._q("select payload from activities where lead_id = %s and "
+                     "type = 'einladung_antwort'", (lead,))
+
+
+def test_kalenderantwort_aus_der_sammelstelle_wird_festgehalten(kalender_welt):
+    w = kalender_welt
+    w["kasten"].mails[b"17"] = _kalender_mail("t9-antwort@x")
+    liste = _lesen()["mails"]
+    assert [m["kalenderteil"] for m in liste] == [True]
+    r = json.loads(server.postfach_mail_lesen(f"post:{w['mail']}"))
+    assert r["kalenderteil"] is True and r["text"] == "Siehe Anhang."
+    assert r["kalender_antwort"]["status"] == "ACCEPTED"
+    assert "protokollierfehler" not in r and "kalender_hinweis" not in r
+    zeilen = _antworten(w["lead"])
+    assert len(zeilen) == 1 and zeilen[0]["payload"]["uid"] == "t9-termin-1"
+    # Erneutes Oeffnen legt keine zweite Aktivitaet an (Dedup in postfach).
+    server.postfach_mail_lesen(f"post:{w['mail']}")
+    assert len(_antworten(w["lead"])) == 1
+
+
+def test_kalenderantwort_fremde_mail_unter_der_nummer_haelt_nichts_fest(kalender_welt):
+    """M2: nach einem UIDVALIDITY-Wechsel liegt unter 17 eine ANDERE
+    Kalenderantwort - sie darf nicht festgehalten werden, weder beim Oeffnen
+    noch beim Antworten oder Aufraeumen (vorher hielt postfach.lesen sie fest,
+    bevor die Message-ID geprueft war)."""
+    w = kalender_welt
+    w["kasten"].mails[b"17"] = _kalender_mail("ANDERE@x")
+    r = json.loads(server.postfach_mail_lesen(f"post:{w['mail']}"))
+    assert "kalender_antwort" not in r and "kalender_hinweis" in r
+    assert r["betreff"] == "Angenommen: Erstgespraech"          # Anzeige aus der Sammelstelle
+    for fn in (lambda: server.mail_beantworten(f"post:{w['mail']}", "Danke"),
+               lambda: server.mail_einstufen(f"post:{w['mail']}", "unwichtig", "g")):
+        assert json.loads(fn()) == {"fehler": "nicht verfuegbar"}
+    assert _antworten(w["lead"]) == []
+
+
+def test_antworten_auf_kalenderantwort_haelt_sie_nach_der_pruefung_fest(kalender_welt):
+    w = kalender_welt
+    w["kasten"].mails[b"17"] = _kalender_mail("t9-antwort@x")
+    r = json.loads(server.mail_einstufen(f"post:{w['mail']}", "unwichtig", "Info"))
+    assert r.get("vorgeschlagen") is True
+    assert len(_antworten(w["lead"])) == 1
+
+
+def test_kalenderteil_ohne_live_zugang_gibt_hinweis(kalender_welt, monkeypatch):
+    w = kalender_welt
+    server._q("update post_konten set quelle = 'ui' where id = %s returning 1",
+              (str(w["konto"]),))
+    monkeypatch.setattr(server.postfach, "lesen",
+                        lambda *a, **k: pytest.fail("kein IMAP fuer ui-Konten"))
+    r = json.loads(server.postfach_mail_lesen(f"post:{w['mail']}"))
+    assert "kalender_hinweis" in r and r["text"] == "Siehe Anhang."
+    # Ohne Kalenderteil wird nie live gelesen.
+    server._q("update post_mails set kalenderteil = false where id = %s returning 1",
+              (w["mail"],))
+    r = json.loads(server.postfach_mail_lesen(f"post:{w['mail']}"))
+    assert r["kalenderteil"] is False and "kalender_hinweis" not in r
 
 
 def test_inaktives_konto_ohne_imap(monkeypatch):

@@ -66,6 +66,18 @@ create table if not exists :"schema".post_mails (
 -- `fehler`, damit eine einzelne kaputte Mail die Einordnung nicht blockiert.
 alter table :"schema".post_mails
   add column if not exists versuche int not null default 0;
+-- I1: traegt die Mail einen text/calendar-Teil? Beim Abholen gesetzt; nur dann
+-- liest postfach_mail_lesen die Mail einmal live, um eine Kalenderantwort
+-- (REPLY/COUNTER) am Kontakt festzuhalten (wie frueher postfach.lesen).
+alter table :"schema".post_mails
+  add column if not exists kalenderteil boolean not null default false;
+-- M3: die Mail hatte keine Message-ID; message_id ist dann ein Platzhalter
+-- "<kennung>:<uid>@sales-post". Solche Mails taugen nicht fuer die
+-- Identitaetspruefung vor Antworten/Aufraeumen (post:-uid wird abgelehnt).
+alter table :"schema".post_mails
+  add column if not exists message_id_ersatz boolean not null default false;
+update :"schema".post_mails set message_id_ersatz = true
+  where not message_id_ersatz and message_id like '%:%@sales-post';
 -- Fail closed (R9): NULL bei `sensibel` darf es nicht geben. Bestehende
 -- Installationen werden nachgezogen; beides ist beliebig oft wiederholbar.
 update :"schema".post_mails set sensibel = false where sensibel is null;

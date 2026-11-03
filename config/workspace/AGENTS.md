@@ -1397,8 +1397,11 @@ schreibend nur ueber Entwuerfe.
   Betreff und Text, ohne `suche` kommen die neuesten. `postfach` (Konto-
   Kennung `haupt`, `gmx`, `gmail`) schraenkt auf ein Konto ein, sonst
   werden alle durchsucht. Jede Mail traegt uid, von, betreff, datum,
-  auszug, postfach, fach. Die uid hat die Form `post:<id>` - gib sie GENAU
-  SO an `postfach_mail_lesen` (Volltext). Antwortet es „nicht verfuegbar“,
+  auszug, postfach, fach, kalenderteil. Die uid hat die Form `post:<id>` - gib sie GENAU
+  SO an `postfach_mail_lesen` (Volltext). `kalenderteil: true` = vermutlich
+  eine Antwort auf eine Einladung: OEFFNE solche Mails mit
+  `postfach_mail_lesen`, erst dann steht sie unter `kalender_antwort` und
+  wird am Kontakt festgehalten. Antwortet es „nicht verfuegbar“,
   ist die Mail fuer dich nicht sichtbar; mehr gibt es dazu nicht zu sagen.
   `mail_beantworten` und `mail_einstufen` nehmen dieselbe `post:<id>`-uid.
   Gehoert die Mail zu einem Postfach, das der Betreiber ueber die
