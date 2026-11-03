@@ -109,6 +109,14 @@ ANBIETER = {
     # eigene Kopie stuende dort doppelt.
     "gmail": {"name": "Gmail", "imap": "imap.gmail.com", "smtp": "smtp.gmail.com",
               "sent_kopie": False},
+    # Namecheap Private Email = das Hauptpostfach. Host aus der Umgebung statt
+    # fest; es gibt kein POSTFACH_NAMECHEAP_*, darum liefert konto("namecheap")
+    # None und kennungen() fuehrt es nicht als eigenes Zusatzpostfach (das
+    # Hauptpostfach heisst weiter "haupt"). Die Post-Sammelstelle fuehrt es in
+    # post_konten als Kennung "haupt", Anbieter "namecheap".
+    "namecheap": {"name": "Namecheap", "imap": IMAP_HOST,
+                  "smtp": os.environ.get("SMTP_HOST", "").strip(),
+                  "sent_kopie": True},
 }
 IMAP_SSL_PORT = 993
 SMTP_SSL_PORT = 465
@@ -120,9 +128,13 @@ class Konto:
     adresse: str
     passwort: str = field(repr=False)   # nie in Log oder Fehlertext
 
+    # Welcher Anbieter (Host usw.) gilt; leer = die Kennung selbst. So kann es
+    # mehrere Konten je Anbieter geben (gmx-privat, gmx-firma).
+    anbieter_id: str = ""
+
     @property
     def anbieter(self) -> dict:
-        return ANBIETER[self.kennung]
+        return ANBIETER[self.anbieter_id or self.kennung]
 
 
 def konto(kennung: str):
