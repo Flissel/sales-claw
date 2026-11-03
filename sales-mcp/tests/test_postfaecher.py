@@ -148,42 +148,39 @@ def test_eingerichtet_je_uid(haupt, gmx):
 
 # --- Lesen -------------------------------------------------------------------
 
-def test_postfach_lesen_mischt_alle_postfaecher_neueste_zuerst(haupt, gmx, leer):
+def test_postfach_lesen_rueckfall_liest_nur_das_hauptpostfach(haupt, gmx, leer):
+    # Task 9: leere Sammelstelle -> alter IMAP-Weg, aber NUR Hauptpostfach
+    # (GMX/Gmail koennen Privates enthalten und werden nie live gelesen).
     antwort = json.loads(server.postfach_lesen(10))
-    assert [m["uid"] for m in antwort["mails"]] == ["gmx:2", "7"]
-    assert [m["postfach"] for m in antwort["mails"]] == ["gmx", "haupt"]
-    assert gmx.geoeffnet[0].adresse == GMX_ADRESSE
-    assert all(readonly for _, readonly in gmx.selects)
-    # Der Index kennt die Herkunft ueber die uid.
+    assert [m["uid"] for m in antwort["mails"]] == ["7"]
+    assert [m["postfach"] for m in antwort["mails"]] == ["haupt"]
+    assert gmx.geoeffnet == []          # GMX wurde nie geoeffnet
+    assert all(readonly for _, readonly in haupt.selects)
     zeilen = server._q("select uid from postfach_mails order by uid")
-    assert [z["uid"] for z in zeilen] == ["7", "gmx:2"]
+    assert [z["uid"] for z in zeilen] == ["7"]
 
 
-def test_ein_kaputtes_postfach_kostet_die_anderen_nicht(haupt, gmx, leer, monkeypatch):
+def test_kaputtes_hauptpostfach_ist_eine_meldung_ohne_geheimnis(haupt, gmx, leer, monkeypatch):
     def kaputt(konto):
         raise OSError(f"login failed {GMX_GEHEIM}")
     monkeypatch.setattr(postfach, "_imap_oeffnen", kaputt)
     antwort = json.loads(server.postfach_lesen(10))
-    assert [m["uid"] for m in antwort["mails"]] == ["7"]
-    assert antwort["nicht_erreichbar"] == {"gmx": "OSError"}
+    assert "fehler" in antwort and antwort["nicht_erreichbar"] == {"haupt": "OSError"}
     assert GMX_GEHEIM not in json.dumps(antwort)
 
 
-def test_nur_ein_postfach_lesen(haupt, gmx, leer):
+def test_gmx_wird_nie_live_gelesen(haupt, gmx, leer):
     antwort = json.loads(server.postfach_lesen(10, postfach="gmx"))
-    assert [m["uid"] for m in antwort["mails"]] == ["gmx:2"]
+    assert antwort["mails"] == [] and gmx.geoeffnet == []
 
 
-def test_volltext_aus_gmx(haupt, gmx):
-    mail = json.loads(server.postfach_mail_lesen("gmx:2"))
-    assert mail["betreff"] == "Privat über GMX" and mail["uid"] == "gmx:2"
-    assert mail["postfach"] == "gmx"
-    assert gmx.selects == [("INBOX", True)]
+def test_volltext_aus_gmx_ist_nicht_verfuegbar(haupt, gmx):
+    assert json.loads(server.postfach_mail_lesen("gmx:2")) == {"fehler": "nicht verfuegbar"}
+    assert gmx.geoeffnet == []
 
 
-def test_nicht_eingerichtetes_postfach_ist_eine_meldung(haupt):
-    antwort = json.loads(server.postfach_mail_lesen("gmail:4"))
-    assert "nicht eingerichtet" in antwort["fehler"]
+def test_nicht_eingerichtetes_postfach_ist_nicht_verfuegbar(haupt):
+    assert json.loads(server.postfach_mail_lesen("gmail:4")) == {"fehler": "nicht verfuegbar"}
 
 
 # --- Aufraeumen --------------------------------------------------------------
