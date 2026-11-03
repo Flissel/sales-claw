@@ -138,6 +138,9 @@ begin
     rolle := 'sales_app_' || substr(s, 7);
   end if;
   if rolle is null then
+    -- Nicht still ueberspringen: ein Laden ohne Rolle haette sonst keine Rechte,
+    -- und niemand wuerde es merken.
+    raise notice 'WARNUNG: keine Rechte vergeben fuer Schema %: Rolle % existiert nicht', s, 'sales_app_' || substr(s, 7);
     return;
   end if;
   foreach t in array array['post_konten','post_mails','post_regeln',

@@ -61,10 +61,13 @@ def test_tabellen_existieren_im_testschema(db):
               "post_abteilung_faecher", "benutzer_abteilungen"):
         assert t in tabellen, t
     spalte = db.execute(
-        "select 1 from information_schema.columns where table_schema = "
-        "'sales_test' and table_name = 'benutzer' and column_name = 'leitung'"
+        "select is_nullable, column_default from information_schema.columns "
+        "where table_schema = 'sales_test' and table_name = 'benutzer' "
+        "and column_name = 'leitung'"
     ).fetchone()
     assert spalte is not None
+    assert spalte["is_nullable"] == "NO"
+    assert spalte["column_default"] == "false"
 
 
 def test_suchtext_enthaelt_keinen_text_sensibler_mails(db):
