@@ -185,8 +185,32 @@ def test_nicht_eingerichtetes_postfach_ist_nicht_verfuegbar(haupt):
 
 # --- Aufraeumen --------------------------------------------------------------
 
-def test_spam_aus_gmx_wandert_in_den_gmx_spamordner(haupt, gmx, leer):
-    antwort = json.loads(server.mail_einstufen("gmx:2", "spam", "Phishing"))
+@pytest.fixture
+def gmx_in_sammelstelle():
+    """Seit M1 (03.11.2026) gibt es keine alten uids "gmx:2" mehr fuer
+    Antworten/Aufraeumen - der Weg in GMX fuehrt ueber die Sammelstelle
+    (post:<id>, env-Konto gmx). Liefert die post:-uid der GMX-Mail 2."""
+    with server.pool.connection() as conn:
+        conn.execute("truncate sales_test.post_mails, sales_test.post_konten cascade")
+    konto = server._q(
+        "insert into post_konten (besitzer, kennung, anbieter, adresse, quelle) "
+        "values ('t_felix', 'gmx', 'gmx', %s, 'env') returning id", (GMX_ADRESSE,))[0]["id"]
+    mail_id = server._q(
+        "insert into post_mails (konto_id, imap_uid, message_id, besitzer, von, betreff, "
+        "bereich, fach, sensibel, datum) values (%s, 2, 'gmx-2@x', 't_felix', "
+        "'Freund <f@beispiel.org>', 'Anfrage ueber GMX', 'business', 'Kunden & Anfragen', "
+        "false, now()) returning id", (konto,))[0]["id"]
+    yield f"post:{mail_id}"
+    with server.pool.connection() as conn:
+        conn.execute("truncate sales_test.post_mails, sales_test.post_konten cascade")
+
+
+def test_spam_aus_gmx_wandert_in_den_gmx_spamordner(haupt, gmx, leer, gmx_in_sammelstelle):
+    # Alte uid: nie live in GMX (M1/R15), nichts geoeffnet.
+    assert json.loads(server.mail_einstufen("gmx:2", "spam", "Phishing")) == {
+        "fehler": "nicht verfuegbar"}
+    assert gmx.geoeffnet == []
+    antwort = json.loads(server.mail_einstufen(gmx_in_sammelstelle, "spam", "Phishing"))
     assert antwort["ordner"] == "Spamverdacht"
     assert gmx.kopien == [(b"2", '"Spamverdacht"')]
     assert gmx.flags == [(b"2", "(\\Deleted)")] and gmx.expunged
@@ -202,8 +226,9 @@ def test_ordnernamen_mit_leerzeichen_und_klammern():
 
 # --- Antworten ---------------------------------------------------------------
 
-def test_antwort_auf_gmx_mail_merkt_sich_das_postfach(haupt, gmx, leer):
-    a = json.loads(server.mail_beantworten("gmx:2", "Danke, melde mich."))
+def test_antwort_auf_gmx_mail_merkt_sich_das_postfach(haupt, gmx, leer, gmx_in_sammelstelle):
+    assert json.loads(server.mail_beantworten("gmx:2", "x")) == {"fehler": "nicht verfuegbar"}
+    a = json.loads(server.mail_beantworten(gmx_in_sammelstelle, "Danke, melde mich."))
     assert "fehler" not in a, a
     d = server._q("select postfach, antwort_auf, recipient from drafts where id = %s", (a["draft_id"],))[0]
     assert (d["postfach"], d["antwort_auf"], d["recipient"]) == ("gmx", "gmx-2@x", "f@beispiel.org")

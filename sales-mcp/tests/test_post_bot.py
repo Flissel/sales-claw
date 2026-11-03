@@ -262,7 +262,7 @@ def test_alte_gmx_uids_auch_bei_leerer_sammelstelle_gesperrt(monkeypatch):
     solange die Sammelstelle leer ist. Das Hauptpostfach bleibt erreichbar."""
     geholt = _lesen_spion(monkeypatch)
     assert server._sammelstelle_leer()
-    for uid in ("gmx:12", "gmail:3", "GMX:4"):
+    for uid in ("gmx:12", "gmail:3", " gmx:4 "):
         assert json.loads(server.mail_beantworten(uid, "x")) == {
             "fehler": "nicht verfuegbar"}, uid
         assert json.loads(server.mail_einstufen(uid, "unwichtig", "g")) == {
