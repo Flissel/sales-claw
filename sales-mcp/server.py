@@ -3857,35 +3857,54 @@ _STUFE2_HINWEIS = ("Antworten/Aufraeumen fuer dieses Postfach kommt mit "
                    "Stufe 2 - bitte betreiber_mail_entwurf nutzen.")
 
 
+def _mid_norm(mid) -> str:
+    """Message-ID vergleichbar machen: ohne Leerraum und <>, klein."""
+    return str(mid or "").strip().strip("<>").strip().lower()
+
+
 def _post_uid_aufloesen(uid) -> tuple:
-    """(legacy_uid, fehler) fuer mail_beantworten/mail_einstufen (R16).
-    `post:<id>` wird ueber die Sichtbarkeit des Bots geprueft und nur fuer
-    env-Konten mit echter IMAP-Nummer in die alte uid uebersetzt. Alte uids
-    gelten nur, solange die Sammelstelle leer ist: sonst koennte der Bot
-    ueber sie Mails umgehen, die er nicht sehen darf."""
+    """(legacy_uid, fehler, erwartete_message_id) fuer mail_beantworten/
+    mail_einstufen (R16). `post:<id>` wird ueber die Sichtbarkeit des Bots
+    geprueft und nur fuer aktive env-Konten mit echter IMAP-Nummer in die
+    alte uid uebersetzt. Die erwartete Message-ID muss der Aufrufer nach dem
+    IMAP-Lesen gegen die geholte Mail pruefen (_mail_passt): nach einem
+    UIDVALIDITY-Wechsel kann die gespeicherte Nummer auf eine ANDERE Mail
+    zeigen. Alte uids gelten nur, solange die Sammelstelle leer ist: sonst
+    koennte der Bot ueber sie Mails umgehen, die er nicht sehen darf."""
     roh = str(uid or "").strip()
     nicht_da = '{"fehler": "nicht verfuegbar"}'
     if roh.lower().startswith("post:"):
         mail = post_struktur.mail_lesen(post_struktur.BETREIBER_AGENT,
                                         roh[5:].strip())
         if mail is None or not mail.get("konto_id"):
-            return None, nicht_da
-        konto = _q("select kennung, quelle from post_konten where id = %s",
-                   (str(mail["konto_id"]),))
-        nummer = _q("select imap_uid from post_mails where id = %s",
-                    (str(mail["id"]),))
-        if (not konto or konto[0]["quelle"] != "env" or not nummer
-                or (nummer[0]["imap_uid"] or 0) <= 0):
-            return None, _json({"fehler": _STUFE2_HINWEIS})
-        k = konto[0]["kennung"]
+            return None, nicht_da, None
+        konto = _q("select kennung, quelle, aktiv from post_konten "
+                   "where id = %s", (str(mail["konto_id"]),))
+        zeile = _q("select imap_uid, message_id from post_mails where id = %s",
+                   (str(mail["id"]),))
+        if not konto or not konto[0]["aktiv"] or not zeile:
+            return None, nicht_da, None
+        mid = _mid_norm(zeile[0]["message_id"])
+        if (konto[0]["quelle"] != "env" or (zeile[0]["imap_uid"] or 0) <= 0
+                or not mid):
+            return None, _json({"fehler": _STUFE2_HINWEIS}), None
+        k, nr = konto[0]["kennung"], zeile[0]["imap_uid"]
         if k == postfach.HAUPT:
-            return str(nummer[0]["imap_uid"]), None
+            return str(nr), None, mid
         if k in postfach.ANBIETER:
-            return f"{k}:{nummer[0]['imap_uid']}", None
-        return None, _json({"fehler": _STUFE2_HINWEIS})
+            return f"{k}:{nr}", None, mid
+        return None, _json({"fehler": _STUFE2_HINWEIS}), None
     if not _sammelstelle_leer():
-        return None, nicht_da
-    return roh, None
+        return None, nicht_da, None
+    return roh, None, None
+
+
+def _mail_passt(mail, erwartet) -> bool:
+    """True, wenn keine Identitaetspruefung verlangt ist oder die geholte
+    Mail genau die erwartete Message-ID traegt."""
+    if erwartet is None:
+        return True
+    return _mid_norm((mail or {}).get("message_id")) == erwartet
 
 
 @_gesichert
@@ -3984,7 +4003,7 @@ def mail_einstufen(uid: str, art: str, grund: str) -> str:
     grund = " ".join(str(grund or "").split())[:300]
     if not grund:
         return _json({"fehler": "Bitte einen Grund in einem Satz nennen."})
-    uid, fehler = _post_uid_aufloesen(uid)
+    uid, fehler, erwartet = _post_uid_aufloesen(uid)
     if fehler:
         return fehler
     if not postfach.eingerichtet(uid):
@@ -3995,6 +4014,8 @@ def mail_einstufen(uid: str, art: str, grund: str) -> str:
         return _json({"fehler": f"Postfach nicht erreichbar ({type(e).__name__})."})
     if not mail:
         return _json({"fehler": f"Mail nicht mehr im Postfach (uid {uid})."})
+    if not _mail_passt(mail, erwartet):
+        return _json({"fehler": "nicht verfuegbar"})
     _postfach_merken([{**mail, "auszug": (mail.get("text") or "")[:600]}])
     mid = (str(mail.get("message_id") or "").strip() or f"uid:{uid}")[:300]
     if art == "unwichtig":
@@ -4055,7 +4076,7 @@ def mail_beantworten(uid: str, text: str, thema: str = "",
     Antworten gehen vom Postfach der Mail hinaus (28.10.2026): auf "gmx:12" antwortet die GMX-Adresse.
     uid "post:<id>" aus postfach_lesen wird auf die IMAP-Mail uebersetzt (nur Konten aus der
     Umgebung; fuer ueber die Oberflaeche angelegte Postfaecher kommt das mit Stufe 2)."""
-    uid, fehler = _post_uid_aufloesen(uid)
+    uid, fehler, erwartet = _post_uid_aufloesen(uid)
     if fehler:
         return fehler
     if not postfach.eingerichtet(uid):
@@ -4066,6 +4087,8 @@ def mail_beantworten(uid: str, text: str, thema: str = "",
         return _json({"fehler": f"Postfach nicht erreichbar ({type(e).__name__})."})
     if not mail:
         return _json({"fehler": f"Mail nicht mehr im Postfach (uid {uid})."})
+    if not _mail_passt(mail, erwartet):
+        return _json({"fehler": "nicht verfuegbar"})
     name, adresse = parseaddr(mail.get("von") or "")
     adresse = adresse.strip().lower()
     if not adresse or _NOREPLY.match(adresse):

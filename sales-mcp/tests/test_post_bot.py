@@ -100,13 +100,13 @@ def test_post_uid_wird_gelesen():
             "fehler": "nicht verfuegbar"}
 
 
-def _lesen_spion(monkeypatch):
+def _lesen_spion(monkeypatch, mid=None):
     geholt = []
     monkeypatch.setattr(server.postfach, "eingerichtet", lambda uid="": True)
     monkeypatch.setattr(server.postfach, "lesen",
                         lambda uid: geholt.append(uid) or {
                             "uid": uid, "von": "k@kunde.de", "betreff": "Hi",
-                            "text": "t", "message_id": "<m@x>",
+                            "text": "t", "message_id": mid or "<m@x>",
                             "postfach": "haupt"})
     return geholt
 
@@ -141,7 +141,7 @@ def _mail_in(konto_id, imap_uid, bereich="business", sensibel=False,
         "insert into post_mails (konto_id, imap_uid, message_id, besitzer, von, "
         "betreff, bereich, fach, sensibel, datum) values (%s, %s, %s, 't9_anna', "
         "'k@kunde.de', 'Anfrage', %s, %s, %s, now()) returning id",
-        (konto_id, imap_uid, f"t9r{imap_uid}{bereich}{sensibel}", bereich,
+        (konto_id, imap_uid, "m@x" if bereich == "business" else f"t9r{imap_uid}", bereich,
          fach if bereich == "business" else "Familie & Freunde", sensibel))[0]["id"])
 
 
@@ -209,3 +209,53 @@ def test_agents_md_unter_grenze():
     text = AGENTS_MD.read_text(encoding="utf-8")
     assert len(text) < 100000
     assert "post:<id>" in text and "Sammelstelle" in text
+
+
+def _zaehler_aktionen():
+    return (server._q("select count(*) n from drafts")[0]["n"],
+            server._q("select count(*) n from activities")[0]["n"])
+
+
+def test_falsche_message_id_tut_nichts(monkeypatch):
+    # UIDVALIDITY-Wechsel: die Nummer zeigt auf eine andere Mail.
+    geholt = _lesen_spion(monkeypatch, mid="<ANDERE@x>")
+    verschoben = []
+    monkeypatch.setattr(server.postfach, "verschieben",
+                        lambda uid, art: verschoben.append(uid) or "Spam")
+    mid = _mail_in(_env_konto("haupt", "env"), 17)
+    vorher = _zaehler_aktionen()
+    for r in (server.mail_beantworten(f"post:{mid}", "Danke"),
+              server.mail_einstufen(f"post:{mid}", "spam", "g"),
+              server.mail_einstufen(f"post:{mid}", "unwichtig", "g")):
+        assert json.loads(r) == {"fehler": "nicht verfuegbar"}
+    assert geholt == ["17", "17", "17"]       # gelesen, aber nichts getan
+    assert verschoben == [] and _zaehler_aktionen() == vorher
+
+
+def test_passende_message_id_normalisiert(monkeypatch):
+    _lesen_spion(monkeypatch, mid="  <M@X> ")
+    mid = _mail_in(_env_konto("haupt", "env"), 17)
+    assert "fehler" not in json.loads(server.mail_beantworten(f"post:{mid}", "ok"))
+
+
+def test_ersatz_message_id_passt_nie(monkeypatch):
+    _lesen_spion(monkeypatch, mid="<haupt:17@sales-post>")
+    konto = _env_konto("haupt", "env")
+    mid = str(server._q(
+        "insert into post_mails (konto_id, imap_uid, message_id, besitzer, von, "
+        "betreff, bereich, fach, sensibel, datum) values (%s, 17, '', 't9_anna', "
+        "'k@kunde.de', 'x', 'business', 'Kunden & Anfragen', false, now()) "
+        "returning id", (konto,))[0]["id"])
+    assert "fehler" in json.loads(server.mail_beantworten(f"post:{mid}", "x"))
+
+
+def test_inaktives_konto_ohne_imap(monkeypatch):
+    geholt = _lesen_spion(monkeypatch)
+    konto = _env_konto("haupt", "env")
+    mid = _mail_in(konto, 17)
+    server._q("update post_konten set aktiv = false where id = %s returning 1",
+              (str(konto),))
+    for r in (server.mail_beantworten(f"post:{mid}", "x"),
+              server.mail_einstufen(f"post:{mid}", "spam", "g")):
+        assert "fehler" in json.loads(r)
+    assert geholt == []
