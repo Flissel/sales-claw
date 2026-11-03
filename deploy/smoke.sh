@@ -773,20 +773,18 @@ fi
 # und ein rotes Ergebnis wuerde jedes update.sh blockieren.
 # Signal "letzte Runde": der Dienst schreibt im Leerlauf KEINE Zeile (Protokoll
 # nur bei Abgeholtem/Eingeordnetem) und post_mails.gesehen_am bewegt sich nur
-# mit neuen Mails - beides taugt nicht als Herzschlag. Billig und ehrlich:
-# laeuft (nicht "restarting"), die laufende Instanz ist seit >= 120 s oben -
-# eine Absturzschleife (restart: unless-stopped) setzt StartedAt dauernd zurueck
-# und faellt so auf - und post_mails ist lesbar.
+# mit neuen Mails - beides taugt nicht als Herzschlag. Eine Mindest-Laufzeit
+# taugt auch nicht: update.sh erzeugt laufende optionale Dienste neu und ruft
+# smoke ~30 s spaeter - das waere ROT und damit Rueckbau. Absturzschleife statt
+# dessen: Restarting oder RestartCount >= 3 (Neuerzeugen setzt ihn auf 0).
+# Dazu muss post_mails lesbar sein.
 post_zustand="$(docker inspect -f '{{.State.Status}}' sales-post 2>/dev/null | tr -d '[:space:]' || true)"
 if [ "$post_zustand" != "running" ]; then
   melde "sales-post" "uebersprungen (Container laeuft nicht — Post-Sammelstelle noch nicht ausgerollt)"
 else
-  post_start="$(docker inspect -f '{{.State.StartedAt}}' sales-post 2>/dev/null || true)"
-  post_s="$(date -d "$post_start" +%s 2>/dev/null || true)"
-  if [ -z "$post_s" ]; then
-    fehl "sales-post laeuft" "Startzeit nicht lesbar"
-  elif [ $(( $(date +%s) - post_s )) -lt 120 ]; then
-    fehl "sales-post laeuft" "seit weniger als 120 s oben (Absturzschleife?) — docker logs sales-post"
+  read -r post_restarting post_zaehler < <(docker inspect -f '{{.State.Restarting}} {{.RestartCount}}' sales-post 2>/dev/null || true)
+  if [ "${post_restarting:-}" = "true" ] || ! [[ "${post_zaehler:-x}" =~ ^[0-9]+$ ]] || [ "$post_zaehler" -ge 3 ]; then
+    fehl "sales-post laeuft" "Absturzschleife? (Restarting=${post_restarting:-?} RestartCount=${post_zaehler:-?}) — docker logs sales-post"
   else
     gut "sales-post laeuft"
   fi

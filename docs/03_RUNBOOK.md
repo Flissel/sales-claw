@@ -3276,10 +3276,16 @@ Ausrollen - Reihenfolge, jeder Schritt nur mit Betreiber-OK:
    traegt den Agenten `post` (keine Werkzeuge) ins Gateway ein und prueft `/v1/models`. Zeigt die
    Ausgabe "OHNE Modell", hat das Gateway `agents.list[].model` abgelehnt: dann gilt das Standardmodell
    des Ladens.
-4. `docker compose up -d sales-post` (bzw. mit `--env-file deploy/laeden/<laden>.env`).
-5. `bash deploy/smoke.sh`: Abschnitt `sales-post` (laeuft, >= 120 s oben, `post_mails` lesbar; ohne
-   laufenden Dienst "uebersprungen"). Der Dienst schreibt im Leerlauf keinen Herzschlag - ein Haenger
-   ohne Absturz faellt hier nicht auf; Gegenprobe: `docker logs --since 10m sales-post`.
+4. Hat `post-anbinden.sh` ein NEUES Schluesselpaar erzeugt (es sagt es), bekommt `sales-ui` den
+   oeffentlichen Schluessel erst beim Neuerzeugen:
+   `docker compose up -d --no-deps --force-recreate sales-ui` (andere Laeden mit
+   `--env-file deploy/laeden/<laden>.env`). Ohne das meldet "Postfach hinzufuegen" einen Fehler.
+5. `docker compose up -d sales-post` (bzw. mit `--env-file deploy/laeden/<laden>.env`).
+6. `bash deploy/smoke.sh`: Abschnitt `sales-post` (kein `Restarting`, `RestartCount` < 3, `post_mails`
+   lesbar; ohne laufenden Dienst "uebersprungen"). Eine Mindest-Laufzeit wird bewusst nicht verlangt:
+   `update.sh` erzeugt den Dienst neu und prueft ~30 s spaeter. Der Dienst schreibt im Leerlauf keinen
+   Herzschlag - ein Haenger ohne Absturz faellt hier nicht auf; Gegenprobe:
+   `docker logs --since 10m sales-post`.
 
 R13: Regeln aus "fuer diesen Absender immer so" gelten nur fuer Mails ihres Besitzers
 (`post_regeln.besitzer`; NULL = global). Die Tabelle ist neu, alte besitzerlose Regeln gibt es nicht.

@@ -31,17 +31,23 @@ export LC_ALL=C
 WURZEL="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$WURZEL"
 PRAEFIX="${1:-sales}"
-if ! [[ $PRAEFIX =~ ^[a-z][a-z0-9-]{0,30}$ ]]; then
+if ! [[ $PRAEFIX =~ ^[a-z][a-z0-9_]{0,30}$ ]]; then
   echo "Aufruf: $0 [laden-praefix]  (Kleinbuchstaben, z. B. ivan)" >&2; exit 2
 fi
 CONTAINER="${PRAEFIX}-claw"
 MCP_CONTAINER="${PRAEFIX}-mcp"
 if [ "$PRAEFIX" = "sales" ]; then
-  ENV_DATEI="$WURZEL/.env"; SCHEMA="sales"
+  ENV_DATEI="$WURZEL/.env"
 else
-  ENV_DATEI="$WURZEL/deploy/laeden/$PRAEFIX.env"; SCHEMA="sales_${PRAEFIX//-/_}"
+  ENV_DATEI="$WURZEL/deploy/laeden/$PRAEFIX.env"
 fi
 [ -f "$ENV_DATEI" ] || { echo "FEHLT: $ENV_DATEI" >&2; exit 1; }
+# Schema aus der Umgebung des Ladens (wie die Container es bekommen); Basis-Laden: sales.
+SCHEMA="$(grep -E '^SALES_DB_SCHEMA=' "$ENV_DATEI" | tail -n 1 | cut -d= -f2- | tr -d '\r[:space:]"' || true)"
+SCHEMA="${SCHEMA:-sales}"
+if ! [[ $SCHEMA =~ ^sales(_[a-z][a-z0-9_]{0,30})?$ ]]; then
+  echo "ABBRUCH: SALES_DB_SCHEMA='$SCHEMA' passt nicht zum Schema-Muster - nichts geaendert." >&2; exit 1
+fi
 
 # 0) Besitzer: nur diese eine Variable aus der .env lesen.
 BESITZER="$(grep -E '^POST_BESITZER=' "$ENV_DATEI" | tail -n 1 | cut -d= -f2- | tr -d '\r[:space:]"' || true)"
@@ -60,9 +66,11 @@ for c in "$CONTAINER" "$MCP_CONTAINER"; do
 done
 
 # 1) Schluesselpaar fuer versiegelte Postfach-Zugaenge (nur wenn es fehlt).
+NEUES_PAAR=0
 if ! grep -Eq '^POST_SCHLUESSEL_PRIVAT=.+' "$ENV_DATEI"; then
   echo "1) POST_SCHLUESSEL_PRIVAT fehlt -> deploy/post-schluessel.sh"
   SALES_ENV_DATEI="$ENV_DATEI" bash "$WURZEL/deploy/post-schluessel.sh"
+  NEUES_PAAR=1
 else
   echo "1) Schluesselpaar schon vorhanden"
 fi
@@ -74,7 +82,7 @@ docker exec -i debian-supabase-db-1 psql -q -U supabase_admin -d postgres \
 
 # 3) Leitung + Env-Konten im sales-mcp-Container (Name per Umgebung, nie in SQL).
 echo "3) Leitung fuer $BESITZER, Env-Postfaecher uebernehmen"
-docker exec -e "SALES_DB_SCHEMA=$SCHEMA" -e "POST_BESITZER=$BESITZER" "$MCP_CONTAINER" python -c '
+docker exec -e "POST_BESITZER=$BESITZER" "$MCP_CONTAINER" python -c '
 import os, sys
 sys.path.insert(0, "/app")
 import server, post_konten
@@ -88,7 +96,7 @@ print("   Env-Konten neu uebernommen:", post_konten.env_konten_uebernehmen(b))
 
 # 4+5) Agent post und Arbeitsordner im Gateway-Container (node ist dort).
 echo "4) Agent post + Arbeitsordner in $CONTAINER"
-docker exec -i "$CONTAINER" node -e '
+docker exec "$CONTAINER" node -e '
   const fs = require("node:fs");
   const { execFileSync } = require("node:child_process");
   const pfad = "/home/node/.openclaw/openclaw.json";
@@ -109,7 +117,14 @@ docker exec -i "$CONTAINER" node -e '
     };
     try { setze(mitModell); console.log("   Agent post eingetragen (tools.deny [*], Modell claude-haiku-5-5)"); }
     catch (e) {
-      // Aeltere/strengere Schemata lehnen das Feld ab: dann ohne Modell.
+      // Nur eine Schema-/Validierungsablehnung des Feldes rechtfertigt den Rueckfall;
+      // jeder andere Fehler (Rechte, Datei, Gateway) bricht klar ab.
+      const text = String(e && e.stderr || "") + " " + String(e && e.message || "");
+      if (!/unrecogni[sz]ed key|unknown key|invalid|validation|additional propert|schema/i.test(text)) {
+        console.error("   ABBRUCH: openclaw config set agents.list fehlgeschlagen (kein Schemafehler): " +
+          text.replace(/\s+/g, " ").slice(0, 300));
+        process.exit(5);
+      }
       setze(ohneModell);
       console.log("   HINWEIS: agents.list[].model wurde abgelehnt - Agent post OHNE Modell eingetragen;");
       console.log("            es gilt das Standardmodell des Ladens (im Bericht vermerken).");
@@ -144,6 +159,14 @@ ERGEBNIS="$(docker exec "$CONTAINER" node -e '
   })();' 2>&1)"
 if printf '%s' "$ERGEBNIS" | grep -w "openclaw/post" >/dev/null; then
   echo "   ok: $ERGEBNIS"
+  if [ "$NEUES_PAAR" = 1 ]; then
+    echo "WICHTIG: neues Schluesselpaar - sales-ui bekommt den oeffentlichen Schluessel erst beim Neuerzeugen:"
+    if [ "$PRAEFIX" = "sales" ]; then
+      echo "  docker compose up -d --no-deps --force-recreate sales-ui"
+    else
+      echo "  docker compose --env-file deploy/laeden/$PRAEFIX.env up -d --no-deps --force-recreate sales-ui"
+    fi
+  fi
   echo "Fertig. sales-post starten erst mit Betreiber-OK: docker compose up -d sales-post (bzw. mit --env-file)."
 else
   echo "   ROT: $ERGEBNIS" >&2

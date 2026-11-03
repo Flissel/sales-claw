@@ -45,7 +45,8 @@ def test_skript_gibt_den_token_nie_aus_und_startet_nichts():
     assert "TOKEN" not in code and "-e T=" not in code
     assert "gateway?.auth?.token" in code
     assert "docker restart" not in code.replace("(docker restart $CONTAINER, mit dem Betreiber", "")
-    assert "compose up" not in code.replace("docker compose up -d sales-post (bzw.", "")
+    ausgefuehrt = chr(10).join(z for z in code.splitlines() if not z.lstrip().startswith("echo"))
+    assert "compose" not in ausgefuehrt                         # Hinweise nur als echo, nie ausgefuehrt
     # Der Token wird wiederverwendet, nicht neu in die .env geschrieben.
     assert "OPENCLAW_GATEWAY_TOKEN=" not in code
     # Warteschleife wie bei auto-anbinden (Neuladen kommt Sekunden nach config set).
@@ -66,7 +67,10 @@ def test_skript_schluessel_sql_leitung_und_konten():
     code = _code("deploy/post-anbinden.sh")
     assert "POST_SCHLUESSEL_PRIVAT" in code and "post-schluessel.sh" in code
     assert "db/post-sammelstelle.sql" in code and "-v \"schema=$SCHEMA\"" in code
-    assert 'SCHEMA="sales"' in code and 'sales_${PRAEFIX//-/_}' in code
+    # Schema aus der Umgebung des Ladens, nicht aus dem Praefix; kein -e SALES_DB_SCHEMA am mcp-Container.
+    assert "^SALES_DB_SCHEMA=" in code and 'SCHEMA="${SCHEMA:-sales}"' in code
+    assert "-e \"SALES_DB_SCHEMA" not in code
+    assert "^[a-z][a-z0-9_]{0,30}$" in code
     assert "set leitung = true where name = %s" in code
     assert "env_konten_uebernehmen" in code
     # Besitzername geht per Umgebung, nie in SQL-Text oder Kommandozeile von psql.
@@ -89,7 +93,10 @@ def test_smoke_hat_abschnitt_sales_post_mit_uebersprungen():
     i = smoke.index("# 20) Post-Sammelstelle")
     abschnitt = smoke[i:smoke.index('echo "---"', i)]
     assert "sales-post" in abschnitt and "uebersprungen" in abschnitt
-    assert "post_mails" in abschnitt and "StartedAt" in abschnitt
+    assert "post_mails" in abschnitt
+    # Kein Mindest-Alter (update.sh erzeugt neu und prueft ~30 s spaeter -> sonst Rueckbau).
+    assert "StartedAt" not in abschnitt and "-lt 120" not in abschnitt
+    assert "{{.State.Restarting}} {{.RestartCount}}" in abschnitt and "-ge 3" in abschnitt
     # sales-post gehoert NICHT in die Pflichtliste der Container (sonst rot vor dem Ausrollen).
     pflicht = re.search(r"for c in (sales-mcp[^;]*); do", smoke).group(1)
     assert "sales-post" not in pflicht
@@ -102,3 +109,18 @@ def test_runbook_beschreibt_ausrollen_und_rueckweg():
     for stichwort in ("post-anbinden.sh", "update.sh", "up -d sales-post", "R13",
                       "compose stop sales-post", "POST_BESITZER"):
         assert stichwort in abschnitt
+
+
+def test_modell_rueckfall_nur_bei_schemaablehnung():
+    code = _code("deploy/post-anbinden.sh")
+    assert "process.exit(5)" in code and "unrecogni" in code and "validation" in code
+    assert code.index("process.exit(5)") < code.index("setze(ohneModell);\n      console.log")
+
+
+def test_neues_schluesselpaar_gibt_ui_neuerzeugen_aus_ohne_es_zu_tun():
+    code = _code("deploy/post-anbinden.sh")
+    assert "NEUES_PAAR=1" in code
+    assert code.count("force-recreate sales-ui") == 2           # nur als Echo
+    assert not any(z.lstrip().startswith("docker compose") for z in code.splitlines())
+    rb = (WURZEL / "docs" / "03_RUNBOOK.md").read_text(encoding="utf-8")
+    assert "up -d --no-deps --force-recreate sales-ui" in rb[rb.index("## Post-Sammelstelle"):]
