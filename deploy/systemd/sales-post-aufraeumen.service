@@ -1,0 +1,8 @@
+[Unit]
+Description=sales-claw: Sitzungskopien des Sortier-Agenten post loeschen (aelter 10 min)
+
+[Service]
+Type=oneshot
+User=debian
+ExecStart=/usr/bin/bash /home/debian/sales-claw/deploy/post-sitzungen-aufraeumen.sh
+TimeoutStartSec=60

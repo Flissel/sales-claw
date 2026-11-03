@@ -166,3 +166,13 @@ def test_neues_schluesselpaar_gibt_ui_neuerzeugen_aus_ohne_es_zu_tun():
     assert not any(z.lstrip().startswith("docker compose") for z in code.splitlines())
     rb = (WURZEL / "docs" / "03_RUNBOOK.md").read_text(encoding="utf-8")
     assert "up -d --no-deps --force-recreate sales-ui" in rb[rb.index("## Post-Sammelstelle"):]
+
+
+def test_aufraeum_timer_ruft_das_skript_alle_5_minuten():
+    """Die Gateway-Kopien jeder eingeordneten Mail (agents/post/sessions) sollen
+    nicht liegen bleiben - der Hauptagent hat Dateiwerkzeuge (Ruling R17)."""
+    dienst = (WURZEL / "deploy" / "systemd" / "sales-post-aufraeumen.service").read_text(encoding="utf-8")
+    zeit = (WURZEL / "deploy" / "systemd" / "sales-post-aufraeumen.timer").read_text(encoding="utf-8")
+    assert "ExecStart=/usr/bin/bash /home/debian/sales-claw/deploy/post-sitzungen-aufraeumen.sh" in dienst
+    assert "User=debian" in dienst and "Type=oneshot" in dienst
+    assert "OnCalendar=*:0/5" in zeit and "WantedBy=timers.target" in zeit
