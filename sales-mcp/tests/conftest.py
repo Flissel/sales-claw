@@ -95,7 +95,7 @@ def _keine_echten_zusatzpostfaecher(monkeypatch):
         if name.startswith("POSTFACH_") and name.endswith(("_ADRESSE", "_PASSWORT")):
             monkeypatch.delenv(name)
 
-    def nie(konto):
+    def nie(konto, **_):
         raise AssertionError(f"echte Verbindung zu {konto.kennung} im Test")
     monkeypatch.setattr(postfach, "_imap_oeffnen", nie)
     yield

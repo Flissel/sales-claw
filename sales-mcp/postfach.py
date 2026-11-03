@@ -180,9 +180,13 @@ def name(kennung: str) -> str:
     return ANBIETER.get(kennung, {}).get("name", "Hauptpostfach")
 
 
-def _imap_oeffnen(k: Konto):
+def _imap_oeffnen(k: Konto, timeout: float | None = None):
+    # `timeout` gilt nur fuer DIESEN Socket (Verbinden, Anmelden, jeder
+    # Befehl). Bewusst kein socket.setdefaulttimeout: in sales-ui wuerde das
+    # jeden anderen Socket des Prozesses mit begrenzen.
+    zusatz = {"timeout": timeout} if timeout else {}
     kasten = imaplib.IMAP4_SSL(k.anbieter["imap"], IMAP_SSL_PORT,
-                               ssl_context=ssl.create_default_context())
+                               ssl_context=ssl.create_default_context(), **zusatz)
     kasten.login(k.adresse, k.passwort)
     return kasten
 

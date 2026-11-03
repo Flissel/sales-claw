@@ -14,6 +14,8 @@ import postfach  # noqa: E402
 import server  # noqa: E402
 
 GEHEIM = "Sehr-Geheim-Passwort-4711"
+# Beim Import, bevor die conftest-Wache (_keine_echten_zusatzpostfaecher) es ersetzt.
+_ECHT_OEFFNEN = postfach._imap_oeffnen
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -154,6 +156,43 @@ def test_verbinden_ui_oeffnet_versiegeltes_passwort(monkeypatch):
     assert post_konten.verbinden(post_konten.aktive_konten()[0]) == "VERBINDUNG"
     k = gesehen[0]
     assert (k.kennung, k.adresse, k.passwort, k.anbieter_id) == ("gmx-privat", "a@gmx.de", GEHEIM, "gmx")
+
+
+def test_env_kennungen_sind_reserviert():
+    # M4: ein UI-Konto "gmx" verdraengte still das Env-Konto gleichen Namens.
+    for kennung in ("haupt", "gmx", "gmail"):
+        r = post_konten.konto_anlegen("b1", kennung, "gmx", "a@gmx.de", GEHEIM, probe=_ok)
+        assert "reserviert" in r.get("fehler", ""), kennung
+    assert _zeilen() == []
+    assert "konto_id" in post_konten.konto_anlegen("b1", "gmx-privat", "gmx", "a@gmx.de",
+                                                    GEHEIM, probe=_ok)
+
+
+def test_probe_mit_eigener_zeitgrenze_ohne_prozessweiten_default(monkeypatch):
+    # M6: die Probe laeuft in sales-ui - ein haengender Anbieter darf die Anfrage
+    # nicht ewig halten, aber auch nicht jeden anderen Socket des Prozesses begrenzen.
+    import socket
+    gesehen = []
+
+    class Kasten:
+        def __init__(self, host, port, **kw):
+            gesehen.append((host, port, kw))
+
+        def login(self, adresse, passwort):
+            pass
+
+        def logout(self):
+            pass
+    vorher = socket.getdefaulttimeout()
+    # conftest sperrt _imap_oeffnen; hier gilt das echte, nur IMAP4_SSL ist Attrappe.
+    monkeypatch.setattr(postfach, "_imap_oeffnen", _ECHT_OEFFNEN)
+    monkeypatch.setattr(postfach.imaplib, "IMAP4_SSL", Kasten)
+    post_konten._probe_imap(postfach.Konto("gmx-x", "a@gmx.de", GEHEIM, anbieter_id="gmx"))
+    host, port, kw = gesehen[0]
+    assert host == "imap.gmx.net" and port == 993
+    assert kw["timeout"] == post_konten.PROBE_TIMEOUT_S == 30
+    assert socket.getdefaulttimeout() == vorher
+    assert "setdefaulttimeout" not in Path(post_konten.__file__).read_text(encoding="utf-8")
 
 
 def test_verbinden_env_nutzt_postfach_oeffnen(monkeypatch):
