@@ -16,8 +16,8 @@
 #   3. benutzer.leitung = true fuer POST_BESITZER; Env-Postfaecher uebernehmen
 #      (post_konten.env_konten_uebernehmen) - beides im sales-mcp-Container
 #   4. Agent `post` in agents.list (tools.deny ["*"], eigener Arbeitsordner,
-#      Modell anthropic/claude-haiku-5-5; lehnt `config set` das Feld ab, wird
-#      OHNE Modell eingetragen = Standardmodell des Ladens, mit klarem Hinweis)
+#      model {primary anthropic/claude-haiku-5-5, fallbacks []} - nie ein
+#      Rueckfall auf openrouter/free; lehnt `config set` das ab, ABBRUCH)
 #   5. workspace-post/AGENTS.md (fast leer, die Regeln schickt sales-post mit)
 #   6. Probe: GET /v1/models muss openclaw/post zeigen (bis 30 s)
 #
@@ -103,32 +103,37 @@ docker exec "$CONTAINER" node -e '
   const c = JSON.parse(fs.readFileSync(pfad, "utf8"));
   const lauf = (args) => execFileSync("openclaw", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   const liste = Array.isArray(c?.agents?.list) ? c.agents.list : [{ id: "main" }];
-  const ohneModell = { id: "post", workspace: "/home/node/.openclaw/workspace-post", tools: { deny: ["*"] } };
-  const mitModell = { ...ohneModell, model: "anthropic/claude-haiku-5-5" };
+  // Eigenes Modell OHNE fallbacks: die Vorgabe des Ladens faellt auf
+  // openrouter/free zurueck - Mailinhalte duerfen nie an ein kostenloses
+  // Fremdmodell gehen. Gemessen (OpenClaw 2026.7.1,
+  // resolveSelectedModelFallbacksOverride): fallbacks [] am Agenten ersetzt
+  // die Vorgabe, es gibt dann keinen Rueckfall.
+  const soll = { id: "post", workspace: "/home/node/.openclaw/workspace-post", tools: { deny: ["*"] },
+                 model: { primary: "anthropic/claude-haiku-5-5", fallbacks: [] } };
   const i = liste.findIndex((a) => a && a.id === "post");
-  const gleich = (a) => i !== -1 && JSON.stringify(liste[i]) === JSON.stringify(a);
-  if (gleich(mitModell)) console.log("   Agent post war schon da (mit Modell claude-haiku-5-5)");
-  else if (gleich(ohneModell)) console.log("   Agent post war schon da (OHNE Modell - Standardmodell des Ladens)");
-  else {
-    const setze = (a) => {
-      const neu = liste.slice();
-      if (i === -1) neu.push(a); else neu[i] = a;
+  // Vergleich unabhaengig von der Schluesselreihenfolge (sonst unnoetiges config set).
+  const norm = (v) => Array.isArray(v) ? v.map(norm) : (v && typeof v === "object")
+    ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, norm(v[k])])) : v;
+  if (i !== -1 && JSON.stringify(norm(liste[i])) === JSON.stringify(norm(soll))) {
+    console.log("   Agent post war schon da (Modell claude-haiku-5-5, ohne Rueckfall)");
+  } else {
+    // Auch ein vorhandener Eintrag ohne eigenes Modell (alter Stand) wird hochgezogen.
+    const neu = liste.slice();
+    if (i === -1) neu.push(soll); else neu[i] = soll;
+    try {
       lauf(["config", "set", "agents.list", JSON.stringify(neu)]);
-    };
-    try { setze(mitModell); console.log("   Agent post eingetragen (tools.deny [*], Modell claude-haiku-5-5)"); }
-    catch (e) {
-      // Nur eine Schema-/Validierungsablehnung des Feldes rechtfertigt den Rueckfall;
-      // jeder andere Fehler (Rechte, Datei, Gateway) bricht klar ab.
+    } catch (e) {
+      // KEIN Rueckfall ohne Modell: dann liefe post auf der Vorgabe des Ladens
+      // samt fallbacks [openrouter/free]. Lieber gar nicht anbinden.
       const text = String(e && e.stderr || "") + " " + String(e && e.message || "");
-      if (!/unrecogni[sz]ed key|unknown key|invalid|validation|additional propert|schema/i.test(text)) {
-        console.error("   ABBRUCH: openclaw config set agents.list fehlgeschlagen (kein Schemafehler): " +
-          text.replace(/\s+/g, " ").slice(0, 300));
-        process.exit(5);
-      }
-      setze(ohneModell);
-      console.log("   HINWEIS: agents.list[].model wurde abgelehnt - Agent post OHNE Modell eingetragen;");
-      console.log("            es gilt das Standardmodell des Ladens (im Bericht vermerken).");
+      console.error("   ABBRUCH: das Gateway hat den Agenten post mit eigenem Modell abgelehnt");
+      console.error("   (agents.list[].model = {primary: anthropic/claude-haiku-5-5, fallbacks: []}).");
+      console.error("   Ohne dieses Feld liefe die Einordnung auf dem Standardmodell MIT Rueckfall auf");
+      console.error("   ein Fremdmodell - darum nichts eingetragen. Meldung: " +
+        text.replace(/\s+/g, " ").slice(0, 300));
+      process.exit(5);
     }
+    console.log("   Agent post eingetragen (tools.deny [*], Modell claude-haiku-5-5, fallbacks [])");
   }
   fs.mkdirSync("/home/node/.openclaw/workspace-post", { recursive: true });
   fs.writeFileSync("/home/node/.openclaw/workspace-post/AGENTS.md",

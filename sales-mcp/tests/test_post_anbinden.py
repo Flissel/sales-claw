@@ -19,14 +19,35 @@ def _code(pfad: str) -> str:
     return "\n".join(z for z in skript.splitlines() if not z.lstrip().startswith("#"))
 
 
-def test_skript_hat_gueltige_bash_syntax():
+@pytest.mark.parametrize("skript", ["post-anbinden.sh", "post-sitzungen-aufraeumen.sh"])
+def test_skript_hat_gueltige_bash_syntax(skript):
     # Skript ueber stdin: auf Windows ist `bash` mitunter WSL und kennt keine C:-Pfade.
     try:
-        r = subprocess.run(["bash", "-n"], input=(WURZEL / "deploy" / "post-anbinden.sh").read_bytes(),
+        r = subprocess.run(["bash", "-n"], input=(WURZEL / "deploy" / skript).read_bytes(),
                            capture_output=True)
     except FileNotFoundError:
         pytest.skip("kein bash")
     assert r.returncode == 0, r.stderr.decode("utf-8", "replace")
+
+
+def test_sitzungen_aufraeumen_loescht_nur_alte_post_sitzungen():
+    """I3 / R17: das Gateway legt je eingeordneter Mail eine Sitzungsdatei mit
+    dem Mailinhalt an. Das Skript loescht die von Agent post nach 10 min - nur
+    dort, nie Inhalte ausgeben, nichts starten."""
+    code = _code("deploy/post-sitzungen-aufraeumen.sh")
+    assert "/home/node/.openclaw/agents/post/sessions" in code
+    assert "-mmin +10" in code and "-delete" in code and "-type f" in code
+    assert "agents/main" not in code and "agents/auto" not in code
+    assert "-name '*.jsonl*'" in code
+    # Index-Eintraege ohne Datei raeumt OpenClaw selbst weg (nur Agent post).
+    assert "sessions cleanup --agent post --fix-missing" in code
+    for verboten in ("cat ", "head ", "tail ", "grep ", "less ", "docker restart",
+                     "compose", "set -x"):
+        assert verboten not in code, verboten
+    assert "^[a-z][a-z0-9_]{0,30}$" in code
+    rb = (WURZEL / "docs" / "03_RUNBOOK.md").read_text(encoding="utf-8")
+    abschnitt = rb[rb.index("## Post-Sammelstelle"):]
+    assert "*/5 * * * *" in abschnitt and "post-sitzungen-aufraeumen.sh" in abschnitt
 
 
 def test_skript_bricht_ohne_besitzer_vor_jeder_aenderung_ab():
@@ -54,13 +75,18 @@ def test_skript_gibt_den_token_nie_aus_und_startet_nichts():
     assert "openclaw/post" in code
 
 
-def test_skript_agent_ohne_werkzeuge_modell_mit_rueckfall():
+def test_skript_agent_ohne_werkzeuge_eigenes_modell_ohne_rueckfall():
+    """I2: Agent post darf nie auf die Vorgabe des Ladens (fallbacks
+    [openrouter/free]) fallen - weder per Modell-Rueckfall noch per Eintrag
+    ohne Modell."""
     code = _code("deploy/post-anbinden.sh")
     assert 'deny: ["*"]' in code
     assert "workspace-post" in code
-    assert "anthropic/claude-haiku-5-5" in code
-    # Rueckfall ohne Modell, wenn das Feld abgelehnt wird, mit klarem Hinweis.
-    assert "ohneModell" in code and "OHNE Modell" in code
+    assert 'model: { primary: "anthropic/claude-haiku-5-5", fallbacks: [] }' in code
+    assert "ohneModell" not in code and "OHNE Modell" not in code
+    # Ein alter Eintrag ohne Modell zaehlt nicht als "schon da" - er wird ersetzt.
+    assert code.count('config", "set", "agents.list"') == 1
+    assert "neu[i] = soll" in code
 
 
 def test_skript_schluessel_sql_leitung_und_konten():
@@ -111,10 +137,26 @@ def test_runbook_beschreibt_ausrollen_und_rueckweg():
         assert stichwort in abschnitt
 
 
-def test_modell_rueckfall_nur_bei_schemaablehnung():
+def test_abgelehntes_modell_bricht_ab():
+    """I2: lehnt das Gateway agents.list[].model ab, bricht das Skript ab -
+    nach dem einzigen config set kommt im Fehlerzweig nur noch exit(5)."""
     code = _code("deploy/post-anbinden.sh")
-    assert "process.exit(5)" in code and "unrecogni" in code and "validation" in code
-    assert code.index("process.exit(5)") < code.index("setze(ohneModell);\n      console.log")
+    i = code.index('lauf(["config", "set", "agents.list"')
+    fang = code[i:code.index("process.exit(5)", i)]
+    assert "catch (e)" in fang and "ABBRUCH" in fang
+    assert "lauf(" not in fang[5:]                     # kein zweiter Versuch im Fehlerzweig
+
+
+def test_saat_agent_post_ohne_fallbacks():
+    """I2: die Vorgabe des Ladens hat fallbacks [openrouter/free]; post hat ein
+    eigenes Modell mit leerer Liste (OpenClaw: [] ersetzt die Vorgabe)."""
+    c = json.loads((WURZEL / "config" / "openclaw.json").read_text(encoding="utf-8"))
+    post = {a["id"]: a for a in c["agents"]["list"]}["post"]
+    assert post["model"] == {"primary": "anthropic/claude-haiku-5-5", "fallbacks": []}
+    assert "openrouter/free" in c["agents"]["defaults"]["model"]["fallbacks"]   # darum
+    # Saat und Skript setzen denselben Eintrag (sonst zieht das Skript staendig nach).
+    code = _code("deploy/post-anbinden.sh")
+    assert post["workspace"] in code and "anthropic/claude-haiku-5-5" in code
 
 
 def test_neues_schluesselpaar_gibt_ui_neuerzeugen_aus_ohne_es_zu_tun():
