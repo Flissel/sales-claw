@@ -163,7 +163,7 @@ def test_postfach_lesen_rueckfall_liest_nur_das_hauptpostfach(haupt, gmx, leer):
 def test_kaputtes_hauptpostfach_ist_eine_meldung_ohne_geheimnis(haupt, gmx, leer, monkeypatch):
     def kaputt(konto):
         raise OSError(f"login failed {GMX_GEHEIM}")
-    monkeypatch.setattr(postfach, "_imap_oeffnen", kaputt)
+    monkeypatch.setattr(postfach, "_verbinden", lambda: kaputt(None))
     antwort = json.loads(server.postfach_lesen(10))
     assert "fehler" in antwort and antwort["nicht_erreichbar"] == {"haupt": "OSError"}
     assert GMX_GEHEIM not in json.dumps(antwort)
