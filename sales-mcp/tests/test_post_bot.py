@@ -100,18 +100,88 @@ def test_post_uid_wird_gelesen():
             "fehler": "nicht verfuegbar"}
 
 
-def test_alte_uids_nur_fuers_hauptpostfach(monkeypatch):
+def _lesen_spion(monkeypatch):
     geholt = []
     monkeypatch.setattr(server.postfach, "eingerichtet", lambda uid="": True)
     monkeypatch.setattr(server.postfach, "lesen",
-                        lambda uid: geholt.append(uid) or {"uid": uid})
+                        lambda uid: geholt.append(uid) or {
+                            "uid": uid, "von": "k@kunde.de", "betreff": "Hi",
+                            "text": "t", "message_id": "<m@x>",
+                            "postfach": "haupt"})
+    return geholt
+
+
+def test_alte_uids_nur_bei_leerer_sammelstelle(monkeypatch):
+    geholt = _lesen_spion(monkeypatch)
+    assert json.loads(server.postfach_mail_lesen("42"))["uid"] == "42"
+    assert geholt == ["42"]
     _mail()                                    # Sammelstelle hat Zeilen
-    for uid in ("gmx:12", "gmail:3", "-5", "haupt:-1", "abc"):
+    geholt.clear()
+    for uid in ("42", "gmx:12", "gmail:3", "-5", "haupt:-1", "abc"):
         assert json.loads(server.postfach_mail_lesen(uid)) == {
             "fehler": "nicht verfuegbar"}
+        assert json.loads(server.mail_beantworten(uid, "x")) == {
+            "fehler": "nicht verfuegbar"}
+        assert json.loads(server.mail_einstufen(uid, "unwichtig", "g")) == {
+            "fehler": "nicht verfuegbar"}
     assert geholt == []                        # nie per IMAP angefasst
-    assert json.loads(server.postfach_mail_lesen("42")) == {"uid": "42"}
-    assert geholt == ["42"]
+
+
+def _env_konto(kennung, quelle):
+    return server._q(
+        "insert into post_konten (besitzer, kennung, anbieter, adresse, quelle) "
+        "values ('t9_anna', %s, 'gmx', 'a@b.de', %s) "
+        "on conflict (kennung) do update set quelle = excluded.quelle "
+        "returning id", (kennung, quelle))[0]["id"]
+
+
+def _mail_in(konto_id, imap_uid, bereich="business", sensibel=False,
+             fach="Kunden & Anfragen"):
+    return str(server._q(
+        "insert into post_mails (konto_id, imap_uid, message_id, besitzer, von, "
+        "betreff, bereich, fach, sensibel, datum) values (%s, %s, %s, 't9_anna', "
+        "'k@kunde.de', 'Anfrage', %s, %s, %s, now()) returning id",
+        (konto_id, imap_uid, f"t9r{imap_uid}{bereich}{sensibel}", bereich,
+         fach if bereich == "business" else "Familie & Freunde", sensibel))[0]["id"])
+
+
+def test_post_uid_wird_fuer_antworten_uebersetzt(monkeypatch):
+    geholt = _lesen_spion(monkeypatch)
+    mid = _mail_in(_env_konto("haupt", "env"), 17)
+    r = json.loads(server.mail_beantworten(f"post:{mid}", "Danke"))
+    assert geholt == ["17"] and "fehler" not in r
+    gmx = _mail_in(_env_konto("gmx", "env"), 5)
+    server.mail_einstufen(f"post:{gmx}", "unwichtig", "Werbung")
+    assert geholt[-1] == "gmx:5"
+
+
+def test_post_uid_ohne_antwortrecht_ruft_nie_imap(monkeypatch):
+    geholt = _lesen_spion(monkeypatch)
+    env = _env_konto("haupt", "env")
+    ui = _env_konto("ui-konto", "ui")
+    faelle = {
+        "privat": _mail_in(env, 1, bereich="privat"),
+        "sensibel": _mail_in(env, 2, sensibel=True),
+        "ui": _mail_in(ui, 3),
+        "negativ": _mail_in(env, -4),
+        "unbekannt": "00000000-0000-0000-0000-000000000000",
+    }
+    for name, mid in faelle.items():
+        for r in (server.mail_beantworten(f"post:{mid}", "x"),
+                  server.mail_einstufen(f"post:{mid}", "spam", "g")):
+            assert "fehler" in json.loads(r), name
+    assert geholt == []
+    assert "Stufe 2" in json.loads(
+        server.mail_beantworten(f"post:{faelle['ui']}", "x"))["fehler"]
+
+
+def test_fehlende_tabelle_gilt_als_leer(monkeypatch):
+    import psycopg
+
+    def kaputt(*a, **k):
+        raise psycopg.errors.UndefinedTable("post_mails")
+    monkeypatch.setattr(server, "_q", kaputt)
+    assert server._sammelstelle_leer() is True
 
 
 def test_rueckfall_ohne_sammelstelle(monkeypatch):

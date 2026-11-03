@@ -3818,7 +3818,10 @@ def _sammelstelle_leer() -> bool:
     """True, wenn post_mails in diesem Laden noch gar keine Zeile hat (der
     Abhol-Dienst lief noch nie). Nur dann darf der Bot den alten IMAP-Weg
     nehmen - sobald die Sammelstelle Mails kennt, gilt nur noch sie."""
-    return not _q("select 1 from post_mails limit 1")
+    try:
+        return not _q("select 1 from post_mails limit 1")
+    except psycopg.errors.UndefinedTable:
+        return True      # Laden noch nicht migriert -> wie leer
 
 
 def _sammelstelle_lesen(anzahl: int, wahl: str, suche: str) -> str:
@@ -3848,6 +3851,41 @@ def _sammelstelle_lesen(anzahl: int, wahl: str, suche: str) -> str:
         "fach": z["fach"],
     } for z in zeilen]
     return _json({"anzahl": len(mails), "mails": mails})
+
+
+_STUFE2_HINWEIS = ("Antworten/Aufraeumen fuer dieses Postfach kommt mit "
+                   "Stufe 2 - bitte betreiber_mail_entwurf nutzen.")
+
+
+def _post_uid_aufloesen(uid) -> tuple:
+    """(legacy_uid, fehler) fuer mail_beantworten/mail_einstufen (R16).
+    `post:<id>` wird ueber die Sichtbarkeit des Bots geprueft und nur fuer
+    env-Konten mit echter IMAP-Nummer in die alte uid uebersetzt. Alte uids
+    gelten nur, solange die Sammelstelle leer ist: sonst koennte der Bot
+    ueber sie Mails umgehen, die er nicht sehen darf."""
+    roh = str(uid or "").strip()
+    nicht_da = '{"fehler": "nicht verfuegbar"}'
+    if roh.lower().startswith("post:"):
+        mail = post_struktur.mail_lesen(post_struktur.BETREIBER_AGENT,
+                                        roh[5:].strip())
+        if mail is None or not mail.get("konto_id"):
+            return None, nicht_da
+        konto = _q("select kennung, quelle from post_konten where id = %s",
+                   (str(mail["konto_id"]),))
+        nummer = _q("select imap_uid from post_mails where id = %s",
+                    (str(mail["id"]),))
+        if (not konto or konto[0]["quelle"] != "env" or not nummer
+                or (nummer[0]["imap_uid"] or 0) <= 0):
+            return None, _json({"fehler": _STUFE2_HINWEIS})
+        k = konto[0]["kennung"]
+        if k == postfach.HAUPT:
+            return str(nummer[0]["imap_uid"]), None
+        if k in postfach.ANBIETER:
+            return f"{k}:{nummer[0]['imap_uid']}", None
+        return None, _json({"fehler": _STUFE2_HINWEIS})
+    if not _sammelstelle_leer():
+        return None, nicht_da
+    return roh, None
 
 
 @_gesichert
@@ -3883,7 +3921,7 @@ def postfach_lesen(anzahl: int = 10, postfach: str = "",
         return _json({"anzahl": 0, "mails": [], "hinweis": (
             "Die Post-Sammelstelle ist noch leer — dieses Postfach ist "
             "noch nicht verfuegbar.")})
-    if not postfach_modul.eingerichtet() or             postfach_modul.HAUPT not in postfach_modul.kennungen():
+    if postfach_modul.HAUPT not in postfach_modul.kennungen():
         return _json({"fehler": (
             "Kein Postfach eingerichtet (IMAP_HOST/IMAP_USER) — nichts "
             "zu lesen.")})
@@ -3946,6 +3984,9 @@ def mail_einstufen(uid: str, art: str, grund: str) -> str:
     grund = " ".join(str(grund or "").split())[:300]
     if not grund:
         return _json({"fehler": "Bitte einen Grund in einem Satz nennen."})
+    uid, fehler = _post_uid_aufloesen(uid)
+    if fehler:
+        return fehler
     if not postfach.eingerichtet(uid):
         return _json({"fehler": _postfach_fehlt(uid)})
     try:
@@ -4011,7 +4052,12 @@ def mail_beantworten(uid: str, text: str, thema: str = "",
     Absenderadresse gefunden oder angelegt; die eingegangene Mail wird als Kundennachricht gebucht.
     `thema`/`trotzdem` wie bei entwurf_erstellen: Doppel-Warnung, wenn der Kontakt in 90 Tagen
     schon zum selben Thema angeschrieben wurde.
-    Antworten gehen vom Postfach der Mail hinaus (28.10.2026): auf "gmx:12" antwortet die GMX-Adresse."""
+    Antworten gehen vom Postfach der Mail hinaus (28.10.2026): auf "gmx:12" antwortet die GMX-Adresse.
+    uid "post:<id>" aus postfach_lesen wird auf die IMAP-Mail uebersetzt (nur Konten aus der
+    Umgebung; fuer ueber die Oberflaeche angelegte Postfaecher kommt das mit Stufe 2)."""
+    uid, fehler = _post_uid_aufloesen(uid)
+    if fehler:
+        return fehler
     if not postfach.eingerichtet(uid):
         return _json({"fehler": _postfach_fehlt(uid)})
     try:
@@ -4101,7 +4147,7 @@ def postfach_mail_lesen(uid: str) -> str:
         return nicht_da
     if not nummer.isdigit():
         return nicht_da
-    if kennung != postfach.HAUPT:
+    if kennung != postfach.HAUPT or not _sammelstelle_leer():
         return nicht_da
     if not postfach.eingerichtet(uid):
         return _json({"fehler": _postfach_fehlt(uid)})

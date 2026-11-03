@@ -1400,7 +1400,11 @@ schreibend nur ueber Entwuerfe.
   auszug, postfach, fach. Die uid hat die Form `post:<id>` - gib sie GENAU
   SO an `postfach_mail_lesen` (Volltext). Antwortet es „nicht verfuegbar“,
   ist die Mail fuer dich nicht sichtbar; mehr gibt es dazu nicht zu sagen.
-  Beides ist REIN LESEND. Nutze es, wenn der Betreiber fragt („was ist im
+  `mail_beantworten` und `mail_einstufen` nehmen dieselbe `post:<id>`-uid.
+  Gehoert die Mail zu einem Postfach, das der Betreiber ueber die
+  Oberflaeche angelegt hat, kommt Antworten/Aufraeumen erst mit Stufe 2:
+  sag das dem Betreiber, biete `betreiber_mail_entwurf` an und versuche es
+  nicht erneut. Lesen ist REIN LESEND. Nutze es, wenn der Betreiber fragt („was ist im
   Postfach?", „ist Antwort von X da?"), und wirf im ARBEIT-UND-MELDUNG-Lauf
   einen kurzen Blick hinein: Neues, das nach Antwort verlangt, gehoert in
   die Meldung (Absender + Betreff + ein Satz). Zitiere sparsam.
