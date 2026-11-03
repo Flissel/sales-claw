@@ -394,14 +394,14 @@ def test_konto_anlegen_formular_zeigt_kein_passwort_zurueck(schluessel,
     assert 'type="password"' in feld and 'autocomplete="off"' in feld
     assert '<option value="gmx"' in seite.text
     assert '<option value="gmail"' in seite.text
-    daten = {"anbieter": "gmx", "kennung": "gmx-privat",
+    daten = {"anbieter": "gmx", "kennung": "gmx-t8anna",
              "adresse": "anna@gmx.de", "passwort": GEHEIM}
     # Probe scheitert (conftest: keine echte IMAP-Verbindung) -> Fehlerseite
     # mit Formular, aber ohne Passwort.
     fehler = _post("t8_anna", "/post/konten", daten)
     assert fehler.status_code == 400
     assert GEHEIM not in fehler.text
-    assert "gmx-privat" in fehler.text           # Kennung bleibt stehen
+    assert "gmx-t8anna" in fehler.text           # Kennung bleibt stehen
     assert server._q("select count(*) n from post_konten")[0]["n"] == 0
     # Probe gelingt -> Konto mit Besitzer = angemeldete Person.
     import post_konten
@@ -413,10 +413,10 @@ def test_konto_anlegen_formular_zeigt_kein_passwort_zurueck(schluessel,
     assert (z["besitzer"], z["anbieter"], z["quelle"]) == ("t8_anna", "gmx", "ui")
     assert GEHEIM not in (z["zugang_versiegelt"] or "")
     liste = _get("t8_anna", "/post/konten").text
-    assert "gmx-privat" in liste and "anna@gmx.de" in liste
+    assert "gmx-t8anna" in liste and "anna@gmx.de" in liste
     assert GEHEIM not in liste and z["zugang_versiegelt"] not in liste
     # Fremde Konten stehen nicht in Annas Liste.
-    assert "gmx-privat" not in _get("t8_ben", "/post/konten").text
+    assert "gmx-t8anna" not in _get("t8_ben", "/post/konten").text
 
 
 def test_konten_nur_rolle_freigeben():
@@ -445,4 +445,6 @@ def test_rolle_lesen_sieht_reiter_ohne_korrektur():
 
 def test_menue_fuehrt_zum_mail_reiter():
     seite = _get("t8_anna", "/post").text
-    assert 'href="/post"' in seite
+    menue = re.search(r'<nav class="seite".*?</nav>', seite, re.S).group(0)
+    assert '<a class="aktiv" href="/post">' in menue
+    assert "Mails" in menue
