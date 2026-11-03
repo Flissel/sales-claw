@@ -44,7 +44,7 @@ def test_sicherheitscode_ist_sensibel_ohne_modell():
 def test_einordnen_ruft_bei_regeltreffer_das_modell_nicht_auf(monkeypatch):
     def verboten(*a, **k):
         raise AssertionError("Modell darf nicht aufgerufen werden")
-    monkeypatch.setattr(pe.gateway, "funktion_aufrufen", verboten)
+    monkeypatch.setattr(pe, "nach_modell", verboten)
     e = pe.einordnen(_mail(betreff="Your verification code"))
     assert e.sensibel and e.fach == "Konten & Sicherheit"
 
@@ -117,3 +117,24 @@ def test_text_wird_vor_dem_modell_gekuerzt():
     assert "A" * 4000 in g[0]["auftrag"]
     assert "A" * 4001 not in g[0]["auftrag"]
     assert "ENDE" not in g[0]["auftrag"]
+
+
+def test_sensibel_vom_modell_speichert_keinen_freitext():
+    e = pe.nach_modell(_mail(), aufruf=_attrappe(
+        {"bereich": "privat", "fach": "Konten & Sicherheit", "sensibel": True,
+         "begruendung": "Code 483920 fuer Login"}))
+    assert e.sensibel and "483920" not in e.begruendung
+
+
+def test_nicht_sensibel_behaelt_begruendung():
+    e = pe.nach_modell(_mail(), aufruf=_attrappe(
+        {"bereich": "privat", "fach": "Werbung", "sensibel": False, "begruendung": "Rabattmail"}))
+    assert e.begruendung == "Rabattmail"
+
+
+def test_betreff_und_absender_werden_gekappt():
+    g = []
+    pe.nach_modell(_mail(betreff="B" * 5000, von="V" * 5000), aufruf=_attrappe(
+        {"bereich": "privat", "fach": "Unklar", "sensibel": False, "begruendung": ""}, g))
+    assert "B" * 300 in g[0]["auftrag"] and "B" * 301 not in g[0]["auftrag"]
+    assert "V" * 300 in g[0]["auftrag"] and "V" * 301 not in g[0]["auftrag"]
