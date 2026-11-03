@@ -6,6 +6,7 @@ Gateway fragt sonst bis zum Kontextueberlauf neu an), 408/429/5xx und
 Netzfehler sind voruebergehend, alles andere endgueltig. Der Token steht in
 keiner Meldung. Rein: nur urllib, keine Datenbank.
 """
+import http.client
 import json
 import socket
 import urllib.error
@@ -52,6 +53,13 @@ def _http(methode, url, pfad, token, timeout_s, nutzlast=None, kopf=None) -> dic
             raise GatewayTransient(f"Gateway Zeitueberschreitung nach {timeout_s:g} s") from None
         raise GatewayTransient(
             f"Gateway nicht erreichbar: {str(e.reason)[:FEHLER_MAXLAENGE]}") from None
+    except (http.client.HTTPException, OSError) as e:
+        # Abbruch WAEHREND der Antwort (ConnectionResetError beim Lesen,
+        # IncompleteRead bei einem Gateway-Neustart, BrokenPipe ...): urllib
+        # verpackt das nicht in URLError. Es ist ein Netz-/Neustartproblem, kein
+        # Fehler dieser Anfrage -> spaeter erneut. Nur der Typname: die Meldung
+        # koennte Teile der Antwort enthalten.
+        raise GatewayTransient(f"Gateway-Verbindung abgebrochen ({type(e).__name__})") from None
     except ValueError:                       # json.loads der Antwort
         raise GatewayFehler("Gateway-Antwort ist kein JSON") from None
 

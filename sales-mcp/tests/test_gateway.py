@@ -2,6 +2,7 @@
 
 Echtes HTTP auf 127.0.0.1, kein Modell, keine Datenbank.
 """
+import http.client
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -110,6 +111,40 @@ def test_429_ist_voruebergehend(gw):
     gw.status_chat = 429
     with pytest.raises(gateway.GatewayTransient):
         _aufruf(gw)
+
+
+@pytest.mark.parametrize("ausnahme", [
+    ConnectionResetError("Verbindung vom Partner zurueckgesetzt"),
+    http.client.IncompleteRead(b"teil", 100),
+    http.client.RemoteDisconnected("weg"),
+    http.client.BadStatusLine("kaputt"),
+    BrokenPipeError("Pipe"),
+    OSError("irgendein Netzfehler"),
+])
+def test_abbruch_beim_lesen_ist_voruebergehend(monkeypatch, ausnahme):
+    # M7: urllib verpackt Abbrueche WAEHREND der Antwort nicht in URLError -
+    # vorher entwichen sie roh und die Runde zaehlte sie als Fehler der Mail.
+    def urlopen(*a, **k):
+        raise ausnahme
+    monkeypatch.setattr(gateway.urllib.request, "urlopen", urlopen)
+    with pytest.raises(gateway.GatewayTransient) as e:
+        gateway._http("GET", "http://127.0.0.1:9", "/v1/models", TOKEN, 1)
+    assert TOKEN not in str(e.value) and type(ausnahme).__name__ in str(e.value)
+
+
+def test_abbruch_waehrend_read_ist_voruebergehend(monkeypatch):
+    class Antwort:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            raise http.client.IncompleteRead(b"{", 10)
+    monkeypatch.setattr(gateway.urllib.request, "urlopen", lambda *a, **k: Antwort())
+    with pytest.raises(gateway.GatewayTransient):
+        gateway._http("GET", "http://127.0.0.1:9", "/v1/models", TOKEN, 1)
 
 
 def test_token_in_keiner_meldung(gw):
