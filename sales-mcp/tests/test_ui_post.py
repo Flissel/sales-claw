@@ -436,12 +436,32 @@ def test_regel_gilt_nicht_fuer_fremde_konten(monkeypatch):
 
 
 def test_leitung_korrektur_legt_regel_fuer_den_besitzer_an():
+    """R18 (vorher: Regel fuer den Besitzer): die Leitung korrigiert Bens Mail,
+    legt aber KEINE Regel fuer Bens kuenftige Post an - auch nicht, wenn ein
+    selbstgebautes Formular den Haken mitschickt."""
     m = _mail("t8_ben", "business", ps.UNKLAR, von="y@lieferant.de")
+    seite = _get("t8_lea", f"/post/mail/{m}").text
+    assert "/korrigieren" in seite and 'name="regel"' not in seite
     assert _post("t8_lea", f"/post/mail/{m}/korrigieren",
                  {"bereich": "business", "fach": "Rechnungen",
                   "regel": "ja"}).status_code == 303
-    g = server._q("select besitzer, angelegt_von from post_regeln")[0]
-    assert (g["besitzer"], g["angelegt_von"]) == ("t8_ben", "t8_lea")
+    assert _zeile(m)["fach"] == "Rechnungen"                 # korrigiert ...
+    assert server._q("select count(*) n from post_regeln")[0]["n"] == 0   # ... ohne Regel
+    # Der Besitzer selbst sieht den Haken.
+    eigene = _mail("t8_lea", "business", ps.UNKLAR, von="z@lieferant.de")
+    assert 'name="regel"' in _get("t8_lea", f"/post/mail/{eigene}").text
+
+
+def test_regel_traegt_nie_sensibel():
+    """R18: auch mit Haken „sensibel“ bekommt die Regel nur Bereich und Fach;
+    die Mail selbst wird sensibel."""
+    m = _mail("t8_anna", "business", ps.UNKLAR, von="bank@bank.example", text="IBAN")
+    assert _post("t8_anna", f"/post/mail/{m}/korrigieren",
+                 {"bereich": "privat", "fach": "Rechnungen", "sensibel": "ja",
+                  "regel": "ja"}).status_code == 303
+    assert _zeile(m)["sensibel"] is True
+    g = server._q("select sensibel, bereich, fach from post_regeln")[0]
+    assert (g["sensibel"], g["bereich"], g["fach"]) == (False, "privat", "Rechnungen")
 
 
 # ---------------------------------------------------------------------------

@@ -387,9 +387,13 @@ def kunde_aktiv() -> bool:
 
 
 def modellaufrufe_heute() -> int:
+    # Nutzerregel-Treffer ('regel:<feld>...') rufen seit R18 das Modell fuer
+    # `sensibel` - sie zaehlen mit. Feste Sensibel-Muster ('sensibel-muster:')
+    # und menschliche Korrekturen nicht.
     return int(server._q(
         "select count(*) as n from post_mails where eingeordnet_am::date = current_date "
-        "and einordnung_quelle = 'modell'")[0]["n"])
+        "and (einordnung_quelle = 'modell' or (einordnung_quelle = 'regel' "
+        "and begruendung like 'regel:%%'))")[0]["n"])
 
 
 def eine_runde() -> dict:

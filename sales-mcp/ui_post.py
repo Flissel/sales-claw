@@ -244,7 +244,13 @@ def routen(ui) -> list:
         return (rolle(request) == "freigeben"
                 and (b.leitung or m["besitzer"] == b.name))
 
-    def korrektur_formular(m: dict) -> str:
+    def darf_regel_anlegen(b, m) -> bool:
+        # R18: „für diesen Absender immer so“ nur fuer die eigene Post. Die
+        # Leitung darf eine fremde Mail korrigieren, aber keine Regel fuer
+        # die Post eines anderen anlegen (sie lenkte dessen kuenftige Mails).
+        return bool(m["besitzer"]) and m["besitzer"] == b.name
+
+    def korrektur_formular(m: dict, regel_erlaubt: bool) -> str:
         bereiche = "".join(
             f'<option value="{br}"{" selected" if m["bereich"] == br else ""}>'
             f'{e(BEREICH_TITEL[br])}</option>' for br in ps.BEREICHE)
@@ -262,8 +268,9 @@ def routen(ui) -> list:
             f'<label>Fach <select name="fach">{gruppen}</select></label> '
             '<label><input type="checkbox" name="sensibel" value="ja"'
             f'{" checked" if m["sensibel"] is not False else ""}> sensibel</label> '
-            '<label><input type="checkbox" name="regel" value="ja"> '
-            'für diesen Absender immer so</label> '
+            + ('<label><input type="checkbox" name="regel" value="ja"> '
+               'für diesen Absender immer so (Bereich und Fach)</label> '
+               if regel_erlaubt else '') +
             '<p class="meta">Sensibel löscht Text, Empfänger und Anhangnamen '
             'dieser Mail endgültig aus der Sammelstelle.</p>'
             '<button class="primaer">Speichern</button></form>')
@@ -303,7 +310,7 @@ def routen(ui) -> list:
                              + ", ".join(e(a) for a in m["anhaenge"]) + "</div>")
             teile.append(f'<div class="text mailtext">{e((m["text"] or "")[:TEXT_MAX])}</div></div>')
         if darf_korrigieren(request, b, m):
-            teile.append(korrektur_formular(m))
+            teile.append(korrektur_formular(m, darf_regel_anlegen(b, m)))
         return ui._seite(m["betreff"] or "Mail", "".join(teile), titel_zeigen=False)
 
     @ui._gesichert_seite
@@ -328,7 +335,9 @@ def routen(ui) -> list:
                                    "Nichts geändert.")
         sensibel = form.get("sensibel") == "ja"
         muster = None
-        if form.get("regel") == "ja":
+        # R18: fremde Post (Leitung korrigiert Bens Mail) wird korrigiert, aber
+        # ohne Regel - auch wenn ein selbstgebautes Formular den Haken schickt.
+        if form.get("regel") == "ja" and darf_regel_anlegen(b, m):
             adresse = email.utils.parseaddr(m["von"] or "")[1].strip()
             if "@" not in adresse:
                 return ui._fehlerseite(400, "Keine Regel möglich",
@@ -347,13 +356,15 @@ def routen(ui) -> list:
                 f"status = 'eingeordnet', fehler = null, begruendung = null{leeren} "
                 "where id = %s", (bereich, fach, sensibel, m["id"]))
             if muster:
-                # R13: die Regel gehoert dem Besitzer der Mail (nicht der
-                # korrigierenden Leitung) und gilt nur fuer dessen Post.
+                # R13: die Regel gilt nur fuer die Post ihres Besitzers (hier
+                # immer der Korrigierende selbst, R18). Sie traegt nur Bereich
+                # und Fach - `sensibel` entscheiden Muster und Modell weiter je
+                # Mail, darum steht hier immer false (die Spalte wird nicht gelesen).
                 conn.execute(
                     "insert into post_regeln (muster, feld, bereich, fach, "
                     "sensibel, angelegt_von, besitzer) "
-                    "values (%s, 'von', %s, %s, %s, %s, %s)",
-                    (muster, bereich, fach, sensibel, b.name, m["besitzer"]))
+                    "values (%s, 'von', %s, %s, false, %s, %s)",
+                    (muster, bereich, fach, b.name, m["besitzer"]))
         return RedirectResponse(f"/post/mail/{m['id']}", status_code=303)
 
     # --- Postfach hinzufügen ---------------------------------------------

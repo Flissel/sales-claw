@@ -497,6 +497,24 @@ def test_tagesgrenze(monkeypatch):
     assert post_abholen.einordnen_offene(2) == 2 and len(aufrufe) == 2
 
 
+def test_nutzerregel_treffer_zaehlen_zur_tagesgrenze():
+    """R18: ein Nutzerregel-Treffer ruft das Modell fuer `sensibel` - zaehlt also
+    mit; feste Sensibel-Muster und menschliche Korrekturen nicht."""
+    konto_id = _konto()["id"]
+    with server.pool.connection() as conn:
+        for uid, quelle, begruendung in ((201, "regel", "regel:von"),
+                                         (202, "regel", "regel:von:modell-sensibel"),
+                                         (203, "regel", "sensibel-muster:betreff:0"),
+                                         (204, "mensch", None),
+                                         (205, "modell", "x")):
+            conn.execute(
+                "insert into post_mails (konto_id, imap_uid, message_id, besitzer, status, "
+                "einordnung_quelle, begruendung, eingeordnet_am) values (%s, %s, %s, "
+                "'felix', 'eingeordnet', %s, %s, now())",
+                (konto_id, uid, f"z{uid}@x", quelle, begruendung))
+    assert post_abholen.modellaufrufe_heute() == 3
+
+
 def test_fehler_in_einem_konto_haelt_die_anderen_nicht_auf(monkeypatch, caplog):
     _konto("felix", "gmx-kaputt")
     _konto("felix", "gmx-gut")

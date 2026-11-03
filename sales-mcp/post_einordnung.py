@@ -1,8 +1,10 @@
 """Einordnung der Post-Sammelstelle (Spec §4, §5, §9): erst feste Regeln, dann Modell.
 
 Jede Mail bekommt genau einen Bereich und ein Fach aus der festen Liste
-(`post_struktur`) plus die Markierung `sensibel`. Regeln gehen vor dem Modell:
-Sicherheitscodes und Passwort-Links duerfen gar nicht erst zum Cloud-Modell.
+(`post_struktur`) plus die Markierung `sensibel`. Feste Muster gehen vor dem
+Modell: Sicherheitscodes und Passwort-Links duerfen gar nicht erst zum
+Cloud-Modell. Nutzerregeln (post_regeln) setzen nur Bereich und Fach; ueber
+`sensibel` entscheidet bei ihnen weiterhin das Modell (Ruling R18).
 
 Die Mail ist Fremddatum. Der Agent `post` hat keine Werkzeuge, sein Auftrag
 rahmt den Mailtext als Daten, und das Ergebnis wird gegen die feste Liste
@@ -28,11 +30,14 @@ KOPF_MAX = 300            # Absender/Betreff: Fremddaten, gekappt wie der Text
 SENSIBEL_FACH = ("privat", "Konten & Sicherheit")
 
 # (feld, regex) - nur der Treffer-Name (feld) landet in der Begruendung, nie Mailinhalt.
+# Kontoauszug/IBAN (R18): Spec §5 nennt Kontoauszuege ausdruecklich; ein Betreff
+# mit IBAN-Anfang (DE + 2 Pruefziffern + Bankleitzahl-Anfang) ist es ziemlich sicher.
 SENSIBEL_MUSTER: tuple[tuple[str, str], ...] = (
     ("betreff", r"(?i)(sicherheitscode|best[äa]tigungscode|verification code|security code|"
                 r"passwort zur[üu]cksetzen|reset your password|einmal-?passwort|anmeldecode|"
                 r"login code|2fa|zwei-faktor)"),
     ("von", r"(?i)(no-?reply@accounts\.google\.com|security@|noreply@namecheap\.com)"),
+    ("betreff", r"(?i)(kontoauszug|account statement|\bIBAN\b|\bDE\d{2}\s?\d{4})"),
 )
 
 
@@ -52,7 +57,7 @@ def _regeln_laden() -> list[dict]:
     # diesen Absender immer so“, soll seine letzte Entscheidung gelten, nicht
     # eine ältere Regel für denselben Absender.
     return list(server._q(
-        "select muster, feld, bereich, fach, sensibel, besitzer from post_regeln "
+        "select muster, feld, bereich, fach, besitzer from post_regeln "
         "order by angelegt_am desc nulls last, id desc"))
 
 
@@ -66,11 +71,22 @@ def _regel_gilt(zeile: dict, mail: dict) -> bool:
     return bool(mail.get("besitzer")) and mail.get("besitzer") == eigner
 
 
-def nach_regel(mail: dict) -> Einordnung | None:
+def nach_muster(mail: dict) -> Einordnung | None:
+    """Feste Sensibel-Muster: Treffer gehen nie zum Modell."""
     for i, (feld, muster) in enumerate(SENSIBEL_MUSTER):
         if re.search(muster, mail.get(feld) or ""):
             bereich, fach = SENSIBEL_FACH
             return Einordnung(bereich, fach, True, "regel", f"sensibel-muster:{feld}:{i}")
+    return None
+
+
+def nach_nutzerregel(mail: dict) -> Einordnung | None:
+    """Regeln aus post_regeln (Ruling R18): sie setzen NUR Bereich und Fach.
+    `sensibel` ist hier immer False und die Spalte post_regeln.sensibel wird
+    nicht gelesen - sonst schaltete ein „fuer diesen Absender immer so“ die
+    Sensibel-Erkennung fuer alle kuenftigen Mails des Absenders ab (die Bank
+    schickt heute einen Newsletter, morgen den Kontoauszug). Ueber sensibel
+    entscheiden die festen Muster und das Modell (einordnen)."""
     for zeile in _regeln_laden():
         if not _regel_gilt(zeile, mail):
             continue
@@ -84,9 +100,15 @@ def nach_regel(mail: dict) -> Einordnung | None:
             LOG.warning("Regel uebersprungen: ungueltiger regulaerer Ausdruck")
             continue
         if treffer:
-            return Einordnung(bereich, fach, bool(zeile.get("sensibel")), "regel",
-                              f"regel:{zeile['feld']}")
+            return Einordnung(bereich, fach, False, "regel", f"regel:{zeile['feld']}")
     return None
+
+
+def nach_regel(mail: dict) -> Einordnung | None:
+    """Feste Muster, sonst Nutzerregel - ohne Modell. Achtung: bei einem
+    Nutzerregel-Treffer ist `sensibel` hier noch NICHT entschieden; das tut
+    erst einordnen() (R18). Fuer die Einordnung immer einordnen() nehmen."""
+    return nach_muster(mail) or nach_nutzerregel(mail)
 
 
 _ALLE_FAECHER = tuple(dict.fromkeys(f for fs in post_struktur.FAECHER.values() for f in fs))
@@ -150,4 +172,18 @@ def nach_modell(mail: dict, aufruf=gateway.funktion_aufrufen) -> Einordnung:
 
 
 def einordnen(mail: dict) -> Einordnung:
-    return nach_regel(mail) or nach_modell(mail)
+    """Feste Muster -> fertig (sensibel, ohne Modell). Sonst entscheidet das
+    Modell ueber `sensibel` - auch bei einem Nutzerregel-Treffer (R18): dann
+    kommen Bereich und Fach aus der Regel, vom Modell zaehlt nur `sensibel`,
+    die Quelle bleibt 'regel'. Die Begruendung bleibt der feste Regeltext
+    (kein Modell-Freitext); 'regel:...' zaehlt in post_abholen zur
+    Tagesgrenze, weil ein Modellaufruf dahintersteht."""
+    fest = nach_muster(mail)
+    if fest is not None:
+        return fest
+    regel = nach_nutzerregel(mail)
+    modell = nach_modell(mail)
+    if regel is None:
+        return modell
+    return Einordnung(regel.bereich, regel.fach, modell.sensibel, "regel",
+                      regel.begruendung + (":modell-sensibel" if modell.sensibel else ""))

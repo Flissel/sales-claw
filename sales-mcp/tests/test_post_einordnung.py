@@ -31,22 +31,76 @@ def _attrappe(args, gesehen=None):
 
 
 def test_sicherheitscode_ist_sensibel_ohne_modell():
-    def verboten(*a, **k):
-        raise AssertionError("Modell darf nicht aufgerufen werden")
-    e = pe.einordnen(_mail(betreff="Ihr Sicherheitscode: 123456")) \
-        if False else pe.nach_regel(_mail(betreff="Ihr Sicherheitscode: 123456"))
+    e = pe.nach_muster(_mail(betreff="Ihr Sicherheitscode: 123456"))
     assert e == pe.Einordnung("privat", "Konten & Sicherheit", True, "regel", e.begruendung)
     assert "123456" not in e.begruendung
     e2 = pe.nach_regel(_mail(von="no-reply@accounts.google.com", betreff="x"))
     assert e2.sensibel and e2.quelle == "regel"
 
 
-def test_einordnen_ruft_bei_regeltreffer_das_modell_nicht_auf(monkeypatch):
+def test_einordnen_ruft_bei_festem_muster_das_modell_nicht_auf(monkeypatch):
     def verboten(*a, **k):
         raise AssertionError("Modell darf nicht aufgerufen werden")
     monkeypatch.setattr(pe, "nach_modell", verboten)
     e = pe.einordnen(_mail(betreff="Your verification code"))
     assert e.sensibel and e.fach == "Konten & Sicherheit"
+
+
+@pytest.mark.parametrize("betreff", [
+    "Ihr Kontoauszug Oktober", "Your account statement is ready", "Neue IBAN hinterlegt",
+    "Ueberweisung an DE89 3704 0044", "Lastschrift DE893704"])
+def test_kontoauszug_und_iban_sind_sensibel_ohne_modell(monkeypatch, betreff):
+    # R18: Spec §5 nennt Kontoauszuege; die festen Muster kennen sie jetzt.
+    monkeypatch.setattr(pe, "nach_modell", lambda *a, **k: pytest.fail("kein Modell"))
+    e = pe.einordnen(_mail(betreff=betreff))
+    assert e.sensibel and e.quelle == "regel" and betreff not in e.begruendung
+
+
+@pytest.mark.parametrize("betreff", ["Ideen fuer Q4", "Codeprobe 12 3456", "Strasse DE"])
+def test_iban_muster_trifft_keine_harmlosen_betreffe(betreff):
+    assert pe.nach_muster(_mail(betreff=betreff)) is None
+
+
+def _regel_zeile(sensibel=False):
+    return [{"muster": r"@bank\.example", "feld": "von", "bereich": "privat",
+             "fach": "Rechnungen", "sensibel": sensibel, "besitzer": None}]
+
+
+def test_nutzerregel_setzt_nur_bereich_und_fach_modell_entscheidet_sensibel(monkeypatch):
+    # R18: die Bank schickt heute einen Newsletter, morgen den Kontoauszug - eine
+    # Absender-Regel darf die Sensibel-Erkennung nicht abschalten.
+    monkeypatch.setattr(pe, "_regeln_laden", lambda: _regel_zeile())
+    gesehen = []
+
+    def modell(mail):
+        gesehen.append(mail["id"])
+        return pe.Einordnung("business", "Kunden & Anfragen", True, "modell", "modell:sensibel")
+    monkeypatch.setattr(pe, "nach_modell", modell)
+    e = pe.einordnen(_mail(von="Bank <info@bank.example>", betreff="Ihre Unterlagen"))
+    assert (e.bereich, e.fach, e.sensibel, e.quelle) == ("privat", "Rechnungen", True, "regel")
+    assert e.begruendung.startswith("regel:von") and len(gesehen) == 1
+
+    monkeypatch.setattr(pe, "nach_modell", lambda mail: pe.Einordnung(
+        "business", "Werbung", False, "modell", "Freitext des Modells"))
+    e = pe.einordnen(_mail(von="Bank <info@bank.example>", betreff="Newsletter"))
+    assert (e.bereich, e.fach, e.sensibel, e.quelle) == ("privat", "Rechnungen", False, "regel")
+    assert "Freitext" not in e.begruendung
+
+
+def test_sensibel_spalte_der_regel_zaehlt_nicht(monkeypatch):
+    # Auch eine alte Regel mit sensibel=true macht nichts sensibel und nichts
+    # unsensibel - nur Muster und Modell entscheiden.
+    monkeypatch.setattr(pe, "_regeln_laden", lambda: _regel_zeile(sensibel=True))
+    assert pe.nach_nutzerregel(_mail(von="info@bank.example")).sensibel is False
+    monkeypatch.setattr(pe, "nach_modell", lambda mail: pe.Einordnung(
+        "privat", "Werbung", False, "modell", ""))
+    assert pe.einordnen(_mail(von="info@bank.example")).sensibel is False
+
+
+def test_ohne_regel_gilt_das_modell(monkeypatch):
+    erwartet = pe.Einordnung("business", "Werbung", False, "modell", "x")
+    monkeypatch.setattr(pe, "nach_modell", lambda mail: erwartet)
+    assert pe.einordnen(_mail()) == erwartet
 
 
 def test_eigene_regel_vor_modell(monkeypatch):
