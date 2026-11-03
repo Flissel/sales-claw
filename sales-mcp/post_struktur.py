@@ -42,7 +42,7 @@ from dataclasses import dataclass
 class Betrachter:
     name: str
     leitung: bool
-    abteilungen: tuple
+    abteilungen: tuple[str, ...]
     ist_agent: bool = False
 
 
@@ -52,7 +52,7 @@ BETREIBER_AGENT = Betrachter(name="agent", leitung=True, abteilungen=(),
                              ist_agent=True)
 
 
-def betrachter_laden(name):
+def betrachter_laden(name: str) -> "Betrachter | None":
     """Betrachter aus `benutzer` + `benutzer_abteilungen`; None, wenn
     unbekannt oder deaktiviert (ein gesperrter Zugang sieht nichts)."""
     import server
@@ -69,7 +69,7 @@ def betrachter_laden(name):
                       abteilungen=tuple(a["abteilung"] for a in abt))
 
 
-def sichtbar_sql(b):
+def sichtbar_sql(b: Betrachter) -> tuple[str, list]:
     """(WHERE-Fragment mit %s-Platzhaltern, Parameter) fuer `from post_mails m`.
 
     Nicht eingeordnete Mails (bereich null) sieht nur der Besitzer; „Unklar“
@@ -78,7 +78,7 @@ def sichtbar_sql(b):
     if b.ist_agent:
         # Nie privat, nie sensibel, nie unklassifiziert (bereich null faellt
         # durch den Gleichheitsvergleich heraus).
-        return ("(m.bereich = 'business' and not coalesce(m.sensibel, false))",
+        return ("(m.bereich = 'business' and m.sensibel is false)",
                 [])
     teile = ["(m.bereich is null and m.besitzer = %s)",
              "(m.bereich = 'privat' and m.besitzer = %s)"]
@@ -93,20 +93,23 @@ def sichtbar_sql(b):
     return "(" + " or ".join(teile) + ")", params
 
 
-def _spalten():
-    # Text/Auszug sensibler Mails werden schon in SQL zu NULL: sie verlassen
-    # die Datenbank gar nicht erst (Spec §5), auch nicht fuer den Besitzer.
-    return ("m.id, m.konto_id, m.besitzer, m.von, m.an, m.betreff, m.datum, "
-            "m.anhaenge, m.bereich, m.fach, m.sensibel, m.status, "
-            "m.gesehen_am, "
-            "case when coalesce(m.sensibel, false) then null else m.auszug "
-            "end as auszug, "
-            "case when coalesce(m.sensibel, false) then null else m.text "
-            "end as text")
+def _spalten() -> str:
+    # Text, Auszug, Anhaenge und Empfaenger sensibler Mails werden schon in
+    # SQL geleert: sie verlassen die Datenbank gar nicht erst (Spec §5: nur
+    # Konto, Absender, Datum, Betreff, Fach, Markierung), auch nicht fuer den
+    # Besitzer. `is not false` behandelt NULL wie sensibel (fail closed).
+    s = "m.sensibel is not false"
+    return ("m.id, m.konto_id, m.besitzer, m.von, m.betreff, m.datum, "
+            "m.bereich, m.fach, m.sensibel, m.status, m.gesehen_am, "
+            f"case when {s} then null else m.an end as an, "
+            f"case when {s} then '{{}}'::text[] else m.anhaenge end as anhaenge, "
+            f"case when {s} then null else m.auszug end as auszug, "
+            f"case when {s} then null else m.text end as text")
 
 
-def mails_suchen(b, suche="", bereich="", fach="", konto_id="", grenze=50,
-                 versatz=0):
+def mails_suchen(b: Betrachter, suche: str = "", bereich: str = "",
+                 fach: str = "", konto_id: str = "", grenze: int = 50,
+                 versatz: int = 0) -> list[dict]:
     import server
     if bereich and bereich not in BEREICHE:
         return []
@@ -142,7 +145,7 @@ def mails_suchen(b, suche="", bereich="", fach="", konto_id="", grenze=50,
           "limit %s offset %s", params)
 
 
-def mail_lesen(b, mail_id):
+def mail_lesen(b: Betrachter, mail_id: str) -> "dict | None":
     """Eine Mail, wenn `b` sie sehen darf; sonst None (auch bei unbekannter
     oder kaputter id - kein Unterschied, damit nichts durchsickert)."""
     import server

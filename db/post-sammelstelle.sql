@@ -50,7 +50,7 @@ create table if not exists :"schema".post_mails (
   anhaenge text[] default '{}',
   bereich text check (bereich in ('privat','business')),
   fach text,
-  sensibel boolean default false,
+  sensibel boolean not null default false,
   einordnung_quelle text check (einordnung_quelle in ('regel','modell','mensch')),
   begruendung text,
   eingeordnet_am timestamptz,
@@ -66,6 +66,10 @@ create table if not exists :"schema".post_mails (
 -- `fehler`, damit eine einzelne kaputte Mail die Einordnung nicht blockiert.
 alter table :"schema".post_mails
   add column if not exists versuche int not null default 0;
+-- Fail closed (R9): NULL bei `sensibel` darf es nicht geben. Bestehende
+-- Installationen werden nachgezogen; beides ist beliebig oft wiederholbar.
+update :"schema".post_mails set sensibel = false where sensibel is null;
+alter table :"schema".post_mails alter column sensibel set not null;
 create index if not exists post_mails_such_idx
   on :"schema".post_mails using gin (suchtext);
 create index if not exists post_mails_besitzer_msg_idx

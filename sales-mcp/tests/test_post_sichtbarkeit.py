@@ -51,7 +51,8 @@ _zaehler = [0]
 
 
 def _mail(besitzer="t7_anna", bereich="business", fach="Kunden & Anfragen",
-          sensibel=False, betreff="Angebot", text="Hallo Welt", datum=None):
+          sensibel=False, betreff="Angebot", text="Hallo Welt", datum=None,
+          anhaenge=(), an=None):
     _zaehler[0] += 1
     konto = server._q(
         "insert into post_konten (besitzer, kennung, anbieter, adresse, "
@@ -60,11 +61,12 @@ def _mail(besitzer="t7_anna", bereich="business", fach="Kunden & Anfragen",
         "returning id", (besitzer, f"k-{besitzer}"))[0]["id"]
     return str(server._q(
         "insert into post_mails (konto_id, imap_uid, message_id, besitzer, "
-        "von, betreff, text, auszug, bereich, fach, sensibel, datum) values "
-        "(%s, %s, %s, %s, 'x@y.de', %s, %s, %s, %s, %s, %s, %s) "
+        "von, betreff, text, auszug, bereich, fach, sensibel, datum, "
+        "anhaenge, an) values "
+        "(%s, %s, %s, %s, 'x@y.de', %s, %s, %s, %s, %s, %s, %s, %s, %s) "
         "returning id",
         (konto, _zaehler[0], f"m{_zaehler[0]}", besitzer, betreff, text,
-         text[:20], bereich, fach, sensibel, datum))[0]["id"])
+         text[:20], bereich, fach, sensibel, datum, list(anhaenge), an))[0]["id"])
 
 
 def _ids(b, **kw):
@@ -103,7 +105,7 @@ def test_unklar_nur_leitung_und_besitzer():
 
 
 def test_privates_fach_gleichen_namens_oeffnet_nichts():
-    # „Rechnungen“ privat von Anna darf Bens Abteilung nicht aufmachen.
+    # Privates Fach mit dem Namen eines Vertriebs-Fachs oeffnet nichts.
     m = _mail("t7_anna", "privat", "Kunden & Anfragen")
     assert m not in _ids(_b("t7_ben"))
 
@@ -140,11 +142,27 @@ def test_sensible_mail_ohne_text_auch_fuer_besitzer_in_der_suche():
     zeilen = ps.mails_suchen(_b("t7_anna"))
     z = next(r for r in zeilen if str(r["id"]) == m)
     assert z["text"] is None and z["auszug"] is None
+    assert z["anhaenge"] == [] and z["an"] is None
     assert z["betreff"] == "Code"
     # Auch ueber die Suche nach dem Text nicht auffindbar
     assert m not in _ids(_b("t7_anna"), suche="123456")
     lesen = ps.mail_lesen(_b("t7_anna"), m)
     assert lesen["text"] is None and lesen["auszug"] is None
+    assert lesen["anhaenge"] == [] and lesen["an"] is None
+    # Auch die Leitung sieht von einer sensiblen Business-Mail nur Metadaten.
+    b = _mail("t7_anna", "business", "Tools & Dienste", sensibel=True,
+              text="geheim", anhaenge=["pass.pdf"], an="chef@x.de")
+    k = ps.mail_lesen(_b("t7_lea"), b)
+    assert k["text"] is None and k["auszug"] is None
+    assert k["anhaenge"] == [] and k["an"] is None
+
+
+def test_sensibel_spalte_ist_not_null():
+    zeile = server._q(
+        "select is_nullable from information_schema.columns where "
+        "table_schema = 'sales_test' and table_name = 'post_mails' and "
+        "column_name = 'sensibel'")[0]
+    assert zeile["is_nullable"] == "NO"
 
 
 @pytest.mark.parametrize("s", ['"', "&", ":*", "   ", "'", "a & | !b", "\\"])

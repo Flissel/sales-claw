@@ -147,11 +147,16 @@ def _mail_zerlegen(nachricht, kennung: str, uid: int) -> dict:
     auszug = " ".join(text.split())[:postfach.AUSZUG_MAX]
     if _sensibel_nach_muster(von, betreff):
         text = auszug = None
+        sensibel_treffer = True
+    else:
+        sensibel_treffer = False
     return {
         "message_id": message_id or f"{kennung}:{uid}@sales-post",
-        "von": von, "an": _rein(postfach._kopf(nachricht, "To"), KOPF_MAX),
+        "von": von,
+        # Sensibel: weder Empfaenger noch Anhaenge speichern (Spec §5).
+        "an": None if sensibel_treffer else _rein(postfach._kopf(nachricht, "To"), KOPF_MAX),
         "betreff": betreff, "datum": _datum(postfach._kopf(nachricht, "Date")),
-        "text": text, "auszug": auszug, "anhaenge": _anhaenge(nachricht),
+        "text": text, "auszug": auszug, "anhaenge": [] if sensibel_treffer else _anhaenge(nachricht),
     }
 
 
@@ -307,10 +312,12 @@ def _ergebnis_speichern(mail_id, e: post_einordnung.Einordnung) -> None:
         "einordnung_quelle = %s, begruendung = %s, eingeordnet_am = now(), "
         "status = 'eingeordnet', fehler = null, "
         "text = case when %s then null else text end, "
-        "auszug = case when %s then null else auszug end "
+        "auszug = case when %s then null else auszug end, "
+        "an = case when %s then null else an end, "
+        "anhaenge = case when %s then '{}'::text[] else anhaenge end "
         "where id = %s and status = 'neu'",
         (bereich, fach, e.sensibel, e.quelle, e.begruendung, e.sensibel, e.sensibel,
-         mail_id))
+         e.sensibel, e.sensibel, mail_id))
 
 
 def einordnen_offene(grenze: int) -> int:

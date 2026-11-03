@@ -286,12 +286,13 @@ def _einordnung(sensibel=False, quelle="modell"):
 def test_sensibel_speichert_keinen_text(monkeypatch):
     _konto()
     code = _mail("<code@x>", von="security@bank.example", betreff="Ihr Sicherheitscode",
-                 text="Code 482913")
-    normal = _mail("<n@x>", betreff="Kontoauszug", text="Saldo 1.234,56 EUR")
+                 text="Code 482913", anhang="code.pdf")
+    normal = _mail("<n@x>", betreff="Kontoauszug", text="Saldo 1.234,56 EUR", anhang="konto.pdf")
     post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({1: code, 2: normal}))
     # Sicherheitscode: festes Muster greift schon beim Speichern.
     r1 = _mails("imap_uid = 1")[0]
     assert r1["text"] is None and r1["auszug"] is None
+    assert r1["an"] is None and r1["anhaenge"] == []
     gesehen = []
 
     def einordnen(mail):
@@ -304,6 +305,7 @@ def test_sensibel_speichert_keinen_text(monkeypatch):
     for r in _mails():
         assert r["sensibel"] is True and r["status"] == "eingeordnet"
         assert r["text"] is None and r["auszug"] is None
+        assert r["an"] is None and r["anhaenge"] == []
     with server.pool.connection() as conn:
         assert conn.execute(
             "select count(*) as n from post_mails where suchtext @@ "
