@@ -90,8 +90,10 @@ echo "   eingetragen (Sicherung: $(basename "$SICHERUNG"))"
 # erst ~1-4 s nach `config set` neu (Endpunkt an = interner Neustart des
 # Gateways). Die Probe fragt deshalb bis zu 30 s lang jede Sekunde.
 echo "3) Probe (bis 30 s)"
-ERGEBNIS="$(docker exec -e T="$TOKEN" "$CONTAINER" node -e '
-  const frage = () => fetch("http://127.0.0.1:18894/v1/models", { headers: { Authorization: "Bearer " + process.env.T } })
+ERGEBNIS="$(docker exec "$CONTAINER" node -e '
+  // Token im Container selbst lesen: er gelangt nie in die Kommandozeile von docker (ps).
+  const T = String(JSON.parse(require("node:fs").readFileSync("/home/node/.openclaw/openclaw.json", "utf8"))?.gateway?.auth?.token || "");
+  const frage = () => fetch("http://127.0.0.1:18894/v1/models", { headers: { Authorization: "Bearer " + T } })
     .then(async (r) => { if (r.status !== 200) return "HTTP " + r.status;
       const d = await r.json(); return (d.data || []).map((m) => m.id).join(" "); })
     .catch((e) => "FEHLER " + e.message);
@@ -103,7 +105,7 @@ ERGEBNIS="$(docker exec -e T="$TOKEN" "$CONTAINER" node -e '
       await new Promise((ok) => setTimeout(ok, 1000));
     }
     console.log(zuletzt);
-  })();' 2>&1 | sed "s#${TOKEN}#<token>#g")"
+  })();' 2>&1)"
 unset TOKEN
 if printf '%s' "$ERGEBNIS" | grep -w "openclaw/auto" >/dev/null; then
   echo "   ok: $ERGEBNIS"

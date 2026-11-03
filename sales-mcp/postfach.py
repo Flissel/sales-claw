@@ -109,6 +109,14 @@ ANBIETER = {
     # eigene Kopie stuende dort doppelt.
     "gmail": {"name": "Gmail", "imap": "imap.gmail.com", "smtp": "smtp.gmail.com",
               "sent_kopie": False},
+    # Namecheap Private Email = das Hauptpostfach. Host aus der Umgebung statt
+    # fest; es gibt kein POSTFACH_NAMECHEAP_*, darum liefert konto("namecheap")
+    # None und kennungen() fuehrt es nicht als eigenes Zusatzpostfach (das
+    # Hauptpostfach heisst weiter "haupt"). Die Post-Sammelstelle fuehrt es in
+    # post_konten als Kennung "haupt", Anbieter "namecheap".
+    "namecheap": {"name": "Namecheap", "imap": IMAP_HOST,
+                  "smtp": os.environ.get("SMTP_HOST", "").strip(),
+                  "sent_kopie": True},
 }
 IMAP_SSL_PORT = 993
 SMTP_SSL_PORT = 465
@@ -120,9 +128,13 @@ class Konto:
     adresse: str
     passwort: str = field(repr=False)   # nie in Log oder Fehlertext
 
+    # Welcher Anbieter (Host usw.) gilt; leer = die Kennung selbst. So kann es
+    # mehrere Konten je Anbieter geben (gmx-privat, gmx-firma).
+    anbieter_id: str = ""
+
     @property
     def anbieter(self) -> dict:
-        return ANBIETER[self.kennung]
+        return ANBIETER[self.anbieter_id or self.kennung]
 
 
 def konto(kennung: str):
@@ -168,9 +180,13 @@ def name(kennung: str) -> str:
     return ANBIETER.get(kennung, {}).get("name", "Hauptpostfach")
 
 
-def _imap_oeffnen(k: Konto):
+def _imap_oeffnen(k: Konto, timeout: float | None = None):
+    # `timeout` gilt nur fuer DIESEN Socket (Verbinden, Anmelden, jeder
+    # Befehl). Bewusst kein socket.setdefaulttimeout: in sales-ui wuerde das
+    # jeden anderen Socket des Prozesses mit begrenzen.
+    zusatz = {"timeout": timeout} if timeout else {}
     kasten = imaplib.IMAP4_SSL(k.anbieter["imap"], IMAP_SSL_PORT,
-                               ssl_context=ssl.create_default_context())
+                               ssl_context=ssl.create_default_context(), **zusatz)
     kasten.login(k.adresse, k.passwort)
     return kasten
 
@@ -651,7 +667,34 @@ def verschieben(uid: str, ziel: str) -> str:
         kasten.logout()
 
 
-def lesen(uid: str):
+def kalender_festhalten(ergebnis: dict) -> dict:
+    """Die Kalenderantwort eines `lesen(..., protokollieren=False)`-Ergebnisses
+    nachtraeglich festhalten - genau wie lesen() es sonst sofort tut: nur wenn
+    der Mail-Absender einer ATTENDEE-Zeile entspricht, Fehler beim Schreiben
+    landen als `protokollierfehler` im Ergebnis. Die Auswahl wird aus
+    `kalender_antwort` (traegt `teilnehmende`) und `von` neu getroffen; `von`
+    ist derselbe From-Kopf, aus dem lesen() die Absenderadresse nimmt."""
+    antwort = (ergebnis or {}).get("kalender_antwort")
+    if not antwort:
+        return ergebnis
+    _, absender = email.utils.parseaddr(ergebnis.get("von") or "")
+    gewaehlt = _passenden_teilnehmer_waehlen(antwort, absender.strip())
+    if gewaehlt is None:
+        LOG.warning("Kalenderantwort (uid=%s) ohne zuordenbaren Teilnehmer — "
+                    "keine Aktivitaet festgehalten", antwort.get("uid") or "?")
+        return ergebnis
+    try:
+        _antwort_festhalten(gewaehlt)
+    except Exception as e:  # noqa: BLE001 — DB, kein IMAP (W5 wie in lesen)
+        LOG.warning("Kalenderantwort (uid=%s) konnte nicht protokolliert werden (%s)",
+                    antwort.get("uid") or "?", type(e).__name__)
+        ergebnis["protokollierfehler"] = (
+            f"Die Antwort wurde gelesen, aber nicht am Kontakt festgehalten "
+            f"({type(e).__name__}) — Details im Container-Log.")
+    return ergebnis
+
+
+def lesen(uid: str, protokollieren: bool = True):
     """Eine Mail im Volltext (gedeckelt) — oder None, wenn es sie nicht
     gibt.
 
@@ -670,7 +713,12 @@ def lesen(uid: str):
     Ursache, das IMAP-Postfach war erreichbar.
 
     Seit 28.10.2026 auch "gmx:12": gelesen wird im Postfach der Mail, das
-    Ergebnis traegt es unter `postfach`."""
+    Ergebnis traegt es unter `postfach`.
+
+    `protokollieren=False` (03.11.2026, Post-Sammelstelle M2): nur lesen, die
+    Kalenderantwort NICHT festhalten. Fuer Aufrufer, die vorher pruefen
+    muessen, ob unter dieser uid noch die erwartete Mail liegt (nach einem
+    UIDVALIDITY-Wechsel kann es eine fremde sein); danach kalender_festhalten."""
     kennung, nummer = zerlegen(uid)
     kasten = oeffnen(kennung)
     try:
@@ -705,7 +753,12 @@ def lesen(uid: str):
                     antwort, _absenderadresse(nachricht))
                 ergebnis["kalender_antwort"] = (
                     gewaehlt if gewaehlt is not None else antwort)
-                if gewaehlt is not None:
+                if not protokollieren:
+                    # M2 (Post-Sammelstelle): der Aufrufer prueft erst, ob es
+                    # die erwartete Mail ist, und haelt dann per
+                    # kalender_festhalten() fest - nie eine fremde Antwort.
+                    pass
+                elif gewaehlt is not None:
                     try:
                         # W5 (Schlusspruefung 11.09.2026): `_antwort_
                         # festhalten` (und die darin aufgerufene

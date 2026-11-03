@@ -304,7 +304,7 @@ assert erst["name"] == "sales-claw", erst["name"]
 erwartete_container = {
     "sales-claw", "sales-mcp", "sales-dispatch", "sales-inbox",
     "sales-mail", "sales-telegram", "sales-linkedin", "sales-kanaele",
-    "sales-auto", "sales-ui"}  # sales-stt seit 20.10.2026 am PC, hier nur per Profil stt-lokal
+    "sales-auto", "sales-ui", "sales-post"}  # sales-stt seit 20.10.2026 am PC, hier nur per Profil stt-lokal
 ist = {d["container_name"] for d in erst["services"].values()}
 assert ist == erwartete_container, ist
 istv = {v["name"] for v in erst["volumes"].values()}
@@ -766,6 +766,31 @@ else
       fi
     done
   fi
+fi
+
+# 20) Post-Sammelstelle (sales-post, 03.11.2026). Nur wenn der Dienst laeuft:
+# vor dem Ausrollen (post-anbinden.sh, Betreiber-OK) ist er bewusst nicht da,
+# und ein rotes Ergebnis wuerde jedes update.sh blockieren.
+# Signal "letzte Runde": der Dienst schreibt im Leerlauf KEINE Zeile (Protokoll
+# nur bei Abgeholtem/Eingeordnetem) und post_mails.gesehen_am bewegt sich nur
+# mit neuen Mails - beides taugt nicht als Herzschlag. Eine Mindest-Laufzeit
+# taugt auch nicht: update.sh erzeugt laufende optionale Dienste neu und ruft
+# smoke ~30 s spaeter - das waere ROT und damit Rueckbau. Absturzschleife statt
+# dessen: Restarting oder RestartCount >= 3 (Neuerzeugen setzt ihn auf 0).
+# Dazu muss post_mails lesbar sein.
+post_zustand="$(docker inspect -f '{{.State.Status}}' sales-post 2>/dev/null | tr -d '[:space:]' || true)"
+if [ "$post_zustand" != "running" ]; then
+  melde "sales-post" "uebersprungen (Container laeuft nicht — Post-Sammelstelle noch nicht ausgerollt)"
+else
+  read -r post_restarting post_zaehler < <(docker inspect -f '{{.State.Restarting}} {{.RestartCount}}' sales-post 2>/dev/null || true)
+  if [ "${post_restarting:-}" = "true" ] || ! [[ "${post_zaehler:-x}" =~ ^[0-9]+$ ]] || [ "$post_zaehler" -ge 3 ]; then
+    fehl "sales-post laeuft" "Absturzschleife? (Restarting=${post_restarting:-?} RestartCount=${post_zaehler:-?}) — docker logs sales-post"
+  else
+    gut "sales-post laeuft"
+  fi
+  if docker exec -e SALES_DB_SCHEMA=sales sales-mcp python -c \
+    "import sys;sys.path.insert(0,'/app');import server;server._q('select count(*) from post_mails')" \
+    >/dev/null 2>&1; then gut "post_mails lesbar"; else fehl "post_mails lesbar" "select scheitert (db/post-sammelstelle.sql eingespielt?)"; fi
 fi
 
 echo "---"

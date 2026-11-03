@@ -3259,3 +3259,61 @@ Ein Newsletter geht nur an `consent_status = 'opt_in'` (E1). Zwei Wege dorthin, 
   KI-Bilder-Stufe) zurueckgerollt wird, offene KI-Auftraege abbrechen (Status `ideen`,
   `bilder_laufen`, `bilder_pruefen` - Reels-Seite "Abbrechen"); die alte Oberflaeche kennt diese
   Status nicht. Migration 090 braucht keinen Rueckbau.
+
+## Post-Sammelstelle (Stufe 1, seit 03.11.2026)
+
+Ein Dienst `sales-post` holt die Mails aller Postfaecher (Env-Konten + ueber `/post/konten` angelegte) in
+eine Sammelstelle (`post_mails`) und ordnet sie in Bereich + Fach ein. Stufe 1 liest nur: IMAP nur
+`readonly`, im echten Postfach wird nichts verschoben, archiviert oder geloescht.
+
+Ausrollen - Reihenfolge, jeder Schritt nur mit Betreiber-OK:
+
+> **Achtung - Dienste immer beim Namen nennen.** `sales-post` steht ohne Profil in
+> `docker-compose.yml`. Ein nacktes `docker compose up -d` (ohne Dienstnamen) startet ihn mit - fehlt
+> `POST_BESITZER` in der `.env`, beendet er sich sofort mit Code 2 und `restart: unless-stopped` laesst
+> ihn im Kreis neu starten. Also immer `docker compose up -d <dienst> ...` mit Namen.
+
+1. `POST_BESITZER=<Benutzername>` in die `.env` des Ladens (ohne Wert bricht `post-anbinden.sh` ab).
+2. **Vor** `update.sh` die Tabellen/Spalten einspielen - der neue Code (Bot-Werkzeuge, Reiter Mails)
+   liest `post_mails.kalenderteil`/`message_id_ersatz` usw. und braucht sie ab dem ersten Start
+   (idempotent; Schema `sales` fuer den Basis-Laden, sonst `sales_<praefix>`):
+   `docker exec -i debian-supabase-db-1 psql -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v schema=sales < db/post-sammelstelle.sql`
+3. `bash deploy/update.sh` (neuer Code, UI mit Reiter Mails).
+4. `bash deploy/post-anbinden.sh [laden]` - erzeugt bei Bedarf das Schluesselpaar, spielt
+   `db/post-sammelstelle.sql` noch einmal ein (idempotent), setzt `benutzer.leitung` fuer den Besitzer,
+   uebernimmt die Env-Postfaecher, traegt den Agenten `post` (keine Werkzeuge, eigenes Modell
+   `anthropic/claude-haiku-5-5` mit `fallbacks: []`) ins Gateway ein und prueft `/v1/models`. Lehnt das
+   Gateway den Modell-Eintrag ab, bricht das Skript mit "ABBRUCH" ab (Code 5) - es gibt bewusst keinen
+   Rueckfall auf das Standardmodell, denn dessen `fallbacks: [openrouter/free]` wuerde Mailinhalte an
+   ein kostenloses Fremdmodell schicken. Dann nicht weiter ausrollen.
+5. Hat `post-anbinden.sh` ein NEUES Schluesselpaar erzeugt (es sagt es), bekommt `sales-ui` den
+   oeffentlichen Schluessel erst beim Neuerzeugen:
+   `docker compose up -d --no-deps --force-recreate sales-ui` (andere Laeden mit
+   `--env-file deploy/laeden/<laden>.env`). Ohne das meldet "Postfach hinzufuegen" einen Fehler.
+6. Sitzungskopien aufraeumen einrichten (R17): das Gateway legt je eingeordneter Mail eine
+   Sitzungsdatei mit dem Mailinhalt an (`agents/post/sessions/*.jsonl`).
+   `deploy/post-sitzungen-aufraeumen.sh [laden]` loescht sie nach 10 min (gibt nur Zahlen aus).
+   Einmal von Hand laufen lassen, dann per `crontab -e` des Betriebsnutzers auf der VM eintragen
+   (wird NICHT automatisch installiert):
+   `*/5 * * * * cd /home/<nutzer>/sales-claw && bash deploy/post-sitzungen-aufraeumen.sh >/dev/null 2>&1`
+   (je Laden eine Zeile mit Praefix). Erst danach `sales-post` starten.
+7. `docker compose up -d sales-post` (bzw. mit `--env-file deploy/laeden/<laden>.env`).
+8. `bash deploy/smoke.sh`: Abschnitt `sales-post` (kein `Restarting`, `RestartCount` < 3, `post_mails`
+   lesbar; ohne laufenden Dienst "uebersprungen"). Eine Mindest-Laufzeit wird bewusst nicht verlangt:
+   `update.sh` erzeugt den Dienst neu und prueft ~30 s spaeter. Der Dienst schreibt im Leerlauf keinen
+   Herzschlag - ein Haenger ohne Absturz faellt hier nicht auf; Gegenprobe:
+   `docker logs --since 10m sales-post`.
+
+R13: Regeln aus "fuer diesen Absender immer so" gelten nur fuer Mails ihres Besitzers
+(`post_regeln.besitzer`; NULL = global). Die Tabelle ist neu, alte besitzerlose Regeln gibt es nicht.
+R18: Solche Regeln setzen nur Bereich und Fach; ob eine Mail sensibel ist, entscheiden weiter die festen
+Muster (u. a. Sicherheitscode, Kontoauszug, IBAN) und - auch bei einem Regeltreffer - das Modell. Den
+Haken "immer so" gibt es nur fuer die eigene Post (die Leitung korrigiert fremde Mails ohne Regel).
+Regeltreffer zaehlen deshalb zur Tagesgrenze `POST_TAGESGRENZE`.
+
+Kalenderantworten (REPLY/COUNTER): `post_mails.kalenderteil` markiert sie beim Abholen; festgehalten
+am Kontakt wird die Antwort, wenn der Bot die Mail mit `postfach_mail_lesen` oeffnet (einmaliges
+Live-Lesen, nur Env-Konten, erst nach Pruefung der Message-ID).
+
+Stoppen / Rueckweg: `docker compose stop sales-post`. In den Postfaechern wurde nichts veraendert; die
+Tabellen koennen liegen bleiben. Der Agent `post` im Gateway ist harmlos (keine Werkzeuge).

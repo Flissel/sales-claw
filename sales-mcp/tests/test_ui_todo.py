@@ -350,17 +350,44 @@ def test_posteingang_mails_suche_und_aufraeumen():
     server._q("update postfach_mails set art = 'unwichtig', status = 'vorgeschlagen', "
               "grund = 'Werbung' where message_id = 'a1'")
     s = _get("/posteingang").text
-    assert "Rabattaktion Herbst" in s and "Spam-Ordner (1)" in s
-    assert "Rabattaktionen" in _get("/posteingang?q=Rabattaktionen").text or \
-        "Rabattaktion Herbst" in _get("/posteingang?q=Rabattaktionen").text
-    assert "Rabattaktion Herbst" in _get("/posteingang?q=Rabbataktion").text
+    # Rulings R10/R14 (03.11.2026): Mails stehen im Reiter /post; der
+    # Posteingang verweist darauf und sucht nur noch Chats - postfach_mails
+    # hat keinen Besitzer, private Post waere hier fuer jeden auffindbar.
+    assert '<a href="/post">Mails →</a>' in s
+    assert "Rabattaktion Herbst" not in s and "Konto gesperrt" not in s
+    such = _get("/posteingang?q=Rabattaktion").text
+    assert "Rabattaktion Herbst" not in such
+    assert '<a href="/post?q=Rabattaktion">In Mails suchen →</a>' in such
+    boese = _get("/posteingang?q=%3Cb%3E%26x").text
+    assert 'href="/post?q=%3Cb%3E%26x"' in boese and "<b>&x" not in boese
     f = _get("/freigaben").text
     assert "Mails aufräumen" in f and "Rabattaktion Herbst" in f
+    # I5 (03.11.2026): was der Bot als Betrug in den Spam-Ordner verschob, steht
+    # neben den Vorschlaegen - ohne Knopf, nur zur Kontrolle.
+    spam = f[f.index('id="mails-spam"'):]
+    assert "Konto gesperrt" in spam and "Phishing" in spam
+    assert "Rabattaktion Herbst" not in spam
     r = _post("/posteingang/aufraeumen", {"message_id": "a1",
                                           "entscheidung": "verschieben"})
     assert r.status_code == 303
     assert server._q("select status from postfach_mails where message_id = 'a1'"
                      )[0]["status"] == "bestaetigt"
+
+
+@pytest.mark.parametrize("rolle,sichtbar", [("freigeben", True), ("", True),
+                                            ("lesen", False), ("kalender", False)])
+def test_spam_liste_nur_fuer_die_aufraeumende_rolle(rolle, sichtbar):
+    """I5: postfach_mails hat keinen Besitzer (auch private GMX/Gmail-Post) -
+    Spam-Liste und Vorschlaege nur fuer die Rolle, die aufraeumt."""
+    server._q("insert into postfach_mails (message_id, uid, von, betreff, art, status, "
+              "grund) values ('s1', 'gmx:9', 'x@betrug.ru', 'Privat-Phish', 'spam', "
+              "'verschoben', 'Phishing') returning 1")
+    token = ui._AKTIVE_ROLLE.set(rolle)
+    try:
+        abschnitt = ui._mails_aufraeumen_abschnitt()
+    finally:
+        ui._AKTIVE_ROLLE.reset(token)
+    assert ("Privat-Phish" in abschnitt) is sichtbar
 
 
 def test_wartezeit_lesbar():

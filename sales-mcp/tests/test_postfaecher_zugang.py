@@ -85,6 +85,8 @@ def test_compose_eingetragen_wo_gebraucht_und_namen_wie_im_code():
     beispiel = (WURZEL / ".env.example").read_text(encoding="utf-8")
     skript = SKRIPT.read_text(encoding="utf-8")
     for kennung, info in postfach.ANBIETER.items():
+        if kennung == "namecheap":    # Host aus IMAP_HOST, kein POSTFACH_*-Skriptzweig
+            continue
         assert re.search(rf"^\s*{kennung}\)\s+IMAP={re.escape(info['imap'])};\s+SMTP={re.escape(info['smtp'])}",
                          skript, re.M), kennung
         for teil in ("ADRESSE", "PASSWORT"):

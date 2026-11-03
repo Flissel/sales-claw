@@ -320,6 +320,8 @@ begin
           coalesce(betreff, '') || ' ' || coalesce(von, '') || ' ' ||
           coalesce(auszug, ''))) stored
       )$ddl$, s);
+    -- Post-Sammelstelle (Tabellen post_*): bewusst NICHT hier, sondern in
+    -- db/post-sammelstelle.sql (-v schema=...), damit sales_test getrennt pruefbar ist.
     execute format('create index if not exists postfach_mails_such_idx '
                    'on %I.postfach_mails using gin (suchtext)', s);
     if s = 'sales' then

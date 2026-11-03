@@ -62,6 +62,9 @@ alter table :"schema".benutzer_mails drop constraint if exists benutzer_mails_ar
 alter table :"schema".benutzer_mails add constraint benutzer_mails_art_check
   check (art in ('passwort_reset','willkommen'));
 
+-- Post-Sammelstelle: neue Laeden muessen zusaetzlich db/post-sammelstelle.sql
+-- einspielen (-v schema=sales_<laden>); hier nicht verdrahtet.
+
 -- Die zwei Fremdschluessel, INNERHALB des neuen Schemas. Zeigten sie auf
 -- sales.leads, waere die Trennung schon hier gebrochen.
 --

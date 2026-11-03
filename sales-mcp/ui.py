@@ -220,6 +220,7 @@ import ui_marketing
 import ui_muster
 import ui_plan
 import ui_podcast
+import ui_post
 import ui_reels
 import struktur
 import ui_kanaele
@@ -2053,6 +2054,9 @@ _GRUPPEN = (
                  ("/pipeline", "Pipeline"),
                  ("/ergebnisse", "Ergebnisse"),
                  ("/posteingang", "Posteingang"),
+                 # Post-Sammelstelle (Stufe 1, 03.11.2026): alle Postfaecher
+                 # einsortiert, nur mit Anmeldung (ui_post.py).
+                 ("/post", "Mails"),
                  # Struktur-Graph (Betreiber 20.10.2026: Gruppe Analyse statt
                  # Admin). Sichtbar bleibt er nur fuer freigeben im
                  # Basis-Laden - _pfad_erlaubt filtert (_ADMIN_BASIS_PFADE).
@@ -8044,7 +8048,7 @@ async def posteingang(request):
             f'href="/kontakte/{_e(e["lead_id"])}#verlauf">Antworten</a></div></div>')
     if "hinweis" in daten:
         teile.append(f'<div class="hinweis">{_e(daten["hinweis"])}</div>')
-    teile.append(_postfach_block())
+    teile.append(_mails_verweis())
     return _seite("Posteingang", "".join(teile))
 
 
@@ -8061,80 +8065,51 @@ def _wartezeit(stunden) -> str:
     return f"{round(h)} Std."
 
 
-def _postfach_block() -> str:
-    """Mails aus dem Betreiber-Postfach (Index postfach_mails) und Spam."""
-    mails = server._q(
-        "select message_id, uid, von, betreff, datum, auszug, art, status, grund "
-        "from postfach_mails order by gesehen_am desc limit 30")
-    normal = [m for m in mails if m["status"] not in ("verschoben",)]
-    spam = [m for m in mails if m["art"] == "spam" and m["status"] == "verschoben"]
-    teile = [f"<h2>Mails ({len(normal)})</h2>"]
-    if not normal:
-        teile.append('<p class="meta">Noch keine Mail gesehen — der Agent liest '
-                     'das Postfach im Routinelauf.</p>')
-    for m in normal:
-        marke = (' <span class="badge achtung">Vorschlag: unwichtig</span>'
-                 if m["status"] == "vorgeschlagen" else "")
-        teile.append(
-            f'<div class="karte">{_badge("email")}{_postfach_marke(m["uid"])}{marke} '
-            f'<b>{_e(m["betreff"] or "(ohne Betreff)")}</b>'
-            f'<div class="meta">{_e(m["von"])} · {_e(m["datum"])}</div>'
-            f'<div class="text">{_e(_kurz(m["auszug"] or "", 300))}</div></div>')
-    teile.append(f'<details class="karte"><summary>Spam-Ordner ({len(spam)})</summary>'
-                 '<p class="meta">Vom Agenten als Betrug erkannt und in den '
-                 'Spam-Ordner des Postfachs verschoben — nichts gelöscht. '
-                 'Zurückholen im Mailprogramm.</p>'
-                 + "".join(f'<div class="zeile"><b>{_e(m["betreff"])}</b> · '
-                           f'{_e(m["von"])} · <span class="meta">{_e(m["grund"] or "")}'
-                           f'</span></div>' for m in spam)
-                 + '</details>')
-    return "".join(teile)
-
-
-def _postfach_marke(uid) -> str:
-    """Herkunft einer Mail (28.10.2026): GMX/Gmail als Abzeichen, das
-    Laden-Postfach ohne - es ist der Normalfall."""
-    try:
-        kennung, _ = server.postfach.zerlegen(uid)
-    except ValueError:
-        return ""
-    if kennung == server.postfach.HAUPT:
-        return ""
-    return f' <span class="badge">{_e(server.postfach.name(kennung))}</span>'
+def _mails_verweis() -> str:
+    """Mails stehen seit der Post-Sammelstelle (Ruling R10, 03.11.2026) im
+    eigenen Reiter /post - nur mit Anmeldung und nach Sichtbarkeit je Person.
+    Der alte Block las postfach_mails ohne Besitzer; private GMX/Gmail-Post
+    stand damit fuer jede Anmeldung auf dieser Seite. Die Chats bleiben hier."""
+    return ('<h2>Mails</h2><p class="meta">Alle Postfächer, einsortiert und '
+            'durchsuchbar: <a href="/post">Mails →</a></p>')
 
 
 def _posteingang_suche(such: str) -> str:
-    """Mails und Nachrichten durchsuchen: deutsche Wortstaemme (Volltext)
-    plus Tippfehler-Toleranz ueber Trigramme."""
-    mails = server._q(
-        "select uid, betreff, von, datum, auszug from postfach_mails "
-        "where suchtext @@ websearch_to_tsquery('german', %(q)s) "
-        "   or similarity(betreff, %(q)s) >= 0.3 or similarity(von, %(q)s) >= 0.3 "
-        "order by ts_rank(suchtext, websearch_to_tsquery('german', %(q)s)) desc "
-        "limit 20", {"q": such})
+    """Nachrichten (Chats) durchsuchen, deutsche Wortstaemme (Volltext).
+
+    Mails sucht diese Seite nicht mehr (Ruling R14, 03.11.2026): postfach_mails
+    hat keinen Besitzer, private GMX/Gmail-Post waere hier fuer jede Anmeldung
+    auffindbar. Mails sucht der Reiter /post - nach Sichtbarkeit je Person."""
     chats = server._q(
         "select a.created_at, a.payload->>'text' as text, l.id as lead_id, l.name "
         "  from activities a join leads l on l.id = a.lead_id "
         " where a.type in ('kundenantwort', 'transkription') "
         "   and a.suchtext @@ websearch_to_tsquery('german', %(q)s) "
         " order by a.created_at desc limit 20", {"q": such})
-    teile = [f"<h2>Treffer für „{_e(such)}“ ({len(mails) + len(chats)})</h2>"]
-    for m in mails:
-        teile.append(f'<div class="karte">{_badge("email")}{_postfach_marke(m["uid"])} '
-                     f'<b>{_e(m["betreff"])}</b>'
-                     f'<div class="meta">{_e(m["von"])} · {_e(m["datum"])}</div>'
-                     f'<div class="text">{_e(_kurz(m["auszug"] or "", 300))}</div></div>')
+    mails_link = _e("/post?" + urllib.parse.urlencode({"q": such}))
+    teile = [f"<h2>Treffer für „{_e(such)}“ ({len(chats)})</h2>",
+             f'<p class="meta"><a href="{mails_link}">In Mails suchen →</a></p>']
     for c in chats:
         teile.append(f'<div class="karte"><a href="/kontakte/{_e(c["lead_id"])}">'
                      f'{_e(c["name"])}</a> · <span class="meta">{_zeit(c["created_at"])}'
                      f'</span><div class="text">{_e(_kurz(c["text"] or "", 300))}</div></div>')
-    if not mails and not chats:
-        teile.append('<p class="meta">Nichts gefunden.</p>')
+    if not chats:
+        teile.append('<p class="meta">Keine Nachricht gefunden.</p>')
     return "".join(teile)
 
 
+SPAM_LISTE_MAX = 20
+
+
 def _mails_aufraeumen_abschnitt() -> str:
-    """Freigaben: unwichtige Mails, die der Agent zum Wegraeumen vorschlaegt."""
+    """Freigaben: unwichtige Mails, die der Agent zum Wegraeumen vorschlaegt,
+    und (I5, 03.11.2026) die Mails, die er als Betrug sofort in den Spam-Ordner
+    verschoben hat - die Uebersicht stand frueher auf /posteingang und fiel mit
+    R14 weg. Beides kommt aus postfach_mails OHNE Besitzer (Absender/Betreff
+    auch privater GMX/Gmail-Post): darum nur fuer die Rolle, die aufraeumt
+    (freigeben; ohne Anmeldung wie aktion_mail_aufraeumen), nie fuer lesen."""
+    if _AKTIVE_ROLLE.get() in ("lesen", "kalender"):
+        return ""
     vorschlaege = server._q(
         "select message_id, von, betreff, grund from postfach_mails "
         "where status = 'vorgeschlagen' order by gesehen_am desc limit 50")
@@ -8155,6 +8130,25 @@ def _mails_aufraeumen_abschnitt() -> str:
             f'In „Unwichtig“ verschieben</button>'
             f'<button name="entscheidung" value="behalten">Behalten</button>'
             f'</form></div></div>')
+    # Nur zur Kontrolle, ohne Knopf: verschoben ist zurueckholbar (im
+    # Postfach aus dem Spam-Ordner ziehen), geloescht wird nie.
+    spam = server._q(
+        "select von, betreff, grund, ordner, geaendert_am from postfach_mails "
+        "where art = 'spam' and status = 'verschoben' "
+        "order by geaendert_am desc nulls last limit %s", (SPAM_LISTE_MAX,))
+    teile.append(f'<h3 id="mails-spam">Als Betrug in den Spam-Ordner verschoben '
+                 f'<span class="zaehler">{len(spam)}</span></h3>')
+    if not spam:
+        teile.append('<p class="meta">Nichts verschoben.</p>')
+    else:
+        teile.append('<p class="meta">Zurückholen: im Postfach aus dem Spam-Ordner '
+                     'ziehen – gelöscht wird nie.</p>')
+    for m in spam:
+        teile.append(
+            f'<div class="karte"><b>{_e(m["betreff"])}</b>'
+            f'<div class="meta">{_e(m["von"])} — {_e(m["grund"] or "")}'
+            f'{" · Ordner " + _e(m["ordner"]) if m["ordner"] else ""}'
+            f'{" · " + _zeit(m["geaendert_am"]) if m["geaendert_am"] else ""}</div></div>')
     teile.append("</section>")
     return "".join(teile)
 
@@ -9411,6 +9405,8 @@ app = Starlette(routes=[
     *ui_marketing.routen(sys.modules[__name__]),
     *ui_plan.routen(sys.modules[__name__]),
     *ui_struktur.routen(sys.modules[__name__]),
+    # Mail-Reiter der Post-Sammelstelle (Stufe 1, 03.11.2026).
+    *ui_post.routen(sys.modules[__name__]),
     *ui_kanaele.routen(sys.modules[__name__]),
     *ui_reels.routen(sys.modules[__name__]),
     *ui_podcast.routen(sys.modules[__name__]),
