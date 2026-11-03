@@ -1,0 +1,436 @@
+"""Mail-Reiter der Post-Sammelstelle (Spec 2026-10-30-post-sammelstelle-design.md
+§11, §14.3) und „Postfach hinzufügen“.
+
+- /post: Fächer mit Zahl, Liste, Suche, Stand je eigenem Konto.
+- /post/mail/{id}: eine Mail; sensibel heißt nur Kopfdaten (Spec §5).
+- /post/mail/{id}/korrigieren: Mensch ändert Bereich/Fach/sensibel, optional
+  als Regel für den Absender (Spec §8.3).
+- /post/konten: Postfach anlegen (nur Rolle `freigeben`), das Passwort wird
+  sofort versiegelt und nie wieder angezeigt.
+
+JEDE Abfrage geht durch post_struktur (sichtbar_sql, mails_suchen,
+mail_lesen) - hier steht kein eigenes Sichtbarkeits-SQL, sonst gäbe es zwei
+Stellen, die über private Post entscheiden. Ohne angemeldete Person ist alles
+zu (fail closed, §14.3): die Anmeldewache ist ohne UI_SESSION_SECRET
+durchlässig, darum prüft jede Route selbst. Wie der Rest von sales-ui ohne
+JavaScript; jeder Wert aus einer Mail geht durch `ui._e`. `ui` wird
+hereingereicht, nie importiert (Muster ui_editor.routen).
+"""
+from __future__ import annotations
+
+import email.utils
+import re
+import urllib.parse
+
+import psycopg
+from starlette.concurrency import run_in_threadpool
+from starlette.responses import RedirectResponse
+from starlette.routing import Route
+
+import post_struktur as ps
+import server
+
+SEITE_GROESSE = 50
+# Eine Seitenzahl jenseits davon ist keine Absicht, sondern ein Tippfehler
+# oder ein Versuch, die Datenbank mit riesigen OFFSETs zu beschäftigen.
+SEITE_MAX = 10_000
+SUCHE_MAX = 200
+FELD_MAX = 200
+TEXT_MAX = 20_000          # Anzeige; gespeichert ist ohnehin gedeckelt
+BEREICH_TITEL = {"privat": "Privat", "business": "Business"}
+
+_STIL = """<style>
+.post { display: grid; grid-template-columns: 15rem 1fr; gap: 1.2rem; }
+@media (max-width: 760px) { .post { grid-template-columns: 1fr; } }
+nav.faecher h3 { margin: .8rem 0 .3rem; font-size: .9rem; }
+nav.faecher a { display: flex; align-items: center; gap: .4rem;
+                padding: .25rem .4rem; text-decoration: none; border-radius: 6px; }
+nav.faecher a.aktiv { font-weight: 700; background: var(--kopfzeile); }
+.mailzeile { display: block; padding: .5rem 0; border-top: 1px solid var(--linie);
+             text-decoration: none; color: inherit; }
+.mailtext { white-space: pre-wrap; overflow-wrap: anywhere; }
+.kontostand table { width: 100%; }
+</style>"""
+
+
+def _ganzzahl(roh, vorgabe: int, kleinste: int, groesste: int) -> int:
+    """Query-Parameter -> int; Unsinn wird zur Vorgabe, nie zu einem 500
+    (mails_suchen wirft bei nicht-numerischen Werten, Task-7-Hinweis)."""
+    try:
+        wert = int(str(roh).strip())
+    except (TypeError, ValueError):
+        return vorgabe
+    return max(kleinste, min(wert, groesste))
+
+
+def _adresse(link_basis: str, **werte) -> str:
+    teile = {k: v for k, v in werte.items() if v not in ("", None, 1)}
+    return link_basis + ("?" + urllib.parse.urlencode(teile) if teile else "")
+
+
+def routen(ui) -> list:
+    e = ui._e
+
+    def gesperrt():
+        return ui._fehlerseite(
+            403, "Nur mit Anmeldung",
+            "Der Mail-Reiter ist nur mit persönlicher Anmeldung offen. "
+            "Nichts wurde gelesen oder geändert.")
+
+    def betrachter(request):
+        name = request.scope.get("benutzer_name")
+        return ps.betrachter_laden(str(name)) if name else None
+
+    def rolle(request) -> str:
+        return str(request.scope.get("benutzer_rolle") or "")
+
+    # --- Liste ------------------------------------------------------------
+
+    def faecher_zahlen(b) -> dict:
+        """{(bereich, fach): anzahl} über die sichtbaren Mails - eine Abfrage,
+        dieselbe Grenze wie die Liste (sichtbar_sql)."""
+        wo, params = ps.sichtbar_sql(b)
+        zeilen = server._q(
+            f"select m.bereich, m.fach, count(*) as n from post_mails m "
+            f"where {wo} group by m.bereich, m.fach", params)
+        return {(z["bereich"], z["fach"]): int(z["n"]) for z in zeilen}
+
+    def faecher_leiste(zahlen: dict, bereich: str, fach: str) -> str:
+        markiert = ' class="aktiv"'
+        teile = ['<nav class="faecher" aria-label="Fächer">',
+                 f'<a href="/post"{markiert if not (bereich or fach) else ""}>'
+                 f'Alle <span class="zaehler">{sum(zahlen.values())}</span></a>']
+        for br in ps.BEREICHE:
+            eigene = {f: n for (b_, f), n in zahlen.items() if b_ == br}
+            if not eigene:
+                continue
+            teile.append(
+                f'<h3><a href="{e(_adresse("/post", bereich=br))}"'
+                f'{markiert if bereich == br and not fach else ""}>'
+                f'{e(BEREICH_TITEL[br])} <span class="zaehler">'
+                f'{sum(eigene.values())}</span></a></h3>')
+            # Feste Reihenfolge aus Spec §4; ein Fach außerhalb der Liste
+            # (Altdaten) steht hinten, statt zu verschwinden.
+            reihe = [f for f in ps.FAECHER[br] if f in eigene]
+            reihe += sorted(f for f in eigene if f not in ps.FAECHER[br])
+            for f in reihe:
+                aktiv = ' class="aktiv"' if (bereich, fach) == (br, f) else ""
+                teile.append(
+                    f'<a href="{e(_adresse("/post", bereich=br, fach=f or ""))}"{aktiv}>'
+                    f'{e(f or "(ohne Fach)")} <span class="zaehler">{eigene[f]}</span></a>')
+        offen = zahlen.get((None, None), 0)
+        if offen:
+            teile.append(f'<p class="meta">Noch nicht eingeordnet: {offen}</p>')
+        teile.append("</nav>")
+        return "".join(teile)
+
+    def konten_sichtbar(b) -> dict:
+        """Konten fürs Filtern: eigene und die, aus denen man Mails sieht."""
+        wo, params = ps.sichtbar_sql(b)
+        zeilen = server._q(
+            "select k.id, k.kennung from post_konten k where k.besitzer = %s "
+            "or exists (select 1 from post_mails m where m.konto_id = k.id "
+            f"and {wo}) order by k.kennung", [b.name] + params)
+        return {str(z["id"]): z["kennung"] for z in zeilen}
+
+    def kontostand(b) -> str:
+        """Stand je EIGENEM Konto. Der Besitzer sieht alle Mails seiner Konten,
+        die Zahlen verraten also nichts, was er nicht ohnehin sähe."""
+        zeilen = server._q(
+            "select k.kennung, k.anbieter, k.altbestand_fertig, "
+            "count(m.id) filter (where m.status = 'eingeordnet' "
+            "  and m.fach is distinct from %s) as eingeordnet, "
+            "count(m.id) filter (where m.status = 'eingeordnet' "
+            "  and m.fach = %s) as unklar, "
+            "count(m.id) filter (where m.status = 'neu') as neu, "
+            "count(m.id) filter (where m.status = 'fehler') as fehler "
+            "from post_konten k left join post_mails m on m.konto_id = k.id "
+            "where k.besitzer = %s and k.aktiv "
+            "group by k.id order by k.kennung", (ps.UNKLAR, ps.UNKLAR, b.name))
+        if not zeilen:
+            return ""
+        reihen = "".join(
+            f'<tr><td data-label="Konto">{e(z["kennung"])} '
+            f'<span class="meta">{e(z["anbieter"])}</span></td>'
+            f'<td data-label="Eingeordnet">{int(z["eingeordnet"])}</td>'
+            f'<td data-label="Unklar">{int(z["unklar"])}</td>'
+            f'<td data-label="Neu">{int(z["neu"])}</td>'
+            f'<td data-label="Fehler">{int(z["fehler"])}</td>'
+            f'<td data-label="Altbestand">'
+            f'{"fertig" if z["altbestand_fertig"] else "läuft"}</td></tr>'
+            for z in zeilen)
+        return ('<section class="kontostand"><h2>Stand je Konto</h2>'
+                '<table><thead><tr><th>Konto</th><th>Eingeordnet</th>'
+                '<th>Unklar</th><th>Neu</th><th>Fehler</th><th>Altbestand</th>'
+                f'</tr></thead><tbody>{reihen}</tbody></table>'
+                '<p class="meta">Archiviert wird in Stufe 1 nichts; '
+                '<a href="/post/konten">Postfach hinzufügen</a></p></section>')
+
+    def mail_zeile(m: dict, konten: dict) -> str:
+        marke = (' <span class="badge achtung">sensibel</span>'
+                 if m["sensibel"] is not False else "")
+        fach = (f'{e(BEREICH_TITEL.get(m["bereich"], m["bereich"]))} · {e(m["fach"])}'
+                if m["bereich"] else "noch nicht eingeordnet")
+        return (f'<a class="mailzeile" href="/post/mail/{e(m["id"])}">'
+                f'<b>{e(m["betreff"] or "(ohne Betreff)")}</b>{marke}'
+                f'<div class="meta">{e(m["von"])} · {e(ui._zeit(m["datum"]) if m["datum"] else "")}'
+                f' · {e(konten.get(str(m["konto_id"]), ""))} · {fach}</div></a>')
+
+    @ui._gesichert_seite
+    async def liste(request):
+        b = betrachter(request)
+        if b is None:
+            return gesperrt()
+        qp = request.query_params
+        bereich = str(qp.get("bereich") or "")
+        fach = str(qp.get("fach") or "")
+        konto = str(qp.get("konto") or "")
+        such = str(qp.get("q") or "").strip()[:SUCHE_MAX]
+        seite = _ganzzahl(qp.get("seite"), 1, 1, SEITE_MAX)
+        # Eine Zeile mehr holen als angezeigt: so weiß die Seite, ob es eine
+        # nächste gibt, ohne zweite Zählabfrage.
+        mails = ps.mails_suchen(b, suche=such, bereich=bereich, fach=fach,
+                                konto_id=konto, grenze=SEITE_GROESSE + 1,
+                                versatz=(seite - 1) * SEITE_GROESSE)
+        weiter = len(mails) > SEITE_GROESSE
+        mails = mails[:SEITE_GROESSE]
+        konten = konten_sichtbar(b)
+        optionen = "".join(
+            f'<option value="{e(k)}"{" selected" if k == konto else ""}>{e(n)}</option>'
+            for k, n in konten.items())
+        formular = (
+            '<form method="get" action="/post" class="filter">'
+            f'<input type="search" name="q" value="{e(such)}" '
+            'placeholder="Absender, Betreff, Text" aria-label="Mails durchsuchen">'
+            f'<select name="konto" aria-label="Konto"><option value="">Alle Konten</option>'
+            f'{optionen}</select>'
+            + (f'<input type="hidden" name="bereich" value="{e(bereich)}">' if bereich else "")
+            + (f'<input type="hidden" name="fach" value="{e(fach)}">' if fach else "")
+            + '<button>Suchen</button></form>')
+        if mails:
+            zeilen = "".join(mail_zeile(m, konten) for m in mails)
+        else:
+            zeilen = '<p class="meta">Keine Mails für diese Auswahl.</p>'
+        blaettern = []
+        filter_ = {"bereich": bereich, "fach": fach, "konto": konto, "q": such}
+        if seite > 1:
+            blaettern.append(f'<a href="{e(_adresse("/post", **filter_, seite=seite - 1))}">'
+                             '← zurück</a>')
+        if weiter:
+            blaettern.append(f'<a href="{e(_adresse("/post", **filter_, seite=seite + 1))}">'
+                             'weiter →</a>')
+        rumpf = (_STIL + '<div class="post">'
+                 + faecher_leiste(faecher_zahlen(b), bereich, fach)
+                 + f'<div>{formular}<p class="meta">Seite {seite}</p>{zeilen}'
+                 + (f'<p class="aktionen">{" ".join(blaettern)}</p>' if blaettern else "")
+                 + kontostand(b) + '</div></div>')
+        return ui._seite("Mails", rumpf)
+
+    # --- Eine Mail --------------------------------------------------------
+
+    def darf_korrigieren(request, b, m) -> bool:
+        # Sichtbar ist m schon (mail_lesen); korrigieren darf davon nur der
+        # Besitzer oder die Leitung - ein Abteilungsmitglied liest nur.
+        return (rolle(request) == "freigeben"
+                and (b.leitung or m["besitzer"] == b.name))
+
+    def korrektur_formular(m: dict) -> str:
+        bereiche = "".join(
+            f'<option value="{br}"{" selected" if m["bereich"] == br else ""}>'
+            f'{e(BEREICH_TITEL[br])}</option>' for br in ps.BEREICHE)
+        gruppen = "".join(
+            f'<optgroup label="{e(BEREICH_TITEL[br])}">' + "".join(
+                f'<option value="{e(f)}"'
+                f'{" selected" if (m["bereich"], m["fach"]) == (br, f) else ""}>'
+                f'{e(f)}</option>' for f in ps.FAECHER[br]) + '</optgroup>'
+            for br in ps.BEREICHE)
+        return (
+            f'<form method="post" action="/post/mail/{e(m["id"])}/korrigieren" '
+            'class="karte"><h2>Einordnung korrigieren</h2>'
+            f'<input type="hidden" name="csrf" value="{e(ui.CSRF_TOKEN)}">'
+            f'<label>Bereich <select name="bereich">{bereiche}</select></label> '
+            f'<label>Fach <select name="fach">{gruppen}</select></label> '
+            '<label><input type="checkbox" name="sensibel" value="ja"'
+            f'{" checked" if m["sensibel"] is not False else ""}> sensibel</label> '
+            '<label><input type="checkbox" name="regel" value="ja"> '
+            'für diesen Absender immer so</label> '
+            '<p class="meta">Sensibel löscht Text, Empfänger und Anhangnamen '
+            'dieser Mail endgültig aus der Sammelstelle.</p>'
+            '<button class="primaer">Speichern</button></form>')
+
+    @ui._gesichert_seite
+    async def mail(request):
+        b = betrachter(request)
+        if b is None:
+            return gesperrt()
+        m = ps.mail_lesen(b, request.path_params["mail_id"])
+        if m is None:
+            # Kein Unterschied zwischen „gibt es nicht“ und „darfst du nicht“.
+            return ui._fehlerseite(404, "Mail nicht gefunden",
+                                   'Diese Mail gibt es hier nicht. '
+                                   '<a href="/post">Zurück zu den Mails</a>')
+        konto = server._q("select kennung from post_konten where id = %s",
+                          (m["konto_id"],))
+        sensibel = m["sensibel"] is not False
+        kopf = [("Konto", konto[0]["kennung"] if konto else ""),
+                ("Von", m["von"]), ("Datum", ui._zeit(m["datum"]) if m["datum"] else ""),
+                ("Einordnung", (f'{BEREICH_TITEL.get(m["bereich"], m["bereich"])} · {m["fach"]}'
+                                if m["bereich"] else "noch nicht eingeordnet"))]
+        if not sensibel and m["an"]:
+            kopf.insert(2, ("An", m["an"]))
+        teile = [_STIL, '<p><a href="/post">← Alle Mails</a></p>',
+                 f'<div class="karte"><h2>{e(m["betreff"] or "(ohne Betreff)")}</h2>',
+                 "".join(f'<div class="meta"><b>{e(k)}:</b> {e(v)}</div>' for k, v in kopf)]
+        if sensibel:
+            # Spec §5: von sensiblen Mails bleiben nur Kopfdaten; Text und
+            # Anhänge liefert mail_lesen gar nicht erst aus.
+            teile.append('<p class="hinweis"><span class="badge achtung">sensibel</span> '
+                         'Inhalt, Empfänger und Anhänge werden nicht gespeichert. '
+                         'Die Mail selbst liegt im Postfach.</p></div>')
+        else:
+            if m["anhaenge"]:
+                teile.append('<div class="meta"><b>Anhänge:</b> '
+                             + ", ".join(e(a) for a in m["anhaenge"]) + "</div>")
+            teile.append(f'<div class="text mailtext">{e((m["text"] or "")[:TEXT_MAX])}</div></div>')
+        if darf_korrigieren(request, b, m):
+            teile.append(korrektur_formular(m))
+        return ui._seite(m["betreff"] or "Mail", "".join(teile), titel_zeigen=False)
+
+    @ui._gesichert_seite
+    async def korrigieren(request):
+        b = betrachter(request)
+        if b is None:
+            return gesperrt()
+        form = await request.form()
+        if not ui._csrf_ok(form):
+            return ui._fehlerseite(403, "CSRF-Token fehlt oder ist ungültig",
+                                   "Nichts geändert. Seite neu laden.")
+        m = ps.mail_lesen(b, request.path_params["mail_id"])
+        if m is None or not darf_korrigieren(request, b, m):
+            return ui._fehlerseite(403, "Nicht erlaubt",
+                                   "Korrigieren darf nur, wem das Postfach gehört, "
+                                   "oder die Leitung. Nichts geändert.")
+        bereich = str(form.get("bereich") or "")
+        fach = str(form.get("fach") or "")
+        if not ps.fach_gueltig(bereich, fach):
+            return ui._fehlerseite(400, "Ungültige Einordnung",
+                                   "Dieses Fach gibt es in diesem Bereich nicht. "
+                                   "Nichts geändert.")
+        sensibel = form.get("sensibel") == "ja"
+        muster = None
+        if form.get("regel") == "ja":
+            adresse = email.utils.parseaddr(m["von"] or "")[1].strip()
+            if "@" not in adresse:
+                return ui._fehlerseite(400, "Keine Regel möglich",
+                                       "Der Absender hat keine Mailadresse. "
+                                       "Nichts geändert.")
+            # Wörtlich, nicht als Muster: eine Adresse mit „+“ oder „.“ soll
+            # genau sich selbst treffen (post_einordnung nutzt re.search).
+            muster = re.escape(adresse)
+        # R9: wird eine Mail sensibel, verschwinden Text, Auszug, Empfänger
+        # und Anhangnamen sofort und endgültig, nicht erst in der Anzeige.
+        leeren = (", text = null, auszug = null, an = null, anhaenge = '{}'"
+                  if sensibel else "")
+        with server.pool.connection() as conn:
+            # Die Modell-Begründung passt nach einer Korrektur nicht mehr.
+            conn.execute(
+                "update post_mails set bereich = %s, fach = %s, sensibel = %s, "
+                "einordnung_quelle = 'mensch', eingeordnet_am = now(), "
+                f"status = 'eingeordnet', fehler = null, begruendung = null{leeren} "
+                "where id = %s", (bereich, fach, sensibel, m["id"]))
+            if muster:
+                conn.execute(
+                    "insert into post_regeln (muster, feld, bereich, fach, "
+                    "sensibel, angelegt_von) values (%s, 'von', %s, %s, %s, %s)",
+                    (muster, bereich, fach, sensibel, b.name))
+        return RedirectResponse(f"/post/mail/{m['id']}", status_code=303)
+
+    # --- Postfach hinzufügen ---------------------------------------------
+
+    def konten_seite(b, fehler: str = "", werte: dict | None = None,
+                     status: int = 200):
+        import post_konten   # erst hier: zieht cryptography nach
+        werte = werte or {}
+        eigene = [k for k in post_konten.aktive_konten() if k["besitzer"] == b.name]
+        # Bewusst keine Spalte zugang_versiegelt: auch versiegelt hat das
+        # Geheimnis auf der Seite nichts verloren.
+        liste = "".join(
+            f'<tr><td data-label="Kennung">{e(k["kennung"])}</td>'
+            f'<td data-label="Anbieter">{e(k["anbieter"])}</td>'
+            f'<td data-label="Adresse">{e(k["adresse"])}</td>'
+            f'<td data-label="Altbestand">'
+            f'{"fertig" if k["altbestand_fertig"] else "läuft"}</td></tr>'
+            for k in eigene)
+        tabelle = ('<table><thead><tr><th>Kennung</th><th>Anbieter</th>'
+                   f'<th>Adresse</th><th>Altbestand</th></tr></thead><tbody>{liste}'
+                   '</tbody></table>' if eigene
+                   else '<p class="meta">Noch kein Postfach angebunden.</p>')
+        anbieter = "".join(
+            f'<option value="{a}"{" selected" if werte.get("anbieter") == a else ""}>'
+            f'{"GMX" if a == "gmx" else "Gmail"}</option>'
+            for a in post_konten.UI_ANBIETER)
+        # Das Passwortfeld bleibt IMMER leer - auch nach einem Fehler.
+        formular = (
+            '<form method="post" action="/post/konten" class="karte">'
+            '<h2>Postfach hinzufügen</h2>'
+            f'<input type="hidden" name="csrf" value="{e(ui.CSRF_TOKEN)}">'
+            f'<label>Anbieter <select name="anbieter">{anbieter}</select></label> '
+            '<label>Kennung <input type="text" name="kennung" required '
+            f'maxlength="31" value="{e(werte.get("kennung", ""))}" '
+            'placeholder="z. B. gmx-privat" autocapitalize="none" spellcheck="false"></label> '
+            '<label>Adresse <input type="email" name="adresse" required '
+            f'maxlength="{FELD_MAX}" value="{e(werte.get("adresse", ""))}" '
+            'autocapitalize="none" spellcheck="false"></label> '
+            '<label>Passwort / App-Passwort <input type="password" name="passwort" '
+            'required autocomplete="off"></label> '
+            '<p class="meta">Vor dem Speichern meldet sich sales-claw einmal am '
+            'Postfach an. Das Passwort wird sofort versiegelt; lesen kann es nur '
+            'der Abholdienst.</p><button class="primaer">Prüfen und speichern</button>'
+            '</form>')
+        rumpf = ((f'<p class="fehler">{e(fehler)}</p>' if fehler else "")
+                 + '<p><a href="/post">← Mails</a></p>'
+                 + f'<h2>Deine Postfächer</h2>{tabelle}{formular}')
+        return ui._seite("Postfächer", rumpf, status=status)
+
+    def nur_freigeben():
+        return ui._fehlerseite(403, "Nicht für diese Anmeldung",
+                               "Postfächer anbinden darf nur die Rolle "
+                               "„freigeben“. Nichts geändert.")
+
+    @ui._gesichert_seite
+    async def konten(request):
+        b = betrachter(request)
+        if b is None:
+            return gesperrt()
+        if rolle(request) != "freigeben":
+            return nur_freigeben()
+        if request.method != "POST":
+            return konten_seite(b)
+        form = await request.form()
+        if not ui._csrf_ok(form):
+            return ui._fehlerseite(403, "CSRF-Token fehlt oder ist ungültig",
+                                   "Nichts gespeichert. Seite neu laden.")
+        werte = {"anbieter": str(form.get("anbieter") or ""),
+                 "kennung": str(form.get("kennung") or "").strip()[:40],
+                 "adresse": str(form.get("adresse") or "").strip()[:FELD_MAX]}
+        passwort = str(form.get("passwort") or "")
+        import post_konten
+        try:
+            # Die Probe-Anmeldung blockiert (IMAP) - nicht im Event-Loop.
+            ergebnis = await run_in_threadpool(
+                post_konten.konto_anlegen, b.name, werte["kennung"],
+                werte["anbieter"], werte["adresse"], passwort)
+        except psycopg.Error:
+            raise
+        except Exception as fehler:  # noqa: BLE001 - nur der Typ, der Text koennte das Passwort tragen
+            ergebnis = {"fehler": f"Postfach nicht angelegt ({type(fehler).__name__})"}
+        if "fehler" in ergebnis:
+            return konten_seite(b, str(ergebnis["fehler"]), werte, status=400)
+        return RedirectResponse("/post/konten", status_code=303)
+
+    return [
+        Route("/post", liste),
+        Route("/post/konten", konten, methods=["GET", "POST"]),
+        Route("/post/mail/{mail_id}", mail),
+        Route("/post/mail/{mail_id}/korrigieren", korrigieren, methods=["POST"]),
+    ]

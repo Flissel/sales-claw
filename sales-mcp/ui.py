@@ -220,6 +220,7 @@ import ui_marketing
 import ui_muster
 import ui_plan
 import ui_podcast
+import ui_post
 import ui_reels
 import struktur
 import ui_kanaele
@@ -2053,6 +2054,9 @@ _GRUPPEN = (
                  ("/pipeline", "Pipeline"),
                  ("/ergebnisse", "Ergebnisse"),
                  ("/posteingang", "Posteingang"),
+                 # Post-Sammelstelle (Stufe 1, 03.11.2026): alle Postfaecher
+                 # einsortiert, nur mit Anmeldung (ui_post.py).
+                 ("/post", "Mails"),
                  # Struktur-Graph (Betreiber 20.10.2026: Gruppe Analyse statt
                  # Admin). Sichtbar bleibt er nur fuer freigeben im
                  # Basis-Laden - _pfad_erlaubt filtert (_ADMIN_BASIS_PFADE).
@@ -9411,6 +9415,8 @@ app = Starlette(routes=[
     *ui_marketing.routen(sys.modules[__name__]),
     *ui_plan.routen(sys.modules[__name__]),
     *ui_struktur.routen(sys.modules[__name__]),
+    # Mail-Reiter der Post-Sammelstelle (Stufe 1, 03.11.2026).
+    *ui_post.routen(sys.modules[__name__]),
     *ui_kanaele.routen(sys.modules[__name__]),
     *ui_reels.routen(sys.modules[__name__]),
     *ui_podcast.routen(sys.modules[__name__]),
