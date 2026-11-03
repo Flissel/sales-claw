@@ -750,6 +750,42 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Post-Sammelstelle Stufe 1 (03.11.2026, sales-mcp/post_abholen.py): holt die
+  # Mails aller aktiven Postfaecher NUR LESEND (IMAP readonly) und ordnet sie
+  # mit niedriger Prioritaet ueber den Agenten `post` des eigenen Gateways ein.
+  # Stufe 1 verschiebt, archiviert und loescht nichts im Postfach.
+  # Startet erst, wenn POST_BESITZER gesetzt ist (leer = Abbruch mit Fehler);
+  # deploy/update.sh baut ihn nur neu, wenn er vorher schon lief.
+  sales-post:
+    build: ./sales-mcp
+    image: sales-claw-sales-mcp:local
+    container_name: ${LADEN_PRAEFIX:-sales}-post
+    command: python post_abholen.py
+    restart: unless-stopped
+    environment:
+      <<: *sales_mcp_umgebung
+      # Wie sales-auto: das Gateway DES EIGENEN Ladens; der Token steht nur
+      # hier und bei sales-auto, nie im Anker.
+      OPENCLAW_URL: http://${LADEN_PRAEFIX:-sales}-claw:18894
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
+      # Privater Schluessel zum Oeffnen der versiegelten Postfach-Zugaenge
+      # (deploy/post-schluessel.sh). NUR in diesem Dienst - die Oberflaeche
+      # bekommt nur den oeffentlichen (Ruling R5, Test
+      # test_schluessel_nur_bei_sales_post).
+      POST_SCHLUESSEL_PRIVAT: ${POST_SCHLUESSEL_PRIVAT:-}
+      # Benutzername, dem die Postfaecher aus der Umgebung gehoeren.
+      POST_BESITZER: ${POST_BESITZER:-}
+      # Modellaufrufe je Tag (Regel-Treffer zaehlen nicht).
+      POST_TAGESGRENZE: ${POST_TAGESGRENZE:-500}
+      POST_INTERVAL_S: 120
+    # Ein laufender Modellaufruf (Timeout 60 s) darf zu Ende gehen.
+    stop_grace_period: 90s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   # Die Freigabe-Oberflaeche (Stufe 10) — der siebte Container, und der
   # einzige mit einem Host-Port neben dem Gateway. Gleicher Build-Kontext und
   # gleiches Image wie sales-mcp, nur ein anderes Kommando (sales-mcp/ui.py).

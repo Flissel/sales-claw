@@ -31,7 +31,9 @@ STATUS="$BETRIEB/update-status.json"
 # noch Rueckweg (Profil stt-lokal) und wird von einem Update nie hochgezogen.
 # sales-kanaele (24.10.2026) steht nur im Basis-Laden; in anderen Laeden
 # laeuft er nie und wird deshalb auch nie angefasst (nur was VORHER lief).
-KERN_ALLE="sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw sales-telegram sales-linkedin sales-kanaele"
+# sales-post (03.11.2026, Post-Sammelstelle) startet erst mit POST_BESITZER;
+# ein Update baut ihn nur neu, wenn er vorher lief - hochgezogen wird er nie.
+KERN_ALLE="sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw sales-telegram sales-post sales-linkedin sales-kanaele"
 
 # Praefix und --env-file-Argument je Laden, PARALLELE Arrays (Index i
 # gehoert zusammen). Der bestehende Laden ("sales", Vorgabewerte aus den
