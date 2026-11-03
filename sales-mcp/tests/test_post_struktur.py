@@ -54,7 +54,7 @@ def db():
 
 
 def test_tabellen_existieren_im_testschema(db):
-    tabellen = {r[0] for r in db.execute(
+    tabellen = {r["table_name"] for r in db.execute(
         "select table_name from information_schema.tables "
         "where table_schema = 'sales_test'").fetchall()}
     for t in ("post_konten", "post_mails", "post_regeln", "post_abteilungen",
@@ -72,7 +72,7 @@ def test_suchtext_enthaelt_keinen_text_sensibler_mails(db):
         "insert into sales_test.post_konten (besitzer, kennung, anbieter, "
         "adresse, quelle) values ('t', 'test-suchtext', 'gmx', 'a@b.de', 'env') "
         "on conflict (kennung) do update set besitzer = 't' returning id"
-    ).fetchone()[0]
+    ).fetchone()["id"]
     try:
         db.execute(
             "insert into sales_test.post_mails (konto_id, imap_uid, message_id, "
@@ -80,7 +80,7 @@ def test_suchtext_enthaelt_keinen_text_sensibler_mails(db):
             "(%s, 1, '<s@x>', 't', 'Hallo', 'geheimcode 4711', true), "
             "(%s, 2, '<o@x>', 't', 'Hallo', 'geheimcode 4711', false)",
             (konto, konto))
-        treffer = [r[0] for r in db.execute(
+        treffer = [r["sensibel"] for r in db.execute(
             "select sensibel from sales_test.post_mails where konto_id = %s "
             "and suchtext @@ plainto_tsquery('german', 'geheimcode')",
             (konto,)).fetchall()]
