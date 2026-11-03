@@ -1,0 +1,139 @@
+-- Post-Sammelstelle, Stufe 1 (Spec 2026-10-30-post-sammelstelle-design.md):
+-- Tabellen, Rechte und Startabteilungen. Aufruf je Schema (als supabase_admin):
+--
+--   psql -v ON_ERROR_STOP=1 -v schema=sales_test -f db/post-sammelstelle.sql
+--
+-- Bewusst NICHT im Schema-Loop von db/provision.sql (Ruling R1): so laesst sich
+-- der Block auf sales_test einspielen und pruefen, ohne die Produktion
+-- (`sales`) anzufassen. Neue Laeden muessen es zusaetzlich einspielen
+-- (siehe db/laden-anlegen.sql). Idempotent: ein zweiter Lauf aendert nichts.
+--
+-- psql ersetzt :"schema" nicht innerhalb von $$-Bloecken. Darum steht der
+-- Schemaname fuer den Rechte-Block in einer Sitzungsvariable (set_config).
+\set ON_ERROR_STOP on
+
+select set_config('post.schema', :'schema', false);
+
+-- Konten, aus denen die Sammelstelle liest. Das Zugangsgeheimnis liegt nur
+-- versiegelt in der Tabelle (zugang_versiegelt), nie im Klartext.
+create table if not exists :"schema".post_konten (
+  id uuid primary key default gen_random_uuid(),
+  besitzer text not null,
+  kennung text unique not null,
+  anbieter text not null check (anbieter in ('gmx','gmail','namecheap')),
+  adresse text not null,
+  zugang_versiegelt text,
+  quelle text not null check (quelle in ('env','ui')),
+  uidvalidity bigint,
+  letzte_uid bigint,
+  altbestand_fertig boolean default false,
+  aktiv boolean default true,
+  angelegt_am timestamptz default now()
+);
+
+-- Je gesehene Mail eine Zeile. suchtext nimmt den Text sensibler Mails NICHT
+-- auf: was als sensibel gilt, soll sich ueber die Suche nicht herausziehen
+-- lassen (Spec §5). Generated column, damit das auch bei spaeterer
+-- Aenderung von `sensibel` automatisch stimmt.
+create table if not exists :"schema".post_mails (
+  id uuid primary key default gen_random_uuid(),
+  konto_id uuid references :"schema".post_konten(id),
+  imap_uid bigint not null,
+  message_id text not null,
+  besitzer text not null,
+  von text,
+  an text,
+  betreff text,
+  datum timestamptz,
+  text text,
+  auszug text,
+  anhaenge text[] default '{}',
+  bereich text check (bereich in ('privat','business')),
+  fach text,
+  sensibel boolean default false,
+  einordnung_quelle text check (einordnung_quelle in ('regel','modell','mensch')),
+  begruendung text,
+  eingeordnet_am timestamptz,
+  status text not null default 'neu' check (status in ('neu','eingeordnet','fehler')),
+  fehler text,
+  gesehen_am timestamptz default now(),
+  suchtext tsvector generated always as (to_tsvector('german'::regconfig,
+    coalesce(betreff,'') || ' ' || coalesce(von,'') || ' ' ||
+    case when sensibel then '' else coalesce(text,'') end)) stored,
+  unique (konto_id, imap_uid)
+);
+create index if not exists post_mails_such_idx
+  on :"schema".post_mails using gin (suchtext);
+create index if not exists post_mails_besitzer_msg_idx
+  on :"schema".post_mails (besitzer, message_id);
+
+create table if not exists :"schema".post_regeln (
+  id uuid primary key default gen_random_uuid(),
+  muster text not null,
+  feld text not null check (feld in ('von','betreff')),
+  bereich text,
+  fach text,
+  sensibel boolean default false,
+  angelegt_von text,
+  angelegt_am timestamptz default now()
+);
+
+create table if not exists :"schema".post_abteilungen (
+  name text primary key
+);
+-- `fach` ist der Primary Key (ein Fach gehoert hoechstens einer Abteilung,
+-- Spec §7). Die Tabelle bezieht sich NUR auf Business-Faecher; „Rechnungen“
+-- und „Werbung“ gibt es in beiden Bereichen, gemeint ist hier jeweils das
+-- Business-Fach.
+create table if not exists :"schema".post_abteilung_faecher (
+  abteilung text references :"schema".post_abteilungen(name),
+  fach text not null,
+  primary key (fach)
+);
+create table if not exists :"schema".benutzer_abteilungen (
+  benutzer text,
+  abteilung text references :"schema".post_abteilungen(name),
+  primary key (benutzer, abteilung)
+);
+
+-- Leitung ist eine Eigenschaft der Person, nicht der Abteilung (Spec §7).
+alter table :"schema".benutzer
+  add column if not exists leitung boolean not null default false;
+
+-- Startabteilungen (Spec §7), anpassbar in der Oberflaeche.
+insert into :"schema".post_abteilungen (name) values
+  ('Vertrieb'), ('Buchhaltung'), ('Marketing'), ('Recruiting'), ('Technik')
+  on conflict do nothing;
+insert into :"schema".post_abteilung_faecher (abteilung, fach) values
+  ('Vertrieb', 'Kunden & Anfragen'),
+  ('Vertrieb', 'Partner & Netzwerk'),
+  ('Buchhaltung', 'Rechnungen'),
+  ('Marketing', 'Newsletter & Branche'),
+  ('Marketing', 'Werbung'),
+  ('Recruiting', 'Bewerbungen & Jobs'),
+  ('Technik', 'Tools & Dienste')
+  on conflict do nothing;
+
+-- Rechte wie bei postfach_mails (provision.sql): sales_app fuer `sales`,
+-- sales_app_<laden> fuer sales_<laden> falls die Rolle existiert, sales_test
+-- bekommt keine (die Tests laufen als Admin). Kein delete.
+do $$
+declare
+  s text := current_setting('post.schema');
+  rolle text;
+  t text;
+begin
+  if s = 'sales' then
+    rolle := 'sales_app';
+  elsif s <> 'sales_test' and exists (
+      select 1 from pg_roles where rolname = 'sales_app_' || substr(s, 7)) then
+    rolle := 'sales_app_' || substr(s, 7);
+  end if;
+  if rolle is null then
+    return;
+  end if;
+  foreach t in array array['post_konten','post_mails','post_regeln',
+      'post_abteilungen','post_abteilung_faecher','benutzer_abteilungen'] loop
+    execute format('grant select, insert, update on %I.%I to %I', s, t, rolle);
+  end loop;
+end $$;
