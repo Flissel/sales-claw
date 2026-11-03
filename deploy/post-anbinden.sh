@@ -21,7 +21,7 @@
 #   5. workspace-post/AGENTS.md (fast leer, die Regeln schickt sales-post mit)
 #   6. Probe: GET /v1/models muss openclaw/post zeigen (bis 30 s)
 #
-# Der Token erscheint nirgends (nur im Container gelesen, per -e an die Probe).
+# Der Token erscheint nirgends (nur im Container von der Probe selbst gelesen).
 # Startet NICHTS und startet sales-post nicht: Rollout-Reihenfolge und
 # Betreiber-OK stehen im Runbook (Abschnitt Post-Sammelstelle).
 set +x
@@ -122,16 +122,14 @@ docker exec -i "$CONTAINER" node -e '
   console.log("   workspace-post/AGENTS.md geschrieben");
 '
 
-# 6) Probe aus dem Gateway selbst (Token aus dem Volume, nie ausgegeben).
+# 6) Probe aus dem Gateway selbst.
 echo "5) Probe (bis 30 s)"
-TOKEN="$(docker exec "$CONTAINER" node -e '
-  const c = JSON.parse(require("node:fs").readFileSync("/home/node/.openclaw/openclaw.json", "utf8"));
-  process.stdout.write(String(c?.gateway?.auth?.token || ""));')"
-if ! [[ $TOKEN =~ ^[A-Za-z0-9._-]{16,}$ ]]; then
-  echo "ABBRUCH: gateway.auth.token fehlt - erst deploy/auto-anbinden.sh." >&2; exit 1
-fi
-ERGEBNIS="$(docker exec -e T="$TOKEN" "$CONTAINER" node -e '
-  const frage = () => fetch("http://127.0.0.1:18894/v1/models", { headers: { Authorization: "Bearer " + process.env.T } })
+# Der Token wird im selben node-Prozess gelesen, der die Probe fragt: er
+# verlaesst den Container nie und steht in keiner docker-Kommandozeile.
+ERGEBNIS="$(docker exec "$CONTAINER" node -e '
+  const T = String(JSON.parse(require("node:fs").readFileSync("/home/node/.openclaw/openclaw.json", "utf8"))?.gateway?.auth?.token || "");
+  if (!T) { console.log("FEHLER Zugangsschluessel fehlt"); process.exit(0); }
+  const frage = () => fetch("http://127.0.0.1:18894/v1/models", { headers: { Authorization: "Bearer " + T } })
     .then(async (r) => { if (r.status !== 200) return "HTTP " + r.status;
       const d = await r.json(); return (d.data || []).map((m) => m.id).join(" "); })
     .catch((e) => "FEHLER " + e.message);
@@ -143,8 +141,7 @@ ERGEBNIS="$(docker exec -e T="$TOKEN" "$CONTAINER" node -e '
       await new Promise((ok) => setTimeout(ok, 1000));
     }
     console.log(zuletzt);
-  })();' 2>&1 | sed "s#${TOKEN}#<token>#g")"
-unset TOKEN
+  })();' 2>&1)"
 if printf '%s' "$ERGEBNIS" | grep -w "openclaw/post" >/dev/null; then
   echo "   ok: $ERGEBNIS"
   echo "Fertig. sales-post starten erst mit Betreiber-OK: docker compose up -d sales-post (bzw. mit --env-file)."

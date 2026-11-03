@@ -178,7 +178,10 @@ def test_anbinde_skript_gibt_den_token_nie_aus_und_startet_nichts():
     code = "\n".join(z for z in skript.splitlines() if not z.lstrip().startswith("#"))
     assert not re.search(r"set -[a-z]*x", code)
     assert "echo \"$TOKEN\"" not in code and "echo $TOKEN" not in code
-    assert 'sed "s#${TOKEN}#<token>#g"' in code and "unset TOKEN" in code
+    assert "unset TOKEN" in code
+    # Token nie in einer docker-Kommandozeile (ps zeigt sie): die Probe liest ihn im Container selbst.
+    assert not any("docker" in z and "$TOKEN" in z for z in code.splitlines()) and "-e T=" not in code
+    assert "gateway?.auth?.token" in code
     assert '"deny": ["*"]' in code or 'deny: ["*"]' in code
     assert "docker restart" not in code.replace("(docker restart $CONTAINER, mit dem Betreiber", "")
     assert "compose up" not in code.replace("docker compose up -d sales-auto (bzw.", "")

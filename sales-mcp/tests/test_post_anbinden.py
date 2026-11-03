@@ -41,7 +41,9 @@ def test_skript_gibt_den_token_nie_aus_und_startet_nichts():
     code = _code("deploy/post-anbinden.sh")
     assert not re.search(r"set -[a-z]*x", code)
     assert "echo \"$TOKEN\"" not in code and "echo $TOKEN" not in code
-    assert 'sed "s#${TOKEN}#<token>#g"' in code and "unset TOKEN" in code
+    # Token nie in einer docker-Kommandozeile (ps): die Probe liest ihn im Container selbst.
+    assert "TOKEN" not in code and "-e T=" not in code
+    assert "gateway?.auth?.token" in code
     assert "docker restart" not in code.replace("(docker restart $CONTAINER, mit dem Betreiber", "")
     assert "compose up" not in code.replace("docker compose up -d sales-post (bzw.", "")
     # Der Token wird wiederverwendet, nicht neu in die .env geschrieben.

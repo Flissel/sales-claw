@@ -37,6 +37,11 @@ def _aufraeumen():
         conn.execute("truncate sales_test.post_konten cascade")
         conn.execute("delete from sales_test.activities where payload->>'quelle' = %s",
                      (TEST_QUELLE,))
+        # Andere Testdateien lassen kundenantwort-Aktivitaeten (< 120 s) und Modell-
+        # Einordnungen von heute in sales_test zurueck; beides steuert die Pause und
+        # die Tagesgrenze. Nur das Testschema, darum hier ausdruecklich geleert.
+        conn.execute("delete from sales_test.activities where type = 'kundenantwort'")
+        conn.execute("truncate sales_test.post_mails")
 
 
 @pytest.fixture(autouse=True)
