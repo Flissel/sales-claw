@@ -596,6 +596,24 @@ def test_schluessel_nur_bei_sales_post():
             assert "POST_SCHLUESSEL_PRIVAT" not in datei.read_text(encoding="utf-8"), datei
 
 
+def test_oeffentlicher_schluessel_nur_bei_sales_ui():
+    """Ruling R5: die Oberflaeche versiegelt neue Zugaenge und braucht dafuer
+    nur den oeffentlichen Schluessel; den privaten bekommt sie nie."""
+    text = (WURZEL / "docker-compose.yml").read_text(encoding="utf-8")
+    anker = text[text.index("x-sales-mcp-umgebung"):text.index("\nservices:")]
+    assert "POST_SCHLUESSEL_OEFFENTLICH" not in anker
+    ui_teil = _compose_abschnitt("sales-ui")
+    assert ("- POST_SCHLUESSEL_OEFFENTLICH=${POST_SCHLUESSEL_OEFFENTLICH:-}"
+            in ui_teil)
+    assert "POST_SCHLUESSEL_PRIVAT" not in ui_teil
+    assert "env_file" not in ui_teil
+    for dienst in _dienste():
+        if dienst != "sales-ui":
+            assert "POST_SCHLUESSEL_OEFFENTLICH" not in _compose_abschnitt(dienst), dienst
+    assert _code(text).count("POST_SCHLUESSEL_OEFFENTLICH") == ui_teil.count(
+        "POST_SCHLUESSEL_OEFFENTLICH")
+
+
 def _update_logik() -> str:
     """Die Teile von deploy/update.sh, die entscheiden, was laeuft und ob die
     Abnahme (mit automatischem Rueckbau) laeuft - woertlich ausgeschnitten."""
