@@ -351,6 +351,12 @@ def konto_abholen(zeile: dict, kasten=None, stapel: int = 50) -> int:
 # Einordnen
 # ---------------------------------------------------------------------------
 
+# Kosten eines Fehlversuchs (Sortierer/Pruefer haben gekostet, die Mail bleibt `neu`):
+# am selben Tag aufaddieren, an einem neuen Tag neu beginnen - so zaehlt jeder Aufruf
+# genau einmal, an dem Tag, an dem er anfiel (gleiches Muster wie post_neu_einordnen._KOSTEN_SQL).
+_FEHL_KOSTEN_SQL = ("fehl_aufrufe = %s + case when fehl_am::date = current_date "
+                    "then fehl_aufrufe else 0 end, fehl_am = now()")
+
 def _ergebnis_speichern(mail_id, e: post_einordnung.Einordnung) -> None:
     bereich, fach = e.bereich, e.fach
     unterfach = e.unterfach
@@ -364,7 +370,9 @@ def _ergebnis_speichern(mail_id, e: post_einordnung.Einordnung) -> None:
     server._q(
         "update post_mails set bereich = %s, fach = %s, unterfach = %s, sensibel = %s, "
         "einordnung_quelle = %s, begruendung = %s, vorschlaege = %s::jsonb, "
-        "modellaufrufe = modellaufrufe + %s, einordnung_version = 2, eingeordnet_am = now(), "
+        # `=`, nicht `+`: Fehlversuch-Kosten stehen auf fehl_aufrufe (Tag ihres Anfalls),
+        # modellaufrufe traegt nur die endgueltige Einordnung - sonst zaehlte sie doppelt.
+        "modellaufrufe = %s, einordnung_version = 2, eingeordnet_am = now(), "
         "status = 'eingeordnet', fehler = null, "
         "text = case when %s then null else text end, "
         "auszug = case when %s then null else auszug end, "
@@ -417,10 +425,11 @@ def einordnen_offene(grenze: int) -> int:
             ergebnis = post_einordnung.einordnen(mail, konto)
         except post_einordnung.PrueferVoruebergehend as e:
             # Muss vor GatewayTransient stehen (Unterklasse). Der Sortierer hat schon
-            # gekostet: buchen (versuch_am macht es fuer die Tagesgrenze sichtbar),
-            # aber keinen Versuch zaehlen - der Pruefer, nicht die Mail ist schuld.
+            # gekostet: auf den Tag des Anfalls buchen (fehl_am macht es fuer die
+            # Tagesgrenze sichtbar), aber keinen Versuch zaehlen - der Pruefer, nicht
+            # die Mail ist schuld.
             server._q(
-                "update post_mails set modellaufrufe = modellaufrufe + %s, versuch_am = now() "
+                f"update post_mails set {_FEHL_KOSTEN_SQL} "
                 "where id = %s and status = 'neu'", (int(e.aufrufe), mail["id"]))
             LOG.info("Einordnen pausiert: Pruefer voruebergehend nicht bereit")
             break
@@ -435,19 +444,18 @@ def einordnen_offene(grenze: int) -> int:
                 "update post_mails set status = 'fehler', bereich = 'privat', fach = %s, "
                 "fehler = 'Einordnung durch das Modell endgueltig fehlgeschlagen', "
                 # Der Aufruf hat das Modell erreicht: zaehlt zur Tagesgrenze.
-                "einordnung_quelle = 'modell', modellaufrufe = modellaufrufe + 1, einordnung_version = 2, "
+                "einordnung_quelle = 'modell', modellaufrufe = 1, einordnung_version = 2, "
                 "eingeordnet_am = now() where id = %s and status = 'neu'",
                 (post_struktur.UNKLAR, mail["id"]))
             erledigt += 1
             continue
         except post_einordnung.PrueferFehlgeschlagen as e:
             # Sortierer-Aufrufe (e.vorschlag.aufrufe) plus der gescheiterte Pruefer
-            # haben gekostet. `versuch_am` macht sie fuer die Tagesgrenze sofort
-            # sichtbar, auch solange die Mail `neu` ist.
+            # haben gekostet. fehl_aufrufe/fehl_am machen sie am Tag ihres Anfalls fuer
+            # die Tagesgrenze sichtbar, auch solange die Mail `neu` ist.
             zeilen = server._q(
-                "update post_mails set versuche = versuche + 1, "
-                "modellaufrufe = modellaufrufe + %s, versuch_am = now() where id = %s "
-                "returning versuche", (e.vorschlag.aufrufe + 1, mail["id"]))
+                f"update post_mails set versuche = versuche + 1, {_FEHL_KOSTEN_SQL} "
+                "where id = %s returning versuche", (e.vorschlag.aufrufe + 1, mail["id"]))
             if zeilen and zeilen[0]["versuche"] >= VERSUCHE_MAX:
                 LOG.warning("Mail %s: Pruefer nach %d Versuchen ausgefallen - Zum Nachsehen",
                             mail["id"], VERSUCHE_MAX)
@@ -486,13 +494,18 @@ def kunde_aktiv() -> bool:
 
 
 def modellaufrufe_heute() -> int:
-    # Jede Mail traegt die Summe ihrer Modellaufrufe (`modellaufrufe`; feste Regeln
-    # und menschliche Korrekturen: 0), gezaehlt an ihrem letzten Tag: eingeordnet_am,
-    # solange noch `neu` der letzte Fehlversuch (versuch_am). So entgeht auch eine
-    # Mail mit toten Pruefer-Versuchen der Grenze nicht. Dazu die Vorschau-Aufrufe (vorschau_aufrufe am Tag vorschau_am; ueberlebt anwenden).
+    # Jeder Modellaufruf zaehlt genau einmal, an dem Tag, an dem er anfiel:
+    # - modellaufrufe: Kosten der endgueltigen Einordnung (feste Regeln und menschliche
+    #   Korrekturen: 0) am Tag eingeordnet_am,
+    # - fehl_aufrufe: Kosten der Fehlversuche (Pruefer ausgefallen) am Tag fehl_am - so
+    #   entgeht auch eine noch `neue` Mail mit toten Versuchen der Grenze nicht und
+    #   zaehlt nicht an Folgetagen erneut,
+    # - vorschau_aufrufe am Tag vorschau_am (ueberlebt anwenden).
     zeile = server._q(
         "select (select coalesce(sum(modellaufrufe), 0) from post_mails "
-        "         where coalesce(eingeordnet_am, versuch_am)::date = current_date) "
+        "         where eingeordnet_am::date = current_date) "
+        "     + (select coalesce(sum(fehl_aufrufe), 0) from post_mails "
+        "         where fehl_am::date = current_date) "
         "     + (select coalesce(sum(vorschau_aufrufe), 0) from post_mails "
         "         where vorschau_am::date = current_date) as n")[0]
     return int(zeile["n"])
