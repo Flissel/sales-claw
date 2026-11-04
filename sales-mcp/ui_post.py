@@ -163,7 +163,7 @@ def routen(ui) -> list:
             f'<tr><td data-label="Konto">{e(z["kennung"])} '
             f'<span class="meta">{e(z["anbieter"])}</span></td>'
             f'<td data-label="Eingeordnet">{int(z["eingeordnet"])}</td>'
-            f'<td data-label="Unklar">{int(z["unklar"])}</td>'
+            f'<td data-label="Zum Nachsehen">{int(z["unklar"])}</td>'
             f'<td data-label="Neu">{int(z["neu"])}</td>'
             f'<td data-label="Fehler">{int(z["fehler"])}</td>'
             f'<td data-label="Altbestand">'
@@ -171,7 +171,7 @@ def routen(ui) -> list:
             for z in zeilen)
         return ('<section class="kontostand"><h2>Stand je Konto</h2>'
                 '<table><thead><tr><th>Konto</th><th>Eingeordnet</th>'
-                '<th>Unklar</th><th>Neu</th><th>Fehler</th><th>Altbestand</th>'
+                '<th>Zum Nachsehen</th><th>Neu</th><th>Fehler</th><th>Altbestand</th>'
                 f'</tr></thead><tbody>{reihen}</tbody></table>'
                 '<p class="meta">Archiviert wird in Stufe 1 nichts; '
                 '<a href="/post/konten">Postfach hinzufügen</a></p></section>')

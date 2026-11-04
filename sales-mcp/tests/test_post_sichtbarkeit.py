@@ -104,6 +104,33 @@ def test_unklar_nur_leitung_und_besitzer():
     assert unklar in _ids(_b("t7_lea"))
 
 
+def test_sensible_business_mail_nur_besitzer_und_leitung():
+    server._q("insert into post_abteilungen (name) values ('Marketing') "
+              "on conflict do nothing")
+    server._q("insert into post_abteilung_faecher (abteilung, fach) values "
+              "('Marketing', 'Soziale Netzwerke') on conflict do nothing")
+    server._q("insert into benutzer_abteilungen values ('t7_ben', "
+              "'Marketing') on conflict do nothing")
+    try:
+        sens = _mail("t7_anna", "business", "Soziale Netzwerke", sensibel=True)
+        offen = _mail("t7_anna", "business", "Soziale Netzwerke")
+        assert sens in _ids(_b("t7_anna"))
+        assert sens in _ids(_b("t7_lea"))            # Leitung: business
+        assert sens not in _ids(_b("t7_ben"))        # Abteilung nie
+        assert offen in _ids(_b("t7_ben"))           # nicht sensibel: ja
+        assert sens not in _ids(ps.BETREIBER_AGENT)
+        assert ps.mail_lesen(_b("t7_ben"), sens) is None
+        privat = _mail("t7_anna", "privat", "Konten & Sicherheit",
+                       sensibel=True)
+        assert privat in _ids(_b("t7_anna"))
+        assert privat not in _ids(_b("t7_lea"))
+    finally:
+        server._q("delete from post_abteilung_faecher where abteilung = "
+                  "'Marketing' and fach = 'Soziale Netzwerke'")
+        server._q("delete from benutzer_abteilungen where benutzer = 't7_ben' "
+                  "and abteilung = 'Marketing'")
+
+
 def test_privates_fach_gleichen_namens_oeffnet_nichts():
     # Privates Fach mit dem Namen eines Vertriebs-Fachs oeffnet nichts.
     m = _mail("t7_anna", "privat", "Kunden & Anfragen")

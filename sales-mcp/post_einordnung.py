@@ -8,7 +8,7 @@ Cloud-Modell. Nutzerregeln (post_regeln) setzen nur Bereich und Fach; ueber
 
 Die Mail ist Fremddatum. Der Agent `post` hat keine Werkzeuge, sein Auftrag
 rahmt den Mailtext als Daten, und das Ergebnis wird gegen die feste Liste
-geprueft - ein erfundenes Fach wird `Unklar`, nie uebernommen.
+geprueft - ein erfundenes Fach wird `Zum Nachsehen`, nie uebernommen.
 """
 from __future__ import annotations
 

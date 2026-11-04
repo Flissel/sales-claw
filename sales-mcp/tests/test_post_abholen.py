@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import gateway  # noqa: E402
 import post_abholen  # noqa: E402
 import post_einordnung  # noqa: E402
+import post_struktur  # noqa: E402
 import server  # noqa: E402
 
 WURZEL = Path(__file__).resolve().parents[2]
@@ -401,7 +402,7 @@ def test_transient_laesst_mail_neu(monkeypatch, caplog):
         # Transient zaehlt keinen Versuch: das Gateway, nicht die Mail ist schuld.
         assert {(r["status"], r["versuche"]) for r in _mails()} == {("neu", 0)}
 
-    # Endgueltiger Fehler: diese Mail -> fehler/Unklar, die naechste laeuft weiter.
+    # Endgueltiger Fehler: diese Mail -> fehler/Zum Nachsehen, die naechste laeuft weiter.
     reihe = iter([gateway.GatewayFehler("Gateway HTTP 400: Geheimer Betreff Eins"),
                   _einordnung()])
 
@@ -413,7 +414,7 @@ def test_transient_laesst_mail_neu(monkeypatch, caplog):
     monkeypatch.setattr(post_einordnung, "einordnen", gemischt)
     assert post_abholen.einordnen_offene(10) == 2
     r1, r2 = _mails()
-    assert (r1["status"], r1["fach"]) == ("fehler", "Unklar")
+    assert (r1["status"], r1["fach"]) == ("fehler", post_struktur.UNKLAR)
     assert "Geheim" not in (r1["fehler"] or "") and r1["fehler"]
     assert r2["status"] == "eingeordnet"
     assert "Geheim" not in caplog.text and "anna@example.org" not in caplog.text
@@ -437,11 +438,11 @@ def test_kaputte_mail_blockiert_die_einordnung_nicht(monkeypatch, caplog):
         assert post_abholen.einordnen_offene(10) == 0
         r1, r2 = _mails()
         assert (r1["status"], r1["versuche"], r2["status"]) == ("neu", versuch, "neu")
-    # Versuch 3: aufgegeben -> fehler/privat/Unklar, und die naechste Mail laeuft.
+    # Versuch 3: aufgegeben -> fehler/privat/Zum Nachsehen, und die naechste Mail laeuft.
     assert post_abholen.einordnen_offene(10) == 2
     r1, r2 = _mails()
     assert (r1["status"], r1["bereich"], r1["fach"], r1["versuche"]) == \
-        ("fehler", "privat", "Unklar", 3)
+        ("fehler", "privat", post_struktur.UNKLAR, 3)
     assert r1["fehler"] and "Geheim" not in r1["fehler"]
     assert r2["status"] == "eingeordnet"
     assert len(aufrufe) == 4
