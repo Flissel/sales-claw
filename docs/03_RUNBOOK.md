@@ -3321,17 +3321,34 @@ Text, wer der Laden ist und was in welches Fach gehoert (z. B. Branche, typische
 Teil der Regeln an den Klassifizierer. Leer heisst: nur die allgemeinen Regeln. Der Text wird mit dem
 Betreiber abgestimmt; Mailinhalte, Namen Dritter und Zugangsdaten gehoeren nicht hinein.
 
-Rollout v2 (je Schritt Betreiber-OK):
+Rollout v2 (je Schritt Betreiber-OK). Wie beim ersten Ausrollen gilt: **die Migration vor
+`update.sh`** - der neue Code liest `unterfach`, `standard_bereich`, `versuch_am`, `vorschau_aufrufe`
+usw. ab dem ersten Start; liefe er vorher, gaebe `/post` einen Fehler 500, `postfach_lesen` des Bots
+schluege fehl und jede `sales-post`-Runde scheiterte. `[laden]` faellt fuer den Basis-Laden weg, sonst
+der Praefix (z. B. `ivan`) bzw. `--env-file deploy/laeden/<laden>.env` bei `docker compose`.
 
-1. `POST_KONTEXT` in die VM-`.env` (Text mit dem Betreiber abstimmen).
-2. `bash deploy/update.sh`.
-3. `bash deploy/post-anbinden.sh [laden]` (Migration + Pruefer-Agent).
-4. `bash deploy/post-neu-einordnen.sh vorschau` - ueber Tage, bis die Tagesgrenze alles geschafft hat
-   (das Skript kommt mit Task 7 der Post-Einordnung v2; es aendert in der Vorschau nichts am Bestand).
-5. Bericht + Katalog-Tabelle an den Betreiber; Katalog-Aenderungen einarbeiten (ggf.
-   `post-neu-einordnen.sh vorschau --alle`).
-6. Anwenden (`post-neu-einordnen.sh`, Aufruf laut Skript-Hilfe).
-7. Stichprobe von 20 Mails mit dem Betreiber.
+1. `POST_KONTEXT` in die `.env` des Ladens (Text mit dem Betreiber abstimmen; leer ist erlaubt).
+2. `docker compose stop sales-post` - der alte Dienst soll zwischen Migration und neuem Code keine
+   Mails mehr einordnen.
+3. `bash deploy/post-anbinden.sh [laden]` - spielt die Migration ein (`db/post-sammelstelle.sql`,
+   idempotent), traegt `post-pruefer` ein und prueft ihn mit einem echten Funktionsaufruf
+   (Dummy-Text, keine Mail). Endet es mit "ABBRUCH" (Code 5) oder "ROT" (Code 3/6): nicht weiter.
+4. `bash deploy/update.sh` (neuer Code). `sales-post` bleibt dabei aus (`update.sh` baut ihn nur neu,
+   wenn er vorher lief).
+5. Die Migration noch einmal (idempotent): sie benennt `Unklar`-Zeilen um, die der alte Code
+   (Oberflaeche, Bot) zwischen Schritt 3 und 4 noch geschrieben hat, und loescht Regeln dorthin:
+   `docker exec -i debian-supabase-db-1 psql -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v schema=sales < db/post-sammelstelle.sql`
+   (anderer Laden: `-v schema=sales_<praefix>`) - oder einfach `bash deploy/post-anbinden.sh [laden]` erneut.
+6. `docker compose up -d sales-post` (bzw. mit `--env-file deploy/laeden/<laden>.env`); danach
+   `bash deploy/smoke.sh`.
+7. `bash deploy/post-neu-einordnen.sh [laden] vorschau` - ueber Tage, bis die Tagesgrenze alles geschafft
+   hat (braucht den laufenden `sales-post`; die Vorschau aendert nichts am Bestand, ihre Aufrufe zaehlen
+   zur selben Tagesgrenze wie `sales-post`).
+8. `bash deploy/post-neu-einordnen.sh [laden] bericht` - Bericht + Katalog-Tabelle an den Betreiber;
+   Katalog-Aenderungen einarbeiten (ggf. `bash deploy/post-neu-einordnen.sh [laden] vorschau --alle`).
+9. `bash deploy/post-neu-einordnen.sh [laden] anwenden` (ohne Modell; Mails mit menschlicher Korrektur
+   und Mails, die schon beim Abholen kaputt waren, bleiben unberuehrt).
+10. Stichprobe von 20 Mails mit dem Betreiber.
 
 R13: Regeln aus "fuer diesen Absender immer so" gelten nur fuer Mails ihres Besitzers
 (`post_regeln.besitzer`; NULL = global). Die Tabelle ist neu, alte besitzerlose Regeln gibt es nicht.
