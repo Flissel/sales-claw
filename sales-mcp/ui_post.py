@@ -450,10 +450,12 @@ def routen(ui) -> list:
             # alten Einordnung: nach der Entscheidung des Menschen passen sie
             # nicht mehr, und bei einer jetzt sensiblen Mail dürfen sie nicht
             # überleben. Alles in einem UPDATE.
+            # eingeordnet_am bleibt: es ist der Tag, an dem die Modellaufrufe der Mail
+            # anfielen (Tagesgrenze). Eine Korrektur von Hand darf sie nicht auf heute ziehen.
             conn.execute(
                 "update post_mails set bereich = %s, fach = %s, unterfach = %s, "
                 "sensibel = %s, einordnung_quelle = 'mensch', "
-                "einordnung_version = 2, eingeordnet_am = now(), "
+                "einordnung_version = 2, eingeordnet_am = coalesce(eingeordnet_am, now()), "
                 "status = 'eingeordnet', fehler = null, begruendung = null, "
                 f"vorschau = null, vorschlaege = null{leeren} "
                 "where id = %s", (bereich, fach, unterfach, sensibel, m["id"]))

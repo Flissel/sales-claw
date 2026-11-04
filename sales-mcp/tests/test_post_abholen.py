@@ -640,7 +640,7 @@ def test_pruefer_fehler_bleibt_neu_dann_nach_drei_zum_nachsehen(monkeypatch, cap
     assert post_abholen.einordnen_offene(10) == 1
     r1, r2 = _mails()
     assert (r1["status"], r1["versuche"], r2["status"]) == ("neu", 1, "eingeordnet")
-    assert r1["modellaufrufe"] == 2                           # Kosten der Fehlversuche zaehlen
+    assert r1["fehl_aufrufe"] == 2 and r1["modellaufrufe"] == 0   # Fehlversuch-Kosten: eigene Spalte
     assert post_abholen.einordnen_offene(10) == 0
     assert _mails()[0]["versuche"] == 2
     # Versuch 3: Vorschlag des Sortierers bleibt als Vorschlag, die Mail liegt zum Nachsehen.
@@ -651,7 +651,8 @@ def test_pruefer_fehler_bleibt_neu_dann_nach_drei_zum_nachsehen(monkeypatch, cap
     assert r1["vorschlaege"] == {"sortierer": {
         "bereich": "business", "fach": "Rechnungen", "unterfach": "Eingang",
         "begruendung": "Geheime Begruendung"}}
-    assert (r1["einordnung_version"], r1["modellaufrufe"], r1["sensibel"]) == (2, 6, False)
+    # Kosten der drei Fehlversuche stehen auf fehl_aufrufe, nichts doppelt auf modellaufrufe.
+    assert (r1["einordnung_version"], r1["fehl_aufrufe"], r1["modellaufrufe"], r1["sensibel"]) == (2, 6, 0, False)
     assert "Geheim" not in caplog.text
 
 
@@ -853,11 +854,11 @@ def test_fehlversuche_einer_neuen_mail_zaehlen_zur_tagesgrenze(monkeypatch):
     assert post_abholen.modellaufrufe_heute() == 0
     post_abholen.einordnen_offene(10)
     r = _mails()[0]
-    assert r["status"] == "neu" and r["eingeordnet_am"] is None and r["versuch_am"] is not None
+    assert r["status"] == "neu" and r["eingeordnet_am"] is None and r["fehl_am"] is not None
     assert post_abholen.modellaufrufe_heute() == 2          # Sortierer + Pruefer, obwohl noch neu
     # Ein Fehlversuch von gestern zaehlt heute nicht.
     with server.pool.connection() as conn:
-        conn.execute("update post_mails set versuch_am = now() - interval '1 day'")
+        conn.execute("update post_mails set fehl_am = now() - interval '1 day'")
     assert post_abholen.modellaufrufe_heute() == 0
 
 
@@ -878,9 +879,9 @@ def test_pruefer_voruebergehend_bucht_sortierer_und_pausiert(monkeypatch):
         assert len(aufrufe) == runde                  # Pause: die Runde endet bei der ersten Mail
         r1, r2 = _mails()
         # Kein Versuch gezaehlt (der Pruefer, nicht die Mail ist schuld), aber die Kosten.
-        assert (r1["status"], r1["versuche"], r1["modellaufrufe"]) == ("neu", 0, runde)
-        assert r1["versuch_am"] is not None and r1["eingeordnet_am"] is None
-        assert (r2["status"], r2["modellaufrufe"]) == ("neu", 0)
+        assert (r1["status"], r1["versuche"], r1["fehl_aufrufe"], r1["modellaufrufe"]) == ("neu", 0, runde, 0)
+        assert r1["fehl_am"] is not None and r1["eingeordnet_am"] is None
+        assert (r2["status"], r2["fehl_aufrufe"]) == ("neu", 0)
         assert post_abholen.modellaufrufe_heute() == runde      # die Tagesgrenze waechst
 
 
@@ -912,5 +913,32 @@ def test_pruefer_fehler_dann_gatewayfehler_summiert_die_aufrufe(monkeypatch):
     post_abholen.einordnen_offene(10)       # Pruefer aus: 2 Aufrufe, bleibt neu
     post_abholen.einordnen_offene(10)       # Sortierer endgueltig: +1
     r = _mails()[0]
-    assert r["status"] == "fehler" and r["modellaufrufe"] == 3
+    assert r["status"] == "fehler" and (r["fehl_aufrufe"], r["modellaufrufe"]) == (2, 1)
+    assert post_abholen.modellaufrufe_heute() == 3
+
+
+def test_pruefer_ausfall_ueber_mitternacht_zaehlt_nicht_doppelt(monkeypatch):
+    """Jeder Modellaufruf zaehlt genau einmal, an dem Tag, an dem er anfiel: Die
+    Fehlversuche von gestern duerfen heute weder beim neuen Fehlversuch noch bei der
+    endgueltigen Einordnung erneut mitzaehlen."""
+    _konto()
+    post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({1: _mail("<a@x>")}))
+    with server.pool.connection() as conn:       # gestern: 3 Fehlversuch-Aufrufe
+        conn.execute("update post_mails set fehl_aufrufe = 3, "
+                     "fehl_am = now() - interval '1 day'")
+    assert post_abholen.modellaufrufe_heute() == 0
+    reihe = iter([post_einordnung.PrueferVoruebergehend(1), post_einordnung.Einordnung(
+        "business", "Kunden & Anfragen", False, "modell", "passt", None, aufrufe=2)])
+
+    def einordnen(mail, konto):
+        e = next(reihe)
+        if isinstance(e, Exception):
+            raise e
+        return e
+    monkeypatch.setattr(post_einordnung, "einordnen", einordnen)
+    post_abholen.einordnen_offene(10)            # heute: 1 weiterer Fehlversuch
+    assert post_abholen.modellaufrufe_heute() == 1
+    post_abholen.einordnen_offene(10)            # heute endgueltig, 2 Aufrufe
+    r = _mails()[0]
+    assert (r["status"], r["fehl_aufrufe"], r["modellaufrufe"]) == ("eingeordnet", 1, 2)
     assert post_abholen.modellaufrufe_heute() == 3

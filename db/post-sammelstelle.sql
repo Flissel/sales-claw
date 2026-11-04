@@ -200,9 +200,13 @@ alter table :"schema".post_mails
   add column if not exists vorschau_am timestamptz,
   -- Kosten der Vorschau fuer die Tagesgrenze; bleibt, wenn anwenden die Vorschau leert.
   add column if not exists vorschau_aufrufe smallint not null default 0,
-  -- Zeitpunkt des letzten Fehlversuchs (Pruefer ausgefallen): macht die Modellaufrufe
-  -- einer noch `neuen` Mail fuer die Tagesgrenze sichtbar.
-  add column if not exists versuch_am timestamptz;
+  -- Veraltet: ersetzt durch fehl_am (s. u.); die Spalte bleibt stehen, wird nicht mehr gelesen.
+  add column if not exists versuch_am timestamptz,
+  -- Kosten der Fehlversuche (Pruefer/Sortierer ausgefallen, Mail bleibt `neu`) mit Tagesreset
+  -- ueber fehl_am: jeder Aufruf zaehlt genau einmal, an dem Tag, an dem er anfiel.
+  -- `modellaufrufe` traegt nur noch die Kosten der endgueltigen Einordnung.
+  add column if not exists fehl_aufrufe smallint not null default 0,
+  add column if not exists fehl_am timestamptz;
 
 alter table :"schema".post_regeln
   add column if not exists unterfach text;
