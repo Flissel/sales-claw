@@ -391,12 +391,20 @@ def routen(ui) -> list:
             f'<option value="{a}"{" selected" if werte.get("anbieter") == a else ""}>'
             f'{"GMX" if a == "gmx" else "Gmail"}</option>'
             for a in post_konten.UI_ANBIETER)
+        # business ist vorgewaehlt (bisheriges Verhalten); nach einem Fehler
+        # bleibt die Wahl stehen.
+        gewaehlt = werte.get("standard_bereich") or "business"
+        bereiche = "".join(
+            f'<option value="{b_}"{" selected" if gewaehlt == b_ else ""}>{n}</option>'
+            for b_, n in (("business", "Business"), ("privat", "Privat")))
         # Das Passwortfeld bleibt IMMER leer - auch nach einem Fehler.
         formular = (
             '<form method="post" action="/post/konten" class="karte">'
             '<h2>Postfach hinzufügen</h2>'
             f'<input type="hidden" name="csrf" value="{e(ui.CSRF_TOKEN)}">'
             f'<label>Anbieter <select name="anbieter">{anbieter}</select></label> '
+            f'<label>Standardbereich <select name="standard_bereich">{bereiche}'
+            '</select></label> '
             '<label>Kennung <input type="text" name="kennung" required '
             f'maxlength="31" value="{e(werte.get("kennung", ""))}" '
             'placeholder="z. B. gmx-privat" autocapitalize="none" spellcheck="false"></label> '
@@ -434,14 +442,16 @@ def routen(ui) -> list:
                                    "Nichts gespeichert. Seite neu laden.")
         werte = {"anbieter": str(form.get("anbieter") or ""),
                  "kennung": str(form.get("kennung") or "").strip()[:40],
-                 "adresse": str(form.get("adresse") or "").strip()[:FELD_MAX]}
+                 "adresse": str(form.get("adresse") or "").strip()[:FELD_MAX],
+                 "standard_bereich": str(form.get("standard_bereich") or "business")}
         passwort = str(form.get("passwort") or "")
         import post_konten
         try:
             # Die Probe-Anmeldung blockiert (IMAP) - nicht im Event-Loop.
             ergebnis = await run_in_threadpool(
                 post_konten.konto_anlegen, b.name, werte["kennung"],
-                werte["anbieter"], werte["adresse"], passwort)
+                werte["anbieter"], werte["adresse"], passwort,
+                werte["standard_bereich"])
         except psycopg.Error:
             raise
         except Exception as fehler:  # noqa: BLE001 - nur der Typ, der Text koennte das Passwort tragen

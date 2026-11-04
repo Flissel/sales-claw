@@ -84,6 +84,8 @@ def _sql_einspielen():
     import shutil
     if shutil.which("psql") is None:
         text = SQL_DATEI.read_text(encoding="utf-8")
+        # psql-Metabefehle (\set ...) kennt der Server nicht.
+        text = "\n".join(z for z in text.splitlines() if not z.startswith("\\"))
         text = text.replace(':"schema"', "sales_test").replace(":'schema'", "'sales_test'")
         with server.pool.connection() as conn:
             conn.execute(text)

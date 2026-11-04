@@ -107,8 +107,11 @@ def test_unklar_nur_leitung_und_besitzer():
 def test_sensible_business_mail_nur_besitzer_und_leitung():
     server._q("insert into post_abteilungen (name) values ('Marketing') "
               "on conflict do nothing")
-    server._q("insert into post_abteilung_faecher (abteilung, fach) values "
-              "('Marketing', 'Soziale Netzwerke') on conflict do nothing")
+    # Die Migration legt die Zeile an; nur loeschen, was dieser Test selbst
+    # eingefuegt hat.
+    selbst_eingefuegt = bool(server._q(
+        "insert into post_abteilung_faecher (abteilung, fach) values "
+        "('Marketing', 'Soziale Netzwerke') on conflict do nothing returning fach"))
     server._q("insert into benutzer_abteilungen values ('t7_ben', "
               "'Marketing') on conflict do nothing")
     try:
@@ -125,8 +128,9 @@ def test_sensible_business_mail_nur_besitzer_und_leitung():
         assert privat in _ids(_b("t7_anna"))
         assert privat not in _ids(_b("t7_lea"))
     finally:
-        server._q("delete from post_abteilung_faecher where abteilung = "
-                  "'Marketing' and fach = 'Soziale Netzwerke'")
+        if selbst_eingefuegt:
+            server._q("delete from post_abteilung_faecher where abteilung = "
+                      "'Marketing' and fach = 'Soziale Netzwerke'")
         server._q("delete from benutzer_abteilungen where benutzer = 't7_ben' "
                   "and abteilung = 'Marketing'")
 
