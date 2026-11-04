@@ -100,6 +100,18 @@ def test_post_uid_wird_gelesen():
             "fehler": "nicht verfuegbar"}
 
 
+def test_bot_sieht_das_unterfach():
+    """M5 (v2): Liste und Einzelmail nennen neben dem Fach das Unterfach."""
+    mid = _mail(fach="Tools & Dienste")
+    server._q("update post_mails set unterfach = 'GitHub' where id = %s", (mid,))
+    ohne = _mail(betreff="Ohne Unterfach")
+    liste = {m["uid"]: m for m in _lesen()["mails"]}
+    assert liste[f"post:{mid}"]["unterfach"] == "GitHub"
+    assert liste[f"post:{ohne}"]["unterfach"] is None
+    einzeln = json.loads(server.postfach_mail_lesen(f"post:{mid}"))
+    assert (einzeln["fach"], einzeln["unterfach"]) == ("Tools & Dienste", "GitHub")
+
+
 def _lesen_spion(monkeypatch, mid=None):
     geholt = []
     monkeypatch.setattr(server.postfach, "eingerichtet", lambda uid="": True)

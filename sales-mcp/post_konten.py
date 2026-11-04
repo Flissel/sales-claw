@@ -26,9 +26,12 @@ UI_ANBIETER = ("gmx", "gmail")
 # wuerde das Env-Konto still verdraengen - und alte uids "gmx:12" zeigten
 # dann auf ein fremdes Postfach.
 RESERVIERT = (postfach.HAUPT, "gmx", "gmail")
+# Bereich, in den Mails eines Kontos ohne anderen Hinweis fallen.
+BEREICHE = ("privat", "business")
 PROBE_TIMEOUT_S = 30
 _SPALTEN = ("id, besitzer, kennung, anbieter, adresse, zugang_versiegelt, quelle, "
-            "uidvalidity, letzte_uid, altbestand_fertig, aktiv, angelegt_am")
+            "uidvalidity, letzte_uid, altbestand_fertig, aktiv, angelegt_am, "
+            "standard_bereich")
 
 
 def _probe_imap(konto: postfach.Konto) -> None:
@@ -66,7 +69,8 @@ def env_konten_uebernehmen(besitzer: str) -> int:
 
 
 def konto_anlegen(besitzer: str, kennung: str, anbieter: str, adresse: str,
-                  passwort: str, probe=None) -> dict:
+                  passwort: str, standard_bereich: str = "business",
+                  probe=None) -> dict:
     """Prueft, probiert die Anmeldung, versiegelt das Passwort, speichert.
     Rueckgabe {"konto_id", "kennung"} oder {"fehler"} - nie mit Passwort."""
     kennung = (kennung or "").strip()
@@ -81,6 +85,9 @@ def konto_anlegen(besitzer: str, kennung: str, anbieter: str, adresse: str,
         return {"fehler": "Anbieter nicht zulaessig (erlaubt: gmx, gmail)"}
     if not adresse or not passwort:
         return {"fehler": "Adresse und Passwort sind noetig"}
+    # Vor der Probe: ein ungueltiger Wert soll keine Anmeldung am Postfach ausloesen.
+    if standard_bereich not in BEREICHE:
+        return {"fehler": "Standardbereich ungueltig (erlaubt: privat, business)"}
     with server.pool.connection() as conn:
         if conn.execute("select 1 from post_konten where kennung = %s",
                         (kennung,)).fetchone():
@@ -96,9 +103,11 @@ def konto_anlegen(besitzer: str, kennung: str, anbieter: str, adresse: str,
     with server.pool.connection() as conn:
         zeile = conn.execute(
             "insert into post_konten (besitzer, kennung, anbieter, adresse, "
-            "zugang_versiegelt, quelle) values (%s, %s, %s, %s, %s, 'ui') "
+            "zugang_versiegelt, quelle, standard_bereich) "
+            "values (%s, %s, %s, %s, %s, 'ui', %s) "
             "on conflict (kennung) do nothing returning id",
-            (besitzer, kennung, anbieter, adresse, versiegelt)).fetchone()
+            (besitzer, kennung, anbieter, adresse, versiegelt,
+             standard_bereich)).fetchone()
     if not zeile:                      # zwischen Pruefung und Insert vergeben
         return {"fehler": f"Kennung '{kennung}' ist schon vergeben"}
     return {"konto_id": str(zeile["id"]), "kennung": kennung}

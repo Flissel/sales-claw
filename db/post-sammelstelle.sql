@@ -174,3 +174,73 @@ begin
     execute format('grant %s on %I.%I to %I', rechte, s, t, rolle);
   end loop;
 end $$;
+
+
+-- ---------------------------------------------------------------------------
+-- Post-Einordnung v2 (Spec 2026-11-04-post-einordnung-v2-design.md). Alles
+-- idempotent und auf Schemata mit Stufe-1-Daten anwendbar.
+-- ---------------------------------------------------------------------------
+
+-- Standardbereich je Konto: eine Mail aus dem Konto ist ohne anderen Hinweis
+-- privat oder business. `business` als Vorgabe, weil bisher alles so lief; die
+-- Konten aus der Umgebung behalten ihn (env_konten_uebernehmen setzt nichts).
+alter table :"schema".post_konten
+  add column if not exists standard_bereich text not null default 'business'
+  check (standard_bereich in ('privat','business'));
+
+-- Unterfach, Modell-Vorschlaege, Zaehler fuer Modellaufrufe (Kostenbremse),
+-- Version der Einordnungslogik (fuer spaetere Neu-Einordnung) und die
+-- zwischengespeicherte Vorschau.
+alter table :"schema".post_mails
+  add column if not exists unterfach text,
+  add column if not exists vorschlaege jsonb,
+  add column if not exists modellaufrufe smallint not null default 0,
+  add column if not exists einordnung_version smallint not null default 1,
+  add column if not exists vorschau jsonb,
+  add column if not exists vorschau_am timestamptz,
+  -- Kosten der Vorschau fuer die Tagesgrenze; bleibt, wenn anwenden die Vorschau leert.
+  add column if not exists vorschau_aufrufe smallint not null default 0,
+  -- Zeitpunkt des letzten Fehlversuchs (Pruefer ausgefallen): macht die Modellaufrufe
+  -- einer noch `neuen` Mail fuer die Tagesgrenze sichtbar.
+  add column if not exists versuch_am timestamptz;
+
+alter table :"schema".post_regeln
+  add column if not exists unterfach text;
+
+-- Neue Quellen 'katalog' und 'pruefer'. Der alte Check ist inline angelegt und
+-- hat von Postgres den Standardnamen <tabelle>_<spalte>_check bekommen. Ersetzt
+-- wird nur, wenn er die neuen Werte noch nicht kennt - ein zweiter Lauf fasst
+-- die Tabelle nicht erneut an.
+do $$
+declare
+  s text := current_setting('post.schema');
+begin
+  if not exists (
+      select 1 from pg_constraint c
+      where c.conrelid = format('%I.post_mails', s)::regclass
+        and c.conname = 'post_mails_einordnung_quelle_check'
+        and pg_get_constraintdef(c.oid) like '%pruefer%') then
+    execute format('alter table %I.post_mails drop constraint if exists '
+                   'post_mails_einordnung_quelle_check', s);
+    execute format('alter table %I.post_mails add constraint '
+                   'post_mails_einordnung_quelle_check check '
+                   '(einordnung_quelle in (''regel'',''modell'',''mensch'','
+                   '''katalog'',''pruefer''))', s);
+  end if;
+end $$;
+
+-- 'Unklar' heisst jetzt 'Zum Nachsehen' und gibt es nur noch privat: was nicht
+-- einzuordnen ist, soll nie in einem Business-Fach untergehen (und damit auch
+-- nicht fuer Abteilungen sichtbar werden).
+update :"schema".post_mails set fach = 'Zum Nachsehen', bereich = 'privat'
+  where fach = 'Unklar';
+-- Regeln nach 'Unklar'/'Zum Nachsehen' sind sinnlos (dort entscheidet ein Mensch) und
+-- braechen mit business die Privat-Regel oben. Der Code ueberspringt sie ohnehin
+-- (post_einordnung.nach_nutzerregel); hier verschwinden auch die alten Zeilen.
+delete from :"schema".post_regeln where fach in ('Unklar', 'Zum Nachsehen');
+
+-- Neue Business-Faecher fuer die Abteilung Marketing.
+insert into :"schema".post_abteilung_faecher (abteilung, fach) values
+  ('Marketing', 'Veranstaltungen'),
+  ('Marketing', 'Soziale Netzwerke')
+  on conflict do nothing;

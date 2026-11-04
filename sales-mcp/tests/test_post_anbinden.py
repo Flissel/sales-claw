@@ -5,8 +5,11 @@ ausgibt, nichts startet, ohne Besitzer abbricht und die Saat den Agenten `post`
 ohne Werkzeuge kennt.
 """
 import json
+import os
 import re
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -35,12 +38,12 @@ def test_sitzungen_aufraeumen_loescht_nur_alte_post_sitzungen():
     dem Mailinhalt an. Das Skript loescht die von Agent post nach 10 min - nur
     dort, nie Inhalte ausgeben, nichts starten."""
     code = _code("deploy/post-sitzungen-aufraeumen.sh")
-    assert "/home/node/.openclaw/agents/post/sessions" in code
+    assert "/home/node/.openclaw/agents/$AGENT/sessions" in code
     assert "-mmin +10" in code and "-delete" in code and "-type f" in code
     assert "agents/main" not in code and "agents/auto" not in code
     assert "-name '*.jsonl*'" in code
     # Index-Eintraege ohne Datei raeumt OpenClaw selbst weg (nur Agent post).
-    assert "sessions cleanup --agent post --fix-missing" in code
+    assert 'sessions cleanup --agent "$AGENT" --fix-missing' in code
     for verboten in ("cat ", "head ", "tail ", "grep ", "less ", "docker restart",
                      "compose", "set -x"):
         assert verboten not in code, verboten
@@ -83,10 +86,11 @@ def test_skript_agent_ohne_werkzeuge_eigenes_modell_ohne_rueckfall():
     assert 'deny: ["*"]' in code
     assert "workspace-post" in code
     assert 'model: { primary: "anthropic/claude-haiku-5-5", fallbacks: [] }' in code
+    assert 'model: { primary: "anthropic/claude-sonnet-5-5", fallbacks: [] }' in code
     assert "ohneModell" not in code and "OHNE Modell" not in code
     # Ein alter Eintrag ohne Modell zaehlt nicht als "schon da" - er wird ersetzt.
     assert code.count('config", "set", "agents.list"') == 1
-    assert "neu[i] = soll" in code
+    assert "neu[i] = s;" in code
 
 
 def test_skript_schluessel_sql_leitung_und_konten():
@@ -176,3 +180,144 @@ def test_aufraeum_timer_ruft_das_skript_alle_5_minuten():
     assert "ExecStart=/usr/bin/bash /home/debian/sales-claw/deploy/post-sitzungen-aufraeumen.sh" in dienst
     assert "User=debian" in dienst and "Type=oneshot" in dienst
     assert "OnCalendar=*:0/5" in zeit and "WantedBy=timers.target" in zeit
+
+
+def _saat():
+    return json.loads((WURZEL / "config" / "openclaw.json").read_text(encoding="utf-8"))
+
+
+def test_saat_kennt_pruefer_ohne_werkzeuge_ohne_rueckfall():
+    """Task 6: der Pruefer liest dieselben Mails wie `post` - gleiche Regeln:
+    keine Werkzeuge, eigenes Modell, [] ersetzt die Rueckfall-Vorgabe des Ladens."""
+    c = _saat()
+    agenten = {a["id"]: a for a in c["agents"]["list"]}
+    pruefer = agenten["post-pruefer"]
+    assert pruefer["tools"] == {"deny": ["*"]}
+    assert pruefer["workspace"] == "/home/node/.openclaw/workspace-post-pruefer"
+    assert pruefer["workspace"] != agenten["post"]["workspace"]
+    assert pruefer["workspace"] != agenten["auto"]["workspace"]
+    assert pruefer["model"] == {"primary": "anthropic/claude-sonnet-5-5", "fallbacks": []}
+    ids = [a["id"] for a in c["agents"]["list"]]
+    assert ids[0] == "main" and ids.index("post-pruefer") > ids.index("post")
+    # Eigener Modelleintrag, wie bei claude-haiku-5-5.
+    modelle = [m["id"] for m in c["models"]["providers"]["anthropic"]["models"]]
+    assert "claude-sonnet-5-5" in modelle
+
+
+def test_skript_traegt_beide_agenten_ein():
+    """Ein unbekannter Gateway-Agent bekommt ALLE Werkzeuge: beide Agenten
+    gehen in EINEM config set hinein, die Probe verlangt beide."""
+    code = _code("deploy/post-anbinden.sh")
+    assert '"post-pruefer"' in code
+    assert code.count('deny: ["*"]') == 2
+    assert code.count("fallbacks: []") >= 2
+    assert "workspace-post-pruefer" in code
+    assert code.count('config", "set", "agents.list"') == 1
+    assert "openclaw/post-pruefer" in code and "openclaw/post" in code
+    # Der Abbruch (exit 5) gilt weiter fuer beide - kein Eintrag ohne eigenes Modell.
+    assert "process.exit(5)" in code
+    # Die Probe darf `openclaw/post` nicht mit dem Praefix von `openclaw/post-pruefer` verwechseln.
+    assert 'grep -w "openclaw/post"' not in code
+
+
+def test_aufraeumen_kennt_beide_agenten():
+    code = _code("deploy/post-sitzungen-aufraeumen.sh")
+    assert "for AGENT in post post-pruefer" in code
+    assert "agents/main" not in code and "agents/auto" not in code
+
+
+_DOCKER_ATTRAPPE = """#!/usr/bin/env bash
+# Attrappe: protokolliert jeden Aufruf; das Loeschen bei Agent post scheitert.
+printf '%s\\n' "$*" >> "$PROTOKOLL"
+case "$1" in
+  inspect) echo running ;;
+  exec)
+    if [ "$3" = sh ]; then
+      case "$5" in
+        */agents/post/sessions*) echo "kaputt" >&2; exit 1 ;;
+        *) echo 4 ;;
+      esac
+    fi ;;
+esac
+"""
+
+
+@pytest.mark.skipif(sys.platform == "win32" or shutil.which("bash") is None,
+                    reason="braucht bash mit POSIX-Pfaden")
+def test_aufraeumen_fehler_beim_ersten_agenten_ueberspringt_den_zweiten_nicht(tmp_path):
+    """M2: unter `set -e` brach ein scheiterndes `docker exec` beim ersten Agenten die
+    Schleife ab - die Sitzungskopien (mit Mailinhalt) des Pruefers blieben liegen."""
+    attrappe = tmp_path / "docker"
+    attrappe.write_text(_DOCKER_ATTRAPPE, encoding="utf-8")
+    attrappe.chmod(0o755)
+    protokoll = tmp_path / "protokoll"
+    r = subprocess.run(
+        ["bash", str(WURZEL / "deploy" / "post-sitzungen-aufraeumen.sh")],
+        capture_output=True, text=True, timeout=30,
+        env={**os.environ, "PATH": f"{tmp_path}:{os.environ.get('PATH', '')}",
+             "PROTOKOLL": str(protokoll)})
+    aufrufe = protokoll.read_text(encoding="utf-8")
+    assert "agents/post-pruefer/sessions" in aufrufe                 # zweiter Agent geloescht
+    assert "cleanup --agent post " in aufrufe and "cleanup --agent post-pruefer " in aufrufe
+    assert "post-Sitzungen: Loeschen fehlgeschlagen" in r.stdout
+    assert "post-pruefer-Sitzungen: 4 Datei(en)" in r.stdout
+    assert r.returncode == 1                                          # Fehler bleibt sichtbar
+    assert "kaputt" not in r.stdout + r.stderr                        # nichts aus dem Container
+
+
+def test_anbinden_funktionsprobe_an_den_pruefer():
+    """M4: /v1/models zeigt nur den Eintrag. Erst ein echter Aufruf zeigt, ob das
+    Gateway das Pruefer-Modell annimmt - mit Dummy-Text, Ausgabe nur ok/Fehlertyp."""
+    code = _code("deploy/post-anbinden.sh")
+    modelle = code.index('/v1/models"')
+    probe = code.index("/v1/chat/completions")
+    assert modelle < probe
+    teil = code[code.index('PROBE="$(docker exec'):]
+    assert teil.index("/v1/chat/completions") < 1000
+    assert 'model: "openclaw/post-pruefer"' in teil
+    assert '"x-openclaw-session-key": "agent:post-pruefer:' in teil
+    assert '"x-openclaw-agent-id": "post-pruefer"' in teil
+    assert "tool_choice" in teil and "keine Mail" in teil
+    # Ausgabe: nur ok oder Fehlertyp - nie die Antwort, nie der Token.
+    assert "console.log(s)" in teil and "JSON.stringify(d" not in teil
+    assert "r.text()" not in teil and "e.message" not in teil[:teil.index("exit 6")]
+    assert "gateway?.auth?.token" in teil and "TOKEN" not in code
+    assert 'if [ "$PROBE" != "ok" ]' in teil and "exit 6" in teil
+    # Die Probe steht vor dem Hinweis "Fertig" (ein rotes Ergebnis darf nicht gruen enden).
+    assert probe < code.index('echo "Fertig.')
+
+
+def test_runbook_v2_reihenfolge_migration_vor_update():
+    """C1: neuer Code liest Spalten, die erst die Migration anlegt. Also: sales-post
+    stoppen, Migration + Pruefer (post-anbinden.sh), dann update.sh, dann die
+    idempotente Migration noch einmal (benennt zwischenzeitlich geschriebene Zeilen um)."""
+    rb = (WURZEL / "docs" / "03_RUNBOOK.md").read_text(encoding="utf-8")
+    start = rb.index("Rollout v2")
+    abschnitt = rb[start:rb.index("\nR13:", start)]
+    stopp = abschnitt.index("compose stop sales-post")
+    anbinden = abschnitt.index("deploy/post-anbinden.sh")
+    update = abschnitt.index("deploy/update.sh")
+    nochmal = abschnitt.index("db/post-sammelstelle.sql", update)
+    start_post = abschnitt.index("up -d sales-post", nochmal)
+    vorschau = abschnitt.index("post-neu-einordnen.sh [laden] vorschau")
+    assert abschnitt.index("POST_KONTEXT") < stopp < anbinden < update < nochmal < start_post < vorschau
+    assert "bash deploy/post-neu-einordnen.sh [laden] anwenden" in abschnitt
+    assert "Task 7" not in abschnitt and "Aufruf laut Skript-Hilfe" not in abschnitt
+
+
+def test_pruefer_id_im_code_gleich_saat():
+    """Tippfehler in der ID legte im Gateway einen Agenten mit allen Werkzeugen an."""
+    import sys
+    sys.path.insert(0, str(WURZEL / "sales-mcp"))
+    import post_einordnung
+    ids = {a["id"] for a in _saat()["agents"]["list"]}
+    assert post_einordnung.PRUEFER in ids and post_einordnung.AGENT in ids
+    code = _code("deploy/post-anbinden.sh")
+    assert f'"{post_einordnung.PRUEFER}"' in code
+
+
+def test_runbook_beschreibt_v2_ausrollen():
+    rb = (WURZEL / "docs" / "03_RUNBOOK.md").read_text(encoding="utf-8")
+    abschnitt = rb[rb.index("## Post-Sammelstelle"):]
+    for stichwort in ("post-pruefer", "POST_KONTEXT", "post-neu-einordnen.sh", "vorschau"):
+        assert stichwort in abschnitt

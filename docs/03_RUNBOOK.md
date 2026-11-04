@@ -3281,9 +3281,12 @@ Ausrollen - Reihenfolge, jeder Schritt nur mit Betreiber-OK:
 3. `bash deploy/update.sh` (neuer Code, UI mit Reiter Mails).
 4. `bash deploy/post-anbinden.sh [laden]` - erzeugt bei Bedarf das Schluesselpaar, spielt
    `db/post-sammelstelle.sql` noch einmal ein (idempotent), setzt `benutzer.leitung` fuer den Besitzer,
-   uebernimmt die Env-Postfaecher, traegt den Agenten `post` (keine Werkzeuge, eigenes Modell
-   `anthropic/claude-haiku-5-5` mit `fallbacks: []`) ins Gateway ein und prueft `/v1/models`. Lehnt das
-   Gateway den Modell-Eintrag ab, bricht das Skript mit "ABBRUCH" ab (Code 5) - es gibt bewusst keinen
+   uebernimmt die Env-Postfaecher, traegt die Agenten `post` (keine Werkzeuge, eigenes Modell
+   `anthropic/claude-haiku-5-5` mit `fallbacks: []`) und `post-pruefer` (Pruefer der Einordnung, v2: keine
+   Werkzeuge, eigenes Modell `anthropic/claude-sonnet-5-5` mit `fallbacks: []`) in EINEM Schritt ins Gateway
+   ein und prueft `/v1/models` auf beide (`openclaw/post` und `openclaw/post-pruefer`). Lehnt das
+   Gateway einen Modell-Eintrag ab, bricht das Skript mit "ABBRUCH" ab (Code 5) und traegt KEINEN der
+   beiden Agenten ein (ein dem Gateway unbekannter Agent bekaeme alle Werkzeuge); es gibt bewusst keinen
    Rueckfall auf das Standardmodell, denn dessen `fallbacks: [openrouter/free]` wuerde Mailinhalte an
    ein kostenloses Fremdmodell schicken. Dann nicht weiter ausrollen.
 5. Hat `post-anbinden.sh` ein NEUES Schluesselpaar erzeugt (es sagt es), bekommt `sales-ui` den
@@ -3291,7 +3294,8 @@ Ausrollen - Reihenfolge, jeder Schritt nur mit Betreiber-OK:
    `docker compose up -d --no-deps --force-recreate sales-ui` (andere Laeden mit
    `--env-file deploy/laeden/<laden>.env`). Ohne das meldet "Postfach hinzufuegen" einen Fehler.
 6. Sitzungskopien aufraeumen einrichten (R17): das Gateway legt je eingeordneter Mail eine
-   Sitzungsdatei mit dem Mailinhalt an (`agents/post/sessions/*.jsonl`).
+   Sitzungsdatei mit dem Mailinhalt an (`agents/post/sessions/*.jsonl`, ebenso
+   `agents/post-pruefer/sessions/` fuer den Pruefer).
    `deploy/post-sitzungen-aufraeumen.sh [laden]` loescht sie nach 10 min (gibt nur Zahlen aus).
    Einmal von Hand laufen lassen, dann per `crontab -e` des Betriebsnutzers auf der VM eintragen
    (wird NICHT automatisch installiert):
@@ -3303,6 +3307,48 @@ Ausrollen - Reihenfolge, jeder Schritt nur mit Betreiber-OK:
    `update.sh` erzeugt den Dienst neu und prueft ~30 s spaeter. Der Dienst schreibt im Leerlauf keinen
    Herzschlag - ein Haenger ohne Absturz faellt hier nicht auf; Gegenprobe:
    `docker logs --since 10m sales-post`.
+
+### Post-Einordnung v2: Pruefer, `POST_KONTEXT`, Neu-Sortierung
+
+Ab v2 ordnet `post` jede Mail ein und der zweite Agent `post-pruefer` (anderes, staerkeres Modell,
+keine Werkzeuge, kein Rueckfall) liest sie noch einmal und prueft das Urteil. Beide Agenten kommen mit
+`post-anbinden.sh` ins Gateway (siehe Schritt 4 oben); ohne den Pruefer-Agenten kann die Pruefung nicht
+laufen. Ob das Live-Gateway `anthropic/claude-sonnet-5-5` annimmt, zeigt erst dieser Lauf - bei einer
+Ablehnung bricht das Skript ab (Code 5) und es bleibt beim Stand vor dem Lauf.
+
+`POST_KONTEXT` (pro Laden in der `.env`, darf leer sein): Betreiber-Kontext fuer die Einordnung - kurzer
+Text, wer der Laden ist und was in welches Fach gehoert (z. B. Branche, typische Absender). Er geht als
+Teil der Regeln an den Klassifizierer. Leer heisst: nur die allgemeinen Regeln. Der Text wird mit dem
+Betreiber abgestimmt; Mailinhalte, Namen Dritter und Zugangsdaten gehoeren nicht hinein.
+
+Rollout v2 (je Schritt Betreiber-OK). Wie beim ersten Ausrollen gilt: **die Migration vor
+`update.sh`** - der neue Code liest `unterfach`, `standard_bereich`, `versuch_am`, `vorschau_aufrufe`
+usw. ab dem ersten Start; liefe er vorher, gaebe `/post` einen Fehler 500, `postfach_lesen` des Bots
+schluege fehl und jede `sales-post`-Runde scheiterte. `[laden]` faellt fuer den Basis-Laden weg, sonst
+der Praefix (z. B. `ivan`) bzw. `--env-file deploy/laeden/<laden>.env` bei `docker compose`.
+
+1. `POST_KONTEXT` in die `.env` des Ladens (Text mit dem Betreiber abstimmen; leer ist erlaubt).
+2. `docker compose stop sales-post` - der alte Dienst soll zwischen Migration und neuem Code keine
+   Mails mehr einordnen.
+3. `bash deploy/post-anbinden.sh [laden]` - spielt die Migration ein (`db/post-sammelstelle.sql`,
+   idempotent), traegt `post-pruefer` ein und prueft ihn mit einem echten Funktionsaufruf
+   (Dummy-Text, keine Mail). Endet es mit "ABBRUCH" (Code 5) oder "ROT" (Code 3/6): nicht weiter.
+4. `bash deploy/update.sh` (neuer Code). `sales-post` bleibt dabei aus (`update.sh` baut ihn nur neu,
+   wenn er vorher lief).
+5. Die Migration noch einmal (idempotent): sie benennt `Unklar`-Zeilen um, die der alte Code
+   (Oberflaeche, Bot) zwischen Schritt 3 und 4 noch geschrieben hat, und loescht Regeln dorthin:
+   `docker exec -i debian-supabase-db-1 psql -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v schema=sales < db/post-sammelstelle.sql`
+   (anderer Laden: `-v schema=sales_<praefix>`) - oder einfach `bash deploy/post-anbinden.sh [laden]` erneut.
+6. `docker compose up -d sales-post` (bzw. mit `--env-file deploy/laeden/<laden>.env`); danach
+   `bash deploy/smoke.sh`.
+7. `bash deploy/post-neu-einordnen.sh [laden] vorschau` - ueber Tage, bis die Tagesgrenze alles geschafft
+   hat (braucht den laufenden `sales-post`; die Vorschau aendert nichts am Bestand, ihre Aufrufe zaehlen
+   zur selben Tagesgrenze wie `sales-post`).
+8. `bash deploy/post-neu-einordnen.sh [laden] bericht` - Bericht + Katalog-Tabelle an den Betreiber;
+   Katalog-Aenderungen einarbeiten (ggf. `bash deploy/post-neu-einordnen.sh [laden] vorschau --alle`).
+9. `bash deploy/post-neu-einordnen.sh [laden] anwenden` (ohne Modell; Mails mit menschlicher Korrektur
+   und Mails, die schon beim Abholen kaputt waren, bleiben unberuehrt).
+10. Stichprobe von 20 Mails mit dem Betreiber.
 
 R13: Regeln aus "fuer diesen Absender immer so" gelten nur fuer Mails ihres Besitzers
 (`post_regeln.besitzer`; NULL = global). Die Tabelle ist neu, alte besitzerlose Regeln gibt es nicht.
@@ -3316,4 +3362,4 @@ am Kontakt wird die Antwort, wenn der Bot die Mail mit `postfach_mail_lesen` oef
 Live-Lesen, nur Env-Konten, erst nach Pruefung der Message-ID).
 
 Stoppen / Rueckweg: `docker compose stop sales-post`. In den Postfaechern wurde nichts veraendert; die
-Tabellen koennen liegen bleiben. Der Agent `post` im Gateway ist harmlos (keine Werkzeuge).
+Tabellen koennen liegen bleiben. Die Agenten `post` und `post-pruefer` im Gateway sind harmlos (keine Werkzeuge).

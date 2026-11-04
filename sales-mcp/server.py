@@ -3849,6 +3849,7 @@ def _sammelstelle_lesen(anzahl: int, wahl: str, suche: str) -> str:
         "auszug": z["auszug"],
         "postfach": konten.get(str(z["konto_id"]), ""),
         "fach": z["fach"],
+        "unterfach": z.get("unterfach"),        # v2: z. B. Tools & Dienste / GitHub
         # I1: wie frueher postfach.liste - eine Kalenderantwort wird erst
         # ausgewertet und am Kontakt festgehalten, wenn postfach_mail_lesen
         # die Mail oeffnet; das Feld zeigt, welche das sind.
@@ -4230,6 +4231,7 @@ def postfach_mail_lesen(uid: str) -> str:
             "datum": mail["datum"], "text": mail["text"],
             "auszug": mail["auszug"], "anhaenge": mail["anhaenge"],
             "postfach": kennung, "fach": mail["fach"],
+            "unterfach": mail.get("unterfach"),
             "kalenderteil": bool(mail.get("kalenderteil"))}
         if mail.get("kalenderteil"):
             # I1: Kalenderantworten (REPLY/COUNTER) gingen sonst verloren,

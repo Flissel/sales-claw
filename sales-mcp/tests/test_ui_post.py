@@ -423,16 +423,18 @@ def test_regel_gilt_nicht_fuer_fremde_konten(monkeypatch):
     assert pe.nach_regel(kopf("")) is None
 
     # Ende zu Ende ueber den Abholdienst: zwei neue Mails von X.
-    monkeypatch.setattr(pe, "nach_modell", lambda mail: pe.Einordnung(
-        "business", ps.UNKLAR, False, "modell", "attrappe"))
+    # Nutzerregel zuerst (ohne Modell, `nach_regel`), sonst die Modell-Attrappe.
+    monkeypatch.setattr(pe, "einordnen", lambda mail, konto: pe.nach_regel(mail, konto)
+                        or pe.Einordnung("business", ps.UNKLAR, False, "modell", "attrappe"))
     annas = _mail("t8_anna", None, None, status="neu", von="X <x@absender.de>")
     bens = _mail("t8_ben", None, None, status="neu", von="X <x@absender.de>")
     assert post_abholen.einordnen_offene(10) == 2
     a, b = _zeile(annas), _zeile(bens)
     assert (a["bereich"], a["fach"], a["einordnung_quelle"]) == (
         "privat", "Abos & Newsletter", "regel")
+    # Die Attrappe sagt business - Zum Nachsehen liegt trotzdem privat (I2c, zentral).
     assert (b["bereich"], b["fach"], b["einordnung_quelle"]) == (
-        "business", ps.UNKLAR, "modell")
+        "privat", ps.UNKLAR, "modell")
 
 
 def test_leitung_korrektur_legt_regel_fuer_den_besitzer_an():
@@ -555,3 +557,13 @@ def test_posteingang_bleibt_chatseite_mit_verweis():
     assert menue.index('href="/posteingang"') < menue.index('href="/post"')
     links = re.findall(r'href="(/[^"]*)"', menue)
     assert links[links.index("/posteingang") + 1] == "/post"
+
+
+def test_konten_formular_hat_standardbereich_mit_business_vorgewaehlt():
+    seite = _get("t8_anna", "/post/konten")
+    sel = re.search(r'<select[^>]*name="standard_bereich"[^>]*>(.*?)</select>',
+                    seite.text, re.S)
+    assert sel, "Feld standard_bereich fehlt"
+    assert re.search(r'<option value="business"[^>]* selected', sel.group(1))
+    assert '<option value="privat"' in sel.group(1)
+    assert "selected" not in re.search(r'<option value="privat"[^>]*>', sel.group(1)).group(0)

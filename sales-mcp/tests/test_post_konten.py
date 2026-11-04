@@ -200,3 +200,26 @@ def test_verbinden_env_nutzt_postfach_oeffnen(monkeypatch):
     monkeypatch.setattr(postfach, "oeffnen", lambda kennung: aufrufe.append(kennung) or "V")
     assert post_konten.verbinden({"quelle": "env", "kennung": "gmx"}) == "V"
     assert aufrufe == ["gmx"]
+
+
+def test_konto_anlegen_standardbereich():
+    r = post_konten.konto_anlegen("b1", "gmx-privat", "gmx", "a@gmx.de", GEHEIM,
+                                  standard_bereich="privat", probe=_ok)
+    assert "konto_id" in r
+    assert _zeilen()[0]["standard_bereich"] == "privat"
+    # Vorgabe ohne Angabe: business.
+    post_konten.konto_anlegen("b1", "gmx-firma", "gmx", "f@gmx.de", GEHEIM, probe=_ok)
+    assert {z["kennung"]: z["standard_bereich"] for z in _zeilen()} == {
+        "gmx-privat": "privat", "gmx-firma": "business"}
+    assert {k["standard_bereich"] for k in post_konten.aktive_konten()} == {
+        "privat", "business"}
+
+
+def test_konto_anlegen_ungueltiger_standardbereich_ohne_probe():
+    aufrufe = []
+    r = post_konten.konto_anlegen("b1", "gmx-x", "gmx", "a@gmx.de", GEHEIM,
+                                  standard_bereich="firma",
+                                  probe=lambda k: aufrufe.append(k))
+    assert "fehler" in r and GEHEIM not in r["fehler"]
+    assert aufrufe == []                       # keine Anmeldung am Postfach
+    assert _zeilen() == []

@@ -9,31 +9,77 @@ import pytest
 
 import post_struktur
 
-SPEC_PRIVAT = {
-    "Familie & Freunde", "Rechnungen", "Käufe & Bestellungen",
-    "Abos & Newsletter", "Soziale Netzwerke", "Konten & Sicherheit",
-    "Behörden & Versicherung", "Werbung", "Unklar",
-}
-SPEC_BUSINESS = {
-    "Kunden & Anfragen", "Partner & Netzwerk", "Rechnungen",
-    "Tools & Dienste", "Bewerbungen & Jobs", "Newsletter & Branche",
-    "Werbung", "Unklar",
-}
+SPEC_PRIVAT = (
+    "Familie & Freunde", "Käufe & Bestellungen", "Rechnungen",
+    "Behörden & Versicherung", "Gesundheit", "Abos & Newsletter",
+    "Soziale Netzwerke", "Konten & Sicherheit", "Werbung", "Zum Nachsehen",
+)
+SPEC_BUSINESS = (
+    "Kunden & Anfragen", "Partner & Netzwerk", "Veranstaltungen", "Rechnungen",
+    "Tools & Dienste", "Soziale Netzwerke", "Konten & Sicherheit",
+    "Bewerbungen & Jobs", "Newsletter & Branche", "Werbung", "Zum Nachsehen",
+)
+ps = post_struktur
 
 
 def test_faecher_sind_genau_die_spec_liste():
     assert post_struktur.BEREICHE == ("privat", "business")
-    assert set(post_struktur.FAECHER) == {"privat", "business"}
-    assert set(post_struktur.FAECHER["privat"]) == SPEC_PRIVAT
-    assert set(post_struktur.FAECHER["business"]) == SPEC_BUSINESS
-    assert len(post_struktur.FAECHER["privat"]) == len(SPEC_PRIVAT)
-    assert len(post_struktur.FAECHER["business"]) == len(SPEC_BUSINESS)
+    assert post_struktur.FAECHER["privat"] == SPEC_PRIVAT
+    assert post_struktur.FAECHER["business"] == SPEC_BUSINESS
 
 
 def test_unklar_in_beiden_bereichen():
-    assert post_struktur.UNKLAR == "Unklar"
+    assert post_struktur.UNKLAR == "Zum Nachsehen"
     for bereich in post_struktur.BEREICHE:
         assert post_struktur.fach_gueltig(bereich, post_struktur.UNKLAR)
+        assert not post_struktur.fach_gueltig(bereich, "Unklar")
+
+
+def test_soziale_netzwerke_in_beiden_bereichen_mit_unterfaechern():
+    for br in ("privat", "business"):
+        assert "Soziale Netzwerke" in ps.FAECHER[br]
+        assert "Konten & Sicherheit" in ps.FAECHER[br]
+        assert ps.FAECHER[br][-1] == "Zum Nachsehen"
+    assert ps.UNKLAR == "Zum Nachsehen"
+    assert "Veranstaltungen" in ps.FAECHER["business"] and "Gesundheit" in ps.FAECHER["privat"]
+    assert "Unklar" not in ps.FAECHER["privat"] + ps.FAECHER["business"]
+
+
+def test_unterfach_zwingen():
+    assert ps.unterfach_zwingen("Soziale Netzwerke", "Instagram") == "Instagram"
+    assert ps.unterfach_zwingen("Soziale Netzwerke", "Myspace") == "Sonstige"
+    assert ps.unterfach_zwingen("Soziale Netzwerke", None) == "Sonstige"
+    assert ps.unterfach_zwingen("Werbung", "Instagram") is None
+    assert ps.unterfach_gueltig("Werbung", None) and not ps.unterfach_gueltig("Werbung", "X")
+    assert ps.unterfach_gueltig("Werbung", "")
+    assert ps.unterfach_gueltig("Tools & Dienste", "GitHub")
+    assert not ps.unterfach_gueltig("Tools & Dienste", "Instagram")
+    assert not ps.unterfach_gueltig("Soziale Netzwerke", None)
+    # Konten & Sicherheit kennt Netzwerke und Anbieter, „Sonstige“ genau einmal.
+    ks = ps.UNTERFAECHER["Konten & Sicherheit"]
+    assert "Instagram" in ks and "GitHub" in ks and ks.count("Sonstige") == 1
+
+
+def test_bereich_fuer():
+    assert ps.bereich_fuer("Tools & Dienste", "privat") == "business"
+    assert ps.bereich_fuer("Soziale Netzwerke", "privat") == "privat"
+    assert ps.bereich_fuer("Gesundheit", "business") == "privat"
+    assert ps.bereich_fuer("Rechnungen", "business") == "business"
+    assert ps.bereich_fuer("Veranstaltungen", "privat") == "business"
+    assert ps.bereich_fuer("Konten & Sicherheit", "privat") == "privat"
+    assert ps.bereich_fuer("Gibtsnicht", "privat") == "privat"
+
+
+def test_jedes_fach_hat_eine_beschreibung():
+    for br, faecher in ps.FAECHER.items():
+        for f in faecher:
+            assert ps.BESCHREIBUNG[(br, f)].strip()
+    assert set(ps.BESCHREIBUNG) == {(br, f) for br, fs in ps.FAECHER.items() for f in fs}
+
+
+def test_nur_business_faecher_gibt_es_nur_unter_business():
+    for f in ps.NUR_BUSINESS:
+        assert f in ps.FAECHER["business"] and f not in ps.FAECHER["privat"]
 
 
 def test_fach_gueltig_lehnt_fach_aus_anderem_bereich_ab():

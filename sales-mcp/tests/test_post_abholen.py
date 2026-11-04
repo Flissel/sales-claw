@@ -3,7 +3,7 @@
 DB-Tests nur gegen sales_test. IMAP ist eine Attrappe, die jeden schreibenden
 Befehl (store/copy/move/expunge/append) als Testfehler meldet und `select`
 nur mit readonly=True annimmt - Stufe 1 veraendert das echte Postfach nie.
-Das Modell wird nie gerufen: `nach_modell` ist per autouse-Fixture gesperrt.
+Das Modell wird nie gerufen: der Gateway-Aufruf von `einordnen` ist per autouse-Fixture gesperrt.
 """
 import os
 import re
@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import gateway  # noqa: E402
 import post_abholen  # noqa: E402
 import post_einordnung  # noqa: E402
+import post_struktur  # noqa: E402
 import server  # noqa: E402
 
 WURZEL = Path(__file__).resolve().parents[2]
@@ -55,9 +56,12 @@ def saubere_tabellen():
 def kein_modell(monkeypatch):
     """Ein echter Modellaufruf waere ein Testfehler. pytest.fail ist keine
     Exception-Unterklasse und rutscht deshalb durch den breiten Fang."""
-    def verboten(mail, *a, **k):
+    def verboten(*a, **k):
         pytest.fail("Modell darf im Test nicht gerufen werden")
-    monkeypatch.setattr(post_einordnung, "nach_modell", verboten)
+    # `einordnen(..., aufruf=gateway.funktion_aufrufen)` bindet den Standardwert beim
+    # Definieren: Das Modulattribut zu patchen reichte nicht, der Default wird ersetzt.
+    monkeypatch.setattr(post_einordnung.einordnen, "__defaults__", (verboten,))
+    monkeypatch.setattr(gateway, "funktion_aufrufen", verboten)
     monkeypatch.setattr(post_abholen, "_STOPP", post_abholen.threading.Event())
 
 
@@ -352,11 +356,11 @@ def test_sensibel_speichert_keinen_text(monkeypatch):
     assert r1["an"] is None and r1["anhaenge"] == []
     gesehen = []
 
-    def einordnen(mail):
+    def einordnen(mail, konto):
         gesehen.append(mail)
         if mail["betreff"] == "Kontoauszug":
             return _einordnung(sensibel=True)
-        return post_einordnung.nach_regel(mail)
+        return post_einordnung.nach_regel(mail, konto)
     monkeypatch.setattr(post_einordnung, "einordnen", einordnen)
     assert post_abholen.einordnen_offene(10) == 2
     for r in _mails():
@@ -374,7 +378,7 @@ def test_einordnung_wird_gespeichert(monkeypatch):
     post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({1: _mail("<a@x>")}))
     gesehen = []
     monkeypatch.setattr(post_einordnung, "einordnen",
-                        lambda mail: gesehen.append(mail) or _einordnung())
+                        lambda mail, konto: gesehen.append(mail) or _einordnung())
     assert post_abholen.einordnen_offene(5) == 1
     r = _mails()[0]
     assert (r["bereich"], r["fach"], r["sensibel"], r["einordnung_quelle"], r["status"]) == \
@@ -392,7 +396,7 @@ def test_transient_laesst_mail_neu(monkeypatch, caplog):
     for _ in range(post_abholen.VERSUCHE_MAX + 1):
         aufrufe = []
 
-        def einordnen(mail):
+        def einordnen(mail, konto):
             aufrufe.append(mail["id"])
             raise gateway.GatewayTransient("Gateway nicht erreichbar")
         monkeypatch.setattr(post_einordnung, "einordnen", einordnen)
@@ -401,11 +405,11 @@ def test_transient_laesst_mail_neu(monkeypatch, caplog):
         # Transient zaehlt keinen Versuch: das Gateway, nicht die Mail ist schuld.
         assert {(r["status"], r["versuche"]) for r in _mails()} == {("neu", 0)}
 
-    # Endgueltiger Fehler: diese Mail -> fehler/Unklar, die naechste laeuft weiter.
+    # Endgueltiger Fehler: diese Mail -> fehler/Zum Nachsehen, die naechste laeuft weiter.
     reihe = iter([gateway.GatewayFehler("Gateway HTTP 400: Geheimer Betreff Eins"),
                   _einordnung()])
 
-    def gemischt(mail):
+    def gemischt(mail, konto):
         x = next(reihe)
         if isinstance(x, Exception):
             raise x
@@ -413,7 +417,7 @@ def test_transient_laesst_mail_neu(monkeypatch, caplog):
     monkeypatch.setattr(post_einordnung, "einordnen", gemischt)
     assert post_abholen.einordnen_offene(10) == 2
     r1, r2 = _mails()
-    assert (r1["status"], r1["fach"]) == ("fehler", "Unklar")
+    assert (r1["status"], r1["fach"]) == ("fehler", post_struktur.UNKLAR)
     assert "Geheim" not in (r1["fehler"] or "") and r1["fehler"]
     assert r2["status"] == "eingeordnet"
     assert "Geheim" not in caplog.text and "anna@example.org" not in caplog.text
@@ -426,7 +430,7 @@ def test_kaputte_mail_blockiert_die_einordnung_nicht(monkeypatch, caplog):
         2: _mail("<b@x>", betreff="Geheimer Betreff Zwei")}))
     aufrufe = []
 
-    def einordnen(mail):
+    def einordnen(mail, konto):
         aufrufe.append(mail["betreff"])
         if mail["betreff"].endswith("Eins"):
             raise ValueError("Geheimer Betreff Eins kaputt")
@@ -437,11 +441,11 @@ def test_kaputte_mail_blockiert_die_einordnung_nicht(monkeypatch, caplog):
         assert post_abholen.einordnen_offene(10) == 0
         r1, r2 = _mails()
         assert (r1["status"], r1["versuche"], r2["status"]) == ("neu", versuch, "neu")
-    # Versuch 3: aufgegeben -> fehler/privat/Unklar, und die naechste Mail laeuft.
+    # Versuch 3: aufgegeben -> fehler/privat/Zum Nachsehen, und die naechste Mail laeuft.
     assert post_abholen.einordnen_offene(10) == 2
     r1, r2 = _mails()
     assert (r1["status"], r1["bereich"], r1["fach"], r1["versuche"]) == \
-        ("fehler", "privat", "Unklar", 3)
+        ("fehler", "privat", post_struktur.UNKLAR, 3)
     assert r1["fehler"] and "Geheim" not in r1["fehler"]
     assert r2["status"] == "eingeordnet"
     assert len(aufrufe) == 4
@@ -475,7 +479,7 @@ def test_gatewayfehler_zaehlt_zur_tagesgrenze(monkeypatch):
     _konto()
     post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({1: _mail("<a@x>")}))
 
-    def einordnen(mail):
+    def einordnen(mail, konto):
         raise gateway.GatewayFehler("Gateway HTTP 400")
     monkeypatch.setattr(post_einordnung, "einordnen", einordnen)
     assert post_abholen.einordnen_offene(5) == 1
@@ -499,7 +503,7 @@ def _runde_vorbereiten(monkeypatch, n_mails=2):
     monkeypatch.setattr(post_abholen.post_konten, "verbinden", lambda zeile: kasten)
     aufrufe = []
     monkeypatch.setattr(post_einordnung, "einordnen",
-                        lambda mail: aufrufe.append(mail["id"]) or _einordnung())
+                        lambda mail, konto: aufrufe.append(mail["id"]) or _einordnung())
     return aufrufe
 
 
@@ -520,27 +524,35 @@ def test_pause_bei_kundenantwort(monkeypatch):
     assert len(aufrufe) == 2
 
 
-def test_tagesgrenze(monkeypatch):
-    aufrufe = _runde_vorbereiten(monkeypatch, n_mails=4)
-    monkeypatch.setattr(post_abholen, "TAGESGRENZE", 3)
-    konto_id = _zeile("gmx-test")["id"]
+def _alt_mail(konto_id, uid, quelle="modell", aufrufe=0, vorschau=None, heute=True):
+    """Bereits eingeordnete Zeile fuer die Tageszaehlung; `heute=False` = gestern."""
+    tag = "now()" if heute else "now() - interval '1 day'"
+    vorschau_json = None if vorschau is None else server._json(vorschau)
     with server.pool.connection() as conn:
-        for uid in (101, 102):
-            conn.execute(
-                "insert into post_mails (konto_id, imap_uid, message_id, besitzer, status, "
-                "einordnung_quelle, eingeordnet_am, bereich, fach) values (%s, %s, %s, "
-                "'felix', 'eingeordnet', 'modell', now(), 'business', 'Werbung')",
-                (konto_id, uid, f"alt{uid}@x"))
-        # Regel-Treffer zaehlen nicht gegen die Grenze, Modellaufrufe von gestern auch nicht.
         conn.execute(
             "insert into post_mails (konto_id, imap_uid, message_id, besitzer, status, "
-            "einordnung_quelle, eingeordnet_am) values (%s, 103, 'r@x', 'felix', "
-            "'eingeordnet', 'regel', now()), (%s, 104, 'g@x', 'felix', 'eingeordnet', "
-            "'modell', now() - interval '1 day')", (konto_id, konto_id))
-    assert post_abholen.modellaufrufe_heute() == 2
+            "einordnung_quelle, eingeordnet_am, modellaufrufe, vorschau, vorschau_am, vorschau_aufrufe) "
+            f"values (%s, %s, %s, 'felix', 'eingeordnet', %s, {tag}, %s, %s::jsonb, "
+            f"case when %s::jsonb is null then null else {tag} end, %s)",
+            (konto_id, uid, f"alt{uid}@x", quelle, aufrufe, vorschau_json, vorschau_json,
+             int((vorschau or {}).get("aufrufe", 0))))
+
+
+def test_tagesgrenze(monkeypatch):
+    aufrufe = _runde_vorbereiten(monkeypatch, n_mails=4)
+    monkeypatch.setattr(post_abholen, "TAGESGRENZE", 5)
+    konto_id = _zeile("gmx-test")["id"]
+    _alt_mail(konto_id, 101, aufrufe=2)
+    _alt_mail(konto_id, 102, aufrufe=1)
+    _alt_mail(konto_id, 103, quelle="regel", aufrufe=0)      # feste Regel: kein Aufruf
+    _alt_mail(konto_id, 104, aufrufe=2, heute=False)         # gestern zaehlt nicht
+    assert post_abholen.modellaufrufe_heute() == 3
+    # rest = 2 -> hoechstens eine Mail (jede kann 2 Aufrufe kosten).
     bilanz = post_abholen.eine_runde()
     assert len(aufrufe) == 1 and bilanz["eingeordnet"] == 1
-    assert post_abholen.eine_runde()["eingeordnet"] == 0
+    # Die Attrappe meldet aufrufe=0, es bleibt bei rest = 2; mit echtem Zaehler ist Schluss.
+    _alt_mail(konto_id, 105, aufrufe=2)
+    assert post_abholen.eine_runde().get("tagesgrenze") is True
     assert len(aufrufe) == 1
 
     # Die Grenze von einordnen_offene selbst: hoechstens `grenze` Mails.
@@ -549,22 +561,115 @@ def test_tagesgrenze(monkeypatch):
     assert post_abholen.einordnen_offene(2) == 2 and len(aufrufe) == 2
 
 
-def test_nutzerregel_treffer_zaehlen_zur_tagesgrenze():
-    """R18: ein Nutzerregel-Treffer ruft das Modell fuer `sensibel` - zaehlt also
-    mit; feste Sensibel-Muster und menschliche Korrekturen nicht."""
+def test_tagesgrenze_zaehlt_aufrufe_und_vorschau():
     konto_id = _konto()["id"]
+    _alt_mail(konto_id, 201, aufrufe=2)
+    _alt_mail(konto_id, 202, quelle="mensch", aufrufe=0, vorschau={"aufrufe": 2})
+    assert post_abholen.modellaufrufe_heute() == 4
+
+
+def test_restbudget_unter_zwei_aufrufen_stoppt_die_runde(monkeypatch):
+    aufrufe = _runde_vorbereiten(monkeypatch, n_mails=2)
+    monkeypatch.setattr(post_abholen, "TAGESGRENZE", 3)
+    _alt_mail(_zeile("gmx-test")["id"], 301, aufrufe=2)       # rest = 1 < 2
+    bilanz = post_abholen.eine_runde()
+    assert bilanz.get("tagesgrenze") is True and aufrufe == []
+
+
+def test_speichert_unterfach_vorschlaege_aufrufe_version(monkeypatch):
+    _konto()
+    post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({1: _mail("<a@x>")}))
+    vorschlaege = {"sortierer": {"bereich": "business", "fach": "Rechnungen", "unterfach": None},
+                   "pruefer": {"bereich": "privat", "fach": "Werbung", "unterfach": None}}
+    monkeypatch.setattr(
+        post_einordnung, "einordnen",
+        lambda mail, konto: post_einordnung.Einordnung(
+            "privat", post_struktur.UNKLAR, False, "modell", "pruefer:uneins", None,
+            aufrufe=2, vorschlaege=vorschlaege))
+    assert post_abholen.einordnen_offene(5) == 1
+    r = _mails()[0]
+    assert (r["unterfach"], r["modellaufrufe"], r["einordnung_version"]) == (None, 2, 2)
+    assert r["vorschlaege"] == vorschlaege and r["status"] == "eingeordnet"
+
+    # Mit Unterfach, ohne Vorschlaege.
+    _aufraeumen()
+    _konto()
+    post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({1: _mail("<b@x>")}))
+    monkeypatch.setattr(
+        post_einordnung, "einordnen",
+        lambda mail, konto: post_einordnung.Einordnung(
+            "privat", "Konten & Sicherheit", True, "katalog", "katalog:modell-sensibel",
+            "Instagram", aufrufe=1))
+    assert post_abholen.einordnen_offene(5) == 1
+    r = _mails()[0]
+    assert (r["unterfach"], r["modellaufrufe"], r["einordnung_version"], r["vorschlaege"]) == \
+        ("Instagram", 1, 2, None)
+    assert r["text"] is None                                  # sensibel: Text weg
+
+
+def test_konto_kontext_wird_uebergeben(monkeypatch):
+    _konto()
     with server.pool.connection() as conn:
-        for uid, quelle, begruendung in ((201, "regel", "regel:von"),
-                                         (202, "regel", "regel:von:modell-sensibel"),
-                                         (203, "regel", "sensibel-muster:betreff:0"),
-                                         (204, "mensch", None),
-                                         (205, "modell", "x")):
-            conn.execute(
-                "insert into post_mails (konto_id, imap_uid, message_id, besitzer, status, "
-                "einordnung_quelle, begruendung, eingeordnet_am) values (%s, %s, %s, "
-                "'felix', 'eingeordnet', %s, %s, now())",
-                (konto_id, uid, f"z{uid}@x", quelle, begruendung))
-    assert post_abholen.modellaufrufe_heute() == 3
+        conn.execute("update post_konten set standard_bereich = 'privat' "
+                     "where kennung = 'gmx-test'")
+    post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({1: _mail("<a@x>")}))
+    gesehen = []
+
+    def einordnen(mail, konto):
+        gesehen.append(konto)
+        return _einordnung()
+    monkeypatch.setattr(post_einordnung, "einordnen", einordnen)
+    assert post_abholen.einordnen_offene(5) == 1
+    assert gesehen[0]["standard_bereich"] == "privat" and gesehen[0]["kennung"] == "gmx-test"
+
+
+def test_pruefer_fehler_bleibt_neu_dann_nach_drei_zum_nachsehen(monkeypatch, caplog):
+    _konto()
+    post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({
+        1: _mail("<a@x>", betreff="Geheimer Betreff Eins"),
+        2: _mail("<b@x>", betreff="Geheimer Betreff Zwei")}))
+
+    def einordnen(mail, konto):
+        if mail["betreff"].endswith("Eins"):
+            raise post_einordnung.PrueferFehlgeschlagen(post_einordnung.Einordnung(
+                "business", "Rechnungen", False, "modell", "Geheime Begruendung", "Eingang",
+                aufrufe=1))
+        return _einordnung()
+    monkeypatch.setattr(post_einordnung, "einordnen", einordnen)
+    # Versuch 1: Mail 1 bleibt neu, die Runde macht mit Mail 2 weiter.
+    assert post_abholen.einordnen_offene(10) == 1
+    r1, r2 = _mails()
+    assert (r1["status"], r1["versuche"], r2["status"]) == ("neu", 1, "eingeordnet")
+    assert r1["modellaufrufe"] == 2                           # Kosten der Fehlversuche zaehlen
+    assert post_abholen.einordnen_offene(10) == 0
+    assert _mails()[0]["versuche"] == 2
+    # Versuch 3: Vorschlag des Sortierers bleibt als Vorschlag, die Mail liegt zum Nachsehen.
+    assert post_abholen.einordnen_offene(10) == 1
+    r1 = _mails()[0]
+    assert (r1["status"], r1["bereich"], r1["fach"], r1["einordnung_quelle"]) == \
+        ("eingeordnet", "privat", post_struktur.UNKLAR, "modell")
+    assert r1["vorschlaege"] == {"sortierer": {
+        "bereich": "business", "fach": "Rechnungen", "unterfach": "Eingang",
+        "begruendung": "Geheime Begruendung"}}
+    assert (r1["einordnung_version"], r1["modellaufrufe"], r1["sensibel"]) == (2, 6, False)
+    assert "Geheim" not in caplog.text
+
+
+def test_pruefer_fehler_sensibel_speichert_keine_begruendung(monkeypatch):
+    _konto()
+    post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({1: _mail("<a@x>")}))
+
+    def einordnen(mail, konto):
+        raise post_einordnung.PrueferFehlgeschlagen(post_einordnung.Einordnung(
+            "privat", "Konten & Sicherheit", True, "modell", "modell:sensibel", "Sonstige",
+            aufrufe=1))
+    monkeypatch.setattr(post_einordnung, "einordnen", einordnen)
+    for _ in range(post_abholen.VERSUCHE_MAX):
+        post_abholen.einordnen_offene(10)
+    r = _mails()[0]
+    assert r["status"] == "eingeordnet" and r["sensibel"] is True and r["text"] is None
+    assert r["vorschlaege"] == {"sortierer": {
+        "bereich": "privat", "fach": "Konten & Sicherheit", "unterfach": "Sonstige"}}
 
 
 def test_fehler_in_einem_konto_haelt_die_anderen_nicht_auf(monkeypatch, caplog):
@@ -576,7 +681,7 @@ def test_fehler_in_einem_konto_haelt_die_anderen_nicht_auf(monkeypatch, caplog):
             raise OSError("Passwort-Geheim-4711 abgelehnt")
         return Attrappe({1: _mail()})
     monkeypatch.setattr(post_abholen.post_konten, "verbinden", verbinden)
-    monkeypatch.setattr(post_einordnung, "einordnen", lambda mail: _einordnung())
+    monkeypatch.setattr(post_einordnung, "einordnen", lambda mail, konto: _einordnung())
     bilanz = post_abholen.eine_runde()
     assert bilanz["abgeholt"] == 1 and bilanz["konten_fehler"] == 1
     assert "Passwort-Geheim-4711" not in caplog.text and "OSError" in caplog.text
@@ -671,6 +776,22 @@ def test_schluessel_nur_bei_sales_post():
             assert "POST_SCHLUESSEL_PRIVAT" not in datei.read_text(encoding="utf-8"), datei
 
 
+def test_post_kontext_nur_bei_sales_post():
+    """I3: post_einordnung liest POST_KONTEXT aus der Umgebung - Compose muss es dem
+    Dienst sales-post durchreichen (leer erlaubt), sonst kommt es nie an."""
+    text = (WURZEL / "docker-compose.yml").read_text(encoding="utf-8")
+    anker = text[text.index("x-sales-mcp-umgebung"):text.index("\nservices:")]
+    assert "POST_KONTEXT" not in anker
+    assert "POST_KONTEXT: ${POST_KONTEXT:-}" in _compose_abschnitt("sales-post")
+    for dienst in _dienste():
+        if dienst != "sales-post":
+            assert "POST_KONTEXT" not in _compose_abschnitt(dienst), dienst
+    # Der veraltete Kommentar (v2: Regeltreffer kosten einen Sensibel-Aufruf) ist weg.
+    assert "Regel-Treffer zaehlen nicht" not in text
+    beispiel = (WURZEL / "deploy" / "laeden" / "beispiel.env").read_text(encoding="utf-8")
+    assert re.search(r"^POST_KONTEXT=$", beispiel, re.M)
+
+
 def test_oeffentlicher_schluessel_nur_bei_sales_ui():
     """Ruling R5: die Oberflaeche versiegelt neue Zugaenge und braucht dafuer
     nur den oeffentlichen Schluessel; den privaten bekommt sie nie."""
@@ -719,3 +840,77 @@ def test_update_abnahme_auch_ohne_sales_post(gestoppt, erwartet, post_laeuft):
     assert ergebnis.stdout.strip().endswith(erwartet), ergebnis.stdout
     laeuft = ergebnis.stdout.split("LAEUFT:")[1].splitlines()[0].split()
     assert ("sales-post" in laeuft) is post_laeuft
+
+
+def test_fehlversuche_einer_neuen_mail_zaehlen_zur_tagesgrenze(monkeypatch):
+    _konto()
+    post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({1: _mail("<a@x>")}))
+
+    def einordnen(mail, konto):
+        raise post_einordnung.PrueferFehlgeschlagen(post_einordnung.Einordnung(
+            "business", "Rechnungen", False, "modell", "x", None, aufrufe=1))
+    monkeypatch.setattr(post_einordnung, "einordnen", einordnen)
+    assert post_abholen.modellaufrufe_heute() == 0
+    post_abholen.einordnen_offene(10)
+    r = _mails()[0]
+    assert r["status"] == "neu" and r["eingeordnet_am"] is None and r["versuch_am"] is not None
+    assert post_abholen.modellaufrufe_heute() == 2          # Sortierer + Pruefer, obwohl noch neu
+    # Ein Fehlversuch von gestern zaehlt heute nicht.
+    with server.pool.connection() as conn:
+        conn.execute("update post_mails set versuch_am = now() - interval '1 day'")
+    assert post_abholen.modellaufrufe_heute() == 0
+
+
+def test_pruefer_voruebergehend_bucht_sortierer_und_pausiert(monkeypatch):
+    """I1: fehlt post-pruefer im Gateway (oder 429/5xx), hat der Sortierer schon
+    gekostet. Ohne Buchung liefe dieselbe Mail alle 120 s ungezaehlt erneut."""
+    _konto()
+    post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({
+        1: _mail("<a@x>"), 2: _mail("<b@x>")}))
+    aufrufe = []
+
+    def einordnen(mail, konto):
+        aufrufe.append(mail["id"])
+        raise post_einordnung.PrueferVoruebergehend(1)
+    monkeypatch.setattr(post_einordnung, "einordnen", einordnen)
+    for runde in (1, 2):
+        assert post_abholen.einordnen_offene(10) == 0
+        assert len(aufrufe) == runde                  # Pause: die Runde endet bei der ersten Mail
+        r1, r2 = _mails()
+        # Kein Versuch gezaehlt (der Pruefer, nicht die Mail ist schuld), aber die Kosten.
+        assert (r1["status"], r1["versuche"], r1["modellaufrufe"]) == ("neu", 0, runde)
+        assert r1["versuch_am"] is not None and r1["eingeordnet_am"] is None
+        assert (r2["status"], r2["modellaufrufe"]) == ("neu", 0)
+        assert post_abholen.modellaufrufe_heute() == runde      # die Tagesgrenze waechst
+
+
+def test_zum_nachsehen_wird_immer_privat_gespeichert(monkeypatch):
+    """I2c: was auch immer `einordnen` liefert - Zum Nachsehen liegt privat, und ein
+    ungueltiges Fach wird privat/Zum Nachsehen (nie unter business)."""
+    _konto()
+    post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({
+        1: _mail("<a@x>"), 2: _mail("<b@x>")}))
+    reihe = iter([
+        post_einordnung.Einordnung("business", post_struktur.UNKLAR, False, "modell", "x"),
+        post_einordnung.Einordnung("business", "Erfunden", False, "modell", "x", "Irgendwas")])
+    monkeypatch.setattr(post_einordnung, "einordnen", lambda mail, konto: next(reihe))
+    assert post_abholen.einordnen_offene(10) == 2
+    for r in _mails():
+        assert (r["bereich"], r["fach"], r["unterfach"]) == ("privat", post_struktur.UNKLAR, None)
+
+
+def test_pruefer_fehler_dann_gatewayfehler_summiert_die_aufrufe(monkeypatch):
+    _konto()
+    post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({1: _mail("<a@x>")}))
+    reihe = iter([post_einordnung.PrueferFehlgeschlagen(post_einordnung.Einordnung(
+        "business", "Rechnungen", False, "modell", "x", None, aufrufe=1)),
+        gateway.GatewayFehler("Gateway HTTP 400")])
+
+    def einordnen(mail, konto):
+        raise next(reihe)
+    monkeypatch.setattr(post_einordnung, "einordnen", einordnen)
+    post_abholen.einordnen_offene(10)       # Pruefer aus: 2 Aufrufe, bleibt neu
+    post_abholen.einordnen_offene(10)       # Sortierer endgueltig: +1
+    r = _mails()[0]
+    assert r["status"] == "fehler" and r["modellaufrufe"] == 3
+    assert post_abholen.modellaufrufe_heute() == 3
