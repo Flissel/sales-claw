@@ -244,8 +244,119 @@ def test_fehler_senkt_rest_der_tagesgrenze(monkeypatch, konto_id):
     def kaputt(mail, konto):
         raise RuntimeError("x")
     monkeypatch.setattr(post_einordnung, "einordnen", kaputt)
-    assert neu.vorschau(10) == 2          # 4 // 2 Mails, nicht alle fuenf
-    assert post_abholen.modellaufrufe_heute() == 2
+    # M3: der Rest kommt vor jeder Mail aus der Datenbank. Jeder Fehlschlag bucht
+    # einen Aufruf; die naechste Mail startet nur, solange noch 2 Aufrufe frei sind.
+    assert neu.vorschau(10) == 3          # Rest 4, 3, 2 -> drei Mails; bei 1 Schluss
+    assert post_abholen.modellaufrufe_heute() == 3
+
+
+def test_tagesgrenze_wird_vor_jeder_mail_neu_gelesen(monkeypatch, konto_id):
+    """M3: sales-post ordnet parallel ein und verbraucht dieselbe Tagesgrenze -
+    die Vorschau darf nicht mit dem Stand vom Start weiterrechnen."""
+    for uid in range(1, 6):
+        _mail(konto_id, uid)
+    parallel = _mail(konto_id, 99, version=2, aufrufe=0)   # gehoert sales-post, kein Altbestand
+    with server.pool.connection() as conn:
+        conn.execute("update post_mails set eingeordnet_am = now() where id = %s", (parallel,))
+    monkeypatch.setattr(post_abholen, "TAGESGRENZE", 6)
+    innen = _fake(aufrufe=1)
+
+    def einordnen_und_parallel(mail, konto):
+        # Waehrend jeder Vorschau-Mail bucht sales-post zwei Aufrufe.
+        with server.pool.connection() as conn:
+            conn.execute("update post_mails set modellaufrufe = modellaufrufe + 2 "
+                         "where id = %s", (parallel,))
+        return innen(mail, konto)
+    monkeypatch.setattr(post_einordnung, "einordnen", einordnen_und_parallel)
+    # Mail 1 bei 0 verbraucht; danach 1 + 2 = 3 -> Mail 2; danach 6 -> Schluss.
+    # Mit dem einmal gelesenen Rest liefen alle fuenf (6 - 1 je Mail).
+    assert neu.vorschau(10) == 2
+    assert post_abholen.modellaufrufe_heute() == 6
+
+
+def test_pruefer_voruebergehend_bucht_vorschau_kosten(monkeypatch, konto_id):
+    """I1: Pruefer voruebergehend weg - der bezahlte Sortierer zaehlt zur Tagesgrenze,
+    die Vorschau bleibt leer (die Mail kommt beim naechsten Lauf wieder), Pause."""
+    a = _mail(konto_id, 1)
+    b = _mail(konto_id, 2)
+    ruf = []
+
+    def weg(mail, konto):
+        ruf.append(mail["id"])
+        raise post_einordnung.PrueferVoruebergehend(1)
+    monkeypatch.setattr(post_einordnung, "einordnen", weg)
+    for lauf in (1, 2):
+        assert neu.vorschau(10) == 0
+        assert len(ruf) == lauf                       # Pause nach der ersten Mail
+        za, zb = _zeile(a), _zeile(b)
+        assert za["vorschau"] is None and zb["vorschau"] is None
+        assert za["vorschau_aufrufe"] == lauf and zb["vorschau_aufrufe"] == 0
+        assert za["modellaufrufe"] == 1               # die echte Spalte bleibt
+        assert post_abholen.modellaufrufe_heute() == lauf
+
+
+def _vorschau_setzen(mail_id, vorschau: dict):
+    with server.pool.connection() as conn:
+        conn.execute("update post_mails set vorschau = %s::jsonb, vorschau_am = now() "
+                     "where id = %s", (server._json(vorschau), mail_id))
+
+
+def test_anwenden_zum_nachsehen_immer_privat_und_nur_feste_faecher(konto_id):
+    """I2d: anwenden prueft die Vorschau gegen die feste Liste - Zum Nachsehen
+    liegt privat, ein unbekanntes Fach wird privat/Zum Nachsehen ohne Unterfach."""
+    nachsehen = _mail(konto_id, 1)
+    erfunden = _mail(konto_id, 2)
+    falscher_bereich = _mail(konto_id, 3)
+    gut = _mail(konto_id, 4)
+    basis = {"sensibel": False, "quelle": "modell", "begruendung": "b", "vorschlaege": None,
+             "aufrufe": 2}
+    _vorschau_setzen(nachsehen, {**basis, "bereich": "business", "fach": post_struktur.UNKLAR,
+                                 "unterfach": None})
+    _vorschau_setzen(erfunden, {**basis, "bereich": "business", "fach": "Erfunden",
+                                "unterfach": "Irgendwas"})
+    _vorschau_setzen(falscher_bereich, {**basis, "bereich": "privat", "fach": "Tools & Dienste",
+                                        "unterfach": "GitHub"})
+    _vorschau_setzen(gut, {**basis, "bereich": "business", "fach": "Tools & Dienste",
+                           "unterfach": "GitHub"})
+    assert neu.anwenden() == 4
+    for mid in (nachsehen, erfunden, falscher_bereich):
+        z = _zeile(mid)
+        assert (z["bereich"], z["fach"], z["unterfach"]) == ("privat", post_struktur.UNKLAR, None)
+    z = _zeile(gut)
+    assert (z["bereich"], z["fach"], z["unterfach"]) == ("business", "Tools & Dienste", "GitHub")
+
+
+def _abholfehler(konto, uid):
+    """Zeile wie post_abholen._unlesbar: schon beim Abholen kaputt, nie einsortiert."""
+    with server.pool.connection() as conn:
+        return conn.execute(
+            "insert into post_mails (konto_id, imap_uid, message_id, besitzer, status, fehler, "
+            "bereich, fach, message_id_ersatz) values (%s, %s, %s, 'felix', 'fehler', %s, "
+            "'privat', %s, true) returning id",
+            (konto, uid, f"gmx-test:{uid}@sales-post",
+             f"{post_abholen.ABHOLFEHLER} (ValueError)", post_struktur.UNKLAR)).fetchone()["id"]
+
+
+def test_abholfehler_bleiben_unberuehrt(monkeypatch, konto_id):
+    """M6: eine Mail, die schon beim Abholen kaputt war, wird nicht neu sortiert -
+    sonst verdeckte `anwenden` (status eingeordnet, fehler null) den Abholfehler.
+    Sortier-Fehler dagegen kommen in die Neu-Sortierung."""
+    kaputt = _abholfehler(konto_id, 1)
+    sortierfehler = _mail(konto_id, 2, status="fehler", bereich="privat",
+                          fach=post_struktur.UNKLAR)
+    monkeypatch.setattr(post_einordnung, "einordnen", _fake())
+    assert neu.vorschau(10) == 1
+    assert _zeile(kaputt)["vorschau"] is None and _zeile(sortierfehler)["vorschau"] is not None
+    assert neu.bericht()["offen"] == 0             # der Abholfehler zaehlt nicht als offen
+    # Auch eine (von Hand oder frueher) gesetzte Vorschau wendet anwenden nicht an.
+    _vorschau_setzen(kaputt, {"bereich": "privat", "fach": "Rechnungen", "unterfach": None,
+                              "sensibel": False, "quelle": "modell", "begruendung": "b",
+                              "vorschlaege": None, "aufrufe": 1})
+    assert neu.anwenden() == 1
+    z = _zeile(kaputt)
+    assert (z["status"], z["fach"], z["einordnung_version"]) == ("fehler", post_struktur.UNKLAR, 1)
+    assert z["fehler"].startswith(post_abholen.ABHOLFEHLER)
+    assert _zeile(sortierfehler)["status"] == "eingeordnet"
 
 
 def test_vorschau_kosten_ueberleben_anwenden(monkeypatch, konto_id):

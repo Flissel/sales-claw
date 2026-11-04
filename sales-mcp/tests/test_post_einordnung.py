@@ -267,6 +267,50 @@ def test_pruefer_transient_wird_durchgereicht():
             post=_urteil(), pruefer=gateway.GatewayTransient("spaeter")))
 
 
+def test_pruefer_transient_traegt_die_bezahlten_sortierer_aufrufe():
+    """I1 (Gesamtpruefung): faellt der Pruefer voruebergehend aus (Agent fehlt, 429/5xx),
+    hat der Sortierer schon gekostet. Die Ausnahme bleibt ein GatewayTransient (Pause),
+    traegt aber die Aufrufe, damit der Aufrufer sie zur Tagesgrenze bucht."""
+    with pytest.raises(pe.PrueferVoruebergehend) as info:
+        pe.einordnen(_mail(), BUSINESS, aufruf=_agenten(
+            post=_urteil(), pruefer=gateway.GatewayTransient("Agent fehlt")))
+    assert isinstance(info.value, gateway.GatewayTransient)
+    assert info.value.aufrufe == 1
+
+
+def test_sortierer_transient_bleibt_ohne_kosten():
+    # Nichts wurde beantwortet: reiner GatewayTransient, keine Kosten zu buchen.
+    with pytest.raises(gateway.GatewayTransient) as info:
+        pe.einordnen(_mail(), BUSINESS, aufruf=_agenten(post=gateway.GatewayTransient("x")))
+    assert not isinstance(info.value, pe.PrueferVoruebergehend)
+
+
+def test_pruefer_fehler_wird_mit_typ_protokolliert(caplog):
+    # M1: Typ ins Protokoll, nie die Meldung (sie koennte die Mail spiegeln).
+    with pytest.raises(pe.PrueferFehlgeschlagen):
+        pe.einordnen(_mail(), BUSINESS, aufruf=_agenten(
+            post=_urteil(), pruefer=RuntimeError("Geheimer Betreff")))
+    assert "RuntimeError" in caplog.text and "Geheim" not in caplog.text
+
+
+def test_nutzerregel_nach_zum_nachsehen_wird_uebersprungen(monkeypatch):
+    """I2b: eine Regel nach „Zum Nachsehen“ ist sinnlos (ein Mensch soll entscheiden)
+    und braeche die Privat-Regel, wenn sie business sagt - sie zaehlt nie."""
+    monkeypatch.setattr(pe, "_regeln_laden", lambda: [
+        {"muster": r"@bank\.example", "feld": "von", "bereich": "business",
+         "fach": post_struktur.UNKLAR, "unterfach": None, "besitzer": None},
+        {"muster": r"@bank\.example", "feld": "von", "bereich": "privat",
+         "fach": post_struktur.UNKLAR, "unterfach": None, "besitzer": None},
+        {"muster": r"@bank\.example", "feld": "von", "bereich": "privat",
+         "fach": "Rechnungen", "unterfach": None, "besitzer": None}])
+    e = pe.nach_nutzerregel(_mail(von="info@bank.example"))
+    assert (e.bereich, e.fach) == ("privat", "Rechnungen")
+    monkeypatch.setattr(pe, "_regeln_laden", lambda: [
+        {"muster": r"@bank\.example", "feld": "von", "bereich": "business",
+         "fach": post_struktur.UNKLAR, "unterfach": None, "besitzer": None}])
+    assert pe.nach_nutzerregel(_mail(von="info@bank.example")) is None
+
+
 def test_sortierer_fehler_wird_nicht_verpackt():
     with pytest.raises(gateway.GatewayFehler):
         pe.einordnen(_mail(), BUSINESS, aufruf=_agenten(post=gateway.GatewayFehler("x")))

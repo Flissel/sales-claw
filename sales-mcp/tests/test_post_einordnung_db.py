@@ -78,14 +78,17 @@ SQL_DATEI = Path(__file__).resolve().parents[2] / "db" / "post-sammelstelle.sql"
 
 
 def _umbenennung_einspielen():
-    """Fuehrt die Umbenennungs-Statements ('Unklar' -> 'Zum Nachsehen') aus der
-    Migrationsdatei aus. Die DDL-Teile spielt das Testverfahren per psql als
-    supabase_admin ein (sales_app darf kein DDL); die Daten-Updates darf sie."""
+    """Fuehrt die Daten-Statements zu 'Unklar'/'Zum Nachsehen' aus der Migrationsdatei
+    aus (Umbenennung in post_mails, Loeschen sinnloser Regeln in post_regeln). Die
+    DDL-Teile spielt das Testverfahren per psql als supabase_admin ein (sales_app darf
+    kein DDL); die Daten-Aenderungen darf sie."""
     assert server.SCHEMA == "sales_test"
     text = SQL_DATEI.read_text(encoding="utf-8")
-    anweisungen = re.findall(r"update :\"schema\"\.post_\w+ set fach = 'Zum Nachsehen'"
-                             r"[^;]*;", text)
-    assert len(anweisungen) == 2, "Umbenennung in post_mails und post_regeln erwartet"
+    anweisungen = (re.findall(r"update :\"schema\"\.post_\w+ set fach = 'Zum Nachsehen'"
+                              r"[^;]*;", text)
+                   + re.findall(r"delete from :\"schema\"\.post_regeln where fach in "
+                                r"\('Unklar', 'Zum Nachsehen'\);", text))
+    assert len(anweisungen) == 2, "Umbenennung in post_mails und Loeschen in post_regeln erwartet"
     with server.pool.connection() as conn:
         for a in anweisungen:
             conn.execute(a.replace(':"schema"', "sales_test"))
@@ -100,14 +103,17 @@ def test_migration_zweimal_einspielbar_und_unklar_umbenannt():
                      "besitzer, bereich, fach) values (%s, 1, '<t2@x>', 't2', "
                      "'business', 'Unklar')", (k,))
         conn.execute("insert into sales_test.post_regeln (muster, feld, bereich, fach) "
-                     "values ('t2', 'von', 'business', 'Unklar')")
+                     "values ('t2', 'von', 'business', 'Unklar'), "
+                     "('t2', 'von', 'business', 'Zum Nachsehen'), "
+                     "('t2', 'von', 'privat', 'Rechnungen')")
     try:
         _umbenennung_einspielen()
         _umbenennung_einspielen()
         m = server._q("select bereich, fach from post_mails where konto_id = %s", (k,))[0]
         assert (m["bereich"], m["fach"]) == ("privat", "Zum Nachsehen")
-        r = server._q("select fach from post_regeln where muster = 't2'")[0]
-        assert r["fach"] == "Zum Nachsehen"
+        # I2a: Regeln nach Unklar/Zum Nachsehen sind weg, andere bleiben.
+        r = server._q("select fach from post_regeln where muster = 't2'")
+        assert [z["fach"] for z in r] == ["Rechnungen"]
         spalten = {z["column_name"] for z in server._q(
             "select column_name from information_schema.columns "
             "where table_schema = 'sales_test' and table_name in "

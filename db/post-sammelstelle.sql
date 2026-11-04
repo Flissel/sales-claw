@@ -234,7 +234,10 @@ end $$;
 -- nicht fuer Abteilungen sichtbar werden).
 update :"schema".post_mails set fach = 'Zum Nachsehen', bereich = 'privat'
   where fach = 'Unklar';
-update :"schema".post_regeln set fach = 'Zum Nachsehen' where fach = 'Unklar';
+-- Regeln nach 'Unklar'/'Zum Nachsehen' sind sinnlos (dort entscheidet ein Mensch) und
+-- braechen mit business die Privat-Regel oben. Der Code ueberspringt sie ohnehin
+-- (post_einordnung.nach_nutzerregel); hier verschwinden auch die alten Zeilen.
+delete from :"schema".post_regeln where fach in ('Unklar', 'Zum Nachsehen');
 
 -- Neue Business-Faecher fuer die Abteilung Marketing.
 insert into :"schema".post_abteilung_faecher (abteilung, fach) values

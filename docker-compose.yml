@@ -775,7 +775,11 @@ services:
       POST_SCHLUESSEL_PRIVAT: ${POST_SCHLUESSEL_PRIVAT:-}
       # Benutzername, dem die Postfaecher aus der Umgebung gehoeren.
       POST_BESITZER: ${POST_BESITZER:-}
-      # Modellaufrufe je Tag (Regel-Treffer zaehlen nicht).
+      # Betreiber-Kontext fuer die Einordnung (v2, Runbook): kurzer Text, wer der
+      # Laden ist und was wohin gehoert. Leer = nur die allgemeinen Regeln.
+      POST_KONTEXT: ${POST_KONTEXT:-}
+      # Modellaufrufe je Tag. Es zaehlt jeder Aufruf (Sortierer, Pruefer und die
+      # Sensibel-Pruefung bei Regel-/Katalogtreffern); nur feste Muster sind frei.
       POST_TAGESGRENZE: ${POST_TAGESGRENZE:-500}
       POST_INTERVAL_S: 120
     # Ein laufender Modellaufruf (Timeout 60 s) darf zu Ende gehen.

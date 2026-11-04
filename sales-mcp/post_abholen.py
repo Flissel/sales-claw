@@ -178,13 +178,19 @@ def _kalender_sicher(nachricht) -> bool:
         return True
 
 
+# Anfang der `fehler`-Meldung einer Mail, die schon beim Abholen kaputt war. Die
+# Neu-Sortierung (post_neu_einordnen) erkennt solche Zeilen daran und laesst sie
+# stehen - sonst verdeckte eine Einordnung den Abholfehler.
+ABHOLFEHLER = "Mail nicht lesbar"
+
+
 def _unlesbar(kennung: str, uid: int, fehlertyp: str) -> dict:
     """Platzhalter fuer eine Mail, die sich nicht zerlegen liess: sie geht
     nicht verloren (Spec: keine Mail verschwindet), steht aber als fehler da."""
     return {"message_id": _ersatz_id(kennung, uid), "message_id_ersatz": True,
             "kalenderteil": False, "von": None, "an": None,
             "betreff": None, "datum": None, "text": None, "auszug": None, "anhaenge": [],
-            "fehler": f"Mail nicht lesbar ({fehlertyp})"}
+            "fehler": f"{ABHOLFEHLER} ({fehlertyp})"}
 
 
 def _holen(kasten, uid: int):
@@ -350,9 +356,11 @@ def _ergebnis_speichern(mail_id, e: post_einordnung.Einordnung) -> None:
     unterfach = e.unterfach
     if not post_struktur.fach_gueltig(bereich or "", fach or ""):
         # Die feste Liste gilt auch hier: nie ein Fach speichern, das es nicht gibt.
-        bereich, fach = (bereich if bereich in post_struktur.BEREICHE else "privat",
-                         post_struktur.UNKLAR)
-        unterfach = None
+        fach, unterfach = post_struktur.UNKLAR, None
+    if fach == post_struktur.UNKLAR:
+        # Spec §6: Zum Nachsehen liegt IMMER privat - hier zentral, egal welcher
+        # Weg (Modell, Regel, Fallback oben) die Einordnung geliefert hat.
+        bereich, unterfach = "privat", None
     server._q(
         "update post_mails set bereich = %s, fach = %s, unterfach = %s, sensibel = %s, "
         "einordnung_quelle = %s, begruendung = %s, vorschlaege = %s::jsonb, "
@@ -407,6 +415,15 @@ def einordnen_offene(grenze: int) -> int:
         konto = {"kennung": zeile["kennung"], "standard_bereich": zeile["standard_bereich"]}
         try:
             ergebnis = post_einordnung.einordnen(mail, konto)
+        except post_einordnung.PrueferVoruebergehend as e:
+            # Muss vor GatewayTransient stehen (Unterklasse). Der Sortierer hat schon
+            # gekostet: buchen (versuch_am macht es fuer die Tagesgrenze sichtbar),
+            # aber keinen Versuch zaehlen - der Pruefer, nicht die Mail ist schuld.
+            server._q(
+                "update post_mails set modellaufrufe = modellaufrufe + %s, versuch_am = now() "
+                "where id = %s and status = 'neu'", (int(e.aufrufe), mail["id"]))
+            LOG.info("Einordnen pausiert: Pruefer voruebergehend nicht bereit")
+            break
         except GatewayTransient:
             LOG.info("Einordnen pausiert: Gateway voruebergehend nicht bereit")
             break

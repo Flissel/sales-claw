@@ -68,6 +68,17 @@ class PrueferFehlgeschlagen(Exception):
         self.vorschlag = vorschlag
 
 
+class PrueferVoruebergehend(gateway.GatewayTransient):
+    """Der Pruefer ist voruebergehend nicht bereit (Agent fehlt im Gateway, 429/5xx),
+    NACHDEM der Sortierer schon bezahlt geantwortet hat. Bleibt ein GatewayTransient
+    (der Aufrufer pausiert wie bisher), traegt aber `aufrufe`: ohne Buchung wuerde
+    dieselbe Mail jede Runde neu sortiert, ungezaehlt an der Tagesgrenze vorbei."""
+
+    def __init__(self, aufrufe: int):
+        super().__init__("Pruefer voruebergehend nicht bereit")
+        self.aufrufe = aufrufe
+
+
 def _regeln_laden() -> list[dict]:
     # server erst hier: das Modul bleibt ohne Datenbank importier- und testbar.
     import server
@@ -125,6 +136,10 @@ def nach_nutzerregel(mail: dict) -> Einordnung | None:
         if not _regel_gilt(zeile, mail):
             continue
         bereich, fach = zeile.get("bereich"), zeile.get("fach")
+        if fach == post_struktur.UNKLAR:
+            # „Zum Nachsehen“ heisst: ein Mensch entscheidet. Als Regel ist das sinnlos,
+            # und eine Regel mit business braeche „Zum Nachsehen liegt immer privat“.
+            continue
         if not post_struktur.fach_gueltig(bereich or "", fach or ""):
             LOG.warning("Regel uebersprungen: ungueltiges Fach/Bereich")
             continue
@@ -281,7 +296,9 @@ def _sensibel_entscheiden(mail: dict, konto: dict, aufruf) -> bool:
 def einordnen(mail: dict, konto: dict, aufruf=gateway.funktion_aufrufen) -> Einordnung:
     """Stufen nach Spec v2 §5. `konto` = {"kennung", "standard_bereich"}.
     Raises PrueferFehlgeschlagen (mit Sortierer-Vorschlag), wenn der Pruefer
-    ausfaellt; GatewayTransient geht unveraendert durch (Pause wie bisher)."""
+    ausfaellt; PrueferVoruebergehend (ein GatewayTransient mit den Sortierer-Aufrufen),
+    wenn er voruebergehend nicht bereit ist; jeder andere GatewayTransient geht
+    unveraendert durch (Pause wie bisher, nichts zu buchen)."""
     standard = _standard(konto)
     fest = nach_muster(mail, konto)
     if fest is not None:
@@ -314,9 +331,11 @@ def einordnen(mail: dict, konto: dict, aufruf=gateway.funktion_aufrufen) -> Eino
         p = _urteil_holen(PRUEFER, mail, konto, PRUEFER_SYSTEM, aufruf,
                           {"bereich": s.bereich, "fach": s.fach, "unterfach": s.unterfach})
     except gateway.GatewayTransient:
-        raise
-    except Exception:                       # noqa: BLE001 - jeder Pruefer-Ausfall zaehlt gleich
-        LOG.warning("Pruefer fehlgeschlagen")
+        # Der Sortierer hat schon gekostet: die Aufrufe gehen mit, damit sie gebucht werden.
+        raise PrueferVoruebergehend(vorschlag.aufrufe) from None
+    except Exception as e:                  # noqa: BLE001 - jeder Pruefer-Ausfall zaehlt gleich
+        # Nur der Typ: die Meldung koennte Teile der Anfrage (also der Mail) spiegeln.
+        LOG.warning("Pruefer fehlgeschlagen (%s)", type(e).__name__)
         raise PrueferFehlgeschlagen(vorschlag) from None
 
     if s.tripel() == p.tripel() and s.sicher and p.sicher:

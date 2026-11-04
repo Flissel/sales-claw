@@ -776,6 +776,22 @@ def test_schluessel_nur_bei_sales_post():
             assert "POST_SCHLUESSEL_PRIVAT" not in datei.read_text(encoding="utf-8"), datei
 
 
+def test_post_kontext_nur_bei_sales_post():
+    """I3: post_einordnung liest POST_KONTEXT aus der Umgebung - Compose muss es dem
+    Dienst sales-post durchreichen (leer erlaubt), sonst kommt es nie an."""
+    text = (WURZEL / "docker-compose.yml").read_text(encoding="utf-8")
+    anker = text[text.index("x-sales-mcp-umgebung"):text.index("\nservices:")]
+    assert "POST_KONTEXT" not in anker
+    assert "POST_KONTEXT: ${POST_KONTEXT:-}" in _compose_abschnitt("sales-post")
+    for dienst in _dienste():
+        if dienst != "sales-post":
+            assert "POST_KONTEXT" not in _compose_abschnitt(dienst), dienst
+    # Der veraltete Kommentar (v2: Regeltreffer kosten einen Sensibel-Aufruf) ist weg.
+    assert "Regel-Treffer zaehlen nicht" not in text
+    beispiel = (WURZEL / "deploy" / "laeden" / "beispiel.env").read_text(encoding="utf-8")
+    assert re.search(r"^POST_KONTEXT=$", beispiel, re.M)
+
+
 def test_oeffentlicher_schluessel_nur_bei_sales_ui():
     """Ruling R5: die Oberflaeche versiegelt neue Zugaenge und braucht dafuer
     nur den oeffentlichen Schluessel; den privaten bekommt sie nie."""
@@ -843,6 +859,44 @@ def test_fehlversuche_einer_neuen_mail_zaehlen_zur_tagesgrenze(monkeypatch):
     with server.pool.connection() as conn:
         conn.execute("update post_mails set versuch_am = now() - interval '1 day'")
     assert post_abholen.modellaufrufe_heute() == 0
+
+
+def test_pruefer_voruebergehend_bucht_sortierer_und_pausiert(monkeypatch):
+    """I1: fehlt post-pruefer im Gateway (oder 429/5xx), hat der Sortierer schon
+    gekostet. Ohne Buchung liefe dieselbe Mail alle 120 s ungezaehlt erneut."""
+    _konto()
+    post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({
+        1: _mail("<a@x>"), 2: _mail("<b@x>")}))
+    aufrufe = []
+
+    def einordnen(mail, konto):
+        aufrufe.append(mail["id"])
+        raise post_einordnung.PrueferVoruebergehend(1)
+    monkeypatch.setattr(post_einordnung, "einordnen", einordnen)
+    for runde in (1, 2):
+        assert post_abholen.einordnen_offene(10) == 0
+        assert len(aufrufe) == runde                  # Pause: die Runde endet bei der ersten Mail
+        r1, r2 = _mails()
+        # Kein Versuch gezaehlt (der Pruefer, nicht die Mail ist schuld), aber die Kosten.
+        assert (r1["status"], r1["versuche"], r1["modellaufrufe"]) == ("neu", 0, runde)
+        assert r1["versuch_am"] is not None and r1["eingeordnet_am"] is None
+        assert (r2["status"], r2["modellaufrufe"]) == ("neu", 0)
+        assert post_abholen.modellaufrufe_heute() == runde      # die Tagesgrenze waechst
+
+
+def test_zum_nachsehen_wird_immer_privat_gespeichert(monkeypatch):
+    """I2c: was auch immer `einordnen` liefert - Zum Nachsehen liegt privat, und ein
+    ungueltiges Fach wird privat/Zum Nachsehen (nie unter business)."""
+    _konto()
+    post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({
+        1: _mail("<a@x>"), 2: _mail("<b@x>")}))
+    reihe = iter([
+        post_einordnung.Einordnung("business", post_struktur.UNKLAR, False, "modell", "x"),
+        post_einordnung.Einordnung("business", "Erfunden", False, "modell", "x", "Irgendwas")])
+    monkeypatch.setattr(post_einordnung, "einordnen", lambda mail, konto: next(reihe))
+    assert post_abholen.einordnen_offene(10) == 2
+    for r in _mails():
+        assert (r["bereich"], r["fach"], r["unterfach"]) == ("privat", post_struktur.UNKLAR, None)
 
 
 def test_pruefer_fehler_dann_gatewayfehler_summiert_die_aufrufe(monkeypatch):

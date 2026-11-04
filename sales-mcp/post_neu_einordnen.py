@@ -39,8 +39,15 @@ TOP_DOMAINS = 40
 
 # Gemeinsame Auswahl: wer ueberhaupt neu einzuordnen ist (nie ein Mensch, nie v2).
 def _altbestand(t: str = "") -> str:
-    """`t` = Tabellenalias mit Punkt, wo ein Join die Spaltennamen mehrdeutig macht."""
-    return (f"{t}status in ('eingeordnet','fehler') "
+    """`t` = Tabellenalias mit Punkt, wo ein Join die Spaltennamen mehrdeutig macht.
+
+    `fehler` nur, wenn das Einsortieren scheiterte: eine Mail, die schon beim Abholen
+    kaputt war (post_abholen.ABHOLFEHLER), bleibt stehen - anwenden setzte sie sonst auf
+    eingeordnet und loeschte die Fehlermeldung. starts_with statt LIKE: ein `%` im Text
+    vertruege sich nicht mit den Platzhaltern der Abfragen, die diesen Teil einbetten."""
+    abholfehler = post_abholen.ABHOLFEHLER.replace("'", "''")
+    return (f"({t}status = 'eingeordnet' or ({t}status = 'fehler' "
+            f"and not starts_with(coalesce({t}fehler, ''), '{abholfehler}'))) "
             f"and {t}einordnung_quelle is distinct from 'mensch' "
             f"and {t}einordnung_version < 2")
 
@@ -80,25 +87,38 @@ def _pruefer_ausfall(vorschlag: post_einordnung.Einordnung) -> post_einordnung.E
         vorschlaege={"sortierer": sortierer})
 
 
+# Kosten der Vorschau fuer die Tagesgrenze: `vorschau_aufrufe` ueberlebt `anwenden` (das
+# die Vorschau leert) und wird am selben Tag aufaddiert, sonst verschwaenden bezahlte
+# Aufrufe aus der Tagesgrenze (post_abholen.modellaufrufe_heute zaehlt sie am Tag vorschau_am).
+_KOSTEN_SQL = ("vorschau_aufrufe = %s + case when vorschau_am::date = current_date "
+               "then vorschau_aufrufe else 0 end, vorschau_am = now()")
+
+
 def _vorschau_speichern(mail_id, inhalt: dict) -> None:
-    """Speichert die Vorschau und merkt die Kosten in `vorschau_aufrufe`. Dieser Zaehler
-    ueberlebt `anwenden` (das die Vorschau leert) und wird beim Ueberschreiben am selben
-    Tag aufaddiert, sonst verschwaenden bezahlte Aufrufe aus der Tagesgrenze.
+    """Speichert die Vorschau samt Kosten.
     'mensch'/Version erneut im WHERE: eine Korrektur waehrend des Modellaufrufs gewinnt."""
     server._q(
-        "update post_mails set vorschau = %s::jsonb, "
-        "vorschau_aufrufe = %s + case when vorschau_am::date = current_date "
-        "then vorschau_aufrufe else 0 end, vorschau_am = now() "
+        f"update post_mails set vorschau = %s::jsonb, {_KOSTEN_SQL} "
         f"where id = %s and {_ALTBESTAND}",
         (server._json(inhalt), int(inhalt["aufrufe"]), mail_id))
+
+
+def _nur_kosten_buchen(mail_id, aufrufe: int) -> None:
+    """Bucht bezahlte Aufrufe OHNE Vorschau (Pruefer voruebergehend weg): die Mail bleibt
+    in der Warteschlange. Ohne Altbestand-Bedingung - gekostet hat es so oder so."""
+    server._q(f"update post_mails set {_KOSTEN_SQL} where id = %s", (int(aufrufe), mail_id))
 
 
 def vorschau(grenze: int, alle: bool = False) -> int:
     """Ordnet bis zu `grenze` Altbestand-Mails neu ein und speichert nur die Vorschau.
     Haelt die Tagesgrenze ein (die Vorschau-Aufrufe zaehlen in modellaufrufe_heute mit).
     Rueckgabe = Zahl bearbeiteter Mails."""
-    rest = post_abholen.TAGESGRENZE - post_abholen.modellaufrufe_heute()
-    if grenze <= 0 or rest < AUFRUFE_JE_MAIL:
+    def rest() -> int:
+        # Vor JEDER Mail neu gelesen: sales-post ordnet parallel ein und verbraucht
+        # dieselbe Tagesgrenze; ein einmal gelesener Rest liefe daran vorbei.
+        return post_abholen.TAGESGRENZE - post_abholen.modellaufrufe_heute()
+
+    if grenze <= 0 or rest() < AUFRUFE_JE_MAIL:
         return 0
     zeilen = server._q(
         "select m.id, m.besitzer, m.von, m.betreff, m.datum, m.text, m.sensibel, "
@@ -109,7 +129,7 @@ def vorschau(grenze: int, alle: bool = False) -> int:
         "order by m.gesehen_am, m.imap_uid limit %s", (int(grenze),))
     fertig = 0
     for zeile in zeilen:
-        if rest < AUFRUFE_JE_MAIL:
+        if rest() < AUFRUFE_JE_MAIL:
             break                  # eine weitere Mail koennte die Tagesgrenze reissen
         if post_abholen.kunde_aktiv():
             LOG.info("Vorschau pausiert: Kundenantwort hat Vorrang")
@@ -123,6 +143,11 @@ def vorschau(grenze: int, alle: bool = False) -> int:
         konto = {"kennung": zeile["kennung"], "standard_bereich": zeile["standard_bereich"]}
         try:
             ergebnis = post_einordnung.einordnen(mail, konto)
+        except post_einordnung.PrueferVoruebergehend as e:
+            # Vor GatewayTransient (Unterklasse): der Sortierer hat schon gekostet.
+            _nur_kosten_buchen(mail["id"], e.aufrufe)
+            LOG.info("Vorschau pausiert: Pruefer voruebergehend nicht bereit")
+            break
         except GatewayTransient:
             LOG.info("Vorschau pausiert: Gateway voruebergehend nicht bereit")
             break
@@ -134,14 +159,12 @@ def vorschau(grenze: int, alle: bool = False) -> int:
             # darum eine Fehler-Vorschau (Zum Nachsehen), die den Aufruf festhaelt und
             # die Mail aus der Warteschlange nimmt. --alle holt sie bei Bedarf zurueck.
             LOG.warning("Mail %s: Vorschau fehlgeschlagen (%s)", mail["id"], type(e).__name__)
-            rest -= AUFRUFE_JE_MAIL
             _vorschau_speichern(mail["id"], {
                 "bereich": "privat", "fach": post_struktur.UNKLAR, "unterfach": None,
                 "sensibel": bool(zeile["sensibel"]), "quelle": "modell",
                 "begruendung": "vorschau:fehler", "vorschlaege": None, "aufrufe": 1})
             fertig += 1
             continue
-        rest -= ergebnis.aufrufe
         _vorschau_speichern(mail["id"], _vorschau_inhalt(ergebnis, bool(zeile["sensibel"])))
         fertig += 1
     return fertig
@@ -197,13 +220,22 @@ def anwenden() -> int:
     Modell-Freitext behalten (wie post_abholen._ergebnis_speichern). In SET lesen alle
     Ausdruecke die ALTEN Spaltenwerte - darum ist `sens` ueberall dasselbe.
     `modellaufrufe` und `eingeordnet_am` bleiben, ebenso `vorschau_aufrufe`/`vorschau_am`:
-    die Vorschau-Aufrufe zaehlen am Vorschau-Tag weiter (genau einmal)."""
+    die Vorschau-Aufrufe zaehlen am Vorschau-Tag weiter (genau einmal).
+
+    Die feste Liste gilt auch hier (wie post_abholen._ergebnis_speichern): ein Paar
+    Bereich/Fach, das es nicht gibt, wird Zum Nachsehen; Zum Nachsehen liegt immer
+    privat und ohne Unterfach."""
     sens = "(sensibel or coalesce((vorschau->>'sensibel')::boolean, false))"
     vs = "vorschau->'vorschlaege'"
+    gueltig = ("coalesce((vorschau->>'bereich') || '|' || (vorschau->>'fach') "
+               "= any(%(paare)s), false)")
+    nachsehen = f"(not {gueltig} or vorschau->>'fach' = %(unklar)s)"
+    paare = [f"{b}|{f}" for b, faecher in post_struktur.FAECHER.items() for f in faecher]
     zeilen = server._q(
         "update post_mails set "
-        "bereich = vorschau->>'bereich', fach = vorschau->>'fach', "
-        "unterfach = vorschau->>'unterfach', "
+        f"bereich = case when {nachsehen} then 'privat' else vorschau->>'bereich' end, "
+        f"fach = case when {gueltig} then vorschau->>'fach' else %(unklar)s end, "
+        f"unterfach = case when {nachsehen} then null else vorschau->>'unterfach' end, "
         f"sensibel = {sens}, "
         "einordnung_quelle = vorschau->>'quelle', "
         f"begruendung = case when {sens} and not coalesce((vorschau->>'sensibel')::boolean, false) "
@@ -216,7 +248,8 @@ def anwenden() -> int:
         f"auszug = case when {sens} then null else auszug end, "
         f"an = case when {sens} then null else an end, "
         f"anhaenge = case when {sens} then '{{}}'::text[] else anhaenge end "
-        f"where vorschau is not null and {_ALTBESTAND} returning id")
+        f"where vorschau is not null and {_ALTBESTAND} returning id",
+        {"paare": paare, "unklar": post_struktur.UNKLAR})
     return len(zeilen)
 
 

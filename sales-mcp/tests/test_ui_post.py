@@ -432,8 +432,9 @@ def test_regel_gilt_nicht_fuer_fremde_konten(monkeypatch):
     a, b = _zeile(annas), _zeile(bens)
     assert (a["bereich"], a["fach"], a["einordnung_quelle"]) == (
         "privat", "Abos & Newsletter", "regel")
+    # Die Attrappe sagt business - Zum Nachsehen liegt trotzdem privat (I2c, zentral).
     assert (b["bereich"], b["fach"], b["einordnung_quelle"]) == (
-        "business", ps.UNKLAR, "modell")
+        "privat", ps.UNKLAR, "modell")
 
 
 def test_leitung_korrektur_legt_regel_fuer_den_besitzer_an():
