@@ -1,5 +1,6 @@
 """post_regeln gegen echte Datenbank (nur sales_test): Reihenfolge, Treffer, kaputte Zeilen."""
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -76,22 +77,18 @@ def test_regel_mit_besitzer_nur_fuer_dessen_post():
 SQL_DATEI = Path(__file__).resolve().parents[2] / "db" / "post-sammelstelle.sql"
 
 
-def _sql_einspielen():
-    """Spielt die Migration so ein wie deploy/post-anbinden.sh: psql, nur sales_test."""
-    import subprocess
+def _umbenennung_einspielen():
+    """Fuehrt die Umbenennungs-Statements ('Unklar' -> 'Zum Nachsehen') aus der
+    Migrationsdatei aus. Die DDL-Teile spielt das Testverfahren per psql als
+    supabase_admin ein (sales_app darf kein DDL); die Daten-Updates darf sie."""
     assert server.SCHEMA == "sales_test"
-    # Die Tests laufen im Container ohne psql; dann ueber die Verbindung des Pools.
-    import shutil
-    if shutil.which("psql") is None:
-        text = SQL_DATEI.read_text(encoding="utf-8")
-        # psql-Metabefehle (\set ...) kennt der Server nicht.
-        text = "\n".join(z for z in text.splitlines() if not z.startswith("\\"))
-        text = text.replace(':"schema"', "sales_test").replace(":'schema'", "'sales_test'")
-        with server.pool.connection() as conn:
-            conn.execute(text)
-        return
-    subprocess.run(["psql", "-v", "ON_ERROR_STOP=1", "-v", "schema=sales_test",
-                    "-f", str(SQL_DATEI)], check=True)
+    text = SQL_DATEI.read_text(encoding="utf-8")
+    anweisungen = re.findall(r"update :\"schema\"\.post_\w+ set fach = 'Zum Nachsehen'"
+                             r"[^;]*;", text)
+    assert len(anweisungen) == 2, "Umbenennung in post_mails und post_regeln erwartet"
+    with server.pool.connection() as conn:
+        for a in anweisungen:
+            conn.execute(a.replace(':"schema"', "sales_test"))
 
 
 def test_migration_zweimal_einspielbar_und_unklar_umbenannt():
@@ -105,8 +102,8 @@ def test_migration_zweimal_einspielbar_und_unklar_umbenannt():
         conn.execute("insert into sales_test.post_regeln (muster, feld, bereich, fach) "
                      "values ('t2', 'von', 'business', 'Unklar')")
     try:
-        _sql_einspielen()
-        _sql_einspielen()
+        _umbenennung_einspielen()
+        _umbenennung_einspielen()
         m = server._q("select bereich, fach from post_mails where konto_id = %s", (k,))[0]
         assert (m["bereich"], m["fach"]) == ("privat", "Zum Nachsehen")
         r = server._q("select fach from post_regeln where muster = 't2'")[0]
