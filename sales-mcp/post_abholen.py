@@ -472,11 +472,11 @@ def modellaufrufe_heute() -> int:
     # Jede Mail traegt die Summe ihrer Modellaufrufe (`modellaufrufe`; feste Regeln
     # und menschliche Korrekturen: 0), gezaehlt an ihrem letzten Tag: eingeordnet_am,
     # solange noch `neu` der letzte Fehlversuch (versuch_am). So entgeht auch eine
-    # Mail mit toten Pruefer-Versuchen der Grenze nicht. Dazu die Vorschau-Aufrufe.
+    # Mail mit toten Pruefer-Versuchen der Grenze nicht. Dazu die Vorschau-Aufrufe (vorschau_aufrufe am Tag vorschau_am; ueberlebt anwenden).
     zeile = server._q(
         "select (select coalesce(sum(modellaufrufe), 0) from post_mails "
         "         where coalesce(eingeordnet_am, versuch_am)::date = current_date) "
-        "     + (select coalesce(sum((vorschau->>'aufrufe')::int), 0) from post_mails "
+        "     + (select coalesce(sum(vorschau_aufrufe), 0) from post_mails "
         "         where vorschau_am::date = current_date) as n")[0]
     return int(zeile["n"])
 

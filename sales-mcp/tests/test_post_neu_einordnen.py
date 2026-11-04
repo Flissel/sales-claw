@@ -16,6 +16,7 @@ import post_einordnung  # noqa: E402
 import post_neu_einordnen as neu  # noqa: E402
 import post_struktur  # noqa: E402
 import server  # noqa: E402
+from gateway import GatewayFehler  # noqa: E402
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -217,3 +218,50 @@ def test_bericht_enthaelt_keine_betreffs(monkeypatch, konto_id):
     assert sum(b["alt"].values()) == 2 and sum(b["neu"].values()) == 2
     assert ("instagram.com", "Soziale Netzwerke", "Instagram", 1) in b["katalog"]
     assert ("mystery-test.example", 1) in b["ohne_katalog"]
+
+
+def test_fehler_wird_gezaehlt_und_nicht_wiederholt(monkeypatch, konto_id):
+    mid = _mail(konto_id, 1, sensibel=True, text=None)
+    ruf = []
+
+    def kaputt(mail, konto):
+        ruf.append(1)
+        raise GatewayFehler("x")
+    monkeypatch.setattr(post_einordnung, "einordnen", kaputt)
+    vorher = post_abholen.modellaufrufe_heute()
+    assert neu.vorschau(10) == 1
+    assert post_abholen.modellaufrufe_heute() > vorher
+    v = _zeile(mid)["vorschau"]
+    assert (v["fach"], v["begruendung"], v["sensibel"]) == (post_struktur.UNKLAR, "vorschau:fehler", True)
+    assert neu.vorschau(10) == 0 and len(ruf) == 1
+
+
+def test_fehler_senkt_rest_der_tagesgrenze(monkeypatch, konto_id):
+    for uid in range(1, 6):
+        _mail(konto_id, uid)
+    monkeypatch.setattr(post_abholen, "TAGESGRENZE", 4)
+
+    def kaputt(mail, konto):
+        raise RuntimeError("x")
+    monkeypatch.setattr(post_einordnung, "einordnen", kaputt)
+    assert neu.vorschau(10) == 2          # 4 // 2 Mails, nicht alle fuenf
+    assert post_abholen.modellaufrufe_heute() == 2
+
+
+def test_vorschau_kosten_ueberleben_anwenden(monkeypatch, konto_id):
+    _mail(konto_id, 1)
+    monkeypatch.setattr(post_einordnung, "einordnen", _fake(aufrufe=2))
+    neu.vorschau(10)
+    nach_vorschau = post_abholen.modellaufrufe_heute()
+    assert nach_vorschau == 2
+    neu.anwenden()
+    assert post_abholen.modellaufrufe_heute() == nach_vorschau
+
+
+def test_vorschau_alle_zaehlt_aufsummiert(monkeypatch, konto_id):
+    _mail(konto_id, 1)
+    monkeypatch.setattr(post_einordnung, "einordnen", _fake(aufrufe=2))
+    neu.vorschau(10)
+    erste = post_abholen.modellaufrufe_heute()
+    neu.vorschau(10, alle=True)
+    assert post_abholen.modellaufrufe_heute() == erste + 2

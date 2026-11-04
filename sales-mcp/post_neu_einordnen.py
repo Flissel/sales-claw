@@ -29,7 +29,7 @@ import post_einordnung
 import post_katalog
 import post_struktur
 import server
-from gateway import GatewayFehler, GatewayTransient
+from gateway import GatewayTransient
 
 LOG = logging.getLogger("post_neu_einordnen")
 
@@ -80,6 +80,19 @@ def _pruefer_ausfall(vorschlag: post_einordnung.Einordnung) -> post_einordnung.E
         vorschlaege={"sortierer": sortierer})
 
 
+def _vorschau_speichern(mail_id, inhalt: dict) -> None:
+    """Speichert die Vorschau und merkt die Kosten in `vorschau_aufrufe`. Dieser Zaehler
+    ueberlebt `anwenden` (das die Vorschau leert) und wird beim Ueberschreiben am selben
+    Tag aufaddiert, sonst verschwaenden bezahlte Aufrufe aus der Tagesgrenze.
+    'mensch'/Version erneut im WHERE: eine Korrektur waehrend des Modellaufrufs gewinnt."""
+    server._q(
+        "update post_mails set vorschau = %s::jsonb, "
+        "vorschau_aufrufe = %s + case when vorschau_am::date = current_date "
+        "then vorschau_aufrufe else 0 end, vorschau_am = now() "
+        f"where id = %s and {_ALTBESTAND}",
+        (server._json(inhalt), int(inhalt["aufrufe"]), mail_id))
+
+
 def vorschau(grenze: int, alle: bool = False) -> int:
     """Ordnet bis zu `grenze` Altbestand-Mails neu ein und speichert nur die Vorschau.
     Haelt die Tagesgrenze ein (die Vorschau-Aufrufe zaehlen in modellaufrufe_heute mit).
@@ -115,18 +128,21 @@ def vorschau(grenze: int, alle: bool = False) -> int:
             break
         except post_einordnung.PrueferFehlgeschlagen as e:
             ergebnis = _pruefer_ausfall(e.vorschlag)
-        except GatewayFehler:
-            LOG.warning("Mail %s: Vorschau uebersprungen (Gateway-Fehler)", mail["id"])
-            continue
-        except Exception as e:  # noqa: BLE001 - eine kaputte Mail haelt die anderen nicht auf
-            LOG.warning("Mail %s: Vorschau uebersprungen (%s)", mail["id"], type(e).__name__)
+        except Exception as e:  # noqa: BLE001 - GatewayFehler und alles andere: eine Mail haelt die anderen nicht auf
+            # Der Aufruf hat das Modell erreicht und kostet (wie in einordnen_offene).
+            # Ohne gespeicherte Spur wuerde jeder Lauf dieselbe Mail erneut bezahlen:
+            # darum eine Fehler-Vorschau (Zum Nachsehen), die den Aufruf festhaelt und
+            # die Mail aus der Warteschlange nimmt. --alle holt sie bei Bedarf zurueck.
+            LOG.warning("Mail %s: Vorschau fehlgeschlagen (%s)", mail["id"], type(e).__name__)
+            rest -= AUFRUFE_JE_MAIL
+            _vorschau_speichern(mail["id"], {
+                "bereich": "privat", "fach": post_struktur.UNKLAR, "unterfach": None,
+                "sensibel": bool(zeile["sensibel"]), "quelle": "modell",
+                "begruendung": "vorschau:fehler", "vorschlaege": None, "aufrufe": 1})
+            fertig += 1
             continue
         rest -= ergebnis.aufrufe
-        # 'mensch'/Version erneut im WHERE: eine Korrektur waehrend des Modellaufrufs gewinnt.
-        server._q(
-            "update post_mails set vorschau = %s::jsonb, vorschau_am = now() "
-            f"where id = %s and {_ALTBESTAND}",
-            (server._json(_vorschau_inhalt(ergebnis, bool(zeile["sensibel"]))), mail["id"]))
+        _vorschau_speichern(mail["id"], _vorschau_inhalt(ergebnis, bool(zeile["sensibel"])))
         fertig += 1
     return fertig
 
@@ -180,8 +196,8 @@ def anwenden() -> int:
     Ist das Ergebnis sensibel, werden Text/Auszug/An/Anhaenge geleert und kein
     Modell-Freitext behalten (wie post_abholen._ergebnis_speichern). In SET lesen alle
     Ausdruecke die ALTEN Spaltenwerte - darum ist `sens` ueberall dasselbe.
-    `modellaufrufe` und `eingeordnet_am` bleiben: die Aufrufe der Vorschau zaehlten
-    am Vorschau-Tag schon, zweimal zaehlen waere falsch."""
+    `modellaufrufe` und `eingeordnet_am` bleiben, ebenso `vorschau_aufrufe`/`vorschau_am`:
+    die Vorschau-Aufrufe zaehlen am Vorschau-Tag weiter (genau einmal)."""
     sens = "(sensibel or coalesce((vorschau->>'sensibel')::boolean, false))"
     vs = "vorschau->'vorschlaege'"
     zeilen = server._q(

@@ -198,6 +198,8 @@ alter table :"schema".post_mails
   add column if not exists einordnung_version smallint not null default 1,
   add column if not exists vorschau jsonb,
   add column if not exists vorschau_am timestamptz,
+  -- Kosten der Vorschau fuer die Tagesgrenze; bleibt, wenn anwenden die Vorschau leert.
+  add column if not exists vorschau_aufrufe smallint not null default 0,
   -- Zeitpunkt des letzten Fehlversuchs (Pruefer ausgefallen): macht die Modellaufrufe
   -- einer noch `neuen` Mail fuer die Tagesgrenze sichtbar.
   add column if not exists versuch_am timestamptz;

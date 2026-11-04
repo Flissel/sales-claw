@@ -531,10 +531,11 @@ def _alt_mail(konto_id, uid, quelle="modell", aufrufe=0, vorschau=None, heute=Tr
     with server.pool.connection() as conn:
         conn.execute(
             "insert into post_mails (konto_id, imap_uid, message_id, besitzer, status, "
-            "einordnung_quelle, eingeordnet_am, modellaufrufe, vorschau, vorschau_am) "
+            "einordnung_quelle, eingeordnet_am, modellaufrufe, vorschau, vorschau_am, vorschau_aufrufe) "
             f"values (%s, %s, %s, 'felix', 'eingeordnet', %s, {tag}, %s, %s::jsonb, "
-            f"case when %s::jsonb is null then null else {tag} end)",
-            (konto_id, uid, f"alt{uid}@x", quelle, aufrufe, vorschau_json, vorschau_json))
+            f"case when %s::jsonb is null then null else {tag} end, %s)",
+            (konto_id, uid, f"alt{uid}@x", quelle, aufrufe, vorschau_json, vorschau_json,
+             int((vorschau or {}).get("aufrufe", 0))))
 
 
 def test_tagesgrenze(monkeypatch):
