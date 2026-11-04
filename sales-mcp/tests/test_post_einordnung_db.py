@@ -71,3 +71,58 @@ def test_regel_mit_besitzer_nur_fuer_dessen_post():
     assert pe.nach_regel({**mail, "besitzer": "anna"}).fach == "Werbung"
     assert pe.nach_regel({**mail, "besitzer": "ben"}) is None
     assert pe.nach_regel(mail) is None           # ohne Besitzer: fail closed
+
+
+SQL_DATEI = Path(__file__).resolve().parents[2] / "db" / "post-sammelstelle.sql"
+
+
+def _sql_einspielen():
+    """Spielt die Migration so ein wie deploy/post-anbinden.sh: psql, nur sales_test."""
+    import subprocess
+    assert server.SCHEMA == "sales_test"
+    # Die Tests laufen im Container ohne psql; dann ueber die Verbindung des Pools.
+    import shutil
+    if shutil.which("psql") is None:
+        text = SQL_DATEI.read_text(encoding="utf-8")
+        text = text.replace(':"schema"', "sales_test").replace(":'schema'", "'sales_test'")
+        with server.pool.connection() as conn:
+            conn.execute(text)
+        return
+    subprocess.run(["psql", "-v", "ON_ERROR_STOP=1", "-v", "schema=sales_test",
+                    "-f", str(SQL_DATEI)], check=True)
+
+
+def test_migration_zweimal_einspielbar_und_unklar_umbenannt():
+    with server.pool.connection() as conn:
+        k = conn.execute("insert into sales_test.post_konten (besitzer, kennung, "
+                         "anbieter, adresse, quelle) values ('t2', 't2-mig', 'gmx', "
+                         "'a@b.de', 'ui') returning id").fetchone()["id"]
+        conn.execute("insert into sales_test.post_mails (konto_id, imap_uid, message_id, "
+                     "besitzer, bereich, fach) values (%s, 1, '<t2@x>', 't2', "
+                     "'business', 'Unklar')", (k,))
+        conn.execute("insert into sales_test.post_regeln (muster, feld, bereich, fach) "
+                     "values ('t2', 'von', 'business', 'Unklar')")
+    try:
+        _sql_einspielen()
+        _sql_einspielen()
+        m = server._q("select bereich, fach from post_mails where konto_id = %s", (k,))[0]
+        assert (m["bereich"], m["fach"]) == ("privat", "Zum Nachsehen")
+        r = server._q("select fach from post_regeln where muster = 't2'")[0]
+        assert r["fach"] == "Zum Nachsehen"
+        spalten = {z["column_name"] for z in server._q(
+            "select column_name from information_schema.columns "
+            "where table_schema = 'sales_test' and table_name in "
+            "('post_konten','post_mails','post_regeln')")}
+        assert {"standard_bereich", "unterfach", "vorschlaege", "modellaufrufe",
+                "einordnung_version", "vorschau", "vorschau_am"} <= spalten
+        # Neue Quellen sind erlaubt, alte bleiben es.
+        for q in ("katalog", "pruefer", "regel"):
+            server._q("update post_mails set einordnung_quelle = %s where konto_id = %s",
+                      (q, k))
+        fach = {z["fach"] for z in server._q(
+            "select fach from post_abteilung_faecher where abteilung = 'Marketing'")}
+        assert {"Veranstaltungen", "Soziale Netzwerke"} <= fach
+    finally:
+        server._q("delete from post_mails where konto_id = %s", (k,))
+        server._q("delete from post_konten where id = %s", (k,))
+        server._q("delete from post_regeln where muster = 't2'")

@@ -555,3 +555,13 @@ def test_posteingang_bleibt_chatseite_mit_verweis():
     assert menue.index('href="/posteingang"') < menue.index('href="/post"')
     links = re.findall(r'href="(/[^"]*)"', menue)
     assert links[links.index("/posteingang") + 1] == "/post"
+
+
+def test_konten_formular_hat_standardbereich_mit_business_vorgewaehlt():
+    seite = _get("t8_anna", "/post/konten")
+    sel = re.search(r'<select[^>]*name="standard_bereich"[^>]*>(.*?)</select>',
+                    seite.text, re.S)
+    assert sel, "Feld standard_bereich fehlt"
+    assert re.search(r'<option value="business"[^>]* selected', sel.group(1))
+    assert '<option value="privat"' in sel.group(1)
+    assert "selected" not in re.search(r'<option value="privat"[^>]*>', sel.group(1)).group(0)
