@@ -49,15 +49,25 @@ fi
 
 # 1) Alte Sitzungsdateien loeschen; gezaehlt wird im Container, heraus kommt nur die Zahl.
 # 2) Index-Eintraege ohne Datei entfernen lassen (Ausgabe nennt Sitzungsschluessel - verworfen).
-# Beide Agenten nacheinander; ein Fehler bei einem darf den anderen nicht ueberspringen.
+# Beide Agenten nacheinander; ein Fehler bei einem darf den anderen nicht ueberspringen:
+# unter `set -e` braeche ein scheiterndes `docker exec` sonst die Schleife ab, und die
+# Sitzungskopien (mit Mailinhalt) des zweiten Agenten blieben liegen. Darum faengt jeder
+# Schritt seinen Fehler selbst; ein Fehlschlag macht nur den Exit-Code am Ende rot.
+FEHLGESCHLAGEN=0
 for AGENT in post post-pruefer; do
   ORDNER="/home/node/.openclaw/agents/$AGENT/sessions"
-  ANZAHL="$(docker exec "$CONTAINER" sh -c "[ -d $ORDNER ] || { echo 0; exit 0; }; find $ORDNER -maxdepth 1 -type f -name '*.jsonl*' -mmin +10 -print -delete | wc -l")"
-  ANZAHL="$(printf '%s' "$ANZAHL" | tr -dc '0-9')"
-  if docker exec "$CONTAINER" openclaw sessions cleanup --agent $AGENT --fix-missing --enforce >/dev/null 2>&1; then
+  if ANZAHL="$(docker exec "$CONTAINER" sh -c "[ -d '$ORDNER' ] || { echo 0; exit 0; }; find '$ORDNER' -maxdepth 1 -type f -name '*.jsonl*' -mmin +10 -print -delete | wc -l" 2>/dev/null)"; then
+    ANZAHL="$(printf '%s' "$ANZAHL" | tr -dc '0-9')"
+    ANZAHL="${ANZAHL:-0} Datei(en) aelter als 10 min geloescht"
+  else
+    ANZAHL="Loeschen fehlgeschlagen"
+    FEHLGESCHLAGEN=1
+  fi
+  if docker exec "$CONTAINER" openclaw sessions cleanup --agent "$AGENT" --fix-missing --enforce >/dev/null 2>&1; then
     INDEX="bereinigt"
   else
     INDEX="nicht bereinigt (openclaw sessions cleanup fehlgeschlagen)"
   fi
-  echo "$AGENT-Sitzungen: ${ANZAHL:-0} Datei(en) aelter als 10 min geloescht; Index $INDEX."
+  echo "$AGENT-Sitzungen: $ANZAHL; Index $INDEX."
 done
+exit "$FEHLGESCHLAGEN"

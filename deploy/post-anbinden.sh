@@ -26,6 +26,10 @@
 #      leer, die Regeln schickt sales-post mit)
 #   6. Probe: GET /v1/models muss openclaw/post UND openclaw/post-pruefer
 #      zeigen (bis 30 s)
+#   7. Funktionsprobe: EIN echter Aufruf an openclaw/post-pruefer mit festem
+#      Dummy-Text (keine Mail). /v1/models zeigt nur den Eintrag; ob das
+#      Gateway das Modell claude-sonnet-5-5 wirklich annimmt, zeigt erst der
+#      Aufruf (Ruling 2). Ausgabe nur "ok" oder der Fehlertyp; sonst Code 6.
 #
 # Der Token erscheint nirgends (nur im Container von der Probe selbst gelesen).
 # Startet NICHTS und startet sales-post nicht: Rollout-Reihenfolge und
@@ -190,20 +194,62 @@ FEHLEN=""
 for m in openclaw/post openclaw/post-pruefer; do
   printf '%s' "$ERGEBNIS" | tr ' ' '\n' | grep -Fx "$m" >/dev/null || FEHLEN="$FEHLEN $m"
 done
-if [ -z "$FEHLEN" ]; then
-  echo "   ok: $ERGEBNIS"
-  if [ "$NEUES_PAAR" = 1 ]; then
-    echo "WICHTIG: neues Schluesselpaar - sales-ui bekommt den oeffentlichen Schluessel erst beim Neuerzeugen:"
-    if [ "$PRAEFIX" = "sales" ]; then
-      echo "  docker compose up -d --no-deps --force-recreate sales-ui"
-    else
-      echo "  docker compose --env-file deploy/laeden/$PRAEFIX.env up -d --no-deps --force-recreate sales-ui"
-    fi
-  fi
-  echo "Fertig. sales-post starten erst mit Betreiber-OK: docker compose up -d sales-post (bzw. mit --env-file)."
-else
+if [ -n "$FEHLEN" ]; then
   echo "   ROT: $ERGEBNIS" >&2
   echo "   Agent(en) noch nicht aktiv (fehlt:${FEHLEN}) - das Gateway braucht vermutlich einen Neustart" >&2
   echo "   (docker restart $CONTAINER, mit dem Betreiber abstimmen), dann dieses Skript erneut." >&2
   exit 3
 fi
+echo "   ok: $ERGEBNIS"
+
+# 7) Funktionsprobe: ein echter Aufruf an post-pruefer, wie sales-post ihn macht
+# (Sitzungsschluessel agent:post-pruefer:..., fest gepinnte Funktion). Fester
+# Dummy-Text, keine Mail - die Sitzungsdatei raeumt post-sitzungen-aufraeumen.sh
+# weg. Token wie oben nur im Container; heraus kommt nur "ok" oder ein Fehlertyp
+# (HTTP-Status bzw. Name der JS-Ausnahme), nie die Antwort des Gateways.
+echo "6) Funktionsprobe openclaw/post-pruefer (Dummy-Text, keine Mail, bis 120 s)"
+PROBE="$(docker exec "$CONTAINER" node -e '
+  const T = String(JSON.parse(require("node:fs").readFileSync("/home/node/.openclaw/openclaw.json", "utf8"))?.gateway?.auth?.token || "");
+  if (!T) { console.log("FEHLER Zugangsschluessel fehlt"); process.exit(0); }
+  const name = "probe_abgeben";
+  fetch("http://127.0.0.1:18894/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer " + T,
+               "x-openclaw-session-key": "agent:post-pruefer:probe:" + Date.now(),
+               "x-openclaw-agent-id": "post-pruefer" },
+    body: JSON.stringify({
+      model: "openclaw/post-pruefer",
+      messages: [{ role: "system", content: "Funktionstest der Anbindung. Rufe die Funktion auf." },
+                 { role: "user", content: "Probe: gib ok=true ab. Dies ist ein Testtext, keine Mail." }],
+      tools: [{ type: "function", function: { name, description: "Gibt das Ergebnis der Probe ab.",
+        parameters: { type: "object", additionalProperties: false, required: ["ok"],
+                      properties: { ok: { type: "boolean" } } } } }],
+      tool_choice: { type: "function", function: { name } } }),
+    signal: AbortSignal.timeout(120000) })
+    .then(async (r) => {
+      if (r.status !== 200) return "FEHLER HTTP " + r.status;
+      const f = (await r.json())?.choices?.[0]?.message?.tool_calls?.[0]?.function;
+      return f && f.name === name ? "ok" : "FEHLER ohne Funktionsaufruf";
+    })
+    .catch((e) => "FEHLER " + String((e && e.name) || "unbekannt"))
+    .then((s) => console.log(s));' 2>/dev/null || true)"
+# Nur harmlose Zeichen, gekappt: die Zeile besteht ohnehin nur aus Status/Typname.
+PROBE="$(printf '%s' "$PROBE" | tr -cd 'A-Za-z0-9 ._-' | cut -c1-80)"
+if [ "$PROBE" != "ok" ]; then
+  echo "   ROT: Funktionsprobe post-pruefer: ${PROBE:-FEHLER keine Ausgabe}" >&2
+  echo "   Der Agent ist eingetragen, antwortet aber nicht mit Funktionsaufruf - vermutlich nimmt das" >&2
+  echo "   Gateway das Modell anthropic/claude-sonnet-5-5 nicht an (Ruling 2: dann claude-sonnet-5)." >&2
+  echo "   Nicht weiter ausrollen: sonst scheitert jede Pruefung einer Mail." >&2
+  exit 6
+fi
+echo "   ok: openclaw/post-pruefer antwortet mit Funktionsaufruf"
+
+if [ "$NEUES_PAAR" = 1 ]; then
+  echo "WICHTIG: neues Schluesselpaar - sales-ui bekommt den oeffentlichen Schluessel erst beim Neuerzeugen:"
+  if [ "$PRAEFIX" = "sales" ]; then
+    echo "  docker compose up -d --no-deps --force-recreate sales-ui"
+  else
+    echo "  docker compose --env-file deploy/laeden/$PRAEFIX.env up -d --no-deps --force-recreate sales-ui"
+  fi
+fi
+echo "Fertig. sales-post starten erst mit Betreiber-OK: docker compose up -d sales-post (bzw. mit --env-file)."
