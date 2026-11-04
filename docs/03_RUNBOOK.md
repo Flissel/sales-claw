@@ -3330,15 +3330,18 @@ der Praefix (z. B. `ivan`) bzw. `--env-file deploy/laeden/<laden>.env` bei `dock
 1. `POST_KONTEXT` in die `.env` des Ladens (Text mit dem Betreiber abstimmen; leer ist erlaubt).
 2. `docker compose stop sales-post` - der alte Dienst soll zwischen Migration und neuem Code keine
    Mails mehr einordnen.
-3. `bash deploy/post-anbinden.sh [laden]` - spielt die Migration ein (`db/post-sammelstelle.sql`,
-   idempotent), traegt `post-pruefer` ein und prueft ihn mit einem echten Funktionsaufruf
-   (Dummy-Text, keine Mail). Endet es mit "ABBRUCH" (Code 5) oder "ROT" (Code 3/6): nicht weiter.
+3. Migration aus dem NEUEN Stand einspielen, ohne den Checkout schon vorzuziehen (sonst meldet
+   `update.sh` danach "Bereits aktuell" und baut nichts neu):
+   `git fetch origin && git show origin/feat/stufe-1-fundament:db/post-sammelstelle.sql | docker exec -i debian-supabase-db-1 psql -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v schema=sales`
+   (anderer Laden: `-v schema=sales_<praefix>`). Die Migration ist rein additiv bzw. idempotent; der
+   noch laufende alte Code (Oberflaeche, Bot) kommt mit den neuen Spalten zurecht.
 4. `bash deploy/update.sh` (neuer Code). `sales-post` bleibt dabei aus (`update.sh` baut ihn nur neu,
    wenn er vorher lief).
-5. Die Migration noch einmal (idempotent): sie benennt `Unklar`-Zeilen um, die der alte Code
-   (Oberflaeche, Bot) zwischen Schritt 3 und 4 noch geschrieben hat, und loescht Regeln dorthin:
-   `docker exec -i debian-supabase-db-1 psql -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v schema=sales < db/post-sammelstelle.sql`
-   (anderer Laden: `-v schema=sales_<praefix>`) - oder einfach `bash deploy/post-anbinden.sh [laden]` erneut.
+5. `bash deploy/post-anbinden.sh [laden]` - jetzt in der neuen Fassung: spielt die Migration noch einmal
+   ein (benennt `Unklar`-Zeilen um, die der alte Code zwischen Schritt 3 und 4 geschrieben hat, und
+   loescht Regeln dorthin), traegt `post-pruefer` ein und prueft ihn mit einem echten Funktionsaufruf
+   (Dummy-Text, keine Mail). Endet es mit "ABBRUCH" (Code 5) oder "ROT" (Code 3/6): nicht weiter,
+   `sales-post` bleibt aus.
 6. `docker compose up -d sales-post` (bzw. mit `--env-file deploy/laeden/<laden>.env`); danach
    `bash deploy/smoke.sh`.
 7. `bash deploy/post-neu-einordnen.sh [laden] vorschau` - ueber Tage, bis die Tagesgrenze alles geschafft

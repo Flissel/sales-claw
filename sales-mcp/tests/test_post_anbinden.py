@@ -289,18 +289,22 @@ def test_anbinden_funktionsprobe_an_den_pruefer():
 
 def test_runbook_v2_reihenfolge_migration_vor_update():
     """C1: neuer Code liest Spalten, die erst die Migration anlegt. Also: sales-post
-    stoppen, Migration + Pruefer (post-anbinden.sh), dann update.sh, dann die
-    idempotente Migration noch einmal (benennt zwischenzeitlich geschriebene Zeilen um)."""
+    stoppen, Migration aus dem NEUEN Stand per `git show` (der Checkout darf nicht
+    vorgezogen werden, sonst meldet update.sh "Bereits aktuell" und baut nichts),
+    dann update.sh, dann post-anbinden.sh in der neuen Fassung (Migration noch
+    einmal + Pruefer), erst danach sales-post starten."""
     rb = (WURZEL / "docs" / "03_RUNBOOK.md").read_text(encoding="utf-8")
     start = rb.index("Rollout v2")
     abschnitt = rb[start:rb.index("\nR13:", start)]
     stopp = abschnitt.index("compose stop sales-post")
-    anbinden = abschnitt.index("deploy/post-anbinden.sh")
-    update = abschnitt.index("deploy/update.sh")
-    nochmal = abschnitt.index("db/post-sammelstelle.sql", update)
-    start_post = abschnitt.index("up -d sales-post", nochmal)
+    migration = abschnitt.index("git show origin/feat/stufe-1-fundament:db/post-sammelstelle.sql", stopp)
+    update = abschnitt.index("bash deploy/update.sh", migration)
+    anbinden = abschnitt.index("bash deploy/post-anbinden.sh", update)
+    start_post = abschnitt.index("up -d sales-post", anbinden)
     vorschau = abschnitt.index("post-neu-einordnen.sh [laden] vorschau")
-    assert abschnitt.index("POST_KONTEXT") < stopp < anbinden < update < nochmal < start_post < vorschau
+    assert abschnitt.index("POST_KONTEXT") < stopp < migration < update < anbinden < start_post < vorschau
+    # Den Checkout vor update.sh von Hand vorzuziehen, waere die Falle selbst.
+    assert "git merge" not in abschnitt[:update] and "git pull" not in abschnitt[:update]
     assert "bash deploy/post-neu-einordnen.sh [laden] anwenden" in abschnitt
     assert "Task 7" not in abschnitt and "Aufruf laut Skript-Hilfe" not in abschnitt
 
