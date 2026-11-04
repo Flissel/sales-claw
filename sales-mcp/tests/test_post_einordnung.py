@@ -209,7 +209,8 @@ def test_uneinig_sensibel_ist_oder_und_ohne_freitext():
         post=_urteil("business", "Werbung", sensibel=False, begruendung="Rabatt"),
         pruefer=_urteil("privat", "Rechnungen", sensibel=True, begruendung="Code 4711")))
     assert e.sensibel is True and e.fach == post_struktur.UNKLAR
-    assert "begruendung" in e.vorschlaege["sortierer"]
+    # Mail-Ebene: ist die Mail sensibel, traegt KEIN Vorschlag Freitext.
+    assert "begruendung" not in e.vorschlaege["sortierer"]
     assert "begruendung" not in e.vorschlaege["pruefer"]
     assert "4711" not in repr(e)
 
@@ -347,3 +348,18 @@ def test_nicht_sensibel_behaelt_begruendung():
     u = _urteil("privat", "Werbung", begruendung="Rabattmail")
     e = pe.einordnen(_mail(), PRIVAT, aufruf=_agenten(post=u, pruefer=dict(u)))
     assert e.begruendung == "Rabattmail"
+
+
+@pytest.mark.parametrize("fach", ["Erfunden", post_struktur.UNKLAR])
+def test_einig_auf_unklar_oder_erfundenem_fach_liegt_immer_privat(fach):
+    u = _urteil("business", fach)
+    e = pe.einordnen(_mail(), BUSINESS, aufruf=_agenten(post=u, pruefer=dict(u)))
+    assert (e.bereich, e.fach) == ("privat", post_struktur.UNKLAR)
+
+
+def test_einig_aber_nur_pruefer_sensibel_ist_sensibel_ohne_freitext():
+    s = _urteil("privat", "Rechnungen", sensibel=False, begruendung="Code 4711 fuer Login")
+    p = _urteil("privat", "Rechnungen", sensibel=True)
+    e = pe.einordnen(_mail(), PRIVAT, aufruf=_agenten(post=s, pruefer=p))
+    assert e.quelle == "pruefer" and e.sensibel is True
+    assert "4711" not in e.begruendung

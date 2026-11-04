@@ -241,9 +241,9 @@ class _Urteil:
     def tripel(self) -> tuple:
         return (self.bereich, self.fach, self.unterfach)
 
-    def vorschlag(self) -> dict:
+    def vorschlag(self, ohne_freitext: bool) -> dict:
         v = {"bereich": self.bereich, "fach": self.fach, "unterfach": self.unterfach}
-        if not self.sensibel:     # Freitext sensibler Mails wird nie gespeichert
+        if not ohne_freitext:     # Freitext sensibler Mails wird nie gespeichert (Mail-Ebene)
             v["begruendung"] = self.begruendung
         return v
 
@@ -262,6 +262,8 @@ def _urteil_holen(agent: str, mail: dict, konto: dict, system: str,
         bereich, fach = "privat", post_struktur.UNKLAR
     elif not isinstance(fach, str) or not post_struktur.fach_gueltig(bereich, fach):
         fach = post_struktur.UNKLAR
+    if fach == post_struktur.UNKLAR:
+        bereich = "privat"        # Spec §6: Zum Nachsehen liegt IMMER privat
     unterfach = post_struktur.unterfach_zwingen(fach, args.get("unterfach"))
     sensibel = args.get("sensibel") is True
     # Sensibel: Freitext des Modells kann Mailinhalt (Codes, Namen) tragen und wird
@@ -318,9 +320,14 @@ def einordnen(mail: dict, konto: dict, aufruf=gateway.funktion_aufrufen) -> Eino
         raise PrueferFehlgeschlagen(vorschlag) from None
 
     if s.tripel() == p.tripel() and s.sicher and p.sicher:
-        return Einordnung(s.bereich, s.fach, s.sensibel, "pruefer", s.begruendung,
+        # Meldet auch nur einer sensibel, gilt die Mail als sensibel und der
+        # Freitext des Sortierers wird nicht gespeichert.
+        sensibel = s.sensibel or p.sensibel
+        return Einordnung(s.bereich, s.fach, sensibel, "pruefer",
+                          "modell:sensibel" if sensibel else s.begruendung,
                           s.unterfach, aufrufe=2)
     # Uneins oder unsicher: privat (nur der Besitzer sieht es), ein Mensch entscheidet.
-    return Einordnung("privat", post_struktur.UNKLAR, s.sensibel or p.sensibel, "modell",
+    sensibel = s.sensibel or p.sensibel
+    return Einordnung("privat", post_struktur.UNKLAR, sensibel, "modell",
                       "pruefer:uneins", None, aufrufe=2,
-                      vorschlaege={"sortierer": s.vorschlag(), "pruefer": p.vorschlag()})
+                      vorschlaege={"sortierer": s.vorschlag(sensibel), "pruefer": p.vorschlag(sensibel)})
