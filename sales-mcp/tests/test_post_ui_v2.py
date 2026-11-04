@@ -139,8 +139,9 @@ def test_vorschlag_fremde_mail_ohne_regel():
     r = _post("t8_lea", f"/post/mail/{m}/vorschlag", {"wahl": "sortierer", "regel": "ja"})
     assert r.status_code == 403
     assert _zeile(m)["fach"] == ps.UNKLAR
-    # Sichtbar fuer die Leitung, wenn der Vorschlag-Mail unter business liegt.
-    m2 = _mail("t8_ben", "business", ps.UNKLAR, von="x@y.de")
+    # Bens Business-Mail ist fuer die Leitung sichtbar: sie darf uebernehmen,
+    # aber keine Regel fuer Bens Post anlegen.
+    m2 = _mail("t8_ben", "business", "Kunden & Anfragen", von="x@y.de")
     with server.pool.connection() as conn:
         conn.execute("update post_mails set vorschlaege = %s::jsonb where id = %s",
                      (json.dumps(VORSCHLAEGE), m2))
@@ -216,3 +217,36 @@ def test_sensible_mail_liefert_keine_begruendung_der_vorschlaege():
         conn.execute("update post_mails set sensibel = false where id = %s", (m,))
     assert "begruendung" in ps.mail_lesen(ps.betrachter_laden("t8_anna"), m)["vorschlaege"]["sortierer"]
     assert "vorschlaege" not in ps.mails_suchen(ps.betrachter_laden("t8_anna"))[0]
+
+
+def test_zum_nachsehen_nie_unter_business():
+    import re
+    m = _mail("t8_anna", "business", "Kunden & Anfragen", von="n@firma.de")
+    seite = _get("t8_anna", f"/post/mail/{m}").text
+    gruppe = re.search(r'<optgroup label="Business">(.*?)</optgroup>', seite, re.S).group(1)
+    assert ps.UNKLAR not in gruppe
+    assert ps.UNKLAR in re.search(r'<optgroup label="Privat">(.*?)</optgroup>', seite, re.S).group(1)
+    r = _post("t8_anna", f"/post/mail/{m}/korrigieren",
+              {"bereich": "business", "fach": ps.UNKLAR, "regel": "ja"})
+    assert r.status_code == 303
+    z = _zeile(m)
+    assert (z["bereich"], z["fach"]) == ("privat", ps.UNKLAR)
+    assert server._q("select count(*) n from post_regeln")[0]["n"] == 0
+
+
+def test_absender_ohne_adresse_korrektur_gelingt_mit_standardformular():
+    m = _unklar(von="Kein Absender")
+    seite = _get("t8_anna", f"/post/mail/{m}").text
+    assert 'name="regel"' not in seite
+    r = _post("t8_anna", f"/post/mail/{m}/korrigieren",
+              {"bereich": "business", "fach": "Rechnungen"})
+    assert r.status_code == 303 and _zeile(m)["fach"] == "Rechnungen"
+    m2 = _unklar(von="Kein Absender")
+    assert _post("t8_anna", f"/post/mail/{m2}/vorschlag",
+                 {"wahl": "sortierer"}).status_code == 303
+    # Selbstgebauter Haken ohne Adresse: weiterhin 400, nichts geaendert.
+    m3 = _unklar(von="Kein Absender")
+    assert _post("t8_anna", f"/post/mail/{m3}/korrigieren",
+                 {"bereich": "business", "fach": "Rechnungen",
+                  "regel": "ja"}).status_code == 400
+    assert _zeile(m3)["fach"] == ps.UNKLAR

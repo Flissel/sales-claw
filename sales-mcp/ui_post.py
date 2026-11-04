@@ -273,6 +273,15 @@ def routen(ui) -> list:
         return (rolle(request) == "freigeben"
                 and (b.leitung or m["besitzer"] == b.name))
 
+    def absender_adresse(m) -> str:
+        adresse = email.utils.parseaddr(m["von"] or "")[1].strip()
+        return adresse if "@" in adresse else ""
+
+    def regel_angeboten(b, m) -> bool:
+        # Den Haken nur zeigen, wo er auch wirken kann: ohne Mailadresse
+        # scheiterte sonst jede Korrektur mit dem vorgewaehlten Haken.
+        return darf_regel_anlegen(b, m) and bool(absender_adresse(m))
+
     def darf_regel_anlegen(b, m) -> bool:
         # R18: „für diesen Absender immer so“ nur fuer die eigene Post. Die
         # Leitung darf eine fremde Mail korrigieren, aber keine Regel fuer
@@ -323,7 +332,10 @@ def routen(ui) -> list:
             f'<optgroup label="{e(BEREICH_TITEL[br])}">' + "".join(
                 f'<option value="{e(f)}"'
                 f'{" selected" if (m["bereich"], m["fach"]) == (br, f) else ""}>'
-                f'{e(f)}</option>' for f in ps.FAECHER[br]) + '</optgroup>'
+                f'{e(f)}</option>' for f in ps.FAECHER[br]
+                # „Zum Nachsehen“ liegt immer privat (Spec): unter Business
+                # nicht anbieten, sonst sähe die Leitung solche Mails.
+                if not (br == "business" and f == ps.UNKLAR)) + '</optgroup>'
             for br in ps.BEREICHE)
         alle_unter = tuple(dict.fromkeys(u for liste in ps.UNTERFAECHER.values()
                                          for u in liste))
@@ -382,8 +394,8 @@ def routen(ui) -> list:
                              + ", ".join(e(a) for a in m["anhaenge"]) + "</div>")
             teile.append(f'<div class="text mailtext">{e((m["text"] or "")[:TEXT_MAX])}</div></div>')
         if darf_korrigieren(request, b, m):
-            teile.append(vorschlag_formulare(m, darf_regel_anlegen(b, m)))
-            teile.append(korrektur_formular(m, darf_regel_anlegen(b, m)))
+            teile.append(vorschlag_formulare(m, regel_angeboten(b, m)))
+            teile.append(korrektur_formular(m, regel_angeboten(b, m)))
         return ui._seite(m["betreff"] or "Mail", "".join(teile), titel_zeigen=False)
 
     @ui._gesichert_seite
@@ -406,6 +418,8 @@ def routen(ui) -> list:
             return ui._fehlerseite(400, "Ungültige Einordnung",
                                    "Dieses Fach gibt es in diesem Bereich nicht. "
                                    "Nichts geändert.")
+        if fach == ps.UNKLAR:
+            bereich = "privat"   # auch bei selbstgebautem Formular
         sensibel = form.get("sensibel") == "ja"
         unterfach = ps.unterfach_zwingen(fach, str(form.get("unterfach") or ""))
         fehler = speichern(b, m, bereich, fach, unterfach, sensibel,
@@ -418,9 +432,11 @@ def routen(ui) -> list:
         muster = None
         # R18: fremde Post (Leitung korrigiert Bens Mail) wird korrigiert, aber
         # ohne Regel - auch wenn ein selbstgebautes Formular den Haken schickt.
-        if regel_gewollt and darf_regel_anlegen(b, m):
-            adresse = email.utils.parseaddr(m["von"] or "")[1].strip()
-            if "@" not in adresse:
+        # Nie eine Regel nach „Zum Nachsehen“: sie hielte alle kuenftigen
+        # Mails des Absenders dauerhaft ungeordnet fest.
+        if regel_gewollt and fach != ps.UNKLAR and darf_regel_anlegen(b, m):
+            adresse = absender_adresse(m)
+            if not adresse:
                 return ui._fehlerseite(400, "Keine Regel möglich",
                                        "Der Absender hat keine Mailadresse. "
                                        "Nichts geändert.")
