@@ -347,21 +347,38 @@ def konto_abholen(zeile: dict, kasten=None, stapel: int = 50) -> int:
 
 def _ergebnis_speichern(mail_id, e: post_einordnung.Einordnung) -> None:
     bereich, fach = e.bereich, e.fach
+    unterfach = e.unterfach
     if not post_struktur.fach_gueltig(bereich or "", fach or ""):
         # Die feste Liste gilt auch hier: nie ein Fach speichern, das es nicht gibt.
         bereich, fach = (bereich if bereich in post_struktur.BEREICHE else "privat",
                          post_struktur.UNKLAR)
+        unterfach = None
     server._q(
-        "update post_mails set bereich = %s, fach = %s, sensibel = %s, "
-        "einordnung_quelle = %s, begruendung = %s, eingeordnet_am = now(), "
+        "update post_mails set bereich = %s, fach = %s, unterfach = %s, sensibel = %s, "
+        "einordnung_quelle = %s, begruendung = %s, vorschlaege = %s::jsonb, "
+        "modellaufrufe = %s, einordnung_version = 2, eingeordnet_am = now(), "
         "status = 'eingeordnet', fehler = null, "
         "text = case when %s then null else text end, "
         "auszug = case when %s then null else auszug end, "
         "an = case when %s then null else an end, "
         "anhaenge = case when %s then '{}'::text[] else anhaenge end "
         "where id = %s and status = 'neu'",
-        (bereich, fach, e.sensibel, e.quelle, e.begruendung, e.sensibel, e.sensibel,
-         e.sensibel, e.sensibel, mail_id))
+        (bereich, fach, unterfach, e.sensibel, e.quelle, e.begruendung,
+         None if e.vorschlaege is None else server._json(e.vorschlaege), e.aufrufe,
+         e.sensibel, e.sensibel, e.sensibel, e.sensibel, mail_id))
+
+
+def _pruefer_vorschlag_speichern(mail_id, vorschlag: post_einordnung.Einordnung,
+                                 aufrufe: int) -> None:
+    """Pruefer dreimal ausgefallen: Die Mail geht nicht ungeprueft ins Fach des
+    Sortierers, sondern privat zum Nachsehen - sein Vorschlag liegt daneben."""
+    sortierer = {"bereich": vorschlag.bereich, "fach": vorschlag.fach,
+                 "unterfach": vorschlag.unterfach}
+    if not vorschlag.sensibel:      # Freitext sensibler Mails wird nie gespeichert (Spec §5)
+        sortierer["begruendung"] = vorschlag.begruendung
+    _ergebnis_speichern(mail_id, post_einordnung.Einordnung(
+        "privat", post_struktur.UNKLAR, vorschlag.sensibel, "modell",
+        "pruefer:ausgefallen", None, aufrufe=aufrufe, vorschlaege={"sortierer": sortierer}))
 
 
 def einordnen_offene(grenze: int) -> int:
@@ -369,9 +386,13 @@ def einordnen_offene(grenze: int) -> int:
     Rueckgabe = Zahl der Mails, die `neu` verlassen haben (eingeordnet oder fehler)."""
     if grenze <= 0:
         return 0
+    # Das Konto bestimmt den Standardbereich (Spec v2 §5.1); ohne Konto-Zeile
+    # (sollte es nicht geben) gilt der Standard von post_einordnung.
     offene = server._q(
-        "select id, besitzer, von, betreff, datum, text from post_mails where status = 'neu' "
-        "order by gesehen_am, imap_uid limit %s", (int(grenze),))
+        "select m.id, m.besitzer, m.von, m.betreff, m.datum, m.text, "
+        "k.kennung, k.standard_bereich from post_mails m "
+        "left join post_konten k on k.id = m.konto_id where m.status = 'neu' "
+        "order by m.gesehen_am, m.imap_uid limit %s", (int(grenze),))
     erledigt = 0
     for zeile in offene:
         if _STOPP.is_set():
@@ -383,8 +404,9 @@ def einordnen_offene(grenze: int) -> int:
                 "betreff": zeile["betreff"] or "",
                 "datum": zeile["datum"].isoformat() if zeile["datum"] else "",
                 "text": zeile["text"] or ""}
+        konto = {"kennung": zeile["kennung"], "standard_bereich": zeile["standard_bereich"]}
         try:
-            ergebnis = post_einordnung.einordnen(mail)
+            ergebnis = post_einordnung.einordnen(mail, konto)
         except GatewayTransient:
             LOG.info("Einordnen pausiert: Gateway voruebergehend nicht bereit")
             break
@@ -396,11 +418,27 @@ def einordnen_offene(grenze: int) -> int:
                 "update post_mails set status = 'fehler', bereich = 'privat', fach = %s, "
                 "fehler = 'Einordnung durch das Modell endgueltig fehlgeschlagen', "
                 # Der Aufruf hat das Modell erreicht: zaehlt zur Tagesgrenze.
-                "einordnung_quelle = 'modell', "
+                "einordnung_quelle = 'modell', modellaufrufe = 1, einordnung_version = 2, "
                 "eingeordnet_am = now() where id = %s and status = 'neu'",
                 (post_struktur.UNKLAR, mail["id"]))
             erledigt += 1
             continue
+        except post_einordnung.PrueferFehlgeschlagen as e:
+            # Der Sortierer-Aufruf und der gescheiterte Pruefer haben Geld gekostet:
+            # je Fehlversuch 2 Aufrufe auf die Zeile, damit die Grenze sie sieht,
+            # sobald die Mail eingeordnet ist.
+            zeilen = server._q(
+                "update post_mails set versuche = versuche + 1, "
+                "modellaufrufe = modellaufrufe + 2 where id = %s "
+                "returning versuche, modellaufrufe", (mail["id"],))
+            if zeilen and zeilen[0]["versuche"] >= VERSUCHE_MAX:
+                LOG.warning("Mail %s: Pruefer nach %d Versuchen ausgefallen - Zum Nachsehen",
+                            mail["id"], VERSUCHE_MAX)
+                _pruefer_vorschlag_speichern(mail["id"], e.vorschlag, zeilen[0]["modellaufrufe"])
+                erledigt += 1
+            else:
+                LOG.warning("Mail %s: Pruefer ausgefallen - bleibt neu", mail["id"])
+            continue          # die naechste Mail ist vom Pruefer-Ausfall nicht betroffen
         except Exception as e:  # noqa: BLE001 - Netz-/JSON-Eigenheiten (Task-4-Luecke)
             versuche = server._q(
                 "update post_mails set versuche = versuche + 1 where id = %s "
@@ -431,13 +469,14 @@ def kunde_aktiv() -> bool:
 
 
 def modellaufrufe_heute() -> int:
-    # Nutzerregel-Treffer ('regel:<feld>...') rufen seit R18 das Modell fuer
-    # `sensibel` - sie zaehlen mit. Feste Sensibel-Muster ('sensibel-muster:')
-    # und menschliche Korrekturen nicht.
-    return int(server._q(
-        "select count(*) as n from post_mails where eingeordnet_am::date = current_date "
-        "and (einordnung_quelle = 'modell' or (einordnung_quelle = 'regel' "
-        "and begruendung like 'regel:%%'))")[0]["n"])
+    # Jede Mail traegt die Zahl ihrer Modellaufrufe (`modellaufrufe`; feste Regeln
+    # und menschliche Korrekturen: 0). Dazu die Aufrufe der Vorschau-Zwischenablage.
+    zeile = server._q(
+        "select (select coalesce(sum(modellaufrufe), 0) from post_mails "
+        "         where eingeordnet_am::date = current_date) "
+        "     + (select coalesce(sum((vorschau->>'aufrufe')::int), 0) from post_mails "
+        "         where vorschau_am::date = current_date) as n")[0]
+    return int(zeile["n"])
 
 
 def eine_runde() -> dict:
@@ -457,10 +496,12 @@ def eine_runde() -> dict:
         bilanz["pause"] = "kundenantwort"
         return bilanz
     rest = TAGESGRENZE - modellaufrufe_heute()
-    if rest <= 0:
+    # Eine Mail kostet bis zu 2 Aufrufe (Sortierer + Pruefer), `rest` zaehlt Aufrufe.
+    mails = min(rest // 2, EINORDNEN_JE_RUNDE)
+    if mails <= 0:
         bilanz["tagesgrenze"] = True
         return bilanz
-    bilanz["eingeordnet"] = einordnen_offene(min(rest, EINORDNEN_JE_RUNDE))
+    bilanz["eingeordnet"] = einordnen_offene(mails)
     return bilanz
 
 

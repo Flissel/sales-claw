@@ -423,8 +423,9 @@ def test_regel_gilt_nicht_fuer_fremde_konten(monkeypatch):
     assert pe.nach_regel(kopf("")) is None
 
     # Ende zu Ende ueber den Abholdienst: zwei neue Mails von X.
-    monkeypatch.setattr(pe, "nach_modell", lambda mail: pe.Einordnung(
-        "business", ps.UNKLAR, False, "modell", "attrappe"))
+    # Nutzerregel zuerst (ohne Modell, `nach_regel`), sonst die Modell-Attrappe.
+    monkeypatch.setattr(pe, "einordnen", lambda mail, konto: pe.nach_regel(mail, konto)
+                        or pe.Einordnung("business", ps.UNKLAR, False, "modell", "attrappe"))
     annas = _mail("t8_anna", None, None, status="neu", von="X <x@absender.de>")
     bens = _mail("t8_ben", None, None, status="neu", von="X <x@absender.de>")
     assert post_abholen.einordnen_offene(10) == 2

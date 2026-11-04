@@ -290,8 +290,8 @@ def einordnen(mail: dict, konto: dict, aufruf=gateway.funktion_aufrufen) -> Eino
     regel = nach_nutzerregel(mail)
     if regel is not None:
         sensibel = _sensibel_entscheiden(mail, konto, aufruf)
-        # Begruendung bleibt der feste Regeltext (kein Modell-Freitext); 'regel:...'
-        # zaehlt in post_abholen zur Tagesgrenze, weil ein Modellaufruf dahintersteht.
+        # Begruendung bleibt der feste Regeltext (kein Modell-Freitext). Den Modellaufruf
+        # dahinter zaehlt `aufrufe` (post_abholen.modellaufrufe_heute summiert es).
         return Einordnung(regel.bereich, regel.fach, sensibel, "regel",
                           regel.begruendung + (":modell-sensibel" if sensibel else ""),
                           regel.unterfach, aufrufe=1)
