@@ -13,6 +13,7 @@
     }
   },
   "_kommentar_post": "03.11.2026: Agent post (sales-post, Einordnung der Post-Sammelstelle) liest jede Mail einmal - er hat ein EIGENES Modell ohne fallbacks. Die Vorgabe fallbacks [openrouter/free] wuerde Mailinhalte bei erschoepftem Abo an ein kostenloses Fremdmodell schicken; dann lieber kein Ergebnis (sales-post wiederholt spaeter). deploy/post-anbinden.sh setzt genau diesen Eintrag und bricht ab, wenn das Gateway ihn ablehnt.",
+  "_kommentar_pruefer": "04.11.2026: Agent post-pruefer (Post-Einordnung v2) liest dieselben Mails ein zweites Mal und prueft das Urteil von post - mit eigenem, staerkerem Modell (claude-sonnet-5-5, eigener Modelleintrag wie claude-haiku-5-5) und aus demselben Grund ohne fallbacks und ohne Werkzeuge. Ob das Live-Gateway das Modell kennt, zeigt erst post-anbinden.sh: lehnt es den Eintrag ab, bricht das Skript ab und registriert KEINEN der beiden Agenten (ein Agent ohne eigenes Modell fiele auf openrouter/free zurueck).",
   "_kommentar_auto": "29.10.2026: sales-auto ruft das Gateway synchron ueber /v1/chat/completions (Agent auto). Der Agent auto hat KEIN Werkzeug (tools.deny ['*'], gemessen: auch exec/message weg, die mitgeschickte Funktion antwort_abgeben bleibt) und einen eigenen, fast leeren Arbeitsordner - die Regeln schickt sales-auto als Systemnachricht mit. main bleibt erster Eintrag = Standard-Agent. Der Endpunkt ist Operator-Zugriff: Port 18894 bleibt im Compose-Netz bzw. auf 127.0.0.1.",
   "agents": {
     "defaults": {
@@ -46,6 +47,15 @@
           "primary": "anthropic/claude-haiku-5-5",
           "fallbacks": []
         }
+      },
+      {
+        "id": "post-pruefer",
+        "workspace": "/home/node/.openclaw/workspace-post-pruefer",
+        "tools": { "deny": ["*"] },
+        "model": {
+          "primary": "anthropic/claude-sonnet-5-5",
+          "fallbacks": []
+        }
       }
     ]
   },
@@ -69,6 +79,10 @@
             "id": "claude-haiku-5-5",
             "name": "claude-haiku-5-5",
             "input": ["text", "image"]
+          },
+          {
+            "id": "claude-sonnet-5-5",
+            "name": "claude-sonnet-5-5"
           }
         ]
       }
