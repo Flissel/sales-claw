@@ -204,6 +204,28 @@ def test_mensch_loescht_vorschau_und_vorschlaege_auch_bei_sensibel():
     assert z["text"] is None and z["sensibel"] is True
 
 
+def test_korrektur_verschiebt_die_modellkosten_nicht_auf_heute():
+    """Jeder Modellaufruf zaehlt genau einmal, an seinem Tag: Eine Korrektur von Hand
+    darf den Tag der urspruenglichen Einordnung nicht auf heute ziehen."""
+    import post_abholen
+    m = _mail("t8_anna", "privat", "Rechnungen")
+    with server.pool.connection() as conn:
+        conn.execute("update post_mails set einordnung_quelle = 'modell', modellaufrufe = 2, "
+                     "eingeordnet_am = now() - interval '1 day' where id = %s", (m,))
+        gestern = conn.execute("select eingeordnet_am from post_mails where id = %s",
+                               (m,)).fetchone()
+    vorher = post_abholen.modellaufrufe_heute()
+    r = _post("t8_anna", f"/post/mail/{m}/korrigieren",
+              {"bereich": "privat", "fach": "Soziale Netzwerke"})
+    assert r.status_code == 303
+    z = _zeile(m)
+    assert z["einordnung_quelle"] == "mensch" and z["fach"] == "Soziale Netzwerke"
+    assert z["eingeordnet_am"] == (gestern["eingeordnet_am"] if isinstance(gestern, dict)
+                                   else gestern[0])
+    assert z["modellaufrufe"] == 2
+    assert post_abholen.modellaufrufe_heute() == vorher
+
+
 def test_sensible_mail_liefert_keine_begruendung_der_vorschlaege():
     m = _unklar()
     with server.pool.connection() as conn:
