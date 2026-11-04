@@ -199,24 +199,36 @@ def sichtbar_sql(b: Betrachter) -> tuple[str, list]:
     return "(" + " or ".join(teile) + ")", params
 
 
-def _spalten() -> str:
+def _spalten(mit_vorschlaegen: bool = False) -> str:
     # Text, Auszug, Anhaenge und Empfaenger sensibler Mails werden schon in
     # SQL geleert: sie verlassen die Datenbank gar nicht erst (Spec §5: nur
     # Konto, Absender, Datum, Betreff, Fach, Markierung), auch nicht fuer den
     # Besitzer. `is not false` behandelt NULL wie sensibel (fail closed).
     s = "m.sensibel is not false"
     return ("m.id, m.konto_id, m.besitzer, m.von, m.betreff, m.datum, "
-            "m.bereich, m.fach, m.sensibel, m.status, m.gesehen_am, "
+            "m.bereich, m.fach, m.unterfach, m.sensibel, m.status, m.gesehen_am, "
             f"case when {s} then false else m.kalenderteil end as kalenderteil, "
             f"case when {s} then null else m.an end as an, "
             f"case when {s} then '{{}}'::text[] else m.anhaenge end as anhaenge, "
             f"case when {s} then null else m.auszug end as auszug, "
-            f"case when {s} then null else m.text end as text")
+            f"case when {s} then null else m.text end as text"
+            + (", " + _vorschlaege_spalte(s) if mit_vorschlaegen else ""))
+
+
+def _vorschlaege_spalte(sensibel_sql: str) -> str:
+    # Die Modell-Begruendung ist freier Text ueber die Mail. Bei sensiblen
+    # Mails (Spec §5) darf sie die Datenbank nicht verlassen, auch wenn sie
+    # dort - gegen die Regel - doch stuende: Tiefenverteidigung, die
+    # Einordnung schreibt sie fuer solche Mails ohnehin nicht.
+    return (f"case when {sensibel_sql} then (select jsonb_object_agg(e.key, "
+            "case when jsonb_typeof(e.value) = 'object' then e.value - 'begruendung' "
+            "else e.value end) from jsonb_each(m.vorschlaege) e) "
+            "else m.vorschlaege end as vorschlaege")
 
 
 def mails_suchen(b: Betrachter, suche: str = "", bereich: str = "",
                  fach: str = "", konto_id: str = "", grenze: int = 50,
-                 versatz: int = 0) -> list[dict]:
+                 versatz: int = 0, unterfach: str = "") -> list[dict]:
     import server
     if bereich and bereich not in BEREICHE:
         return []
@@ -225,6 +237,9 @@ def mails_suchen(b: Betrachter, suche: str = "", bereich: str = "",
                    else any(fach_gueltig(x, fach) for x in BEREICHE))
         if not gueltig:
             return []
+    # Ein Unterfach gibt es nur unter einem Fach, das es kennt.
+    if unterfach and unterfach not in UNTERFAECHER.get(fach, ()):
+        return []
     if konto_id:
         try:
             konto_id = str(uuid.UUID(str(konto_id)))
@@ -238,6 +253,9 @@ def mails_suchen(b: Betrachter, suche: str = "", bereich: str = "",
     if fach:
         teile.append("m.fach = %s")
         params.append(fach)
+    if unterfach:
+        teile.append("m.unterfach = %s")
+        params.append(unterfach)
     if konto_id:
         teile.append("m.konto_id = %s")
         params.append(konto_id)
@@ -262,6 +280,7 @@ def mail_lesen(b: Betrachter, mail_id: str) -> "dict | None":
         return None
     where, params = sichtbar_sql(b)
     zeilen = server._q(
-        f"select {_spalten()} from post_mails m where m.id = %s and {where}",
+        f"select {_spalten(mit_vorschlaegen=True)} from post_mails m "
+        f"where m.id = %s and {where}",
         [mid] + params)
     return zeilen[0] if zeilen else None
