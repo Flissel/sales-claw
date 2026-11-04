@@ -356,7 +356,7 @@ def _ergebnis_speichern(mail_id, e: post_einordnung.Einordnung) -> None:
     server._q(
         "update post_mails set bereich = %s, fach = %s, unterfach = %s, sensibel = %s, "
         "einordnung_quelle = %s, begruendung = %s, vorschlaege = %s::jsonb, "
-        "modellaufrufe = %s, einordnung_version = 2, eingeordnet_am = now(), "
+        "modellaufrufe = modellaufrufe + %s, einordnung_version = 2, eingeordnet_am = now(), "
         "status = 'eingeordnet', fehler = null, "
         "text = case when %s then null else text end, "
         "auszug = case when %s then null else auszug end, "
@@ -368,8 +368,7 @@ def _ergebnis_speichern(mail_id, e: post_einordnung.Einordnung) -> None:
          e.sensibel, e.sensibel, e.sensibel, e.sensibel, mail_id))
 
 
-def _pruefer_vorschlag_speichern(mail_id, vorschlag: post_einordnung.Einordnung,
-                                 aufrufe: int) -> None:
+def _pruefer_vorschlag_speichern(mail_id, vorschlag: post_einordnung.Einordnung) -> None:
     """Pruefer dreimal ausgefallen: Die Mail geht nicht ungeprueft ins Fach des
     Sortierers, sondern privat zum Nachsehen - sein Vorschlag liegt daneben."""
     sortierer = {"bereich": vorschlag.bereich, "fach": vorschlag.fach,
@@ -378,7 +377,8 @@ def _pruefer_vorschlag_speichern(mail_id, vorschlag: post_einordnung.Einordnung,
         sortierer["begruendung"] = vorschlag.begruendung
     _ergebnis_speichern(mail_id, post_einordnung.Einordnung(
         "privat", post_struktur.UNKLAR, vorschlag.sensibel, "modell",
-        "pruefer:ausgefallen", None, aufrufe=aufrufe, vorschlaege={"sortierer": sortierer}))
+        "pruefer:ausgefallen", None, aufrufe=0,   # Kosten stehen schon auf der Zeile
+         vorschlaege={"sortierer": sortierer}))
 
 
 def einordnen_offene(grenze: int) -> int:
@@ -418,23 +418,23 @@ def einordnen_offene(grenze: int) -> int:
                 "update post_mails set status = 'fehler', bereich = 'privat', fach = %s, "
                 "fehler = 'Einordnung durch das Modell endgueltig fehlgeschlagen', "
                 # Der Aufruf hat das Modell erreicht: zaehlt zur Tagesgrenze.
-                "einordnung_quelle = 'modell', modellaufrufe = 1, einordnung_version = 2, "
+                "einordnung_quelle = 'modell', modellaufrufe = modellaufrufe + 1, einordnung_version = 2, "
                 "eingeordnet_am = now() where id = %s and status = 'neu'",
                 (post_struktur.UNKLAR, mail["id"]))
             erledigt += 1
             continue
         except post_einordnung.PrueferFehlgeschlagen as e:
-            # Der Sortierer-Aufruf und der gescheiterte Pruefer haben Geld gekostet:
-            # je Fehlversuch 2 Aufrufe auf die Zeile, damit die Grenze sie sieht,
-            # sobald die Mail eingeordnet ist.
+            # Sortierer-Aufrufe (e.vorschlag.aufrufe) plus der gescheiterte Pruefer
+            # haben gekostet. `versuch_am` macht sie fuer die Tagesgrenze sofort
+            # sichtbar, auch solange die Mail `neu` ist.
             zeilen = server._q(
                 "update post_mails set versuche = versuche + 1, "
-                "modellaufrufe = modellaufrufe + 2 where id = %s "
-                "returning versuche, modellaufrufe", (mail["id"],))
+                "modellaufrufe = modellaufrufe + %s, versuch_am = now() where id = %s "
+                "returning versuche", (e.vorschlag.aufrufe + 1, mail["id"]))
             if zeilen and zeilen[0]["versuche"] >= VERSUCHE_MAX:
                 LOG.warning("Mail %s: Pruefer nach %d Versuchen ausgefallen - Zum Nachsehen",
                             mail["id"], VERSUCHE_MAX)
-                _pruefer_vorschlag_speichern(mail["id"], e.vorschlag, zeilen[0]["modellaufrufe"])
+                _pruefer_vorschlag_speichern(mail["id"], e.vorschlag)
                 erledigt += 1
             else:
                 LOG.warning("Mail %s: Pruefer ausgefallen - bleibt neu", mail["id"])
@@ -469,11 +469,13 @@ def kunde_aktiv() -> bool:
 
 
 def modellaufrufe_heute() -> int:
-    # Jede Mail traegt die Zahl ihrer Modellaufrufe (`modellaufrufe`; feste Regeln
-    # und menschliche Korrekturen: 0). Dazu die Aufrufe der Vorschau-Zwischenablage.
+    # Jede Mail traegt die Summe ihrer Modellaufrufe (`modellaufrufe`; feste Regeln
+    # und menschliche Korrekturen: 0), gezaehlt an ihrem letzten Tag: eingeordnet_am,
+    # solange noch `neu` der letzte Fehlversuch (versuch_am). So entgeht auch eine
+    # Mail mit toten Pruefer-Versuchen der Grenze nicht. Dazu die Vorschau-Aufrufe.
     zeile = server._q(
         "select (select coalesce(sum(modellaufrufe), 0) from post_mails "
-        "         where eingeordnet_am::date = current_date) "
+        "         where coalesce(eingeordnet_am, versuch_am)::date = current_date) "
         "     + (select coalesce(sum((vorschau->>'aufrufe')::int), 0) from post_mails "
         "         where vorschau_am::date = current_date) as n")[0]
     return int(zeile["n"])

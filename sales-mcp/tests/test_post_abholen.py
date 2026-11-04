@@ -823,3 +823,39 @@ def test_update_abnahme_auch_ohne_sales_post(gestoppt, erwartet, post_laeuft):
     assert ergebnis.stdout.strip().endswith(erwartet), ergebnis.stdout
     laeuft = ergebnis.stdout.split("LAEUFT:")[1].splitlines()[0].split()
     assert ("sales-post" in laeuft) is post_laeuft
+
+
+def test_fehlversuche_einer_neuen_mail_zaehlen_zur_tagesgrenze(monkeypatch):
+    _konto()
+    post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({1: _mail("<a@x>")}))
+
+    def einordnen(mail, konto):
+        raise post_einordnung.PrueferFehlgeschlagen(post_einordnung.Einordnung(
+            "business", "Rechnungen", False, "modell", "x", None, aufrufe=1))
+    monkeypatch.setattr(post_einordnung, "einordnen", einordnen)
+    assert post_abholen.modellaufrufe_heute() == 0
+    post_abholen.einordnen_offene(10)
+    r = _mails()[0]
+    assert r["status"] == "neu" and r["eingeordnet_am"] is None and r["versuch_am"] is not None
+    assert post_abholen.modellaufrufe_heute() == 2          # Sortierer + Pruefer, obwohl noch neu
+    # Ein Fehlversuch von gestern zaehlt heute nicht.
+    with server.pool.connection() as conn:
+        conn.execute("update post_mails set versuch_am = now() - interval '1 day'")
+    assert post_abholen.modellaufrufe_heute() == 0
+
+
+def test_pruefer_fehler_dann_gatewayfehler_summiert_die_aufrufe(monkeypatch):
+    _konto()
+    post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({1: _mail("<a@x>")}))
+    reihe = iter([post_einordnung.PrueferFehlgeschlagen(post_einordnung.Einordnung(
+        "business", "Rechnungen", False, "modell", "x", None, aufrufe=1)),
+        gateway.GatewayFehler("Gateway HTTP 400")])
+
+    def einordnen(mail, konto):
+        raise next(reihe)
+    monkeypatch.setattr(post_einordnung, "einordnen", einordnen)
+    post_abholen.einordnen_offene(10)       # Pruefer aus: 2 Aufrufe, bleibt neu
+    post_abholen.einordnen_offene(10)       # Sortierer endgueltig: +1
+    r = _mails()[0]
+    assert r["status"] == "fehler" and r["modellaufrufe"] == 3
+    assert post_abholen.modellaufrufe_heute() == 3

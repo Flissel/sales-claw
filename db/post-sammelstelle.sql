@@ -197,7 +197,10 @@ alter table :"schema".post_mails
   add column if not exists modellaufrufe smallint not null default 0,
   add column if not exists einordnung_version smallint not null default 1,
   add column if not exists vorschau jsonb,
-  add column if not exists vorschau_am timestamptz;
+  add column if not exists vorschau_am timestamptz,
+  -- Zeitpunkt des letzten Fehlversuchs (Pruefer ausgefallen): macht die Modellaufrufe
+  -- einer noch `neuen` Mail fuer die Tagesgrenze sichtbar.
+  add column if not exists versuch_am timestamptz;
 
 alter table :"schema".post_regeln
   add column if not exists unterfach text;
