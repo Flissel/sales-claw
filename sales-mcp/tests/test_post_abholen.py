@@ -644,7 +644,7 @@ def test_konto_kontext_wird_uebergeben(monkeypatch):
 def test_pruefer_fehler_bleibt_neu_dann_nach_drei_zum_nachsehen(monkeypatch, caplog):
     _konto()
     post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({
-        1: _mail("<a@x>", betreff="Geheimer Betreff Eins", datum=NEUER),
+        1: _mail("<a@x>", betreff="Geheimer Betreff Eins"),
         2: _mail("<b@x>", betreff="Geheimer Betreff Zwei")}))
 
     def einordnen(mail, konto):
@@ -885,7 +885,7 @@ def test_pruefer_voruebergehend_bucht_sortierer_und_pausiert(monkeypatch):
     gekostet. Ohne Buchung liefe dieselbe Mail alle 120 s ungezaehlt erneut."""
     _konto()
     post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({
-        1: _mail("<a@x>"), 2: _mail("<b@x>")}))
+        1: _mail("<a@x>", datum=NEUER), 2: _mail("<b@x>")}))
     aufrufe = []
 
     def einordnen(mail, konto):
