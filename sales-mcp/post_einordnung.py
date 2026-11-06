@@ -360,9 +360,9 @@ def einordnen(mail: dict, konto: dict, aufruf=gateway.funktion_aufrufen) -> Eino
     """Stufen nach Spec v2 §5 (`_stufen`), danach gilt die ursprüngliche Empfängeradresse
     (Spec 2026-11-06 §8): ging die Mail an eine Business-Adresse und wurde nur weitergeleitet,
     ist sie business. Nur der Bereich ändert sich; Aufmerksamkeit, werbung_sicher, Quelle und
-    Aufrufe bleiben. „Zum Nachsehen“ liegt immer privat (Spec §6) und bleibt unberührt."""
+    Aufrufe bleiben. Sensible Mails nie (sonst saehen Team/Bot private Post). „Zum Nachsehen“ liegt immer privat (Spec §6) und bleibt unberührt."""
     ergebnis = _stufen(mail, konto, aufruf)
-    if (ergebnis.bereich != "business" and ergebnis.fach != post_struktur.UNKLAR
+    if (ergebnis.bereich != "business" and not ergebnis.sensibel and ergebnis.fach != post_struktur.UNKLAR
             and post_herkunft.ist_business(mail.get("urspruengliche_adresse"))):
         # Fach in business vorhanden: bleibt. Sonst sagt bereich_fuer, wohin es gehoert
         # (ein rein privates Fach bleibt privat, statt in ein fremdes Fach zu rutschen).

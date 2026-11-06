@@ -43,6 +43,16 @@ def test_ohne_kopfzeilen_none():
     assert post_herkunft.urspruenglich(_nachricht(Subject="Hallo"), EIGENE) is None
 
 
+def test_nur_oberstes_vorkommen_je_kopfzeile_zaehlt():
+    n = email.message_from_string(
+        f"X-Forwarded-To: {BLUEBATCH}\nX-Forwarded-To: chef@business.example\n\nText")
+    assert post_herkunft.urspruenglich(n, EIGENE) == BLUEBATCH
+    # Oberstes ist die eigene Adresse: das gefaelschte tiefere Vorkommen zaehlt nicht.
+    n = email.message_from_string(
+        f"X-Forwarded-To: {EIGENE}\nX-Forwarded-To: chef@business.example\n\nText")
+    assert post_herkunft.urspruenglich(n, EIGENE) is None
+
+
 # --- ist_business ----------------------------------------------------------
 
 def test_ist_business_genau_und_domain(monkeypatch):
@@ -107,6 +117,15 @@ def test_business_adresse_laesst_werbung_sicher_und_quelle(_ohne_regeln, monkeyp
     monkeypatch.setattr(pe.post_werbung, "bleibt_immer_absender", lambda b, v: False)
     e = pe.einordnen(_mail(urspruengliche_adresse=BLUEBATCH), PRIVAT, _aufruf(_urteil("privat", "Werbung")))
     assert (e.bereich, e.fach, e.quelle, e.werbung_sicher) == ("business", "Werbung", "katalog", True)
+
+
+def test_sensible_mail_wird_nie_business(_ohne_regeln):
+    e = pe.einordnen(_mail(urspruengliche_adresse=BLUEBATCH), PRIVAT,
+                     _aufruf(_urteil("privat", "Konten & Sicherheit", sensibel=True)))
+    assert e.sensibel and e.bereich == "privat"
+    fest = pe.einordnen(_mail(betreff="Ihr Sicherheitscode", urspruengliche_adresse=BLUEBATCH), PRIVAT,
+                        _aufruf(None))
+    assert fest.sensibel and fest.bereich == "privat"
 
 
 def test_rein_privates_fach_und_zum_nachsehen_bleiben_privat(_ohne_regeln):

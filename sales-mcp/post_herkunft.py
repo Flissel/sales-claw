@@ -48,7 +48,9 @@ BUSINESS_ADRESSEN: tuple[str, ...] = _liste(os.environ.get("POST_BUSINESS_ADRESS
 
 
 def _adressen(nachricht, name: str) -> list[str]:
-    werte = [str(w) for w in nachricht.get_all(name, [])]
+    # Nur das OBERSTE Vorkommen je Name: Server fuegen oben an, tiefere Zeilen kann der
+    # Absender selbst in die Mail schreiben (Faelschung).
+    werte = [str(w) for w in nachricht.get_all(name, [])[:1]]
     rein = (a.strip().lower() for _n, a in email.utils.getaddresses(werte))
     return [a[:_ADRESSE_MAX] for a in rein if "@" in a]
 
