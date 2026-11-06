@@ -149,6 +149,10 @@ def _mail(message_id="<m1@example.org>", von="Anna Beispiel <anna@example.org>",
     return m.as_bytes()
 
 
+# Die Einordnung laeuft neueste Mail zuerst: Mail 1 dieser Tests ist die neuere.
+NEUER = "Tue, 03 Nov 2026 10:00:00 +0100"
+
+
 def _konto(besitzer="felix", kennung="gmx-test") -> dict:
     with server.pool.connection() as conn:
         conn.execute(
@@ -391,7 +395,7 @@ def test_einordnung_wird_gespeichert(monkeypatch):
 def test_transient_laesst_mail_neu(monkeypatch, caplog):
     _konto()
     post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({
-        1: _mail("<a@x>", betreff="Geheimer Betreff Eins"),
+        1: _mail("<a@x>", betreff="Geheimer Betreff Eins", datum=NEUER),
         2: _mail("<b@x>", betreff="Geheimer Betreff Zwei")}))
     for _ in range(post_abholen.VERSUCHE_MAX + 1):
         aufrufe = []
@@ -426,7 +430,7 @@ def test_transient_laesst_mail_neu(monkeypatch, caplog):
 def test_kaputte_mail_blockiert_die_einordnung_nicht(monkeypatch, caplog):
     _konto()
     post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({
-        1: _mail("<a@x>", betreff="Geheimer Betreff Eins"),
+        1: _mail("<a@x>", betreff="Geheimer Betreff Eins", datum=NEUER),
         2: _mail("<b@x>", betreff="Geheimer Betreff Zwei")}))
     aufrufe = []
 
@@ -640,7 +644,7 @@ def test_konto_kontext_wird_uebergeben(monkeypatch):
 def test_pruefer_fehler_bleibt_neu_dann_nach_drei_zum_nachsehen(monkeypatch, caplog):
     _konto()
     post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({
-        1: _mail("<a@x>", betreff="Geheimer Betreff Eins"),
+        1: _mail("<a@x>", betreff="Geheimer Betreff Eins", datum=NEUER),
         2: _mail("<b@x>", betreff="Geheimer Betreff Zwei")}))
 
     def einordnen(mail, konto):
