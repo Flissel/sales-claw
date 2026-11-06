@@ -571,7 +571,8 @@ def test_je_konto_argument_wird_durchgereicht(monkeypatch, capsys):
     gesehen = []
     monkeypatch.setattr(neu, "vorschau", lambda g, a=False, j=None: gesehen.append((g, a, j)) or 0)
     monkeypatch.setattr(neu, "bericht", lambda: {"alt": {}, "neu": {}, "zum_nachsehen": 0,
-                                                 "offen": 0, "katalog": [], "ohne_katalog": []})
+                                                 "offen": 0, "katalog": [], "ohne_katalog": [],
+                                                 "unklar_anteil": {}})
     assert neu.main(["vorschau", "--je-konto", "50"]) == 0
     assert gesehen == [(1000, False, 50)]
     skript = (Path(__file__).resolve().parents[2] / "deploy" / "post-neu-einordnen.sh").read_text(
