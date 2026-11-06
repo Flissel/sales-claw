@@ -4,6 +4,9 @@ Die Liste liegt hier als Daten, nicht verstreut im Prompt: der Agent darf nur
 aus ihr waehlen, ein neues Fach legt ein Mensch bewusst an.
 """
 
+import email.utils
+import re
+
 BEREICHE = ("privat", "business")
 
 # „Zum Nachsehen“ ist das Fach fuer alles, was nicht sicher zuzuordnen ist
@@ -40,6 +43,33 @@ UNTERFAECHER: dict[str, tuple[str, ...]] = {
     "Tools & Dienste": ANBIETER,
     "Konten & Sicherheit": SOZIAL[:-1] + ANBIETER,
 }
+
+# Faecher, in denen Post des Absenders nie als Werbung gilt (Spec §4): wer hier
+# auch nur eine Mail hat, wird nicht zum Werbe-Absender und nichts von ihm wird
+# automatisch geloescht. Rechnungen & Co. liegen in beiden Bereichen unter
+# demselben Namen.
+BLEIBT_IMMER = frozenset({
+    "Rechnungen", "Käufe & Bestellungen", "Konten & Sicherheit",
+    "Behörden & Versicherung", "Gesundheit", "Familie & Freunde",
+    "Kunden & Anfragen", "Partner & Netzwerk",
+})
+
+
+def absender_adresse(von: str) -> str:
+    """Reine Mailadresse aus einem From-Wert, kleingeschrieben; leer ohne „@“."""
+    adresse = email.utils.parseaddr(von or "")[1].strip().lower()
+    return adresse if "@" in adresse else ""
+
+
+def absender_muster(adresse: str) -> str:
+    """Regel-Muster, das GENAU diese Adresse trifft (Ruling R12).
+
+    Wörtlich (re.escape): „+“ und „.“ sind keine Musterzeichen. Verankert an
+    Anfang/Ende oder an <, >, Leerzeichen, Anführungszeichen, weil
+    post_einordnung re.search benutzt: sonst träfe a@x.de auch ba@x.de oder
+    a@x.de.evil.com. Groß/klein ignoriert die Einordnung selbst."""
+    return r'(^|[<\s"])' + re.escape(adresse) + r'($|[>\s"])'
+
 
 # Faecher, die es nur unter business gibt: Firmenwerkzeuge sind Firmensache,
 # sie ziehen den Bereich auf business (Spec §5, „Fach passt nicht zum Bereich“).

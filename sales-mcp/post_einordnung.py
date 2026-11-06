@@ -23,6 +23,7 @@ from dataclasses import dataclass
 import gateway
 import post_katalog
 import post_struktur
+import post_werbung
 
 LOG = logging.getLogger("post_einordnung")
 
@@ -90,6 +91,8 @@ def _regeln_laden() -> list[dict]:
     # eine ältere Regel für denselben Absender.
     return list(server._q(
         "select muster, feld, bereich, fach, unterfach, besitzer from post_regeln "
+        # nie_werbung ist eine Schutzregel, keine Einordnung: sie setzt nie ein Fach.
+        "where art = 'einordnen' "
         "order by angelegt_am desc nulls last, id desc"))
 
 
@@ -101,6 +104,20 @@ def _regel_gilt(zeile: dict, mail: dict) -> bool:
     if eigner is None:
         return True
     return bool(mail.get("besitzer")) and mail.get("besitzer") == eigner
+
+
+def werbung_ausgeschlossen(mail: dict) -> bool:
+    """Darf eine Werbe-Einordnung aus Regel oder Katalog (ohne Modell) fuer diese Mail
+    NICHT gelten? Ja bei Betreffs wie Rechnung/Vertrag/Konto, bei Absendern mit
+    „nie Werbung“ und bei Absendern, von denen derselbe Besitzer schon Wichtiges bekam
+    (Spec §4: „Bekommt so ein Absender später doch eine, gilt die Regel nicht mehr“).
+    Ohne Besitzer laesst sich das nicht pruefen: dann gilt sie nicht (fail closed)."""
+    besitzer, von = mail.get("besitzer"), mail.get("von") or ""
+    if not besitzer:
+        return True
+    return bool(re.search(post_werbung.BLEIBT_BETREFF, mail.get("betreff") or "")
+                or post_werbung.geschuetzt(besitzer, von)
+                or post_werbung.bleibt_immer_absender(besitzer, von))
 
 
 def _konten_unterfach(unterfach: str | None) -> str:
@@ -152,6 +169,8 @@ def nach_nutzerregel(mail: dict) -> Einordnung | None:
         except re.error:
             LOG.warning("Regel uebersprungen: ungueltiger regulaerer Ausdruck")
             continue
+        if treffer and fach == WERBUNG and werbung_ausgeschlossen(mail):
+            continue    # gilt als nicht getroffen: naechste Regel, Katalog, Modell
         if treffer:
             return Einordnung(bereich, fach, False, "regel", f"regel:{zeile['feld']}",
                               post_struktur.unterfach_zwingen(fach, zeile.get("unterfach")))
@@ -342,16 +361,22 @@ def einordnen(mail: dict, konto: dict, aufruf=gateway.funktion_aufrufen) -> Eino
         return fest
 
     regel = nach_nutzerregel(mail)
+    if regel is not None and regel.fach == WERBUNG:
+        # Werbung per Absender-Regel braucht kein Modell: nach_nutzerregel hat die
+        # Schutzpruefungen schon hinter sich (Betreff, nie Werbung, Bleibt-immer-Absender).
+        return Einordnung(regel.bereich, regel.fach, False, "regel", regel.begruendung,
+                          regel.unterfach, aufrufe=0, werbung_sicher=True)
     if regel is not None:
         sensibel, aufmerksamkeit = _merkmale(mail, konto, aufruf)
         # Begruendung bleibt der feste Regeltext (kein Modell-Freitext). Den Modellaufruf
         # dahinter zaehlt `aufrufe` (post_abholen.modellaufrufe_heute summiert es).
         return Einordnung(regel.bereich, regel.fach, sensibel, "regel",
                           regel.begruendung + (":modell-sensibel" if sensibel else ""),
-                          regel.unterfach, aufrufe=1, aufmerksamkeit=aufmerksamkeit,
-                          werbung_sicher=regel.fach == WERBUNG and not sensibel)
+                          regel.unterfach, aufrufe=1, aufmerksamkeit=aufmerksamkeit)
 
     katalog = post_katalog.treffer(mail.get("von") or "")
+    if katalog is not None and katalog[0] == WERBUNG and werbung_ausgeschlossen(mail):
+        katalog = None      # wie bei der Regel: Werbe-Treffer, der hier nicht gelten darf
     if katalog is not None:
         fach, unterfach = katalog
         sensibel, aufmerksamkeit = _merkmale(mail, konto, aufruf)
@@ -385,7 +410,9 @@ def einordnen(mail: dict, konto: dict, aufruf=gateway.funktion_aufrufen) -> Eino
         return Einordnung(s.bereich, s.fach, sensibel, "pruefer",
                           "modell:sensibel" if sensibel else s.begruendung,
                           s.unterfach, aufrufe=2, aufmerksamkeit=s.aufmerksamkeit or p.aufmerksamkeit,
-                          werbung_sicher=s.fach == WERBUNG and not sensibel)
+                          werbung_sicher=s.fach == WERBUNG and not sensibel
+                          and not post_werbung.geschuetzt(mail.get("besitzer") or "",
+                                                          mail.get("von") or ""))
     # Uneins oder unsicher: privat (nur der Besitzer sieht es), ein Mensch entscheidet.
     sensibel = s.sensibel or p.sensibel
     return Einordnung("privat", post_struktur.UNKLAR, sensibel, "modell",

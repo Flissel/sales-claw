@@ -46,6 +46,9 @@ def _agenten(post=None, pruefer=None, protokoll=None):
 @pytest.fixture(autouse=True)
 def _keine_regeln(monkeypatch):
     monkeypatch.setattr(pe, "_regeln_laden", lambda: [])
+    # Schutz und Verlauf stehen in der Datenbank (Tests in test_post_werbung.py).
+    monkeypatch.setattr(pe.post_werbung, "geschuetzt", lambda besitzer, von: False)
+    monkeypatch.setattr(pe.post_werbung, "bleibt_immer_absender", lambda besitzer, von: False)
 
 
 def test_muster_trifft_ohne_modell_und_nimmt_standardbereich():
@@ -483,18 +486,21 @@ def test_katalog_treffer_liefert_aufmerksamkeit_aus_einem_aufruf():
 
 def test_katalog_werbung_ist_werbung_sicher(monkeypatch):
     monkeypatch.setattr(pe.post_katalog, "treffer", lambda von: ("Werbung", None))
-    e = pe.einordnen(_mail(), PRIVAT, aufruf=_agenten(post=_urteil(sensibel=False)))
+    e = pe.einordnen(_mail(besitzer="felix"), PRIVAT, aufruf=_agenten(post=_urteil(sensibel=False)))
     assert e.fach == "Werbung" and e.quelle == "katalog" and e.werbung_sicher is True
+    # Sensibel (das Modell sagt es) ist nie sichere Werbung.
+    e = pe.einordnen(_mail(besitzer="felix"), PRIVAT, aufruf=_agenten(post=_urteil(sensibel=True)))
+    assert e.werbung_sicher is False
 
 
-def test_regel_werbung_ist_werbung_sicher_aber_nicht_wenn_sensibel(monkeypatch):
+def test_regel_werbung_braucht_kein_modell_und_ist_sicher(monkeypatch):
+    # Seit Task 3: Werbe-Regel = kein Modellaufruf (Details in test_post_werbung.py).
     zeile = {"muster": "x", "feld": "von", "bereich": "privat", "fach": "Werbung",
              "unterfach": None, "besitzer": None}
     monkeypatch.setattr(pe, "_regeln_laden", lambda: [zeile])
-    e = pe.einordnen(_mail(von="x@y.de"), PRIVAT, aufruf=_agenten(post=_urteil()))
-    assert e.quelle == "regel" and e.werbung_sicher is True
-    e = pe.einordnen(_mail(von="x@y.de"), PRIVAT, aufruf=_agenten(post=_urteil(sensibel=True)))
-    assert e.werbung_sicher is False
+    g = []
+    e = pe.einordnen(_mail(von="x@y.de", besitzer="felix"), PRIVAT, aufruf=_agenten(protokoll=g))
+    assert e.quelle == "regel" and e.werbung_sicher is True and e.aufrufe == 0 and g == []
 
 
 def test_regel_liefert_aufmerksamkeit_aus_dem_modell(monkeypatch):

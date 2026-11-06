@@ -19,7 +19,6 @@ hereingereicht, nie importiert (Muster ui_editor.routen).
 from __future__ import annotations
 
 import email.utils
-import re
 import urllib.parse
 
 import psycopg
@@ -28,6 +27,7 @@ from starlette.responses import RedirectResponse
 from starlette.routing import Route
 
 import post_struktur as ps
+from post_struktur import absender_muster
 import server
 
 SEITE_GROESSE = 50
@@ -63,16 +63,6 @@ def _ganzzahl(roh, vorgabe: int, kleinste: int, groesste: int) -> int:
     except (TypeError, ValueError):
         return vorgabe
     return max(kleinste, min(wert, groesste))
-
-
-def absender_muster(adresse: str) -> str:
-    """Regel-Muster, das GENAU diese Adresse trifft (Ruling R12).
-
-    Wörtlich (re.escape): „+“ und „.“ sind keine Musterzeichen. Verankert an
-    Anfang/Ende oder an <, >, Leerzeichen, Anführungszeichen, weil
-    post_einordnung re.search benutzt: sonst träfe a@x.de auch ba@x.de oder
-    a@x.de.evil.com. Groß/klein ignoriert die Einordnung selbst."""
-    return r'(^|[<\s"])' + re.escape(adresse) + r'($|[>\s"])'
 
 
 def _adresse(link_basis: str, **werte) -> str:

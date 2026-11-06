@@ -50,6 +50,7 @@ import threading
 import post_einordnung
 import post_konten
 import post_struktur
+import post_werbung
 import postfach
 import server
 from gateway import GatewayFehler, GatewayTransient
@@ -387,6 +388,19 @@ def _ergebnis_speichern(mail_id, e: post_einordnung.Einordnung) -> None:
          None if e.vorschlaege is None else server._json(e.vorschlaege),
          aufmerksamkeit, e.werbung_sicher, e.aufrufe,
          e.sensibel, e.sensibel, e.sensibel, e.sensibel, mail_id))
+    if e.werbung_sicher:
+        _werbe_regel_vorschlagen(mail_id)
+
+
+def _werbe_regel_vorschlagen(mail_id) -> None:
+    """Hat der Absender jetzt genug sichere Werbemails, legt post_werbung eine Regel an
+    (kuenftig ohne Modell). Ein Fehler hier darf die gespeicherte Einordnung nicht kippen."""
+    try:
+        zeile = server._q("select besitzer, von from post_mails where id = %s", (mail_id,))
+        if zeile and post_werbung.regel_vorschlagen(zeile[0]["besitzer"], zeile[0]["von"] or ""):
+            LOG.info("Werbe-Regel fuer einen Absender angelegt")
+    except Exception as e:      # noqa: BLE001 - nur der Typ: Meldungen koennten Mailinhalt tragen
+        LOG.warning("Werbe-Regel-Vorschlag fehlgeschlagen (%s)", type(e).__name__)
 
 
 def _pruefer_vorschlag_speichern(mail_id, vorschlag: post_einordnung.Einordnung) -> None:
