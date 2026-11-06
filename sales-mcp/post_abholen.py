@@ -52,6 +52,7 @@ import sys
 import threading
 
 import post_einordnung
+import post_herkunft
 import post_konten
 import post_ordnen
 import post_struktur
@@ -146,7 +147,7 @@ def _sensibel_nach_muster(von: str, betreff: str) -> bool:
                for feld, muster in post_einordnung.SENSIBEL_MUSTER)
 
 
-def _mail_zerlegen(nachricht, kennung: str, uid: int) -> dict:
+def _mail_zerlegen(nachricht, kennung: str, uid: int, konto_adresse: str = "") -> dict:
     von = _rein(postfach._kopf(nachricht, "From"), KOPF_MAX)
     betreff = _rein(postfach._kopf(nachricht, "Subject"), KOPF_MAX)
     message_id = _rein(postfach._kopf(nachricht, "Message-ID").strip().strip("<>"), KOPF_MAX)
@@ -170,6 +171,10 @@ def _mail_zerlegen(nachricht, kennung: str, uid: int) -> dict:
         "an": None if sensibel_treffer else _rein(postfach._kopf(nachricht, "To"), KOPF_MAX),
         "betreff": betreff, "datum": _datum(postfach._kopf(nachricht, "Date")),
         "text": text, "auszug": auszug, "anhaenge": [] if sensibel_treffer else _anhaenge(nachricht),
+        # Die Kopfzeilen sind schon da: kein zusaetzlicher Abruf. '' = geprueft, keine
+        # (post_herkunft); sensibel: wie `an` nicht speichern (Spec §5).
+        "urspruengliche_adresse": None if sensibel_treffer else (
+            _rein(post_herkunft.urspruenglich(nachricht, konto_adresse), KOPF_MAX) or ""),
     }
 
 
@@ -285,8 +290,8 @@ def _speichern(zeile: dict, uid: int, mail: dict | None) -> bool:
                 neu = conn.execute(
                     "insert into post_mails (konto_id, imap_uid, message_id, besitzer, "
                     "von, an, betreff, datum, text, auszug, anhaenge, status, fehler, "
-                    "bereich, fach, message_id_ersatz, kalenderteil) values "
-                    "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                    "bereich, fach, message_id_ersatz, kalenderteil, urspruengliche_adresse) values "
+                    "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
                     "on conflict (konto_id, imap_uid) do nothing returning id",
                     (zeile["id"], uid, mail["message_id"], zeile["besitzer"], mail["von"],
                      mail["an"], mail["betreff"], mail["datum"], mail["text"],
@@ -294,7 +299,7 @@ def _speichern(zeile: dict, uid: int, mail: dict | None) -> bool:
                      "fehler" if mail.get("fehler") else "neu", mail.get("fehler"),
                      "privat" if mail.get("fehler") else None,
                      post_struktur.UNKLAR if mail.get("fehler") else None,
-                     ersatz, bool(mail.get("kalenderteil")))
+                     ersatz, bool(mail.get("kalenderteil")), mail.get("urspruengliche_adresse"))
                 ).fetchone() is not None
             elif str(vorhanden["konto_id"]) == str(zeile["id"]) and vorhanden["imap_uid"] < 0:
                 # Nach UIDVALIDITY-Wechsel wiedergefunden: neuer Fundort, keine
@@ -335,7 +340,8 @@ def konto_abholen(zeile: dict, kasten=None, stapel: int = 50) -> int:
                          zeile["kennung"], uid)
             else:
                 try:
-                    mail = _mail_zerlegen(nachricht, zeile["kennung"], uid)
+                    mail = _mail_zerlegen(nachricht, zeile["kennung"], uid,
+                                          zeile.get("adresse") or "")
                 except Exception as e:  # noqa: BLE001 - sonst haengt das Konto ewig an dieser UID
                     LOG.warning("Konto %s: Mail %s nicht lesbar (%s)", zeile["kennung"], uid,
                                 type(e).__name__)
@@ -388,12 +394,13 @@ def _ergebnis_speichern(mail_id, e: post_einordnung.Einordnung) -> None:
         "text = case when %s then null else text end, "
         "auszug = case when %s then null else auszug end, "
         "an = case when %s then null else an end, "
-        "anhaenge = case when %s then '{}'::text[] else anhaenge end "
+        "anhaenge = case when %s then '{}'::text[] else anhaenge end, "
+        "urspruengliche_adresse = case when %s then null else urspruengliche_adresse end "
         "where id = %s and status = 'neu'",
         (bereich, fach, unterfach, e.sensibel, e.quelle, e.begruendung,
          None if e.vorschlaege is None else server._json(e.vorschlaege),
          aufmerksamkeit, e.werbung_sicher, e.aufrufe,
-         e.sensibel, e.sensibel, e.sensibel, e.sensibel, mail_id))
+         e.sensibel, e.sensibel, e.sensibel, e.sensibel, e.sensibel, mail_id))
     if e.werbung_sicher:
         _werbe_regel_vorschlagen(mail_id)
 
@@ -431,7 +438,7 @@ def einordnen_offene(grenze: int) -> int:
     # (sollte es nicht geben) gilt der Standard von post_einordnung.
     offene = server._q(
         "select m.id, m.besitzer, m.von, m.betreff, m.datum, m.text, "
-        "k.kennung, k.standard_bereich from post_mails m "
+        "m.urspruengliche_adresse, k.kennung, k.standard_bereich from post_mails m "
         "left join post_konten k on k.id = m.konto_id where m.status = 'neu' "
         "order by m.gesehen_am, m.imap_uid limit %s", (int(grenze),))
     erledigt = 0
@@ -444,7 +451,8 @@ def einordnen_offene(grenze: int) -> int:
                 "von": zeile["von"] or "",
                 "betreff": zeile["betreff"] or "",
                 "datum": zeile["datum"].isoformat() if zeile["datum"] else "",
-                "text": zeile["text"] or ""}
+                "text": zeile["text"] or "",
+                "urspruengliche_adresse": zeile["urspruengliche_adresse"] or None}
         konto = {"kennung": zeile["kennung"], "standard_bereich": zeile["standard_bereich"]}
         try:
             ergebnis = post_einordnung.einordnen(mail, konto)

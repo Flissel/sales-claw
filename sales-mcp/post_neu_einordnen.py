@@ -122,7 +122,7 @@ def vorschau(grenze: int, alle: bool = False) -> int:
         return 0
     zeilen = server._q(
         "select m.id, m.besitzer, m.von, m.betreff, m.datum, m.text, m.sensibel, "
-        "k.kennung, k.standard_bereich from post_mails m "
+        "m.urspruengliche_adresse, k.kennung, k.standard_bereich from post_mails m "
         "left join post_konten k on k.id = m.konto_id "
         f"where {_altbestand('m.')} "
         + ("" if alle else "and m.vorschau is null ") +
@@ -139,7 +139,8 @@ def vorschau(grenze: int, alle: bool = False) -> int:
         mail = {"id": str(zeile["id"]), "besitzer": zeile["besitzer"],
                 "von": zeile["von"] or "", "betreff": zeile["betreff"] or "",
                 "datum": zeile["datum"].isoformat() if zeile["datum"] else "",
-                "text": zeile["text"] or ""}
+                "text": zeile["text"] or "",
+                "urspruengliche_adresse": zeile["urspruengliche_adresse"] or None}
         konto = {"kennung": zeile["kennung"], "standard_bereich": zeile["standard_bereich"]}
         try:
             ergebnis = post_einordnung.einordnen(mail, konto)

@@ -18,9 +18,10 @@ from __future__ import annotations
 import logging
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import gateway
+import post_herkunft
 import post_katalog
 import post_struktur
 import post_werbung
@@ -356,6 +357,22 @@ def _merkmale(mail: dict, konto: dict, aufruf) -> tuple[bool, bool]:
 
 
 def einordnen(mail: dict, konto: dict, aufruf=gateway.funktion_aufrufen) -> Einordnung:
+    """Stufen nach Spec v2 §5 (`_stufen`), danach gilt die ursprüngliche Empfängeradresse
+    (Spec 2026-11-06 §8): ging die Mail an eine Business-Adresse und wurde nur weitergeleitet,
+    ist sie business. Nur der Bereich ändert sich; Aufmerksamkeit, werbung_sicher, Quelle und
+    Aufrufe bleiben. „Zum Nachsehen“ liegt immer privat (Spec §6) und bleibt unberührt."""
+    ergebnis = _stufen(mail, konto, aufruf)
+    if (ergebnis.bereich != "business" and ergebnis.fach != post_struktur.UNKLAR
+            and post_herkunft.ist_business(mail.get("urspruengliche_adresse"))):
+        # Fach in business vorhanden: bleibt. Sonst sagt bereich_fuer, wohin es gehoert
+        # (ein rein privates Fach bleibt privat, statt in ein fremdes Fach zu rutschen).
+        bereich = ("business" if post_struktur.fach_gueltig("business", ergebnis.fach)
+                   else post_struktur.bereich_fuer(ergebnis.fach, "business"))
+        return replace(ergebnis, bereich=bereich)
+    return ergebnis
+
+
+def _stufen(mail: dict, konto: dict, aufruf) -> Einordnung:
     """Stufen nach Spec v2 §5. `konto` = {"kennung", "standard_bereich"}.
     Raises PrueferFehlgeschlagen (mit Sortierer-Vorschlag), wenn der Pruefer
     ausfaellt; PrueferVoruebergehend (ein GatewayTransient mit den Sortierer-Aufrufen),

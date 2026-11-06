@@ -778,6 +778,9 @@ services:
       # Betreiber-Kontext fuer die Einordnung (v2, Runbook): kurzer Text, wer der
       # Laden ist und was wohin gehoert. Leer = nur die allgemeinen Regeln.
       POST_KONTEXT: ${POST_KONTEXT:-}
+      # Business-Adressen (Komma-Liste; mit @ = genaue Adresse, ohne @ = Domain). Eine
+      # weitergeleitete Mail an so eine Adresse gilt als business. Leer = keine Wirkung.
+      POST_BUSINESS_ADRESSEN: ${POST_BUSINESS_ADRESSEN:-}
       # Modellaufrufe je Tag. Es zaehlt jeder Aufruf (Sortierer, Pruefer und die
       # Sensibel-Pruefung bei Regel-/Katalogtreffern); nur feste Muster sind frei.
       POST_TAGESGRENZE: ${POST_TAGESGRENZE:-500}
