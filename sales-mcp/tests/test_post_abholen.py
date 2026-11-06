@@ -970,3 +970,26 @@ def test_pruefer_ausfall_ueber_mitternacht_zaehlt_nicht_doppelt(monkeypatch):
     r = _mails()[0]
     assert (r["status"], r["fehl_aufrufe"], r["modellaufrufe"]) == ("eingeordnet", 1, 2)
     assert post_abholen.modellaufrufe_heute() == 3
+
+
+def test_einordnen_neuestes_jahr_zuerst_ueber_alle_konten(monkeypatch):
+    """Das neueste Jahr kommt zuerst, ueber alle Konten gemeinsam; Mails ohne Datum zuletzt."""
+    a = _konto(kennung="gmx-test")
+    b = _konto(kennung="web-test")
+    daten = [(a["id"], 1, "2023-12-30T10:00:00Z"), (b["id"], 1, "2025-01-02T10:00:00Z"),
+             (a["id"], 2, "2025-03-01T10:00:00Z"), (b["id"], 2, "2024-06-01T10:00:00Z"),
+             (a["id"], 3, "2025-03-01T10:00:00Z"), (b["id"], 3, None)]
+    with server.pool.connection() as conn:
+        for konto, uid, datum in daten:
+            conn.execute(
+                "insert into post_mails (konto_id, imap_uid, message_id, besitzer, von, betreff, "
+                "datum, status) values (%s, %s, %s, 'felix', 'x@y.example', %s, %s::timestamptz, "
+                "'neu')", (konto, uid, f"o{konto}{uid}@x", f"{konto}:{uid}", datum))
+    gesehen = []
+    monkeypatch.setattr(post_einordnung, "einordnen",
+                        lambda mail, konto: gesehen.append(
+                            (konto["kennung"], mail["betreff"].split(":")[1])) or _einordnung())
+    assert post_abholen.einordnen_offene(10) == 6
+    # 2025 zuerst (neueste Mail zuerst, bei gleichem Datum hoehere UID), dann 2024, 2023, ohne Datum.
+    assert gesehen == [("gmx-test", "3"), ("gmx-test", "2"), ("web-test", "1"),
+                       ("web-test", "2"), ("gmx-test", "1"), ("web-test", "3")]

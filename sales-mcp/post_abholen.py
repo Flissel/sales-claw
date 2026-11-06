@@ -430,7 +430,7 @@ def _pruefer_vorschlag_speichern(mail_id, vorschlag: post_einordnung.Einordnung)
 
 
 def einordnen_offene(grenze: int) -> int:
-    """Ordnet bis zu `grenze` offene Mails ein (zuerst gesehen zuerst).
+    """Ordnet bis zu `grenze` offene Mails ein (neuestes Jahr zuerst, alle Konten gemeinsam).
     Rueckgabe = Zahl der Mails, die `neu` verlassen haben (eingeordnet oder fehler)."""
     if grenze <= 0:
         return 0
@@ -440,7 +440,10 @@ def einordnen_offene(grenze: int) -> int:
         "select m.id, m.besitzer, m.von, m.betreff, m.datum, m.text, "
         "m.urspruengliche_adresse, k.kennung, k.standard_bereich from post_mails m "
         "left join post_konten k on k.id = m.konto_id where m.status = 'neu' "
-        "order by m.gesehen_am, m.imap_uid limit %s", (int(grenze),))
+        # Neuestes Jahr zuerst, ueber alle Konten gemeinsam; innerhalb des Jahres die
+        # neueste Mail zuerst.
+        "order by extract(year from m.datum) desc nulls last, m.datum desc, "
+        "m.imap_uid desc limit %s", (int(grenze),))
     erledigt = 0
     for zeile in offene:
         if _STOPP.is_set():

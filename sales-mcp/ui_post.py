@@ -445,7 +445,7 @@ def routen(ui) -> list:
             conn.execute(
                 "update post_mails set bereich = %s, fach = %s, unterfach = %s, "
                 "sensibel = %s, einordnung_quelle = 'mensch', "
-                "einordnung_version = 2, eingeordnet_am = coalesce(eingeordnet_am, now()), "
+                "einordnung_version = 3, eingeordnet_am = coalesce(eingeordnet_am, now()), "
                 "status = 'eingeordnet', fehler = null, begruendung = null, "
                 f"vorschau = null, vorschlaege = null{leeren} "
                 "where id = %s", (bereich, fach, unterfach, sensibel, m["id"]))

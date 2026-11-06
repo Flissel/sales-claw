@@ -15,6 +15,7 @@ import post_abholen  # noqa: E402
 import post_einordnung  # noqa: E402
 import post_neu_einordnen as neu  # noqa: E402
 import post_struktur  # noqa: E402
+import post_werbung  # noqa: E402
 import server  # noqa: E402
 from gateway import GatewayFehler  # noqa: E402
 
@@ -50,16 +51,16 @@ def konto_id():
 
 def _mail(konto, uid, *, von="Shop <info@shop-test.example>", betreff="Hallo", quelle="modell",
           version=1, sensibel=False, bereich="business", fach="Sonstiges", aufrufe=1,
-          status="eingeordnet", text="Mailtext"):
+          status="eingeordnet", text="Mailtext", datum=None):
     with server.pool.connection() as conn:
         return conn.execute(
             "insert into post_mails (konto_id, imap_uid, message_id, besitzer, von, betreff, text, "
             "auszug, an, anhaenge, status, bereich, fach, sensibel, einordnung_quelle, "
-            "einordnung_version, modellaufrufe, eingeordnet_am) "
+            "einordnung_version, modellaufrufe, eingeordnet_am, datum) "
             "values (%s, %s, %s, 'felix', %s, %s, %s, 'Auszug', 'felix@x', '{a.pdf}', %s, %s, %s, "
-            "%s, %s, %s, %s, now() - interval '3 days') returning id",
+            "%s, %s, %s, %s, now() - interval '3 days', %s::timestamptz) returning id",
             (konto, uid, f"m{uid}@x", von, betreff, text, status, bereich, fach, sensibel,
-             quelle, version, aufrufe)).fetchone()["id"]
+             quelle, version, aufrufe, datum)).fetchone()["id"]
 
 
 def _zeile(mail_id):
@@ -77,7 +78,9 @@ def _fake(ergebnis=None, aufrufe=1, gesehen=None):
             ergebnis.get("bereich", "privat"), ergebnis.get("fach", "Rechnungen"),
             ergebnis.get("sensibel", False), ergebnis.get("quelle", "pruefer"),
             ergebnis.get("begruendung", "neu"), ergebnis.get("unterfach"),
-            aufrufe=aufrufe, vorschlaege=ergebnis.get("vorschlaege"))
+            aufrufe=aufrufe, vorschlaege=ergebnis.get("vorschlaege"),
+            aufmerksamkeit=ergebnis.get("aufmerksamkeit", False),
+            werbung_sicher=ergebnis.get("werbung_sicher", False))
     return einordnen
 
 
@@ -103,13 +106,13 @@ def test_vorschau_aendert_echte_spalten_nicht(monkeypatch, konto_id):
     assert gesehen[0]["betreff"] == "Rechnung" and gesehen[0]["besitzer"] == "felix"
 
 
-def test_vorschau_ueberspringt_mensch_und_version_2(monkeypatch, konto_id):
+def test_vorschau_ueberspringt_mensch_und_version_3(monkeypatch, konto_id):
     mensch = _mail(konto_id, 1, quelle="mensch")
-    v2 = _mail(konto_id, 2, version=2)
+    v3 = _mail(konto_id, 2, version=3)
     offen = _mail(konto_id, 3, status="fehler", fach="Zum Nachsehen", bereich="privat")
     monkeypatch.setattr(post_einordnung, "einordnen", _fake())
     assert neu.vorschau(10) == 1
-    assert _zeile(mensch)["vorschau"] is None and _zeile(v2)["vorschau"] is None
+    assert _zeile(mensch)["vorschau"] is None and _zeile(v3)["vorschau"] is None
     assert _zeile(offen)["vorschau"] is not None
     # Ohne --alle keine zweite Vorschau; mit --alle wieder.
     assert neu.vorschau(10) == 0
@@ -142,7 +145,7 @@ def test_anwenden_uebernimmt_vorschau_ohne_modell(monkeypatch, konto_id):
     z = _zeile(mid)
     assert (z["bereich"], z["fach"], z["einordnung_quelle"], z["begruendung"]) == (
         "privat", "Rechnungen", "pruefer", "grund")
-    assert z["einordnung_version"] == 2 and z["vorschau"] is None and z["status"] == "eingeordnet"
+    assert z["einordnung_version"] == 3 and z["vorschau"] is None and z["status"] == "eingeordnet"
     assert z["modellaufrufe"] == 1            # nicht doppelt gezaehlt
     assert z["text"] == "Mailtext"            # nicht sensibel: Inhalt bleibt
     assert neu.anwenden() == 0                # wiederholbar
@@ -255,7 +258,7 @@ def test_tagesgrenze_wird_vor_jeder_mail_neu_gelesen(monkeypatch, konto_id):
     die Vorschau darf nicht mit dem Stand vom Start weiterrechnen."""
     for uid in range(1, 6):
         _mail(konto_id, uid)
-    parallel = _mail(konto_id, 99, version=2, aufrufe=0)   # gehoert sales-post, kein Altbestand
+    parallel = _mail(konto_id, 99, version=3, aufrufe=0)   # gehoert sales-post, kein Altbestand
     with server.pool.connection() as conn:
         conn.execute("update post_mails set eingeordnet_am = now() where id = %s", (parallel,))
     monkeypatch.setattr(post_abholen, "TAGESGRENZE", 6)
@@ -376,3 +379,179 @@ def test_vorschau_alle_zaehlt_aufsummiert(monkeypatch, konto_id):
     erste = post_abholen.modellaufrufe_heute()
     neu.vorschau(10, alle=True)
     assert post_abholen.modellaufrufe_heute() == erste + 2
+
+
+# ---------------------------------------------------------------------------
+# Task 8: Altbestand v2, Stichprobe je Konto, Anteil Zum Nachsehen, neue Felder
+# ---------------------------------------------------------------------------
+
+def _zweites_konto():
+    with server.pool.connection() as conn:
+        return conn.execute(
+            "insert into post_konten (besitzer, kennung, anbieter, adresse, quelle) "
+            "values ('felix', 'web-test', 'gmx', 'web-test@gmx.de', 'ui') returning id"
+        ).fetchone()["id"]
+
+
+def test_v2_einordnungen_zaehlen_als_altbestand(monkeypatch, konto_id):
+    v2 = _mail(konto_id, 1, version=2)
+    v3 = _mail(konto_id, 2, version=3)
+    mensch_v2 = _mail(konto_id, 3, version=2, quelle="mensch")
+    monkeypatch.setattr(post_einordnung, "einordnen", _fake())
+    assert neu.vorschau(10) == 1
+    assert _zeile(v2)["vorschau"] is not None
+    assert _zeile(v3)["vorschau"] is None
+    # Eine Handkorrektur wird auch mit Version 2 nie angefasst.
+    assert _zeile(mensch_v2)["vorschau"] is None
+    assert neu.anwenden() == 1
+    assert _zeile(v2)["einordnung_version"] == 3
+    assert neu.anwenden() == 0            # danach nicht mehr im Altbestand: keine Endlosschleife
+
+
+def test_vorschau_je_konto_n(monkeypatch, konto_id):
+    web = _zweites_konto()
+    alt = [_mail(konto_id, uid, datum=f"2024-01-0{uid}T10:00:00Z") for uid in (1, 2, 3)]
+    web_alt = [_mail(web, uid, datum=f"2023-05-0{uid}T10:00:00Z") for uid in (1, 2)]
+    ohne_datum = _mail(konto_id, 9)          # kein Datum: gilt als aeltestes
+    gesehen = []
+    monkeypatch.setattr(post_einordnung, "einordnen", _fake(gesehen=gesehen))
+    assert neu.vorschau(100, je_konto=2) == 4
+    mit = {m for m in alt + web_alt + [ohne_datum] if _zeile(m)["vorschau"] is not None}
+    # Je Konto die zwei neuesten (hoechste Tage), nicht die ohne Datum.
+    assert mit == {alt[1], alt[2], web_alt[0], web_alt[1]}
+    # Zweiter Lauf zieht keine weiteren nach: die Stichprobe bleibt gleich gross.
+    assert neu.vorschau(100, je_konto=2) == 0
+    # Ohne je_konto sind die uebrigen dran.
+    assert neu.vorschau(100) == 2
+    # Ungueltiges N: nichts.
+    assert neu.vorschau(100, alle=True, je_konto=0) == 0
+
+
+def test_bericht_nennt_unklar_anteil_je_konto(monkeypatch, konto_id):
+    web = _zweites_konto()
+    for uid in (1, 2, 3, 4):
+        _mail(konto_id, uid)
+    _mail(web, 1)
+    ergebnisse = iter([post_struktur.UNKLAR, "Rechnungen", "Rechnungen", "Rechnungen",
+                       "Rechnungen"])
+
+    def einordnen(mail, konto):
+        return post_einordnung.Einordnung("privat", next(ergebnisse), False, "modell", "b",
+                                          aufrufe=1)
+    monkeypatch.setattr(post_einordnung, "einordnen", einordnen)
+    assert neu.vorschau(2) == 2 and neu.vorschau(10) == 3
+    b = neu.bericht()
+    # Das erste Ergebnis (UNKLAR) gehoert zur ersten bearbeiteten Mail; Konten ueber die Summe pruefen.
+    assert set(b["unklar_anteil"]) == {"gmx-test", "web-test"}
+    assert all(isinstance(w, float) and 0 <= w <= 1 for w in b["unklar_anteil"].values())
+    assert sum(b["unklar_anteil"][k] * n for k, n in (("gmx-test", 4), ("web-test", 1))) == 1
+    assert b["zum_nachsehen"] == 1
+
+
+def test_bericht_ohne_vorschau_hat_keinen_unklar_anteil(konto_id):
+    _mail(konto_id, 1)
+    assert neu.bericht()["unklar_anteil"] == {}
+
+
+def test_vorschau_speichert_aufmerksamkeit_und_werbung_sicher(monkeypatch, konto_id):
+    mid = _mail(konto_id, 1)
+    monkeypatch.setattr(post_einordnung, "einordnen", _fake(
+        {"fach": "Werbung", "aufmerksamkeit": False, "werbung_sicher": True}))
+    neu.vorschau(10)
+    v = _zeile(mid)["vorschau"]
+    assert v["aufmerksamkeit"] is False and v["werbung_sicher"] is True
+
+
+def test_anwenden_uebernimmt_neue_felder(monkeypatch, konto_id):
+    werbung = _mail(konto_id, 1)
+    handeln = _mail(konto_id, 2)
+    monkeypatch.setattr(post_werbung, "regel_vorschlagen", lambda b, v: False)
+    basis = {"bereich": "privat", "sensibel": False, "quelle": "modell", "begruendung": "b",
+             "vorschlaege": None, "aufrufe": 1, "unterfach": None}
+    _vorschau_setzen(werbung, {**basis, "fach": "Werbung", "aufmerksamkeit": False,
+                               "werbung_sicher": True})
+    _vorschau_setzen(handeln, {**basis, "fach": "Rechnungen", "aufmerksamkeit": True,
+                               "werbung_sicher": False})
+    assert neu.anwenden() == 2
+    z = _zeile(werbung)
+    assert (z["aufmerksamkeit"], z["werbung_sicher"], z["einordnung_version"]) == (False, True, 3)
+    z = _zeile(handeln)
+    assert (z["aufmerksamkeit"], z["werbung_sicher"], z["einordnung_version"]) == (True, False, 3)
+
+
+def test_anwenden_nachsehen_und_ungueltiges_paar_sind_aufmerksam(konto_id):
+    nachsehen = _mail(konto_id, 1)
+    ungueltig = _mail(konto_id, 2)
+    basis = {"sensibel": False, "quelle": "modell", "begruendung": "b", "vorschlaege": None,
+             "aufrufe": 1, "unterfach": None, "aufmerksamkeit": False, "werbung_sicher": True}
+    _vorschau_setzen(nachsehen, {**basis, "bereich": "privat", "fach": post_struktur.UNKLAR})
+    _vorschau_setzen(ungueltig, {**basis, "bereich": "business", "fach": "Erfunden"})
+    assert neu.anwenden() == 2
+    for mid in (nachsehen, ungueltig):
+        z = _zeile(mid)
+        assert z["aufmerksamkeit"] is True and z["werbung_sicher"] is False
+
+
+def test_anwenden_sensibel_ist_nie_werbung_sicher(konto_id):
+    neu_sensibel = _mail(konto_id, 1)
+    alt_sensibel = _mail(konto_id, 2, sensibel=True)
+    basis = {"bereich": "privat", "fach": "Werbung", "unterfach": None, "quelle": "modell",
+             "begruendung": "b", "vorschlaege": None, "aufrufe": 1, "aufmerksamkeit": False,
+             "werbung_sicher": True}
+    _vorschau_setzen(neu_sensibel, {**basis, "sensibel": True})
+    _vorschau_setzen(alt_sensibel, {**basis, "sensibel": False})
+    assert neu.anwenden() == 2
+    for mid in (neu_sensibel, alt_sensibel):
+        assert _zeile(mid)["werbung_sicher"] is False
+
+
+def test_anwenden_aeltere_vorschau_ohne_neue_schluessel_bleibt_sichtbar(konto_id):
+    mid = _mail(konto_id, 1)
+    _vorschau_setzen(mid, {"bereich": "privat", "fach": "Werbung", "unterfach": None,
+                           "sensibel": False, "quelle": "modell", "begruendung": "b",
+                           "vorschlaege": None, "aufrufe": 1})
+    assert neu.anwenden() == 1
+    z = _zeile(mid)
+    assert z["aufmerksamkeit"] is True and z["werbung_sicher"] is False
+
+
+def test_anwenden_schlaegt_werberegel_je_absender_einmal_vor(monkeypatch, konto_id):
+    aufrufe = []
+    monkeypatch.setattr(post_werbung, "regel_vorschlagen",
+                        lambda besitzer, von: aufrufe.append((besitzer, von)) or True)
+    basis = {"bereich": "privat", "fach": "Werbung", "unterfach": None, "sensibel": False,
+             "quelle": "modell", "begruendung": "b", "vorschlaege": None, "aufrufe": 1,
+             "aufmerksamkeit": False}
+    for uid in (1, 2):
+        _vorschau_setzen(_mail(konto_id, uid, von="Shop <news@shop-test.example>"),
+                         {**basis, "werbung_sicher": True})
+    _vorschau_setzen(_mail(konto_id, 3, von="Andere <a@andere.example>"),
+                     {**basis, "werbung_sicher": False})
+    assert neu.anwenden() == 3
+    assert aufrufe == [("felix", "Shop <news@shop-test.example>")]
+
+
+def test_anwenden_bricht_bei_fehler_im_regelvorschlag_nicht_ab(monkeypatch, konto_id):
+    def kaputt(besitzer, von):
+        raise RuntimeError("Zeile mit Mailinhalt GEHEIM")
+    monkeypatch.setattr(post_werbung, "regel_vorschlagen", kaputt)
+    mid = _mail(konto_id, 1)
+    _vorschau_setzen(mid, {"bereich": "privat", "fach": "Werbung", "unterfach": None,
+                           "sensibel": False, "quelle": "modell", "begruendung": "b",
+                           "vorschlaege": None, "aufrufe": 1, "aufmerksamkeit": False,
+                           "werbung_sicher": True})
+    assert neu.anwenden() == 1
+    assert _zeile(mid)["werbung_sicher"] is True
+
+
+def test_je_konto_argument_wird_durchgereicht(monkeypatch, capsys):
+    """Die Befehlszeile (deploy/post-neu-einordnen.sh reicht alle Argumente durch)."""
+    gesehen = []
+    monkeypatch.setattr(neu, "vorschau", lambda g, a=False, j=None: gesehen.append((g, a, j)) or 0)
+    monkeypatch.setattr(neu, "bericht", lambda: {"alt": {}, "neu": {}, "zum_nachsehen": 0,
+                                                 "offen": 0, "katalog": [], "ohne_katalog": []})
+    assert neu.main(["vorschau", "--je-konto", "50"]) == 0
+    assert gesehen == [(1000, False, 50)]
+    skript = (Path(__file__).resolve().parents[2] / "deploy" / "post-neu-einordnen.sh").read_text(
+        encoding="utf-8")
+    assert "--je-konto N" in skript and '"$@"' in skript
