@@ -385,7 +385,7 @@ def einordnen(mail: dict, konto: dict, aufruf=gateway.funktion_aufrufen) -> Eino
         return Einordnung(s.bereich, s.fach, sensibel, "pruefer",
                           "modell:sensibel" if sensibel else s.begruendung,
                           s.unterfach, aufrufe=2, aufmerksamkeit=s.aufmerksamkeit or p.aufmerksamkeit,
-                          werbung_sicher=s.fach == WERBUNG)
+                          werbung_sicher=s.fach == WERBUNG and not sensibel)
     # Uneins oder unsicher: privat (nur der Besitzer sieht es), ein Mensch entscheidet.
     sensibel = s.sensibel or p.sensibel
     return Einordnung("privat", post_struktur.UNKLAR, sensibel, "modell",

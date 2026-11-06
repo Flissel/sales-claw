@@ -361,8 +361,7 @@ def test_schema_hat_unterfach_enum_und_sicher():
     assert props["sicher"] == {"type": "boolean"}
     assert props["bereich"]["enum"] == list(post_struktur.BEREICHE)
     assert set(pe.FUNKTION["function"]["parameters"]["required"]) == \
-        {"bereich", "fach", "unterfach", "sensibel", "aufmerksamkeit", "sicher",
-                                                                        "begruendung"}
+        {"bereich", "fach", "unterfach", "sensibel", "aufmerksamkeit", "sicher", "begruendung"}
 
 
 def test_text_wird_vor_dem_modell_gekuerzt():
@@ -400,6 +399,13 @@ def test_einig_auf_unklar_oder_erfundenem_fach_liegt_immer_privat(fach):
     u = _urteil("business", fach)
     e = pe.einordnen(_mail(), BUSINESS, aufruf=_agenten(post=u, pruefer=dict(u)))
     assert (e.bereich, e.fach) == ("privat", post_struktur.UNKLAR)
+    # Gespeichert wird aufmerksamkeit=True zentral in post_abholen._ergebnis_speichern.
+
+
+def test_einig_werbung_aber_sensibel_ist_nicht_werbung_sicher():
+    u = _urteil("business", "Werbung", sensibel=True)
+    e = pe.einordnen(_mail(), BUSINESS, aufruf=_agenten(post=u, pruefer=dict(u)))
+    assert e.werbung_sicher is False
 
 
 def test_einig_aber_nur_pruefer_sensibel_ist_sensibel_ohne_freitext():

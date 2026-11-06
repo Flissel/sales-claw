@@ -360,6 +360,7 @@ _FEHL_KOSTEN_SQL = ("fehl_aufrufe = %s + case when fehl_am::date = current_date 
 def _ergebnis_speichern(mail_id, e: post_einordnung.Einordnung) -> None:
     bereich, fach = e.bereich, e.fach
     unterfach = e.unterfach
+    aufmerksamkeit = e.aufmerksamkeit
     if not post_struktur.fach_gueltig(bereich or "", fach or ""):
         # Die feste Liste gilt auch hier: nie ein Fach speichern, das es nicht gibt.
         fach, unterfach = post_struktur.UNKLAR, None
@@ -367,6 +368,8 @@ def _ergebnis_speichern(mail_id, e: post_einordnung.Einordnung) -> None:
         # Spec §6: Zum Nachsehen liegt IMMER privat - hier zentral, egal welcher
         # Weg (Modell, Regel, Fallback oben) die Einordnung geliefert hat.
         bereich, unterfach = "privat", None
+        # Zum Nachsehen bleibt im Posteingang (Spec §5), egal was die Stufe davor meldete.
+        aufmerksamkeit = True
     server._q(
         "update post_mails set bereich = %s, fach = %s, unterfach = %s, sensibel = %s, "
         "einordnung_quelle = %s, begruendung = %s, vorschlaege = %s::jsonb, "
@@ -382,7 +385,7 @@ def _ergebnis_speichern(mail_id, e: post_einordnung.Einordnung) -> None:
         "where id = %s and status = 'neu'",
         (bereich, fach, unterfach, e.sensibel, e.quelle, e.begruendung,
          None if e.vorschlaege is None else server._json(e.vorschlaege),
-         e.aufmerksamkeit, e.werbung_sicher, e.aufrufe,
+         aufmerksamkeit, e.werbung_sicher, e.aufrufe,
          e.sensibel, e.sensibel, e.sensibel, e.sensibel, mail_id))
 
 
@@ -447,7 +450,7 @@ def einordnen_offene(grenze: int) -> int:
                 "fehler = 'Einordnung durch das Modell endgueltig fehlgeschlagen', "
                 # Der Aufruf hat das Modell erreicht: zaehlt zur Tagesgrenze.
                 "einordnung_quelle = 'modell', modellaufrufe = 1, einordnung_version = 2, "
-                "eingeordnet_am = now() where id = %s and status = 'neu'",
+                "aufmerksamkeit = true, eingeordnet_am = now() where id = %s and status = 'neu'",
                 (post_struktur.UNKLAR, mail["id"]))
             erledigt += 1
             continue
@@ -475,7 +478,8 @@ def einordnen_offene(grenze: int) -> int:
                             mail["id"], VERSUCHE_MAX, type(e).__name__)
                 server._q(
                     "update post_mails set status = 'fehler', bereich = 'privat', fach = %s, "
-                    "fehler = 'Einordnung wiederholt fehlgeschlagen', eingeordnet_am = now() "
+                    "fehler = 'Einordnung wiederholt fehlgeschlagen', aufmerksamkeit = true, "
+                    "eingeordnet_am = now() "
                     "where id = %s and status = 'neu'", (post_struktur.UNKLAR, mail["id"]))
                 erledigt += 1
                 continue

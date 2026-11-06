@@ -929,6 +929,20 @@ def test_pruefer_fehler_dann_gatewayfehler_summiert_die_aufrufe(monkeypatch):
     r = _mails()[0]
     assert r["status"] == "fehler" and (r["fehl_aufrufe"], r["modellaufrufe"]) == (2, 1)
     assert post_abholen.modellaufrufe_heute() == 3
+    assert r["aufmerksamkeit"] is True          # Zum Nachsehen bleibt im Posteingang
+
+
+def test_unklar_erzwingt_aufmerksamkeit_beim_speichern(monkeypatch):
+    _konto()
+    post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({1: _mail("<u@x>")}))
+    monkeypatch.setattr(
+        post_einordnung, "einordnen",
+        lambda mail, konto: post_einordnung.Einordnung(
+            "business", post_struktur.UNKLAR, False, "pruefer", "x", None, aufrufe=2,
+            aufmerksamkeit=False))
+    assert post_abholen.einordnen_offene(5) == 1
+    r = _mails()[0]
+    assert (r["bereich"], r["fach"], r["aufmerksamkeit"]) == ("privat", post_struktur.UNKLAR, True)
 
 
 def test_pruefer_ausfall_ueber_mitternacht_zaehlt_nicht_doppelt(monkeypatch):
