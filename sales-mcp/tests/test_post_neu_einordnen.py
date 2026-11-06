@@ -470,6 +470,35 @@ def test_bericht_nennt_unklar_anteil_je_konto(monkeypatch, konto_id, capsys):
     assert "  0.50  web-test" in ausgabe and "  0.00  gmx-test" in ausgabe
 
 
+def test_bericht_misst_auch_laufend_eingeordnete_v3_mails(konto_id, capsys):
+    """I5 / R20: gmail hat keinen Altbestand (alles neu). Das Tor misst darum zusaetzlich den
+    Anteil Zum Nachsehen unter den laufend eingeordneten v3-Mails, ohne Handkorrekturen."""
+    web = _zweites_konto()
+    for uid in (1, 2, 3):
+        _mail(konto_id, uid, version=3, fach="Rechnungen", bereich="privat")
+    _mail(konto_id, 4, version=3, fach=post_struktur.UNKLAR, bereich="privat")
+    _mail(konto_id, 5, version=3, fach=post_struktur.UNKLAR, bereich="privat", quelle="mensch")
+    _mail(konto_id, 6, version=2, fach=post_struktur.UNKLAR, bereich="privat")   # Altbestand
+    _mail(konto_id, 7, version=3, status="neu", fach=None, bereich=None)
+    _mail(web, 1, version=3, fach=post_struktur.UNKLAR, bereich="privat")
+    b = neu.bericht()
+    assert b["unklar_laufend"] == {"gmx-test": {"anteil": 0.25, "n": 4},
+                                   "web-test": {"anteil": 1.0, "n": 1}}
+    assert b["unklar_anteil"] == {}           # ohne Vorschau kein Altbestand-Wert
+    neu._bericht_drucken(b)
+    ausgabe = capsys.readouterr().out
+    assert neu.TOR_VORSCHAU in ausgabe and neu.TOR_LAUFEND in ausgabe
+    assert "  0.25  gmx-test  (4 Mails)" in ausgabe
+
+
+def test_runbook_nennt_die_tor_bezeichnungen_woertlich():
+    """I5/M3: Ausgabe und Runbook muessen dieselben Worte benutzen."""
+    runbook = (Path(__file__).resolve().parents[2] / "docs" / "03_RUNBOOK.md").read_text(
+        encoding="utf-8")
+    assert neu.TOR_VORSCHAU in runbook and neu.TOR_LAUFEND in runbook
+    assert "Offen (noch ohne Vorschau)" in runbook
+
+
 def test_bericht_ohne_vorschau_hat_keinen_unklar_anteil(konto_id):
     _mail(konto_id, 1)
     assert neu.bericht()["unklar_anteil"] == {}

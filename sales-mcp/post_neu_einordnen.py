@@ -37,6 +37,12 @@ LOG = logging.getLogger("post_neu_einordnen")
 # Bester Fall je Mail: Sortierer + Pruefer. Wie in post_abholen.eine_runde.
 AUFRUFE_JE_MAIL = 2
 TOP_DOMAINS = 40
+# Rollout-Tor (Spec §9, R20): je Konto Anteil Zum Nachsehen < 0,10, und zwar fuer BEIDE Werte.
+# A misst die Vorschau des Altbestands; B die laufend eingeordneten v3-Mails ohne Handkorrektur
+# (gmail-felix404 hat keinen Altbestand, nur B; dort gilt das Tor ab 25 Mails). Die Bezeichnungen
+# stehen wortgleich im Runbook (docs/03_RUNBOOK.md, Post aufraeumen).
+TOR_VORSCHAU = "Tor A: Zum Nachsehen je Konto (Altbestand-Vorschau)"
+TOR_LAUFEND = "Tor B: Zum Nachsehen je Konto (laufend eingeordnet, v3)"
 
 # Gemeinsame Auswahl: wer ueberhaupt neu einzuordnen ist (nie ein Mensch, nie v3).
 # Version 3 = Einordnung mit aufmerksamkeit/werbung_sicher; v2-Zeilen kennen die Felder nicht.
@@ -231,8 +237,24 @@ def bericht() -> dict:
             ohne_katalog[domain or "(ohne Domain)"] += 1
     return {"alt": dict(alt), "neu": dict(neu), "zum_nachsehen": nachsehen, "offen": offen,
             "unklar_anteil": {k: je_kennung_unklar[k] / n for k, n in je_kennung.items()},
+            "vorschau_je_konto": dict(je_kennung),
+            "unklar_laufend": _unklar_laufend(),
             "katalog": [(e, f, u, n) for (e, f, u), n in katalog.most_common()],
             "ohne_katalog": ohne_katalog.most_common(TOP_DOMAINS)}
+
+
+def _unklar_laufend() -> dict:
+    """Je Konto: Anteil Zum Nachsehen unter den laufend eingeordneten Mails (Version 3, ohne
+    Handkorrektur) und deren Zahl. Nur Zahlen, keine Adressen oder Betreffe."""
+    zeilen = server._q(
+        "select coalesce(k.kennung, '(ohne Konto)') as kennung, count(*) as n, "
+        "count(*) filter (where m.fach = %s) as unklar from post_mails m "
+        "left join post_konten k on k.id = m.konto_id "
+        "where m.status = 'eingeordnet' and m.einordnung_version = 3 "
+        "and m.einordnung_quelle is distinct from 'mensch' group by 1",
+        (post_struktur.UNKLAR,))
+    return {z["kennung"]: {"anteil": int(z["unklar"]) / int(z["n"]), "n": int(z["n"])}
+            for z in zeilen}
 
 
 def anwenden() -> int:
@@ -315,10 +337,14 @@ def _bericht_drucken(b: dict) -> None:
                                             key=lambda t: -t[-1]))
     _tabelle("Neu (Bereich / Fach / Unterfach)", sorted(((*k, n) for k, n in b["neu"].items()),
                                                         key=lambda t: -t[-1]))
-    # Rollout-Tor: der Anteil Zum Nachsehen soll je Konto unter 0,10 liegen.
-    print("\nZum Nachsehen je Konto (Anteil der Vorschau-Ergebnisse)")
+    # Rollout-Tor: der Anteil Zum Nachsehen soll je Konto in BEIDEN Werten unter 0,10 liegen.
+    vorschau_n = b.get("vorschau_je_konto", {})
+    print(f"\n{TOR_VORSCHAU}")
     for kennung, anteil in sorted(b["unklar_anteil"].items()):
-        print(f"  {anteil:5.2f}  {kennung}")
+        print(f"  {anteil:5.2f}  {kennung}  ({vorschau_n.get(kennung, 0)} Mails)")
+    print(f"\n{TOR_LAUFEND}")
+    for kennung, w in sorted(b.get("unklar_laufend", {}).items()):
+        print(f"  {w['anteil']:5.2f}  {kennung}  ({w['n']} Mails)")
     _tabelle("Katalog-Treffer (Endung / Fach / Unterfach)",
              [(e, f, u, n) for e, f, u, n in b["katalog"]])
     _tabelle(f"Ohne Katalog, haeufigste Domains (Top {TOP_DOMAINS})",

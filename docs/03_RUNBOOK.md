@@ -3388,28 +3388,44 @@ Die Schalter (in der `.env` des Ladens, durchgereicht in `docker-compose.yml`):
 | Variable | Werte | Wirkung |
 | --- | --- | --- |
 | `POST_ORDNEN` | `aus` (Vorgabe) / `verschieben` / `voll` | `aus`: kein IMAP-Schritt. `verschieben`: nur Ordner-Wechsel, nichts wird geloescht. `voll`: loescht zusaetzlich Mails mit Ziel `loeschen`, aber nur freigegebene Jahre, sowie To-Review-Mails, die aelter als 30 Tage sind. `sales-post` und `sales-ui` lesen sie (die UI nur zur Anzeige). |
-| `POST_AUFRAEUMEN_AB` | ISO-Datum, z. B. `2026-11-20` | Tag des Einschaltens. Posteingangs-Mails ab diesem Tag zaehlen nicht als Altbestand. **Pflicht, sobald `POST_ORDNEN` nicht `aus` ist** (siehe Schritt 9). |
-| `POST_BUSINESS_ADRESSEN` | Komma-Liste, mit `@` = Adresse, ohne = Domain | Weitergeleitete Mail an so eine Adresse gilt als business. Wert erst nach Schritt 5 setzen. |
+| `POST_AUFRAEUMEN_AB` | ISO-Datum, z. B. `2026-11-20` | Tag des Einschaltens. Posteingangs-Mails ab diesem Tag zaehlen nicht als Altbestand. **Pflicht, sobald `POST_ORDNEN` nicht `aus` ist** (siehe Schritt 11). |
+| `POST_BUSINESS_ADRESSEN` | Komma-Liste, mit `@` = Adresse, ohne = Domain | Weitergeleitete Mail an so eine Adresse gilt als business. Wert erst nach Schritt 6 setzen. |
+| `POST_TAGESGRENZE` | Zahl, Vorgabe `500` | Modellaufrufe je Tag. **`0` pausiert das Einordnen ganz** - auch kostenlose Muster-, Regel- und Katalog-Treffer, denn `post_abholen._einordnen` bricht vor `einordnen_offene` ab (Test `test_tagesgrenze_null_pausiert_auch_kostenlose_treffer`). Abholen laeuft weiter. Die Vorschau (`post-neu-einordnen.sh vorschau`) haelt sich ebenfalls daran. Pause nur fuer Schritt 4-8. |
 
 1. **Vault-Claim.** Vor jeder Arbeit an der VM `C:\Users\User\Desktop\secondbrain\00_Meta\002_Koordination_Live.md`
    lesen, Claim eintragen und sofort committen (Vault ist git-versioniert); bei fremdem aktivem Claim
    nicht anfassen, Felix fragen. Pruefen: `git -C <vault> log -1 --oneline` zeigt den Claim-Commit.
-2. **SQL einspielen - vor `update.sh`**, aus dem deployten Stand (nicht aus einem anderen Checkout),
-   immer mit `ON_ERROR_STOP`. Die Migration ist additiv/idempotent:
-   `docker exec -i debian-supabase-db-1 psql -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v schema=sales -f - < db/post-sammelstelle.sql`
-   (bzw. `psql -v ON_ERROR_STOP=1 -v schema=sales -f db/post-sammelstelle.sql` im Checkout; anderer Laden:
-   `-v schema=sales_<praefix>`). Soll der Stand vor dem `git pull` eingespielt werden:
-   `git fetch origin && git show origin/<branch>:db/post-sammelstelle.sql | docker exec -i ... psql ... -f -`.
-   Pruefen: Exit-Code 0 und
-   `docker exec debian-supabase-db-1 psql -U supabase_admin -d postgres -Atc "select column_name from information_schema.columns where table_schema='sales' and table_name='post_mails' and column_name in ('ziel','urspruengliche_adresse','ordner_stand')"`
-   liefert drei Zeilen; ausserdem existiert `sales.post_loeschfreigaben`.
-3. `bash deploy/update.sh` (neuer Code; `POST_ORDNEN` bleibt `aus`). Pruefen: `bash deploy/smoke.sh`
-   (Abschnitt `sales-post` gruen) und `docker exec ${PRAEFIX}-post printenv POST_ORDNEN` meldet `aus`.
-4. Das GMX-Konto ist privat:
+2. **SQL einspielen - vor `update.sh`, in JEDES Schema mit `post_mails`**, aus dem deployten Stand (nicht
+   aus einem anderen Checkout), immer mit `ON_ERROR_STOP`. `update.sh` baut **alle** Laeden neu, und der
+   neue Code liest die neuen Spalten (`ziel`, `ordner`, `ordner_am`) in jedem Laden: ein Laden ohne
+   Migration bricht sonst mit `UndefinedColumn` ab. Die Migration ist additiv/idempotent. Schemata ermitteln:
+   `docker exec debian-supabase-db-1 psql -U supabase_admin -d postgres -Atc "select table_schema from information_schema.tables where table_name='post_mails' and table_schema like 'sales%' and table_schema <> 'sales_test' order by 1"`
+   und fuer jedes davon einspielen (im Checkout des deployten Stands auf der VM):
+   ```bash
+   for s in $(docker exec debian-supabase-db-1 psql -U supabase_admin -d postgres -Atc "select table_schema from information_schema.tables where table_name='post_mails' and table_schema like 'sales%' and table_schema <> 'sales_test' order by 1"); do
+     echo "== $s"
+     docker exec -i debian-supabase-db-1 psql -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v schema=$s -f - < db/post-sammelstelle.sql || break
+   done
+   ```
+   Soll der Stand vor dem `git pull` eingespielt werden: im Schleifenrumpf
+   `git show origin/<branch>:db/post-sammelstelle.sql | docker exec -i ... -v schema=$s -f -` (vorher `git fetch origin`).
+   Pruefen **je Laden** (Exit-Code 0 je Schema, kein `break`), dann fuer jedes Schema `$s`:
+   `docker exec debian-supabase-db-1 psql -U supabase_admin -d postgres -Atc "select count(*) from information_schema.columns where table_schema='$s' and table_name='post_mails' and column_name in ('ziel','ordner','ordner_am','urspruengliche_adresse','ordner_stand')"`
+   liefert `5`, und `select to_regclass('$s.post_loeschfreigaben')` ist nicht leer. Ein Schema mit
+   weniger: nicht weiter, erst die Migration fuer dieses Schema klaeren.
+3. Das GMX-Konto ist privat - **vor `update.sh`**, sonst ordnet der neue Code GMX-Mails als business ein:
    `docker exec -i debian-supabase-db-1 psql -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -c "update sales.post_konten set standard_bereich='privat' where kennung='gmx-felix'"`
    Pruefen: Ausgabe `UPDATE 1` (bei `UPDATE 0` stimmt die Kennung nicht - nicht raten, Kennungen mit
-   `select kennung from sales.post_konten` ansehen).
-5. **Herkunfts-Stichprobe.** Die Kopfzeilen-Befehle laufen im Container `${PRAEFIX}-post` (nur dort
+   `select kennung from sales.post_konten` ansehen). Gilt nur fuer Felix' Laden (`sales`).
+4. **Einordnen pausieren - vor `update.sh`.** Mit v3 eingeordnete Mails sortiert spaeter nichts mehr neu
+   um; ohne Pause ordnet `sales-post` direkt nach `update.sh` ein, bevor `POST_BUSINESS_ADRESSEN` und die
+   urspruengliche Adresse (Schritt 6-7) da sind - weitergeleitete Business-Mail landete dauerhaft unter
+   privat. In die `.env` des Ladens: `POST_TAGESGRENZE=0` (wirkt auf alles Einordnen, auch kostenlose
+   Treffer, siehe Tabelle). Die Pause gilt bis einschliesslich Schritt 7.
+5. `bash deploy/update.sh` (neuer Code; `POST_ORDNEN` bleibt `aus`). Pruefen: `bash deploy/smoke.sh`
+   (Abschnitt `sales-post` gruen), `docker exec ${PRAEFIX}-post printenv POST_ORDNEN POST_TAGESGRENZE`
+   meldet `aus` und `0`.
+6. **Herkunfts-Stichprobe.** Die Kopfzeilen-Befehle laufen im Container `${PRAEFIX}-post` (nur dort
    sind `POST_BUSINESS_ADRESSEN` und die Kontozugaenge da, wie bei `deploy/post-neu-einordnen.sh`) und
    lesen nur Kopfzeilen per `BODY.PEEK`, nie Inhalt:
    `docker exec ${PRAEFIX}-post python -m post_herkunft stichprobe gmail-felix404` (Kennung wie in `post_konten.kennung`)
@@ -3420,18 +3436,33 @@ Die Schalter (in der `.env` des Ladens, durchgereicht in `docker-compose.yml`):
    nacktes `up -d`). Findet sich nichts Verlaessliches, nichts raten: Felix nach der Bluebatch-Adresse
    fragen. Gegenprobe: `docker exec ${PRAEFIX}-post printenv POST_BUSINESS_ADRESSEN`.
    Bei Abweichung ggf. die Reihenfolge `KOPFZEILEN` in `post_herkunft.py` anpassen (eigener Commit).
-6. `docker exec ${PRAEFIX}-post python -m post_herkunft nachtragen gmail-felix404` - traegt die
-   urspruengliche Adresse fuer den Altbestand nach (nur Kopfzeilen; 500 Mails je Lauf, bei Bedarf
-   wiederholen). Pruefen: Ausgabe `Nachgetragen: <n>`; wiederholen, bis `n` = 0 ist.
-7. **Neu-Einordnung als Stichprobe, ueber alle vier Konten, mindestens 100 Mails (Spec §9):**
+7. `docker exec ${PRAEFIX}-post python -m post_herkunft nachtragen gmail-felix404` - traegt die
+   urspruengliche Adresse fuer den Altbestand nach (nur Kopfzeilen; 500 Mails je Lauf). Die Ausgabe lautet
+   `Verarbeitet: <v> (Adresse gefunden: <g>, uebersprungen: <u>), noch offen: <o>`.
+   **Wiederholen, bis `noch offen: 0`.** Bleibt `<o>` ueber zwei Laeufe gleich und `<v>` besteht nur aus
+   `uebersprungen` (Ordner fehlt, Mail nicht mehr am Server), nicht weiter wiederholen: Zahl an Felix melden.
+8. **Pause beenden.** `POST_TAGESGRENZE` in der `.env` wieder auf den alten Wert (Zeile entfernen = `500`),
+   dann `docker compose up -d --no-deps --force-recreate sales-post` (nur `sales-post`). Pruefen:
+   `docker exec ${PRAEFIX}-post printenv POST_TAGESGRENZE` meldet nicht mehr `0`.
+9. **Neu-Einordnung als Stichprobe, ueber alle vier Konten, mindestens 100 Mails (Spec §9):**
    `bash deploy/post-neu-einordnen.sh [laden] vorschau --je-konto 25`, danach
-   `bash deploy/post-neu-einordnen.sh [laden] bericht`.
-   **Tor: `unklar_anteil` < 0,10 in jedem Konto** (steht im `bericht`, je Konto). Ein Konto darueber heisst:
-   Prompt/Katalog nachschaerfen (zurueck zu Task 2 der Einordnung), Vorschau wiederholen - nicht weiter.
-   Die Mailinhalte erscheinen nirgends in der Ausgabe; die Vorschau zaehlt zur Tagesgrenze `POST_TAGESGRENZE`.
-8. `bash deploy/post-neu-einordnen.sh [laden] anwenden` - nur mit Felix' OK nach dem Bericht (ohne Modell;
-   Mails mit menschlicher Korrektur bleiben). Pruefen: Ausgabe nennt die Zahl, danach `bericht` noch einmal.
-9. **Einschalten, Stufe 1: nur verschieben.** In die `.env`: `POST_AUFRAEUMEN_AB=<heutiges Datum, ISO>` und
+   `bash deploy/post-neu-einordnen.sh [laden] bericht`. Der Bericht zeigt **zwei** Tor-Tabellen, je Zeile
+   `<Anteil>  <Kennung>  (<n> Mails)`:
+   - `Tor A: Zum Nachsehen je Konto (Altbestand-Vorschau)` - Anteil „Zum Nachsehen“ in der Vorschau.
+   - `Tor B: Zum Nachsehen je Konto (laufend eingeordnet, v3)` - Anteil „Zum Nachsehen“ unter den seit
+     dem Update laufend eingeordneten Mails (ohne Handkorrekturen).
+   **Tor: beide Werte < 0,10 in jedem Konto.** `gmail-felix404` hat keinen Altbestand (fehlt in Tor A); es
+   wird ueber Tor B gemessen, sobald dort mindestens 25 Mails stehen - bis dahin Runden abwarten, nicht
+   weiter. Ein Konto darueber heisst: Prompt/Katalog nachschaerfen (zurueck zu Task 2 der Einordnung),
+   Vorschau wiederholen - nicht weiter. Die Mailinhalte erscheinen nirgends in der Ausgabe; die Vorschau
+   zaehlt zur Tagesgrenze `POST_TAGESGRENZE`.
+10. **Voller Neu-Sortier-Lauf, erst nach bestandenem Tor:**
+    `bash deploy/post-neu-einordnen.sh [laden] vorschau` (ohne `--je-konto`) wiederholen, bis im `bericht`
+    `Offen (noch ohne Vorschau)` = 0 steht (die Tagesgrenze kann das auf mehrere Tage verteilen), dann
+    `bash deploy/post-neu-einordnen.sh [laden] bericht` (beide Tore noch einmal ansehen), dann - nur mit
+    Felix' OK - `bash deploy/post-neu-einordnen.sh [laden] anwenden` (ohne Modell; Mails mit menschlicher
+    Korrektur bleiben). Pruefen: Ausgabe nennt die Zahl, danach `bericht` noch einmal.
+11. **Einschalten, Stufe 1: nur verschieben.** In die `.env`: `POST_AUFRAEUMEN_AB=<heutiges Datum, ISO>` und
    `POST_ORDNEN=verschieben`, dann `docker compose up -d --no-deps --force-recreate sales-post sales-ui`.
    **`POST_ORDNEN` ausser `aus` nie ohne `POST_AUFRAEUMEN_AB`:** ohne Stichtag gilt jede Mail als
    Altbestand und die 90-Tage-Regel stuft Posteingangs-Mails ab. Pruefen:
@@ -3439,12 +3470,13 @@ Die Schalter (in der `.env` des Ladens, durchgereicht in `docker-compose.yml`):
    Runde beobachten** (Intervall 120 s): Zahlen in `/post/aufraeumen`, `docker logs --since 10m ${PRAEFIX}-post`
    ohne Fehler, Stichprobe im Handy-Postfach (Ordner `Zur Info`/`To-Review`, nichts fehlt).
    Verschieben ist umkehrbar (Mail liegt nur in einem anderen Ordner).
-10. **Sichtpruefung vor `voll`:** In der UI unter `/post/aufraeumen` je Jahr ansehen, was geloescht
-    wuerde (Vorschau je Jahr, Reiter To-Review). Erst danach, mit Felix' OK: `POST_ORDNEN=voll` in die
+12. **Sichtpruefung vor `voll`:** In der UI unter `/post/aufraeumen` je Jahr ansehen, was geloescht
+    wuerde (Vorschau je Jahr; ein Klick auf den Absender listet dessen Mails mit Datum, Konto und
+    Betreff; Reiter To-Review). Erst danach, mit Felix' OK: `POST_ORDNEN=voll` in die
     `.env`, `docker compose up -d --no-deps --force-recreate sales-post sales-ui`. `voll` loescht nur
     **freigegebene Jahre** und **To-Review-Mails, die aelter als 30 Tage sind**; ohne Freigabe bleibt die
     Mail, wo sie ist.
-11. **Jahre freigeben** durch Felix in der UI (`/post/aufraeumen`), das neueste Jahr zuerst, je Jahr einzeln;
+13. **Jahre freigeben** durch Felix in der UI (`/post/aufraeumen`), das neueste Jahr zuerst, je Jahr einzeln;
     Absender, die bleiben sollen, vorher herausnehmen. Nach jeder Freigabe eine Runde abwarten und die
     Zahlen pruefen, bevor das naechste Jahr dran ist.
 
@@ -3452,5 +3484,5 @@ Die Schalter (in der `.env` des Ladens, durchgereicht in `docker-compose.yml`):
 sales-post sales-ui` stoppt jedes Verschieben und Loeschen ab der naechsten Runde (Pruefen:
 `printenv POST_ORDNEN` im Container = `aus`). Schon verschobene Mails bleiben im Zielordner und lassen
 sich per Handy zurueckziehen. **Geloeschte Mails sind endgueltig weg**; nur ihre Kopfzeile bleibt in
-`post_mails` (Absender, Betreff, Datum - kein Inhalt). Darum nie `voll` ohne Sichtpruefung (Schritt 10).
+`post_mails` (Absender, Betreff, Datum - kein Inhalt). Darum nie `voll` ohne Sichtpruefung (Schritt 12).
 Notbremse ohne `.env`-Aenderung: `docker compose stop sales-post`.
