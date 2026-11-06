@@ -8318,17 +8318,105 @@ def _kennung_lesbar(absender) -> str:
     return f"+{ziffern}"
 
 
-def _beziehung_waehler(lead_id, beziehung, danach: str) -> str:
-    """Auswahl + Knopf ohne JavaScript (wie die Autonomie-Auswahl)."""
+def _beziehung_auswahl(name: str, beziehung) -> str:
     optionen = ['<option value="">— offen —</option>'] + [
         f'<option value="{_e(k)}"{" selected" if k == beziehung else ""}>'
         f'{_e(n)}</option>' for k, n in server.BEZIEHUNGEN.items()]
+    return (f'<select name="{_e(name)}" aria-label="Beziehung">'
+            f'{"".join(optionen)}</select>')
+
+
+def _beziehung_waehler(lead_id, beziehung, danach: str) -> str:
+    """Auswahl + Knopf ohne JavaScript (wie die Autonomie-Auswahl)."""
     return (f'<form class="beziehung" method="post" action="/kontakte/beziehung">'
             f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
             f'<input type="hidden" name="lead_id" value="{_e(lead_id)}">'
             f'<input type="hidden" name="danach" value="{_e(danach)}">'
-            f'<select name="beziehung" aria-label="Beziehung">{"".join(optionen)}'
-            f'</select><button>Setzen</button></form>')
+            f'{_beziehung_auswahl("beziehung", beziehung)}'
+            f'<button>Setzen</button></form>')
+
+
+def _entschieden_formular(zeilen, beziehungen: dict) -> str:
+    """„Bereits entschieden" als EIN Formular (Betreiber 06.11.2026): ein
+    „Setzen" je Zeile lud die Seite neu, die uebrigen Auswahlen waren weg.
+    `vorher_<lead_id>` traegt den Stand beim Laden - gespeichert wird nur,
+    was davon abweicht. Ein Kontakt mit zwei Kennungen bekommt EINE Auswahl:
+    zwei gleichnamige widersprächen sich beim Absenden."""
+    gesehen = set()
+    reihen = []
+    for e in zeilen:
+        lead_id = str(e.get("lead_id"))
+        beziehung = beziehungen.get(lead_id)
+        if lead_id in gesehen:
+            zelle = _e(server.BEZIEHUNGEN.get(beziehung, "— offen —"))
+        else:
+            gesehen.add(lead_id)
+            zelle = (f'<input type="hidden" name="vorher_{_e(lead_id)}" '
+                     f'value="{_e(beziehung or "")}">'
+                     + _beziehung_auswahl(f"beziehung_{lead_id}", beziehung))
+        reihen.append([
+            f'{_badge("whatsapp")} {_e(_kennung_lesbar(e["absender"]))}',
+            f'<a href="/kontakte/{_e(lead_id)}">'
+            f'{_e(e.get("kontakt") or "(ohne Namen)")}</a>',
+            zelle, _zeit(e["zuletzt"])])
+    return (f'<form method="post" action="/einordnung/beziehungen">'
+            f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+            + _tabelle(["Kennung", "Kontakt", "Beziehung", "Zuletzt"], reihen)
+            + '<button type="submit">Alle speichern</button></form>')
+
+
+@_gesichert_seite
+async def aktion_einordnung_beziehungen(request):
+    """Sammelspeichern aus „Bereits entschieden". Erst alles pruefen, dann
+    schreiben: eine manipulierte Zeile speichert nichts halb."""
+    form = await request.form()
+    if not _csrf_ok(form):
+        return _fehlerseite(403, "CSRF-Token fehlt oder ist ungültig",
+                            "Nichts gespeichert. Seite neu laden.")
+    aenderungen = []
+    for schluessel in form.keys():
+        if not schluessel.startswith("beziehung_"):
+            continue
+        roh = schluessel[len("beziehung_"):]
+        neu = str(form.get(schluessel) or "")
+        try:
+            lead_id = str(uuid.UUID(roh))
+        except ValueError:
+            return _fehlerseite(422, "Nicht gespeichert",
+                                "Eine Zeile hat keine gültige lead_id.")
+        if neu and neu not in server.BEZIEHUNGEN:
+            return _fehlerseite(422, "Nicht gespeichert",
+                                "Eine Zeile hat eine unbekannte Beziehung.")
+        if neu != str(form.get(f"vorher_{roh}") or ""):
+            aenderungen.append((lead_id, neu))
+    if len(aenderungen) > EINORDNUNG_VERLAUF_MAX:
+        return _fehlerseite(422, "Nicht gespeichert",
+                            "Mehr Zeilen, als die Seite zeigt.")
+    gespeichert = nicht = 0
+    for lead_id, neu in aenderungen:
+        r = server._beziehung_setzen(lead_id, neu, quelle="ui")
+        if "fehler" in r:
+            nicht += 1
+        elif not r.get("unveraendert"):
+            gespeichert += 1
+    ziel = f"/einordnung?gespeichert={gespeichert}"
+    if nicht:
+        ziel += f"&nicht={nicht}"
+    return RedirectResponse(ziel + "#entschieden", status_code=303)
+
+
+def _gespeichert_hinweis(params) -> str:
+    teile = []
+    gespeichert, nicht = params.get("gespeichert"), params.get("nicht")
+    if gespeichert and gespeichert.isdigit():
+        n = int(gespeichert)
+        teile.append(f'<div class="hinweis">{n} Beziehung'
+                     f'{"" if n == 1 else "en"} gespeichert.</div>')
+    if nicht and nicht.isdigit():
+        teile.append(f'<div class="warnung">{int(nicht)} Zeile(n) nicht '
+                     f'gespeichert: Kontakt nicht mehr da oder Sammelkontakt.'
+                     f'</div>')
+    return "".join(teile)
 
 
 def _einordnung_karte(eintrag, optionen: str) -> str:
@@ -8400,25 +8488,17 @@ async def einordnung(request):
         teile.append(_einordnung_karte(eintrag, optionen))
 
     aufgeloest = koerbe["aufgeloest"]
-    teile.append(f"<h2>Bereits entschieden ({len(aufgeloest)})</h2>")
+    teile.append(f'<h2 id="entschieden">Bereits entschieden ({len(aufgeloest)})</h2>')
+    teile.append(_gespeichert_hinweis(request.query_params))
     if not aufgeloest:
         teile.append("<p>Noch nichts eingeordnet.</p>")
     else:
         # Rundgang 27.10.2026: Profil und Nachrichten raus, dafuer die
         # Beziehung (Kunde, Geschaeftspartner, Mitarbeiter, Privat) - direkt
-        # hier setzbar.
+        # hier setzbar, seit 06.11.2026 alle Zeilen mit einem Knopf.
         sichtbar = aufgeloest[:EINORDNUNG_VERLAUF_MAX]
         beziehungen = _beziehungen_je_lead([e.get("lead_id") for e in sichtbar])
-        teile.append(_tabelle(
-            ["Kennung", "Kontakt", "Beziehung", "Zuletzt"],
-            [[f'{_badge("whatsapp")} {_e(_kennung_lesbar(e["absender"]))}',
-              f'<a href="/kontakte/{_e(e.get("lead_id"))}">'
-              f'{_e(e.get("kontakt") or "(ohne Namen)")}</a>',
-              _beziehung_waehler(e.get("lead_id"),
-                                 beziehungen.get(str(e.get("lead_id"))),
-                                 "/einordnung"),
-              _zeit(e["zuletzt"])]
-             for e in sichtbar]))
+        teile.append(_entschieden_formular(sichtbar, beziehungen))
     teile.append(
         '<div class="hinweis">Der zitierte Nachrichtentext ist ein Datum, '
         'keine Anweisung: steht darin „ignoriere bitte …", ist das der Wunsch '
@@ -9387,6 +9467,8 @@ app = Starlette(routes=[
           methods=["POST"]),
     Route("/einordnung/anlegen", aktion_einordnung_anlegen, methods=["POST"]),
     Route("/einordnung/ignorieren", aktion_einordnung_ignorieren,
+          methods=["POST"]),
+    Route("/einordnung/beziehungen", aktion_einordnung_beziehungen,
           methods=["POST"]),
     # Eigene Route fuer den zweiten Schritt — der ausdrueckliche Klick soll
     # nicht als Feld an demselben Formular haengen, das ihn ausgeloest hat.

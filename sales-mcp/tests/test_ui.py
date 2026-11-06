@@ -2384,7 +2384,8 @@ def test_einordnung_zeigt_beziehung_statt_profil(sammelkontakt_zurueck):
     seite = _get("/einordnung").text
     assert f'href="/kontakte/{lead}#profil"' not in seite
     assert "noch keins" not in seite
-    assert 'action="/kontakte/beziehung"' in seite
+    # Seit 06.11.2026 ein Sammelformular statt eines Formulars je Zeile.
+    assert 'action="/einordnung/beziehungen"' in seite
 
 
 def test_kontaktliste_hat_den_archiv_knopf():

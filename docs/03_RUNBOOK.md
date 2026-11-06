@@ -634,6 +634,12 @@ setzt pytests Standard-Importmodus nur das Verzeichnis der Testdatei
 (Task 2, Befund 3). `python -m pytest` stellt das Arbeitsverzeichnis voran auf
 `sys.path`.
 
+**`--env-file .env` reicht echte Zugangsdaten durch.** Bis 06.11.2026 schrieb die
+Suite dadurch 275 Testtermine („Steuer“ u. a.) in den echten Kalender. Seitdem nimmt
+die autouse-Fixture `_kein_echter_kalender` (`tests/conftest.py`) CALDAV_* und
+GOOGLE_MEET_* für jeden Test heraus, bewacht von `tests/test_testsperre.py`.
+Wer einen neuen Dienst mit Schreibzugriff anbindet, sperrt ihn dort mit.
+
 **Ausschließlich gegen `sales_test`** (`SALES_DB_SCHEMA=sales_test`) —
 `db/provision.sql` sagt es wörtlich: „Die Testsuite darf NIE gegen `sales` laufen."
 Der Schema-Wächter in `server.py` bricht bei jedem anderen Wert als
