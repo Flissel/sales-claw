@@ -270,7 +270,7 @@ def test_nachtragen_holt_nur_kopfzeilen(db):
                   14: _roh("m14@x", X_Forwarded_To=BLUEBATCH)},
         "Zur Info": {3: _roh("m8@x", Delivered_To=EIGENE)}})
     n = post_herkunft.nachtragen(konto_zeile, kasten)
-    assert n == 1
+    assert n == {"verarbeitet": 4, "gefunden": 1, "uebersprungen": 0, "offen": 0}
     assert _adresse(db, inbox) == BLUEBATCH
     assert _adresse(db, zur_info) == ""                          # geprueft, keine Adresse
     assert _adresse(db, platzhalter) is None and _adresse(db, ohne_uid) is None
@@ -283,7 +283,8 @@ def test_nachtragen_holt_nur_kopfzeilen(db):
     assert all(p[2] is True for p in kasten.protokoll if p[0] == "select")   # nur lesend
     # Zweite Runde: nichts mehr offen, kein Abruf.
     kasten.protokoll.clear()
-    assert post_herkunft.nachtragen(konto_zeile, kasten) == 0
+    assert post_herkunft.nachtragen(konto_zeile, kasten) == {
+        "verarbeitet": 0, "gefunden": 0, "uebersprungen": 0, "offen": 0}
     assert not [p for p in kasten.protokoll if p[0] == "uid"]
 
 
@@ -293,8 +294,40 @@ def test_nachtragen_beachtet_grenze(db):
     kasten = KopfKasten(ordner={"INBOX": {
         u: _roh(f"m{u}@x", X_Forwarded_To=BLUEBATCH) for u in (1, 2, 3)}})
     assert post_herkunft.nachtragen({"id": k, "kennung": "gmail-felix404", "adresse": EIGENE},
-                                    kasten, grenze=2) == 2
+                                    kasten, grenze=2) == {
+        "verarbeitet": 2, "gefunden": 2, "uebersprungen": 0, "offen": 1}
     assert sum(1 for i in ids if _adresse(db, i) is None) == 1
+
+
+def test_nachtragen_zeilen_ohne_uid_verbrauchen_die_grenze_nicht(db):
+    """I8: Platzhalter (INBOX, UID <= 0) und Ordner-Zeilen ohne UID stehen in der Sortierung
+    vorn. Sie duerfen den Lauf nicht fuellen, sonst endete er ohne Fortschritt."""
+    k = _konto(db)
+    for u in (-1, -2, -3):
+        _mail_zeile(db, k, u, f"p{u}@x")
+    _mail_zeile(db, k, 20, "o20@x", ordner="To-Review", ordner_uid=None)
+    gut = _mail_zeile(db, k, 21, "m21@x", ordner="Zur Info", ordner_uid=3)
+    kasten = KopfKasten(ordner={"Zur Info": {3: _roh("m21@x", X_Forwarded_To=BLUEBATCH)}})
+    zeile = {"id": k, "kennung": "gmail-felix404", "adresse": EIGENE}
+    assert post_herkunft.nachtragen(zeile, kasten, grenze=3) == {
+        "verarbeitet": 1, "gefunden": 1, "uebersprungen": 0, "offen": 0}
+    assert _adresse(db, gut) == BLUEBATCH
+
+
+def test_nachtragen_meldet_uebersprungene_und_offene(db, monkeypatch):
+    import post_konten
+    k = _konto(db)
+    _mail_zeile(db, k, 7, "m7@x")
+    _mail_zeile(db, k, 8, "m8@x", ordner="Gibt-es-nicht", ordner_uid=4)
+    kasten = KopfKasten(ordner={"INBOX": {7: _roh("m7@x")}})
+    monkeypatch.setattr(post_konten, "aktive_konten", lambda: [
+        {"id": k, "kennung": "gmail-felix404", "adresse": EIGENE}])
+    ausgabe = []
+    n = post_herkunft.cli_nachtragen("gmail-felix404", verbinden=lambda z: kasten,
+                                     ausgabe=ausgabe.append)
+    assert n == {"verarbeitet": 1, "gefunden": 0, "uebersprungen": 1, "offen": 1}
+    # Dieselbe Bezeichnung wie im Runbook (Schritt nachtragen).
+    assert ausgabe == ["Verarbeitet: 1 (Adresse gefunden: 0, uebersprungen: 1), noch offen: 1"]
 
 
 def test_neue_mail_bekommt_adresse_beim_abholen(db):

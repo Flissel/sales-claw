@@ -116,36 +116,50 @@ def _eintragen(mail_id, adresse: str) -> None:
               "where id = %s and urspruengliche_adresse is null", (adresse, mail_id))
 
 
-def nachtragen(zeile_konto: dict, kasten, grenze: int = 500) -> int:
+# Zeilen, fuer die nachtragen etwas abrufen kann: Adresse noch nicht geprueft, nicht sensibel,
+# nicht geloescht, und mit nutzbarer UID im jeweiligen Ordner (wie _uid_fuer). Zeilen ohne UID
+# stehen hier nicht drin, sonst fuellten sie das Limit jedes Laufs und er endete ohne Fortschritt.
+_OFFEN_SQL = (
+    "from post_mails where konto_id = %s and urspruengliche_adresse is null "
+    "and sensibel is not true and status <> 'geloescht' "
+    "and ((coalesce(ordner, 'INBOX') = 'INBOX' and imap_uid > 0) "
+    "  or (coalesce(ordner, 'INBOX') <> 'INBOX' and ordner_uid > 0))")
+
+
+def nachtragen(zeile_konto: dict, kasten, grenze: int = 500) -> dict:
     """Holt fuer Mails des Kontos ohne `urspruengliche_adresse` NUR die Kopfzeilen
-    nach und speichert die Adresse. Rueckgabe = Zahl der Nachtraege (gefundene
-    Adressen). Sensible Mails bleiben aussen vor (Spec §5: kein Empfaenger)."""
+    nach und speichert die Adresse. Sensible Mails bleiben aussen vor (Spec §5: kein
+    Empfaenger). Rueckgabe: {verarbeitet (Adresse oder '' eingetragen), gefunden (davon mit
+    Adresse), uebersprungen (Ordner fehlt / Abruf abgelehnt, bleiben offen), offen (danach
+    noch abzurufen)} - der Rollout wiederholt, bis offen = 0 ist."""
     import server       # erst hier: ist_business/urspruenglich bleiben ohne Datenbank nutzbar
     zeilen = server._q(
         "select id, imap_uid, message_id, message_id_ersatz, coalesce(ordner, 'INBOX') as ordner, "
-        "ordner_uid from post_mails where konto_id = %s and urspruengliche_adresse is null "
-        "and sensibel is not true order by coalesce(ordner, 'INBOX'), id limit %s",
+        f"ordner_uid {_OFFEN_SQL} order by coalesce(ordner, 'INBOX'), id limit %s",
         (zeile_konto["id"], max(1, int(grenze))))
     eigene = zeile_konto.get("adresse") or ""
     gewaehlt: str | None = None
-    nachgetragen = 0
+    bilanz = {"verarbeitet": 0, "gefunden": 0, "uebersprungen": 0, "offen": 0}
     for z in zeilen:
         uid = _uid_fuer(z)
         if uid is None:
-            continue                       # Platzhalter / keine UID: nichts abzurufen
+            continue                       # kann nach der Auswahl oben nicht vorkommen
         if z["ordner"] != gewaehlt:
             # Lesend (EXAMINE): hier wird nichts veraendert, auch kein Flag.
             status, _ = kasten.select(postfach._imap_name(z["ordner"]), readonly=True)
             if status != "OK":
                 LOG.info("Konto %s: Ordner nicht vorhanden - uebersprungen", zeile_konto["kennung"])
                 gewaehlt = None
+                bilanz["uebersprungen"] += 1
                 continue
             gewaehlt = z["ordner"]
         try:
             kopf = _kopf_holen(kasten, uid)
         except RuntimeError:
             LOG.warning("Konto %s: Kopfzeilen-Abruf abgelehnt (uid %d)", zeile_konto["kennung"], uid)
+            bilanz["uebersprungen"] += 1
             continue
+        bilanz["verarbeitet"] += 1
         if kopf is None:
             _eintragen(z["id"], "")        # die Mail gibt es dort nicht mehr
             continue
@@ -158,8 +172,10 @@ def nachtragen(zeile_konto: dict, kasten, grenze: int = 500) -> int:
             continue
         adresse = urspruenglich(kopf, eigene)
         _eintragen(z["id"], adresse or "")
-        nachgetragen += 1 if adresse else 0
-    return nachgetragen
+        bilanz["gefunden"] += 1 if adresse else 0
+    bilanz["offen"] = int(server._q(f"select count(*) as n {_OFFEN_SQL}",
+                                    (zeile_konto["id"],))[0]["n"])
+    return bilanz
 
 
 # ---------------------------------------------------------------------------
@@ -237,12 +253,14 @@ def _verbinden(verbinden):
     return verbinden
 
 
-def cli_nachtragen(kennung: str, verbinden=None, ausgabe=print) -> int:
-    """`verbinden` (Konto-Zeile -> angemeldeter Kasten) ist fuer Tests austauschbar."""
+def cli_nachtragen(kennung: str, verbinden=None, ausgabe=print) -> dict:
+    """`verbinden` (Konto-Zeile -> angemeldeter Kasten) ist fuer Tests austauschbar.
+    Die Ausgabe steht wortgleich im Runbook (Post aufraeumen, Schritt nachtragen)."""
     verbinden = _verbinden(verbinden)
-    n = _mit_kasten(kennung, verbinden, lambda z, k: nachtragen(z, k))
-    ausgabe(f"Nachgetragen: {n}")
-    return n
+    b = _mit_kasten(kennung, verbinden, lambda z, k: nachtragen(z, k))
+    ausgabe(f"Verarbeitet: {b['verarbeitet']} (Adresse gefunden: {b['gefunden']}, "
+            f"uebersprungen: {b['uebersprungen']}), noch offen: {b['offen']}")
+    return b
 
 
 def cli_stichprobe(kennung: str, n: int = 30, verbinden=None, ausgabe=print) -> Counter:
