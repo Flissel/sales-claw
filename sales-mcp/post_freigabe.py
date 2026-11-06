@@ -12,6 +12,7 @@ from psycopg.types.json import Jsonb
 
 import post_struktur
 import post_werbung
+import post_ziel
 
 BEISPIELE = 3
 BETREFF_MAX = 80
@@ -63,6 +64,9 @@ def freigeben(besitzer: str, jahr: int, gezeigt: list[str], ausgenommen: list[st
     gesehen = {a for a in (_adresse(x) for x in gezeigt) if a}
     server = _db()
     with server.pool.connection() as conn:
+        # Zuerst der Lock: ein laufender ziele_aktualisieren-Lauf endet vorher, ein spaeterer
+        # liest diese Freigabe (sonst koennte er unter alten Freigaben `loeschen` schreiben).
+        conn.execute("select pg_advisory_xact_lock(%s)", (post_ziel.FREIGABE_SPERRE,))
         # Konflikt statt Fehler: beim Doppelklick gewinnt genau ein Aufruf.
         neu = conn.execute(
             "insert into post_loeschfreigaben (besitzer, jahr, ausgenommen) values (%s, %s, %s) "

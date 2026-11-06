@@ -177,3 +177,35 @@ def test_jahre_zaehlt_offen_und_zu_loeschen(db):
     assert [(x["jahr"], x["eingeordnet"], x["offen"], x["zu_loeschen"]) for x in j] == [
         (2025, 2, 1, 0), (2024, 1, 0, 1)]
     assert j[0]["freigegeben_am"] is None and j[1]["freigegeben_am"] is not None
+
+
+def test_ziele_lauf_mit_veralteten_freigaben_macht_ungesehene_nicht_loeschbar(db, monkeypatch):
+    """Race: ziele_aktualisieren hat die Freigaben gelesen, dann kommt freigeben, dann schreibt
+    der Lauf. Der Lock haelt freigeben bis nach dem Lauf zurueck (kein Deadlock-frei ohne
+    Threads simulierbar: freigeben laeuft darum in einem Thread, der am Lock haengt)."""
+    import threading
+    k = _konto(db)
+    _mail(db, k)
+    ungesehen = _mail(db, k, von=ANDERER)
+    ergebnis: dict = {}
+
+    def freigeben_im_thread():
+        try:
+            post_freigabe.freigeben("felix", 2025, [SHOP], [])
+        except Exception as e:  # noqa: BLE001
+            ergebnis["fehler"] = e
+
+    thread = threading.Thread(target=freigeben_im_thread)
+    original = post_ziel._freigegeben
+
+    def gelesen_dann_freigeben(server, besitzer=None):
+        gelesen = original(server, besitzer)       # 1. Freigaben sind gelesen (noch keine)
+        thread.start()                              # 2. freigeben laeuft los ...
+        thread.join(timeout=1.5)                    # ... und kommt nur ohne Lock durch
+        return gelesen
+    monkeypatch.setattr(post_ziel, "_freigegeben", gelesen_dann_freigeben)
+
+    post_ziel.ziele_aktualisieren()                 # 3. der Lauf schreibt
+    thread.join(timeout=10)
+    assert not thread.is_alive() and "fehler" not in ergebnis
+    assert _ziel(db, ungesehen)["ziel"] == "to_review"

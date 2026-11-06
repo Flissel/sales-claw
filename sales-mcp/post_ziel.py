@@ -27,6 +27,10 @@ BILD_ENDUNGEN = (".png", ".jpg", ".jpeg", ".gif", ".webp")
 LOGIN_FRIST = timedelta(days=1)
 ALTER_TAGE = 90
 _BLOCK = 1000     # Mails je UPDATE
+# Advisory-Lock, den post_freigabe.freigeben und ziele_aktualisieren gemeinsam nehmen: Ein
+# Lauf, der die Freigaben vor einem Commit von freigeben las, soll danach nicht ein Ziel
+# `loeschen` fuer Absender schreiben, die Felix in der Vorschau nie gesehen hat.
+FREIGABE_SPERRE = 7_340_611
 
 
 def _stichtag(wert: str | None) -> date:
@@ -187,23 +191,27 @@ def ziele_aktualisieren() -> int:
 
     Die Eingaben werden gebuendelt geladen (je Lauf einmal), nicht je Mail abgefragt."""
     server = _db()
-    jetzt = datetime.now(timezone.utc)
-    freigegeben = _freigegeben(server)
-    kontakte = _kontakte(server)
-    schutz = _schutz(server)
-
-    zeilen = server._q(
-        f"select {_SPALTEN} from post_mails "
-        "where status = 'eingeordnet' and not ziel_manuell")
-
-    neu: dict[str, list] = {}
-    for z in zeilen:
-        ziel = _berechnen(z, jetzt, freigegeben, kontakte, schutz)
-        if ziel != z["ziel"]:
-            neu.setdefault(ziel, []).append(z["id"])
-
     geaendert = 0
+    # Eine Transaktion vom Lesen der Freigaben bis zum letzten Schreiben, unter dem Lock von
+    # freigeben. READ COMMITTED: Lesen nach dem Lock sieht alles, was freigeben schon committet
+    # hat; wartet freigeben, dann auf das Ende dieses Laufs (~11.000 Zeilen, kurz).
     with server.pool.connection() as conn:
+        conn.execute("select pg_advisory_xact_lock(%s)", (FREIGABE_SPERRE,))
+        jetzt = datetime.now(timezone.utc)
+        freigegeben = _freigegeben(server)
+        kontakte = _kontakte(server)
+        schutz = _schutz(server)
+
+        zeilen = server._q(
+            f"select {_SPALTEN} from post_mails "
+            "where status = 'eingeordnet' and not ziel_manuell")
+
+        neu: dict[str, list] = {}
+        for z in zeilen:
+            ziel = _berechnen(z, jetzt, freigegeben, kontakte, schutz)
+            if ziel != z["ziel"]:
+                neu.setdefault(ziel, []).append(z["id"])
+
         for ziel, ids in neu.items():
             for i in range(0, len(ids), _BLOCK):
                 # Die Bedingungen wiederholt: eine Handentscheidung oder ein Loeschen, das
