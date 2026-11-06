@@ -47,8 +47,8 @@ def _mail(konto_id, **felder):
 
 @pytest.fixture
 def konto():
-    k = server._q("insert into sales_test.post_konten (anbieter, adresse, quelle, besitzer) "
-                  "values ('gmx','aufraeumen@example.test','ui','test-aufraeumen') returning id")[0]["id"]
+    k = server._q("insert into sales_test.post_konten (anbieter, adresse, quelle, besitzer, kennung) "
+                  "values ('gmx','aufraeumen@example.test','ui','test-aufraeumen','aufraeumen-test') returning id")[0]["id"]
     yield k
     server._q("delete from sales_test.post_mails where konto_id=%s", (k,))
     server._q("delete from sales_test.post_konten where id=%s", (k,))
