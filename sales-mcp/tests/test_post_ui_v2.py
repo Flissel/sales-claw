@@ -96,7 +96,7 @@ def test_vorschlag_uebernehmen_setzt_mensch_und_regel():
     z = _zeile(m)
     assert (z["bereich"], z["fach"], z["unterfach"]) == (
         "business", "Tools & Dienste", "GitHub")
-    assert (z["einordnung_quelle"], z["einordnung_version"]) == ("mensch", 2)
+    assert (z["einordnung_quelle"], z["einordnung_version"]) == ("mensch", 3)
     assert z["vorschlaege"] is None and z["vorschau"] is None and z["begruendung"] is None
     regeln = server._q("select fach, unterfach, besitzer, bereich from post_regeln")
     assert len(regeln) == 1
@@ -177,7 +177,7 @@ def test_korrektur_regel_ersetzt_statt_verdoppelt():
         "privat", "Soziale Netzwerke", "LinkedIn")
     z = _zeile(m2)
     assert (z["unterfach"], z["einordnung_version"], z["einordnung_quelle"]) == (
-        "LinkedIn", 2, "mensch")
+        "LinkedIn", 3, "mensch")
     # Anderer Besitzer mit gleichem Muster behaelt seine Regel.
     m3 = _mail("t8_ben", "business", ps.UNKLAR, von=von)
     _post("t8_ben", f"/post/mail/{m3}/korrigieren",

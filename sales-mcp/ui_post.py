@@ -18,9 +18,9 @@ hereingereicht, nie importiert (Muster ui_editor.routen).
 """
 from __future__ import annotations
 
-import email.utils
-import re
+import math
 import urllib.parse
+from datetime import timedelta
 
 import psycopg
 from starlette.concurrency import run_in_threadpool
@@ -28,6 +28,7 @@ from starlette.responses import RedirectResponse
 from starlette.routing import Route
 
 import post_struktur as ps
+from post_struktur import absender_muster
 import server
 
 SEITE_GROESSE = 50
@@ -38,6 +39,18 @@ SUCHE_MAX = 200
 FELD_MAX = 200
 TEXT_MAX = 20_000          # Anzeige; gespeichert ist ohnehin gedeckelt
 BEREICH_TITEL = {"privat": "Privat", "business": "Business"}
+# Reiter unter /post (Spec 2026-11-06 §7); die ersten drei sind Mail-Listen.
+ANSICHT_VORGABE = "aufmerksamkeit"
+ANSICHT_TITEL = {"aufmerksamkeit": "Aufmerksamkeit", "zur_info": "Zur Info",
+                 "to_review": "To-Review"}
+JAHR_MIN, JAHR_MAX = 1990, 2100
+# Ziele, die ein Mensch in der UI setzen darf (Spec §6.3). `loeschen` und
+# `to_review` setzt nur die Automatik.
+ZIEL_WAHL = ("posteingang", "zur_info")
+# Modellaufrufe je Tag und je Mail (Sortierer + Pruefer): Grundlage der Resttage.
+AUFRUFE_JE_MAIL = 2
+HINWEISE = {"freigegeben": "Das Jahr ist freigegeben.",
+            "schon": "Dieses Jahr war schon freigegeben. Nichts geändert."}
 
 _STIL = """<style>
 .post { display: grid; grid-template-columns: 15rem 1fr; gap: 1.2rem; }
@@ -52,6 +65,10 @@ nav.faecher a.unterfach { margin-left: 1.2rem; font-size: .9rem; }
              text-decoration: none; color: inherit; }
 .mailtext { white-space: pre-wrap; overflow-wrap: anywhere; }
 .kontostand table { width: 100%; }
+nav.reiter { display: flex; flex-wrap: wrap; gap: .4rem; margin: 0 0 1rem; }
+nav.reiter a { padding: .3rem .7rem; border-radius: 6px; text-decoration: none;
+               border: 1px solid var(--linie); }
+nav.reiter a.aktiv { font-weight: 700; background: var(--kopfzeile); }
 </style>"""
 
 
@@ -63,16 +80,6 @@ def _ganzzahl(roh, vorgabe: int, kleinste: int, groesste: int) -> int:
     except (TypeError, ValueError):
         return vorgabe
     return max(kleinste, min(wert, groesste))
-
-
-def absender_muster(adresse: str) -> str:
-    """Regel-Muster, das GENAU diese Adresse trifft (Ruling R12).
-
-    Wörtlich (re.escape): „+“ und „.“ sind keine Musterzeichen. Verankert an
-    Anfang/Ende oder an <, >, Leerzeichen, Anführungszeichen, weil
-    post_einordnung re.search benutzt: sonst träfe a@x.de auch ba@x.de oder
-    a@x.de.evil.com. Groß/klein ignoriert die Einordnung selbst."""
-    return r'(^|[<\s"])' + re.escape(adresse) + r'($|[>\s"])'
 
 
 def _adresse(link_basis: str, **werte) -> str:
@@ -98,12 +105,14 @@ def routen(ui) -> list:
 
     # --- Liste ------------------------------------------------------------
 
-    def faecher_zahlen(b) -> tuple[dict, dict]:
+    def faecher_zahlen(b, ansicht: str = "") -> tuple[dict, dict]:
         """({(bereich, fach): anzahl}, {(bereich, fach, unterfach): anzahl})
         über die sichtbaren Mails - eine Abfrage, dieselbe Grenze wie die
         Liste (sichtbar_sql). Das Fach zählt alle seine Mails, das Unterfach
         nur die, die eines tragen."""
         wo, params = ps.sichtbar_sql(b)
+        if ansicht:
+            wo += " and " + ps.ziel_sql(ansicht)
         zeilen = server._q(
             f"select m.bereich, m.fach, m.unterfach, count(*) as n "
             f"from post_mails m where {wo} "
@@ -118,17 +127,23 @@ def routen(ui) -> list:
         return faecher, unter
 
     def faecher_leiste(zahlen: dict, unter: dict, bereich: str, fach: str,
-                       unterfach: str = "") -> str:
+                       unterfach: str = "", ansicht: str = ANSICHT_VORGABE) -> str:
         markiert = ' class="aktiv"'
+
+        def adr(**werte) -> str:
+            # Die Vorgabe-Ansicht bleibt aus der Adresse heraus (alte Links gelten weiter).
+            return _adresse("/post", ansicht="" if ansicht == ANSICHT_VORGABE else ansicht,
+                            **werte)
+
         teile = ['<nav class="faecher" aria-label="Fächer">',
-                 f'<a href="/post"{markiert if not (bereich or fach) else ""}>'
+                 f'<a href="{e(adr())}"{markiert if not (bereich or fach) else ""}>'
                  f'Alle <span class="zaehler">{sum(zahlen.values())}</span></a>']
         for br in ps.BEREICHE:
             eigene = {f: n for (b_, f), n in zahlen.items() if b_ == br}
             if not eigene:
                 continue
             teile.append(
-                f'<h3><a href="{e(_adresse("/post", bereich=br))}"'
+                f'<h3><a href="{e(adr(bereich=br))}"'
                 f'{markiert if bereich == br and not fach else ""}>'
                 f'{e(BEREICH_TITEL[br])} <span class="zaehler">'
                 f'{sum(eigene.values())}</span></a></h3>')
@@ -140,7 +155,7 @@ def routen(ui) -> list:
                 aktiv = (' class="aktiv"' if (bereich, fach, unterfach) == (br, f or "", "")
                          else "")
                 teile.append(
-                    f'<a href="{e(_adresse("/post", bereich=br, fach=f or ""))}"{aktiv}>'
+                    f'<a href="{e(adr(bereich=br, fach=f or ""))}"{aktiv}>'
                     f'{e(f or "(ohne Fach)")} <span class="zaehler">{eigene[f]}</span></a>')
                 # Unterfächer eingerückt darunter, nur mit mindestens einer
                 # Mail, in der Reihenfolge der festen Liste.
@@ -150,7 +165,7 @@ def routen(ui) -> list:
                     ua = ("aktiv " if (bereich, fach, unterfach) == (br, f, u) else "")
                     teile.append(
                         f'<a class="{ua}unterfach" href="'
-                        f'{e(_adresse("/post", bereich=br, fach=f, unterfach=u))}">'
+                        f'{e(adr(bereich=br, fach=f, unterfach=u))}">'
                         f'{e(u)} <span class="zaehler">{unter[(br, f, u)]}</span></a>')
         offen = zahlen.get((None, None), 0)
         if offen:
@@ -200,7 +215,25 @@ def routen(ui) -> list:
                 '<p class="meta">Archiviert wird in Stufe 1 nichts; '
                 '<a href="/post/konten">Postfach hinzufügen</a></p></section>')
 
-    def mail_zeile(m: dict, konten: dict) -> str:
+    def reiterleiste(aktiv: str) -> str:
+        reiter = [(k, ANSICHT_TITEL[k], "/post" if k == ANSICHT_VORGABE else f"/post?ansicht={k}")
+                  for k in ANSICHT_TITEL] + [("aufraeumen", "Aufräumen", "/post/aufraeumen")]
+        markiert = ' class="aktiv"'
+        return ('<nav class="reiter" aria-label="Mail-Reiter">' + "".join(
+            f'<a href="{e(url)}"{markiert if k == aktiv else ""}>{e(titel)}</a>'
+            for k, titel, url in reiter) + '</nav>')
+
+    def loeschdatum(m: dict) -> str:
+        """To-Review: Tag, an dem die Mail geloescht wird. Die Frist laeuft nur, solange die
+        Mail im Ordner To-Review liegt (post_ordnen loescht nur dort); ordner_am kann auch
+        vom Verschieben in einen anderen Ordner stammen - dann steht dort kein Datum."""
+        if m.get("ordner_am") is None or m.get("ordner") != "To-Review":
+            return "noch nicht im Ordner"
+        import post_ordnen   # TO_REVIEW_TAGE; erst hier, das Modul zieht die Abholung nach
+        frist = m["ordner_am"] + timedelta(days=post_ordnen.TO_REVIEW_TAGE)
+        return "wird gelöscht am " + ui._zeit(frist).split(" ")[0]
+
+    def mail_zeile(m: dict, konten: dict, ansicht: str = "") -> str:
         marke = (' <span class="badge achtung">sensibel</span>'
                  if m["sensibel"] is not False else "")
         fach = (f'{e(BEREICH_TITEL.get(m["bereich"], m["bereich"]))} · {e(m["fach"])}'
@@ -209,7 +242,9 @@ def routen(ui) -> list:
         return (f'<a class="mailzeile" href="/post/mail/{e(m["id"])}">'
                 f'<b>{e(m["betreff"] or "(ohne Betreff)")}</b>{marke}'
                 f'<div class="meta">{e(m["von"])} · {e(ui._zeit(m["datum"]) if m["datum"] else "")}'
-                f' · {e(konten.get(str(m["konto_id"]), ""))} · {fach}</div></a>')
+                f' · {e(konten.get(str(m["konto_id"]), ""))} · {fach}</div>'
+                + (f'<div class="meta">{e(loeschdatum(m))}</div>' if ansicht == "to_review" else "")
+                + '</a>')
 
     @ui._gesichert_seite
     async def liste(request):
@@ -221,12 +256,16 @@ def routen(ui) -> list:
         fach = str(qp.get("fach") or "")
         unterfach = str(qp.get("unterfach") or "")
         konto = str(qp.get("konto") or "")
+        ansicht = str(qp.get("ansicht") or ANSICHT_VORGABE)
+        if ansicht not in ANSICHT_TITEL:
+            ansicht = ANSICHT_VORGABE
         such = str(qp.get("q") or "").strip()[:SUCHE_MAX]
         seite = _ganzzahl(qp.get("seite"), 1, 1, SEITE_MAX)
         # Eine Zeile mehr holen als angezeigt: so weiß die Seite, ob es eine
         # nächste gibt, ohne zweite Zählabfrage.
         mails = ps.mails_suchen(b, suche=such, bereich=bereich, fach=fach,
-                                unterfach=unterfach, konto_id=konto, grenze=SEITE_GROESSE + 1,
+                                unterfach=unterfach, konto_id=konto, ziel=ansicht,
+                                grenze=SEITE_GROESSE + 1,
                                 versatz=(seite - 1) * SEITE_GROESSE)
         weiter = len(mails) > SEITE_GROESSE
         mails = mails[:SEITE_GROESSE]
@@ -240,17 +279,20 @@ def routen(ui) -> list:
             'placeholder="Absender, Betreff, Text" aria-label="Mails durchsuchen">'
             f'<select name="konto" aria-label="Konto"><option value="">Alle Konten</option>'
             f'{optionen}</select>'
+            + (f'<input type="hidden" name="ansicht" value="{e(ansicht)}">'
+               if ansicht != ANSICHT_VORGABE else "")
             + (f'<input type="hidden" name="bereich" value="{e(bereich)}">' if bereich else "")
             + (f'<input type="hidden" name="fach" value="{e(fach)}">' if fach else "")
             + (f'<input type="hidden" name="unterfach" value="{e(unterfach)}">'
                if unterfach else "")
             + '<button>Suchen</button></form>')
         if mails:
-            zeilen = "".join(mail_zeile(m, konten) for m in mails)
+            zeilen = "".join(mail_zeile(m, konten, ansicht) for m in mails)
         else:
             zeilen = '<p class="meta">Keine Mails für diese Auswahl.</p>'
         blaettern = []
-        filter_ = {"bereich": bereich, "fach": fach, "unterfach": unterfach,
+        filter_ = {"ansicht": "" if ansicht == ANSICHT_VORGABE else ansicht,
+                   "bereich": bereich, "fach": fach, "unterfach": unterfach,
                    "konto": konto, "q": such}
         if seite > 1:
             blaettern.append(f'<a href="{e(_adresse("/post", **filter_, seite=seite - 1))}">'
@@ -258,8 +300,9 @@ def routen(ui) -> list:
         if weiter:
             blaettern.append(f'<a href="{e(_adresse("/post", **filter_, seite=seite + 1))}">'
                              'weiter →</a>')
-        rumpf = (_STIL + '<div class="post">'
-                 + faecher_leiste(*faecher_zahlen(b), bereich, fach, unterfach)
+        rumpf = (_STIL + reiterleiste(ansicht) + '<div class="post">'
+                 + faecher_leiste(*faecher_zahlen(b, ansicht), bereich, fach, unterfach,
+                                  ansicht)
                  + f'<div>{formular}<p class="meta">Seite {seite}</p>{zeilen}'
                  + (f'<p class="aktionen">{" ".join(blaettern)}</p>' if blaettern else "")
                  + kontostand(b) + '</div></div>')
@@ -273,14 +316,10 @@ def routen(ui) -> list:
         return (rolle(request) == "freigeben"
                 and (b.leitung or m["besitzer"] == b.name))
 
-    def absender_adresse(m) -> str:
-        adresse = email.utils.parseaddr(m["von"] or "")[1].strip()
-        return adresse if "@" in adresse else ""
-
     def regel_angeboten(b, m) -> bool:
         # Den Haken nur zeigen, wo er auch wirken kann: ohne Mailadresse
         # scheiterte sonst jede Korrektur mit dem vorgewaehlten Haken.
-        return darf_regel_anlegen(b, m) and bool(absender_adresse(m))
+        return darf_regel_anlegen(b, m) and bool(ps.absender_adresse(m["von"] or ""))
 
     def darf_regel_anlegen(b, m) -> bool:
         # R18: „für diesen Absender immer so“ nur fuer die eigene Post. Die
@@ -359,6 +398,27 @@ def routen(ui) -> list:
             'dieser Mail endgültig aus der Sammelstelle.</p>'
             '<button class="primaer">Speichern</button></form>')
 
+    def ziel_formulare(m: dict) -> str:
+        """Ein-Klick-Korrektur des Ziels (Spec §6.3). Nur die Ziele, die ein Mensch setzen
+        darf, und nur das jeweils andere als das heutige."""
+        if m["status"] == "geloescht":
+            return ""
+        namen = {"posteingang": "In den Posteingang holen",
+                 "zur_info": "Nach „Zur Info“ legen"}
+        knoepfe = "".join(
+            f'<form method="post" action="/post/mail/{e(m["id"])}/ziel" '
+            f'class="ziel-{z}">'
+            f'<input type="hidden" name="csrf" value="{e(ui.CSRF_TOKEN)}">'
+            f'<input type="hidden" name="ziel" value="{z}">'
+            f'<button class="primaer">{e(namen[z])}</button></form>'
+            for z in ZIEL_WAHL if z != m["ziel"])
+        if not knoepfe:
+            return ""
+        hinweis = ('<p class="meta">Der Absender wird dabei als „nie Werbung“ '
+                   'geschützt.</p>' if m["ziel"] == "to_review" else "")
+        return ('<section class="karte"><h2>Ablage ändern</h2>' + knoepfe + hinweis
+                + '</section>')
+
     @ui._gesichert_seite
     async def mail(request):
         b = betrachter(request)
@@ -394,6 +454,7 @@ def routen(ui) -> list:
                              + ", ".join(e(a) for a in m["anhaenge"]) + "</div>")
             teile.append(f'<div class="text mailtext">{e((m["text"] or "")[:TEXT_MAX])}</div></div>')
         if darf_korrigieren(request, b, m):
+            teile.append(ziel_formulare(m))
             teile.append(vorschlag_formulare(m, regel_angeboten(b, m)))
             teile.append(korrektur_formular(m, regel_angeboten(b, m)))
         return ui._seite(m["betreff"] or "Mail", "".join(teile), titel_zeigen=False)
@@ -426,25 +487,34 @@ def routen(ui) -> list:
                            form.get("regel") == "ja")
         return fehler or RedirectResponse(f"/post/mail/{m['id']}", status_code=303)
 
-    def speichern(b, m, bereich, fach, unterfach, sensibel, regel_gewollt):
+    def speichern(b, m, bereich, fach, unterfach, sensibel, regel_gewollt,
+                  aufmerksamkeit=None):
         """Menschliche Einordnung festhalten (Korrektur und Vorschlag teilen
-        sich das). Gibt eine Fehlerseite zurück oder None."""
+        sich das). Gibt eine Fehlerseite zurück oder None.
+
+        `aufmerksamkeit`: Wert des übernommenen Vorschlags; ohne ihn gilt nur
+        „Zum Nachsehen“ als Posteingang (Spec §5), alles andere als Zur Info."""
         muster = None
         # R18: fremde Post (Leitung korrigiert Bens Mail) wird korrigiert, aber
         # ohne Regel - auch wenn ein selbstgebautes Formular den Haken schickt.
         # Nie eine Regel nach „Zum Nachsehen“: sie hielte alle kuenftigen
         # Mails des Absenders dauerhaft ungeordnet fest.
         if regel_gewollt and fach != ps.UNKLAR and darf_regel_anlegen(b, m):
-            adresse = absender_adresse(m)
+            # Dieselbe Adresse wie post_werbung (klein geschrieben): sonst ersetzte die
+            # Regel eine gleichlautende Regel in anderer Schreibweise nicht.
+            adresse = ps.absender_adresse(m["von"] or "")
             if not adresse:
                 return ui._fehlerseite(400, "Keine Regel möglich",
                                        "Der Absender hat keine Mailadresse. "
                                        "Nichts geändert.")
             muster = absender_muster(adresse)
-        # R9: wird eine Mail sensibel, verschwinden Text, Auszug, Empfänger
-        # und Anhangnamen sofort und endgültig, nicht erst in der Anzeige.
-        leeren = (", text = null, auszug = null, an = null, anhaenge = '{}'"
-                  if sensibel else "")
+        if aufmerksamkeit is None or fach == ps.UNKLAR:
+            aufmerksamkeit = fach == ps.UNKLAR
+        # R9: wird eine Mail sensibel, verschwinden Text, Auszug, Empfänger,
+        # Anhangnamen und die ursprüngliche Empfängeradresse sofort und endgültig,
+        # nicht erst in der Anzeige.
+        leeren = (", text = null, auszug = null, an = null, anhaenge = '{}', "
+                  "urspruengliche_adresse = null" if sensibel else "")
         with server.pool.connection() as conn:
             # Begründung, Vorschau und Vorschläge sind Modell-Freitext zur
             # alten Einordnung: nach der Entscheidung des Menschen passen sie
@@ -452,28 +522,33 @@ def routen(ui) -> list:
             # überleben. Alles in einem UPDATE.
             # eingeordnet_am bleibt: es ist der Tag, an dem die Modellaufrufe der Mail
             # anfielen (Tagesgrenze). Eine Korrektur von Hand darf sie nicht auf heute ziehen.
+            # werbung_sicher = false: geloescht wird nur, was Regel, Katalog oder beide
+            # Modelle als Werbung erkannt haben, nie eine Handeinordnung (Spec §4).
             conn.execute(
                 "update post_mails set bereich = %s, fach = %s, unterfach = %s, "
                 "sensibel = %s, einordnung_quelle = 'mensch', "
-                "einordnung_version = 2, eingeordnet_am = coalesce(eingeordnet_am, now()), "
+                "aufmerksamkeit = %s, werbung_sicher = false, "
+                "einordnung_version = 3, eingeordnet_am = coalesce(eingeordnet_am, now()), "
                 "status = 'eingeordnet', fehler = null, begruendung = null, "
                 f"vorschau = null, vorschlaege = null{leeren} "
-                "where id = %s", (bereich, fach, unterfach, sensibel, m["id"]))
+                "where id = %s", (bereich, fach, unterfach, sensibel, aufmerksamkeit, m["id"]))
             if muster:
                 # R13: die Regel gilt nur fuer die Post ihres Besitzers (hier
                 # immer der Korrigierende selbst, R18). Sie traegt Bereich,
                 # Fach und Unterfach - `sensibel` entscheiden Muster und Modell
                 # weiter je Mail, darum steht hier immer false. Eine vorhandene
-                # Regel fuer denselben Absender wird ersetzt, sonst haeuften
-                # sich widerspruechliche Regeln an; beides in dieser einen
-                # Transaktion (der Block committet gemeinsam).
+                # Einordnungs-Regel fuer denselben Absender wird ersetzt, sonst
+                # haeuften sich widerspruechliche Regeln an; beides in dieser einen
+                # Transaktion (der Block committet gemeinsam). Die Schutzregel
+                # „nie Werbung“ (art nie_werbung) bleibt: sie ordnet nichts ein.
                 conn.execute(
-                    "delete from post_regeln where muster = %s and feld = 'von' "
-                    "and besitzer is not distinct from %s", (muster, m["besitzer"]))
+                    "delete from post_regeln where art = 'einordnen' and feld = 'von' "
+                    "and lower(muster) = lower(%s) and besitzer is not distinct from %s",
+                    (muster, m["besitzer"]))
                 conn.execute(
                     "insert into post_regeln (muster, feld, bereich, fach, "
-                    "unterfach, sensibel, angelegt_von, besitzer) "
-                    "values (%s, 'von', %s, %s, %s, false, %s, %s)",
+                    "unterfach, sensibel, angelegt_von, besitzer, art) "
+                    "values (%s, 'von', %s, %s, %s, false, %s, %s, 'einordnen')",
                     (muster, bereich, fach, unterfach, b.name, m["besitzer"]))
         return None
 
@@ -503,9 +578,207 @@ def routen(ui) -> list:
                                    "Diesen Vorschlag gibt es nicht oder er passt "
                                    "nicht zur Fächerliste. Nichts geändert.")
         unterfach = ps.unterfach_zwingen(fach, v.get("unterfach"))
+        # Ältere Vorschläge kennen aufmerksamkeit nicht: dann entscheidet speichern.
+        aufmerksamkeit = v.get("aufmerksamkeit")
         fehler = speichern(b, m, bereich, fach, unterfach,
-                           m["sensibel"] is not False, form.get("regel") == "ja")
+                           m["sensibel"] is not False, form.get("regel") == "ja",
+                           aufmerksamkeit if isinstance(aufmerksamkeit, bool) else None)
         return fehler or RedirectResponse(f"/post/mail/{m['id']}", status_code=303)
+
+    @ui._gesichert_seite
+    async def ziel_setzen(request):
+        b = betrachter(request)
+        if b is None:
+            return gesperrt()
+        form = await request.form()
+        if not ui._csrf_ok(form):
+            return ui._fehlerseite(403, "CSRF-Token fehlt oder ist ungültig",
+                                   "Nichts geändert. Seite neu laden.")
+        m = ps.mail_lesen(b, request.path_params["mail_id"])
+        if m is None or not darf_korrigieren(request, b, m):
+            return ui._fehlerseite(403, "Nicht erlaubt",
+                                   "Die Ablage ändern darf nur, wem das Postfach gehört, "
+                                   "oder die Leitung. Nichts geändert.")
+        ziel = str(form.get("ziel") or "")
+        if ziel not in ZIEL_WAHL or m["status"] == "geloescht":
+            return ui._fehlerseite(400, "Ungültiges Ziel",
+                                   "Dieses Ziel gibt es hier nicht. Nichts geändert.")
+        import post_werbung
+        with server.pool.connection() as conn:
+            # Eine Transaktion: eine Mail, die aus To-Review geholt wird, ohne Schutz für
+            # den Absender landete beim nächsten Treffer wieder dort. `ziel_manuell` hält
+            # die Automatik von der Mail fern.
+            # status im WHERE: post_ordnen kann die Mail seit dem Lesen geloescht haben.
+            conn.execute("update post_mails set ziel = %s, ziel_manuell = true "
+                         "where id = %s and status <> 'geloescht'", (ziel, m["id"]))
+            # Schutzregel nur für die eigene Post (R18): die Leitung darf eine fremde Mail
+            # umlegen, aber keine Regel im Namen des Besitzers anlegen.
+            if m["ziel"] == "to_review" and darf_regel_anlegen(b, m):
+                post_werbung.schutz_setzen(m["besitzer"], m["von"] or "", conn=conn)
+        return RedirectResponse(f"/post/mail/{m['id']}", status_code=303)
+
+    # --- Aufräumen ----------------------------------------------------------
+
+    def jahr_aus(request) -> int | None:
+        try:
+            jahr = int(str(request.path_params["jahr"]).strip())
+        except ValueError:
+            return None
+        return jahr if JAHR_MIN <= jahr <= JAHR_MAX else None
+
+    def jahr_fehlt():
+        return ui._fehlerseite(404, "Jahr nicht gefunden",
+                               'Dieses Jahr gibt es hier nicht. '
+                               '<a href="/post/aufraeumen">Zurück zum Aufräumen</a>')
+
+    @ui._gesichert_seite
+    async def aufraeumen(request):
+        b = betrachter(request)
+        if b is None:
+            return gesperrt()
+        import post_abholen
+        import post_freigabe
+        import post_ordnen
+        # Immer der angemeldete Name als Besitzer: es gibt keinen Weg, einen
+        # anderen anzugeben, auch nicht für die Leitung.
+        jahre = post_freigabe.jahre(b.name)
+        konten_ = post_freigabe.konten_des_besitzers(b.name)
+        neu = post_freigabe.offene_mails(b.name)
+        grenze = post_abholen.TAGESGRENZE
+        heute = post_abholen.modellaufrufe_heute()
+        resttage = math.ceil(neu * AUFRUFE_JE_MAIL / grenze) if grenze > 0 else 0
+        hinweis = HINWEISE.get(str(request.query_params.get("hinweis") or ""), "")
+        jahrzeilen = "".join(
+            f'<tr><td data-label="Jahr"><a href="/post/aufraeumen/{int(j["jahr"])}">'
+            f'{int(j["jahr"])}</a></td>'
+            f'<td data-label="Eingeordnet">{int(j["eingeordnet"])}</td>'
+            f'<td data-label="Wartet auf Freigabe">{int(j["offen"])}</td>'
+            f'<td data-label="Wird gelöscht">{int(j["zu_loeschen"])}</td>'
+            f'<td data-label="Freigegeben">'
+            f'{e(ui._zeit(j["freigegeben_am"])) if j["freigegeben_am"] else "—"}</td></tr>'
+            for j in jahre)
+        jahrtabelle = (
+            '<table><thead><tr><th>Jahr</th><th>Eingeordnet</th><th>Wartet auf Freigabe</th>'
+            f'<th>Wird gelöscht</th><th>Freigegeben</th></tr></thead><tbody>{jahrzeilen}'
+            '</tbody></table>' if jahre else '<p class="meta">Noch keine eingeordneten Mails.</p>')
+        kontozeilen = "".join(
+            f'<tr><td data-label="Konto">{e(k["kennung"])}</td>'
+            f'<td data-label="Ordnen">'
+            f'{e("ruht: " + k["ordnen_aus"]) if k["ordnen_aus"] else "aktiv"}</td></tr>'
+            for k in konten_)
+        kontotabelle = ('<table><thead><tr><th>Konto</th><th>Ordnen im Postfach</th></tr></thead>'
+                        f'<tbody>{kontozeilen}</tbody></table>' if konten_
+                        else '<p class="meta">Noch kein Postfach angebunden.</p>')
+        rumpf = (_STIL + reiterleiste("aufraeumen")
+                 + (f'<p class="hinweis">{e(hinweis)}</p>' if hinweis else "")
+                 + '<section class="karte"><h2>Stand</h2>'
+                 f'<p>Ordnungsmodus: <b>{e(post_ordnen.MODUS)}</b></p>'
+                 f'<p>Modellaufrufe heute: <b>{heute} / {grenze}</b></p>'
+                 f'<p>Noch einzuordnen: <b>{neu}</b> Mails, geschätzt '
+                 f'<b>{resttage}</b> Tage Rest.</p></section>'
+                 + f'<h2>Je Jahr</h2>{jahrtabelle}<h2>Postfächer</h2>{kontotabelle}')
+        return ui._seite("Aufräumen", rumpf)
+
+    async def freigabe_ausfuehren(request, b, jahr: int, post_freigabe):
+        if rolle(request) != "freigeben":
+            return ui._fehlerseite(403, "Nicht für diese Anmeldung",
+                                   "Freigeben darf nur die Rolle „freigeben“. "
+                                   "Nichts geändert.")
+        form = await request.form()
+        if not ui._csrf_ok(form):
+            return ui._fehlerseite(403, "CSRF-Token fehlt oder ist ungültig",
+                                   "Nichts geändert. Seite neu laden.")
+        gezeigt = [str(x) for x in form.getlist("absender")]
+        behalten = {str(x) for x in form.getlist("loeschen")}
+        # Ausgenommen ist, was in der Vorschau stand und nicht mehr angehakt ist.
+        ausgenommen = [a for a in gezeigt if a not in behalten]
+        try:
+            post_freigabe.freigeben(b.name, jahr, gezeigt, ausgenommen)
+        except ValueError as fehler:
+            if str(fehler) != "schon freigegeben":
+                raise
+            return RedirectResponse("/post/aufraeumen?hinweis=schon", status_code=303)
+        return RedirectResponse("/post/aufraeumen?hinweis=freigegeben", status_code=303)
+
+    @ui._gesichert_seite
+    async def aufraeumen_jahr(request):
+        b = betrachter(request)
+        if b is None:
+            return gesperrt()
+        jahr = jahr_aus(request)
+        if jahr is None:
+            return jahr_fehlt()
+        import post_freigabe
+        # Ein Jahr ohne eigene eingeordnete Mails gibt es hier nicht (GET wie POST).
+        eintrag = next((j for j in post_freigabe.jahre(b.name) if int(j["jahr"]) == jahr), None)
+        if eintrag is None:
+            return jahr_fehlt()
+        if request.method == "POST":
+            return await freigabe_ausfuehren(request, b, jahr, post_freigabe)
+        if eintrag is None:
+            return jahr_fehlt()
+        kopf = (f'{reiterleiste("aufraeumen")}<p><a href="/post/aufraeumen">← Aufräumen</a></p>'
+                f'<h2>Jahr {jahr}</h2>')
+        if eintrag["freigegeben_am"]:
+            return ui._seite(f"Aufräumen {jahr}", _STIL + kopf
+                             + '<p class="hinweis">Freigegeben am '
+                             f'{e(ui._zeit(eintrag["freigegeben_am"]))}.</p>')
+        absender = post_freigabe.vorschau(b.name, jahr)
+        if not absender:
+            return ui._seite(f"Aufräumen {jahr}", _STIL + kopf
+                             + '<p class="meta">In diesem Jahr gibt es nichts zu löschen.</p>')
+        zeilen = "".join(
+            f'<tr><td data-label="Löschen">'
+            f'<input type="hidden" name="absender" value="{e(a["absender"])}">'
+            f'<input type="checkbox" name="loeschen" value="{e(a["absender"])}" checked '
+            f'aria-label="{e(a["absender"])} löschen"></td>'
+            f'<td data-label="Absender"><a href="/post/aufraeumen/{jahr}/absender?adresse='
+            f'{urllib.parse.quote(a["absender"], safe="")}">{e(a["absender"])}</a></td>'
+            f'<td data-label="Mails">{int(a["anzahl"])}</td>'
+            f'<td data-label="Beispiele">{e(" · ".join(a["beispiele"]))}</td></tr>'
+            for a in absender)
+        gesamt = sum(int(a["anzahl"]) for a in absender)
+        if rolle(request) == "freigeben":
+            knopf = f'<button class="primaer">Jahr {jahr} löschen freigeben</button>'
+        else:
+            knopf = '<p class="meta">Freigeben darf nur die Rolle „freigeben“.</p>'
+        formular = (
+            f'<form method="post" action="/post/aufraeumen/{jahr}" class="karte">'
+            f'<input type="hidden" name="csrf" value="{e(ui.CSRF_TOKEN)}">'
+            f'<p>{gesamt} Mails von {len(absender)} Absendern werden gelöscht. '
+            'Wer abgewählt ist, bekommt die Schutzregel „nie Werbung“ und '
+            'bleibt im Postfach.</p>'
+            '<table><thead><tr><th>Löschen</th><th>Absender</th><th>Mails</th>'
+            f'<th>Beispiele</th></tr></thead><tbody>{zeilen}</tbody></table>{knopf}</form>')
+        return ui._seite(f"Aufräumen {jahr}", _STIL + kopf + formular)
+
+    @ui._gesichert_seite
+    async def aufraeumen_absender(request):
+        """Vor der Freigabe nachsehen, welche Mails eines Absenders im Jahr gelöscht
+        würden (Spec §6.1). Nur lesen, nur eigene Konten, kein Formular."""
+        b = betrachter(request)
+        if b is None:
+            return gesperrt()
+        jahr = jahr_aus(request)
+        if jahr is None:
+            return jahr_fehlt()
+        import post_freigabe
+        if not any(int(j["jahr"]) == jahr for j in post_freigabe.jahre(b.name)):
+            return jahr_fehlt()
+        adresse = str(request.query_params.get("adresse") or "")
+        mails = post_freigabe.loeschliste(b, jahr, adresse)
+        zeilen = "".join(
+            f'<tr><td data-label="Datum">{e(ui._zeit(m["datum"]))}</td>'
+            f'<td data-label="Konto">{e(m["kennung"])}</td>'
+            f'<td data-label="Betreff">{e(m["betreff"])}</td></tr>'
+            for m in mails)
+        tabelle = ('<table><thead><tr><th>Datum</th><th>Konto</th><th>Betreff</th></tr>'
+                   f'</thead><tbody>{zeilen}</tbody></table>' if mails
+                   else '<p class="meta">Keine Mails dieses Absenders zum Löschen.</p>')
+        rumpf = (_STIL + reiterleiste("aufraeumen")
+                 + f'<p><a href="/post/aufraeumen/{jahr}">← Jahr {jahr}</a></p>'
+                 + f'<h2>{e(adresse)} · {len(mails)} Mails in {jahr}</h2>{tabelle}')
+        return ui._seite(f"Aufräumen {jahr}", rumpf)
 
     # --- Postfach hinzufügen ---------------------------------------------
 
@@ -603,7 +876,11 @@ def routen(ui) -> list:
     return [
         Route("/post", liste),
         Route("/post/konten", konten, methods=["GET", "POST"]),
+        Route("/post/aufraeumen", aufraeumen),
+        Route("/post/aufraeumen/{jahr}", aufraeumen_jahr, methods=["GET", "POST"]),
+        Route("/post/aufraeumen/{jahr}/absender", aufraeumen_absender),
         Route("/post/mail/{mail_id}", mail),
         Route("/post/mail/{mail_id}/korrigieren", korrigieren, methods=["POST"]),
         Route("/post/mail/{mail_id}/vorschlag", vorschlag, methods=["POST"]),
+        Route("/post/mail/{mail_id}/ziel", ziel_setzen, methods=["POST"]),
     ]

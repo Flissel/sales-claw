@@ -35,20 +35,30 @@ def _mail(von, betreff, text, datum, mid):
 
 
 class Kasten:
-    """IMAP-Ersatz mit Ordnern — merkt sich jeden schreibenden Befehl."""
+    """IMAP-Ersatz mit Ordnern — merkt sich jeden schreibenden Befehl.
+    Kann UIDPLUS, aber kein MOVE: verschieben laeuft ueber UID COPY + UID EXPUNGE."""
+
+    capabilities = ("IMAP4REV1", "UIDPLUS")
 
     def __init__(self, mails, ordner=()):
         self.mails = dict(mails)
         self.ordner = list(ordner) or [(r"\HasNoChildren", "INBOX")]
         self.selects, self.kopien, self.flags, self.angelegt = [], [], [], []
         self.expunged = False
+        self.uid_expunges = []
         self.abgemeldet = False
 
     def select(self, ordner, readonly=False):
         self.selects.append((ordner, readonly))
         return "OK", [str(len(self.mails)).encode()]
 
+    def response(self, code):
+        return code, [None]
+
     def uid(self, befehl, *args):
+        befehl = befehl.lower()
+        if args and isinstance(args[0], str):
+            args = (args[0].encode("ascii"),) + args[1:]
         if befehl == "search":
             return "OK", [b" ".join(sorted(self.mails))]
         if befehl == "fetch":
@@ -60,6 +70,9 @@ class Kasten:
             return "OK", [b""]
         if befehl == "store":
             self.flags.append((args[0], args[2]))
+            return "OK", [b""]
+        if befehl == "expunge":
+            self.uid_expunges.append(args[0])
             return "OK", [b""]
         raise AssertionError(befehl)
 
@@ -213,7 +226,9 @@ def test_spam_aus_gmx_wandert_in_den_gmx_spamordner(haupt, gmx, leer, gmx_in_sam
     antwort = json.loads(server.mail_einstufen(gmx_in_sammelstelle, "spam", "Phishing"))
     assert antwort["ordner"] == "Spamverdacht"
     assert gmx.kopien == [(b"2", '"Spamverdacht"')]
-    assert gmx.flags == [(b"2", "(\\Deleted)")] and gmx.expunged
+    # Nur UID EXPUNGE der einen Mail, nie ein nacktes EXPUNGE (Spec 2026-11-06 §11).
+    assert gmx.flags == [(b"2", "(\\Deleted)")] and gmx.uid_expunges == [b"2"]
+    assert not gmx.expunged
     assert haupt.kopien == []
 
 

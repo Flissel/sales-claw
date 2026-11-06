@@ -292,7 +292,7 @@ def test_korrektur_setzt_quelle_mensch():
     assert r.headers["location"] == f"/post/mail/{m}"
     z = _zeile(m)
     assert (z["bereich"], z["fach"]) == ("business", "Rechnungen")
-    assert z["einordnung_quelle"] == "mensch"
+    assert z["einordnung_quelle"] == "mensch" and z["einordnung_version"] == 3
     assert z["status"] == "eingeordnet" and z["eingeordnet_am"] is not None
     assert z["sensibel"] is False
 

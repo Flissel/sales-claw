@@ -29,6 +29,10 @@ Sensibel: Treffen die festen Muster (Sicherheitscode, Passwort-Link) schon
 beim Abholen, landet der Text gar nicht erst in der Datenbank. Sonst wird er
 beim Einordnen als sensibel geloescht (text/auszug NULL, Spec §5).
 
+AUFRAEUMEN (Spec 2026-11-06). Nach dem Einordnen pflegt die Runde das Ziel je
+Mail (post_ziel.ziele_aktualisieren, immer) und gleicht mit POST_ORDNEN != aus
+das Postfach daran an (post_ordnen). Das Abholen oben bleibt dabei lesend.
+
 Protokoll: nur Konto-Kennung, Zeilen-ID, Zahlen und Fehler-TYPEN. Nie
 Absender, Betreff, Text oder die Ausnahme-Meldung selbst - Datenbank-Meldungen
 zitieren die Zeile ("Failing row contains ..."), Netz-Meldungen manchmal das
@@ -48,8 +52,12 @@ import sys
 import threading
 
 import post_einordnung
+import post_herkunft
 import post_konten
+import post_ordnen
 import post_struktur
+import post_werbung
+import post_ziel
 import postfach
 import server
 from gateway import GatewayFehler, GatewayTransient
@@ -108,6 +116,21 @@ def _text_sicher(nachricht) -> str:
     return ""
 
 
+# Name fuer einen Anhang ohne Dateinamen. Kein Bildname: post_ziel zaehlt ihn als Anhang
+# ausser Bildern, die Werbemail wird also nie geloescht (Spec §4).
+ANHANG_OHNE_NAMEN = "(Anhang)"
+
+
+def _anhang_ohne_namen(teil) -> bool:
+    """Ein Teil ohne Dateinamen, der trotzdem ein Anhang ist: Disposition attachment (ausser
+    Bildern) oder ein Typ, der kein Text-/HTML-Rumpf und kein Bild ist (application/*,
+    message/rfc822, ...). Container (multipart) zaehlen nicht."""
+    haupt = teil.get_content_maintype()
+    if haupt in ("multipart", "image"):
+        return False
+    return haupt != "text" or teil.get_content_disposition() == "attachment"
+
+
 def _anhaenge(nachricht) -> list[str]:
     namen = []
     for teil in nachricht.walk():
@@ -116,7 +139,9 @@ def _anhaenge(nachricht) -> list[str]:
             if name:
                 name = str(email.header.make_header(email.header.decode_header(name)))
         except Exception:  # noqa: BLE001 - ein kaputter Dateiname kostet nur den Namen
-            name = "(Anhang)"
+            name = ANHANG_OHNE_NAMEN
+        if not name and _anhang_ohne_namen(teil):
+            name = ANHANG_OHNE_NAMEN
         if name:
             namen.append(_rein(name, ANHANG_NAME_MAX))
         if len(namen) >= ANHAENGE_MAX:
@@ -139,7 +164,7 @@ def _sensibel_nach_muster(von: str, betreff: str) -> bool:
                for feld, muster in post_einordnung.SENSIBEL_MUSTER)
 
 
-def _mail_zerlegen(nachricht, kennung: str, uid: int) -> dict:
+def _mail_zerlegen(nachricht, kennung: str, uid: int, konto_adresse: str = "") -> dict:
     von = _rein(postfach._kopf(nachricht, "From"), KOPF_MAX)
     betreff = _rein(postfach._kopf(nachricht, "Subject"), KOPF_MAX)
     message_id = _rein(postfach._kopf(nachricht, "Message-ID").strip().strip("<>"), KOPF_MAX)
@@ -163,6 +188,10 @@ def _mail_zerlegen(nachricht, kennung: str, uid: int) -> dict:
         "an": None if sensibel_treffer else _rein(postfach._kopf(nachricht, "To"), KOPF_MAX),
         "betreff": betreff, "datum": _datum(postfach._kopf(nachricht, "Date")),
         "text": text, "auszug": auszug, "anhaenge": [] if sensibel_treffer else _anhaenge(nachricht),
+        # Die Kopfzeilen sind schon da: kein zusaetzlicher Abruf. '' = geprueft, keine
+        # (post_herkunft); sensibel: wie `an` nicht speichern (Spec §5).
+        "urspruengliche_adresse": None if sensibel_treffer else (
+            _rein(post_herkunft.urspruenglich(nachricht, konto_adresse), KOPF_MAX) or ""),
     }
 
 
@@ -278,8 +307,8 @@ def _speichern(zeile: dict, uid: int, mail: dict | None) -> bool:
                 neu = conn.execute(
                     "insert into post_mails (konto_id, imap_uid, message_id, besitzer, "
                     "von, an, betreff, datum, text, auszug, anhaenge, status, fehler, "
-                    "bereich, fach, message_id_ersatz, kalenderteil) values "
-                    "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                    "bereich, fach, message_id_ersatz, kalenderteil, urspruengliche_adresse) values "
+                    "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
                     "on conflict (konto_id, imap_uid) do nothing returning id",
                     (zeile["id"], uid, mail["message_id"], zeile["besitzer"], mail["von"],
                      mail["an"], mail["betreff"], mail["datum"], mail["text"],
@@ -287,7 +316,7 @@ def _speichern(zeile: dict, uid: int, mail: dict | None) -> bool:
                      "fehler" if mail.get("fehler") else "neu", mail.get("fehler"),
                      "privat" if mail.get("fehler") else None,
                      post_struktur.UNKLAR if mail.get("fehler") else None,
-                     ersatz, bool(mail.get("kalenderteil")))
+                     ersatz, bool(mail.get("kalenderteil")), mail.get("urspruengliche_adresse"))
                 ).fetchone() is not None
             elif str(vorhanden["konto_id"]) == str(zeile["id"]) and vorhanden["imap_uid"] < 0:
                 # Nach UIDVALIDITY-Wechsel wiedergefunden: neuer Fundort, keine
@@ -328,7 +357,8 @@ def konto_abholen(zeile: dict, kasten=None, stapel: int = 50) -> int:
                          zeile["kennung"], uid)
             else:
                 try:
-                    mail = _mail_zerlegen(nachricht, zeile["kennung"], uid)
+                    mail = _mail_zerlegen(nachricht, zeile["kennung"], uid,
+                                          zeile.get("adresse") or "")
                 except Exception as e:  # noqa: BLE001 - sonst haengt das Konto ewig an dieser UID
                     LOG.warning("Konto %s: Mail %s nicht lesbar (%s)", zeile["kennung"], uid,
                                 type(e).__name__)
@@ -360,6 +390,7 @@ _FEHL_KOSTEN_SQL = ("fehl_aufrufe = %s + case when fehl_am::date = current_date 
 def _ergebnis_speichern(mail_id, e: post_einordnung.Einordnung) -> None:
     bereich, fach = e.bereich, e.fach
     unterfach = e.unterfach
+    aufmerksamkeit = e.aufmerksamkeit
     if not post_struktur.fach_gueltig(bereich or "", fach or ""):
         # Die feste Liste gilt auch hier: nie ein Fach speichern, das es nicht gibt.
         fach, unterfach = post_struktur.UNKLAR, None
@@ -367,21 +398,39 @@ def _ergebnis_speichern(mail_id, e: post_einordnung.Einordnung) -> None:
         # Spec §6: Zum Nachsehen liegt IMMER privat - hier zentral, egal welcher
         # Weg (Modell, Regel, Fallback oben) die Einordnung geliefert hat.
         bereich, unterfach = "privat", None
+        # Zum Nachsehen bleibt im Posteingang (Spec §5), egal was die Stufe davor meldete.
+        aufmerksamkeit = True
     server._q(
         "update post_mails set bereich = %s, fach = %s, unterfach = %s, sensibel = %s, "
         "einordnung_quelle = %s, begruendung = %s, vorschlaege = %s::jsonb, "
+        "aufmerksamkeit = %s, werbung_sicher = %s, "
         # `=`, nicht `+`: Fehlversuch-Kosten stehen auf fehl_aufrufe (Tag ihres Anfalls),
         # modellaufrufe traegt nur die endgueltige Einordnung - sonst zaehlte sie doppelt.
-        "modellaufrufe = %s, einordnung_version = 2, eingeordnet_am = now(), "
+        "modellaufrufe = %s, einordnung_version = 3, eingeordnet_am = now(), "
         "status = 'eingeordnet', fehler = null, "
         "text = case when %s then null else text end, "
         "auszug = case when %s then null else auszug end, "
         "an = case when %s then null else an end, "
-        "anhaenge = case when %s then '{}'::text[] else anhaenge end "
+        "anhaenge = case when %s then '{}'::text[] else anhaenge end, "
+        "urspruengliche_adresse = case when %s then null else urspruengliche_adresse end "
         "where id = %s and status = 'neu'",
         (bereich, fach, unterfach, e.sensibel, e.quelle, e.begruendung,
-         None if e.vorschlaege is None else server._json(e.vorschlaege), e.aufrufe,
-         e.sensibel, e.sensibel, e.sensibel, e.sensibel, mail_id))
+         None if e.vorschlaege is None else server._json(e.vorschlaege),
+         aufmerksamkeit, e.werbung_sicher, e.aufrufe,
+         e.sensibel, e.sensibel, e.sensibel, e.sensibel, e.sensibel, mail_id))
+    if e.werbung_sicher:
+        _werbe_regel_vorschlagen(mail_id)
+
+
+def _werbe_regel_vorschlagen(mail_id) -> None:
+    """Hat der Absender jetzt genug sichere Werbemails, legt post_werbung eine Regel an
+    (kuenftig ohne Modell). Ein Fehler hier darf die gespeicherte Einordnung nicht kippen."""
+    try:
+        zeile = server._q("select besitzer, von from post_mails where id = %s", (mail_id,))
+        if zeile and post_werbung.regel_vorschlagen(zeile[0]["besitzer"], zeile[0]["von"] or ""):
+            LOG.info("Werbe-Regel fuer einen Absender angelegt")
+    except Exception as e:      # noqa: BLE001 - nur der Typ: Meldungen koennten Mailinhalt tragen
+        LOG.warning("Werbe-Regel-Vorschlag fehlgeschlagen (%s)", type(e).__name__)
 
 
 def _pruefer_vorschlag_speichern(mail_id, vorschlag: post_einordnung.Einordnung) -> None:
@@ -398,7 +447,7 @@ def _pruefer_vorschlag_speichern(mail_id, vorschlag: post_einordnung.Einordnung)
 
 
 def einordnen_offene(grenze: int) -> int:
-    """Ordnet bis zu `grenze` offene Mails ein (zuerst gesehen zuerst).
+    """Ordnet bis zu `grenze` offene Mails ein (neuestes Jahr zuerst, alle Konten gemeinsam).
     Rueckgabe = Zahl der Mails, die `neu` verlassen haben (eingeordnet oder fehler)."""
     if grenze <= 0:
         return 0
@@ -406,9 +455,12 @@ def einordnen_offene(grenze: int) -> int:
     # (sollte es nicht geben) gilt der Standard von post_einordnung.
     offene = server._q(
         "select m.id, m.besitzer, m.von, m.betreff, m.datum, m.text, "
-        "k.kennung, k.standard_bereich from post_mails m "
+        "m.urspruengliche_adresse, k.kennung, k.standard_bereich from post_mails m "
         "left join post_konten k on k.id = m.konto_id where m.status = 'neu' "
-        "order by m.gesehen_am, m.imap_uid limit %s", (int(grenze),))
+        # Neuestes Jahr zuerst, ueber alle Konten gemeinsam; innerhalb des Jahres die
+        # neueste Mail zuerst.
+        "order by extract(year from m.datum) desc nulls last, m.datum desc, "
+        "m.imap_uid desc limit %s", (int(grenze),))
     erledigt = 0
     for zeile in offene:
         if _STOPP.is_set():
@@ -419,7 +471,8 @@ def einordnen_offene(grenze: int) -> int:
                 "von": zeile["von"] or "",
                 "betreff": zeile["betreff"] or "",
                 "datum": zeile["datum"].isoformat() if zeile["datum"] else "",
-                "text": zeile["text"] or ""}
+                "text": zeile["text"] or "",
+                "urspruengliche_adresse": zeile["urspruengliche_adresse"] or None}
         konto = {"kennung": zeile["kennung"], "standard_bereich": zeile["standard_bereich"]}
         try:
             ergebnis = post_einordnung.einordnen(mail, konto)
@@ -445,7 +498,7 @@ def einordnen_offene(grenze: int) -> int:
                 "fehler = 'Einordnung durch das Modell endgueltig fehlgeschlagen', "
                 # Der Aufruf hat das Modell erreicht: zaehlt zur Tagesgrenze.
                 "einordnung_quelle = 'modell', modellaufrufe = 1, einordnung_version = 2, "
-                "eingeordnet_am = now() where id = %s and status = 'neu'",
+                "aufmerksamkeit = true, eingeordnet_am = now() where id = %s and status = 'neu'",
                 (post_struktur.UNKLAR, mail["id"]))
             erledigt += 1
             continue
@@ -473,7 +526,8 @@ def einordnen_offene(grenze: int) -> int:
                             mail["id"], VERSUCHE_MAX, type(e).__name__)
                 server._q(
                     "update post_mails set status = 'fehler', bereich = 'privat', fach = %s, "
-                    "fehler = 'Einordnung wiederholt fehlgeschlagen', eingeordnet_am = now() "
+                    "fehler = 'Einordnung wiederholt fehlgeschlagen', aufmerksamkeit = true, "
+                    "eingeordnet_am = now() "
                     "where id = %s and status = 'neu'", (post_struktur.UNKLAR, mail["id"]))
                 erledigt += 1
                 continue
@@ -524,17 +578,40 @@ def eine_runde() -> dict:
                         type(e).__name__)
     if _STOPP.is_set():
         return bilanz
+    _einordnen(bilanz)
+    if not _STOPP.is_set():
+        _aufraeumen(bilanz)
+    return bilanz
+
+
+def _einordnen(bilanz: dict) -> None:
     if kunde_aktiv():
         bilanz["pause"] = "kundenantwort"
-        return bilanz
+        return
     rest = TAGESGRENZE - modellaufrufe_heute()
     # Eine Mail kostet bis zu 2 Aufrufe (Sortierer + Pruefer), `rest` zaehlt Aufrufe.
     mails = min(rest // 2, EINORDNEN_JE_RUNDE)
     if mails <= 0:
         bilanz["tagesgrenze"] = True
-        return bilanz
+        return
     bilanz["eingeordnet"] = einordnen_offene(mails)
-    return bilanz
+
+
+def _aufraeumen(bilanz: dict) -> None:
+    """Nach dem Einordnen: Ziel je Mail pflegen (immer, R1), dann das Postfach angleichen
+    (nur mit POST_ORDNEN != aus). Beides ruft kein Modell, laeuft also auch in der
+    Kundenpause und nach der Tagesgrenze. Ein Fehler in einem Schritt kostet die Runde
+    nicht; im Protokoll nur der Typ (Datenbank-Meldungen zitieren Zeilen)."""
+    try:
+        bilanz["ziele"] = post_ziel.ziele_aktualisieren()
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("Ziele nicht aktualisiert (%s)", type(e).__name__)
+    if post_ordnen.MODUS == "aus":
+        return
+    try:
+        bilanz["ordnen"] = post_ordnen.ordnen()
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("Ordnen fehlgeschlagen (%s)", type(e).__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -588,7 +665,8 @@ def main() -> int:
     while not _STOPP.is_set():
         try:
             bilanz = eine_runde()
-            if bilanz.get("abgeholt") or bilanz.get("eingeordnet") or bilanz.get("konten_fehler"):
+            if (bilanz.get("abgeholt") or bilanz.get("eingeordnet") or bilanz.get("konten_fehler")
+                    or bilanz.get("ziele")):
                 LOG.info("Runde: %s", bilanz)
         except Exception as e:  # noqa: BLE001 - Meldung koennte Mailinhalt zitieren
             LOG.error("Runde uebersprungen (%s)", type(e).__name__)

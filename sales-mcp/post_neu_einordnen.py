@@ -2,7 +2,7 @@
 
 Drei Schritte, jeder einzeln aufrufbar:
 
-  vorschau   ordnet die alten Mails (einordnung_version < 2) mit der neuen Logik
+  vorschau   ordnet die alten Mails (einordnung_version < 3) mit der neuen Logik
              ein und legt das Ergebnis NUR in `post_mails.vorschau` ab. Die echten
              Spalten bleiben unberuehrt: Felix sieht erst den Bericht, dann
              entscheidet er.
@@ -10,7 +10,7 @@ Drei Schritte, jeder einzeln aufrufbar:
              dass der Bericht ohne Bedenken im Terminal stehen darf.
   anwenden   kopiert die Vorschau in die echten Spalten. Kein Modellaufruf.
 
-Aufruf im Container: `python -m post_neu_einordnen vorschau [--alle] | bericht | anwenden`
+Aufruf im Container: `python -m post_neu_einordnen vorschau [--alle] [--je-konto N] | bericht | anwenden`
 (siehe deploy/post-neu-einordnen.sh).
 
 Mensch geht vor: Eine Zeile mit einordnung_quelle = 'mensch' fasst nichts davon an -
@@ -28,6 +28,7 @@ import post_abholen
 import post_einordnung
 import post_katalog
 import post_struktur
+import post_werbung
 import server
 from gateway import GatewayTransient
 
@@ -36,8 +37,15 @@ LOG = logging.getLogger("post_neu_einordnen")
 # Bester Fall je Mail: Sortierer + Pruefer. Wie in post_abholen.eine_runde.
 AUFRUFE_JE_MAIL = 2
 TOP_DOMAINS = 40
+# Rollout-Tor (Spec §9, R20): je Konto Anteil Zum Nachsehen < 0,10, und zwar fuer BEIDE Werte.
+# A misst die Vorschau des Altbestands; B die laufend eingeordneten v3-Mails ohne Handkorrektur
+# (gmail-felix404 hat keinen Altbestand, nur B; dort gilt das Tor ab 25 Mails). Die Bezeichnungen
+# stehen wortgleich im Runbook (docs/03_RUNBOOK.md, Post aufraeumen).
+TOR_VORSCHAU = "Tor A: Zum Nachsehen je Konto (Altbestand-Vorschau)"
+TOR_LAUFEND = "Tor B: Zum Nachsehen je Konto (laufend eingeordnet, v3)"
 
-# Gemeinsame Auswahl: wer ueberhaupt neu einzuordnen ist (nie ein Mensch, nie v2).
+# Gemeinsame Auswahl: wer ueberhaupt neu einzuordnen ist (nie ein Mensch, nie v3).
+# Version 3 = Einordnung mit aufmerksamkeit/werbung_sicher; v2-Zeilen kennen die Felder nicht.
 def _altbestand(t: str = "") -> str:
     """`t` = Tabellenalias mit Punkt, wo ein Join die Spaltennamen mehrdeutig macht.
 
@@ -49,7 +57,7 @@ def _altbestand(t: str = "") -> str:
     return (f"({t}status = 'eingeordnet' or ({t}status = 'fehler' "
             f"and not starts_with(coalesce({t}fehler, ''), '{abholfehler}'))) "
             f"and {t}einordnung_quelle is distinct from 'mensch' "
-            f"and {t}einordnung_version < 2")
+            f"and {t}einordnung_version < 3")
 
 
 _ALTBESTAND = _altbestand()
@@ -70,7 +78,10 @@ def _vorschau_inhalt(e: post_einordnung.Einordnung, alt_sensibel: bool) -> dict:
                            for k, v in vorschlaege.items()}
     return {"bereich": e.bereich, "fach": e.fach, "unterfach": e.unterfach,
             "sensibel": e.sensibel, "quelle": e.quelle, "begruendung": begruendung,
-            "vorschlaege": vorschlaege, "aufrufe": e.aufrufe}
+            "vorschlaege": vorschlaege, "aufrufe": e.aufrufe,
+            # Wie post_abholen._ergebnis_speichern; anwenden erzwingt Zum Nachsehen -> Posteingang.
+            "aufmerksamkeit": e.aufmerksamkeit,
+            "werbung_sicher": e.werbung_sicher and not sensibel_gesamt}
 
 
 def _pruefer_ausfall(vorschlag: post_einordnung.Einordnung) -> post_einordnung.Einordnung:
@@ -109,8 +120,11 @@ def _nur_kosten_buchen(mail_id, aufrufe: int) -> None:
     server._q(f"update post_mails set {_KOSTEN_SQL} where id = %s", (int(aufrufe), mail_id))
 
 
-def vorschau(grenze: int, alle: bool = False) -> int:
+def vorschau(grenze: int, alle: bool = False, je_konto: int | None = None) -> int:
     """Ordnet bis zu `grenze` Altbestand-Mails neu ein und speichert nur die Vorschau.
+    `je_konto` = Stichprobe: je Konto nur die N neuesten Altbestand-Mails. Der Rang wird
+    unter ALLEN Altbestand-Mails des Kontos vergeben (auch denen mit Vorschau), sonst
+    zoege jeder weitere Lauf die naechsten N nach und die Stichprobe wuchse still.
     Haelt die Tagesgrenze ein (die Vorschau-Aufrufe zaehlen in modellaufrufe_heute mit).
     Rueckgabe = Zahl bearbeiteter Mails."""
     def rest() -> int:
@@ -120,13 +134,20 @@ def vorschau(grenze: int, alle: bool = False) -> int:
 
     if grenze <= 0 or rest() < AUFRUFE_JE_MAIL:
         return 0
+    stichprobe = je_konto is not None and je_konto > 0
+    if je_konto is not None and not stichprobe:
+        return 0
     zeilen = server._q(
-        "select m.id, m.besitzer, m.von, m.betreff, m.datum, m.text, m.sensibel, "
-        "k.kennung, k.standard_bereich from post_mails m "
-        "left join post_konten k on k.id = m.konto_id "
-        f"where {_altbestand('m.')} "
-        + ("" if alle else "and m.vorschau is null ") +
-        "order by m.gesehen_am, m.imap_uid limit %s", (int(grenze),))
+        "select * from (select m.id, m.besitzer, m.von, m.betreff, m.datum, m.text, m.sensibel, "
+        "m.urspruengliche_adresse, k.kennung, k.standard_bereich, m.vorschau, m.gesehen_am, "
+        "m.imap_uid, row_number() over (partition by m.konto_id "
+        "order by m.datum desc nulls last, m.imap_uid desc) as rang "
+        "from post_mails m left join post_konten k on k.id = m.konto_id "
+        f"where {_altbestand('m.')}) a where true "
+        + ("" if alle else "and a.vorschau is null ")
+        + ("and a.rang <= %s " if stichprobe else "")
+        + "order by a.gesehen_am, a.imap_uid limit %s",
+        ((int(je_konto),) if stichprobe else ()) + (int(grenze),))
     fertig = 0
     for zeile in zeilen:
         if rest() < AUFRUFE_JE_MAIL:
@@ -139,7 +160,8 @@ def vorschau(grenze: int, alle: bool = False) -> int:
         mail = {"id": str(zeile["id"]), "besitzer": zeile["besitzer"],
                 "von": zeile["von"] or "", "betreff": zeile["betreff"] or "",
                 "datum": zeile["datum"].isoformat() if zeile["datum"] else "",
-                "text": zeile["text"] or ""}
+                "text": zeile["text"] or "",
+                "urspruengliche_adresse": zeile["urspruengliche_adresse"] or None}
         konto = {"kennung": zeile["kennung"], "standard_bereich": zeile["standard_bereich"]}
         try:
             ergebnis = post_einordnung.einordnen(mail, konto)
@@ -162,7 +184,8 @@ def vorschau(grenze: int, alle: bool = False) -> int:
             _vorschau_speichern(mail["id"], {
                 "bereich": "privat", "fach": post_struktur.UNKLAR, "unterfach": None,
                 "sensibel": bool(zeile["sensibel"]), "quelle": "modell",
-                "begruendung": "vorschau:fehler", "vorschlaege": None, "aufrufe": 1})
+                "begruendung": "vorschau:fehler", "vorschlaege": None, "aufrufe": 1,
+                "aufmerksamkeit": True, "werbung_sicher": False})
             fertig += 1
             continue
         _vorschau_speichern(mail["id"], _vorschau_inhalt(ergebnis, bool(zeile["sensibel"])))
@@ -184,13 +207,16 @@ def bericht() -> dict:
     """Nur Zahlen und Domains. Betreff, Text und volle Adressen werden nicht einmal
     in den Rueckgabewert uebernommen."""
     zeilen = server._q(
-        "select bereich, fach, von, vorschau from post_mails "
-        f"where {_ALTBESTAND}")
+        "select m.bereich, m.fach, m.von, m.vorschau, k.kennung from post_mails m "
+        "left join post_konten k on k.id = m.konto_id "
+        f"where {_altbestand('m.')}")
     alt: Counter = Counter()
     neu: Counter = Counter()
     katalog: Counter = Counter()
     ohne_katalog: Counter = Counter()
     nachsehen = offen = 0
+    je_kennung: Counter = Counter()          # Vorschau-Ergebnisse je Konto
+    je_kennung_unklar: Counter = Counter()   # davon Zum Nachsehen
     for z in zeilen:
         v = z["vorschau"]
         if not v:
@@ -198,8 +224,11 @@ def bericht() -> dict:
             continue
         alt[(z["bereich"], z["fach"])] += 1
         neu[(v.get("bereich"), v.get("fach"), v.get("unterfach"))] += 1
+        kennung = z["kennung"] or "(ohne Konto)"
+        je_kennung[kennung] += 1
         if v.get("fach") == post_struktur.UNKLAR:
             nachsehen += 1
+            je_kennung_unklar[kennung] += 1
         domain = post_katalog.domain(z["von"] or "")
         endung = _endung(domain) if domain else None
         if v.get("quelle") == "katalog" and endung:
@@ -207,8 +236,25 @@ def bericht() -> dict:
         elif endung is None:
             ohne_katalog[domain or "(ohne Domain)"] += 1
     return {"alt": dict(alt), "neu": dict(neu), "zum_nachsehen": nachsehen, "offen": offen,
+            "unklar_anteil": {k: je_kennung_unklar[k] / n for k, n in je_kennung.items()},
+            "vorschau_je_konto": dict(je_kennung),
+            "unklar_laufend": _unklar_laufend(),
             "katalog": [(e, f, u, n) for (e, f, u), n in katalog.most_common()],
             "ohne_katalog": ohne_katalog.most_common(TOP_DOMAINS)}
+
+
+def _unklar_laufend() -> dict:
+    """Je Konto: Anteil Zum Nachsehen unter den laufend eingeordneten Mails (Version 3, ohne
+    Handkorrektur) und deren Zahl. Nur Zahlen, keine Adressen oder Betreffe."""
+    zeilen = server._q(
+        "select coalesce(k.kennung, '(ohne Konto)') as kennung, count(*) as n, "
+        "count(*) filter (where m.fach = %s) as unklar from post_mails m "
+        "left join post_konten k on k.id = m.konto_id "
+        "where m.status = 'eingeordnet' and m.einordnung_version = 3 "
+        "and m.einordnung_quelle is distinct from 'mensch' group by 1",
+        (post_struktur.UNKLAR,))
+    return {z["kennung"]: {"anteil": int(z["unklar"]) / int(z["n"]), "n": int(z["n"])}
+            for z in zeilen}
 
 
 def anwenden() -> int:
@@ -243,14 +289,40 @@ def anwenden() -> int:
         f"vorschlaege = case when coalesce(jsonb_typeof({vs}), '') <> 'object' then null "
         f"when {sens} then (({vs} #- '{{sortierer,begruendung}}') #- '{{pruefer,begruendung}}') "
         f"else {vs} end, "
-        "einordnung_version = 2, vorschau = null, status = 'eingeordnet', fehler = null, "
+        f"aufmerksamkeit = case when {nachsehen} then true "
+        "else coalesce((vorschau->>'aufmerksamkeit')::boolean, true) end, "
+        # Nie Werbung-sicher bei Nachsehen, sensibel oder fehlendem Schluessel (alte Vorschau):
+        # im Zweifel bleibt die Mail sichtbar und wird nicht geloescht.
+        f"werbung_sicher = case when {nachsehen} or {sens} then false "
+        "else coalesce((vorschau->>'werbung_sicher')::boolean, false) end, "
+        "einordnung_version = 3, vorschau = null, status = 'eingeordnet', fehler = null, "
         f"text = case when {sens} then null else text end, "
         f"auszug = case when {sens} then null else auszug end, "
         f"an = case when {sens} then null else an end, "
-        f"anhaenge = case when {sens} then '{{}}'::text[] else anhaenge end "
-        f"where vorschau is not null and {_ALTBESTAND} returning id",
+        f"anhaenge = case when {sens} then '{{}}'::text[] else anhaenge end, "
+        f"urspruengliche_adresse = case when {sens} then null else urspruengliche_adresse end "
+        f"where vorschau is not null and {_ALTBESTAND} "
+        "returning id, besitzer, von, werbung_sicher",
         {"paare": paare, "unklar": post_struktur.UNKLAR})
+    _werbe_regeln_vorschlagen(zeilen)
     return len(zeilen)
+
+
+def _werbe_regeln_vorschlagen(zeilen: list) -> None:
+    """Wie post_abholen._werbe_regel_vorschlagen, nur je Absender einmal: Hat ein Absender
+    jetzt genug sichere Werbemails, legt post_werbung eine Regel an. Ein Fehler kippt
+    das schon uebernommene anwenden nicht; im Protokoll nur der Typ."""
+    gesehen: set = set()
+    for z in zeilen:
+        schluessel = (z["besitzer"], z["von"] or "")
+        if not z["werbung_sicher"] or schluessel in gesehen:
+            continue
+        gesehen.add(schluessel)
+        try:
+            if post_werbung.regel_vorschlagen(*schluessel):
+                LOG.info("Werbe-Regel fuer einen Absender angelegt")
+        except Exception as e:      # noqa: BLE001 - Meldungen koennten Mailinhalt tragen
+            LOG.warning("Werbe-Regel-Vorschlag fehlgeschlagen (%s)", type(e).__name__)
 
 
 def _tabelle(titel: str, zeilen: list[tuple]) -> None:
@@ -265,6 +337,14 @@ def _bericht_drucken(b: dict) -> None:
                                             key=lambda t: -t[-1]))
     _tabelle("Neu (Bereich / Fach / Unterfach)", sorted(((*k, n) for k, n in b["neu"].items()),
                                                         key=lambda t: -t[-1]))
+    # Rollout-Tor: der Anteil Zum Nachsehen soll je Konto in BEIDEN Werten unter 0,10 liegen.
+    vorschau_n = b.get("vorschau_je_konto", {})
+    print(f"\n{TOR_VORSCHAU}")
+    for kennung, anteil in sorted(b["unklar_anteil"].items()):
+        print(f"  {anteil:5.2f}  {kennung}  ({vorschau_n.get(kennung, 0)} Mails)")
+    print(f"\n{TOR_LAUFEND}")
+    for kennung, w in sorted(b.get("unklar_laufend", {}).items()):
+        print(f"  {w['anteil']:5.2f}  {kennung}  ({w['n']} Mails)")
     _tabelle("Katalog-Treffer (Endung / Fach / Unterfach)",
              [(e, f, u, n) for e, f, u, n in b["katalog"]])
     _tabelle(f"Ohne Katalog, haeufigste Domains (Top {TOP_DOMAINS})",
@@ -278,11 +358,13 @@ def main(argv: list[str] | None = None) -> int:
     v = sub.add_parser("vorschau", help="Altbestand neu einordnen, nur als Vorschau speichern")
     v.add_argument("--alle", action="store_true", help="auch Mails mit vorhandener Vorschau")
     v.add_argument("--grenze", type=int, default=1000, help="hoechstens so viele Mails")
+    v.add_argument("--je-konto", type=int, default=None, metavar="N",
+                   help="Stichprobe: je Konto nur die N neuesten Mails")
     sub.add_parser("bericht", help="Zahlen und Domains der Vorschau")
     sub.add_parser("anwenden", help="Vorschau in die echten Spalten uebernehmen (ohne Modell)")
     a = p.parse_args(argv)
     if a.befehl == "vorschau":
-        print(f"Vorschau fuer {vorschau(a.grenze, a.alle)} Mail(s) gespeichert.")
+        print(f"Vorschau fuer {vorschau(a.grenze, a.alle, a.je_konto)} Mail(s) gespeichert.")
     elif a.befehl == "anwenden":
         print(f"{anwenden()} Mail(s) uebernommen.")
         return 0              # danach ist die Vorschau leer, ein Bericht waere sinnlos

@@ -5,6 +5,7 @@ Befehl (store/copy/move/expunge/append) als Testfehler meldet und `select`
 nur mit readonly=True annimmt - Stufe 1 veraendert das echte Postfach nie.
 Das Modell wird nie gerufen: der Gateway-Aufruf von `einordnen` ist per autouse-Fixture gesperrt.
 """
+import email
 import os
 import re
 import shutil
@@ -149,6 +150,10 @@ def _mail(message_id="<m1@example.org>", von="Anna Beispiel <anna@example.org>",
     return m.as_bytes()
 
 
+# Die Einordnung laeuft neueste Mail zuerst: Mail 1 dieser Tests ist die neuere.
+NEUER = "Tue, 03 Nov 2026 10:00:00 +0100"
+
+
 def _konto(besitzer="felix", kennung="gmx-test") -> dict:
     with server.pool.connection() as conn:
         conn.execute(
@@ -170,6 +175,24 @@ def _mails(where="true", params=()) -> list:
 
 
 # --- Abholen ---------------------------------------------------------------
+
+@pytest.mark.parametrize("teile,erwartet", [
+    ((("application", "pdf", "a.pdf", "attachment"),), ["a.pdf"]),
+    ((("application", "octet-stream", None, None),), ["(Anhang)"]),
+    ((("application", "pdf", None, "attachment"),), ["(Anhang)"]),
+    ((("text", "plain", None, "attachment"),), ["(Anhang)"]),
+    ((("message", "rfc822", None, None),), ["(Anhang)"]),
+    ((("image", "png", None, "attachment"),), []),          # Bilder ohne Namen zaehlen nicht
+    ((("image", "png", "b.png", "attachment"),), ["b.png"]),
+    ((), []),
+], ids=["pdf", "ohne-namen", "pdf-ohne-namen", "text-attachment", "rfc822", "bild-ohne-namen",
+        "bild", "ohne"])
+def test_anhang_ohne_dateiname_bekommt_platzhalter(teile, erwartet):
+    """I7: ein Anhang ohne Dateinamen darf nicht als „kein Anhang“ zaehlen, sonst waere die
+    Werbemail loeschbar. Der Platzhalter ist kein Bildname, schuetzt also (post_ziel)."""
+    from test_post_imap import mail_mit_anhang
+    nachricht = email.message_from_bytes(mail_mit_anhang("m@x", *teile))
+    assert post_abholen._anhaenge(nachricht) == erwartet
 
 def test_holt_nur_neue_uids():
     _konto()
@@ -391,7 +414,7 @@ def test_einordnung_wird_gespeichert(monkeypatch):
 def test_transient_laesst_mail_neu(monkeypatch, caplog):
     _konto()
     post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({
-        1: _mail("<a@x>", betreff="Geheimer Betreff Eins"),
+        1: _mail("<a@x>", betreff="Geheimer Betreff Eins", datum=NEUER),
         2: _mail("<b@x>", betreff="Geheimer Betreff Zwei")}))
     for _ in range(post_abholen.VERSUCHE_MAX + 1):
         aufrufe = []
@@ -426,7 +449,7 @@ def test_transient_laesst_mail_neu(monkeypatch, caplog):
 def test_kaputte_mail_blockiert_die_einordnung_nicht(monkeypatch, caplog):
     _konto()
     post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({
-        1: _mail("<a@x>", betreff="Geheimer Betreff Eins"),
+        1: _mail("<a@x>", betreff="Geheimer Betreff Eins", datum=NEUER),
         2: _mail("<b@x>", betreff="Geheimer Betreff Zwei")}))
     aufrufe = []
 
@@ -561,6 +584,33 @@ def test_tagesgrenze(monkeypatch):
     assert post_abholen.einordnen_offene(2) == 2 and len(aufrufe) == 2
 
 
+def test_tagesgrenze_null_pausiert_auch_kostenlose_treffer(monkeypatch):
+    """I4: POST_TAGESGRENZE=0 ist im Runbook die Pause zwischen update.sh und dem Ende von
+    nachtragen. Sie muss auch Treffer ohne Modell (feste Muster, Werbe-Regel) anhalten, sonst
+    entstuenden v3-Einordnungen ohne Herkunft, die nie neu sortiert werden."""
+    _konto()
+    kasten = Attrappe({1: _mail("<1@x>", betreff="Ihr Sicherheitscode 4711"),
+                       2: _mail("<2@x>", von="Shop <news@shop.example>", betreff="Rabatt")})
+    monkeypatch.setattr(post_abholen.post_konten, "verbinden", lambda zeile: kasten)
+    with server.pool.connection() as conn:
+        conn.execute("insert into post_regeln (muster, feld, bereich, fach, sensibel, angelegt_von, "
+                     "besitzer, art) values (%s, 'von', 'privat', 'Werbung', false, 'test-i4', "
+                     "'felix', 'einordnen')",
+                     (post_struktur.absender_muster("news@shop.example"),))
+    try:
+        monkeypatch.setattr(post_abholen, "TAGESGRENZE", 0)
+        bilanz = post_abholen.eine_runde()
+        assert bilanz["abgeholt"] == 2 and bilanz.get("tagesgrenze") is True
+        assert {r["status"] for r in _mails()} == {"neu"}
+        # Gegenprobe: dieselben Mails sind ohne Modell einzuordnen (kein_modell sperrt es).
+        monkeypatch.setattr(post_abholen, "TAGESGRENZE", 500)
+        assert post_abholen.eine_runde()["eingeordnet"] == 2
+        assert {r["einordnung_quelle"] for r in _mails()} == {"regel"}
+    finally:
+        with server.pool.connection() as conn:
+            conn.execute("delete from sales_test.post_regeln where angelegt_von = 'test-i4'")
+
+
 def test_tagesgrenze_zaehlt_aufrufe_und_vorschau():
     konto_id = _konto()["id"]
     _alt_mail(konto_id, 201, aufrufe=2)
@@ -588,7 +638,7 @@ def test_speichert_unterfach_vorschlaege_aufrufe_version(monkeypatch):
             aufrufe=2, vorschlaege=vorschlaege))
     assert post_abholen.einordnen_offene(5) == 1
     r = _mails()[0]
-    assert (r["unterfach"], r["modellaufrufe"], r["einordnung_version"]) == (None, 2, 2)
+    assert (r["unterfach"], r["modellaufrufe"], r["einordnung_version"]) == (None, 2, 3)
     assert r["vorschlaege"] == vorschlaege and r["status"] == "eingeordnet"
 
     # Mit Unterfach, ohne Vorschlaege.
@@ -603,8 +653,22 @@ def test_speichert_unterfach_vorschlaege_aufrufe_version(monkeypatch):
     assert post_abholen.einordnen_offene(5) == 1
     r = _mails()[0]
     assert (r["unterfach"], r["modellaufrufe"], r["einordnung_version"], r["vorschlaege"]) == \
-        ("Instagram", 1, 2, None)
+        ("Instagram", 1, 3, None)
     assert r["text"] is None                                  # sensibel: Text weg
+    assert (r["aufmerksamkeit"], r["werbung_sicher"]) == (False, False)
+
+    # Aufmerksamkeit und werbung_sicher werden mitgeschrieben.
+    _aufraeumen()
+    _konto()
+    post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({1: _mail("<c@x>")}))
+    monkeypatch.setattr(
+        post_einordnung, "einordnen",
+        lambda mail, konto: post_einordnung.Einordnung(
+            "privat", "Werbung", False, "pruefer", "x", None, aufrufe=2,
+            aufmerksamkeit=True, werbung_sicher=True))
+    assert post_abholen.einordnen_offene(5) == 1
+    r = _mails()[0]
+    assert (r["aufmerksamkeit"], r["werbung_sicher"], r["einordnung_version"]) == (True, True, 3)
 
 
 def test_konto_kontext_wird_uebergeben(monkeypatch):
@@ -652,7 +716,7 @@ def test_pruefer_fehler_bleibt_neu_dann_nach_drei_zum_nachsehen(monkeypatch, cap
         "bereich": "business", "fach": "Rechnungen", "unterfach": "Eingang",
         "begruendung": "Geheime Begruendung"}}
     # Kosten der drei Fehlversuche stehen auf fehl_aufrufe, nichts doppelt auf modellaufrufe.
-    assert (r1["einordnung_version"], r1["fehl_aufrufe"], r1["modellaufrufe"], r1["sensibel"]) == (2, 6, 0, False)
+    assert (r1["einordnung_version"], r1["fehl_aufrufe"], r1["modellaufrufe"], r1["sensibel"]) == (3, 6, 0, False)
     assert "Geheim" not in caplog.text
 
 
@@ -867,7 +931,7 @@ def test_pruefer_voruebergehend_bucht_sortierer_und_pausiert(monkeypatch):
     gekostet. Ohne Buchung liefe dieselbe Mail alle 120 s ungezaehlt erneut."""
     _konto()
     post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({
-        1: _mail("<a@x>"), 2: _mail("<b@x>")}))
+        1: _mail("<a@x>", datum=NEUER), 2: _mail("<b@x>")}))
     aufrufe = []
 
     def einordnen(mail, konto):
@@ -915,6 +979,20 @@ def test_pruefer_fehler_dann_gatewayfehler_summiert_die_aufrufe(monkeypatch):
     r = _mails()[0]
     assert r["status"] == "fehler" and (r["fehl_aufrufe"], r["modellaufrufe"]) == (2, 1)
     assert post_abholen.modellaufrufe_heute() == 3
+    assert r["aufmerksamkeit"] is True          # Zum Nachsehen bleibt im Posteingang
+
+
+def test_unklar_erzwingt_aufmerksamkeit_beim_speichern(monkeypatch):
+    _konto()
+    post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({1: _mail("<u@x>")}))
+    monkeypatch.setattr(
+        post_einordnung, "einordnen",
+        lambda mail, konto: post_einordnung.Einordnung(
+            "business", post_struktur.UNKLAR, False, "pruefer", "x", None, aufrufe=2,
+            aufmerksamkeit=False))
+    assert post_abholen.einordnen_offene(5) == 1
+    r = _mails()[0]
+    assert (r["bereich"], r["fach"], r["aufmerksamkeit"]) == ("privat", post_struktur.UNKLAR, True)
 
 
 def test_pruefer_ausfall_ueber_mitternacht_zaehlt_nicht_doppelt(monkeypatch):
@@ -942,3 +1020,26 @@ def test_pruefer_ausfall_ueber_mitternacht_zaehlt_nicht_doppelt(monkeypatch):
     r = _mails()[0]
     assert (r["status"], r["fehl_aufrufe"], r["modellaufrufe"]) == ("eingeordnet", 1, 2)
     assert post_abholen.modellaufrufe_heute() == 3
+
+
+def test_einordnen_neuestes_jahr_zuerst_ueber_alle_konten(monkeypatch):
+    """Das neueste Jahr kommt zuerst, ueber alle Konten gemeinsam; Mails ohne Datum zuletzt."""
+    a = _konto(kennung="gmx-test")
+    b = _konto(kennung="web-test")
+    daten = [(a["id"], 1, "2023-12-30T10:00:00Z"), (b["id"], 1, "2025-01-02T10:00:00Z"),
+             (a["id"], 2, "2025-03-01T10:00:00Z"), (b["id"], 2, "2024-06-01T10:00:00Z"),
+             (a["id"], 3, "2025-03-01T10:00:00Z"), (b["id"], 3, None)]
+    with server.pool.connection() as conn:
+        for konto, uid, datum in daten:
+            conn.execute(
+                "insert into post_mails (konto_id, imap_uid, message_id, besitzer, von, betreff, "
+                "datum, status) values (%s, %s, %s, 'felix', 'x@y.example', %s, %s::timestamptz, "
+                "'neu')", (konto, uid, f"o{konto}{uid}@x", f"{konto}:{uid}", datum))
+    gesehen = []
+    monkeypatch.setattr(post_einordnung, "einordnen",
+                        lambda mail, konto: gesehen.append(
+                            (konto["kennung"], mail["betreff"].split(":")[1])) or _einordnung())
+    assert post_abholen.einordnen_offene(10) == 6
+    # 2025 zuerst (neueste Mail zuerst, bei gleichem Datum hoehere UID), dann 2024, 2023, ohne Datum.
+    assert gesehen == [("gmx-test", "3"), ("gmx-test", "2"), ("web-test", "1"),
+                       ("web-test", "2"), ("gmx-test", "1"), ("web-test", "3")]

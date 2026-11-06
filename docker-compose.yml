@@ -778,6 +778,15 @@ services:
       # Betreiber-Kontext fuer die Einordnung (v2, Runbook): kurzer Text, wer der
       # Laden ist und was wohin gehoert. Leer = nur die allgemeinen Regeln.
       POST_KONTEXT: ${POST_KONTEXT:-}
+      # Business-Adressen (Komma-Liste; mit @ = genaue Adresse, ohne @ = Domain). Eine
+      # weitergeleitete Mail an so eine Adresse gilt als business. Leer = keine Wirkung.
+      POST_BUSINESS_ADRESSEN: ${POST_BUSINESS_ADRESSEN:-}
+      # Aufraeumen (Spec 2026-11-06): aus (Vorgabe) | verschieben | voll. aus = kein IMAP-Schritt,
+      # nur das Ziel je Mail wird gepflegt. voll loescht Freigegebenes (Runbook "Post aufraeumen").
+      POST_ORDNEN: ${POST_ORDNEN:-aus}
+      # Stichtag (ISO-Datum) des Einschaltens: Posteingangs-Mails ab dann gelten nicht als Altbestand.
+      # PFLICHT, sobald POST_ORDNEN != aus; leer = alles gilt als Altbestand.
+      POST_AUFRAEUMEN_AB: ${POST_AUFRAEUMEN_AB:-}
       # Modellaufrufe je Tag. Es zaehlt jeder Aufruf (Sortierer, Pruefer und die
       # Sensibel-Pruefung bei Regel-/Katalogtreffern); nur feste Muster sind frei.
       POST_TAGESGRENZE: ${POST_TAGESGRENZE:-500}
@@ -930,6 +939,9 @@ services:
       # Oberflaeche uebernimmt, kann gespeicherte Zugaenge nicht oeffnen.
       # Leer = „Postfach hinzufügen“ meldet einen Fehler, nichts wird gespeichert.
       - POST_SCHLUESSEL_OEFFENTLICH=${POST_SCHLUESSEL_OEFFENTLICH:-}
+      # Nur zur Anzeige (/post/aufraeumen zeigt den Ordnungsmodus). Die UI ordnet und loescht nie;
+      # ohne den Wert zeigte die Seite faelschlich immer "aus".
+      - POST_ORDNEN=${POST_ORDNEN:-aus}
       # Basis-Adresse fuer den Link in der Passwort-vergessen-Mail
       # (16.09.2026). Sie kommt BEWUSST aus der Umgebung und nicht aus dem
       # Host-Header der Anfrage: wer den faelschen kann, wuerde den Link

@@ -4,6 +4,9 @@ Die Liste liegt hier als Daten, nicht verstreut im Prompt: der Agent darf nur
 aus ihr waehlen, ein neues Fach legt ein Mensch bewusst an.
 """
 
+import email.utils
+import re
+
 BEREICHE = ("privat", "business")
 
 # „Zum Nachsehen“ ist das Fach fuer alles, was nicht sicher zuzuordnen ist
@@ -41,6 +44,33 @@ UNTERFAECHER: dict[str, tuple[str, ...]] = {
     "Konten & Sicherheit": SOZIAL[:-1] + ANBIETER,
 }
 
+# Faecher, in denen Post des Absenders nie als Werbung gilt (Spec §4): wer hier
+# auch nur eine Mail hat, wird nicht zum Werbe-Absender und nichts von ihm wird
+# automatisch geloescht. Rechnungen & Co. liegen in beiden Bereichen unter
+# demselben Namen.
+BLEIBT_IMMER = frozenset({
+    "Rechnungen", "Käufe & Bestellungen", "Konten & Sicherheit",
+    "Behörden & Versicherung", "Gesundheit", "Familie & Freunde",
+    "Kunden & Anfragen", "Partner & Netzwerk",
+})
+
+
+def absender_adresse(von: str) -> str:
+    """Reine Mailadresse aus einem From-Wert, kleingeschrieben; leer ohne „@“."""
+    adresse = email.utils.parseaddr(von or "")[1].strip().lower()
+    return adresse if "@" in adresse else ""
+
+
+def absender_muster(adresse: str) -> str:
+    """Regel-Muster, das GENAU diese Adresse trifft (Ruling R12).
+
+    Wörtlich (re.escape): „+“ und „.“ sind keine Musterzeichen. Verankert an
+    Anfang/Ende oder an <, >, Leerzeichen, Anführungszeichen, weil
+    post_einordnung re.search benutzt: sonst träfe a@x.de auch ba@x.de oder
+    a@x.de.evil.com. Groß/klein ignoriert die Einordnung selbst."""
+    return r'(^|[<\s"])' + re.escape(adresse) + r'($|[>\s"])'
+
+
 # Faecher, die es nur unter business gibt: Firmenwerkzeuge sind Firmensache,
 # sie ziehen den Bereich auf business (Spec §5, „Fach passt nicht zum Bereich“).
 NUR_BUSINESS = frozenset({
@@ -60,7 +90,7 @@ BESCHREIBUNG: dict[tuple[str, str], str] = {
     ("business", "Rechnungen"):
         "Rechnungen, Zahlungen, Quittungen der Firma.",
     ("business", "Tools & Dienste"):
-        "Mitteilungen von Software und Diensten, die die Firma nutzt (auch deren Werbung).",
+        "Mitteilungen von Software und Diensten, die die Firma nutzt (Produkt, Konto, Abrechnung).",
     ("business", "Soziale Netzwerke"):
         "Mitteilungen der Firmenkanäle in sozialen Netzwerken.",
     ("business", "Konten & Sicherheit"):
@@ -207,6 +237,7 @@ def _spalten(mit_vorschlaegen: bool = False) -> str:
     s = "m.sensibel is not false"
     return ("m.id, m.konto_id, m.besitzer, m.von, m.betreff, m.datum, "
             "m.bereich, m.fach, m.unterfach, m.sensibel, m.status, m.gesehen_am, "
+            "m.ziel, m.ordner, m.ordner_am, "
             f"case when {s} then false else m.kalenderteil end as kalenderteil, "
             f"case when {s} then null else m.an end as an, "
             f"case when {s} then '{{}}'::text[] else m.anhaenge end as anhaenge, "
@@ -226,10 +257,27 @@ def _vorschlaege_spalte(sensibel_sql: str) -> str:
             "else m.vorschlaege end as vorschlaege")
 
 
+ZIEL_ANSICHTEN = ("aufmerksamkeit", "zur_info", "to_review")
+
+
+def ziel_sql(ziel: str) -> str:
+    """WHERE-Fragment (ohne Parameter) fuer eine Reiter-Ansicht; leer ohne Filter.
+
+    Geloeschte Mails stehen in keinem Mail-Reiter. `aufmerksamkeit` nimmt zusaetzlich
+    Mails ohne Ziel mit: was noch nicht entschieden ist, muss sichtbar bleiben."""
+    if ziel == "aufmerksamkeit":
+        return "(m.status <> 'geloescht' and (m.ziel = 'posteingang' or m.ziel is null))"
+    if ziel in ("zur_info", "to_review"):
+        return f"(m.status <> 'geloescht' and m.ziel = '{ziel}')"
+    return ""
+
+
 def mails_suchen(b: Betrachter, suche: str = "", bereich: str = "",
                  fach: str = "", konto_id: str = "", grenze: int = 50,
-                 versatz: int = 0, unterfach: str = "") -> list[dict]:
+                 versatz: int = 0, unterfach: str = "", ziel: str = "") -> list[dict]:
     import server
+    if ziel and ziel not in ZIEL_ANSICHTEN:
+        return []
     if bereich and bereich not in BEREICHE:
         return []
     if fach:
@@ -247,6 +295,8 @@ def mails_suchen(b: Betrachter, suche: str = "", bereich: str = "",
             return []
     where, params = sichtbar_sql(b)
     teile = [where]
+    if ziel:
+        teile.append(ziel_sql(ziel))
     if bereich:
         teile.append("m.bereich = %s")
         params.append(bereich)
