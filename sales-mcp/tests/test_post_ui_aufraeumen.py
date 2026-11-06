@@ -122,7 +122,9 @@ def test_vorschau_formular_ein_knopf_und_haken_je_absender():
         _werbung("Shop <news@shop.example>", betreff=f"Sale {i}")
     _werbung("Andere <info@andere.example>", betreff="Aktion")
     seite = _get("t8_anna", "/post/aufraeumen/2025").text
-    assert seite.count("<form") == 1 and seite.count("<button") == 1
+    # Ein Formular, ein Knopf für die Freigabe (der Seitenrahmen hat eigene Formulare).
+    assert seite.count('action="/post/aufraeumen/2025"') == 1
+    assert seite.count('class="primaer"') == 1
     assert "Jahr 2025 löschen freigeben" in seite
     haken = re.findall(r'<input type="checkbox" name="loeschen"[^>]*>', seite)
     assert len(haken) == 2 and all(" checked" in h for h in haken)
