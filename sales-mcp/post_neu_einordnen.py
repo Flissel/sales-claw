@@ -277,7 +277,8 @@ def anwenden() -> int:
         f"text = case when {sens} then null else text end, "
         f"auszug = case when {sens} then null else auszug end, "
         f"an = case when {sens} then null else an end, "
-        f"anhaenge = case when {sens} then '{{}}'::text[] else anhaenge end "
+        f"anhaenge = case when {sens} then '{{}}'::text[] else anhaenge end, "
+        f"urspruengliche_adresse = case when {sens} then null else urspruengliche_adresse end "
         f"where vorschau is not null and {_ALTBESTAND} "
         "returning id, besitzer, von, werbung_sicher",
         {"paare": paare, "unklar": post_struktur.UNKLAR})
@@ -314,6 +315,11 @@ def _bericht_drucken(b: dict) -> None:
                                             key=lambda t: -t[-1]))
     _tabelle("Neu (Bereich / Fach / Unterfach)", sorted(((*k, n) for k, n in b["neu"].items()),
                                                         key=lambda t: -t[-1]))
+    # Rollout-Tor: der Anteil Zum Nachsehen soll je Konto unter 0,10 liegen.
+    print("
+Zum Nachsehen je Konto (Anteil der Vorschau-Ergebnisse)")
+    for kennung, anteil in sorted(b["unklar_anteil"].items()):
+        print(f"  {anteil:5.2f}  {kennung}")
     _tabelle("Katalog-Treffer (Endung / Fach / Unterfach)",
              [(e, f, u, n) for e, f, u, n in b["katalog"]])
     _tabelle(f"Ohne Katalog, haeufigste Domains (Top {TOP_DOMAINS})",

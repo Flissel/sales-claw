@@ -181,6 +181,21 @@ def test_anwenden_macht_sensible_nie_unsensibel(monkeypatch, konto_id):
     assert "geheimer" not in (z["begruendung"] or "") and "frei" not in str(z["vorschlaege"])
 
 
+def test_anwenden_leert_urspruengliche_adresse_bei_neu_sensibel(konto_id):
+    sensibel = _mail(konto_id, 1)
+    harmlos = _mail(konto_id, 2)
+    with server.pool.connection() as conn:
+        conn.execute("update post_mails set urspruengliche_adresse = 'a@b.example'")
+    basis = {"bereich": "privat", "fach": "Rechnungen", "unterfach": None, "quelle": "modell",
+             "begruendung": "b", "vorschlaege": None, "aufrufe": 1, "aufmerksamkeit": True,
+             "werbung_sicher": False}
+    _vorschau_setzen(sensibel, {**basis, "sensibel": True})
+    _vorschau_setzen(harmlos, {**basis, "sensibel": False})
+    assert neu.anwenden() == 2
+    assert _zeile(sensibel)["urspruengliche_adresse"] is None
+    assert _zeile(harmlos)["urspruengliche_adresse"] == "a@b.example"
+
+
 def test_anwenden_leert_neu_sensible(monkeypatch, konto_id):
     mid = _mail(konto_id, 1, sensibel=False)
     monkeypatch.setattr(post_einordnung, "einordnen", _fake(
@@ -427,25 +442,32 @@ def test_vorschau_je_konto_n(monkeypatch, konto_id):
     assert neu.vorschau(100, alle=True, je_konto=0) == 0
 
 
-def test_bericht_nennt_unklar_anteil_je_konto(monkeypatch, konto_id):
+def test_bericht_nennt_unklar_anteil_je_konto(monkeypatch, konto_id, capsys):
     web = _zweites_konto()
     for uid in (1, 2, 3, 4):
         _mail(konto_id, uid)
     _mail(web, 1)
-    ergebnisse = iter([post_struktur.UNKLAR, "Rechnungen", "Rechnungen", "Rechnungen",
-                       "Rechnungen"])
+    _mail(web, 2)
 
     def einordnen(mail, konto):
-        return post_einordnung.Einordnung("privat", next(ergebnisse), False, "modell", "b",
-                                          aufrufe=1)
+        # Nur die Mails des Kontos web-test landen bei Zum Nachsehen: genau eine von zwei.
+        unklar = konto["kennung"] == "web-test" and mail["id"] == erste_web["id"]
+        return post_einordnung.Einordnung(
+            "privat", post_struktur.UNKLAR if unklar else "Rechnungen", False, "modell", "b",
+            aufrufe=1)
+    with server.pool.connection() as conn:
+        erste_web = {"id": str(conn.execute(
+            "select id from post_mails where konto_id = %s and imap_uid = 1", (web,)
+        ).fetchone()["id"])}
     monkeypatch.setattr(post_einordnung, "einordnen", einordnen)
-    assert neu.vorschau(2) == 2 and neu.vorschau(10) == 3
+    assert neu.vorschau(10) == 6
     b = neu.bericht()
-    # Das erste Ergebnis (UNKLAR) gehoert zur ersten bearbeiteten Mail; Konten ueber die Summe pruefen.
-    assert set(b["unklar_anteil"]) == {"gmx-test", "web-test"}
-    assert all(isinstance(w, float) and 0 <= w <= 1 for w in b["unklar_anteil"].values())
-    assert sum(b["unklar_anteil"][k] * n for k, n in (("gmx-test", 4), ("web-test", 1))) == 1
+    assert b["unklar_anteil"] == {"gmx-test": 0.0, "web-test": 0.5}
     assert b["zum_nachsehen"] == 1
+    neu._bericht_drucken(b)
+    ausgabe = capsys.readouterr().out
+    assert "Zum Nachsehen je Konto" in ausgabe
+    assert "  0.50  web-test" in ausgabe and "  0.00  gmx-test" in ausgabe
 
 
 def test_bericht_ohne_vorschau_hat_keinen_unklar_anteil(konto_id):
