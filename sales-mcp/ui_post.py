@@ -597,7 +597,9 @@ def routen(ui) -> list:
             # die Automatik von der Mail fern.
             conn.execute("update post_mails set ziel = %s, ziel_manuell = true "
                          "where id = %s", (ziel, m["id"]))
-            if m["ziel"] == "to_review" and m["besitzer"]:
+            # Schutzregel nur für die eigene Post (R18): die Leitung darf eine fremde Mail
+            # umlegen, aber keine Regel im Namen des Besitzers anlegen.
+            if m["ziel"] == "to_review" and darf_regel_anlegen(b, m):
                 post_werbung.schutz_setzen(m["besitzer"], m["von"] or "", conn=conn)
         return RedirectResponse(f"/post/mail/{m['id']}", status_code=303)
 
@@ -626,12 +628,8 @@ def routen(ui) -> list:
         # Immer der angemeldete Name als Besitzer: es gibt keinen Weg, einen
         # anderen anzugeben, auch nicht für die Leitung.
         jahre = post_freigabe.jahre(b.name)
-        konten_ = server._q(
-            "select kennung, ordnen_aus from post_konten where besitzer = %s and aktiv "
-            "order by kennung", (b.name,))
-        neu = int(server._q(
-            "select count(*) as n from post_mails m join post_konten k on k.id = m.konto_id "
-            "where k.besitzer = %s and m.status = 'neu'", (b.name,))[0]["n"])
+        konten_ = post_freigabe.konten_des_besitzers(b.name)
+        neu = post_freigabe.offene_mails(b.name)
         grenze = post_abholen.TAGESGRENZE
         heute = post_abholen.modellaufrufe_heute()
         resttage = math.ceil(neu * AUFRUFE_JE_MAIL / grenze) if grenze > 0 else 0
@@ -662,7 +660,7 @@ def routen(ui) -> list:
                  + '<section class="karte"><h2>Stand</h2>'
                  f'<p>Ordnungsmodus: <b>{e(post_ordnen.MODUS)}</b></p>'
                  f'<p>Modellaufrufe heute: <b>{heute} / {grenze}</b></p>'
-                 f'<p>Noch nicht eingeordnet: <b>{neu}</b> Mails, geschätzt '
+                 f'<p>Noch einzuordnen: <b>{neu}</b> Mails, geschätzt '
                  f'<b>{resttage}</b> Tage Rest.</p></section>'
                  + f'<h2>Je Jahr</h2>{jahrtabelle}<h2>Postfächer</h2>{kontotabelle}')
         return ui._seite("Aufräumen", rumpf)
@@ -697,9 +695,12 @@ def routen(ui) -> list:
         if jahr is None:
             return jahr_fehlt()
         import post_freigabe
+        # Ein Jahr ohne eigene eingeordnete Mails gibt es hier nicht (GET wie POST).
+        eintrag = next((j for j in post_freigabe.jahre(b.name) if int(j["jahr"]) == jahr), None)
+        if eintrag is None:
+            return jahr_fehlt()
         if request.method == "POST":
             return await freigabe_ausfuehren(request, b, jahr, post_freigabe)
-        eintrag = next((j for j in post_freigabe.jahre(b.name) if int(j["jahr"]) == jahr), None)
         if eintrag is None:
             return jahr_fehlt()
         kopf = (f'{reiterleiste("aufraeumen")}<p><a href="/post/aufraeumen">← Aufräumen</a></p>'

@@ -176,6 +176,35 @@ def test_jahr_muss_plausibel_sein():
         assert _post_liste("t8_anna", f"/post/aufraeumen/{jahr}", {}).status_code == 404
 
 
+def test_freigabe_unbekanntes_jahr_404_ohne_zeile():
+    _werbung("Mehr <x@mehr.example>", jahr=2023, besitzer="t8_ben")
+    r = _post_liste("t8_ben", "/post/aufraeumen/2025", {"absender": ["x@mehr.example"]})
+    assert r.status_code == 404
+    assert server._q("select count(*) n from post_loeschfreigaben")[0]["n"] == 0
+
+
+def test_resttage_zaehlen_altbestand_mit(monkeypatch):
+    import post_abholen
+    monkeypatch.setattr(post_abholen, "TAGESGRENZE", 10)
+    for _ in range(3):
+        _mail("t8_anna", None, None, status="neu")
+    alt = [_mail("t8_anna", "privat", "Rechnungen") for _ in range(4)]
+    v3 = _mail("t8_anna", "privat", "Rechnungen")
+    mensch = _mail("t8_anna", "privat", "Rechnungen")
+    fremd = _mail("t8_ben", "privat", "Rechnungen")
+    with server.pool.connection() as conn:
+        conn.execute("update post_mails set einordnung_version = 2 where id = any(%s)",
+                     (alt + [mensch, fremd],))
+        conn.execute("update post_mails set einordnung_version = 3 where id = %s", (v3,))
+        conn.execute("update post_mails set einordnung_quelle = 'mensch' where id = %s",
+                     (mensch,))
+    seite = _get("t8_anna", "/post/aufraeumen").text
+    # 3 neu + 4 Altbestand = 7 (v3, Mensch und fremde Konten zählen nicht):
+    # ceil(7 * 2 / 10) = 2; ohne Altbestand wäre es ceil(3 * 2 / 10) = 1.
+    assert "<b>7</b> Mails" in seite and "<b>2</b> Tage Rest" in seite
+    assert "/ 10" in seite
+
+
 def test_ohne_anmeldung_403():
     for pfad in ("/post/aufraeumen", "/post/aufraeumen/2025"):
         assert _get(None, pfad).status_code in (302, 303, 401, 403)
@@ -195,6 +224,16 @@ def test_aus_to_review_holen_schuetzt_absender():
     assert _post("t8_anna", f"/post/mail/{n}/ziel", {"ziel": "posteingang"}).status_code == 303
     assert _zeile(n)["ziel"] == "posteingang" and _zeile(n)["ziel_manuell"] is True
     assert len(_regeln()) == 1
+
+
+def test_leitung_holt_fremde_mail_ohne_fremde_schutzregel():
+    m = _ziel(_mail("t8_anna", "business", "Kunden & Anfragen",
+                    von="Shop <news@shop.example>"), "to_review")
+    r = _post("t8_lea", f"/post/mail/{m}/ziel", {"ziel": "posteingang"})
+    assert r.status_code == 303
+    z = _zeile(m)
+    assert z["ziel"] == "posteingang" and z["ziel_manuell"] is True
+    assert not _regeln(besitzer="t8_anna") and not _regeln(besitzer="t8_lea")
 
 
 def test_ziel_nur_posteingang_oder_zur_info_und_mit_csrf():
@@ -232,7 +271,8 @@ def test_fremde_freigabe_nicht_moeglich():
     # Annas Jahr gibt es für Ben nicht; ein Freigabe-Post trifft nur Bens eigene Daten.
     assert _get("t8_ben", "/post/aufraeumen/2025").status_code == 404
     assert "Annas Werbung" not in _get("t8_lea", "/post/aufraeumen/2025").text
-    _post_liste("t8_lea", "/post/aufraeumen/2025", {"absender": ["news@shop.example"]})
+    r = _post_liste("t8_lea", "/post/aufraeumen/2025", {"absender": ["news@shop.example"]})
+    assert r.status_code == 404      # Leas Konten haben dieses Jahr nicht
     assert server._q("select count(*) n from post_loeschfreigaben "
                      "where besitzer = 't8_anna'")[0]["n"] == 0
     # Einen Besitzer-Parameter gibt es nicht: er wird ignoriert.

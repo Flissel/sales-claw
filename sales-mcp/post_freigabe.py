@@ -110,3 +110,22 @@ def jahre(besitzer: str) -> list[dict]:
         "left join post_loeschfreigaben f on f.besitzer = %s and f.jahr = y.jahr "
         "order by y.jahr desc", (besitzer, besitzer))
     return [dict(z) for z in zeilen]
+
+
+def konten_des_besitzers(besitzer: str) -> list[dict]:
+    """Aktive Konten des Besitzers: [{kennung, ordnen_aus}] (ordnen_aus = Grund, warum das
+    Konto ruht)."""
+    return [dict(z) for z in _db()._q(
+        "select kennung, ordnen_aus from post_konten where besitzer = %s and aktiv "
+        "order by kennung", (besitzer,))]
+
+
+def offene_mails(besitzer: str) -> int:
+    """Mails des Besitzers, die noch Modellaufrufe brauchen: neue plus der Altbestand, der
+    neu einzuordnen ist (dieselbe Auswahl wie post_neu_einordnen, nicht nachgebaut)."""
+    import post_neu_einordnen   # erst hier: zieht die Abholung nach
+    zeile = _db()._q(
+        "select count(*) as n from post_mails m join post_konten k on k.id = m.konto_id "
+        f"where k.besitzer = %s and (m.status = 'neu' or ({post_neu_einordnen._altbestand('m.')}))",
+        (besitzer,))[0]
+    return int(zeile["n"])
