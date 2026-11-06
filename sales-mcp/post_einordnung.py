@@ -365,8 +365,11 @@ def einordnen(mail: dict, konto: dict, aufruf=gateway.funktion_aufrufen) -> Eino
     ist sie business. Nur der Bereich ändert sich; Aufmerksamkeit, werbung_sicher, Quelle und
     Aufrufe bleiben. Sensible Mails nie (sonst saehen Team/Bot private Post). „Zum Nachsehen“ liegt immer privat (Spec §6) und bleibt unberührt."""
     ergebnis = _stufen(mail, konto, aufruf)
+    # Absender zaehlt ebenso (06.11. Felix): Outlook-Weiterleitung kommt als neue Mail VON
+    # der eigenen Business-Adresse an, die Weiterleitungs-Kopfzeilen nennen sie dann nicht.
     if (ergebnis.bereich != "business" and not ergebnis.sensibel and ergebnis.fach != post_struktur.UNKLAR
-            and post_herkunft.ist_business(mail.get("urspruengliche_adresse"))):
+            and (post_herkunft.ist_business(mail.get("urspruengliche_adresse"))
+                 or post_herkunft.ist_business(post_struktur.absender_adresse(mail.get("von"))))):
         # Fach in business vorhanden: bleibt. Sonst sagt bereich_fuer, wohin es gehoert
         # (ein rein privates Fach bleibt privat, statt in ein fremdes Fach zu rutschen).
         bereich = ("business" if post_struktur.fach_gueltig("business", ergebnis.fach)

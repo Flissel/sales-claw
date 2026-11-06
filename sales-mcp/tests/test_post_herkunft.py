@@ -357,3 +357,22 @@ def test_speichern_schreibt_adresse_und_einordnen_offene_reicht_sie_weiter(db, m
     monkeypatch.setattr(post_abholen.post_einordnung, "einordnen", fake)
     assert post_abholen.einordnen_offene(5) == 1
     assert gesehen == [BLUEBATCH]
+
+
+def test_absender_aus_business_domain_zieht_business(_ohne_regeln, monkeypatch):
+    # Outlook-Weiterleitung kommt als neue Mail VON der eigenen Business-Adresse an;
+    # Kopfzeilen nennen sie nicht. Der Absender allein reicht dann (06.11. Felix).
+    monkeypatch.setattr(post_herkunft, "BUSINESS_ADRESSEN", ("bluebatch.example",))
+    urteil = _urteil("privat", "Rechnungen")
+    for von in ("Felix <felix@bluebatch.example>", "max@BlueBatch.example"):
+        e = pe.einordnen(_mail(von=von), PRIVAT, _aufruf(urteil))
+        assert (e.bereich, e.fach) == ("business", "Rechnungen"), von
+    fremd = pe.einordnen(_mail(von="x@bluebatch.example.evil.org"), PRIVAT, _aufruf(urteil))
+    assert fremd.bereich == "privat"
+
+
+def test_absender_aus_business_domain_sensibel_bleibt_privat(_ohne_regeln, monkeypatch):
+    monkeypatch.setattr(post_herkunft, "BUSINESS_ADRESSEN", ("bluebatch.example",))
+    e = pe.einordnen(_mail(von="felix@bluebatch.example"), PRIVAT,
+                     _aufruf(_urteil("privat", "Konten & Sicherheit", sensibel=True)))
+    assert e.sensibel and e.bereich == "privat"
