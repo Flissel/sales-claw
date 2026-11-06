@@ -318,7 +318,10 @@ class _Urteil:
         return (self.bereich, self.fach, self.unterfach)
 
     def vorschlag(self, ohne_freitext: bool) -> dict:
-        v = {"bereich": self.bereich, "fach": self.fach, "unterfach": self.unterfach}
+        # aufmerksamkeit geht mit: uebernimmt Felix den Vorschlag in der UI, gilt dessen Wert
+        # (sonst verloere die Mail die Angabe und landete still in Zur Info).
+        v = {"bereich": self.bereich, "fach": self.fach, "unterfach": self.unterfach,
+             "aufmerksamkeit": self.aufmerksamkeit}
         if not ohne_freitext:     # Freitext sensibler Mails wird nie gespeichert (Mail-Ebene)
             v["begruendung"] = self.begruendung
         return v

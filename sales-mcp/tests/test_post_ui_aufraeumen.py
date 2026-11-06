@@ -90,13 +90,17 @@ def test_zur_info_reiter_zeigt_faecher():
 
 
 def test_to_review_nennt_loeschdatum():
-    _ziel(_mail(betreff="Fest verschoben"), "to_review", ordner_am="2026-10-01 12:00+00")
+    _ziel(_mail(betreff="Fest verschoben"), "to_review", ordner_am="2026-10-01 12:00+00",
+          ordner="To-Review")
     _ziel(_mail(betreff="Noch nicht verschoben"), "to_review")
+    # M1: ordner_am stammt vom Verschieben nach Zur Info - die Frist laeuft erst in To-Review.
+    _ziel(_mail(betreff="Liegt in Zur Info"), "to_review", ordner_am="2026-10-01 12:00+00",
+          ordner="Zur Info")
     seite = _get("t8_anna", "/post?ansicht=to_review").text
     assert "wird gelöscht am 31.10.2026" in seite
-    # Ohne ordner_am gibt es kein erfundenes Datum.
+    # Ohne ordner_am oder ausserhalb von To-Review gibt es kein erfundenes Datum.
     assert seite.count("wird gelöscht am") == 1
-    assert "noch nicht im Ordner" in seite
+    assert seite.count("noch nicht im Ordner") == 2
 
 
 # --- Aufräumen ------------------------------------------------------------
@@ -278,3 +282,136 @@ def test_fremde_freigabe_nicht_moeglich():
     # Einen Besitzer-Parameter gibt es nicht: er wird ignoriert.
     assert "/post/aufraeumen/2025" not in _get(
         "t8_ben", "/post/aufraeumen?besitzer=t8_anna").text
+
+
+# --- Was gelöscht wird, einsehen (I9) ------------------------------------------
+
+def test_vorschau_verlinkt_liste_je_absender():
+    _werbung("Shop <news@shop.example>", betreff="Sale 1")
+    seite = _get("t8_anna", "/post/aufraeumen/2025").text
+    assert "/post/aufraeumen/2025/absender?adresse=news%40shop.example" in seite
+
+
+def test_liste_je_absender_nur_eigene_loeschbare_mails():
+    _werbung("Shop <news@shop.example>", betreff="Sale 1")
+    _werbung("Shop <NEWS@shop.example>", betreff="Sale <b>2</b>")
+    _werbung("Shop <news@shop.example>", jahr=2024, betreff="Altes Jahr")
+    _werbung("Andere <info@andere.example>", betreff="Anderer Absender")
+    _ziel(_mail("t8_anna", "privat", "Werbung", von="Shop <news@shop.example>",
+                betreff="Bleibt in Zur Info"), "zur_info", datum="2025-05-01 12:00+00")
+    _werbung("Shop <news@shop.example>", betreff="Bens Werbung", besitzer="t8_ben")
+    r = _get("t8_anna", "/post/aufraeumen/2025/absender?adresse=news%40shop.example")
+    assert r.status_code == 200
+    seite = r.text
+    assert "Sale 1" in seite and "Sale &lt;b&gt;2&lt;/b&gt;" in seite
+    assert "k-t8-anna" in seite and "15.06.2025" in seite
+    for fremd in ("Altes Jahr", "Anderer Absender", "Bleibt in Zur Info", "Bens Werbung"):
+        assert fremd not in seite
+    # Ohne JavaScript, ohne Formular: nur lesen.
+    assert "<script" not in seite.lower()
+
+
+def test_liste_je_absender_fremder_besitzer_sieht_nichts():
+    _werbung("Shop <news@shop.example>", betreff="Annas Werbung")
+    _werbung("Shop <news@shop.example>", jahr=2023, betreff="Annas altes Jahr")
+    _werbung("Shop <news@shop.example>", jahr=2023, betreff="Bens Werbung", besitzer="t8_ben")
+    # Ben: Annas Jahr gibt es nicht, im gemeinsamen Jahr nur seine eigene Mail.
+    assert _get("t8_ben", "/post/aufraeumen/2025/absender?adresse=news%40shop.example"
+                ).status_code == 404
+    seite = _get("t8_ben", "/post/aufraeumen/2023/absender?adresse=news%40shop.example").text
+    assert "Bens Werbung" in seite and "Annas" not in seite
+    # Leitung ohne eigene Konten: nichts, auch nicht Annas Werbung.
+    for jahr in (2025, 2023):
+        r = _get("t8_lea", f"/post/aufraeumen/{jahr}/absender?adresse=news%40shop.example")
+        assert r.status_code == 404 and "Annas" not in r.text
+    # Ohne Anmeldung zu; eine kaputte Adresse liefert eine leere Liste statt 500.
+    assert _get(None, "/post/aufraeumen/2025/absender?adresse=news%40shop.example"
+                ).status_code in (302, 303, 401, 403)
+    leer = _get("t8_anna", "/post/aufraeumen/2025/absender?adresse=%25")
+    assert leer.status_code == 200 and "Annas Werbung" not in leer.text
+
+
+# --- Handkorrektur (I2, I3, M2) -------------------------------------------------
+
+def _setzen(mail_id, **spalten):
+    sets = ", ".join(f"{k} = %s" for k in spalten)
+    with server.pool.connection() as conn:
+        conn.execute(f"update post_mails set {sets} where id = %s", (*spalten.values(), mail_id))
+    return mail_id
+
+
+def test_handkorrektur_mit_regel_laesst_schutzregel_stehen():
+    import post_werbung
+    von = "Shop <News@Shop.example>"
+    post_werbung.schutz_setzen("t8_anna", von)
+    # Eine alte Einordnungs-Regel in anderer Schreibweise wird ersetzt, nicht verdoppelt.
+    with server.pool.connection() as conn:
+        conn.execute("insert into post_regeln (muster, feld, bereich, fach, sensibel, besitzer, "
+                     "art) values (%s, 'von', 'privat', 'Werbung', false, 't8_anna', 'einordnen')",
+                     (ps.absender_muster("News@Shop.example"),))
+    m = _mail("t8_anna", "privat", ps.UNKLAR, von=von)
+    assert _post("t8_anna", f"/post/mail/{m}/korrigieren",
+                 {"bereich": "privat", "fach": "Abos & Newsletter", "regel": "ja"}
+                 ).status_code == 303
+    assert len(_regeln("nie_werbung")) == 1
+    einordnen = server._q("select muster, fach from post_regeln where art = 'einordnen' "
+                          "and besitzer = 't8_anna'")
+    assert [(r["muster"], r["fach"]) for r in einordnen] == [
+        (ps.absender_muster("news@shop.example"), "Abos & Newsletter")]
+
+
+def test_handkorrektur_aufmerksamkeit_aus_dem_neuen_fach():
+    m = _setzen(_mail("t8_anna", "privat", ps.UNKLAR), aufmerksamkeit=True)
+    assert _post("t8_anna", f"/post/mail/{m}/korrigieren",
+                 {"bereich": "privat", "fach": "Abos & Newsletter"}).status_code == 303
+    assert _zeile(m)["aufmerksamkeit"] is False
+    # Zurueck nach Zum Nachsehen: dann wieder Posteingang.
+    assert _post("t8_anna", f"/post/mail/{m}/korrigieren",
+                 {"bereich": "privat", "fach": ps.UNKLAR}).status_code == 303
+    assert _zeile(m)["aufmerksamkeit"] is True
+
+
+def test_vorschlag_uebernimmt_aufmerksamkeit_des_vorschlags():
+    import json
+    mit = {"sortierer": {"bereich": "privat", "fach": "Rechnungen", "unterfach": None,
+                         "aufmerksamkeit": True},
+           "pruefer": {"bereich": "privat", "fach": "Abos & Newsletter", "unterfach": None}}
+    for wahl, erwartet in (("sortierer", True), ("pruefer", False)):
+        m = _mail("t8_anna", "privat", ps.UNKLAR)
+        with server.pool.connection() as conn:
+            conn.execute("update post_mails set aufmerksamkeit = true, "
+                         "vorschlaege = %s::jsonb where id = %s", (json.dumps(mit), m))
+        assert _post("t8_anna", f"/post/mail/{m}/vorschlag", {"wahl": wahl}).status_code == 303
+        assert _zeile(m)["aufmerksamkeit"] is erwartet, wahl
+
+
+def test_handkorrektur_nimmt_werbung_sicher_und_herkunft_bei_sensibel():
+    m = _setzen(_mail("t8_anna", "privat", "Werbung"), werbung_sicher=True,
+                urspruengliche_adresse="info@bluebatch.example")
+    assert _post("t8_anna", f"/post/mail/{m}/korrigieren",
+                 {"bereich": "privat", "fach": "Werbung", "sensibel": "ja"}).status_code == 303
+    z = _zeile(m)
+    assert z["werbung_sicher"] is False and z["sensibel"] is True
+    assert z["urspruengliche_adresse"] is None
+    # Ohne sensibel bleibt die Herkunft; werbung_sicher faellt trotzdem (Mensch, nicht Regel).
+    n = _setzen(_mail("t8_anna", "privat", "Werbung"), werbung_sicher=True,
+                urspruengliche_adresse="info@bluebatch.example")
+    assert _post("t8_anna", f"/post/mail/{n}/korrigieren",
+                 {"bereich": "privat", "fach": "Werbung"}).status_code == 303
+    z = _zeile(n)
+    assert z["werbung_sicher"] is False and z["urspruengliche_adresse"] == "info@bluebatch.example"
+
+
+def test_ziel_setzen_trifft_keine_inzwischen_geloeschte_mail(monkeypatch):
+    """M2: zwischen Lesen und Schreiben geloescht (post_ordnen) - das UPDATE greift nicht."""
+    m = _ziel(_mail(), "to_review")
+    echt = ps.mail_lesen
+
+    def veraltet(b, mail_id):
+        gelesen = echt(b, mail_id)
+        _setzen(m, status="geloescht")
+        return gelesen
+    monkeypatch.setattr(ps, "mail_lesen", veraltet)
+    assert _post("t8_anna", f"/post/mail/{m}/ziel", {"ziel": "posteingang"}).status_code == 303
+    z = _zeile(m)
+    assert (z["status"], z["ziel"], z["ziel_manuell"]) == ("geloescht", "to_review", False)

@@ -53,6 +53,26 @@ def vorschau(besitzer: str, jahr: int) -> list[dict]:
     return sorted(gruppen.values(), key=lambda g: (-g["anzahl"], g["absender"]))
 
 
+def loeschliste(betrachter, jahr: int, adresse: str) -> list[dict]:
+    """Die einzelnen Mails eines Absenders, die im Jahr geloescht wuerden: [{datum,
+    kennung, betreff}], neueste zuerst. Nur eigene Konten (wie vorschau) und zusaetzlich
+    nur, was der Betrachter laut sichtbar_sql sehen darf. Eine unlesbare Adresse liefert
+    eine leere Liste."""
+    adresse = _adresse(adresse)
+    if not adresse:
+        return []
+    sicht, params = post_struktur.sichtbar_sql(betrachter)
+    # strpos grenzt nur vor (Gross-/Kleinschreibung, „Name <addr>“); entscheidend ist
+    # der exakte Vergleich der Adresse unten, wie in vorschau.
+    zeilen = _db()._q(
+        f"select m.datum, m.betreff, m.von, k.kennung {_LOESCHBAR} and {sicht} "
+        "and strpos(lower(m.von), %s) > 0 order by m.datum desc, m.id",
+        (betrachter.name, jahr, *params, adresse))
+    return [{"datum": z["datum"], "kennung": z["kennung"],
+             "betreff": (z["betreff"] or "").strip() or _OHNE_BETREFF}
+            for z in zeilen if _adresse(z["von"]) == adresse]
+
+
 def freigeben(besitzer: str, jahr: int, gezeigt: list[str], ausgenommen: list[str]) -> int:
     """Gibt das Jahr zum Loeschen frei. Alles in einer Transaktion: Freigabezeile,
     Schutzregeln der ausgenommenen Absender, zur_info fuer deren Mails und to_review fuer

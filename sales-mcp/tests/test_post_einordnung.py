@@ -197,14 +197,16 @@ def test_einig_mit_unterfach():
 def test_uneinig_zum_nachsehen_privat_mit_beiden_vorschlaegen():
     e = pe.einordnen(_mail(), BUSINESS, aufruf=_agenten(
         post=_urteil("business", "Werbung", begruendung="Rabatt"),
-        pruefer=_urteil("business", "Kunden & Anfragen", begruendung="Anfrage")))
+        pruefer=_urteil("business", "Kunden & Anfragen", begruendung="Anfrage",
+                        aufmerksamkeit=True)))
     assert (e.bereich, e.fach, e.unterfach, e.quelle, e.aufrufe, e.sensibel) == \
         ("privat", post_struktur.UNKLAR, None, "modell", 2, False)
+    # aufmerksamkeit geht je Vorschlag mit (I3): die UI uebernimmt sie mit dem Vorschlag.
     assert e.vorschlaege == {
         "sortierer": {"bereich": "business", "fach": "Werbung", "unterfach": None,
-                      "begruendung": "Rabatt"},
+                      "aufmerksamkeit": False, "begruendung": "Rabatt"},
         "pruefer": {"bereich": "business", "fach": "Kunden & Anfragen", "unterfach": None,
-                    "begruendung": "Anfrage"}}
+                    "aufmerksamkeit": True, "begruendung": "Anfrage"}}
 
 
 def test_uneinig_sensibel_ist_oder_und_ohne_freitext():

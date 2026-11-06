@@ -237,7 +237,7 @@ def _spalten(mit_vorschlaegen: bool = False) -> str:
     s = "m.sensibel is not false"
     return ("m.id, m.konto_id, m.besitzer, m.von, m.betreff, m.datum, "
             "m.bereich, m.fach, m.unterfach, m.sensibel, m.status, m.gesehen_am, "
-            "m.ziel, m.ordner_am, "
+            "m.ziel, m.ordner, m.ordner_am, "
             f"case when {s} then false else m.kalenderteil end as kalenderteil, "
             f"case when {s} then null else m.an end as an, "
             f"case when {s} then '{{}}'::text[] else m.anhaenge end as anhaenge, "
