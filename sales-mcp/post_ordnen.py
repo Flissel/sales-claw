@@ -68,7 +68,10 @@ class _Ruhen(Exception):
 # nur mit Freigabe des Besitzers fuer das Jahr (UTC wie die Session, R12); ohne das bleibt
 # eine Mail mit Ziel loeschen liegen (R5). Zeilen mit Stand fehlt/fehler werden nicht
 # jede Runde neu versucht: was Felix im Postfach selbst bewegt hat, bildet die
-# Sammelstelle nicht nach (Spec §6.3).
+# Sammelstelle nicht nach (Spec §6.3). INBOX-Zeilen mit imap_uid <= 0 sind Platzhalter:
+# post_abholen hat die INBOX nach einem UIDVALIDITY-Wechsel neu nummeriert und die Mail
+# (noch) nicht wiedergefunden. Sie werden uebersprungen, nicht als fehlt markiert, denn
+# das Abholen holt hoechstens einen Stapel je Runde und findet sie spaeter wieder.
 _OFFENE_SQL = f"""
 select m.id, m.imap_uid, m.message_id, m.message_id_ersatz, m.von, m.ziel, m.ordner,
        m.ordner_uid, m.ordner_am, extract(year from m.datum)::int as jahr,
@@ -77,6 +80,7 @@ select m.id, m.imap_uid, m.message_id, m.message_id_ersatz, m.von, m.ziel, m.ord
  where m.konto_id = %(konto)s and m.besitzer = %(besitzer)s
    and m.status = 'eingeordnet' and m.ziel is not null
    and (m.ordner_stand is null or m.ordner_stand = 'ok')
+   and not (m.ordner = 'INBOX' and m.imap_uid <= 0)
    and ((m.ziel = 'posteingang' and m.ordner <> 'INBOX')
      or (m.ziel = 'zur_info' and m.ordner <> 'Zur Info')
      or (m.ziel = 'to_review' and m.ordner <> 'To-Review')
@@ -218,7 +222,7 @@ def _konto_ordnen(konto: dict, je_konto: int, verbinden, bilanz: dict) -> None:
     kasten = verbinden(konto)
     try:
         post_imap.faehigkeiten_auffrischen(kasten)
-        faehig = {str(f).upper() for f in (getattr(kasten, "capabilities", None) or ())}
+        faehig = post_imap.faehigkeiten(kasten)
         if "MOVE" not in faehig and "UIDPLUS" not in faehig:
             raise _Ruhen("Server kann weder MOVE noch UIDPLUS")
         try:
@@ -239,7 +243,9 @@ def _konto_ordnen(konto: dict, je_konto: int, verbinden, bilanz: dict) -> None:
                 LOG.info("Konto %s: Mail fehlt im Ordner %s", konto["kennung"], z["ordner"])
             except imaplib.IMAP4.abort:
                 raise                # Verbindung weg: ganzes Konto in dieser Runde abbrechen
-            except (post_imap.ImapFehler, imaplib.IMAP4.error) as e:
+            except (post_imap.ImapFehler, imaplib.IMAP4.error, ValueError) as e:
+                # ValueError: z. B. leere Message-ID ohne Ersatz-Markierung, die
+                # post_imap.loeschen ablehnt. Betrifft nur diese Zeile, nicht das Konto.
                 _stand(z["id"], "fehler")
                 bilanz["fehler"] += 1
                 LOG.warning("Konto %s: Befehl abgelehnt (%s)", konto["kennung"],

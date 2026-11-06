@@ -300,7 +300,8 @@ alter table :"schema".post_regeln
   add column if not exists art text not null default 'einordnen'
     check (art in ('einordnen','nie_werbung'));
 
--- Freigabe zum Loeschen je Besitzer und Jahr; `ausgenommen` haelt einzelne Mails heraus.
+-- Freigabe zum Loeschen je Besitzer und Jahr; `ausgenommen` ist eine Liste von
+-- Absenderadressen (klein geschrieben), deren Mails nicht geloescht werden.
 create table if not exists :"schema".post_loeschfreigaben (
   id uuid primary key default gen_random_uuid(),
   besitzer text not null,

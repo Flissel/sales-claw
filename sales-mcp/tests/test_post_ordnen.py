@@ -55,7 +55,7 @@ def _konto(server, kennung="gmx-test", anbieter="gmx", uidvalidity=1, besitzer="
 def _mail(server, konto_id, uid, mid=None, *, fach="Werbung", sicher=True, ziel=None,
           ordner="INBOX", ordner_uid=None, ordner_am=None, datum=None,
           ersatz=False, von=VON, betreff=BETREFF, aufmerksamkeit=False, besitzer="felix"):
-    mid = mid or f"m{uid}@x"
+    mid = f"m{uid}@x" if mid is None else mid
     datum = datum or ALT
     with server.pool.connection() as conn:
         return conn.execute(
@@ -194,6 +194,34 @@ def test_uidvalidity_geaendert_konto_ruht(db):
     assert _zeile(db, m)["ordner"] == "INBOX" and _schreibend(kasten) == []
 
 
+def test_platzhalter_nach_uidvalidity_wechsel_werden_uebersprungen(db):
+    """Reihenfolge wie in eine_runde: abholen nummeriert die INBOX nach einem
+    UIDVALIDITY-Wechsel um (alte UIDs negativ, neue UIDVALIDITY gespeichert) und
+    findet je Runde nur einen Stapel wieder. ordnen darf die noch nicht
+    wiedergefundenen Zeilen nicht als fehlt abschreiben."""
+    k_id = _konto(db, uidvalidity=1)
+    offen = _mail(db, k_id, 7, fach="Rechnungen", sicher=False, ziel="zur_info",
+                  datum=_datum("2025-07-01T09:00:00Z"))
+    wieder = _mail(db, k_id, 8, fach="Rechnungen", sicher=False, ziel="zur_info",
+                   datum=_datum("2025-06-01T09:00:00Z"))
+    # Das echte Umnummerieren aus post_abholen, dann wie _speichern: Zeile 8 wiedergefunden.
+    assert post_abholen._uidvalidity_pruefen(_konto_zeile(db, "gmx-test"), 2) == 0
+    assert _zeile(db, offen)["imap_uid"] < 0 and _zeile(db, wieder)["imap_uid"] < 0
+    db._q("update post_mails set imap_uid = 1 where id = %s returning id", (wieder,))
+    kasten = FakeKasten(ordner={"INBOX": {1: mail("m8@x"), 2: mail("m7@x")}}, uidvalidity=2)
+
+    bilanz = post_ordnen.ordnen(verbinden=_verbinden({"gmx-test": kasten}))
+    assert bilanz == {"verschoben": 1, "geloescht": 0, "fehlt": 0, "fehler": 0, "konten_aus": []}
+    z = _zeile(db, offen)
+    assert (z["ordner"], z["ordner_stand"], z["ordner_am"]) == ("INBOX", None, None)
+    assert (_zeile(db, wieder)["ordner"], _zeile(db, wieder)["ordner_stand"]) == ("Zur Info", "ok")
+    assert 2 in kasten.ordner["INBOX"]
+    # Spaeter wiedergefunden: dann wird auch sie normal geordnet.
+    db._q("update post_mails set imap_uid = 2 where id = %s returning id", (offen,))
+    assert post_ordnen.ordnen(verbinden=_verbinden({"gmx-test": kasten}))["verschoben"] == 1
+    assert _zeile(db, offen)["ordner"] == "Zur Info"
+
+
 # --- Loeschen -------------------------------------------------------------------
 
 def test_modus_verschieben_loescht_nie(db):
@@ -317,6 +345,21 @@ def test_absender_in_ausgenommen_wird_nicht_geloescht(db, monkeypatch):
     assert bilanz["geloescht"] == 0
     assert _zeile(db, m)["status"] == "eingeordnet"
     assert 7 in kasten.ordner["INBOX"] and _schreibend(kasten) == []
+
+
+def test_leere_message_id_ist_zeilenfehler_und_konto_laeuft_weiter(db, monkeypatch):
+    monkeypatch.setattr(post_ordnen, "MODUS", "voll")
+    k_id = _konto(db)
+    _freigabe(db, 2025)
+    leer = _mail(db, k_id, 7, "", ziel="loeschen", datum=_datum("2025-07-01T09:00:00Z"))
+    gut = _mail(db, k_id, 8, ziel="loeschen", datum=_datum("2025-06-01T09:00:00Z"))
+    kasten = FakeKasten(ordner={"INBOX": {7: mail(None), 8: mail("m8@x")}})
+    bilanz = post_ordnen.ordnen(verbinden=_verbinden({"gmx-test": kasten}))
+    assert (bilanz["fehler"], bilanz["geloescht"], bilanz["konten_aus"]) == (1, 1, [])
+    z = _zeile(db, leer)
+    assert (z["status"], z["ordner_stand"]) == ("eingeordnet", "fehler")
+    assert _zeile(db, gut)["status"] == "geloescht"
+    assert 7 in kasten.ordner["INBOX"] and 8 not in kasten.ordner["INBOX"]
 
 
 def test_gmail_loeschen_ueber_ordnen(db, monkeypatch):

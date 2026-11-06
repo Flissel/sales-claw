@@ -63,7 +63,8 @@ def faehigkeiten_auffrischen(kasten) -> None:
         kasten.capabilities = tuple(roh.upper().split())
 
 
-def _faehig(kasten) -> set[str]:
+def faehigkeiten(kasten) -> set[str]:
+    """Faehigkeiten des Kastens, gross geschrieben (nach faehigkeiten_auffrischen)."""
     return {str(f).upper() for f in (getattr(kasten, "capabilities", None) or ())}
 
 
@@ -155,7 +156,7 @@ def verschieben(kasten, quelle: str, uid: int, ziel: str,
     """Genau die Mail `uid` aus `quelle` nach `ziel`; Rueckgabe die neue UID (COPYUID)
     oder None. `UID MOVE`, sonst `UID COPY` + `UID STORE` + `UID EXPUNGE <uid>`,
     sonst `NichtUnterstuetzt`. Mit `message_id` muss die UID noch diese Mail sein."""
-    faehig = _faehig(kasten)
+    faehig = faehigkeiten(kasten)
     if "MOVE" not in faehig and "UIDPLUS" not in faehig:
         raise NichtUnterstuetzt("Server kann weder MOVE noch UIDPLUS")
     waehlen(kasten, quelle)
@@ -195,7 +196,7 @@ def loeschen(kasten, quelle: str, uid: int, anbieter: str, message_id: str = "")
     entfernen; ohne neue UID `NichtUnterstuetzt` (Spec §11)."""
     if not message_id:
         raise ValueError("Loeschen nur mit pruefbarer Message-ID")
-    if "UIDPLUS" not in _faehig(kasten):
+    if "UIDPLUS" not in faehigkeiten(kasten):
         raise NichtUnterstuetzt("Server kann kein UID EXPUNGE (UIDPLUS fehlt)")
     if anbieter == "gmail":
         papierkorb = _papierkorb(kasten)
