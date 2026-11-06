@@ -237,6 +237,7 @@ def _spalten(mit_vorschlaegen: bool = False) -> str:
     s = "m.sensibel is not false"
     return ("m.id, m.konto_id, m.besitzer, m.von, m.betreff, m.datum, "
             "m.bereich, m.fach, m.unterfach, m.sensibel, m.status, m.gesehen_am, "
+            "m.ziel, m.ordner_am, "
             f"case when {s} then false else m.kalenderteil end as kalenderteil, "
             f"case when {s} then null else m.an end as an, "
             f"case when {s} then '{{}}'::text[] else m.anhaenge end as anhaenge, "
@@ -256,10 +257,27 @@ def _vorschlaege_spalte(sensibel_sql: str) -> str:
             "else m.vorschlaege end as vorschlaege")
 
 
+ZIEL_ANSICHTEN = ("aufmerksamkeit", "zur_info", "to_review")
+
+
+def ziel_sql(ziel: str) -> str:
+    """WHERE-Fragment (ohne Parameter) fuer eine Reiter-Ansicht; leer ohne Filter.
+
+    Geloeschte Mails stehen in keinem Mail-Reiter. `aufmerksamkeit` nimmt zusaetzlich
+    Mails ohne Ziel mit: was noch nicht entschieden ist, muss sichtbar bleiben."""
+    if ziel == "aufmerksamkeit":
+        return "(m.status <> 'geloescht' and (m.ziel = 'posteingang' or m.ziel is null))"
+    if ziel in ("zur_info", "to_review"):
+        return f"(m.status <> 'geloescht' and m.ziel = '{ziel}')"
+    return ""
+
+
 def mails_suchen(b: Betrachter, suche: str = "", bereich: str = "",
                  fach: str = "", konto_id: str = "", grenze: int = 50,
-                 versatz: int = 0, unterfach: str = "") -> list[dict]:
+                 versatz: int = 0, unterfach: str = "", ziel: str = "") -> list[dict]:
     import server
+    if ziel and ziel not in ZIEL_ANSICHTEN:
+        return []
     if bereich and bereich not in BEREICHE:
         return []
     if fach:
@@ -277,6 +295,8 @@ def mails_suchen(b: Betrachter, suche: str = "", bereich: str = "",
             return []
     where, params = sichtbar_sql(b)
     teile = [where]
+    if ziel:
+        teile.append(ziel_sql(ziel))
     if bereich:
         teile.append("m.bereich = %s")
         params.append(bereich)
