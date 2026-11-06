@@ -85,20 +85,30 @@ def regel_vorschlagen(besitzer: str, von: str) -> bool:
     return angelegt > 0
 
 
-def schutz_setzen(besitzer: str, von: str) -> None:
+def schutz_setzen(besitzer: str, von: str, conn=None) -> None:
     """Regel „nie Werbung“ anlegen; Werbe-Regeln desselben Musters und Besitzers entfallen,
-    sonst fuehre eine aeltere Regel den Absender weiter als Werbung."""
+    sonst fuehre eine aeltere Regel den Absender weiter als Werbung.
+
+    Mit `conn` laeuft alles in der Transaktion des Aufrufers (Loeschfreigabe: ganz oder gar
+    nicht); ohne eigene Verbindung, die sofort festgeschrieben wird."""
     m = _muster(von)
     if m is None or not besitzer:
         return
     _, muster = m
-    with _db().pool.connection() as conn:
-        conn.execute(
+
+    def schreiben(c) -> None:
+        c.execute(
             "delete from post_regeln where art = 'einordnen' and fach = %s and feld = 'von' "
             "and besitzer = %s and lower(muster) = lower(%s)", (WERBUNG, besitzer, muster))
-        conn.execute(
+        c.execute(
             "insert into post_regeln (muster, feld, sensibel, angelegt_von, besitzer, art) "
             "select %s, 'von', false, %s, %s, 'nie_werbung' where not exists ("
             "select 1 from post_regeln where art = 'nie_werbung' and feld = 'von' "
             "and besitzer = %s and lower(muster) = lower(%s))",
             (muster, SYSTEM_NAME, besitzer, besitzer, muster))
+
+    if conn is not None:
+        schreiben(conn)
+        return
+    with _db().pool.connection() as eigene:
+        schreiben(eigene)
