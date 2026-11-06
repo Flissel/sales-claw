@@ -145,6 +145,19 @@ def test_datum_als_text_wird_gelesen():
     assert _ziel(_werbung(datum="2025-06-01T09:00:00+01:00")) == "loeschen"
 
 
+@pytest.mark.parametrize("quelle,erwartet", [
+    ("regel", "zur_info"), ("katalog", "zur_info"), (None, "zur_info"),
+    # Spec §4: hat der Absender eine Mail in „Bleibt immer“, loescht nur noch die Einigkeit
+    # beider Modelle (R6).
+    ("pruefer", "loeschen"),
+])
+def test_bleibt_immer_absender_nur_einig_werbung_loeschbar(quelle, erwartet):
+    m = _werbung(einordnung_quelle=quelle)
+    assert post_ziel.ziel_fuer(m, JETZT, set(), False, False, bleibt_absender=True) == erwartet
+    # Ohne Bleibt-immer-Mail des Absenders aendert sich nichts.
+    assert post_ziel.ziel_fuer(m, JETZT, set(), False, False) == "loeschen"
+
+
 # --- gegen die echte Datenbank (nur sales_test) -------------------------------------------
 
 @pytest.fixture
@@ -170,14 +183,14 @@ def db():
 
 def _mail(server, konto_id, nr, von="Shop <news@shop.example>", fach="Werbung", sicher=True,
           status="eingeordnet", ziel=None, manuell=False, besitzer="felix",
-          datum="2025-06-01T09:00:00+01:00", anhaenge=()):
+          datum="2025-06-01T09:00:00+01:00", anhaenge=(), quelle=None):
     with server.pool.connection() as conn:
         return conn.execute(
             "insert into post_mails (konto_id, imap_uid, message_id, besitzer, von, bereich, fach, "
-            "werbung_sicher, status, ziel, ziel_manuell, datum, anhaenge) values "
-            "(%s, %s, %s, %s, %s, 'privat', %s, %s, %s, %s, %s, %s, %s) returning id",
+            "werbung_sicher, status, ziel, ziel_manuell, datum, anhaenge, einordnung_quelle) values "
+            "(%s, %s, %s, %s, %s, 'privat', %s, %s, %s, %s, %s, %s, %s, %s) returning id",
             (konto_id, nr, f"z{nr}@x", besitzer, von, fach, sicher, status, ziel, manuell,
-             datum, list(anhaenge))).fetchone()["id"]
+             datum, list(anhaenge), quelle)).fetchone()["id"]
 
 
 def _ziel_db(server, mail_id):
@@ -242,6 +255,45 @@ def test_aktualisieren_freigegebenes_jahr_je_besitzer(db):
     # Jahr freigegeben, ziel war null: erst nach der Freigabe als Werbung erkannt -> to_review.
     assert _ziel_db(server, eigene) == "to_review"
     assert _ziel_db(server, fremde) == "loeschen"
+
+
+def test_aktualisieren_bleibt_immer_absender_regelwerbung_nicht_loeschen(db):
+    """C1 / Spec §4: neueste Jahre zuerst - S bekam eine Werbe-Regel, spaeter wird eine aeltere
+    Bestellung von S eingeordnet. Ab dann loescht nur noch die Einigkeit beider Modelle."""
+    server, k, _ = db
+    regel = _mail(server, k, 1, quelle="regel")
+    katalog = _mail(server, k, 2, quelle="katalog")
+    einig = _mail(server, k, 3, quelle="pruefer")
+    assert post_ziel.ziele_aktualisieren() == 3
+    assert {_ziel_db(server, m) for m in (regel, katalog, einig)} == {"loeschen"}
+    # Bestellung von S (andere Schreibweise der Adresse), dazu Lauras Rechnung von S.
+    _mail(server, k, 4, von="Shop <News@Shop.example>", fach="Käufe & Bestellungen",
+          sicher=False, datum="2024-03-01T09:00:00+01:00", quelle="pruefer")
+    assert post_ziel.ziel_frisch(regel) == "zur_info"
+    assert post_ziel.ziel_frisch(katalog) == "zur_info"
+    assert post_ziel.ziel_frisch(einig) == "loeschen"
+    assert post_ziel.ziele_aktualisieren() == 3        # regel, katalog und die Bestellung selbst
+    assert (_ziel_db(server, regel), _ziel_db(server, katalog), _ziel_db(server, einig)) == (
+        "zur_info", "zur_info", "loeschen")
+
+
+def test_aktualisieren_bleibt_immer_nur_beim_selben_besitzer(db):
+    server, k, _ = db
+    eigene = _mail(server, k, 1, quelle="regel")
+    _mail(server, k, 2, fach="Rechnungen", sicher=False, besitzer="laura")
+    post_ziel.ziele_aktualisieren()
+    assert _ziel_db(server, eigene) == "loeschen"
+    assert post_ziel.ziel_frisch(eigene) == "loeschen"
+
+
+def test_aktualisieren_absender_ohne_lesbare_adresse_gilt_als_geschuetzt(db):
+    """M4: ohne Adresse laesst sich weder Kontakt noch Schutz pruefen - nie loeschen."""
+    server, k, _ = db
+    ohne = _mail(server, k, 1, von="Newsletter ohne Adresse")
+    leer = _mail(server, k, 2, von="")
+    assert post_ziel.ziele_aktualisieren() == 2
+    assert (_ziel_db(server, ohne), _ziel_db(server, leer)) == ("zur_info", "zur_info")
+    assert post_ziel.ziel_frisch(ohne) == "zur_info"
 
 
 def test_aktualisieren_zaehlt_nur_geaenderte_zeilen(db):

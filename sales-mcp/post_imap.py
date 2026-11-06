@@ -109,6 +109,114 @@ def pruefen(kasten, uid: int, erwartet: str | None) -> None:
         raise Fehlt("unter der UID liegt eine andere Mail")
 
 
+# --- Anhaenge per BODYSTRUCTURE -------------------------------------------------
+# Fuer Mails, die abgeholt wurden, bevor ein Anhang ohne Dateinamen erkannt wurde: vor dem
+# Loeschen fragt post_ordnen nur die Struktur ab (Typen, Disposition), nie den Inhalt.
+
+_TOKEN = re.compile(rb'\s*(?:(\()|(\))|"((?:[^"\\]|\\.)*)"|([^\s()"]+))', re.S)
+_LITERAL_ENDE = re.compile(rb"\{\d+\}\s*$")
+# Hauptteile, die ein Text-/HTML-Rumpf oder ein Bild sein koennen. Alles andere (application,
+# audio, video, message, ...) ist ein Anhang - auch ohne Dateinamen und ohne Disposition.
+_RUMPF_TYPEN = ("text", "multipart")
+
+
+def _rohtext(daten) -> bytes:
+    """FETCH-Antwort von imaplib zu einem Text: Literale ({n} + Tupel) werden zu Strings."""
+    teile = []
+    for teil in daten or ():
+        if isinstance(teil, tuple) and len(teil) >= 2:
+            kopf = _LITERAL_ENDE.sub(b"", teil[0] or b"")
+            wert = (teil[1] or b"").replace(b"\\", b"\\\\").replace(b'"', b'\\"')
+            teile.append(kopf + b'"' + wert + b'"')
+        elif isinstance(teil, bytes):
+            teile.append(teil)
+    return b"".join(teile)
+
+
+def _parsen(roh: bytes) -> list:
+    """Klammerausdruecke (RFC 3501) als verschachtelte Listen; NIL = None. Wirft ValueError,
+    wenn die Klammern nicht aufgehen."""
+    wurzel: list = []
+    stapel = [wurzel]
+    pos = 0
+    while pos < len(roh):
+        treffer = _TOKEN.match(roh, pos)
+        if treffer is None:
+            if roh[pos:].strip():
+                raise ValueError("BODYSTRUCTURE nicht lesbar")
+            break
+        pos = treffer.end()
+        auf, zu, zitat, atom = treffer.groups()
+        if auf:
+            neu: list = []
+            stapel[-1].append(neu)
+            stapel.append(neu)
+        elif zu:
+            if len(stapel) == 1:
+                raise ValueError("BODYSTRUCTURE nicht lesbar")
+            stapel.pop()
+        elif zitat is not None:
+            stapel[-1].append(re.sub(rb"\\(.)", rb"\1", zitat).decode("utf-8", "replace"))
+        else:
+            wert = atom.decode("ascii", "replace")
+            stapel[-1].append(None if wert.upper() == "NIL" else wert)
+    if len(stapel) != 1:
+        raise ValueError("BODYSTRUCTURE nicht lesbar")
+    return wurzel
+
+
+def _anhang_in(teil) -> bool:
+    """Enthaelt dieser Teil der BODYSTRUCTURE einen Anhang, der kein Bild ist?"""
+    if not isinstance(teil, list) or not teil:
+        raise ValueError("BODYSTRUCTURE nicht lesbar")
+    if isinstance(teil[0], list):
+        # multipart: erst die Unterteile, dann der Untertyp und die Erweiterungsdaten.
+        kinder = []
+        for k in teil:
+            if not isinstance(k, list):
+                break
+            kinder.append(k)
+        return any(_anhang_in(k) for k in kinder)
+    haupt = str(teil[0] or "").lower()
+    if haupt == "image":
+        return False                       # Bilder sind erlaubt, auch als attachment
+    if haupt not in _RUMPF_TYPEN:
+        return True
+    # text/*: nur mit Disposition attachment oder mit Datei-/Teilnamen ein Anhang.
+    for feld in teil[2:]:
+        if (isinstance(feld, list) and feld and isinstance(feld[0], str)
+                and feld[0].lower() == "attachment"):
+            return True
+    parameter = teil[2] if len(teil) > 2 and isinstance(teil[2], list) else []
+    return any(isinstance(p, str) and p.lower() == "name" for p in parameter[0::2])
+
+
+def anhang_ausser_bildern(kasten, uid: int) -> bool:
+    """Hat die Mail `uid` im gewaehlten Ordner einen Anhang, der kein Bild ist? Fragt nur
+    `UID FETCH <uid> (BODYSTRUCTURE)` ab, keinen Inhalt. Keine Mail unter der UID: `Fehlt`;
+    unlesbare Antwort: `ImapFehler` (der Aufrufer loescht dann nicht)."""
+    nummer = int(uid)
+    if nummer <= 0:
+        raise Fehlt("UID nicht im Ordner")
+    daten = _ok(kasten.uid("FETCH", str(nummer), "(BODYSTRUCTURE)"), "UID FETCH")
+    if not any(isinstance(t, (bytes, tuple)) for t in daten or ()):
+        raise Fehlt("UID nicht im Ordner")
+    try:
+        antworten = _parsen(_rohtext(daten))
+        # Je Antwort: Nummer, dann (UID n BODYSTRUCTURE (...)). Ungefragte Antworten anderer
+        # Mails zaehlen nicht.
+        for feld in antworten:
+            if not isinstance(feld, list):
+                continue
+            werte = {str(feld[j]).upper(): feld[j + 1] for j in range(0, len(feld) - 1, 2)
+                     if isinstance(feld[j], str)}
+            if werte.get("UID") == str(nummer) and "BODYSTRUCTURE" in werte:
+                return _anhang_in(werte["BODYSTRUCTURE"])
+    except ValueError:
+        raise ImapFehler("BODYSTRUCTURE nicht lesbar") from None
+    raise Fehlt("UID nicht im Ordner")
+
+
 def suchen(kasten, mid: str) -> int:
     """UID der Mail mit genau dieser Message-ID im gewaehlten Ordner, sonst `Fehlt`.
     HEADER-Suche trifft Teilstuecke, darum wird jeder Kandidat genau verglichen."""

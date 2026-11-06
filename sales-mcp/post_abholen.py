@@ -116,6 +116,21 @@ def _text_sicher(nachricht) -> str:
     return ""
 
 
+# Name fuer einen Anhang ohne Dateinamen. Kein Bildname: post_ziel zaehlt ihn als Anhang
+# ausser Bildern, die Werbemail wird also nie geloescht (Spec §4).
+ANHANG_OHNE_NAMEN = "(Anhang)"
+
+
+def _anhang_ohne_namen(teil) -> bool:
+    """Ein Teil ohne Dateinamen, der trotzdem ein Anhang ist: Disposition attachment (ausser
+    Bildern) oder ein Typ, der kein Text-/HTML-Rumpf und kein Bild ist (application/*,
+    message/rfc822, ...). Container (multipart) zaehlen nicht."""
+    haupt = teil.get_content_maintype()
+    if haupt in ("multipart", "image"):
+        return False
+    return haupt != "text" or teil.get_content_disposition() == "attachment"
+
+
 def _anhaenge(nachricht) -> list[str]:
     namen = []
     for teil in nachricht.walk():
@@ -124,7 +139,9 @@ def _anhaenge(nachricht) -> list[str]:
             if name:
                 name = str(email.header.make_header(email.header.decode_header(name)))
         except Exception:  # noqa: BLE001 - ein kaputter Dateiname kostet nur den Namen
-            name = "(Anhang)"
+            name = ANHANG_OHNE_NAMEN
+        if not name and _anhang_ohne_namen(teil):
+            name = ANHANG_OHNE_NAMEN
         if name:
             namen.append(_rein(name, ANHANG_NAME_MAX))
         if len(namen) >= ANHAENGE_MAX:

@@ -40,6 +40,8 @@ MODI = ("aus", "verschieben", "voll")
 ORDNER = {post_ziel.POSTEINGANG: "INBOX", post_ziel.ZUR_INFO: "Zur Info",
           post_ziel.TO_REVIEW: "To-Review"}
 TO_REVIEW_TAGE = 30
+# Wie post_abholen den Anhang ohne Dateinamen nennt; kein Bildname, zaehlt also als Anhang.
+ANHANG_PLATZHALTER = "(Anhang)"
 
 
 def _modus(wert: str | None) -> str:
@@ -128,6 +130,19 @@ def _geloescht(z: dict) -> None:
         "where id = %s returning id", (z["ziel"], z["id"]))
 
 
+def _anhang_behalten(z: dict) -> None:
+    """Die Struktur zeigt einen Anhang, den das Abholen nicht kannte (ohne Dateinamen): die
+    Mail bleibt (Spec §4). Der Platzhalter macht das dauerhaft, sonst setzte die naechste
+    Runde von ziele_aktualisieren wieder `loeschen`. Eine Handentscheidung bleibt stehen."""
+    server._q(
+        "update post_mails set anhaenge = case when sensibel is not false "
+        "or %s = any(coalesce(anhaenge, '{}')) then anhaenge "
+        "else array_append(coalesce(anhaenge, '{}'), %s) end, "
+        "ziel = case when ziel_manuell then ziel else %s end "
+        "where id = %s and status = 'eingeordnet' returning id",
+        (ANHANG_PLATZHALTER, ANHANG_PLATZHALTER, post_ziel.ZUR_INFO, z["id"]))
+
+
 def _uid_im_ordner(kasten, z: dict) -> int:
     """UID der Mail in ihrem jetzigen Ordner. In der INBOX die beim Abholen gesehene UID,
     solange ordnen die Mail nie bewegt hat; sonst die UID aus COPYUID; fehlt die, wird
@@ -187,6 +202,14 @@ def _zeile_ordnen(kasten, konto: dict, z: dict, bilanz: dict, angelegt: set) -> 
         if not _loeschen_erlaubt(konto, z):
             return
         uid = _uid_im_ordner(kasten, z)
+        # Altbestand ohne erkannten Anhang (I7): erst pruefen, dass die UID diese Mail ist,
+        # dann nur die Struktur lesen. Ein Anhang ausser Bildern heisst: nicht loeschen.
+        post_imap.waehlen(kasten, z["ordner"])
+        post_imap.pruefen(kasten, uid, z["message_id"] or None)
+        if post_imap.anhang_ausser_bildern(kasten, uid):
+            _anhang_behalten(z)
+            LOG.info("Konto %s: Loeschen ausgelassen, Anhang laut Struktur", kennung)
+            return
         post_imap.loeschen(kasten, z["ordner"], uid, konto["anbieter"],
                            message_id=z["message_id"])
         _geloescht(z)

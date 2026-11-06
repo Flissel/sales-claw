@@ -20,7 +20,7 @@ import post_konten  # noqa: E402
 import post_ordnen  # noqa: E402
 import post_werbung  # noqa: E402
 import post_ziel  # noqa: E402
-from test_post_imap import FakeKasten, mail  # noqa: E402
+from test_post_imap import FakeKasten, mail, mail_mit_anhang  # noqa: E402
 
 VON = "Shop <news@shop.example>"
 BETREFF = "Nur heute 50 Prozent Rabatt"
@@ -373,6 +373,76 @@ def test_gmail_loeschen_ueber_ordnen(db, monkeypatch):
     assert _zeile(db, m)["status"] == "geloescht"
     assert kasten.ordner["INBOX"] == {} and kasten.ordner["[Gmail]/Trash"] == {}
     assert kasten.befehle("EXPUNGE") == [("uid", "EXPUNGE", "1")]
+
+
+def test_bleibt_immer_absender_regelwerbung_wird_nicht_geloescht(db, monkeypatch):
+    """C1: das gespeicherte Ziel ist loeschen, inzwischen kam eine Rechnung desselben
+    Absenders. ziel_frisch sieht das, also bleibt die Mail."""
+    monkeypatch.setattr(post_ordnen, "MODUS", "voll")
+    k_id = _konto(db)
+    _freigabe(db, 2025)
+    m = _mail(db, k_id, 7, ziel="loeschen", datum=ALT)            # Quelle unbekannt = Regel
+    _mail(db, k_id, 8, fach="Rechnungen", sicher=False, ziel="zur_info", ordner="Zur Info",
+          ordner_uid=3, ordner_am="now()")
+    kasten = FakeKasten(ordner={"INBOX": {7: mail("m7@x")}, "Zur Info": {3: mail("m8@x")}})
+    bilanz = post_ordnen.ordnen(verbinden=_verbinden({"gmx-test": kasten}))
+    assert bilanz["geloescht"] == 0
+    z = _zeile(db, m)
+    assert (z["status"], z["ziel"]) == ("eingeordnet", "zur_info")
+    assert 7 in kasten.ordner["INBOX"] and _schreibend(kasten) == []
+
+
+def test_to_review_mit_geaendertem_ziel_wird_nach_30_tagen_nicht_geloescht(db, monkeypatch):
+    """M5: herausgeholt (Absender jetzt geschuetzt) - ziel_frisch weicht ab, nichts geloescht."""
+    monkeypatch.setattr(post_ordnen, "MODUS", "voll")
+    k_id = _konto(db)
+    m = _mail(db, k_id, 7, ziel="to_review", ordner="To-Review", ordner_uid=3,
+              ordner_am="now() - interval '31 days'", datum="now() - interval '41 days'")
+    post_werbung.schutz_setzen("felix", VON)
+    kasten = FakeKasten(ordner={"To-Review": {3: mail("m7@x")}})
+    bilanz = post_ordnen.ordnen(verbinden=_verbinden({"gmx-test": kasten}))
+    assert bilanz["geloescht"] == 0
+    z = _zeile(db, m)
+    assert (z["status"], z["ziel"]) == ("eingeordnet", "zur_info")
+    assert 3 in kasten.ordner["To-Review"]
+    assert not kasten.befehle("STORE") and not kasten.befehle("EXPUNGE")
+
+
+@pytest.mark.parametrize("teil", [
+    ("application", "pdf", "angebot.pdf", "attachment"),
+    ("application", "octet-stream", None, None),
+    ("message", "rfc822", None, None),
+], ids=["pdf", "ohne-namen", "rfc822"])
+def test_altbestand_mit_anhang_laut_struktur_wird_nicht_geloescht(db, monkeypatch, teil):
+    """I7: beim Abholen ohne Dateinamen nicht erkannt (anhaenge leer). Vor dem Loeschen zeigt
+    BODYSTRUCTURE den Anhang: die Mail bleibt, bekommt den Platzhalter und Ziel zur_info."""
+    monkeypatch.setattr(post_ordnen, "MODUS", "voll")
+    k_id = _konto(db)
+    _freigabe(db, 2025)
+    m = _mail(db, k_id, 7, ziel="loeschen", datum=ALT)
+    kasten = FakeKasten(ordner={"INBOX": {7: mail_mit_anhang("m7@x", teil)}})
+    bilanz = post_ordnen.ordnen(verbinden=_verbinden({"gmx-test": kasten}))
+    assert bilanz["geloescht"] == 0
+    z = _zeile(db, m)
+    assert (z["status"], z["ziel"], z["ordner"]) == ("eingeordnet", "zur_info", "INBOX")
+    assert z["ordner_stand"] in (None, "ok") and "(Anhang)" in z["anhaenge"]
+    assert 7 in kasten.ordner["INBOX"] and _schreibend(kasten) == []
+    # Nur Struktur und Kopf abgefragt, nie der Inhalt.
+    assert all("BODY[]" not in p[3] and "RFC822" not in p[3] for p in kasten.befehle("FETCH"))
+    # Die naechste Berechnung bleibt dabei (kein Hin und Her mit ziele_aktualisieren).
+    post_ziel.ziele_aktualisieren()
+    assert _zeile(db, m)["ziel"] == "zur_info"
+
+
+def test_altbestand_nur_mit_bild_wird_geloescht(db, monkeypatch):
+    monkeypatch.setattr(post_ordnen, "MODUS", "voll")
+    k_id = _konto(db)
+    _freigabe(db, 2025)
+    m = _mail(db, k_id, 7, ziel="loeschen", datum=ALT)
+    kasten = FakeKasten(ordner={"INBOX": {7: mail_mit_anhang(
+        "m7@x", ("image", "png", None, "attachment"))}})
+    assert post_ordnen.ordnen(verbinden=_verbinden({"gmx-test": kasten}))["geloescht"] == 1
+    assert _zeile(db, m)["status"] == "geloescht" and 7 not in kasten.ordner["INBOX"]
 
 
 def test_fremdes_konto_nicht_angefasst(db, monkeypatch):

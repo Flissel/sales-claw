@@ -6,6 +6,7 @@ Ordner als dict[str, dict[int, bytes]], Flags und ein Protokoll jedes Befehls.
 (entfernt jede \\Deleted-Mail des Ordners), damit ein Rueckfall auffaellt.
 `test_post_ordnen.py` nutzt dieselbe Attrappe.
 """
+import email
 import re
 import sys
 from email.message import EmailMessage
@@ -28,6 +29,52 @@ def mail(message_id: str | None, betreff="Hallo") -> bytes:
         m["Message-ID"] = f"<{message_id}>"
     m.set_content("Text")
     return m.as_bytes()
+
+
+def mail_mit_anhang(message_id: str | None, *teile) -> bytes:
+    """Mail mit Anhaengen; je Teil (maintype, subtype, dateiname|None, disposition|None)."""
+    m = EmailMessage()
+    m["From"] = "Shop <news@shop.example>"
+    m["Subject"] = "Angebot"
+    if message_id:
+        m["Message-ID"] = f"<{message_id}>"
+    m.set_content("Text")
+    for haupt, unter, name, disposition in teile:
+        if (haupt, unter) == ("message", "rfc822"):
+            innen = EmailMessage()
+            innen["Subject"] = "weitergeleitet"
+            innen.set_content("innen")
+            m.add_attachment(innen)
+            continue
+        m.add_attachment(b"\x00\x01daten", maintype=haupt, subtype=unter)
+        teil = m.get_payload()[-1]
+        del teil["Content-Disposition"]
+        if disposition:
+            teil["Content-Disposition"] = (disposition + (f'; filename="{name}"' if name else ""))
+    return m.as_bytes()
+
+
+def _bodystructure(roh: bytes) -> str:
+    """Vereinfachte, aber formgerechte BODYSTRUCTURE (RFC 3501) der Mail `roh`."""
+    def zitat(s) -> str:
+        return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+    def teil(t) -> str:
+        if t.get_content_maintype() == "multipart":
+            kinder = "".join(teil(x) for x in t.get_payload())
+            return f"({kinder} {zitat(t.get_content_subtype())} NIL NIL NIL NIL)"
+        haupt, unter = t.get_content_maintype(), t.get_content_subtype()
+        kopf = f"({zitat(haupt)} {zitat(unter)} NIL NIL NIL \"7bit\" 10"
+        if haupt == "text":
+            kopf += " 1"
+        elif (haupt, unter) == ("message", "rfc822"):
+            kopf += ' NIL ("text" "plain" ("charset" "utf-8") NIL NIL "7bit" 5 1) 1'
+        art, name = t.get_content_disposition(), t.get_filename()
+        dsp = "NIL" if not art else (
+            f"({zitat(art)} " + (f'("filename" {zitat(name)})' if name else "NIL") + ")")
+        return kopf + f" NIL {dsp} NIL NIL)"
+
+    return teil(email.message_from_bytes(roh))
 
 
 def _name(roh) -> str:
@@ -120,6 +167,10 @@ class FakeKasten:
             uid = int(args[0])
             if uid not in inhalt:
                 return "OK", [None]
+            if "BODYSTRUCTURE" in str(args[1]).upper():
+                # Nur die Struktur, nie Inhalt - so wie post_imap es anfragt.
+                return "OK", [f"1 (UID {uid} BODYSTRUCTURE {_bodystructure(inhalt[uid])})"
+                              .encode()]
             kopf = b""
             for zeile in inhalt[uid].split(b"\n"):
                 if zeile.lower().startswith(b"message-id:"):
@@ -312,6 +363,58 @@ def test_gmail_loeschen_ohne_neue_uid_nicht_unterstuetzt():
     with pytest.raises(post_imap.NichtUnterstuetzt):
         post_imap.loeschen(k, "INBOX", 7, "gmail", message_id="m7@x")
     assert not k.befehle("STORE") and not k.befehle("EXPUNGE")
+
+
+# --- Anhaenge per BODYSTRUCTURE (I7) ----------------------------------------------
+
+@pytest.mark.parametrize("teile,erwartet", [
+    ((), False),
+    ((("image", "png", "bild.png", "attachment"),), False),
+    ((("image", "jpeg", None, "attachment"),), False),           # Bild ohne Namen: erlaubt
+    ((("image", "gif", None, None),), False),
+    ((("application", "pdf", "angebot.pdf", "attachment"),), True),
+    ((("application", "octet-stream", None, None),), True),       # ohne Namen, ohne Disposition
+    ((("application", "pdf", None, "inline"),), True),
+    ((("text", "plain", None, "attachment"),), True),             # Disposition attachment
+    ((("message", "rfc822", None, None),), True),
+    ((("image", "png", "a.png", "attachment"), ("application", "zip", None, None)), True),
+], ids=["ohne", "bild", "bild-ohne-name", "bild-inline", "pdf", "octet-ohne-name",
+        "pdf-inline", "text-attachment", "rfc822", "bild-und-zip"])
+def test_anhang_ausser_bildern(teile, erwartet):
+    k = FakeKasten(ordner={"INBOX": {7: mail_mit_anhang("m7@x", *teile)}})
+    post_imap.waehlen(k, "INBOX")
+    assert post_imap.anhang_ausser_bildern(k, 7) is erwartet
+    # Nur die Struktur, kein Inhalt, nichts Schreibendes.
+    abrufe = k.befehle("FETCH")
+    assert [p[3] for p in abrufe] == ["(BODYSTRUCTURE)"]
+    assert not [p for p in k.protokoll if p[:2] in (("uid", "STORE"), ("uid", "MOVE"))]
+
+
+def test_anhang_ausser_bildern_fehlende_uid_ist_fehlt():
+    k = _kasten()
+    post_imap.waehlen(k, "INBOX")
+    with pytest.raises(post_imap.Fehlt):
+        post_imap.anhang_ausser_bildern(k, 9)
+
+
+def test_anhang_ausser_bildern_liest_literal_und_fremde_antworten():
+    """imaplib liefert Literale als Tupel; ungefragte FETCH-Antworten anderer UIDs zaehlen nicht."""
+    class Kasten:
+        def uid(self, befehl, *args):
+            return "OK", [
+                b'2 (UID 8 BODYSTRUCTURE ("application" "pdf" NIL NIL NIL "base64" 9 NIL NIL NIL NIL))',
+                (b'1 (UID 7 BODYSTRUCTURE (("text" "plain" ("charset" "utf-8") NIL NIL "7bit" 4 1 '
+                 b'NIL NIL NIL NIL)("image" "png" ("name" {9}', b'bild).png'),
+                b') NIL NIL "base64" 10 NIL ("attachment" NIL) NIL NIL) "mixed" NIL NIL NIL NIL))']
+    assert post_imap.anhang_ausser_bildern(Kasten(), 7) is False
+
+
+def test_anhang_ausser_bildern_unlesbar_ist_imapfehler():
+    class Kasten:
+        def uid(self, befehl, *args):
+            return "OK", [b'1 (UID 7 BODYSTRUCTURE ("text" "plain"']
+    with pytest.raises(post_imap.ImapFehler):
+        post_imap.anhang_ausser_bildern(Kasten(), 7)
 
 
 # --- Ordner, Suche, Faehigkeiten ------------------------------------------------

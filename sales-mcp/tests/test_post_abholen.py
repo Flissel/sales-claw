@@ -5,6 +5,7 @@ Befehl (store/copy/move/expunge/append) als Testfehler meldet und `select`
 nur mit readonly=True annimmt - Stufe 1 veraendert das echte Postfach nie.
 Das Modell wird nie gerufen: der Gateway-Aufruf von `einordnen` ist per autouse-Fixture gesperrt.
 """
+import email
 import os
 import re
 import shutil
@@ -174,6 +175,24 @@ def _mails(where="true", params=()) -> list:
 
 
 # --- Abholen ---------------------------------------------------------------
+
+@pytest.mark.parametrize("teile,erwartet", [
+    ((("application", "pdf", "a.pdf", "attachment"),), ["a.pdf"]),
+    ((("application", "octet-stream", None, None),), ["(Anhang)"]),
+    ((("application", "pdf", None, "attachment"),), ["(Anhang)"]),
+    ((("text", "plain", None, "attachment"),), ["(Anhang)"]),
+    ((("message", "rfc822", None, None),), ["(Anhang)"]),
+    ((("image", "png", None, "attachment"),), []),          # Bilder ohne Namen zaehlen nicht
+    ((("image", "png", "b.png", "attachment"),), ["b.png"]),
+    ((), []),
+], ids=["pdf", "ohne-namen", "pdf-ohne-namen", "text-attachment", "rfc822", "bild-ohne-namen",
+        "bild", "ohne"])
+def test_anhang_ohne_dateiname_bekommt_platzhalter(teile, erwartet):
+    """I7: ein Anhang ohne Dateinamen darf nicht als „kein Anhang“ zaehlen, sonst waere die
+    Werbemail loeschbar. Der Platzhalter ist kein Bildname, schuetzt also (post_ziel)."""
+    from test_post_imap import mail_mit_anhang
+    nachricht = email.message_from_bytes(mail_mit_anhang("m@x", *teile))
+    assert post_abholen._anhaenge(nachricht) == erwartet
 
 def test_holt_nur_neue_uids():
     _konto()
@@ -563,6 +582,33 @@ def test_tagesgrenze(monkeypatch):
     monkeypatch.setattr(post_abholen, "TAGESGRENZE", 500)
     aufrufe.clear()
     assert post_abholen.einordnen_offene(2) == 2 and len(aufrufe) == 2
+
+
+def test_tagesgrenze_null_pausiert_auch_kostenlose_treffer(monkeypatch):
+    """I4: POST_TAGESGRENZE=0 ist im Runbook die Pause zwischen update.sh und dem Ende von
+    nachtragen. Sie muss auch Treffer ohne Modell (feste Muster, Werbe-Regel) anhalten, sonst
+    entstuenden v3-Einordnungen ohne Herkunft, die nie neu sortiert werden."""
+    _konto()
+    kasten = Attrappe({1: _mail("<1@x>", betreff="Ihr Sicherheitscode 4711"),
+                       2: _mail("<2@x>", von="Shop <news@shop.example>", betreff="Rabatt")})
+    monkeypatch.setattr(post_abholen.post_konten, "verbinden", lambda zeile: kasten)
+    with server.pool.connection() as conn:
+        conn.execute("insert into post_regeln (muster, feld, bereich, fach, sensibel, angelegt_von, "
+                     "besitzer, art) values (%s, 'von', 'privat', 'Werbung', false, 'test-i4', "
+                     "'felix', 'einordnen')",
+                     (post_struktur.absender_muster("news@shop.example"),))
+    try:
+        monkeypatch.setattr(post_abholen, "TAGESGRENZE", 0)
+        bilanz = post_abholen.eine_runde()
+        assert bilanz["abgeholt"] == 2 and bilanz.get("tagesgrenze") is True
+        assert {r["status"] for r in _mails()} == {"neu"}
+        # Gegenprobe: dieselben Mails sind ohne Modell einzuordnen (kein_modell sperrt es).
+        monkeypatch.setattr(post_abholen, "TAGESGRENZE", 500)
+        assert post_abholen.eine_runde()["eingeordnet"] == 2
+        assert {r["einordnung_quelle"] for r in _mails()} == {"regel"}
+    finally:
+        with server.pool.connection() as conn:
+            conn.execute("delete from sales_test.post_regeln where angelegt_von = 'test-i4'")
 
 
 def test_tagesgrenze_zaehlt_aufrufe_und_vorschau():

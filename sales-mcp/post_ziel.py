@@ -66,8 +66,11 @@ def _nur_bilder(anhaenge) -> bool:
 
 
 def ziel_fuer(m: dict, jetzt: datetime, freigegebene_jahre: set[int],
-              ist_kontakt: bool, geschuetzt: bool) -> str:
-    """Ziel der Mail; der erste Treffer gewinnt (Reihenfolge der Brief, Task 4)."""
+              ist_kontakt: bool, geschuetzt: bool, bleibt_absender: bool = False) -> str:
+    """Ziel der Mail; der erste Treffer gewinnt (Reihenfolge der Brief, Task 4).
+
+    `bleibt_absender`: derselbe Besitzer hat vom Absender mindestens eine Mail in einem Fach
+    aus BLEIBT_IMMER (Spec §4). Dann loescht nur noch die Einigkeit beider Modelle."""
     # 1. Handentscheidung gilt immer.
     if m.get("ziel_manuell"):
         return m.get("ziel") or ZUR_INFO
@@ -83,6 +86,12 @@ def ziel_fuer(m: dict, jetzt: datetime, freigegebene_jahre: set[int],
     if m.get("fach") == WERBUNG:
         if (not m.get("werbung_sicher") or ist_kontakt or geschuetzt
                 or not _nur_bilder(m.get("anhaenge"))):
+            return ZUR_INFO
+        # Spec §4: Regel und Katalog gelten fuer einen Absender mit Bleibt-immer-Mail nicht
+        # mehr. post_einordnung prueft das nur beim Einordnen; kommt die Rechnung erst danach
+        # (neueste Jahre zuerst), muss es hier sichtbar sein. Nur „pruefer“ heisst: beide
+        # Modelle einig (R6); jede andere oder fehlende Quelle gilt als Regel/Katalog.
+        if bleibt_absender and m.get("einordnung_quelle") != "pruefer":
             return ZUR_INFO
         if datum is None:
             return ZUR_INFO           # ohne Datum weder Jahr noch Alter: nie loeschen
@@ -122,7 +131,7 @@ def _db():
 
 # Spalten, die ziel_fuer braucht.
 _SPALTEN = ("id, besitzer, von, fach, aufmerksamkeit, werbung_sicher, datum, anhaenge, "
-            "begruendung, ziel, ziel_manuell")
+            "begruendung, ziel, ziel_manuell, einordnung_quelle")
 
 
 def _freigegeben(server, besitzer: str | None = None) -> dict[str, set[int]]:
@@ -158,15 +167,36 @@ def _schutz(server, besitzer: str | None = None) -> set[tuple[str, str]]:
     return {(z["besitzer"], z["muster"]) for z in server._q(sql, werte)}
 
 
+def _bleibt(server, besitzer: str | None = None,
+            adresse: str | None = None) -> set[tuple[str, str]]:
+    """(Besitzer, Adresse) der Absender mit mindestens einer Mail in einem Fach aus
+    BLEIBT_IMMER. Die Adresse kommt wie ueberall aus post_struktur.absender_adresse (klein,
+    aus „Name <addr>“), nicht aus SQL. Mit `besitzer`/`adresse` nur die passenden Zeilen."""
+    sql = ("select distinct besitzer, von from post_mails "
+           "where fach = any(%s) and besitzer is not null and von is not null")
+    werte: list = [sorted(post_struktur.BLEIBT_IMMER)]
+    if besitzer is not None:
+        sql += " and besitzer = %s"
+        werte.append(besitzer)
+    if adresse is not None:
+        sql += " and strpos(lower(von), %s) > 0"     # grob vorfiltern, genau prueft Python
+        werte.append(adresse)
+    menge = {(z["besitzer"], post_struktur.absender_adresse(z["von"]))
+             for z in server._q(sql, werte)}
+    return {(b, a) for b, a in menge if a and (adresse is None or a == adresse)}
+
+
 def _berechnen(z: dict, jetzt: datetime, freigegeben: dict[str, set[int]],
-               kontakte: set[str], schutz: set[tuple[str, str]]) -> str:
+               kontakte: set[str], schutz: set[tuple[str, str]],
+               bleibt: set[tuple[str, str]]) -> str:
     adresse = post_struktur.absender_adresse(z["von"])
     # Ohne lesbare Absenderadresse laesst sich weder Kontakt noch Schutz pruefen: dann
     # gilt die Mail als geschuetzt (nie loeschen).
     geschuetzt = (not adresse or (z["besitzer"], post_struktur.absender_muster(adresse).lower())
                   in schutz)
     return ziel_fuer(z, jetzt, freigegeben.get(z["besitzer"], set()),
-                     bool(adresse) and adresse in kontakte, geschuetzt)
+                     bool(adresse) and adresse in kontakte, geschuetzt,
+                     bleibt_absender=(z["besitzer"], adresse) in bleibt)
 
 
 def ziel_frisch(mail_id) -> str | None:
@@ -182,7 +212,9 @@ def ziel_frisch(mail_id) -> str | None:
     adresse = post_struktur.absender_adresse(z["von"])
     return _berechnen(z, datetime.now(timezone.utc), _freigegeben(server, z["besitzer"]),
                       _kontakte(server, adresse) if adresse else set(),
-                      _schutz(server, z["besitzer"]))
+                      _schutz(server, z["besitzer"]),
+                      _bleibt(server, z["besitzer"], adresse) if adresse and z["besitzer"]
+                      else set())
 
 
 def ziele_aktualisieren() -> int:
@@ -201,6 +233,7 @@ def ziele_aktualisieren() -> int:
         freigegeben = _freigegeben(server)
         kontakte = _kontakte(server)
         schutz = _schutz(server)
+        bleibt = _bleibt(server)
 
         zeilen = server._q(
             f"select {_SPALTEN} from post_mails "
@@ -208,7 +241,7 @@ def ziele_aktualisieren() -> int:
 
         neu: dict[str, list] = {}
         for z in zeilen:
-            ziel = _berechnen(z, jetzt, freigegeben, kontakte, schutz)
+            ziel = _berechnen(z, jetzt, freigegeben, kontakte, schutz, bleibt)
             if ziel != z["ziel"]:
                 neu.setdefault(ziel, []).append(z["id"])
 
