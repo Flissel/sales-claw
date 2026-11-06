@@ -60,7 +60,7 @@ BESCHREIBUNG: dict[tuple[str, str], str] = {
     ("business", "Rechnungen"):
         "Rechnungen, Zahlungen, Quittungen der Firma.",
     ("business", "Tools & Dienste"):
-        "Mitteilungen von Software und Diensten, die die Firma nutzt (auch deren Werbung).",
+        "Mitteilungen von Software und Diensten, die die Firma nutzt (Produkt, Konto, Abrechnung).",
     ("business", "Soziale Netzwerke"):
         "Mitteilungen der Firmenkanäle in sozialen Netzwerken.",
     ("business", "Konten & Sicherheit"):

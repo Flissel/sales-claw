@@ -588,7 +588,7 @@ def test_speichert_unterfach_vorschlaege_aufrufe_version(monkeypatch):
             aufrufe=2, vorschlaege=vorschlaege))
     assert post_abholen.einordnen_offene(5) == 1
     r = _mails()[0]
-    assert (r["unterfach"], r["modellaufrufe"], r["einordnung_version"]) == (None, 2, 2)
+    assert (r["unterfach"], r["modellaufrufe"], r["einordnung_version"]) == (None, 2, 3)
     assert r["vorschlaege"] == vorschlaege and r["status"] == "eingeordnet"
 
     # Mit Unterfach, ohne Vorschlaege.
@@ -603,8 +603,22 @@ def test_speichert_unterfach_vorschlaege_aufrufe_version(monkeypatch):
     assert post_abholen.einordnen_offene(5) == 1
     r = _mails()[0]
     assert (r["unterfach"], r["modellaufrufe"], r["einordnung_version"], r["vorschlaege"]) == \
-        ("Instagram", 1, 2, None)
+        ("Instagram", 1, 3, None)
     assert r["text"] is None                                  # sensibel: Text weg
+    assert (r["aufmerksamkeit"], r["werbung_sicher"]) == (False, False)
+
+    # Aufmerksamkeit und werbung_sicher werden mitgeschrieben.
+    _aufraeumen()
+    _konto()
+    post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({1: _mail("<c@x>")}))
+    monkeypatch.setattr(
+        post_einordnung, "einordnen",
+        lambda mail, konto: post_einordnung.Einordnung(
+            "privat", "Werbung", False, "pruefer", "x", None, aufrufe=2,
+            aufmerksamkeit=True, werbung_sicher=True))
+    assert post_abholen.einordnen_offene(5) == 1
+    r = _mails()[0]
+    assert (r["aufmerksamkeit"], r["werbung_sicher"], r["einordnung_version"]) == (True, True, 3)
 
 
 def test_konto_kontext_wird_uebergeben(monkeypatch):
@@ -652,7 +666,7 @@ def test_pruefer_fehler_bleibt_neu_dann_nach_drei_zum_nachsehen(monkeypatch, cap
         "bereich": "business", "fach": "Rechnungen", "unterfach": "Eingang",
         "begruendung": "Geheime Begruendung"}}
     # Kosten der drei Fehlversuche stehen auf fehl_aufrufe, nichts doppelt auf modellaufrufe.
-    assert (r1["einordnung_version"], r1["fehl_aufrufe"], r1["modellaufrufe"], r1["sensibel"]) == (2, 6, 0, False)
+    assert (r1["einordnung_version"], r1["fehl_aufrufe"], r1["modellaufrufe"], r1["sensibel"]) == (3, 6, 0, False)
     assert "Geheim" not in caplog.text
 
 

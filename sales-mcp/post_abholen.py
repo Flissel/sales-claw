@@ -370,9 +370,10 @@ def _ergebnis_speichern(mail_id, e: post_einordnung.Einordnung) -> None:
     server._q(
         "update post_mails set bereich = %s, fach = %s, unterfach = %s, sensibel = %s, "
         "einordnung_quelle = %s, begruendung = %s, vorschlaege = %s::jsonb, "
+        "aufmerksamkeit = %s, werbung_sicher = %s, "
         # `=`, nicht `+`: Fehlversuch-Kosten stehen auf fehl_aufrufe (Tag ihres Anfalls),
         # modellaufrufe traegt nur die endgueltige Einordnung - sonst zaehlte sie doppelt.
-        "modellaufrufe = %s, einordnung_version = 2, eingeordnet_am = now(), "
+        "modellaufrufe = %s, einordnung_version = 3, eingeordnet_am = now(), "
         "status = 'eingeordnet', fehler = null, "
         "text = case when %s then null else text end, "
         "auszug = case when %s then null else auszug end, "
@@ -380,7 +381,8 @@ def _ergebnis_speichern(mail_id, e: post_einordnung.Einordnung) -> None:
         "anhaenge = case when %s then '{}'::text[] else anhaenge end "
         "where id = %s and status = 'neu'",
         (bereich, fach, unterfach, e.sensibel, e.quelle, e.begruendung,
-         None if e.vorschlaege is None else server._json(e.vorschlaege), e.aufrufe,
+         None if e.vorschlaege is None else server._json(e.vorschlaege),
+         e.aufmerksamkeit, e.werbung_sicher, e.aufrufe,
          e.sensibel, e.sensibel, e.sensibel, e.sensibel, mail_id))
 
 

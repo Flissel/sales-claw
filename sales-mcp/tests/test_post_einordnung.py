@@ -22,9 +22,9 @@ PRIVAT = {"kennung": "privat@example.org", "standard_bereich": "privat"}
 
 
 def _urteil(bereich="business", fach="Kunden & Anfragen", unterfach="", sensibel=False,
-            sicher=True, begruendung="x"):
+            sicher=True, begruendung="x", aufmerksamkeit=False):
     return {"bereich": bereich, "fach": fach, "unterfach": unterfach, "sensibel": sensibel,
-            "sicher": sicher, "begruendung": begruendung}
+            "sicher": sicher, "begruendung": begruendung, "aufmerksamkeit": aufmerksamkeit}
 
 
 def _agenten(post=None, pruefer=None, protokoll=None):
@@ -361,7 +361,8 @@ def test_schema_hat_unterfach_enum_und_sicher():
     assert props["sicher"] == {"type": "boolean"}
     assert props["bereich"]["enum"] == list(post_struktur.BEREICHE)
     assert set(pe.FUNKTION["function"]["parameters"]["required"]) == \
-        {"bereich", "fach", "unterfach", "sensibel", "sicher", "begruendung"}
+        {"bereich", "fach", "unterfach", "sensibel", "aufmerksamkeit", "sicher",
+                                                                        "begruendung"}
 
 
 def test_text_wird_vor_dem_modell_gekuerzt():
@@ -407,3 +408,110 @@ def test_einig_aber_nur_pruefer_sensibel_ist_sensibel_ohne_freitext():
     e = pe.einordnen(_mail(), PRIVAT, aufruf=_agenten(post=s, pruefer=p))
     assert e.quelle == "pruefer" and e.sensibel is True
     assert "4711" not in e.begruendung
+
+
+def test_privates_postfach_bekommt_privat_regeln_im_auftrag():
+    a = pe._auftrag({"id": "1", "von": "x@y.de", "betreff": "b", "text": ""},
+                    {"kennung": "gmx-felix", "standard_bereich": "privat"})
+    assert "Privates Postfach" in a and "im Zweifel Business" not in a
+
+
+def test_firmenpostfach_behaelt_im_zweifel_business():
+    a = pe._auftrag({"id": "1", "von": "", "betreff": "", "text": ""},
+                    {"kennung": "haupt", "standard_bereich": "business"})
+    assert "im Zweifel Business" in a
+    assert "im Zweifel Business" not in pe.SYSTEM
+
+
+def test_postfach_art_steht_ausserhalb_der_fremddaten_marker():
+    a = pe._auftrag(_mail(), PRIVAT)
+    assert a.index("Privates Postfach") < a.index("--- Inhalt der Mail")
+
+
+def test_system_enthaelt_aufmerksamkeit_und_werbung():
+    assert "Aufmerksamkeit" in pe.SYSTEM and "Sicherheitswarnungen" in pe.SYSTEM
+    assert "Kaltakquise, Gewinnspiele, Rabattaktionen" in pe.SYSTEM
+
+
+def test_aufmerksamkeit_wird_oder_verknuepft():
+    s = _urteil("business", "Rechnungen", aufmerksamkeit=True)
+    p = _urteil("business", "Rechnungen", aufmerksamkeit=False)
+    e = pe.einordnen(_mail(), BUSINESS, aufruf=_agenten(post=s, pruefer=p))
+    assert e.aufmerksamkeit is True and e.fach == "Rechnungen"
+    e = pe.einordnen(_mail(), BUSINESS, aufruf=_agenten(post=p, pruefer=s))
+    assert e.aufmerksamkeit is True
+
+
+def test_ohne_aufmerksamkeit_bleibt_sie_false():
+    u = _urteil("business", "Rechnungen")
+    e = pe.einordnen(_mail(), BUSINESS, aufruf=_agenten(post=u, pruefer=dict(u)))
+    assert e.aufmerksamkeit is False and e.werbung_sicher is False
+
+
+def test_einig_werbung_ist_werbung_sicher():
+    u = _urteil("business", "Werbung")
+    e = pe.einordnen(_mail(), BUSINESS, aufruf=_agenten(post=u, pruefer=dict(u)))
+    assert e.fach == "Werbung" and e.werbung_sicher is True
+
+
+def test_uneinig_werbung_ist_nicht_werbung_sicher_und_braucht_aufmerksamkeit():
+    s = _urteil("business", "Werbung")
+    p = _urteil("business", "Newsletter & Branche")
+    e = pe.einordnen(_mail(), BUSINESS, aufruf=_agenten(post=s, pruefer=p))
+    assert e.fach == post_struktur.UNKLAR and e.werbung_sicher is False
+    assert e.aufmerksamkeit is True
+
+
+def test_unsichere_werbung_ist_nicht_werbung_sicher():
+    s = _urteil("business", "Werbung", sicher=False)
+    e = pe.einordnen(_mail(), BUSINESS, aufruf=_agenten(post=s, pruefer=dict(s)))
+    assert e.fach == post_struktur.UNKLAR and e.werbung_sicher is False
+
+
+def test_katalog_treffer_liefert_aufmerksamkeit_aus_einem_aufruf():
+    g = []
+    e = pe.einordnen(_mail(von="noreply@github.com"), BUSINESS,
+                     aufruf=_agenten(post=_urteil(sensibel=False, aufmerksamkeit=True), protokoll=g))
+    assert e.aufrufe == 1 and e.aufmerksamkeit is True and len(g) == 1
+
+
+def test_katalog_werbung_ist_werbung_sicher(monkeypatch):
+    monkeypatch.setattr(pe.post_katalog, "treffer", lambda von: ("Werbung", None))
+    e = pe.einordnen(_mail(), PRIVAT, aufruf=_agenten(post=_urteil(sensibel=False)))
+    assert e.fach == "Werbung" and e.quelle == "katalog" and e.werbung_sicher is True
+
+
+def test_regel_werbung_ist_werbung_sicher_aber_nicht_wenn_sensibel(monkeypatch):
+    zeile = {"muster": "x", "feld": "von", "bereich": "privat", "fach": "Werbung",
+             "unterfach": None, "besitzer": None}
+    monkeypatch.setattr(pe, "_regeln_laden", lambda: [zeile])
+    e = pe.einordnen(_mail(von="x@y.de"), PRIVAT, aufruf=_agenten(post=_urteil()))
+    assert e.quelle == "regel" and e.werbung_sicher is True
+    e = pe.einordnen(_mail(von="x@y.de"), PRIVAT, aufruf=_agenten(post=_urteil(sensibel=True)))
+    assert e.werbung_sicher is False
+
+
+def test_regel_liefert_aufmerksamkeit_aus_dem_modell(monkeypatch):
+    zeile = {"muster": "x", "feld": "von", "bereich": "privat", "fach": "Rechnungen",
+             "unterfach": None, "besitzer": None}
+    monkeypatch.setattr(pe, "_regeln_laden", lambda: [zeile])
+    e = pe.einordnen(_mail(von="x@y.de"), PRIVAT,
+                     aufruf=_agenten(post=_urteil(aufmerksamkeit=True)))
+    assert e.aufmerksamkeit is True and e.aufrufe == 1
+
+
+def test_zum_nachsehen_und_muster_haben_aufmerksamkeit():
+    s = _urteil("business", "Rechnungen")
+    p = _urteil("business", "Kunden & Anfragen")
+    assert pe.einordnen(_mail(), BUSINESS, aufruf=_agenten(post=s, pruefer=p)).aufmerksamkeit is True
+    assert pe.einordnen(_mail(betreff="Ihr Sicherheitscode"), BUSINESS).aufmerksamkeit is True
+
+
+def test_schema_verlangt_aufmerksamkeit():
+    par = pe.FUNKTION["function"]["parameters"]
+    assert "aufmerksamkeit" in par["required"]
+    assert par["properties"]["aufmerksamkeit"] == {"type": "boolean"}
+
+
+def test_tools_und_dienste_beschreibung_ohne_werbung():
+    assert "Werbung" not in post_struktur.BESCHREIBUNG[("business", "Tools & Dienste")]
