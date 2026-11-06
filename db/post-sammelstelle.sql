@@ -248,3 +248,90 @@ insert into :"schema".post_abteilung_faecher (abteilung, fach) values
   ('Marketing', 'Veranstaltungen'),
   ('Marketing', 'Soziale Netzwerke')
   on conflict do nothing;
+
+
+-- ---------------------------------------------------------------------------
+-- Aufräumen (Spec 2026-11-06). Alles idempotent.
+-- ---------------------------------------------------------------------------
+
+-- Aufmerksamkeit, Ziel je Mail, Stand im Postfach-Ordner und Loeschzeitpunkt.
+-- `ziel` ist das Soll, `ordner*` der zuletzt gemeldete Ist-Stand im Postfach.
+-- `ziel_manuell` schuetzt eine Handentscheidung vor dem automatischen Neuberechnen.
+alter table :"schema".post_mails
+  add column if not exists aufmerksamkeit boolean,
+  add column if not exists werbung_sicher boolean not null default false,
+  add column if not exists ziel text
+    check (ziel in ('posteingang','zur_info','to_review','loeschen')),
+  add column if not exists ziel_manuell boolean not null default false,
+  add column if not exists ordner text not null default 'INBOX',
+  add column if not exists ordner_uid bigint,
+  add column if not exists ordner_stand text
+    check (ordner_stand in ('ok','fehlt','fehler')),
+  add column if not exists ordner_am timestamptz,
+  add column if not exists urspruengliche_adresse text,
+  add column if not exists geloescht_am timestamptz;
+
+-- Status 'geloescht' neu. Der Check ist inline angelegt und heisst
+-- post_mails_status_check (in sales_test aus pg_constraint gelesen). Ersetzt
+-- wird nur, wenn er den neuen Wert noch nicht kennt.
+do $$
+declare
+  s text := current_setting('post.schema');
+begin
+  if not exists (
+      select 1 from pg_constraint c
+      where c.conrelid = format('%I.post_mails', s)::regclass
+        and c.conname = 'post_mails_status_check'
+        and pg_get_constraintdef(c.oid) like '%geloescht%') then
+    execute format('alter table %I.post_mails drop constraint if exists '
+                   'post_mails_status_check', s);
+    execute format('alter table %I.post_mails add constraint '
+                   'post_mails_status_check check '
+                   '(status in (''neu'',''eingeordnet'',''fehler'',''geloescht''))', s);
+  end if;
+end $$;
+
+-- NULL = Verschieben und Loeschen sind aktiv; sonst steht hier der Grund fuer die Ruhe.
+alter table :"schema".post_konten
+  add column if not exists ordnen_aus text;
+
+-- 'nie_werbung': Absender, die nie als Werbung (und damit nie zum Loeschen) gelten.
+alter table :"schema".post_regeln
+  add column if not exists art text not null default 'einordnen'
+    check (art in ('einordnen','nie_werbung'));
+
+-- Freigabe zum Loeschen je Besitzer und Jahr; `ausgenommen` haelt einzelne Mails heraus.
+create table if not exists :"schema".post_loeschfreigaben (
+  id uuid primary key default gen_random_uuid(),
+  besitzer text not null,
+  jahr int not null,
+  freigegeben_am timestamptz not null default now(),
+  ausgenommen jsonb not null default '[]',
+  unique (besitzer, jahr)
+);
+
+create index if not exists post_mails_ziel_ordner_idx
+  on :"schema".post_mails (ziel, ordner);
+
+-- Rechte fuer die neue Tabelle (der Block oben kennt sie nicht), gleiche Regeln.
+do $$
+declare
+  s text := current_setting('post.schema');
+  rolle text;
+  rechte text := 'select, insert, update';
+begin
+  if s = 'sales' then
+    rolle := 'sales_app';
+  elsif s = 'sales_test' then
+    rolle := 'sales_app';
+    rechte := 'select, insert, update, delete, truncate';
+  elsif exists (
+      select 1 from pg_roles where rolname = 'sales_app_' || substr(s, 7)) then
+    rolle := 'sales_app_' || substr(s, 7);
+  end if;
+  if rolle is null then
+    raise notice 'WARNUNG: keine Rechte vergeben fuer Schema %: Rolle % existiert nicht', s, 'sales_app_' || substr(s, 7);
+    return;
+  end if;
+  execute format('grant %s on %I.post_loeschfreigaben to %I', rechte, s, rolle);
+end $$;
