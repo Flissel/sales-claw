@@ -197,6 +197,89 @@ def test_beziehung_ziel_nie_fremd():
     assert r.headers["location"] == f"/kontakte/{lead}"
 
 
+def _entschieden(monkeypatch, *namen):
+    """Je Name ein Kontakt, dessen Nummer schon im Sammelkontakt schrieb -
+    er steht damit unter „Bereits entschieden"."""
+    sammel = _sammel(monkeypatch)
+    leads = []
+    for i, name in enumerate(namen):
+        nummer = f"49170111100{i:02d}"
+        leads.append(_lead(name=name, phone=f"+{nummer}"))
+        _eingang(sammel, nummer, "hi")
+    return leads
+
+
+def test_bereits_entschieden_alle_auf_einmal_speichern(monkeypatch):
+    """Betreiber 06.11.2026: „Setzen" je Zeile lud die Seite neu, die anderen
+    Auswahlen waren weg. Jetzt ein Formular, ein Knopf, nur Geaendertes."""
+    a, b, c = _entschieden(monkeypatch, "Anna", "Bert", "Carl")
+    server._beziehung_setzen(c, "kunde")
+    teil = _get("/einordnung").text.split("Bereits entschieden")[1]
+    assert teil.count('action="/einordnung/beziehungen"') == 1
+    assert 'action="/kontakte/beziehung"' not in teil
+    assert "Alle speichern" in teil
+    assert f'name="beziehung_{c}"' in teil and f'name="vorher_{c}" value="kunde"' in teil
+    r = _post("/einordnung/beziehungen", {
+        f"beziehung_{a}": "partner", f"vorher_{a}": "",
+        f"beziehung_{b}": "privat", f"vorher_{b}": "",
+        f"beziehung_{c}": "kunde", f"vorher_{c}": "kunde"})
+    assert r.status_code == 303
+    assert r.headers["location"] == "/einordnung?gespeichert=2#entschieden"
+    stand = {z["id"]: (z["enrichment"] or {}).get("beziehung") for z in server._q(
+        "select id::text as id, enrichment from leads where id::text = any(%s)",
+        ([a, b, c],))}
+    assert stand == {a: "partner", b: "privat", c: "kunde"}
+    # Unveraenderte Zeilen schreiben nichts - auch keinen Verlaufseintrag.
+    assert len(server._q("select 1 from activities where lead_id = %s "
+                         "and type = 'beziehung'", (c,))) == 1
+    assert "2 Beziehungen gespeichert" in _get("/einordnung?gespeichert=2").text
+
+
+def test_bereits_entschieden_kann_beziehung_wieder_oeffnen(monkeypatch):
+    (a,) = _entschieden(monkeypatch, "Anna")
+    server._beziehung_setzen(a, "kunde")
+    r = _post("/einordnung/beziehungen", {f"beziehung_{a}": "", f"vorher_{a}": "kunde"})
+    assert r.headers["location"] == "/einordnung?gespeichert=1#entschieden"
+    e = server._q("select enrichment from leads where id = %s", (a,))[0]["enrichment"]
+    assert "beziehung" not in (e or {})
+
+
+def test_bereits_entschieden_ungueltige_eingabe_speichert_nichts(monkeypatch):
+    """Eine manipulierte Zeile kippt die ganze Sammlung - nicht halb gespeichert."""
+    a, b = _entschieden(monkeypatch, "Anna", "Bert")
+    r = _post("/einordnung/beziehungen", {
+        f"beziehung_{a}": "partner", f"vorher_{a}": "",
+        f"beziehung_{b}": "chef", f"vorher_{b}": ""})
+    assert r.status_code == 422
+    r = _post("/einordnung/beziehungen", {
+        f"beziehung_{a}": "partner", f"vorher_{a}": "",
+        "beziehung_kein-uuid": "kunde", "vorher_kein-uuid": ""})
+    assert r.status_code == 422
+    assert not server._q("select 1 from activities where type = 'beziehung'")
+
+
+def test_bereits_entschieden_ohne_csrf_speichert_nichts(monkeypatch):
+    (a,) = _entschieden(monkeypatch, "Anna")
+    r = CLIENT.post("/einordnung/beziehungen", headers={"host": HOST_OK},
+                    data={f"beziehung_{a}": "kunde", f"vorher_{a}": ""},
+                    follow_redirects=False)
+    assert r.status_code == 403
+    assert not server._q("select 1 from activities where type = 'beziehung'")
+
+
+def test_bereits_entschieden_ein_kontakt_mit_zwei_kennungen_eine_auswahl():
+    """Zwei Kennungen desselben Kontakts (Nummer und LID): zwei Auswahlen mit
+    demselben Namen widersprächen sich beim Absenden."""
+    lead = "11111111-1111-1111-1111-111111111111"
+    zeilen = [{"absender": "491701@c.us", "lead_id": lead, "kontakt": "Anna",
+               "zuletzt": None},
+              {"absender": "123@lid", "lead_id": lead, "kontakt": "Anna",
+               "zuletzt": None}]
+    html = ui._entschieden_formular(zeilen, {lead: "kunde"})
+    assert html.count(f'name="beziehung_{lead}"') == 1
+    assert "Kunde / Interessent" in html
+
+
 # --- Autonomie je Beziehung --------------------------------------------------------
 
 def test_standard_autonomie_je_beziehung():

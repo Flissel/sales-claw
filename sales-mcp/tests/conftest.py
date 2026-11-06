@@ -41,6 +41,7 @@ lokale Fixture, sie raeumt beim Teardown in umgekehrter Reihenfolge aller
 """
 import os
 import shutil
+import sys
 import tempfile
 
 import pytest
@@ -113,6 +114,19 @@ def _kein_echter_kalender(monkeypatch):
                  "GOOGLE_MEET_CLIENT_ID", "GOOGLE_MEET_CLIENT_SECRET",
                  "GOOGLE_MEET_REFRESH_TOKEN"):
         monkeypatch.delenv(name, raising=False)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _keine_echte_anmeldung(monkeypatch):
+    """Mit `--env-file .env` ist die echte UI_SESSION_SECRET gesetzt, und
+    jede Seite im Test antwortete mit der Umleitung auf /login (gefunden
+    06.11.2026). Die Suite prueft Seiten im Uebergangszustand ohne Anmeldung;
+    wer die Anmeldung testet, setzt das Geheimnis selbst per monkeypatch.
+    Nur wenn `ui` schon geladen ist - reine Modultests ziehen es nicht."""
+    ui = sys.modules.get("ui")
+    if ui is not None:
+        monkeypatch.setattr(ui, "UI_SESSION_SECRET", "")
     yield
 
 
