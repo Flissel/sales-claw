@@ -46,6 +46,11 @@ SENSIBEL_MUSTER: tuple[tuple[str, str], ...] = (
     ("von", r"(?i)(no-?reply@accounts\.google\.com|security@|noreply@namecheap\.com)"),
     ("betreff", r"(?i)(kontoauszug|account statement|\bIBAN\b|\bDE\d{2}\s?\d{4})"),
 )
+# Positionen in SENSIBEL_MUSTER, deren Treffer NICHT sofort Aufmerksamkeit brauchen (R10):
+# Kontoauszuege gehen nach „Zur Info“ (Spec §5). Login-Code (0) bleibt im Posteingang und
+# altert ueber post_ziel.ziel_fuer; die Sicherheitswarnung von security@ (1) braucht Handeln.
+# Wer ein Muster einfuegt oder umsortiert, muss diese Menge mitziehen.
+OHNE_AUFMERKSAMKEIT: frozenset[int] = frozenset({2})
 
 
 @dataclass(frozen=True)
@@ -142,7 +147,8 @@ def nach_muster(mail: dict, konto: dict | None = None) -> Einordnung | None:
             return Einordnung(_standard(konto), SENSIBEL_FACH[1], True, "regel",
                               f"sensibel-muster:{feld}:{i}",
                               _konten_unterfach(katalog[1] if katalog else None),
-                              aufmerksamkeit=True)   # das Altern regelt ein spaeterer Durchgang
+                              # das Altern des Login-Codes regelt post_ziel
+                              aufmerksamkeit=i not in OHNE_AUFMERKSAMKEIT)
     return None
 
 

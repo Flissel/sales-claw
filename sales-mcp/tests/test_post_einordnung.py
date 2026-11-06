@@ -519,6 +519,15 @@ def test_zum_nachsehen_und_muster_haben_aufmerksamkeit():
     assert pe.einordnen(_mail(betreff="Ihr Sicherheitscode"), BUSINESS).aufmerksamkeit is True
 
 
+def test_kontoauszug_zur_info_sicherheitscode_und_warnung_aufmerksam():
+    assert pe.einordnen(_mail(betreff="Ihr Kontoauszug"), PRIVAT).aufmerksamkeit is False
+    assert pe.einordnen(_mail(betreff="Ihr Sicherheitscode"), PRIVAT).aufmerksamkeit is True
+    assert pe.einordnen(_mail(von="security@bank.example"), PRIVAT).aufmerksamkeit is True
+    # Beide bleiben sensibel (kein Modell, kein Text), nur die Aufmerksamkeit unterscheidet sich.
+    e = pe.einordnen(_mail(betreff="Ihr Kontoauszug"), PRIVAT)
+    assert (e.sensibel, e.fach, e.aufrufe) == (True, "Konten & Sicherheit", 0)
+
+
 def test_schema_verlangt_aufmerksamkeit():
     par = pe.FUNKTION["function"]["parameters"]
     assert "aufmerksamkeit" in par["required"]

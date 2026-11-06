@@ -122,11 +122,23 @@ def test_ohne_stichtag_ist_alles_altbestand(monkeypatch):
     assert _ziel(m) == "loeschen"
 
 
-def test_stichtag_aus_umgebung(monkeypatch):
+def test_stichtag_parser():
     assert post_ziel._stichtag("2026-11-10") == date(2026, 11, 10)
     assert post_ziel._stichtag("") == date.max
     assert post_ziel._stichtag(None) == date.max
     assert post_ziel._stichtag("kaputt") == date.max   # fail closed: alles Altbestand
+
+
+def test_stichtag_wird_beim_import_aus_der_umgebung_gelesen(monkeypatch):
+    import importlib
+    try:
+        monkeypatch.setenv("POST_AUFRAEUMEN_AB", "2026-11-10")
+        assert importlib.reload(post_ziel).ALTBESTAND_AB == date(2026, 11, 10)
+        monkeypatch.delenv("POST_AUFRAEUMEN_AB")
+        assert importlib.reload(post_ziel).ALTBESTAND_AB == date.max
+    finally:
+        monkeypatch.undo()
+        importlib.reload(post_ziel)    # Modulzustand fuer die uebrigen Tests wiederherstellen
 
 
 def test_datum_als_text_wird_gelesen():
