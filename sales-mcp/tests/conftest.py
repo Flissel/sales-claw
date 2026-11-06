@@ -101,6 +101,21 @@ def _keine_echten_zusatzpostfaecher(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _kein_echter_kalender(monkeypatch):
+    """Kalender und Google Meet (06.11.2026): das Runbook startet die Suite
+    mit `--env-file .env`, und mit den echten CALDAV_*-Werten schrieb
+    `termine_eigen.anlegen` aus den Tests heraus 275 Termine ("Steuer" u. a.)
+    in den echten Kalender des Betreibers. Kein Test braucht echte Werte -
+    wer einen konfigurierten Kalender braucht, setzt eine Attrappen-URL selbst
+    (siehe test_termin.py). Wache: tests/test_testsperre.py."""
+    for name in ("CALDAV_URL", "CALDAV_USER", "CALDAV_PASSWORT",
+                 "GOOGLE_MEET_CLIENT_ID", "GOOGLE_MEET_CLIENT_SECRET",
+                 "GOOGLE_MEET_REFRESH_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    yield
+
+
 class KanalHttpRekorder:
     """Ersatz fuer kanal_api.HTTP (Kanal-Adapter, Spec 2026-10-24-kanaele-posten).
 
