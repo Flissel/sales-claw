@@ -3372,3 +3372,85 @@ Live-Lesen, nur Env-Konten, erst nach Pruefung der Message-ID).
 
 Stoppen / Rueckweg: `docker compose stop sales-post`. In den Postfaechern wurde nichts veraendert; die
 Tabellen koennen liegen bleiben. Die Agenten `post` und `post-pruefer` im Gateway sind harmlos (keine Werkzeuge).
+
+### Post aufraeumen (Spec 2026-11-06): Einschalten
+
+`sales-post` kann den Posteingang aufraeumen: Werbung, Verlaeufe und Altes wandern in Ordner
+(`Zur Info`, `To-Review`), freigegebene Jahre werden geloescht. **Standard ist aus** - der Code laeuft
+nach dem Deploy mit `POST_ORDNEN=aus`: das Ziel je Mail wird nur gepflegt (Reiter in `/post`), im
+Postfach wird nichts angefasst. Ausgeliefert wird erst, wenn Felix es will.
+
+Alle Schritte unten laufen nur mit Felix' ausdruecklichem OK, jeder einzeln. `sales-auto` wird dabei
+nie gestartet. `[laden]` faellt fuer den Basis-Laden weg; `PRAEFIX` = `sales` bzw. der Laden-Praefix.
+
+Die Schalter (in der `.env` des Ladens, durchgereicht in `docker-compose.yml`):
+
+| Variable | Werte | Wirkung |
+| --- | --- | --- |
+| `POST_ORDNEN` | `aus` (Vorgabe) / `verschieben` / `voll` | `aus`: kein IMAP-Schritt. `verschieben`: nur Ordner-Wechsel, nichts wird geloescht. `voll`: loescht zusaetzlich Mails mit Ziel `loeschen`, aber nur freigegebene Jahre, sowie To-Review-Mails, die aelter als 30 Tage sind. `sales-post` und `sales-ui` lesen sie (die UI nur zur Anzeige). |
+| `POST_AUFRAEUMEN_AB` | ISO-Datum, z. B. `2026-11-20` | Tag des Einschaltens. Posteingangs-Mails ab diesem Tag zaehlen nicht als Altbestand. **Pflicht, sobald `POST_ORDNEN` nicht `aus` ist** (siehe Schritt 9). |
+| `POST_BUSINESS_ADRESSEN` | Komma-Liste, mit `@` = Adresse, ohne = Domain | Weitergeleitete Mail an so eine Adresse gilt als business. Wert erst nach Schritt 5 setzen. |
+
+1. **Vault-Claim.** Vor jeder Arbeit an der VM `C:\Users\User\Desktop\secondbrain\00_Meta\002_Koordination_Live.md`
+   lesen, Claim eintragen und sofort committen (Vault ist git-versioniert); bei fremdem aktivem Claim
+   nicht anfassen, Felix fragen. Pruefen: `git -C <vault> log -1 --oneline` zeigt den Claim-Commit.
+2. **SQL einspielen - vor `update.sh`**, aus dem deployten Stand (nicht aus einem anderen Checkout),
+   immer mit `ON_ERROR_STOP`. Die Migration ist additiv/idempotent:
+   `docker exec -i debian-supabase-db-1 psql -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v schema=sales -f - < db/post-sammelstelle.sql`
+   (bzw. `psql -v ON_ERROR_STOP=1 -v schema=sales -f db/post-sammelstelle.sql` im Checkout; anderer Laden:
+   `-v schema=sales_<praefix>`). Soll der Stand vor dem `git pull` eingespielt werden:
+   `git fetch origin && git show origin/<branch>:db/post-sammelstelle.sql | docker exec -i ... psql ... -f -`.
+   Pruefen: Exit-Code 0 und
+   `docker exec debian-supabase-db-1 psql -U supabase_admin -d postgres -Atc "select column_name from information_schema.columns where table_schema='sales' and table_name='post_mails' and column_name in ('ziel','urspruengliche_adresse','ordner_stand')"`
+   liefert drei Zeilen; ausserdem existiert `sales.post_loeschfreigaben`.
+3. `bash deploy/update.sh` (neuer Code; `POST_ORDNEN` bleibt `aus`). Pruefen: `bash deploy/smoke.sh`
+   (Abschnitt `sales-post` gruen) und `docker exec ${PRAEFIX}-post printenv POST_ORDNEN` meldet `aus`.
+4. Das GMX-Konto ist privat:
+   `docker exec -i debian-supabase-db-1 psql -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -c "update sales.post_konten set standard_bereich='privat' where kennung='gmx-felix'"`
+   Pruefen: Ausgabe `UPDATE 1` (bei `UPDATE 0` stimmt die Kennung nicht - nicht raten, Kennungen mit
+   `select kennung from sales.post_konten` ansehen).
+5. **Herkunfts-Stichprobe.** Die Kopfzeilen-Befehle laufen im Container `${PRAEFIX}-post` (nur dort
+   sind `POST_BUSINESS_ADRESSEN` und die Kontozugaenge da, wie bei `deploy/post-neu-einordnen.sh`) und
+   lesen nur Kopfzeilen per `BODY.PEEK`, nie Inhalt:
+   `docker exec ${PRAEFIX}-post python -m post_herkunft stichprobe gmail-felix404` (Kennung wie in `post_konten.kennung`)
+   Die Tabelle zeigt, welche Kopfzeile (`X-Forwarded-To`, `X-Original-To`, `Delivered-To`,
+   `X-Forwarded-For`) welche Zieladresse traegt. **Erst dieser Befund entscheidet `POST_BUSINESS_ADRESSEN`
+   (R16):** steht dort verlaesslich die Bluebatch-Adresse (Domain oder genaue Adresse), diese in die `.env`
+   eintragen und `docker compose up -d --no-deps --force-recreate sales-post` (nur `sales-post`, nie
+   nacktes `up -d`). Findet sich nichts Verlaessliches, nichts raten: Felix nach der Bluebatch-Adresse
+   fragen. Gegenprobe: `docker exec ${PRAEFIX}-post printenv POST_BUSINESS_ADRESSEN`.
+   Bei Abweichung ggf. die Reihenfolge `KOPFZEILEN` in `post_herkunft.py` anpassen (eigener Commit).
+6. `docker exec ${PRAEFIX}-post python -m post_herkunft nachtragen gmail-felix404` - traegt die
+   urspruengliche Adresse fuer den Altbestand nach (nur Kopfzeilen; 500 Mails je Lauf, bei Bedarf
+   wiederholen). Pruefen: Ausgabe `Nachgetragen: <n>`; wiederholen, bis `n` = 0 ist.
+7. **Neu-Einordnung als Stichprobe, ueber alle vier Konten, mindestens 100 Mails (Spec §9):**
+   `bash deploy/post-neu-einordnen.sh [laden] vorschau --je-konto 25`, danach
+   `bash deploy/post-neu-einordnen.sh [laden] bericht`.
+   **Tor: `unklar_anteil` < 0,10 in jedem Konto** (steht im `bericht`, je Konto). Ein Konto darueber heisst:
+   Prompt/Katalog nachschaerfen (zurueck zu Task 2 der Einordnung), Vorschau wiederholen - nicht weiter.
+   Die Mailinhalte erscheinen nirgends in der Ausgabe; die Vorschau zaehlt zur Tagesgrenze `POST_TAGESGRENZE`.
+8. `bash deploy/post-neu-einordnen.sh [laden] anwenden` - nur mit Felix' OK nach dem Bericht (ohne Modell;
+   Mails mit menschlicher Korrektur bleiben). Pruefen: Ausgabe nennt die Zahl, danach `bericht` noch einmal.
+9. **Einschalten, Stufe 1: nur verschieben.** In die `.env`: `POST_AUFRAEUMEN_AB=<heutiges Datum, ISO>` und
+   `POST_ORDNEN=verschieben`, dann `docker compose up -d --no-deps --force-recreate sales-post sales-ui`.
+   **`POST_ORDNEN` ausser `aus` nie ohne `POST_AUFRAEUMEN_AB`:** ohne Stichtag gilt jede Mail als
+   Altbestand und die 90-Tage-Regel stuft Posteingangs-Mails ab. Pruefen:
+   `docker exec ${PRAEFIX}-post printenv POST_ORDNEN POST_AUFRAEUMEN_AB` (beide gesetzt). Dann **eine
+   Runde beobachten** (Intervall 120 s): Zahlen in `/post/aufraeumen`, `docker logs --since 10m ${PRAEFIX}-post`
+   ohne Fehler, Stichprobe im Handy-Postfach (Ordner `Zur Info`/`To-Review`, nichts fehlt).
+   Verschieben ist umkehrbar (Mail liegt nur in einem anderen Ordner).
+10. **Sichtpruefung vor `voll`:** In der UI unter `/post/aufraeumen` je Jahr ansehen, was geloescht
+    wuerde (Vorschau je Jahr, Reiter To-Review). Erst danach, mit Felix' OK: `POST_ORDNEN=voll` in die
+    `.env`, `docker compose up -d --no-deps --force-recreate sales-post sales-ui`. `voll` loescht nur
+    **freigegebene Jahre** und **To-Review-Mails, die aelter als 30 Tage sind**; ohne Freigabe bleibt die
+    Mail, wo sie ist.
+11. **Jahre freigeben** durch Felix in der UI (`/post/aufraeumen`), das neueste Jahr zuerst, je Jahr einzeln;
+    Absender, die bleiben sollen, vorher herausnehmen. Nach jeder Freigabe eine Runde abwarten und die
+    Zahlen pruefen, bevor das naechste Jahr dran ist.
+
+**Rueckweg.** `POST_ORDNEN=aus` in der `.env` und `docker compose up -d --no-deps --force-recreate
+sales-post sales-ui` stoppt jedes Verschieben und Loeschen ab der naechsten Runde (Pruefen:
+`printenv POST_ORDNEN` im Container = `aus`). Schon verschobene Mails bleiben im Zielordner und lassen
+sich per Handy zurueckziehen. **Geloeschte Mails sind endgueltig weg**; nur ihre Kopfzeile bleibt in
+`post_mails` (Absender, Betreff, Datum - kein Inhalt). Darum nie `voll` ohne Sichtpruefung (Schritt 10).
+Notbremse ohne `.env`-Aenderung: `docker compose stop sales-post`.
