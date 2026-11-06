@@ -316,8 +316,7 @@ def _bericht_drucken(b: dict) -> None:
     _tabelle("Neu (Bereich / Fach / Unterfach)", sorted(((*k, n) for k, n in b["neu"].items()),
                                                         key=lambda t: -t[-1]))
     # Rollout-Tor: der Anteil Zum Nachsehen soll je Konto unter 0,10 liegen.
-    print("
-Zum Nachsehen je Konto (Anteil der Vorschau-Ergebnisse)")
+    print("\nZum Nachsehen je Konto (Anteil der Vorschau-Ergebnisse)")
     for kennung, anteil in sorted(b["unklar_anteil"].items()):
         print(f"  {anteil:5.2f}  {kennung}")
     _tabelle("Katalog-Treffer (Endung / Fach / Unterfach)",
