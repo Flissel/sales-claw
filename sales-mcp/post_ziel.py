@@ -116,6 +116,71 @@ def _db():
     return server
 
 
+# Spalten, die ziel_fuer braucht.
+_SPALTEN = ("id, besitzer, von, fach, aufmerksamkeit, werbung_sicher, datum, anhaenge, "
+            "begruendung, ziel, ziel_manuell")
+
+
+def _freigegeben(server, besitzer: str | None = None) -> dict[str, set[int]]:
+    """Freigegebene Jahre je Besitzer; mit `besitzer` nur dessen."""
+    sql, werte = "select besitzer, jahr from post_loeschfreigaben", ()
+    if besitzer is not None:
+        sql, werte = sql + " where besitzer = %s", (besitzer,)
+    freigegeben: dict[str, set[int]] = {}
+    for z in server._q(sql, werte):
+        freigegeben.setdefault(z["besitzer"], set()).add(z["jahr"])
+    return freigegeben
+
+
+def _kontakte(server, adresse: str | None = None) -> set[str]:
+    """Adressen bekannter Kontakte; jede Zeile in leads zaehlt, auch archivierte.
+    Mit `adresse` nur diese (leer, wenn sie kein Kontakt ist)."""
+    sql = ("select distinct lower(trim(email)) as adresse from leads "
+           "where email is not null and trim(email) <> ''")
+    werte = ()
+    if adresse is not None:
+        sql, werte = sql + " and lower(trim(email)) = %s", (adresse,)
+    return {z["adresse"] for z in server._q(sql, werte)}
+
+
+def _schutz(server, besitzer: str | None = None) -> set[tuple[str, str]]:
+    """(Besitzer, Muster) der Regeln „nie Werbung“. Dieselbe Musterlogik wie
+    post_werbung.geschuetzt: gleich ohne Gross/Klein."""
+    sql = ("select besitzer, lower(muster) as muster from post_regeln "
+           "where art = 'nie_werbung' and feld = 'von' and besitzer is not null")
+    werte = ()
+    if besitzer is not None:
+        sql, werte = sql + " and besitzer = %s", (besitzer,)
+    return {(z["besitzer"], z["muster"]) for z in server._q(sql, werte)}
+
+
+def _berechnen(z: dict, jetzt: datetime, freigegeben: dict[str, set[int]],
+               kontakte: set[str], schutz: set[tuple[str, str]]) -> str:
+    adresse = post_struktur.absender_adresse(z["von"])
+    # Ohne lesbare Absenderadresse laesst sich weder Kontakt noch Schutz pruefen: dann
+    # gilt die Mail als geschuetzt (nie loeschen).
+    geschuetzt = (not adresse or (z["besitzer"], post_struktur.absender_muster(adresse).lower())
+                  in schutz)
+    return ziel_fuer(z, jetzt, freigegeben.get(z["besitzer"], set()),
+                     bool(adresse) and adresse in kontakte, geschuetzt)
+
+
+def ziel_frisch(mail_id) -> str | None:
+    """Ziel genau dieser Mail, frisch aus der Datenbank berechnet; None, wenn sie nicht
+    (mehr) eingeordnet ist. Fuer post_ordnen direkt vor dem Loeschen (R13): das
+    gespeicherte `ziel` kann seit dem letzten ziele_aktualisieren veraltet sein."""
+    server = _db()
+    zeilen = server._q(f"select {_SPALTEN} from post_mails "
+                       "where id = %s and status = 'eingeordnet'", (mail_id,))
+    if not zeilen:
+        return None
+    z = zeilen[0]
+    adresse = post_struktur.absender_adresse(z["von"])
+    return _berechnen(z, datetime.now(timezone.utc), _freigegeben(server, z["besitzer"]),
+                      _kontakte(server, adresse) if adresse else set(),
+                      _schutz(server, z["besitzer"]))
+
+
 def ziele_aktualisieren() -> int:
     """Berechnet das Ziel aller eingeordneten Mails ohne Handentscheidung neu und schreibt
     nur Abweichungen. Rueckgabe: Zahl geaenderter Zeilen. Geloeschte Mails bleiben unberuehrt.
@@ -123,33 +188,17 @@ def ziele_aktualisieren() -> int:
     Die Eingaben werden gebuendelt geladen (je Lauf einmal), nicht je Mail abgefragt."""
     server = _db()
     jetzt = datetime.now(timezone.utc)
-
-    freigegeben: dict[str, set[int]] = {}
-    for z in server._q("select besitzer, jahr from post_loeschfreigaben"):
-        freigegeben.setdefault(z["besitzer"], set()).add(z["jahr"])
-    kontakte = {z["adresse"] for z in server._q(
-        # jede Zeile in leads zaehlt, auch archivierte
-        "select distinct lower(trim(email)) as adresse from leads "
-        "where email is not null and trim(email) <> ''")}
-    # Dieselbe Musterlogik wie post_werbung.geschuetzt: (Besitzer, Muster) gleich ohne Gross/Klein.
-    schutz = {(z["besitzer"], z["muster"]) for z in server._q(
-        "select besitzer, lower(muster) as muster from post_regeln "
-        "where art = 'nie_werbung' and feld = 'von' and besitzer is not null")}
+    freigegeben = _freigegeben(server)
+    kontakte = _kontakte(server)
+    schutz = _schutz(server)
 
     zeilen = server._q(
-        "select id, besitzer, von, fach, aufmerksamkeit, werbung_sicher, datum, anhaenge, "
-        "begruendung, ziel from post_mails "
+        f"select {_SPALTEN} from post_mails "
         "where status = 'eingeordnet' and not ziel_manuell")
 
     neu: dict[str, list] = {}
     for z in zeilen:
-        adresse = post_struktur.absender_adresse(z["von"])
-        # Ohne lesbare Absenderadresse laesst sich weder Kontakt noch Schutz pruefen: dann
-        # gilt die Mail als geschuetzt (nie loeschen).
-        geschuetzt = (not adresse or (z["besitzer"], post_struktur.absender_muster(adresse).lower())
-                      in schutz)
-        ziel = ziel_fuer(z, jetzt, freigegeben.get(z["besitzer"], set()),
-                         bool(adresse) and adresse in kontakte, geschuetzt)
+        ziel = _berechnen(z, jetzt, freigegeben, kontakte, schutz)
         if ziel != z["ziel"]:
             neu.setdefault(ziel, []).append(z["id"])
 

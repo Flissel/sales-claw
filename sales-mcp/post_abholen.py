@@ -29,6 +29,10 @@ Sensibel: Treffen die festen Muster (Sicherheitscode, Passwort-Link) schon
 beim Abholen, landet der Text gar nicht erst in der Datenbank. Sonst wird er
 beim Einordnen als sensibel geloescht (text/auszug NULL, Spec §5).
 
+AUFRAEUMEN (Spec 2026-11-06). Nach dem Einordnen pflegt die Runde das Ziel je
+Mail (post_ziel.ziele_aktualisieren, immer) und gleicht mit POST_ORDNEN != aus
+das Postfach daran an (post_ordnen). Das Abholen oben bleibt dabei lesend.
+
 Protokoll: nur Konto-Kennung, Zeilen-ID, Zahlen und Fehler-TYPEN. Nie
 Absender, Betreff, Text oder die Ausnahme-Meldung selbst - Datenbank-Meldungen
 zitieren die Zeile ("Failing row contains ..."), Netz-Meldungen manchmal das
@@ -49,8 +53,10 @@ import threading
 
 import post_einordnung
 import post_konten
+import post_ordnen
 import post_struktur
 import post_werbung
+import post_ziel
 import postfach
 import server
 from gateway import GatewayFehler, GatewayTransient
@@ -544,17 +550,40 @@ def eine_runde() -> dict:
                         type(e).__name__)
     if _STOPP.is_set():
         return bilanz
+    _einordnen(bilanz)
+    if not _STOPP.is_set():
+        _aufraeumen(bilanz)
+    return bilanz
+
+
+def _einordnen(bilanz: dict) -> None:
     if kunde_aktiv():
         bilanz["pause"] = "kundenantwort"
-        return bilanz
+        return
     rest = TAGESGRENZE - modellaufrufe_heute()
     # Eine Mail kostet bis zu 2 Aufrufe (Sortierer + Pruefer), `rest` zaehlt Aufrufe.
     mails = min(rest // 2, EINORDNEN_JE_RUNDE)
     if mails <= 0:
         bilanz["tagesgrenze"] = True
-        return bilanz
+        return
     bilanz["eingeordnet"] = einordnen_offene(mails)
-    return bilanz
+
+
+def _aufraeumen(bilanz: dict) -> None:
+    """Nach dem Einordnen: Ziel je Mail pflegen (immer, R1), dann das Postfach angleichen
+    (nur mit POST_ORDNEN != aus). Beides ruft kein Modell, laeuft also auch in der
+    Kundenpause und nach der Tagesgrenze. Ein Fehler in einem Schritt kostet die Runde
+    nicht; im Protokoll nur der Typ (Datenbank-Meldungen zitieren Zeilen)."""
+    try:
+        bilanz["ziele"] = post_ziel.ziele_aktualisieren()
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("Ziele nicht aktualisiert (%s)", type(e).__name__)
+    if post_ordnen.MODUS == "aus":
+        return
+    try:
+        bilanz["ordnen"] = post_ordnen.ordnen()
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("Ordnen fehlgeschlagen (%s)", type(e).__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -608,7 +637,8 @@ def main() -> int:
     while not _STOPP.is_set():
         try:
             bilanz = eine_runde()
-            if bilanz.get("abgeholt") or bilanz.get("eingeordnet") or bilanz.get("konten_fehler"):
+            if (bilanz.get("abgeholt") or bilanz.get("eingeordnet") or bilanz.get("konten_fehler")
+                    or bilanz.get("ziele")):
                 LOG.info("Runde: %s", bilanz)
         except Exception as e:  # noqa: BLE001 - Meldung koennte Mailinhalt zitieren
             LOG.error("Runde uebersprungen (%s)", type(e).__name__)

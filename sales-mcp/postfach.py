@@ -642,7 +642,11 @@ def verschieben(uid: str, ziel: str) -> str:
     -> Name des Zielordners. Wirft bei Verbindungsproblemen; ValueError, wenn
     es keinen Spam-Ordner gibt oder die uid unlesbar ist.
 
-    Seit 28.10.2026 auch "gmx:12" - verschoben wird im Postfach der Mail."""
+    Seit 28.10.2026 auch "gmx:12" - verschoben wird im Postfach der Mail.
+
+    Seit 06.11.2026 ueber post_imap: `UID MOVE` oder `UID EXPUNGE <uid>`. Das fruehere
+    nackte EXPUNGE entfernte jede als geloescht markierte Mail der INBOX (Spec §11)."""
+    import post_imap    # spaet: post_imap nutzt dieses Modul
     kennung, nummer = zerlegen(uid)
     if not nummer.isdigit():
         raise ValueError("uid ist keine Zahl")
@@ -654,14 +658,9 @@ def verschieben(uid: str, ziel: str) -> str:
                 raise ValueError("kein Spam-Ordner im Postfach")
         else:
             ordner = UNWICHTIG_ORDNER
-            if ordner not in {n for _, n in _ordner_liste(kasten)}:
-                kasten.create(_imap_name(ordner))
-        kasten.select("INBOX")
-        status, _ = kasten.uid("copy", nummer.encode("ascii"), _imap_name(ordner))
-        if status != "OK":
-            raise ValueError("Kopieren abgelehnt")
-        kasten.uid("store", nummer.encode("ascii"), "+FLAGS", "(\\Deleted)")
-        kasten.expunge()
+            post_imap.ordner_sicherstellen(kasten, ordner)
+        post_imap.faehigkeiten_auffrischen(kasten)
+        post_imap.verschieben(kasten, "INBOX", int(nummer), ordner)
         return ordner
     finally:
         kasten.logout()
