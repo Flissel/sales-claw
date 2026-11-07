@@ -645,3 +645,57 @@ def test_posteingang_suche_findet_email_aktivitaet_nur_fuer_besitzer(
     ben = _get("t8_ben", "/posteingang?q=MAILTEXT")
     assert ben.status_code == 200
     assert MAILTEXT not in ben.text
+
+
+def test_historie_email_entwurf_nur_fuer_container_besitzer(kontakt_mit_mail):
+    """Gesendeter E-Mail-Entwurf (Betreff) taucht in Verlauf UND Ueberblick
+    nur beim Besitzer auf; ein WhatsApp-Entwurf bleibt fuer alle sichtbar."""
+    server._q(
+        "insert into drafts (lead_id, channel, recipient, subject, body, "
+        "status, sent_at) values (%s, 'email', 'x@example.org', 'BETREFF-789', "
+        "'Text', 'sent', now()) returning id", (kontakt_mit_mail,))
+    server._q(
+        "insert into drafts (lead_id, channel, recipient, subject, body, "
+        "status, sent_at) values (%s, 'whatsapp', '+491', 'WABETREFF-321', "
+        "'Text', 'sent', now()) returning id", (kontakt_mit_mail,))
+    for reiter in ("verlauf", "ueberblick"):
+        pfad = f"/kontakte/{kontakt_mit_mail}?reiter={reiter}"
+        anna = _get("t8_anna", pfad).text
+        ben = _get("t8_ben", pfad).text
+        assert "BETREFF-789" in anna, reiter
+        assert "BETREFF-789" not in ben, reiter
+        assert "WABETREFF-321" in ben, reiter
+        assert "BETREFF-789" not in _get(None, pfad).text, reiter
+
+
+def test_verlauf_versand_email_fuer_fremde_versteckt(kontakt_mit_mail):
+    import json
+    server._q(
+        "insert into activities (lead_id, type, payload, actor) values "
+        "(%s, 'versand', %s, 'system') returning id",
+        (kontakt_mit_mail, json.dumps({"kanal": "email", "text": "RAUS-555",
+                                       "chat_id": "x@example.org"})))
+    server._q(
+        "insert into activities (lead_id, type, payload, actor) values "
+        "(%s, 'nachricht_ausgehend', %s, 'system') returning id",
+        (kontakt_mit_mail, json.dumps({"kanal": "email", "text": "RAUS-556"})))
+    pfad = f"/kontakte/{kontakt_mit_mail}?reiter=verlauf"
+    anna = _get("t8_anna", pfad).text
+    ben = _get("t8_ben", pfad).text
+    assert "RAUS-555" in anna and "RAUS-556" in anna
+    assert "RAUS-555" not in ben and "RAUS-556" not in ben
+
+
+def test_chat_report_ohne_email_aktivitaeten(kontakt_mit_mail):
+    """Was ein Chat-Report zusammenfasst (chat_verlauf ohne alle, faellig-
+    Zaehlung, juengste offene Grenze) kennt keine Mail-Aktivitaet."""
+    import json
+    v = json.loads(server.chat_verlauf(kontakt_mit_mail))
+    texte = [n["text"] for n in v["nachrichten"]]
+    assert WATEXT in texte and MAILTEXT not in texte
+    assert v["gesamt"] == 1
+    faellig = server._chat_faellig(schwelle=1)
+    assert [int(z["offen"]) for z in faellig] == [1]
+    # Nachlese durch den Betreiber (alle=True) bleibt vollstaendig.
+    alle = json.loads(server.chat_verlauf(kontakt_mit_mail, alle=True))
+    assert MAILTEXT in [n["text"] for n in alle["nachrichten"]]
