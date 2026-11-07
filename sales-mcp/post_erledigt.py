@@ -126,7 +126,9 @@ def kontakt_anlegen(b: Betrachter, mail_id: str) -> "str | None":
 # Drei Signale: versandter Entwurf (DB), \Answered am Server, Antwort im Gesendet-Ordner.
 # Das Postfach wird nur gelesen. \Answered ist so aktuell wie der letzte Abruf.
 
-_KANDIDATEN = f"""
+def _kandidaten_sql() -> str:
+    """Wird je Aufruf gebaut: der Stichtag darf nicht beim Import einfrieren (R4)."""
+    return f"""
 select m.id, m.imap_uid, m.message_id, m.message_id_ersatz, m.ordner, m.ordner_uid,
        (not m.message_id_ersatz and exists (
           select 1 from drafts d where d.status = 'sent'
@@ -166,8 +168,8 @@ def _imap_uid(z: dict) -> "int | None":
 
 def _konto_abgleichen(konto: dict, je_konto: int, verbinden, bilanz: dict) -> None:
     import server
-    zeilen = server._q(_KANDIDATEN, {"konto": konto["id"], "besitzer": konto["besitzer"],
-                                     "n": max(1, int(je_konto))})
+    zeilen = server._q(_kandidaten_sql(), {"konto": konto["id"], "besitzer": konto["besitzer"],
+                                           "n": max(1, int(je_konto))})
     if not zeilen:
         return
     rest = []
