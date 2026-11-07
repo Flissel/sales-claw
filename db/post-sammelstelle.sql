@@ -336,3 +336,16 @@ begin
   end if;
   execute format('grant %s on %I.post_loeschfreigaben to %I', rechte, s, rolle);
 end $$;
+
+-- Ein Posteingang (Spec 2026-11-07, Z3): Erledigt-Zustand und Abgleich-Marker.
+-- erledigt_art: beantwortet = vom Abgleich erkannt, bezahlt/erledigt = per Hand.
+-- abgleich_aus: nach "wieder oeffnen" greift der Antwort-Abgleich nicht mehr.
+alter table :"schema".post_mails
+  add column if not exists erledigt_am timestamptz,
+  add column if not exists erledigt_art text
+    check (erledigt_art in ('beantwortet','bezahlt','erledigt')),
+  add column if not exists bezahlt_am timestamptz,
+  add column if not exists abgeglichen_am timestamptz,
+  add column if not exists abgleich_aus boolean not null default false;
+create index if not exists post_mails_offen_idx
+  on :"schema".post_mails (besitzer, ziel) where erledigt_am is null;
