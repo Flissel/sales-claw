@@ -199,10 +199,12 @@ def test_nicht_eingerichtetes_postfach_ist_nicht_verfuegbar(haupt):
 # --- Aufraeumen --------------------------------------------------------------
 
 @pytest.fixture
-def gmx_in_sammelstelle():
+def gmx_in_sammelstelle(monkeypatch):
     """Seit M1 (03.11.2026) gibt es keine alten uids "gmx:2" mehr fuer
     Antworten/Aufraeumen - der Weg in GMX fuehrt ueber die Sammelstelle
     (post:<id>, env-Konto gmx). Liefert die post:-uid der GMX-Mail 2."""
+    # Ein Container = ein Nutzer: der Bot sieht nur die Mails des Besitzers.
+    monkeypatch.setenv("POST_BESITZER", "t_felix")
     with server.pool.connection() as conn:
         conn.execute("truncate sales_test.post_mails, sales_test.post_konten cascade")
     konto = server._q(
