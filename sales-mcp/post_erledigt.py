@@ -5,6 +5,7 @@ erledigt, nicht geloescht und ab dem Stichtag. Datenzugriff auf Mails nur ueber
 post_struktur (sichtbar_sql / mail_lesen): nur der Besitzer sieht und aendert.
 """
 import email.utils
+import imaplib
 import logging
 from datetime import date
 
@@ -185,37 +186,52 @@ def _konto_abgleichen(konto: dict, je_konto: int, verbinden, bilanz: dict) -> No
     kasten = verbinden(konto)
     try:
         post_imap.faehigkeiten_auffrischen(kasten)
-        flags: dict = {}                   # (ordner, uid) -> Flags
-        fehlend_ordner: set = set()
-        je_ordner: dict = {}
-        for z in rest:
-            uid = _imap_uid(z)
-            if uid is not None:
-                je_ordner.setdefault(z["ordner"] or "INBOX", []).append(uid)
-        for ordner, uids in je_ordner.items():
+        # \Answered nur, wenn die gespeicherten INBOX-UIDs noch gelten (UIDVALIDITY gleich).
+        # Andere Ordner haben keine gespeicherte Validity: dort kein Signal 2.
+        try:
+            live = post_imap.uidvalidity_lesen(kasten, "INBOX")
+        except post_imap.Fehlt:
+            live = None
+        gespeichert = konto.get("uidvalidity")
+        inbox_gilt = (live is not None and gespeichert is not None
+                      and int(live) == int(gespeichert))
+        flags: dict = {}                   # uid -> Flags (nur INBOX)
+        inbox_fehlt = False
+        uids = [u for u in (_imap_uid(z) for z in rest
+                            if (z["ordner"] or "INBOX") == "INBOX") if u is not None]
+        if inbox_gilt and uids:
             try:
-                for uid, f in post_imap.flags_lesen(kasten, ordner, uids).items():
-                    flags[(ordner, uid)] = f
+                flags = post_imap.flags_lesen(kasten, "INBOX", uids)
             except post_imap.Fehlt:
-                fehlend_ordner.add(ordner)
+                inbox_fehlt = True
+        # Gesendet-Ordner einmal lesend waehlen, danach nur SEARCH je Mail.
         gesendet = post_imap.gesendet_ordner(kasten)
+        sent_ok = False
+        if gesendet and any(not z["message_id_ersatz"] and z["message_id"] for z in rest):
+            try:
+                post_imap.lesend_waehlen(kasten, gesendet)
+                sent_ok = True
+            except (post_imap.Fehlt, post_imap.ImapFehler, imaplib.IMAP4.error) as e:
+                bilanz["sent_fehler"] += 1
+                LOG.warning("Konto %s: Gesendet-Ordner nicht lesbar (%s)",
+                            konto["kennung"], type(e).__name__)
         for z in rest:
             ordner, uid = z["ordner"] or "INBOX", _imap_uid(z)
-            if uid is None:
-                _geprueft(z["id"])         # nichts abzugleichen (Platzhalter-UID o. ae.)
-                bilanz["geprueft"] += 1
-                continue
-            if ordner in fehlend_ordner or (ordner, uid) not in flags:
-                _geprueft(z["id"], fehlt=True)
-                bilanz["geprueft"] += 1
-                bilanz["fehlt"] += 1
-                continue
-            antwort = "\\Answered" in flags[(ordner, uid)]
-            if not antwort and gesendet and not z["message_id_ersatz"]:
+            antwort = False
+            if inbox_gilt and ordner == "INBOX" and uid is not None:
+                if inbox_fehlt or uid not in flags:
+                    _geprueft(z["id"], fehlt=True)
+                    bilanz["geprueft"] += 1
+                    bilanz["fehlt"] += 1
+                    continue
+                antwort = "\\Answered" in flags[uid]
+            if not antwort and sent_ok and not z["message_id_ersatz"]:
                 try:
-                    antwort = post_imap.antwort_gesendet(kasten, gesendet, z["message_id"])
-                except (post_imap.Fehlt, post_imap.ImapFehler):
-                    antwort = False
+                    antwort = post_imap.antwort_suchen(kasten, z["message_id"])
+                except (post_imap.ImapFehler, imaplib.IMAP4.error) as e:
+                    bilanz["sent_fehler"] += 1
+                    LOG.warning("Konto %s: Gesendet-Suche abgelehnt (%s)",
+                                konto["kennung"], type(e).__name__)
             if antwort:
                 _beantwortet(z["id"])
                 bilanz["beantwortet"] += 1
@@ -232,10 +248,11 @@ def _konto_abgleichen(konto: dict, je_konto: int, verbinden, bilanz: dict) -> No
 def abgleich(verbinden=None, je_konto: int = 50) -> dict:
     """Je aktivem Konto des Container-Besitzers hoechstens `je_konto` offene Mails auf
     Antworten pruefen. Ohne Stichtag oder Besitzer: nichts, keine Verbindung.
-    Rueckgabe: {"geprueft", "beantwortet", "fehlt", "konten_fehler"}."""
+    Rueckgabe: {"geprueft", "beantwortet", "fehlt", "konten_fehler", "sent_fehler"}."""
     import server
     import post_konten
-    bilanz = {"geprueft": 0, "beantwortet": 0, "fehlt": 0, "konten_fehler": 0}
+    bilanz = {"geprueft": 0, "beantwortet": 0, "fehlt": 0, "konten_fehler": 0,
+              "sent_fehler": 0}
     besitzer = post_struktur.container_besitzer()
     if not stichtag_gesetzt() or not besitzer:
         return bilanz

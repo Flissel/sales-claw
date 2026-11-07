@@ -328,7 +328,7 @@ def loeschen(kasten, quelle: str, uid: int, anbieter: str, message_id: str = "")
 _FLAGS = re.compile(rb"FLAGS \(([^)]*)\)", re.I)
 
 
-def _lesend_waehlen(kasten, ordner: str) -> None:
+def lesend_waehlen(kasten, ordner: str) -> None:
     status, _ = kasten.select(postfach._imap_name(ordner), readonly=True)
     if status != "OK":
         raise Fehlt("Ordner nicht vorhanden")
@@ -337,7 +337,7 @@ def _lesend_waehlen(kasten, ordner: str) -> None:
 def flags_lesen(kasten, ordner: str, uids: list[int]) -> dict[int, set[str]]:
     """Flags je UID im Ordner (nur lesend geoeffnet). Fehlt eine UID, ist sie nicht im
     Ergebnis; fehlt der Ordner, gilt `Fehlt`. Der Stand ist so frisch wie dieser Abruf."""
-    _lesend_waehlen(kasten, ordner)
+    lesend_waehlen(kasten, ordner)
     ergebnis: dict[int, set[str]] = {}
     for uid in uids:
         nummer = int(uid)
@@ -365,12 +365,20 @@ def gesendet_ordner(kasten) -> str | None:
     return None
 
 
-def antwort_gesendet(kasten, ordner: str, message_id: str) -> bool:
-    """Liegt im Ordner eine Mail, die auf `message_id` antwortet? Erst In-Reply-To, ohne
-    Treffer auch References. Leere oder nicht suchbare Message-ID: False."""
+def uidvalidity_lesen(kasten, ordner: str) -> int | None:
+    """UIDVALIDITY des Ordners, nur lesend geoeffnet (None, wenn der Server keine nennt)."""
+    lesend_waehlen(kasten, ordner)
+    _typ, daten = kasten.response("UIDVALIDITY")
+    try:
+        return int(daten[0]) if daten and daten[0] is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def antwort_suchen(kasten, message_id: str) -> bool:
+    """Wie antwort_gesendet, aber im schon (lesend) gewaehlten Ordner: nur UID SEARCH."""
     if not message_id or not _SUCHBAR.fullmatch(message_id):
         return False
-    _lesend_waehlen(kasten, ordner)
     for kopf in ("In-Reply-To", "References"):
         daten = _ok(kasten.uid("SEARCH", None, "HEADER", kopf, f'"<{message_id}>"'),
                     "UID SEARCH")
@@ -378,3 +386,12 @@ def antwort_gesendet(kasten, ordner: str, message_id: str) -> bool:
         if (roh.split() if isinstance(roh, bytes) else str(roh).split()):
             return True
     return False
+
+
+def antwort_gesendet(kasten, ordner: str, message_id: str) -> bool:
+    """Liegt im Ordner eine Mail, die auf `message_id` antwortet? Erst In-Reply-To, ohne
+    Treffer auch References. Leere oder nicht suchbare Message-ID: False."""
+    if not message_id or not _SUCHBAR.fullmatch(message_id):
+        return False
+    lesend_waehlen(kasten, ordner)
+    return antwort_suchen(kasten, message_id)

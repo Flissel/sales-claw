@@ -38,7 +38,7 @@ def db(monkeypatch):
     leeren()
 
 
-def _konto(server, besitzer="t_anna", kennung="t-anna"):
+def _konto(server, besitzer="t_anna", kennung="t-anna", uidvalidity=1):
     with server.pool.connection() as conn:
         return conn.execute(
             "insert into post_konten (besitzer, kennung, anbieter, adresse, quelle) "
@@ -194,7 +194,8 @@ def test_abgleich_answered_markiert_beantwortet(abg):
     bilanz = post_erledigt.abgleich(verbinden=_verbinden({"t-anna": kasten}))
     z = _zeile(abg, m)
     assert z["erledigt_art"] == "beantwortet" and z["erledigt_am"] and z["abgeglichen_am"]
-    assert bilanz == {"geprueft": 1, "beantwortet": 1, "fehlt": 0, "konten_fehler": 0}
+    assert bilanz == {"geprueft": 1, "beantwortet": 1, "fehlt": 0, "konten_fehler": 0,
+                       "sent_fehler": 0}
     assert ("logout",) in kasten.protokoll
 
 
@@ -323,14 +324,106 @@ def test_abgleich_kontofehler_zaehlt_und_geht_weiter(abg):
     assert _zeile(abg, m2)["abgeglichen_am"] is not None
 
 
-def test_abgleich_ordner_uid_in_anderem_ordner(abg):
+def test_abgleich_anderer_ordner_traut_answered_nicht(abg):
     k_id = _konto(abg)
     m = _mail(abg, k_id, uid=7, mid="m7@x", ordner="Rechnungen", ordner_uid=3,
               abgeglichen=False)
     kasten = FakeKasten(ordner={"INBOX": {}, "Rechnungen": {3: mail("m7@x")}})
     kasten.flags[("Rechnungen", 3)] = {"\\Answered"}
     post_erledigt.abgleich(verbinden=_verbinden({"t-anna": kasten}))
+    z = _zeile(abg, m)
+    assert z["erledigt_am"] is None and z["abgeglichen_am"] is not None
+    assert not kasten.befehle("FETCH")
+
+
+def test_abgleich_uidvalidity_weicht_ab_kein_answered(abg):
+    k_id = _konto(abg, uidvalidity=5)                     # live: 1
+    m = _mail(abg, k_id, uid=7, mid="m7@x", abgeglichen=False)
+    kasten = _inbox(7)
+    kasten.flags[("INBOX", 7)] = {"\\Answered"}
+    bilanz = post_erledigt.abgleich(verbinden=_verbinden({"t-anna": kasten}))
+    z = _zeile(abg, m)
+    assert z["erledigt_am"] is None and z["abgeglichen_am"] is not None
+    assert bilanz["beantwortet"] == 0 and bilanz["geprueft"] == 1
+    assert not kasten.befehle("FETCH")
+    assert m in _ids(ANNA)
+
+
+def test_abgleich_ohne_gespeicherte_uidvalidity_kein_answered(abg):
+    k_id = _konto(abg, uidvalidity=None)
+    m = _mail(abg, k_id, uid=7, mid="m7@x", abgeglichen=False)
+    kasten = _inbox(7)
+    kasten.flags[("INBOX", 7)] = {"\\Answered"}
+    post_erledigt.abgleich(verbinden=_verbinden({"t-anna": kasten}))
+    assert _zeile(abg, m)["erledigt_am"] is None
+
+
+def test_abgleich_uidvalidity_abweichung_gesendet_gilt_noch(abg):
+    k_id = _konto(abg, uidvalidity=5)
+    m = _mail(abg, k_id, uid=7, mid="m7@x", abgeglichen=False)
+    roh = mail("a1@x").replace(b"Subject:", b"In-Reply-To: <m7@x>\nSubject:", 1)
+    kasten = FakeKasten(ordner={"INBOX": {7: mail("m7@x")}, "Gesendet": {3: roh}},
+                        merkmale={"Gesendet": "\\Sent"})
+    post_erledigt.abgleich(verbinden=_verbinden({"t-anna": kasten}))
     assert _zeile(abg, m)["erledigt_art"] == "beantwortet"
+
+
+def _gesendet_kasten(*antwort_auf):
+    roh = {i + 3: mail(f"a{i}@x").replace(
+        b"Subject:", f"In-Reply-To: <{mid}>\nSubject:".encode(), 1)
+        for i, mid in enumerate(antwort_auf)}
+    return FakeKasten(ordner={"INBOX": {7: mail("m7@x"), 8: mail("m8@x")}, "Gesendet": roh},
+                      merkmale={"Gesendet": "\\Sent"})
+
+
+def test_abgleich_gesendet_ordner_nur_einmal_gewaehlt(abg):
+    k_id = _konto(abg)
+    _mail(abg, k_id, uid=7, mid="m7@x", abgeglichen=False)
+    _mail(abg, k_id, uid=8, mid="m8@x", abgeglichen=False)
+    kasten = _gesendet_kasten("m8@x")
+    bilanz = post_erledigt.abgleich(verbinden=_verbinden({"t-anna": kasten}))
+    assert [p for p in kasten.protokoll if p[:2] == ("select", "Gesendet")] == [
+        ("select", "Gesendet", True)]
+    assert bilanz["beantwortet"] == 1 and bilanz["sent_fehler"] == 0
+
+
+def test_abgleich_platzhalter_uid_nutzt_gesendet_suche(abg):
+    k_id = _konto(abg)
+    m = _mail(abg, k_id, uid=0, mid="m7@x", abgeglichen=False)
+    kasten = _gesendet_kasten("m7@x")
+    post_erledigt.abgleich(verbinden=_verbinden({"t-anna": kasten}))
+    assert _zeile(abg, m)["erledigt_art"] == "beantwortet"
+    assert not kasten.befehle("FETCH")
+
+
+def test_abgleich_ordner_ohne_uid_nutzt_gesendet_suche(abg):
+    k_id = _konto(abg)
+    a = _mail(abg, k_id, uid=7, mid="m7@x", ordner="Rechnungen", ordner_uid=None,
+              abgeglichen=False)
+    b = _mail(abg, k_id, uid=8, mid="m8@x", ordner="Rechnungen", ordner_uid=None,
+              abgeglichen=False, ersatz=True)
+    kasten = _gesendet_kasten("m7@x", "m8@x")
+    post_erledigt.abgleich(verbinden=_verbinden({"t-anna": kasten}))
+    assert _zeile(abg, a)["erledigt_art"] == "beantwortet"
+    z = _zeile(abg, b)
+    assert z["erledigt_am"] is None and z["abgeglichen_am"] is not None
+
+
+def test_abgleich_gesendet_fehler_wird_gezaehlt(abg):
+    k_id = _konto(abg)
+    m = _mail(abg, k_id, uid=7, mid="m7@x", abgeglichen=False)
+    kasten = _gesendet_kasten("m7@x")
+    echt = kasten.select
+
+    def select(ordner="INBOX", readonly=False):
+        if "Gesendet" in str(ordner):
+            return "NO", [b"kaputt"]
+        return echt(ordner, readonly)
+    kasten.select = select
+    bilanz = post_erledigt.abgleich(verbinden=_verbinden({"t-anna": kasten}))
+    assert bilanz["sent_fehler"] == 1 and bilanz["konten_fehler"] == 0
+    z = _zeile(abg, m)
+    assert z["erledigt_am"] is None and z["abgeglichen_am"] is not None
 
 
 def test_abgleich_schreibt_nie(abg):
