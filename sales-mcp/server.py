@@ -4886,9 +4886,12 @@ def _chat_offen_sql(alias: str = "a") -> str:
     zwar strukturell wie bei `_archiv_sql`/`_kanon`: uebergeben werden
     ausschliesslich Literale aus diesem Repository.
     """
+    # Mails fliessen nicht in Chat-Reports (Spec Z5): der Report wird jedem
+    # Betrachter gezeigt, Mailinhalt gehoert aber nur dem Postfach-Besitzer.
     return (f"({alias}.created_at, {alias}.id) > "
             f"(coalesce(g.bis_zeit, '-infinity'::timestamptz), "
-            f" coalesce(g.bis_id, '00000000-0000-0000-0000-000000000000'::uuid))")
+            f" coalesce(g.bis_id, '00000000-0000-0000-0000-000000000000'::uuid))"
+            f" and coalesce({alias}.payload->>'kanal', '') <> 'email'")
 
 
 def _chat_reports(lead_id):

@@ -2705,10 +2705,13 @@ def _schon_angeschrieben(z) -> str:
     return f'<div class="hinweis">Schon angeschrieben: {teile}</div>'
 
 
-def _kontakt_historie_bereich(lead_id, alle: bool) -> str:
+def _kontakt_historie_bereich(lead_id, alle: bool,
+                              betrachter_name: str | None = None) -> str:
     """Zeitleiste „Kontakt-Historie“ (C3): letzte 20, optional alle."""
     try:
-        eintraege = historie.kontakt_historie(lead_id)
+        eintraege = historie.kontakt_historie(
+            lead_id,
+            mit_mail=post_struktur.mail_verlauf_erlaubt(betrachter_name))
     except psycopg.Error:
         return ""
     zeilen = "".join(
@@ -7550,10 +7553,13 @@ def _naechste_termine(lead_id, termine) -> str:
     return "".join(teile)
 
 
-def _letzte_kontakte(lead_id) -> str:
+def _letzte_kontakte(lead_id, betrachter_name: str | None = None) -> str:
     """Überblick: die neuesten Einträge der Kontakt-Historie (C3)."""
     try:
-        eintraege = historie.kontakt_historie(lead_id)[:KONTAKT_LETZTE]
+        eintraege = historie.kontakt_historie(
+            lead_id,
+            mit_mail=post_struktur.mail_verlauf_erlaubt(betrachter_name)
+        )[:KONTAKT_LETZTE]
     except psycopg.Error:
         eintraege = None
     teile = ['<h2>Letzte Kontakte</h2>']
@@ -7572,7 +7578,8 @@ def _letzte_kontakte(lead_id) -> str:
     return "".join(teile)
 
 
-def _kontakt_ueberblick(lead, termine) -> str:
+def _kontakt_ueberblick(lead, termine,
+                        betrachter_name: str | None = None) -> str:
     """Reiter „Überblick“: links Stammdaten, Kontaktprofil, Bedarfsstand;
     rechts Wiedervorlagen, die nächsten Termine und die letzten Kontakte."""
     lead_id = str(lead["id"])
@@ -7614,7 +7621,7 @@ def _kontakt_ueberblick(lead, termine) -> str:
         f'</section>',
         f'<section class="karte box">{_wiedervorlage_formular(lead_id)}</section>',
         f'<section class="karte box">{_naechste_termine(lead_id, termine)}</section>',
-        f'<section class="karte box">{_letzte_kontakte(lead_id)}</section>']
+        f'<section class="karte box">{_letzte_kontakte(lead_id, betrachter_name)}</section>']
     return (f'<div class="zwei"><div class="spalte-haupt">{"".join(links)}</div>'
             f'<div class="spalte-rand">{"".join(rechts)}</div></div>')
 
@@ -7625,7 +7632,7 @@ def _kontakt_verlauf(lead_id, alle: bool,
     # Postfach-Besitzer dieses Containers; fuer alle anderen, auch ohne
     # persoenliche Anmeldung, fallen sie aus der Tabelle.
     """Reiter „Verlauf“: Kontakt-Historie, Chat-Reports, Verlaufstabelle."""
-    teile = [_kontakt_historie_bereich(lead_id, alle)]
+    teile = [_kontakt_historie_bereich(lead_id, alle, betrachter_name)]
     # Chat-Reports ZUERST (Betreiber-Wunsch 22.08.2026): sie erzaehlen die
     # Vorgeschichte, und die von ihnen abgedeckten Einzelnachrichten fallen
     # unten aus dem Verlauf — sonst stuende derselbe Chat zweimal da. Der
@@ -7838,7 +7845,8 @@ async def kontakt_detail(request):
     elif reiter == "einstellungen":
         teile.append(_kontakt_einstellungen(lead, archiviert))
     else:
-        teile.append(_kontakt_ueberblick(lead, termine))
+        teile.append(_kontakt_ueberblick(
+            lead, termine, request.scope.get("benutzer_name")))
     return _seite(lead["name"] or "Kontakt", "".join(teile), titel_zeigen=False)
 
 
