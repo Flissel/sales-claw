@@ -436,7 +436,7 @@ def test_posteingang_mails_suche_und_aufraeumen():
     # Rulings R10/R14 (03.11.2026): Mails stehen im Reiter /post; der
     # Posteingang verweist darauf und sucht nur noch Chats - postfach_mails
     # hat keinen Besitzer, private Post waere hier fuer jeden auffindbar.
-    assert '<a href="/post">Mails →</a>' in s
+    assert '<a href="/post?ansicht=zur_info">Zur Info →</a>' in s
     assert "Rabattaktion Herbst" not in s and "Konto gesperrt" not in s
     such = _get("/posteingang?q=Rabattaktion").text
     assert "Rabattaktion Herbst" not in such
