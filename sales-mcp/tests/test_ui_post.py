@@ -672,12 +672,12 @@ def test_verlauf_versand_email_fuer_fremde_versteckt(kontakt_mit_mail):
     import json
     server._q(
         "insert into activities (lead_id, type, payload, actor) values "
-        "(%s, 'versand', %s, 'system') returning id",
+        "(%s, 'versand', %s, 'agent') returning id",
         (kontakt_mit_mail, json.dumps({"kanal": "email", "text": "RAUS-555",
                                        "chat_id": "x@example.org"})))
     server._q(
         "insert into activities (lead_id, type, payload, actor) values "
-        "(%s, 'nachricht_ausgehend', %s, 'system') returning id",
+        "(%s, 'nachricht_ausgehend', %s, 'agent') returning id",
         (kontakt_mit_mail, json.dumps({"kanal": "email", "text": "RAUS-556"})))
     pfad = f"/kontakte/{kontakt_mit_mail}?reiter=verlauf"
     anna = _get("t8_anna", pfad).text
