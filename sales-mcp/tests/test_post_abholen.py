@@ -852,6 +852,14 @@ def test_post_besitzer_erreicht_bot_und_oberflaeche():
     assert "POST_BESITZER=${POST_BESITZER:-}" in _compose_abschnitt("sales-ui")
 
 
+def test_post_stichtag_erreicht_sales_post_und_oberflaeche():
+    """C1: post_ziel liest POST_AUFRAEUMEN_AB beim Import - sales-ui zeigt die Mails und
+    braucht ihn genauso wie sales-post (im Container ohne docker-compose.yml scheitert der
+    Test umgebungsbedingt, wie test_post_besitzer_erreicht_bot_und_oberflaeche)."""
+    assert "POST_AUFRAEUMEN_AB: ${POST_AUFRAEUMEN_AB:-}" in _compose_abschnitt("sales-post")
+    assert "POST_AUFRAEUMEN_AB=${POST_AUFRAEUMEN_AB:-}" in _compose_abschnitt("sales-ui")
+
+
 def test_post_kontext_nur_bei_sales_post():
     """I3: post_einordnung liest POST_KONTEXT aus der Umgebung - Compose muss es dem
     Dienst sales-post durchreichen (leer erlaubt), sonst kommt es nie an."""

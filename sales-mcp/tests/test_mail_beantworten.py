@@ -91,3 +91,14 @@ def test_noreply_rueckfrage(monkeypatch, von):
 
 def test_registriert():
     assert server.mail_beantworten in server.WERKZEUGE
+
+
+def test_eingangsmail_wird_ohne_text_gebucht(monkeypatch):
+    """I6 (R11): in activities steht nur ein Verweis (message_id, betreff), kein Mailtext."""
+    _postfach(monkeypatch, MAIL)
+    a = json.loads(server.mail_beantworten("7", "Hallo Leo, danke!"))
+    p = server._q("select payload from activities where lead_id = %s and type = 'kundenantwort'",
+                  (a["lead_id"],))[0]["payload"]
+    assert "text" not in p
+    assert p["message_id"] == "m-7@example.com" and p["betreff"] == "Kurze Frage"
+    assert p["kanal"] == "email"

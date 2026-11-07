@@ -422,7 +422,10 @@ def test_wiedervorlagen_zeigen_heutige_termine_mit_unterlagen():
 
 # --- Posteingang -----------------------------------------------------------------
 
-def test_posteingang_mails_suche_und_aufraeumen():
+def test_posteingang_mails_suche_und_aufraeumen(monkeypatch):
+    # Aufraeum-Abschnitt/-Knopf nur fuer den Container-Besitzer (Review I4); dieser Test
+    # laeuft ohne Anmeldung, daher gilt der Zugang hier als Besitzer.
+    monkeypatch.setattr(ui.post_struktur, "mail_verlauf_erlaubt", lambda name: True)
     server._q("delete from postfach_mails")
     server._q("insert into postfach_mails (message_id, uid, von, betreff, auszug) "
               "values ('a1', '7', 'shop@werbung.de', 'Rabattaktion Herbst', "
@@ -459,7 +462,7 @@ def test_posteingang_mails_suche_und_aufraeumen():
 
 @pytest.mark.parametrize("rolle,sichtbar", [("freigeben", True), ("", True),
                                             ("lesen", False), ("kalender", False)])
-def test_spam_liste_nur_fuer_die_aufraeumende_rolle(rolle, sichtbar):
+def test_spam_liste_nur_fuer_die_aufraeumende_rolle(rolle, sichtbar, monkeypatch):
     """I5: postfach_mails hat keinen Besitzer (auch private GMX/Gmail-Post) -
     Spam-Liste und Vorschlaege nur fuer die Rolle, die aufraeumt."""
     server._q("insert into postfach_mails (message_id, uid, von, betreff, art, status, "

@@ -447,3 +447,29 @@ def test_stichtag_sql_geteilt_mit_offen_sql(db, monkeypatch):
     assert post_erledigt.offen_sql() == "(m.ziel = 'posteingang' and m.status = 'eingeordnet' " \
         "and m.erledigt_am is null and m.abgeglichen_am is not null " \
         "and m.geloescht_am is null and false)"
+
+
+def test_vor_erstem_abgleich_erledigt_dann_wieder_geoeffnet_erscheint(db):
+    """I2: wieder_oeffnen setzt abgeglichen_am, sonst bleibt die Mail unsichtbar."""
+    mid = _mail(db, _konto(db), abgeglichen=False)
+    assert post_erledigt.erledigen(ANNA, mid, "erledigt") is True
+    assert _zeile(db, mid)["abgeglichen_am"] is None
+    assert post_erledigt.wieder_oeffnen(ANNA, mid) is True
+    assert _zeile(db, mid)["abgeglichen_am"] is not None
+    assert mid in _ids(ANNA)
+
+
+def test_wieder_oeffnen_offener_mail_aendert_nichts(db):
+    """I2: Guard erledigt_am is not null - offene Mail bleibt unveraendert."""
+    mid = _mail(db, _konto(db))
+    assert post_erledigt.wieder_oeffnen(ANNA, mid) is False
+    assert _zeile(db, mid)["abgleich_aus"] is False
+
+
+def test_abgleich_gefunden_setzt_fehlt_zurueck(abg):
+    """Minor: wird eine als fehlt markierte Mail wiedergefunden, ist sie wieder 'ok'."""
+    k_id = _konto(abg)
+    m = _mail(abg, k_id, uid=7, mid="m7@x")
+    abg._q("update post_mails set ordner_stand = 'fehlt' where id = %s returning id", (m,))
+    post_erledigt.abgleich(verbinden=_verbinden({"t-anna": _inbox(7)}))
+    assert _zeile(abg, m)["ordner_stand"] == "ok"

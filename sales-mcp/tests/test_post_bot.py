@@ -433,3 +433,20 @@ def test_inaktives_konto_ohne_imap(monkeypatch):
               server.mail_einstufen(f"post:{mid}", "spam", "g")):
         assert "fehler" in json.loads(r)
     assert geholt == []
+
+
+def test_sammelstelle_liest_nur_konten_des_container_besitzers(monkeypatch):
+    """I8: Konten anderer Besitzer sind fuer den Bot unsichtbar - auch ihre Kennungen
+    tauchen in keiner Fehlermeldung auf; ohne Besitzer verhaelt er sich wie ohne Konten."""
+    _mail(kennung="annas-konto", betreff="Annas Geschaeft")
+    server._q("insert into post_konten (besitzer, kennung, anbieter, adresse, quelle) "
+              "values ('t9_ben', 'bens-geheimes-konto', 'gmx', 'b@b.de', 'ui') returning id")
+    r = _lesen(postfach="bens-geheimes-konto")
+    assert "fehler" in r and "bens-geheimes-konto" in r["fehler"]      # der angefragte Name
+    assert "annas-konto" in r["fehler"]                                  # eigene Liste
+    r = _lesen(postfach="nirgends")
+    assert "bens-geheimes-konto" not in r["fehler"] and "annas-konto" in r["fehler"]
+    assert _lesen(postfach="bens-geheimes-konto")["fehler"].count("bens-geheimes-konto") == 1
+    monkeypatch.setenv("POST_BESITZER", "")
+    r = _lesen(postfach="annas-konto")
+    assert "fehler" in r and "annas-konto" not in r["fehler"].split("eingerichtet:")[-1]

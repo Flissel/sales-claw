@@ -697,9 +697,11 @@ def test_chat_report_ohne_email_aktivitaeten(kontakt_mit_mail):
     assert v["gesamt"] == 1
     faellig = server._chat_faellig(schwelle=1)
     assert [int(z["offen"]) for z in faellig] == [1]
-    # Nachlese durch den Betreiber (alle=True) bleibt vollstaendig.
+    # Auch die Nachlese (alle=True) liefert keine Mail-Aktivitaeten (R10, Spec Z5:
+    # der Agent liest alte E-Mail-Zeilen nie; die Mails selbst stehen in /post).
     alle = json.loads(server.chat_verlauf(kontakt_mit_mail, alle=True))
-    assert MAILTEXT in [n["text"] for n in alle["nachrichten"]]
+    assert MAILTEXT not in [n["text"] for n in alle["nachrichten"]]
+    assert WATEXT in [n["text"] for n in alle["nachrichten"]]
 
 
 # ---------------------------------------------------------------------------
@@ -968,3 +970,110 @@ def test_verlauf_sensible_mail_nur_kopf(lead_max):
 def test_verlauf_ohne_mails_kein_leerer_abschnitt(lead_max):
     anna = _get("t8_anna", f"/kontakte/{lead_max}?reiter=verlauf").text
     assert "<h2>E-Mails" not in anna
+
+
+# --- Final-Fix-Welle (Review 2026-11-07) ---------------------------------------
+
+def test_menue_gruppe_eingang_standardmaessig_offen():
+    """I3: Eingang ist wie Aufgaben standardmaessig aufgeklappt."""
+    s = _get("t8_anna", "/").text
+    i = s.index('<span class="gruppentitel">Eingang</span>')
+    assert s[s.rindex('<details class="gruppe"', 0, i):i].startswith('<details class="gruppe" open>')
+
+
+def _spam_mail():
+    server._q("delete from postfach_mails")
+    server._q("insert into postfach_mails (message_id, uid, von, betreff, art, status, grund) "
+              "values ('t8-p1', 'gmx:1', 'x@werbung.de', 'Privat-Rabatt-T8', 'unwichtig', "
+              "'vorgeschlagen', 'Werbung') returning 1")
+
+
+def test_aufraeumen_abschnitt_nur_fuer_container_besitzer(monkeypatch):
+    """I4: postfach_mails hat keinen Besitzer - /freigaben zeigt Absender/Betreff nur
+    dem Container-Besitzer; andere persoenliche Anmeldungen sehen nichts."""
+    monkeypatch.setenv("POST_BESITZER", "t8_anna")
+    _spam_mail()
+    try:
+        assert "Privat-Rabatt-T8" in _get("t8_anna", "/freigaben").text
+        assert "Privat-Rabatt-T8" not in _get("t8_ben", "/freigaben").text
+        # gemeinsamer Zugang / ohne Namen
+        assert ui._AKTIVER_BENUTZER.get() == ""
+        assert ui._mails_aufraeumen_abschnitt() == ""
+    finally:
+        server._q("delete from postfach_mails")
+
+
+def test_aufraeumen_zaehler_nur_fuer_container_besitzer(monkeypatch):
+    """I4: auch die Zahl der Vorschlaege (Freigaben-Zaehler) nur fuer den Besitzer."""
+    monkeypatch.setenv("POST_BESITZER", "t8_anna")
+    _spam_mail()
+    try:
+        t = ui._AKTIVER_BENUTZER.set("t8_anna")
+        try:
+            mit = ui._freigaben_zusatz()
+        finally:
+            ui._AKTIVER_BENUTZER.reset(t)
+        t = ui._AKTIVER_BENUTZER.set("t8_ben")
+        try:
+            ohne = ui._freigaben_zusatz()
+        finally:
+            ui._AKTIVER_BENUTZER.reset(t)
+        assert mit == ohne + 1
+    finally:
+        server._q("delete from postfach_mails")
+
+
+def test_aufraeumen_post_nur_container_besitzer(monkeypatch):
+    """I4: POST /posteingang/aufraeumen -> 403 fuer Nicht-Besitzer, 303 fuer den Besitzer."""
+    monkeypatch.setenv("POST_BESITZER", "t8_anna")
+    _spam_mail()
+    try:
+        daten = {"message_id": "t8-p1", "entscheidung": "verschieben"}
+        assert _post("t8_ben", "/posteingang/aufraeumen", daten).status_code == 403
+        assert server._q("select status from postfach_mails where message_id = 't8-p1'"
+                         )[0]["status"] == "vorgeschlagen"
+        assert _post("t8_anna", "/posteingang/aufraeumen", daten).status_code == 303
+        assert server._q("select status from postfach_mails where message_id = 't8-p1'"
+                         )[0]["status"] == "bestaetigt"
+    finally:
+        server._q("delete from postfach_mails")
+
+
+def test_ohne_post_mails_tabelle_bleibt_verlauf_und_suche_heil(monkeypatch, lead_max):
+    """I7: Schema ohne post_mails -> kein 503, Abschnitt/Treffer entfallen."""
+    import psycopg
+    monkeypatch.setenv("POST_BESITZER", "t8_anna")
+    echt = server._q
+
+    def q(sql, *a, **kw):
+        if "post_mails" in sql:
+            raise psycopg.errors.UndefinedTable("post_mails")
+        return echt(sql, *a, **kw)
+    monkeypatch.setattr(server, "_q", q)
+    assert ui._kontakt_mails_bereich(lead_max, "t8_anna") == ""
+    assert "Mails (0)" in ui._posteingang_suche("Angebot", "t8_anna")
+
+
+def _agent_welt(lead):
+    server._q("insert into activities (lead_id, type, payload, actor) values "
+              "(%s, 'kundenantwort', %s, 'human') returning id",
+              (lead, '{"kanal": "email", "text": "ALTMAIL-777 Geheimes", "richtung": "eingehend"}'))
+    server._q("insert into activities (lead_id, type, payload, actor) values "
+              "(%s, 'kundenantwort', %s, 'human') returning id",
+              (lead, '{"kanal": "whatsapp", "text": "WACHAT-888 Hallo", "richtung": "eingehend"}'))
+
+
+def test_agent_werkzeuge_lesen_keinen_mailtext_aus_activities(kontakt_mit_mail):
+    """I5 (Spec Z5, fail closed): profil_lesen, gespraeche_suchen, chat_verlauf(alle=True)
+    und _letzte_nachrichten liefern keinen Text von Aktivitaeten mit kanal=email."""
+    import json
+    _agent_welt(kontakt_mit_mail)
+    profil = server.profil_lesen(kontakt_mit_mail)
+    assert MAILTEXT not in profil and "ALTMAIL-777" not in profil and WATEXT in profil
+    such = server.gespraeche_suchen("ALTMAIL-777")
+    assert "ALTMAIL" not in such and json.loads(such)["treffer"] == []
+    assert json.loads(server.gespraeche_suchen("WACHAT-888"))["treffer"]
+    alle = server.chat_verlauf(kontakt_mit_mail, alle=True)
+    assert MAILTEXT not in alle and "ALTMAIL-777" not in alle and WATEXT in alle
+    texte = " ".join(n["text"] for n in server._letzte_nachrichten(kontakt_mit_mail, 10))
+    assert MAILTEXT not in texte and "ALTMAIL-777" not in texte and WATEXT in texte
