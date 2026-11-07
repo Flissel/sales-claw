@@ -553,11 +553,12 @@ def test_menue_fuehrt_zum_mail_reiter():
 
 def test_posteingang_bleibt_chatseite_mit_verweis():
     """Ruling R10: keine Umleitung; /posteingang bleibt die Chat-Seite und
-    verweist fuer Mails auf /post. Im Menue steht Mails direkt danach."""
+    verweist fuer die Info-Mails auf /post. Seit Task 6 steht Posteingang
+    ganz oben, Mails direkt danach."""
     r = _get("t8_anna", "/posteingang")
     assert r.status_code == 200
-    assert "Unbeantwortet" in r.text
-    assert '<a href="/post">Mails →</a>' in r.text
+    assert "Offen (" in r.text
+    assert '<a href="/post?ansicht=zur_info">Zur Info →</a>' in r.text
     menue = re.search(r'<nav class="seite".*?</nav>', r.text, re.S).group(0)
     assert menue.index('href="/posteingang"') < menue.index('href="/post"')
     links = re.findall(r'href="(/[^"]*)"', menue)
@@ -779,3 +780,151 @@ def test_aktionen_ohne_csrf_403():
         assert _post("t8_anna", f"/post/mail/{m}/{pfad}", d,
                      csrf=False).status_code == 403
     assert _zeile(m)["erledigt_am"] is None
+
+
+# ---------------------------------------------------------------------------
+# Ein Posteingang fuer Chats und Mails (Plan "Ein Posteingang", Task 6)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def eingang(monkeypatch):
+    """Stichtag gesetzt, Container-Besitzer anna, saubere Kontakte."""
+    from datetime import date
+    import post_ziel
+    monkeypatch.setattr(post_ziel, "ALTBESTAND_AB", date(2020, 1, 1))
+    monkeypatch.setenv("POST_BESITZER", "t8_anna")
+    with server.pool.connection() as conn:
+        conn.execute("truncate sales_test.activities, sales_test.drafts, "
+                     "sales_test.personas, sales_test.leads cascade")
+    yield
+    with server.pool.connection() as conn:
+        conn.execute("truncate sales_test.activities, sales_test.drafts, "
+                     "sales_test.personas, sales_test.leads cascade")
+
+
+def _offene_mail(stunden=5, **kw):
+    """Eine offene Mail (eingeordnet, abgeglichen, Posteingang) von vor n Std."""
+    m = _mail(**kw)
+    server._q("update post_mails set ziel = 'posteingang', "
+              "abgeglichen_am = now(), datum = now() - make_interval(hours => %s) "
+              "where id = %s returning id", (stunden, m))
+    return m
+
+
+def _wa_kundenantwort(stunden=3, text="WA-Frage-T6"):
+    import json
+    lead = str(server._q(
+        "insert into leads (name, source) values ('Chatkontakt T6', 'whatsapp') "
+        "returning id")[0]["id"])
+    server._q(
+        "insert into activities (lead_id, type, payload, actor, created_at) "
+        "values (%s, 'kundenantwort', %s, 'human', "
+        "now() - make_interval(hours => %s)) returning id",
+        (lead, json.dumps({"kanal": "whatsapp", "text": text,
+                           "richtung": "eingehend", "message_id": "t6-wa"}),
+         stunden))
+    return lead
+
+
+def test_menue_eingang_zuerst():
+    seite = _get("t8_anna", "/posteingang").text
+    menue = re.search(r'<nav class="seite".*?</nav>', seite, re.S).group(0)
+    assert (menue.index('<span class="gruppentitel">Eingang</span>')
+            < menue.index('href="/posteingang"') < menue.index('href="/post"')
+            < menue.index('href="/"') )
+    assert menue.index('href="/posteingang"') < menue.index("Heute")
+    analyse = menue[menue.index('<span class="gruppentitel">Analyse</span>'):]
+    analyse = analyse[:analyse.index("</details>")]
+    assert "Posteingang" not in analyse and "Mails" not in analyse
+
+
+def test_posteingang_zeigt_chat_und_mail_gemischt(eingang):
+    _wa_kundenantwort(stunden=3)
+    m = _offene_mail(stunden=5, fach="Rechnungen", betreff="Rechnung-T6")
+    seite = _get("t8_anna", "/posteingang").text
+    assert "WA-Frage-T6" in seite and "Rechnung-T6" in seite
+    assert seite.index("Rechnung-T6") < seite.index("WA-Frage-T6")
+    assert "Offen (2)" in seite
+    assert 'class="badge email"' in seite
+    assert "k-t8-anna" in seite
+    assert "Erledigt</button>" in seite and "Bezahlt</button>" in seite
+    assert f'href="/post/mail/{m}"' in seite
+    assert 'name="zurueck" value="/posteingang"' in seite
+    kunde = _offene_mail(fach="Kunden & Anfragen", betreff="Anfrage-T6")
+    seite = _get("t8_anna", "/posteingang").text
+    assert seite.count("Bezahlt</button>") == 1
+    assert f'href="/post/mail/{kunde}"' in seite
+
+
+def test_posteingang_ohne_persoenliche_anmeldung_zeigt_keine_mails(eingang):
+    _offene_mail(betreff="Geheimbetreff-T6")
+    seite = _get(None, "/posteingang").text
+    assert "Mails nur mit persönlicher Anmeldung" in seite
+    assert "Geheimbetreff-T6" not in seite
+
+
+def test_posteingang_ohne_stichtag_hinweis(eingang):
+    from datetime import date
+    import post_ziel
+    post_ziel.ALTBESTAND_AB = date.max   # monkeypatch der Fixture stellt zurueck
+    _offene_mail(betreff="Stichtag-T6")
+    seite = _get("t8_anna", "/posteingang").text
+    assert "POST_AUFRAEUMEN_AB" in seite
+    assert "Stichtag-T6" not in seite
+
+
+def test_posteingang_fremde_mail_unsichtbar(eingang):
+    _offene_mail("t8_anna", betreff="NurAnna-T6")
+    assert "NurAnna-T6" in _get("t8_anna", "/posteingang").text
+    assert "NurAnna-T6" not in _get("t8_ben", "/posteingang").text
+
+
+def test_posteingang_sensible_mail_nur_kopf(eingang):
+    _offene_mail(sensibel=True, betreff="Befund-T6", text="Streng-Geheimer-Text")
+    seite = _get("t8_anna", "/posteingang").text
+    assert "Befund-T6" in seite and "Streng-Geheimer-Text" not in seite
+
+
+def test_posteingang_unbekannter_absender_kontakt_anlegen(eingang):
+    _offene_mail(von="Neu <neu.t6@firma-t6.de>")
+    seite = _get("t8_anna", "/posteingang").text
+    assert "Kontakt anlegen</button>" in seite
+
+
+def test_posteingang_bekannter_absender_link(eingang):
+    lead = str(server._q(
+        "insert into leads (name, source, email) values "
+        "('Bekannt T6', 'email', 'bekannt.t6@firma-t6.de') returning id")[0]["id"])
+    _offene_mail(von="Bekannt <bekannt.t6@firma-t6.de>")
+    seite = _get("t8_anna", "/posteingang").text
+    assert f'href="/kontakte/{lead}"' in seite
+    assert "Kontakt anlegen</button>" not in seite
+
+
+def test_posteingang_fehlt_hinweis(eingang):
+    m = _offene_mail()
+    assert "im Postfach nicht mehr gefunden" not in _get(
+        "t8_anna", "/posteingang").text
+    server._q("update post_mails set ordner_stand = 'fehlt' where id = %s "
+              "returning id", (m,))
+    assert "im Postfach nicht mehr gefunden" in _get(
+        "t8_anna", "/posteingang").text
+
+
+def test_posteingang_suche_mails_des_besitzers(eingang):
+    m = _offene_mail(betreff="Suchwort-Zebra-T6")
+    anna = _get("t8_anna", "/posteingang?q=Zebra").text
+    assert "Suchwort-Zebra-T6" in anna and f'href="/post/mail/{m}"' in anna
+    assert "Suchwort-Zebra-T6" not in _get("t8_ben", "/posteingang?q=Zebra").text
+
+
+def test_posteingang_seite_blaettern_und_unsinn(eingang):
+    for i in range(52):
+        _offene_mail(stunden=100 - i, betreff=f"Blatt-{i:03d}-T6")
+    s1 = _get("t8_anna", "/posteingang").text
+    assert "Blatt-000-T6" in s1 and "Blatt-051-T6" not in s1
+    assert 'href="/posteingang?seite=2"' in s1
+    s2 = _get("t8_anna", "/posteingang?seite=2").text
+    assert "Blatt-051-T6" in s2 and "Blatt-000-T6" not in s2
+    for roh in ("abc", "0", "-3", "99999999999999999999"):
+        assert _get("t8_anna", f"/posteingang?seite={roh}").status_code == 200

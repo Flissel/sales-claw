@@ -220,6 +220,7 @@ import ui_marketing
 import ui_muster
 import ui_plan
 import ui_podcast
+import post_erledigt
 import post_struktur
 import ui_post
 import ui_reels
@@ -2038,6 +2039,8 @@ th, button, .knopf { overflow-wrap: break-word; }
 # 02.09.2026 nach dem Design-Durchgang, docs/superpowers/plans/
 # 2026-09-02-ui-gruppen-und-heute.md). Reihenfolge ist Teil des Entwurfs.
 _GRUPPEN = (
+    # Ein Posteingang (07.11.2026): Chats und Mails zuoberst, vor „Heute“.
+    ("Eingang", (("/posteingang", "Posteingang"), ("/post", "Mails"))),
     ("Aufgaben", (("/", "Heute"), ("/freigaben", "Freigaben"),
                   ("/wiedervorlagen", "Wiedervorlagen"),
                   ("/einordnung", "Einordnung"),
@@ -2054,10 +2057,6 @@ _GRUPPEN = (
     ("Analyse", (("/kontakte", "Kontaktliste"),
                  ("/pipeline", "Pipeline"),
                  ("/ergebnisse", "Ergebnisse"),
-                 ("/posteingang", "Posteingang"),
-                 # Post-Sammelstelle (Stufe 1, 03.11.2026): alle Postfaecher
-                 # einsortiert, nur mit Anmeldung (ui_post.py).
-                 ("/post", "Mails"),
                  # Struktur-Graph (Betreiber 20.10.2026: Gruppe Analyse statt
                  # Admin). Sichtbar bleibt er nur fuer freigeben im
                  # Basis-Laden - _pfad_erlaubt filtert (_ADMIN_BASIS_PFADE).
@@ -2423,7 +2422,7 @@ KANAL_ANZEIGE: dict[str, str] = {k: i.anzeige for k, i in kanaele.KANAELE.items(
 
 
 def _badge(kanal) -> str:
-    text = KANAL_ANZEIGE.get(str(kanal), kanal)
+    text = KANAL_ANZEIGE.get(str(kanal), "E-Mail" if kanal == "email" else kanal)
     return f'<span class="badge {_e(kanal)}">{_e(text)}</span>'
 
 
@@ -8033,40 +8032,139 @@ async def posteingang(request):
     if such:
         teile.append(_posteingang_suche(
             such, request.scope.get("benutzer_name")))
-    teile.append(f'<h2>Unbeantwortet ({_e(daten["anzahl_unbeantwortet"])})</h2>'
-                 f'<p class="meta">Fenster: {_e(daten["fenster_stunden"])} Std.</p>')
-    if not daten["eintraege"]:
-        teile.append("<p>Keine unbeantworteten Eingänge.</p>")
-    for e in daten["eintraege"]:
-        absender = ""
-        if "absender" in e:
-            # @lid ist WhatsApps Privacy-Kennung, KEINE Rufnummer — als
-            # solche kennzeichnen, sonst tippt jemand sie als Nummer ab.
-            lid = (' <span class="badge lid">LID-Pseudo-Kennung, keine '
-                   'Rufnummer</span>' if "@lid" in str(e["absender"]) else "")
-            # Stufe 11: die Kennung ist aufgeloest und gehoert einem Kontakt.
-            # Die alten Zeilen bleiben am Sammelkontakt (activities ist
-            # append-only) — der Betreiber soll trotzdem sehen, WER wartet.
-            if "zugeordnet_zu" in e:
-                lid += (f' <span class="badge">gehört zu '
-                        f'<a href="/kontakte/{_e(e["zugeordnet_zu"])}">'
-                        f'{_e(e.get("zugeordnet_name") or "Kontakt")}</a>'
-                        f'</span>')
-            absender = f'<div class="meta">Absender: {_e(e["absender"])}{lid}</div>'
-        inhalt_zeile = _nachricht_inhalt(e.get("text_kurz"),
-                                         e.get("nachrichtentyp"))
-        kanal = str(e.get("kanal") or "whatsapp")
-        teile.append(
-            f'<div class="karte">{_badge(kanal)} '
-            f'<b><a href="/kontakte/{_e(e["lead_id"])}">'
-            f'{_e(e["kontakt"] or "(ohne Kontakt)")}</a></b> — wartet seit '
-            f'{_e(_wartezeit(e["wartet_stunden"]))}{absender}{inhalt_zeile}'
-            f'<div class="aktionen"><a class="knopf sek" '
-            f'href="/kontakte/{_e(e["lead_id"])}#verlauf">Antworten</a></div></div>')
-    if "hinweis" in daten:
+    # Ein Posteingang (07.11.2026): Chats (Seite 1) und offene Mails des
+    # angemeldeten Besitzers, gemischt nach Wartezeit; Folgeseiten nur Mails.
+    seite = _seitenzahl(request.query_params.get("seite"))
+    betrachter = _post_betrachter(request.scope.get("benutzer_name"))
+    mails, mails_gesamt, mail_hinweis = [], 0, ""
+    if betrachter is None:
+        mail_hinweis = "Mails nur mit persönlicher Anmeldung."
+    elif not post_erledigt.stichtag_gesetzt():
+        mail_hinweis = ("Keine Mails im Posteingang: Der Stichtag "
+                        "POST_AUFRAEUMEN_AB ist nicht gesetzt.")
+    else:
+        mails, mails_gesamt = post_erledigt.mails_offen(
+            betrachter, "", seite)
+    chats = daten["eintraege"] if seite == 1 else []
+    kopf_chats = int(daten["anzahl_unbeantwortet"] or 0)
+    eintraege = [(float(e["wartet_stunden"] or 0), _chat_karte(e)) for e in chats]
+    jetzt = datetime.now(timezone.utc)
+    for m in mails:
+        eintraege.append((_mail_wartet_stunden(m.get("datum"), jetzt),
+                          _mail_karte(m)))
+    eintraege.sort(key=lambda x: -x[0])
+    teile.append(f'<h2>Offen ({kopf_chats + mails_gesamt})</h2>'
+                 f'<p class="meta">Chats: Fenster {_e(daten["fenster_stunden"])} '
+                 f'Std.</p>')
+    if mail_hinweis:
+        teile.append(f'<div class="hinweis">{_e(mail_hinweis)}</div>')
+    if not eintraege:
+        teile.append("<p>Nichts offen.</p>")
+    teile.extend(k for _, k in eintraege)
+    if mails_gesamt > post_erledigt.JE_SEITE:
+        letzte = math.ceil(mails_gesamt / post_erledigt.JE_SEITE)
+        nav = [f'<span class="meta">Seite {seite} von {letzte}</span>']
+        if seite > 1:
+            nav.insert(0, f'<a class="knopf sek" href="{_e(_posteingang_adresse(seite - 1, such))}">'
+                          f'← Zurück</a>')
+        if seite < letzte:
+            nav.append(f'<a class="knopf sek" href="{_e(_posteingang_adresse(seite + 1, such))}">'
+                       f'Weiter →</a>')
+        teile.append(f'<p class="aktionen">{" ".join(nav)}</p>')
+    if "hinweis" in daten and seite == 1:
         teile.append(f'<div class="hinweis">{_e(daten["hinweis"])}</div>')
-    teile.append(_mails_verweis())
+    teile.append('<p class="meta">Zur Info einsortierte Mails: '
+                 '<a href="/post?ansicht=zur_info">Zur Info →</a></p>')
     return _seite("Posteingang", "".join(teile))
+
+
+def _seitenzahl(roh) -> int:
+    """?seite=n -> int >= 1; Unsinn wird zu 1, nie zu einem 500."""
+    try:
+        return max(1, min(int(str(roh).strip()), ui_post.SEITE_MAX))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _posteingang_adresse(seite: int, such: str = "") -> str:
+    werte = {k: v for k, v in (("seite", seite if seite > 1 else ""),
+                               ("q", such)) if v}
+    return "/posteingang" + ("?" + urllib.parse.urlencode(werte) if werte else "")
+
+
+def _post_betrachter(name):
+    """Betrachter der persoenlichen Anmeldung; ohne Anmeldung keiner."""
+    return post_struktur.betrachter_laden(str(name)) if name else None
+
+
+def _mail_wartet_stunden(datum, jetzt) -> float:
+    if datum is None:
+        return 0.0
+    if getattr(datum, "tzinfo", None) is None:
+        datum = datum.replace(tzinfo=timezone.utc)
+    return max(0.0, (jetzt - datum).total_seconds() / 3600)
+
+
+def _chat_karte(e: dict) -> str:
+    absender = ""
+    if "absender" in e:
+        # @lid ist WhatsApps Privacy-Kennung, KEINE Rufnummer — als
+        # solche kennzeichnen, sonst tippt jemand sie als Nummer ab.
+        lid = (' <span class="badge lid">LID-Pseudo-Kennung, keine '
+               'Rufnummer</span>' if "@lid" in str(e["absender"]) else "")
+        # Stufe 11: die Kennung ist aufgeloest und gehoert einem Kontakt.
+        # Die alten Zeilen bleiben am Sammelkontakt (activities ist
+        # append-only) — der Betreiber soll trotzdem sehen, WER wartet.
+        if "zugeordnet_zu" in e:
+            lid += (f' <span class="badge">gehört zu '
+                    f'<a href="/kontakte/{_e(e["zugeordnet_zu"])}">'
+                    f'{_e(e.get("zugeordnet_name") or "Kontakt")}</a>'
+                    f'</span>')
+        absender = f'<div class="meta">Absender: {_e(e["absender"])}{lid}</div>'
+    inhalt_zeile = _nachricht_inhalt(e.get("text_kurz"),
+                                     e.get("nachrichtentyp"))
+    kanal = str(e.get("kanal") or "whatsapp")
+    return (
+        f'<div class="karte">{_badge(kanal)} '
+        f'<b><a href="/kontakte/{_e(e["lead_id"])}">'
+        f'{_e(e["kontakt"] or "(ohne Kontakt)")}</a></b> — wartet seit '
+        f'{_e(_wartezeit(e["wartet_stunden"]))}{absender}{inhalt_zeile}'
+        f'<div class="aktionen"><a class="knopf sek" '
+        f'href="/kontakte/{_e(e["lead_id"])}#verlauf">Antworten</a></div></div>')
+
+
+def _mail_karte(m: dict) -> str:
+    """Eine offene Mail im gemeinsamen Posteingang. Sensible Mails kommen aus
+    post_struktur._spalten schon ohne Text/Auszug - hier nur der Kopf."""
+    jetzt = datetime.now(timezone.utc)
+    wartet = _wartezeit(round(_mail_wartet_stunden(m.get("datum"), jetzt), 1))
+    mid = _e(m["id"])
+    zeilen = [f'{_badge("email")} <span class="meta">{_e(m.get("kennung") or "")}</span> '
+              f'<b><a href="/post/mail/{mid}">{_e(m.get("betreff") or "(ohne Betreff)")}</a></b>'
+              f' — wartet seit {_e(wartet)}',
+              f'<div class="meta">Von: {_e(m.get("von") or "")}</div>']
+    if m.get("ordner_stand") == "fehlt":
+        zeilen.append('<div class="meta">im Postfach nicht mehr gefunden</div>')
+    kurz = "" if m.get("sensibel") is not False else (m.get("auszug") or "")
+    if kurz:
+        zeilen.append(f'<div class="text">{_e(_kurz(kurz, 300))}</div>')
+    aktionen = []
+    if m.get("lead_id"):
+        aktionen.append(f'<a class="knopf sek" href="/kontakte/{_e(m["lead_id"])}">'
+                        f'Zum Kontakt</a>')
+    if _AKTIVE_ROLLE.get() == "freigeben":
+        selbst = sys.modules[__name__]
+        z = "/posteingang"
+        aktionen.append(ui_post.knopf_formular(
+            selbst, m["id"], "erledigt", "Erledigt", "erledigt", z))
+        if m.get("fach") == post_erledigt.RECHNUNGEN:
+            aktionen.append(ui_post.knopf_formular(
+                selbst, m["id"], "erledigt", "Bezahlt", "bezahlt", z))
+        if not m.get("lead_id"):
+            aktionen.append(ui_post.knopf_formular(
+                selbst, m["id"], "kontakt", "Kontakt anlegen", "", z))
+    return (f'<div class="karte">{"".join(zeilen)}'
+            f'<div class="aktionen">{"".join(aktionen)}</div></div>')
 
 
 def _wartezeit(stunden) -> str:
@@ -8080,15 +8178,6 @@ def _wartezeit(stunden) -> str:
     if h >= 48:
         return f"{round(h / 24)} Tagen"
     return f"{round(h)} Std."
-
-
-def _mails_verweis() -> str:
-    """Mails stehen seit der Post-Sammelstelle (Ruling R10, 03.11.2026) im
-    eigenen Reiter /post - nur mit Anmeldung und nach Sichtbarkeit je Person.
-    Der alte Block las postfach_mails ohne Besitzer; private GMX/Gmail-Post
-    stand damit fuer jede Anmeldung auf dieser Seite. Die Chats bleiben hier."""
-    return ('<h2>Mails</h2><p class="meta">Alle Postfächer, einsortiert und '
-            'durchsuchbar: <a href="/post">Mails →</a></p>')
 
 
 def _posteingang_suche(such: str, betrachter_name: str | None = None) -> str:
@@ -8114,6 +8203,19 @@ def _posteingang_suche(such: str, betrachter_name: str | None = None) -> str:
                      f'</span><div class="text">{_e(_kurz(c["text"] or "", 300))}</div></div>')
     if not chats:
         teile.append('<p class="meta">Keine Nachricht gefunden.</p>')
+    b = _post_betrachter(betrachter_name)
+    if b is not None:
+        treffer = post_struktur.mails_suchen(b, such, grenze=20)
+        teile.append(f"<h3>Mails ({len(treffer)})</h3>")
+        for m in treffer:
+            teile.append(
+                f'<div class="karte">{_badge("email")} '
+                f'<b><a href="/post/mail/{_e(m["id"])}">'
+                f'{_e(m.get("betreff") or "(ohne Betreff)")}</a></b> · '
+                f'<span class="meta">{_e(m.get("von") or "")} · '
+                f'{_zeit(m["datum"])}</span></div>')
+        if not treffer:
+            teile.append('<p class="meta">Keine Mail gefunden.</p>')
     return "".join(teile)
 
 

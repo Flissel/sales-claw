@@ -88,6 +88,20 @@ def _adresse(link_basis: str, **werte) -> str:
     return link_basis + ("?" + urllib.parse.urlencode(teile) if teile else "")
 
 
+def knopf_formular(ui, mail_id, pfad: str, text: str, art: str = "",
+                   zurueck: str = "") -> str:
+    """Ein Ein-Knopf-Formular fuer die Erledigt-Routen (auch vom Posteingang
+    genutzt). `zurueck` ist nur "/posteingang" wirksam (zurueck_ziel)."""
+    e = ui._e
+    feld = f'<input type="hidden" name="art" value="{e(art)}">' if art else ""
+    if zurueck:
+        feld += f'<input type="hidden" name="zurueck" value="{e(zurueck)}">'
+    return (f'<form method="post" action="/post/mail/{e(mail_id)}/{pfad}" '
+            f'class="erledigt-{pfad}">'
+            f'<input type="hidden" name="csrf" value="{e(ui.CSRF_TOKEN)}">'
+            f'{feld}<button class="primaer">{e(text)}</button></form>')
+
+
 def routen(ui) -> list:
     e = ui._e
 
@@ -433,11 +447,7 @@ def routen(ui) -> list:
         z = z[0]
 
         def knopf(pfad, text, art=""):
-            feld = f'<input type="hidden" name="art" value="{e(art)}">' if art else ""
-            return (f'<form method="post" action="/post/mail/{e(m["id"])}/{pfad}" '
-                    f'class="erledigt-{pfad}">'
-                    f'<input type="hidden" name="csrf" value="{e(ui.CSRF_TOKEN)}">'
-                    f'{feld}<button class="primaer">{e(text)}</button></form>')
+            return knopf_formular(ui, m["id"], pfad, text, art)
 
         teile = ['<section class="karte"><h2>Erledigt?</h2>']
         if z["erledigt_am"]:
