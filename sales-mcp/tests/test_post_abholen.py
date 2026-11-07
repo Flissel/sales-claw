@@ -846,8 +846,7 @@ def test_post_besitzer_erreicht_bot_und_oberflaeche():
     POST_BESITZER in sales-mcp (Bot-Werkzeuge) und sales-ui (Kontaktverlauf),
     nicht nur in sales-post. sales-mcp bekommt ihn ueber den Anker."""
     text = (WURZEL / "docker-compose.yml").read_text(encoding="utf-8")
-    anker = text[text.index("x-sales-mcp-umgebung"):text.index("
-services:")]
+    anker = text[text.index("x-sales-mcp-umgebung"):text.index("\nservices:")]
     assert "POST_BESITZER: ${POST_BESITZER:-}" in _code(anker)
     assert "<<: *sales_mcp_umgebung" in _compose_abschnitt("sales-mcp")
     assert "POST_BESITZER=${POST_BESITZER:-}" in _compose_abschnitt("sales-ui")
