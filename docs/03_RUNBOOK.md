@@ -3486,3 +3486,38 @@ sales-post sales-ui` stoppt jedes Verschieben und Loeschen ab der naechsten Rund
 sich per Handy zurueckziehen. **Geloeschte Mails sind endgueltig weg**; nur ihre Kopfzeile bleibt in
 `post_mails` (Absender, Betreff, Datum - kein Inhalt). Darum nie `voll` ohne Sichtpruefung (Schritt 12).
 Notbremse ohne `.env`-Aenderung: `docker compose stop sales-post`.
+
+### Posteingang mit Mails: Einschalten (Spec 2026-11-07)
+
+`/posteingang` zeigt Chats und Mails in einem Eingang; am Kontakt steht der Abschnitt „E-Mails“
+(Kopf: Betreff, Datum, Konto - kein Text). **Mails sieht nur der Postfach-Besitzer** (`besitzer` der
+Mail), auch nicht die Leitung; der Agent sieht nur Business-Mails des Container-Besitzers, nicht
+sensibel. Kein Kontakt entsteht automatisch aus einer Mail: die Zuordnung laeuft nur ueber die
+Absenderadresse = `leads.email`.
+
+Alle Schritte nur mit Felix' ausdruecklichem OK (der Deploy selbst braucht es; kein SQL gegen Schema
+`sales` ohne OK). Werte stehen hier als Platzhalter, nichts davon in Chat oder Log ausgeben.
+
+1. **Vault-Claim.** `C:\Users\User\Desktop\secondbrain\00_Meta\002_Koordination_Live.md` lesen, Claim
+   eintragen und sofort committen; bei fremdem aktivem Claim nicht anfassen, Felix fragen.
+2. **SQL einspielen - vor `update.sh`, in JEDES Schema mit `post_mails`**, wie im Abschnitt davor
+   (Schritt 2, Schleife mit `-v ON_ERROR_STOP=1 -v schema=$s`, ohne `sales_test`):
+   `docker exec -i debian-supabase-db-1 psql -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v schema=<schema> -f - < db/post-sammelstelle.sql`
+   Pruefen je Schema: Exit-Code 0.
+3. **`bash deploy/update.sh`.** Vorher in der `.env` jedes Ladens `POST_BESITZER=<Benutzername des
+   Postfach-Besitzers>` setzen (Wert nicht ausgeben). `docker-compose.yml` reicht ihn an `sales-mcp`,
+   `sales-ui` und die uebrigen sales-Dienste durch. **Ohne `POST_BESITZER`** sieht der Agent keine Mails
+   (fail closed), und die alten E-Mail-Zeilen im Kontakt-Verlauf bleiben fuer alle verborgen.
+   Pruefen: `bash deploy/smoke.sh`, `docker exec ${PRAEFIX}-ui printenv POST_BESITZER` ist nicht leer.
+4. **`POST_AUFRAEUMEN_AB=<ISO-Datum>` setzen** (Felix' Entscheidung; `POST_BESITZER` muss gesetzt bleiben), dann
+   nur `docker compose up -d --no-deps --force-recreate sales-post` (einzeln, nie nacktes `up -d`).
+   Pruefen: `docker exec ${PRAEFIX}-post printenv POST_AUFRAEUMEN_AB POST_BESITZER`.
+5. **Warten, bis der erste Abgleich gelaufen ist** (Intervall 120 s): in `post_mails` ist `abgeglichen_am`
+   gefuellt, z. B. `select count(*) filter (where abgeglichen_am is not null), count(*) from <schema>.post_mails`
+   - die erste Zahl waechst; `docker logs --since 10m ${PRAEFIX}-post` ohne Fehler. Erst dann weiter.
+6. **Sichtpruefung.** `/posteingang` als Besitzer (persoenliche Anmeldung): Chats und Mails stehen
+   zusammen, ein Kontakt mit passender Absenderadresse zeigt den Abschnitt „E-Mails“. Dann als zweite
+   Anmeldung (andere Person) und mit dem gemeinsamen Zugang: keine Mail, kein Betreff, kein E-Mail-Verlauf.
+
+**Rueckweg.** `docker compose stop sales-post` haelt den Abgleich an; den Code per `update.sh` auf den
+vorherigen Stand zuruecksetzen. Die Spalten aus Schritt 2 sind additiv und koennen liegen bleiben.

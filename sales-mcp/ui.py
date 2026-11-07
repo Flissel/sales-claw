@@ -7625,13 +7625,41 @@ def _kontakt_ueberblick(lead, termine,
             f'<div class="spalte-rand">{"".join(rechts)}</div></div>')
 
 
+def _kontakt_mails_bereich(lead_id, betrachter_name: str | None) -> str:
+    """Abschnitt „E-Mails“ am Kontakt: Mails, deren Absender die Adresse des
+    Kontakts ist, nur aus dem, was der Betrachter sehen darf (Besitzer). Ohne
+    persoenliche Anmeldung oder ohne Treffer entfaellt er ganz. Nur Kopf
+    (Betreff, Datum, Konto) - nie Text oder Auszug, auch nicht bei Mails, die
+    nicht sensibel sind."""
+    betrachter = _post_betrachter(betrachter_name)
+    if betrachter is None:
+        return ""
+    where, params = post_struktur.sichtbar_sql(betrachter)
+    mails = server._q(
+        "select m.id, m.betreff, m.datum, k.kennung "
+        "from post_mails m join post_konten k on k.id = m.konto_id "
+        f"where {where} and {post_erledigt.ABSENDER_SQL} = "
+        "(select lower(l.email) from leads l where l.id = %s) "
+        "order by m.datum desc nulls last, m.id limit 50",
+        params + [lead_id])
+    if not mails:
+        return ""
+    zeilen = [[_zeit(m["datum"]),
+               f'<a href="/post/mail/{_e(m["id"])}">'
+               f'{_e(m["betreff"] or "(ohne Betreff)")}</a>',
+               _e(m["kennung"])] for m in mails]
+    return (f"<h2>E-Mails ({len(mails)})</h2>"
+            + _tabelle(["Wann", "Betreff", "Konto"], zeilen))
+
+
 def _kontakt_verlauf(lead_id, alle: bool,
                      betrachter_name: str | None = None) -> str:
     # Mail-Aktivitaeten (payload.kanal = email, alle Typen) sieht nur der
     # Postfach-Besitzer dieses Containers; fuer alle anderen, auch ohne
     # persoenliche Anmeldung, fallen sie aus der Tabelle.
     """Reiter „Verlauf“: Kontakt-Historie, Chat-Reports, Verlaufstabelle."""
-    teile = [_kontakt_historie_bereich(lead_id, alle, betrachter_name)]
+    teile = [_kontakt_mails_bereich(lead_id, betrachter_name),
+             _kontakt_historie_bereich(lead_id, alle, betrachter_name)]
     # Chat-Reports ZUERST (Betreiber-Wunsch 22.08.2026): sie erzaehlen die
     # Vorgeschichte, und die von ihnen abgedeckten Einzelnachrichten fallen
     # unten aus dem Verlauf — sonst stuende derselbe Chat zweimal da. Der
