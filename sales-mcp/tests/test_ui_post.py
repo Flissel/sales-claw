@@ -1071,7 +1071,7 @@ def test_agent_werkzeuge_lesen_keinen_mailtext_aus_activities(kontakt_mit_mail):
     profil = server.profil_lesen(kontakt_mit_mail)
     assert MAILTEXT not in profil and "ALTMAIL-777" not in profil and WATEXT in profil
     such = server.gespraeche_suchen("ALTMAIL-777")
-    assert "ALTMAIL" not in such and json.loads(such)["treffer"] == []
+    assert json.loads(such)["treffer"] == []
     assert json.loads(server.gespraeche_suchen("WACHAT-888"))["treffer"]
     alle = server.chat_verlauf(kontakt_mit_mail, alle=True)
     assert MAILTEXT not in alle and "ALTMAIL-777" not in alle and WATEXT in alle

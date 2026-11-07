@@ -468,6 +468,7 @@ def test_spam_liste_nur_fuer_die_aufraeumende_rolle(rolle, sichtbar, monkeypatch
     server._q("insert into postfach_mails (message_id, uid, von, betreff, art, status, "
               "grund) values ('s1', 'gmx:9', 'x@betrug.ru', 'Privat-Phish', 'spam', "
               "'verschoben', 'Phishing') returning 1")
+    monkeypatch.setattr(ui.post_struktur, "mail_verlauf_erlaubt", lambda name: True)
     token = ui._AKTIVE_ROLLE.set(rolle)
     try:
         abschnitt = ui._mails_aufraeumen_abschnitt()
