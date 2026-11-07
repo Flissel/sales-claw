@@ -68,6 +68,10 @@ x-sales-mcp-umgebung: &sales_mcp_umgebung
   POSTFACH_GMX_PASSWORT: ${POSTFACH_GMX_PASSWORT:-}
   POSTFACH_GMAIL_ADRESSE: ${POSTFACH_GMAIL_ADRESSE:-}
   POSTFACH_GMAIL_PASSWORT: ${POSTFACH_GMAIL_PASSWORT:-}
+  # Ein Container = ein Nutzer (DSGVO): Mails sieht nur ihr Besitzer. Der Bot
+  # (server.py) und der Kontaktverlauf lesen post_struktur.container_besitzer()
+  # aus genau dieser Variable; leer = der Bot sieht keine Mails.
+  POST_BESITZER: ${POST_BESITZER:-}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   ROWBOAT_URL: ${ROWBOAT_URL:-}
   ROWBOAT_PROJECT_ID: ${ROWBOAT_PROJECT_ID:-}
@@ -890,6 +894,9 @@ services:
       # Testlauf selbst, siehe deploy/smoke.sh Testkommando).
       - SALES_DB_SCHEMA=${SALES_DB_SCHEMA:-sales}
       - TZ=${TZ:-Europe/Berlin}
+      # Wem dieser Container gehoert: die Oberflaeche zeigt den Mailverlauf zu
+      # einem Kontakt nur dem Besitzer (post_struktur.mail_verlauf_erlaubt).
+      - POST_BESITZER=${POST_BESITZER:-}
       - UI_PORT=8791
       # Docker-Host-Port DIESES Ladens (siehe ports: weiter unten) — NICHT
       # dasselbe wie UI_PORT direkt darueber: UI_PORT bleibt fuer JEDEN

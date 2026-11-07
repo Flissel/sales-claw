@@ -166,6 +166,7 @@ def fach_gueltig(bereich: str, fach: str) -> bool:
 # eine Person oder der Bot sehen darf. Jede Seite, Suche und jedes Bot-
 # Werkzeug geht hierdurch; ein Fehler waere ein Datenleck privater Post.
 # ---------------------------------------------------------------------------
+import os
 import uuid
 from dataclasses import dataclass
 
@@ -178,10 +179,23 @@ class Betrachter:
     ist_agent: bool = False
 
 
-# Bot und spaetere Agenten handeln fuer den Betreiber: nur Business, nie
-# sensibel, alle Konten (Spec §14.3). Leitung=True heisst „alle Abteilungen“.
+# Der Bot handelt fuer den Betreiber DIESES Containers (Ein Container = ein
+# Nutzer, DSGVO): `sichtbar_sql` begrenzt ihn auf dessen Business-Mails.
+# leitung/abteilungen sind fuer Mails ohne Wirkung.
 BETREIBER_AGENT = Betrachter(name="agent", leitung=True, abteilungen=(),
                              ist_agent=True)
+
+
+def container_besitzer() -> str:
+    """Benutzername, dem dieser Container gehoert (`POST_BESITZER`). Wird bei
+    jedem Aufruf gelesen; leer, wenn nicht gesetzt."""
+    return os.environ.get("POST_BESITZER", "").strip()
+
+
+def mail_verlauf_erlaubt(name: "str | None") -> bool:
+    """Wahr genau dann, wenn `name` der Besitzer dieses Containers ist. Nur
+    dann darf zu einem Kontakt der Mailverlauf gezeigt werden."""
+    return bool(name) and container_besitzer() == name
 
 
 def betrachter_laden(name: str) -> "Betrachter | None":
@@ -204,29 +218,18 @@ def betrachter_laden(name: str) -> "Betrachter | None":
 def sichtbar_sql(b: Betrachter) -> tuple[str, list]:
     """(WHERE-Fragment mit %s-Platzhaltern, Parameter) fuer `from post_mails m`.
 
-    Nicht eingeordnete Mails (bereich null) sieht nur der Besitzer; „Zum
-    Nachsehen“ gehoert keiner Abteilung. Sensible Mails (Spec §6) sieht der
-    Besitzer; die Leitung nur unter business (privat ist ohnehin nur Besitzer);
-    Abteilungen nie - sie koennen unter business liegen, ohne fuer Teams
-    gedacht zu sein.
+    Ein Container = ein Nutzer (DSGVO): Mails sieht nur ihr Besitzer, egal in
+    welchem Bereich - Leitung und Abteilungen nicht. Der Bot sieht nur die
+    nicht sensiblen Business-Mails des Container-Besitzers; ist keiner
+    gesetzt, nichts.
     """
     if b.ist_agent:
-        # Nie privat, nie sensibel, nie unklassifiziert (bereich null faellt
-        # durch den Gleichheitsvergleich heraus).
-        return ("(m.bereich = 'business' and m.sensibel is false)",
-                [])
-    teile = ["(m.bereich is null and m.besitzer = %s)",
-             "(m.bereich = 'privat' and m.besitzer = %s)"]
-    params = [b.name, b.name]
-    if b.leitung:
-        teile.append("(m.bereich = 'business')")
-    else:
-        teile.append("(m.bereich = 'business' and (m.besitzer = %s or "
-                     "(m.sensibel is false and "
-                     "m.fach in (select f.fach from post_abteilung_faecher f "
-                     "where f.abteilung = any(%s)))))")
-        params += [b.name, list(b.abteilungen)]
-    return "(" + " or ".join(teile) + ")", params
+        besitzer = container_besitzer()
+        if not besitzer:
+            return ("false", [])
+        return ("(m.bereich = 'business' and m.sensibel is false "
+                "and m.besitzer = %s)", [besitzer])
+    return ("(m.besitzer = %s)", [b.name])
 
 
 def _spalten(mit_vorschlaegen: bool = False) -> str:

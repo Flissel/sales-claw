@@ -311,10 +311,9 @@ def routen(ui) -> list:
     # --- Eine Mail --------------------------------------------------------
 
     def darf_korrigieren(request, b, m) -> bool:
-        # Sichtbar ist m schon (mail_lesen); korrigieren darf davon nur der
-        # Besitzer oder die Leitung - ein Abteilungsmitglied liest nur.
-        return (rolle(request) == "freigeben"
-                and (b.leitung or m["besitzer"] == b.name))
+        # Mails sieht nur ihr Besitzer (mail_lesen), korrigieren darf er
+        # also nur seine eigenen - mit der Rolle „freigeben“.
+        return rolle(request) == "freigeben" and m["besitzer"] == b.name
 
     def regel_angeboten(b, m) -> bool:
         # Den Haken nur zeigen, wo er auch wirken kann: ohne Mailadresse
@@ -322,9 +321,8 @@ def routen(ui) -> list:
         return darf_regel_anlegen(b, m) and bool(ps.absender_adresse(m["von"] or ""))
 
     def darf_regel_anlegen(b, m) -> bool:
-        # R18: „für diesen Absender immer so“ nur fuer die eigene Post. Die
-        # Leitung darf eine fremde Mail korrigieren, aber keine Regel fuer
-        # die Post eines anderen anlegen (sie lenkte dessen kuenftige Mails).
+        # R18: „für diesen Absender immer so“ nur fuer die eigene Post (fremde
+        # Mails sieht ohnehin niemand; Tiefenverteidigung).
         return bool(m["besitzer"]) and m["besitzer"] == b.name
 
     def einordnung_text(bereich, fach, unterfach) -> str:
@@ -373,7 +371,7 @@ def routen(ui) -> list:
                 f'{" selected" if (m["bereich"], m["fach"]) == (br, f) else ""}>'
                 f'{e(f)}</option>' for f in ps.FAECHER[br]
                 # „Zum Nachsehen“ liegt immer privat (Spec): unter Business
-                # nicht anbieten, sonst sähe die Leitung solche Mails.
+                # nicht anbieten.
                 if not (br == "business" and f == ps.UNKLAR)) + '</optgroup>'
             for br in ps.BEREICHE)
         alle_unter = tuple(dict.fromkeys(u for liste in ps.UNTERFAECHER.values()
@@ -471,8 +469,8 @@ def routen(ui) -> list:
         m = ps.mail_lesen(b, request.path_params["mail_id"])
         if m is None or not darf_korrigieren(request, b, m):
             return ui._fehlerseite(403, "Nicht erlaubt",
-                                   "Korrigieren darf nur, wem das Postfach gehört, "
-                                   "oder die Leitung. Nichts geändert.")
+                                   "Korrigieren darf nur, wem das Postfach gehört. "
+                                   "Nichts geändert.")
         bereich = str(form.get("bereich") or "")
         fach = str(form.get("fach") or "")
         if not ps.fach_gueltig(bereich, fach):
@@ -495,8 +493,8 @@ def routen(ui) -> list:
         `aufmerksamkeit`: Wert des übernommenen Vorschlags; ohne ihn gilt nur
         „Zum Nachsehen“ als Posteingang (Spec §5), alles andere als Zur Info."""
         muster = None
-        # R18: fremde Post (Leitung korrigiert Bens Mail) wird korrigiert, aber
-        # ohne Regel - auch wenn ein selbstgebautes Formular den Haken schickt.
+        # R18: Regel nur fuer die eigene Post - nie fuer fremde, auch wenn
+        # ein selbstgebautes Formular den Haken schickt.
         # Nie eine Regel nach „Zum Nachsehen“: sie hielte alle kuenftigen
         # Mails des Absenders dauerhaft ungeordnet fest.
         if regel_gewollt and fach != ps.UNKLAR and darf_regel_anlegen(b, m):
@@ -564,8 +562,8 @@ def routen(ui) -> list:
         m = ps.mail_lesen(b, request.path_params["mail_id"])
         if m is None or not darf_korrigieren(request, b, m):
             return ui._fehlerseite(403, "Nicht erlaubt",
-                                   "Übernehmen darf nur, wem das Postfach gehört, "
-                                   "oder die Leitung. Nichts geändert.")
+                                   "Übernehmen darf nur, wem das Postfach gehört. "
+                                   "Nichts geändert.")
         wahl = str(form.get("wahl") or "")
         vorschlaege = m["vorschlaege"] if isinstance(m["vorschlaege"], dict) else {}
         v = vorschlaege.get(wahl) if wahl in ("sortierer", "pruefer") else None
@@ -597,8 +595,8 @@ def routen(ui) -> list:
         m = ps.mail_lesen(b, request.path_params["mail_id"])
         if m is None or not darf_korrigieren(request, b, m):
             return ui._fehlerseite(403, "Nicht erlaubt",
-                                   "Die Ablage ändern darf nur, wem das Postfach gehört, "
-                                   "oder die Leitung. Nichts geändert.")
+                                   "Die Ablage ändern darf nur, wem das Postfach gehört. "
+                                   "Nichts geändert.")
         ziel = str(form.get("ziel") or "")
         if ziel not in ZIEL_WAHL or m["status"] == "geloescht":
             return ui._fehlerseite(400, "Ungültiges Ziel",
@@ -611,8 +609,7 @@ def routen(ui) -> list:
             # status im WHERE: post_ordnen kann die Mail seit dem Lesen geloescht haben.
             conn.execute("update post_mails set ziel = %s, ziel_manuell = true "
                          "where id = %s and status <> 'geloescht'", (ziel, m["id"]))
-            # Schutzregel nur für die eigene Post (R18): die Leitung darf eine fremde Mail
-            # umlegen, aber keine Regel im Namen des Besitzers anlegen.
+            # Schutzregel nur für die eigene Post (R18); Tiefenverteidigung.
             if m["ziel"] == "to_review" and darf_regel_anlegen(b, m):
                 post_werbung.schutz_setzen(m["besitzer"], m["von"] or "", conn=conn)
         return RedirectResponse(f"/post/mail/{m['id']}", status_code=303)
