@@ -1,0 +1,13 @@
+[Unit]
+Description=sales-claw: Bewerbungs-Eingang taeglich 19:45 (vor Hermes' Auswertung um 20:00)
+
+[Timer]
+# Zone ausdruecklich: 19:45 Berliner Zeit, gleich welche Zone die VM hat und
+# auch nach der Zeitumstellung (wie sales-token-waechter.timer).
+OnCalendar=*-*-* 19:45:00 Europe/Berlin
+# Kein Nachholen: ein Lauf nach 20:00 kaeme fuer Hermes zu spaet, und der
+# naechste Lauf holt ohnehin alles seit dem letzten Cursor.
+Persistent=false
+
+[Install]
+WantedBy=timers.target
