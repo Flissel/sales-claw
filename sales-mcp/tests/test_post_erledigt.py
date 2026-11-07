@@ -41,9 +41,9 @@ def db(monkeypatch):
 def _konto(server, besitzer="t_anna", kennung="t-anna", uidvalidity=1):
     with server.pool.connection() as conn:
         return conn.execute(
-            "insert into post_konten (besitzer, kennung, anbieter, adresse, quelle) "
-            "values (%s, %s, 'gmx', %s, 'ui') returning id",
-            (besitzer, kennung, f"{kennung}@x.de")).fetchone()["id"]
+            "insert into post_konten (besitzer, kennung, anbieter, adresse, quelle, uidvalidity) "
+            "values (%s, %s, 'gmx', %s, 'ui', %s) returning id",
+            (besitzer, kennung, f"{kennung}@x.de", uidvalidity)).fetchone()["id"]
 
 
 _n = [0]
