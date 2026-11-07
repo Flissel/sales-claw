@@ -4219,7 +4219,7 @@ def test_freigabe_karte_ohne_andere_treffer_kein_hinweis():
 def test_kontaktseite_zeitleiste():
     lead = _lead()
     ui.server._q("insert into drafts (lead_id, channel, recipient, body, status, thema, sent_at) "
-                 "values (%s,'email','x','b','sent','Homelab <Angebot>', now()) returning id", (lead,))
+                 "values (%s,'whatsapp','x','b','sent','Homelab <Angebot>', now()) returning id", (lead,))
     s = _get(f"/kontakte/{lead}?reiter=verlauf").text
     assert "Kontakt-Historie" in s and "Homelab &lt;Angebot&gt;" in s
 
@@ -4227,7 +4227,7 @@ def test_kontaktseite_zeitleiste():
 def test_kontaktseite_historie_fehler_bricht_seite_nicht(monkeypatch):
     lead = _lead()
 
-    def kaputt(_):
+    def kaputt(_, **_kw):
         raise ui.psycopg.Error("weg")
     _gesendet(lead, "Sichtbar")
     monkeypatch.setattr(ui.historie, "kontakt_historie", kaputt)
