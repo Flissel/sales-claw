@@ -358,9 +358,9 @@ def flags_lesen(kasten, ordner: str, uids: list[int]) -> dict[int, set[str]]:
 
 
 def gesendet_ordner(kasten) -> str | None:
-    """Der Ordner mit dem Merkmal \Sent, sonst None."""
+    """Der Ordner mit dem Merkmal \\Sent, sonst None."""
     for merkmale, name in postfach._ordner_liste(kasten):
-        if "\SENT" in merkmale.upper():
+        if "\\SENT" in merkmale.upper():
             return name
     return None
 
