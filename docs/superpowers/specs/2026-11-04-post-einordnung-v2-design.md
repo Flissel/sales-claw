@@ -57,7 +57,7 @@ Drei Ebenen: **Bereich → Fach → Unterfach** (Unterfach optional, nur wo unte
 | Bewerbungen & Jobs | Bewerbungen an die Firma, Jobplattformen | – |
 | Newsletter & Branche | Fach-Newsletter, Branchennews, Substack | – |
 | Werbung | unaufgeforderte Verkaufsmails, Cold Outreach | – |
-| Zum Nachsehen | Sortierer und Prüfer uneins oder beide unsicher | – |
+| Zum Nachsehen | Sortierer und Prüfer uneins, oder beide wählen selbst „Zum Nachsehen“ (seit 07.11.: gleiches Fach gilt auch, wenn einer unsicher war) | – |
 
 **privat**
 | Fach | Unterfächer |

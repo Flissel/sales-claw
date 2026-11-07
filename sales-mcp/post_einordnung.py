@@ -6,8 +6,10 @@ entscheidet: feste Sensibel-Muster (kein Modell: Codes und Passwort-Links
 duerfen nicht zum Cloud-Modell), Nutzerregel, Absender-Katalog, Sortierer
 (Agent `post`), Pruefer (Agent `post-pruefer`). Bei Regel und Katalog
 entscheidet das Modell nur ueber `sensibel` (Ruling R18); der Pruefer laeuft nur
-nach dem Sortierer. Sind beide uneins oder unsicher, landet die Mail privat in
-`Zum Nachsehen` (fail closed) mit beiden Vorschlaegen.
+nach dem Sortierer. Sind beide uneins oder waehlen beide selbst `Zum Nachsehen`,
+landet die Mail privat in `Zum Nachsehen` (fail closed) mit beiden Vorschlaegen.
+Gleiches Fach gilt auch, wenn einer unsicher war (07.11. Felix); sichere Werbung
+(Absender-Regel) braucht aber beide sicher.
 
 Die Mail ist Fremddatum. Beide Agenten haben keine Werkzeuge, der Auftrag rahmt
 den Mailtext als Daten, und jedes Ergebnis wird gegen die feste Liste geprueft -
@@ -250,11 +252,17 @@ SYSTEM = (
     "und, wo das Fach Unterfächer kennt, genau ein Unterfach aus dieser festen Liste und rufe "
     "dann `einordnung_abgeben` auf:\n"
     + _faecherliste()
-    + "\nPrivat ist nur, was den Inhaber persönlich betrifft (Familie und Freunde, eigene Käufe, "
+    + "\nPrivat ist, was den Inhaber persönlich betrifft (Familie und Freunde, eigene Käufe, "
     "eigene Rechnungen, Behörden und Versicherung, Gesundheit). Newsletter, Abos, "
-    "Plattform-Mitteilungen sowie Cookie- und Datenschutz-Hinweise sind nicht privat.\n"
+    "Plattform-Mitteilungen sowie Cookie- und Datenschutz-Hinweise ordnest du je nach "
+    "Postfach ein (die Art des Postfachs steht im Auftrag):\n"
+    "- Im privaten Postfach sind sie privat (Abos & Newsletter, Konten & Sicherheit, "
+    "Soziale Netzwerke). Business ist dort nur, was erkennbar die Firma betrifft "
+    "(Kunden, Partner, Branche, Bewerbungen, Firmen-Werkzeuge).\n"
+    "- Im Firmenpostfach sind sie nicht privat.\n"
     "Werbung = Kaltakquise, Gewinnspiele, Rabattaktionen, auch von Diensten, die der Inhaber "
-    "nutzt. Produkt- und Kontomitteilungen solcher Dienste sind Tools & Dienste.\n"
+    "nutzt. Produkt- und Kontomitteilungen solcher Dienste sind im Firmenpostfach "
+    "Tools & Dienste, im privaten Postfach Konten & Sicherheit.\n"
     f"Ist die Zuordnung nicht sicher, wähle das Fach „{post_struktur.UNKLAR}“ oder setze "
     "sicher=false. Erfinde keine Fächer und Unterfächer; ohne passendes Unterfach lasse es leer.\n"
     "Sensibel sind Mails mit Login- oder Bestätigungscodes, Passwort-Rücksetzlinks, "
@@ -273,8 +281,9 @@ PRUEFER_SYSTEM = (
 
 
 _POSTFACH_ART = {
-    "privat": ("Privates Postfach: Abos, Rechnungen, Käufe, Konten und Newsletter des Inhabers "
-               "sind privat. Business ist nur, was erkennbar die Firma betrifft."),
+    "privat": ("Privates Postfach: Abos, Rechnungen, Käufe, Konten, Newsletter und "
+               "Plattform-Mitteilungen des Inhabers sind privat. Business ist nur, was "
+               "erkennbar die Firma betrifft."),
     "business": "Firmenpostfach: im Zweifel Business.",
 }
 
@@ -432,17 +441,20 @@ def _stufen(mail: dict, konto: dict, aufruf) -> Einordnung:
         LOG.warning("Pruefer fehlgeschlagen (%s)", type(e).__name__)
         raise PrueferFehlgeschlagen(vorschlag) from None
 
-    if s.tripel() == p.tripel() and s.sicher and p.sicher:
-        # Meldet auch nur einer sensibel, gilt die Mail als sensibel und der
-        # Freitext des Sortierers wird nicht gespeichert.
+    if s.tripel() == p.tripel() and s.fach != post_struktur.UNKLAR:
+        # Gleiches Tripel reicht, auch wenn einer unsicher war (07.11. Felix). Einigkeit
+        # auf "Zum Nachsehen" ist keine Einordnung (unten). Meldet auch nur einer
+        # sensibel, gilt die Mail als sensibel und der Freitext wird nicht gespeichert.
         sensibel = s.sensibel or p.sensibel
         return Einordnung(s.bereich, s.fach, sensibel, "pruefer",
                           "modell:sensibel" if sensibel else s.begruendung,
                           s.unterfach, aufrufe=2, aufmerksamkeit=s.aufmerksamkeit or p.aufmerksamkeit,
+                          # Sichere Werbung (legt Absender-Regeln an) nur, wenn beide sicher sind.
                           werbung_sicher=s.fach == WERBUNG and not sensibel
+                          and s.sicher and p.sicher
                           and not post_werbung.geschuetzt(mail.get("besitzer") or "",
                                                           mail.get("von") or ""))
-    # Uneins oder unsicher: privat (nur der Besitzer sieht es), ein Mensch entscheidet.
+    # Uneins oder beide "Zum Nachsehen": privat (nur der Besitzer sieht es), ein Mensch entscheidet.
     sensibel = s.sensibel or p.sensibel
     return Einordnung("privat", post_struktur.UNKLAR, sensibel, "modell",
                       "pruefer:uneins", None, aufrufe=2,
