@@ -841,6 +841,18 @@ def test_schluessel_nur_bei_sales_post():
             assert "POST_SCHLUESSEL_PRIVAT" not in datei.read_text(encoding="utf-8"), datei
 
 
+def test_post_besitzer_erreicht_bot_und_oberflaeche():
+    """Ein Container = ein Nutzer: post_struktur.container_besitzer() liest
+    POST_BESITZER in sales-mcp (Bot-Werkzeuge) und sales-ui (Kontaktverlauf),
+    nicht nur in sales-post. sales-mcp bekommt ihn ueber den Anker."""
+    text = (WURZEL / "docker-compose.yml").read_text(encoding="utf-8")
+    anker = text[text.index("x-sales-mcp-umgebung"):text.index("
+services:")]
+    assert "POST_BESITZER: ${POST_BESITZER:-}" in _code(anker)
+    assert "<<: *sales_mcp_umgebung" in _compose_abschnitt("sales-mcp")
+    assert "POST_BESITZER=${POST_BESITZER:-}" in _compose_abschnitt("sales-ui")
+
+
 def test_post_kontext_nur_bei_sales_post():
     """I3: post_einordnung liest POST_KONTEXT aus der Umgebung - Compose muss es dem
     Dienst sales-post durchreichen (leer erlaubt), sonst kommt es nie an."""

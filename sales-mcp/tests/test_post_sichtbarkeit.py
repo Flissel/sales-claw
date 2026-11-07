@@ -2,7 +2,8 @@
 
 Diese Suite verteidigt: private Post sieht nur ihr Besitzer (auch die
 Leitung und der Bot nicht), sensible Mails verlieren Text und Auszug in jeder
-Abfrage, Business-Post folgt den Abteilungen.
+Abfrage, jede Mail sieht nur ihr Besitzer (auch Leitung und Abteilungen nicht),
+der Bot nur Business des Container-Besitzers.
 """
 import os
 
@@ -89,22 +90,25 @@ def test_privat_nur_fuer_besitzer():
     assert ps.mail_lesen(_b("t7_anna"), m) is not None
 
 
-def test_business_nach_abteilung():
+def test_abteilung_sieht_fremde_business_nicht():
+    # DSGVO: ein Container = ein Nutzer. Auch Abteilungsmitglieder sehen
+    # fremde Mails nicht, selbst wenn das Fach zu ihrer Abteilung passt.
     kunden = _mail("t7_anna", "business", "Kunden & Anfragen")
     rechn = _mail("t7_anna", "business", "Rechnungen")
     ben = _ids(_b("t7_ben"))                    # Mitglied Vertrieb
-    assert kunden in ben
+    assert kunden not in ben
     assert rechn not in ben
+    assert ps.mail_lesen(_b("t7_ben"), kunden) is None
 
 
-def test_unklar_nur_leitung_und_besitzer():
+def test_unklar_nur_besitzer():
     unklar = _mail("t7_anna", "business", ps.UNKLAR)
     assert unklar not in _ids(_b("t7_ben"))
     assert unklar in _ids(_b("t7_anna"))
-    assert unklar in _ids(_b("t7_lea"))
+    assert unklar not in _ids(_b("t7_lea"))     # Leitung: fremde Mail, nein
 
 
-def test_sensible_business_mail_nur_besitzer_und_leitung():
+def test_sensible_business_mail_nur_besitzer():
     server._q("insert into post_abteilungen (name) values ('Marketing') "
               "on conflict do nothing")
     # Die Migration legt die Zeile an; nur loeschen, was dieser Test selbst
@@ -118,9 +122,9 @@ def test_sensible_business_mail_nur_besitzer_und_leitung():
         sens = _mail("t7_anna", "business", "Soziale Netzwerke", sensibel=True)
         offen = _mail("t7_anna", "business", "Soziale Netzwerke")
         assert sens in _ids(_b("t7_anna"))
-        assert sens in _ids(_b("t7_lea"))            # Leitung: business
+        assert sens not in _ids(_b("t7_lea"))        # Leitung: fremde Mail
         assert sens not in _ids(_b("t7_ben"))        # Abteilung nie
-        assert offen in _ids(_b("t7_ben"))           # nicht sensibel: ja
+        assert offen not in _ids(_b("t7_ben"))       # Abteilung: auch nicht
         assert sens not in _ids(ps.BETREIBER_AGENT)
         assert ps.mail_lesen(_b("t7_ben"), sens) is None
         privat = _mail("t7_anna", "privat", "Konten & Sicherheit",
@@ -149,13 +153,16 @@ def test_nicht_eingeordnet_nur_besitzer():
     assert m not in _ids(ps.BETREIBER_AGENT)
 
 
-def test_leitung_sieht_alle_business():
+def test_leitung_sieht_fremde_mails_nicht():
     a = _mail("t7_anna", "business", "Rechnungen")
     b = _mail("t7_ben", "business", ps.UNKLAR)
-    assert {a, b} <= _ids(_b("t7_lea"))
+    assert not ({a, b} & _ids(_b("t7_lea")))
+    eigene = _mail("t7_lea", "business", "Rechnungen")
+    assert eigene in _ids(_b("t7_lea"))
 
 
-def test_agent_sieht_weder_privat_noch_sensibel():
+def test_agent_sieht_weder_privat_noch_sensibel(monkeypatch):
+    monkeypatch.setenv("POST_BESITZER", "t7_anna")
     ok = _mail("t7_anna", "business", "Kunden & Anfragen")
     priv = _mail("t7_anna", "privat", "Familie & Freunde")
     sens = _mail("t7_anna", "business", "Tools & Dienste", sensibel=True)
@@ -165,6 +172,45 @@ def test_agent_sieht_weder_privat_noch_sensibel():
     assert sens not in ids
     assert ps.mail_lesen(ps.BETREIBER_AGENT, priv) is None
     assert ps.mail_lesen(ps.BETREIBER_AGENT, sens) is None
+
+
+def test_agent_sieht_nur_business_des_container_besitzers(monkeypatch):
+    monkeypatch.setenv("POST_BESITZER", "t7_anna")
+    anna = _mail("t7_anna", "business", "Kunden & Anfragen")
+    ben = _mail("t7_ben", "business", "Kunden & Anfragen")
+    ids = _ids(ps.BETREIBER_AGENT)
+    assert anna in ids
+    assert ben not in ids
+    assert ps.mail_lesen(ps.BETREIBER_AGENT, ben) is None
+
+
+@pytest.mark.parametrize("leer", ["", "   "])
+def test_agent_ohne_container_besitzer_sieht_nichts(monkeypatch, leer):
+    monkeypatch.setenv("POST_BESITZER", leer)
+    _mail("t7_anna", "business", "Kunden & Anfragen")
+    assert _ids(ps.BETREIBER_AGENT) == set()
+    monkeypatch.delenv("POST_BESITZER")
+    assert _ids(ps.BETREIBER_AGENT) == set()
+
+
+def test_container_besitzer_liest_bei_jedem_aufruf(monkeypatch):
+    monkeypatch.setenv("POST_BESITZER", "  t7_anna ")
+    assert ps.container_besitzer() == "t7_anna"
+    monkeypatch.setenv("POST_BESITZER", "t7_ben")
+    assert ps.container_besitzer() == "t7_ben"
+    monkeypatch.delenv("POST_BESITZER")
+    assert ps.container_besitzer() == ""
+
+
+def test_mail_verlauf_erlaubt(monkeypatch):
+    monkeypatch.setenv("POST_BESITZER", "t7_anna")
+    assert ps.mail_verlauf_erlaubt("t7_anna") is True
+    assert ps.mail_verlauf_erlaubt("t7_ben") is False
+    assert ps.mail_verlauf_erlaubt(None) is False
+    assert ps.mail_verlauf_erlaubt("") is False
+    monkeypatch.setenv("POST_BESITZER", "")
+    assert ps.mail_verlauf_erlaubt("t7_anna") is False
+    assert ps.mail_verlauf_erlaubt("") is False
 
 
 def test_sensible_mail_ohne_text_auch_fuer_besitzer_in_der_suche():

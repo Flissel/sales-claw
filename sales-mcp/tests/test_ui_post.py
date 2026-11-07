@@ -3,7 +3,7 @@ Stufe 1, Spec §11/§14.3) gegen sales_test.
 
 Diese Suite verteidigt: der Reiter zeigt nur, was die zentrale Sichtbarkeit
 (post_struktur) erlaubt; sensible Mails erscheinen ohne Inhalt; Korrekturen
-darf nur Besitzer oder Leitung; ein eingegebenes Passwort kommt nie zurück;
+darf nur der Besitzer; ein eingegebenes Passwort kommt nie zurück;
 ohne Anmeldung gibt es nichts (fail closed).
 """
 import base64
@@ -156,29 +156,31 @@ def test_liste_zeigt_nur_sichtbare():
                      betreff="Rechnung Lieferant")
     ben = _get("t8_ben", "/post")
     assert ben.status_code == 200
-    assert "Anfrage Kunde Meier" in ben.text          # Vertrieb
+    assert "Anfrage Kunde Meier" not in ben.text      # Vertrieb: fremde Mail
     assert "Annas Geburtstag" not in ben.text         # privat von anna
     assert "Rechnung Lieferant" not in ben.text       # Buchhaltung
     assert f"/post/mail/{privat}" not in ben.text
     lea = _get("t8_lea", "/post").text
-    assert "Anfrage Kunde Meier" in lea and "Rechnung Lieferant" in lea
+    assert "Anfrage Kunde Meier" not in lea and "Rechnung Lieferant" not in lea
     assert "Annas Geburtstag" not in lea              # auch Leitung nicht
     anna = _get("t8_anna", "/post").text
     for betreff in ("Annas Geburtstag", "Anfrage Kunde Meier",
                     "Rechnung Lieferant"):
         assert betreff in anna, betreff
-    # Faecher mit Zahl: ben zaehlt nur, was er sieht.
-    leiste = _faecherleiste(ben.text)
-    assert 'Kunden &amp; Anfragen <span class="zaehler">1</span>' in leiste
-    assert 'Rechnungen <span class="zaehler">' not in leiste
-    assert 'Familie &amp; Freunde <span class="zaehler">' not in leiste
-    lea_leiste = _faecherleiste(lea)
-    assert 'Rechnungen <span class="zaehler">1</span>' in lea_leiste
-    assert 'Familie &amp; Freunde <span class="zaehler">' not in lea_leiste
+    # Faecher mit Zahl: jeder zaehlt nur, was er sieht (Besitzer: seine).
+    for fremder in (ben.text, lea):
+        leiste = _faecherleiste(fremder)
+        assert 'Kunden &amp; Anfragen <span class="zaehler">' not in leiste
+        assert 'Rechnungen <span class="zaehler">' not in leiste
+        assert 'Familie &amp; Freunde <span class="zaehler">' not in leiste
+    anna_leiste = _faecherleiste(anna)
+    assert 'Kunden &amp; Anfragen <span class="zaehler">1</span>' in anna_leiste
+    assert 'Rechnungen <span class="zaehler">1</span>' in anna_leiste
     # Fremde Mail-Seite: wie nicht vorhanden.
-    assert _get("t8_ben", f"/post/mail/{privat}").status_code == 404
-    assert _get("t8_ben", f"/post/mail/{rechnung}").status_code == 404
-    assert _get("t8_ben", f"/post/mail/{kunde}").status_code == 200
+    for fremder in ("t8_ben", "t8_lea"):
+        for mail in (privat, rechnung, kunde):
+            assert _get(fremder, f"/post/mail/{mail}").status_code == 404
+    assert _get("t8_anna", f"/post/mail/{kunde}").status_code == 200
 
 
 def _faecherleiste(seite):
@@ -219,9 +221,9 @@ def test_suche_findet_business_text():
     assert "Monatsabschluss" in r and "Etwas anderes" not in r
     assert "Bens Privates" not in r
     assert "Monatsabschluss" not in _get("t8_anna", "/post?q=gibtsnicht").text
-    # Lea (Leitung) findet die Business-Mail, nicht Bens private.
+    # Lea (Leitung) findet weder Annas Business-Mail noch Bens private.
     lea = _get("t8_lea", "/post?q=4711").text
-    assert "Monatsabschluss" in lea and f"/post/mail/{fremd}" not in lea
+    assert "Monatsabschluss" not in lea and f"/post/mail/{fremd}" not in lea
 
 
 def test_stand_je_konto_nur_eigene():
@@ -332,15 +334,19 @@ def test_korrektur_fremder_mail_403():
     # Leitung sieht private Post nicht - also auch keine Korrektur.
     assert _post("t8_lea", f"/post/mail/{privat}/korrigieren",
                  ziel).status_code == 403
-    # Ben sieht die Kundenmail (Vertrieb), ist aber weder Besitzer noch Leitung.
+    # Ben (Vertrieb) und die Leitung sehen die Kundenmail nicht: 403.
     assert _post("t8_ben", f"/post/mail/{kunde}/korrigieren",
                  ziel).status_code == 403
     assert _post("t8_ben", "/post/mail/kein-uuid/korrigieren",
                  ziel).status_code == 403
     assert _zeile(privat)["fach"] == "Familie & Freunde"
     assert _zeile(kunde)["fach"] == "Kunden & Anfragen"
-    # Leitung darf Business-Post korrigieren.
+    # Auch die Leitung darf fremde Business-Post nicht korrigieren.
     assert _post("t8_lea", f"/post/mail/{kunde}/korrigieren",
+                 ziel).status_code == 403
+    assert _zeile(kunde)["fach"] == "Kunden & Anfragen"
+    # Der Besitzer darf.
+    assert _post("t8_anna", f"/post/mail/{kunde}/korrigieren",
                  ziel).status_code == 303
     assert _zeile(kunde)["fach"] == "Rechnungen"
 
@@ -437,18 +443,17 @@ def test_regel_gilt_nicht_fuer_fremde_konten(monkeypatch):
         "privat", ps.UNKLAR, "modell")
 
 
-def test_leitung_korrektur_legt_regel_fuer_den_besitzer_an():
-    """R18 (vorher: Regel fuer den Besitzer): die Leitung korrigiert Bens Mail,
-    legt aber KEINE Regel fuer Bens kuenftige Post an - auch nicht, wenn ein
-    selbstgebautes Formular den Haken mitschickt."""
+def test_leitung_korrigiert_fremde_mail_nicht_und_legt_keine_regel_an():
+    """Ein Container = ein Nutzer: die Leitung sieht Bens Mail nicht, kann sie
+    nicht korrigieren und keine Regel in Bens Namen anlegen - auch nicht mit
+    selbstgebautem Formular."""
     m = _mail("t8_ben", "business", ps.UNKLAR, von="y@lieferant.de")
-    seite = _get("t8_lea", f"/post/mail/{m}").text
-    assert "/korrigieren" in seite and 'name="regel"' not in seite
+    assert _get("t8_lea", f"/post/mail/{m}").status_code == 404
     assert _post("t8_lea", f"/post/mail/{m}/korrigieren",
                  {"bereich": "business", "fach": "Rechnungen",
-                  "regel": "ja"}).status_code == 303
-    assert _zeile(m)["fach"] == "Rechnungen"                 # korrigiert ...
-    assert server._q("select count(*) n from post_regeln")[0]["n"] == 0   # ... ohne Regel
+                  "regel": "ja"}).status_code == 403
+    assert _zeile(m)["fach"] == ps.UNKLAR                    # unveraendert
+    assert server._q("select count(*) n from post_regeln")[0]["n"] == 0
     # Der Besitzer selbst sieht den Haken.
     eigene = _mail("t8_lea", "business", ps.UNKLAR, von="z@lieferant.de")
     assert 'name="regel"' in _get("t8_lea", f"/post/mail/{eigene}").text
