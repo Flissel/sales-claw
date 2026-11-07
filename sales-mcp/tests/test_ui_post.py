@@ -572,3 +572,76 @@ def test_konten_formular_hat_standardbereich_mit_business_vorgewaehlt():
     assert re.search(r'<option value="business"[^>]* selected', sel.group(1))
     assert '<option value="privat"' in sel.group(1)
     assert "selected" not in re.search(r'<option value="privat"[^>]*>', sel.group(1)).group(0)
+
+
+# ---------------------------------------------------------------------------
+# Mail-Eintraege im Kontakt-Verlauf / Posteingang nur fuer den Besitzer
+# (Plan "Ein Posteingang fuer Chats und Mails", Task 2)
+# ---------------------------------------------------------------------------
+
+MAILTEXT = "MAILTEXT-123"
+WATEXT = "WA-456"
+
+
+@pytest.fixture
+def kontakt_mit_mail(monkeypatch):
+    """Ein Kontakt mit einer Mail- und einer WhatsApp-Kundenantwort;
+    Besitzer dieses Containers ist t8_anna."""
+    import json
+    monkeypatch.setenv("POST_BESITZER", "t8_anna")
+    with server.pool.connection() as conn:
+        conn.execute("truncate sales_test.activities, sales_test.drafts, "
+                     "sales_test.personas, sales_test.leads cascade")
+    lead = str(server._q(
+        "insert into leads (name, source) values ('Mailkontakt T2', 'email') "
+        "returning id")[0]["id"])
+    for kanal, text, mid in (("email", MAILTEXT, "t2-mail"),
+                             ("whatsapp", WATEXT, "t2-wa")):
+        server._q(
+            "insert into activities (lead_id, type, payload, actor, created_at)"
+            " values (%s, 'kundenantwort', %s, 'human', now() - interval '1 hour')"
+            " returning id",
+            (lead, json.dumps({"kanal": kanal, "text": text,
+                               "richtung": "eingehend", "message_id": mid})))
+    yield lead
+    with server.pool.connection() as conn:
+        conn.execute("truncate sales_test.activities, sales_test.drafts, "
+                     "sales_test.personas, sales_test.leads cascade")
+
+
+def test_verlauf_email_nur_fuer_container_besitzer(kontakt_mit_mail):
+    pfad = f"/kontakte/{kontakt_mit_mail}?reiter=verlauf"
+    anna = _get("t8_anna", pfad)
+    assert anna.status_code == 200
+    assert MAILTEXT in anna.text and WATEXT in anna.text
+    ben = _get("t8_ben", pfad)
+    assert ben.status_code == 200
+    assert MAILTEXT not in ben.text
+    assert WATEXT in ben.text
+    # Ohne persoenliche Anmeldung (Sitzung scharf): nie der Mailtext.
+    assert MAILTEXT not in _get(None, pfad).text
+
+
+def test_posteingang_werkzeug_ohne_email_zeilen(kontakt_mit_mail):
+    import json
+    # Zweiter Kontakt nur mit Mail: darf gar nicht auftauchen.
+    nur_mail = str(server._q(
+        "insert into leads (name, source) values ('Nur Mail T2', 'email') "
+        "returning id")[0]["id"])
+    server._q(
+        "insert into activities (lead_id, type, payload, actor) values "
+        "(%s, 'kundenantwort', %s, 'human') returning id",
+        (nur_mail, json.dumps({"kanal": "email", "text": "NURMAIL-789"})))
+    daten = json.loads(server.posteingang())
+    texte = " ".join(e["text_kurz"] for e in daten["eintraege"])
+    assert MAILTEXT not in texte and "NURMAIL-789" not in texte
+    assert WATEXT in texte
+    assert all(e["kanal"] != "email" for e in daten["eintraege"])
+
+
+def test_posteingang_suche_findet_email_aktivitaet_nur_fuer_besitzer(
+        kontakt_mit_mail):
+    assert MAILTEXT in _get("t8_anna", "/posteingang?q=MAILTEXT").text
+    ben = _get("t8_ben", "/posteingang?q=MAILTEXT")
+    assert ben.status_code == 200
+    assert MAILTEXT not in ben.text
