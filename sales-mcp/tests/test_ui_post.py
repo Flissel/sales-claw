@@ -699,3 +699,83 @@ def test_chat_report_ohne_email_aktivitaeten(kontakt_mit_mail):
     # Nachlese durch den Betreiber (alle=True) bleibt vollstaendig.
     alle = json.loads(server.chat_verlauf(kontakt_mit_mail, alle=True))
     assert MAILTEXT in [n["text"] for n in alle["nachrichten"]]
+
+
+# ---------------------------------------------------------------------------
+# Erledigt, Bezahlt, Wieder oeffnen, Kontakt anlegen (Posteingang, Z3/Z4)
+# ---------------------------------------------------------------------------
+
+def test_erledigt_knopf_nur_besitzer():
+    m = _mail("t8_anna")
+    assert _post("t8_ben", f"/post/mail/{m}/erledigt",
+                 {"art": "erledigt"}).status_code == 403
+    assert _zeile(m)["erledigt_am"] is None
+    r = _post("t8_anna", f"/post/mail/{m}/erledigt", {"art": "erledigt"})
+    assert r.status_code == 303
+    assert r.headers["location"] == f"/post/mail/{m}"
+    z = _zeile(m)
+    assert z["erledigt_am"] is not None and z["erledigt_art"] == "erledigt"
+    assert _post("t8_anna", f"/post/mail/{m}/erledigt",
+                 {"art": "quatsch"}).status_code == 400
+
+
+def test_bezahlt_nur_bei_rechnungen_ui():
+    kunde = _mail("t8_anna", fach="Kunden & Anfragen")
+    rech = _mail("t8_anna", fach="Rechnungen")
+    assert _post("t8_anna", f"/post/mail/{kunde}/erledigt",
+                 {"art": "bezahlt"}).status_code == 400
+    assert _zeile(kunde)["erledigt_am"] is None
+    assert "Bezahlt</button>" in _get("t8_anna", f"/post/mail/{rech}").text
+    assert "Bezahlt</button>" not in _get("t8_anna", f"/post/mail/{kunde}").text
+    assert _post("t8_anna", f"/post/mail/{rech}/erledigt",
+                 {"art": "bezahlt"}).status_code == 303
+    z = _zeile(rech)
+    assert z["erledigt_art"] == "bezahlt" and z["bezahlt_am"] is not None
+    assert "Bezahlt am" in _get("t8_anna", f"/post/mail/{rech}").text
+
+
+def test_zurueck_nur_erlaubte_ziele():
+    m = _mail("t8_anna")
+    r = _post("t8_anna", f"/post/mail/{m}/erledigt",
+              {"art": "erledigt", "zurueck": "https://evil.example"})
+    assert r.status_code == 303 and r.headers["location"] == f"/post/mail/{m}"
+    m2 = _mail("t8_anna")
+    r = _post("t8_anna", f"/post/mail/{m2}/erledigt",
+              {"art": "erledigt", "zurueck": "/posteingang"})
+    assert r.headers["location"] == "/posteingang"
+
+
+def test_wieder_oeffnen_zeigt_mail_wieder():
+    m = _mail("t8_anna")
+    _post("t8_anna", f"/post/mail/{m}/erledigt", {"art": "erledigt"})
+    seite = _get("t8_anna", f"/post/mail/{m}").text
+    assert "Erledigt am" in seite and "Wieder öffnen" in seite
+    assert _post("t8_ben", f"/post/mail/{m}/wieder-offen", {}).status_code == 403
+    assert _post("t8_anna", f"/post/mail/{m}/wieder-offen", {}).status_code == 303
+    z = _zeile(m)
+    assert z["erledigt_am"] is None and z["erledigt_art"] is None
+
+
+def test_kontakt_anlegen_leitet_zum_kontakt():
+    adr = "erika.t8@neu-firma.de"
+    m = _mail("t8_anna", von=f"Erika Muster <{adr}>")
+    try:
+        assert "Kontakt anlegen" in _get("t8_anna", f"/post/mail/{m}").text
+        assert _post("t8_ben", f"/post/mail/{m}/kontakt", {}).status_code == 403
+        r = _post("t8_anna", f"/post/mail/{m}/kontakt", {})
+        assert r.status_code == 303
+        lead = server._q("select id from leads where lower(email) = %s", (adr,))
+        assert len(lead) == 1
+        assert r.headers["location"] == f"/kontakte/{lead[0]['id']}"
+        assert "Kontakt anlegen" not in _get("t8_anna", f"/post/mail/{m}").text
+    finally:
+        server._q("delete from leads where lower(email) = %s returning id", (adr,))
+
+
+def test_aktionen_ohne_csrf_403():
+    m = _mail("t8_anna")
+    for pfad, d in (("erledigt", {"art": "erledigt"}), ("wieder-offen", {}),
+                    ("kontakt", {})):
+        assert _post("t8_anna", f"/post/mail/{m}/{pfad}", d,
+                     csrf=False).status_code == 403
+    assert _zeile(m)["erledigt_am"] is None
