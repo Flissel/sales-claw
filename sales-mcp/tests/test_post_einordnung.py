@@ -263,8 +263,10 @@ def test_unbekanntes_fach_und_bereich_werden_unklar():
     e = pe.einordnen(_mail(), BUSINESS, aufruf=_agenten(
         post=_urteil("geheim", "Erfunden"), pruefer=_urteil("geheim", "Erfunden")))
     assert (e.bereich, e.fach) == ("privat", post_struktur.UNKLAR)
-    # beide einig auf „Zum Nachsehen“: kein Absturz, keine erfundene Ablage
-    assert e.quelle == "pruefer" and e.fach in post_struktur.FAECHER["privat"]
+    # beide einig auf „Zum Nachsehen“: kein Absturz, keine erfundene Ablage; seit 07.11.
+    # keine Einordnung, sondern Zum Nachsehen mit Aufmerksamkeit und beiden Vorschlaegen
+    assert e.quelle == "modell" and e.fach in post_struktur.FAECHER["privat"]
+    assert e.aufmerksamkeit is True and e.vorschlaege is not None
 
 
 def test_pruefer_fehler_wirft_mit_vorschlag():
