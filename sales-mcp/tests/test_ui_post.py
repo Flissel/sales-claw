@@ -802,9 +802,9 @@ def eingang(monkeypatch):
                      "sales_test.personas, sales_test.leads cascade")
 
 
-def _offene_mail(stunden=5, **kw):
+def _offene_mail(besitzer="t8_anna", stunden=5, **kw):
     """Eine offene Mail (eingeordnet, abgeglichen, Posteingang) von vor n Std."""
-    m = _mail(**kw)
+    m = _mail(besitzer, **kw)
     server._q("update post_mails set ziel = 'posteingang', "
               "abgeglichen_am = now(), datum = now() - make_interval(hours => %s) "
               "where id = %s returning id", (stunden, m))
