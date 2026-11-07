@@ -858,6 +858,7 @@ def test_posteingang_zeigt_chat_und_mail_gemischt(eingang):
 
 def test_posteingang_ohne_persoenliche_anmeldung_zeigt_keine_mails(eingang):
     _offene_mail(betreff="Geheimbetreff-T6")
+    ui.UI_SESSION_SECRET = ""   # Uebergangszustand: Seite offen, aber ohne Person
     seite = _get(None, "/posteingang").text
     assert "Mails nur mit persönlicher Anmeldung" in seite
     assert "Geheimbetreff-T6" not in seite
