@@ -226,12 +226,14 @@ def test_sensible_mail_ohne_text_auch_fuer_besitzer_in_der_suche():
     lesen = ps.mail_lesen(_b("t7_anna"), m)
     assert lesen["text"] is None and lesen["auszug"] is None
     assert lesen["anhaenge"] == [] and lesen["an"] is None
-    # Auch die Leitung sieht von einer sensiblen Business-Mail nur Metadaten.
+    # Auch bei einer sensiblen Business-Mail bleiben dem Besitzer nur
+    # Metadaten; die Leitung sieht die fremde Mail gar nicht.
     b = _mail("t7_anna", "business", "Tools & Dienste", sensibel=True,
               text="geheim", anhaenge=["pass.pdf"], an="chef@x.de")
-    k = ps.mail_lesen(_b("t7_lea"), b)
+    k = ps.mail_lesen(_b("t7_anna"), b)
     assert k["text"] is None and k["auszug"] is None
     assert k["anhaenge"] == [] and k["an"] is None
+    assert ps.mail_lesen(_b("t7_lea"), b) is None
 
 
 def test_sensibel_spalte_ist_not_null():

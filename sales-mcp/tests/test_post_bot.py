@@ -23,7 +23,10 @@ def schema_wache():
 
 
 @pytest.fixture(autouse=True)
-def welt():
+def welt(monkeypatch):
+    # Ein Container = ein Nutzer: der Bot sieht nur die Mails des Besitzers
+    # dieses Containers (POST_BESITZER).
+    monkeypatch.setenv("POST_BESITZER", "t9_anna")
     _leeren()
     yield
     _leeren()
@@ -66,6 +69,16 @@ def test_bot_sieht_keine_private_mail():
     assert _lesen(suche="Geheimprivat")["mails"] == []
     assert json.loads(server.postfach_mail_lesen(f"post:{privat}")) == {
         "fehler": "nicht verfuegbar"}
+
+
+def test_bot_sieht_keine_mail_eines_anderen_besitzers(monkeypatch):
+    mid = _mail(betreff="Annas Geschaeft")
+    monkeypatch.setenv("POST_BESITZER", "t9_ben")
+    assert _lesen()["mails"] == []
+    assert json.loads(server.postfach_mail_lesen(f"post:{mid}")) == {
+        "fehler": "nicht verfuegbar"}
+    monkeypatch.setenv("POST_BESITZER", "")
+    assert _lesen()["mails"] == []
 
 
 def test_bot_sieht_keine_sensible_mail():

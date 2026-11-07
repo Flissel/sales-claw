@@ -230,13 +230,13 @@ def test_aus_to_review_holen_schuetzt_absender():
     assert len(_regeln()) == 1
 
 
-def test_leitung_holt_fremde_mail_ohne_fremde_schutzregel():
+def test_leitung_darf_fremde_mail_nicht_umlegen():
     m = _ziel(_mail("t8_anna", "business", "Kunden & Anfragen",
                     von="Shop <news@shop.example>"), "to_review")
     r = _post("t8_lea", f"/post/mail/{m}/ziel", {"ziel": "posteingang"})
-    assert r.status_code == 303
+    assert r.status_code == 403
     z = _zeile(m)
-    assert z["ziel"] == "posteingang" and z["ziel_manuell"] is True
+    assert z["ziel"] == "to_review" and z["ziel_manuell"] is False
     assert not _regeln(besitzer="t8_anna") and not _regeln(besitzer="t8_lea")
 
 

@@ -139,15 +139,15 @@ def test_vorschlag_fremde_mail_ohne_regel():
     r = _post("t8_lea", f"/post/mail/{m}/vorschlag", {"wahl": "sortierer", "regel": "ja"})
     assert r.status_code == 403
     assert _zeile(m)["fach"] == ps.UNKLAR
-    # Bens Business-Mail ist fuer die Leitung sichtbar: sie darf uebernehmen,
-    # aber keine Regel fuer Bens Post anlegen.
+    # Auch Bens Business-Mail sieht die Leitung nicht (ein Container = ein
+    # Nutzer): 403, nichts geaendert, keine Regel fuer Bens Post.
     m2 = _mail("t8_ben", "business", "Kunden & Anfragen", von="x@y.de")
     with server.pool.connection() as conn:
         conn.execute("update post_mails set vorschlaege = %s::jsonb where id = %s",
                      (json.dumps(VORSCHLAEGE), m2))
     r = _post("t8_lea", f"/post/mail/{m2}/vorschlag", {"wahl": "sortierer", "regel": "ja"})
-    assert r.status_code == 303
-    assert _zeile(m2)["fach"] == "Tools & Dienste"
+    assert r.status_code == 403
+    assert _zeile(m2)["fach"] == "Kunden & Anfragen"
     assert server._q("select count(*) n from post_regeln")[0]["n"] == 0
 
 
