@@ -897,6 +897,9 @@ services:
       # Wem dieser Container gehoert: die Oberflaeche zeigt den Mailverlauf zu
       # einem Kontakt nur dem Besitzer (post_struktur.mail_verlauf_erlaubt).
       - POST_BESITZER=${POST_BESITZER:-}
+      # Stichtag fuer die Mail-Anzeige im Posteingang (post_ziel liest ihn beim Import);
+      # ohne ihn zeigt /posteingang 'Stichtag nicht gesetzt'. Aenderung = Container neu erzeugen.
+      - POST_AUFRAEUMEN_AB=${POST_AUFRAEUMEN_AB:-}
       - UI_PORT=8791
       # Docker-Host-Port DIESES Ladens (siehe ports: weiter unten) — NICHT
       # dasselbe wie UI_PORT direkt darueber: UI_PORT bleibt fuer JEDEN

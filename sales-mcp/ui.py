@@ -785,6 +785,7 @@ def _gesichert_seite(fn):
     async def innen(request):
         _AKTIVER_PFAD.set(request.url.path)
         _AKTIVE_ROLLE.set(str(request.scope.get("benutzer_rolle") or ""))
+        _AKTIVER_BENUTZER.set(str(request.scope.get("benutzer_name") or ""))
         _ANGEMELDET.set(bool(request.scope.get("benutzer_name")))
         try:
             return await fn(request)
@@ -2118,6 +2119,9 @@ _AKTIVER_PFAD = contextvars.ContextVar("aktiver_pfad", default="")
 # Kontakte/Freigaben/Posteingang, die alle in einem 403 enden — die Rolle
 # soll schmal AUSSEHEN, nicht nur schmal SEIN.
 _AKTIVE_ROLLE = contextvars.ContextVar("aktive_rolle", default="")
+# Name der persoenlichen Anmeldung (leer: gemeinsamer Zugang / keine Anmeldung);
+# nur fuer Stellen ohne Request in der Hand (Menue-Zaehler, Freigaben-Abschnitt).
+_AKTIVER_BENUTZER = contextvars.ContextVar("aktiver_benutzer", default="")
 # Rundgang 27.10.2026: ohne Sitzung (Anmeldemaske, Passwort vergessen) kein
 # Menue - die Zaehler verrieten sonst jedem im Tailnet Kontakt- und
 # Posteingangszahlen.
@@ -2188,8 +2192,10 @@ def _freigaben_zusatz() -> int:
     """Was ausser den Entwuerfen auf /freigaben wartet - EINE Rechnung fuer
     Seitenleiste und Heute (Rundgang 27.10.2026: 11 gegen 5 gegen 19)."""
     modul = sys.modules[__name__]
-    mails = server._q("select count(*) as n from postfach_mails "
-                      "where status = 'vorgeschlagen'")[0]["n"]
+    # postfach_mails hat keinen Besitzer: nur der Container-Besitzer sieht/zaehlt sie.
+    mails = (server._q("select count(*) as n from postfach_mails "
+                       "where status = 'vorgeschlagen'")[0]["n"]
+             if post_struktur.mail_verlauf_erlaubt(_AKTIVER_BENUTZER.get()) else 0)
     return (ui_freigabe_newsletter.anzahl_offen(modul)
             + ui_freigabe_bewerbung.anzahl_offen(modul) + int(mails))
 
@@ -2239,11 +2245,11 @@ def _kopf_zaehler(eintraege, zaehler: dict) -> str:
 def _menue_links(gruppen, zaehler: dict, aktiver_pfad) -> str:
     """Die Gruppen mit ihren Eintraegen und Zaehlern als HTML. Jede Gruppe
     ist ein <details> (Betreiber 24.10.2026, ohne JavaScript): offen sind
-    die Gruppe der aktuellen Seite und "Aufgaben", auf /mehr
+    die Gruppe der aktuellen Seite sowie "Eingang" und "Aufgaben", auf /mehr
     (aktiver_pfad None) alle."""
     teile = []
     for gruppe, eintraege in gruppen:
-        offen = (aktiver_pfad is None or gruppe == "Aufgaben"
+        offen = (aktiver_pfad is None or gruppe in ("Eingang", "Aufgaben")
                  or any(p == aktiver_pfad for p, _ in eintraege))
         teile.append(f'<details class="gruppe"{" open" if offen else ""}>'
                      f'<summary class="gruppenname"><span class="gruppentitel">'
@@ -7635,13 +7641,17 @@ def _kontakt_mails_bereich(lead_id, betrachter_name: str | None) -> str:
     if betrachter is None:
         return ""
     where, params = post_struktur.sichtbar_sql(betrachter)
-    mails = server._q(
-        "select m.id, m.betreff, m.datum, k.kennung "
-        "from post_mails m join post_konten k on k.id = m.konto_id "
-        f"where {where} and {post_erledigt.ABSENDER_SQL} = "
-        "(select lower(l.email) from leads l where l.id = %s) "
-        "order by m.datum desc nulls last, m.id limit 50",
-        params + [lead_id])
+    try:
+        mails = server._q(
+            "select m.id, m.betreff, m.datum, k.kennung "
+            "from post_mails m join post_konten k on k.id = m.konto_id "
+            f"where {where} and {post_erledigt.ABSENDER_SQL} = "
+            "(select lower(l.email) from leads l where l.id = %s) "
+            "order by m.datum desc nulls last, m.id limit 50",
+            params + [lead_id])
+    except psycopg.errors.UndefinedTable:
+        # Schema ohne post_mails (Laden ohne Post): der Verlauf bleibt heil.
+        return ""
     if not mails:
         return ""
     zeilen = [[_zeit(m["datum"]),
@@ -7654,10 +7664,10 @@ def _kontakt_mails_bereich(lead_id, betrachter_name: str | None) -> str:
 
 def _kontakt_verlauf(lead_id, alle: bool,
                      betrachter_name: str | None = None) -> str:
+    """Reiter „Verlauf“: Kontakt-Historie, Chat-Reports, Verlaufstabelle."""
     # Mail-Aktivitaeten (payload.kanal = email, alle Typen) sieht nur der
     # Postfach-Besitzer dieses Containers; fuer alle anderen, auch ohne
     # persoenliche Anmeldung, fallen sie aus der Tabelle.
-    """Reiter „Verlauf“: Kontakt-Historie, Chat-Reports, Verlaufstabelle."""
     teile = [_kontakt_mails_bereich(lead_id, betrachter_name),
              _kontakt_historie_bereich(lead_id, alle, betrachter_name)]
     # Chat-Reports ZUERST (Betreiber-Wunsch 22.08.2026): sie erzaehlen die
@@ -8209,11 +8219,11 @@ def _wartezeit(stunden) -> str:
 
 
 def _posteingang_suche(such: str, betrachter_name: str | None = None) -> str:
-    """Nachrichten (Chats) durchsuchen, deutsche Wortstaemme (Volltext).
+    """Nachrichten (Chats) durchsuchen, deutsche Wortstaemme (Volltext), und die
+    Mails der angemeldeten Person (post_struktur.mails_suchen, nur eigene).
 
-    Mails sucht diese Seite nicht mehr (Ruling R14, 03.11.2026): postfach_mails
-    hat keinen Besitzer, private GMX/Gmail-Post waere hier fuer jede Anmeldung
-    auffindbar. Mails sucht der Reiter /post - nach Sichtbarkeit je Person."""
+    postfach_mails (ohne Besitzer) durchsucht diese Seite nie (Ruling R14,
+    03.11.2026); E-Mail-Chatzeilen nur fuer den Container-Besitzer."""
     chats = server._q(
         "select a.created_at, a.payload->>'text' as text, l.id as lead_id, l.name "
         "  from activities a join leads l on l.id = a.lead_id "
@@ -8233,7 +8243,10 @@ def _posteingang_suche(such: str, betrachter_name: str | None = None) -> str:
         teile.append('<p class="meta">Keine Nachricht gefunden.</p>')
     b = _post_betrachter(betrachter_name)
     if b is not None:
-        treffer = post_struktur.mails_suchen(b, such, grenze=20)
+        try:
+            treffer = post_struktur.mails_suchen(b, such, grenze=20)
+        except psycopg.errors.UndefinedTable:
+            treffer = []        # Schema ohne post_mails: Chat-Treffer bleiben
         teile.append(f"<h3>Mails ({len(treffer)})</h3>")
         for m in treffer:
             teile.append(
@@ -8256,8 +8269,11 @@ def _mails_aufraeumen_abschnitt() -> str:
     verschoben hat - die Uebersicht stand frueher auf /posteingang und fiel mit
     R14 weg. Beides kommt aus postfach_mails OHNE Besitzer (Absender/Betreff
     auch privater GMX/Gmail-Post): darum nur fuer die Rolle, die aufraeumt
-    (freigeben; ohne Anmeldung wie aktion_mail_aufraeumen), nie fuer lesen."""
+    (freigeben), nie fuer lesen - und nur dem Container-Besitzer (Spec Z5: Mails
+    sieht nur ihr Besitzer; dasselbe Tor wie aktion_mail_aufraeumen)."""
     if _AKTIVE_ROLLE.get() in ("lesen", "kalender"):
+        return ""
+    if not post_struktur.mail_verlauf_erlaubt(_AKTIVER_BENUTZER.get()):
         return ""
     vorschlaege = server._q(
         "select message_id, von, betreff, grund from postfach_mails "
@@ -8311,6 +8327,10 @@ async def aktion_mail_aufraeumen(request):
     if _AKTIVE_ROLLE.get() in ("lesen", "kalender"):
         return _fehlerseite(403, "Nicht für diese Anmeldung",
                             "Nur die Rolle „freigeben“ räumt auf.")
+    if not post_struktur.mail_verlauf_erlaubt(
+            str(request.scope.get("benutzer_name") or "")):
+        return _fehlerseite(403, "Nicht für diese Anmeldung",
+                            "Mails räumt nur ihr Besitzer auf.")
     neu = {"verschieben": "bestaetigt", "behalten": "behalten"}.get(
         str(form.get("entscheidung") or ""))
     if not neu:

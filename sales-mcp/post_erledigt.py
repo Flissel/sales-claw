@@ -98,8 +98,9 @@ def wieder_oeffnen(b: Betrachter, mail_id: str) -> bool:
         return False
     zeilen = server._q(
         "update post_mails set erledigt_am = null, erledigt_art = null, "
-        "bezahlt_am = null, abgleich_aus = true "
-        "where id = %s and besitzer = %s returning id", (m["id"], b.name))
+        "bezahlt_am = null, abgleich_aus = true, "
+        "abgeglichen_am = coalesce(abgeglichen_am, now()) "
+        "where id = %s and besitzer = %s and erledigt_am is not null returning id", (m["id"], b.name))
     return bool(zeilen)
 
 
@@ -153,8 +154,10 @@ def _beantwortet(mail_id) -> None:
 
 def _geprueft(mail_id, fehlt: bool = False) -> None:
     import server
-    server._q("update post_mails set abgeglichen_am = now()"
-              + (", ordner_stand = 'fehlt'" if fehlt else "")
+    # Gefunden: ein frueheres 'fehlt' zuruecksetzen ('ok' = Normalwert, sonst unveraendert).
+    server._q("update post_mails set abgeglichen_am = now(), ordner_stand = "
+              + ("'fehlt'" if fehlt else
+                 "case when ordner_stand = 'fehlt' then 'ok' else ordner_stand end")
               + " where id = %s returning id", (mail_id,))
 
 

@@ -3510,8 +3510,10 @@ Alle Schritte nur mit Felix' ausdruecklichem OK (der Deploy selbst braucht es; k
    (fail closed), und die alten E-Mail-Zeilen im Kontakt-Verlauf bleiben fuer alle verborgen.
    Pruefen: `bash deploy/smoke.sh`, `docker exec ${PRAEFIX}-ui printenv POST_BESITZER` ist nicht leer.
 4. **`POST_AUFRAEUMEN_AB=<ISO-Datum>` setzen** (Felix' Entscheidung; `POST_BESITZER` muss gesetzt bleiben), dann
-   nur `docker compose up -d --no-deps --force-recreate sales-post` (einzeln, nie nacktes `up -d`).
-   Pruefen: `docker exec ${PRAEFIX}-post printenv POST_AUFRAEUMEN_AB POST_BESITZER`.
+   nur `docker compose up -d --no-deps --force-recreate sales-post sales-ui` (beide: `sales-ui` zeigt die Mails und liest den
+   Stichtag ebenfalls; ohne ihn steht in `/posteingang` "Stichtag nicht gesetzt"; nie nacktes `up -d`).
+   Pruefen: `docker exec ${PRAEFIX}-post printenv POST_AUFRAEUMEN_AB POST_BESITZER` und `docker exec ${PRAEFIX}-ui printenv POST_AUFRAEUMEN_AB`.
+   **Jede Aenderung des Stichtags** braucht dieselbe Neuerzeugung von `sales-post` und `sales-ui`.
 5. **Warten, bis der erste Abgleich gelaufen ist** (Intervall 120 s): in `post_mails` ist `abgeglichen_am`
    gefuellt, z. B. `select count(*) filter (where abgeglichen_am is not null), count(*) from <schema>.post_mails`
    - die erste Zahl waechst; `docker logs --since 10m ${PRAEFIX}-post` ohne Fehler. Erst dann weiter.

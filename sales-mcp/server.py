@@ -306,6 +306,9 @@ def gespraeche_suchen(frage: str, grenze: int = 10) -> str:
         "  join leads l on l.id = a.lead_id, "
         "       websearch_to_tsquery('german'::regconfig, %s) as f(q) "
         " where a.suchtext @@ f.q "
+        # Mails gehoeren dem Postfach-Besitzer (Spec Z5): alte E-Mail-Aktivitaeten
+        # haben keine Klassifizierung -> fuer den Agenten fail closed.
+        "   and coalesce(a.payload->>'kanal', '') <> 'email' "
         " order by rang desc, a.created_at desc limit %s",
         (frage, grenze))
     return _json({
@@ -2504,6 +2507,9 @@ def profil_lesen(lead_id: str) -> str:
     grenze_zeit, grenze_id = _chat_grenze(lead_id)
     akt = _q("select id, type, payload, actor, created_at from activities "
              "where lead_id = %(lead)s and type <> %(report)s "
+             # Alte E-Mail-Aktivitaeten (Text im Payload): nur der Postfach-Besitzer
+             # liest sie in /post, der Agent nie (Spec Z5, fail closed).
+             "and coalesce(payload->>'kanal', '') <> 'email' "
              "and (not (type = any(%(typen)s)) "
              "     or (created_at, id) > "
              "        (coalesce(%(zeit)s::timestamptz, '-infinity'::timestamptz), "
@@ -3827,9 +3833,14 @@ def _sammelstelle_leer() -> bool:
 def _sammelstelle_lesen(anzahl: int, wahl: str, suche: str) -> str:
     """Business-Mails aus der Sammelstelle fuer den Bot. BETREIBER_AGENT
     sieht nie Privates und nie Sensibles (Spec §14.3) - die Auswahl macht
-    allein post_struktur, hier wird nichts nachgefiltert oder aufgeweicht."""
+    allein post_struktur, hier wird nichts nachgefiltert oder aufgeweicht.
+    Nur Konten des Container-Besitzers (POST_BESITZER); ohne Besitzer verhaelt
+    sich der Bot wie ohne Konten (fail closed), und Fehlertexte nennen nie die
+    Kennungen anderer Besitzer."""
+    besitzer = post_struktur.container_besitzer()
     konten = {str(k["id"]): k["kennung"] for k in _q(
-        "select id, kennung from post_konten where aktiv")}
+        "select id, kennung from post_konten where aktiv and besitzer = %s",
+        (besitzer,))} if besitzer else {}
     konto_id = ""
     if wahl:
         passend = [i for i, k in konten.items() if k == wahl]
@@ -4145,6 +4156,7 @@ def mail_beantworten(uid: str, text: str, thema: str = "",
     Antworten gehen vom Postfach der Mail hinaus (28.10.2026): auf "gmx:12" antwortet die GMX-Adresse.
     uid "post:<id>" aus postfach_lesen wird auf die IMAP-Mail uebersetzt (nur Konten aus der
     Umgebung; fuer ueber die Oberflaeche angelegte Postfaecher kommt das mit Stufe 2)."""
+    uid_roh = uid
     uid, fehler, erwartet = _post_uid_aufloesen(uid)
     if fehler:
         return fehler
@@ -4167,11 +4179,15 @@ def mail_beantworten(uid: str, text: str, thema: str = "",
     if halt:
         return halt
     mid = (mail.get("message_id") or "").strip()
+    # Kein Mailtext in activities (Spec Z5; R11): nur Verweise. post_id nur bei
+    # "post:<id>" - der Text bleibt in post_mails und gehoert dem Postfach-Besitzer.
+    roh_uid = str(uid_roh or "").strip()
+    post_id = (roh_uid[5:].strip() or None) if roh_uid.lower().startswith("post:") else None
     if not mid or not _q("select 1 from activities where lead_id = %s and type = 'kundenantwort' "
                          "and payload->>'message_id' = %s limit 1", (lead_id, mid)):
         _q("insert into activities (lead_id, type, payload, actor) values (%s, 'kundenantwort', %s, 'human') "
            "returning id", (lead_id, _json({"kanal": "email", "message_id": mid, "betreff": mail.get("betreff") or "",
-                                            "text": (mail.get("text") or "")[:4000], "richtung": "eingehend"})))
+                                            "post_id": post_id, "richtung": "eingehend"})))
     betreff = _antwort_betreff(mail.get("betreff") or "")
     # _entwurf_erstellen direkt: die Doppel-Pruefung lief oben schon (einmal).
     roh = _doppelt_nachher(_entwurf_erstellen(lead_id, "email", text, betreff=betreff,
@@ -5437,6 +5453,8 @@ def chat_verlauf(lead_id: str, limit: int = CHAT_VERLAUF_LIMIT_VORGABE,
         "   left join chat_grenze g on g.lead_id = a.lead_id"
         "  where a.lead_id = %(lead)s and a.type = any(%(typen)s)"
         "    and (%(alle)s or " + _chat_offen_sql("a") + ")"
+        # Auch mit alle=True keine E-Mail-Zeilen (R10, Spec Z5, fail closed).
+        "    and coalesce(a.payload->>'kanal', '') <> 'email'"
         "  order by a.created_at asc, a.id asc limit %(limit)s",
         {"lead": lead_id, "typen": list(CHAT_NACHRICHT_TYPEN),
          "alle": bool(alle), "limit": deckel})
@@ -7536,6 +7554,7 @@ def _letzte_nachrichten(lead_id: str, anzahl: int, absender=None) -> list:
     zeilen = _q(
         "select a.type, a.payload, a.created_at from activities a"
         " where a.lead_id = %(lead)s and a.type = any(%(typen)s)" + bedingung +
+        " and coalesce(a.payload->>'kanal', '') <> 'email'"
         " order by a.created_at desc, a.id desc limit %(n)s", params)
     verlauf = []
     for z in reversed(zeilen):
