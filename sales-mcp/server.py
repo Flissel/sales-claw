@@ -4548,7 +4548,12 @@ def posteingang(stunden: int = 48) -> str:
         "              then " + _kanon("a." + _ABSENDER_SPALTE) + " end as kanon"
         "    from activities a"
         "   where a.type = 'kundenantwort'"
-        "     and a.created_at > now() - make_interval(hours => %(stunden)s)),"
+        "     and a.created_at > now() - make_interval(hours => %(stunden)s)"
+        # Mails stehen nicht im Chat-Posteingang: sie gehoeren dem
+        # Postfach-Besitzer und kommen aus post_mails (Spec Ein-Eingang).
+        # Der Filter sitzt VOR distinct on, damit die juengste NICHT-Mail
+        # zaehlt.
+        "     and coalesce(a.payload->>'kanal', '') <> 'email'),"
         " juengste as ("
         "  select distinct on (lead_id, gruppe)"
         "         lead_id, gruppe, anzeige, kanon, kennung, created_at, payload"

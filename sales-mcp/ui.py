@@ -7618,7 +7618,11 @@ def _kontakt_ueberblick(lead, termine) -> str:
             f'<div class="spalte-rand">{"".join(rechts)}</div></div>')
 
 
-def _kontakt_verlauf(lead_id, alle: bool) -> str:
+def _kontakt_verlauf(lead_id, alle: bool,
+                     betrachter_name: str | None = None) -> str:
+    # Mail-Aktivitaeten (payload.kanal = email, alle Typen) sieht nur der
+    # Postfach-Besitzer dieses Containers; fuer alle anderen, auch ohne
+    # persoenliche Anmeldung, fallen sie aus der Tabelle.
     """Reiter „Verlauf“: Kontakt-Historie, Chat-Reports, Verlaufstabelle."""
     teile = [_kontakt_historie_bereich(lead_id, alle)]
     # Chat-Reports ZUERST (Betreiber-Wunsch 22.08.2026): sie erzaehlen die
@@ -7634,6 +7638,8 @@ def _kontakt_verlauf(lead_id, alle: bool) -> str:
     aktivitaeten = server._q(
         "select type, actor, payload, created_at from activities "
         "where lead_id = %(lead)s and type <> %(report)s "
+        + ("" if post_struktur.mail_verlauf_erlaubt(betrachter_name) else
+           "and coalesce(payload->>'kanal', '') <> 'email' ") +
         "and (not (type = any(%(typen)s)) "
         "     or (created_at, id) > "
         "        (coalesce(%(zeit)s::timestamptz, '-infinity'::timestamptz), "
@@ -7820,7 +7826,8 @@ async def kontakt_detail(request):
 
     if reiter == "verlauf":
         teile.append(_kontakt_verlauf(
-            lead_id, request.query_params.get("historie") == "alle"))
+            lead_id, request.query_params.get("historie") == "alle",
+            request.scope.get("benutzer_name")))
     elif reiter == "vertraege":
         teile.append(_vertraege_bereich(lead))
     elif reiter == "termine":
@@ -8015,7 +8022,8 @@ async def posteingang(request):
              f'placeholder="Mails und Nachrichten durchsuchen" '
              f'aria-label="Posteingang durchsuchen"><button>Suchen</button></form>']
     if such:
-        teile.append(_posteingang_suche(such))
+        teile.append(_posteingang_suche(
+            such, request.scope.get("benutzer_name")))
     teile.append(f'<h2>Unbeantwortet ({_e(daten["anzahl_unbeantwortet"])})</h2>'
                  f'<p class="meta">Fenster: {_e(daten["fenster_stunden"])} Std.</p>')
     if not daten["eintraege"]:
@@ -8074,7 +8082,7 @@ def _mails_verweis() -> str:
             'durchsuchbar: <a href="/post">Mails →</a></p>')
 
 
-def _posteingang_suche(such: str) -> str:
+def _posteingang_suche(such: str, betrachter_name: str | None = None) -> str:
     """Nachrichten (Chats) durchsuchen, deutsche Wortstaemme (Volltext).
 
     Mails sucht diese Seite nicht mehr (Ruling R14, 03.11.2026): postfach_mails
@@ -8085,6 +8093,8 @@ def _posteingang_suche(such: str) -> str:
         "  from activities a join leads l on l.id = a.lead_id "
         " where a.type in ('kundenantwort', 'transkription') "
         "   and a.suchtext @@ websearch_to_tsquery('german', %(q)s) "
+        + ("" if post_struktur.mail_verlauf_erlaubt(betrachter_name) else
+           "   and coalesce(a.payload->>'kanal', '') <> 'email' ") +
         " order by a.created_at desc limit 20", {"q": such})
     mails_link = _e("/post?" + urllib.parse.urlencode({"q": such}))
     teile = [f"<h2>Treffer für „{_e(such)}“ ({len(chats)})</h2>",
