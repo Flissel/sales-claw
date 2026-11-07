@@ -220,12 +220,25 @@ def test_uneinig_sensibel_ist_oder_und_ohne_freitext():
     assert "4711" not in repr(e)
 
 
-def test_einig_aber_unsicher_zum_nachsehen():
-    u = _urteil("business", "Kunden & Anfragen")
-    e = pe.einordnen(_mail(), BUSINESS, aufruf=_agenten(post=u, pruefer=dict(u, sicher=False)))
-    assert (e.bereich, e.fach, e.quelle, e.aufrufe) == ("privat", post_struktur.UNKLAR, "modell", 2)
-    e = pe.einordnen(_mail(), BUSINESS, aufruf=_agenten(post=dict(u, sicher=False), pruefer=dict(u)))
-    assert e.fach == post_struktur.UNKLAR and e.vorschlaege is not None
+def test_einig_aber_unsicher_gilt():
+    # 07.11. Felix: gleiches Fach von beiden reicht, auch wenn einer unsicher war.
+    u = _urteil("business", "Kunden & Anfragen", begruendung="Anfrage")
+    for s, p in ((u, dict(u, sicher=False)), (dict(u, sicher=False), dict(u)),
+                 (dict(u, sicher=False), dict(u, sicher=False))):
+        e = pe.einordnen(_mail(), BUSINESS, aufruf=_agenten(post=s, pruefer=p))
+        assert (e.bereich, e.fach, e.quelle, e.aufrufe, e.vorschlaege) == \
+            ("business", "Kunden & Anfragen", "pruefer", 2, None)
+
+
+@pytest.mark.parametrize("sicher", [True, False])
+def test_beide_zum_nachsehen_bleibt_zum_nachsehen(sicher):
+    # Einigkeit auf "Zum Nachsehen" ist keine Einordnung: die Mail bleibt im
+    # Posteingang (aufmerksamkeit) und traegt beide Vorschlaege.
+    u = _urteil("privat", post_struktur.UNKLAR, sicher=sicher, aufmerksamkeit=False)
+    e = pe.einordnen(_mail(), PRIVAT, aufruf=_agenten(post=u, pruefer=dict(u)))
+    assert (e.bereich, e.fach, e.quelle, e.aufmerksamkeit) == \
+        ("privat", post_struktur.UNKLAR, "modell", True)
+    assert e.vorschlaege is not None
 
 
 def test_pruefer_fach_aus_anderem_bereich_wird_gezwungen():
@@ -474,9 +487,24 @@ def test_uneinig_werbung_ist_nicht_werbung_sicher_und_braucht_aufmerksamkeit():
 
 
 def test_unsichere_werbung_ist_nicht_werbung_sicher():
+    # Einig auf Werbung, aber einer unsicher: Fach Werbung, jedoch keine sichere
+    # Werbung (also keine automatische Absender-Regel).
     s = _urteil("business", "Werbung", sicher=False)
-    e = pe.einordnen(_mail(), BUSINESS, aufruf=_agenten(post=s, pruefer=dict(s)))
-    assert e.fach == post_struktur.UNKLAR and e.werbung_sicher is False
+    for post, pruefer in ((s, dict(s)), (dict(s, sicher=True), s)):
+        e = pe.einordnen(_mail(), BUSINESS, aufruf=_agenten(post=post, pruefer=pruefer))
+        assert e.fach == "Werbung" and e.werbung_sicher is False
+
+
+def test_newsletter_regel_haengt_am_postfach():
+    # 07.11. Felix: im Privatpostfach sind Newsletter/Abos/Plattform-Mails privat. Die
+    # Systemanweisung darf das nicht pauschal verneinen (Sortierer und Pruefer stritten).
+    assert "Newsletter, Abos, Plattform-Mitteilungen sowie Cookie- und Datenschutz-Hinweise sind nicht privat" \
+        not in pe.SYSTEM
+    assert "Im privaten Postfach" in pe.SYSTEM and "Im Firmenpostfach" in pe.SYSTEM
+    g = []
+    u = _urteil("privat", "Abos & Newsletter")
+    pe.einordnen(_mail(), PRIVAT, aufruf=_agenten(post=u, pruefer=dict(u), protokoll=g))
+    assert "Newsletter" in g[0]["auftrag"] and "Plattform-Mitteilungen" in g[0]["auftrag"]
 
 
 def test_katalog_treffer_liefert_aufmerksamkeit_aus_einem_aufruf():
