@@ -929,3 +929,42 @@ def test_posteingang_seite_blaettern_und_unsinn(eingang):
     assert "Blatt-051-T6" in s2 and "Blatt-000-T6" not in s2
     for roh in ("abc", "0", "-3", "99999999999999999999"):
         assert _get("t8_anna", f"/posteingang?seite={roh}").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Mails am Kontakt (Plan "Ein Posteingang", Task 7)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def lead_max(monkeypatch):
+    monkeypatch.setenv("POST_BESITZER", "t8_anna")
+    lid = str(server._q(
+        "insert into leads (name, email, source) values "
+        "('Max T7', 'max@firma.de', 'email') returning id")[0]["id"])
+    yield lid
+    server._q("delete from leads where id = %s returning id", (lid,))
+
+
+def test_verlauf_zeigt_mails_des_kontakts_nur_dem_besitzer(lead_max):
+    m = _mail("t8_anna", betreff="Angebot 42", von="Max <MAX@firma.de>")
+    _mail("t8_anna", betreff="Fremder Absender", von="x@andere.de")
+    pfad = f"/kontakte/{lead_max}?reiter=verlauf"
+    anna = _get("t8_anna", pfad).text
+    assert "E-Mails" in anna and "Angebot 42" in anna
+    assert f'href="/post/mail/{m}"' in anna
+    assert "Fremder Absender" not in anna
+    assert "Angebot 42" not in _get("t8_ben", pfad).text
+    assert "Angebot 42" not in _get(None, pfad).text
+
+
+def test_verlauf_sensible_mail_nur_kopf(lead_max):
+    _mail("t8_anna", betreff="Gehaltsmail", von="max@firma.de",
+          sensibel=True, text="GEHEIMER-INHALT-777")
+    anna = _get("t8_anna", f"/kontakte/{lead_max}?reiter=verlauf").text
+    assert "Gehaltsmail" in anna
+    assert "GEHEIMER-INHALT-777" not in anna
+
+
+def test_verlauf_ohne_mails_kein_leerer_abschnitt(lead_max):
+    anna = _get("t8_anna", f"/kontakte/{lead_max}?reiter=verlauf").text
+    assert "<h2>E-Mails" not in anna
