@@ -27,6 +27,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import RedirectResponse
 from starlette.routing import Route
 
+import post_erledigt
 import post_struktur as ps
 from post_struktur import absender_muster
 import server
@@ -417,6 +418,109 @@ def routen(ui) -> list:
         return ('<section class="karte"><h2>Ablage ändern</h2>' + knoepfe + hinweis
                 + '</section>')
 
+    def erledigt_bereich(request, b, m) -> str:
+        """Erledigt-Zustand und die Knoepfe dazu (Spec Z3/Z4). Nur der Besitzer
+        (mit Rolle freigeben) sieht Knoepfe und den Zustand."""
+        if not darf_korrigieren(request, b, m):
+            return ""
+        z = server._q(
+            "select m.erledigt_am, m.erledigt_art, m.bezahlt_am, "
+            "exists (select 1 from leads l where lower(l.email) = "
+            f"{post_erledigt.ABSENDER_SQL}) as hat_kontakt "
+            "from post_mails m where m.id = %s", (m["id"],))
+        if not z:
+            return ""
+        z = z[0]
+
+        def knopf(pfad, text, art=""):
+            feld = f'<input type="hidden" name="art" value="{e(art)}">' if art else ""
+            return (f'<form method="post" action="/post/mail/{e(m["id"])}/{pfad}" '
+                    f'class="erledigt-{pfad}">'
+                    f'<input type="hidden" name="csrf" value="{e(ui.CSRF_TOKEN)}">'
+                    f'{feld}<button class="primaer">{e(text)}</button></form>')
+
+        teile = ['<section class="karte"><h2>Erledigt?</h2>']
+        if z["erledigt_am"]:
+            art = z["erledigt_art"] if z["erledigt_art"] in (
+                "beantwortet", "bezahlt") else "erledigt"
+            teile.append(f'<p class="meta">Erledigt am {e(ui._zeit(z["erledigt_am"]))} '
+                         f'({e(art)})</p>')
+            if z["bezahlt_am"]:
+                teile.append(f'<p class="meta">Bezahlt am {e(ui._zeit(z["bezahlt_am"]))}</p>')
+            teile.append(knopf("wieder-offen", "Wieder öffnen"))
+        else:
+            teile.append(knopf("erledigt", "Erledigt", "erledigt"))
+            if m["fach"] == post_erledigt.RECHNUNGEN:
+                teile.append(knopf("erledigt", "Bezahlt", "bezahlt"))
+        if not z["hat_kontakt"]:
+            teile.append(knopf("kontakt", "Kontakt anlegen"))
+        teile.append("</section>")
+        return "".join(teile)
+
+    def aktion_pruefen(request, form, b, m):
+        """Gemeinsame Pruefung der Knopf-Routen: Fehlerseite oder None."""
+        if b is None:
+            return gesperrt()
+        if not ui._csrf_ok(form):
+            return ui._fehlerseite(403, "CSRF-Token fehlt oder ist ungültig",
+                                   "Nichts geändert. Seite neu laden.")
+        if m is None or not darf_korrigieren(request, b, m):
+            return ui._fehlerseite(403, "Nicht erlaubt",
+                                   "Das darf nur, wem das Postfach gehört. "
+                                   "Nichts geändert.")
+        return None
+
+    def zurueck_ziel(form, m) -> str:
+        # Nur der Posteingang ist als Ruecksprung erlaubt, nie eine fremde Adresse.
+        if str(form.get("zurueck") or "") == "/posteingang":
+            return "/posteingang"
+        return f"/post/mail/{m['id']}"
+
+    @ui._gesichert_seite
+    async def mail_erledigt(request):
+        b = betrachter(request)
+        form = await request.form()
+        m = ps.mail_lesen(b, request.path_params["mail_id"]) if b else None
+        fehler = aktion_pruefen(request, form, b, m)
+        if fehler is not None:
+            return fehler
+        art = str(form.get("art") or "")
+        if art not in post_erledigt.ARTEN:
+            return ui._fehlerseite(400, "Ungültige Art",
+                                   "Das gibt es hier nicht. Nichts geändert.")
+        if art == "bezahlt" and m["fach"] != post_erledigt.RECHNUNGEN:
+            return ui._fehlerseite(400, "Nicht bezahlbar",
+                                   "„Bezahlt“ gibt es nur bei Rechnungen. "
+                                   "Nichts geändert.")
+        post_erledigt.erledigen(b, m["id"], art)
+        return RedirectResponse(zurueck_ziel(form, m), status_code=303)
+
+    @ui._gesichert_seite
+    async def mail_wieder_offen(request):
+        b = betrachter(request)
+        form = await request.form()
+        m = ps.mail_lesen(b, request.path_params["mail_id"]) if b else None
+        fehler = aktion_pruefen(request, form, b, m)
+        if fehler is not None:
+            return fehler
+        post_erledigt.wieder_oeffnen(b, m["id"])
+        return RedirectResponse(zurueck_ziel(form, m), status_code=303)
+
+    @ui._gesichert_seite
+    async def mail_kontakt(request):
+        b = betrachter(request)
+        form = await request.form()
+        m = ps.mail_lesen(b, request.path_params["mail_id"]) if b else None
+        fehler = aktion_pruefen(request, form, b, m)
+        if fehler is not None:
+            return fehler
+        lead_id = post_erledigt.kontakt_anlegen(b, m["id"])
+        if not lead_id:
+            return ui._fehlerseite(400, "Kein Kontakt möglich",
+                                   "Die Mail hat keine Absenderadresse. "
+                                   "Nichts geändert.")
+        return RedirectResponse(f"/kontakte/{lead_id}", status_code=303)
+
     @ui._gesichert_seite
     async def mail(request):
         b = betrachter(request)
@@ -451,6 +555,7 @@ def routen(ui) -> list:
                 teile.append('<div class="meta"><b>Anhänge:</b> '
                              + ", ".join(e(a) for a in m["anhaenge"]) + "</div>")
             teile.append(f'<div class="text mailtext">{e((m["text"] or "")[:TEXT_MAX])}</div></div>')
+        teile.append(erledigt_bereich(request, b, m))
         if darf_korrigieren(request, b, m):
             teile.append(ziel_formulare(m))
             teile.append(vorschlag_formulare(m, regel_angeboten(b, m)))
@@ -880,4 +985,7 @@ def routen(ui) -> list:
         Route("/post/mail/{mail_id}/korrigieren", korrigieren, methods=["POST"]),
         Route("/post/mail/{mail_id}/vorschlag", vorschlag, methods=["POST"]),
         Route("/post/mail/{mail_id}/ziel", ziel_setzen, methods=["POST"]),
+        Route("/post/mail/{mail_id}/erledigt", mail_erledigt, methods=["POST"]),
+        Route("/post/mail/{mail_id}/wieder-offen", mail_wieder_offen, methods=["POST"]),
+        Route("/post/mail/{mail_id}/kontakt", mail_kontakt, methods=["POST"]),
     ]
