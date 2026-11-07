@@ -167,6 +167,9 @@ class FakeKasten:
             uid = int(args[0])
             if uid not in inhalt:
                 return "OK", [None]
+            if str(args[1]).upper() == "(FLAGS)":
+                flags = " ".join(sorted(self.flags.get((self.gewaehlt, uid), set())))
+                return "OK", [f"1 (UID {uid} FLAGS ({flags}))".encode()]
             if "BODYSTRUCTURE" in str(args[1]).upper():
                 # Nur die Struktur, nie Inhalt - so wie post_imap es anfragt.
                 return "OK", [f"1 (UID {uid} BODYSTRUCTURE {_bodystructure(inhalt[uid])})"
@@ -484,3 +487,41 @@ def test_kein_nacktes_expunge_im_quelltext(datei):
     """Spec §11: `expunge()` entfernt jede \\Deleted-Mail des Ordners, nicht nur die eine."""
     quelltext = (WURZEL / datei).read_text(encoding="utf-8")
     assert not _NACKT.search(quelltext), f"nacktes expunge() in {datei}"
+
+
+# --- Antwort-Abgleich: nur lesen -----------------------------------------------
+
+def test_flags_lesen_und_fehlende_uid():
+    k = _kasten()
+    k.flags[("INBOX", 7)] = {"\\Answered", "\\Seen"}
+    erg = post_imap.flags_lesen(k, "INBOX", [7, 8, 99])
+    assert erg == {7: {"\\Answered", "\\Seen"}, 8: set()}      # 99 fehlt: nicht im Ergebnis
+    assert ("select", "INBOX", True) in k.protokoll
+    assert all(p[2] is True for p in k.protokoll if p[0] == "select")
+    with pytest.raises(post_imap.Fehlt):
+        post_imap.flags_lesen(k, "Gibt es nicht", [1])
+
+
+def test_gesendet_ordner_ueber_merkmal():
+    k = FakeKasten(ordner={"INBOX": {}, "Gesendet": {}, "Entwuerfe": {}},
+                   merkmale={"Gesendet": "\\Sent"})
+    assert post_imap.gesendet_ordner(k) == "Gesendet"
+    assert post_imap.gesendet_ordner(_kasten()) is None
+
+
+def test_antwort_gesendet_ueber_in_reply_to():
+    roh = mail("a1@x").replace(b"Subject:", b"In-Reply-To: <m7@x>\nSubject:", 1)
+    k = FakeKasten(ordner={"INBOX": {}, "Gesendet": {3: roh}}, merkmale={"Gesendet": "\\Sent"})
+    assert post_imap.antwort_gesendet(k, "Gesendet", "m7@x") is True
+    assert post_imap.antwort_gesendet(k, "Gesendet", "m9@x") is False
+    assert post_imap.antwort_gesendet(k, "Gesendet", "") is False
+    assert all(p[2] is True for p in k.protokoll if p[0] == "select")
+    assert not k.befehle("STORE") and not k.nackt_expunged()
+
+
+def test_antwort_gesendet_ueber_references():
+    roh = mail("a1@x").replace(b"Subject:", b"References: <m1@x> <m7@x>\nSubject:", 1)
+    k = FakeKasten(ordner={"INBOX": {}, "Gesendet": {3: roh}})
+    assert post_imap.antwort_gesendet(k, "Gesendet", "m7@x") is True
+    suchen = [p for p in k.befehle("SEARCH")]
+    assert any("References" in p for p in suchen) or any("In-Reply-To" in p for p in suchen)

@@ -52,6 +52,7 @@ import sys
 import threading
 
 import post_einordnung
+import post_erledigt
 import post_herkunft
 import post_konten
 import post_ordnen
@@ -606,6 +607,10 @@ def _aufraeumen(bilanz: dict) -> None:
         bilanz["ziele"] = post_ziel.ziele_aktualisieren()
     except Exception as e:  # noqa: BLE001
         LOG.warning("Ziele nicht aktualisiert (%s)", type(e).__name__)
+    try:
+        bilanz["abgleich"] = post_erledigt.abgleich()
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("Abgleich fehlgeschlagen (%s)", type(e).__name__)
     if post_ordnen.MODUS == "aus":
         return
     try:

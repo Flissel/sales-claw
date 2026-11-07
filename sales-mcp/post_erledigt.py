@@ -5,12 +5,15 @@ erledigt, nicht geloescht und ab dem Stichtag. Datenzugriff auf Mails nur ueber
 post_struktur (sichtbar_sql / mail_lesen): nur der Besitzer sieht und aendert.
 """
 import email.utils
+import logging
 from datetime import date
 
+import post_imap
 import post_struktur
 import post_ziel
 from post_struktur import Betrachter
 
+LOG = logging.getLogger("sales-post.abgleich")
 RECHNUNGEN = "Rechnungen"
 ARTEN = ("erledigt", "bezahlt")
 JE_SEITE = 50
@@ -23,15 +26,20 @@ def stichtag_gesetzt() -> bool:
     return post_ziel.ALTBESTAND_AB != date.max
 
 
-def offen_sql() -> str:
-    """WHERE-Fragment fuer `post_mails m`, ohne Parameter. Der Stichtag wird
-    bei jedem Aufruf gelesen; ohne Stichtag ist nichts offen."""
+def stichtag_sql() -> str:
+    """Datumsbedingung fuer `post_mails m`: ab dem Stichtag, ohne Stichtag nie. Offen-Liste
+    und Antwort-Abgleich nutzen dieselbe Bedingung. Wird bei jedem Aufruf gelesen (R4)."""
     if not stichtag_gesetzt():
         return "false"
     ab = post_ziel.ALTBESTAND_AB.isoformat()  # date, keine Nutzereingabe
+    return f"m.datum >= '{ab}'"
+
+
+def offen_sql() -> str:
+    """WHERE-Fragment fuer `post_mails m`, ohne Parameter. Ohne Stichtag ist nichts offen."""
     return ("(m.ziel = 'posteingang' and m.status = 'eingeordnet' "
             "and m.erledigt_am is null and m.abgeglichen_am is not null "
-            f"and m.geloescht_am is null and m.datum >= '{ab}')")
+            f"and m.geloescht_am is null and {stichtag_sql()})")
 
 
 def mails_offen(b: Betrachter, suche: str = "",
@@ -112,3 +120,135 @@ def kontakt_anlegen(b: Betrachter, mail_id: str) -> "str | None":
         "insert into leads (name, email, source) values (%s, %s, 'email') "
         "returning id", (name, adresse))
     return str(neu[0]["id"])
+
+
+# --- Antwort-Abgleich (Spec Z3, Festlegung 6) ---------------------------------------
+# Drei Signale: versandter Entwurf (DB), \Answered am Server, Antwort im Gesendet-Ordner.
+# Das Postfach wird nur gelesen. \Answered ist so aktuell wie der letzte Abruf.
+
+_KANDIDATEN = f"""
+select m.id, m.imap_uid, m.message_id, m.message_id_ersatz, m.ordner, m.ordner_uid,
+       (not m.message_id_ersatz and exists (
+          select 1 from drafts d where d.status = 'sent'
+             and trim(both '<>' from d.antwort_auf) = m.message_id)) as entwurf_gesendet
+  from post_mails m
+ where m.konto_id = %(konto)s and m.besitzer = %(besitzer)s
+   and m.ziel = 'posteingang' and m.status = 'eingeordnet'
+   and m.erledigt_am is null and not m.abgleich_aus and m.geloescht_am is null
+   and {stichtag_sql()}
+ order by m.abgeglichen_am nulls first, m.datum, m.id
+ limit %(n)s
+"""
+
+
+def _beantwortet(mail_id) -> None:
+    import server
+    server._q("update post_mails set erledigt_am = now(), erledigt_art = 'beantwortet', "
+              "abgeglichen_am = now() where id = %s and erledigt_am is null "
+              "and not abgleich_aus returning id", (mail_id,))
+
+
+def _geprueft(mail_id, fehlt: bool = False) -> None:
+    import server
+    server._q("update post_mails set abgeglichen_am = now()"
+              + (", ordner_stand = 'fehlt'" if fehlt else "")
+              + " where id = %s returning id", (mail_id,))
+
+
+def _imap_uid(z: dict) -> "int | None":
+    """UID der Mail in ihrem Ordner; None, wenn sie sich nicht bestimmen laesst."""
+    if (z["ordner"] or "INBOX") == "INBOX":
+        uid = z["imap_uid"]
+    else:
+        uid = z["ordner_uid"]
+    return int(uid) if uid is not None and int(uid) > 0 else None
+
+
+def _konto_abgleichen(konto: dict, je_konto: int, verbinden, bilanz: dict) -> None:
+    import server
+    zeilen = server._q(_KANDIDATEN, {"konto": konto["id"], "besitzer": konto["besitzer"],
+                                     "n": max(1, int(je_konto))})
+    if not zeilen:
+        return
+    rest = []
+    for z in zeilen:                       # Signal 1: kein IMAP noetig
+        if z["entwurf_gesendet"]:
+            _beantwortet(z["id"])
+            bilanz["geprueft"] += 1
+            bilanz["beantwortet"] += 1
+        else:
+            rest.append(z)
+    if not rest:
+        return
+    kasten = verbinden(konto)
+    try:
+        post_imap.faehigkeiten_auffrischen(kasten)
+        flags: dict = {}                   # (ordner, uid) -> Flags
+        fehlend_ordner: set = set()
+        je_ordner: dict = {}
+        for z in rest:
+            uid = _imap_uid(z)
+            if uid is not None:
+                je_ordner.setdefault(z["ordner"] or "INBOX", []).append(uid)
+        for ordner, uids in je_ordner.items():
+            try:
+                for uid, f in post_imap.flags_lesen(kasten, ordner, uids).items():
+                    flags[(ordner, uid)] = f
+            except post_imap.Fehlt:
+                fehlend_ordner.add(ordner)
+        gesendet = post_imap.gesendet_ordner(kasten)
+        for z in rest:
+            ordner, uid = z["ordner"] or "INBOX", _imap_uid(z)
+            if uid is None:
+                _geprueft(z["id"])         # nichts abzugleichen (Platzhalter-UID o. ae.)
+                bilanz["geprueft"] += 1
+                continue
+            if ordner in fehlend_ordner or (ordner, uid) not in flags:
+                _geprueft(z["id"], fehlt=True)
+                bilanz["geprueft"] += 1
+                bilanz["fehlt"] += 1
+                continue
+            antwort = "\\Answered" in flags[(ordner, uid)]
+            if not antwort and gesendet and not z["message_id_ersatz"]:
+                try:
+                    antwort = post_imap.antwort_gesendet(kasten, gesendet, z["message_id"])
+                except (post_imap.Fehlt, post_imap.ImapFehler):
+                    antwort = False
+            if antwort:
+                _beantwortet(z["id"])
+                bilanz["beantwortet"] += 1
+            else:
+                _geprueft(z["id"])
+            bilanz["geprueft"] += 1
+    finally:
+        try:
+            kasten.logout()
+        except Exception:  # noqa: BLE001 - Abmelden ist Hoeflichkeit
+            pass
+
+
+def abgleich(verbinden=None, je_konto: int = 50) -> dict:
+    """Je aktivem Konto des Container-Besitzers hoechstens `je_konto` offene Mails auf
+    Antworten pruefen. Ohne Stichtag oder Besitzer: nichts, keine Verbindung.
+    Rueckgabe: {"geprueft", "beantwortet", "fehlt", "konten_fehler"}."""
+    import server
+    import post_konten
+    bilanz = {"geprueft": 0, "beantwortet": 0, "fehlt": 0, "konten_fehler": 0}
+    besitzer = post_struktur.container_besitzer()
+    if not stichtag_gesetzt() or not besitzer:
+        return bilanz
+    verbinden = verbinden or post_konten.verbinden
+    konten = server._q("select * from post_konten where aktiv and besitzer = %s "
+                       "order by kennung", (besitzer,))
+    for konto in konten:
+        try:
+            _konto_abgleichen(konto, je_konto, verbinden, bilanz)
+        except Exception as e:  # noqa: BLE001 - ein Konto haelt die anderen nicht auf
+            bilanz["konten_fehler"] += 1
+            LOG.warning("Konto %s: Abgleich abgebrochen (%s)", konto["kennung"],
+                        type(e).__name__)
+    if any(bilanz.values()):
+        LOG.info("Abgleich: %d geprueft, %d beantwortet, %d fehlen, %d Kontofehler",
+                 bilanz["geprueft"], bilanz["beantwortet"], bilanz["fehlt"],
+                 bilanz["konten_fehler"])
+    return bilanz

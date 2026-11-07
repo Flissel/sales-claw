@@ -320,3 +320,61 @@ def loeschen(kasten, quelle: str, uid: int, anbieter: str, message_id: str = "")
     waehlen(kasten, quelle)
     pruefen(kasten, uid, message_id)
     _entfernen(kasten, uid)
+
+
+# --- Antwort-Abgleich: nur lesen -------------------------------------------------
+# Alles hier oeffnet Ordner mit readonly=True und kennt keinen STORE/MOVE/COPY/EXPUNGE.
+
+_FLAGS = re.compile(rb"FLAGS \(([^)]*)\)", re.I)
+
+
+def _lesend_waehlen(kasten, ordner: str) -> None:
+    status, _ = kasten.select(postfach._imap_name(ordner), readonly=True)
+    if status != "OK":
+        raise Fehlt("Ordner nicht vorhanden")
+
+
+def flags_lesen(kasten, ordner: str, uids: list[int]) -> dict[int, set[str]]:
+    """Flags je UID im Ordner (nur lesend geoeffnet). Fehlt eine UID, ist sie nicht im
+    Ergebnis; fehlt der Ordner, gilt `Fehlt`. Der Stand ist so frisch wie dieser Abruf."""
+    _lesend_waehlen(kasten, ordner)
+    ergebnis: dict[int, set[str]] = {}
+    for uid in uids:
+        nummer = int(uid)
+        if nummer <= 0:
+            continue
+        daten = _ok(kasten.uid("FETCH", str(nummer), "(FLAGS)"), "UID FETCH")
+        muster = re.compile(rb"\bUID %d\b" % nummer)
+        for teil in daten or ():
+            roh = teil[0] if isinstance(teil, tuple) else teil
+            if not isinstance(roh, bytes) or not muster.search(roh):
+                continue
+            treffer = _FLAGS.search(roh)
+            if treffer:
+                ergebnis[nummer] = {f.decode("ascii", "replace")
+                                    for f in treffer.group(1).split()}
+                break
+    return ergebnis
+
+
+def gesendet_ordner(kasten) -> str | None:
+    """Der Ordner mit dem Merkmal \Sent, sonst None."""
+    for merkmale, name in postfach._ordner_liste(kasten):
+        if "\SENT" in merkmale.upper():
+            return name
+    return None
+
+
+def antwort_gesendet(kasten, ordner: str, message_id: str) -> bool:
+    """Liegt im Ordner eine Mail, die auf `message_id` antwortet? Erst In-Reply-To, ohne
+    Treffer auch References. Leere oder nicht suchbare Message-ID: False."""
+    if not message_id or not _SUCHBAR.fullmatch(message_id):
+        return False
+    _lesend_waehlen(kasten, ordner)
+    for kopf in ("In-Reply-To", "References"):
+        daten = _ok(kasten.uid("SEARCH", None, "HEADER", kopf, f'"<{message_id}>"'),
+                    "UID SEARCH")
+        roh = daten[0] if daten and daten[0] else b""
+        if (roh.split() if isinstance(roh, bytes) else str(roh).split()):
+            return True
+    return False
