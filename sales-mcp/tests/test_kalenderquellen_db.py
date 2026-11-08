@@ -209,3 +209,47 @@ def test_entfernte_quelle_laesst_sich_nicht_fortsetzen():
     server.kalenderquelle_entfernen(qid, "ivan")
     assert server.kalenderquelle_pausieren(qid, True, "ivan") is False
     assert server.kalenderquellen_lesen() == []
+
+
+# --- Abgleich gegen Wechsel/Entfernen (Fix-Runde 1, Task 5) ------------------
+
+def test_ersetzen_nach_wechsel_auf_privat_speichert_keine_fremden_titel():
+    """Der Abgleich hat details=True aus seinem Stand zu Rundenbeginn; in
+    der Zwischenzeit wurde die Quelle privat. Massgeblich ist die Zeile."""
+    qid = server.kalenderquelle_speichern("Ivan", "https://example.test/a.ics", "ivan", "business")
+    assert server.kalenderquelle_bereich_setzen(qid, "privat", "ivan") is True
+    assert server.kalendertermine_ersetzen(qid, [_termin()], True) == 1
+    assert _gespeichert(qid) == [{"titel": None, "ort": None}]
+
+
+def test_ersetzen_nach_entfernen_schreibt_nichts():
+    qid = server.kalenderquelle_speichern("Ivan", "https://example.test/a.ics", "ivan", "business")
+    assert server.kalenderquelle_entfernen(qid, "ivan") is True
+    assert server.kalendertermine_ersetzen(qid, [_termin()], True) == 0
+    assert _gespeichert(qid) == []
+
+
+def test_ersetzen_unbekannte_quelle_schreibt_nichts():
+    assert server.kalendertermine_ersetzen(
+        "00000000-0000-0000-0000-000000000000", [_termin()], True) == 0
+
+
+def test_details_false_des_aufrufers_schraenkt_zusaetzlich_ein():
+    qid = server.kalenderquelle_speichern("Felix", "https://example.test/a.ics", "felix", "business")
+    server.kalendertermine_ersetzen(qid, [_termin()], False)
+    assert _gespeichert(qid) == [{"titel": None, "ort": None}]
+
+
+def test_eigener_privatkalender_eines_teammitglieds_zeigt_privattermin():
+    """Fallback in kalendertermine_lesen: ivans Privattitel wurden nie
+    gespeichert (Spec §6.3) - auch ivan selbst sieht den Block, nie None."""
+    qid = server.kalenderquelle_speichern("Ivan privat", "https://example.test/a.ics",
+                                          "ivan", "privat")
+    server.kalendertermine_ersetzen(qid, [_termin()], True)
+    server.kalenderquelle_stand_setzen(qid, 1, None)
+    assert _gespeichert(qid) == [{"titel": None, "ort": None}]
+    jetzt = datetime.now(timezone.utc)
+    termine, luecken = server.kalendertermine_lesen(jetzt, jetzt + timedelta(days=2), "ivan")
+    assert luecken == []
+    assert [(t["titel"], t["ort"], t["maskiert"]) for t in termine] == [
+        ("Privattermin", "", False)]

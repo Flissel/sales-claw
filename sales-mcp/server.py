@@ -3576,16 +3576,32 @@ def kalendertermine_ersetzen(quelle_id: str, termine: list, details: bool) -> in
 
     Loeschen und Einfuegen laufen in EINER Transaktion: bricht das Einfuegen
     ab, bleiben die alten Termine stehen, und es gibt nie einen Zwischenstand
-    ohne Termine (der Agent sagte sonst kurz "frei"). Mit `details=False`
-    (fremde Privat-Quelle, Spec §6.3) werden titel und ort als NULL
-    geschrieben - sie erreichen die Datenbank gar nicht erst."""
-    zeilen = [(quelle_id, t.get("uid") or "", t["beginn"], t["ende"],
-               bool(t.get("ganztaegig")), bool(t.get("frei")),
-               (t.get("titel") or None) if details else None,
-               (t.get("ort") or None) if details else None)
-              for t in termine]
+    ohne Termine (der Agent sagte sonst kurz "frei").
+
+    Ob titel und ort gespeichert werden, entscheidet die Quellen-Zeile, die
+    hier IN DERSELBEN Transaktion gesperrt gelesen wird (`for update`) - nicht
+    der Stand, den der Abgleich zu Rundenbeginn gelesen hat. Sonst schriebe
+    ein Abgleich, der waehrend eines Wechsels Business->Privat oder eines
+    Entfernens laeuft, fremde Privattitel zurueck oder Termine einer
+    entfernten Quelle neu (bereich_setzen/entfernen sperren dieselbe Zeile).
+    `details=False` des Aufrufers schraenkt nur zusaetzlich ein: gespeichert
+    wird nur, wenn beide es erlauben (Spec §6.3). Ist die Quelle inaktiv
+    oder fehlt, wird nichts geschrieben -> 0."""
     with pool.connection() as conn:
         with conn.transaction():
+            quelle = conn.execute(
+                "select besitzer, bereich, aktiv from kalender_quellen "
+                "where id = %s for update", (quelle_id,)).fetchone()
+            if quelle is None or not quelle["aktiv"]:
+                return 0
+            mit_details = details and kalender_sichtbarkeit.details_speichern(
+                quelle["besitzer"], quelle["bereich"],
+                post_struktur.container_besitzer())
+            zeilen = [(quelle_id, t.get("uid") or "", t["beginn"], t["ende"],
+                       bool(t.get("ganztaegig")), bool(t.get("frei")),
+                       (t.get("titel") or None) if mit_details else None,
+                       (t.get("ort") or None) if mit_details else None)
+                      for t in termine]
             conn.execute("delete from kalender_termine where quelle_id = %s",
                          (quelle_id,))
             if zeilen:

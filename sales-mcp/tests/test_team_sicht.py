@@ -207,3 +207,59 @@ def test_eigener_privattermin_steht_auf_der_seite_voll(monkeypatch):
     antwort = _get("/kalender")
     assert antwort.status_code == 200
     assert "Arzt Dr. Geheim" in antwort.text and "Praxis X" in antwort.text
+
+
+@pytest.fixture
+def ivan_angemeldet(monkeypatch):
+    """Echte Anmeldung als `ivan` (Rolle kalender), Laden gehoert felix."""
+    import benutzer_anlegen
+    import kalender
+    monkeypatch.setenv("POST_BESITZER", "felix")
+    monkeypatch.setattr(kalender, "termine_lesen", lambda *a, **k: ([], None))
+    monkeypatch.setattr(ui, "UI_SESSION_SECRET", "test-geheimnis-nur-fuer-diese-datei")
+    ui.ANMELDE_BREMSE.update({"fehler": 0, "gesperrt_bis": 0.0})
+    with server.pool.connection() as conn:
+        conn.execute("truncate sales_test.benutzer cascade")
+    assert benutzer_anlegen.anlegen("ivan", "kalender", "nur-kalender-9").startswith("OK")
+    client = TestClient(ui.app)
+    antwort = client.post("/login", data={"name": "ivan", "passwort": "nur-kalender-9",
+                                          "csrf": ui.CSRF_TOKEN},
+                          headers={"host": HOST_OK}, follow_redirects=False)
+    assert antwort.status_code == 303
+    yield client
+    ui.ANMELDE_BREMSE.update({"fehler": 0, "gesperrt_bis": 0.0})
+    with server.pool.connection() as conn:
+        conn.execute("truncate sales_test.benutzer cascade")
+
+
+def test_angemeldeter_ivan_sieht_felix_privat_nur_als_privattermin(ivan_angemeldet):
+    """Fix-Runde 1, Task 5: echte Quelle von felix/privat (Titel gespeichert,
+    weil felix der Laden-Besitzer ist); ivan sieht weder in der Liste unter
+    dem Kalender noch in termine.json Titel oder Ort."""
+    import kalender_sichtbarkeit
+    import post_struktur
+    qid = server.kalenderquelle_speichern("Felix privat", "https://example.test/f.ics",
+                                          "felix", "privat")
+    beginn = _bald(24)
+    server.kalendertermine_ersetzen(qid, [
+        {"uid": "p1", "beginn": beginn, "ende": beginn + timedelta(hours=1),
+         "titel": "Arzt Dr. Geheim", "ort": "Praxis X"}],
+        kalender_sichtbarkeit.details_speichern("felix", "privat",
+                                                post_struktur.container_besitzer()))
+    server.kalenderquelle_stand_setzen(qid, 1, None)
+    assert server._q("select titel from kalender_termine where quelle_id = %s",
+                     (qid,)) == [{"titel": "Arzt Dr. Geheim"}]
+
+    seite = ivan_angemeldet.get("/kalender", headers={"host": HOST_OK})
+    assert seite.status_code == 200
+    assert "Privattermin" in seite.text
+    assert "Arzt Dr. Geheim" not in seite.text and "Praxis X" not in seite.text
+
+    von = (beginn - timedelta(days=1)).isoformat().replace("+", "%2B")
+    bis = (beginn + timedelta(days=1)).isoformat().replace("+", "%2B")
+    antwort = ivan_angemeldet.get(f"/kalender/termine.json?von={von}&bis={bis}",
+                                  headers={"host": HOST_OK})
+    assert antwort.status_code == 200, antwort.text
+    (e,) = [e for e in antwort.json()["ereignisse"] if e["art"] == "kalender"]
+    assert e["titel"] == "Privattermin" and e["maskiert"] is True
+    assert "Arzt Dr. Geheim" not in antwort.text and "Praxis X" not in antwort.text
