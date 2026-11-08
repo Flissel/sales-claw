@@ -132,6 +132,11 @@ def _abgleichen_geschuetzt(quelle: dict, zugaenge: dict | None = None) -> bool:
 def runde() -> dict:
     bilanz = {"quellen": 0, "fehler": 0}
     zugaenge: dict = {}     # ein Access-Token je Konto und Runde
+    try:
+        # Verwaiste Google-Zugaenge (nichts uebernommen) einmal je Runde weg.
+        server.kalenderkonten_aufraeumen()
+    except Exception as e:  # noqa: BLE001 - nur der Typ, nie der Text
+        LOG.error("Konten aufraeumen fehlgeschlagen (%s)", type(e).__name__)
     for quelle in server.kalenderquellen_lesen():
         if _STOPP.is_set():
             break

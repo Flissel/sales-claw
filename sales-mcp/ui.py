@@ -695,7 +695,8 @@ class AnmeldeWache:
                     "/team/kalender/entfernen",
                     # Task 9: Kalender aus der Google-Auswahl uebernehmen -
                     # dieselbe Regel wie "verbinden" (Besitzer = die Person).
-                    "/team/kalender/google/uebernehmen")):
+                    "/team/kalender/google/uebernehmen",
+                    "/team/kalender/google/abbrechen")):
             antwort = _fehlerseite(
                 403, "Nur Lesen",
                 "Diese Anmeldung darf sehen, aber nicht verändern. "
@@ -7031,7 +7032,27 @@ async def google_auswahl(request):
         f'<input type="hidden" name="csrf" value="{_e(CSRF_TOKEN)}">'
         f'<input type="hidden" name="konto_id" value="{_e(konto["id"])}">'
         f'<ul class="liste">{"".join(zeilen)}</ul>'
-        f'<button class="primaer" type="submit">Übernehmen</button></form>'))
+        f'<button class="primaer" type="submit">Übernehmen</button></form>'
+        f'<form method="post" action="/team/kalender/google/abbrechen">'
+        f'<input type="hidden" name="csrf" value="{_e(CSRF_TOKEN)}">'
+        f'<input type="hidden" name="konto_id" value="{_e(konto["id"])}">'
+        f'<button type="submit">Abbrechen</button></form>'))
+
+
+@_gesichert_seite
+async def google_abbrechen(request):
+    """Nichts uebernehmen: der Zugang des eigenen Kontos wird vernichtet,
+    wenn noch keine Quelle daran haengt."""
+    form = await request.form()
+    if not _csrf_ok(form):
+        return _fehlerseite(403, "Abgewiesen",
+                            "Fehlende oder falsche CSRF-Marke.")
+    besitzer, _filter = _kalender_besitzer(request)
+    konto = _google_eigenes_konto(besitzer, form.get("konto_id"))
+    if konto is None:
+        return _google_seite("Abgewiesen", _e(_GOOGLE_KEIN_KONTO), 403)
+    server.kalenderkonto_abbrechen(konto["id"], besitzer)
+    return RedirectResponse("/team/kalender", status_code=303)
 
 
 def _google_namen(besitzer: str, konto_id: str, auswahl: list) -> list:
@@ -7079,8 +7100,14 @@ async def google_uebernehmen(request):
                              "gespeichert.", 400, zurueck)
     auswahl = []
     for gid in gewaehlt:
+        if gid not in bekannt:
+            return _google_seite(
+                "Abgewiesen",
+                "Kalender gehört nicht zu diesem Konto. Nichts wurde "
+                "gespeichert.", 400, zurueck)
+    for gid in gewaehlt:
         bereich = str(form.get("bereich_" + gid) or "")
-        if gid not in bekannt or bereich not in dict(_BEREICHE):
+        if bereich not in dict(_BEREICHE):
             return _google_seite(
                 "Bereich fehlt",
                 "Für jeden übernommenen Kalender muss Business oder Privat "
@@ -7139,6 +7166,15 @@ async def aktion_kalender_verbinden(request):
             "Ohne Anmeldung ist nicht klar, wem dieser Kalender gehört, "
             "und für diesen Laden ist kein Besitzer eingetragen. Bitte "
             "anmelden. Nichts wurde gespeichert."))
+    # Fix-Runde 1 (Task 9): ein Name, den schon ein Google-Kalender traegt,
+    # bleibt dessen Name - vor dem Abruf abweisen, nichts holen, nichts
+    # speichern. (kalenderquelle_speichern prueft es als Rueckhalt nochmal.)
+    if any(q["besitzer"] == besitzer and q["art"] == "google"
+           and q["anzeigename"].casefold() == name.casefold()
+           for q in server.kalenderquellen_lesen(nur_aktive=False)):
+        return _fehlerseite(400, "Name vergeben", (
+            f"{_e(server.GOOGLE_NAME_BELEGT)} – bitte anderen Namen wählen. "
+            f"Nichts wurde gespeichert."))
     # Erst pruefen, dann speichern - nie umgekehrt (ein Tippfehler beim
     # Neuverbinden darf eine funktionierende Quelle nicht zerstoeren). Der
     # Abruf laeuft genau einmal; die Ergebnisse werden unten weiterverwendet.
@@ -7156,7 +7192,12 @@ async def aktion_kalender_verbinden(request):
             f'<p class="fehler">{_e(fehler)}</p>'
             f'<p class="meta">Nichts wurde gespeichert.</p>'
             f'<p><a href="/team/kalender">Zurück und erneut versuchen</a></p>'))
-    quelle_id = server.kalenderquelle_speichern(name, url, besitzer, bereich)
+    try:
+        quelle_id = server.kalenderquelle_speichern(name, url, besitzer, bereich)
+    except ValueError:
+        return _fehlerseite(400, "Name vergeben", (
+            f"{_e(server.GOOGLE_NAME_BELEGT)} – bitte anderen Namen wählen. "
+            f"Nichts wurde gespeichert."))
     anzahl = None
     try:
         # details=True: kalendertermine_ersetzen entscheidet unter Sperre
@@ -10029,6 +10070,8 @@ app = Starlette(routes=[
     Route("/team/kalender/google/zurueck", google_zurueck),
     Route("/team/kalender/google/auswahl", google_auswahl),
     Route("/team/kalender/google/uebernehmen", google_uebernehmen,
+          methods=["POST"]),
+    Route("/team/kalender/google/abbrechen", google_abbrechen,
           methods=["POST"]),
     Route("/team/kalender/entfernen", aktion_kalender_entfernen,
           methods=["POST"]),

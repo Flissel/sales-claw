@@ -154,6 +154,10 @@ begin
     return;
   end if;
   execute format('grant select, insert, update on %I.kalender_konten to %I', s, rolle);
+  -- Entfernen loescht die Quellenzeile wirklich (Fix-Runde 1, Task 9): sonst
+  -- bliebe der Google-Zugang bzw. die iCal-Adresse liegen. Auf `sales`
+  -- einmalig nachziehen: diese Datei erneut einspielen (idempotent).
+  execute format('grant delete on %I.kalender_quellen to %I', s, rolle);
   execute format('grant select, insert, update, delete on %I.kalender_termine to %I', s, rolle);
   -- Testschema: die Test-Fixture leert die Tabellen zwischen den Tests
   -- (truncate ... cascade auf kalender_quellen greift auf beide durch).

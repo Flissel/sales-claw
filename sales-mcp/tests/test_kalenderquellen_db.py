@@ -89,26 +89,19 @@ def test_erfolg_nach_fehler_loescht_den_fehler():
 
 
 def test_entfernen():
-    """Entfernen ist ein Gegen-Ereignis, kein DELETE: die Zeile bleibt
-    bestehen (nur ausgeblendet), aber die geheime Adresse verschwindet
-    wirklich. Ein erneutes Verbinden desselben Namens weckt sie wieder."""
+    """Fix-Runde 1 (Task 9): Entfernen loescht die Zeile (und ihre Termine)
+    wirklich - aktiv oder pausiert. Neu verbinden legt eine neue Zeile an."""
     qid = server.kalenderquelle_speichern("Ivan", "https://example.test/a.ics", "ivan", "privat")
     assert server.kalenderquelle_entfernen(qid, "ivan") is True
     assert server.kalenderquellen_lesen() == []
     assert server.kalenderquelle_entfernen(qid, "ivan") is False
 
-    # Nicht geloescht, nur deaktiviert — und die Adresse ist weg, nicht
-    # bloss ausgeblendet.
-    alle = server.kalenderquellen_lesen(nur_aktive=False)
-    assert len(alle) == 1, alle
-    assert alle[0]["id"] == qid
-    assert alle[0]["aktiv"] is False
-    assert alle[0]["url"] is None
+    assert server.kalenderquellen_lesen(nur_aktive=False) == []
 
     # Verbindet der Kollege seinen Kalender unter demselben Namen neu,
-    # wacht genau diese Zeile von selbst wieder auf.
+    # entsteht eine neue Zeile.
     neue_id = server.kalenderquelle_speichern("Ivan", "https://example.test/neu.ics", "ivan", "privat")
-    assert neue_id == qid
+    assert neue_id != qid
     wieder = server.kalenderquellen_lesen()
     assert len(wieder) == 1, wieder
     assert wieder[0]["aktiv"] is True

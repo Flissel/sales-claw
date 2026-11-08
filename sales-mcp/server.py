@@ -3504,6 +3504,9 @@ def _fremde_titel_loeschen(conn, quelle_id: str, besitzer: str, bereich: str) ->
                      "where quelle_id = %s", (quelle_id,))
 
 
+GOOGLE_NAME_BELEGT = "Diesen Namen trägt schon ein Google-Kalender"
+
+
 def kalenderquelle_speichern(anzeigename: str, url: str, besitzer: str,
                              bereich: str) -> str:
     """Anlegen oder die Adresse eines bekannten Namens DESSELBEN Besitzers
@@ -3518,15 +3521,21 @@ def kalenderquelle_speichern(anzeigename: str, url: str, besitzer: str,
     _bereich_pruefen(bereich)
     with pool.connection() as conn:
         with conn.transaction():
-            quelle_id = str(conn.execute(
+            zeile = (conn.execute(
                 "insert into kalender_quellen (anzeigename, url, besitzer, bereich) "
                 "values (%s, %s, %s, %s) "
                 "on conflict (besitzer, anzeigename) do update set "
                 "url = excluded.url, bereich = excluded.bereich, "
                 "aktiv = true, letzter_fehler = null, zuletzt_gelesen = null "
+                # Eine Google-Quelle wird nie zur Mischzeile (art google,
+                # aber mit Adresse): der Name ist dann belegt.
+                "where kalender_quellen.art <> 'google' "
                 "returning id",
                 (anzeigename.strip(), url.strip(), besitzer, bereich)
-            ).fetchone()["id"])
+            ).fetchone())
+            if zeile is None:
+                raise ValueError(GOOGLE_NAME_BELEGT)
+            quelle_id = str(zeile["id"])
             _fremde_titel_loeschen(conn, quelle_id, besitzer, bereich)
     return quelle_id
 
@@ -3542,8 +3551,34 @@ def kalenderkonto_speichern(besitzer: str, adresse: str, zugang_versiegelt: str,
         "zugang_versiegelt, kalender_liste) values (%s, 'google', %s, %s, "
         "%s::jsonb) on conflict (besitzer, anbieter, adresse) do update set "
         "zugang_versiegelt = excluded.zugang_versiegelt, "
-        "kalender_liste = excluded.kalender_liste, aktiv = true returning id",
+        "kalender_liste = excluded.kalender_liste, aktiv = true, "
+        # created_at = "angelegt oder zuletzt erneuert": das Aufraeumen
+        # verwaister Zugaenge (eine Stunde) rechnet davon.
+        "created_at = now() returning id",
         (besitzer, adresse, zugang_versiegelt, _json(kalender_liste)))[0]["id"])
+
+
+def kalenderkonten_aufraeumen() -> int:
+    """Verwaiste Zugaenge vernichten: Konten OHNE jede Quellenzeile, die vor
+    ueber einer Stunde angelegt oder erneuert wurden (die Person hat nach dem
+    Google-Rueckweg nichts uebernommen) -> Anzahl."""
+    return len(_q(
+        "update kalender_konten k set zugang_versiegelt = null "
+        "where zugang_versiegelt is not null "
+        "and created_at < now() - interval '1 hour' "
+        "and not exists (select 1 from kalender_quellen q "
+        "                where q.konto_id = k.id) returning k.id"))
+
+
+def kalenderkonto_abbrechen(konto_id: str, besitzer: str) -> bool:
+    """Abbrechen auf der Auswahlseite: den Zugang des EIGENEN Kontos
+    vernichten, wenn noch keine Quelle daran haengt -> True, wenn geschehen."""
+    return bool(_q(
+        "update kalender_konten k set zugang_versiegelt = null "
+        "where k.id = %s and k.besitzer = %s and zugang_versiegelt is not null "
+        "and not exists (select 1 from kalender_quellen q "
+        "                where q.konto_id = k.id) returning k.id",
+        (str(konto_id), besitzer)))
 
 
 def kalenderkonto_lesen(konto_id: str) -> "dict | None":
@@ -3673,36 +3708,38 @@ def kalendertermine_ersetzen(quelle_id: str, termine: list, details: bool) -> in
 
 
 def kalenderquelle_entfernen(quelle_id: str, besitzer: "str | None") -> bool:
-    """Aus Betreibersicht "entfernt" — die Quelle selbst ist ein
-    Gegen-Ereignis, kein DELETE (archivieren statt loeschen, wie
-    `wiedervorlage_erledigt`, `absender_beachtet`). Die Zeile bleibt
-    bestehen (aktiv = false), aber die GEHEIME Adresse wird vernichtet
-    (url = null) — der Kollege erwartet, dass sie weg ist, nicht dass sie
-    nur ausgeblendet daliegt. Ihre abgeglichenen Termine werden dagegen
-    wirklich geloescht (Spec §5, Loeschrecht nur auf kalender_termine), in
-    derselben Transaktion. Nur der Besitzer, oder mit `besitzer=None` die
-    Rolle `freigeben`, darf entfernen.
-    Verbindet er seinen Kalender unter demselben Namen neu, weckt
-    `kalenderquelle_speichern` genau diese Zeile von selbst wieder auf."""
+    """Fix-Runde 1 (Task 9): die Zeile wird WIRKLICH geloescht, samt ihren
+    Terminen (aktiv oder pausiert) - sonst bliebe die geheime Adresse bzw. der
+    Google-Zugang liegen, und "Fortsetzen" haette die Quelle wiederbelebt.
+    Nur kalender_termine verweist auf die Zeile. Gehoerte sie zu einem Google-
+    Konto und ist sie die letzte, wird dessen Zugang vernichtet. Braucht
+    `delete` auf kalender_quellen (db/kalender-verbinden.sql). Nur der
+    Besitzer, oder mit `besitzer=None` die Rolle `freigeben`, darf."""
     bedingung, werte = _besitzer_bedingung(besitzer)
+    try:
+        uuid.UUID(str(quelle_id))
+    except ValueError:
+        return False
     with pool.connection() as conn:
         with conn.transaction():
+            # Zeile sperren (der Abgleich sperrt sie ebenso), dann Termine
+            # und Zeile loeschen - aktiv oder pausiert.
             zeile = conn.execute(
-                "update kalender_quellen set aktiv = false, url = null "
-                "where id = %s and aktiv" + bedingung
-                + " returning id, konto_id",
-                (quelle_id,) + werte).fetchone()
+                "select id, konto_id from kalender_quellen where id = %s"
+                + bedingung + " for update", (quelle_id,) + werte).fetchone()
             if zeile is None:
                 return False
             conn.execute("delete from kalender_termine where quelle_id = %s",
                          (quelle_id,))
+            conn.execute("delete from kalender_quellen where id = %s",
+                         (quelle_id,))
             if zeile["konto_id"] is not None:
-                # Letzte aktive Quelle eines Google-Kontos: der Zugang wird
-                # vernichtet, nicht nur ausgeblendet (gleiche Transaktion).
+                # Keine Quellenzeile mehr am Google-Konto (pausierte zaehlen
+                # als vorhanden): der Zugang wird vernichtet, gleiche
+                # Transaktion.
                 if conn.execute(
                         "select 1 from kalender_quellen where konto_id = %s "
-                        "and aktiv limit 1", (zeile["konto_id"],)
-                ).fetchone() is None:
+                        "limit 1", (zeile["konto_id"],)).fetchone() is None:
                     conn.execute("update kalender_konten set "
                                  "zugang_versiegelt = null where id = %s",
                                  (zeile["konto_id"],))

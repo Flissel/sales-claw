@@ -471,3 +471,168 @@ def test_rollen_wache_laesst_schmale_rolle_uebernehmen(scharf, eingerichtet, goo
         "konto_id": konto_id, "wahl": ["ivan@example.test"],
         "bereich_ivan@example.test": "privat"})
     assert r.status_code == 200 and len(_quellen()) == 1
+
+
+# --- Fix-Runde 1: Entfernen loescht wirklich ---------------------------------
+
+def _quelle_ids():
+    return {str(x["id"]) for x in _quellen()}
+
+
+def test_pausiert_a_entfernt_b_token_bleibt():
+    kid, (a, b) = _konto_mit_quellen()
+    assert server.kalenderquelle_pausieren(a, False, "ivan") is True
+    assert server.kalenderquelle_entfernen(b, "ivan") is True
+    assert _quelle_ids() == {a}                       # B ist wirklich weg
+    assert server.kalender_konto_zugang(kid) == "VERSIEGELT-X"
+    assert server.kalenderquelle_pausieren(a, True, "ivan") is True
+
+
+def test_letzte_pausierte_quelle_entfernen_loescht_zeile_und_zugang():
+    kid, (a, b) = _konto_mit_quellen()
+    for q in (a, b):
+        assert server.kalenderquelle_pausieren(q, False, "ivan") is True
+    assert server.kalenderquelle_entfernen(a, "ivan") is True
+    assert server.kalender_konto_zugang(kid) == "VERSIEGELT-X"
+    assert server.kalenderquelle_entfernen(b, "ivan") is True
+    assert _quellen() == []
+    assert _konten()[0]["zugang_versiegelt"] is None
+
+
+def test_entfernte_google_quelle_nicht_fortsetzbar_auch_nicht_fuer_freigeben():
+    kid, (a,) = _konto_mit_quellen(1)
+    assert server.kalenderquelle_entfernen(a, "ivan") is True
+    assert server.kalenderquelle_pausieren(a, True, "ivan") is False
+    assert server.kalenderquelle_pausieren(a, True, None) is False
+    assert _quellen() == []
+
+
+def test_freigeben_entfernt_fremde_google_quelle_samt_zugang():
+    kid, (a,) = _konto_mit_quellen(1)
+    server._q("insert into kalender_termine (quelle_id, beginn, ende) "
+              "values (%s, now(), now()) returning quelle_id", (a,))
+    assert server.kalenderquelle_entfernen(a, None) is True
+    assert _quellen() == []
+    assert server._q("select 1 from kalender_termine") == []
+    assert _konten()[0]["zugang_versiegelt"] is None
+
+
+def test_entfernen_fremder_quelle_bleibt_abgewiesen():
+    kid, (a,) = _konto_mit_quellen(1)
+    assert server.kalenderquelle_entfernen(a, "dora") is False
+    assert _quelle_ids() == {a} and server.kalender_konto_zugang(kid)
+
+
+# --- Fix-Runde 1: iCal unter Google-Namen -----------------------------------
+
+def test_ical_unter_google_namen_wird_abgewiesen(scharf, eingerichtet, monkeypatch):
+    import kalenderquellen
+    kid, (a,) = _konto_mit_quellen(1)
+    aufrufe = []
+    monkeypatch.setattr(kalenderquellen, "hole",
+                        lambda *x, **k: aufrufe.append(1) or ([], None))
+    c = _angemeldet("ivan")
+    r = _post(c, "/team/kalender/verbinden", {
+        "name": "K0", "url": "https://example.test/a.ics", "bereich": "privat"})
+    assert r.status_code == 400
+    assert "Diesen Namen trägt schon ein Google-Kalender" in r.text
+    assert aufrufe == []
+    q = _quellen()
+    assert len(q) == 1 and q[0]["art"] == "google" and q[0]["url"] is None
+    assert q[0]["bereich"] == "business"
+
+
+def test_speichern_backstop_gegen_google_namen():
+    _konto_mit_quellen(1)
+    with pytest.raises(ValueError):
+        server.kalenderquelle_speichern("K0", "https://example.test/a.ics",
+                                        "ivan", "privat")
+    q = _quellen()
+    assert len(q) == 1 and q[0]["art"] == "google" and q[0]["url"] is None
+
+
+# --- Fix-Runde 1: verwaiste Token -------------------------------------------
+
+def test_konto_ohne_quellen_wird_nach_einer_stunde_aufgeraeumt():
+    alt = server.kalenderkonto_speichern("ivan", "alt@example.test", "V-ALT", [])
+    jung = server.kalenderkonto_speichern("ivan", "jung@example.test", "V-JUNG", [])
+    mit = server.kalenderkonto_speichern("ivan", "mit@example.test", "V-MIT", [])
+    server.google_quelle_speichern(mit, "x", "X", "ivan", "business")
+    server._q("update kalender_konten set created_at = now() - interval '2 hours' "
+              "where id in (%s, %s) returning id", (alt, mit))
+    assert server.kalenderkonten_aufraeumen() == 1
+    assert server.kalender_konto_zugang(alt) is None
+    assert server.kalender_konto_zugang(jung) == "V-JUNG"
+    assert server.kalender_konto_zugang(mit) == "V-MIT"
+    assert server.kalenderkonten_aufraeumen() == 0
+
+
+def test_neu_verbinden_erneuert_den_zeitstempel():
+    kid = server.kalenderkonto_speichern("ivan", "a@example.test", "V1", [])
+    server._q("update kalender_konten set created_at = now() - interval '5 hours' "
+              "returning id")
+    server.kalenderkonto_speichern("ivan", "a@example.test", "V2", [])
+    assert server.kalenderkonten_aufraeumen() == 0
+    assert server.kalender_konto_zugang(kid) == "V2"
+
+
+def test_runde_raeumt_konten_auf(monkeypatch):
+    import kalender_abgleich
+    n = []
+    monkeypatch.setattr(server, "kalenderquellen_lesen", lambda *a, **k: [])
+    monkeypatch.setattr(server, "kalenderkonten_aufraeumen",
+                        lambda: n.append(1) or 0)
+    kalender_abgleich.runde()
+    assert n == [1]
+
+
+def test_runde_laeuft_weiter_wenn_aufraeumen_scheitert(monkeypatch):
+    import kalender_abgleich
+
+    def kaputt():
+        raise RuntimeError("GEHEIM")
+    monkeypatch.setattr(server, "kalenderquellen_lesen", lambda *a, **k: [])
+    monkeypatch.setattr(server, "kalenderkonten_aufraeumen", kaputt)
+    assert kalender_abgleich.runde() == {"quellen": 0, "fehler": 0}
+
+
+def test_auswahl_hat_abbrechen_und_loescht_token(scharf, eingerichtet, google):
+    c = _angemeldet("ivan")
+    konto_id = _auswahl(c)
+    seite = _get(c, f"/team/kalender/google/auswahl?konto={konto_id}").text
+    assert 'action="/team/kalender/google/abbrechen"' in seite
+    r = _post(c, "/team/kalender/google/abbrechen", {"konto_id": konto_id})
+    assert r.status_code == 303
+    assert server.kalender_konto_zugang(konto_id) is None
+
+
+def test_abbrechen_laesst_konto_mit_quellen_in_ruhe(scharf, eingerichtet, google):
+    c = _angemeldet("ivan")
+    konto_id = _auswahl(c)
+    server.google_quelle_speichern(konto_id, "ivan@example.test", "Ivan", "ivan", "privat")
+    _post(c, "/team/kalender/google/abbrechen", {"konto_id": konto_id})
+    assert server.kalender_konto_zugang(konto_id)
+
+
+def test_abbrechen_fremdes_konto_und_ohne_csrf(scharf, eingerichtet, google):
+    c = _angemeldet("ivan")
+    konto_id = _auswahl(c)
+    d = _angemeldet("dora")
+    assert _post(d, "/team/kalender/google/abbrechen",
+                 {"konto_id": konto_id}).status_code == 403
+    assert _post(c, "/team/kalender/google/abbrechen", {"konto_id": konto_id},
+                 csrf=False).status_code == 403
+    assert server.kalender_konto_zugang(konto_id)
+
+
+# --- Fix-Runde 1: eigene Meldung fuer fremde google_id ----------------------
+
+def test_fremde_google_id_hat_eigene_meldung(scharf, eingerichtet, google):
+    c = _angemeldet("ivan")
+    konto_id = _auswahl(c)
+    r = _post(c, "/team/kalender/google/uebernehmen", {
+        "konto_id": konto_id, "wahl": ["fremd@example.test"],
+        "bereich_fremd@example.test": "business"})
+    assert r.status_code == 400
+    assert "Kalender gehört nicht zu diesem Konto" in r.text
+    assert "Bereich fehlt" not in r.text and _quellen() == []

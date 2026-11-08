@@ -310,7 +310,7 @@ def test_entfernen_knopf_steht_je_aktiver_quelle_auf_der_seite(monkeypatch):
     assert f'value="{quelle_id}"' in seite
 
 
-def test_entfernen_deaktiviert_die_quelle(monkeypatch):
+def test_entfernen_loescht_die_quelle(monkeypatch):
     monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: ([], None))
     _post({"name": "Ivan", "url": "https://example.test/a.ics",
           "bereich": "business", "csrf": ui.CSRF_TOKEN})
@@ -318,10 +318,8 @@ def test_entfernen_deaktiviert_die_quelle(monkeypatch):
     antwort = _post_entfernen({"quelle_id": quelle_id, "csrf": ui.CSRF_TOKEN})
     assert antwort.status_code == 303, antwort.text
     assert server.kalenderquellen_lesen() == []
-    # Nicht geloescht, nur deaktiviert (Gegen-Ereignis) — die Zeile bleibt,
-    # zaehlt aber nicht mehr als aktive Quelle.
-    alle = server.kalenderquellen_lesen(nur_aktive=False)
-    assert len(alle) == 1 and alle[0]["aktiv"] is False
+    # Fix-Runde 1 (Task 9): "Entfernen" loescht die Zeile wirklich.
+    assert server.kalenderquellen_lesen(nur_aktive=False) == []
 
 
 def test_entfernen_ohne_csrf_passiert_nichts(monkeypatch):
