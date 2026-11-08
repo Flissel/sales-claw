@@ -37,6 +37,7 @@ KALENDER_ONCE = os.environ.get("KALENDER_ONCE", "").strip().lower() in ("1", "tr
 ENV_SCHLUESSEL_PRIVAT = "KALENDER_SCHLUESSEL_PRIVAT"
 KONTO_FEHLT = "Google-Konto fehlt – bitte neu verbinden"
 ZUGANG_UNLESBAR = "Zugang nicht lesbar – bitte neu verbinden"
+SCHLUESSEL_FEHLT = "Kalender-Schlüssel fehlt – Betreiber muss einrichten"
 
 LOG = logging.getLogger("sales-kalender")
 _STOPP = threading.Event()
@@ -55,6 +56,8 @@ def _zugang(konto_id: str, zugaenge: dict) -> str:
             try:
                 refresh = post_tresor.oeffnen(
                     versiegelt, env_name=ENV_SCHLUESSEL_PRIVAT)
+            except post_tresor.SchluesselFehlt:
+                raise google_kalender.GoogleFehler(SCHLUESSEL_FEHLT) from None
             except post_tresor.TresorFehler:
                 raise google_kalender.GoogleFehler(ZUGANG_UNLESBAR) from None
             zugaenge[konto_id] = google_kalender.zugang_erneuern(refresh)
@@ -74,10 +77,10 @@ def _google_holen(quelle: dict, zugaenge: dict) -> tuple[list, str | None]:
     try:
         token = _zugang(str(quelle["konto_id"]), zugaenge)
         jetzt = datetime.now(timezone.utc)
-        return google_kalender.termine(
+        return google_kalender.termine_mit_hinweis(
             token, quelle["google_id"],
             jetzt - timedelta(days=FENSTER_ZURUECK_TAGE),
-            jetzt + timedelta(days=FENSTER_VORAUS_TAGE)), None
+            jetzt + timedelta(days=FENSTER_VORAUS_TAGE))
     except google_kalender.GoogleFehler as e:
         return [], str(e)
 

@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import stat
 import subprocess
 import urllib.error
@@ -225,9 +226,9 @@ def db(monkeypatch):
         conn.execute("truncate sales_test.kalender_konten cascade")
 
 
-def _konto(adresse="felix@example.test"):
-    versiegelt = post_tresor.versiegeln(
-        REFRESH, env_name="KALENDER_SCHLUESSEL_OEFFENTLICH")
+def _konto(adresse="felix@example.test", refresh=REFRESH):
+    versiegelt = post_tresor.versiegeln_lang(
+        refresh, env_name="KALENDER_SCHLUESSEL_OEFFENTLICH")
     z = server._q(
         "insert into kalender_konten (besitzer, anbieter, adresse, zugang_versiegelt) "
         "values ('felix', 'google', %s, %s) returning id", (adresse, versiegelt))
@@ -400,3 +401,151 @@ def test_google_zugang_skript_traegt_ein_und_gibt_nichts_aus(tmp_path):
                        capture_output=True, timeout=30,
                        env={**os.environ, "SALES_ENV_DATEI": str(env)})
     assert r.returncode == 3 and "GOOGLE_KALENDER_CLIENT_ID=neu\n" in env.read_text(encoding="utf-8")
+
+
+# --- Fix round 1 ---------------------------------------------------------------
+
+def test_fields_werden_angefordert(monkeypatch):
+    aufrufe = _antwort(monkeypatch, {"items": []}, {"items": []})
+    google_kalender.termine("tok", "primary", VON, BIS)
+    google_kalender.kalender_liste("tok")
+    ev_url, liste_url = aufrufe[0][1], aufrufe[1][1]
+    assert "fields=" in ev_url and "fields=" in liste_url
+    assert "transparency" in ev_url and "attendees" not in ev_url and "description" not in ev_url
+    assert "summaryOverride" in liste_url and "accessRole" not in liste_url
+
+
+def test_kaputte_eintraege_werden_uebersprungen_und_gemeldet(monkeypatch):
+    _antwort(monkeypatch, {"items": [
+        _ev("ok"), "text", None, 7, {"id": "x", "start": "kaputt", "end": {}},
+        {"id": "y", "start": {"dateTime": "kein-datum"}, "end": {"dateTime": "2030-01-02T10:00:00Z"}},
+        {"id": "z", "start": [], "end": []},
+        _ev("cancel", status="cancelled")]})
+    t, hinweis = google_kalender.termine_mit_hinweis("tok", "primary", VON, BIS)
+    assert [x["uid"] for x in t] == ["ok"]
+    assert hinweis == "6 Termine nicht lesbar — dort kann etwas liegen, das hier fehlt."
+
+
+def test_kaputte_eintraege_im_abgleich_sind_teilerfolg_und_luecke(db, monkeypatch):
+    q = _quelle(_konto(), "T1")
+    start = (datetime.now(timezone.utc) + timedelta(days=3)).replace(microsecond=0)
+    _antwort(monkeypatch, {"access_token": "T"},
+             {"items": [_ev("a", start=start.isoformat(),
+                            ende=(start + timedelta(hours=1)).isoformat()), "muell"]})
+    anzahl, fehler = kalender_abgleich.quelle_abgleichen(q)
+    assert anzahl == 1 and "1 Termin nicht lesbar" in fehler
+    assert _stand(q["id"])["letzter_fehler"] == fehler
+
+
+def test_items_kein_array_ist_unlesbar(monkeypatch):
+    _antwort(monkeypatch, {"items": "text"})
+    with pytest.raises(google_kalender.GoogleFehler) as e:
+        google_kalender.termine("tok", "primary", VON, BIS)
+    assert str(e.value) == google_kalender.UNLESBAR
+
+
+def test_seitengrenze_bei_endlosem_nextpagetoken(monkeypatch):
+    aufrufe = []
+
+    def endlos(methode, url, daten=None, token=None):
+        aufrufe.append(url)
+        return {"items": [], "nextPageToken": "immer-gleich"}
+    monkeypatch.setattr(google_kalender, "_anfrage", endlos)
+    with pytest.raises(google_kalender.GoogleFehler) as e:
+        google_kalender.termine("tok", "primary", VON, BIS)
+    assert str(e.value) == google_kalender.ZU_VIELE_SEITEN
+    assert len(aufrufe) == google_kalender.MAX_SEITEN
+
+
+def test_netz_und_zeitfehler_sind_nicht_erreichbar(monkeypatch):
+    for ausnahme in (urllib.error.URLError("Name or service not known: ya29.GEHEIM"),
+                     TimeoutError("timed out ya29.GEHEIM"), ConnectionResetError("ya29.GEHEIM")):
+        def falsch(*a, _a=ausnahme, **k):
+            raise _a
+        monkeypatch.setattr(google_kalender, "_anfrage", falsch)
+        with pytest.raises(google_kalender.GoogleFehler) as e:
+            google_kalender.zugang_erneuern(REFRESH)
+        assert str(e.value) == google_kalender.NICHT_ERREICHBAR and "ya29" not in str(e.value)
+
+
+def test_echte_anfrage_urlerror_und_timeout(monkeypatch):
+    for ausnahme in (urllib.error.URLError("x"), TimeoutError("t")):
+        def oeffnen(req, timeout=None, _a=ausnahme):
+            raise _a
+        monkeypatch.setattr(google_kalender.urllib.request, "urlopen", oeffnen)
+        with pytest.raises(google_kalender.GoogleFehler) as e:
+            google_kalender._anfrage("GET", "https://x.test/")
+        assert str(e.value) == google_kalender.NICHT_ERREICHBAR
+
+
+def test_schluessel_fehlt_hat_eigenen_betreibertext(db, monkeypatch):
+    q = _quelle(_konto(), "S1")
+    monkeypatch.delenv("KALENDER_SCHLUESSEL_PRIVAT")
+    anzahl, fehler = kalender_abgleich.quelle_abgleichen(q)
+    assert anzahl is None
+    assert fehler == kalender_abgleich.SCHLUESSEL_FEHLT == \
+        "Kalender-Schlüssel fehlt – Betreiber muss einrichten"
+    assert "neu verbinden" not in fehler
+    assert _stand(q["id"])["letzter_fehler"] == fehler
+
+
+def test_langer_refresh_token_wird_im_abgleich_geoeffnet(db, monkeypatch):
+    lang = "1//" + "q" * 509                      # 512 Bytes
+    q = _quelle(_konto(refresh=lang), "LT")
+    aufrufe = _antwort(monkeypatch, {"access_token": "T"}, {"items": []})
+    assert kalender_abgleich.quelle_abgleichen(q) == (0, None)
+    assert aufrufe[0][2]["refresh_token"] == lang
+
+
+def test_konto_a_scheitert_konto_b_laeuft_in_derselben_runde(db, monkeypatch):
+    ka = _konto("a@example.test", refresh="REFRESH-A")
+    kb = _konto("b@example.test", refresh="REFRESH-B")
+    qa = _quelle(ka, "A1", "ca")
+    qb = _quelle(kb, "B1", "cb")
+    start = (datetime.now(timezone.utc) + timedelta(days=2)).replace(microsecond=0)
+
+    def gemischt(methode, url, daten=None, token=None):
+        if url == google_kalender.TOKEN_URL:
+            if daten["refresh_token"] == "REFRESH-A":
+                raise _http_fehler(400, b'{"error": "invalid_grant"}')
+            return {"access_token": "TOK-B"}
+        assert token == "TOK-B"
+        return {"items": [_ev("b1", start=start.isoformat(),
+                              ende=(start + timedelta(hours=1)).isoformat())]}
+    monkeypatch.setattr(google_kalender, "_anfrage", gemischt)
+    assert kalender_abgleich.runde() == {"quellen": 2, "fehler": 1}
+    assert _stand(qa["id"])["letzter_fehler"] == google_kalender.ZUGANG_ABGELAUFEN
+    assert _stand(qb["id"])["letzter_fehler"] is None and _stand(qb["id"])["termine_zuletzt"] == 1
+
+
+@pytest.mark.skipif(shutil.which("openssl") is None, reason="openssl fehlt")
+def test_kalender_schluessel_skript_leitet_oeffentlichen_ab(tmp_path):
+    skript = WURZEL / "deploy" / "kalender-schluessel.sh"
+    privat, oeff = _paar()
+    umg = {**os.environ, "SALES_ENV_DATEI": str(tmp_path / ".env")}
+
+    def lauf(inhalt):
+        (tmp_path / ".env").write_bytes(inhalt.encode())
+        r = subprocess.run(["bash", str(skript)], capture_output=True, text=True,
+                           timeout=60, env=umg)
+        return r, (tmp_path / ".env").read_bytes().decode("utf-8")
+
+    # Privat da (CRLF-Datei), oeffentlich leer nach \r: ableiten, privat bleibt, nichts ausgeben.
+    r, text = lauf(f"A=1\r\nKALENDER_SCHLUESSEL_PRIVAT={privat}\r\nKALENDER_SCHLUESSEL_OEFFENTLICH=\r\nB=2\r\n")
+    assert r.returncode == 0, r.stderr
+    assert f"KALENDER_SCHLUESSEL_PRIVAT={privat}\r\n" in text
+    zeilen = [z.rstrip("\r") for z in text.splitlines()]
+    assert f"KALENDER_SCHLUESSEL_OEFFENTLICH={oeff}" in zeilen
+    assert sum(z.startswith("KALENDER_SCHLUESSEL_OEFFENTLICH=") for z in zeilen) == 1
+    assert privat not in r.stdout + r.stderr and oeff not in r.stdout + r.stderr
+    # Zweiter Lauf: schon vollstaendig -> nichts geaendert.
+    r2 = subprocess.run(["bash", str(skript)], capture_output=True, text=True, timeout=60, env=umg)
+    assert "schon vorhanden" in r2.stdout and (tmp_path / ".env").read_bytes().decode("utf-8") == text
+    # Privat nur aus \r (leer): gilt als fehlend -> neues Paar.
+    r3, text3 = lauf("KALENDER_SCHLUESSEL_PRIVAT=\r\nX=1\r\n")
+    assert r3.returncode == 0 and re.search(r"^KALENDER_SCHLUESSEL_PRIVAT=\S{100,}$", text3, re.M)
+    assert re.search(r"^KALENDER_SCHLUESSEL_OEFFENTLICH=\S{100,}$", text3, re.M)
+    # Unlesbarer privater Schluessel: Abbruch, nichts geaendert, kein neues Paar.
+    r4, text4 = lauf("KALENDER_SCHLUESSEL_PRIVAT=kaputt\n")
+    assert r4.returncode == 1 and text4 == "KALENDER_SCHLUESSEL_PRIVAT=kaputt\n"
+    assert "kaputt" not in r4.stdout + r4.stderr

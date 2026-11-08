@@ -100,3 +100,51 @@ def test_skript_gibt_keinen_schluessel_aus_und_hat_kein_set_x():
     assert "POST_SCHLUESSEL_PRIVAT" in code and "POST_SCHLUESSEL_OEFFENTLICH" in code
     assert "umask 077" in code and "chmod 600" in code and "mktemp" in code
     assert "schon vorhanden" in code
+
+
+def test_lang_512_bytes_hin_und_zurueck(schluessel, monkeypatch):
+    privat, oeffentlich = schluessel
+    monkeypatch.setenv("KALENDER_SCHLUESSEL_OEFFENTLICH", base64.b64encode(oeffentlich.encode()).decode())
+    monkeypatch.setenv("KALENDER_SCHLUESSEL_PRIVAT", base64.b64encode(privat.encode()).decode())
+    token = "1//" + "aB-_" * 127 + "x"          # 512 Bytes
+    assert len(token.encode()) == 512
+    v = post_tresor.versiegeln_lang(token, env_name="KALENDER_SCHLUESSEL_OEFFENTLICH")
+    assert v.startswith("v2:") and "aB-_" not in v
+    assert post_tresor.oeffnen(v, env_name="KALENDER_SCHLUESSEL_PRIVAT") == token
+    # kurze Klartexte und Umlaute gehen ebenso, die Grenze liegt bei 4096 Bytes
+    assert post_tresor.oeffnen(post_tresor.versiegeln_lang("äö", oeffentlich), privat) == "äö"
+    grenze = "x" * 4096
+    assert post_tresor.oeffnen(post_tresor.versiegeln_lang(grenze, oeffentlich), privat) == grenze
+    with pytest.raises(post_tresor.TresorFehler) as e:
+        post_tresor.versiegeln_lang("x" * 4097, oeffentlich)
+    assert str(e.value) == "Geheimnis zu lang (hoechstens 4096 Bytes)" and "Passwort" not in str(e.value)
+
+
+def test_altes_format_oeffnet_unveraendert(schluessel):
+    privat, oeffentlich = schluessel
+    alt = post_tresor.versiegeln("altes-pw", oeffentlich)
+    assert not alt.startswith("v2:")
+    assert post_tresor.oeffnen(alt, privat) == "altes-pw"
+
+
+def test_manipuliertes_v2_gibt_festen_tresorfehler(schluessel):
+    privat, oeffentlich = schluessel
+    v = post_tresor.versiegeln_lang("GanzGeheim-1234", oeffentlich)
+    kopf, rest = v.split(".", 1)
+    roh = bytearray(base64.b64decode(rest))
+    roh[-1] ^= 0x01                                   # GCM-Tag kippen
+    kaputt = [kopf + "." + base64.b64encode(bytes(roh)).decode(),
+              "v2:" + "kein-base64", "v2:" + kopf[3:], v[:-6]]
+    for text in kaputt:
+        with pytest.raises(post_tresor.TresorFehler) as e:
+            post_tresor.oeffnen(text, privat)
+        assert str(e.value) == "Oeffnen fehlgeschlagen (Schluessel passt nicht oder Daten defekt)"
+        assert "GanzGeheim" not in str(e.value)
+
+
+def test_v2_ohne_privaten_schluessel_ist_schluessel_fehlt(schluessel, monkeypatch):
+    _, oeffentlich = schluessel
+    monkeypatch.delenv("KALENDER_SCHLUESSEL_PRIVAT", raising=False)
+    v = post_tresor.versiegeln_lang("pw", oeffentlich)
+    with pytest.raises(post_tresor.SchluesselFehlt):
+        post_tresor.oeffnen(v, env_name="KALENDER_SCHLUESSEL_PRIVAT")

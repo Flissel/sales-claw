@@ -37,6 +37,10 @@ API = "https://www.googleapis.com/calendar/v3"
 TIMEOUT_S = 20
 MAX_ANTWORT_BYTES = 10 * 1024 * 1024
 MAX_SEITEN = 40
+# Datensparsamkeit: nur die Felder anfordern, die wir verwenden.
+FELDER_LISTE = "nextPageToken,items(id,summary,summaryOverride,primary,deleted)"
+FELDER_TERMINE = ("nextPageToken,items(id,status,summary,location,start,end,"
+                  "transparency)")
 
 
 class GoogleFehler(Exception):
@@ -160,7 +164,7 @@ def zugang_erneuern(refresh_token: str) -> str:
 
 
 def _seiten(url: str, parameter: dict, access_token: str):
-    """Alle Seiten einer Liste (nextPageToken)."""
+    """Alle Seiten einer Liste (nextPageToken). Hoechstens MAX_SEITEN."""
     seite = None
     for _ in range(MAX_SEITEN):
         p = dict(parameter)
@@ -168,6 +172,8 @@ def _seiten(url: str, parameter: dict, access_token: str):
             p["pageToken"] = seite
         a = _aufrufen("GET", url + "?" + urllib.parse.urlencode(p),
                       token=access_token)
+        if not isinstance(a.get("items") or [], list):
+            raise GoogleFehler(UNLESBAR)
         yield a
         seite = a.get("nextPageToken")
         if not seite:
@@ -178,9 +184,9 @@ def _seiten(url: str, parameter: dict, access_token: str):
 def kalender_liste(access_token: str) -> list[dict]:
     out = []
     for a in _seiten(API + "/users/me/calendarList",
-                     {"maxResults": 250}, access_token):
+                     {"maxResults": 250, "fields": FELDER_LISTE}, access_token):
         for k in a.get("items") or []:
-            if not k.get("id") or k.get("deleted"):
+            if not isinstance(k, dict) or not k.get("id") or k.get("deleted"):
                 continue
             out.append({"id": str(k["id"]),
                         "name": str(k.get("summaryOverride") or k.get("summary")
@@ -207,19 +213,33 @@ def termine(access_token: str, kalender_id: str, von: datetime,
             bis: datetime) -> list[dict]:
     """Termine im Fenster, Form wie `kalenderquellen.hole`. Abgesagte fallen
     raus, `transparency: transparent` ergibt `frei`. Serien sind einzeln."""
+    return termine_mit_hinweis(access_token, kalender_id, von, bis)[0]
+
+
+def termine_mit_hinweis(access_token: str, kalender_id: str, von: datetime,
+                        bis: datetime) -> tuple[list[dict], str | None]:
+    """Wie `termine`, dazu ein fester Hinweistext, wenn Eintraege nicht lesbar
+    waren (wie `kalenderquellen.hole` -> (termine, fehler)): dort kann etwas
+    liegen, das hier fehlt, die Quelle zaehlt dann als Luecke."""
     zone = kalender.ortszone()
     url = f"{API}/calendars/{urllib.parse.quote(kalender_id, safe='')}/events"
     out = []
+    unlesbar = 0
     for a in _seiten(url, {
             "singleEvents": "true", "maxResults": 2500, "orderBy": "startTime",
-            "timeMin": _rfc3339(von), "timeMax": _rfc3339(bis)}, access_token):
+            "timeMin": _rfc3339(von), "timeMax": _rfc3339(bis),
+            "fields": FELDER_TERMINE}, access_token):
         for ev in a.get("items") or []:
+            if not isinstance(ev, dict):
+                unlesbar += 1
+                continue
             if ev.get("status") == "cancelled":
                 continue
             try:
                 start = _zeit(ev.get("start") or {}, zone)
                 ende = _zeit(ev.get("end") or {}, zone)
                 if start is None:
+                    unlesbar += 1
                     continue
                 beginn, ganztaegig = start
                 ende_t = ende[0] if ende else beginn
@@ -233,7 +253,11 @@ def termine(access_token: str, kalender_id: str, von: datetime,
                     "uid": str(ev.get("id") or "")[:120],
                     "ganztaegig": ganztaegig,
                     "frei": ev.get("transparency") == "transparent"})
-            except (ValueError, TypeError):   # ein Termin, nicht alle
-                continue
+            except Exception:                 # noqa: BLE001 - ein Termin, nicht alle
+                unlesbar += 1
     out.sort(key=lambda t: t["beginn"])
-    return out
+    hinweis = None
+    if unlesbar:
+        hinweis = (f"{unlesbar} Termin{'e' if unlesbar != 1 else ''} nicht "
+                   f"lesbar — dort kann etwas liegen, das hier fehlt.")
+    return out, hinweis
