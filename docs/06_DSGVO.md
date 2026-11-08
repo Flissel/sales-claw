@@ -180,6 +180,22 @@ auf `/team/kalender` einstuft.
   selbst unter myaccount.google.com/permissions.
 - **Rechte.** Entfernen, Pausieren und Bereich ändern darf nur der Besitzer
   der Quelle oder die Rolle `freigeben`.
+- **Altbestand.** Vor dieser Version wurde „Entfernen“ nur weich gelöscht:
+  die Zeile blieb mit `aktiv = false` und `url = null` stehen (die Adresse
+  war weg, Name und abgeglichene Termine nicht). Diese Zeilen gibt es noch.
+  Einmalige Bereinigung, nur mit OK des Betreibers, je Schema (zuerst die
+  Termine, dann die Quellen; nichts anderes wird berührt):
+
+  ```sql
+  delete from <schema>.kalender_termine where quelle_id in
+    (select id from <schema>.kalender_quellen
+      where art = 'ics' and aktiv = false and url is null);
+  delete from <schema>.kalender_quellen
+    where art = 'ics' and aktiv = false and url is null;
+  ```
+
+  Vorher mit `select count(*)` zählen. Dafür braucht es die Owner-Rolle
+  (`supabase_admin`), die Dienst-Rolle löscht nur Quellen über die Oberfläche.
 
 ## Grenze
 

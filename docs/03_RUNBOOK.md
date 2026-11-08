@@ -3589,7 +3589,8 @@ anlegen (der Bereich ist Pflicht) → nach etwa einer Minute stehen seine Termin
 
 ### Teil B: Google dazunehmen
 
-Ohne diesen Teil bleibt der Knopf „Mit Google verbinden“ verborgen. Er erscheint nur, wenn **alle**
+Ohne diesen Teil steht auf `/team/kalender` der Knopf „Mit Google verbinden“ ausgegraut, mit dem
+Hinweis „Google-Anbindung ist noch nicht eingerichtet“. Aktiv wird er erst, wenn **alle**
 Werte in `sales-ui` gesetzt sind: `GOOGLE_KALENDER_CLIENT_ID`, `GOOGLE_KALENDER_CLIENT_SECRET`,
 `KALENDER_SCHLUESSEL_OEFFENTLICH`, `UI_BASIS_URL` und `UI_SESSION_SECRET` (die letzten beiden hat
 die UI normalerweise schon). Dazu braucht `sales-kalender` `KALENDER_SCHLUESSEL_PRIVAT` (nur dort,
@@ -3618,9 +3619,11 @@ nie in der UI), `GOOGLE_KALENDER_CLIENT_ID` und `GOOGLE_KALENDER_CLIENT_SECRET`.
 3. Die Dienste lesen die `.env` erst nach Neuerzeugen:
    `docker compose up -d --no-deps --force-recreate sales-ui sales-kalender`
    (andere Läden mit `--env-file deploy/laeden/<laden>.env`).
-   Prüfen: `docker exec ${PRAEFIX}-ui printenv GOOGLE_KALENDER_CLIENT_ID` ist nicht leer;
+   Prüfen (jeweils nur „da“, nie die Werte selbst ausgeben):
+   `docker exec ${PRAEFIX}-ui sh -c 'test -n "$GOOGLE_KALENDER_CLIENT_ID" && echo da'` (ebenso für
+   `GOOGLE_KALENDER_CLIENT_SECRET` und `KALENDER_SCHLUESSEL_OEFFENTLICH`) und
    `docker exec ${PRAEFIX}-kalender sh -c 'test -n "$KALENDER_SCHLUESSEL_PRIVAT" && echo da'`
-   (nie die Werte selbst ausgeben).
+   (ebenso für die zwei Google-Werte).
 
 **Probe Teil B.** `/team/kalender` → „Mit Google verbinden“ → bei Google zustimmen (zeigt nur
 „Kalender ansehen“) → zurück auf der Seite die Kalender auswählen und je Kalender **Business** oder
@@ -3637,7 +3640,8 @@ eine öffentliche Domain), meldet der Betreiber das und am Ablauf wird nichts um
 |---|---|
 | Quelle zeigt „Zugang abgelaufen – bitte neu verbinden“ | Google hat den Zugang widerrufen oder er ist abgelaufen. Der Besitzer verbindet auf `/team/kalender` neu. Die Quelle gilt bis dahin als Lücke; der Agent sagt nie „frei“, sondern „unvollständig“. |
 | Quelle zeigt „Kalender-Schlüssel fehlt – Betreiber muss einrichten“ | `KALENDER_SCHLUESSEL_PRIVAT` fehlt im Dienst `sales-kalender`: `bash deploy/kalender-schluessel.sh`, dann `docker compose up -d --no-deps --force-recreate sales-kalender`. |
-| Kein Knopf „Mit Google verbinden“ | Einer der Werte oben fehlt in `sales-ui` („Google-Anbindung ist noch nicht eingerichtet“). |
+| Knopf „Mit Google verbinden“ ausgegraut, Hinweis „Google-Anbindung ist noch nicht eingerichtet“ | Einer der Werte oben fehlt in `sales-ui`; mit den `test -n`-Prüfungen aus Teil B, Schritt 3 den fehlenden finden, nachtragen und `sales-ui` neu erzeugen. |
+| `db/kalender-verbinden.sql` meldete „WARNUNG: keine Rechte vergeben für Schema …“ | Die Datenbank-Rolle (`sales_app` bzw. `sales_app_<name>`) gab es beim Einspielen nicht; Spalten und Tabellen sind angelegt, aber die Rechte fehlen (Abgleich und „Entfernen“ scheitern). Rolle anlegen (`db/laden-anlegen.sql`) bzw. Schema/Rolle prüfen, dann dieselbe Datei erneut einspielen (idempotent) und auf eine Ausgabe ohne WARNUNG achten. |
 | Termine fehlen, Quelle zeigt keinen Fehler | Eine Quelle ohne Lesestand oder älter als 15 Minuten gilt als Lücke. `docker logs --since 10m ${PRAEFIX}-kalender`; läuft der Dienst (`docker ps`)? |
 | „Entfernen“ scheitert | Recht `delete` fehlt: `db/kalender-verbinden.sql` für dieses Schema erneut einspielen (Teil A, Schritt 3). |
 
