@@ -31,7 +31,7 @@ STATUS="$BETRIEB/update-status.json"
 # noch Rueckweg (Profil stt-lokal) und wird von einem Update nie hochgezogen.
 # sales-kanaele (24.10.2026) steht nur im Basis-Laden; in anderen Laeden
 # laeuft er nie und wird deshalb auch nie angefasst (nur was VORHER lief).
-KERN_ALLE="sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw sales-telegram sales-linkedin sales-kanaele"
+KERN_ALLE="sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw sales-telegram freigabe-bote sales-linkedin sales-kanaele"
 # OPTIONALE Dienste (03.11.2026): werden wie KERN_ALLE nur neu gebaut bzw.
 # zurueckgebaut, wenn sie vorher liefen - zaehlen aber NICHT zum "vollen
 # Stack". Sonst waere KERN_BASIS = KERN_ALLE unten nie wahr, solange z. B.
