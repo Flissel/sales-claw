@@ -62,6 +62,9 @@ USER_AGENT = kalender.CALDAV_USER_AGENT
 
 FEHLER_MAXLAENGE = 300
 
+# Obergrenze fuer Vorkommen je Abruf (Schutz vor feindlichen Serienregeln).
+MAX_VORKOMMEN = 5000
+
 # NUR fuer Tests — MUSS in Produktion IMMER False bleiben. Ein "1" hier
 # schaltet die komplette Ziel-Pruefung unten ab (siehe `_ziel_erlaubt`) und
 # liesse `hole()` gegen 127.0.0.1 und jedes interne Netz abrufen. Die
@@ -195,7 +198,8 @@ def _serien_uids(kal) -> set:
     Stamm oder RECURRENCE-ID an einer Abweichung)."""
     uids = set()
     for ev in kal.walk("VEVENT"):
-        if ev.get("RRULE") is not None or ev.get("RDATE") is not None                 or ev.get("RECURRENCE-ID") is not None:
+        if (ev.get("RRULE") is not None or ev.get("RDATE") is not None
+                or ev.get("RECURRENCE-ID") is not None):
             uids.add(str(ev.get("UID", "")))
     return uids
 
@@ -271,12 +275,24 @@ def hole(url: str, tage_zurueck: int = 7, tage_voraus: int = 60):
     try:
         kal = icalendar.Calendar.from_ical(text)
         serien = _serien_uids(kal)
-        vorkommen = recurring_ical_events.of(kal).between(von, bis)
+        # Seitenweise, nur die erste Seite: eine feindliche Serie
+        # (FREQ=SECONDLY) wuerde sonst Millionen Vorkommen erzeugen.
+        seiten = recurring_ical_events.of(kal).paginate(
+            MAX_VORKOMMEN + 1, earliest_end=von, latest_start=bis)
+        vorkommen = list(next(iter(seiten), []))
     except Exception as e:                # noqa: BLE001 — kaputtes iCal
         return [], ohne_adresse(
             f"Der Kalender ist nicht lesbar ({type(e).__name__}).", url)
 
+    hinweise = []
+    if len(vorkommen) > MAX_VORKOMMEN:
+        vorkommen = vorkommen[:MAX_VORKOMMEN]
+        hinweise.append(
+            f"Der Kalender enthaelt mehr als {MAX_VORKOMMEN} Termine im "
+            f"Zeitfenster — nur die ersten {MAX_VORKOMMEN} wurden gelesen, "
+            f"dort kann etwas liegen, das hier fehlt.")
     termine = []
+    unlesbar = 0
     for ev in vorkommen:
         try:
             start = ev.start
@@ -287,9 +303,12 @@ def hole(url: str, tage_zurueck: int = 7, tage_voraus: int = 60):
             ende = _ortszeit_utc(ende, ortszone) if ende is not None else beginn
             if ganztaegig and ende <= beginn:
                 ende = _ortszeit_utc(start + timedelta(days=1), ortszone)
-            uid = str(ev.get("UID", ""))[:120]
-            if uid in serien:
-                uid = f"{uid}#{beginn.isoformat()}"
+            voll = str(ev.get("UID", ""))
+            # Serienpruefung gegen die VOLLE UID, Schluessel vor dem Kuerzen.
+            if voll in serien:
+                uid = f"{voll[:80]}#{beginn.isoformat()}"
+            else:
+                uid = voll[:120]
             termine.append({
                 "beginn": beginn,
                 "ende": max(ende, beginn),
@@ -299,6 +318,11 @@ def hole(url: str, tage_zurueck: int = 7, tage_voraus: int = 60):
                 "ganztaegig": ganztaegig,
                 "frei": str(ev.get("TRANSP", "")).upper() == "TRANSPARENT"})
         except Exception:                 # noqa: BLE001 — ein Termin, nicht alle
-            continue
+            unlesbar += 1
+    if unlesbar:
+        hinweise.append(
+            f"{unlesbar} Termin{'e' if unlesbar != 1 else ''} nicht "
+            f"lesbar — dort kann etwas liegen, das hier fehlt.")
     termine.sort(key=lambda t: t["beginn"])
-    return termine, None
+    # Bekannte Luecken werden gemeldet, die lesbaren `termine` bleiben.
+    return termine, (" ".join(hinweise) if hinweise else None)

@@ -1,5 +1,7 @@
 """Abonnierte Fremdkalender holen und zerlegen — ohne Netz."""
 import threading
+import time
+from zoneinfo import ZoneInfo
 from datetime import timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -339,7 +341,99 @@ def test_kaputtes_ical_wirft_nicht_und_nennt_keine_adresse(server_stub):
                          b"DTSTART:kaputt\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
     termine, fehler = kalenderquellen.hole(server_stub.url)
     assert termine == []
-    assert server_stub.url not in (fehler or "")
+    assert fehler, "ein kaputter Kalender muss gemeldet werden"
+    assert server_stub.url not in fehler
+
+
+def test_unlesbares_vorkommen_wird_gemeldet_und_der_gute_bleibt(
+        server_stub, monkeypatch):
+    gut = _BALD
+    schlecht = _BALD + _td(days=1)
+    server_stub.rumpf = _ics(
+        _vevent("gut@google", gut.strftime("%Y%m%dT%H%M%SZ"),
+               "DTEND:" + (gut + _td(hours=1)).strftime("%Y%m%dT%H%M%SZ")
+               + "\r\nSUMMARY:Gut\r\n"),
+        _vevent("schlecht@google", schlecht.strftime("%Y%m%dT%H%M%SZ"),
+               "DTEND:" + (schlecht + _td(hours=1)).strftime(
+                   "%Y%m%dT%H%M%SZ") + "\r\nSUMMARY:Geheimer Titel\r\n"))
+    echt = kalenderquellen._ortszeit_utc
+
+    def zickig(wert, zone):
+        if wert.date() == schlecht.date():
+            raise ValueError("kaputt")
+        return echt(wert, zone)
+
+    monkeypatch.setattr(kalenderquellen, "_ortszeit_utc", zickig)
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert [t["titel"] for t in termine] == ["Gut"]
+    assert fehler and "1 Termin nicht lesbar" in fehler
+    assert "Geheimer Titel" not in fehler and server_stub.url not in fehler
+
+
+def test_obergrenze_fuer_vorkommen_kappt_und_meldet(server_stub, monkeypatch):
+    monkeypatch.setattr(kalenderquellen, "MAX_VORKOMMEN", 5)
+    start = _dt.now(_tz.utc).replace(microsecond=0) - _td(days=1)
+    server_stub.rumpf = _ics(_vevent(
+        "viele@google", start.strftime("%Y%m%dT%H%M%SZ"),
+        "DTEND:" + (start + _td(hours=1)).strftime("%Y%m%dT%H%M%SZ") + "\r\n"
+        "RRULE:FREQ=DAILY;COUNT=20\r\nSUMMARY:Viele\r\n"))
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert len(termine) == 5
+    assert fehler and "5" in fehler
+
+
+def test_feindliche_sekundenserie_haelt_hole_nicht_auf(server_stub):
+    start = _dt.now(_tz.utc).replace(microsecond=0)
+    server_stub.rumpf = _ics(_vevent(
+        "boese@google", start.strftime("%Y%m%dT%H%M%SZ"),
+        "RRULE:FREQ=SECONDLY\r\nSUMMARY:Boese\r\n"))
+    t0 = time.monotonic()
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert time.monotonic() - t0 < 30
+    assert len(termine) == kalenderquellen.MAX_VORKOMMEN
+    assert fehler
+
+
+def test_tzid_beginn_wird_korrekt_nach_utc_umgerechnet(server_stub):
+    tag = (_BALD + _td(days=1)).date()
+    server_stub.rumpf = _ics(
+        "BEGIN:VEVENT\r\nUID:berlin@google\r\n"
+        f"DTSTART;TZID=Europe/Berlin:{tag:%Y%m%d}T140000\r\n"
+        f"DTEND;TZID=Europe/Berlin:{tag:%Y%m%d}T150000\r\n"
+        "SUMMARY:Berlin\r\nEND:VEVENT\r\n")
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert fehler is None, fehler
+    erwartet = _dt(tag.year, tag.month, tag.day, 14,
+                   tzinfo=ZoneInfo("Europe/Berlin")).astimezone(_tz.utc)
+    assert termine[0]["beginn"] == erwartet
+    assert termine[0]["beginn"].utcoffset() == _td(0)
+
+
+def test_ganztaegiger_geburtstag_ist_ganztaegig_und_frei(server_stub):
+    tag = (_BALD + _td(days=1)).date()
+    server_stub.rumpf = _ics(
+        "BEGIN:VEVENT\r\nUID:geb@google\r\n"
+        f"DTSTART;VALUE=DATE:{tag:%Y%m%d}\r\n"
+        f"DTEND;VALUE=DATE:{(tag + _td(days=1)):%Y%m%d}\r\n"
+        "TRANSP:TRANSPARENT\r\nSUMMARY:Geburtstag\r\nEND:VEVENT\r\n")
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert fehler is None, fehler
+    assert termine[0]["ganztaegig"] is True and termine[0]["frei"] is True
+
+
+def test_serien_uid_ueber_120_zeichen_bleibt_je_vorkommen_eindeutig(
+        server_stub):
+    start = _dt.now(_tz.utc).replace(microsecond=0) - _td(days=1)
+    lange_uid = "x" * 150 + "@google"
+    server_stub.rumpf = _ics(_vevent(
+        lange_uid, start.strftime("%Y%m%dT%H%M%SZ"),
+        "DTEND:" + (start + _td(hours=1)).strftime("%Y%m%dT%H%M%SZ") + "\r\n"
+        "RRULE:FREQ=DAILY;COUNT=3\r\nSUMMARY:Lang\r\n"))
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert fehler is None, fehler
+    uids = [t["uid"] for t in termine]
+    assert len(uids) == 3 and len(set(uids)) == 3
+    assert all("#" in u for u in uids)
 
 
 def test_duration_wird_als_ende_gelesen(server_stub):
