@@ -3523,3 +3523,133 @@ Alle Schritte nur mit Felix' ausdruecklichem OK (der Deploy selbst braucht es; k
 
 **Rueckweg.** `docker compose stop sales-post` haelt den Abgleich an; den Code per `update.sh` auf den
 vorherigen Stand zuruecksetzen. Die Spalten aus Schritt 2 sind additiv und koennen liegen bleiben.
+
+## Kalender verbinden (Google und iCal, Spec 2026-11-08)
+
+Die Seite `/team/kalender` kennt jetzt zwei Wege: die geheime iCal-Adresse (wie bisher) und
+„Mit Google verbinden“. Jeder Kalender hat einen **Besitzer** und einen **Bereich** (Business oder
+Privat). Ein Dienst `sales-kalender` liest alle verbundenen Kalender alle 300 Sekunden (30 Tage
+zurück, 180 Tage voraus) und legt die Termine in `kalender_termine` ab. Fremde Privat-Kalender
+erscheinen nur als Block „Privattermin“ (Zeit, kein Titel, kein Ort). Google wird nur **lesend**
+angefragt: Google zeigt dem Nutzer „Kalender ansehen“, die App kann nichts schreiben.
+
+**Alle Schritte unten brauchen das ausdrückliche OK des Betreibers** (Deploy, SQL gegen ein
+Schema, Start eines Dienstes). Werte (Client-Secret, Schlüssel) nie in Chat oder Log ausgeben; die
+Skripte lesen verdeckt und schreiben nur in die `.env`.
+
+Die Seite hat zwei Ausbaustufen. **Teil A** bringt Ebenen (Business/Privat), von–bis-Anzeige,
+Ganztags-Zeile und iCal mit Bereich — **ohne Google**. **Teil B** nimmt Google dazu und kann
+Tage oder Wochen später folgen.
+
+> **Achtung - Dienste immer beim Namen nennen.** Nie nacktes `docker compose up -d`. Für weitere
+> Läden überall `--env-file deploy/laeden/<laden>.env` mitgeben.
+
+### Teil A: ohne Google
+
+1. **Vault-Claim.** `C:\Users\User\Desktop\secondbrain\00_Meta\002_Koordination_Live.md` lesen,
+   Claim eintragen und sofort committen; bei fremdem aktivem Claim nicht anfassen, Betreiber fragen.
+2. **`POST_BESITZER=<Benutzername des Laden-Besitzers>`** in der `.env` jedes Ladens prüfen
+   (derselbe Wert wie bei der Post-Sammelstelle). Der Abgleich nimmt ihn als Laden-Besitzer: ohne
+   ihn gilt **jeder** Privat-Kalender als fremd, und der Agent sieht von ihm nur Blöcke — sicher,
+   aber unbrauchbar für den eigenen Kalender.
+3. **SQL einspielen - VOR `update.sh`, in `sales` und in JEDES Laden-Schema.** Die Datei fügt
+   Spalten (Besitzer, Bereich) und Tabellen hinzu, die der neue Code ab dem ersten Start liest.
+   Außerdem enthält sie `grant delete on kalender_quellen`: ohne dieses Recht scheitert
+   „Entfernen“ auf `/team/kalender`. Idempotent; ein zweiter Lauf ändert nichts.
+   Basis-Laden (`sales`), Besitzer = Laden-Besitzer (hier `felix`):
+
+   ```bash
+   docker exec -i debian-supabase-db-1 psql -q -U supabase_admin -d postgres \
+     -v ON_ERROR_STOP=1 -v schema=sales -v besitzer=felix \
+     < db/kalender-verbinden.sql
+   ```
+
+   Weitere Läden: die Läden sind die Dateien `deploy/laeden/*.env` (außer `beispiel.env`); das
+   Schema steht dort als `SALES_DB_SCHEMA=sales_<name>`, der Besitzer als `POST_BESITZER=`. Je Laden
+   derselbe Aufruf mit `-v schema=sales_<name> -v besitzer=<POST_BESITZER dieses Ladens>`
+   (`deploy/laden-anlegen.sh` nennt ihn für neue Läden ebenfalls). Kein `sales_test` ausrollen.
+   Fehlt `-v besitzer=` und gibt es Altzeilen, bricht das Skript vor den Pflicht-Regeln ab.
+   Prüfen je Schema: Exit-Code 0, keine Zeile „WARNUNG: keine Rechte vergeben“.
+4. **`bash deploy/update.sh`.** Es baut die Dienste neu, die vorher liefen (`KERN_OPTIONAL`
+   enthält `sales-kalender` nur zum Neubauen, **nicht** zum Starten). Den neuen Dienst startet
+   das Update **nie** von sich aus.
+5. **`sales-kalender` einmalig starten** (er ist neu, lief also vorher nicht):
+   `docker compose up -d sales-kalender` (weitere Läden:
+   `docker compose --env-file deploy/laeden/<laden>.env up -d sales-kalender`). Danach baut jedes
+   Update ihn mit neu.
+6. **Bestehende iCal-Kalender zuordnen.** Nach der Migration gehört jeder vorhandene Kalender dem
+   Laden-Besitzer, Bereich **Privat** (Spec §2.9). Der Besitzer öffnet `/team/kalender` und stellt
+   je Kalender Business oder Privat ein. Bis dahin sehen Kollegen von diesen Kalendern nur
+   „Privattermin“-Blöcke.
+
+**Probe Teil A.** `/kalender` zeigt die vorhandenen Termine mit von–bis, ganztägige Termine in
+der Ganztags-Zeile. `/team/kalender` zeigt je Quelle Besitzer und Bereich. Einen neuen iCal-Kalender
+anlegen (der Bereich ist Pflicht) → nach etwa einer Minute stehen seine Termine auf `/kalender`.
+`docker logs --since 10m ${PRAEFIX}-kalender` ohne Fehler.
+
+### Teil B: Google dazunehmen
+
+Ohne diesen Teil bleibt der Knopf „Mit Google verbinden“ verborgen. Er erscheint nur, wenn **alle**
+Werte in `sales-ui` gesetzt sind: `GOOGLE_KALENDER_CLIENT_ID`, `GOOGLE_KALENDER_CLIENT_SECRET`,
+`KALENDER_SCHLUESSEL_OEFFENTLICH`, `UI_BASIS_URL` und `UI_SESSION_SECRET` (die letzten beiden hat
+die UI normalerweise schon). Dazu braucht `sales-kalender` `KALENDER_SCHLUESSEL_PRIVAT` (nur dort,
+nie in der UI), `GOOGLE_KALENDER_CLIENT_ID` und `GOOGLE_KALENDER_CLIENT_SECRET`.
+
+**Google-Projekt anlegen (Betreiber, in der Google Cloud Console):**
+
+1. Neues Projekt anlegen, **Google Calendar API** aktivieren.
+2. Zustimmungsbildschirm: Nutzertyp **Extern**, Status **„In Produktion“** (bei „Testen“ läuft der
+   Zugang nach 7 Tagen ab). Rechte (Scopes) genau diese zwei, beide nur lesend:
+   `https://www.googleapis.com/auth/calendar.calendarlist.readonly` und
+   `https://www.googleapis.com/auth/calendar.events.readonly`.
+3. OAuth-Client vom Typ **Webanwendung**; als autorisierte Weiterleitungs-URI
+   `<UI_BASIS_URL>/team/kalender/google/zurueck` eintragen (der Wert von `UI_BASIS_URL` aus der
+   `.env` des Ladens, plus dieser Pfad). Client-ID und Client-Secret bereithalten.
+
+**Dann, jeder Schritt mit OK des Betreibers:**
+
+1. `bash deploy/google-kalender-zugang.sh` - fragt Client-ID und Secret verdeckt ab und schreibt
+   `GOOGLE_KALENDER_CLIENT_ID`/`_CLIENT_SECRET` in die `.env` (Sicherung, 600). Für eine andere
+   `.env`: `SALES_ENV_DATEI=<pfad> bash deploy/google-kalender-zugang.sh`.
+2. `bash deploy/kalender-schluessel.sh` - erzeugt einmalig das Schlüsselpaar (RSA-3072) und trägt
+   `KALENDER_SCHLUESSEL_OEFFENTLICH` (UI) und `KALENDER_SCHLUESSEL_PRIVAT` (nur `sales-kalender`)
+   ein. Ist der private Schlüssel schon da, ändert es nichts (ein zweites Paar machte alle
+   versiegelten Zugänge unlesbar).
+3. Die Dienste lesen die `.env` erst nach Neuerzeugen:
+   `docker compose up -d --no-deps --force-recreate sales-ui sales-kalender`
+   (andere Läden mit `--env-file deploy/laeden/<laden>.env`).
+   Prüfen: `docker exec ${PRAEFIX}-ui printenv GOOGLE_KALENDER_CLIENT_ID` ist nicht leer;
+   `docker exec ${PRAEFIX}-kalender sh -c 'test -n "$KALENDER_SCHLUESSEL_PRIVAT" && echo da'`
+   (nie die Werte selbst ausgeben).
+
+**Probe Teil B.** `/team/kalender` → „Mit Google verbinden“ → bei Google zustimmen (zeigt nur
+„Kalender ansehen“) → zurück auf der Seite die Kalender auswählen und je Kalender **Business** oder
+**Privat** festlegen → nach etwa einer Minute stehen die Termine auf `/kalender`.
+
+**Lehnt Google den Rücksprung ab** (Fehler `redirect_uri_mismatch` o. ä.): anhalten, nicht
+umbauen (Spec §5). Die eingetragene Weiterleitungs-URI muss Zeichen für Zeichen
+`<UI_BASIS_URL>/team/kalender/google/zurueck` sein; geht es auch dann nicht (z. B. verlangt Google
+eine öffentliche Domain), meldet der Betreiber das und am Ablauf wird nichts umgebaut.
+
+### Wenn etwas hakt
+
+| Anzeige / Lage | Bedeutung und Schritt |
+|---|---|
+| Quelle zeigt „Zugang abgelaufen – bitte neu verbinden“ | Google hat den Zugang widerrufen oder er ist abgelaufen. Der Besitzer verbindet auf `/team/kalender` neu. Die Quelle gilt bis dahin als Lücke; der Agent sagt nie „frei“, sondern „unvollständig“. |
+| Quelle zeigt „Kalender-Schlüssel fehlt – Betreiber muss einrichten“ | `KALENDER_SCHLUESSEL_PRIVAT` fehlt im Dienst `sales-kalender`: `bash deploy/kalender-schluessel.sh`, dann `docker compose up -d --no-deps --force-recreate sales-kalender`. |
+| Kein Knopf „Mit Google verbinden“ | Einer der Werte oben fehlt in `sales-ui` („Google-Anbindung ist noch nicht eingerichtet“). |
+| Termine fehlen, Quelle zeigt keinen Fehler | Eine Quelle ohne Lesestand oder älter als 15 Minuten gilt als Lücke. `docker logs --since 10m ${PRAEFIX}-kalender`; läuft der Dienst (`docker ps`)? |
+| „Entfernen“ scheitert | Recht `delete` fehlt: `db/kalender-verbinden.sql` für dieses Schema erneut einspielen (Teil A, Schritt 3). |
+
+**Zugang widerrufen.** Der Nutzer entzieht den Zugriff selbst unter
+`myaccount.google.com/permissions`. Wer auf `/team/kalender` den **letzten** Kalender eines
+Google-Kontos entfernt, vernichtet damit auch den gespeicherten Zugang. Ein Zugang, den nach dem
+Rücksprung niemand übernommen hat (kein Kalender gewählt), wird nach einer Stunde automatisch
+vernichtet.
+
+**Schlüsselpaar tauschen** (Rotation, `docs/10_SECRETS_ROTATION.md`) macht alle gespeicherten
+Google-Zugänge unlesbar: die Nutzer verbinden danach neu.
+
+**Rückweg.** `docker compose stop sales-kalender` hält den Abgleich an; den Code per
+`update.sh`-Rückbau auf den vorherigen Stand zurücksetzen. Die Spalten und Tabellen aus
+`db/kalender-verbinden.sql` sind additiv und können liegen bleiben.
