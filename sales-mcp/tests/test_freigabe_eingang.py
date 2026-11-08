@@ -99,6 +99,13 @@ def test_offene_und_zum_aufraeumen():
     assert fe.zum_aufraeumen() == []
 
 
+def test_zum_aufraeumen_enthaelt_geschlossene_ungesichtete():
+    k = _debugger()
+    fe.schliessen_kennung(k, "verworfen", "ui")
+    assert _zeile(k)["rowboat_stand"] == "ungesichtet"
+    assert [e["kennung"] for e in fe.zum_aufraeumen()] == [k]
+
+
 def test_stand_nur_vorwaerts():
     k = _debugger()
     fe.rowboat_stand_setzen(k, "angenommen")

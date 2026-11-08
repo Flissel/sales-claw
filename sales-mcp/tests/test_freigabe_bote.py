@@ -252,6 +252,39 @@ def test_geschlossen_zieht_vorschlag_zurueck(rowboat):
     assert _db(k)["rowboat_aufgeraeumt"] is True
 
 
+def test_spaeterer_rpc_fehler_behaelt_vorgeschlagen(rowboat, monkeypatch):
+    _neuer_eintrag()
+    fb.durchgang()
+    fe.schliessen("debugger-claw", "Flissel/vibemind-os#154", "verworfen", "test")
+    k3, _ = fe.eintragen("debugger-claw", "debugger_pr", "Flissel/vibemind-os#156", "Drei")
+
+    def kaputt(kanal, body):
+        if kanal == "todo:withdrawSuggestion":
+            raise urllib.error.URLError("weg")
+        return rowboat(kanal, body)
+    monkeypatch.setattr(fb, "_rpc", kaputt)
+    assert fb.durchgang() == 1
+    assert _db(k3)["rowboat_stand"] == "vorgeschlagen"
+
+
+def test_geschlossen_ungesichtet_wird_zurueckgezogen(rowboat):
+    k = _neuer_eintrag()
+    rowboat.suggestions.append(fb.vorschlagstext(_db(k), BASIS))
+    fe.schliessen("debugger-claw", "Flissel/vibemind-os#154", "verworfen", "test")
+    assert _db(k)["rowboat_stand"] == "ungesichtet"
+    fb.durchgang()
+    assert rowboat.suggestions == [] and _db(k)["rowboat_aufgeraeumt"] is False
+    fb.durchgang()
+    assert _db(k)["rowboat_aufgeraeumt"] is True
+
+
+def test_link_mit_at_und_klammern_bleibt_unschaedlich():
+    t = fb.vorschlagstext(eintrag(link="https://x/@agent/[a](b)"), "https://s/@x")
+    assert "@" not in t
+    assert "[a]" not in t and t.count("[") == 3 and t.count("]") == 3
+    assert fb.kennung_in(t) == K
+
+
 def test_rowboat_weg_kein_zurueckschreiben(monkeypatch):
     k = _neuer_eintrag()
     monkeypatch.setenv("UI_BASIS_URL", BASIS)

@@ -48,15 +48,23 @@ def _link_label(art: str, quelle_ref: str) -> str:
     return "Ansehen"
 
 
+_URL_ESCAPE = {"@": "%40", "[": "%5B", "]": "%5D", "(": "%28", ")": "%29"}
+
+
+def _url_sicher(url) -> str:
+    """Zeichen, die Rowboat als Mention oder Markdown deuten wuerde, prozent-kodieren."""
+    return "".join(_URL_ESCAPE.get(c, c) for c in str(url))
+
+
 def vorschlagstext(eintrag: dict, basis: str) -> str:
     herkunft = fe.HERKUNFT_ANZEIGE.get(eintrag["herkunft"], eintrag["herkunft"])
     teile = [f"[{herkunft}] {_titel_bereinigen(eintrag.get('titel'))}"]
     link = eintrag.get("link")
     if link:
-        sicher = str(link).replace("(", "%28").replace(")", "%29")
+        sicher = _url_sicher(link)
         label = _link_label(eintrag.get("art", ""), eintrag.get("quelle_ref", ""))
         teile.append(f"[{label}]({sicher})")
-    teile.append(f"[Sales]({basis.rstrip('/')}/freigaben#{eintrag['kennung']})")
+    teile.append(f"[Sales]({_url_sicher(basis.rstrip('/'))}/freigaben#{eintrag['kennung']})")
     return " · ".join(teile)
 
 
@@ -185,6 +193,7 @@ def durchgang() -> int:
                 k = kennung_in(text)
                 if k:
                     staende[k] = "vorgeschlagen"
+                    fe.rowboat_stand_setzen(k, "vorgeschlagen")  # sofort, falls spaeter etwas scheitert
         for text in plan.zurueckziehen:
             _rpc("todo:withdrawSuggestion", {"text": text})
         for key in plan.abhaken:

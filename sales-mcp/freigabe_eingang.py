@@ -141,8 +141,7 @@ def offene(herkunft: str | None = None) -> list[dict]:
 
 def zum_aufraeumen() -> list[dict]:
     return server._q("select * from freigabe_eintraege where status <> 'offen' "
-                     "and rowboat_aufgeraeumt = false and rowboat_stand <> 'ungesichtet' "
-                     "order by erstellt_am")
+                     "and rowboat_aufgeraeumt = false order by erstellt_am")
 
 
 def rowboat_stand_setzen(kennung, stand) -> None:
