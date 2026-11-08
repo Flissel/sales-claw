@@ -3447,7 +3447,7 @@ def kalenderquellen_lesen(nur_aktive: bool = True) -> list:
     Aufrufer darf sie benutzen, aber niemals anzeigen oder loggen."""
     bedingung = "where aktiv" if nur_aktive else ""
     return [dict(z, id=str(z["id"])) for z in _q(
-        f"select id, anzeigename, art, url, aktiv, zuletzt_gelesen, "
+        f"select id, anzeigename, art, url, aktiv, zuletzt_gelesen, besitzer, bereich, "
         f"letzter_fehler, termine_zuletzt from kalender_quellen "
         f"{bedingung} order by anzeigename")]
 
@@ -3497,6 +3497,58 @@ def kalenderquelle_stand_setzen(quelle_id: str, anzahl, fehler) -> None:
        "letzter_fehler = %s, "
        "termine_zuletzt = coalesce(%s, termine_zuletzt) "
        "where id = %s", (fehler, anzahl, quelle_id))
+
+
+def kalendertermine_ersetzen(quelle_id: str, termine: list, details: bool) -> int:
+    """Die abgeglichenen Termine einer Quelle austauschen -> Anzahl.
+
+    Loeschen und Einfuegen laufen in EINER Transaktion: bricht das Einfuegen
+    ab, bleiben die alten Termine stehen, und es gibt nie einen Zwischenstand
+    ohne Termine (der Agent sagte sonst kurz „frei"). Mit `details=False`
+    (fremde Privat-Quelle, Spec §6.3) werden titel und ort als NULL
+    geschrieben - sie erreichen die Datenbank gar nicht erst."""
+    zeilen = [(quelle_id, t.get("uid") or "", t["beginn"], t["ende"],
+               bool(t.get("ganztaegig")), bool(t.get("frei")),
+               (t.get("titel") or None) if details else None,
+               (t.get("ort") or None) if details else None)
+              for t in termine]
+    with pool.connection() as conn:
+        with conn.transaction():
+            conn.execute("delete from kalender_termine where quelle_id = %s",
+                         (quelle_id,))
+            if zeilen:
+                with conn.cursor() as cur:
+                    cur.executemany(
+                        "insert into kalender_termine (quelle_id, uid, beginn, "
+                        "ende, ganztaegig, frei, titel, ort) "
+                        "values (%s, %s, %s, %s, %s, %s, %s, %s)", zeilen)
+    return len(zeilen)
+
+
+def kalendertermine_ersetzen(quelle_id: str, termine: list, details: bool) -> int:
+    """Die abgeglichenen Termine einer Quelle austauschen -> Anzahl.
+
+    Loeschen und Einfuegen laufen in EINER Transaktion: bricht das Einfuegen
+    ab, bleiben die alten Termine stehen, und es gibt nie einen Zwischenstand
+    ohne Termine (der Agent sagte sonst kurz "frei"). Mit `details=False`
+    (fremde Privat-Quelle, Spec §6.3) werden titel und ort als NULL
+    geschrieben - sie erreichen die Datenbank gar nicht erst."""
+    zeilen = [(quelle_id, t.get("uid") or "", t["beginn"], t["ende"],
+               bool(t.get("ganztaegig")), bool(t.get("frei")),
+               (t.get("titel") or None) if details else None,
+               (t.get("ort") or None) if details else None)
+              for t in termine]
+    with pool.connection() as conn:
+        with conn.transaction():
+            conn.execute("delete from kalender_termine where quelle_id = %s",
+                         (quelle_id,))
+            if zeilen:
+                with conn.cursor() as cur:
+                    cur.executemany(
+                        "insert into kalender_termine (quelle_id, uid, beginn, "
+                        "ende, ganztaegig, frei, titel, ort) "
+                        "values (%s, %s, %s, %s, %s, %s, %s, %s)", zeilen)
+    return len(zeilen)
 
 
 def kalenderquelle_entfernen(quelle_id: str) -> bool:

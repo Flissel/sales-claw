@@ -155,4 +155,10 @@ begin
   end if;
   execute format('grant select, insert, update on %I.kalender_konten to %I', s, rolle);
   execute format('grant select, insert, update, delete on %I.kalender_termine to %I', s, rolle);
+  -- Testschema: die Test-Fixture leert die Tabellen zwischen den Tests
+  -- (truncate ... cascade auf kalender_quellen greift auf beide durch).
+  if s = 'sales_test' then
+    execute format('grant truncate on %I.kalender_konten to %I', s, rolle);
+    execute format('grant truncate on %I.kalender_termine to %I', s, rolle);
+  end if;
 end $$;

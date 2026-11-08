@@ -754,6 +754,21 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Kalender-Abgleich (Spec 2026-11-08): liest alle verbundenen Kalender alle
+  # KALENDER_INTERVAL_S Sekunden und legt die Termine in kalender_termine ab.
+  # Fremde Privat-Termine verlieren dabei Titel und Ort (POST_BESITZER = Laden-
+  # Besitzer, steckt im Anker). deploy/update.sh baut ihn nur neu, wenn er
+  # vorher schon lief.
+  sales-kalender:
+    build: ./sales-mcp
+    image: sales-claw-sales-mcp:local
+    container_name: ${LADEN_PRAEFIX:-sales}-kalender
+    command: python kalender_abgleich.py
+    restart: unless-stopped
+    environment:
+      <<: *sales_mcp_umgebung
+      KALENDER_INTERVAL_S: ${KALENDER_INTERVAL_S:-300}
+
   # Post-Sammelstelle Stufe 1 (03.11.2026, sales-mcp/post_abholen.py): holt die
   # Mails aller aktiven Postfaecher NUR LESEND (IMAP readonly) und ordnet sie
   # mit niedriger Prioritaet ueber den Agenten `post` des eigenen Gateways ein.
