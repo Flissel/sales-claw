@@ -100,6 +100,8 @@ def routen(ui) -> list[Route]:
         try:
             ref = _str(daten, "quelle_ref")
             status = _str(daten, "status")
+            if status not in ("erledigt", "verworfen"):
+                raise fe.EingabeFehler("status_ungueltig")
             n = await run_in_threadpool(fe.schliessen, herkunft, ref, status, herkunft)
         except fe.EingabeFehler:
             return _fehler(422, "ungueltig")

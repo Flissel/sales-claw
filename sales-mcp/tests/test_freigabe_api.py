@@ -135,6 +135,15 @@ def test_schliessen(client):
     assert r.status_code == 422
 
 
+def test_schliessen_ausgefuehrt_verboten(client):
+    kd = _kopf("debugger-claw")
+    client.post(EINTRAG, json=_rumpf(), headers=kd)
+    r = client.post("/api/freigaben/schliessen",
+                    json={"quelle_ref": PR, "status": "ausgefuehrt"}, headers=kd)
+    assert r.status_code == 422 and r.json() == {"fehler": "ungueltig"}
+    assert len(fe.offene("debugger-claw")) == 1
+
+
 def test_fremden_eintrag_nicht_schliessen(client):
     kd, ks = _kopf("debugger-claw"), _kopf("selbstbild")
     client.post(EINTRAG, json=_rumpf(), headers=kd)
