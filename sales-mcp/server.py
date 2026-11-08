@@ -3531,6 +3531,56 @@ def kalenderquelle_speichern(anzeigename: str, url: str, besitzer: str,
     return quelle_id
 
 
+def kalenderkonto_speichern(besitzer: str, adresse: str, zugang_versiegelt: str,
+                            kalender_liste: list) -> str:
+    """Google-Konto anlegen oder erneuern (Upsert auf besitzer/google/adresse)
+    -> Konto-ID. `adresse` ist die ID des primaeren Kalenders. Das Zugangs-
+    geheimnis kommt schon VERSIEGELT an (die UI hat nur den oeffentlichen
+    Schluessel); neu verbinden ersetzt Zugang und Liste und weckt das Konto."""
+    return str(_q(
+        "insert into kalender_konten (besitzer, anbieter, adresse, "
+        "zugang_versiegelt, kalender_liste) values (%s, 'google', %s, %s, "
+        "%s::jsonb) on conflict (besitzer, anbieter, adresse) do update set "
+        "zugang_versiegelt = excluded.zugang_versiegelt, "
+        "kalender_liste = excluded.kalender_liste, aktiv = true returning id",
+        (besitzer, adresse, zugang_versiegelt, _json(kalender_liste)))[0]["id"])
+
+
+def kalenderkonto_lesen(konto_id: str) -> "dict | None":
+    """Ein Konto OHNE Zugangsgeheimnis (id, besitzer, adresse, kalender_liste,
+    aktiv); None bei unbekannter oder kaputter ID."""
+    try:
+        uuid.UUID(str(konto_id))
+    except ValueError:
+        return None
+    z = _q("select id, besitzer, adresse, kalender_liste, aktiv "
+           "from kalender_konten where id = %s", (str(konto_id),))
+    return dict(z[0], id=str(z[0]["id"])) if z else None
+
+
+def google_quelle_speichern(konto_id: str, google_id: str, anzeigename: str,
+                            besitzer: str, bereich: str) -> str:
+    """Google-Kalender als Quelle anlegen (art 'google', keine Adresse).
+    Upsert auf (besitzer, anzeigename) wie `kalenderquelle_speichern`: der
+    Bereich gilt wie neu gewaehlt, fremde Privat-Titel fallen sofort weg."""
+    _bereich_pruefen(bereich)
+    with pool.connection() as conn:
+        with conn.transaction():
+            quelle_id = str(conn.execute(
+                "insert into kalender_quellen (anzeigename, art, url, besitzer, "
+                "bereich, konto_id, google_id) "
+                "values (%s, 'google', null, %s, %s, %s, %s) "
+                "on conflict (besitzer, anzeigename) do update set "
+                "art = 'google', url = null, bereich = excluded.bereich, "
+                "konto_id = excluded.konto_id, google_id = excluded.google_id, "
+                "aktiv = true, letzter_fehler = null, zuletzt_gelesen = null "
+                "returning id",
+                (anzeigename.strip(), besitzer, bereich, konto_id, google_id)
+            ).fetchone()["id"])
+            _fremde_titel_loeschen(conn, quelle_id, besitzer, bereich)
+    return quelle_id
+
+
 def _besitzer_bedingung(besitzer) -> tuple[str, tuple]:
     """`besitzer=None` heisst: darf alle (Rolle `freigeben`)."""
     if besitzer is None:
@@ -3639,12 +3689,23 @@ def kalenderquelle_entfernen(quelle_id: str, besitzer: "str | None") -> bool:
         with conn.transaction():
             zeile = conn.execute(
                 "update kalender_quellen set aktiv = false, url = null "
-                "where id = %s and aktiv" + bedingung + " returning id",
+                "where id = %s and aktiv" + bedingung
+                + " returning id, konto_id",
                 (quelle_id,) + werte).fetchone()
             if zeile is None:
                 return False
             conn.execute("delete from kalender_termine where quelle_id = %s",
                          (quelle_id,))
+            if zeile["konto_id"] is not None:
+                # Letzte aktive Quelle eines Google-Kontos: der Zugang wird
+                # vernichtet, nicht nur ausgeblendet (gleiche Transaktion).
+                if conn.execute(
+                        "select 1 from kalender_quellen where konto_id = %s "
+                        "and aktiv limit 1", (zeile["konto_id"],)
+                ).fetchone() is None:
+                    conn.execute("update kalender_konten set "
+                                 "zugang_versiegelt = null where id = %s",
+                                 (zeile["konto_id"],))
     return True
 
 

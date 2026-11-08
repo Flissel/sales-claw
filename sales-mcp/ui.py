@@ -172,6 +172,7 @@ und vor allem die Schema-Wache — `import server` laesst denselben
 `SystemExit` fliegen, wenn SALES_DB_SCHEMA etwas anderes als
 `sales`/`sales_test` ist.
 """
+import base64
 import contextvars
 import functools
 import hashlib
@@ -207,6 +208,7 @@ import historie
 import kalender
 import kalender_abgleich
 import kalender_sicht
+import google_kalender
 import kalender_sichtbarkeit
 import kanaele
 import mailadresse
@@ -224,6 +226,7 @@ import ui_plan
 import ui_podcast
 import post_erledigt
 import post_struktur
+import post_tresor
 import ui_post
 import ui_reels
 import struktur
@@ -689,7 +692,10 @@ class AnmeldeWache:
                     # "verbinden" braucht dieselbe Ausnahme — sonst kann
                     # ausgerechnet der Kollege mit der schmalen Rolle die
                     # eigene tote Quelle nicht entfernen.
-                    "/team/kalender/entfernen")):
+                    "/team/kalender/entfernen",
+                    # Task 9: Kalender aus der Google-Auswahl uebernehmen -
+                    # dieselbe Regel wie "verbinden" (Besitzer = die Person).
+                    "/team/kalender/google/uebernehmen")):
             antwort = _fehlerseite(
                 403, "Nur Lesen",
                 "Diese Anmeldung darf sehen, aber nicht verändern. "
@@ -6817,9 +6823,10 @@ async def team_kalender(request):
         f'<button class="primaer" type="submit">Verbinden und prüfen</button>'
         f'</form>')
 
-    google = ('<h2>Mit Google verbinden</h2>'
-              '<p class="meta">Kommt bald: ein Klick, ohne Adresse zu '
-              'kopieren.</p>')
+    google = _google_abschnitt()
+    if any(q["art"] == "google" for q in meine):
+        meine_tabelle += ('<p class="meta">Zugriff bei Google entziehen: '
+                          'myaccount.google.com/permissions</p>')
     return _seite("Kalender verbinden",
                   '<p class="meta">Wähle bei jedem Kalender, ob er Business '
                   'oder Privat ist. Du kannst die Adresse bei deinem '
@@ -6827,6 +6834,266 @@ async def team_kalender(request):
                   'sofort.</p>'
                   + google + '<h2>Meine Kalender</h2>' + meine_tabelle
                   + '<h2>Andere Anbieter (Adresse)</h2>' + formular + team)
+
+
+# --- Mit Google verbinden (Task 9, Spec 2026-11-08 §6) -----------------------
+# Ablauf: start -> Google -> zurueck (Code tauschen, Token VERSIEGELT ablegen,
+# Redirect auf die Auswahl, damit der Code nicht in der Adresszeile bleibt)
+# -> auswahl -> uebernehmen (legt nur Quellen an; den Abruf macht der
+# Abgleich-Dienst, die UI hat den privaten Schluessel nicht).
+# Geheimnisse: Code, Access-/Refresh-Token und das Versiegelte erscheinen in
+# keiner Seite, keinem Redirect und keinem Log; geloggt wird nur der Typ.
+
+GOOGLE_STATE_SEKUNDEN = 600
+_GOOGLE_ENV = ("GOOGLE_KALENDER_CLIENT_ID", "GOOGLE_KALENDER_CLIENT_SECRET",
+               "KALENDER_SCHLUESSEL_OEFFENTLICH", "UI_BASIS_URL")
+_GOOGLE_SCHLUESSEL = "KALENDER_SCHLUESSEL_OEFFENTLICH"
+_GOOGLE_NICHT_BEREIT = "Google-Anbindung ist noch nicht eingerichtet"
+
+
+def _google_bereit() -> bool:
+    """Ohne Anmeldung (kein UI_SESSION_SECRET) gibt es keinen sicheren State;
+    ohne die Google-Zugaenge oder den Schluessel keinen Anfang."""
+    return bool(UI_SESSION_SECRET) and all(
+        (os.environ.get(n) or "").strip() for n in _GOOGLE_ENV)
+
+
+def _google_signatur(teil: str) -> str:
+    return hmac.new(UI_SESSION_SECRET.encode("utf-8"),
+                    b"google-state|" + teil.encode("utf-8"),
+                    hashlib.sha256).hexdigest()
+
+
+def _google_state(name: str, jetzt: "float | None" = None) -> str:
+    """Name.Ablauf.Nonce.HMAC (UI_SESSION_SECRET), 10 Minuten gueltig."""
+    ablauf = int((time.time() if jetzt is None else jetzt)
+                 + GOOGLE_STATE_SEKUNDEN)
+    roh = base64.urlsafe_b64encode(name.encode("utf-8")).decode("ascii")
+    teil = f"{roh}.{ablauf}.{secrets.token_hex(8)}"
+    return teil + "." + _google_signatur(teil)
+
+
+def _google_state_pruefen(state: str) -> "str | None":
+    """Der Name im State, wenn Signatur und Ablauf stimmen; sonst None."""
+    if not UI_SESSION_SECRET or not isinstance(state, str) or len(state) > 600:
+        return None
+    teile = state.split(".")
+    if len(teile) != 4:
+        return None
+    try:
+        passt = hmac.compare_digest(
+            _google_signatur(".".join(teile[:3])).encode("utf-8"),
+            teile[3].encode("utf-8"))
+        if not passt or int(teile[1]) < time.time():
+            return None
+        return base64.urlsafe_b64decode(teile[0].encode("ascii")).decode("utf-8")
+    except (ValueError, UnicodeError):
+        return None
+
+
+def _google_abschnitt() -> str:
+    if _google_bereit():
+        return ('<h2>Mit Google verbinden</h2>'
+                '<p class="meta">Ein Klick, ohne Adresse zu kopieren. Du '
+                'wählst danach, welche Kalender dazukommen.</p>'
+                '<p><a class="primaer" href="/team/kalender/google/start">'
+                'Mit Google verbinden</a></p>')
+    return ('<h2>Mit Google verbinden</h2>'
+            f'<p class="meta">{_e(_GOOGLE_NICHT_BEREIT)}.</p>'
+            '<p><button class="primaer" type="button" disabled>'
+            'Mit Google verbinden</button></p>')
+
+
+def _google_seite(titel: str, text: str, status: int = 200,
+                  zurueck: str = "/team/kalender") -> HTMLResponse:
+    """`text` ist fester Text oder schon escaped."""
+    return _seite(titel, f'<p>{text}</p><p><a href="{_e(zurueck)}">'
+                         f'Zurück</a></p>', status=status)
+
+
+@_gesichert_seite
+async def google_start(request):
+    besitzer, _filter = _kalender_besitzer(request)
+    if not besitzer or not _google_bereit():
+        return _google_seite("Mit Google verbinden",
+                             _e(_GOOGLE_NICHT_BEREIT) + ".", 503)
+    try:
+        ziel = google_kalender.anmelde_url(_google_state(besitzer))
+    except google_kalender.GoogleFehler as e:
+        return _google_seite("Mit Google verbinden", _e(str(e)) + ".", 503)
+    return RedirectResponse(ziel, status_code=303)
+
+
+@_gesichert_seite
+async def google_zurueck(request):
+    """Rueckkehr von Google. Die Adresse traegt den Einmal-Code; sie wird nie
+    angezeigt und per Redirect sofort verlassen."""
+    p = request.query_params
+    if p.get("error"):
+        # Abgelehnt (access_denied) oder sonstiger Google-Fehler: nichts
+        # speichern, nichts aus der Adresse uebernehmen.
+        return _google_seite(
+            "Google nicht verbunden",
+            "Der Kalender wurde nicht mit Google verbunden. Nichts wurde "
+            "gespeichert. Du kannst es jederzeit erneut versuchen.")
+    besitzer, _filter = _kalender_besitzer(request)
+    if not besitzer or not _google_bereit():
+        return _google_seite("Mit Google verbinden",
+                             _e(_GOOGLE_NICHT_BEREIT) + ".", 503)
+    # State zuerst: ohne gueltigen, eigenen State kein Aufruf bei Google.
+    if _google_state_pruefen(str(p.get("state") or "")) != besitzer:
+        return _google_seite(
+            "Abgewiesen",
+            "Der Verbindungsversuch ist abgelaufen oder gehört nicht zu "
+            "dieser Anmeldung. Nichts wurde gespeichert. Bitte noch einmal "
+            "von vorn beginnen.", 400)
+    code = str(p.get("code") or "")
+    if not code:
+        return _google_seite("Abgewiesen",
+                             "Google hat keinen Code geliefert. Nichts wurde "
+                             "gespeichert.", 400)
+    try:
+        zugang = await run_in_threadpool(google_kalender.code_tauschen, code)
+        liste = await run_in_threadpool(google_kalender.kalender_liste,
+                                        zugang["access_token"])
+        liste = [{"id": str(k["id"]), "name": str(k["name"])[:200],
+                  "primaer": bool(k.get("primaer"))} for k in liste]
+        if not liste:
+            return _google_seite(
+                "Keine Kalender",
+                "In diesem Google-Konto wurde kein Kalender gefunden. Nichts "
+                "wurde gespeichert.", 400)
+        versiegelt = post_tresor.versiegeln_lang(
+            zugang["refresh_token"], env_name=_GOOGLE_SCHLUESSEL)
+        adresse = next((k["id"] for k in liste if k["primaer"]), liste[0]["id"])
+        konto_id = server.kalenderkonto_speichern(
+            besitzer, adresse, versiegelt, liste)
+    except google_kalender.GoogleFehler as e:
+        # Feste Texte aus google_kalender - nie Teile der Google-Antwort.
+        LOG.warning("Google verbinden: GoogleFehler")
+        return _google_seite("Google nicht verbunden", _e(str(e)) + ".", 502)
+    except post_tresor.TresorFehler:
+        LOG.error("Google verbinden: Versiegeln fehlgeschlagen")
+        return _google_seite("Google nicht verbunden",
+                             "Der Zugang konnte nicht sicher abgelegt werden. "
+                             "Nichts wurde gespeichert.", 500)
+    except psycopg.Error:
+        raise
+    except Exception as e:  # noqa: BLE001 - Meldung koennte Token zitieren
+        LOG.error("Google verbinden: Fehler (%s)", type(e).__name__)
+        return _google_seite("Google nicht verbunden",
+                             "Das hat nicht geklappt. Nichts wurde "
+                             "gespeichert.", 502)
+    return RedirectResponse(
+        "/team/kalender/google/auswahl?konto=" + urllib.parse.quote(konto_id),
+        status_code=303)
+
+
+def _google_eigenes_konto(besitzer: str, konto_id) -> "dict | None":
+    """Das Konto nur, wenn es dieser Person gehoert und aktiv ist (auch die
+    Rolle `freigeben` nimmt kein fremdes Konto)."""
+    konto = server.kalenderkonto_lesen(str(konto_id or ""))
+    if (konto is None or not besitzer or konto["besitzer"] != besitzer
+            or not konto["aktiv"]):
+        return None
+    return konto
+
+
+_GOOGLE_KEIN_KONTO = (
+    "Dieses Google-Konto gehört nicht zu deiner Anmeldung, oder es gibt es "
+    "nicht mehr. Nichts wurde getan.")
+
+
+@_gesichert_seite
+async def google_auswahl(request):
+    besitzer, _filter = _kalender_besitzer(request)
+    konto = _google_eigenes_konto(besitzer, request.query_params.get("konto"))
+    if konto is None:
+        return _google_seite("Abgewiesen", _e(_GOOGLE_KEIN_KONTO), 403)
+    zeilen = []
+    for k in konto["kalender_liste"]:
+        gid = str(k.get("id") or "")
+        zeilen.append(
+            f'<li class="karte"><label class="haken">'
+            f'<input type="checkbox" name="wahl" value="{_e(gid)}" checked> '
+            f'<b>{_e(k.get("name"))}</b>'
+            f'{" (Hauptkalender)" if k.get("primaer") else ""}</label> '
+            f'<label class="haken"><input type="radio" '
+            f'name="{_e("bereich_" + gid)}" value="business"> Business</label> '
+            f'<label class="haken"><input type="radio" '
+            f'name="{_e("bereich_" + gid)}" value="privat"> Privat</label></li>')
+    return _seite("Welche Kalender sollen dazu?", (
+        '<p class="meta">Pflicht: wähle für jeden Kalender, den du übernimmst, '
+        'Business oder Privat. Privat: Kollegen und der Agent sehen nur, dass '
+        'du belegt bist, nicht was. Es gibt keine Voreinstellung. Zugriff '
+        'bei Google entziehen: myaccount.google.com/permissions</p>'
+        f'<form method="post" action="/team/kalender/google/uebernehmen">'
+        f'<input type="hidden" name="csrf" value="{_e(CSRF_TOKEN)}">'
+        f'<input type="hidden" name="konto_id" value="{_e(konto["id"])}">'
+        f'<ul class="liste">{"".join(zeilen)}</ul>'
+        f'<button class="primaer" type="submit">Übernehmen</button></form>'))
+
+
+def _google_namen(besitzer: str, konto_id: str, auswahl: list) -> list:
+    """Anzeigenamen der gewaehlten Kalender: nie der reservierte Name des
+    eigenen Kalenders, nie ein Name, den eine andere Quelle derselben Person
+    schon traegt (der Upsert liefe sonst ueber sie hinweg)."""
+    gewaehlt = {g for g, _ in auswahl}
+    belegt = {q["anzeigename"].casefold()
+              for q in server.kalenderquellen_lesen(nur_aktive=False)
+              if q["besitzer"] == besitzer
+              and not (str(q["konto_id"] or "") == konto_id
+                       and q["google_id"] in gewaehlt)}
+    belegt.add(server.EIGENE_QUELLE.casefold())
+    namen = []
+    for _gid, name in auswahl:
+        basis = (name.strip() or "Google-Kalender")[:70]
+        kandidat, n = basis, 1
+        while kandidat.casefold() in belegt:
+            n += 1
+            kandidat = f"{basis} ({n})"
+        belegt.add(kandidat.casefold())
+        namen.append(kandidat)
+    return namen
+
+
+@_gesichert_seite
+async def google_uebernehmen(request):
+    form = await request.form()
+    if not _csrf_ok(form):
+        return _fehlerseite(403, "Abgewiesen",
+                            "Fehlende oder falsche CSRF-Marke.")
+    besitzer, _filter = _kalender_besitzer(request)
+    konto = _google_eigenes_konto(besitzer, form.get("konto_id"))
+    if konto is None:
+        return _google_seite("Abgewiesen", _e(_GOOGLE_KEIN_KONTO), 403)
+    zurueck = ("/team/kalender/google/auswahl?konto="
+               + urllib.parse.quote(konto["id"]))
+    # Nur, was im gespeicherten Konto steht - nie dem Formular glauben.
+    bekannt = {str(k.get("id")): str(k.get("name") or "")
+               for k in konto["kalender_liste"]}
+    gewaehlt = list(dict.fromkeys(str(w) for w in form.getlist("wahl")))
+    if not gewaehlt:
+        return _google_seite("Nichts gewählt",
+                             "Es wurde kein Kalender gewählt. Nichts wurde "
+                             "gespeichert.", 400, zurueck)
+    auswahl = []
+    for gid in gewaehlt:
+        bereich = str(form.get("bereich_" + gid) or "")
+        if gid not in bekannt or bereich not in dict(_BEREICHE):
+            return _google_seite(
+                "Bereich fehlt",
+                "Für jeden übernommenen Kalender muss Business oder Privat "
+                "gewählt sein. Nichts wurde gespeichert.", 400, zurueck)
+        auswahl.append((gid, bekannt[gid], bereich))
+    namen = _google_namen(besitzer, konto["id"], [(g, n) for g, n, _ in auswahl])
+    for (gid, _n, bereich), name in zip(auswahl, namen):
+        server.google_quelle_speichern(konto["id"], gid, name, besitzer, bereich)
+    liste = "".join(f"<li>{_e(n)}</li>" for n in namen)
+    return _seite("Kalender verbunden", (
+        f'<p>{len(namen)} Kalender übernommen:</p><ul>{liste}</ul>'
+        '<p>Erste Termine erscheinen innerhalb einer Minute.</p>'
+        '<p><a href="/team/kalender">Zur Übersicht</a></p>'))
 
 
 @_gesichert_seite
@@ -9757,6 +10024,11 @@ app = Starlette(routes=[
     *ui_newsletter_einwilligung.routen(sys.modules[__name__]),
     Route("/team/kalender", team_kalender),
     Route("/team/kalender/verbinden", aktion_kalender_verbinden,
+          methods=["POST"]),
+    Route("/team/kalender/google/start", google_start),
+    Route("/team/kalender/google/zurueck", google_zurueck),
+    Route("/team/kalender/google/auswahl", google_auswahl),
+    Route("/team/kalender/google/uebernehmen", google_uebernehmen,
           methods=["POST"]),
     Route("/team/kalender/entfernen", aktion_kalender_entfernen,
           methods=["POST"]),
