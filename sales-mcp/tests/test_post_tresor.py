@@ -150,6 +150,38 @@ def test_manipuliertes_v2_gibt_festen_tresorfehler(schluessel):
         assert "GanzGeheim" not in str(e.value)
 
 
+@pytest.mark.parametrize("kaputt", [
+    "kein base64!!",
+    base64.b64encode(b"-----BEGIN PRIVATE KEY-----\nMuell\n-----END PRIVATE KEY-----\n").decode(),
+])
+def test_gesetzter_aber_kaputter_schluessel_ist_schluessel_unbrauchbar(
+        schluessel, monkeypatch, kaputt):
+    """T8-Nachtrag: eigene Art fuer den Betreiber; Post-Aufrufer fangen weiter
+    TresorFehler. Daten-/Passt-nicht-Fehler bleiben der allgemeine Text."""
+    privat, oeffentlich = schluessel
+    v2 = post_tresor.versiegeln_lang("pw", oeffentlich)
+    alt = post_tresor.versiegeln("pw", oeffentlich)
+    monkeypatch.setenv("KALENDER_SCHLUESSEL_PRIVAT", kaputt)
+    monkeypatch.setenv("KALENDER_SCHLUESSEL_OEFFENTLICH", kaputt)
+    for aufruf in (
+            lambda: post_tresor.oeffnen(v2, env_name="KALENDER_SCHLUESSEL_PRIVAT"),
+            lambda: post_tresor.oeffnen(alt, env_name="KALENDER_SCHLUESSEL_PRIVAT"),
+            lambda: post_tresor.versiegeln_lang("x", env_name="KALENDER_SCHLUESSEL_OEFFENTLICH"),
+            lambda: post_tresor.versiegeln("x", env_name="KALENDER_SCHLUESSEL_OEFFENTLICH")):
+        with pytest.raises(post_tresor.SchluesselUnbrauchbar) as e:
+            aufruf()
+        assert isinstance(e.value, post_tresor.SchluesselFehlt)
+        assert isinstance(e.value, post_tresor.TresorFehler)
+        assert "Muell" not in str(e.value) and "BEGIN" not in str(e.value)
+    # Ein anderer, gueltiger Schluessel ist KEIN unbrauchbarer Schluessel.
+    andere = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+    falsch = andere.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                  serialization.NoEncryption()).decode()
+    with pytest.raises(post_tresor.TresorFehler) as e:
+        post_tresor.oeffnen(v2, falsch)
+    assert not isinstance(e.value, post_tresor.SchluesselFehlt)
+
+
 def test_v2_ohne_privaten_schluessel_ist_schluessel_fehlt(schluessel, monkeypatch):
     _, oeffentlich = schluessel
     monkeypatch.delenv("KALENDER_SCHLUESSEL_PRIVAT", raising=False)

@@ -489,6 +489,23 @@ def test_schluessel_fehlt_hat_eigenen_betreibertext(db, monkeypatch):
     assert _stand(q["id"])["letzter_fehler"] == fehler
 
 
+@pytest.mark.parametrize("kaputt", [
+    "kein base64!!",                                        # kein base64
+    base64.b64encode(b"-----BEGIN PRIVATE KEY-----\nMuell\n").decode(),  # kein PEM
+])
+def test_kaputter_schluessel_hat_betreibertext(db, monkeypatch, kaputt):
+    """T8-Nachtrag: ein gesetzter, aber unbrauchbarer privater Schluessel ist
+    Betreiber-Sache - nicht "bitte neu verbinden" (das hilft dort nicht)."""
+    q = _quelle(_konto(), "S2")
+    monkeypatch.setenv("KALENDER_SCHLUESSEL_PRIVAT", kaputt)
+    anzahl, fehler = kalender_abgleich.quelle_abgleichen(q)
+    assert anzahl is None
+    assert fehler == kalender_abgleich.SCHLUESSEL_UNBRAUCHBAR == \
+        "Kalender-Schlüssel unbrauchbar – Betreiber muss einrichten"
+    assert "neu verbinden" not in fehler and "Muell" not in fehler
+    assert _stand(q["id"])["letzter_fehler"] == fehler
+
+
 def test_langer_refresh_token_wird_im_abgleich_geoeffnet(db, monkeypatch):
     lang = "1//" + "q" * 509                      # 512 Bytes
     q = _quelle(_konto(refresh=lang), "LT")

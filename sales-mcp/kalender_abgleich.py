@@ -38,6 +38,7 @@ ENV_SCHLUESSEL_PRIVAT = "KALENDER_SCHLUESSEL_PRIVAT"
 KONTO_FEHLT = "Google-Konto fehlt – bitte neu verbinden"
 ZUGANG_UNLESBAR = "Zugang nicht lesbar – bitte neu verbinden"
 SCHLUESSEL_FEHLT = "Kalender-Schlüssel fehlt – Betreiber muss einrichten"
+SCHLUESSEL_UNBRAUCHBAR = "Kalender-Schlüssel unbrauchbar – Betreiber muss einrichten"
 
 LOG = logging.getLogger("sales-kalender")
 _STOPP = threading.Event()
@@ -56,6 +57,8 @@ def _zugang(konto_id: str, zugaenge: dict) -> str:
             try:
                 refresh = post_tresor.oeffnen(
                     versiegelt, env_name=ENV_SCHLUESSEL_PRIVAT)
+            except post_tresor.SchluesselUnbrauchbar:
+                raise google_kalender.GoogleFehler(SCHLUESSEL_UNBRAUCHBAR) from None
             except post_tresor.SchluesselFehlt:
                 raise google_kalender.GoogleFehler(SCHLUESSEL_FEHLT) from None
             except post_tresor.TresorFehler:
