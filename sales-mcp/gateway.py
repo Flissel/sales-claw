@@ -3,17 +3,26 @@
 Ein Agent, ein festgepinnter Funktionsaufruf, die Argumente kommen zurueck.
 Fehlerordnung wie auto._http: 502 "did not produce one" ist endgueltig (das
 Gateway fragt sonst bis zum Kontextueberlauf neu an), 408/429/5xx und
-Netzfehler sind voruebergehend, alles andere endgueltig. Der Token steht in
-keiner Meldung. Rein: nur urllib, keine Datenbank.
+Netzfehler sind voruebergehend, ebenso 401/402/403 (Anmeldung, Kontingent,
+Rechte des Dienstes - nie ein Fehler der Anfrage), alles andere endgueltig.
+Der Token steht in keiner Meldung. Rein: nur urllib, keine Datenbank.
 """
 import http.client
 import json
+import logging
 import socket
 import urllib.error
 import urllib.request
 
+LOG = logging.getLogger("gateway")
+
 FEHLER_MAXLAENGE = 300
 KEIN_FUNKTIONSAUFRUF = "did not produce one"
+# 08.11.2026: Das Gateway schickte das Abo-Token fuer ein Modell an die falsche
+# Adresse und meldete 401. Als endgueltig gewertet landete jede Mail einzeln auf
+# `fehler` (365 in einer Nacht). Anmeldung (401), Kontingent (402) und Rechte (403)
+# betreffen den Dienst, nicht die Anfrage: pausieren und laut warnen.
+ANMELDUNG_ABGELEHNT = (401, 402, 403)
 
 
 class GatewayFehler(Exception):
@@ -43,6 +52,11 @@ def _http(methode, url, pfad, token, timeout_s, nutzlast=None, kopf=None) -> dic
         detail = " ".join(detail.split())[:FEHLER_MAXLAENGE]
         if KEIN_FUNKTIONSAUFRUF in detail:
             raise GatewayFehler(f"Gateway HTTP {e.code}: {detail}") from None
+        if e.code in ANMELDUNG_ABGELEHNT:
+            # Nur der Code: das Detail koennte Teile des Tokens oder der Anfrage spiegeln.
+            LOG.warning("Gateway HTTP %s: Anmeldung, Kontingent oder Rechte abgelehnt - "
+                        "pausiert, Gateway-Log und Modellzugang pruefen", e.code)
+            raise GatewayTransient(f"Gateway HTTP {e.code}: {detail}") from None
         if e.code in (408, 429) or e.code >= 500:
             raise GatewayTransient(f"Gateway HTTP {e.code}: {detail}") from None
         raise GatewayFehler(f"Gateway HTTP {e.code}: {detail}") from None
