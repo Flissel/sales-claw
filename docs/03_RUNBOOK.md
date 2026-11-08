@@ -3570,6 +3570,11 @@ Tage oder Wochen später folgen.
    (`deploy/laden-anlegen.sh` nennt ihn für neue Läden ebenfalls). Kein `sales_test` ausrollen.
    Fehlt `-v besitzer=` und gibt es Altzeilen, bricht das Skript vor den Pflicht-Regeln ab.
    Prüfen je Schema: Exit-Code 0, keine Zeile „WARNUNG: keine Rechte vergeben“.
+   Die Datei legt auch die Spalte `kalender_quellen.abgeglichen_am` an. Nur der neue Dienst
+   `sales-kalender` schreibt sie; der alte Code setzt bei jedem Lesen nur `zuletzt_gelesen`.
+   Deshalb gilt nach dem Update **jeder** verbundene Kalender als „noch nicht abgeglichen“ (Lücke,
+   der Agent sagt „unvollständig“, nie „frei“), bis `sales-kalender` ihn zum ersten Mal gelesen hat
+   (Schritt 5, wenige Sekunden je Kalender). Das ist gewollt.
 4. **`bash deploy/update.sh`.** Es baut die Dienste neu, die vorher liefen (`KERN_OPTIONAL`
    enthält `sales-kalender` nur zum Neubauen, **nicht** zum Starten). Den neuen Dienst startet
    das Update **nie** von sich aus.
@@ -3629,6 +3634,13 @@ nie in der UI), `GOOGLE_KALENDER_CLIENT_ID` und `GOOGLE_KALENDER_CLIENT_SECRET`.
 „Kalender ansehen“) → zurück auf der Seite die Kalender auswählen und je Kalender **Business** oder
 **Privat** festlegen → nach etwa einer Minute stehen die Termine auf `/kalender`.
 
+**Alte iCal-Kopien danach entfernen (empfohlen).** War derselbe Google-Kalender schon über seine
+geheime iCal-Adresse verbunden (z. B. `felix404-gmail`), steht er nach dem Google-Verbinden
+zweimal in der Liste der Ebenen. Die Termine selbst erscheinen nur einmal (gleiche UID, je Person
+zusammengeführt), aber die Ebene gibt es doppelt, und die alte iCal-Adresse liegt weiter in der
+Datenbank. Der Besitzer entfernt die alte iCal-Quelle auf `/team/kalender` („Entfernen“), sobald
+die Google-Quelle Termine zeigt.
+
 **Lehnt Google den Rücksprung ab** (Fehler `redirect_uri_mismatch` o. ä.): anhalten, nicht
 umbauen (Spec §5). Die eingetragene Weiterleitungs-URI muss Zeichen für Zeichen
 `<UI_BASIS_URL>/team/kalender/google/zurueck` sein; geht es auch dann nicht (z. B. verlangt Google
@@ -3640,6 +3652,8 @@ eine öffentliche Domain), meldet der Betreiber das und am Ablauf wird nichts um
 |---|---|
 | Quelle zeigt „Zugang abgelaufen – bitte neu verbinden“ | Google hat den Zugang widerrufen oder er ist abgelaufen. Der Besitzer verbindet auf `/team/kalender` neu. Die Quelle gilt bis dahin als Lücke; der Agent sagt nie „frei“, sondern „unvollständig“. |
 | Quelle zeigt „Kalender-Schlüssel fehlt – Betreiber muss einrichten“ | `KALENDER_SCHLUESSEL_PRIVAT` fehlt im Dienst `sales-kalender`: `bash deploy/kalender-schluessel.sh`, dann `docker compose up -d --no-deps --force-recreate sales-kalender`. |
+| Quelle zeigt „Kalender-Schlüssel unbrauchbar – Betreiber muss einrichten“ | `KALENDER_SCHLUESSEL_PRIVAT` ist gesetzt, aber kaputt (kein base64 oder kein PEM, z. B. beim Kopieren abgeschnitten). Den Wert in der `.env` prüfen (nur Länge/Anfang ansehen, nie ausgeben); ist das Paar verloren, neu erzeugen — dann verbinden alle Nutzer neu (siehe „Schlüsselpaar tauschen“). |
+| Hinweis „Verbundene Kalender nur von … bis … abgeglichen“ | Die Ansicht oder Frage liegt außerhalb des Abgleich-Fensters (30 Tage zurück, 180 voraus). Dort ist nichts abgeglichen; die Antwort ist unvollständig, kein Fehler. |
 | Knopf „Mit Google verbinden“ ausgegraut, Hinweis „Google-Anbindung ist noch nicht eingerichtet“ | Einer der Werte oben fehlt in `sales-ui`; mit den `test -n`-Prüfungen aus Teil B, Schritt 3 den fehlenden finden, nachtragen und `sales-ui` neu erzeugen. |
 | `db/kalender-verbinden.sql` meldete „WARNUNG: keine Rechte vergeben für Schema …“ | Die Datenbank-Rolle (`sales_app` bzw. `sales_app_<name>`) gab es beim Einspielen nicht; Spalten und Tabellen sind angelegt, aber die Rechte fehlen (Abgleich und „Entfernen“ scheitern). Rolle anlegen (`db/laden-anlegen.sql`) bzw. Schema/Rolle prüfen, dann dieselbe Datei erneut einspielen (idempotent) und auf eine Ausgabe ohne WARNUNG achten. |
 | Termine fehlen, Quelle zeigt keinen Fehler | Eine Quelle ohne Lesestand oder älter als 15 Minuten gilt als Lücke. `docker logs --since 10m ${PRAEFIX}-kalender`; läuft der Dienst (`docker ps`)? |
@@ -3656,4 +3670,22 @@ Google-Zugänge unlesbar: die Nutzer verbinden danach neu.
 
 **Rückweg.** `docker compose stop sales-kalender` hält den Abgleich an; den Code per
 `update.sh`-Rückbau auf den vorherigen Stand zurücksetzen. Die Spalten und Tabellen aus
-`db/kalender-verbinden.sql` sind additiv und können liegen bleiben.
+`db/kalender-verbinden.sql` können liegen bleiben, **aber das Schema ist danach nicht mehr ganz
+das alte**:
+
+- Der alte Code kann auf dem migrierten Schema **keinen Kalender mehr verbinden**. Sein Speichern
+  nutzt `on conflict (anzeigename)`, und der eindeutige Index auf `anzeigename` ist durch
+  `(besitzer, anzeigename)` ersetzt; außerdem ist `besitzer` Pflicht, und der alte Code setzt ihn
+  nicht. „Verbinden“ endet dann mit einem Fehler. Lesen und Anzeigen der vorhandenen iCal-Quellen
+  gehen weiter.
+- **Rückweg nach Teil B:** Google-Quellen haben keine Adresse, der alte Code würde sie als kaputte
+  iCal-Quellen abrufen und als Lücke melden. Vor dem Rückbau je Schema abschalten (mit OK des
+  Betreibers):
+
+  ```bash
+  docker exec -i debian-supabase-db-1 psql -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
+    -c "update <schema>.kalender_quellen set aktiv = false where art = 'google'"
+  ```
+
+  Beim erneuten Ausrollen schaltet der Besitzer sie auf `/team/kalender` wieder ein
+  („Fortsetzen“).
