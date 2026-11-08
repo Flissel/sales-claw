@@ -12,6 +12,7 @@ import shutil
 import stat
 import subprocess
 import urllib.error
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -413,6 +414,78 @@ def test_fields_werden_angefordert(monkeypatch):
     assert "fields=" in ev_url and "fields=" in liste_url
     assert "transparency" in ev_url and "attendees" not in ev_url and "description" not in ev_url
     assert "summaryOverride" in liste_url and "accessRole" not in liste_url
+
+
+def test_ical_uid_und_serienfelder_werden_angefordert(monkeypatch):
+    aufrufe = _antwort(monkeypatch, {"items": []})
+    google_kalender.termine("tok", "primary", VON, BIS)
+    url = urllib.parse.unquote(aufrufe[0][1])
+    assert "iCalUID" in url and "originalStartTime" in url and "recurringEventId" in url
+
+
+def test_uid_ist_die_ical_uid_wie_beim_ical_weg(monkeypatch):
+    """M4: Einzeltermin -> iCalUID; Vorkommen einer Serie -> wie
+    kalenderquellen.hole: `<Serien-UID[:80]>#<Beginn UTC isoformat>`."""
+    _antwort(monkeypatch, {"items": [
+        _ev("einzelid", iCalUID="einzel@google.com"),
+        _ev("serienid_20300103T080000Z", start="2030-01-03T09:00:00+01:00",
+            ende="2030-01-03T10:00:00+01:00", iCalUID="serie@google.com",
+            recurringEventId="serienid",
+            originalStartTime={"dateTime": "2030-01-03T09:00:00+01:00"}),
+        _ev("ohne-ical-uid", start="2030-01-04T09:00:00+01:00",
+            ende="2030-01-04T10:00:00+01:00")]})
+    uids = [t["uid"] for t in google_kalender.termine("tok", "primary", VON, BIS)]
+    assert uids == ["einzel@google.com", "serie@google.com#2030-01-03T08:00:00+00:00",
+                    "ohne-ical-uid"]
+
+
+def test_derselbe_kalender_ueber_google_und_ical_hat_dieselben_uids(monkeypatch):
+    """M4: wer denselben Kalender per iCal-Adresse UND per Google verbindet,
+    bekommt dieselben UIDs - anwenden() fuehrt sie zusammen (je Besitzer)."""
+    import kalender_sichtbarkeit
+    import kalenderquellen
+    fmt = "%Y%m%dT%H%M%SZ"
+    start = (datetime.now(timezone.utc) + timedelta(days=2)).replace(
+        minute=0, second=0, microsecond=0)
+    alt, neu = start + timedelta(days=1), start + timedelta(days=1, hours=3)
+    einzel = start + timedelta(hours=5)
+    ics = ("BEGIN:VCALENDAR\r\nVERSION:2.0\r\n"
+           "BEGIN:VEVENT\r\nUID:serie@google.com\r\nDTSTART:" + start.strftime(fmt)
+           + "\r\nDTEND:" + (start + timedelta(hours=1)).strftime(fmt)
+           + "\r\nRRULE:FREQ=DAILY;COUNT=3\r\nSUMMARY:Runde\r\nEND:VEVENT\r\n"
+           "BEGIN:VEVENT\r\nUID:serie@google.com\r\nRECURRENCE-ID:" + alt.strftime(fmt)
+           + "\r\nDTSTART:" + neu.strftime(fmt) + "\r\nDTEND:"
+           + (neu + timedelta(hours=1)).strftime(fmt)
+           + "\r\nSUMMARY:Runde verschoben\r\nEND:VEVENT\r\n"
+           "BEGIN:VEVENT\r\nUID:einzel@google.com\r\nDTSTART:" + einzel.strftime(fmt)
+           + "\r\nDTEND:" + (einzel + timedelta(hours=1)).strftime(fmt)
+           + "\r\nSUMMARY:Einzeln\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n").encode()
+    monkeypatch.setattr(kalenderquellen, "PRIVATE_ZIELE_ERLAUBT", True)
+    monkeypatch.setattr(kalenderquellen, "_antwort_lesen", lambda url: io.BytesIO(ics))
+    ical, fehler = kalenderquellen.hole("https://example.test/x.ics", 30, 180)
+    assert fehler is None, fehler
+
+    def g(t):
+        return {"dateTime": t.isoformat()}
+    vorkommen = []
+    for b in (start, neu, start + timedelta(days=2)):
+        original = alt if b == neu else b
+        vorkommen.append({
+            "id": "serienid_" + original.strftime(fmt), "summary": "Runde",
+            "iCalUID": "serie@google.com", "recurringEventId": "serienid",
+            "originalStartTime": g(original), "start": g(b), "end": g(b + timedelta(hours=1))})
+    vorkommen.append({"id": "einzelid", "iCalUID": "einzel@google.com", "summary": "Einzeln",
+                      "start": g(einzel), "end": g(einzel + timedelta(hours=1))})
+    _antwort(monkeypatch, {"items": vorkommen})
+    google = google_kalender.termine("tok", "primary", start - timedelta(days=1),
+                                     start + timedelta(days=10))
+    assert sorted(t["uid"] for t in google) == sorted(t["uid"] for t in ical)
+    assert len(google) == 4
+    roh = [dict(t, besitzer="felix", bereich="business", quelle=q)
+           for q, liste in (("iCal", ical), ("Google", google)) for t in liste]
+    zusammen = kalender_sichtbarkeit.anwenden(roh, "felix")
+    assert len(zusammen) == 4
+    assert all(t["kalender"] == ["iCal", "Google"] for t in zusammen)
 
 
 def test_kaputte_eintraege_werden_uebersprungen_und_gemeldet(monkeypatch):

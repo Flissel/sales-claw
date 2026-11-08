@@ -39,7 +39,10 @@ MAX_ANTWORT_BYTES = 10 * 1024 * 1024
 MAX_SEITEN = 40
 # Datensparsamkeit: nur die Felder anfordern, die wir verwenden.
 FELDER_LISTE = "nextPageToken,items(id,summary,summaryOverride,primary,deleted)"
-FELDER_TERMINE = ("nextPageToken,items(id,status,summary,location,start,end,"
+# iCalUID/recurringEventId/originalStartTime: die UID wird wie beim iCal-Weg
+# gebildet (M4), damit derselbe Kalender ueber beide Wege zusammenfaellt.
+FELDER_TERMINE = ("nextPageToken,items(id,iCalUID,recurringEventId,"
+                  "originalStartTime,status,summary,location,start,end,"
                   "transparency)")
 
 
@@ -205,6 +208,18 @@ def _zeit(feld: dict, zone) -> tuple[datetime, bool] | None:
     return None
 
 
+def _uid(ev: dict, beginn: datetime) -> str:
+    """UID genau wie `kalenderquellen.hole`: Einzeltermin -> iCalUID[:120];
+    Vorkommen einer Serie (recurringEventId/originalStartTime gesetzt) ->
+    `<iCalUID[:80]>#<Beginn UTC isoformat>` - mit dem tatsaechlichen Beginn,
+    auch bei einem verschobenen Vorkommen (wie RECURRENCE-ID dort). Ohne
+    iCalUID bleibt die Google-ID."""
+    voll = str(ev.get("iCalUID") or ev.get("id") or "")
+    if ev.get("recurringEventId") or ev.get("originalStartTime"):
+        return f"{voll[:80]}#{beginn.isoformat()}"
+    return voll[:120]
+
+
 def _rfc3339(t: datetime) -> str:
     return t.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -250,7 +265,7 @@ def termine_mit_hinweis(access_token: str, kalender_id: str, von: datetime,
                     "ende": max(ende_t, beginn),
                     "titel": str(ev.get("summary") or "")[:200],
                     "ort": str(ev.get("location") or "")[:120],
-                    "uid": str(ev.get("id") or "")[:120],
+                    "uid": _uid(ev, beginn),
                     "ganztaegig": ganztaegig,
                     "frei": ev.get("transparency") == "transparent"})
             except Exception:                 # noqa: BLE001 - ein Termin, nicht alle
