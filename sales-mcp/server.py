@@ -3797,6 +3797,26 @@ def _quellen_luecke(quelle: dict, jetzt: datetime):
     return quelle["letzter_fehler"] or None
 
 
+# M3: Name der Luecke, wenn eine Frage aus dem Abgleich-Fenster faellt.
+FENSTER_QUELLE = "Verbundene Kalender"
+
+
+def _fenster_luecke(von: datetime, bis: datetime) -> "dict | None":
+    """Luecke, wenn [von, bis) das Abgleich-Fenster (kalender_abgleich.
+    FENSTER_*: 30 Tage zurueck, 180 voraus) verlaesst - dort wurde nichts
+    abgeglichen, die Antwort ist unvollstaendig, nie frei. Sonst None."""
+    import kalender_abgleich     # spaet: kalender_abgleich importiert server
+    jetzt = datetime.now(timezone.utc)
+    anfang = jetzt - timedelta(days=kalender_abgleich.FENSTER_ZURUECK_TAGE)
+    schluss = jetzt + timedelta(days=kalender_abgleich.FENSTER_VORAUS_TAGE)
+    if von >= anfang and bis <= schluss:
+        return None
+    zone = kalender.ortszone() or timezone.utc
+    return {"quelle": FENSTER_QUELLE, "fenster": True, "fest": True,
+            "grund": (f"nur von {anfang.astimezone(zone):%d.%m.%Y} bis "
+                      f"{schluss.astimezone(zone):%d.%m.%Y} abgeglichen")}
+
+
 def _grund_fest(quelle: dict, grund: str) -> bool:
     """Ist der Grund ein fester Standtext (kein gespeicherter Fehlertext)?"""
     return grund != (quelle["letzter_fehler"] or None)
@@ -3810,7 +3830,9 @@ def kalendertermine_lesen(von: datetime, bis: datetime, betrachter: str):
     termine als „Privattermin" ohne Ort, Doppelte je Besitzer einmal).
     `luecken` = [{"quelle", "grund", "besitzer", "bereich", "fest"}]: nie abgeglichen, zu alt (FRISCHE_MIN)
     oder der letzte Abgleich schlug fehl. Ihre gespeicherten Termine zaehlen
-    trotzdem — nur ist die Antwort dann nicht vollstaendig.
+    trotzdem — nur ist die Antwort dann nicht vollstaendig. Verlaesst das
+    Fenster den Abgleich-Zeitraum, kommt eine Luecke {"quelle":
+    FENSTER_QUELLE, "grund", "fest", "fenster": True} ohne Besitzer dazu (M3).
     Die geheime Adresse der Quelle verlaesst diese Funktion nicht."""
     quellen = kalenderquellen_lesen(nur_aktive=True)
     jetzt = datetime.now(timezone.utc)
@@ -3823,6 +3845,9 @@ def kalendertermine_lesen(von: datetime, bis: datetime, betrachter: str):
                             "fest": _grund_fest(q, grund)})
     if not quellen:
         return [], luecken
+    fenster = _fenster_luecke(von, bis)
+    if fenster:
+        luecken.append(fenster)
     nach_id = {q["id"]: q for q in quellen}
     # Grob vorgefiltert; die Aufrufer pruefen die genaue Ueberlappung selbst
     # (halboffen, punktuelle Termine).
@@ -3957,6 +3982,16 @@ def _kollisionen(beginn, dauer_minuten: int):
         beginn = beginn.replace(tzinfo=kalender.ortszone() or timezone.utc)
     ende = beginn + timedelta(minutes=dauer_minuten)
     eintraege, luecken = belegungen()
+    # M3: ausserhalb des Abgleich-Fensters wissen die verbundenen Kalender
+    # nichts - unvollstaendig, nie frei (nur, wenn welche verbunden sind).
+    fenster = _fenster_luecke(beginn, ende)
+    if fenster:
+        try:
+            verbunden = bool(kalenderquellen_lesen())
+        except psycopg.Error:
+            verbunden = False      # belegungen() meldet die Tabelle schon
+        if verbunden:
+            luecken = luecken + [fenster]
     treffer = [
         {"quelle": e["quelle"], "titel": e["titel"],
          "beginn": e["beginn"].isoformat(), "ende": e["ende"].isoformat()}
@@ -3989,15 +4024,20 @@ def _kollisionstext(treffer, luecken) -> str:
             f"{t['quelle']} ({t['titel']})" if t["titel"] else t["quelle"]
             for t in treffer)
         teile.append(f"ACHTUNG, zu dieser Zeit ist schon etwas: {wer}.")
-    if luecken:
+    stumm = [l for l in luecken if not l.get("fenster")]
+    if stumm:
         # Der Agent sieht mit den Augen des Laden-Besitzers: fremde Privat-
         # Kalender (z. B. die eines Teammitglieds) tragen keinen Namen.
         agent = post_struktur.container_besitzer()
         wer = ", ".join(kalender_sichtbarkeit.luecke_anzeige(l, agent)[0]
-                        for l in luecken)
+                        for l in stumm)
         teile.append(
             f"Ausserdem war {wer} gerade nicht abrufbar — dort kann etwas "
             f"liegen, das hier fehlt.")
+    for l in luecken:
+        if l.get("fenster"):
+            teile.append(f"{l['quelle']} {l['grund']} — für diese Zeit ist die "
+                         f"Auskunft unvollständig.")
     return " ".join(teile)
 
 

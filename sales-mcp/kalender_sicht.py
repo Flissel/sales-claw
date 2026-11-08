@@ -135,7 +135,11 @@ def _sammeln(von: datetime, bis: datetime,
         luecke = True
     for l in luecken:
         name, grund = kalender_sichtbarkeit.luecke_anzeige(l, betrachter)
-        hinweise.append(f"Kalender „{name}“: {grund}")
+        if l.get("fenster"):
+            # M3: Frage ausserhalb des Abgleich-Fensters (30 zurueck/180 voraus).
+            hinweise.append(f"{name} {grund}")
+        else:
+            hinweise.append(f"Kalender „{name}“: {grund}")
         luecke = True
     for t in termine:
         roh.append({"art": "kalender", "uid": t["uid"], "titel": t["titel"],

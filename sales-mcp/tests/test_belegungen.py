@@ -166,6 +166,28 @@ def test_alter_ui_stempel_ohne_abgleich_ist_luecke_nie_frei():
     assert antwort["frei"] is True and antwort["quellen_luecken"] == []
 
 
+def test_termin_ausserhalb_des_abgleich_fensters_ist_nie_frei():
+    """M3: verbundene Kalender sind nur bis 180 Tage voraus abgeglichen - der
+    Agent meldet dahinter „unvollstaendig", nie „frei"."""
+    _quelle("Ivan", "ivan", "business", [])
+    tag = _t(200, 9).date().isoformat()
+    antwort = json.loads(server.termin_konflikte(tag, "09:00"))
+    assert antwort["frei"] is False
+    (luecke,) = antwort["quellen_luecken"]
+    assert luecke["quelle"] == "Verbundene Kalender"
+    assert luecke["grund"].startswith("nur von ") and luecke["grund"].endswith(" abgeglichen")
+    assert "Verbundene Kalender nur von" in antwort["hinweis"]
+    assert "nicht abrufbar" not in antwort["hinweis"]
+    # Innerhalb des Fensters bleibt es frei.
+    antwort = json.loads(server.termin_konflikte(_t(2, 9).date().isoformat(), "09:00"))
+    assert antwort["frei"] is True
+
+
+def test_ausserhalb_des_fensters_ohne_verbundene_kalender_bleibt_frei():
+    antwort = json.loads(server.termin_konflikte(_t(200, 9).date().isoformat(), "09:00"))
+    assert antwort["frei"] is True and antwort["quellen_luecken"] == []
+
+
 def test_veraltete_quelle_ist_luecke():
     qid = _quelle("Ivan", "ivan", "business", [_termin(1, 9, "Alt", "a")])
     server._q("update kalender_quellen set abgeglichen_am = now() - interval '16 minutes' "

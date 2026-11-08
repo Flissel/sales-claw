@@ -178,6 +178,29 @@ def test_nie_abgeglichene_quelle_ist_luecke():
     assert kalender_sicht.konflikte(_um(1, 9), 30, betrachter="felix")["unvollstaendig"] is True
 
 
+def _fenster_text():
+    jetzt = datetime.now(B)
+    return (f"Verbundene Kalender nur von {(jetzt - timedelta(days=30)):%d.%m.%Y} "
+            f"bis {(jetzt + timedelta(days=180)):%d.%m.%Y} abgeglichen")
+
+
+@pytest.mark.parametrize("tag", [200, -40])
+def test_ausserhalb_des_abgleich_fensters_ist_luecke(tag):
+    """M3: verbundene Kalender sind nur 30 Tage zurueck bis 180 voraus
+    abgeglichen - eine Frage ausserhalb ist unvollstaendig, nie frei."""
+    _quelle("Ivan", "ivan", "business", [])
+    erg = kalender_sicht.ereignisse(*_fenster(tag), "felix")
+    assert _fenster_text() in erg["hinweise"], erg["hinweise"]
+    assert kalender_sicht.konflikte(_um(tag, 9), 30, betrachter="felix")["unvollstaendig"] is True
+    # Innerhalb des Fensters: kein Hinweis.
+    assert kalender_sicht.ereignisse(*_fenster(1), "felix")["hinweise"] == []
+
+
+def test_ausserhalb_des_fensters_ohne_verbundene_kalender_kein_hinweis():
+    assert kalender_sicht.ereignisse(*_fenster(200), "felix")["hinweise"] == []
+    assert kalender_sicht.konflikte(_um(200, 9), 30, betrachter="felix")["unvollstaendig"] is False
+
+
 def test_frisch_abgeglichene_quelle_ist_keine_luecke():
     _quelle("Ivan", "ivan", "business", [], alter_min=14)
     assert kalender_sicht.konflikte(_um(1, 9), 30, betrachter="felix")["unvollstaendig"] is False
