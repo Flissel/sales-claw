@@ -155,7 +155,7 @@ Heute holt jede Seitenansicht und jeder Agent-Aufruf alle iCal-Adressen neu, ohn
   - Neue Ereignis-Art(en) statt `kollege`: Builder-Wahl. Pflicht ist, dass Titel, Farbe und Klick-Details der Sichtbarkeitstabelle folgen.
   - „Privattermin“ zeigt in den Details nur von–bis und den Namen des Besitzers.
 - **`/kalender/termine.json`** filtert serverseitig nach der angemeldeten Person. Kundentermine und eigene Termine des Betreibers folgen derselben Tabelle wie alles andere:
-  - Sie liegen im Business-Kalender des Laden-Besitzers (`CALDAV_URL`) und sind damit für Teammitglieder voll sichtbar, auch mit Kundennamen. **[offen, Betreiber fragen]**
+  - Sie liegen im Business-Kalender des Laden-Besitzers (`CALDAV_URL`) und sind damit für Teammitglieder voll sichtbar, auch mit Kundennamen. **[Betreiber 08.11.2026: „Okay“ auf genau diese Frage]**
   - Steht derselbe Termin in einem Business- und einem Privat-Kalender, gilt für fremde Betrachter die strengere Sicht; die Maske darf beim Zusammenführen nie verloren gehen.
 
 ## 7. Dem Builder überlassen
