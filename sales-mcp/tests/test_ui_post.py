@@ -269,6 +269,18 @@ def test_mail_zeigt_text_und_anhaenge():
     assert _get("t8_anna", "/post/mail/kein-uuid").status_code == 404
 
 
+def test_mail_adressen_sind_anklickbar():
+    # Betreiber 08.11.2026: „in den E-Mails sind keine Hyperlinks klickbar".
+    m = _mail(text='Termin: https://meet.example.de/abc?x=1&y=2. '
+                   'Nicht: javascript:alert(1) und "https://a.de/"><b>x</b>')
+    seite = _get("t8_anna", f"/post/mail/{m}").text
+    assert ('<a href="https://meet.example.de/abc?x=1&amp;y=2" '
+            'rel="noreferrer noopener" target="_blank">') in seite
+    assert '</a>. Nicht: javascript:alert(1)' in seite
+    assert 'href="javascript' not in seite
+    assert "<b>x</b>" not in seite and "&lt;b&gt;x&lt;/b&gt;" in seite
+
+
 def test_mailinhalt_escaped():
     m = _mail(betreff="<script>alert(1)</script>",
               text='Hallo"><img src=x onerror=alert(2)><script>x()</script>',

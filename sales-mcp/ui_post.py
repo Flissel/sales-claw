@@ -564,7 +564,10 @@ def routen(ui) -> list:
             if m["anhaenge"]:
                 teile.append('<div class="meta"><b>Anhänge:</b> '
                              + ", ".join(e(a) for a in m["anhaenge"]) + "</div>")
-            teile.append(f'<div class="text mailtext">{e((m["text"] or "")[:TEXT_MAX])}</div></div>')
+            # Betreiber 08.11.2026: Adressen anklickbar, mit derselben Regel wie
+            # die Chats (verlinken.py: erst escapen, nur http(s), neuer Reiter).
+            teile.append('<div class="text mailtext">'
+                         f'{ui._text_html((m["text"] or "")[:TEXT_MAX])}</div></div>')
         teile.append(erledigt_bereich(request, b, m))
         if darf_korrigieren(request, b, m):
             teile.append(ziel_formulare(m))
