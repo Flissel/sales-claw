@@ -194,7 +194,7 @@ def _ics_serie_und_normal(normal_beginn, normal_ende, serie_beginn,
         "END:VCALENDAR\r\n").encode("utf-8")
 
 
-def test_verbinden_speichert_trotz_serientermin_und_zeigt_den_hinweis(
+def test_verbinden_loest_serientermin_auf_ohne_hinweis(
         monkeypatch):
     """BLOCKER (Koordinator-Fix-Runde, 13.09.2026): seit K4 meldet hole()
     `fehler` auch dann, wenn die Quelle VOLLSTAENDIG verstanden wurde und
@@ -220,12 +220,11 @@ def test_verbinden_speichert_trotz_serientermin_und_zeigt_den_hinweis(
     # Gespeichert — nicht abgewiesen.
     assert server.kalenderquellen_lesen()[0]["anzeigename"] == "Ivan"
     assert "Nichts wurde gespeichert" not in antwort.text
-    # Der verstandene Termin zaehlt und wird genannt ...
-    assert "1 Termin" in antwort.text
+    # Task 3: die Serie wird aufgeloest (woechentlich im 60-Tage-Fenster:
+    # mehr als ein Vorkommen), der alte Vorbehalt entfaellt.
     assert "Normaler Termin" in antwort.text
-    # ... der Vorbehalt steht DANEBEN, nicht als Totalabweisung.
-    assert "Serientermin" in antwort.text
-    assert "RRULE" in antwort.text
+    assert "Serientermin" not in antwort.text
+    assert "RRULE" not in antwort.text
 
 
 def test_falscher_link_wird_benannt_nicht_nur_abgewiesen(monkeypatch):

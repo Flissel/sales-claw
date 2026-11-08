@@ -35,12 +35,14 @@ freigeben, und eine 80/443-Regel wuerde echte Quellen abweisen.
 """
 import ipaddress
 import os
-import re
 import socket
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+
+import icalendar
+import recurring_ical_events
 
 import kalender
 
@@ -173,26 +175,29 @@ def _sieht_aus_wie_kalender(text: str) -> bool:
     return "BEGIN:VCALENDAR" in text[:2000].upper()
 
 
-# RFC 5545 §3.3.6 DURATION — bescheidene Auswertung fuer Tage/Stunden/
-# Minuten/Sekunden (K4-Ruling, Schlusspruefung 13.09.2026). Bewusst NICHT
-# unterstuetzt: Wochen ("P2W") und negative Dauern — beide sind in echten
-# Kalenderexporten selten, und eine falsche Auswertung waere schlimmer als
-# eine ehrlich gemeldete Luecke. Was hier nicht passt, gilt als unlesbar.
-_DAUER_MUSTER = re.compile(
-    r"^P(?:(?P<tage>\d+)D)?"
-    r"(?:T(?:(?P<stunden>\d+)H)?(?:(?P<minuten>\d+)M)?(?:(?P<sekunden>\d+)S)?)?$")
+def _ortszeit_utc(wert, ortszone) -> datetime:
+    """Ein iCal-Zeitwert (date | naiv | zonenbewusst) -> UTC-aware.
+
+    Ein reines Datum (VALUE=DATE, ganztaegig) beginnt um Mitternacht
+    ORTSZEIT, nicht UTC: ein Termin am 10.11. soll am 10.11. liegen. Ein
+    „schwebender" Wert ohne TZID gilt ebenfalls als Ortszeit.
+    """
+    zone = ortszone or timezone.utc
+    if not isinstance(wert, datetime):
+        wert = datetime(wert.year, wert.month, wert.day)
+    if wert.tzinfo is None:
+        wert = wert.replace(tzinfo=zone)
+    return wert.astimezone(timezone.utc)
 
 
-def _dauer_lesen(wert: str):
-    """DURATION-Wert ('PT1H30M', 'P1D', ...) -> timedelta oder None (nicht
-    verstanden — behandle wie ein fehlendes Ende, siehe Aufrufer)."""
-    treffer = _DAUER_MUSTER.match((wert or "").strip())
-    if not treffer:
-        return None
-    teile = {k: int(v) for k, v in treffer.groupdict(default="0").items()}
-    dauer = timedelta(days=teile["tage"], hours=teile["stunden"],
-                      minutes=teile["minuten"], seconds=teile["sekunden"])
-    return dauer if dauer > timedelta(0) else None
+def _serien_uids(kal) -> set:
+    """UIDs aller VEVENTs, die zu einer Serie gehoeren (RRULE/RDATE am
+    Stamm oder RECURRENCE-ID an einer Abweichung)."""
+    uids = set()
+    for ev in kal.walk("VEVENT"):
+        if ev.get("RRULE") is not None or ev.get("RDATE") is not None                 or ev.get("RECURRENCE-ID") is not None:
+            uids.add(str(ev.get("UID", "")))
+    return uids
 
 
 def hole(url: str, tage_zurueck: int = 7, tage_voraus: int = 60):
@@ -216,19 +221,14 @@ def hole(url: str, tage_zurueck: int = 7, tage_voraus: int = 60):
     Fenster [von, bis) ueberschneidet; ein punktueller Termin (ende ==
     beginn, siehe unten) zaehlt, wenn sein Zeitpunkt im Fenster liegt.
 
-    Serientermine und DURATION (K4, Schlusspruefung 13.09.2026): ein VEVENT
-    mit RRULE wird NICHT entfaltet (ein eigenes Vorhaben, halb richtig waere
-    schlimmer als gar nicht) — es zaehlt weder mit seinem einzelnen DTSTART
-    als Termin (das waere K4s Ursprungsfehler: ein woechentliches Meeting
-    kollidiert dann nie wieder) noch fehlt es stillschweigend. Stattdessen
-    zaehlt `hole()` solche Eintraege (und VEVENTs mit unlesbarer DURATION
-    statt DTEND) und meldet sie als `fehler` — nicht als leerer `termine`,
-    denn andere, einmalige VEVENTs derselben Antwort bleiben gueltige
-    Kollisionsdaten. `belegungen()` haengt diesen Text als eigene Luecke an,
-    OHNE die zurueckgegebenen `termine` zu verwerfen (Fix K4/K3): eine
-    Quelle mit Serientermin meldet `termin_konflikte` dadurch nie
-    `frei: true`, verliert aber nicht die Kollisionen, die sie sehr wohl
-    versteht.
+    Serientermine, Ganztaegiges, „frei" (Task 3, Kalender verbinden):
+    `recurring_ical_events` loest RRULE/RDATE/EXDATE/Abweichungen zu
+    einzelnen Vorkommen auf (UID = Serien-UID + "#" + Beginn in UTC);
+    DURATION statt DTEND versteht `icalendar`. Ganztaegig (VALUE=DATE):
+    Beginn = Mitternacht Ortszeit, Ende = folgende Mitternacht, `ganztaegig`
+    gesetzt. `TRANSP:TRANSPARENT` ergibt `frei`. Es entfaellt damit der
+    fruehere Serien-/Dauer-Hinweis; `fehler` bleibt fuer Abruf- und
+    Lesefehler.
     """
     url = (url or "").strip()
     erlaubt, grund = _ziel_erlaubt(url)
@@ -266,76 +266,39 @@ def hole(url: str, tage_zurueck: int = 7, tage_voraus: int = 60):
     jetzt = datetime.now(timezone.utc)
     von = jetzt - timedelta(days=tage_zurueck)
     bis = jetzt + timedelta(days=tage_voraus)
+    ortszone = kalender.ortszone()
+
+    try:
+        kal = icalendar.Calendar.from_ical(text)
+        serien = _serien_uids(kal)
+        vorkommen = recurring_ical_events.of(kal).between(von, bis)
+    except Exception as e:                # noqa: BLE001 — kaputtes iCal
+        return [], ohne_adresse(
+            f"Der Kalender ist nicht lesbar ({type(e).__name__}).", url)
 
     termine = []
-    serien = 0
-    unlesbare_dauer = 0
-    for teil in text.split("BEGIN:VEVENT")[1:]:
-        block = teil.split("END:VEVENT", 1)[0]
-        beginn = kalender._ics_zeit(kalender._ics_feld(block, "DTSTART"),
-                                    kalender._ics_tzid(block, "DTSTART"))
-        if beginn is None:
+    for ev in vorkommen:
+        try:
+            start = ev.start
+            ende = ev.end
+            ganztaegig = (isinstance(start, date)
+                          and not isinstance(start, datetime))
+            beginn = _ortszeit_utc(start, ortszone)
+            ende = _ortszeit_utc(ende, ortszone) if ende is not None else beginn
+            if ganztaegig and ende <= beginn:
+                ende = _ortszeit_utc(start + timedelta(days=1), ortszone)
+            uid = str(ev.get("UID", ""))[:120]
+            if uid in serien:
+                uid = f"{uid}#{beginn.isoformat()}"
+            termine.append({
+                "beginn": beginn,
+                "ende": max(ende, beginn),
+                "titel": str(ev.get("SUMMARY", ""))[:200],
+                "ort": str(ev.get("LOCATION", ""))[:120],
+                "uid": uid,
+                "ganztaegig": ganztaegig,
+                "frei": str(ev.get("TRANSP", "")).upper() == "TRANSPARENT"})
+        except Exception:                 # noqa: BLE001 — ein Termin, nicht alle
             continue
-        ist_serie = bool(kalender._ics_feld(block, "RRULE"))
-        ende = kalender._ics_zeit(kalender._ics_feld(block, "DTEND"),
-                                  kalender._ics_tzid(block, "DTEND"))
-        dauer_unlesbar = False
-        if not (ende and ende > beginn):
-            # Ohne (lesbares) DTEND: DURATION probieren (K4 — RFC 5545
-            # erlaubt beides, Apple und manche Outlook-Exporte nutzen es).
-            dauer_wert = kalender._ics_feld(block, "DURATION")
-            dauer = _dauer_lesen(dauer_wert) if dauer_wert else None
-            if dauer is not None:
-                ende = beginn + dauer
-            else:
-                # Weder DTEND noch (lesbare) DURATION: punktuell. NICHT
-                # geraten: eine erfundene Dauer erzeugte Kollisionen, die es
-                # nicht gibt.
-                dauer_unlesbar = bool(dauer_wert)
-                ende = beginn
-        # Zeitfenster (K2/W1) — jetzt VOR dem Serien-/Dauer-Zaehler (Fix
-        # Koordinator, 13.09.2026): eine Serie oder ein unlesbares DURATION
-        # zaehlt nur, wenn IHR eigener Anhaltspunkt (Master-DTSTART/-DTEND)
-        # im Fenster liegt. Vorher zaehlte auch eine vor Jahren beendete
-        # Serie fuer immer als Luecke — termin_konflikte haette fuer eine
-        # solche Quelle NIE WIEDER frei: true gemeldet, und /team/kalender
-        # haette sie fuer immer als Fehler statt mit Terminzahl gezeigt
-        # (kalenderquelle_stand_setzen laesst den Zaehler bei jedem
-        # `fehler` unveraendert). Ein punktueller Termin (ende == beginn)
-        # zaehlt, wenn sein Zeitpunkt im Fenster liegt; sonst gilt die
-        # Ueberlappung [beginn, ende) mit [von, bis) — dieselbe Regel wie
-        # die CalDAV time-range REPORT in kalender.termine_lesen.
-        if ende <= von or beginn >= bis:
-            continue
-        if ist_serie:
-            # K4: nicht entfalten, nicht als einzelnen Termin am ersten
-            # DTSTART durchrutschen lassen — nur zaehlen (und das erst,
-            # seit gerade eben, nur innerhalb des Fensters).
-            serien += 1
-            continue
-        if dauer_unlesbar:
-            unlesbare_dauer += 1
-        termine.append({
-            "beginn": beginn,
-            "ende": ende,
-            "titel": kalender._ics_feld(block, "SUMMARY")[:200],
-            "ort": kalender._ics_feld(block, "LOCATION")[:120],
-            "uid": kalender._ics_feld(block, "UID")[:120]})
     termine.sort(key=lambda t: t["beginn"])
-
-    hinweise = []
-    if serien:
-        hinweise.append(
-            f"{serien} Serientermin{'e' if serien != 1 else ''} (RRULE) "
-            f"werden nicht aufgeloest — dort kann etwas liegen, das hier "
-            f"fehlt.")
-    if unlesbare_dauer:
-        hinweise.append(
-            f"{unlesbare_dauer} Termin{'e' if unlesbare_dauer != 1 else ''} "
-            f"mit unlesbarer Dauer (DURATION) — als punktuell behandelt, "
-            f"dort kann etwas liegen, das hier fehlt.")
-    # Bewusst KEIN leeres `termine` bei einer Luecke (anders als jeder
-    # andere Fehlerpfad oben): andere, einmalige VEVENTs derselben Antwort
-    # bleiben gueltige Kollisionsdaten (siehe Docstring). `belegungen()`
-    # haengt den Hinweis als eigene Luecke an, OHNE `termine` zu verwerfen.
-    return termine, (" ".join(hinweise) if hinweise else None)
+    return termine, None

@@ -248,26 +248,77 @@ def _vevent(uid: str, dtstart: str, rumpf: str) -> str:
     return f"BEGIN:VEVENT\r\nUID:{uid}\r\nDTSTART:{dtstart}\r\n{rumpf}END:VEVENT\r\n"
 
 
-def test_serientermin_wird_als_luecke_gemeldet_statt_einmalig_gezaehlt(
-        server_stub):
-    """Der Kernbefund K4: ein RRULE-VEVENT darf NICHT als einzelner Termin
-    am ersten DTSTART durchrutschen (er kollidiert dann nie wieder) — er
-    zaehlt stattdessen als Luecke, damit die Quelle nie `frei: true`
-    ergibt."""
+def test_woechentliche_serie_wird_aufgeloest(server_stub):
+    """Task 3: eine RRULE ergibt einzelne Vorkommen, je mit eigener UID
+    (Serien-UID + '#' + Beginn) — und keinen Hinweis mehr."""
+    start = _dt.now(_tz.utc).replace(microsecond=0) - _td(days=1)
     server_stub.rumpf = _ics(_vevent(
-        "teamrunde@google", _BALD.strftime("%Y%m%dT%H%M%SZ"),
-        "DTEND:" + (_BALD + _td(hours=1)).strftime("%Y%m%dT%H%M%SZ") + "\r\n"
-        "RRULE:FREQ=WEEKLY;BYDAY=MO\r\n"
-        "SUMMARY:Teamrunde\r\n"))
+        "teamrunde@google", start.strftime("%Y%m%dT%H%M%SZ"),
+        "DTEND:" + (start + _td(hours=1)).strftime("%Y%m%dT%H%M%SZ") + "\r\n"
+        "RRULE:FREQ=WEEKLY;COUNT=3\r\nSUMMARY:Teamrunde\r\n"))
     termine, fehler = kalenderquellen.hole(server_stub.url)
-    assert termine == [], termine
-    assert fehler is not None
-    assert "Serientermin" in fehler and "RRULE" in fehler
+    assert fehler is None, fehler
+    assert len(termine) == 3, termine
+    uids = [t["uid"] for t in termine]
+    assert len(set(uids)) == 3
+    assert all(u.startswith("teamrunde@google#") for u in uids)
+    assert {t["titel"] for t in termine} == {"Teamrunde"}
 
 
-def test_serie_neben_normalem_termin_behaelt_den_normalen(server_stub):
-    """Eine Luecke darf gueltige Kollisionsdaten nicht mitreissen: ein
-    gewoehnlicher VEVENT in derselben Antwort bleibt ein echter Termin."""
+def test_ausnahme_exdate_fehlt(server_stub):
+    start = _dt.now(_tz.utc).replace(microsecond=0) - _td(days=1)
+    ausnahme = start + _td(days=7)
+    server_stub.rumpf = _ics(_vevent(
+        "serie@google", start.strftime("%Y%m%dT%H%M%SZ"),
+        "DTEND:" + (start + _td(hours=1)).strftime("%Y%m%dT%H%M%SZ") + "\r\n"
+        "RRULE:FREQ=WEEKLY;COUNT=3\r\n"
+        "EXDATE:" + ausnahme.strftime("%Y%m%dT%H%M%SZ") + "\r\n"
+        "SUMMARY:Serie\r\n"))
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert fehler is None, fehler
+    assert len(termine) == 2
+    assert ausnahme not in [t["beginn"] for t in termine]
+
+
+def test_ganztaegig_value_date(server_stub):
+    server_stub.rumpf = _ics(
+        "BEGIN:VEVENT\r\nUID:tag@google\r\n"
+        "DTSTART;VALUE=DATE:20261110\r\nDTEND;VALUE=DATE:20261111\r\n"
+        "SUMMARY:Ganzer Tag\r\nEND:VEVENT\r\n")
+    termine, fehler = kalenderquellen.hole(
+        server_stub.url, tage_zurueck=3650, tage_voraus=3650)
+    assert fehler is None, fehler
+    assert len(termine) == 1
+    t = termine[0]
+    assert t["ganztaegig"] is True
+    zone = kalenderquellen.kalender.ortszone() or _tz.utc
+    assert t["beginn"].tzinfo is not None
+    assert t["beginn"].astimezone(zone).replace(tzinfo=None) == _dt(2026, 11, 10)
+    assert t["ende"].astimezone(zone).replace(tzinfo=None) == _dt(2026, 11, 11)
+
+
+def test_gewoehnlicher_termin_ist_nicht_ganztaegig_und_nicht_frei(server_stub):
+    server_stub.rumpf = _ics(_vevent(
+        "normal@google", _BALD.strftime("%Y%m%dT%H%M%SZ"),
+        "DTEND:" + (_BALD + _td(hours=1)).strftime("%Y%m%dT%H%M%SZ")
+        + "\r\nSUMMARY:Normal\r\n"))
+    termine, _ = kalenderquellen.hole(server_stub.url)
+    assert termine[0]["ganztaegig"] is False
+    assert termine[0]["frei"] is False
+    assert "#" not in termine[0]["uid"]
+
+
+def test_transparent_ist_frei(server_stub):
+    server_stub.rumpf = _ics(_vevent(
+        "geburtstag@google", _BALD.strftime("%Y%m%dT%H%M%SZ"),
+        "DTEND:" + (_BALD + _td(hours=1)).strftime("%Y%m%dT%H%M%SZ")
+        + "\r\nTRANSP:TRANSPARENT\r\nSUMMARY:Geburtstag\r\n"))
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert fehler is None, fehler
+    assert termine[0]["frei"] is True
+
+
+def test_serie_neben_normalem_termin_behaelt_beide(server_stub):
     server_stub.rumpf = _ics(
         _vevent("normal@google", _BALD.strftime("%Y%m%dT%H%M%SZ"),
                "DTEND:" + (_BALD + _td(hours=1)).strftime("%Y%m%dT%H%M%SZ")
@@ -275,11 +326,20 @@ def test_serie_neben_normalem_termin_behaelt_den_normalen(server_stub):
         _vevent("serie@google",
                (_BALD + _td(days=1)).strftime("%Y%m%dT%H%M%SZ"),
                "DTEND:" + (_BALD + _td(days=1, hours=1)).strftime(
-                   "%Y%m%dT%H%M%SZ") + "\r\nRRULE:FREQ=WEEKLY\r\n"
+                   "%Y%m%dT%H%M%SZ") + "\r\nRRULE:FREQ=DAILY;COUNT=2\r\n"
                "SUMMARY:Serie\r\n"))
     termine, fehler = kalenderquellen.hole(server_stub.url)
-    assert [t["titel"] for t in termine] == ["Normaler Termin"]
-    assert fehler is not None and "Serientermin" in fehler
+    assert fehler is None, fehler
+    assert [t["titel"] for t in termine] == [
+        "Normaler Termin", "Serie", "Serie"]
+
+
+def test_kaputtes_ical_wirft_nicht_und_nennt_keine_adresse(server_stub):
+    server_stub.rumpf = (b"BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\n"
+                         b"DTSTART:kaputt\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert termine == []
+    assert server_stub.url not in (fehler or "")
 
 
 def test_duration_wird_als_ende_gelesen(server_stub):
@@ -296,18 +356,16 @@ def test_duration_wird_als_ende_gelesen(server_stub):
     assert dauer.total_seconds() == 5400, termine[0]
 
 
-def test_unlesbare_duration_wird_gezaehlt_und_gemeldet(server_stub):
-    """Was die bescheidene Auswertung nicht versteht (hier: Wochen, 'P2W'),
-    gilt wie ein fehlendes Ende — UND wird gemeldet (K4-Ruling), statt
-    kommentarlos als still 'frei' durchzugehen."""
+def test_wochen_duration_wird_gelesen(server_stub):
+    """'P2W' war fuer den alten Handparser unlesbar; `icalendar` versteht
+    es (Task 3: die Warnung zu unlesbarer Dauer entfaellt damit)."""
     server_stub.rumpf = _ics(_vevent(
-        "seltsam@irgendwer", _BALD.strftime("%Y%m%dT%H%M%SZ"),
-        "DURATION:P2W\r\nSUMMARY:Komische Dauer\r\n"))
+        "wochen@irgendwer", _BALD.strftime("%Y%m%dT%H%M%SZ"),
+        "DURATION:P2W\r\nSUMMARY:Zwei Wochen\r\n"))
     termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert fehler is None, fehler
     assert len(termine) == 1
-    assert termine[0]["ende"] == termine[0]["beginn"]
-    assert fehler is not None
-    assert "unlesbar" in fehler.lower()
+    assert termine[0]["ende"] - termine[0]["beginn"] == _td(weeks=2)
 
 
 def test_laengst_beendete_serie_macht_die_quelle_nicht_fuer_immer_zur_luecke(
