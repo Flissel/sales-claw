@@ -322,6 +322,8 @@ begin
       )$ddl$, s);
     -- Post-Sammelstelle (Tabellen post_*): bewusst NICHT hier, sondern in
     -- db/post-sammelstelle.sql (-v schema=...), damit sales_test getrennt pruefbar ist.
+    -- Freigabe-Eingang (Tabellen freigabe_*): ebenso NICHT hier, sondern in
+    -- db/freigabe-eingang.sql (-v schema=...).
     execute format('create index if not exists postfach_mails_such_idx '
                    'on %I.postfach_mails using gin (suchtext)', s);
     if s = 'sales' then

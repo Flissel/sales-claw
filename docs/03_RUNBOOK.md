@@ -3523,3 +3523,19 @@ Alle Schritte nur mit Felix' ausdruecklichem OK (der Deploy selbst braucht es; k
 
 **Rueckweg.** `docker compose stop sales-post` haelt den Abgleich an; den Code per `update.sh` auf den
 vorherigen Stand zuruecksetzen. Die Spalten aus Schritt 2 sind additiv und koennen liegen bleiben.
+
+## Freigabe-Eingang: Tabellen (Plan 2026-11-08)
+
+Drei Tabellen je Schema: `freigabe_eintraege`, `freigabe_auftraege`, `freigabe_schluessel`. Das Skript
+`db/freigabe-eingang.sql` ist idempotent und steht bewusst nicht im Schema-Loop von `db/provision.sql`.
+`sales_app` bekommt select/insert/update (nie delete); in `sales_test` zusaetzlich truncate.
+
+1. **Zuerst auf `sales_test`** (Testschema, jederzeit wiederholbar):
+   `ssh offload-vm 'docker exec -i debian-supabase-db-1 psql -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v schema=sales_test' < db/freigabe-eingang.sql`
+   Pruefen: Exit-Code 0, Schematest `tests/test_freigabe_eingang_tabelle.py` gruen.
+2. **Dann auf `sales`** (Produktion) - erst nach Freigabe durch Felix und Vault-Claim, vor dem Ausliefern des
+   Codes, der die Tabellen nutzt:
+   `ssh offload-vm 'docker exec -i debian-supabase-db-1 psql -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v schema=sales' < db/freigabe-eingang.sql`
+   Weitere Laeden (z. B. `sales_ivan`) nur, wenn dort ebenfalls Eintraege einlaufen sollen.
+
+**Rueckweg.** Die Tabellen sind additiv; ungenutzt koennen sie liegen bleiben.
