@@ -1,8 +1,8 @@
 {
   "quelle": "fullcalendar@6.1.21",
-  "gebaut": "2026-11-08T21:55:24.777Z",
+  "gebaut": "2026-11-08T21:58:27.357Z",
   "sha256": {
-    "kalender.js": "2b67405413a20312587829f456b51a503fc80ec2c4e7793b1c57416c69dcc800",
+    "kalender.js": "dac22fb14017b4a5413fae9ddece22365b894fcd3f1d0b462070bef3d33bf48a",
     "kalender.css": "1c28edf59cbc3b6e27049a7adc7375a2da5404916cf4299325caf47fb076b7c4"
   }
 }

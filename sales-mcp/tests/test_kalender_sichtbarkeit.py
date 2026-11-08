@@ -37,7 +37,7 @@ def test_doppelter_termin_einmal_und_strenger():
     b = _t(quelle="Privat", bereich="privat", uid="u1", titel="Treffen")
     aus = anwenden([a, b], "ivan")
     assert len(aus) == 1 and aus[0]["titel"] == "Privattermin"
-    assert sorted(aus[0]["kalender"]) == ["Arbeit", "Privat"]
+    assert aus[0]["kalender"] == [] and aus[0]["quelle"] == "Privat (felix)"
 
 
 def test_verschiedene_besitzer_werden_nicht_zusammengefuehrt():
@@ -87,3 +87,19 @@ def test_sortiert_nach_beginn_und_eingabe_unveraendert():
     assert "maskiert" not in privat and "kalender" not in privat
     assert privat["titel"] == "Geheim" and privat["ort"] == "O"
     assert eingang == [spaet, frueh, privat]
+
+
+def test_maskiertes_ergebnis_traegt_keinen_kalendernamen():
+    privat = _t(besitzer="felix", bereich="privat", quelle="Felix geheim", uid="u1")
+    aus = anwenden([privat], "ivan")[0]
+    assert aus["quelle"] == "Privat (felix)" and aus["kalender"] == []
+
+
+def test_zusammengefuehrt_mit_business_kopie_bleibt_namenlos():
+    privat = _t(besitzer="felix", bereich="privat", quelle="Felix geheim", uid="u1")
+    business = _t(besitzer="felix", bereich="business", quelle="Felix Arbeit", uid="u1")
+    for reihenfolge in ([privat, business], [business, privat]):
+        (aus,) = anwenden(reihenfolge, "ivan")
+        assert aus["maskiert"] and aus["quelle"] == "Privat (felix)" and aus["kalender"] == []
+        assert "Felix geheim" not in str(aus) and "Felix Arbeit" not in str(aus)
+    assert anwenden([privat], "felix")[0]["quelle"] == "Felix geheim"

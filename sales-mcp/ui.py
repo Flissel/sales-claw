@@ -6187,7 +6187,8 @@ def _freie_termine(betrachter: str, tage_voraus: int = 60) -> list:
     try:
         termine, _ = server.kalendertermine_lesen(
             jetzt, jetzt + timedelta(days=tage_voraus), betrachter)
-    except psycopg.Error:
+    except Exception as e:                 # noqa: BLE001 — die Liste faellt nie deswegen aus
+        LOG.warning("freie Termine nicht lesbar: %s", type(e).__name__)
         return []
     return [{"beginn": t["beginn"], "ende": t["ende"], "titel": t["titel"],
              "ort": t["ort"], "quelle": t["quelle"], "frei": True}
@@ -6204,6 +6205,7 @@ def _fuer_betrachter(eintraege: list, betrachter: str) -> list:
         if "besitzer" in e and kalender_sichtbarkeit.maskiert(
                 e["besitzer"], e["bereich"], betrachter):
             e = {**e, "titel": kalender_sichtbarkeit.PRIVATTERMIN, "ort": "",
+                 "quelle": kalender_sichtbarkeit.privat_name(e["besitzer"]),
                  "maskiert": True}
         aus.append(e)
     return aus

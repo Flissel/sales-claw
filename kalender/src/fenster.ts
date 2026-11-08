@@ -133,6 +133,10 @@ const zwei = (n: number) => String(n).padStart(2, '0');
 const datumVon = (d: Date) => `${d.getFullYear()}-${zwei(d.getMonth() + 1)}-${zwei(d.getDate())}`;
 const zeitVon = (d: Date) => `${zwei(d.getHours())}:${zwei(d.getMinutes())}`;
 
+export function tagText(d: Date): string {
+  return d.toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
 export function zeitText(beginn: Date | string, ende?: Date | string | null): string {
   const b = typeof beginn === 'string' ? new Date(beginn) : beginn;
   const tag = b.toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' });
@@ -167,7 +171,7 @@ export function konfliktFragen(konflikte: Konflikt[], unvollstaendig: boolean): 
 export function detailsOeffnen(ev: EventApi, ctx: Kontext): void {
   const p = ev.extendedProps;
   const zeile = (k: string, v: unknown) => (v ? el('div', { class: 'vk-zeile' }, el('b', {}, `${k}: `), String(v)) : null);
-  const zeit = ev.start ? (ev.allDay ? `${zeitText(ev.start).split(',')[0]}, ganztägig` : zeitText(ev.start, ev.end)) : '';
+  const zeit = ev.start ? (ev.allDay ? `${tagText(ev.start)}, ganztägig` : zeitText(ev.start, ev.end)) : '';
   if (p.maskiert) {
     // Fremder Privattermin: nur Zeit und Besitzer, nie Titel oder Ort.
     const { fenster, inhalt } = neuesFenster(ev.title);
@@ -178,7 +182,7 @@ export function detailsOeffnen(ev: EventApi, ctx: Kontext): void {
     fenster.showModal();
     return;
   }
-  const { fenster, inhalt } = neuesFenster(String(p.art === 'kunde' ? p.thema : p.art === 'kalender' ? p.thema : ev.title));
+  const { fenster, inhalt } = neuesFenster(String(p.art === 'kunde' || p.art === 'kalender' ? p.thema : ev.title));
   const art = { kunde: 'Kundentermin', eigen: 'Eigener Termin', handy: 'Laden-Kalender' }[String(p.art)] ?? '';
   anfuegen(inhalt,
     zeile('Art', art), zeile('Zeit', zeit), zeile('Kontakt', p.kontakt),

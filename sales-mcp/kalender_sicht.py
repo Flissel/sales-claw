@@ -12,6 +12,7 @@ import math
 from datetime import datetime, timedelta, timezone
 
 import kalender
+import kalender_sichtbarkeit
 import post_struktur
 import server
 import termine_eigen
@@ -167,7 +168,7 @@ def betrachter(name: str = "") -> str:
     return str(name or "") or post_struktur.container_besitzer()
 
 
-def ebenen() -> list[dict]:
+def ebenen(betrachter: str = "") -> list[dict]:
     """Die festen Ebenen des Ladens und jede aktive Quelle (ohne Adresse)."""
     laden = post_struktur.container_besitzer()
     feste = [{"id": art, "name": name, "besitzer": laden, "bereich": "business"}
@@ -177,7 +178,11 @@ def ebenen() -> list[dict]:
         quellen = server.kalenderquellen_lesen(nur_aktive=True)
     except Exception:                      # noqa: BLE001 — die Luecke meldet _sammeln
         quellen = []
-    return feste + [{"id": q["id"], "name": q["anzeigename"],
+    return feste + [{"id": q["id"],
+                     "name": (kalender_sichtbarkeit.privat_name(q["besitzer"])
+                              if kalender_sichtbarkeit.maskiert(
+                                  q["besitzer"], q["bereich"], betrachter)
+                              else q["anzeigename"]),
                      "besitzer": q["besitzer"], "bereich": q["bereich"]}
                     for q in quellen]
 
@@ -204,7 +209,7 @@ def ereignisse(von: datetime, bis: datetime, betrachter: str) -> dict:
             for feld in KALENDER_FELDER:
                 e[feld] = r[feld]
         aus.append(e)
-    return {"ereignisse": aus, "hinweise": hinweise, "ebenen": ebenen()}
+    return {"ereignisse": aus, "hinweise": hinweise, "ebenen": ebenen(betrachter)}
 
 
 def konflikte(beginn: datetime, dauer_minuten: int, ausser_uid: str = "",

@@ -20,6 +20,11 @@ def maskiert(besitzer: str, bereich: str, betrachter: str) -> bool:
     return bereich == "privat" and (betrachter == "" or besitzer != betrachter)
 
 
+def privat_name(besitzer: str) -> str:
+    """Anzeigename fuer einen Kalender, dessen echten Namen der Betrachter nicht sehen darf."""
+    return f"Privat ({besitzer})"
+
+
 def anwenden(termine: list[dict], betrachter: str) -> list[dict]:
     """Maskiert und fuehrt Doppelte je Besitzer zusammen; Eingang bleibt unveraendert."""
     gruppen: list[dict] = []
@@ -49,6 +54,10 @@ def anwenden(termine: list[dict], betrachter: str) -> list[dict]:
         if maske:
             neu["titel"] = PRIVATTERMIN
             neu["ort"] = ""
+            # Auch der Kalendername ist privat: kein Anzeigename einer fremden
+            # Privat-Quelle (und keiner zusammengefuehrten Kopie) im Ergebnis.
+            neu["quelle"] = privat_name(neu["besitzer"])
+            neu["kalender"] = []
         ergebnis.append(neu)
     ergebnis.sort(key=lambda x: x["beginn"])
     return ergebnis

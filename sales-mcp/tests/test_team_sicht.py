@@ -279,3 +279,50 @@ def test_freier_termin_steht_in_der_liste_als_frei_markiert(monkeypatch):
     seite = _get("/kalender").text
     assert "Geburtstag Oma" in seite
     assert "(frei)" in seite
+
+
+def _felix_privat_quelle(frei=False, ort="Praxis X"):
+    import kalender_sichtbarkeit
+    import post_struktur
+    qid = server.kalenderquelle_speichern("Felix geheimer Name", "https://example.test/f.ics",
+                                          "felix", "privat")
+    beginn = _bald(24)
+    server.kalendertermine_ersetzen(qid, [
+        {"uid": "p1", "beginn": beginn, "ende": beginn + timedelta(hours=1),
+         "titel": "Arzt Dr. Geheim", "ort": ort, "frei": frei}],
+        kalender_sichtbarkeit.details_speichern("felix", "privat",
+                                                post_struktur.container_besitzer()))
+    server.kalenderquelle_stand_setzen(qid, 1, None)
+    return qid, beginn
+
+
+def test_name_fremder_privat_kalender_erreicht_ivan_nirgends(ivan_angemeldet):
+    qid, beginn = _felix_privat_quelle()
+    von = (beginn - timedelta(days=1)).isoformat().replace("+", "%2B")
+    bis = (beginn + timedelta(days=1)).isoformat().replace("+", "%2B")
+    antwort = ivan_angemeldet.get(f"/kalender/termine.json?von={von}&bis={bis}",
+                                  headers={"host": HOST_OK})
+    assert antwort.status_code == 200, antwort.text
+    assert "Felix geheimer Name" not in antwort.text
+    ebene = [e for e in antwort.json()["ebenen"] if e["id"] == qid]
+    assert ebene and ebene[0]["name"] == "Privat (felix)"
+    seite = ivan_angemeldet.get("/kalender", headers={"host": HOST_OK})
+    assert "Felix geheimer Name" not in seite.text
+    assert "Arzt Dr. Geheim" not in seite.text and "Praxis X" not in seite.text
+
+
+def test_freier_maskierter_termin_steht_in_ivans_liste_ohne_titel_und_ort(ivan_angemeldet):
+    _felix_privat_quelle(frei=True)
+    seite = ivan_angemeldet.get("/kalender", headers={"host": HOST_OK}).text
+    assert "Privattermin" in seite and "(frei)" in seite
+    assert "Arzt Dr. Geheim" not in seite and "Praxis X" not in seite
+    assert "Felix geheimer Name" not in seite
+
+
+def test_freie_termine_fehler_nimmt_die_seite_nicht_mit(monkeypatch):
+    monkeypatch.setattr(server, "belegungen", _belegt())
+
+    def kaputt(*a, **k):
+        raise RuntimeError("DB weg")
+    monkeypatch.setattr(server, "kalendertermine_lesen", kaputt)
+    assert _get("/kalender").status_code == 200

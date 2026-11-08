@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ausgeschaltet, farbeFuer, filtern, PALETTE, umschalten } from './ebenen';
+import { ausgeschaltet, farbeFuer, filtern, PALETTE, umschalten, zuruecksetzen } from './ebenen';
 
 const ev = (ebene: string) => ({ extendedProps: { ebene } });
 
@@ -34,7 +34,8 @@ function speicher(): Storage {
 }
 
 describe('umschalten', () => {
-  afterEach(() => { vi.unstubAllGlobals(); });
+  beforeEach(() => { zuruecksetzen(); });
+  afterEach(() => { vi.unstubAllGlobals(); zuruecksetzen(); });
   it('merkt sich ausgeschaltete Ebenen und schaltet zurueck', () => {
     vi.stubGlobal('localStorage', speicher());
     expect(ausgeschaltet().size).toBe(0);
@@ -50,6 +51,10 @@ describe('umschalten', () => {
     });
     expect(ausgeschaltet().size).toBe(0);
     expect(() => umschalten('q1')).not.toThrow();
+    expect(ausgeschaltet().has('q1')).toBe(true);
+    expect(filtern([ev('q1'), ev('q2')], ausgeschaltet())).toEqual([ev('q2')]);
+    umschalten('q1');
+    expect(ausgeschaltet().size).toBe(0);
   });
   it('kaputter Inhalt ergibt eine leere Menge', () => {
     const sp = speicher();
