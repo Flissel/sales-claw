@@ -74,6 +74,7 @@ _LOG = logging.getLogger("sales-mcp")
 # Modul ohne Datenbank und ohne Rückimport — und der einzige Ort, an dem
 # der neue ausgehende Pfad dieser Stufe steht.
 import kalender
+import kalender_sichtbarkeit
 import kalenderquellen
 import konferenz
 # LID-Auflösung (Stufe 11): wem gehört eine `@lid`-Kennung? Wieder ein Modul
@@ -3476,18 +3477,89 @@ def team_kalender_aus_setzen(namen: list, von: str) -> None:
        (EINSTELLUNG_TEAM_KALENDER_AUS, _json(sorted(set(namen))), von))
 
 
-def kalenderquelle_speichern(anzeigename: str, url: str) -> str:
-    """Anlegen oder die Adresse eines bekannten Namens ersetzen.
+KALENDER_BEREICHE = ("business", "privat")
+
+
+def _bereich_pruefen(bereich: str) -> None:
+    if bereich not in KALENDER_BEREICHE:
+        raise ValueError("bereich muss 'business' oder 'privat' sein")
+
+
+def _fremde_titel_loeschen(conn, quelle_id: str, besitzer: str, bereich: str) -> None:
+    """Spec §6.3: fuer eine fremde Privat-Quelle stehen titel und ort nie in
+    der Datenbank. Nach einem Wechsel auf privat sofort weg, nicht erst beim
+    naechsten Abgleich (Review Focus 4)."""
+    if not kalender_sichtbarkeit.details_speichern(
+            besitzer, bereich, post_struktur.container_besitzer()):
+        conn.execute("update kalender_termine set titel = null, ort = null "
+                     "where quelle_id = %s", (quelle_id,))
+
+
+def kalenderquelle_speichern(anzeigename: str, url: str, besitzer: str,
+                             bereich: str) -> str:
+    """Anlegen oder die Adresse eines bekannten Namens DESSELBEN Besitzers
+    ersetzen (der Name ist nur je Besitzer eindeutig).
 
     Ersetzen statt danebenlegen: setzt ein Kollege seine Adresse zurueck
     und verbindet neu, wuerde die alte sonst stuendlich Fehler erzeugen und
-    niemand wuesste, welche der beiden gilt.
+    niemand wuesste, welche der beiden gilt. Der Bereich gilt wie neu
+    gewaehlt; wird daraus eine fremde Privat-Quelle, fallen gespeicherte
+    Titel und Orte in derselben Transaktion weg.
     """
-    return str(_q(
-        "insert into kalender_quellen (anzeigename, url) values (%s, %s) "
-        "on conflict (anzeigename) do update set url = excluded.url, "
-        "aktiv = true, letzter_fehler = null, zuletzt_gelesen = null "
-        "returning id", (anzeigename.strip(), url.strip()))[0]["id"])
+    _bereich_pruefen(bereich)
+    with pool.connection() as conn:
+        with conn.transaction():
+            quelle_id = str(conn.execute(
+                "insert into kalender_quellen (anzeigename, url, besitzer, bereich) "
+                "values (%s, %s, %s, %s) "
+                "on conflict (besitzer, anzeigename) do update set "
+                "url = excluded.url, bereich = excluded.bereich, "
+                "aktiv = true, letzter_fehler = null, zuletzt_gelesen = null "
+                "returning id",
+                (anzeigename.strip(), url.strip(), besitzer, bereich)
+            ).fetchone()["id"])
+            _fremde_titel_loeschen(conn, quelle_id, besitzer, bereich)
+    return quelle_id
+
+
+def _besitzer_bedingung(besitzer) -> tuple[str, tuple]:
+    """`besitzer=None` heisst: darf alle (Rolle `freigeben`)."""
+    if besitzer is None:
+        return "", ()
+    return " and besitzer = %s", (besitzer,)
+
+
+def kalenderquelle_bereich_setzen(quelle_id: str, bereich: str,
+                                  besitzer: "str | None") -> bool:
+    """Business/Privat umstellen -> True, wenn die Quelle (des Besitzers)
+    umgestellt wurde. Bei einem Wechsel auf privat werden fremde Titel und
+    Orte in derselben Transaktion geloescht."""
+    _bereich_pruefen(bereich)
+    bedingung, werte = _besitzer_bedingung(besitzer)
+    with pool.connection() as conn:
+        with conn.transaction():
+            zeile = conn.execute(
+                "update kalender_quellen set bereich = %s where id = %s"
+                + bedingung + " returning besitzer",
+                (bereich, quelle_id) + werte).fetchone()
+            if zeile is None:
+                return False
+            _fremde_titel_loeschen(conn, quelle_id, zeile["besitzer"], bereich)
+    return True
+
+
+def kalenderquelle_pausieren(quelle_id: str, aktiv: bool,
+                             besitzer: "str | None") -> bool:
+    """Abschalten oder fortsetzen -> True, wenn umgestellt. Eine abgeschaltete
+    Quelle zaehlt fuer niemanden, auch nicht fuer den Agenten (Spec §2.5).
+    Eine entfernte iCal-Quelle (Adresse vernichtet) laesst sich nicht
+    fortsetzen - sie wird neu verbunden."""
+    bedingung, werte = _besitzer_bedingung(besitzer)
+    return bool(_q(
+        "update kalender_quellen set aktiv = %s where id = %s"
+        " and (not %s or url is not null or art = 'google')"
+        + bedingung + " returning id",
+        (bool(aktiv), quelle_id, bool(aktiv)) + werte))
 
 
 def kalenderquelle_stand_setzen(quelle_id: str, anzahl, fehler) -> None:
@@ -3525,20 +3597,30 @@ def kalendertermine_ersetzen(quelle_id: str, termine: list, details: bool) -> in
     return len(zeilen)
 
 
-def kalenderquelle_entfernen(quelle_id: str) -> bool:
-    """Aus Betreibersicht "entfernt" — technisch ein Gegen-Ereignis, kein
-    DELETE: `sales_app` hat auf keiner Tabelle ein Loeschrecht
-    (db/provision.sql: „Bewusst NICHT vergeben: DELETE (nirgends)"), und
-    dieses Projekt macht dafuer keine Ausnahme (wie ueberall im Haus:
-    archivieren statt loeschen, siehe `wiedervorlage_erledigt`,
-    `absender_beachtet`). Die Zeile bleibt bestehen (aktiv = false), aber
-    die GEHEIME Adresse wird vernichtet (url = null) — der Kollege
-    erwartet, dass sie weg ist, nicht dass sie nur ausgeblendet daliegt.
+def kalenderquelle_entfernen(quelle_id: str, besitzer: "str | None") -> bool:
+    """Aus Betreibersicht "entfernt" — die Quelle selbst ist ein
+    Gegen-Ereignis, kein DELETE (archivieren statt loeschen, wie
+    `wiedervorlage_erledigt`, `absender_beachtet`). Die Zeile bleibt
+    bestehen (aktiv = false), aber die GEHEIME Adresse wird vernichtet
+    (url = null) — der Kollege erwartet, dass sie weg ist, nicht dass sie
+    nur ausgeblendet daliegt. Ihre abgeglichenen Termine werden dagegen
+    wirklich geloescht (Spec §5, Loeschrecht nur auf kalender_termine), in
+    derselben Transaktion. Nur der Besitzer, oder mit `besitzer=None` die
+    Rolle `freigeben`, darf entfernen.
     Verbindet er seinen Kalender unter demselben Namen neu, weckt
     `kalenderquelle_speichern` genau diese Zeile von selbst wieder auf."""
-    return bool(_q(
-        "update kalender_quellen set aktiv = false, url = null "
-        "where id = %s and aktiv returning id", (quelle_id,)))
+    bedingung, werte = _besitzer_bedingung(besitzer)
+    with pool.connection() as conn:
+        with conn.transaction():
+            zeile = conn.execute(
+                "update kalender_quellen set aktiv = false, url = null "
+                "where id = %s and aktiv" + bedingung + " returning id",
+                (quelle_id,) + werte).fetchone()
+            if zeile is None:
+                return False
+            conn.execute("delete from kalender_termine where quelle_id = %s",
+                         (quelle_id,))
+    return True
 
 
 # Anzeigename der eigenen Quelle. Er steht neben fremden Namen in derselben
@@ -3550,11 +3632,77 @@ EIGENE_QUELLE = "Betreiber"
 # Tabelle ist ja gerade das Problem.
 FREMDE_QUELLEN_LUECKE = "Kollegen-Kalender"
 
+# Spec §6.2: eine Quelle, deren letzter Abgleich laenger zurueckliegt, ist
+# eine Luecke (Abgleich alle KALENDER_INTERVAL_S = 300 s, also drei Runden
+# Spielraum).
+FRISCHE_MIN = 15
+
+
+def _quellen_luecke(quelle: dict, jetzt: datetime):
+    """Grund, warum diese Quelle gerade nicht vollstaendig ist, sonst None."""
+    if quelle["zuletzt_gelesen"] is None:
+        return "noch nicht abgeglichen"
+    if quelle["zuletzt_gelesen"] < jetzt - timedelta(minutes=FRISCHE_MIN):
+        return f"seit über {FRISCHE_MIN} Minuten nicht abgeglichen"
+    return quelle["letzter_fehler"] or None
+
+
+def kalendertermine_lesen(von: datetime, bis: datetime, betrachter: str):
+    """Abgeglichene Termine aller aktiven Quellen im Fenster, so wie
+    `betrachter` sie sehen darf -> (termine, luecken).
+
+    `termine` kommen aus `kalender_sichtbarkeit.anwenden` (fremde Privat-
+    termine als „Privattermin" ohne Ort, Doppelte je Besitzer einmal).
+    `luecken` = [{"quelle", "grund"}]: nie abgeglichen, zu alt (FRISCHE_MIN)
+    oder der letzte Abgleich schlug fehl. Ihre gespeicherten Termine zaehlen
+    trotzdem — nur ist die Antwort dann nicht vollstaendig.
+    Die geheime Adresse der Quelle verlaesst diese Funktion nicht."""
+    quellen = kalenderquellen_lesen(nur_aktive=True)
+    jetzt = datetime.now(timezone.utc)
+    luecken = []
+    for q in quellen:
+        grund = _quellen_luecke(q, jetzt)
+        if grund:
+            luecken.append({"quelle": q["anzeigename"], "grund": grund})
+    if not quellen:
+        return [], luecken
+    nach_id = {q["id"]: q for q in quellen}
+    # Grob vorgefiltert; die Aufrufer pruefen die genaue Ueberlappung selbst
+    # (halboffen, punktuelle Termine).
+    zeilen = _q(
+        "select quelle_id, uid, beginn, ende, ganztaegig, frei, titel, ort "
+        "from kalender_termine where quelle_id = any(%s::uuid[]) "
+        "and beginn < %s and ende >= %s order by beginn",
+        (list(nach_id), bis, von))
+    roh = []
+    for z in zeilen:
+        q = nach_id[str(z["quelle_id"])]
+        # Nur genau diese Schluessel: alles Weitere liefe unmaskiert durch
+        # anwenden() hindurch.
+        roh.append({"quelle_id": q["id"], "quelle": q["anzeigename"],
+                    "besitzer": q["besitzer"], "bereich": q["bereich"],
+                    "uid": z["uid"], "beginn": z["beginn"], "ende": z["ende"],
+                    "ganztaegig": z["ganztaegig"], "frei": z["frei"],
+                    "titel": z["titel"] or "", "ort": z["ort"] or ""})
+    termine = kalender_sichtbarkeit.anwenden(roh, betrachter)
+    for t in termine:
+        # Eigene Privattermine eines Teammitglieds: ihr Titel wurde nie
+        # gespeichert (Spec §6.3) - auch es selbst sieht hier nur den Block.
+        if not t["titel"] and t["bereich"] == "privat":
+            t["titel"] = kalender_sichtbarkeit.PRIVATTERMIN
+    return termine, luecken
+
 
 def belegungen(tage_voraus: int = 60):
     """Alle Termine aller aktiven Quellen -> (eintraege, luecken).
 
-    `eintraege` = [{"beginn", "ende", "titel", "ort", "quelle"}], aufsteigend.
+    `eintraege` = [{"beginn", "ende", "titel", "ort", "quelle", ...}],
+    aufsteigend; Termine aus Quellen tragen dazu `besitzer`, `bereich`,
+    `maskiert`, `ganztaegig`. Gesehen mit den Augen des Laden-Besitzers
+    (`post_struktur.container_besitzer()`, Spec §2.3): fremde Privattermine
+    stehen als „Privattermin" da und zaehlen als belegt. Als „frei"
+    markierte Termine (Geburtstage, TRANSP:TRANSPARENT) fehlen hier - sie
+    blockieren nichts.
     `luecken`   = [{"quelle", "grund"}] — Quellen, die gerade nichts sagen.
 
     DIE LUECKEN SIND DER PUNKT (Spec §2.2): eine Quelle, die nicht
@@ -3570,8 +3718,11 @@ def belegungen(tage_voraus: int = 60):
     for t in eigene:
         eintraege.append({**t, "quelle": EIGENE_QUELLE})
 
+    jetzt = datetime.now(timezone.utc)
     try:
-        fremde_quellen = kalenderquellen_lesen()
+        termine, quellen_luecken = kalendertermine_lesen(
+            jetzt, jetzt + timedelta(days=tage_voraus),
+            post_struktur.container_besitzer())
     except psycopg.Error as e:
         # K3 (Schlusspruefung 13.09.2026): db/provision.sql laeuft NUR in
         # CI — auf einer Installation, auf der es noch nicht gegen die
@@ -3587,37 +3738,22 @@ def belegungen(tage_voraus: int = 60):
             f"Kollegen-Kalender sind gerade nicht abrufbar "
             f"({e.sqlstate or type(e).__name__}) — dort koennen Termine "
             f"liegen, die hier fehlen.")})
-        fremde_quellen = []
+        termine, quellen_luecken = [], []
 
-    # Team-Ebene ausgeschaltet (Betreiber 28.10.2026): dann plant der Agent
-    # ohne diesen Kalender - bewusst, nicht als Luecke.
-    ausgeschaltet = set(team_kalender_aus())
-    fremde_quellen = [q for q in fremde_quellen
-                      if q["anzeigename"] not in ausgeschaltet]
-    for quelle in fremde_quellen:
-        # Dasselbe Fenster wie beim eigenen Kalender oben (K2/W1,
-        # Schlusspruefung 13.09.2026): `tage_zurueck=0` hier explizit statt
-        # `hole()`s eigener Vorgabe (7) ueberlassen — sonst haette „die
-        # Termine" in belegungen() zwei verschiedene Auffassungen je nach
-        # Quelle, genau die Fuge, vor der der Pruefbericht warnt.
-        termine, fehler = kalenderquellen.hole(quelle["url"], 0, tage_voraus)
-        kalenderquelle_stand_setzen(
-            quelle["id"], None if fehler else len(termine), fehler)
-        if fehler:
-            luecken.append({"quelle": quelle["anzeigename"], "grund": fehler})
-            # KEIN `continue` (K4, Schlusspruefung 13.09.2026): `hole()`
-            # meldet `fehler` jetzt auch fuer eine Quelle, die TEILWEISE
-            # verstanden wurde (Serientermine/unlesbare DURATION neben
-            # gewoehnlichen VEVENTs) — die gueltigen `termine` bleiben
-            # echte Kollisionsdaten, nur weil ein Teil der Antwort nicht
-            # verstanden wurde, verwerfen wir nicht auch den Rest. In jedem
-            # AELTEREN Fehlerpfad (unerreichbar, HTTP-Fehler, ...) ist
-            # `termine` ohnehin leer — die Schleife unten tut dort nichts.
-        for t in termine:
-            # Nur belegt/frei (Betreiber 28.10.2026): Titel und Ort eines
-            # Team-Kalenders gehen weder in die Liste noch an den Agenten.
-            eintraege.append({**t, "titel": "belegt", "ort": "",
-                              "quelle": quelle["anzeigename"]})
+    # Abgeschaltete Quellen (aktiv = false) liest kalendertermine_lesen gar
+    # nicht erst; der fruehere ladenweite Team-Schalter wirkt nicht mehr auf
+    # den Agenten (Spec §2.5). Eine Quelle mit Luecke behaelt ihre
+    # gespeicherten Termine (K4: teilweise Verstandenes bleibt echte
+    # Kollisionsdaten), meldet aber die Luecke.
+    luecken.extend(quellen_luecken)
+    for t in termine:
+        if t["frei"]:
+            continue
+        eintraege.append({
+            "beginn": t["beginn"], "ende": t["ende"], "titel": t["titel"],
+            "ort": t["ort"], "uid": t["uid"], "quelle": t["quelle"],
+            "besitzer": t["besitzer"], "bereich": t["bereich"],
+            "maskiert": t["maskiert"], "ganztaegig": t["ganztaegig"]})
 
     eintraege.sort(key=lambda e: e["beginn"])
     return eintraege, luecken
@@ -3665,7 +3801,10 @@ def _kollisionen(beginn, dauer_minuten: int):
         for e in eintraege
         # e["ende"] > e["beginn"] schliesst punktuelle Eintraege aus (kein
         # DTEND) — sie wuerden sonst als nulllanges Fenster mitzaehlen.
-        if e["ende"] > e["beginn"] and e["beginn"] < ende and e["ende"] > beginn]
+        # „frei" markierte Termine blockieren nie (belegungen() laesst sie
+        # schon weg; hier nur zur Sicherheit).
+        if not e.get("frei")
+        and e["ende"] > e["beginn"] and e["beginn"] < ende and e["ende"] > beginn]
     return treffer, luecken
 
 

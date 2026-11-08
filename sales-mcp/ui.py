@@ -206,6 +206,7 @@ from starlette.routing import Route
 import historie
 import kalender
 import kalender_sicht
+import kalender_sichtbarkeit
 import kanaele
 import mailadresse
 import laden_marke
@@ -6211,6 +6212,27 @@ async def aktion_team_ebenen(request):
     return RedirectResponse("/kalender", status_code=303)
 
 
+def _kalender_betrachter() -> str:
+    """Wer den Kalender gerade ansieht: die angemeldete Person, ohne
+    Anmeldung der Laden-Besitzer (Spec §2.2)."""
+    return _AKTIVER_BENUTZER.get() or post_struktur.container_besitzer()
+
+
+def _fuer_betrachter(eintraege: list, betrachter: str) -> list:
+    """Eintraege aus `server.belegungen()` fuer `betrachter` maskieren:
+    Privattermine, die er nicht sehen darf, nur als „Privattermin" ohne Ort.
+    Eintraege ohne Besitzer (der eigene CalDAV-Kalender des Ladens) sind
+    Business."""
+    aus = []
+    for e in eintraege:
+        if "besitzer" in e and kalender_sichtbarkeit.maskiert(
+                e["besitzer"], e["bereich"], betrachter):
+            e = {**e, "titel": kalender_sichtbarkeit.PRIVATTERMIN, "ort": "",
+                 "maskiert": True}
+        aus.append(e)
+    return aus
+
+
 def kalender_abschnitte() -> str:
     """Die serverseitigen Abschnitte unter dem Kalender (R5, 14.10.2026):
     die Seite selbst baut ui_kalender (Paket /static/kalender), das alte
@@ -6241,6 +6263,10 @@ def kalender_abschnitte() -> str:
     # Quelle, steht sie in `luecken` und wird unten als Hinweis genannt statt
     # stillschweigend als frei zu gelten (Spec §2.2).
     eintraege, luecken = server.belegungen()
+    # belegungen() sieht mit den Augen des Laden-Besitzers (Agent, Spec
+    # §2.3); diese Seite sieht die angemeldete Person - fuer sie werden
+    # fremde Privattermine nachtraeglich maskiert.
+    eintraege = _fuer_betrachter(eintraege, _kalender_betrachter())
 
     # Aufgabe 4: dieselbe Buchung steht oft in beiden Quellen — einmal im
     # eigenen Store (mit Kontaktbezug), einmal im CalDAV-Import. Betreiber-
@@ -6754,16 +6780,14 @@ async def aktion_kalender_verbinden(request):
         return _fehlerseite(400, "Name fehlt",
                             "Ohne Namen lässt sich der Kalender später "
                             "niemandem zuordnen.")
-    # W4 (Schlusspruefung 13.09.2026): `kalenderquelle_speichern` legt per
-    # `on conflict (anzeigename)` einfach ueber eine bestehende Zeile —
-    # nennt sich ein Kollege wie die eigene Quelle, landen seine Termine in
-    # der Paarung des EIGENEN Kalenders (ui.py, `t["quelle"] ==
-    # server.EIGENE_QUELLE`) statt in der Team-Sicht. Genau die
-    # Verschmelzung, gegen die Ruling 10 gerichtet war, nur durch die
-    # Vordertuer. Case-insensitiv abgewiesen: eine Schreibvariante waere
-    # zwar keine echte Kollision in der Datenbank (der Vergleich dort ist
-    # case-sensitiv), saehe in der Liste daneben aber genauso verwirrend
-    # aus wie der exakte Name.
+    # W4 (Schlusspruefung 13.09.2026): nennt sich ein Kollege wie die eigene
+    # Quelle, landen seine Termine in der Paarung des EIGENEN Kalenders
+    # (ui.py, `t["quelle"] == server.EIGENE_QUELLE`) statt in der
+    # Team-Sicht — die Paarung geht ueber den Anzeigenamen, nicht ueber
+    # den Besitzer (`kalenderquelle_speichern` ersetzt seit 08.11.2026 nur
+    # noch je (besitzer, anzeigename)). Case-insensitiv abgewiesen: eine
+    # Schreibvariante saehe in der Liste daneben genauso verwirrend aus wie
+    # der exakte Name.
     if name.casefold() == server.EIGENE_QUELLE.casefold():
         return _fehlerseite(400, "Name vergeben", (
             f'„{_e(server.EIGENE_QUELLE)}" ist der Name des eigenen '
@@ -6791,7 +6815,12 @@ async def aktion_kalender_verbinden(request):
             f'<p class="fehler">{_e(fehler)}</p>'
             f'<p class="meta">Nichts wurde gespeichert.</p>'
             f'<p><a href="/team/kalender">Zurück und erneut versuchen</a></p>'))
-    server.kalenderquelle_speichern(name, url)
+    # Besitzer ist die angemeldete Person (ohne Anmeldung der Laden-Besitzer),
+    # nie das Namensfeld. Bis die Seite Business/Privat abfragt (Task 6),
+    # gilt die sichere Vorgabe 'privat'.
+    besitzer = (str(request.scope.get("benutzer_name") or "")
+                or post_struktur.container_besitzer() or _ui_akteur(request))
+    server.kalenderquelle_speichern(name, url, besitzer, "privat")
     naechster = ""
     if termine:
         naechster = (f" Der nächste ist „{_e(termine[0]['titel'])}" + '" am '
@@ -6824,7 +6853,13 @@ async def aktion_kalender_entfernen(request):
     quelle_id = str(form.get("quelle_id") or "")
     if not quelle_id:
         return _fehlerseite(400, "Keine Quelle", "Keine Quelle angegeben.")
-    server.kalenderquelle_entfernen(quelle_id)
+    # Nur der Besitzer, oder die Rolle `freigeben` (bzw. ohne Anmeldung der
+    # Uebergangszugang), darf entfernen (Spec §4). Die Fehlerseite dazu
+    # folgt mit Task 6.
+    name = str(request.scope.get("benutzer_name") or "")
+    rolle = str(request.scope.get("benutzer_rolle") or "")
+    server.kalenderquelle_entfernen(
+        quelle_id, name if name and rolle != "freigeben" else None)
     return RedirectResponse("/team/kalender", status_code=303)
 
 

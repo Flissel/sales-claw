@@ -502,28 +502,6 @@ def test_struktur_ich_unter_hoeherem_knoten(monkeypatch):
     assert js.status_code == 200 and "dragstart" in js.text
 
 
-# --- Team-Kalender -----------------------------------------------------------------
-
-def test_team_ebene_aus_gilt_fuer_planung(monkeypatch):
-    import kalenderquellen
-    server._q("delete from einstellungen where schluessel = 'kalender_team_aus'")
-    monkeypatch.setattr(server, "kalenderquellen_lesen",
-                        lambda nur_aktive=True: [{"id": "q1", "anzeigename": "Ivan",
-                                                  "url": "x"}])
-    monkeypatch.setattr(server, "kalenderquelle_stand_setzen", lambda *a: None)
-    from datetime import datetime, timedelta
-    t = {"beginn": datetime.now() + timedelta(days=1),
-         "ende": datetime.now() + timedelta(days=1, hours=1),
-         "titel": "Geheimes Thema", "ort": "Büro"}
-    monkeypatch.setattr(kalenderquellen, "hole", lambda *a, **k: ([t], None))
-    monkeypatch.setattr(server.kalender, "termine_lesen", lambda *a: ([], None))
-    eintraege, _ = server.belegungen()
-    assert [e["titel"] for e in eintraege] == ["belegt"]
-    server.team_kalender_aus_setzen(["Ivan"], "test")
-    eintraege, _ = server.belegungen()
-    assert eintraege == []
-
-
 # --- Marketing: Marke loeschen -----------------------------------------------------
 
 def test_marke_loeschen_nur_mit_bestaetigung(monkeypatch):

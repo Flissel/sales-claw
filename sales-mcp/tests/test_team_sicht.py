@@ -173,10 +173,37 @@ def test_verbunden_aber_leer_ist_nicht_dasselbe_wie_nichts_verbunden(
     genau die Verwechslung, die Fix-Runde 1 fuer den umgekehrten Fall schon
     behoben hat."""
     server.kalenderquelle_speichern(
-        "Ivan", "https://calendar.example.invalid/ivan.ics")
+        "Ivan", "https://calendar.example.invalid/ivan.ics", "ivan", "business")
     monkeypatch.setattr(server, "belegungen", _belegt())
     antwort = _get("/kalender")
     assert antwort.status_code == 200
     seite = antwort.text
     assert "Kein Kalender verbunden" not in seite
     assert "Keine Einträge im Zeitfenster." in seite
+
+
+def _privat_von_felix():
+    return {"beginn": _bald(24), "ende": _bald(25), "titel": "Arzt Dr. Geheim",
+            "ort": "Praxis X", "quelle": "Felix privat", "besitzer": "felix",
+            "bereich": "privat", "maskiert": False}
+
+
+def test_fremder_privattermin_steht_auf_der_seite_nur_als_privattermin(monkeypatch):
+    """Spec 2026-11-08 §2.2: belegungen() sieht mit den Augen des Laden-
+    Besitzers; die Seite maskiert fuer die Person, die sie ansieht (ohne
+    Anmeldung: der Laden-Besitzer, hier ivan)."""
+    monkeypatch.setenv("POST_BESITZER", "ivan")
+    monkeypatch.setattr(server, "belegungen", _belegt(_privat_von_felix()))
+    antwort = _get("/kalender")
+    assert antwort.status_code == 200
+    assert "Arzt Dr. Geheim" not in antwort.text
+    assert "Praxis X" not in antwort.text
+    assert "Privattermin" in antwort.text
+
+
+def test_eigener_privattermin_steht_auf_der_seite_voll(monkeypatch):
+    monkeypatch.setenv("POST_BESITZER", "felix")
+    monkeypatch.setattr(server, "belegungen", _belegt(_privat_von_felix()))
+    antwort = _get("/kalender")
+    assert antwort.status_code == 200
+    assert "Arzt Dr. Geheim" in antwort.text and "Praxis X" in antwort.text

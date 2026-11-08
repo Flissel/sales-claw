@@ -220,10 +220,11 @@ def test_termine_json_mit_falschen_parametern_ist_422(abfrage):
 
 
 def test_termine_json_liefert_die_ereignisse(monkeypatch):
+    monkeypatch.setenv("POST_BESITZER", "felix")
     gesehen = {}
 
-    def _ereignisse(von, bis):
-        gesehen["von"], gesehen["bis"] = von, bis
+    def _ereignisse(von, bis, betrachter):
+        gesehen["von"], gesehen["bis"], gesehen["betrachter"] = von, bis, betrachter
         return {"ereignisse": [{"id": "eigen:a", "art": "eigen", "titel": "Steuer",
                                 "beginn": "2099-09-02T10:00:00+02:00",
                                 "ende": "2099-09-02T10:30:00+02:00", "bearbeitbar": True}],
@@ -236,11 +237,13 @@ def test_termine_json_liefert_die_ereignisse(monkeypatch):
     assert antwort.json()["hinweise"] == ["Handy-Termine gerade nicht abrufbar"]
     assert gesehen["von"] == datetime(2099, 9, 1, tzinfo=timezone(timedelta(hours=2)))
     assert gesehen["bis"] - gesehen["von"] == timedelta(days=7)
+    # Ohne Anmeldung sieht der Laden-Besitzer (Spec 2026-11-08 §2.2).
+    assert gesehen["betrachter"] == "felix"
     assert antwort.headers["cache-control"] == "no-store"
 
 
 def test_termine_json_db_ausfall_ist_503(monkeypatch):
-    def _wirft(von, bis):
+    def _wirft(*a):
         raise psycopg.OperationalError("weg")
     monkeypatch.setattr(kalender_sicht, "ereignisse", _wirft)
     antwort = _get("/kalender/termine.json?von=2099-09-01T00:00:00%2B02:00"

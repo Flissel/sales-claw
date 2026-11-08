@@ -273,9 +273,8 @@ def test_leerer_name_wird_abgewiesen(monkeypatch):
 def test_reservierter_name_wird_abgewiesen(monkeypatch):
     """W4 (Schlusspruefung 13.09.2026): 'Betreiber' ist der Anzeigename der
     EIGENEN Quelle (server.EIGENE_QUELLE) — nennt sich ein Kollege so,
-    wuerde `kalenderquelle_speichern`s `on conflict (anzeigename)` seine
-    Fremdtermine mit dem eigenen Kalender verschmelzen (ui.py paart
-    ausschliesslich ueber diesen Namen)."""
+    landeten seine Fremdtermine in der Paarung des eigenen Kalenders (ui.py
+    paart ausschliesslich ueber diesen Namen, nicht ueber den Besitzer)."""
     monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: ([], None))
     antwort = _post({"name": "Betreiber", "url": "https://example.test/a.ics",
                      "csrf": ui.CSRF_TOKEN})
@@ -349,7 +348,7 @@ def test_db_fehler_beim_speichern_traegt_die_adresse_nicht_nach_aussen(
     geheim = "https://calendar.google.com/ical/GEHEIM999/basic.ics"
     monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: ([], None))
 
-    def _wirft(name, url):
+    def _wirft(*a):
         raise psycopg.errors.UniqueViolation(
             f"duplicate key value violates unique constraint "
             f'"kalender_quellen_url_key" DETAIL: Key (url)=({geheim}) '
