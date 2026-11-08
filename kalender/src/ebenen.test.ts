@@ -11,6 +11,12 @@ describe('farbeFuer', () => {
     expect(farbeFuer('a', 0)).toBe(PALETTE[0]);
     expect(farbeFuer('b', 9)).toBe(PALETTE[1]);
   });
+  it('kein Kalender sieht aus wie Eigene Termine, Kundentermine oder Laden-Kalender', () => {
+    // Browser-Probe 08.11.: "Felix Gmail" war so blau wie "Eigene Termine".
+    for (const fest of ['#2563eb', '#b45309', '#9ca3af', '#c2410c', '#a16207']) {
+      expect(PALETTE).not.toContain(fest);
+    }
+  });
 });
 
 describe('filtern', () => {

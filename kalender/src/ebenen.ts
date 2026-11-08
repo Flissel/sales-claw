@@ -1,9 +1,11 @@
 // Ebenen der Kalenderseite: eine Farbe und ein Schalter je Kalender. Reine
 // Funktionen plus ein kleiner Speicher; die Seite laeuft auch ohne localStorage.
 
-/** Feste Palette (gut unterscheidbar, ohne Rot/Gruen-Paar als einziges Merkmal). */
+/** Feste Palette (gut unterscheidbar, ohne Rot/Gruen-Paar als einziges Merkmal).
+ *  Ohne Blau, Bernstein/Orange und Grau: die gehoeren den festen Ebenen
+ *  (Eigene Termine, Kundentermine, Laden-Kalender) in abbild.FARBEN. */
 export const PALETTE: readonly string[] = [
-  '#2563eb', '#4d7c5a', '#c2410c', '#7c3aed', '#0e7490', '#be185d', '#a16207', '#475569',
+  '#4d7c5a', '#7c3aed', '#0e7490', '#be185d', '#475569', '#b91c1c', '#ca8a04', '#57534e',
 ];
 
 const SCHLUESSEL = 'vk-ebenen-aus';
