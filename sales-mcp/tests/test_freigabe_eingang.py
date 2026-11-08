@@ -1,0 +1,203 @@
+"""Kern-Modul freigabe_eingang (Plan 2026-11-08, Task 4)."""
+import os
+import re
+
+os.environ["SALES_DB_SCHEMA"] = "sales_test"
+
+import pytest  # noqa: E402
+
+import freigabe_eingang as fe  # noqa: E402
+import server  # noqa: E402
+
+PR = "Flissel/vibemind-os#154"
+LINK = "https://github.com/x"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def schema_wache():
+    assert server.SCHEMA == "sales_test"
+
+
+@pytest.fixture(autouse=True)
+def leer():
+    with server.pool.connection() as conn:
+        conn.execute("truncate sales_test.freigabe_auftraege, "
+                     "sales_test.freigabe_eintraege, sales_test.freigabe_schluessel cascade")
+        conn.execute("delete from sales_test.einstellungen where schluessel = 'freigabe_stufe2'")
+    yield
+
+
+def _zeile(kennung):
+    return server._q("select * from freigabe_eintraege where kennung = %s", (kennung,))[0]
+
+
+def _debugger(ref=PR):
+    return fe.eintragen("debugger-claw", "debugger_pr", ref, "t", LINK)[0]
+
+
+def test_eintragen_idempotent():
+    k1, neu1 = fe.eintragen("debugger-claw", "debugger_pr", PR, "t", LINK)
+    k2, neu2 = fe.eintragen("debugger-claw", "debugger_pr", PR, "t", LINK)
+    assert k1 == k2 and neu1 is True and neu2 is False
+    assert len(server._q("select 1 from freigabe_eintraege")) == 1
+
+
+def test_falsche_art_fuer_herkunft():
+    with pytest.raises(fe.EingabeFehler):
+        fe.eintragen("selbstbild", "debugger_pr", PR, "t")
+
+
+def test_details_zu_gross():
+    with pytest.raises(fe.EingabeFehler):
+        fe.eintragen("debugger-claw", "debugger_pr", PR, "t", details={"x": "y" * 3000})
+
+
+def test_titel_einzeilig_gekappt():
+    k, _ = fe.eintragen("debugger-claw", "debugger_pr", PR, "a\nb" + "x" * 500)
+    t = _zeile(k)["titel"]
+    assert "\n" not in t and len(t) == 200
+
+
+def test_link_nur_http():
+    k, _ = fe.eintragen("debugger-claw", "debugger_pr", PR, "t", link="javascript:x")
+    assert _zeile(k)["link"] is None
+
+
+def test_kennung_format():
+    assert re.fullmatch(r"fg-[a-z2-7]{10}", fe.kennung_neu())
+
+
+def test_schliessen_nur_eigene_herkunft():
+    k = _debugger()
+    assert fe.schliessen("selbstbild", PR, "erledigt", "t") == 0
+    assert _zeile(k)["status"] == "offen"
+    assert fe.schliessen("debugger-claw", PR, "erledigt", "t") == 1
+    assert _zeile(k)["status"] == "erledigt"
+
+
+def test_schliessen_kennung_und_neu_nach_schliessen():
+    k = _debugger()
+    assert fe.schliessen_kennung(k, "verworfen", "ui") is True
+    assert fe.schliessen_kennung(k, "verworfen", "ui") is False
+    _, neu = fe.eintragen("debugger-claw", "debugger_pr", PR, "t")
+    assert neu is True
+
+
+def test_offene_und_zum_aufraeumen():
+    k = _debugger()
+    assert [e["kennung"] for e in fe.offene("debugger-claw")] == [k]
+    assert fe.offene("selbstbild") == []
+    fe.rowboat_stand_setzen(k, "vorgeschlagen")
+    assert fe.zum_aufraeumen() == []
+    fe.schliessen_kennung(k, "erledigt", "ui")
+    assert [e["kennung"] for e in fe.zum_aufraeumen()] == [k]
+    fe.aufgeraeumt(k)
+    assert fe.zum_aufraeumen() == []
+
+
+def test_stand_nur_vorwaerts():
+    k = _debugger()
+    fe.rowboat_stand_setzen(k, "angenommen")
+    assert _zeile(k)["rowboat_seit"] is not None
+    fe.rowboat_stand_setzen(k, "vorgeschlagen")
+    assert _zeile(k)["rowboat_stand"] == "angenommen"
+    fe.rowboat_stand_setzen(k, "abgelehnt")
+    assert _zeile(k)["rowboat_stand"] == "angenommen"
+
+
+def test_abgelehnt_endgueltig():
+    k = _debugger()
+    fe.rowboat_stand_setzen(k, "abgelehnt")
+    assert _zeile(k)["rowboat_stand"] == "abgelehnt"
+    fe.rowboat_stand_setzen(k, "angenommen")
+    assert _zeile(k)["rowboat_stand"] == "abgelehnt"
+
+
+def _label_auftrag():
+    k, _ = fe.eintragen("selbstbild", "selbstbild_rueckfrage", "r#1", "t")
+    a = fe.auftrag_anlegen(k, "selbstbild_label", {"repo": "r", "nummer": 1, "label": "l"}, "ui")
+    return k, a
+
+
+def test_auftrag_unbekannte_art():
+    k = _debugger()
+    with pytest.raises(fe.EingabeFehler):
+        fe.auftrag_anlegen(k, "gibt_es_nicht", {}, "ui")
+
+
+def test_auftrag_nur_einmal_abgeholt():
+    _label_auftrag()
+    assert len(fe.auftraege_abholen("selbstbild")) == 1
+    assert fe.auftraege_abholen("selbstbild") == []
+
+
+def test_auftrag_nur_fuer_abholer():
+    _label_auftrag()
+    assert fe.auftraege_abholen("werkstatt") == []
+
+
+def test_haengender_auftrag_wird_fehler():
+    _, a = _label_auftrag()
+    fe.auftraege_abholen("selbstbild")
+    server._q("update freigabe_auftraege set abgeholt_am = now() - interval '11 minutes' "
+              "where id = %s returning id", (a,))
+    assert fe.auftraege_abholen("selbstbild") == []
+    z = server._q("select status from freigabe_auftraege where id = %s", (a,))
+    assert z[0]["status"] == "fehler"
+
+
+def test_label_erfolg_fuehrt_eintrag_aus():
+    k, a = _label_auftrag()
+    fe.auftraege_abholen("selbstbild")
+    assert fe.auftrag_ergebnis(a, "selbstbild", True, None) is True
+    assert _zeile(k)["status"] == "ausgefuehrt"
+    assert fe.auftrag_ergebnis(a, "selbstbild", True, None) is False
+
+
+def test_label_fehler_laesst_offen():
+    k, a = _label_auftrag()
+    fe.auftraege_abholen("selbstbild")
+    assert fe.auftrag_ergebnis(a, "selbstbild", False, "kaputt") is True
+    assert _zeile(k)["status"] == "offen"
+
+
+def test_kurs_erfolg_laesst_offen():
+    k, _ = fe.eintragen("werkstatt", "kursfreigabe", "kurs-1", "t")
+    a = fe.auftrag_anlegen(k, "kurs_freigabe_zeigen", {"course_id": "c1"}, "ui")
+    assert fe.auftraege_abholen("werkstatt")[0]["abholer"] == "werkstatt"
+    assert fe.auftrag_ergebnis(a, "werkstatt", True, None) is True
+    z = _zeile(k)
+    assert z["status"] == "offen" and z["vermerk"] == "Freigabe-Link gesendet"
+
+
+def test_ergebnis_falscher_abholer():
+    _, a = _label_auftrag()
+    fe.auftraege_abholen("selbstbild")
+    assert fe.auftrag_ergebnis(a, "werkstatt", True, None) is False
+
+
+def test_schluessel_hash_nicht_klartext():
+    klar = fe.schluessel_anlegen("werkstatt")
+    inhalt = str(server._q("select * from freigabe_schluessel"))
+    assert klar not in inhalt
+    assert fe.schluessel_herkunft(klar) == "werkstatt"
+    assert fe.schluessel_herkunft("falsch") is None
+    with pytest.raises(fe.EingabeFehler):
+        fe.schluessel_anlegen("sales")
+
+
+def test_schluessel_neu_ersetzt_alten():
+    alt = fe.schluessel_anlegen("selbstbild")
+    neu = fe.schluessel_anlegen("selbstbild")
+    assert fe.schluessel_herkunft(alt) is None
+    assert fe.schluessel_herkunft(neu) == "selbstbild"
+
+
+def test_stufe2_aus_und_gesperrt():
+    assert fe.stufe2_lesen() == {"debugger_pr": False, "selbstbild_rueckfrage": False,
+                                 "kursfreigabe": False, "entwurf": False}
+    with pytest.raises(fe.Stufe2Gesperrt):
+        fe.stufe2_setzen("entwurf", True, "t")
+    assert fe.stufe2_lesen()["entwurf"] is False
+    fe.stufe2_setzen("entwurf", False, "t")
+    assert fe.stufe2_lesen()["entwurf"] is False
