@@ -326,3 +326,41 @@ def test_freie_termine_fehler_nimmt_die_seite_nicht_mit(monkeypatch):
         raise RuntimeError("DB weg")
     monkeypatch.setattr(server, "kalendertermine_lesen", kaputt)
     assert _get("/kalender").status_code == 200
+
+
+def test_luecken_hinweis_nennt_fremden_privat_kalender_nicht(ivan_angemeldet):
+    """Fix-Runde 2: Quelle von felix/privat mit Fehler -> Hinweis fuer ivan
+    ohne Anzeigename und ohne Fehlertext; fuer den Laden-Besitzer (Agent) bleibt
+    der Name stehen."""
+    qid, beginn = _felix_privat_quelle()
+    server.kalenderquelle_stand_setzen(qid, None, "Abruf gescheitert: geheimer-pfad-xyz")
+    von = (beginn - timedelta(days=1)).isoformat().replace("+", "%2B")
+    bis = (beginn + timedelta(days=1)).isoformat().replace("+", "%2B")
+    antwort = ivan_angemeldet.get(f"/kalender/termine.json?von={von}&bis={bis}",
+                                  headers={"host": HOST_OK})
+    assert antwort.status_code == 200, antwort.text
+    assert "Felix geheimer Name" not in antwort.text
+    assert "geheimer-pfad-xyz" not in antwort.text
+    assert "Kalender „Privat (felix)“: nicht abrufbar" in antwort.json()["hinweise"]
+    seite = ivan_angemeldet.get("/kalender", headers={"host": HOST_OK}).text
+    assert "Nicht abrufbar" in seite and "Privat (felix)" in seite
+    assert "Felix geheimer Name" not in seite and "geheimer-pfad-xyz" not in seite
+    # Agent-Sicht (Laden-Besitzer felix): eigener Kalender bleibt benannt.
+    import post_struktur
+    assert post_struktur.container_besitzer() == "felix"
+    _, luecken = server.belegungen()
+    text = server._kollisionstext([], luecken)
+    assert "Felix geheimer Name" in text
+    assert server._luecken_fuer_agent(luecken)[0]["quelle"] == "Felix geheimer Name"
+
+
+def test_agent_sieht_fremden_privat_kalender_ohne_namen(monkeypatch):
+    monkeypatch.setenv("POST_BESITZER", "felix")
+    luecken = [{"quelle": "Ivan geheim", "grund": "Fehler mit Titel", "besitzer": "ivan",
+                "bereich": "privat", "fest": False},
+               {"quelle": "Felix Arbeit", "grund": "noch nicht abgeglichen", "besitzer": "felix",
+                "bereich": "business", "fest": True}]
+    text = server._kollisionstext([], luecken)
+    assert "Ivan geheim" not in text and "Privat (ivan)" in text and "Felix Arbeit" in text
+    aus = server._luecken_fuer_agent(luecken)
+    assert aus[0] == {"quelle": "Privat (ivan)", "grund": "nicht abrufbar"}

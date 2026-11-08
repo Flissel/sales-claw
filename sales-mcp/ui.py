@@ -6396,8 +6396,9 @@ def kalender_abschnitte() -> str:
         # `server.belegungen()` schon fuer den Chat (Aufgabe 3/4) durchsetzt,
         # hier fuer die Oberflaeche. Eine Luecke, die niemand sieht, ist
         # schlimmer als keine Sicht.
-        wer = "; ".join(f"{_e(l['quelle'])} ({_e(l['grund'])})"
-                        for l in luecken)
+        wer = "; ".join(
+            "{} ({})".format(*map(_e, kalender_sichtbarkeit.luecke_anzeige(l, betrachter)))
+            for l in luecken)
         teile.append(f'<p class="hinweis">Nicht abrufbar: {wer}. Dort '
                      f'können Termine liegen, die hier fehlen.</p>')
     if (not eintraege and not luecken and not kalender.konfiguration()[0]

@@ -134,7 +134,8 @@ def _sammeln(von: datetime, bis: datetime,
         hinweise.append(HINWEIS_QUELLEN)
         luecke = True
     for l in luecken:
-        hinweise.append(f"Kalender „{l['quelle']}“: {l['grund']}")
+        name, grund = kalender_sichtbarkeit.luecke_anzeige(l, betrachter)
+        hinweise.append(f"Kalender „{name}“: {grund}")
         luecke = True
     for t in termine:
         roh.append({"art": "kalender", "uid": t["uid"], "titel": t["titel"],

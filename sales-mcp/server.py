@@ -2112,7 +2112,7 @@ def termin_bestaetigen(lead_id: str, datum: str, uhrzeit: str,
         "wiedervorlage": {"aktivitaets_id": wv_id,
                           "faellig_am": faellig.isoformat()},
         "kollisionen": kollisionen,
-        "quellen_luecken": quellen_luecken,
+        "quellen_luecken": _luecken_fuer_agent(quellen_luecken),
         "hinweis": (kollisionstext + " " if kollisionstext else "")
                    + hinweis}))
 
@@ -2426,7 +2426,7 @@ def _termin_einladen(lead_id: str, datum: str, uhrzeit: str,
                   "wiedervorlage": {"aktivitaets_id": wv_id,
                                     "faellig_am": nachfass_faellig.isoformat()},
                   "kollisionen": kollisionen,
-                  "quellen_luecken": quellen_luecken,
+                  "quellen_luecken": _luecken_fuer_agent(quellen_luecken),
                   # Kein "das passiert erst bei der Zusage" mehr (W3,
                   # Nachpruefung 11.09.2026): der Docstring war korrigiert,
                   # dieser Text nicht — die Unwahrheit stand danach nur noch
@@ -3663,13 +3663,18 @@ def _quellen_luecke(quelle: dict, jetzt: datetime):
     return quelle["letzter_fehler"] or None
 
 
+def _grund_fest(quelle: dict, grund: str) -> bool:
+    """Ist der Grund ein fester Standtext (kein gespeicherter Fehlertext)?"""
+    return grund != (quelle["letzter_fehler"] or None)
+
+
 def kalendertermine_lesen(von: datetime, bis: datetime, betrachter: str):
     """Abgeglichene Termine aller aktiven Quellen im Fenster, so wie
     `betrachter` sie sehen darf -> (termine, luecken).
 
     `termine` kommen aus `kalender_sichtbarkeit.anwenden` (fremde Privat-
     termine als „Privattermin" ohne Ort, Doppelte je Besitzer einmal).
-    `luecken` = [{"quelle", "grund"}]: nie abgeglichen, zu alt (FRISCHE_MIN)
+    `luecken` = [{"quelle", "grund", "besitzer", "bereich", "fest"}]: nie abgeglichen, zu alt (FRISCHE_MIN)
     oder der letzte Abgleich schlug fehl. Ihre gespeicherten Termine zaehlen
     trotzdem — nur ist die Antwort dann nicht vollstaendig.
     Die geheime Adresse der Quelle verlaesst diese Funktion nicht."""
@@ -3679,7 +3684,9 @@ def kalendertermine_lesen(von: datetime, bis: datetime, betrachter: str):
     for q in quellen:
         grund = _quellen_luecke(q, jetzt)
         if grund:
-            luecken.append({"quelle": q["anzeigename"], "grund": grund})
+            luecken.append({"quelle": q["anzeigename"], "grund": grund,
+                            "besitzer": q["besitzer"], "bereich": q["bereich"],
+                            "fest": _grund_fest(q, grund)})
     if not quellen:
         return [], luecken
     nach_id = {q["id"]: q for q in quellen}
@@ -3824,6 +3831,17 @@ def _kollisionen(beginn, dauer_minuten: int):
     return treffer, luecken
 
 
+def _luecken_fuer_agent(luecken: list) -> list:
+    """Luecken mit den Augen des Laden-Besitzers: fremde Privat-Kalender
+    ohne Namen, ohne Fehlertext, ohne Besitzer-Zusatzfelder."""
+    agent = post_struktur.container_besitzer()
+    aus = []
+    for l in luecken:
+        name, grund = kalender_sichtbarkeit.luecke_anzeige(l, agent)
+        aus.append({"quelle": name, "grund": grund})
+    return aus
+
+
 def _kollisionstext(treffer, luecken) -> str:
     """Ein Satz fuer Mensch und Modell — beide lesen denselben."""
     teile = []
@@ -3833,7 +3851,11 @@ def _kollisionstext(treffer, luecken) -> str:
             for t in treffer)
         teile.append(f"ACHTUNG, zu dieser Zeit ist schon etwas: {wer}.")
     if luecken:
-        wer = ", ".join(l["quelle"] for l in luecken)
+        # Der Agent sieht mit den Augen des Laden-Besitzers: fremde Privat-
+        # Kalender (z. B. die eines Teammitglieds) tragen keinen Namen.
+        agent = post_struktur.container_besitzer()
+        wer = ", ".join(kalender_sichtbarkeit.luecke_anzeige(l, agent)[0]
+                        for l in luecken)
         teile.append(
             f"Ausserdem war {wer} gerade nicht abrufbar — dort kann etwas "
             f"liegen, das hier fehlt.")
@@ -3861,7 +3883,7 @@ def termin_konflikte(datum: str, uhrzeit: str,
     return _json({
         "frei": not treffer and not luecken,
         "kollisionen": treffer,
-        "quellen_luecken": luecken,
+        "quellen_luecken": _luecken_fuer_agent(luecken),
         "hinweis": text or (f"{tag.isoformat()} {zeit:%H:%M} ist bei allen "
                             f"bekannten Quellen frei.")})
 

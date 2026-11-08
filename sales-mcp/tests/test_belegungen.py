@@ -165,13 +165,15 @@ def test_veraltete_quelle_ist_luecke():
     eintraege, luecken = server.belegungen()
     assert [e["titel"] for e in eintraege] == ["Alt"]
     assert luecken == [{"quelle": "Ivan",
-                        "grund": "seit über 15 Minuten nicht abgeglichen"}]
+                        "grund": "seit über 15 Minuten nicht abgeglichen",
+                        "besitzer": "ivan", "bereich": "business", "fest": True}]
 
 
 def test_nie_abgeglichene_quelle_ist_luecke():
     server.kalenderquelle_speichern("Ivan", "https://example.test/a.ics", "ivan", "business")
     _, luecken = server.belegungen()
-    assert luecken == [{"quelle": "Ivan", "grund": "noch nicht abgeglichen"}]
+    assert luecken == [{"quelle": "Ivan", "grund": "noch nicht abgeglichen",
+                        "besitzer": "ivan", "bereich": "business", "fest": True}]
 
 
 def test_inaktive_quelle_wird_nicht_abgerufen():

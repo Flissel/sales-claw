@@ -25,6 +25,19 @@ def privat_name(besitzer: str) -> str:
     return f"Privat ({besitzer})"
 
 
+def luecke_anzeige(luecke: dict, betrachter: str) -> tuple[str, str]:
+    """(Name, Grund) einer Luecke, wie `betrachter` sie lesen darf.
+
+    Eine fremde Privat-Quelle heisst „Privat (<besitzer>)"; ihr Grund bleibt nur
+    stehen, wenn er ein fester Standtext ist (`fest`), nie ein Fehlertext, der
+    Inhalt oder Adresse zitieren koennte. Luecken ohne Besitzer (eigener
+    CalDAV-Kalender, Quellentabelle) bleiben unveraendert."""
+    if "besitzer" in luecke and maskiert(luecke["besitzer"], luecke["bereich"], betrachter):
+        return (privat_name(luecke["besitzer"]),
+                luecke["grund"] if luecke.get("fest") else "nicht abrufbar")
+    return luecke["quelle"], luecke["grund"]
+
+
 def anwenden(termine: list[dict], betrachter: str) -> list[dict]:
     """Maskiert und fuehrt Doppelte je Besitzer zusammen; Eingang bleibt unveraendert."""
     gruppen: list[dict] = []
