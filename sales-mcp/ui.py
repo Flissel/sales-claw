@@ -211,6 +211,7 @@ import mailadresse
 import laden_marke
 import marketing_pult
 import ui_editor
+import ui_freigabe_api
 import ui_freigabe_bewerbung
 import ui_freigabe_newsletter
 import ui_empfehlungen
@@ -647,6 +648,11 @@ class AnmeldeWache:
             # Sie sind nicht ungeschuetzt: /passwort-neu verlangt einen
             # gueltigen Einmal-Token, und /passwort-vergessen kann nichts
             # aendern, nur eine Mail an eine HINTERLEGTE Adresse ausloesen.
+            await self.app(scope, receive, send)
+            return
+        if scope["path"].startswith("/api/freigaben/"):
+            # Freigabe-Eingang fuer Dienste: eigener Bearer-Schluessel je
+            # Herkunft (ui_freigabe_api), keine Sitzung, kein CSRF.
             await self.app(scope, receive, send)
             return
         if scope["method"] in ("GET", "HEAD") and _schrift_pfad(scope["path"]):
@@ -9663,6 +9669,7 @@ app = Starlette(routes=[
     *ui_podcast.routen(sys.modules[__name__]),
     *ui_freigabe_newsletter.routen(sys.modules[__name__]),
     *ui_freigabe_bewerbung.routen(sys.modules[__name__]),
+    *ui_freigabe_api.routen(sys.modules[__name__]),
     Route("/medien", medien),
     Route("/medien/bot", aktion_medien_bot, methods=["POST"]),
     Route("/medien/datei/{name}", medien_datei),
