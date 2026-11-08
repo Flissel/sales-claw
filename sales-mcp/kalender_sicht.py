@@ -161,6 +161,12 @@ KALENDER_FELDER = ("quelle_id", "quelle", "besitzer", "bereich", "maskiert",
                    "kalender", "ganztaegig", "frei")
 
 
+def betrachter(name: str = "") -> str:
+    """Wer den Kalender ansieht: die angemeldete Person, ohne Anmeldung der
+    Laden-Besitzer (Spec 2026-11-08 §2.2)."""
+    return str(name or "") or post_struktur.container_besitzer()
+
+
 def ebenen() -> list[dict]:
     """Die festen Ebenen des Ladens und jede aktive Quelle (ohne Adresse)."""
     laden = post_struktur.container_besitzer()

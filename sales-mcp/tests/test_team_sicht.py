@@ -263,3 +263,19 @@ def test_angemeldeter_ivan_sieht_felix_privat_nur_als_privattermin(ivan_angemeld
     (e,) = [e for e in antwort.json()["ereignisse"] if e["art"] == "kalender"]
     assert e["titel"] == "Privattermin" and e["maskiert"] is True
     assert "Arzt Dr. Geheim" not in antwort.text and "Praxis X" not in antwort.text
+
+
+def test_freier_termin_steht_in_der_liste_als_frei_markiert(monkeypatch):
+    """Task 7: „frei" markierte Termine (Geburtstage) erscheinen in der Liste,
+    sind als frei gekennzeichnet und kommen nicht aus belegungen() (blockieren nie)."""
+    monkeypatch.setenv("POST_BESITZER", "felix")
+    monkeypatch.setattr(server, "belegungen", _belegt())
+    beginn = _bald(24)
+    monkeypatch.setattr(server, "kalendertermine_lesen", lambda v, b, betrachter: ([{
+        "beginn": beginn, "ende": beginn + timedelta(hours=1), "titel": "Geburtstag Oma",
+        "ort": "", "uid": "g1", "quelle": "Familie", "besitzer": "felix",
+        "bereich": "business", "maskiert": False, "ganztaegig": True, "frei": True,
+        "quelle_id": "q1", "kalender": "x"}], []))
+    seite = _get("/kalender").text
+    assert "Geburtstag Oma" in seite
+    assert "(frei)" in seite

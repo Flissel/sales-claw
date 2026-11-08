@@ -191,7 +191,7 @@ import shutil
 import sys
 import time
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import passwort_reset
 import psycopg
@@ -6174,50 +6174,24 @@ def _beginn_aus_payload(payload):
     return roh.replace(tzinfo=ZEITZONE) if ZEITZONE else roh
 
 
-def _team_ebenen() -> str:
-    """Team-Kalender je Mitglied an/aus (Betreiber 28.10.2026): eingeblendet
-    als „belegt" im Kalender und fuer die Planung des Agenten genutzt."""
-    if _AKTIVE_ROLLE.get() in ("lesen", "kalender"):
-        return ""
-    try:
-        quellen = server.kalenderquellen_lesen(nur_aktive=True)
-    except psycopg.Error:
-        return ""
-    if not quellen:
-        return ('<p class="meta">Kein Team-Kalender verbunden — '
-                '<a href="/team/kalender">Kalender verbinden</a>.</p>')
-    aus = set(server.team_kalender_aus())
-    felder = "".join(
-        f'<label><input type="checkbox" name="an" value="{_e(q["anzeigename"])}"'
-        f'{"" if q["anzeigename"] in aus else " checked"}> {_e(q["anzeigename"])}</label> '
-        for q in quellen)
-    return (f'<form class="karte" method="post" action="/kalender/team">'
-            f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
-            f'<b>Team-Ebenen</b> <span class="meta">— nur belegt/frei; '
-            f'eingeschaltete plant der Agent mit.</span><div>{felder}'
-            f'<button>Übernehmen</button></div></form>')
-
-
-@_gesichert_seite
-async def aktion_team_ebenen(request):
-    form = await request.form()
-    if not _csrf_ok(form):
-        return _fehlerseite(403, "CSRF-Token fehlt oder ist ungültig",
-                            "Nichts geändert. Seite neu laden.")
-    if _AKTIVE_ROLLE.get() in ("lesen", "kalender"):
-        return _fehlerseite(403, "Nicht für diese Anmeldung",
-                            "Nur die Rolle „freigeben“ schaltet Team-Ebenen.")
-    an = set(form.getlist("an"))
-    alle = [q["anzeigename"] for q in server.kalenderquellen_lesen(nur_aktive=True)]
-    server.team_kalender_aus_setzen([n for n in alle if n not in an],
-                                    _ui_akteur(request))
-    return RedirectResponse("/kalender", status_code=303)
-
-
 def _kalender_betrachter() -> str:
     """Wer den Kalender gerade ansieht: die angemeldete Person, ohne
     Anmeldung der Laden-Besitzer (Spec §2.2)."""
-    return _AKTIVER_BENUTZER.get() or post_struktur.container_besitzer()
+    return kalender_sicht.betrachter(_AKTIVER_BENUTZER.get())
+
+
+def _freie_termine(betrachter: str, tage_voraus: int = 60) -> list:
+    """„Frei" markierte Termine (Geburtstage, TRANSP:TRANSPARENT) fuer die
+    Liste: sichtbar, aber nie belegt - `server.belegungen()` laesst sie weg."""
+    jetzt = datetime.now(timezone.utc)
+    try:
+        termine, _ = server.kalendertermine_lesen(
+            jetzt, jetzt + timedelta(days=tage_voraus), betrachter)
+    except psycopg.Error:
+        return []
+    return [{"beginn": t["beginn"], "ende": t["ende"], "titel": t["titel"],
+             "ort": t["ort"], "quelle": t["quelle"], "frei": True}
+            for t in termine if t["frei"]]
 
 
 def _fuer_betrachter(eintraege: list, betrachter: str) -> list:
@@ -6268,7 +6242,10 @@ def kalender_abschnitte() -> str:
     # belegungen() sieht mit den Augen des Laden-Besitzers (Agent, Spec
     # §2.3); diese Seite sieht die angemeldete Person - fuer sie werden
     # fremde Privattermine nachtraeglich maskiert.
-    eintraege = _fuer_betrachter(eintraege, _kalender_betrachter())
+    betrachter = _kalender_betrachter()
+    eintraege = _fuer_betrachter(eintraege, betrachter)
+    eintraege = sorted(eintraege + _freie_termine(betrachter),
+                       key=lambda e: e["beginn"])
 
     # Aufgabe 4: dieselbe Buchung steht oft in beiden Quellen — einmal im
     # eigenen Store (mit Kontaktbezug), einmal im CalDAV-Import. Betreiber-
@@ -6372,7 +6349,7 @@ def kalender_abschnitte() -> str:
 
     # Das Monatsgitter (01.09.2026) ist seit 14.10.2026 durch die Wochen-/
     # Monatsansicht des Pakets ersetzt (ui_kalender, R5).
-    teile = [_team_ebenen()]
+    teile = []
 
     kopf = ["Datum", "Zeit", "Kontakt", "Thema", "Ort", "Ändern"]
     teile.append(f"<h2>Kommende Termine ({len(kommend)})</h2>")
@@ -6439,7 +6416,9 @@ def kalender_abschnitte() -> str:
     else:
         teile.append(_tabelle(
             ["Wann", "Titel", "Ort", "Quelle"],
-            [[_zeit(t["beginn"]), _e(t["titel"]), _e(t["ort"]),
+            [[_zeit(t["beginn"]),
+              _e(t["titel"]) + (' <span class="meta">(frei)</span>' if t.get("frei") else ""),
+              _e(t["ort"]),
               f'<span class="badge">{_e(t["quelle"])}</span>']
              for t in eintraege[:100]]))
 
@@ -9764,7 +9743,6 @@ app = Starlette(routes=[
     Route("/pipeline", pipeline),
     Route("/pipeline/phase", aktion_phase, methods=["POST"]),
     Route("/ergebnisse/termin", aktion_termin_ergebnis, methods=["POST"]),
-    Route("/kalender/team", aktion_team_ebenen, methods=["POST"]),
     Route("/posteingang/aufraeumen", aktion_mail_aufraeumen, methods=["POST"]),
     Route("/ergebnisse", ergebnisse),
     # Handy (Design-Review S4): das ganze Menue hinter dem Tab "Mehr".

@@ -31,7 +31,6 @@ from starlette.routing import Route
 import kalender
 import kalender_sicht
 import konferenz
-import post_struktur
 import server
 import termine_eigen
 from ui_editor import _json_im_html
@@ -216,8 +215,7 @@ def _name(lead_id: str) -> str:
 def _betrachter(request) -> str:
     """Wer den Kalender ansieht: die angemeldete Person, ohne Anmeldung der
     Laden-Besitzer (Spec 2026-11-08 §2.2)."""
-    return (str(request.scope.get("benutzer_name") or "")
-            or post_struktur.container_besitzer())
+    return kalender_sicht.betrachter(request.scope.get("benutzer_name"))
 
 
 async def _konflikt(request, beginn: datetime, dauer: int, ausser_uid: str = ""):

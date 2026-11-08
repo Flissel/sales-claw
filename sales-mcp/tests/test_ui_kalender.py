@@ -775,3 +775,11 @@ def test_start_neu_kunde_nie_fuer_rolle_lesen(scharf):
     lead = server._q("insert into leads (name) values ('Rolf Lesen') returning id")[0]["id"]
     lesen = _anmelden("nur-lesen-neu", "lesen")
     assert "neu_kunde" not in _start(_get(f"/kalender?neu=kunde&lead_id={lead}", client=lesen).text)
+
+
+def test_keine_team_ebenen_box():
+    """Task 7: die ladenweite Team-Ebenen-Box und ihre Route sind weg."""
+    seite = _get("/kalender")
+    assert seite.status_code == 200
+    assert "Team-Ebenen" not in seite.text
+    assert CLIENT.post("/kalender/team", data={}, headers={"host": HOST_OK}).status_code in (404, 405)

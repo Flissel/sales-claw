@@ -163,16 +163,28 @@ export function konfliktFragen(konflikte: Konflikt[], unvollstaendig: boolean): 
   });
 }
 
-/** Nur ansehen: fremde Termine (Handy, Kollegen) und alles fuer Rollen ohne Schreibrecht. */
+/** Nur ansehen: verbundene Kalender, Handy-Termine und alles fuer Rollen ohne Schreibrecht. */
 export function detailsOeffnen(ev: EventApi, ctx: Kontext): void {
   const p = ev.extendedProps;
-  const { fenster, inhalt } = neuesFenster(String(p.art === 'kunde' ? p.thema : ev.title));
   const zeile = (k: string, v: unknown) => (v ? el('div', { class: 'vk-zeile' }, el('b', {}, `${k}: `), String(v)) : null);
-  const art = { kunde: 'Kundentermin', eigen: 'Eigener Termin', kollege: 'Kollegen-Kalender', handy: 'Handy-Kalender' }[
-    String(p.art)] ?? '';
+  const zeit = ev.start ? (ev.allDay ? `${zeitText(ev.start).split(',')[0]}, ganztägig` : zeitText(ev.start, ev.end)) : '';
+  if (p.maskiert) {
+    // Fremder Privattermin: nur Zeit und Besitzer, nie Titel oder Ort.
+    const { fenster, inhalt } = neuesFenster(ev.title);
+    anfuegen(inhalt, zeile('Zeit', zeit), zeile('Besitzer', p.besitzer));
+    const zu = el('button', { type: 'button' }, 'Schließen');
+    zu.onclick = () => fenster.close();
+    inhalt.append(el('div', { class: 'vk-knoepfe' }, zu));
+    fenster.showModal();
+    return;
+  }
+  const { fenster, inhalt } = neuesFenster(String(p.art === 'kunde' ? p.thema : p.art === 'kalender' ? p.thema : ev.title));
+  const art = { kunde: 'Kundentermin', eigen: 'Eigener Termin', handy: 'Laden-Kalender' }[String(p.art)] ?? '';
   anfuegen(inhalt,
-    zeile('Art', art), zeile('Zeit', ev.start ? zeitText(ev.start, ev.end) : ''), zeile('Kontakt', p.kontakt),
-    zeile('Kalender', p.quelle), zeile('Ort', p.ort), zeile('Notiz', p.notiz),
+    zeile('Art', art), zeile('Zeit', zeit), zeile('Kontakt', p.kontakt),
+    zeile('Ort', p.ort), zeile('Notiz', p.notiz),
+    p.art === 'kalender' ? zeile('steht in', p.steht_in) : zeile('Kalender', p.quelle),
+    p.frei ? el('p', { class: 'vk-hinweis' }, 'Als frei markiert – blockiert nichts.') : null,
     p.handy_fehlt ? el('p', { class: 'vk-warnung' }, NICHT_IM_HANDY) : null,
     p.art === 'kunde' && !p.bearbeitbar && ctx.darfSchreiben
       ? el('p', { class: 'vk-hinweis' }, 'Ohne Kontakt – hier nicht bearbeitbar.') : null,
