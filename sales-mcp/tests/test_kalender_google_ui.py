@@ -706,6 +706,38 @@ def test_entfernen_wartet_auf_laufendes_uebernehmen():
     assert server.kalender_konto_zugang(kid) == "VERSIEGELT-X"
 
 
+# --- Final-Fix M6: Kalenderliste faellt mit dem Zugang ----------------------
+
+def _liste(kid):
+    return server._q("select kalender_liste from kalender_konten where id = %s",
+                     (kid,))[0]["kalender_liste"]
+
+
+def test_aufraeumen_leert_auch_die_kalenderliste():
+    alt = server.kalenderkonto_speichern("ivan", "alt@example.test", "V-ALT",
+                                         [{"id": "x", "name": "Privat Ivan", "primaer": True}])
+    server._q("update kalender_konten set created_at = now() - interval '2 hours' "
+              "where id = %s returning id", (alt,))
+    assert server.kalenderkonten_aufraeumen() == 1
+    assert _liste(alt) == []
+
+
+def test_letzte_quelle_entfernt_leert_die_kalenderliste():
+    kid, (a, b) = _konto_mit_quellen()
+    assert server.kalenderquelle_entfernen(a, "ivan") is True
+    assert len(_liste(kid)) == 2
+    assert server.kalenderquelle_entfernen(b, "ivan") is True
+    assert _liste(kid) == []
+
+
+def test_abbrechen_leert_die_kalenderliste(scharf, eingerichtet, google):
+    c = _angemeldet("ivan")
+    konto_id = _auswahl(c)
+    assert _post(c, "/team/kalender/google/abbrechen",
+                 {"konto_id": konto_id}).status_code == 303
+    assert _liste(konto_id) == []
+
+
 # --- Fix-Runde 1: eigene Meldung fuer fremde google_id ----------------------
 
 def test_fremde_google_id_hat_eigene_meldung(scharf, eingerichtet, google):

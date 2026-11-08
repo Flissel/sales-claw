@@ -125,18 +125,6 @@ def test_ganztaegig_wird_mitgegeben():
     assert eintraege[0]["ganztaegig"] is True
 
 
-def test_team_schalter_wirkt_nicht_mehr_auf_den_agenten():
-    """Spec 2026-11-08 §2.5: der ladenweite Schalter „Team-Ebenen" entfaellt;
-    abgeschaltet wird je Quelle (aktiv)."""
-    _quelle("Ivan", "ivan", "business", [_termin(1, 9, "Kunde", "k")])
-    server.team_kalender_aus_setzen(["Ivan"], "test")
-    try:
-        eintraege, _ = server.belegungen()
-        assert [e["quelle"] for e in eintraege] == ["Ivan"]
-    finally:
-        server.team_kalender_aus_setzen([], "test")
-
-
 def test_eigener_und_fremder_kalender_zusammen(monkeypatch):
     monkeypatch.setattr(kalender, "termine_lesen", lambda *a, **k: ([
         {"beginn": _t(1, 14), "ende": _t(1, 15), "titel": "Eigener",

@@ -3463,30 +3463,6 @@ def kalender_konto_zugang(konto_id: str) -> "str | None":
     return (z[0]["zugang_versiegelt"] or None) if z else None
 
 
-EINSTELLUNG_TEAM_KALENDER_AUS = "kalender_team_aus"
-
-
-def team_kalender_aus() -> list:
-    """Anzeigenamen der Team-Kalender, die der Betreiber ausgeschaltet hat
-    (Betreiber 28.10.2026: an/aus je Mitglied, fuer Anzeige UND Planung).
-    Faellt die Tabelle aus, ist nichts ausgeschaltet."""
-    try:
-        z = _q("select wert from einstellungen where schluessel = %s",
-               (EINSTELLUNG_TEAM_KALENDER_AUS,))
-    except psycopg.Error:
-        return []
-    wert = z[0]["wert"] if z else []
-    return [str(n) for n in wert] if isinstance(wert, list) else []
-
-
-def team_kalender_aus_setzen(namen: list, von: str) -> None:
-    _q("insert into einstellungen (schluessel, wert, geaendert_von) "
-       "values (%s, %s, %s) on conflict (schluessel) do update set "
-       "wert = excluded.wert, geaendert_am = now(), "
-       "geaendert_von = excluded.geaendert_von returning schluessel",
-       (EINSTELLUNG_TEAM_KALENDER_AUS, _json(sorted(set(namen))), von))
-
-
 KALENDER_BEREICHE = ("business", "privat")
 
 
@@ -3563,9 +3539,11 @@ def kalenderkonto_speichern(besitzer: str, adresse: str, zugang_versiegelt: str,
 def kalenderkonten_aufraeumen() -> int:
     """Verwaiste Zugaenge vernichten: Konten OHNE jede Quellenzeile, die vor
     ueber einer Stunde angelegt oder erneuert wurden (die Person hat nach dem
-    Google-Rueckweg nichts uebernommen) -> Anzahl."""
+    Google-Rueckweg nichts uebernommen) -> Anzahl. Die Kalenderliste (Namen
+    der Kalender des Kontos) faellt mit weg (Datensparsamkeit, M6)."""
     return len(_q(
-        "update kalender_konten k set zugang_versiegelt = null "
+        "update kalender_konten k set zugang_versiegelt = null, "
+        "kalender_liste = '[]'::jsonb "
         "where zugang_versiegelt is not null "
         "and created_at < now() - interval '1 hour' "
         "and not exists (select 1 from kalender_quellen q "
@@ -3574,9 +3552,11 @@ def kalenderkonten_aufraeumen() -> int:
 
 def kalenderkonto_abbrechen(konto_id: str, besitzer: str) -> bool:
     """Abbrechen auf der Auswahlseite: den Zugang des EIGENEN Kontos
-    vernichten, wenn noch keine Quelle daran haengt -> True, wenn geschehen."""
+    vernichten, wenn noch keine Quelle daran haengt -> True, wenn geschehen.
+    Die Kalenderliste faellt mit weg."""
     return bool(_q(
-        "update kalender_konten k set zugang_versiegelt = null "
+        "update kalender_konten k set zugang_versiegelt = null, "
+        "kalender_liste = '[]'::jsonb "
         "where k.id = %s and k.besitzer = %s and zugang_versiegelt is not null "
         "and not exists (select 1 from kalender_quellen q "
         "                where q.konto_id = k.id) returning k.id",
@@ -3780,8 +3760,10 @@ def kalenderquelle_entfernen(quelle_id: str, besitzer: "str | None") -> bool:
                 if conn.execute(
                         "select 1 from kalender_quellen where konto_id = %s "
                         "limit 1", (zeile["konto_id"],)).fetchone() is None:
+                    # Mit dem Zugang auch die Kalenderliste (M6).
                     conn.execute("update kalender_konten set "
-                                 "zugang_versiegelt = null where id = %s",
+                                 "zugang_versiegelt = null, "
+                                 "kalender_liste = '[]'::jsonb where id = %s",
                                  (zeile["konto_id"],))
     return True
 
