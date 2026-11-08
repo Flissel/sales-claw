@@ -241,7 +241,7 @@ def test_falscher_link_wird_benannt_nicht_nur_abgewiesen(monkeypatch):
                      "bereich": "business", "csrf": ui.CSRF_TOKEN})
     assert antwort.status_code == 200
     assert "Webseite" in antwort.text
-    assert server.kalenderquellen_lesen() == []
+    assert server.kalenderquellen_lesen(nur_aktive=False) == []
 
 
 def test_die_adresse_erscheint_nach_dem_speichern_nirgends(monkeypatch):
@@ -690,3 +690,26 @@ def test_ical_quelle_sofort_abgeglichen(monkeypatch):
     zeilen = server._q("select titel from kalender_termine "
                        "where quelle_id = %s", (quelle["id"],))
     assert [z["titel"] for z in zeilen] == ["Kuenftiger Termin"]
+
+
+def test_tippfehler_beim_neu_verbinden_zerstoert_funktionierende_quelle_nicht(
+        monkeypatch):
+    url_a = "https://example.test/a-gut.ics"
+    qid = server.kalenderquelle_speichern("Felix", url_a, "felix", "business")
+    jetzt = datetime.now(timezone.utc)
+    server.kalendertermine_ersetzen(qid, [{
+        "uid": "u1", "beginn": jetzt + timedelta(days=1),
+        "ende": jetzt + timedelta(days=1, hours=1), "titel": "Bleibt"}], True)
+    monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: (
+        [], "Dort liegt kein Kalender, sondern eine Webseite."))
+    antwort = _post({"name": "Felix", "url": "https://example.test/b-kaputt",
+                     "bereich": "business", "csrf": ui.CSRF_TOKEN})
+    assert antwort.status_code == 200
+    assert "Nichts wurde gespeichert" in antwort.text
+    zeile = server.kalenderquellen_lesen(nur_aktive=False)
+    assert len(zeile) == 1
+    assert zeile[0]["aktiv"] is True
+    assert zeile[0]["url"] == url_a
+    titel = [z["titel"] for z in server._q(
+        "select titel from kalender_termine where quelle_id = %s", (qid,))]
+    assert titel == ["Bleibt"]

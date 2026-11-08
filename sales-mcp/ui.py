@@ -6784,7 +6784,7 @@ async def team_kalender(request):
         else '<p class="meta">Noch kein Kalender verbunden.</p>')
 
     team = ""
-    if _AKTIVE_ROLLE.get() == "freigeben":
+    if str(request.scope.get("benutzer_rolle") or "") == "freigeben":
         team_zeilen = [[_e(q["anzeigename"]), _e(q["besitzer"]),
                         _e(_kalender_bereichsname(q["bereich"])),
                         ("entfernt" if _kalender_entfernt(q) else
@@ -6849,13 +6849,12 @@ async def team_kalender(request):
 
 @_gesichert_seite
 async def aktion_kalender_verbinden(request):
-    """Quelle speichern, sofort abgleichen, dann erst melden.
+    """Adresse prüfen, dann erst speichern — nie umgekehrt.
 
     Die sofortige Rückmeldung ist der Kern von §2.7: der häufigste Fehler
     ist die öffentliche statt der geheimen Adresse, und ohne Prüfung merkt
     das niemand — die Sicht bliebe tagelang leer. Der Abruf läuft genau
-    einmal (kalender_abgleich.quelle_abgleichen); schlägt er ohne einen
-    einzigen Termin fehl, wird die Quelle wieder entfernt.
+    einmal; seine Termine werden nach dem Speichern gleich abgelegt.
     """
     form = await request.form()
     if not _csrf_ok(form):
@@ -6891,23 +6890,39 @@ async def aktion_kalender_verbinden(request):
             "Ohne Anmeldung ist nicht klar, wem dieser Kalender gehört, "
             "und für diesen Laden ist kein Besitzer eingetragen. Bitte "
             "anmelden. Nichts wurde gespeichert."))
-    quelle_id = server.kalenderquelle_speichern(name, url, besitzer, bereich)
-    quelle = next(q for q in server.kalenderquellen_lesen(nur_aktive=False)
-                  if q["id"] == quelle_id)
-    anzahl, fehler = kalender_abgleich.quelle_abgleichen(quelle)
+    # Erst pruefen, dann speichern - nie umgekehrt (ein Tippfehler beim
+    # Neuverbinden darf eine funktionierende Quelle nicht zerstoeren). Der
+    # Abruf laeuft genau einmal; die Ergebnisse werden unten weiterverwendet.
+    termine, fehler = server.kalenderquellen.hole(
+        url, kalender_abgleich.FENSTER_ZURUECK_TAGE,
+        kalender_abgleich.FENSTER_VORAUS_TAGE)
     # BLOCKER (Koordinator-Fix-Runde, 13.09.2026): `fehler` ist NICHT
-    # gleichbedeutend mit "nichts verstanden" — hole() meldet ihn auch dann,
+    # gleichbedeutend mit "nichts verstanden" - hole() meldet ihn auch dann,
     # wenn die Quelle VOLLSTAENDIG verstanden wurde und nur zusaetzlich
     # unlesbare Dauern enthaelt. Abgewiesen wird nur, wenn GAR NICHTS
-    # Verwertbares ankam (anzahl is None); sonst bleibt die Quelle und der
-    # Vorbehalt steht NEBEN der Zahl.
-    if anzahl is None:
-        server.kalenderquelle_entfernen(quelle_id, besitzer)
+    # Verwertbares ankam; sonst steht der Vorbehalt NEBEN der Zahl.
+    if fehler and not termine:
         return _seite("Kalender verbinden", (
             f'<h1>Das hat nicht geklappt</h1>'
             f'<p class="fehler">{_e(fehler)}</p>'
-            f'<p class="meta">Der Kalender wurde nicht verbunden.</p>'
+            f'<p class="meta">Nichts wurde gespeichert.</p>'
             f'<p><a href="/team/kalender">Zurück und erneut versuchen</a></p>'))
+    quelle_id = server.kalenderquelle_speichern(name, url, besitzer, bereich)
+    anzahl = None
+    try:
+        # details=True: kalendertermine_ersetzen entscheidet unter Sperre
+        # selbst, ob Titel und Ort gespeichert werden duerfen (Spec §6.3).
+        anzahl = server.kalendertermine_ersetzen(quelle_id, termine, True)
+        server.kalenderquelle_stand_setzen(quelle_id, anzahl, fehler)
+    except Exception as e:  # noqa: BLE001 - Meldung koennte Inhalt zitieren
+        # Die Quelle ist gespeichert; der Abgleichdienst holt das nach.
+        LOG.error("Kalender %s: erster Abgleich fehlgeschlagen (%s)",
+                  quelle_id, type(e).__name__)
+        return _seite("Kalender verbunden", (
+            '<h1>Gespeichert</h1>'
+            '<p>Der Kalender ist verbunden, die Termine werden aber erst in '
+            'ein paar Minuten angezeigt.</p>'
+            '<p><a href="/team/kalender">Zur Übersicht</a></p>'))
     # Der naechste Termin kommt aus dem Abgleich: Titel sind nur da, wo sie
     # gespeichert werden duerfen (nie fuer fremde Privat-Kalender).
     naechster = ""
