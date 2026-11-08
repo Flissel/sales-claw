@@ -26,6 +26,7 @@ markiert wird dabei nichts.
 """
 import email
 import email.header
+import html as html_kuerzel
 import email.utils
 import imaplib
 import json
@@ -244,17 +245,48 @@ def _automatisch(nachricht) -> bool:
     return _kopf(nachricht, "Return-Path").replace(" ", "") == "<>"
 
 
-def _html_zu_text(html: str) -> str:
-    # Script/Style samt Inhalt weg, dann alle Tags — grob, aber ehrlich:
-    # das ist eine Lesehilfe, kein Browser.
+# Link mit Zieladresse (nur fuer `links=True`). Der Linktext darf Tags
+# enthalten (<a><b>Hier</b></a>); geschachtelte <a> gibt es in HTML nicht.
+_A_TAG = re.compile(r"""<a\b[^>]*?\bhref\s*=\s*(["'])(.*?)\1[^>]*>(.*?)</a\s*>""",
+                    re.S | re.I)
+
+
+def _link_mit_adresse(treffer) -> str:
+    """`Linktext (https://…)` - aber nur, wenn es etwas zu zeigen gibt.
+
+    Nur http(s); ohne sichtbaren Linktext (Bildlinks), bei Text = Adresse und bei
+    Adressen mit Leerraum oder Klammern bleibt es beim Linktext. Die Adresse
+    wird escapt eingesetzt, weil `_html_zu_text` danach alles entschluesselt.
+    post_einordnung (_LINK_ADRESSE) nimmt genau diese Klammern wieder heraus."""
+    adresse = html_kuerzel.unescape(treffer.group(2)).strip()
+    linktext = treffer.group(3)
+    sichtbar = " ".join(html_kuerzel.unescape(re.sub(r"<[^>]+>", " ", linktext)).split())
+    if (not re.match(r"https?://", adresse, re.I) or not sichtbar
+            or re.search(r"[\s()<>\"']", adresse) or sichtbar == adresse):
+        return linktext
+    return f"{linktext} ({html_kuerzel.escape(adresse)})"
+
+
+def _html_zu_text(html: str, links: bool = False) -> str:
+    """Script/Style samt Inhalt weg, dann alle Tags — grob, aber ehrlich:
+    das ist eine Lesehilfe, kein Browser.
+
+    `links=True` (Post-Sammelstelle, Betreiber 08.11.2026: Links in Mails
+    anklickbar) behaelt die Zieladresse hinter dem Linktext und loest
+    HTML-Kuerzel wie &amp; auf. Ohne Schalter bleibt es beim alten Verhalten."""
     ohne = re.sub(r"<(script|style)\b.*?</\1>", " ", html,
                   flags=re.S | re.I)
+    if links:
+        ohne = _A_TAG.sub(_link_mit_adresse, ohne)
     ohne = re.sub(r"<[^>]+>", " ", ohne)
+    if links:
+        ohne = html_kuerzel.unescape(ohne)
     return " ".join(ohne.split())
 
 
-def _text(nachricht) -> str:
-    """text/plain bevorzugt; sonst text/html gestrippt; sonst leer."""
+def _text(nachricht, links: bool = False) -> str:
+    """text/plain bevorzugt; sonst text/html gestrippt; sonst leer.
+    `links`: siehe `_html_zu_text`."""
     kandidaten = (nachricht.walk()
                   if nachricht.is_multipart() else [nachricht])
     html = None
@@ -271,7 +303,7 @@ def _text(nachricht) -> str:
             return wert.strip()
         if html is None:
             html = wert
-    return _html_zu_text(html) if html else ""
+    return _html_zu_text(html, links) if html else ""
 
 
 def _kalender_teil(nachricht) -> str:

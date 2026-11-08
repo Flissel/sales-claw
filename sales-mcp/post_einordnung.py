@@ -33,6 +33,12 @@ LOG = logging.getLogger("post_einordnung")
 AGENT = "post"            # FEST: ein Tippfehler legte im Gateway einen Agenten mit allen Werkzeugen an
 PRUEFER = "post-pruefer"  # FEST, aus demselben Grund; eigener Agent mit anderem Modell
 TEXT_MAX = 4000
+# Adressen, die postfach._html_zu_text(links=True) hinter Linktexte setzt
+# (08.11.2026, fuer anklickbare Links in der Mailansicht). Das Modell sieht sie
+# nicht: Tracking-Adressen wuerden das Fenster oben fuellen, und vorher sah es
+# sie auch nicht. Ausgeschriebene Adressen im Fliesstext bleiben, ausser sie
+# stehen zufaellig in genau dieser Form " (https://…)" - dann fehlt nur die Adresse.
+_LINK_ADRESSE = re.compile(r" \(https?://[^\s()]+\)")
 BEGRUENDUNG_MAX = 200
 KOPF_MAX = 300            # Absender/Betreff: Fremddaten, gekappt wie der Text
 
@@ -289,7 +295,7 @@ _POSTFACH_ART = {
 
 
 def _auftrag(mail: dict, konto: dict, sortierer: dict | None = None) -> str:
-    text = (mail.get("text") or "")[:TEXT_MAX]
+    text = _LINK_ADRESSE.sub("", mail.get("text") or "")[:TEXT_MAX]
     kontext = os.environ.get("POST_KONTEXT", "").strip()
     teile = [f"Postfach: {konto.get('kennung', '')} (Standardbereich: {_standard(konto)})"]
     # Postfach-Art kommt vom Konto (Betreiber), nicht aus der Mail: ausserhalb der Fremddaten-Marker.

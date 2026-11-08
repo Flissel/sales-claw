@@ -100,9 +100,10 @@ def _rein(wert: str | None, laenge: int | None = None) -> str | None:
 
 def _text_sicher(nachricht) -> str:
     """postfach._text, aber robust gegen unbekannte Zeichensaetze (LookupError
-    bei decode) - die Mail wird trotzdem gespeichert, notfalls als utf-8."""
+    bei decode) - die Mail wird trotzdem gespeichert, notfalls als utf-8.
+    Links aus HTML-Mails behalten ihre Adresse (08.11.2026, postfach._html_zu_text)."""
     try:
-        return postfach._text(nachricht)
+        return postfach._text(nachricht, links=True)
     except (LookupError, UnicodeError):
         pass
     teile = nachricht.walk() if nachricht.is_multipart() else [nachricht]
@@ -112,7 +113,7 @@ def _text_sicher(nachricht) -> str:
             if roh:
                 text = roh.decode("utf-8", errors="replace")
                 if teil.get_content_type() == "text/html":
-                    text = postfach._html_zu_text(text)
+                    text = postfach._html_zu_text(text, links=True)
                 return text.strip()
     return ""
 
