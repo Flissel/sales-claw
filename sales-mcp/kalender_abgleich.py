@@ -65,6 +65,12 @@ def _abgleichen_geschuetzt(quelle: dict) -> bool:
         _, fehler = quelle_abgleichen(quelle)
     except Exception as e:  # noqa: BLE001 - Meldung koennte Inhalt zitieren
         LOG.error("Quelle %s: Abgleich fehlgeschlagen (%s)", quelle["id"], type(e).__name__)
+        # Der Betreiber soll einen Fehlertext sehen; nur der Typ, nie str(e).
+        try:
+            server.kalenderquelle_stand_setzen(
+                quelle["id"], None, f"Abgleich fehlgeschlagen ({type(e).__name__})")
+        except Exception as e2:  # noqa: BLE001 - die Runde laeuft weiter
+            LOG.error("Quelle %s: Stand nicht gesetzt (%s)", quelle["id"], type(e2).__name__)
         return True
     if fehler:
         LOG.warning("Quelle %s: Fehler gemeldet", quelle["id"])

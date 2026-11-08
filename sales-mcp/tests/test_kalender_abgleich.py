@@ -169,6 +169,25 @@ def test_runde_zaehlt_und_haelt_bei_ausnahme_nicht_an(monkeypatch):
         return [_termin()], None
     monkeypatch.setattr(kalenderquellen, "hole", hole)
     assert kalender_abgleich.runde() == {"quellen": 2, "fehler": 1}
+    faelle = server.kalenderquellen_lesen()
+    texte = sorted(str(_stand(q["id"])["letzter_fehler"]) for q in faelle)
+    assert "Abgleich fehlgeschlagen (RuntimeError)" in texte
+    assert all("Zahnarzt" not in t for t in texte)
+
+
+def test_stand_schreiben_scheitert_haelt_runde_nicht_an(monkeypatch):
+    monkeypatch.setenv("POST_BESITZER", "felix")
+    _quelle()
+    _quelle()
+
+    def hole(url, *a, **k):
+        raise RuntimeError("x")
+
+    def stand(*a, **k):
+        raise ValueError("db weg")
+    monkeypatch.setattr(kalenderquellen, "hole", hole)
+    monkeypatch.setattr(server, "kalenderquelle_stand_setzen", stand)
+    assert kalender_abgleich.runde() == {"quellen": 2, "fehler": 2}
 
 
 def test_neue_quellen_sind_die_nie_gelesenen():

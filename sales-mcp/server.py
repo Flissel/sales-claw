@@ -3504,32 +3504,6 @@ def kalendertermine_ersetzen(quelle_id: str, termine: list, details: bool) -> in
 
     Loeschen und Einfuegen laufen in EINER Transaktion: bricht das Einfuegen
     ab, bleiben die alten Termine stehen, und es gibt nie einen Zwischenstand
-    ohne Termine (der Agent sagte sonst kurz „frei"). Mit `details=False`
-    (fremde Privat-Quelle, Spec §6.3) werden titel und ort als NULL
-    geschrieben - sie erreichen die Datenbank gar nicht erst."""
-    zeilen = [(quelle_id, t.get("uid") or "", t["beginn"], t["ende"],
-               bool(t.get("ganztaegig")), bool(t.get("frei")),
-               (t.get("titel") or None) if details else None,
-               (t.get("ort") or None) if details else None)
-              for t in termine]
-    with pool.connection() as conn:
-        with conn.transaction():
-            conn.execute("delete from kalender_termine where quelle_id = %s",
-                         (quelle_id,))
-            if zeilen:
-                with conn.cursor() as cur:
-                    cur.executemany(
-                        "insert into kalender_termine (quelle_id, uid, beginn, "
-                        "ende, ganztaegig, frei, titel, ort) "
-                        "values (%s, %s, %s, %s, %s, %s, %s, %s)", zeilen)
-    return len(zeilen)
-
-
-def kalendertermine_ersetzen(quelle_id: str, termine: list, details: bool) -> int:
-    """Die abgeglichenen Termine einer Quelle austauschen -> Anzahl.
-
-    Loeschen und Einfuegen laufen in EINER Transaktion: bricht das Einfuegen
-    ab, bleiben die alten Termine stehen, und es gibt nie einen Zwischenstand
     ohne Termine (der Agent sagte sonst kurz "frei"). Mit `details=False`
     (fremde Privat-Quelle, Spec §6.3) werden titel und ort als NULL
     geschrieben - sie erreichen die Datenbank gar nicht erst."""
