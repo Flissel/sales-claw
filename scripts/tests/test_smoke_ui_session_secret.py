@@ -156,7 +156,9 @@ def _abschnitt_15(
     assert ABSCHNITT in zeilen, lauf.stdout + lauf.stderr
     ergebnis: dict[str, str] = {}
     for zeile in zeilen[zeilen.index(ABSCHNITT) + 1 :]:
-        if zeile == "---":
+        # Abschnitt 15 endet an der naechsten Ueberschrift (seit 03.11.2026
+        # folgt die Post-Sammelstelle) oder am Schlussstrich.
+        if zeile == "---" or zeile.startswith("== "):
             break
         treffer = re.match(r"^(ui_session_secret (?:je laden|\S+))\s+(.*)$", zeile)
         assert treffer, f"unerwartete Zeile in Abschnitt 15: {zeile!r}"
