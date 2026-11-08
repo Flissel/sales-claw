@@ -8,7 +8,9 @@
 -- :besitzer = Laden-Besitzer. Bestehende Quellen ohne Besitzer gehoeren ihm und
 -- werden 'privat' (Spec §2.9). Die Variable ist nur noetig, solange es Zeilen
 -- mit `besitzer is null` gibt: fehlt sie dann, bricht das Skript ab, bevor
--- etwas geaendert wird. Technik: `\if :{?besitzer}` prueft, ob psql die
+-- Altzeilen gefuellt oder Pflicht-/Check-Regeln gesetzt werden (die rein
+-- additiven Schritte davor - Tabelle kalender_konten, nullbare Spalten - sind
+-- schon gelaufen und harmlos). Technik: `\if :{?besitzer}` prueft, ob psql die
 -- Variable kennt; sonst wird sie auf '' gesetzt, und der Pruefblock unten
 -- wirft eine Ausnahme, falls Altzeilen existieren.
 --
@@ -80,7 +82,38 @@ alter table :"schema".kalender_quellen add constraint kalender_quellen_art_check
   check (art in ('ics','google'));
 
 -- Der Name ist nur noch je Besitzer eindeutig.
-drop index if exists :"schema".kalender_quellen_name_idx;
+-- Den alten globalen Unique-Index auf (anzeigename) entfernen, gleich unter
+-- welchem Namen: Schemata aus db/laden-anlegen.sql (`like ... including all`)
+-- tragen einen automatisch vergebenen Namen.
+do $$
+declare
+  i record;
+  k record;
+begin
+  for i in
+    select ic.oid, ic.relname
+      from pg_index x
+      join pg_class ic on ic.oid = x.indexrelid
+      join pg_class tc on tc.oid = x.indrelid
+      join pg_namespace n on n.oid = tc.relnamespace
+     where n.nspname = current_setting('kv.schema')
+       and tc.relname = 'kalender_quellen'
+       and x.indisunique and not x.indisprimary
+       and x.indnkeyatts = 1
+       and x.indpred is null
+       and (select a.attname from pg_attribute a
+             where a.attrelid = tc.oid and a.attnum = x.indkey[0]) = 'anzeigename'
+  loop
+    -- Haengt der Index an einer Unique-Constraint, faellt er nur mit ihr.
+    select c.conname, c.conrelid::regclass::text into k
+      from pg_constraint c where c.conindid = i.oid;
+    if k.conname is not null then
+      execute format('alter table %s drop constraint %I', k.conrelid, k.conname);
+    else
+      execute format('drop index %I.%I', current_setting('kv.schema'), i.relname);
+    end if;
+  end loop;
+end $$;
 create unique index if not exists kalender_quellen_besitzer_name_idx
   on :"schema".kalender_quellen (besitzer, anzeigename);
 
