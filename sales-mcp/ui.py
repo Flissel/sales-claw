@@ -205,6 +205,7 @@ from starlette.routing import Route
 
 import historie
 import kalender
+import kalender_abgleich
 import kalender_sicht
 import kalender_sichtbarkeit
 import kanaele
@@ -683,6 +684,7 @@ class AnmeldeWache:
                 and scope["method"] not in ("GET", "HEAD")
                 and scope["path"] not in (
                     "/logout", "/team/kalender/verbinden",
+                    "/team/kalender/bereich", "/team/kalender/pausieren",
                     # W3 (Schlusspruefung 13.09.2026): das Gegenstueck zu
                     # "verbinden" braucht dieselbe Ausnahme — sonst kann
                     # ausgerechnet der Kollege mit der schmalen Rolle die
@@ -6692,38 +6694,108 @@ async def aktion_tailscale_einladen(request):
     return RedirectResponse("/team/tailscale-einladen", status_code=303)
 
 
+_BEREICHE = (("business", "Business"), ("privat", "Privat"))
+
+
+def _kalender_besitzer(request) -> "tuple[str, str | None]":
+    """(Besitzer fuer NEUE Quellen, Filter fuer Aenderungen).
+
+    Angemeldet: die Person selbst; die Rolle `freigeben` darf alle Quellen
+    pflegen (Filter None). Ohne Anmeldung (Uebergangszugang) handelt der
+    Laden-Besitzer; ist keiner eingetragen, ist der Besitzer leer und der
+    Aufrufer verweigert das Speichern."""
+    name = str(request.scope.get("benutzer_name") or "")
+    rolle = str(request.scope.get("benutzer_rolle") or "")
+    if name:
+        return name, (None if rolle == "freigeben" else name)
+    eigner = post_struktur.container_besitzer()
+    return eigner, (eigner or None)
+
+
+def _kalender_stand(quelle: dict) -> str:
+    stand = (f"zuletzt gelesen {_zeit(quelle['zuletzt_gelesen'])}"
+             if quelle["zuletzt_gelesen"] else "noch nicht gelesen")
+    if quelle["letzter_fehler"]:
+        stand += f" — {_e(quelle['letzter_fehler'])}"
+    elif quelle["termine_zuletzt"] is not None:
+        stand += f", {quelle['termine_zuletzt']} Termine"
+    return stand
+
+
+def _kalender_entfernt(quelle: dict) -> bool:
+    return (not quelle["aktiv"] and quelle["art"] == "ics"
+            and not quelle["url"])
+
+
+def _kalender_knopf(pfad: str, quelle_id: str, felder: str, text: str,
+                    gefahr: bool = False) -> str:
+    klasse = "aktion gefahr" if gefahr else "aktion"
+    return (f'<form class="{klasse}" method="post" action="{pfad}">'
+            f'<input type="hidden" name="quelle_id" value="{_e(quelle_id)}">'
+            f'<input type="hidden" name="csrf" value="{_e(CSRF_TOKEN)}">'
+            f'{felder}<button{" class=gefahr" if gefahr else ""}>'
+            f'{_e(text)}</button></form>')
+
+
+def _kalender_aktionen(quelle: dict) -> str:
+    if _kalender_entfernt(quelle):
+        return '<span class="meta">entfernt</span>'
+    qid = str(quelle["id"])
+    optionen = "".join(
+        f'<option value="{w}"{" selected" if w == quelle["bereich"] else ""}>'
+        f'{_e(t)}</option>' for w, t in _BEREICHE)
+    bereich = _kalender_knopf(
+        "/team/kalender/bereich", qid,
+        f'<select name="bereich" aria-label="Bereich">{optionen}</select>',
+        "Bereich ändern")
+    pause = (_kalender_knopf("/team/kalender/pausieren", qid,
+                             '<input type="hidden" name="aktiv" value="0">',
+                             "Pausieren")
+             if quelle["aktiv"] else
+             _kalender_knopf("/team/kalender/pausieren", qid,
+                             '<input type="hidden" name="aktiv" value="1">',
+                             "Fortsetzen"))
+    entfernen = _kalender_knopf("/team/kalender/entfernen", qid, "",
+                                "Entfernen", gefahr=True)
+    return bereich + pause + entfernen
+
+
+def _kalender_bereichsname(bereich: str) -> str:
+    return dict(_BEREICHE).get(bereich, bereich)
+
+
 @_gesichert_seite
 async def team_kalender(request):
     """Die Seite, über die ein Kollege seinen Kalender verbindet."""
+    besitzer, _filter = _kalender_besitzer(request)
+    alle = server.kalenderquellen_lesen(nur_aktive=False)
+    # Die Adresse steht hier NICHT (Spec §4).
+    meine = [q for q in alle if q["besitzer"] == besitzer]
     zeilen = []
-    for quelle in server.kalenderquellen_lesen(nur_aktive=False):
-        stand = (f"zuletzt gelesen {_zeit(quelle['zuletzt_gelesen'])}"
-                 if quelle["zuletzt_gelesen"] else "noch nicht gelesen")
-        if quelle["letzter_fehler"]:
-            stand += f" — {_e(quelle['letzter_fehler'])}"
-        elif quelle["termine_zuletzt"] is not None:
-            stand += f", {quelle['termine_zuletzt']} Termine"
-        # Die Adresse steht hier NICHT (Spec §4).
-        # W3 (Schlusspruefung 13.09.2026): kalenderquelle_entfernen() hatte
-        # bisher keinen Aufrufer ausserhalb der Tests — setzte ein Kollege
-        # seine Adresse beim Anbieter zurueck (den Widerruf, den diese Seite
-        # ihm oben ausdruecklich anbietet), blieb die Zeile aktiv und schlug
-        # dauerhaft fehl. Je aktiver Quelle ein Knopf, nach dem Muster der
-        # uebrigen Aktionen (CSRF-Marke, einzelner POST, kein Bestaetigungs-
-        # schritt — das Entfernen ist ein Gegen-Ereignis, kein Hard-Delete:
-        # unter demselben Namen neu verbinden weckt die Zeile von selbst
-        # wieder auf, siehe kalenderquelle_entfernen()s Docstring).
-        aktion = (
-            f'<form class="aktion gefahr" method="post" '
-            f'action="/team/kalender/entfernen">'
-            f'<input type="hidden" name="quelle_id" '
-            f'value="{_e(str(quelle["id"]))}">'
-            f'<input type="hidden" name="csrf" value="{_e(CSRF_TOKEN)}">'
-            f'<button class="gefahr">Entfernen</button></form>'
-            if quelle["aktiv"] else '<span class="meta">entfernt</span>')
-        zeilen.append([_e(quelle["anzeigename"]), stand, aktion])
-    tabelle = (_tabelle(["Name", "Stand", "Aktion"], zeilen) if zeilen else
-               '<p class="meta">Noch kein Kalender verbunden.</p>')
+    for q in meine:
+        stand = _kalender_stand(q)
+        if not q["aktiv"] and not _kalender_entfernt(q):
+            stand = "pausiert — " + stand
+        zeilen.append([_e(q["anzeigename"]),
+                       _e(_kalender_bereichsname(q["bereich"])), stand,
+                       _kalender_aktionen(q)])
+    meine_tabelle = (
+        _tabelle(["Name", "Bereich", "Stand", "Aktion"], zeilen) if zeilen
+        else '<p class="meta">Noch kein Kalender verbunden.</p>')
+
+    team = ""
+    if _AKTIVE_ROLLE.get() == "freigeben":
+        team_zeilen = [[_e(q["anzeigename"]), _e(q["besitzer"]),
+                        _e(_kalender_bereichsname(q["bereich"])),
+                        ("entfernt" if _kalender_entfernt(q) else
+                         ("pausiert — " if not q["aktiv"] else "")
+                         + _kalender_stand(q)),
+                        _kalender_aktionen(q)]
+                       for q in alle]
+        team = ("<h2>Kalender im Team</h2>" + (
+            _tabelle(["Name", "Besitzer", "Bereich", "Stand", "Aktion"],
+                     team_zeilen) if team_zeilen else
+            '<p class="meta">Noch kein Kalender verbunden.</p>'))
 
     # Neuer Tab fuer die Anbieter-Seite: wer dort die Adresse kopiert, soll
     # hierher zurueckkommen, ohne diese Seite neu suchen zu muessen.
@@ -6733,12 +6805,19 @@ async def team_kalender(request):
         f'Einstellungen öffnen ↗</a></p><p class="meta">{weg}</p></details>'
         for name, link, weg in _ANBIETER_WEGE)
 
-    # Vorbelegt mit dem angemeldeten Namen (ein Kollege mit Rolle
-    # `kalender` verbindet fast immer seinen eigenen), aenderbar fuer den
-    # Betreiber, der fuer jemanden verbindet. Der Sammelstempel ohne
-    # Anmeldung ist kein Name und bleibt deshalb leer.
+    # Vorbelegt mit dem angemeldeten Namen als ANZEIGENAME; der Besitzer ist
+    # immer die angemeldete Person, nicht dieses Feld.
     akteur = _ui_akteur(request)
     vorbelegt = "" if akteur == "betreiber-ui" else akteur
+    bereich_wahl = (
+        '<fieldset class="feld"><legend>Ist das ein Business- oder ein '
+        'Privat-Kalender?</legend>'
+        '<label class="haken"><input type="radio" name="bereich" '
+        'value="business" required> Business</label> '
+        '<label class="haken"><input type="radio" name="bereich" '
+        'value="privat" required> Privat</label>'
+        '<p class="meta">Privat: Kollegen und der Agent sehen nur, dass du '
+        'belegt bist, nicht was.</p></fieldset>')
     formular = (
         f'<form method="post" action="/team/kalender/verbinden">'
         f'<input type="hidden" name="csrf" value="{_e(CSRF_TOKEN)}">'
@@ -6748,27 +6827,35 @@ async def team_kalender(request):
         f'<li><label class="feld">Adresse hier einfügen'
         f'<input name="url" type="text" required autocomplete="off" '
         f'placeholder="https://…/basic.ics"></label></li>'
-        f'<li><label class="feld">Wessen Kalender ist das?'
+        f'<li><label class="feld">Wie soll dieser Kalender heißen?'
         f'<input name="name" type="text" required value="{_e(vorbelegt)}">'
         f'</label></li>'
+        f'<li>{bereich_wahl}</li>'
         f'</ol>'
         f'<button class="primaer" type="submit">Verbinden und prüfen</button>'
         f'</form>')
 
+    google = ('<h2>Mit Google verbinden</h2>'
+              '<p class="meta">Kommt bald: ein Klick, ohne Adresse zu '
+              'kopieren.</p>')
     return _seite("Kalender verbinden",
-                  '<p class="meta">Drei Schritte, dann wird sofort geprüft, '
-                  'ob es klappt. Du kannst die Adresse bei deinem Anbieter '
-                  'jederzeit zurücksetzen — dann endet der Zugriff sofort.</p>'
-                  + formular + '<h2>Verbunden</h2>' + tabelle)
+                  '<p class="meta">Wähle bei jedem Kalender, ob er Business '
+                  'oder Privat ist. Du kannst die Adresse bei deinem '
+                  'Anbieter jederzeit zurücksetzen — dann endet der Zugriff '
+                  'sofort.</p>'
+                  + google + '<h2>Meine Kalender</h2>' + meine_tabelle
+                  + '<h2>Andere Anbieter (Adresse)</h2>' + formular + team)
 
 
 @_gesichert_seite
 async def aktion_kalender_verbinden(request):
-    """Adresse prüfen, dann erst speichern — nie umgekehrt.
+    """Quelle speichern, sofort abgleichen, dann erst melden.
 
     Die sofortige Rückmeldung ist der Kern von §2.7: der häufigste Fehler
     ist die öffentliche statt der geheimen Adresse, und ohne Prüfung merkt
-    das niemand — die Sicht bliebe tagelang leer.
+    das niemand — die Sicht bliebe tagelang leer. Der Abruf läuft genau
+    einmal (kalender_abgleich.quelle_abgleichen); schlägt er ohne einen
+    einzigen Termin fehl, wird die Quelle wieder entfernt.
     """
     form = await request.form()
     if not _csrf_ok(form):
@@ -6776,6 +6863,11 @@ async def aktion_kalender_verbinden(request):
                             "Fehlende oder falsche CSRF-Marke.")
     name = str(form.get("name") or "").strip()[:80]
     url = str(form.get("url") or "").strip()
+    bereich = str(form.get("bereich") or "").strip()
+    if bereich not in dict(_BEREICHE):
+        return _fehlerseite(400, "Bereich fehlt",
+                            "Business oder Privat wählen. Nichts wurde "
+                            "gespeichert.")
     if not name:
         return _fehlerseite(400, "Name fehlt",
                             "Ohne Namen lässt sich der Kalender später "
@@ -6793,42 +6885,43 @@ async def aktion_kalender_verbinden(request):
             f'„{_e(server.EIGENE_QUELLE)}" ist der Name des eigenen '
             f'Kalenders und dafür reserviert. Wähle einen anderen Namen, '
             f'zum Beispiel deinen eigenen.'))
-    # Zeitfenster wie server.belegungen()s Vorgabe (K2/W1, Schlusspruefung
-    # 13.09.2026): dieselbe Zahl, die die Sicht auf /kalender spaeter fuer
-    # dieselbe Quelle zeigt — sonst meldet die Sofortpruefung hier "1.284
-    # Termine" (die ganze Historie) und die spaetere Sicht etwas anderes.
-    termine, fehler = server.kalenderquellen.hole(url, 0, 60)
-    # BLOCKER (Koordinator-Fix-Runde, 13.09.2026): `fehler` ist seit K4
-    # NICHT mehr gleichbedeutend mit "nichts verstanden" — hole() meldet
-    # ihn auch dann, wenn die Quelle VOLLSTAENDIG verstanden wurde und nur
-    # zusaetzlich Serientermine/unlesbare Dauern enthaelt (siehe
-    # kalenderquellen.hole()s Docstring). Ein gewoehnlicher Google-/
-    # Outlook-Kalender mit einer woechentlichen Teamrunde waere sonst gar
-    # nicht mehr verbindbar gewesen — genau der Torschritt aus Spec-
-    # Pruefpunkt 1. Abgewiesen wird nur, wenn GAR NICHTS Verwertbares
-    # ankam (`termine` leer); sonst wie in server.belegungen() (K3/K4):
-    # speichern, und den Vorbehalt NEBEN die Zahl stellen statt die ganze
-    # Verbindung zu verweigern.
-    if fehler and not termine:
+    besitzer, _filter = _kalender_besitzer(request)
+    if not besitzer:
+        return _fehlerseite(400, "Besitzer unbekannt", (
+            "Ohne Anmeldung ist nicht klar, wem dieser Kalender gehört, "
+            "und für diesen Laden ist kein Besitzer eingetragen. Bitte "
+            "anmelden. Nichts wurde gespeichert."))
+    quelle_id = server.kalenderquelle_speichern(name, url, besitzer, bereich)
+    quelle = next(q for q in server.kalenderquellen_lesen(nur_aktive=False)
+                  if q["id"] == quelle_id)
+    anzahl, fehler = kalender_abgleich.quelle_abgleichen(quelle)
+    # BLOCKER (Koordinator-Fix-Runde, 13.09.2026): `fehler` ist NICHT
+    # gleichbedeutend mit "nichts verstanden" — hole() meldet ihn auch dann,
+    # wenn die Quelle VOLLSTAENDIG verstanden wurde und nur zusaetzlich
+    # unlesbare Dauern enthaelt. Abgewiesen wird nur, wenn GAR NICHTS
+    # Verwertbares ankam (anzahl is None); sonst bleibt die Quelle und der
+    # Vorbehalt steht NEBEN der Zahl.
+    if anzahl is None:
+        server.kalenderquelle_entfernen(quelle_id, besitzer)
         return _seite("Kalender verbinden", (
             f'<h1>Das hat nicht geklappt</h1>'
             f'<p class="fehler">{_e(fehler)}</p>'
-            f'<p class="meta">Nichts wurde gespeichert.</p>'
+            f'<p class="meta">Der Kalender wurde nicht verbunden.</p>'
             f'<p><a href="/team/kalender">Zurück und erneut versuchen</a></p>'))
-    # Besitzer ist die angemeldete Person (ohne Anmeldung der Laden-Besitzer),
-    # nie das Namensfeld. Bis die Seite Business/Privat abfragt (Task 6),
-    # gilt die sichere Vorgabe 'privat'.
-    besitzer = (str(request.scope.get("benutzer_name") or "")
-                or post_struktur.container_besitzer() or _ui_akteur(request))
-    server.kalenderquelle_speichern(name, url, besitzer, "privat")
+    # Der naechste Termin kommt aus dem Abgleich: Titel sind nur da, wo sie
+    # gespeichert werden duerfen (nie fuer fremde Privat-Kalender).
     naechster = ""
-    if termine:
-        naechster = (f" Der nächste ist „{_e(termine[0]['titel'])}" + '" am '
-                     f"{_zeit(termine[0]['beginn'])}.")
+    zeile = server._q(
+        "select titel, beginn from kalender_termine where quelle_id = %s "
+        "and titel is not null and beginn >= now() order by beginn limit 1",
+        (quelle_id,))
+    if zeile:
+        naechster = (f" Der nächste ist „{_e(zeile[0]['titel'])}" + '" am '
+                     f"{_zeit(zeile[0]['beginn'])}.")
     vorbehalt = (f'<p class="hinweis">{_e(fehler)}</p>' if fehler else "")
     return _seite("Kalender verbunden", (
         f'<h1>Passt</h1>'
-        f'<p>Ich sehe {len(termine)} Termin{"e" if len(termine) != 1 else ""} '
+        f'<p>Ich sehe {anzahl} Termin{"e" if anzahl != 1 else ""} '
         f'in deinem Kalender.{naechster}</p>'
         + vorbehalt +
         f'<p class="meta">Die Adresse ist gespeichert und wird ab jetzt nicht '
@@ -6836,16 +6929,9 @@ async def aktion_kalender_verbinden(request):
         f'<p><a href="/team/kalender">Zur Übersicht</a></p>'))
 
 
-@_gesichert_seite
-async def aktion_kalender_entfernen(request):
-    """W3 (Schlusspruefung 13.09.2026): der einzige Aufrufer von
-    server.kalenderquelle_entfernen() ausserhalb der Tests — ohne ihn blieb
-    eine tote Quelle fuer immer aktiv und machte `frei: true` fuer sie
-    dauerhaft unmoeglich. Ein Gegen-Ereignis, kein Hard-Delete (siehe
-    kalenderquelle_entfernen()s Docstring): unter demselben Namen neu
-    verbinden weckt die Zeile von selbst wieder auf, ein Bestaetigungs-
-    schritt ist deshalb nicht noetig — dasselbe Muster wie
-    die fruehere Termin-Absage der Oberflaeche."""
+async def _kalender_pflege(request, tun):
+    """Gemeinsamer Rahmen der Pflege-Aktionen: CSRF, Quelle, Besitzerprüfung.
+    `tun(quelle_id, filter, form)` -> bool; False = nicht deine Quelle."""
     form = await request.form()
     if not _csrf_ok(form):
         return _fehlerseite(403, "Abgewiesen",
@@ -6853,14 +6939,43 @@ async def aktion_kalender_entfernen(request):
     quelle_id = str(form.get("quelle_id") or "")
     if not quelle_id:
         return _fehlerseite(400, "Keine Quelle", "Keine Quelle angegeben.")
-    # Nur der Besitzer, oder die Rolle `freigeben` (bzw. ohne Anmeldung der
-    # Uebergangszugang), darf entfernen (Spec §4). Die Fehlerseite dazu
-    # folgt mit Task 6.
-    name = str(request.scope.get("benutzer_name") or "")
-    rolle = str(request.scope.get("benutzer_rolle") or "")
-    server.kalenderquelle_entfernen(
-        quelle_id, name if name and rolle != "freigeben" else None)
+    _besitzer, filter_ = _kalender_besitzer(request)
+    try:
+        geschafft = tun(quelle_id, filter_, form)
+    except ValueError:
+        return _fehlerseite(400, "Bereich fehlt",
+                            "Business oder Privat wählen.")
+    if not geschafft:
+        return _fehlerseite(403, "Nicht deine Quelle", (
+            "Diesen Kalender darfst du nicht ändern: er gehört jemand "
+            "anderem, oder er ist schon entfernt. Nichts wurde getan."))
     return RedirectResponse("/team/kalender", status_code=303)
+
+
+@_gesichert_seite
+async def aktion_kalender_entfernen(request):
+    """W3 (Schlusspruefung 13.09.2026): der Aufrufer von
+    server.kalenderquelle_entfernen() - sonst bliebe eine tote Quelle fuer
+    immer aktiv und machte `frei: true` fuer sie dauerhaft unmoeglich. Ein
+    Gegen-Ereignis, kein Hard-Delete: unter demselben Namen neu verbinden
+    weckt die Zeile von selbst wieder auf. Nur der Besitzer oder die Rolle
+    `freigeben` darf (Spec §4)."""
+    return await _kalender_pflege(
+        request, lambda qid, f, form: server.kalenderquelle_entfernen(qid, f))
+
+
+@_gesichert_seite
+async def aktion_kalender_pausieren(request):
+    return await _kalender_pflege(
+        request, lambda qid, f, form: server.kalenderquelle_pausieren(
+            qid, str(form.get("aktiv") or "") == "1", f))
+
+
+@_gesichert_seite
+async def aktion_kalender_bereich(request):
+    return await _kalender_pflege(
+        request, lambda qid, f, form: server.kalenderquelle_bereich_setzen(
+            qid, str(form.get("bereich") or ""), f))
 
 
 _MONATSNAMEN = ("Januar", "Februar", "März", "April", "Mai", "Juni", "Juli",
@@ -9648,6 +9763,10 @@ app = Starlette(routes=[
     Route("/team/kalender/verbinden", aktion_kalender_verbinden,
           methods=["POST"]),
     Route("/team/kalender/entfernen", aktion_kalender_entfernen,
+          methods=["POST"]),
+    Route("/team/kalender/bereich", aktion_kalender_bereich,
+          methods=["POST"]),
+    Route("/team/kalender/pausieren", aktion_kalender_pausieren,
           methods=["POST"]),
     Route("/team/laden-anlegen", laden_anlegen_seite),
     Route("/team/laden-anlegen/anfordern", aktion_laden_anlegen,
