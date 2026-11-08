@@ -113,6 +113,23 @@ def test_429_ist_voruebergehend(gw):
         _aufruf(gw)
 
 
+@pytest.mark.parametrize("status", [401, 402, 403])
+def test_abgelehnte_anmeldung_ist_voruebergehend(gw, status, caplog):
+    # 08.11.2026: Das Gateway schickte das Abo-Token fuer Haiku an die falsche
+    # Adresse und gab 401 (authentication_error) zurueck. Als GatewayFehler galt
+    # das als Fehler JEDER Mail - 365 Mails landeten in einer Nacht auf `fehler`.
+    # Anmeldung/Rechte/Kontingent sind Sache des Dienstes: pausieren, Mail bleibt neu.
+    gw.status_chat = status
+    gw.chat_fehler = "Authentication failed (provider returned HTTP 401)"
+    with caplog.at_level("WARNING", logger="gateway"):
+        with pytest.raises(gateway.GatewayTransient) as e:
+            _aufruf(gw)
+    assert TOKEN not in str(e.value)
+    warnungen = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any(f"HTTP {status}" in w for w in warnungen)
+    assert all("Authentication failed" not in w for w in warnungen)
+
+
 @pytest.mark.parametrize("ausnahme", [
     ConnectionResetError("Verbindung vom Partner zurueckgesetzt"),
     http.client.IncompleteRead(b"teil", 100),
