@@ -3449,8 +3449,17 @@ def kalenderquellen_lesen(nur_aktive: bool = True) -> list:
     bedingung = "where aktiv" if nur_aktive else ""
     return [dict(z, id=str(z["id"])) for z in _q(
         f"select id, anzeigename, art, url, aktiv, zuletzt_gelesen, besitzer, bereich, "
-        f"letzter_fehler, termine_zuletzt from kalender_quellen "
+        f"letzter_fehler, termine_zuletzt, konto_id, google_id from kalender_quellen "
         f"{bedingung} order by anzeigename")]
+
+
+def kalender_konto_zugang(konto_id: str) -> "str | None":
+    """Das VERSIEGELTE Zugangsgeheimnis eines aktiven Kalender-Kontos (nur der
+    Abgleich oeffnet es mit dem privaten Schluessel); None, wenn es das Konto
+    nicht gibt, es abgeschaltet ist oder kein Zugang gespeichert ist."""
+    z = _q("select zugang_versiegelt from kalender_konten "
+           "where id = %s and aktiv", (konto_id,))
+    return (z[0]["zugang_versiegelt"] or None) if z else None
 
 
 EINSTELLUNG_TEAM_KALENDER_AUS = "kalender_team_aus"

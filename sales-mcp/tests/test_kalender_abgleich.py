@@ -135,13 +135,14 @@ def test_ersetzen_ist_atomar():
     assert len(zeilen) == 1 and zeilen[0]["uid"] == "u1"
 
 
-def test_google_quelle_wird_uebersprungen(monkeypatch):
+def test_google_quelle_ohne_konto_laeuft_nicht_ueber_ical(monkeypatch):
+    """Der Google-Zweig lebt in test_google_kalender.py; hier nur: kein iCal-Abruf."""
     def nie(*a, **k):
         raise AssertionError("hole darf fuer Google nicht laufen")
     monkeypatch.setattr(kalenderquellen, "hole", nie)
     q = _quelle(art="google")
     anzahl, fehler = kalender_abgleich.quelle_abgleichen(q)
-    assert anzahl is None and fehler
+    assert anzahl is None and fehler == kalender_abgleich.KONTO_FEHLT
     assert _stand(q["id"])["letzter_fehler"] == fehler
 
 

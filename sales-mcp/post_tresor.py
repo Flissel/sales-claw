@@ -46,13 +46,14 @@ def _pem(pem: str | None, env_name: str, was: str) -> bytes:
         raise TresorFehler(f"{was} ist nicht lesbar (kein base64)") from None
 
 
-def versiegeln(klartext: str, oeffentlich_pem: str | None = None) -> str:
+def versiegeln(klartext: str, oeffentlich_pem: str | None = None,
+               env_name: str = ENV_OEFFENTLICH) -> str:
     daten = klartext.encode("utf-8")
     if len(klartext) > MAX_ZEICHEN or len(daten) > 318:
         raise TresorFehler(f"Passwort zu lang (hoechstens {MAX_ZEICHEN} Zeichen)")
     try:
         schluessel = serialization.load_pem_public_key(
-            _pem(oeffentlich_pem, ENV_OEFFENTLICH, "oeffentlicher Schluessel")
+            _pem(oeffentlich_pem, env_name, "oeffentlicher Schluessel")
         )
         return base64.b64encode(schluessel.encrypt(daten, _oaep())).decode("ascii")
     except TresorFehler:
@@ -61,10 +62,11 @@ def versiegeln(klartext: str, oeffentlich_pem: str | None = None) -> str:
         raise TresorFehler("Versiegeln fehlgeschlagen (Schluessel unbrauchbar)") from None
 
 
-def oeffnen(versiegelt: str, privat_pem: str | None = None) -> str:
+def oeffnen(versiegelt: str, privat_pem: str | None = None,
+            env_name: str = ENV_PRIVAT) -> str:
     try:
         schluessel = serialization.load_pem_private_key(
-            _pem(privat_pem, ENV_PRIVAT, "privater Schluessel"), password=None
+            _pem(privat_pem, env_name, "privater Schluessel"), password=None
         )
         roh = base64.b64decode(versiegelt, validate=True)
         return schluessel.decrypt(roh, _oaep()).decode("utf-8")

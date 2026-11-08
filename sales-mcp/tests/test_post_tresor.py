@@ -43,6 +43,22 @@ def test_umgebung_base64_pem(schluessel, monkeypatch):
     assert post_tresor.oeffnen(post_tresor.versiegeln("pw")) == "pw"
 
 
+def test_tresor_mit_eigenem_schluesselpaar(schluessel, monkeypatch):
+    """env_name: ein zweites Paar (Kalender) neben dem der Post, ohne Vermischung."""
+    privat, oeffentlich = schluessel
+    monkeypatch.setenv("KALENDER_SCHLUESSEL_OEFFENTLICH", base64.b64encode(oeffentlich.encode()).decode())
+    monkeypatch.setenv("KALENDER_SCHLUESSEL_PRIVAT", base64.b64encode(privat.encode()).decode())
+    monkeypatch.delenv("POST_SCHLUESSEL_OEFFENTLICH", raising=False)
+    monkeypatch.delenv("POST_SCHLUESSEL_PRIVAT", raising=False)
+    v = post_tresor.versiegeln("1//refresh", env_name="KALENDER_SCHLUESSEL_OEFFENTLICH")
+    assert "refresh" not in v
+    assert post_tresor.oeffnen(v, env_name="KALENDER_SCHLUESSEL_PRIVAT") == "1//refresh"
+    with pytest.raises(post_tresor.TresorFehler):       # Vorgabe bleibt das Paar der Post
+        post_tresor.oeffnen(v)
+    with pytest.raises(post_tresor.TresorFehler):
+        post_tresor.versiegeln("x")
+
+
 def test_ohne_privaten_schluessel_tresorfehler(schluessel, monkeypatch):
     _, oeffentlich = schluessel
     monkeypatch.delenv("POST_SCHLUESSEL_PRIVAT", raising=False)

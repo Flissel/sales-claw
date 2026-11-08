@@ -768,6 +768,12 @@ services:
     environment:
       <<: *sales_mcp_umgebung
       KALENDER_INTERVAL_S: ${KALENDER_INTERVAL_S:-300}
+      # Google-Kalender (deploy/kalender-schluessel.sh, deploy/google-kalender-zugang.sh):
+      # der PRIVATE Schluessel oeffnet die versiegelten Refresh-Token - NUR in
+      # diesem Dienst; die Oberflaeche bekommt nur den oeffentlichen.
+      KALENDER_SCHLUESSEL_PRIVAT: ${KALENDER_SCHLUESSEL_PRIVAT:-}
+      GOOGLE_KALENDER_CLIENT_ID: ${GOOGLE_KALENDER_CLIENT_ID:-}
+      GOOGLE_KALENDER_CLIENT_SECRET: ${GOOGLE_KALENDER_CLIENT_SECRET:-}
 
   # Post-Sammelstelle Stufe 1 (03.11.2026, sales-mcp/post_abholen.py): holt die
   # Mails aller aktiven Postfaecher NUR LESEND (IMAP readonly) und ordnet sie
@@ -964,6 +970,12 @@ services:
       # Oberflaeche uebernimmt, kann gespeicherte Zugaenge nicht oeffnen.
       # Leer = „Postfach hinzufügen“ meldet einen Fehler, nichts wird gespeichert.
       - POST_SCHLUESSEL_OEFFENTLICH=${POST_SCHLUESSEL_OEFFENTLICH:-}
+      # Google-Kalender verbinden: die Oberflaeche versiegelt den Refresh-Token
+      # sofort mit dem OEFFENTLICHEN Schluessel (der private steht nur bei
+      # sales-kalender) und tauscht den Code gegen den Token (Client-Secret).
+      - KALENDER_SCHLUESSEL_OEFFENTLICH=${KALENDER_SCHLUESSEL_OEFFENTLICH:-}
+      - GOOGLE_KALENDER_CLIENT_ID=${GOOGLE_KALENDER_CLIENT_ID:-}
+      - GOOGLE_KALENDER_CLIENT_SECRET=${GOOGLE_KALENDER_CLIENT_SECRET:-}
       # Nur zur Anzeige (/post/aufraeumen zeigt den Ordnungsmodus). Die UI ordnet und loescht nie;
       # ohne den Wert zeigte die Seite faelschlich immer "aus".
       - POST_ORDNEN=${POST_ORDNEN:-aus}
