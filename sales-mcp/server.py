@@ -3823,14 +3823,18 @@ def kalendertermine_lesen(von: datetime, bis: datetime, betrachter: str):
     return termine, luecken
 
 
-def belegungen(tage_voraus: int = 60):
+def belegungen(tage_voraus: int = 60, betrachter: "str | None" = None):
     """Alle Termine aller aktiven Quellen -> (eintraege, luecken).
 
     `eintraege` = [{"beginn", "ende", "titel", "ort", "quelle", ...}],
     aufsteigend; Termine aus Quellen tragen dazu `besitzer`, `bereich`,
-    `maskiert`, `ganztaegig`. Gesehen mit den Augen des Laden-Besitzers
-    (`post_struktur.container_besitzer()`, Spec §2.3): fremde Privattermine
-    stehen als „Privattermin" da und zaehlen als belegt. Als „frei"
+    `maskiert`, `ganztaegig`. Gesehen mit den Augen von `betrachter`, ohne
+    Angabe des Laden-Besitzers (`post_struktur.container_besitzer()`, der
+    Agent, Spec §2.3): fremde Privattermine stehen als „Privattermin" da und
+    zaehlen als belegt. Maskiert wird beim Zusammenfuehren selbst
+    (`kalender_sichtbarkeit.anwenden`), nie nachtraeglich - sonst ginge die
+    Maske eines zusammengefuehrten Business+Privat-Paars verloren (Spec
+    §6.4). Als „frei"
     markierte Termine (Geburtstage, TRANSP:TRANSPARENT) fehlen hier - sie
     blockieren nichts.
     `luecken`   = [{"quelle", "grund"}] — Quellen, die gerade nichts sagen.
@@ -3852,7 +3856,8 @@ def belegungen(tage_voraus: int = 60):
     try:
         termine, quellen_luecken = kalendertermine_lesen(
             jetzt, jetzt + timedelta(days=tage_voraus),
-            post_struktur.container_besitzer())
+            post_struktur.container_besitzer() if betrachter is None
+            else betrachter)
     except psycopg.Error as e:
         # K3 (Schlusspruefung 13.09.2026): db/provision.sql laeuft NUR in
         # CI — auf einer Installation, auf der es noch nicht gegen die

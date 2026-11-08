@@ -40,8 +40,13 @@ def _bald(stunden):
     return datetime.now(timezone.utc) + timedelta(hours=stunden)
 
 
-def _belegt(*eintraege, luecken=()):
-    return lambda tage_voraus=60: (list(eintraege), list(luecken))
+def _belegt(*eintraege, luecken=(), gefragt=None):
+    """Ersatz fuer server.belegungen; `gefragt` (Liste) sammelt den Betrachter."""
+    def belegungen(tage_voraus=60, betrachter=None):
+        if gefragt is not None:
+            gefragt.append(betrachter)
+        return list(eintraege), list(luecken)
+    return belegungen
 
 
 def test_fremder_termin_traegt_den_namen(monkeypatch):
@@ -182,31 +187,17 @@ def test_verbunden_aber_leer_ist_nicht_dasselbe_wie_nichts_verbunden(
     assert "Keine Einträge im Zeitfenster." in seite
 
 
-def _privat_von_felix():
-    return {"beginn": _bald(24), "ende": _bald(25), "titel": "Arzt Dr. Geheim",
-            "ort": "Praxis X", "quelle": "Felix privat", "besitzer": "felix",
-            "bereich": "privat", "maskiert": False}
-
-
-def test_fremder_privattermin_steht_auf_der_seite_nur_als_privattermin(monkeypatch):
-    """Spec 2026-11-08 §2.2: belegungen() sieht mit den Augen des Laden-
-    Besitzers; die Seite maskiert fuer die Person, die sie ansieht (ohne
-    Anmeldung: der Laden-Besitzer, hier ivan)."""
-    monkeypatch.setenv("POST_BESITZER", "ivan")
-    monkeypatch.setattr(server, "belegungen", _belegt(_privat_von_felix()))
-    antwort = _get("/kalender")
-    assert antwort.status_code == 200
-    assert "Arzt Dr. Geheim" not in antwort.text
-    assert "Praxis X" not in antwort.text
-    assert "Privattermin" in antwort.text
-
-
-def test_eigener_privattermin_steht_auf_der_seite_voll(monkeypatch):
-    monkeypatch.setenv("POST_BESITZER", "felix")
-    monkeypatch.setattr(server, "belegungen", _belegt(_privat_von_felix()))
-    antwort = _get("/kalender")
-    assert antwort.status_code == 200
-    assert "Arzt Dr. Geheim" in antwort.text and "Praxis X" in antwort.text
+def test_seite_fragt_belegungen_mit_den_augen_des_betrachters(monkeypatch):
+    """Final-Fix I1 (Spec §6.4): die Liste maskiert nicht mehr nachtraeglich,
+    sondern laesst belegungen() fuer die ansehende Person lesen (ohne
+    Anmeldung: der Laden-Besitzer). Ersetzt die beiden Stub-Tests, die das
+    nachtraegliche Maskieren (_fuer_betrachter) prueften."""
+    for besitzer in ("ivan", "felix"):
+        gefragt = []
+        monkeypatch.setenv("POST_BESITZER", besitzer)
+        monkeypatch.setattr(server, "belegungen", _belegt(gefragt=gefragt))
+        assert _get("/kalender").status_code == 200
+        assert gefragt == [besitzer]
 
 
 @pytest.fixture
@@ -364,3 +355,43 @@ def test_agent_sieht_fremden_privat_kalender_ohne_namen(monkeypatch):
     assert "Ivan geheim" not in text and "Privat (ivan)" in text and "Felix Arbeit" in text
     aus = server._luecken_fuer_agent(luecken)
     assert aus[0] == {"quelle": "Privat (ivan)", "grund": "nicht abrufbar"}
+
+
+def _felix_paar_business_zuerst():
+    """Derselbe Termin (eine UID) in felix' Business- UND Privat-Kalender, die
+    Business-Kopie zuerst angelegt (sie wird beim Zusammenfuehren die Basis)."""
+    beginn = _bald(24)
+    termin = {"uid": "dup-1", "beginn": beginn, "ende": beginn + timedelta(hours=1),
+              "titel": "Arzt Dr. Geheim", "ort": "Praxis X"}
+    for name, bereich in (("Felix Arbeit", "business"), ("Felix privat", "privat")):
+        qid = server.kalenderquelle_speichern(name, f"https://example.test/{bereich}.ics",
+                                              "felix", bereich)
+        server.kalendertermine_ersetzen(qid, [dict(termin)], True)
+        server.kalenderquelle_stand_setzen(qid, 1, None)
+    return beginn
+
+
+def test_zusammengefuehrtes_paar_bleibt_fuer_ivan_maskiert(ivan_angemeldet):
+    """Final-Fix I1 (Spec §6.4): belegungen() fuehrte mit den Augen des Laden-
+    Besitzers zusammen; die Business-Kopie war Basis, die Seite maskierte danach
+    nur nach deren Bereich -> ivan sah den Titel. Die Maske darf beim
+    Zusammenfuehren nie verloren gehen."""
+    _felix_paar_business_zuerst()
+    seite = ivan_angemeldet.get("/kalender", headers={"host": HOST_OK})
+    assert seite.status_code == 200
+    assert "Privattermin" in seite.text
+    assert "Arzt Dr. Geheim" not in seite.text and "Praxis X" not in seite.text
+    assert "Felix privat" not in seite.text
+
+
+def test_agent_pfad_sieht_das_paar_weiter_mit_den_augen_des_laden_besitzers(monkeypatch):
+    import kalender
+    monkeypatch.setenv("POST_BESITZER", "felix")
+    monkeypatch.setattr(kalender, "termine_lesen", lambda *a, **k: ([], None))
+    _felix_paar_business_zuerst()
+    eintraege, luecken = server.belegungen()
+    assert luecken == []
+    assert [(e["titel"], e["maskiert"]) for e in eintraege] == [("Arzt Dr. Geheim", False)]
+    eintraege, _ = server.belegungen(betrachter="ivan")
+    assert [(e["titel"], e["ort"], e["maskiert"]) for e in eintraege] == [
+        ("Privattermin", "", True)]

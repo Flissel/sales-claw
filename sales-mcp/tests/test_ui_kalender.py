@@ -42,7 +42,8 @@ def leer(tmp_path, monkeypatch):
     monkeypatch.setattr(medien, "ERZEUGT_VERZEICHNIS", str(tmp_path / "erzeugt"))
     for name in ("CALDAV_URL", "CALDAV_USER", "CALDAV_PASSWORT"):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(server, "belegungen", lambda tage_voraus=60: ([], []))
+    monkeypatch.setattr(server, "belegungen",
+                        lambda tage_voraus=60, betrachter=None: ([], []))
     monkeypatch.setattr(server, "kalenderquellen_lesen", lambda nur_aktive=True: [])
     monkeypatch.setattr(kalender, "termine_lesen", lambda z=7, v=60: ([], None))
     monkeypatch.setattr(mail_dispatch, "EMAIL_ABSENDER", "buero@vibemind.space")

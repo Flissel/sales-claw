@@ -6202,22 +6202,6 @@ def _freie_termine(betrachter: str, tage_voraus: int = 60) -> list:
             for t in termine if t["frei"]]
 
 
-def _fuer_betrachter(eintraege: list, betrachter: str) -> list:
-    """Eintraege aus `server.belegungen()` fuer `betrachter` maskieren:
-    Privattermine, die er nicht sehen darf, nur als „Privattermin" ohne Ort.
-    Eintraege ohne Besitzer (der eigene CalDAV-Kalender des Ladens) sind
-    Business."""
-    aus = []
-    for e in eintraege:
-        if "besitzer" in e and kalender_sichtbarkeit.maskiert(
-                e["besitzer"], e["bereich"], betrachter):
-            e = {**e, "titel": kalender_sichtbarkeit.PRIVATTERMIN, "ort": "",
-                 "quelle": kalender_sichtbarkeit.privat_name(e["besitzer"]),
-                 "maskiert": True}
-        aus.append(e)
-    return aus
-
-
 def kalender_abschnitte() -> str:
     """Die serverseitigen Abschnitte unter dem Kalender (R5, 14.10.2026):
     die Seite selbst baut ui_kalender (Paket /static/kalender), das alte
@@ -6247,12 +6231,12 @@ def kalender_abschnitte() -> str:
     # seiner Quelle (server.EIGENE_QUELLE fuer den eigenen). Schweigt eine
     # Quelle, steht sie in `luecken` und wird unten als Hinweis genannt statt
     # stillschweigend als frei zu gelten (Spec §2.2).
-    eintraege, luecken = server.belegungen()
-    # belegungen() sieht mit den Augen des Laden-Besitzers (Agent, Spec
-    # §2.3); diese Seite sieht die angemeldete Person - fuer sie werden
-    # fremde Privattermine nachtraeglich maskiert.
+    # Diese Seite sieht die angemeldete Person (nicht der Agent/Laden-
+    # Besitzer): belegungen() maskiert fuer sie schon beim Zusammenfuehren
+    # Doppelter - nachtraeglich ginge die Maske eines Business+Privat-Paars
+    # verloren (Spec §6.4, Final-Fix I1).
     betrachter = _kalender_betrachter()
-    eintraege = _fuer_betrachter(eintraege, betrachter)
+    eintraege, luecken = server.belegungen(betrachter=betrachter)
     eintraege = sorted(eintraege + _freie_termine(betrachter),
                        key=lambda e: e["beginn"])
 
