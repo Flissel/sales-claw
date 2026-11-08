@@ -357,6 +357,24 @@ def test_agent_sieht_fremden_privat_kalender_ohne_namen(monkeypatch):
     assert aus[0] == {"quelle": "Privat (ivan)", "grund": "nicht abrufbar"}
 
 
+def test_alter_ui_stempel_ohne_abgleich_ist_in_termine_json_eine_luecke(ivan_angemeldet):
+    """Final-Fix I2: zuletzt_gelesen = now() (alter Code) ohne abgeglichen_am
+    -> Hinweis „noch nicht abgeglichen", die Antwort ist unvollstaendig."""
+    qid = server.kalenderquelle_speichern("Ivan Arbeit", "https://example.test/i.ics",
+                                          "ivan", "business")
+    server._q("update kalender_quellen set zuletzt_gelesen = now() where id = %s", (qid,))
+    beginn = _bald(24)
+    von = (beginn - timedelta(days=1)).isoformat().replace("+", "%2B")
+    bis = (beginn + timedelta(days=1)).isoformat().replace("+", "%2B")
+    pfad = f"/kalender/termine.json?von={von}&bis={bis}"
+    antwort = ivan_angemeldet.get(pfad, headers={"host": HOST_OK})
+    assert antwort.status_code == 200, antwort.text
+    assert "Kalender „Ivan Arbeit“: noch nicht abgeglichen" in antwort.json()["hinweise"]
+    server.kalenderquelle_stand_setzen(qid, 0, None)
+    antwort = ivan_angemeldet.get(pfad, headers={"host": HOST_OK})
+    assert antwort.json()["hinweise"] == []
+
+
 def _felix_paar_business_zuerst():
     """Derselbe Termin (eine UID) in felix' Business- UND Privat-Kalender, die
     Business-Kopie zuerst angelegt (sie wird beim Zusammenfuehren die Basis)."""

@@ -37,7 +37,7 @@ def _quelle(name, besitzer, bereich, termine, fehler=None, alter_min=0):
         besitzer, bereich, post_struktur.container_besitzer()))
     server.kalenderquelle_stand_setzen(qid, len(termine), fehler)
     if alter_min:
-        server._q("update kalender_quellen set zuletzt_gelesen = "
+        server._q("update kalender_quellen set abgeglichen_am = "
                   "now() - make_interval(mins => %s) where id = %s", (alter_min, qid))
     return qid
 

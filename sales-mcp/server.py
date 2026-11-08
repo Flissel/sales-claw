@@ -3448,8 +3448,9 @@ def kalenderquellen_lesen(nur_aktive: bool = True) -> list:
     Aufrufer darf sie benutzen, aber niemals anzeigen oder loggen."""
     bedingung = "where aktiv" if nur_aktive else ""
     return [dict(z, id=str(z["id"])) for z in _q(
-        f"select id, anzeigename, art, url, aktiv, zuletzt_gelesen, besitzer, bereich, "
-        f"letzter_fehler, termine_zuletzt, konto_id, google_id from kalender_quellen "
+        f"select id, anzeigename, art, url, aktiv, zuletzt_gelesen, abgeglichen_am, "
+        f"besitzer, bereich, letzter_fehler, termine_zuletzt, konto_id, google_id "
+        f"from kalender_quellen "
         f"{bedingung} order by anzeigename")]
 
 
@@ -3526,7 +3527,8 @@ def kalenderquelle_speichern(anzeigename: str, url: str, besitzer: str,
                 "values (%s, %s, %s, %s) "
                 "on conflict (besitzer, anzeigename) do update set "
                 "url = excluded.url, bereich = excluded.bereich, "
-                "aktiv = true, letzter_fehler = null, zuletzt_gelesen = null "
+                "aktiv = true, letzter_fehler = null, zuletzt_gelesen = null, "
+                "abgeglichen_am = null "
                 # Eine Google-Quelle wird nie zur Mischzeile (art google,
                 # aber mit Adresse): der Name ist dann belegt.
                 "where kalender_quellen.art <> 'google' "
@@ -3608,7 +3610,8 @@ def google_quelle_speichern(konto_id: str, google_id: str, anzeigename: str,
                 "on conflict (besitzer, anzeigename) do update set "
                 "art = 'google', url = null, bereich = excluded.bereich, "
                 "konto_id = excluded.konto_id, google_id = excluded.google_id, "
-                "aktiv = true, letzter_fehler = null, zuletzt_gelesen = null "
+                "aktiv = true, letzter_fehler = null, zuletzt_gelesen = null, "
+                "abgeglichen_am = null "
                 "returning id",
                 (anzeigename.strip(), besitzer, bereich, konto_id, google_id)
             ).fetchone()["id"])
@@ -3658,8 +3661,10 @@ def kalenderquelle_pausieren(quelle_id: str, aktiv: bool,
 
 def kalenderquelle_stand_setzen(quelle_id: str, anzahl, fehler) -> None:
     """Nach jedem Abruf. `anzahl=None` laesst den alten Zaehler stehen —
-    ein einzelner Ausfall soll die letzte bekannte Zahl nicht wegwischen."""
-    _q("update kalender_quellen set zuletzt_gelesen = now(), "
+    ein einzelner Ausfall soll die letzte bekannte Zahl nicht wegwischen.
+    `abgeglichen_am` schreibt NUR dieser Weg (Abgleich, erstes Verbinden);
+    der alte Code kennt die Spalte nicht (Final-Fix I2, Rollout-Fenster)."""
+    _q("update kalender_quellen set zuletzt_gelesen = now(), abgeglichen_am = now(), "
        "letzter_fehler = %s, "
        "termine_zuletzt = coalesce(%s, termine_zuletzt) "
        "where id = %s", (fehler, anzahl, quelle_id))
@@ -3762,10 +3767,15 @@ FRISCHE_MIN = 15
 
 
 def _quellen_luecke(quelle: dict, jetzt: datetime):
-    """Grund, warum diese Quelle gerade nicht vollstaendig ist, sonst None."""
-    if quelle["zuletzt_gelesen"] is None:
+    """Grund, warum diese Quelle gerade nicht vollstaendig ist, sonst None.
+
+    Frische zaehlt nach `abgeglichen_am`, nicht nach `zuletzt_gelesen`: der
+    alte Code setzt zuletzt_gelesen bei jedem Live-Abruf, nach dem Update
+    staende eine Quelle sonst bis zur ersten Runde des neuen Dienstes ohne
+    Termine als frisch da (der Agent saehe "frei", Final-Fix I2)."""
+    if quelle["abgeglichen_am"] is None:
         return "noch nicht abgeglichen"
-    if quelle["zuletzt_gelesen"] < jetzt - timedelta(minutes=FRISCHE_MIN):
+    if quelle["abgeglichen_am"] < jetzt - timedelta(minutes=FRISCHE_MIN):
         return f"seit über {FRISCHE_MIN} Minuten nicht abgeglichen"
     return quelle["letzter_fehler"] or None
 

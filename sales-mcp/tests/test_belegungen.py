@@ -158,9 +158,29 @@ def test_unerreichbare_quelle_wird_als_luecke_gemeldet():
     assert "erreichbar" in luecken[0]["grund"]
 
 
+def test_alter_ui_stempel_ohne_abgleich_ist_luecke_nie_frei():
+    """Final-Fix I2 (Rollout-Fenster): der alte Code setzt bei jedem Lesen
+    zuletzt_gelesen = now(). Ohne Abgleich des neuen Dienstes (abgeglichen_am)
+    ist die Quelle trotzdem eine Luecke - der Agent sagt nie „frei"."""
+    qid = server.kalenderquelle_speichern("Ivan", "https://example.test/a.ics",
+                                          "ivan", "business")
+    server._q("update kalender_quellen set zuletzt_gelesen = now() where id = %s",
+              (qid,))
+    _, luecken = server.belegungen()
+    assert [(l["quelle"], l["grund"]) for l in luecken] == [
+        ("Ivan", "noch nicht abgeglichen")]
+    antwort = json.loads(server.termin_konflikte(_t(2, 9).date().isoformat(), "09:00"))
+    assert antwort["frei"] is False
+    assert [l["quelle"] for l in antwort["quellen_luecken"]] == ["Ivan"]
+    # Nach dem ersten Abgleich des neuen Dienstes: frisch.
+    server.kalenderquelle_stand_setzen(qid, 0, None)
+    antwort = json.loads(server.termin_konflikte(_t(2, 9).date().isoformat(), "09:00"))
+    assert antwort["frei"] is True and antwort["quellen_luecken"] == []
+
+
 def test_veraltete_quelle_ist_luecke():
     qid = _quelle("Ivan", "ivan", "business", [_termin(1, 9, "Alt", "a")])
-    server._q("update kalender_quellen set zuletzt_gelesen = now() - interval '16 minutes' "
+    server._q("update kalender_quellen set abgeglichen_am = now() - interval '16 minutes' "
               "where id = %s", (qid,))
     eintraege, luecken = server.belegungen()
     assert [e["titel"] for e in eintraege] == ["Alt"]

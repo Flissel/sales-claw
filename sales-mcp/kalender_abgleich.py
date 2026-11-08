@@ -147,8 +147,9 @@ def runde() -> dict:
 
 
 def neue_quellen() -> list[dict]:
-    """Aktive Quellen, die noch nie gelesen wurden (frisch verbunden)."""
-    return [q for q in server.kalenderquellen_lesen() if q["zuletzt_gelesen"] is None]
+    """Aktive Quellen, die dieser Dienst noch nie abgeglichen hat (frisch
+    verbunden oder vom alten Code nur live gelesen)."""
+    return [q for q in server.kalenderquellen_lesen() if q["abgeglichen_am"] is None]
 
 
 def _stoppen(signum, _rahmen) -> None:

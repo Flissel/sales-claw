@@ -50,6 +50,11 @@ alter table :"schema".kalender_quellen add column if not exists bereich text def
 alter table :"schema".kalender_quellen add column if not exists konto_id uuid
   references :"schema".kalender_konten(id);
 alter table :"schema".kalender_quellen add column if not exists google_id text;
+-- Wann der Abgleich-Dienst (sales-kalender) die Quelle zuletzt gelesen hat.
+-- Bewusst NICHT zuletzt_gelesen: das schreibt auch der alte Code bei jedem
+-- Live-Abruf. Nur abgeglichen_am zaehlt fuer die Frische (Spec §6.2); bis der
+-- neue Dienst eine Quelle abgeglichen hat, ist sie eine Luecke, nie "frei".
+alter table :"schema".kalender_quellen add column if not exists abgeglichen_am timestamptz;
 
 -- Abbruch, wenn Altzeilen einen Besitzer brauchen, aber keiner uebergeben wurde.
 do $$

@@ -6686,8 +6686,10 @@ def _kalender_besitzer(request) -> "tuple[str, str | None]":
 
 
 def _kalender_stand(quelle: dict) -> str:
-    stand = (f"zuletzt gelesen {_zeit(quelle['zuletzt_gelesen'])}"
-             if quelle["zuletzt_gelesen"] else "noch nicht gelesen")
+    # abgeglichen_am, nicht zuletzt_gelesen: dieselbe Frische, nach der die
+    # Quelle als Luecke zaehlt (Final-Fix I2).
+    stand = (f"zuletzt gelesen {_zeit(quelle['abgeglichen_am'])}"
+             if quelle["abgeglichen_am"] else "noch nicht gelesen")
     if quelle["letzter_fehler"]:
         stand += f" — {_e(quelle['letzter_fehler'])}"
     elif quelle["termine_zuletzt"] is not None:

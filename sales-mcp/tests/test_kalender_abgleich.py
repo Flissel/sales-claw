@@ -193,5 +193,13 @@ def test_stand_schreiben_scheitert_haelt_runde_nicht_an(monkeypatch):
 
 def test_neue_quellen_sind_die_nie_gelesenen():
     neu = _quelle()
-    _quelle(zuletzt_gelesen=True)
+    alt = _quelle()
+    server.kalenderquelle_stand_setzen(alt["id"], 0, None)
     assert [q["id"] for q in kalender_abgleich.neue_quellen()] == [neu["id"]]
+
+
+def test_neue_quellen_zaehlen_den_stempel_der_alten_ui_nicht():
+    """Final-Fix I2: der alte Code setzt zuletzt_gelesen bei jedem Lesen; erst
+    der neue Abgleich (abgeglichen_am) macht eine Quelle 'nicht mehr neu'."""
+    q = _quelle(zuletzt_gelesen=True)
+    assert [x["id"] for x in kalender_abgleich.neue_quellen()] == [q["id"]]
