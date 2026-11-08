@@ -3585,24 +3585,41 @@ def kalenderkonto_abbrechen(konto_id: str, besitzer: str) -> bool:
 
 def kalenderkonto_lesen(konto_id: str) -> "dict | None":
     """Ein Konto OHNE Zugangsgeheimnis (id, besitzer, adresse, kalender_liste,
-    aktiv); None bei unbekannter oder kaputter ID."""
+    aktiv, hat_zugang); None bei unbekannter oder kaputter ID. `hat_zugang`
+    sagt nur, OB ein versiegelter Zugang liegt - nie den Wert."""
     try:
         uuid.UUID(str(konto_id))
     except ValueError:
         return None
-    z = _q("select id, besitzer, adresse, kalender_liste, aktiv "
+    z = _q("select id, besitzer, adresse, kalender_liste, aktiv, "
+           "zugang_versiegelt is not null as hat_zugang "
            "from kalender_konten where id = %s", (str(konto_id),))
     return dict(z[0], id=str(z[0]["id"])) if z else None
+
+
+GOOGLE_ZUGANG_ABGELAUFEN = "Zugang abgelaufen – bitte neu verbinden"
 
 
 def google_quelle_speichern(konto_id: str, google_id: str, anzeigename: str,
                             besitzer: str, bereich: str) -> str:
     """Google-Kalender als Quelle anlegen (art 'google', keine Adresse).
     Upsert auf (besitzer, anzeigename) wie `kalenderquelle_speichern`: der
-    Bereich gilt wie neu gewaehlt, fremde Privat-Titel fallen sofort weg."""
+    Bereich gilt wie neu gewaehlt, fremde Privat-Titel fallen sofort weg.
+
+    Rueckhalt (Final-Fix I3): das Konto wird `for share` gesperrt und muss
+    noch einen Zugang tragen, sonst ValueError(GOOGLE_ZUGANG_ABGELAUFEN).
+    `kalenderquelle_entfernen` sperrt dieselbe Zeile `for update`: entweder
+    sieht es diese neue Quelle und laesst den Zugang stehen, oder diese
+    Funktion sieht den vernichteten Zugang und legt nichts an."""
     _bereich_pruefen(bereich)
     with pool.connection() as conn:
         with conn.transaction():
+            konto = conn.execute(
+                "select zugang_versiegelt is not null as hat_zugang "
+                "from kalender_konten where id = %s for share",
+                (konto_id,)).fetchone()
+            if konto is None or not konto["hat_zugang"]:
+                raise ValueError(GOOGLE_ZUGANG_ABGELAUFEN)
             quelle_id = str(conn.execute(
                 "insert into kalender_quellen (anzeigename, art, url, besitzer, "
                 "bereich, konto_id, google_id) "
@@ -3727,6 +3744,20 @@ def kalenderquelle_entfernen(quelle_id: str, besitzer: "str | None") -> bool:
         return False
     with pool.connection() as conn:
         with conn.transaction():
+            # Final-Fix I3: zuerst das Google-Konto sperren (`for update`),
+            # dann die Quellenzeile - dieselbe Reihenfolge wie
+            # google_quelle_speichern (Konto `for share`, dann Quelle), also
+            # kein Deadlock. Ein laufendes Uebernehmen wird so abgewartet und
+            # seine neue Quelle unten mitgezaehlt; sonst vernichtete dies den
+            # Zugang unter einer gerade angelegten Quelle.
+            vorab = conn.execute(
+                "select konto_id from kalender_quellen where id = %s"
+                + bedingung, (quelle_id,) + werte).fetchone()
+            if vorab is None:
+                return False
+            if vorab["konto_id"] is not None:
+                conn.execute("select 1 from kalender_konten where id = %s "
+                             "for update", (vorab["konto_id"],))
             # Zeile sperren (der Abgleich sperrt sie ebenso), dann Termine
             # und Zeile loeschen - aktiv oder pausiert.
             zeile = conn.execute(
@@ -3734,6 +3765,10 @@ def kalenderquelle_entfernen(quelle_id: str, besitzer: "str | None") -> bool:
                 + bedingung + " for update", (quelle_id,) + werte).fetchone()
             if zeile is None:
                 return False
+            if zeile["konto_id"] not in (None, vorab["konto_id"]):
+                # Inzwischen an ein anderes Konto gehaengt (Neu-Verbinden).
+                conn.execute("select 1 from kalender_konten where id = %s "
+                             "for update", (zeile["konto_id"],))
             conn.execute("delete from kalender_termine where quelle_id = %s",
                          (quelle_id,))
             conn.execute("delete from kalender_quellen where id = %s",
@@ -3741,7 +3776,7 @@ def kalenderquelle_entfernen(quelle_id: str, besitzer: "str | None") -> bool:
             if zeile["konto_id"] is not None:
                 # Keine Quellenzeile mehr am Google-Konto (pausierte zaehlen
                 # als vorhanden): der Zugang wird vernichtet, gleiche
-                # Transaktion.
+                # Transaktion (das Konto ist oben gesperrt).
                 if conn.execute(
                         "select 1 from kalender_quellen where konto_id = %s "
                         "limit 1", (zeile["konto_id"],)).fetchone() is None:

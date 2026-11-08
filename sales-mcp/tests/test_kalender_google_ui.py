@@ -625,6 +625,87 @@ def test_abbrechen_fremdes_konto_und_ohne_csrf(scharf, eingerichtet, google):
     assert server.kalender_konto_zugang(konto_id)
 
 
+# --- Final-Fix I3: Zugang abgelaufen, Wettlauf um den Zugang -----------------
+
+def _zugang_vernichten(kid):
+    server._q("update kalender_konten set zugang_versiegelt = null where id = %s "
+              "returning id", (kid,))
+
+
+def test_konto_lesen_nennt_nur_ob_ein_zugang_da_ist():
+    kid = server.kalenderkonto_speichern("ivan", "a@example.test", "V-GEHEIM", [])
+    k = server.kalenderkonto_lesen(kid)
+    assert k["hat_zugang"] is True
+    assert "zugang_versiegelt" not in k and "V-GEHEIM" not in str(k)
+    _zugang_vernichten(kid)
+    assert server.kalenderkonto_lesen(kid)["hat_zugang"] is False
+
+
+def test_uebernehmen_mit_vernichtetem_zugang_legt_nichts_an(scharf, eingerichtet, google):
+    c = _angemeldet("ivan")
+    konto_id = _auswahl(c)
+    _zugang_vernichten(konto_id)      # z. B. aufgeraeumt (eine Stunde) oder entfernt
+    r = _post(c, "/team/kalender/google/uebernehmen", {
+        "konto_id": konto_id, "wahl": ["ivan@example.test"],
+        "bereich_ivan@example.test": "privat"})
+    assert r.status_code == 400
+    assert "Zugang abgelaufen – bitte neu verbinden" in r.text
+    assert _quellen() == []
+
+
+def test_speichern_backstop_bei_vernichtetem_zugang():
+    kid = server.kalenderkonto_speichern("ivan", "a@example.test", "V1",
+                                         [{"id": "k0", "name": "K0", "primaer": True}])
+    _zugang_vernichten(kid)
+    with pytest.raises(ValueError):
+        server.google_quelle_speichern(kid, "k0", "K0", "ivan", "business")
+    assert _quellen() == []
+
+
+def test_uebernehmen_faengt_den_backstop(scharf, eingerichtet, google, monkeypatch):
+    """Zwischen Lesen des Kontos und Speichern vernichtet (Wettlauf): dieselbe
+    Seite, keine Quelle, kein 500."""
+    c = _angemeldet("ivan")
+    konto_id = _auswahl(c)
+    echt = server.kalenderkonto_lesen
+
+    def lesen_dann_vernichten(kid):
+        k = echt(kid)
+        _zugang_vernichten(kid)
+        return k
+    monkeypatch.setattr(server, "kalenderkonto_lesen", lesen_dann_vernichten)
+    r = _post(c, "/team/kalender/google/uebernehmen", {
+        "konto_id": konto_id, "wahl": ["ivan@example.test"],
+        "bereich_ivan@example.test": "privat"})
+    assert r.status_code == 400
+    assert "Zugang abgelaufen – bitte neu verbinden" in r.text
+    assert _quellen() == []
+
+
+def test_entfernen_wartet_auf_laufendes_uebernehmen():
+    """Wettlauf: waehrend eine neue Quelle am Konto noch nicht committed ist
+    (google_quelle_speichern haelt das Konto `for share`), entfernt jemand die
+    bisher letzte Quelle. Der Zugang darf nicht vernichtet werden, denn nach
+    dem Commit haengt wieder eine Quelle daran."""
+    import threading
+    import time as _time
+    kid, (a,) = _konto_mit_quellen(1)
+    with server.pool.connection() as conn:
+        with conn.transaction():
+            conn.execute("select 1 from kalender_konten where id = %s for share", (kid,))
+            conn.execute(
+                "insert into kalender_quellen (anzeigename, art, url, besitzer, bereich, "
+                "konto_id, google_id) values ('K-neu', 'google', null, 'ivan', "
+                "'business', %s, 'k-neu')", (kid,))
+            t = threading.Thread(target=server.kalenderquelle_entfernen, args=(a, "ivan"))
+            t.start()
+            _time.sleep(1.0)
+        t.join(10)
+    assert not t.is_alive()
+    assert [x["anzeigename"] for x in _quellen()] == ["K-neu"]
+    assert server.kalender_konto_zugang(kid) == "VERSIEGELT-X"
+
+
 # --- Fix-Runde 1: eigene Meldung fuer fremde google_id ----------------------
 
 def test_fremde_google_id_hat_eigene_meldung(scharf, eingerichtet, google):

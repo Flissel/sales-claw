@@ -7064,6 +7064,13 @@ def _google_namen(besitzer: str, konto_id: str, auswahl: list) -> list:
     return namen
 
 
+def _google_abgelaufen() -> HTMLResponse:
+    return _google_seite(
+        "Google nicht verbunden",
+        _e(server.GOOGLE_ZUGANG_ABGELAUFEN) + ". Nichts wurde gespeichert.",
+        400)
+
+
 @_gesichert_seite
 async def google_uebernehmen(request):
     form = await request.form()
@@ -7074,6 +7081,11 @@ async def google_uebernehmen(request):
     konto = _google_eigenes_konto(besitzer, form.get("konto_id"))
     if konto is None:
         return _google_seite("Abgewiesen", _e(_GOOGLE_KEIN_KONTO), 403)
+    if not konto["hat_zugang"]:
+        # Zugang schon vernichtet (aufgeraeumt nach einer Stunde, abgebrochen
+        # oder letzte Quelle entfernt): eine Quelle daran hiesse nur
+        # "Konto fehlt" beim Abgleich (Final-Fix I3).
+        return _google_abgelaufen()
     zurueck = ("/team/kalender/google/auswahl?konto="
                + urllib.parse.quote(konto["id"]))
     # Nur, was im gespeicherten Konto steht - nie dem Formular glauben.
@@ -7100,8 +7112,14 @@ async def google_uebernehmen(request):
                 "gewählt sein. Nichts wurde gespeichert.", 400, zurueck)
         auswahl.append((gid, bekannt[gid], bereich))
     namen = _google_namen(besitzer, konto["id"], [(g, n) for g, n, _ in auswahl])
-    for (gid, _n, bereich), name in zip(auswahl, namen):
-        server.google_quelle_speichern(konto["id"], gid, name, besitzer, bereich)
+    try:
+        for (gid, _n, bereich), name in zip(auswahl, namen):
+            server.google_quelle_speichern(konto["id"], gid, name, besitzer,
+                                           bereich)
+    except ValueError:
+        # Rueckhalt in google_quelle_speichern: der Zugang wurde zwischen
+        # Lesen und Speichern vernichtet (Bereiche sind oben schon geprueft).
+        return _google_abgelaufen()
     liste = "".join(f"<li>{_e(n)}</li>" for n in namen)
     return _seite("Kalender verbunden", (
         f'<p>{len(namen)} Kalender übernommen:</p><ul>{liste}</ul>'
@@ -7247,10 +7265,12 @@ async def _kalender_pflege(request, tun):
 async def aktion_kalender_entfernen(request):
     """W3 (Schlusspruefung 13.09.2026): der Aufrufer von
     server.kalenderquelle_entfernen() - sonst bliebe eine tote Quelle fuer
-    immer aktiv und machte `frei: true` fuer sie dauerhaft unmoeglich. Ein
-    Gegen-Ereignis, kein Hard-Delete: unter demselben Namen neu verbinden
-    weckt die Zeile von selbst wieder auf. Nur der Besitzer oder die Rolle
-    `freigeben` darf (Spec §4)."""
+    immer aktiv und machte `frei: true` fuer sie dauerhaft unmoeglich.
+    Seit Fix-Runde 1 (Task 9) ein echtes Loeschen: Quellenzeile und ihre
+    Termine sind weg (aktiv oder pausiert), die iCal-Adresse mit ihr; war es
+    die letzte Quelle eines Google-Kontos, wird dessen Zugang vernichtet.
+    Wieder da ist der Kalender nur durch neues Verbinden. Nur der Besitzer
+    oder die Rolle `freigeben` darf (Spec §4)."""
     return await _kalender_pflege(
         request, lambda qid, f, form: server.kalenderquelle_entfernen(qid, f))
 
