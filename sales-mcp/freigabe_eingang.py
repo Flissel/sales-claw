@@ -9,6 +9,7 @@ import hmac
 import json
 import re
 import secrets
+import uuid
 
 import psycopg
 
@@ -121,6 +122,8 @@ def schliessen(herkunft, quelle_ref, status, von) -> int:
 
 def schliessen_kennung(kennung, status, von) -> bool:
     _status_pruefen(status)
+    if not isinstance(kennung, str) or not _KENNUNG_RE.match(kennung):
+        return False
     z = server._q(
         "update freigabe_eintraege set status = %s, geschlossen_am = now(), "
         "geschlossen_von = %s where kennung = %s and status = 'offen' returning id",
@@ -161,18 +164,60 @@ def aufgeraeumt(kennung) -> None:
               "where kennung = %s returning id", (kennung,))
 
 
+_AUFTRAG_ENTRYART = {"selbstbild_label": "selbstbild_rueckfrage",
+                     "kurs_freigabe_zeigen": "kursfreigabe"}
+_LABELS = ("antwort:weg", "antwort:bleibt", "antwort:benutzt")
+_KENNUNG_RE = re.compile(r"^fg-[a-z2-7]{10}$")
+
+
+def _uuid_oder_none(wert):
+    try:
+        return str(uuid.UUID(str(wert)))
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+def _nutzlast_pruefen(art, nutzlast):
+    if not isinstance(nutzlast, dict):
+        raise EingabeFehler("nutzlast muss ein Objekt sein.")
+    if art == "selbstbild_label":
+        ok = (set(nutzlast) == {"repo", "nummer", "label"}
+              and isinstance(nutzlast["repo"], str) and nutzlast["repo"]
+              and isinstance(nutzlast["nummer"], int)
+              and not isinstance(nutzlast["nummer"], bool)
+              and nutzlast["label"] in _LABELS)
+    else:
+        ok = (set(nutzlast) == {"course_id"}
+              and isinstance(nutzlast["course_id"], str) and nutzlast["course_id"])
+    if not ok:
+        raise EingabeFehler(f"nutzlast passt nicht zur Auftragsart '{art}'.")
+
+
 def auftrag_anlegen(kennung, art, nutzlast, von) -> str:
     abholer = _AUFTRAG_ABHOLER.get(art)
     if abholer is None:
         raise EingabeFehler(f"Unbekannte Auftragsart '{art}'.")
-    e = server._q("select id from freigabe_eintraege where kennung = %s", (kennung,))
+    if not isinstance(kennung, str) or not _KENNUNG_RE.match(kennung):
+        raise EingabeFehler("Ungueltige Kennung.")
+    _nutzlast_pruefen(art, nutzlast)
+    e = server._q("select id, art, status from freigabe_eintraege where kennung = %s",
+                  (kennung,))
     if not e:
         raise EingabeFehler("Unbekannte Kennung.")
+    if e[0]["status"] != "offen":
+        raise EingabeFehler("Der Eintrag ist nicht mehr offen.")
+    if e[0]["art"] != _AUFTRAG_ENTRYART[art]:
+        raise EingabeFehler(f"Auftragsart '{art}' passt nicht zur Art des Eintrags.")
+    # Pro Eintrag nur ein Auftrag in Arbeit (Doppelklick).
     z = server._q(
         "insert into freigabe_auftraege (eintrag_id, art, abholer, nutzlast, "
-        "angefordert_von) values (%s,%s,%s,%s,%s) returning id",
+        "angefordert_von) select %s,%s,%s,%s,%s where not exists (select 1 from "
+        "freigabe_auftraege where eintrag_id = %s and status in ('offen','laeuft')) "
+        "returning id",
         (e[0]["id"], art, abholer,
-         json.dumps(nutzlast, ensure_ascii=False, default=str), von))
+         json.dumps(nutzlast, ensure_ascii=False, default=str), von, e[0]["id"]))
+    if not z:
+        raise EingabeFehler("Fuer diesen Eintrag laeuft schon ein Auftrag.")
     return str(z[0]["id"])
 
 
@@ -188,11 +233,14 @@ def auftraege_abholen(abholer) -> list[dict]:
 
 
 def auftrag_ergebnis(auftrag_id, abholer, ok: bool, fehler: str | None) -> bool:
+    auftrag_id = _uuid_oder_none(auftrag_id)
+    if auftrag_id is None:
+        return False
     z = server._q(
         "update freigabe_auftraege set status = %s, erledigt_am = now(), fehler = %s "
         "where id = %s and abholer = %s and status = 'laeuft' returning eintrag_id, art",
         ("erfolg" if ok else "fehler", None if ok else (fehler or "")[:500],
-         str(auftrag_id), abholer))
+         auftrag_id, abholer))
     if not z:
         return False
     if ok:
@@ -233,7 +281,7 @@ def schluessel_anlegen(herkunft) -> str:
     return klartext
 
 
-def stufe2_lesen() -> dict[str, bool]:
+def _stufe2_gespeichert() -> dict[str, bool]:
     wert = {a: False for a in STUFE2_ARTEN}
     z = server._q("select wert from einstellungen where schluessel = %s",
                   (EINSTELLUNG_STUFE2,))
@@ -243,12 +291,18 @@ def stufe2_lesen() -> dict[str, bool]:
     return wert
 
 
+def stufe2_lesen() -> dict[str, bool]:
+    """Solange die Sperre gilt, ist jede Art aus, auch wenn die DB etwas anderes haelt."""
+    gespeichert = _stufe2_gespeichert()
+    return {a: bool(STUFE2_ENTSPERRT and gespeichert[a]) for a in STUFE2_ARTEN}
+
+
 def stufe2_setzen(art, an: bool, von) -> None:
     if art not in STUFE2_ARTEN:
         raise EingabeFehler(f"Unbekannte Art '{art}'.")
     if an and not STUFE2_ENTSPERRT:
         raise Stufe2Gesperrt("Stufe 2 ist gesperrt, solange 5.5 nicht geloest ist.")
-    neu = stufe2_lesen()
+    neu = stufe2_lesen()  # gesperrt: nie ein gespeichertes true weiterschreiben
     neu[art] = bool(an)
     server._q("insert into einstellungen (schluessel, wert, geaendert_von) "
               "values (%s, %s, %s) on conflict (schluessel) do update set "

@@ -1,6 +1,8 @@
 """Kern-Modul freigabe_eingang (Plan 2026-11-08, Task 4)."""
+import json
 import os
 import re
+import uuid
 
 os.environ["SALES_DB_SCHEMA"] = "sales_test"
 
@@ -21,8 +23,10 @@ def schema_wache():
 @pytest.fixture(autouse=True)
 def leer():
     with server.pool.connection() as conn:
-        conn.execute("truncate sales_test.freigabe_auftraege, "
-                     "sales_test.freigabe_eintraege, sales_test.freigabe_schluessel cascade")
+        # Eine Anweisung, eintraege zuerst: die Fixtures anderer Dateien sperren
+        # drafts -> eintraege -> auftraege; eine andere Reihenfolge ergibt Deadlocks.
+        conn.execute("truncate sales_test.freigabe_eintraege, "
+                     "sales_test.freigabe_schluessel cascade")
         conn.execute("delete from sales_test.einstellungen where schluessel = 'freigabe_stufe2'")
     yield
 
@@ -115,7 +119,7 @@ def test_abgelehnt_endgueltig():
 
 def _label_auftrag():
     k, _ = fe.eintragen("selbstbild", "selbstbild_rueckfrage", "r#1", "t")
-    a = fe.auftrag_anlegen(k, "selbstbild_label", {"repo": "r", "nummer": 1, "label": "l"}, "ui")
+    a = fe.auftrag_anlegen(k, "selbstbild_label", {"repo": "r", "nummer": 1, "label": "antwort:weg"}, "ui")
     return k, a
 
 
@@ -201,3 +205,82 @@ def test_stufe2_aus_und_gesperrt():
     assert fe.stufe2_lesen()["entwurf"] is False
     fe.stufe2_setzen("entwurf", False, "t")
     assert fe.stufe2_lesen()["entwurf"] is False
+
+
+def test_stufe2_lesen_ignoriert_gespeichertes_true():
+    server._q("insert into einstellungen (schluessel, wert, geaendert_von) values "
+              "('freigabe_stufe2', %s, 'sql') returning schluessel",
+              (json.dumps({"entwurf": True, "debugger_pr": True,
+                           "selbstbild_rueckfrage": False, "kursfreigabe": False}),))
+    assert not any(fe.stufe2_lesen().values())
+    fe.stufe2_setzen("debugger_pr", False, "t")
+    roh = server._q("select wert from einstellungen where schluessel = 'freigabe_stufe2'")
+    assert True not in roh[0]["wert"].values()
+
+
+LABEL = {"repo": "r", "nummer": 1, "label": "antwort:weg"}
+
+
+def test_auftrag_unbekannter_oder_geschlossener_eintrag():
+    with pytest.raises(fe.EingabeFehler):
+        fe.auftrag_anlegen("fg-aaaaaaaaaa", "selbstbild_label", LABEL, "ui")
+    k, _ = fe.eintragen("selbstbild", "selbstbild_rueckfrage", "r#2", "t")
+    fe.schliessen_kennung(k, "verworfen", "ui")
+    with pytest.raises(fe.EingabeFehler):
+        fe.auftrag_anlegen(k, "selbstbild_label", LABEL, "ui")
+
+
+def test_auftrag_art_passt_nicht_zum_eintrag():
+    k = _debugger()
+    with pytest.raises(fe.EingabeFehler):
+        fe.auftrag_anlegen(k, "selbstbild_label", LABEL, "ui")
+    with pytest.raises(fe.EingabeFehler):
+        fe.auftrag_anlegen(k, "kurs_freigabe_zeigen", {"course_id": "c"}, "ui")
+
+
+@pytest.mark.parametrize("nutzlast", [
+    {"repo": "r", "nummer": 1, "label": "antwort:anders"},
+    {"repo": "r", "nummer": "1", "label": "antwort:weg"},
+    {"repo": 5, "nummer": 1, "label": "antwort:weg"},
+    {"repo": "r", "nummer": 1},
+    {"repo": "r", "nummer": 1, "label": "antwort:weg", "extra": 1},
+    "text",
+])
+def test_auftrag_label_nutzlast_falsch(nutzlast):
+    k, _ = fe.eintragen("selbstbild", "selbstbild_rueckfrage", "r#3", "t")
+    with pytest.raises(fe.EingabeFehler):
+        fe.auftrag_anlegen(k, "selbstbild_label", nutzlast, "ui")
+
+
+@pytest.mark.parametrize("nutzlast", [{}, {"course_id": 7}, {"course_id": "c", "x": 1}])
+def test_auftrag_kurs_nutzlast_falsch(nutzlast):
+    k, _ = fe.eintragen("werkstatt", "kursfreigabe", "kurs-9", "t")
+    with pytest.raises(fe.EingabeFehler):
+        fe.auftrag_anlegen(k, "kurs_freigabe_zeigen", nutzlast, "ui")
+
+
+def test_auftrag_kein_duplikat_bei_doppelklick():
+    k, _ = fe.eintragen("selbstbild", "selbstbild_rueckfrage", "r#4", "t")
+    fe.auftrag_anlegen(k, "selbstbild_label", LABEL, "ui")
+    with pytest.raises(fe.EingabeFehler):
+        fe.auftrag_anlegen(k, "selbstbild_label", LABEL, "ui")
+    fe.auftraege_abholen("selbstbild")  # laeuft noch: weiterhin gesperrt
+    with pytest.raises(fe.EingabeFehler):
+        fe.auftrag_anlegen(k, "selbstbild_label", LABEL, "ui")
+
+
+def test_auftrag_nach_fehler_wieder_moeglich():
+    k, a = _label_auftrag()
+    fe.auftraege_abholen("selbstbild")
+    fe.auftrag_ergebnis(a, "selbstbild", False, "kaputt")
+    assert fe.auftrag_anlegen(k, "selbstbild_label", LABEL, "ui")
+
+
+def test_kein_uuid_und_kaputte_kennung():
+    assert fe.auftrag_ergebnis("kein-uuid", "selbstbild", True, None) is False
+    assert fe.auftrag_ergebnis(None, "selbstbild", True, None) is False
+    assert fe.auftrag_ergebnis(str(uuid.uuid4()), "selbstbild", True, None) is False
+    assert fe.schliessen_kennung("x' or 1=1", "erledigt", "ui") is False
+    assert fe.schliessen_kennung(None, "erledigt", "ui") is False
+    with pytest.raises(fe.EingabeFehler):
+        fe.auftrag_anlegen("kaputt", "selbstbild_label", LABEL, "ui")
