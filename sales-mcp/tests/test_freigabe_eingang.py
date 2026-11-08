@@ -284,3 +284,13 @@ def test_kein_uuid_und_kaputte_kennung():
     assert fe.schliessen_kennung(None, "erledigt", "ui") is False
     with pytest.raises(fe.EingabeFehler):
         fe.auftrag_anlegen("kaputt", "selbstbild_label", LABEL, "ui")
+
+
+def test_letzte_auftraege_je_eintrag():
+    k = fe.eintragen("werkstatt", "kursfreigabe", "k-1", "Kurs", None, {"course_id": "c"})[0]
+    assert fe.letzte_auftraege() == {}
+    fe.auftrag_anlegen(k, "kurs_freigabe_zeigen", {"course_id": "c"}, "mira")
+    z = fe.letzte_auftraege()
+    assert list(z.values()) == [{"status": "offen", "fehler": None}]
+    fe.schliessen_kennung(k, "verworfen", "mira")
+    assert fe.letzte_auftraege() == {}

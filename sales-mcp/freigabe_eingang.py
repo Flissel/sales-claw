@@ -309,3 +309,12 @@ def stufe2_setzen(art, an: bool, von) -> None:
               "wert = excluded.wert, geaendert_am = now(), "
               "geaendert_von = excluded.geaendert_von returning schluessel",
               (EINSTELLUNG_STUFE2, json.dumps(neu), von))
+
+
+def letzte_auftraege() -> dict[str, dict]:
+    """Je offenem Eintrag der juengste Auftrag: {eintrag_id: {status, fehler}}."""
+    z = server._q(
+        "select distinct on (a.eintrag_id) a.eintrag_id, a.status, a.fehler "
+        "from freigabe_auftraege a join freigabe_eintraege e on e.id = a.eintrag_id "
+        "where e.status = 'offen' order by a.eintrag_id, a.erstellt_am desc, a.id desc")
+    return {str(r["eintrag_id"]): {"status": r["status"], "fehler": r["fehler"]} for r in z}
