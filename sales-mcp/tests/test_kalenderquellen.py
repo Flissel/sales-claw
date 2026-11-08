@@ -490,3 +490,30 @@ def test_laengst_veraltete_unlesbare_dauer_macht_die_quelle_nicht_fuer_immer_zur
     termine, fehler = kalenderquellen.hole(server_stub.url)
     assert termine == []
     assert fehler is None, fehler
+
+
+def test_verschobenes_vorkommen_einer_serie_steht_nur_am_neuen_platz(server_stub):
+    """T3-Nachtrag: RECURRENCE-ID verschiebt ein Vorkommen -> genau ein Termin
+    zur neuen Zeit, keiner zur alten."""
+    start = (_dt.now(_tz.utc) + _td(days=1)).replace(minute=0, second=0, microsecond=0)
+    alt = start + _td(days=7)
+    neu = alt + _td(hours=2)
+    fmt = "%Y%m%dT%H%M%SZ"
+    server_stub.rumpf = _ics(
+        _vevent("woche@google", start.strftime(fmt),
+                "DTEND:" + (start + _td(hours=1)).strftime(fmt) + "\r\n"
+                "RRULE:FREQ=WEEKLY;COUNT=3\r\nSUMMARY:Runde\r\n"),
+        _vevent("woche@google", neu.strftime(fmt),
+                "RECURRENCE-ID:" + alt.strftime(fmt) + "\r\n"
+                "DTEND:" + (neu + _td(hours=1)).strftime(fmt) + "\r\n"
+                "SUMMARY:Verschoben\r\n"))
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert fehler is None, fehler
+    assert len(termine) == 3, termine
+    beginne = [t["beginn"] for t in termine]
+    assert alt not in beginne
+    assert beginne.count(neu) == 1
+    (verschoben,) = [t for t in termine if t["beginn"] == neu]
+    assert verschoben["titel"] == "Verschoben"
+    assert verschoben["uid"] == f"woche@google#{neu.isoformat()}"
+    assert len({t["uid"] for t in termine}) == 3
