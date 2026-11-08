@@ -112,6 +112,9 @@ def _oeffnen_v2(versiegelt: str, privat_pem: str | None, env_name: str) -> str:
 
 def oeffnen(versiegelt: str, privat_pem: str | None = None,
             env_name: str = ENV_PRIVAT) -> str:
+    if not isinstance(versiegelt, str):
+        # NULL aus der DB o. ae.: Aufrufer fangen nur TresorFehler.
+        raise TresorFehler("Oeffnen fehlgeschlagen (Schluessel passt nicht oder Daten defekt)")
     if versiegelt.startswith(PREFIX_V2):
         return _oeffnen_v2(versiegelt, privat_pem, env_name)
     try:

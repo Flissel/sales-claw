@@ -29,6 +29,14 @@ def schluessel():
     return privat, oeffentlich
 
 
+@pytest.mark.parametrize("kaputt", [None, b"abc", 42, ""])
+def test_oeffnen_ohne_text_bleibt_tresorfehler(schluessel, kaputt):
+    # post_konten faengt nur TresorFehler; zugang_versiegelt darf NULL sein.
+    privat, _ = schluessel
+    with pytest.raises(post_tresor.TresorFehler):
+        post_tresor.oeffnen(kaputt, privat)
+
+
 def test_hin_und_zurueck(schluessel):
     privat, oeffentlich = schluessel
     v = post_tresor.versiegeln("geheimes-Passwort äö", oeffentlich)
