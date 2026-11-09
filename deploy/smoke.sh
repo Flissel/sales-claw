@@ -304,7 +304,8 @@ assert erst["name"] == "sales-claw", erst["name"]
 erwartete_container = {
     "sales-claw", "sales-mcp", "sales-dispatch", "sales-inbox",
     "sales-mail", "sales-telegram", "sales-linkedin", "sales-kanaele",
-    "sales-auto", "sales-ui", "sales-post"}  # sales-stt seit 20.10.2026 am PC, hier nur per Profil stt-lokal
+    "sales-auto", "sales-ui", "sales-post",
+    "sales-freigabe-bote"}  # sales-stt seit 20.10.2026 am PC, hier nur per Profil stt-lokal
 ist = {d["container_name"] for d in erst["services"].values()}
 assert ist == erwartete_container, ist
 istv = {v["name"] for v in erst["volumes"].values()}
