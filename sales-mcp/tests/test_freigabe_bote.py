@@ -360,3 +360,66 @@ def test_main_startet_nur_mit_sales_oder_sales_test(monkeypatch, caplog, schema)
 
 def test_erlaubte_schemas():
     assert fb.ERLAUBTE_SCHEMAS == ("sales", "sales_test")
+
+
+# --- F5: geaenderter Titel wird in Rowboat nachgezogen ---------------------
+
+def test_geaenderter_text_wird_ersetzt():
+    alt = text_zu()
+    neu = fb.vorschlagstext(eintrag(titel="Neuer Titel"), BASIS)
+    p = fb.planen([eintrag(titel="Neuer Titel", stand="vorgeschlagen")], [],
+                  fb.RowboatStand(vorschlaege=[alt]), BASIS)
+    assert p.ersetzen == [(alt, neu)]
+    assert p.hinzufuegen == [] and p.zurueckziehen == [] and p.staende == {}
+
+
+def test_gleicher_text_bis_auf_leerraum_wird_nicht_ersetzt():
+    gespeichert = "  " + text_zu().replace(" · ", "  ·   ") + " "
+    p = fb.planen([eintrag(stand="vorgeschlagen")], [],
+                  fb.RowboatStand(vorschlaege=[gespeichert]), BASIS)
+    assert p.ersetzen == [] and p.hinzufuegen == []
+
+
+def test_angenommene_zeile_wird_nie_ersetzt():
+    st = fb.RowboatStand(items=[("k", text_zu(), False)], signale=[sig("kept")])
+    p = fb.planen([eintrag(titel="Neuer Titel", stand="angenommen")], [], st, BASIS)
+    assert p.ersetzen == [] and p.hinzufuegen == []
+
+
+def test_durchgang_zieht_titel_nach(rowboat):
+    k = _neuer_eintrag()
+    fb.durchgang()
+    alt = rowboat.suggestions[0]
+    fe.eintragen("debugger-claw", "debugger_pr", "Flissel/vibemind-os#154", "Neuer Titel",
+                 "https://github.com/x/pull/154")
+    assert _db(k)["titel"] == "Neuer Titel"
+    assert fb.durchgang() == 0
+    assert len(rowboat.suggestions) == 1
+    assert "Neuer Titel" in rowboat.suggestions[0] and kennung_ok(rowboat.suggestions[0], k)
+    assert rowboat.gesendet("todo:withdrawSuggestion") == [{"text": alt}]
+    assert _db(k)["rowboat_stand"] == "vorgeschlagen"
+    # danach Ruhe: kein weiteres Ersetzen
+    fb.durchgang()
+    assert len(rowboat.gesendet("todo:withdrawSuggestion")) == 1
+    assert len(rowboat.gesendet("todo:addSuggestions")) == 2
+
+
+def test_inzwischen_angenommen_kein_doppel(rowboat, monkeypatch):
+    k = _neuer_eintrag()
+    fb.durchgang()
+    alt = rowboat.suggestions[0]
+    fe.eintragen("debugger-claw", "debugger_pr", "Flissel/vibemind-os#154", "Neuer Titel",
+                 "https://github.com/x/pull/154")
+    echt = fb._rpc
+
+    def zwischendurch_angenommen(kanal, body):
+        if kanal == "todo:withdrawSuggestion" and alt in rowboat.suggestions:
+            rowboat.annehmen(alt)  # der Mensch war schneller
+        return echt(kanal, body)
+    monkeypatch.setattr(fb, "_rpc", zwischendurch_angenommen)
+    assert fb.durchgang() == 0
+    assert rowboat.suggestions == []
+    assert [i["text"] for i in rowboat.items] == [alt]
+    fb.durchgang()
+    assert _db(k)["rowboat_stand"] == "angenommen"
+    assert rowboat.suggestions == []

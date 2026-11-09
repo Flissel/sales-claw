@@ -3740,7 +3740,10 @@ dann 401.
 
 **Prüfen.**
 
-- `docker compose logs --tail 5 freigabe-bote`: je Minute eine Zeile `Durchgang: +n Vorschlaege, …`.
+- `docker compose logs --tail 5 freigabe-bote`: je Minute eine Zeile `Durchgang: +n Vorschlaege, …, n ersetzt`.
+  `ersetzt` zählt offene Vorschläge, deren Text sich geändert hat (z. B. ein neuer Titel vom Erzeuger). Der Bote
+  zieht den alten Text zurück und stellt den neuen nur dann ein, wenn das Zurückziehen geklappt hat. Eine schon
+  angenommene Zeile in Rowboat bleibt wie sie ist.
 - Herzschlag: Jeder Durchgang schreibt `sales.einstellungen` → `freigabe_bote_herzschlag`, mit letztem Versuch,
   letztem Erfolg und Fehler (nur der Typname) seit wann. Ein Durchgang zählt nur dann als Erfolg, wenn auch der
   Entwurfs-Spiegel durchlief. Liegt der letzte Erfolg mehr als 10 min zurück, wird `deploy/wache.sh`

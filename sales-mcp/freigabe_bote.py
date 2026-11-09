@@ -89,6 +89,12 @@ class Plan:
     abhaken: list[str] = field(default_factory=list)         # Item-Keys
     staende: dict[str, str] = field(default_factory=dict)    # kennung -> rowboat_stand
     aufgeraeumt: list[str] = field(default_factory=list)
+    ersetzen: list[tuple[str, str]] = field(default_factory=list)  # (alter Text, neuer Text)
+
+
+def _wie_gespeichert(text: str) -> str:
+    """Rowboat fasst Leerraum zusammen und schneidet die Raender ab (addSuggestions)."""
+    return re.sub(r"\s+", " ", text or "").strip()
 
 
 def _signal_zu(signale: list[dict], art: str, kennung: str) -> bool:
@@ -114,6 +120,11 @@ def planen(eintraege: list[dict], aufraeumen: list[dict], stand: RowboatStand,
         aktuell = e.get("rowboat_stand", "ungesichtet")
         items = items_je_kennung.get(k, [])
         if k in vorschlag_text:                                            # Regel 1
+            # F5: Titel/Link geaendert -> Vorschlag ersetzen. Nur offene Vorschlaege,
+            # eine angenommene Zeile gehoert dem Menschen in Rowboat.
+            soll = vorschlagstext(e, basis)
+            if _wie_gespeichert(vorschlag_text[k]) != _wie_gespeichert(soll):
+                plan.ersetzen.append((vorschlag_text[k], soll))
             if aktuell != "vorgeschlagen":
                 plan.staende[k] = "vorgeschlagen"
             continue
@@ -215,6 +226,12 @@ def durchgang() -> int:
                 if k:
                     staende[k] = "vorgeschlagen"
                     fe.rowboat_stand_setzen(k, "vorgeschlagen")  # sofort, falls spaeter etwas scheitert
+        for alt, neu in plan.ersetzen:
+            # Erst zurueckziehen, nur bei Erfolg neu einstellen: hat der Mensch den
+            # alten Vorschlag eben angenommen, entsteht so kein Doppel.
+            antwort = _rpc("todo:withdrawSuggestion", {"text": alt})
+            if isinstance(antwort, dict) and antwort.get("removed") is True:
+                _rpc("todo:addSuggestions", {"texts": [neu]})
         for text in plan.zurueckziehen:
             _rpc("todo:withdrawSuggestion", {"text": text})
         for key in plan.abhaken:
@@ -233,8 +250,8 @@ def durchgang() -> int:
     # fiele ein dauerhaft stiller Spiegel niemandem auf.
     _herzschlag(entwurf_fehler is None, entwurf_fehler)
     LOG.info("Durchgang: +%d Vorschlaege, -%d zurueckgezogen, %d abgehakt, %d Staende, "
-             "%d aufgeraeumt", len(plan.hinzufuegen), len(plan.zurueckziehen),
-             len(plan.abhaken), len(staende), len(plan.aufgeraeumt))
+             "%d aufgeraeumt, %d ersetzt", len(plan.hinzufuegen), len(plan.zurueckziehen),
+             len(plan.abhaken), len(staende), len(plan.aufgeraeumt), len(plan.ersetzen))
     return 0
 
 
