@@ -1081,6 +1081,35 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Der Freigabe-Bote (Plan 2026-11-08, Task 7): spiegelt offene Eintraege der
+  # Freigabe-Seite als Vorschlaege in Rowboats Todo-Liste und liest die
+  # Entscheidung zurueck. Gleiches Image wie sales-ui, anderes Kommando.
+  #
+  # network_mode host: Rowboats headless Server haengt nur an 127.0.0.1:3220 des
+  # Hosts. KEIN env_file, nur die Kundendaten-DB (wie sales-ui); der
+  # Server-Schluessel kommt als Datei, nie als Umgebungsvariable. Der Bote
+  # fuehrt nichts aus (Stufe 1) und ruft kein Sprachmodell.
+  freigabe-bote:
+    build: ./sales-mcp
+    image: sales-claw-sales-mcp:local
+    container_name: ${LADEN_PRAEFIX:-sales}-freigabe-bote
+    command: python -m freigabe_bote
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      - SALES_DB_URL=${SALES_DB_URL}
+      - SALES_DB_SCHEMA=${SALES_DB_SCHEMA:-sales}
+      - TZ=${TZ:-Europe/Berlin}
+      - UI_BASIS_URL=${UI_BASIS_URL:-}
+      - ROWBOAT_RPC_URL=http://127.0.0.1:3220
+    volumes:
+      - /home/debian/rowboat-data/server-key:/run/rowboat-server-key:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 networks:
   # Netz des Compose-Projekts pm-claw (Projektname dort gepinnt). Nur der
   # Dienst sales-claw haengt daran, siehe dort.

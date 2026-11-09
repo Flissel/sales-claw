@@ -215,7 +215,9 @@ import mailadresse
 import laden_marke
 import marketing_pult
 import ui_editor
+import ui_freigabe_api
 import ui_freigabe_bewerbung
+import ui_freigabe_eingang
 import ui_freigabe_newsletter
 import ui_empfehlungen
 import ui_newsletter_einwilligung
@@ -652,6 +654,11 @@ class AnmeldeWache:
             # Sie sind nicht ungeschuetzt: /passwort-neu verlangt einen
             # gueltigen Einmal-Token, und /passwort-vergessen kann nichts
             # aendern, nur eine Mail an eine HINTERLEGTE Adresse ausloesen.
+            await self.app(scope, receive, send)
+            return
+        if scope["path"].startswith("/api/freigaben/"):
+            # Freigabe-Eingang fuer Dienste: eigener Bearer-Schluessel je
+            # Herkunft (ui_freigabe_api), keine Sitzung, kein CSRF.
             await self.app(scope, receive, send)
             return
         if scope["method"] in ("GET", "HEAD") and _schrift_pfad(scope["path"]):
@@ -2764,7 +2771,7 @@ def _entwurf_karte_offen(z) -> str:
         f'<b>{_e(z["name"] or "(ohne Kontakt)")}</b>'
         f'<span class="meta" title="{_e(text_normalisiert)}"> — {_e(vorschau)}'
         f'</span></summary>'
-        f'{_devto_hinweis_offen(z)}'
+        f'{_devto_hinweis_offen(z)}{ui_freigabe_eingang.rowboat_vermerk(z["id"])}'
         f'{_entwurf_rumpf(z)}</details>')
 
 
@@ -3868,6 +3875,8 @@ async def inbox(request):
     # Bewerbungen (Hermes H1): was der Bewerbungs-Bot zur Freigabe vorlegt.
     teile.append(await ui_freigabe_bewerbung.abschnitt(
         sys.modules[__name__], request, verlauf=False))
+    # Eingang (Freigabe-Eingang): Debugger-PRs, Rueckfragen, Kursfreigaben.
+    teile.append(await ui_freigabe_eingang.abschnitt(sys.modules[__name__], request))
     # KEIN Auto-Refresh mehr (Betreiber 03.09.2026: „ich bearbeite einen Text
     # und werde wie bei einem Reload in die Mitte der Seite gezogen") — auf
     # dieser Seite wird getippt, und ein Neuladen wirft den Text weg.
@@ -10136,6 +10145,8 @@ app = Starlette(routes=[
     *ui_podcast.routen(sys.modules[__name__]),
     *ui_freigabe_newsletter.routen(sys.modules[__name__]),
     *ui_freigabe_bewerbung.routen(sys.modules[__name__]),
+    *ui_freigabe_api.routen(sys.modules[__name__]),
+    *ui_freigabe_eingang.routen(sys.modules[__name__]),
     Route("/medien", medien),
     Route("/medien/bot", aktion_medien_bot, methods=["POST"]),
     Route("/medien/datei/{name}", medien_datei),
