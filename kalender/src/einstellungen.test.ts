@@ -18,6 +18,13 @@ describe('grundOptionen', () => {
     expect(o.businessHours).toEqual({ daysOfWeek: [1, 2, 3, 4, 5], startTime: '08:00', endTime: '18:00' });
   });
 
+  it('zeigt von-bis in jeder Ansicht', () => {
+    const o = grundOptionen(true);
+    expect(o.displayEventEnd).toBe(true);
+    expect(o.allDaySlot).toBe(true);
+    expect(o.eventTimeFormat).toEqual({ hour: '2-digit', minute: '2-digit', hour12: false });
+  });
+
   it('Knopf "Neu" nur mit Schreibrecht', () => {
     expect(String(grundOptionen(true).headerToolbar && (grundOptionen(true).headerToolbar as { left: string }).left)).toContain('neu');
     expect((grundOptionen(false).headerToolbar as { left: string }).left).not.toContain('neu');

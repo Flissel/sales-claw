@@ -48,6 +48,13 @@ im Betrieb messbar — nichts hier ist Absichtserklärung. Referenzen:
   geroutet ist (`kalenderquellen._ziel_erlaubt`, `is_global` statt einer
   Positivliste — deckt auch Tailscale-CGNAT `100.64.0.0/10` ab) und damit
   nicht als Fenster ins interne Netz der VM dient.
+- **Google-Kalender-Zugang (seit 08.11.2026):** nur lesende Rechte. Der
+  Refresh-Token liegt ausschließlich versiegelt in der Datenbank (RSA-OAEP
+  plus AES-GCM); der private Schlüssel `KALENDER_SCHLUESSEL_PRIVAT` ist nur
+  im Dienst `sales-kalender` verdrahtet, die Oberfläche bekommt den
+  öffentlichen. Google-Fehlertexte werden auf einen festen Typ reduziert.
+  Fremde Privat-Termine werden ohne Titel und Ort gespeichert (06,
+  Abschnitt Kalender verbinden).
 
 ## Protokollierung und Eingabekontrolle
 

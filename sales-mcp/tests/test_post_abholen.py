@@ -841,6 +841,31 @@ def test_schluessel_nur_bei_sales_post():
             assert "POST_SCHLUESSEL_PRIVAT" not in datei.read_text(encoding="utf-8"), datei
 
 
+def test_kalender_schluessel_nur_bei_sales_kalender():
+    """Der private Kalender-Schluessel oeffnet die Google-Refresh-Token: nur
+    sales-kalender. Das Client-Secret haben nur sales-kalender und sales-ui
+    (Code tauschen bzw. erneuern); der oeffentliche Schluessel nur sales-ui."""
+    text = (WURZEL / "docker-compose.yml").read_text(encoding="utf-8")
+    anker = text[text.index("x-sales-mcp-umgebung"):text.index("\nservices:")]
+    for name in ("KALENDER_SCHLUESSEL", "GOOGLE_KALENDER"):
+        assert name not in anker
+    dienste = _dienste()
+    assert "sales-kalender" in dienste and "sales-ui" in dienste
+    for dienst in dienste:
+        a = _compose_abschnitt(dienst)
+        assert ("KALENDER_SCHLUESSEL_PRIVAT" in a) == (dienst == "sales-kalender"), dienst
+        assert ("GOOGLE_KALENDER_CLIENT_SECRET" in a) == (
+            dienst in ("sales-kalender", "sales-ui")), dienst
+        assert ("GOOGLE_KALENDER_CLIENT_ID" in a) == (
+            dienst in ("sales-kalender", "sales-ui")), dienst
+        assert ("KALENDER_SCHLUESSEL_OEFFENTLICH" in a) == (dienst == "sales-ui"), dienst
+    assert _code(text).count("KALENDER_SCHLUESSEL_PRIVAT") == _compose_abschnitt(
+        "sales-kalender").count("KALENDER_SCHLUESSEL_PRIVAT")
+    for datei in WURZEL.glob("docker-compose*.yml"):
+        if datei.name != "docker-compose.yml":
+            assert "KALENDER_SCHLUESSEL_PRIVAT" not in datei.read_text(encoding="utf-8"), datei
+
+
 def test_post_besitzer_erreicht_bot_und_oberflaeche():
     """Ein Container = ein Nutzer: post_struktur.container_besitzer() liest
     POST_BESITZER in sales-mcp (Bot-Werkzeuge) und sales-ui (Kontaktverlauf),

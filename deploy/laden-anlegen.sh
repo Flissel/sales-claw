@@ -240,6 +240,11 @@ echo "  docker exec -i debian-supabase-db-1 psql \\"
 echo "    \"postgresql://sales_app_$NAME:<passwort>@127.0.0.1:5432/postgres\" \\"
 echo "    -v laden=$NAME < $WURZEL/db/pruefe-laden.sql"
 echo
+echo "Kalender verbinden (Besitzer/Bereich/Termine) — ebenfalls als supabase_admin:"
+echo "  docker exec -i debian-supabase-db-1 psql -U supabase_admin -d postgres \\"
+echo "    -v ON_ERROR_STOP=1 -v schema=sales_$NAME -v besitzer=<laden-besitzer> \\"
+echo "    < $WURZEL/db/kalender-verbinden.sql"
+echo
 echo "Dann die Dienste starten — NIEMALS nacktes 'docker compose up -d':"
 echo "das wuerde $NAME-auto mitstarten, einen Dienst, der bewusst nie"
 echo "laeuft (siehe deploy/update.sh:17). Immer namentlich:"

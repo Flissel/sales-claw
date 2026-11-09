@@ -6,3 +6,5 @@ pytest>=8.0
 reportlab>=4.0
 pypdf>=4.0
 cryptography>=42
+icalendar>=6.0
+recurring-ical-events>=3.3

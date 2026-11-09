@@ -212,9 +212,16 @@ def _name(lead_id: str) -> str:
     return (z[0]["name"] or "") if z else ""
 
 
-async def _konflikt(beginn: datetime, dauer: int, ausser_uid: str = ""):
+def _betrachter(request) -> str:
+    """Wer den Kalender ansieht: die angemeldete Person, ohne Anmeldung der
+    Laden-Besitzer (Spec 2026-11-08 §2.2)."""
+    return kalender_sicht.betrachter(request.scope.get("benutzer_name"))
+
+
+async def _konflikt(request, beginn: datetime, dauer: int, ausser_uid: str = ""):
     """-> 409-Antwort bei Treffern, sonst None."""
-    k = await run_in_threadpool(kalender_sicht.konflikte, beginn, dauer, ausser_uid)
+    k = await run_in_threadpool(kalender_sicht.konflikte, beginn, dauer, ausser_uid,
+                                _betrachter(request))
     if k["konflikte"]:
         return _grund(409, "Konflikt", konflikte=k["konflikte"],
                       unvollstaendig=k["unvollstaendig"])
@@ -300,7 +307,8 @@ def routen(ui) -> list:
             return _grund(422, "bis muss nach von liegen")
         if bis - von > timedelta(days=SPANNE_MAX_TAGE):
             return _grund(422, f"Höchstens {SPANNE_MAX_TAGE} Tage auf einmal")
-        return _ok(await run_in_threadpool(kalender_sicht.ereignisse, von, bis))
+        return _ok(await run_in_threadpool(kalender_sicht.ereignisse, von, bis,
+                                           _betrachter(request)))
 
     @_gesichert_json
     async def kontakte_json(request):
@@ -340,7 +348,7 @@ def routen(ui) -> list:
             f = termine_eigen._pruefen(titel, beginn, dauer, ort, notiz)
             if f:
                 return _grund(422, f)
-            k = None if trotzdem else await _konflikt(beginn, dauer)
+            k = None if trotzdem else await _konflikt(request, beginn, dauer)
             if k:
                 return k
             r = await run_in_threadpool(termine_eigen.anlegen, titel, beginn, dauer, ort, notiz)
@@ -364,7 +372,7 @@ def routen(ui) -> list:
                                f"{server.TERMIN_DAUER_MAX} Minuten sein")
         if not isinstance(einladung, bool):
             return _grund(422, "einladung muss true oder false sein")
-        k = None if trotzdem else await _konflikt(beginn, dauer)
+        k = None if trotzdem else await _konflikt(request, beginn, dauer)
         if k:
             return k
         datum, uhrzeit = _ortszeit(beginn)
@@ -429,7 +437,7 @@ def routen(ui) -> list:
             neu_dauer = felder.get("dauer_minuten", alt[0]["dauer_minuten"])
             if (not trotzdem and _ganzzahl(neu_dauer, termine_eigen.DAUER_MIN, termine_eigen.DAUER_MAX)
                     and (neu_beginn != alt[0]["beginn"] or neu_dauer != alt[0]["dauer_minuten"])):
-                k = await _konflikt(neu_beginn, neu_dauer, uid)
+                k = await _konflikt(request, neu_beginn, neu_dauer, uid)
                 if k:
                     return k
             r = await run_in_threadpool(functools.partial(termine_eigen.aendern, uid, stempel, **felder))
@@ -461,7 +469,7 @@ def routen(ui) -> list:
         neu_beginn, neu_dauer = beginn or alt_beginn, dauer or alt_dauer
         if (not trotzdem and neu_beginn is not None
                 and (neu_beginn != alt_beginn or neu_dauer != alt_dauer)):
-            k = await _konflikt(neu_beginn, neu_dauer, uid)
+            k = await _konflikt(request, neu_beginn, neu_dauer, uid)
             if k:
                 return k
         datum, uhrzeit = _ortszeit(beginn) if beginn else ("", "")

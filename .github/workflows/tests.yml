@@ -38,6 +38,10 @@ jobs:
             -c "create extension if not exists vector; create extension if not exists pgcrypto;"
           psql "postgresql://postgres:ci@localhost:5432/postgres" -v ON_ERROR_STOP=1 \
             -f db/provision.sql
+          # Kalender verbinden (Spec 2026-11-08): nicht im Schema-Loop von
+          # provision.sql, darum eigens fuer das Testschema.
+          psql "postgresql://postgres:ci@localhost:5432/postgres" -v ON_ERROR_STOP=1 \
+            -v schema=sales_test -v besitzer=felix -f db/kalender-verbinden.sql
       - name: Image bauen
         run: docker build -t sales-mcp-ci ./sales-mcp
       - name: Suite

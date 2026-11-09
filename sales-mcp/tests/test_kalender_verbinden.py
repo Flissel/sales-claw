@@ -40,6 +40,12 @@ def leer():
     yield
 
 
+@pytest.fixture(autouse=True)
+def laden_besitzer(monkeypatch):
+    """Ohne Anmeldung handelt der Laden-Besitzer (POST_BESITZER)."""
+    monkeypatch.setenv("POST_BESITZER", "felix")
+
+
 @pytest.fixture
 def scharf():
     """Anmeldung fuer die Dauer eines Tests scharf schalten (Muster aus
@@ -162,7 +168,7 @@ def test_verbinden_meldet_die_zahl_der_termine(monkeypatch):
             jetzt + timedelta(days=10),
             jetzt + timedelta(days=10, hours=1)))))
     antwort = _post({"name": "Ivan", "url": "https://example.test/a.ics",
-                     "csrf": ui.CSRF_TOKEN})
+                     "bereich": "business", "csrf": ui.CSRF_TOKEN})
     assert antwort.status_code == 200, antwort.text
     # Nur der kuenftige Termin liegt im Fenster — die Zahl bezieht sich auf
     # dasselbe Fenster, das /kalender spaeter benutzt (K2-Ruling).
@@ -194,7 +200,7 @@ def _ics_serie_und_normal(normal_beginn, normal_ende, serie_beginn,
         "END:VCALENDAR\r\n").encode("utf-8")
 
 
-def test_verbinden_speichert_trotz_serientermin_und_zeigt_den_hinweis(
+def test_verbinden_loest_serientermin_auf_ohne_hinweis(
         monkeypatch):
     """BLOCKER (Koordinator-Fix-Runde, 13.09.2026): seit K4 meldet hole()
     `fehler` auch dann, wenn die Quelle VOLLSTAENDIG verstanden wurde und
@@ -215,17 +221,16 @@ def test_verbinden_speichert_trotz_serientermin_und_zeigt_den_hinweis(
             jetzt + timedelta(days=3), jetzt + timedelta(days=3, hours=1),
             jetzt + timedelta(days=5), jetzt + timedelta(days=5, hours=1)))))
     antwort = _post({"name": "Ivan", "url": "https://example.test/a.ics",
-                     "csrf": ui.CSRF_TOKEN})
+                     "bereich": "business", "csrf": ui.CSRF_TOKEN})
     assert antwort.status_code == 200, antwort.text
     # Gespeichert — nicht abgewiesen.
     assert server.kalenderquellen_lesen()[0]["anzeigename"] == "Ivan"
     assert "Nichts wurde gespeichert" not in antwort.text
-    # Der verstandene Termin zaehlt und wird genannt ...
-    assert "1 Termin" in antwort.text
+    # Task 3: die Serie wird aufgeloest (woechentlich im 60-Tage-Fenster:
+    # mehr als ein Vorkommen), der alte Vorbehalt entfaellt.
     assert "Normaler Termin" in antwort.text
-    # ... der Vorbehalt steht DANEBEN, nicht als Totalabweisung.
-    assert "Serientermin" in antwort.text
-    assert "RRULE" in antwort.text
+    assert "Serientermin" not in antwort.text
+    assert "RRULE" not in antwort.text
 
 
 def test_falscher_link_wird_benannt_nicht_nur_abgewiesen(monkeypatch):
@@ -233,10 +238,10 @@ def test_falscher_link_wird_benannt_nicht_nur_abgewiesen(monkeypatch):
     monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: (
         [], "Dort liegt kein Kalender, sondern eine Webseite."))
     antwort = _post({"name": "Ivan", "url": "https://example.test/",
-                     "csrf": ui.CSRF_TOKEN})
+                     "bereich": "business", "csrf": ui.CSRF_TOKEN})
     assert antwort.status_code == 200
     assert "Webseite" in antwort.text
-    assert server.kalenderquellen_lesen() == []
+    assert server.kalenderquellen_lesen(nur_aktive=False) == []
 
 
 def test_die_adresse_erscheint_nach_dem_speichern_nirgends(monkeypatch):
@@ -244,7 +249,7 @@ def test_die_adresse_erscheint_nach_dem_speichern_nirgends(monkeypatch):
     den Betreiber."""
     geheim = "https://calendar.google.com/ical/GEHEIM123/basic.ics"
     monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: ([], None))
-    antwort = _post({"name": "Ivan", "url": geheim, "csrf": ui.CSRF_TOKEN})
+    antwort = _post({"name": "Ivan", "url": geheim, "bereich": "business", "csrf": ui.CSRF_TOKEN})
     # Gegenprobe (Pruefer, Fix-Runde 1): "die Adresse steht nirgends" haelt
     # auch dann, wenn das Speichern klanglos scheitert — dann steht ja
     # gar nichts da. Erst der Beleg, dass der POST ERFOLGREICH war UND die
@@ -266,7 +271,7 @@ def test_ohne_csrf_passiert_nichts():
 def test_leerer_name_wird_abgewiesen(monkeypatch):
     monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: ([], None))
     antwort = _post({"name": "  ", "url": "https://example.test/a.ics",
-                     "csrf": ui.CSRF_TOKEN})
+                     "bereich": "business", "csrf": ui.CSRF_TOKEN})
     assert antwort.status_code == 400
     assert server.kalenderquellen_lesen() == []
 
@@ -274,12 +279,11 @@ def test_leerer_name_wird_abgewiesen(monkeypatch):
 def test_reservierter_name_wird_abgewiesen(monkeypatch):
     """W4 (Schlusspruefung 13.09.2026): 'Betreiber' ist der Anzeigename der
     EIGENEN Quelle (server.EIGENE_QUELLE) — nennt sich ein Kollege so,
-    wuerde `kalenderquelle_speichern`s `on conflict (anzeigename)` seine
-    Fremdtermine mit dem eigenen Kalender verschmelzen (ui.py paart
-    ausschliesslich ueber diesen Namen)."""
+    landeten seine Fremdtermine in der Paarung des eigenen Kalenders (ui.py
+    paart ausschliesslich ueber diesen Namen, nicht ueber den Besitzer)."""
     monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: ([], None))
     antwort = _post({"name": "Betreiber", "url": "https://example.test/a.ics",
-                     "csrf": ui.CSRF_TOKEN})
+                     "bereich": "business", "csrf": ui.CSRF_TOKEN})
     assert antwort.status_code == 400, antwort.text
     assert server.kalenderquellen_lesen() == []
 
@@ -288,7 +292,7 @@ def test_reservierter_name_wird_case_insensitiv_abgewiesen(monkeypatch):
     monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: ([], None))
     antwort = _post({"name": "  betreiber  ",
                      "url": "https://example.test/a.ics",
-                     "csrf": ui.CSRF_TOKEN})
+                     "bereich": "business", "csrf": ui.CSRF_TOKEN})
     assert antwort.status_code == 400, antwort.text
     assert server.kalenderquellen_lesen() == []
 
@@ -299,31 +303,29 @@ def test_entfernen_knopf_steht_je_aktiver_quelle_auf_der_seite(monkeypatch):
     Aufrufer ausserhalb der Tests."""
     monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: ([], None))
     _post({"name": "Ivan", "url": "https://example.test/a.ics",
-          "csrf": ui.CSRF_TOKEN})
+          "bereich": "business", "csrf": ui.CSRF_TOKEN})
     seite = _get("/team/kalender").text
     assert 'action="/team/kalender/entfernen"' in seite
     quelle_id = server.kalenderquellen_lesen()[0]["id"]
     assert f'value="{quelle_id}"' in seite
 
 
-def test_entfernen_deaktiviert_die_quelle(monkeypatch):
+def test_entfernen_loescht_die_quelle(monkeypatch):
     monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: ([], None))
     _post({"name": "Ivan", "url": "https://example.test/a.ics",
-          "csrf": ui.CSRF_TOKEN})
+          "bereich": "business", "csrf": ui.CSRF_TOKEN})
     quelle_id = server.kalenderquellen_lesen()[0]["id"]
     antwort = _post_entfernen({"quelle_id": quelle_id, "csrf": ui.CSRF_TOKEN})
     assert antwort.status_code == 303, antwort.text
     assert server.kalenderquellen_lesen() == []
-    # Nicht geloescht, nur deaktiviert (Gegen-Ereignis) — die Zeile bleibt,
-    # zaehlt aber nicht mehr als aktive Quelle.
-    alle = server.kalenderquellen_lesen(nur_aktive=False)
-    assert len(alle) == 1 and alle[0]["aktiv"] is False
+    # Fix-Runde 1 (Task 9): "Entfernen" loescht die Zeile wirklich.
+    assert server.kalenderquellen_lesen(nur_aktive=False) == []
 
 
 def test_entfernen_ohne_csrf_passiert_nichts(monkeypatch):
     monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: ([], None))
     _post({"name": "Ivan", "url": "https://example.test/a.ics",
-          "csrf": ui.CSRF_TOKEN})
+          "bereich": "business", "csrf": ui.CSRF_TOKEN})
     quelle_id = server.kalenderquellen_lesen()[0]["id"]
     antwort = _post_entfernen({"quelle_id": quelle_id})
     assert antwort.status_code == 403
@@ -350,13 +352,13 @@ def test_db_fehler_beim_speichern_traegt_die_adresse_nicht_nach_aussen(
     geheim = "https://calendar.google.com/ical/GEHEIM999/basic.ics"
     monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: ([], None))
 
-    def _wirft(name, url):
+    def _wirft(*a):
         raise psycopg.errors.UniqueViolation(
             f"duplicate key value violates unique constraint "
             f'"kalender_quellen_url_key" DETAIL: Key (url)=({geheim}) '
             f"already exists.")
     monkeypatch.setattr(server, "kalenderquelle_speichern", _wirft)
-    antwort = _post({"name": "Ivan", "url": geheim, "csrf": ui.CSRF_TOKEN})
+    antwort = _post({"name": "Ivan", "url": geheim, "bereich": "business", "csrf": ui.CSRF_TOKEN})
     assert geheim not in antwort.text
     assert "GEHEIM999" not in antwort.text
 
@@ -398,7 +400,7 @@ def test_end_zu_end_anmeldung_rolle_kalender(scharf, monkeypatch):
     verbunden = client.post(
         "/team/kalender/verbinden",
         data={"name": "Ivan", "url": "https://example.test/a.ics",
-              "csrf": ui.CSRF_TOKEN},
+              "bereich": "business", "csrf": ui.CSRF_TOKEN},
         headers={"host": HOST_OK}, follow_redirects=False)
     assert verbunden.status_code == 200, verbunden.text
     assert server.kalenderquellen_lesen()[0]["anzeigename"] == "Ivan"
@@ -507,3 +509,205 @@ def test_name_ist_mit_dem_angemeldeten_benutzer_vorbelegt(scharf):
 def test_ohne_anmeldung_bleibt_der_name_leer():
     seite = _get("/team/kalender").text
     assert 'value="betreiber-ui"' not in seite
+
+
+# --- Task 6: Besitzer und Bereich ------------------------------------------
+
+def _leer_hole(monkeypatch):
+    monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: ([], None))
+
+
+def _angemeldet(name, rolle, passwort="pw-fuer-tests-9"):
+    import benutzer_anlegen
+    meldung = benutzer_anlegen.anlegen(name, rolle, passwort)
+    assert meldung.startswith("OK"), meldung
+    client = _client()
+    assert _login(client, name, passwort).status_code == 303
+    return client
+
+
+def _client_post(client, pfad, daten):
+    return client.post(pfad, data=dict(daten, csrf=ui.CSRF_TOKEN),
+                       headers={"host": HOST_OK}, follow_redirects=False)
+
+
+def _quelle_von(besitzer, name, bereich="privat", url="https://example.test/x.ics"):
+    return server.kalenderquelle_speichern(name, url, besitzer, bereich)
+
+
+def test_bereich_ist_pflicht(monkeypatch):
+    _leer_hole(monkeypatch)
+    antwort = _post({"name": "Ivan", "url": "https://example.test/a.ics",
+                     "csrf": ui.CSRF_TOKEN})
+    assert antwort.status_code == 400
+    assert "Business oder Privat wählen" in antwort.text
+    assert server.kalenderquellen_lesen(nur_aktive=False) == []
+
+
+def test_besitzer_ist_angemeldete_person(scharf, monkeypatch):
+    _leer_hole(monkeypatch)
+    client = _angemeldet("ivan", "kalender")
+    antwort = _client_post(client, "/team/kalender/verbinden", {
+        "name": "felix", "url": "https://example.test/a.ics",
+        "bereich": "privat"})
+    assert antwort.status_code == 200, antwort.text
+    zeilen = server.kalenderquellen_lesen()
+    assert len(zeilen) == 1
+    assert zeilen[0]["besitzer"] == "ivan"
+    assert zeilen[0]["anzeigename"] == "felix"
+    assert zeilen[0]["bereich"] == "privat"
+
+
+def test_ohne_anmeldung_und_ohne_laden_besitzer_wird_nichts_gespeichert(
+        monkeypatch):
+    _leer_hole(monkeypatch)
+    monkeypatch.setenv("POST_BESITZER", "")
+    antwort = _post({"name": "Ivan", "url": "https://example.test/a.ics",
+                     "bereich": "privat", "csrf": ui.CSRF_TOKEN})
+    assert antwort.status_code == 400
+    assert server.kalenderquellen_lesen(nur_aktive=False) == []
+
+
+def test_kalender_rolle_entfernt_fremde_quelle_nicht(scharf):
+    qid = _quelle_von("felix", "Felix")
+    client = _angemeldet("ivan", "kalender")
+    antwort = _client_post(client, "/team/kalender/entfernen",
+                           {"quelle_id": qid})
+    assert antwort.status_code == 403
+    assert server.kalenderquellen_lesen()[0]["aktiv"] is True
+
+
+def test_freigeben_entfernt_jede(scharf):
+    qid = _quelle_von("felix", "Felix")
+    client = _angemeldet("chefin", "freigeben")
+    antwort = _client_post(client, "/team/kalender/entfernen",
+                           {"quelle_id": qid})
+    assert antwort.status_code == 303
+    assert server.kalenderquellen_lesen() == []
+
+
+def test_meine_kalender_zeigt_keine_adresse(scharf):
+    geheim = "https://calendar.example/ical/GEHEIM777/basic.ics"
+    _quelle_von("ivan", "Ivans Kalender", "business", geheim)
+    _quelle_von("felix", "Felix Privat", "privat", geheim + "2")
+    client = _angemeldet("ivan", "kalender")
+    seite = client.get("/team/kalender", headers={"host": HOST_OK}).text
+    assert "GEHEIM777" not in seite
+    assert "Ivans Kalender" in seite
+    assert "Business" in seite
+    assert "noch nicht gelesen" in seite
+    # Fremde Quellen stehen in der persoenlichen Liste nicht.
+    assert "Felix Privat" not in seite
+
+
+def test_team_liste_nur_fuer_freigeben(scharf):
+    _quelle_von("felix", "Felix Privat", "privat")
+    chefin = _angemeldet("chefin", "freigeben")
+    seite = chefin.get("/team/kalender", headers={"host": HOST_OK}).text
+    assert "Kalender im Team" in seite and "Felix Privat" in seite
+    assert "felix" in seite
+    ivan = _angemeldet("ivan", "kalender")
+    assert "Kalender im Team" not in ivan.get(
+        "/team/kalender", headers={"host": HOST_OK}).text
+
+
+def test_bereich_wechseln_als_besitzer(scharf):
+    qid = _quelle_von("ivan", "Ivan", "privat")
+    client = _angemeldet("ivan", "kalender")
+    antwort = _client_post(client, "/team/kalender/bereich",
+                           {"quelle_id": qid, "bereich": "business"})
+    assert antwort.status_code == 303
+    assert server.kalenderquellen_lesen()[0]["bereich"] == "business"
+
+
+def test_bereich_wechseln_fremde_quelle_403(scharf):
+    qid = _quelle_von("felix", "Felix", "privat")
+    client = _angemeldet("ivan", "kalender")
+    antwort = _client_post(client, "/team/kalender/bereich",
+                           {"quelle_id": qid, "bereich": "business"})
+    assert antwort.status_code == 403
+    assert server.kalenderquellen_lesen()[0]["bereich"] == "privat"
+
+
+def test_bereich_ungueltig_ist_400(scharf):
+    qid = _quelle_von("ivan", "Ivan", "privat")
+    client = _angemeldet("ivan", "kalender")
+    antwort = _client_post(client, "/team/kalender/bereich",
+                           {"quelle_id": qid, "bereich": "geheim"})
+    assert antwort.status_code == 400
+    assert server.kalenderquellen_lesen()[0]["bereich"] == "privat"
+
+
+def test_pausieren_und_fortsetzen(scharf):
+    qid = _quelle_von("ivan", "Ivan")
+    client = _angemeldet("ivan", "kalender")
+    assert _client_post(client, "/team/kalender/pausieren",
+                        {"quelle_id": qid, "aktiv": "0"}).status_code == 303
+    assert server.kalenderquellen_lesen() == []
+    seite = client.get("/team/kalender", headers={"host": HOST_OK}).text
+    assert "Fortsetzen" in seite and "pausiert" in seite
+    assert _client_post(client, "/team/kalender/pausieren",
+                        {"quelle_id": qid, "aktiv": "1"}).status_code == 303
+    assert len(server.kalenderquellen_lesen()) == 1
+
+
+def test_pausieren_fremde_quelle_403(scharf):
+    qid = _quelle_von("felix", "Felix")
+    client = _angemeldet("ivan", "kalender")
+    assert _client_post(client, "/team/kalender/pausieren",
+                        {"quelle_id": qid, "aktiv": "0"}).status_code == 403
+    assert server.kalenderquellen_lesen()[0]["aktiv"] is True
+
+
+def test_neue_aktionen_ohne_csrf_passiert_nichts():
+    qid = _quelle_von("felix", "Felix", "privat")
+    for pfad, daten in (("/team/kalender/bereich", {"bereich": "business"}),
+                        ("/team/kalender/pausieren", {"aktiv": "0"})):
+        antwort = CLIENT.post(pfad, data=dict(daten, quelle_id=qid),
+                              headers={"host": HOST_OK}, follow_redirects=False)
+        assert antwort.status_code == 403
+    zeile = server.kalenderquellen_lesen()[0]
+    assert zeile["bereich"] == "privat" and zeile["aktiv"] is True
+
+
+def test_ical_quelle_sofort_abgeglichen(monkeypatch):
+    jetzt = datetime.now(timezone.utc)
+    monkeypatch.setattr(kalenderquellen, "_ziel_erlaubt",
+                        lambda url: (True, None))
+    monkeypatch.setattr(kalenderquellen, "_antwort_lesen", lambda url: (
+        _FakeAntwort(_ics_zwei_termine(
+            jetzt - timedelta(days=2000),
+            jetzt - timedelta(days=2000) + timedelta(hours=1),
+            jetzt + timedelta(days=10),
+            jetzt + timedelta(days=10, hours=1)))))
+    antwort = _post({"name": "Felix", "url": "https://example.test/a.ics",
+                     "bereich": "business", "csrf": ui.CSRF_TOKEN})
+    assert antwort.status_code == 200, antwort.text
+    quelle = server.kalenderquellen_lesen()[0]
+    assert quelle["zuletzt_gelesen"] is not None
+    zeilen = server._q("select titel from kalender_termine "
+                       "where quelle_id = %s", (quelle["id"],))
+    assert [z["titel"] for z in zeilen] == ["Kuenftiger Termin"]
+
+
+def test_tippfehler_beim_neu_verbinden_zerstoert_funktionierende_quelle_nicht(
+        monkeypatch):
+    url_a = "https://example.test/a-gut.ics"
+    qid = server.kalenderquelle_speichern("Felix", url_a, "felix", "business")
+    jetzt = datetime.now(timezone.utc)
+    server.kalendertermine_ersetzen(qid, [{
+        "uid": "u1", "beginn": jetzt + timedelta(days=1),
+        "ende": jetzt + timedelta(days=1, hours=1), "titel": "Bleibt"}], True)
+    monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: (
+        [], "Dort liegt kein Kalender, sondern eine Webseite."))
+    antwort = _post({"name": "Felix", "url": "https://example.test/b-kaputt",
+                     "bereich": "business", "csrf": ui.CSRF_TOKEN})
+    assert antwort.status_code == 200
+    assert "Nichts wurde gespeichert" in antwort.text
+    zeile = server.kalenderquellen_lesen(nur_aktive=False)
+    assert len(zeile) == 1
+    assert zeile[0]["aktiv"] is True
+    assert zeile[0]["url"] == url_a
+    titel = [z["titel"] for z in server._q(
+        "select titel from kalender_termine where quelle_id = %s", (qid,))]
+    assert titel == ["Bleibt"]

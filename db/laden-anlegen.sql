@@ -65,6 +65,9 @@ alter table :"schema".benutzer_mails add constraint benutzer_mails_art_check
 -- Post-Sammelstelle: neue Laeden muessen zusaetzlich db/post-sammelstelle.sql
 -- einspielen (-v schema=sales_<laden>); hier nicht verdrahtet.
 
+-- Kalender verbinden: ebenso db/kalender-verbinden.sql je Laden einspielen
+-- (-v schema=sales_<laden> -v besitzer=<laden-besitzer>); hier nicht verdrahtet.
+
 -- Die zwei Fremdschluessel, INNERHALB des neuen Schemas. Zeigten sie auf
 -- sales.leads, waere die Trennung schon hier gebrochen.
 --

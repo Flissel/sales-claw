@@ -195,9 +195,15 @@ begin
         termine_zuletzt int,
         created_at timestamptz not null default now()
       )$ddl$, s);
-    execute format('create unique index if not exists '
-                   'kalender_quellen_name_idx on %I.kalender_quellen '
-                   '(anzeigename)', s);
+    -- Nach db/kalender-verbinden.sql ist der Name nur je Besitzer eindeutig
+    -- (kalender_quellen_besitzer_name_idx); der alte globale Index darf bei einem
+    -- erneuten Lauf dieser Datei nicht wiederkommen.
+    if not exists (select 1 from pg_indexes where schemaname = s
+                   and indexname = 'kalender_quellen_besitzer_name_idx') then
+      execute format('create unique index if not exists '
+                     'kalender_quellen_name_idx on %I.kalender_quellen '
+                     '(anzeigename)', s);
+    end if;
     -- `url` nachtraeglich nullbar gemacht (Fix-Runde 2, 13.09.2026): auf
     -- bereits bestehenden Installationen wirkt das obige `create table if
     -- not exists` nicht mehr, deshalb per ALTER nachgezogen; idempotent

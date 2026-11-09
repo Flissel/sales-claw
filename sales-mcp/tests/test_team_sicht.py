@@ -40,8 +40,13 @@ def _bald(stunden):
     return datetime.now(timezone.utc) + timedelta(hours=stunden)
 
 
-def _belegt(*eintraege, luecken=()):
-    return lambda tage_voraus=60: (list(eintraege), list(luecken))
+def _belegt(*eintraege, luecken=(), gefragt=None):
+    """Ersatz fuer server.belegungen; `gefragt` (Liste) sammelt den Betrachter."""
+    def belegungen(tage_voraus=60, betrachter=None):
+        if gefragt is not None:
+            gefragt.append(betrachter)
+        return list(eintraege), list(luecken)
+    return belegungen
 
 
 def test_fremder_termin_traegt_den_namen(monkeypatch):
@@ -173,10 +178,238 @@ def test_verbunden_aber_leer_ist_nicht_dasselbe_wie_nichts_verbunden(
     genau die Verwechslung, die Fix-Runde 1 fuer den umgekehrten Fall schon
     behoben hat."""
     server.kalenderquelle_speichern(
-        "Ivan", "https://calendar.example.invalid/ivan.ics")
+        "Ivan", "https://calendar.example.invalid/ivan.ics", "ivan", "business")
     monkeypatch.setattr(server, "belegungen", _belegt())
     antwort = _get("/kalender")
     assert antwort.status_code == 200
     seite = antwort.text
     assert "Kein Kalender verbunden" not in seite
     assert "Keine Einträge im Zeitfenster." in seite
+
+
+def test_seite_fragt_belegungen_mit_den_augen_des_betrachters(monkeypatch):
+    """Final-Fix I1 (Spec §6.4): die Liste maskiert nicht mehr nachtraeglich,
+    sondern laesst belegungen() fuer die ansehende Person lesen (ohne
+    Anmeldung: der Laden-Besitzer). Ersetzt die beiden Stub-Tests, die das
+    nachtraegliche Maskieren (_fuer_betrachter) prueften."""
+    for besitzer in ("ivan", "felix"):
+        gefragt = []
+        monkeypatch.setenv("POST_BESITZER", besitzer)
+        monkeypatch.setattr(server, "belegungen", _belegt(gefragt=gefragt))
+        assert _get("/kalender").status_code == 200
+        assert gefragt == [besitzer]
+
+
+@pytest.fixture
+def ivan_angemeldet(monkeypatch):
+    """Echte Anmeldung als `ivan` (Rolle kalender), Laden gehoert felix."""
+    import benutzer_anlegen
+    import kalender
+    monkeypatch.setenv("POST_BESITZER", "felix")
+    monkeypatch.setattr(kalender, "termine_lesen", lambda *a, **k: ([], None))
+    monkeypatch.setattr(ui, "UI_SESSION_SECRET", "test-geheimnis-nur-fuer-diese-datei")
+    ui.ANMELDE_BREMSE.update({"fehler": 0, "gesperrt_bis": 0.0})
+    with server.pool.connection() as conn:
+        conn.execute("truncate sales_test.benutzer cascade")
+    assert benutzer_anlegen.anlegen("ivan", "kalender", "nur-kalender-9").startswith("OK")
+    client = TestClient(ui.app)
+    antwort = client.post("/login", data={"name": "ivan", "passwort": "nur-kalender-9",
+                                          "csrf": ui.CSRF_TOKEN},
+                          headers={"host": HOST_OK}, follow_redirects=False)
+    assert antwort.status_code == 303
+    yield client
+    ui.ANMELDE_BREMSE.update({"fehler": 0, "gesperrt_bis": 0.0})
+    with server.pool.connection() as conn:
+        conn.execute("truncate sales_test.benutzer cascade")
+
+
+def test_angemeldeter_ivan_sieht_felix_privat_nur_als_privattermin(ivan_angemeldet):
+    """Fix-Runde 1, Task 5: echte Quelle von felix/privat (Titel gespeichert,
+    weil felix der Laden-Besitzer ist); ivan sieht weder in der Liste unter
+    dem Kalender noch in termine.json Titel oder Ort."""
+    import kalender_sichtbarkeit
+    import post_struktur
+    qid = server.kalenderquelle_speichern("Felix privat", "https://example.test/f.ics",
+                                          "felix", "privat")
+    beginn = _bald(24)
+    server.kalendertermine_ersetzen(qid, [
+        {"uid": "p1", "beginn": beginn, "ende": beginn + timedelta(hours=1),
+         "titel": "Arzt Dr. Geheim", "ort": "Praxis X"}],
+        kalender_sichtbarkeit.details_speichern("felix", "privat",
+                                                post_struktur.container_besitzer()))
+    server.kalenderquelle_stand_setzen(qid, 1, None)
+    assert server._q("select titel from kalender_termine where quelle_id = %s",
+                     (qid,)) == [{"titel": "Arzt Dr. Geheim"}]
+
+    seite = ivan_angemeldet.get("/kalender", headers={"host": HOST_OK})
+    assert seite.status_code == 200
+    assert "Privattermin" in seite.text
+    assert "Arzt Dr. Geheim" not in seite.text and "Praxis X" not in seite.text
+
+    von = (beginn - timedelta(days=1)).isoformat().replace("+", "%2B")
+    bis = (beginn + timedelta(days=1)).isoformat().replace("+", "%2B")
+    antwort = ivan_angemeldet.get(f"/kalender/termine.json?von={von}&bis={bis}",
+                                  headers={"host": HOST_OK})
+    assert antwort.status_code == 200, antwort.text
+    (e,) = [e for e in antwort.json()["ereignisse"] if e["art"] == "kalender"]
+    assert e["titel"] == "Privattermin" and e["maskiert"] is True
+    assert "Arzt Dr. Geheim" not in antwort.text and "Praxis X" not in antwort.text
+
+
+def test_freier_termin_steht_in_der_liste_als_frei_markiert(monkeypatch):
+    """Task 7: „frei" markierte Termine (Geburtstage) erscheinen in der Liste,
+    sind als frei gekennzeichnet und kommen nicht aus belegungen() (blockieren nie)."""
+    monkeypatch.setenv("POST_BESITZER", "felix")
+    monkeypatch.setattr(server, "belegungen", _belegt())
+    beginn = _bald(24)
+    monkeypatch.setattr(server, "kalendertermine_lesen", lambda v, b, betrachter: ([{
+        "beginn": beginn, "ende": beginn + timedelta(hours=1), "titel": "Geburtstag Oma",
+        "ort": "", "uid": "g1", "quelle": "Familie", "besitzer": "felix",
+        "bereich": "business", "maskiert": False, "ganztaegig": True, "frei": True,
+        "quelle_id": "q1", "kalender": "x"}], []))
+    seite = _get("/kalender").text
+    assert "Geburtstag Oma" in seite
+    assert "(frei)" in seite
+
+
+def _felix_privat_quelle(frei=False, ort="Praxis X"):
+    import kalender_sichtbarkeit
+    import post_struktur
+    qid = server.kalenderquelle_speichern("Felix geheimer Name", "https://example.test/f.ics",
+                                          "felix", "privat")
+    beginn = _bald(24)
+    server.kalendertermine_ersetzen(qid, [
+        {"uid": "p1", "beginn": beginn, "ende": beginn + timedelta(hours=1),
+         "titel": "Arzt Dr. Geheim", "ort": ort, "frei": frei}],
+        kalender_sichtbarkeit.details_speichern("felix", "privat",
+                                                post_struktur.container_besitzer()))
+    server.kalenderquelle_stand_setzen(qid, 1, None)
+    return qid, beginn
+
+
+def test_name_fremder_privat_kalender_erreicht_ivan_nirgends(ivan_angemeldet):
+    qid, beginn = _felix_privat_quelle()
+    von = (beginn - timedelta(days=1)).isoformat().replace("+", "%2B")
+    bis = (beginn + timedelta(days=1)).isoformat().replace("+", "%2B")
+    antwort = ivan_angemeldet.get(f"/kalender/termine.json?von={von}&bis={bis}",
+                                  headers={"host": HOST_OK})
+    assert antwort.status_code == 200, antwort.text
+    assert "Felix geheimer Name" not in antwort.text
+    ebene = [e for e in antwort.json()["ebenen"] if e["id"] == qid]
+    assert ebene and ebene[0]["name"] == "Privat (felix)"
+    seite = ivan_angemeldet.get("/kalender", headers={"host": HOST_OK})
+    assert "Felix geheimer Name" not in seite.text
+    assert "Arzt Dr. Geheim" not in seite.text and "Praxis X" not in seite.text
+
+
+def test_freier_maskierter_termin_steht_in_ivans_liste_ohne_titel_und_ort(ivan_angemeldet):
+    _felix_privat_quelle(frei=True)
+    seite = ivan_angemeldet.get("/kalender", headers={"host": HOST_OK}).text
+    assert "Privattermin" in seite and "(frei)" in seite
+    assert "Arzt Dr. Geheim" not in seite and "Praxis X" not in seite
+    assert "Felix geheimer Name" not in seite
+
+
+def test_freie_termine_fehler_nimmt_die_seite_nicht_mit(monkeypatch):
+    monkeypatch.setattr(server, "belegungen", _belegt())
+
+    def kaputt(*a, **k):
+        raise RuntimeError("DB weg")
+    monkeypatch.setattr(server, "kalendertermine_lesen", kaputt)
+    assert _get("/kalender").status_code == 200
+
+
+def test_luecken_hinweis_nennt_fremden_privat_kalender_nicht(ivan_angemeldet):
+    """Fix-Runde 2: Quelle von felix/privat mit Fehler -> Hinweis fuer ivan
+    ohne Anzeigename und ohne Fehlertext; fuer den Laden-Besitzer (Agent) bleibt
+    der Name stehen."""
+    qid, beginn = _felix_privat_quelle()
+    server.kalenderquelle_stand_setzen(qid, None, "Abruf gescheitert: geheimer-pfad-xyz")
+    von = (beginn - timedelta(days=1)).isoformat().replace("+", "%2B")
+    bis = (beginn + timedelta(days=1)).isoformat().replace("+", "%2B")
+    antwort = ivan_angemeldet.get(f"/kalender/termine.json?von={von}&bis={bis}",
+                                  headers={"host": HOST_OK})
+    assert antwort.status_code == 200, antwort.text
+    assert "Felix geheimer Name" not in antwort.text
+    assert "geheimer-pfad-xyz" not in antwort.text
+    assert "Kalender „Privat (felix)“: nicht abrufbar" in antwort.json()["hinweise"]
+    seite = ivan_angemeldet.get("/kalender", headers={"host": HOST_OK}).text
+    assert "Nicht abrufbar" in seite and "Privat (felix)" in seite
+    assert "Felix geheimer Name" not in seite and "geheimer-pfad-xyz" not in seite
+    # Agent-Sicht (Laden-Besitzer felix): eigener Kalender bleibt benannt.
+    import post_struktur
+    assert post_struktur.container_besitzer() == "felix"
+    _, luecken = server.belegungen()
+    text = server._kollisionstext([], luecken)
+    assert "Felix geheimer Name" in text
+    assert server._luecken_fuer_agent(luecken)[0]["quelle"] == "Felix geheimer Name"
+
+
+def test_agent_sieht_fremden_privat_kalender_ohne_namen(monkeypatch):
+    monkeypatch.setenv("POST_BESITZER", "felix")
+    luecken = [{"quelle": "Ivan geheim", "grund": "Fehler mit Titel", "besitzer": "ivan",
+                "bereich": "privat", "fest": False},
+               {"quelle": "Felix Arbeit", "grund": "noch nicht abgeglichen", "besitzer": "felix",
+                "bereich": "business", "fest": True}]
+    text = server._kollisionstext([], luecken)
+    assert "Ivan geheim" not in text and "Privat (ivan)" in text and "Felix Arbeit" in text
+    aus = server._luecken_fuer_agent(luecken)
+    assert aus[0] == {"quelle": "Privat (ivan)", "grund": "nicht abrufbar"}
+
+
+def test_alter_ui_stempel_ohne_abgleich_ist_in_termine_json_eine_luecke(ivan_angemeldet):
+    """Final-Fix I2: zuletzt_gelesen = now() (alter Code) ohne abgeglichen_am
+    -> Hinweis „noch nicht abgeglichen", die Antwort ist unvollstaendig."""
+    qid = server.kalenderquelle_speichern("Ivan Arbeit", "https://example.test/i.ics",
+                                          "ivan", "business")
+    server._q("update kalender_quellen set zuletzt_gelesen = now() where id = %s", (qid,))
+    beginn = _bald(24)
+    von = (beginn - timedelta(days=1)).isoformat().replace("+", "%2B")
+    bis = (beginn + timedelta(days=1)).isoformat().replace("+", "%2B")
+    pfad = f"/kalender/termine.json?von={von}&bis={bis}"
+    antwort = ivan_angemeldet.get(pfad, headers={"host": HOST_OK})
+    assert antwort.status_code == 200, antwort.text
+    assert "Kalender „Ivan Arbeit“: noch nicht abgeglichen" in antwort.json()["hinweise"]
+    server.kalenderquelle_stand_setzen(qid, 0, None)
+    antwort = ivan_angemeldet.get(pfad, headers={"host": HOST_OK})
+    assert antwort.json()["hinweise"] == []
+
+
+def _felix_paar_business_zuerst():
+    """Derselbe Termin (eine UID) in felix' Business- UND Privat-Kalender, die
+    Business-Kopie zuerst angelegt (sie wird beim Zusammenfuehren die Basis)."""
+    beginn = _bald(24)
+    termin = {"uid": "dup-1", "beginn": beginn, "ende": beginn + timedelta(hours=1),
+              "titel": "Arzt Dr. Geheim", "ort": "Praxis X"}
+    for name, bereich in (("Felix Arbeit", "business"), ("Felix privat", "privat")):
+        qid = server.kalenderquelle_speichern(name, f"https://example.test/{bereich}.ics",
+                                              "felix", bereich)
+        server.kalendertermine_ersetzen(qid, [dict(termin)], True)
+        server.kalenderquelle_stand_setzen(qid, 1, None)
+    return beginn
+
+
+def test_zusammengefuehrtes_paar_bleibt_fuer_ivan_maskiert(ivan_angemeldet):
+    """Final-Fix I1 (Spec §6.4): belegungen() fuehrte mit den Augen des Laden-
+    Besitzers zusammen; die Business-Kopie war Basis, die Seite maskierte danach
+    nur nach deren Bereich -> ivan sah den Titel. Die Maske darf beim
+    Zusammenfuehren nie verloren gehen."""
+    _felix_paar_business_zuerst()
+    seite = ivan_angemeldet.get("/kalender", headers={"host": HOST_OK})
+    assert seite.status_code == 200
+    assert "Privattermin" in seite.text
+    assert "Arzt Dr. Geheim" not in seite.text and "Praxis X" not in seite.text
+    assert "Felix privat" not in seite.text
+
+
+def test_agent_pfad_sieht_das_paar_weiter_mit_den_augen_des_laden_besitzers(monkeypatch):
+    import kalender
+    monkeypatch.setenv("POST_BESITZER", "felix")
+    monkeypatch.setattr(kalender, "termine_lesen", lambda *a, **k: ([], None))
+    _felix_paar_business_zuerst()
+    eintraege, luecken = server.belegungen()
+    assert luecken == []
+    assert [(e["titel"], e["maskiert"]) for e in eintraege] == [("Arzt Dr. Geheim", False)]
+    eintraege, _ = server.belegungen(betrachter="ivan")
+    assert [(e["titel"], e["ort"], e["maskiert"]) for e in eintraege] == [
+        ("Privattermin", "", True)]
