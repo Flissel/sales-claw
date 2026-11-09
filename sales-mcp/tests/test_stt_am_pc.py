@@ -67,6 +67,20 @@ def test_ohne_schluessel_wie_bisher(monkeypatch):
         dienst.shutdown()
 
 
+def test_zweite_kopie_bekommt_den_port_nicht(monkeypatch):
+    """09.11.2026: am PC liefen 55 Kopien. Windows erlaubt mit SO_REUSEADDR einen
+    zweiten lauschenden Prozess auf demselben Port; die Waechter-Aufgabe sah den
+    Port nicht immer und startete alle 5 Minuten nach. Die zweite Kopie muss am
+    Binden scheitern (und damit sofort enden)."""
+    stt = _stt_laden(monkeypatch)
+    erster = stt.Dienst(("127.0.0.1", 0), stt.Handler)
+    try:
+        with pytest.raises(OSError):
+            stt.Dienst(("127.0.0.1", erster.server_address[1]), stt.Handler).server_close()
+    finally:
+        erster.server_close()
+
+
 def test_bindadresse_ist_einstellbar(monkeypatch):
     assert _stt_laden(monkeypatch).HOST == "0.0.0.0"                       # Container: wie bisher
     assert _stt_laden(monkeypatch, STT_HOST="127.0.0.1").HOST == "127.0.0.1"   # PC: nur lokal, Tailnet davor
