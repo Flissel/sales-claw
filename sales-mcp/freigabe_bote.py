@@ -182,15 +182,26 @@ def _stand_lesen() -> RowboatStand:
                         items=items, signale=list(signale))
 
 
+def _herzschlag(erfolg: bool, fehler: str | None = None) -> None:
+    """Der Herzschlag darf den Durchgang nie stoppen."""
+    try:
+        fe.herzschlag_schreiben(erfolg, fehler)
+    except Exception as e:  # noqa: BLE001
+        LOG.error("Herzschlag nicht geschrieben: %s", type(e).__name__)
+
+
 def durchgang() -> int:
     basis = os.environ.get("UI_BASIS_URL", "").strip().rstrip("/")
     if not basis:
         LOG.error("UI_BASIS_URL fehlt - Rowboat wird nicht angefasst.")
+        _herzschlag(False, "UI_BASIS_URL_fehlt")
         return 1
+    entwurf_fehler = None
     try:
         fe.entwuerfe_spiegeln(basis)
     except Exception as e:  # noqa: BLE001 - Entwuerfe duerfen den Rowboat-Abgleich nie stoppen
         LOG.error("Entwuerfe spiegeln fehlgeschlagen: %s", type(e).__name__)
+        entwurf_fehler = f"Entwuerfe.{type(e).__name__}"
     try:
         eintraege = fe.offene()
         aufraeumen = fe.zum_aufraeumen()
@@ -216,7 +227,11 @@ def durchgang() -> int:
             fe.aufgeraeumt(kennung)
     except Exception as e:  # noqa: BLE001 - nur der Typ ins Log, nie der Text (Schluessel)
         LOG.error("Durchgang abgebrochen: %s", type(e).__name__)
+        _herzschlag(False, type(e).__name__)
         return 1
+    # Ein Durchgang mit kaputtem Entwurfs-Spiegel zaehlt nicht als Erfolg: sonst
+    # fiele ein dauerhaft stiller Spiegel niemandem auf.
+    _herzschlag(entwurf_fehler is None, entwurf_fehler)
     LOG.info("Durchgang: +%d Vorschlaege, -%d zurueckgezogen, %d abgehakt, %d Staende, "
              "%d aufgeraeumt", len(plan.hinzufuegen), len(plan.zurueckziehen),
              len(plan.abhaken), len(staende), len(plan.aufgeraeumt))

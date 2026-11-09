@@ -3741,6 +3741,15 @@ dann 401.
 **Prüfen.**
 
 - `docker compose logs --tail 5 freigabe-bote`: je Minute eine Zeile `Durchgang: +n Vorschlaege, …`.
+- Herzschlag: Jeder Durchgang schreibt `sales.einstellungen` → `freigabe_bote_herzschlag`, mit letztem Versuch,
+  letztem Erfolg und Fehler (nur der Typname) seit wann. Ein Durchgang zählt nur dann als Erfolg, wenn auch der
+  Entwurfs-Spiegel durchlief. Liegt der letzte Erfolg mehr als 10 min zurück, wird `deploy/wache.sh`
+  (Abschnitt 21 von `smoke.sh`, nur volle Prüfung) rot, und `/freigaben` zeigt oben einen roten Hinweis. Beim
+  Ausrollen (`--nur-basis`) wird der Herzschlag nicht geprüft, damit ein fehlendes Rowboat keinen Rückbau
+  auslöst. Von Hand lesen:
+
+      docker exec -e SALES_DB_SCHEMA=sales sales-mcp python -c \
+        "import sys;sys.path.insert(0,'/app');import freigabe_eingang as fe;print(fe.herzschlag_pruefzeile())"
 - `docker logs --since 10m sales-ui | grep freigabe-api`: zeigt `herkunft=…`; die Abholer fragen etwa jede Minute
   (werkstatt) bzw. alle 2 min (selbstbild).
 - Doppelte offene Aufträge je Eintrag (muss 0 sein):
@@ -3755,3 +3764,6 @@ dann 401.
   Learning b8cc069).
 - `deploy/smoke.sh` muss jeden neuen Kern-Container kennen. Fehlt einer, rollt `update.sh` zurück (so am 09.11.
   zweimal geschehen, behoben 4830dc7).
+- Eine Kursfreigabe ohne Inhaltsänderung braucht `neu_ausliefern: true` in den Details des Eintrags. Fehlt es,
+  bereitet der Knopf „Freigabe-Seite schicken“ eine Seite mit grauem Knopf vor (Learning 3a86283).
+- Ein Entwurf steht beim Versand kurz auf `failed`. Das ist die Claim-Marke von `kanal_dispatch`, kein Fehler.

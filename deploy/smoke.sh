@@ -794,6 +794,29 @@ else
     >/dev/null 2>&1; then gut "post_mails lesbar"; else fehl "post_mails lesbar" "select scheitert (db/post-sammelstelle.sql eingespielt?)"; fi
 fi
 
+# 21) Herzschlag des Freigabe-Boten (M4, 09.11.2026). Der Bote schreibt nach
+# jedem Durchgang (Takt 60 s) in einstellungen.freigabe_bote_herzschlag, ob der
+# Abgleich mit Rowboat geklappt hat. Ein laufender Container sagt nichts: ein
+# Bote, der Rowboat nicht erreicht, laeuft weiter und tut nichts. ROT, wenn
+# der letzte Erfolg aelter als 10 Minuten ist oder nie einer verzeichnet wurde.
+# NUR in der vollen Pruefung (deploy/wache.sh alle 15 Minuten): ist Rowboat
+# beim Ausrollen gerade weg, darf das keinen Rueckbau von Sales ausloesen.
+# Ohne Container sales-freigabe-bote gibt es nichts zu pruefen.
+if [ "$MODUS" = "basis" ]; then
+  melde "freigabe-bote herzschlag" "uebersprungen (--nur-basis; volle Pruefung ueber deploy/wache.sh alle 15 Minuten)"
+elif ! docker inspect sales-freigabe-bote >/dev/null 2>&1; then
+  melde "freigabe-bote herzschlag" "uebersprungen (kein Container sales-freigabe-bote)"
+else
+  hz="$(docker exec -e SALES_DB_SCHEMA=sales sales-mcp python -c \
+    "import sys;sys.path.insert(0,'/app');import freigabe_eingang as fe;print(fe.herzschlag_pruefzeile())" \
+    2>/dev/null | tail -1 || true)"
+  case "$hz" in
+    ok\ *) gut "freigabe-bote herzschlag" ;;
+    still\ *|unbekannt\ *) fehl "freigabe-bote herzschlag" "${hz} — docker logs sales-freigabe-bote" ;;
+    *) fehl "freigabe-bote herzschlag" "nicht lesbar (sales-mcp oder Datenbank?)" ;;
+  esac
+fi
+
 echo "---"
 if [ "$ROT" -eq 0 ]; then echo "ALLE PRUEFUNGEN GRUEN"; else echo "$ROT PRUEFUNG(EN) ROT"; fi
 exit "$ROT"

@@ -10,6 +10,7 @@ import json
 import re
 import secrets
 import uuid
+from datetime import datetime, timezone
 
 import psycopg
 
@@ -33,6 +34,9 @@ HERKUNFT_ANZEIGE = {
 STUFE2_ENTSPERRT = False
 EINSTELLUNG_STUFE2 = "freigabe_stufe2"
 STUFE2_ARTEN = ("debugger_pr", "selbstbild_rueckfrage", "kursfreigabe", "entwurf")
+# Herzschlag des Boten (M4): jeder Durchgang schreibt hierher, Wache und Seite lesen.
+EINSTELLUNG_HERZSCHLAG = "freigabe_bote_herzschlag"
+HERZSCHLAG_STILL_MINUTEN = 10
 
 _ALPHABET = "abcdefghijklmnopqrstuvwxyz234567"
 _SCHLIESS_STATUS = ("erledigt", "verworfen", "ausgefuehrt")
@@ -319,6 +323,67 @@ def stufe2_setzen(art, an: bool, von) -> None:
               "wert = excluded.wert, geaendert_am = now(), "
               "geaendert_von = excluded.geaendert_von returning schluessel",
               (EINSTELLUNG_STUFE2, json.dumps(neu), von))
+
+
+def _zeitpunkt(wert) -> datetime | None:
+    try:
+        z = datetime.fromisoformat(str(wert))
+    except (TypeError, ValueError):
+        return None
+    return z if z.tzinfo else z.replace(tzinfo=timezone.utc)
+
+
+def _herzschlag_gespeichert() -> dict:
+    z = server._q("select wert from einstellungen where schluessel = %s",
+                  (EINSTELLUNG_HERZSCHLAG,))
+    return z[0]["wert"] if z and isinstance(z[0]["wert"], dict) else {}
+
+
+def herzschlag_schreiben(erfolg: bool, fehler: str | None = None,
+                         jetzt: datetime | None = None) -> None:
+    """Ein Durchgang des Boten. Der Fehler ist nur ein Typname, nie ein Text
+    (ein Fehlertext koennte den Rowboat-Schluessel tragen)."""
+    jetzt = jetzt or datetime.now(timezone.utc)
+    alt = _herzschlag_gespeichert()
+    neu = {"versuch": jetzt.isoformat(), "erfolg": alt.get("erfolg"),
+           "fehler": None, "fehler_seit": None}
+    if erfolg:
+        neu["erfolg"] = jetzt.isoformat()
+    else:
+        neu["fehler"] = re.sub(r"[^A-Za-z0-9_.]", "", str(fehler or "Unbekannt"))[:60] or "Unbekannt"
+        neu["fehler_seit"] = alt.get("fehler_seit") or jetzt.isoformat()
+    server._q("insert into einstellungen (schluessel, wert, geaendert_von) "
+              "values (%s, %s, 'freigabe-bote') on conflict (schluessel) do update set "
+              "wert = excluded.wert, geaendert_am = now(), "
+              "geaendert_von = excluded.geaendert_von returning schluessel",
+              (EINSTELLUNG_HERZSCHLAG, json.dumps(neu)))
+
+
+def herzschlag_lesen(jetzt: datetime | None = None) -> dict:
+    """zustand: unbekannt (nie geschrieben), ok, still (letzter Erfolg zu alt oder nie)."""
+    jetzt = jetzt or datetime.now(timezone.utc)
+    w = _herzschlag_gespeichert()
+    h = {"versuch": _zeitpunkt(w.get("versuch")), "erfolg": _zeitpunkt(w.get("erfolg")),
+         "fehler": w.get("fehler") or None, "fehler_seit": _zeitpunkt(w.get("fehler_seit")),
+         "minuten": None}
+    if h["versuch"] is None and h["erfolg"] is None:
+        h["zustand"] = "unbekannt"
+        return h
+    if h["erfolg"] is not None:
+        h["minuten"] = max(0, int((jetzt - h["erfolg"]).total_seconds() // 60))
+    still = h["minuten"] is None or h["minuten"] > HERZSCHLAG_STILL_MINUTEN
+    h["zustand"] = "still" if still else "ok"
+    return h
+
+
+def herzschlag_pruefzeile(jetzt: datetime | None = None) -> str:
+    """Eine Zeile fuer deploy/smoke.sh: erstes Wort unbekannt|ok|still."""
+    h = herzschlag_lesen(jetzt)
+    if h["zustand"] == "unbekannt":
+        return "unbekannt kein Durchgang verzeichnet"
+    erfolg = f"vor {h['minuten']} min" if h["minuten"] is not None else "nie"
+    fehler = f", Fehler {h['fehler']}" if h["fehler"] else ""
+    return f"{h['zustand']} letzter Erfolg {erfolg}{fehler}"
 
 
 def letzte_auftraege() -> dict[str, dict]:

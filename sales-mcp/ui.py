@@ -4053,6 +4053,7 @@ async def inbox(request):
              f'Diese Seite lädt nicht von selbst neu, damit dir beim '
              f'Tippen nichts verloren geht — '
              f'<a href="{_e(hier)}">neu laden</a>, wenn du Neues erwartest.</p>',
+             ui_freigabe_eingang.abgleich_zeile(),
              _freigabe_leiste(leisten, gewaehlt, "Freigaben"), unter_leiste, inhalt]
     # Termine sind keine Freigaben (Rundgang 27.10.2026): Termine ohne Datum
     # gibt es nicht, ihr Verlauf steht unter Monitoring -> Verlauf.

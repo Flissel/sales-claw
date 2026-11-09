@@ -13,8 +13,10 @@ antwortet immer 409 und aendert nichts. `ui` wird nie importiert, sondern bei
 from __future__ import annotations
 
 import logging
+import os
 import re
 import urllib.parse
+from datetime import datetime, timezone
 
 import psycopg
 from starlette.responses import RedirectResponse
@@ -56,6 +58,33 @@ _HINWEISE = {
                               "Nichts wurde getan."),
     "quelle": ("warnung", "Die Quelle des Eintrags ist nicht lesbar. Nichts wurde getan."),
 }
+
+try:
+    from zoneinfo import ZoneInfo
+    _ZEITZONE = ZoneInfo(os.environ.get("TZ", "Europe/Berlin"))
+except Exception:  # noqa: BLE001 - ohne tzdata: UTC, wie ui.ZEITZONE
+    _ZEITZONE = timezone.utc
+
+
+def abgleich_zeile(jetzt: datetime | None = None) -> str:
+    """Oben auf /freigaben: Stand des Rowboat-Abgleichs (Herzschlag des Boten, M4).
+    Leer, solange nie ein Durchgang verzeichnet ist (z. B. ein Laden ohne Boten)."""
+    try:
+        h = fe.herzschlag_lesen(jetzt)
+    except Exception as e:  # noqa: BLE001 - die Seite darf daran nie scheitern
+        LOG.error("Herzschlag nicht lesbar: %s", type(e).__name__)
+        return ""
+    if h["zustand"] == "unbekannt":
+        return ""
+    if h["zustand"] == "ok":
+        return f'<p class="meta">Rowboat-Abgleich: vor {h["minuten"]} min</p>'
+    seit = (h["erfolg"].astimezone(_ZEITZONE).strftime("%d.%m.%Y %H:%M")
+            if h["erfolg"] else "nie")
+    fehler = f' (Fehler: {h["fehler"]})' if h["fehler"] else ""
+    return (f'<div class="warnung">Rowboat-Abgleich steht – letzter Erfolg: {seit}{fehler}. '
+            f'Neue Einträge kommen nicht nach Rowboat; hier auf der Seite '
+            f'kannst du weiter freigeben.</div>')
+
 
 def rowboat_text(stand) -> str:
     return _ROWBOAT_TEXT.get(stand, "noch nicht gesichtet")
