@@ -602,3 +602,98 @@ def test_ganztaegige_und_naive_serie_werden_geprueft(server_stub):
     assert time.monotonic() - t0 < 2
     assert termine == []
     assert fehler and "2 Serientermine" in fehler, fehler
+
+
+# --- Zweite Runde: Gesamtbudget, Verschachtelung, harte Zeitgrenze --------
+
+import multiprocessing as _mp  # noqa: E402
+
+import icalendar as _ical  # noqa: E402
+
+
+def _stamm(ics_text):
+    return _ical.Calendar.from_ical(ics_text).subcomponents[0]
+
+
+def test_viele_serien_knapp_unter_der_einzelgrenze_sprengen_das_budget(
+        server_stub, monkeypatch):
+    monkeypatch.setattr(kalenderquellen, "MAX_ITERATIONEN", 1000)
+    start = (_dt.now(_tz.utc) - _td(days=700)).strftime("%Y%m%dT%H%M%SZ")
+    server_stub.rumpf = _ics(*[
+        _serie(f"s{i}@x", start, "FREQ=DAILY", f"S{i}") for i in range(4)])
+    t0 = time.monotonic()
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert time.monotonic() - t0 < 5
+    assert {t["titel"] for t in termine} == {"S0"}
+    assert fehler and "3 Serientermine" in fehler, fehler
+
+
+def test_zu_viele_serien_werden_gekappt(server_stub, monkeypatch):
+    monkeypatch.setattr(kalenderquellen, "MAX_SERIEN", 2)
+    start = (_dt.now(_tz.utc) - _td(days=1)).strftime("%Y%m%dT%H%M%SZ")
+    server_stub.rumpf = _ics(*[
+        _serie(f"s{i}@x", start, "FREQ=WEEKLY;COUNT=2", f"S{i}")
+        for i in range(4)])
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert {t["titel"] for t in termine} == {"S0", "S1"}
+    assert fehler and "2 Serientermine" in fehler, fehler
+
+
+def test_jaehrlich_byday_ohne_ordnungszahl_wird_hochgerechnet():
+    bis = _dt.now(_tz.utc)
+    ev = _stamm(_ics(_serie("y@x", "19000101T000000Z",
+                            "FREQ=YEARLY;BYDAY=MO")).decode())
+    jahre = bis.year - 1900
+    assert kalenderquellen._serie_schritte(ev, bis) >= 52 * jahre
+    ev = _stamm(_ics(_serie("m@x", "19000101T000000Z",
+                            "FREQ=MONTHLY;BYDAY=MO")).decode())
+    assert kalenderquellen._serie_schritte(ev, bis) >= 5 * 12 * jahre
+    ev = _stamm(_ics(_serie("w@x", "19000101T000000Z",
+                            "FREQ=YEARLY;BYWEEKNO=1,2")).decode())
+    assert kalenderquellen._serie_schritte(ev, bis) >= 14 * jahre
+
+
+def test_jaehrlich_byday_seit_1900_wird_uebersprungen(server_stub):
+    server_stub.rumpf = _ics(
+        _serie("y@x", "19000101T000000Z",
+               "FREQ=YEARLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;"
+               "BYHOUR=" + ",".join(str(h) for h in range(24))),
+        _normal())
+    t0 = time.monotonic()
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert time.monotonic() - t0 < 2
+    assert [t["titel"] for t in termine] == ["Normal"]
+    assert fehler and "uebersprungen" in fehler
+
+
+def test_verschachteltes_vevent_wird_entfernt(server_stub):
+    server_stub.rumpf = _ics(
+        "BEGIN:VTODO\r\nUID:t@x\r\nDTSTART:20000101T000000Z\r\n"
+        "BEGIN:VEVENT\r\nUID:in@x\r\nDTSTART:20000101T000000Z\r\n"
+        "RRULE:FREQ=SECONDLY\r\nSUMMARY:Innen\r\nEND:VEVENT\r\n"
+        "END:VTODO\r\n"
+        "BEGIN:X-FOO\r\n"
+        "BEGIN:VEVENT\r\nUID:in2@x\r\nDTSTART:20000101T000000Z\r\n"
+        "RRULE:FREQ=SECONDLY\r\nSUMMARY:Innen2\r\nEND:VEVENT\r\n"
+        "END:X-FOO\r\n",
+        _normal())
+    t0 = time.monotonic()
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert time.monotonic() - t0 < 2
+    assert [t["titel"] for t in termine] == ["Normal"]
+    assert fehler and "2 Serientermine" in fehler, fehler
+
+
+def test_harte_zeitgrenze_greift_auch_ohne_vorfilter(server_stub, monkeypatch):
+    monkeypatch.setattr(kalenderquellen, "_teure_serien_entfernen",
+                        lambda kal, bis: 0)
+    monkeypatch.setattr(kalenderquellen, "KALENDER_AUFKLAPP_TIMEOUT_S", 1)
+    server_stub.rumpf = _ics(
+        _serie("boese@x", "20000101T000000Z", "FREQ=SECONDLY"), _normal())
+    t0 = time.monotonic()
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert time.monotonic() - t0 < 4
+    assert termine == []
+    assert fehler == kalenderquellen.ZEITLIMIT_FEHLER
+    assert "http" not in fehler
+    assert _mp.active_children() == []

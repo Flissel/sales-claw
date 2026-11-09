@@ -34,7 +34,10 @@ Kollege koennte seinen Kalender ueber einen Anbieter auf einem anderen Port
 freigeben, und eine 80/443-Regel wuerde echte Quellen abweisen.
 """
 import ipaddress
+import math
+import multiprocessing
 import os
+import re
 import socket
 import urllib.error
 import urllib.parse
@@ -75,8 +78,18 @@ _PERIODE_S = {
     "HOURLY": 3600.0, "DAILY": 86400.0, "WEEKLY": 604800.0,
     "MONTHLY": 2.6e6, "YEARLY": 3.15e7,
 }
-_VERVIELFACHER = ("BYSECOND", "BYMINUTE", "BYHOUR", "BYDAY", "BYMONTHDAY",
-                  "BYYEARDAY", "BYWEEKNO", "BYMONTH")
+_VERVIELFACHER = ("BYSECOND", "BYMINUTE", "BYHOUR", "BYMONTHDAY",
+                  "BYYEARDAY", "BYMONTH")
+
+# Gesamtbudget ueber ALLE Serien eines Kalenders und Obergrenze fuer die
+# Zahl der Serien (viele Termine knapp unter der Einzelgrenze addieren sich).
+MAX_SERIEN = 2000
+
+# Harte Zeitgrenze fuer das Aufklappen in einem Kindprozess — die eigentliche
+# Garantie; der Vorab-Filter ist nur die billige erste Stufe.
+KALENDER_AUFKLAPP_TIMEOUT_S = 15
+ZEITLIMIT_FEHLER = ("Kalender zu aufwendig zum Lesen (Zeitlimit) — "
+                    "nicht abgeglichen.")
 
 # NUR fuer Tests — MUSS in Produktion IMMER False bleiben. Ein "1" hier
 # schaltet die komplette Ziel-Pruefung unten ab (siehe `_ziel_erlaubt`) und
@@ -225,30 +238,35 @@ def _als_utc(wert) -> datetime:
     return datetime(wert.year, wert.month, wert.day, tzinfo=timezone.utc)
 
 
-def _serie_zu_teuer(ev, bis: datetime) -> bool:
-    """True, wenn die Serienregel dieses VEVENTs nicht aufgeklappt werden
-    soll (Sekunden-/Minutentakt, zu viele Schritte, kaputt, ohne DTSTART).
-    Wirft nie."""
+def _hat_ordnungszahl(eintrag) -> bool:
+    return bool(re.match(r"^[+-]?\d", str(eintrag)))
+
+
+def _serie_schritte(ev, bis: datetime) -> float:
+    """Geschaetzte Schritte der Serienregel dieses VEVENTs bis `bis`.
+    0.0 = keine Serie; inf = nicht aufklappen (Sekunden-/Minutentakt, ohne
+    DTSTART, kaputt). Wirft nie."""
     try:
         regeln = ev.get("RRULE")
         if regeln is None:
-            return False
+            return 0.0
         if not isinstance(regeln, list):
             regeln = [regeln]
         dtstart = ev.get("DTSTART")
         if dtstart is None:
-            return True
+            return math.inf
         start = _als_utc(dtstart.dt)
+        gesamt = 0.0
         for regel in regeln:
             freq = str((regel.get("FREQ") or [""])[0]).upper()
             if freq in ("SECONDLY", "MINUTELY"):
-                return True
+                return math.inf
             periode = _PERIODE_S.get(freq)
             if periode is None:
-                return True
+                return math.inf
             intervall = int((regel.get("INTERVAL") or [1])[0])
             if intervall < 1:
-                return True
+                return math.inf
             ende = bis
             until = regel.get("UNTIL")
             if until:
@@ -259,25 +277,115 @@ def _serie_zu_teuer(ev, bis: datetime) -> bool:
                 werte = regel.get(schluessel)
                 if werte:
                     schritte *= max(len(werte), 1)
-            if schritte > MAX_ITERATIONEN:
-                return True
-        return False
+            tage = regel.get("BYDAY") or []
+            wochen = regel.get("BYWEEKNO") or []
+            enger = any(regel.get(k) for k in
+                        ("BYMONTH", "BYMONTHDAY", "BYYEARDAY", "BYWEEKNO"))
+            if tage:
+                gewicht = 1
+                if freq == "YEARLY" and not enger:
+                    gewicht = 52
+                elif freq == "MONTHLY" and not regel.get("BYMONTHDAY"):
+                    gewicht = 5
+                schritte *= sum(1 if _hat_ordnungszahl(t) else gewicht
+                                for t in tage)
+            if wochen:
+                schritte *= len(wochen) * (7 if freq == "YEARLY"
+                                           and not tage else 1)
+            gesamt += schritte
+        return gesamt
     except Exception:                     # noqa: BLE001 — kaputte Regel
-        return True
+        return math.inf
 
 
 def _teure_serien_entfernen(kal, bis: datetime) -> int:
-    """Entfernt VEVENTs mit zu teurer Serienregel (nur VEVENT wird von
-    `recurring_ical_events.of(kal)` aufgeklappt) -> Anzahl entfernter."""
-    behalten, entfernt = [], 0
-    for teil in kal.subcomponents:
-        if teil.name == "VEVENT" and _serie_zu_teuer(teil, bis):
-            entfernt += 1
-        else:
+    """Entfernt rekursiv jedes VEVENT, das kein direktes Kind des VCALENDAR
+    ist (die Bibliothek laeuft rekursiv), jedes zu teure und alle, die das
+    Gesamtbudget / die Serien-Obergrenze sprengen -> Anzahl entfernter."""
+    stand = {"entfernt": 0, "budget": 0.0, "serien": 0}
+
+    def durch(komp, wurzel):
+        behalten = []
+        for teil in komp.subcomponents:
+            if teil.name == "VEVENT":
+                if not wurzel:
+                    stand["entfernt"] += 1
+                    continue
+                schritte = _serie_schritte(teil, bis)
+                if schritte > 0:
+                    stand["serien"] += 1
+                    stand["budget"] += schritte
+                    if (schritte > MAX_ITERATIONEN
+                            or stand["budget"] > MAX_ITERATIONEN
+                            or stand["serien"] > MAX_SERIEN):
+                        stand["entfernt"] += 1
+                        continue
+            durch(teil, False)
             behalten.append(teil)
-    if entfernt:
-        kal.subcomponents[:] = behalten
-    return entfernt
+        komp.subcomponents[:] = behalten
+
+    durch(kal, True)
+    return stand["entfernt"]
+
+
+def _aufklappen(text: str, von: datetime, bis: datetime):
+    """Parsen, Vorab-Filter und Aufklappen — laeuft im Kindprozess. Gibt nur
+    schlichte Daten zurueck: (zu_teuer, serien_uids, [(start, ende, uid,
+    titel, ort, transp) | None])."""
+    kal = icalendar.Calendar.from_ical(text)
+    zu_teuer = _teure_serien_entfernen(kal, bis)
+    serien = _serien_uids(kal)
+    seiten = recurring_ical_events.of(kal).paginate(
+        MAX_VORKOMMEN + 1, earliest_end=von, latest_start=bis)
+    roh = []
+    for ev in next(iter(seiten), []):
+        try:
+            roh.append((ev.start, ev.end, str(ev.get("UID", "")),
+                        str(ev.get("SUMMARY", ""))[:200],
+                        str(ev.get("LOCATION", ""))[:120],
+                        str(ev.get("TRANSP", "")).upper()))
+        except Exception:                 # noqa: BLE001 — ein Termin, nicht alle
+            roh.append(None)
+    return zu_teuer, serien, roh
+
+
+def _kind(verbindung, text, von, bis):
+    try:
+        verbindung.send(("ok", _aufklappen(text, von, bis)))
+    except BaseException as e:            # noqa: BLE001 — nur der Typ geht raus
+        try:
+            verbindung.send(("fehler", type(e).__name__))
+        except Exception:                 # noqa: BLE001
+            pass
+    finally:
+        verbindung.close()
+
+
+def _aufklappen_mit_zeitgrenze(text: str, von: datetime, bis: datetime):
+    """-> ("ok", daten) | ("fehler", Typname) | ("zeit", None).
+    Harte Wanduhr-Grenze: ein Kindprozess, der nach Ablauf beendet wird."""
+    methoden = multiprocessing.get_all_start_methods()
+    ctx = multiprocessing.get_context("fork" if "fork" in methoden else None)
+    lesen, schreiben = ctx.Pipe(duplex=False)
+    kind = ctx.Process(target=_kind, args=(schreiben, text, von, bis),
+                       daemon=True)
+    kind.start()
+    schreiben.close()
+    try:
+        if not lesen.poll(KALENDER_AUFKLAPP_TIMEOUT_S):
+            return "zeit", None
+        try:
+            return lesen.recv()
+        except (EOFError, OSError):
+            return "fehler", "ChildDied"
+    finally:
+        lesen.close()
+        if kind.is_alive():
+            kind.terminate()
+        kind.join(1)
+        if kind.is_alive():
+            kind.kill()
+            kind.join(1)
 
 
 def hole(url: str, tage_zurueck: int = 7, tage_voraus: int = 60):
@@ -348,18 +456,13 @@ def hole(url: str, tage_zurueck: int = 7, tage_voraus: int = 60):
     bis = jetzt + timedelta(days=tage_voraus)
     ortszone = kalender.ortszone()
 
-    try:
-        kal = icalendar.Calendar.from_ical(text)
-        zu_teuer = _teure_serien_entfernen(kal, bis)
-        serien = _serien_uids(kal)
-        # Seitenweise, nur die erste Seite: eine feindliche Serie
-        # (FREQ=SECONDLY) wuerde sonst Millionen Vorkommen erzeugen.
-        seiten = recurring_ical_events.of(kal).paginate(
-            MAX_VORKOMMEN + 1, earliest_end=von, latest_start=bis)
-        vorkommen = list(next(iter(seiten), []))
-    except Exception as e:                # noqa: BLE001 — kaputtes iCal
+    art, daten = _aufklappen_mit_zeitgrenze(text, von, bis)
+    if art == "zeit":
+        return [], ZEITLIMIT_FEHLER
+    if art != "ok":
         return [], ohne_adresse(
-            f"Der Kalender ist nicht lesbar ({type(e).__name__}).", url)
+            f"Der Kalender ist nicht lesbar ({daten}).", url)
+    zu_teuer, serien, vorkommen = daten
 
     hinweise = []
     if zu_teuer:
@@ -375,17 +478,15 @@ def hole(url: str, tage_zurueck: int = 7, tage_voraus: int = 60):
             f"dort kann etwas liegen, das hier fehlt.")
     termine = []
     unlesbar = 0
-    for ev in vorkommen:
+    for roh_ev in vorkommen:
         try:
-            start = ev.start
-            ende = ev.end
+            start, ende, voll, titel, ort, transp = roh_ev
             ganztaegig = (isinstance(start, date)
                           and not isinstance(start, datetime))
             beginn = _ortszeit_utc(start, ortszone)
             ende = _ortszeit_utc(ende, ortszone) if ende is not None else beginn
             if ganztaegig and ende <= beginn:
                 ende = _ortszeit_utc(start + timedelta(days=1), ortszone)
-            voll = str(ev.get("UID", ""))
             # Serienpruefung gegen die VOLLE UID, Schluessel vor dem Kuerzen.
             if voll in serien:
                 uid = f"{voll[:80]}#{beginn.isoformat()}"
@@ -394,11 +495,11 @@ def hole(url: str, tage_zurueck: int = 7, tage_voraus: int = 60):
             termine.append({
                 "beginn": beginn,
                 "ende": max(ende, beginn),
-                "titel": str(ev.get("SUMMARY", ""))[:200],
-                "ort": str(ev.get("LOCATION", ""))[:120],
+                "titel": titel,
+                "ort": ort,
                 "uid": uid,
                 "ganztaegig": ganztaegig,
-                "frei": str(ev.get("TRANSP", "")).upper() == "TRANSPARENT"})
+                "frei": transp == "TRANSPARENT"})
         except Exception:                 # noqa: BLE001 — ein Termin, nicht alle
             unlesbar += 1
     if unlesbar:
