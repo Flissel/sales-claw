@@ -389,9 +389,10 @@ def test_feindliche_sekundenserie_haelt_hole_nicht_auf(server_stub):
         "RRULE:FREQ=SECONDLY\r\nSUMMARY:Boese\r\n"))
     t0 = time.monotonic()
     termine, fehler = kalenderquellen.hole(server_stub.url)
-    assert time.monotonic() - t0 < 30
-    assert len(termine) == kalenderquellen.MAX_VORKOMMEN
-    assert fehler
+    # Sekunden-/Minutentakt wird gar nicht erst aufgeklappt (Luecke, nicht frei).
+    assert time.monotonic() - t0 < 2
+    assert termine == []
+    assert fehler and "uebersprungen" in fehler
 
 
 def test_tzid_beginn_wird_korrekt_nach_utc_umgerechnet(server_stub):
@@ -517,3 +518,87 @@ def test_verschobenes_vorkommen_einer_serie_steht_nur_am_neuen_platz(server_stub
     assert verschoben["titel"] == "Verschoben"
     assert verschoben["uid"] == f"woche@google#{neu.isoformat()}"
     assert len({t["uid"] for t in termine}) == 3
+
+
+# --- Serienregeln vor dem Aufklappen begrenzen (DoS-Schutz) ---------------
+
+def _serie(uid, start, rrule, titel="Serie"):
+    return _vevent(uid, start, f"RRULE:{rrule}\r\nSUMMARY:{titel}\r\n")
+
+
+def _normal(uid="normal@x", titel="Normal"):
+    start = _dt.now(_tz.utc).replace(microsecond=0) + _td(days=2)
+    return _vevent(uid, start.strftime("%Y%m%dT%H%M%SZ"),
+                   f"SUMMARY:{titel}\r\n")
+
+
+def test_sekundenserie_wird_uebersprungen_und_gemeldet(server_stub):
+    server_stub.rumpf = _ics(
+        _serie("boese@x", "20000101T000000Z", "FREQ=SECONDLY", "Boese"),
+        _normal())
+    t0 = time.monotonic()
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert time.monotonic() - t0 < 2
+    assert [t["titel"] for t in termine] == ["Normal"]
+    assert fehler and "uebersprungen" in fehler, fehler
+
+
+def test_minutenserie_wird_uebersprungen(server_stub):
+    server_stub.rumpf = _ics(
+        _serie("boese@x", "20250101T000000Z", "FREQ=MINUTELY;COUNT=10"))
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert termine == []
+    assert fehler and "uebersprungen" in fehler
+
+
+def test_stuendlich_seit_1990_wird_uebersprungen(server_stub):
+    server_stub.rumpf = _ics(
+        _serie("alt@x", "19900101T000000Z", "FREQ=HOURLY;INTERVAL=1"),
+        _normal())
+    t0 = time.monotonic()
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert time.monotonic() - t0 < 2
+    assert [t["titel"] for t in termine] == ["Normal"]
+    assert fehler and "uebersprungen" in fehler
+
+
+def test_taegliche_serie_seit_2020_bleibt(server_stub):
+    server_stub.rumpf = _ics(
+        _serie("tag@x", "20200101T090000Z", "FREQ=DAILY", "Taeglich"),
+        _normal())
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert fehler is None, fehler
+    assert sum(1 for t in termine if t["titel"] == "Taeglich") > 30
+    assert any(t["titel"] == "Normal" for t in termine)
+
+
+def test_werktagsserie_seit_2010_bleibt(server_stub):
+    server_stub.rumpf = _ics(
+        _serie("wt@x", "20100104T090000Z",
+               "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR", "Werktag"))
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert fehler is None, fehler
+    assert len(termine) > 20
+
+
+def test_serie_ohne_dtstart_oder_kaputte_regel_wirft_nicht(server_stub):
+    server_stub.rumpf = _ics(
+        "BEGIN:VEVENT\r\nUID:ohne@x\r\nRRULE:FREQ=DAILY\r\n"
+        "SUMMARY:Ohne\r\nEND:VEVENT\r\n",
+        _serie("kaputt@x", "20260101T000000Z", "FREQ=BLA;INTERVAL=x"),
+        _normal())
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert [t["titel"] for t in termine] == ["Normal"]
+    assert fehler and "uebersprungen" in fehler
+
+
+def test_ganztaegige_und_naive_serie_werden_geprueft(server_stub):
+    server_stub.rumpf = _ics(
+        "BEGIN:VEVENT\r\nUID:g@x\r\nDTSTART;VALUE=DATE:19900101\r\n"
+        "RRULE:FREQ=HOURLY\r\nSUMMARY:G\r\nEND:VEVENT\r\n",
+        _serie("n@x", "19900101T000000", "FREQ=HOURLY"))
+    t0 = time.monotonic()
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert time.monotonic() - t0 < 2
+    assert termine == []
+    assert fehler and "2 Serientermine" in fehler, fehler

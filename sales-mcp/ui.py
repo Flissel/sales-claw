@@ -7182,7 +7182,9 @@ async def aktion_kalender_verbinden(request):
     # Erst pruefen, dann speichern - nie umgekehrt (ein Tippfehler beim
     # Neuverbinden darf eine funktionierende Quelle nicht zerstoeren). Der
     # Abruf laeuft genau einmal; die Ergebnisse werden unten weiterverwendet.
-    termine, fehler = server.kalenderquellen.hole(
+    # Abruf + Aufklappen blockieren (Netz, iCal): nicht im Event-Loop.
+    termine, fehler = await run_in_threadpool(
+        server.kalenderquellen.hole,
         url, kalender_abgleich.FENSTER_ZURUECK_TAGE,
         kalender_abgleich.FENSTER_VORAUS_TAGE)
     # BLOCKER (Koordinator-Fix-Runde, 13.09.2026): `fehler` ist NICHT

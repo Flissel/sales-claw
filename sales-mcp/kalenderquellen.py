@@ -65,6 +65,19 @@ FEHLER_MAXLAENGE = 300
 # Obergrenze fuer Vorkommen je Abruf (Schutz vor feindlichen Serienregeln).
 MAX_VORKOMMEN = 5000
 
+# Obergrenze fuer die Schritte, die die Bibliothek von DTSTART bis zum
+# Fensterende gehen muesste. `paginate` kappt nur die AUSGABE, nicht die
+# Arbeit davor: FREQ=SECONDLY ab dem Jahr 2000 laeuft sonst Minuten bis
+# Stunden und blockiert den Abgleich und die Seite.
+MAX_ITERATIONEN = 200_000
+
+_PERIODE_S = {
+    "HOURLY": 3600.0, "DAILY": 86400.0, "WEEKLY": 604800.0,
+    "MONTHLY": 2.6e6, "YEARLY": 3.15e7,
+}
+_VERVIELFACHER = ("BYSECOND", "BYMINUTE", "BYHOUR", "BYDAY", "BYMONTHDAY",
+                  "BYYEARDAY", "BYWEEKNO", "BYMONTH")
+
 # NUR fuer Tests — MUSS in Produktion IMMER False bleiben. Ein "1" hier
 # schaltet die komplette Ziel-Pruefung unten ab (siehe `_ziel_erlaubt`) und
 # liesse `hole()` gegen 127.0.0.1 und jedes interne Netz abrufen. Die
@@ -204,6 +217,69 @@ def _serien_uids(kal) -> set:
     return uids
 
 
+def _als_utc(wert) -> datetime:
+    """date/datetime (naiv oder zonenbewusst) -> UTC-datetime."""
+    if isinstance(wert, datetime):
+        return (wert.replace(tzinfo=timezone.utc) if wert.tzinfo is None
+                else wert.astimezone(timezone.utc))
+    return datetime(wert.year, wert.month, wert.day, tzinfo=timezone.utc)
+
+
+def _serie_zu_teuer(ev, bis: datetime) -> bool:
+    """True, wenn die Serienregel dieses VEVENTs nicht aufgeklappt werden
+    soll (Sekunden-/Minutentakt, zu viele Schritte, kaputt, ohne DTSTART).
+    Wirft nie."""
+    try:
+        regeln = ev.get("RRULE")
+        if regeln is None:
+            return False
+        if not isinstance(regeln, list):
+            regeln = [regeln]
+        dtstart = ev.get("DTSTART")
+        if dtstart is None:
+            return True
+        start = _als_utc(dtstart.dt)
+        for regel in regeln:
+            freq = str((regel.get("FREQ") or [""])[0]).upper()
+            if freq in ("SECONDLY", "MINUTELY"):
+                return True
+            periode = _PERIODE_S.get(freq)
+            if periode is None:
+                return True
+            intervall = int((regel.get("INTERVAL") or [1])[0])
+            if intervall < 1:
+                return True
+            ende = bis
+            until = regel.get("UNTIL")
+            if until:
+                ende = min(ende, _als_utc(until[0]))
+            sekunden = max((ende - start).total_seconds(), 0.0)
+            schritte = sekunden / (periode * intervall)
+            for schluessel in _VERVIELFACHER:
+                werte = regel.get(schluessel)
+                if werte:
+                    schritte *= max(len(werte), 1)
+            if schritte > MAX_ITERATIONEN:
+                return True
+        return False
+    except Exception:                     # noqa: BLE001 — kaputte Regel
+        return True
+
+
+def _teure_serien_entfernen(kal, bis: datetime) -> int:
+    """Entfernt VEVENTs mit zu teurer Serienregel (nur VEVENT wird von
+    `recurring_ical_events.of(kal)` aufgeklappt) -> Anzahl entfernter."""
+    behalten, entfernt = [], 0
+    for teil in kal.subcomponents:
+        if teil.name == "VEVENT" and _serie_zu_teuer(teil, bis):
+            entfernt += 1
+        else:
+            behalten.append(teil)
+    if entfernt:
+        kal.subcomponents[:] = behalten
+    return entfernt
+
+
 def hole(url: str, tage_zurueck: int = 7, tage_voraus: int = 60):
     """Eine abonnierte Adresse abrufen -> (termine, fehler).
 
@@ -274,6 +350,7 @@ def hole(url: str, tage_zurueck: int = 7, tage_voraus: int = 60):
 
     try:
         kal = icalendar.Calendar.from_ical(text)
+        zu_teuer = _teure_serien_entfernen(kal, bis)
         serien = _serien_uids(kal)
         # Seitenweise, nur die erste Seite: eine feindliche Serie
         # (FREQ=SECONDLY) wuerde sonst Millionen Vorkommen erzeugen.
@@ -285,6 +362,11 @@ def hole(url: str, tage_zurueck: int = 7, tage_voraus: int = 60):
             f"Der Kalender ist nicht lesbar ({type(e).__name__}).", url)
 
     hinweise = []
+    if zu_teuer:
+        hinweise.append(
+            f"{zu_teuer} Serientermin{'e' if zu_teuer != 1 else ''} "
+            f"uebersprungen (Wiederholungsregel zu fein oder zu weit "
+            f"zurueck) — dort kann etwas liegen, das hier fehlt.")
     if len(vorkommen) > MAX_VORKOMMEN:
         vorkommen = vorkommen[:MAX_VORKOMMEN]
         hinweise.append(
