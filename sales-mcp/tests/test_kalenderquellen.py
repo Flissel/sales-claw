@@ -1,5 +1,7 @@
 """Abonnierte Fremdkalender holen und zerlegen — ohne Netz."""
 import threading
+import time
+from zoneinfo import ZoneInfo
 from datetime import timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -248,26 +250,77 @@ def _vevent(uid: str, dtstart: str, rumpf: str) -> str:
     return f"BEGIN:VEVENT\r\nUID:{uid}\r\nDTSTART:{dtstart}\r\n{rumpf}END:VEVENT\r\n"
 
 
-def test_serientermin_wird_als_luecke_gemeldet_statt_einmalig_gezaehlt(
-        server_stub):
-    """Der Kernbefund K4: ein RRULE-VEVENT darf NICHT als einzelner Termin
-    am ersten DTSTART durchrutschen (er kollidiert dann nie wieder) — er
-    zaehlt stattdessen als Luecke, damit die Quelle nie `frei: true`
-    ergibt."""
+def test_woechentliche_serie_wird_aufgeloest(server_stub):
+    """Task 3: eine RRULE ergibt einzelne Vorkommen, je mit eigener UID
+    (Serien-UID + '#' + Beginn) — und keinen Hinweis mehr."""
+    start = _dt.now(_tz.utc).replace(microsecond=0) - _td(days=1)
     server_stub.rumpf = _ics(_vevent(
-        "teamrunde@google", _BALD.strftime("%Y%m%dT%H%M%SZ"),
-        "DTEND:" + (_BALD + _td(hours=1)).strftime("%Y%m%dT%H%M%SZ") + "\r\n"
-        "RRULE:FREQ=WEEKLY;BYDAY=MO\r\n"
-        "SUMMARY:Teamrunde\r\n"))
+        "teamrunde@google", start.strftime("%Y%m%dT%H%M%SZ"),
+        "DTEND:" + (start + _td(hours=1)).strftime("%Y%m%dT%H%M%SZ") + "\r\n"
+        "RRULE:FREQ=WEEKLY;COUNT=3\r\nSUMMARY:Teamrunde\r\n"))
     termine, fehler = kalenderquellen.hole(server_stub.url)
-    assert termine == [], termine
-    assert fehler is not None
-    assert "Serientermin" in fehler and "RRULE" in fehler
+    assert fehler is None, fehler
+    assert len(termine) == 3, termine
+    uids = [t["uid"] for t in termine]
+    assert len(set(uids)) == 3
+    assert all(u.startswith("teamrunde@google#") for u in uids)
+    assert {t["titel"] for t in termine} == {"Teamrunde"}
 
 
-def test_serie_neben_normalem_termin_behaelt_den_normalen(server_stub):
-    """Eine Luecke darf gueltige Kollisionsdaten nicht mitreissen: ein
-    gewoehnlicher VEVENT in derselben Antwort bleibt ein echter Termin."""
+def test_ausnahme_exdate_fehlt(server_stub):
+    start = _dt.now(_tz.utc).replace(microsecond=0) - _td(days=1)
+    ausnahme = start + _td(days=7)
+    server_stub.rumpf = _ics(_vevent(
+        "serie@google", start.strftime("%Y%m%dT%H%M%SZ"),
+        "DTEND:" + (start + _td(hours=1)).strftime("%Y%m%dT%H%M%SZ") + "\r\n"
+        "RRULE:FREQ=WEEKLY;COUNT=3\r\n"
+        "EXDATE:" + ausnahme.strftime("%Y%m%dT%H%M%SZ") + "\r\n"
+        "SUMMARY:Serie\r\n"))
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert fehler is None, fehler
+    assert len(termine) == 2
+    assert ausnahme not in [t["beginn"] for t in termine]
+
+
+def test_ganztaegig_value_date(server_stub):
+    server_stub.rumpf = _ics(
+        "BEGIN:VEVENT\r\nUID:tag@google\r\n"
+        "DTSTART;VALUE=DATE:20261110\r\nDTEND;VALUE=DATE:20261111\r\n"
+        "SUMMARY:Ganzer Tag\r\nEND:VEVENT\r\n")
+    termine, fehler = kalenderquellen.hole(
+        server_stub.url, tage_zurueck=3650, tage_voraus=3650)
+    assert fehler is None, fehler
+    assert len(termine) == 1
+    t = termine[0]
+    assert t["ganztaegig"] is True
+    zone = kalenderquellen.kalender.ortszone() or _tz.utc
+    assert t["beginn"].tzinfo is not None
+    assert t["beginn"].astimezone(zone).replace(tzinfo=None) == _dt(2026, 11, 10)
+    assert t["ende"].astimezone(zone).replace(tzinfo=None) == _dt(2026, 11, 11)
+
+
+def test_gewoehnlicher_termin_ist_nicht_ganztaegig_und_nicht_frei(server_stub):
+    server_stub.rumpf = _ics(_vevent(
+        "normal@google", _BALD.strftime("%Y%m%dT%H%M%SZ"),
+        "DTEND:" + (_BALD + _td(hours=1)).strftime("%Y%m%dT%H%M%SZ")
+        + "\r\nSUMMARY:Normal\r\n"))
+    termine, _ = kalenderquellen.hole(server_stub.url)
+    assert termine[0]["ganztaegig"] is False
+    assert termine[0]["frei"] is False
+    assert "#" not in termine[0]["uid"]
+
+
+def test_transparent_ist_frei(server_stub):
+    server_stub.rumpf = _ics(_vevent(
+        "geburtstag@google", _BALD.strftime("%Y%m%dT%H%M%SZ"),
+        "DTEND:" + (_BALD + _td(hours=1)).strftime("%Y%m%dT%H%M%SZ")
+        + "\r\nTRANSP:TRANSPARENT\r\nSUMMARY:Geburtstag\r\n"))
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert fehler is None, fehler
+    assert termine[0]["frei"] is True
+
+
+def test_serie_neben_normalem_termin_behaelt_beide(server_stub):
     server_stub.rumpf = _ics(
         _vevent("normal@google", _BALD.strftime("%Y%m%dT%H%M%SZ"),
                "DTEND:" + (_BALD + _td(hours=1)).strftime("%Y%m%dT%H%M%SZ")
@@ -275,11 +328,113 @@ def test_serie_neben_normalem_termin_behaelt_den_normalen(server_stub):
         _vevent("serie@google",
                (_BALD + _td(days=1)).strftime("%Y%m%dT%H%M%SZ"),
                "DTEND:" + (_BALD + _td(days=1, hours=1)).strftime(
-                   "%Y%m%dT%H%M%SZ") + "\r\nRRULE:FREQ=WEEKLY\r\n"
+                   "%Y%m%dT%H%M%SZ") + "\r\nRRULE:FREQ=DAILY;COUNT=2\r\n"
                "SUMMARY:Serie\r\n"))
     termine, fehler = kalenderquellen.hole(server_stub.url)
-    assert [t["titel"] for t in termine] == ["Normaler Termin"]
-    assert fehler is not None and "Serientermin" in fehler
+    assert fehler is None, fehler
+    assert [t["titel"] for t in termine] == [
+        "Normaler Termin", "Serie", "Serie"]
+
+
+def test_kaputtes_ical_wirft_nicht_und_nennt_keine_adresse(server_stub):
+    server_stub.rumpf = (b"BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\n"
+                         b"DTSTART:kaputt\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert termine == []
+    assert fehler, "ein kaputter Kalender muss gemeldet werden"
+    assert server_stub.url not in fehler
+
+
+def test_unlesbares_vorkommen_wird_gemeldet_und_der_gute_bleibt(
+        server_stub, monkeypatch):
+    gut = _BALD
+    schlecht = _BALD + _td(days=1)
+    server_stub.rumpf = _ics(
+        _vevent("gut@google", gut.strftime("%Y%m%dT%H%M%SZ"),
+               "DTEND:" + (gut + _td(hours=1)).strftime("%Y%m%dT%H%M%SZ")
+               + "\r\nSUMMARY:Gut\r\n"),
+        _vevent("schlecht@google", schlecht.strftime("%Y%m%dT%H%M%SZ"),
+               "DTEND:" + (schlecht + _td(hours=1)).strftime(
+                   "%Y%m%dT%H%M%SZ") + "\r\nSUMMARY:Geheimer Titel\r\n"))
+    echt = kalenderquellen._ortszeit_utc
+
+    def zickig(wert, zone):
+        if wert.date() == schlecht.date():
+            raise ValueError("kaputt")
+        return echt(wert, zone)
+
+    monkeypatch.setattr(kalenderquellen, "_ortszeit_utc", zickig)
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert [t["titel"] for t in termine] == ["Gut"]
+    assert fehler and "1 Termin nicht lesbar" in fehler
+    assert "Geheimer Titel" not in fehler and server_stub.url not in fehler
+
+
+def test_obergrenze_fuer_vorkommen_kappt_und_meldet(server_stub, monkeypatch):
+    monkeypatch.setattr(kalenderquellen, "MAX_VORKOMMEN", 5)
+    start = _dt.now(_tz.utc).replace(microsecond=0) - _td(days=1)
+    server_stub.rumpf = _ics(_vevent(
+        "viele@google", start.strftime("%Y%m%dT%H%M%SZ"),
+        "DTEND:" + (start + _td(hours=1)).strftime("%Y%m%dT%H%M%SZ") + "\r\n"
+        "RRULE:FREQ=DAILY;COUNT=20\r\nSUMMARY:Viele\r\n"))
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert len(termine) == 5
+    assert fehler and "5" in fehler
+
+
+def test_feindliche_sekundenserie_haelt_hole_nicht_auf(server_stub):
+    start = _dt.now(_tz.utc).replace(microsecond=0)
+    server_stub.rumpf = _ics(_vevent(
+        "boese@google", start.strftime("%Y%m%dT%H%M%SZ"),
+        "RRULE:FREQ=SECONDLY\r\nSUMMARY:Boese\r\n"))
+    t0 = time.monotonic()
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    # Sekunden-/Minutentakt wird gar nicht erst aufgeklappt (Luecke, nicht frei).
+    assert time.monotonic() - t0 < 2
+    assert termine == []
+    assert fehler and "uebersprungen" in fehler
+
+
+def test_tzid_beginn_wird_korrekt_nach_utc_umgerechnet(server_stub):
+    tag = (_BALD + _td(days=1)).date()
+    server_stub.rumpf = _ics(
+        "BEGIN:VEVENT\r\nUID:berlin@google\r\n"
+        f"DTSTART;TZID=Europe/Berlin:{tag:%Y%m%d}T140000\r\n"
+        f"DTEND;TZID=Europe/Berlin:{tag:%Y%m%d}T150000\r\n"
+        "SUMMARY:Berlin\r\nEND:VEVENT\r\n")
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert fehler is None, fehler
+    erwartet = _dt(tag.year, tag.month, tag.day, 14,
+                   tzinfo=ZoneInfo("Europe/Berlin")).astimezone(_tz.utc)
+    assert termine[0]["beginn"] == erwartet
+    assert termine[0]["beginn"].utcoffset() == _td(0)
+
+
+def test_ganztaegiger_geburtstag_ist_ganztaegig_und_frei(server_stub):
+    tag = (_BALD + _td(days=1)).date()
+    server_stub.rumpf = _ics(
+        "BEGIN:VEVENT\r\nUID:geb@google\r\n"
+        f"DTSTART;VALUE=DATE:{tag:%Y%m%d}\r\n"
+        f"DTEND;VALUE=DATE:{(tag + _td(days=1)):%Y%m%d}\r\n"
+        "TRANSP:TRANSPARENT\r\nSUMMARY:Geburtstag\r\nEND:VEVENT\r\n")
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert fehler is None, fehler
+    assert termine[0]["ganztaegig"] is True and termine[0]["frei"] is True
+
+
+def test_serien_uid_ueber_120_zeichen_bleibt_je_vorkommen_eindeutig(
+        server_stub):
+    start = _dt.now(_tz.utc).replace(microsecond=0) - _td(days=1)
+    lange_uid = "x" * 150 + "@google"
+    server_stub.rumpf = _ics(_vevent(
+        lange_uid, start.strftime("%Y%m%dT%H%M%SZ"),
+        "DTEND:" + (start + _td(hours=1)).strftime("%Y%m%dT%H%M%SZ") + "\r\n"
+        "RRULE:FREQ=DAILY;COUNT=3\r\nSUMMARY:Lang\r\n"))
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert fehler is None, fehler
+    uids = [t["uid"] for t in termine]
+    assert len(uids) == 3 and len(set(uids)) == 3
+    assert all("#" in u for u in uids)
 
 
 def test_duration_wird_als_ende_gelesen(server_stub):
@@ -296,18 +451,16 @@ def test_duration_wird_als_ende_gelesen(server_stub):
     assert dauer.total_seconds() == 5400, termine[0]
 
 
-def test_unlesbare_duration_wird_gezaehlt_und_gemeldet(server_stub):
-    """Was die bescheidene Auswertung nicht versteht (hier: Wochen, 'P2W'),
-    gilt wie ein fehlendes Ende — UND wird gemeldet (K4-Ruling), statt
-    kommentarlos als still 'frei' durchzugehen."""
+def test_wochen_duration_wird_gelesen(server_stub):
+    """'P2W' war fuer den alten Handparser unlesbar; `icalendar` versteht
+    es (Task 3: die Warnung zu unlesbarer Dauer entfaellt damit)."""
     server_stub.rumpf = _ics(_vevent(
-        "seltsam@irgendwer", _BALD.strftime("%Y%m%dT%H%M%SZ"),
-        "DURATION:P2W\r\nSUMMARY:Komische Dauer\r\n"))
+        "wochen@irgendwer", _BALD.strftime("%Y%m%dT%H%M%SZ"),
+        "DURATION:P2W\r\nSUMMARY:Zwei Wochen\r\n"))
     termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert fehler is None, fehler
     assert len(termine) == 1
-    assert termine[0]["ende"] == termine[0]["beginn"]
-    assert fehler is not None
-    assert "unlesbar" in fehler.lower()
+    assert termine[0]["ende"] - termine[0]["beginn"] == _td(weeks=2)
 
 
 def test_laengst_beendete_serie_macht_die_quelle_nicht_fuer_immer_zur_luecke(
@@ -338,3 +491,209 @@ def test_laengst_veraltete_unlesbare_dauer_macht_die_quelle_nicht_fuer_immer_zur
     termine, fehler = kalenderquellen.hole(server_stub.url)
     assert termine == []
     assert fehler is None, fehler
+
+
+def test_verschobenes_vorkommen_einer_serie_steht_nur_am_neuen_platz(server_stub):
+    """T3-Nachtrag: RECURRENCE-ID verschiebt ein Vorkommen -> genau ein Termin
+    zur neuen Zeit, keiner zur alten."""
+    start = (_dt.now(_tz.utc) + _td(days=1)).replace(minute=0, second=0, microsecond=0)
+    alt = start + _td(days=7)
+    neu = alt + _td(hours=2)
+    fmt = "%Y%m%dT%H%M%SZ"
+    server_stub.rumpf = _ics(
+        _vevent("woche@google", start.strftime(fmt),
+                "DTEND:" + (start + _td(hours=1)).strftime(fmt) + "\r\n"
+                "RRULE:FREQ=WEEKLY;COUNT=3\r\nSUMMARY:Runde\r\n"),
+        _vevent("woche@google", neu.strftime(fmt),
+                "RECURRENCE-ID:" + alt.strftime(fmt) + "\r\n"
+                "DTEND:" + (neu + _td(hours=1)).strftime(fmt) + "\r\n"
+                "SUMMARY:Verschoben\r\n"))
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert fehler is None, fehler
+    assert len(termine) == 3, termine
+    beginne = [t["beginn"] for t in termine]
+    assert alt not in beginne
+    assert beginne.count(neu) == 1
+    (verschoben,) = [t for t in termine if t["beginn"] == neu]
+    assert verschoben["titel"] == "Verschoben"
+    assert verschoben["uid"] == f"woche@google#{neu.isoformat()}"
+    assert len({t["uid"] for t in termine}) == 3
+
+
+# --- Serienregeln vor dem Aufklappen begrenzen (DoS-Schutz) ---------------
+
+def _serie(uid, start, rrule, titel="Serie"):
+    return _vevent(uid, start, f"RRULE:{rrule}\r\nSUMMARY:{titel}\r\n")
+
+
+def _normal(uid="normal@x", titel="Normal"):
+    start = _dt.now(_tz.utc).replace(microsecond=0) + _td(days=2)
+    return _vevent(uid, start.strftime("%Y%m%dT%H%M%SZ"),
+                   f"SUMMARY:{titel}\r\n")
+
+
+def test_sekundenserie_wird_uebersprungen_und_gemeldet(server_stub):
+    server_stub.rumpf = _ics(
+        _serie("boese@x", "20000101T000000Z", "FREQ=SECONDLY", "Boese"),
+        _normal())
+    t0 = time.monotonic()
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert time.monotonic() - t0 < 2
+    assert [t["titel"] for t in termine] == ["Normal"]
+    assert fehler and "uebersprungen" in fehler, fehler
+
+
+def test_minutenserie_wird_uebersprungen(server_stub):
+    server_stub.rumpf = _ics(
+        _serie("boese@x", "20250101T000000Z", "FREQ=MINUTELY;COUNT=10"))
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert termine == []
+    assert fehler and "uebersprungen" in fehler
+
+
+def test_stuendlich_seit_1990_wird_uebersprungen(server_stub):
+    server_stub.rumpf = _ics(
+        _serie("alt@x", "19900101T000000Z", "FREQ=HOURLY;INTERVAL=1"),
+        _normal())
+    t0 = time.monotonic()
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert time.monotonic() - t0 < 2
+    assert [t["titel"] for t in termine] == ["Normal"]
+    assert fehler and "uebersprungen" in fehler
+
+
+def test_taegliche_serie_seit_2020_bleibt(server_stub):
+    server_stub.rumpf = _ics(
+        _serie("tag@x", "20200101T090000Z", "FREQ=DAILY", "Taeglich"),
+        _normal())
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert fehler is None, fehler
+    assert sum(1 for t in termine if t["titel"] == "Taeglich") > 30
+    assert any(t["titel"] == "Normal" for t in termine)
+
+
+def test_werktagsserie_seit_2010_bleibt(server_stub):
+    server_stub.rumpf = _ics(
+        _serie("wt@x", "20100104T090000Z",
+               "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR", "Werktag"))
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert fehler is None, fehler
+    assert len(termine) > 20
+
+
+def test_serie_ohne_dtstart_oder_kaputte_regel_wirft_nicht(server_stub):
+    server_stub.rumpf = _ics(
+        "BEGIN:VEVENT\r\nUID:ohne@x\r\nRRULE:FREQ=DAILY\r\n"
+        "SUMMARY:Ohne\r\nEND:VEVENT\r\n",
+        _serie("kaputt@x", "20260101T000000Z", "FREQ=BLA;INTERVAL=x"),
+        _normal())
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert [t["titel"] for t in termine] == ["Normal"]
+    assert fehler and "uebersprungen" in fehler
+
+
+def test_ganztaegige_und_naive_serie_werden_geprueft(server_stub):
+    server_stub.rumpf = _ics(
+        "BEGIN:VEVENT\r\nUID:g@x\r\nDTSTART;VALUE=DATE:19900101\r\n"
+        "RRULE:FREQ=HOURLY\r\nSUMMARY:G\r\nEND:VEVENT\r\n",
+        _serie("n@x", "19900101T000000", "FREQ=HOURLY"))
+    t0 = time.monotonic()
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert time.monotonic() - t0 < 2
+    assert termine == []
+    assert fehler and "2 Serientermine" in fehler, fehler
+
+
+# --- Zweite Runde: Gesamtbudget, Verschachtelung, harte Zeitgrenze --------
+
+import multiprocessing as _mp  # noqa: E402
+
+import icalendar as _ical  # noqa: E402
+
+
+def _stamm(ics_text):
+    return _ical.Calendar.from_ical(ics_text).subcomponents[0]
+
+
+def test_viele_serien_knapp_unter_der_einzelgrenze_sprengen_das_budget(
+        server_stub, monkeypatch):
+    monkeypatch.setattr(kalenderquellen, "MAX_ITERATIONEN", 1000)
+    start = (_dt.now(_tz.utc) - _td(days=700)).strftime("%Y%m%dT%H%M%SZ")
+    server_stub.rumpf = _ics(*[
+        _serie(f"s{i}@x", start, "FREQ=DAILY", f"S{i}") for i in range(4)])
+    t0 = time.monotonic()
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert time.monotonic() - t0 < 5
+    assert {t["titel"] for t in termine} == {"S0"}
+    assert fehler and "3 Serientermine" in fehler, fehler
+
+
+def test_zu_viele_serien_werden_gekappt(server_stub, monkeypatch):
+    monkeypatch.setattr(kalenderquellen, "MAX_SERIEN", 2)
+    start = (_dt.now(_tz.utc) - _td(days=1)).strftime("%Y%m%dT%H%M%SZ")
+    server_stub.rumpf = _ics(*[
+        _serie(f"s{i}@x", start, "FREQ=WEEKLY;COUNT=2", f"S{i}")
+        for i in range(4)])
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert {t["titel"] for t in termine} == {"S0", "S1"}
+    assert fehler and "2 Serientermine" in fehler, fehler
+
+
+def test_jaehrlich_byday_ohne_ordnungszahl_wird_hochgerechnet():
+    bis = _dt.now(_tz.utc)
+    ev = _stamm(_ics(_serie("y@x", "19000101T000000Z",
+                            "FREQ=YEARLY;BYDAY=MO")).decode())
+    jahre = bis.year - 1900
+    assert kalenderquellen._serie_schritte(ev, bis) >= 52 * jahre
+    ev = _stamm(_ics(_serie("m@x", "19000101T000000Z",
+                            "FREQ=MONTHLY;BYDAY=MO")).decode())
+    assert kalenderquellen._serie_schritte(ev, bis) >= 5 * 12 * jahre
+    ev = _stamm(_ics(_serie("w@x", "19000101T000000Z",
+                            "FREQ=YEARLY;BYWEEKNO=1,2")).decode())
+    assert kalenderquellen._serie_schritte(ev, bis) >= 14 * jahre
+
+
+def test_jaehrlich_byday_seit_1900_wird_uebersprungen(server_stub):
+    server_stub.rumpf = _ics(
+        _serie("y@x", "19000101T000000Z",
+               "FREQ=YEARLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;"
+               "BYHOUR=" + ",".join(str(h) for h in range(24))),
+        _normal())
+    t0 = time.monotonic()
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert time.monotonic() - t0 < 2
+    assert [t["titel"] for t in termine] == ["Normal"]
+    assert fehler and "uebersprungen" in fehler
+
+
+def test_verschachteltes_vevent_wird_entfernt(server_stub):
+    server_stub.rumpf = _ics(
+        "BEGIN:VTODO\r\nUID:t@x\r\nDTSTART:20000101T000000Z\r\n"
+        "BEGIN:VEVENT\r\nUID:in@x\r\nDTSTART:20000101T000000Z\r\n"
+        "RRULE:FREQ=SECONDLY\r\nSUMMARY:Innen\r\nEND:VEVENT\r\n"
+        "END:VTODO\r\n"
+        "BEGIN:X-FOO\r\n"
+        "BEGIN:VEVENT\r\nUID:in2@x\r\nDTSTART:20000101T000000Z\r\n"
+        "RRULE:FREQ=SECONDLY\r\nSUMMARY:Innen2\r\nEND:VEVENT\r\n"
+        "END:X-FOO\r\n",
+        _normal())
+    t0 = time.monotonic()
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert time.monotonic() - t0 < 2
+    assert [t["titel"] for t in termine] == ["Normal"]
+    assert fehler and "2 Serientermine" in fehler, fehler
+
+
+def test_harte_zeitgrenze_greift_auch_ohne_vorfilter(server_stub, monkeypatch):
+    monkeypatch.setattr(kalenderquellen, "_teure_serien_entfernen",
+                        lambda kal, bis: 0)
+    monkeypatch.setattr(kalenderquellen, "KALENDER_AUFKLAPP_TIMEOUT_S", 1)
+    server_stub.rumpf = _ics(
+        _serie("boese@x", "20000101T000000Z", "FREQ=SECONDLY"), _normal())
+    t0 = time.monotonic()
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert time.monotonic() - t0 < 4
+    assert termine == []
+    assert fehler == kalenderquellen.ZEITLIMIT_FEHLER
+    assert "http" not in fehler
+    assert _mp.active_children() == []

@@ -2,7 +2,7 @@
 // und den Ereignissen von FullCalendar. Reine Funktionen, ohne DOM.
 import type { EventApi, EventInput } from '@fullcalendar/core';
 
-export type Art = 'kunde' | 'eigen' | 'kollege' | 'handy';
+export type Art = 'kunde' | 'eigen' | 'handy' | 'kalender';
 
 export interface Ereignis {
   id: string;
@@ -17,6 +17,14 @@ export interface Ereignis {
   ort?: string;
   notiz?: string;
   quelle?: string;
+  // Nur bei art 'kalender' (kalender_sicht.KALENDER_FELDER):
+  quelle_id?: string;
+  besitzer?: string;
+  bereich?: string;
+  maskiert?: boolean;
+  kalender?: string[];
+  ganztaegig?: boolean;
+  frei?: boolean;
   geaendert_am?: string;
   // Nur in Schreib-Antworten oder kuenftigen Feldern: NULL = noch nicht abgeglichen.
   kalender_stand?: string | null;
@@ -25,10 +33,11 @@ export interface Ereignis {
 export const FARBEN: Record<Art, string> = {
   kunde: 'var(--marke, #b45309)',
   eigen: '#2563eb',
-  kollege: '#4d7c5a',
+  kalender: '#4d7c5a',
   handy: '#9ca3af',
 };
 
+export const PRIVATTERMIN = 'Privattermin';
 export const NICHT_IM_HANDY = 'nicht im Handy-Kalender';
 export const TRENNER = ' – ';
 
@@ -44,14 +53,18 @@ export function themaAus(e: Pick<Ereignis, 'titel' | 'kontakt'>): string {
 }
 
 function titelVon(e: Ereignis): string {
+  if (e.art === 'kalender') {
+    if (e.maskiert) return `${PRIVATTERMIN} (${e.besitzer ?? ''})`;
+    return e.quelle ? `${e.titel} (${e.quelle})` : e.titel;
+  }
   let t = e.titel;
   if (e.art === 'kunde' && e.kontakt && !t.includes(e.kontakt)) t = `${t}${TRENNER}${e.kontakt}`;
-  if (e.art === 'kollege' && e.quelle) t = `${t} (${e.quelle})`;
   if (handyFehlt(e.kalender_stand)) t = `${t} · ${NICHT_IM_HANDY}`;
   return t;
 }
 
-export function zuEvent(e: Ereignis, darfSchreiben = true): EventInput {
+/** `farbe`: die Farbe der Ebene (ebenen.farbeFuer) - nur fuer verbundene Kalender. */
+export function zuEvent(e: Ereignis, darfSchreiben = true, farbe?: string): EventInput {
   const editable = darfSchreiben && e.bearbeitbar && (e.art === 'kunde' || e.art === 'eigen');
   return {
     id: e.id,
@@ -59,10 +72,16 @@ export function zuEvent(e: Ereignis, darfSchreiben = true): EventInput {
     start: e.beginn,
     end: e.ende,
     editable,
-    color: FARBEN[e.art] ?? FARBEN.handy,
-    classNames: [`vk-${e.art}`],
+    allDay: e.ganztaegig === true,
+    color: (e.art === 'kalender' ? farbe : undefined) ?? FARBEN[e.art] ?? FARBEN.handy,
+    classNames: [`vk-${e.art}`, ...(e.frei ? ['vk-frei'] : [])],
     extendedProps: {
       art: e.art,
+      ebene: e.art === 'kalender' ? (e.quelle_id ?? '') : e.art,
+      maskiert: e.maskiert === true,
+      besitzer: e.besitzer ?? '',
+      frei: e.frei === true,
+      steht_in: (e.kalender && e.kalender.length ? e.kalender.join(', ') : e.quelle) ?? '',
       uid: e.uid ?? '',
       lead_id: e.lead_id ?? '',
       kontakt: e.kontakt ?? '',

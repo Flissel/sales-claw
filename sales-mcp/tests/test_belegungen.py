@@ -2,6 +2,10 @@
 
 Der Betreiber hat das am 12.09.2026 ausdruecklich verlangt: "dass Ivans und
 meiner dann beruecksichtigt wird". Geprueft wird gegen JEDE aktive Quelle.
+
+Seit Spec 2026-11-08 liest belegungen() den Abgleich (kalender_termine) statt
+die Adressen live, und der Agent sieht, was der Laden-Besitzer sieht: fremdes
+Business voll, fremdes Privat als „Privattermin".
 """
 import json
 import os
@@ -11,7 +15,9 @@ import pytest
 
 os.environ["SALES_DB_SCHEMA"] = "sales_test"
 import kalender  # noqa: E402
+import kalender_sichtbarkeit  # noqa: E402
 import kalenderquellen  # noqa: E402
+import post_struktur  # noqa: E402
 import server  # noqa: E402
 
 
@@ -21,7 +27,8 @@ def schema_wache():
 
 
 @pytest.fixture(autouse=True)
-def leer():
+def leer(monkeypatch):
+    monkeypatch.setenv("POST_BESITZER", "felix")
     with server.pool.connection() as conn:
         conn.execute("truncate sales_test.kalender_quellen cascade")
     yield
@@ -35,42 +42,103 @@ def kein_eigener_kalender(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def kein_live_abruf(monkeypatch):
+    """belegungen() liest nur noch den Abgleich - jede Adresse bleibt unberuehrt."""
+    def _verboten(*a, **k):
+        raise AssertionError("belegungen() darf keine Adresse live abrufen")
+    monkeypatch.setattr(kalenderquellen, "hole", _verboten)
+    yield
+
+
 def _t(tag, stunde):
-    return datetime(2026, 10, tag, stunde, tzinfo=timezone.utc)
+    """Kuenftig, im 60-Tage-Fenster von belegungen()."""
+    morgen = datetime.now(timezone.utc).date() + timedelta(days=tag)
+    return datetime(morgen.year, morgen.month, morgen.day, stunde, tzinfo=timezone.utc)
 
 
-def test_fremde_quelle_erscheint_mit_namen(monkeypatch):
-    server.kalenderquelle_speichern("Ivan", "https://example.test/a.ics")
-    monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: ([
-        {"beginn": _t(1, 9), "ende": _t(1, 10), "titel": "Kundentermin",
-         "ort": "", "uid": "x"}], None))
+def _termin(tag, stunde, titel, uid, **extra):
+    return {"beginn": _t(tag, stunde), "ende": _t(tag, stunde + 1), "titel": titel,
+            "ort": "", "uid": uid, **extra}
+
+
+def _quelle(name, besitzer, bereich, termine, fehler=None):
+    """Eine verbundene Quelle so, wie sie der Abgleich hinterlaesst."""
+    qid = server.kalenderquelle_speichern(name, "https://example.test/a.ics",
+                                          besitzer, bereich)
+    server.kalendertermine_ersetzen(qid, termine, kalender_sichtbarkeit.details_speichern(
+        besitzer, bereich, post_struktur.container_besitzer()))
+    server.kalenderquelle_stand_setzen(qid, len(termine), fehler)
+    return qid
+
+
+def test_fremde_quelle_erscheint_mit_namen():
+    _quelle("Ivan", "ivan", "business", [_termin(1, 9, "Kundentermin", "x")])
     eintraege, luecken = server.belegungen()
     assert luecken == []
     assert len(eintraege) == 1
     assert eintraege[0]["quelle"] == "Ivan"
-    # Team-Kalender nur belegt/frei (Betreiber 28.10.2026): kein fremder Titel.
-    assert eintraege[0]["titel"] == "belegt"
+    # Fremdes Business ist voll sichtbar (Spec 2026-11-08 §2.2) - ersetzt
+    # die Regel vom 28.10.2026 („nur belegt").
+    assert eintraege[0]["titel"] == "Kundentermin"
+    assert eintraege[0]["maskiert"] is False
+
+
+def test_agent_sieht_privattermin_als_belegt():
+    _quelle("Ivan privat", "ivan", "privat",
+            [_termin(1, 9, "Zahnarzt", "p", ort="Praxis")])
+    eintraege, luecken = server.belegungen()
+    assert luecken == []
+    assert [e["titel"] for e in eintraege] == ["Privattermin"]
+    assert eintraege[0]["ort"] == ""
+    assert eintraege[0]["maskiert"] is True
+
+
+def test_agent_sieht_eigene_privattermine_des_laden_besitzers_voll():
+    _quelle("Felix privat", "felix", "privat", [_termin(1, 9, "Zahnarzt", "p")])
+    eintraege, _ = server.belegungen()
+    assert [e["titel"] for e in eintraege] == ["Zahnarzt"]
+
+
+def test_ohne_laden_besitzer_ist_jeder_privattermin_maskiert(monkeypatch):
+    _quelle("Felix privat", "felix", "privat", [_termin(1, 9, "Zahnarzt", "p")])
+    monkeypatch.setenv("POST_BESITZER", "")
+    eintraege, _ = server.belegungen()
+    assert [e["titel"] for e in eintraege] == ["Privattermin"]
+
+
+def test_freier_termin_kollidiert_nicht():
+    _quelle("Ivan", "ivan", "business", [
+        _termin(1, 9, "Geburtstag Oma", "g", frei=True),
+        _termin(1, 11, "Kunde", "k")])
+    eintraege, _ = server.belegungen()
+    assert [e["titel"] for e in eintraege] == ["Kunde"]
+    treffer, luecken = server._kollisionen(_t(1, 9), 30)
+    assert treffer == [] and luecken == []
+    treffer, _ = server._kollisionen(_t(1, 11), 30)
+    assert [t["titel"] for t in treffer] == ["Kunde"]
+
+
+def test_ganztaegig_wird_mitgegeben():
+    _quelle("Ivan", "ivan", "business", [_termin(1, 0, "Messe", "m", ganztaegig=True)])
+    eintraege, _ = server.belegungen()
+    assert eintraege[0]["ganztaegig"] is True
 
 
 def test_eigener_und_fremder_kalender_zusammen(monkeypatch):
     monkeypatch.setattr(kalender, "termine_lesen", lambda *a, **k: ([
         {"beginn": _t(1, 14), "ende": _t(1, 15), "titel": "Eigener",
          "ort": "", "uid": "e"}], None))
-    server.kalenderquelle_speichern("Ivan", "https://example.test/a.ics")
-    monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: ([
-        {"beginn": _t(1, 9), "ende": _t(1, 10), "titel": "Ivans",
-         "ort": "", "uid": "i"}], None))
+    _quelle("Ivan", "ivan", "business", [_termin(1, 9, "Ivans", "i")])
     eintraege, _ = server.belegungen()
-    assert [e["titel"] for e in eintraege] == ["belegt", "Eigener"]
+    assert [e["titel"] for e in eintraege] == ["Ivans", "Eigener"]
     assert {e["quelle"] for e in eintraege} == {"Ivan", "Betreiber"}
 
 
-def test_unerreichbare_quelle_wird_als_luecke_gemeldet(monkeypatch):
+def test_unerreichbare_quelle_wird_als_luecke_gemeldet():
     """Sie darf NICHT stillschweigend als 'frei' gelten — sonst schlaegt der
     Bot ausgerechnet dann Termine vor, wenn er am wenigsten weiss."""
-    server.kalenderquelle_speichern("Ivan", "https://example.test/a.ics")
-    monkeypatch.setattr(kalenderquellen, "hole",
-                        lambda url, *a, **k: ([], "Nicht erreichbar (TimeoutError)."))
+    _quelle("Ivan", "ivan", "business", [], fehler="Nicht erreichbar (TimeoutError).")
     eintraege, luecken = server.belegungen()
     assert eintraege == []
     assert len(luecken) == 1
@@ -78,59 +146,71 @@ def test_unerreichbare_quelle_wird_als_luecke_gemeldet(monkeypatch):
     assert "erreichbar" in luecken[0]["grund"]
 
 
-def test_der_stand_wird_festgehalten(monkeypatch):
-    qid = server.kalenderquelle_speichern("Ivan", "https://example.test/a.ics")
-    monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: ([
-        {"beginn": _t(1, 9), "ende": _t(1, 10), "titel": "A", "ort": "",
-         "uid": "x"}], None))
-    server.belegungen()
-    q = [z for z in server.kalenderquellen_lesen() if z["id"] == qid][0]
-    assert q["termine_zuletzt"] == 1
-    assert q["letzter_fehler"] is None
+def test_alter_ui_stempel_ohne_abgleich_ist_luecke_nie_frei():
+    """Final-Fix I2 (Rollout-Fenster): der alte Code setzt bei jedem Lesen
+    zuletzt_gelesen = now(). Ohne Abgleich des neuen Dienstes (abgeglichen_am)
+    ist die Quelle trotzdem eine Luecke - der Agent sagt nie „frei"."""
+    qid = server.kalenderquelle_speichern("Ivan", "https://example.test/a.ics",
+                                          "ivan", "business")
+    server._q("update kalender_quellen set zuletzt_gelesen = now() where id = %s",
+              (qid,))
+    _, luecken = server.belegungen()
+    assert [(l["quelle"], l["grund"]) for l in luecken] == [
+        ("Ivan", "noch nicht abgeglichen")]
+    antwort = json.loads(server.termin_konflikte(_t(2, 9).date().isoformat(), "09:00"))
+    assert antwort["frei"] is False
+    assert [l["quelle"] for l in antwort["quellen_luecken"]] == ["Ivan"]
+    # Nach dem ersten Abgleich des neuen Dienstes: frisch.
+    server.kalenderquelle_stand_setzen(qid, 0, None)
+    antwort = json.loads(server.termin_konflikte(_t(2, 9).date().isoformat(), "09:00"))
+    assert antwort["frei"] is True and antwort["quellen_luecken"] == []
 
 
-def test_fehlerfall_wird_in_der_datenbank_festgehalten(monkeypatch):
-    """Ergaenzung Fix-Runde 1 (Pruefung 13.09.2026): der Fehlerfall wurde
-    bisher nur ueber den Rueckgabewert von belegungen() geprueft, nie gegen
-    die Tabelle selbst — dort liest die Verbindungsseite den Stand aber
-    tatsaechlich ab ("zuletzt gelesen um ...", Fehlertext). Steht dort
-    nichts oder das Falsche, sucht der Kollege an der falschen Stelle.
-
-    Ablauf als Abfolge, erst erfolgreich, dann fehlschlagend: nur so zeigt
-    sich im Zusammenspiel mit belegungen(), dass ein einzelner Ausfall die
-    letzte bekannte Zahl nicht wegwischt (Aufgabe 1 hat das nur isoliert an
-    kalenderquelle_stand_setzen geprueft, nie ueber belegungen())."""
-    qid = server.kalenderquelle_speichern("Ivan", "https://example.test/a.ics")
-    monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: ([
-        {"beginn": _t(1, 9), "ende": _t(1, 10), "titel": "A", "ort": "",
-         "uid": "x"}], None))
-    server.belegungen()
-    q = [z for z in server.kalenderquellen_lesen() if z["id"] == qid][0]
-    assert q["termine_zuletzt"] == 1
-    alter_zeitpunkt = q["zuletzt_gelesen"]
-    assert alter_zeitpunkt is not None
-
-    monkeypatch.setattr(kalenderquellen, "hole",
-                        lambda url, *a, **k: ([], "Nicht erreichbar (TimeoutError)."))
-    server.belegungen()
-    q = [z for z in server.kalenderquellen_lesen() if z["id"] == qid][0]
-    assert q["letzter_fehler"] == "Nicht erreichbar (TimeoutError)."
-    assert q["zuletzt_gelesen"] is not None
-    assert q["zuletzt_gelesen"] > alter_zeitpunkt
-    # Der wertvollste Teil: der alte Zaehler bleibt stehen, ein einzelner
-    # Ausfall wischt die letzte bekannte Zahl nicht weg.
-    assert q["termine_zuletzt"] == 1
+def test_termin_ausserhalb_des_abgleich_fensters_ist_nie_frei():
+    """M3: verbundene Kalender sind nur bis 180 Tage voraus abgeglichen - der
+    Agent meldet dahinter „unvollstaendig", nie „frei"."""
+    _quelle("Ivan", "ivan", "business", [])
+    tag = _t(200, 9).date().isoformat()
+    antwort = json.loads(server.termin_konflikte(tag, "09:00"))
+    assert antwort["frei"] is False
+    (luecke,) = antwort["quellen_luecken"]
+    assert luecke["quelle"] == "Verbundene Kalender"
+    assert luecke["grund"].startswith("nur von ") and luecke["grund"].endswith(" abgeglichen")
+    assert "Verbundene Kalender nur von" in antwort["hinweis"]
+    assert "nicht abrufbar" not in antwort["hinweis"]
+    # Innerhalb des Fensters bleibt es frei.
+    antwort = json.loads(server.termin_konflikte(_t(2, 9).date().isoformat(), "09:00"))
+    assert antwort["frei"] is True
 
 
-def test_inaktive_quelle_wird_nicht_abgerufen(monkeypatch):
-    server.kalenderquelle_speichern("Ivan", "https://example.test/a.ics")
+def test_ausserhalb_des_fensters_ohne_verbundene_kalender_bleibt_frei():
+    antwort = json.loads(server.termin_konflikte(_t(200, 9).date().isoformat(), "09:00"))
+    assert antwort["frei"] is True and antwort["quellen_luecken"] == []
+
+
+def test_veraltete_quelle_ist_luecke():
+    qid = _quelle("Ivan", "ivan", "business", [_termin(1, 9, "Alt", "a")])
+    server._q("update kalender_quellen set abgeglichen_am = now() - interval '16 minutes' "
+              "where id = %s", (qid,))
+    eintraege, luecken = server.belegungen()
+    assert [e["titel"] for e in eintraege] == ["Alt"]
+    assert luecken == [{"quelle": "Ivan",
+                        "grund": "seit über 15 Minuten nicht abgeglichen",
+                        "besitzer": "ivan", "bereich": "business", "fest": True}]
+
+
+def test_nie_abgeglichene_quelle_ist_luecke():
+    server.kalenderquelle_speichern("Ivan", "https://example.test/a.ics", "ivan", "business")
+    _, luecken = server.belegungen()
+    assert luecken == [{"quelle": "Ivan", "grund": "noch nicht abgeglichen",
+                        "besitzer": "ivan", "bereich": "business", "fest": True}]
+
+
+def test_inaktive_quelle_wird_nicht_abgerufen():
+    _quelle("Ivan", "ivan", "business", [_termin(1, 9, "Kunde", "k")])
     with server.pool.connection() as conn:
         conn.execute("update sales_test.kalender_quellen set aktiv = false")
-    gerufen = []
-    monkeypatch.setattr(kalenderquellen, "hole",
-                        lambda url, *a, **k: gerufen.append(url) or ([], None))
     eintraege, luecken = server.belegungen()
-    assert gerufen == []
     assert eintraege == [] and luecken == []
 
 
@@ -188,36 +268,25 @@ def test_fehlende_quellentabelle_reisst_termin_konflikte_nicht_ab(
         server.FREMDE_QUELLEN_LUECKE]
 
 
-def test_teilweise_verstandene_quelle_behaelt_ihre_gueltigen_termine(
-        monkeypatch):
-    """K4 (Schlusspruefung 13.09.2026): `kalenderquellen.hole()` meldet
-    `fehler` jetzt auch fuer eine Quelle, die NUR TEILWEISE verstanden
-    wurde (Serientermin neben einem gewoehnlichen VEVENT). belegungen()
-    darf die gueltigen `termine` dabei nicht verwerfen (kein `continue`
-    mehr) — sonst gingen echte Kollisionsdaten verloren, nur weil ein Teil
-    derselben Antwort eine RRULE enthielt."""
-    server.kalenderquelle_speichern("Ivan", "https://example.test/a.ics")
-    monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: ([
-        {"beginn": _t(1, 9), "ende": _t(1, 10), "titel": "Normaler Termin",
-         "ort": "", "uid": "n"}],
-        "1 Serientermin (RRULE) wird nicht aufgeloest — dort kann etwas "
-        "liegen, das hier fehlt."))
+def test_teilweise_verstandene_quelle_behaelt_ihre_gueltigen_termine():
+    """K4 (Schlusspruefung 13.09.2026): eine Quelle, die NUR TEILWEISE
+    verstanden wurde, meldet `letzter_fehler` - ihre gueltigen Termine
+    bleiben trotzdem echte Kollisionsdaten, die Luecke steht daneben."""
+    _quelle("Ivan", "ivan", "business", [_termin(1, 9, "Normaler Termin", "n")],
+            fehler="1 Termin nicht lesbar — dort kann etwas liegen, das hier fehlt.")
     eintraege, luecken = server.belegungen()
-    assert [e["titel"] for e in eintraege] == ["belegt"]
+    assert [e["titel"] for e in eintraege] == ["Normaler Termin"]
     assert len(luecken) == 1
     assert luecken[0]["quelle"] == "Ivan"
-    assert "Serientermin" in luecken[0]["grund"]
+    assert "nicht lesbar" in luecken[0]["grund"]
 
 
-def test_serientermin_laesst_termin_konflikte_nie_frei_melden(monkeypatch):
-    """Das K4-Ruling direkt am Werkzeug: eine Quelle mit einem
-    unaufgeloesten Serientermin darf `termin_konflikte` nie `frei: true`
-    liefern lassen, auch ohne dass irgendetwas kollidiert."""
-    monkeypatch.setattr(kalender, "termine_lesen", lambda *a, **k: ([], None))
-    server.kalenderquelle_speichern("Ivan", "https://example.test/a.ics")
-    monkeypatch.setattr(kalenderquellen, "hole", lambda url, *a, **k: (
-        [], "1 Serientermin (RRULE) wird nicht aufgeloest — dort kann "
-            "etwas liegen, das hier fehlt."))
-    antwort = json.loads(server.termin_konflikte("2026-10-01", "09:00"))
+def test_luecke_laesst_termin_konflikte_nie_frei_melden():
+    """Das K4-Ruling direkt am Werkzeug: eine Quelle mit Luecke darf
+    `termin_konflikte` nie `frei: true` liefern lassen, auch ohne dass
+    irgendetwas kollidiert."""
+    _quelle("Ivan", "ivan", "business", [],
+            fehler="1 Termin nicht lesbar — dort kann etwas liegen, das hier fehlt.")
+    antwort = json.loads(server.termin_konflikte(_t(2, 9).date().isoformat(), "09:00"))
     assert antwort["frei"] is False
     assert [l["quelle"] for l in antwort["quellen_luecken"]] == ["Ivan"]

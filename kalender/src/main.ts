@@ -2,16 +2,17 @@
 // baut FullCalendar (Woche/Tag/Monat/Liste) mit Ziehen, Anlegen und Bearbeiten.
 import './kalender.css';
 
-import { Calendar, type EventApi } from '@fullcalendar/core';
+import { Calendar, type EventApi, type EventInput } from '@fullcalendar/core';
 import deLocale from '@fullcalendar/core/locales/de';
 import dayGridPlugin from '@fullcalendar/daygrid';
 import interactionPlugin from '@fullcalendar/interaction';
 import listPlugin from '@fullcalendar/list';
 import timeGridPlugin from '@fullcalendar/timegrid';
 
-import { braucheBestaetigung, type Ereignis, zuAenderung, zuEvent } from './abbild';
+import { type Art, braucheBestaetigung, type Ereignis, FARBEN, zuAenderung, zuEvent } from './abbild';
 import { type Oberflaeche, schreiben } from './ablauf';
 import * as api from './api';
+import { ausgeschaltet, farbeFuer, filtern, umschalten } from './ebenen';
 import { grundOptionen, naechsteVolleStunde } from './einstellungen';
 import { anlegenOeffnen, bearbeitenOeffnen, detailsOeffnen, konfliktFragen, type Kontext, zeitText } from './fenster';
 
@@ -90,12 +91,65 @@ function leisten(wurzel: HTMLElement) {
   };
 }
 
+interface Ebene {
+  id: string;
+  name: string;
+  besitzer?: string;
+  bereich?: string;
+}
+
+const FESTE_EBENEN = ['kunde', 'eigen', 'handy'];
+
+/** Farbe je Ebene: feste Arten behalten ihre Farbe, verbundene Kalender bekommen die Palette der Reihe nach. */
+function ebenenFarben(ebenen: Ebene[]): Map<string, string> {
+  const farben = new Map<string, string>();
+  let i = 0;
+  for (const e of ebenen) {
+    if (FESTE_EBENEN.includes(e.id)) farben.set(e.id, FARBEN[e.id as Art]);
+    else farben.set(e.id, farbeFuer(e.id, i++));
+  }
+  return farben;
+}
+
+function ebenenLeiste(wurzel: HTMLElement, beiAenderung: () => void) {
+  const leiste = document.createElement('div');
+  leiste.className = 'vk-ebenen';
+  leiste.hidden = true;
+  wurzel.before(leiste);
+  return (ebenen: Ebene[], farben: Map<string, string>) => {
+    leiste.replaceChildren();
+    leiste.hidden = ebenen.length === 0;
+    const aus = ausgeschaltet();
+    for (const e of ebenen) {
+      const label = document.createElement('label');
+      label.className = 'vk-ebene';
+      const haken = document.createElement('input');
+      haken.type = 'checkbox';
+      haken.checked = !aus.has(e.id);
+      haken.onchange = () => { umschalten(e.id); beiAenderung(); };
+      const punkt = document.createElement('span');
+      punkt.className = 'vk-punkt';
+      punkt.style.background = farben.get(e.id) ?? '';
+      label.append(haken, punkt, ` ${e.name}`);
+      if (e.bereich === 'privat') label.title = `privat (${e.besitzer ?? ''})`;
+      leiste.append(label);
+    }
+  };
+}
+
 function starten(): void {
   const wurzel = document.getElementById('kalender');
   const start = startdaten();
   if (!wurzel || !start) return;
   api.einrichten(start.csrf);
   const leiste = leisten(wurzel);
+  // Die Ebenen der letzten Antwort; der Schalter filtert ohne neue Anfrage.
+  let geladen: EventInput[] = [];
+  let ausDemSpeicher = false;
+  const zeigeEbenen = ebenenLeiste(wurzel, () => {
+    ausDemSpeicher = true;
+    kalender?.refetchEvents();
+  });
   const darf = start.darf_schreiben === true;
   // eslint-artig vorab deklariert: die Oberflaeche braucht den Kalender zum Neuladen.
   let kalender: Calendar | null = null;
@@ -138,6 +192,12 @@ function starten(): void {
       },
     } : {},
     events: (info, ok, fehler) => {
+      if (ausDemSpeicher) {
+        // Nur ein Schalter wurde bedient: dieselben Termine, neu gefiltert.
+        ausDemSpeicher = false;
+        ok(filtern(geladen, ausgeschaltet()));
+        return;
+      }
       api.laden(info.startStr, info.endStr).then((r) => {
         if (!r.ok) {
           leiste.laden([r.daten.grund ?? 'Termine nicht abrufbar']);
@@ -147,7 +207,11 @@ function starten(): void {
         const hinweise = Array.isArray(r.daten.hinweise) ? (r.daten.hinweise as string[]) : [];
         leiste.laden(hinweise);
         const liste = Array.isArray(r.daten.ereignisse) ? (r.daten.ereignisse as Ereignis[]) : [];
-        ok(liste.map((e) => zuEvent(e, darf)));
+        const ebenen = Array.isArray(r.daten.ebenen) ? (r.daten.ebenen as Ebene[]) : [];
+        const farben = ebenenFarben(ebenen);
+        geladen = liste.map((e) => zuEvent(e, darf, e.quelle_id ? farben.get(e.quelle_id) : undefined));
+        zeigeEbenen(ebenen, farben);
+        ok(filtern(geladen, ausgeschaltet()));
       }, (e: unknown) => fehler(e instanceof Error ? e : new Error(String(e))));
     },
     select: (info) => {

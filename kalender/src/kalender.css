@@ -25,8 +25,11 @@
 #kalender .fc-day-sat,
 #kalender .fc-day-sun { background: var(--kopfzeile, #f1eff8); }
 #kalender .fc-event { cursor: pointer; }
+#kalender .fc-event, #kalender .fc-event-main { font-size: 0.85rem; }
 #kalender .vk-handy .fc-event-main,
-#kalender .vk-kollege .fc-event-main { opacity: 0.9; }
+#kalender .vk-kalender .fc-event-main { opacity: 0.9; }
+/* Als frei markiert (Geburtstage u. ae.): heller und gestrichelt, blockiert nie. */
+#kalender .vk-frei { opacity: 0.6; border-style: dashed; }
 
 @media (max-width: 640px) {
   #kalender .fc-header-toolbar { flex-wrap: wrap; gap: 6px; }
@@ -83,3 +86,9 @@
 .vk-fenster button:disabled { opacity: 0.55; cursor: progress; }
 .vk-fenster .vk-haupt { background: var(--akzent, #5b3fd6); border-color: var(--akzent, #5b3fd6); color: var(--akzent_auf, #fff); }
 .vk-fenster .vk-gefahr { color: #b91c1c; border-color: #fca5a5; }
+
+/* Ebenen-Leiste ueber dem Kalender */
+.vk-ebenen { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 6px 0; font-size: 0.9rem; }
+.vk-ebene { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.vk-ebene input { margin: 0; }
+.vk-punkt { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: none; }

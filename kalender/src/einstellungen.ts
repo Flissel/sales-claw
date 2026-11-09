@@ -8,7 +8,11 @@ export function grundOptionen(darfSchreiben: boolean): CalendarOptions {
     // (kein font-src) blockiert sie. Textknoepfe der de-Locale ("Zurück"/"Vor").
     buttonIcons: false,
     firstDay: 1,
-    allDaySlot: false,
+    // Ganztaegige Termine (Geburtstage, Urlaub) stehen in einer eigenen Zeile oben.
+    allDaySlot: true,
+    // Von-bis in jeder Ansicht, 24-Stunden-Zeit.
+    displayEventEnd: true,
+    eventTimeFormat: { hour: '2-digit', minute: '2-digit', hour12: false },
     // Ganzer Tag im Zeitraster; sichtbar ist etwa 07–20 Uhr, der Rest per Scrollen.
     slotMinTime: '00:00',
     slotMaxTime: '24:00',

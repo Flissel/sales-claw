@@ -17,8 +17,9 @@ const handy: Ereignis = {
   beginn: '2026-10-22T12:00:00+02:00', ende: '2026-10-22T13:00:00+02:00', bearbeitbar: false,
 };
 const kollege: Ereignis = {
-  id: 'kollege:k1', art: 'kollege', titel: 'Messe',
+  id: 'kalender:q1:k1', art: 'kalender', titel: 'Messe',
   beginn: '2026-10-22T12:00:00+02:00', ende: '2026-10-22T18:00:00+02:00', bearbeitbar: false, quelle: 'Anna',
+  quelle_id: 'q1', besitzer: 'anna', maskiert: false, ganztaegig: false, frei: false,
 };
 
 describe('zuEvent', () => {
@@ -101,6 +102,32 @@ describe('zuAenderung', () => {
 describe('braucheBestaetigung', () => {
   it('nur bei kunde', () => {
     expect(braucheBestaetigung('kunde')).toBe(true);
-    for (const a of ['eigen', 'handy', 'kollege', '']) expect(braucheBestaetigung(a)).toBe(false);
+    for (const a of ['eigen', 'handy', 'kalender', '']) expect(braucheBestaetigung(a)).toBe(false);
+  });
+});
+
+describe('zuEvent: verbundene Kalender', () => {
+  const B = '2026-10-22T12:00:00+02:00';
+  const E = '2026-10-22T13:00:00+02:00';
+  it('Titel traegt die Quelle, Farbe kommt von der Ebene', () => {
+    const ev = zuEvent(kollege, true, '#123456');
+    expect(ev.title).toBe('Messe (Anna)');
+    expect(ev.color).toBe('#123456');
+    expect(ev.allDay).toBe(false);
+    expect(ev.extendedProps).toMatchObject({ ebene: 'q1' });
+  });
+  it('maskierter Termin zeigt nur Privattermin', () => {
+    const ev = zuEvent({ id: 'k:1', art: 'kalender', titel: 'Privattermin', beginn: B, ende: E,
+      bearbeitbar: false, maskiert: true, besitzer: 'ivan', quelle: 'Privat' } as Ereignis);
+    expect(ev.title).toBe('Privattermin (ivan)');
+    expect(ev.editable).toBe(false);
+  });
+  it('ganztaegig und frei werden uebernommen', () => {
+    const ev = zuEvent({ ...kollege, ganztaegig: true, frei: true });
+    expect(ev.allDay).toBe(true);
+    expect(ev.classNames).toContain('vk-frei');
+  });
+  it('feste Ebenen tragen ihre Art als Ebene', () => {
+    expect(zuEvent(eigen).extendedProps).toMatchObject({ ebene: 'eigen' });
   });
 });
