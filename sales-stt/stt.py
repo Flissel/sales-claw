@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import signal
+import socket
 import sys
 import tempfile
 import threading
@@ -141,7 +142,15 @@ class Handler(BaseHTTPRequestHandler):
 
 class Dienst(ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    # Windows: SO_REUSEADDR laesst dort einen ZWEITEN lauschenden Prozess auf
+    # denselben Port (09.11.2026: 55 Kopien am PC). Dort exklusiv binden, damit
+    # eine weitere Kopie am Binden scheitert; im Container (Linux) wie bisher.
+    allow_reuse_address = os.name != "nt"
+
+    def server_bind(self):
+        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
 
 
 def main() -> int:
