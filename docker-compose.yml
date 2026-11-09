@@ -1103,7 +1103,10 @@ services:
       - UI_BASIS_URL=${UI_BASIS_URL:-}
       - ROWBOAT_RPC_URL=http://127.0.0.1:3220
     volumes:
-      - /home/debian/rowboat-data/server-key:/run/rowboat-server-key:ro
+      # Enger Rowboat-Schluessel (M7): darf nur todo:get/plannerSignals/addSuggestions/
+      # withdrawSuggestion/setChecked, kein Chat, keine Dateien, kein WebSocket. Anlegen:
+      # docs/03_RUNBOOK.md "Rowboat-Schluessel des Boten". Nie den Generalschluessel einhaengen.
+      - /home/debian/freigabe-bote/rowboat-key:/run/rowboat-server-key:ro
     logging:
       driver: json-file
       options:

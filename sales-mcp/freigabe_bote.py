@@ -3,8 +3,8 @@
 Stufe 1: "Annehmen" in Rowboat fuehrt nichts aus, der Bote liest die Entscheidung
 nur zurueck (Stand je Eintrag) und raeumt auf, wenn der Eintrag geschlossen ist.
 Kein Sprachmodell, keine Schreibzugriffe auf Rowboats Dateien: nur
-POST /rpc/<kanal> des headless Servers. Der Server-Schluessel steht in einer
-Datei und erscheint nie in Log, Eintrag oder Fehlertext (geloggt wird nur der Typ).
+POST /rpc/<kanal> des headless Servers. Der Schluessel ist ein enger Rowboat-Schluessel
+(nur die fuenf todo:-Kanaele, die der Bote braucht), steht in einer Datei und erscheint nie in Log, Eintrag oder Fehlertext (geloggt wird nur der Typ).
 """
 import json
 import logging

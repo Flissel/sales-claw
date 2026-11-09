@@ -3733,6 +3733,22 @@ abgelehnt):
 Danach die ACL der Datei auf den eigenen Benutzer beschränken. Für `debugger-claw` auf der VM mit
 `| sudo install -o root -g root -m 0400 /dev/stdin ~/debugger-claw/freigabe/schluessel`.
 
+**Rowboat-Schlüssel des Boten** (seit 09.11.2026). Der Bote hält nicht den Rowboat-Generalschlüssel, sondern einen
+engen Schlüssel: nur `POST /rpc/` auf `todo:get`, `todo:plannerSignals`, `todo:addSuggestions`,
+`todo:withdrawSuggestion` und `todo:setChecked`. Alles andere (Chat, Dateien, WebSocket, andere Kanäle) bekommt
+403. Rowboat speichert nur den sha256 in `~/rowboat-data/scoped-keys.json` und liest die Datei bei jeder Anfrage.
+Ein Widerruf wirkt deshalb sofort, ohne Neustart. Der Wert liegt nur in `~/freigabe-bote/rowboat-key` (0600) und
+geht beim Anlegen direkt in die Datei:
+
+    ssh offload-vm 'umask 077; mkdir -p ~/freigabe-bote; cd ~/rowboat-headless && docker compose exec -T rowboat-server \
+      node rowboat-server.cjs scoped-key add freigabe-bote \
+      todo:get,todo:plannerSignals,todo:addSuggestions,todo:withdrawSuggestion,todo:setChecked \
+      > ~/freigabe-bote/rowboat-key && cd ~/sales-claw && docker compose up -d --force-recreate freigabe-bote'
+
+`add` ersetzt einen Schlüssel gleichen Namens, der alte ist danach ungültig. `scoped-key list` zeigt Namen und
+Kanäle, nie den Wert. Zum Widerrufen: `scoped-key remove freigabe-bote`. Braucht der Bote einen neuen Kanal, legt
+man den Schlüssel mit der erweiterten Liste neu an.
+
 **Not-Aus.** `docker compose stop freigabe-bote`. Rowboat bekommt dann nichts Neues mehr, die Sales-UI arbeitet
 weiter. Ein Erzeuger allein: seinen Schlüssel deaktivieren
 (`update sales.freigabe_schluessel set aktiv = false where herkunft = '<herkunft>'`). Seine Anfragen bekommen
