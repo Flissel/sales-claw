@@ -3539,3 +3539,53 @@ Drei Tabellen je Schema: `freigabe_eintraege`, `freigabe_auftraege`, `freigabe_s
    Weitere Laeden (z. B. `sales_ivan`) nur, wenn dort ebenfalls Eintraege einlaufen sollen.
 
 **Rueckweg.** Die Tabellen sind additiv; ungenutzt koennen sie liegen bleiben.
+
+## Freigabe-Eingang: Betrieb (seit 09.11.2026)
+
+Erzeuger melden über `/api/freigaben/*` (Bearer-Schlüssel je Herkunft, gespeichert nur als sha256). Der Dienst
+`freigabe-bote` (Container `sales-freigabe-bote`, in `KERN_OPTIONAL` von `deploy/update.sh`) gleicht alle 60 s
+mit dem Rowboat-Headless ab (`todo:addSuggestions`, `todo:withdrawSuggestion`, `todo:setChecked`, `todo:get`).
+Annehmen in Rowboat markiert nur, ausgeführt wird nur über `/freigaben` (Stufe 1; Stufe 2 ist gesperrt, POST → 409).
+
+| Herkunft | wer | Schlüsseldatei |
+|---|---|---|
+| `debugger-claw` | VM, `~/debugger-claw` | `~/debugger-claw/freigabe/schluessel` (root, 0400) |
+| `selbstbild` | PC, täglicher Lauf + Aufgabe „Selbstbild Freigabe-Abholer“ | `%LOCALAPPDATA%\VibeMind\selbstbild\freigabe.schluessel` |
+| `werkstatt` | PC, Learning-Claw :8139 | `%LOCALAPPDATA%\VibeMind\learning\freigabe.schluessel` |
+| `sales`, `marketing` | Bote selbst (Entwürfe) | kein Schlüssel |
+
+PC-Umgebung (nur Namen): Selbstbild liest `SELBSTBILD_FREIGABE_URL` und `SELBSTBILD_FREIGABE_SCHLUESSEL_DATEI`
+auf User-Ebene. Der Learning-Claw liest `FREIGABE_URL` und `FREIGABE_SCHLUESSEL_DATEI` aus
+`%LOCALAPPDATA%\VibeMind\learning-claw\learning.env`. Die unpräfixierten Namen nie auf User-Ebene setzen.
+
+**Schlüssel neu anlegen** (ersetzt den alten Hash der Herkunft; der Wert geht nur in die Pipe, ein Terminal wird
+abgelehnt):
+
+    ssh offload-vm 'cd ~/sales-claw && docker compose exec -T sales-ui python -m freigabe_schluessel anlegen selbstbild' \
+      | Set-Content -NoNewline "$env:LOCALAPPDATA\VibeMind\selbstbild\freigabe.schluessel"
+
+Danach die ACL der Datei auf den eigenen Benutzer beschränken. Für `debugger-claw` auf der VM mit
+`| sudo install -o root -g root -m 0400 /dev/stdin ~/debugger-claw/freigabe/schluessel`.
+
+**Not-Aus.** `docker compose stop freigabe-bote`. Rowboat bekommt dann nichts Neues mehr, die Sales-UI arbeitet
+weiter. Ein Erzeuger allein: seinen Schlüssel deaktivieren
+(`update sales.freigabe_schluessel set aktiv = false where herkunft = '<herkunft>'`). Seine Anfragen bekommen
+dann 401.
+
+**Prüfen.**
+
+- `docker compose logs --tail 5 freigabe-bote`: je Minute eine Zeile `Durchgang: +n Vorschlaege, …`.
+- `docker logs --since 10m sales-ui | grep freigabe-api`: zeigt `herkunft=…`; die Abholer fragen etwa jede Minute
+  (werkstatt) bzw. alle 2 min (selbstbild).
+- Doppelte offene Aufträge je Eintrag (muss 0 sein):
+
+      select count(*) from (select eintrag_id from sales.freigabe_auftraege
+        where status in ('offen','laeuft') group by eintrag_id having count(*) > 1) d;
+
+**Bekannte Fallen.**
+
+- Windows-Python 3.11.0/OpenSSL 1.1.1 meldet „certificate has expired“ für die Let's-Encrypt-Kette der UI
+  (ISRG Root X2 fehlt unter ROOT). Die PC-Clients laden darum zusätzlich `certifi` (la_fungus 54bc239,
+  Learning b8cc069).
+- `deploy/smoke.sh` muss jeden neuen Kern-Container kennen. Fehlt einer, rollt `update.sh` zurück (so am 09.11.
+  zweimal geschehen, behoben 4830dc7).
