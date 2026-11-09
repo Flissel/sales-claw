@@ -903,7 +903,7 @@ def routen(ui) -> list:
         ergebnis = json.loads(await run_in_threadpool(ui.server.post_entwurf_erstellen, thema, text, datei))
         if ergebnis.get("fehler"):
             return ui._fehlerseite(422, "Nicht möglich", e(str(ergebnis["fehler"])))
-        return RedirectResponse("/freigaben", status_code=303)
+        return RedirectResponse(ui._freigaben_url("marketing", "linkedin"), status_code=303)
 
     # --- Auf Kanaelen teilen (Beitraege auf weitere Kanaele, Task 8) ------------------------
 
@@ -950,7 +950,7 @@ def routen(ui) -> list:
                           + (e(str(grund)) if grund else "angelegt") + "</li>")
         rumpf = (f'<ul>{"".join(zeilen)}</ul>'
                  '<p class="meta">Veröffentlicht wird erst nach deiner Freigabe.</p>'
-                 '<p><a class="knopf" href="/freigaben">Zu den Freigaben</a></p>')
+                 '<p><a class="knopf" href="/freigaben?tab=marketing">Zu den Freigaben</a></p>')
         return ui._seite("Auf Kanälen teilen", rumpf)
 
     return [

@@ -713,7 +713,7 @@ def test_inbox_linkedin_beitrag_nennt_den_dienst():
     lead = _lead()
     _entwurf(lead, status="approved", kanal="linkedin", empfaenger="eigenes-profil",
              approved_by="betreiber", text="LinkedIn-Post-Text")
-    seite = _get("/freigaben").text
+    seite = _get("/freigaben?tab=marketing&art=linkedin").text
     assert "sales-linkedin" in seite
     assert "Markier-Liste" in seite
 
@@ -724,7 +724,7 @@ def test_inbox_linkedin_direktnachricht_nennt_den_handversand():
     lead = _lead()
     _entwurf(lead, status="approved", kanal="linkedin",
              approved_by="betreiber", text="LinkedIn-DM-Text")
-    seite = _get("/freigaben").text
+    seite = _get("/freigaben?tab=nachrichten&art=linkedin").text
     assert "von Hand" in seite
     assert "entwurf_manuell_gesendet" in seite
     assert "sales-linkedin" not in seite
@@ -3965,7 +3965,7 @@ def test_linkedin_karte_zeigt_markier_liste_escaped():
     _markierungen(d, [{"name": "<b>Peter</b>", "art": "person",
                        "profil": "https://www.linkedin.com/in/p"},
                       {"name": "BMW Group", "art": "firma", "profil": ""}])
-    seite = _get("/freigaben").text
+    seite = _get("/freigaben?tab=marketing&art=linkedin").text
     assert "Nach dem Posten markieren" in seite
     assert "&lt;b&gt;Peter&lt;/b&gt;" in seite and "<b>Peter</b>" not in seite
     assert "BMW Group" in seite and "https://www.linkedin.com/in/p" in seite
@@ -3974,14 +3974,14 @@ def test_linkedin_karte_zeigt_markier_liste_escaped():
 def test_linkedin_karte_ohne_liste_ohne_block():
     lead = _lead()
     _entwurf(lead, kanal="linkedin", empfaenger="eigenes-profil", text="Post")
-    assert "Nach dem Posten markieren" not in _get("/freigaben").text
+    assert "Nach dem Posten markieren" not in _get("/freigaben?tab=marketing&art=linkedin").text
 
 
 def test_freigegebener_linkedin_post_kein_handposten_hinweis_mehr():
     lead = _lead()
     _entwurf(lead, status="approved", kanal="linkedin", empfaenger="eigenes-profil",
              text="Post", approved_by="felix")
-    seite = _get("/freigaben").text
+    seite = _get("/freigaben?tab=marketing&art=linkedin").text
     assert "von Hand posten" not in seite
 
 

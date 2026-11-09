@@ -20,6 +20,8 @@ import ui  # noqa: E402
 
 CLIENT = TestClient(ui.app)
 HOST_OK = "127.0.0.1:8791"
+# Freigaben in Reitern (09.11.2026): eigene Beitraege stehen unter Marketing.
+MARKETING = "/freigaben?tab=marketing"
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -72,13 +74,13 @@ def _beleg(lead, draft_id, url):
 
 def test_freigaben_zeigt_offenen_bluesky_entwurf(sammelkontakt):
     _entwurf(sammelkontakt, "bluesky", text="Grüße vom Bluesky-Test")
-    seite = _get("/freigaben").text
+    seite = _get(MARKETING).text
     assert 'class="badge bluesky">Bluesky<' in seite
     assert "Grüße vom Bluesky-Test" in seite
 
 
 def test_leere_unverbundene_kanaele_ohne_block():
-    antwort = _get("/freigaben")
+    antwort = _get(MARKETING)
     assert antwort.status_code == 200
     for kanal in kanaele.KANAELE:
         assert f'class="badge {kanal}"' not in antwort.text
@@ -89,7 +91,7 @@ def test_leere_unverbundene_kanaele_ohne_block():
 
 def test_verbundener_kanal_hat_block():
     kanaele.status_schreiben(server._q, "mastodon", True, None)
-    seite = _get("/freigaben").text
+    seite = _get("/freigaben?tab=marketing&art=mastodon").text
     kopf = '<h2><span class="badge mastodon">Mastodon</span> Mastodon'
     assert kopf in seite
     block = seite.split(kopf, 1)[1].split("</section>", 1)[0]
@@ -109,21 +111,21 @@ def test_kein_direkt_freigeben_in_der_zeile(sammelkontakt):
 
 def test_devto_hinweis_entwurf_bei_devto(sammelkontakt):
     _entwurf(sammelkontakt, "devto", text="# Artikel\n\nText")
-    seite = _get("/freigaben").text
+    seite = _get(MARKETING).text
     assert ("Freigeben legt den Artikel als Entwurf bei dev.to an – "
             "veröffentlicht wird dort von Hand.") in seite
 
 
 def test_youtube_hinweis_privat_bei_youtube(sammelkontakt):
     _entwurf(sammelkontakt, "youtube", text="Beschreibung")
-    seite = _get("/freigaben").text
+    seite = _get(MARKETING).text
     assert ("Freigeben lädt das Video als Short bei YouTube hoch – zunächst "
             "nicht öffentlich (Vorgabe privat).") in seite
 
 
 def test_freigegeben_nicht_verbunden_hinweis(sammelkontakt):
     _entwurf(sammelkontakt, "discord", status="approved")
-    seite = _get("/freigaben").text
+    seite = _get(MARKETING).text
     assert ("Kanal nicht verbunden – bleibt liegen, bis der Zugang "
             "eingetragen ist.") in seite
 
@@ -131,7 +133,7 @@ def test_freigegeben_nicht_verbunden_hinweis(sammelkontakt):
 def test_freigegeben_verbunden_hinweis_mit_kadenz(sammelkontakt):
     kanaele.status_schreiben(server._q, "devto", True, None)
     _entwurf(sammelkontakt, "devto", status="approved")
-    seite = _get("/freigaben").text
+    seite = _get(MARKETING).text
     assert ("Der Dienst sales-kanaele veröffentlicht den Beitrag (höchstens 1 "
             "pro Tag). Freigaben, die älter als 7 Tage sind, bleiben liegen."
             ) in seite
@@ -142,7 +144,7 @@ def test_freigegeben_verbunden_hinweis_mit_kadenz(sammelkontakt):
 def test_freigegeben_zu_alt_hinweis(sammelkontakt):
     kanaele.status_schreiben(server._q, "bluesky", True, None)
     _entwurf(sammelkontakt, "bluesky", status="approved", approved_vor_tagen=8)
-    seite = _get("/freigaben").text
+    seite = _get(MARKETING).text
     assert ("Älter als 7 Tage freigegeben – wird nicht mehr automatisch "
             "veröffentlicht.") in seite
 
@@ -170,7 +172,7 @@ def test_verlauf_unbekannte_art_nennt_neue():
 def test_ohne_kanal_status_tabelle_kein_absturz(sammelkontakt, monkeypatch):
     monkeypatch.setattr(kanaele, "status_lesen", lambda q: {})
     _entwurf(sammelkontakt, "mastodon", status="approved")
-    antwort = _get("/freigaben")
+    antwort = _get(MARKETING)
     assert antwort.status_code == 200
     assert "Kanal nicht verbunden" in antwort.text
 
@@ -211,7 +213,7 @@ def test_freigaben_ueberlebt_kanal_status_rechtefehler(sammelkontakt, monkeypatc
         raise psycopg.errors.InsufficientPrivilege("permission denied")
     monkeypatch.setattr(kanaele, "status_lesen", verboten)
     _entwurf(sammelkontakt, "mastodon", status="approved")
-    antwort = _get("/freigaben")
+    antwort = _get(MARKETING)
     assert antwort.status_code == 200
     assert "Kanal nicht verbunden" in antwort.text
     assert _get("/").status_code == 200

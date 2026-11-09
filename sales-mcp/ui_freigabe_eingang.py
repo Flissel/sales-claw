@@ -38,6 +38,13 @@ _ART_NAME = {
     "kursfreigabe": "Kursfreigaben",
     "entwurf": "Entwürfe",
 }
+# Wo die Arten auf /freigaben stehen (Freigaben in Reitern, Betreiber 09.11.2026):
+# (art, Reiter, Unter-Reiter oder None, Name). Kurse bekommen einen eigenen Reiter,
+# Debugger-PRs und Rueckfragen der Bots stehen unter "Technik".
+REITER = (("debugger_pr", "technik", "debugger", "Debugger-PRs"),
+          ("selbstbild_rueckfrage", "technik", "rueckfragen", "Rückfragen"),
+          ("kursfreigabe", "kurse", None, "Kursfreigaben"))
+_ZIEL = {art: (reiter, unter) for art, reiter, unter, _ in REITER}
 _LABEL_KNOEPFE = (("antwort:weg", "kann weg"), ("antwort:bleibt", "soll bleiben"),
                   ("antwort:benutzt", "wird benutzt"))
 _QUELLE = re.compile(r"^(?P<repo>[^#\s]+)#(?P<nummer>[0-9]{1,9})$")
@@ -131,27 +138,49 @@ def _stufe2(stufe2: dict) -> str:
     return f'<h3>Stufe 2</h3><ul class="stufe2">{zeilen}</ul>'
 
 
-async def abschnitt(ui, request=None) -> str:
-    """HTML des Abschnitts "Eingang"; "" solange die Tabellen fehlen."""
+def zaehlen() -> dict[str, int] | None:
+    """Offene Eintraege je Art (ohne `entwurf`, die stehen als Entwurfskarte da);
+    None solange die Tabellen fehlen - dann gibt es die Reiter Kurse und Technik nicht."""
     try:
-        eintraege = [e for e in fe.offene() if e["art"] != "entwurf"]
+        eintraege = fe.offene()
+    except psycopg.errors.UndefinedTable:
+        return None
+    zahlen = {art: 0 for art, *_ in REITER}
+    for e in eintraege:
+        if e["art"] in zahlen:
+            zahlen[e["art"]] += 1
+    return zahlen
+
+
+async def abschnitt(ui, request=None, arten: tuple[str, ...] | None = None,
+                    titel: str = "Eingang", stufe2: bool = True) -> str:
+    """HTML des Abschnitts "Eingang"; "" solange die Tabellen fehlen.
+
+    `arten` grenzt auf die Arten eines Reiters ein (Kurse, Debugger-PRs, Rueckfragen),
+    `titel` ist dann dessen Name; der Kasten "Stufe 2" steht nur unter Technik."""
+    try:
+        eintraege = [e for e in fe.offene() if e["art"] != "entwurf"
+                     and (arten is None or e["art"] in arten)]
         auftraege = fe.letzte_auftraege()
-        stufe2 = fe.stufe2_lesen()
+        stand2 = fe.stufe2_lesen() if stufe2 else {}
     except psycopg.errors.UndefinedTable:
         return ""
     darf = ui._AKTIVE_ROLLE.get() not in ("lesen", "kalender")
     n = len(eintraege)
     karten = "".join(_karte(ui, e, auftraege.get(str(e["id"])), darf) for e in eintraege)
-    leer = '' if n else '<p class="meta">Im Eingang wartet nichts auf dich.</p>'
-    return (f'<section class="block" id="eingang"><h2>Eingang '
+    leer = '' if n else '<p class="meta">Hier wartet nichts auf dich.</p>'
+    return (f'<section class="block" id="eingang"><h2>{ui._e(titel)} '
             f'<span class="zaehler{" offen" if n else ""}">{n}</span></h2>'
-            f'{_hinweis(ui, request)}{leer}{karten}{_stufe2(stufe2)}</section>')
+            f'{_hinweis(ui, request)}{leer}{karten}{_stufe2(stand2) if stufe2 else ""}</section>')
 
 
 def routen(ui) -> list:
-    def ziel(code: str) -> RedirectResponse:
+    def ziel(code: str, art: str | None = None) -> RedirectResponse:
+        # Zurueck in den Reiter, aus dem der Knopf kam (Kurse bzw. Technik).
+        reiter, unter = _ZIEL.get(art, ("technik", None))
+        abfrage = {"tab": reiter, **({"art": unter} if unter else {}), "eg_hinweis": code}
         return RedirectResponse(
-            f"/freigaben?{urllib.parse.urlencode({'eg_hinweis': code})}#eingang", status_code=303)
+            f"/freigaben?{urllib.parse.urlencode(abfrage)}#eingang", status_code=303)
 
     async def formular(request):
         form = await request.form()
@@ -164,12 +193,12 @@ def routen(ui) -> list:
                       "where kennung = %s", (kennung,)) if fe._KENNUNG_RE.match(kennung) else []
         return z[0] if z and z[0]["status"] == "offen" else None
 
-    def anlegen(request, kennung, art, nutzlast):
+    def anlegen(request, kennung, art, nutzlast, eintrag_art):
         try:
             fe.auftrag_anlegen(kennung, art, nutzlast, ui._ui_akteur(request))
         except fe.EingabeFehler:
-            return ziel("abgewiesen")
-        return ziel("auftrag")
+            return ziel("abgewiesen", eintrag_art)
+        return ziel("auftrag", eintrag_art)
 
     @ui._gesichert_seite
     async def label(request):
@@ -181,12 +210,13 @@ def routen(ui) -> list:
             return ui._fehlerseite(422, "Abgewiesen", "Unbekanntes Label. Nichts wurde getan.")
         e = offener(kennung)
         if e is None:
-            return ziel("geschlossen")
+            return ziel("geschlossen", "selbstbild_rueckfrage")
         treffer = _QUELLE.match(str(e["quelle_ref"]))
         if e["art"] != "selbstbild_rueckfrage" or not treffer:
-            return ziel("quelle" if e["art"] == "selbstbild_rueckfrage" else "abgewiesen")
+            return ziel("quelle" if e["art"] == "selbstbild_rueckfrage" else "abgewiesen", e["art"])
         return anlegen(request, kennung, "selbstbild_label",
-                       {"repo": treffer["repo"], "nummer": int(treffer["nummer"]), "label": wahl})
+                       {"repo": treffer["repo"], "nummer": int(treffer["nummer"]), "label": wahl},
+                       e["art"])
 
     @ui._gesichert_seite
     async def kurs(request):
@@ -196,12 +226,12 @@ def routen(ui) -> list:
         kennung = str(form.get("kennung") or "")
         e = offener(kennung)
         if e is None:
-            return ziel("geschlossen")
+            return ziel("geschlossen", "kursfreigabe")
         details = e["details"] if isinstance(e["details"], dict) else {}
         kurs_id = details.get("course_id")
         if e["art"] != "kursfreigabe" or not isinstance(kurs_id, str) or not kurs_id:
-            return ziel("quelle" if e["art"] == "kursfreigabe" else "abgewiesen")
-        return anlegen(request, kennung, "kurs_freigabe_zeigen", {"course_id": kurs_id})
+            return ziel("quelle" if e["art"] == "kursfreigabe" else "abgewiesen", e["art"])
+        return anlegen(request, kennung, "kurs_freigabe_zeigen", {"course_id": kurs_id}, e["art"])
 
     @ui._gesichert_seite
     async def verwerfen(request):
@@ -213,7 +243,7 @@ def routen(ui) -> list:
         if e is not None and e["art"] == "entwurf":  # Entwuerfe nur ueber ihre Entwurfskarte
             return ziel("abgewiesen")
         ok = fe.schliessen_kennung(kennung, "verworfen", ui._ui_akteur(request))
-        return ziel("verworfen" if ok else "geschlossen")
+        return ziel("verworfen" if ok else "geschlossen", e["art"] if e else None)
 
     @ui._gesichert_seite
     async def stufe2(request):

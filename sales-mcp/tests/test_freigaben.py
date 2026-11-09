@@ -58,19 +58,24 @@ def _aktivitaet(lead, typ, payload):
         (lead, typ, payload))[0]["id"]
 
 
-def test_vier_bloecke_in_fester_reihenfolge_mit_zaehlern():
+def test_arten_als_unterreiter_in_fester_reihenfolge_mit_zaehlern():
     lead = _lead()
     _entwurf(lead, text="WA offen eins")
     _entwurf(lead, text="WA offen zwei")
     _entwurf(lead, kanal="linkedin", text="LI offen")
     seite = _get("/freigaben").text
     # Seit 28.10.2026: nur Offenes; die Verlaeufe stehen unter Monitoring ->
-    # Verlauf, Termine sind keine Freigaben mehr.
-    assert 'WhatsApp <span class="zaehler offen">2</span>' in seite
-    assert 'LinkedIn <span class="zaehler offen">1</span>' in seite
-    assert 'E-Mail <span class="zaehler">0</span>' in seite
+    # Verlauf, Termine sind keine Freigaben mehr. Seit 09.11.2026 stehen die
+    # Arten als Unter-Reiter von "Nachrichten" (E-Mail, WhatsApp, LinkedIn),
+    # gezeigt wird eine Art auf einmal.
+    unter = seite[seite.index('<nav class="reiter unter"'):]
+    unter = unter[:unter.index("</nav>")]
+    assert (unter.index('E-Mail <span class="zaehler">0</span>')
+            < unter.index('WhatsApp <span class="zaehler offen">2</span>')
+            < unter.index('LinkedIn <span class="zaehler offen">1</span>'))
     assert 'id="termine"' not in seite and "Verlauf WhatsApp" not in seite
-    assert seite.index("WA offen eins") < seite.index("LI offen")
+    assert "WA offen eins" in seite and "LI offen" not in seite
+    assert "LI offen" in _get("/freigaben?tab=nachrichten&art=linkedin").text
     verlauf = _get("/monitoring/verlauf").text
     assert (verlauf.index("Verlauf WhatsApp") < verlauf.index("Verlauf LinkedIn")
             < verlauf.index("Verlauf E-Mail") < verlauf.index("Verlauf Termine"))

@@ -30,6 +30,8 @@ import ui_freigabe_bewerbung  # noqa: E402
 
 PultFehler = bewerbung_pult.PultFehler
 HOST = {"host": "127.0.0.1:8791"}
+# Freigaben in Reitern (09.11.2026): Bewerbungen stehen im eigenen Reiter.
+SEITE = "/freigaben?tab=bewerbungen"
 BID = "bw-4711"
 BID2 = "bw-4712"
 B = "sha256:" + "ab" * 32
@@ -248,7 +250,7 @@ def rolle_freigeben():
     ui._AKTIVE_ROLLE.reset(t)
 
 
-def _abschnitt(c, pfad="/freigaben") -> str:
+def _abschnitt(c, pfad=SEITE) -> str:
     """Offenes von /freigaben, „Zuletzt entschieden" seit 28.10.2026 von
     Monitoring -> Verlauf - hintereinander, wie vorher in einem Abschnitt."""
     teile = []
@@ -297,7 +299,7 @@ def test_abschnitt_zeigt_karte_maskiert(client, falsch):            # Review Foc
                               status="blockiert", anzeige_url="javascript:alert(2)", am=BOESE),
                       verlauf(application_id="bw-9", firma="Neun", entscheidung="approve",
                               status="blockiert", anzeige_url='https://x.example/"><script>z</script>')]
-    seite = client.get("/freigaben").text
+    seite = client.get(SEITE).text
     assert "<script>x</script>" not in seite and "&lt;script&gt;" in seite
     assert "<script" not in seite and '"><img' not in seite
     assert "&lt;/textarea&gt;&lt;script&gt;" in seite                  # Feld-Inhalt bleibt Text
@@ -495,7 +497,7 @@ def test_rolle_lesen_darf_nicht_posten(client_lesen, falsch, monkeypatch, pfad, 
     r = _post(client_lesen, pfad, **daten)
     assert r.status_code == 403 and "Nicht für diese Anmeldung" in r.text and falsch.aktionen() == []
     assert client_lesen.get(f"/freigaben/bewerbung/{BID}/anschreiben.pdf?fassung=1").status_code == 403
-    assert 'id="bewerbungen"' not in client_lesen.get("/freigaben").text
+    assert 'id="bewerbungen"' not in client_lesen.get(SEITE).text
     assert falsch.aufrufe == []
     assert ui._pfad_erlaubt("freigeben", f"/freigaben/bewerbung/{BID}/{pfad}") is True
     monkeypatch.setattr(server, "SCHEMA", "sales_ivan")          # fremder Laden: gesperrt
@@ -509,7 +511,7 @@ def test_ohne_anmeldung_keine_entscheidung(falsch, monkeypatch, pfad, daten):
     c = TestClient(ui.app, headers=HOST)
     assert _post(c, pfad, **daten).status_code == 403
     assert c.get(f"/freigaben/bewerbung/{BID}/anschreiben.pdf?fassung=1").status_code == 403
-    assert 'id="bewerbungen"' not in c.get("/freigaben").text
+    assert 'id="bewerbungen"' not in c.get(SEITE).text
     assert falsch.aufrufe == []
 
 
@@ -564,14 +566,18 @@ def test_api_weg_seite_bleibt(client, falsch):                     # Review Focu
     server._q("insert into drafts (lead_id, channel, recipient, body, status) values "
               "(%s, 'whatsapp', '+491', 'Hallo Welt', 'pending') returning id", (lead,))
     falsch.fehler = PultFehler("nicht_erreichbar", "URLError")
-    r = client.get("/freigaben")
+    r = client.get(SEITE)
     assert r.status_code == 200
     assert "Bewerbungs-Zentrale ist gerade nicht erreichbar" in r.text
-    assert "Hallo Welt" in r.text                                   # Sales-Abschnitte da
+    # Freigaben in Reitern (09.11.2026): die Sales-Entwuerfe stehen unter
+    # Nachrichten - der Reiter zaehlt sie hier mit und zeigt sie dort.
+    assert 'Nachrichten <span class="zaehler offen">1</span>' in r.text
     assert len(_listen_aufrufe(falsch)) == 1
-    assert "gerade nicht erreichbar" in client.get("/freigaben").text
+    assert "gerade nicht erreichbar" in client.get(SEITE).text
     assert len(_listen_aufrufe(falsch)) == 1                         # < 60 s: kein neuer Versuch (der Liste)
     assert [a[1] for a in falsch.aufrufe].count(NOT_AUS) == 2        # der Not-Aus dagegen bei jeder Seite
+    nachrichten = client.get("/freigaben")
+    assert nachrichten.status_code == 200 and "Hallo Welt" in nachrichten.text
 
 
 @pytest.mark.parametrize("fehler,text", [
@@ -581,7 +587,7 @@ def test_api_weg_seite_bleibt(client, falsch):                     # Review Focu
 ])
 def test_lesefehler_gibt_hinweis_statt_500(client, falsch, fehler, text):
     falsch.fehler = fehler
-    r = client.get("/freigaben")
+    r = client.get(SEITE)
     assert r.status_code == 200 and text in r.text
 
 
@@ -637,7 +643,7 @@ def test_feedback_grenzen_und_crlf(client, falsch):
 
 
 def test_feedback_schickt_text_nur_wenn_geaendert(client, falsch):
-    seite = client.get("/freigaben").text
+    seite = client.get(SEITE).text
     original = _wert(seite, "original")
     wie_browser = "\r\n" + BRIEF.replace("\n", "\r\n") + "\r\n  "         # unveraendert abgeschickt
     r = _post(client, "feedback", fassung="1", original=original, kommentar=" Bitte kürzer ",
@@ -706,7 +712,7 @@ def test_pdf_nur_als_pdf(client, falsch):
 def test_unsichtbar_ohne_pult_konfiguration(client, falsch, monkeypatch):
     monkeypatch.setattr(bewerbung_pult, "eingerichtet", lambda: False)
     monkeypatch.setitem(ui_freigabe_bewerbung._laeuft, "thread", None)
-    r = client.get("/freigaben")
+    r = client.get(SEITE)
     assert r.status_code == 200 and 'id="bewerbungen"' not in r.text
     t = ui._AKTIVE_ROLLE.set("freigeben")
     try:
@@ -746,7 +752,7 @@ def test_laden_fehler_gibt_0(falsch):
 
 
 def test_zeitlimits(client, falsch):
-    client.get("/freigaben")
+    client.get(SEITE)
     for pfad, daten in POSTS:
         assert _post(client, pfad, **daten).status_code == 303
     z = {(m, p): t for m, p, t in falsch.zeitlimits if m == "POST"}
@@ -784,8 +790,9 @@ def test_kaputte_karte_reisst_die_seite_nicht(client, falsch, caplog):          
               "(%s, 'whatsapp', '+491', 'Hallo Welt', 'pending') returning id", (lead,))
     falsch.karten = [karte(score=10 ** 400)]                    # OverflowError beim Formatieren
     with caplog.at_level(logging.WARNING, logger="sales-ui"):
-        r = client.get("/freigaben")
-    assert r.status_code == 200 and "Hallo Welt" in r.text
+        r = client.get(SEITE)
+    assert r.status_code == 200 and 'Nachrichten <span class="zaehler offen">1</span>' in r.text
+    assert "Hallo Welt" in client.get("/freigaben").text            # Nachrichten-Reiter steht
     assert "Bewerbungs-Zentrale ist gerade nicht erreichbar" in _abschnitt(client)
     assert any(x.exc_info for x in caplog.records if x.name == "sales-ui")
 
@@ -848,7 +855,7 @@ def test_lesefehler_wird_protokolliert(client, falsch, monkeypatch, caplog):    
     monkeypatch.setattr(bewerbung_pult, "KEY", SCHLUESSEL)
     falsch.fehler = PultFehler("nicht_erreichbar", "URLError", {"detail": "RUMPF-XYZ"})
     with caplog.at_level(logging.WARNING, logger="sales-ui"):
-        client.get("/freigaben")
+        client.get(SEITE)
     assert any("nicht_erreichbar" in m and "URLError" in m for m in _meldungen(caplog))
     assert SCHLUESSEL not in caplog.text and "RUMPF-XYZ" not in caplog.text
 
@@ -856,7 +863,7 @@ def test_lesefehler_wird_protokolliert(client, falsch, monkeypatch, caplog):    
 def test_unerwarteter_lesefehler_mit_stapel(client, falsch, caplog):                 # F2
     falsch.fehler = RuntimeError("kaputt")
     with caplog.at_level(logging.WARNING, logger="sales-ui"):
-        assert client.get("/freigaben").status_code == 200
+        assert client.get(SEITE).status_code == 200
     assert any(x.exc_info for x in caplog.records if x.name == "sales-ui")
 
 
@@ -967,7 +974,7 @@ def test_versandangaben_werden_maskiert(client, falsch):                        
     falsch.karten = [karte(versand=weg(an=BOESE, warnung=BOESE2)),
                      karte(application_id=BID2, versand=weg(BOESE, BOESE2, BOESE)),
                      karte(application_id="bw-3", versand=weg(an=BOESE2, warnung=BOESE))]
-    seite = client.get("/freigaben").text
+    seite = client.get(SEITE).text
     assert "<script" not in seite and '"><img' not in seite
     assert "Versand: E-Mail an &lt;script&gt;x&lt;/script&gt;" in seite
     assert "&quot;&gt;&lt;img onerror=1&gt;" in seite
@@ -1129,7 +1136,7 @@ def test_versandziel_antwort_ohne_gesetzt_ist_unklar(client, falsch):
 
 def test_freigeben_schickt_das_angezeigte_versand_an(client, falsch):
     falsch.karten = [karte(versand=weg())]
-    seite = client.get("/freigaben").text
+    seite = client.get(SEITE).text
     r = _post(client, "freigeben", fassung="1", bindung=B, bestaetigt="ja", versand_an=_wert(seite, "versand_an"))
     assert r.status_code == 303 and r.headers["location"] == "/freigaben?bw_hinweis=freigegeben#bewerbungen"
     assert falsch.aktionen() == [("POST", f"/bewerbungen/{BID}/freigeben",
@@ -1139,7 +1146,7 @@ def test_freigeben_schickt_das_angezeigte_versand_an(client, falsch):
 
 def test_freigeben_beim_portal_schickt_leeres_versand_an(client, falsch):
     falsch.karten = [karte(versand=weg("portal", None))]
-    seite = client.get("/freigaben").text
+    seite = client.get(SEITE).text
     assert _wert(seite, "versand_an") == ""
     r = _post(client, "freigeben", fassung="1", bindung=B, bestaetigt="ja", versand_an="")
     assert r.status_code == 303
@@ -1148,7 +1155,7 @@ def test_freigeben_beim_portal_schickt_leeres_versand_an(client, falsch):
 
 def test_freigeben_ohne_adresse_laesst_versand_an_weg(client, falsch):
     falsch.karten = [karte(versand=weg(an=None))]
-    seite = client.get("/freigaben").text
+    seite = client.get(SEITE).text
     assert 'name="versand_an"' not in seite                           # also kein Feld im Formular
     assert _post(client, "freigeben", fassung="1", bindung=B, bestaetigt="ja").status_code == 303
     assert "versand_an" not in falsch.aktionen()[-1][2]
@@ -1435,7 +1442,7 @@ def test_lauf_kasten_maskiert_alles(client, falsch):                            
                      {"application_id": "bw-2", "firma": "Zwei", "rolle": "R", "score": "hoch",
                       "stand": "vielleicht <b>"}]),
         zustand="pausiert", grund=BOESE, moeglich=False)
-    seite = client.get("/freigaben").text
+    seite = client.get(SEITE).text
     assert "<script" not in seite and '"><img' not in seite and "vielleicht <b>" not in seite
     assert "&lt;script&gt;x&lt;/script&gt; – &quot;&gt;&lt;img onerror=1&gt; (Score 4,0): Stand unbekannt" in seite
     assert "Zwei – R (Score –): Stand unbekannt" in seite
@@ -1552,7 +1559,7 @@ def test_ohne_lauf_id_kein_abbrechen_knopf(client, falsch):
 
 
 def test_lauf_knoepfe_sind_nur_fuer_freigeben_sichtbar(client_lesen, falsch):
-    s = client_lesen.get("/freigaben").text
+    s = client_lesen.get(SEITE).text
     assert "Neuer Lauf" not in s and "Hermes" not in s and falsch.aufrufe == []
 
 
@@ -1586,7 +1593,7 @@ def test_lauf_kennung_wird_im_pfad_maskiert(client, falsch):
 def test_lauf_zeitlimits(client, falsch):
     assert _post_lauf(client, "lauf").status_code == 303
     assert _post_lauf(client, f"lauf/{LAUF_ID}/abbrechen").status_code == 303
-    client.get("/freigaben")
+    client.get(SEITE)
     z = {(m, p): t for m, p, t in falsch.zeitlimits}
     assert z[("POST", "/laeufe")] == 8
     assert z[("POST", f"/laeufe/{LAUF_ID}/abbrechen")] == 30
@@ -1726,13 +1733,13 @@ def test_ausfall_von_laeufe_aktuell_wird_protokolliert(client, falsch, monkeypat
     monkeypatch.setattr(bewerbung_pult, "KEY", SCHLUESSEL)
     falsch.fehler_lauf = PultFehler("nicht_erreichbar", "TimeoutError", {"detail": "RUMPF-XYZ"})
     with caplog.at_level(logging.WARNING, logger="sales-ui"):
-        client.get("/freigaben")
+        client.get(SEITE)
     assert any("nicht_erreichbar" in m and "TimeoutError" in m and "Lauf" in m for m in _meldungen(caplog))
     assert SCHLUESSEL not in caplog.text and "RUMPF-XYZ" not in caplog.text
     falsch.fehler_lauf = RuntimeError("kaputt")
     caplog.clear()
     with caplog.at_level(logging.WARNING, logger="sales-ui"):
-        assert client.get("/freigaben").status_code == 200
+        assert client.get(SEITE).status_code == 200
     assert any(x.exc_info for x in caplog.records if x.name == "sales-ui")
 
 
@@ -1746,7 +1753,7 @@ def test_ausfall_von_laeufe_aktuell_sperrt_den_abschnitt_nicht(client, falsch):
 
 
 def test_lauf_wird_nach_der_liste_gelesen(client, falsch):
-    client.get("/freigaben")
+    client.get(SEITE)
     gets = [p for m, p, _ in falsch.aufrufe if m == "GET"]
     assert gets == [OFFEN, ENTSCHIEDEN, NOT_AUS, LAUF_AKTUELL]
     assert ("GET", LAUF_AKTUELL, ui_freigabe_bewerbung.LESE_ZEITLIMIT_S) in falsch.zeitlimits
@@ -1825,7 +1832,7 @@ def test_pruefnotiz_und_fragen_werden_maskiert(client, falsch):                 
         fragen=[{"id": "f1", "frage": BOESE, "antwort": BOESE2},
                 {"id": 'f2"><script>k</script>', "frage": BOESE2, "antwort": None},
                 {"id": "f3", "frage": BOESE2, "antwort": None}]))]
-    seite = client.get("/freigaben").text
+    seite = client.get(SEITE).text
     assert "<script" not in seite and '"><img' not in seite
     assert "&lt;script&gt;x&lt;/script&gt;" in seite and "Deine Antwort: &quot;&gt;&lt;img onerror=1&gt;" in seite
     assert '<a href="javascript:' not in seite                                    # Quellen sind Text, nie Links
@@ -1966,14 +1973,14 @@ def test_lauf_kasten_steht_auf_freigaben_nicht_im_verlauf(client, falsch):
     falsch.karten = [karte(versand=weg(), pruefnotiz=notiz())]
     falsch.verlauf = [verlauf(firma="Alt AG")]
 
-    offen = client.get("/freigaben").text
+    offen = client.get(SEITE).text
     assert HERMES_TEXTE["bereit"] in offen
     assert "Lauf vom" in offen and ">Lauf abbrechen</button>" in offen
     assert "Prüfnotiz" in offen and 'name="antwort_f1"' in offen
     assert "Zuletzt entschieden" not in offen and "Alt AG" not in offen
 
     falsch.uebersicht = uebersicht(None, moeglich=True)
-    assert ">Neuer Lauf</button>" in client.get("/freigaben").text
+    assert ">Neuer Lauf</button>" in client.get(SEITE).text
 
     for ansicht in (uebersicht(None, moeglich=True), uebersicht(lauf(), moeglich=False)):
         falsch.uebersicht = ansicht
@@ -2161,13 +2168,13 @@ def test_not_aus_wird_im_threadpool_mit_kurzem_zeitlimit_gelesen(client, falsch)
 
 
 def test_not_aus_steht_auf_freigaben_aber_nicht_im_verlauf(client, falsch):
-    assert "Not-Aus: aus" in client.get("/freigaben").text
+    assert "Not-Aus: aus" in client.get(SEITE).text
     v = client.get("/monitoring/verlauf").text
     assert "Not-Aus" not in v and 'action="/freigaben/bewerbung/' not in v
 
 
 def test_not_aus_ist_nur_fuer_freigeben_sichtbar(client_lesen, falsch):
-    assert "Not-Aus" not in client_lesen.get("/freigaben").text and falsch.aufrufe == []
+    assert "Not-Aus" not in client_lesen.get(SEITE).text and falsch.aufrufe == []
 
 
 # --- Not-Aus setzen und lösen ------------------------------------------------------------------
@@ -2440,7 +2447,7 @@ def test_autonom_zeile_steht_auf_freigaben_nicht_im_verlauf(client, falsch, berl
     """Monitoring -> Verlauf zeigt keine Karten: dort steht keine Autonomie-Zeile."""
     falsch.karten = [karte(autonom=autonom_stand("bereit"))]
     falsch.verlauf = [verlauf(firma="Alt AG")]
-    assert AUTONOM_TEXTE["bereit"] in client.get("/freigaben").text
+    assert AUTONOM_TEXTE["bereit"] in client.get(SEITE).text
     v = client.get("/monitoring/verlauf").text
     assert "Alt AG" in v and "Geht automatisch raus" not in v
 
@@ -2675,7 +2682,7 @@ def test_not_aus_wird_vor_den_karten_gelesen(client, falsch, monkeypatch):
         return anfrage(methode, pfad, daten, roh, zeitlimit)
 
     monkeypatch.setattr(bewerbung_pult, "anfrage", anfrage_mit_merker)
-    client.get("/freigaben")
+    client.get(SEITE)
     assert ereignisse.index(f"GET {NOT_AUS}") < ereignisse.index("karte") < ereignisse.index(f"GET {LAUF_AKTUELL}")
 
 
@@ -2720,9 +2727,9 @@ def test_not_aus_bleibt_sichtbar_wenn_die_darstellung_der_karten_scheitert(clien
 def test_not_aus_bleibt_im_zwischengespeicherten_fehler_sichtbar(client, falsch):
     """Die Liste wird 60 s nicht neu versucht; der Not-Aus schon (der Zustand von eben, nie ein alter)."""
     falsch.karten = "kaputt"
-    assert _not_aus_zeile(client.get("/freigaben").text) == "Not-Aus: aus"
+    assert _not_aus_zeile(client.get(SEITE).text) == "Not-Aus: aus"
     falsch.not_aus = dict(NOT_AUS_PULT)
-    s = client.get("/freigaben").text
+    s = client.get(SEITE).text
     assert WEG_TEXT in s and _not_aus_zeile(s).startswith("Not-Aus: an seit")
     assert [a[1] for a in falsch.aufrufe].count(OFFEN) == 1               # die Liste wurde nur einmal gefragt
     assert [a[1] for a in falsch.aufrufe].count(NOT_AUS) == 2             # der Not-Aus bei jeder Seite
@@ -2762,7 +2769,7 @@ def test_fehlerweg_not_aus_steht_nicht_im_verlauf(client, falsch):
 
 def test_fehlerweg_not_aus_nur_fuer_freigeben(client_lesen, falsch):
     falsch.karten = "kaputt"
-    assert "Not-Aus" not in client_lesen.get("/freigaben").text and falsch.aufrufe == []
+    assert "Not-Aus" not in client_lesen.get(SEITE).text and falsch.aufrufe == []
 
 
 # --- Lösen verlangt den Haken ----------------------------------------------------------------------

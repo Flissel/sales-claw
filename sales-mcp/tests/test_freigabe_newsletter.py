@@ -17,6 +17,8 @@ import ui_freigabe_newsletter  # noqa: E402
 
 CLIENT = TestClient(ui.app)
 HOST = {"host": "127.0.0.1:8791"}
+# Freigaben in Reitern (09.11.2026): das Marketing-Pult ist ein Unter-Reiter von Marketing.
+PULT = "/freigaben?tab=marketing&art=pult"
 IID = "11111111-1111-1111-1111-111111111111"
 IID2 = "22222222-2222-2222-2222-222222222222"
 
@@ -137,7 +139,7 @@ def rolle_freigeben():
 
 
 def _seite():
-    return CLIENT.get("/freigaben", headers=HOST)
+    return CLIENT.get(PULT, headers=HOST)
 
 
 def _verlauf_seite():
@@ -287,7 +289,7 @@ def test_freigeben_export_fehler_redirect_mit_hinweis(pult):
 def test_zurueckgeben_schickt_kommentar(pult):
     r = CLIENT.post(f"/freigaben/newsletter/{IID}/zurueckgeben", headers=HOST, follow_redirects=False,
                     data={"csrf": ui.CSRF_TOKEN, "fassung": "3", "kommentar": "  Betreff fehlt  "})
-    assert r.status_code == 303 and r.headers["location"] == "/freigaben#marketing"
+    assert r.status_code == 303 and r.headers["location"] == "/freigaben?tab=marketing&art=pult#marketing"
     assert pult.aktionen() == [("POST", f"/inhalte/{IID}/zurueckgeben",
                                 {"fassung": 3, "von": "mira", "text": "Betreff fehlt"})]
     assert pult.im_loop == []
@@ -335,7 +337,10 @@ def test_api_weg_seite_bleibt(pult):
     r = _seite()
     assert r.status_code == 200
     assert "Marketing gerade nicht erreichbar" in r.text
-    assert "Hallo Welt" in r.text                              # Sales-Arten da
+    # Freigaben in Reitern (09.11.2026): Sales-Entwuerfe stehen unter Nachrichten.
+    assert 'Nachrichten <span class="zaehler offen">1</span>' in r.text
+    nachrichten = CLIENT.get("/freigaben", headers=HOST)
+    assert nachrichten.status_code == 200 and "Hallo Welt" in nachrichten.text
 
 
 # --- Endwelle (final fix) ---
@@ -357,7 +362,7 @@ def test_f1_rolle_ohne_marketing_kein_abschnitt(pult, anmeldung, monkeypatch, ro
     monkeypatch.setattr(server.medien, "liste", lambda *a, **k: [])
     monkeypatch.setitem(ui_freigabe_newsletter._laeuft, "thread", None)
     if rolle:
-        r = anmeldung(rolle).get("/freigaben", headers=HOST)
+        r = anmeldung(rolle).get(PULT, headers=HOST)
         assert r.status_code == 200 and 'id="marketing"' not in r.text
     t = ui._AKTIVE_ROLLE.set(rolle)
     try:
@@ -510,6 +515,10 @@ def test_seite_listet_empfaenger_und_legt_entwuerfe_an(versand):
     r = CLIENT.post(f"/freigaben/newsletter/{IID}/versand", headers=HOST, follow_redirects=False,
                     data={"csrf": ui.CSRF_TOKEN, "lead": [anna, lena], "bestaetigt": "ja"})
     assert r.status_code == 303 and "nl_hinweis=entwuerfe" in r.headers["location"]
+    # Freigaben in Reitern (09.11.2026): der Hinweis zeigt, wo die Entwuerfe warten.
+    hinweis = CLIENT.get(r.headers["location"], headers=HOST).text
+    assert '2 Newsletter-Entwürfe angelegt' in hinweis
+    assert 'href="/freigaben?tab=marketing&amp;art=newsletter">Marketing → Newsletter</a>' in hinweis
     d = {str(z["lead_id"]): z for z in server._q("select lead_id, status, body, body_html, newsletter, recipient "
                                                  "from drafts")}
     assert d[anna]["status"] == "pending" and str(d[anna]["newsletter"]) == IID
@@ -544,7 +553,7 @@ def test_newsletter_entwurf_nicht_bearbeitbar_und_mehrfach_freigeben(versand):
         server._newsletter_entwurf(k, IID, "B", VERSAND["html"], VERSAND["text"], [])
     entwuerfe = server._q("select id, body, body_html from drafts order by recipient")
     assert "nicht bearbeiten" in server.entwurf_bearbeiten(str(entwuerfe[0]["id"]), "neuer Text")
-    seite = CLIENT.get("/freigaben", headers=HOST).text
+    seite = CLIENT.get("/freigaben?tab=marketing&art=newsletter", headers=HOST).text
     assert "Ausgewählte freigeben" in seite
     daten = {"csrf": ui.CSRF_TOKEN, "bestaetigt": "ja", "draft_id": [str(z["id"]) for z in entwuerfe]}
     for z in entwuerfe:

@@ -205,8 +205,9 @@ def _hinweis(ui, request) -> str:
     if art == "entwuerfe":
         n = request.query_params.get("nl_n", "")
         n = int(n) if n.isdigit() and len(n) < 6 else 0
-        return (f'<div class="hinweis">{n} Newsletter-Entwürfe angelegt. Sie warten oben in den Freigaben '
-                f'(Kanal E-Mail) - nichts ist verschickt.</div>')
+        return (f'<div class="hinweis">{n} Newsletter-Entwürfe angelegt. Sie warten unter '
+                f'<a href="/freigaben?tab=marketing&amp;art=newsletter">Marketing → Newsletter</a> '
+                f'- nichts ist verschickt.</div>')
     if art == "ok":
         n = request.query_params.get("nl_flaechen", "")
         n = int(n) if n.isdigit() and len(n) < 6 else 0
@@ -297,7 +298,9 @@ def routen(ui) -> list:
         return fehler(f)
 
     def ziel(anker_abfrage: str = "") -> RedirectResponse:
-        return RedirectResponse(f"/freigaben{anker_abfrage}#marketing", status_code=303)
+        # Zurueck in Marketing -> Marketing-Pult (Freigaben in Reitern, 09.11.2026).
+        abfrage = "?tab=marketing&art=pult" + ("&" + anker_abfrage.lstrip("?") if anker_abfrage else "")
+        return RedirectResponse(f"/freigaben{abfrage}#marketing", status_code=303)
 
     @ui._gesichert_seite
     async def freigeben(request):
@@ -457,7 +460,7 @@ def routen(ui) -> list:
             liste = "".join(f"<li>{e(x)}</li>" for x in fehlschlaege)
             return ui._seite("Newsletter senden", (
                 f'<h1>{angelegt} Entwürfe angelegt</h1><p>Nicht angelegt:</p><ul>{liste}</ul>'
-                f'<p><a href="/freigaben">Zu den Freigaben</a> - nichts ist verschickt.</p>'))
+                f'<p><a href="/freigaben?tab=marketing&amp;art=newsletter">Zu den Freigaben</a> - nichts ist verschickt.</p>'))
         return ziel(f"?nl_hinweis=entwuerfe&nl_n={angelegt}")
 
     return [

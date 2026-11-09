@@ -88,9 +88,11 @@ def test_whatsapp_und_linkedin_behalten_ihre_grenzen():
     lead = _lead()
     wa = _entwurf(lead, "whatsapp", "Kurz per WhatsApp", empfaenger="+491701234567")
     li = _entwurf(lead, "linkedin", "Beitrag", empfaenger="eigenes-profil")
-    seite = _get("/freigaben").text
+    seite = _get("/freigaben?tab=nachrichten&art=whatsapp").text
     assert 'maxlength="4096"' in _textfeld(seite, wa)
-    assert f'maxlength="{server.POST_MAXLAENGE}"' in _textfeld(seite, li)
+    # Der eigene Beitrag steht unter Marketing (Freigaben in Reitern, 09.11.2026).
+    beitraege = _get("/freigaben?tab=marketing&art=linkedin").text
+    assert f'maxlength="{server.POST_MAXLAENGE}"' in _textfeld(beitraege, li)
     assert 'name="betreff"' not in _textfeld(seite, wa)
 
 

@@ -11,6 +11,9 @@ import server  # noqa: E402
 import ui  # noqa: E402
 
 HOST = {"host": "127.0.0.1:8791"}
+# Freigaben in Reitern (09.11.2026): Debugger-PRs und Rueckfragen unter Technik, Kurse eigen.
+TECHNIK = "/freigaben?tab=technik"
+KURSE = "/freigaben?tab=kurse"
 PR = "Flissel/vibemind-os#154"
 RUECK = "Flissel/vibemind-os#77"
 KURS = "11111111-2222-3333-4444-555555555555"
@@ -61,8 +64,8 @@ def client_lesen(anmeldung):
     return anmeldung("lesen")
 
 
-def _abschnitt(c) -> str:
-    r = c.get("/freigaben")
+def _abschnitt(c, pfad=TECHNIK) -> str:
+    r = c.get(pfad)
     assert r.status_code == 200
     s = r.text[r.text.index('<section class="block" id="eingang">'):]
     return s[:s.index("</section>")]
@@ -149,12 +152,12 @@ def test_label_fuer_kursfreigabe_abgewiesen(client):
 
 def test_kurs_knopf(client):
     k = _kurs()
-    assert "Freigabe-Seite schicken" in _abschnitt(client)
+    assert "Freigabe-Seite schicken" in _abschnitt(client, KURSE)
     assert _post(client, "eingang-kurs", k).status_code == 303
     a = _auftraege()
     assert len(a) == 1 and a[0]["art"] == "kurs_freigabe_zeigen"
     assert a[0]["nutzlast"] == {"course_id": KURS}
-    assert "wartet auf PC" in _abschnitt(client)
+    assert "wartet auf PC" in _abschnitt(client, KURSE)
 
 
 def test_doppelklick_nur_ein_auftrag(client):

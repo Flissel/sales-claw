@@ -1508,6 +1508,11 @@ nav.reiter a { display: inline-flex; align-items: center; gap: .4rem; min-height
 nav.reiter a[aria-current] { border-bottom-color: var(--akzent);
                              color: var(--akzent_text); font-weight: 700; }
 nav.reiter .zahl { font-size: .8rem; color: var(--gedaempft); }
+/* Freigaben in Reitern (09.11.2026): leere Reiter blass, aber da; die
+   Unter-Reiter eine Stufe kleiner direkt darunter. */
+nav.reiter a.leer { opacity: .55; }
+nav.reiter.unter { margin-top: -.6rem; }
+nav.reiter.unter a { padding: 0 .6rem; font-size: .92rem; }
 /* Medien-Raster (Design-Review S3, Task 5): Karten statt Tabelle. */
 .medienraster { display: grid; gap: 1rem; margin: 0 0 1rem;
                 grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr)); }
@@ -3750,12 +3755,154 @@ def _kontakt_ruecksprung(form, lead_id: str) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Freigaben in Reitern (Betreiber 09.11.2026: „Genau, so finde ich super.")
+#
+# Vorher eine lange Seite, auf der sich alles mischte (eigene LinkedIn-Beiträge
+# zwischen Direktnachrichten, Kurse neben Debugger-PRs). Jetzt Reiter oben,
+# darunter Unter-Reiter je Art, beide mit offenen Zahlen; leere blass, aber
+# sichtbar. Nur die Anordnung ist neu: Freigeben, Ablehnen, Bearbeiten bleiben,
+# wie sie sind. Ohne JavaScript: jeder Reiter ist ein Link mit ?tab=&art=.
+# ---------------------------------------------------------------------------
+FREIGABE_REITER = (("nachrichten", "Nachrichten"), ("marketing", "Marketing"),
+                   ("bewerbungen", "Bewerbungen"), ("kurse", "Kurse"),
+                   ("technik", "Technik"))
+# Nachrichten an Menschen, in der Reihenfolge des Betreibers.
+_NACHRICHTEN_ARTEN = (("email", "E-Mail"), ("whatsapp", "WhatsApp"),
+                      ("linkedin", "LinkedIn"))
+
+
+def _entwurf_ort(kanal, empfaenger, newsletter=None) -> tuple[str, str]:
+    """(Reiter, Unter-Reiter) eines Entwurfs. Eigene Beiträge (LinkedIn-Profil,
+    die Beitrags-Kanäle) und Newsletter sind Marketing; was an einen Menschen
+    geht, ist eine Nachricht."""
+    kanal = str(kanal or "")
+    if newsletter:
+        return "marketing", "newsletter"
+    if empfaenger == "eigenes-profil" or kanal in kanaele.KANAELE:
+        return "marketing", kanal
+    return "nachrichten", kanal
+
+
+def _freigaben_url(reiter: str, unter: str | None = None, **abfrage) -> str:
+    """Adresse eines Reiters; Nachrichten ohne Unter-Reiter ist /freigaben selbst."""
+    if reiter == "nachrichten" and not unter and not abfrage:
+        return "/freigaben"
+    teile = {"tab": reiter, **({"art": unter} if unter else {}), **abfrage}
+    return "/freigaben?" + urllib.parse.urlencode(teile)
+
+
+def _freigaben_ziel(draft_id) -> str:
+    """Rücksprung nach einer Aktion auf einem Entwurf: in dessen Reiter."""
+    zeilen = server._q("select channel, recipient, newsletter from drafts where id = %s",
+                       (draft_id,))
+    if not zeilen:
+        return "/freigaben"
+    z = zeilen[0]
+    return _freigaben_url(*_entwurf_ort(z["channel"], z["recipient"], z["newsletter"]))
+
+
+def _nach_entwurf(form, draft_id) -> str:
+    """Wie `_ruecksprung`, nur landet "/freigaben" im Reiter des Entwurfs."""
+    ziel = _ruecksprung(form, _FREIGABE_ZIELE, "/freigaben")
+    return _freigaben_ziel(draft_id) if ziel == "/freigaben" else ziel
+
+
+def _freigabe_leiste(eintraege, aktiv, name: str, unter: bool = False) -> str:
+    """Reiterleiste als Links wie `ui_muster.reiter` (aria-current), dazu die
+    Achtung-Farbe für Offenes und blasse leere Reiter.
+    `eintraege`: (schluessel, titel, zahl, leer, url)."""
+    teile = []
+    for schluessel, titel, zahl, leer, url in eintraege:
+        klasse = ' class="leer"' if leer else ""
+        aktuell = ' aria-current="page"' if schluessel == aktiv else ""
+        teile.append(f'<a{klasse} href="{_e(url)}"{aktuell}>{_e(titel)} '
+                     f'<span class="zaehler{" offen" if zahl else ""}">{int(zahl)}</span></a>')
+    return (f'<nav class="reiter{" unter" if unter else ""}" aria-label="{_e(name)}">'
+            f'{"".join(teile)}</nav>')
+
+
+def _entwurf_block(art: str, name: str, offen: list, kaputt: list, wartend: list,
+                   kanal_status: dict) -> str:
+    """Offene Entwürfe einer Art: zu prüfen, fehlgeschlagen, freigegeben."""
+    n_offen = len(offen)
+    teile = [f'<section class="block"><h2>{_badge(art)} {_e(name)} '
+             f'<span class="zaehler{" offen" if n_offen else ""}">{n_offen}'
+             f'</span></h2>']
+    if not (offen or kaputt or wartend):
+        teile.append('<p class="meta">Nichts offen.</p>')
+    teile.append(_newsletter_auswahl(offen))
+    for z in offen:
+        # „Freigeben" und „Ablehnen" stehen in EINEM `.aktionen`-Kasten:
+        # nebeneinander am Desktop, gestapelt ueber die volle Breite am
+        # Handy. Beides ist nicht zurueckzunehmen.
+        teile.append(_entwurf_karte_offen(z))
+    for z in kaputt:
+        teile.append(
+            f'<div class="karte">{_entwurf_kopf(z, "failed")}'
+            f'<div class="text">{_text_html(z["body"])}</div>'
+            f'<div class="fehler">Fehler: {_e(z["error"])}</div>'
+            f'<div class="aktionen">'
+            f'{_formular("erneut-freigeben", z["id"], "Erneut freigeben", "",
+                         checkbox="erneute Freigabe bestätigen")}'
+            # Einschrittig: ein gescheiterter Entwurf ging nachweislich
+            # nicht raus, und verwerfen versendet nichts.
+            f'{_formular("verwerfen", z["id"], "Verwerfen", "gefahr")}'
+            f"</div></div>")
+    for z in wartend:
+        if z["channel"] == "linkedin" and z["recipient"] == "eigenes-profil":
+            stand = ('<div class="hinweis">LinkedIn: der Dienst sales-linkedin '
+                     'veröffentlicht den Beitrag; danach kommen Post-Link und '
+                     'Markier-Liste per WhatsApp.</div>' + _markier_block(z))
+        elif (z["channel"] in kanaele.KANAELE
+              and z["recipient"] == "eigenes-profil"):
+            stand = _kanal_hinweis_freigegeben(z, kanal_status)
+        elif z["channel"] == "linkedin":
+            # Direktnachricht: der Dienst holt nur Beitraege (eigenes-profil),
+            # eine DM geht weiter von Hand raus (Final-Review I2).
+            stand = ('<div class="hinweis">LinkedIn-Direktnachricht: von Hand '
+                     'senden, danach im Chat <code>entwurf_manuell_gesendet</code> '
+                     'melden — automatisch geht hier nichts raus.</div>')
+        else:
+            stand = ('<div class="meta">wartet auf Dispatcher '
+                     '(Versand übernimmt der zuständige Dienst '
+                     'automatisch)</div>')
+        teile.append(
+            f'<div class="karte">{_entwurf_kopf(z, "approved")}'
+            f'<div class="text">{_text_html(z["body"])}</div>'
+            f'<div class="meta">freigegeben: {_e(z["approved_by"])} am '
+            f'{_zeit(z["approved_at"])}</div>{stand}'
+            # ZWEISTUFIG: dieser Knopf fuehrt auf eine Warnseite und
+            # schreibt selbst nichts (aktion_verwerfen).
+            f'<div class="aktionen">'
+            f'{_formular("verwerfen", z["id"], "Verwerfen", "gefahr")}'
+            f'</div></div>')
+    # Verlauf je Art steht seit dem Rundgang 27.10.2026 unter
+    # Monitoring -> Verlauf (/monitoring/verlauf): hier nur, was offen ist.
+    teile.append("</section>")
+    return "".join(teile)
+
+
+def _abschnitt_aus_hinweis(abfrage) -> tuple[str, str | None]:
+    """Reiter für eine Adresse ohne ?tab=: Rücksprünge der Abschnitte tragen
+    ihren Hinweis (bw_*, nl_*, eg_hinweis) und landen so im richtigen Reiter."""
+    schluessel = list(abfrage.keys())
+    if any(k.startswith("bw_") for k in schluessel):
+        return "bewerbungen", None
+    if any(k.startswith("nl_") for k in schluessel):
+        return "marketing", "pult"
+    if "eg_hinweis" in schluessel:
+        return "technik", None
+    return "nachrichten", None
+
+
 @_gesichert_seite
 async def inbox(request):
-    """Freigaben in vier Bloecken — WhatsApp, LinkedIn, E-Mail, Termine —
-    jeder mit seinen offenen Entwuerfen (zu pruefen, fehlgeschlagen,
-    freigegeben) und darunter seinem eigenen Verlauf (UI-Plan Schritt 3,
-    Betreiber 02.09.2026: „damit alles seine Ordnung hat")."""
+    """Freigaben in Reitern (09.11.2026): Nachrichten, Marketing, Bewerbungen,
+    Kurse, Technik - je mit Unter-Reitern und offenen Zahlen. Gezeigt wird nur
+    der gewählte Unter-Reiter; die Zahlen aller anderen stehen in den Leisten."""
+    modul = sys.modules[__name__]
+    abfrage = request.query_params
     pending = server._q(
         "select d.id, d.channel, d.recipient, d.body, d.media_ref, d.subject, d.cc, d.newsletter, d.body_html, "
         "       extract(epoch from (now() - d.created_at)) / 3600 as alter_h, "
@@ -3763,120 +3910,152 @@ async def inbox(request):
         "from drafts d left join leads l on l.id = d.lead_id "
         "where d.status = 'pending' order by d.created_at desc")
     gescheitert = server._q(
-        "select d.id, d.channel, d.recipient, d.body, d.error, d.media_ref, "
+        "select d.id, d.channel, d.recipient, d.body, d.error, d.media_ref, d.newsletter, "
         "       extract(epoch from (now() - d.created_at)) / 3600 as alter_h, "
         "       l.name, l.consent_status "
         "from drafts d left join leads l on l.id = d.lead_id "
         "where d.status = 'failed' order by d.created_at desc limit %s",
         (server.FEHLGESCHLAGEN_MAX,))
     freigegeben = server._q(
-        "select d.id, d.channel, d.recipient, d.body, d.media_ref, "
+        "select d.id, d.channel, d.recipient, d.body, d.media_ref, d.newsletter, "
         "       d.approved_by, d.approved_at, l.name, l.consent_status, "
         "       coalesce(d.approved_at < now() - interval '7 days', false) as zu_alt "
         "from drafts d left join leads l on l.id = d.lead_id "
         "where d.status = 'approved' order by d.created_at desc")
 
-    def je_art(zeilen):
+    def je_ort(zeilen):
         d = {}
         for z in zeilen:
-            d.setdefault(str(z["channel"]), []).append(z)
+            d.setdefault(_entwurf_ort(z["channel"], z["recipient"], z.get("newsletter")),
+                         []).append(z)
         return d
-    offen, kaputt, wartend = je_art(pending), je_art(gescheitert), je_art(freigegeben)
-    bekannt = dict(FREIGABE_ARTEN)
-    # Unbekannte Kanaele (falls je einer dazukommt) haengen sich hinten an,
-    # statt unsichtbar zu bleiben.
-    # Die fuenf Beitrags-Kanaele zeigen ihren Block nur, wenn darin etwas
-    # steht oder der Kanal verbunden ist - fuenf leere Bloecke "Nichts offen"
-    # fuer Kanaele ohne Zugang waeren nur Rauschen.
+    offen, kaputt, wartend = je_ort(pending), je_ort(gescheitert), je_ort(freigegeben)
+    orte = set(offen) | set(kaputt) | set(wartend)
     kanal_status = _kanal_status_sicher()
-    arten = [
-        (a, n) for a, n in FREIGABE_ARTEN
-        if a not in kanaele.KANAELE
-        or offen.get(a) or kaputt.get(a) or wartend.get(a)
-        or (kanal_status.get(a) or {}).get("verbunden")]
-    arten += [
-        (a, a) for a in sorted(set(offen) | set(kaputt) | set(wartend))
-        if a not in bekannt]
+    namen = dict(FREIGABE_ARTEN)
+
+    # Ein Unter-Reiter: art (None = Reiter ohne Unter-Reiter), Titel, Zahl (int
+    # oder Funktion - die Pult-Zahlen stehen erst nach dem Lesen fest), leer
+    # (None = leer, wenn die Zahl 0 ist) und die Funktion, die ihn zeigt.
+    def entwurf_unter(reiter, art, titel, abzeichen=None):
+        ort = (reiter, art)
+        zahl = len(offen.get(ort, [])) + len(kaputt.get(ort, []))
+
+        async def zeigen():
+            return _entwurf_block(abzeichen or art, titel, offen.get(ort, []),
+                                  kaputt.get(ort, []), wartend.get(ort, []), kanal_status)
+        return {"art": art, "titel": titel, "zahl": zahl,
+                "leer": not (zahl or wartend.get(ort)), "zeigen": zeigen}
+
+    def unter(art, titel, zahl, zeigen):
+        return {"art": art, "titel": titel, "zahl": zahl, "leer": None, "zeigen": zeigen}
+
+    reiter = {}
+    # Nachrichten: E-Mail, WhatsApp, LinkedIn - unbekannte Kanaele (falls je
+    # einer dazukommt) hinten, statt unsichtbar zu bleiben -, Mails aufraeumen.
+    nachrichten = [entwurf_unter("nachrichten", a, t) for a, t in _NACHRICHTEN_ARTEN]
+    nachrichten += [entwurf_unter("nachrichten", a, a) for a in sorted(
+        a for r, a in orte if r == "nachrichten" and a not in dict(_NACHRICHTEN_ARTEN))]
+    if (_AKTIVE_ROLLE.get() not in ("lesen", "kalender")
+            and post_struktur.mail_verlauf_erlaubt(_AKTIVER_BENUTZER.get())):
+        n_mails = int(server._q("select count(*) as n from postfach_mails "
+                                "where status = 'vorgeschlagen'")[0]["n"])
+
+        async def mails():
+            return _mails_aufraeumen_abschnitt()
+        nachrichten.append(unter("aufraeumen", "Mails aufräumen", n_mails, mails))
+    reiter["nachrichten"] = nachrichten
+
+    # Marketing: eigene Beitraege je Kanal, Newsletter, das Marketing-Pult. Die
+    # Beitrags-Kanaele zeigen sich nur, wenn darin etwas steht oder der Kanal
+    # verbunden ist - leere Reiter fuer Kanaele ohne Zugang waeren nur Rauschen.
+    marketing = [entwurf_unter("marketing", "linkedin", "LinkedIn-Beiträge")]
+    marketing += [entwurf_unter("marketing", a, namen.get(a, a)) for a in kanaele.KANAELE
+                  if ("marketing", a) in orte
+                  or (kanal_status.get(a) or {}).get("verbunden")]
+    bekannt = {"linkedin", "newsletter", *kanaele.KANAELE}
+    marketing += [entwurf_unter("marketing", a, a) for a in sorted(
+        a for r, a in orte if r == "marketing" and a not in bekannt)]
+    marketing.append(entwurf_unter("marketing", "newsletter", "Newsletter", abzeichen="email"))
+    if ui_freigabe_newsletter.sichtbar(modul):
+        async def pult():
+            return await ui_freigabe_newsletter.abschnitt(modul, request, verlauf=False)
+        marketing.append(unter("pult", "Marketing-Pult",
+                               lambda: ui_freigabe_newsletter.anzahl_offen(modul), pult))
+    reiter["marketing"] = marketing
+
+    if ui_freigabe_bewerbung.sichtbar(modul):
+        async def bewerbungen():
+            return await ui_freigabe_bewerbung.abschnitt(modul, request, verlauf=False)
+        reiter["bewerbungen"] = [unter(None, "Bewerbungen",
+                                       lambda: ui_freigabe_bewerbung.anzahl_offen(modul),
+                                       bewerbungen)]
+
+    # Kurse und Technik teilen sich den Freigabe-Eingang (Debugger-PRs,
+    # Rueckfragen der Bots, Kursfreigaben); ohne seine Tabellen fehlen beide.
+    eingang = ui_freigabe_eingang.zaehlen()
+    if eingang is not None:
+        for art, wo, unter_art, titel in ui_freigabe_eingang.REITER:
+            async def zeigen(art=art, titel=titel, wo=wo):
+                return await ui_freigabe_eingang.abschnitt(
+                    modul, request, arten=(art,), titel=titel, stufe2=(wo == "technik"))
+            reiter.setdefault(wo, []).append(unter(unter_art, titel, eingang[art], zeigen))
+
+    def zahl(u) -> int:
+        return int(u["zahl"]() if callable(u["zahl"]) else u["zahl"])
+
+    gewaehlt = str(abfrage.get("tab") or "")
+    vorgabe_unter = None
+    if gewaehlt not in reiter:
+        gewaehlt, vorgabe_unter = _abschnitt_aus_hinweis(abfrage)
+        if gewaehlt not in reiter:
+            gewaehlt, vorgabe_unter = "nachrichten", None
+    unterreiter = reiter[gewaehlt]
+    arten = [u["art"] for u in unterreiter]
+    wahl = str(abfrage.get("art") or "")
+    explizit = wahl in arten
+    if not explizit:
+        # Vorgabe: der erste Unter-Reiter mit Offenem, sonst der erste, in dem
+        # ueberhaupt etwas steht (freigegeben, wartet), sonst der erste.
+        wahl = vorgabe_unter if vorgabe_unter in arten else next(
+            (u["art"] for u in unterreiter if zahl(u) > 0), next(
+                (u["art"] for u in unterreiter if u["leer"] is False), arten[0]))
+    auswahl = next(u for u in unterreiter if u["art"] == wahl)
+    inhalt = await auswahl["zeigen"]()
+
+    # Erst jetzt zaehlen: das Lesen eben hat die Pult-Zahlen aufgefrischt.
+    def stand(u) -> tuple[int, bool]:
+        n = zahl(u)
+        return n, (n == 0) if u["leer"] is None else bool(u["leer"])
+    leisten = []
+    for schluessel, titel in FREIGABE_REITER:
+        if schluessel not in reiter:
+            continue
+        staende = [stand(u) for u in reiter[schluessel]]
+        leisten.append((schluessel, titel, sum(n for n, _ in staende),
+                        all(leer for _, leer in staende), _freigaben_url(schluessel)))
+    unter_leiste = ""
+    if not (len(unterreiter) == 1 and unterreiter[0]["art"] is None):
+        unter_leiste = _freigabe_leiste(
+            [(u["art"], u["titel"], *stand(u), _freigaben_url(gewaehlt, u["art"]))
+             for u in unterreiter],
+            wahl, dict(FREIGABE_REITER)[gewaehlt], unter=True)
 
     # Merge 12.09.2026: inhaltlich die Fassung der Konferenz-Linie (der Satz
     # ueber das fehlende Neuladen gehoert hierher), aber in echten Umlauten —
     # Stufe 1 hat die ASCII-Umschreibungen in ALLEN Anzeigetexten beseitigt,
     # und der Waechter-Test in test_darstellung.py laesst „Verlaeufe" hier
     # nicht mehr durch. Beides behalten heisst: ihr Text, meine Schreibweise.
-    teile = ['<p class="meta">Jede Art hat ihre Liste und ihren Verlauf. '
-             'Freigeben heißt senden; nichts geht ohne dich raus. '
-             'Diese Seite lädt nicht von selbst neu, damit dir beim '
-             'Tippen nichts verloren geht — '
-             '<a href="/freigaben">neu laden</a>, wenn du Neues erwartest.</p>']
-    for art, name in arten:
-        n_offen = len(offen.get(art, []))
-        teile.append(
-            f'<section class="block"><h2>{_badge(art)} {_e(name)} '
-            f'<span class="zaehler{" offen" if n_offen else ""}">{n_offen}'
-            f'</span></h2>')
-        if not (offen.get(art) or kaputt.get(art) or wartend.get(art)):
-            teile.append('<p class="meta">Nichts offen.</p>')
-        teile.append(_newsletter_auswahl(offen.get(art, [])))
-        for z in offen.get(art, []):
-            # „Freigeben" und „Ablehnen" stehen in EINEM `.aktionen`-Kasten:
-            # nebeneinander am Desktop, gestapelt ueber die volle Breite am
-            # Handy. Beides ist nicht zurueckzunehmen.
-            teile.append(_entwurf_karte_offen(z))
-        for z in kaputt.get(art, []):
-            teile.append(
-                f'<div class="karte">{_entwurf_kopf(z, "failed")}'
-                f'<div class="text">{_text_html(z["body"])}</div>'
-                f'<div class="fehler">Fehler: {_e(z["error"])}</div>'
-                f'<div class="aktionen">'
-                f'{_formular("erneut-freigeben", z["id"], "Erneut freigeben", "",
-                             checkbox="erneute Freigabe bestätigen")}'
-                # Einschrittig: ein gescheiterter Entwurf ging nachweislich
-                # nicht raus, und verwerfen versendet nichts.
-                f'{_formular("verwerfen", z["id"], "Verwerfen", "gefahr")}'
-                f"</div></div>")
-        for z in wartend.get(art, []):
-            if z["channel"] == "linkedin" and z["recipient"] == "eigenes-profil":
-                stand = ('<div class="hinweis">LinkedIn: der Dienst sales-linkedin '
-                         'veröffentlicht den Beitrag; danach kommen Post-Link und '
-                         'Markier-Liste per WhatsApp.</div>' + _markier_block(z))
-            elif (z["channel"] in kanaele.KANAELE
-                  and z["recipient"] == "eigenes-profil"):
-                stand = _kanal_hinweis_freigegeben(z, kanal_status)
-            elif z["channel"] == "linkedin":
-                # Direktnachricht: der Dienst holt nur Beitraege (eigenes-profil),
-                # eine DM geht weiter von Hand raus (Final-Review I2).
-                stand = ('<div class="hinweis">LinkedIn-Direktnachricht: von Hand '
-                         'senden, danach im Chat <code>entwurf_manuell_gesendet</code> '
-                         'melden — automatisch geht hier nichts raus.</div>')
-            else:
-                stand = ('<div class="meta">wartet auf Dispatcher '
-                         '(Versand übernimmt der zuständige Dienst '
-                         'automatisch)</div>')
-            teile.append(
-                f'<div class="karte">{_entwurf_kopf(z, "approved")}'
-                f'<div class="text">{_text_html(z["body"])}</div>'
-                f'<div class="meta">freigegeben: {_e(z["approved_by"])} am '
-                f'{_zeit(z["approved_at"])}</div>{stand}'
-                # ZWEISTUFIG: dieser Knopf fuehrt auf eine Warnseite und
-                # schreibt selbst nichts (aktion_verwerfen).
-                f'<div class="aktionen">'
-                f'{_formular("verwerfen", z["id"], "Verwerfen", "gefahr")}'
-                f'</div></div>')
-        # Verlauf je Art steht seit dem Rundgang 27.10.2026 unter
-        # Monitoring -> Verlauf (/monitoring/verlauf): hier nur, was offen ist.
-        teile.append("</section>")
-
+    # „neu laden" bleibt im gewaehlten Reiter.
+    hier = _freigaben_url(gewaehlt, wahl if explizit else None)
+    teile = [f'<p class="meta">Jede Art hat ihre Liste und ihren Verlauf. '
+             f'Freigeben heißt senden; nichts geht ohne dich raus. '
+             f'Diese Seite lädt nicht von selbst neu, damit dir beim '
+             f'Tippen nichts verloren geht — '
+             f'<a href="{_e(hier)}">neu laden</a>, wenn du Neues erwartest.</p>',
+             _freigabe_leiste(leisten, gewaehlt, "Freigaben"), unter_leiste, inhalt]
     # Termine sind keine Freigaben (Rundgang 27.10.2026): Termine ohne Datum
     # gibt es nicht, ihr Verlauf steht unter Monitoring -> Verlauf.
-    teile.append(_mails_aufraeumen_abschnitt())
-    # Marketing (R7): eingereichte Inhalte aller Firmen und Arten.
-    teile.append(await ui_freigabe_newsletter.abschnitt(
-        sys.modules[__name__], request, verlauf=False))
-    # Bewerbungen (Hermes H1): was der Bewerbungs-Bot zur Freigabe vorlegt.
-    teile.append(await ui_freigabe_bewerbung.abschnitt(
-        sys.modules[__name__], request, verlauf=False))
-    # Eingang (Freigabe-Eingang): Debugger-PRs, Rueckfragen, Kursfreigaben.
-    teile.append(await ui_freigabe_eingang.abschnitt(sys.modules[__name__], request))
     # KEIN Auto-Refresh mehr (Betreiber 03.09.2026: „ich bearbeite einen Text
     # und werde wie bei einem Reload in die Mitte der Seite gezogen") — auf
     # dieser Seite wird getippt, und ein Neuladen wirft den Text weg.
@@ -4118,7 +4297,7 @@ async def aktion_freigeben_auswahl(request):
         fehler = _eines_freigeben(draft_id, str(form.get(f"stand_{draft_id}") or ""), _ui_akteur(request))
         if fehler is not None:
             return fehler
-    return RedirectResponse("/freigaben", status_code=303)
+    return RedirectResponse(_freigaben_url("marketing", "newsletter"), status_code=303)
 
 
 @_gesichert_seite
@@ -4184,7 +4363,7 @@ async def aktion_freigeben(request):
     _freigabe_loggen(zeilen[0])
     if zeilen[0]["lead_id"]:
         server.ignorieren_aufheben_sicher(zeilen[0]["lead_id"])
-    return RedirectResponse(_ruecksprung(form, _FREIGABE_ZIELE, "/freigaben"),
+    return RedirectResponse(_nach_entwurf(form, draft_id),
                             status_code=303)
 
 
@@ -4207,7 +4386,7 @@ async def aktion_bearbeiten(request):
         cc=(str(form.get("cc") or "")[:CC_FELD_MAX] if "cc" in form else None)))
     if "fehler" in antwort:
         return _fehlerseite(409, "Nicht geändert", _e(antwort["fehler"]))
-    return RedirectResponse("/freigaben", status_code=303)
+    return RedirectResponse(_freigaben_ziel(draft_id), status_code=303)
 
 
 @_gesichert_seite
@@ -4228,7 +4407,7 @@ async def aktion_ablehnen(request):
               (z["lead_id"], server._json({"draft_id": str(z["id"]),
                                            "kanal": z["channel"],
                                            "weg": "ui"})))
-    return RedirectResponse(_ruecksprung(form, _FREIGABE_ZIELE, "/freigaben"),
+    return RedirectResponse(_nach_entwurf(form, draft_id),
                             status_code=303)
 
 
@@ -4277,7 +4456,7 @@ async def aktion_erneut_freigeben(request):
                 f"bestaetigt=True). error: {_e(error)}")
         return _statusfehler(draft_id, "failed")
     _freigabe_loggen(zeilen[0], erneut=True)
-    return RedirectResponse("/freigaben", status_code=303)
+    return RedirectResponse(_freigaben_ziel(draft_id), status_code=303)
 
 
 # ---------------------------------------------------------------------------
@@ -4414,7 +4593,7 @@ async def aktion_verwerfen(request):
     if not getroffen:
         return _statusfehler(draft_id, "failed")
     _verwerfen_loggen(getroffen[0], "failed")
-    return RedirectResponse("/freigaben", status_code=303)
+    return RedirectResponse(_freigaben_ziel(draft_id), status_code=303)
 
 
 @_gesichert_seite
@@ -4457,7 +4636,7 @@ async def aktion_verwerfen_bestaetigen(request):
     if not getroffen:
         return _statusfehler(draft_id, "approved")
     _verwerfen_loggen(getroffen[0], "approved")
-    return RedirectResponse("/freigaben", status_code=303)
+    return RedirectResponse(_freigaben_ziel(draft_id), status_code=303)
 
 
 def _verwerfen_statusfehler(z) -> HTMLResponse:
@@ -8810,7 +8989,7 @@ async def aktion_mail_aufraeumen(request):
     server._q("update postfach_mails set status = %s, geaendert_am = now() "
               "where message_id = %s and status = 'vorgeschlagen' returning 1",
               (neu, str(form.get("message_id") or "")))
-    return RedirectResponse("/freigaben#mails-ordnen", status_code=303)
+    return RedirectResponse(_freigaben_url("nachrichten", "aufraeumen") + "#mails-ordnen", status_code=303)
 
 
 # ---------------------------------------------------------------------------

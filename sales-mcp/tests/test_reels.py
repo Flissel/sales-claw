@@ -422,7 +422,7 @@ def test_post_vorbereiten_legt_entwurf_an(angemeldet, pult, monkeypatch):
                         or json.dumps({"draft_id": 7}))
     r = post(angemeldet, "/marketing/reels/post",
              {"csrf": ui.CSRF_TOKEN, "datei": DATEI, "thema": "Herbst-Reel", "text": "Drei Fehler, kurz erklaert."})
-    assert r.status_code == 303 and r.headers["location"] == "/freigaben"
+    assert r.status_code == 303 and r.headers["location"] == "/freigaben?tab=marketing&art=linkedin"
     assert gesehen == [("Herbst-Reel", "Drei Fehler, kurz erklaert.", DATEI)]
 
 
@@ -504,7 +504,7 @@ def test_kanaele_teilen_nur_verbundene_mit_video(angemeldet, pult, monkeypatch):
     assert [a["kanal"] for a in aufrufe] == ["mastodon", "discord"]
     assert all(a["medien"] == DATEI and a["thema"] == "Herbst-Reel" for a in aufrufe)
     s = rumpf(r)
-    assert "angelegt" in s and 'href="/freigaben"' in s
+    assert "angelegt" in s and 'href="/freigaben?tab=marketing"' in s
 
 
 def test_kanaele_teilen_kuerzt_und_haengt_link(angemeldet, pult, monkeypatch):
