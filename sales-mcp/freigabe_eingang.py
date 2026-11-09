@@ -317,3 +317,40 @@ def letzte_auftraege() -> dict[str, dict]:
         "from freigabe_auftraege a join freigabe_eintraege e on e.id = a.eintrag_id "
         "where e.status = 'offen' order by a.eintrag_id, a.erstellt_am desc, a.id desc")
     return {str(r["eintrag_id"]): {"status": r["status"], "fehler": r["fehler"]} for r in z}
+
+
+_DRAFT_HERKUNFT = "sales"  # drafts tragen keinen lesbaren Versandauftrag-Vermerk (siehe Bericht)
+_DRAFT_BATCH = 200
+
+
+def _draft_titel(kanal, name, betreff) -> str:
+    betreff = re.sub(r"\s+", " ", str(betreff or "")).strip()
+    kopf = f"{kanal} an {name}" if name else f"{kanal}"
+    return _titel(f"{kopf}: {betreff}" if betreff else kopf).replace("@", "")
+
+
+def entwuerfe_spiegeln(basis: str) -> int:
+    """Wartende Entwuerfe als Eintraege anlegen, gesendete/verworfene schliessen.
+
+    Zwei Abfragen je Lauf. Nie body, body_html oder Empfaenger in Titel/Details.
+    Gibt die Zahl neu angelegter Eintraege zurueck."""
+    server._q(
+        "update freigabe_eintraege e set status = case d.status when 'sent' "
+        "then 'ausgefuehrt' else 'verworfen' end, geschlossen_am = now(), "
+        "geschlossen_von = 'entwurf-spiegel' from drafts d where e.draft_id = d.id "
+        "and e.art = 'entwurf' and e.status = 'offen' and d.status in ('sent','rejected') "
+        "returning e.id")
+    neu = server._q(
+        "select d.id, d.channel, d.subject, d.thema, "
+        "coalesce(nullif(btrim(l.name), ''), nullif(btrim(l.company), '')) as lead_name "
+        "from drafts d left join leads l on l.id = d.lead_id "
+        "where d.status = 'pending' and not exists (select 1 from freigabe_eintraege e "
+        "where e.draft_id = d.id) order by d.created_at limit %s", (_DRAFT_BATCH,))
+    link = f"{basis.rstrip('/')}/freigaben"
+    angelegt = 0
+    for d in neu:
+        titel = _draft_titel(d["channel"], d["lead_name"], d["subject"] or d["thema"])
+        _, angelegt_neu = eintragen(_DRAFT_HERKUNFT, "entwurf", str(d["id"]), titel,
+                                    link, {"kanal": d["channel"]}, d["id"])
+        angelegt += 1 if angelegt_neu else 0
+    return angelegt

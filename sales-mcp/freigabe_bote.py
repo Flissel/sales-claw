@@ -182,6 +182,10 @@ def durchgang() -> int:
         LOG.error("UI_BASIS_URL fehlt - Rowboat wird nicht angefasst.")
         return 1
     try:
+        fe.entwuerfe_spiegeln(basis)
+    except Exception as e:  # noqa: BLE001 - Entwuerfe duerfen den Rowboat-Abgleich nie stoppen
+        LOG.error("Entwuerfe spiegeln fehlgeschlagen: %s", type(e).__name__)
+    try:
         eintraege = fe.offene()
         aufraeumen = fe.zum_aufraeumen()
         stand = _stand_lesen()
