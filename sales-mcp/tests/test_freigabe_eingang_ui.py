@@ -230,3 +230,13 @@ def test_entwurfskarte_mit_vermerk(client):
             conn.execute("truncate sales_test.freigabe_eintraege cascade")
             conn.execute("delete from sales_test.drafts where id = %s", (draft,))
             conn.execute("delete from sales_test.leads where id = %s", (lead,))
+
+
+def test_verwerfen_lehnt_entwurf_ab(client):
+    """Final-Review Zeile 21: Entwuerfe werden nur ueber ihre Entwurfskarte verworfen."""
+    k = fe.eintragen("sales", "entwurf", "entwurf-1", "Entwurf an Frau Test")[0]
+    r = _post(client, "eingang-verwerfen", k)
+    assert r.status_code == 303 and "abgewiesen" in r.headers["location"]
+    z = server._q("select status, geschlossen_von from freigabe_eintraege where kennung = %s", (k,))
+    assert z[0]["status"] == "offen" and z[0]["geschlossen_von"] is None
+    assert "Nichts wurde getan" in client.get(r.headers["location"]).text

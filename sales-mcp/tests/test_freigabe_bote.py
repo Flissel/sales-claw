@@ -1,4 +1,5 @@
 """Freigabe-Bote (Plan 2026-11-08, Task 7): planen/vorschlagstext rein, durchgang gegen Fake-RPC."""
+import io
 import logging
 import os
 import urllib.error
@@ -319,8 +320,43 @@ def test_schluessel_nie_im_log(monkeypatch, tmp_path, caplog):
         gesehen["timeout"] = timeout
         raise urllib.error.URLError(f"Verbindung mit {anfrage.get_header('Authorization')}")
     monkeypatch.setattr(fb.urllib.request, "urlopen", urlopen)
-    fb.LOG.propagate = True
+    monkeypatch.setattr(fb.LOG, "propagate", True)  # wird nach dem Test zurueckgesetzt
     with caplog.at_level(logging.DEBUG, logger="freigabe-bote"):
         assert fb.durchgang() == 1
     assert gesehen == {"auth": f"Bearer {SCHLUESSEL}", "host": "127.0.0.1:3220", "timeout": 10}
     assert SCHLUESSEL not in caplog.text and "URLError" in caplog.text
+
+
+def test_http_fehler_loggt_status_nie_rumpf(monkeypatch, tmp_path, caplog):
+    datei = tmp_path / "key"
+    datei.write_text(SCHLUESSEL + "\n")
+    monkeypatch.setattr(fb, "SCHLUESSEL_DATEI", str(datei))
+    monkeypatch.setenv("UI_BASIS_URL", BASIS)
+    _neuer_eintrag()
+    rumpf = io.BytesIO(f"RUMPF-GEHEIM {SCHLUESSEL}".encode())
+
+    def urlopen(anfrage, timeout=None):
+        raise urllib.error.HTTPError(anfrage.full_url, 401, "Unauthorized", None, rumpf)
+    monkeypatch.setattr(fb.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(fb.LOG, "propagate", True)
+    with caplog.at_level(logging.DEBUG, logger="freigabe-bote"):
+        assert fb.durchgang() == 1
+    assert "RPC todo:get: HTTPError 401" in caplog.text
+    assert "RUMPF-GEHEIM" not in caplog.text and SCHLUESSEL not in caplog.text
+    assert rumpf.closed
+
+
+@pytest.mark.parametrize("schema", ["public", "sales_prod", ""])
+def test_main_startet_nur_mit_sales_oder_sales_test(monkeypatch, caplog, schema):
+    monkeypatch.setattr(fe.server, "SCHEMA", schema)
+    monkeypatch.setattr(fb, "_logging_einrichten", lambda: None)
+    monkeypatch.setattr(fb.LOG, "propagate", True)
+    monkeypatch.setattr(fb, "durchgang", lambda: pytest.fail("darf nicht laufen"))
+    monkeypatch.setattr(fb.signal, "signal", lambda *a: pytest.fail("kein Signal-Handler"))
+    with caplog.at_level(logging.DEBUG, logger="freigabe-bote"):
+        assert fb.main() == 2
+    assert "nicht erlaubt" in caplog.text and f"Schema {schema} " in caplog.text
+
+
+def test_erlaubte_schemas():
+    assert fb.ERLAUBTE_SCHEMAS == ("sales", "sales_test")

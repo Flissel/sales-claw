@@ -67,10 +67,15 @@ def _link(link) -> str | None:
     return None
 
 
-def _offen_zu(herkunft: str, quelle_ref: str):
-    z = server._q("select kennung from freigabe_eintraege "
-                  "where herkunft = %s and quelle_ref = %s and status = 'offen'",
-                  (herkunft, quelle_ref))
+def _offen_auffrischen(herkunft: str, quelle_ref: str, titel: str, link: str | None,
+                       details_json: str):
+    """Ein offener Eintrag derselben Quelle bekommt Titel und Details der neuen Meldung
+    (Link nur, wenn einer mitkommt); Kennung und Rowboat-Stand bleiben."""
+    z = server._q("update freigabe_eintraege set titel = %s, details = %s, "
+                  "link = coalesce(%s, link) "
+                  "where herkunft = %s and quelle_ref = %s and status = 'offen' "
+                  "returning kennung",
+                  (titel, details_json, link, herkunft, quelle_ref))
     return z[0]["kennung"] if z else None
 
 
@@ -83,7 +88,8 @@ def eintragen(herkunft, art, quelle_ref, titel, link=None, details=None,
     details_json = json.dumps(details or {}, ensure_ascii=False, default=str)
     if len(details_json.encode("utf-8")) > _DETAILS_MAX_BYTES:
         raise EingabeFehler(f"details ist groesser als {_DETAILS_MAX_BYTES} Byte.")
-    vorhanden = _offen_zu(herkunft, quelle_ref)
+    titel, link = _titel(titel), _link(link)
+    vorhanden = _offen_auffrischen(herkunft, quelle_ref, titel, link, details_json)
     if vorhanden:
         return vorhanden, False
     for _ in range(5):
@@ -94,13 +100,13 @@ def eintragen(herkunft, art, quelle_ref, titel, link=None, details=None,
                 "titel, link, details, draft_id) values (%s,%s,%s,%s,%s,%s,%s,%s) "
                 "on conflict (herkunft, quelle_ref) where status = 'offen' do nothing "
                 "returning kennung",
-                (kennung, herkunft, art, quelle_ref, _titel(titel), _link(link),
+                (kennung, herkunft, art, quelle_ref, titel, link,
                  details_json, str(draft_id) if draft_id else None))
         except psycopg.errors.UniqueViolation:
             z = []
         if z:
             return z[0]["kennung"], True
-        vorhanden = _offen_zu(herkunft, quelle_ref)
+        vorhanden = _offen_auffrischen(herkunft, quelle_ref, titel, link, details_json)
         if vorhanden:  # ein paralleler Lauf war schneller
             return vorhanden, False
     raise RuntimeError("Keine freie Kennung gefunden.")
@@ -207,14 +213,19 @@ def auftrag_anlegen(kennung, art, nutzlast, von) -> str:
         raise EingabeFehler("Der Eintrag ist nicht mehr offen.")
     if e[0]["art"] != _AUFTRAG_ENTRYART[art]:
         raise EingabeFehler(f"Auftragsart '{art}' passt nicht zur Art des Eintrags.")
-    # Pro Eintrag nur ein Auftrag in Arbeit (Doppelklick).
-    z = server._q(
-        "insert into freigabe_auftraege (eintrag_id, art, abholer, nutzlast, "
-        "angefordert_von) select %s,%s,%s,%s,%s where not exists (select 1 from "
-        "freigabe_auftraege where eintrag_id = %s and status in ('offen','laeuft')) "
-        "returning id",
-        (e[0]["id"], art, abholer,
-         json.dumps(nutzlast, ensure_ascii=False, default=str), von, e[0]["id"]))
+    # Pro Eintrag nur ein Auftrag in Arbeit (Doppelklick). Zwei gleichzeitige Klicks
+    # sehen beide "keiner offen"; dann entscheidet der partielle Unique-Index
+    # freigabe_auftraege_offen_je_eintrag, und der zweite bekommt dieselbe Meldung.
+    try:
+        z = server._q(
+            "insert into freigabe_auftraege (eintrag_id, art, abholer, nutzlast, "
+            "angefordert_von) select %s,%s,%s,%s,%s where not exists (select 1 from "
+            "freigabe_auftraege where eintrag_id = %s and status in ('offen','laeuft')) "
+            "returning id",
+            (e[0]["id"], art, abholer,
+             json.dumps(nutzlast, ensure_ascii=False, default=str), von, e[0]["id"]))
+    except psycopg.errors.UniqueViolation:
+        z = []
     if not z:
         raise EingabeFehler("Fuer diesen Eintrag laeuft schon ein Auftrag.")
     return str(z[0]["id"])

@@ -95,3 +95,30 @@ def test_sales_app_darf_nicht_loeschen():
         # sales_test: wie die anderen Tabellen mit truncate fuer die Fixtures,
         # aber ohne delete.
         assert rechte == {"select", "insert", "update", "truncate"}, (tabelle, rechte)
+
+
+def test_indexe_draft_id_und_ein_auftrag_je_eintrag():
+    """Final-Review I3/Zeile 14: draft_id-Index (Bote, jede Minute) und hoechstens ein
+    offener/laufender Auftrag je Eintrag, auch ohne die Wache im Code."""
+    idx = {z["indexname"]: z["indexdef"] for z in server._q(
+        "select indexname, indexdef from pg_indexes where schemaname = 'sales_test' "
+        "and tablename in ('freigabe_eintraege', 'freigabe_auftraege')")}
+    assert "(draft_id)" in idx["freigabe_eintraege_draft_id"]
+    auftrag = idx["freigabe_auftraege_offen_je_eintrag"]
+    assert auftrag.startswith("CREATE UNIQUE INDEX") and "(eintrag_id)" in auftrag
+    assert "'offen'" in auftrag and "'laeuft'" in auftrag
+    with server.pool.connection() as conn:
+        e = _einfuegen(conn, "fg-dddddddddd", "auftrag-dup")
+        neu = ("insert into freigabe_auftraege (eintrag_id, art, abholer, nutzlast, "
+               "angefordert_von, status) values (%s, 'selbstbild_label', 'selbstbild', "
+               "'{}', 't', %s)")
+        conn.execute(neu, (e["id"], "fehler"))
+        conn.execute(neu, (e["id"], "erfolg"))  # abgeschlossene zaehlen nicht
+        conn.execute(neu, (e["id"], "laeuft"))
+        ok = False
+        try:
+            conn.execute(neu, (e["id"], "offen"))
+        except Exception as fehler:
+            ok = "23505" in _sqlstate(fehler)
+        assert ok, "zweiter offener Auftrag haette am Unique-Index scheitern muessen"
+        conn.rollback()

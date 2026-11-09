@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
@@ -21,6 +22,11 @@ import freigabe_eingang as fe
 PRAEFIX = "/api/freigaben/"
 MAX_RUMPF = 8 * 1024
 LOG = logging.getLogger("sales-ui")
+
+
+def _utc_iso(zeit) -> str | None:
+    """ISO 8601 in UTC (fuer `angelegt_am`); None ohne Zeit."""
+    return zeit.astimezone(timezone.utc).isoformat() if isinstance(zeit, datetime) else None
 
 
 def _fehler(status: int, kurz: str) -> JSONResponse:
@@ -117,7 +123,8 @@ def routen(ui) -> list[Route]:
     async def auftraege(request, herkunft):
         zeilen = await run_in_threadpool(fe.auftraege_abholen, herkunft)
         return JSONResponse({"auftraege": [
-            {"id": str(z["id"]), "art": z["art"], "nutzlast": z["nutzlast"]}
+            {"id": str(z["id"]), "art": z["art"], "nutzlast": z["nutzlast"],
+             "angelegt_am": _utc_iso(z.get("erstellt_am"))}
             for z in zeilen]})
 
     async def auftrag_ergebnis(request, herkunft):

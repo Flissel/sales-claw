@@ -301,3 +301,45 @@ def test_letzte_auftraege_je_eintrag():
     assert list(z.values()) == [{"status": "offen", "fehler": None}]
     fe.schliessen_kennung(k, "verworfen", "mira")
     assert fe.letzte_auftraege() == {}
+
+
+def test_auftrag_wettlauf_index_entscheidet(monkeypatch):
+    """Final-Review I3/Zeile 14: zwei Klicks sehen beide keinen offenen Auftrag; der
+    partielle Unique-Index weist den zweiten ab, mit derselben EingabeFehler-Meldung."""
+    k, _ = fe.eintragen("selbstbild", "selbstbild_rueckfrage", "r#5", "t")
+    fe.auftrag_anlegen(k, "selbstbild_label", LABEL, "ui")
+    echt = server._q
+
+    def ohne_wache(sql, params=()):
+        if sql.startswith("insert into freigabe_auftraege"):  # Wache sieht den ersten nicht
+            sql, params = sql.split(" where not exists")[0] + " returning id", params[:5]
+        return echt(sql, params)
+    monkeypatch.setattr(server, "_q", ohne_wache)
+    with pytest.raises(fe.EingabeFehler, match="schon ein Auftrag"):
+        fe.auftrag_anlegen(k, "selbstbild_label", LABEL, "ui")
+    monkeypatch.undo()
+    assert len(server._q("select 1 from freigabe_auftraege")) == 1
+
+
+def test_erneute_meldung_frischt_offenen_eintrag_auf():
+    """Final-Review M5: Titel, Details und Link der neuen Meldung; Kennung und Stand bleiben."""
+    k, _ = fe.eintragen("debugger-claw", "debugger_pr", PR, "alt", LINK, {"tests": "1 failed"})
+    fe.rowboat_stand_setzen(k, "angenommen")
+    k2, neu = fe.eintragen("debugger-claw", "debugger_pr", PR, "neu\ntitel", LINK + "/2",
+                           {"tests": "4 passed"})
+    z = _zeile(k)
+    assert (k2, neu) == (k, False)
+    assert (z["titel"], z["details"], z["link"]) == ("neu titel", {"tests": "4 passed"}, LINK + "/2")
+    assert z["rowboat_stand"] == "angenommen" and z["status"] == "offen"
+    fe.eintragen("debugger-claw", "debugger_pr", PR, "ohne link")  # kein Link: alter bleibt
+    fe.eintragen("debugger-claw", "debugger_pr", PR, "kaputter link", "javascript:x")
+    z = _zeile(k)
+    assert (z["titel"], z["details"], z["link"]) == ("kaputter link", {}, LINK + "/2")
+    assert len(server._q("select 1 from freigabe_eintraege")) == 1
+
+
+def test_erneute_meldung_laesst_geschlossenen_eintrag():
+    k, _ = fe.eintragen("debugger-claw", "debugger_pr", PR, "alt", LINK)
+    fe.schliessen_kennung(k, "verworfen", "ui")
+    k2, neu = fe.eintragen("debugger-claw", "debugger_pr", PR, "neu", LINK)
+    assert neu is True and k2 != k and _zeile(k)["titel"] == "alt"

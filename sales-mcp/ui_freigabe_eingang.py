@@ -208,8 +208,11 @@ def routen(ui) -> list:
         form, fehler = await formular(request)
         if fehler is not None:
             return fehler
-        ok = fe.schliessen_kennung(str(form.get("kennung") or ""), "verworfen",
-                                   ui._ui_akteur(request))
+        kennung = str(form.get("kennung") or "")
+        e = offener(kennung)
+        if e is not None and e["art"] == "entwurf":  # Entwuerfe nur ueber ihre Entwurfskarte
+            return ziel("abgewiesen")
+        ok = fe.schliessen_kennung(kennung, "verworfen", ui._ui_akteur(request))
         return ziel("verworfen" if ok else "geschlossen")
 
     @ui._gesichert_seite

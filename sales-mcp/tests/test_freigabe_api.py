@@ -2,6 +2,7 @@
 import io
 import os
 import uuid
+from datetime import datetime, timedelta, timezone
 
 os.environ["SALES_DB_SCHEMA"] = "sales_test"
 
@@ -163,7 +164,12 @@ def test_auftraege_nur_eigene(client):
     aid = _auftrag_werkstatt()
     assert client.get("/api/freigaben/auftraege", headers=ks).json() == {"auftraege": []}
     a = client.get("/api/freigaben/auftraege", headers=kw).json()["auftraege"]
+    angelegt = a[0].pop("angelegt_am")
     assert a == [{"id": aid, "art": "kurs_freigabe_zeigen", "nutzlast": {"course_id": "c1"}}]
+    # Final-Review M3: Anlagezeit in ISO 8601 UTC, damit die Werkstatt alte Auftraege liegen laesst
+    zeit = datetime.fromisoformat(angelegt)
+    assert zeit.utcoffset() == timedelta(0) and angelegt.endswith("+00:00")
+    assert abs(datetime.now(timezone.utc) - zeit) < timedelta(minutes=5)
 
 
 def test_auftrag_ergebnis(client):

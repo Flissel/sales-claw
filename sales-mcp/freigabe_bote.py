@@ -13,6 +13,7 @@ import re
 import signal
 import sys
 import threading
+import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
@@ -156,8 +157,13 @@ def _rpc(kanal: str, body):
                  "Host": ROWBOAT_HOST,
                  "Content-Type": "application/json"},
         method="POST")
-    with urllib.request.urlopen(anfrage, timeout=RPC_ZEITLIMIT_S) as antwort:
-        return json.loads(antwort.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(anfrage, timeout=RPC_ZEITLIMIT_S) as antwort:
+            return json.loads(antwort.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:  # Status und Typ ins Log, nie der Rumpf
+        e.close()
+        LOG.error("RPC %s: %s %d", kanal, type(e).__name__, e.code)
+        raise
 
 
 def _items_sammeln(items, ziel: list) -> None:
@@ -234,8 +240,15 @@ def _logging_einrichten() -> None:
     LOG.propagate = False
 
 
+ERLAUBTE_SCHEMAS = ("sales", "sales_test")
+
+
 def main() -> int:
     _logging_einrichten()
+    if fe.server.SCHEMA not in ERLAUBTE_SCHEMAS:
+        LOG.error("Schema %s ist nicht erlaubt (nur sales oder sales_test) - kein Start.",
+                  fe.server.SCHEMA)
+        return 2
     signal.signal(signal.SIGTERM, _stopp_anfordern)
     signal.signal(signal.SIGINT, _stopp_anfordern)
     LOG.info("Start: schema=%s takt=%ds", fe.server.SCHEMA, TAKT_S)

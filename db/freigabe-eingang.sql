@@ -44,6 +44,9 @@ create unique index if not exists freigabe_eintraege_offen_je_quelle
   on :"schema".freigabe_eintraege (herkunft, quelle_ref) where status = 'offen';
 create index if not exists freigabe_eintraege_status_erstellt
   on :"schema".freigabe_eintraege (status, erstellt_am);
+-- Der Bote sucht je Minute Entwuerfe ohne Eintrag (not exists ueber draft_id).
+create index if not exists freigabe_eintraege_draft_id
+  on :"schema".freigabe_eintraege (draft_id);
 
 -- Auftraege an die Abholer (selbstbild / werkstatt), die eine Entscheidung
 -- in ihrem eigenen System nachziehen.
@@ -64,6 +67,10 @@ create table if not exists :"schema".freigabe_auftraege (
 
 create index if not exists freigabe_auftraege_abholer_status
   on :"schema".freigabe_auftraege (abholer, status, erstellt_am);
+-- Je Eintrag hoechstens EIN Auftrag offen oder laufend (auch bei zwei
+-- gleichzeitigen Klicks; der Code prueft vorher, der Index entscheidet).
+create unique index if not exists freigabe_auftraege_offen_je_eintrag
+  on :"schema".freigabe_auftraege (eintrag_id) where status in ('offen','laeuft');
 
 -- Zugangsschluessel der einliefernden Systeme (nur der Hash liegt hier).
 create table if not exists :"schema".freigabe_schluessel (
