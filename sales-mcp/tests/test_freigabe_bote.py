@@ -30,6 +30,11 @@ def leer():
                      "sales_test.freigabe_schluessel cascade")
         conn.execute("delete from sales_test.einstellungen where schluessel = 'freigabe_stufe2'")
     yield
+    # Jeder Durchgang schreibt einen Herzschlag; liegen gelassen zeigt /freigaben ihn
+    # in spaeteren Tests anderer Dateien (test_darstellung).
+    with server.pool.connection() as conn:
+        conn.execute("delete from sales_test.einstellungen "
+                     "where schluessel = 'freigabe_bote_herzschlag'")
 
 
 def eintrag(kennung=K, stand="ungesichtet", **kw):

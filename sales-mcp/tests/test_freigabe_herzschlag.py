@@ -162,7 +162,7 @@ def test_entwuerfe_kaputt_ist_kein_erfolg(monkeypatch):
     monkeypatch.setattr(fe, "entwuerfe_spiegeln", kaputt)
     fb.durchgang()
     h = fe.herzschlag_lesen()
-    assert h["erfolg"] is None and h["fehler"] == "Entwuerfe.KeyError"
+    assert h["erfolg"] is None and h["fehler"] == "Entwurfsspiegel.KeyError"
 
 
 def test_herzschlag_kaputt_stoppt_den_boten_nicht(monkeypatch):
@@ -196,6 +196,16 @@ def test_zeile_still_rot_mit_uhrzeit_und_fehler():
     assert 'class="warnung"' in z
     assert "12:00" in z  # letzter Erfolg in Ortszeit (Europe/Berlin, UTC+1 im November)
     assert "URLError" in z
+
+
+@pytest.mark.parametrize("fehler", ["Entwurfsspiegel.KeyError", "UI_BASIS_URL_fehlt", "URLError"])
+def test_roter_hinweis_ohne_ascii_umschreibung(fehler):
+    """Die Fehlernamen des Boten stehen auf /freigaben, also gilt die Umlaut-Regel."""
+    from tests.test_darstellung import WOERTER_ASCII
+    fe.herzschlag_schreiben(False, fehler, jetzt=T0)
+    z = ufe.abgleich_zeile(jetzt=T0 + timedelta(minutes=30))
+    assert fehler in z
+    assert [w for w in WOERTER_ASCII if w in z] == []
 
 
 def test_freigaben_seite_zeigt_zeile(monkeypatch):

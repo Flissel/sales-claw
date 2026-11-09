@@ -212,7 +212,8 @@ def durchgang() -> int:
         fe.entwuerfe_spiegeln(basis)
     except Exception as e:  # noqa: BLE001 - Entwuerfe duerfen den Rowboat-Abgleich nie stoppen
         LOG.error("Entwuerfe spiegeln fehlgeschlagen: %s", type(e).__name__)
-        entwurf_fehler = f"Entwuerfe.{type(e).__name__}"
+        # Der Name erscheint auf /freigaben, darum ohne ASCII-Umschreibung (test_darstellung).
+        entwurf_fehler = f"Entwurfsspiegel.{type(e).__name__}"
     try:
         eintraege = fe.offene()
         aufraeumen = fe.zum_aufraeumen()
