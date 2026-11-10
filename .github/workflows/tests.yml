@@ -8,8 +8,10 @@
 #     denn provision.sql prueft sie bewusst nur und legt sie nie selbst an.
 #     pg_trgm (und pgcrypto) liegen wie auf der VM im Schema `extensions` —
 #     provision.sql verlangt das fuer pg_trgm ausdruecklich (17.09.2026).
-#     db/post-sammelstelle.sql gehoert nicht zum Schema-Loop (Ruling R1) und
-#     wird deshalb getrennt auf sales_test eingespielt.
+#     db/kalender-verbinden.sql, db/post-sammelstelle.sql und
+#     db/freigabe-eingang.sql gehoeren nicht zum Schema-Loop (Ruling R1) und
+#     werden deshalb getrennt auf sales_test eingespielt — ein neues Skript
+#     dieser Art muss hier dazu, sonst fehlen seinen Tests die Tabellen.
 #     Die Suite laeuft im Image, aber auf dem eingehaengten Checkout: viele
 #     Vertragstests lesen Dateien ausserhalb von sales-mcp/ (db/, deploy/,
 #     config/, docs/, docker-compose.yml), die das Image nicht enthaelt.
@@ -51,6 +53,8 @@ jobs:
             -v schema=sales_test -v besitzer=felix -f db/kalender-verbinden.sql
           psql "postgresql://postgres:ci@localhost:5432/postgres" -v ON_ERROR_STOP=1 \
             -v schema=sales_test -f db/post-sammelstelle.sql
+          psql "postgresql://postgres:ci@localhost:5432/postgres" -v ON_ERROR_STOP=1 \
+            -v schema=sales_test -f db/freigabe-eingang.sql
       - name: Image bauen
         run: docker build -t sales-mcp-ci ./sales-mcp
       - name: Suite
