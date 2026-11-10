@@ -1038,16 +1038,27 @@ def test_bild_route_entschluesselt_nur_einmal(monkeypatch, medien_ordner):
                  "client": ("127.0.0.1", 1), "server": ("127.0.0.1", 8791)}
         eingang = [{"type": "http.request", "body": b"", "more_body": False}]
         aus = {"status": 0, "body": b""}
+        fertig = asyncio.Event()
 
         async def receive():
-            return eingang.pop(0) if eingang else {"type": "http.disconnect"}
+            if eingang:
+                return eingang.pop(0)
+            # Wie uvicorn und der TestClient: der Client bleibt verbunden, bis
+            # die Antwort vollstaendig ist. Ein sofortiges http.disconnect
+            # heisst "Client weg" - FileResponse bricht dann seit Starlette
+            # 1.10 (im Image) die Auslieferung ab: 200 ohne Koerper (CI-Lauf
+            # 1 und 2, 10.11.2026). Der Code war richtig, das Geruest nicht.
+            await fertig.wait()
+            return {"type": "http.disconnect"}
 
         async def send(m):
             if m["type"] == "http.response.start":
                 aus["status"] = m["status"]
             elif m["type"] == "http.response.body":
                 aus["body"] += m.get("body", b"")
-        await ui.app(scope, receive, send)
+                if not m.get("more_body", False):
+                    fertig.set()
+        await asyncio.wait_for(ui.app(scope, receive, send), 10)
         return aus["status"], aus["body"]
 
     status, inhalt = asyncio.run(holen(f"/marketing/bild/{gut}/logo%2Epng", f"/marketing/bild/{gut}/logo%252Epng"))
