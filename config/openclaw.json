@@ -5,8 +5,16 @@
     "bind": "lan",
     "auth": {
       "mode": "token"
+    },
+    "http": {
+      "endpoints": {
+        "chatCompletions": { "enabled": true }
+      }
     }
   },
+  "_kommentar_post": "03.11.2026: Agent post (sales-post, Einordnung der Post-Sammelstelle) liest jede Mail einmal - er hat ein EIGENES Modell ohne fallbacks. Die Vorgabe fallbacks [openrouter/free] wuerde Mailinhalte bei erschoepftem Abo an ein kostenloses Fremdmodell schicken; dann lieber kein Ergebnis (sales-post wiederholt spaeter). deploy/post-anbinden.sh setzt genau diesen Eintrag und bricht ab, wenn das Gateway ihn ablehnt.",
+  "_kommentar_pruefer": "04.11.2026: Agent post-pruefer (Post-Einordnung v2) liest dieselben Mails ein zweites Mal und prueft das Urteil von post - mit eigenem, staerkerem Modell (claude-sonnet-5-5, eigener Modelleintrag wie claude-haiku-5-5) und aus demselben Grund ohne fallbacks und ohne Werkzeuge. Ob das Live-Gateway das Modell kennt, zeigt erst post-anbinden.sh: lehnt es den Eintrag ab, bricht das Skript ab und registriert KEINEN der beiden Agenten (ein Agent ohne eigenes Modell fiele auf openrouter/free zurueck).",
+  "_kommentar_auto": "29.10.2026: sales-auto ruft das Gateway synchron ueber /v1/chat/completions (Agent auto). Der Agent auto hat KEIN Werkzeug (tools.deny ['*'], gemessen: auch exec/message weg, die mitgeschickte Funktion antwort_abgeben bleibt) und einen eigenen, fast leeren Arbeitsordner - die Regeln schickt sales-auto als Systemnachricht mit. main bleibt erster Eintrag = Standard-Agent. Der Endpunkt ist Operator-Zugriff: Port 18894 bleibt im Compose-Netz bzw. auf 127.0.0.1.",
   "agents": {
     "defaults": {
       "model": {
@@ -15,6 +23,8 @@
           "openrouter/free"
         ]
       },
+      "_kommentar_bildmodell": "30.10.2026: Ohne imageModel fiel das Bild-Werkzeug auf die eingebaute Vorgabe anthropic/claude-opus-4-8 zurueck - die gibt es nicht ('Unknown model'), Fotos im Chat blieben unlesbar. Der Modelleintrag braucht input [text, image], sonst gilt er als reines Textmodell. Gemessen: image describe ueber claude-haiku-5-5, 200 in 0,6 s. NACHGEZOGEN 08.11.2026: Der Modelleintrag (models.providers.anthropic) braucht api anthropic-messages + baseUrl - ohne sie schickte das Gateway das Abo-Token fuer Haiku an api.openai.com/v1/responses (401), der Agent post scheiterte bei jeder Mail. Live per openclaw config patch nachgezogen (Hot Reload, kein Neustart).",
+      "imageModel": "anthropic/claude-haiku-5-5",
       "workspace": "/home/node/.openclaw/workspace",
       "_kommentar_bootstrap": "GEMESSEN 22.08.2026: AGENTS.md ist ~47000 Zeichen. Mit den Vorgaben (20000 je Datei, 60000 gesamt) wurden davon nur 19184 in den Systemprompt eingespritzt - 41 Prozent. Abgeschnitten wurde alles ab 'Kundenchats (Auto-Betrieb)', DARUNTER DER ABSCHNITT 'Verbote - ohne Ausnahme'. Der Agent kannte seine eigenen absoluten Verbote also nicht; dass er sich trotzdem regelkonform verhielt, war das Urteil des Modells und nicht diese Datei. Der Fehler ist still: OpenClaw meldet ihn nur im JSON-Bericht eines Laufs (bootstrapTruncation), nicht im Log. Wer AGENTS.md kuerzt, darf diese Werte wieder senken - wer sie waechst, muss hier nachziehen. NACHGEZOGEN 27.08.2026: AGENTS.md wuchs mit Update-/LinkedIn-/DSGVO-/Pipeline-Abschnitten auf ~60300 Zeichen - smoke.sh Pruefung 8 schlug korrekt an; beide Grenzen angehoben (100000/150000), Laufzeit per config set gleichgezogen.",
       "bootstrapMaxChars": 100000,
@@ -23,6 +33,29 @@
     "list": [
       {
         "id": "main"
+      },
+      {
+        "id": "auto",
+        "workspace": "/home/node/.openclaw/workspace-auto",
+        "tools": { "deny": ["*"] }
+      },
+      {
+        "id": "post",
+        "workspace": "/home/node/.openclaw/workspace-post",
+        "tools": { "deny": ["*"] },
+        "model": {
+          "primary": "anthropic/claude-haiku-5-5",
+          "fallbacks": []
+        }
+      },
+      {
+        "id": "post-pruefer",
+        "workspace": "/home/node/.openclaw/workspace-post-pruefer",
+        "tools": { "deny": ["*"] },
+        "model": {
+          "primary": "anthropic/claude-sonnet-5-5",
+          "fallbacks": []
+        }
       }
     ]
   },
@@ -41,6 +74,17 @@
           {
             "id": "claude-sonnet-5",
             "name": "claude-sonnet-5"
+          },
+          {
+            "id": "claude-haiku-5-5",
+            "name": "claude-haiku-5-5",
+            "input": ["text", "image"],
+            "api": "anthropic-messages",
+            "baseUrl": "https://api.anthropic.com"
+          },
+          {
+            "id": "claude-sonnet-5-5",
+            "name": "claude-sonnet-5-5"
           }
         ]
       }
@@ -111,9 +155,19 @@
         "toolFilter": {
           "include": ["rowboat_wissensquellen", "rowboat_wissensquelle", "rowboat_dokumente"]
         }
+      },
+      "pm": {
+        "url": "http://pm-mcp:8765/mcp",
+        "transport": "streamable-http",
+        "connectionTimeoutMs": 30000,
+        "requestTimeoutMs": 60000,
+        "toolFilter": {
+          "include": ["aufnahme_anstossen", "aufnahme_status"]
+        }
       }
     }
   },
+  "_kommentar_pm": "29.10.2026: mcp.servers.pm = Tuerklingel zu pm-claw (Projektaufnahme anstossen, pm-claw Stufe 2 §8). pm-mcp laeuft im Compose-Projekt pm-claw; erreichbar nur, weil der Dienst sales-claw dem Netz pm-claw_default beitritt (docker-compose.yml). Der Bearer-Token der Rolle sales steht NICHT hier (keine Env-Referenz fuer headers, wie bei rowboat): deploy/pm-anbinden.sh setzt ihn aus PM_TOKEN_SALES der .env ins Laufzeit-Volume. toolFilter = zweiter Riegel neben dem Rollentor in pm-mcp: nur aufnahme_anstossen und aufnahme_status.",
   "_kommentar_rowboat": "01.09.2026: mcp.servers.rowboat = Lesezugriff auf die VibeMind-Wissensbasis (Rowboat, MCP-Endpunkt POST /api/mcp; Code in vibemind-os, Branch claude/rowboat-mcp-endpoint-v1). Rowboat laeuft auf derselben VM in einem anderen Compose-Projekt, darum die LAN-IP statt eines Dienstnamens. Der Bearer-Schluessel steht NICHT hier: openclaw kennt fuer mcp.servers.*.headers keine Env-Referenz (Schema geprueft - nur Klartext), er wird per deploy/rowboat-anbinden.sh aus der .env ins Laufzeit-Volume gesetzt. Ohne diesen Schritt antwortet Rowboat -32001 und smoke.sh Pruefung 4 wird rot - absichtlich laut, keine stille Luecke. toolFilter: nur die drei Werkzeuge mit Live-Beweis; rowboat_datei_url kommt dazu, sobald es ein Datei-Dokument gibt. Kommentar-Schluessel stehen bewusst NICHT in mcp.servers - dort waere jeder Schluessel ein Servername.",
   "_kommentar_websuche": "14.10.2026 (Betreiber-Auftrag 'Websuche freistellen'): web_search an mit Anbieter parallel-free (kostenlos, ohne Schluessel; DuckDuckGo blockt die VM mit Captcha). Braucht das Plugin @openclaw/parallel-plugin@2026.7.1 im Volume (openclaw plugins install ...) und 'parallel' in plugins.allow. web_fetch bleibt AUS: mit Abrufen koennte eine praeparierte Kunden-Mail den Agenten Daten an eine fremde Adresse schicken lassen.",
   "tools": {

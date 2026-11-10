@@ -634,6 +634,12 @@ setzt pytests Standard-Importmodus nur das Verzeichnis der Testdatei
 (Task 2, Befund 3). `python -m pytest` stellt das Arbeitsverzeichnis voran auf
 `sys.path`.
 
+**`--env-file .env` reicht echte Zugangsdaten durch.** Bis 06.11.2026 schrieb die
+Suite dadurch 275 Testtermine („Steuer“ u. a.) in den echten Kalender. Seitdem nimmt
+die autouse-Fixture `_kein_echter_kalender` (`tests/conftest.py`) CALDAV_* und
+GOOGLE_MEET_* für jeden Test heraus, bewacht von `tests/test_testsperre.py`.
+Wer einen neuen Dienst mit Schreibzugriff anbindet, sperrt ihn dort mit.
+
 **Ausschließlich gegen `sales_test`** (`SALES_DB_SCHEMA=sales_test`) —
 `db/provision.sql` sagt es wörtlich: „Die Testsuite darf NIE gegen `sales` laufen."
 Der Schema-Wächter in `server.py` bricht bei jedem anderen Wert als
@@ -3314,3 +3320,524 @@ Ein Newsletter geht nur an `consent_status = 'opt_in'` (E1). Zwei Wege dorthin, 
   KI-Bilder-Stufe) zurueckgerollt wird, offene KI-Auftraege abbrechen (Status `ideen`,
   `bilder_laufen`, `bilder_pruefen` - Reels-Seite "Abbrechen"); die alte Oberflaeche kennt diese
   Status nicht. Migration 090 braucht keinen Rueckbau.
+
+## Post-Sammelstelle (Stufe 1, seit 03.11.2026)
+
+Ein Dienst `sales-post` holt die Mails aller Postfaecher (Env-Konten + ueber `/post/konten` angelegte) in
+eine Sammelstelle (`post_mails`) und ordnet sie in Bereich + Fach ein. Stufe 1 liest nur: IMAP nur
+`readonly`, im echten Postfach wird nichts verschoben, archiviert oder geloescht.
+
+Ausrollen - Reihenfolge, jeder Schritt nur mit Betreiber-OK:
+
+> **Achtung - Dienste immer beim Namen nennen.** `sales-post` steht ohne Profil in
+> `docker-compose.yml`. Ein nacktes `docker compose up -d` (ohne Dienstnamen) startet ihn mit - fehlt
+> `POST_BESITZER` in der `.env`, beendet er sich sofort mit Code 2 und `restart: unless-stopped` laesst
+> ihn im Kreis neu starten. Also immer `docker compose up -d <dienst> ...` mit Namen.
+
+1. `POST_BESITZER=<Benutzername>` in die `.env` des Ladens (ohne Wert bricht `post-anbinden.sh` ab).
+2. **Vor** `update.sh` die Tabellen/Spalten einspielen - der neue Code (Bot-Werkzeuge, Reiter Mails)
+   liest `post_mails.kalenderteil`/`message_id_ersatz` usw. und braucht sie ab dem ersten Start
+   (idempotent; Schema `sales` fuer den Basis-Laden, sonst `sales_<praefix>`):
+   `docker exec -i debian-supabase-db-1 psql -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v schema=sales < db/post-sammelstelle.sql`
+3. `bash deploy/update.sh` (neuer Code, UI mit Reiter Mails).
+4. `bash deploy/post-anbinden.sh [laden]` - erzeugt bei Bedarf das Schluesselpaar, spielt
+   `db/post-sammelstelle.sql` noch einmal ein (idempotent), setzt `benutzer.leitung` fuer den Besitzer,
+   uebernimmt die Env-Postfaecher, traegt die Agenten `post` (keine Werkzeuge, eigenes Modell
+   `anthropic/claude-haiku-5-5` mit `fallbacks: []`) und `post-pruefer` (Pruefer der Einordnung, v2: keine
+   Werkzeuge, eigenes Modell `anthropic/claude-sonnet-5-5` mit `fallbacks: []`) in EINEM Schritt ins Gateway
+   ein und prueft `/v1/models` auf beide (`openclaw/post` und `openclaw/post-pruefer`). Lehnt das
+   Gateway einen Modell-Eintrag ab, bricht das Skript mit "ABBRUCH" ab (Code 5) und traegt KEINEN der
+   beiden Agenten ein (ein dem Gateway unbekannter Agent bekaeme alle Werkzeuge); es gibt bewusst keinen
+   Rueckfall auf das Standardmodell, denn dessen `fallbacks: [openrouter/free]` wuerde Mailinhalte an
+   ein kostenloses Fremdmodell schicken. Dann nicht weiter ausrollen.
+5. Hat `post-anbinden.sh` ein NEUES Schluesselpaar erzeugt (es sagt es), bekommt `sales-ui` den
+   oeffentlichen Schluessel erst beim Neuerzeugen:
+   `docker compose up -d --no-deps --force-recreate sales-ui` (andere Laeden mit
+   `--env-file deploy/laeden/<laden>.env`). Ohne das meldet "Postfach hinzufuegen" einen Fehler.
+6. Sitzungskopien aufraeumen einrichten (R17): das Gateway legt je eingeordneter Mail eine
+   Sitzungsdatei mit dem Mailinhalt an (`agents/post/sessions/*.jsonl`, ebenso
+   `agents/post-pruefer/sessions/` fuer den Pruefer).
+   `deploy/post-sitzungen-aufraeumen.sh [laden]` loescht sie nach 10 min (gibt nur Zahlen aus).
+   Einmal von Hand laufen lassen, dann per `crontab -e` des Betriebsnutzers auf der VM eintragen
+   (wird NICHT automatisch installiert):
+   `*/5 * * * * cd /home/<nutzer>/sales-claw && bash deploy/post-sitzungen-aufraeumen.sh >/dev/null 2>&1`
+   (je Laden eine Zeile mit Praefix). Erst danach `sales-post` starten.
+7. `docker compose up -d sales-post` (bzw. mit `--env-file deploy/laeden/<laden>.env`).
+8. `bash deploy/smoke.sh`: Abschnitt `sales-post` (kein `Restarting`, `RestartCount` < 3, `post_mails`
+   lesbar; ohne laufenden Dienst "uebersprungen"). Eine Mindest-Laufzeit wird bewusst nicht verlangt:
+   `update.sh` erzeugt den Dienst neu und prueft ~30 s spaeter. Der Dienst schreibt im Leerlauf keinen
+   Herzschlag - ein Haenger ohne Absturz faellt hier nicht auf; Gegenprobe:
+   `docker logs --since 10m sales-post`.
+
+### Post-Einordnung v2: Pruefer, `POST_KONTEXT`, Neu-Sortierung
+
+Ab v2 ordnet `post` jede Mail ein und der zweite Agent `post-pruefer` (anderes, staerkeres Modell,
+keine Werkzeuge, kein Rueckfall) liest sie noch einmal und prueft das Urteil. Beide Agenten kommen mit
+`post-anbinden.sh` ins Gateway (siehe Schritt 4 oben); ohne den Pruefer-Agenten kann die Pruefung nicht
+laufen. Ob das Live-Gateway `anthropic/claude-sonnet-5-5` annimmt, zeigt erst dieser Lauf - bei einer
+Ablehnung bricht das Skript ab (Code 5) und es bleibt beim Stand vor dem Lauf.
+
+`POST_KONTEXT` (pro Laden in der `.env`, darf leer sein): Betreiber-Kontext fuer die Einordnung - kurzer
+Text, wer der Laden ist und was in welches Fach gehoert (z. B. Branche, typische Absender). Er geht als
+Teil der Regeln an den Klassifizierer. Leer heisst: nur die allgemeinen Regeln. Der Text wird mit dem
+Betreiber abgestimmt; Mailinhalte, Namen Dritter und Zugangsdaten gehoeren nicht hinein.
+
+Rollout v2 (je Schritt Betreiber-OK). Wie beim ersten Ausrollen gilt: **die Migration vor
+`update.sh`** - der neue Code liest `unterfach`, `standard_bereich`, `versuch_am`, `vorschau_aufrufe`
+usw. ab dem ersten Start; liefe er vorher, gaebe `/post` einen Fehler 500, `postfach_lesen` des Bots
+schluege fehl und jede `sales-post`-Runde scheiterte. `[laden]` faellt fuer den Basis-Laden weg, sonst
+der Praefix (z. B. `ivan`) bzw. `--env-file deploy/laeden/<laden>.env` bei `docker compose`.
+
+1. `POST_KONTEXT` in die `.env` des Ladens (Text mit dem Betreiber abstimmen; leer ist erlaubt).
+2. `docker compose stop sales-post` - der alte Dienst soll zwischen Migration und neuem Code keine
+   Mails mehr einordnen.
+3. Migration aus dem NEUEN Stand einspielen, ohne den Checkout schon vorzuziehen (sonst meldet
+   `update.sh` danach "Bereits aktuell" und baut nichts neu):
+   `git fetch origin && git show origin/feat/stufe-1-fundament:db/post-sammelstelle.sql | docker exec -i debian-supabase-db-1 psql -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v schema=sales`
+   (anderer Laden: `-v schema=sales_<praefix>`). Die Migration ist rein additiv bzw. idempotent; der
+   noch laufende alte Code (Oberflaeche, Bot) kommt mit den neuen Spalten zurecht.
+4. `bash deploy/update.sh` (neuer Code). `sales-post` bleibt dabei aus (`update.sh` baut ihn nur neu,
+   wenn er vorher lief).
+5. `bash deploy/post-anbinden.sh [laden]` - jetzt in der neuen Fassung: spielt die Migration noch einmal
+   ein (benennt `Unklar`-Zeilen um, die der alte Code zwischen Schritt 3 und 4 geschrieben hat, und
+   loescht Regeln dorthin), traegt `post-pruefer` ein und prueft ihn mit einem echten Funktionsaufruf
+   (Dummy-Text, keine Mail). Endet es mit "ABBRUCH" (Code 5) oder "ROT" (Code 3/6): nicht weiter,
+   `sales-post` bleibt aus.
+6. `docker compose up -d sales-post` (bzw. mit `--env-file deploy/laeden/<laden>.env`); danach
+   `bash deploy/smoke.sh`.
+7. `bash deploy/post-neu-einordnen.sh [laden] vorschau` - ueber Tage, bis die Tagesgrenze alles geschafft
+   hat (braucht den laufenden `sales-post`; die Vorschau aendert nichts am Bestand, ihre Aufrufe zaehlen
+   zur selben Tagesgrenze wie `sales-post`).
+8. `bash deploy/post-neu-einordnen.sh [laden] bericht` - Bericht + Katalog-Tabelle an den Betreiber;
+   Katalog-Aenderungen einarbeiten (ggf. `bash deploy/post-neu-einordnen.sh [laden] vorschau --alle`).
+9. `bash deploy/post-neu-einordnen.sh [laden] anwenden` (ohne Modell; Mails mit menschlicher Korrektur
+   und Mails, die schon beim Abholen kaputt waren, bleiben unberuehrt).
+10. Stichprobe von 20 Mails mit dem Betreiber.
+
+R13: Regeln aus "fuer diesen Absender immer so" gelten nur fuer Mails ihres Besitzers
+(`post_regeln.besitzer`; NULL = global). Die Tabelle ist neu, alte besitzerlose Regeln gibt es nicht.
+R18: Solche Regeln setzen nur Bereich und Fach; ob eine Mail sensibel ist, entscheiden weiter die festen
+Muster (u. a. Sicherheitscode, Kontoauszug, IBAN) und - auch bei einem Regeltreffer - das Modell. Den
+Haken "immer so" gibt es nur fuer die eigene Post (die Leitung korrigiert fremde Mails ohne Regel).
+Regeltreffer zaehlen deshalb zur Tagesgrenze `POST_TAGESGRENZE`.
+
+Kalenderantworten (REPLY/COUNTER): `post_mails.kalenderteil` markiert sie beim Abholen; festgehalten
+am Kontakt wird die Antwort, wenn der Bot die Mail mit `postfach_mail_lesen` oeffnet (einmaliges
+Live-Lesen, nur Env-Konten, erst nach Pruefung der Message-ID).
+
+Stoppen / Rueckweg: `docker compose stop sales-post`. In den Postfaechern wurde nichts veraendert; die
+Tabellen koennen liegen bleiben. Die Agenten `post` und `post-pruefer` im Gateway sind harmlos (keine Werkzeuge).
+
+### Post aufraeumen (Spec 2026-11-06): Einschalten
+
+`sales-post` kann den Posteingang aufraeumen: Werbung, Verlaeufe und Altes wandern in Ordner
+(`Zur Info`, `To-Review`), freigegebene Jahre werden geloescht. **Standard ist aus** - der Code laeuft
+nach dem Deploy mit `POST_ORDNEN=aus`: das Ziel je Mail wird nur gepflegt (Reiter in `/post`), im
+Postfach wird nichts angefasst. Ausgeliefert wird erst, wenn Felix es will.
+
+Alle Schritte unten laufen nur mit Felix' ausdruecklichem OK, jeder einzeln. `sales-auto` wird dabei
+nie gestartet. `[laden]` faellt fuer den Basis-Laden weg; `PRAEFIX` = `sales` bzw. der Laden-Praefix.
+
+Die Schalter (in der `.env` des Ladens, durchgereicht in `docker-compose.yml`):
+
+| Variable | Werte | Wirkung |
+| --- | --- | --- |
+| `POST_ORDNEN` | `aus` (Vorgabe) / `verschieben` / `voll` | `aus`: kein IMAP-Schritt. `verschieben`: nur Ordner-Wechsel, nichts wird geloescht. `voll`: loescht zusaetzlich Mails mit Ziel `loeschen`, aber nur freigegebene Jahre, sowie To-Review-Mails, die aelter als 30 Tage sind. `sales-post` und `sales-ui` lesen sie (die UI nur zur Anzeige). |
+| `POST_AUFRAEUMEN_AB` | ISO-Datum, z. B. `2026-11-20` | Tag des Einschaltens. Posteingangs-Mails ab diesem Tag zaehlen nicht als Altbestand. **Pflicht, sobald `POST_ORDNEN` nicht `aus` ist** (siehe Schritt 11). |
+| `POST_BUSINESS_ADRESSEN` | Komma-Liste, mit `@` = Adresse, ohne = Domain | Weitergeleitete Mail an so eine Adresse gilt als business. Wert erst nach Schritt 6 setzen. |
+| `POST_TAGESGRENZE` | Zahl, Vorgabe `500` | Modellaufrufe je Tag. **`0` pausiert das Einordnen ganz** - auch kostenlose Muster-, Regel- und Katalog-Treffer, denn `post_abholen._einordnen` bricht vor `einordnen_offene` ab (Test `test_tagesgrenze_null_pausiert_auch_kostenlose_treffer`). Abholen laeuft weiter. Die Vorschau (`post-neu-einordnen.sh vorschau`) haelt sich ebenfalls daran. Pause nur fuer Schritt 4-8. |
+
+1. **Vault-Claim.** Vor jeder Arbeit an der VM `C:\Users\User\Desktop\secondbrain\00_Meta\002_Koordination_Live.md`
+   lesen, Claim eintragen und sofort committen (Vault ist git-versioniert); bei fremdem aktivem Claim
+   nicht anfassen, Felix fragen. Pruefen: `git -C <vault> log -1 --oneline` zeigt den Claim-Commit.
+2. **SQL einspielen - vor `update.sh`, in JEDES Schema mit `post_mails`**, aus dem deployten Stand (nicht
+   aus einem anderen Checkout), immer mit `ON_ERROR_STOP`. `update.sh` baut **alle** Laeden neu, und der
+   neue Code liest die neuen Spalten (`ziel`, `ordner`, `ordner_am`) in jedem Laden: ein Laden ohne
+   Migration bricht sonst mit `UndefinedColumn` ab. Die Migration ist additiv/idempotent. Schemata ermitteln:
+   `docker exec debian-supabase-db-1 psql -U supabase_admin -d postgres -Atc "select table_schema from information_schema.tables where table_name='post_mails' and table_schema like 'sales%' and table_schema <> 'sales_test' order by 1"`
+   und fuer jedes davon einspielen (im Checkout des deployten Stands auf der VM):
+   ```bash
+   for s in $(docker exec debian-supabase-db-1 psql -U supabase_admin -d postgres -Atc "select table_schema from information_schema.tables where table_name='post_mails' and table_schema like 'sales%' and table_schema <> 'sales_test' order by 1"); do
+     echo "== $s"
+     docker exec -i debian-supabase-db-1 psql -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v schema=$s -f - < db/post-sammelstelle.sql || break
+   done
+   ```
+   Soll der Stand vor dem `git pull` eingespielt werden: im Schleifenrumpf
+   `git show origin/<branch>:db/post-sammelstelle.sql | docker exec -i ... -v schema=$s -f -` (vorher `git fetch origin`).
+   Pruefen **je Laden** (Exit-Code 0 je Schema, kein `break`), dann fuer jedes Schema `$s`:
+   `docker exec debian-supabase-db-1 psql -U supabase_admin -d postgres -Atc "select count(*) from information_schema.columns where table_schema='$s' and table_name='post_mails' and column_name in ('ziel','ordner','ordner_am','urspruengliche_adresse','ordner_stand')"`
+   liefert `5`, und `select to_regclass('$s.post_loeschfreigaben')` ist nicht leer. Ein Schema mit
+   weniger: nicht weiter, erst die Migration fuer dieses Schema klaeren.
+3. Das GMX-Konto ist privat - **vor `update.sh`**, sonst ordnet der neue Code GMX-Mails als business ein:
+   `docker exec -i debian-supabase-db-1 psql -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -c "update sales.post_konten set standard_bereich='privat' where kennung='gmx-felix'"`
+   Pruefen: Ausgabe `UPDATE 1` (bei `UPDATE 0` stimmt die Kennung nicht - nicht raten, Kennungen mit
+   `select kennung from sales.post_konten` ansehen). Gilt nur fuer Felix' Laden (`sales`).
+4. **Einordnen pausieren - vor `update.sh`.** Mit v3 eingeordnete Mails sortiert spaeter nichts mehr neu
+   um; ohne Pause ordnet `sales-post` direkt nach `update.sh` ein, bevor `POST_BUSINESS_ADRESSEN` und die
+   urspruengliche Adresse (Schritt 6-7) da sind - weitergeleitete Business-Mail landete dauerhaft unter
+   privat. In die `.env` des Ladens: `POST_TAGESGRENZE=0` (wirkt auf alles Einordnen, auch kostenlose
+   Treffer, siehe Tabelle). Die Pause gilt bis einschliesslich Schritt 7.
+5. `bash deploy/update.sh` (neuer Code; `POST_ORDNEN` bleibt `aus`). Pruefen: `bash deploy/smoke.sh`
+   (Abschnitt `sales-post` gruen), `docker exec ${PRAEFIX}-post printenv POST_ORDNEN POST_TAGESGRENZE`
+   meldet `aus` und `0`.
+6. **Herkunfts-Stichprobe.** Die Kopfzeilen-Befehle laufen im Container `${PRAEFIX}-post` (nur dort
+   sind `POST_BUSINESS_ADRESSEN` und die Kontozugaenge da, wie bei `deploy/post-neu-einordnen.sh`) und
+   lesen nur Kopfzeilen per `BODY.PEEK`, nie Inhalt:
+   `docker exec ${PRAEFIX}-post python -m post_herkunft stichprobe gmail-felix404` (Kennung wie in `post_konten.kennung`)
+   Die Tabelle zeigt, welche Kopfzeile (`X-Forwarded-To`, `X-Original-To`, `Delivered-To`,
+   `X-Forwarded-For`) welche Zieladresse traegt. **Erst dieser Befund entscheidet `POST_BUSINESS_ADRESSEN`
+   (R16):** steht dort verlaesslich die Bluebatch-Adresse (Domain oder genaue Adresse), diese in die `.env`
+   eintragen und `docker compose up -d --no-deps --force-recreate sales-post` (nur `sales-post`, nie
+   nacktes `up -d`). Findet sich nichts Verlaessliches, nichts raten: Felix nach der Bluebatch-Adresse
+   fragen. Gegenprobe: `docker exec ${PRAEFIX}-post printenv POST_BUSINESS_ADRESSEN`.
+   Bei Abweichung ggf. die Reihenfolge `KOPFZEILEN` in `post_herkunft.py` anpassen (eigener Commit).
+7. `docker exec ${PRAEFIX}-post python -m post_herkunft nachtragen gmail-felix404` - traegt die
+   urspruengliche Adresse fuer den Altbestand nach (nur Kopfzeilen; 500 Mails je Lauf). Die Ausgabe lautet
+   `Verarbeitet: <v> (Adresse gefunden: <g>, uebersprungen: <u>), noch offen: <o>`.
+   **Wiederholen, bis `noch offen: 0`.** Bleibt `<o>` ueber zwei Laeufe gleich und `<v>` besteht nur aus
+   `uebersprungen` (Ordner fehlt, Mail nicht mehr am Server), nicht weiter wiederholen: Zahl an Felix melden.
+8. **Pause beenden.** `POST_TAGESGRENZE` in der `.env` wieder auf den alten Wert (Zeile entfernen = `500`),
+   dann `docker compose up -d --no-deps --force-recreate sales-post` (nur `sales-post`). Pruefen:
+   `docker exec ${PRAEFIX}-post printenv POST_TAGESGRENZE` meldet nicht mehr `0`.
+9. **Neu-Einordnung als Stichprobe, ueber alle vier Konten, mindestens 100 Mails (Spec §9):**
+   `bash deploy/post-neu-einordnen.sh [laden] vorschau --je-konto 25`, danach
+   `bash deploy/post-neu-einordnen.sh [laden] bericht`. Der Bericht zeigt **zwei** Tor-Tabellen, je Zeile
+   `<Anteil>  <Kennung>  (<n> Mails)`:
+   - `Tor A: Zum Nachsehen je Konto (Altbestand-Vorschau)` - Anteil „Zum Nachsehen“ in der Vorschau.
+   - `Tor B: Zum Nachsehen je Konto (laufend eingeordnet, v3)` - Anteil „Zum Nachsehen“ unter den seit
+     dem Update laufend eingeordneten Mails (ohne Handkorrekturen).
+   **Tor: beide Werte < 0,10 in jedem Konto.** `gmail-felix404` hat keinen Altbestand (fehlt in Tor A); es
+   wird ueber Tor B gemessen, sobald dort mindestens 25 Mails stehen - bis dahin Runden abwarten, nicht
+   weiter. Ein Konto darueber heisst: Prompt/Katalog nachschaerfen (zurueck zu Task 2 der Einordnung),
+   Vorschau wiederholen - nicht weiter. Die Mailinhalte erscheinen nirgends in der Ausgabe; die Vorschau
+   zaehlt zur Tagesgrenze `POST_TAGESGRENZE`.
+10. **Voller Neu-Sortier-Lauf, erst nach bestandenem Tor:**
+    `bash deploy/post-neu-einordnen.sh [laden] vorschau` (ohne `--je-konto`) wiederholen, bis im `bericht`
+    `Offen (noch ohne Vorschau)` = 0 steht (die Tagesgrenze kann das auf mehrere Tage verteilen), dann
+    `bash deploy/post-neu-einordnen.sh [laden] bericht` (beide Tore noch einmal ansehen), dann - nur mit
+    Felix' OK - `bash deploy/post-neu-einordnen.sh [laden] anwenden` (ohne Modell; Mails mit menschlicher
+    Korrektur bleiben). Pruefen: Ausgabe nennt die Zahl, danach `bericht` noch einmal.
+11. **Einschalten, Stufe 1: nur verschieben.** In die `.env`: `POST_AUFRAEUMEN_AB=<heutiges Datum, ISO>` und
+   `POST_ORDNEN=verschieben`, dann `docker compose up -d --no-deps --force-recreate sales-post sales-ui`.
+   **`POST_ORDNEN` ausser `aus` nie ohne `POST_AUFRAEUMEN_AB`:** ohne Stichtag gilt jede Mail als
+   Altbestand und die 90-Tage-Regel stuft Posteingangs-Mails ab. Pruefen:
+   `docker exec ${PRAEFIX}-post printenv POST_ORDNEN POST_AUFRAEUMEN_AB` (beide gesetzt). Dann **eine
+   Runde beobachten** (Intervall 120 s): Zahlen in `/post/aufraeumen`, `docker logs --since 10m ${PRAEFIX}-post`
+   ohne Fehler, Stichprobe im Handy-Postfach (Ordner `Zur Info`/`To-Review`, nichts fehlt).
+   Verschieben ist umkehrbar (Mail liegt nur in einem anderen Ordner).
+12. **Sichtpruefung vor `voll`:** In der UI unter `/post/aufraeumen` je Jahr ansehen, was geloescht
+    wuerde (Vorschau je Jahr; ein Klick auf den Absender listet dessen Mails mit Datum, Konto und
+    Betreff; Reiter To-Review). Erst danach, mit Felix' OK: `POST_ORDNEN=voll` in die
+    `.env`, `docker compose up -d --no-deps --force-recreate sales-post sales-ui`. `voll` loescht nur
+    **freigegebene Jahre** und **To-Review-Mails, die aelter als 30 Tage sind**; ohne Freigabe bleibt die
+    Mail, wo sie ist.
+13. **Jahre freigeben** durch Felix in der UI (`/post/aufraeumen`), das neueste Jahr zuerst, je Jahr einzeln;
+    Absender, die bleiben sollen, vorher herausnehmen. Nach jeder Freigabe eine Runde abwarten und die
+    Zahlen pruefen, bevor das naechste Jahr dran ist.
+
+**Rueckweg.** `POST_ORDNEN=aus` in der `.env` und `docker compose up -d --no-deps --force-recreate
+sales-post sales-ui` stoppt jedes Verschieben und Loeschen ab der naechsten Runde (Pruefen:
+`printenv POST_ORDNEN` im Container = `aus`). Schon verschobene Mails bleiben im Zielordner und lassen
+sich per Handy zurueckziehen. **Geloeschte Mails sind endgueltig weg**; nur ihre Kopfzeile bleibt in
+`post_mails` (Absender, Betreff, Datum - kein Inhalt). Darum nie `voll` ohne Sichtpruefung (Schritt 12).
+Notbremse ohne `.env`-Aenderung: `docker compose stop sales-post`.
+
+### Posteingang mit Mails: Einschalten (Spec 2026-11-07)
+
+`/posteingang` zeigt Chats und Mails in einem Eingang; am Kontakt steht der Abschnitt „E-Mails“
+(Kopf: Betreff, Datum, Konto - kein Text). **Mails sieht nur der Postfach-Besitzer** (`besitzer` der
+Mail), auch nicht die Leitung; der Agent sieht nur Business-Mails des Container-Besitzers, nicht
+sensibel. Kein Kontakt entsteht automatisch aus einer Mail: die Zuordnung laeuft nur ueber die
+Absenderadresse = `leads.email`.
+
+Alle Schritte nur mit Felix' ausdruecklichem OK (der Deploy selbst braucht es; kein SQL gegen Schema
+`sales` ohne OK). Werte stehen hier als Platzhalter, nichts davon in Chat oder Log ausgeben.
+
+1. **Vault-Claim.** `C:\Users\User\Desktop\secondbrain\00_Meta\002_Koordination_Live.md` lesen, Claim
+   eintragen und sofort committen; bei fremdem aktivem Claim nicht anfassen, Felix fragen.
+2. **SQL einspielen - vor `update.sh`, in JEDES Schema mit `post_mails`**, wie im Abschnitt davor
+   (Schritt 2, Schleife mit `-v ON_ERROR_STOP=1 -v schema=$s`, ohne `sales_test`):
+   `docker exec -i debian-supabase-db-1 psql -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v schema=<schema> -f - < db/post-sammelstelle.sql`
+   Pruefen je Schema: Exit-Code 0.
+3. **`bash deploy/update.sh`.** Vorher in der `.env` jedes Ladens `POST_BESITZER=<Benutzername des
+   Postfach-Besitzers>` setzen (Wert nicht ausgeben). `docker-compose.yml` reicht ihn an `sales-mcp`,
+   `sales-ui` und die uebrigen sales-Dienste durch. **Ohne `POST_BESITZER`** sieht der Agent keine Mails
+   (fail closed), und die alten E-Mail-Zeilen im Kontakt-Verlauf bleiben fuer alle verborgen.
+   Pruefen: `bash deploy/smoke.sh`, `docker exec ${PRAEFIX}-ui printenv POST_BESITZER` ist nicht leer.
+4. **`POST_AUFRAEUMEN_AB=<ISO-Datum>` setzen** (Felix' Entscheidung; `POST_BESITZER` muss gesetzt bleiben), dann
+   nur `docker compose up -d --no-deps --force-recreate sales-post sales-ui` (beide: `sales-ui` zeigt die Mails und liest den
+   Stichtag ebenfalls; ohne ihn steht in `/posteingang` "Stichtag nicht gesetzt"; nie nacktes `up -d`).
+   Pruefen: `docker exec ${PRAEFIX}-post printenv POST_AUFRAEUMEN_AB POST_BESITZER` und `docker exec ${PRAEFIX}-ui printenv POST_AUFRAEUMEN_AB`.
+   **Jede Aenderung des Stichtags** braucht dieselbe Neuerzeugung von `sales-post` und `sales-ui`.
+5. **Warten, bis der erste Abgleich gelaufen ist** (Intervall 120 s): in `post_mails` ist `abgeglichen_am`
+   gefuellt, z. B. `select count(*) filter (where abgeglichen_am is not null), count(*) from <schema>.post_mails`
+   - die erste Zahl waechst; `docker logs --since 10m ${PRAEFIX}-post` ohne Fehler. Erst dann weiter.
+6. **Sichtpruefung.** `/posteingang` als Besitzer (persoenliche Anmeldung): Chats und Mails stehen
+   zusammen, ein Kontakt mit passender Absenderadresse zeigt den Abschnitt „E-Mails“. Dann als zweite
+   Anmeldung (andere Person) und mit dem gemeinsamen Zugang: keine Mail, kein Betreff, kein E-Mail-Verlauf.
+
+**Rueckweg.** `docker compose stop sales-post` haelt den Abgleich an; den Code per `update.sh` auf den
+vorherigen Stand zuruecksetzen. Die Spalten aus Schritt 2 sind additiv und koennen liegen bleiben.
+
+## Kalender verbinden (Google und iCal, Spec 2026-11-08)
+
+Die Seite `/team/kalender` kennt jetzt zwei Wege: die geheime iCal-Adresse (wie bisher) und
+„Mit Google verbinden“. Jeder Kalender hat einen **Besitzer** und einen **Bereich** (Business oder
+Privat). Ein Dienst `sales-kalender` liest alle verbundenen Kalender alle 300 Sekunden (30 Tage
+zurück, 180 Tage voraus) und legt die Termine in `kalender_termine` ab. Fremde Privat-Kalender
+erscheinen nur als Block „Privattermin“ (Zeit, kein Titel, kein Ort). Google wird nur **lesend**
+angefragt: Google zeigt dem Nutzer „Kalender ansehen“, die App kann nichts schreiben.
+
+**Alle Schritte unten brauchen das ausdrückliche OK des Betreibers** (Deploy, SQL gegen ein
+Schema, Start eines Dienstes). Werte (Client-Secret, Schlüssel) nie in Chat oder Log ausgeben; die
+Skripte lesen verdeckt und schreiben nur in die `.env`.
+
+Die Seite hat zwei Ausbaustufen. **Teil A** bringt Ebenen (Business/Privat), von–bis-Anzeige,
+Ganztags-Zeile und iCal mit Bereich — **ohne Google**. **Teil B** nimmt Google dazu und kann
+Tage oder Wochen später folgen.
+
+> **Achtung - Dienste immer beim Namen nennen.** Nie nacktes `docker compose up -d`. Für weitere
+> Läden überall `--env-file deploy/laeden/<laden>.env` mitgeben.
+
+### Teil A: ohne Google
+
+1. **Vault-Claim.** `C:\Users\User\Desktop\secondbrain\00_Meta\002_Koordination_Live.md` lesen,
+   Claim eintragen und sofort committen; bei fremdem aktivem Claim nicht anfassen, Betreiber fragen.
+2. **`POST_BESITZER=<Benutzername des Laden-Besitzers>`** in der `.env` jedes Ladens prüfen
+   (derselbe Wert wie bei der Post-Sammelstelle). Der Abgleich nimmt ihn als Laden-Besitzer: ohne
+   ihn gilt **jeder** Privat-Kalender als fremd, und der Agent sieht von ihm nur Blöcke — sicher,
+   aber unbrauchbar für den eigenen Kalender.
+3. **SQL einspielen - VOR `update.sh`, in `sales` und in JEDES Laden-Schema.** Die Datei fügt
+   Spalten (Besitzer, Bereich) und Tabellen hinzu, die der neue Code ab dem ersten Start liest.
+   Außerdem enthält sie `grant delete on kalender_quellen`: ohne dieses Recht scheitert
+   „Entfernen“ auf `/team/kalender`. Idempotent; ein zweiter Lauf ändert nichts.
+   Basis-Laden (`sales`), Besitzer = Laden-Besitzer (hier `felix`):
+
+   ```bash
+   docker exec -i debian-supabase-db-1 psql -q -U supabase_admin -d postgres \
+     -v ON_ERROR_STOP=1 -v schema=sales -v besitzer=felix \
+     < db/kalender-verbinden.sql
+   ```
+
+   Weitere Läden: die Läden sind die Dateien `deploy/laeden/*.env` (außer `beispiel.env`); das
+   Schema steht dort als `SALES_DB_SCHEMA=sales_<name>`, der Besitzer als `POST_BESITZER=`. Je Laden
+   derselbe Aufruf mit `-v schema=sales_<name> -v besitzer=<POST_BESITZER dieses Ladens>`
+   (`deploy/laden-anlegen.sh` nennt ihn für neue Läden ebenfalls). Kein `sales_test` ausrollen.
+   Fehlt `-v besitzer=` und gibt es Altzeilen, bricht das Skript vor den Pflicht-Regeln ab.
+   Prüfen je Schema: Exit-Code 0, keine Zeile „WARNUNG: keine Rechte vergeben“.
+   Die Datei legt auch die Spalte `kalender_quellen.abgeglichen_am` an. Nur der neue Dienst
+   `sales-kalender` schreibt sie; der alte Code setzt bei jedem Lesen nur `zuletzt_gelesen`.
+   Deshalb gilt nach dem Update **jeder** verbundene Kalender als „noch nicht abgeglichen“ (Lücke,
+   der Agent sagt „unvollständig“, nie „frei“), bis `sales-kalender` ihn zum ersten Mal gelesen hat
+   (Schritt 5, wenige Sekunden je Kalender). Das ist gewollt.
+4. **`bash deploy/update.sh`.** Es baut die Dienste neu, die vorher liefen (`KERN_OPTIONAL`
+   enthält `sales-kalender` nur zum Neubauen, **nicht** zum Starten). Den neuen Dienst startet
+   das Update **nie** von sich aus.
+5. **`sales-kalender` einmalig starten** (er ist neu, lief also vorher nicht):
+   `docker compose up -d sales-kalender` (weitere Läden:
+   `docker compose --env-file deploy/laeden/<laden>.env up -d sales-kalender`). Danach baut jedes
+   Update ihn mit neu.
+6. **Bestehende iCal-Kalender zuordnen.** Nach der Migration gehört jeder vorhandene Kalender dem
+   Laden-Besitzer, Bereich **Privat** (Spec §2.9). Der Besitzer öffnet `/team/kalender` und stellt
+   je Kalender Business oder Privat ein. Bis dahin sehen Kollegen von diesen Kalendern nur
+   „Privattermin“-Blöcke.
+
+**Probe Teil A.** `/kalender` zeigt die vorhandenen Termine mit von–bis, ganztägige Termine in
+der Ganztags-Zeile. `/team/kalender` zeigt je Quelle Besitzer und Bereich. Einen neuen iCal-Kalender
+anlegen (der Bereich ist Pflicht) → nach etwa einer Minute stehen seine Termine auf `/kalender`.
+`docker logs --since 10m ${PRAEFIX}-kalender` ohne Fehler.
+
+### Teil B: Google dazunehmen
+
+Ohne diesen Teil steht auf `/team/kalender` der Knopf „Mit Google verbinden“ ausgegraut, mit dem
+Hinweis „Google-Anbindung ist noch nicht eingerichtet“. Aktiv wird er erst, wenn **alle**
+Werte in `sales-ui` gesetzt sind: `GOOGLE_KALENDER_CLIENT_ID`, `GOOGLE_KALENDER_CLIENT_SECRET`,
+`KALENDER_SCHLUESSEL_OEFFENTLICH`, `UI_BASIS_URL` und `UI_SESSION_SECRET` (die letzten beiden hat
+die UI normalerweise schon). Dazu braucht `sales-kalender` `KALENDER_SCHLUESSEL_PRIVAT` (nur dort,
+nie in der UI), `GOOGLE_KALENDER_CLIENT_ID` und `GOOGLE_KALENDER_CLIENT_SECRET`.
+
+**Google-Projekt anlegen (Betreiber, in der Google Cloud Console):**
+
+1. Neues Projekt anlegen, **Google Calendar API** aktivieren.
+2. Zustimmungsbildschirm: Nutzertyp **Extern**, Status **„In Produktion“** (bei „Testen“ läuft der
+   Zugang nach 7 Tagen ab). Rechte (Scopes) genau diese zwei, beide nur lesend:
+   `https://www.googleapis.com/auth/calendar.calendarlist.readonly` und
+   `https://www.googleapis.com/auth/calendar.events.readonly`.
+3. OAuth-Client vom Typ **Webanwendung**; als autorisierte Weiterleitungs-URI
+   `<UI_BASIS_URL>/team/kalender/google/zurueck` eintragen (der Wert von `UI_BASIS_URL` aus der
+   `.env` des Ladens, plus dieser Pfad). Client-ID und Client-Secret bereithalten.
+
+**Dann, jeder Schritt mit OK des Betreibers:**
+
+1. `bash deploy/google-kalender-zugang.sh` - fragt Client-ID und Secret verdeckt ab und schreibt
+   `GOOGLE_KALENDER_CLIENT_ID`/`_CLIENT_SECRET` in die `.env` (Sicherung, 600). Für eine andere
+   `.env`: `SALES_ENV_DATEI=<pfad> bash deploy/google-kalender-zugang.sh`.
+2. `bash deploy/kalender-schluessel.sh` - erzeugt einmalig das Schlüsselpaar (RSA-3072) und trägt
+   `KALENDER_SCHLUESSEL_OEFFENTLICH` (UI) und `KALENDER_SCHLUESSEL_PRIVAT` (nur `sales-kalender`)
+   ein. Ist der private Schlüssel schon da, ändert es nichts (ein zweites Paar machte alle
+   versiegelten Zugänge unlesbar).
+3. Die Dienste lesen die `.env` erst nach Neuerzeugen:
+   `docker compose up -d --no-deps --force-recreate sales-ui sales-kalender`
+   (andere Läden mit `--env-file deploy/laeden/<laden>.env`).
+   Prüfen (jeweils nur „da“, nie die Werte selbst ausgeben):
+   `docker exec ${PRAEFIX}-ui sh -c 'test -n "$GOOGLE_KALENDER_CLIENT_ID" && echo da'` (ebenso für
+   `GOOGLE_KALENDER_CLIENT_SECRET` und `KALENDER_SCHLUESSEL_OEFFENTLICH`) und
+   `docker exec ${PRAEFIX}-kalender sh -c 'test -n "$KALENDER_SCHLUESSEL_PRIVAT" && echo da'`
+   (ebenso für die zwei Google-Werte).
+
+**Probe Teil B.** `/team/kalender` → „Mit Google verbinden“ → bei Google zustimmen (zeigt nur
+„Kalender ansehen“) → zurück auf der Seite die Kalender auswählen und je Kalender **Business** oder
+**Privat** festlegen → nach etwa einer Minute stehen die Termine auf `/kalender`.
+
+**Alte iCal-Kopien danach entfernen (empfohlen).** War derselbe Google-Kalender schon über seine
+geheime iCal-Adresse verbunden (z. B. `felix404-gmail`), steht er nach dem Google-Verbinden
+zweimal in der Liste der Ebenen. Die Termine selbst erscheinen nur einmal (gleiche UID, je Person
+zusammengeführt), aber die Ebene gibt es doppelt, und die alte iCal-Adresse liegt weiter in der
+Datenbank. Der Besitzer entfernt die alte iCal-Quelle auf `/team/kalender` („Entfernen“), sobald
+die Google-Quelle Termine zeigt.
+
+**Lehnt Google den Rücksprung ab** (Fehler `redirect_uri_mismatch` o. ä.): anhalten, nicht
+umbauen (Spec §5). Die eingetragene Weiterleitungs-URI muss Zeichen für Zeichen
+`<UI_BASIS_URL>/team/kalender/google/zurueck` sein; geht es auch dann nicht (z. B. verlangt Google
+eine öffentliche Domain), meldet der Betreiber das und am Ablauf wird nichts umgebaut.
+
+### Wenn etwas hakt
+
+| Anzeige / Lage | Bedeutung und Schritt |
+|---|---|
+| Quelle zeigt „Zugang abgelaufen – bitte neu verbinden“ | Google hat den Zugang widerrufen oder er ist abgelaufen. Der Besitzer verbindet auf `/team/kalender` neu. Die Quelle gilt bis dahin als Lücke; der Agent sagt nie „frei“, sondern „unvollständig“. |
+| Quelle zeigt „Kalender-Schlüssel fehlt – Betreiber muss einrichten“ | `KALENDER_SCHLUESSEL_PRIVAT` fehlt im Dienst `sales-kalender`: `bash deploy/kalender-schluessel.sh`, dann `docker compose up -d --no-deps --force-recreate sales-kalender`. |
+| Quelle zeigt „Kalender-Schlüssel unbrauchbar – Betreiber muss einrichten“ | `KALENDER_SCHLUESSEL_PRIVAT` ist gesetzt, aber kaputt (kein base64 oder kein PEM, z. B. beim Kopieren abgeschnitten). Den Wert in der `.env` prüfen (nur Länge/Anfang ansehen, nie ausgeben); ist das Paar verloren, neu erzeugen — dann verbinden alle Nutzer neu (siehe „Schlüsselpaar tauschen“). |
+| Hinweis „Verbundene Kalender nur von … bis … abgeglichen“ | Die Ansicht oder Frage liegt außerhalb des Abgleich-Fensters (30 Tage zurück, 180 voraus). Dort ist nichts abgeglichen; die Antwort ist unvollständig, kein Fehler. |
+| Knopf „Mit Google verbinden“ ausgegraut, Hinweis „Google-Anbindung ist noch nicht eingerichtet“ | Einer der Werte oben fehlt in `sales-ui`; mit den `test -n`-Prüfungen aus Teil B, Schritt 3 den fehlenden finden, nachtragen und `sales-ui` neu erzeugen. |
+| `db/kalender-verbinden.sql` meldete „WARNUNG: keine Rechte vergeben für Schema …“ | Die Datenbank-Rolle (`sales_app` bzw. `sales_app_<name>`) gab es beim Einspielen nicht; Spalten und Tabellen sind angelegt, aber die Rechte fehlen (Abgleich und „Entfernen“ scheitern). Rolle anlegen (`db/laden-anlegen.sql`) bzw. Schema/Rolle prüfen, dann dieselbe Datei erneut einspielen (idempotent) und auf eine Ausgabe ohne WARNUNG achten. |
+| Termine fehlen, Quelle zeigt keinen Fehler | Eine Quelle ohne Lesestand oder älter als 15 Minuten gilt als Lücke. `docker logs --since 10m ${PRAEFIX}-kalender`; läuft der Dienst (`docker ps`)? |
+| „Entfernen“ scheitert | Recht `delete` fehlt: `db/kalender-verbinden.sql` für dieses Schema erneut einspielen (Teil A, Schritt 3). |
+
+**Zugang widerrufen.** Der Nutzer entzieht den Zugriff selbst unter
+`myaccount.google.com/permissions`. Wer auf `/team/kalender` den **letzten** Kalender eines
+Google-Kontos entfernt, vernichtet damit auch den gespeicherten Zugang. Ein Zugang, den nach dem
+Rücksprung niemand übernommen hat (kein Kalender gewählt), wird nach einer Stunde automatisch
+vernichtet.
+
+**Schlüsselpaar tauschen** (Rotation, `docs/10_SECRETS_ROTATION.md`) macht alle gespeicherten
+Google-Zugänge unlesbar: die Nutzer verbinden danach neu.
+
+**Rückweg.** `docker compose stop sales-kalender` hält den Abgleich an; den Code per
+`update.sh`-Rückbau auf den vorherigen Stand zurücksetzen. Die Spalten und Tabellen aus
+`db/kalender-verbinden.sql` können liegen bleiben, **aber das Schema ist danach nicht mehr ganz
+das alte**:
+
+- Der alte Code kann auf dem migrierten Schema **keinen Kalender mehr verbinden**. Sein Speichern
+  nutzt `on conflict (anzeigename)`, und der eindeutige Index auf `anzeigename` ist durch
+  `(besitzer, anzeigename)` ersetzt; außerdem ist `besitzer` Pflicht, und der alte Code setzt ihn
+  nicht. „Verbinden“ endet dann mit einem Fehler. Lesen und Anzeigen der vorhandenen iCal-Quellen
+  gehen weiter.
+- **Rückweg nach Teil B:** Google-Quellen haben keine Adresse, der alte Code würde sie als kaputte
+  iCal-Quellen abrufen und als Lücke melden. Vor dem Rückbau je Schema abschalten (mit OK des
+  Betreibers):
+
+  ```bash
+  docker exec -i debian-supabase-db-1 psql -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
+    -c "update <schema>.kalender_quellen set aktiv = false where art = 'google'"
+  ```
+
+  Beim erneuten Ausrollen schaltet der Besitzer sie auf `/team/kalender` wieder ein
+  („Fortsetzen“).
+
+## Freigabe-Eingang: Tabellen (Plan 2026-11-08)
+
+Drei Tabellen je Schema: `freigabe_eintraege`, `freigabe_auftraege`, `freigabe_schluessel`. Das Skript
+`db/freigabe-eingang.sql` ist idempotent und steht bewusst nicht im Schema-Loop von `db/provision.sql`.
+`sales_app` bekommt select/insert/update (nie delete); in `sales_test` zusaetzlich truncate.
+
+1. **Zuerst auf `sales_test`** (Testschema, jederzeit wiederholbar):
+   `ssh offload-vm 'docker exec -i debian-supabase-db-1 psql -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v schema=sales_test' < db/freigabe-eingang.sql`
+   Pruefen: Exit-Code 0, Schematest `tests/test_freigabe_eingang_tabelle.py` gruen.
+2. **Dann auf `sales`** (Produktion) - erst nach Freigabe durch Felix und Vault-Claim, vor dem Ausliefern des
+   Codes, der die Tabellen nutzt:
+   `ssh offload-vm 'docker exec -i debian-supabase-db-1 psql -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v schema=sales' < db/freigabe-eingang.sql`
+   Weitere Laeden (z. B. `sales_ivan`) nur, wenn dort ebenfalls Eintraege einlaufen sollen.
+
+**Rueckweg.** Die Tabellen sind additiv; ungenutzt koennen sie liegen bleiben.
+
+## Freigabe-Eingang: Betrieb (seit 09.11.2026)
+
+Erzeuger melden über `/api/freigaben/*` (Bearer-Schlüssel je Herkunft, gespeichert nur als sha256). Der Dienst
+`freigabe-bote` (Container `sales-freigabe-bote`, in `KERN_OPTIONAL` von `deploy/update.sh`) gleicht alle 60 s
+mit dem Rowboat-Headless ab (`todo:addSuggestions`, `todo:withdrawSuggestion`, `todo:setChecked`, `todo:get`).
+Annehmen in Rowboat markiert nur, ausgeführt wird nur über `/freigaben` (Stufe 1; Stufe 2 ist gesperrt, POST → 409).
+
+| Herkunft | wer | Schlüsseldatei |
+|---|---|---|
+| `debugger-claw` | VM, `~/debugger-claw` | `~/debugger-claw/freigabe/schluessel` (root, 0400) |
+| `selbstbild` | PC, täglicher Lauf + Aufgabe „Selbstbild Freigabe-Abholer“ | `%LOCALAPPDATA%\VibeMind\selbstbild\freigabe.schluessel` |
+| `werkstatt` | PC, Learning-Claw :8139 | `%LOCALAPPDATA%\VibeMind\learning\freigabe.schluessel` |
+| `sales`, `marketing` | Bote selbst (Entwürfe) | kein Schlüssel |
+
+PC-Umgebung (nur Namen): Selbstbild liest `SELBSTBILD_FREIGABE_URL` und `SELBSTBILD_FREIGABE_SCHLUESSEL_DATEI`
+auf User-Ebene. Der Learning-Claw liest `FREIGABE_URL` und `FREIGABE_SCHLUESSEL_DATEI` aus
+`%LOCALAPPDATA%\VibeMind\learning-claw\learning.env`. Die unpräfixierten Namen nie auf User-Ebene setzen.
+
+**Schlüssel neu anlegen** (ersetzt den alten Hash der Herkunft; der Wert geht nur in die Pipe, ein Terminal wird
+abgelehnt):
+
+    ssh offload-vm 'cd ~/sales-claw && docker compose exec -T sales-ui python -m freigabe_schluessel anlegen selbstbild' \
+      | Set-Content -NoNewline "$env:LOCALAPPDATA\VibeMind\selbstbild\freigabe.schluessel"
+
+Danach die ACL der Datei auf den eigenen Benutzer beschränken. Für `debugger-claw` auf der VM mit
+`| sudo install -o root -g root -m 0400 /dev/stdin ~/debugger-claw/freigabe/schluessel`.
+
+**Rowboat-Schlüssel des Boten** (seit 09.11.2026). Der Bote hält nicht den Rowboat-Generalschlüssel, sondern einen
+engen Schlüssel: nur `POST /rpc/` auf `todo:get`, `todo:plannerSignals`, `todo:addSuggestions`,
+`todo:withdrawSuggestion` und `todo:setChecked`. Alles andere (Chat, Dateien, WebSocket, andere Kanäle) bekommt
+403. Rowboat speichert nur den sha256 in `~/rowboat-data/scoped-keys.json` und liest die Datei bei jeder Anfrage.
+Ein Widerruf wirkt deshalb sofort, ohne Neustart. Der Wert liegt nur in `~/freigabe-bote/rowboat-key` (0600) und
+geht beim Anlegen direkt in die Datei:
+
+    ssh offload-vm 'umask 077; mkdir -p ~/freigabe-bote; cd ~/rowboat-headless && docker compose exec -T rowboat-server \
+      node rowboat-server.cjs scoped-key add freigabe-bote \
+      todo:get,todo:plannerSignals,todo:addSuggestions,todo:withdrawSuggestion,todo:setChecked \
+      > ~/freigabe-bote/rowboat-key && cd ~/sales-claw && docker compose up -d --force-recreate freigabe-bote'
+
+`add` ersetzt einen Schlüssel gleichen Namens, der alte ist danach ungültig. `scoped-key list` zeigt Namen und
+Kanäle, nie den Wert. Zum Widerrufen: `scoped-key remove freigabe-bote`. Braucht der Bote einen neuen Kanal, legt
+man den Schlüssel mit der erweiterten Liste neu an.
+
+**Not-Aus.** `docker compose stop freigabe-bote`. Rowboat bekommt dann nichts Neues mehr, die Sales-UI arbeitet
+weiter. Ein Erzeuger allein: seinen Schlüssel deaktivieren
+(`update sales.freigabe_schluessel set aktiv = false where herkunft = '<herkunft>'`). Seine Anfragen bekommen
+dann 401.
+
+**Prüfen.**
+
+- `docker compose logs --tail 5 freigabe-bote`: je Minute eine Zeile `Durchgang: +n Vorschlaege, …, n ersetzt`.
+  `ersetzt` zählt offene Vorschläge, deren Text sich geändert hat (z. B. ein neuer Titel vom Erzeuger). Der Bote
+  zieht den alten Text zurück und stellt den neuen nur dann ein, wenn das Zurückziehen geklappt hat. Eine schon
+  angenommene Zeile in Rowboat bleibt wie sie ist.
+- Herzschlag: Jeder Durchgang schreibt `sales.einstellungen` → `freigabe_bote_herzschlag`, mit letztem Versuch,
+  letztem Erfolg und Fehler (nur der Typname) seit wann. Ein Durchgang zählt nur dann als Erfolg, wenn auch der
+  Entwurfs-Spiegel durchlief. Liegt der letzte Erfolg mehr als 10 min zurück, wird `deploy/wache.sh`
+  (Abschnitt 21 von `smoke.sh`, nur volle Prüfung) rot, und `/freigaben` zeigt oben einen roten Hinweis. Beim
+  Ausrollen (`--nur-basis`) wird der Herzschlag nicht geprüft, damit ein fehlendes Rowboat keinen Rückbau
+  auslöst. Von Hand lesen:
+
+      docker exec -e SALES_DB_SCHEMA=sales sales-mcp python -c \
+        "import sys;sys.path.insert(0,'/app');import freigabe_eingang as fe;print(fe.herzschlag_pruefzeile())"
+- `docker logs --since 10m sales-ui | grep freigabe-api`: zeigt `herkunft=…`; die Abholer fragen etwa jede Minute
+  (werkstatt) bzw. alle 2 min (selbstbild).
+- Doppelte offene Aufträge je Eintrag (muss 0 sein):
+
+      select count(*) from (select eintrag_id from sales.freigabe_auftraege
+        where status in ('offen','laeuft') group by eintrag_id having count(*) > 1) d;
+
+**Bekannte Fallen.**
+
+- Windows-Python 3.11.0/OpenSSL 1.1.1 meldet „certificate has expired“ für die Let's-Encrypt-Kette der UI
+  (ISRG Root X2 fehlt unter ROOT). Die PC-Clients laden darum zusätzlich `certifi` (la_fungus 54bc239,
+  Learning b8cc069).
+- `deploy/smoke.sh` muss jeden neuen Kern-Container kennen. Fehlt einer, rollt `update.sh` zurück (so am 09.11.
+  zweimal geschehen, behoben 4830dc7).
+- Eine Kursfreigabe ohne Inhaltsänderung braucht `neu_ausliefern: true` in den Details des Eintrags. Fehlt es,
+  bereitet der Knopf „Freigabe-Seite schicken“ eine Seite mit grauem Knopf vor (Learning 3a86283).
+- Ein Entwurf steht beim Versand kurz auf `failed`. Das ist die Claim-Marke von `kanal_dispatch`, kein Fehler.

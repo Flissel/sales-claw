@@ -172,6 +172,7 @@ und vor allem die Schema-Wache — `import server` laesst denselben
 `SystemExit` fliegen, wenn SALES_DB_SCHEMA etwas anderes als
 `sales`/`sales_test` ist.
 """
+import base64
 import contextvars
 import functools
 import hashlib
@@ -191,7 +192,7 @@ import shutil
 import sys
 import time
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import passwort_reset
 import psycopg
@@ -205,13 +206,18 @@ from starlette.routing import Route
 
 import historie
 import kalender
+import kalender_abgleich
 import kalender_sicht
+import google_kalender
+import kalender_sichtbarkeit
 import kanaele
 import mailadresse
 import laden_marke
 import marketing_pult
 import ui_editor
+import ui_freigabe_api
 import ui_freigabe_bewerbung
+import ui_freigabe_eingang
 import ui_freigabe_newsletter
 import ui_empfehlungen
 import ui_newsletter_einwilligung
@@ -220,6 +226,10 @@ import ui_marketing
 import ui_muster
 import ui_plan
 import ui_podcast
+import post_erledigt
+import post_struktur
+import post_tresor
+import ui_post
 import ui_reels
 import struktur
 import ui_kanaele
@@ -646,6 +656,11 @@ class AnmeldeWache:
             # aendern, nur eine Mail an eine HINTERLEGTE Adresse ausloesen.
             await self.app(scope, receive, send)
             return
+        if scope["path"].startswith("/api/freigaben/"):
+            # Freigabe-Eingang fuer Dienste: eigener Bearer-Schluessel je
+            # Herkunft (ui_freigabe_api), keine Sitzung, kein CSRF.
+            await self.app(scope, receive, send)
+            return
         if scope["method"] in ("GET", "HEAD") and _schrift_pfad(scope["path"]):
             # Eigene Schriften, s. _SCHRIFT.
             await self.app(scope, receive, send)
@@ -679,11 +694,16 @@ class AnmeldeWache:
                 and scope["method"] not in ("GET", "HEAD")
                 and scope["path"] not in (
                     "/logout", "/team/kalender/verbinden",
+                    "/team/kalender/bereich", "/team/kalender/pausieren",
                     # W3 (Schlusspruefung 13.09.2026): das Gegenstueck zu
                     # "verbinden" braucht dieselbe Ausnahme — sonst kann
                     # ausgerechnet der Kollege mit der schmalen Rolle die
                     # eigene tote Quelle nicht entfernen.
-                    "/team/kalender/entfernen")):
+                    "/team/kalender/entfernen",
+                    # Task 9: Kalender aus der Google-Auswahl uebernehmen -
+                    # dieselbe Regel wie "verbinden" (Besitzer = die Person).
+                    "/team/kalender/google/uebernehmen",
+                    "/team/kalender/google/abbrechen")):
             antwort = _fehlerseite(
                 403, "Nur Lesen",
                 "Diese Anmeldung darf sehen, aber nicht verändern. "
@@ -782,6 +802,7 @@ def _gesichert_seite(fn):
     async def innen(request):
         _AKTIVER_PFAD.set(request.url.path)
         _AKTIVE_ROLLE.set(str(request.scope.get("benutzer_rolle") or ""))
+        _AKTIVER_BENUTZER.set(str(request.scope.get("benutzer_name") or ""))
         _ANGEMELDET.set(bool(request.scope.get("benutzer_name")))
         try:
             return await fn(request)
@@ -1487,6 +1508,11 @@ nav.reiter a { display: inline-flex; align-items: center; gap: .4rem; min-height
 nav.reiter a[aria-current] { border-bottom-color: var(--akzent);
                              color: var(--akzent_text); font-weight: 700; }
 nav.reiter .zahl { font-size: .8rem; color: var(--gedaempft); }
+/* Freigaben in Reitern (09.11.2026): leere Reiter blass, aber da; die
+   Unter-Reiter eine Stufe kleiner direkt darunter. */
+nav.reiter a.leer { opacity: .55; }
+nav.reiter.unter { margin-top: -.6rem; }
+nav.reiter.unter a { padding: 0 .6rem; font-size: .92rem; }
 /* Medien-Raster (Design-Review S3, Task 5): Karten statt Tabelle. */
 .medienraster { display: grid; gap: 1rem; margin: 0 0 1rem;
                 grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr)); }
@@ -2036,6 +2062,8 @@ th, button, .knopf { overflow-wrap: break-word; }
 # 02.09.2026 nach dem Design-Durchgang, docs/superpowers/plans/
 # 2026-09-02-ui-gruppen-und-heute.md). Reihenfolge ist Teil des Entwurfs.
 _GRUPPEN = (
+    # Ein Posteingang (07.11.2026): Chats und Mails zuoberst, vor „Heute“.
+    ("Eingang", (("/posteingang", "Posteingang"), ("/post", "Mails"))),
     ("Aufgaben", (("/", "Heute"), ("/freigaben", "Freigaben"),
                   ("/wiedervorlagen", "Wiedervorlagen"),
                   ("/einordnung", "Einordnung"),
@@ -2052,7 +2080,6 @@ _GRUPPEN = (
     ("Analyse", (("/kontakte", "Kontaktliste"),
                  ("/pipeline", "Pipeline"),
                  ("/ergebnisse", "Ergebnisse"),
-                 ("/posteingang", "Posteingang"),
                  # Struktur-Graph (Betreiber 20.10.2026: Gruppe Analyse statt
                  # Admin). Sichtbar bleibt er nur fuer freigeben im
                  # Basis-Laden - _pfad_erlaubt filtert (_ADMIN_BASIS_PFADE).
@@ -2114,6 +2141,9 @@ _AKTIVER_PFAD = contextvars.ContextVar("aktiver_pfad", default="")
 # Kontakte/Freigaben/Posteingang, die alle in einem 403 enden — die Rolle
 # soll schmal AUSSEHEN, nicht nur schmal SEIN.
 _AKTIVE_ROLLE = contextvars.ContextVar("aktive_rolle", default="")
+# Name der persoenlichen Anmeldung (leer: gemeinsamer Zugang / keine Anmeldung);
+# nur fuer Stellen ohne Request in der Hand (Menue-Zaehler, Freigaben-Abschnitt).
+_AKTIVER_BENUTZER = contextvars.ContextVar("aktiver_benutzer", default="")
 # Rundgang 27.10.2026: ohne Sitzung (Anmeldemaske, Passwort vergessen) kein
 # Menue - die Zaehler verrieten sonst jedem im Tailnet Kontakt- und
 # Posteingangszahlen.
@@ -2184,8 +2214,10 @@ def _freigaben_zusatz() -> int:
     """Was ausser den Entwuerfen auf /freigaben wartet - EINE Rechnung fuer
     Seitenleiste und Heute (Rundgang 27.10.2026: 11 gegen 5 gegen 19)."""
     modul = sys.modules[__name__]
-    mails = server._q("select count(*) as n from postfach_mails "
-                      "where status = 'vorgeschlagen'")[0]["n"]
+    # postfach_mails hat keinen Besitzer: nur der Container-Besitzer sieht/zaehlt sie.
+    mails = (server._q("select count(*) as n from postfach_mails "
+                       "where status = 'vorgeschlagen'")[0]["n"]
+             if post_struktur.mail_verlauf_erlaubt(_AKTIVER_BENUTZER.get()) else 0)
     return (ui_freigabe_newsletter.anzahl_offen(modul)
             + ui_freigabe_bewerbung.anzahl_offen(modul) + int(mails))
 
@@ -2235,11 +2267,11 @@ def _kopf_zaehler(eintraege, zaehler: dict) -> str:
 def _menue_links(gruppen, zaehler: dict, aktiver_pfad) -> str:
     """Die Gruppen mit ihren Eintraegen und Zaehlern als HTML. Jede Gruppe
     ist ein <details> (Betreiber 24.10.2026, ohne JavaScript): offen sind
-    die Gruppe der aktuellen Seite und "Aufgaben", auf /mehr
+    die Gruppe der aktuellen Seite sowie "Eingang" und "Aufgaben", auf /mehr
     (aktiver_pfad None) alle."""
     teile = []
     for gruppe, eintraege in gruppen:
-        offen = (aktiver_pfad is None or gruppe == "Aufgaben"
+        offen = (aktiver_pfad is None or gruppe in ("Eingang", "Aufgaben")
                  or any(p == aktiver_pfad for p, _ in eintraege))
         teile.append(f'<details class="gruppe"{" open" if offen else ""}>'
                      f'<summary class="gruppenname"><span class="gruppentitel">'
@@ -2418,7 +2450,7 @@ KANAL_ANZEIGE: dict[str, str] = {k: i.anzeige for k, i in kanaele.KANAELE.items(
 
 
 def _badge(kanal) -> str:
-    text = KANAL_ANZEIGE.get(str(kanal), kanal)
+    text = KANAL_ANZEIGE.get(str(kanal), "E-Mail" if kanal == "email" else kanal)
     return f'<span class="badge {_e(kanal)}">{_e(text)}</span>'
 
 
@@ -2700,10 +2732,13 @@ def _schon_angeschrieben(z) -> str:
     return f'<div class="hinweis">Schon angeschrieben: {teile}</div>'
 
 
-def _kontakt_historie_bereich(lead_id, alle: bool) -> str:
+def _kontakt_historie_bereich(lead_id, alle: bool,
+                              betrachter_name: str | None = None) -> str:
     """Zeitleiste „Kontakt-Historie“ (C3): letzte 20, optional alle."""
     try:
-        eintraege = historie.kontakt_historie(lead_id)
+        eintraege = historie.kontakt_historie(
+            lead_id,
+            mit_mail=post_struktur.mail_verlauf_erlaubt(betrachter_name))
     except psycopg.Error:
         return ""
     zeilen = "".join(
@@ -2741,7 +2776,7 @@ def _entwurf_karte_offen(z) -> str:
         f'<b>{_e(z["name"] or "(ohne Kontakt)")}</b>'
         f'<span class="meta" title="{_e(text_normalisiert)}"> — {_e(vorschau)}'
         f'</span></summary>'
-        f'{_devto_hinweis_offen(z)}'
+        f'{_devto_hinweis_offen(z)}{ui_freigabe_eingang.rowboat_vermerk(z["id"])}'
         f'{_entwurf_rumpf(z)}</details>')
 
 
@@ -3720,12 +3755,154 @@ def _kontakt_ruecksprung(form, lead_id: str) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Freigaben in Reitern (Betreiber 09.11.2026: „Genau, so finde ich super.")
+#
+# Vorher eine lange Seite, auf der sich alles mischte (eigene LinkedIn-Beiträge
+# zwischen Direktnachrichten, Kurse neben Debugger-PRs). Jetzt Reiter oben,
+# darunter Unter-Reiter je Art, beide mit offenen Zahlen; leere blass, aber
+# sichtbar. Nur die Anordnung ist neu: Freigeben, Ablehnen, Bearbeiten bleiben,
+# wie sie sind. Ohne JavaScript: jeder Reiter ist ein Link mit ?tab=&art=.
+# ---------------------------------------------------------------------------
+FREIGABE_REITER = (("nachrichten", "Nachrichten"), ("marketing", "Marketing"),
+                   ("bewerbungen", "Bewerbungen"), ("kurse", "Kurse"),
+                   ("technik", "Technik"))
+# Nachrichten an Menschen, in der Reihenfolge des Betreibers.
+_NACHRICHTEN_ARTEN = (("email", "E-Mail"), ("whatsapp", "WhatsApp"),
+                      ("linkedin", "LinkedIn"))
+
+
+def _entwurf_ort(kanal, empfaenger, newsletter=None) -> tuple[str, str]:
+    """(Reiter, Unter-Reiter) eines Entwurfs. Eigene Beiträge (LinkedIn-Profil,
+    die Beitrags-Kanäle) und Newsletter sind Marketing; was an einen Menschen
+    geht, ist eine Nachricht."""
+    kanal = str(kanal or "")
+    if newsletter:
+        return "marketing", "newsletter"
+    if empfaenger == "eigenes-profil" or kanal in kanaele.KANAELE:
+        return "marketing", kanal
+    return "nachrichten", kanal
+
+
+def _freigaben_url(reiter: str, unter: str | None = None, **abfrage) -> str:
+    """Adresse eines Reiters; Nachrichten ohne Unter-Reiter ist /freigaben selbst."""
+    if reiter == "nachrichten" and not unter and not abfrage:
+        return "/freigaben"
+    teile = {"tab": reiter, **({"art": unter} if unter else {}), **abfrage}
+    return "/freigaben?" + urllib.parse.urlencode(teile)
+
+
+def _freigaben_ziel(draft_id) -> str:
+    """Rücksprung nach einer Aktion auf einem Entwurf: in dessen Reiter."""
+    zeilen = server._q("select channel, recipient, newsletter from drafts where id = %s",
+                       (draft_id,))
+    if not zeilen:
+        return "/freigaben"
+    z = zeilen[0]
+    return _freigaben_url(*_entwurf_ort(z["channel"], z["recipient"], z["newsletter"]))
+
+
+def _nach_entwurf(form, draft_id) -> str:
+    """Wie `_ruecksprung`, nur landet "/freigaben" im Reiter des Entwurfs."""
+    ziel = _ruecksprung(form, _FREIGABE_ZIELE, "/freigaben")
+    return _freigaben_ziel(draft_id) if ziel == "/freigaben" else ziel
+
+
+def _freigabe_leiste(eintraege, aktiv, name: str, unter: bool = False) -> str:
+    """Reiterleiste als Links wie `ui_muster.reiter` (aria-current), dazu die
+    Achtung-Farbe für Offenes und blasse leere Reiter.
+    `eintraege`: (schluessel, titel, zahl, leer, url)."""
+    teile = []
+    for schluessel, titel, zahl, leer, url in eintraege:
+        klasse = ' class="leer"' if leer else ""
+        aktuell = ' aria-current="page"' if schluessel == aktiv else ""
+        teile.append(f'<a{klasse} href="{_e(url)}"{aktuell}>{_e(titel)} '
+                     f'<span class="zaehler{" offen" if zahl else ""}">{int(zahl)}</span></a>')
+    return (f'<nav class="reiter{" unter" if unter else ""}" aria-label="{_e(name)}">'
+            f'{"".join(teile)}</nav>')
+
+
+def _entwurf_block(art: str, name: str, offen: list, kaputt: list, wartend: list,
+                   kanal_status: dict) -> str:
+    """Offene Entwürfe einer Art: zu prüfen, fehlgeschlagen, freigegeben."""
+    n_offen = len(offen)
+    teile = [f'<section class="block"><h2>{_badge(art)} {_e(name)} '
+             f'<span class="zaehler{" offen" if n_offen else ""}">{n_offen}'
+             f'</span></h2>']
+    if not (offen or kaputt or wartend):
+        teile.append('<p class="meta">Nichts offen.</p>')
+    teile.append(_newsletter_auswahl(offen))
+    for z in offen:
+        # „Freigeben" und „Ablehnen" stehen in EINEM `.aktionen`-Kasten:
+        # nebeneinander am Desktop, gestapelt ueber die volle Breite am
+        # Handy. Beides ist nicht zurueckzunehmen.
+        teile.append(_entwurf_karte_offen(z))
+    for z in kaputt:
+        teile.append(
+            f'<div class="karte">{_entwurf_kopf(z, "failed")}'
+            f'<div class="text">{_text_html(z["body"])}</div>'
+            f'<div class="fehler">Fehler: {_e(z["error"])}</div>'
+            f'<div class="aktionen">'
+            f'{_formular("erneut-freigeben", z["id"], "Erneut freigeben", "",
+                         checkbox="erneute Freigabe bestätigen")}'
+            # Einschrittig: ein gescheiterter Entwurf ging nachweislich
+            # nicht raus, und verwerfen versendet nichts.
+            f'{_formular("verwerfen", z["id"], "Verwerfen", "gefahr")}'
+            f"</div></div>")
+    for z in wartend:
+        if z["channel"] == "linkedin" and z["recipient"] == "eigenes-profil":
+            stand = ('<div class="hinweis">LinkedIn: der Dienst sales-linkedin '
+                     'veröffentlicht den Beitrag; danach kommen Post-Link und '
+                     'Markier-Liste per WhatsApp.</div>' + _markier_block(z))
+        elif (z["channel"] in kanaele.KANAELE
+              and z["recipient"] == "eigenes-profil"):
+            stand = _kanal_hinweis_freigegeben(z, kanal_status)
+        elif z["channel"] == "linkedin":
+            # Direktnachricht: der Dienst holt nur Beitraege (eigenes-profil),
+            # eine DM geht weiter von Hand raus (Final-Review I2).
+            stand = ('<div class="hinweis">LinkedIn-Direktnachricht: von Hand '
+                     'senden, danach im Chat <code>entwurf_manuell_gesendet</code> '
+                     'melden — automatisch geht hier nichts raus.</div>')
+        else:
+            stand = ('<div class="meta">wartet auf Dispatcher '
+                     '(Versand übernimmt der zuständige Dienst '
+                     'automatisch)</div>')
+        teile.append(
+            f'<div class="karte">{_entwurf_kopf(z, "approved")}'
+            f'<div class="text">{_text_html(z["body"])}</div>'
+            f'<div class="meta">freigegeben: {_e(z["approved_by"])} am '
+            f'{_zeit(z["approved_at"])}</div>{stand}'
+            # ZWEISTUFIG: dieser Knopf fuehrt auf eine Warnseite und
+            # schreibt selbst nichts (aktion_verwerfen).
+            f'<div class="aktionen">'
+            f'{_formular("verwerfen", z["id"], "Verwerfen", "gefahr")}'
+            f'</div></div>')
+    # Verlauf je Art steht seit dem Rundgang 27.10.2026 unter
+    # Monitoring -> Verlauf (/monitoring/verlauf): hier nur, was offen ist.
+    teile.append("</section>")
+    return "".join(teile)
+
+
+def _abschnitt_aus_hinweis(abfrage) -> tuple[str, str | None]:
+    """Reiter für eine Adresse ohne ?tab=: Rücksprünge der Abschnitte tragen
+    ihren Hinweis (bw_*, nl_*, eg_hinweis) und landen so im richtigen Reiter."""
+    schluessel = list(abfrage.keys())
+    if any(k.startswith("bw_") for k in schluessel):
+        return "bewerbungen", None
+    if any(k.startswith("nl_") for k in schluessel):
+        return "marketing", "pult"
+    if "eg_hinweis" in schluessel:
+        return "technik", None
+    return "nachrichten", None
+
+
 @_gesichert_seite
 async def inbox(request):
-    """Freigaben in vier Bloecken — WhatsApp, LinkedIn, E-Mail, Termine —
-    jeder mit seinen offenen Entwuerfen (zu pruefen, fehlgeschlagen,
-    freigegeben) und darunter seinem eigenen Verlauf (UI-Plan Schritt 3,
-    Betreiber 02.09.2026: „damit alles seine Ordnung hat")."""
+    """Freigaben in Reitern (09.11.2026): Nachrichten, Marketing, Bewerbungen,
+    Kurse, Technik - je mit Unter-Reitern und offenen Zahlen. Gezeigt wird nur
+    der gewählte Unter-Reiter; die Zahlen aller anderen stehen in den Leisten."""
+    modul = sys.modules[__name__]
+    abfrage = request.query_params
     pending = server._q(
         "select d.id, d.channel, d.recipient, d.body, d.media_ref, d.subject, d.cc, d.newsletter, d.body_html, "
         "       extract(epoch from (now() - d.created_at)) / 3600 as alter_h, "
@@ -3733,118 +3910,153 @@ async def inbox(request):
         "from drafts d left join leads l on l.id = d.lead_id "
         "where d.status = 'pending' order by d.created_at desc")
     gescheitert = server._q(
-        "select d.id, d.channel, d.recipient, d.body, d.error, d.media_ref, "
+        "select d.id, d.channel, d.recipient, d.body, d.error, d.media_ref, d.newsletter, "
         "       extract(epoch from (now() - d.created_at)) / 3600 as alter_h, "
         "       l.name, l.consent_status "
         "from drafts d left join leads l on l.id = d.lead_id "
         "where d.status = 'failed' order by d.created_at desc limit %s",
         (server.FEHLGESCHLAGEN_MAX,))
     freigegeben = server._q(
-        "select d.id, d.channel, d.recipient, d.body, d.media_ref, "
+        "select d.id, d.channel, d.recipient, d.body, d.media_ref, d.newsletter, "
         "       d.approved_by, d.approved_at, l.name, l.consent_status, "
         "       coalesce(d.approved_at < now() - interval '7 days', false) as zu_alt "
         "from drafts d left join leads l on l.id = d.lead_id "
         "where d.status = 'approved' order by d.created_at desc")
 
-    def je_art(zeilen):
+    def je_ort(zeilen):
         d = {}
         for z in zeilen:
-            d.setdefault(str(z["channel"]), []).append(z)
+            d.setdefault(_entwurf_ort(z["channel"], z["recipient"], z.get("newsletter")),
+                         []).append(z)
         return d
-    offen, kaputt, wartend = je_art(pending), je_art(gescheitert), je_art(freigegeben)
-    bekannt = dict(FREIGABE_ARTEN)
-    # Unbekannte Kanaele (falls je einer dazukommt) haengen sich hinten an,
-    # statt unsichtbar zu bleiben.
-    # Die fuenf Beitrags-Kanaele zeigen ihren Block nur, wenn darin etwas
-    # steht oder der Kanal verbunden ist - fuenf leere Bloecke "Nichts offen"
-    # fuer Kanaele ohne Zugang waeren nur Rauschen.
+    offen, kaputt, wartend = je_ort(pending), je_ort(gescheitert), je_ort(freigegeben)
+    orte = set(offen) | set(kaputt) | set(wartend)
     kanal_status = _kanal_status_sicher()
-    arten = [
-        (a, n) for a, n in FREIGABE_ARTEN
-        if a not in kanaele.KANAELE
-        or offen.get(a) or kaputt.get(a) or wartend.get(a)
-        or (kanal_status.get(a) or {}).get("verbunden")]
-    arten += [
-        (a, a) for a in sorted(set(offen) | set(kaputt) | set(wartend))
-        if a not in bekannt]
+    namen = dict(FREIGABE_ARTEN)
+
+    # Ein Unter-Reiter: art (None = Reiter ohne Unter-Reiter), Titel, Zahl (int
+    # oder Funktion - die Pult-Zahlen stehen erst nach dem Lesen fest), leer
+    # (None = leer, wenn die Zahl 0 ist) und die Funktion, die ihn zeigt.
+    def entwurf_unter(reiter, art, titel, abzeichen=None):
+        ort = (reiter, art)
+        zahl = len(offen.get(ort, [])) + len(kaputt.get(ort, []))
+
+        async def zeigen():
+            return _entwurf_block(abzeichen or art, titel, offen.get(ort, []),
+                                  kaputt.get(ort, []), wartend.get(ort, []), kanal_status)
+        return {"art": art, "titel": titel, "zahl": zahl,
+                "leer": not (zahl or wartend.get(ort)), "zeigen": zeigen}
+
+    def unter(art, titel, zahl, zeigen):
+        return {"art": art, "titel": titel, "zahl": zahl, "leer": None, "zeigen": zeigen}
+
+    reiter = {}
+    # Nachrichten: E-Mail, WhatsApp, LinkedIn - unbekannte Kanaele (falls je
+    # einer dazukommt) hinten, statt unsichtbar zu bleiben -, Mails aufraeumen.
+    nachrichten = [entwurf_unter("nachrichten", a, t) for a, t in _NACHRICHTEN_ARTEN]
+    nachrichten += [entwurf_unter("nachrichten", a, a) for a in sorted(
+        a for r, a in orte if r == "nachrichten" and a not in dict(_NACHRICHTEN_ARTEN))]
+    if (_AKTIVE_ROLLE.get() not in ("lesen", "kalender")
+            and post_struktur.mail_verlauf_erlaubt(_AKTIVER_BENUTZER.get())):
+        n_mails = int(server._q("select count(*) as n from postfach_mails "
+                                "where status = 'vorgeschlagen'")[0]["n"])
+
+        async def mails():
+            return _mails_aufraeumen_abschnitt()
+        nachrichten.append(unter("aufraeumen", "Mails aufräumen", n_mails, mails))
+    reiter["nachrichten"] = nachrichten
+
+    # Marketing: eigene Beitraege je Kanal, Newsletter, das Marketing-Pult. Die
+    # Beitrags-Kanaele zeigen sich nur, wenn darin etwas steht oder der Kanal
+    # verbunden ist - leere Reiter fuer Kanaele ohne Zugang waeren nur Rauschen.
+    marketing = [entwurf_unter("marketing", "linkedin", "LinkedIn-Beiträge")]
+    marketing += [entwurf_unter("marketing", a, namen.get(a, a)) for a in kanaele.KANAELE
+                  if ("marketing", a) in orte
+                  or (kanal_status.get(a) or {}).get("verbunden")]
+    bekannt = {"linkedin", "newsletter", *kanaele.KANAELE}
+    marketing += [entwurf_unter("marketing", a, a) for a in sorted(
+        a for r, a in orte if r == "marketing" and a not in bekannt)]
+    marketing.append(entwurf_unter("marketing", "newsletter", "Newsletter", abzeichen="email"))
+    if ui_freigabe_newsletter.sichtbar(modul):
+        async def pult():
+            return await ui_freigabe_newsletter.abschnitt(modul, request, verlauf=False)
+        marketing.append(unter("pult", "Marketing-Pult",
+                               lambda: ui_freigabe_newsletter.anzahl_offen(modul), pult))
+    reiter["marketing"] = marketing
+
+    if ui_freigabe_bewerbung.sichtbar(modul):
+        async def bewerbungen():
+            return await ui_freigabe_bewerbung.abschnitt(modul, request, verlauf=False)
+        reiter["bewerbungen"] = [unter(None, "Bewerbungen",
+                                       lambda: ui_freigabe_bewerbung.anzahl_offen(modul),
+                                       bewerbungen)]
+
+    # Kurse und Technik teilen sich den Freigabe-Eingang (Debugger-PRs,
+    # Rueckfragen der Bots, Kursfreigaben); ohne seine Tabellen fehlen beide.
+    eingang = ui_freigabe_eingang.zaehlen()
+    if eingang is not None:
+        for art, wo, unter_art, titel in ui_freigabe_eingang.REITER:
+            async def zeigen(art=art, titel=titel, wo=wo):
+                return await ui_freigabe_eingang.abschnitt(
+                    modul, request, arten=(art,), titel=titel, stufe2=(wo == "technik"))
+            reiter.setdefault(wo, []).append(unter(unter_art, titel, eingang[art], zeigen))
+
+    def zahl(u) -> int:
+        return int(u["zahl"]() if callable(u["zahl"]) else u["zahl"])
+
+    gewaehlt = str(abfrage.get("tab") or "")
+    vorgabe_unter = None
+    if gewaehlt not in reiter:
+        gewaehlt, vorgabe_unter = _abschnitt_aus_hinweis(abfrage)
+        if gewaehlt not in reiter:
+            gewaehlt, vorgabe_unter = "nachrichten", None
+    unterreiter = reiter[gewaehlt]
+    arten = [u["art"] for u in unterreiter]
+    wahl = str(abfrage.get("art") or "")
+    explizit = wahl in arten
+    if not explizit:
+        # Vorgabe: der erste Unter-Reiter mit Offenem, sonst der erste, in dem
+        # ueberhaupt etwas steht (freigegeben, wartet), sonst der erste.
+        wahl = vorgabe_unter if vorgabe_unter in arten else next(
+            (u["art"] for u in unterreiter if zahl(u) > 0), next(
+                (u["art"] for u in unterreiter if u["leer"] is False), arten[0]))
+    auswahl = next(u for u in unterreiter if u["art"] == wahl)
+    inhalt = await auswahl["zeigen"]()
+
+    # Erst jetzt zaehlen: das Lesen eben hat die Pult-Zahlen aufgefrischt.
+    def stand(u) -> tuple[int, bool]:
+        n = zahl(u)
+        return n, (n == 0) if u["leer"] is None else bool(u["leer"])
+    leisten = []
+    for schluessel, titel in FREIGABE_REITER:
+        if schluessel not in reiter:
+            continue
+        staende = [stand(u) for u in reiter[schluessel]]
+        leisten.append((schluessel, titel, sum(n for n, _ in staende),
+                        all(leer for _, leer in staende), _freigaben_url(schluessel)))
+    unter_leiste = ""
+    if not (len(unterreiter) == 1 and unterreiter[0]["art"] is None):
+        unter_leiste = _freigabe_leiste(
+            [(u["art"], u["titel"], *stand(u), _freigaben_url(gewaehlt, u["art"]))
+             for u in unterreiter],
+            wahl, dict(FREIGABE_REITER)[gewaehlt], unter=True)
 
     # Merge 12.09.2026: inhaltlich die Fassung der Konferenz-Linie (der Satz
     # ueber das fehlende Neuladen gehoert hierher), aber in echten Umlauten —
     # Stufe 1 hat die ASCII-Umschreibungen in ALLEN Anzeigetexten beseitigt,
     # und der Waechter-Test in test_darstellung.py laesst „Verlaeufe" hier
     # nicht mehr durch. Beides behalten heisst: ihr Text, meine Schreibweise.
-    teile = ['<p class="meta">Jede Art hat ihre Liste und ihren Verlauf. '
-             'Freigeben heißt senden; nichts geht ohne dich raus. '
-             'Diese Seite lädt nicht von selbst neu, damit dir beim '
-             'Tippen nichts verloren geht — '
-             '<a href="/freigaben">neu laden</a>, wenn du Neues erwartest.</p>']
-    for art, name in arten:
-        n_offen = len(offen.get(art, []))
-        teile.append(
-            f'<section class="block"><h2>{_badge(art)} {_e(name)} '
-            f'<span class="zaehler{" offen" if n_offen else ""}">{n_offen}'
-            f'</span></h2>')
-        if not (offen.get(art) or kaputt.get(art) or wartend.get(art)):
-            teile.append('<p class="meta">Nichts offen.</p>')
-        teile.append(_newsletter_auswahl(offen.get(art, [])))
-        for z in offen.get(art, []):
-            # „Freigeben" und „Ablehnen" stehen in EINEM `.aktionen`-Kasten:
-            # nebeneinander am Desktop, gestapelt ueber die volle Breite am
-            # Handy. Beides ist nicht zurueckzunehmen.
-            teile.append(_entwurf_karte_offen(z))
-        for z in kaputt.get(art, []):
-            teile.append(
-                f'<div class="karte">{_entwurf_kopf(z, "failed")}'
-                f'<div class="text">{_text_html(z["body"])}</div>'
-                f'<div class="fehler">Fehler: {_e(z["error"])}</div>'
-                f'<div class="aktionen">'
-                f'{_formular("erneut-freigeben", z["id"], "Erneut freigeben", "",
-                             checkbox="erneute Freigabe bestätigen")}'
-                # Einschrittig: ein gescheiterter Entwurf ging nachweislich
-                # nicht raus, und verwerfen versendet nichts.
-                f'{_formular("verwerfen", z["id"], "Verwerfen", "gefahr")}'
-                f"</div></div>")
-        for z in wartend.get(art, []):
-            if z["channel"] == "linkedin" and z["recipient"] == "eigenes-profil":
-                stand = ('<div class="hinweis">LinkedIn: der Dienst sales-linkedin '
-                         'veröffentlicht den Beitrag; danach kommen Post-Link und '
-                         'Markier-Liste per WhatsApp.</div>' + _markier_block(z))
-            elif (z["channel"] in kanaele.KANAELE
-                  and z["recipient"] == "eigenes-profil"):
-                stand = _kanal_hinweis_freigegeben(z, kanal_status)
-            elif z["channel"] == "linkedin":
-                # Direktnachricht: der Dienst holt nur Beitraege (eigenes-profil),
-                # eine DM geht weiter von Hand raus (Final-Review I2).
-                stand = ('<div class="hinweis">LinkedIn-Direktnachricht: von Hand '
-                         'senden, danach im Chat <code>entwurf_manuell_gesendet</code> '
-                         'melden — automatisch geht hier nichts raus.</div>')
-            else:
-                stand = ('<div class="meta">wartet auf Dispatcher '
-                         '(Versand übernimmt der zuständige Dienst '
-                         'automatisch)</div>')
-            teile.append(
-                f'<div class="karte">{_entwurf_kopf(z, "approved")}'
-                f'<div class="text">{_text_html(z["body"])}</div>'
-                f'<div class="meta">freigegeben: {_e(z["approved_by"])} am '
-                f'{_zeit(z["approved_at"])}</div>{stand}'
-                # ZWEISTUFIG: dieser Knopf fuehrt auf eine Warnseite und
-                # schreibt selbst nichts (aktion_verwerfen).
-                f'<div class="aktionen">'
-                f'{_formular("verwerfen", z["id"], "Verwerfen", "gefahr")}'
-                f'</div></div>')
-        # Verlauf je Art steht seit dem Rundgang 27.10.2026 unter
-        # Monitoring -> Verlauf (/monitoring/verlauf): hier nur, was offen ist.
-        teile.append("</section>")
-
+    # „neu laden" bleibt im gewaehlten Reiter.
+    hier = _freigaben_url(gewaehlt, wahl if explizit else None)
+    teile = [f'<p class="meta">Jede Art hat ihre Liste und ihren Verlauf. '
+             f'Freigeben heißt senden; nichts geht ohne dich raus. '
+             f'Diese Seite lädt nicht von selbst neu, damit dir beim '
+             f'Tippen nichts verloren geht — '
+             f'<a href="{_e(hier)}">neu laden</a>, wenn du Neues erwartest.</p>',
+             ui_freigabe_eingang.abgleich_zeile(),
+             _freigabe_leiste(leisten, gewaehlt, "Freigaben"), unter_leiste, inhalt]
     # Termine sind keine Freigaben (Rundgang 27.10.2026): Termine ohne Datum
     # gibt es nicht, ihr Verlauf steht unter Monitoring -> Verlauf.
-    teile.append(_mails_aufraeumen_abschnitt())
-    # Marketing (R7): eingereichte Inhalte aller Firmen und Arten.
-    teile.append(await ui_freigabe_newsletter.abschnitt(
-        sys.modules[__name__], request, verlauf=False))
-    # Bewerbungen (Hermes H1): was der Bewerbungs-Bot zur Freigabe vorlegt.
-    teile.append(await ui_freigabe_bewerbung.abschnitt(
-        sys.modules[__name__], request, verlauf=False))
     # KEIN Auto-Refresh mehr (Betreiber 03.09.2026: „ich bearbeite einen Text
     # und werde wie bei einem Reload in die Mitte der Seite gezogen") — auf
     # dieser Seite wird getippt, und ein Neuladen wirft den Text weg.
@@ -4086,7 +4298,7 @@ async def aktion_freigeben_auswahl(request):
         fehler = _eines_freigeben(draft_id, str(form.get(f"stand_{draft_id}") or ""), _ui_akteur(request))
         if fehler is not None:
             return fehler
-    return RedirectResponse("/freigaben", status_code=303)
+    return RedirectResponse(_freigaben_url("marketing", "newsletter"), status_code=303)
 
 
 @_gesichert_seite
@@ -4152,7 +4364,7 @@ async def aktion_freigeben(request):
     _freigabe_loggen(zeilen[0])
     if zeilen[0]["lead_id"]:
         server.ignorieren_aufheben_sicher(zeilen[0]["lead_id"])
-    return RedirectResponse(_ruecksprung(form, _FREIGABE_ZIELE, "/freigaben"),
+    return RedirectResponse(_nach_entwurf(form, draft_id),
                             status_code=303)
 
 
@@ -4175,7 +4387,7 @@ async def aktion_bearbeiten(request):
         cc=(str(form.get("cc") or "")[:CC_FELD_MAX] if "cc" in form else None)))
     if "fehler" in antwort:
         return _fehlerseite(409, "Nicht geändert", _e(antwort["fehler"]))
-    return RedirectResponse("/freigaben", status_code=303)
+    return RedirectResponse(_freigaben_ziel(draft_id), status_code=303)
 
 
 @_gesichert_seite
@@ -4196,7 +4408,7 @@ async def aktion_ablehnen(request):
               (z["lead_id"], server._json({"draft_id": str(z["id"]),
                                            "kanal": z["channel"],
                                            "weg": "ui"})))
-    return RedirectResponse(_ruecksprung(form, _FREIGABE_ZIELE, "/freigaben"),
+    return RedirectResponse(_nach_entwurf(form, draft_id),
                             status_code=303)
 
 
@@ -4245,7 +4457,7 @@ async def aktion_erneut_freigeben(request):
                 f"bestaetigt=True). error: {_e(error)}")
         return _statusfehler(draft_id, "failed")
     _freigabe_loggen(zeilen[0], erneut=True)
-    return RedirectResponse("/freigaben", status_code=303)
+    return RedirectResponse(_freigaben_ziel(draft_id), status_code=303)
 
 
 # ---------------------------------------------------------------------------
@@ -4382,7 +4594,7 @@ async def aktion_verwerfen(request):
     if not getroffen:
         return _statusfehler(draft_id, "failed")
     _verwerfen_loggen(getroffen[0], "failed")
-    return RedirectResponse("/freigaben", status_code=303)
+    return RedirectResponse(_freigaben_ziel(draft_id), status_code=303)
 
 
 @_gesichert_seite
@@ -4425,7 +4637,7 @@ async def aktion_verwerfen_bestaetigen(request):
     if not getroffen:
         return _statusfehler(draft_id, "approved")
     _verwerfen_loggen(getroffen[0], "approved")
-    return RedirectResponse("/freigaben", status_code=303)
+    return RedirectResponse(_freigaben_ziel(draft_id), status_code=303)
 
 
 def _verwerfen_statusfehler(z) -> HTMLResponse:
@@ -6158,44 +6370,25 @@ def _beginn_aus_payload(payload):
     return roh.replace(tzinfo=ZEITZONE) if ZEITZONE else roh
 
 
-def _team_ebenen() -> str:
-    """Team-Kalender je Mitglied an/aus (Betreiber 28.10.2026): eingeblendet
-    als „belegt" im Kalender und fuer die Planung des Agenten genutzt."""
-    if _AKTIVE_ROLLE.get() in ("lesen", "kalender"):
-        return ""
+def _kalender_betrachter() -> str:
+    """Wer den Kalender gerade ansieht: die angemeldete Person, ohne
+    Anmeldung der Laden-Besitzer (Spec §2.2)."""
+    return kalender_sicht.betrachter(_AKTIVER_BENUTZER.get())
+
+
+def _freie_termine(betrachter: str, tage_voraus: int = 60) -> list:
+    """„Frei" markierte Termine (Geburtstage, TRANSP:TRANSPARENT) fuer die
+    Liste: sichtbar, aber nie belegt - `server.belegungen()` laesst sie weg."""
+    jetzt = datetime.now(timezone.utc)
     try:
-        quellen = server.kalenderquellen_lesen(nur_aktive=True)
-    except psycopg.Error:
-        return ""
-    if not quellen:
-        return ('<p class="meta">Kein Team-Kalender verbunden — '
-                '<a href="/team/kalender">Kalender verbinden</a>.</p>')
-    aus = set(server.team_kalender_aus())
-    felder = "".join(
-        f'<label><input type="checkbox" name="an" value="{_e(q["anzeigename"])}"'
-        f'{"" if q["anzeigename"] in aus else " checked"}> {_e(q["anzeigename"])}</label> '
-        for q in quellen)
-    return (f'<form class="karte" method="post" action="/kalender/team">'
-            f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
-            f'<b>Team-Ebenen</b> <span class="meta">— nur belegt/frei; '
-            f'eingeschaltete plant der Agent mit.</span><div>{felder}'
-            f'<button>Übernehmen</button></div></form>')
-
-
-@_gesichert_seite
-async def aktion_team_ebenen(request):
-    form = await request.form()
-    if not _csrf_ok(form):
-        return _fehlerseite(403, "CSRF-Token fehlt oder ist ungültig",
-                            "Nichts geändert. Seite neu laden.")
-    if _AKTIVE_ROLLE.get() in ("lesen", "kalender"):
-        return _fehlerseite(403, "Nicht für diese Anmeldung",
-                            "Nur die Rolle „freigeben“ schaltet Team-Ebenen.")
-    an = set(form.getlist("an"))
-    alle = [q["anzeigename"] for q in server.kalenderquellen_lesen(nur_aktive=True)]
-    server.team_kalender_aus_setzen([n for n in alle if n not in an],
-                                    _ui_akteur(request))
-    return RedirectResponse("/kalender", status_code=303)
+        termine, _ = server.kalendertermine_lesen(
+            jetzt, jetzt + timedelta(days=tage_voraus), betrachter)
+    except Exception as e:                 # noqa: BLE001 — die Liste faellt nie deswegen aus
+        LOG.warning("freie Termine nicht lesbar: %s", type(e).__name__)
+        return []
+    return [{"beginn": t["beginn"], "ende": t["ende"], "titel": t["titel"],
+             "ort": t["ort"], "quelle": t["quelle"], "frei": True}
+            for t in termine if t["frei"]]
 
 
 def kalender_abschnitte() -> str:
@@ -6227,7 +6420,14 @@ def kalender_abschnitte() -> str:
     # seiner Quelle (server.EIGENE_QUELLE fuer den eigenen). Schweigt eine
     # Quelle, steht sie in `luecken` und wird unten als Hinweis genannt statt
     # stillschweigend als frei zu gelten (Spec §2.2).
-    eintraege, luecken = server.belegungen()
+    # Diese Seite sieht die angemeldete Person (nicht der Agent/Laden-
+    # Besitzer): belegungen() maskiert fuer sie schon beim Zusammenfuehren
+    # Doppelter - nachtraeglich ginge die Maske eines Business+Privat-Paars
+    # verloren (Spec §6.4, Final-Fix I1).
+    betrachter = _kalender_betrachter()
+    eintraege, luecken = server.belegungen(betrachter=betrachter)
+    eintraege = sorted(eintraege + _freie_termine(betrachter),
+                       key=lambda e: e["beginn"])
 
     # Aufgabe 4: dieselbe Buchung steht oft in beiden Quellen — einmal im
     # eigenen Store (mit Kontaktbezug), einmal im CalDAV-Import. Betreiber-
@@ -6331,7 +6531,7 @@ def kalender_abschnitte() -> str:
 
     # Das Monatsgitter (01.09.2026) ist seit 14.10.2026 durch die Wochen-/
     # Monatsansicht des Pakets ersetzt (ui_kalender, R5).
-    teile = [_team_ebenen()]
+    teile = []
 
     kopf = ["Datum", "Zeit", "Kontakt", "Thema", "Ort", "Ändern"]
     teile.append(f"<h2>Kommende Termine ({len(kommend)})</h2>")
@@ -6376,8 +6576,9 @@ def kalender_abschnitte() -> str:
         # `server.belegungen()` schon fuer den Chat (Aufgabe 3/4) durchsetzt,
         # hier fuer die Oberflaeche. Eine Luecke, die niemand sieht, ist
         # schlimmer als keine Sicht.
-        wer = "; ".join(f"{_e(l['quelle'])} ({_e(l['grund'])})"
-                        for l in luecken)
+        wer = "; ".join(
+            "{} ({})".format(*map(_e, kalender_sichtbarkeit.luecke_anzeige(l, betrachter)))
+            for l in luecken)
         teile.append(f'<p class="hinweis">Nicht abrufbar: {wer}. Dort '
                      f'können Termine liegen, die hier fehlen.</p>')
     if (not eintraege and not luecken and not kalender.konfiguration()[0]
@@ -6398,7 +6599,9 @@ def kalender_abschnitte() -> str:
     else:
         teile.append(_tabelle(
             ["Wann", "Titel", "Ort", "Quelle"],
-            [[_zeit(t["beginn"]), _e(t["titel"]), _e(t["ort"]),
+            [[_zeit(t["beginn"]),
+              _e(t["titel"]) + (' <span class="meta">(frei)</span>' if t.get("frei") else ""),
+              _e(t["ort"]),
               f'<span class="badge">{_e(t["quelle"])}</span>']
              for t in eintraege[:100]]))
 
@@ -6653,38 +6856,110 @@ async def aktion_tailscale_einladen(request):
     return RedirectResponse("/team/tailscale-einladen", status_code=303)
 
 
+_BEREICHE = (("business", "Business"), ("privat", "Privat"))
+
+
+def _kalender_besitzer(request) -> "tuple[str, str | None]":
+    """(Besitzer fuer NEUE Quellen, Filter fuer Aenderungen).
+
+    Angemeldet: die Person selbst; die Rolle `freigeben` darf alle Quellen
+    pflegen (Filter None). Ohne Anmeldung (Uebergangszugang) handelt der
+    Laden-Besitzer; ist keiner eingetragen, ist der Besitzer leer und der
+    Aufrufer verweigert das Speichern."""
+    name = str(request.scope.get("benutzer_name") or "")
+    rolle = str(request.scope.get("benutzer_rolle") or "")
+    if name:
+        return name, (None if rolle == "freigeben" else name)
+    eigner = post_struktur.container_besitzer()
+    return eigner, (eigner or None)
+
+
+def _kalender_stand(quelle: dict) -> str:
+    # abgeglichen_am, nicht zuletzt_gelesen: dieselbe Frische, nach der die
+    # Quelle als Luecke zaehlt (Final-Fix I2).
+    stand = (f"zuletzt gelesen {_zeit(quelle['abgeglichen_am'])}"
+             if quelle["abgeglichen_am"] else "noch nicht gelesen")
+    if quelle["letzter_fehler"]:
+        stand += f" — {_e(quelle['letzter_fehler'])}"
+    elif quelle["termine_zuletzt"] is not None:
+        stand += f", {quelle['termine_zuletzt']} Termine"
+    return stand
+
+
+def _kalender_entfernt(quelle: dict) -> bool:
+    return (not quelle["aktiv"] and quelle["art"] == "ics"
+            and not quelle["url"])
+
+
+def _kalender_knopf(pfad: str, quelle_id: str, felder: str, text: str,
+                    gefahr: bool = False) -> str:
+    klasse = "aktion gefahr" if gefahr else "aktion"
+    return (f'<form class="{klasse}" method="post" action="{pfad}">'
+            f'<input type="hidden" name="quelle_id" value="{_e(quelle_id)}">'
+            f'<input type="hidden" name="csrf" value="{_e(CSRF_TOKEN)}">'
+            f'{felder}<button{" class=gefahr" if gefahr else ""}>'
+            f'{_e(text)}</button></form>')
+
+
+def _kalender_aktionen(quelle: dict) -> str:
+    if _kalender_entfernt(quelle):
+        return '<span class="meta">entfernt</span>'
+    qid = str(quelle["id"])
+    optionen = "".join(
+        f'<option value="{w}"{" selected" if w == quelle["bereich"] else ""}>'
+        f'{_e(t)}</option>' for w, t in _BEREICHE)
+    bereich = _kalender_knopf(
+        "/team/kalender/bereich", qid,
+        f'<select name="bereich" aria-label="Bereich">{optionen}</select>',
+        "Bereich ändern")
+    pause = (_kalender_knopf("/team/kalender/pausieren", qid,
+                             '<input type="hidden" name="aktiv" value="0">',
+                             "Pausieren")
+             if quelle["aktiv"] else
+             _kalender_knopf("/team/kalender/pausieren", qid,
+                             '<input type="hidden" name="aktiv" value="1">',
+                             "Fortsetzen"))
+    entfernen = _kalender_knopf("/team/kalender/entfernen", qid, "",
+                                "Entfernen", gefahr=True)
+    return bereich + pause + entfernen
+
+
+def _kalender_bereichsname(bereich: str) -> str:
+    return dict(_BEREICHE).get(bereich, bereich)
+
+
 @_gesichert_seite
 async def team_kalender(request):
     """Die Seite, über die ein Kollege seinen Kalender verbindet."""
+    besitzer, _filter = _kalender_besitzer(request)
+    alle = server.kalenderquellen_lesen(nur_aktive=False)
+    # Die Adresse steht hier NICHT (Spec §4).
+    meine = [q for q in alle if q["besitzer"] == besitzer]
     zeilen = []
-    for quelle in server.kalenderquellen_lesen(nur_aktive=False):
-        stand = (f"zuletzt gelesen {_zeit(quelle['zuletzt_gelesen'])}"
-                 if quelle["zuletzt_gelesen"] else "noch nicht gelesen")
-        if quelle["letzter_fehler"]:
-            stand += f" — {_e(quelle['letzter_fehler'])}"
-        elif quelle["termine_zuletzt"] is not None:
-            stand += f", {quelle['termine_zuletzt']} Termine"
-        # Die Adresse steht hier NICHT (Spec §4).
-        # W3 (Schlusspruefung 13.09.2026): kalenderquelle_entfernen() hatte
-        # bisher keinen Aufrufer ausserhalb der Tests — setzte ein Kollege
-        # seine Adresse beim Anbieter zurueck (den Widerruf, den diese Seite
-        # ihm oben ausdruecklich anbietet), blieb die Zeile aktiv und schlug
-        # dauerhaft fehl. Je aktiver Quelle ein Knopf, nach dem Muster der
-        # uebrigen Aktionen (CSRF-Marke, einzelner POST, kein Bestaetigungs-
-        # schritt — das Entfernen ist ein Gegen-Ereignis, kein Hard-Delete:
-        # unter demselben Namen neu verbinden weckt die Zeile von selbst
-        # wieder auf, siehe kalenderquelle_entfernen()s Docstring).
-        aktion = (
-            f'<form class="aktion gefahr" method="post" '
-            f'action="/team/kalender/entfernen">'
-            f'<input type="hidden" name="quelle_id" '
-            f'value="{_e(str(quelle["id"]))}">'
-            f'<input type="hidden" name="csrf" value="{_e(CSRF_TOKEN)}">'
-            f'<button class="gefahr">Entfernen</button></form>'
-            if quelle["aktiv"] else '<span class="meta">entfernt</span>')
-        zeilen.append([_e(quelle["anzeigename"]), stand, aktion])
-    tabelle = (_tabelle(["Name", "Stand", "Aktion"], zeilen) if zeilen else
-               '<p class="meta">Noch kein Kalender verbunden.</p>')
+    for q in meine:
+        stand = _kalender_stand(q)
+        if not q["aktiv"] and not _kalender_entfernt(q):
+            stand = "pausiert — " + stand
+        zeilen.append([_e(q["anzeigename"]),
+                       _e(_kalender_bereichsname(q["bereich"])), stand,
+                       _kalender_aktionen(q)])
+    meine_tabelle = (
+        _tabelle(["Name", "Bereich", "Stand", "Aktion"], zeilen) if zeilen
+        else '<p class="meta">Noch kein Kalender verbunden.</p>')
+
+    team = ""
+    if str(request.scope.get("benutzer_rolle") or "") == "freigeben":
+        team_zeilen = [[_e(q["anzeigename"]), _e(q["besitzer"]),
+                        _e(_kalender_bereichsname(q["bereich"])),
+                        ("entfernt" if _kalender_entfernt(q) else
+                         ("pausiert — " if not q["aktiv"] else "")
+                         + _kalender_stand(q)),
+                        _kalender_aktionen(q)]
+                       for q in alle]
+        team = ("<h2>Kalender im Team</h2>" + (
+            _tabelle(["Name", "Besitzer", "Bereich", "Stand", "Aktion"],
+                     team_zeilen) if team_zeilen else
+            '<p class="meta">Noch kein Kalender verbunden.</p>'))
 
     # Neuer Tab fuer die Anbieter-Seite: wer dort die Adresse kopiert, soll
     # hierher zurueckkommen, ohne diese Seite neu suchen zu muessen.
@@ -6694,12 +6969,19 @@ async def team_kalender(request):
         f'Einstellungen öffnen ↗</a></p><p class="meta">{weg}</p></details>'
         for name, link, weg in _ANBIETER_WEGE)
 
-    # Vorbelegt mit dem angemeldeten Namen (ein Kollege mit Rolle
-    # `kalender` verbindet fast immer seinen eigenen), aenderbar fuer den
-    # Betreiber, der fuer jemanden verbindet. Der Sammelstempel ohne
-    # Anmeldung ist kein Name und bleibt deshalb leer.
+    # Vorbelegt mit dem angemeldeten Namen als ANZEIGENAME; der Besitzer ist
+    # immer die angemeldete Person, nicht dieses Feld.
     akteur = _ui_akteur(request)
     vorbelegt = "" if akteur == "betreiber-ui" else akteur
+    bereich_wahl = (
+        '<fieldset class="feld"><legend>Ist das ein Business- oder ein '
+        'Privat-Kalender?</legend>'
+        '<label class="haken"><input type="radio" name="bereich" '
+        'value="business" required> Business</label> '
+        '<label class="haken"><input type="radio" name="bereich" '
+        'value="privat" required> Privat</label>'
+        '<p class="meta">Privat: Kollegen und der Agent sehen nur, dass du '
+        'belegt bist, nicht was.</p></fieldset>')
     formular = (
         f'<form method="post" action="/team/kalender/verbinden">'
         f'<input type="hidden" name="csrf" value="{_e(CSRF_TOKEN)}">'
@@ -6709,18 +6991,329 @@ async def team_kalender(request):
         f'<li><label class="feld">Adresse hier einfügen'
         f'<input name="url" type="text" required autocomplete="off" '
         f'placeholder="https://…/basic.ics"></label></li>'
-        f'<li><label class="feld">Wessen Kalender ist das?'
+        f'<li><label class="feld">Wie soll dieser Kalender heißen?'
         f'<input name="name" type="text" required value="{_e(vorbelegt)}">'
         f'</label></li>'
+        f'<li>{bereich_wahl}</li>'
         f'</ol>'
         f'<button class="primaer" type="submit">Verbinden und prüfen</button>'
         f'</form>')
 
+    google = _google_abschnitt()
+    if any(q["art"] == "google" for q in meine):
+        meine_tabelle += ('<p class="meta">Zugriff bei Google entziehen: '
+                          'myaccount.google.com/permissions</p>')
     return _seite("Kalender verbinden",
-                  '<p class="meta">Drei Schritte, dann wird sofort geprüft, '
-                  'ob es klappt. Du kannst die Adresse bei deinem Anbieter '
-                  'jederzeit zurücksetzen — dann endet der Zugriff sofort.</p>'
-                  + formular + '<h2>Verbunden</h2>' + tabelle)
+                  '<p class="meta">Wähle bei jedem Kalender, ob er Business '
+                  'oder Privat ist. Du kannst die Adresse bei deinem '
+                  'Anbieter jederzeit zurücksetzen — dann endet der Zugriff '
+                  'sofort.</p>'
+                  + google + '<h2>Meine Kalender</h2>' + meine_tabelle
+                  + '<h2>Andere Anbieter (Adresse)</h2>' + formular + team)
+
+
+# --- Mit Google verbinden (Task 9, Spec 2026-11-08 §6) -----------------------
+# Ablauf: start -> Google -> zurueck (Code tauschen, Token VERSIEGELT ablegen,
+# Redirect auf die Auswahl, damit der Code nicht in der Adresszeile bleibt)
+# -> auswahl -> uebernehmen (legt nur Quellen an; den Abruf macht der
+# Abgleich-Dienst, die UI hat den privaten Schluessel nicht).
+# Geheimnisse: Code, Access-/Refresh-Token und das Versiegelte erscheinen in
+# keiner Seite, keinem Redirect und keinem Log; geloggt wird nur der Typ.
+
+GOOGLE_STATE_SEKUNDEN = 600
+_GOOGLE_ENV = ("GOOGLE_KALENDER_CLIENT_ID", "GOOGLE_KALENDER_CLIENT_SECRET",
+               "KALENDER_SCHLUESSEL_OEFFENTLICH", "UI_BASIS_URL")
+_GOOGLE_SCHLUESSEL = "KALENDER_SCHLUESSEL_OEFFENTLICH"
+_GOOGLE_NICHT_BEREIT = "Google-Anbindung ist noch nicht eingerichtet"
+
+
+def _google_bereit() -> bool:
+    """Ohne Anmeldung (kein UI_SESSION_SECRET) gibt es keinen sicheren State;
+    ohne die Google-Zugaenge oder den Schluessel keinen Anfang."""
+    return bool(UI_SESSION_SECRET) and all(
+        (os.environ.get(n) or "").strip() for n in _GOOGLE_ENV)
+
+
+def _google_signatur(teil: str) -> str:
+    return hmac.new(UI_SESSION_SECRET.encode("utf-8"),
+                    b"google-state|" + teil.encode("utf-8"),
+                    hashlib.sha256).hexdigest()
+
+
+def _google_state(name: str, jetzt: "float | None" = None) -> str:
+    """Name.Ablauf.Nonce.HMAC (UI_SESSION_SECRET), 10 Minuten gueltig."""
+    ablauf = int((time.time() if jetzt is None else jetzt)
+                 + GOOGLE_STATE_SEKUNDEN)
+    roh = base64.urlsafe_b64encode(name.encode("utf-8")).decode("ascii")
+    teil = f"{roh}.{ablauf}.{secrets.token_hex(8)}"
+    return teil + "." + _google_signatur(teil)
+
+
+def _google_state_pruefen(state: str) -> "str | None":
+    """Der Name im State, wenn Signatur und Ablauf stimmen; sonst None."""
+    if not UI_SESSION_SECRET or not isinstance(state, str) or len(state) > 600:
+        return None
+    teile = state.split(".")
+    if len(teile) != 4:
+        return None
+    try:
+        passt = hmac.compare_digest(
+            _google_signatur(".".join(teile[:3])).encode("utf-8"),
+            teile[3].encode("utf-8"))
+        if not passt or int(teile[1]) < time.time():
+            return None
+        return base64.urlsafe_b64decode(teile[0].encode("ascii")).decode("utf-8")
+    except (ValueError, UnicodeError):
+        return None
+
+
+def _google_abschnitt() -> str:
+    if _google_bereit():
+        return ('<h2>Mit Google verbinden</h2>'
+                '<p class="meta">Ein Klick, ohne Adresse zu kopieren. Du '
+                'wählst danach, welche Kalender dazukommen.</p>'
+                '<p><a class="primaer" href="/team/kalender/google/start">'
+                'Mit Google verbinden</a></p>')
+    return ('<h2>Mit Google verbinden</h2>'
+            f'<p class="meta">{_e(_GOOGLE_NICHT_BEREIT)}.</p>'
+            '<p><button class="primaer" type="button" disabled>'
+            'Mit Google verbinden</button></p>')
+
+
+def _google_seite(titel: str, text: str, status: int = 200,
+                  zurueck: str = "/team/kalender") -> HTMLResponse:
+    """`text` ist fester Text oder schon escaped."""
+    return _seite(titel, f'<p>{text}</p><p><a href="{_e(zurueck)}">'
+                         f'Zurück</a></p>', status=status)
+
+
+@_gesichert_seite
+async def google_start(request):
+    besitzer, _filter = _kalender_besitzer(request)
+    if not besitzer or not _google_bereit():
+        return _google_seite("Mit Google verbinden",
+                             _e(_GOOGLE_NICHT_BEREIT) + ".", 503)
+    try:
+        ziel = google_kalender.anmelde_url(_google_state(besitzer))
+    except google_kalender.GoogleFehler as e:
+        return _google_seite("Mit Google verbinden", _e(str(e)) + ".", 503)
+    return RedirectResponse(ziel, status_code=303)
+
+
+@_gesichert_seite
+async def google_zurueck(request):
+    """Rueckkehr von Google. Die Adresse traegt den Einmal-Code; sie wird nie
+    angezeigt und per Redirect sofort verlassen."""
+    p = request.query_params
+    if p.get("error"):
+        # Abgelehnt (access_denied) oder sonstiger Google-Fehler: nichts
+        # speichern, nichts aus der Adresse uebernehmen.
+        return _google_seite(
+            "Google nicht verbunden",
+            "Der Kalender wurde nicht mit Google verbunden. Nichts wurde "
+            "gespeichert. Du kannst es jederzeit erneut versuchen.")
+    besitzer, _filter = _kalender_besitzer(request)
+    if not besitzer or not _google_bereit():
+        return _google_seite("Mit Google verbinden",
+                             _e(_GOOGLE_NICHT_BEREIT) + ".", 503)
+    # State zuerst: ohne gueltigen, eigenen State kein Aufruf bei Google.
+    if _google_state_pruefen(str(p.get("state") or "")) != besitzer:
+        return _google_seite(
+            "Abgewiesen",
+            "Der Verbindungsversuch ist abgelaufen oder gehört nicht zu "
+            "dieser Anmeldung. Nichts wurde gespeichert. Bitte noch einmal "
+            "von vorn beginnen.", 400)
+    code = str(p.get("code") or "")
+    if not code:
+        return _google_seite("Abgewiesen",
+                             "Google hat keinen Code geliefert. Nichts wurde "
+                             "gespeichert.", 400)
+    try:
+        zugang = await run_in_threadpool(google_kalender.code_tauschen, code)
+        liste = await run_in_threadpool(google_kalender.kalender_liste,
+                                        zugang["access_token"])
+        liste = [{"id": str(k["id"]), "name": str(k["name"])[:200],
+                  "primaer": bool(k.get("primaer"))} for k in liste]
+        if not liste:
+            return _google_seite(
+                "Keine Kalender",
+                "In diesem Google-Konto wurde kein Kalender gefunden. Nichts "
+                "wurde gespeichert.", 400)
+        versiegelt = post_tresor.versiegeln_lang(
+            zugang["refresh_token"], env_name=_GOOGLE_SCHLUESSEL)
+        adresse = next((k["id"] for k in liste if k["primaer"]), liste[0]["id"])
+        konto_id = server.kalenderkonto_speichern(
+            besitzer, adresse, versiegelt, liste)
+    except google_kalender.GoogleFehler as e:
+        # Feste Texte aus google_kalender - nie Teile der Google-Antwort.
+        LOG.warning("Google verbinden: GoogleFehler")
+        return _google_seite("Google nicht verbunden", _e(str(e)) + ".", 502)
+    except post_tresor.TresorFehler:
+        LOG.error("Google verbinden: Versiegeln fehlgeschlagen")
+        return _google_seite("Google nicht verbunden",
+                             "Der Zugang konnte nicht sicher abgelegt werden. "
+                             "Nichts wurde gespeichert.", 500)
+    except psycopg.Error:
+        raise
+    except Exception as e:  # noqa: BLE001 - Meldung koennte Token zitieren
+        LOG.error("Google verbinden: Fehler (%s)", type(e).__name__)
+        return _google_seite("Google nicht verbunden",
+                             "Das hat nicht geklappt. Nichts wurde "
+                             "gespeichert.", 502)
+    return RedirectResponse(
+        "/team/kalender/google/auswahl?konto=" + urllib.parse.quote(konto_id),
+        status_code=303)
+
+
+def _google_eigenes_konto(besitzer: str, konto_id) -> "dict | None":
+    """Das Konto nur, wenn es dieser Person gehoert und aktiv ist (auch die
+    Rolle `freigeben` nimmt kein fremdes Konto)."""
+    konto = server.kalenderkonto_lesen(str(konto_id or ""))
+    if (konto is None or not besitzer or konto["besitzer"] != besitzer
+            or not konto["aktiv"]):
+        return None
+    return konto
+
+
+_GOOGLE_KEIN_KONTO = (
+    "Dieses Google-Konto gehört nicht zu deiner Anmeldung, oder es gibt es "
+    "nicht mehr. Nichts wurde getan.")
+
+
+@_gesichert_seite
+async def google_auswahl(request):
+    besitzer, _filter = _kalender_besitzer(request)
+    konto = _google_eigenes_konto(besitzer, request.query_params.get("konto"))
+    if konto is None:
+        return _google_seite("Abgewiesen", _e(_GOOGLE_KEIN_KONTO), 403)
+    zeilen = []
+    for k in konto["kalender_liste"]:
+        gid = str(k.get("id") or "")
+        zeilen.append(
+            f'<li class="karte"><label class="haken">'
+            f'<input type="checkbox" name="wahl" value="{_e(gid)}" checked> '
+            f'<b>{_e(k.get("name"))}</b>'
+            f'{" (Hauptkalender)" if k.get("primaer") else ""}</label> '
+            f'<label class="haken"><input type="radio" '
+            f'name="{_e("bereich_" + gid)}" value="business"> Business</label> '
+            f'<label class="haken"><input type="radio" '
+            f'name="{_e("bereich_" + gid)}" value="privat"> Privat</label></li>')
+    return _seite("Welche Kalender sollen dazu?", (
+        '<p class="meta">Pflicht: wähle für jeden Kalender, den du übernimmst, '
+        'Business oder Privat. Privat: Kollegen und der Agent sehen nur, dass '
+        'du belegt bist, nicht was. Es gibt keine Voreinstellung. Zugriff '
+        'bei Google entziehen: myaccount.google.com/permissions</p>'
+        f'<form method="post" action="/team/kalender/google/uebernehmen">'
+        f'<input type="hidden" name="csrf" value="{_e(CSRF_TOKEN)}">'
+        f'<input type="hidden" name="konto_id" value="{_e(konto["id"])}">'
+        f'<ul class="liste">{"".join(zeilen)}</ul>'
+        f'<button class="primaer" type="submit">Übernehmen</button></form>'
+        f'<form method="post" action="/team/kalender/google/abbrechen">'
+        f'<input type="hidden" name="csrf" value="{_e(CSRF_TOKEN)}">'
+        f'<input type="hidden" name="konto_id" value="{_e(konto["id"])}">'
+        f'<button type="submit">Abbrechen</button></form>'))
+
+
+@_gesichert_seite
+async def google_abbrechen(request):
+    """Nichts uebernehmen: der Zugang des eigenen Kontos wird vernichtet,
+    wenn noch keine Quelle daran haengt."""
+    form = await request.form()
+    if not _csrf_ok(form):
+        return _fehlerseite(403, "Abgewiesen",
+                            "Fehlende oder falsche CSRF-Marke.")
+    besitzer, _filter = _kalender_besitzer(request)
+    konto = _google_eigenes_konto(besitzer, form.get("konto_id"))
+    if konto is None:
+        return _google_seite("Abgewiesen", _e(_GOOGLE_KEIN_KONTO), 403)
+    server.kalenderkonto_abbrechen(konto["id"], besitzer)
+    return RedirectResponse("/team/kalender", status_code=303)
+
+
+def _google_namen(besitzer: str, konto_id: str, auswahl: list) -> list:
+    """Anzeigenamen der gewaehlten Kalender: nie der reservierte Name des
+    eigenen Kalenders, nie ein Name, den eine andere Quelle derselben Person
+    schon traegt (der Upsert liefe sonst ueber sie hinweg)."""
+    gewaehlt = {g for g, _ in auswahl}
+    belegt = {q["anzeigename"].casefold()
+              for q in server.kalenderquellen_lesen(nur_aktive=False)
+              if q["besitzer"] == besitzer
+              and not (str(q["konto_id"] or "") == konto_id
+                       and q["google_id"] in gewaehlt)}
+    belegt.add(server.EIGENE_QUELLE.casefold())
+    namen = []
+    for _gid, name in auswahl:
+        basis = (name.strip() or "Google-Kalender")[:70]
+        kandidat, n = basis, 1
+        while kandidat.casefold() in belegt:
+            n += 1
+            kandidat = f"{basis} ({n})"
+        belegt.add(kandidat.casefold())
+        namen.append(kandidat)
+    return namen
+
+
+def _google_abgelaufen() -> HTMLResponse:
+    return _google_seite(
+        "Google nicht verbunden",
+        _e(server.GOOGLE_ZUGANG_ABGELAUFEN) + ". Nichts wurde gespeichert.",
+        400)
+
+
+@_gesichert_seite
+async def google_uebernehmen(request):
+    form = await request.form()
+    if not _csrf_ok(form):
+        return _fehlerseite(403, "Abgewiesen",
+                            "Fehlende oder falsche CSRF-Marke.")
+    besitzer, _filter = _kalender_besitzer(request)
+    konto = _google_eigenes_konto(besitzer, form.get("konto_id"))
+    if konto is None:
+        return _google_seite("Abgewiesen", _e(_GOOGLE_KEIN_KONTO), 403)
+    if not konto["hat_zugang"]:
+        # Zugang schon vernichtet (aufgeraeumt nach einer Stunde, abgebrochen
+        # oder letzte Quelle entfernt): eine Quelle daran hiesse nur
+        # "Konto fehlt" beim Abgleich (Final-Fix I3).
+        return _google_abgelaufen()
+    zurueck = ("/team/kalender/google/auswahl?konto="
+               + urllib.parse.quote(konto["id"]))
+    # Nur, was im gespeicherten Konto steht - nie dem Formular glauben.
+    bekannt = {str(k.get("id")): str(k.get("name") or "")
+               for k in konto["kalender_liste"]}
+    gewaehlt = list(dict.fromkeys(str(w) for w in form.getlist("wahl")))
+    if not gewaehlt:
+        return _google_seite("Nichts gewählt",
+                             "Es wurde kein Kalender gewählt. Nichts wurde "
+                             "gespeichert.", 400, zurueck)
+    auswahl = []
+    for gid in gewaehlt:
+        if gid not in bekannt:
+            return _google_seite(
+                "Abgewiesen",
+                "Kalender gehört nicht zu diesem Konto. Nichts wurde "
+                "gespeichert.", 400, zurueck)
+    for gid in gewaehlt:
+        bereich = str(form.get("bereich_" + gid) or "")
+        if bereich not in dict(_BEREICHE):
+            return _google_seite(
+                "Bereich fehlt",
+                "Für jeden übernommenen Kalender muss Business oder Privat "
+                "gewählt sein. Nichts wurde gespeichert.", 400, zurueck)
+        auswahl.append((gid, bekannt[gid], bereich))
+    namen = _google_namen(besitzer, konto["id"], [(g, n) for g, n, _ in auswahl])
+    try:
+        for (gid, _n, bereich), name in zip(auswahl, namen):
+            server.google_quelle_speichern(konto["id"], gid, name, besitzer,
+                                           bereich)
+    except ValueError:
+        # Rueckhalt in google_quelle_speichern: der Zugang wurde zwischen
+        # Lesen und Speichern vernichtet (Bereiche sind oben schon geprueft).
+        return _google_abgelaufen()
+    liste = "".join(f"<li>{_e(n)}</li>" for n in namen)
+    return _seite("Kalender verbunden", (
+        f'<p>{len(namen)} Kalender übernommen:</p><ul>{liste}</ul>'
+        '<p>Erste Termine erscheinen innerhalb einer Minute.</p>'
+        '<p><a href="/team/kalender">Zur Übersicht</a></p>'))
 
 
 @_gesichert_seite
@@ -6729,7 +7322,8 @@ async def aktion_kalender_verbinden(request):
 
     Die sofortige Rückmeldung ist der Kern von §2.7: der häufigste Fehler
     ist die öffentliche statt der geheimen Adresse, und ohne Prüfung merkt
-    das niemand — die Sicht bliebe tagelang leer.
+    das niemand — die Sicht bliebe tagelang leer. Der Abruf läuft genau
+    einmal; seine Termine werden nach dem Speichern gleich abgelegt.
     """
     form = await request.form()
     if not _csrf_ok(form):
@@ -6737,56 +7331,97 @@ async def aktion_kalender_verbinden(request):
                             "Fehlende oder falsche CSRF-Marke.")
     name = str(form.get("name") or "").strip()[:80]
     url = str(form.get("url") or "").strip()
+    bereich = str(form.get("bereich") or "").strip()
+    if bereich not in dict(_BEREICHE):
+        return _fehlerseite(400, "Bereich fehlt",
+                            "Business oder Privat wählen. Nichts wurde "
+                            "gespeichert.")
     if not name:
         return _fehlerseite(400, "Name fehlt",
                             "Ohne Namen lässt sich der Kalender später "
                             "niemandem zuordnen.")
-    # W4 (Schlusspruefung 13.09.2026): `kalenderquelle_speichern` legt per
-    # `on conflict (anzeigename)` einfach ueber eine bestehende Zeile —
-    # nennt sich ein Kollege wie die eigene Quelle, landen seine Termine in
-    # der Paarung des EIGENEN Kalenders (ui.py, `t["quelle"] ==
-    # server.EIGENE_QUELLE`) statt in der Team-Sicht. Genau die
-    # Verschmelzung, gegen die Ruling 10 gerichtet war, nur durch die
-    # Vordertuer. Case-insensitiv abgewiesen: eine Schreibvariante waere
-    # zwar keine echte Kollision in der Datenbank (der Vergleich dort ist
-    # case-sensitiv), saehe in der Liste daneben aber genauso verwirrend
-    # aus wie der exakte Name.
+    # W4 (Schlusspruefung 13.09.2026): nennt sich ein Kollege wie die eigene
+    # Quelle, landen seine Termine in der Paarung des EIGENEN Kalenders
+    # (ui.py, `t["quelle"] == server.EIGENE_QUELLE`) statt in der
+    # Team-Sicht — die Paarung geht ueber den Anzeigenamen, nicht ueber
+    # den Besitzer (`kalenderquelle_speichern` ersetzt seit 08.11.2026 nur
+    # noch je (besitzer, anzeigename)). Case-insensitiv abgewiesen: eine
+    # Schreibvariante saehe in der Liste daneben genauso verwirrend aus wie
+    # der exakte Name.
     if name.casefold() == server.EIGENE_QUELLE.casefold():
         return _fehlerseite(400, "Name vergeben", (
             f'„{_e(server.EIGENE_QUELLE)}" ist der Name des eigenen '
             f'Kalenders und dafür reserviert. Wähle einen anderen Namen, '
             f'zum Beispiel deinen eigenen.'))
-    # Zeitfenster wie server.belegungen()s Vorgabe (K2/W1, Schlusspruefung
-    # 13.09.2026): dieselbe Zahl, die die Sicht auf /kalender spaeter fuer
-    # dieselbe Quelle zeigt — sonst meldet die Sofortpruefung hier "1.284
-    # Termine" (die ganze Historie) und die spaetere Sicht etwas anderes.
-    termine, fehler = server.kalenderquellen.hole(url, 0, 60)
-    # BLOCKER (Koordinator-Fix-Runde, 13.09.2026): `fehler` ist seit K4
-    # NICHT mehr gleichbedeutend mit "nichts verstanden" — hole() meldet
-    # ihn auch dann, wenn die Quelle VOLLSTAENDIG verstanden wurde und nur
-    # zusaetzlich Serientermine/unlesbare Dauern enthaelt (siehe
-    # kalenderquellen.hole()s Docstring). Ein gewoehnlicher Google-/
-    # Outlook-Kalender mit einer woechentlichen Teamrunde waere sonst gar
-    # nicht mehr verbindbar gewesen — genau der Torschritt aus Spec-
-    # Pruefpunkt 1. Abgewiesen wird nur, wenn GAR NICHTS Verwertbares
-    # ankam (`termine` leer); sonst wie in server.belegungen() (K3/K4):
-    # speichern, und den Vorbehalt NEBEN die Zahl stellen statt die ganze
-    # Verbindung zu verweigern.
+    besitzer, _filter = _kalender_besitzer(request)
+    if not besitzer:
+        return _fehlerseite(400, "Besitzer unbekannt", (
+            "Ohne Anmeldung ist nicht klar, wem dieser Kalender gehört, "
+            "und für diesen Laden ist kein Besitzer eingetragen. Bitte "
+            "anmelden. Nichts wurde gespeichert."))
+    # Fix-Runde 1 (Task 9): ein Name, den schon ein Google-Kalender traegt,
+    # bleibt dessen Name - vor dem Abruf abweisen, nichts holen, nichts
+    # speichern. (kalenderquelle_speichern prueft es als Rueckhalt nochmal.)
+    if any(q["besitzer"] == besitzer and q["art"] == "google"
+           and q["anzeigename"].casefold() == name.casefold()
+           for q in server.kalenderquellen_lesen(nur_aktive=False)):
+        return _fehlerseite(400, "Name vergeben", (
+            f"{_e(server.GOOGLE_NAME_BELEGT)} – bitte anderen Namen wählen. "
+            f"Nichts wurde gespeichert."))
+    # Erst pruefen, dann speichern - nie umgekehrt (ein Tippfehler beim
+    # Neuverbinden darf eine funktionierende Quelle nicht zerstoeren). Der
+    # Abruf laeuft genau einmal; die Ergebnisse werden unten weiterverwendet.
+    # Abruf + Aufklappen blockieren (Netz, iCal): nicht im Event-Loop.
+    termine, fehler = await run_in_threadpool(
+        server.kalenderquellen.hole,
+        url, kalender_abgleich.FENSTER_ZURUECK_TAGE,
+        kalender_abgleich.FENSTER_VORAUS_TAGE)
+    # BLOCKER (Koordinator-Fix-Runde, 13.09.2026): `fehler` ist NICHT
+    # gleichbedeutend mit "nichts verstanden" - hole() meldet ihn auch dann,
+    # wenn die Quelle VOLLSTAENDIG verstanden wurde und nur zusaetzlich
+    # unlesbare Dauern enthaelt. Abgewiesen wird nur, wenn GAR NICHTS
+    # Verwertbares ankam; sonst steht der Vorbehalt NEBEN der Zahl.
     if fehler and not termine:
         return _seite("Kalender verbinden", (
             f'<h1>Das hat nicht geklappt</h1>'
             f'<p class="fehler">{_e(fehler)}</p>'
             f'<p class="meta">Nichts wurde gespeichert.</p>'
             f'<p><a href="/team/kalender">Zurück und erneut versuchen</a></p>'))
-    server.kalenderquelle_speichern(name, url)
+    try:
+        quelle_id = server.kalenderquelle_speichern(name, url, besitzer, bereich)
+    except ValueError:
+        return _fehlerseite(400, "Name vergeben", (
+            f"{_e(server.GOOGLE_NAME_BELEGT)} – bitte anderen Namen wählen. "
+            f"Nichts wurde gespeichert."))
+    anzahl = None
+    try:
+        # details=True: kalendertermine_ersetzen entscheidet unter Sperre
+        # selbst, ob Titel und Ort gespeichert werden duerfen (Spec §6.3).
+        anzahl = server.kalendertermine_ersetzen(quelle_id, termine, True)
+        server.kalenderquelle_stand_setzen(quelle_id, anzahl, fehler)
+    except Exception as e:  # noqa: BLE001 - Meldung koennte Inhalt zitieren
+        # Die Quelle ist gespeichert; der Abgleichdienst holt das nach.
+        LOG.error("Kalender %s: erster Abgleich fehlgeschlagen (%s)",
+                  quelle_id, type(e).__name__)
+        return _seite("Kalender verbunden", (
+            '<h1>Gespeichert</h1>'
+            '<p>Der Kalender ist verbunden, die Termine werden aber erst in '
+            'ein paar Minuten angezeigt.</p>'
+            '<p><a href="/team/kalender">Zur Übersicht</a></p>'))
+    # Der naechste Termin kommt aus dem Abgleich: Titel sind nur da, wo sie
+    # gespeichert werden duerfen (nie fuer fremde Privat-Kalender).
     naechster = ""
-    if termine:
-        naechster = (f" Der nächste ist „{_e(termine[0]['titel'])}" + '" am '
-                     f"{_zeit(termine[0]['beginn'])}.")
+    zeile = server._q(
+        "select titel, beginn from kalender_termine where quelle_id = %s "
+        "and titel is not null and beginn >= now() order by beginn limit 1",
+        (quelle_id,))
+    if zeile:
+        naechster = (f" Der nächste ist „{_e(zeile[0]['titel'])}" + '" am '
+                     f"{_zeit(zeile[0]['beginn'])}.")
     vorbehalt = (f'<p class="hinweis">{_e(fehler)}</p>' if fehler else "")
     return _seite("Kalender verbunden", (
         f'<h1>Passt</h1>'
-        f'<p>Ich sehe {len(termine)} Termin{"e" if len(termine) != 1 else ""} '
+        f'<p>Ich sehe {anzahl} Termin{"e" if anzahl != 1 else ""} '
         f'in deinem Kalender.{naechster}</p>'
         + vorbehalt +
         f'<p class="meta">Die Adresse ist gespeichert und wird ab jetzt nicht '
@@ -6794,16 +7429,9 @@ async def aktion_kalender_verbinden(request):
         f'<p><a href="/team/kalender">Zur Übersicht</a></p>'))
 
 
-@_gesichert_seite
-async def aktion_kalender_entfernen(request):
-    """W3 (Schlusspruefung 13.09.2026): der einzige Aufrufer von
-    server.kalenderquelle_entfernen() ausserhalb der Tests — ohne ihn blieb
-    eine tote Quelle fuer immer aktiv und machte `frei: true` fuer sie
-    dauerhaft unmoeglich. Ein Gegen-Ereignis, kein Hard-Delete (siehe
-    kalenderquelle_entfernen()s Docstring): unter demselben Namen neu
-    verbinden weckt die Zeile von selbst wieder auf, ein Bestaetigungs-
-    schritt ist deshalb nicht noetig — dasselbe Muster wie
-    die fruehere Termin-Absage der Oberflaeche."""
+async def _kalender_pflege(request, tun):
+    """Gemeinsamer Rahmen der Pflege-Aktionen: CSRF, Quelle, Besitzerprüfung.
+    `tun(quelle_id, filter, form)` -> bool; False = nicht deine Quelle."""
     form = await request.form()
     if not _csrf_ok(form):
         return _fehlerseite(403, "Abgewiesen",
@@ -6811,8 +7439,45 @@ async def aktion_kalender_entfernen(request):
     quelle_id = str(form.get("quelle_id") or "")
     if not quelle_id:
         return _fehlerseite(400, "Keine Quelle", "Keine Quelle angegeben.")
-    server.kalenderquelle_entfernen(quelle_id)
+    _besitzer, filter_ = _kalender_besitzer(request)
+    try:
+        geschafft = tun(quelle_id, filter_, form)
+    except ValueError:
+        return _fehlerseite(400, "Bereich fehlt",
+                            "Business oder Privat wählen.")
+    if not geschafft:
+        return _fehlerseite(403, "Nicht deine Quelle", (
+            "Diesen Kalender darfst du nicht ändern: er gehört jemand "
+            "anderem, oder er ist schon entfernt. Nichts wurde getan."))
     return RedirectResponse("/team/kalender", status_code=303)
+
+
+@_gesichert_seite
+async def aktion_kalender_entfernen(request):
+    """W3 (Schlusspruefung 13.09.2026): der Aufrufer von
+    server.kalenderquelle_entfernen() - sonst bliebe eine tote Quelle fuer
+    immer aktiv und machte `frei: true` fuer sie dauerhaft unmoeglich.
+    Seit Fix-Runde 1 (Task 9) ein echtes Loeschen: Quellenzeile und ihre
+    Termine sind weg (aktiv oder pausiert), die iCal-Adresse mit ihr; war es
+    die letzte Quelle eines Google-Kontos, wird dessen Zugang vernichtet.
+    Wieder da ist der Kalender nur durch neues Verbinden. Nur der Besitzer
+    oder die Rolle `freigeben` darf (Spec §4)."""
+    return await _kalender_pflege(
+        request, lambda qid, f, form: server.kalenderquelle_entfernen(qid, f))
+
+
+@_gesichert_seite
+async def aktion_kalender_pausieren(request):
+    return await _kalender_pflege(
+        request, lambda qid, f, form: server.kalenderquelle_pausieren(
+            qid, str(form.get("aktiv") or "") == "1", f))
+
+
+@_gesichert_seite
+async def aktion_kalender_bereich(request):
+    return await _kalender_pflege(
+        request, lambda qid, f, form: server.kalenderquelle_bereich_setzen(
+            qid, str(form.get("bereich") or ""), f))
 
 
 _MONATSNAMEN = ("Januar", "Februar", "März", "April", "Mai", "Juni", "Juli",
@@ -7545,10 +8210,13 @@ def _naechste_termine(lead_id, termine) -> str:
     return "".join(teile)
 
 
-def _letzte_kontakte(lead_id) -> str:
+def _letzte_kontakte(lead_id, betrachter_name: str | None = None) -> str:
     """Überblick: die neuesten Einträge der Kontakt-Historie (C3)."""
     try:
-        eintraege = historie.kontakt_historie(lead_id)[:KONTAKT_LETZTE]
+        eintraege = historie.kontakt_historie(
+            lead_id,
+            mit_mail=post_struktur.mail_verlauf_erlaubt(betrachter_name)
+        )[:KONTAKT_LETZTE]
     except psycopg.Error:
         eintraege = None
     teile = ['<h2>Letzte Kontakte</h2>']
@@ -7567,7 +8235,8 @@ def _letzte_kontakte(lead_id) -> str:
     return "".join(teile)
 
 
-def _kontakt_ueberblick(lead, termine) -> str:
+def _kontakt_ueberblick(lead, termine,
+                        betrachter_name: str | None = None) -> str:
     """Reiter „Überblick“: links Stammdaten, Kontaktprofil, Bedarfsstand;
     rechts Wiedervorlagen, die nächsten Termine und die letzten Kontakte."""
     lead_id = str(lead["id"])
@@ -7609,14 +8278,50 @@ def _kontakt_ueberblick(lead, termine) -> str:
         f'</section>',
         f'<section class="karte box">{_wiedervorlage_formular(lead_id)}</section>',
         f'<section class="karte box">{_naechste_termine(lead_id, termine)}</section>',
-        f'<section class="karte box">{_letzte_kontakte(lead_id)}</section>']
+        f'<section class="karte box">{_letzte_kontakte(lead_id, betrachter_name)}</section>']
     return (f'<div class="zwei"><div class="spalte-haupt">{"".join(links)}</div>'
             f'<div class="spalte-rand">{"".join(rechts)}</div></div>')
 
 
-def _kontakt_verlauf(lead_id, alle: bool) -> str:
+def _kontakt_mails_bereich(lead_id, betrachter_name: str | None) -> str:
+    """Abschnitt „E-Mails“ am Kontakt: Mails, deren Absender die Adresse des
+    Kontakts ist, nur aus dem, was der Betrachter sehen darf (Besitzer). Ohne
+    persoenliche Anmeldung oder ohne Treffer entfaellt er ganz. Nur Kopf
+    (Betreff, Datum, Konto) - nie Text oder Auszug, auch nicht bei Mails, die
+    nicht sensibel sind."""
+    betrachter = _post_betrachter(betrachter_name)
+    if betrachter is None:
+        return ""
+    where, params = post_struktur.sichtbar_sql(betrachter)
+    try:
+        mails = server._q(
+            "select m.id, m.betreff, m.datum, k.kennung "
+            "from post_mails m join post_konten k on k.id = m.konto_id "
+            f"where {where} and {post_erledigt.ABSENDER_SQL} = "
+            "(select lower(l.email) from leads l where l.id = %s) "
+            "order by m.datum desc nulls last, m.id limit 50",
+            params + [lead_id])
+    except psycopg.errors.UndefinedTable:
+        # Schema ohne post_mails (Laden ohne Post): der Verlauf bleibt heil.
+        return ""
+    if not mails:
+        return ""
+    zeilen = [[_zeit(m["datum"]),
+               f'<a href="/post/mail/{_e(m["id"])}">'
+               f'{_e(m["betreff"] or "(ohne Betreff)")}</a>',
+               _e(m["kennung"])] for m in mails]
+    return (f"<h2>E-Mails ({len(mails)})</h2>"
+            + _tabelle(["Wann", "Betreff", "Konto"], zeilen))
+
+
+def _kontakt_verlauf(lead_id, alle: bool,
+                     betrachter_name: str | None = None) -> str:
     """Reiter „Verlauf“: Kontakt-Historie, Chat-Reports, Verlaufstabelle."""
-    teile = [_kontakt_historie_bereich(lead_id, alle)]
+    # Mail-Aktivitaeten (payload.kanal = email, alle Typen) sieht nur der
+    # Postfach-Besitzer dieses Containers; fuer alle anderen, auch ohne
+    # persoenliche Anmeldung, fallen sie aus der Tabelle.
+    teile = [_kontakt_mails_bereich(lead_id, betrachter_name),
+             _kontakt_historie_bereich(lead_id, alle, betrachter_name)]
     # Chat-Reports ZUERST (Betreiber-Wunsch 22.08.2026): sie erzaehlen die
     # Vorgeschichte, und die von ihnen abgedeckten Einzelnachrichten fallen
     # unten aus dem Verlauf — sonst stuende derselbe Chat zweimal da. Der
@@ -7630,6 +8335,8 @@ def _kontakt_verlauf(lead_id, alle: bool) -> str:
     aktivitaeten = server._q(
         "select type, actor, payload, created_at from activities "
         "where lead_id = %(lead)s and type <> %(report)s "
+        + ("" if post_struktur.mail_verlauf_erlaubt(betrachter_name) else
+           "and coalesce(payload->>'kanal', '') <> 'email' ") +
         "and (not (type = any(%(typen)s)) "
         "     or (created_at, id) > "
         "        (coalesce(%(zeit)s::timestamptz, '-infinity'::timestamptz), "
@@ -7816,7 +8523,8 @@ async def kontakt_detail(request):
 
     if reiter == "verlauf":
         teile.append(_kontakt_verlauf(
-            lead_id, request.query_params.get("historie") == "alle"))
+            lead_id, request.query_params.get("historie") == "alle",
+            request.scope.get("benutzer_name")))
     elif reiter == "vertraege":
         teile.append(_vertraege_bereich(lead))
     elif reiter == "termine":
@@ -7826,7 +8534,8 @@ async def kontakt_detail(request):
     elif reiter == "einstellungen":
         teile.append(_kontakt_einstellungen(lead, archiviert))
     else:
-        teile.append(_kontakt_ueberblick(lead, termine))
+        teile.append(_kontakt_ueberblick(
+            lead, termine, request.scope.get("benutzer_name")))
     return _seite(lead["name"] or "Kontakt", "".join(teile), titel_zeigen=False)
 
 
@@ -8011,41 +8720,141 @@ async def posteingang(request):
              f'placeholder="Mails und Nachrichten durchsuchen" '
              f'aria-label="Posteingang durchsuchen"><button>Suchen</button></form>']
     if such:
-        teile.append(_posteingang_suche(such))
-    teile.append(f'<h2>Unbeantwortet ({_e(daten["anzahl_unbeantwortet"])})</h2>'
-                 f'<p class="meta">Fenster: {_e(daten["fenster_stunden"])} Std.</p>')
-    if not daten["eintraege"]:
-        teile.append("<p>Keine unbeantworteten Eingänge.</p>")
-    for e in daten["eintraege"]:
-        absender = ""
-        if "absender" in e:
-            # @lid ist WhatsApps Privacy-Kennung, KEINE Rufnummer — als
-            # solche kennzeichnen, sonst tippt jemand sie als Nummer ab.
-            lid = (' <span class="badge lid">LID-Pseudo-Kennung, keine '
-                   'Rufnummer</span>' if "@lid" in str(e["absender"]) else "")
-            # Stufe 11: die Kennung ist aufgeloest und gehoert einem Kontakt.
-            # Die alten Zeilen bleiben am Sammelkontakt (activities ist
-            # append-only) — der Betreiber soll trotzdem sehen, WER wartet.
-            if "zugeordnet_zu" in e:
-                lid += (f' <span class="badge">gehört zu '
-                        f'<a href="/kontakte/{_e(e["zugeordnet_zu"])}">'
-                        f'{_e(e.get("zugeordnet_name") or "Kontakt")}</a>'
-                        f'</span>')
-            absender = f'<div class="meta">Absender: {_e(e["absender"])}{lid}</div>'
-        inhalt_zeile = _nachricht_inhalt(e.get("text_kurz"),
-                                         e.get("nachrichtentyp"))
-        kanal = str(e.get("kanal") or "whatsapp")
-        teile.append(
-            f'<div class="karte">{_badge(kanal)} '
-            f'<b><a href="/kontakte/{_e(e["lead_id"])}">'
-            f'{_e(e["kontakt"] or "(ohne Kontakt)")}</a></b> — wartet seit '
-            f'{_e(_wartezeit(e["wartet_stunden"]))}{absender}{inhalt_zeile}'
-            f'<div class="aktionen"><a class="knopf sek" '
-            f'href="/kontakte/{_e(e["lead_id"])}#verlauf">Antworten</a></div></div>')
-    if "hinweis" in daten:
+        teile.append(_posteingang_suche(
+            such, request.scope.get("benutzer_name")))
+    # Ein Posteingang (07.11.2026): Chats (Seite 1) und offene Mails des
+    # angemeldeten Besitzers, gemischt nach Wartezeit; Folgeseiten nur Mails.
+    seite = _seitenzahl(request.query_params.get("seite"))
+    betrachter = _post_betrachter(request.scope.get("benutzer_name"))
+    mails, mails_gesamt, mail_hinweis = [], 0, ""
+    if betrachter is None:
+        mail_hinweis = "Mails nur mit persönlicher Anmeldung."
+    elif not post_erledigt.stichtag_gesetzt():
+        mail_hinweis = ("Keine Mails im Posteingang: Der Stichtag "
+                        "POST_AUFRAEUMEN_AB ist nicht gesetzt.")
+    else:
+        mails, mails_gesamt = post_erledigt.mails_offen(
+            betrachter, "", seite)
+    chats = daten["eintraege"] if seite == 1 else []
+    kopf_chats = int(daten["anzahl_unbeantwortet"] or 0)
+    eintraege = [(float(e["wartet_stunden"] or 0), _chat_karte(e)) for e in chats]
+    jetzt = datetime.now(timezone.utc)
+    for m in mails:
+        eintraege.append((_mail_wartet_stunden(m.get("datum"), jetzt),
+                          _mail_karte(m)))
+    eintraege.sort(key=lambda x: -x[0])
+    teile.append(f'<h2>Offen ({kopf_chats + mails_gesamt})</h2>'
+                 f'<p class="meta">Chats: Fenster {_e(daten["fenster_stunden"])} '
+                 f'Std.</p>')
+    if mail_hinweis:
+        teile.append(f'<div class="hinweis">{_e(mail_hinweis)}</div>')
+    if not eintraege:
+        teile.append("<p>Nichts offen.</p>")
+    teile.extend(k for _, k in eintraege)
+    if mails_gesamt > post_erledigt.JE_SEITE:
+        letzte = math.ceil(mails_gesamt / post_erledigt.JE_SEITE)
+        nav = [f'<span class="meta">Seite {seite} von {letzte}</span>']
+        if seite > 1:
+            nav.insert(0, f'<a class="knopf sek" href="{_e(_posteingang_adresse(seite - 1, such))}">'
+                          f'← Zurück</a>')
+        if seite < letzte:
+            nav.append(f'<a class="knopf sek" href="{_e(_posteingang_adresse(seite + 1, such))}">'
+                       f'Weiter →</a>')
+        teile.append(f'<p class="aktionen">{" ".join(nav)}</p>')
+    if "hinweis" in daten and seite == 1:
         teile.append(f'<div class="hinweis">{_e(daten["hinweis"])}</div>')
-    teile.append(_postfach_block())
+    teile.append('<p class="meta">Zur Info einsortierte Mails: '
+                 '<a href="/post?ansicht=zur_info">Zur Info →</a></p>')
     return _seite("Posteingang", "".join(teile))
+
+
+def _seitenzahl(roh) -> int:
+    """?seite=n -> int >= 1; Unsinn wird zu 1, nie zu einem 500."""
+    try:
+        return max(1, min(int(str(roh).strip()), ui_post.SEITE_MAX))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _posteingang_adresse(seite: int, such: str = "") -> str:
+    werte = {k: v for k, v in (("seite", seite if seite > 1 else ""),
+                               ("q", such)) if v}
+    return "/posteingang" + ("?" + urllib.parse.urlencode(werte) if werte else "")
+
+
+def _post_betrachter(name):
+    """Betrachter der persoenlichen Anmeldung; ohne Anmeldung keiner."""
+    return post_struktur.betrachter_laden(str(name)) if name else None
+
+
+def _mail_wartet_stunden(datum, jetzt) -> float:
+    if datum is None:
+        return 0.0
+    if getattr(datum, "tzinfo", None) is None:
+        datum = datum.replace(tzinfo=timezone.utc)
+    return max(0.0, (jetzt - datum).total_seconds() / 3600)
+
+
+def _chat_karte(e: dict) -> str:
+    absender = ""
+    if "absender" in e:
+        # @lid ist WhatsApps Privacy-Kennung, KEINE Rufnummer — als
+        # solche kennzeichnen, sonst tippt jemand sie als Nummer ab.
+        lid = (' <span class="badge lid">LID-Pseudo-Kennung, keine '
+               'Rufnummer</span>' if "@lid" in str(e["absender"]) else "")
+        # Stufe 11: die Kennung ist aufgeloest und gehoert einem Kontakt.
+        # Die alten Zeilen bleiben am Sammelkontakt (activities ist
+        # append-only) — der Betreiber soll trotzdem sehen, WER wartet.
+        if "zugeordnet_zu" in e:
+            lid += (f' <span class="badge">gehört zu '
+                    f'<a href="/kontakte/{_e(e["zugeordnet_zu"])}">'
+                    f'{_e(e.get("zugeordnet_name") or "Kontakt")}</a>'
+                    f'</span>')
+        absender = f'<div class="meta">Absender: {_e(e["absender"])}{lid}</div>'
+    inhalt_zeile = _nachricht_inhalt(e.get("text_kurz"),
+                                     e.get("nachrichtentyp"))
+    kanal = str(e.get("kanal") or "whatsapp")
+    return (
+        f'<div class="karte">{_badge(kanal)} '
+        f'<b><a href="/kontakte/{_e(e["lead_id"])}">'
+        f'{_e(e["kontakt"] or "(ohne Kontakt)")}</a></b> — wartet seit '
+        f'{_e(_wartezeit(e["wartet_stunden"]))}{absender}{inhalt_zeile}'
+        f'<div class="aktionen"><a class="knopf sek" '
+        f'href="/kontakte/{_e(e["lead_id"])}#verlauf">Antworten</a></div></div>')
+
+
+def _mail_karte(m: dict) -> str:
+    """Eine offene Mail im gemeinsamen Posteingang. Sensible Mails kommen aus
+    post_struktur._spalten schon ohne Text/Auszug - hier nur der Kopf."""
+    jetzt = datetime.now(timezone.utc)
+    wartet = _wartezeit(round(_mail_wartet_stunden(m.get("datum"), jetzt), 1))
+    mid = _e(m["id"])
+    zeilen = [f'{_badge("email")} <span class="meta">{_e(m.get("kennung") or "")}</span> '
+              f'<b><a href="/post/mail/{mid}">{_e(m.get("betreff") or "(ohne Betreff)")}</a></b>'
+              f' — wartet seit {_e(wartet)}',
+              f'<div class="meta">Von: {_e(m.get("von") or "")}</div>']
+    if m.get("ordner_stand") == "fehlt":
+        zeilen.append('<div class="meta">im Postfach nicht mehr gefunden</div>')
+    kurz = "" if m.get("sensibel") is not False else (m.get("auszug") or "")
+    if kurz:
+        zeilen.append(f'<div class="text">{_e(_kurz(kurz, 300))}</div>')
+    aktionen = []
+    if m.get("lead_id"):
+        aktionen.append(f'<a class="knopf sek" href="/kontakte/{_e(m["lead_id"])}">'
+                        f'Zum Kontakt</a>')
+    if _AKTIVE_ROLLE.get() == "freigeben":
+        selbst = sys.modules[__name__]
+        z = "/posteingang"
+        aktionen.append(ui_post.knopf_formular(
+            selbst, m["id"], "erledigt", "Erledigt", "erledigt", z))
+        if m.get("fach") == post_erledigt.RECHNUNGEN:
+            aktionen.append(ui_post.knopf_formular(
+                selbst, m["id"], "erledigt", "Bezahlt", "bezahlt", z))
+        if not m.get("lead_id"):
+            aktionen.append(ui_post.knopf_formular(
+                selbst, m["id"], "kontakt", "Kontakt anlegen", "", z))
+    return (f'<div class="karte">{"".join(zeilen)}'
+            f'<div class="aktionen">{"".join(aktionen)}</div></div>')
 
 
 def _wartezeit(stunden) -> str:
@@ -8061,80 +8870,63 @@ def _wartezeit(stunden) -> str:
     return f"{round(h)} Std."
 
 
-def _postfach_block() -> str:
-    """Mails aus dem Betreiber-Postfach (Index postfach_mails) und Spam."""
-    mails = server._q(
-        "select message_id, uid, von, betreff, datum, auszug, art, status, grund "
-        "from postfach_mails order by gesehen_am desc limit 30")
-    normal = [m for m in mails if m["status"] not in ("verschoben",)]
-    spam = [m for m in mails if m["art"] == "spam" and m["status"] == "verschoben"]
-    teile = [f"<h2>Mails ({len(normal)})</h2>"]
-    if not normal:
-        teile.append('<p class="meta">Noch keine Mail gesehen — der Agent liest '
-                     'das Postfach im Routinelauf.</p>')
-    for m in normal:
-        marke = (' <span class="badge achtung">Vorschlag: unwichtig</span>'
-                 if m["status"] == "vorgeschlagen" else "")
-        teile.append(
-            f'<div class="karte">{_badge("email")}{_postfach_marke(m["uid"])}{marke} '
-            f'<b>{_e(m["betreff"] or "(ohne Betreff)")}</b>'
-            f'<div class="meta">{_e(m["von"])} · {_e(m["datum"])}</div>'
-            f'<div class="text">{_e(_kurz(m["auszug"] or "", 300))}</div></div>')
-    teile.append(f'<details class="karte"><summary>Spam-Ordner ({len(spam)})</summary>'
-                 '<p class="meta">Vom Agenten als Betrug erkannt und in den '
-                 'Spam-Ordner des Postfachs verschoben — nichts gelöscht. '
-                 'Zurückholen im Mailprogramm.</p>'
-                 + "".join(f'<div class="zeile"><b>{_e(m["betreff"])}</b> · '
-                           f'{_e(m["von"])} · <span class="meta">{_e(m["grund"] or "")}'
-                           f'</span></div>' for m in spam)
-                 + '</details>')
-    return "".join(teile)
+def _posteingang_suche(such: str, betrachter_name: str | None = None) -> str:
+    """Nachrichten (Chats) durchsuchen, deutsche Wortstaemme (Volltext), und die
+    Mails der angemeldeten Person (post_struktur.mails_suchen, nur eigene).
 
-
-def _postfach_marke(uid) -> str:
-    """Herkunft einer Mail (28.10.2026): GMX/Gmail als Abzeichen, das
-    Laden-Postfach ohne - es ist der Normalfall."""
-    try:
-        kennung, _ = server.postfach.zerlegen(uid)
-    except ValueError:
-        return ""
-    if kennung == server.postfach.HAUPT:
-        return ""
-    return f' <span class="badge">{_e(server.postfach.name(kennung))}</span>'
-
-
-def _posteingang_suche(such: str) -> str:
-    """Mails und Nachrichten durchsuchen: deutsche Wortstaemme (Volltext)
-    plus Tippfehler-Toleranz ueber Trigramme."""
-    mails = server._q(
-        "select uid, betreff, von, datum, auszug from postfach_mails "
-        "where suchtext @@ websearch_to_tsquery('german', %(q)s) "
-        "   or similarity(betreff, %(q)s) >= 0.3 or similarity(von, %(q)s) >= 0.3 "
-        "order by ts_rank(suchtext, websearch_to_tsquery('german', %(q)s)) desc "
-        "limit 20", {"q": such})
+    postfach_mails (ohne Besitzer) durchsucht diese Seite nie (Ruling R14,
+    03.11.2026); E-Mail-Chatzeilen nur fuer den Container-Besitzer."""
     chats = server._q(
         "select a.created_at, a.payload->>'text' as text, l.id as lead_id, l.name "
         "  from activities a join leads l on l.id = a.lead_id "
         " where a.type in ('kundenantwort', 'transkription') "
         "   and a.suchtext @@ websearch_to_tsquery('german', %(q)s) "
+        + ("" if post_struktur.mail_verlauf_erlaubt(betrachter_name) else
+           "   and coalesce(a.payload->>'kanal', '') <> 'email' ") +
         " order by a.created_at desc limit 20", {"q": such})
-    teile = [f"<h2>Treffer für „{_e(such)}“ ({len(mails) + len(chats)})</h2>"]
-    for m in mails:
-        teile.append(f'<div class="karte">{_badge("email")}{_postfach_marke(m["uid"])} '
-                     f'<b>{_e(m["betreff"])}</b>'
-                     f'<div class="meta">{_e(m["von"])} · {_e(m["datum"])}</div>'
-                     f'<div class="text">{_e(_kurz(m["auszug"] or "", 300))}</div></div>')
+    mails_link = _e("/post?" + urllib.parse.urlencode({"q": such}))
+    teile = [f"<h2>Treffer für „{_e(such)}“ ({len(chats)})</h2>",
+             f'<p class="meta"><a href="{mails_link}">In Mails suchen →</a></p>']
     for c in chats:
         teile.append(f'<div class="karte"><a href="/kontakte/{_e(c["lead_id"])}">'
                      f'{_e(c["name"])}</a> · <span class="meta">{_zeit(c["created_at"])}'
                      f'</span><div class="text">{_e(_kurz(c["text"] or "", 300))}</div></div>')
-    if not mails and not chats:
-        teile.append('<p class="meta">Nichts gefunden.</p>')
+    if not chats:
+        teile.append('<p class="meta">Keine Nachricht gefunden.</p>')
+    b = _post_betrachter(betrachter_name)
+    if b is not None:
+        try:
+            treffer = post_struktur.mails_suchen(b, such, grenze=20)
+        except psycopg.errors.UndefinedTable:
+            treffer = []        # Schema ohne post_mails: Chat-Treffer bleiben
+        teile.append(f"<h3>Mails ({len(treffer)})</h3>")
+        for m in treffer:
+            teile.append(
+                f'<div class="karte">{_badge("email")} '
+                f'<b><a href="/post/mail/{_e(m["id"])}">'
+                f'{_e(m.get("betreff") or "(ohne Betreff)")}</a></b> · '
+                f'<span class="meta">{_e(m.get("von") or "")} · '
+                f'{_zeit(m["datum"])}</span></div>')
+        if not treffer:
+            teile.append('<p class="meta">Keine Mail gefunden.</p>')
     return "".join(teile)
 
 
+SPAM_LISTE_MAX = 20
+
+
 def _mails_aufraeumen_abschnitt() -> str:
-    """Freigaben: unwichtige Mails, die der Agent zum Wegraeumen vorschlaegt."""
+    """Freigaben: unwichtige Mails, die der Agent zum Wegraeumen vorschlaegt,
+    und (I5, 03.11.2026) die Mails, die er als Betrug sofort in den Spam-Ordner
+    verschoben hat - die Uebersicht stand frueher auf /posteingang und fiel mit
+    R14 weg. Beides kommt aus postfach_mails OHNE Besitzer (Absender/Betreff
+    auch privater GMX/Gmail-Post): darum nur fuer die Rolle, die aufraeumt
+    (freigeben), nie fuer lesen - und nur dem Container-Besitzer (Spec Z5: Mails
+    sieht nur ihr Besitzer; dasselbe Tor wie aktion_mail_aufraeumen)."""
+    if _AKTIVE_ROLLE.get() in ("lesen", "kalender"):
+        return ""
+    if not post_struktur.mail_verlauf_erlaubt(_AKTIVER_BENUTZER.get()):
+        return ""
     vorschlaege = server._q(
         "select message_id, von, betreff, grund from postfach_mails "
         "where status = 'vorgeschlagen' order by gesehen_am desc limit 50")
@@ -8155,6 +8947,25 @@ def _mails_aufraeumen_abschnitt() -> str:
             f'In „Unwichtig“ verschieben</button>'
             f'<button name="entscheidung" value="behalten">Behalten</button>'
             f'</form></div></div>')
+    # Nur zur Kontrolle, ohne Knopf: verschoben ist zurueckholbar (im
+    # Postfach aus dem Spam-Ordner ziehen), geloescht wird nie.
+    spam = server._q(
+        "select von, betreff, grund, ordner, geaendert_am from postfach_mails "
+        "where art = 'spam' and status = 'verschoben' "
+        "order by geaendert_am desc nulls last limit %s", (SPAM_LISTE_MAX,))
+    teile.append(f'<h3 id="mails-spam">Als Betrug in den Spam-Ordner verschoben '
+                 f'<span class="zaehler">{len(spam)}</span></h3>')
+    if not spam:
+        teile.append('<p class="meta">Nichts verschoben.</p>')
+    else:
+        teile.append('<p class="meta">Zurückholen: im Postfach aus dem Spam-Ordner '
+                     'ziehen – gelöscht wird nie.</p>')
+    for m in spam:
+        teile.append(
+            f'<div class="karte"><b>{_e(m["betreff"])}</b>'
+            f'<div class="meta">{_e(m["von"])} — {_e(m["grund"] or "")}'
+            f'{" · Ordner " + _e(m["ordner"]) if m["ordner"] else ""}'
+            f'{" · " + _zeit(m["geaendert_am"]) if m["geaendert_am"] else ""}</div></div>')
     teile.append("</section>")
     return "".join(teile)
 
@@ -8168,6 +8979,10 @@ async def aktion_mail_aufraeumen(request):
     if _AKTIVE_ROLLE.get() in ("lesen", "kalender"):
         return _fehlerseite(403, "Nicht für diese Anmeldung",
                             "Nur die Rolle „freigeben“ räumt auf.")
+    if not post_struktur.mail_verlauf_erlaubt(
+            str(request.scope.get("benutzer_name") or "")):
+        return _fehlerseite(403, "Nicht für diese Anmeldung",
+                            "Mails räumt nur ihr Besitzer auf.")
     neu = {"verschieben": "bestaetigt", "behalten": "behalten"}.get(
         str(form.get("entscheidung") or ""))
     if not neu:
@@ -8175,7 +8990,7 @@ async def aktion_mail_aufraeumen(request):
     server._q("update postfach_mails set status = %s, geaendert_am = now() "
               "where message_id = %s and status = 'vorgeschlagen' returning 1",
               (neu, str(form.get("message_id") or "")))
-    return RedirectResponse("/freigaben#mails-ordnen", status_code=303)
+    return RedirectResponse(_freigaben_url("nachrichten", "aufraeumen") + "#mails-ordnen", status_code=303)
 
 
 # ---------------------------------------------------------------------------
@@ -8245,17 +9060,21 @@ def _einordnung_aktionen(absender, optionen: str) -> str:
     """
     verborgen = (f'<input type="hidden" name="absender" '
                  f'value="{_e(absender)}">{_einordnung_kopf()}')
+    # Betreiber-Vorgabe 30.10.2026: „das soll beim Einordnen mit abgehakt
+    # werden" — vorab gesetzt, abwaehlbar (abgewaehlt bucht nichts).
+    haken = ('<label class="meta"><input type="checkbox" name="einwilligung" '
+             'value="ja" checked> darf angeschrieben werden</label>')
     return (
         f'<div class="aktionen">'
         f'<form class="aktion" method="post" action="/einordnung/zuordnen">'
         f'{verborgen}<select name="lead_id">'
         f'<option value="">— bestehender Kontakt —</option>{optionen}'
-        f'</select><button class="primaer">Zuordnen</button></form>'
+        f'</select>{haken}<button class="primaer">Zuordnen</button></form>'
         f'<form class="aktion" method="post" action="/einordnung/anlegen">'
         f'{verborgen}<input type="text" name="name" autocomplete="off" '
         f'autocapitalize="words" '
         f'maxlength="{EINORDNUNG_NAME_MAX}" placeholder="Name des Kontakts">'
-        f'<button>Neu anlegen</button></form>'
+        f'{haken}<button>Neu anlegen</button></form>'
         f'<form class="aktion gefahr" method="post" '
         f'action="/einordnung/ignorieren">'
         f'{verborgen}<button class="gefahr">Ignorieren</button></form>'
@@ -8320,17 +9139,105 @@ def _kennung_lesbar(absender) -> str:
     return f"+{ziffern}"
 
 
-def _beziehung_waehler(lead_id, beziehung, danach: str) -> str:
-    """Auswahl + Knopf ohne JavaScript (wie die Autonomie-Auswahl)."""
+def _beziehung_auswahl(name: str, beziehung) -> str:
     optionen = ['<option value="">— offen —</option>'] + [
         f'<option value="{_e(k)}"{" selected" if k == beziehung else ""}>'
         f'{_e(n)}</option>' for k, n in server.BEZIEHUNGEN.items()]
+    return (f'<select name="{_e(name)}" aria-label="Beziehung">'
+            f'{"".join(optionen)}</select>')
+
+
+def _beziehung_waehler(lead_id, beziehung, danach: str) -> str:
+    """Auswahl + Knopf ohne JavaScript (wie die Autonomie-Auswahl)."""
     return (f'<form class="beziehung" method="post" action="/kontakte/beziehung">'
             f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
             f'<input type="hidden" name="lead_id" value="{_e(lead_id)}">'
             f'<input type="hidden" name="danach" value="{_e(danach)}">'
-            f'<select name="beziehung" aria-label="Beziehung">{"".join(optionen)}'
-            f'</select><button>Setzen</button></form>')
+            f'{_beziehung_auswahl("beziehung", beziehung)}'
+            f'<button>Setzen</button></form>')
+
+
+def _entschieden_formular(zeilen, beziehungen: dict) -> str:
+    """„Bereits entschieden" als EIN Formular (Betreiber 06.11.2026): ein
+    „Setzen" je Zeile lud die Seite neu, die uebrigen Auswahlen waren weg.
+    `vorher_<lead_id>` traegt den Stand beim Laden - gespeichert wird nur,
+    was davon abweicht. Ein Kontakt mit zwei Kennungen bekommt EINE Auswahl:
+    zwei gleichnamige widersprächen sich beim Absenden."""
+    gesehen = set()
+    reihen = []
+    for e in zeilen:
+        lead_id = str(e.get("lead_id"))
+        beziehung = beziehungen.get(lead_id)
+        if lead_id in gesehen:
+            zelle = _e(server.BEZIEHUNGEN.get(beziehung, "— offen —"))
+        else:
+            gesehen.add(lead_id)
+            zelle = (f'<input type="hidden" name="vorher_{_e(lead_id)}" '
+                     f'value="{_e(beziehung or "")}">'
+                     + _beziehung_auswahl(f"beziehung_{lead_id}", beziehung))
+        reihen.append([
+            f'{_badge("whatsapp")} {_e(_kennung_lesbar(e["absender"]))}',
+            f'<a href="/kontakte/{_e(lead_id)}">'
+            f'{_e(e.get("kontakt") or "(ohne Namen)")}</a>',
+            zelle, _zeit(e["zuletzt"])])
+    return (f'<form method="post" action="/einordnung/beziehungen">'
+            f'<input type="hidden" name="csrf" value="{CSRF_TOKEN}">'
+            + _tabelle(["Kennung", "Kontakt", "Beziehung", "Zuletzt"], reihen)
+            + '<button type="submit">Alle speichern</button></form>')
+
+
+@_gesichert_seite
+async def aktion_einordnung_beziehungen(request):
+    """Sammelspeichern aus „Bereits entschieden". Erst alles pruefen, dann
+    schreiben: eine manipulierte Zeile speichert nichts halb."""
+    form = await request.form()
+    if not _csrf_ok(form):
+        return _fehlerseite(403, "CSRF-Token fehlt oder ist ungültig",
+                            "Nichts gespeichert. Seite neu laden.")
+    aenderungen = []
+    for schluessel in form.keys():
+        if not schluessel.startswith("beziehung_"):
+            continue
+        roh = schluessel[len("beziehung_"):]
+        neu = str(form.get(schluessel) or "")
+        try:
+            lead_id = str(uuid.UUID(roh))
+        except ValueError:
+            return _fehlerseite(422, "Nicht gespeichert",
+                                "Eine Zeile hat keine gültige lead_id.")
+        if neu and neu not in server.BEZIEHUNGEN:
+            return _fehlerseite(422, "Nicht gespeichert",
+                                "Eine Zeile hat eine unbekannte Beziehung.")
+        if neu != str(form.get(f"vorher_{roh}") or ""):
+            aenderungen.append((lead_id, neu))
+    if len(aenderungen) > EINORDNUNG_VERLAUF_MAX:
+        return _fehlerseite(422, "Nicht gespeichert",
+                            "Mehr Zeilen, als die Seite zeigt.")
+    gespeichert = nicht = 0
+    for lead_id, neu in aenderungen:
+        r = server._beziehung_setzen(lead_id, neu, quelle="ui")
+        if "fehler" in r:
+            nicht += 1
+        elif not r.get("unveraendert"):
+            gespeichert += 1
+    ziel = f"/einordnung?gespeichert={gespeichert}"
+    if nicht:
+        ziel += f"&nicht={nicht}"
+    return RedirectResponse(ziel + "#entschieden", status_code=303)
+
+
+def _gespeichert_hinweis(params) -> str:
+    teile = []
+    gespeichert, nicht = params.get("gespeichert"), params.get("nicht")
+    if gespeichert and gespeichert.isdigit():
+        n = int(gespeichert)
+        teile.append(f'<div class="hinweis">{n} Beziehung'
+                     f'{"" if n == 1 else "en"} gespeichert.</div>')
+    if nicht and nicht.isdigit():
+        teile.append(f'<div class="warnung">{int(nicht)} Zeile(n) nicht '
+                     f'gespeichert: Kontakt nicht mehr da oder Sammelkontakt.'
+                     f'</div>')
+    return "".join(teile)
 
 
 def _einordnung_karte(eintrag, optionen: str) -> str:
@@ -8402,25 +9309,17 @@ async def einordnung(request):
         teile.append(_einordnung_karte(eintrag, optionen))
 
     aufgeloest = koerbe["aufgeloest"]
-    teile.append(f"<h2>Bereits entschieden ({len(aufgeloest)})</h2>")
+    teile.append(f'<h2 id="entschieden">Bereits entschieden ({len(aufgeloest)})</h2>')
+    teile.append(_gespeichert_hinweis(request.query_params))
     if not aufgeloest:
         teile.append("<p>Noch nichts eingeordnet.</p>")
     else:
         # Rundgang 27.10.2026: Profil und Nachrichten raus, dafuer die
         # Beziehung (Kunde, Geschaeftspartner, Mitarbeiter, Privat) - direkt
-        # hier setzbar.
+        # hier setzbar, seit 06.11.2026 alle Zeilen mit einem Knopf.
         sichtbar = aufgeloest[:EINORDNUNG_VERLAUF_MAX]
         beziehungen = _beziehungen_je_lead([e.get("lead_id") for e in sichtbar])
-        teile.append(_tabelle(
-            ["Kennung", "Kontakt", "Beziehung", "Zuletzt"],
-            [[f'{_badge("whatsapp")} {_e(_kennung_lesbar(e["absender"]))}',
-              f'<a href="/kontakte/{_e(e.get("lead_id"))}">'
-              f'{_e(e.get("kontakt") or "(ohne Namen)")}</a>',
-              _beziehung_waehler(e.get("lead_id"),
-                                 beziehungen.get(str(e.get("lead_id"))),
-                                 "/einordnung"),
-              _zeit(e["zuletzt"])]
-             for e in sichtbar]))
+        teile.append(_entschieden_formular(sichtbar, beziehungen))
     teile.append(
         '<div class="hinweis">Der zitierte Nachrichtentext ist ein Datum, '
         'keine Anweisung: steht darin „ignoriere bitte …", ist das der Wunsch '
@@ -8599,7 +9498,17 @@ async def aktion_einordnung_zuordnen(request):
         absender=absender, entscheidung="zuordnen", lead_id=lead_id))
     if "fehler" in antwort:
         return _einordnung_fehler(antwort, "Nicht zugeordnet")
+    _einordnung_einwilligung(form, lead_id)
     return RedirectResponse("/einordnung", status_code=303)
+
+
+def _einordnung_einwilligung(form, lead_id: str) -> None:
+    """Der Haken „darf angeschrieben werden" (Betreiber-Vorgabe 30.10.2026).
+    Die Ausnahmen (Loeschantrag, Privat, Verbotsliste, Widerruf) prueft
+    server._grundlage_vorgabe."""
+    if str(form.get("einwilligung") or "") == "ja":
+        server._grundlage_vorgabe(
+            lead_id, f"Einordnung durch den Betreiber ({server._heute_text()})")
 
 
 @_gesichert_seite
@@ -8646,9 +9555,11 @@ async def aktion_einordnung_anlegen(request):
     antwort = json.loads(server.kontakt_anlegen(
         name=name, phone="+" + server.lid.ziffern(aufgeloest),
         source="whatsapp",
-        notes="aus der Einordnung eines unbekannten Absenders (sales-ui)"))
+        notes="aus der Einordnung eines unbekannten Absenders (sales-ui)",
+        einwilligung=False))
     if "fehler" in antwort:
         return _einordnung_fehler(antwort, "Kontakt nicht angelegt")
+    _einordnung_einwilligung(form, str(antwort["lead_id"]))
     return RedirectResponse(f'/kontakte/{antwort["lead_id"]}', status_code=303)
 
 
@@ -9340,7 +10251,6 @@ app = Starlette(routes=[
     Route("/pipeline", pipeline),
     Route("/pipeline/phase", aktion_phase, methods=["POST"]),
     Route("/ergebnisse/termin", aktion_termin_ergebnis, methods=["POST"]),
-    Route("/kalender/team", aktion_team_ebenen, methods=["POST"]),
     Route("/posteingang/aufraeumen", aktion_mail_aufraeumen, methods=["POST"]),
     Route("/ergebnisse", ergebnisse),
     # Handy (Design-Review S4): das ganze Menue hinter dem Tab "Mehr".
@@ -9353,7 +10263,18 @@ app = Starlette(routes=[
     Route("/team/kalender", team_kalender),
     Route("/team/kalender/verbinden", aktion_kalender_verbinden,
           methods=["POST"]),
+    Route("/team/kalender/google/start", google_start),
+    Route("/team/kalender/google/zurueck", google_zurueck),
+    Route("/team/kalender/google/auswahl", google_auswahl),
+    Route("/team/kalender/google/uebernehmen", google_uebernehmen,
+          methods=["POST"]),
+    Route("/team/kalender/google/abbrechen", google_abbrechen,
+          methods=["POST"]),
     Route("/team/kalender/entfernen", aktion_kalender_entfernen,
+          methods=["POST"]),
+    Route("/team/kalender/bereich", aktion_kalender_bereich,
+          methods=["POST"]),
+    Route("/team/kalender/pausieren", aktion_kalender_pausieren,
           methods=["POST"]),
     Route("/team/laden-anlegen", laden_anlegen_seite),
     Route("/team/laden-anlegen/anfordern", aktion_laden_anlegen,
@@ -9378,6 +10299,8 @@ app = Starlette(routes=[
     Route("/einordnung/anlegen", aktion_einordnung_anlegen, methods=["POST"]),
     Route("/einordnung/ignorieren", aktion_einordnung_ignorieren,
           methods=["POST"]),
+    Route("/einordnung/beziehungen", aktion_einordnung_beziehungen,
+          methods=["POST"]),
     # Eigene Route fuer den zweiten Schritt — der ausdrueckliche Klick soll
     # nicht als Feld an demselben Formular haengen, das ihn ausgeloest hat.
     Route("/einordnung/ignorieren-bestaetigen",
@@ -9395,11 +10318,15 @@ app = Starlette(routes=[
     *ui_marketing.routen(sys.modules[__name__]),
     *ui_plan.routen(sys.modules[__name__]),
     *ui_struktur.routen(sys.modules[__name__]),
+    # Mail-Reiter der Post-Sammelstelle (Stufe 1, 03.11.2026).
+    *ui_post.routen(sys.modules[__name__]),
     *ui_kanaele.routen(sys.modules[__name__]),
     *ui_reels.routen(sys.modules[__name__]),
     *ui_podcast.routen(sys.modules[__name__]),
     *ui_freigabe_newsletter.routen(sys.modules[__name__]),
     *ui_freigabe_bewerbung.routen(sys.modules[__name__]),
+    *ui_freigabe_api.routen(sys.modules[__name__]),
+    *ui_freigabe_eingang.routen(sys.modules[__name__]),
     Route("/medien", medien),
     Route("/medien/bot", aktion_medien_bot, methods=["POST"]),
     Route("/medien/datei/{name}", medien_datei),

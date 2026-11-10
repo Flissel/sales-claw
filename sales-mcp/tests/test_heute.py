@@ -115,7 +115,7 @@ def test_freigaben_wohnen_unter_freigaben_und_aktionen_kehren_dorthin_zurueck():
     assert '<a class="aktiv" href="/freigaben">' in _get("/freigaben").text
     r = _post("/aktion/ablehnen", {"draft_id": draft, "csrf": ui.CSRF_TOKEN})
     assert r.status_code == 303
-    assert r.headers["location"] == "/freigaben"
+    assert r.headers["location"] == "/freigaben?tab=nachrichten&art=whatsapp"
 
 
 def test_rechte_spalte_haelt_ausfaelle_aus(monkeypatch):
@@ -247,7 +247,7 @@ def test_freigeben_aus_heute_kehrt_nach_heute_zurueck():
 def test_danach_nur_aus_der_liste(ziel):
     lead = _lead(); d = _entwurf(lead, text="Kurz")
     r = _post("/aktion/ablehnen", {"draft_id": d, "csrf": ui.CSRF_TOKEN, "danach": ziel})
-    assert r.headers["location"] == "/freigaben"
+    assert r.headers["location"] == "/freigaben?tab=nachrichten&art=whatsapp"
 
 
 def test_wiedervorlage_erledigt_aus_heute_kehrt_nach_heute_zurueck():

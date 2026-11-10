@@ -411,11 +411,13 @@ def test_ohne_umgebung_bleibt_alles_wie_heute():
     assert set(cfg["services"]) == {
         "sales-claw", "sales-mcp", "sales-dispatch", "sales-inbox",
         "sales-mail", "sales-telegram", "sales-linkedin", "sales-kanaele",
-        "sales-auto", "sales-ui"}  # sales-stt seit 20.10.2026 am PC (Profil stt-lokal)
+        "sales-auto", "sales-ui", "sales-post", "freigabe-bote",
+        "sales-kalender", "auftrag-bote"}  # sales-stt seit 20.10.2026 am PC (Profil stt-lokal)
     assert {d["container_name"] for d in cfg["services"].values()} == {
         "sales-claw", "sales-mcp", "sales-dispatch", "sales-inbox",
         "sales-mail", "sales-telegram", "sales-linkedin", "sales-kanaele",
-        "sales-auto", "sales-ui"}  # sales-stt seit 20.10.2026 am PC (Profil stt-lokal)
+        "sales-auto", "sales-ui", "sales-post", "sales-freigabe-bote",
+        "sales-kalender", "sales-auftrag-bote"}  # sales-stt seit 20.10.2026 am PC (Profil stt-lokal)
     assert {v["name"] for v in cfg["volumes"].values()} == {
         "sales-claw-state", "sales-claw-keys",
         "sales-sprachnachrichten"}
@@ -593,3 +595,20 @@ def test_oberflaeche_kennt_alle_drei_sammelkontakte():
     for name in ("INBOX_UNBEKANNT_LEAD_ID", "RECHERCHE_LEAD_ID",
                  "LINKEDIN_POST_LEAD_ID"):
         assert name in umgebung, name
+
+
+@ohne_docker
+def test_freigabe_bote_haelt_nur_den_engen_rowboat_schluessel():
+    """M7 (09.11.2026): Der Bote bekommt einen Rowboat-Schluessel, der nur
+    seine fuenf todo:-Kanaele darf (~/freigabe-bote/rowboat-key), nicht mehr
+    den Generalschluessel aus ~/rowboat-data/server-key. Kein Dienst dieser
+    Datei haengt den Generalschluessel ein."""
+    cfg = _aufgeloest("docker-compose.yml")
+    bote = [v for v in (cfg["services"]["freigabe-bote"].get("volumes") or [])
+            if v.get("target") == "/run/rowboat-server-key"]
+    assert len(bote) == 1, bote
+    assert bote[0]["source"] == "/home/debian/freigabe-bote/rowboat-key"
+    assert bote[0].get("read_only") is True
+    for name, dienst in cfg["services"].items():
+        for v in dienst.get("volumes") or []:
+            assert not str(v.get("source", "")).endswith("rowboat-data/server-key"), name

@@ -195,9 +195,15 @@ begin
         termine_zuletzt int,
         created_at timestamptz not null default now()
       )$ddl$, s);
-    execute format('create unique index if not exists '
-                   'kalender_quellen_name_idx on %I.kalender_quellen '
-                   '(anzeigename)', s);
+    -- Nach db/kalender-verbinden.sql ist der Name nur je Besitzer eindeutig
+    -- (kalender_quellen_besitzer_name_idx); der alte globale Index darf bei einem
+    -- erneuten Lauf dieser Datei nicht wiederkommen.
+    if not exists (select 1 from pg_indexes where schemaname = s
+                   and indexname = 'kalender_quellen_besitzer_name_idx') then
+      execute format('create unique index if not exists '
+                     'kalender_quellen_name_idx on %I.kalender_quellen '
+                     '(anzeigename)', s);
+    end if;
     -- `url` nachtraeglich nullbar gemacht (Fix-Runde 2, 13.09.2026): auf
     -- bereits bestehenden Installationen wirkt das obige `create table if
     -- not exists` nicht mehr, deshalb per ALTER nachgezogen; idempotent
@@ -320,6 +326,10 @@ begin
           coalesce(betreff, '') || ' ' || coalesce(von, '') || ' ' ||
           coalesce(auszug, ''))) stored
       )$ddl$, s);
+    -- Post-Sammelstelle (Tabellen post_*): bewusst NICHT hier, sondern in
+    -- db/post-sammelstelle.sql (-v schema=...), damit sales_test getrennt pruefbar ist.
+    -- Freigabe-Eingang (Tabellen freigabe_*): ebenso NICHT hier, sondern in
+    -- db/freigabe-eingang.sql (-v schema=...).
     execute format('create index if not exists postfach_mails_such_idx '
                    'on %I.postfach_mails using gin (suchtext)', s);
     if s = 'sales' then
@@ -346,6 +356,12 @@ begin
     execute format('alter table %I.drafts add column if not exists newsletter_medien jsonb', s);
     -- Thema des Kundenentwurfs (normalisiert verglichen) fuer die Doppel-Pruefung (C3).
     execute format('alter table %I.drafts add column if not exists thema text', s);
+    -- Auftragsbuch (M8, 10.11.2026): der Entwurf gehoert zu diesem Auftrag (auftrag.auftraege.id, ohne
+    -- Fremdschluessel: anderes Schema). Der auftrag-bote legt je Auftrag und Kanal hoechstens einen
+    -- Entwurf an und schliesst den Auftrag ueber diese Spalte ab; der Index sichert "hoechstens einen".
+    execute format('alter table %I.drafts add column if not exists auftrag uuid', s);
+    execute format($idx$create unique index if not exists drafts_auftrag_kanal_uidx on %I.drafts
+      (auftrag, channel) where auftrag is not null$idx$, s);
     execute format($idx$create unique index if not exists drafts_newsletter_lead_uidx on %I.drafts
       (lead_id, newsletter) where newsletter is not null and status <> 'rejected'$idx$, s);
     execute format('alter table %I.leads drop constraint if exists leads_consent_status_check', s);

@@ -393,7 +393,7 @@ def test_leere_suchbegriffe_gehen_gar_nicht_erst_raus():
 # b2b_leads
 # ---------------------------------------------------------------------------
 
-def test_b2b_leads_legt_kontakte_ohne_einwilligung_an():
+def test_b2b_leads_legt_kontakte_mit_betreiber_vorgabe_an():
     STUB.antworte_mit([_ort("Alpha GmbH"), _ort("Beta AG",
                                                 telefon="+499419876543")])
     antwort = _b2b(branche="Handwerksbetrieb", region="Regensburg", limit=10)
@@ -404,7 +404,9 @@ def test_b2b_leads_legt_kontakte_ohne_einwilligung_an():
                        "order by name")
     assert [z["name"] for z in zeilen] == ["Alpha GmbH", "Beta AG"]
     assert all(z["company"] == z["name"] for z in zeilen)
-    assert all(z["consent_status"] == "unknown" for z in zeilen)
+    # Betreiber-Vorgabe 30.10.2026: auch Recherche-Kontakte tragen die
+    # Grundlage betreiber_auftrag (ausdrueckliche Entscheidung „ueberall").
+    assert all(z["consent_status"] == "betreiber_auftrag" for z in zeilen)
     # Internationale Schreibweise — die national notierte waere unzustellbar.
     assert zeilen[0]["phone"] == "+499411234567"
     for stichwort in ("Adresse:", "Website:", "Kategorie:", "Quelle:",

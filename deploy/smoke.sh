@@ -110,6 +110,21 @@ for server in sales rowboat; do
     fehl "mcp $server" "'$server' fehlt in mcp list"
   fi
 done
+# 4b) pm-claw (29.10.2026, deploy/pm-anbinden.sh): nur pruefen, wenn der Token
+# in der .env steht — vorher ist die Anbindung bewusst noch nicht gemacht, und
+# ein rotes `pm` wuerde jedes update.sh blockieren. Mit Token: Server sichtbar
+# und genau die zwei Werkzeuge (toolFilter + Rollentor).
+if grep -E '^PM_TOKEN_SALES=.' "$WURZEL/.env" >/dev/null 2>&1; then
+  pm_probe="$(docker exec sales-claw sh -c "openclaw mcp probe pm --json 2>/dev/null" || true)"
+  pm_anzahl="$(printf '%s' "$pm_probe" | grep -o 'pm__[a-z_]*' | sort -u | wc -l | tr -d ' ')"
+  if printf '%s' "$pm_probe" | grep "pm__aufnahme_status" >/dev/null && [ "$pm_anzahl" = "2" ]; then
+    gut "mcp pm"
+  else
+    fehl "mcp pm" "$pm_anzahl pm-Werkzeuge statt 2 — deploy/pm-anbinden.sh erneut laufen lassen"
+  fi
+else
+  melde "mcp pm" "uebersprungen (PM_TOKEN_SALES fehlt in .env — Anbindung noch nicht gemacht)"
+fi
 if docker logs --since 10m sales-claw 2>&1 | grep -i "failed to start server" >/dev/null; then
   fehl "mcp verbindung" "Startfehler in den letzten 10 Min."
 else
@@ -289,7 +304,9 @@ assert erst["name"] == "sales-claw", erst["name"]
 erwartete_container = {
     "sales-claw", "sales-mcp", "sales-dispatch", "sales-inbox",
     "sales-mail", "sales-telegram", "sales-linkedin", "sales-kanaele",
-    "sales-auto", "sales-ui"}  # sales-stt seit 20.10.2026 am PC, hier nur per Profil stt-lokal
+    "sales-auto", "sales-ui", "sales-post",
+    "sales-freigabe-bote", "sales-kalender",
+    "sales-auftrag-bote"}  # sales-stt seit 20.10.2026 am PC, hier nur per Profil stt-lokal
 ist = {d["container_name"] for d in erst["services"].values()}
 assert ist == erwartete_container, ist
 istv = {v["name"] for v in erst["volumes"].values()}
@@ -690,24 +707,57 @@ fi
 # "Einen zweiten Laden anlegen", Schritt 4) — der Container laeuft dann
 # schon, bevor ein Mensch das Secret gesetzt hat.
 #
-# Ueber ALLE laufenden *-ui-Container (docker ps), nicht nur
-# deploy/laeden/*.env — dasselbe Muster wie Abschnitt 12 ("Absenderadressen
-# sind je Laden verschieden"): der Basis-Laden "sales" hat keine
-# Umgebungsdatei, der Wert kommt deshalb immer aus dem LAUFENDEN Container
-# selbst (printenv), nie aus einer Datei.
+# Ueber die LAUFENDEN Container (docker ps), nicht nur deploy/laeden/*.env
+# — dasselbe Muster wie Abschnitt 12 ("Absenderadressen sind je Laden
+# verschieden"): der Basis-Laden "sales" hat keine Umgebungsdatei, der Wert
+# kommt deshalb immer aus dem LAUFENDEN Container selbst (printenv), nie
+# aus einer Datei.
 #
-# Kein laufender *-ui-Container ist KEIN Fehler dieses Abschnitts (wie bei
-# Abschnitt 12) — dann gibt es nichts zu pruefen. Dieselbe --nur-basis-Gate
-# wie 11-14: ein leeres Secret in einem EINZELNEN Zweitladen darf keinen
-# Rueckbau DES PRODUKTIONSLADENS in deploy/update.sh ausloesen (W2); die
-# volle Pruefung laeuft ueber deploy/wache.sh alle 15 Minuten.
+# NUR die Oberflaechen der Laeden, nicht jeder *-ui-Container (Befund
+# 14.10.2026): auf der VM laeuft das fremde Compose-Projekt bewerbung-bot
+# mit "bewerbung-zentrale-ui" (Dienst zentrale-ui, bewusst ohne
+# UI_SESSION_SECRET). Der Filter `grep -- '-ui$'` machte daraus ein
+# dauerhaftes ROT in jeder vollen Abnahme und damit in deploy/wache.sh —
+# ein Fehlalarm, der echte Befunde verdeckte. Ein Laden-UI ist, was
+# EINES von beiden erfuellt:
+#   * Compose-Dienst "sales-ui" (Etikett com.docker.compose.service) —
+#     JEDER Laden laeuft aus demselben docker-compose.yml, egal unter
+#     welchem Projekt (sales-claw, <name>-claw) und Praefix. Faengt auch
+#     einen Laden, dessen Umgebungsdatei in deploy/laeden/ fehlt oder
+#     kaputt ist (verwaist, von Hand anderswo gestartet).
+#   * Name <praefix>-ui eines bekannten Ladens: "sales" plus jedes
+#     brauchbare LADEN_PRAEFIX aus deploy/laeden/*.env (dieselbe Quelle wie
+#     die Abschnitte 11, 13 und 14) — faengt einen Laden-Container ohne
+#     Compose-Etiketten (z. B. per docker run nachgestellt).
+# Ein unbrauchbares LADEN_PRAEFIX zaehlen die Abschnitte 11, 13 und 14
+# bereits als ROT; hier faellt es nur aus der Namensliste.
+#
+# Kein laufender Laden-UI-Container ist KEIN Fehler dieses Abschnitts (wie
+# bei Abschnitt 12) — dann gibt es nichts zu pruefen. Dieselbe
+# --nur-basis-Gate wie 11-14: ein leeres Secret in einem EINZELNEN
+# Zweitladen darf keinen Rueckbau DES PRODUKTIONSLADENS in deploy/update.sh
+# ausloesen (W2); die volle Pruefung laeuft ueber deploy/wache.sh alle 15
+# Minuten.
 echo "== UI_SESSION_SECRET je laufender Oberflaeche =="
 if [ "$MODUS" = "basis" ]; then
   melde "ui_session_secret je laden" "uebersprungen (--nur-basis; volle Pruefung ueber deploy/wache.sh alle 15 Minuten)"
 else
-  ui_container="$(docker ps --format '{{.Names}}' | grep -- '-ui$' || true)"
+  laden_ui_namen=" sales-ui "
+  for e in "$WURZEL"/deploy/laeden/*.env; do
+    [ -e "$e" ] || continue
+    [ "$(basename "$e")" = "beispiel.env" ] && continue
+    p="$(grep -E '^LADEN_PRAEFIX=' "$e" | cut -d= -f2 | tr -d '[:space:]')"
+    [[ "$p" =~ ^[a-z][a-z0-9_]{0,30}$ ]] && laden_ui_namen="$laden_ui_namen$p-ui "
+  done
+  ui_container=""
+  while read -r name dienst; do
+    [ -n "$name" ] || continue
+    if [ "$dienst" = "sales-ui" ] || [[ "$laden_ui_namen" == *" $name "* ]]; then
+      ui_container="$ui_container $name"
+    fi
+  done < <(docker ps --format '{{.Names}} {{.Label "com.docker.compose.service"}}' 2>/dev/null || true)
   if [ -z "$ui_container" ]; then
-    melde "ui_session_secret je laden" "uebersprungen (kein *-ui-Container laeuft)"
+    melde "ui_session_secret je laden" "uebersprungen (kein Laden-UI-Container laeuft)"
   else
     for c in $ui_container; do
       wert="$(docker exec "$c" printenv UI_SESSION_SECRET 2>/dev/null || true)"
@@ -718,6 +768,75 @@ else
       fi
     done
   fi
+fi
+
+# 20) Post-Sammelstelle (sales-post, 03.11.2026). Nur wenn der Dienst laeuft:
+# vor dem Ausrollen (post-anbinden.sh, Betreiber-OK) ist er bewusst nicht da,
+# und ein rotes Ergebnis wuerde jedes update.sh blockieren.
+# Signal "letzte Runde": der Dienst schreibt im Leerlauf KEINE Zeile (Protokoll
+# nur bei Abgeholtem/Eingeordnetem) und post_mails.gesehen_am bewegt sich nur
+# mit neuen Mails - beides taugt nicht als Herzschlag. Eine Mindest-Laufzeit
+# taugt auch nicht: update.sh erzeugt laufende optionale Dienste neu und ruft
+# smoke ~30 s spaeter - das waere ROT und damit Rueckbau. Absturzschleife statt
+# dessen: Restarting oder RestartCount >= 3 (Neuerzeugen setzt ihn auf 0).
+# Dazu muss post_mails lesbar sein.
+post_zustand="$(docker inspect -f '{{.State.Status}}' sales-post 2>/dev/null | tr -d '[:space:]' || true)"
+if [ "$post_zustand" != "running" ]; then
+  melde "sales-post" "uebersprungen (Container laeuft nicht — Post-Sammelstelle noch nicht ausgerollt)"
+else
+  read -r post_restarting post_zaehler < <(docker inspect -f '{{.State.Restarting}} {{.RestartCount}}' sales-post 2>/dev/null || true)
+  if [ "${post_restarting:-}" = "true" ] || ! [[ "${post_zaehler:-x}" =~ ^[0-9]+$ ]] || [ "$post_zaehler" -ge 3 ]; then
+    fehl "sales-post laeuft" "Absturzschleife? (Restarting=${post_restarting:-?} RestartCount=${post_zaehler:-?}) — docker logs sales-post"
+  else
+    gut "sales-post laeuft"
+  fi
+  if docker exec -e SALES_DB_SCHEMA=sales sales-mcp python -c \
+    "import sys;sys.path.insert(0,'/app');import server;server._q('select count(*) from post_mails')" \
+    >/dev/null 2>&1; then gut "post_mails lesbar"; else fehl "post_mails lesbar" "select scheitert (db/post-sammelstelle.sql eingespielt?)"; fi
+fi
+
+# 21) Herzschlag des Freigabe-Boten (M4, 09.11.2026). Der Bote schreibt nach
+# jedem Durchgang (Takt 60 s) in einstellungen.freigabe_bote_herzschlag, ob der
+# Abgleich mit Rowboat geklappt hat. Ein laufender Container sagt nichts: ein
+# Bote, der Rowboat nicht erreicht, laeuft weiter und tut nichts. ROT, wenn
+# der letzte Erfolg aelter als 10 Minuten ist oder nie einer verzeichnet wurde.
+# NUR in der vollen Pruefung (deploy/wache.sh alle 15 Minuten): ist Rowboat
+# beim Ausrollen gerade weg, darf das keinen Rueckbau von Sales ausloesen.
+# Ohne Container sales-freigabe-bote gibt es nichts zu pruefen.
+if [ "$MODUS" = "basis" ]; then
+  melde "freigabe-bote herzschlag" "uebersprungen (--nur-basis; volle Pruefung ueber deploy/wache.sh alle 15 Minuten)"
+elif ! docker inspect sales-freigabe-bote >/dev/null 2>&1; then
+  melde "freigabe-bote herzschlag" "uebersprungen (kein Container sales-freigabe-bote)"
+else
+  hz="$(docker exec -e SALES_DB_SCHEMA=sales sales-mcp python -c \
+    "import sys;sys.path.insert(0,'/app');import freigabe_eingang as fe;print(fe.herzschlag_pruefzeile())" \
+    2>/dev/null | tail -1 || true)"
+  case "$hz" in
+    ok\ *) gut "freigabe-bote herzschlag" ;;
+    still\ *|unbekannt\ *) fehl "freigabe-bote herzschlag" "${hz} — docker logs sales-freigabe-bote" ;;
+    *) fehl "freigabe-bote herzschlag" "nicht lesbar (sales-mcp oder Datenbank?)" ;;
+  esac
+fi
+
+# 22) Herzschlag des Auftrag-Boten (M8, 10.11.2026). Wie Abschnitt 21, mit
+# dem Schluessel einstellungen.auftrag_bote_herzschlag: der Bote schreibt nach
+# jedem Durchgang (Takt 60 s), ob Auftragsbuch und Entwuerfe erreichbar waren.
+# ROT, wenn der letzte Erfolg aelter als 10 Minuten ist oder nie einer
+# verzeichnet wurde. NUR in der vollen Pruefung (deploy/wache.sh). Ohne
+# Container sales-auftrag-bote gibt es nichts zu pruefen.
+if [ "$MODUS" = "basis" ]; then
+  melde "auftrag-bote herzschlag" "uebersprungen (--nur-basis; volle Pruefung ueber deploy/wache.sh alle 15 Minuten)"
+elif ! docker inspect sales-auftrag-bote >/dev/null 2>&1; then
+  melde "auftrag-bote herzschlag" "uebersprungen (kein Container sales-auftrag-bote)"
+else
+  hz="$(docker exec -e SALES_DB_SCHEMA=sales sales-mcp python -c \
+    "import sys;sys.path.insert(0,'/app');import freigabe_eingang as fe;print(fe.herzschlag_pruefzeile(schluessel='auftrag_bote_herzschlag'))" \
+    2>/dev/null | tail -1 || true)"
+  case "$hz" in
+    ok\ *) gut "auftrag-bote herzschlag" ;;
+    still\ *|unbekannt\ *) fehl "auftrag-bote herzschlag" "${hz} — docker logs sales-auftrag-bote" ;;
+    *) fehl "auftrag-bote herzschlag" "nicht lesbar (sales-mcp oder Datenbank?)" ;;
+  esac
 fi
 
 echo "---"

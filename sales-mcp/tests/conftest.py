@@ -41,6 +41,7 @@ lokale Fixture, sie raeumt beim Teardown in umgekehrter Reihenfolge aller
 """
 import os
 import shutil
+import sys
 import tempfile
 
 import pytest
@@ -95,9 +96,60 @@ def _keine_echten_zusatzpostfaecher(monkeypatch):
         if name.startswith("POSTFACH_") and name.endswith(("_ADRESSE", "_PASSWORT")):
             monkeypatch.delenv(name)
 
-    def nie(konto):
+    def nie(konto, **_):
         raise AssertionError(f"echte Verbindung zu {konto.kennung} im Test")
     monkeypatch.setattr(postfach, "_imap_oeffnen", nie)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _kein_echter_kalender(monkeypatch):
+    """Kalender und Google Meet (06.11.2026): das Runbook startet die Suite
+    mit `--env-file .env`, und mit den echten CALDAV_*-Werten schrieb
+    `termine_eigen.anlegen` aus den Tests heraus 275 Termine ("Steuer" u. a.)
+    in den echten Kalender des Betreibers. Kein Test braucht echte Werte -
+    wer einen konfigurierten Kalender braucht, setzt eine Attrappen-URL selbst
+    (siehe test_termin.py). Wache: tests/test_testsperre.py."""
+    for name in ("CALDAV_URL", "CALDAV_USER", "CALDAV_PASSWORT",
+                 "GOOGLE_MEET_CLIENT_ID", "GOOGLE_MEET_CLIENT_SECRET",
+                 "GOOGLE_MEET_REFRESH_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    yield
+
+
+class _GesperrtesAuftragsbuch:
+    """Jeder Aufruf scheitert laut: der Test hat kein eigenes Auftragsbuch gesetzt."""
+
+    def __getattr__(self, name):
+        def gesperrt(*_a, **_kw):
+            raise AssertionError(f"echtes Auftragsbuch im Test (auftrag_buch.{name})")
+        return gesperrt
+
+
+@pytest.fixture(autouse=True)
+def _kein_echtes_auftragsbuch(monkeypatch):
+    """auftrag-bote (M8, 10.11.2026): das Auftragsbuch (Schema `auftrag`) ist EINE
+    Tabelle fuer alle Laeden und kennt kein sales_test. Ein Bote-Durchgang im Test
+    mit dem echten Pool wuerde echte Auftraege des Ladens `sales` weiterschalten
+    (wartet_freigabe ohne echte Entwuerfe). Der Bote sieht im Test deshalb ein
+    gesperrtes Buch; Tests setzen ihr eigenes (tests/test_auftrag_bote.py).
+    Nur wenn `auftrag_bote` schon geladen ist. Wache: tests/test_testsperre.py."""
+    bote = sys.modules.get("auftrag_bote")
+    if bote is not None:
+        monkeypatch.setattr(bote, "auftrag_buch", _GesperrtesAuftragsbuch())
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _keine_echte_anmeldung(monkeypatch):
+    """Mit `--env-file .env` ist die echte UI_SESSION_SECRET gesetzt, und
+    jede Seite im Test antwortete mit der Umleitung auf /login (gefunden
+    06.11.2026). Die Suite prueft Seiten im Uebergangszustand ohne Anmeldung;
+    wer die Anmeldung testet, setzt das Geheimnis selbst per monkeypatch.
+    Nur wenn `ui` schon geladen ist - reine Modultests ziehen es nicht."""
+    ui = sys.modules.get("ui")
+    if ui is not None:
+        monkeypatch.setattr(ui, "UI_SESSION_SECRET", "")
     yield
 
 

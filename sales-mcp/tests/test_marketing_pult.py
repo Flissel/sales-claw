@@ -328,7 +328,7 @@ def test_freigeben_geht_hier_nicht_mehr(angemeldet, pult):
     r = angemeldet.post(f"/marketing/entwurf/{IID}/entscheiden", headers=HOST, follow_redirects=False,
                         data={"csrf": ui.CSRF_TOKEN, "fassung": "2", "urteil": "freigeben", "grund": ""})
     assert r.status_code == 422 and "Freigeben geht über die Freigaben" in r.text
-    assert 'href="/freigaben#marketing"' in r.text
+    assert 'href="/freigaben?tab=marketing&amp;art=pult#marketing"' in r.text
     assert not any(a[0] == "POST" for a in pult.aufrufe)
 
 

@@ -457,7 +457,7 @@ def routen(ui) -> list:
             vom = e(i.get("eingereicht_von") or "")
             zeile_status = (f'<p class="meta">Liegt zur Freigabe seit {wann}'
                             f'{" (eingereicht von " + vom + ")" if vom else ""}. '
-                            f'Freigegeben wird in den <a href="/freigaben#marketing">Freigaben</a>.</p>')
+                            f'Freigegeben wird in den <a href="/freigaben?tab=marketing&amp;art=pult#marketing">Freigaben</a>.</p>')
             haupt = (f'<form method="post" action="{basis}/zurueckziehen" class="aktion">{csrf}'
                      f'<button type="submit">Zurückziehen</button></form>')
         elif in_arbeit:
@@ -638,7 +638,7 @@ def routen(ui) -> list:
         if str(form.get("urteil") or "") == "freigeben":
             return ui._fehlerseite(422, "Nicht möglich",
                                    'Freigeben geht über die Freigaben. '
-                                   '<a href="/freigaben#marketing">Zu den Freigaben</a>')
+                                   '<a href="/freigaben?tab=marketing&amp;art=pult#marketing">Zu den Freigaben</a>')
         return await verwerfen_senden(request, form)
 
     async def verwerfen_senden(request, form):

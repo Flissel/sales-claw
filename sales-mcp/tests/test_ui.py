@@ -713,7 +713,7 @@ def test_inbox_linkedin_beitrag_nennt_den_dienst():
     lead = _lead()
     _entwurf(lead, status="approved", kanal="linkedin", empfaenger="eigenes-profil",
              approved_by="betreiber", text="LinkedIn-Post-Text")
-    seite = _get("/freigaben").text
+    seite = _get("/freigaben?tab=marketing&art=linkedin").text
     assert "sales-linkedin" in seite
     assert "Markier-Liste" in seite
 
@@ -724,7 +724,7 @@ def test_inbox_linkedin_direktnachricht_nennt_den_handversand():
     lead = _lead()
     _entwurf(lead, status="approved", kanal="linkedin",
              approved_by="betreiber", text="LinkedIn-DM-Text")
-    seite = _get("/freigaben").text
+    seite = _get("/freigaben?tab=nachrichten&art=linkedin").text
     assert "von Hand" in seite
     assert "entwurf_manuell_gesendet" in seite
     assert "sales-linkedin" not in seite
@@ -1337,6 +1337,71 @@ def test_anlegen_legt_keinen_zweiten_kontakt_zur_selben_nummer_an(
     assert r.headers["location"] == f"/kontakte/{vorhanden}"
     assert server._q("select id from leads where name = %s",
                      ("Sophie Doppelt",)) == []
+
+
+# --- Werbe-Einwilligung beim Einordnen (Betreiber-Vorgabe 30.10.2026) -------
+#
+# „das soll beim Einordnen mit abgehakt werden": ein vorab gesetzter Haken bei
+# Zuordnen und Neu anlegen. Abgewaehlt bucht er nichts.
+
+def _consent(lead):
+    return server._q("select consent_status from leads where id = %s",
+                     (lead,))[0]["consent_status"]
+
+
+def test_einordnung_zeigt_den_haken_vorab_gesetzt(sammelkontakt_zurueck):
+    sammel = _sammel()
+    _kundenantwort(sammel, text="Hallo", absender=SOPHIE_NUMMER)
+    seite = _get("/einordnung").text
+    haken = re.findall(r'<input type="checkbox" name="einwilligung" value="ja" checked>',
+                       seite)
+    assert len(haken) == 2   # Zuordnen und Neu anlegen
+
+
+def test_zuordnen_mit_haken_bucht_die_grundlage(sammelkontakt_zurueck):
+    sammel = _sammel()
+    ziel = _lead(name="Sophie Beispiel", phone=SOPHIE_PHONE)
+    _kundenantwort(sammel, text="Hallo", absender=SOPHIE_LID)
+    r = _post("/einordnung/zuordnen", {"absender": SOPHIE_LID, "csrf": ui.CSRF_TOKEN,
+                                       "lead_id": ziel, "einwilligung": "ja"})
+    assert r.status_code == 303
+    assert _consent(ziel) == "betreiber_auftrag"
+    (eintrag,) = _aktivitaeten("werbe_einwilligung")
+    assert eintrag["payload"]["quelle"].startswith("Einordnung durch den Betreiber")
+
+
+def test_zuordnen_ohne_haken_bucht_nichts(sammelkontakt_zurueck):
+    sammel = _sammel()
+    ziel = _lead(name="Sophie Beispiel", phone=SOPHIE_PHONE)
+    _kundenantwort(sammel, text="Hallo", absender=SOPHIE_LID)
+    r = _post("/einordnung/zuordnen", {"absender": SOPHIE_LID, "csrf": ui.CSRF_TOKEN,
+                                       "lead_id": ziel})
+    assert r.status_code == 303
+    assert _consent(ziel) == "unknown"
+    assert _aktivitaeten("werbe_einwilligung") == []
+
+
+def test_anlegen_mit_haken_bucht_die_grundlage(sammelkontakt_zurueck):
+    sammel = _sammel()
+    _kundenantwort(sammel, text="Hallo", absender=SOPHIE_NUMMER)
+    r = _post("/einordnung/anlegen", {"absender": SOPHIE_NUMMER, "csrf": ui.CSRF_TOKEN,
+                                      "name": "Sophie Neu", "einwilligung": "ja"})
+    assert r.status_code == 303
+    neu = server._q("select id from leads where name = %s", ("Sophie Neu",))[0]["id"]
+    assert _consent(str(neu)) == "betreiber_auftrag"
+    (eintrag,) = _aktivitaeten("werbe_einwilligung")
+    assert eintrag["payload"]["quelle"].startswith("Einordnung durch den Betreiber")
+
+
+def test_anlegen_ohne_haken_bucht_nichts(sammelkontakt_zurueck):
+    sammel = _sammel()
+    _kundenantwort(sammel, text="Hallo", absender=SOPHIE_NUMMER)
+    r = _post("/einordnung/anlegen", {"absender": SOPHIE_NUMMER, "csrf": ui.CSRF_TOKEN,
+                                      "name": "Sophie Neu"})
+    assert r.status_code == 303
+    neu = server._q("select id from leads where name = %s", ("Sophie Neu",))[0]["id"]
+    assert _consent(str(neu)) == "unknown"
+    assert _aktivitaeten("werbe_einwilligung") == []
 
 
 # ---------------------------------------------------------------------------
@@ -2319,7 +2384,8 @@ def test_einordnung_zeigt_beziehung_statt_profil(sammelkontakt_zurueck):
     seite = _get("/einordnung").text
     assert f'href="/kontakte/{lead}#profil"' not in seite
     assert "noch keins" not in seite
-    assert 'action="/kontakte/beziehung"' in seite
+    # Seit 06.11.2026 ein Sammelformular statt eines Formulars je Zeile.
+    assert 'action="/einordnung/beziehungen"' in seite
 
 
 def test_kontaktliste_hat_den_archiv_knopf():
@@ -3899,7 +3965,7 @@ def test_linkedin_karte_zeigt_markier_liste_escaped():
     _markierungen(d, [{"name": "<b>Peter</b>", "art": "person",
                        "profil": "https://www.linkedin.com/in/p"},
                       {"name": "BMW Group", "art": "firma", "profil": ""}])
-    seite = _get("/freigaben").text
+    seite = _get("/freigaben?tab=marketing&art=linkedin").text
     assert "Nach dem Posten markieren" in seite
     assert "&lt;b&gt;Peter&lt;/b&gt;" in seite and "<b>Peter</b>" not in seite
     assert "BMW Group" in seite and "https://www.linkedin.com/in/p" in seite
@@ -3908,14 +3974,14 @@ def test_linkedin_karte_zeigt_markier_liste_escaped():
 def test_linkedin_karte_ohne_liste_ohne_block():
     lead = _lead()
     _entwurf(lead, kanal="linkedin", empfaenger="eigenes-profil", text="Post")
-    assert "Nach dem Posten markieren" not in _get("/freigaben").text
+    assert "Nach dem Posten markieren" not in _get("/freigaben?tab=marketing&art=linkedin").text
 
 
 def test_freigegebener_linkedin_post_kein_handposten_hinweis_mehr():
     lead = _lead()
     _entwurf(lead, status="approved", kanal="linkedin", empfaenger="eigenes-profil",
              text="Post", approved_by="felix")
-    seite = _get("/freigaben").text
+    seite = _get("/freigaben?tab=marketing&art=linkedin").text
     assert "von Hand posten" not in seite
 
 
@@ -4153,7 +4219,7 @@ def test_freigabe_karte_ohne_andere_treffer_kein_hinweis():
 def test_kontaktseite_zeitleiste():
     lead = _lead()
     ui.server._q("insert into drafts (lead_id, channel, recipient, body, status, thema, sent_at) "
-                 "values (%s,'email','x','b','sent','Homelab <Angebot>', now()) returning id", (lead,))
+                 "values (%s,'whatsapp','x','b','sent','Homelab <Angebot>', now()) returning id", (lead,))
     s = _get(f"/kontakte/{lead}?reiter=verlauf").text
     assert "Kontakt-Historie" in s and "Homelab &lt;Angebot&gt;" in s
 
@@ -4161,7 +4227,7 @@ def test_kontaktseite_zeitleiste():
 def test_kontaktseite_historie_fehler_bricht_seite_nicht(monkeypatch):
     lead = _lead()
 
-    def kaputt(_):
+    def kaputt(_, **_kw):
         raise ui.psycopg.Error("weg")
     _gesendet(lead, "Sichtbar")
     monkeypatch.setattr(ui.historie, "kontakt_historie", kaputt)

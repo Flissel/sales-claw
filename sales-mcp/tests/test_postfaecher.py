@@ -35,20 +35,30 @@ def _mail(von, betreff, text, datum, mid):
 
 
 class Kasten:
-    """IMAP-Ersatz mit Ordnern — merkt sich jeden schreibenden Befehl."""
+    """IMAP-Ersatz mit Ordnern — merkt sich jeden schreibenden Befehl.
+    Kann UIDPLUS, aber kein MOVE: verschieben laeuft ueber UID COPY + UID EXPUNGE."""
+
+    capabilities = ("IMAP4REV1", "UIDPLUS")
 
     def __init__(self, mails, ordner=()):
         self.mails = dict(mails)
         self.ordner = list(ordner) or [(r"\HasNoChildren", "INBOX")]
         self.selects, self.kopien, self.flags, self.angelegt = [], [], [], []
         self.expunged = False
+        self.uid_expunges = []
         self.abgemeldet = False
 
     def select(self, ordner, readonly=False):
         self.selects.append((ordner, readonly))
         return "OK", [str(len(self.mails)).encode()]
 
+    def response(self, code):
+        return code, [None]
+
     def uid(self, befehl, *args):
+        befehl = befehl.lower()
+        if args and isinstance(args[0], str):
+            args = (args[0].encode("ascii"),) + args[1:]
         if befehl == "search":
             return "OK", [b" ".join(sorted(self.mails))]
         if befehl == "fetch":
@@ -60,6 +70,9 @@ class Kasten:
             return "OK", [b""]
         if befehl == "store":
             self.flags.append((args[0], args[2]))
+            return "OK", [b""]
+        if befehl == "expunge":
+            self.uid_expunges.append(args[0])
             return "OK", [b""]
         raise AssertionError(befehl)
 
@@ -148,51 +161,76 @@ def test_eingerichtet_je_uid(haupt, gmx):
 
 # --- Lesen -------------------------------------------------------------------
 
-def test_postfach_lesen_mischt_alle_postfaecher_neueste_zuerst(haupt, gmx, leer):
-    antwort = json.loads(server.postfach_lesen(10))
-    assert [m["uid"] for m in antwort["mails"]] == ["gmx:2", "7"]
-    assert [m["postfach"] for m in antwort["mails"]] == ["gmx", "haupt"]
-    assert gmx.geoeffnet[0].adresse == GMX_ADRESSE
-    assert all(readonly for _, readonly in gmx.selects)
-    # Der Index kennt die Herkunft ueber die uid.
-    zeilen = server._q("select uid from postfach_mails order by uid")
-    assert [z["uid"] for z in zeilen] == ["7", "gmx:2"]
-
-
-def test_ein_kaputtes_postfach_kostet_die_anderen_nicht(haupt, gmx, leer, monkeypatch):
-    def kaputt(konto):
-        raise OSError(f"login failed {GMX_GEHEIM}")
-    monkeypatch.setattr(postfach, "_imap_oeffnen", kaputt)
+def test_postfach_lesen_rueckfall_liest_nur_das_hauptpostfach(haupt, gmx, leer):
+    # Task 9: leere Sammelstelle -> alter IMAP-Weg, aber NUR Hauptpostfach
+    # (GMX/Gmail koennen Privates enthalten und werden nie live gelesen).
     antwort = json.loads(server.postfach_lesen(10))
     assert [m["uid"] for m in antwort["mails"]] == ["7"]
-    assert antwort["nicht_erreichbar"] == {"gmx": "OSError"}
+    assert [m["postfach"] for m in antwort["mails"]] == ["haupt"]
+    assert gmx.geoeffnet == []          # GMX wurde nie geoeffnet
+    assert all(readonly for _, readonly in haupt.selects)
+    zeilen = server._q("select uid from postfach_mails order by uid")
+    assert [z["uid"] for z in zeilen] == ["7"]
+
+
+def test_kaputtes_hauptpostfach_ist_eine_meldung_ohne_geheimnis(haupt, gmx, leer, monkeypatch):
+    def kaputt(konto):
+        raise OSError(f"login failed {GMX_GEHEIM}")
+    monkeypatch.setattr(postfach, "_verbinden", lambda: kaputt(None))
+    antwort = json.loads(server.postfach_lesen(10))
+    assert "fehler" in antwort and antwort["nicht_erreichbar"] == {"haupt": "OSError"}
     assert GMX_GEHEIM not in json.dumps(antwort)
 
 
-def test_nur_ein_postfach_lesen(haupt, gmx, leer):
+def test_gmx_wird_nie_live_gelesen(haupt, gmx, leer):
     antwort = json.loads(server.postfach_lesen(10, postfach="gmx"))
-    assert [m["uid"] for m in antwort["mails"]] == ["gmx:2"]
+    assert antwort["mails"] == [] and gmx.geoeffnet == []
 
 
-def test_volltext_aus_gmx(haupt, gmx):
-    mail = json.loads(server.postfach_mail_lesen("gmx:2"))
-    assert mail["betreff"] == "Privat über GMX" and mail["uid"] == "gmx:2"
-    assert mail["postfach"] == "gmx"
-    assert gmx.selects == [("INBOX", True)]
+def test_volltext_aus_gmx_ist_nicht_verfuegbar(haupt, gmx):
+    assert json.loads(server.postfach_mail_lesen("gmx:2")) == {"fehler": "nicht verfuegbar"}
+    assert gmx.geoeffnet == []
 
 
-def test_nicht_eingerichtetes_postfach_ist_eine_meldung(haupt):
-    antwort = json.loads(server.postfach_mail_lesen("gmail:4"))
-    assert "nicht eingerichtet" in antwort["fehler"]
+def test_nicht_eingerichtetes_postfach_ist_nicht_verfuegbar(haupt):
+    assert json.loads(server.postfach_mail_lesen("gmail:4")) == {"fehler": "nicht verfuegbar"}
 
 
 # --- Aufraeumen --------------------------------------------------------------
 
-def test_spam_aus_gmx_wandert_in_den_gmx_spamordner(haupt, gmx, leer):
-    antwort = json.loads(server.mail_einstufen("gmx:2", "spam", "Phishing"))
+@pytest.fixture
+def gmx_in_sammelstelle(monkeypatch):
+    """Seit M1 (03.11.2026) gibt es keine alten uids "gmx:2" mehr fuer
+    Antworten/Aufraeumen - der Weg in GMX fuehrt ueber die Sammelstelle
+    (post:<id>, env-Konto gmx). Liefert die post:-uid der GMX-Mail 2."""
+    # Ein Container = ein Nutzer: der Bot sieht nur die Mails des Besitzers.
+    monkeypatch.setenv("POST_BESITZER", "t_felix")
+    with server.pool.connection() as conn:
+        conn.execute("truncate sales_test.post_mails, sales_test.post_konten cascade")
+    konto = server._q(
+        "insert into post_konten (besitzer, kennung, anbieter, adresse, quelle) "
+        "values ('t_felix', 'gmx', 'gmx', %s, 'env') returning id", (GMX_ADRESSE,))[0]["id"]
+    mail_id = server._q(
+        "insert into post_mails (konto_id, imap_uid, message_id, besitzer, von, betreff, "
+        "bereich, fach, sensibel, datum) values (%s, 2, 'gmx-2@x', 't_felix', "
+        "'Freund <f@beispiel.org>', 'Anfrage ueber GMX', 'business', 'Kunden & Anfragen', "
+        "false, now()) returning id", (konto,))[0]["id"]
+    yield f"post:{mail_id}"
+    with server.pool.connection() as conn:
+        conn.execute("truncate sales_test.post_mails, sales_test.post_konten cascade")
+
+
+def test_spam_aus_gmx_wandert_in_den_gmx_spamordner(haupt, gmx, leer, gmx_in_sammelstelle):
+    # Alte uid: nie live in GMX (M1/R15), nichts geoeffnet.
+    assert json.loads(server.mail_einstufen("gmx:2", "spam", "Phishing")) == {
+        "fehler": "nicht verfuegbar"}
+    assert gmx.geoeffnet == []
+    antwort = json.loads(server.mail_einstufen(gmx_in_sammelstelle, "spam", "Phishing"))
     assert antwort["ordner"] == "Spamverdacht"
     assert gmx.kopien == [(b"2", '"Spamverdacht"')]
-    assert gmx.flags == [(b"2", "(\\Deleted)")] and gmx.expunged
+    # Nur UID EXPUNGE der einen Mail, nie ein nacktes EXPUNGE (Spec 2026-11-06 §11).
+    assert gmx.flags == [(b"2", "(\\Deleted)")] and gmx.uid_expunges == [b"2"]
+    assert not gmx.expunged
     assert haupt.kopien == []
 
 
@@ -205,8 +243,9 @@ def test_ordnernamen_mit_leerzeichen_und_klammern():
 
 # --- Antworten ---------------------------------------------------------------
 
-def test_antwort_auf_gmx_mail_merkt_sich_das_postfach(haupt, gmx, leer):
-    a = json.loads(server.mail_beantworten("gmx:2", "Danke, melde mich."))
+def test_antwort_auf_gmx_mail_merkt_sich_das_postfach(haupt, gmx, leer, gmx_in_sammelstelle):
+    assert json.loads(server.mail_beantworten("gmx:2", "x")) == {"fehler": "nicht verfuegbar"}
+    a = json.loads(server.mail_beantworten(gmx_in_sammelstelle, "Danke, melde mich."))
     assert "fehler" not in a, a
     d = server._q("select postfach, antwort_auf, recipient from drafts where id = %s", (a["draft_id"],))[0]
     assert (d["postfach"], d["antwort_auf"], d["recipient"]) == ("gmx", "gmx-2@x", "f@beispiel.org")
@@ -287,15 +326,22 @@ def test_passwort_des_zusatzpostfachs_nie_im_fehlertext(gmx):
 
 # --- Oberflaeche -------------------------------------------------------------
 
-def test_posteingang_zeigt_herkunft(leer):
+def test_posteingang_zeigt_keine_private_postfach_mail(leer):
+    """Rulings R10/R14 (03.11.2026): postfach_mails hat keinen Besitzer -
+    private GMX-Post darf auf /posteingang weder in der Liste noch in der
+    Suche stehen. Mails gibt es nur im Reiter /post (Sichtbarkeit je Person)."""
     server._postfach_merken([
         {"uid": "gmx:2", "message_id": "gmx-2@x", "von": "f@beispiel.org", "betreff": "Privat",
          "datum": "", "auszug": "Hallo"},
         {"uid": "7", "message_id": "laden-7@x", "von": "k@beispiel.org", "betreff": "Laden",
          "datum": "", "auszug": "Hallo"}])
     seite = TestClient(ui.app).get("/posteingang", headers=HOST_OK).text
-    assert '<span class="badge">GMX</span> <b>Privat</b>' in seite
-    assert '<span class="badge">Hauptpostfach</span>' not in seite
+    assert '<a href="/post">Mails →</a>' in seite
+    assert "<b>Privat</b>" not in seite and "f@beispiel.org" not in seite
+    seite = TestClient(ui.app).get("/posteingang?q=Privat", headers=HOST_OK).text
+    assert "<b>Privat</b>" not in seite and "f@beispiel.org" not in seite
+    assert '<span class="badge">GMX</span>' not in seite
+    assert '<a href="/post?q=Privat">In Mails suchen →</a>' in seite
 
 
 def test_freigabe_zeigt_absender_postfach(leer):

@@ -54,14 +54,17 @@ def doppelt_hinweis(treffer: list) -> str:
             f"angeschrieben — trotzdem anlegen? Dann trotzdem=True.")
 
 
-def kontakt_historie(lead_id, tage=365) -> list:
+def kontakt_historie(lead_id, tage=365, mit_mail: bool = True) -> list:
+    """`mit_mail=False` laesst E-Mail-Entwuerfe weg: die Oberflaeche zeigt
+    Mailinhalt (Betreff, Anfang) nur dem Postfach-Besitzer."""
     lid = str(lead_id)
     aus = []
     for z in _lesen(
             "Entwuerfe (thema)",
             "select channel, subject, thema, newsletter, left(body, 60) as anfang, "
             "coalesce(sent_at, created_at) as datum from drafts where lead_id = %s "
-            "and status = 'sent' and coalesce(sent_at, created_at) > now() - make_interval(days => %s)",
+            "and status = 'sent' and coalesce(sent_at, created_at) > now() - make_interval(days => %s)"
+            + ("" if mit_mail else " and channel <> 'email'"),
             (lid, tage)):
         art = "newsletter" if z["newsletter"] else "entwurf"
         text = z["thema"] or z["subject"] or z["anfang"] or ""

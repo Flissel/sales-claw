@@ -26,6 +26,7 @@ markiert wird dabei nichts.
 """
 import email
 import email.header
+import html as html_kuerzel
 import email.utils
 import imaplib
 import json
@@ -109,6 +110,14 @@ ANBIETER = {
     # eigene Kopie stuende dort doppelt.
     "gmail": {"name": "Gmail", "imap": "imap.gmail.com", "smtp": "smtp.gmail.com",
               "sent_kopie": False},
+    # Namecheap Private Email = das Hauptpostfach. Host aus der Umgebung statt
+    # fest; es gibt kein POSTFACH_NAMECHEAP_*, darum liefert konto("namecheap")
+    # None und kennungen() fuehrt es nicht als eigenes Zusatzpostfach (das
+    # Hauptpostfach heisst weiter "haupt"). Die Post-Sammelstelle fuehrt es in
+    # post_konten als Kennung "haupt", Anbieter "namecheap".
+    "namecheap": {"name": "Namecheap", "imap": IMAP_HOST,
+                  "smtp": os.environ.get("SMTP_HOST", "").strip(),
+                  "sent_kopie": True},
 }
 IMAP_SSL_PORT = 993
 SMTP_SSL_PORT = 465
@@ -120,9 +129,13 @@ class Konto:
     adresse: str
     passwort: str = field(repr=False)   # nie in Log oder Fehlertext
 
+    # Welcher Anbieter (Host usw.) gilt; leer = die Kennung selbst. So kann es
+    # mehrere Konten je Anbieter geben (gmx-privat, gmx-firma).
+    anbieter_id: str = ""
+
     @property
     def anbieter(self) -> dict:
-        return ANBIETER[self.kennung]
+        return ANBIETER[self.anbieter_id or self.kennung]
 
 
 def konto(kennung: str):
@@ -168,9 +181,13 @@ def name(kennung: str) -> str:
     return ANBIETER.get(kennung, {}).get("name", "Hauptpostfach")
 
 
-def _imap_oeffnen(k: Konto):
+def _imap_oeffnen(k: Konto, timeout: float | None = None):
+    # `timeout` gilt nur fuer DIESEN Socket (Verbinden, Anmelden, jeder
+    # Befehl). Bewusst kein socket.setdefaulttimeout: in sales-ui wuerde das
+    # jeden anderen Socket des Prozesses mit begrenzen.
+    zusatz = {"timeout": timeout} if timeout else {}
     kasten = imaplib.IMAP4_SSL(k.anbieter["imap"], IMAP_SSL_PORT,
-                               ssl_context=ssl.create_default_context())
+                               ssl_context=ssl.create_default_context(), **zusatz)
     kasten.login(k.adresse, k.passwort)
     return kasten
 
@@ -228,17 +245,48 @@ def _automatisch(nachricht) -> bool:
     return _kopf(nachricht, "Return-Path").replace(" ", "") == "<>"
 
 
-def _html_zu_text(html: str) -> str:
-    # Script/Style samt Inhalt weg, dann alle Tags — grob, aber ehrlich:
-    # das ist eine Lesehilfe, kein Browser.
+# Link mit Zieladresse (nur fuer `links=True`). Der Linktext darf Tags
+# enthalten (<a><b>Hier</b></a>); geschachtelte <a> gibt es in HTML nicht.
+_A_TAG = re.compile(r"""<a\b[^>]*?\bhref\s*=\s*(["'])(.*?)\1[^>]*>(.*?)</a\s*>""",
+                    re.S | re.I)
+
+
+def _link_mit_adresse(treffer) -> str:
+    """`Linktext (https://…)` - aber nur, wenn es etwas zu zeigen gibt.
+
+    Nur http(s); ohne sichtbaren Linktext (Bildlinks), bei Text = Adresse und bei
+    Adressen mit Leerraum oder Klammern bleibt es beim Linktext. Die Adresse
+    wird escapt eingesetzt, weil `_html_zu_text` danach alles entschluesselt.
+    post_einordnung (_LINK_ADRESSE) nimmt genau diese Klammern wieder heraus."""
+    adresse = html_kuerzel.unescape(treffer.group(2)).strip()
+    linktext = treffer.group(3)
+    sichtbar = " ".join(html_kuerzel.unescape(re.sub(r"<[^>]+>", " ", linktext)).split())
+    if (not re.match(r"https?://", adresse, re.I) or not sichtbar
+            or re.search(r"[\s()<>\"']", adresse) or sichtbar == adresse):
+        return linktext
+    return f"{linktext} ({html_kuerzel.escape(adresse)})"
+
+
+def _html_zu_text(html: str, links: bool = False) -> str:
+    """Script/Style samt Inhalt weg, dann alle Tags — grob, aber ehrlich:
+    das ist eine Lesehilfe, kein Browser.
+
+    `links=True` (Post-Sammelstelle, Betreiber 08.11.2026: Links in Mails
+    anklickbar) behaelt die Zieladresse hinter dem Linktext und loest
+    HTML-Kuerzel wie &amp; auf. Ohne Schalter bleibt es beim alten Verhalten."""
     ohne = re.sub(r"<(script|style)\b.*?</\1>", " ", html,
                   flags=re.S | re.I)
+    if links:
+        ohne = _A_TAG.sub(_link_mit_adresse, ohne)
     ohne = re.sub(r"<[^>]+>", " ", ohne)
+    if links:
+        ohne = html_kuerzel.unescape(ohne)
     return " ".join(ohne.split())
 
 
-def _text(nachricht) -> str:
-    """text/plain bevorzugt; sonst text/html gestrippt; sonst leer."""
+def _text(nachricht, links: bool = False) -> str:
+    """text/plain bevorzugt; sonst text/html gestrippt; sonst leer.
+    `links`: siehe `_html_zu_text`."""
     kandidaten = (nachricht.walk()
                   if nachricht.is_multipart() else [nachricht])
     html = None
@@ -255,7 +303,7 @@ def _text(nachricht) -> str:
             return wert.strip()
         if html is None:
             html = wert
-    return _html_zu_text(html) if html else ""
+    return _html_zu_text(html, links) if html else ""
 
 
 def _kalender_teil(nachricht) -> str:
@@ -626,7 +674,11 @@ def verschieben(uid: str, ziel: str) -> str:
     -> Name des Zielordners. Wirft bei Verbindungsproblemen; ValueError, wenn
     es keinen Spam-Ordner gibt oder die uid unlesbar ist.
 
-    Seit 28.10.2026 auch "gmx:12" - verschoben wird im Postfach der Mail."""
+    Seit 28.10.2026 auch "gmx:12" - verschoben wird im Postfach der Mail.
+
+    Seit 06.11.2026 ueber post_imap: `UID MOVE` oder `UID EXPUNGE <uid>`. Das fruehere
+    nackte EXPUNGE entfernte jede als geloescht markierte Mail der INBOX (Spec §11)."""
+    import post_imap    # spaet: post_imap nutzt dieses Modul
     kennung, nummer = zerlegen(uid)
     if not nummer.isdigit():
         raise ValueError("uid ist keine Zahl")
@@ -638,20 +690,42 @@ def verschieben(uid: str, ziel: str) -> str:
                 raise ValueError("kein Spam-Ordner im Postfach")
         else:
             ordner = UNWICHTIG_ORDNER
-            if ordner not in {n for _, n in _ordner_liste(kasten)}:
-                kasten.create(_imap_name(ordner))
-        kasten.select("INBOX")
-        status, _ = kasten.uid("copy", nummer.encode("ascii"), _imap_name(ordner))
-        if status != "OK":
-            raise ValueError("Kopieren abgelehnt")
-        kasten.uid("store", nummer.encode("ascii"), "+FLAGS", "(\\Deleted)")
-        kasten.expunge()
+            post_imap.ordner_sicherstellen(kasten, ordner)
+        post_imap.faehigkeiten_auffrischen(kasten)
+        post_imap.verschieben(kasten, "INBOX", int(nummer), ordner)
         return ordner
     finally:
         kasten.logout()
 
 
-def lesen(uid: str):
+def kalender_festhalten(ergebnis: dict) -> dict:
+    """Die Kalenderantwort eines `lesen(..., protokollieren=False)`-Ergebnisses
+    nachtraeglich festhalten - genau wie lesen() es sonst sofort tut: nur wenn
+    der Mail-Absender einer ATTENDEE-Zeile entspricht, Fehler beim Schreiben
+    landen als `protokollierfehler` im Ergebnis. Die Auswahl wird aus
+    `kalender_antwort` (traegt `teilnehmende`) und `von` neu getroffen; `von`
+    ist derselbe From-Kopf, aus dem lesen() die Absenderadresse nimmt."""
+    antwort = (ergebnis or {}).get("kalender_antwort")
+    if not antwort:
+        return ergebnis
+    _, absender = email.utils.parseaddr(ergebnis.get("von") or "")
+    gewaehlt = _passenden_teilnehmer_waehlen(antwort, absender.strip())
+    if gewaehlt is None:
+        LOG.warning("Kalenderantwort (uid=%s) ohne zuordenbaren Teilnehmer — "
+                    "keine Aktivitaet festgehalten", antwort.get("uid") or "?")
+        return ergebnis
+    try:
+        _antwort_festhalten(gewaehlt)
+    except Exception as e:  # noqa: BLE001 — DB, kein IMAP (W5 wie in lesen)
+        LOG.warning("Kalenderantwort (uid=%s) konnte nicht protokolliert werden (%s)",
+                    antwort.get("uid") or "?", type(e).__name__)
+        ergebnis["protokollierfehler"] = (
+            f"Die Antwort wurde gelesen, aber nicht am Kontakt festgehalten "
+            f"({type(e).__name__}) — Details im Container-Log.")
+    return ergebnis
+
+
+def lesen(uid: str, protokollieren: bool = True):
     """Eine Mail im Volltext (gedeckelt) — oder None, wenn es sie nicht
     gibt.
 
@@ -670,7 +744,12 @@ def lesen(uid: str):
     Ursache, das IMAP-Postfach war erreichbar.
 
     Seit 28.10.2026 auch "gmx:12": gelesen wird im Postfach der Mail, das
-    Ergebnis traegt es unter `postfach`."""
+    Ergebnis traegt es unter `postfach`.
+
+    `protokollieren=False` (03.11.2026, Post-Sammelstelle M2): nur lesen, die
+    Kalenderantwort NICHT festhalten. Fuer Aufrufer, die vorher pruefen
+    muessen, ob unter dieser uid noch die erwartete Mail liegt (nach einem
+    UIDVALIDITY-Wechsel kann es eine fremde sein); danach kalender_festhalten."""
     kennung, nummer = zerlegen(uid)
     kasten = oeffnen(kennung)
     try:
@@ -705,7 +784,12 @@ def lesen(uid: str):
                     antwort, _absenderadresse(nachricht))
                 ergebnis["kalender_antwort"] = (
                     gewaehlt if gewaehlt is not None else antwort)
-                if gewaehlt is not None:
+                if not protokollieren:
+                    # M2 (Post-Sammelstelle): der Aufrufer prueft erst, ob es
+                    # die erwartete Mail ist, und haelt dann per
+                    # kalender_festhalten() fest - nie eine fremde Antwort.
+                    pass
+                elif gewaehlt is not None:
                     try:
                         # W5 (Schlusspruefung 11.09.2026): `_antwort_
                         # festhalten` (und die darin aufgerufene

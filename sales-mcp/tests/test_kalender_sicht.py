@@ -1,5 +1,6 @@
-"""Kalender-Sicht: Kunden-, eigene, Kollegen- und Handy-Termine in einem Zeitraum
-und die Konfliktpruefung ueber alle vier Arten (Spec 2026-10-14)."""
+"""Kalender-Sicht: Kunden-, eigene, Handy-Termine und verbundene Kalender in einem
+Zeitraum und die Konfliktpruefung ueber alle Arten (Spec 2026-10-14; Business/
+Privat je Betrachter seit Spec 2026-11-08)."""
 import json
 import os
 from datetime import datetime, timedelta, timezone
@@ -10,7 +11,8 @@ import pytest
 os.environ["SALES_DB_SCHEMA"] = "sales_test"
 import server  # noqa: E402
 import kalender  # noqa: E402
-import kalenderquellen  # noqa: E402
+import kalender_sichtbarkeit  # noqa: E402
+import post_struktur  # noqa: E402
 import termine_eigen  # noqa: E402
 import kalender_sicht  # noqa: E402
 
@@ -20,13 +22,24 @@ GEHEIM = "https://geheim.example/kollege-token.ics"
 
 @pytest.fixture(autouse=True)
 def leer(monkeypatch):
+    monkeypatch.setenv("POST_BESITZER", "felix")
     monkeypatch.setattr(kalender, "termine_lesen", lambda z=7, v=60: ([], None))
-    monkeypatch.setattr(server, "kalenderquellen_lesen", lambda nur_aktive=True: [])
-    monkeypatch.setattr(kalenderquellen, "hole", lambda url, z=7, v=60: ([], None))
     with server.pool.connection() as conn:
         conn.execute("truncate sales_test.activities, sales_test.eigene_termine, "
-                     "sales_test.leads cascade")
+                     "sales_test.leads, sales_test.kalender_quellen cascade")
     yield
+
+
+def _quelle(name, besitzer, bereich, termine, fehler=None, alter_min=0):
+    """Eine verbundene Quelle so, wie sie der Abgleich hinterlaesst."""
+    qid = server.kalenderquelle_speichern(name, GEHEIM, besitzer, bereich)
+    server.kalendertermine_ersetzen(qid, termine, kalender_sichtbarkeit.details_speichern(
+        besitzer, bereich, post_struktur.container_besitzer()))
+    server.kalenderquelle_stand_setzen(qid, len(termine), fehler)
+    if alter_min:
+        server._q("update kalender_quellen set abgeglichen_am = "
+                  "now() - make_interval(mins => %s) where id = %s", (alter_min, qid))
+    return qid
 
 
 def _lead(name="Ivan Kunde"):
@@ -69,25 +82,24 @@ def _alle_vier(monkeypatch):
     eig = _eigen(_um(1, 11), 30)
     monkeypatch.setattr(kalender, "termine_lesen", lambda z=7, v=60: (
         [_handy(eig["uid"], _um(1, 11), 30), _handy("h-1", _um(1, 13), 30, "Zahnarzt")], None))
-    monkeypatch.setattr(server, "kalenderquellen_lesen", lambda nur_aktive=True: [
-        {"id": "q1", "anzeigename": "Ivan", "art": "kollege", "url": GEHEIM}])
-    monkeypatch.setattr(kalenderquellen, "hole", lambda url, z=7, v=60: (
-        [_handy("c-1", _um(1, 15), 60, "Ivan Meeting")], None))
+    _quelle("Ivan", "ivan", "business", [_handy("c-1", _um(1, 15), 60, "Ivan Meeting")])
     return lead, eig
 
 
 def test_vier_arten_mit_art_und_bearbeitbar(monkeypatch):
     lead, eig = _alle_vier(monkeypatch)
-    erg = kalender_sicht.ereignisse(*_fenster())
+    erg = kalender_sicht.ereignisse(*_fenster(), "felix")
     nach_art = {e["art"]: e for e in erg["ereignisse"]}
-    assert set(nach_art) == {"kunde", "eigen", "kollege", "handy"}
+    assert set(nach_art) == {"kunde", "eigen", "kalender", "handy"}
     assert nach_art["kunde"]["bearbeitbar"] is True
     assert nach_art["kunde"]["titel"] == "Beratung – Ivan Kunde"
     assert nach_art["kunde"]["lead_id"] == lead
     assert nach_art["eigen"]["bearbeitbar"] is True
     assert nach_art["eigen"]["uid"] == eig["uid"]
-    assert nach_art["kollege"]["bearbeitbar"] is False
-    assert nach_art["kollege"]["quelle"] == "Ivan"
+    assert nach_art["kalender"]["bearbeitbar"] is False
+    assert nach_art["kalender"]["quelle"] == "Ivan"
+    # Fremdes Business: voll sichtbar (Spec 2026-11-08 §2.2).
+    assert nach_art["kalender"]["titel"] == "Ivan Meeting"
     assert nach_art["handy"]["bearbeitbar"] is False
     assert nach_art["handy"]["titel"] == "Zahnarzt"
     for e in erg["ereignisse"]:
@@ -97,15 +109,130 @@ def test_vier_arten_mit_art_und_bearbeitbar(monkeypatch):
     assert erg["hinweise"] == []
 
 
+def test_kalendertermin_traegt_quelle_besitzer_bereich(monkeypatch):
+    _alle_vier(monkeypatch)
+    erg = kalender_sicht.ereignisse(*_fenster(), "felix")
+    (k,) = [e for e in erg["ereignisse"] if e["art"] == "kalender"]
+    qid = server.kalenderquellen_lesen()[0]["id"]
+    assert {f: k[f] for f in ("quelle_id", "quelle", "besitzer", "bereich", "maskiert",
+                              "kalender", "ganztaegig")} == {
+        "quelle_id": qid, "quelle": "Ivan", "besitzer": "ivan", "bereich": "business",
+        "maskiert": False, "kalender": ["Ivan"], "ganztaegig": False}
+
+
+def test_ebenen_feste_und_je_quelle(monkeypatch):
+    _alle_vier(monkeypatch)
+    erg = kalender_sicht.ereignisse(*_fenster(), "felix")
+    qid = server.kalenderquellen_lesen()[0]["id"]
+    assert erg["ebenen"] == [
+        {"id": "kunde", "name": "Kundentermine", "besitzer": "felix", "bereich": "business"},
+        {"id": "eigen", "name": "Eigene Termine", "besitzer": "felix", "bereich": "business"},
+        {"id": "handy", "name": "Laden-Kalender", "besitzer": "felix", "bereich": "business"},
+        {"id": qid, "name": "Ivan", "besitzer": "ivan", "bereich": "business"}]
+
+
+def test_ivan_sieht_felix_privat_als_privattermin():
+    _quelle("Felix privat", "felix", "privat",
+            [dict(_handy("p-1", _um(1, 10), 60, "Arzt Dr. Geheim"), ort="Praxis")])
+    erg = kalender_sicht.ereignisse(*_fenster(), "ivan")
+    (k,) = erg["ereignisse"]
+    assert k["titel"] == "Privattermin"
+    assert k["maskiert"] is True
+    assert "ort" not in k
+    assert "Geheim" not in json.dumps(erg) and "Praxis" not in json.dumps(erg)
+    # Gegenprobe: felix selbst sieht seinen Privattermin voll.
+    (eigen,) = kalender_sicht.ereignisse(*_fenster(), "felix")["ereignisse"]
+    assert eigen["titel"] == "Arzt Dr. Geheim" and eigen["maskiert"] is False
+
+
+def test_ohne_betrachter_ist_jeder_privattermin_maskiert():
+    _quelle("Felix privat", "felix", "privat", [_handy("p-1", _um(1, 10), 60, "Arzt")])
+    (k,) = kalender_sicht.ereignisse(*_fenster(), "")["ereignisse"]
+    assert k["titel"] == "Privattermin"
+
+
+def test_ganztaegiger_termin_traegt_ganztaegig():
+    beginn = _um(1, 0)
+    _quelle("Ivan", "ivan", "business", [
+        {"uid": "g-1", "titel": "Messe", "ort": "", "ganztaegig": True,
+         "beginn": beginn.astimezone(timezone.utc),
+         "ende": (beginn + timedelta(days=1)).astimezone(timezone.utc)}])
+    (k,) = kalender_sicht.ereignisse(*_fenster(), "felix")["ereignisse"]
+    assert k["ganztaegig"] is True
+
+
+def test_veraltete_quelle_ist_luecke():
+    _quelle("Ivan", "ivan", "business", [_handy("c-1", _um(1, 15), 60, "Alt")],
+            alter_min=16)
+    erg = kalender_sicht.ereignisse(*_fenster(), "felix")
+    assert any("Ivan" in h and "15 Minuten" in h for h in erg["hinweise"]), erg["hinweise"]
+    # Die gespeicherten Termine bleiben sichtbar, nur die Antwort ist unvollstaendig.
+    assert [e["titel"] for e in erg["ereignisse"]] == ["Alt"]
+    assert kalender_sicht.konflikte(_um(1, 9), 30, betrachter="felix")["unvollstaendig"] is True
+
+
+def test_nie_abgeglichene_quelle_ist_luecke():
+    server.kalenderquelle_speichern("Ivan", GEHEIM, "ivan", "business")
+    erg = kalender_sicht.ereignisse(*_fenster(), "felix")
+    assert any("noch nicht abgeglichen" in h for h in erg["hinweise"])
+    assert kalender_sicht.konflikte(_um(1, 9), 30, betrachter="felix")["unvollstaendig"] is True
+
+
+def _fenster_text():
+    jetzt = datetime.now(B)
+    return (f"Verbundene Kalender nur von {(jetzt - timedelta(days=30)):%d.%m.%Y} "
+            f"bis {(jetzt + timedelta(days=180)):%d.%m.%Y} abgeglichen")
+
+
+@pytest.mark.parametrize("tag", [200, -40])
+def test_ausserhalb_des_abgleich_fensters_ist_luecke(tag):
+    """M3: verbundene Kalender sind nur 30 Tage zurueck bis 180 voraus
+    abgeglichen - eine Frage ausserhalb ist unvollstaendig, nie frei."""
+    _quelle("Ivan", "ivan", "business", [])
+    erg = kalender_sicht.ereignisse(*_fenster(tag), "felix")
+    assert _fenster_text() in erg["hinweise"], erg["hinweise"]
+    assert kalender_sicht.konflikte(_um(tag, 9), 30, betrachter="felix")["unvollstaendig"] is True
+    # Innerhalb des Fensters: kein Hinweis.
+    assert kalender_sicht.ereignisse(*_fenster(1), "felix")["hinweise"] == []
+
+
+def test_ausserhalb_des_fensters_ohne_verbundene_kalender_kein_hinweis():
+    assert kalender_sicht.ereignisse(*_fenster(200), "felix")["hinweise"] == []
+    assert kalender_sicht.konflikte(_um(200, 9), 30, betrachter="felix")["unvollstaendig"] is False
+
+
+def test_frisch_abgeglichene_quelle_ist_keine_luecke():
+    _quelle("Ivan", "ivan", "business", [], alter_min=14)
+    assert kalender_sicht.konflikte(_um(1, 9), 30, betrachter="felix")["unvollstaendig"] is False
+
+
+def test_freier_termin_ist_kein_konflikt():
+    _quelle("Ivan", "ivan", "business", [
+        dict(_handy("f-1", _um(1, 9), 60, "Geburtstag"), frei=True)])
+    erg = kalender_sicht.konflikte(_um(1, 9), 30, betrachter="felix")
+    assert erg["konflikte"] == [] and erg["unvollstaendig"] is False
+    # Gezeigt wird er trotzdem.
+    (k,) = kalender_sicht.ereignisse(*_fenster(), "felix")["ereignisse"]
+    assert k["frei"] is True
+
+
+def test_pausierte_quelle_fehlt_und_ist_keine_luecke():
+    qid = _quelle("Ivan", "ivan", "business", [_handy("c-1", _um(1, 15), 60, "X")])
+    assert server.kalenderquelle_pausieren(qid, False, "ivan") is True
+    erg = kalender_sicht.ereignisse(*_fenster(), "felix")
+    assert erg["ereignisse"] == [] and erg["hinweise"] == []
+    assert [e["id"] for e in erg["ebenen"]] == ["kunde", "eigen", "handy"]
+
+
 def test_kollegen_adresse_wird_nie_ausgegeben(monkeypatch):
     _alle_vier(monkeypatch)
-    erg = kalender_sicht.ereignisse(*_fenster())
+    erg = kalender_sicht.ereignisse(*_fenster(), "felix")
     assert "kollege-token" not in json.dumps(erg, default=str)
 
 
 def test_handy_mit_bekannter_uid_entfaellt(monkeypatch):
     _, eig = _alle_vier(monkeypatch)
-    erg = kalender_sicht.ereignisse(*_fenster())
+    erg = kalender_sicht.ereignisse(*_fenster(), "felix")
     handy = [e for e in erg["ereignisse"] if e["art"] == "handy"]
     assert [e["titel"] for e in handy] == ["Zahnarzt"]
     assert len([e for e in erg["ereignisse"] if e.get("uid") == eig["uid"]]) == 1
@@ -116,7 +243,7 @@ def test_handy_mit_uid_eines_kundentermins_entfaellt(monkeypatch):
     _kunde(lead, _tag().isoformat(), "09:00", uid="kunde-1")
     monkeypatch.setattr(kalender, "termine_lesen", lambda z=7, v=60: (
         [_handy("kunde-1", _um(1, 9), 60)], None))
-    erg = kalender_sicht.ereignisse(*_fenster())
+    erg = kalender_sicht.ereignisse(*_fenster(), "felix")
     assert [e["art"] for e in erg["ereignisse"]] == ["kunde"]
 
 
@@ -125,7 +252,7 @@ def test_abgesagter_kundentermin_fehlt():
     _kunde(lead, _tag().isoformat(), uid="weg")
     _kunde(lead, _tag().isoformat(), "16:00", uid="bleibt")
     _kunde(lead, _tag().isoformat(), uid="weg", typ="termin_abgesagt")
-    erg = kalender_sicht.ereignisse(*_fenster())
+    erg = kalender_sicht.ereignisse(*_fenster(), "felix")
     assert [e["uid"] for e in erg["ereignisse"]] == ["bleibt"]
     assert [k["uid"] for k in kalender_sicht.kundentermine(*_fenster())] == ["bleibt"]
 
@@ -152,10 +279,10 @@ def test_kundentermine_nach_zeitraum_gefiltert():
     assert [t["uid"] for t in kalender_sicht.kundentermine(*_fenster(1))] == ["morgen"]
 
 
-@pytest.mark.parametrize("art", ["kunde", "eigen", "kollege", "handy"])
+@pytest.mark.parametrize("art", ["kunde", "eigen", "kalender", "handy"])
 def test_konflikt_mit_jeder_art(monkeypatch, art):
     _alle_vier(monkeypatch)
-    stunde = {"kunde": 9, "eigen": 11, "handy": 13, "kollege": 15}[art]
+    stunde = {"kunde": 9, "eigen": 11, "handy": 13, "kalender": 15}[art]
     erg = kalender_sicht.konflikte(_um(1, stunde, 10), 20)
     assert erg["unvollstaendig"] is False
     assert [k["art"] for k in erg["konflikte"]] == [art]
@@ -183,18 +310,16 @@ def test_ausser_uid_gilt_auch_fuer_kundentermin(monkeypatch):
 
 def test_caldav_fehler_hinweis_und_unvollstaendig(monkeypatch):
     monkeypatch.setattr(kalender, "termine_lesen", lambda z=7, v=60: ([], "Kalender nicht erreichbar (X)."))
-    erg = kalender_sicht.ereignisse(*_fenster())
+    erg = kalender_sicht.ereignisse(*_fenster(), "felix")
     assert "Handy-Termine gerade nicht abrufbar" in erg["hinweise"]
     k = kalender_sicht.konflikte(_um(1, 9), 30)
     assert k["unvollstaendig"] is True and k["konflikte"] == []
 
 
-def test_kollegenquelle_fehler_ist_unvollstaendig(monkeypatch):
-    monkeypatch.setattr(server, "kalenderquellen_lesen", lambda nur_aktive=True: [
-        {"id": "q1", "anzeigename": "Ivan", "art": "kollege", "url": GEHEIM}])
-    monkeypatch.setattr(kalenderquellen, "hole", lambda url, z=7, v=60: ([], "kaputt"))
+def test_kollegenquelle_fehler_ist_unvollstaendig():
+    _quelle("Ivan", "ivan", "business", [], fehler="kaputt")
     assert kalender_sicht.konflikte(_um(1, 9), 30)["unvollstaendig"] is True
-    erg = kalender_sicht.ereignisse(*_fenster())
+    erg = kalender_sicht.ereignisse(*_fenster(), "felix")
     assert any("Ivan" in h for h in erg["hinweise"])
     assert "kollege-token" not in json.dumps(erg)
 
@@ -216,6 +341,6 @@ def test_eigener_termin_traegt_kalender_stand():
     ok = _eigen(_um(1, 11), 30, "Unbekannt")
     termine_eigen._stand_setzen(fehl["uid"], "fehlgeschlagen: 503")
     termine_eigen._stand_setzen(ok["uid"], None)
-    nach_uid = {e["uid"]: e for e in kalender_sicht.ereignisse(*_fenster())["ereignisse"]}
+    nach_uid = {e["uid"]: e for e in kalender_sicht.ereignisse(*_fenster(), "felix")["ereignisse"]}
     assert nach_uid[fehl["uid"]]["kalender_stand"] == "fehlgeschlagen: 503"
     assert "kalender_stand" not in nach_uid[ok["uid"]]

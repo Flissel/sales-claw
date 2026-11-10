@@ -68,6 +68,10 @@ x-sales-mcp-umgebung: &sales_mcp_umgebung
   POSTFACH_GMX_PASSWORT: ${POSTFACH_GMX_PASSWORT:-}
   POSTFACH_GMAIL_ADRESSE: ${POSTFACH_GMAIL_ADRESSE:-}
   POSTFACH_GMAIL_PASSWORT: ${POSTFACH_GMAIL_PASSWORT:-}
+  # Ein Container = ein Nutzer (DSGVO): Mails sieht nur ihr Besitzer. Der Bot
+  # (server.py) und der Kontaktverlauf lesen post_struktur.container_besitzer()
+  # aus genau dieser Variable; leer = der Bot sieht keine Mails.
+  POST_BESITZER: ${POST_BESITZER:-}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   ROWBOAT_URL: ${ROWBOAT_URL:-}
   ROWBOAT_PROJECT_ID: ${ROWBOAT_PROJECT_ID:-}
@@ -180,6 +184,17 @@ services:
     volumes:
       - sales-claw-state:/home/node/.openclaw
       - sales-claw-keys:/home/node/.config/openclaw
+    # Anbindung an pm-claw (29.10.2026, pm-claw Stufe 2 §8): NUR das Gateway
+    # tritt dem Netz von pm-claw bei und erreicht dort pm-mcp unter
+    # http://pm-mcp:8765/mcp (Token per deploy/pm-anbinden.sh). `default`
+    # muss ausdruecklich mit dabei sein, sonst verliert der Dienst
+    # sales-claw_default und damit sales-mcp. Laeuft der pm-claw-Stack nicht,
+    # scheitert `up` laut ("network pm-claw_default ... could not be found").
+    # Entscheidung Betreiber: gilt fuer ALLE Laeden (Vorlage dieses Dienstes);
+    # andere Laeden sehen pm-mcp ohne Token nur als 401 und erreichen pm-stt.
+    networks:
+      - default
+      - pm-claw
     ports:
       # Nur Loopback. Der Gateway hält WhatsApp-Session und Modellschlüssel.
       # HOST-Port ist seit 16.09.2026 ein Parameter (PORT_GATEWAY), der
@@ -220,6 +235,8 @@ services:
       # Kampagnenplan im Morgen-Digest (17.10.2026): dieselbe Firma wie beim
       # Newsletter-Versand in sales-ui. Leer = kein Block (zweite Laeden).
       MARKETING_MANDANT: ${MARKETING_MANDANT:-}
+      # Auftragsbuch (M8): auftrag_geben schreibt den Laden in den Auftrag.
+      LADEN_PRAEFIX: ${LADEN_PRAEFIX:-sales}
       # Bewerbungs-Eingang (29.10.2026, bewerbungs_eingang.py): der Timer
       # sales-bewerbungs-eingang startet ihn per `docker exec` in DIESEM
       # Dienst, weil hier die Postfach-Zugaenge schon liegen. Der Schluessel
@@ -265,8 +282,8 @@ services:
       # Umgebungsdatei und bleibt ueber den Vorgabewert auf seinen Ordnern;
       # jeder weitere Laden MUSS MEDIEN_ORDNER und MEDIEN_ERZEUGT_ORDNER
       # setzen, sonst weist deploy/update.sh ihn ab (ein fehlender Wert fiele
-      # sonst STILL auf den Ordner des Basis-Ladens zurueck). Alle elf Stellen
-      # prueft scripts/tests/test_proxmox_compose.py.
+      # sonst STILL auf den Ordner des Basis-Ladens zurueck). Alle Stellen (15
+      # seit dem auftrag-bote, 10.11.2026) prueft scripts/tests/test_proxmox_compose.py.
       - ${MEDIEN_ORDNER:-./media}:/media:ro
       # media-erzeugt (01.09.2026): der EINZIGE Medienordner, in den das
       # System selbst schreibt — hierhin legt `termin_bestaetigen` die
@@ -729,8 +746,12 @@ services:
     # Der Anker schliesst genau diese Luecke mit.
     environment:
       <<: *sales_mcp_umgebung
-      # Dasselbe Primaermodell wie der Agent (config/openclaw.json).
-      AUTO_MODELL: ${AUTO_MODELL:-claude-sonnet-5}
+      # Modellweg seit 29.10.2026: das OpenClaw-Gateway DES EIGENEN Ladens
+      # (Agent `auto`, ohne Werkzeuge); das Modell steht in dessen
+      # openclaw.json. Der Gateway-Token ist Operator-Zugriff und steht NUR
+      # hier, nicht im Anker (deploy/auto-anbinden.sh traegt ihn ein).
+      OPENCLAW_URL: http://${LADEN_PRAEFIX:-sales}-claw:18894
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
       # Sammelfenster: so alt muss die juengste Kundennachricht sein, bevor
       # geantwortet wird — mehrere schnelle Nachrichten bekommen EINE Antwort.
       AUTO_SAMMELFENSTER_S: ${AUTO_SAMMELFENSTER_S:-90}
@@ -738,6 +759,76 @@ services:
     # Ein laufender Modellaufruf (Timeout 90 s) darf die Runde zu Ende
     # bringen; danach geht der Dienst. 120 s Gnadenfrist decken das ab.
     stop_grace_period: 120s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Kalender-Abgleich (Spec 2026-11-08): liest alle verbundenen Kalender alle
+  # KALENDER_INTERVAL_S Sekunden und legt die Termine in kalender_termine ab.
+  # Fremde Privat-Termine verlieren dabei Titel und Ort (POST_BESITZER = Laden-
+  # Besitzer, steckt im Anker). deploy/update.sh baut ihn nur neu, wenn er
+  # vorher schon lief.
+  sales-kalender:
+    build: ./sales-mcp
+    image: sales-claw-sales-mcp:local
+    container_name: ${LADEN_PRAEFIX:-sales}-kalender
+    command: python kalender_abgleich.py
+    restart: unless-stopped
+    environment:
+      <<: *sales_mcp_umgebung
+      KALENDER_INTERVAL_S: ${KALENDER_INTERVAL_S:-300}
+      # Google-Kalender (deploy/kalender-schluessel.sh, deploy/google-kalender-zugang.sh):
+      # der PRIVATE Schluessel oeffnet die versiegelten Refresh-Token - NUR in
+      # diesem Dienst; die Oberflaeche bekommt nur den oeffentlichen.
+      KALENDER_SCHLUESSEL_PRIVAT: ${KALENDER_SCHLUESSEL_PRIVAT:-}
+      GOOGLE_KALENDER_CLIENT_ID: ${GOOGLE_KALENDER_CLIENT_ID:-}
+      GOOGLE_KALENDER_CLIENT_SECRET: ${GOOGLE_KALENDER_CLIENT_SECRET:-}
+
+  # Post-Sammelstelle Stufe 1 (03.11.2026, sales-mcp/post_abholen.py): holt die
+  # Mails aller aktiven Postfaecher NUR LESEND (IMAP readonly) und ordnet sie
+  # mit niedriger Prioritaet ueber den Agenten `post` des eigenen Gateways ein.
+  # Stufe 1 verschiebt, archiviert und loescht nichts im Postfach.
+  # Startet erst, wenn POST_BESITZER gesetzt ist (leer = Abbruch mit Fehler);
+  # deploy/update.sh baut ihn nur neu, wenn er vorher schon lief.
+  sales-post:
+    build: ./sales-mcp
+    image: sales-claw-sales-mcp:local
+    container_name: ${LADEN_PRAEFIX:-sales}-post
+    command: python post_abholen.py
+    restart: unless-stopped
+    environment:
+      <<: *sales_mcp_umgebung
+      # Wie sales-auto: das Gateway DES EIGENEN Ladens; der Token steht nur
+      # hier und bei sales-auto, nie im Anker.
+      OPENCLAW_URL: http://${LADEN_PRAEFIX:-sales}-claw:18894
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
+      # Privater Schluessel zum Oeffnen der versiegelten Postfach-Zugaenge
+      # (deploy/post-schluessel.sh). NUR in diesem Dienst - die Oberflaeche
+      # bekommt nur den oeffentlichen (Ruling R5, Test
+      # test_schluessel_nur_bei_sales_post).
+      POST_SCHLUESSEL_PRIVAT: ${POST_SCHLUESSEL_PRIVAT:-}
+      # Benutzername, dem die Postfaecher aus der Umgebung gehoeren.
+      POST_BESITZER: ${POST_BESITZER:-}
+      # Betreiber-Kontext fuer die Einordnung (v2, Runbook): kurzer Text, wer der
+      # Laden ist und was wohin gehoert. Leer = nur die allgemeinen Regeln.
+      POST_KONTEXT: ${POST_KONTEXT:-}
+      # Business-Adressen (Komma-Liste; mit @ = genaue Adresse, ohne @ = Domain). Eine
+      # weitergeleitete Mail an so eine Adresse gilt als business. Leer = keine Wirkung.
+      POST_BUSINESS_ADRESSEN: ${POST_BUSINESS_ADRESSEN:-}
+      # Aufraeumen (Spec 2026-11-06): aus (Vorgabe) | verschieben | voll. aus = kein IMAP-Schritt,
+      # nur das Ziel je Mail wird gepflegt. voll loescht Freigegebenes (Runbook "Post aufraeumen").
+      POST_ORDNEN: ${POST_ORDNEN:-aus}
+      # Stichtag (ISO-Datum) des Einschaltens: Posteingangs-Mails ab dann gelten nicht als Altbestand.
+      # PFLICHT, sobald POST_ORDNEN != aus; leer = alles gilt als Altbestand.
+      POST_AUFRAEUMEN_AB: ${POST_AUFRAEUMEN_AB:-}
+      # Modellaufrufe je Tag. Es zaehlt jeder Aufruf (Sortierer, Pruefer und die
+      # Sensibel-Pruefung bei Regel-/Katalogtreffern); nur feste Muster sind frei.
+      POST_TAGESGRENZE: ${POST_TAGESGRENZE:-500}
+      POST_INTERVAL_S: 120
+    # Ein laufender Modellaufruf (Timeout 60 s) darf zu Ende gehen.
+    stop_grace_period: 90s
     logging:
       driver: json-file
       options:
@@ -835,6 +926,12 @@ services:
       # Testlauf selbst, siehe deploy/smoke.sh Testkommando).
       - SALES_DB_SCHEMA=${SALES_DB_SCHEMA:-sales}
       - TZ=${TZ:-Europe/Berlin}
+      # Wem dieser Container gehoert: die Oberflaeche zeigt den Mailverlauf zu
+      # einem Kontakt nur dem Besitzer (post_struktur.mail_verlauf_erlaubt).
+      - POST_BESITZER=${POST_BESITZER:-}
+      # Stichtag fuer die Mail-Anzeige im Posteingang (post_ziel liest ihn beim Import);
+      # ohne ihn zeigt /posteingang 'Stichtag nicht gesetzt'. Aenderung = Container neu erzeugen.
+      - POST_AUFRAEUMEN_AB=${POST_AUFRAEUMEN_AB:-}
       - UI_PORT=8791
       # Docker-Host-Port DIESES Ladens (siehe ports: weiter unten) — NICHT
       # dasselbe wie UI_PORT direkt darueber: UI_PORT bleibt fuer JEDEN
@@ -878,6 +975,21 @@ services:
       # Anmeldung (E1, 31.08.2026): leer = Uebergangszustand (offen wie
       # bisher); gesetzt = Login Pflicht. Setzt deploy/benutzer-anlegen.sh.
       - UI_SESSION_SECRET=${UI_SESSION_SECRET:-}
+      # Post-Sammelstelle (Ruling R5, 03.11.2026): /post/konten versiegelt
+      # ein neues Postfach-Passwort sofort mit dem OEFFENTLICHEN Schluessel.
+      # Den privaten (POST_SCHLUESSEL_PRIVAT) hat nur sales-post - wer die
+      # Oberflaeche uebernimmt, kann gespeicherte Zugaenge nicht oeffnen.
+      # Leer = „Postfach hinzufügen“ meldet einen Fehler, nichts wird gespeichert.
+      - POST_SCHLUESSEL_OEFFENTLICH=${POST_SCHLUESSEL_OEFFENTLICH:-}
+      # Google-Kalender verbinden: die Oberflaeche versiegelt den Refresh-Token
+      # sofort mit dem OEFFENTLICHEN Schluessel (der private steht nur bei
+      # sales-kalender) und tauscht den Code gegen den Token (Client-Secret).
+      - KALENDER_SCHLUESSEL_OEFFENTLICH=${KALENDER_SCHLUESSEL_OEFFENTLICH:-}
+      - GOOGLE_KALENDER_CLIENT_ID=${GOOGLE_KALENDER_CLIENT_ID:-}
+      - GOOGLE_KALENDER_CLIENT_SECRET=${GOOGLE_KALENDER_CLIENT_SECRET:-}
+      # Nur zur Anzeige (/post/aufraeumen zeigt den Ordnungsmodus). Die UI ordnet und loescht nie;
+      # ohne den Wert zeigte die Seite faelschlich immer "aus".
+      - POST_ORDNEN=${POST_ORDNEN:-aus}
       # Basis-Adresse fuer den Link in der Passwort-vergessen-Mail
       # (16.09.2026). Sie kommt BEWUSST aus der Umgebung und nicht aus dem
       # Host-Header der Anfrage: wer den faelschen kann, wuerde den Link
@@ -979,6 +1091,78 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # Der Freigabe-Bote (Plan 2026-11-08, Task 7): spiegelt offene Eintraege der
+  # Freigabe-Seite als Vorschlaege in Rowboats Todo-Liste und liest die
+  # Entscheidung zurueck. Gleiches Image wie sales-ui, anderes Kommando.
+  #
+  # network_mode host: Rowboats headless Server haengt nur an 127.0.0.1:3220 des
+  # Hosts. KEIN env_file, nur die Kundendaten-DB (wie sales-ui); der
+  # Server-Schluessel kommt als Datei, nie als Umgebungsvariable. Der Bote
+  # fuehrt nichts aus (Stufe 1) und ruft kein Sprachmodell.
+  freigabe-bote:
+    build: ./sales-mcp
+    image: sales-claw-sales-mcp:local
+    container_name: ${LADEN_PRAEFIX:-sales}-freigabe-bote
+    command: python -m freigabe_bote
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      - SALES_DB_URL=${SALES_DB_URL}
+      - SALES_DB_SCHEMA=${SALES_DB_SCHEMA:-sales}
+      - TZ=${TZ:-Europe/Berlin}
+      - UI_BASIS_URL=${UI_BASIS_URL:-}
+      - ROWBOAT_RPC_URL=http://127.0.0.1:3220
+    volumes:
+      # Enger Rowboat-Schluessel (M7): darf nur todo:get/plannerSignals/addSuggestions/
+      # withdrawSuggestion/setChecked, kein Chat, keine Dateien, kein WebSocket. Anlegen:
+      # docs/03_RUNBOOK.md "Rowboat-Schluessel des Boten". Nie den Generalschluessel einhaengen.
+      - /home/debian/freigabe-bote/rowboat-key:/run/rowboat-server-key:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Der Auftrag-Bote (M8 Stufe A, Plan 2026-11-10-auftragsbuch-marketing-kette, Task 6): macht aus
+  # fertigen Marketing-Reels des Auftragsbuchs Kanal-Entwuerfe (warten in /freigaben auf den
+  # Betreiber) und schliesst Auftraege ab. Gleiches Image wie sales-mcp, anderes Kommando.
+  #
+  # Wie freigabe-bote, aber ohne Rowboat (kein Schluessel, kein Host-Netz). Die Medienordner NUR
+  # LESEND: die Werkzeuge pruefen die Reel-Datei (pruefe_anhang) vor jedem Entwurf, genau wie auf
+  # der Reels-Seite. Dieselbe Eigentumspruefung wie dort fragt die Marketing-API (MARKETING_PULT_*,
+  # wie sales-ui), ob die Datei ein fertiges Reel der Firma ist. LINKEDIN_POST_LEAD_ID ist der
+  # Sammelkontakt der Beitragsentwuerfe. Versendet nichts, ruft kein Sprachmodell.
+  auftrag-bote:
+    build: ./sales-mcp
+    image: sales-claw-sales-mcp:local
+    container_name: ${LADEN_PRAEFIX:-sales}-auftrag-bote
+    command: python -m auftrag_bote
+    restart: unless-stopped
+    environment:
+      - SALES_DB_URL=${SALES_DB_URL}
+      - SALES_DB_SCHEMA=${SALES_DB_SCHEMA:-sales}
+      - TZ=${TZ:-Europe/Berlin}
+      - LADEN_PRAEFIX=${LADEN_PRAEFIX:-sales}
+      - MARKETING_MANDANT=${MARKETING_MANDANT:-}
+      - MARKETING_PULT_URL=${MARKETING_PULT_URL:-}
+      - MARKETING_PULT_KEY=${MARKETING_PULT_KEY:-}
+      - LINKEDIN_POST_LEAD_ID=${LINKEDIN_POST_LEAD_ID:-}
+    volumes:
+      - ${MEDIEN_ORDNER:-./media}:/media:ro
+      - ${MEDIEN_ERZEUGT_ORDNER:-./media-erzeugt}:/media-erzeugt:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  # Netz des Compose-Projekts pm-claw (Projektname dort gepinnt). Nur der
+  # Dienst sales-claw haengt daran, siehe dort.
+  pm-claw:
+    external: true
+    name: pm-claw_default
 
 volumes:
   # Explizite name:-Angabe, sonst prefixt Compose mit dem Projektnamen

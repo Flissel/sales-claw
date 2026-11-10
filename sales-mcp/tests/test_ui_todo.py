@@ -197,6 +197,89 @@ def test_beziehung_ziel_nie_fremd():
     assert r.headers["location"] == f"/kontakte/{lead}"
 
 
+def _entschieden(monkeypatch, *namen):
+    """Je Name ein Kontakt, dessen Nummer schon im Sammelkontakt schrieb -
+    er steht damit unter „Bereits entschieden"."""
+    sammel = _sammel(monkeypatch)
+    leads = []
+    for i, name in enumerate(namen):
+        nummer = f"49170111100{i:02d}"
+        leads.append(_lead(name=name, phone=f"+{nummer}"))
+        _eingang(sammel, nummer, "hi")
+    return leads
+
+
+def test_bereits_entschieden_alle_auf_einmal_speichern(monkeypatch):
+    """Betreiber 06.11.2026: „Setzen" je Zeile lud die Seite neu, die anderen
+    Auswahlen waren weg. Jetzt ein Formular, ein Knopf, nur Geaendertes."""
+    a, b, c = _entschieden(monkeypatch, "Anna", "Bert", "Carl")
+    server._beziehung_setzen(c, "kunde")
+    teil = _get("/einordnung").text.split("Bereits entschieden")[1]
+    assert teil.count('action="/einordnung/beziehungen"') == 1
+    assert 'action="/kontakte/beziehung"' not in teil
+    assert "Alle speichern" in teil
+    assert f'name="beziehung_{c}"' in teil and f'name="vorher_{c}" value="kunde"' in teil
+    r = _post("/einordnung/beziehungen", {
+        f"beziehung_{a}": "partner", f"vorher_{a}": "",
+        f"beziehung_{b}": "privat", f"vorher_{b}": "",
+        f"beziehung_{c}": "kunde", f"vorher_{c}": "kunde"})
+    assert r.status_code == 303
+    assert r.headers["location"] == "/einordnung?gespeichert=2#entschieden"
+    stand = {z["id"]: (z["enrichment"] or {}).get("beziehung") for z in server._q(
+        "select id::text as id, enrichment from leads where id::text = any(%s)",
+        ([a, b, c],))}
+    assert stand == {a: "partner", b: "privat", c: "kunde"}
+    # Unveraenderte Zeilen schreiben nichts - auch keinen Verlaufseintrag.
+    assert len(server._q("select 1 from activities where lead_id = %s "
+                         "and type = 'beziehung'", (c,))) == 1
+    assert "2 Beziehungen gespeichert" in _get("/einordnung?gespeichert=2").text
+
+
+def test_bereits_entschieden_kann_beziehung_wieder_oeffnen(monkeypatch):
+    (a,) = _entschieden(monkeypatch, "Anna")
+    server._beziehung_setzen(a, "kunde")
+    r = _post("/einordnung/beziehungen", {f"beziehung_{a}": "", f"vorher_{a}": "kunde"})
+    assert r.headers["location"] == "/einordnung?gespeichert=1#entschieden"
+    e = server._q("select enrichment from leads where id = %s", (a,))[0]["enrichment"]
+    assert "beziehung" not in (e or {})
+
+
+def test_bereits_entschieden_ungueltige_eingabe_speichert_nichts(monkeypatch):
+    """Eine manipulierte Zeile kippt die ganze Sammlung - nicht halb gespeichert."""
+    a, b = _entschieden(monkeypatch, "Anna", "Bert")
+    r = _post("/einordnung/beziehungen", {
+        f"beziehung_{a}": "partner", f"vorher_{a}": "",
+        f"beziehung_{b}": "chef", f"vorher_{b}": ""})
+    assert r.status_code == 422
+    r = _post("/einordnung/beziehungen", {
+        f"beziehung_{a}": "partner", f"vorher_{a}": "",
+        "beziehung_kein-uuid": "kunde", "vorher_kein-uuid": ""})
+    assert r.status_code == 422
+    assert not server._q("select 1 from activities where type = 'beziehung'")
+
+
+def test_bereits_entschieden_ohne_csrf_speichert_nichts(monkeypatch):
+    (a,) = _entschieden(monkeypatch, "Anna")
+    r = CLIENT.post("/einordnung/beziehungen", headers={"host": HOST_OK},
+                    data={f"beziehung_{a}": "kunde", f"vorher_{a}": ""},
+                    follow_redirects=False)
+    assert r.status_code == 403
+    assert not server._q("select 1 from activities where type = 'beziehung'")
+
+
+def test_bereits_entschieden_ein_kontakt_mit_zwei_kennungen_eine_auswahl():
+    """Zwei Kennungen desselben Kontakts (Nummer und LID): zwei Auswahlen mit
+    demselben Namen widersprächen sich beim Absenden."""
+    lead = "11111111-1111-1111-1111-111111111111"
+    zeilen = [{"absender": "491701@c.us", "lead_id": lead, "kontakt": "Anna",
+               "zuletzt": None},
+              {"absender": "123@lid", "lead_id": lead, "kontakt": "Anna",
+               "zuletzt": None}]
+    html = ui._entschieden_formular(zeilen, {lead: "kunde"})
+    assert html.count(f'name="beziehung_{lead}"') == 1
+    assert "Kunde / Interessent" in html
+
+
 # --- Autonomie je Beziehung --------------------------------------------------------
 
 def test_standard_autonomie_je_beziehung():
@@ -339,7 +422,10 @@ def test_wiedervorlagen_zeigen_heutige_termine_mit_unterlagen():
 
 # --- Posteingang -----------------------------------------------------------------
 
-def test_posteingang_mails_suche_und_aufraeumen():
+def test_posteingang_mails_suche_und_aufraeumen(monkeypatch):
+    # Aufraeum-Abschnitt/-Knopf nur fuer den Container-Besitzer (Review I4); dieser Test
+    # laeuft ohne Anmeldung, daher gilt der Zugang hier als Besitzer.
+    monkeypatch.setattr(ui.post_struktur, "mail_verlauf_erlaubt", lambda name: True)
     server._q("delete from postfach_mails")
     server._q("insert into postfach_mails (message_id, uid, von, betreff, auszug) "
               "values ('a1', '7', 'shop@werbung.de', 'Rabattaktion Herbst', "
@@ -350,17 +436,45 @@ def test_posteingang_mails_suche_und_aufraeumen():
     server._q("update postfach_mails set art = 'unwichtig', status = 'vorgeschlagen', "
               "grund = 'Werbung' where message_id = 'a1'")
     s = _get("/posteingang").text
-    assert "Rabattaktion Herbst" in s and "Spam-Ordner (1)" in s
-    assert "Rabattaktionen" in _get("/posteingang?q=Rabattaktionen").text or \
-        "Rabattaktion Herbst" in _get("/posteingang?q=Rabattaktionen").text
-    assert "Rabattaktion Herbst" in _get("/posteingang?q=Rabbataktion").text
+    # Rulings R10/R14 (03.11.2026): Mails stehen im Reiter /post; der
+    # Posteingang verweist darauf und sucht nur noch Chats - postfach_mails
+    # hat keinen Besitzer, private Post waere hier fuer jeden auffindbar.
+    assert '<a href="/post?ansicht=zur_info">Zur Info →</a>' in s
+    assert "Rabattaktion Herbst" not in s and "Konto gesperrt" not in s
+    such = _get("/posteingang?q=Rabattaktion").text
+    assert "Rabattaktion Herbst" not in such
+    assert '<a href="/post?q=Rabattaktion">In Mails suchen →</a>' in such
+    boese = _get("/posteingang?q=%3Cb%3E%26x").text
+    assert 'href="/post?q=%3Cb%3E%26x"' in boese and "<b>&x" not in boese
     f = _get("/freigaben").text
     assert "Mails aufräumen" in f and "Rabattaktion Herbst" in f
+    # I5 (03.11.2026): was der Bot als Betrug in den Spam-Ordner verschob, steht
+    # neben den Vorschlaegen - ohne Knopf, nur zur Kontrolle.
+    spam = f[f.index('id="mails-spam"'):]
+    assert "Konto gesperrt" in spam and "Phishing" in spam
+    assert "Rabattaktion Herbst" not in spam
     r = _post("/posteingang/aufraeumen", {"message_id": "a1",
                                           "entscheidung": "verschieben"})
     assert r.status_code == 303
     assert server._q("select status from postfach_mails where message_id = 'a1'"
                      )[0]["status"] == "bestaetigt"
+
+
+@pytest.mark.parametrize("rolle,sichtbar", [("freigeben", True), ("", True),
+                                            ("lesen", False), ("kalender", False)])
+def test_spam_liste_nur_fuer_die_aufraeumende_rolle(rolle, sichtbar, monkeypatch):
+    """I5: postfach_mails hat keinen Besitzer (auch private GMX/Gmail-Post) -
+    Spam-Liste und Vorschlaege nur fuer die Rolle, die aufraeumt."""
+    server._q("insert into postfach_mails (message_id, uid, von, betreff, art, status, "
+              "grund) values ('s1', 'gmx:9', 'x@betrug.ru', 'Privat-Phish', 'spam', "
+              "'verschoben', 'Phishing') returning 1")
+    monkeypatch.setattr(ui.post_struktur, "mail_verlauf_erlaubt", lambda name: True)
+    token = ui._AKTIVE_ROLLE.set(rolle)
+    try:
+        abschnitt = ui._mails_aufraeumen_abschnitt()
+    finally:
+        ui._AKTIVE_ROLLE.reset(token)
+    assert ("Privat-Phish" in abschnitt) is sichtbar
 
 
 def test_wartezeit_lesbar():
@@ -386,28 +500,6 @@ def test_struktur_ich_unter_hoeherem_knoten(monkeypatch):
     assert '<script src="/team/struktur/struktur.js" defer></script>' in s
     js = _get("/team/struktur/struktur.js")
     assert js.status_code == 200 and "dragstart" in js.text
-
-
-# --- Team-Kalender -----------------------------------------------------------------
-
-def test_team_ebene_aus_gilt_fuer_planung(monkeypatch):
-    import kalenderquellen
-    server._q("delete from einstellungen where schluessel = 'kalender_team_aus'")
-    monkeypatch.setattr(server, "kalenderquellen_lesen",
-                        lambda nur_aktive=True: [{"id": "q1", "anzeigename": "Ivan",
-                                                  "url": "x"}])
-    monkeypatch.setattr(server, "kalenderquelle_stand_setzen", lambda *a: None)
-    from datetime import datetime, timedelta
-    t = {"beginn": datetime.now() + timedelta(days=1),
-         "ende": datetime.now() + timedelta(days=1, hours=1),
-         "titel": "Geheimes Thema", "ort": "Büro"}
-    monkeypatch.setattr(kalenderquellen, "hole", lambda *a, **k: ([t], None))
-    monkeypatch.setattr(server.kalender, "termine_lesen", lambda *a: ([], None))
-    eintraege, _ = server.belegungen()
-    assert [e["titel"] for e in eintraege] == ["belegt"]
-    server.team_kalender_aus_setzen(["Ivan"], "test")
-    eintraege, _ = server.belegungen()
-    assert eintraege == []
 
 
 # --- Marketing: Marke loeschen -----------------------------------------------------

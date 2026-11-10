@@ -81,6 +81,14 @@ Bestandskunden-Ausnahme des § 7 Abs. 3 UWG.
   quelle, wortlaut)` — die Quelle ist Pflicht, alles landet als
   `werbe_einwilligung` im Protokoll (activities). Der Bot ruft es nur auf
   ausdrückliche Nennung durch den Betreiber auf, nie aus eigener Deutung.
+- **Betreiber-Vorgabe (30.10.2026, ausdrückliche Entscheidung des
+  Betreibers):** jeder Kontakt trägt die Grundlage `betreiber_auftrag` —
+  neue bei `kontakt_anlegen`, eingeordnete per vorab gesetztem Haken,
+  bestehende per einmaliger Sammelbestätigung. Das ist KEIN opt_in: der
+  Eintrag dokumentiert, dass der Betreiber die Grundlage verantwortet; das
+  Abmahnrisiko bei fehlender echter Einwilligung trägt er. Nie gebucht bei
+  Löschantrag, Privat, Verbotsliste oder nach Widerruf
+  (`server._grundlage_vorgabe`, Tests `test_einwilligung_vorgabe.py`).
 - **Widerruf:** `einwilligung_widerrufen(lead_id, grund)` wirkt sofort;
   „keine Werbung mehr" im Chat zählt als Widerruf.
 - **Abgrenzung:** die Zustimmung (`zustimmung_*`) erlaubt die automatische
@@ -128,14 +136,66 @@ Ivans und meiner dann berücksichtigt wird".
 - **Widerruf:** der Kollege setzt seine Adresse beim eigenen Anbieter
   jederzeit selbst zurück — der Zugriff endet damit sofort, ohne dass
   `sales-claw` etwas tun muss (die alte Adresse wird beim nächsten Abruf
-  nur noch mit Fehler quittiert). Zusätzlich kann jede Quelle über
-  `/team/kalender` aktiv entfernt werden (W3) — ein Gegen-Ereignis, kein
-  Hard-Delete: die Zeile bleibt bestehen, aber die Adresse wird
-  gelöscht (`aktiv = false, url = null`), damit `sales_app` (ohne
-  DELETE-Recht auf jeder Tabelle) konsistent bleibt.
-- **Aufbewahrung:** wie beim übrigen Bestand kein automatisches Ablaufdatum
-  — eine entfernte Quelle bleibt als deaktivierte Zeile stehen (Nachweis,
-  dass und wann sie entfernt wurde), ohne die Adresse selbst.
+  nur noch mit Fehler quittiert). Zusätzlich kann der Besitzer (oder die
+  Rolle `freigeben`) jede Quelle über `/team/kalender` entfernen — seit
+  08.11.2026 wird dabei die Quellenzeile samt Adresse bzw. Google-Zugang
+  und alle abgeglichenen Termine **gelöscht** (siehe unten, Kalender
+  verbinden).
+- **Aufbewahrung:** eine entfernte Quelle hinterlässt keine Zeile mehr;
+  die Löschung ist das Gegen-Ereignis.
+
+### Kalender verbinden: Besitzer, Bereich und Google (seit 08.11.2026)
+
+Jede Kalenderquelle hat einen **Besitzer** (die Person, die sie verbunden
+hat) und einen **Bereich**: Business oder Privat. Bestehende iCal-Kalender
+gehören nach der Umstellung dem Laden-Besitzer und sind Privat, bis er sie
+auf `/team/kalender` einstuft.
+
+- **Fremde Privat-Termine nur mit Zeit.** Für eine Quelle im Bereich Privat,
+  die dem Betrachter nicht gehört (Betrachter ist der Laden-Besitzer,
+  `POST_BESITZER`), werden Titel und Ort **gar nicht erst gespeichert** —
+  auch nicht kurzzeitig, nicht in Logs, nicht in Fehlertexten. Gespeichert
+  und angezeigt wird nur die Zeit, als Block „Privattermin“. Wechselt eine
+  fremde Quelle von Business auf Privat, sind die gespeicherten Titel und
+  Orte sofort gelöscht, nicht erst beim nächsten Abgleich. Der Name eines
+  fremden Privat-Kalenders erscheint als „Privat (<Besitzer>)“.
+- **Agent.** Er sieht fremde Privat-Termine ebenfalls nur als Zeitblock.
+  Fehlt eine Quelle oder ist sie veraltet (älter als 15 Minuten) oder
+  fehlerhaft, meldet er „unvollständig“, nie „frei“. Als „frei“ markierte
+  Termine (z. B. Geburtstage) blockieren nicht.
+- **Google-Zugang.** Verbindet ein Nutzer Google, erhält `sales-claw`
+  ausschließlich Leserechte (Google zeigt „Kalender ansehen“; Scopes
+  `calendar.calendarlist.readonly` und `calendar.events.readonly`). Der
+  Refresh-Token wird nur **versiegelt** gespeichert (RSA-OAEP plus
+  AES-GCM): die Oberfläche kennt nur den öffentlichen Schlüssel, der
+  private liegt allein im Dienst `sales-kalender`. Im Klartext erscheint
+  der Token weder in Anzeige noch Log noch Fehlertext.
+- **Abgerufene Felder.** Nur Kennung, Status, Titel, Ort, Beginn, Ende und
+  „frei/beschäftigt“ des Termins; abgesagte Termine werden verworfen.
+  Abgleichfenster: 30 Tage zurück, 180 Tage voraus.
+- **Löschung.** „Entfernen“ löscht Quelle und zugehörige Termine; entfernt
+  man den letzten Kalender eines Google-Kontos, wird auch der gespeicherte
+  Zugang vernichtet. Ein beim Verbinden nicht übernommener Zugang wird nach
+  einer Stunde vernichtet. Den Zugriff beim Anbieter entzieht der Nutzer
+  selbst unter myaccount.google.com/permissions.
+- **Rechte.** Entfernen, Pausieren und Bereich ändern darf nur der Besitzer
+  der Quelle oder die Rolle `freigeben`.
+- **Altbestand.** Vor dieser Version wurde „Entfernen“ nur weich gelöscht:
+  die Zeile blieb mit `aktiv = false` und `url = null` stehen (die Adresse
+  war weg, Name und abgeglichene Termine nicht). Diese Zeilen gibt es noch.
+  Einmalige Bereinigung, nur mit OK des Betreibers, je Schema (zuerst die
+  Termine, dann die Quellen; nichts anderes wird berührt):
+
+  ```sql
+  delete from <schema>.kalender_termine where quelle_id in
+    (select id from <schema>.kalender_quellen
+      where art = 'ics' and aktiv = false and url is null);
+  delete from <schema>.kalender_quellen
+    where art = 'ics' and aktiv = false and url is null;
+  ```
+
+  Vorher mit `select count(*)` zählen. Dafür braucht es die Owner-Rolle
+  (`supabase_admin`), die Dienst-Rolle löscht nur Quellen über die Oberfläche.
 
 ## Grenze
 

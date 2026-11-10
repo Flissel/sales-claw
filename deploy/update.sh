@@ -32,6 +32,26 @@ STATUS="$BETRIEB/update-status.json"
 # sales-kanaele (24.10.2026) steht nur im Basis-Laden; in anderen Laeden
 # laeuft er nie und wird deshalb auch nie angefasst (nur was VORHER lief).
 KERN_ALLE="sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw sales-telegram sales-linkedin sales-kanaele"
+# OPTIONALE Dienste (03.11.2026): werden wie KERN_ALLE nur neu gebaut bzw.
+# zurueckgebaut, wenn sie vorher liefen - zaehlen aber NICHT zum "vollen
+# Stack". Sonst waere KERN_BASIS = KERN_ALLE unten nie wahr, solange z. B.
+# sales-post (Post-Sammelstelle, startet erst mit POST_BESITZER) nicht laeuft,
+# und jedes Update ueberspraenge Abnahme und automatischen Rueckbau.
+# auftrag-bote (10.11.2026, M8): das erste Mal von Hand starten, danach
+# zieht ihn jedes Update mit.
+KERN_OPTIONAL="sales-post sales-kalender freigabe-bote auftrag-bote"
+
+# Dienstliste ohne die optionalen Dienste (Reihenfolge bleibt).
+ohne_optionale() { # dienstliste
+  local d aus=""
+  for d in $1; do
+    case " $KERN_OPTIONAL " in
+      *" $d "*) ;;
+      *) aus="$aus $d" ;;
+    esac
+  done
+  printf '%s' "${aus# }"
+}
 
 # Praefix und --env-file-Argument je Laden, PARALLELE Arrays (Index i
 # gehoert zusammen). Der bestehende Laden ("sales", Vorgabewerte aus den
@@ -126,7 +146,7 @@ containername() { # dienst praefix
 # nicht von sich aus hochziehen.
 laufende_kerndienste() { # praefix
   local praefix="$1" laufend="" dienst c
-  for dienst in $KERN_ALLE; do
+  for dienst in $KERN_ALLE $KERN_OPTIONAL; do
     c="$(containername "$dienst" "$praefix")"
     if [ "$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null)" = "running" ]; then
       laufend="$laufend $dienst"
@@ -470,7 +490,7 @@ fi
 # hatte. Die Zweitladen-Pruefungen laufen weiter ohne diesen Schalter —
 # ueber deploy/wache.sh alle 15 Minuten, wo sie hingehoeren — sie duerfen
 # nur keinen Rueckbau der Produktion mehr ausloesen.
-if [ "$KERN_BASIS" = "$KERN_ALLE" ]; then
+if [ "$(ohne_optionale "$KERN_BASIS")" = "$KERN_ALLE" ]; then
   bash "$WURZEL/deploy/smoke.sh" --nur-basis || rueckbau
   status_schreiben eingespielt "$ALT" "$NEU" "${HINWEIS:-glatt durchgelaufen}"
   echo "Update eingespielt und Abnahme gruen."

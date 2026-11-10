@@ -1,0 +1,9 @@
+[Unit]
+Description=sales-claw: Sitzungskopien von agent post alle 5 Minuten aufraeumen
+
+[Timer]
+OnCalendar=*:0/5
+Persistent=false
+
+[Install]
+WantedBy=timers.target
