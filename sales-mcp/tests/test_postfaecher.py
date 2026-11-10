@@ -336,7 +336,11 @@ def test_posteingang_zeigt_keine_private_postfach_mail(leer):
         {"uid": "7", "message_id": "laden-7@x", "von": "k@beispiel.org", "betreff": "Laden",
          "datum": "", "auszug": "Hallo"}])
     seite = TestClient(ui.app).get("/posteingang", headers=HOST_OK).text
-    assert '<a href="/post">Mails →</a>' in seite
+    # Seit 4493b33 (07.11.2026, ein Posteingang fuer Chats und Mails) ersetzt
+    # der Menuepunkt "Mails" den frueheren Abschnitt "Mails →"; die Seite
+    # selbst verweist auf die zur Info einsortierten Mails.
+    assert '<a href="/post"><span>Mails</span>' in seite
+    assert '<a href="/post?ansicht=zur_info">Zur Info →</a>' in seite
     assert "<b>Privat</b>" not in seite and "f@beispiel.org" not in seite
     seite = TestClient(ui.app).get("/posteingang?q=Privat", headers=HOST_OK).text
     assert "<b>Privat</b>" not in seite and "f@beispiel.org" not in seite

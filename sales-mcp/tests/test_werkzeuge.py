@@ -1214,8 +1214,10 @@ def test_traversal_auf_eine_existierende_datei_ausserhalb_wird_abgelehnt(
     assert _anzahl_drafts() == 0
 
 
+# .txt steht seit 70b477d (06.10.2026, Editor-Anhaenge) bewusst in
+# medien.ERLAUBT; als unerlaubtes Beispiel dient jetzt .html.
 @pytest.mark.parametrize("name", [
-    "notizen.txt", "skript.sh", "archiv.zip", "tabelle.xlsx", "ohneendung",
+    "seite.html", "skript.sh", "archiv.zip", "tabelle.xlsx", "ohneendung",
     "doppel.pdf.exe",
 ])
 def test_unerlaubte_endung_wird_abgelehnt(medienordner, name):
@@ -1305,12 +1307,13 @@ def test_entwuerfe_offen_zeigt_medien_datei_auch_im_fehlgeschlagen_block(
 
 def test_medien_liste_nennt_namen_und_groesse(medienordner):
     (medienordner / "bild.jpg").write_bytes(b"x" * 100)
-    (medienordner / "notiz.txt").write_bytes(b"x" * 50)
+    (medienordner / "seite.html").write_bytes(b"x" * 50)
 
     liste = json.loads(server.medien_liste())
 
     namen = [d["name"] for d in liste["dateien"]]
-    assert namen == ["bild.jpg", "checkliste.pdf"]     # .txt faellt raus
+    # .html faellt raus (.txt ist seit 70b477d erlaubt, 06.10.2026)
+    assert namen == ["bild.jpg", "checkliste.pdf"]
     assert liste["anzahl"] == 2
     je_name = {d["name"]: d for d in liste["dateien"]}
     assert je_name["bild.jpg"]["groesse_bytes"] == 100
