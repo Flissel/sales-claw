@@ -1115,6 +1115,36 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Der Auftrag-Bote (M8 Stufe A, Plan 2026-11-10-auftragsbuch-marketing-kette, Task 6): macht aus
+  # fertigen Marketing-Reels des Auftragsbuchs Kanal-Entwuerfe (warten in /freigaben auf den
+  # Betreiber) und schliesst Auftraege ab. Gleiches Image wie sales-mcp, anderes Kommando.
+  #
+  # Wie freigabe-bote, aber ohne Rowboat (kein Schluessel, kein Host-Netz). Die Medienordner NUR
+  # LESEND: die Werkzeuge pruefen die Reel-Datei (pruefe_anhang) vor jedem Entwurf, genau wie auf
+  # der Reels-Seite. LINKEDIN_POST_LEAD_ID ist der Sammelkontakt der Beitragsentwuerfe.
+  # Versendet nichts, ruft kein Sprachmodell.
+  auftrag-bote:
+    build: ./sales-mcp
+    image: sales-claw-sales-mcp:local
+    container_name: ${LADEN_PRAEFIX:-sales}-auftrag-bote
+    command: python -m auftrag_bote
+    restart: unless-stopped
+    environment:
+      - SALES_DB_URL=${SALES_DB_URL}
+      - SALES_DB_SCHEMA=${SALES_DB_SCHEMA:-sales}
+      - TZ=${TZ:-Europe/Berlin}
+      - LADEN_PRAEFIX=${LADEN_PRAEFIX:-sales}
+      - MARKETING_MANDANT=${MARKETING_MANDANT:-}
+      - LINKEDIN_POST_LEAD_ID=${LINKEDIN_POST_LEAD_ID:-}
+    volumes:
+      - ${MEDIEN_ORDNER:-./media}:/media:ro
+      - ${MEDIEN_ERZEUGT_ORDNER:-./media-erzeugt}:/media-erzeugt:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 networks:
   # Netz des Compose-Projekts pm-claw (Projektname dort gepinnt). Nur der
   # Dienst sales-claw haengt daran, siehe dort.
