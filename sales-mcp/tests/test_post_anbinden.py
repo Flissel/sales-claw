@@ -166,7 +166,8 @@ def test_saat_agent_post_ohne_fallbacks():
 def test_neues_schluesselpaar_gibt_ui_neuerzeugen_aus_ohne_es_zu_tun():
     code = _code("deploy/post-anbinden.sh")
     assert "NEUES_PAAR=1" in code
-    assert code.count("force-recreate sales-ui") == 2           # nur als Echo
+    assert code.count("force-recreate sales-ui") == 1           # nur als Echo (andere Laeden)
+    assert 'echo "  bash deploy/sales-ui-neu.sh"' in code          # Basis-Laden: haelt das Netz bewerbung-fenster
     assert not any(z.lstrip().startswith("docker compose") for z in code.splitlines())
     rb = (WURZEL / "docs" / "03_RUNBOOK.md").read_text(encoding="utf-8")
     assert "up -d --no-deps --force-recreate sales-ui" in rb[rb.index("## Post-Sammelstelle"):]
