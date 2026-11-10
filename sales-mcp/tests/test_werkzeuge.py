@@ -727,8 +727,9 @@ def test_fuenfundachtzig_werkzeuge_registriert():
     # aufraeumen), 101 -> 103.
     # 28.10.2026: profil_anhang_speichern (Anhaenge am Kontaktprofil), 103 -> 104.
     # 10.11.2026: auftrag_geben (M8 Auftragsbuch), 104 -> 105.
-    assert len(namen) == 105
-    assert "auftrag_geben" in namen
+    # 10.11.2026: auftraege_melden (Meldungen an den Betreiber), 105 -> 106.
+    assert len(namen) == 106
+    assert {"auftrag_geben", "auftraege_melden"} <= namen
     assert {"termin_rueckfragen", "termin_ergebnis_speichern"} <= namen
     assert "kanal_post_entwurf" in namen
     assert "termin_konflikte" in namen

@@ -61,6 +61,7 @@ from nummern import normalisiere_empfaenger
 import medien
 import kanaele
 import auftrag_buch
+import auftrag_meldung
 import reel_teilen
 # Die Apify-Anbindung (Stufe 5). Ebenfalls ein eigenes Modul, und ebenfalls
 # eines ohne Rückimport: recherche.py kennt weder Datenbank noch Werkzeuge,
@@ -10397,6 +10398,18 @@ def auftrag_geben(art: str, thema: str, kanaele: str = "") -> str:
                   "hinweis": "Marketing arbeitet daran. Wenn das Reel online ist, kommt eine Meldung."})
 
 
+@_gesichert
+def auftraege_melden() -> str:
+    """Meldungen zu den Reel-Auftraegen des Betreibers (online mit Links, verworfen, gescheitert,
+    nicht rechtzeitig fertig, Kanal ging nicht raus, wartet seit 2 Tagen auf Freigabe).
+
+    Gibt {"meldungen": [Satz, ...]} zurueck. Schicke JEDEN Satz GENAU EINMAL und woertlich an den
+    Betreiber: das Werkzeug merkt sich beim Aufruf, was es geliefert hat, ein zweiter Aufruf liefert
+    es nicht noch einmal. Leere Liste = nichts zu melden, dann schweigen."""
+    laden = os.environ.get("LADEN_PRAEFIX", "").strip() or "sales"
+    return _json({"meldungen": auftrag_meldung.melden(_q, laden, datetime.now(timezone.utc))})
+
+
 WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,
              kontakt_anlegen,
              kontakt_aktualisieren,
@@ -10545,7 +10558,9 @@ WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,
              vorlage_beauftragen, vorlagenauftraege_pruefen, vorlage_urteil,
              terminkarte_erstellen,
              # M8 Auftragsbuch (10.11.2026): Reel-Auftrag an Marketing. tests/test_auftrag_geben.py.
-             auftrag_geben)
+             auftrag_geben,
+             # M8 Auftragsbuch: Meldungen an den Betreiber (antworten-pruefen). tests/test_auftrag_meldung.py.
+             auftraege_melden)
 
 def bedarfsanalyse_an() -> bool:
     """Schalter SALES_BEDARFSANALYSE (je Aufruf gelesen): nur "an" schaltet
