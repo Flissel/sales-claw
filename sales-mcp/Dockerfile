@@ -11,10 +11,10 @@ RUN if [ -n "$NOVNC_SHA256" ]; then\
       python -c "import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], '/tmp/novnc.tar.gz')"\
         "https://github.com/novnc/noVNC/archive/refs/tags/v${NOVNC_VERSION}.tar.gz"\
       && echo "${NOVNC_SHA256}  /tmp/novnc.tar.gz" | sha256sum -c -\
-      && mkdir -p /tmp/novnc /app/static/novnc\
-      && tar -xzf /tmp/novnc.tar.gz -C /tmp/novnc --strip-components=1\
-      && cp -r /tmp/novnc/core /tmp/novnc/vendor /tmp/novnc/LICENSE.txt /app/static/novnc/\
-      && rm -rf /tmp/novnc /tmp/novnc.tar.gz;\
+      && mkdir -p /app/static/novnc\
+      && tar -xzf /tmp/novnc.tar.gz -C /app/static/novnc --strip-components=1\
+           "noVNC-${NOVNC_VERSION}/core" "noVNC-${NOVNC_VERSION}/vendor" "noVNC-${NOVNC_VERSION}/LICENSE.txt"\
+      && rm -f /tmp/novnc.tar.gz;\
     fi
 COPY . .
 EXPOSE 8765

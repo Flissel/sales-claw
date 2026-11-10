@@ -59,6 +59,9 @@ ohne_optionale() { # dienstliste
 # also GENAU den bisherigen Stand.
 LADEN_PRAEFIXE=("sales")
 LADEN_ENVARGS=("")
+# Compose-Dateien je Laden, parallel zu LADEN_ENVARGS. Nur der Basis-Laden (Index 0) bekommt
+# docker-compose.fenster.yml dazu (Netz zum Portal-Container, siehe dort); zweite Laeden nie.
+LADEN_DATEIEN=("-f docker-compose.yml -f docker-compose.fenster.yml")
 # W3 (Schlussprüfung 2026-09-16, Bereich B): eine Umgebungsdatei ohne
 # brauchbares LADEN_PRAEFIX (Tippfehler im Schluessel, auskommentierte
 # Zeile, oder unter Debian ein mitkopiertes CRLF -> "ivan\r") ist ein
@@ -101,6 +104,7 @@ for e in "$WURZEL"/deploy/laeden/*.env; do
   done
   LADEN_PRAEFIXE+=("$p")
   LADEN_ENVARGS+=("--env-file $e")
+  LADEN_DATEIEN+=("")
 done
 if [ "$LADEN_ENV_FEHLER" -gt 0 ]; then
   echo "ABBRUCH: $LADEN_ENV_FEHLER Umgebungsdatei(en) in deploy/laeden/ fehlerhaft (LADEN_PRAEFIX oder eigene Medienordner) - siehe FEHLER-Zeilen oben." >&2
@@ -229,11 +233,6 @@ GEAENDERT="$(git diff --name-only "$ALT" "$NEU")"
 echo "Eingespielt $ALT -> $NEU. Geaendert:"
 echo "$GEAENDERT" | sed 's/^/  /'
 
-# Portal-Fenster: sales-ui haengt am internen Netz bewerbung-fenster (docker-compose.yml,
-# external). Fehlt es, scheitert JEDES `up` von sales-ui laut - deshalb einmal hier, vor dem
-# ersten `up` (Bau, Rueckbau). Idempotent; --internal: kein Weg nach draussen.
-docker network inspect bewerbung-fenster >/dev/null 2>&1 || docker network create --internal bewerbung-fenster
-
 # Diese Flags sind global (haengen nur vom Diff ab, nicht vom Laden). Die
 # eigentliche $BAUEN-Liste je Laden entsteht weiter unten, in der
 # Build-Schleife, aus diesen Flags UND dem laden-eigenen $KERN-Schnappschuss.
@@ -283,6 +282,31 @@ chat_eingang_sichern() { # envargs
     echo "HINWEIS: Chat-Eingang (media/inbound) nicht angelegt - siehe oben." >&2
 }
 
+# Portal-Fenster: das Netz bewerbung-fenster (deploy/fenster-netz-anlegen.sh, idempotent) vor
+# JEDEM `up` des Basis-Ladens (Index 0), auch im Rueckbau. Ein Fehlschlag bricht das Update nicht
+# ab: dann bleibt FENSTER_NETZ_OK falsch, compose_dateien liefert nichts, der Basis-Laden kommt
+# OHNE Override hoch und das Fenster bleibt aus (ein `up` mit fehlendem external-Netz scheiterte
+# sonst laut und nahme sales-ui mit).
+FENSTER_NETZ_OK=false
+fenster_netz_sichern() { # laden-index
+  FENSTER_NETZ_OK=false
+  [ "$1" -eq 0 ] || return 0
+  [ -f "$WURZEL/deploy/fenster-netz-anlegen.sh" ] || return 0
+  if bash "$WURZEL/deploy/fenster-netz-anlegen.sh"; then
+    FENSTER_NETZ_OK=true
+  else
+    echo "HINWEIS: Netz bewerbung-fenster nicht angelegt - Basis-Laden startet ohne Portal-Fenster." >&2
+  fi
+  return 0
+}
+# Die -f-Argumente eines Ladens (Override nur mit angelegtem Netz und vorhandener Datei).
+compose_dateien() { # laden-index
+  if [ "$1" -eq 0 ] && $FENSTER_NETZ_OK && [ -f "$WURZEL/docker-compose.fenster.yml" ]; then
+    echo "${LADEN_DATEIEN[0]}"
+  fi
+  return 0
+}
+
 gateway_neustarten() {
   # Nur anfassen, was laeuft — KERN_BASIS enthaelt sales-claw nur dann.
   # Bewusst nur der Basis-Laden, siehe Kommentar bei KERN_BASIS oben.
@@ -304,8 +328,9 @@ rueckbau() {
     k="${LADEN_KERN[$i]}"
     [ -n "$k" ] || continue
     chat_eingang_sichern "${LADEN_ENVARGS[$i]}"
-    # shellcheck disable=SC2086
-    docker compose ${LADEN_ENVARGS[$i]} up -d --build $k
+    fenster_netz_sichern "$i"
+    # shellcheck disable=SC2046,SC2086
+    docker compose ${LADEN_ENVARGS[$i]} $(compose_dateien "$i") up -d --build $k
   done
   gateway_neustarten
   sleep 30
@@ -360,8 +385,9 @@ for i in "${!LADEN_PRAEFIXE[@]}"; do
 
   if [ -n "$BAUEN" ]; then
     chat_eingang_sichern "${LADEN_ENVARGS[$i]}"
-    # shellcheck disable=SC2086
-    docker compose ${LADEN_ENVARGS[$i]} up -d --build $BAUEN
+    fenster_netz_sichern "$i"
+    # shellcheck disable=SC2046,SC2086
+    docker compose ${LADEN_ENVARGS[$i]} $(compose_dateien "$i") up -d --build $BAUEN
   fi
 done
 

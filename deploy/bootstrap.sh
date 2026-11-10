@@ -25,7 +25,14 @@ docker volume create sales-claw-keys >/dev/null
 
 docker compose build sales-mcp
 docker compose -f docker-compose.openwa.yml build openwa
-docker compose up -d sales-mcp sales-ui
+# Portal-Fenster: Netz bewerbung-fenster nur fuer die sales-ui des Basis-Ladens. Ohne Netz startet
+# der Grundstack trotzdem, nur ohne Fenster.
+if bash deploy/fenster-netz-anlegen.sh; then
+  docker compose -f docker-compose.yml -f docker-compose.fenster.yml up -d sales-mcp sales-ui
+else
+  echo "HINWEIS: Netz bewerbung-fenster nicht angelegt - sales-ui startet ohne Portal-Fenster." >&2
+  docker compose up -d sales-mcp sales-ui
+fi
 
 echo "Grundstack laeuft. Naechste Schritte:"
 echo "  1. Zustand einspielen:  deploy/wiederherstellen.sh <sicherung>"

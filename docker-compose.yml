@@ -1004,9 +1004,10 @@ services:
       - BEWERBUNG_PULT_URL=${BEWERBUNG_PULT_URL:-}
       - BEWERBUNG_PULT_KEY=${BEWERBUNG_PULT_KEY:-}
       # Portal-Fenster (Portal-Abgabe): WebSocket-Adresse des Fensters im Container
-      # bewerbung-portal (ws://bewerbung-portal:6080, Netz bewerbung-fenster) und der
+      # bewerbung-portal (ws://bewerbung-portal:6080) und der
       # gemeinsame Schluessel (= PORTAL_FENSTER_SCHLUESSEL in der bot.env). NUR in der
-      # Haupt-.env des Basis-Ladens. Leer = kein Fenster.
+      # Haupt-.env des Basis-Ladens. Leer = kein Fenster. Das Netz haengt NICHT hier,
+      # sondern nur im Basis-Laden an (docker-compose.fenster.yml).
       - BEWERBUNG_FENSTER_WS=${BEWERBUNG_FENSTER_WS:-}
       - BEWERBUNG_FENSTER_SCHLUESSEL=${BEWERBUNG_FENSTER_SCHLUESSEL:-}
       # Newsletter an Kontakte (15.10.2026, E4): dieser Laden sendet nur Newsletter dieser Marketing-Firma.
@@ -1081,15 +1082,6 @@ services:
       # derselben Adresse ist erlaubt).
       - "127.0.0.1:${PORT_UI:-8791}:8791"
       - "${UI_TAILSCALE_IP:-127.0.0.1}:${PORT_UI:-8791}:8791"
-    # Portal-Fenster: sales-ui erreicht den Container bewerbung-portal ueber das
-    # interne Netz bewerbung-fenster (deploy/update.sh legt es an). `default`
-    # muss ausdruecklich mit dabei sein, sonst verliert der Dienst die DB- und
-    # Dienstverbindungen. Gilt fuer ALLE Laeden (Vorlage dieses Dienstes), wie
-    # bei pm-claw; geschuetzt ist das Fenster durch den Schluessel und durch
-    # Rolle freigeben im Basis-Laden.
-    networks:
-      - default
-      - bewerbung-fenster
     logging:
       driver: json-file
       options:
@@ -1131,11 +1123,6 @@ networks:
   pm-claw:
     external: true
     name: pm-claw_default
-  # Internes Netz zum Portal-Container des Bewerbungs-Bots (Fenster). Nur der
-  # Dienst sales-ui haengt daran, siehe dort.
-  bewerbung-fenster:
-    external: true
-    name: bewerbung-fenster
 
 volumes:
   # Explizite name:-Angabe, sonst prefixt Compose mit dem Projektnamen

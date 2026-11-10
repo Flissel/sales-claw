@@ -6,8 +6,11 @@ hinter Host-, Origin-, Sitzungs- und Rollenpruefung. Fakes: die Zentrale (`bewer
 und `websockets.connect` (In-Memory). Es wird nie echtes noVNC gebraucht."""
 import asyncio
 import base64
+import logging
 import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 os.environ["SALES_DB_SCHEMA"] = "sales_test"
 
@@ -120,10 +123,26 @@ def zentrale(monkeypatch):
     return z
 
 
+_ENDEN: list = []          # je Verbindung ein Ereignis: gesetzt, wenn der Handler ganz durch ist
+_POOL = ThreadPoolExecutor(4)
+
+
 @pytest.fixture
 def upstream(monkeypatch):
     v = FalscheVerbindung()
     monkeypatch.setattr(pf.websockets, "connect", v)
+    _ENDEN.clear()
+    original = pf.weiterleitung
+
+    async def umhuellt(ws, ui=None):
+        ende = threading.Event()
+        _ENDEN.append(ende)
+        try:
+            await original(ws, ui)
+        finally:
+            ende.set()
+
+    monkeypatch.setattr(pf, "weiterleitung", umhuellt)
     return v
 
 
@@ -148,15 +167,16 @@ def _http(rolle="freigeben"):
     return TestClient(ui.app, headers={"host": HOST, "cookie": cookie})
 
 
-def _zu(ws, upstream, nr=-1):
-    """Client macht zu und wartet, bis der Handler fertig ist: der TestClient bricht ihn beim
-    Verlassen des Blocks sonst mitten im Aufraeumen ab (CancelledError)."""
+def _zu(ws, upstream=None, nr=-1):
+    """Client macht zu und wartet, bis der Handler ganz durch ist (Ereignis am Ende seines finally):
+    der TestClient bricht ihn beim Verlassen des Blocks sonst mitten im Aufraeumen ab."""
     ws.close(1000)
-    for _ in range(200):
-        if upstream.upstreams[nr].geschlossen is not None:
-            break
-        time.sleep(0.01)
-    time.sleep(0.1)
+    assert _ENDEN[nr].wait(5), "Handler wurde nicht fertig"
+
+
+def _empfange(ws, sekunden=5):
+    """Naechste Nachricht, aber begrenzt: ein Fehler laesst den Test scheitern statt haengen."""
+    return _POOL.submit(ws.receive).result(timeout=sekunden)
 
 
 def _ws_kopf(rolle="freigeben"):
@@ -196,8 +216,6 @@ def test_fenster_ws_zentrale_fehler_schliesst(anmeldung, eingerichtet, zentrale,
 @pytest.mark.parametrize("antwort", [["liste"], "text", None])
 def test_fenster_ws_unsinnige_antwort_schliesst(anmeldung, eingerichtet, zentrale, upstream, antwort):
     zentrale.antwort = antwort
-    # FalscheZentrale ersetzt None durch Standard; hier direkt erzwingen
-    zentrale.anfrage = lambda *a, **k: antwort
     with pytest.raises(WebSocketDisconnect) as e:
         with TestClient(ui.app).websocket_connect(WS_PFAD, headers=_ws_kopf()):
             pass
@@ -231,6 +249,7 @@ def test_upstream_bekommt_adresse_unterprotokoll_und_schluessel_im_kopf(
     url, kw = upstream.aufrufe[0]
     assert url == "ws://bewerbung-portal:6080/websockify"
     assert kw["subprotocols"] == ["binary"] and kw["max_size"] is None and kw["open_timeout"] == 5
+    assert kw["close_timeout"] == 2
     erwartet = "Basic " + base64.b64encode(f"portal:{SCHLUESSEL}".encode()).decode()
     koepfe = [tuple(k) for k in kw["extra_headers"]]
     assert ("Authorization", erwartet) in koepfe
@@ -266,9 +285,9 @@ def test_neue_verbindung_ersetzt_alte(anmeldung, eingerichtet, zentrale, upstrea
         assert ws1.receive_bytes() == b"xyz"
         with c.websocket_connect(WS_PFAD, headers=kopf) as ws2:
             assert ws2.receive_bytes() == b"xyz"
-            with pytest.raises(WebSocketDisconnect) as e:
-                ws1.receive_bytes()
-            assert e.value.code == 1000
+            # Begrenzt: fehlt das Ersetzen, scheitert der Test statt zu haengen.
+            m = _empfange(ws1)
+            assert m["type"] == "websocket.close" and m["code"] == 1000
             _zu(ws2, upstream)
         _zu(ws1, upstream, 0)
     assert len(upstream.upstreams) == 2
@@ -299,6 +318,72 @@ def test_relay_nur_fuer_freigeben(anmeldung, eingerichtet, zentrale, upstream):
             pass
     assert e.value.code == 1008
     assert zentrale.aufrufe == [] and upstream.aufrufe == []
+
+
+# ------------------------------------------------------------------ Nachpruefen im offenen Fenster
+
+@pytest.fixture
+def schnell(monkeypatch):
+    monkeypatch.setattr(pf, "NACHPRUEFEN_S", 0.05)
+
+
+def _bis_geschlossen(ws, upstream):
+    m = _empfange(ws)
+    assert m["type"] == "websocket.close" and m["code"] == 1008, m
+    assert _ENDEN[-1].wait(5), "Handler wurde nicht fertig"
+    assert upstream.upstreams[0].geschlossen is not None
+
+
+def test_offenes_fenster_bleibt_offen_solange_alles_gilt(
+        anmeldung, eingerichtet, zentrale, upstream, schnell):
+    with TestClient(ui.app).websocket_connect(WS_PFAD, headers=_ws_kopf()) as ws:
+        assert ws.receive_bytes() == b"xyz"
+        for _ in range(500):
+            if len(zentrale.aufrufe) >= 4:
+                break
+            time.sleep(0.01)
+        assert len(zentrale.aufrufe) >= 4        # es wird wirklich nachgefragt
+        assert upstream.upstreams[0].geschlossen is None
+        ws.send_bytes(b"noch da")
+        _zu(ws)
+    assert upstream.upstreams[0].gesendet == [b"noch da"]
+
+
+def test_zustand_wechselt_mitten_in_der_sitzung(anmeldung, eingerichtet, zentrale, upstream, schnell):
+    with TestClient(ui.app).websocket_connect(WS_PFAD, headers=_ws_kopf()) as ws:
+        assert ws.receive_bytes() == b"xyz"
+        zentrale.antwort = {"lauf_id": "l-1", "application_id": "a-1", "zustand": "bereit"}
+        _bis_geschlossen(ws, upstream)
+
+
+@pytest.mark.parametrize("fehler", [PultFehler("zeitlimit", "x"), RuntimeError("boom")])
+def test_zentrale_faellt_mitten_in_der_sitzung_aus(
+        anmeldung, eingerichtet, zentrale, upstream, schnell, fehler):
+    with TestClient(ui.app).websocket_connect(WS_PFAD, headers=_ws_kopf()) as ws:
+        assert ws.receive_bytes() == b"xyz"
+        zentrale.fehler = fehler
+        _bis_geschlossen(ws, upstream)
+
+
+@pytest.mark.parametrize("wie", ["benutzer_aus", "rolle_lesen", "geheimnis_gedreht", "sitzung_abgelaufen"])
+def test_sitzung_endet_mitten_in_der_sitzung(
+        anmeldung, eingerichtet, zentrale, upstream, schnell, monkeypatch, wie):
+    with TestClient(ui.app).websocket_connect(WS_PFAD, headers=_ws_kopf()) as ws:
+        assert ws.receive_bytes() == b"xyz"
+        if wie == "benutzer_aus":
+            server._q("update benutzer set aktiv = false where name = %s", ("mira",))
+        elif wie == "rolle_lesen":
+            server._q("update benutzer set rolle = 'lesen' where name = %s", ("mira",))
+        elif wie == "geheimnis_gedreht":
+            monkeypatch.setattr(ui, "UI_SESSION_SECRET", "ein-ganz-anderes-geheimnis")
+        else:
+            monkeypatch.setattr(ui, "_sitzung_pruefen", lambda wert: None)
+        _bis_geschlossen(ws, upstream)
+
+
+def test_websockets_logger_bleibt_ueber_debug():
+    # Auf DEBUG druckt websockets die Kopfzeilen (Authorization) ins Log.
+    assert logging.getLogger("websockets").level == logging.INFO
 
 
 # ------------------------------------------------------------------ eingerichtet()
@@ -350,6 +435,19 @@ def test_novnc_dateien_mit_eigener_csp_und_ohne_ausbruch(anmeldung, eingerichtet
                  "core", "gibt-es-nicht.js", "core%00.js"):
         assert c.get(f"{PFAD}/novnc/{boes}").status_code == 404, boes
     assert c.get(PFAD + "/novnc/../geheim.txt").status_code == 404
+
+
+def test_absoluter_pfad_und_symlink_fuehren_nicht_hinaus(anmeldung, eingerichtet, tmp_path):
+    c = _http()
+    geheim = tmp_path / "geheim.txt"
+    assert c.get(f"{PFAD}/novnc/{geheim.as_posix()}").status_code == 404
+    assert c.get(f"{PFAD}/novnc//etc/passwd").status_code == 404
+    link = pf.NOVNC_DIR / "core" / "raus.txt"
+    try:
+        link.symlink_to(geheim)
+    except (OSError, NotImplementedError):
+        pytest.skip("Symlinks hier nicht erlaubt")
+    assert c.get(f"{PFAD}/novnc/core/raus.txt").status_code == 404
 
 
 def test_novnc_nur_fuer_rolle_freigeben(anmeldung, eingerichtet):

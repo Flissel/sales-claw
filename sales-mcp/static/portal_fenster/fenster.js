@@ -20,6 +20,10 @@ try {
   rfb.addEventListener("connect", () => zeige("Verbunden"));
   rfb.addEventListener("disconnect", () => zeige("Getrennt \u2013 Seite neu laden"));
   rfb.addEventListener("securityfailure", () => zeige("Getrennt \u2013 Seite neu laden"));
+  // Der Container verlangt kein VNC-Passwort; kommt die Frage trotzdem, nicht abfragen.
+  rfb.addEventListener("credentialsrequired", () => {
+    zeige("Fenster verlangt ein Passwort \u2013 Einrichtung pr\u00fcfen");
+  });
 } catch (e) {
   zeige("Getrennt \u2013 Seite neu laden");
 }

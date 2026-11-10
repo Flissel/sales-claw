@@ -32,6 +32,9 @@ from starlette.routing import Route, WebSocketRoute
 import bewerbung_pult
 
 LOG = logging.getLogger("sales-ui")
+# Auf DEBUG schreibt websockets die Kopfzeilen des Handshakes ins Log - darunter Authorization
+# (der Fenster-Schluessel). Die Stufe wird hier festgenagelt, nie darunter.
+logging.getLogger("websockets").setLevel(logging.INFO)
 
 FENSTER_WS = os.environ.get("BEWERBUNG_FENSTER_WS", "").strip().rstrip("/")
 FENSTER_SCHLUESSEL = os.environ.get("BEWERBUNG_FENSTER_SCHLUESSEL", "").strip()
@@ -41,6 +44,7 @@ PFAD = "/freigaben/bewerbung/fenster"
 CSP_NOVNC = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
              "font-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'")
 ZUSTAENDE = ("fenster_angefragt", "im_fenster")
+NACHPRUEFEN_S = 10   # so oft prueft das offene Fenster Zentrale und Sitzung erneut
 
 _TYPEN = {".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css",
           ".html": "text/html; charset=utf-8", ".json": "application/json", ".svg": "image/svg+xml",
@@ -161,18 +165,49 @@ async def _schliessen(ws, code: int) -> None:
         pass
 
 
-async def weiterleitung(websocket) -> None:
-    global _AKTUELL
-    if not eingerichtet():
-        await websocket.close(1008)
-        return
+async def _zentrale_erlaubt() -> bool:
+    """Will die Zentrale gerade ein Fenster? Jeder Fehler und jeder andere Zustand: nein."""
     try:
         antwort = await run_in_threadpool(bewerbung_pult.anfrage, "GET", "/portal/fenster", zeitlimit=3)
     except Exception as e:   # PultFehler und alles andere: kein Fenster
         LOG.warning("portal-fenster: Zentrale nicht erreichbar (%s)", type(e).__name__)
+        return False
+    return isinstance(antwort, dict) and antwort.get("zustand") in ZUSTAENDE
+
+
+async def _sitzung_gilt(websocket, ui) -> bool:
+    """Die Sitzung des Handshakes gilt noch: Signatur und Ablauf, Benutzer aktiv, Rolle freigeben,
+    Pfad erlaubt. Ohne `ui` oder bei jedem Fehler: nein."""
+    if ui is None:
+        return False
+
+    def pruefen() -> bool:
+        name = ui._sitzung_pruefen(ui._cookie_wert(websocket.scope, ui.SITZUNG_COOKIE))
+        benutzer = ui._benutzer_lesen(name) if name else None
+        return bool(benutzer and benutzer["rolle"] == "freigeben"
+                    and ui._pfad_erlaubt(benutzer["rolle"], websocket.scope["path"]))
+
+    try:
+        return await run_in_threadpool(pruefen)
+    except Exception as e:
+        LOG.warning("portal-fenster: Sitzung nicht pruefbar (%s)", type(e).__name__)
+        return False
+
+
+async def _nachpruefen(websocket, ui) -> None:
+    """Kehrt zurueck, sobald Zentrale oder Sitzung das Fenster nicht mehr tragen."""
+    while True:
+        await asyncio.sleep(NACHPRUEFEN_S)
+        if not await _zentrale_erlaubt() or not await _sitzung_gilt(websocket, ui):
+            return
+
+
+async def weiterleitung(websocket, ui=None) -> None:
+    global _AKTUELL
+    if not eingerichtet():
         await websocket.close(1008)
         return
-    if not isinstance(antwort, dict) or antwort.get("zustand") not in ZUSTAENDE:
+    if not await _zentrale_erlaubt():
         await websocket.close(1008)
         return
 
@@ -189,7 +224,7 @@ async def weiterleitung(websocket) -> None:
     try:
         upstream = await websockets.connect(
             FENSTER_WS + "/websockify", subprotocols=["binary"], max_size=None, open_timeout=5,
-            extra_headers=[("Authorization", f"Basic {anmeldung}")])
+            close_timeout=2, extra_headers=[("Authorization", f"Basic {anmeldung}")])
     except Exception as e:   # nur der Typ ins Log: Text koennte Adresse und Zugangsdaten tragen
         LOG.warning("portal-fenster: Container nicht erreichbar (%s)", type(e).__name__)
         if _AKTUELL is ich:
@@ -215,27 +250,34 @@ async def weiterleitung(websocket) -> None:
             else:
                 await websocket.send_text(daten)
 
+    pruefung = asyncio.ensure_future(_nachpruefen(websocket, ui))
     aufgaben = [asyncio.ensure_future(hoch()), asyncio.ensure_future(runter()),
-                asyncio.ensure_future(ich.ende.wait())]
+                asyncio.ensure_future(ich.ende.wait()), pruefung]
+    code = 1000
     try:
-        await asyncio.wait(aufgaben, return_when=asyncio.FIRST_COMPLETED)
+        fertig, _ = await asyncio.wait(aufgaben, return_when=asyncio.FIRST_COMPLETED)
+        if pruefung in fertig:
+            code = 1008
     finally:
         for a in aufgaben:
             a.cancel()
         await asyncio.gather(*aufgaben, return_exceptions=True)
         if _AKTUELL is ich:
             _AKTUELL = None
-        try:
-            await upstream.close()
-        except Exception:
-            pass
-        await _schliessen(websocket, 1000)
+        # Client und Container gleichzeitig schliessen: ein haengender Container (Close-Handshake)
+        # haelt den Browser so nicht fest.
+        await asyncio.gather(_schliessen(websocket, code), _schliessen(upstream, 1000),
+                             return_exceptions=True)
 
 
 def routen(ui) -> list:
+    async def ws_weiterleitung(websocket) -> None:
+        # `weiterleitung` wird beim Aufruf nachgeschlagen (Tests umhuellen sie).
+        await weiterleitung(websocket, ui)
+
     return [
         Route(f"{PFAD}/seite", seite),
         Route(f"{PFAD}/fenster.js", fenster_js),
         Route(f"{PFAD}/novnc/{{pfad:path}}", novnc_datei),
-        WebSocketRoute(f"{PFAD}/ws", weiterleitung),
+        WebSocketRoute(f"{PFAD}/ws", ws_weiterleitung),
     ]
