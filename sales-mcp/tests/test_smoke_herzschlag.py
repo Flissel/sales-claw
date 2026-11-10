@@ -4,6 +4,8 @@ Rein (liest nur Dateien). Der echte Beweis ist die Ausfall-Probe auf der VM:
 Bote stoppen, Wache wird rot, Bote starten, Wache wird gruen.
 """
 import re
+
+import pytest
 from pathlib import Path
 
 WURZEL = Path(__file__).resolve().parents[2]
@@ -42,6 +44,8 @@ def test_nur_ok_ist_gruen():
 
 def test_auftrag_bote_eigener_schluessel_nur_voll():
     """M8: derselbe Aufbau fuer den Auftrag-Boten, mit seinem eigenen Schluessel."""
+    if not (WURZEL / "deploy/smoke.sh").exists():  # im Container-Image liegt deploy/ nicht
+        pytest.skip("deploy/smoke.sh nicht im Image")
     a = _abschnitt("# 22) Herzschlag des Auftrag-Boten")
     zweig = a[a.index('if [ "$MODUS" = "basis" ]'):a.index("elif")]
     assert "melde" in zweig and "fehl" not in zweig

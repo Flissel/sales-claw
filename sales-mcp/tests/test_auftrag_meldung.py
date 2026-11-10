@@ -193,6 +193,8 @@ def test_werkzeug_liefert_meldungen_json_mit_laden(monkeypatch):
 def test_cron_postfach_check_ruft_auftraege_melden_auf_antworten_pruefen_nicht():
     from pathlib import Path
     cron = Path(__file__).resolve().parents[2] / "deploy" / "cron"
+    if not (cron / "postfach-check.json").exists():  # im Container-Image liegt deploy/ nicht
+        pytest.skip("deploy/cron nicht im Image")
     pf = json.loads((cron / "postfach-check.json").read_text(encoding="utf-8"))
     assert pf["enabled"] is True and pf["delivery"]["mode"] == "announce"
     assert pf["delivery"]["to"] == "${MELDE_AN}"
