@@ -212,6 +212,13 @@ def _erzeugt(q, a: dict, zaehler: dict) -> None:
     auftrag_buch.stand_setzen(q, aid, "erzeugt", "wartet_freigabe")
 
 
+def _beitrag_link(wert: str) -> str:
+    """LinkedIn liefert eine URN (urn:li:share:... / urn:li:ugcPost:...): daraus den Link auf den Beitrag bauen."""
+    if re.match(r"^urn:li:(share|ugcPost):\S+$", wert):
+        return f"https://www.linkedin.com/feed/update/{wert}"
+    return wert
+
+
 def _beitraege(q, gesendet: list[dict]) -> dict[str, str]:
     """Je gesendetem Kanal der Link: URL aus dem Versand-Beleg, sonst die Beitrags-Kennung (LinkedIn);
     YouTube laedt privat hoch und steht deshalb als "privat"."""
@@ -223,7 +230,7 @@ def _beitraege(q, gesendet: list[dict]) -> dict[str, str]:
     for b in belege:
         wert = b["url"] or b["beitrag"]
         if wert:
-            beleg.setdefault(str(b["draft_id"]), str(wert))
+            beleg.setdefault(str(b["draft_id"]), _beitrag_link(str(wert)))
     return {z["channel"]: "privat" if z["channel"] == "youtube" else beleg.get(str(z["id"]), "gesendet")
             for z in gesendet}
 
@@ -241,6 +248,8 @@ def _versand_fehler(z: dict, jetzt: datetime) -> str | None:
     if z["status"] != "failed":
         return None
     fehler = str(z["error"] or "")
+    if fehler.startswith("UNGEWISS:"):
+        return auftrag_buch.VERSAND_UNGEWISS
     if not fehler.startswith(server._CLAIM_MARKE_PRAEFIX):
         return VERSAND_FEHLGESCHLAGEN
     m = _CLAIM_SEIT.search(fehler)

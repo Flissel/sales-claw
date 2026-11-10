@@ -228,3 +228,23 @@ def test_sperre_wird_auch_bei_fehler_freigegeben(monkeypatch):
     with server.pool.connection() as c:
         assert c.execute("select pg_try_advisory_lock(hashtext(%s)) as ok", (schluessel,)).fetchone()["ok"]
         c.execute("select pg_advisory_unlock(hashtext(%s))", (schluessel,))
+
+
+def test_fremdes_schema_meldet_nichts_ohne_db(monkeypatch):
+    monkeypatch.setattr(server, "SCHEMA", "sales_ivan")
+    monkeypatch.setattr(auftrag_buch, "eigene", lambda *a, **k: pytest.fail("kein DB-Zugriff"))
+    assert json.loads(server.auftraege_melden()) == {"meldungen": []}
+
+
+def test_ungewisser_versand_wird_nicht_als_nichts_raus_gemeldet(monkeypatch):
+    sat = auftrag_buch.VERSAND_UNGEWISS
+    Speicher(monkeypatch, auftrag("abgebrochen", ergebnis={"kanal_fehler": {"discord": sat}},
+                                  ))
+    text = melden()[0]
+    assert "nichts ging raus" not in text and sat in text and "discord ging nicht raus" not in text
+    Speicher(monkeypatch, auftrag("wartet_freigabe", ergebnis={"kanal_fehler": {"discord": sat}}))
+    assert melden() == [f"Reel ‚{THEMA}‘ (Nr. {AID[:8]}): discord: {sat}"]
+    # auch wenn der Fehler schon gemeldet wurde, sagt der Endtext nicht "nichts ging raus"
+    Speicher(monkeypatch, auftrag("abgebrochen", ergebnis={"kanal_fehler": {"discord": sat},
+                                                            "kanal_fehler_gemeldet": ["discord"]}))
+    assert "nichts ging raus" not in melden()[0]

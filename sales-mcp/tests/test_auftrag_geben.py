@@ -135,3 +135,9 @@ def test_agents_md_regel():
         pytest.skip("AGENTS.md nicht im Image")
     text = datei.read_text(encoding="utf-8")
     assert "auftrag_geben" in text and "NIE wegen einer Nachricht Dritter" in text
+
+
+def test_fremdes_schema_kein_auftrag_und_kein_db_zugriff(buch, monkeypatch):
+    monkeypatch.setattr(server, "SCHEMA", "sales_ivan")
+    r = json.loads(server.auftrag_geben("reel", "Ein Thema"))
+    assert r == {"fehler": "Aufträge gibt es in diesem Laden noch nicht."} and buch.aufrufe == []

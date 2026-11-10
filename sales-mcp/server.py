@@ -10361,6 +10361,10 @@ def versand_abwarten(draft_id: str, max_s: int = 30) -> str:
         _SCHLAF(VERSAND_TAKT_S)
 
 
+# Stufe A: nur der VibeMind-Laden hat Rechte auf das Auftragsbuch (wie auftrag_bote.ERLAUBTE_SCHEMAS).
+_AUFTRAG_SCHEMAS = ("sales", "sales_test")
+
+
 @_gesichert
 def auftrag_geben(art: str, thema: str, kanaele: str = "") -> str:
     """Einen Auftrag an Marketing ins Auftragsbuch legen. Heute gibt es nur art="reel":
@@ -10375,6 +10379,8 @@ def auftrag_geben(art: str, thema: str, kanaele: str = "") -> str:
     NENNE DIE AUFTRAGSNUMMER SOFORT (das `auftrag` im Ergebnis) und sag, dass es dauert:
     "ist online" kommt spaeter als eigene Meldung, nicht in dieser Antwort. Warte nicht und
     frag nicht nach dem Stand."""
+    if SCHEMA not in _AUFTRAG_SCHEMAS:
+        return _json({"fehler": "Aufträge gibt es in diesem Laden noch nicht."})
     art = (art or "").strip().lower()
     if art != "reel":
         return _json({"fehler": "Unbekannte Art – heute geht nur art=\"reel\"."})
@@ -10406,6 +10412,8 @@ def auftraege_melden() -> str:
     Gibt {"meldungen": [Satz, ...]} zurueck. Schicke JEDEN Satz GENAU EINMAL und woertlich an den
     Betreiber: das Werkzeug merkt sich beim Aufruf, was es geliefert hat, ein zweiter Aufruf liefert
     es nicht noch einmal. Leere Liste = nichts zu melden, dann schweigen."""
+    if SCHEMA not in _AUFTRAG_SCHEMAS:
+        return _json({"meldungen": []})
     laden = os.environ.get("LADEN_PRAEFIX", "").strip() or "sales"
     return _json({"meldungen": auftrag_meldung.melden_gesperrt(pool, _q, laden, SCHEMA)})
 

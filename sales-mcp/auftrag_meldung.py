@@ -75,14 +75,16 @@ def _endtext(a: dict, ergebnis: dict, offen: dict[str, str]) -> str:
         text = f"{kopf} ist online: {links}" if links else f"{kopf} ist online."
     elif stand == "abgebrochen":
         gesendet = bool(_dict(ergebnis.get("beitraege")))
-        text = f"{kopf} wurde verworfen." if gesendet or offen else f"{kopf} wurde verworfen, nichts ging raus."
+        # "nichts ging raus" nur, wenn kein Kanal je einen Fehler hatte: ein ungewisser Versand kann online sein
+        text = f"{kopf} wurde verworfen." if gesendet or offen or _dict(ergebnis.get("kanal_fehler")) else f"{kopf} wurde verworfen, nichts ging raus."
     elif stand == "fehler":
         grund = _rein(a.get("fehler") or "", 300).rstrip(" .")
         text = f"{kopf} ist gescheitert: {grund}." if grund else f"{kopf} ist gescheitert."
     else:
         text = f"{kopf} ist nicht rechtzeitig fertig geworden (PC aus?)."
     for kanal, satz in offen.items():
-        text += f" {kanal} ging nicht raus: {_rein(satz, 200)}"
+        text += (f" {kanal}: {satz}" if satz == auftrag_buch.VERSAND_UNGEWISS
+                 else f" {kanal} ging nicht raus: {_rein(satz, 200)}")
     return text
 
 
@@ -98,7 +100,8 @@ def _plan(q, laden: str) -> list[tuple[str, str, str, dict | None]]:
             continue
         for kanal, satz in _offene_kanalfehler(ergebnis, gemeldet).items():
             gemeldet = gemeldet + [kanal]
-            text = f"{_kopf(a)}: {kanal} ging nicht raus: {_rein(satz, 200)} Bitte in /freigaben ansehen."
+            text = (f"{_kopf(a)}: {kanal}: {satz}" if satz == auftrag_buch.VERSAND_UNGEWISS
+                    else f"{_kopf(a)}: {kanal} ging nicht raus: {_rein(satz, 200)} Bitte in /freigaben ansehen.")
             zeilen.append((aid, f"kanal_fehler:{kanal}", text, {"kanal_fehler_gemeldet": gemeldet}))
         if a.get("erinnert_am") and not ergebnis.get("erinnerung_gemeldet"):
             zeilen.append((aid, "erinnerung", f"{_kopf(a)} wartet seit 2 Tagen auf deine Freigabe.",

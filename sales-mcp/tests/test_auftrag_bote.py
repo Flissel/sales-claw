@@ -14,6 +14,7 @@ import pytest
 
 # HART, nicht setdefault (T5a): siehe test_linkedin_posts.py.
 os.environ["SALES_DB_SCHEMA"] = "sales_test"
+import auftrag_buch  # noqa: E402
 import auftrag_bote as ab  # noqa: E402
 import freigabe_eingang as fe  # noqa: E402
 import kanaele  # noqa: E402
@@ -190,7 +191,7 @@ def test_alle_gesendet_macht_fertig_mit_urls(buch):
     a = buch.auftraege[aid]
     assert a["stand"] == "fertig" and zaehler["abgeschlossen"] == 1
     assert a["ergebnis"]["beitraege"] == {"mastodon": "https://social.example/@haus/1101",
-                                          "youtube": "privat", "linkedin": "urn:li:share:7"}
+                                          "youtube": "privat", "linkedin": "https://www.linkedin.com/feed/update/urn:li:share:7"}
 
 
 def test_alle_verworfen_macht_abgebrochen(buch):
@@ -437,3 +438,24 @@ def test_fremdes_schema_wartet_ohne_durchgang(monkeypatch):
         assert ab.main() == 0
     finally:
         ab._STOPP.clear()
+
+
+def test_ungewisser_versand_steht_als_unklar_nicht_als_fehlgeschlagen(buch):
+    aid = buch.neu(kanaele=("discord",))
+    _durchgang(buch)
+    _status("discord", "failed", "UNGEWISS: Antwort verloren, der Beitrag KANN oeffentlich stehen")
+    _durchgang(buch, T0 + timedelta(minutes=5))
+    assert buch.auftraege[aid]["ergebnis"]["kanal_fehler"] == {"discord": auftrag_buch.VERSAND_UNGEWISS}
+
+
+def test_linkedin_urn_wird_zum_link(buch):
+    aid = buch.neu(kanaele=("linkedin", "mastodon"))
+    _durchgang(buch)
+    for kanal in ("linkedin", "mastodon"):
+        _status(kanal, "sent")
+    _beleg("linkedin", beitrag="urn:li:ugcPost:9")
+    _beleg("mastodon", beitrag="urn:li:share:keinlinkedin", url="https://social.example/@haus/1")
+    _durchgang(buch, T0 + timedelta(minutes=5))
+    assert buch.auftraege[aid]["ergebnis"]["beitraege"] == {
+        "linkedin": "https://www.linkedin.com/feed/update/urn:li:ugcPost:9",
+        "mastodon": "https://social.example/@haus/1"}

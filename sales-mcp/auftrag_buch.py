@@ -11,6 +11,9 @@ import logging
 
 log = logging.getLogger(__name__)
 
+# Satz fuer einen Versand, dessen Ausgang unklar ist (kanal_dispatch: error "UNGEWISS: ..."); der Beitrag KANN online sein.
+VERSAND_UNGEWISS = "Ob der Beitrag online ist, ist unklar – bitte im Kanal nachsehen."
+
 
 class AuftragAbgelehnt(Exception):
     """Das Auftragsbuch nimmt den Auftrag nicht an; `grund` ist ein kurzer deutscher Satz."""
