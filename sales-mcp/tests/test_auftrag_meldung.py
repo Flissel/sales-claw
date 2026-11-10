@@ -154,3 +154,14 @@ def test_werkzeug_liefert_meldungen_json_mit_laden(monkeypatch):
     assert len(r["meldungen"]) == 1 and sp.laden == "ivan"
     assert json.loads(server.auftraege_melden()) == {"meldungen": []}
     assert server.auftraege_melden in server.WERKZEUGE
+
+
+def test_cron_postfach_check_ruft_auftraege_melden_auf_antworten_pruefen_nicht():
+    from pathlib import Path
+    cron = Path(__file__).resolve().parents[2] / "deploy" / "cron"
+    pf = json.loads((cron / "postfach-check.json").read_text(encoding="utf-8"))
+    assert pf["enabled"] is True and pf["delivery"]["mode"] == "announce"
+    assert pf["delivery"]["to"] == "${MELDE_AN}"
+    assert "auftraege_melden()" in pf["payload"]["message"]
+    alt = json.loads((cron / "antworten-pruefen.json").read_text(encoding="utf-8"))
+    assert "auftraege_melden" not in alt["payload"]["message"]
