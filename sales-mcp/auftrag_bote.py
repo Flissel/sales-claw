@@ -39,6 +39,7 @@ from datetime import datetime, timedelta, timezone
 import psycopg
 
 import auftrag_buch
+from auftrag_buch import VERSAND_UNGEWISS
 import freigabe_eingang as fe
 import kanaele
 import medien
@@ -249,7 +250,7 @@ def _versand_fehler(z: dict, jetzt: datetime) -> str | None:
         return None
     fehler = str(z["error"] or "")
     if fehler.startswith("UNGEWISS:"):
-        return auftrag_buch.VERSAND_UNGEWISS
+        return VERSAND_UNGEWISS
     if not fehler.startswith(server._CLAIM_MARKE_PRAEFIX):
         return VERSAND_FEHLGESCHLAGEN
     m = _CLAIM_SEIT.search(fehler)
