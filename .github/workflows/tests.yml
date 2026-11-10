@@ -6,6 +6,13 @@
 #     gegen ein Postgres MIT pgvector (das Schema braucht vector(1536)).
 #     db/provision.sql laeuft unveraendert; nur die Extensions legt CI an,
 #     denn provision.sql prueft sie bewusst nur und legt sie nie selbst an.
+#     pg_trgm (und pgcrypto) liegen wie auf der VM im Schema `extensions` —
+#     provision.sql verlangt das fuer pg_trgm ausdruecklich (17.09.2026).
+#     db/post-sammelstelle.sql gehoert nicht zum Schema-Loop (Ruling R1) und
+#     wird deshalb getrennt auf sales_test eingespielt.
+#     Die Suite laeuft im Image, aber auf dem eingehaengten Checkout: viele
+#     Vertragstests lesen Dateien ausserhalb von sales-mcp/ (db/, deploy/,
+#     config/, docs/, docker-compose.yml), die das Image nicht enthaelt.
 #   * host-suite — die Pilot-/Packaging-Tests aus scripts/tests, die auf
 #     dem Wirt laufen (kein Docker, kein DB-Zugriff).
 name: tests
@@ -35,18 +42,21 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
           psql "postgresql://postgres:ci@localhost:5432/postgres" -v ON_ERROR_STOP=1 \
-            -c "create extension if not exists vector; create extension if not exists pgcrypto;"
+            -c "create schema if not exists extensions; create extension if not exists vector; create extension if not exists pgcrypto with schema extensions; create extension if not exists pg_trgm with schema extensions;"
           psql "postgresql://postgres:ci@localhost:5432/postgres" -v ON_ERROR_STOP=1 \
             -f db/provision.sql
           # Kalender verbinden (Spec 2026-11-08): nicht im Schema-Loop von
           # provision.sql, darum eigens fuer das Testschema.
           psql "postgresql://postgres:ci@localhost:5432/postgres" -v ON_ERROR_STOP=1 \
             -v schema=sales_test -v besitzer=felix -f db/kalender-verbinden.sql
+          psql "postgresql://postgres:ci@localhost:5432/postgres" -v ON_ERROR_STOP=1 \
+            -v schema=sales_test -f db/post-sammelstelle.sql
       - name: Image bauen
         run: docker build -t sales-mcp-ci ./sales-mcp
       - name: Suite
         run: >-
           docker run --rm --network host
+          -v "$GITHUB_WORKSPACE:/repo" -w /repo/sales-mcp
           -e SALES_DB_SCHEMA=sales_test
           -e SALES_DB_URL="postgresql://postgres:ci@localhost:5432/postgres"
           sales-mcp-ci
