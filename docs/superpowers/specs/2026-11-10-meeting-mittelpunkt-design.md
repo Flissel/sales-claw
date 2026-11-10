@@ -1,6 +1,6 @@
 # Meeting-Mittelpunkt: Termin, Briefing, Mitschrift
 
-Stand: 2026-11-10 · Laden: nur Felix (`sales`) · Status: Entwurf zur Freigabe
+Stand: 2026-11-10 · Laden: nur Felix (`sales`) · Status: **freigegeben von Felix am 10.11.** (Plan erst nach dem Jitsi-Test, §3)
 
 ## 1. Warum
 
