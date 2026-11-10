@@ -28,6 +28,7 @@ import kanaele
 import marketing_mandant
 import marketing_pult
 import medien
+import reel_teilen
 import ui_muster
 
 # "ki" gibt es nur auf dieser Seite: an die API geht art "bilder" mit briefing.ki (Stufe 3, E2)
@@ -212,18 +213,7 @@ def datum_text(roh) -> str:
     return f"{m.group(3)}.{m.group(2)}.{m.group(1)}" if m else ""
 
 
-def kuerzen(text: str, grenze: int) -> str:
-    """Zu langer Text wird am letzten Leerzeichen vor `grenze - 1` gekuerzt und bekommt "…" -
-    das Ergebnis hat hoechstens `grenze` Zeichen. Ohne Leerzeichen wird hart geschnitten."""
-    if len(text) <= grenze:
-        return text
-    if grenze < 1:
-        return ""
-    stueck = text[:grenze - 1]
-    leer = stueck.rfind(" ")
-    if leer > 0:
-        stueck = stueck[:leer]
-    return stueck.rstrip() + "…"
+kuerzen = reel_teilen.kuerzen  # herausgeloest nach reel_teilen (Auftragsbuch-Weg nutzt dasselbe)
 
 
 def eigene_firma() -> str:
@@ -927,10 +917,7 @@ def routen(ui) -> list:
         if abgelehnt is not None:
             return abgelehnt
         art = "video" if medien.endpunkt_und_typ(datei)[1].startswith("video/") else "bild"
-        status = await run_in_threadpool(kanaele.status_lesen, ui.server._q)
-        ziele = [info for k, info in kanaele.KANAELE.items()
-                 if k != "devto" and (status.get(k) or {}).get("verbunden")
-                 and (info.video_max if art == "video" else info.bilder_max) >= 1]
+        ziele = await run_in_threadpool(reel_teilen.ziele, ui.server._q, None, art, False)
         if not ziele:
             return ui._fehlerseite(
                 422, "Nicht möglich",
@@ -938,10 +925,8 @@ def routen(ui) -> list:
                 'Kanäle: <a href="/einstellungen/kanaele">/einstellungen/kanaele</a>')
         zeilen = []
         for info in ziele:
-            platz = info.max_zeichen_mit_medien - (len(link) + 2 if link else 0)
-            fassung = kuerzen(text, platz) + ("\n\n" + link if link else "")
             # YouTube: Titel ist Pflicht - das Thema, gekuerzt.
-            titel = kuerzen(thema, info.titel_max) if info.titel_pflicht else ""
+            titel, fassung = reel_teilen.fassung(info, thema, {"text_lang": text}, link)
             antwort = json.loads(await run_in_threadpool(
                 ui.server.kanal_post_entwurf, info.name, thema, fassung, titel=titel,
                 medien_dateien=datei))

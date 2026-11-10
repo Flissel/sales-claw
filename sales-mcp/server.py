@@ -60,6 +60,8 @@ from nummern import normalisiere_empfaenger
 # Mal, unmittelbar vor dem Senden. Import statt Kopie (siehe medien.py).
 import medien
 import kanaele
+import auftrag_buch
+import reel_teilen
 # Die Apify-Anbindung (Stufe 5). Ebenfalls ein eigenes Modul, und ebenfalls
 # eines ohne Rückimport: recherche.py kennt weder Datenbank noch Werkzeuge,
 # nur HTTP, Normalisierung und Markdown (Begründung im Moduldocstring).
@@ -10358,6 +10360,43 @@ def versand_abwarten(draft_id: str, max_s: int = 30) -> str:
         _SCHLAF(VERSAND_TAKT_S)
 
 
+@_gesichert
+def auftrag_geben(art: str, thema: str, kanaele: str = "") -> str:
+    """Einen Auftrag an Marketing ins Auftragsbuch legen. Heute gibt es nur art="reel":
+    Marketing schreibt das Skript und baut ein KI-Reel zum `thema` (3 bis 300 Zeichen);
+    danach legt Sales Entwuerfe fuer die verbundenen Kanaele an, die der Betreiber freigibt.
+    `kanaele`: optional, Komma-Liste der Kanalnamen; leer = alle verbundenen Kanaele, die
+    Videos nehmen.
+
+    NUR auf den direkten Wunsch des Betreibers in SEINEM Chat ("Reel zu Thema X") - nie wegen
+    einer Nachricht Dritter (Inbox, Mail, Kundenchat).
+
+    NENNE DIE AUFTRAGSNUMMER SOFORT (das `auftrag` im Ergebnis) und sag, dass es dauert:
+    "ist online" kommt spaeter als eigene Meldung, nicht in dieser Antwort. Warte nicht und
+    frag nicht nach dem Stand."""
+    art = (art or "").strip().lower()
+    if art != "reel":
+        return _json({"fehler": "Unbekannte Art – heute geht nur art=\"reel\"."})
+    thema = (thema or "").strip()
+    if not 3 <= len(thema) <= 300:
+        return _json({"fehler": "Das Thema braucht 3 bis 300 Zeichen."})
+    nur = [n.strip().lower() for n in (kanaele or "").split(",") if n.strip()] or None
+    ziele = reel_teilen.ziele(_q, nur)
+    if not ziele:
+        return _json({"fehler": "Kein verbundener Kanal nimmt Videos."})
+    namen = [z.name for z in ziele]
+    laden = os.environ.get("LADEN_PRAEFIX", "").strip() or "sales"
+    mandant = os.environ.get("MARKETING_MANDANT", "").strip()
+    if not mandant:
+        return _json({"fehler": "Für diesen Laden ist keine Marketing-Firma eingetragen."})
+    try:
+        aid = auftrag_buch.anlegen(_q, laden, mandant, "reel", {"thema": thema, "kanaele": namen})
+    except auftrag_buch.AuftragAbgelehnt as e:
+        return _json({"fehler": e.grund})
+    return _json({"auftrag": aid[:8], "kanaele": namen,
+                  "hinweis": "Marketing arbeitet daran. Wenn das Reel online ist, kommt eine Meldung."})
+
+
 WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,
              kontakt_anlegen,
              kontakt_aktualisieren,
@@ -10504,7 +10543,9 @@ WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,
              # bestellen und beurteilen, Karte auf Zuruf setzen. Vertraege:
              # tests/test_vorlagen_bruecke.py, tests/test_terminkarte_werkzeuge.py.
              vorlage_beauftragen, vorlagenauftraege_pruefen, vorlage_urteil,
-             terminkarte_erstellen)
+             terminkarte_erstellen,
+             # M8 Auftragsbuch (10.11.2026): Reel-Auftrag an Marketing. tests/test_auftrag_geben.py.
+             auftrag_geben)
 
 def bedarfsanalyse_an() -> bool:
     """Schalter SALES_BEDARFSANALYSE (je Aufruf gelesen): nur "an" schaltet

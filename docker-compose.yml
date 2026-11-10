@@ -235,6 +235,8 @@ services:
       # Kampagnenplan im Morgen-Digest (17.10.2026): dieselbe Firma wie beim
       # Newsletter-Versand in sales-ui. Leer = kein Block (zweite Laeden).
       MARKETING_MANDANT: ${MARKETING_MANDANT:-}
+      # Auftragsbuch (M8): auftrag_geben schreibt den Laden in den Auftrag.
+      LADEN_PRAEFIX: ${LADEN_PRAEFIX:-sales}
     # Der Medienordner (Stufe 4, F4). Hier liegen die Unterlagen, die der
     # Betreiber an Entwürfe hängen kann; `medien_liste` liest genau dieses
     # Verzeichnis und `entwurf_erstellen` prüft eine Datei gegen es, bevor ein
