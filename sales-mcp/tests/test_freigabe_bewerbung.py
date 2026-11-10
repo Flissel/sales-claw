@@ -564,7 +564,7 @@ def test_veraltet_wird_als_hinweis_gezeigt(client, falsch, pfad, daten, grund, t
         assert ui_freigabe_bewerbung._HINWEISE[erfolg][1] not in s
 
 
-@pytest.mark.parametrize("grund", ["nicht_offen", "unbekannt", "eingabe_ungueltig", "Eingabe ungueltig", "409"])
+@pytest.mark.parametrize("grund", ["neuer_code_der_zentrale", "unbekannt", "eingabe_ungueltig", "Eingabe ungueltig", "409"])
 def test_andere_ablehnung_ist_ein_allgemeiner_hinweis(client, falsch, grund):
     falsch.fehler_post = PultFehler("abgelehnt", grund)
     r = _post(client, "freigeben", fassung="1", bindung=B, bestaetigt="ja")
@@ -1135,7 +1135,7 @@ def test_unbekannter_kanal_ist_422(client, falsch, kanal):
     assert r.status_code == 422 and falsch.aktionen() == []
 
 
-@pytest.mark.parametrize("grund", ["nicht_offen", "eingabe_ungueltig", "unbekannt"])
+@pytest.mark.parametrize("grund", ["neuer_code_der_zentrale", "eingabe_ungueltig", "unbekannt"])
 def test_versandziel_andere_ablehnung_ist_ein_allgemeiner_hinweis(client, falsch, grund):
     falsch.fehler_post = PultFehler("abgelehnt", grund)
     r = _post(client, "versandziel", fassung="1", an=ADRESSE)
@@ -2954,7 +2954,11 @@ def test_portal_hinweistexte_wortlaut():
     assert h["not_aus"] == "Not-Aus ist an – nichts wird abgeschickt."
     assert h["portal_erfasst"] == "Gespeichert." and h["abgeschickt"] == "Als abgeschickt vermerkt."
     assert h["portal_aus"] == "Die Portal-Abgabe ist ausgeschaltet."
-    for code in ("fenster_belegt", "feldtabelle_veraltet", "zustand_veraltet", "not_aus", "portal_aus"):
+    assert h["nicht_offen"] == "Nicht mehr offen – Seite neu laden."
+    assert h["befehl_nicht_geschrieben"] == ("Das Fenster ließ sich nicht anfordern – nichts geändert, "
+                                             "bitte nochmal versuchen.")
+    for code in ("fenster_belegt", "feldtabelle_veraltet", "zustand_veraltet", "not_aus", "portal_aus",
+                 "nicht_offen"):
         assert code in ui_freigabe_bewerbung._ABLEHNUNGEN and code in ui_freigabe_bewerbung._HINWEISE
     assert "fassung_veraltet" in ui_freigabe_bewerbung._ABLEHNUNGEN        # Bestehendes bleibt
 
@@ -2966,7 +2970,8 @@ PORTAL_POSTS = [("fenster", {"fassung": "1", "feldtabelle_sha256": SHA_P}), ("be
 
 
 @pytest.mark.parametrize("code", ["fenster_belegt", "feldtabelle_veraltet", "zustand_veraltet", "not_aus",
-                                  "portal_aus", "fassung_veraltet", "antwort_ungueltig", "frage_unbekannt"])
+                                  "portal_aus", "fassung_veraltet", "antwort_ungueltig", "frage_unbekannt",
+                                  "nicht_offen"])
 @pytest.mark.parametrize("aktion,form", PORTAL_POSTS)
 def test_portal_ablehnungen_werden_hinweise(client, falsch, aktion, form, code):
     falsch.fehler_post = PultFehler("abgelehnt", code, {"detail": code})
@@ -2977,9 +2982,32 @@ def test_portal_ablehnungen_werden_hinweise(client, falsch, aktion, form, code):
 
 
 def test_portal_unbekannter_code_ist_der_allgemeine_hinweis(client, falsch):
-    falsch.fehler_post = PultFehler("abgelehnt", "nicht_offen")
+    falsch.fehler_post = PultFehler("abgelehnt", "irgendein_neuer_code")
     r = _ppost(client, "selbst", lauf_id=LAUF_P)
-    assert r.headers["location"].startswith("/freigaben?bw_hinweis=abgelehnt&bw_grund=nicht_offen")
+    assert r.headers["location"].startswith("/freigaben?bw_hinweis=abgelehnt&bw_grund=irgendein_neuer_code")
+
+
+# R53: die Zentrale antwortet auf `fenster` mit 503 `befehl_nicht_geschrieben` und hat den Lauf schon
+# zurueckgesetzt - nichts angefordert, kein "unklar". Jedes andere 503 bleibt, wie es war.
+def test_fenster_befehl_nicht_geschrieben_ist_saubere_weiterleitung(client, falsch):
+    falsch.fehler_post = PultFehler("nicht_erreichbar", "503", {"detail": "befehl_nicht_geschrieben"})
+    r = _ppost(client, "fenster", lauf_id=LAUF_P, fassung="1", feldtabelle_sha256=SHA_P)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/freigaben?bw_hinweis=befehl_nicht_geschrieben#bewerbungen"
+    klasse, text = ui_freigabe_bewerbung._HINWEISE["befehl_nicht_geschrieben"]
+    assert f'<div class="{klasse}">{text}</div>' in _abschnitt(client, r.headers["location"])
+
+
+@pytest.mark.parametrize("fehler", [
+    PultFehler("nicht_verbunden", "503"),                                          # misconfigured: ...
+    PultFehler("nicht_erreichbar", "503", {"detail": "datenbank_nicht_erreichbar"}),
+    PultFehler("nicht_erreichbar", "503"),
+    PultFehler("nicht_erreichbar", "503", {"detail": ["befehl_nicht_geschrieben"]}),
+])
+def test_fenster_anderes_503_bleibt_wie_es_war(client, falsch, fehler):
+    falsch.fehler_post = fehler
+    r = _ppost(client, "fenster", lauf_id=LAUF_P, fassung="1", feldtabelle_sha256=SHA_P)
+    assert r.status_code == (503 if fehler.art == "nicht_verbunden" else 504)
 
 
 @pytest.mark.parametrize("art,status", [("nicht_erreichbar", 504), ("nicht_verbunden", 503)])
@@ -3023,7 +3051,7 @@ def test_offline_und_wartet_und_unbekannt(client, falsch):
     k = _pkarte(client, falsch, zustand="offline")
     assert "Anzeige offline – archivieren?" in k and "Nicht bewerben" in _form(k, "nicht-bewerben")
     k = _pkarte(client, falsch, zustand="wartet_auf_worker")
-    assert "Bot bereitet vor …" in k and "<form" not in k
+    assert "Bot bereitet vor …" in k
     k = _pkarte(client, falsch, zustand=BOESE)
     assert BOESE not in k and "<script>" not in k and "Stand unbekannt" in k
 
@@ -3048,6 +3076,19 @@ def test_frage_offen_zeigt_felder_und_speichern(client, falsch):
     assert 'name="antwort_eintritt-ab"' in f and 'value="Mai &lt;b&gt;"' in f and "<b>" not in f
     assert "Antworten speichern" in f
     assert 'class="nur-pc"' not in k
+
+
+# SC-M5: aus `wartet_auf_worker` und `frage_offen` gibt es einen Ausgang. Die Zentrale nimmt dort
+# `selbst` (von wartet_auf_worker | frage_offen | bereit) und `nicht-bewerben` (nur Lauf + offene
+# Freigabe + Fassung, kein Zustand) an - mehr bieten die Karten nicht an.
+@pytest.mark.parametrize("zustand", ["wartet_auf_worker", "frage_offen"])
+def test_ausgang_aus_wartet_und_frage_offen(client, falsch, zustand):
+    k = _pkarte(client, falsch, zustand=zustand)
+    assert "Selbst bewerben" in _form(k, "selbst")
+    assert "Nicht bewerben" in _form(k, "nicht-bewerben")
+    assert f'name="lauf_id" value="{LAUF_P}"' in _form(k, "selbst")
+    assert 'name="bestaetigt"' in _form(k, "nicht-bewerben")       # wie sonst: nur mit Haken
+    assert "Am PC im Fenster" not in k and 'class="nur-pc"' not in k
 
 
 def test_antworten_ohne_inhalt_ruft_nichts(client, falsch):

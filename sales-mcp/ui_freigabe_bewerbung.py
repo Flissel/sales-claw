@@ -197,11 +197,16 @@ _HINWEISE = {
     "abgeschickt": ("hinweis", "Als abgeschickt vermerkt."),
     "portal_aus": ("warnung", "Die Portal-Abgabe ist ausgeschaltet."),
     "zustand_veraltet": ("warnung", "Der Stand hat sich geändert – Seite neu laden."),
+    "nicht_offen": ("warnung", "Nicht mehr offen – Seite neu laden."),
+    # Kein Code der Zentrale zum Weiterreichen: 503 auf `fenster`, wenn der Befehl nicht ins Auftragsverzeichnis
+    # ging. Die Zentrale hat den Lauf schon zurueckgesetzt - nichts angefordert (sonst bliebe nur "unklar").
+    "befehl_nicht_geschrieben": ("warnung", "Das Fenster ließ sich nicht anfordern – nichts geändert, "
+                                            "bitte nochmal versuchen."),
 }
 _ABLEHNUNGEN = ("fassung_veraltet", "schon_entschieden", "wartet_auf_durchsicht",
                 "versandziel_geaendert", "lauf_laeuft", "lauf_unbekannt", "lauf_nicht_offen",
                 "antwort_ungueltig", "frage_unbekannt", "fenster_belegt", "feldtabelle_veraltet",
-                "zustand_veraltet", "not_aus", "portal_aus")
+                "zustand_veraltet", "not_aus", "portal_aus", "nicht_offen")
 
 # Portal-Abgabe (Plan 2026-11-09, Task 12): die Portal-Karte. Die Zentrale liefert `portal` (Lauf, Zustand,
 # Feldtabelle, Fragen); Felix macht im Fenster oder von Hand weiter. Ins Protokoll kommen nur Bewerbung, Lauf
@@ -644,13 +649,17 @@ def _portal_inhalt(ui, k: dict, p: dict, basis: str, nr, lauf_id: str, not_aus: 
         url = _https(p.get("formular_url"))
         return f'<p class="meta">{_link(e(url), "Originalseite ↗")}</p>' if url else ""
 
+    def ausgang() -> str:
+        # Die Zentrale nimmt `selbst` aus wartet_auf_worker, frage_offen und bereit an, `nicht-bewerben` in jedem Zustand.
+        return f'<div class="aktionen">{knopf("selbst", "Selbst bewerben")}{ablehnen()}</div>'
+
     if zustand == "wartet_auf_worker":
-        return '<p class="meta">Bot bereitet vor …</p>'
+        return '<p class="meta">Bot bereitet vor …</p>' + ausgang()
     if zustand == "frage_offen":
         felder = _fragefelder(ui, p.get("fragen"), p.get("antworten"))
         antworten = (form("antworten", lauf_id, nr, f'{felder}<button>Antworten speichern</button>')
                      if felder else "")
-        return f'<div><b>Offene Fragen</b></div>{_feldtabelle(ui, p.get("feldtabelle"))}{antworten}'
+        return f'<div><b>Offene Fragen</b></div>{_feldtabelle(ui, p.get("feldtabelle"))}{antworten}{ausgang()}'
     if zustand == "bereit":
         teile = ['<div><b>Bereit</b></div>']
         if not_aus:
@@ -1209,6 +1218,9 @@ def routen(ui) -> list:
                 if f.grund in _ABLEHNUNGEN:
                     return ziel(f.grund)
                 return ziel("abgelehnt", f.grund if _CODE.fullmatch(f.grund) else "")
+            if (f.art == "nicht_erreichbar" and pfad.endswith("/portal/fenster")
+                    and isinstance(f.koerper, dict) and f.koerper.get("detail") == "befehl_nicht_geschrieben"):
+                return ziel("befehl_nicht_geschrieben")
             return unklar_protokolliert("%s: %r", f.art, f.grund)
         _cache_leeren()
         if not (isinstance(r, dict) and gelungen(r)):
