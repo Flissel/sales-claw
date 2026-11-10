@@ -27,6 +27,7 @@ import bewerbung_pult  # noqa: E402
 import server  # noqa: E402
 import ui  # noqa: E402
 import ui_freigabe_bewerbung  # noqa: E402
+import ui_portal_fenster  # noqa: E402
 
 PultFehler = bewerbung_pult.PultFehler
 HOST = {"host": "127.0.0.1:8791"}
@@ -113,6 +114,15 @@ class Falsch:
         self.karten = [karte()]
         self.verlauf = []
         self.pdf = (b"%PDF-1.7 Anschreiben", "application/pdf")
+        # Portal-Abgabe (Task 12): Bild und Unterlagen des Laufs, Antworten der Portal-Routen.
+        self.bild = (b"\x89PNG\r\n\x1a\nBILD", "image/png")
+        self.portal_pdf = (b"%PDF-1.7 Portal", "application/pdf")
+        self.fehler_datei = None    # nur bild.png und bewerbung.pdf
+        self.portal_antwort = {"fenster": {"status": "angefragt"}, "beenden": {"status": "beendet"},
+                               "antworten": {"status": "erfasst", "offen": 0},
+                               "ausgang": {"status": "abgeschickt"},
+                               "selbst": {"status": "selbst_bewerben"}, "am-pc": {"status": "gesetzt"},
+                               "nicht-bewerben": {"status": "abgelehnt", "kommando": "k-3"}}
         self.antwort = {"freigeben": {"status": "freigegeben", "kommando": "k-1"},
                         "nicht-bewerben": {"status": "abgelehnt", "kommando": "k-2"},
                         "feedback": {"status": "erfasst"},
@@ -140,6 +150,11 @@ class Falsch:
                 if self.antwort_not_aus is not None:
                     return self.antwort_not_aus
                 return self._not_aus_umschalten(daten)
+            if "/portal/" in pfad:
+                aktion = pfad.rsplit("/", 1)[1]
+                if aktion == "ausgang" and isinstance(daten, dict) and daten.get("ausgang") == "nicht_raus":
+                    return {"status": "bereit"}
+                return dict(self.portal_antwort[aktion])
             return self.antwort[pfad.rsplit("/", 1)[1]]
         if pfad == OFFEN:
             return {"bewerbungen": self.karten}
@@ -157,6 +172,11 @@ class Falsch:
             if self.fehler_pdf:
                 raise self.fehler_pdf
             return self.pdf
+        if "/portal/bild.png?" in pfad or "/portal/bewerbung.pdf?" in pfad:
+            assert roh is True
+            if self.fehler_datei:
+                raise self.fehler_datei
+            return self.bild if "bild.png" in pfad else self.portal_pdf
         raise AssertionError(f"unerwartet: {methode} {pfad}")
 
     def aktionen(self):
@@ -2804,3 +2824,431 @@ def test_loesen_formular_nur_ein_haken_und_der_folgehinweis_nur_dort(client, fal
     assert kopf.count("Danach gehen fällige Bewerbungen raus.") == 1
     falsch.not_aus = dict(NOT_AUS_AUS)
     assert "Danach gehen fällige Bewerbungen raus." not in _abschnitt(client)
+
+
+# --- Portal-Abgabe (Plan 2026-11-09, Task 12): Portal-Karte im Reiter Bewerbungen -----------------------
+
+LAUF_P = "pl-abcdefghij0123456789"
+SHA_P = "sha256:" + "ef" * 32
+PORTAL = f"/freigaben/bewerbung/{BID}/portal"
+
+
+def portal(**kw):
+    """`k["portal"]` der Karte (Vertrag: pult_daten.portal_darstellung)."""
+    p = {"lauf_id": LAUF_P, "zustand": "bereit", "hindernis": None,
+         "feldtabelle": [{"feld": "Vorname", "wert": "Felix", "quelle": "profil", "hinweis": None},
+                         {"feld": "Gehalt", "wert": "70000", "quelle": "antwort",
+                          "hinweis": "aus deiner Antwort"}],
+         "feldtabelle_sha256": SHA_P, "fragen": [], "antworten": {}, "fehler": None, "status_code": None,
+         "rest_nach_freigabe": False, "bild_version": 3, "formular_url": "https://portal.example.org/job/1",
+         "am_pc": False, "briefdatum_alter_tage": 0, "fenster_belegt_von": None}
+    p.update(kw)
+    return p
+
+
+def pkarte(**kw):
+    return karte(kanal="portal", portal=portal(**kw))
+
+
+def _pkarte(client, falsch, **kw) -> str:
+    falsch.karten = [pkarte(**kw)]
+    return _karten(_abschnitt(client))[0]
+
+
+def _ppost(c, aktion, **daten):
+    return c.post(f"{PORTAL}/{aktion}", data={"csrf": ui.CSRF_TOKEN, **daten}, follow_redirects=False)
+
+
+def test_portal_karte_bereit_zeigt_tabelle_bild_und_knoepfe(client, falsch):
+    k = _pkarte(client, falsch)
+    assert "Bereit" in k and "kein Hindernis erkannt" in k
+    assert (f'<img src="/freigaben/bewerbung/{BID}/portal/bild.png?lauf={LAUF_P}&v=3"') in k
+    assert "<td>Vorname</td>" in k and "<td>Felix</td>" in k and "aus deiner Antwort" in k
+    assert "Freigeben und senden" not in k and "Anschreiben selbst ändern" not in k   # keine Unterlagen-Formulare
+    assert 'class="nur-pc"' in k and "Am PC im Fenster erledigen" in k
+    assert 'class="nur-handy"' in k and "Am PC erledigen" in k
+    assert "Selbst bewerben" in k and "Nicht bewerben" in k
+    assert 'target="_blank" rel="noopener noreferrer"' in k and 'href="https://portal.example.org/job/1"' in k
+    s = _abschnitt(client)
+    assert "@media (max-width: 899px) { .nur-pc { display: none } }" in s
+    assert "@media (min-width: 900px) { .nur-handy { display: none } }" in s
+
+
+@pytest.mark.parametrize("hindernis,text", [(None, "kein Hindernis erkannt"), ("captcha", "CAPTCHA"),
+                                            ("anmeldung", "Anmeldung nötig"), ("bot_falle", "Bot-Falle"),
+                                            ("unbekannt", "unklar"), ("irgendwas", "unklar")])
+def test_hindernis_in_worten(client, falsch, hindernis, text):
+    k = _pkarte(client, falsch, hindernis=hindernis)
+    assert f"Hindernis: {text}" in k and "irgendwas" not in k
+
+
+def test_bereit_zusaetze_rest_fehler_und_keine_bild_version(client, falsch):
+    k = _pkarte(client, falsch, rest_nach_freigabe=True, fehler="Zeitüberschreitung beim Senden",
+                bild_version=0)
+    assert "Rest wird nach der Freigabe ausgefüllt" in k and "Letzter Versuch: Zeitüberschreitung beim Senden" in k
+    assert "bild.png" not in k
+    k = _pkarte(client, falsch)
+    assert "Rest wird nach der Freigabe" not in k and "Letzter Versuch" not in k
+
+
+def test_not_aus_steht_auf_der_bereit_karte(client, falsch):
+    falsch.not_aus = {"an": True, "quelle": "pult", "von": "sales-ui:mira", "seit": NOT_AUS_SEIT, "grund": None}
+    assert "Not-Aus ist an – nichts wird abgeschickt." in _pkarte(client, falsch)
+
+
+def test_fenster_knopf_nur_pc_und_ueberschreibbar(client, falsch):
+    k = _pkarte(client, falsch)
+    pc = re.search(r'<form class="nur-pc"[^>]*action="([^"]*)".*?</form>', k, re.S)
+    assert pc and pc.group(1) == f"{PORTAL}/fenster" and "Am PC im Fenster erledigen" in pc.group(0)
+    assert f'name="feldtabelle_sha256" value="{SHA_P}"' in pc.group(0) and 'name="fassung" value="1"' in pc.group(0)
+    assert f'name="lauf_id" value="{LAUF_P}"' in pc.group(0) and ui.CSRF_TOKEN in pc.group(0)
+    handy = re.search(r'<form class="nur-handy"[^>]*action="([^"]*)".*?</form>', k, re.S)
+    assert handy and handy.group(1) == f"{PORTAL}/am-pc" and "Am PC erledigen" in handy.group(0)
+    assert 'name="am_pc" value="true"' in handy.group(0)
+    d = re.search(r'<details class="nur-handy"><summary>Fenster trotzdem hier öffnen</summary>(.*?)</details>',
+                  k, re.S)
+    assert d and f'action="{PORTAL}/fenster"' in d.group(1) and SHA_P in d.group(1)
+
+
+def test_am_pc_vorgemerkt_bietet_zurueck(client, falsch):
+    k = _pkarte(client, falsch, am_pc=True)
+    handy = re.search(r'<form class="nur-handy"[^>]*action="[^"]*/am-pc".*?</form>', k, re.S).group(0)
+    assert 'name="am_pc" value="false"' in handy and "Doch nicht am PC" in handy
+
+
+AKTIONEN = [
+    ("fenster", {"fassung": "1", "feldtabelle_sha256": SHA_P},
+     {"lauf_id": LAUF_P, "von": "mira", "fassung": 1, "feldtabelle_sha256": SHA_P}, "fenster_angefragt"),
+    ("beenden", {}, {"lauf_id": LAUF_P, "von": "mira"}, "portal_erfasst"),
+    ("antworten", {"antwort_gehalt-wunsch": "  70000 ", "antwort_eintritt-ab": "", "fassung": "1"},
+     {"lauf_id": LAUF_P, "von": "mira", "antworten": [{"frage_id": "gehalt-wunsch", "antwort": "70000"}]},
+     "portal_erfasst"),
+    ("ausgang", {"ausgang": "raus"}, {"lauf_id": LAUF_P, "von": "mira", "ausgang": "raus"}, "abgeschickt"),
+    ("ausgang", {"ausgang": "nicht_raus"}, {"lauf_id": LAUF_P, "von": "mira", "ausgang": "nicht_raus"},
+     "portal_erfasst"),
+    ("selbst", {}, {"lauf_id": LAUF_P, "von": "mira"}, "portal_erfasst"),
+    ("am-pc", {"am_pc": "true"}, {"lauf_id": LAUF_P, "von": "mira", "am_pc": True}, "portal_erfasst"),
+    ("am-pc", {"am_pc": "false"}, {"lauf_id": LAUF_P, "von": "mira", "am_pc": False}, "portal_erfasst"),
+    ("nicht-bewerben", {"fassung": "1", "grund": " zu weit ", "bestaetigt": "ja"},
+     {"lauf_id": LAUF_P, "von": "mira", "fassung": 1, "grund": "zu weit"}, "nicht_beworben"),
+    ("nicht-bewerben", {"fassung": "1", "bestaetigt": "ja"},
+     {"lauf_id": LAUF_P, "von": "mira", "fassung": 1}, "nicht_beworben"),
+]
+
+
+@pytest.mark.parametrize("aktion,form,json,hinweis", AKTIONEN)
+def test_portal_aktionen_senden_richtiges_json(client, falsch, aktion, form, json, hinweis):
+    r = _ppost(client, aktion, lauf_id=LAUF_P, **form)
+    assert r.status_code == 303 and r.headers["location"] == f"/freigaben?bw_hinweis={hinweis}#bewerbungen"
+    assert falsch.aktionen() == [("POST", f"/bewerbungen/{BID}/portal/{aktion}", json)]
+    assert falsch.im_loop == []
+    assert ui_freigabe_bewerbung._HINWEISE[hinweis][1] in _abschnitt(client, r.headers["location"])
+
+
+def test_portal_hinweistexte_wortlaut():
+    h = {k: v[1] for k, v in ui_freigabe_bewerbung._HINWEISE.items()}
+    assert h["fenster_angefragt"] == "Das Fenster wird vorbereitet – gleich oben im Reiter."
+    assert h["fenster_belegt"] == ("Im Fenster läuft schon eine Bewerbung. "
+                                   "Erst dort fertig machen oder die Sitzung beenden.")
+    assert h["feldtabelle_veraltet"] == "Die Angaben haben sich geändert – bitte die Karte neu ansehen."
+    assert h["not_aus"] == "Not-Aus ist an – nichts wird abgeschickt."
+    assert h["portal_erfasst"] == "Gespeichert." and h["abgeschickt"] == "Als abgeschickt vermerkt."
+    assert h["portal_aus"] == "Die Portal-Abgabe ist ausgeschaltet."
+    for code in ("fenster_belegt", "feldtabelle_veraltet", "zustand_veraltet", "not_aus", "portal_aus"):
+        assert code in ui_freigabe_bewerbung._ABLEHNUNGEN and code in ui_freigabe_bewerbung._HINWEISE
+    assert "fassung_veraltet" in ui_freigabe_bewerbung._ABLEHNUNGEN        # Bestehendes bleibt
+
+
+PORTAL_POSTS = [("fenster", {"fassung": "1", "feldtabelle_sha256": SHA_P}), ("beenden", {}),
+                ("antworten", {"antwort_gehalt-wunsch": "1"}), ("ausgang", {"ausgang": "raus"}),
+                ("selbst", {}), ("am-pc", {"am_pc": "true"}),
+                ("nicht-bewerben", {"fassung": "1", "bestaetigt": "ja"})]
+
+
+@pytest.mark.parametrize("code", ["fenster_belegt", "feldtabelle_veraltet", "zustand_veraltet", "not_aus",
+                                  "portal_aus", "fassung_veraltet", "antwort_ungueltig", "frage_unbekannt"])
+@pytest.mark.parametrize("aktion,form", PORTAL_POSTS)
+def test_portal_ablehnungen_werden_hinweise(client, falsch, aktion, form, code):
+    falsch.fehler_post = PultFehler("abgelehnt", code, {"detail": code})
+    r = _ppost(client, aktion, lauf_id=LAUF_P, **form)
+    assert r.status_code == 303 and r.headers["location"] == f"/freigaben?bw_hinweis={code}#bewerbungen"
+    klasse, text = ui_freigabe_bewerbung._HINWEISE[code]
+    assert f'<div class="{klasse}">{text}</div>' in _abschnitt(client, r.headers["location"])
+
+
+def test_portal_unbekannter_code_ist_der_allgemeine_hinweis(client, falsch):
+    falsch.fehler_post = PultFehler("abgelehnt", "nicht_offen")
+    r = _ppost(client, "selbst", lauf_id=LAUF_P)
+    assert r.headers["location"].startswith("/freigaben?bw_hinweis=abgelehnt&bw_grund=nicht_offen")
+
+
+@pytest.mark.parametrize("art,status", [("nicht_erreichbar", 504), ("nicht_verbunden", 503)])
+def test_portal_ausfall_ist_unklar_oder_nicht_verbunden(client, falsch, art, status):
+    falsch.fehler_post = PultFehler(art, "TimeoutError")
+    assert _ppost(client, "beenden", lauf_id=LAUF_P).status_code == status
+
+
+def test_unklar_zeigt_ist_raus_und_ist_nicht_raus(client, falsch):
+    k = _pkarte(client, falsch, zustand="unklar")
+    assert "Unklar, ob abgeschickt" in k
+    assert "Ist raus" in _form(k, "ausgang", 'value="raus"')
+    assert "Ist nicht raus" in _form(k, "ausgang", 'value="nicht_raus"')
+    assert "Am PC im Fenster" not in k
+
+
+def test_selbst_bewerben_zeigt_pdf_link_und_feldwerte(client, falsch):
+    k = _pkarte(client, falsch, zustand="selbst_bewerben",
+                feldtabelle=[{"feld": "Name", "wert": '"><b>x</b>', "quelle": "profil", "hinweis": None}])
+    assert (f'<a href="/freigaben/bewerbung/{BID}/portal/bewerbung.pdf?lauf={LAUF_P}" target="_blank" '
+            f'rel="noopener noreferrer">Bewerbung als PDF</a>') in k
+    assert 'href="https://portal.example.org/job/1" target="_blank" rel="noopener noreferrer"' in k
+    assert '<input type="text" readonly value="&quot;&gt;&lt;b&gt;x&lt;/b&gt;">' in k and "<b>x</b>" not in k
+    assert "Abgeschickt" in _form(k, "ausgang", 'value="raus"')
+    assert "Nicht bewerben" in _form(k, "nicht-bewerben")
+
+
+@pytest.mark.parametrize("url", ["http://portal.example.org/x", "javascript:alert(1)", "//x.example/", "", None,
+                                 "https:///x"])
+def test_formular_link_nur_https(client, falsch, url):
+    k = _pkarte(client, falsch, zustand="selbst_bewerben", formular_url=url)
+    assert "Originalseite" not in k and "javascript" not in k and "http://portal" not in k
+
+
+def test_formular_link_wird_maskiert(client, falsch):
+    k = _pkarte(client, falsch, zustand="selbst_bewerben", formular_url='https://x.example/a"onmouseover="1')
+    assert 'onmouseover="1' not in k and "&quot;onmouseover=" in k
+
+
+def test_offline_und_wartet_und_unbekannt(client, falsch):
+    k = _pkarte(client, falsch, zustand="offline")
+    assert "Anzeige offline – archivieren?" in k and "Nicht bewerben" in _form(k, "nicht-bewerben")
+    k = _pkarte(client, falsch, zustand="wartet_auf_worker")
+    assert "Bot bereitet vor …" in k and "<form" not in k
+    k = _pkarte(client, falsch, zustand=BOESE)
+    assert BOESE not in k and "<script>" not in k and "Stand unbekannt" in k
+
+
+@pytest.mark.parametrize("zustand", ["fenster_angefragt", "im_fenster"])
+def test_im_fenster_text_und_sitzung_beenden(client, falsch, zustand):
+    k = _pkarte(client, falsch, zustand=zustand)
+    assert "Du bist dran – im Fenster oben" in k and "Sitzung beenden" in _form(k, "beenden")
+
+
+def test_frage_offen_zeigt_felder_und_speichern(client, falsch):
+    fragen = [{"frage_id": "gehalt-wunsch", "feld": "Gehaltswunsch", "art": "gehalt", "optionen": []},
+              {"frage_id": "arbeitserlaubnis", "feld": 'Erlaubnis "?"', "art": "arbeitserlaubnis",
+               "optionen": ["Ja", "Nein", BOESE]},
+              {"frage_id": "eintritt-ab", "feld": "Eintritt", "art": "eintritt", "optionen": []}]
+    k = _pkarte(client, falsch, zustand="frage_offen", fragen=fragen, antworten={"eintritt-ab": "Mai <b>"})
+    assert "<td>Felix</td>" in k
+    f = _form(k, "antworten")
+    assert 'name="antwort_gehalt-wunsch"' in f and "Gehaltswunsch" in f
+    assert '<select name="antwort_arbeitserlaubnis">' in f and "<option>Ja</option>" in f
+    assert "&lt;script&gt;x&lt;/script&gt;" in f and BOESE not in k
+    assert 'name="antwort_eintritt-ab"' in f and 'value="Mai &lt;b&gt;"' in f and "<b>" not in f
+    assert "Antworten speichern" in f
+    assert 'class="nur-pc"' not in k
+
+
+def test_antworten_ohne_inhalt_ruft_nichts(client, falsch):
+    r = _ppost(client, "antworten", lauf_id=LAUF_P, **{"antwort_gehalt-wunsch": "  ", "fremd": "x"})
+    assert r.status_code == 303 and r.headers["location"] == "/freigaben?bw_hinweis=keine_antwort#bewerbungen"
+    assert falsch.aktionen() == []
+
+
+@pytest.mark.parametrize("form", [{"antwort_gehalt-wunsch": "x" * 501}, {"antwort_gehalt-wunsch": "a\nb"},
+                                  {"antwort_Gehalt wunsch": "x"}, {"antwort_": "x"},
+                                  {f"antwort_f{i:02d}x": "x" for i in range(21)}])
+def test_antworten_grenzen_lokal(client, falsch, form):
+    r = _ppost(client, "antworten", lauf_id=LAUF_P, **form)
+    assert r.status_code in (303, 422) and falsch.aktionen() == []
+
+
+def test_am_pc_liste_steht_oben(client, falsch):
+    falsch.karten = [karte(application_id="bw-1", firma="Erste GmbH", portal=portal(am_pc=False)),
+                     karte(application_id="bw-2", firma="Zweite AG", rolle="Analyst",
+                           portal=portal(am_pc=True, zustand="frage_offen")),
+                     karte(application_id="bw-3", firma="Dritte KG", portal=None)]
+    s = _abschnitt(client)
+    kopf = s[:s.index('<details class="karte"')]
+    assert "Am PC" in kopf and "Zweite AG – Analyst" in kopf
+    assert "Erste GmbH" not in kopf and "Dritte KG" not in kopf
+
+
+def test_am_pc_liste_maskiert_und_fehlt_ohne_eintrag(client, falsch):
+    falsch.karten = [karte(firma=BOESE, portal=portal(am_pc=True))]
+    kopf = _abschnitt(client)
+    kopf = kopf[:kopf.index('<details class="karte"')]
+    assert BOESE not in kopf and "&lt;script&gt;" in kopf
+    falsch.karten = [pkarte()]
+    assert 'class="ampc"' not in _abschnitt(client)
+
+
+@pytest.mark.parametrize("tage,da", [(0, False), (7, False), (8, True), (30, True)])
+def test_briefdatum_hinweis_ab_8_tagen(client, falsch, tage, da):
+    k = _pkarte(client, falsch, briefdatum_alter_tage=tage)
+    assert (f"Datum im Anschreiben ist {tage} Tage alt" in k) is da
+
+
+@pytest.mark.parametrize("aktion,form", PORTAL_POSTS)
+def test_rolle_lesen_darf_keine_portal_aktion(client_lesen, falsch, aktion, form):
+    r = _ppost(client_lesen, aktion, lauf_id=LAUF_P, **form)
+    assert r.status_code == 403 and falsch.aktionen() == []
+    for pfad in (f"{PORTAL}/bild.png?lauf={LAUF_P}&v=1", f"{PORTAL}/bewerbung.pdf?lauf={LAUF_P}"):
+        assert client_lesen.get(pfad).status_code == 403
+    assert falsch.aufrufe == []
+
+
+@pytest.mark.parametrize("aktion,form", PORTAL_POSTS)
+def test_portal_ohne_csrf_403(client, falsch, aktion, form):
+    for daten in ({"lauf_id": LAUF_P, **form}, {"csrf": "falsch", "lauf_id": LAUF_P, **form}):
+        r = client.post(f"{PORTAL}/{aktion}", data=daten, follow_redirects=False)
+        assert r.status_code == 403
+    assert falsch.aktionen() == []
+
+
+def test_portal_nicht_bewerben_braucht_haken_und_grenzen(client, falsch):
+    r = _ppost(client, "nicht-bewerben", lauf_id=LAUF_P, fassung="1")
+    assert r.status_code == 400 and falsch.aktionen() == []
+    r = _ppost(client, "nicht-bewerben", lauf_id=LAUF_P, fassung="1", bestaetigt="ja", grund="g" * 501)
+    assert r.status_code == 422 and falsch.aktionen() == []
+    r = _ppost(client, "nicht-bewerben", lauf_id=LAUF_P, fassung="x", bestaetigt="ja")
+    assert r.status_code == 422 and falsch.aktionen() == []
+
+
+@pytest.mark.parametrize("aktion,form,ohne_lauf", [
+    ("beenden", {}, True), ("fenster", {"fassung": "0", "feldtabelle_sha256": SHA_P}, False),
+    ("fenster", {"fassung": "1", "feldtabelle_sha256": "xyz"}, False),
+    ("fenster", {"fassung": "1"}, False), ("ausgang", {"ausgang": "vielleicht"}, False),
+    ("ausgang", {}, False), ("am-pc", {"am_pc": "ja"}, False), ("am-pc", {}, False),
+])
+def test_portal_eingaben_werden_lokal_geprueft(client, falsch, aktion, form, ohne_lauf):
+    daten = {"csrf": ui.CSRF_TOKEN, **form}
+    if not ohne_lauf:
+        daten["lauf_id"] = LAUF_P
+    r = client.post(f"{PORTAL}/{aktion}", data=daten, follow_redirects=False)
+    assert r.status_code == 422 and falsch.aktionen() == []
+
+
+@pytest.mark.parametrize("lauf_id", ["", "x", "pl-kurz", "pl-" + "a" * 65, "pl-abcdefghij0123456789/../x",
+                                     "pl-abcdefghij0123456789 "])
+def test_portal_lauf_id_wird_geprueft(client, falsch, lauf_id):
+    r = _ppost(client, "beenden", lauf_id=lauf_id)
+    assert r.status_code == 422 and falsch.aktionen() == []
+
+
+def test_portal_unbekannte_aktion_ruft_nichts(client, falsch):
+    r = _ppost(client, "bild.png", lauf_id=LAUF_P)
+    assert r.status_code in (404, 405) and falsch.aktionen() == []
+    r = _ppost(client, "loeschen", lauf_id=LAUF_P)
+    assert r.status_code == 404 and falsch.aktionen() == []
+
+
+def test_portal_unerwartete_antwort_ist_unklar(client, falsch):
+    falsch.portal_antwort["selbst"] = {"status": "was-anderes"}
+    assert _ppost(client, "selbst", lauf_id=LAUF_P).status_code == 504
+
+
+def test_portal_protokoll_nennt_keine_feldwerte(client, falsch, caplog):
+    falsch.fehler_post = PultFehler("nicht_erreichbar", "TimeoutError")
+    caplog.set_level(logging.DEBUG, logger="sales-ui")
+    _ppost(client, "antworten", lauf_id=LAUF_P, **{"antwort_gehalt-wunsch": "GEHEIMER-WERT-123"})
+    _ppost(client, "nicht-bewerben", lauf_id=LAUF_P, fassung="1", bestaetigt="ja", grund="PRIVATER-GRUND-9")
+    text = "\n".join(_meldungen(caplog))
+    assert BID in text and LAUF_P in text
+    assert "GEHEIMER-WERT-123" not in text and "PRIVATER-GRUND-9" not in text
+
+
+def test_bild_und_pdf_werden_durchgereicht(client, falsch):
+    r = client.get(f"{PORTAL}/bild.png?lauf={LAUF_P}&v=3")
+    assert r.status_code == 200 and r.content == falsch.bild[0]
+    assert r.headers["content-type"] == "image/png" and r.headers["cache-control"] == "private, no-store"
+    i = falsch.aufrufe.index(("GET", f"/bewerbungen/{BID}/portal/bild.png?lauf={LAUF_P}&v=3", None))
+    assert falsch.roh[i] is True
+    r = client.get(f"{PORTAL}/bewerbung.pdf?lauf={LAUF_P}")
+    assert r.status_code == 200 and r.content == falsch.portal_pdf[0]
+    assert r.headers["content-type"].startswith("application/pdf")
+    assert r.headers["content-security-policy"] == ui._CSP_DATEI
+    j = falsch.aufrufe.index(("GET", f"/bewerbungen/{BID}/portal/bewerbung.pdf?lauf={LAUF_P}", None))
+    assert falsch.roh[j] is True and falsch.im_loop == []
+
+
+@pytest.mark.parametrize("abfrage", ["", "?lauf=x", f"?lauf={LAUF_P}/../x", f"?lauf={LAUF_P}&v=a",
+                                     f"?lauf={LAUF_P}&v=" + "1" * 12])
+def test_bild_ohne_gueltige_abfrage_ruft_nichts(client, falsch, abfrage):
+    assert client.get(f"{PORTAL}/bild.png{abfrage}").status_code == 422
+    assert not [a for a in falsch.aufrufe if "bild.png" in a[1]]
+
+
+def test_bild_ohne_version_und_pdf_ohne_lauf(client, falsch):
+    assert client.get(f"{PORTAL}/bild.png?lauf={LAUF_P}").status_code == 200
+    assert client.get(f"{PORTAL}/bewerbung.pdf").status_code == 422
+
+
+@pytest.mark.parametrize("pfad,fehler,status", [
+    ("bild.png?lauf=" + LAUF_P, PultFehler("abgelehnt", "unbekannt"), 404),
+    ("bild.png?lauf=" + LAUF_P, PultFehler("nicht_verbunden", "401"), 503),
+    ("bewerbung.pdf?lauf=" + LAUF_P, PultFehler("nicht_erreichbar", "TimeoutError"), 503),
+    ("bewerbung.pdf?lauf=" + LAUF_P, PultFehler("abgelehnt", BOESE), 422),
+])
+def test_bild_und_pdf_fehler(client, falsch, pfad, fehler, status):
+    falsch.fehler_datei = fehler
+    r = client.get(f"{PORTAL}/{pfad}")
+    assert r.status_code == status and "<script" not in r.text
+
+
+def test_bild_und_pdf_nur_mit_richtigem_typ(client, falsch):
+    falsch.bild = (b"<script>1</script>", "text/html")
+    falsch.portal_pdf = (b"<script>1</script>", "text/html")
+    assert client.get(f"{PORTAL}/bild.png?lauf={LAUF_P}&v=1").status_code == 502
+    assert client.get(f"{PORTAL}/bewerbung.pdf?lauf={LAUF_P}").status_code == 502
+
+
+def test_fenster_rahmen_nur_bei_aktiver_sitzung(client, falsch, monkeypatch):
+    rahmen = '<iframe class="fenster"'
+    for eingerichtet in (True, False):
+        monkeypatch.setattr(ui_portal_fenster, "eingerichtet", lambda e=eingerichtet: e)
+        for zustand in ("fenster_angefragt", "im_fenster", "bereit", "frage_offen", "unklar",
+                        "selbst_bewerben", "offline", "wartet_auf_worker"):
+            falsch.karten = [pkarte(zustand=zustand)]
+            r = client.get(SEITE)
+            erwartet = eingerichtet and zustand in ("fenster_angefragt", "im_fenster")
+            assert (rahmen in r.text) is erwartet, (eingerichtet, zustand)
+            if erwartet:
+                assert r.text.count(rahmen) == 1
+    falsch.karten = [karte()]                                              # keine Portal-Karte
+    monkeypatch.setattr(ui_portal_fenster, "eingerichtet", lambda: True)
+    assert rahmen not in client.get(SEITE).text
+
+
+def test_fenster_rahmen_liegt_oben_und_csp_erlaubt_den_rahmen(client, falsch, monkeypatch):    # R38
+    monkeypatch.setattr(ui_portal_fenster, "eingerichtet", lambda: True)
+    falsch.karten = [pkarte(zustand="im_fenster")]
+    r = client.get(SEITE)
+    assert r.text.index('<iframe class="fenster"') < r.text.index('<details class="karte"')
+    assert "frame-src 'self'" in r.headers["content-security-policy"]
+    assert r.headers["content-security-policy"] == ui._csp_mit_rahmen("'self'")
+    assert "default-src 'none'" in r.headers["content-security-policy"]
+    assert r.headers["x-frame-options"] == "DENY"                           # die Seite selbst bleibt ungerahmt
+    falsch.karten = [pkarte(zustand="bereit")]
+    r = client.get(SEITE)
+    assert '<iframe class="fenster"' not in r.text
+    assert r.headers["content-security-policy"] == ui._csp_mit_rahmen("'self'")
+
+
+def test_portal_karte_maskiert_alles(client, falsch):
+    falsch.karten = [karte(firma=BOESE, rolle=BOESE2, portal=portal(
+        fehler=BOESE, feldtabelle=[{"feld": BOESE, "wert": BOESE2, "quelle": BOESE, "hinweis": BOESE}]))]
+    s = _abschnitt(client)
+    assert BOESE not in s and "<img onerror" not in s and BOESE2 not in s
+
+
+def test_portal_karte_ohne_dict_bleibt_unterlagen_karte(client, falsch):
+    falsch.karten = [karte(portal=None), karte(application_id=BID2, firma="B GmbH", portal="x")]
+    s = _abschnitt(client)
+    assert s.count(">Freigeben<") + s.count("Freigeben und senden<") >= 2 and "Bot bereitet vor" not in s
+
+
+def test_portal_karte_mit_kaputtem_lauf_id_hat_keine_formulare(client, falsch):
+    k = _pkarte(client, falsch, lauf_id='"><script>')
+    assert "<script>" not in k and "<form" not in k
