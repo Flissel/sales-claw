@@ -1,7 +1,7 @@
 """Kollisionspruefung ueber alle Quellen — Spec §2.2, Pruefung 3a/3b."""
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -26,47 +26,69 @@ import kalender  # noqa: E402
 # CEST = UTC+2 — der volle Zwei-Stunden-Versatz, den der Koordinator
 # gemessen hat, nicht nur eine Stunde.
 #
-# Jahr 2099 seit 10.11.2026: der 1.10.2026 lag selbst in der Vergangenheit,
-# und alle Werkzeug-Tests hier scheiterten an genau dieser Pruefung. Wie
-# test_termin.py ein festes Datum weit voraus; der 1. Oktober ist in jedem
-# Jahr Sommerzeit (Umstellung am letzten Oktobersonntag).
+# Seit 10.11.2026 kein festes Datum mehr: der 1.10.2026 lag selbst in der
+# Vergangenheit, und ein Datum weit voraus (2099) faellt aus dem Abgleich-
+# Fenster (30 Tage zurueck, 180 voraus, server._fenster_luecke) — sobald
+# eine Kalenderquelle verbunden ist, meldet `_kollisionen` dann eine
+# Fenster-Luecke und "frei" wird nie wahr (gemessen in CI-Lauf 2). TAG ist
+# darum der naechste SOMMERZEIT-Tag ab morgen: er liegt in der Zukunft,
+# hoechstens rund 155 Tage voraus (Ende Oktober bis Ende Maerz), also im
+# Fenster, und behaelt den vollen Zwei-Stunden-Versatz.
 ORTSZONE = kalender.ortszone() or timezone.utc
-JAHR = 2099
-MONAT = 10
+
+
+def _naechster_sommertag():
+    tag = datetime.now(ORTSZONE).date() + timedelta(days=1)
+    for _ in range(366):
+        um_neun = datetime(tag.year, tag.month, tag.day, 9, tzinfo=ORTSZONE)
+        if um_neun.utcoffset() == timedelta(hours=2):
+            return tag
+        tag += timedelta(days=1)
+    # Ohne Zeitzonendaten (Rueckfall UTC) gibt es keine Sommerzeit; dann
+    # rechnen beide Seiten in UTC und morgen genuegt.
+    return datetime.now(ORTSZONE).date() + timedelta(days=1)
+
+
+TAG = _naechster_sommertag()
+DATUM = TAG.isoformat()
 
 
 def _belegt(*eintraege, luecken=()):
     return lambda tage_voraus=60: (list(eintraege), list(luecken))
 
 
-def _e(tag, von, bis, quelle, titel="Belegt"):
-    """Ein Fremdtermin in Berliner ORTSZEIT — so, wie ein Mensch ihn
-    meint ("Ivan ist von 9 bis 10 Uhr belegt"), nicht als UTC-Zahl, die
-    nur zufaellig mit einer Ortszeit-Eingabe zusammenpasst."""
-    return {"beginn": datetime(JAHR, MONAT, tag, von, tzinfo=ORTSZONE),
-            "ende": datetime(JAHR, MONAT, tag, bis, tzinfo=ORTSZONE),
+def _wandzeit(stunde, tzinfo=None):
+    return datetime(TAG.year, TAG.month, TAG.day, stunde, tzinfo=tzinfo)
+
+
+def _e(von, bis, quelle, titel="Belegt"):
+    """Ein Fremdtermin an TAG in Berliner ORTSZEIT — so, wie ein Mensch
+    ihn meint ("Ivan ist von 9 bis 10 Uhr belegt"), nicht als UTC-Zahl,
+    die nur zufaellig mit einer Ortszeit-Eingabe zusammenpasst."""
+    return {"beginn": _wandzeit(von, ORTSZONE),
+            "ende": _wandzeit(bis, ORTSZONE),
             "titel": titel, "ort": "", "quelle": quelle}
 
 
-def _beginn(tag, stunde):
+def _beginn(stunde):
     """Fuer den DIREKTEN Aufruf von `_kollisionen`: bereits aware, in
     Ortszeit — `_kollisionen` fasst eine aware Zeit unveraendert an, nur
     eine NAIVE Zeit wird lokalisiert (siehe `_beginn_naiv`)."""
-    return datetime(JAHR, MONAT, tag, stunde, tzinfo=ORTSZONE)
+    return _wandzeit(stunde, ORTSZONE)
 
 
-def _beginn_naiv(tag, stunde):
+def _beginn_naiv(stunde):
     """So, wie `_termin_zeitpunkt` einen Zeitpunkt tatsaechlich liefert:
     NAIV, in Ortszeit gemeint, ohne tzinfo. Nur damit laesst sich die
     Lokalisierung in `_kollisionen` selbst pruefen, nicht nur ihr
     Ergebnis ueber ein Werkzeug."""
-    return datetime(JAHR, MONAT, tag, stunde)
+    return _wandzeit(stunde)
 
 
 def test_ueberlappung_beim_kollegen_wird_gefunden(monkeypatch):
     monkeypatch.setattr(server, "belegungen",
-                        _belegt(_e(1, 9, 10, "Ivan", "Ivans Kundentermin")))
-    treffer, luecken = server._kollisionen(_beginn(1, 9), 30)
+                        _belegt(_e(9, 10, "Ivan", "Ivans Kundentermin")))
+    treffer, luecken = server._kollisionen(_beginn(9), 30)
     assert len(treffer) == 1
     assert treffer[0]["quelle"] == "Ivan"
     assert treffer[0]["titel"] == "Ivans Kundentermin"
@@ -75,8 +97,8 @@ def test_ueberlappung_beim_kollegen_wird_gefunden(monkeypatch):
 def test_ueberlappung_beim_betreiber_wird_gefunden(monkeypatch):
     """Gegenprobe zur vorigen: beide Richtungen, wie Pruefung 3a verlangt."""
     monkeypatch.setattr(server, "belegungen",
-                        _belegt(_e(1, 9, 10, "Betreiber", "Eigener")))
-    treffer, _ = server._kollisionen(_beginn(1, 9), 30)
+                        _belegt(_e(9, 10, "Betreiber", "Eigener")))
+    treffer, _ = server._kollisionen(_beginn(9), 30)
     assert [t["quelle"] for t in treffer] == ["Betreiber"]
 
 
@@ -84,29 +106,29 @@ def test_anschliessender_termin_ist_keine_kollision(monkeypatch):
     """Ende gleich Beginn heisst nacheinander, nicht gleichzeitig — sonst
     waere jeder Tag mit Terminkette blockiert."""
     monkeypatch.setattr(server, "belegungen",
-                        _belegt(_e(1, 9, 10, "Ivan")))
-    treffer, _ = server._kollisionen(_beginn(1, 10), 30)
+                        _belegt(_e(9, 10, "Ivan")))
+    treffer, _ = server._kollisionen(_beginn(10), 30)
     assert treffer == []
 
 
 def test_termin_davor_ist_keine_kollision(monkeypatch):
-    monkeypatch.setattr(server, "belegungen", _belegt(_e(1, 14, 15, "Ivan")))
-    treffer, _ = server._kollisionen(_beginn(1, 9), 60)
+    monkeypatch.setattr(server, "belegungen", _belegt(_e(14, 15, "Ivan")))
+    treffer, _ = server._kollisionen(_beginn(9), 60)
     assert treffer == []
 
 
 def test_punktueller_termin_ohne_dauer_kollidiert_nicht(monkeypatch):
     """Fehlt DTEND, ist ende == beginn. Ein solcher Eintrag darf nicht den
     ganzen Tag blockieren."""
-    monkeypatch.setattr(server, "belegungen", _belegt(_e(1, 9, 9, "Ivan")))
-    treffer, _ = server._kollisionen(_beginn(1, 9), 30)
+    monkeypatch.setattr(server, "belegungen", _belegt(_e(9, 9, "Ivan")))
+    treffer, _ = server._kollisionen(_beginn(9), 30)
     assert treffer == []
 
 
 def test_luecken_werden_durchgereicht(monkeypatch):
     monkeypatch.setattr(server, "belegungen", _belegt(
         luecken=[{"quelle": "Ivan", "grund": "Nicht erreichbar."}]))
-    treffer, luecken = server._kollisionen(_beginn(1, 9), 30)
+    treffer, luecken = server._kollisionen(_beginn(9), 30)
     assert treffer == []
     assert luecken[0]["quelle"] == "Ivan"
 
@@ -114,8 +136,8 @@ def test_luecken_werden_durchgereicht(monkeypatch):
 def test_lokalisierung_verhindert_den_zwei_stunden_sommerzeit_versatz(
         monkeypatch):
     """Faengt genau den vom Koordinator gemessenen Fehler fest: Ivan ist
-    von 9 bis 10 Uhr BERLINER Zeit belegt (1. Oktober, vor der DST-
-    Umstellung am 25.10. also noch CEST = UTC+2, damit 7-8 Uhr UTC). Die
+    von 9 bis 10 Uhr BERLINER Zeit belegt (an TAG, einem Sommerzeit-Tag:
+    CEST = UTC+2, damit 7-8 Uhr UTC). Die
     Anfrage kommt — wie bei einem echten Aufruf ueber
     termin_konflikte — als NAIVE 09:00 herein (`_beginn_naiv`), gemeint als
     dieselbe Ortszeit.
@@ -132,23 +154,23 @@ def test_lokalisierung_verhindert_den_zwei_stunden_sommerzeit_versatz(
     keiner Aussage. Wegnahme-Beleg dazu im Bericht zu Aufgabe 4,
     Fix-Runde 1."""
     monkeypatch.setattr(server, "belegungen",
-                        _belegt(_e(1, 9, 10, "Ivan", "Kundentermin")))
-    treffer, _ = server._kollisionen(_beginn_naiv(1, 9), 30)
+                        _belegt(_e(9, 10, "Ivan", "Kundentermin")))
+    treffer, _ = server._kollisionen(_beginn_naiv(9), 30)
     assert len(treffer) == 1
     assert treffer[0]["quelle"] == "Ivan"
 
 
 def test_werkzeug_meldet_frei(monkeypatch):
     monkeypatch.setattr(server, "belegungen", _belegt())
-    antwort = json.loads(server.termin_konflikte("2099-10-01", "09:00", 30))
+    antwort = json.loads(server.termin_konflikte(DATUM, "09:00", 30))
     assert antwort["frei"] is True
     assert antwort["kollisionen"] == []
 
 
 def test_werkzeug_meldet_belegt_mit_namen(monkeypatch):
     monkeypatch.setattr(server, "belegungen",
-                        _belegt(_e(1, 9, 10, "Ivan", "Kundentermin")))
-    antwort = json.loads(server.termin_konflikte("2099-10-01", "09:30", 30))
+                        _belegt(_e(9, 10, "Ivan", "Kundentermin")))
+    antwort = json.loads(server.termin_konflikte(DATUM, "09:30", 30))
     assert antwort["frei"] is False
     assert "Ivan" in antwort["hinweis"]
 
@@ -157,7 +179,7 @@ def test_werkzeug_ist_bei_luecken_nicht_einfach_frei(monkeypatch):
     """Der wichtigste Fall: nichts gefunden, aber auch nichts gewusst."""
     monkeypatch.setattr(server, "belegungen", _belegt(
         luecken=[{"quelle": "Ivan", "grund": "Nicht erreichbar."}]))
-    antwort = json.loads(server.termin_konflikte("2099-10-01", "09:00", 30))
+    antwort = json.loads(server.termin_konflikte(DATUM, "09:00", 30))
     assert antwort["frei"] is False
     assert "Ivan" in antwort["hinweis"]
 
@@ -176,11 +198,11 @@ def _lead():
 
 def test_einladung_nennt_die_kollision(monkeypatch):
     monkeypatch.setattr(server, "belegungen",
-                        _belegt(_e(1, 9, 10, "Ivan", "Kundentermin")))
+                        _belegt(_e(9, 10, "Ivan", "Kundentermin")))
     import mail_dispatch
     monkeypatch.setattr(mail_dispatch, "EMAIL_ABSENDER", "felix@vibemind.space")
     antwort = json.loads(server.termin_einladen(
-        _lead(), "2099-10-01", "09:30", thema="Test"))
+        _lead(), DATUM, "09:30", thema="Test"))
     assert "fehler" not in antwort, antwort
     assert antwort["kollisionen"], antwort
     assert "Ivan" in antwort["hinweis"]
@@ -194,10 +216,10 @@ def test_kollision_blockiert_die_einladung_NICHT(monkeypatch):
     Plan-Entscheidung, dass eine Kollision meldet, aber nicht blockiert:
     faellt er kuenftig um, hat jemand ein hartes Nein eingebaut, das dem
     Betreiber genau die Entscheidung abnaehme, die ihm gehoert."""
-    monkeypatch.setattr(server, "belegungen", _belegt(_e(1, 9, 10, "Ivan")))
+    monkeypatch.setattr(server, "belegungen", _belegt(_e(9, 10, "Ivan")))
     import mail_dispatch
     monkeypatch.setattr(mail_dispatch, "EMAIL_ABSENDER", "felix@vibemind.space")
     lead = _lead()
-    json.loads(server.termin_einladen(lead, "2099-10-01", "09:30", thema="T"))
+    json.loads(server.termin_einladen(lead, DATUM, "09:30", thema="T"))
     assert len(server._q(
         "select id from drafts where lead_id = %s", (lead,))) == 1
