@@ -25,7 +25,13 @@ import kalender  # noqa: E402
 # Sonntag im Oktober (25.10.), Europe/Berlin steht am 1.10. also noch auf
 # CEST = UTC+2 — der volle Zwei-Stunden-Versatz, den der Koordinator
 # gemessen hat, nicht nur eine Stunde.
+#
+# Jahr 2099 seit 10.11.2026: der 1.10.2026 lag selbst in der Vergangenheit,
+# und alle Werkzeug-Tests hier scheiterten an genau dieser Pruefung. Wie
+# test_termin.py ein festes Datum weit voraus; der 1. Oktober ist in jedem
+# Jahr Sommerzeit (Umstellung am letzten Oktobersonntag).
 ORTSZONE = kalender.ortszone() or timezone.utc
+JAHR = 2099
 MONAT = 10
 
 
@@ -37,8 +43,8 @@ def _e(tag, von, bis, quelle, titel="Belegt"):
     """Ein Fremdtermin in Berliner ORTSZEIT — so, wie ein Mensch ihn
     meint ("Ivan ist von 9 bis 10 Uhr belegt"), nicht als UTC-Zahl, die
     nur zufaellig mit einer Ortszeit-Eingabe zusammenpasst."""
-    return {"beginn": datetime(2026, MONAT, tag, von, tzinfo=ORTSZONE),
-            "ende": datetime(2026, MONAT, tag, bis, tzinfo=ORTSZONE),
+    return {"beginn": datetime(JAHR, MONAT, tag, von, tzinfo=ORTSZONE),
+            "ende": datetime(JAHR, MONAT, tag, bis, tzinfo=ORTSZONE),
             "titel": titel, "ort": "", "quelle": quelle}
 
 
@@ -46,7 +52,7 @@ def _beginn(tag, stunde):
     """Fuer den DIREKTEN Aufruf von `_kollisionen`: bereits aware, in
     Ortszeit — `_kollisionen` fasst eine aware Zeit unveraendert an, nur
     eine NAIVE Zeit wird lokalisiert (siehe `_beginn_naiv`)."""
-    return datetime(2026, MONAT, tag, stunde, tzinfo=ORTSZONE)
+    return datetime(JAHR, MONAT, tag, stunde, tzinfo=ORTSZONE)
 
 
 def _beginn_naiv(tag, stunde):
@@ -54,7 +60,7 @@ def _beginn_naiv(tag, stunde):
     NAIV, in Ortszeit gemeint, ohne tzinfo. Nur damit laesst sich die
     Lokalisierung in `_kollisionen` selbst pruefen, nicht nur ihr
     Ergebnis ueber ein Werkzeug."""
-    return datetime(2026, MONAT, tag, stunde)
+    return datetime(JAHR, MONAT, tag, stunde)
 
 
 def test_ueberlappung_beim_kollegen_wird_gefunden(monkeypatch):
@@ -134,7 +140,7 @@ def test_lokalisierung_verhindert_den_zwei_stunden_sommerzeit_versatz(
 
 def test_werkzeug_meldet_frei(monkeypatch):
     monkeypatch.setattr(server, "belegungen", _belegt())
-    antwort = json.loads(server.termin_konflikte("2026-10-01", "09:00", 30))
+    antwort = json.loads(server.termin_konflikte("2099-10-01", "09:00", 30))
     assert antwort["frei"] is True
     assert antwort["kollisionen"] == []
 
@@ -142,7 +148,7 @@ def test_werkzeug_meldet_frei(monkeypatch):
 def test_werkzeug_meldet_belegt_mit_namen(monkeypatch):
     monkeypatch.setattr(server, "belegungen",
                         _belegt(_e(1, 9, 10, "Ivan", "Kundentermin")))
-    antwort = json.loads(server.termin_konflikte("2026-10-01", "09:30", 30))
+    antwort = json.loads(server.termin_konflikte("2099-10-01", "09:30", 30))
     assert antwort["frei"] is False
     assert "Ivan" in antwort["hinweis"]
 
@@ -151,7 +157,7 @@ def test_werkzeug_ist_bei_luecken_nicht_einfach_frei(monkeypatch):
     """Der wichtigste Fall: nichts gefunden, aber auch nichts gewusst."""
     monkeypatch.setattr(server, "belegungen", _belegt(
         luecken=[{"quelle": "Ivan", "grund": "Nicht erreichbar."}]))
-    antwort = json.loads(server.termin_konflikte("2026-10-01", "09:00", 30))
+    antwort = json.loads(server.termin_konflikte("2099-10-01", "09:00", 30))
     assert antwort["frei"] is False
     assert "Ivan" in antwort["hinweis"]
 
@@ -174,7 +180,7 @@ def test_einladung_nennt_die_kollision(monkeypatch):
     import mail_dispatch
     monkeypatch.setattr(mail_dispatch, "EMAIL_ABSENDER", "felix@vibemind.space")
     antwort = json.loads(server.termin_einladen(
-        _lead(), "2026-10-01", "09:30", thema="Test"))
+        _lead(), "2099-10-01", "09:30", thema="Test"))
     assert "fehler" not in antwort, antwort
     assert antwort["kollisionen"], antwort
     assert "Ivan" in antwort["hinweis"]
@@ -192,6 +198,6 @@ def test_kollision_blockiert_die_einladung_NICHT(monkeypatch):
     import mail_dispatch
     monkeypatch.setattr(mail_dispatch, "EMAIL_ABSENDER", "felix@vibemind.space")
     lead = _lead()
-    json.loads(server.termin_einladen(lead, "2026-10-01", "09:30", thema="T"))
+    json.loads(server.termin_einladen(lead, "2099-10-01", "09:30", thema="T"))
     assert len(server._q(
         "select id from drafts where lead_id = %s", (lead,))) == 1
