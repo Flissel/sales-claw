@@ -219,6 +219,7 @@ import ui_freigabe_api
 import ui_freigabe_bewerbung
 import ui_freigabe_eingang
 import ui_freigabe_newsletter
+import ui_portal_fenster
 import ui_empfehlungen
 import ui_newsletter_einwilligung
 import ui_kalender
@@ -10359,6 +10360,7 @@ app = Starlette(routes=[
     *ui_reels.routen(sys.modules[__name__]),
     *ui_podcast.routen(sys.modules[__name__]),
     *ui_freigabe_newsletter.routen(sys.modules[__name__]),
+    *ui_portal_fenster.routen(sys.modules[__name__]),
     *ui_freigabe_bewerbung.routen(sys.modules[__name__]),
     *ui_freigabe_api.routen(sys.modules[__name__]),
     *ui_freigabe_eingang.routen(sys.modules[__name__]),

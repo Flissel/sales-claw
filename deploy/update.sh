@@ -229,6 +229,11 @@ GEAENDERT="$(git diff --name-only "$ALT" "$NEU")"
 echo "Eingespielt $ALT -> $NEU. Geaendert:"
 echo "$GEAENDERT" | sed 's/^/  /'
 
+# Portal-Fenster: sales-ui haengt am internen Netz bewerbung-fenster (docker-compose.yml,
+# external). Fehlt es, scheitert JEDES `up` von sales-ui laut - deshalb einmal hier, vor dem
+# ersten `up` (Bau, Rueckbau). Idempotent; --internal: kein Weg nach draussen.
+docker network inspect bewerbung-fenster >/dev/null 2>&1 || docker network create --internal bewerbung-fenster
+
 # Diese Flags sind global (haengen nur vom Diff ab, nicht vom Laden). Die
 # eigentliche $BAUEN-Liste je Laden entsteht weiter unten, in der
 # Build-Schleife, aus diesen Flags UND dem laden-eigenen $KERN-Schnappschuss.
