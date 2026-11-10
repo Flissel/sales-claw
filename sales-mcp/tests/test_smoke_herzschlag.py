@@ -12,7 +12,8 @@ WURZEL = Path(__file__).resolve().parents[2]
 def _abschnitt(kopf: str = "# 21) Herzschlag des Freigabe-Boten") -> str:
     smoke = (WURZEL / "deploy/smoke.sh").read_text(encoding="utf-8")
     start = smoke.index(kopf)
-    ende = min(i for i in (smoke.find("\n# 2", start + 1), smoke.index('echo "---"', start)) if i > 0)
+    naechster = re.compile(r"\n# \d+\) ").search(smoke, start + 1)
+    ende = min(naechster.start() if naechster else len(smoke), smoke.index('echo "---"', start))
     return smoke[start:ende]
 
 

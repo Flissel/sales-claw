@@ -37,6 +37,11 @@ def kuerzen(text: str, grenze: int) -> str:
     return stueck.rstrip() + "…"
 
 
+def auftraege(d) -> list[dict]:
+    """Die Auftragsliste einer GET /video-Antwort (nur Objekte)."""
+    return [a for a in (d.get("auftraege") if isinstance(d, dict) else None) or [] if isinstance(a, dict)]
+
+
 def fertige_reels(firma: str) -> set[str]:
     """Dateinamen der fertigen Reels einer Firma (aktuelle und archivierte Auftraege) laut Marketing-API.
     Die Eigentumspruefung vor jedem Teilen (Reels-Seite und auftrag-bote): eine Datei, die hier fehlt, ist kein
@@ -46,7 +51,7 @@ def fertige_reels(firma: str) -> set[str]:
         abfrage = urllib.parse.urlencode({"mandant": firma, "archiv": "true" if archiv else "false",
                                           "limit": str(LISTE_MAX)})
         d = marketing_pult.anfrage("GET", f"/video?{abfrage}")
-        alle += [a for a in (d.get("auftraege") if isinstance(d, dict) else None) or [] if isinstance(a, dict)]
+        alle += auftraege(d)
     return {str(a.get("datei")) for a in alle if a.get("status") == "fertig"}
 
 

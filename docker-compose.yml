@@ -273,8 +273,8 @@ services:
       # Umgebungsdatei und bleibt ueber den Vorgabewert auf seinen Ordnern;
       # jeder weitere Laden MUSS MEDIEN_ORDNER und MEDIEN_ERZEUGT_ORDNER
       # setzen, sonst weist deploy/update.sh ihn ab (ein fehlender Wert fiele
-      # sonst STILL auf den Ordner des Basis-Ladens zurueck). Alle elf Stellen
-      # prueft scripts/tests/test_proxmox_compose.py.
+      # sonst STILL auf den Ordner des Basis-Ladens zurueck). Alle Stellen (15
+      # seit dem auftrag-bote, 10.11.2026) prueft scripts/tests/test_proxmox_compose.py.
       - ${MEDIEN_ORDNER:-./media}:/media:ro
       # media-erzeugt (01.09.2026): der EINZIGE Medienordner, in den das
       # System selbst schreibt — hierhin legt `termin_bestaetigen` die

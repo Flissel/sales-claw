@@ -220,8 +220,7 @@ def eigene_firma() -> str:
     return os.environ.get("MARKETING_MANDANT", "").strip()
 
 
-def _auftraege(d) -> list[dict]:
-    return [a for a in (d.get("auftraege") if isinstance(d, dict) else None) or [] if isinstance(a, dict)]
+_auftraege = reel_teilen.auftraege
 
 
 def routen(ui) -> list:

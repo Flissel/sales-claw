@@ -228,12 +228,13 @@ def test_failed_haelt_offen_und_vermerkt_kanalfehler_einmal(buch):
     _durchgang(buch)
     a = buch.auftraege[aid]
     assert a["stand"] == "wartet_freigabe"
-    assert a["ergebnis"]["kanal_fehler"] == {"discord": "fehlgeschlagen"}   # in Zustellung ist kein Fehler
-    assert [t for _, t in buch.mischungen if "kanal_fehler" in t] == [{"kanal_fehler": {"discord": "fehlgeschlagen"}}]
+    assert a["ergebnis"]["kanal_fehler"] == {"discord": ab.VERSAND_FEHLGESCHLAGEN}   # in Zustellung: noch kein Fehler
+    assert [t for _, t in buch.mischungen if "kanal_fehler" in t] == [
+        {"kanal_fehler": {"discord": ab.VERSAND_FEHLGESCHLAGEN}}]
     _status("youtube", "failed", "YouTube: Kontingent erschoepft")
     _durchgang(buch)
-    assert buch.auftraege[aid]["ergebnis"]["kanal_fehler"] == {"discord": "fehlgeschlagen",
-                                                               "youtube": "fehlgeschlagen"}
+    assert buch.auftraege[aid]["ergebnis"]["kanal_fehler"] == {"discord": ab.VERSAND_FEHLGESCHLAGEN,
+                                                               "youtube": ab.VERSAND_FEHLGESCHLAGEN}
 
 
 def test_erinnerung_nach_48h_einmal(buch):
@@ -253,9 +254,11 @@ def test_kein_kanal_macht_fehler(buch):
     _durchgang(buch)
     assert _entwuerfe() == []
     a = buch.auftraege[nicht_verbunden]
-    assert a["stand"] == "fehler" and a["fehler"].startswith("Kein Kanal nahm den Entwurf an: ")
+    assert a["stand"] == "fehler"
+    assert a["fehler"] == "Kein Kanal nahm den Entwurf an: Telegram-Kanal: Der Kanal ist nicht verbunden."
     b = buch.auftraege[ohne_datei]
-    assert b["stand"] == "fehler" and b["fehler"].startswith("Kein Kanal nahm den Entwurf an: Mastodon: ")
+    assert b["stand"] == "fehler"
+    assert b["fehler"] == "Kein Kanal nahm den Entwurf an: Mastodon: Die Reel-Datei ließ sich nicht anhängen."
 
 
 def test_fremdes_reel_wird_nicht_geteilt(buch, monkeypatch):
@@ -316,3 +319,121 @@ def test_herzschlag_eigener_schluessel(buch, monkeypatch):
     _durchgang(buch, T0 + timedelta(minutes=1))
     h = fe.herzschlag_lesen(jetzt=T0 + timedelta(minutes=1), schluessel=ab.EINSTELLUNG_HERZSCHLAG)
     assert h["fehler"] == "RuntimeError"
+
+
+# --- Fix-Runde 1 ---------------------------------------------------------------------------------------------
+
+def test_abgelehnter_kanal_wird_einmal_vermerkt(buch, caplog):
+    """YouTube lehnt ab (schon ein Beitrag zum Thema), Telegram-Kanal ist nicht verbunden, Mastodon und
+    Discord nehmen an: der Auftrag wartet, die zwei Kanaele stehen je einmal mit Satz in kanal_fehler."""
+    anderes = "vid-11111111-altes-reel.mp4"
+    with open(os.path.join(medien.ERZEUGT_VERZEICHNIS, anderes), "wb") as f:
+        f.write(b"\x00\x00\x00\x18ftypisom" + b"0" * 20)
+    alt = json.loads(server.kanal_post_entwurf("youtube", "Drei Fehler bei der bAV", "Frueher", titel="Frueher",
+                                               medien_dateien=anderes))
+    assert "draft_id" in alt
+    aid = buch.neu(kanaele=("mastodon", "discord", "youtube", "telegram_kanal"))
+    caplog.set_level("WARNING", logger="auftrag-bote")
+    _durchgang(buch)
+    a = buch.auftraege[aid]
+    assert a["stand"] == "wartet_freigabe"
+    assert set(a["ergebnis"]["entwuerfe"]) == {"mastodon", "discord"}
+    assert a["ergebnis"]["kanal_fehler"] == {"youtube": "Zu diesem Thema gibt es dort schon einen Beitrag.",
+                                             "telegram_kanal": ab.NICHT_VERBUNDEN}
+    log = caplog.text
+    assert "youtube" in log and "telegram_kanal" in log and "trotzdem" not in log
+    # Neustart vor dem Standwechsel: kein zweiter Vermerk
+    a["stand"] = "erzeugt"
+    _durchgang(buch)
+    assert len([t for _, t in buch.mischungen if "kanal_fehler" in t]) == 1
+
+
+@pytest.mark.parametrize("grund, satz", [
+    ("Zum Thema 'X' gibt es auf YouTube schon einen Beitrag (Zustand 'pending', vom 10.11.2026). Zwei Beitraege "
+     "zum selben Thema fallen auf. ... ruf erneut auf mit trotzdem=True.",
+     "Zu diesem Thema gibt es dort schon einen Beitrag."),
+    ("Kanal Mastodon ist noch nicht verbunden – es entsteht kein Entwurf. Zugang am PC speichern: kanal-zugang "
+     "speichern mastodon", ab.NICHT_VERBUNDEN),
+    ("Datei 'vid-1.mp4' liegt nicht im Medienordner. medien_liste() zeigt, was verfuegbar ist.",
+     "Die Reel-Datei ließ sich nicht anhängen."),
+    ("Die Datei 'vid-1.mp4' ist fuer den Bot gesperrt — der Schalter ...",
+     "Die Reel-Datei ist in den Medien für den Bot gesperrt."),
+    ("Mastodon: der Text hat 600 Zeichen, erlaubt sind mit Medien höchstens 500",
+     "Text oder Titel passen nicht in die Grenzen des Kanals."),
+    ("etwas ganz anderes", ab.UNBEKANNT_ABGELEHNT),
+])
+def test_ablehnungen_werden_kurze_saetze(grund, satz):
+    assert ab.ablehnung_satz(grund) == satz
+    assert len(satz) <= 120 and "trotzdem" not in satz
+
+
+def test_haengende_zustellung_nach_30_min_einmal(buch):
+    aid = buch.neu()
+    _durchgang(buch)
+    marke = f"in Zustellung seit {(T0 + timedelta(minutes=1)).isoformat()} (dispatcher 1a2b3c4d)"
+    _status("discord", "failed", marke)
+    _durchgang(buch, T0 + timedelta(minutes=20))
+    assert "kanal_fehler" not in buch.auftraege[aid]["ergebnis"]
+    _durchgang(buch, T0 + timedelta(minutes=40))
+    _durchgang(buch, T0 + timedelta(minutes=50))
+    a = buch.auftraege[aid]
+    assert a["stand"] == "wartet_freigabe"
+    assert a["ergebnis"]["kanal_fehler"] == {"discord": ab.VERSAND_HAENGT}
+    assert len([t for _, t in buch.mischungen if "kanal_fehler" in t]) == 1
+
+
+def test_failed_dann_rejected_ohne_gesendet_macht_abgebrochen(buch):
+    aid = buch.neu()
+    _durchgang(buch)
+    _status("mastodon", "rejected")
+    _status("discord", "failed", "Discord: HTTP 500")
+    _durchgang(buch)
+    assert buch.auftraege[aid]["stand"] == "wartet_freigabe"
+    _status("discord", "rejected", "Discord: HTTP 500")
+    _durchgang(buch)
+    assert buch.auftraege[aid]["stand"] == "abgebrochen"
+
+
+def test_verwaister_gesendeter_entwurf_schliesst_den_kanal_ab(buch):
+    """Ein von Hand auf der Reels-Seite angelegter, schon gesendeter Entwurf derselben Datei wird uebernommen:
+    dieselbe Datei ein zweites Mal zu posten waere ein Doppel."""
+    hand = json.loads(server.kanal_post_entwurf("discord", "Von Hand", "Schon draussen", medien_dateien=DATEI))
+    _status("discord", "sent")
+    aid = buch.neu()
+    _durchgang(buch)
+    discord = [e for e in _entwuerfe() if e["channel"] == "discord"]
+    assert len(discord) == 1 and str(discord[0]["id"]) == str(hand["draft_id"])
+    assert str(discord[0]["auftrag"]) == aid
+
+
+def test_doppel_beim_zuordnen_wird_zurueckgenommen(buch, monkeypatch):
+    """Ein zweiter Bote (oder ein Rennen) hat dem Auftrag fuer Discord schon einen Entwurf zugeordnet, waehrend
+    dieser Durchgang seinen anlegt: der eigene verliert am eindeutigen Index und wird sofort zurueckgenommen."""
+    aid = buch.neu()
+    echt = ab._anlegen
+
+    def mit_rennen(info, thema, ergebnis, datei):
+        if info.name == "discord":
+            server._q("insert into drafts (lead_id, channel, recipient, subject, body, thema, auftrag) "
+                      "values (%s, 'discord', 'eigenes-profil', 'Post: anders', 'x', 'anders', %s) returning id",
+                      (server.LINKEDIN_POST_LEAD_ID, aid))
+        return echt(info, thema, ergebnis, datei)
+    monkeypatch.setattr(ab, "_anlegen", mit_rennen)
+    zaehler = _durchgang(buch)
+    discord = server._q("select id, status, auftrag from drafts where channel = 'discord' order by created_at")
+    assert [(d["status"], d["auftrag"] is not None) for d in discord] == [("pending", True), ("rejected", False)]
+    assert buch.auftraege[aid]["ergebnis"]["entwuerfe"]["discord"] == str(discord[0]["id"])
+    assert zaehler["entwuerfe"] == 1 and buch.auftraege[aid]["stand"] == "wartet_freigabe"
+
+
+def test_fremdes_schema_wartet_ohne_durchgang(monkeypatch):
+    """Stufe A: nur VibeMind-Laden. In einem anderen Schema kein Exit (sonst Neustartschleife), sondern warten."""
+    monkeypatch.setattr(server, "SCHEMA", "sales_ivan")
+    monkeypatch.setattr(ab.signal, "signal", lambda *a: None)
+    monkeypatch.setattr(ab, "_logging_einrichten", lambda: None)
+    monkeypatch.setattr(ab, "durchgang", lambda *a, **k: pytest.fail("kein Durchgang"))
+    ab._STOPP.set()                       # wie SIGTERM: das Warten endet sofort
+    try:
+        assert ab.main() == 0
+    finally:
+        ab._STOPP.clear()
