@@ -2100,7 +2100,8 @@ Kontakte samt Verlauf/Bedarf/Verträgen, Posteingang, die Einordnung
 unbekannter Absender und offene Wiedervorlagen — ohne den Chat zu bemühen.
 
 ```powershell
-# Start (Rest des Stacks bleibt unberührt)
+# Start (Rest des Stacks bleibt unberührt). Der Basis-Laden mit Portal-Fenster: bash deploy/sales-ui-neu.sh
+# (ein schlichtes `up -d sales-ui` erzeugt ihn ohne das Netz bewerbung-fenster neu).
 docker compose up -d sales-ui
 # dann im Browser: http://127.0.0.1:8791
 ```
@@ -3297,8 +3298,8 @@ Ausrollen - Reihenfolge, jeder Schritt nur mit Betreiber-OK:
    ein kostenloses Fremdmodell schicken. Dann nicht weiter ausrollen.
 5. Hat `post-anbinden.sh` ein NEUES Schluesselpaar erzeugt (es sagt es), bekommt `sales-ui` den
    oeffentlichen Schluessel erst beim Neuerzeugen:
-   `docker compose up -d --no-deps --force-recreate sales-ui` (andere Laeden mit
-   `--env-file deploy/laeden/<laden>.env`). Ohne das meldet "Postfach hinzufuegen" einen Fehler.
+   `bash deploy/sales-ui-neu.sh` (Basis-Laden; es haelt das Netz bewerbung-fenster) - andere Laeden:
+   `docker compose --env-file deploy/laeden/<laden>.env up -d --no-deps --force-recreate sales-ui`. Ohne das meldet "Postfach hinzufuegen" einen Fehler.
 6. Sitzungskopien aufraeumen einrichten (R17): das Gateway legt je eingeordneter Mail eine
    Sitzungsdatei mit dem Mailinhalt an (`agents/post/sessions/*.jsonl`, ebenso
    `agents/post-pruefer/sessions/` fuer den Pruefer).

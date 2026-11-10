@@ -4,6 +4,7 @@ Der Portal-Container surft auf fremden Seiten; haengte die Vorlage docker-compos
 JEDEN Laden) die sales-ui an dieses Netz, saehen auch zweite Laeden den Container. Deshalb steht
 das Netz in docker-compose.fenster.yml, die nur die Deploy-Skripte fuer den Basis-Laden dazunehmen.
 Rein: liest Dateien und startet bash mit Attrappen, kein Docker, keine DB."""
+import os
 import re
 import shutil
 import subprocess
@@ -99,3 +100,115 @@ def test_bootstrap_und_benutzer_anlegen_nehmen_den_override_nur_fuer_den_basis_l
     assert "docker compose $ENVARG $DATEIEN up -d" in n
     # admin-auftrag-ausfuehren.sh legt nur NEUE (zweite) Laeden an: unveraendert, ohne Fenster.
     assert "fenster" not in _lesen("deploy/admin-auftrag-ausfuehren.sh")
+
+
+# --- SC-M4: ein vorhandenes, NICHT internes Netz wird nicht hingenommen -------------------------------
+
+_FALSCHES_DOCKER = """#!/usr/bin/env bash
+echo "$*" >> "$FAKE_LOG"
+if [ "$1 $2" = "network inspect" ]; then
+  [ "${FAKE_NETZ:-da}" = "fehlt" ] && exit 1
+  [ "$3" = "-f" ] && echo "${FAKE_INTERN-true}"
+fi
+exit 0
+"""
+
+
+def _mit_falschem_docker(tmp_path, skripte: list[str], **env_extra):
+    """Kopiert die Skripte (LF) nach tmp_path/deploy, legt ein falsches `docker` vorn in den PATH und gibt
+    (Prozess, Docker-Aufrufe) zurueck. Kein echtes Docker."""
+    (tmp_path / "deploy").mkdir(exist_ok=True)
+    for rel in skripte:
+        (tmp_path / rel).write_text(_lesen(rel).replace("\r\n", "\n"), encoding="utf-8", newline="\n")
+    (tmp_path / "docker-compose.fenster.yml").write_text("services: {}\n", encoding="utf-8")
+    bin_ = tmp_path / "bin"
+    bin_.mkdir(exist_ok=True)
+    (bin_ / "docker").write_text(_FALSCHES_DOCKER, encoding="utf-8", newline="\n")
+    log = tmp_path / "docker.log"
+    log.write_text("", encoding="utf-8")
+    env = {**os.environ, "PATH": f"{bin_}{os.pathsep}{os.environ['PATH']}", "FAKE_LOG": str(log), **env_extra}
+    return env, log
+
+
+@pytest.mark.skipif(BASH is None, reason="braucht bash")
+@pytest.mark.parametrize("netz,intern,ok", [
+    ("fehlt", "true", True),      # wird angelegt
+    ("da", "true", True),         # intern: nichts zu tun
+    ("da", "false", False),       # vorhanden, aber nicht intern: Fehler
+    ("da", "", False),            # Antwort unlesbar: Fehler
+])
+def test_netz_skript_verlangt_ein_internes_netz(tmp_path, netz, intern, ok):
+    env, log = _mit_falschem_docker(tmp_path, ["deploy/fenster-netz-anlegen.sh"],
+                                    FAKE_NETZ=netz, FAKE_INTERN=intern)
+    r = subprocess.run([BASH, "deploy/fenster-netz-anlegen.sh"], capture_output=True, text=True,
+                       cwd=tmp_path, env=env)
+    aufrufe = log.read_text(encoding="utf-8")
+    assert (r.returncode == 0) is ok, (r.stdout, r.stderr)
+    assert ("network create --internal bewerbung-fenster" in aufrufe) is (netz == "fehlt")
+    if not ok:
+        assert "NICHT intern" in r.stderr and "bewerbung-fenster" in r.stderr
+        assert "network create" not in aufrufe
+    if netz == "da":
+        assert "network inspect -f {{.Internal}} bewerbung-fenster" in aufrufe
+
+
+def test_netz_skript_prueft_internal_im_text():
+    s = _lesen("deploy/fenster-netz-anlegen.sh")
+    assert "docker network inspect -f '{{.Internal}}' bewerbung-fenster" in s and '!= "true"' in s
+    assert "exit 1" in s
+
+
+# --- SC-I2: die Basis-sales-ui wird nie ohne das Netz neu erzeugt ----------------------------------------
+
+def test_sales_ui_neu_ist_der_eine_weg_fuer_die_basis_sales_ui():
+    s = _lesen("deploy/sales-ui-neu.sh")
+    assert s.startswith("#!/usr/bin/env bash") and "set -euo pipefail" in s
+    assert "bash deploy/fenster-netz-anlegen.sh" in s and "[ -f docker-compose.fenster.yml ]" in s
+    assert 'docker compose "${DATEIEN[@]}" up -d --no-deps --force-recreate sales-ui' in s
+    assert "DATEIEN=(-f docker-compose.yml)" in s and "DATEIEN+=(-f docker-compose.fenster.yml)" in s
+    assert "env-file" not in s.replace("zweite Laeden behalten ihren Befehl mit --env-file", "")
+
+
+@pytest.mark.skipif(BASH is None, reason="braucht bash")
+@pytest.mark.parametrize("netz_ok,datei,erwartet", [
+    (True, True, "compose -f docker-compose.yml -f docker-compose.fenster.yml up -d --no-deps --force-recreate sales-ui"),
+    (False, True, "compose -f docker-compose.yml up -d --no-deps --force-recreate sales-ui"),
+    (True, False, "compose -f docker-compose.yml up -d --no-deps --force-recreate sales-ui"),
+])
+def test_sales_ui_neu_nimmt_den_override_nur_mit_netz_und_datei(tmp_path, netz_ok, datei, erwartet):
+    env, log = _mit_falschem_docker(tmp_path, ["deploy/sales-ui-neu.sh"])
+    (tmp_path / "deploy" / "fenster-netz-anlegen.sh").write_text(
+        f"#!/usr/bin/env bash\nexit {0 if netz_ok else 1}\n", encoding="utf-8", newline="\n")
+    if not datei:
+        (tmp_path / "docker-compose.fenster.yml").unlink()
+    r = subprocess.run([BASH, "deploy/sales-ui-neu.sh"], capture_output=True, text=True, cwd=tmp_path, env=env)
+    assert r.returncode == 0, r.stderr             # ein Fehlschlag des Netz-Skripts ist nicht tragisch
+    assert log.read_text(encoding="utf-8").strip() == erwartet
+    assert ("HINWEIS" in r.stderr) is not (netz_ok and datei)
+
+
+@pytest.mark.skipif(BASH is None, reason="braucht bash")
+def test_sales_ui_neu_ohne_netz_skript_laeuft_ohne_override(tmp_path):
+    env, log = _mit_falschem_docker(tmp_path, ["deploy/sales-ui-neu.sh"])      # fenster-netz-anlegen.sh fehlt
+    r = subprocess.run([BASH, "deploy/sales-ui-neu.sh"], capture_output=True, text=True, cwd=tmp_path, env=env)
+    assert r.returncode == 0, r.stderr
+    assert "fenster.yml" not in log.read_text(encoding="utf-8")
+
+
+def test_hinweis_und_doku_verweisen_auf_das_skript():
+    p = _lesen("deploy/post-anbinden.sh")
+    assert 'if [ "$PRAEFIX" = "sales" ]; then' in p and 'echo "  bash deploy/sales-ui-neu.sh"' in p
+    assert 'echo "  docker compose up -d --no-deps --force-recreate sales-ui"' not in p
+    # andere Laeden behalten ihren Befehl
+    assert "--env-file deploy/laeden/$PRAEFIX.env up -d --no-deps --force-recreate sales-ui" in p
+    b = _lesen("docs/04_BETRIEB_MINIPC.md")
+    assert "bash deploy/sales-ui-neu.sh" in b
+    assert "docker compose up -d sales-ui'" not in b                     # Zeile ~336: ohne Skript-Weg
+    karte = b[b.index("## Rückfahrkarte"):b.index("## Sicherung")]
+    assert "docker compose build sales-ui && bash deploy/sales-ui-neu.sh" in karte
+    flach = " ".join(karte.split())
+    assert "ohne `docker-compose.fenster.yml` und ohne dieses Skript" in flach and "alte schlichte Befehl" in flach
+    r = _lesen("docs/03_RUNBOOK.md")
+    assert r.count("bash deploy/sales-ui-neu.sh") >= 2
+    assert "`docker compose up -d --no-deps --force-recreate sales-ui` (andere Laeden" not in r
+    assert "Ist unklar, ob sie raus ist, vermerkst du" in _lesen("docs/05_BEDIENUNG.md")
