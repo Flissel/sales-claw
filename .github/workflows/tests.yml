@@ -12,6 +12,8 @@
 #     db/freigabe-eingang.sql gehoeren nicht zum Schema-Loop (Ruling R1) und
 #     werden deshalb getrennt auf sales_test eingespielt — ein neues Skript
 #     dieser Art muss hier dazu, sonst fehlen seinen Tests die Tabellen.
+#     db/compliance-test.sql legt die Verbotsliste der Testlaeufe an; die
+#     Produktionsliste `compliance` gehoert dem Marketing-Space.
 #     Die Suite laeuft im Image, aber auf dem eingehaengten Checkout: viele
 #     Vertragstests lesen Dateien ausserhalb von sales-mcp/ (db/, deploy/,
 #     config/, docs/, docker-compose.yml), die das Image nicht enthaelt.
@@ -47,6 +49,9 @@ jobs:
             -c "create schema if not exists extensions; create extension if not exists vector; create extension if not exists pgcrypto with schema extensions; create extension if not exists pg_trgm with schema extensions;"
           psql "postgresql://postgres:ci@localhost:5432/postgres" -v ON_ERROR_STOP=1 \
             -f db/provision.sql
+          # Verbotsliste der Testlaeufe (sperrliste.py: sales_test -> compliance_test).
+          psql "postgresql://postgres:ci@localhost:5432/postgres" -v ON_ERROR_STOP=1 \
+            -f db/compliance-test.sql
           # Kalender verbinden (Spec 2026-11-08): nicht im Schema-Loop von
           # provision.sql, darum eigens fuer das Testschema.
           psql "postgresql://postgres:ci@localhost:5432/postgres" -v ON_ERROR_STOP=1 \
