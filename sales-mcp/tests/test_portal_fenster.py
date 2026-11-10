@@ -248,7 +248,7 @@ def test_upstream_bekommt_adresse_unterprotokoll_und_schluessel_im_kopf(
         _zu(ws, upstream)
     url, kw = upstream.aufrufe[0]
     assert url == "ws://bewerbung-portal:6080/websockify"
-    assert kw["subprotocols"] == ["binary"] and kw["max_size"] is None and kw["open_timeout"] == 5
+    assert kw["subprotocols"] == ["binary"] and kw["max_size"] == 16 * 2**20 and kw["open_timeout"] == 5
     assert kw["close_timeout"] == 2
     erwartet = "Basic " + base64.b64encode(f"portal:{SCHLUESSEL}".encode()).decode()
     koepfe = [tuple(k) for k in kw["extra_headers"]]
@@ -381,6 +381,50 @@ def test_sitzung_endet_mitten_in_der_sitzung(
         _bis_geschlossen(ws, upstream)
 
 
+def test_logout_beendet_das_offene_fenster(anmeldung, eingerichtet, zentrale, upstream):
+    # SC-M3: das Handshake-Cookie gilt bis zu 12 h; ohne Trennen lebt das Fenster nach dem Abmelden weiter.
+    with TestClient(ui.app).websocket_connect(WS_PFAD, headers=_ws_kopf()) as ws:
+        assert ws.receive_bytes() == b"xyz"
+        r = _http().post("/logout", data={"csrf": ui.CSRF_TOKEN}, follow_redirects=False)
+        assert r.status_code == 303 and r.headers["location"] == "/login"
+        m = _empfange(ws)
+        assert m["type"] == "websocket.close" and m["code"] == 1000, m
+        assert _ENDEN[-1].wait(5), "Handler wurde nicht fertig"
+    assert upstream.upstreams[0].geschlossen is not None
+
+
+def test_trennen_ohne_offenes_fenster_ist_harmlos():
+    pf._AKTUELL = None
+    pf.trennen()
+
+
+@pytest.mark.parametrize("schema", ["kunde", "sales_kunde"])
+def test_fenster_ws_nur_im_basis_laden(anmeldung, eingerichtet, zentrale, upstream, monkeypatch, schema):
+    # SC-M9: ein zweiter Laden (anderes Schema) bekommt das Relay nie, auch nicht als `freigeben`.
+    cookie = _ws_kopf()
+    monkeypatch.setattr(server, "SCHEMA", schema)
+    with pytest.raises(WebSocketDisconnect) as e:
+        with TestClient(ui.app).websocket_connect(WS_PFAD, headers=cookie):
+            pass
+    assert e.value.code == 1008
+    assert upstream.aufrufe == [] and zentrale.aufrufe == []
+
+
+class _Ws:
+    def __init__(self, cookie):
+        self.scope = {"path": WS_PFAD, "headers": [(b"cookie", cookie.encode())]}
+
+
+@pytest.mark.parametrize("geheimnis", ["", GEHEIMNIS])
+def test_sitzung_gilt_nie_ohne_sitzungsgeheimnis(monkeypatch, geheimnis):
+    # SC-I1 (Tiefenverteidigung): mit leerem Geheimnis rechnet das HMAC mit leerem Schluessel - wer den
+    # Namen kennt, baut ein "gueltiges" Cookie. Das Relay pruefte es nicht noch einmal.
+    monkeypatch.setattr(ui, "UI_SESSION_SECRET", geheimnis)
+    monkeypatch.setattr(ui, "_benutzer_lesen", lambda n: {"name": n, "rolle": "freigeben"})
+    cookie = f"{ui.SITZUNG_COOKIE}=" + ui._sitzung_bauen("felix", time.time() + 3600)
+    assert asyncio.run(pf._sitzung_gilt(_Ws(cookie), ui)) is bool(geheimnis)
+
+
 def test_websockets_logger_bleibt_ueber_debug():
     # Auf DEBUG druckt websockets die Kopfzeilen (Authorization) ins Log.
     assert logging.getLogger("websockets").level == logging.INFO
@@ -428,7 +472,7 @@ def test_novnc_dateien_mit_eigener_csp_und_ohne_ausbruch(anmeldung, eingerichtet
     assert r.status_code == 200 and "RFB" in r.text
     assert r.headers["content-security-policy"] == pf.CSP_NOVNC
     assert r.headers["x-frame-options"] == "SAMEORIGIN"
-    assert r.headers["cache-control"] == "private, max-age=3600"
+    assert r.headers["cache-control"] == "private, no-cache"   # SC-M6: nie alte und neue Module mischen
     assert r.headers["content-type"].startswith("text/javascript")
     assert c.get(PFAD + "/novnc/core/stil.css").headers["content-type"].startswith("text/css")
     for boes in ("..%2Fui.py", "..%2F..%2Fui.py", "..%2Fgeheim.txt", "%2e%2e%2fgeheim.txt",
@@ -454,6 +498,15 @@ def test_novnc_nur_fuer_rolle_freigeben(anmeldung, eingerichtet):
     c = _http("lesen")
     for p in ("/novnc/core/rfb.js", "/seite", "/fenster.js"):
         assert c.get(PFAD + p).status_code == 403, p
+
+
+def test_ohne_sitzungsgeheimnis_sind_seite_und_dateien_404(eingerichtet):
+    # SC-M7: im Uebergangszustand (kein UI_SESSION_SECRET) ist HTTP offen - die Fenster-Dateien aber nicht,
+    # wie die Routen von ui_freigabe_bewerbung.
+    assert ui.UI_SESSION_SECRET == ""
+    c = TestClient(ui.app, headers={"host": HOST})
+    for p in ("/novnc/core/rfb.js", "/seite", "/fenster.js"):
+        assert c.get(PFAD + p, follow_redirects=False).status_code == 404, p
 
 
 def test_ohne_anmeldung_keine_dateien(anmeldung, eingerichtet):

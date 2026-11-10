@@ -96,3 +96,14 @@ def test_websocket_mit_freigeben_und_eigenem_origin_kommt_an(echo_route, monkeyp
     c = TestClient(ui.app)
     with c.websocket_connect(PFAD, headers=_kopf(cookie=_cookie("freigeben"))) as ws:
         assert ws.receive_text() == "hallo"
+
+
+def test_websocket_mit_gefaelschtem_cookie_ohne_sitzungsgeheimnis_wird_geschlossen(echo_route, monkeypatch):
+    # SC-I1: HTTP ist ohne Geheimnis absichtlich offen; diese Wache haelt WebSockets zu. Mit leerem
+    # Schluessel baut jeder, der den Namen eines aktiven `freigeben`-Benutzers kennt, ein gueltiges Cookie.
+    assert ui.UI_SESSION_SECRET == ""
+    monkeypatch.setattr(ui, "_benutzer_lesen",
+                        lambda name: {"name": name, "rolle": "freigeben"})
+    cookie = f"{ui.SITZUNG_COOKIE}=" + ui._sitzung_bauen("felix", time.time() + 3600)
+    assert ui._sitzung_pruefen(cookie.split("=", 1)[1]) == "felix"      # das Cookie waere "gueltig"
+    _geschlossen(_kopf(cookie=cookie))

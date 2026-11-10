@@ -34,6 +34,7 @@ import bewerbung_pult
 LOG = logging.getLogger("sales-ui")
 # Auf DEBUG schreibt websockets die Kopfzeilen des Handshakes ins Log - darunter Authorization
 # (der Fenster-Schluessel). Die Stufe wird hier festgenagelt, nie darunter.
+# ACHTUNG: gilt nur ab dem Import - ein spaeteres DEBUG-basicConfig oder setLevel(DEBUG) loggte den Authorization-Kopf.
 logging.getLogger("websockets").setLevel(logging.INFO)
 
 FENSTER_WS = os.environ.get("BEWERBUNG_FENSTER_WS", "").strip().rstrip("/")
@@ -87,6 +88,13 @@ class _Verbindung:
             pass
 
 
+def trennen() -> None:
+    """Beendet das gerade offene Fenster (Abmelden): das Cookie des Handshakes gilt sonst bis zu 12 h weiter."""
+    aktuell = _AKTUELL
+    if aktuell is not None:
+        aktuell.beenden()
+
+
 def eingerichtet() -> bool:
     # Wie bewerbung_pult.eingerichtet: ein Schluessel mit Steuerzeichen, Leerraum oder Nicht-ASCII ist als
     # HTTP-Kopf nicht sendbar - dann lieber "nicht eingerichtet" als ein Versuch.
@@ -118,14 +126,20 @@ def _typ(datei: Path) -> str:
     return _TYPEN.get(datei.suffix.lower()) or mimetypes.guess_type(datei.name)[0] or "application/octet-stream"
 
 
-async def seite(request) -> Response:
-    if not eingerichtet():
+def _darf(request, ui) -> bool:
+    """Wie ui_freigabe_bewerbung: nur die Rolle `freigeben` im Basis-Laden. Ohne Anmeldung (kein
+    UI_SESSION_SECRET, Uebergangszustand) gibt es keine Rolle - dann auch keine Dateien."""
+    return bool(ui._pfad_erlaubt(str(request.scope.get("benutzer_rolle") or ""), PFAD))
+
+
+async def seite(request, ui) -> Response:
+    if not eingerichtet() or not _darf(request, ui):
         return _nicht_da()
     return Response(SEITE, media_type="text/html; charset=utf-8", headers=_kopfe("no-store"))
 
 
-async def fenster_js(request) -> Response:
-    if not eingerichtet():
+async def fenster_js(request, ui) -> Response:
+    if not eingerichtet() or not _darf(request, ui):
         return _nicht_da()
     try:
         inhalt = await run_in_threadpool(JS_DATEI.read_bytes)
@@ -145,8 +159,8 @@ def _aufloesen(pfad: str) -> Path | None:
         return None
 
 
-async def novnc_datei(request) -> Response:
-    if not eingerichtet():
+async def novnc_datei(request, ui) -> Response:
+    if not eingerichtet() or not _darf(request, ui):
         return _nicht_da()
     datei = _aufloesen(request.path_params.get("pfad", ""))
     if datei is None:
@@ -155,7 +169,7 @@ async def novnc_datei(request) -> Response:
         inhalt = await run_in_threadpool(datei.read_bytes)
     except OSError:
         return _nicht_da()
-    return Response(inhalt, media_type=_typ(datei), headers=_kopfe("private, max-age=3600"))
+    return Response(inhalt, media_type=_typ(datei), headers=_kopfe("private, no-cache"))
 
 
 async def _schliessen(ws, code: int) -> None:
@@ -182,6 +196,8 @@ async def _sitzung_gilt(websocket, ui) -> bool:
         return False
 
     def pruefen() -> bool:
+        if not ui.UI_SESSION_SECRET:   # leerer Schluessel: jedes Cookie waere "gueltig" (Tiefenverteidigung)
+            return False
         name = ui._sitzung_pruefen(ui._cookie_wert(websocket.scope, ui.SITZUNG_COOKIE))
         benutzer = ui._benutzer_lesen(name) if name else None
         return bool(benutzer and benutzer["rolle"] == "freigeben"
@@ -223,7 +239,7 @@ async def weiterleitung(websocket, ui=None) -> None:
     upstream = None
     try:
         upstream = await websockets.connect(
-            FENSTER_WS + "/websockify", subprotocols=["binary"], max_size=None, open_timeout=5,
+            FENSTER_WS + "/websockify", subprotocols=["binary"], max_size=16 * 2**20, open_timeout=5,
             close_timeout=2, extra_headers=[("Authorization", f"Basic {anmeldung}")])
     except Exception as e:   # nur der Typ ins Log: Text koennte Adresse und Zugangsdaten tragen
         LOG.warning("portal-fenster: Container nicht erreichbar (%s)", type(e).__name__)
@@ -275,9 +291,18 @@ def routen(ui) -> list:
         # `weiterleitung` wird beim Aufruf nachgeschlagen (Tests umhuellen sie).
         await weiterleitung(websocket, ui)
 
+    async def http_seite(request) -> Response:
+        return await seite(request, ui)
+
+    async def http_js(request) -> Response:
+        return await fenster_js(request, ui)
+
+    async def http_novnc(request) -> Response:
+        return await novnc_datei(request, ui)
+
     return [
-        Route(f"{PFAD}/seite", seite),
-        Route(f"{PFAD}/fenster.js", fenster_js),
-        Route(f"{PFAD}/novnc/{{pfad:path}}", novnc_datei),
+        Route(f"{PFAD}/seite", http_seite),
+        Route(f"{PFAD}/fenster.js", http_js),
+        Route(f"{PFAD}/novnc/{{pfad:path}}", http_novnc),
         WebSocketRoute(f"{PFAD}/ws", ws_weiterleitung),
     ]

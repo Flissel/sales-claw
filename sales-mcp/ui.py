@@ -9947,6 +9947,8 @@ async def logout(request):
         return _fehlerseite(
             400, "Ungültige Anfrage",
             "Die Anfrage trägt keine gültige Marke dieser Oberfläche.")
+    # Ein offenes Portal-Fenster haelt das Handshake-Cookie (bis 12 h) - mit dem Abmelden endet es.
+    ui_portal_fenster.trennen()
     antwort = RedirectResponse("/login", status_code=303)
     antwort.delete_cookie(SITZUNG_COOKIE, path="/")
     return antwort
