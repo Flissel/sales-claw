@@ -10407,7 +10407,7 @@ def auftraege_melden() -> str:
     Betreiber: das Werkzeug merkt sich beim Aufruf, was es geliefert hat, ein zweiter Aufruf liefert
     es nicht noch einmal. Leere Liste = nichts zu melden, dann schweigen."""
     laden = os.environ.get("LADEN_PRAEFIX", "").strip() or "sales"
-    return _json({"meldungen": auftrag_meldung.melden(_q, laden, datetime.now(timezone.utc))})
+    return _json({"meldungen": auftrag_meldung.melden_gesperrt(pool, _q, laden, SCHEMA)})
 
 
 WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,

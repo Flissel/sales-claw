@@ -69,6 +69,40 @@ def test_fertig_meldet_links_einmal(monkeypatch):
     assert melden() == []
 
 
+def test_links_bleiben_unveraendert(monkeypatch):
+    mastodon = "https://mastodon.social/@vibemind/113456789012345678"
+    youtube = "https://www.youtube.com/shorts/dQw4w9WgXcQ?feature=share&t=1234567890123"
+    Speicher(monkeypatch, auftrag("fertig", ergebnis={"beitraege": {"mastodon": mastodon, "youtube": youtube}}))
+    text = melden()[0]
+    assert f"mastodon: {mastodon}; youtube: {youtube}" in text
+    assert "[Adresse]" not in text and "[Nummer]" not in text
+
+
+def test_viele_kanaele_lassen_ganze_eintraege_weg_nie_einen_link_kuerzen(monkeypatch):
+    lang = "https://example.org/" + "a" * 500
+    beitraege = {f"k{i}": f"{lang}{i}" for i in range(10)}
+    Speicher(monkeypatch, auftrag("fertig", ergebnis={"beitraege": beitraege}))
+    text = melden()[0]
+    assert f"k7: {lang}7" in text and "k8:" not in text and text.endswith("… und 2 weitere")
+
+
+def test_thema_mit_nummer_und_adresse_wird_gesaeubert(monkeypatch):
+    z = auftrag("abgelaufen", eingabe={"thema": "Rueckruf +49 170 1234567 oder anna@example.com", "kanaele": []})
+    Speicher(monkeypatch, z)
+    text = melden()[0]
+    assert "1234567" not in text and "anna@example.com" not in text and "Rueckruf" in text
+
+
+def test_nichts_ging_raus_nur_wenn_nichts_gesendet_wurde(monkeypatch):
+    Speicher(monkeypatch, auftrag("abgebrochen"))
+    assert melden()[0].endswith("wurde verworfen, nichts ging raus.")
+    Speicher(monkeypatch, auftrag("abgebrochen", ergebnis={"beitraege": {"mastodon": "https://m.example/1"}}))
+    assert "nichts ging raus" not in melden()[0]
+    Speicher(monkeypatch, auftrag("abgebrochen", ergebnis={"kanal_fehler": {"discord": "Der Versand ist fehlgeschlagen."}}))
+    text = melden()[0]
+    assert "nichts ging raus" not in text and "discord ging nicht raus" in text
+
+
 def test_abgelaufen_wird_genau_einmal_gemeldet(monkeypatch):
     Speicher(monkeypatch, auftrag("abgelaufen"))
     assert melden() == [f"Reel ‚{THEMA}‘ (Nr. {AID[:8]}) ist nicht rechtzeitig fertig geworden (PC aus?)."]
@@ -165,3 +199,32 @@ def test_cron_postfach_check_ruft_auftraege_melden_auf_antworten_pruefen_nicht()
     assert "auftraege_melden()" in pf["payload"]["message"]
     alt = json.loads((cron / "antworten-pruefen.json").read_text(encoding="utf-8"))
     assert "auftraege_melden" not in alt["payload"]["message"]
+
+
+def test_zweiter_aufruf_bei_gehaltener_sperre_liefert_nichts(monkeypatch):
+    """Echte Advisory-Sperre in sales_test: solange eine andere Sitzung sie haelt, kommt nichts."""
+    Speicher(monkeypatch, auftrag("abgebrochen"))
+    schluessel = f"{server.SCHEMA}:{auftrag_meldung.SPERRE}"
+    with server.pool.connection() as fremd:
+        fremd.execute("select pg_advisory_lock(hashtext(%s))", (schluessel,))
+        try:
+            assert json.loads(server.auftraege_melden()) == {"meldungen": []}
+        finally:
+            fremd.execute("select pg_advisory_unlock(hashtext(%s))", (schluessel,))
+    assert len(json.loads(server.auftraege_melden())["meldungen"]) == 1      # Sperre war frei und wurde nicht verbraucht
+    assert json.loads(server.auftraege_melden()) == {"meldungen": []}
+
+
+def test_sperre_wird_auch_bei_fehler_freigegeben(monkeypatch):
+    Speicher(monkeypatch, auftrag("abgebrochen"))
+
+    def kaputt(q, laden, jetzt=None):
+        raise RuntimeError("x")
+    monkeypatch.setattr(auftrag_meldung, "melden", kaputt)
+    with pytest.raises(RuntimeError):
+        auftrag_meldung.melden_gesperrt(server.pool, None, "sales", server.SCHEMA)
+    monkeypatch.undo()
+    schluessel = f"{server.SCHEMA}:{auftrag_meldung.SPERRE}"
+    with server.pool.connection() as c:
+        assert c.execute("select pg_try_advisory_lock(hashtext(%s)) as ok", (schluessel,)).fetchone()["ok"]
+        c.execute("select pg_advisory_unlock(hashtext(%s))", (schluessel,))

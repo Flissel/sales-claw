@@ -10,6 +10,13 @@ Markierung:
   wirkt nur bis zum Endstand; darum gibt es Kanalfehler- und Erinnerungszeilen nur, solange der Auftrag in
   `wartet_freigabe` steht. Im Endstand nennt die eine Schlussmeldung noch nicht gemeldete, gescheiterte Kanaele.
 Kein Personenbezug im Text: nur Thema, Kurznummer, Kanalnamen, Links und die gespeicherten kurzen Saetze.
+Freitext (Thema, fehler, gespeicherte Saetze) wird von Mailadressen und Telefonnummern gesaeubert; Links und
+Kanalnamen NIE (Mastodon-Links tragen ein `@`, Status-Ids sind lange Zahlen).
+
+Gleichzeitige Aufrufe: `melden_gesperrt` haelt eine Advisory-Sperre auf Sitzungsebene; wer sie nicht bekommt,
+liefert nichts. Das schuetzt die Flags in `ergebnis` (ergebnis_mischen ist kein Compare-and-set); die Endstand-Zeilen
+sichert zusaetzlich auftrag.sales_gemeldet (liefert nur True, wenn der Stand wirklich neu gesetzt wurde).
+`jetzt` steht nur wegen der Plan-Signatur in `faellige`/`melden` und wird nicht gebraucht.
 """
 from __future__ import annotations
 
@@ -23,12 +30,16 @@ log = logging.getLogger(__name__)
 ENDSTAENDE = ("fertig", "abgebrochen", "fehler", "abgelaufen")
 WARTET = "wartet_freigabe"
 
-_MAIL = re.compile(r"\S+@\S+")
+_MAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 _NUMMER = re.compile(r"\+?\d[\d ()/-]{6,}\d")
 
 
+MAX_LINKS = 8          # mehr Kanaele als das: ganze Eintraege weglassen, nie einen Link kuerzen
+SPERRE = "auftraege_melden"
+
+
 def _rein(text: str, grenze: int) -> str:
-    """Kurztext ohne Mailadressen und Telefonnummern, einzeilig, gekappt."""
+    """Freitext ohne Mailadressen und Telefonnummern, einzeilig, gekappt."""
     text = _NUMMER.sub("[Nummer]", _MAIL.sub("[Adresse]", " ".join(str(text or "").split())))
     return text[:grenze]
 
@@ -57,10 +68,14 @@ def _offene_kanalfehler(ergebnis: dict, gemeldet: list[str]) -> dict[str, str]:
 def _endtext(a: dict, ergebnis: dict, offen: dict[str, str]) -> str:
     kopf, stand = _kopf(a), a["stand"]
     if stand == "fertig":
-        links = "; ".join(f"{k}: {_rein(v, 300)}" for k, v in _dict(ergebnis.get("beitraege")).items())
-        text = f"{kopf} ist online: {links}." if links else f"{kopf} ist online."
+        eintraege = [f"{k}: {v}" for k, v in _dict(ergebnis.get("beitraege")).items()]
+        if len(eintraege) > MAX_LINKS:
+            eintraege = eintraege[:MAX_LINKS] + [f"… und {len(eintraege) - MAX_LINKS} weitere"]
+        links = "; ".join(eintraege)
+        text = f"{kopf} ist online: {links}" if links else f"{kopf} ist online."
     elif stand == "abgebrochen":
-        text = f"{kopf} wurde verworfen, nichts ging raus."
+        gesendet = bool(_dict(ergebnis.get("beitraege")))
+        text = f"{kopf} wurde verworfen." if gesendet or offen else f"{kopf} wurde verworfen, nichts ging raus."
     elif stand == "fehler":
         grund = _rein(a.get("fehler") or "", 300).rstrip(" .")
         text = f"{kopf} ist gescheitert: {grund}." if grund else f"{kopf} ist gescheitert."
@@ -109,3 +124,18 @@ def melden(q, laden: str, jetzt=None) -> list[str]:
         if ok:
             texte.append(text)
     return texte
+
+
+def melden_gesperrt(pool, q, laden: str, schema: str = "", jetzt=None) -> list[str]:
+    """`melden` unter einer Advisory-Sperre (Sitzungsebene, fester Schluessel je Schema).
+
+    Bekommt ein zweiter Aufruf die Sperre nicht, liefert er nichts. Die Sperre wird immer wieder freigegeben."""
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("select pg_try_advisory_lock(hashtext(%s)) as ok", (f"{schema}:{SPERRE}",))
+            if not cur.fetchone()["ok"]:
+                return []
+            try:
+                return melden(q, laden, jetzt)
+            finally:
+                cur.execute("select pg_advisory_unlock(hashtext(%s))", (f"{schema}:{SPERRE}",))
