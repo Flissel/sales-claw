@@ -6,6 +6,7 @@ dieselben Werkzeuge wie "Auf Kanaelen teilen" (server.kanal_post_entwurf / post_
 """
 import json
 import os
+import urllib.parse
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -16,8 +17,10 @@ os.environ["SALES_DB_SCHEMA"] = "sales_test"
 import auftrag_bote as ab  # noqa: E402
 import freigabe_eingang as fe  # noqa: E402
 import kanaele  # noqa: E402
+import marketing_pult  # noqa: E402
 import medien  # noqa: E402
 import server  # noqa: E402
+from pult_http import PultFehler  # noqa: E402
 
 T0 = datetime(2026, 11, 10, 12, 0, tzinfo=timezone.utc)
 DATEI = "vid-0123abcd-drei-fehler.mp4"
@@ -41,6 +44,19 @@ class Buch:
         self.jetzt = T0
         self.ablaufen_aufrufe = 0
         self.mischungen: list[tuple[str, dict]] = []
+        # Marketing-API (GET /video): fertige Reels je Firma, aktuell und im Archiv
+        self.reels = {FIRMA: [{"datei": DATEI, "status": "fertig", "archiviert": False},
+                              {"datei": "vid-99999999-in-arbeit.mp4", "status": "in_arbeit", "archiviert": False}],
+                      "andere-firma": [{"datei": "vid-77777777-fremd.mp4", "status": "fertig", "archiviert": True}]}
+        self.pult_fehler = None
+
+    def pult(self, methode, pfad, daten=None, roh=False, zeitlimit=None):
+        if self.pult_fehler:
+            raise self.pult_fehler
+        assert methode == "GET" and pfad.startswith("/video?"), pfad
+        abfrage = urllib.parse.parse_qs(pfad.split("?", 1)[1])
+        archiv = abfrage["archiv"] == ["true"]
+        return {"auftraege": [a for a in self.reels.get(abfrage["mandant"][0], []) if a["archiviert"] == archiv]}
 
     def neu(self, kanaele=("mastodon", "discord"), stand="erzeugt", **ergebnis) -> str:
         aid = str(uuid.uuid4())
@@ -105,6 +121,7 @@ def buch(monkeypatch):
         f.write(b"\x00\x00\x00\x18ftypisom" + b"0" * 20)
     b = Buch()
     monkeypatch.setattr(ab, "auftrag_buch", b)
+    monkeypatch.setattr(marketing_pult, "anfrage", b.pult)
     return b
 
 
@@ -250,6 +267,35 @@ def test_fremdes_reel_wird_nicht_geteilt(buch, monkeypatch):
     assert _entwuerfe() == []
     assert buch.auftraege[fremd]["stand"] == "fehler"
     assert buch.auftraege[kaputt]["stand"] == "fehler"
+
+
+@pytest.mark.parametrize("datei", ["vid-77777777-fremd.mp4",        # fertiges Reel einer anderen Firma
+                                   "vid-99999999-in-arbeit.mp4",    # eigenes, aber nicht fertig
+                                   "vid-55555555-unbekannt.mp4"])   # Marketing kennt die Datei nicht
+def test_datei_ist_kein_fertiges_reel_der_firma(buch, datei):
+    """Dieselbe Eigentumspruefung wie die Reels-Seite (reel_teilen.fertige_reels): die Datei liegt im
+    Medienordner und hat die Reel-Form, gehoert laut Marketing-API aber nicht zu den fertigen Reels der Firma."""
+    with open(os.path.join(medien.ERZEUGT_VERZEICHNIS, datei), "wb") as f:
+        f.write(b"\x00\x00\x00\x18ftypisom" + b"0" * 20)
+    aid = buch.neu(datei=datei)
+    _durchgang(buch)
+    assert _entwuerfe() == []
+    a = buch.auftraege[aid]
+    assert a["stand"] == "fehler" and a["fehler"] == "Das Reel gehört nicht zur Firma dieses Ladens."
+
+
+def test_marketing_api_weg_laesst_auftrag_stehen(buch):
+    """Ohne Antwort der Marketing-API ist nichts geprueft: kein Entwurf, der Auftrag bleibt `erzeugt`, der
+    Herzschlag meldet den Fehler; der naechste Durchgang holt es nach."""
+    aid = buch.neu()
+    buch.pult_fehler = PultFehler("nicht_erreichbar", "weg")
+    _durchgang(buch)
+    assert _entwuerfe() == [] and buch.auftraege[aid]["stand"] == "erzeugt"
+    h = fe.herzschlag_lesen(jetzt=T0, schluessel=ab.EINSTELLUNG_HERZSCHLAG)
+    assert h["fehler"] == "Auftrag.PultFehler"
+    buch.pult_fehler = None
+    _durchgang(buch)
+    assert len(_entwuerfe()) == 2 and buch.auftraege[aid]["stand"] == "wartet_freigabe"
 
 
 def test_herzschlag_eigener_schluessel(buch, monkeypatch):

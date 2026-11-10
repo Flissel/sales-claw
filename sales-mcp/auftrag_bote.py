@@ -11,7 +11,8 @@ Je Durchgang (Takt 60 s):
 Hoechstens ein Entwurf je Auftrag und Kanal, auch ueber Neustarts: ein Kanal mit einem Entwurf dieses Auftrags
 wird uebersprungen, und ein Entwurf, den ein frueherer Durchgang angelegt, aber vor dem Zuordnen verloren hat
 (gleiche Reel-Datei, gleicher Kanal, noch ohne Auftrag), wird uebernommen statt neu angelegt. Dazu sichert der
-eindeutige Index drafts_auftrag_kanal_uidx (db/provision.sql). Kein Sprachmodell, kein Netz ausser der Datenbank.
+eindeutige Index drafts_auftrag_kanal_uidx (db/provision.sql). Vor dem ersten Entwurf dieselbe Eigentumspruefung
+wie auf der Reels-Seite (reel_teilen.fertige_reels ueber die Marketing-API). Kein Sprachmodell.
 """
 import json
 import logging
@@ -66,12 +67,16 @@ def _zuordnen(q, aid: str, draft_id: str) -> bool:
 
 
 def _eigenes_reel(a: dict, datei: str) -> str | None:
-    """Wie nicht_eigenes_reel auf der Reels-Seite: None, wenn das Reel der Firma dieses Ladens gehoert."""
+    """Wie nicht_eigenes_reel auf der Reels-Seite: None, wenn `datei` ein fertiges Reel der Firma dieses
+    Ladens ist (laut Marketing-API, reel_teilen.fertige_reels), sonst der Grund. Ist die Marketing-API
+    nicht erreichbar, wirft das PultFehler: der Auftrag bleibt `erzeugt` und der naechste Durchgang prueft neu."""
     firma = os.environ.get("MARKETING_MANDANT", "").strip()
     if not firma or a.get("mandant") != firma:
         return "Das Reel gehört nicht zur Firma dieses Ladens."
     if not (medien.reeldatei(datei) and datei.endswith(".mp4")):
         return "Das Ergebnis nennt keine gültige Reel-Datei."
+    if datei not in reel_teilen.fertige_reels(firma):
+        return "Das Reel gehört nicht zur Firma dieses Ladens."
     return None
 
 

@@ -6,9 +6,13 @@ Herausgeloest aus ui_reels.kanaele_teilen, damit die Oberflaeche und der Auftrag
 from __future__ import annotations
 
 import os
+import urllib.parse
 
 import kanaele
+import marketing_pult
 from kanaele import KanalInfo
+
+LISTE_MAX = 200    # Hoechstwert der Marketing-API: so findet sich auch ein aelteres Reel
 
 # LinkedIn ist kein Kanal von sales-kanaele (eigener Dienst, post_entwurf_erstellen), hat aber
 # dieselben Grenzen fuer die Fassung: Beitrag bis 3000 Zeichen, ein Video, kein Titel.
@@ -31,6 +35,19 @@ def kuerzen(text: str, grenze: int) -> str:
     if leer > 0:
         stueck = stueck[:leer]
     return stueck.rstrip() + "…"
+
+
+def fertige_reels(firma: str) -> set[str]:
+    """Dateinamen der fertigen Reels einer Firma (aktuelle und archivierte Auftraege) laut Marketing-API.
+    Die Eigentumspruefung vor jedem Teilen (Reels-Seite und auftrag-bote): eine Datei, die hier fehlt, ist kein
+    fertiges Reel dieser Firma. Wirft marketing_pult.PultFehler (dann wird nichts geteilt)."""
+    alle: list[dict] = []
+    for archiv in (False, True):
+        abfrage = urllib.parse.urlencode({"mandant": firma, "archiv": "true" if archiv else "false",
+                                          "limit": str(LISTE_MAX)})
+        d = marketing_pult.anfrage("GET", f"/video?{abfrage}")
+        alle += [a for a in (d.get("auftraege") if isinstance(d, dict) else None) or [] if isinstance(a, dict)]
+    return {str(a.get("datei")) for a in alle if a.get("status") == "fertig"}
 
 
 def ziele(q, nur: list[str] | None = None, art: str = "video",

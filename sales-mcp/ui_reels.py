@@ -68,7 +68,7 @@ LINK_MAX = 300                     # "Auf Kanaelen teilen": optionaler Link, nur
 _LINK = re.compile(r"^https://[^\s<>\"']+$")
 WUNSCH_MAX = 500
 AUSWAHL_MAX = 8
-DETAIL_LIMIT = 200                 # Hoechstwert der API: so findet die Detailseite auch aeltere Reels
+DETAIL_LIMIT = reel_teilen.LISTE_MAX   # Hoechstwert der API: so findet die Detailseite auch aeltere Reels
 MATERIAL_ZEITLIMIT_S = 12          # die API wartet bis zu ~6 s auf Laura
 REFRESH_S = 30
 SEITE = "/marketing/reels"
@@ -869,10 +869,9 @@ def routen(ui) -> list:
             m, _ = await marketing_mandant.firma(request)
             if m != firma:
                 return ui._fehlerseite(422, "Nicht möglich", "Dieses Reel gehört nicht zur Firma dieses Ladens.")
-            alle = await liste(firma, False, DETAIL_LIMIT) + await liste(firma, True, DETAIL_LIMIT)
+            eigene = await run_in_threadpool(reel_teilen.fertige_reels, firma)   # dieselbe Pruefung im auftrag-bote
         except marketing_pult.PultFehler as f:
             return fehler(f)
-        eigene = {str(a.get("datei")) for a in alle if a.get("status") == "fertig"}
         if datei not in eigene:
             return ui._fehlerseite(422, "Nicht möglich", "Dieses Reel gehört nicht zur Firma dieses Ladens.")
         return None
