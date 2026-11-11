@@ -275,9 +275,8 @@ Löschantrag oder Privat-Vermerk, schickt der Taktgeber **keinen Bot**. Die Akte
 
 ## 6. Plattformen und was der Spike gezeigt hat
 
-Spike vom 09.–10.11. auf der VM (Vexa v0.12.28, Wegwerf-Aufbau). Er bleibt stehen, bis die offenen
-Plattform-Tests durch sind, und wird danach komplett abgebaut. Der echte Betrieb wird neu und sauber
-aufgesetzt.
+Spike vom 09.–11.11. auf der VM (Vexa v0.12.28, Wegwerf-Aufbau). Am 11.11. komplett abgebaut. Der
+echte Betrieb wird neu und sauber aufgesetzt.
 
 | Prüfung | Ergebnis |
 |---|---|
