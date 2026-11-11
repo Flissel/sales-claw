@@ -2364,7 +2364,9 @@ def _termin_einladen(lead_id: str, datum: str, uhrzeit: str,
     # hier, weil termin_link/termin_akte server selbst importieren (R4).
     import termin_link
     hinweiszeile = (f"{EINLADUNG_MITSCHRIFT_HINWEIS}\n\n"
-                    if termin_link.erkennen(ort_kurz) else "")
+                    if termin_link.erkennen(ort) else "")
+    # `ort` (nicht ort_kurz): die Kuerzung auf TERMIN_TEXT_MAXLAENGE darf
+    # einen Link am Ende nicht vor der Erkennung abschneiden.
     text = (f"Hallo {name},\n\n"
             f"ich schlage folgenden Termin vor:\n"
             f"{WOCHENTAGE[beginn.weekday()]}, {tag.strftime('%d.%m.%Y')} "
@@ -8883,6 +8885,8 @@ def _mitschriften_abraeumen(lead_id: str) -> None:
         _q("update termin_akten set briefing_md = null, briefing_stand = null, "
            "briefing_mit_ki = null, briefing_am = null, geaendert_am = now() "
            "where uid = %s returning uid", (uid,))
+    # Sicherheitsnetz nach dem Abraeumen je Akte (Wortlaut des Briefs): fiele
+    # eine Akte durch akten_eines_leads, geht die Mitschrift hier trotzdem.
     _q("delete from termin_mitschriften where uid in (select uid from "
        "termin_teilnehmer where lead_id = %s) returning id", (lead_id,))
     _q("update termin_teilnehmer set lead_id = null, grund = 'gesperrt' "
@@ -8896,8 +8900,12 @@ def loeschantrag_vermerken(lead_id: str, quelle: str,
     weitere Verarbeitung dieses Kontakts.
 
     Der Vermerk archiviert den Kontakt, blockiert neue Entwuerfe und den
-    Auto-Betrieb und verhindert stilles Zurueckholen. Geloescht wird hier
-    NICHTS: die physische Loeschung ist ein Menschen-Schritt mit
+    Auto-Betrieb und verhindert stilles Zurueckholen. ZUERST raeumt er die
+    Mitschriften ab (Meeting-Mittelpunkt: Mitschrift, Auswertung, Briefing
+    aller Termine des Kontakts, laufende Bots werden beendet); scheitert das,
+    kommt ein Fehler und der Kontakt wird NICHT vermerkt — der Aufruf kann
+    wiederholt werden. Der Kontakt selbst wird hier NICHT geloescht: die
+    physische Loeschung ist ein Menschen-Schritt mit
     Vier-Augen (docs/06_DSGVO.md, Frist 30 Tage). Verlangt ein Kontakt im
     Chat die Loeschung, vermerke sie MIT Quelle und Wortlaut und sag es
     dem Betreiber sofort.
@@ -8909,6 +8917,19 @@ def loeschantrag_vermerken(lead_id: str, quelle: str,
     leads = _q("select enrichment, name from leads where id = %s", (lead_id,))
     if not leads:
         return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
+    # Mitschriften VOR dem Vermerk abraeumen: bricht das ab, bleibt der
+    # Kontakt unvermerkt und der Aufruf wiederholbar, statt ihn als
+    # "geloescht" zu markieren, waehrend Mitschrift und Briefing bleiben.
+    # Auch bei bereits vorhandenem Antrag (idempotent), damit kein Fruehausstieg
+    # ein abgebrochenes Abraeumen offen laesst.
+    try:
+        _mitschriften_abraeumen(lead_id)
+    except Exception as e:
+        _LOG.error("Loeschantrag: Mitschriften nicht abgeraeumt (%s)",
+                   type(e).__name__)
+        return _json({"fehler": (
+            "Mitschriften nicht abgeraeumt – Antrag erneut ausfuehren. "
+            "Der Kontakt ist noch NICHT vermerkt.")})
     if _loeschantrag(leads[0]["enrichment"]):
         return _json({"fehler": "Ein Loeschantrag liegt bereits vor."})
     vermerk = {"am": _jetzt(), "quelle": quelle.strip(),
@@ -8925,7 +8946,6 @@ def loeschantrag_vermerken(lead_id: str, quelle: str,
        "(%s, 'loeschantrag', %s) returning id", (lead_id, _json(vermerk)))
     # F1: Loeschbegehren gilt fuer beide Systeme — gemeinsame Verbotsliste.
     _lead_sperren(lead_id, "sales:loeschantrag", f"Loeschantrag via {quelle.strip()}")
-    _mitschriften_abraeumen(lead_id)
     return _json({"lead_id": lead_id, "kontakt": leads[0]["name"],
                   "vermerkt_am": vermerk["am"], "hinweis": (
                       "Verarbeitung gestoppt, Kontakt archiviert. Physische "

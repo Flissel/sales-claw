@@ -292,3 +292,70 @@ def test_auskunft_enthaelt_mitschrift(akten_leer):
     assert "Fremder Satz" not in text and "Termin a2" not in text
     assert "chef@firma.de" not in text
     assert antwort["termine"] == 1
+
+
+def test_zwei_leads_in_einer_akte_antrag_von_a(akten_leer, monkeypatch):
+    a = _lead()
+    b = _lead("Bernd Beispiel")
+    _akte("z1", a, status="laeuft", vexa_id=9, briefing="Briefing beide")
+    server._q("insert into termin_teilnehmer (uid, adresse, name, rolle, lead_id) "
+              "values ('z1', 'bernd@example.org', 'Bernd', 'gast', %s) returning uid",
+              (b,))
+    _mitschrift("z1")
+    monkeypatch.setattr(termin_akte.vexa, "bot_stoppen", lambda p, n: None)
+    geloescht = []
+    monkeypatch.setattr(termin_akte.vexa, "meeting_loeschen",
+                        lambda i: geloescht.append(i))
+    server.loeschantrag_vermerken(a, "E-Mail")
+    assert geloescht == [9]
+    assert server._q("select 1 from termin_mitschriften") == []
+    z = server._q("select status, briefing_md from termin_akten")[0]
+    assert z["status"] == "ohne_aufnahme" and z["briefing_md"] is None
+    zb = server._q("select lead_id, grund from termin_teilnehmer "
+                   "where adresse = 'bernd@example.org'")[0]
+    assert str(zb["lead_id"]) == b and zb["grund"] is None
+    za = server._q("select lead_id, grund from termin_teilnehmer "
+                   "where adresse = 'dora@example.org'")[0]
+    assert za["lead_id"] is None and za["grund"] == "gesperrt"
+
+
+def test_abraeumen_vor_dem_vermerk_zweiter_aufruf_klappt(akten_leer, monkeypatch):
+    lead = _lead()
+    _akte("r1", lead, briefing="Briefing")
+    _mitschrift("r1")
+    echt = termin_akte.mitschrift_entfernen
+    zaehler = {"n": 0}
+
+    def einmal_kaputt(uid):
+        zaehler["n"] += 1
+        if zaehler["n"] == 1:
+            raise RuntimeError("DB weg")
+        return echt(uid)
+    monkeypatch.setattr(termin_akte, "mitschrift_entfernen", einmal_kaputt)
+    erst = json.loads(server.loeschantrag_vermerken(lead, "E-Mail"))
+    assert "Mitschriften nicht abgeraeumt" in erst["fehler"]
+    assert _enrichment(lead).get(server.LOESCH_SCHLUESSEL) is None
+    assert server._q("select 1 from activities where lead_id = %s "
+                     "and type = 'loeschantrag'", (lead,)) == []
+    assert len(server._q("select 1 from termin_mitschriften")) == 1
+    zweit = json.loads(server.loeschantrag_vermerken(lead, "E-Mail"))
+    assert "fehler" not in zweit
+    assert server._q("select 1 from termin_mitschriften") == []
+    assert server._q("select briefing_md from termin_akten")[0]["briefing_md"] is None
+    assert _enrichment(lead).get(server.LOESCH_SCHLUESSEL)
+
+
+def test_nichts_davon_im_log(akten_leer, caplog):
+    import logging
+    lead = _lead()
+    _akte("g1", lead, briefing="Briefing GEHEIMBRIEFING")
+    server._q("insert into termin_teilnehmer (uid, adresse, name, rolle) values "
+              "('g1', 'sentinel@geheim.example', 'Sentinel Sprecher', 'gast') "
+              "returning uid")
+    _mitschrift("g1", text="SENTINELSATZ vertraulich")
+    with caplog.at_level(logging.DEBUG):
+        server.kontakt_auskunft(lead)
+        server.loeschantrag_vermerken(lead, "E-Mail")
+    for geheim in ("SENTINELSATZ", "sentinel@geheim.example",
+                   "Sentinel Sprecher", "GEHEIMBRIEFING", "dora@example.org"):
+        assert geheim not in caplog.text, geheim

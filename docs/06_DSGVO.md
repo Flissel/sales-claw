@@ -19,7 +19,9 @@ Eine Person will wissen, was über sie gespeichert ist.
 
 - **Mitschriften von Videotreffen** (Meeting-Mittelpunkt, seit 11.11.2026) stehen im
   Abschnitt `Termine` der Auskunft: je Termin des Kontakts Titel, Beginn, Status,
-  Mitschrift-Segmente und Auswertung. Adressen anderer Teilnehmer stehen nicht darin.
+  Mitschrift-Segmente und Auswertung. Das ist der volle Wortlaut, auch mit Äußerungen
+  und Sprechernamen anderer Teilnehmer: der Betreiber prüft und schwärzt Fremdes vor der
+  Weitergabe (Art. 15 Abs. 4). Adressen anderer Teilnehmer stehen nicht darin.
 
 - **Terminkarten** (seit 24.09.2026) stehen in der Auskunft als Aktivität `terminkarte`
   mit Dateiname, eingesetzten Werten und Fassung der Vorlage. Die Datei selbst liegt in
@@ -83,14 +85,19 @@ Checkliste für Transkripte:
 - [ ] **Wo:** Mitschrift und Auswertung auf unseren eigenen Servern (Vexa auf der VM,
       Datenbank des Ladens). Kundentext geht nur an `OLLAMA_URL`, nie an ein
       Cloud-Modell. Die Einladung mit Videolink trägt einen Hinweis auf die Mitschrift.
-- [ ] **Löschweg:** `loeschantrag_vermerken` beendet einen laufenden Bot (Status
+- [ ] **Löschweg:** `loeschantrag_vermerken` räumt zuerst ab (scheitert das, kommt ein
+      Fehler, der Kontakt wird nicht vermerkt, der Aufruf ist wiederholbar), dann der
+      Vermerk. Es beendet einen laufenden Bot (Status
       `ohne_aufnahme`), löscht die Mitschriften **aller** Termine, an denen der Kontakt
       teilnahm, lehnt einen offenen Zusammenfassungs-Entwurf ab, leert das Briefing dieser
       Akten und löst den Kontakt aus der Teilnehmerliste (`grund = 'gesperrt'`). Ein noch
       beim Transkriptionsdienst liegendes Meeting löscht der Taktgeber nach.
       Sicherungen laufen wie oben aus.
 - [ ] **Auskunft:** `kontakt_auskunft` enthält Abschnitt `Termine` mit Mitschrift und
-      Auswertung (ohne Adressen anderer Teilnehmer).
+      Auswertung. Die Mitschrift ist vollständig und enthält damit auch Äußerungen
+      und Sprechernamen **anderer Teilnehmer**; Adressen anderer Teilnehmer stehen
+      nicht darin. Der Betreiber prüft den Export und schwärzt Fremdes vor der
+      Weitergabe (Art. 15 Abs. 4: Rechte Dritter).
 
 ## Werbe-Einwilligung (§ 7 UWG, seit 31.08.2026)
 
