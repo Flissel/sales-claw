@@ -177,6 +177,12 @@ function istKundentermin(id: string, uid: unknown): boolean {
   return Boolean(uid) && (id.startsWith('kunde:') || id.startsWith('kalender:'));
 }
 
+/** Link auf die Termin-Seite: nur fuer Kundentermine und nie fuer die Rolle
+ *  'kalender' (die sieht wie bei "Zum Kontakt" nur den Kalender). */
+export function zeigtAktenLink(id: string, uid: unknown, rolle: string): boolean {
+  return rolle !== 'kalender' && istKundentermin(id, uid);
+}
+
 /** Nur ansehen: verbundene Kalender, Handy-Termine und alles fuer Rollen ohne Schreibrecht. */
 export function detailsOeffnen(ev: EventApi, ctx: Kontext): void {
   const p = ev.extendedProps;
@@ -204,7 +210,7 @@ export function detailsOeffnen(ev: EventApi, ctx: Kontext): void {
       ? el('p', { class: 'vk-hinweis' }, 'Ohne Kontakt – hier nicht bearbeitbar.') : null,
     p.lead_id && ctx.rolle !== 'kalender'
       ? el('p', {}, el('a', { href: `/kontakte/${encodeURIComponent(String(p.lead_id))}` }, 'Zum Kontakt')) : null,
-    istKundentermin(ev.id, p.uid)
+    zeigtAktenLink(ev.id, p.uid, ctx.rolle)
       ? el('p', {}, el('a', { href: aktenLink(String(p.uid)), class: 'vk-link' }, 'Termin-Seite')) : null,
   );
   const zu = el('button', { type: 'button' }, 'Schließen');
