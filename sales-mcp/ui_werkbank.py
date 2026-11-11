@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import re
 import stat
+import time
 import urllib.parse
 
 from starlette.concurrency import run_in_threadpool
@@ -36,8 +37,11 @@ NR_MAX = 999
 _AID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _KENNUNG = re.compile(r"^wb-[a-z2-7]{10}$")
 _NR = re.compile(r"^[0-9]{1,3}$")
-_RANGE = re.compile(r"^bytes=([0-9]*)-([0-9]*)$")
+_RANGE = re.compile(r"^bytes=([0-9]{0,15})-([0-9]{0,15})$")     # Ziffern begrenzt: nie ein ValueError in int()
 # Alle Staende des Auftragsbuchs (Migration 098): die Datei-Route und die Videoseite suchen den Auftrag darin.
+_DATEI_STAENDE = ["in_arbeit", "werkbank", "erzeugt", "wartet_freigabe", "fertig"]    # hier kann ein Video Dateien haben
+_AUFTRAG_ZEIT = 60.0               # so lange gilt "Praefix -> Auftrag" in der Datei-Route (Seeking = viele Anfragen)
+_auftrag_cache: dict[str, tuple[float, str]] = {}
 _STAENDE = ["offen", "in_arbeit", "erzeugt", "wartet_freigabe", "fertig", "abgebrochen", "fehler", "abgelaufen",
             "werkbank"]
 
@@ -52,6 +56,9 @@ BILDART = {"slide": "Slide mit Stimme aus dem Off", "avatar_gross": "Avatar im g
 VORLAGE = {"titel": "Titel", "stichpunkte": "Stichpunkte", "zahl": "Zahl", "zitat": "Zitat",
            "vergleich": "Vergleich", "agenda": "Agenda"}
 UEBERGANG = {"schnitt": "Schnitt", "blende": "Blende"}
+AUFTRAG_STAND = {"offen": "bestellt", "in_arbeit": "wird vorbereitet", "werkbank": "in der Werkbank",
+                 "erzeugt": "Video ist fertig", "wartet_freigabe": "wartet auf deine Freigabe", "fertig": "fertig",
+                 "abgebrochen": "abgebrochen", "fehler": "fehlgeschlagen", "abgelaufen": "abgelaufen"}
 HINWEISE = {"ueberholt": ("hinweis", "Diese Fassung ist überholt."),
             "entschieden": ("hinweis", "Schon entschieden – Seite neu geladen."),
             "gespeichert": ("meta", "Dein Wunsch ist gespeichert."),
@@ -181,8 +188,9 @@ def routen(ui) -> list:
             raise marketing_pult.PultFehler("unbekannt", "Antwort ohne Werk")
         return d
 
-    async def buch_zeilen() -> list[dict]:
-        zeilen = await run_in_threadpool(auftrag_buch.eigene, ui.server._q, laden(), _STAENDE)
+    async def buch_zeilen(staende: list[str] | None = None) -> list[dict]:
+        # sales_eigene filtert nur nach Staenden (nicht nach art): die Videos sucht der Code selbst heraus
+        zeilen = await run_in_threadpool(auftrag_buch.eigene, ui.server._q, laden(), staende or _STAENDE)
         return [z for z in zeilen if isinstance(z, dict) and z.get("art") == "video"]
 
     # --- Sprung aus der Nachricht ----------------------------------------------------------
@@ -209,6 +217,37 @@ def routen(ui) -> list:
         if d.get("tor") != "gliederung" and isinstance(nr, int) and not isinstance(nr, bool) and 0 < nr <= NR_MAX:
             return RedirectResponse(seite_url(aid, str(nr)), status_code=303)
         return RedirectResponse(seite_url(aid, kennung=kennung), status_code=303)
+
+    # --- Liste der Video-Auftraege ---------------------------------------------------------
+
+    @ui._gesichert_seite
+    async def liste_seite(request):
+        firma = ui_reels.eigene_firma()
+        if not firma:
+            return keine_firma()
+        try:
+            zeilen = await buch_zeilen()
+        except Exception:                                   # noqa: BLE001 - nur der Satz, nie der Text
+            return ui._fehlerseite(503, "Auftragsbuch nicht erreichbar", "Bitte gleich noch einmal versuchen.")
+        eigene = [z for z in zeilen if z.get("mandant") == firma and _AID.fullmatch(str(z.get("id") or ""))]
+        eigene.sort(key=lambda z: str(z.get("angelegt") or ""), reverse=True)     # neueste zuerst
+        karten = []
+        for z in eigene:
+            eingabe = z.get("eingabe") if isinstance(z.get("eingabe"), dict) else {}
+            thema = str(eingabe.get("thema") or eingabe.get("titel") or "").strip() or "Video ohne Titel"
+            erg = z.get("ergebnis") if isinstance(z.get("ergebnis"), dict) else {}
+            wb = erg.get("werkbank") if isinstance(erg.get("werkbank"), dict) else {}
+            wartet = wb.get("wartet")
+            warten = (f' <span class="chip bereich">{wartet} warten auf dich</span>'
+                      if isinstance(wartet, int) and not isinstance(wartet, bool) and wartet > 0 else "")
+            stand = str(z.get("stand") or "")
+            karten.append(f'<a href="{e(seite_url(str(z["id"])))}"><b>{e(thema)}</b> '
+                          f'<span class="meta">{e(AUFTRAG_STAND.get(stand, stand))}</span>{warten}</a>')
+        inhalt = (f'<div class="wb-szenen">{"".join(karten)}</div>' if karten else
+                  '<p class="meta">Noch kein langes Video bestellt. Schreib dem Salesman: „Video zu …“ und '
+                  'nenn das Thema.</p>')
+        return ui._seite("Lange Videos", _STIL + f'<div class="wb"><p><a href="/marketing/reels">Alle Reels</a></p>'
+                         f'{inhalt}</div>')
 
     # --- Uebersicht -------------------------------------------------------------------------
 
@@ -272,13 +311,16 @@ def routen(ui) -> list:
         except marketing_pult.PultFehler as f:
             return fehler(f)
         werk = d["werk"]
+        # Die API nennt die lebende Gliederungs-Kennung (null = keine); fehlt der Schluessel (aeltere API), gilt ?k=
+        kennung = d.get("gliederung_kennung") if "gliederung_kennung" in d else request.query_params.get("k", "")
+        kennung = kennung if isinstance(kennung, str) else ""
         szenen = [s for s in liste(werk.get("szenen")) if isinstance(s, dict)]
         fertig = sum(1 for s in szenen if s.get("stand") == "fertig")
         warten = sum(1 for s in szenen if s.get("stand") in WARTET)
         teile = [hinweis_html(request),
                  f'<p>{len(szenen)} Szenen, {fertig} fertig, {warten} warten auf dich.</p>',
                  gliederung_html(werk),
-                 wunschfeld_gliederung(aid, request.query_params.get("k", ""), werk)]
+                 wunschfeld_gliederung(aid, kennung, werk)]
         if szenen:
             zeilen = []
             for s in szenen:
@@ -422,8 +464,8 @@ def routen(ui) -> list:
         if not firma:
             return keine_firma()
         try:
-            await werk_lesen(firma, aid)                    # die Firma kennt den Auftrag, sonst 404
-            zeilen = await buch_zeilen()
+            werk = (await werk_lesen(firma, aid))["werk"]   # die Firma kennt den Auftrag, sonst 404
+            zeilen = await buch_zeilen(_DATEI_STAENDE)
         except marketing_pult.PultFehler as f:
             return fehler(f)
         except Exception:                                   # noqa: BLE001 - nur der Satz, nie der Text
@@ -438,11 +480,14 @@ def routen(ui) -> list:
         groesse = (f'{erg["bytes"] / 1_000_000:.0f} MB' if isinstance(erg.get("bytes"), (int, float))
                    and not isinstance(erg.get("bytes"), bool) and erg["bytes"] > 0 else "")
         angaben = " · ".join(t for t in (minuten(erg.get("dauer_s")) if erg.get("dauer_s") else "", groesse) if t)
+        veraltet = werk.get("video_veraltet") is True
+        laden_knopf = ("" if veraltet else f'<a class="knopf primaer" href="{datei_url(datei, True)}">Herunterladen</a>')
         teile = [zurueck,
+                 '<p class="hinweis">Eine Szene wurde wieder geöffnet – dieses Video wird neu gebaut.</p>'
+                 if veraltet else "",
                  f'<video controls preload="metadata" src="{datei_url(datei)}"></video>',
                  f'<p class="meta">{e(angaben)}</p>' if angaben else "",
-                 f'<div class="aktionen"><a class="knopf primaer" href="{datei_url(datei, True)}">Herunterladen</a>'
-                 '<a class="knopf" href="/freigaben">Zu den Freigaben</a></div>',
+                 f'<div class="aktionen">{laden_knopf}<a class="knopf" href="/freigaben">Zu den Freigaben</a></div>',
                  '<p class="hinweis">Dieses Video ist mit KI erstellt (Bilder, Stimme und Schnitt). '
                  'Gib es erst frei, wenn du es dir angesehen hast.</p>',
                  kopierfeld("titel", "Titel", str(erg.get("titel") or "")),
@@ -489,16 +534,32 @@ def routen(ui) -> list:
     def zu_lang():
         return ui._fehlerseite(422, "Nicht möglich", f"Der Wunsch darf höchstens {WUNSCH_MAX} Zeichen haben.")
 
-    async def senden(request, aid: str, nr: str, pfad: str, daten: dict, erfolg: str):
-        """Pult-Route aufrufen; eine Ablehnung (404/409/422) heisst: schon entschieden, Seite neu laden."""
+    def schon_entschieden(aid: str, nr: str, wunsch: str, kennung: str):
+        """Die API hat abgelehnt (409, oder 200 mit ok:false). Ohne Wunsch: zurueck zur Seite mit dem Hinweis.
+        Mit Wunsch: kein Redirect, damit der getippte Text nicht verloren geht - er steht zum Kopieren da."""
+        ziel = seite_url(aid, nr or None, "entschieden", None if nr else kennung or None)
+        if not wunsch:
+            return RedirectResponse(ziel, status_code=303)
+        rumpf = (_STIL + '<div class="wb"><p class="hinweis">Schon entschieden – Seite neu geladen. Dein Wunsch ist '
+                 'nicht gespeichert; hier steht er zum Kopieren.</p>'
+                 f'<textarea readonly rows="6">{e(wunsch)}</textarea>'
+                 f'<p><a class="knopf primaer" href="{e(ziel)}">Seite neu laden</a></p></div>')
+        return ui._seite("Schon entschieden", rumpf, status=409)
+
+    async def senden(request, aid: str, nr: str, pfad: str, daten: dict, erfolg: str, kennung: str = ""):
+        """Pult-Route aufrufen. Eine Ablehnung heisst: schon entschieden. Sie kommt als 404/409/422 (PultFehler)
+        oder, bei /wunsch, als 200 mit {"ok": false} - beides wird gleich behandelt."""
         daten = {**daten, "mandant": ui_reels.eigene_firma(), "von": (ui._ui_akteur(request) or "betreiber-ui")[:60]}
+        wunsch = str(daten.get("wunsch") or "")
         try:
-            await api("POST", pfad, daten)
+            antwort = await api("POST", pfad, daten)
         except marketing_pult.PultFehler as f:
             if f.art != "abgelehnt":
                 return fehler(f)
-            return RedirectResponse(seite_url(aid, nr or None, "entschieden"), status_code=303)
-        return RedirectResponse(seite_url(aid, nr or None, erfolg), status_code=303)
+            return schon_entschieden(aid, nr, wunsch, kennung)
+        if isinstance(antwort, dict) and antwort.get("ok") is False:
+            return schon_entschieden(aid, nr, wunsch, kennung)
+        return RedirectResponse(seite_url(aid, nr or None, erfolg, None if nr else kennung or None), status_code=303)
 
     @ui._gesichert_seite
     async def wunsch_speichern(request):
@@ -512,7 +573,7 @@ def routen(ui) -> list:
             return zu_lang()
         if not wunsch:
             return ui._fehlerseite(422, "Nicht möglich", "Schreib bitte erst einen Wunsch auf.")
-        return await senden(request, aid, nr, f"/werkbank/v/{kennung}/wunsch", {"wunsch": wunsch}, "gespeichert")
+        return await senden(request, aid, nr, f"/werkbank/v/{kennung}/wunsch", {"wunsch": wunsch}, "gespeichert", kennung)
 
     @ui._gesichert_seite
     async def urteil(request):
@@ -525,7 +586,7 @@ def routen(ui) -> list:
             return nicht_gefunden()
         if wunsch is None:
             return zu_lang()
-        return await senden(request, aid, nr, f"/werkbank/v/{kennung}/urteil", {"urteil": art, "wunsch": wunsch}, art)
+        return await senden(request, aid, nr, f"/werkbank/v/{kennung}/urteil", {"urteil": art, "wunsch": wunsch}, art, kennung)
 
     @ui._gesichert_seite
     async def nochmal(request):
@@ -584,11 +645,18 @@ def routen(ui) -> list:
         if not firma:
             return nicht_gefunden()
         try:
-            zeilen = await buch_zeilen()
-            aid = next((str(z["id"]) for z in zeilen
-                        if str(z.get("id") or "").startswith(name[3:11]) and z.get("mandant") == firma), "")
-            if not _AID.fullmatch(aid):
-                return nicht_gefunden()
+            schluessel = f"{firma}/{name[3:11]}"
+            jetzt = time.monotonic()
+            treffer = _auftrag_cache.get(schluessel)
+            if treffer and jetzt - treffer[0] < _AUFTRAG_ZEIT:
+                aid = treffer[1]
+            else:
+                zeilen = await buch_zeilen(_DATEI_STAENDE)
+                aid = next((str(z["id"]) for z in zeilen
+                            if str(z.get("id") or "").startswith(name[3:11]) and z.get("mandant") == firma), "")
+                if not _AID.fullmatch(aid):
+                    return nicht_gefunden()
+                _auftrag_cache[schluessel] = (jetzt, aid)
             await werk_lesen(firma, aid)                    # die Marketing-API kennt den Auftrag dieser Firma
         except marketing_pult.PultFehler as f:
             return nicht_gefunden() if f.art == "abgelehnt" else fehler(f)
@@ -617,6 +685,7 @@ def routen(ui) -> list:
                                  media_type="video/mp4")
 
     return [
+        Route(BASIS, liste_seite),
         Route(f"{BASIS}/kopieren.js", kopier_skript),
         Route(f"{BASIS}/v/{{kennung}}", sprung),
         Route(f"{BASIS}/datei/{{name}}", datei),

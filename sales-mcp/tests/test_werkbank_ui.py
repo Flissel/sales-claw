@@ -57,13 +57,15 @@ class Falsch:
         self.kennung = K
         self.vorschlag = {"auftrag": AID, "tor": "clip", "nr": 3, "mandant": "vibemind", "aktuell": True}
         self.werk = _werk()
+        self.gliederung_kennung = "fehlt"      # "fehlt" = Schluessel fehlt in der Antwort (aeltere API)
+        self.ok_false = False                  # POST antwortet 200 mit {"ok": false}
 
     def anfrage(self, methode, pfad, daten=None, roh=False, zeitlimit=None):
         self.aufrufe.append((methode, pfad, daten))
         if methode == "POST":
             if self.fehler:
                 raise self.fehler
-            return {"ok": True}
+            return {"ok": not self.ok_false}
         if pfad.startswith(f"/werkbank/{AID_FREMD}"):
             raise marketing_pult.PultFehler("abgelehnt", "Unbekannter Auftrag")
         if pfad.startswith(f"/werkbank/v/{K}"):
@@ -73,7 +75,10 @@ class Falsch:
         if pfad.startswith(f"/werkbank/{AID}/szene/"):
             return {"szene": self.szene, "kennung": self.kennung}
         if pfad.startswith(f"/werkbank/{AID}?"):
-            return {"werk": self.werk, "stand": "werkbank", "werkbank": {}}
+            antwort = {"werk": self.werk, "stand": "werkbank", "werkbank": {}}
+            if self.gliederung_kennung != "fehlt":
+                antwort["gliederung_kennung"] = self.gliederung_kennung
+            return antwort
         raise AssertionError(pfad)
 
     def posts(self):
@@ -87,8 +92,10 @@ def pult(monkeypatch, tmp_path):
     monkeypatch.setattr(marketing_pult, "eingerichtet", lambda: True)
     monkeypatch.setenv("MARKETING_MANDANT", "vibemind")
     monkeypatch.setattr(medien, "ERZEUGT_VERZEICHNIS", str(tmp_path))
+    ui_werkbank._auftrag_cache.clear()
     f.buch = [
-        {"id": AID, "art": "video", "mandant": "vibemind", "stand": "werkbank", "ergebnis": {
+        {"id": AID, "art": "video", "mandant": "vibemind", "stand": "werkbank", "angelegt": "2026-11-11T09:00:00",
+         "eingabe": {"thema": "Altersvorsorge <kurz>"}, "ergebnis": {"werkbank": {"wartet": 2},
             "datei": NAME_VIDEO, "bytes": 90_000_000, "dauer_s": 245, "titel": "Altersvorsorge <einfach>",
             "beschreibung": "Drei Fehler und wie du sie vermeidest.",
             "zeitmarken": [{"zeit": "0:00", "name": "Einstieg"}, {"zeit": "0:42", "name": "Problem"}],
@@ -96,7 +103,11 @@ def pult(monkeypatch, tmp_path):
         {"id": AID_FREMD, "art": "video", "mandant": "fin2gether", "stand": "werkbank", "ergebnis": {}},
         {"id": "55556666-4444-4444-4444-444444444444", "art": "reel", "mandant": "vibemind", "stand": "fertig",
          "ergebnis": {}}]
-    monkeypatch.setattr(auftrag_buch, "eigene", lambda q, laden, staende: list(f.buch))
+    def eigene(q, laden, staende):
+        f.buch_staende.append(list(staende))
+        return list(f.buch)
+    f.buch_staende = []
+    monkeypatch.setattr(auftrag_buch, "eigene", eigene)
     return f
 
 
@@ -368,7 +379,7 @@ def test_urteil_passt(klient, pult):
 
 def test_urteil_der_gliederung_geht_zur_uebersicht(klient, pult):
     r = post(klient, "/aktion/werkbank-urteil", {"aid": AID, "kennung": K, "urteil": "passt"})
-    assert r.headers["location"] == f"/marketing/werkbank/{AID}?hinweis=passt"
+    assert r.headers["location"] == f"/marketing/werkbank/{AID}?hinweis=passt&k={K}"
 
 
 def test_urteil_ohne_csrf_403(klient, pult):
@@ -548,3 +559,142 @@ def test_videoseite_boese_dateiname_wird_nicht_eingebettet(klient, pult):
     html = rumpf(get(klient, f"/marketing/werkbank/{AID}/video"))
     assert "<script>x" not in html and "<video" not in html
 
+
+
+# --- Review-Runde: ok:false, Gliederungs-Kennung, Liste, Kleinkram ----------------------
+
+def test_wunsch_ok_false_zeigt_hinweis_und_behaelt_den_text(klient, pult):
+    pult.ok_false = True
+    r = post(klient, "/aktion/werkbank-wunsch", {"aid": AID, "nr": "3", "kennung": K, "wunsch": "mehr <Zahlen>"})
+    assert r.status_code == 409
+    html = rumpf(r)
+    assert "Schon entschieden – Seite neu geladen" in html and "Dein Wunsch ist gespeichert" not in html
+    assert "mehr &lt;Zahlen&gt;" in html and "<Zahlen>" not in html
+    assert f'href="/marketing/werkbank/{AID}/szene/3?hinweis=entschieden"' in html
+
+
+def test_wunsch_abgelehnt_per_fehler_behaelt_den_text_auch(klient, pult):
+    pult.fehler = marketing_pult.PultFehler("abgelehnt", "Der Vorschlag ist nicht mehr aktuell")
+    r = post(klient, "/aktion/werkbank-urteil", {"aid": AID, "nr": "3", "kennung": K, "urteil": "nochmal",
+                                                  "wunsch": "kürzer"})
+    assert r.status_code == 409 and "kürzer" in r.text
+
+
+def test_urteil_ok_false_ohne_wunsch_leitet_mit_hinweis_um(klient, pult):
+    pult.ok_false = True
+    r = post(klient, "/aktion/werkbank-urteil", {"aid": AID, "nr": "3", "kennung": K, "urteil": "passt"})
+    assert r.status_code == 303 and r.headers["location"].endswith("?hinweis=entschieden")
+
+
+@pytest.mark.parametrize("pfad,daten", [
+    ("/aktion/werkbank-nochmal", {"aid": AID, "nr": "4"}),
+    ("/aktion/werkbank-oeffnen", {"aid": AID, "nr": "1", "wunsch": "anders"})])
+def test_andere_posts_mit_ok_false(klient, pult, pfad, daten):
+    pult.ok_false = True
+    r = post(klient, pfad, daten)
+    assert "Schon entschieden – Seite neu geladen" in r.text or r.headers["location"].endswith("hinweis=entschieden")
+
+
+def test_gliederung_kennung_aus_der_api_zeigt_wunschfeld_ohne_k(klient, pult):
+    pult.gliederung_kennung = K
+    html = rumpf(get(klient, f"/marketing/werkbank/{AID}"))
+    assert 'name="wunsch"' in html and f'name="kennung" value="{K}"' in html and "Passt" in html
+
+
+def test_gliederung_kennung_null_zeigt_keine_knoepfe_auch_mit_k(klient, pult):
+    pult.gliederung_kennung = None
+    html = rumpf(get(klient, f"/marketing/werkbank/{AID}?k={K}"))
+    assert 'name="wunsch"' not in html
+
+
+def test_gliederung_kennung_der_api_gewinnt_gegen_k(klient, pult):
+    pult.gliederung_kennung = K
+    html = rumpf(get(klient, f"/marketing/werkbank/{AID}?k={K_ALT}"))
+    assert f'name="kennung" value="{K}"' in html and K_ALT not in html
+
+
+def test_gliederung_wunsch_speichern_und_neu_laden_behaelt_die_knoepfe(klient, pult):
+    pult.gliederung_kennung = K
+    r = post(klient, "/aktion/werkbank-wunsch", {"aid": AID, "kennung": K, "wunsch": "mehr Kosten"})
+    assert r.status_code == 303 and r.headers["location"] == f"/marketing/werkbank/{AID}?hinweis=gespeichert&k={K}"
+    html = rumpf(get(klient, r.headers["location"]))
+    assert "Dein Wunsch ist gespeichert" in html and "Wunsch speichern" in html and 'value="nochmal"' in html
+    # ohne ?k= (neue API) bleiben sie auch
+    assert 'value="nochmal"' in rumpf(get(klient, f"/marketing/werkbank/{AID}?hinweis=gespeichert"))
+
+
+def test_gliederung_wunsch_fallback_ohne_api_schluessel_behaelt_k(klient, pult):
+    r = post(klient, "/aktion/werkbank-wunsch", {"aid": AID, "kennung": K, "wunsch": "mehr Kosten"})
+    html = rumpf(get(klient, r.headers["location"]))                 # aeltere API: nur ?k= traegt die Kennung
+    assert 'value="nochmal"' in html
+
+
+def test_liste_zeigt_eigene_videoauftraege(klient, pult):
+    pult.buch.append({"id": "77778888-4444-4444-4444-444444444444", "art": "video", "mandant": "vibemind",
+                      "stand": "wartet_freigabe", "angelegt": "2026-11-12T09:00:00", "eingabe": {"thema": "Neu"},
+                      "ergebnis": {}})
+    r = get(klient, "/marketing/werkbank")
+    html = rumpf(r)
+    assert r.status_code == 200 and f'href="/marketing/werkbank/{AID}"' in html
+    assert "Altersvorsorge &lt;kurz&gt;" in html and "in der Werkbank" in html and "2 warten auf dich" in html
+    assert "wartet auf deine Freigabe" in html
+    assert html.index("Neu</b>") < html.index("Altersvorsorge")            # neueste zuerst
+    assert AID_FREMD not in html and "55556666" not in html                # fremde Firma, Reel
+
+
+def test_liste_leer_erklaert_die_bestellung(klient, pult):
+    pult.buch.clear()
+    html = rumpf(get(klient, "/marketing/werkbank"))
+    assert "Schreib dem Salesman" in html and "Video zu" in html
+
+
+def test_liste_ohne_anmeldung_umleitung(anonym):
+    assert get(anonym, "/marketing/werkbank").headers["location"] == "/login"
+
+
+def test_reels_seite_verlinkt_die_liste(klient, pult, monkeypatch):
+    echt = pult.anfrage
+
+    def reels(methode, pfad, daten=None, roh=False, zeitlimit=None):
+        if pfad == "/mandanten":
+            return {"mandanten": [{"id": "vibemind", "name": "VibeMind", "aktiv": True}]}
+        if pfad.startswith("/video?"):
+            return {"auftraege": []}
+        return echt(methode, pfad, daten, roh, zeitlimit)
+    monkeypatch.setattr(marketing_pult, "anfrage", reels)
+    assert 'href="/marketing/werkbank"' in rumpf(get(klient, "/marketing/reels"))
+
+
+def test_range_absurde_ziffern_sind_416_nicht_500(klient, datei_1mb):
+    r = get(klient, f"/marketing/werkbank/datei/{NAME}", headers={"Range": "bytes=" + "9" * 5000 + "-"})
+    assert r.status_code == 416
+    assert ui_werkbank.bereich("bytes=0-" + "9" * 5000, 1000) is None
+
+
+def test_datei_route_sucht_nur_in_staenden_mit_videos_und_merkt_sich_den_auftrag(klient, pult, datei_1mb):
+    assert get(klient, f"/marketing/werkbank/datei/{NAME}").status_code == 200
+    assert get(klient, f"/marketing/werkbank/datei/{NAME}", headers={"Range": "bytes=0-9"}).status_code == 206
+    assert len(pult.buch_staende) == 1 and "abgebrochen" not in pult.buch_staende[0]
+
+
+def test_videoseite_veraltet_ohne_download(klient, pult):
+    pult.werk = {**_werk(), "video_veraltet": True}
+    html = rumpf(get(klient, f"/marketing/werkbank/{AID}/video"))
+    assert "Eine Szene wurde wieder geöffnet – dieses Video wird neu gebaut." in html
+    assert "laden=1" not in html and "<video" in html
+
+
+def test_videoseite_aktuell_hat_download_ohne_hinweis(klient, pult):
+    html = rumpf(get(klient, f"/marketing/werkbank/{AID}/video"))
+    assert "laden=1" in html and "neu gebaut" not in html
+
+
+def test_alte_medienroute_sperrt_werkbankdateien_aber_nicht_reels(klient, tmp_path, monkeypatch):
+    medien_ordner = tmp_path / "media"
+    medien_ordner.mkdir()
+    monkeypatch.setattr(medien, "MEDIA_VERZEICHNIS", str(medien_ordner))
+    (medien_ordner / "vid-0123abcd-herbst.mp4").write_bytes(b"x" * 64)
+    (medien_ordner / NAME).write_bytes(b"x" * 64)
+    (tmp_path / NAME).write_bytes(b"x" * 64)               # auch im Erzeugt-Ordner
+    assert get(klient, "/medien/datei/vid-0123abcd-herbst.mp4").status_code == 200
+    assert get(klient, f"/medien/datei/{NAME}").status_code == 404
