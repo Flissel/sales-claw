@@ -3239,6 +3239,28 @@ laeuft deshalb am PC des Betreibers, nicht mehr als Container auf der VM.
 - Rueckweg (nur ausdruecklich): `STT_URL`/`STT_SCHLUESSEL` in der VM-`.env` leeren, dann
   `docker compose --profile stt-lokal up -d --build sales-stt` und sales-mcp neu erzeugen.
 
+### Sprachnachrichten im Selbst-Chat (seit 11.11.2026)
+
+Bis dahin schrieb sales-stt nur Kunden-Sprachnachrichten ab (Routine
+`sprachnachrichten_transkribieren`). Eine Sprachnachricht des Betreibers im Selbst-Chat
+kam beim Agenten nur als `<media:audio>` an - er konnte sie nicht hoeren.
+
+- `tools.media.audio` im Gateway ruft vor dem Agenten die CLI `stt/sprachnotiz.mjs` im
+  Volume auf. Die schickt die Datei an dasselbe sales-stt (`STT_URL`, `X-STT-Key`) und gibt
+  nur den Text zurueck. OpenClaw ersetzt den Anhang durch einen `[Audio]`-Block mit der
+  Abschrift.
+- Einrichten bzw. nachziehen: `bash deploy/stt-anbinden.sh` (nur Basis-Laden, ohne
+  Neustart, Schluessel nie in Ausgabe oder Kommandozeile). Am Ende steht eine Probe mit
+  1 s Stille ueber genau diese CLI.
+- Bewusst ein ausdruecklicher CLI-Eintrag: ohne eingetragene Modelle erkennt OpenClaw
+  selbst einen Anbieter und naehme einen Cloud-Dienst, sobald dessen Schluessel in der
+  Umgebung liegt. Block: `deploy/stt/media-audio.json` (= Saat in `config/openclaw.json`).
+- PC aus: die CLI scheitert nach Sekunden, die Sprachnachricht bleibt Anhang, der Agent
+  sagt, dass er sie nicht abhoeren konnte.
+- Abschrift zur Kontrolle zurueck in den Chat: `echoTranscript: true` im Block (aus).
+- Rueckweg: `docker exec sales-claw openclaw config unset tools.media.audio` (dann
+  greift wieder die Auto-Erkennung) oder `... config set tools.media.audio '{"enabled":false}'`.
+
 ## Newsletter-Einwilligung: fragen und selbst anmelden (seit 20.10.2026)
 
 Ein Newsletter geht nur an `consent_status = 'opt_in'` (E1). Zwei Wege dorthin, beide auf
