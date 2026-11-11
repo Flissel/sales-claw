@@ -18,7 +18,10 @@ liefert nichts. Das schuetzt die Flags in `ergebnis` (ergebnis_mischen ist kein 
 sichert zusaetzlich auftrag.sales_gemeldet (liefert nur True, wenn der Stand wirklich neu gesetzt wurde).
 
 Videos (art == "video", Video-Werkbank): zusaetzlich zum Endstand je Anlass eine Zeile, jede genau einmal. Die
-Markierung ist EIN Objekt `ergebnis.werkbank_gemeldet` = {runde, erinnert, hinweise: [key...], freigabe_fassung},
+Hinweise kommen schon im Stand `in_arbeit` (die Gliederung entsteht dort, M1); im Stand `erzeugt` meldet eine Zeile
+einmal, dass der Auftrag-Bote das Video nicht in die Freigabe stellen kann (ergebnis.freigabe_problem, I2). Die
+Markierung ist EIN Objekt `ergebnis.werkbank_gemeldet` = {runde, erinnert, hinweise: [key...], freigabe_fassung,
+freigabe_problem},
 das `melden` ganz ueber ergebnis_mischen schreibt - und zwar je Zeile erst NACH dem Schreiben der vorigen: schlaegt
 das Markieren einer Zeile fehl, entfaellt genau diese (sie kommt beim naechsten Aufruf), und keine andere Zeile
 wird dabei mitmarkiert. Markiert wird VOR dem Ausliefern: geht die Antwort danach verloren, ist die Zeile weg,
@@ -40,6 +43,7 @@ log = logging.getLogger(__name__)
 ENDSTAENDE = ("fertig", "abgebrochen", "fehler", "abgelaufen")
 WARTET = "wartet_freigabe"
 WERKBANK = "werkbank"
+IN_ARBEIT, ERZEUGT = "in_arbeit", "erzeugt"   # nur fuer Videos gelesen (M1 Hinweise, I2 Freigabe-Problem)
 ERINNERN_NACH = timedelta(hours=48)
 # Was in Rowboat wartet, je Tor: (Einzahl, Mehrzahl) fuer "<n> ... warten in Rowboat auf dich."
 _TOR_NAME = {"gliederung": ("Gliederung", "Gliederungen"), "text": ("Szenentext", "Szenentexte"),
@@ -167,6 +171,11 @@ def _video_zeilen(a: dict, ergebnis: dict, jetzt: datetime) -> list[tuple[str, s
         gesehen.add(key)
         zeilen.append((aid, "werkbank_hinweis:" + key, f"{kopf}: {satz}",
                        (gemeldet, lambda m, key=key: {**m, "hinweise": _liste(m.get("hinweise")) + [key]})))
+    problem = ergebnis.get("freigabe_problem")
+    if stand == ERZEUGT and isinstance(problem, str) and problem and gemeldet.get("freigabe_problem") != problem:
+        zeilen.append((aid, "werkbank_freigabe_problem",                # I2: der Auftrag-Bote kommt nicht weiter
+                       f"{kopf} ist fertig, kann aber nicht in die Freigabe gestellt werden – bitte Einstellung prüfen.",
+                       (gemeldet, lambda m, problem=problem: {**m, "freigabe_problem": problem})))
     fassung = ergebnis.get("fassung") or 0
     kennung = str(ergebnis.get("freigabe") or "")
     if stand == WARTET and kennung and gemeldet.get("freigabe_fassung") != fassung:
@@ -182,8 +191,12 @@ def _plan(q, laden: str, jetzt: datetime) -> list[tuple[str, str, str, dict | tu
     """(auftrag_id, stand, text, flag) - flag None = Endstand, ein dict = der ergebnis-Teil zum Markieren,
     ein Tupel = Markierung eines Videos (siehe _video_zeilen)."""
     zeilen: list[tuple[str, str, str, dict | tuple | None]] = []
-    for a in auftrag_buch.eigene(q, laden, list(ENDSTAENDE) + [WARTET, WERKBANK]):
+    for a in auftrag_buch.eigene(q, laden, list(ENDSTAENDE) + [WARTET, WERKBANK, IN_ARBEIT, ERZEUGT]):
         aid, ergebnis = str(a["id"]), _dict(a.get("ergebnis"))
+        if a["stand"] in (IN_ARBEIT, ERZEUGT):
+            if a.get("art") == "video":                 # Reels in diesen Staenden: unveraendert keine Zeile
+                zeilen += _video_zeilen(a, ergebnis, jetzt)
+            continue
         gemeldet = _liste(ergebnis.get("kanal_fehler_gemeldet"))
         if a["stand"] in ENDSTAENDE:
             if a.get("gemeldet_stand") != a["stand"]:

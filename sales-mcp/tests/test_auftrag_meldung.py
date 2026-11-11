@@ -494,6 +494,35 @@ def test_offene_video_staende_melden_nichts(monkeypatch):
     assert melden_um() == []
 
 
+def test_hinweis_eines_videos_in_arbeit_kommt_einmal(monkeypatch):
+    """M1: die Gliederung entsteht, solange der Auftrag in_arbeit steht; ihre Hinweise kommen trotzdem."""
+    satz = "Die Gliederung ließ sich nicht schreiben – bitte Wunsch ergänzen."
+    b = Buch(monkeypatch, video("in_arbeit", ergebnis={"werkbank": {
+        "wartet": 0, "hinweise": [{"key": "gliederung_f1", "satz": satz}]}}))
+    assert melden_um() == [f"{KOPF}: {satz}"]
+    assert melden_um() == [] and b.marke() == {"hinweise": ["gliederung_f1"]}
+
+
+def test_video_kann_nicht_in_die_freigabe_wird_einmal_gemeldet(monkeypatch):
+    """I2: der Auftrag-Bote laesst das Video in `erzeugt` und setzt ergebnis.freigabe_problem; die Meldung kommt
+    einmal je Problemart, mit Marke in werkbank_gemeldet."""
+    b = Buch(monkeypatch, video("erzeugt", ergebnis={"freigabe_problem": "adresse"}))
+    satz = f"{KOPF} ist fertig, kann aber nicht in die Freigabe gestellt werden – bitte Einstellung prüfen."
+    assert melden_um() == [satz]
+    assert melden_um() == [] and b.marke() == {"freigabe_problem": "adresse"}
+    b.zeilen[0]["ergebnis"]["freigabe_problem"] = "datei"            # anderes Problem: eine neue Zeile
+    assert melden_um() == [satz] and melden_um() == []
+    b.zeilen[0]["ergebnis"]["freigabe_problem"] = None
+    assert melden_um() == []
+
+
+def test_reel_in_arbeit_oder_erzeugt_meldet_weiter_nichts(monkeypatch):
+    Buch(monkeypatch, auftrag("in_arbeit", ergebnis={"kanal_fehler": {"mastodon": "kaputt"},
+                                                     "werkbank": {"hinweise": [{"key": "a", "satz": "b"}]}}),
+         auftrag("erzeugt", ergebnis={"kanal_fehler": {"discord": "kaputt"}, "freigabe_problem": "adresse"}))
+    assert melden_um() == []
+
+
 def test_reel_in_der_werkbank_bekommt_keine_videozeilen(monkeypatch):
     Buch(monkeypatch, auftrag("werkbank", ergebnis={"werkbank": {"wartet": 2, "wartet_tor": "text", "runde": 1}}))
     assert melden_um() == []
