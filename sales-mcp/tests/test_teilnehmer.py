@@ -210,3 +210,27 @@ def test_ohne_tabelle_kalender_konten_bleibt_nicht_extern_heil(monkeypatch):
     finally:
         with server.pool.connection() as conn:
             conn.execute("alter table sales_test.kalender_konten_weg rename to kalender_konten")
+
+
+# --- Final-Review I4/I6 ------------------------------------------------------
+
+def test_i4_gesperrter_externer_macht_keinen_kundentermin():
+    _lead("p@firma.de", '{"_privat": {"privat": true}}')
+    sperrliste.sperren(server._q, email="nein@firma.de", quelle="test", grund="x")
+    for liste in ([_t("p@firma.de")], [_t("nein@firma.de")],
+                  [_t("p@firma.de"), _t("nein@firma.de")]):
+        assert teilnehmer.ist_kundentermin("kalender", "business", liste, len(liste))[0] is False
+    ok, _ = teilnehmer.ist_kundentermin(
+        "kalender", "business", [_t("nein@firma.de"), _t("frei@firma.de")], 2)
+    assert ok is True
+
+
+def test_i6_gesperrte_zeile_ohne_namen():
+    sperrliste.sperren(server._q, email="nein@firma.de", quelle="test", grund="x")
+    z = teilnehmer.verknuepfen(UID, [_t("nein@firma.de", "Nina Nein"), _t("ok@firma.de", "Otto")],
+                               darf_anlegen=True)
+    gesperrt = [x for x in z if x["adresse"] == "nein@firma.de"][0]
+    assert gesperrt["grund"] == "gesperrt" and gesperrt["name"] is None
+    assert server._q("select name from termin_teilnehmer where adresse = 'nein@firma.de'"
+                     )[0]["name"] is None
+    assert [x for x in z if x["adresse"] == "ok@firma.de"][0]["name"] == "Otto"

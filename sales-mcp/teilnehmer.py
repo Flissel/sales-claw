@@ -117,7 +117,8 @@ def lead_sperrgrund(lead_id) -> str:
     z = server._q("select email, enrichment from leads where id = %s", (str(lead_id),))
     if not z:
         return ""
-    return (server._sperre_fuer_lead(str(lead_id)) and "gesperrt")         or _enrichment_grund(z[0].get("enrichment"))
+    return ((server._sperre_fuer_lead(str(lead_id)) and "gesperrt")
+            or _enrichment_grund(z[0].get("enrichment")))
 
 
 def ist_kundentermin(herkunft: str, bereich: str, teilnehmer: list[dict],
@@ -132,6 +133,10 @@ def ist_kundentermin(herkunft: str, bereich: str, teilnehmer: list[dict],
     for t in teilnehmer or []:
         a = _norm(t.get("adresse"))
         if a and a not in intern and not ist_ressource(a, t.get("art") or ""):
+            # Final-Review I4: ein gesperrter Gast (Verbotsliste, Loeschantrag,
+            # privat) macht aus einem Termin keinen Kundentermin.
+            if sperrgrund(a):
+                continue
             return True, ""
     return False, "keine externen Teilnehmer"
 
@@ -178,6 +183,7 @@ def verknuepfen(uid: str, teilnehmer: list[dict], *, darf_anlegen: bool) -> list
             grund = "Ressource"
         elif sperrgrund(a):
             grund = "gesperrt"
+            name = ""  # Final-Review I6: von Gesperrten nur die Adresse
         else:
             lead_id = _lead_id(a)
             if lead_id is None:
