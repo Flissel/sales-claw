@@ -8,7 +8,9 @@ Der Betreiber nimmt ein langes Video Szene fuer Szene am Handy ab:
 - /marketing/werkbank/{aid}/szene/{nr}: Text, Bildidee, Belege, Clip-Abspieler, Wunschfeld und Knoepfe.
 - /marketing/werkbank/{aid}/video: das fertige Video mit Abspieler, Download und Kopierfeldern.
 - /marketing/werkbank/datei/{name}: Clips und Video aus dem Erzeugt-Ordner, gestreamt, mit Range.
-- POST /aktion/werkbank-{wunsch,urteil,nochmal,oeffnen}: gehen an die Pult-Routen der Marketing-API.
+- POST /aktion/werkbank-{wunsch,urteil,nochmal,oeffnen,neu-schreiben,neu-bauen}: gehen an die Pult-Routen der
+  Marketing-API. "Nochmal schreiben" gibt einer aufgegebenen Szene oder Gliederung einen neuen Wunsch, "Video neu
+  zusammenfügen" startet nach einem gescheiterten Zusammenfuegen genau einen neuen Versuch.
 
 Alle Seiten laufen ohne JavaScript, ausser dem Kopier-Knopf der Videoseite (eigene Skriptdatei, CSP script-src
 'self' nur auf dieser Seite). Geprueft wird in der Marketing-API (eine Wahrheit): die Seiten senden nur durch,
@@ -65,7 +67,9 @@ HINWEISE = {"ueberholt": ("hinweis", "Diese Fassung ist überholt."),
             "passt": ("meta", "Danke, das ist abgenommen."),
             "nochmal": ("meta", "Verstanden, das wird noch einmal gemacht."),
             "versucht": ("meta", "Die Szene wird noch einmal versucht."),
-            "geoeffnet": ("meta", "Die Szene ist wieder offen.")}
+            "geoeffnet": ("meta", "Die Szene ist wieder offen."),
+            "neu": ("meta", "Danke – das wird mit deinem Wunsch neu geschrieben."),
+            "neu_bauen": ("meta", "Das Video wird neu zusammengefügt.")}
 
 KOPIER_JS = """document.addEventListener("click", function (ev) {
   var knopf = ev.target.closest("button[data-kopieren]");
@@ -137,6 +141,22 @@ def quelle_text(q) -> str:
 
 def liste(wert) -> list:
     return wert if isinstance(wert, list) else []
+
+
+def kurztext(wert, grenze: int = 300) -> str:
+    return wert.strip()[:grenze] if isinstance(wert, str) else ""
+
+
+def aussagen(belege) -> list[tuple[str, str]]:
+    """Die geprueften Belege der Szene als (Aussage, Quelle); unbrauchbare Eintraege fallen weg."""
+    paare = []
+    for b in liste(belege):
+        if not isinstance(b, dict):
+            continue
+        aussage, quelle = kurztext(b.get("aussage"), 500), kurztext(b.get("quelle"), 200)
+        if aussage and quelle:
+            paare.append((aussage, "Auftrag" if quelle == "auftrag" else quelle))
+    return paare
 
 
 def routen(ui) -> list:
@@ -298,6 +318,32 @@ def routen(ui) -> list:
                 '<button type="submit" formaction="/aktion/werkbank-wunsch">Wunsch speichern</button>'
                 '</div></form>')
 
+    def neu_schreiben_html(aid: str, nr: str | None, grund: str) -> str:
+        """C1: aufgegeben (Szene oder Gliederung in geplant) -> Grund, Wunschfeld und "Nochmal schreiben"."""
+        teile = [f'<p class="warnung">{e(grund)}</p>']
+        if darf_schreiben():
+            ziel = f'<input type="hidden" name="aid" value="{e(aid)}">' + (
+                f'<input type="hidden" name="nr" value="{e(nr)}">' if nr else "")
+            teile.append(
+                f'<form method="post" action="/aktion/werkbank-neu-schreiben">{csrf()}{ziel}'
+                f'<label>Was soll anders werden? <textarea name="wunsch" maxlength="{WUNSCH_MAX}" required '
+                'placeholder="z. B. welche Zahl aus welchem Dokument, oder was weg kann"></textarea></label>'
+                '<div class="aktionen"><button class="primaer" type="submit">Nochmal schreiben</button></div></form>')
+        return "".join(teile)
+
+    def neu_bauen_html(aid: str, werk: dict) -> str:
+        """I1: das Zusammenfuegen ist gescheitert (video_fehler) und alle Szenen sind fertig."""
+        grund = kurztext(werk.get("video_fehler"))
+        if not grund or werk.get("alle_fertig") is not True:
+            return ""
+        teile = [f'<p class="warnung">{e(grund)}</p>']
+        if darf_schreiben():
+            teile.append(f'<form method="post" action="/aktion/werkbank-neu-bauen">{csrf()}'
+                         f'<input type="hidden" name="aid" value="{e(aid)}">'
+                         '<div class="aktionen"><button class="primaer" type="submit">Video neu zusammenfügen</button>'
+                         '</div></form>')
+        return "".join(teile)
+
     @ui._gesichert_seite
     async def uebersicht(request):
         aid = request.path_params["aid"]
@@ -317,19 +363,25 @@ def routen(ui) -> list:
         szenen = [s for s in liste(werk.get("szenen")) if isinstance(s, dict)]
         fertig = sum(1 for s in szenen if s.get("stand") == "fertig")
         warten = sum(1 for s in szenen if s.get("stand") in WARTET)
+        gl_grund = kurztext(werk.get("gliederung_aufgegeben"))
         teile = [hinweis_html(request),
                  f'<p>{len(szenen)} Szenen, {fertig} fertig, {warten} warten auf dich.</p>',
                  gliederung_html(werk),
-                 wunschfeld_gliederung(aid, kennung, werk)]
+                 wunschfeld_gliederung(aid, kennung, werk),
+                 neu_schreiben_html(aid, None, gl_grund)
+                 if gl_grund and werk.get("gliederung_stand") == "geplant" else ""]
         if szenen:
             zeilen = []
             for s in szenen:
                 nr = s.get("nr")
                 if not isinstance(nr, int) or isinstance(nr, bool):
                     continue
+                aufgegeben = (' <span class="chip fehler">braucht deinen Wunsch</span>'
+                              if s.get("stand") == "geplant" and kurztext(s.get("aufgegeben")) else "")
                 zeilen.append(f'<a href="{e(seite_url(aid, str(nr)))}"><b>Szene {nr}</b> {e(str(s.get("kurz") or ""))} '
-                              f'{stand_chip(str(s.get("stand") or ""), bool(s.get("fehler")))}</a>')
+                              f'{stand_chip(str(s.get("stand") or ""), bool(s.get("fehler")))}{aufgegeben}</a>')
             teile.append(f'<h2>Szenen</h2><div class="wb-szenen">{"".join(zeilen)}</div>')
+        teile.append(neu_bauen_html(aid, werk))
         if werk.get("alle_fertig") is True:
             teile.append(f'<p><a class="knopf primaer" href="{e(BASIS)}/{e(aid)}/video">Zum fertigen Video</a></p>')
         return ui._seite("Video-Werkbank", _STIL + f'<div class="wb">{"".join(teile)}</div>')
@@ -430,8 +482,15 @@ def routen(ui) -> list:
             teile.append(f'<video controls preload="metadata" src="{datei_url(datei)}"></video>'
                          + (f'<p class="meta">Länge {e(dauer)}</p>' if dauer else ""))
         sprech = str(s.get("sprechtext") or "").strip()
+        grund = kurztext(s.get("aufgegeben"))
+        if grund and stand == "geplant":
+            teile.append(neu_schreiben_html(aid, nr, grund))
         teile.append('<h3>Sprechtext</h3>' + (f'<p class="wb-text">{e(sprech)}</p>' if sprech
                                               else '<p class="meta">Der Text ist noch nicht geschrieben.</p>'))
+        paare = aussagen(s.get("belege"))
+        if paare:                                    # I3: jede Aussage mit ihrer Quelle, direkt unter dem Text
+            teile.append("<h3>Aussagen und Quellen</h3><ul>" + "".join(
+                f'<li>{e(a)} <span class="meta">Quelle: {e(q)}</span></li>' for a, q in paare) + "</ul>")
         teile.append("<h3>Bildidee</h3>" + (schritte_html(s) or '<p class="meta">Noch keine Bildidee.</p>'))
         belege = [quelle_text(q) for q in liste(s.get("quellen"))]
         belege = [b for b in belege if b]
@@ -607,6 +666,28 @@ def routen(ui) -> list:
             return ui._fehlerseite(422, "Nicht möglich", "Schreib bitte auf, was anders werden soll.")
         return await senden(request, aid, nr, f"/werkbank/{aid}/szene/{int(nr)}/oeffnen", {"wunsch": wunsch}, "geoeffnet")
 
+    @ui._gesichert_seite
+    async def neu_schreiben(request):
+        """C1: neuer Wunsch an eine aufgegebene Szene (mit nr) oder Gliederung (ohne nr)."""
+        form, aid, nr, _, abgelehnt = await aktion(request, False)
+        if abgelehnt is not None:
+            return abgelehnt
+        wunsch = wunsch_aus(form)
+        if wunsch is None:
+            return zu_lang()
+        if not wunsch:
+            return ui._fehlerseite(422, "Nicht möglich", "Schreib bitte auf, was anders werden soll.")
+        pfad = f"/werkbank/{aid}/szene/{int(nr)}/wunsch" if nr else f"/werkbank/{aid}/gliederung/wunsch"
+        return await senden(request, aid, nr, pfad, {"wunsch": wunsch}, "neu")
+
+    @ui._gesichert_seite
+    async def neu_bauen(request):
+        """I1: "Video neu zusammenfügen" nach einem gescheiterten Zusammenfuegen."""
+        form, aid, _, _, abgelehnt = await aktion(request, False)
+        if abgelehnt is not None:
+            return abgelehnt
+        return await senden(request, aid, "", f"/werkbank/{aid}/video/neu-bauen", {}, "neu_bauen")
+
     # --- Dateien (Clips und Video) -----------------------------------------------------------
 
     def datei_pruefen(name: str) -> int | None:
@@ -696,4 +777,6 @@ def routen(ui) -> list:
         Route("/aktion/werkbank-urteil", urteil, methods=["POST"]),
         Route("/aktion/werkbank-nochmal", nochmal, methods=["POST"]),
         Route("/aktion/werkbank-oeffnen", oeffnen, methods=["POST"]),
+        Route("/aktion/werkbank-neu-schreiben", neu_schreiben, methods=["POST"]),
+        Route("/aktion/werkbank-neu-bauen", neu_bauen, methods=["POST"]),
     ]

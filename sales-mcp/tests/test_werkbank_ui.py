@@ -723,3 +723,87 @@ def test_medien_werkbankname_verdaechtig():
 
 def test_verborgen_auch_bei_grossschreibung():
     assert medien.verborgen("WB-0123ABCD-S03-F1.MP4") and medien.verborgen(NAME)
+
+
+# --- Abschlussrunde: aufgegeben (C1), neu zusammenfuegen (I1), Aussagen mit Quelle (I3) ---------------
+
+GRUND = "Die Szene ließ sich nicht schreiben – bitte Wunsch ergänzen."
+
+
+def test_aufgegebene_szene_zeigt_grund_und_nochmal_schreiben(klient, pult):
+    pult.szene = _szene(5, "geplant", sprechtext=None, clip_datei=None, aufgegeben=GRUND)
+    pult.kennung = None
+    html = rumpf(get(klient, f"/marketing/werkbank/{AID}/szene/5"))
+    assert GRUND in html and "Nochmal schreiben" in html and 'action="/aktion/werkbank-neu-schreiben"' in html
+    assert 'name="wunsch"' in html and 'value="passt"' not in html
+    pult.szene = _szene(5, "geplant", sprechtext=None, clip_datei=None, aufgegeben=None)
+    assert "Nochmal schreiben" not in rumpf(get(klient, f"/marketing/werkbank/{AID}/szene/5"))
+    pult.szene = _szene(5, "text_wartet", aufgegeben=GRUND)           # nur in geplant
+    assert "Nochmal schreiben" not in rumpf(get(klient, f"/marketing/werkbank/{AID}/szene/5"))
+
+
+def test_nochmal_schreiben_schickt_den_wunsch_an_die_szene(klient, pult):
+    r = post(klient, "/aktion/werkbank-neu-schreiben", {"aid": AID, "nr": "5", "wunsch": " mit Zahl aus Preise.pdf "})
+    assert r.status_code == 303 and r.headers["location"] == f"/marketing/werkbank/{AID}/szene/5?hinweis=neu"
+    assert pult.posts()[0] == ("POST", f"/werkbank/{AID}/szene/5/wunsch",
+                               {"wunsch": "mit Zahl aus Preise.pdf", "mandant": "vibemind", "von": "mira"})
+    assert "neu geschrieben" in rumpf(get(klient, r.headers["location"]))
+    assert post(klient, "/aktion/werkbank-neu-schreiben", {"aid": AID, "nr": "5", "wunsch": " "}).status_code == 422
+    assert post(klient, "/aktion/werkbank-neu-schreiben",
+                {"aid": AID, "nr": "5", "wunsch": "x" * 2001}).status_code == 422
+    assert len(pult.posts()) == 1
+
+
+def test_aufgegebene_gliederung_zeigt_grund_und_nochmal_schreiben(klient, pult):
+    pult.werk = {**_werk(), "gliederung_stand": "geplant", "gliederung": None, "szenen": [],
+                 "gliederung_aufgegeben": "Die Gliederung ließ sich nicht schreiben – bitte Wunsch ergänzen."}
+    pult.gliederung_kennung = None
+    html = rumpf(get(klient, f"/marketing/werkbank/{AID}"))
+    assert "Die Gliederung ließ sich nicht schreiben" in html and "Nochmal schreiben" in html
+    r = post(klient, "/aktion/werkbank-neu-schreiben", {"aid": AID, "wunsch": "kürzer, fünf Szenen"})
+    assert r.status_code == 303 and r.headers["location"] == f"/marketing/werkbank/{AID}?hinweis=neu"
+    assert pult.posts()[0][:2] == ("POST", f"/werkbank/{AID}/gliederung/wunsch")
+    assert pult.posts()[0][2]["wunsch"] == "kürzer, fünf Szenen"
+
+
+def test_nochmal_schreiben_abgelehnt_behaelt_den_text(klient, pult):
+    pult.ok_false = True
+    r = post(klient, "/aktion/werkbank-neu-schreiben", {"aid": AID, "nr": "5", "wunsch": "mein <Wunsch>"})
+    assert r.status_code == 409 and "mein &lt;Wunsch&gt;" in r.text
+
+
+def test_uebersicht_markiert_aufgegebene_szenen(klient, pult):
+    pult.werk = {**_werk(), "szenen": [_szene(1, "fertig"), _szene(2, "geplant", aufgegeben=GRUND)]}
+    html = rumpf(get(klient, f"/marketing/werkbank/{AID}"))
+    assert "braucht deinen Wunsch" in html
+
+
+def test_gescheitertes_video_zeigt_neu_zusammenfuegen(klient, pult):
+    pult.werk = {**_werk(), "alle_fertig": True, "video_fehler": "Das Video ließ sich nicht zusammenfügen. Platz",
+                 "video_versuch": 0}
+    html = rumpf(get(klient, f"/marketing/werkbank/{AID}"))
+    assert "Das Video ließ sich nicht zusammenfügen. Platz" in html and "Video neu zusammenfügen" in html
+    r = post(klient, "/aktion/werkbank-neu-bauen", {"aid": AID})
+    assert r.status_code == 303 and r.headers["location"] == f"/marketing/werkbank/{AID}?hinweis=neu_bauen"
+    assert pult.posts()[0] == ("POST", f"/werkbank/{AID}/video/neu-bauen", {"mandant": "vibemind", "von": "mira"})
+    assert "wird neu zusammengefügt" in rumpf(get(klient, r.headers["location"]))
+    pult.werk = {**_werk(), "alle_fertig": True, "video_fehler": None}
+    assert "Video neu zusammenfügen" not in rumpf(get(klient, f"/marketing/werkbank/{AID}"))
+    pult.werk = {**_werk(), "alle_fertig": False, "video_fehler": "alt"}
+    assert "Video neu zusammenfügen" not in rumpf(get(klient, f"/marketing/werkbank/{AID}"))
+
+
+def test_leserolle_kann_nicht_neu_schreiben_oder_bauen(leser, pult):
+    assert post(leser, "/aktion/werkbank-neu-schreiben", {"aid": AID, "nr": "5", "wunsch": "x"}).status_code == 403
+    assert post(leser, "/aktion/werkbank-neu-bauen", {"aid": AID}).status_code == 403
+    assert not pult.posts()
+
+
+def test_szenenseite_zeigt_jede_aussage_mit_quelle(klient, pult):
+    pult.szene = _szene(3, belege=[{"aussage": "Die Schulung spart 30 % <Zeit>.", "quelle": "Preise.pdf"},
+                                   {"aussage": "Zwei Termine im Monat.", "quelle": "auftrag"}, "kaputt", {"aussage": ""}])
+    html = rumpf(get(klient, f"/marketing/werkbank/{AID}/szene/3"))
+    sprech = html.index("Viele machen drei Fehler.")
+    aussage = html.index("Die Schulung spart 30 % &lt;Zeit&gt;.")
+    assert sprech < aussage < html.index("<h3>Bildidee</h3>")
+    assert "Quelle: Preise.pdf" in html and "Quelle: Auftrag" in html and "<Zeit>" not in html
