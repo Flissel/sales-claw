@@ -32,6 +32,27 @@ class VexaNichtGefunden(VexaFehler):
     """Meeting bzw. Mitschrift ist bei Vexa unbekannt (HTTP 404 oder nicht in der Liste)."""
 
 
+class VexaNichtErreichbar(VexaFehler):
+    """Keine Verbindung zu Vexa (Netz, Zeitlimit). Wird nur beim Wechsel geloggt."""
+
+
+# Log-Flut vermeiden (Final-Review I9): "nicht erreichbar" steht nur beim
+# Wechsel erreichbar -> weg im Log, die Rueckkehr einmal als Info.
+_unerreichbar_gemeldet = False
+
+
+def _erreichbar_merken(ok: bool, methode: str = "", kurz: str = "") -> None:
+    global _unerreichbar_gemeldet
+    if ok:
+        if _unerreichbar_gemeldet:
+            _unerreichbar_gemeldet = False
+            log.info("Vexa wieder erreichbar")
+    elif not _unerreichbar_gemeldet:
+        _unerreichbar_gemeldet = True
+        log.warning("Vexa %s %s nicht erreichbar (weitere Fehlversuche ohne Log)",
+                    methode, kurz)
+
+
 def _basis() -> str:
     return os.environ.get("VEXA_URL", "http://vexa-lite:8056").rstrip("/")
 
@@ -72,6 +93,7 @@ def _anfrage(methode: str, pfad: str, body: dict | None = None,
                 req, timeout=_zahl("VEXA_TIMEOUT_S", 20)) as antwort:
             roh = antwort.read()
     except urllib.error.HTTPError as e:
+        _erreichbar_merken(True)
         if e.code == 404 and ok404:
             return None
         log.warning("Vexa %s %s -> %s", methode, kurz, e.code)
@@ -79,12 +101,13 @@ def _anfrage(methode: str, pfad: str, body: dict | None = None,
             raise VexaNichtGefunden(f"Vexa kennt {kurz} nicht (404)") from None
         raise VexaFehler(f"Vexa antwortet {e.code} auf {methode} {kurz}") from None
     except (urllib.error.URLError, OSError, TimeoutError):
-        log.warning("Vexa %s %s nicht erreichbar", methode, kurz)
-        raise VexaFehler(f"Vexa nicht erreichbar ({methode} {kurz})") from None
+        _erreichbar_merken(False, methode, kurz)
+        raise VexaNichtErreichbar(f"Vexa nicht erreichbar ({methode} {kurz})") from None
     except (ValueError, http.client.HTTPException):
         # Feste Meldung: der Text dieser Ausnahmen kann Header-Werte enthalten.
         log.warning("Vexa %s %s: Anfrage/Antwort unbrauchbar", methode, kurz)
         raise VexaFehler(f"Vexa-Anfrage fehlgeschlagen ({methode} {kurz})") from None
+    _erreichbar_merken(True)
     if not roh:
         return {}
     try:

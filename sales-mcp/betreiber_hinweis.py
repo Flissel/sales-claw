@@ -24,6 +24,27 @@ log = logging.getLogger("betreiber_hinweis")
 # Aufrufer (Termin-/Mitschrift-Ablauf) nicht lange auf.
 TIMEOUT_S = 10
 
+# Log-Flut vermeiden (Final-Review I9): dieselbe Fehlermeldung steht nur
+# einmal im Log, bis ein Senden gelingt oder ein anderer Fehler kommt. Die
+# Meldungen sind feste Texte (nie Token, Chat-ID oder Text).
+_letzter_fehler: str | None = None
+
+
+def _fehler(meldung: str) -> bool:
+    global _letzter_fehler
+    if meldung != _letzter_fehler:
+        _letzter_fehler = meldung
+        log.warning("%s", meldung)
+    return False
+
+
+def _ok() -> bool:
+    global _letzter_fehler
+    if _letzter_fehler is not None:
+        _letzter_fehler = None
+        log.info("Telegram-Hinweis: Senden klappt wieder")
+    return True
+
 
 def senden(text: str, *, link_vorschau: bool = False) -> bool:
     """Schickt `text` an den Betreiber. Wahr nur bei HTTP 200 und `ok`.
@@ -35,8 +56,7 @@ def senden(text: str, *, link_vorschau: bool = False) -> bool:
         token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
         chat = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
         if not token or not chat:
-            log.warning("Telegram nicht konfiguriert")
-            return False
+            return _fehler("Telegram nicht konfiguriert")
         basis = (os.environ.get("TELEGRAM_API_BASIS", "").strip()
                  or "https://api.telegram.org").rstrip("/")
         daten = urllib.parse.urlencode({
@@ -52,27 +72,20 @@ def senden(text: str, *, link_vorschau: bool = False) -> bool:
                 status = antwort.status
                 roh = antwort.read()
         except urllib.error.HTTPError as e:
-            log.warning("Telegram-Hinweis: HTTP %s", e.code)
-            return False
+            return _fehler(f"Telegram-Hinweis: HTTP {int(e.code)}")
         except (urllib.error.URLError, OSError, TimeoutError):
-            log.warning("Telegram-Hinweis: nicht erreichbar")
-            return False
+            return _fehler("Telegram-Hinweis: nicht erreichbar")
         except (ValueError, http.client.HTTPException):
-            log.warning("Telegram-Hinweis: Anfrage/Antwort unbrauchbar")
-            return False
+            return _fehler("Telegram-Hinweis: Anfrage/Antwort unbrauchbar")
         if status != 200:
-            log.warning("Telegram-Hinweis: HTTP %s", status)
-            return False
+            return _fehler(f"Telegram-Hinweis: HTTP {int(status)}")
         try:
             antwort_json = json.loads(roh)
         except ValueError:
-            log.warning("Telegram-Hinweis: Antwort ist kein JSON")
-            return False
+            return _fehler("Telegram-Hinweis: Antwort ist kein JSON")
         if not isinstance(antwort_json, dict) or antwort_json.get("ok") is not True:
-            log.warning("Telegram-Hinweis: Telegram meldet ok=false")
-            return False
-        return True
+            return _fehler("Telegram-Hinweis: Telegram meldet ok=false")
+        return _ok()
     except Exception as e:  # noqa: BLE001 - senden() darf nie werfen
         # Nur der Typname: Text und URL der Ausnahme koennen den Token tragen.
-        log.warning("Telegram-Hinweis: unerwarteter Fehler (%s)", type(e).__name__)
-        return False
+        return _fehler(f"Telegram-Hinweis: unerwarteter Fehler ({type(e).__name__})")

@@ -32,6 +32,12 @@ class _VexaStub(BaseHTTPRequestHandler):
     do_GET = do_POST = do_DELETE = _antwort
 
 
+@pytest.fixture(autouse=True)
+def _zustand_frisch(monkeypatch):
+    # I9: Warnungen nur beim Zustandswechsel - jeder Test beginnt frisch.
+    monkeypatch.setattr(vexa, "_unerreichbar_gemeldet", False, raising=False)
+
+
 @pytest.fixture
 def stub(monkeypatch):
     server = HTTPServer(("127.0.0.1", 0), _VexaStub)
@@ -193,3 +199,28 @@ def test_ohne_schluessel(monkeypatch):
 ])
 def test_abbilden(vexa_status, erwartet):
     assert vexa.abbilden(vexa_status) == erwartet
+
+
+# --- Final-Review I9: "nicht erreichbar" nur beim Zustandswechsel -----------
+
+def test_i9_nicht_erreichbar_einmal_je_wechsel(stub, monkeypatch, caplog):
+    caplog.set_level(logging.DEBUG, logger="vexa")
+    port = stub.server_address[1]
+    monkeypatch.setenv("VEXA_URL", "http://127.0.0.1:1")
+    for _ in range(3):
+        with pytest.raises(vexa.VexaNichtErreichbar):
+            vexa.meeting_lesen(1)
+        with pytest.raises(vexa.VexaFehler):
+            vexa.bot_stoppen("google_meet", "abc")
+    warn = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warn) == 1 and "nicht erreichbar" in warn[0].getMessage()
+    # wieder da: eine Info, danach wieder eine Warnung beim naechsten Ausfall
+    monkeypatch.setenv("VEXA_URL", f"http://127.0.0.1:{port}")
+    stub.antworten[("GET", "/meetings")] = (200, {"meetings": [{"id": 1, "status": "active"}]})
+    vexa.meeting_lesen(1)
+    monkeypatch.setenv("VEXA_URL", "http://127.0.0.1:1")
+    with pytest.raises(vexa.VexaFehler):
+        vexa.meeting_lesen(1)
+    warn = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warn) == 2
+    assert SCHLUESSEL not in caplog.text

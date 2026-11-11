@@ -35,6 +35,12 @@ class _Stub(BaseHTTPRequestHandler):
         self.wfile.write(roh)
 
 
+@pytest.fixture(autouse=True)
+def _zustand_frisch(monkeypatch):
+    # I9: Warnungen nur beim Zustandswechsel - jeder Test beginnt frisch.
+    monkeypatch.setattr(betreiber_hinweis, "_letzter_fehler", None, raising=False)
+
+
 @pytest.fixture
 def stub(monkeypatch):
     srv = HTTPServer(("127.0.0.1", 0), _Stub)
@@ -147,3 +153,31 @@ def test_unerwartete_ausnahme_wirft_nie(stub, monkeypatch, caplog):
     with caplog.at_level(logging.DEBUG):
         assert betreiber_hinweis.senden(TEXT) is False
     assert "RuntimeError" in _kein_geheimnis(caplog)
+
+
+# --- Final-Review I9: Warnung nur beim Zustandswechsel ---------------------
+
+def test_i9_nicht_konfiguriert_nur_einmal(monkeypatch, caplog):
+    monkeypatch.setattr(betreiber_hinweis, "_letzter_fehler", None, raising=False)
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    with caplog.at_level(logging.DEBUG, logger="betreiber_hinweis"):
+        for _ in range(3):
+            assert betreiber_hinweis.senden(TEXT) is False
+    warn = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warn) == 1 and "nicht konfiguriert" in warn[0].getMessage()
+
+
+def test_i9_sendefehler_einmal_je_zustand(stub, monkeypatch, caplog):
+    monkeypatch.setattr(betreiber_hinweis, "_letzter_fehler", None, raising=False)
+    stub.antwort = (500, {"ok": False})
+    with caplog.at_level(logging.DEBUG, logger="betreiber_hinweis"):
+        for _ in range(3):
+            assert betreiber_hinweis.senden(TEXT) is False
+        stub.antwort = (200, {"ok": True})
+        assert betreiber_hinweis.senden(TEXT) is True
+        stub.antwort = (500, {"ok": False})
+        assert betreiber_hinweis.senden(TEXT) is False
+    warn = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert warn == ["Telegram-Hinweis: HTTP 500", "Telegram-Hinweis: HTTP 500"]
+    _kein_geheimnis(caplog)
