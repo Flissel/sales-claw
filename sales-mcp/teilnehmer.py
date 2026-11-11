@@ -97,12 +97,27 @@ def sperrgrund(adresse: str) -> str:
     if grund:
         return grund
     for z in server._q("select enrichment from leads where lower(email) = %s", (a,)):
-        enr = z.get("enrichment")
-        if server._loeschantrag(enr):
-            return "Loeschantrag"
-        if server._privat(enr):
-            return "privat"
+        grund = _enrichment_grund(z.get("enrichment"))
+        if grund:
+            return grund
     return ""
+
+
+def _enrichment_grund(enr) -> str:
+    if server._loeschantrag(enr):
+        return "Loeschantrag"
+    if server._privat(enr):
+        return "privat"
+    return ""
+
+
+def lead_sperrgrund(lead_id) -> str:
+    """Wie `sperrgrund`, aber fuer einen Kontakt: Sperrliste ueber seine
+    aktuelle E-Mail UND Telefonnummer, Loeschantrag, Privat-Vermerk."""
+    z = server._q("select email, enrichment from leads where id = %s", (str(lead_id),))
+    if not z:
+        return ""
+    return (server._sperre_fuer_lead(str(lead_id)) and "gesperrt")         or _enrichment_grund(z[0].get("enrichment"))
 
 
 def ist_kundentermin(herkunft: str, bereich: str, teilnehmer: list[dict],

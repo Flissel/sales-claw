@@ -16,12 +16,12 @@ from __future__ import annotations
 
 import html
 import json
-import logging
 import re
 import uuid
 from datetime import date
 from urllib.parse import quote, urlsplit
 
+import psycopg
 from starlette.responses import RedirectResponse
 from starlette.routing import Route
 
@@ -31,7 +31,6 @@ import server
 import termin_akte
 from ui_kalender import _gesichert_json, _grund, _ok
 
-LOG = logging.getLogger("ui_termin")
 
 STATUS_TEXT = {"geplant": "geplant", "wartet_auf_einlass": "wartet auf Einlass",
                "laeuft": "läuft", "fertig": "fertig", "ohne_aufnahme": "ohne Aufnahme",
@@ -40,7 +39,19 @@ VORSCHLAG_TEXT = {"offen": "offen", "bestaetigt": "übernommen", "verworfen": "v
 WOCHENTAGE = ("Mo", "Di", "Mi", "Do", "Fr", "Sa", "So")
 FELD_NAMEN = {"title": "Position", "company": "Firma"}   # Whitelist der Spalten
 _REITER = ("details", "briefing", "verlauf", "mitschrift")
-_HINWEIS_MAX = 300
+MELDUNGEN = {
+    "unbekannte_aktion": "Unbekannte Aktion.",
+    "kein_bot_gesperrt": "„Kein Bot“ lässt sich nach dem Start nicht mehr ändern.",
+    "kein_vorschlag": "Diesen offenen Vorschlag gibt es nicht (mehr).",
+    "ohne_kontakt": "Der Vorschlag gehört zu keinem Kontakt.",
+    "gesperrt": "Dieser Kontakt ist inzwischen gesperrt – nichts übernommen.",
+    "keine_terminzeile": "Zu diesem Termin gibt es keine Termin-Zeile im CRM.",
+    "schon_gebucht": "Zu diesem Termin ist das Ergebnis schon gebucht.",
+    "nicht_gebucht": "Der Vorschlag konnte nicht übernommen werden.",
+    "datum_ungueltig": "Das Datum der Wiedervorlage ist ungültig.",
+    "feld_ungueltig": "Dieses Feld lässt sich nicht übernehmen.",
+    "keine_mitschrift": "Es gibt keine Mitschrift (mehr).",
+}
 _VERLAUF_MAX = 20
 _TEXT_MAX = 300
 
@@ -195,15 +206,9 @@ def _verlauf(akte: dict, betrachter: str | None) -> str:
     namen = {str(k["id"]): k["name"] for k in _kunden(akte)}
     frueher: dict[str, None] = {}
     for lid in ids:
-        try:
-            eintraege = historie.kontakt_historie(lid, mit_mail=mit_mail)[:_VERLAUF_MAX]
-        except Exception as e:  # noqa: BLE001 - nur der Typname ins Log
-            LOG.warning("Verlauf nicht lesbar (%s)", type(e).__name__)
-            eintraege = None
-        zeilen = ""
-        if eintraege is None:
-            zeilen = '<p class="meta">Gerade nicht lesbar.</p>'
-        elif eintraege:
+        # DB-Fehler steigen auf (-> 503 ueber _gesichert_seite).
+        eintraege = historie.kontakt_historie(lid, mit_mail=mit_mail)[:_VERLAUF_MAX]
+        if eintraege:
             punkte = []
             for x in eintraege:
                 tag = x["datum"].strftime("%d.%m.%Y")
@@ -220,14 +225,15 @@ def _verlauf(akte: dict, betrachter: str | None) -> str:
                 frueher[u] = None
     if frueher:
         zeilen = server._q("select uid, beginn, titel from termin_akten where uid = any(%s) "
-                           "order by beginn desc", (list(frueher),))
+                           "and beginn < %s order by beginn desc",
+                           (list(frueher), akte["beginn"]))
         from kalender_sicht import _zone
         punkte = []
         for z in zeilen:
             wann = z["beginn"].astimezone(_zone()).strftime("%d.%m.%Y %H:%M")
             punkte.append(f'<li><a href="{_e(_pfad(z["uid"]))}">{_e(wann)} · '
                           f'{_e(z["titel"] or "Termin")}</a></li>')
-        teile.append("<h2>Weitere Termine mit diesen Kontakten</h2><ul>" + "".join(punkte)
+        teile.append("<h2>Frühere Termine mit diesen Kontakten</h2><ul>" + "".join(punkte)
                      + "</ul>")
     return "".join(teile) or '<p class="meta">Kein verknüpfter Kontakt.</p>'
 
@@ -291,7 +297,7 @@ def _reiter_leiste(akte: dict, aktiv: str) -> str:
 
 
 def _hinweis(request) -> str:
-    h = str(request.query_params.get("hinweis") or "")[:_HINWEIS_MAX]
+    h = MELDUNGEN.get(str(request.query_params.get("m") or ""))
     return f'<div class="hinweis">{_e(h)}</div>' if h else ""
 
 
@@ -309,9 +315,9 @@ def _vorschlag_anwenden(akte_zeile: dict, v: dict) -> str:
     uid, d = akte_zeile["uid"], _daten(v)
     lid = str(v["lead_id"]) if v["lead_id"] else None
     if not lid:
-        return "Der Vorschlag gehört zu keinem Kontakt."
+        return "ohne_kontakt"
     if termin_akte.lead_gesperrt(lid):
-        return "Dieser Kontakt ist inzwischen gesperrt – nichts übernommen."
+        return "gesperrt"
     if v["art"] == "termin_ergebnis":
         tid = akte_zeile["termin_activity_id"]
         if tid is None and akte_zeile["herkunft"] == "kalender":
@@ -329,27 +335,35 @@ def _vorschlag_anwenden(akte_zeile: dict, v: dict) -> str:
             server._q("update termin_akten set termin_activity_id = %s where uid = %s "
                       "returning uid", (tid, uid))
         if tid is None:
-            return "Zu diesem Termin gibt es keine Termin-Zeile im CRM."
+            return "keine_terminzeile"
         erg = server._termin_ergebnis(
             str(tid), bool(d.get("stattgefunden")), d.get("erfolg"),
             str(d.get("was") or ""), quelle="termin-seite")
-        return str(erg["fehler"]) if "fehler" in erg else ""
+        if "fehler" not in erg:
+            return ""
+        return "schon_gebucht" if "schon gebucht" in erg["fehler"] else "nicht_gebucht"
     if v["art"] == "wiedervorlage":
         try:
             faellig = date.fromisoformat(str(d.get("faellig_am")))
         except ValueError:
-            return "Das Datum der Wiedervorlage ist ungültig."
+            return "datum_ungueltig"
         server._wiedervorlage_anlegen(lid, faellig, str(d.get("notiz") or "")[:_TEXT_MAX])
         return ""
     feld, wert = d.get("feld"), " ".join(str(d.get("wert") or "").split())[:200]
     if feld not in FELD_NAMEN or not wert:
-        return "Dieses Feld lässt sich nicht übernehmen."
+        return "feld_ungueltig"
     # Nur die zwei Spalten der Whitelist; der Name kommt nie aus den Daten.
     sql = ("update leads set title = %s, updated_at = now() where id = %s returning id"
            if feld == "title" else
            "update leads set company = %s, updated_at = now() where id = %s returning id")
     server._q(sql, (wert, lid))
     return ""
+
+
+def _zurueck(vid) -> None:
+    """Der Vorschlag wurde nicht angewendet: wieder offen."""
+    server._q("update termin_vorschlaege set status = 'offen', erledigt_am = null "
+              "where id = %s returning id", (vid,))
 
 
 def _aktion(uid: str, form) -> str:
@@ -364,34 +378,35 @@ def _aktion(uid: str, form) -> str:
         if not server._q("update termin_akten set kein_bot = not kein_bot, "
                          "geaendert_am = now() where uid = %s "
                          "and status in ('geplant', 'kein_link') returning uid", (uid,)):
-            return "„Kein Bot“ lässt sich nach dem Start nicht mehr ändern."
+            return "kein_bot_gesperrt"
     elif aktion in ("vorschlag_uebernehmen", "vorschlag_verwerfen"):
+        uebernehmen = aktion == "vorschlag_uebernehmen"
         vid = _uuid(form.get("vorschlag_id"))
+        # Zuerst beanspruchen: ein zweiter Absender findet nichts mehr.
         z = server._q(
-            "select v.id, v.art, v.lead_id, v.daten from termin_vorschlaege v "
-            "join termin_mitschriften m on m.id = v.mitschrift_id "
-            "where v.id = %s and m.uid = %s and v.status = 'offen'",
-            (vid, uid)) if vid else []
+            "update termin_vorschlaege v set status = %s, erledigt_am = now() "
+            "from termin_mitschriften m where m.id = v.mitschrift_id and v.id = %s "
+            "and m.uid = %s and v.status = 'offen' "
+            "returning v.id, v.art, v.lead_id, v.daten",
+            ("bestaetigt" if uebernehmen else "verworfen", vid, uid)) if vid else []
         if not z:
-            return "Diesen offenen Vorschlag gibt es nicht (mehr)."
-        if aktion == "vorschlag_uebernehmen":
-            fehler = _vorschlag_anwenden(
-                server._q("select * from termin_akten where uid = %s", (uid,))[0], z[0])
+            return "kein_vorschlag"
+        if uebernehmen:
+            try:
+                fehler = _vorschlag_anwenden(
+                    server._q("select * from termin_akten where uid = %s", (uid,))[0], z[0])
+            except Exception:
+                _zurueck(vid)
+                raise
             if fehler:
+                _zurueck(vid)
                 return fehler
-        server._q("update termin_vorschlaege set status = %s, erledigt_am = now() "
-                  "where id = %s and status = 'offen' returning id",
-                  ("bestaetigt" if aktion == "vorschlag_uebernehmen" else "verworfen", vid))
     elif aktion == "mitschrift_verwerfen":
-        for m in server._q("select entwurf_id from termin_mitschriften where uid = %s", (uid,)):
-            if m["entwurf_id"] and server._q(
-                    "select 1 from drafts where id = %s and status = 'pending'",
-                    (str(m["entwurf_id"]),)):
-                server.entwurf_ablehnen(str(m["entwurf_id"]))
-        server._q("delete from termin_mitschriften where uid = %s returning id", (uid,))
-        termin_akte.status_setzen(uid, "ohne_aufnahme", "nachträglich verworfen")
+        if not server._q("select 1 from termin_mitschriften where uid = %s", (uid,)):
+            return "keine_mitschrift"
+        termin_akte.aufnahme_beenden(uid, "nachträglich verworfen")
     else:
-        return "Unbekannte Aktion."
+        return "unbekannte_aktion"
     return ""
 
 
@@ -427,8 +442,20 @@ def routen(ui) -> list:
         antwort.headers["Cache-Control"] = "no-store"
         return antwort
 
+    def _gibt(uid: str) -> bool:
+        return bool(server._q("select 1 from termin_akten where uid = %s", (uid,)))
+
     async def lesen(request):
-        if str(request.path_params["kennung"]).endswith(".json"):
+        k = str(request.path_params["kennung"])
+        json_weg = k.endswith(".json")
+        if json_weg:
+            # Eine uid darf selbst auf ".json" enden: gibt es sie ohne den
+            # Zusatz nicht, wohl aber mit, ist es ihre HTML-Seite.
+            try:
+                json_weg = _gibt(k[:-len(".json")]) or not _gibt(k)
+            except psycopg.Error:
+                pass
+        if json_weg:
             return await json_ansicht(request)
         return await seite(request)
 
@@ -445,10 +472,7 @@ def routen(ui) -> list:
         if not server._q("select 1 from termin_akten where uid = %s", (uid,)):
             return ui._fehlerseite(404, "Nicht gefunden", "Zu diesem Termin gibt es keine Akte.")
         meldung = _aktion(uid, form)
-        reiter = str(form.get("reiter") or "")
-        ziel = _pfad(uid) + (f"?reiter={reiter}" if reiter in _REITER else "")
-        if meldung:
-            ziel += ("&" if "?" in ziel else "?") + "hinweis=" + quote(meldung[:_HINWEIS_MAX])
+        ziel = _pfad(uid) + (f"?m={meldung}" if meldung else "")
         return RedirectResponse(ziel, status_code=303)
 
     return [Route("/termine/{kennung:path}", lesen, methods=["GET"]),

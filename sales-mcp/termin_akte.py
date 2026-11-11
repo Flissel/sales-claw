@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import kalender_sichtbarkeit
 import kalender_sicht
@@ -243,6 +244,16 @@ def lesen(uid: str) -> dict | None:
     if not z:
         return None
     a = z[0]
+    gesperrt: dict[str, bool] = {}
+
+    def lead_weg(lid) -> bool:
+        if not lid:
+            return False
+        lid = str(lid)
+        if lid not in gesperrt:
+            gesperrt[lid] = bool(lead_gesperrt(lid))
+        return gesperrt[lid]
+
     tn = [{"name": t["name"], "adresse": t["adresse"], "rolle": t["rolle"],
            "lead_id": str(t["lead_id"]) if t["lead_id"] else None, "grund": t["grund"]}
           for t in server._q(
@@ -250,7 +261,7 @@ def lesen(uid: str) -> dict | None:
               "where uid = %s and coalesce(grund, '') <> 'gesperrt' "
               "order by (rolle = 'organisator') desc, adresse", (uid,))
           # Eine Sperre NACH dem Verknuepfen zaehlt auch: live pruefen.
-          if not teilnehmer.sperrgrund(t["adresse"])]
+          if not teilnehmer.sperrgrund(t["adresse"]) and not lead_weg(t["lead_id"])]
     mit = server._q("select id, segmente, auswertung_status, auswertung_md "
                     "from termin_mitschriften where uid = %s", (uid,))
     mitschrift = None
@@ -260,16 +271,12 @@ def lesen(uid: str) -> dict | None:
         mitschrift = {"id": str(m["id"]), "segmente": m["segmente"],
                       "auswertung_status": m["auswertung_status"],
                       "auswertung_md": m["auswertung_md"]}
-        gesperrt: dict[str, bool] = {}
         for v in server._q(
                 "select id, art, lead_id, daten, status from termin_vorschlaege "
                 "where mitschrift_id = %s order by erstellt_am", (m["id"],)):
             lid = str(v["lead_id"]) if v["lead_id"] else None
-            if lid:
-                if lid not in gesperrt:
-                    gesperrt[lid] = bool(lead_gesperrt(lid))
-                if gesperrt[lid]:
-                    continue
+            if lead_weg(lid):
+                continue
             vorschlaege.append({"id": str(v["id"]), "art": v["art"], "lead_id": lid,
                                 "daten": v["daten"], "status": v["status"]})
     briefing = None
@@ -319,19 +326,9 @@ def akten_eines_leads(lead_id) -> list[str]:
 
 
 def lead_gesperrt(lead_id) -> str:
-    """Grund, wenn der Kontakt JETZT gesperrt ist (Sperrliste, Loeschantrag,
-    Privat-Vermerk) - sonst ''. Nur zur Entscheidung, nie loggen."""
-    z = server._q("select enrichment from leads where id = %s", (str(lead_id),))
-    if not z:
-        return ""
-    if server._sperre_fuer_lead(str(lead_id)):
-        return "gesperrt"
-    enr = z[0]["enrichment"]
-    if server._loeschantrag(enr):
-        return "Loeschantrag"
-    if server._privat(enr):
-        return "privat"
-    return ""
+    """Grund, wenn der Kontakt JETZT gesperrt ist - sonst ''. Nur zur
+    Entscheidung, nie loggen."""
+    return teilnehmer.lead_sperrgrund(lead_id)
 
 
 def aufnahme_beenden(uid: str, grund: str) -> None:
@@ -351,5 +348,40 @@ def aufnahme_beenden(uid: str, grund: str) -> None:
             felder["vexa_meeting_id"] = None
         except vexa.VexaFehler as e:
             LOG.warning("Vexa-Aufraeumen fehlgeschlagen (%s)", type(e).__name__)
+    # Ein noch offener Zusammenfassungs-Entwurf darf nicht verwaisen.
+    for m in server._q("select entwurf_id from termin_mitschriften where uid = %s", (uid,)):
+        if m["entwurf_id"] and server._q(
+                "select 1 from drafts where id = %s and status = 'pending'",
+                (str(m["entwurf_id"]),)):
+            server.entwurf_ablehnen(str(m["entwurf_id"]))
     server._q("delete from termin_mitschriften where uid = %s returning id", (uid,))
     status_setzen(uid, "ohne_aufnahme", grund, **felder)
+
+
+_PASSCODE_PARAMETER = ("pwd", "passcode", "pw", "password")
+GEHEIM = "•••"
+
+
+def _ohne_passcode(wert, passcode: str):
+    if isinstance(wert, str):
+        return wert.replace(passcode, GEHEIM) if passcode else wert
+    if isinstance(wert, dict):
+        return {k: _ohne_passcode(v, passcode) for k, v in wert.items()}
+    if isinstance(wert, list):
+        return [_ohne_passcode(v, passcode) for v in wert]
+    return wert
+
+
+def fuer_agenten(akte: dict) -> dict:
+    """Die Akte ohne Passcode: Feld, Link-Parameter (?pwd=) und jede Stelle in
+    Texten (Beschreibung, Einwahl, Briefing ...) sind entfernt."""
+    passcode = (akte["beitreten"].get("passcode") or "").strip()
+    link = akte["beitreten"].get("link")
+    if link:
+        t = urlsplit(link)
+        rest = [(k, v) for k, v in parse_qsl(t.query, keep_blank_values=True)
+                if k.lower() not in _PASSCODE_PARAMETER]
+        link = urlunsplit(t._replace(query=urlencode(rest)))
+    akte = {**akte, "beitreten": {**akte["beitreten"], "link": link}}
+    del akte["beitreten"]["passcode"]
+    return _ohne_passcode(akte, passcode)

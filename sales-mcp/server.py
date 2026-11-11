@@ -10445,8 +10445,7 @@ def termin_akte_lesen(uid: str) -> str:
     akte = termin_akte.lesen(uid)
     if akte is None:
         return _json({"fehler": "Keine Akte zu dieser uid."})
-    akte["beitreten"] = {k: v for k, v in akte["beitreten"].items() if k != "passcode"}
-    return _json(akte)
+    return _json(termin_akte.fuer_agenten(akte))
 
 
 WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,

@@ -16,6 +16,7 @@ import server  # noqa: E402
 import sperrliste  # noqa: E402
 import termin_akte  # noqa: E402
 import ui  # noqa: E402
+import ui_termin  # noqa: E402
 import vexa  # noqa: E402
 
 CLIENT = TestClient(ui.app)
@@ -150,7 +151,9 @@ def _post(uid, aktion, csrf=True, client=CLIENT, **felder):
 
 def _hinweis(antwort) -> str:
     from urllib.parse import parse_qs, urlsplit
-    return parse_qs(urlsplit(antwort.headers["location"]).query).get("hinweis", [""])[0]
+    code = parse_qs(urlsplit(antwort.headers["location"]).query).get("m", [""])[0]
+    assert code == "" or code in ui_termin.MELDUNGEN
+    return ui_termin.MELDUNGEN.get(code, "")
 
 
 def _anmelden(name, rolle, passwort="termin-passwort-9"):
@@ -502,3 +505,112 @@ def test_kein_passcode_und_keine_mitschrift_im_log(caplog, fake):
     _post("u1", "ohne_aufnahme")
     log = caplog.text
     assert PASSCODE not in log and SEGMENT_TEXT not in log and ADRESSE not in log
+
+
+# --- Fix-Runde 1 ------------------------------------------------------------
+
+def test_lead_gesperrt_nicht_in_html_und_json():
+    frei = _lead()
+    weg = _lead(email="geaendert@firma.de", name="Privat Paula", firma="Geheim AG")
+    _akte("u1")
+    _teilnehmer("u1", frei)
+    _teilnehmer("u1", weg, adresse="andere-adresse@firma.de", name="Privat Paula")
+    server._q("insert into activities (lead_id, type, payload) values (%s, 'termin', %s) "
+              "returning id", (weg, server._json({"datum": "2098-12-01", "uhrzeit": "10:00",
+                                                    "thema": "VERLAUFSGEHEIMNIS"})))
+    server._q("update leads set enrichment = %s::jsonb where id = %s returning id",
+              (json.dumps({server.PRIVAT_SCHLUESSEL: {"privat": True}}), weg))
+    for pfad in (_pfad("u1"), _pfad("u1") + "?reiter=verlauf", _pfad("u1") + ".json"):
+        text = _get(pfad).text
+        for geheim in ("Privat Paula", "Geheim AG", "VERLAUFSGEHEIMNIS", weg,
+                       "andere-adresse@firma.de"):
+            assert geheim not in text, (pfad, geheim)
+        assert "Karla Kunde" in text
+
+
+def test_lead_mit_telefon_auf_sperrliste_nicht_sichtbar():
+    weg = str(server._q(
+        "insert into leads (name, email, phone, source) values "
+        "('Tel Torsten', 'ttt@firma.de', '+4915112345678', 'Messe') returning id")[0]["id"])
+    _akte("u1")
+    _teilnehmer("u1", weg, adresse="neu@firma.de", name="Tel Torsten")
+    sperrliste.sperren(server._q, phone="+4915112345678", quelle="test", grund="Widerruf")
+    assert "Tel Torsten" not in _get(_pfad("u1")).text
+    assert "Tel Torsten" not in _get(_pfad("u1") + ".json").text
+
+
+def test_ohne_aufnahme_lehnt_offenen_entwurf_ab(fake):
+    lead = _lead()
+    _akte("u1", status="fertig")
+    entwurf = str(server._q(
+        "insert into drafts (lead_id, channel, recipient, subject, body, status) "
+        "values (%s, 'email', %s, 'Danke', 'Text', 'pending') returning id",
+        (lead, ADRESSE))[0]["id"])
+    _mitschrift("u1", entwurf_id=entwurf)
+    _post("u1", "ohne_aufnahme")
+    assert server._q("select status from drafts where id = %s", (entwurf,))[0]["status"] == "rejected"
+    assert _mit() is None and _zeile()["status"] == "ohne_aufnahme"
+
+
+def test_mitschrift_verwerfen_ohne_mitschrift_aendert_nichts():
+    _akte("u1", status="fertig")
+    a = _post("u1", "mitschrift_verwerfen")
+    assert a.status_code == 303 and "keine Mitschrift" in _hinweis(a)
+    assert _zeile()["status"] == "fertig"
+
+
+def test_vorschlag_zweimal_absenden_bucht_einmal():
+    lead = _lead()
+    _akte("u1", status="fertig")
+    _teilnehmer("u1", lead)
+    vid = _vorschlag(_mitschrift("u1"), "wiedervorlage", lead,
+                     {"faellig_am": "2099-02-01", "notiz": "einmal"})
+    assert _hinweis(_post("u1", "vorschlag_uebernehmen", vorschlag_id=vid)) == ""
+    assert "nicht (mehr)" in _hinweis(_post("u1", "vorschlag_uebernehmen", vorschlag_id=vid))
+    assert len(server._q("select 1 from activities where type = 'wiedervorlage'")) == 1
+
+
+def test_fehlgeschlagene_wirkung_setzt_vorschlag_zurueck(monkeypatch):
+    lead = _lead()
+    _akte("u1", status="fertig")
+    _teilnehmer("u1", lead)
+    vid = _vorschlag(_mitschrift("u1"), "wiedervorlage", lead,
+                     {"faellig_am": "kein-datum", "notiz": "x"})
+    a = _post("u1", "vorschlag_uebernehmen", vorschlag_id=vid)
+    assert "ungültig" in _hinweis(a) and _vstatus(vid) == "offen"
+    def kaputt(*a, **k):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(server, "_wiedervorlage_anlegen", kaputt)
+    server._q("update termin_vorschlaege set daten = %s::jsonb where id = %s returning id",
+              (json.dumps({"faellig_am": "2099-02-01", "notiz": "x"}), vid))
+    with pytest.raises(RuntimeError):
+        _post("u1", "vorschlag_uebernehmen", vorschlag_id=vid)
+    assert _vstatus(vid) == "offen"
+
+
+def test_nur_fruehere_akten_im_verlauf():
+    lead = _lead()
+    _akte("u1")
+    _akte("alt", beginn=JETZT - timedelta(days=30), titel="FRUEHERTERMIN")
+    _akte("spaeter", beginn=JETZT + timedelta(days=30), titel="SPAETERTERMIN")
+    for u in ("u1", "alt", "spaeter"):
+        _teilnehmer(u, lead)
+    text = _get(_pfad("u1") + "?reiter=verlauf").text
+    assert "FRUEHERTERMIN" in text and "SPAETERTERMIN" not in text
+
+
+def test_hinweis_nur_als_festcode():
+    _akte("u1")
+    a = _get(_pfad("u1") + "?m=unbekannte_aktion")
+    assert "Unbekannte Aktion." in a.text
+    a = _get(_pfad("u1") + "?m=%3Cb%3Efrei%3C%2Fb%3E&hinweis=Freitext")
+    assert "<b>frei</b>" not in a.text and "Freitext" not in a.text
+
+
+@pytest.mark.parametrize("uid", ["a/b@x", "evt.json", "x/y.json"])
+def test_uid_mit_schraegstrich_und_json_endung(uid):
+    _akte(uid)
+    h = _get(_pfad(uid))
+    assert h.status_code == 200 and ">Beitreten</a>" in h.text
+    j = _get(_pfad(uid) + ".json")
+    assert j.status_code == 200 and j.json()["uid"] == uid

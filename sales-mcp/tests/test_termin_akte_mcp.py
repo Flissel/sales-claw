@@ -51,3 +51,17 @@ def test_mcp_unbekannte_uid():
 
 def test_mcp_ist_registriert():
     assert server.termin_akte_lesen in server.WERKZEUGE
+
+
+def test_mcp_passcode_auch_in_link_und_texten_weg():
+    server._q(
+        "insert into termin_akten (uid, herkunft, beginn, ende, titel, link, plattform, "
+        "passcode, einwahl, beschreibung, status) values ('z1', 'sales-claw', %s, %s, "
+        "'Zoom', 'https://zoom.us/j/1?pwd=PASS4711&x=1', 'zoom', %s, "
+        "'Einwahl +49 30 1, Kenncode: PASS4711', 'Kenncode: PASS4711 bitte nutzen', "
+        "'geplant') returning uid", (JETZT, JETZT + timedelta(hours=1), PASSCODE))
+    roh = server.termin_akte_lesen("z1")
+    assert PASSCODE not in roh
+    daten = json.loads(roh)
+    assert daten["beitreten"]["link"] == "https://zoom.us/j/1?x=1"
+    assert "•••" in daten["beschreibung"] and "bitte nutzen" in daten["beschreibung"]
