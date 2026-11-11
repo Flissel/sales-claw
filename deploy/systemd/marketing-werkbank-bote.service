@@ -1,0 +1,22 @@
+[Unit]
+Description=Marketing-Werkbank-Bote (spiegelt die Gates der Video-Werkbank als Rowboat-Vorschlaege)
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+User=debian
+WorkingDirectory=/home/debian/marketing-os
+# Dieselbe Umgebungsdatei wie marketing-api (Rechte 600, nur auf der VM). WERKBANK_UI_BASIS_URL
+# (die Adresse der Sales-Oberflaeche, aus der die Links in den Rowboat-Nachrichten gebaut werden)
+# MUSS dort als Zeile stehen: ohne sie arbeitet der Bote nicht. Wert nie hier und nie im Repo.
+EnvironmentFile=/home/debian/marketing-api.env
+Environment=SUPABASE_SSH_HOST=
+Environment=SUPABASE_DB_CONTAINER=debian-supabase-db-1
+Environment=WERKBANK_ROWBOAT_SCHLUESSEL_DATEI=/home/debian/marketing-werkbank/rowboat-key
+Environment=WERKBANK_ROWBOAT_RPC_URL=http://127.0.0.1:3220
+ExecStart=/home/debian/marketing-os/.venv/bin/python -m spaces.marketing.workers.werkbank_bote
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

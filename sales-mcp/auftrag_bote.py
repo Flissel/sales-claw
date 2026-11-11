@@ -26,6 +26,12 @@ Hoechstens ein Entwurf je Auftrag und Kanal, auch ueber Neustarts:
   frisch angelegter Entwurf dort gegen einen anderen, nimmt der Bote ihn sofort zurueck (rejected).
 Vor dem ersten Entwurf dieselbe Eigentumspruefung wie auf der Reels-Seite (reel_teilen.fertige_reels ueber die
 Marketing-API). Kein Sprachmodell.
+
+Videos (Video-Werkbank, art == "video"): kein Kanal-Entwurf. Ein fertiges Video im Stand `erzeugt` wird ein Eintrag
+im Freigabe-Eingang (Herkunft marketing-video, Link auf die Videoseite der Werkbank), ergebnis.freigabe haelt die
+Kennung, der Auftrag steht danach auf `wartet_freigabe`. Dort entscheidet der Betreiber im Eingang: freigegeben ->
+`fertig`, verworfen -> `abgebrochen`; offen und seit ueber 48 h -> einmal erinnern. Geht der Auftrag in der
+Werkbank zurueck in den Stand `werkbank` (das Video wird neu gebaut), schliesst der Bote den alten Eintrag.
 """
 import json
 import logging
@@ -54,6 +60,11 @@ ZUSTELLUNG_HAENGT_NACH = timedelta(minutes=30)
 EINSTELLUNG_HERZSCHLAG = "auftrag_bote_herzschlag"
 ERLAUBTE_SCHEMAS = ("sales", "sales_test")
 _STOPP = threading.Event()
+
+VIDEO_HERKUNFT = "marketing-video"
+VIDEO_ART = "marketing_video"
+VIDEO_OHNE_BASIS = "Die Adresse der Oberfläche fehlt – das Video kann nicht zur Freigabe."
+VIDEO_OHNE_DATEI = "Das Ergebnis nennt keine gültige Videodatei."
 
 # Saetze fuer den Betreiber (ergebnis.kanal_fehler, auftrag.fehler): kurz, ohne Werkzeug-Begriffe.
 VERSAND_FEHLGESCHLAGEN = "Der Versand ist fehlgeschlagen."
@@ -287,6 +298,64 @@ def _wartet(q, a: dict, jetzt: datetime, zaehler: dict) -> None:
             zaehler["erinnert"] += 1
 
 
+def _video_erzeugt(q, a: dict, zaehler: dict) -> None:
+    """Fertiges Video -> Eintrag im Freigabe-Eingang, dann `wartet_freigabe`. Idempotent: ein offener Eintrag
+    derselben Quelle wird aufgefrischt statt verdoppelt (Neustart zwischen Eintrag und Standwechsel)."""
+    aid = str(a["id"])
+    eingabe = a.get("eingabe") if isinstance(a.get("eingabe"), dict) else {}
+    ergebnis = a.get("ergebnis") if isinstance(a.get("ergebnis"), dict) else {}
+    basis = os.environ.get("UI_BASIS_URL", "").strip().rstrip("/")
+    if not basis:
+        auftrag_buch.stand_setzen(q, aid, "erzeugt", "fehler", VIDEO_OHNE_BASIS)
+        return
+    datei = str(ergebnis.get("datei") or "")
+    if not medien.werkbankdatei(datei):
+        auftrag_buch.stand_setzen(q, aid, "erzeugt", "fehler", VIDEO_OHNE_DATEI)
+        return
+    titel = str(ergebnis.get("titel") or eingabe.get("thema") or "").strip()
+    kennung, _neu = fe.eintragen(VIDEO_HERKUNFT, VIDEO_ART, aid, f"Video: {titel}",
+                                 f"{basis}/marketing/werkbank/{aid}/video",
+                                 {"auftrag": aid, "datei": datei, "dauer_s": ergebnis.get("dauer_s"),
+                                  "fassung": ergebnis.get("fassung")})
+    if not auftrag_buch.ergebnis_mischen(q, aid, {"freigabe": kennung}):
+        LOG.warning("Auftrag %s: Freigabe-Kennung nicht gespeichert - naechster Durchgang", aid[:8])
+        return
+    auftrag_buch.stand_setzen(q, aid, "erzeugt", "wartet_freigabe")
+
+
+def _video_eintrag(q, aid: str, kennung) -> dict | None:
+    """Der Eingangs-Eintrag des Videos: nach der Kennung aus dem Ergebnis, sonst der juengste dieser Quelle."""
+    if isinstance(kennung, str) and kennung:
+        z = q("select status from freigabe_eintraege where kennung = %s", (kennung,))
+    else:
+        z = q("select status from freigabe_eintraege where herkunft = %s and quelle_ref = %s "
+              "order by erstellt_am desc limit 1", (VIDEO_HERKUNFT, aid))
+    return z[0] if z else None
+
+
+def _video_wartet(q, a: dict, jetzt: datetime, zaehler: dict) -> None:
+    aid = str(a["id"])
+    ergebnis = a.get("ergebnis") if isinstance(a.get("ergebnis"), dict) else {}
+    eintrag = _video_eintrag(q, aid, ergebnis.get("freigabe"))
+    if eintrag is None:
+        LOG.warning("Auftrag %s: kein Eintrag im Freigabe-Eingang", aid[:8])
+        return
+    if eintrag["status"] in ("erledigt", "verworfen"):
+        nach = "fertig" if eintrag["status"] == "erledigt" else "abgebrochen"
+        zaehler["abgeschlossen"] += 1 if auftrag_buch.stand_setzen(q, aid, "wartet_freigabe", nach) else 0
+        return
+    seit = _wartet_seit(a)
+    if (eintrag["status"] == "offen" and not a.get("erinnert_am") and seit is not None
+            and jetzt - seit > ERINNERN_NACH):
+        if auftrag_buch.erinnert(q, aid):
+            zaehler["erinnert"] += 1
+
+
+def _video_werkbank(q, a: dict) -> None:
+    """Das Video wird neu gebaut: ein noch offener Eintrag zur alten Fassung ist hinfaellig."""
+    fe.schliessen(VIDEO_HERKUNFT, str(a["id"]), "verworfen", "auftrag-bote")
+
+
 def _herzschlag(erfolg: bool, fehler: str | None, jetzt: datetime) -> None:
     """Der Herzschlag darf den Durchgang nie stoppen."""
     try:
@@ -315,9 +384,16 @@ def durchgang(q, jetzt: datetime | None = None) -> dict:
         for a in auftrag_buch.eigene(q, laden, ["erzeugt"]):
             if a.get("art") == "reel":
                 fehler = _einzeln(lambda: _erzeugt(q, a, zaehler), a) or fehler
+            elif a.get("art") == "video":
+                fehler = _einzeln(lambda: _video_erzeugt(q, a, zaehler), a) or fehler
         for a in auftrag_buch.eigene(q, laden, ["wartet_freigabe"]):
             if a.get("art") == "reel":
                 fehler = _einzeln(lambda: _wartet(q, a, jetzt, zaehler), a) or fehler
+            elif a.get("art") == "video":
+                fehler = _einzeln(lambda: _video_wartet(q, a, jetzt, zaehler), a) or fehler
+        for a in auftrag_buch.eigene(q, laden, ["werkbank"]):
+            if a.get("art") == "video":
+                fehler = _einzeln(lambda: _video_werkbank(q, a), a) or fehler
     except Exception as e:  # noqa: BLE001
         LOG.error("Durchgang abgebrochen: %s", type(e).__name__)
         fehler = type(e).__name__

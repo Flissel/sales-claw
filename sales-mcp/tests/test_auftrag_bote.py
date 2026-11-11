@@ -84,7 +84,7 @@ class Buch:
 
     def ergebnis_mischen(self, q, aid, teil):
         a = self.auftraege[aid]
-        if a["stand"] not in ("in_arbeit", "erzeugt", "wartet_freigabe"):
+        if a["stand"] not in ("in_arbeit", "erzeugt", "wartet_freigabe", "werkbank"):
             return False
         self.mischungen.append((aid, self._kopie(teil)))
         a["ergebnis"] = {**a["ergebnis"], **self._kopie(teil)}
@@ -459,3 +459,148 @@ def test_linkedin_urn_wird_zum_link(buch):
     assert buch.auftraege[aid]["ergebnis"]["beitraege"] == {
         "linkedin": "https://www.linkedin.com/feed/update/urn:li:ugcPost:9",
         "mastodon": "https://social.example/@haus/1"}
+
+
+# --- Video (Video-Werkbank): Freigabe-Eintrag statt Kanal-Entwuerfe ------------------------------------------
+
+WB_DATEI = "wb-0123abcd-video-f1.mp4"
+BASIS = "https://laden.example"
+
+
+@pytest.fixture(autouse=True)
+def eingang_leer(monkeypatch):
+    with server.pool.connection() as conn:
+        conn.execute("truncate sales_test.freigabe_eintraege cascade")
+    monkeypatch.setenv("UI_BASIS_URL", BASIS + "/")
+
+
+def _video(buch, stand="erzeugt", **ergebnis) -> str:
+    aid = str(uuid.uuid4())
+    buch.auftraege[aid] = {
+        "id": aid, "von": "sales", "an": "marketing", "laden": LADEN, "mandant": FIRMA, "art": "video",
+        "stand": stand, "eingabe": {"thema": "KI im Vertrieb", "beschreibung": "Geheimer Wunsch des Betreibers",
+                                    "minuten": 4, "zielgruppe": "Entscheider 34+, die eine Schulung suchen"},
+        "ergebnis": {"datei": WB_DATEI, "titel": "KI im Vertrieb", "dauer_s": 241, "fassung": 1,
+                     "ki_hinweis": True, "werkbank": {"wartet": 0, "runde": 3}, **ergebnis},
+        "fehler": None, "erinnert_am": None, "verlauf": [{"stand": stand, "zeit": buch.jetzt.isoformat()}]}
+    return aid
+
+
+def _eintraege(herkunft="marketing-video"):
+    return fe.offene(herkunft)
+
+
+def test_video_erzeugt_wird_freigabe_eintrag(buch):
+    aid = _video(buch)
+    zaehler = _durchgang(buch)
+    e = _eintraege()
+    assert len(e) == 1 and e[0]["art"] == "marketing_video" and e[0]["quelle_ref"] == aid
+    assert e[0]["link"] == f"{BASIS}/marketing/werkbank/{aid}/video"
+    assert e[0]["titel"] == "Video: KI im Vertrieb"
+    assert e[0]["details"] == {"auftrag": aid, "datei": WB_DATEI, "dauer_s": 241, "fassung": 1}
+    assert buch.auftraege[aid]["stand"] == "wartet_freigabe"
+    assert buch.auftraege[aid]["ergebnis"]["freigabe"] == e[0]["kennung"]
+    assert zaehler == {"abgelaufen": 0, "entwuerfe": 0, "abgeschlossen": 0, "erinnert": 0}
+
+
+def test_video_zweiter_durchgang_kein_zweiter_eintrag(buch):
+    aid = _video(buch)
+    _durchgang(buch)
+    kennung = buch.auftraege[aid]["ergebnis"]["freigabe"]
+    _durchgang(buch)
+    # Neustart zwischen Eintrag und Standwechsel: der Auftrag steht noch auf erzeugt.
+    buch.auftraege[aid]["stand"] = "erzeugt"
+    _durchgang(buch)
+    e = _eintraege()
+    assert len(e) == 1 and e[0]["kennung"] == kennung and buch.auftraege[aid]["stand"] == "wartet_freigabe"
+    assert server._q("select count(*) n from freigabe_eintraege")[0]["n"] == 1
+
+
+def test_video_freigegeben_macht_fertig(buch):
+    aid = _video(buch)
+    _durchgang(buch)
+    assert _durchgang(buch)["abgeschlossen"] == 0 and buch.auftraege[aid]["stand"] == "wartet_freigabe"
+    assert fe.schliessen_kennung(_eintraege()[0]["kennung"], "erledigt", "mira")
+    assert _durchgang(buch)["abgeschlossen"] == 1
+    assert buch.auftraege[aid]["stand"] == "fertig"
+
+
+def test_video_verworfen_macht_abgebrochen(buch):
+    aid = _video(buch)
+    _durchgang(buch)
+    assert fe.schliessen_kennung(_eintraege()[0]["kennung"], "verworfen", "mira")
+    assert _durchgang(buch)["abgeschlossen"] == 1
+    assert buch.auftraege[aid]["stand"] == "abgebrochen"
+
+
+def test_video_wieder_in_werkbank_schliesst_alten_eintrag(buch):
+    aid = _video(buch)
+    _durchgang(buch)
+    alt = buch.auftraege[aid]["ergebnis"]["freigabe"]
+    buch.auftraege[aid]["stand"] = "werkbank"           # Marketing baut das Video neu
+    _durchgang(buch)
+    z = server._q("select status, geschlossen_von from freigabe_eintraege where kennung = %s", (alt,))[0]
+    assert z["status"] == "verworfen" and z["geschlossen_von"] == "auftrag-bote" and _eintraege() == []
+    assert buch.auftraege[aid]["stand"] == "werkbank"
+    # die neue Fassung: neuer Eintrag mit neuer Kennung
+    a = buch.auftraege[aid]
+    a["stand"], a["ergebnis"]["datei"], a["ergebnis"]["fassung"] = "erzeugt", "wb-0123abcd-video-f2.mp4", 2
+    _durchgang(buch)
+    neu = _eintraege()
+    assert len(neu) == 1 and neu[0]["kennung"] != alt and neu[0]["details"]["fassung"] == 2
+    assert a["ergebnis"]["freigabe"] == neu[0]["kennung"] and a["stand"] == "wartet_freigabe"
+
+
+def test_video_werkbank_ohne_eintrag_tut_nichts(buch):
+    aid = _video(buch, stand="werkbank")
+    assert _durchgang(buch) == {"abgelaufen": 0, "entwuerfe": 0, "abgeschlossen": 0, "erinnert": 0}
+    assert buch.auftraege[aid]["stand"] == "werkbank"
+
+
+def test_video_legt_keine_kanal_entwuerfe_an(buch):
+    aid = _video(buch)
+    _durchgang(buch)
+    assert server._q("select count(*) n from drafts where auftrag = %s", (aid,))[0]["n"] == 0
+    assert _entwuerfe() == []
+
+
+def test_video_erinnerung_nach_48h_einmal(buch):
+    aid = _video(buch)
+    _durchgang(buch)
+    assert _durchgang(buch, T0 + timedelta(hours=47))["erinnert"] == 0
+    assert _durchgang(buch, T0 + timedelta(hours=49))["erinnert"] == 1
+    assert buch.auftraege[aid]["erinnert_am"] is not None
+    assert _durchgang(buch, T0 + timedelta(hours=72))["erinnert"] == 0
+
+
+def test_video_ohne_basisadresse_wird_fehler(buch, monkeypatch):
+    monkeypatch.delenv("UI_BASIS_URL")
+    aid = _video(buch)
+    _durchgang(buch)
+    assert buch.auftraege[aid]["stand"] == "fehler" and buch.auftraege[aid]["fehler"] == ab.VIDEO_OHNE_BASIS
+    assert _eintraege() == []
+
+
+@pytest.mark.parametrize("datei", ["", "../media/geheim.mp4", "vid-0123abcd-drei-fehler.mp4",
+                                   "wb-0123abcd-video-f1.mov", "wb-0123abcd-video-f1.mp4/../x"])
+def test_video_ohne_gueltige_datei_wird_fehler(buch, datei):
+    aid = _video(buch, datei=datei)
+    _durchgang(buch)
+    assert buch.auftraege[aid]["stand"] == "fehler" and buch.auftraege[aid]["fehler"] == ab.VIDEO_OHNE_DATEI
+    assert _eintraege() == []
+
+
+def test_ein_kaputtes_video_haelt_ein_reel_nicht_auf(buch):
+    _video(buch, datei="")
+    reel = buch.neu()
+    _durchgang(buch)
+    assert buch.auftraege[reel]["stand"] == "wartet_freigabe"
+
+
+def test_reel_zweige_unveraendert_neben_einem_video(buch):
+    reel, video = buch.neu(), _video(buch)
+    zaehler = _durchgang(buch)
+    assert zaehler["entwuerfe"] == 2 and len(_entwuerfe()) == 2
+    assert all(str(e["auftrag"]) == reel for e in _entwuerfe())
+    assert buch.auftraege[video]["stand"] == "wartet_freigabe" and len(_eintraege()) == 1
+    assert _eintraege("sales") == [] and _eintraege("marketing") == []
