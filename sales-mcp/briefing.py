@@ -53,10 +53,30 @@ def _kurz(text, grenze: int) -> str:
 _URL = re.compile(r"(?:https?://|www\.)\S+", re.I)
 _MAIL = re.compile(r"\S+@\S+")
 _NUMMER = re.compile(r"\+?\(?\d[\d\s().\-/]*\d")
-_GEHEIMZEILE = re.compile(
-    r"passcode|kenncode|kennwort|meeting[\s-]?id|besprechungs[\s-]?id|dial[\s-]?in|"
-    r"einwahl|telefon", re.I)
 _LANGE_ZIFFERN = re.compile(r"\d[\d\s-]{6,}\d")
+# Einladungstexte (Meet/Teams/Zoom): Bausteine ohne eigenen Inhalt.
+_FLOSKELN = re.compile(
+    r"(?:mit google meet teilnehmen|join with google meet|oder telefonisch teilnehmen|"
+    r"join by phone|weitere telefonnummern|more phone numbers|"
+    r"microsoft teams[- ]?(?:besprechung|meeting)|"
+    r"nehmen sie auf ihrem computer, in der mobilen app oder auf einem raumger.t teil|"
+    r"join on your computer,? mobile app or room device|"
+    r"klicken sie hier, um an der besprechung teilzunehmen|click here to join the meeting|"
+    r"weitere informationen|learn more|besprechungsoptionen|meeting options|"
+    r"zoom[- ]?meeting beitreten|zoom beitreten|join zoom meeting|"
+    r"an der besprechung teilnehmen|join the meeting)\s*:?", re.I)
+# Zugangscodes: Stichwort + Wert (mit Doppelpunkt jeder Wert, ohne nur mit Ziffer)
+_CODE = re.compile(
+    r"\b(?:passcode|kenncode|kennwort|passwort|password|zugangscode|pin)\b"
+    r"(?:\s*[:=]\s*\S+|[ \t]+(?=\S*\d)\S+)(?:[ \t]+[\d#]+)*", re.I)
+# Kennungen und Einwahl: Stichwort + Ziffernfolge (das Stichwort faellt immer)
+_KENNUNG = re.compile(
+    r"(?:\b(?:meeting|besprechungs|konferenz|webinar)[\s-]?(?:id|nummer|kennung)\b|"
+    r"\bdial[\s-]?in\b|\beinwahl(?:nummer|nummern)?\b|\btelefon(?:nummer|nummern)?\b|"
+    r"\bphone\b|\btel\.)"
+    r"\s*[:=]?\s*(?:\(\s*[A-Z]{2}\s*\)\s*)?(?:\+?[\d\s()./,#*-]*\d#?)?", re.I)
+_LAENDERKUERZEL = re.compile(r"\(\s*[A-Z]{2}\s*\)\s*(?=\+?\d)")
+_HAT_INHALT = re.compile(r"[^\W_]")
 
 
 def _ziffern_weg(m) -> str:
@@ -74,13 +94,23 @@ def _scrub(text, neutral: str = NEUTRAL) -> str:
 
 
 def _beschreibung(text, grenze: int) -> str:
-    """Zugangsdaten raus, bevor gekuerzt wird: Zeilen mit URL oder Passcode-/
-    Einwahl-Stichwort entfallen, lange Zifferfolgen ebenfalls."""
+    """Zugangsdaten raus, bevor gekuerzt wird - der eigene Text bleibt (Final-
+    Review): URLs, Passcodes/PINs mit Wert, Meeting-IDs und Einwahlnummern,
+    Telefon-/lange Zifferfolgen und die Floskeln der Einladungsvorlagen
+    entfallen; Zeilen ohne Buchstaben/Ziffern (Trennlinien) ebenfalls."""
     zeilen = []
     for z in str(text or "").splitlines():
-        if _URL.search(z) or _GEHEIMZEILE.search(z):
-            continue
-        zeilen.append(_LANGE_ZIFFERN.sub(" ", z))
+        z = _URL.sub(" ", z)
+        z = _FLOSKELN.sub(" ", z)
+        z = _CODE.sub(" ", z)
+        z = _KENNUNG.sub(" ", z)
+        z = _LAENDERKUERZEL.sub(" ", z)
+        z = _MAIL.sub(" ", z)
+        z = _NUMMER.sub(_ziffern_weg, z)
+        z = _LANGE_ZIFFERN.sub(" ", z)
+        z = " ".join(z.replace("<", " ").replace(">", " ").split())
+        if _HAT_INHALT.search(z):
+            zeilen.append(z)
     return _kurz(" ".join(zeilen), grenze)
 
 
@@ -144,7 +174,8 @@ def _lead_fakten(lead: dict, uid: str) -> dict:
     lid = str(lead["id"])
     # kontakt_historie sortiert nur nach datum; Gleichstaende voll ordnen,
     # damit Schnitt und stand stabil bleiben
-    roh = sorted(kontakt_historie(lid, tage=365),
+    # Final-Review I11: ohne Mailinhalt (Sichtbarkeitsregel wie in der Oberflaeche)
+    roh = sorted(kontakt_historie(lid, tage=365, mit_mail=False),
                  key=lambda e: (str(e["datum"]), e["art"] or "", e["kanal"] or "",
                                 str(e["text"] or "")), reverse=True)
     kontakte = [{"datum": _tag(e["datum"]), "art": e["art"], "kanal": e["kanal"],
@@ -155,6 +186,10 @@ def _lead_fakten(lead: dict, uid: str) -> dict:
             "letzte_kontakte": kontakte,
             "offene_wiedervorlagen": _wiedervorlagen(lid),
             "painpoints": _painpoints(lid, uid)}
+
+
+def _h(uid: str) -> str:
+    return hashlib.sha256(str(uid).encode()).hexdigest()[:8]
 
 
 def fakten(uid: str) -> dict:
@@ -171,12 +206,14 @@ def fakten(uid: str) -> dict:
                       "created_at, enrichment from leads where id = %s::uuid", (lid,))
         if z and not gesperrt(z[0]):
             leads.append(_lead_fakten(z[0], uid))
-    LOG.debug("Briefing-Fakten: uid=%s leads=%d",
-              hashlib.sha256(uid.encode()).hexdigest()[:8], len(leads))
-    return {"beginn": akte["beginn"].isoformat(),
-            "ziel": {"thema": akte.get("thema") or akte.get("titel") or "",
-                     "beschreibung": _beschreibung(akte.get("beschreibung"), MAX_BESCHREIBUNG)},
-            "leads": leads}
+    LOG.debug("Briefing-Fakten: uid=%s leads=%d", _h(uid), len(leads))
+    if termin_akte.hat_gesperrte(uid):
+        # Final-Review I4: Titel/Beschreibung nennen oft den Gesperrten
+        ziel = {"thema": NEUTRAL, "beschreibung": ""}
+    else:
+        ziel = {"thema": akte.get("thema") or akte.get("titel") or "",
+                "beschreibung": _beschreibung(akte.get("beschreibung"), MAX_BESCHREIBUNG)}
+    return {"beginn": akte["beginn"].isoformat(), "ziel": ziel, "leads": leads}
 
 
 def _dd(tag: str) -> str:
@@ -242,11 +279,13 @@ def erstellen(uid: str) -> dict:
     kurz = ""
     try:
         if ollama.erreichbar():
-            kurz = _ki_text(ollama.chat(SYSTEM_PROMPT, md))
+            # Final-Review I7c: eigenes, kurzes Zeitlimit - der Takt wartet sonst
+            kurz = _ki_text(ollama.chat(SYSTEM_PROMPT, md,
+                                        timeout_s=ollama.briefing_timeout()))
     except ollama.OllamaFehler:
-        LOG.warning("Briefing ohne KI-Text: Ollama-Fehler (uid=%s)", uid)
+        LOG.warning("Briefing ohne KI-Text: Ollama-Fehler (uid=%s)", _h(uid))
     except Exception:  # noqa: BLE001 - Vertrag: Ollama bricht das Briefing nie
-        LOG.warning("Briefing ohne KI-Text: unerwarteter Fehler (uid=%s)", uid)
+        LOG.warning("Briefing ohne KI-Text: unerwarteter Fehler (uid=%s)", _h(uid))
     if kurz:
         return {"markdown": f"## Kurz\n{kurz}\n\n{md}", "mit_ki": True, "stand": stand}
     return {"markdown": f"_ohne KI-Text_\n\n{md}", "mit_ki": False, "stand": stand}
@@ -255,14 +294,16 @@ def erstellen(uid: str) -> dict:
 def hinweis_text(akte: dict, ui_basis: str) -> str:
     """Genau vier Zeilen (drei ohne Link); keine Adresse, kein Telefon, keine
     URL ausser dem Beitrittslink, kein Passcode. Uhrzeit in der Zeitzone der
-    Akte. Kunde und Thema laufen durch `_scrub`."""
+    Akte. Kunde und Thema laufen durch `_scrub`. Ist irgendein Teilnehmer
+    gesperrt, sind Kunde UND Thema neutral (Final-Review I4)."""
     try:
         zone = ZoneInfo(akte.get("zeitzone") or "Europe/Berlin")
     except Exception:  # noqa: BLE001 - unbekannte Zone: Vorgabe
         zone = ZoneInfo("Europe/Berlin")
     uhr = akte["beginn"].astimezone(zone).strftime("%H:%M")
-    kunde = _scrub(akte.get("titel"))
-    for t in akte.get("teilnehmer") or []:
+    neutral = termin_akte.hat_gesperrte(akte["uid"])
+    kunde = NEUTRAL if neutral else _scrub(akte.get("titel"))
+    for t in [] if neutral else (akte.get("teilnehmer") or []):
         if not t.get("lead_id"):
             continue
         z = server._q("select name, company, email, phone, enrichment from leads "
@@ -277,7 +318,7 @@ def hinweis_text(akte: dict, ui_basis: str) -> str:
                 if firma:
                     kunde += f" ({firma})"
         break
-    thema = _scrub(akte.get("thema") or akte.get("titel"))
+    thema = NEUTRAL if neutral else _scrub(akte.get("thema") or akte.get("titel"))
     zeilen = [f"🗓 {uhr} {kunde}", thema,
               f"Briefing öffnen: {ui_basis}/termine/{quote(akte['uid'], safe='')}"]
     link = (akte.get("beitreten") or {}).get("link")

@@ -59,6 +59,13 @@ def _mail(lead, betreff="Angebot", tag="2098-12-20"):
               (lead, ADRESSE, betreff, tag + " 09:00+00"))
 
 
+def _nachricht(lead, text="Angebot", tag="2098-12-20"):
+    """Gesendete WhatsApp-Nachricht (kein Mailinhalt: der bleibt aus dem Briefing)."""
+    server._q("insert into drafts (lead_id, channel, recipient, body, status, sent_at) "
+              "values (%s, 'whatsapp', '+4915112345678', %s, 'sent', %s) returning id",
+              (lead, text, tag + " 09:00+00"))
+
+
 def _auswertung(uid, painpoints, am="2098-12-01 10:00+00", status="fertig"):
     server._q("insert into termin_mitschriften (uid, segmente, auswertung_status, "
               "auswertung_json, auswertung_am) values (%s, '[]'::jsonb, %s, %s::jsonb, %s) "
@@ -76,7 +83,7 @@ def _alte_akte(lead, uid, beginn="2098-12-01 09:00+00"):
 def test_fakten_inhalt():
     lead = _lead()
     uid = _akte(lead)
-    _mail(lead, "Angebot bAV")
+    _nachricht(lead, "Angebot bAV")
     server._wiedervorlage_anlegen(lead, datetime(2099, 1, 20).date(), "Unterlagen schicken")
     _alte_akte(lead, "alt-1")
     # Form aus Task 10: {"zitat", "zeit", "sprecher"}; tolerant auch str / {"text"}
@@ -138,7 +145,7 @@ def test_mit_ollama_kurztext(monkeypatch):
     uid = _akte(_lead())
     aufrufe = []
 
-    def chat(system, nutzer, *, als_json=False):
+    def chat(system, nutzer, *, als_json=False, timeout_s=None):
         aufrufe.append((system, nutzer))
         return "  Erster Satz. Zweiter Satz.  "
     monkeypatch.setattr(ollama, "erreichbar", lambda: True)
@@ -177,7 +184,7 @@ def test_stand_aendert_sich_mit_neuer_mail(monkeypatch):
     uid = _akte(lead)
     a = briefing.erstellen(uid)["stand"]
     assert briefing.erstellen(uid)["stand"] == a  # deterministisch
-    _mail(lead, "Neue Mail")
+    _nachricht(lead, "Neue Nachricht")
     b = briefing.erstellen(uid)["stand"]
     assert b != a
     # KI-Text aendert den Stand nicht
@@ -359,3 +366,101 @@ def test_log_ohne_kundentext_bei_ollama_fehler(caplog, monkeypatch):
     assert any("ohne KI-Text" in x.message for x in caplog.records)
     for geheim in (ADRESSE, "Karla", "Firma GmbH", "Beratung"):
         assert geheim not in caplog.text
+
+
+# --- Final-Review --------------------------------------------------------
+
+def test_i11_mailbetreff_nicht_im_briefing():
+    lead = _lead()
+    uid = _akte(lead)
+    _mail(lead, "GEHEIMBETREFF Gehaltsliste")
+    _nachricht(lead, "Whatsapp sichtbar")
+    md = briefing.erstellen(uid)["markdown"]
+    assert "GEHEIMBETREFF" not in md and "Gehaltsliste" not in md
+    assert "Whatsapp sichtbar" in md
+
+
+def _mit_gesperrtem(uid):
+    gesperrt = _lead("gesperrt@firma.de", "Gesperrt Person", "Sperr GmbH")
+    server._q("update termin_akten set titel = 'Gespräch mit Gesperrt Person', "
+              "thema = 'Gesperrt Person Vertrag', beschreibung = 'Gesperrt Person bringt Vertrag' "
+              "where uid = %s returning uid", (uid,))
+    server._q("insert into termin_teilnehmer (uid, adresse, rolle, lead_id, grund) "
+              "values (%s, 'gesperrt@firma.de', 'gast', null, 'gesperrt') returning uid", (uid,))
+    server._lead_sperren(gesperrt, "test", "test")
+
+
+def test_i4_hinweis_mit_gesperrtem_teilnehmer_neutral():
+    uid = _akte(_lead())
+    _mit_gesperrtem(uid)
+    text = briefing.hinweis_text(termin_akte.lesen(uid), "https://ui.example")
+    zeilen = text.split("\n")
+    assert zeilen[0] == "🗓 10:00 Kundentermin" and zeilen[1] == "Kundentermin"
+    for geheim in ("Gesperrt", "Sperr GmbH", "Vertrag", "Karla", "Firma GmbH"):
+        assert geheim not in text, geheim
+
+
+def test_i4_briefing_fakten_neutral_bei_gesperrtem_teilnehmer():
+    uid = _akte(_lead())
+    _mit_gesperrtem(uid)
+    f = briefing.fakten(uid)
+    assert f["ziel"] == {"thema": "Kundentermin", "beschreibung": ""}
+    md = briefing.erstellen(uid)["markdown"]
+    assert "Gesperrt" not in md and "Vertrag" not in md
+    assert "Karla Kunde" in md          # der freie Kontakt bleibt im Briefing
+
+
+MEET_EINLADUNG = (
+    "Agenda: bAV-Angebot durchgehen. Mit Google Meet teilnehmen: "
+    "https://meet.google.com/abc-defg-hij Oder telefonisch teilnehmen: (DE) +49 30 300195061 "
+    "PIN: 123 456 789# Weitere Telefonnummern: https://tel.meet/abc-defg-hij?pin=123 "
+    "Bitte Unterlagen mitbringen.")
+TEAMS_EINLADUNG = (
+    "Bitte vorab das Angebot lesen.\n" + "_" * 80 + "\nMicrosoft Teams-Besprechung\n"
+    "Nehmen Sie auf Ihrem Computer, in der mobilen App oder auf einem Raumgerät teil\n"
+    "Klicken Sie hier, um an der Besprechung teilzunehmen "
+    "<https://teams.microsoft.com/l/meetup-join/19%3ameeting_x/0>\n"
+    "Besprechungs-ID: 312 456 789 012\nKenncode: aB3cD4\n"
+    "Weitere Informationen<https://aka.ms/JoinTeamsMeeting> | "
+    "Besprechungsoptionen<https://teams.microsoft.com/meetingOptions/>\n" + "_" * 80)
+
+
+def test_beschreibung_meet_einladung_einzeilig_bleibt():
+    b = briefing._beschreibung(MEET_EINLADUNG, 400)
+    assert "Agenda: bAV-Angebot durchgehen." in b and "Bitte Unterlagen mitbringen." in b
+    for weg in ("meet.google", "tel.meet", "https", "300195061", "123 456", "PIN",
+                "teilnehmen", "Telefonnummern"):
+        assert weg not in b, weg
+
+
+def test_beschreibung_teams_einladung_nur_eigener_text():
+    assert briefing._beschreibung(TEAMS_EINLADUNG, 400) == "Bitte vorab das Angebot lesen."
+
+
+def test_beschreibung_bleibt_gekappt():
+    b = briefing._beschreibung("Wort " * 300 + "https://meet.google.com/abc-defg-hij", 50)
+    assert len(b) <= 50 and b.startswith("Wort")
+
+
+def test_log_uid_nur_als_hash(caplog, monkeypatch):
+    import hashlib
+    uid = _akte(_lead(), uid="uid-sehr-geheim")
+
+    def kaputt(*a, **k):
+        raise ollama.OllamaFehler("weg")
+    monkeypatch.setattr(ollama, "erreichbar", lambda: True)
+    monkeypatch.setattr(ollama, "chat", kaputt)
+    with caplog.at_level(logging.DEBUG):
+        briefing.erstellen(uid)
+    assert "uid-sehr-geheim" not in caplog.text
+    assert hashlib.sha256(uid.encode()).hexdigest()[:8] in caplog.text
+
+
+def test_i7c_briefing_mit_eigenem_zeitlimit(monkeypatch):
+    uid = _akte(_lead())
+    gesehen = []
+    monkeypatch.delenv("OLLAMA_BRIEFING_TIMEOUT_S", raising=False)
+    monkeypatch.setattr(ollama, "erreichbar", lambda: True)
+    monkeypatch.setattr(ollama, "chat", lambda s, n, **k: gesehen.append(k) or "Text.")
+    assert briefing.erstellen(uid)["mit_ki"] is True
+    assert gesehen == [{"timeout_s": 60}]
