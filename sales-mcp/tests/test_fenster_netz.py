@@ -212,3 +212,35 @@ def test_hinweis_und_doku_verweisen_auf_das_skript():
     assert r.count("bash deploy/sales-ui-neu.sh") >= 2
     assert "`docker compose up -d --no-deps --force-recreate sales-ui` (andere Laeden" not in r
     assert "Ist unklar, ob sie raus ist, vermerkst du" in _lesen("docs/05_BEDIENUNG.md")
+
+
+# R64: ein schlichter Basis-Recreate von sales-ui in den Betriebsdokus verliert still das Netz bewerbung-fenster.
+_PLAIN_UI = re.compile(r"docker compose(?![^`\n&]*--env-file)[^`\n&]*\bup\b[^`\n&]*\bsales-ui(?![-\w])")
+# bewusst stehengelassen: die Warnung selbst und der alte Rueckfahr-Befehl fuer einen vor-update-Stand ohne Portal-Fenster
+_PLAIN_UI_ERLAUBT = ("verlöre es", "`docker compose up -d --build sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw`.")
+
+
+@pytest.mark.parametrize("rel", ["docs/03_RUNBOOK.md", "docs/04_BETRIEB_MINIPC.md", "docs/11_INBETRIEBNAHME.md"])
+def test_doku_hat_keinen_schlichten_basis_recreate_von_sales_ui(rel):
+    schlecht = [
+        f"{rel}:{n}: {z.strip()}"
+        for n, z in enumerate(_lesen(rel).splitlines(), 1)
+        if _PLAIN_UI.search(z) and not any(e in z for e in _PLAIN_UI_ERLAUBT)
+    ]
+    assert not schlecht, "\n".join(schlecht)
+
+
+def test_plain_recreate_regex_trifft_die_bekannten_formen():
+    for z in (
+        "docker compose up -d sales-ui",
+        "`docker compose up -d --no-deps --force-recreate sales-post sales-ui`.",
+        "`docker compose up -d --no-deps --force-recreate sales-ui sales-kalender`",
+        "docker compose up -d --build sales-ui",
+    ):
+        assert _PLAIN_UI.search(z), z
+    for z in (
+        "`docker compose --env-file deploy/laeden/<laden>.env up -d --no-deps --force-recreate sales-ui`.",
+        "docker compose up -d --no-deps --force-recreate sales-post && bash deploy/sales-ui-neu.sh",
+        "docker compose build sales-ui && bash deploy/sales-ui-neu.sh",
+    ):
+        assert not _PLAIN_UI.search(z), z

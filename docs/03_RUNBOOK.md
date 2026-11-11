@@ -2100,9 +2100,9 @@ Kontakte samt Verlauf/Bedarf/Verträgen, Posteingang, die Einordnung
 unbekannter Absender und offene Wiedervorlagen — ohne den Chat zu bemühen.
 
 ```powershell
-# Start (Rest des Stacks bleibt unberührt). Der Basis-Laden mit Portal-Fenster: bash deploy/sales-ui-neu.sh
-# (ein schlichtes `up -d sales-ui` erzeugt ihn ohne das Netz bewerbung-fenster neu).
-docker compose up -d sales-ui
+# Start (Rest des Stacks bleibt unberührt). Der Basis-Laden mit Portal-Fenster, immer über das Skript
+# (ein schlichtes `up -d sales-ui` erzeugt ihn ohne das Netz bewerbung-fenster neu):
+bash deploy/sales-ui-neu.sh
 # dann im Browser: http://127.0.0.1:8791
 ```
 
@@ -2249,7 +2249,7 @@ Adresse jederzeit erreichbar, und „Wiederherstellen" holt ihn zurück.
 * **Die beiden neuen Chat-Werkzeuge stehen erst nach einem Neustart von
   `sales-mcp` zur Verfügung** (`docker compose up -d --build sales-mcp`) — die
   Werkzeugliste entsteht beim Prozessstart. Das Ausrollen der Oberfläche
-  (`docker compose up -d --build sales-ui`) ändert daran nichts und lässt den
+  (`docker compose build sales-ui && bash deploy/sales-ui-neu.sh`) ändert daran nichts und lässt den
   laufenden MCP-Container bewusst in Ruhe; der Posteingang-Filter für
   archivierte Kontakte greift im Chat also ebenfalls erst nach diesem Neustart.
   **Bis dahin sehen Chat und Oberfläche verschieden:** ein in der Oberfläche
@@ -2284,7 +2284,7 @@ Fall ausdrücklich, dass kein Sammelkontakt eingerichtet ist. Nach dem Ziehen
 dieser Änderung deshalb einmal ausrollen:
 
 ```powershell
-docker compose up -d --build sales-ui
+docker compose build sales-ui; bash deploy/sales-ui-neu.sh
 ```
 
 `--build` ist nötig, weil `ui.py` im Image liegt; es baut das gemeinsame Image
@@ -2493,7 +2493,7 @@ Agententext über Kundennachrichten).
 `entwurf_verwerfen`) stehen erst nach einem Neustart von `sales-mcp` zur
 Verfügung (`docker compose up -d --build sales-mcp`) — die Werkzeugliste
 entsteht beim Prozessstart. Die Oberfläche braucht
-`docker compose up -d --build sales-ui`. `AGENTS.md` muss der Betreiber
+`docker compose build sales-ui && bash deploy/sales-ui-neu.sh`. `AGENTS.md` muss der Betreiber
 zusätzlich per `docker compose cp` ins Volume legen, sonst kennt der Agent die
 neuen Werkzeuge nicht (kein Neustart nötig, siehe „Agent-Regeln ändern").
 `--remove-orphans` bleibt TABU.
@@ -3464,7 +3464,7 @@ Die Schalter (in der `.env` des Ladens, durchgereicht in `docker-compose.yml`):
     Felix' OK - `bash deploy/post-neu-einordnen.sh [laden] anwenden` (ohne Modell; Mails mit menschlicher
     Korrektur bleiben). Pruefen: Ausgabe nennt die Zahl, danach `bericht` noch einmal.
 11. **Einschalten, Stufe 1: nur verschieben.** In die `.env`: `POST_AUFRAEUMEN_AB=<heutiges Datum, ISO>` und
-   `POST_ORDNEN=verschieben`, dann `docker compose up -d --no-deps --force-recreate sales-post sales-ui`.
+   `POST_ORDNEN=verschieben`, dann `docker compose up -d --no-deps --force-recreate sales-post && bash deploy/sales-ui-neu.sh`.
    **`POST_ORDNEN` ausser `aus` nie ohne `POST_AUFRAEUMEN_AB`:** ohne Stichtag gilt jede Mail als
    Altbestand und die 90-Tage-Regel stuft Posteingangs-Mails ab. Pruefen:
    `docker exec ${PRAEFIX}-post printenv POST_ORDNEN POST_AUFRAEUMEN_AB` (beide gesetzt). Dann **eine
@@ -3474,7 +3474,7 @@ Die Schalter (in der `.env` des Ladens, durchgereicht in `docker-compose.yml`):
 12. **Sichtpruefung vor `voll`:** In der UI unter `/post/aufraeumen` je Jahr ansehen, was geloescht
     wuerde (Vorschau je Jahr; ein Klick auf den Absender listet dessen Mails mit Datum, Konto und
     Betreff; Reiter To-Review). Erst danach, mit Felix' OK: `POST_ORDNEN=voll` in die
-    `.env`, `docker compose up -d --no-deps --force-recreate sales-post sales-ui`. `voll` loescht nur
+    `.env`, `docker compose up -d --no-deps --force-recreate sales-post && bash deploy/sales-ui-neu.sh`. `voll` loescht nur
     **freigegebene Jahre** und **To-Review-Mails, die aelter als 30 Tage sind**; ohne Freigabe bleibt die
     Mail, wo sie ist.
 13. **Jahre freigeben** durch Felix in der UI (`/post/aufraeumen`), das neueste Jahr zuerst, je Jahr einzeln;
@@ -3511,7 +3511,7 @@ Alle Schritte nur mit Felix' ausdruecklichem OK (der Deploy selbst braucht es; k
    (fail closed), und die alten E-Mail-Zeilen im Kontakt-Verlauf bleiben fuer alle verborgen.
    Pruefen: `bash deploy/smoke.sh`, `docker exec ${PRAEFIX}-ui printenv POST_BESITZER` ist nicht leer.
 4. **`POST_AUFRAEUMEN_AB=<ISO-Datum>` setzen** (Felix' Entscheidung; `POST_BESITZER` muss gesetzt bleiben), dann
-   nur `docker compose up -d --no-deps --force-recreate sales-post sales-ui` (beide: `sales-ui` zeigt die Mails und liest den
+   nur `docker compose up -d --no-deps --force-recreate sales-post && bash deploy/sales-ui-neu.sh` (beide: `sales-ui` zeigt die Mails und liest den
    Stichtag ebenfalls; ohne ihn steht in `/posteingang` "Stichtag nicht gesetzt"; nie nacktes `up -d`).
    Pruefen: `docker exec ${PRAEFIX}-post printenv POST_AUFRAEUMEN_AB POST_BESITZER` und `docker exec ${PRAEFIX}-ui printenv POST_AUFRAEUMEN_AB`.
    **Jede Aenderung des Stichtags** braucht dieselbe Neuerzeugung von `sales-post` und `sales-ui`.
@@ -3623,7 +3623,7 @@ nie in der UI), `GOOGLE_KALENDER_CLIENT_ID` und `GOOGLE_KALENDER_CLIENT_SECRET`.
    ein. Ist der private Schlüssel schon da, ändert es nichts (ein zweites Paar machte alle
    versiegelten Zugänge unlesbar).
 3. Die Dienste lesen die `.env` erst nach Neuerzeugen:
-   `docker compose up -d --no-deps --force-recreate sales-ui sales-kalender`
+   `bash deploy/sales-ui-neu.sh && docker compose up -d --no-deps --force-recreate sales-kalender`
    (andere Läden mit `--env-file deploy/laeden/<laden>.env`).
    Prüfen (jeweils nur „da“, nie die Werte selbst ausgeben):
    `docker exec ${PRAEFIX}-ui sh -c 'test -n "$GOOGLE_KALENDER_CLIENT_ID" && echo da'` (ebenso für

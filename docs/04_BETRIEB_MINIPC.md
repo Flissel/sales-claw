@@ -125,7 +125,7 @@ Nie zwei Standorte gleichzeitig im Kundenverkehr. Reihenfolge:
    (`POST /api/sessions/<id>/pairing-code`), Betreiber tippt ihn ein.
 6. VM: sales-claw starten; Log muss `Listening for WhatsApp inbound`
    zeigen. Bei `session logged out`: Control-UI, „Erneut verknüpfen", QR.
-7. VM: `docker compose up -d sales-inbox sales-dispatch sales-mail sales-ui sales-mcp`.
+7. VM: `docker compose up -d sales-inbox sales-dispatch sales-mail sales-mcp && bash deploy/sales-ui-neu.sh`.
 8. VM: `bash deploy/smoke.sh` → alle neun grün.
 9. Von einer ZWEITEN Nummer eine WhatsApp schicken → muss als
    `kundenantwort` in der Datenbank und im Posteingang erscheinen.
