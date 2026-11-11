@@ -124,6 +124,8 @@ def _mit_falschem_docker(tmp_path, skripte: list[str], **env_extra):
     bin_ = tmp_path / "bin"
     bin_.mkdir(exist_ok=True)
     (bin_ / "docker").write_text(_FALSCHES_DOCKER, encoding="utf-8", newline="\n")
+    # Ueber PATH aufgerufen: ohne Ausfuehrungsrecht scheitert bash unter Linux mit 126.
+    (bin_ / "docker").chmod(0o755)
     log = tmp_path / "docker.log"
     log.write_text("", encoding="utf-8")
     env = {**os.environ, "PATH": f"{bin_}{os.pathsep}{os.environ['PATH']}", "FAKE_LOG": str(log), **env_extra}
