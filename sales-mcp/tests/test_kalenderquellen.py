@@ -82,8 +82,19 @@ def server_stub(monkeypatch):
     httpd.shutdown()
 
 
+def _hole_fixture(url):
+    """Die Oktober-2026-Fixture oben liegt seit Mitte Oktober 2026 vor dem
+    Vorgabefenster von hole() (7 Tage zurueck, 60 voraus) — gemessen in
+    CI-Lauf 2 am 10.11.2026: alle vier Tests sahen keinen einzigen Termin.
+    Diese Tests pruefen das Zerlegen, nicht das Fenster (das pruefen die
+    K2/W1-Tests); darum ein weites Fenster wie test_ganztaegig_value_date.
+    Die Daten bleiben fest im Oktober, damit 09:00 Berlin = 07:00 UTC
+    (Sommerzeit) gilt."""
+    return kalenderquellen.hole(url, tage_zurueck=3650, tage_voraus=3650)
+
+
 def test_termine_werden_gelesen_und_sortiert(server_stub):
-    termine, fehler = kalenderquellen.hole(server_stub.url)
+    termine, fehler = _hole_fixture(server_stub.url)
     assert fehler is None, fehler
     assert [t["titel"] for t in termine] == [
         "Erster Termin", "Zweiter Termin", "Dritter Termin"]
@@ -94,7 +105,7 @@ def test_termine_werden_gelesen_und_sortiert(server_stub):
 def test_ende_wird_gelesen(server_stub):
     """Ohne Endzeit ist keine Ueberlappung berechenbar. DTEND wurde im Baum
     bisher NUR geschrieben, nie gelesen."""
-    termine, _ = kalenderquellen.hole(server_stub.url)
+    termine, _ = _hole_fixture(server_stub.url)
     dauer = termine[0]["ende"] - termine[0]["beginn"]
     assert dauer.total_seconds() == 3600, termine[0]
 
@@ -104,13 +115,13 @@ def test_ende_faellt_ohne_dtend_auf_beginn_zurueck(server_stub):
     ungetestet — beide bisherigen Testtermine hatten ein DTEND. Eine
     erfundene Dauer erzeugte Kollisionen, die es nicht gibt (der eigentliche
     Grund fuer dieses Modul)."""
-    termine, _ = kalenderquellen.hole(server_stub.url)
+    termine, _ = _hole_fixture(server_stub.url)
     dritter = next(t for t in termine if t["uid"] == "dritter@google")
     assert dritter["ende"] == dritter["beginn"], dritter
 
 
 def test_zeiten_sind_zonenbewusst(server_stub):
-    termine, _ = kalenderquellen.hole(server_stub.url)
+    termine, _ = _hole_fixture(server_stub.url)
     assert termine[0]["beginn"].tzinfo is not None
     assert termine[0]["beginn"].astimezone(timezone.utc).hour == 7
 

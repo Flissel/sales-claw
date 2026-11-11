@@ -757,7 +757,8 @@ def test_ohne_ladenwert_bleibt_der_basis_laden_auf_seinen_ordnern(tmp_path: Path
     """Der bestehende Laden hat keine Umgebungsdatei — fuer ihn aendert sich
     kein einziger Pfad. Keine Datei wandert, nichts ist umzuziehen."""
     quellen = _medien_quellen(rendered_config(tmp_path)["services"])
-    assert len(quellen) == 11
+    # elf Stellen am 23.09.2026, 13 vor dem auftrag-bote, mit ihm (10.11.2026) 15
+    assert len(quellen) == 15
     for (dienst, ziel), quelle in quellen.items():
         assert quelle.replace("\\", "/").endswith(ziel), (dienst, ziel, quelle)
 
@@ -773,6 +774,7 @@ def test_ein_laden_mit_eigenem_ordner_teilt_KEINE_einzige_einhaengestelle(tmp_pa
         "MEDIEN_ORDNER": eigene["/media"],
         "MEDIEN_ERZEUGT_ORDNER": eigene["/media-erzeugt"],
     })["services"])
-    assert len(quellen) == 11
+    # elf Stellen am 23.09.2026, 13 vor dem auftrag-bote, mit ihm (10.11.2026) 15
+    assert len(quellen) == 15
     falsch = {k: v for k, v in quellen.items() if v != eigene[k[1]]}
     assert falsch == {}, f"teilt weiterhin mit dem Basis-Laden: {falsch}"

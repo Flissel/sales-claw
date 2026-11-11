@@ -37,7 +37,9 @@ KERN_ALLE="sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw s
 # Stack". Sonst waere KERN_BASIS = KERN_ALLE unten nie wahr, solange z. B.
 # sales-post (Post-Sammelstelle, startet erst mit POST_BESITZER) nicht laeuft,
 # und jedes Update ueberspraenge Abnahme und automatischen Rueckbau.
-KERN_OPTIONAL="sales-post sales-kalender freigabe-bote"
+# auftrag-bote (10.11.2026, M8): das erste Mal von Hand starten, danach
+# zieht ihn jedes Update mit.
+KERN_OPTIONAL="sales-post sales-kalender freigabe-bote auftrag-bote"
 
 # Dienstliste ohne die optionalen Dienste (Reihenfolge bleibt).
 ohne_optionale() { # dienstliste

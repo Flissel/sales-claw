@@ -333,18 +333,21 @@ def _zeitpunkt(wert) -> datetime | None:
     return z if z.tzinfo else z.replace(tzinfo=timezone.utc)
 
 
-def _herzschlag_gespeichert() -> dict:
+def _herzschlag_gespeichert(schluessel: str = EINSTELLUNG_HERZSCHLAG) -> dict:
     z = server._q("select wert from einstellungen where schluessel = %s",
-                  (EINSTELLUNG_HERZSCHLAG,))
+                  (schluessel,))
     return z[0]["wert"] if z and isinstance(z[0]["wert"], dict) else {}
 
 
 def herzschlag_schreiben(erfolg: bool, fehler: str | None = None,
-                         jetzt: datetime | None = None) -> None:
+                         jetzt: datetime | None = None,
+                         schluessel: str = EINSTELLUNG_HERZSCHLAG) -> None:
     """Ein Durchgang des Boten. Der Fehler ist nur ein Typname, nie ein Text
-    (ein Fehlertext koennte den Rowboat-Schluessel tragen)."""
+    (ein Fehlertext koennte den Rowboat-Schluessel tragen). `schluessel`: der
+    Auftrag-Bote (M8) schreibt seinen eigenen Herzschlag; geaendert_von ist
+    der Dienstname dazu (freigabe_bote_herzschlag -> freigabe-bote)."""
     jetzt = jetzt or datetime.now(timezone.utc)
-    alt = _herzschlag_gespeichert()
+    alt = _herzschlag_gespeichert(schluessel)
     neu = {"versuch": jetzt.isoformat(), "erfolg": alt.get("erfolg"),
            "fehler": None, "fehler_seit": None}
     if erfolg:
@@ -352,17 +355,19 @@ def herzschlag_schreiben(erfolg: bool, fehler: str | None = None,
     else:
         neu["fehler"] = re.sub(r"[^A-Za-z0-9_.]", "", str(fehler or "Unbekannt"))[:60] or "Unbekannt"
         neu["fehler_seit"] = alt.get("fehler_seit") or jetzt.isoformat()
+    dienst = schluessel.removesuffix("_herzschlag").replace("_", "-")
     server._q("insert into einstellungen (schluessel, wert, geaendert_von) "
-              "values (%s, %s, 'freigabe-bote') on conflict (schluessel) do update set "
+              "values (%s, %s, %s) on conflict (schluessel) do update set "
               "wert = excluded.wert, geaendert_am = now(), "
               "geaendert_von = excluded.geaendert_von returning schluessel",
-              (EINSTELLUNG_HERZSCHLAG, json.dumps(neu)))
+              (schluessel, json.dumps(neu), dienst))
 
 
-def herzschlag_lesen(jetzt: datetime | None = None) -> dict:
+def herzschlag_lesen(jetzt: datetime | None = None,
+                     schluessel: str = EINSTELLUNG_HERZSCHLAG) -> dict:
     """zustand: unbekannt (nie geschrieben), ok, still (letzter Erfolg zu alt oder nie)."""
     jetzt = jetzt or datetime.now(timezone.utc)
-    w = _herzschlag_gespeichert()
+    w = _herzschlag_gespeichert(schluessel)
     h = {"versuch": _zeitpunkt(w.get("versuch")), "erfolg": _zeitpunkt(w.get("erfolg")),
          "fehler": w.get("fehler") or None, "fehler_seit": _zeitpunkt(w.get("fehler_seit")),
          "minuten": None}
@@ -376,9 +381,10 @@ def herzschlag_lesen(jetzt: datetime | None = None) -> dict:
     return h
 
 
-def herzschlag_pruefzeile(jetzt: datetime | None = None) -> str:
+def herzschlag_pruefzeile(jetzt: datetime | None = None,
+                          schluessel: str = EINSTELLUNG_HERZSCHLAG) -> str:
     """Eine Zeile fuer deploy/smoke.sh: erstes Wort unbekannt|ok|still."""
-    h = herzschlag_lesen(jetzt)
+    h = herzschlag_lesen(jetzt, schluessel)
     if h["zustand"] == "unbekannt":
         return "unbekannt kein Durchgang verzeichnet"
     erfolg = f"vor {h['minuten']} min" if h["minuten"] is not None else "nie"

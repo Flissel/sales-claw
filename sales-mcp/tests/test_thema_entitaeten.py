@@ -91,7 +91,7 @@ def test_escaptes_und_im_thema_wird_aufgeloest():
     """Das gemeldete Symptom: "&amp;" statt "&" in SUMMARY und Betreff."""
     lead = _lead()
     antwort = json.loads(server.termin_einladen(
-        lead, "2026-10-01", "14:30", thema="Angebot &amp; Förderung"))
+        lead, "2099-10-01", "14:30", thema="Angebot &amp; Förderung"))
     text = _ics(antwort)
     assert "Angebot & Förderung" in text, text
     assert "&amp;" not in text, text
@@ -101,7 +101,7 @@ def test_betreff_der_mail_traegt_kein_amp():
     """Die Betreffzeile ist die Stelle, an der der Betreiber es gesehen hat."""
     lead = _lead()
     server.termin_einladen(
-        lead, "2026-10-01", "14:30", thema="Angebot &amp; Förderung")
+        lead, "2099-10-01", "14:30", thema="Angebot &amp; Förderung")
     betreff = server._q(
         "select subject from drafts where lead_id = %s", (lead,))[0]["subject"]
     assert betreff == "Terminvorschlag: Angebot & Förderung", betreff
@@ -112,7 +112,7 @@ def test_doppelt_escaptes_und_wird_ganz_aufgeloest():
     nicht. Die Schleife laeuft, bis sich nichts mehr aendert."""
     lead = _lead()
     antwort = json.loads(server.termin_einladen(
-        lead, "2026-10-01", "14:30", thema="Doppelt &amp;amp; kaputt"))
+        lead, "2099-10-01", "14:30", thema="Doppelt &amp;amp; kaputt"))
     text = _ics(antwort)
     assert "Doppelt & kaputt" in text, text
 
@@ -120,7 +120,7 @@ def test_doppelt_escaptes_und_wird_ganz_aufgeloest():
 def test_auch_die_uebrigen_vier_entitaeten():
     lead = _lead()
     antwort = json.loads(server.termin_einladen(
-        lead, "2026-10-01", "14:30",
+        lead, "2099-10-01", "14:30",
         thema="&lt;Beratung&gt; &quot;kurz&quot; &#x27;A&#x27;"))
     text = _ics(antwort)
     assert "<Beratung> \"kurz\" 'A'" in text, text
@@ -132,7 +132,7 @@ def test_link_im_ort_bleibt_heil():
     lead = _lead()
     raum = "https://teams.microsoft.com/l/meetup?a=1&amp;b=2"
     antwort = json.loads(server.termin_einladen(
-        lead, "2026-10-01", "14:30", thema="Erstgespräch", ort=raum))
+        lead, "2099-10-01", "14:30", thema="Erstgespräch", ort=raum))
     text = _ics(antwort)
     assert "https://teams.microsoft.com/l/meetup?a=1&b=2" in text, text
     rumpf = server._q(
@@ -149,7 +149,7 @@ def test_kaufmaennisches_und_vor_einem_wort_bleibt_stehen():
     jemand auf `html.unescape` umstellt."""
     lead = _lead()
     antwort = json.loads(server.termin_einladen(
-        lead, "2026-10-01", "14:30", thema="Beratung &notwendig für Sie"))
+        lead, "2099-10-01", "14:30", thema="Beratung &notwendig für Sie"))
     text = _ics(antwort)
     assert "Beratung &notwendig für Sie" in text, text
     assert "¬" not in text, text
@@ -160,7 +160,7 @@ def test_echtes_und_bleibt_unveraendert():
     entfernt."""
     lead = _lead()
     antwort = json.loads(server.termin_einladen(
-        lead, "2026-10-01", "14:30", thema="Meier & Söhne"))
+        lead, "2099-10-01", "14:30", thema="Meier & Söhne"))
     text = _ics(antwort)
     assert "Meier & Söhne" in text, text
 
@@ -173,7 +173,7 @@ def test_termin_bestaetigen_loest_ebenfalls_auf():
     sie auseinander."""
     lead = _lead()
     antwort = json.loads(server.termin_bestaetigen(
-        lead, "2026-10-01", "14:30", thema="Angebot &amp; Förderung"))
+        lead, "2099-10-01", "14:30", thema="Angebot &amp; Förderung"))
     text = _ics(antwort)
     assert "Angebot & Förderung" in text, text
     assert "&amp;" not in text, text

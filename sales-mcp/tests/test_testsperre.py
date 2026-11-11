@@ -12,8 +12,16 @@ Aussagekraeftig sind sie nur mit gesetzten Zugangsdaten, also im Container
 mit der echten .env - genau dort entstand der Schaden. Die Meldungen nennen
 nur Variablennamen, nie Werte: ein roter Lauf darf kein Passwort ausgeben.
 """
+import os
+
+import pytest
+
 import kalender
 import konferenz
+
+# HART, nicht setdefault (T5a): auftrag_bote zieht server nach.
+os.environ["SALES_DB_SCHEMA"] = "sales_test"
+import auftrag_bote  # noqa: E402
 
 
 def _gesetzt(namen, werte):
@@ -34,3 +42,11 @@ def test_suite_sieht_keine_echten_google_meet_zugangsdaten():
     namen = ("GOOGLE_MEET_CLIENT_ID", "GOOGLE_MEET_CLIENT_SECRET",
              "GOOGLE_MEET_REFRESH_TOKEN")
     assert _gesetzt(namen, konferenz.konfiguration()[1:]) == []
+
+
+def test_auftrag_bote_erreicht_im_test_kein_echtes_auftragsbuch():
+    """Das Auftragsbuch kennt kein sales_test: ein Durchgang mit dem echten Pool
+    schaltete echte Auftraege des Ladens `sales` weiter. conftest sperrt es."""
+    for name in ("ablaufen", "eigene", "ergebnis_mischen", "stand_setzen", "erinnert"):
+        with pytest.raises(AssertionError, match="echtes Auftragsbuch im Test"):
+            getattr(auftrag_bote.auftrag_buch, name)(None)

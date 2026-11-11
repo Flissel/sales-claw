@@ -117,6 +117,29 @@ def _kein_echter_kalender(monkeypatch):
     yield
 
 
+class _GesperrtesAuftragsbuch:
+    """Jeder Aufruf scheitert laut: der Test hat kein eigenes Auftragsbuch gesetzt."""
+
+    def __getattr__(self, name):
+        def gesperrt(*_a, **_kw):
+            raise AssertionError(f"echtes Auftragsbuch im Test (auftrag_buch.{name})")
+        return gesperrt
+
+
+@pytest.fixture(autouse=True)
+def _kein_echtes_auftragsbuch(monkeypatch):
+    """auftrag-bote (M8, 10.11.2026): das Auftragsbuch (Schema `auftrag`) ist EINE
+    Tabelle fuer alle Laeden und kennt kein sales_test. Ein Bote-Durchgang im Test
+    mit dem echten Pool wuerde echte Auftraege des Ladens `sales` weiterschalten
+    (wartet_freigabe ohne echte Entwuerfe). Der Bote sieht im Test deshalb ein
+    gesperrtes Buch; Tests setzen ihr eigenes (tests/test_auftrag_bote.py).
+    Nur wenn `auftrag_bote` schon geladen ist. Wache: tests/test_testsperre.py."""
+    bote = sys.modules.get("auftrag_bote")
+    if bote is not None:
+        monkeypatch.setattr(bote, "auftrag_buch", _GesperrtesAuftragsbuch())
+    yield
+
+
 @pytest.fixture(autouse=True)
 def _keine_echte_anmeldung(monkeypatch):
     """Mit `--env-file .env` ist die echte UI_SESSION_SECRET gesetzt, und

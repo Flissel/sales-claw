@@ -305,7 +305,8 @@ erwartete_container = {
     "sales-claw", "sales-mcp", "sales-dispatch", "sales-inbox",
     "sales-mail", "sales-telegram", "sales-linkedin", "sales-kanaele",
     "sales-auto", "sales-ui", "sales-post",
-    "sales-freigabe-bote", "sales-kalender"}  # sales-stt seit 20.10.2026 am PC, hier nur per Profil stt-lokal
+    "sales-freigabe-bote", "sales-kalender",
+    "sales-auftrag-bote"}  # sales-stt seit 20.10.2026 am PC, hier nur per Profil stt-lokal
 ist = {d["container_name"] for d in erst["services"].values()}
 assert ist == erwartete_container, ist
 istv = {v["name"] for v in erst["volumes"].values()}
@@ -779,6 +780,7 @@ fi
 # smoke ~30 s spaeter - das waere ROT und damit Rueckbau. Absturzschleife statt
 # dessen: Restarting oder RestartCount >= 3 (Neuerzeugen setzt ihn auf 0).
 # Dazu muss post_mails lesbar sein.
+echo "== Post-Sammelstelle =="
 post_zustand="$(docker inspect -f '{{.State.Status}}' sales-post 2>/dev/null | tr -d '[:space:]' || true)"
 if [ "$post_zustand" != "running" ]; then
   melde "sales-post" "uebersprungen (Container laeuft nicht — Post-Sammelstelle noch nicht ausgerollt)"
@@ -814,6 +816,27 @@ else
     ok\ *) gut "freigabe-bote herzschlag" ;;
     still\ *|unbekannt\ *) fehl "freigabe-bote herzschlag" "${hz} — docker logs sales-freigabe-bote" ;;
     *) fehl "freigabe-bote herzschlag" "nicht lesbar (sales-mcp oder Datenbank?)" ;;
+  esac
+fi
+
+# 22) Herzschlag des Auftrag-Boten (M8, 10.11.2026). Wie Abschnitt 21, mit
+# dem Schluessel einstellungen.auftrag_bote_herzschlag: der Bote schreibt nach
+# jedem Durchgang (Takt 60 s), ob Auftragsbuch und Entwuerfe erreichbar waren.
+# ROT, wenn der letzte Erfolg aelter als 10 Minuten ist oder nie einer
+# verzeichnet wurde. NUR in der vollen Pruefung (deploy/wache.sh). Ohne
+# Container sales-auftrag-bote gibt es nichts zu pruefen.
+if [ "$MODUS" = "basis" ]; then
+  melde "auftrag-bote herzschlag" "uebersprungen (--nur-basis; volle Pruefung ueber deploy/wache.sh alle 15 Minuten)"
+elif ! docker inspect sales-auftrag-bote >/dev/null 2>&1; then
+  melde "auftrag-bote herzschlag" "uebersprungen (kein Container sales-auftrag-bote)"
+else
+  hz="$(docker exec -e SALES_DB_SCHEMA=sales sales-mcp python -c \
+    "import sys;sys.path.insert(0,'/app');import freigabe_eingang as fe;print(fe.herzschlag_pruefzeile(schluessel='auftrag_bote_herzschlag'))" \
+    2>/dev/null | tail -1 || true)"
+  case "$hz" in
+    ok\ *) gut "auftrag-bote herzschlag" ;;
+    still\ *|unbekannt\ *) fehl "auftrag-bote herzschlag" "${hz} — docker logs sales-auftrag-bote" ;;
+    *) fehl "auftrag-bote herzschlag" "nicht lesbar (sales-mcp oder Datenbank?)" ;;
   esac
 fi
 

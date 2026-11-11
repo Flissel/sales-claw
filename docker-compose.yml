@@ -235,6 +235,8 @@ services:
       # Kampagnenplan im Morgen-Digest (17.10.2026): dieselbe Firma wie beim
       # Newsletter-Versand in sales-ui. Leer = kein Block (zweite Laeden).
       MARKETING_MANDANT: ${MARKETING_MANDANT:-}
+      # Auftragsbuch (M8): auftrag_geben schreibt den Laden in den Auftrag.
+      LADEN_PRAEFIX: ${LADEN_PRAEFIX:-sales}
     # Der Medienordner (Stufe 4, F4). Hier liegen die Unterlagen, die der
     # Betreiber an Entwürfe hängen kann; `medien_liste` liest genau dieses
     # Verzeichnis und `entwurf_erstellen` prüft eine Datei gegen es, bevor ein
@@ -271,8 +273,8 @@ services:
       # Umgebungsdatei und bleibt ueber den Vorgabewert auf seinen Ordnern;
       # jeder weitere Laden MUSS MEDIEN_ORDNER und MEDIEN_ERZEUGT_ORDNER
       # setzen, sonst weist deploy/update.sh ihn ab (ein fehlender Wert fiele
-      # sonst STILL auf den Ordner des Basis-Ladens zurueck). Alle elf Stellen
-      # prueft scripts/tests/test_proxmox_compose.py.
+      # sonst STILL auf den Ordner des Basis-Ladens zurueck). Alle Stellen (15
+      # seit dem auftrag-bote, 10.11.2026) prueft scripts/tests/test_proxmox_compose.py.
       - ${MEDIEN_ORDNER:-./media}:/media:ro
       # media-erzeugt (01.09.2026): der EINZIGE Medienordner, in den das
       # System selbst schreibt — hierhin legt `termin_bestaetigen` die
@@ -1110,7 +1112,43 @@ services:
       - UI_BASIS_URL=${UI_BASIS_URL:-}
       - ROWBOAT_RPC_URL=http://127.0.0.1:3220
     volumes:
-      - /home/debian/rowboat-data/server-key:/run/rowboat-server-key:ro
+      # Enger Rowboat-Schluessel (M7): darf nur todo:get/plannerSignals/addSuggestions/
+      # withdrawSuggestion/setChecked, kein Chat, keine Dateien, kein WebSocket. Anlegen:
+      # docs/03_RUNBOOK.md "Rowboat-Schluessel des Boten". Nie den Generalschluessel einhaengen.
+      - /home/debian/freigabe-bote/rowboat-key:/run/rowboat-server-key:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Der Auftrag-Bote (M8 Stufe A, Plan 2026-11-10-auftragsbuch-marketing-kette, Task 6): macht aus
+  # fertigen Marketing-Reels des Auftragsbuchs Kanal-Entwuerfe (warten in /freigaben auf den
+  # Betreiber) und schliesst Auftraege ab. Gleiches Image wie sales-mcp, anderes Kommando.
+  #
+  # Wie freigabe-bote, aber ohne Rowboat (kein Schluessel, kein Host-Netz). Die Medienordner NUR
+  # LESEND: die Werkzeuge pruefen die Reel-Datei (pruefe_anhang) vor jedem Entwurf, genau wie auf
+  # der Reels-Seite. Dieselbe Eigentumspruefung wie dort fragt die Marketing-API (MARKETING_PULT_*,
+  # wie sales-ui), ob die Datei ein fertiges Reel der Firma ist. LINKEDIN_POST_LEAD_ID ist der
+  # Sammelkontakt der Beitragsentwuerfe. Versendet nichts, ruft kein Sprachmodell.
+  auftrag-bote:
+    build: ./sales-mcp
+    image: sales-claw-sales-mcp:local
+    container_name: ${LADEN_PRAEFIX:-sales}-auftrag-bote
+    command: python -m auftrag_bote
+    restart: unless-stopped
+    environment:
+      - SALES_DB_URL=${SALES_DB_URL}
+      - SALES_DB_SCHEMA=${SALES_DB_SCHEMA:-sales}
+      - TZ=${TZ:-Europe/Berlin}
+      - LADEN_PRAEFIX=${LADEN_PRAEFIX:-sales}
+      - MARKETING_MANDANT=${MARKETING_MANDANT:-}
+      - MARKETING_PULT_URL=${MARKETING_PULT_URL:-}
+      - MARKETING_PULT_KEY=${MARKETING_PULT_KEY:-}
+      - LINKEDIN_POST_LEAD_ID=${LINKEDIN_POST_LEAD_ID:-}
+    volumes:
+      - ${MEDIEN_ORDNER:-./media}:/media:ro
+      - ${MEDIEN_ERZEUGT_ORDNER:-./media-erzeugt}:/media-erzeugt:ro
     logging:
       driver: json-file
       options:
