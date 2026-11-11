@@ -3481,8 +3481,8 @@ Die Schalter (in der `.env` des Ladens, durchgereicht in `docker-compose.yml`):
     Absender, die bleiben sollen, vorher herausnehmen. Nach jeder Freigabe eine Runde abwarten und die
     Zahlen pruefen, bevor das naechste Jahr dran ist.
 
-**Rueckweg.** `POST_ORDNEN=aus` in der `.env` und `docker compose up -d --no-deps --force-recreate
-sales-post sales-ui` stoppt jedes Verschieben und Loeschen ab der naechsten Runde (Pruefen:
+**Rueckweg.** `POST_ORDNEN=aus` in der `.env` und
+`docker compose up -d --no-deps --force-recreate sales-post && bash deploy/sales-ui-neu.sh` stoppt jedes Verschieben und Loeschen ab der naechsten Runde (Pruefen:
 `printenv POST_ORDNEN` im Container = `aus`). Schon verschobene Mails bleiben im Zielordner und lassen
 sich per Handy zurueckziehen. **Geloeschte Mails sind endgueltig weg**; nur ihre Kopfzeile bleibt in
 `post_mails` (Absender, Betreff, Datum - kein Inhalt). Darum nie `voll` ohne Sichtpruefung (Schritt 12).

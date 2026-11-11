@@ -216,18 +216,50 @@ def test_hinweis_und_doku_verweisen_auf_das_skript():
 
 # R64: ein schlichter Basis-Recreate von sales-ui in den Betriebsdokus verliert still das Netz bewerbung-fenster.
 _PLAIN_UI = re.compile(r"docker compose(?![^`\n&]*--env-file)[^`\n&]*\bup\b[^`\n&]*\bsales-ui(?![-\w])")
-# bewusst stehengelassen: die Warnung selbst und der alte Rueckfahr-Befehl fuer einen vor-update-Stand ohne Portal-Fenster
-_PLAIN_UI_ERLAUBT = ("verlöre es", "`docker compose up -d --build sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw`.")
+# bewusst stehengelassen (Datei, genauer Zeilentext): die Warnung selbst und der alte Rueckfahr-Befehl fuer einen
+# vor-update-Stand ohne Portal-Fenster
+_PLAIN_UI_ERLAUBT = {
+    ("docs/04_BETRIEB_MINIPC.md",
+     "schlichtes `docker compose up -d sales-ui` verlöre es. Liegt `vor-update` vor dem Portal-Fenster, also ohne"),
+    ("docs/04_BETRIEB_MINIPC.md",
+     "`docker compose up -d --build sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw`."),
+}
 
 
-@pytest.mark.parametrize("rel", ["docs/03_RUNBOOK.md", "docs/04_BETRIEB_MINIPC.md", "docs/11_INBETRIEBNAHME.md"])
+def _logische_zeilen(text: str):
+    """(Zeilennummer, Text): ein Befehl, der per Backslash oder in einem offenen Backtick-Bereich ueber
+    Zeilenumbrueche laeuft, zaehlt als eine Zeile (Umbruch + Einrueckung -> ein Leerzeichen)."""
+    puffer, start = "", 0
+    for n, z in enumerate(text.splitlines(), 1):
+        if not puffer:
+            start = n
+        puffer = f"{puffer} {z.strip()}" if puffer else z
+        offen = puffer.rstrip().endswith("\\") or (
+            puffer.count("`") % 2 == 1 and not puffer.lstrip().startswith("```"))
+        if offen:
+            continue
+        yield start, puffer
+        puffer = ""
+    if puffer:
+        yield start, puffer
+
+
+@pytest.mark.parametrize("rel", ["docs/03_RUNBOOK.md", "docs/04_BETRIEB_MINIPC.md", "docs/11_INBETRIEBNAHME.md",
+                                 "README.md"])
 def test_doku_hat_keinen_schlichten_basis_recreate_von_sales_ui(rel):
     schlecht = [
         f"{rel}:{n}: {z.strip()}"
-        for n, z in enumerate(_lesen(rel).splitlines(), 1)
-        if _PLAIN_UI.search(z) and not any(e in z for e in _PLAIN_UI_ERLAUBT)
+        for n, z in _logische_zeilen(_lesen(rel))
+        if _PLAIN_UI.search(z) and (rel, z.strip()) not in _PLAIN_UI_ERLAUBT
     ]
     assert not schlecht, "\n".join(schlecht)
+
+
+def test_umgebrochener_befehl_wird_gefunden():
+    text = ("x `docker compose up -d --no-deps --force-recreate\nsales-post sales-ui` y\n"
+            "docker compose up -d " + chr(92) + "\n  sales-ui\n")
+    treffer = [n for n, z in _logische_zeilen(text) if _PLAIN_UI.search(z)]
+    assert treffer == [1, 3]
 
 
 def test_plain_recreate_regex_trifft_die_bekannten_formen():

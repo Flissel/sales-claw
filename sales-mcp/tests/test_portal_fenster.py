@@ -443,7 +443,7 @@ def test_fenster_ws_nur_im_basis_laden(anmeldung, eingerichtet, zentrale, upstre
     # nur deshalb gruen ist, liefert die Attrappe einen aktiven `freigeben`-Benutzer. Die Ablehnung muss dann
     # aus der Pfad-/Schemapruefung (_pfad_erlaubt, _ADMIN_BASIS_PFADE) kommen.
     monkeypatch.setattr(ui, "_benutzer_lesen", lambda n: {"name": n, "rolle": "freigeben"})
-    assert ui._pfad_erlaubt("freigeben", PFAD) is False
+    assert ui._pfad_erlaubt("freigeben", WS_PFAD) is False
     with pytest.raises(WebSocketDisconnect) as e:
         with TestClient(ui.app).websocket_connect(WS_PFAD, headers=cookie):
             pass

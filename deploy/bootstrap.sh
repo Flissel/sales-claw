@@ -30,6 +30,7 @@ docker compose -f docker-compose.openwa.yml build openwa
 if bash deploy/fenster-netz-anlegen.sh; then
   docker compose -f docker-compose.yml -f docker-compose.fenster.yml up -d sales-mcp sales-ui
 else
+  # Absicht: ohne Netz KEIN Override - der Override haengt sales-ui an das fehlende externe Netz und `up` scheiterte laut.
   echo "HINWEIS: Netz bewerbung-fenster nicht angelegt - sales-ui startet ohne Portal-Fenster." >&2
   docker compose up -d sales-mcp sales-ui
 fi
