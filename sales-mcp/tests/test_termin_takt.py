@@ -22,6 +22,12 @@ import server  # noqa: E402
 import termin_akte  # noqa: E402
 import termin_takt  # noqa: E402
 import vexa  # noqa: E402
+from zoneinfo import ZoneInfo  # noqa: E402
+
+# Die echten Funktionen, bevor die Fixture sie ersetzt (Final-Review I3/I9).
+ECHT_ABGLEICHEN = termin_akte.abgleichen
+ECHT_ERREICHBAR = ollama.erreichbar
+ECHT_SENDEN = betreiber_hinweis.senden
 
 JETZT = datetime(2099, 1, 9, 12, 0, tzinfo=timezone.utc)
 MEET = "https://meet.google.com/abc-defg-hij"
@@ -44,6 +50,9 @@ class FakeVexa:
         self.holen_fehler: list[Exception] = []
         self.loeschen_fehler: list[Exception] = []
         self.loeschen_hook = None
+        self.bot_hook = None
+        self.lesen_hook = None
+        self.holen_hook = None
 
     def anzahl(self, name):
         return sum(1 for a in self.aufrufe if a[0] == name)
@@ -52,6 +61,8 @@ class FakeVexa:
         self.aufrufe.append(("bot", url))
         if self.bot_fehler:
             raise self.bot_fehler
+        if self.bot_hook:
+            self.bot_hook()
         return {"meeting_id": 11, "plattform": "google_meet",
                 "native_id": "abc-defg-hij", "status": "requested"}
 
@@ -59,10 +70,14 @@ class FakeVexa:
         self.aufrufe.append(("lesen", mid))
         if self.lesen_fehler:
             raise self.lesen_fehler
+        if self.lesen_hook:
+            self.lesen_hook(mid)
         return dict(self.meeting)
 
     def segmente_holen(self, mid):
         self.aufrufe.append(("holen", mid))
+        if self.holen_hook:
+            self.holen_hook(mid)
         if self.holen_fehler:
             raise self.holen_fehler.pop(0)
         return list(self.segmente)
@@ -75,7 +90,7 @@ class FakeVexa:
             raise self.loeschen_fehler.pop(0)
 
     def bot_stoppen(self, plattform, native_id):
-        self.aufrufe.append(("stoppen", plattform))
+        self.aufrufe.append(("stoppen", plattform, native_id))
 
 
 @pytest.fixture
@@ -283,7 +298,8 @@ def test_taktgeber_spaet_gestartet_schickt_noch_waehrend_termin(fake):
     termin_takt.runde(JETZT)
     assert [a for a in fake.aufrufe if a[0] == "bot"] == [("bot", MEET)]
     assert _zeile("u1")["status"] == "wartet_auf_einlass"
-    assert _zeile("u2")["status"] == "geplant"          # vorbei: kein Bot
+    u2 = _zeile("u2")                                   # vorbei: kein Bot
+    assert (u2["status"], u2["status_grund"]) == ("ohne_aufnahme", "Termin vorbei ohne Bot")
 
 
 def test_bot_startet_nicht_fehlgeschlagen(fake):
@@ -609,6 +625,11 @@ def test_log_ohne_kundendaten(fake, monkeypatch, caplog):
     # Zweiter Bot (Nr. 5, gesperrt) schickt nie; Nr. 6 trifft den Fehler
     ergebnis = termin_takt.runde(JETZT)
     assert _zeile(uids[2])["status"] == "fertig"
+    # I7a: solange ein Termin mit Bot ansteht/laeuft, wartet die Auswertung
+    assert ergebnis["auswerten"] == 0 and _mit(uids[2])["auswertung_status"] == "offen"
+    server._q("update termin_akten set abgesagt_am = now() where uid <> %s returning uid",
+              (uids[2],))
+    termin_takt.runde(JETZT + timedelta(seconds=30))
     assert _mit(uids[2])["auswertung_status"] == "fertig"
     assert _zeile(uids[4])["status"] == "ohne_aufnahme"
     assert server._q("select count(*) as n from drafts")[0]["n"] == 1
@@ -659,11 +680,13 @@ def test_briefing_ki_wird_nachgeholt_ohne_zweiten_hinweis(fake, monkeypatch):
     aufrufe = []
     monkeypatch.setattr(ollama, "erreichbar", lambda: aufrufe.append(1) or True)
     monkeypatch.setattr(ollama, "chat", lambda *a, **k: "Kurzer KI-Text.")
-    termin_takt.runde(JETZT + timedelta(seconds=30))
+    termin_takt.runde(JETZT + timedelta(seconds=30))          # I7b: noch Pause
+    assert _zeile("u1")["briefing_mit_ki"] is False
+    termin_takt.runde(JETZT + timedelta(minutes=6))
     assert _zeile("u1")["briefing_mit_ki"] is True
     assert "Kurzer KI-Text." in _zeile("u1")["briefing_md"]
     assert len(TELEGRAM) == 1
-    termin_takt.runde(JETZT + timedelta(seconds=60))          # mit KI: nichts mehr
+    termin_takt.runde(JETZT + timedelta(minutes=6, seconds=30))   # mit KI: nichts mehr
     assert len(TELEGRAM) == 1
 
 
@@ -679,14 +702,14 @@ def test_bot_claim_verhindert_zweiten_bot(fake):
 def test_bot_gestartet_speichern_scheitert_raeumt_auf(fake, monkeypatch, caplog):
     caplog.set_level(logging.INFO)
     _akte("u1", beginn=JETZT + timedelta(seconds=30))
-    echt = termin_akte.status_setzen
+    echt = termin_akte.status_wechseln
 
-    def kaputt(uid, status, grund="", **felder):
+    def kaputt(uid, von, nach, grund="", **felder):
         if "vexa_meeting_id" in felder:
             raise RuntimeError(f"DB weg {ADRESSE}")
-        return echt(uid, status, grund, **felder)
+        return echt(uid, von, nach, grund, **felder)
 
-    monkeypatch.setattr(termin_akte, "status_setzen", kaputt)
+    monkeypatch.setattr(termin_akte, "status_wechseln", kaputt)
     termin_takt._bot_starten("u1", MEET, JETZT)
     assert fake.anzahl("bot") == 1
     assert fake.anzahl("stoppen") == 1 and fake.anzahl("loeschen") == 1
@@ -707,10 +730,12 @@ def test_nach_ende_ohne_bot_wird_ohne_aufnahme(fake, monkeypatch):
     termin_takt.runde(JETZT)
     a = _zeile("u1")
     assert (a["status"], a["status_grund"]) == ("ohne_aufnahme", "kein Bot gewuenscht")
-    assert _zeile("u2")["status"] == "geplant"                # Vexa da, kein Schalter
+    a = _zeile("u2")                                          # Vexa da, trotzdem vorbei
+    assert (a["status"], a["status_grund"]) == ("ohne_aufnahme", "Termin vorbei ohne Bot")
+    _akte("u3", beginn=vorbei)
     monkeypatch.setattr(vexa, "konfiguriert", lambda: False)
     termin_takt.runde(JETZT)
-    a = _zeile("u2")
+    a = _zeile("u3")
     assert (a["status"], a["status_grund"]) == ("ohne_aufnahme", "Vexa nicht konfiguriert")
     assert fake.anzahl("bot") == 0
 
@@ -752,8 +777,7 @@ def test_ablegen_zweite_anweisung_scheitert_rollt_insert_zurueck(fake, monkeypat
 
 def test_ablegen_nur_aus_laeuft_oder_wartet(fake):
     _akte("u1", status="fehlgeschlagen")
-    with pytest.raises(RuntimeError):
-        termin_takt._mitschrift_ablegen("u1", SEGMENTE)
+    assert termin_takt._mitschrift_ablegen("u1", SEGMENTE) is False
     assert _mit() is None and _zeile("u1")["status"] == "fehlgeschlagen"
 
 
@@ -810,3 +834,307 @@ def test_entwurf_scheitert_keine_neue_auswertung(fake, monkeypatch):
 
 def test_gesperrt_ist_oeffentlich():
     assert briefing.gesperrt({"email": "", "phone": "", "enrichment": {}}) is False
+
+
+# ---------- Final-Review C1/I2: nur der Taktgeber spricht mit Vexa ----------
+
+VEXA_IDS = {"vexa_meeting_id": 11, "vexa_plattform": "google_meet",
+            "vexa_native_id": "abc-defg-hij"}
+
+
+def _ids(uid="u1"):
+    a = _zeile(uid)
+    return a["vexa_meeting_id"], a["vexa_plattform"], a["vexa_native_id"]
+
+
+def _fake_einsetzen(monkeypatch) -> FakeVexa:
+    f = FakeVexa()
+    monkeypatch.setenv("VEXA_API_KEY", SCHLUESSEL)
+    for name in ("bot_schicken", "meeting_lesen", "segmente_holen",
+                 "meeting_loeschen", "bot_stoppen"):
+        monkeypatch.setattr(vexa, name, getattr(f, name))
+    return f
+
+
+def _stopp_und_loeschen(f):
+    return [a for a in f.aufrufe if a[0] in ("stoppen", "loeschen")]
+
+
+def test_c1_ohne_aufnahme_ohne_vexa_schluessel_taktgeber_stoppt_bot(monkeypatch):
+    _akte("u1", beginn=JETZT - timedelta(minutes=5), status="laeuft", **VEXA_IDS)
+    _mitschrift("u1")
+    monkeypatch.delenv("VEXA_API_KEY")              # wie in sales-ui: kein Schluessel
+    termin_akte.aufnahme_beenden("u1", "Kunde hat abgelehnt")
+    assert _zeile()["status"] == "ohne_aufnahme" and _mit() is None
+    assert _ids() == (11, "google_meet", "abc-defg-hij")
+    f = _fake_einsetzen(monkeypatch)
+    termin_takt.runde(JETZT)
+    assert _stopp_und_loeschen(f) == [("stoppen", "google_meet", "abc-defg-hij"),
+                                      ("loeschen", 11)]
+    assert _ids() == (None, None, None) and _zeile()["status"] == "ohne_aufnahme"
+    termin_takt.runde(JETZT + timedelta(seconds=30))
+    assert f.anzahl("stoppen") == 1 and f.anzahl("loeschen") == 1
+
+
+def test_c1_loeschantrag_ohne_vexa_schluessel_taktgeber_stoppt_bot(monkeypatch):
+    lead = _lead()
+    _akte("u1", beginn=JETZT - timedelta(minutes=1), status="wartet_auf_einlass", **VEXA_IDS)
+    _teilnehmer("u1", lead)
+    monkeypatch.delenv("VEXA_API_KEY")              # wie in sales-mcp
+    assert "fehler" not in json.loads(server.loeschantrag_vermerken(lead, "E-Mail"))
+    a = _zeile()
+    assert (a["status"], a["status_grund"]) == ("ohne_aufnahme", "Löschantrag eines Teilnehmers")
+    assert _ids() == (11, "google_meet", "abc-defg-hij")
+    f = _fake_einsetzen(monkeypatch)
+    termin_takt.runde(JETZT)
+    assert _stopp_und_loeschen(f) == [("stoppen", "google_meet", "abc-defg-hij"),
+                                      ("loeschen", 11)]
+    assert _ids() == (None, None, None)
+
+
+def test_c1_stoppen_scheitert_ids_bleiben_und_neuversuch(fake, monkeypatch):
+    _akte("u1", status="ohne_aufnahme", **VEXA_IDS)
+    folge = [vexa.VexaFehler("500")]
+
+    def stoppen(p, n):
+        fake.aufrufe.append(("stoppen", p, n))
+        if folge:
+            raise folge.pop(0)
+
+    monkeypatch.setattr(vexa, "bot_stoppen", stoppen)
+    termin_takt._nachloeschen(JETZT)
+    assert _ids() == (11, "google_meet", "abc-defg-hij") and fake.anzahl("loeschen") == 0
+    termin_takt._nachloeschen(JETZT + timedelta(seconds=30))
+    assert _ids() == (None, None, None)
+    assert fake.anzahl("stoppen") == 2 and fake.anzahl("loeschen") == 1
+
+
+def test_i2_nein_waehrend_bot_schicken_bot_wird_gestoppt(fake):
+    _akte("u1", beginn=JETZT + timedelta(seconds=30))
+    fake.bot_hook = lambda: termin_akte.aufnahme_beenden("u1", "Kunde hat abgelehnt")
+    termin_takt._bot(JETZT)
+    a = _zeile()
+    assert (a["status"], a["status_grund"]) == ("ohne_aufnahme", "Kunde hat abgelehnt")
+    assert _ids() == (11, "google_meet", "abc-defg-hij")      # Ids nie verlieren
+    termin_takt.runde(JETZT + timedelta(seconds=30))
+    assert _stopp_und_loeschen(fake) == [("stoppen", "google_meet", "abc-defg-hij"),
+                                         ("loeschen", 11)]
+    assert _ids() == (None, None, None) and _zeile()["status"] == "ohne_aufnahme"
+    assert fake.anzahl("bot") == 1
+
+
+def test_i2_verfolgen_nach_nein_aendert_status_nicht(fake):
+    _akte("u1", beginn=JETZT - timedelta(minutes=5), status="wartet_auf_einlass", **VEXA_IDS)
+    fake.meeting = {"status": "active", "grund": "", "ende_grund": ""}
+    fake.lesen_hook = lambda mid: termin_akte.aufnahme_beenden("u1", "Kunde hat abgelehnt")
+    termin_takt._verfolgen(JETZT)
+    assert _zeile()["status"] == "ohne_aufnahme"
+
+
+def test_i2_failed_nach_nein_aendert_status_nicht(fake):
+    _akte("u1", beginn=JETZT - timedelta(minutes=5), status="laeuft", **VEXA_IDS)
+    fake.meeting = {"status": "failed", "grund": "x", "ende_grund": ""}
+    fake.lesen_hook = lambda mid: termin_akte.aufnahme_beenden("u1", "Kunde hat abgelehnt")
+    termin_takt._verfolgen(JETZT)
+    a = _zeile()
+    assert (a["status"], a["status_grund"]) == ("ohne_aufnahme", "Kunde hat abgelehnt")
+
+
+def test_i2_completed_nach_nein_keine_mitschrift(fake):
+    _akte("u1", beginn=JETZT - timedelta(minutes=60), status="laeuft", **VEXA_IDS)
+    fake.meeting = {"status": "completed", "grund": "", "ende_grund": ""}
+    fake.holen_hook = lambda mid: termin_akte.aufnahme_beenden("u1", "Kunde hat abgelehnt")
+    termin_takt._verfolgen(JETZT)
+    assert _mit() is None
+    assert _zeile()["status"] == "ohne_aufnahme" and _zeile()["vexa_meeting_id"] == 11
+    termin_takt._nachloeschen(JETZT)
+    assert fake.anzahl("loeschen") == 1 and _ids() == (None, None, None)
+    assert server._q("select count(*) as n from termin_mitschriften")[0]["n"] == 0
+
+
+def test_i2_ablegen_sperrt_die_akte(fake):
+    _akte("u1", status="ohne_aufnahme")
+    assert termin_takt._mitschrift_ablegen("u1", SEGMENTE) is False
+    assert _mit() is None and _zeile()["status"] == "ohne_aufnahme"
+
+
+def test_fertig_vergisst_die_bot_kennung(fake):
+    _akte("u1", beginn=JETZT - timedelta(minutes=60), status="laeuft", **VEXA_IDS)
+    fake.meeting = {"status": "completed", "grund": "", "ende_grund": ""}
+    fake.loeschen_fehler = [vexa.VexaFehler("x"), vexa.VexaFehler("x")]
+    termin_takt.runde(JETZT)
+    a = _zeile()
+    # Der Bot ist weg: keine Plattform-Kennung mehr (ein spaeterer Bot im selben
+    # Raum wird nie gestoppt), nur die Meeting-Id zum Nachloeschen bleibt.
+    assert a["status"] == "fertig" and _ids() == (11, None, None)
+    assert fake.anzahl("stoppen") == 0
+
+
+# ---------- Final-Review I3: verschobener Termin ----------
+
+def _echter_abgleich(monkeypatch):
+    monkeypatch.setattr(termin_akte, "abgleichen", ECHT_ABGLEICHEN)
+    with server.pool.connection() as conn:
+        conn.execute("truncate sales_test.kalender_quellen cascade")
+
+
+def _berlin(zeit):
+    return zeit.astimezone(ZoneInfo("Europe/Berlin"))
+
+
+def _sc_termin(lead, uid, beginn):
+    b = _berlin(beginn)
+    payload = {"datum": b.date().isoformat(), "uhrzeit": b.strftime("%H:%M"),
+               "dauer_minuten": 60, "thema": "Beratung", "ort": MEET, "uid": uid}
+    return str(server._q("insert into activities (lead_id, type, payload) "
+                         "values (%s, 'termin', %s::jsonb) returning id",
+                         (lead, json.dumps(payload)))[0]["id"])
+
+
+def _sc_verschieben(aid, beginn):
+    b = _berlin(beginn)
+    server._q("update activities set payload = payload || %s::jsonb where id = %s returning id",
+              (json.dumps({"datum": b.date().isoformat(), "uhrzeit": b.strftime("%H:%M")}),
+               aid))
+
+
+def test_i3_verschoben_neuer_hinweis_zur_neuen_zeit(fake, monkeypatch):
+    _echter_abgleich(monkeypatch)
+    aid = _sc_termin(_lead(), "v1", JETZT + timedelta(minutes=20))
+    termin_takt.runde(JETZT)
+    assert len(TELEGRAM) == 1 and _zeile("v1")["hinweis_gesendet_am"] is not None
+    _sc_verschieben(aid, JETZT + timedelta(days=1, minutes=20))
+    termin_takt.runde(JETZT + timedelta(seconds=30))
+    assert _zeile("v1")["hinweis_gesendet_am"] is None and len(TELEGRAM) == 1
+    termin_takt.runde(JETZT + timedelta(days=1))
+    assert len(TELEGRAM) == 2 and _zeile("v1")["hinweis_gesendet_am"] is not None
+
+
+def test_i3_fehlgeschlagen_neu_gebucht_bot_zur_neuen_zeit(fake, monkeypatch):
+    _echter_abgleich(monkeypatch)
+    aid = _sc_termin(_lead(), "v2", JETZT + timedelta(minutes=1))
+    termin_takt.runde(JETZT)
+    assert fake.anzahl("bot") == 1 and _zeile("v2")["status"] == "wartet_auf_einlass"
+    fake.meeting = {"status": "failed", "grund": "nicht eingelassen", "ende_grund": ""}
+    termin_takt.runde(JETZT + timedelta(seconds=30))
+    assert _zeile("v2")["status"] == "fehlgeschlagen"
+    _sc_verschieben(aid, JETZT + timedelta(days=1, minutes=1))
+    termin_takt.runde(JETZT + timedelta(minutes=2))
+    a = _zeile("v2")
+    assert a["status"] == "geplant" and a["bot_geschickt_am"] is None
+    assert _ids("v2") == (None, None, None)
+    fake.meeting = {"status": "requested", "grund": "", "ende_grund": ""}
+    termin_takt.runde(JETZT + timedelta(days=1))
+    assert fake.anzahl("bot") == 2 and _zeile("v2")["status"] == "wartet_auf_einlass"
+
+
+def test_i3_nein_bleibt_nach_verschieben(fake, monkeypatch):
+    _echter_abgleich(monkeypatch)
+    aid = _sc_termin(_lead(), "v3", JETZT + timedelta(hours=2))
+    termin_takt.runde(JETZT)
+    termin_akte.aufnahme_beenden("v3", "Kunde hat abgelehnt")
+    _sc_verschieben(aid, JETZT + timedelta(days=1))
+    termin_takt.runde(JETZT + timedelta(seconds=30))
+    a = _zeile("v3")
+    assert (a["status"], a["status_grund"]) == ("ohne_aufnahme", "Kunde hat abgelehnt")
+    termin_takt.runde(JETZT + timedelta(days=1))
+    assert fake.anzahl("bot") == 0
+
+
+def test_i3_alte_bot_ids_erst_stoppen_dann_neuer_bot(fake):
+    # Akte wurde zurueck auf 'geplant' gesetzt, die Ids des alten Bots stehen noch.
+    _akte("u1", beginn=JETZT + timedelta(seconds=30), **VEXA_IDS)
+    termin_takt._bot(JETZT)
+    assert fake.anzahl("bot") == 0                       # erst aufraeumen
+    termin_takt._nachloeschen(JETZT)
+    assert _stopp_und_loeschen(fake) == [("stoppen", "google_meet", "abc-defg-hij"),
+                                         ("loeschen", 11)]
+    assert _ids() == (None, None, None) and _zeile()["status"] == "geplant"
+    termin_takt._bot(JETZT + timedelta(seconds=5))
+    assert fake.anzahl("bot") == 1
+
+
+# ---------- Final-Review I7: Takt blockiert nicht ----------
+
+def test_i7a_auswerten_pausiert_vor_einem_termin(fake, monkeypatch):
+    monkeypatch.setattr(ollama, "erreichbar", lambda: True)
+    aufrufe = []
+    monkeypatch.setattr(auswertung, "auswerten", lambda s: aufrufe.append(1) or _ergebnis())
+    _akte("alt", beginn=JETZT - timedelta(days=1), status="fertig")
+    _mitschrift("alt")
+    _akte("bald", beginn=JETZT + timedelta(minutes=14))
+    assert termin_takt.runde(JETZT)["auswerten"] == 0 and aufrufe == []
+    server._q("update termin_akten set kein_bot = true where uid = 'bald' returning uid")
+    termin_takt.runde(JETZT + timedelta(seconds=30))
+    assert aufrufe == [1]
+
+
+def test_i7a_auswerten_pausiert_im_bot_fenster(fake, monkeypatch):
+    monkeypatch.setattr(ollama, "erreichbar", lambda: True)
+    aufrufe = []
+    monkeypatch.setattr(auswertung, "auswerten", lambda s: aufrufe.append(1) or _ergebnis())
+    _akte("alt", beginn=JETZT - timedelta(days=1), status="fertig")
+    _mitschrift("alt")
+    _akte("lauf", beginn=JETZT - timedelta(minutes=10), status="laeuft", vexa_meeting_id=7)
+    fake.meeting = {"status": "active", "grund": "", "ende_grund": ""}
+    termin_takt.runde(JETZT)
+    assert aufrufe == []
+    server._q("update termin_akten set abgesagt_am = now() where uid = 'lauf' returning uid")
+    termin_takt.runde(JETZT + timedelta(seconds=30))
+    assert aufrufe == [1]
+
+
+def test_i7b_briefing_ki_neuversuch_erst_nach_pause(fake, monkeypatch):
+    lead = _lead()
+    _akte("u1", beginn=JETZT + timedelta(minutes=25))
+    _teilnehmer("u1", lead)
+
+    def kaputt(*a, **k):
+        raise ollama.OllamaFehler("weg")
+
+    monkeypatch.setattr(ollama, "erreichbar", lambda: True)
+    monkeypatch.setattr(ollama, "chat", kaputt)
+    erstellt = []
+    echt = briefing.erstellen
+    monkeypatch.setattr(briefing, "erstellen", lambda uid: erstellt.append(uid) or echt(uid))
+    termin_takt.runde(JETZT)
+    assert len(erstellt) == 1 and _zeile()["briefing_mit_ki"] is False
+    termin_takt.runde(JETZT + timedelta(seconds=30))
+    termin_takt.runde(JETZT + timedelta(minutes=4))
+    assert len(erstellt) == 1
+    termin_takt.runde(JETZT + timedelta(minutes=5, seconds=1))
+    assert len(erstellt) == 2
+    # geaenderte Fakten: sofort neu, ohne Pause
+    server._q("update leads set company = 'Andere AG' where id = %s returning id", (lead,))
+    termin_takt.runde(JETZT + timedelta(minutes=5, seconds=31))
+    assert len(erstellt) == 3
+
+
+# ---------- Final-Review I9: keine Warnungsflut ----------
+
+def test_i9_dienste_weg_hoechstens_eine_warnung_je_dienst(monkeypatch, caplog):
+    monkeypatch.setattr(ollama, "erreichbar", ECHT_ERREICHBAR)
+    monkeypatch.setattr(betreiber_hinweis, "senden", ECHT_SENDEN)
+    monkeypatch.setattr(vexa, "_unerreichbar_gemeldet", False, raising=False)
+    monkeypatch.setattr(betreiber_hinweis, "_letzter_fehler", None, raising=False)
+    monkeypatch.setenv("OLLAMA_URL", "http://127.0.0.1:1")
+    monkeypatch.setenv("VEXA_URL", "http://127.0.0.1:1")
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    lead = _lead()
+    _akte("brief", beginn=JETZT + timedelta(minutes=20))
+    _teilnehmer("brief", lead)
+    _akte("lauf", beginn=JETZT - timedelta(hours=2), ende=JETZT - timedelta(hours=1),
+          status="laeuft", vexa_meeting_id=7)
+    _akte("nein", beginn=JETZT - timedelta(hours=3), status="ohne_aufnahme", **VEXA_IDS)
+    _akte("fertig", beginn=JETZT - timedelta(days=1), status="fertig")
+    _mitschrift("fertig")
+    caplog.set_level(logging.WARNING)
+    for i in range(3):
+        termin_takt.runde(JETZT + timedelta(seconds=30 * i))
+    warn = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    for dienst in ("Vexa", "Telegram", "Ollama"):
+        assert len([w for w in warn if dienst in w]) <= 1, (dienst, warn)
+    assert len(warn) <= 3, warn
+    for geheim in (SCHLUESSEL, ADRESSE, "Karla"):
+        assert geheim not in caplog.text

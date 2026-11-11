@@ -51,6 +51,9 @@ MELDUNGEN = {
     "datum_ungueltig": "Das Datum der Wiedervorlage ist ungültig.",
     "feld_ungueltig": "Dieses Feld lässt sich nicht übernehmen.",
     "keine_mitschrift": "Es gibt keine Mitschrift (mehr).",
+    # Final-Review C1: die Oberflaeche setzt nur den Status; den Bot holt der
+    # Taktgeber in seiner naechsten Runde aus dem Termin.
+    "aufnahme_beendet": "Aufnahme beendet – der Bot verlässt den Termin in Kürze.",
 }
 _VERLAUF_MAX = 20
 _TEXT_MAX = 300
@@ -371,6 +374,7 @@ def _aktion(uid: str, form) -> str:
     aktion = str(form.get("aktion") or "")
     if aktion == "ohne_aufnahme":
         termin_akte.aufnahme_beenden(uid, "Kunde hat abgelehnt")
+        return "aufnahme_beendet"
     elif aktion == "will_zusammenfassung":
         server._q("update termin_akten set will_zusammenfassung = not will_zusammenfassung, "
                   "geaendert_am = now() where uid = %s returning uid", (uid,))

@@ -399,3 +399,150 @@ def test_pausierte_quelle_schuetzt_akte_mit_salesclaw_herkunft():
     server._q("update kalender_quellen set aktiv = false where id = %s returning id", (qid,))
     assert termin_akte.abgleichen(JETZT)["abgesagt"] == 0
     assert _akten()[0]["abgesagt_am"] is None
+
+
+# --- Final-Review --------------------------------------------------------------
+
+def test_i4_nur_privater_externer_ergibt_keine_akte():
+    server._q("insert into leads (name, email, enrichment) values "
+              "('Paula', 'p@firma.de', '{\"_privat\": {\"privat\": true}}'::jsonb) returning id")
+    _ersetzen(_quelle(), [_termin(teilnehmer=[_gast("p@firma.de", "Paula")])])
+    assert termin_akte.abgleichen(JETZT)["neu"] == 0
+    assert _akten() == []
+
+
+@pytest.mark.parametrize("status,grund,erwartet", [
+    ("fehlgeschlagen", "nicht eingelassen", "geplant"),
+    ("ohne_aufnahme", "Vexa nicht konfiguriert", "geplant"),
+    ("ohne_aufnahme", "Termin vorbei ohne Bot", "geplant"),
+    ("ohne_aufnahme", "Kunde hat abgelehnt", "ohne_aufnahme"),
+    ("ohne_aufnahme", "kein Bot gewuenscht", "ohne_aufnahme"),
+    ("ohne_aufnahme", "gesperrter Teilnehmer", "ohne_aufnahme"),
+    ("ohne_aufnahme", "Löschantrag eines Teilnehmers", "ohne_aufnahme"),
+    ("ohne_aufnahme", "nachträglich verworfen", "ohne_aufnahme"),
+    ("fertig", None, "fertig"),
+])
+def test_i3_verschoben_setzt_hinweis_und_systemstatus_zurueck(status, grund, erwartet):
+    qid = _quelle()
+    _ersetzen(qid, [_termin()])
+    termin_akte.abgleichen(JETZT)
+    server._q("update termin_akten set status = %s, status_grund = %s, "
+              "hinweis_gesendet_am = now(), bot_geschickt_am = now() returning uid",
+              (status, grund))
+    _ersetzen(qid, [_termin(beginn=BEGINN + timedelta(days=1))])
+    assert termin_akte.abgleichen(JETZT)["geaendert"] == 1
+    z = _akten()[0]
+    assert z["hinweis_gesendet_am"] is None
+    assert z["status"] == erwartet
+    if erwartet == "geplant":
+        assert z["status_grund"] is None and z["bot_geschickt_am"] is None
+    else:
+        assert z["status_grund"] == grund and z["bot_geschickt_am"] is not None
+
+
+def test_i3_ohne_verschiebung_oder_mit_mitschrift_bleibt_alles():
+    qid = _quelle()
+    _ersetzen(qid, [_termin("m1"), _termin("m2", beginn=BEGINN + timedelta(hours=3))])
+    termin_akte.abgleichen(JETZT)
+    server._q("update termin_akten set status = 'fehlgeschlagen', status_grund = 'x', "
+              "hinweis_gesendet_am = now() returning uid")
+    server._q("insert into termin_mitschriften (uid, segmente, auswertung_status) "
+              "values ('m2', '[]'::jsonb, 'leer') returning id")
+    # m1 nur umbenannt, m2 verschoben, aber mit Mitschrift
+    _ersetzen(qid, [_termin("m1", titel="Neu"),
+                    _termin("m2", beginn=BEGINN + timedelta(days=2))])
+    termin_akte.abgleichen(JETZT)
+    for z in _akten():
+        assert z["status"] == "fehlgeschlagen" and z["hinweis_gesendet_am"] is not None, z["uid"]
+
+
+def test_i3_in_die_vergangenheit_verschoben_setzt_nicht_zurueck():
+    qid = _quelle()
+    _ersetzen(qid, [_termin()])
+    termin_akte.abgleichen(JETZT)
+    server._q("update termin_akten set status = 'fehlgeschlagen', status_grund = 'x', "
+              "hinweis_gesendet_am = now() returning uid")
+    _ersetzen(qid, [_termin(beginn=JETZT - timedelta(hours=2))])
+    termin_akte.abgleichen(JETZT)
+    z = _akten()[0]
+    assert z["status"] == "fehlgeschlagen" and z["hinweis_gesendet_am"] is not None
+
+
+def test_i3_vexa_ids_bleiben_fuers_nachloeschen():
+    qid = _quelle()
+    _ersetzen(qid, [_termin()])
+    termin_akte.abgleichen(JETZT)
+    server._q("update termin_akten set status = 'fehlgeschlagen', status_grund = 'x', "
+              "vexa_meeting_id = 5, vexa_plattform = 'google_meet', vexa_native_id = 'a-b-c' "
+              "returning uid")
+    _ersetzen(qid, [_termin(beginn=BEGINN + timedelta(days=1))])
+    termin_akte.abgleichen(JETZT)
+    z = _akten()[0]
+    assert z["status"] == "geplant"
+    assert (z["vexa_meeting_id"], z["vexa_plattform"], z["vexa_native_id"]) == (
+        5, "google_meet", "a-b-c")
+
+
+def test_i2_abgleich_ueberschreibt_laufenden_status_nicht():
+    qid = _quelle()
+    _ersetzen(qid, [_termin()])
+    termin_akte.abgleichen(JETZT)
+    for status in ("wartet_auf_einlass", "laeuft", "ohne_aufnahme"):
+        server._q("update termin_akten set status = %s, status_grund = 'g' returning uid",
+                  (status,))
+        _ersetzen(qid, [_termin(titel=f"Titel {status}")])
+        termin_akte.abgleichen(JETZT)
+        z = _akten()[0]
+        assert (z["status"], z["status_grund"]) == (status, "g")
+
+
+def test_i6_nach_loeschantrag_und_physischer_loeschung_kein_neuer_kontakt():
+    lead = _lead("kunde@firma.de", "Kunde Karl")
+    qid = _quelle()
+    _ersetzen(qid, [_termin(teilnehmer=[_gast("kunde@firma.de", "Kunde Karl"),
+                                        _gast("zweiter@firma.de", "Zweiter")])])
+    termin_akte.abgleichen(JETZT)
+    assert "fehler" not in json.loads(server.loeschantrag_vermerken(lead, "E-Mail"))
+    with server.pool.connection() as conn:
+        conn.execute("delete from sales_test.leads where id = %s", (lead,))
+    termin_akte.abgleichen(JETZT)
+    assert server._q("select count(*) as n from leads where lower(email) = "
+                     "'kunde@firma.de'")[0]["n"] == 0
+    z = server._q("select lead_id, grund, name from termin_teilnehmer "
+                  "where adresse = 'kunde@firma.de'")[0]
+    assert (z["lead_id"], z["grund"], z["name"]) == (None, "gesperrt", None)
+    assert teilnehmer.sperrgrund("kunde@firma.de")
+
+
+def test_abgleich_fehler_einer_akte_stoppt_rest_nicht(monkeypatch, caplog):
+    qid = _quelle()
+    _ersetzen(qid, [_termin("a"), _termin("b", beginn=BEGINN + timedelta(hours=1)),
+                    _termin("weg", beginn=BEGINN + timedelta(hours=2))])
+    termin_akte.abgleichen(JETZT)
+    _ersetzen(qid, [_termin("a", titel="Neu A"),
+                    _termin("b", beginn=BEGINN + timedelta(hours=1), titel="Neu B")])
+    echt = teilnehmer.verknuepfen
+
+    def mal(uid, t, **k):
+        if uid == "a":
+            raise RuntimeError("kaputt kunde@firma.de")
+        return echt(uid, t, **k)
+
+    monkeypatch.setattr(teilnehmer, "verknuepfen", mal)
+    with caplog.at_level(logging.DEBUG):
+        erg = termin_akte.abgleichen(JETZT)
+    assert erg["abgesagt"] == 1
+    titel = {z["uid"]: z["titel"] for z in _akten()}
+    assert titel["b"] == "Neu B"
+    assert "kunde@firma.de" not in caplog.text and "RuntimeError" in caplog.text
+    assert "'a'" not in caplog.text and "uid=a " not in caplog.text
+
+
+def test_quelle_auf_privat_umgestellt_sagt_zukuenftige_akten_ab():
+    qid = _quelle()
+    _ersetzen(qid, [_termin()])
+    termin_akte.abgleichen(JETZT)
+    server._q("update kalender_quellen set bereich = 'privat' where id = %s returning id",
+              (qid,))
+    assert termin_akte.abgleichen(JETZT)["abgesagt"] == 1
+    assert termin_akte.lesen("k1")["abgesagt"] is True

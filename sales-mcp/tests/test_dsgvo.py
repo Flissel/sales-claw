@@ -174,6 +174,7 @@ def test_ein_kaputter_vermerk_schuetzt_trotzdem():
 from datetime import datetime, timedelta, timezone  # noqa: E402
 
 import termin_akte  # noqa: E402
+import vexa  # noqa: E402
 
 BEGINN = datetime(2099, 1, 10, 10, 0, tzinfo=timezone.utc)
 
@@ -261,18 +262,19 @@ def test_loeschantrag_beendet_laufenden_bot(akten_leer, monkeypatch):
     _akte("w1", lead, status="wartet_auf_einlass", vexa_id=8)
     _akte("f1", lead, status="fertig")
     gerufen = []
-    monkeypatch.setattr(termin_akte.vexa, "bot_stoppen",
+    monkeypatch.setattr(vexa, "bot_stoppen",
                         lambda p, n: gerufen.append(("stop", p, n)))
-    monkeypatch.setattr(termin_akte.vexa, "meeting_loeschen",
+    monkeypatch.setattr(vexa, "meeting_loeschen",
                         lambda i: gerufen.append(("del", i)))
     server.loeschantrag_vermerken(lead, "E-Mail")
-    assert ("del", 7) in gerufen and ("del", 8) in gerufen
+    # C1: Nur der Taktgeber spricht mit Vexa; hier nur Status und Absicht.
+    assert gerufen == []
     st = {z["uid"]: z for z in server._q(
         "select uid, status, status_grund, vexa_meeting_id from termin_akten")}
-    for uid in ("l1", "w1"):
+    for uid, mid in (("l1", 7), ("w1", 8)):
         assert st[uid]["status"] == "ohne_aufnahme"
         assert st[uid]["status_grund"] == "Löschantrag eines Teilnehmers"
-        assert st[uid]["vexa_meeting_id"] is None
+        assert st[uid]["vexa_meeting_id"] == mid       # der Taktgeber stoppt und loescht
     assert st["f1"]["status"] == "fertig"      # fertige Akte: Status bleibt
 
 
@@ -302,12 +304,12 @@ def test_zwei_leads_in_einer_akte_antrag_von_a(akten_leer, monkeypatch):
               "values ('z1', 'bernd@example.org', 'Bernd', 'gast', %s) returning uid",
               (b,))
     _mitschrift("z1")
-    monkeypatch.setattr(termin_akte.vexa, "bot_stoppen", lambda p, n: None)
+    monkeypatch.setattr(vexa, "bot_stoppen", lambda p, n: None)
     geloescht = []
-    monkeypatch.setattr(termin_akte.vexa, "meeting_loeschen",
+    monkeypatch.setattr(vexa, "meeting_loeschen",
                         lambda i: geloescht.append(i))
     server.loeschantrag_vermerken(a, "E-Mail")
-    assert geloescht == [9]
+    assert geloescht == []                     # C1: das macht der Taktgeber
     assert server._q("select 1 from termin_mitschriften") == []
     z = server._q("select status, briefing_md from termin_akten")[0]
     assert z["status"] == "ohne_aufnahme" and z["briefing_md"] is None
@@ -359,3 +361,41 @@ def test_nichts_davon_im_log(akten_leer, caplog):
     for geheim in ("SENTINELSATZ", "sentinel@geheim.example",
                    "Sentinel Sprecher", "GEHEIMBRIEFING", "dora@example.org"):
         assert geheim not in caplog.text, geheim
+
+
+# --- Final-Review I5: Akten auch ueber die Adresse finden --------------------
+
+def _akte_ueber_adresse(uid):
+    """Teilnehmerzeile mit der Adresse des Kontakts, aber ohne lead_id (er war
+    schon vorher gesperrt und wurde beim Abgleich ausgeloest)."""
+    _akte(uid)
+    server._q("insert into termin_teilnehmer (uid, adresse, name, rolle, lead_id, grund) "
+              "values (%s, 'Dora@Example.org', null, 'gast', null, 'gesperrt') "
+              "returning uid", (uid,))
+
+
+def test_i5_auskunft_und_loeschantrag_finden_ausgeloeste_akte(akten_leer):
+    lead = _lead()
+    _akte_ueber_adresse("s1")
+    _mitschrift("s1", text="Satz aus der Sperrzeit")
+    server._q("update termin_akten set briefing_md = 'Briefing s1' where uid = 's1' "
+              "returning uid")
+    antwort = json.loads(server.kontakt_auskunft(lead))
+    assert antwort["termine"] == 1
+    assert "Termin s1" in antwort["text"] and "Satz aus der Sperrzeit" in antwort["text"]
+    assert "fehler" not in json.loads(server.loeschantrag_vermerken(lead, "E-Mail"))
+    assert server._q("select 1 from termin_mitschriften where uid = 's1'") == []
+    assert server._q("select briefing_md from termin_akten where uid = 's1'"
+                     )[0]["briefing_md"] is None
+
+
+def test_i6_ausgeloeste_zeile_behaelt_nur_die_adresse(akten_leer):
+    lead = _lead()
+    _akte("n1", lead)
+    server.loeschantrag_vermerken(lead, "E-Mail")
+    z = server._q("select lead_id, grund, name from termin_teilnehmer "
+                  "where uid = 'n1' and adresse = 'dora@example.org'")[0]
+    assert (z["lead_id"], z["grund"], z["name"]) == (None, "gesperrt", None)
+    # die anderen Teilnehmer behalten ihren Namen
+    assert server._q("select name from termin_teilnehmer where uid = 'n1' "
+                     "and adresse = 'chef@firma.de'")[0]["name"] == "Chef"

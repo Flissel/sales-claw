@@ -13,8 +13,10 @@ darf nirgends geloggt werden.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -24,7 +26,6 @@ import post_struktur
 import server
 import teilnehmer
 import termin_link
-import vexa
 
 LOG = logging.getLogger("termin_akte")
 
@@ -32,6 +33,12 @@ FENSTER_VOR = timedelta(days=1)
 FENSTER_NACH = timedelta(days=30)
 STATUS_OHNE_LINK = "kein_link"
 GRUND_OHNE_LINK = "Kein Konferenz-Link im Termin"
+ALLE_STATUS = ("geplant", STATUS_OHNE_LINK, "wartet_auf_einlass", "laeuft", "fertig",
+               "fehlgeschlagen", "ohne_aufnahme")
+# Vom System gesetzte Endgruende fuer ohne_aufnahme: nach einer Verschiebung
+# gilt der Termin wieder als geplant (Final-Review I3). Ein "Nein" von Kunde
+# oder Felix, kein_bot und Sperren bleiben.
+SYSTEM_GRUENDE = frozenset({"Vexa nicht konfiguriert", "Termin vorbei ohne Bot"})
 
 # Spalten, die status_setzen ausser status/status_grund setzen darf.
 FELDER = frozenset({
@@ -41,6 +48,10 @@ FELDER = frozenset({
     "vexa_plattform", "vexa_native_id", "bot_geschickt_am", "briefing_md",
     "briefing_stand", "briefing_mit_ki", "briefing_am", "hinweis_gesendet_am",
 })
+
+
+def _h(uid) -> str:
+    return hashlib.sha256(str(uid).encode()).hexdigest()[:8]
 
 
 def _utc(wert: datetime) -> datetime:
@@ -110,10 +121,12 @@ def _kalender() -> tuple[dict[str, dict], set[str], set[str]]:
         (list(aktiv),))
     for z in zeilen:
         uid = z["uid"]
-        gesehen.add(uid)
         qid = str(z["quelle_id"])
-        if qid not in nutzbar:
+        if qid not in nutzbar or aktiv[qid]["bereich"] == "privat":
+            # Quelle privat oder ohne Details: ihre Termine gelten als
+            # verschwunden - kuenftige Akten werden abgesagt (Final-Review).
             continue
+        gesehen.add(uid)
         daten = z["teilnehmer"] if isinstance(z["teilnehmer"], dict) else {}
         liste = daten.get("liste") or []
         ok, _ = teilnehmer.ist_kundentermin(
@@ -162,28 +175,44 @@ def _link(texte: tuple) -> dict:
             "einwahl": treffer.get("einwahl") or None}
 
 
-def _speichern(uid: str, k: dict) -> tuple[bool, bool]:
-    """Akte anlegen oder nachziehen -> (neu, geaendert)."""
+def _speichern(uid: str, k: dict, jetzt: datetime) -> tuple[bool, bool]:
+    """Akte anlegen oder nachziehen -> (neu, geaendert).
+
+    Den Status schreibt der Abgleich nur, solange die Akte geplant/kein_link
+    ist (Final-Review I2) - sonst gehoert er Taktgeber und Oberflaeche. Wird
+    der Termin ohne Mitschrift in die Zukunft verschoben (I3), gilt er wieder
+    als offen: Hinweis neu, und ein vom System gesetztes Ende (fehlgeschlagen,
+    ohne_aufnahme aus SYSTEM_GRUENDE) wird wieder geplant/kein_link. Vexa-Ids
+    bleiben stehen - die raeumt `_nachloeschen` im Taktgeber ab."""
     link = _link(k["link_texte"])
     alt = server._q("select * from termin_akten where uid = %s", (uid,))
     alt = alt[0] if alt else None
     status = "geplant" if link["link"] else STATUS_OHNE_LINK
     grund = None if link["link"] else GRUND_OHNE_LINK
-    geaendert = False
-    stand_leeren = False
+    geaendert = verschoben = zurueck = bot_zurueck = stand_leeren = False
+    alt_status = None
     if alt is not None:
+        alt_status = alt["status"]
         geaendert = (_utc(alt["beginn"]) != k["beginn"] or _utc(alt["ende"]) != k["ende"]
                      or alt["titel"] != k["titel"] or alt["link"] != link["link"]
                      or alt["abgesagt_am"] is not None)
-        if alt["status"] in ("geplant", STATUS_OHNE_LINK):
-            stand_leeren = geaendert
-        else:
-            status, grund = alt["status"], alt["status_grund"]
+        verschoben = (_utc(alt["beginn"]) != k["beginn"] and k["beginn"] > jetzt
+                      and not server._q("select 1 from termin_mitschriften where uid = %s",
+                                        (uid,)))
+        zurueck = verschoben and (
+            alt_status == "fehlgeschlagen"
+            or (alt_status == "ohne_aufnahme" and alt["status_grund"] in SYSTEM_GRUENDE))
+        bot_zurueck = verschoben and (zurueck or alt_status in ("geplant", STATUS_OHNE_LINK))
+        stand_leeren = (geaendert and alt_status in ("geplant", STATUS_OHNE_LINK)) or zurueck
+    offen = ("termin_akten.status in ('geplant', 'kein_link') "
+             "or (%(zurueck)s and termin_akten.status = %(alt_status)s)")
     server._q(
         "insert into termin_akten (uid, herkunft, quelle_id, termin_activity_id, "
         "beginn, ende, titel, thema, beschreibung, link, plattform, passcode, "
         "einwahl, status, status_grund) "
-        "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+        "values (%(uid)s, %(herkunft)s, %(quelle_id)s, %(activity_id)s, %(beginn)s, "
+        "%(ende)s, %(titel)s, %(thema)s, %(beschreibung)s, %(link)s, %(plattform)s, "
+        "%(passcode)s, %(einwahl)s, %(status)s, %(grund)s) "
         "on conflict (uid) do update set herkunft = case when termin_akten.herkunft = 'sales-claw' "
         "                  then termin_akten.herkunft else excluded.herkunft end, "
         "quelle_id = excluded.quelle_id, "
@@ -193,16 +222,26 @@ def _speichern(uid: str, k: dict) -> tuple[bool, bool]:
         "thema = excluded.thema, beschreibung = excluded.beschreibung, "
         "link = excluded.link, plattform = excluded.plattform, "
         "passcode = excluded.passcode, einwahl = excluded.einwahl, "
-        "status = excluded.status, status_grund = excluded.status_grund, "
+        f"status = case when {offen} then excluded.status else termin_akten.status end, "
+        f"status_grund = case when {offen} then excluded.status_grund "
+        "                     else termin_akten.status_grund end, "
+        "hinweis_gesendet_am = case when %(verschoben)s then null "
+        "                           else termin_akten.hinweis_gesendet_am end, "
+        "bot_geschickt_am = case when %(bot_zurueck)s and termin_akten.status = %(alt_status)s "
+        "                        then null else termin_akten.bot_geschickt_am end, "
         "abgesagt_am = null, "
-        "briefing_stand = case when %s then null "
+        "briefing_stand = case when %(stand_leeren)s then null "
         "                      else termin_akten.briefing_stand end, "
-        "geaendert_am = case when %s then now() "
+        "geaendert_am = case when %(geaendert)s then now() "
         "                    else termin_akten.geaendert_am end "
         "returning uid",
-        (uid, k["herkunft"], k["quelle_id"], k["activity_id"], k["beginn"], k["ende"],
-         k["titel"], k["thema"], k["beschreibung"], link["link"], link["plattform"],
-         link["passcode"], link["einwahl"], status, grund, stand_leeren, geaendert))
+        {"uid": uid, "herkunft": k["herkunft"], "quelle_id": k["quelle_id"],
+         "activity_id": k["activity_id"], "beginn": k["beginn"], "ende": k["ende"],
+         "titel": k["titel"], "thema": k["thema"], "beschreibung": k["beschreibung"],
+         "link": link["link"], "plattform": link["plattform"], "passcode": link["passcode"],
+         "einwahl": link["einwahl"], "status": status, "grund": grund,
+         "zurueck": zurueck, "alt_status": alt_status, "verschoben": verschoben,
+         "bot_zurueck": bot_zurueck, "stand_leeren": stand_leeren, "geaendert": geaendert})
     return alt is None, geaendert
 
 
@@ -214,9 +253,13 @@ def abgleichen(jetzt: datetime) -> dict:
     for uid, k in kandidaten.items():
         if not (von <= k["beginn"] <= bis):
             continue
-        ist_neu, ist_geaendert = _speichern(uid, k)
-        # Die Akte steht, bevor Teilnehmer verknuepft werden (FK auf termin_akten).
-        teilnehmer.verknuepfen(uid, k["teilnehmer"], darf_anlegen=True)
+        try:
+            ist_neu, ist_geaendert = _speichern(uid, k, jetzt)
+            # Die Akte steht, bevor Teilnehmer verknuepft werden (FK auf termin_akten).
+            teilnehmer.verknuepfen(uid, k["teilnehmer"], darf_anlegen=True)
+        except Exception as e:  # noqa: BLE001 - eine kaputte Akte stoppt den Rest nicht
+            LOG.warning("Termin-Akte uebersprungen (uid=%s): %s", _h(uid), type(e).__name__)
+            continue
         neu += ist_neu
         geaendert += ist_geaendert and not ist_neu
     weg = 0
@@ -231,8 +274,12 @@ def abgleichen(jetzt: datetime) -> dict:
             continue
         elif z["quelle_id"] is not None and str(z["quelle_id"]) in pausiert:
             continue   # pausierte Quelle: ihr Schweigen heisst nicht "abgesagt"
-        server._q("update termin_akten set abgesagt_am = now(), geaendert_am = now() "
-                  "where uid = %s returning uid", (uid,))
+        try:
+            server._q("update termin_akten set abgesagt_am = now(), geaendert_am = now() "
+                      "where uid = %s returning uid", (uid,))
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("Absage uebersprungen (uid=%s): %s", _h(uid), type(e).__name__)
+            continue
         weg += 1
     LOG.info("Termin-Akten abgeglichen: neu=%d geaendert=%d abgesagt=%d", neu, geaendert, weg)
     return {"neu": neu, "geaendert": geaendert, "abgesagt": weg}
@@ -310,20 +357,66 @@ def status_setzen(uid: str, status: str, grund: str = "", **felder) -> None:
     LOG.info("Termin-Akte Status gesetzt: %s", status)
 
 
+def status_wechseln(uid: str, von: Iterable[str], nach: str, grund: str = "",
+                    **felder) -> bool:
+    """Bedingter Statuswechsel (Final-Review I2): schreibt nur, wenn die Akte
+    noch in einem der Status `von` steht. -> True, wenn eine Zeile wechselte.
+    So holt kein Taktgeber-Schritt eine Aufnahme nach einem "Nein" zurueck."""
+    unbekannt = set(felder) - FELDER
+    if unbekannt:
+        raise ValueError(f"Unbekannte Felder: {sorted(unbekannt)}")
+    namen = sorted(felder)
+    zuweisung = "".join(f", {n} = %s" for n in namen)
+    z = server._q(
+        "update termin_akten set status = %s, status_grund = %s, geaendert_am = now()"
+        f"{zuweisung} where uid = %s and status = any(%s) returning uid",
+        (nach, grund or None, *[felder[n] for n in namen], uid, list(von)))
+    if z:
+        LOG.info("Termin-Akte Status gewechselt: %s", nach)
+    return bool(z)
+
+
+def felder_setzen(uid: str, **felder) -> None:
+    """Nur Felder, kein Status (z. B. Vexa-Ids nach einem "Nein" sichern)."""
+    unbekannt = set(felder) - FELDER
+    if unbekannt or not felder:
+        raise ValueError(f"Unbekannte oder keine Felder: {sorted(unbekannt)}")
+    namen = sorted(felder)
+    server._q(
+        "update termin_akten set geaendert_am = now()"
+        + "".join(f", {n} = %s" for n in namen) + " where uid = %s returning uid",
+        (*[felder[n] for n in namen], uid))
+
+
 def hat_gesperrte(uid: str) -> bool:
     """Steht unter den Teilnehmern jemand, der JETZT gesperrt ist? Prueft jede
-    gespeicherte Adresse live - eine Sperre nach dem Verknuepfen zaehlt auch."""
-    for z in server._q("select adresse, grund from termin_teilnehmer where uid = %s", (uid,)):
+    gespeicherte Adresse und jeden verknuepften Kontakt live - eine Sperre
+    nach dem Verknuepfen zaehlt auch."""
+    for z in server._q("select adresse, grund, lead_id from termin_teilnehmer "
+                       "where uid = %s", (uid,)):
         if z["grund"] == "gesperrt" or teilnehmer.sperrgrund(z["adresse"]):
+            return True
+        if z["lead_id"] and teilnehmer.lead_sperrgrund(z["lead_id"]):
             return True
     return False
 
 
-def akten_eines_leads(lead_id) -> list[str]:
+def akten_eines_leads(lead_id, mit_adresse: bool = False) -> list[str]:
+    """uids der Akten eines Kontakts. `mit_adresse=True` (Loeschantrag,
+    Auskunft - Final-Review I5) findet auch Akten, in denen die Zeile schon
+    entknuepft ist (gesperrt): Abgleich ueber die E-Mail-Adresse des Leads."""
+    lid = str(lead_id)
+    bedingung = "t.lead_id = %s::uuid"
+    werte: tuple = (lid,)
+    if mit_adresse:
+        bedingung += (" or (t.lead_id is null and lower(t.adresse) in ("
+                      "select lower(email) from leads "
+                      "where id = %s::uuid and coalesce(email, '') <> ''))")
+        werte = (lid, lid)
     return [z["uid"] for z in server._q(
         "select distinct t.uid, a.beginn from termin_teilnehmer t "
         "join termin_akten a on a.uid = t.uid "
-        "where t.lead_id = %s::uuid order by a.beginn, t.uid", (str(lead_id),))]
+        f"where {bedingung} order by a.beginn, t.uid", werte)]
 
 
 def lead_gesperrt(lead_id) -> str:
@@ -333,24 +426,13 @@ def lead_gesperrt(lead_id) -> str:
 
 
 def aufnahme_beenden(uid: str, grund: str) -> None:
-    """Bot stoppen und das Vexa-Meeting loeschen (falls eines laeuft), die lokale
-    Mitschrift loeschen (Vorschlaege gehen per Kaskade mit), Status
-    'ohne_aufnahme'. Scheitert Vexa, bleibt vexa_meeting_id stehen: der
-    Taktgeber loescht nach."""
-    z = server._q("select vexa_meeting_id, vexa_plattform, vexa_native_id "
-                  "from termin_akten where uid = %s", (uid,))
-    felder: dict = {}
-    if z and z[0]["vexa_meeting_id"] is not None:
-        a = z[0]
-        try:
-            if a["vexa_plattform"] and a["vexa_native_id"]:
-                vexa.bot_stoppen(a["vexa_plattform"], a["vexa_native_id"])
-            vexa.meeting_loeschen(int(a["vexa_meeting_id"]))
-            felder["vexa_meeting_id"] = None
-        except vexa.VexaFehler as e:
-            LOG.warning("Vexa-Aufraeumen fehlgeschlagen (%s)", type(e).__name__)
+    """Erst Status 'ohne_aufnahme' (bedingt, I2), dann die lokale Mitschrift
+    loeschen (Vorschlaege gehen per Kaskade mit, offener Entwurf wird
+    abgelehnt). Vexa spricht hier niemand an (Final-Review C1): die Vexa-Ids
+    bleiben stehen, der Taktgeber stoppt den Bot und loescht das Meeting
+    (`termin_takt._nachloeschen`) - nur er hat VEXA_API_KEY."""
+    status_wechseln(uid, ALLE_STATUS, "ohne_aufnahme", grund)
     mitschrift_entfernen(uid)
-    status_setzen(uid, "ohne_aufnahme", grund, **felder)
 
 
 def mitschrift_entfernen(uid: str) -> None:

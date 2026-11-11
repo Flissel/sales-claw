@@ -7,10 +7,22 @@ Alle `TERMIN_TAKT_S` Sekunden (Vorgabe 30) eine Runde, jeder Schritt mit eigenem
   2. Briefing 30 Minuten vorher (und einmal Telegram-Hinweis)
   3. Vexa-Bot 1 Minute vorher schicken
   4. Bot verfolgen; fertig -> Mitschrift holen, ablegen, bei Vexa loeschen
-  5. Bei Vexa nachloeschen, was beim Abholen liegen blieb
-  6. Eine offene Mitschrift mit dem lokalen Ollama auswerten
+  5. Bei Vexa nachraeumen: Bot stoppen (nach "Nein", Loeschantrag, Verschiebung)
+     und Meeting loeschen, was beim Abholen liegen blieb
+  6. Eine offene Mitschrift mit dem lokalen Ollama auswerten (nicht kurz vor
+     oder waehrend eines Termins mit Bot - der Takt soll dann nicht stehen)
 
-REIHENFOLGE (Schritt 4): Mitschrift-Insert und Status `fertig` in EINER Transaktion,
+NUR DER TAKTGEBER SPRICHT MIT VEXA (Final-Review C1): Oberflaeche und MCP haben
+keinen VEXA_API_KEY; sie setzen nur Status und lassen die Vexa-Ids stehen.
+Schritt 5 stoppt den Bot und loescht das Meeting.
+
+STATUS (Final-Review I2): jeder Statuswechsel ist bedingt
+(`termin_akte.status_wechseln`) - ein "Nein" aus der Oberflaeche gewinnt immer,
+auch wenn es zwischen Vexa-Aufruf und Speichern faellt; die Vexa-Ids gehen
+dabei nie verloren.
+
+REIHENFOLGE (Schritt 4): Mitschrift-Insert und Status `fertig` in EINER Transaktion
+(Akte mit `for update` gesperrt, nur aus wartet_auf_einlass/laeuft),
 `meeting_loeschen` erst NACH dem Commit; scheitert es, bleibt `vexa_meeting_id`
 stehen und Schritt 5 loescht nach.
 
@@ -46,6 +58,12 @@ BRIEFING_VOR = timedelta(minutes=30)
 BOT_VOR = timedelta(seconds=60)
 NEUVERSUCH_NACH = timedelta(hours=1)
 MAX_AUSWERTUNGEN = 3
+# I7a: keine Auswertung, wenn ein Termin mit Bot so bald beginnt oder laeuft
+AUSWERTUNG_PAUSE_VOR = timedelta(minutes=15)
+# I7b: Briefing ohne KI-Text hoechstens so oft neu versuchen (Fakten gleich)
+BRIEFING_KI_PAUSE = timedelta(minutes=5)
+# Status, aus denen ein Bot laeuft oder anstehen kann
+BOT_STATUS = ("wartet_auf_einlass", "laeuft")
 
 _STOPP = threading.Event()
 # Letzter bekannter Zustand je Gegenstelle, damit nur der WECHSEL geloggt wird.
@@ -93,7 +111,8 @@ def _abgleichen(jetzt: datetime):
 def _briefing(jetzt: datetime) -> int:
     ui_basis = os.environ.get("UI_BASIS_URL", "").strip().rstrip("/")
     zeilen = server._q(
-        "select uid, briefing_stand, briefing_mit_ki, hinweis_gesendet_am from termin_akten "
+        "select uid, briefing_stand, briefing_mit_ki, briefing_am, hinweis_gesendet_am "
+        "from termin_akten "
         "where abgesagt_am is null and beginn > %s and beginn <= %s order by beginn",
         (jetzt, jetzt + BRIEFING_VOR))
     getan = 0
@@ -107,10 +126,14 @@ def _briefing(jetzt: datetime) -> int:
     def neu_erstellen(z):
         stand = z["briefing_stand"]
         # Nur neu, wenn die Fakten sich geaendert haben - oder das Briefing ohne
-        # KI-Text entstand und Ollama jetzt da ist.
-        if (stand and stand == briefing.stand_von(briefing.fakten(z["uid"]))
-                and not (z["briefing_mit_ki"] is False and ki_da())):
-            return False
+        # KI-Text entstand, die Pause (I7b) um ist und Ollama jetzt da ist.
+        if stand and stand == briefing.stand_von(briefing.fakten(z["uid"])):
+            if z["briefing_mit_ki"] is not False:
+                return False
+            if z["briefing_am"] is not None and z["briefing_am"] > jetzt - BRIEFING_KI_PAUSE:
+                return False
+            if not ki_da():
+                return False
         b = briefing.erstellen(z["uid"])
         _felder(z["uid"], briefing_md=b["markdown"], briefing_stand=b["stand"],
                 briefing_mit_ki=b["mit_ki"], briefing_am=jetzt)
@@ -137,25 +160,33 @@ def _briefing(jetzt: datetime) -> int:
 
 def _bot_starten(uid: str, link: str, jetzt: datetime) -> None:
     if termin_akte.hat_gesperrte(uid):
-        termin_akte.status_setzen(uid, "ohne_aufnahme", "gesperrter Teilnehmer")
+        termin_akte.status_wechseln(uid, ("geplant",), "ohne_aufnahme",
+                                    "gesperrter Teilnehmer")
         return
     # Akte ZUERST beanspruchen: nur wer sie von 'geplant' weiterschaltet, schickt
-    # den Bot. Ein zweiter Aufruf (Rennen, Neustart) findet keine Zeile.
+    # den Bot. Ein zweiter Aufruf (Rennen, Neustart) findet keine Zeile. Stehen
+    # noch Ids eines alten Bots, raeumt erst Schritt 5 auf.
     if not server._q(
             "update termin_akten set status = 'wartet_auf_einlass', status_grund = null, "
             "bot_geschickt_am = now(), geaendert_am = now() "
-            "where uid = %s and status = 'geplant' returning uid", (uid,)):
+            "where uid = %s and status = 'geplant' and vexa_meeting_id is null "
+            "and vexa_native_id is null returning uid", (uid,)):
         return
     try:
         m = vexa.bot_schicken(link)
     except vexa.VexaFehler:
-        termin_akte.status_setzen(uid, "fehlgeschlagen", "Bot konnte nicht starten")
+        termin_akte.status_wechseln(uid, ("wartet_auf_einlass",), "fehlgeschlagen",
+                                    "Bot konnte nicht starten")
         return
+    ids = {"vexa_meeting_id": m["meeting_id"], "vexa_plattform": m["plattform"],
+           "vexa_native_id": m["native_id"]}
     try:
-        termin_akte.status_setzen(
-            uid, "wartet_auf_einlass", vexa_meeting_id=m["meeting_id"],
-            vexa_plattform=m["plattform"], vexa_native_id=m["native_id"],
-            bot_geschickt_am=jetzt)
+        if not termin_akte.status_wechseln(uid, ("wartet_auf_einlass",), "wartet_auf_einlass",
+                                           bot_geschickt_am=jetzt, **ids):
+            # Inzwischen "Nein" (I2): Status bleibt, aber die Ids muessen in die
+            # Akte, damit Schritt 5 den Bot wieder herausholt.
+            termin_akte.felder_setzen(uid, **ids)
+            LOG.info("Bot gestartet nach Statuswechsel uid=%s - wird gestoppt", _h(uid))
     except Exception as e:  # noqa: BLE001
         # Der Bot laeuft schon, die Akte weiss es nicht: wegnehmen, nie still.
         LOG.warning("Bot gestartet, Speichern gescheitert uid=%s (%s) - raeume auf",
@@ -174,6 +205,7 @@ def _bot(jetzt: datetime) -> int:
     zeilen = server._q(
         "select uid, link from termin_akten "
         "where status = 'geplant' and coalesce(link, '') <> '' and not kein_bot "
+        "and vexa_meeting_id is null and vexa_native_id is null "
         "and abgesagt_am is null and beginn <= %s and ende > %s order by beginn",
         (jetzt + BOT_VOR, jetzt))
     if zeilen:
@@ -184,15 +216,17 @@ def _bot(jetzt: datetime) -> int:
         getan = sum(_je_akte("Bot", z["uid"],
                              lambda z=z: _bot_starten(z["uid"], z["link"], jetzt))
                     for z in zeilen)
-    # Vorbei und nie aufgenommen: nicht ewig 'geplant' lassen.
+    # Vorbei und nie aufgenommen: nicht ewig 'geplant' lassen - auch mit Vexa
+    # (z. B. Taktgeber war aus, Bot-Fenster verpasst).
     for z in server._q(
             "select uid, kein_bot from termin_akten "
             "where status = 'geplant' and coalesce(link, '') <> '' and abgesagt_am is null "
-            "and ende <= %s and (kein_bot or %s)", (jetzt, not konf)):
-        grund = "kein Bot gewuenscht" if z["kein_bot"] else "Vexa nicht konfiguriert"
+            "and ende <= %s", (jetzt,)):
+        grund = ("kein Bot gewuenscht" if z["kein_bot"]
+                 else "Termin vorbei ohne Bot" if konf else "Vexa nicht konfiguriert")
         getan += _je_akte("Ende", z["uid"],
-                          lambda z=z, g=grund: termin_akte.status_setzen(
-                              z["uid"], "ohne_aufnahme", g))
+                          lambda z=z, g=grund: termin_akte.status_wechseln(
+                              z["uid"], ("geplant",), "ohne_aufnahme", g))
     return getan
 
 
@@ -203,6 +237,8 @@ def _vexa_loeschen(uid: str, meeting_id: int) -> bool:
     die Id stehen (Schritt 5 versucht es wieder)."""
     try:
         vexa.meeting_loeschen(meeting_id)
+    except vexa.VexaNichtErreichbar:
+        return False            # vexa meldet den Ausfall selbst, einmal (I9)
     except vexa.VexaFehler:
         LOG.warning("Loeschen bei Vexa gescheitert uid=%s (Neuversuch folgt)", _h(uid))
         return False
@@ -210,51 +246,63 @@ def _vexa_loeschen(uid: str, meeting_id: int) -> bool:
     return True
 
 
-def _mitschrift_ablegen(uid: str, segmente: list[dict]) -> None:
-    """Mitschrift und Status `fertig` gemeinsam oder gar nicht."""
+def _mitschrift_ablegen(uid: str, segmente: list[dict]) -> bool:
+    """Mitschrift und Status `fertig` gemeinsam oder gar nicht -> abgelegt?
+
+    Die Akte ist in der Transaktion gesperrt (`for update`): steht sie nicht
+    mehr auf wartet_auf_einlass/laeuft (z. B. "Nein" in der Oberflaeche), wird
+    die Mitschrift verworfen (I2) und die Vexa-Ids bleiben fuer Schritt 5. Mit
+    `fertig` faellt die Bot-Kennung (Plattform/native Id) weg - der Bot ist
+    gegangen; nur die Meeting-Id bleibt zum Loeschen."""
     with server.pool.connection() as conn:
         with conn.transaction():
+            z = conn.execute("select status from termin_akten where uid = %s for update",
+                             (uid,)).fetchone()
+            if not z or z["status"] not in BOT_STATUS:
+                return False
             conn.execute(
                 "insert into termin_mitschriften (uid, segmente, auswertung_status) "
                 "values (%s, %s::jsonb, %s) on conflict (uid) do nothing",
                 (uid, json.dumps(segmente), "offen" if segmente else "leer"))
             if conn.execute(
                     "update termin_akten set status = 'fertig', status_grund = null, "
+                    "vexa_plattform = null, vexa_native_id = null, "
                     "geaendert_am = now() where uid = %s "
                     "and status in ('wartet_auf_einlass', 'laeuft')", (uid,)).rowcount != 1:
                 raise RuntimeError("Status inzwischen geaendert")   # rollt den Insert zurueck
+    return True
 
 
 def _verfolgen_eine(z: dict) -> int:
     uid, mid = z["uid"], z["vexa_meeting_id"]
     if mid is None:
-        termin_akte.status_setzen(uid, "fehlgeschlagen", "Keine Vexa-Meeting-Id")
-        return 1
+        return int(termin_akte.status_wechseln(uid, BOT_STATUS, "fehlgeschlagen",
+                                               "Keine Vexa-Meeting-Id"))
     try:
         m = vexa.meeting_lesen(mid)
     except vexa.VexaNichtGefunden:
-        termin_akte.status_setzen(uid, "fehlgeschlagen",
-                                  "Meeting bei Vexa nicht mehr vorhanden")
-        return 1
+        return int(termin_akte.status_wechseln(uid, BOT_STATUS, "fehlgeschlagen",
+                                               "Meeting bei Vexa nicht mehr vorhanden"))
     except vexa.VexaFehler:
         return 0                                  # naechste Runde
     if m["status"] == "failed":
-        termin_akte.status_setzen(
-            uid, "fehlgeschlagen", m["grund"] or m["ende_grund"] or "Bot ist gescheitert")
-        return 1
+        return int(termin_akte.status_wechseln(
+            uid, BOT_STATUS, "fehlgeschlagen",
+            m["grund"] or m["ende_grund"] or "Bot ist gescheitert"))
     if m["status"] == "completed":
         try:
             segmente = vexa.segmente_holen(mid)
         except vexa.VexaFehler:
             return 0                              # nichts geaendert, Wiederholung
-        _mitschrift_ablegen(uid, segmente)
+        if not _mitschrift_ablegen(uid, segmente):
+            LOG.info("Mitschrift verworfen uid=%s (Status inzwischen geaendert)", _h(uid))
+            return 1                              # Schritt 5 raeumt bei Vexa auf
         LOG.info("Mitschrift abgelegt uid=%s segmente=%d", _h(uid), len(segmente))
         _vexa_loeschen(uid, mid)                  # strikt nach dem Commit
         return 1
     neu = vexa.abbilden(m["status"])
     if neu != z["status"]:
-        termin_akte.status_setzen(uid, neu)
-        return 1
+        return int(termin_akte.status_wechseln(uid, (z["status"],), neu))
     return 0
 
 
@@ -268,15 +316,42 @@ def _verfolgen(jetzt: datetime) -> int:
     return sum(erg)
 
 
+def _nachloeschen_eine(z: dict) -> bool:
+    """Erst den Bot stoppen (404 = schon weg), dann das Meeting loeschen, dann
+    die Ids vergessen - nur wenn sie noch dieselben sind (ein neuer Bot der
+    Akte behaelt seine). Scheitert Vexa, bleiben die Ids: naechste Runde."""
+    uid = z["uid"]
+    try:
+        if z["vexa_plattform"] and z["vexa_native_id"]:
+            vexa.bot_stoppen(z["vexa_plattform"], z["vexa_native_id"])
+        if z["vexa_meeting_id"] is not None:
+            vexa.meeting_loeschen(int(z["vexa_meeting_id"]))
+    except vexa.VexaNichtErreichbar:
+        return False            # vexa meldet den Ausfall selbst, einmal (I9)
+    except vexa.VexaFehler as e:
+        LOG.warning("Nachraeumen bei Vexa gescheitert uid=%s (%s) - Neuversuch folgt",
+                    _h(uid), type(e).__name__)
+        return False
+    server._q(
+        "update termin_akten set vexa_meeting_id = null, vexa_plattform = null, "
+        "vexa_native_id = null where uid = %s "
+        "and vexa_meeting_id is not distinct from %s "
+        "and vexa_native_id is not distinct from %s returning uid",
+        (uid, z["vexa_meeting_id"], z["vexa_native_id"]))
+    return True
+
+
 def _nachloeschen(jetzt: datetime) -> int:
+    """C1: Jede Akte ohne laufende Aufnahme, an der noch Vexa-Ids haengen -
+    nach "Nein", Loeschantrag, Fehlschlag, Abholen oder Verschiebung."""
     zeilen = server._q(
-        "select uid, vexa_meeting_id from termin_akten "
-        "where status in ('fertig', 'ohne_aufnahme', 'fehlgeschlagen') and vexa_meeting_id is not null "
+        "select uid, vexa_meeting_id, vexa_plattform, vexa_native_id from termin_akten "
+        "where status in ('fertig', 'ohne_aufnahme', 'fehlgeschlagen', 'geplant', 'kein_link') "
+        "and (vexa_meeting_id is not null or vexa_native_id is not null) "
         "order by beginn")
     erg: list[bool] = []
     for z in zeilen:
-        _je_akte("Nachloeschen", z["uid"],
-                 lambda z=z: erg.append(_vexa_loeschen(z["uid"], z["vexa_meeting_id"])))
+        _je_akte("Nachloeschen", z["uid"], lambda z=z: erg.append(_nachloeschen_eine(z)))
     return sum(erg)
 
 
@@ -364,7 +439,20 @@ def _auswerten_eine(m: dict, jetzt: datetime) -> None:
              _h(uid), len(vorschlaege), entwurf is not None)
 
 
+def _termin_steht_an(jetzt: datetime) -> bool:
+    """I7a: beginnt bald ein Termin mit Bot oder laeuft einer? Dann wartet die
+    Auswertung (ein Ollama-Aufruf kann Minuten dauern, der Bot nicht)."""
+    return bool(server._q(
+        "select 1 from termin_akten where abgesagt_am is null "
+        "and coalesce(link, '') <> '' and not kein_bot "
+        "and status in ('geplant', 'wartet_auf_einlass', 'laeuft') "
+        "and beginn <= %s and ende > %s limit 1",
+        (jetzt + AUSWERTUNG_PAUSE_VOR, jetzt)))
+
+
 def _auswerten(jetzt: datetime) -> int:
+    if _termin_steht_an(jetzt):
+        return 0
     kandidaten = server._q(
         "select id, uid, segmente, entwurf_id from termin_mitschriften "
         "where auswertung_status = 'offen' or (auswertung_status = 'fehler' "

@@ -8837,13 +8837,16 @@ def kontakt_auskunft(lead_id: str) -> str:
                      f"[{e['status']}] {e['subject'] or ''}: {e['body']}")
     # Termin-Akten mit Mitschrift und Auswertung. Nur die eigenen Daten des
     # Kontakts plus Termin-Metadaten: keine Adressen anderer Teilnehmer. Nie
-    # loggen.
+    # loggen. Auch Akten, in denen der Kontakt schon entknuepft ist (gesperrt):
+    # Abgleich ueber seine E-Mail-Adresse (Final-Review I5).
     akten = _q(
         "select a.uid, a.titel, a.beginn, a.status, m.segmente, "
         "m.auswertung_json, m.auswertung_md from termin_akten a "
         "left join termin_mitschriften m on m.uid = a.uid "
         "where a.uid in (select uid from termin_teilnehmer "
-        "where lead_id = %s) order by a.beginn, a.uid", (lead_id,))
+        "where lead_id = %s or (lead_id is null and coalesce(%s, '') <> '' "
+        "and lower(adresse) = lower(%s))) "
+        "order by a.beginn, a.uid", (lead_id, l.get("email"), l.get("email")))
     teile += ["", f"## Termine ({len(akten)})", ""]
     for a in akten:
         teile.append(f"* {a['beginn']:%d.%m.%Y %H:%M} — {a['titel'] or ''} "
@@ -8872,15 +8875,24 @@ def kontakt_auskunft(lead_id: str) -> str:
                      if schreibfehler else {})})
 
 
+_TEILNAHME_DES_LEADS = (
+    "(lead_id = %s or (lead_id is null and lower(adresse) in (select lower(email) from leads "
+    "where id = %s and coalesce(email, '') <> '')))")
+
+
 def _mitschriften_abraeumen(lead_id: str) -> None:
     """Loeschantrag: Mitschriften aller Termine, an denen der Kontakt
-    teilnahm, entfernen (Meeting-Mittelpunkt). Laeuft ein Bot, erst beenden;
-    das Briefing nennt Namen, Kontakte und Painpoints und wird geleert."""
+    teilnahm, entfernen (Meeting-Mittelpunkt) - auch dort, wo seine Zeile
+    schon entknuepft ist (Abgleich ueber die Adresse, Final-Review I5).
+    Steht ein Bot an oder laeuft er, wird nur der Status 'ohne_aufnahme'
+    gesetzt (bedingt, I2); Bot stoppen und Vexa-Meeting loeschen macht der
+    Taktgeber (C1, `termin_takt._nachloeschen`) - nur er hat VEXA_API_KEY.
+    Das Briefing nennt Namen, Kontakte und Painpoints und wird geleert."""
     import termin_akte  # R4: termin_akte importiert server
-    for uid in termin_akte.akten_eines_leads(lead_id):
-        akte = _q("select status from termin_akten where uid = %s", (uid,))
-        if akte and akte[0]["status"] in ("wartet_auf_einlass", "laeuft"):
-            termin_akte.aufnahme_beenden(uid, "Löschantrag eines Teilnehmers")
+    for uid in termin_akte.akten_eines_leads(lead_id, mit_adresse=True):
+        termin_akte.status_wechseln(
+            uid, ("geplant", "wartet_auf_einlass", "laeuft"), "ohne_aufnahme",
+            "Löschantrag eines Teilnehmers")
         termin_akte.mitschrift_entfernen(uid)
         _q("update termin_akten set briefing_md = null, briefing_stand = null, "
            "briefing_mit_ki = null, briefing_am = null, geaendert_am = now() "
@@ -8888,9 +8900,10 @@ def _mitschriften_abraeumen(lead_id: str) -> None:
     # Sicherheitsnetz nach dem Abraeumen je Akte (Wortlaut des Briefs): fiele
     # eine Akte durch akten_eines_leads, geht die Mitschrift hier trotzdem.
     _q("delete from termin_mitschriften where uid in (select uid from "
-       "termin_teilnehmer where lead_id = %s) returning id", (lead_id,))
-    _q("update termin_teilnehmer set lead_id = null, grund = 'gesperrt' "
-       "where lead_id = %s returning uid", (lead_id,))
+       f"termin_teilnehmer where {_TEILNAHME_DES_LEADS}) returning id", (lead_id, lead_id))
+    # Von Gesperrten bleibt nur die Adresse (Final-Review I6).
+    _q("update termin_teilnehmer set lead_id = null, grund = 'gesperrt', name = null "
+       f"where {_TEILNAHME_DES_LEADS} returning uid", (lead_id, lead_id))
 
 
 @_gesichert
@@ -8902,7 +8915,8 @@ def loeschantrag_vermerken(lead_id: str, quelle: str,
     Der Vermerk archiviert den Kontakt, blockiert neue Entwuerfe und den
     Auto-Betrieb und verhindert stilles Zurueckholen. ZUERST raeumt er die
     Mitschriften ab (Meeting-Mittelpunkt: Mitschrift, Auswertung, Briefing
-    aller Termine des Kontakts, laufende Bots werden beendet); scheitert das,
+    aller Termine des Kontakts; ein laufender Bot wird ueber den Status
+    beendet, der Taktgeber holt ihn binnen einer Runde raus); scheitert das,
     kommt ein Fehler und der Kontakt wird NICHT vermerkt — der Aufruf kann
     wiederholt werden. Der Kontakt selbst wird hier NICHT geloescht: die
     physische Loeschung ist ein Menschen-Schritt mit

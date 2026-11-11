@@ -269,18 +269,23 @@ def test_knoepfe_je_status():
 
 # --- Aktionen ---------------------------------------------------------------
 
-def test_ohne_aufnahme_stoppt_und_loescht(fake):
+def test_ohne_aufnahme_setzt_status_und_ueberlaesst_vexa_dem_taktgeber(fake):
+    # C1: Die Oberflaeche spricht nie mit Vexa (sie hat keinen VEXA_API_KEY);
+    # die Ids bleiben stehen, der Taktgeber stoppt den Bot und loescht.
     _akte("u1", status="laeuft", vexa_meeting_id=11, vexa_plattform="google_meet",
           vexa_native_id="abc-defg-hij")
     _mitschrift("u1")
     a = _post("u1", "ohne_aufnahme")
     assert a.status_code == 303 and a.headers["location"].startswith(_pfad("u1"))
-    assert ("stoppen", "google_meet", "abc-defg-hij") in fake.aufrufe
-    assert ("loeschen", 11) in fake.aufrufe
+    assert fake.aufrufe == []
     z = _zeile()
     assert z["status"] == "ohne_aufnahme" and z["status_grund"] == "Kunde hat abgelehnt"
-    assert z["vexa_meeting_id"] is None
+    assert (z["vexa_meeting_id"], z["vexa_plattform"], z["vexa_native_id"]) == (
+        11, "google_meet", "abc-defg-hij")
     assert _mit() is None
+    assert _hinweis(a) == "Aufnahme beendet – der Bot verlässt den Termin in Kürze."
+    assert "Aufnahme beendet – der Bot verlässt den Termin in Kürze." in _get(
+        a.headers["location"]).text
 
 
 def test_ohne_aufnahme_vexa_weg_trotzdem_status(fake):
@@ -292,7 +297,7 @@ def test_ohne_aufnahme_vexa_weg_trotzdem_status(fake):
     z = _zeile()
     assert z["status"] == "ohne_aufnahme"
     assert z["vexa_meeting_id"] == 11            # der Taktgeber loescht nach
-    assert _mit() is None
+    assert _mit() is None and fake.aufrufe == []
 
 
 def test_will_zusammenfassung_schaltet_um():
@@ -614,3 +619,21 @@ def test_uid_mit_schraegstrich_und_json_endung(uid):
     assert h.status_code == 200 and ">Beitreten</a>" in h.text
     j = _get(_pfad(uid) + ".json")
     assert j.status_code == 200 and j.json()["uid"] == uid
+
+
+# --- Final-Review I2: erst Status, dann loeschen ------------------------------
+
+def test_i2_aufnahme_beenden_setzt_status_vor_dem_loeschen(monkeypatch):
+    _akte("u1", status="laeuft")
+    _mitschrift("u1")
+    gesehen = []
+    echt = termin_akte.mitschrift_entfernen
+
+    def spion(uid):
+        gesehen.append(_zeile(uid)["status"])
+        return echt(uid)
+
+    monkeypatch.setattr(termin_akte, "mitschrift_entfernen", spion)
+    _post("u1", "ohne_aufnahme")
+    assert gesehen == ["ohne_aufnahme"]
+    assert _mit() is None
