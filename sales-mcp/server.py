@@ -3670,6 +3670,17 @@ def kalenderquelle_stand_setzen(quelle_id: str, anzahl, fehler) -> None:
        "where id = %s", (fehler, anzahl, quelle_id))
 
 
+def _teilnehmer_json(termin: dict) -> "str | None":
+    """Teilnehmer eines Termins als {"liste", "anzahl"} (JSON-Text) oder None,
+    wenn der Termin keine kennt (Google-Termine, leere Liste)."""
+    liste = termin.get("teilnehmer")
+    if not liste:
+        return None
+    return json.dumps({"liste": liste,
+                       "anzahl": termin.get("teilnehmer_anzahl", len(liste))},
+                      ensure_ascii=False)
+
+
 def kalendertermine_ersetzen(quelle_id: str, termine: list, details: bool) -> int:
     """Die abgeglichenen Termine einer Quelle austauschen -> Anzahl.
 
@@ -3699,7 +3710,10 @@ def kalendertermine_ersetzen(quelle_id: str, termine: list, details: bool) -> in
             zeilen = [(quelle_id, t.get("uid") or "", t["beginn"], t["ende"],
                        bool(t.get("ganztaegig")), bool(t.get("frei")),
                        (t.get("titel") or None) if mit_details else None,
-                       (t.get("ort") or None) if mit_details else None)
+                       (t.get("ort") or None) if mit_details else None,
+                       (t.get("beschreibung") or None) if mit_details else None,
+                       _teilnehmer_json(t) if mit_details else None,
+                       (t.get("konferenz") or None) if mit_details else None)
                       for t in termine]
             conn.execute("delete from kalender_termine where quelle_id = %s",
                          (quelle_id,))
@@ -3707,8 +3721,10 @@ def kalendertermine_ersetzen(quelle_id: str, termine: list, details: bool) -> in
                 with conn.cursor() as cur:
                     cur.executemany(
                         "insert into kalender_termine (quelle_id, uid, beginn, "
-                        "ende, ganztaegig, frei, titel, ort) "
-                        "values (%s, %s, %s, %s, %s, %s, %s, %s)", zeilen)
+                        "ende, ganztaegig, frei, titel, ort, beschreibung, "
+                        "teilnehmer, konferenz) "
+                        "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, "
+                        "%s::jsonb, %s)", zeilen)
     return len(zeilen)
 
 
