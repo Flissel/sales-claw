@@ -366,6 +366,8 @@ begin
         auswertung_am timestamptz,
         modell text,
         entwurf_id uuid)$ddl$, s, s);
+    -- Neuversuche der Auswertung (Taktgeber): hoechstens 3, je 1 h Abstand.
+    execute format('alter table %I.termin_mitschriften add column if not exists auswertung_versuche integer not null default 0', s);
     execute format($ddl$
       create table if not exists %I.termin_vorschlaege (
         id uuid primary key default gen_random_uuid(),

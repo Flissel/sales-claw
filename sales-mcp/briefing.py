@@ -224,11 +224,17 @@ def _ki_text(roh) -> str:
     return "\n".join(zeilen).strip()[:MAX_KI_ZEICHEN].strip()
 
 
+def stand_von(f: dict) -> str:
+    """Fingerabdruck der Fakten (ohne KI-Text). Der Taktgeber vergleicht ihn
+    mit dem gespeicherten, ohne dafuer Ollama zu befragen."""
+    return hashlib.sha256(json.dumps(f, sort_keys=True, default=str).encode()).hexdigest()
+
+
 def erstellen(uid: str) -> dict:
     f = fakten(uid)
     md = fakten_markdown(f)
     # stand nur ueber die Fakten: aendert sich mit neuer Mail, nicht mit KI-Text
-    stand = hashlib.sha256(json.dumps(f, sort_keys=True, default=str).encode()).hexdigest()
+    stand = stand_von(f)
     kurz = ""
     try:
         if ollama.erreichbar():

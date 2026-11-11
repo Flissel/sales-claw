@@ -21,7 +21,7 @@ SPALTEN = {
     "termin_mitschriften": {
         "id", "uid", "segmente", "geholt_am", "auswertung_status",
         "auswertung_json", "auswertung_md", "auswertung_am", "modell",
-        "entwurf_id"},
+        "entwurf_id", "auswertung_versuche"},
     "termin_vorschlaege": {
         "id", "mitschrift_id", "art", "lead_id", "daten", "status",
         "erstellt_am", "erledigt_am"},
