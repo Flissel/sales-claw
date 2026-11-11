@@ -91,3 +91,29 @@ def test_kein_log_von_passcode(caplog):
     with caplog.at_level("DEBUG"):
         erkennen("https://us02web.zoom.us/j/81234567890?pwd=geheim123")
     assert "geheim123" not in caplog.text
+
+
+def test_passcode_in_tags():
+    r = erkennen("https://teams.microsoft.com/l/meetup-join/x", "Passcode: <b>7Hx9</b>")
+    assert r["passcode"] == "7Hx9"
+
+
+def test_passcode_nbsp_und_punkt():
+    r = erkennen("https://teams.microsoft.com/l/meetup-join/x", "Passcode:&nbsp;7Hx9.")
+    assert r["passcode"] == "7Hx9"
+
+
+def test_einwahl_einzeilig_mit_br():
+    r = erkennen("https://meet.google.com/abc-defg-hij",
+                 "Termin<br>Telefon: +49 30 1234567<br>Weitere Infos folgen")
+    assert r["einwahl"] == "+49 30 1234567"
+
+
+def test_einwahl_laenge_begrenzt():
+    r = erkennen("https://meet.google.com/abc-defg-hij", "Telefon: +49 " + "1" * 300)
+    assert len(r["einwahl"]) <= 80
+
+
+def test_zoom_pwd_mit_amp_entitaet():
+    r = erkennen('<a href="https://us02web.zoom.us/j/81234567890?x=1&amp;pwd=abc">Join</a>')
+    assert r["passcode"] == "abc"

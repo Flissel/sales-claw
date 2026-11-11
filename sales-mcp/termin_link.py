@@ -12,6 +12,7 @@ Link, Passcode und Einwahl duerfen in kein Log: dieses Modul loggt nichts.
 """
 from __future__ import annotations
 
+import html
 import os
 import re
 import urllib.parse
@@ -33,9 +34,10 @@ _URL = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 _URL_ENDE = ">)].,;:!?\"'"
 _PASSCODE = re.compile(
     r"(?:Kenncode|Passcode|Zugangscode|Meeting-Kennwort|Kennwort|Passwort"
-    r"|Password)\s*:\s*([^\s,;]+)", re.IGNORECASE)
+    r"|Password)\s*:\s*(?:<[^>]*>\s*)*([^\s<>&,;]+)", re.IGNORECASE)
+# Einwahl endet an Zeilenende oder Tag und ist auf 80 Zeichen begrenzt (1 + 79)
 _EINWAHL = re.compile(
-    r"(?:Telefon|Einwahl|Dial[- ]?in|Phone|Tel\.?)\s*:\s*(\+?\d[^\r\n]*)",
+    r"(?:Telefon|Einwahl|Dial[- ]?in|Phone|Tel\.?)\s*:\s*(\+?\d[^<\r\n]{0,78})",
     re.IGNORECASE)
 
 
@@ -81,7 +83,7 @@ def _passcode(link: str, texte: tuple) -> str:
     for text in texte:
         treffer = _PASSCODE.search(text or "")
         if treffer:
-            return treffer.group(1)
+            return treffer.group(1).rstrip(".!?:")
     return ""
 
 
@@ -99,6 +101,8 @@ def erkennen(*texte: str | None) -> dict | None:
     Rueckgabe `{"link", "plattform", "passcode", "einwahl"}` oder `None`.
     Ein beliebiger Link ohne bekannte Plattform ergibt `None`.
     """
+    # HTML-Entitaeten (&amp;, &nbsp;) vor jedem Abgleich aufloesen
+    texte = tuple(html.unescape(t or "") for t in texte)
     jitsi = jitsi_hosts()
     for text in texte:
         for roh in _URL.findall(text or ""):
