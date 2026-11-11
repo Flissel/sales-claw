@@ -777,6 +777,37 @@ services:
       GOOGLE_KALENDER_CLIENT_ID: ${GOOGLE_KALENDER_CLIENT_ID:-}
       GOOGLE_KALENDER_CLIENT_SECRET: ${GOOGLE_KALENDER_CLIENT_SECRET:-}
 
+  # Taktgeber der Meeting-Mitte (11.11.2026, sales-mcp/termin_takt.py): alle
+  # TERMIN_TAKT_S Sekunden gleicht er die Termin-Akten ab, schickt 30 Minuten
+  # vorher Briefing und Telegram-Hinweis, 1 Minute vorher den Vexa-Bot, holt
+  # danach die Mitschrift, loescht sie bei Vexa und wertet sie mit dem lokalen
+  # Ollama aus. Kein Port. VEXA_URL zeigt auf vexa-lite im Netz sales-claw_default
+  # (der Vexa-Stack haengt sich dort an, kein eigenes Netz hier). Ohne
+  # VEXA_API_KEY schickt er keinen Bot; deploy/update.sh baut ihn nur neu, wenn
+  # er vorher schon lief.
+  sales-termine:
+    build: ./sales-mcp
+    image: sales-claw-sales-mcp:local
+    container_name: ${LADEN_PRAEFIX:-sales}-termine
+    command: python termin_takt.py
+    restart: unless-stopped
+    environment:
+      <<: *sales_mcp_umgebung
+      TERMIN_TAKT_S: ${TERMIN_TAKT_S:-30}
+      VEXA_URL: ${VEXA_URL:-http://vexa-lite:8056}
+      VEXA_API_KEY: ${VEXA_API_KEY:-}
+      VEXA_TIMEOUT_S: ${VEXA_TIMEOUT_S:-20}
+      VEXA_LOBBY_WARTEN_MS: ${VEXA_LOBBY_WARTEN_MS:-1800000}
+      OLLAMA_URL: ${OLLAMA_URL:-}
+      OLLAMA_MODELL: ${OLLAMA_MODELL:-}
+      OLLAMA_TIMEOUT_S: ${OLLAMA_TIMEOUT_S:-300}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      UI_BASIS_URL: ${UI_BASIS_URL:-}
+      JITSI_BASIS: ${JITSI_BASIS:-}
+      JITSI_HOSTS: ${JITSI_HOSTS:-}
+      TERMIN_TEAM_ADRESSEN: ${TERMIN_TEAM_ADRESSEN:-}
+
   # Post-Sammelstelle Stufe 1 (03.11.2026, sales-mcp/post_abholen.py): holt die
   # Mails aller aktiven Postfaecher NUR LESEND (IMAP readonly) und ordnet sie
   # mit niedriger Prioritaet ueber den Agenten `post` des eigenen Gateways ein.
@@ -1005,6 +1036,13 @@ services:
       # "Bewerbungen" auf /freigaben.
       - BEWERBUNG_PULT_URL=${BEWERBUNG_PULT_URL:-}
       - BEWERBUNG_PULT_KEY=${BEWERBUNG_PULT_KEY:-}
+      # Portal-Fenster (Portal-Abgabe): WebSocket-Adresse des Fensters im Container
+      # bewerbung-portal (ws://bewerbung-portal:6080) und der
+      # gemeinsame Schluessel (= PORTAL_FENSTER_SCHLUESSEL in der bot.env). NUR in der
+      # Haupt-.env des Basis-Ladens. Leer = kein Fenster. Das Netz haengt NICHT hier,
+      # sondern nur im Basis-Laden an (docker-compose.fenster.yml).
+      - BEWERBUNG_FENSTER_WS=${BEWERBUNG_FENSTER_WS:-}
+      - BEWERBUNG_FENSTER_SCHLUESSEL=${BEWERBUNG_FENSTER_SCHLUESSEL:-}
       # Newsletter an Kontakte (15.10.2026, E4): dieser Laden sendet nur Newsletter dieser Marketing-Firma.
       - MARKETING_MANDANT=${MARKETING_MANDANT:-}
       # Aussehen je Laden (Paket C4, 19.10.2026, laden_marke.py): LADEN_MARKE waehlt die Firma, deren

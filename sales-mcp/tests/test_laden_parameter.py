@@ -285,6 +285,28 @@ _ANKER_AUSNAHMEN = {
     "KALENDERQUELLEN_PRIVATE_ZIELE": (
         "kalenderquellen.py: dasselbe Testsuite-only-Muster und dieselbe "
         "Begruendung wie FIRMA_PRIVATE_ZIELE (recherche.py)."),
+    # Geteilte Module (Befund 10.11.2026): server.py importiert sie nur fuer
+    # Konstanten oder eine einzelne Funktion; die gemeldeten Werte liest erst
+    # der Dienst, der das Modul als Einstieg startet — und der hat sie.
+    "KALENDER_ONCE": (
+        "kalender_abgleich.py: Einzelrunden-Schalter wie DISPATCH_ONCE fuer "
+        "den Dienst sales-kalender. server.py importiert das Modul spaet nur "
+        "fuer FENSTER_ZURUECK_TAGE/FENSTER_VORAUS_TAGE."),
+    "SYSTEM_SMTP_HOST": (
+        "mail_dispatch.py: Zugang der System-Identitaet, nur fuer die "
+        "Versandschleife in sales-mail (dort im environment). server.py nutzt "
+        "aus mail_dispatch nur EMAIL_ABSENDER, ANHANG_MAX_BYTES und "
+        "kunden_identitaet(). Ein Ankereintrag verteilte SMTP-Zugaenge an "
+        "Dienste, die nie senden (T5a)."),
+    "SYSTEM_SMTP_USER": "mail_dispatch.py: wie SYSTEM_SMTP_HOST.",
+    "SYSTEM_SMTP_PASSWORT": "mail_dispatch.py: wie SYSTEM_SMTP_HOST.",
+    "SYSTEM_ABSENDER": "mail_dispatch.py: wie SYSTEM_SMTP_HOST.",
+    "MARKETING_PULT_URL": (
+        "marketing_pult.py ueber reel_teilen.py: server.py ruft nur "
+        "reel_teilen.ziele() (Kanalwahl, ohne Marketing-API); "
+        "fertige_reels() mit dem Pult-Zugang laeuft im auftrag-bote, der "
+        "MARKETING_PULT_URL/KEY im environment hat."),
+    "MARKETING_PULT_KEY": "marketing_pult.py: wie MARKETING_PULT_URL.",
 }
 
 
@@ -395,12 +417,12 @@ def test_ohne_umgebung_bleibt_alles_wie_heute():
         "sales-claw", "sales-mcp", "sales-dispatch", "sales-inbox",
         "sales-mail", "sales-telegram", "sales-linkedin", "sales-kanaele",
         "sales-auto", "sales-ui", "sales-post", "freigabe-bote",
-        "sales-kalender", "auftrag-bote"}  # sales-stt seit 20.10.2026 am PC (Profil stt-lokal)
+        "sales-kalender", "auftrag-bote", "sales-termine"}  # sales-stt seit 20.10.2026 am PC (Profil stt-lokal)
     assert {d["container_name"] for d in cfg["services"].values()} == {
         "sales-claw", "sales-mcp", "sales-dispatch", "sales-inbox",
         "sales-mail", "sales-telegram", "sales-linkedin", "sales-kanaele",
         "sales-auto", "sales-ui", "sales-post", "sales-freigabe-bote",
-        "sales-kalender", "sales-auftrag-bote"}  # sales-stt seit 20.10.2026 am PC (Profil stt-lokal)
+        "sales-kalender", "sales-auftrag-bote", "sales-termine"}  # sales-stt seit 20.10.2026 am PC (Profil stt-lokal)
     assert {v["name"] for v in cfg["volumes"].values()} == {
         "sales-claw-state", "sales-claw-keys",
         "sales-sprachnachrichten"}

@@ -1,0 +1,24 @@
+# docker-compose.fenster.yml - Zusatz NUR fuer die sales-ui des Basis-Ladens.
+#
+# WARUM EINE EIGENE DATEI: Der Portal-Container des Bewerbungs-Bots (bewerbung-portal)
+# surft auf fremden Seiten. Das interne Netz bewerbung-fenster verbindet ihn mit der
+# Oberflaeche, die sein Fenster zeigt. Haengt nur die sales-ui des Basis-Ladens daran,
+# sehen andere Laeden den Container nie (Trennung der Laden-Mandanten). Deshalb steht das
+# Netz NICHT in docker-compose.yml (das ist die Vorlage fuer JEDEN Laden), sondern hier.
+#
+# AUFRUFER: nur die Deploy-Skripte fuer den Basis-Laden (deploy/update.sh, bootstrap.sh,
+# benutzer-anlegen.sh), und zwar so:
+#   docker compose -f docker-compose.yml -f docker-compose.fenster.yml up -d sales-ui
+# nachdem deploy/fenster-netz-anlegen.sh das Netz angelegt hat (external: sonst scheitert `up`).
+# Zweite Laeden (--env-file) nutzen diese Datei nie. `default` muss ausdruecklich mit dabei
+# sein, sonst verliert der Dienst die Verbindung zu den uebrigen Diensten.
+services:
+  sales-ui:
+    networks:
+      - default
+      - bewerbung-fenster
+
+networks:
+  bewerbung-fenster:
+    external: true
+    name: bewerbung-fenster

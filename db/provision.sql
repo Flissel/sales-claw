@@ -301,6 +301,93 @@ begin
       execute format('grant select, insert, update on %I.einstellungen to %I',
                      s, 'sales_app_' || substr(s, 7));
     end if;
+    -- Meeting-Mittelpunkt (11.11.2026): Termin-Akte, Teilnehmer, Mitschrift,
+    -- Vorschlaege. Die Akte ist die eine Zeile je Termin (uid = Kalender-UID
+    -- oder eigene). Mitschrift, Auswertung und Vorschlaege liegen in eigenen,
+    -- loeschbaren Tabellen - activities bleibt append-only. Status ASCII.
+    execute format($ddl$
+      create table if not exists %I.termin_akten (
+        uid text primary key,
+        herkunft text not null check (herkunft in ('sales-claw','kalender')),
+        quelle_id uuid null,
+        termin_activity_id uuid null,
+        beginn timestamptz not null,
+        ende timestamptz not null,
+        zeitzone text not null default 'Europe/Berlin',
+        titel text,
+        thema text,
+        beschreibung text,
+        link text,
+        plattform text null
+          check (plattform in ('google_meet','teams','zoom','jitsi','sonstige')),
+        passcode text,
+        einwahl text,
+        status text not null default 'geplant',
+        status_grund text,
+        kein_bot boolean not null default false,
+        will_zusammenfassung boolean not null default false,
+        abgesagt_am timestamptz,
+        vexa_meeting_id integer,
+        vexa_plattform text,
+        vexa_native_id text,
+        bot_geschickt_am timestamptz,
+        briefing_md text,
+        briefing_stand text,
+        briefing_mit_ki boolean,
+        briefing_am timestamptz,
+        hinweis_gesendet_am timestamptz,
+        erstellt_am timestamptz not null default now(),
+        geaendert_am timestamptz not null default now())$ddl$, s);
+    execute format('alter table %I.termin_akten drop constraint if exists termin_akten_status_check', s);
+    execute format($ddl$alter table %I.termin_akten add constraint termin_akten_status_check
+      check (status in ('geplant','wartet_auf_einlass','laeuft','fertig',
+                        'ohne_aufnahme','fehlgeschlagen','kein_link'))$ddl$, s);
+    execute format('create index if not exists termin_akten_beginn_idx on %I.termin_akten (beginn)', s);
+    execute format($ddl$
+      create table if not exists %I.termin_teilnehmer (
+        uid text not null references %I.termin_akten(uid) on delete cascade,
+        adresse text not null,
+        name text,
+        rolle text not null check (rolle in ('organisator','gast')),
+        lead_id uuid null references %I.leads(id) on delete set null,
+        grund text,
+        primary key (uid, adresse))$ddl$, s, s, s);
+    execute format('create index if not exists termin_teilnehmer_lead_idx on %I.termin_teilnehmer (lead_id)', s);
+    execute format($ddl$
+      create table if not exists %I.termin_mitschriften (
+        id uuid primary key default gen_random_uuid(),
+        uid text not null unique references %I.termin_akten(uid) on delete cascade,
+        segmente jsonb not null,
+        geholt_am timestamptz not null default now(),
+        auswertung_status text not null default 'offen'
+          check (auswertung_status in ('offen','fertig','fehler','leer')),
+        auswertung_json jsonb,
+        auswertung_md text,
+        auswertung_am timestamptz,
+        modell text,
+        entwurf_id uuid)$ddl$, s, s);
+    -- Neuversuche der Auswertung (Taktgeber): hoechstens 3, je 1 h Abstand.
+    execute format('alter table %I.termin_mitschriften add column if not exists auswertung_versuche integer not null default 0', s);
+    execute format($ddl$
+      create table if not exists %I.termin_vorschlaege (
+        id uuid primary key default gen_random_uuid(),
+        mitschrift_id uuid not null references %I.termin_mitschriften(id) on delete cascade,
+        art text not null check (art in ('termin_ergebnis','wiedervorlage','feld')),
+        lead_id uuid null references %I.leads(id) on delete cascade,
+        daten jsonb not null,
+        status text not null default 'offen'
+          check (status in ('offen','bestaetigt','verworfen')),
+        erstellt_am timestamptz not null default now(),
+        erledigt_am timestamptz)$ddl$, s, s, s);
+    -- Rechte: sales_test bekommt select/insert/update/delete/truncate ueber den
+    -- Sammel-Grant nach der Schleife (er laeuft nach dieser Zeile).
+    if s = 'sales' then
+      execute 'grant select, insert, update, delete on sales.termin_akten, sales.termin_teilnehmer, sales.termin_mitschriften, sales.termin_vorschlaege to sales_app';
+    elsif s <> 'sales_test' and exists (
+        select 1 from pg_roles where rolname = 'sales_app_' || substr(s, 7)) then
+      execute format('grant select, insert, update, delete on %I.termin_akten, %I.termin_teilnehmer, %I.termin_mitschriften, %I.termin_vorschlaege to %I',
+                     s, s, s, s, 'sales_app_' || substr(s, 7));
+    end if;
     -- Postfach aufraeumen + durchsuchen (28.10.2026, Sales-UI-Rundgang):
     -- je gesehene Mail eine Zeile. art: 'spam' (Betrug, sofort verschoben),
     -- 'unwichtig' (nur Vorschlag, verschoben erst nach Bestaetigung) oder

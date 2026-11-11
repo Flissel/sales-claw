@@ -87,10 +87,16 @@ für ~20–60 Sekunden still und verbindet sich selbst wieder. Ein
 ```bash
 cd ~/sales-claw
 git reset --hard vor-update
-docker compose up -d --build sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw
+docker compose up -d --build sales-mcp sales-inbox sales-dispatch sales-mail sales-claw
+docker compose build sales-ui && bash deploy/sales-ui-neu.sh
 docker restart sales-claw
 bash deploy/smoke.sh
 ```
+
+`deploy/sales-ui-neu.sh` erzeugt die Basis-`sales-ui` mit dem Netz `bewerbung-fenster` (Portal-Fenster) neu; ein
+schlichtes `docker compose up -d sales-ui` verlöre es. Liegt `vor-update` vor dem Portal-Fenster, also ohne
+`docker-compose.fenster.yml` und ohne dieses Skript, gilt der alte schlichte Befehl:
+`docker compose up -d --build sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw`.
 
 ## Sicherung
 
@@ -119,7 +125,7 @@ Nie zwei Standorte gleichzeitig im Kundenverkehr. Reihenfolge:
    (`POST /api/sessions/<id>/pairing-code`), Betreiber tippt ihn ein.
 6. VM: sales-claw starten; Log muss `Listening for WhatsApp inbound`
    zeigen. Bei `session logged out`: Control-UI, „Erneut verknüpfen", QR.
-7. VM: `docker compose up -d sales-inbox sales-dispatch sales-mail sales-ui sales-mcp`.
+7. VM: `docker compose up -d sales-inbox sales-dispatch sales-mail sales-mcp && bash deploy/sales-ui-neu.sh`.
 8. VM: `bash deploy/smoke.sh` → alle neun grün.
 9. Von einer ZWEITEN Nummer eine WhatsApp schicken → muss als
    `kundenantwort` in der Datenbank und im Posteingang erscheinen.
@@ -333,7 +339,7 @@ neu anmelden — ohne Gruppe scheitert jede Abfrage der Marketing-API.
    marketing-api`; dann `sales-ui` namentlich neu erstellen:
 
    ```bash
-   ssh offload-vm 'cd ~/sales-claw && docker compose up -d sales-ui'
+   ssh offload-vm 'cd ~/sales-claw && bash deploy/sales-ui-neu.sh'
    ssh offload-vm 'docker exec sales-ui printenv MARKETING_PULT_URL'              # gesetzt
    ssh offload-vm 'docker exec ivan-ui printenv MARKETING_PULT_URL || echo leer'  # leer
    ```

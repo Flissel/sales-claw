@@ -592,7 +592,11 @@ def test_beide_werkzeuge_sind_registriert():
     # kontakt_einordnen, 91 -> 94. 17.10.2026: empfehlungsliste_anlegen,
     # empfehlungslisten_zeigen (C4), 94 -> 96. abschluss_speichern (C2), 96 -> 97.
     # kontakt_historie_lesen (C3), 97 -> 98.
-    assert len(namen) == len(set(namen)) == 98
+    # 24.10.-10.11.2026: kanal_post_entwurf, termin_rueckfragen,
+    # termin_ergebnis_speichern, mail_einstufen, mail_aufraeumen_ausfuehren,
+    # profil_anhang_speichern, auftrag_geben, auftraege_melden, 98 -> 106
+    # (hier nachgezogen am 10.11.2026; Einzelnachweis in test_werkzeuge.py).
+    assert len(namen) == len(set(namen)) == 107
 
 # ---------------------------------------------------------------------------
 # Nachbesserungen aus dem Stufe-5-Review (Befunde T1, B2, D2)

@@ -107,8 +107,14 @@ if [ -z "$AKTUELL" ]; then
   fi
   unset SECRET
   echo "UI_SESSION_SECRET gesetzt — Anmeldung wird scharf (Laden '$LADEN')."
+  # Portal-Fenster: NUR die sales-ui des Basis-Ladens (ENVARG leer) haengt am Netz
+  # bewerbung-fenster; ohne angelegtes Netz startet sie ohne Fenster.
+  DATEIEN=""
+  if [ -z "$ENVARG" ] && bash "$REPO/deploy/fenster-netz-anlegen.sh"; then
+    DATEIEN="-f docker-compose.yml -f docker-compose.fenster.yml"
+  fi
   # shellcheck disable=SC2086
-  (cd "$REPO" && docker compose $ENVARG up -d "$UI_DIENST" >/dev/null)
+  (cd "$REPO" && docker compose $ENVARG $DATEIEN up -d "$UI_DIENST" >/dev/null)
   echo "$LADEN-ui neu gestartet. Ab jetzt: erst anmelden, dann freigeben."
 else
   echo "Anmeldung war schon scharf — Benutzer angelegt/aktualisiert (Laden '$LADEN')."

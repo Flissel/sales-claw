@@ -2100,8 +2100,9 @@ Kontakte samt Verlauf/Bedarf/Verträgen, Posteingang, die Einordnung
 unbekannter Absender und offene Wiedervorlagen — ohne den Chat zu bemühen.
 
 ```powershell
-# Start (Rest des Stacks bleibt unberührt)
-docker compose up -d sales-ui
+# Start (Rest des Stacks bleibt unberührt). Der Basis-Laden mit Portal-Fenster, immer über das Skript
+# (ein schlichtes `up -d sales-ui` erzeugt ihn ohne das Netz bewerbung-fenster neu):
+bash deploy/sales-ui-neu.sh
 # dann im Browser: http://127.0.0.1:8791
 ```
 
@@ -2248,7 +2249,7 @@ Adresse jederzeit erreichbar, und „Wiederherstellen" holt ihn zurück.
 * **Die beiden neuen Chat-Werkzeuge stehen erst nach einem Neustart von
   `sales-mcp` zur Verfügung** (`docker compose up -d --build sales-mcp`) — die
   Werkzeugliste entsteht beim Prozessstart. Das Ausrollen der Oberfläche
-  (`docker compose up -d --build sales-ui`) ändert daran nichts und lässt den
+  (`docker compose build sales-ui && bash deploy/sales-ui-neu.sh`) ändert daran nichts und lässt den
   laufenden MCP-Container bewusst in Ruhe; der Posteingang-Filter für
   archivierte Kontakte greift im Chat also ebenfalls erst nach diesem Neustart.
   **Bis dahin sehen Chat und Oberfläche verschieden:** ein in der Oberfläche
@@ -2283,7 +2284,7 @@ Fall ausdrücklich, dass kein Sammelkontakt eingerichtet ist. Nach dem Ziehen
 dieser Änderung deshalb einmal ausrollen:
 
 ```powershell
-docker compose up -d --build sales-ui
+docker compose build sales-ui; bash deploy/sales-ui-neu.sh
 ```
 
 `--build` ist nötig, weil `ui.py` im Image liegt; es baut das gemeinsame Image
@@ -2492,7 +2493,7 @@ Agententext über Kundennachrichten).
 `entwurf_verwerfen`) stehen erst nach einem Neustart von `sales-mcp` zur
 Verfügung (`docker compose up -d --build sales-mcp`) — die Werkzeugliste
 entsteht beim Prozessstart. Die Oberfläche braucht
-`docker compose up -d --build sales-ui`. `AGENTS.md` muss der Betreiber
+`docker compose build sales-ui && bash deploy/sales-ui-neu.sh`. `AGENTS.md` muss der Betreiber
 zusätzlich per `docker compose cp` ins Volume legen, sonst kennt der Agent die
 neuen Werkzeuge nicht (kein Neustart nötig, siehe „Agent-Regeln ändern").
 `--remove-orphans` bleibt TABU.
@@ -3239,6 +3240,28 @@ laeuft deshalb am PC des Betreibers, nicht mehr als Container auf der VM.
 - Rueckweg (nur ausdruecklich): `STT_URL`/`STT_SCHLUESSEL` in der VM-`.env` leeren, dann
   `docker compose --profile stt-lokal up -d --build sales-stt` und sales-mcp neu erzeugen.
 
+### Sprachnachrichten im Selbst-Chat (seit 11.11.2026)
+
+Bis dahin schrieb sales-stt nur Kunden-Sprachnachrichten ab (Routine
+`sprachnachrichten_transkribieren`). Eine Sprachnachricht des Betreibers im Selbst-Chat
+kam beim Agenten nur als `<media:audio>` an - er konnte sie nicht hoeren.
+
+- `tools.media.audio` im Gateway ruft vor dem Agenten die CLI `stt/sprachnotiz.mjs` im
+  Volume auf. Die schickt die Datei an dasselbe sales-stt (`STT_URL`, `X-STT-Key`) und gibt
+  nur den Text zurueck. OpenClaw ersetzt den Anhang durch einen `[Audio]`-Block mit der
+  Abschrift.
+- Einrichten bzw. nachziehen: `bash deploy/stt-anbinden.sh` (nur Basis-Laden, ohne
+  Neustart, Schluessel nie in Ausgabe oder Kommandozeile). Am Ende steht eine Probe mit
+  1 s Stille ueber genau diese CLI.
+- Bewusst ein ausdruecklicher CLI-Eintrag: ohne eingetragene Modelle erkennt OpenClaw
+  selbst einen Anbieter und naehme einen Cloud-Dienst, sobald dessen Schluessel in der
+  Umgebung liegt. Block: `deploy/stt/media-audio.json` (= Saat in `config/openclaw.json`).
+- PC aus: die CLI scheitert nach Sekunden, die Sprachnachricht bleibt Anhang, der Agent
+  sagt, dass er sie nicht abhoeren konnte.
+- Abschrift zur Kontrolle zurueck in den Chat: `echoTranscript: true` im Block (aus).
+- Rueckweg: `docker exec sales-claw openclaw config unset tools.media.audio` (dann
+  greift wieder die Auto-Erkennung) oder `... config set tools.media.audio '{"enabled":false}'`.
+
 ## Newsletter-Einwilligung: fragen und selbst anmelden (seit 20.10.2026)
 
 Ein Newsletter geht nur an `consent_status = 'opt_in'` (E1). Zwei Wege dorthin, beide auf
@@ -3297,8 +3320,8 @@ Ausrollen - Reihenfolge, jeder Schritt nur mit Betreiber-OK:
    ein kostenloses Fremdmodell schicken. Dann nicht weiter ausrollen.
 5. Hat `post-anbinden.sh` ein NEUES Schluesselpaar erzeugt (es sagt es), bekommt `sales-ui` den
    oeffentlichen Schluessel erst beim Neuerzeugen:
-   `docker compose up -d --no-deps --force-recreate sales-ui` (andere Laeden mit
-   `--env-file deploy/laeden/<laden>.env`). Ohne das meldet "Postfach hinzufuegen" einen Fehler.
+   `bash deploy/sales-ui-neu.sh` (Basis-Laden; es haelt das Netz bewerbung-fenster) - andere Laeden:
+   `docker compose --env-file deploy/laeden/<laden>.env up -d --no-deps --force-recreate sales-ui`. Ohne das meldet "Postfach hinzufuegen" einen Fehler.
 6. Sitzungskopien aufraeumen einrichten (R17): das Gateway legt je eingeordneter Mail eine
    Sitzungsdatei mit dem Mailinhalt an (`agents/post/sessions/*.jsonl`, ebenso
    `agents/post-pruefer/sessions/` fuer den Pruefer).
@@ -3463,7 +3486,7 @@ Die Schalter (in der `.env` des Ladens, durchgereicht in `docker-compose.yml`):
     Felix' OK - `bash deploy/post-neu-einordnen.sh [laden] anwenden` (ohne Modell; Mails mit menschlicher
     Korrektur bleiben). Pruefen: Ausgabe nennt die Zahl, danach `bericht` noch einmal.
 11. **Einschalten, Stufe 1: nur verschieben.** In die `.env`: `POST_AUFRAEUMEN_AB=<heutiges Datum, ISO>` und
-   `POST_ORDNEN=verschieben`, dann `docker compose up -d --no-deps --force-recreate sales-post sales-ui`.
+   `POST_ORDNEN=verschieben`, dann `docker compose up -d --no-deps --force-recreate sales-post && bash deploy/sales-ui-neu.sh`.
    **`POST_ORDNEN` ausser `aus` nie ohne `POST_AUFRAEUMEN_AB`:** ohne Stichtag gilt jede Mail als
    Altbestand und die 90-Tage-Regel stuft Posteingangs-Mails ab. Pruefen:
    `docker exec ${PRAEFIX}-post printenv POST_ORDNEN POST_AUFRAEUMEN_AB` (beide gesetzt). Dann **eine
@@ -3473,15 +3496,15 @@ Die Schalter (in der `.env` des Ladens, durchgereicht in `docker-compose.yml`):
 12. **Sichtpruefung vor `voll`:** In der UI unter `/post/aufraeumen` je Jahr ansehen, was geloescht
     wuerde (Vorschau je Jahr; ein Klick auf den Absender listet dessen Mails mit Datum, Konto und
     Betreff; Reiter To-Review). Erst danach, mit Felix' OK: `POST_ORDNEN=voll` in die
-    `.env`, `docker compose up -d --no-deps --force-recreate sales-post sales-ui`. `voll` loescht nur
+    `.env`, `docker compose up -d --no-deps --force-recreate sales-post && bash deploy/sales-ui-neu.sh`. `voll` loescht nur
     **freigegebene Jahre** und **To-Review-Mails, die aelter als 30 Tage sind**; ohne Freigabe bleibt die
     Mail, wo sie ist.
 13. **Jahre freigeben** durch Felix in der UI (`/post/aufraeumen`), das neueste Jahr zuerst, je Jahr einzeln;
     Absender, die bleiben sollen, vorher herausnehmen. Nach jeder Freigabe eine Runde abwarten und die
     Zahlen pruefen, bevor das naechste Jahr dran ist.
 
-**Rueckweg.** `POST_ORDNEN=aus` in der `.env` und `docker compose up -d --no-deps --force-recreate
-sales-post sales-ui` stoppt jedes Verschieben und Loeschen ab der naechsten Runde (Pruefen:
+**Rueckweg.** `POST_ORDNEN=aus` in der `.env` und
+`docker compose up -d --no-deps --force-recreate sales-post && bash deploy/sales-ui-neu.sh` stoppt jedes Verschieben und Loeschen ab der naechsten Runde (Pruefen:
 `printenv POST_ORDNEN` im Container = `aus`). Schon verschobene Mails bleiben im Zielordner und lassen
 sich per Handy zurueckziehen. **Geloeschte Mails sind endgueltig weg**; nur ihre Kopfzeile bleibt in
 `post_mails` (Absender, Betreff, Datum - kein Inhalt). Darum nie `voll` ohne Sichtpruefung (Schritt 12).
@@ -3510,7 +3533,7 @@ Alle Schritte nur mit Felix' ausdruecklichem OK (der Deploy selbst braucht es; k
    (fail closed), und die alten E-Mail-Zeilen im Kontakt-Verlauf bleiben fuer alle verborgen.
    Pruefen: `bash deploy/smoke.sh`, `docker exec ${PRAEFIX}-ui printenv POST_BESITZER` ist nicht leer.
 4. **`POST_AUFRAEUMEN_AB=<ISO-Datum>` setzen** (Felix' Entscheidung; `POST_BESITZER` muss gesetzt bleiben), dann
-   nur `docker compose up -d --no-deps --force-recreate sales-post sales-ui` (beide: `sales-ui` zeigt die Mails und liest den
+   nur `docker compose up -d --no-deps --force-recreate sales-post && bash deploy/sales-ui-neu.sh` (beide: `sales-ui` zeigt die Mails und liest den
    Stichtag ebenfalls; ohne ihn steht in `/posteingang` "Stichtag nicht gesetzt"; nie nacktes `up -d`).
    Pruefen: `docker exec ${PRAEFIX}-post printenv POST_AUFRAEUMEN_AB POST_BESITZER` und `docker exec ${PRAEFIX}-ui printenv POST_AUFRAEUMEN_AB`.
    **Jede Aenderung des Stichtags** braucht dieselbe Neuerzeugung von `sales-post` und `sales-ui`.
@@ -3622,7 +3645,7 @@ nie in der UI), `GOOGLE_KALENDER_CLIENT_ID` und `GOOGLE_KALENDER_CLIENT_SECRET`.
    ein. Ist der private Schlüssel schon da, ändert es nichts (ein zweites Paar machte alle
    versiegelten Zugänge unlesbar).
 3. Die Dienste lesen die `.env` erst nach Neuerzeugen:
-   `docker compose up -d --no-deps --force-recreate sales-ui sales-kalender`
+   `bash deploy/sales-ui-neu.sh && docker compose up -d --no-deps --force-recreate sales-kalender`
    (andere Läden mit `--env-file deploy/laeden/<laden>.env`).
    Prüfen (jeweils nur „da“, nie die Werte selbst ausgeben):
    `docker exec ${PRAEFIX}-ui sh -c 'test -n "$GOOGLE_KALENDER_CLIENT_ID" && echo da'` (ebenso für
@@ -3786,3 +3809,99 @@ dann 401.
 - Eine Kursfreigabe ohne Inhaltsänderung braucht `neu_ausliefern: true` in den Details des Eintrags. Fehlt es,
   bereitet der Knopf „Freigabe-Seite schicken“ eine Seite mit grauem Knopf vor (Learning 3a86283).
 - Ein Entwurf steht beim Versand kurz auf `failed`. Das ist die Claim-Marke von `kanal_dispatch`, kein Fehler.
+
+## Meeting-Mittelpunkt: Vexa-Betrieb (Spec 2026-11-10 §5.4, Plan Task 15)
+
+Vexa (Meeting-Bot und Mitschrift) läuft als **eigenes Compose-Projekt `vexa`** unter `deploy/vexa/`, getrennt vom
+Basis-Stack. Dateien: `deploy/vexa/docker-compose.yml`, `deploy/vexa/nginx-tor.conf`, `deploy/vexa/.env.example`,
+`deploy/vexa/whisper-aufwaermen.py`, `deploy/vexa-anbinden.sh`. Vorlage ist Vexa v0.12.28, `deploy/lite/` (Makefile).
+Alle Images sind per Digest gepinnt (Digests und Abfragedatum stehen im Kopf der Compose-Datei bzw. im Task-Bericht).
+**Nichts davon startet von selbst; Start erst nach Felix' OK.**
+
+**Wichtig: Jeder Compose-Aufruf für Vexa braucht `-f` und `-p`.** Aus `~/sales-claw` heraus lädt ein bloßes
+`docker compose -p vexa …` die Compose-Datei des Basis-Stacks, nicht die von Vexa. Darum in diesem Abschnitt überall
+`docker compose -f ~/sales-claw/deploy/vexa/docker-compose.yml -p vexa …` (kurz: `VEXA_C`):
+
+    VEXA_C="docker compose -f $HOME/sales-claw/deploy/vexa/docker-compose.yml -p vexa"
+
+**Dienste** (Container, Volumes):
+
+| Dienst | Aufgabe | Volume |
+|---|---|---|
+| `vexa-lite` | Gateway, Admin-API, meeting-api, Bots als Prozesse. `127.0.0.1:8056` | – |
+| `vexa-tor` | nginx, reicht nur :8056 an `vexa-lite` weiter, einziger Teilnehmer von `sales-claw_default` | – |
+| `vexa-lite-whisper` | Spracherkennung `Systran/faster-whisper-small`, CPU, kein Port | `vexa-whisper-modelle` |
+| `vexa-lite-postgres` | Datenbank, kein Port | `vexa-pgdata` |
+| `vexa-lite-storage` (+ `vexa-lite-storage-init`) | versitygw (S3), Bucket `vexa`, kein Port | `vexa-storagedata` |
+
+**Netz und Tor-Dienst.** `sales-termine` erreicht Vexa als `VEXA_URL=http://vexa-lite:8056` (Standardwert). Dafür hängt
+**nicht `vexa-lite` selbst**, sondern nur der schmale Dienst `vexa-tor` am bestehenden Netz `sales-claw_default`
+(`external: true`) und trägt dort den Netz-Alias `vexa-lite`. Er leitet ausschließlich Port 8056 an `vexa-lite:8056` weiter
+(`deploy/vexa/nginx-tor.conf`, ohne Zugriffslog, weil Anfragen API-Schlüssel tragen). Grund: Jeder Container in
+`sales-claw_default` (auch die Läden, OpenWA, Rowboat-Anbindungen) kann sonst alle Ports von `vexa-lite` erreichen, also
+Admin-API (8001), Terminal (3001), Agent-API (8100), noVNC. Mit dem Tor sieht der Basis-Stack nur das Gateway, das mit
+API-Schlüsseln geschützt ist. Postgres, Speicher und Whisper hängen nur an `vexa_default`. Heißt der Basis-Stack anders
+(zweiter Laden, `LADEN_PROJEKT`), muss `networks.salesclaw.name` in der Compose-Datei passen. Existiert
+`sales-claw_default` nicht, bricht `up` mit „network … not found“ ab: erst den Basis-Stack starten.
+
+**Start** (VM, nur nach OK):
+
+    cd ~/sales-claw
+    VEXA_C="docker compose -f $HOME/sales-claw/deploy/vexa/docker-compose.yml -p vexa"
+    bash deploy/vexa-anbinden.sh            # 1. Aufruf: legt deploy/vexa/.env (600) mit Zufallswerten an, Exit 4
+    $VEXA_C up -d
+    $VEXA_C ps                              # alle Dienste "healthy" (vexa-lite braucht bis zu 2 Minuten)
+
+Die `.env` in `deploy/vexa/` wird **nicht** neu erzeugt, solange das Volume `vexa-pgdata` existiert und die `.env` fehlt
+(Exit 5): ein neues Datenbankpasswort passte nicht zu den vorhandenen Daten. Die `.env` also sichern (Backup/`sicherung.sh`
+des Basis-Stacks deckt `deploy/vexa/` nicht ab) und bei Verlust entweder die alte wiederherstellen oder das Volume bewusst
+einzeln entfernen (Datenverlust, siehe Rückbau). Enthält die `.env` irgendwo das Wort `PLATZHALTER`, bricht das Skript ab.
+
+**Whisper aufwärmen** (einmal nach dem ersten Start und nach jedem Löschen von `vexa-whisper-modelle`). Das Modell wird
+erst bei der **ersten Anfrage** geladen (Download von HuggingFace, einige Minuten). Ohne Aufwärmen bekäme der erste echte
+Termin keine Mitschrift oder eine sehr späte:
+
+    docker exec -i vexa-lite-whisper python3 - < ~/sales-claw/deploy/vexa/whisper-aufwaermen.py
+    # erwartet: "whisper warm: HTTP 200"
+
+**Anbinden** (nach dem Start, idempotent, gibt keine Geheimnisse aus):
+
+    bash deploy/vexa-anbinden.sh            # 2. Aufruf
+
+legt in Vexa den Nutzer `sales` an, holt einen Token mit den Rechten `bot,tx`, setzt `PUT /user/transcription` mit
+Platzhalter-Token (ohne das scheitert laut Spike die Spracherkennung) und trägt `VEXA_API_KEY=` in `~/sales-claw/.env`
+ein (Sicherung `.env.vor-vexa-<Zeit>`, Rechte 600). Ein weiterer Aufruf prüft den vorhandenen Schlüssel mit demselben
+`PUT`: ist er gültig, wird weder ein Token geholt noch die `.env` angefasst. Danach `sales-termine` neu erzeugen, damit er
+die `.env` neu liest:
+
+    cd ~/sales-claw && docker compose up -d --no-deps --force-recreate sales-termine
+
+**Smoke** (nur lesen, ohne Geheimnis auf dem Bildschirm):
+
+    curl -sf http://127.0.0.1:8056/health && echo gateway-ok
+    docker exec vexa-lite supervisorctl status                       # alle RUNNING
+    docker exec vexa-lite-whisper python3 -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=3).status)"
+    docker network inspect sales-claw_default --format '{{range .Containers}}{{.Name}} {{end}}' | tr ' ' '\n' | grep -x -e vexa-tor
+    docker network inspect sales-claw_default --format '{{range .Containers}}{{.Name}} {{end}}' | tr ' ' '\n' | grep -cx vexa-lite   # muss 0 sein
+    docker exec sales-termine python -c "import urllib.request;print(urllib.request.urlopen('http://vexa-lite:8056/health',timeout=5).status)"
+    docker logs --since 5m sales-termine | tail -5
+
+Ein echter Probe-Bot (Termin mit Jitsi-Link auf `meet.ffmuc.net`) gehört zu den Abnahmetests (Spec §10).
+
+**Rückbau** (trifft nur das Projekt `vexa`):
+
+    VEXA_C="docker compose -f $HOME/sales-claw/deploy/vexa/docker-compose.yml -p vexa"
+    $VEXA_C down                                 # Container und Netz vexa_default; Volumes bleiben
+    docker volume rm vexa-pgdata                 # einzeln, jeder Name für sich (löscht die Vexa-Daten!)
+    docker volume rm vexa-storagedata
+    docker volume rm vexa-whisper-modelle        # optional; das Modell lädt sonst neu
+    # dann in ~/sales-claw/.env die Zeile VEXA_API_KEY= leeren und sales-termine neu erzeugen;
+    # deploy/vexa/.env löschen, wenn auch pgdata gelöscht wurde
+
+Nie `docker system prune` oder `docker volume prune`, nie `--remove-orphans`, nie `-v` an `down` anderer Projekte. Das
+externe Netz `sales-claw_default` gehört dem Basis-Stack und bleibt unberührt.
+
+**Prüfung der Dateien** (ohne Daemon, ohne Netz): `bash deploy/tests/test_vexa_compose.sh` — jedes `image:` mit Digest,
+alle `ports:` auf `127.0.0.1`, Projektname `vexa`, Volumes mit Präfix `vexa-`, nur `vexa-tor` auf `sales-claw_default`;
+`docker compose config` läuft mit, wenn Docker am Ort vorhanden ist. `bash deploy/tests/test_vexa_anbinden.sh` prüft das
+Anbinde-Skript gegen Attrappen für `docker` und `curl`.

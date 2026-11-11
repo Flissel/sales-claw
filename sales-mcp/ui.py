@@ -219,9 +219,11 @@ import ui_freigabe_api
 import ui_freigabe_bewerbung
 import ui_freigabe_eingang
 import ui_freigabe_newsletter
+import ui_portal_fenster
 import ui_empfehlungen
 import ui_newsletter_einwilligung
 import ui_kalender
+import ui_termin
 import ui_marketing
 import ui_muster
 import ui_plan
@@ -527,6 +529,20 @@ class HostWache:
         self.app = app
 
     async def __call__(self, scope, receive, send):
+        if scope["type"] == "websocket":
+            # Kein WebSocket ohne eigenen Host UND eigene Herkunft: der Browser
+            # schickt bei WebSockets Cookies auch aus fremden Seiten mit
+            # (Cross-Site-WebSocket-Hijacking), die Origin-Pruefung ist die
+            # einzige Huerde dagegen. Fehlender Origin zaehlt wie ein fremder.
+            kopf = Headers(scope=scope)
+            host = kopf.get("host", "")
+            origin = kopf.get("origin", "")
+            if (host not in ERLAUBTE_HOSTS
+                    or origin not in (f"https://{host}", f"http://{host}")):
+                await send({"type": "websocket.close", "code": 1008})
+                return
+            await self.app(scope, receive, send)
+            return
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
@@ -646,6 +662,27 @@ class AnmeldeWache:
         self.app = app
 
     async def __call__(self, scope, receive, send):
+        if scope["type"] == "websocket":
+            # Ohne Anmeldung kein WebSocket (auch im Uebergangszustand ohne
+            # UI_SESSION_SECRET). Keine Pfad-Ausnahmen wie bei HTTP; `lesen`
+            # und `kalender` bekommen nie einen WebSocket.
+            benutzer = None
+            if UI_SESSION_SECRET:
+                name = _sitzung_pruefen(_cookie_wert(scope, SITZUNG_COOKIE))
+                benutzer = _benutzer_lesen(name) if name else None
+            if (not benutzer
+                    or benutzer["rolle"] in ("lesen", "kalender")
+                    # _pfad_erlaubt winkt Schrift- und Bildpfade fuer jede Rolle
+                    # durch (HTTP-Ausnahme) - fuer WebSockets gibt es sie nicht.
+                    or _schrift_pfad(scope["path"])
+                    or _signiertes_bild(scope["path"])
+                    or not _pfad_erlaubt(benutzer["rolle"], scope["path"])):
+                await send({"type": "websocket.close", "code": 1008})
+                return
+            scope["benutzer_name"] = benutzer["name"]
+            scope["benutzer_rolle"] = benutzer["rolle"]
+            await self.app(scope, receive, send)
+            return
         if scope["type"] != "http" or not UI_SESSION_SECRET:
             await self.app(scope, receive, send)
             return
@@ -1509,6 +1546,19 @@ nav.reiter a { display: inline-flex; align-items: center; gap: .4rem; min-height
 nav.reiter a[aria-current] { border-bottom-color: var(--akzent);
                              color: var(--akzent_text); font-weight: 700; }
 nav.reiter .zahl { font-size: .8rem; color: var(--gedaempft); }
+/* Termin-Seite (Meeting-Mittelpunkt, Variante C): grosser Beitreten-Knopf,
+   Aktionen als Knopfzeile, auf dem Handy untereinander. */
+a.knopf.gross { display: flex; align-items: center; justify-content: center;
+                min-height: 56px; font-size: 1.25rem; margin: .6rem 0; }
+.termin-wer { font-size: 1.1rem; margin: .2rem 0; }
+.termin-status { margin: .6rem 0; }
+.termin-aktionen { display: flex; flex-wrap: wrap; gap: .5rem; margin: .4rem 0 .8rem; }
+.termin-aktionen form.aktion { margin: 0; }
+.termin-aktionen button { min-height: 44px; }
+.termin-liste { list-style: none; padding: 0; margin: 0; }
+.termin-md, .termin-inhalt { overflow-wrap: anywhere; }
+@media (max-width: 639px) {
+  .termin-aktionen form.aktion, .termin-aktionen button { width: 100%; } }
 /* Freigaben in Reitern (09.11.2026): leere Reiter blass, aber da; die
    Unter-Reiter eine Stufe kleiner direkt darunter. */
 nav.reiter a.leer { opacity: .55; }
@@ -2740,7 +2790,8 @@ def _kontakt_historie_bereich(lead_id, alle: bool,
     try:
         eintraege = historie.kontakt_historie(
             lead_id,
-            mit_mail=post_struktur.mail_verlauf_erlaubt(betrachter_name))
+            mit_mail=post_struktur.mail_verlauf_erlaubt(betrachter_name),
+            mit_akten=True)
     except psycopg.Error:
         return ""
     zeilen = "".join(
@@ -8185,14 +8236,24 @@ def _kontakt_termine(lead_id: str, termine=None) -> str:
         teile.append("<p>Keine Termine.</p>")
         return "".join(teile)
     zeilen = []
+    uids = [str(p["uid"]) for _t, _z, p in termine[:30] if p.get("uid")]
+    try:
+        mit_akte = {z["uid"] for z in server._q(
+            "select uid from termin_akten where uid = any(%s)", (uids,))} if uids else set()
+    except psycopg.Error:
+        mit_akte = set()  # Akten-Tabelle fehlt noch: Zeilen bleiben wie bisher
     for tag, zeit, p in termine[:30]:
         thema = str(p.get("thema") or "")
         ziel = f"/kalender?datum={tag}&ansicht=woche"
+        aktenlink = ""
+        uid = str(p.get("uid") or "")
+        if uid and uid in mit_akte:
+            aktenlink = f' · <a href="/termine/{urllib.parse.quote(uid, safe="")}">Termin-Seite</a>'
         zeilen.append([
             _e(tag_lesbar(tag)), _e(zeit),
             f'<span title="{_e(thema)}">{_e(_kurz(thema, 80))}</span>',
             _e(_kurz(str(p.get("ort") or ""), 60)),
-            f'<a href="{_e(ziel)}">im Kalender öffnen</a>'])
+            f'<a href="{_e(ziel)}">im Kalender öffnen</a>{aktenlink}'])
     teile.append(_tabelle(["Datum", "Zeit", "Thema", "Ort", "Kalender"], zeilen))
     return "".join(teile)
 
@@ -9917,6 +9978,9 @@ async def logout(request):
         return _fehlerseite(
             400, "Ungültige Anfrage",
             "Die Anfrage trägt keine gültige Marke dieser Oberfläche.")
+    # Ein offenes Portal-Fenster haelt das Handshake-Cookie (bis 12 h) - mit dem Abmelden seines Benutzers
+    # endet es; das Abmelden eines anderen Benutzers laesst es offen.
+    ui_portal_fenster.trennen(request.scope.get("benutzer_name"))
     antwort = RedirectResponse("/login", status_code=303)
     antwort.delete_cookie(SITZUNG_COOKIE, path="/")
     return antwort
@@ -10263,6 +10327,8 @@ app = Starlette(routes=[
     Route("/mehr", mehr),
     # Seite /kalender, JSON-Schnittstelle und Paketdateien (14.10.2026).
     *ui_kalender.routen(sys.modules[__name__]),
+    # Termin-Seite /termine/{uid} und /termine/{uid}.json (Meeting-Mittelpunkt).
+    *ui_termin.routen(sys.modules[__name__]),
     # Empfehlungslisten (C4, 17.10.2026).
     *ui_empfehlungen.routen(sys.modules[__name__]),
     *ui_newsletter_einwilligung.routen(sys.modules[__name__]),
@@ -10331,6 +10397,7 @@ app = Starlette(routes=[
     *ui_werkbank.routen(sys.modules[__name__]),
     *ui_podcast.routen(sys.modules[__name__]),
     *ui_freigabe_newsletter.routen(sys.modules[__name__]),
+    *ui_portal_fenster.routen(sys.modules[__name__]),
     *ui_freigabe_bewerbung.routen(sys.modules[__name__]),
     *ui_freigabe_api.routen(sys.modules[__name__]),
     *ui_freigabe_eingang.routen(sys.modules[__name__]),

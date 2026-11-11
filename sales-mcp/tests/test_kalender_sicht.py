@@ -179,9 +179,13 @@ def test_nie_abgeglichene_quelle_ist_luecke():
 
 
 def _fenster_text():
-    jetzt = datetime.now(B)
-    return (f"Verbundene Kalender nur von {(jetzt - timedelta(days=30)):%d.%m.%Y} "
-            f"bis {(jetzt + timedelta(days=180)):%d.%m.%Y} abgeglichen")
+    # Wie server._fenster_luecke: in UTC rechnen, in Berliner Zeit anzeigen.
+    # In Berliner Wandzeit gerechnet lag das Datum zwischen 23 und 24 Uhr
+    # (Winterzeit, Fensterrand in der Sommerzeit) einen Tag daneben
+    # (gemessen 10.11.2026, CI-Lauf um 23:07).
+    jetzt = datetime.now(timezone.utc)
+    return (f"Verbundene Kalender nur von {(jetzt - timedelta(days=30)).astimezone(B):%d.%m.%Y} "
+            f"bis {(jetzt + timedelta(days=180)).astimezone(B):%d.%m.%Y} abgeglichen")
 
 
 @pytest.mark.parametrize("tag", [200, -40])

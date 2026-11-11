@@ -82,8 +82,19 @@ def server_stub(monkeypatch):
     httpd.shutdown()
 
 
+def _hole_fixture(url):
+    """Die Oktober-2026-Fixture oben liegt seit Mitte Oktober 2026 vor dem
+    Vorgabefenster von hole() (7 Tage zurueck, 60 voraus) — gemessen in
+    CI-Lauf 2 am 10.11.2026: alle vier Tests sahen keinen einzigen Termin.
+    Diese Tests pruefen das Zerlegen, nicht das Fenster (das pruefen die
+    K2/W1-Tests); darum ein weites Fenster wie test_ganztaegig_value_date.
+    Die Daten bleiben fest im Oktober, damit 09:00 Berlin = 07:00 UTC
+    (Sommerzeit) gilt."""
+    return kalenderquellen.hole(url, tage_zurueck=3650, tage_voraus=3650)
+
+
 def test_termine_werden_gelesen_und_sortiert(server_stub):
-    termine, fehler = kalenderquellen.hole(server_stub.url)
+    termine, fehler = _hole_fixture(server_stub.url)
     assert fehler is None, fehler
     assert [t["titel"] for t in termine] == [
         "Erster Termin", "Zweiter Termin", "Dritter Termin"]
@@ -94,7 +105,7 @@ def test_termine_werden_gelesen_und_sortiert(server_stub):
 def test_ende_wird_gelesen(server_stub):
     """Ohne Endzeit ist keine Ueberlappung berechenbar. DTEND wurde im Baum
     bisher NUR geschrieben, nie gelesen."""
-    termine, _ = kalenderquellen.hole(server_stub.url)
+    termine, _ = _hole_fixture(server_stub.url)
     dauer = termine[0]["ende"] - termine[0]["beginn"]
     assert dauer.total_seconds() == 3600, termine[0]
 
@@ -104,13 +115,13 @@ def test_ende_faellt_ohne_dtend_auf_beginn_zurueck(server_stub):
     ungetestet — beide bisherigen Testtermine hatten ein DTEND. Eine
     erfundene Dauer erzeugte Kollisionen, die es nicht gibt (der eigentliche
     Grund fuer dieses Modul)."""
-    termine, _ = kalenderquellen.hole(server_stub.url)
+    termine, _ = _hole_fixture(server_stub.url)
     dritter = next(t for t in termine if t["uid"] == "dritter@google")
     assert dritter["ende"] == dritter["beginn"], dritter
 
 
 def test_zeiten_sind_zonenbewusst(server_stub):
-    termine, _ = kalenderquellen.hole(server_stub.url)
+    termine, _ = _hole_fixture(server_stub.url)
     assert termine[0]["beginn"].tzinfo is not None
     assert termine[0]["beginn"].astimezone(timezone.utc).hour == 7
 
@@ -697,3 +708,89 @@ def test_harte_zeitgrenze_greift_auch_ohne_vorfilter(server_stub, monkeypatch):
     assert fehler == kalenderquellen.ZEITLIMIT_FEHLER
     assert "http" not in fehler
     assert _mp.active_children() == []
+
+
+# --- Meeting-Mittelpunkt Task 3: Beschreibung, Teilnehmer, Konferenz --------
+
+def _stunde():
+    return (_dt.now(_tz.utc).replace(microsecond=0, second=0, minute=0)
+            + _td(days=3))
+
+
+def _ics_mit(rumpf: str) -> bytes:
+    start = _stunde()
+    return _ics(_vevent(
+        "mm@x", start.strftime("%Y%m%dT%H%M%SZ"),
+        "DTEND:" + (start + _td(hours=1)).strftime("%Y%m%dT%H%M%SZ")
+        + "\r\nSUMMARY:Termin\r\n" + rumpf))
+
+
+def test_vevent_mit_teilnehmern(server_stub):
+    teams = "https://teams.microsoft.com/l/meetup-join/abc"
+    server_stub.rumpf = _ics_mit(
+        "ORGANIZER;CN=Kunde:mailto:K@Firma.de\r\n"
+        "ATTENDEE;CN=Anna;ROLE=REQ-PARTICIPANT:mailto:Anna@Firma.de\r\n"
+        "ATTENDEE;CN=Raum 1;CUTYPE=ROOM:mailto:Raum1@Firma.de\r\n"
+        f"DESCRIPTION:Bitte beitreten {teams}\r\n"
+        f"X-MICROSOFT-SKYPETEAMSMEETINGURL:{teams}\r\n")
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert fehler is None, fehler
+    t = termine[0]
+    assert t["konferenz"] == teams
+    assert teams in t["beschreibung"]
+    assert t["teilnehmer_anzahl"] == 3
+    nach = {p["adresse"]: p for p in t["teilnehmer"]}
+    assert set(nach) == {"k@firma.de", "anna@firma.de", "raum1@firma.de"}
+    assert nach["k@firma.de"]["rolle"] == "organisator"
+    assert nach["k@firma.de"]["name"] == "Kunde"
+    assert nach["anna@firma.de"]["rolle"] == "gast"
+    assert nach["anna@firma.de"]["art"] == "individual"
+    assert nach["raum1@firma.de"]["art"] == "room"
+
+
+def test_organisator_auch_als_attendee_steht_einmal(server_stub):
+    server_stub.rumpf = _ics_mit(
+        "ORGANIZER;CN=Kunde:mailto:k@firma.de\r\n"
+        "ATTENDEE;CN=Kunde:mailto:K@Firma.de\r\n")
+    t = kalenderquellen.hole(server_stub.url)[0][0]
+    assert len(t["teilnehmer"]) == 1 and t["teilnehmer_anzahl"] == 1
+    assert t["teilnehmer"][0]["rolle"] == "organisator"
+
+
+def test_ohne_felder_leere_vorgaben(server_stub):
+    server_stub.rumpf = _ics_mit("")
+    t = kalenderquellen.hole(server_stub.url)[0][0]
+    assert (t["beschreibung"], t["teilnehmer"], t["teilnehmer_anzahl"],
+            t["konferenz"]) == ("", [], 0, "")
+
+
+def test_beschreibung_gekappt_und_einzeilig(server_stub):
+    lang = "\\n".join(["abc def"] * 2000)     # ICS-escaped, wird zu echten Umbruechen
+    server_stub.rumpf = _ics_mit(f"DESCRIPTION:{lang}\r\n")
+    t = kalenderquellen.hole(server_stub.url)[0][0]
+    assert len(t["beschreibung"]) == 4000
+    assert "\n" not in t["beschreibung"] and "\r" not in t["beschreibung"]
+    assert "  " not in t["beschreibung"]
+
+
+def test_webinar_anzahl(server_stub):
+    gaeste = "".join(f"ATTENDEE:mailto:g{i}@firma.de\r\n" for i in range(60))
+    server_stub.rumpf = _ics_mit(gaeste)
+    t = kalenderquellen.hole(server_stub.url)[0][0]
+    assert len(t["teilnehmer"]) == 50
+    assert t["teilnehmer_anzahl"] == 60
+
+
+def test_konferenz_bevorzugt_eigenes_feld_vor_url(server_stub):
+    teams = "https://teams.microsoft.com/l/meetup-join/xyz"
+    server_stub.rumpf = _ics_mit(
+        "URL:https://outlook.example/event/123\r\n"
+        f"X-MICROSOFT-SKYPETEAMSMEETINGURL:{teams}\r\n")
+    t = kalenderquellen.hole(server_stub.url)[0][0]
+    assert t["konferenz"] == teams
+
+
+def test_konferenz_faellt_auf_url_zurueck(server_stub):
+    server_stub.rumpf = _ics_mit("URL:https://meet.example/abc\r\n")
+    t = kalenderquellen.hole(server_stub.url)[0][0]
+    assert t["konferenz"] == "https://meet.example/abc"

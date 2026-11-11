@@ -306,7 +306,7 @@ erwartete_container = {
     "sales-mail", "sales-telegram", "sales-linkedin", "sales-kanaele",
     "sales-auto", "sales-ui", "sales-post",
     "sales-freigabe-bote", "sales-kalender",
-    "sales-auftrag-bote"}  # sales-stt seit 20.10.2026 am PC, hier nur per Profil stt-lokal
+    "sales-auftrag-bote", "sales-termine"}  # sales-stt seit 20.10.2026 am PC, hier nur per Profil stt-lokal
 ist = {d["container_name"] for d in erst["services"].values()}
 assert ist == erwartete_container, ist
 istv = {v["name"] for v in erst["volumes"].values()}
@@ -780,6 +780,7 @@ fi
 # smoke ~30 s spaeter - das waere ROT und damit Rueckbau. Absturzschleife statt
 # dessen: Restarting oder RestartCount >= 3 (Neuerzeugen setzt ihn auf 0).
 # Dazu muss post_mails lesbar sein.
+echo "== Post-Sammelstelle =="
 post_zustand="$(docker inspect -f '{{.State.Status}}' sales-post 2>/dev/null | tr -d '[:space:]' || true)"
 if [ "$post_zustand" != "running" ]; then
   melde "sales-post" "uebersprungen (Container laeuft nicht — Post-Sammelstelle noch nicht ausgerollt)"
@@ -837,6 +838,40 @@ else
     still\ *|unbekannt\ *) fehl "auftrag-bote herzschlag" "${hz} — docker logs sales-auftrag-bote" ;;
     *) fehl "auftrag-bote herzschlag" "nicht lesbar (sales-mcp oder Datenbank?)" ;;
   esac
+fi
+
+# 23) Taktgeber der Meeting-Mitte (sales-termine, 11.11.2026). Nur wenn der
+# Dienst laeuft: vor dem ersten Start von Hand (VEXA_API_KEY, OLLAMA_URL,
+# TELEGRAM_* gesetzt) ist er bewusst nicht da, und ein rotes Ergebnis wuerde
+# jedes update.sh blockieren. Wie Abschnitt 20: Absturzschleife (Restarting
+# oder RestartCount >= 3) statt Mindest-Laufzeit. Die Gesundheit von Vexa
+# (/meetings) prueft nur die volle Pruefung (deploy/wache.sh): ist Vexa beim
+# Ausrollen gerade weg, darf das keinen Rueckbau von Sales ausloesen.
+termine_zustand="$(docker inspect -f '{{.State.Status}}' sales-termine 2>/dev/null | tr -d '[:space:]' || true)"
+if [ "$termine_zustand" != "running" ]; then
+  melde "sales-termine" "uebersprungen (Container laeuft nicht — Meeting-Mitte noch nicht gestartet)"
+else
+  read -r termine_restarting termine_zaehler < <(docker inspect -f '{{.State.Restarting}} {{.RestartCount}}' sales-termine 2>/dev/null || true)
+  if [ "${termine_restarting:-}" = "true" ] || ! [[ "${termine_zaehler:-x}" =~ ^[0-9]+$ ]] || [ "$termine_zaehler" -ge 3 ]; then
+    fehl "sales-termine laeuft" "Absturzschleife? (Restarting=${termine_restarting:-?} RestartCount=${termine_zaehler:-?}) — docker logs sales-termine"
+  else
+    gut "sales-termine laeuft"
+  fi
+  # Vexa antwortet? meeting_lesen(0) kennt die Id nie: VexaNichtGefunden
+  # heisst "Vexa hat geantwortet" (gesund), jeder andere Fehler "nicht erreichbar".
+  if [ "$MODUS" = "basis" ]; then
+    melde "vexa gesundheit" "uebersprungen (--nur-basis; volle Pruefung ueber deploy/wache.sh alle 15 Minuten)"
+  elif docker exec sales-termine python -c "import sys;sys.path.insert(0,'/app');import vexa
+try:
+    vexa.meeting_lesen(0)
+except vexa.VexaNichtGefunden:
+    pass
+except Exception:
+    sys.exit(1)" >/dev/null 2>&1; then
+    gut "vexa gesundheit"
+  else
+    fehl "vexa gesundheit" "Vexa antwortet nicht (VEXA_URL/VEXA_API_KEY? docker logs sales-termine)"
+  fi
 fi
 
 echo "---"

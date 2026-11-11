@@ -6,6 +6,17 @@
 #     gegen ein Postgres MIT pgvector (das Schema braucht vector(1536)).
 #     db/provision.sql laeuft unveraendert; nur die Extensions legt CI an,
 #     denn provision.sql prueft sie bewusst nur und legt sie nie selbst an.
+#     pg_trgm (und pgcrypto) liegen wie auf der VM im Schema `extensions` —
+#     provision.sql verlangt das fuer pg_trgm ausdruecklich (17.09.2026).
+#     db/kalender-verbinden.sql, db/post-sammelstelle.sql und
+#     db/freigabe-eingang.sql gehoeren nicht zum Schema-Loop (Ruling R1) und
+#     werden deshalb getrennt auf sales_test eingespielt — ein neues Skript
+#     dieser Art muss hier dazu, sonst fehlen seinen Tests die Tabellen.
+#     db/compliance-test.sql legt die Verbotsliste der Testlaeufe an; die
+#     Produktionsliste `compliance` gehoert dem Marketing-Space.
+#     Die Suite laeuft im Image, aber auf dem eingehaengten Checkout: viele
+#     Vertragstests lesen Dateien ausserhalb von sales-mcp/ (db/, deploy/,
+#     config/, docs/, docker-compose.yml), die das Image nicht enthaelt.
 #   * host-suite — die Pilot-/Packaging-Tests aus scripts/tests, die auf
 #     dem Wirt laufen (kein Docker, kein DB-Zugriff).
 name: tests
@@ -33,20 +44,34 @@ jobs:
       - uses: actions/checkout@v4
       - name: Schema provisionieren
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+          # psql aus dem schon geladenen Service-Image statt apt-get: die
+          # Ubuntu-Spiegel waren am 11.11.2026 vom Runner aus nicht
+          # aufloesbar (exit 100, zwei Anlaeufe).
+          psql() {
+            docker run --rm --network host -v "$GITHUB_WORKSPACE:/w" -w /w \
+              pgvector/pgvector:pg16 psql "$@"
+          }
           psql "postgresql://postgres:ci@localhost:5432/postgres" -v ON_ERROR_STOP=1 \
-            -c "create extension if not exists vector; create extension if not exists pgcrypto;"
+            -c "create schema if not exists extensions; create extension if not exists vector; create extension if not exists pgcrypto with schema extensions; create extension if not exists pg_trgm with schema extensions;"
           psql "postgresql://postgres:ci@localhost:5432/postgres" -v ON_ERROR_STOP=1 \
             -f db/provision.sql
+          # Verbotsliste der Testlaeufe (sperrliste.py: sales_test -> compliance_test).
+          psql "postgresql://postgres:ci@localhost:5432/postgres" -v ON_ERROR_STOP=1 \
+            -f db/compliance-test.sql
           # Kalender verbinden (Spec 2026-11-08): nicht im Schema-Loop von
           # provision.sql, darum eigens fuer das Testschema.
           psql "postgresql://postgres:ci@localhost:5432/postgres" -v ON_ERROR_STOP=1 \
             -v schema=sales_test -v besitzer=felix -f db/kalender-verbinden.sql
+          psql "postgresql://postgres:ci@localhost:5432/postgres" -v ON_ERROR_STOP=1 \
+            -v schema=sales_test -f db/post-sammelstelle.sql
+          psql "postgresql://postgres:ci@localhost:5432/postgres" -v ON_ERROR_STOP=1 \
+            -v schema=sales_test -f db/freigabe-eingang.sql
       - name: Image bauen
         run: docker build -t sales-mcp-ci ./sales-mcp
       - name: Suite
         run: >-
           docker run --rm --network host
+          -v "$GITHUB_WORKSPACE:/repo" -w /repo/sales-mcp
           -e SALES_DB_SCHEMA=sales_test
           -e SALES_DB_URL="postgresql://postgres:ci@localhost:5432/postgres"
           sales-mcp-ci

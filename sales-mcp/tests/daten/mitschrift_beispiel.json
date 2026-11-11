@@ -1,0 +1,242 @@
+[
+ {
+  "sprecher": "Berater",
+  "beginn": "2026-11-12T09:00:00Z",
+  "text": "Guten Tag, schön, dass es geklappt hat. Wir wollen heute über Ihre Abläufe im Büro sprechen.",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Kundin",
+  "beginn": "2026-11-12T09:00:06Z",
+  "text": "Guten Tag. Ja, gern. Bei uns ist im Moment einiges im Fluss.",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Berater",
+  "beginn": "2026-11-12T09:00:11Z",
+  "text": "Wie viele Leute arbeiten denn bei Ihnen im Innendienst?",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Kundin",
+  "beginn": "2026-11-12T09:00:17Z",
+  "text": "Wir sind zwölf Personen, davon sechs im Innendienst.",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Berater",
+  "beginn": "2026-11-12T09:00:25Z",
+  "text": "Und womit arbeiten Sie aktuell bei der Angebotserstellung?",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Kundin",
+  "beginn": "2026-11-12T09:01:15Z",
+  "text": "Ehrlich gesagt mit Excel und vielen Word-Vorlagen. Das kostet uns jede Woche gut zehn Stunden.",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Berater",
+  "beginn": "2026-11-12T09:01:22Z",
+  "text": "Zehn Stunden pro Woche, das ist viel. Woran liegt das hauptsächlich?",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Kundin",
+  "beginn": "2026-11-12T09:01:31Z",
+  "text": "Wir tippen alles doppelt ab. Der Preis steht im Angebot und nochmal in der Rechnung.",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Berater",
+  "beginn": "2026-11-12T09:01:39Z",
+  "text": "Und passieren dabei auch Fehler?",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Kundin",
+  "beginn": "2026-11-12T09:01:48Z",
+  "text": "Ständig. Letzten Monat haben wir ein falsches Angebot geschickt, das hat uns einen Kunden gekostet.",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Berater",
+  "beginn": "2026-11-12T09:02:00Z",
+  "text": "Das ärgert mich für Sie. Wer entscheidet bei Ihnen über neue Software?",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Kundin",
+  "beginn": "2026-11-12T09:02:11Z",
+  "text": "Das mache ich mit unserem Geschäftsführer zusammen, Herrn Beispiel. Er will vor allem die Kosten im Blick behalten.",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Berater",
+  "beginn": "2026-11-12T09:02:21Z",
+  "text": "Welches Budget haben Sie dafür im Kopf?",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Kundin",
+  "beginn": "2026-11-12T09:02:28Z",
+  "text": "Rund 5000 Euro im Jahr, mehr gibt unser Haushalt dieses Jahr nicht her.",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Berater",
+  "beginn": "2026-11-12T09:02:40Z",
+  "text": "Das lässt sich einrichten. Bis wann soll die Lösung laufen?",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Kundin",
+  "beginn": "2026-11-12T09:02:47Z",
+  "text": "Idealerweise bis Ende des Quartals, weil dann unsere Hochsaison beginnt.",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Berater",
+  "beginn": "2026-11-12T09:02:58Z",
+  "text": "Verstanden. Was wäre Ihnen bei einer Lösung am wichtigsten?",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Kundin",
+  "beginn": "2026-11-12T09:03:08Z",
+  "text": "Dass wir nichts mehr doppelt eintippen müssen und die Daten sauber bei uns bleiben.",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Berater",
+  "beginn": "2026-11-12T09:03:21Z",
+  "text": "Datenschutz ist bei uns ein fester Punkt, alles läuft auf eigenen Servern.",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Kundin",
+  "beginn": "2026-11-12T09:03:28Z",
+  "text": "Das beruhigt mich. Unser Geschäftsführer hat da Bedenken wegen der Cloud.",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Berater",
+  "beginn": "2026-11-12T09:03:38Z",
+  "text": "Dazu schicke ich Ihnen gern eine Übersicht, wo welche Daten liegen.",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Kundin",
+  "beginn": "2026-11-12T09:03:45Z",
+  "text": "Ja, bitte. Dann kann ich sie ihm zeigen.",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Berater",
+  "beginn": "2026-11-12T09:03:54Z",
+  "text": "Wie läuft bei Ihnen aktuell die Nachverfolgung offener Angebote?",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Kundin",
+  "beginn": "2026-11-12T09:04:02Z",
+  "text": "Gar nicht systematisch. Wir vergessen oft, nachzufassen, und das ist schade um jedes Angebot.",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Berater",
+  "beginn": "2026-11-12T09:04:14Z",
+  "text": "Das ließe sich mit Wiedervorlagen lösen.",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Kundin",
+  "beginn": "2026-11-12T09:04:19Z",
+  "text": "Klingt gut. Aber ich habe Sorge, dass mein Team das nicht annimmt.",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Berater",
+  "beginn": "2026-11-12T09:04:29Z",
+  "text": "Wir können eine kurze Einweisung für alle machen, eine Stunde reicht meist.",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Kundin",
+  "beginn": "2026-11-12T09:04:39Z",
+  "text": "Eine Stunde ist machbar, solange es nicht in die Hochsaison fällt.",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Berater",
+  "beginn": "2026-11-12T09:04:48Z",
+  "text": "Dann legen wir sie vorher. Haben Sie schon andere Anbieter angeschaut?",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Kundin",
+  "beginn": "2026-11-12T09:04:58Z",
+  "text": "Einen, aber der war uns zu kompliziert und viel zu teuer.",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Berater",
+  "beginn": "2026-11-12T09:05:07Z",
+  "text": "Was genau war zu kompliziert?",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Kundin",
+  "beginn": "2026-11-12T09:05:15Z",
+  "text": "Man brauchte Wochen, bis überhaupt das erste Angebot raus ging.",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Berater",
+  "beginn": "2026-11-12T09:05:26Z",
+  "text": "Bei uns geht das am ersten Tag. Ich zeige es Ihnen gern in einer Vorführung.",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Kundin",
+  "beginn": "2026-11-12T09:05:37Z",
+  "text": "Ja, machen wir. Wann könnten Sie das anbieten?",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Berater",
+  "beginn": "2026-11-12T09:05:45Z",
+  "text": "Nächste Woche Dienstag um zehn Uhr wäre möglich.",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Kundin",
+  "beginn": "2026-11-12T09:05:53Z",
+  "text": "Dienstag passt. Ich lade den Geschäftsführer dazu ein.",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Berater",
+  "beginn": "2026-11-12T09:06:02Z",
+  "text": "Sehr gut. Ich schicke Ihnen bis Freitag das Angebot und die Datenschutzübersicht.",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Kundin",
+  "beginn": "2026-11-12T09:06:15Z",
+  "text": "Prima. Und ich kläre bis Montag, ob unser Budget auch für zwei Arbeitsplätze mehr reicht.",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Berater",
+  "beginn": "2026-11-12T09:06:25Z",
+  "text": "Dann bis nächste Woche, vielen Dank für das offene Gespräch.",
+  "sprache": "de"
+ },
+ {
+  "sprecher": "Kundin",
+  "beginn": "2026-11-12T09:06:32Z",
+  "text": "Ich danke Ihnen, bis bald.",
+  "sprache": "de"
+ }
+]

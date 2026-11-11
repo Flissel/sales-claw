@@ -33,6 +33,29 @@ create table if not exists :"schema".eigene_termine   (like sales.eigene_termine
 -- bleibt hier eine unverknuepfte uuid (gewollt).
 create table if not exists :"schema".empfehlungslisten (like sales.empfehlungslisten including all);
 
+-- Meeting-Mittelpunkt (11.11.2026): Termin-Akte und Zubehoer. `including all`
+-- bringt CHECKs, Vorgaben und Indizes mit, NICHT die Fremdschluessel - die
+-- stehen darunter.
+create table if not exists :"schema".termin_akten        (like sales.termin_akten        including all);
+create table if not exists :"schema".termin_teilnehmer   (like sales.termin_teilnehmer   including all);
+create table if not exists :"schema".termin_mitschriften (like sales.termin_mitschriften including all);
+create table if not exists :"schema".termin_vorschlaege  (like sales.termin_vorschlaege  including all);
+alter table :"schema".termin_teilnehmer drop constraint if exists termin_teilnehmer_uid_fkey;
+alter table :"schema".termin_teilnehmer add constraint termin_teilnehmer_uid_fkey
+  foreign key (uid) references :"schema".termin_akten(uid) on delete cascade;
+alter table :"schema".termin_teilnehmer drop constraint if exists termin_teilnehmer_lead_id_fkey;
+alter table :"schema".termin_teilnehmer add constraint termin_teilnehmer_lead_id_fkey
+  foreign key (lead_id) references :"schema".leads(id) on delete set null;
+alter table :"schema".termin_mitschriften drop constraint if exists termin_mitschriften_uid_fkey;
+alter table :"schema".termin_mitschriften add constraint termin_mitschriften_uid_fkey
+  foreign key (uid) references :"schema".termin_akten(uid) on delete cascade;
+alter table :"schema".termin_vorschlaege drop constraint if exists termin_vorschlaege_mitschrift_id_fkey;
+alter table :"schema".termin_vorschlaege add constraint termin_vorschlaege_mitschrift_id_fkey
+  foreign key (mitschrift_id) references :"schema".termin_mitschriften(id) on delete cascade;
+alter table :"schema".termin_vorschlaege drop constraint if exists termin_vorschlaege_lead_id_fkey;
+alter table :"schema".termin_vorschlaege add constraint termin_vorschlaege_lead_id_fkey
+  foreign key (lead_id) references :"schema".leads(id) on delete cascade;
+
 -- Kanal-Status (24.10.2026): verbunden ja/nein je Kanal fuer eigene Beitraege.
 -- Der Dienst sales-kanaele laeuft nur im Haupt-Laden; die Tabelle gibt es
 -- trotzdem ueberall, damit der Code einheitlich bleibt.
@@ -144,6 +167,8 @@ grant select, insert, update on :"schema".empfehlungslisten to :"rolle";
 grant select, insert, update on :"schema".kanal_status to :"rolle";
 grant select, insert, update on :"schema".benutzer_mails   to :"rolle";
 grant select, insert         on :"schema".whatsapp_kopplung to :"rolle";
+grant select, insert, update, delete on :"schema".termin_akten, :"schema".termin_teilnehmer,
+  :"schema".termin_mitschriften, :"schema".termin_vorschlaege to :"rolle";
 
 -- Die Sperrliste ist GEMEINSAM (Spec §2.1): wer Werbung widerspricht, hat
 -- allen widersprochen.

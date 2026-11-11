@@ -135,6 +135,11 @@ create table if not exists :"schema".kalender_termine (
   ort text,
   abgeglichen_am timestamptz not null default now()
 );
+-- Meeting-Mittelpunkt (11.11.2026): Beschreibung, Teilnehmer (jsonb) und
+-- Konferenz-Link des Termins fuer die Termin-Akte. Alle nullable.
+alter table :"schema".kalender_termine add column if not exists beschreibung text;
+alter table :"schema".kalender_termine add column if not exists teilnehmer jsonb;
+alter table :"schema".kalender_termine add column if not exists konferenz text;
 create index if not exists kalender_termine_beginn_idx
   on :"schema".kalender_termine (beginn);
 create index if not exists kalender_termine_quelle_idx

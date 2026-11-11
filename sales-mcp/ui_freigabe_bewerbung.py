@@ -55,6 +55,7 @@ from starlette.routing import Route
 
 import bewerbung_pult
 import pult_cache
+import ui_portal_fenster
 from ui_freigabe_newsletter import _vor
 
 ADMIN_PFAD = "/freigaben/bewerbung"
@@ -186,10 +187,57 @@ _HINWEISE = {
     "not_aus_bot_env": ("warnung", "Der Not-Aus steht in bot.env und lässt sich im Pult nicht lösen."),
     "gestoppt": ("hinweis", "Gestoppt – die Zentrale hat die Entscheidung verbucht. Die Bewerbung geht nicht raus."),
     "grund_fehlt": ("warnung", "Kein Grund eingegeben – zum Stoppen ist ein Grund nötig. Nichts wurde gesendet."),
+    # Portal-Abgabe: Fenster, Fragen und Ausgang der Portal-Karte.
+    "fenster_angefragt": ("hinweis", "Das Fenster wird vorbereitet – gleich oben im Reiter."),
+    "fenster_belegt": ("warnung", "Im Fenster läuft schon eine Bewerbung. Erst dort fertig machen oder die "
+                                  "Sitzung beenden."),
+    "feldtabelle_veraltet": ("warnung", "Die Angaben haben sich geändert – bitte die Karte neu ansehen."),
+    "not_aus": ("warnung", "Not-Aus ist an – nichts wird abgeschickt."),
+    "portal_erfasst": ("hinweis", "Gespeichert."),
+    "abgeschickt": ("hinweis", "Als abgeschickt vermerkt."),
+    "portal_aus": ("warnung", "Die Portal-Abgabe ist ausgeschaltet."),
+    "zustand_veraltet": ("warnung", "Der Stand hat sich geändert – Seite neu laden."),
+    "nicht_offen": ("warnung", "Nicht mehr offen – Seite neu laden."),
+    # Kein Code der Zentrale zum Weiterreichen: 503 auf `fenster`, wenn der Befehl nicht ins Auftragsverzeichnis
+    # ging. Die Zentrale hat den Lauf schon zurueckgesetzt - nichts angefordert (sonst bliebe nur "unklar").
+    "befehl_nicht_geschrieben": ("warnung", "Das Fenster ließ sich nicht anfordern – nichts geändert, "
+                                            "bitte nochmal versuchen."),
 }
 _ABLEHNUNGEN = ("fassung_veraltet", "schon_entschieden", "wartet_auf_durchsicht",
                 "versandziel_geaendert", "lauf_laeuft", "lauf_unbekannt", "lauf_nicht_offen",
-                "antwort_ungueltig", "frage_unbekannt")
+                "antwort_ungueltig", "frage_unbekannt", "fenster_belegt", "feldtabelle_veraltet",
+                "zustand_veraltet", "not_aus", "portal_aus", "nicht_offen")
+
+# Portal-Abgabe (Plan 2026-11-09, Task 12): die Portal-Karte. Die Zentrale liefert `portal` (Lauf, Zustand,
+# Feldtabelle, Fragen); Felix macht im Fenster oder von Hand weiter. Ins Protokoll kommen nur Bewerbung, Lauf
+# und Code - nie ein Feldwert, eine Antwort oder ein Grund.
+_LAUF_ID = re.compile(r"pl-[A-Za-z0-9_-]{16,64}")
+_BILD_VERSION = re.compile(r"[0-9]{1,9}")
+# Aktion -> Zeitlimit. Fenster, Ausgang und Ablehnen verbucht die Zentrale samt Befehl, die anderen setzen nur Felder.
+PORTAL_ZEITLIMITS = {"fenster": 30, "beenden": 8, "antworten": 8, "ausgang": 30, "selbst": 8, "am-pc": 8,
+                     "nicht-bewerben": 30}
+# Status der Zentrale, an dem eine Aktion als gelungen gilt (`ausgang` je nach Wert, siehe Route).
+_PORTAL_STATUS = {"fenster": "angefragt", "beenden": "beendet", "antworten": "erfasst",
+                  "selbst": "selbst_bewerben", "am-pc": "gesetzt", "nicht-bewerben": "abgelehnt"}
+PORTAL_MAX_ANTWORTEN = 20
+PORTAL_DATEI_ZEITLIMIT_S = 8
+BRIEFDATUM_HINWEIS_AB_TAGE = 8
+HINDERNISSE = {None: "kein Hindernis erkannt", "captcha": "CAPTCHA", "anmeldung": "Anmeldung nötig",
+               "bot_falle": "Bot-Falle", "unbekannt": "unklar"}
+PORTAL_QUELLEN = {"profil": "Profil", "standardwert": "Standardwert", "keine_angabe": "keine Angabe",
+                  "antwort": "deine Antwort", "datei": "Datei", "leer": "leer"}
+PORTAL_ZUSTAENDE = {"wartet_auf_worker": "Bot bereitet vor", "frage_offen": "Fragen offen", "bereit": "bereit",
+                    "fenster_angefragt": "Fenster angefragt", "im_fenster": "im Fenster",
+                    "unklar": "unklar, ob abgeschickt", "selbst_bewerben": "selbst bewerben",
+                    "offline": "Anzeige offline"}
+_PORTAL_CSS = ("<style>@media (max-width: 899px) { .nur-pc { display: none } } "
+               "@media (min-width: 900px) { .nur-handy { display: none } } "
+               "iframe.fenster { width: 100%; height: 70vh; border: 0; } "
+               "table.feldtabelle { border-collapse: collapse; width: 100%; } "
+               "table.feldtabelle th, table.feldtabelle td { text-align: left; padding: .2rem .5rem; "
+               "vertical-align: top; } "
+               "table.feldtabelle input { width: 100%; } img.portal-bild { max-width: 100%; height: auto; }"
+               "</style>")
 _WEG = "Die Bewerbungs-Zentrale ist gerade nicht erreichbar."
 _NICHT_VERBUNDEN = "Die Bewerbungs-Zentrale ist nicht verbunden."
 
@@ -506,7 +554,217 @@ def _autonom(ui, k: dict, not_aus: bool = False) -> tuple[str, str | None]:
     return f'<div class="hinweis">{AUTONOM_UNBEKANNT}</div>', ""
 
 
+def _https(url) -> str | None:
+    """Nur eine https-Adresse ohne Leer- und Steuerzeichen darf als Link auf die Karte (nie http, nie javascript:)."""
+    if not isinstance(url, str) or not url.isprintable() or any(z.isspace() for z in url):
+        return None
+    try:
+        teile = urllib.parse.urlsplit(url)
+    except ValueError:
+        return None
+    return url if teile.scheme == "https" and teile.netloc and teile.hostname else None
+
+
+def _portal_form(ui, basis: str, aktion: str, lauf_id: str, nr, inhalt: str, klasse: str = "aktion") -> str:
+    """Ein Formular der Portal-Karte: CSRF-Marke, Lauf und (falls bekannt) Fassung der Karte."""
+    fassung = f'<input type="hidden" name="fassung" value="{nr}">' if nr else ""
+    return (f'<form class="{klasse}" method="post" action="{basis}/portal/{aktion}">'
+            f'<input type="hidden" name="csrf" value="{ui.CSRF_TOKEN}">'
+            f'<input type="hidden" name="lauf_id" value="{ui._e(lauf_id)}">{fassung}{inhalt}</form>')
+
+
+def _feldtabelle(ui, zeilen, lesbar: bool = False) -> str:
+    """Die Feldtabelle des Laufs (Feld, Wert, Quelle mit Hinweis). `lesbar`: Werte als `<input readonly>` zum
+    Abschreiben. Alles maskiert."""
+    e = ui._e
+    reihen = []
+    for z in _dicts(zeilen):
+        wert = z.get("wert") if isinstance(z.get("wert"), str) else ""
+        zelle = f'<input type="text" readonly value="{e(wert)}">' if lesbar else e(wert)
+        hinweis = _nur_text(z.get("hinweis"))
+        quelle = z.get("quelle")
+        quelle = e(_label(PORTAL_QUELLEN, quelle) if isinstance(quelle, str) else "")
+        if hinweis:
+            quelle += f'<br><span class="meta">{e(hinweis)}</span>'
+        feld = z.get("feld") if isinstance(z.get("feld"), str) else ""
+        reihen.append(f"<tr><td>{e(feld)}</td><td>{zelle}</td><td>{quelle}</td></tr>")
+    if not reihen:
+        return '<p class="meta">Keine Angaben.</p>'
+    return ('<table class="feldtabelle"><tr><th>Feld</th><th>Wert</th><th>Quelle</th></tr>'
+            + "".join(reihen) + "</table>")
+
+
+def _fragefelder(ui, fragen, antworten) -> str:
+    """Je Frage ein Feld `antwort_<id>`: eine Auswahl bei Optionen, sonst eine Zeile. Schon Beantwortetes ist
+    vorbelegt. Eine Frage ohne brauchbare Kennung faellt weg (die Zentrale vergibt `[a-z0-9-]{3,40}`)."""
+    e = ui._e
+    felder = []
+    for f in _dicts(fragen):
+        kennung = f.get("frage_id")
+        if not isinstance(kennung, str) or _FRAGE_ID.fullmatch(kennung) is None:
+            continue
+        titel = _nur_text(f.get("feld")) or kennung
+        bisher = antworten.get(kennung) if isinstance(antworten, dict) else None
+        bisher = bisher if isinstance(bisher, str) else ""
+        name = f"{_ANTWORT_PRAEFIX}{e(kennung)}"
+        optionen = _texte(f.get("optionen"))
+        if optionen:
+            wahl = "".join(f'<option{" selected" if o == bisher else ""}>{e(o)}</option>' for o in optionen)
+            eingabe = f'<select name="{name}"><option value="">– wählen –</option>{wahl}</select>'
+        else:
+            eingabe = (f'<input type="text" name="{name}" maxlength="{ANTWORT_MAX}" value="{e(bisher)}" '
+                       f'placeholder="Deine Antwort">')
+        felder.append(f'<label class="feld">{e(titel)}{eingabe}</label>')
+    return "".join(felder)
+
+
+def _portal_inhalt(ui, k: dict, p: dict, basis: str, nr, lauf_id: str, not_aus: bool) -> str:
+    """Der Teil der Portal-Karte, der vom Zustand des Laufs abhaengt (Texte wie in Task 12)."""
+    e = ui._e
+    zustand = p.get("zustand")
+    sicher = urllib.parse.quote(lauf_id, safe="")
+    form = partial(_portal_form, ui, basis)
+
+    def knopf(aktion: str, text: str, daten: str = "", klasse: str = "aktion", nr_mit=None) -> str:
+        return form(aktion, lauf_id, nr_mit, f'{daten}<button>{text}</button>', klasse)
+
+    def ablehnen() -> str:
+        if not nr:
+            return ""
+        return form("nicht-bewerben", lauf_id, nr,
+                    f'<input type="text" name="grund" maxlength="{GRUND_MAX}" placeholder="Grund (optional)">'
+                    f'<label class="haken"><input type="checkbox" name="bestaetigt" value="ja"> '
+                    f'Nicht bewerben bestätigen</label><button class="gefahr">Nicht bewerben</button>',
+                    "aktion gefahr")
+
+    def fenster(klasse: str) -> str:
+        sha = _bindung(p.get("feldtabelle_sha256"))
+        if not nr or sha is None:
+            return ""
+        return form("fenster", lauf_id, nr,
+                    f'<input type="hidden" name="feldtabelle_sha256" value="{e(sha)}">'
+                    f'<button class="primaer">Am PC im Fenster erledigen</button>', klasse)
+
+    def formular_link() -> str:
+        url = _https(p.get("formular_url"))
+        return f'<p class="meta">{_link(e(url), "Originalseite ↗")}</p>' if url else ""
+
+    def ausgang() -> str:
+        # Die Zentrale nimmt `selbst` aus wartet_auf_worker, frage_offen und bereit an, `nicht-bewerben` in jedem Zustand.
+        return f'<div class="aktionen">{knopf("selbst", "Selbst bewerben")}{ablehnen()}</div>'
+
+    if zustand == "wartet_auf_worker":
+        return '<p class="meta">Bot bereitet vor …</p>' + ausgang()
+    if zustand == "frage_offen":
+        felder = _fragefelder(ui, p.get("fragen"), p.get("antworten"))
+        antworten = (form("antworten", lauf_id, nr, f'{felder}<button>Antworten speichern</button>')
+                     if felder else "")
+        return f'<div><b>Offene Fragen</b></div>{_feldtabelle(ui, p.get("feldtabelle"))}{antworten}{ausgang()}'
+    if zustand == "bereit":
+        teile = ['<div><b>Bereit</b></div>']
+        if not_aus:
+            teile.append(f'<div class="warnung">{_HINWEISE["not_aus"][1]}</div>')
+        hindernis = p.get("hindernis") if isinstance(p.get("hindernis"), str) else None
+        text = HINDERNISSE.get(hindernis, HINDERNISSE["unbekannt"])
+        teile.append(f'<div class="{"hinweis" if hindernis is None else "warnung"}">Hindernis: {text}</div>')
+        bild = _nr(p.get("bild_version"))
+        if bild:
+            teile.append(f'<p><img src="{basis}/portal/bild.png?lauf={sicher}&v={bild}" class="portal-bild" '
+                         f'alt="Bild des ausgefüllten Formulars"></p>')
+        teile.append(_feldtabelle(ui, p.get("feldtabelle")))
+        if p.get("rest_nach_freigabe"):
+            teile.append('<div class="hinweis">Rest wird nach der Freigabe ausgefüllt</div>')
+        tage = p.get("briefdatum_alter_tage")
+        if isinstance(tage, int) and not isinstance(tage, bool) and tage >= BRIEFDATUM_HINWEIS_AB_TAGE:
+            teile.append(f'<div class="warnung">Datum im Anschreiben ist {tage} Tage alt</div>')
+        fehler = _nur_text(p.get("fehler"))
+        if fehler:
+            teile.append(f'<div class="meta">Letzter Versuch: {e(fehler)}</div>')
+        teile.append(formular_link())
+        am_pc = p.get("am_pc") is True
+        teile.append('<div class="aktionen">')
+        teile.append(fenster("nur-pc"))
+        teile.append(knopf("am-pc", "Doch nicht am PC" if am_pc else "Am PC erledigen",
+                           f'<input type="hidden" name="am_pc" value="{"false" if am_pc else "true"}">',
+                           "nur-handy"))
+        drin = fenster("aktion")
+        if drin:
+            teile.append(f'<details class="nur-handy"><summary>Fenster trotzdem hier öffnen</summary>'
+                         f'{drin}</details>')
+        teile.append(knopf("selbst", "Selbst bewerben"))
+        teile.append(ablehnen())
+        teile.append("</div>")
+        return "".join(teile)
+    if zustand in ui_portal_fenster.ZUSTAENDE:
+        return ('<div><b>Du bist dran – im Fenster oben</b></div><div class="aktionen">'
+                + knopf("beenden", "Sitzung beenden") + "</div>")
+    if zustand == "unklar":
+        return ('<div class="warnung">Unklar, ob abgeschickt</div><div class="aktionen">'
+                + knopf("ausgang", "Ist raus", '<input type="hidden" name="ausgang" value="raus">')
+                + knopf("ausgang", "Ist nicht raus", '<input type="hidden" name="ausgang" value="nicht_raus">')
+                + "</div>")
+    if zustand == "selbst_bewerben":
+        pdf = _link(f"{basis}/portal/bewerbung.pdf?lauf={sicher}", "Bewerbung als PDF")
+        return (f'<p class="meta">{pdf}</p>{formular_link()}'
+                f'{_feldtabelle(ui, p.get("feldtabelle"), lesbar=True)}<div class="aktionen">'
+                + knopf("ausgang", "Abgeschickt", '<input type="hidden" name="ausgang" value="raus">')
+                + ablehnen() + "</div>")
+    if zustand == "offline":
+        return ('<div class="warnung">Anzeige offline – archivieren?</div><div class="aktionen">'
+                + ablehnen() + "</div>")
+    return '<p class="meta">Stand unbekannt – Seite neu laden.</p>'
+
+
+def _portal_karte(ui, k: dict, not_aus: bool = False) -> str:
+    """Die Karte einer Portal-Bewerbung (`k["portal"]` ist ein dict): Kopf wie bei den Unterlagen, darunter je
+    nach Zustand des Laufs Feldtabelle, Fragen, Bild und Knoepfe. Kein Freigeben der Unterlagen."""
+    e = ui._e
+    p = k["portal"]
+    basis = _basis(k)
+    nr = _nr(k.get("fassung"))
+    angaben = [f"Fassung {nr if nr else '?'}", f"Score {_score(k.get('score'))}"]
+    if k.get("ort"):
+        angaben.append(e(k.get("ort")))
+    angaben.append(f"wartet seit {e(_vor(k.get('seit')))}")
+    anzeige = _anzeige(k.get("anzeige_url"))
+    verweise = f'<p class="meta">{_link(e(anzeige), "Anzeige ↗")}</p>' if anzeige else ""
+    lauf_id = p.get("lauf_id")
+    if isinstance(lauf_id, str) and _LAUF_ID.fullmatch(lauf_id):
+        inhalt = _portal_inhalt(ui, k, p, basis, nr, lauf_id, not_aus)
+    else:
+        inhalt = '<p class="meta">Lauf unbekannt – Seite neu laden.</p>'
+    return (f'<details class="karte" open><summary><span class="badge">Portal</span>'
+            f'<b>{e(k.get("firma"))} – {e(k.get("rolle"))}</b></summary>'
+            f'<div class="meta">{" · ".join(angaben)}</div>{verweise}{inhalt}</details>')
+
+
+def _portal_kopf(ui, karten: list[dict]) -> str:
+    """Oben im Reiter: der Fenster-Rahmen, solange eine Karte `fenster_angefragt` oder `im_fenster` ist und das
+    Fenster eingerichtet ist (sonst nie), danach die Liste "Am PC" mit den vorgemerkten Portal-Karten. Ohne
+    Portal-Karte steht hier nichts."""
+    e = ui._e
+    portale = [(k, k["portal"]) for k in karten if isinstance(k.get("portal"), dict)]
+    if not portale:
+        return ""
+    teile = [_PORTAL_CSS]
+    if ui_portal_fenster.eingerichtet() and any(p.get("zustand") in ui_portal_fenster.ZUSTAENDE
+                                                for _, p in portale):
+        teile.append(ui_portal_fenster.fenster_rahmen(ui))
+    am_pc = [(k, p) for k, p in portale if p.get("am_pc") is True]
+    if am_pc:
+        def stand(p: dict) -> str:
+            z = p.get("zustand")
+            return PORTAL_ZUSTAENDE.get(z, "Stand unbekannt") if isinstance(z, str) else "Stand unbekannt"
+
+        zeilen = "".join(f'<li>{e(k.get("firma"))} – {e(k.get("rolle"))} '
+                         f'<span class="meta">({e(stand(p))})</span></li>' for k, p in am_pc)
+        teile.append(f'<div class="ampc"><b>Am PC</b><ul>{zeilen}</ul></div>')
+    return "".join(teile)
+
+
 def _karte(ui, k: dict, not_aus: bool = False) -> str:
+    if isinstance(k.get("portal"), dict):
+        return _portal_karte(ui, k, not_aus)
     e = ui._e
     basis = _basis(k)
     nr = _nr(k.get("fassung"))
@@ -885,6 +1143,7 @@ async def _abschnitt(ui, request=None) -> str:
         # Auch die Darstellung steht im Schutz: ein kaputter Wert der Zentrale kostet
         # den Abschnitt, nie die ganze Seite.
         karten = "".join(_karte(ui, k, not_aus_an) for k in offen)
+        portal_kopf = _portal_kopf(ui, offen)
         zeilen = "".join(_verlauf_zeile(ui, v) for v in verlauf[:VERLAUF_MAX])
     except bewerbung_pult.PultFehler as f:
         LOG.warning("Bewerbungen auf /freigaben nicht lesbar: %s (%r)", f.art, f.grund)
@@ -896,7 +1155,7 @@ async def _abschnitt(ui, request=None) -> str:
         return await weg("fehler")
     n = len(offen)
     teile = [f'{kopf} <span class="zaehler{" offen" if n else ""}">{n}</span></h2>', hinweis,
-             not_aus, await _lauf_kopf(ui)]
+             not_aus, portal_kopf, await _lauf_kopf(ui)]
     if not offen:
         teile.append('<p class="meta">Keine Bewerbung wartet auf deine Entscheidung.</p>')
     teile.append(karten)
@@ -959,6 +1218,9 @@ def routen(ui) -> list:
                 if f.grund in _ABLEHNUNGEN:
                     return ziel(f.grund)
                 return ziel("abgelehnt", f.grund if _CODE.fullmatch(f.grund) else "")
+            if (f.art == "nicht_erreichbar" and pfad.endswith("/portal/fenster")
+                    and isinstance(f.koerper, dict) and f.koerper.get("detail") == "befehl_nicht_geschrieben"):
+                return ziel("befehl_nicht_geschrieben")
             return unklar_protokolliert("%s: %r", f.art, f.grund)
         _cache_leeren()
         if not (isinstance(r, dict) and gelungen(r)):
@@ -1216,7 +1478,135 @@ def routen(ui) -> list:
                                  "Content-Disposition": 'inline; filename="Anschreiben.pdf"',
                                  "Cache-Control": "private, no-store"})
 
+    @ui._gesichert_seite
+    async def portal_aktion(request):
+        """Eine Aktion der Portal-Karte: Formularfelder -> JSON der Pult-Route `portal/<aktion>`. CSRF, Rolle und
+        Lauf-Kennung zuerst; was die Zentrale ablehnen wuerde, geht gar nicht erst hin. Ins Protokoll kommen
+        Bewerbung, Lauf und Aktion - nie ein Feldwert, eine Antwort oder ein Grund."""
+        aktion = request.path_params["aktion"]
+        if aktion not in PORTAL_ZEITLIMITS:
+            return ui._fehlerseite(404, "Nicht gefunden", "Diese Portal-Aktion gibt es nicht. Nichts wurde getan.")
+        form, fehler = await formular(request)
+        if fehler is not None:
+            return fehler
+        lauf_id = form.get("lauf_id")
+        if not isinstance(lauf_id, str) or _LAUF_ID.fullmatch(lauf_id) is None:
+            return ungueltig("Der Lauf fehlt oder ist ungültig – Seite neu laden.")
+        daten = {"lauf_id": lauf_id, "von": _von(ui._ui_akteur(request))}
+        status, erfolg = _PORTAL_STATUS.get(aktion), "portal_erfasst"
+        if aktion in ("fenster", "nicht-bewerben"):
+            fassung = _fassung(form.get("fassung"))
+            if fassung is None:
+                return ungueltig("Welche Fassung gemeint ist, fehlt – Seite neu laden.")
+            daten["fassung"] = fassung
+        if aktion == "fenster":
+            sha = _bindung(form.get("feldtabelle_sha256"))
+            if sha is None:
+                return ungueltig("Die Prüfsumme der Feldtabelle fehlt oder ist ungültig – Seite neu laden.")
+            daten["feldtabelle_sha256"], erfolg = sha, "fenster_angefragt"
+        elif aktion == "antworten":
+            eintraege, gesehen = [], set()
+            for name, wert in form.multi_items():
+                text = _text(wert)
+                if not isinstance(name, str) or not name.startswith(_ANTWORT_PRAEFIX) or not text:
+                    continue                    # fremde und leere Felder
+                frage_id = name[len(_ANTWORT_PRAEFIX):]
+                if _FRAGE_ID.fullmatch(frage_id) is None or frage_id in gesehen:
+                    return ungueltig("Eine Frage ist unbekannt oder kommt doppelt vor – Seite neu laden.")
+                gesehen.add(frage_id)
+                eintraege.append({"frage_id": frage_id, "antwort": text})
+            if not eintraege:
+                return ziel("keine_antwort")
+            if len(eintraege) > PORTAL_MAX_ANTWORTEN:
+                return ungueltig(f"Mehr als {PORTAL_MAX_ANTWORTEN} Antworten auf einmal.")
+            if any(len(x["antwort"]) > ANTWORT_MAX or "\n" in x["antwort"] for x in eintraege):
+                return ziel("antwort_ungueltig")
+            daten["antworten"] = eintraege
+        elif aktion == "ausgang":
+            ausgang = form.get("ausgang")
+            if ausgang not in ("raus", "nicht_raus"):
+                return ungueltig("Der Ausgang ist unbekannt – Seite neu laden.")
+            daten["ausgang"] = ausgang
+            status, erfolg = ("abgeschickt", "abgeschickt") if ausgang == "raus" else ("bereit", "portal_erfasst")
+        elif aktion == "am-pc":
+            am_pc = {"true": True, "false": False}.get(form.get("am_pc")) if isinstance(form.get("am_pc"), str) \
+                else None
+            if am_pc is None:
+                return ungueltig("Ob die Bewerbung am PC erledigt wird, fehlt oder ist ungültig.")
+            daten["am_pc"] = am_pc
+        elif aktion == "nicht-bewerben":
+            if form.get("bestaetigt") != "ja":
+                return ui._fehlerseite(400, "Nicht bestätigt", "Der Bestätigungshaken fehlt. "
+                                       "Nichts wurde gesendet.")
+            grund = _text(form.get("grund"))
+            if len(grund) > GRUND_MAX:
+                return ungueltig(f"Der Grund hat mehr als {GRUND_MAX} Zeichen.")
+            if grund:
+                daten["grund"] = grund
+            erfolg = "nicht_beworben"
+        kennung = request.path_params["bid"]
+        return await abschicken(
+            f"/bewerbungen/{urllib.parse.quote(kennung, safe='')}/portal/{aktion}", daten,
+            PORTAL_ZEITLIMITS[aktion], "es verbucht wurde", erfolg,
+            lambda r: r.get("status") == status,
+            f"Bewerbung {kennung!r} Lauf {lauf_id!r}: Ausgang von portal/{aktion}")
+
+    async def portal_datei(request, name: str):
+        """Bild oder Unterlagen eines Portal-Laufs, als Rohbytes durchgereicht (nichts wird verarbeitet)."""
+        if not _darf(ui):
+            return verboten()
+        lauf = request.query_params.get("lauf")
+        if lauf is None or _LAUF_ID.fullmatch(lauf) is None:
+            return ui._fehlerseite(422, "Ungültiger Lauf", "Welcher Lauf gemeint ist, fehlt – Seite neu laden.")
+        abfrage = {"lauf": lauf}
+        if name == "bild.png" and (version := request.query_params.get("v")) is not None:
+            if _BILD_VERSION.fullmatch(version) is None:
+                return ui._fehlerseite(422, "Ungültige Version", "Die Bildversion ist ungültig – Seite neu laden.")
+            abfrage["v"] = version
+        bid = urllib.parse.quote(request.path_params["bid"], safe="")
+        try:
+            inhalt, typ = await run_in_threadpool(partial(
+                bewerbung_pult.anfrage, "GET",
+                f"/bewerbungen/{bid}/portal/{name}?{urllib.parse.urlencode(abfrage)}",
+                roh=True, zeitlimit=PORTAL_DATEI_ZEITLIMIT_S))
+        except bewerbung_pult.PultFehler as f:
+            if f.art == "nicht_verbunden":
+                return nicht_verbunden()
+            if f.art == "abgelehnt" and f.grund == "unbekannt":
+                return ui._fehlerseite(404, "Nicht gefunden", "Das hat die Zentrale nicht (mehr).")
+            if f.art == "abgelehnt":
+                return ui._fehlerseite(422, "Nicht möglich", e(f.grund))
+            return ui._fehlerseite(503, "Bewerbungs-Zentrale gerade nicht erreichbar",
+                                   "Das ließ sich gerade nicht abrufen. Später erneut versuchen.")
+        return inhalt, str(typ)
+
+    @ui._gesichert_seite
+    async def portal_bild(request):
+        antwort = await portal_datei(request, "bild.png")
+        if isinstance(antwort, Response):
+            return antwort
+        inhalt, typ = antwort
+        if not typ.startswith("image/png"):
+            return ui._fehlerseite(502, "Unklare Antwort", "Die Zentrale lieferte kein Bild.")
+        return Response(inhalt, media_type="image/png", headers={"Cache-Control": "private, no-store"})
+
+    @ui._gesichert_seite
+    async def portal_pdf(request):
+        antwort = await portal_datei(request, "bewerbung.pdf")
+        if isinstance(antwort, Response):
+            return antwort
+        inhalt, typ = antwort
+        if not typ.startswith("application/pdf"):
+            return ui._fehlerseite(502, "Unklare Antwort", "Die Zentrale lieferte kein PDF.")
+        return Response(inhalt, media_type="application/pdf",
+                        headers={"Content-Security-Policy": ui._CSP_DATEI,
+                                 "Content-Disposition": 'inline; filename="Bewerbung.pdf"',
+                                 "Cache-Control": "private, no-store"})
+
     return [
+        Route(ADMIN_PFAD + "/{bid}/portal/bild.png", portal_bild),
+        Route(ADMIN_PFAD + "/{bid}/portal/bewerbung.pdf", portal_pdf),
+        Route(ADMIN_PFAD + "/{bid}/portal/{aktion}", portal_aktion, methods=["POST"]),
         Route(ADMIN_PFAD + "/{bid}/freigeben", freigeben, methods=["POST"]),
         Route(ADMIN_PFAD + "/{bid}/nicht-bewerben", nicht_bewerben, methods=["POST"]),
         Route(ADMIN_PFAD + "/{bid}/stoppen", stoppen, methods=["POST"]),
