@@ -84,7 +84,7 @@ def _beschreibung(text, grenze: int) -> str:
     return _kurz(" ".join(zeilen), grenze)
 
 
-def _gesperrt(lead: dict) -> bool:
+def gesperrt(lead: dict) -> bool:
     """Live pruefen (nicht nur den gespeicherten Grund): Sperrliste ueber E-Mail
     und Telefon, Loeschantrag und Privat-Vermerk am Lead."""
     if server._sperre(lead.get("email") or "", lead.get("phone") or ""):
@@ -93,6 +93,9 @@ def _gesperrt(lead: dict) -> bool:
         return True
     enr = lead.get("enrichment")
     return bool(server._loeschantrag(enr) or server._privat(enr))
+
+
+_gesperrt = gesperrt   # alter Name
 
 
 def _painpoint_texte(auswertung) -> list[str]:
@@ -166,9 +169,10 @@ def fakten(uid: str) -> dict:
         gesehen.add(lid)
         z = server._q("select id, name, email, phone, company, title, source, "
                       "created_at, enrichment from leads where id = %s::uuid", (lid,))
-        if z and not _gesperrt(z[0]):
+        if z and not gesperrt(z[0]):
             leads.append(_lead_fakten(z[0], uid))
-    LOG.info("Briefing-Fakten: uid=%s leads=%d", uid, len(leads))
+    LOG.debug("Briefing-Fakten: uid=%s leads=%d",
+              hashlib.sha256(uid.encode()).hexdigest()[:8], len(leads))
     return {"beginn": akte["beginn"].isoformat(),
             "ziel": {"thema": akte.get("thema") or akte.get("titel") or "",
                      "beschreibung": _beschreibung(akte.get("beschreibung"), MAX_BESCHREIBUNG)},
@@ -263,7 +267,7 @@ def hinweis_text(akte: dict, ui_basis: str) -> str:
             continue
         z = server._q("select name, company, email, phone, enrichment from leads "
                       "where id = %s::uuid", (str(t["lead_id"]),))
-        if z and _gesperrt(z[0]):
+        if z and gesperrt(z[0]):
             kunde = NEUTRAL  # gesperrter erster Lead: nichts von ihm, auch nicht der Titel
         elif z:
             name = _scrub(z[0]["name"], "")

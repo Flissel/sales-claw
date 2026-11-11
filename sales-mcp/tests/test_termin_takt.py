@@ -392,9 +392,11 @@ def test_nachloeschen_bei_ohne_aufnahme(fake):
     _akte("u1", status="ohne_aufnahme", vexa_meeting_id=9)
     _akte("u2", status="fehlgeschlagen", vexa_meeting_id=10)
     termin_takt.runde(JETZT)
-    assert fake.anzahl("loeschen") == 1
+    assert fake.anzahl("loeschen") == 2                 # auch fehlgeschlagen (Ruling 8)
     assert _zeile("u1")["vexa_meeting_id"] is None
     assert _zeile("u1")["status"] == "ohne_aufnahme"
+    assert _zeile("u2")["vexa_meeting_id"] is None
+    assert _zeile("u2")["status"] == "fehlgeschlagen"
 
 
 def test_null_segmente_leer(fake):
@@ -436,6 +438,9 @@ def test_ollama_aus_auswertung_wartet(fake, monkeypatch, caplog):
     monkeypatch.setattr(auswertung, "auswerten", lambda s: _ergebnis())
     termin_takt.runde(JETZT + timedelta(minutes=5))
     assert _mit()["auswertung_status"] == "fertig"
+    zurueck = [r for r in caplog.records if r.name == "sales-termine"
+               and r.getMessage().startswith("Ollama erreichbar")]
+    assert len(zurueck) == 1
 
 
 def test_auswertung_speichert_ergebnis_und_vorschlaege(fake, monkeypatch):
@@ -641,3 +646,167 @@ def test_takt_aus_umgebung(monkeypatch):
     for kaputt in ("0", "-3", "abc", "nan"):
         monkeypatch.setenv("TERMIN_TAKT_S", kaputt)
         assert termin_takt._takt() == 30
+
+
+# ---------- Fix-Runde 1 ----------
+
+def test_briefing_ki_wird_nachgeholt_ohne_zweiten_hinweis(fake, monkeypatch):
+    lead = _lead()
+    _akte("u1", beginn=JETZT + timedelta(minutes=20))
+    _teilnehmer("u1", lead)
+    termin_takt.runde(JETZT)                                  # Ollama aus
+    assert _zeile("u1")["briefing_mit_ki"] is False and len(TELEGRAM) == 1
+    aufrufe = []
+    monkeypatch.setattr(ollama, "erreichbar", lambda: aufrufe.append(1) or True)
+    monkeypatch.setattr(ollama, "chat", lambda *a, **k: "Kurzer KI-Text.")
+    termin_takt.runde(JETZT + timedelta(seconds=30))
+    assert _zeile("u1")["briefing_mit_ki"] is True
+    assert "Kurzer KI-Text." in _zeile("u1")["briefing_md"]
+    assert len(TELEGRAM) == 1
+    termin_takt.runde(JETZT + timedelta(seconds=60))          # mit KI: nichts mehr
+    assert len(TELEGRAM) == 1
+
+
+def test_bot_claim_verhindert_zweiten_bot(fake):
+    _akte("u1", beginn=JETZT + timedelta(seconds=30))
+    termin_takt._bot_starten("u1", MEET, JETZT)
+    termin_takt._bot_starten("u1", MEET, JETZT)               # zweiter, "gleichzeitiger" Lauf
+    termin_takt._bot(JETZT)
+    assert fake.anzahl("bot") == 1
+    assert _zeile("u1")["status"] == "wartet_auf_einlass"
+
+
+def test_bot_gestartet_speichern_scheitert_raeumt_auf(fake, monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
+    _akte("u1", beginn=JETZT + timedelta(seconds=30))
+    echt = termin_akte.status_setzen
+
+    def kaputt(uid, status, grund="", **felder):
+        if "vexa_meeting_id" in felder:
+            raise RuntimeError(f"DB weg {ADRESSE}")
+        return echt(uid, status, grund, **felder)
+
+    monkeypatch.setattr(termin_akte, "status_setzen", kaputt)
+    termin_takt._bot_starten("u1", MEET, JETZT)
+    assert fake.anzahl("bot") == 1
+    assert fake.anzahl("stoppen") == 1 and fake.anzahl("loeschen") == 1
+    warn = [r for r in caplog.records if r.name == "sales-termine"
+            and r.levelno == logging.WARNING]
+    assert warn and "RuntimeError" in warn[0].getMessage()
+    assert ADRESSE not in caplog.text
+    assert _zeile("u1")["status"] == "wartet_auf_einlass"     # kein zweiter Bot
+    termin_takt._bot(JETZT)
+    assert fake.anzahl("bot") == 1
+
+
+def test_nach_ende_ohne_bot_wird_ohne_aufnahme(fake, monkeypatch):
+    vorbei = JETZT - timedelta(hours=2)
+    _akte("u1", beginn=vorbei, kein_bot=True)
+    _akte("u2", beginn=vorbei)
+    monkeypatch.setattr(vexa, "konfiguriert", lambda: True)
+    termin_takt.runde(JETZT)
+    a = _zeile("u1")
+    assert (a["status"], a["status_grund"]) == ("ohne_aufnahme", "kein Bot gewuenscht")
+    assert _zeile("u2")["status"] == "geplant"                # Vexa da, kein Schalter
+    monkeypatch.setattr(vexa, "konfiguriert", lambda: False)
+    termin_takt.runde(JETZT)
+    a = _zeile("u2")
+    assert (a["status"], a["status_grund"]) == ("ohne_aufnahme", "Vexa nicht konfiguriert")
+    assert fake.anzahl("bot") == 0
+
+
+def test_ablegen_zweite_anweisung_scheitert_rollt_insert_zurueck(fake, monkeypatch):
+    _akte("u1", beginn=JETZT - timedelta(minutes=60), status="laeuft", vexa_meeting_id=7)
+    fake.meeting = {"status": "completed", "grund": "", "ende_grund": ""}
+    echt = server.pool.connection
+
+    class Verbindung:
+        def __init__(self, conn):
+            self._c = conn
+
+        def __getattr__(self, name):
+            return getattr(self._c, name)
+
+        def execute(self, sql, *a, **k):
+            if sql.lstrip().startswith("update termin_akten"):
+                raise RuntimeError("zweite Anweisung scheitert")
+            return self._c.execute(sql, *a, **k)
+
+    class Huelle:
+        def __init__(self):
+            self._cm = echt()
+
+        def __enter__(self):
+            return Verbindung(self._cm.__enter__())
+
+        def __exit__(self, *a):
+            return self._cm.__exit__(*a)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(server.pool, "connection", lambda *a, **k: Huelle())
+        termin_takt.runde(JETZT)
+    assert fake.anzahl("holen") == 1 and fake.anzahl("loeschen") == 0
+    assert _mit() is None                                     # Insert zurueckgerollt
+    assert _zeile("u1")["status"] == "laeuft" and _zeile("u1")["vexa_meeting_id"] == 7
+
+
+def test_ablegen_nur_aus_laeuft_oder_wartet(fake):
+    _akte("u1", status="fehlgeschlagen")
+    with pytest.raises(RuntimeError):
+        termin_takt._mitschrift_ablegen("u1", SEGMENTE)
+    assert _mit() is None and _zeile("u1")["status"] == "fehlgeschlagen"
+
+
+def test_vorschlaege_scheitern_einmal_fehler_kein_doppelter_entwurf(fake, monkeypatch):
+    monkeypatch.setattr(ollama, "erreichbar", lambda: True)
+    monkeypatch.setattr(auswertung, "auswerten", lambda s: _ergebnis())
+    lead = _lead()
+    _akte("u1", status="fertig", will_zusammenfassung=True)
+    _teilnehmer("u1", lead)
+    _mitschrift("u1")
+    echt = auswertung.vorschlaege
+    folge = [True]
+
+    def vorschlaege(a, ids, heute=None):
+        if folge:
+            folge.pop()
+            return [{"art": "ungueltig", "lead_id": lead, "daten": {}}]   # verletzt check
+        return echt(a, ids, heute)
+
+    monkeypatch.setattr(auswertung, "vorschlaege", vorschlaege)
+    termin_takt.runde(JETZT)
+    m = _mit()
+    assert m["auswertung_status"] == "fehler" and m["auswertung_versuche"] == 1
+    assert m["auswertung_am"] == JETZT and m["auswertung_json"] is None
+    assert server._q("select count(*) as n from drafts")[0]["n"] == 0
+    termin_takt.runde(JETZT + timedelta(minutes=30))          # Deckel: noch keine Stunde
+    assert _mit()["auswertung_versuche"] == 1
+    termin_takt.runde(JETZT + timedelta(minutes=61))
+    assert _mit()["auswertung_status"] == "fertig"
+    assert server._q("select count(*) as n from drafts")[0]["n"] == 1
+    termin_takt.runde(JETZT + timedelta(hours=5))
+    assert server._q("select count(*) as n from drafts")[0]["n"] == 1
+
+
+def test_entwurf_scheitert_keine_neue_auswertung(fake, monkeypatch):
+    monkeypatch.setattr(ollama, "erreichbar", lambda: True)
+    zaehler = []
+    monkeypatch.setattr(auswertung, "auswerten", lambda s: zaehler.append(1) or _ergebnis())
+
+    def kaputt(*a, **k):
+        raise RuntimeError("Entwurf kaputt")
+
+    monkeypatch.setattr(server, "_entwurf_erstellen", kaputt)
+    lead = _lead()
+    _akte("u1", status="fertig", will_zusammenfassung=True)
+    _teilnehmer("u1", lead)
+    _mitschrift("u1")
+    termin_takt.runde(JETZT)
+    termin_takt.runde(JETZT + timedelta(hours=3))
+    assert len(zaehler) == 1
+    m = _mit()
+    assert m["auswertung_status"] == "fertig" and m["entwurf_id"] is None
+
+
+def test_gesperrt_ist_oeffentlich():
+    assert briefing.gesperrt({"email": "", "phone": "", "enrichment": {}}) is False

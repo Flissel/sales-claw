@@ -10,11 +10,9 @@ Alle `TERMIN_TAKT_S` Sekunden (Vorgabe 30) eine Runde, jeder Schritt mit eigenem
   5. Bei Vexa nachloeschen, was beim Abholen liegen blieb
   6. Eine offene Mitschrift mit dem lokalen Ollama auswerten
 
-REIHENFOLGE-GARANTIE (Schritt 4): Mitschrift-Insert und Status `fertig` stehen
-in EINER Transaktion, `vexa.meeting_loeschen` laeuft erst NACH dem Commit. Ein
-gescheitertes Loeschen laesst `vexa_meeting_id` stehen; Schritt 5 loescht nach.
-Scheitert schon das Abholen, bleibt alles wie es war und die naechste Runde
-versucht es wieder.
+REIHENFOLGE (Schritt 4): Mitschrift-Insert und Status `fertig` in EINER Transaktion,
+`meeting_loeschen` erst NACH dem Commit; scheitert es, bleibt `vexa_meeting_id`
+stehen und Schritt 5 loescht nach.
 
 LOGS: nur uid-Hash (sha256, 8 Zeichen), Status und Zaehler - nie Adressen,
 Namen, Links, Passcodes, Segment- oder Auswertungstext, Schluessel. Bei
@@ -95,15 +93,23 @@ def _abgleichen(jetzt: datetime):
 def _briefing(jetzt: datetime) -> int:
     ui_basis = os.environ.get("UI_BASIS_URL", "").strip().rstrip("/")
     zeilen = server._q(
-        "select uid, briefing_stand, hinweis_gesendet_am from termin_akten "
+        "select uid, briefing_stand, briefing_mit_ki, hinweis_gesendet_am from termin_akten "
         "where abgesagt_am is null and beginn > %s and beginn <= %s order by beginn",
         (jetzt, jetzt + BRIEFING_VOR))
     getan = 0
+    ki: list[bool] = []          # Ollama hoechstens einmal je Runde fragen
+
+    def ki_da() -> bool:
+        if not ki:
+            ki.append(ollama.erreichbar())
+        return ki[0]
 
     def neu_erstellen(z):
         stand = z["briefing_stand"]
-        # Ollama nur anfragen, wenn sich die Fakten wirklich geaendert haben.
-        if stand and stand == briefing.stand_von(briefing.fakten(z["uid"])):
+        # Nur neu, wenn die Fakten sich geaendert haben - oder das Briefing ohne
+        # KI-Text entstand und Ollama jetzt da ist.
+        if (stand and stand == briefing.stand_von(briefing.fakten(z["uid"]))
+                and not (z["briefing_mit_ki"] is False and ki_da())):
             return False
         b = briefing.erstellen(z["uid"])
         _felder(z["uid"], briefing_md=b["markdown"], briefing_stand=b["stand"],
@@ -133,6 +139,13 @@ def _bot_starten(uid: str, link: str, jetzt: datetime) -> None:
     if termin_akte.hat_gesperrte(uid):
         termin_akte.status_setzen(uid, "ohne_aufnahme", "gesperrter Teilnehmer")
         return
+    # Akte ZUERST beanspruchen: nur wer sie von 'geplant' weiterschaltet, schickt
+    # den Bot. Ein zweiter Aufruf (Rennen, Neustart) findet keine Zeile.
+    if not server._q(
+            "update termin_akten set status = 'wartet_auf_einlass', status_grund = null, "
+            "bot_geschickt_am = now(), geaendert_am = now() "
+            "where uid = %s and status = 'geplant' returning uid", (uid,)):
+        return
     try:
         m = vexa.bot_schicken(link)
     except vexa.VexaFehler:
@@ -143,28 +156,44 @@ def _bot_starten(uid: str, link: str, jetzt: datetime) -> None:
             uid, "wartet_auf_einlass", vexa_meeting_id=m["meeting_id"],
             vexa_plattform=m["plattform"], vexa_native_id=m["native_id"],
             bot_geschickt_am=jetzt)
-    except Exception:
-        # Der Bot laeuft schon, die Akte weiss es nicht: wieder wegnehmen.
-        try:
-            vexa.bot_stoppen(m["plattform"], m["native_id"])
-        except Exception:  # noqa: BLE001
-            pass
-        raise
+    except Exception as e:  # noqa: BLE001
+        # Der Bot laeuft schon, die Akte weiss es nicht: wegnehmen, nie still.
+        LOG.warning("Bot gestartet, Speichern gescheitert uid=%s (%s) - raeume auf",
+                    _h(uid), type(e).__name__)
+        for aufraeumen in (lambda: vexa.bot_stoppen(m["plattform"], m["native_id"]),
+                           lambda: vexa.meeting_loeschen(m["meeting_id"])):
+            try:
+                aufraeumen()
+            except Exception as e2:  # noqa: BLE001
+                LOG.warning("Aufraeumen nach Bot-Start gescheitert uid=%s (%s)",
+                            _h(uid), type(e2).__name__)
 
 
 def _bot(jetzt: datetime) -> int:
+    konf = vexa.konfiguriert()
     zeilen = server._q(
         "select uid, link from termin_akten "
         "where status = 'geplant' and coalesce(link, '') <> '' and not kein_bot "
         "and abgesagt_am is null and beginn <= %s and ende > %s order by beginn",
         (jetzt + BOT_VOR, jetzt))
     if zeilen:
-        _wechsel("vexa", vexa.konfiguriert(), "Vexa konfiguriert",
+        _wechsel("vexa", konf, "Vexa konfiguriert",
                  "Vexa nicht konfiguriert (VEXA_API_KEY fehlt) - kein Bot")
-    if not zeilen or not vexa.konfiguriert():
-        return 0
-    return sum(_je_akte("Bot", z["uid"], lambda z=z: _bot_starten(z["uid"], z["link"], jetzt))
-               for z in zeilen)
+    getan = 0
+    if konf:
+        getan = sum(_je_akte("Bot", z["uid"],
+                             lambda z=z: _bot_starten(z["uid"], z["link"], jetzt))
+                    for z in zeilen)
+    # Vorbei und nie aufgenommen: nicht ewig 'geplant' lassen.
+    for z in server._q(
+            "select uid, kein_bot from termin_akten "
+            "where status = 'geplant' and coalesce(link, '') <> '' and abgesagt_am is null "
+            "and ende <= %s and (kein_bot or %s)", (jetzt, not konf)):
+        grund = "kein Bot gewuenscht" if z["kein_bot"] else "Vexa nicht konfiguriert"
+        getan += _je_akte("Ende", z["uid"],
+                          lambda z=z, g=grund: termin_akte.status_setzen(
+                              z["uid"], "ohne_aufnahme", g))
+    return getan
 
 
 # ---------- 4./5. Verfolgen, Abholen, Loeschen ----------
@@ -189,9 +218,11 @@ def _mitschrift_ablegen(uid: str, segmente: list[dict]) -> None:
                 "insert into termin_mitschriften (uid, segmente, auswertung_status) "
                 "values (%s, %s::jsonb, %s) on conflict (uid) do nothing",
                 (uid, json.dumps(segmente), "offen" if segmente else "leer"))
-            conn.execute(
-                "update termin_akten set status = 'fertig', status_grund = null, "
-                "geaendert_am = now() where uid = %s", (uid,))
+            if conn.execute(
+                    "update termin_akten set status = 'fertig', status_grund = null, "
+                    "geaendert_am = now() where uid = %s "
+                    "and status in ('wartet_auf_einlass', 'laeuft')", (uid,)).rowcount != 1:
+                raise RuntimeError("Status inzwischen geaendert")   # rollt den Insert zurueck
 
 
 def _verfolgen_eine(z: dict) -> int:
@@ -240,7 +271,7 @@ def _verfolgen(jetzt: datetime) -> int:
 def _nachloeschen(jetzt: datetime) -> int:
     zeilen = server._q(
         "select uid, vexa_meeting_id from termin_akten "
-        "where status in ('fertig', 'ohne_aufnahme') and vexa_meeting_id is not null "
+        "where status in ('fertig', 'ohne_aufnahme', 'fehlgeschlagen') and vexa_meeting_id is not null "
         "order by beginn")
     erg: list[bool] = []
     for z in zeilen:
@@ -262,7 +293,7 @@ def _leads(akte: dict) -> list[tuple[str, str]]:
         gesehen.add(lid)
         z = server._q("select name, email, phone, enrichment from leads "
                       "where id = %s::uuid", (lid,))
-        if z and not briefing._gesperrt(z[0]):
+        if z and not briefing.gesperrt(z[0]):
             aus.append((lid, z[0]["name"] or ""))
     return aus
 
@@ -295,38 +326,47 @@ def _auswerten_eine(m: dict, jetzt: datetime) -> None:
     try:
         a = auswertung.auswerten(m["segmente"])
         md = auswertung.markdown(a)
+        akte = termin_akte.lesen(uid)
+        leads = _leads(akte) if akte else []
+        vorschlaege = auswertung.vorschlaege(a, [lid for lid, _ in leads])
+        modell = os.environ.get("OLLAMA_MODELL", "").strip() or ollama.MODELL_STANDARD
+        # ERST Ergebnis und Vorschlaege gemeinsam festschreiben, dann der Entwurf:
+        # scheitert der, gibt es keine zweite Auswertung und keinen zweiten Entwurf.
+        with server.pool.connection() as conn:
+            with conn.transaction():
+                conn.execute(
+                    "update termin_mitschriften set auswertung_status = 'fertig', "
+                    "auswertung_json = %s::jsonb, auswertung_md = %s, auswertung_am = %s, "
+                    "modell = %s where id = %s",
+                    (json.dumps(a), md, jetzt, modell, m["id"]))
+                for v in vorschlaege:
+                    conn.execute(
+                        "insert into termin_vorschlaege (mitschrift_id, art, lead_id, daten) "
+                        "values (%s, %s, %s, %s::jsonb)",
+                        (m["id"], v["art"], v["lead_id"], json.dumps(v["daten"])))
     except Exception as e:  # noqa: BLE001 - OllamaFehler und alles andere
         server._q("update termin_mitschriften set auswertung_status = 'fehler', "
                   "auswertung_versuche = auswertung_versuche + 1, auswertung_am = %s "
                   "where id = %s returning id", (jetzt, m["id"]))
         LOG.warning("Auswertung uid=%s fehlgeschlagen (%s)", _h(uid), type(e).__name__)
         return
-    akte = termin_akte.lesen(uid)
-    leads = _leads(akte) if akte else []
     entwurf = None
-    if akte and akte["will_zusammenfassung"] and leads:
-        entwurf = _zusammenfassung(uid, akte, a, leads[0])
-    vorschlaege = auswertung.vorschlaege(a, [lid for lid, _ in leads])
-    modell = os.environ.get("OLLAMA_MODELL", "").strip() or ollama.MODELL_STANDARD
-    with server.pool.connection() as conn:
-        with conn.transaction():
-            conn.execute(
-                "update termin_mitschriften set auswertung_status = 'fertig', "
-                "auswertung_json = %s::jsonb, auswertung_md = %s, auswertung_am = %s, "
-                "modell = %s, entwurf_id = %s where id = %s",
-                (json.dumps(a), md, jetzt, modell, entwurf, m["id"]))
-            for v in vorschlaege:
-                conn.execute(
-                    "insert into termin_vorschlaege (mitschrift_id, art, lead_id, daten) "
-                    "values (%s, %s, %s, %s::jsonb)",
-                    (m["id"], v["art"], v["lead_id"], json.dumps(v["daten"])))
+    if akte and akte["will_zusammenfassung"] and leads and m["entwurf_id"] is None:
+        try:
+            entwurf = _zusammenfassung(uid, akte, a, leads[0])
+            if entwurf:
+                server._q("update termin_mitschriften set entwurf_id = %s where id = %s "
+                          "returning id", (entwurf, m["id"]))
+        except Exception as e:  # noqa: BLE001 - nie zurueck in die Auswertung
+            LOG.warning("Entwurf-Verknuepfung uid=%s gescheitert (%s)", _h(uid),
+                        type(e).__name__)
     LOG.info("Auswertung fertig uid=%s vorschlaege=%d entwurf=%s",
              _h(uid), len(vorschlaege), entwurf is not None)
 
 
 def _auswerten(jetzt: datetime) -> int:
     kandidaten = server._q(
-        "select id, uid, segmente from termin_mitschriften "
+        "select id, uid, segmente, entwurf_id from termin_mitschriften "
         "where auswertung_status = 'offen' or (auswertung_status = 'fehler' "
         "and auswertung_versuche < %s and auswertung_am <= %s) "
         "order by (auswertung_status = 'fehler'), geholt_am, id limit 1",
