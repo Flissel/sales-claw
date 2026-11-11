@@ -1036,6 +1036,13 @@ services:
       # "Bewerbungen" auf /freigaben.
       - BEWERBUNG_PULT_URL=${BEWERBUNG_PULT_URL:-}
       - BEWERBUNG_PULT_KEY=${BEWERBUNG_PULT_KEY:-}
+      # Portal-Fenster (Portal-Abgabe): WebSocket-Adresse des Fensters im Container
+      # bewerbung-portal (ws://bewerbung-portal:6080) und der
+      # gemeinsame Schluessel (= PORTAL_FENSTER_SCHLUESSEL in der bot.env). NUR in der
+      # Haupt-.env des Basis-Ladens. Leer = kein Fenster. Das Netz haengt NICHT hier,
+      # sondern nur im Basis-Laden an (docker-compose.fenster.yml).
+      - BEWERBUNG_FENSTER_WS=${BEWERBUNG_FENSTER_WS:-}
+      - BEWERBUNG_FENSTER_SCHLUESSEL=${BEWERBUNG_FENSTER_SCHLUESSEL:-}
       # Newsletter an Kontakte (15.10.2026, E4): dieser Laden sendet nur Newsletter dieser Marketing-Firma.
       - MARKETING_MANDANT=${MARKETING_MANDANT:-}
       # Aussehen je Laden (Paket C4, 19.10.2026, laden_marke.py): LADEN_MARKE waehlt die Firma, deren

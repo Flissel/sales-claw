@@ -247,7 +247,8 @@ echo "   ok: openclaw/post-pruefer antwortet mit Funktionsaufruf"
 if [ "$NEUES_PAAR" = 1 ]; then
   echo "WICHTIG: neues Schluesselpaar - sales-ui bekommt den oeffentlichen Schluessel erst beim Neuerzeugen:"
   if [ "$PRAEFIX" = "sales" ]; then
-    echo "  docker compose up -d --no-deps --force-recreate sales-ui"
+    # Basis-Laden: ueber das Skript, sonst verliert sales-ui das Netz bewerbung-fenster (Portal-Fenster).
+    echo "  bash deploy/sales-ui-neu.sh"
   else
     echo "  docker compose --env-file deploy/laeden/$PRAEFIX.env up -d --no-deps --force-recreate sales-ui"
   fi

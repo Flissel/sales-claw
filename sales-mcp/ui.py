@@ -219,6 +219,7 @@ import ui_freigabe_api
 import ui_freigabe_bewerbung
 import ui_freigabe_eingang
 import ui_freigabe_newsletter
+import ui_portal_fenster
 import ui_empfehlungen
 import ui_newsletter_einwilligung
 import ui_kalender
@@ -527,6 +528,20 @@ class HostWache:
         self.app = app
 
     async def __call__(self, scope, receive, send):
+        if scope["type"] == "websocket":
+            # Kein WebSocket ohne eigenen Host UND eigene Herkunft: der Browser
+            # schickt bei WebSockets Cookies auch aus fremden Seiten mit
+            # (Cross-Site-WebSocket-Hijacking), die Origin-Pruefung ist die
+            # einzige Huerde dagegen. Fehlender Origin zaehlt wie ein fremder.
+            kopf = Headers(scope=scope)
+            host = kopf.get("host", "")
+            origin = kopf.get("origin", "")
+            if (host not in ERLAUBTE_HOSTS
+                    or origin not in (f"https://{host}", f"http://{host}")):
+                await send({"type": "websocket.close", "code": 1008})
+                return
+            await self.app(scope, receive, send)
+            return
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
@@ -646,6 +661,27 @@ class AnmeldeWache:
         self.app = app
 
     async def __call__(self, scope, receive, send):
+        if scope["type"] == "websocket":
+            # Ohne Anmeldung kein WebSocket (auch im Uebergangszustand ohne
+            # UI_SESSION_SECRET). Keine Pfad-Ausnahmen wie bei HTTP; `lesen`
+            # und `kalender` bekommen nie einen WebSocket.
+            benutzer = None
+            if UI_SESSION_SECRET:
+                name = _sitzung_pruefen(_cookie_wert(scope, SITZUNG_COOKIE))
+                benutzer = _benutzer_lesen(name) if name else None
+            if (not benutzer
+                    or benutzer["rolle"] in ("lesen", "kalender")
+                    # _pfad_erlaubt winkt Schrift- und Bildpfade fuer jede Rolle
+                    # durch (HTTP-Ausnahme) - fuer WebSockets gibt es sie nicht.
+                    or _schrift_pfad(scope["path"])
+                    or _signiertes_bild(scope["path"])
+                    or not _pfad_erlaubt(benutzer["rolle"], scope["path"])):
+                await send({"type": "websocket.close", "code": 1008})
+                return
+            scope["benutzer_name"] = benutzer["name"]
+            scope["benutzer_rolle"] = benutzer["rolle"]
+            await self.app(scope, receive, send)
+            return
         if scope["type"] != "http" or not UI_SESSION_SECRET:
             await self.app(scope, receive, send)
             return
@@ -9936,6 +9972,9 @@ async def logout(request):
         return _fehlerseite(
             400, "Ungültige Anfrage",
             "Die Anfrage trägt keine gültige Marke dieser Oberfläche.")
+    # Ein offenes Portal-Fenster haelt das Handshake-Cookie (bis 12 h) - mit dem Abmelden seines Benutzers
+    # endet es; das Abmelden eines anderen Benutzers laesst es offen.
+    ui_portal_fenster.trennen(request.scope.get("benutzer_name"))
     antwort = RedirectResponse("/login", status_code=303)
     antwort.delete_cookie(SITZUNG_COOKIE, path="/")
     return antwort
@@ -10351,6 +10390,7 @@ app = Starlette(routes=[
     *ui_reels.routen(sys.modules[__name__]),
     *ui_podcast.routen(sys.modules[__name__]),
     *ui_freigabe_newsletter.routen(sys.modules[__name__]),
+    *ui_portal_fenster.routen(sys.modules[__name__]),
     *ui_freigabe_bewerbung.routen(sys.modules[__name__]),
     *ui_freigabe_api.routen(sys.modules[__name__]),
     *ui_freigabe_eingang.routen(sys.modules[__name__]),

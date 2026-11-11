@@ -8,3 +8,4 @@ pypdf>=4.0
 cryptography>=42
 icalendar>=6.0
 recurring-ical-events>=3.3
+websockets==13.1
