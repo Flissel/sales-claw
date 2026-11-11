@@ -478,6 +478,27 @@ if $GATEWAY_NEU; then
   sleep 30   # Gateway, Kanal und MCP brauchen einen Moment (gemessen 5-20s).
 fi
 
+# Nach einem openwa-Neubau auf die WhatsApp-Sitzung warten, bevor die
+# Abnahme sie prueft. Gemessen 11.11.2026: die Sitzung brauchte nach dem
+# Neustart ~2 min (mehrere "event bridge"-Neuladungen ueber "authenticating"),
+# die Abnahme lief vorher und baute dreimal zurueck, obwohl der neue Stand
+# in Ordnung war. Wartet hoechstens OPENWA_WARTE_S (Standard 240 s) und
+# entscheidet nichts selbst: ist die Sitzung dann nicht "ready", bleibt die
+# Abnahme rot wie bisher.
+if $OPENWA_BAUEN; then
+  openwa_sitzung() {
+    docker exec sales-dispatch python -c "import os,json,urllib.request as u;q=u.Request(os.environ['OPENWA_URL']+'/api/sessions',headers={'X-Api-Key':os.environ['OPENWA_API_KEY']});print(json.loads(u.urlopen(q,timeout=20).read())[0]['status'])" 2>/dev/null || echo unerreichbar
+  }
+  WARTE_BIS=$(( $(date +%s) + ${OPENWA_WARTE_S:-240} ))
+  while :; do
+    SITZUNG="$(openwa_sitzung)"
+    [ "$SITZUNG" = "ready" ] && break
+    [ "$(date +%s)" -ge "$WARTE_BIS" ] && break
+    sleep 10
+  done
+  echo "openwa-Sitzung vor der Abnahme: $SITZUNG"
+fi
+
 # Die Abnahme prueft den VOLLEN Stack — auf einem absichtlich unvollstaendigen
 # (Aufbauphase vor dem Cutover: nur mcp und ui) ist sie zwangslaeufig rot, und
 # ein Rueckbau waere dort sinnlos: die Roete kommt nicht vom Update. Gemessen
