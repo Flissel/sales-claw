@@ -224,7 +224,7 @@ def test_fehlende_schluessel_und_ergebnis_standard(stub):
     a = auswertung.auswerten(_fixture())
     assert a == auswertung._leer()
     assert a["ergebnis"] == {"stattgefunden": True, "erfolg": None, "was": ""}
-    assert set(a) == {k for k, _ in auswertung.ABSCHNITTE} | {"ergebnis"}
+    assert set(a) == {k for k, _ in auswertung.ABSCHNITTE} | {"ergebnis", "felder"}
 
 
 def test_falsche_typen_werden_gerade_gezogen(stub):
@@ -319,3 +319,42 @@ def test_kein_log_mit_mitschrift(stub, caplog):
     with caplog.at_level(logging.DEBUG), pytest.raises(ollama.OllamaFehler) as fehler:
         auswertung.auswerten(seg)
     assert geheim not in caplog.text and geheim not in str(fehler.value)
+
+
+# --- Final-Review I10: Feldvorschlaege aus der Modellantwort ---------------
+
+def test_i10_prompt_kennt_felder():
+    assert '"felder"' in auswertung.SYSTEM_PROMPT
+    assert '"title"' in auswertung.SYSTEM_PROMPT and '"company"' in auswertung.SYSTEM_PROMPT
+
+
+def test_i10_felder_aus_antwort_werden_feldvorschlaege(stub):
+    stub({**VOLL, "felder": {"title": "  Leiterin   Einkauf ", "company": "Neue AG",
+                             "phone": "0301234", "name": "x"}})
+    a = auswertung.auswerten(_fixture())
+    assert a["felder"] == {"title": "Leiterin Einkauf", "company": "Neue AG"}
+    felder = [x["daten"] for x in auswertung.vorschlaege(a, ["L1"]) if x["art"] == "feld"]
+    assert felder == [{"feld": "title", "wert": "Leiterin Einkauf"},
+                      {"feld": "company", "wert": "Neue AG"}]
+
+
+def test_i10_felder_nur_strings_und_gekappt(stub):
+    stub({**VOLL, "felder": {"title": 5, "company": "C" * 500}})
+    a = auswertung.auswerten(_fixture())
+    assert a["felder"] == {"company": "C" * 200}
+    stub({**VOLL, "felder": "Chefin"})
+    assert auswertung.auswerten(_fixture())["felder"] == {}
+
+
+def test_i10_ohne_felder_keine_feldvorschlaege(stub):
+    stub(VOLL)
+    a = auswertung.auswerten(_fixture())
+    assert a["felder"] == {}
+    assert not [x for x in auswertung.vorschlaege(a, ["L1"]) if x["art"] == "feld"]
+
+
+def test_i10_felder_ueber_stuecke_vereint():
+    a, b = auswertung._leer(), auswertung._leer()
+    a["felder"] = {"title": "Alt", "company": "Firma A"}
+    b["felder"] = {"title": "Neu"}
+    assert auswertung._vereinen([a, b])["felder"] == {"title": "Neu", "company": "Firma A"}

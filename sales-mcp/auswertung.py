@@ -56,12 +56,15 @@ Antworte NUR als JSON nach diesem Schema, ohne Erklaerung, auf Deutsch:
   "beteiligte": ["Entscheider und Beteiligte mit Rolle"],
   "offene_fragen": ["Offene Fragen"],
   "stimmung": "ein kurzer Satz",
-  "ergebnis": {"stattgefunden": true, "erfolg": null, "was": "kurz, was herauskam"}
+  "ergebnis": {"stattgefunden": true, "erfolg": null, "was": "kurz, was herauskam"},
+  "felder": {"title": "neue Position des Kunden", "company": "neue Firma des Kunden"}
 }
 Painpoints = Probleme, Ärger, Kosten, Zeitverlust des Kunden, wörtlich zitiert.
 "segment" ist die Nummer des Segments, aus dem das Zitat stammt. Nenne keine Uhrzeiten.
 Nimm nur auf, was im Text steht. Leere Abschnitte sind leere Listen oder leere Texte.
-Datum nur, wenn ein konkretes Datum genannt wurde, sonst null."""
+Datum nur, wenn ein konkretes Datum genannt wurde, sonst null.
+"felder" nur fuellen, wenn der Kunde ausdruecklich eine neue Position (title) oder
+eine neue Firma (company) nennt; sonst {} bzw. den Schluessel weglassen."""
 
 SYSTEM_ZUSAMMENFUEHREN = """Du bekommst Kurzfassungen von Teilen eines Verkaufsgespraechs.
 Fasse sie zu einer einzigen Kurzfassung in 2 bis 4 Saetzen zusammen.
@@ -75,7 +78,25 @@ def _leer() -> dict:
     for schluessel, _ in ABSCHNITTE:
         a[schluessel] = "" if schluessel in _TEXTE else []
     a["ergebnis"] = {"stattgefunden": True, "erfolg": None, "was": ""}
+    a["felder"] = {}
     return a
+
+
+FELD_MAX_ZEICHEN = 200
+
+
+def _felder(wert) -> dict:
+    """Feldvorschlaege (I10): nur title/company, nur Strings, getrimmt, gekappt."""
+    if not isinstance(wert, dict):
+        return {}
+    aus = {}
+    for name in ("title", "company"):
+        x = wert.get(name)
+        if isinstance(x, str):
+            text = " ".join(x.split())[:FELD_MAX_ZEICHEN].strip()
+            if text:
+                aus[name] = text
+    return aus
 
 
 def _norm(text: str) -> str:
@@ -190,6 +211,7 @@ def _normalisieren(roh: dict, segmente: list[dict], beginne: list[datetime | Non
         else:
             a[schluessel] = _strings(wert)
     a["ergebnis"] = _ergebnis(roh.get("ergebnis"))
+    a["felder"] = _felder(roh.get("felder"))
     return a
 
 
@@ -268,6 +290,7 @@ def _vereinen(teile: list[dict]) -> dict:
             e["erfolg"] = er["erfolg"]
         if er["was"]:
             e["was"] = er["was"]
+        a["felder"].update(t.get("felder") or {})  # spaetere Nennung gewinnt
     return a
 
 
