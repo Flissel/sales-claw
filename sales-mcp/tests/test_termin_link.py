@@ -117,3 +117,18 @@ def test_einwahl_laenge_begrenzt():
 def test_zoom_pwd_mit_amp_entitaet():
     r = erkennen('<a href="https://us02web.zoom.us/j/81234567890?x=1&amp;pwd=abc">Join</a>')
     assert r["passcode"] == "abc"
+
+
+# --- Final-Review: Einwahl schluckt keinen PIN -------------------------------
+
+def test_einwahl_einzeilig_ohne_pin():
+    r = erkennen("https://meet.google.com/abc-defg-hij",
+                 "Einwahl: +49 30 1234567 PIN: 1234# Bitte puenktlich")
+    assert r["einwahl"] == "+49 30 1234567"
+    assert "PIN" not in r["einwahl"] and "1234#" not in r["einwahl"]
+
+
+def test_einwahl_mit_kommas_und_raute_bleibt():
+    r = erkennen("https://teams.microsoft.com/l/meetup-join/x",
+                 "Telefon: +49 69 365053000,,123456789# Deutschland")
+    assert r["einwahl"] == "+49 69 365053000,,123456789#"

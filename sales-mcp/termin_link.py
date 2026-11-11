@@ -35,9 +35,11 @@ _URL_ENDE = ">)].,;:!?\"'"
 _PASSCODE = re.compile(
     r"(?:Kenncode|Passcode|Zugangscode|Meeting-Kennwort|Kennwort|Passwort"
     r"|Password)\s*:\s*(?:<[^>]*>\s*)*([^\s<>&,;]+)", re.IGNORECASE)
-# Einwahl endet an Zeilenende oder Tag und ist auf 80 Zeichen begrenzt (1 + 79)
+# Einwahl: nur Rufnummernzeichen (Ziffern, Leerraum, ( ) . / , # * -) - so
+# endet sie vor einem folgenden "PIN:"/"Kenncode:" auf derselben Zeile, an
+# Zeilenende und Tag; hoechstens 80 Zeichen (1 + 79).
 _EINWAHL = re.compile(
-    r"(?:Telefon|Einwahl|Dial[- ]?in|Phone|Tel\.?)\s*:\s*(\+?\d[^<\r\n]{0,78})",
+    r"(?:Telefon|Einwahl|Dial[- ]?in|Phone|Tel\.?)\s*:\s*(\+?\d[\d \t()./,#*-]{0,78})",
     re.IGNORECASE)
 
 
@@ -91,7 +93,7 @@ def _einwahl(texte: tuple) -> str:
     for text in texte:
         treffer = _EINWAHL.search(text or "")
         if treffer:
-            return treffer.group(1).strip()
+            return treffer.group(1).rstrip(" \t(./-")
     return ""
 
 
