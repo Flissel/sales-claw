@@ -393,9 +393,45 @@ def test_logout_beendet_das_offene_fenster(anmeldung, eingerichtet, zentrale, up
     assert upstream.upstreams[0].geschlossen is not None
 
 
+def test_logout_eines_anderen_benutzers_laesst_das_fenster_offen(
+        anmeldung, eingerichtet, zentrale, upstream):
+    # R64: das Relay gehoert dem Benutzer, der es geoeffnet hat; das Abmelden eines anderen schneidet es nicht ab.
+    with TestClient(ui.app).websocket_connect(WS_PFAD, headers=_ws_kopf()) as ws:
+        assert ws.receive_bytes() == b"xyz"
+        server._q("insert into benutzer (name, rolle, passwort_hash, aktiv) values (%s,%s,%s,true)",
+                  ("olga", "lesen", ui._passwort_hashen("korrekt-pferd-9")))
+        fremd = TestClient(ui.app, headers={
+            "host": HOST, "cookie": "sitzung=" + ui._sitzung_bauen("olga", time.time() + 3600)})
+        r = fremd.post("/logout", data={"csrf": ui.CSRF_TOKEN}, follow_redirects=False)
+        assert r.status_code == 303 and r.headers["location"] == "/login"
+        time.sleep(0.3)                          # Zeit, in der ein faelschliches Trennen ankaeme
+        assert upstream.upstreams[0].geschlossen is None
+        ws.send_bytes(b"noch da")
+        _zu(ws)
+    assert upstream.upstreams[0].gesendet == [b"noch da"]
+
+
 def test_trennen_ohne_offenes_fenster_ist_harmlos():
     pf._AKTUELL = None
-    pf.trennen()
+    pf.trennen("mira")
+    pf.trennen(None)
+
+
+@pytest.mark.parametrize("name", [None, "", "olga"])
+def test_trennen_beendet_nur_das_fenster_des_eigenen_benutzers(name):
+    async def lauf():
+        v = pf._Verbindung("mira")
+        pf._AKTUELL = v
+        pf.trennen(name)
+        await asyncio.sleep(0)
+        offen = not v.ende.is_set()
+        pf.trennen("mira")
+        await asyncio.sleep(0)
+        return offen, v.ende.is_set()
+    try:
+        assert asyncio.run(lauf()) == (True, True)
+    finally:
+        pf._AKTUELL = None
 
 
 @pytest.mark.parametrize("schema", ["kunde", "sales_kunde"])
@@ -403,6 +439,11 @@ def test_fenster_ws_nur_im_basis_laden(anmeldung, eingerichtet, zentrale, upstre
     # SC-M9: ein zweiter Laden (anderes Schema) bekommt das Relay nie, auch nicht als `freigeben`.
     cookie = _ws_kopf()
     monkeypatch.setattr(server, "SCHEMA", schema)
+    # Unter dem geaenderten Schema scheitert _benutzer_lesen von selbst (Tabelle fehlt): damit der Test nicht
+    # nur deshalb gruen ist, liefert die Attrappe einen aktiven `freigeben`-Benutzer. Die Ablehnung muss dann
+    # aus der Pfad-/Schemapruefung (_pfad_erlaubt, _ADMIN_BASIS_PFADE) kommen.
+    monkeypatch.setattr(ui, "_benutzer_lesen", lambda n: {"name": n, "rolle": "freigeben"})
+    assert ui._pfad_erlaubt("freigeben", PFAD) is False
     with pytest.raises(WebSocketDisconnect) as e:
         with TestClient(ui.app).websocket_connect(WS_PFAD, headers=cookie):
             pass

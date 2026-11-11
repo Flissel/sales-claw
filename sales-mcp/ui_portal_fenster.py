@@ -76,7 +76,8 @@ _AKTUELL: "_Verbindung | None" = None
 
 
 class _Verbindung:
-    def __init__(self):
+    def __init__(self, benutzer: str = ""):
+        self.benutzer = benutzer   # wer das Fenster geoeffnet hat (Name aus der Sitzung des Handshakes)
         self.schleife = asyncio.get_running_loop()
         self.ende = asyncio.Event()
 
@@ -88,10 +89,11 @@ class _Verbindung:
             pass
 
 
-def trennen() -> None:
-    """Beendet das gerade offene Fenster (Abmelden): das Cookie des Handshakes gilt sonst bis zu 12 h weiter."""
+def trennen(name: "str | None") -> None:
+    """Beendet das offene Fenster, wenn `name` es geoeffnet hat (Abmelden): das Cookie des Handshakes gilt
+    sonst bis zu 12 h weiter. Ein anderer Benutzer (oder keiner) trennt nichts."""
     aktuell = _AKTUELL
-    if aktuell is not None:
+    if aktuell is not None and name and aktuell.benutzer == name:
         aktuell.beenden()
 
 
@@ -230,7 +232,7 @@ async def weiterleitung(websocket, ui=None) -> None:
     angeboten = websocket.scope.get("subprotocols") or []
     await websocket.accept(subprotocol="binary" if "binary" in angeboten else None)
 
-    ich = _Verbindung()
+    ich = _Verbindung(str(websocket.scope.get("benutzer_name") or ""))
     alt, _AKTUELL = _AKTUELL, ich
     if alt is not None:
         alt.beenden()
