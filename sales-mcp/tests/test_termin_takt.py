@@ -1138,3 +1138,44 @@ def test_i9_dienste_weg_hoechstens_eine_warnung_je_dienst(monkeypatch, caplog):
     assert len(warn) <= 3, warn
     for geheim in (SCHLUESSEL, ADRESSE, "Karla"):
         assert geheim not in caplog.text
+
+
+# ---------- Re-Review: Rest-Punkte ----------
+
+@pytest.mark.parametrize("weg", ["aufnahme_beenden", "mitschrift_entfernen"])
+def test_mitschrift_waehrend_auswertung_verworfen_kein_entwurf(fake, monkeypatch, caplog, weg):
+    caplog.set_level(logging.INFO)
+    lead = _lead()
+    _akte("u1", status="fertig", will_zusammenfassung=True)
+    _teilnehmer("u1", lead)
+    _mitschrift("u1")
+    monkeypatch.setattr(ollama, "erreichbar", lambda: True)
+
+    def chat(system, nutzer, **k):
+        # Felix sagt "Nein" bzw. verwirft, waehrend Ollama noch rechnet
+        if weg == "aufnahme_beenden":
+            termin_akte.aufnahme_beenden("u1", "nachträglich verworfen")
+        else:
+            termin_akte.mitschrift_entfernen("u1")
+        return json.dumps({"kurzfassung": "Kurz.", "zusagen_felix": [
+            {"text": "Angebot schicken", "datum": None}], "felder": {"company": "Neu AG"}})
+
+    monkeypatch.setattr(ollama, "chat", chat)
+    termin_takt.runde(JETZT)
+    assert _mit() is None
+    assert server._q("select count(*) as n from termin_vorschlaege")[0]["n"] == 0
+    assert server._q("select count(*) as n from drafts")[0]["n"] == 0
+    eigene = [r.getMessage() for r in caplog.records if r.name == "sales-termine"]
+    assert any("verworfen waehrend Auswertung" in m for m in eigene)
+    assert "u1" not in "\n".join(m.replace(termin_takt._h("u1"), "") for m in eigene)
+
+
+def test_bot_nur_einmal_stoppen_wenn_loeschen_haengt(fake):
+    _akte("u1", status="ohne_aufnahme", **VEXA_IDS)
+    fake.loeschen_fehler = [vexa.VexaFehler("x"), vexa.VexaFehler("x")]
+    termin_takt._nachloeschen(JETZT)
+    assert _ids() == (11, None, None)               # Bot ist weg, Meeting bleibt
+    termin_takt._nachloeschen(JETZT + timedelta(seconds=30))
+    termin_takt._nachloeschen(JETZT + timedelta(seconds=60))
+    assert fake.anzahl("stoppen") == 1 and fake.anzahl("loeschen") == 3
+    assert _ids() == (None, None, None)

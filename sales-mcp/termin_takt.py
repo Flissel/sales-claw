@@ -324,6 +324,14 @@ def _nachloeschen_eine(z: dict) -> bool:
     try:
         if z["vexa_plattform"] and z["vexa_native_id"]:
             vexa.bot_stoppen(z["vexa_plattform"], z["vexa_native_id"])
+            # Bot ist weg: Kennung sofort vergessen, damit ein haengendes
+            # Meeting-Loeschen nicht alle 30 s erneut DELETE /bots schickt.
+            server._q(
+                "update termin_akten set vexa_plattform = null, vexa_native_id = null "
+                "where uid = %s and vexa_meeting_id is not distinct from %s "
+                "and vexa_native_id is not distinct from %s returning uid",
+                (uid, z["vexa_meeting_id"], z["vexa_native_id"]))
+            z = {**z, "vexa_native_id": None}
         if z["vexa_meeting_id"] is not None:
             vexa.meeting_loeschen(int(z["vexa_meeting_id"]))
     except vexa.VexaNichtErreichbar:
@@ -407,13 +415,21 @@ def _auswerten_eine(m: dict, jetzt: datetime) -> None:
         modell = os.environ.get("OLLAMA_MODELL", "").strip() or ollama.MODELL_STANDARD
         # ERST Ergebnis und Vorschlaege gemeinsam festschreiben, dann der Entwurf:
         # scheitert der, gibt es keine zweite Auswertung und keinen zweiten Entwurf.
+        # Die Mitschrift ist gesperrt; wurde sie waehrend der Auswertung
+        # verworfen ("Nein", Loeschantrag), entsteht nichts daraus.
+        verworfen = False
         with server.pool.connection() as conn:
             with conn.transaction():
-                conn.execute(
-                    "update termin_mitschriften set auswertung_status = 'fertig', "
-                    "auswertung_json = %s::jsonb, auswertung_md = %s, auswertung_am = %s, "
-                    "modell = %s where id = %s",
-                    (json.dumps(a), md, jetzt, modell, m["id"]))
+                if conn.execute("select id from termin_mitschriften where id = %s for update",
+                                (m["id"],)).fetchone() is None:
+                    verworfen = True
+                    vorschlaege = []
+                else:
+                    conn.execute(
+                        "update termin_mitschriften set auswertung_status = 'fertig', "
+                        "auswertung_json = %s::jsonb, auswertung_md = %s, auswertung_am = %s, "
+                        "modell = %s where id = %s",
+                        (json.dumps(a), md, jetzt, modell, m["id"]))
                 for v in vorschlaege:
                     conn.execute(
                         "insert into termin_vorschlaege (mitschrift_id, art, lead_id, daten) "
@@ -424,6 +440,9 @@ def _auswerten_eine(m: dict, jetzt: datetime) -> None:
                   "auswertung_versuche = auswertung_versuche + 1, auswertung_am = %s "
                   "where id = %s returning id", (jetzt, m["id"]))
         LOG.warning("Auswertung uid=%s fehlgeschlagen (%s)", _h(uid), type(e).__name__)
+        return
+    if verworfen:
+        LOG.info("Auswertung uid=%s: Mitschrift verworfen waehrend Auswertung", _h(uid))
         return
     entwurf = None
     if akte and akte["will_zusammenfassung"] and leads and m["entwurf_id"] is None:
