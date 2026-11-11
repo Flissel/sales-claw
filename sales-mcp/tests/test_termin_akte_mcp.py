@@ -65,3 +65,52 @@ def test_mcp_passcode_auch_in_link_und_texten_weg():
     daten = json.loads(roh)
     assert daten["beitreten"]["link"] == "https://zoom.us/j/1?x=1"
     assert "•••" in daten["beschreibung"] and "bitte nutzen" in daten["beschreibung"]
+
+
+def test_mcp_ohne_gesprochenes_und_kundentext():
+    lead = str(server._q("insert into leads (name, email, source) values "
+                         "('Karla Kunde', 'k@firma.de', 'Messe') returning id")[0]["id"])
+    _akte("g1")
+    server._q("update termin_akten set briefing_md = %s, briefing_mit_ki = false, "
+              "briefing_am = now() where uid = 'g1' returning uid",
+              ("## Kurz\nBRIEFINGSATZ Budget knapp",))
+    mid = str(server._q(
+        "insert into termin_mitschriften (uid, segmente, auswertung_status, auswertung_md) "
+        "values ('g1', %s::jsonb, 'fertig', %s) returning id",
+        (json.dumps([{"sprecher": "K", "text": "GESPROCHENERSATZ zur Kuendigung"}]),
+         "- Painpoint: \"AUSWERTUNGSZITAT\""))[0]["id"])
+    server._q("insert into termin_vorschlaege (mitschrift_id, art, lead_id, daten) "
+              "values (%s, 'wiedervorlage', %s, %s::jsonb) returning id",
+              (mid, lead, json.dumps({"faellig_am": "2099-02-01", "notiz": "NOTIZTEXT"})))
+    roh = server.termin_akte_lesen("g1")
+    for geheim in ("GESPROCHENERSATZ", "AUSWERTUNGSZITAT", "BRIEFINGSATZ", "NOTIZTEXT"):
+        assert geheim not in roh
+    d = json.loads(roh)
+    assert d["mitschrift"] == {"vorhanden": True, "auswertung_status": "fertig"}
+    assert set(d["briefing"]) == {"am", "mit_ki"} and d["briefing"]["mit_ki"] is False
+    assert len(d["vorschlaege"]) == 1
+    assert set(d["vorschlaege"][0]) == {"id", "art", "status", "lead_id"}
+    assert d["vorschlaege"][0]["art"] == "wiedervorlage"
+
+
+def test_mcp_ohne_mitschrift_und_briefing_sind_none():
+    _akte("g2")
+    d = json.loads(server.termin_akte_lesen("g2"))
+    assert d["mitschrift"] is None and d["briefing"] is None and d["vorschlaege"] == []
+
+
+def test_mcp_pwd_hash_in_jeder_url_weg():
+    server._q(
+        "insert into termin_akten (uid, herkunft, beginn, ende, titel, link, plattform, "
+        "passcode, beschreibung, einwahl, status) values ('z2', 'sales-claw', %s, %s, 'Zoom', "
+        "'https://zoom.us/j/9?pwd=HASHlink999', 'zoom', '123456', %s, %s, 'geplant') "
+        "returning uid",
+        (JETZT, JETZT + timedelta(hours=1),
+         "Beitreten: https://zoom.us/j/9?pwd=HASHabc123&uname=x. Bis dann",
+         "Alternativ (https://zoom.us/j/9?passcode=HASHein77)"))
+    roh = server.termin_akte_lesen("z2")
+    for hash_ in ("HASHabc123", "HASHlink999", "HASHein77"):
+        assert hash_ not in roh
+    d = json.loads(roh)
+    assert "https://zoom.us/j/9?uname=x" in d["beschreibung"] and "Bis dann" in d["beschreibung"]
+    assert d["beitreten"]["link"] == "https://zoom.us/j/9"

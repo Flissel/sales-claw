@@ -14,6 +14,7 @@ darf nirgends geloggt werden.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -358,12 +359,25 @@ def aufnahme_beenden(uid: str, grund: str) -> None:
     status_setzen(uid, "ohne_aufnahme", grund, **felder)
 
 
-_PASSCODE_PARAMETER = ("pwd", "passcode", "pw", "password")
+_PASSCODE_PARAMETER = ("pwd", "passcode", "pw", "password", "pass")
+_URL = re.compile(r"https?://[^\s<>\"']+", re.I)
 GEHEIM = "•••"
+
+
+def _url_bereinigen(treffer) -> str:
+    """Passcode-Parameter aus einer URL nehmen (Zoom ?pwd= ist oft ein Hash)."""
+    url = treffer.group(0)
+    t = urlsplit(url)
+    if not t.query:
+        return url
+    rest = [(k, v) for k, v in parse_qsl(t.query, keep_blank_values=True)
+            if k.lower() not in _PASSCODE_PARAMETER]
+    return urlunsplit(t._replace(query=urlencode(rest)))
 
 
 def _ohne_passcode(wert, passcode: str):
     if isinstance(wert, str):
+        wert = _URL.sub(_url_bereinigen, wert)
         return wert.replace(passcode, GEHEIM) if passcode else wert
     if isinstance(wert, dict):
         return {k: _ohne_passcode(v, passcode) for k, v in wert.items()}
@@ -373,15 +387,19 @@ def _ohne_passcode(wert, passcode: str):
 
 
 def fuer_agenten(akte: dict) -> dict:
-    """Die Akte ohne Passcode: Feld, Link-Parameter (?pwd=) und jede Stelle in
-    Texten (Beschreibung, Einwahl, Briefing ...) sind entfernt."""
+    """Die Akte fuer den MCP-Agenten (laeuft ueber ein Cloud-Modell): kein
+    Gesprochenes und kein Kundentext aus Mitschrift, Auswertung, Briefing und
+    Vorschlaegen - nur Status und Eckdaten. Dazu kein Passcode: weder Feld noch
+    Link-Parameter (in jeder URL jedes Textes) noch der Passcode im Klartext."""
     passcode = (akte["beitreten"].get("passcode") or "").strip()
-    link = akte["beitreten"].get("link")
-    if link:
-        t = urlsplit(link)
-        rest = [(k, v) for k, v in parse_qsl(t.query, keep_blank_values=True)
-                if k.lower() not in _PASSCODE_PARAMETER]
-        link = urlunsplit(t._replace(query=urlencode(rest)))
-    akte = {**akte, "beitreten": {**akte["beitreten"], "link": link}}
-    del akte["beitreten"]["passcode"]
+    m, b = akte["mitschrift"], akte["briefing"]
+    akte = {
+        **akte,
+        "beitreten": {**akte["beitreten"]},
+        "mitschrift": ({"vorhanden": True, "auswertung_status": m["auswertung_status"]}
+                       if m else None),
+        "briefing": {"am": b["am"], "mit_ki": b["mit_ki"]} if b else None,
+        "vorschlaege": [{"id": v["id"], "art": v["art"], "status": v["status"],
+                         "lead_id": v["lead_id"]} for v in akte["vorschlaege"]]}
+    akte["beitreten"].pop("passcode", None)
     return _ohne_passcode(akte, passcode)
