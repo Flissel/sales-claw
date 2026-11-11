@@ -123,12 +123,13 @@ def _status_pruefen(status):
         raise EingabeFehler(f"Status '{status}' ist kein Abschlussstatus.")
 
 
-def schliessen(herkunft, quelle_ref, status, von) -> int:
+def schliessen(herkunft, quelle_ref, status, von, vermerk: str | None = None) -> int:
+    """Offene Eintraege dieser Quelle schliessen; `vermerk` (optional) sagt auf dem Eintrag, warum."""
     _status_pruefen(status)
     z = server._q(
         "update freigabe_eintraege set status = %s, geschlossen_am = now(), "
-        "geschlossen_von = %s where herkunft = %s and quelle_ref = %s "
-        "and status = 'offen' returning id", (status, von, herkunft, quelle_ref))
+        "geschlossen_von = %s, vermerk = coalesce(%s, vermerk) where herkunft = %s and quelle_ref = %s "
+        "and status = 'offen' returning id", (status, von, vermerk, herkunft, quelle_ref))
     return len(z)
 
 

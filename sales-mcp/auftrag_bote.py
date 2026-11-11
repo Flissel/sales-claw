@@ -31,7 +31,11 @@ Videos (Video-Werkbank, art == "video"): kein Kanal-Entwurf. Ein fertiges Video 
 im Freigabe-Eingang (Herkunft marketing-video, Link auf die Videoseite der Werkbank), ergebnis.freigabe haelt die
 Kennung, der Auftrag steht danach auf `wartet_freigabe`. Dort entscheidet der Betreiber im Eingang: freigegeben ->
 `fertig`, verworfen -> `abgebrochen`; offen und seit ueber 48 h -> einmal erinnern. Geht der Auftrag in der
-Werkbank zurueck in den Stand `werkbank` (das Video wird neu gebaut), schliesst der Bote den alten Eintrag.
+Werkbank zurueck in den Stand `werkbank` (das Video wird neu gebaut), schliesst der Bote den alten Eintrag als
+ueberholt (Status verworfen mit Vermerk VIDEO_UEBERHOLT). Fehlt UI_BASIS_URL (oder ihr http(s)://) oder nennt das
+Ergebnis keine gueltige Videodatei, bleibt der Auftrag in `erzeugt` (Problem einmal im Log und in
+ergebnis.freigabe_problem; der naechste Durchgang versucht es wieder). Fehlt der Eintrag eines wartenden Videos,
+geht der Auftrag zurueck nach `erzeugt` und bekommt einen neuen. Sales setzt fuer Videos nie `fehler` (098).
 """
 import json
 import logging
@@ -63,8 +67,14 @@ _STOPP = threading.Event()
 
 VIDEO_HERKUNFT = "marketing-video"
 VIDEO_ART = "marketing_video"
-VIDEO_OHNE_BASIS = "Die Adresse der Oberfläche fehlt – das Video kann nicht zur Freigabe."
-VIDEO_OHNE_DATEI = "Das Ergebnis nennt keine gültige Videodatei."
+# I2: kann ein fertiges Video nicht in die Freigabe, bleibt der Auftrag in `erzeugt`; die Art des Problems steht
+# einmal im Log (je Auftrag und Prozess) und als ergebnis.freigabe_problem fuer auftrag_meldung.
+VIDEO_PROBLEM_ADRESSE = "adresse"      # UI_BASIS_URL fehlt oder hat kein http(s)://
+VIDEO_PROBLEM_DATEI = "datei"          # ergebnis.datei ist keine gueltige Werkbank-Videodatei
+# I6: es gibt keinen Status "ueberholt"; ein Eintrag zu einer alten Fassung wird verworfen MIT diesem Vermerk.
+VIDEO_UEBERHOLT = "überholt – eine neue Fassung wird gebaut"
+_BASIS_MIT_SCHEMA = re.compile(r"^https?://\S+$", re.IGNORECASE)
+_GELOGGT: set[tuple[str, str]] = set()  # (Auftrag, Anlass): schon einmal ins Log geschrieben
 
 # Saetze fuer den Betreiber (ergebnis.kanal_fehler, auftrag.fehler): kurz, ohne Werkzeug-Begriffe.
 VERSAND_FEHLGESCHLAGEN = "Der Versand ist fehlgeschlagen."
@@ -298,6 +308,22 @@ def _wartet(q, a: dict, jetzt: datetime, zaehler: dict) -> None:
             zaehler["erinnert"] += 1
 
 
+def _einmal_loggen(aid: str, anlass: str, text: str, *args) -> None:
+    """Je Auftrag und Anlass hoechstens eine Warnung je Prozess (kein Rauschen im Minutentakt)."""
+    if (aid, anlass) in _GELOGGT:
+        return
+    _GELOGGT.add((aid, anlass))
+    LOG.warning(text, aid[:8], *args)
+
+
+def _video_problem(q, aid: str, ergebnis: dict, art: str) -> None:
+    """I2: das Video kann nicht in die Freigabe. Der Auftrag bleibt in `erzeugt` (der naechste Durchgang versucht
+    es wieder); die Art steht einmal im Log und in ergebnis.freigabe_problem (auftrag_meldung meldet sie einmal)."""
+    _einmal_loggen(aid, "problem:" + art, "Auftrag %s: Video kann nicht in die Freigabe (%s)", art)
+    if ergebnis.get("freigabe_problem") != art:
+        auftrag_buch.ergebnis_mischen(q, aid, {"freigabe_problem": art})
+
+
 def _video_erzeugt(q, a: dict, zaehler: dict) -> None:
     """Fertiges Video -> Eintrag im Freigabe-Eingang, dann `wartet_freigabe`. Idempotent: ein offener Eintrag
     derselben Quelle wird aufgefrischt statt verdoppelt (Neustart zwischen Eintrag und Standwechsel)."""
@@ -305,30 +331,33 @@ def _video_erzeugt(q, a: dict, zaehler: dict) -> None:
     eingabe = a.get("eingabe") if isinstance(a.get("eingabe"), dict) else {}
     ergebnis = a.get("ergebnis") if isinstance(a.get("ergebnis"), dict) else {}
     basis = os.environ.get("UI_BASIS_URL", "").strip().rstrip("/")
-    if not basis:
-        auftrag_buch.stand_setzen(q, aid, "erzeugt", "fehler", VIDEO_OHNE_BASIS)
+    if not _BASIS_MIT_SCHEMA.match(basis):
+        _video_problem(q, aid, ergebnis, VIDEO_PROBLEM_ADRESSE)
         return
     datei = str(ergebnis.get("datei") or "")
     if not medien.werkbankdatei(datei):
-        auftrag_buch.stand_setzen(q, aid, "erzeugt", "fehler", VIDEO_OHNE_DATEI)
+        _video_problem(q, aid, ergebnis, VIDEO_PROBLEM_DATEI)
         return
     titel = str(ergebnis.get("titel") or eingabe.get("thema") or "").strip()
     kennung, _neu = fe.eintragen(VIDEO_HERKUNFT, VIDEO_ART, aid, f"Video: {titel}",
                                  f"{basis}/marketing/werkbank/{aid}/video",
                                  {"auftrag": aid, "datei": datei, "dauer_s": ergebnis.get("dauer_s"),
                                   "fassung": ergebnis.get("fassung")})
-    if not auftrag_buch.ergebnis_mischen(q, aid, {"freigabe": kennung}):
+    teil = {"freigabe": kennung, **({"freigabe_problem": None} if ergebnis.get("freigabe_problem") else {})}
+    if not auftrag_buch.ergebnis_mischen(q, aid, teil):
         LOG.warning("Auftrag %s: Freigabe-Kennung nicht gespeichert - naechster Durchgang", aid[:8])
         return
+    for anlass in [k for k in _GELOGGT if k[0] == aid]:     # ein spaeteres Problem darf wieder ins Log
+        _GELOGGT.discard(anlass)
     auftrag_buch.stand_setzen(q, aid, "erzeugt", "wartet_freigabe")
 
 
 def _video_eintrag(q, aid: str, kennung) -> dict | None:
     """Der Eingangs-Eintrag des Videos: nach der Kennung aus dem Ergebnis, sonst der juengste dieser Quelle."""
     if isinstance(kennung, str) and kennung:
-        z = q("select status from freigabe_eintraege where kennung = %s", (kennung,))
+        z = q("select status, vermerk from freigabe_eintraege where kennung = %s", (kennung,))
     else:
-        z = q("select status from freigabe_eintraege where herkunft = %s and quelle_ref = %s "
+        z = q("select status, vermerk from freigabe_eintraege where herkunft = %s and quelle_ref = %s "
               "order by erstellt_am desc limit 1", (VIDEO_HERKUNFT, aid))
     return z[0] if z else None
 
@@ -337,8 +366,11 @@ def _video_wartet(q, a: dict, jetzt: datetime, zaehler: dict) -> None:
     aid = str(a["id"])
     ergebnis = a.get("ergebnis") if isinstance(a.get("ergebnis"), dict) else {}
     eintrag = _video_eintrag(q, aid, ergebnis.get("freigabe"))
-    if eintrag is None:
-        LOG.warning("Auftrag %s: kein Eintrag im Freigabe-Eingang", aid[:8])
+    if eintrag is None or (eintrag["status"] == "verworfen" and eintrag.get("vermerk") == VIDEO_UEBERHOLT):
+        # M16: der Eintrag fehlt (oder gehoert zu einer alten Fassung): einmal melden, zurueck nach `erzeugt`,
+        # dort legt der naechste Durchgang einen neuen Eintrag an
+        _einmal_loggen(aid, "kein_eintrag", "Auftrag %s: kein Eintrag im Freigabe-Eingang - wird neu angelegt")
+        auftrag_buch.stand_setzen(q, aid, "wartet_freigabe", "erzeugt")
         return
     if eintrag["status"] in ("erledigt", "verworfen"):
         nach = "fertig" if eintrag["status"] == "erledigt" else "abgebrochen"
@@ -352,8 +384,9 @@ def _video_wartet(q, a: dict, jetzt: datetime, zaehler: dict) -> None:
 
 
 def _video_werkbank(q, a: dict) -> None:
-    """Das Video wird neu gebaut: ein noch offener Eintrag zur alten Fassung ist hinfaellig."""
-    fe.schliessen(VIDEO_HERKUNFT, str(a["id"]), "verworfen", "auftrag-bote")
+    """Das Video wird neu gebaut: ein noch offener Eintrag zur alten Fassung ist ueberholt (Status verworfen, weil
+    der Eingang keinen Status "ueberholt" kennt; der Vermerk unterscheidet es vom Verwerfen des Betreibers)."""
+    fe.schliessen(VIDEO_HERKUNFT, str(a["id"]), "verworfen", "auftrag-bote", vermerk=VIDEO_UEBERHOLT)
 
 
 def _herzschlag(erfolg: bool, fehler: str | None, jetzt: datetime) -> None:
