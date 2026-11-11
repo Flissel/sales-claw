@@ -226,7 +226,7 @@ def abgleichen(jetzt: datetime) -> dict:
             pass
         elif uid in gesehen:
             continue
-        elif z["herkunft"] == "kalender" and str(z["quelle_id"]) in pausiert:
+        elif z["quelle_id"] is not None and str(z["quelle_id"]) in pausiert:
             continue   # pausierte Quelle: ihr Schweigen heisst nicht "abgesagt"
         server._q("update termin_akten set abgesagt_am = now(), geaendert_am = now() "
                   "where uid = %s returning uid", (uid,))

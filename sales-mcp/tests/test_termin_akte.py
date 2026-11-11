@@ -383,3 +383,19 @@ def test_sperre_nach_verknuepfen_verschwindet_aus_lesen():
     sperrliste.sperren(server._q, email="kunde@firma.de", quelle="test", grund="x")
     termin_akte.abgleichen(JETZT)
     assert [t["adresse"] for t in termin_akte.lesen("k1")["teilnehmer"]] == ["zweiter@firma.de"]
+
+
+def test_pausierte_quelle_schuetzt_akte_mit_salesclaw_herkunft():
+    lead = _lead()
+    aid = _salesclaw(lead, uid="dup-p")
+    qid = _quelle()
+    _ersetzen(qid, [_termin("dup-p")])
+    termin_akte.abgleichen(JETZT)
+    # die sales-claw-Zeile ist nicht mehr da (geloescht): nur die Kalenderkopie bleibt
+    server._q("delete from activities where id = %s returning id", (aid,))
+    termin_akte.abgleichen(JETZT)
+    z = _akten()[0]
+    assert z["herkunft"] == "sales-claw" and str(z["quelle_id"]) == qid
+    server._q("update kalender_quellen set aktiv = false where id = %s returning id", (qid,))
+    assert termin_akte.abgleichen(JETZT)["abgesagt"] == 0
+    assert _akten()[0]["abgesagt_am"] is None
