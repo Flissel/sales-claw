@@ -10435,6 +10435,20 @@ def auftraege_melden() -> str:
     return _json({"meldungen": auftrag_meldung.melden_gesperrt(pool, _q, laden, SCHEMA)})
 
 
+@_gesichert
+def termin_akte_lesen(uid: str) -> str:
+    """Die Akte zu einem Kundentermin lesen (Zeit, Teilnehmer, Briefing,
+    Mitschrift-Status, Auswertung, CRM-Vorschlaege). Gesperrte Kontakte fehlen,
+    der Passcode wird nicht ausgegeben. `uid` ist die Kalender-UID des Termins.
+    Nur lesen."""
+    import termin_akte   # erst hier: termin_akte importiert server (Ringimport)
+    akte = termin_akte.lesen(uid)
+    if akte is None:
+        return _json({"fehler": "Keine Akte zu dieser uid."})
+    akte["beitreten"] = {k: v for k, v in akte["beitreten"].items() if k != "passcode"}
+    return _json(akte)
+
+
 WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,
              kontakt_anlegen,
              kontakt_aktualisieren,
@@ -10585,7 +10599,9 @@ WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,
              # M8 Auftragsbuch (10.11.2026): Reel-Auftrag an Marketing. tests/test_auftrag_geben.py.
              auftrag_geben,
              # M8 Auftragsbuch: Meldungen an den Betreiber (antworten-pruefen). tests/test_auftrag_meldung.py.
-             auftraege_melden)
+             auftraege_melden,
+             # Meeting-Mittelpunkt: Termin-Akte lesen. tests/test_termin_akte_mcp.py.
+             termin_akte_lesen)
 
 def bedarfsanalyse_an() -> bool:
     """Schalter SALES_BEDARFSANALYSE (je Aufruf gelesen): nur "an" schaltet

@@ -22,6 +22,7 @@ import post_struktur
 import server
 import teilnehmer
 import termin_link
+import vexa
 
 LOG = logging.getLogger("termin_akte")
 
@@ -247,7 +248,9 @@ def lesen(uid: str) -> dict | None:
           for t in server._q(
               "select name, adresse, rolle, lead_id, grund from termin_teilnehmer "
               "where uid = %s and coalesce(grund, '') <> 'gesperrt' "
-              "order by (rolle = 'organisator') desc, adresse", (uid,))]
+              "order by (rolle = 'organisator') desc, adresse", (uid,))
+          # Eine Sperre NACH dem Verknuepfen zaehlt auch: live pruefen.
+          if not teilnehmer.sperrgrund(t["adresse"])]
     mit = server._q("select id, segmente, auswertung_status, auswertung_md "
                     "from termin_mitschriften where uid = %s", (uid,))
     mitschrift = None
@@ -257,13 +260,18 @@ def lesen(uid: str) -> dict | None:
         mitschrift = {"id": str(m["id"]), "segmente": m["segmente"],
                       "auswertung_status": m["auswertung_status"],
                       "auswertung_md": m["auswertung_md"]}
-        vorschlaege = [
-            {"id": str(v["id"]), "art": v["art"],
-             "lead_id": str(v["lead_id"]) if v["lead_id"] else None,
-             "daten": v["daten"], "status": v["status"]}
-            for v in server._q(
+        gesperrt: dict[str, bool] = {}
+        for v in server._q(
                 "select id, art, lead_id, daten, status from termin_vorschlaege "
-                "where mitschrift_id = %s order by erstellt_am", (m["id"],))]
+                "where mitschrift_id = %s order by erstellt_am", (m["id"],)):
+            lid = str(v["lead_id"]) if v["lead_id"] else None
+            if lid:
+                if lid not in gesperrt:
+                    gesperrt[lid] = bool(lead_gesperrt(lid))
+                if gesperrt[lid]:
+                    continue
+            vorschlaege.append({"id": str(v["id"]), "art": v["art"], "lead_id": lid,
+                                "daten": v["daten"], "status": v["status"]})
     briefing = None
     if a["briefing_md"] is not None:
         briefing = {"markdown": a["briefing_md"], "mit_ki": a["briefing_mit_ki"],
@@ -308,3 +316,40 @@ def akten_eines_leads(lead_id) -> list[str]:
         "select distinct t.uid, a.beginn from termin_teilnehmer t "
         "join termin_akten a on a.uid = t.uid "
         "where t.lead_id = %s::uuid order by a.beginn, t.uid", (str(lead_id),))]
+
+
+def lead_gesperrt(lead_id) -> str:
+    """Grund, wenn der Kontakt JETZT gesperrt ist (Sperrliste, Loeschantrag,
+    Privat-Vermerk) - sonst ''. Nur zur Entscheidung, nie loggen."""
+    z = server._q("select enrichment from leads where id = %s", (str(lead_id),))
+    if not z:
+        return ""
+    if server._sperre_fuer_lead(str(lead_id)):
+        return "gesperrt"
+    enr = z[0]["enrichment"]
+    if server._loeschantrag(enr):
+        return "Loeschantrag"
+    if server._privat(enr):
+        return "privat"
+    return ""
+
+
+def aufnahme_beenden(uid: str, grund: str) -> None:
+    """Bot stoppen und das Vexa-Meeting loeschen (falls eines laeuft), die lokale
+    Mitschrift loeschen (Vorschlaege gehen per Kaskade mit), Status
+    'ohne_aufnahme'. Scheitert Vexa, bleibt vexa_meeting_id stehen: der
+    Taktgeber loescht nach."""
+    z = server._q("select vexa_meeting_id, vexa_plattform, vexa_native_id "
+                  "from termin_akten where uid = %s", (uid,))
+    felder: dict = {}
+    if z and z[0]["vexa_meeting_id"] is not None:
+        a = z[0]
+        try:
+            if a["vexa_plattform"] and a["vexa_native_id"]:
+                vexa.bot_stoppen(a["vexa_plattform"], a["vexa_native_id"])
+            vexa.meeting_loeschen(int(a["vexa_meeting_id"]))
+            felder["vexa_meeting_id"] = None
+        except vexa.VexaFehler as e:
+            LOG.warning("Vexa-Aufraeumen fehlgeschlagen (%s)", type(e).__name__)
+    server._q("delete from termin_mitschriften where uid = %s returning id", (uid,))
+    status_setzen(uid, "ohne_aufnahme", grund, **felder)
