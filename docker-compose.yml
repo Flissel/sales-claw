@@ -801,12 +801,31 @@ services:
       OLLAMA_URL: ${OLLAMA_URL:-}
       OLLAMA_MODELL: ${OLLAMA_MODELL:-}
       OLLAMA_TIMEOUT_S: ${OLLAMA_TIMEOUT_S:-300}
+      OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-}
+      OLLAMA_BRIEFING_TIMEOUT_S: ${OLLAMA_BRIEFING_TIMEOUT_S:-}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
       UI_BASIS_URL: ${UI_BASIS_URL:-}
       JITSI_BASIS: ${JITSI_BASIS:-}
       JITSI_HOSTS: ${JITSI_HOSTS:-}
       TERMIN_TEAM_ADRESSEN: ${TERMIN_TEAM_ADRESSEN:-}
+
+  # KI-Tor (12.11.2026, sales-ki/ki_tor.py): Uebergang des Betreibers - bis
+  # eigene Server mit lokalem Modell da sind, beantwortet Claude Code (Abo,
+  # CLAUDE_CODE_OAUTH_TOKEN) Briefing und Mitschrift-Auswertung hinter einer
+  # Ollama-kompatiblen Schnittstelle. sales-termine bekommt dafuer
+  # OLLAMA_URL=http://sales-ki:11434; zurueck zum lokalen Ollama nur OLLAMA_URL
+  # umstellen. Kein Port nach aussen. deploy/update.sh baut ihn nur neu, wenn
+  # er vorher schon lief.
+  sales-ki:
+    build: ./sales-ki
+    image: sales-claw-sales-ki:local
+    container_name: ${LADEN_PRAEFIX:-sales}-ki
+    restart: unless-stopped
+    environment:
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      KI_MODELL: ${KI_MODELL:-sonnet}
+      KI_TIMEOUT_S: ${KI_TIMEOUT_S:-280}
 
   # Post-Sammelstelle Stufe 1 (03.11.2026, sales-mcp/post_abholen.py): holt die
   # Mails aller aktiven Postfaecher NUR LESEND (IMAP readonly) und ordnet sie

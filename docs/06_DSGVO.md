@@ -91,9 +91,17 @@ Checkliste für Transkripte:
       (`termin_mitschriften`, `termin_vorschlaege`, `termin_akten.briefing_*`). Nur im
       eigenen Schema des Ladens, nie in `activities` (die bleibt append-only; dort steht
       nur, was der Betreiber bestätigt).
-- [ ] **Wo:** Mitschrift und Auswertung auf unseren eigenen Servern (Vexa auf der VM,
-      Datenbank des Ladens). Kundentext geht nur an `OLLAMA_URL`, nie an ein
-      Cloud-Modell. Die Einladung mit Videolink trägt einen Hinweis auf die Mitschrift.
+- [ ] **Wo:** Mitschrift auf unseren eigenen Servern (Vexa auf der VM, Datenbank des
+      Ladens). Kundentext geht nur an `OLLAMA_URL`. Die Einladung mit Videolink trägt
+      einen Hinweis auf die Mitschrift.
+- [ ] **Übergang seit 12.11.2026 (Betreiber-Entscheid, noch kein produktiver Betrieb):**
+      `OLLAMA_URL` zeigt auf das KI-Tor `sales-ki`, also auf **Claude Code (Anthropic)**
+      mit dem Abo des Betreibers. Briefing-Fakten und Mitschrift-Stücke gehen damit an
+      einen Cloud-Anbieter. Vor echten Kundengesprächen klären: Auftragsverarbeitung mit
+      Anthropic (AV-Vertrag, Drittland), Hinweis in der Einladung und in der
+      Datenschutzerklärung. Der Satz „Die Mitschrift bleibt auf unseren eigenen Servern“
+      ist deshalb aus der Einladung gestrichen. Zurück: `OLLAMA_URL` auf ein eigenes
+      Modell, `sales-ki` stoppen, Satz wieder aufnehmen.
 - [ ] **Löschweg:** `loeschantrag_vermerken` räumt zuerst ab (scheitert das, kommt ein
       Fehler, der Kontakt wird nicht vermerkt, der Aufruf ist wiederholbar), dann der
       Vermerk. Es beendet einen anstehenden oder laufenden Bot (Status

@@ -41,7 +41,7 @@ KERN_ALLE="sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw s
 # zieht ihn jedes Update mit.
 # sales-termine (11.11.2026): Taktgeber der Meeting-Mitte, das erste Mal von Hand
 # starten (VEXA_API_KEY, OLLAMA_URL, TELEGRAM_* gesetzt), danach zieht ihn jedes Update mit.
-KERN_OPTIONAL="sales-post sales-kalender freigabe-bote auftrag-bote sales-termine"
+KERN_OPTIONAL="sales-post sales-kalender freigabe-bote auftrag-bote sales-termine sales-ki"
 
 # Dienstliste ohne die optionalen Dienste (Reihenfolge bleibt).
 ohne_optionale() { # dienstliste
@@ -262,6 +262,12 @@ fi
 if echo "$GEAENDERT" | grep -E '^sales-stt/' >/dev/null; then
   STT_GEAENDERT=true
 fi
+# sales-ki (12.11.2026) hat wie sales-stt ein eigenes Image: eine Aenderung nur
+# an sales-ki/ baut ihn neu, aber nur in einem Laden, in dem er laeuft.
+KI_GEAENDERT=false
+if echo "$GEAENDERT" | grep -E '^sales-ki/' >/dev/null; then
+  KI_GEAENDERT=true
+fi
 if echo "$GEAENDERT" | grep -E '^config/workspace/' >/dev/null; then
   GATEWAY_NEU=true
 fi
@@ -339,6 +345,12 @@ for i in "${!LADEN_PRAEFIXE[@]}"; do
     c="$(containername sales-stt "$P")"
     if [ "$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null)" = "running" ]; then
       BAUEN="$BAUEN sales-stt"
+    fi
+  fi
+  if $KI_GEAENDERT; then
+    c="$(containername sales-ki "$P")"
+    if [ "$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null)" = "running" ]; then
+      BAUEN="$BAUEN sales-ki"
     fi
   fi
   # sales-linkedin und sales-telegram TEILEN SICH das sales-mcp-Image und
