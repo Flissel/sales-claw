@@ -41,6 +41,7 @@ def stub(monkeypatch):
     monkeypatch.setenv("VEXA_API_KEY", SCHLUESSEL)
     yield server
     server.shutdown()
+    server.server_close()
 
 
 def test_bot_body_exakt(stub):
@@ -110,8 +111,47 @@ def test_meeting_lesen_filtert_liste(stub):
 
 def test_meeting_lesen_unbekannt(stub):
     stub.antworten[("GET", "/meetings")] = (200, {"meetings": []})
-    with pytest.raises(vexa.VexaFehler):
+    with pytest.raises(vexa.VexaNichtGefunden):
         vexa.meeting_lesen(5)
+
+
+def test_meeting_lesen_ueberspringt_nicht_dicts(stub):
+    stub.antworten[("GET", "/meetings")] = (200, {"meetings": [
+        None, "x", {"id": 3, "status": "active"}]})
+    assert vexa.meeting_lesen(3)["status"] == "active"
+
+
+def test_segmente_404_nicht_gefunden(stub):
+    stub.antworten[("GET", "/transcripts/by-id/4")] = (404, {})
+    with pytest.raises(vexa.VexaNichtGefunden):
+        vexa.segmente_holen(4)
+
+
+def test_native_id_sonderzeichen(stub):
+    vexa.bot_stoppen("jitsi", "a#b/c@h")
+    assert stub.anfragen[0][:2] == ("DELETE", "/bots/jitsi/a%23b%2Fc@h")
+
+
+def test_schluessel_mit_crlf_leckt_nicht(stub, monkeypatch, caplog):
+    caplog.set_level(logging.DEBUG)
+    monkeypatch.setenv("VEXA_API_KEY", "geheim123\r\n")
+    stub.antworten[("GET", "/meetings")] = (200, {"meetings": [
+        {"id": 1, "status": "active"}]})
+    try:
+        vexa.meeting_lesen(1)
+    except vexa.VexaFehler as e:
+        assert "geheim123" not in str(e) and "geheim123" not in repr(e)
+    assert "geheim123" not in caplog.text
+    assert stub.anfragen[0][2] == "geheim123"
+
+
+def test_kaputter_header_wird_fester_fehler(stub, monkeypatch, caplog):
+    """Auch ein Schluessel mit eingebettetem Zeilenumbruch (strip hilft nicht)."""
+    monkeypatch.setenv("VEXA_API_KEY", "geheim123\nX-Evil: 1")
+    with pytest.raises(vexa.VexaFehler) as e:
+        vexa.meeting_lesen(1)
+    assert "geheim123" not in str(e.value) and "geheim123" not in repr(e.value)
+    assert "geheim123" not in caplog.text
 
 
 def test_fehler_ohne_schluessel_im_text(stub, caplog):

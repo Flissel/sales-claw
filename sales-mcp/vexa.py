@@ -10,6 +10,7 @@ tragen) noch den Antworttext, nur Methode, Pfad-Anfang und Statuscode.
 """
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import os
@@ -27,12 +28,18 @@ class VexaFehler(Exception):
     """Vexa nicht erreichbar oder lehnt ab. Die Meldung ist kurz und frei von Geheimnissen."""
 
 
+class VexaNichtGefunden(VexaFehler):
+    """Meeting bzw. Mitschrift ist bei Vexa unbekannt (HTTP 404 oder nicht in der Liste)."""
+
+
 def _basis() -> str:
     return os.environ.get("VEXA_URL", "http://vexa-lite:8056").rstrip("/")
 
 
 def _schluessel() -> str:
-    return os.environ.get("VEXA_API_KEY", "")
+    # strip: ein .env mit CRLF liefert sonst "schluessel" und http.client
+    # wirft ValueError MIT dem Schluessel im Text.
+    return os.environ.get("VEXA_API_KEY", "").strip()
 
 
 def konfiguriert() -> bool:
@@ -56,11 +63,11 @@ def _anfrage(methode: str, pfad: str, body: dict | None = None,
     if body is not None:
         daten = json.dumps(body).encode()
         kopf["Content-Type"] = "application/json"
-    req = urllib.request.Request(_basis() + pfad, data=daten, headers=kopf,
-                                 method=methode)
     # Nur der erste Pfadteil ins Log/in die Meldung (keine native_id).
     kurz = "/" + pfad.lstrip("/").split("/", 1)[0]
     try:
+        req = urllib.request.Request(_basis() + pfad, data=daten, headers=kopf,
+                                     method=methode)
         with urllib.request.urlopen(
                 req, timeout=_zahl("VEXA_TIMEOUT_S", 20)) as antwort:
             roh = antwort.read()
@@ -68,10 +75,16 @@ def _anfrage(methode: str, pfad: str, body: dict | None = None,
         if e.code == 404 and ok404:
             return None
         log.warning("Vexa %s %s -> %s", methode, kurz, e.code)
+        if e.code == 404:
+            raise VexaNichtGefunden(f"Vexa kennt {kurz} nicht (404)") from None
         raise VexaFehler(f"Vexa antwortet {e.code} auf {methode} {kurz}") from None
     except (urllib.error.URLError, OSError, TimeoutError):
         log.warning("Vexa %s %s nicht erreichbar", methode, kurz)
         raise VexaFehler(f"Vexa nicht erreichbar ({methode} {kurz})") from None
+    except (ValueError, http.client.HTTPException):
+        # Feste Meldung: der Text dieser Ausnahmen kann Header-Werte enthalten.
+        log.warning("Vexa %s %s: Anfrage/Antwort unbrauchbar", methode, kurz)
+        raise VexaFehler(f"Vexa-Anfrage fehlgeschlagen ({methode} {kurz})") from None
     if not roh:
         return {}
     try:
@@ -101,12 +114,12 @@ def meeting_lesen(meeting_id: int) -> dict:
     antwort = _anfrage("GET", "/meetings")
     liste = antwort.get("meetings", []) if isinstance(antwort, dict) else []
     for m in liste:
-        if m.get("id") == meeting_id:
+        if isinstance(m, dict) and m.get("id") == meeting_id:
             daten = m.get("data") or {}
             return {"status": m.get("status") or "",
                     "grund": daten.get("reason") or "",
                     "ende_grund": daten.get("completion_reason") or ""}
-    raise VexaFehler(f"Meeting {meeting_id} bei Vexa nicht gefunden")
+    raise VexaNichtGefunden(f"Meeting {meeting_id} bei Vexa nicht gefunden")
 
 
 def segmente_holen(meeting_id: int) -> list[dict]:
