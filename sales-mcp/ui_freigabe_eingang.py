@@ -22,6 +22,7 @@ import psycopg
 from starlette.responses import RedirectResponse
 from starlette.routing import Route
 
+import auftrag_buch
 import freigabe_eingang as fe
 import server
 
@@ -59,6 +60,8 @@ _HINWEISE = {
     "abgewiesen": ("warnung", "Der Auftrag wurde abgewiesen (falsche Art oder es läuft schon einer). "
                               "Nichts wurde getan."),
     "freigegeben": ("hinweis", "Video freigegeben."),
+    "neu_gebaut": ("warnung", "Das Video wird gerade neu gebaut – bitte die neue Fassung freigeben."),
+    "buch": ("warnung", "Das Auftragsbuch ist gerade nicht erreichbar. Nichts wurde getan."),
     "quelle": ("warnung", "Die Quelle des Eintrags ist nicht lesbar. Nichts wurde getan."),
 }
 
@@ -280,6 +283,21 @@ def routen(ui) -> list:
             return ziel("geschlossen", "marketing_video")
         if e["art"] != "marketing_video":    # nur Videos; alles andere hat seinen eigenen Weg
             return ziel("abgewiesen", e["art"])
+        # I6: nur freigeben, wenn der Auftrag auf die Freigabe wartet UND der Eintrag die aktuelle Fassung zeigt;
+        # sonst wird das Video gerade neu gebaut, und nichts aendert sich
+        details = e["details"] if isinstance(e["details"], dict) else {}
+        try:
+            laden = os.environ.get("LADEN_PRAEFIX", "").strip() or "sales"
+            zeilen = auftrag_buch.eigene(server._q, laden, ["wartet_freigabe"])
+        except Exception as fehler_:  # noqa: BLE001 - nur der Typname ins Log
+            LOG.error("Auftragsbuch nicht lesbar: %s", type(fehler_).__name__)
+            return ziel("buch", "marketing_video")
+        auftrag = next((z for z in zeilen if isinstance(z, dict) and str(z.get("id")) == str(e["quelle_ref"])
+                        and z.get("art") == "video" and z.get("stand") == "wartet_freigabe"), None)
+        ergebnis = auftrag.get("ergebnis") if auftrag and isinstance(auftrag.get("ergebnis"), dict) else {}
+        fassung = ergebnis.get("fassung")
+        if auftrag is None or fassung is None or details.get("fassung") != fassung:
+            return ziel("neu_gebaut", "marketing_video")
         ok = fe.schliessen_kennung(e["kennung"], "erledigt", ui._ui_akteur(request))
         return ziel("freigegeben" if ok else "geschlossen", "marketing_video")
 

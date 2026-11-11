@@ -249,6 +249,25 @@ def test_verwerfen_lehnt_entwurf_ab(client):
 
 VIDEO = "marketing/werkbank/0123abcd-0000-4000-8000-000000000001/video"
 VIDEOS = "/freigaben?tab=marketing&art=video"
+VIDEO_AID = "0123abcd-0000-4000-8000-000000000001"
+
+
+@pytest.fixture(autouse=True)
+def video_buch(monkeypatch):
+    """Das Auftragsbuch (Schema auftrag gibt es in keiner Test-DB): ein Video-Auftrag, Fassung 1, wartet auf die
+    Freigabe. I6: "freigeben" prueft Stand und Fassung gegen diese Zeile."""
+    import auftrag_buch
+    buch = {"zeile": {"id": VIDEO_AID, "art": "video", "stand": "wartet_freigabe", "ergebnis": {"fassung": 1}},
+            "staende": [], "fehler": None}
+
+    def eigene(q, laden, staende):
+        buch["staende"].append(list(staende))
+        if buch["fehler"]:
+            raise buch["fehler"]
+        z = buch["zeile"]
+        return [dict(z)] if z and z["stand"] in staende else []
+    monkeypatch.setattr(auftrag_buch, "eigene", eigene)
+    return buch
 
 
 def _video():
@@ -312,3 +331,34 @@ def test_video_freigeben_lesen_darf_nicht_und_csrf(client, client_lesen):
     assert _post(client_lesen, "eingang-video-freigeben", k).status_code == 403
     assert _post(client, "eingang-video-freigeben", k, csrf=False).status_code == 403
     assert server._q("select status from freigabe_eintraege where kennung = %s", (k,))[0]["status"] == "offen"
+
+
+NEU_GEBAUT = "Das Video wird gerade neu gebaut – bitte die neue Fassung freigeben."
+
+
+@pytest.mark.parametrize("zeile", [
+    {"id": VIDEO_AID, "art": "video", "stand": "werkbank", "ergebnis": {"fassung": 1}},          # wird neu gebaut
+    {"id": VIDEO_AID, "art": "video", "stand": "erzeugt", "ergebnis": {"fassung": 2}},           # neue Fassung fertig
+    {"id": VIDEO_AID, "art": "video", "stand": "wartet_freigabe", "ergebnis": {"fassung": 2}},   # Eintrag alt
+    {"id": VIDEO_AID, "art": "video", "stand": "wartet_freigabe", "ergebnis": {}},
+    None])
+def test_freigeben_nur_fuer_die_aktuelle_fassung(client, video_buch, zeile):
+    """I6: freigegeben wird nur, wenn der Auftrag auf die Freigabe wartet UND der Eintrag zur aktuellen Fassung
+    gehoert; sonst ein Hinweis, und nichts aendert sich."""
+    k = _video()
+    video_buch["zeile"] = zeile
+    r = _post(client, "eingang-video-freigeben", k)
+    assert r.status_code == 303 and "eg_hinweis=neu_gebaut" in r.headers["location"]
+    z = server._q("select status, geschlossen_von from freigabe_eintraege where kennung = %s", (k,))[0]
+    assert z["status"] == "offen" and z["geschlossen_von"] is None
+    assert video_buch["staende"] and all("wartet_freigabe" in s for s in video_buch["staende"])
+    assert NEU_GEBAUT in client.get(r.headers["location"]).text
+
+
+def test_freigeben_ohne_auftragsbuch_aendert_nichts(client, video_buch):
+    k = _video()
+    video_buch["fehler"] = RuntimeError("Datenbank weg")
+    r = _post(client, "eingang-video-freigeben", k)
+    assert r.status_code == 303 and "eg_hinweis=buch" in r.headers["location"]
+    assert server._q("select status from freigabe_eintraege where kennung = %s", (k,))[0]["status"] == "offen"
+    assert "Nichts wurde getan" in client.get(r.headers["location"]).text
