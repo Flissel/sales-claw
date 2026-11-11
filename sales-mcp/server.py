@@ -3475,13 +3475,14 @@ def _bereich_pruefen(bereich: str) -> None:
 
 
 def _fremde_titel_loeschen(conn, quelle_id: str, besitzer: str, bereich: str) -> None:
-    """Spec §6.3: fuer eine fremde Privat-Quelle stehen titel und ort nie in
+    """Spec §6.3: fuer eine fremde Privat-Quelle stehen titel, ort, beschreibung, teilnehmer und konferenz nie in
     der Datenbank. Nach einem Wechsel auf privat sofort weg, nicht erst beim
     naechsten Abgleich (Review Focus 4)."""
     if not kalender_sichtbarkeit.details_speichern(
             besitzer, bereich, post_struktur.container_besitzer()):
-        conn.execute("update kalender_termine set titel = null, ort = null "
-                     "where quelle_id = %s", (quelle_id,))
+        conn.execute("update kalender_termine set titel = null, ort = null, "
+                     "beschreibung = null, teilnehmer = null, "
+                     "konferenz = null where quelle_id = %s", (quelle_id,))
 
 
 GOOGLE_NAME_BELEGT = "Diesen Namen trägt schon ein Google-Kalender"

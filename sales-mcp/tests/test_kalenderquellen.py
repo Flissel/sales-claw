@@ -765,10 +765,10 @@ def test_ohne_felder_leere_vorgaben(server_stub):
 
 
 def test_beschreibung_gekappt_und_einzeilig(server_stub):
-    lang = "\n".join(["abc def"] * 2000)     # ical-escaped Zeilenumbrueche
+    lang = "\\n".join(["abc def"] * 2000)     # ICS-escaped, wird zu echten Umbruechen
     server_stub.rumpf = _ics_mit(f"DESCRIPTION:{lang}\r\n")
     t = kalenderquellen.hole(server_stub.url)[0][0]
-    assert 0 < len(t["beschreibung"]) <= 4000
+    assert len(t["beschreibung"]) == 4000
     assert "\n" not in t["beschreibung"] and "\r" not in t["beschreibung"]
     assert "  " not in t["beschreibung"]
 
@@ -779,3 +779,18 @@ def test_webinar_anzahl(server_stub):
     t = kalenderquellen.hole(server_stub.url)[0][0]
     assert len(t["teilnehmer"]) == 50
     assert t["teilnehmer_anzahl"] == 60
+
+
+def test_konferenz_bevorzugt_eigenes_feld_vor_url(server_stub):
+    teams = "https://teams.microsoft.com/l/meetup-join/xyz"
+    server_stub.rumpf = _ics_mit(
+        "URL:https://outlook.example/event/123\r\n"
+        f"X-MICROSOFT-SKYPETEAMSMEETINGURL:{teams}\r\n")
+    t = kalenderquellen.hole(server_stub.url)[0][0]
+    assert t["konferenz"] == teams
+
+
+def test_konferenz_faellt_auf_url_zurueck(server_stub):
+    server_stub.rumpf = _ics_mit("URL:https://meet.example/abc\r\n")
+    t = kalenderquellen.hole(server_stub.url)[0][0]
+    assert t["konferenz"] == "https://meet.example/abc"

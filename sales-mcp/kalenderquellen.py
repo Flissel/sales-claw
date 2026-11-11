@@ -330,9 +330,11 @@ def _teure_serien_entfernen(kal, bis: datetime) -> int:
 
 MAX_BESCHREIBUNG = 4000
 MAX_TEILNEHMER = 50
-_KONFERENZ_FELDER = ("URL", "X-GOOGLE-CONFERENCE",
+# Eigene Konferenzfelder vor dem allgemeinen URL: Outlook/Google legen dort
+# oft nur die Terminseite ab, die den echten Meeting-Link verdraengen wuerde.
+_KONFERENZ_FELDER = ("X-GOOGLE-CONFERENCE",
                      "X-MICROSOFT-SKYPETEAMSMEETINGURL",
-                     "X-MICROSOFT-ONLINEMEETINGCONFLINK")
+                     "X-MICROSOFT-ONLINEMEETINGCONFLINK", "URL")
 
 
 def _als_liste(wert) -> list:
