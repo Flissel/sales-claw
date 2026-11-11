@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from datetime import date, datetime
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
@@ -28,6 +29,8 @@ LOG = logging.getLogger("briefing")
 MAX_KONTAKTE = 5
 MAX_PAINPOINTS = 8
 MAX_BESCHREIBUNG = 400
+MAX_KI_ZEICHEN = 1200
+NEUTRAL = "Kundentermin"
 LEER = "—"
 
 SYSTEM_PROMPT = ("Du bereitest Felix auf ein Kundengespräch vor. Antworte auf Deutsch "
@@ -47,6 +50,40 @@ def _kurz(text, grenze: int) -> str:
     return t if len(t) <= grenze else t[:grenze - 1].rstrip() + "…"
 
 
+_URL = re.compile(r"(?:https?://|www\.)\S+", re.I)
+_MAIL = re.compile(r"\S+@\S+")
+_NUMMER = re.compile(r"\+?\(?\d[\d\s().\-/]*\d")
+_GEHEIMZEILE = re.compile(
+    r"passcode|kenncode|kennwort|meeting[\s-]?id|besprechungs[\s-]?id|dial[\s-]?in|"
+    r"einwahl|telefon", re.I)
+_LANGE_ZIFFERN = re.compile(r"\d[\d\s-]{6,}\d")
+
+
+def _ziffern_weg(m) -> str:
+    return " " if sum(c.isdigit() for c in m.group(0)) >= 7 else m.group(0)
+
+
+def _scrub(text, neutral: str = NEUTRAL) -> str:
+    """Fuer den Telegram-Hinweis: ohne URLs, E-Mail-Adressen und Telefon-/Zifferfolgen
+    (7+ Ziffern); leer -> neutrale Bezeichnung."""
+    t = _URL.sub(" ", str(text or ""))
+    t = _MAIL.sub(" ", t)
+    t = _NUMMER.sub(_ziffern_weg, t)
+    t = " ".join(t.split())
+    return t or neutral
+
+
+def _beschreibung(text, grenze: int) -> str:
+    """Zugangsdaten raus, bevor gekuerzt wird: Zeilen mit URL oder Passcode-/
+    Einwahl-Stichwort entfallen, lange Zifferfolgen ebenfalls."""
+    zeilen = []
+    for z in str(text or "").splitlines():
+        if _URL.search(z) or _GEHEIMZEILE.search(z):
+            continue
+        zeilen.append(_LANGE_ZIFFERN.sub(" ", z))
+    return _kurz(" ".join(zeilen), grenze)
+
+
 def _gesperrt(lead: dict) -> bool:
     """Live pruefen (nicht nur den gespeicherten Grund): Sperrliste ueber E-Mail
     und Telefon, Loeschantrag und Privat-Vermerk am Lead."""
@@ -59,9 +96,9 @@ def _gesperrt(lead: dict) -> bool:
 
 
 def _painpoint_texte(auswertung) -> list[str]:
-    """ANNAHME (die Form legt Task 10 fest): auswertung_json hat auf oberster
-    Ebene den Schluessel "painpoints" mit einer Liste von Strings oder Dicts mit
-    "text". Alles andere wird still uebergangen."""
+    """Form (Task 10): auswertung_json hat auf oberster Ebene den Schluessel
+    "painpoints" mit einer Liste von {"zitat", "zeit", "sprecher"}; tolerant
+    auch Strings oder Dicts mit "text". Alles andere wird still uebergangen."""
     if not isinstance(auswertung, dict):
         return []
     roh = auswertung.get("painpoints")
@@ -69,7 +106,7 @@ def _painpoint_texte(auswertung) -> list[str]:
         return []
     aus = []
     for p in roh:
-        t = p.get("text") if isinstance(p, dict) else p
+        t = (p.get("zitat") or p.get("text")) if isinstance(p, dict) else p
         if isinstance(t, str) and t.strip():
             aus.append(" ".join(t.split()))
     return aus
@@ -102,9 +139,13 @@ def _wiedervorlagen(lead_id: str) -> list[dict]:
 
 def _lead_fakten(lead: dict, uid: str) -> dict:
     lid = str(lead["id"])
+    # kontakt_historie sortiert nur nach datum; Gleichstaende voll ordnen,
+    # damit Schnitt und stand stabil bleiben
+    roh = sorted(kontakt_historie(lid, tage=365),
+                 key=lambda e: (str(e["datum"]), e["art"] or "", e["kanal"] or "",
+                                str(e["text"] or "")), reverse=True)
     kontakte = [{"datum": _tag(e["datum"]), "art": e["art"], "kanal": e["kanal"],
-                 "text": _kurz(e["text"], 120)}
-                for e in kontakt_historie(lid, tage=365)[:MAX_KONTAKTE]]
+                 "text": _kurz(e["text"], 120)} for e in roh[:MAX_KONTAKTE]]
     return {"name": lead.get("name") or "", "rolle": lead.get("title") or "",
             "firma": lead.get("company") or "", "quelle": lead.get("source") or "",
             "erster_kontakt": _tag(lead.get("created_at")),
@@ -130,7 +171,7 @@ def fakten(uid: str) -> dict:
     LOG.info("Briefing-Fakten: uid=%s leads=%d", uid, len(leads))
     return {"beginn": akte["beginn"].isoformat(),
             "ziel": {"thema": akte.get("thema") or akte.get("titel") or "",
-                     "beschreibung": _kurz(akte.get("beschreibung"), MAX_BESCHREIBUNG)},
+                     "beschreibung": _beschreibung(akte.get("beschreibung"), MAX_BESCHREIBUNG)},
             "leads": leads}
 
 
@@ -162,7 +203,7 @@ def fakten_markdown(f: dict) -> str:
         for w in lead["offene_wiedervorlagen"]:
             offen.append(f"- fällig {_dd(w['faellig_am'])}: {w['notiz'] or LEER}" + marke)
         for p in lead["painpoints"]:
-            pain.append(f"- {_dd(p['datum'])}: {p['text']}" + marke)
+            pain.append(f"- „{p['text']}“ ({_dd(p['datum'])})" + marke)
     ziel = f.get("ziel") or {}
     z = " — ".join(x for x in (ziel.get("thema"), ziel.get("beschreibung")) if x)
 
@@ -176,6 +217,13 @@ def fakten_markdown(f: dict) -> str:
         abschnitt("Ziel", [z] if z else [])]) + "\n"
 
 
+def _ki_text(roh) -> str:
+    """Begrenzen und fuehrende '#' je Zeile weg: der KI-Text soll keine
+    Faktenueberschriften nachahmen."""
+    zeilen = [z.lstrip().lstrip("#").strip() for z in str(roh or "").strip().splitlines()]
+    return "\n".join(zeilen).strip()[:MAX_KI_ZEICHEN].strip()
+
+
 def erstellen(uid: str) -> dict:
     f = fakten(uid)
     md = fakten_markdown(f)
@@ -184,7 +232,7 @@ def erstellen(uid: str) -> dict:
     kurz = ""
     try:
         if ollama.erreichbar():
-            kurz = (ollama.chat(SYSTEM_PROMPT, md) or "").strip()
+            kurz = _ki_text(ollama.chat(SYSTEM_PROMPT, md))
     except ollama.OllamaFehler:
         LOG.warning("Briefing ohne KI-Text: Ollama-Fehler (uid=%s)", uid)
     except Exception:  # noqa: BLE001 - Vertrag: Ollama bricht das Briefing nie
@@ -195,27 +243,31 @@ def erstellen(uid: str) -> dict:
 
 
 def hinweis_text(akte: dict, ui_basis: str) -> str:
-    """Genau vier Zeilen (drei ohne Link); keine Adresse, kein Telefon, kein
-    Passcode. Uhrzeit in der Zeitzone der Akte."""
+    """Genau vier Zeilen (drei ohne Link); keine Adresse, kein Telefon, keine
+    URL ausser dem Beitrittslink, kein Passcode. Uhrzeit in der Zeitzone der
+    Akte. Kunde und Thema laufen durch `_scrub`."""
     try:
         zone = ZoneInfo(akte.get("zeitzone") or "Europe/Berlin")
     except Exception:  # noqa: BLE001 - unbekannte Zone: Vorgabe
         zone = ZoneInfo("Europe/Berlin")
     uhr = akte["beginn"].astimezone(zone).strftime("%H:%M")
-    kunde = " ".join(str(akte.get("titel") or "").split())
+    kunde = _scrub(akte.get("titel"))
     for t in akte.get("teilnehmer") or []:
         if not t.get("lead_id"):
             continue
         z = server._q("select name, company, email, phone, enrichment from leads "
                       "where id = %s::uuid", (str(t["lead_id"]),))
-        name = " ".join(str(z[0]["name"] or "").split()) if z else ""
-        if z and name and "@" not in name and not _gesperrt(z[0]):
-            kunde = name
-            firma = " ".join(str(z[0]["company"] or "").split())
-            if firma:
-                kunde += f" ({firma})"
+        if z and _gesperrt(z[0]):
+            kunde = NEUTRAL  # gesperrter erster Lead: nichts von ihm, auch nicht der Titel
+        elif z:
+            name = _scrub(z[0]["name"], "")
+            if name:
+                kunde = name
+                firma = _scrub(z[0]["company"], "")
+                if firma:
+                    kunde += f" ({firma})"
         break
-    thema = " ".join(str(akte.get("thema") or akte.get("titel") or "").split())
+    thema = _scrub(akte.get("thema") or akte.get("titel"))
     zeilen = [f"🗓 {uhr} {kunde}", thema,
               f"Briefing öffnen: {ui_basis}/termine/{quote(akte['uid'], safe='')}"]
     link = (akte.get("beitreten") or {}).get("link")

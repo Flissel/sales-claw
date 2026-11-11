@@ -79,7 +79,9 @@ def test_fakten_inhalt():
     _mail(lead, "Angebot bAV")
     server._wiedervorlage_anlegen(lead, datetime(2099, 1, 20).date(), "Unterlagen schicken")
     _alte_akte(lead, "alt-1")
-    _auswertung("alt-1", ["Zu teuer", {"text": "Kein Zeit"}, 5, {"x": 1}])
+    # Form aus Task 10: {"zitat", "zeit", "sprecher"}; tolerant auch str / {"text"}
+    _auswertung("alt-1", [{"zitat": "Zu teuer", "zeit": "01:02", "sprecher": "Kunde"},
+                          {"text": "Kein Zeit"}, "Nur Text", 5, {"x": 1}])
     f = briefing.fakten(uid)
     assert len(f["leads"]) == 1
     l = f["leads"][0]
@@ -90,7 +92,7 @@ def test_fakten_inhalt():
     assert len(l["letzte_kontakte"]) <= 5
     assert l["offene_wiedervorlagen"] == [{"faellig_am": "2099-01-20",
                                           "notiz": "Unterlagen schicken"}]
-    assert {p["text"] for p in l["painpoints"]} == {"Zu teuer", "Kein Zeit"}
+    assert {p["text"] for p in l["painpoints"]} == {"Zu teuer", "Kein Zeit", "Nur Text"}
     assert all(p["datum"] == "2098-12-01" for p in l["painpoints"])
     assert f["ziel"]["thema"] == "Beratung bAV"
     assert f["beginn"].startswith("2099-01-10T09:00")
@@ -98,7 +100,7 @@ def test_fakten_inhalt():
     for kopf in ("## Wer", "## Letzte Kontakte", "## Offen",
                  "## Painpoints aus früheren Gesprächen", "## Ziel"):
         assert kopf in md
-    assert "Karla Kunde" in md and "Zu teuer" in md
+    assert "Karla Kunde" in md and "- „Zu teuer“ (01.12.2098)" in md
 
 
 def test_leere_abschnitte_strich():
@@ -112,9 +114,11 @@ def test_painpoints_max_8_und_nur_fertige():
     lead = _lead()
     uid = _akte(lead)
     _alte_akte(lead, "alt-1")
-    _auswertung("alt-1", [f"p{i}" for i in range(12)])
+    _auswertung("alt-1", [{"zitat": f"p{i}", "zeit": "00:01", "sprecher": "K"}
+                          for i in range(12)])
     _alte_akte(lead, "alt-2", beginn="2098-11-01 09:00+00")
-    _auswertung("alt-2", ["nicht fertig"], status="offen")
+    _auswertung("alt-2", [{"zitat": "nicht fertig", "zeit": "00:01", "sprecher": "K"}],
+                status="offen")
     pp = briefing.fakten(uid)["leads"][0]["painpoints"]
     assert len(pp) == 8
     assert "nicht fertig" not in {p["text"] for p in pp}
@@ -251,3 +255,107 @@ def test_log_ohne_kundendaten(caplog):
     log = caplog.text
     for geheim in (ADRESSE, "Karla", "Firma GmbH", "Geheimer Betreff", "Beratung"):
         assert geheim not in log
+
+
+# --- Fix-Runde 1 ---------------------------------------------------------
+
+@pytest.mark.parametrize("titel", ["Call kunde@firma.de", "Rückruf +49 30 1234567",
+                                   "Tel (030) 123 45 67 wegen bAV"])
+def test_hinweis_titel_ohne_adresse_und_telefon(titel):
+    akte = _akte_dict(lead=None)
+    akte["titel"] = titel
+    akte["thema"] = None
+    text = briefing.hinweis_text(akte, "https://ui.example")
+    assert len(text.split("\n")) == 4
+    assert "@" not in text and "firma.de" not in text
+    assert not re.search(r"\d[\d ()+-]{5,}\d", text.split("\n")[0] + text.split("\n")[1])
+    assert "1234567" not in text.replace(" ", "")
+
+
+def test_hinweis_nur_adresse_im_titel_wird_neutral():
+    akte = _akte_dict(lead=None)
+    akte["titel"], akte["thema"] = "kunde@firma.de", None
+    zeilen = briefing.hinweis_text(akte, "https://ui.example").split("\n")
+    assert zeilen[0] == "🗓 10:00 Kundentermin" and zeilen[1] == "Kundentermin"
+
+
+def test_hinweis_firma_und_url_im_thema_bereinigt():
+    lead = _lead(firma="Firma +49 30 1234567 GmbH")
+    akte = _akte_dict(lead=lead)
+    akte["thema"] = "Siehe https://zoom.us/j/123456789?pwd=abc bAV"
+    text = briefing.hinweis_text(akte, "https://ui.example")
+    zeilen = text.split("\n")
+    assert len(zeilen) == 4
+    assert "1234567" not in zeilen[0] and "zoom" not in zeilen[1] and "bAV" in zeilen[1]
+
+
+def test_hinweis_gesperrter_erster_lead_neutral():
+    lead = _lead("gesperrt@firma.de", "Gesperrt Person", "Sperr GmbH")
+    server._lead_sperren(lead, "test", "test")
+    akte = _akte_dict(lead=lead)
+    akte["titel"] = "Gesperrt Person Besprechung"
+    akte["thema"] = None
+    text = briefing.hinweis_text(akte, "https://ui.example")
+    assert len(text.split("\n")) == 4
+    assert text.split("\n")[0] == "🗓 10:00 Kundentermin"
+    assert "Gesperrt" not in text.split("\n")[0] and "Sperr GmbH" not in text
+
+
+def test_stand_stabil_bei_gleichem_datum(monkeypatch):
+    lead = _lead()
+    uid = _akte(lead)
+    gleich = datetime(2098, 12, 20, 9, 0, tzinfo=timezone.utc)
+    eintraege = [{"datum": gleich, "art": "entwurf", "kanal": "email", "text": f"Betreff {i}"}
+                 for i in range(8)]
+    monkeypatch.setattr(briefing, "kontakt_historie", lambda *a, **k: list(eintraege))
+    a = briefing.erstellen(uid)
+    monkeypatch.setattr(briefing, "kontakt_historie", lambda *a, **k: list(reversed(eintraege)))
+    b = briefing.erstellen(uid)
+    assert a["stand"] == b["stand"] and a["markdown"] == b["markdown"]
+    assert len(briefing.fakten(uid)["leads"][0]["letzte_kontakte"]) == 5
+
+
+def test_beschreibung_ohne_link_und_passcode():
+    uid = _akte(_lead())
+    server._q("update termin_akten set beschreibung = %s where uid = %s returning uid",
+              ("Agenda: Angebot bAV besprechen\n"
+               "Zoom beitreten: https://zoom.us/j/12345678901?pwd=GEHEIMPWD\n"
+               "Meeting-ID: 123 4567 8901\nKenncode: 987654\n"
+               "Einwahl: +49 69 1234 5678\nBesprechungs-ID: 555 666 777\n"
+               "Dial-in Telefon 069 12345678\nBitte Unterlagen mitbringen\n"
+               "Nummer 12345678901 im Text", uid))
+    f = briefing.fakten(uid)
+    md = briefing.fakten_markdown(f)
+    b = f["ziel"]["beschreibung"]
+    assert "Angebot bAV" in b and "Unterlagen" in b
+    for geheim in ("zoom", "GEHEIMPWD", "987654", "8901", "1234 5678", "555 666", "12345678"):
+        assert geheim.lower() not in md.lower(), geheim
+
+
+def test_ki_text_gekappt_und_ohne_ueberschriften(monkeypatch):
+    uid = _akte(_lead())
+    monkeypatch.setattr(ollama, "erreichbar", lambda: True)
+    monkeypatch.setattr(ollama, "chat", lambda *a, **k: "## Wer\n### Offen\nSatz. " + "x" * 3000)
+    md = briefing.erstellen(uid)["markdown"]
+    kurz = md.split("\n\n")[0]
+    assert kurz.startswith("## Kurz\n")
+    assert len(kurz) <= len("## Kurz\n") + 1200
+    assert "\n## Wer\n" not in kurz and "### " not in kurz
+    # die echten Faktenabschnitte bleiben genau einmal
+    assert md.count("\n## Wer\n") == 1
+
+
+def test_log_ohne_kundentext_bei_ollama_fehler(caplog, monkeypatch):
+    lead = _lead()
+    uid = _akte(lead)
+
+    def kaputt(*a, **k):
+        raise ollama.OllamaFehler("Karla Kunde kunde@firma.de Firma GmbH")
+    monkeypatch.setattr(ollama, "erreichbar", lambda: True)
+    monkeypatch.setattr(ollama, "chat", kaputt)
+    with caplog.at_level(logging.DEBUG):
+        r = briefing.erstellen(uid)
+    assert r["mit_ki"] is False
+    assert any("ohne KI-Text" in x.message for x in caplog.records)
+    for geheim in (ADRESSE, "Karla", "Firma GmbH", "Beratung"):
+        assert geheim not in caplog.text
