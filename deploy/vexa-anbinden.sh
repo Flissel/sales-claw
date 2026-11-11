@@ -9,7 +9,8 @@
 # Zweimal aufrufen (idempotent):
 #   1. Aufruf: legt deploy/vexa/.env mit Zufallswerten an (Rechte 600) und
 #      meldet, dass Vexa noch nicht laeuft (Exit 4). Dann
-#      `docker compose -p vexa up -d` (nach Felix' OK).
+#      `docker compose -f ~/sales-claw/deploy/vexa/docker-compose.yml -p vexa up -d`
+#      (nach Felix' OK; ohne -f laedt Compose die Datei des Basis-Stacks).
 #   2. Aufruf: Nutzer sales (gibt es ihn schon, wird er wiederverwendet),
 #      Token (ein noch gueltiger VEXA_API_KEY aus der sales-claw-.env wird
 #      behalten), PUT /user/transcription mit Platzhalter-Token, dann
@@ -93,7 +94,7 @@ fi
 # Vexa muss laufen, sonst gibt es nichts anzubinden.
 laeuft="$($DOCKER inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null || true)"
 if [ "$laeuft" != "true" ]; then
-  echo "Container $CONTAINER läuft nicht – erst 'docker compose -p vexa up -d' in deploy/vexa, dann dieses Skript noch einmal." >&2
+  echo "Container $CONTAINER läuft nicht – erst 'docker compose -f $HIER/vexa/docker-compose.yml -p vexa up -d', dann dieses Skript noch einmal." >&2
   exit 4
 fi
 

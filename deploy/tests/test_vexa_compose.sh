@@ -78,8 +78,21 @@ done
 LITE="$(block vexa-lite)"
 echo "$LITE" | grep -qE 'RUNTIME_BACKEND:[[:space:]]*"?process"?[[:space:]]*$' || fehler "RUNTIME_BACKEND: process fehlt"
 echo "$LITE" | grep -qE 'VEXA_JITSI_HOSTS:[[:space:]]*"?meet\.ffmuc\.net"?[[:space:]]*$' || fehler "VEXA_JITSI_HOSTS fehlt"
-if echo "$LITE" | grep -q 'sales-claw_default\|salesclaw\|networks:'; then
-  fehler "vexa-lite darf nicht an sales-claw_default (nur vexa-tor), auch kein eigenes networks:"
+if echo "$LITE" | grep -q 'sales-claw_default\|salesclaw'; then
+  fehler "vexa-lite darf nicht an sales-claw_default (nur vexa-tor)"
+fi
+# Eindeutiger Alias nur in vexa_default (Ziel des Tors); in networks darf nur default stehen.
+GATEWAY_ALIAS="$(echo "$LITE" | awk '
+  /^    networks:[[:space:]]*$/ { innet=1; next }
+  innet && /^    [^[:space:]]/ { innet=0 }
+  innet && /^      [A-Za-z0-9_-]+:/ { netz=$1; next }
+  innet && netz == "default:" && /^[[:space:]]+-[[:space:]]+/ { sub(/^[[:space:]]+-[[:space:]]+/, ""); print }')"
+[ -n "$GATEWAY_ALIAS" ] || fehler "vexa-lite hat keinen Alias unter networks.default.aliases"
+[ "$(echo "$GATEWAY_ALIAS" | wc -l | tr -d ' ')" = 1 ] || fehler "vexa-lite: genau ein Alias erwartet"
+[ "$GATEWAY_ALIAS" != vexa-lite ] || fehler "vexa-lite-Alias darf nicht vexa-lite heissen"
+NETZE="$(echo "$LITE" | awk '/^    networks:[[:space:]]*$/ { innet=1; next } innet && /^    [^[:space:]]/ { innet=0 } innet && /^      [A-Za-z0-9_-]+:/ { print $1 }')"
+if [ "$NETZE" != "default:" ]; then
+  fehler "vexa-lite haengt an einem anderen Netz als default"
 fi
 if echo "$LITE" | grep -qE 'ANTHROPIC_|HOST_CLAUDE_CREDENTIALS|docker\.sock'; then
   fehler "vexa-lite: Agent-Schluessel oder Docker-Socket gesetzt (Spec 5.4: Agent aus)"
@@ -106,6 +119,20 @@ grep -qE 'proxy_(connect|read)_timeout' "$NGINX" || fehler "nginx-tor.conf: kein
 n_listen="$(grep -cE '^[[:space:]]*listen[[:space:]]' "$NGINX")"
 [ "$n_listen" -eq 1 ] || fehler "nginx-tor.conf: genau ein listen erwartet, gefunden $n_listen"
 if grep -q '0\.0\.0\.0' "$NGINX"; then fehler "0.0.0.0 in nginx-tor.conf"; fi
+# Ziel des Proxys: nie vexa-lite (waere in sales-claw_default das Tor selbst, Schleife),
+# sondern der Alias, der NUR an vexa-lite in vexa_default haengt.
+ZIEL_HOST="$(sed -n 's|^[[:space:]]*set[[:space:]]\{1,\}\$ziel[[:space:]]\{1,\}http://\([A-Za-z0-9_.-]*\):8056;.*|\1|p' "$NGINX")"
+[ -n "$ZIEL_HOST" ] || fehler "nginx-tor.conf: Proxy-Ziel (set \$ziel http://HOST:8056;) nicht gefunden"
+[ "$ZIEL_HOST" != vexa-lite ] || fehler "nginx-tor.conf zielt auf vexa-lite (Selbstschleife ueber den Alias in sales-claw_default)"
+[ "$ZIEL_HOST" = "$GATEWAY_ALIAS" ] || fehler "nginx-tor.conf zielt auf $ZIEL_HOST, vexa-lite traegt aber den Alias $GATEWAY_ALIAS"
+if echo "$TOR" | grep -qx "[[:space:]]*-[[:space:]]*$ZIEL_HOST[[:space:]]*"; then fehler "Ziel-Alias $ZIEL_HOST haengt auch an vexa-tor"; fi
+if echo "$AKTIV" | grep -v '^[[:space:]]*#' | grep -cE "^[[:space:]]+-[[:space:]]*$ZIEL_HOST[[:space:]]*$" | grep -qvx 1; then
+  fehler "Alias $ZIEL_HOST kommt nicht genau einmal vor (nur an vexa-lite)"
+fi
+# vexa-tor: Schonfrist des Healthchecks deckt die von vexa-lite (120 s) ab.
+tor_sp="$(echo "$TOR" | sed -n 's/^[[:space:]]*start_period:[[:space:]]*\([0-9]*\)s.*/\1/p')"
+[ -n "$tor_sp" ] && [ "$tor_sp" -ge 150 ] || fehler "vexa-tor start_period muss >= 150s sein (ist '${tor_sp:-fehlt}')"
+
 # Nur vexa-tor darf an sales-claw_default; Postgres/Speicher/Whisper nur vexa_default.
 for dienst in vexa-lite-whisper vexa-lite-postgres vexa-lite-storage vexa-lite-storage-init; do
   if block "$dienst" | grep -q 'sales-claw_default\|salesclaw\|networks:'; then

@@ -143,6 +143,12 @@ services:
         condition: service_healthy
     ports:
       - "127.0.0.1:8056:8056"
+    # Eindeutiger Name nur in vexa_default: Ziel von vexa-tor (nginx-tor.conf).
+    # "vexa-lite" taugt dafuer nicht, das ist in sales-claw_default der Alias von vexa-tor.
+    networks:
+      default:
+        aliases:
+          - vexa-gateway
     environment:
       RUNTIME_BACKEND: process
       VEXA_JITSI_HOSTS: meet.ffmuc.net
@@ -192,7 +198,9 @@ services:
       interval: 15s
       timeout: 5s
       retries: 6
-      start_period: 10s
+      # Der Healthcheck geht ueber den Proxy bis vexa-lite (start_period 120 s dort):
+      # 150 s Schonfrist plus 6 x 15 s, damit das Tor nicht vor dem Gateway aufgibt.
+      start_period: 150s
 
 volumes:
   vexa-pgdata:
