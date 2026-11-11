@@ -382,3 +382,64 @@ def test_historie_abgesagte_akte_gekennzeichnet_und_zukunft_datum():
     e = hi.kontakt_historie(lead, mit_akten=True)[0]
     assert e["text"] == "Termin (abgesagt): <b>Demo</b>"  # Rohtext, Escaping macht die Oberflaeche
     assert e["datum"] == b
+
+
+def _akte_mit_painpoint(lead):
+    _akte(lead, mitschrift=True, painpoints=[{"zitat": "Zu teuer", "zeit": 1, "sprecher": "K"}])
+
+
+def _ohne_akten(lead):
+    arten = {e["art"] for e in hi.kontakt_historie(lead, mit_akten=True)}
+    return not (arten & {"termin_akte", "mitschrift", "painpoint"})
+
+
+def test_historie_lead_privat_ohne_akten():
+    lead = _lead()
+    _akte_mit_painpoint(lead)
+    assert not _ohne_akten(lead)
+    server._q("update leads set enrichment = %s::jsonb where id = %s returning id",
+              (json.dumps({server.PRIVAT_SCHLUESSEL: {"privat": True}}), lead))
+    assert _ohne_akten(lead)
+
+
+def test_historie_lead_loeschantrag_ohne_akten():
+    lead = _lead()
+    _akte_mit_painpoint(lead)
+    server._q("update leads set enrichment = %s::jsonb where id = %s returning id",
+              (json.dumps({server.LOESCH_SCHLUESSEL: {"am": "2026-11-01", "quelle": "t"}}), lead))
+    assert _ohne_akten(lead)
+
+
+def test_historie_lead_auf_sperrliste_ohne_akten():
+    import sperrliste
+    lead = _lead()
+    _akte_mit_painpoint(lead)
+    sperrliste.sperren(server._q, phone="+491701234567", quelle="test", grund="Widerruf")
+    try:
+        assert _ohne_akten(lead)
+    finally:
+        with server.pool.connection() as conn:
+            conn.execute("truncate compliance_test.sperrliste")
+
+
+def test_historie_zwei_adressen_eine_akte_keine_doppelten_eintraege():
+    lead = _lead()
+    _akte(lead, mitschrift=True, painpoints=[{"zitat": "Zu teuer", "zeit": 1, "sprecher": "K"}])
+    server._q("insert into termin_teilnehmer (uid, adresse, rolle, lead_id) "
+              "values ('u1','zweit@firma.de','gast',%s) returning uid", (lead,))
+    arten = [e["art"] for e in hi.kontakt_historie(lead, mit_akten=True)]
+    assert sorted(arten) == ["mitschrift", "painpoint", "termin_akte"]
+
+
+def test_historie_sperrpruefung_db_fehler_geschlossen_und_geloggt(monkeypatch, caplog):
+    import psycopg
+    import teilnehmer
+    lead = _lead()
+    _akte_mit_painpoint(lead)
+
+    def kaputt(_l):
+        raise psycopg.OperationalError("geheime Adresse k@firma.de")
+    monkeypatch.setattr(teilnehmer, "lead_sperrgrund", kaputt)
+    with caplog.at_level("WARNING"):
+        assert _ohne_akten(lead)
+    assert "OperationalError" in caplog.text and "k@firma.de" not in caplog.text

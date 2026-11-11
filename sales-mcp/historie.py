@@ -63,14 +63,20 @@ def _akten_eintraege(lid: str, tage: int) -> list:
     try:
         if teilnehmer.lead_sperrgrund(lid):
             return []
-    except psycopg.Error:
+    except psycopg.Error as e:
+        # Fail-closed: ohne Sperr-Pruefung keine abgeleiteten Eintraege.
+        server._LOG.warning("Kontakt-Historie ohne Termin-Akten (Sperr-Pruefung scheiterte: %s)",
+                            type(e).__name__)
         return []
+    # Je Akte hoechstens eine Zeile, auch wenn der Kontakt ueber zwei Adressen
+    # als Teilnehmer steht.
+    eigene = ("select uid from termin_teilnehmer where lead_id = %s "
+              "and coalesce(grund, '') <> 'gesperrt'")
     aus = []
     for z in _lesen(
             "Termin-Akten",
-            "select a.titel, a.beginn, a.abgesagt_am from termin_teilnehmer t "
-            "join termin_akten a on a.uid = t.uid where t.lead_id = %s "
-            "and coalesce(t.grund, '') <> 'gesperrt' "
+            "select a.titel, a.beginn, a.abgesagt_am from termin_akten a "
+            f"where a.uid in ({eigene}) "
             "and a.beginn > now() - make_interval(days => %s)", (lid, tage)):
         titel = " ".join(str(z["titel"] or "Termin").split())
         text = f"Termin (abgesagt): {titel}" if z["abgesagt_am"] else f"Termin: {titel}"
@@ -78,8 +84,7 @@ def _akten_eintraege(lid: str, tage: int) -> list:
     for z in _lesen(
             "Mitschriften",
             "select m.geholt_am, m.auswertung_status, m.auswertung_json, m.auswertung_am "
-            "from termin_teilnehmer t join termin_mitschriften m on m.uid = t.uid "
-            "where t.lead_id = %s and coalesce(t.grund, '') <> 'gesperrt' "
+            f"from termin_mitschriften m where m.uid in ({eigene}) "
             "and m.geholt_am > now() - make_interval(days => %s)", (lid, tage)):
         aus.append({"datum": z["geholt_am"], "art": "mitschrift", "kanal": "",
                     "text": "Mitschrift vorhanden"})
