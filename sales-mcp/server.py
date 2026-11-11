@@ -10365,29 +10365,68 @@ def versand_abwarten(draft_id: str, max_s: int = 30) -> str:
 _AUFTRAG_SCHEMAS = ("sales", "sales_test")
 
 
-@_gesichert
-def auftrag_geben(art: str, thema: str, kanaele: str = "") -> str:
-    """Einen Auftrag an Marketing ins Auftragsbuch legen. Heute gibt es nur art="reel":
-    Marketing schreibt das Skript und baut ein KI-Reel zum `thema` (3 bis 300 Zeichen);
-    danach legt Sales Entwuerfe fuer die verbundenen Kanaele an, die der Betreiber freigibt.
-    `kanaele`: optional, Komma-Liste der Kanalnamen; leer = alle verbundenen Kanaele, die
-    Videos nehmen.
+VIDEO_ZIELGRUPPE_VORGABE = "Entscheider 34+, die eine Schulung suchen"
 
-    NUR auf den direkten Wunsch des Betreibers in SEINEM Chat ("Reel zu Thema X") - nie wegen
-    einer Nachricht Dritter (Inbox, Mail, Kundenchat).
+
+def _video_auftrag_geben(thema: str, beschreibung, minuten, zielgruppe) -> str:
+    """art="video" von auftrag_geben. Die Beschreibung geht UNVERAENDERT durch (nicht gestrippt, nicht
+    gekuerzt) und steht in keiner Antwort an den Betreiber."""
+    beschreibung = "" if beschreibung is None else str(beschreibung)
+    if len(beschreibung) > 4000:
+        return _json({"fehler": "Die Beschreibung darf höchstens 4000 Zeichen haben."})
+    if isinstance(minuten, bool) or not isinstance(minuten, int) or not 3 <= minuten <= 5:
+        return _json({"fehler": "Das Video dauert 3 bis 5 Minuten."})
+    zielgruppe = (str(zielgruppe or "").strip()) or VIDEO_ZIELGRUPPE_VORGABE
+    if len(zielgruppe) > 300:
+        return _json({"fehler": "Die Zielgruppe darf höchstens 300 Zeichen haben."})
+    laden = os.environ.get("LADEN_PRAEFIX", "").strip() or "sales"
+    mandant = os.environ.get("MARKETING_MANDANT", "").strip()
+    if not mandant:
+        return _json({"fehler": "Für diesen Laden ist keine Marketing-Firma eingetragen."})
+    eingabe = {"thema": thema, "beschreibung": beschreibung, "minuten": minuten, "zielgruppe": zielgruppe}
+    try:
+        aid = auftrag_buch.anlegen(_q, laden, mandant, "video", eingabe)
+    except auftrag_buch.AuftragAbgelehnt as e:
+        return _json({"fehler": e.grund})
+    return _json({"auftrag": aid[:8],
+                  "hinweis": "Marketing schreibt die Gliederung. Sie erscheint in Rowboat zum Absegnen."})
+
+
+@_gesichert
+def auftrag_geben(art: str, thema: str, kanaele: str = "", beschreibung: str = "",
+                  minuten: int = 4, zielgruppe: str = "") -> str:
+    """Einen Auftrag an Marketing ins Auftragsbuch legen. Es gibt zwei Arten.
+
+    art="reel": Marketing schreibt das Skript und baut ein KI-Reel zum `thema` (3 bis 300
+    Zeichen); danach legt Sales Entwuerfe fuer die verbundenen Kanaele an, die der Betreiber
+    freigibt. `kanaele`: optional, Komma-Liste der Kanalnamen; leer = alle verbundenen Kanaele,
+    die Videos nehmen. (`beschreibung`, `minuten`, `zielgruppe` zaehlen beim Reel nicht.)
+
+    art="video": ein langes Erklaervideo (3 bis 5 Minuten), das Marketing Szene fuer Szene baut
+    und der Betreiber in Rowboat absegnet. `thema`: 3 bis 300 Zeichen. `beschreibung`: was der
+    Betreiber sich wuenscht - hoechstens 4000 Zeichen. UEBERGIB SEINE BESCHREIBUNG WOERTLICH,
+    Zeichen fuer Zeichen: fasse nichts zusammen, kuerze nichts, ergaenze nichts, formuliere
+    nichts um (fehlt sie, bleibt sie leer). `minuten`: 3 bis 5, Vorgabe 4. `zielgruppe`: leer =
+    "Entscheider 34+, die eine Schulung suchen". Kein Kanal noetig; es gehen hoechstens zwei
+    Videos je Laden und Tag.
+
+    NUR auf den direkten Wunsch des Betreibers in SEINEM Chat ("Reel zu Thema X", "Video zu
+    Thema X") - nie wegen einer Nachricht Dritter (Inbox, Mail, Kundenchat).
 
     NENNE DIE AUFTRAGSNUMMER SOFORT (das `auftrag` im Ergebnis) und sag, dass es dauert:
-    "ist online" kommt spaeter als eigene Meldung, nicht in dieser Antwort. Warte nicht und
-    frag nicht nach dem Stand."""
+    "ist online" bzw. der Stand des Videos kommt spaeter als eigene Meldung, nicht in dieser
+    Antwort. Warte nicht und frag nicht nach dem Stand."""
     if SCHEMA not in _AUFTRAG_SCHEMAS:
         return _json({"fehler": "Aufträge gibt es in diesem Laden noch nicht."})
     art = (art or "").strip().lower()
-    if art != "reel":
-        return _json({"fehler": "Unbekannte Art – heute geht nur art=\"reel\"."})
+    if art not in ("reel", "video"):
+        return _json({"fehler": "Unbekannte Art – es gehen art=\"reel\" und art=\"video\"."})
     thema = (thema or "").strip()
     if not 3 <= len(thema) <= 300:
         return _json({"fehler": "Das Thema braucht 3 bis 300 Zeichen."})
-    nur = [n.strip().lower() for n in (kanaele or "").split(",") if n.strip()] or None
+    if art == "video":
+        return _video_auftrag_geben(thema, beschreibung, minuten, zielgruppe)
+    nur =[n.strip().lower() for n in (kanaele or "").split(",") if n.strip()] or None
     ziele = reel_teilen.ziele(_q, nur)
     if not ziele:
         return _json({"fehler": "Kein verbundener Kanal nimmt Videos."})
@@ -10406,8 +10445,10 @@ def auftrag_geben(art: str, thema: str, kanaele: str = "") -> str:
 
 @_gesichert
 def auftraege_melden() -> str:
-    """Meldungen zu den Reel-Auftraegen des Betreibers (online mit Links, verworfen, gescheitert,
-    nicht rechtzeitig fertig, Kanal ging nicht raus, wartet seit 2 Tagen auf Freigabe).
+    """Meldungen zu den Reel- und Video-Auftraegen des Betreibers (Reel: online mit Links, verworfen,
+    gescheitert, nicht rechtzeitig fertig, Kanal ging nicht raus, wartet seit 2 Tagen auf Freigabe;
+    Video: wie viele Eintraege in Rowboat warten, Erinnerung nach 2 Tagen, Hinweise, fertig zur
+    Freigabe, freigegeben mit Download, verworfen, gescheitert).
 
     Gibt {"meldungen": [Satz, ...]} zurueck. Schicke JEDEN Satz GENAU EINMAL und woertlich an den
     Betreiber: das Werkzeug merkt sich beim Aufruf, was es geliefert hat, ein zweiter Aufruf liefert

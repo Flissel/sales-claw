@@ -25,6 +25,8 @@ class AuftragAbgelehnt(Exception):
 
 def _satz(fehler: Exception) -> str:
     text = str(fehler)
+    if "2 Video-Auftraege" in text:      # vor der allgemeinen Tagesgrenze: der Text nennt beide
+        return "Heute sind schon zwei Videos bestellt – morgen wieder."
     if "Tagesgrenze" in text:
         return "Die Tagesgrenze für Aufträge ist erreicht – morgen wieder."
     if "Tiefe" in text:
