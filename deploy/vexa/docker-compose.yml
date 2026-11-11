@@ -151,7 +151,8 @@ services:
           - vexa-gateway
     environment:
       RUNTIME_BACKEND: process
-      VEXA_JITSI_HOSTS: meet.ffmuc.net
+      # Jitsi-Hosts, in die der Bot darf (deploy/vexa/.env, Vorgabe meet.ffmuc.net).
+      VEXA_JITSI_HOSTS: ${VEXA_JITSI_HOSTS:-meet.ffmuc.net}
       ADMIN_API_TOKEN: ${ADMIN_TOKEN:?in deploy/vexa/.env setzen}
       ADMIN_TOKEN: ${ADMIN_TOKEN}
       DB_HOST: vexa-lite-postgres

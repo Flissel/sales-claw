@@ -77,7 +77,9 @@ done
 # vexa-lite: Prozess-Backend, Jitsi-Host, Port; NICHT an sales-claw_default.
 LITE="$(block vexa-lite)"
 echo "$LITE" | grep -qE 'RUNTIME_BACKEND:[[:space:]]*"?process"?[[:space:]]*$' || fehler "RUNTIME_BACKEND: process fehlt"
-echo "$LITE" | grep -qE 'VEXA_JITSI_HOSTS:[[:space:]]*"?meet\.ffmuc\.net"?[[:space:]]*$' || fehler "VEXA_JITSI_HOSTS fehlt"
+# Jitsi-Hosts aus deploy/vexa/.env, Vorgabe meet.ffmuc.net.
+echo "$LITE" | grep -qE 'VEXA_JITSI_HOSTS:[[:space:]]*"?\$\{VEXA_JITSI_HOSTS:-meet\.ffmuc\.net\}"?[[:space:]]*$'   || fehler "VEXA_JITSI_HOSTS nicht aus der .env (\${VEXA_JITSI_HOSTS:-meet.ffmuc.net})"
+grep -qE '^VEXA_JITSI_HOSTS=meet\.ffmuc\.net$' "$BEISPIEL" || fehler ".env.example kennt VEXA_JITSI_HOSTS nicht"
 if echo "$LITE" | grep -q 'sales-claw_default\|salesclaw'; then
   fehler "vexa-lite darf nicht an sales-claw_default (nur vexa-tor)"
 fi
@@ -119,6 +121,15 @@ grep -qE 'proxy_(connect|read)_timeout' "$NGINX" || fehler "nginx-tor.conf: kein
 n_listen="$(grep -cE '^[[:space:]]*listen[[:space:]]' "$NGINX")"
 [ "$n_listen" -eq 1 ] || fehler "nginx-tor.conf: genau ein listen erwartet, gefunden $n_listen"
 if grep -q '0\.0\.0\.0' "$NGINX"; then fehler "0.0.0.0 in nginx-tor.conf"; fi
+# Verwaltungs-Pfade des Gateways (v0.12.28: /user/* geht an die admin-api,
+# /agent/* und /mcp* an den Agenten) und /admin sind am Tor gesperrt - und
+# zwar VOR "location /", sonst gewaenne die allgemeine Weiterleitung nichts.
+for pfad in /admin /user /agent /mcp; do
+  zeile_sperre="$(grep -nE "^[[:space:]]*location[[:space:]]+(\^~[[:space:]]+)?$pfad[[:space:]]*\{[[:space:]]*return[[:space:]]+403;[[:space:]]*\}" "$NGINX" | head -1 | cut -d: -f1)"
+  [ -n "$zeile_sperre" ] || fehler "nginx-tor.conf: location $pfad { return 403; } fehlt"
+  zeile_alles="$(grep -nE '^[[:space:]]*location[[:space:]]+/[[:space:]]*\{' "$NGINX" | head -1 | cut -d: -f1)"
+  [ -n "$zeile_alles" ] && [ "$zeile_sperre" -lt "$zeile_alles" ] || fehler "nginx-tor.conf: Sperre $pfad steht nicht vor location /"
+done
 # Ziel des Proxys: nie vexa-lite (waere in sales-claw_default das Tor selbst, Schleife),
 # sondern der Alias, der NUR an vexa-lite in vexa_default haengt.
 ZIEL_HOST="$(sed -n 's|^[[:space:]]*set[[:space:]]\{1,\}\$ziel[[:space:]]\{1,\}http://\([A-Za-z0-9_.-]*\):8056;.*|\1|p' "$NGINX")"
