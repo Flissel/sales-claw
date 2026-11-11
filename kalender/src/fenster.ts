@@ -167,6 +167,16 @@ export function konfliktFragen(konflikte: Konflikt[], unvollstaendig: boolean): 
   });
 }
 
+/** Adresse der Termin-Akte (Seite /termine/{uid}); die UID enthaelt oft # und @. */
+export function aktenLink(uid: string): string {
+  return '/termine/' + encodeURIComponent(uid);
+}
+
+/** Kundentermine (eigene und aus Kalendern) haben eine Akte; Handy-/Eigentermine nicht. */
+function istKundentermin(id: string, uid: unknown): boolean {
+  return Boolean(uid) && (id.startsWith('kunde:') || id.startsWith('kalender:'));
+}
+
 /** Nur ansehen: verbundene Kalender, Handy-Termine und alles fuer Rollen ohne Schreibrecht. */
 export function detailsOeffnen(ev: EventApi, ctx: Kontext): void {
   const p = ev.extendedProps;
@@ -194,6 +204,8 @@ export function detailsOeffnen(ev: EventApi, ctx: Kontext): void {
       ? el('p', { class: 'vk-hinweis' }, 'Ohne Kontakt – hier nicht bearbeitbar.') : null,
     p.lead_id && ctx.rolle !== 'kalender'
       ? el('p', {}, el('a', { href: `/kontakte/${encodeURIComponent(String(p.lead_id))}` }, 'Zum Kontakt')) : null,
+    istKundentermin(ev.id, p.uid)
+      ? el('p', {}, el('a', { href: aktenLink(String(p.uid)), class: 'vk-link' }, 'Termin-Seite')) : null,
   );
   const zu = el('button', { type: 'button' }, 'Schließen');
   zu.onclick = () => fenster.close();

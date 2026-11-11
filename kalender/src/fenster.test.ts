@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { koerperAendern, koerperAnlegen, mitSperre, pruefen, startWerte, type Werte } from './fenster';
+import { aktenLink, koerperAendern, koerperAnlegen, mitSperre, pruefen, startWerte, type Werte } from './fenster';
 
 const basis: Werte = {
   art: 'eigen', titel: 'Steuerberater', datum: '2026-10-26', zeit: '14:00', dauer: 60,
@@ -98,5 +98,15 @@ describe('startWerte (Vorgabe aus dem Link)', () => {
   });
   it('beim Bearbeiten gilt weiter die Art des Termins', () => {
     expect(startWerte({ modus: 'bearbeiten' }, { art: 'kunde', lead_id: 'x' }).art).toBe('kunde');
+  });
+});
+
+describe('aktenLink', () => {
+  it('kodiert # und @ der Kalender-UID', () => {
+    expect(aktenLink('abc@google.com#2026-11-12T09:00:00+00:00'))
+      .toBe('/termine/abc%40google.com%232026-11-12T09%3A00%3A00%2B00%3A00');
+  });
+  it('einfache UID bleibt lesbar', () => {
+    expect(aktenLink('u1')).toBe('/termine/u1');
   });
 });

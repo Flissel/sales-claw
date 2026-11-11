@@ -54,9 +54,53 @@ def doppelt_hinweis(treffer: list) -> str:
             f"angeschrieben — trotzdem anlegen? Dann trotzdem=True.")
 
 
-def kontakt_historie(lead_id, tage=365, mit_mail: bool = True) -> list:
+def _akten_eintraege(lid: str, tage: int) -> list:
+    """Abgeleitete Eintraege aus Termin-Akten (Meeting-Mittelpunkt): Termin,
+    Mitschrift, Painpoints. Nichts davon liegt in `activities`. Akten, in
+    denen dieser Kontakt gesperrt ist (grund = 'gesperrt'), und gesperrte
+    Kontakte selbst liefern nichts."""
+    import teilnehmer  # lokal: teilnehmer importiert server wie dieses Modul
+    try:
+        if teilnehmer.lead_sperrgrund(lid):
+            return []
+    except psycopg.Error:
+        return []
+    aus = []
+    for z in _lesen(
+            "Termin-Akten",
+            "select a.titel, a.beginn, a.abgesagt_am from termin_teilnehmer t "
+            "join termin_akten a on a.uid = t.uid where t.lead_id = %s "
+            "and coalesce(t.grund, '') <> 'gesperrt' "
+            "and a.beginn > now() - make_interval(days => %s)", (lid, tage)):
+        titel = " ".join(str(z["titel"] or "Termin").split())
+        text = f"Termin (abgesagt): {titel}" if z["abgesagt_am"] else f"Termin: {titel}"
+        aus.append({"datum": z["beginn"], "art": "termin_akte", "kanal": "", "text": text})
+    for z in _lesen(
+            "Mitschriften",
+            "select m.geholt_am, m.auswertung_status, m.auswertung_json, m.auswertung_am "
+            "from termin_teilnehmer t join termin_mitschriften m on m.uid = t.uid "
+            "where t.lead_id = %s and coalesce(t.grund, '') <> 'gesperrt' "
+            "and m.geholt_am > now() - make_interval(days => %s)", (lid, tage)):
+        aus.append({"datum": z["geholt_am"], "art": "mitschrift", "kanal": "",
+                    "text": "Mitschrift vorhanden"})
+        if z["auswertung_status"] != "fertig":
+            continue
+        j = z["auswertung_json"] if isinstance(z["auswertung_json"], dict) else {}
+        for pp in j.get("painpoints") or []:
+            zitat = " ".join(str(pp.get("zitat") or "").split()) if isinstance(pp, dict) else ""
+            if zitat:
+                aus.append({"datum": z["auswertung_am"] or z["geholt_am"], "art": "painpoint",
+                            "kanal": "", "text": f"Painpoint: {zitat}"})
+    return aus
+
+
+def kontakt_historie(lead_id, tage=365, mit_mail: bool = True, mit_akten: bool = False) -> list:
     """`mit_mail=False` laesst E-Mail-Entwuerfe weg: die Oberflaeche zeigt
-    Mailinhalt (Betreff, Anfang) nur dem Postfach-Besitzer."""
+    Mailinhalt (Betreff, Anfang) nur dem Postfach-Besitzer.
+    `mit_akten=True` nimmt Termin-Akten, Mitschrift und Painpoint-Zitate
+    dazu - nur fuer Felix' eigene Seiten. Agent-Werkzeuge, Briefing und
+    `letzter_kontakt` bleiben auf False: Zitate sind gesprochener Kundentext
+    und gehen nie an ein Cloud-Modell."""
     lid = str(lead_id)
     aus = []
     for z in _lesen(
@@ -89,6 +133,8 @@ def kontakt_historie(lead_id, tage=365, mit_mail: bool = True) -> list:
         aus.append({"datum": z["zuletzt"], "art": "handy", "kanal": "whatsapp",
                     "text": f"{z['n']} gesendete WhatsApp-Nachrichten (Handy oder System) "
                             f"im {z['monat']:%m/%Y}"})
+    if mit_akten:
+        aus.extend(_akten_eintraege(lid, tage))
     aus.sort(key=lambda e: e["datum"], reverse=True)
     return aus
 

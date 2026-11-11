@@ -2752,7 +2752,8 @@ def _kontakt_historie_bereich(lead_id, alle: bool,
     try:
         eintraege = historie.kontakt_historie(
             lead_id,
-            mit_mail=post_struktur.mail_verlauf_erlaubt(betrachter_name))
+            mit_mail=post_struktur.mail_verlauf_erlaubt(betrachter_name),
+            mit_akten=True)
     except psycopg.Error:
         return ""
     zeilen = "".join(
@@ -8193,14 +8194,24 @@ def _kontakt_termine(lead_id: str, termine=None) -> str:
         teile.append("<p>Keine Termine.</p>")
         return "".join(teile)
     zeilen = []
+    uids = [str(p["uid"]) for _t, _z, p in termine[:30] if p.get("uid")]
+    try:
+        mit_akte = {z["uid"] for z in server._q(
+            "select uid from termin_akten where uid = any(%s)", (uids,))} if uids else set()
+    except psycopg.Error:
+        mit_akte = set()  # Akten-Tabelle fehlt noch: Zeilen bleiben wie bisher
     for tag, zeit, p in termine[:30]:
         thema = str(p.get("thema") or "")
         ziel = f"/kalender?datum={tag}&ansicht=woche"
+        aktenlink = ""
+        uid = str(p.get("uid") or "")
+        if uid and uid in mit_akte:
+            aktenlink = f' · <a href="/termine/{urllib.parse.quote(uid, safe="")}">Termin-Seite</a>'
         zeilen.append([
             _e(tag_lesbar(tag)), _e(zeit),
             f'<span title="{_e(thema)}">{_e(_kurz(thema, 80))}</span>',
             _e(_kurz(str(p.get("ort") or ""), 60)),
-            f'<a href="{_e(ziel)}">im Kalender öffnen</a>'])
+            f'<a href="{_e(ziel)}">im Kalender öffnen</a>{aktenlink}'])
     teile.append(_tabelle(["Datum", "Zeit", "Thema", "Ort", "Kalender"], zeilen))
     return "".join(teile)
 

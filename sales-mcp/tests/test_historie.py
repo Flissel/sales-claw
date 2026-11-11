@@ -16,7 +16,7 @@ PROVISION = (Path(__file__).resolve().parents[2] / "db" / "provision.sql").read_
 def leer():
     with server.pool.connection() as conn:
         conn.execute("truncate sales_test.activities, sales_test.drafts, "
-                     "sales_test.personas, sales_test.leads cascade")
+                     "sales_test.personas, sales_test.termin_akten, sales_test.leads cascade")
 
 
 def _lead():
@@ -319,3 +319,66 @@ def test_kanal_namen_der_beitragskanaele():
     assert hi._KANAL["devto"] == "dev.to"
     assert hi._KANAL["youtube"] == "YouTube"
     assert hi._KANAL["bluesky"] == "Bluesky"
+
+
+# --- Termin-Akten im Verlauf (Meeting-Mittelpunkt Task 13) ---------------------
+
+def _akte(lead, uid="u1", titel="Beratung bAV", beginn=None, grund=None, abgesagt=False,
+          mitschrift=None, painpoints=None, status="fertig"):
+    b = beginn or datetime.now(timezone.utc) - timedelta(days=2)
+    server._q("insert into termin_akten (uid, herkunft, beginn, ende, titel, abgesagt_am) "
+              "values (%s,'sales-claw',%s,%s,%s,%s) returning uid",
+              (uid, b, b + timedelta(hours=1), titel, b if abgesagt else None))
+    server._q("insert into termin_teilnehmer (uid, adresse, rolle, lead_id, grund) "
+              "values (%s,'k@firma.de','gast',%s,%s) returning uid", (uid, lead, grund))
+    if mitschrift:
+        j = json.dumps({"painpoints": painpoints or []})
+        server._q("insert into termin_mitschriften (uid, segmente, auswertung_status, "
+                  "auswertung_json, auswertung_am) values (%s,'[]'::jsonb,%s,%s::jsonb,now()) "
+                  "returning id", (uid, status, j))
+
+
+def test_historie_zeigt_akte_mitschrift_painpoints():
+    lead = _lead()
+    _akte(lead, mitschrift=True, painpoints=[{"zitat": "Das dauert zu lange", "zeit": 5, "sprecher": "K"}])
+    arten = {e["art"]: e["text"] for e in hi.kontakt_historie(lead, mit_akten=True)}
+    assert arten["termin_akte"] == "Termin: Beratung bAV"
+    assert arten["mitschrift"] == "Mitschrift vorhanden"
+    assert "Das dauert zu lange" in arten["painpoint"]
+
+
+def test_historie_default_ohne_akten_eintraege():
+    lead = _lead()
+    _akte(lead, mitschrift=True, painpoints=[{"zitat": "geheim", "zeit": 1, "sprecher": "K"}])
+    assert hi.kontakt_historie(lead) == []
+    assert hi.zuletzt(lead) is None
+
+
+def test_historie_nach_verwerfen_leer():
+    lead = _lead()
+    _akte(lead, mitschrift=True, painpoints=[{"zitat": "x", "zeit": 1, "sprecher": "K"}])
+    server._q("delete from termin_mitschriften returning id")
+    arten = {e["art"] for e in hi.kontakt_historie(lead, mit_akten=True)}
+    assert arten == {"termin_akte"}
+
+
+def test_historie_painpoints_nur_bei_fertiger_auswertung():
+    lead = _lead()
+    _akte(lead, mitschrift=True, status="offen", painpoints=[{"zitat": "x", "zeit": 1, "sprecher": "K"}])
+    arten = {e["art"] for e in hi.kontakt_historie(lead, mit_akten=True)}
+    assert arten == {"termin_akte", "mitschrift"}
+
+
+def test_historie_gesperrter_teilnehmer_ohne_akten():
+    lead = _lead()
+    _akte(lead, grund="gesperrt", mitschrift=True, painpoints=[{"zitat": "x", "zeit": 1, "sprecher": "K"}])
+    assert hi.kontakt_historie(lead, mit_akten=True) == []
+
+
+def test_historie_abgesagte_akte_gekennzeichnet_und_zukunft_datum():
+    lead = _lead()
+    b = datetime.now(timezone.utc) + timedelta(days=3)
+    _akte(lead, titel="<b>Demo</b>", beginn=b, abgesagt=True)
+    e = hi.kontakt_historie(lead, mit_akten=True)[0]
+    assert e["text"] == "Termin (abgesagt): <b>Demo</b>"  # Rohtext, Escaping macht die Oberflaeche
+    assert e["datum"] == b
