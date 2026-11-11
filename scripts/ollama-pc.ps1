@@ -16,12 +16,24 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
+# Tailnet-Freigabe: laeuft bei JEDEM Aufruf (idempotent), auch wenn Ollama schon
+# antwortet - sonst fehlt der Weg, falls Ollama anderweitig gestartet wurde.
+function Stelle-TailscaleWegHer {
+    tailscale serve --bg --tcp $Port "tcp://127.0.0.1:$Port"
+    if ($LASTEXITCODE -ne 0) { throw "tailscale serve scheiterte (Exit-Code $LASTEXITCODE)" }
+}
+
 # Lebt er? Nur per Anfrage pruefen (nicht per Prozess- oder Portliste), sonst
 # startet das Skript alle 5 Minuten eine weitere Kopie.
+# Hinweis: Ein von der Tray-App gestartetes Ollama bekommt OLLAMA_MODELS und
+# OLLAMA_HOST NICHT von diesem Skript (die Variablen gelten nur fuer den hier
+# gestarteten Kindprozess).
+$lebt = $false
 try {
     $r = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/api/tags" -TimeoutSec 5 -UseBasicParsing
-    if ($r.StatusCode -eq 200) { exit 0 }
+    $lebt = ($r.StatusCode -eq 200)
 } catch { }
+if ($lebt) { Stelle-TailscaleWegHer; exit 0 }
 
 $ollama = Get-Command ollama -ErrorAction SilentlyContinue
 if (-not $ollama) { throw "ollama fehlt im PATH - bitte installieren." }
@@ -44,5 +56,4 @@ for ($i = 0; $i -lt 20 -and -not $bereit; $i++) {
 }
 if (-not $bereit) { throw "ollama antwortet nach 20 s nicht auf 127.0.0.1:$Port" }
 
-# Idempotent: setzt dieselbe Freigabe erneut.
-tailscale serve --bg --tcp $Port "tcp://127.0.0.1:$Port"
+Stelle-TailscaleWegHer

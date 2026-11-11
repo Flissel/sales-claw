@@ -35,11 +35,13 @@ def _modell() -> str:
     return os.environ.get("OLLAMA_MODELL", "").strip() or MODELL_STANDARD
 
 
-def _timeout() -> int:
+def _timeout() -> float:
     try:
-        return int(os.environ.get("OLLAMA_TIMEOUT_S", "") or 300)
+        wert = float(os.environ.get("OLLAMA_TIMEOUT_S", "") or 300)
     except ValueError:
-        return 300
+        return 300.0
+    # nan, inf und <= 0 sind unbrauchbar
+    return wert if 0 < wert < float("inf") else 300.0
 
 
 def _anfrage(methode: str, pfad: str, body: dict | None, timeout: float) -> bytes:

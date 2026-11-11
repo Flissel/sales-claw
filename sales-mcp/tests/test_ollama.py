@@ -129,7 +129,7 @@ def test_chat_fehlerfaelle(stub, monkeypatch):
         ollama.chat("s", "n")
     # Zeitueberschreitung
     stub.antworten[("POST", "/api/chat")] = _antwort("spaet")
-    stub.verzoegerung = 1.5
+    stub.verzoegerung = 3
     monkeypatch.setenv("OLLAMA_TIMEOUT_S", "1")
     with pytest.raises(ollama.OllamaFehler):
         ollama.chat("s", "n")
@@ -157,3 +157,23 @@ def test_ollama_py_ohne_fremde_ki_importe():
         elif isinstance(knoten, ast.ImportFrom) and knoten.module:
             gefunden.add(knoten.module.split(".")[0])
     assert not (gefunden & verboten)
+
+
+def test_timeout_aus_umgebung(monkeypatch):
+    for roh, erwartet in [("", 300), ("abc", 300), ("0", 300), ("-5", 300),
+                          ("nan", 300), ("inf", 300), ("2.5", 2.5), ("40", 40)]:
+        monkeypatch.setenv("OLLAMA_TIMEOUT_S", roh)
+        assert ollama._timeout() == erwartet, roh
+
+
+def test_erreichbar_nutzt_3s_limit(stub, monkeypatch):
+    gesehen = []
+    echt = ollama.urllib.request.urlopen
+
+    def spion(req, timeout=None):
+        gesehen.append(timeout)
+        return echt(req, timeout=timeout)
+
+    monkeypatch.setattr(ollama.urllib.request, "urlopen", spion)
+    assert ollama.erreichbar() is True
+    assert gesehen == [3]

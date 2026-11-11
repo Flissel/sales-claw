@@ -30,14 +30,16 @@ if (-not (Test-Path -LiteralPath $Skript)) { throw "fehlt: $Skript" }
 $argumente = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$Skript`""
 $action    = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $argumente
 $anmeldung = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+# Keine Laufzeitgrenze: ein Limit wuerde das per Start-Process abgekoppelte
+# 'ollama serve' mit der Aufgabe beenden. Das Skript selbst kehrt schnell zurueck.
 # Kein -StartWhenAvailable: ein verpasster Start soll nicht sofort nachgeholt werden.
 $alle5     = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5)
-$settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]"00:10:00") `
+$settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) `
     -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 
 Write-Output "Aufgabe:  $TaskName"
 Write-Output "Aktion:   powershell.exe $argumente"
-Write-Output "Trigger:  bei Anmeldung und alle 5 Minuten; Laufzeit hoechstens 00:10:00; MultipleInstances IgnoreNew"
+Write-Output "Trigger:  bei Anmeldung und alle 5 Minuten; keine Laufzeitgrenze; MultipleInstances IgnoreNew"
 
 if (-not $PSCmdlet.ShouldProcess($TaskName, $(if ($vorhanden) { "aktualisieren" } else { "registrieren" }))) {
     exit 0
