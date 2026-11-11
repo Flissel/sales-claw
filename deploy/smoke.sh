@@ -780,6 +780,7 @@ fi
 # smoke ~30 s spaeter - das waere ROT und damit Rueckbau. Absturzschleife statt
 # dessen: Restarting oder RestartCount >= 3 (Neuerzeugen setzt ihn auf 0).
 # Dazu muss post_mails lesbar sein.
+echo "== Post-Sammelstelle =="
 post_zustand="$(docker inspect -f '{{.State.Status}}' sales-post 2>/dev/null | tr -d '[:space:]' || true)"
 if [ "$post_zustand" != "running" ]; then
   melde "sales-post" "uebersprungen (Container laeuft nicht — Post-Sammelstelle noch nicht ausgerollt)"

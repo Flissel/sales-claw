@@ -329,7 +329,8 @@ def test_erledigt_von_wiedervorlagen_und_heute_unveraendert():
 def test_letzte_kontakte_fehler_bricht_ueberblick_nicht(monkeypatch):
     lead = _lead()
 
-    def kaputt(_):
+    def kaputt(_lead_id, **_kw):
+        # **_kw: seit 5282c7b (07.11.2026) kommt mit_mail=... mit.
         raise ui.psycopg.Error("weg")
     monkeypatch.setattr(ui.historie, "kontakt_historie", kaputt)
     r = _get(f"/kontakte/{lead}")
