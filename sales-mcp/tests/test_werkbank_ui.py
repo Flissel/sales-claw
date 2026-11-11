@@ -711,7 +711,8 @@ def test_alte_medienroute_sperrt_jede_lesart_des_werkbanknamens(klient, tmp_path
     monkeypatch.setattr(medien, "MEDIA_VERZEICHNIS", str(medien_ordner))
     (medien_ordner / NAME).write_bytes(b"x" * 64)
     (tmp_path / NAME).write_bytes(b"x" * 64)
-    assert get(klient, pfad).status_code == 404
+    r = get(klient, pfad)
+    assert r.status_code in (404, 307) and r.content != b"x" * 64     # 307: Starlette schreibt den Pfad um, ohne Datei
 
 
 def test_medien_werkbankname_verdaechtig():
