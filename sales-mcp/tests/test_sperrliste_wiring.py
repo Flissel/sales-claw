@@ -46,7 +46,8 @@ def test_loeschantrag_sperrt_beide_seiten(monkeypatch):
     gesperrt = []
     monkeypatch.setattr(sperrliste, "sperren",
                         lambda q, email="", phone="", *, quelle, grund="": gesperrt.append((email, phone, quelle, grund)) or 1)
-    monkeypatch.setattr(server, "_q", lambda sql, params=(): [
+    # Termin-Akten (Mitschrift-Abraeumen) kennt dieser Test nicht: leer.
+    monkeypatch.setattr(server, "_q", lambda sql, params=(): [] if "termin_" in sql else [
         {"enrichment": {}, "name": "Max", "email": "max@x.de", "phone": "", "id": "lead-1"}])
     out = json.loads(server.loeschantrag_vermerken("lead-1", "mail", "bitte loeschen"))
     assert "fehler" not in out

@@ -349,14 +349,20 @@ def aufnahme_beenden(uid: str, grund: str) -> None:
             felder["vexa_meeting_id"] = None
         except vexa.VexaFehler as e:
             LOG.warning("Vexa-Aufraeumen fehlgeschlagen (%s)", type(e).__name__)
-    # Ein noch offener Zusammenfassungs-Entwurf darf nicht verwaisen.
+    mitschrift_entfernen(uid)
+    status_setzen(uid, "ohne_aufnahme", grund, **felder)
+
+
+def mitschrift_entfernen(uid: str) -> None:
+    """Einen noch offenen Zusammenfassungs-Entwurf ablehnen (er darf nicht
+    verwaisen) und die lokale Mitschrift der Akte loeschen (Vorschlaege gehen
+    per Kaskade mit)."""
     for m in server._q("select entwurf_id from termin_mitschriften where uid = %s", (uid,)):
         if m["entwurf_id"] and server._q(
                 "select 1 from drafts where id = %s and status = 'pending'",
                 (str(m["entwurf_id"]),)):
             server.entwurf_ablehnen(str(m["entwurf_id"]))
     server._q("delete from termin_mitschriften where uid = %s returning id", (uid,))
-    status_setzen(uid, "ohne_aufnahme", grund, **felder)
 
 
 _PASSCODE_PARAMETER = ("pwd", "passcode", "pw", "password", "pass")

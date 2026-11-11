@@ -17,6 +17,10 @@ Eine Person will wissen, was über sie gespeichert ist.
 3. Verlangt der Kontakt die Auskunft im Chat, sagt der Bot es dem
    Betreiber; er stellt den Export nie selbst in den Chat.
 
+- **Mitschriften von Videotreffen** (Meeting-Mittelpunkt, seit 11.11.2026) stehen im
+  Abschnitt `Termine` der Auskunft: je Termin des Kontakts Titel, Beginn, Status,
+  Mitschrift-Segmente und Auswertung. Adressen anderer Teilnehmer stehen nicht darin.
+
 - **Terminkarten** (seit 24.09.2026) stehen in der Auskunft als Aktivität `terminkarte`
   mit Dateiname, eingesetzten Werten und Fassung der Vorlage. Die Datei selbst liegt in
   `media-erzeugt` des Ladens (Basis-Laden: `media-erzeugt/`, weitere Läden:
@@ -66,6 +70,27 @@ DELETE FROM sales.leads WHERE id = '<LEAD>';
    eingestellt (Vermerk-Vollstopp). Nicht einzeln in Archive hineinoperieren.
 5. Löschprotokoll führen OHNE Personenbezug: Datum, wer (beide Namen),
    Fundstellen geprüft ja/nein. Ablage beim Betreiber, nicht im Repo.
+
+## Mitschriften von Videotreffen (Meeting-Mittelpunkt, seit 11.11.2026)
+
+Checkliste für Transkripte:
+
+- [ ] **Was gespeichert wird:** Mitschrift (Segmente mit Sprecher und Text),
+      Auswertung (JSON und Markdown), Vorschläge und das Briefing in der Termin-Akte
+      (`termin_mitschriften`, `termin_vorschlaege`, `termin_akten.briefing_*`). Nur im
+      eigenen Schema des Ladens, nie in `activities` (die bleibt append-only; dort steht
+      nur, was der Betreiber bestätigt).
+- [ ] **Wo:** Mitschrift und Auswertung auf unseren eigenen Servern (Vexa auf der VM,
+      Datenbank des Ladens). Kundentext geht nur an `OLLAMA_URL`, nie an ein
+      Cloud-Modell. Die Einladung mit Videolink trägt einen Hinweis auf die Mitschrift.
+- [ ] **Löschweg:** `loeschantrag_vermerken` beendet einen laufenden Bot (Status
+      `ohne_aufnahme`), löscht die Mitschriften **aller** Termine, an denen der Kontakt
+      teilnahm, lehnt einen offenen Zusammenfassungs-Entwurf ab, leert das Briefing dieser
+      Akten und löst den Kontakt aus der Teilnehmerliste (`grund = 'gesperrt'`). Ein noch
+      beim Transkriptionsdienst liegendes Meeting löscht der Taktgeber nach.
+      Sicherungen laufen wie oben aus.
+- [ ] **Auskunft:** `kontakt_auskunft` enthält Abschnitt `Termine` mit Mitschrift und
+      Auswertung (ohne Adressen anderer Teilnehmer).
 
 ## Werbe-Einwilligung (§ 7 UWG, seit 31.08.2026)
 

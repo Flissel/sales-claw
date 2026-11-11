@@ -2120,6 +2120,14 @@ def termin_bestaetigen(lead_id: str, datum: str, uhrzeit: str,
                    + hinweis}))
 
 
+# Wortlaut: Vorschlag, Freigabe durch Felix vor dem Merge (Spec §5.4).
+EINLADUNG_MITSCHRIFT_HINWEIS = (
+    "Hinweis: VibeMind schreibt das Gespräch mit, damit nichts verloren "
+    "geht. Die Mitschrift bleibt auf unseren eigenen Servern. Möchten Sie "
+    "das nicht, sagen Sie es einfach zu Beginn – dann läuft das Gespräch "
+    "ohne Mitschrift.")
+
+
 def _termin_einladen(lead_id: str, datum: str, uhrzeit: str,
                      dauer_minuten: int = TERMIN_DAUER_VORGABE,
                      thema: str = "Erstgespraech", ort: str = "",
@@ -2352,11 +2360,17 @@ def _termin_einladen(lead_id: str, datum: str, uhrzeit: str,
     ist_link = ort_kurz.lower().startswith(("http://", "https://"))
     ortzeile = f"{'Videoraum' if ist_link else 'Ort'}: {ort_kurz}\n\n" \
         if ort_kurz else ""
+    # Nur bei erkanntem Videolink: die Mitschrift gibt es nur dort. Import
+    # hier, weil termin_link/termin_akte server selbst importieren (R4).
+    import termin_link
+    hinweiszeile = (f"{EINLADUNG_MITSCHRIFT_HINWEIS}\n\n"
+                    if termin_link.erkennen(ort_kurz) else "")
     text = (f"Hallo {name},\n\n"
             f"ich schlage folgenden Termin vor:\n"
             f"{WOCHENTAGE[beginn.weekday()]}, {tag.strftime('%d.%m.%Y')} "
             f"um {zeit:%H:%M} Uhr ({dauer} Minuten)\n\n"
             f"{ortzeile}"
+            f"{hinweiszeile}"
             f"Ihr Kalenderprogramm zeigt diese Mail als Einladung — Sie "
             f"können direkt zusagen, absagen oder einen anderen Termin "
             f"vorschlagen.\n\n"
@@ -8819,6 +8833,29 @@ def kontakt_auskunft(lead_id: str) -> str:
     for e in entwuerfe:
         teile.append(f"* {e['created_at']:%d.%m.%Y %H:%M} — {e['channel']} "
                      f"[{e['status']}] {e['subject'] or ''}: {e['body']}")
+    # Termin-Akten mit Mitschrift und Auswertung. Nur die eigenen Daten des
+    # Kontakts plus Termin-Metadaten: keine Adressen anderer Teilnehmer. Nie
+    # loggen.
+    akten = _q(
+        "select a.uid, a.titel, a.beginn, a.status, m.segmente, "
+        "m.auswertung_json, m.auswertung_md from termin_akten a "
+        "left join termin_mitschriften m on m.uid = a.uid "
+        "where a.uid in (select uid from termin_teilnehmer "
+        "where lead_id = %s) order by a.beginn, a.uid", (lead_id,))
+    teile += ["", f"## Termine ({len(akten)})", ""]
+    for a in akten:
+        teile.append(f"* {a['beginn']:%d.%m.%Y %H:%M} — {a['titel'] or ''} "
+                     f"[{a['status']}] (uid {a['uid']})")
+        if a["segmente"] is not None:
+            teile += ["  Mitschrift:", "  ```json",
+                      json.dumps(a["segmente"], ensure_ascii=False, indent=1,
+                                 default=str), "  ```"]
+        if a["auswertung_json"] is not None:
+            teile += ["  Auswertung (JSON):", "  ```json",
+                      json.dumps(a["auswertung_json"], ensure_ascii=False,
+                                 indent=1, default=str), "  ```"]
+        if a["auswertung_md"]:
+            teile += ["  Auswertung:", "", a["auswertung_md"]]
     text = "\n".join(teile) + "\n"
     name = f"auskunft-{recherche.slug(l['name'] or 'kontakt')}-{heute}.md"
     pfad, schreibfehler = None, None
@@ -8828,9 +8865,28 @@ def kontakt_auskunft(lead_id: str) -> str:
         schreibfehler = f"Auskunft konnte nicht abgelegt werden: {e}"
     return _json({"lead_id": lead_id, "datei": pfad, "text": text,
                   "protokollzeilen": len(zeilen),
-                  "entwuerfe": len(entwuerfe),
+                  "entwuerfe": len(entwuerfe), "termine": len(akten),
                   **({"fehler_ablage": schreibfehler}
                      if schreibfehler else {})})
+
+
+def _mitschriften_abraeumen(lead_id: str) -> None:
+    """Loeschantrag: Mitschriften aller Termine, an denen der Kontakt
+    teilnahm, entfernen (Meeting-Mittelpunkt). Laeuft ein Bot, erst beenden;
+    das Briefing nennt Namen, Kontakte und Painpoints und wird geleert."""
+    import termin_akte  # R4: termin_akte importiert server
+    for uid in termin_akte.akten_eines_leads(lead_id):
+        akte = _q("select status from termin_akten where uid = %s", (uid,))
+        if akte and akte[0]["status"] in ("wartet_auf_einlass", "laeuft"):
+            termin_akte.aufnahme_beenden(uid, "Löschantrag eines Teilnehmers")
+        termin_akte.mitschrift_entfernen(uid)
+        _q("update termin_akten set briefing_md = null, briefing_stand = null, "
+           "briefing_mit_ki = null, briefing_am = null, geaendert_am = now() "
+           "where uid = %s returning uid", (uid,))
+    _q("delete from termin_mitschriften where uid in (select uid from "
+       "termin_teilnehmer where lead_id = %s) returning id", (lead_id,))
+    _q("update termin_teilnehmer set lead_id = null, grund = 'gesperrt' "
+       "where lead_id = %s returning uid", (lead_id,))
 
 
 @_gesichert
@@ -8869,6 +8925,7 @@ def loeschantrag_vermerken(lead_id: str, quelle: str,
        "(%s, 'loeschantrag', %s) returning id", (lead_id, _json(vermerk)))
     # F1: Loeschbegehren gilt fuer beide Systeme — gemeinsame Verbotsliste.
     _lead_sperren(lead_id, "sales:loeschantrag", f"Loeschantrag via {quelle.strip()}")
+    _mitschriften_abraeumen(lead_id)
     return _json({"lead_id": lead_id, "kontakt": leads[0]["name"],
                   "vermerkt_am": vermerk["am"], "hinweis": (
                       "Verarbeitung gestoppt, Kontakt archiviert. Physische "

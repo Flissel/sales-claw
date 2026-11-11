@@ -165,3 +165,130 @@ def test_ein_kaputter_vermerk_schuetzt_trotzdem():
     """Fail-closed in Schutzrichtung: ein dict-Vermerk ohne Datum zaehlt
     ALS Antrag — lieber zu viel gestoppt als weiterverarbeitet."""
     assert server._loeschantrag({"_loeschantrag": {"quelle": "?"}}) is not None
+
+
+# ---------------------------------------------------------------------------
+# Meeting-Mittelpunkt Task 14: Mitschriften im Loeschantrag und in der Auskunft
+# ---------------------------------------------------------------------------
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+import termin_akte  # noqa: E402
+
+BEGINN = datetime(2099, 1, 10, 10, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture
+def akten_leer():
+    with server.pool.connection() as conn:
+        conn.execute("truncate sales_test.termin_akten cascade")
+    yield
+
+
+def _akte(uid, lead=None, status="fertig", vexa_id=None, briefing=None):
+    server._q(
+        "insert into termin_akten (uid, herkunft, beginn, ende, titel, status, "
+        "vexa_meeting_id, vexa_plattform, vexa_native_id, briefing_md, "
+        "briefing_stand, briefing_mit_ki, briefing_am) "
+        "values (%s, 'sales-claw', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+        "returning uid",
+        (uid, BEGINN, BEGINN + timedelta(hours=1), f"Termin {uid}", status,
+         vexa_id, "google_meet" if vexa_id else None,
+         "abc-defg-hij" if vexa_id else None, briefing,
+         "stand" if briefing else None, True if briefing else None,
+         BEGINN if briefing else None))
+    server._q("insert into termin_teilnehmer (uid, adresse, name, rolle, lead_id) "
+              "values (%s, 'chef@firma.de', 'Chef', 'organisator', null) "
+              "returning uid", (uid,))
+    if lead:
+        server._q("insert into termin_teilnehmer (uid, adresse, name, rolle, lead_id) "
+                  "values (%s, 'dora@example.org', 'Dora', 'gast', %s) returning uid",
+                  (uid, lead))
+
+
+def _mitschrift(uid, text="Geheimer Satz", entwurf_id=None):
+    server._q(
+        "insert into termin_mitschriften (uid, segmente, auswertung_status, "
+        "auswertung_json, auswertung_md, entwurf_id) values (%s, %s::jsonb, "
+        "'fertig', %s::jsonb, %s, %s) returning id",
+        (uid, json.dumps([{"sprecher": "Dora", "text": text}]),
+         json.dumps({"zusammenfassung": f"Zusammenfassung {uid}"}),
+         f"Auswertung {uid}", entwurf_id))
+
+
+def test_loeschantrag_loescht_mitschriften_aller_termine(akten_leer):
+    lead = _lead()
+    andere = _lead("Andi Anders")
+    _akte("a1", lead, briefing="Briefing Dora Datenschutz")
+    _akte("a2", lead, briefing="Briefing Dora Datenschutz")
+    _akte("a3", andere, briefing="Briefing Andi")
+    for uid in ("a1", "a2", "a3"):
+        _mitschrift(uid)
+    antwort = json.loads(server.loeschantrag_vermerken(lead, "E-Mail"))
+    assert "fehler" not in antwort
+    uids = [z["uid"] for z in server._q("select uid from termin_mitschriften")]
+    assert uids == ["a3"]
+    # Briefing enthaelt Namen und Kontakte: weg bei a1/a2, bleibt bei a3.
+    b = {z["uid"]: z for z in server._q(
+        "select uid, briefing_md, briefing_stand, briefing_mit_ki, briefing_am "
+        "from termin_akten")}
+    for uid in ("a1", "a2"):
+        assert (b[uid]["briefing_md"], b[uid]["briefing_stand"],
+                b[uid]["briefing_mit_ki"], b[uid]["briefing_am"]) == (None,) * 4
+    assert b["a3"]["briefing_md"] == "Briefing Andi"
+    # Teilnehmerzeile: ausgeloest und gesperrt; die anderen bleiben.
+    z = server._q("select lead_id, grund from termin_teilnehmer "
+                  "where uid = 'a1' and adresse = 'dora@example.org'")[0]
+    assert z["lead_id"] is None and z["grund"] == "gesperrt"
+    assert str(server._q("select lead_id from termin_teilnehmer where uid = 'a3' "
+                         "and adresse = 'dora@example.org'")[0]["lead_id"]) == andere
+
+
+def test_loeschantrag_lehnt_offenen_zusammenfassungs_entwurf_ab(akten_leer):
+    lead = _lead()
+    entwurf = json.loads(server.entwurf_erstellen(lead, "whatsapp", "Zusammenfassung"))
+    entwurf_id = entwurf["draft_id"] if "draft_id" in entwurf else entwurf["id"]
+    _akte("a1", lead)
+    _mitschrift("a1", entwurf_id=entwurf_id)
+    server.loeschantrag_vermerken(lead, "E-Mail")
+    assert server._q("select status from drafts where id = %s",
+                     (entwurf_id,))[0]["status"] != "pending"
+
+
+def test_loeschantrag_beendet_laufenden_bot(akten_leer, monkeypatch):
+    lead = _lead()
+    _akte("l1", lead, status="laeuft", vexa_id=7)
+    _akte("w1", lead, status="wartet_auf_einlass", vexa_id=8)
+    _akte("f1", lead, status="fertig")
+    gerufen = []
+    monkeypatch.setattr(termin_akte.vexa, "bot_stoppen",
+                        lambda p, n: gerufen.append(("stop", p, n)))
+    monkeypatch.setattr(termin_akte.vexa, "meeting_loeschen",
+                        lambda i: gerufen.append(("del", i)))
+    server.loeschantrag_vermerken(lead, "E-Mail")
+    assert ("del", 7) in gerufen and ("del", 8) in gerufen
+    st = {z["uid"]: z for z in server._q(
+        "select uid, status, status_grund, vexa_meeting_id from termin_akten")}
+    for uid in ("l1", "w1"):
+        assert st[uid]["status"] == "ohne_aufnahme"
+        assert st[uid]["status_grund"] == "Löschantrag eines Teilnehmers"
+        assert st[uid]["vexa_meeting_id"] is None
+    assert st["f1"]["status"] == "fertig"      # fertige Akte: Status bleibt
+
+
+def test_auskunft_enthaelt_mitschrift(akten_leer):
+    lead = _lead()
+    andere = _lead("Andi Anders")
+    _akte("a1", lead)
+    _akte("a2", andere)
+    _mitschrift("a1", text="Ich brauche ein Angebot")
+    _mitschrift("a2", text="Fremder Satz")
+    antwort = json.loads(server.kontakt_auskunft(lead))
+    text = antwort["text"]
+    assert "## Termine" in text and "Termin a1" in text
+    assert "Ich brauche ein Angebot" in text and "Auswertung a1" in text
+    assert "Zusammenfassung a1" in text
+    # Nur eigene Akten, keine fremden Adressen.
+    assert "Fremder Satz" not in text and "Termin a2" not in text
+    assert "chef@firma.de" not in text
+    assert antwort["termine"] == 1

@@ -498,3 +498,28 @@ def test_versendete_datei_gleicht_der_in_reports():
     with open(antwort["pfad"], "rb") as f:
         archiv = f.read()
     assert _rohbytes(antwort["datei"]) == archiv
+
+
+# ---------------------------------------------------------------------------
+# Meeting-Mittelpunkt Task 14: Hinweis zur Mitschrift in der Einladung
+# ---------------------------------------------------------------------------
+
+def test_einladung_mit_videolink_hat_hinweis():
+    lead = _lead()
+    json.loads(server.termin_einladen(
+        lead, "2099-10-01", "14:30", thema="Erstgespräch",
+        ort="https://meet.google.com/abc-defg-hij"))
+    rumpf = server._q(
+        "select body from drafts where lead_id = %s", (lead,))[0]["body"]
+    assert server.EINLADUNG_MITSCHRIFT_HINWEIS in rumpf, rumpf
+    assert "schreibt das Gespräch mit" in rumpf, rumpf
+
+
+def test_einladung_ohne_link_ohne_hinweis():
+    lead = _lead()
+    json.loads(server.termin_einladen(
+        lead, "2099-10-01", "14:30", thema="Erstgespräch", ort="Büro Kirchheim"))
+    rumpf = server._q(
+        "select body from drafts where lead_id = %s", (lead,))[0]["body"]
+    assert server.EINLADUNG_MITSCHRIFT_HINWEIS not in rumpf, rumpf
+    assert "mitschreiben" not in rumpf and "Mitschrift" not in rumpf, rumpf
