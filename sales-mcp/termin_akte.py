@@ -4,6 +4,8 @@ Quellen sind die sales-claw-Termine (`activities`, Typ 'termin') und die
 abgeglichenen Kalendertermine (`kalender_termine`) aus aktiven Quellen, deren
 Details gespeichert werden duerfen. Die uid ist die Kalender-UID: dieselbe
 Einladung in mehreren Kalendern und als sales-claw-Termin ergibt eine Akte.
+Ist ein Termin in beiden Quellen, ist sales-claw massgebend fuer beginn, ende
+und titel: sales-claw bucht den Termin und verschickt die Einladungs-Updates.
 
 Zeiten sind intern aware UTC. Logs enthalten nur Zahlen - nie Adressen, Namen,
 Titel, Links oder Passcodes. `lesen()` liefert den Passcode im Dict; das Dict
@@ -99,6 +101,8 @@ def _kalender() -> tuple[dict[str, dict], set[str], set[str]]:
         "select quelle_id, uid, beginn, ende, titel, beschreibung, teilnehmer, "
         "konferenz, ort from kalender_termine "
         "where quelle_id = any(%s::uuid[]) and uid <> '' "
+        # Ganztaegig, "frei" und ohne uid zaehlt nicht: wird ein Eintrag so
+        # umgestellt, gilt er hier als verschwunden.
         "and not ganztaegig and not frei order by beginn, quelle_id",
         (list(aktiv),))
     for z in zeilen:
@@ -177,9 +181,11 @@ def _speichern(uid: str, k: dict) -> tuple[bool, bool]:
         "beginn, ende, titel, thema, beschreibung, link, plattform, passcode, "
         "einwahl, status, status_grund) "
         "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
-        "on conflict (uid) do update set herkunft = excluded.herkunft, "
+        "on conflict (uid) do update set herkunft = case when termin_akten.herkunft = 'sales-claw' "
+        "                  then termin_akten.herkunft else excluded.herkunft end, "
         "quelle_id = excluded.quelle_id, "
-        "termin_activity_id = excluded.termin_activity_id, "
+        "termin_activity_id = coalesce(excluded.termin_activity_id, "
+        "                              termin_akten.termin_activity_id), "
         "beginn = excluded.beginn, ende = excluded.ende, titel = excluded.titel, "
         "thema = excluded.thema, beschreibung = excluded.beschreibung, "
         "link = excluded.link, plattform = excluded.plattform, "
@@ -211,6 +217,8 @@ def abgleichen(jetzt: datetime) -> dict:
         neu += ist_neu
         geaendert += ist_geaendert and not ist_neu
     weg = 0
+    # Keine Obergrenze (`bis`): ein Termin, der aus dem Fenster geschoben wurde,
+    # steht weiter in den Quellen und gilt ueber `gesehen` nicht als abgesagt.
     for z in server._q("select uid, herkunft, quelle_id from termin_akten "
                        "where abgesagt_am is null and beginn > %s", (jetzt,)):
         uid = z["uid"]

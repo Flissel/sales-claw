@@ -320,3 +320,66 @@ def test_kundenzeilen_ueberspringt_aus_kalender():
     _salesclaw(lead, uid="aus-kalender", aus_kalender=True)
     uids = [z["payload"]["uid"] for z in kalender_sicht.kundenzeilen()[0]]
     assert uids == ["normal"]
+
+
+def test_herkunft_bleibt_salesclaw_wenn_zeile_unlesbar_wird():
+    lead = _lead()
+    aid = _salesclaw(lead, uid="dup-h")
+    _ersetzen(_quelle(), [_termin("dup-h")])
+    termin_akte.abgleichen(JETZT)
+    assert _akten()[0]["herkunft"] == "sales-claw"
+    server._q("update activities set payload = jsonb_set(payload, '{uhrzeit}', '\"kaputt\"') "
+              "where id = %s returning id", (aid,))
+    termin_akte.abgleichen(JETZT)
+    z = _akten()[0]
+    assert z["herkunft"] == "sales-claw"
+    assert str(z["termin_activity_id"]) == aid
+
+
+def test_wiederkehrende_akte_ist_nicht_mehr_abgesagt():
+    qid = _quelle()
+    _ersetzen(qid, [_termin()])
+    termin_akte.abgleichen(JETZT)
+    _ersetzen(qid, [])
+    assert termin_akte.abgleichen(JETZT)["abgesagt"] == 1
+    _ersetzen(qid, [_termin()])
+    termin_akte.abgleichen(JETZT)
+    assert server._q("select abgesagt_am from termin_akten")[0]["abgesagt_am"] is None
+    assert termin_akte.lesen("k1")["abgesagt"] is False
+
+
+def test_vergangene_akte_wird_nicht_abgesagt():
+    qid = _quelle()
+    _ersetzen(qid, [_termin()])
+    termin_akte.abgleichen(JETZT)
+    _ersetzen(qid, [])
+    spaeter = BEGINN + timedelta(hours=3)
+    assert termin_akte.abgleichen(spaeter)["abgesagt"] == 0
+    assert server._q("select abgesagt_am from termin_akten")[0]["abgesagt_am"] is None
+
+
+def test_salesclaw_dauer_bestimmt_ende():
+    _salesclaw(_lead(), uid="dauer-1", dauer=45)
+    termin_akte.abgleichen(JETZT)
+    akte = termin_akte.lesen("dauer-1")
+    assert akte["ende"] - akte["beginn"] == timedelta(minutes=45)
+
+
+def test_aktive_quelle_ohne_zeilen_sagt_zukuenftige_akte_ab():
+    # beabsichtigt: eine erfolgreich gelesene, nun leere Quelle heisst "abgesagt"
+    qid = _quelle()
+    _ersetzen(qid, [_termin()])
+    termin_akte.abgleichen(JETZT)
+    server.kalenderquelle_stand_setzen(qid, 0, None)
+    _ersetzen(qid, [])
+    assert termin_akte.abgleichen(JETZT)["abgesagt"] == 1
+
+
+def test_sperre_nach_verknuepfen_verschwindet_aus_lesen():
+    qid = _quelle()
+    _ersetzen(qid, [_termin(teilnehmer=[_gast("kunde@firma.de"), _gast("zweiter@firma.de")])])
+    termin_akte.abgleichen(JETZT)
+    assert len(termin_akte.lesen("k1")["teilnehmer"]) == 2
+    sperrliste.sperren(server._q, email="kunde@firma.de", quelle="test", grund="x")
+    termin_akte.abgleichen(JETZT)
+    assert [t["adresse"] for t in termin_akte.lesen("k1")["teilnehmer"]] == ["zweiter@firma.de"]
