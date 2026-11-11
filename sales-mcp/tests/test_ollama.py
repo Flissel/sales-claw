@@ -1,12 +1,10 @@
 """Ollama-Client gegen einen lokalen HTTP-Stub (Muster: test_vexa).
 
-Die Schranken-Tests ueber briefing/auswertung (einziger Endpunkt, keine
-fremden KI-Importe) kommen in Task 10; hier nur ollama.py selbst.
+Die Schranken-Tests (einziger Endpunkt, keine fremden KI-Importe, auch fuer
+ollama.py) stehen in test_ki_schranke.py.
 """
-import ast
 import json
 import logging
-import pathlib
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -145,18 +143,6 @@ def test_kein_kundentext_im_log_oder_fehler(stub, caplog):
     stub.antworten[("POST", "/api/chat")] = _antwort(GEHEIM)
     ollama.chat(GEHEIM, GEHEIM)
     assert GEHEIM not in caplog.text
-
-
-def test_ollama_py_ohne_fremde_ki_importe():
-    quelle = pathlib.Path(ollama.__file__).read_text(encoding="utf-8")
-    verboten = {"gateway", "openai", "anthropic", "requests", "httpx"}
-    gefunden = set()
-    for knoten in ast.walk(ast.parse(quelle)):
-        if isinstance(knoten, ast.Import):
-            gefunden |= {a.name.split(".")[0] for a in knoten.names}
-        elif isinstance(knoten, ast.ImportFrom) and knoten.module:
-            gefunden.add(knoten.module.split(".")[0])
-    assert not (gefunden & verboten)
 
 
 def test_timeout_aus_umgebung(monkeypatch):
