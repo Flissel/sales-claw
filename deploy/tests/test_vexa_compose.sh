@@ -34,10 +34,16 @@ while IFS= read -r zeile; do
   n_image=$((n_image + 1))
   [[ $zeile =~ @sha256:[0-9a-f]{64}[[:space:]\"\']*$ ]] || fehler "image ohne Digest: $zeile"
 done < <(echo "$AKTIV" | grep -E '^[[:space:]]+image:')
-[ "$n_image" -ge 4 ] || fehler "erwartet mindestens 4 image-Zeilen, gefunden $n_image"
+[ "$n_image" -ge 6 ] || fehler "erwartet mindestens 6 image-Zeilen (inkl. vexa-tor, nginx), gefunden $n_image"
 
 # Kein 0.0.0.0 irgendwo (auch nicht als Kommentar).
 if grep -q '0\.0\.0\.0' "$COMPOSE"; then fehler "0.0.0.0 in docker-compose.yml"; fi
+
+# Kein network_mode, keine ports: im Fliessstil (ports: [...]) — die Pruefung
+# unten liest nur die Listenform; der gerenderte Stand wird zusaetzlich geprueft.
+if echo "$AKTIV" | grep -qE '^[[:space:]]+network_mode:'; then fehler "network_mode gesetzt"; fi
+if echo "$AKTIV" | grep -qE '^[[:space:]]+ports:[[:space:]]*[^[:space:]]'; then fehler "ports: im Fliessstil oder mit Inline-Wert"; fi
+if echo "$AKTIV" | grep -qE '^[[:space:]]+expose:'; then fehler "expose: gesetzt (nicht noetig)"; fi
 
 # Jeder ports:-Eintrag beginnt mit 127.0.0.1:, und es gibt genau einen (Gateway).
 n_ports=0
@@ -64,24 +70,45 @@ block() {
     in_services && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { aktiv = ($1 == d ":") ; next }
     in_services && aktiv { print }'
 }
-for dienst in vexa-lite vexa-lite-whisper vexa-lite-postgres vexa-lite-storage; do
+for dienst in vexa-lite vexa-lite-whisper vexa-lite-postgres vexa-lite-storage vexa-lite-storage-init vexa-tor; do
   [ -n "$(block "$dienst")" ] || fehler "Dienst $dienst fehlt"
 done
 
-# vexa-lite: Prozess-Backend, Jitsi-Host, Port, Netz sales-claw_default.
+# vexa-lite: Prozess-Backend, Jitsi-Host, Port; NICHT an sales-claw_default.
 LITE="$(block vexa-lite)"
 echo "$LITE" | grep -qE 'RUNTIME_BACKEND:[[:space:]]*"?process"?[[:space:]]*$' || fehler "RUNTIME_BACKEND: process fehlt"
 echo "$LITE" | grep -qE 'VEXA_JITSI_HOSTS:[[:space:]]*"?meet\.ffmuc\.net"?[[:space:]]*$' || fehler "VEXA_JITSI_HOSTS fehlt"
-echo "$LITE" | grep -qE '^[[:space:]]+-[[:space:]]*salesclaw[[:space:]]*$' || fehler "vexa-lite haengt nicht an sales-claw_default (Netz-Schluessel salesclaw)"
-echo "$LITE" | grep -qE '^[[:space:]]+-[[:space:]]*default[[:space:]]*$' || fehler "vexa-lite haengt nicht (mehr) an vexa_default"
+if echo "$LITE" | grep -q 'sales-claw_default\|salesclaw\|networks:'; then
+  fehler "vexa-lite darf nicht an sales-claw_default (nur vexa-tor), auch kein eigenes networks:"
+fi
 if echo "$LITE" | grep -qE 'ANTHROPIC_|HOST_CLAUDE_CREDENTIALS|docker\.sock'; then
   fehler "vexa-lite: Agent-Schluessel oder Docker-Socket gesetzt (Spec 5.4: Agent aus)"
 fi
-# Whisper: Modell, kein Port.
-block vexa-lite-whisper | grep -qE 'WHISPER__MODEL:[[:space:]]*"?Systran/faster-whisper-small"?[[:space:]]*$' || fehler "Whisper-Modell nicht Systran/faster-whisper-small"
-# Nur vexa-lite darf an sales-claw_default; Postgres/Speicher/Whisper nur vexa_default.
-for dienst in vexa-lite-whisper vexa-lite-postgres vexa-lite-storage; do
-  if block "$dienst" | grep -q 'sales-claw_default\|salesclaw'; then
+# Whisper: Modell, kein curl im Healthcheck (Image hat keins), Python-Pruefung.
+WHISPER="$(block vexa-lite-whisper)"
+echo "$WHISPER" | grep -qE 'WHISPER__MODEL:[[:space:]]*"?Systran/faster-whisper-small"?[[:space:]]*$' || fehler "Whisper-Modell nicht Systran/faster-whisper-small"
+if echo "$WHISPER" | grep -q 'curl'; then fehler "Whisper-Healthcheck nutzt curl (nicht im Image)"; fi
+echo "$WHISPER" | grep -q 'python3.* -c' || fehler "Whisper-Healthcheck ohne python3"
+# Tor-Dienst: einziger an sales-claw_default, mit Alias vexa-lite, schreibgeschuetzte Konfiguration.
+TOR="$(block vexa-tor)"
+echo "$TOR" | grep -qE '^[[:space:]]+salesclaw:[[:space:]]*$' || fehler "vexa-tor haengt nicht an sales-claw_default (Schluessel salesclaw)"
+echo "$TOR" | grep -qE '^[[:space:]]+-[[:space:]]*vexa-lite[[:space:]]*$' || fehler "vexa-tor ohne Netz-Alias vexa-lite"
+echo "$TOR" | grep -qE '^[[:space:]]+default:' || fehler "vexa-tor haengt nicht an vexa_default"
+echo "$TOR" | grep -qE '^[[:space:]]+image:[[:space:]]*nginx:[^@]*@sha256:[0-9a-f]{64}[[:space:]]*$' || fehler "vexa-tor: nginx-Image nicht per Digest gepinnt"
+echo "$TOR" | grep -qE '^[[:space:]]+-[[:space:]]*\./nginx-tor\.conf:/etc/nginx/nginx\.conf:ro[[:space:]]*$' || fehler "vexa-tor: nginx-tor.conf nicht :ro eingebunden"
+if echo "$TOR" | grep -qE '^[[:space:]]+ports:'; then fehler "vexa-tor darf keinen Port veroeffentlichen"; fi
+if echo "$TOR" | grep -q 'curl'; then fehler "vexa-tor-Healthcheck nutzt curl"; fi
+NGINX="$WURZEL/deploy/vexa/nginx-tor.conf"
+[ -f "$NGINX" ] || fehler "deploy/vexa/nginx-tor.conf fehlt"
+grep -qE '^[[:space:]]*access_log[[:space:]]+off;' "$NGINX" || fehler "nginx-tor.conf: access_log off fehlt"
+grep -qE '^[[:space:]]*listen[[:space:]]+8056;' "$NGINX" || fehler "nginx-tor.conf: listen 8056 fehlt"
+grep -qE 'proxy_(connect|read)_timeout' "$NGINX" || fehler "nginx-tor.conf: keine Proxy-Timeouts"
+n_listen="$(grep -cE '^[[:space:]]*listen[[:space:]]' "$NGINX")"
+[ "$n_listen" -eq 1 ] || fehler "nginx-tor.conf: genau ein listen erwartet, gefunden $n_listen"
+if grep -q '0\.0\.0\.0' "$NGINX"; then fehler "0.0.0.0 in nginx-tor.conf"; fi
+# Nur vexa-tor darf an sales-claw_default; Postgres/Speicher/Whisper nur vexa_default.
+for dienst in vexa-lite-whisper vexa-lite-postgres vexa-lite-storage vexa-lite-storage-init; do
+  if block "$dienst" | grep -q 'sales-claw_default\|salesclaw\|networks:'; then
     fehler "$dienst darf nicht an sales-claw_default"
   fi
 done
@@ -99,7 +126,8 @@ while IFS= read -r zeile; do
   w="${BASH_REMATCH[1]}"
   case "$w" in vexa-*|sales-claw_default|vexa_default|vexa) ;; *) fehler "Name ohne vexa-Praefix: $w" ;; esac
 done < <(echo "$AKTIV" | grep -E '^[[:space:]]+name:')
-if echo "$AKTIV" | grep -qE '^[[:space:]]+-[[:space:]]+["'\'']?(\.|/|~)'; then
+# Einzige erlaubte Pfad-Einbindung: ./nginx-tor.conf, schreibgeschuetzt (oben geprueft).
+if echo "$AKTIV" | grep -vE '^[[:space:]]+-[[:space:]]*\./nginx-tor\.conf:/etc/nginx/nginx\.conf:ro[[:space:]]*$' | grep -qE '^[[:space:]]+-[[:space:]]+["'\'']?(\.|/|~)'; then
   fehler "Bind-Mount oder absoluter Pfad in der Compose-Datei"
 fi
 
@@ -124,10 +152,32 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
   ausgabe="$(docker compose -f "$COMPOSE" --env-file "$BEISPIEL" config 2>&1)" \
     || fehler "docker compose config: $ausgabe"
   if echo "$ausgabe" | grep -q '0\.0\.0\.0'; then fehler "gerendert enthaelt 0.0.0.0"; fi
-  echo "$ausgabe" | grep -q 'host_ip: 127.0.0.1' || fehler "gerendert: kein host_ip 127.0.0.1"
+  n_pub="$(echo "$ausgabe" | grep -cE '^[[:space:]]+published:' || true)"
+  n_loop="$(echo "$ausgabe" | grep -cE '^[[:space:]]+host_ip:[[:space:]]*127\.0\.0\.1[[:space:]]*$' || true)"
+  [ "$n_pub" -ge 1 ] || fehler "gerendert: kein veroeffentlichter Port"
+  [ "$n_pub" -eq "$n_loop" ] || fehler "gerendert: $n_pub veroeffentlichte Ports, aber nur $n_loop mit host_ip 127.0.0.1"
+  if echo "$ausgabe" | grep -q 'network_mode'; then fehler "gerendert: network_mode"; fi
   echo "OK: docker compose config gueltig"
 else
   echo "HINWEIS: docker compose nicht vorhanden, config-Pruefung uebersprungen"
+fi
+
+# Aufwaerm-Skript: vorhanden und (wenn ein brauchbares python da ist) syntaktisch ok.
+[ -f "$WURZEL/deploy/vexa/whisper-aufwaermen.py" ] || fehler "deploy/vexa/whisper-aufwaermen.py fehlt"
+for py in python3 python; do
+  if "$py" -c 'import sys; sys.exit(0 if sys.version_info[0] == 3 else 1)' >/dev/null 2>&1; then
+    "$py" -c 'import ast,sys; ast.parse(open(sys.argv[1], encoding="utf-8").read())' "$WURZEL/deploy/vexa/whisper-aufwaermen.py" \
+      || fehler "whisper-aufwaermen.py: Syntaxfehler"
+    break
+  fi
+done
+
+# .gitignore deckt die Sicherungs- und Temp-Namen der Zugangs-Skripte ab.
+if command -v git >/dev/null 2>&1 && git -C "$WURZEL" rev-parse --git-dir >/dev/null 2>&1; then
+  for n in .env.vor-vexa-20261111-120000 .env.neu.AbC123 deploy/vexa/.env deploy/vexa/.env.vor-vexa-1 deploy/vexa/.env.neu.AbC123; do
+    git -C "$WURZEL" check-ignore -q -- "$n" || fehler ".gitignore deckt $n nicht ab"
+  done
+  if git -C "$WURZEL" check-ignore -q -- deploy/vexa/.env.example; then fehler ".env.example waere ignoriert"; fi
 fi
 
 echo "OK: vexa-compose"

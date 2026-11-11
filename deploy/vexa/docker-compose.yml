@@ -11,15 +11,22 @@
 # CPU) ebenfalls.
 #
 #   cd ~/sales-claw/deploy/vexa
-#   bash ../vexa-anbinden.sh            # 1. Aufruf legt nur die .env an
-#   docker compose -p vexa up -d        # nur nach Felix' OK (Task 17)
-#   bash ../vexa-anbinden.sh            # 2. Aufruf: Nutzer, Token, sales-claw
+#   bash ../vexa-anbinden.sh                 # 1. Aufruf legt nur die .env an
+#   docker compose -f docker-compose.yml -p vexa up -d   # nur nach Felix' OK (Task 17)
+#   bash ../vexa-anbinden.sh                 # 2. Aufruf: Nutzer, Token, sales-claw
+# (Jeder Compose-Aufruf fuer Vexa braucht -f deploy/vexa/docker-compose.yml
+# oder den Wechsel in deploy/vexa; aus ~/sales-claw heraus ohne -f laedt
+# Compose die Datei des Basis-Stacks.)
 #
-# Netz (Entscheidung R3): vexa-lite haengt ZUSAETZLICH am bestehenden Netz
-# sales-claw_default (extern, gehoert dem Basis-Stack) und ist dort als
-# http://vexa-lite:8056 erreichbar (VEXA_URL in sales-claw). Postgres,
-# Speicher und Whisper bleiben NUR in vexa_default. Existiert
-# sales-claw_default nicht (Basis-Stack nie gestartet), scheitert `up` laut.
+# Netz (Entscheidung R3, Tor-Dienst nach Review): sales-claw erreicht Vexa als
+# http://vexa-lite:8056 (VEXA_URL). Dafuer haengt NICHT vexa-lite selbst, sondern
+# nur der schmale Tor-Dienst vexa-tor (nginx, nginx-tor.conf) am bestehenden
+# externen Netz sales-claw_default und traegt dort den Alias "vexa-lite". Er
+# reicht ausschliesslich Port 8056 an vexa-lite:8056 weiter. Alle anderen Ports
+# von vexa-lite (Admin-API, Terminal, Agent-API, noVNC ...) sind damit aus dem
+# Basis-Stack nicht erreichbar. Postgres, Speicher und Whisper bleiben NUR in
+# vexa_default. Existiert sales-claw_default nicht (Basis-Stack nie gestartet),
+# scheitert `up` laut.
 #
 # Ports: nur Loopback, und nur das Gateway. Terminal (3001), Agent-API (8100)
 # und noVNC bleiben unveroeffentlicht. Agent-Funktionen aus (Spec 5.4): kein
@@ -47,9 +54,11 @@ services:
     volumes:
       - vexa-storagedata:/srv/vexa-storage
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9000/health"]
+      # Wortgleich Vexa v0.12.28 deploy/compose/docker-compose.yml (Speicherdienst);
+      # das Image basiert auf alpine, busybox-wget ist da.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9000/health || exit 1"]
       interval: 5s
-      timeout: 3s
+      timeout: 5s
       retries: 12
       start_period: 5s
 
@@ -92,9 +101,13 @@ services:
 
   # Spracherkennung: faster-whisper auf der CPU, Modell small (Spec 5.4). Der
   # Client schickt model=whisper-1, der Server liefert WHISPER__MODEL. Kein
-  # Port; vexa-lite erreicht ihn als http://vexa-lite-whisper:8000. Das
-  # Modell laedt beim ersten Gebrauch aus dem Netz (HuggingFace) und liegt
-  # danach im Volume vexa-whisper-modelle.
+  # Port; vexa-lite erreicht ihn als http://vexa-lite-whisper:8000. Das Modell
+  # wird erst bei der ersten Anfrage geladen (Download von HuggingFace, danach im
+  # Volume vexa-whisper-modelle). Darum vor dem ersten echten Termin einmal
+  # aufwaermen: deploy/vexa/whisper-aufwaermen.py (Runbook).
+  # Das Image (Tag latest-cpu = Commit caba05a, Dockerfile.cpu) ist ubuntu:22.04,
+  # laeuft als root (Cache /root/.cache/huggingface), hat kein curl aber python3
+  # (Abhaengigkeit von software-properties-common) und python3.12.
   vexa-lite-whisper:
     image: fedirz/faster-whisper-server:latest-cpu@sha256:760e5e43d427dc6cfbbc4731934b908b7de9c7e6d5309c6a1f0c8c923a5b6030
     container_name: vexa-lite-whisper
@@ -106,8 +119,8 @@ services:
     volumes:
       - vexa-whisper-modelle:/root/.cache/huggingface
     healthcheck:
-      # TODO(Felix/Task 17): pruefen — curl im Image nicht aus den Quellen belegt
-      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health >/dev/null"]
+      # /health antwortet ohne geladenes Modell. Kein curl im Image: eigenes python.
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=3)\" || python3.12 -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=3)\""]
       interval: 10s
       timeout: 5s
       retries: 18
@@ -149,15 +162,37 @@ services:
       MINIO_SECURE: "false"
       VEXA_PUBLIC_API_URL: http://localhost:8056
       TERMINAL_PUBLIC_URL: http://localhost:3001
-    networks:
-      - default
-      - salesclaw
     healthcheck:
       test: ["CMD-SHELL", "curl -sf -o /dev/null http://localhost:8056/health"]
       interval: 15s
       timeout: 5s
       retries: 20
       start_period: 120s
+
+  # Tor-Dienst (siehe Kopf): einziger Teilnehmer von sales-claw_default, Alias
+  # vexa-lite. nginx reicht nur :8056 an vexa-lite weiter. Kein veroeffentlichter
+  # Port, kein Zugriffslog (Anfragen tragen Tokens). Healthcheck mit busybox-wget
+  # (alpine) fragt /health ueber den Proxy, prueft also auch vexa-lite.
+  vexa-tor:
+    image: nginx:1.30.6-alpine@sha256:583b7f2fce1cdb8da5ad5c39ebd3c33b98b87d493190e548bdee1fa8c619c311
+    container_name: vexa-tor
+    restart: unless-stopped
+    depends_on:
+      vexa-lite:
+        condition: service_started
+    volumes:
+      - ./nginx-tor.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      default: {}
+      salesclaw:
+        aliases:
+          - vexa-lite
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8056/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
 
 volumes:
   vexa-pgdata:
