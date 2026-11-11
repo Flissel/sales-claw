@@ -67,6 +67,15 @@ DELETE FROM sales.leads WHERE id = '<LEAD>';
    - **Terminkarten-Dateien** des Kontakts: `terminkarte-<kunde>-*.pdf` in `media-erzeugt`
      des Ladens — die Namen stehen in den Aktivitäten `terminkarte` des Kontakts. Gedruckte
      Karten beim Teamleiter sind Papier und gehören in die Rückfrage an ihn.
+   - **Termin-Akten** (Meeting-Mittelpunkt): `termin_teilnehmer` hängt NICHT per
+     Kaskade am Kontakt — die Zeilen mit seiner Adresse (`lower(adresse) =
+     '<adresse>'`, nach dem Löschantrag `grund = 'gesperrt'`, Name schon leer)
+     stehen weiter da; die Adresse bleibt bewusst, solange sie auf der
+     Sperrliste steht (der Kalenderabgleich legt die Person sonst neu an).
+     Zusätzlich `termin_akten.titel`/`thema`/`beschreibung` dieser Termine
+     prüfen: nennen sie die Person (z. B. „Gespräch mit …“), Titel neutral
+     setzen bzw. Beschreibung leeren. Mitschrift, Auswertung und Briefing hat
+     der Löschantrag schon entfernt.
 4. Sicherungen: die rotierenden Volume-Sicherungen (7 Tage) und
    DB-Sicherungen laufen aus; bis dahin gilt die Verarbeitung als
    eingestellt (Vermerk-Vollstopp). Nicht einzeln in Archive hineinoperieren.
@@ -87,11 +96,14 @@ Checkliste für Transkripte:
       Cloud-Modell. Die Einladung mit Videolink trägt einen Hinweis auf die Mitschrift.
 - [ ] **Löschweg:** `loeschantrag_vermerken` räumt zuerst ab (scheitert das, kommt ein
       Fehler, der Kontakt wird nicht vermerkt, der Aufruf ist wiederholbar), dann der
-      Vermerk. Es beendet einen laufenden Bot (Status
-      `ohne_aufnahme`), löscht die Mitschriften **aller** Termine, an denen der Kontakt
-      teilnahm, lehnt einen offenen Zusammenfassungs-Entwurf ab, leert das Briefing dieser
-      Akten und löst den Kontakt aus der Teilnehmerliste (`grund = 'gesperrt'`). Ein noch
-      beim Transkriptionsdienst liegendes Meeting löscht der Taktgeber nach.
+      Vermerk. Es beendet einen anstehenden oder laufenden Bot (Status
+      `ohne_aufnahme`; den Bot holt der Taktgeber `sales-termine` binnen einer Runde aus
+      dem Termin — nur er spricht mit dem Transkriptionsdienst), löscht die Mitschriften
+      **aller** Termine, an denen der Kontakt teilnahm (auch wo er schon entknüpft ist —
+      Abgleich über seine E-Mail-Adresse), lehnt einen offenen Zusammenfassungs-Entwurf ab,
+      leert das Briefing dieser Akten und löst den Kontakt aus der Teilnehmerliste
+      (`grund = 'gesperrt'`, Name geleert, nur die Adresse bleibt). Das beim
+      Transkriptionsdienst liegende Meeting löscht ebenfalls der Taktgeber.
       Sicherungen laufen wie oben aus.
 - [ ] **Auskunft:** `kontakt_auskunft` enthält Abschnitt `Termine` mit Mitschrift und
       Auswertung. Die Mitschrift ist vollständig und enthält damit auch Äußerungen
