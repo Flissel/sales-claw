@@ -231,6 +231,7 @@ import post_struktur
 import post_tresor
 import ui_post
 import ui_reels
+import ui_werkbank
 import struktur
 import ui_kanaele
 import ui_struktur
@@ -2116,6 +2117,7 @@ _DETAIL_ZU_LISTE = {
     "/marketing/layout-bild": "/marketing/layouts",
     "/marketing/editor": "/marketing/entwuerfe",
     "/marketing/vorlage-bild": "/marketing/vorlagen",
+    "/marketing/werkbank": "/marketing/reels",
 }
 
 
@@ -10322,6 +10324,7 @@ app = Starlette(routes=[
     *ui_post.routen(sys.modules[__name__]),
     *ui_kanaele.routen(sys.modules[__name__]),
     *ui_reels.routen(sys.modules[__name__]),
+    *ui_werkbank.routen(sys.modules[__name__]),
     *ui_podcast.routen(sys.modules[__name__]),
     *ui_freigabe_newsletter.routen(sys.modules[__name__]),
     *ui_freigabe_bewerbung.routen(sys.modules[__name__]),
