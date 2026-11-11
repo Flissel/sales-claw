@@ -50,6 +50,8 @@ def stub(monkeypatch):
     monkeypatch.setenv("OLLAMA_URL", f"http://127.0.0.1:{server.server_address[1]}")
     monkeypatch.delenv("OLLAMA_MODELL", raising=False)
     monkeypatch.delenv("OLLAMA_TIMEOUT_S", raising=False)
+    monkeypatch.delenv("OLLAMA_NUM_CTX", raising=False)
+    monkeypatch.delenv("OLLAMA_BRIEFING_TIMEOUT_S", raising=False)
     yield server
     server.shutdown()
     server.server_close()
@@ -80,7 +82,7 @@ def test_chat_body(stub):
         "messages": [{"role": "system", "content": "Systemtext"},
                      {"role": "user", "content": "Nutzertext"}],
         "stream": False,
-        "options": {"temperature": 0.2},
+        "options": {"temperature": 0.2, "num_ctx": 8192},
     }
 
 
@@ -92,7 +94,7 @@ def test_chat_body_als_json_und_modell(stub, monkeypatch):
     assert body["format"] == "json"
     assert body["model"] == "anderes:3b"
     assert body["stream"] is False
-    assert body["options"] == {"temperature": 0.2}
+    assert body["options"] == {"temperature": 0.2, "num_ctx": 8192}
 
 
 def test_erreichbar_ok_und_pfad(stub):
@@ -163,3 +165,48 @@ def test_erreichbar_nutzt_3s_limit(stub, monkeypatch):
     monkeypatch.setattr(ollama.urllib.request, "urlopen", spion)
     assert ollama.erreichbar() is True
     assert gesehen == [3]
+
+
+# --- Final-Review I8/I9/I7c --------------------------------------------------
+
+def test_i8_num_ctx_in_jedem_chat(stub, monkeypatch):
+    stub.antworten[("POST", "/api/chat")] = _antwort("x")
+    ollama.chat("s", "n")
+    ollama.chat("s", "n", als_json=True)
+    monkeypatch.setenv("OLLAMA_NUM_CTX", "16384")
+    ollama.chat("s", "n")
+    for kaputt in ("abc", "0", "-1"):
+        monkeypatch.setenv("OLLAMA_NUM_CTX", kaputt)
+        ollama.chat("s", "n")
+    werte = [json.loads(a[2])["options"]["num_ctx"] for a in stub.anfragen]
+    assert werte == [8192, 8192, 16384, 8192, 8192, 8192]
+
+
+def test_i9_erreichbar_ist_leise(stub, caplog):
+    caplog.set_level(logging.DEBUG)
+    stub.antworten[("GET", "/api/tags")] = (500, b"{}")
+    assert ollama.erreichbar() is False
+    stub.shutdown()
+    stub.server_close()
+    assert ollama.erreichbar() is False
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def test_i7c_eigenes_zeitlimit_je_aufruf(stub, monkeypatch):
+    gesehen = []
+    echt = ollama.urllib.request.urlopen
+
+    def spion(req, timeout=None):
+        gesehen.append(timeout)
+        return echt(req, timeout=timeout)
+
+    monkeypatch.setattr(ollama.urllib.request, "urlopen", spion)
+    stub.antworten[("POST", "/api/chat")] = _antwort("x")
+    ollama.chat("s", "n")
+    ollama.chat("s", "n", timeout_s=ollama.briefing_timeout())
+    monkeypatch.setenv("OLLAMA_BRIEFING_TIMEOUT_S", "15")
+    ollama.chat("s", "n", timeout_s=ollama.briefing_timeout())
+    assert gesehen == [300, 60, 15]
+    for kaputt in ("", "abc", "0", "nan"):
+        monkeypatch.setenv("OLLAMA_BRIEFING_TIMEOUT_S", kaputt)
+        assert ollama.briefing_timeout() == 60
