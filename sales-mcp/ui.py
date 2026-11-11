@@ -3213,10 +3213,11 @@ async def medien_datei(request):
     anderes interpretiert wird, als ihre Endung verspricht.
     """
     roh = request.path_params["name"]
-    if server.medien.werkbankdatei(roh):
-        # Clips und Video der Werkbank nur ueber /marketing/werkbank/datei (Firmenpruefung, Range, gestreamt)
-        return _fehlerseite(404, "Nicht gefunden", "Diese Datei gibt es hier nicht.")
     basis, fehler = server.medien.pruefe(roh)
+    # Clips und Video der Werkbank nur ueber /marketing/werkbank/datei (Firmenpruefung, Range, gestreamt). Entschieden
+    # wird auf dem Namen, der geoeffnet wird (`basis`), und auf jeder Lesart des rohen Werts.
+    if server.medien.werkbankname_verdaechtig(roh) or (basis and server.medien.werkbankname_verdaechtig(basis)):
+        return _fehlerseite(404, "Nicht gefunden", "Diese Datei gibt es hier nicht.")
     if fehler:
         return _fehlerseite(404, "Nicht gefunden", _e(fehler))
     _endpunkt, mimetyp = server.medien.endpunkt_und_typ(basis)

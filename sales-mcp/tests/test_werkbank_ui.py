@@ -698,3 +698,27 @@ def test_alte_medienroute_sperrt_werkbankdateien_aber_nicht_reels(klient, tmp_pa
     (tmp_path / NAME).write_bytes(b"x" * 64)               # auch im Erzeugt-Ordner
     assert get(klient, "/medien/datei/vid-0123abcd-herbst.mp4").status_code == 200
     assert get(klient, f"/medien/datei/{NAME}").status_code == 404
+
+
+@pytest.mark.parametrize("pfad", [
+    f"/medien/datei/{NAME}", f"/medien/datei/%20{NAME}", f"/medien/datei/{NAME}%20", f"/medien/datei/%20{NAME}%0A",
+    f"/medien/datei/{NAME.upper()}", "/medien/datei/WB-0123ABCD-S03-F1.MP4", f"/medien/datei/{NAME[:3]}%30{NAME[4:]}",
+    "/medien/datei/%77b-0123abcd-s03-f1.mp4", "/medien/datei/%2577b-0123abcd-s03-f1.mp4",
+    "/medien/datei/wb-0123abcd-s03-f1.mp4%2f", f"/medien/datei/%0d{NAME}"])
+def test_alte_medienroute_sperrt_jede_lesart_des_werkbanknamens(klient, tmp_path, monkeypatch, pfad):
+    medien_ordner = tmp_path / "media"
+    medien_ordner.mkdir()
+    monkeypatch.setattr(medien, "MEDIA_VERZEICHNIS", str(medien_ordner))
+    (medien_ordner / NAME).write_bytes(b"x" * 64)
+    (tmp_path / NAME).write_bytes(b"x" * 64)
+    assert get(klient, pfad).status_code == 404
+
+
+def test_medien_werkbankname_verdaechtig():
+    assert medien.werkbankname_verdaechtig(f" {NAME} ") and medien.werkbankname_verdaechtig(NAME.upper())
+    assert medien.werkbankname_verdaechtig("%77b-0123abcd-s03-f1.mp4")
+    assert not medien.werkbankname_verdaechtig("vid-0123abcd-herbst.mp4") and not medien.werkbankname_verdaechtig("")
+
+
+def test_verborgen_auch_bei_grossschreibung():
+    assert medien.verborgen("WB-0123ABCD-S03-F1.MP4") and medien.verborgen(NAME)

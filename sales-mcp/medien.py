@@ -317,10 +317,29 @@ def werkbankdatei(basis: str) -> bool:
     return bool(WERKBANK_MUSTER.match(basis or ""))
 
 
+_WERKBANK_LOCKER = re.compile(WERKBANK_MUSTER.pattern, re.IGNORECASE)
+
+
+def werkbankname_verdaechtig(name: str) -> bool:
+    """Sieht der Name nach einer Werkbank-Datei aus, auch nach dem, was `pruefe` abstreift oder faltet
+    (Leerraum, Gross-/Kleinschreibung) und nach weiterem Prozent-Entschluesseln? Fuer die alte Medienroute:
+    dort entscheidet nicht der rohe Wert, sondern jede Lesart, die zu einer Datei fuehren koennte."""
+    import urllib.parse
+    wert = name or ""
+    for _ in range(4):
+        if _WERKBANK_LOCKER.match(wert.strip()):
+            return True
+        entschluesselt = urllib.parse.unquote(wert)
+        if entschluesselt == wert:
+            break
+        wert = entschluesselt
+    return False
+
+
 def verborgen(basis: str) -> bool:
     """Entwurfsbild, Bildstueck, Reel- oder Werkbank-Datei: kein Medium (Listen, Picker, Namenswahl; als
     Anhang sperrt `pruefe_anhang` alle ausser dem Reel-MP4)."""
-    return entwurfsbild(basis) or mailstueck(basis) or reeldatei(basis) or werkbankdatei(basis)
+    return entwurfsbild(basis) or mailstueck(basis) or reeldatei(basis) or werkbankdatei(basis) or bool(_WERKBANK_LOCKER.match(basis or ""))
 
 
 def intern(basis: str) -> bool:
