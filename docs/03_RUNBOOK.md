@@ -3786,3 +3786,70 @@ dann 401.
 - Eine Kursfreigabe ohne Inhaltsänderung braucht `neu_ausliefern: true` in den Details des Eintrags. Fehlt es,
   bereitet der Knopf „Freigabe-Seite schicken“ eine Seite mit grauem Knopf vor (Learning 3a86283).
 - Ein Entwurf steht beim Versand kurz auf `failed`. Das ist die Claim-Marke von `kanal_dispatch`, kein Fehler.
+
+## Meeting-Mittelpunkt: Vexa-Betrieb (Spec 2026-11-10 §5.4, Plan Task 15)
+
+Vexa (Meeting-Bot und Mitschrift) läuft als **eigenes Compose-Projekt `vexa`** unter `deploy/vexa/`, getrennt vom
+Basis-Stack. Dateien: `deploy/vexa/docker-compose.yml`, `deploy/vexa/.env.example`, `deploy/vexa-anbinden.sh`.
+Vorlage ist Vexa v0.12.28, `deploy/lite/` (Makefile). Alle Images sind per Digest gepinnt (Digests und Abfragedatum
+stehen im Kopf der Compose-Datei bzw. im Task-Bericht). **Nichts davon startet von selbst; Start erst nach Felix' OK.**
+
+**Dienste** (Container, Volumes):
+
+| Dienst | Aufgabe | Volume |
+|---|---|---|
+| `vexa-lite` | Gateway, Admin-API, meeting-api, Bots als Prozesse. `127.0.0.1:8056` | – |
+| `vexa-lite-whisper` | Spracherkennung `Systran/faster-whisper-small`, CPU, kein Port | `vexa-whisper-modelle` |
+| `vexa-lite-postgres` | Datenbank, kein Port | `vexa-pgdata` |
+| `vexa-lite-storage` (+ `vexa-lite-storage-init`) | versitygw (S3), Bucket `vexa`, kein Port | `vexa-storagedata` |
+
+**Netz.** `vexa-lite` hängt am eigenen Netz `vexa_default` **und zusätzlich** am bestehenden Netz `sales-claw_default`
+(`external: true`). So erreicht `sales-termine` es als `VEXA_URL=http://vexa-lite:8056` (Standardwert), ohne dass der
+Basis-Stack ein Vexa-Netz kennt. Postgres, Speicher und Whisper hängen nur an `vexa_default`. Heißt der Basis-Stack
+anders (zweiter Laden, `LADEN_PROJEKT`), muss `networks.salesclaw.name` in der Compose-Datei passen. Existiert
+`sales-claw_default` nicht, bricht `up` mit „network … not found“ ab: erst den Basis-Stack starten. Innerhalb dieses
+Netzes sind alle Ports von `vexa-lite` erreichbar (nicht nur 8056); geschützt sind sie durch Admin-Token bzw.
+API-Schlüssel, nicht durch das Netz.
+
+**Start** (VM, nur nach OK):
+
+    cd ~/sales-claw
+    bash deploy/vexa-anbinden.sh            # 1. Aufruf: legt deploy/vexa/.env (600) mit Zufallswerten an, Exit 4
+    cd deploy/vexa && docker compose -p vexa up -d && cd ../..
+    docker compose -p vexa ps               # alle Dienste "healthy" (Whisper lädt beim ersten Mal das Modell, einige Minuten)
+
+**Anbinden** (nach dem Start, idempotent, gibt keine Geheimnisse aus):
+
+    bash deploy/vexa-anbinden.sh            # 2. Aufruf
+
+legt in Vexa den Nutzer `sales` an, holt einen Token mit den Rechten `bot,tx`, setzt `PUT /user/transcription` mit
+Platzhalter-Token (ohne das scheitert laut Spike die Spracherkennung) und trägt `VEXA_API_KEY=` in `~/sales-claw/.env`
+ein (Sicherung `.env.vor-vexa-<Zeit>`, Rechte 600). Ein noch gültiger `VEXA_API_KEY` bleibt erhalten. Danach
+`sales-termine` neu erzeugen, damit er die `.env` neu liest:
+
+    cd ~/sales-claw && docker compose up -d --no-deps --force-recreate sales-termine
+
+**Smoke** (nur lesen, ohne Geheimnis auf dem Bildschirm):
+
+    curl -sf http://127.0.0.1:8056/health && echo gateway-ok
+    docker exec vexa-lite supervisorctl status                       # alle RUNNING
+    docker exec vexa-lite-whisper curl -sf http://localhost:8000/health && echo whisper-ok
+    docker network inspect sales-claw_default --format '{{range .Containers}}{{.Name}} {{end}}' | tr ' ' '\n' | grep -x vexa-lite
+    docker logs --since 5m sales-termine | tail -5
+
+Ein echter Probe-Bot (Termin mit Jitsi-Link auf `meet.ffmuc.net`) gehört zu den Abnahmetests (Spec §10).
+
+**Rückbau** (trifft nur das Projekt `vexa`):
+
+    docker compose -p vexa down                  # Container und Netz vexa_default; Volumes bleiben
+    docker volume rm vexa-pgdata                 # einzeln, jeder Name für sich
+    docker volume rm vexa-storagedata
+    docker volume rm vexa-whisper-modelle        # optional; das Modell lädt sonst neu
+    # dann in ~/sales-claw/.env die Zeile VEXA_API_KEY= leeren und sales-termine neu erzeugen
+
+Nie `docker system prune` oder `docker volume prune`, nie `--remove-orphans`, nie `-v` an `down` anderer Projekte. Das
+externe Netz `sales-claw_default` gehört dem Basis-Stack und bleibt unberührt.
+
+**Prüfung der Dateien** (ohne Daemon, ohne Netz): `bash deploy/tests/test_vexa_compose.sh` — jedes `image:` mit Digest,
+alle `ports:` auf `127.0.0.1`, Projektname `vexa`, Volumes mit Präfix `vexa-`, `vexa-lite` auf `sales-claw_default`;
+`docker compose config` läuft mit, wenn Docker am Ort vorhanden ist.
