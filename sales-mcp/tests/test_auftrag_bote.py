@@ -469,9 +469,16 @@ BASIS = "https://laden.example"
 
 @pytest.fixture(autouse=True)
 def eingang_leer(monkeypatch):
-    with server.pool.connection() as conn:
-        conn.execute("truncate sales_test.freigabe_eintraege cascade")
+    """Vorher und nachher leer: Entwuerfe und Eintraege dieser Datei duerfen nicht in die Tests des
+    Freigabe-Boten (test_freigabe_bote) hineinragen, die alphabetisch danach laufen."""
+    def leeren():
+        with server.pool.connection() as conn:
+            conn.execute("truncate sales_test.freigabe_eintraege, sales_test.activities, sales_test.drafts, "
+                         "sales_test.personas, sales_test.leads cascade")
+    leeren()
     monkeypatch.setenv("UI_BASIS_URL", BASIS + "/")
+    yield
+    leeren()
 
 
 def _video(buch, stand="erzeugt", **ergebnis) -> str:
