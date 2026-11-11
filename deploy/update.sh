@@ -485,14 +485,26 @@ fi
 # in Ordnung war. Wartet hoechstens OPENWA_WARTE_S (Standard 240 s) und
 # entscheidet nichts selbst: ist die Sitzung dann nicht "ready", bleibt die
 # Abnahme rot wie bisher.
+# Zweiter Befund 12.11.2026: nach dem Neubau endet der Auto-Start oft in
+# "failed" ("event bridge never attached"), ein Endzustand. Dann einmal
+# POST /api/sessions/{id}/start wie in docs/08_PAIRING_ANLEITUNG.md (kein
+# neues Pairing) - von Hand mehrfach gemessen: binnen ~20 s "ready".
 if $OPENWA_BAUEN; then
   openwa_sitzung() {
     docker exec sales-dispatch python -c "import os,json,urllib.request as u;q=u.Request(os.environ['OPENWA_URL']+'/api/sessions',headers={'X-Api-Key':os.environ['OPENWA_API_KEY']});print(json.loads(u.urlopen(q,timeout=20).read())[0]['status'])" 2>/dev/null || echo unerreichbar
   }
+  openwa_sitzung_starten() {
+    docker exec sales-dispatch python -c "import os,json,urllib.request as u;H={'X-Api-Key':os.environ['OPENWA_API_KEY']};B=os.environ['OPENWA_URL'];s=json.loads(u.urlopen(u.Request(B+'/api/sessions',headers=H),timeout=20).read())[0];print(u.urlopen(u.Request(B+'/api/sessions/'+s['id']+'/start',headers=H,method='POST'),timeout=60).status)" 2>/dev/null || echo fehlgeschlagen
+  }
   WARTE_BIS=$(( $(date +%s) + ${OPENWA_WARTE_S:-240} ))
+  NEU_GESTARTET=false
   while :; do
     SITZUNG="$(openwa_sitzung)"
     [ "$SITZUNG" = "ready" ] && break
+    if [ "$SITZUNG" = "failed" ] && ! $NEU_GESTARTET; then
+      echo "openwa-Sitzung 'failed' nach dem Neubau - einmal neu starten: $(openwa_sitzung_starten)"
+      NEU_GESTARTET=true
+    fi
     [ "$(date +%s)" -ge "$WARTE_BIS" ] && break
     sleep 10
   done
