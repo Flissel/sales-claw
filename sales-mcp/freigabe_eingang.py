@@ -22,6 +22,7 @@ ART_JE_HERKUNFT = {
     "werkstatt": "kursfreigabe",
     "sales": "entwurf",
     "marketing": "entwurf",
+    "marketing-video": "marketing_video",
 }
 HERKUNFT_ANZEIGE = {
     "debugger-claw": "Debugger-Claw",
@@ -29,6 +30,7 @@ HERKUNFT_ANZEIGE = {
     "werkstatt": "Werkstatt",
     "sales": "Sales",
     "marketing": "Marketing",
+    "marketing-video": "Marketing-Video",
 }
 # Stufe 2 (Annehmen fuehrt etwas aus) bleibt gesperrt, solange 5.5 nicht geloest ist.
 STUFE2_ENTSPERRT = False

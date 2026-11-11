@@ -122,3 +122,27 @@ def test_indexe_draft_id_und_ein_auftrag_je_eintrag():
             ok = "23505" in _sqlstate(fehler)
         assert ok, "zweiter offener Auftrag haette am Unique-Index scheitern muessen"
         conn.rollback()
+
+
+def test_tabelle_nimmt_herkunft_marketing_video():
+    """db/freigabe-eingang.sql erweitert die beiden CHECKs (Video-Werkbank); die Standardnamen stimmen."""
+    namen = {z["conname"]: z["def"] for z in server._q(
+        "select conname, pg_get_constraintdef(oid) as def from pg_constraint "
+        "where conrelid = 'sales_test.freigabe_eintraege'::regclass and contype = 'c'")}
+    assert "marketing-video" in namen["freigabe_eintraege_herkunft_check"]
+    assert "marketing_video" in namen["freigabe_eintraege_art_check"]
+    with server.pool.connection() as conn:
+        conn.execute(
+            "insert into freigabe_eintraege (kennung, herkunft, art, quelle_ref, titel) "
+            "values ('fg-vvvvvvvvvv', 'marketing-video', 'marketing_video', 'a1', 'Video: Probe') returning id")
+        for herkunft, art in (("marketing-videos", "marketing_video"), ("marketing-video", "video")):
+            ok = False
+            try:
+                conn.execute(
+                    "insert into freigabe_eintraege (kennung, herkunft, art, quelle_ref, titel) "
+                    "values ('fg-wwwwwwwwww', %s, %s, 'a2', 'x')", (herkunft, art))
+            except Exception as e:
+                ok = "23514" in _sqlstate(e)
+            assert ok, (herkunft, art)
+            conn.rollback()
+        conn.rollback()

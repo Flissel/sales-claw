@@ -243,3 +243,72 @@ def test_verwerfen_lehnt_entwurf_ab(client):
     z = server._q("select status, geschlossen_von from freigabe_eintraege where kennung = %s", (k,))
     assert z[0]["status"] == "offen" and z[0]["geschlossen_von"] is None
     assert "Nichts wurde getan" in client.get(r.headers["location"]).text
+
+
+# --- Marketing-Video (Video-Werkbank) ----------------------------------------------------------------------
+
+VIDEO = "marketing/werkbank/0123abcd-0000-4000-8000-000000000001/video"
+VIDEOS = "/freigaben?tab=marketing&art=video"
+
+
+def _video():
+    return fe.eintragen("marketing-video", "marketing_video", "0123abcd-0000-4000-8000-000000000001",
+                        "Video: KI im Vertrieb", f"https://laden.example/{VIDEO}",
+                        {"auftrag": "0123abcd-0000-4000-8000-000000000001", "dauer_s": 241, "fassung": 1})[0]
+
+
+def test_video_karte_hat_ki_hinweis_und_freigeben_knopf(client):
+    k = _video()
+    s = _abschnitt(client, VIDEOS)
+    assert f'id="{k}"' in s and "Marketing-Video" in s and "Video: KI im Vertrieb" in s
+    assert "Ansehen und herunterladen" in s and f'href="https://laden.example/{VIDEO}"' in s
+    assert "mit KI erstellt" in s
+    assert 'action="/aktion/eingang-video-freigeben"' in s and ">freigeben<" in s
+    assert 'action="/aktion/eingang-verwerfen"' in s and ">verwerfen<" in s
+    assert "Videos" in client.get("/freigaben?tab=marketing").text      # eigener Unter-Reiter
+    assert "Annehmen in Rowboat führt aus (Videos)" not in s            # kein Stufe-2-Kasten fuer Videos
+
+
+def test_video_karte_ohne_ki_hinweis_nur_bei_videos(client):
+    _rueckfrage()
+    assert "mit KI erstellt" not in _abschnitt(client)
+
+
+def test_freigeben_schliesst_als_erledigt(client):
+    k = _video()
+    r = _post(client, "eingang-video-freigeben", k)
+    assert r.status_code == 303 and "eg_hinweis=freigegeben" in r.headers["location"]
+    assert "tab=marketing" in r.headers["location"] and "art=video" in r.headers["location"]
+    z = server._q("select status, geschlossen_von from freigabe_eintraege where kennung = %s", (k,))
+    assert z[0]["status"] == "erledigt" and z[0]["geschlossen_von"] == "mira"
+    assert "Video freigegeben." in client.get(r.headers["location"]).text
+    assert k not in _abschnitt(client, VIDEOS)
+    assert _auftraege() == []
+
+
+def test_freigeben_zweimal_meldet_geschlossen(client):
+    k = _video()
+    _post(client, "eingang-video-freigeben", k)
+    r = _post(client, "eingang-video-freigeben", k)
+    assert r.status_code == 303 and "geschlossen" in r.headers["location"]
+
+
+def test_freigeben_fuer_andere_art_abgewiesen(client):
+    k = _rueckfrage()
+    r = _post(client, "eingang-video-freigeben", k)
+    assert r.status_code == 303 and "abgewiesen" in r.headers["location"]
+    assert server._q("select status from freigabe_eintraege where kennung = %s", (k,))[0]["status"] == "offen"
+
+
+def test_video_verwerfen_schliesst_als_verworfen(client):
+    k = _video()
+    r = _post(client, "eingang-verwerfen", k)
+    assert r.status_code == 303 and "art=video" in r.headers["location"]
+    assert server._q("select status from freigabe_eintraege where kennung = %s", (k,))[0]["status"] == "verworfen"
+
+
+def test_video_freigeben_lesen_darf_nicht_und_csrf(client, client_lesen):
+    k = _video()
+    assert _post(client_lesen, "eingang-video-freigeben", k).status_code == 403
+    assert _post(client, "eingang-video-freigeben", k, csrf=False).status_code == 403
+    assert server._q("select status from freigabe_eintraege where kennung = %s", (k,))[0]["status"] == "offen"
