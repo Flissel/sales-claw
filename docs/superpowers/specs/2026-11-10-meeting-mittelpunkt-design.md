@@ -1,6 +1,6 @@
 # Meeting-Mittelpunkt: Termin, Briefing, Mitschrift
 
-Stand: 2026-11-10 · Laden: nur Felix (`sales`) · Status: **freigegeben von Felix am 10.11.** (Plan erst nach dem Jitsi-Test, §3)
+Stand: 2026-11-10 · Laden: nur Felix (`sales`) · Status: **freigegeben von Felix am 10.11.**, Jitsi-Tor bestanden am 11.11. (§6)
 
 ## 1. Warum
 
@@ -288,9 +288,12 @@ aufgesetzt.
 | Last im Gespräch | ~¼ Kern, ~2,6 GB RAM gesamt |
 | Wartezeit, Aufgeben ohne Einlass | ✅ wie eingestellt |
 | Vexa-Auto-Join | ❌ scheiterte an Schlüsselprüfung, ignoriert Name/Sprache (deshalb eigener Taktgeber) |
-| Zwei Sprecher, längeres Gespräch | offen |
+| Zwei Sprecher | offen |
 | Teams, Zoom | offen |
-| Jitsi (meet.jit.si) | offen. Vexa selbst nennt Live-Mitschrift auf Jitsi „noch nicht nachgewiesen“, und meet.jit.si verlangt eine Moderator-Anmeldung |
+| Jitsi auf meet.jit.si | ❌ für uns unbrauchbar: Seit 2023 öffnet der Raum erst, wenn ein Moderator angemeldet ist (Google/GitHub). Ein Kunde, der vor Felix kommt, steht vor einem verschlossenen Raum, und der Bot wartet ins Leere |
+| Jitsi auf meet.ffmuc.net (Freifunk München) | ✅ 11.11.: Bot ohne Anmeldung und ohne Einlass im Raum, ~1 Min. freie Rede durchgehend mitgeschrieben (11 Segmente, live), Sprechername „Felix Baumann“, Deutsch gut lesbar. Eigennamen und Fachwörter verhört das kleine Modell („BAV“ ja, Firmennamen nein). Allein gelassen geht der Bot selbst (`left_alone`) |
+
+**Jitsi-Tor: bestanden** (11.11.). Der Plan darf geschrieben werden.
 
 Die offenen Zeilen sind **Abnahmetests** (§10). Fällt im Betrieb eine Plattform durch, bekommt deren
 Termin den Status `fehlgeschlagen` mit Grund, und der Rest funktioniert weiter.
@@ -298,6 +301,14 @@ Termin den Status `fehlgeschlagen` mit Grund, und der Rest funktioniert weiter.
 **Ausnahme Jitsi:** Der Jitsi-Test ist ein Tor vor dem Planen (§3). sales-claw legt eigene Videoräume
 heute auf meet.jit.si an, weil der Meet-Schlüssel kaputt ist. Ohne Jitsi hätten Felix' eigene Termine
 also meist keine Mitschrift.
+
+**Meine Entscheidung aus dem Test (Felix kann widersprechen):** sales-claw legt Jitsi-Räume künftig auf
+**meet.ffmuc.net** an statt auf meet.jit.si (`JITSI_BASIS` in `sales-mcp/konferenz.py`, als
+Einstellung `JITSI_BASIS` mit diesem Standard). Grund: Dort braucht weder Felix noch der Kunde eine
+Anmeldung, und der Bot kommt ohne Einlass hinein. Der Server steht in München und wird vom Freifunk
+München betrieben. Mit dem eigenen Jitsi (§11) wird nur diese Einstellung umgestellt. Vexa erkennt
+`meet.*`-Adressen bei gezielt übergebenen Links selbst; für den Taktgeber wird der Host zusätzlich in
+`VEXA_JITSI_HOSTS` eingetragen, damit auch die Kalender-Erkennung ihn kennt.
 
 ## 7. Ollama
 
@@ -375,8 +386,8 @@ Diese Punkte hat Felix nicht entschieden. Ich habe sie so gesetzt:
 
 ## 11. Danach
 
-- **Eigenes Jitsi auf der VM** (Open-Source-Linie). Damit fallen die Moderator-Anmeldung auf
-  meet.jit.si weg, und der Bot wird zuverlässiger. Eigenes Design.
+- **Eigenes Jitsi auf der VM** (Open-Source-Linie). Bis dahin dient meet.ffmuc.net (§6); danach
+  wird nur `JITSI_BASIS` umgestellt. Eigenes Design.
 - **Meet-Schlüssel reparieren** (Google-App veröffentlichen, braucht `vibemind.space/privacy` live).
   Bis dahin bekommen sales-claw-Einladungen mit Videoraum einen Jitsi-Link statt Meet. Dazu wird die
   falsche Aussage in `deploy/google-meet-zugang.py` korrigiert: Im Testmodus verfällt der Schlüssel
