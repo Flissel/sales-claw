@@ -169,3 +169,44 @@ def test_kein_log_mit_adresse(caplog, monkeypatch):
         teilnehmer.ist_kundentermin("kalender", "business", [_t("geheim@firma.de")], 2)
     text = caplog.text.lower()
     assert "geheim" not in text and "firma.de" not in text and "haus.de" not in text
+
+
+def _kalender_konto(besitzer, adresse):
+    server._q("insert into kalender_konten (besitzer, anbieter, adresse) "
+              "values (%s, 'google', %s) returning id", (besitzer, adresse))
+
+
+def test_kalender_konto_eigener_besitzer_ist_eigen_anderer_team():
+    _kalender_konto("felix", "cal-felix@haus.de")
+    _kalender_konto("ivan", "cal-ivan@haus.de")
+    z = teilnehmer.verknuepfen(UID, [_t("cal-felix@haus.de"), _t("cal-ivan@haus.de")],
+                               darf_anlegen=True)
+    assert [r["grund"] for r in z] == ["eigene Adresse", "Team"]
+    assert _anzahl_leads() == 0
+
+
+def test_ohne_container_besitzer_sind_alle_konten_eigen(monkeypatch):
+    monkeypatch.setenv("POST_BESITZER", "")
+    _kalender_konto("ivan", "cal-ivan@haus.de")
+    server._q("insert into post_konten (besitzer, kennung, anbieter, adresse, quelle) "
+              "values ('ivan', 'ivan-1', 'gmx', 'post-ivan@haus.de', 'ui') returning id")
+    z = teilnehmer.verknuepfen(UID, [_t("cal-ivan@haus.de"), _t("post-ivan@haus.de")],
+                               darf_anlegen=True)
+    assert [r["grund"] for r in z] == ["eigene Adresse", "eigene Adresse"]
+
+
+def test_ohne_tabelle_kalender_konten_bleibt_nicht_extern_heil(monkeypatch):
+    monkeypatch.setenv("TERMIN_TEAM_ADRESSEN", "ivan@haus.de")
+    server._q("insert into post_konten (besitzer, kennung, anbieter, adresse, quelle) "
+              "values ('felix', 'haupt', 'namecheap', 'felix@haus.de', 'ui') returning id")
+    with server.pool.connection() as conn:
+        conn.execute("alter table sales_test.kalender_konten rename to kalender_konten_weg")
+    try:
+        assert {"felix@haus.de", "ivan@haus.de"} <= teilnehmer.nicht_extern()
+        z = teilnehmer.verknuepfen(UID, [_t("felix@haus.de"), _t("neu@firma.de")],
+                                   darf_anlegen=True)
+        assert z[0]["grund"] == "eigene Adresse" and z[1]["lead_id"] is not None
+        assert teilnehmer.ist_kundentermin("kalender", "business", [_t("neu@firma.de")], 2)[0]
+    finally:
+        with server.pool.connection() as conn:
+            conn.execute("alter table sales_test.kalender_konten_weg rename to kalender_konten")

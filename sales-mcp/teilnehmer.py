@@ -45,6 +45,10 @@ def _konto_adressen() -> tuple[set[str], set[str]]:
     eigene: set[str] = set()
     fremde: set[str] = set()
     for tabelle in ("post_konten", "kalender_konten"):
+        # kalender_konten legt nur db/kalender-verbinden.sql an; fehlt sie in
+        # diesem Laden, gibt es dort keine Kalenderkonten.
+        if not server._q("select to_regclass(%s) as t", (tabelle,))[0]["t"]:
+            continue
         for z in server._q(f"select besitzer, adresse from {tabelle}"):
             a = _norm(z.get("adresse"))
             if not a:
