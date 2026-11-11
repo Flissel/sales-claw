@@ -328,10 +328,75 @@ def _teure_serien_entfernen(kal, bis: datetime) -> int:
     return stand["entfernt"]
 
 
+MAX_BESCHREIBUNG = 4000
+MAX_TEILNEHMER = 50
+# Eigene Konferenzfelder vor dem allgemeinen URL: Outlook/Google legen dort
+# oft nur die Terminseite ab, die den echten Meeting-Link verdraengen wuerde.
+_KONFERENZ_FELDER = ("X-GOOGLE-CONFERENCE",
+                     "X-MICROSOFT-SKYPETEAMSMEETINGURL",
+                     "X-MICROSOFT-ONLINEMEETINGCONFLINK", "URL")
+
+
+def _als_liste(wert) -> list:
+    if wert is None:
+        return []
+    return list(wert) if isinstance(wert, (list, tuple)) else [wert]
+
+
+def _adresse(wert) -> str:
+    text = str(wert).strip()
+    if text.lower().startswith("mailto:"):
+        text = text[7:]
+    return text.strip().lower()
+
+
+def _teilnehmer_lesen(ev):
+    """-> (liste (hoechstens MAX_TEILNEHMER), echte Anzahl). Organisator
+    zuerst; steht er auch als ATTENDEE, gilt er einmal als organisator.
+    Eintraege ohne Adresse entfallen. Nur schlichte Daten (Kindprozess)."""
+    gefunden = {}
+
+    def aufnehmen(wert, organisator):
+        adresse = _adresse(wert)
+        if not adresse or "@" not in adresse:
+            return
+        params = getattr(wert, "params", None) or {}
+        chair = str(params.get("ROLE", "")).upper() == "CHAIR"
+        alt = gefunden.get(adresse)
+        if alt is None:
+            gefunden[adresse] = {
+                "adresse": adresse,
+                "name": str(params.get("CN", ""))[:120],
+                "rolle": "organisator" if (organisator or chair) else "gast",
+                "art": (str(params.get("CUTYPE", "")).lower()
+                        or "individual")[:20]}
+        elif organisator or chair:
+            alt["rolle"] = "organisator"
+            alt["name"] = alt["name"] or str(params.get("CN", ""))[:120]
+
+    for w in _als_liste(ev.get("ORGANIZER")):
+        aufnehmen(w, True)
+    for w in _als_liste(ev.get("ATTENDEE")):
+        aufnehmen(w, False)
+    alle = list(gefunden.values())
+    alle.sort(key=lambda p: p["rolle"] != "organisator")   # stabil
+    return alle[:MAX_TEILNEHMER], len(alle)
+
+
+def _konferenz_lesen(ev) -> str:
+    for feld in _KONFERENZ_FELDER:
+        for w in _als_liste(ev.get(feld)):
+            text = str(w).strip()
+            if text:
+                return text[:500]
+    return ""
+
+
 def _aufklappen(text: str, von: datetime, bis: datetime):
     """Parsen, Vorab-Filter und Aufklappen — laeuft im Kindprozess. Gibt nur
     schlichte Daten zurueck: (zu_teuer, serien_uids, [(start, ende, uid,
-    titel, ort, transp) | None])."""
+    titel, ort, transp, beschreibung, teilnehmer, anzahl, konferenz)
+    | None])."""
     kal = icalendar.Calendar.from_ical(text)
     zu_teuer = _teure_serien_entfernen(kal, bis)
     serien = _serien_uids(kal)
@@ -340,10 +405,15 @@ def _aufklappen(text: str, von: datetime, bis: datetime):
     roh = []
     for ev in next(iter(seiten), []):
         try:
+            teilnehmer, anzahl = _teilnehmer_lesen(ev)
+            beschreibung = " ".join(
+                str(ev.get("DESCRIPTION", "")).split())[:MAX_BESCHREIBUNG]
             roh.append((ev.start, ev.end, str(ev.get("UID", "")),
                         str(ev.get("SUMMARY", ""))[:200],
                         str(ev.get("LOCATION", ""))[:120],
-                        str(ev.get("TRANSP", "")).upper()))
+                        str(ev.get("TRANSP", "")).upper(),
+                        beschreibung, teilnehmer, anzahl,
+                        _konferenz_lesen(ev)))
         except Exception:                 # noqa: BLE001 — ein Termin, nicht alle
             roh.append(None)
     return zu_teuer, serien, roh
@@ -480,7 +550,8 @@ def hole(url: str, tage_zurueck: int = 7, tage_voraus: int = 60):
     unlesbar = 0
     for roh_ev in vorkommen:
         try:
-            start, ende, voll, titel, ort, transp = roh_ev
+            (start, ende, voll, titel, ort, transp, beschreibung, teilnehmer,
+             anzahl, konferenz) = roh_ev
             ganztaegig = (isinstance(start, date)
                           and not isinstance(start, datetime))
             beginn = _ortszeit_utc(start, ortszone)
@@ -499,7 +570,11 @@ def hole(url: str, tage_zurueck: int = 7, tage_voraus: int = 60):
                 "ort": ort,
                 "uid": uid,
                 "ganztaegig": ganztaegig,
-                "frei": transp == "TRANSPARENT"})
+                "frei": transp == "TRANSPARENT",
+                "beschreibung": beschreibung,
+                "teilnehmer": teilnehmer,
+                "teilnehmer_anzahl": anzahl,
+                "konferenz": konferenz})
         except Exception:                 # noqa: BLE001 — ein Termin, nicht alle
             unlesbar += 1
     if unlesbar:

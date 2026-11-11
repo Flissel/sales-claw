@@ -76,6 +76,7 @@
 .vk-warnung { color: #92400e; background: #fffbeb; border-radius: 6px; padding: 6px 8px; margin: 0; }
 .vk-fehler { color: #b91c1c; margin: 0; min-height: 1em; }
 .vk-zeile { margin: 4px 0; }
+.vk-link { display: inline-flex; align-items: center; min-height: 44px; }
 .vk-konflikte { margin: 6px 0; padding-left: 18px; }
 .vk-knoepfe { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 .vk-loeschen { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; border-top: 1px solid var(--linie, #e2dfec); padding-top: 10px; }

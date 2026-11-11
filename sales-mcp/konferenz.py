@@ -51,9 +51,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-# Oeffentliche Jitsi-Instanz. Ein eigener Server (spaeter, etwa unter der
-# eigenen Domain) aendert AUSSCHLIESSLICH diesen Wert — die Logik bleibt.
-JITSI_BASIS = "https://meet.jit.si"
+# Standard-Jitsi-Server: meet.ffmuc.net verlangt weder von Felix noch vom
+# Kunden ein Konto. Ein eigener Server aendert AUSSCHLIESSLICH die
+# Einstellung `JITSI_BASIS` — die Logik bleibt.
+JITSI_BASIS_STANDARD = "https://meet.ffmuc.net"
 JITSI_ZUFALL_BYTES = 24
 
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -92,9 +93,15 @@ def _kurz(text: str) -> str:
     return " ".join((text or "").split())[:FEHLER_MAXLAENGE]
 
 
+def jitsi_basis() -> str:
+    """Jitsi-Basis-URL zur AUFRUFZEIT (Einstellung `JITSI_BASIS`)."""
+    basis = os.environ.get("JITSI_BASIS", "").strip().rstrip("/")
+    return basis or JITSI_BASIS_STANDARD
+
+
 def jitsi_raum() -> str:
     """Ein nicht zu ratender Raum. Entsteht lokal, ohne jede Anfrage."""
-    return f"{JITSI_BASIS}/{secrets.token_urlsafe(JITSI_ZUFALL_BYTES)}"
+    return f"{jitsi_basis()}/{secrets.token_urlsafe(JITSI_ZUFALL_BYTES)}"
 
 
 def _zugriffstoken(client_id: str, client_secret: str, refresh_token: str) -> str:

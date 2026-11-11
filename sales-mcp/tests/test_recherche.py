@@ -596,7 +596,7 @@ def test_beide_werkzeuge_sind_registriert():
     # termin_ergebnis_speichern, mail_einstufen, mail_aufraeumen_ausfuehren,
     # profil_anhang_speichern, auftrag_geben, auftraege_melden, 98 -> 106
     # (hier nachgezogen am 10.11.2026; Einzelnachweis in test_werkzeuge.py).
-    assert len(namen) == len(set(namen)) == 106
+    assert len(namen) == len(set(namen)) == 107
 
 # ---------------------------------------------------------------------------
 # Nachbesserungen aus dem Stufe-5-Review (Befunde T1, B2, D2)

@@ -39,7 +39,9 @@ KERN_ALLE="sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw s
 # und jedes Update ueberspraenge Abnahme und automatischen Rueckbau.
 # auftrag-bote (10.11.2026, M8): das erste Mal von Hand starten, danach
 # zieht ihn jedes Update mit.
-KERN_OPTIONAL="sales-post sales-kalender freigabe-bote auftrag-bote"
+# sales-termine (11.11.2026): Taktgeber der Meeting-Mitte, das erste Mal von Hand
+# starten (VEXA_API_KEY, OLLAMA_URL, TELEGRAM_* gesetzt), danach zieht ihn jedes Update mit.
+KERN_OPTIONAL="sales-post sales-kalender freigabe-bote auftrag-bote sales-termine"
 
 # Dienstliste ohne die optionalen Dienste (Reihenfolge bleibt).
 ohne_optionale() { # dienstliste

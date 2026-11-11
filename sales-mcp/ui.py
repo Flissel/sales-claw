@@ -222,6 +222,7 @@ import ui_freigabe_newsletter
 import ui_empfehlungen
 import ui_newsletter_einwilligung
 import ui_kalender
+import ui_termin
 import ui_marketing
 import ui_muster
 import ui_plan
@@ -1508,6 +1509,19 @@ nav.reiter a { display: inline-flex; align-items: center; gap: .4rem; min-height
 nav.reiter a[aria-current] { border-bottom-color: var(--akzent);
                              color: var(--akzent_text); font-weight: 700; }
 nav.reiter .zahl { font-size: .8rem; color: var(--gedaempft); }
+/* Termin-Seite (Meeting-Mittelpunkt, Variante C): grosser Beitreten-Knopf,
+   Aktionen als Knopfzeile, auf dem Handy untereinander. */
+a.knopf.gross { display: flex; align-items: center; justify-content: center;
+                min-height: 56px; font-size: 1.25rem; margin: .6rem 0; }
+.termin-wer { font-size: 1.1rem; margin: .2rem 0; }
+.termin-status { margin: .6rem 0; }
+.termin-aktionen { display: flex; flex-wrap: wrap; gap: .5rem; margin: .4rem 0 .8rem; }
+.termin-aktionen form.aktion { margin: 0; }
+.termin-aktionen button { min-height: 44px; }
+.termin-liste { list-style: none; padding: 0; margin: 0; }
+.termin-md, .termin-inhalt { overflow-wrap: anywhere; }
+@media (max-width: 639px) {
+  .termin-aktionen form.aktion, .termin-aktionen button { width: 100%; } }
 /* Freigaben in Reitern (09.11.2026): leere Reiter blass, aber da; die
    Unter-Reiter eine Stufe kleiner direkt darunter. */
 nav.reiter a.leer { opacity: .55; }
@@ -2738,7 +2752,8 @@ def _kontakt_historie_bereich(lead_id, alle: bool,
     try:
         eintraege = historie.kontakt_historie(
             lead_id,
-            mit_mail=post_struktur.mail_verlauf_erlaubt(betrachter_name))
+            mit_mail=post_struktur.mail_verlauf_erlaubt(betrachter_name),
+            mit_akten=True)
     except psycopg.Error:
         return ""
     zeilen = "".join(
@@ -8179,14 +8194,24 @@ def _kontakt_termine(lead_id: str, termine=None) -> str:
         teile.append("<p>Keine Termine.</p>")
         return "".join(teile)
     zeilen = []
+    uids = [str(p["uid"]) for _t, _z, p in termine[:30] if p.get("uid")]
+    try:
+        mit_akte = {z["uid"] for z in server._q(
+            "select uid from termin_akten where uid = any(%s)", (uids,))} if uids else set()
+    except psycopg.Error:
+        mit_akte = set()  # Akten-Tabelle fehlt noch: Zeilen bleiben wie bisher
     for tag, zeit, p in termine[:30]:
         thema = str(p.get("thema") or "")
         ziel = f"/kalender?datum={tag}&ansicht=woche"
+        aktenlink = ""
+        uid = str(p.get("uid") or "")
+        if uid and uid in mit_akte:
+            aktenlink = f' · <a href="/termine/{urllib.parse.quote(uid, safe="")}">Termin-Seite</a>'
         zeilen.append([
             _e(tag_lesbar(tag)), _e(zeit),
             f'<span title="{_e(thema)}">{_e(_kurz(thema, 80))}</span>',
             _e(_kurz(str(p.get("ort") or ""), 60)),
-            f'<a href="{_e(ziel)}">im Kalender öffnen</a>'])
+            f'<a href="{_e(ziel)}">im Kalender öffnen</a>{aktenlink}'])
     teile.append(_tabelle(["Datum", "Zeit", "Thema", "Ort", "Kalender"], zeilen))
     return "".join(teile)
 
@@ -10257,6 +10282,8 @@ app = Starlette(routes=[
     Route("/mehr", mehr),
     # Seite /kalender, JSON-Schnittstelle und Paketdateien (14.10.2026).
     *ui_kalender.routen(sys.modules[__name__]),
+    # Termin-Seite /termine/{uid} und /termine/{uid}.json (Meeting-Mittelpunkt).
+    *ui_termin.routen(sys.modules[__name__]),
     # Empfehlungslisten (C4, 17.10.2026).
     *ui_empfehlungen.routen(sys.modules[__name__]),
     *ui_newsletter_einwilligung.routen(sys.modules[__name__]),

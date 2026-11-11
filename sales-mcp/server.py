@@ -2120,6 +2120,14 @@ def termin_bestaetigen(lead_id: str, datum: str, uhrzeit: str,
                    + hinweis}))
 
 
+# Wortlaut: Vorschlag, Freigabe durch Felix vor dem Merge (Spec §5.4).
+EINLADUNG_MITSCHRIFT_HINWEIS = (
+    "Hinweis: VibeMind schreibt das Gespräch mit, damit nichts verloren "
+    "geht. Die Mitschrift bleibt auf unseren eigenen Servern. Möchten Sie "
+    "das nicht, sagen Sie es einfach zu Beginn – dann läuft das Gespräch "
+    "ohne Mitschrift.")
+
+
 def _termin_einladen(lead_id: str, datum: str, uhrzeit: str,
                      dauer_minuten: int = TERMIN_DAUER_VORGABE,
                      thema: str = "Erstgespraech", ort: str = "",
@@ -2352,11 +2360,19 @@ def _termin_einladen(lead_id: str, datum: str, uhrzeit: str,
     ist_link = ort_kurz.lower().startswith(("http://", "https://"))
     ortzeile = f"{'Videoraum' if ist_link else 'Ort'}: {ort_kurz}\n\n" \
         if ort_kurz else ""
+    # Nur bei erkanntem Videolink: die Mitschrift gibt es nur dort. Import
+    # hier, weil termin_link/termin_akte server selbst importieren (R4).
+    import termin_link
+    hinweiszeile = (f"{EINLADUNG_MITSCHRIFT_HINWEIS}\n\n"
+                    if termin_link.erkennen(ort) else "")
+    # `ort` (nicht ort_kurz): die Kuerzung auf TERMIN_TEXT_MAXLAENGE darf
+    # einen Link am Ende nicht vor der Erkennung abschneiden.
     text = (f"Hallo {name},\n\n"
             f"ich schlage folgenden Termin vor:\n"
             f"{WOCHENTAGE[beginn.weekday()]}, {tag.strftime('%d.%m.%Y')} "
             f"um {zeit:%H:%M} Uhr ({dauer} Minuten)\n\n"
             f"{ortzeile}"
+            f"{hinweiszeile}"
             f"Ihr Kalenderprogramm zeigt diese Mail als Einladung — Sie "
             f"können direkt zusagen, absagen oder einen anderen Termin "
             f"vorschlagen.\n\n"
@@ -3475,13 +3491,14 @@ def _bereich_pruefen(bereich: str) -> None:
 
 
 def _fremde_titel_loeschen(conn, quelle_id: str, besitzer: str, bereich: str) -> None:
-    """Spec §6.3: fuer eine fremde Privat-Quelle stehen titel und ort nie in
+    """Spec §6.3: fuer eine fremde Privat-Quelle stehen titel, ort, beschreibung, teilnehmer und konferenz nie in
     der Datenbank. Nach einem Wechsel auf privat sofort weg, nicht erst beim
     naechsten Abgleich (Review Focus 4)."""
     if not kalender_sichtbarkeit.details_speichern(
             besitzer, bereich, post_struktur.container_besitzer()):
-        conn.execute("update kalender_termine set titel = null, ort = null "
-                     "where quelle_id = %s", (quelle_id,))
+        conn.execute("update kalender_termine set titel = null, ort = null, "
+                     "beschreibung = null, teilnehmer = null, "
+                     "konferenz = null where quelle_id = %s", (quelle_id,))
 
 
 GOOGLE_NAME_BELEGT = "Diesen Namen trägt schon ein Google-Kalender"
@@ -3670,6 +3687,17 @@ def kalenderquelle_stand_setzen(quelle_id: str, anzahl, fehler) -> None:
        "where id = %s", (fehler, anzahl, quelle_id))
 
 
+def _teilnehmer_json(termin: dict) -> "str | None":
+    """Teilnehmer eines Termins als {"liste", "anzahl"} (JSON-Text) oder None,
+    wenn der Termin keine kennt (Google-Termine, leere Liste)."""
+    liste = termin.get("teilnehmer")
+    if not liste:
+        return None
+    return json.dumps({"liste": liste,
+                       "anzahl": termin.get("teilnehmer_anzahl", len(liste))},
+                      ensure_ascii=False)
+
+
 def kalendertermine_ersetzen(quelle_id: str, termine: list, details: bool) -> int:
     """Die abgeglichenen Termine einer Quelle austauschen -> Anzahl.
 
@@ -3699,7 +3727,10 @@ def kalendertermine_ersetzen(quelle_id: str, termine: list, details: bool) -> in
             zeilen = [(quelle_id, t.get("uid") or "", t["beginn"], t["ende"],
                        bool(t.get("ganztaegig")), bool(t.get("frei")),
                        (t.get("titel") or None) if mit_details else None,
-                       (t.get("ort") or None) if mit_details else None)
+                       (t.get("ort") or None) if mit_details else None,
+                       (t.get("beschreibung") or None) if mit_details else None,
+                       _teilnehmer_json(t) if mit_details else None,
+                       (t.get("konferenz") or None) if mit_details else None)
                       for t in termine]
             conn.execute("delete from kalender_termine where quelle_id = %s",
                          (quelle_id,))
@@ -3707,8 +3738,10 @@ def kalendertermine_ersetzen(quelle_id: str, termine: list, details: bool) -> in
                 with conn.cursor() as cur:
                     cur.executemany(
                         "insert into kalender_termine (quelle_id, uid, beginn, "
-                        "ende, ganztaegig, frei, titel, ort) "
-                        "values (%s, %s, %s, %s, %s, %s, %s, %s)", zeilen)
+                        "ende, ganztaegig, frei, titel, ort, beschreibung, "
+                        "teilnehmer, konferenz) "
+                        "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, "
+                        "%s::jsonb, %s)", zeilen)
     return len(zeilen)
 
 
@@ -8802,6 +8835,32 @@ def kontakt_auskunft(lead_id: str) -> str:
     for e in entwuerfe:
         teile.append(f"* {e['created_at']:%d.%m.%Y %H:%M} — {e['channel']} "
                      f"[{e['status']}] {e['subject'] or ''}: {e['body']}")
+    # Termin-Akten mit Mitschrift und Auswertung. Nur die eigenen Daten des
+    # Kontakts plus Termin-Metadaten: keine Adressen anderer Teilnehmer. Nie
+    # loggen. Auch Akten, in denen der Kontakt schon entknuepft ist (gesperrt):
+    # Abgleich ueber seine E-Mail-Adresse (Final-Review I5).
+    akten = _q(
+        "select a.uid, a.titel, a.beginn, a.status, m.segmente, "
+        "m.auswertung_json, m.auswertung_md from termin_akten a "
+        "left join termin_mitschriften m on m.uid = a.uid "
+        "where a.uid in (select uid from termin_teilnehmer "
+        "where lead_id = %s or (lead_id is null and coalesce(%s, '') <> '' "
+        "and lower(adresse) = lower(%s))) "
+        "order by a.beginn, a.uid", (lead_id, l.get("email"), l.get("email")))
+    teile += ["", f"## Termine ({len(akten)})", ""]
+    for a in akten:
+        teile.append(f"* {a['beginn']:%d.%m.%Y %H:%M} — {a['titel'] or ''} "
+                     f"[{a['status']}] (uid {a['uid']})")
+        if a["segmente"] is not None:
+            teile += ["  Mitschrift:", "  ```json",
+                      json.dumps(a["segmente"], ensure_ascii=False, indent=1,
+                                 default=str), "  ```"]
+        if a["auswertung_json"] is not None:
+            teile += ["  Auswertung (JSON):", "  ```json",
+                      json.dumps(a["auswertung_json"], ensure_ascii=False,
+                                 indent=1, default=str), "  ```"]
+        if a["auswertung_md"]:
+            teile += ["  Auswertung:", "", a["auswertung_md"]]
     text = "\n".join(teile) + "\n"
     name = f"auskunft-{recherche.slug(l['name'] or 'kontakt')}-{heute}.md"
     pfad, schreibfehler = None, None
@@ -8811,9 +8870,40 @@ def kontakt_auskunft(lead_id: str) -> str:
         schreibfehler = f"Auskunft konnte nicht abgelegt werden: {e}"
     return _json({"lead_id": lead_id, "datei": pfad, "text": text,
                   "protokollzeilen": len(zeilen),
-                  "entwuerfe": len(entwuerfe),
+                  "entwuerfe": len(entwuerfe), "termine": len(akten),
                   **({"fehler_ablage": schreibfehler}
                      if schreibfehler else {})})
+
+
+_TEILNAHME_DES_LEADS = (
+    "(lead_id = %s or (lead_id is null and lower(adresse) in (select lower(email) from leads "
+    "where id = %s and coalesce(email, '') <> '')))")
+
+
+def _mitschriften_abraeumen(lead_id: str) -> None:
+    """Loeschantrag: Mitschriften aller Termine, an denen der Kontakt
+    teilnahm, entfernen (Meeting-Mittelpunkt) - auch dort, wo seine Zeile
+    schon entknuepft ist (Abgleich ueber die Adresse, Final-Review I5).
+    Steht ein Bot an oder laeuft er, wird nur der Status 'ohne_aufnahme'
+    gesetzt (bedingt, I2); Bot stoppen und Vexa-Meeting loeschen macht der
+    Taktgeber (C1, `termin_takt._nachloeschen`) - nur er hat VEXA_API_KEY.
+    Das Briefing nennt Namen, Kontakte und Painpoints und wird geleert."""
+    import termin_akte  # R4: termin_akte importiert server
+    for uid in termin_akte.akten_eines_leads(lead_id, mit_adresse=True):
+        termin_akte.status_wechseln(
+            uid, ("geplant", "wartet_auf_einlass", "laeuft"), "ohne_aufnahme",
+            "Löschantrag eines Teilnehmers")
+        termin_akte.mitschrift_entfernen(uid)
+        _q("update termin_akten set briefing_md = null, briefing_stand = null, "
+           "briefing_mit_ki = null, briefing_am = null, geaendert_am = now() "
+           "where uid = %s returning uid", (uid,))
+    # Sicherheitsnetz nach dem Abraeumen je Akte (Wortlaut des Briefs): fiele
+    # eine Akte durch akten_eines_leads, geht die Mitschrift hier trotzdem.
+    _q("delete from termin_mitschriften where uid in (select uid from "
+       f"termin_teilnehmer where {_TEILNAHME_DES_LEADS}) returning id", (lead_id, lead_id))
+    # Von Gesperrten bleibt nur die Adresse (Final-Review I6).
+    _q("update termin_teilnehmer set lead_id = null, grund = 'gesperrt', name = null "
+       f"where {_TEILNAHME_DES_LEADS} returning uid", (lead_id, lead_id))
 
 
 @_gesichert
@@ -8823,8 +8913,13 @@ def loeschantrag_vermerken(lead_id: str, quelle: str,
     weitere Verarbeitung dieses Kontakts.
 
     Der Vermerk archiviert den Kontakt, blockiert neue Entwuerfe und den
-    Auto-Betrieb und verhindert stilles Zurueckholen. Geloescht wird hier
-    NICHTS: die physische Loeschung ist ein Menschen-Schritt mit
+    Auto-Betrieb und verhindert stilles Zurueckholen. ZUERST raeumt er die
+    Mitschriften ab (Meeting-Mittelpunkt: Mitschrift, Auswertung, Briefing
+    aller Termine des Kontakts; ein laufender Bot wird ueber den Status
+    beendet, der Taktgeber holt ihn binnen einer Runde raus); scheitert das,
+    kommt ein Fehler und der Kontakt wird NICHT vermerkt — der Aufruf kann
+    wiederholt werden. Der Kontakt selbst wird hier NICHT geloescht: die
+    physische Loeschung ist ein Menschen-Schritt mit
     Vier-Augen (docs/06_DSGVO.md, Frist 30 Tage). Verlangt ein Kontakt im
     Chat die Loeschung, vermerke sie MIT Quelle und Wortlaut und sag es
     dem Betreiber sofort.
@@ -8836,6 +8931,19 @@ def loeschantrag_vermerken(lead_id: str, quelle: str,
     leads = _q("select enrichment, name from leads where id = %s", (lead_id,))
     if not leads:
         return _json({"fehler": f"Kein Kontakt mit lead_id {lead_id}."})
+    # Mitschriften VOR dem Vermerk abraeumen: bricht das ab, bleibt der
+    # Kontakt unvermerkt und der Aufruf wiederholbar, statt ihn als
+    # "geloescht" zu markieren, waehrend Mitschrift und Briefing bleiben.
+    # Auch bei bereits vorhandenem Antrag (idempotent), damit kein Fruehausstieg
+    # ein abgebrochenes Abraeumen offen laesst.
+    try:
+        _mitschriften_abraeumen(lead_id)
+    except Exception as e:
+        _LOG.error("Loeschantrag: Mitschriften nicht abgeraeumt (%s)",
+                   type(e).__name__)
+        return _json({"fehler": (
+            "Mitschriften nicht abgeraeumt – Antrag erneut ausfuehren. "
+            "Der Kontakt ist noch NICHT vermerkt.")})
     if _loeschantrag(leads[0]["enrichment"]):
         return _json({"fehler": "Ein Loeschantrag liegt bereits vor."})
     vermerk = {"am": _jetzt(), "quelle": quelle.strip(),
@@ -10418,6 +10526,19 @@ def auftraege_melden() -> str:
     return _json({"meldungen": auftrag_meldung.melden_gesperrt(pool, _q, laden, SCHEMA)})
 
 
+@_gesichert
+def termin_akte_lesen(uid: str) -> str:
+    """Die Akte zu einem Kundentermin lesen (Zeit, Teilnehmer, Briefing,
+    Mitschrift-Status, Auswertung, CRM-Vorschlaege). Gesperrte Kontakte fehlen,
+    der Passcode wird nicht ausgegeben. `uid` ist die Kalender-UID des Termins.
+    Nur lesen."""
+    import termin_akte   # erst hier: termin_akte importiert server (Ringimport)
+    akte = termin_akte.lesen(uid)
+    if akte is None:
+        return _json({"fehler": "Keine Akte zu dieser uid."})
+    return _json(termin_akte.fuer_agenten(akte))
+
+
 WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,
              kontakt_anlegen,
              kontakt_aktualisieren,
@@ -10568,7 +10689,9 @@ WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,
              # M8 Auftragsbuch (10.11.2026): Reel-Auftrag an Marketing. tests/test_auftrag_geben.py.
              auftrag_geben,
              # M8 Auftragsbuch: Meldungen an den Betreiber (antworten-pruefen). tests/test_auftrag_meldung.py.
-             auftraege_melden)
+             auftraege_melden,
+             # Meeting-Mittelpunkt: Termin-Akte lesen. tests/test_termin_akte_mcp.py.
+             termin_akte_lesen)
 
 def bedarfsanalyse_an() -> bool:
     """Schalter SALES_BEDARFSANALYSE (je Aufruf gelesen): nur "an" schaltet

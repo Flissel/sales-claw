@@ -708,3 +708,89 @@ def test_harte_zeitgrenze_greift_auch_ohne_vorfilter(server_stub, monkeypatch):
     assert fehler == kalenderquellen.ZEITLIMIT_FEHLER
     assert "http" not in fehler
     assert _mp.active_children() == []
+
+
+# --- Meeting-Mittelpunkt Task 3: Beschreibung, Teilnehmer, Konferenz --------
+
+def _stunde():
+    return (_dt.now(_tz.utc).replace(microsecond=0, second=0, minute=0)
+            + _td(days=3))
+
+
+def _ics_mit(rumpf: str) -> bytes:
+    start = _stunde()
+    return _ics(_vevent(
+        "mm@x", start.strftime("%Y%m%dT%H%M%SZ"),
+        "DTEND:" + (start + _td(hours=1)).strftime("%Y%m%dT%H%M%SZ")
+        + "\r\nSUMMARY:Termin\r\n" + rumpf))
+
+
+def test_vevent_mit_teilnehmern(server_stub):
+    teams = "https://teams.microsoft.com/l/meetup-join/abc"
+    server_stub.rumpf = _ics_mit(
+        "ORGANIZER;CN=Kunde:mailto:K@Firma.de\r\n"
+        "ATTENDEE;CN=Anna;ROLE=REQ-PARTICIPANT:mailto:Anna@Firma.de\r\n"
+        "ATTENDEE;CN=Raum 1;CUTYPE=ROOM:mailto:Raum1@Firma.de\r\n"
+        f"DESCRIPTION:Bitte beitreten {teams}\r\n"
+        f"X-MICROSOFT-SKYPETEAMSMEETINGURL:{teams}\r\n")
+    termine, fehler = kalenderquellen.hole(server_stub.url)
+    assert fehler is None, fehler
+    t = termine[0]
+    assert t["konferenz"] == teams
+    assert teams in t["beschreibung"]
+    assert t["teilnehmer_anzahl"] == 3
+    nach = {p["adresse"]: p for p in t["teilnehmer"]}
+    assert set(nach) == {"k@firma.de", "anna@firma.de", "raum1@firma.de"}
+    assert nach["k@firma.de"]["rolle"] == "organisator"
+    assert nach["k@firma.de"]["name"] == "Kunde"
+    assert nach["anna@firma.de"]["rolle"] == "gast"
+    assert nach["anna@firma.de"]["art"] == "individual"
+    assert nach["raum1@firma.de"]["art"] == "room"
+
+
+def test_organisator_auch_als_attendee_steht_einmal(server_stub):
+    server_stub.rumpf = _ics_mit(
+        "ORGANIZER;CN=Kunde:mailto:k@firma.de\r\n"
+        "ATTENDEE;CN=Kunde:mailto:K@Firma.de\r\n")
+    t = kalenderquellen.hole(server_stub.url)[0][0]
+    assert len(t["teilnehmer"]) == 1 and t["teilnehmer_anzahl"] == 1
+    assert t["teilnehmer"][0]["rolle"] == "organisator"
+
+
+def test_ohne_felder_leere_vorgaben(server_stub):
+    server_stub.rumpf = _ics_mit("")
+    t = kalenderquellen.hole(server_stub.url)[0][0]
+    assert (t["beschreibung"], t["teilnehmer"], t["teilnehmer_anzahl"],
+            t["konferenz"]) == ("", [], 0, "")
+
+
+def test_beschreibung_gekappt_und_einzeilig(server_stub):
+    lang = "\\n".join(["abc def"] * 2000)     # ICS-escaped, wird zu echten Umbruechen
+    server_stub.rumpf = _ics_mit(f"DESCRIPTION:{lang}\r\n")
+    t = kalenderquellen.hole(server_stub.url)[0][0]
+    assert len(t["beschreibung"]) == 4000
+    assert "\n" not in t["beschreibung"] and "\r" not in t["beschreibung"]
+    assert "  " not in t["beschreibung"]
+
+
+def test_webinar_anzahl(server_stub):
+    gaeste = "".join(f"ATTENDEE:mailto:g{i}@firma.de\r\n" for i in range(60))
+    server_stub.rumpf = _ics_mit(gaeste)
+    t = kalenderquellen.hole(server_stub.url)[0][0]
+    assert len(t["teilnehmer"]) == 50
+    assert t["teilnehmer_anzahl"] == 60
+
+
+def test_konferenz_bevorzugt_eigenes_feld_vor_url(server_stub):
+    teams = "https://teams.microsoft.com/l/meetup-join/xyz"
+    server_stub.rumpf = _ics_mit(
+        "URL:https://outlook.example/event/123\r\n"
+        f"X-MICROSOFT-SKYPETEAMSMEETINGURL:{teams}\r\n")
+    t = kalenderquellen.hole(server_stub.url)[0][0]
+    assert t["konferenz"] == teams
+
+
+def test_konferenz_faellt_auf_url_zurueck(server_stub):
+    server_stub.rumpf = _ics_mit("URL:https://meet.example/abc\r\n")
+    t = kalenderquellen.hole(server_stub.url)[0][0]
+    assert t["konferenz"] == "https://meet.example/abc"

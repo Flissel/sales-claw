@@ -31,7 +31,7 @@ def leer():
     with server.pool.connection() as conn:
         conn.execute(
             "truncate sales_test.activities, sales_test.drafts, "
-            "sales_test.personas, sales_test.leads cascade")
+            "sales_test.personas, sales_test.termin_akten, sales_test.leads cascade")
     yield
 
 
@@ -346,3 +346,25 @@ def test_kontakt_ziel_haengt_abfrage_sauber_an():
     assert ui._kontakt_ziel(lid, gespeichert="telefon") == f"/kontakte/{lid}?gespeichert=telefon"
     assert ui._kontakt_ziel(lid, "einstellungen", "stufe", gespeichert="telefon") == \
         f"/kontakte/{lid}?reiter=einstellungen&gespeichert=telefon#stufe"
+
+
+def test_kontakt_termine_link_auf_akte():
+    lead = _lead()
+    uid = "abc@google.com#2099-01-09T12:00:00+00:00"
+    _aktivitaet(lead, "termin", {"datum": "2099-01-09", "uhrzeit": "12:00", "thema": "Mit Akte", "uid": uid})
+    _aktivitaet(lead, "termin", {"datum": "2099-01-10", "uhrzeit": "12:00", "thema": "Ohne Akte", "uid": "x2"})
+    server._q("insert into termin_akten (uid, herkunft, beginn, ende, titel) "
+              "values (%s,'kalender',now(),now(),'T') returning uid", (uid,))
+    t = _get(f"/kontakte/{lead}?reiter=termine").text
+    assert t.count(">Termin-Seite</a>") == 1
+    assert 'href="/termine/abc%40google.com%232099-01-09T12%3A00%3A00%2B00%3A00"' in t
+
+
+def test_kontakt_verlauf_zeigt_akte_escaped():
+    lead = _lead()
+    server._q("insert into termin_akten (uid, herkunft, beginn, ende, titel) "
+              "values ('u9','kalender',now(),now(),'<script>x</script>') returning uid")
+    server._q("insert into termin_teilnehmer (uid, adresse, rolle, lead_id) "
+              "values ('u9','k@f.de','gast',%s) returning uid", (lead,))
+    v = _get(f"/kontakte/{lead}?reiter=verlauf").text
+    assert "Termin: &lt;script&gt;x&lt;/script&gt;" in v and "<script>x" not in v

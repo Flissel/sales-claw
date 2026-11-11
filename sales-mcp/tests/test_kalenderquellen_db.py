@@ -246,3 +246,18 @@ def test_eigener_privatkalender_eines_teammitglieds_zeigt_privattermin():
     assert luecken == []
     assert [(t["titel"], t["ort"], t["maskiert"]) for t in termine] == [
         ("Privattermin", "", False)]
+
+
+def test_wechsel_auf_privat_loescht_alle_detailspalten():
+    qid = server.kalenderquelle_speichern("Ivan", "https://example.test/a.ics", "ivan", "business")
+    server.kalendertermine_ersetzen(qid, [dict(
+        _termin(), beschreibung="Agenda", konferenz="https://meet.example/x",
+        teilnehmer=[{"adresse": "g@x.example", "name": "G", "rolle": "gast",
+                     "art": "individual"}], teilnehmer_anzahl=1)], True)
+    voll = server._q("select titel, ort, beschreibung, teilnehmer, konferenz "
+                     "from kalender_termine where quelle_id = %s", (qid,))[0]
+    assert all(v is not None for v in voll.values()), voll
+    assert server.kalenderquelle_bereich_setzen(qid, "privat", "ivan") is True
+    leer = server._q("select titel, ort, beschreibung, teilnehmer, konferenz "
+                     "from kalender_termine where quelle_id = %s", (qid,))[0]
+    assert all(v is None for v in leer.values()), leer

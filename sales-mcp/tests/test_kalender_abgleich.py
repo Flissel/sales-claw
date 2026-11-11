@@ -203,3 +203,47 @@ def test_neue_quellen_zaehlen_den_stempel_der_alten_ui_nicht():
     der neue Abgleich (abgeglichen_am) macht eine Quelle 'nicht mehr neu'."""
     q = _quelle(zuletzt_gelesen=True)
     assert [x["id"] for x in kalender_abgleich.neue_quellen()] == [q["id"]]
+
+
+def _termin_mit_details():
+    return dict(_termin(), beschreibung="Agenda https://meet.example/x",
+                teilnehmer=[{"adresse": "gast@geheim.example", "name": "Gast",
+                             "rolle": "gast", "art": "individual"}],
+                teilnehmer_anzahl=1, konferenz="https://meet.example/x")
+
+
+def test_privat_speichert_keine_details(caplog, monkeypatch):
+    monkeypatch.setenv("POST_BESITZER", "felix")
+    q = _quelle(besitzer="ivan", bereich="privat")
+    _hole_liefert(monkeypatch, [_termin_mit_details()])
+    with caplog.at_level(logging.DEBUG):
+        kalender_abgleich.quelle_abgleichen(q)
+        kalender_abgleich.runde()
+    zeile = _termine(q["id"])[0]
+    assert zeile["beschreibung"] is None
+    assert zeile["teilnehmer"] is None
+    assert zeile["konferenz"] is None
+    assert "gast@geheim.example" not in caplog.text
+
+
+def test_business_speichert_details(monkeypatch):
+    monkeypatch.setenv("POST_BESITZER", "felix")
+    q = _quelle(besitzer="ivan", bereich="business")
+    _hole_liefert(monkeypatch, [_termin_mit_details()])
+    kalender_abgleich.quelle_abgleichen(q)
+    zeile = _termine(q["id"])[0]
+    assert zeile["beschreibung"] == "Agenda https://meet.example/x"
+    assert zeile["konferenz"] == "https://meet.example/x"
+    assert zeile["teilnehmer"]["anzahl"] == 1
+    assert zeile["teilnehmer"]["liste"][0]["adresse"] == "gast@geheim.example"
+
+
+def test_termin_ohne_neue_schluessel_speichert_null(monkeypatch):
+    """Google-Termine kennen die Felder nicht."""
+    monkeypatch.setenv("POST_BESITZER", "felix")
+    q = _quelle(besitzer="ivan", bereich="business")
+    _hole_liefert(monkeypatch, [_termin()])
+    kalender_abgleich.quelle_abgleichen(q)
+    zeile = _termine(q["id"])[0]
+    assert zeile["beschreibung"] is None and zeile["teilnehmer"] is None
+    assert zeile["konferenz"] is None
