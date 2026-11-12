@@ -224,9 +224,7 @@ services:
     # gleicher Builds parallel, und am 11.11.2026 stuerzte dabei der
     # Docker-Daemon der VM ab (BuildKit-Race) und nahm alle Container mit.
     # Erst `docker compose build sales-mcp`, dann die Dienste ohne --build
-    # (deploy/update.sh; Test: scripts/tests/test_proxmox_compose.py). Die
-    # anderen Dienste tragen `pull_policy: never`: den Tag gibt es nur lokal,
-    # ein Pull-Versuch waere nur eine Registry-Anfrage mit irrefuehrendem Fehler.
+    # (deploy/update.sh; Test: scripts/tests/test_proxmox_compose.py).
     image: sales-claw-sales-mcp:local
     container_name: ${LADEN_PRAEFIX:-sales}-mcp
     # Wie sales-claw im Demo-Betrieb: laeuft nur nach ausdruecklichem Start.
@@ -336,7 +334,6 @@ services:
   # (Grundsatzentscheidung 1); LinkedIn fasst er nie an (Nr. 3).
   sales-dispatch:
     image: sales-claw-sales-mcp:local
-    pull_policy: never
     container_name: ${LADEN_PRAEFIX:-sales}-dispatch
     command: python dispatch.py
     # Demo-Betrieb wie der restliche Stack. Bewusst "no": ein Dienst, der
@@ -393,7 +390,6 @@ services:
   #     (Grundsatzentscheidung 1) bleibt unberuehrt.
   sales-inbox:
     image: sales-claw-sales-mcp:local
-    pull_policy: never
     container_name: ${LADEN_PRAEFIX:-sales}-inbox
     command: python inbox.py
     # Demo-Betrieb wie der restliche Stack.
@@ -465,7 +461,6 @@ services:
   # klaren Logzeile und Exit 0 — der Kanal ist dann gebaut, aber inert.
   sales-mail:
     image: sales-claw-sales-mcp:local
-    pull_policy: never
     container_name: ${LADEN_PRAEFIX:-sales}-mail
     command: python mail_dispatch.py
     # Demo-Betrieb wie der restliche Stack. Bewusst "no": ein Dienst, der
@@ -560,7 +555,6 @@ services:
   # Ueberlegung wie bei sales-mail).
   sales-telegram:
     image: sales-claw-sales-mcp:local
-    pull_policy: never
     container_name: ${LADEN_PRAEFIX:-sales}-telegram
     command: python telegram_dispatch.py
     # Wie sales-mail bewusst „unless-stopped" und nicht „always": ein Dienst,
@@ -622,7 +616,6 @@ services:
   #   LINKEDIN_DRAFT_ID=<uuid> docker compose run --rm sales-linkedin
   sales-linkedin:
     image: sales-claw-sales-mcp:local
-    pull_policy: never
     container_name: ${LADEN_PRAEFIX:-sales}-linkedin
     command: python linkedin_dispatch.py
     restart: unless-stopped
@@ -678,7 +671,6 @@ services:
   # diesen Dienst neu).
   sales-kanaele:
     image: sales-claw-sales-mcp:local
-    pull_policy: never
     container_name: ${LADEN_PRAEFIX:-sales}-kanaele
     command: python kanal_dispatch.py
     restart: unless-stopped
@@ -733,7 +725,6 @@ services:
   # genuegt; gegen versehentliche zweite sichert der Advisory-Lock je Lead.
   sales-auto:
     image: sales-claw-sales-mcp:local
-    pull_policy: never
     container_name: ${LADEN_PRAEFIX:-sales}-auto
     command: python auto.py
     restart: "no"
@@ -772,7 +763,6 @@ services:
   # vorher schon lief.
   sales-kalender:
     image: sales-claw-sales-mcp:local
-    pull_policy: never
     container_name: ${LADEN_PRAEFIX:-sales}-kalender
     command: python kalender_abgleich.py
     restart: unless-stopped
@@ -796,7 +786,6 @@ services:
   # er vorher schon lief.
   sales-termine:
     image: sales-claw-sales-mcp:local
-    pull_policy: never
     container_name: ${LADEN_PRAEFIX:-sales}-termine
     command: python termin_takt.py
     restart: unless-stopped
@@ -844,7 +833,6 @@ services:
   # deploy/update.sh baut ihn nur neu, wenn er vorher schon lief.
   sales-post:
     image: sales-claw-sales-mcp:local
-    pull_policy: never
     container_name: ${LADEN_PRAEFIX:-sales}-post
     command: python post_abholen.py
     restart: unless-stopped
@@ -952,7 +940,6 @@ services:
 
   sales-ui:
     image: sales-claw-sales-mcp:local
-    pull_policy: never
     container_name: ${LADEN_PRAEFIX:-sales}-ui
     command: python ui.py
     restart: unless-stopped
@@ -1159,7 +1146,6 @@ services:
   # fuehrt nichts aus (Stufe 1) und ruft kein Sprachmodell.
   freigabe-bote:
     image: sales-claw-sales-mcp:local
-    pull_policy: never
     container_name: ${LADEN_PRAEFIX:-sales}-freigabe-bote
     command: python -m freigabe_bote
     network_mode: host
@@ -1192,7 +1178,6 @@ services:
   # Sammelkontakt der Beitragsentwuerfe. Versendet nichts, ruft kein Sprachmodell.
   auftrag-bote:
     image: sales-claw-sales-mcp:local
-    pull_policy: never
     container_name: ${LADEN_PRAEFIX:-sales}-auftrag-bote
     command: python -m auftrag_bote
     restart: unless-stopped

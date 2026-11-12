@@ -61,9 +61,8 @@ Die Dienste sprechen über die Datenbank und das Compose-Netz miteinander. Nur G
 Wichtig: `sales-auto` startet nie von selbst. Dienste daher immer namentlich starten, nie mit einem blanken `docker compose up -d`:
 
 ```
-docker compose build sales-mcp                          # das eine Image aller sales-mcp-Dienste, genau ein Build
-docker compose up -d sales-mcp sales-dispatch sales-inbox
-bash deploy/sales-ui-neu.sh   # sales-ui des Basis-Ladens immer ueber das Skript (Netz bewerbung-fenster)
+docker compose up -d --build sales-mcp sales-dispatch sales-inbox
+docker compose build sales-mcp && bash deploy/sales-ui-neu.sh   # sales-ui des Basis-Ladens immer ueber das Skript (Netz bewerbung-fenster)
 ```
 
 ## Verzeichnisse

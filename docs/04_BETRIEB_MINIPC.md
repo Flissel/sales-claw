@@ -87,22 +87,16 @@ für ~20–60 Sekunden still und verbindet sich selbst wieder. Ein
 ```bash
 cd ~/sales-claw
 git reset --hard vor-update
-docker compose build sales-mcp
-docker compose up -d sales-mcp sales-inbox sales-dispatch sales-mail sales-claw
-bash deploy/sales-ui-neu.sh
+docker compose up -d --build sales-mcp sales-inbox sales-dispatch sales-mail sales-claw
+docker compose build sales-mcp && bash deploy/sales-ui-neu.sh
 docker restart sales-claw
 bash deploy/smoke.sh
 ```
 
-Nach einem Reset nie `up -d --build` mit mehreren Diensten (12.11.2026): ein `vor-update` von vor dem 12.11.2026
-hat in `docker-compose.yml` noch 14 Dienste mit `build: ./sales-mcp`, und `--build` startete dann ein Dutzend
-gleicher Builds parallel (Daemon-Absturz 11.11.2026). Deshalb erst genau ein `docker compose build sales-mcp`,
-dann `up -d` ohne `--build` (Runbook 4a).
-
 `deploy/sales-ui-neu.sh` erzeugt die Basis-`sales-ui` mit dem Netz `bewerbung-fenster` (Portal-Fenster) neu; ein
 schlichtes `docker compose up -d sales-ui` verlöre es. Liegt `vor-update` vor dem Portal-Fenster, also ohne
 `docker-compose.fenster.yml` und ohne dieses Skript, gilt der alte schlichte Befehl:
-`docker compose build sales-mcp && docker compose up -d sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw`.
+`docker compose up -d --build sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw`.
 
 ## Sicherung
 

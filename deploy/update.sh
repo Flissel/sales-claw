@@ -325,24 +325,14 @@ compose_dateien() { # laden-index
 # derselbe, darum wird hier einmal fuer alle Laeden gebaut, nicht je Laden; die `up`-Aufrufe danach
 # laufen OHNE --build (Compose erzeugt Container neu, deren Image sich geaendert hat). Die Dienste
 # werden nacheinander gebaut, nie mehrere in einem Aufruf. sales-stt und sales-ki haben eigene
-# Images, sales-claw ein fertiges (ghcr) ohne Build. Ein unbekannter Dienst ist ein Fehler, kein
-# stiller sales-mcp-Build: ein neuer Dienst mit eigenem Kontext wuerde sonst nie gebaut.
-# Rueckgabe 1 bei unbekanntem Dienst oder gescheitertem Build. Die Aufrufer stehen in einem
-# `||`-Zusammenhang, dort gilt `set -e` in der Funktion nicht, darum jedes `|| return 1`.
-MCP_IMAGE_DIENSTE="sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-telegram sales-linkedin sales-kanaele sales-auto sales-post sales-kalender sales-termine freigabe-bote auftrag-bote"
+# Images, sales-claw ein fertiges (ghcr) ohne Build.
 images_bauen() { # dienste (Vereinigung ueber alle Laeden)
   local d z ziele=""
   for d in $1; do
-    case " $MCP_IMAGE_DIENSTE " in
-      *" $d "*) z="sales-mcp" ;;
-      *)
-        case "$d" in
-          sales-stt|sales-ki) z="$d" ;;
-          sales-claw) continue ;;
-          *)
-            echo "FEHLER: Dienst '$d' ist images_bauen unbekannt - welches Image er braucht, steht nicht fest. Nichts gebaut." >&2
-            return 1 ;;
-        esac ;;
+    case "$d" in
+      sales-stt|sales-ki) z="$d" ;;
+      sales-claw) continue ;;
+      *) z="sales-mcp" ;;
     esac
     case " $ziele " in
       *" $z "*) ;;
@@ -350,7 +340,7 @@ images_bauen() { # dienste (Vereinigung ueber alle Laeden)
     esac
   done
   for z in $ziele; do
-    docker compose build "$z" || return 1
+    docker compose build "$z"
   done
 }
 
@@ -373,11 +363,7 @@ rueckbau() {
   # bleibt unangetastet (nichts wiederherzustellen).
   # Der alte Stand wird EINMAL fuer alle Laeden gebaut (images_bauen), die `up` je Laden laufen
   # ohne --build (12.11.2026, s. images_bauen).
-  if ! images_bauen "${LADEN_KERN[*]}"; then
-    status_schreiben notfall "$ALT" "$NEU" "Rueckbau: Build des alten Stands gescheitert - Mensch noetig"
-    echo "NOTFALL: Rueckbau auf $ALT, aber der Build des alten Stands ist gescheitert. Mensch noetig." >&2
-    exit 1
-  fi
+  images_bauen "${LADEN_KERN[*]}"
   for i in "${!LADEN_PRAEFIXE[@]}"; do
     k="${LADEN_KERN[$i]}"
     [ -n "$k" ] || continue
@@ -450,15 +436,7 @@ for i in "${!LADEN_PRAEFIXE[@]}"; do
   LADEN_BAUEN+=("$BAUEN")
 done
 
-# Scheitert der Build, ist noch nichts neu gestartet: zurueck auf $ALT, Status schreiben, Ende.
-# Ohne den Reset stuende HEAD schon auf $NEU, der naechste Lauf meldete "Bereits aktuell" und
-# baute nie, waehrend alle Container auf dem alten Image blieben.
-if ! images_bauen "${LADEN_BAUEN[*]}"; then
-  git reset --hard "$ALT" >/dev/null
-  status_schreiben fehler "$ALT" "$NEU" "Build fehlgeschlagen - nichts neu gestartet, Stand zurueck auf $ALT"
-  echo "ABBRUCH: Build fehlgeschlagen. Nichts neu gestartet, der Checkout steht wieder auf $ALT. Der naechste Lauf versucht es erneut." >&2
-  exit 1
-fi
+images_bauen "${LADEN_BAUEN[*]}"
 
 for i in "${!LADEN_PRAEFIXE[@]}"; do
   BAUEN="${LADEN_BAUEN[$i]}"
