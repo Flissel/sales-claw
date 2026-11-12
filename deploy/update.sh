@@ -21,6 +21,22 @@ export LC_ALL=C
 WURZEL="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BETRIEB="${SALES_BETRIEB:-$HOME/sales-betrieb}"
 STATUS="$BETRIEB/update-status.json"
+
+# SPERRE (12.11.2026): zwei gleichzeitige Updates (Timer + Handlauf) bauen
+# und starten dieselben Container gegeneinander. Die Sperre gilt bis zum Ende
+# dieses Prozesses (fd 9 bleibt offen); ein zweiter Lauf bricht hier ab, bevor
+# er irgendetwas anfasst - kein docker, kein git, kein Statuseintrag.
+mkdir -p "$BETRIEB"
+SPERRE="$BETRIEB/update.lock"
+if ! command -v flock >/dev/null 2>&1; then
+  echo "ABBRUCH: flock fehlt (Paket util-linux) - ohne Sperre laeuft kein Update." >&2
+  exit 1
+fi
+exec 9>"$SPERRE"
+if ! flock -n 9; then
+  echo "ABBRUCH: ein anderes Update laeuft bereits (Sperre $SPERRE) - dieser Lauf aendert nichts." >&2
+  exit 1
+fi
 # NIEMALS nacktes `docker compose up -d`: es wuerde sales-auto starten
 # (zweiter Antwortpfad neben dem Cron-Job). Dienste immer namentlich.
 #
@@ -317,6 +333,55 @@ compose_dateien() { # laden-index
   return 0
 }
 
+# EIN BAU JE KONTEXT (12.11.2026). Am 11.11.2026 stuerzte dockerd auf der VM
+# ab (BuildKit: "concurrent map iteration and map write"), alle Container
+# standen. Ausloeser war `docker compose ... up -d --build <dienste>`: die
+# ~14 Dienste mit `build: ./sales-mcp` und demselben Image baute Compose
+# einzeln und GLEICHZEITIG (12 identische Builds in derselben Sekunde).
+# Deshalb hier: Dienste nach Build-Abschnitt UND Image gruppieren (aus
+# `docker compose <dieselben args> config`, also nie ohne die --env-file des
+# Ladens), je Gruppe einen Vertreter bauen - nacheinander, in einer Schleife -
+# und danach `up -d --no-build` mit ALLEN Diensten in der bisherigen
+# Reihenfolge. Dienste ohne build: werden nicht gebaut (wie vorher).
+# Die Dienstnamen gehen an `config` mit, damit Dienste hinter einem Profil
+# (sales-stt, Profil stt-lokal) wie beim `up` dabei sind.
+# Fehlschlaege (config, build, up) beenden das Skript wie vorher das
+# `up --build` (set -euo pipefail; `local` steht bewusst getrennt von der
+# Zuweisung, `local x="$(...)"` wuerde den Fehlerstatus verschlucken).
+#   bauen_und_starten <compose-argumente...> -- <dienste...>
+bauen_und_starten() {
+  local args=() dienste=() vertreter v
+  while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do
+    args+=("$1")
+    shift
+  done
+  [ "$#" -gt 0 ] && shift
+  dienste=("$@")
+  [ "${#dienste[@]}" -gt 0 ] || return 0
+  vertreter="$(docker compose ${args[@]+"${args[@]}"} config --format json "${dienste[@]}" \
+    | python3 -c '
+import json, sys
+dienste = json.load(sys.stdin).get("services") or {}
+gesehen, aus = set(), []
+for name in sys.argv[1:]:
+    if name not in dienste:
+        sys.exit("FEHLER: Dienst %s fehlt in docker compose config" % name)
+    bau = dienste[name].get("build")
+    if not bau:
+        continue
+    schluessel = (json.dumps(bau, sort_keys=True), dienste[name].get("image") or "dienst:" + name)
+    if schluessel not in gesehen:
+        gesehen.add(schluessel)
+        aus.append(name)
+print(" ".join(aus), end="")
+' "${dienste[@]}")"
+  for v in $vertreter; do
+    echo "Baue $v (ein Build je Kontext, nacheinander)"
+    docker compose ${args[@]+"${args[@]}"} build "$v"
+  done
+  docker compose ${args[@]+"${args[@]}"} up -d --no-build "${dienste[@]}"
+}
+
 gateway_neustarten() {
   # Nur anfassen, was laeuft — KERN_BASIS enthaelt sales-claw nur dann.
   # Bewusst nur der Basis-Laden, siehe Kommentar bei KERN_BASIS oben.
@@ -340,7 +405,7 @@ rueckbau() {
     chat_eingang_sichern "${LADEN_ENVARGS[$i]}"
     fenster_netz_sichern "$i"
     # shellcheck disable=SC2046,SC2086
-    docker compose ${LADEN_ENVARGS[$i]} $(compose_dateien "$i") up -d --build $k
+    bauen_und_starten ${LADEN_ENVARGS[$i]} $(compose_dateien "$i") -- $k
   done
   gateway_neustarten
   sleep 30
@@ -403,7 +468,7 @@ for i in "${!LADEN_PRAEFIXE[@]}"; do
     chat_eingang_sichern "${LADEN_ENVARGS[$i]}"
     fenster_netz_sichern "$i"
     # shellcheck disable=SC2046,SC2086
-    docker compose ${LADEN_ENVARGS[$i]} $(compose_dateien "$i") up -d --build $BAUEN
+    bauen_und_starten ${LADEN_ENVARGS[$i]} $(compose_dateien "$i") -- $BAUEN
   fi
 done
 
@@ -505,7 +570,7 @@ if $OPENWA_BAUEN; then
     fi
 
     # shellcheck disable=SC2086
-    docker compose ${LADEN_ENVARGS[$i]} -f docker-compose.openwa.yml up -d --build openwa
+    bauen_und_starten ${LADEN_ENVARGS[$i]} -f docker-compose.openwa.yml -- openwa
   done
 fi
 if echo "$GEAENDERT" | grep -E '^config/workspace/' >/dev/null; then
