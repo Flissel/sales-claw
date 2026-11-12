@@ -6,7 +6,9 @@ Alle `TERMIN_TAKT_S` Sekunden (Vorgabe 30) eine Runde, jeder Schritt mit eigenem
   1. Termin-Akten abgleichen
   2. Briefing 30 Minuten vorher (und einmal Telegram-Hinweis)
   3. Vexa-Bot 1 Minute vorher schicken
-  4. Bot verfolgen; fertig -> Mitschrift holen, ablegen, bei Vexa loeschen
+  4. Bot verfolgen; fertig -> Mitschrift holen, ablegen, bei Vexa loeschen;
+     nach Terminende und `VEXA_STILLE_NACH_ENDE_MIN` Minuten Stille den Bot
+     stoppen (Jitsi meldet das Gehen aller nicht)
   5. Bei Vexa nachraeumen: Bot stoppen (nach "Nein", Loeschantrag, Verschiebung)
      und Meeting loeschen, was beim Abholen liegen blieb
   6. Eine offene Mitschrift mit dem lokalen Ollama auswerten (nicht kurz vor
@@ -64,6 +66,8 @@ AUSWERTUNG_PAUSE_VOR = timedelta(minutes=15)
 BRIEFING_KI_PAUSE = timedelta(minutes=5)
 # Status, aus denen ein Bot laeuft oder anstehen kann
 BOT_STATUS = ("wartet_auf_einlass", "laeuft")
+# Abnahme 12.11.2026: Bot nach Terminende stoppen, wenn so lange niemand spricht
+STILLE_NACH_ENDE_STANDARD_MIN = 10.0
 
 _STOPP = threading.Event()
 # Letzter bekannter Zustand je Gegenstelle, damit nur der WECHSEL geloggt wird.
@@ -273,7 +277,58 @@ def _mitschrift_ablegen(uid: str, segmente: list[dict]) -> bool:
     return True
 
 
-def _verfolgen_eine(z: dict) -> int:
+def _stille_nach_ende() -> timedelta:
+    try:
+        minuten = float(os.environ.get("VEXA_STILLE_NACH_ENDE_MIN", "")
+                        or STILLE_NACH_ENDE_STANDARD_MIN)
+    except ValueError:
+        minuten = STILLE_NACH_ENDE_STANDARD_MIN
+    return timedelta(minutes=max(minuten, 1.0))
+
+
+def _zeitpunkt(text: str) -> datetime | None:
+    try:
+        t = datetime.fromisoformat(str(text).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+
+def _nach_ende_stoppen(z: dict, jetzt: datetime) -> None:
+    """Sicherung (Abnahme 12.11.2026): Auf Jitsi merkte Vexa nicht, dass alle
+    gegangen waren - der Bot blieb allein im Raum, das Meeting `active`, und
+    Mitschrift und Auswertung kamen nie. Darum: ist das Terminende vorbei und
+    seit `VEXA_STILLE_NACH_ENDE_MIN` (Vorgabe 10) Minuten nichts mehr gesagt,
+    stoppt der Taktgeber den Bot. Vexa schliesst das Meeting dann ab, und die
+    naechste Runde holt die Mitschrift wie gewohnt. Wer ueberzieht, verliert
+    nichts, solange gesprochen wird. Einmal je Akte; scheitert der Aufruf,
+    versucht es die naechste Runde."""
+    uid = z["uid"]
+    if _zustand.get(f"nach_ende_gestoppt:{uid}"):
+        return
+    if not (z.get("vexa_plattform") and z.get("vexa_native_id") and z.get("ende")):
+        return
+    stille = _stille_nach_ende()
+    if jetzt < z["ende"] + stille:
+        return                                    # vor Ende + Stille: nichts holen
+    try:
+        segmente = vexa.segmente_holen(z["vexa_meeting_id"])
+    except vexa.VexaFehler:
+        return
+    zeiten = [t for t in (_zeitpunkt(s.get("beginn") or "") for s in segmente) if t]
+    if zeiten and max(zeiten) + stille > jetzt:
+        return                                    # es wird noch gesprochen
+    try:
+        vexa.bot_stoppen(z["vexa_plattform"], z["vexa_native_id"])
+    except vexa.VexaFehler as e:
+        LOG.warning("Bot nach Terminende stoppen uid=%s fehlgeschlagen (%s)",
+                    _h(uid), type(e).__name__)
+        return
+    _zustand[f"nach_ende_gestoppt:{uid}"] = True
+    LOG.info("Bot nach Terminende und Stille gestoppt uid=%s", _h(uid))
+
+
+def _verfolgen_eine(z: dict, jetzt: datetime | None = None) -> int:
     uid, mid = z["uid"], z["vexa_meeting_id"]
     if mid is None:
         return int(termin_akte.status_wechseln(uid, BOT_STATUS, "fehlgeschlagen",
@@ -301,6 +356,8 @@ def _verfolgen_eine(z: dict) -> int:
         _vexa_loeschen(uid, mid)                  # strikt nach dem Commit
         return 1
     neu = vexa.abbilden(m["status"])
+    if neu == "laeuft" and jetzt is not None:
+        _nach_ende_stoppen(z, jetzt)
     if neu != z["status"]:
         return int(termin_akte.status_wechseln(uid, (z["status"],), neu))
     return 0
@@ -308,11 +365,11 @@ def _verfolgen_eine(z: dict) -> int:
 
 def _verfolgen(jetzt: datetime) -> int:
     zeilen = server._q(
-        "select uid, status, vexa_meeting_id from termin_akten "
-        "where status in ('wartet_auf_einlass', 'laeuft') order by beginn")
+        "select uid, status, ende, vexa_meeting_id, vexa_plattform, vexa_native_id "
+        "from termin_akten where status in ('wartet_auf_einlass', 'laeuft') order by beginn")
     erg: list[int] = []
     for z in zeilen:
-        _je_akte("Verfolgen", z["uid"], lambda z=z: erg.append(_verfolgen_eine(z)))
+        _je_akte("Verfolgen", z["uid"], lambda z=z: erg.append(_verfolgen_eine(z, jetzt)))
     return sum(erg)
 
 
