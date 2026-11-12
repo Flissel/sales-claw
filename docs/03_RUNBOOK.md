@@ -2249,7 +2249,7 @@ Adresse jederzeit erreichbar, und „Wiederherstellen" holt ihn zurück.
 * **Die beiden neuen Chat-Werkzeuge stehen erst nach einem Neustart von
   `sales-mcp` zur Verfügung** (`docker compose up -d --build sales-mcp`) — die
   Werkzeugliste entsteht beim Prozessstart. Das Ausrollen der Oberfläche
-  (`docker compose build sales-ui && bash deploy/sales-ui-neu.sh`) ändert daran nichts und lässt den
+  (`docker compose build sales-mcp && bash deploy/sales-ui-neu.sh`) ändert daran nichts und lässt den
   laufenden MCP-Container bewusst in Ruhe; der Posteingang-Filter für
   archivierte Kontakte greift im Chat also ebenfalls erst nach diesem Neustart.
   **Bis dahin sehen Chat und Oberfläche verschieden:** ein in der Oberfläche
@@ -2284,7 +2284,7 @@ Fall ausdrücklich, dass kein Sammelkontakt eingerichtet ist. Nach dem Ziehen
 dieser Änderung deshalb einmal ausrollen:
 
 ```powershell
-docker compose build sales-ui; bash deploy/sales-ui-neu.sh
+docker compose build sales-mcp; bash deploy/sales-ui-neu.sh
 ```
 
 `--build` ist nötig, weil `ui.py` im Image liegt; es baut das gemeinsame Image
@@ -2493,7 +2493,7 @@ Agententext über Kundennachrichten).
 `entwurf_verwerfen`) stehen erst nach einem Neustart von `sales-mcp` zur
 Verfügung (`docker compose up -d --build sales-mcp`) — die Werkzeugliste
 entsteht beim Prozessstart. Die Oberfläche braucht
-`docker compose build sales-ui && bash deploy/sales-ui-neu.sh`. `AGENTS.md` muss der Betreiber
+`docker compose build sales-mcp && bash deploy/sales-ui-neu.sh`. `AGENTS.md` muss der Betreiber
 zusätzlich per `docker compose cp` ins Volume legen, sonst kennt der Agent die
 neuen Werkzeuge nicht (kein Neustart nötig, siehe „Agent-Regeln ändern").
 `--remove-orphans` bleibt TABU.
@@ -2644,6 +2644,22 @@ docker compose --env-file deploy/laeden/ivan.env up -d --build \
 docker compose --env-file deploy/laeden/ivan.env \
   -f docker-compose.openwa.yml up -d --build openwa
 ```
+
+### 4a. Ein Build für alle sales-mcp-Dienste (12.11.2026)
+
+In `docker-compose.yml` baut nur noch der Dienst `sales-mcp` den Kontext `./sales-mcp`. Alle anderen
+Dienste mit dem Image `sales-claw-sales-mcp:local` (sales-ui, sales-inbox, sales-dispatch, sales-mail,
+sales-telegram, sales-linkedin, sales-kanaele, sales-auto, sales-kalender, sales-termine, sales-post,
+freigabe-bote, auftrag-bote) tragen nur `image:`. Grund: am 11.11.2026 startete `up -d --build <mehrere
+Dienste>` per Bake rund zwölf gleiche Builds parallel, der Docker-Daemon der VM stürzte dabei ab
+(BuildKit-Race) und nahm alle Container mit. `deploy/update.sh` baut deshalb je Lauf jedes Image genau
+einmal (`docker compose build sales-mcp`, bei Bedarf `sales-ki`/`sales-stt`), für alle Läden zusammen, weil
+der Tag derselbe ist, und startet die Dienste je Laden danach ohne `--build`. Der Rückbau macht es genauso.
+Die Befehle oben bleiben richtig, weil `sales-mcp` darin steht. Wer einen einzelnen Dienst von Hand startet
+(`docker compose up -d auftrag-bote`), braucht das Image schon; auf einem frischen Wirt zuerst
+`docker compose build sales-mcp` (`deploy/bootstrap.sh` tut das). Stürzt der Daemon trotzdem wieder ab,
+blieben am 11.11.2026 die Container trotz `restart: unless-stopped` aus: mit `bash deploy/smoke.sh`
+nachsehen, was fehlt, und weiter nach `docs/05_DISASTER_RECOVERY.md` („Wenn keiner der vier Fälle passt").
 
 ### 4b. Den Agenten einrichten — drei Geheimnisse und zwei Saaten
 

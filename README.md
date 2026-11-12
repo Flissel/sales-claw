@@ -62,7 +62,7 @@ Wichtig: `sales-auto` startet nie von selbst. Dienste daher immer namentlich sta
 
 ```
 docker compose up -d --build sales-mcp sales-dispatch sales-inbox
-docker compose build sales-ui && bash deploy/sales-ui-neu.sh   # sales-ui des Basis-Ladens immer ueber das Skript (Netz bewerbung-fenster)
+docker compose build sales-mcp && bash deploy/sales-ui-neu.sh   # sales-ui des Basis-Ladens immer ueber das Skript (Netz bewerbung-fenster)
 ```
 
 ## Verzeichnisse

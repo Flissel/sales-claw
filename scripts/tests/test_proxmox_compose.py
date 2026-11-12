@@ -778,3 +778,77 @@ def test_ein_laden_mit_eigenem_ordner_teilt_KEINE_einzige_einhaengestelle(tmp_pa
     assert len(quellen) == 15
     falsch = {k: v for k, v in quellen.items() if v != eigene[k[1]]}
     assert falsch == {}, f"teilt weiterhin mit dem Basis-Laden: {falsch}"
+
+
+# --- Ein Build je Kontext (12.11.2026) ---------------------------------------------------------------
+# Am 11.11.2026 stuerzte der Docker-Daemon der VM ab (BuildKit-Race), als `up -d --build` per Bake ein
+# Dutzend gleicher sales-mcp-Builds parallel startete: 14 Dienste trugen `build: ./sales-mcp` mit
+# demselben Tag. Jetzt baut nur der Dienst sales-mcp, alle anderen tragen nur `image:`.
+
+def _bauende_je_kontext(dienste: dict) -> dict[str, list[str]]:
+    je_kontext: dict[str, list[str]] = {}
+    for name, dienst in dienste.items():
+        bau = dienst.get("build")
+        if bau:
+            kontext = Path(str(bau["context"] if isinstance(bau, dict) else bau)).name
+            je_kontext.setdefault(kontext, []).append(name)
+    return je_kontext
+
+
+def test_nur_ein_dienst_baut_den_kontext_sales_mcp(tmp_path: Path) -> None:
+    # Alle Profile (sales-stt steht hinter stt-lokal), damit kein Dienst durchrutscht.
+    dienste = rendered_config(tmp_path, {"COMPOSE_PROFILES": "*"})["services"]
+    je_kontext = _bauende_je_kontext(dienste)
+    assert je_kontext.get("sales-mcp") == ["sales-mcp"], je_kontext
+    mehrfach = {k: v for k, v in je_kontext.items() if len(v) > 1}
+    assert mehrfach == {}, f"mehrere Dienste bauen denselben Kontext: {mehrfach}"
+    # Die uebrigen Dienste dieses Images gibt es weiter, nur ohne eigenen Build.
+    nur_image = sorted(n for n, d in dienste.items()
+                       if d.get("image") == "sales-claw-sales-mcp:local" and not d.get("build"))
+    assert len(nur_image) >= 13 and "sales-ui" in nur_image and "auftrag-bote" in nur_image
+
+
+def _update_text() -> str:
+    return (ROOT / "deploy" / "update.sh").read_text(encoding="utf-8").replace("\r\n", "\n")
+
+
+def test_update_startet_dienste_ohne_build_ausser_openwa() -> None:
+    code = [z.strip() for z in _update_text().splitlines()
+            if z.strip().startswith("docker compose")]
+    mit_build = [z for z in code if "--build" in z]
+    assert mit_build == ['docker compose ${LADEN_ENVARGS[$i]} -f docker-compose.openwa.yml up -d --build openwa']
+    assert code.count('docker compose build "$z"') == 1
+    # Bau vor den `up`: im Update und im Rueckbau je ein Aufruf von images_bauen VOR der Laden-Schleife.
+    u = _update_text()
+    for marke in ('images_bauen "${LADEN_BAUEN[*]}"', 'images_bauen "${LADEN_KERN[*]}"'):
+        assert u.count(marke) == 1, marke
+    rueckbau = u[u.index("rueckbau() {"):u.index("\n}\n", u.index("rueckbau() {"))]
+    assert rueckbau.index('images_bauen "${LADEN_KERN[*]}"') < rueckbau.index("up -d $k")
+    assert u.index('images_bauen "${LADEN_BAUEN[*]}"') < u.index("up -d $BAUEN")
+
+
+def _bash() -> str:
+    """Git Bash statt des WSL-Starters in System32 (wie test_smoke_ui_session_secret._bash)."""
+    if os.name == "nt":
+        for kandidat in (
+            Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git" / "bin" / "bash.exe",
+            Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git" / "usr" / "bin" / "bash.exe",
+        ):
+            if kandidat.exists():
+                return str(kandidat)
+    gefunden = shutil.which("bash")
+    if gefunden is None:
+        pytest.skip("braucht bash")
+    return gefunden
+
+
+def test_images_bauen_baut_jedes_image_einmal_und_nacheinander() -> None:
+    funktion = re.search(r"^images_bauen\(\) \{.*?^\}$", _update_text(), re.M | re.S)
+    assert funktion
+    # Zwei Laeden mit ueberlappenden Listen; sales-claw hat ein fertiges Image.
+    laeden = "sales-mcp sales-ui sales-claw sales-ki sales-linkedin  sales-mcp sales-inbox sales-ki"
+    skript = ('docker() { echo "$*"; }\n' + funktion.group(0)
+              + f'\nimages_bauen "{laeden}"\nimages_bauen "sales-claw"\nimages_bauen ""\n')
+    r = subprocess.run([_bash(), "-c", skript], capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.splitlines() == ["compose build sales-mcp", "compose build sales-ki"]
