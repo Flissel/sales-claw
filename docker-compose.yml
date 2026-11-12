@@ -1197,6 +1197,9 @@ services:
       - MARKETING_PULT_URL=${MARKETING_PULT_URL:-}
       - MARKETING_PULT_KEY=${MARKETING_PULT_KEY:-}
       - LINKEDIN_POST_LEAD_ID=${LINKEDIN_POST_LEAD_ID:-}
+      # Videos (Video-Werkbank): der Link auf die Videoseite im Freigabe-Eintrag. Ohne UI_BASIS_URL
+      # wird ein fertiges Video zu `fehler` statt zu einem Eintrag.
+      - UI_BASIS_URL=${UI_BASIS_URL:-}
     volumes:
       - ${MEDIEN_ORDNER:-./media}:/media:ro
       - ${MEDIEN_ERZEUGT_ORDNER:-./media-erzeugt}:/media-erzeugt:ro

@@ -22,6 +22,7 @@ import psycopg
 from starlette.responses import RedirectResponse
 from starlette.routing import Route
 
+import auftrag_buch
 import freigabe_eingang as fe
 import server
 
@@ -39,13 +40,15 @@ _ART_NAME = {
     "selbstbild_rueckfrage": "Selbstbild-Rückfragen",
     "kursfreigabe": "Kursfreigaben",
     "entwurf": "Entwürfe",
+    "marketing_video": "Videos",
 }
 # Wo die Arten auf /freigaben stehen (Freigaben in Reitern, Betreiber 09.11.2026):
 # (art, Reiter, Unter-Reiter oder None, Name). Kurse bekommen einen eigenen Reiter,
 # Debugger-PRs und Rueckfragen der Bots stehen unter "Technik".
 REITER = (("debugger_pr", "technik", "debugger", "Debugger-PRs"),
           ("selbstbild_rueckfrage", "technik", "rueckfragen", "Rückfragen"),
-          ("kursfreigabe", "kurse", None, "Kursfreigaben"))
+          ("kursfreigabe", "kurse", None, "Kursfreigaben"),
+          ("marketing_video", "marketing", "video", "Videos"))
 _ZIEL = {art: (reiter, unter) for art, reiter, unter, _ in REITER}
 _LABEL_KNOEPFE = (("antwort:weg", "kann weg"), ("antwort:bleibt", "soll bleiben"),
                   ("antwort:benutzt", "wird benutzt"))
@@ -56,6 +59,9 @@ _HINWEISE = {
     "geschlossen": ("warnung", "Dieser Eintrag ist schon abgeschlossen. Es wurde kein Auftrag angelegt."),
     "abgewiesen": ("warnung", "Der Auftrag wurde abgewiesen (falsche Art oder es läuft schon einer). "
                               "Nichts wurde getan."),
+    "freigegeben": ("hinweis", "Video freigegeben."),
+    "neu_gebaut": ("warnung", "Das Video wird gerade neu gebaut – bitte die neue Fassung freigeben."),
+    "buch": ("warnung", "Das Auftragsbuch ist gerade nicht erreichbar. Nichts wurde getan."),
     "quelle": ("warnung", "Die Quelle des Eintrags ist nicht lesbar. Nichts wurde getan."),
 }
 
@@ -133,10 +139,13 @@ def _karte(ui, e: dict, auftrag: dict | None, darf: bool) -> str:
     teile = [f'<div class="karte" id="{kennung}">',
              f'<div><b>{e_(herkunft)}</b> · {e_(e["titel"])}</div>']
     if e.get("link"):
-        text = "auf GitHub ansehen" if art == "debugger_pr" else "Ansehen"
+        text = ("auf GitHub ansehen" if art == "debugger_pr"
+                else "Ansehen und herunterladen" if art == "marketing_video" else "Ansehen")
         teile.append(f'<div><a href="{e_(e["link"])}" target="_blank" rel="noopener">{text}</a></div>')
     if art == "debugger_pr" and details.get("tests") not in (None, ""):
         teile.append(f'<div class="meta">Teststand: {e_(str(details["tests"])[:200])}</div>')
+    if art == "marketing_video":
+        teile.append('<div class="meta">mit KI erstellt</div>')
     teile.append(f'<div class="meta">Rowboat: {rowboat_text(e["rowboat_stand"])}</div>')
     if e.get("vermerk"):
         teile.append(f'<div class="meta">{e_(e["vermerk"])}</div>')
@@ -152,6 +161,8 @@ def _karte(ui, e: dict, auftrag: dict | None, darf: bool) -> str:
                         for label, text in _LABEL_KNOEPFE]
         elif art == "kursfreigabe":
             knoepfe.append(_knopf(ui, "eingang-kurs", kennung, "Freigabe-Seite schicken"))
+        elif art == "marketing_video":
+            knoepfe.append(_knopf(ui, "eingang-video-freigeben", kennung, "freigeben"))
         knoepfe.append(_knopf(ui, "eingang-verwerfen", kennung, "verwerfen", "gefahr"))
         teile.append(f'<div class="aktionen">{"".join(knoepfe)}</div>')
     teile.append("</div>")
@@ -163,7 +174,7 @@ def _stufe2(stufe2: dict) -> str:
         f'<li><label class="haken"><input type="checkbox" disabled'
         f'{" checked" if stufe2.get(a) else ""}> Annehmen in Rowboat führt aus '
         f'({name})</label> <span class="meta">gesperrt, bis nur ein Klick des Betreibers zählt</span></li>'
-        for a, name in _ART_NAME.items())
+        for a, name in _ART_NAME.items() if a in fe.STUFE2_ARTEN)
     return f'<h3>Stufe 2</h3><ul class="stufe2">{zeilen}</ul>'
 
 
@@ -263,6 +274,34 @@ def routen(ui) -> list:
         return anlegen(request, kennung, "kurs_freigabe_zeigen", {"course_id": kurs_id}, e["art"])
 
     @ui._gesichert_seite
+    async def video_freigeben(request):
+        form, fehler = await formular(request)
+        if fehler is not None:
+            return fehler
+        e = offener(str(form.get("kennung") or ""))
+        if e is None:
+            return ziel("geschlossen", "marketing_video")
+        if e["art"] != "marketing_video":    # nur Videos; alles andere hat seinen eigenen Weg
+            return ziel("abgewiesen", e["art"])
+        # I6: nur freigeben, wenn der Auftrag auf die Freigabe wartet UND der Eintrag die aktuelle Fassung zeigt;
+        # sonst wird das Video gerade neu gebaut, und nichts aendert sich
+        details = e["details"] if isinstance(e["details"], dict) else {}
+        try:
+            laden = os.environ.get("LADEN_PRAEFIX", "").strip() or "sales"
+            zeilen = auftrag_buch.eigene(server._q, laden, ["wartet_freigabe"])
+        except Exception as fehler_:  # noqa: BLE001 - nur der Typname ins Log
+            LOG.error("Auftragsbuch nicht lesbar: %s", type(fehler_).__name__)
+            return ziel("buch", "marketing_video")
+        auftrag = next((z for z in zeilen if isinstance(z, dict) and str(z.get("id")) == str(e["quelle_ref"])
+                        and z.get("art") == "video" and z.get("stand") == "wartet_freigabe"), None)
+        ergebnis = auftrag.get("ergebnis") if auftrag and isinstance(auftrag.get("ergebnis"), dict) else {}
+        fassung = ergebnis.get("fassung")
+        if auftrag is None or fassung is None or details.get("fassung") != fassung:
+            return ziel("neu_gebaut", "marketing_video")
+        ok = fe.schliessen_kennung(e["kennung"], "erledigt", ui._ui_akteur(request))
+        return ziel("freigegeben" if ok else "geschlossen", "marketing_video")
+
+    @ui._gesichert_seite
     async def verwerfen(request):
         form, fehler = await formular(request)
         if fehler is not None:
@@ -284,5 +323,6 @@ def routen(ui) -> list:
 
     return [Route("/aktion/eingang-label", label, methods=["POST"]),
             Route("/aktion/eingang-kurs", kurs, methods=["POST"]),
+            Route("/aktion/eingang-video-freigeben", video_freigeben, methods=["POST"]),
             Route("/aktion/eingang-verwerfen", verwerfen, methods=["POST"]),
             Route("/aktion/eingang-stufe2", stufe2, methods=["POST"])]

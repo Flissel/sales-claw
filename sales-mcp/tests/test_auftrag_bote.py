@@ -39,6 +39,9 @@ class Buch:
 
     UEBERGAENGE = {("erzeugt", "wartet_freigabe"), ("erzeugt", "fehler"), ("wartet_freigabe", "fertig"),
                    ("wartet_freigabe", "abgebrochen"), ("wartet_freigabe", "fehler")}
+    # Migration 098 (R7/M13): fuer Videos darf Sales nur diese Uebergaenge setzen
+    UEBERGAENGE_VIDEO = {("erzeugt", "wartet_freigabe"), ("wartet_freigabe", "fertig"),
+                         ("wartet_freigabe", "abgebrochen"), ("wartet_freigabe", "erzeugt")}
 
     def __init__(self):
         self.auftraege: dict[str, dict] = {}
@@ -84,7 +87,7 @@ class Buch:
 
     def ergebnis_mischen(self, q, aid, teil):
         a = self.auftraege[aid]
-        if a["stand"] not in ("in_arbeit", "erzeugt", "wartet_freigabe"):
+        if a["stand"] not in ("in_arbeit", "erzeugt", "wartet_freigabe", "werkbank"):
             return False
         self.mischungen.append((aid, self._kopie(teil)))
         a["ergebnis"] = {**a["ergebnis"], **self._kopie(teil)}
@@ -92,7 +95,8 @@ class Buch:
 
     def stand_setzen(self, q, aid, von, nach, fehler=None):
         a = self.auftraege[aid]
-        if a["stand"] != von or (von, nach) not in self.UEBERGAENGE:
+        erlaubt = self.UEBERGAENGE_VIDEO if a["art"] == "video" else self.UEBERGAENGE
+        if a["stand"] != von or (von, nach) not in erlaubt:
             return False
         a["stand"], a["fehler"] = nach, fehler or a["fehler"]
         a["verlauf"].append({"stand": nach, "zeit": self.jetzt.isoformat()})
@@ -459,3 +463,217 @@ def test_linkedin_urn_wird_zum_link(buch):
     assert buch.auftraege[aid]["ergebnis"]["beitraege"] == {
         "linkedin": "https://www.linkedin.com/feed/update/urn:li:ugcPost:9",
         "mastodon": "https://social.example/@haus/1"}
+
+
+# --- Video (Video-Werkbank): Freigabe-Eintrag statt Kanal-Entwuerfe ------------------------------------------
+
+WB_DATEI = "wb-0123abcd-video-f1.mp4"
+BASIS = "https://laden.example"
+
+
+@pytest.fixture(autouse=True)
+def eingang_leer(monkeypatch):
+    """Vor jedem Test leere Eintraege; danach auch keine Entwuerfe und Belege mehr: sie duerfen nicht in die
+    Tests des Freigabe-Boten (test_freigabe_bote) hineinragen, die alphabetisch danach laufen."""
+    with server.pool.connection() as conn:
+        conn.execute("truncate sales_test.freigabe_eintraege cascade")
+    monkeypatch.setenv("UI_BASIS_URL", BASIS + "/")
+    yield
+    with server.pool.connection() as conn:
+        conn.execute("truncate sales_test.freigabe_eintraege, sales_test.activities, sales_test.drafts cascade")
+
+
+def _video(buch, stand="erzeugt", **ergebnis) -> str:
+    aid = str(uuid.uuid4())
+    buch.auftraege[aid] = {
+        "id": aid, "von": "sales", "an": "marketing", "laden": LADEN, "mandant": FIRMA, "art": "video",
+        "stand": stand, "eingabe": {"thema": "KI im Vertrieb", "beschreibung": "Geheimer Wunsch des Betreibers",
+                                    "minuten": 4, "zielgruppe": "Entscheider 34+, die eine Schulung suchen"},
+        "ergebnis": {"datei": WB_DATEI, "titel": "KI im Vertrieb", "dauer_s": 241, "fassung": 1,
+                     "ki_hinweis": True, "werkbank": {"wartet": 0, "runde": 3}, **ergebnis},
+        "fehler": None, "erinnert_am": None, "verlauf": [{"stand": stand, "zeit": buch.jetzt.isoformat()}]}
+    return aid
+
+
+def _eintraege(herkunft="marketing-video"):
+    return fe.offene(herkunft)
+
+
+def test_video_erzeugt_wird_freigabe_eintrag(buch):
+    aid = _video(buch)
+    zaehler = _durchgang(buch)
+    e = _eintraege()
+    assert len(e) == 1 and e[0]["art"] == "marketing_video" and e[0]["quelle_ref"] == aid
+    assert e[0]["link"] == f"{BASIS}/marketing/werkbank/{aid}/video"
+    assert e[0]["titel"] == "Video: KI im Vertrieb"
+    assert e[0]["details"] == {"auftrag": aid, "datei": WB_DATEI, "dauer_s": 241, "fassung": 1}
+    assert buch.auftraege[aid]["stand"] == "wartet_freigabe"
+    assert buch.auftraege[aid]["ergebnis"]["freigabe"] == e[0]["kennung"]
+    assert zaehler == {"abgelaufen": 0, "entwuerfe": 0, "abgeschlossen": 0, "erinnert": 0}
+
+
+def test_video_zweiter_durchgang_kein_zweiter_eintrag(buch):
+    aid = _video(buch)
+    _durchgang(buch)
+    kennung = buch.auftraege[aid]["ergebnis"]["freigabe"]
+    _durchgang(buch)
+    # Neustart zwischen Eintrag und Standwechsel: der Auftrag steht noch auf erzeugt.
+    buch.auftraege[aid]["stand"] = "erzeugt"
+    _durchgang(buch)
+    e = _eintraege()
+    assert len(e) == 1 and e[0]["kennung"] == kennung and buch.auftraege[aid]["stand"] == "wartet_freigabe"
+    assert server._q("select count(*) n from freigabe_eintraege")[0]["n"] == 1
+
+
+def test_video_freigegeben_macht_fertig(buch):
+    aid = _video(buch)
+    _durchgang(buch)
+    assert _durchgang(buch)["abgeschlossen"] == 0 and buch.auftraege[aid]["stand"] == "wartet_freigabe"
+    assert fe.schliessen_kennung(_eintraege()[0]["kennung"], "erledigt", "mira")
+    assert _durchgang(buch)["abgeschlossen"] == 1
+    assert buch.auftraege[aid]["stand"] == "fertig"
+
+
+def test_video_verworfen_macht_abgebrochen(buch):
+    aid = _video(buch)
+    _durchgang(buch)
+    assert fe.schliessen_kennung(_eintraege()[0]["kennung"], "verworfen", "mira")
+    assert _durchgang(buch)["abgeschlossen"] == 1
+    assert buch.auftraege[aid]["stand"] == "abgebrochen"
+
+
+def test_video_wieder_in_werkbank_schliesst_alten_eintrag(buch):
+    aid = _video(buch)
+    _durchgang(buch)
+    alt = buch.auftraege[aid]["ergebnis"]["freigabe"]
+    buch.auftraege[aid]["stand"] = "werkbank"           # Marketing baut das Video neu
+    _durchgang(buch)
+    z = server._q("select status, geschlossen_von, vermerk from freigabe_eintraege where kennung = %s", (alt,))[0]
+    # I6: es gibt keinen Status "ueberholt"; der Status bleibt verworfen, der Vermerk sagt, warum
+    assert z["status"] == "verworfen" and z["geschlossen_von"] == "auftrag-bote" and _eintraege() == []
+    assert z["vermerk"] == ab.VIDEO_UEBERHOLT
+    assert buch.auftraege[aid]["stand"] == "werkbank"
+    # die neue Fassung: neuer Eintrag mit neuer Kennung
+    a = buch.auftraege[aid]
+    a["stand"], a["ergebnis"]["datei"], a["ergebnis"]["fassung"] = "erzeugt", "wb-0123abcd-video-f2.mp4", 2
+    _durchgang(buch)
+    neu = _eintraege()
+    assert len(neu) == 1 and neu[0]["kennung"] != alt and neu[0]["details"]["fassung"] == 2
+    assert a["ergebnis"]["freigabe"] == neu[0]["kennung"] and a["stand"] == "wartet_freigabe"
+
+
+def test_video_werkbank_ohne_eintrag_tut_nichts(buch):
+    aid = _video(buch, stand="werkbank")
+    assert _durchgang(buch) == {"abgelaufen": 0, "entwuerfe": 0, "abgeschlossen": 0, "erinnert": 0}
+    assert buch.auftraege[aid]["stand"] == "werkbank"
+
+
+def test_video_legt_keine_kanal_entwuerfe_an(buch):
+    aid = _video(buch)
+    _durchgang(buch)
+    assert server._q("select count(*) n from drafts where auftrag = %s", (aid,))[0]["n"] == 0
+    assert _entwuerfe() == []
+
+
+def test_video_erinnerung_nach_48h_einmal(buch):
+    aid = _video(buch)
+    _durchgang(buch)
+    assert _durchgang(buch, T0 + timedelta(hours=47))["erinnert"] == 0
+    assert _durchgang(buch, T0 + timedelta(hours=49))["erinnert"] == 1
+    assert buch.auftraege[aid]["erinnert_am"] is not None
+    assert _durchgang(buch, T0 + timedelta(hours=72))["erinnert"] == 0
+
+
+@pytest.fixture
+def log_frisch(monkeypatch):
+    monkeypatch.setattr(ab, "_GELOGGT", set())
+
+
+@pytest.mark.parametrize("basis", [None, "", "laden.example", "laden.example/sales", "ftp://laden.example"])
+def test_video_ohne_gueltige_basisadresse_bleibt_erzeugt_und_meldet_sich_einmal(buch, monkeypatch, caplog,
+                                                                                log_frisch, basis):
+    """I2: der Auftrag bleibt in `erzeugt` (kein fehler), das Problem steht EINMAL im Log und als
+    ergebnis.freigabe_problem fuer die Meldung; der naechste Durchgang versucht es wieder."""
+    if basis is None:
+        monkeypatch.delenv("UI_BASIS_URL")
+    else:
+        monkeypatch.setenv("UI_BASIS_URL", basis)
+    aid = _video(buch)
+    for _ in range(3):
+        _durchgang(buch)
+    a = buch.auftraege[aid]
+    assert a["stand"] == "erzeugt" and a["fehler"] is None and _eintraege() == []
+    assert a["ergebnis"]["freigabe_problem"] == "adresse"
+    assert [m for m in buch.mischungen if m[0] == aid] == [(aid, {"freigabe_problem": "adresse"})]   # einmal
+    zeilen = [r for r in caplog.records if aid[:8] in r.getMessage()]
+    assert len(zeilen) == 1 and "adresse" in zeilen[0].getMessage() and "laden.example" not in caplog.text
+    monkeypatch.setenv("UI_BASIS_URL", BASIS)                       # Einstellung repariert: naechster Durchgang
+    _durchgang(buch)
+    assert a["stand"] == "wartet_freigabe" and len(_eintraege()) == 1 and not a["ergebnis"].get("freigabe_problem")
+
+
+@pytest.mark.parametrize("datei", ["", "../media/geheim.mp4", "vid-0123abcd-drei-fehler.mp4",
+                                   "wb-0123abcd-video-f1.mov", "wb-0123abcd-video-f1.mp4/../x"])
+def test_video_ohne_gueltige_datei_bleibt_erzeugt(buch, caplog, log_frisch, datei):
+    aid = _video(buch, datei=datei)
+    _durchgang(buch)
+    _durchgang(buch)
+    a = buch.auftraege[aid]
+    assert a["stand"] == "erzeugt" and a["fehler"] is None and a["ergebnis"]["freigabe_problem"] == "datei"
+    assert _eintraege() == [] and len([r for r in caplog.records if aid[:8] in r.getMessage()]) == 1
+
+
+def test_fehlender_eintrag_wird_einmal_gemeldet_und_neu_angelegt(buch, caplog, log_frisch):
+    """M16: der Eintrag fehlt (z. B. von Hand geloescht): einmal ins Log, zurueck nach `erzeugt`, im naechsten
+    Durchgang ein neuer Eintrag - keine Warnung je Minute."""
+    aid = _video(buch)
+    _durchgang(buch)
+    alt = buch.auftraege[aid]["ergebnis"]["freigabe"]
+    server._q("delete from freigabe_eintraege where kennung = %s returning id", (alt,))
+    _durchgang(buch)
+    assert buch.auftraege[aid]["stand"] == "erzeugt"
+    _durchgang(buch)
+    neu = _eintraege()
+    assert len(neu) == 1 and neu[0]["kennung"] != alt and buch.auftraege[aid]["stand"] == "wartet_freigabe"
+    assert buch.auftraege[aid]["ergebnis"]["freigabe"] == neu[0]["kennung"]
+    assert len([r for r in caplog.records if "kein Eintrag" in r.getMessage()]) == 1
+
+
+def test_ueberholter_eintrag_macht_den_auftrag_nicht_abgebrochen(buch, log_frisch):
+    """I6: ein als ueberholt geschlossener Eintrag ist kein Verwerfen des Betreibers."""
+    aid = _video(buch)
+    _durchgang(buch)
+    fe.schliessen(ab.VIDEO_HERKUNFT, aid, "verworfen", "auftrag-bote", vermerk=ab.VIDEO_UEBERHOLT)
+    _durchgang(buch)
+    assert buch.auftraege[aid]["stand"] == "erzeugt"
+    _durchgang(buch)
+    assert buch.auftraege[aid]["stand"] == "wartet_freigabe" and len(_eintraege()) == 1
+
+
+def test_video_wird_von_sales_nie_auf_fehler_gesetzt(buch, monkeypatch, log_frisch):
+    """R7/M13: Sales setzt fuer Videos nur die Freigabe-Uebergaenge."""
+    monkeypatch.delenv("UI_BASIS_URL")
+    gesetzt = []
+    echt = buch.stand_setzen
+    monkeypatch.setattr(buch, "stand_setzen", lambda q, aid, von, nach, fehler=None:
+                        gesetzt.append((von, nach)) or echt(q, aid, von, nach, fehler))
+    _video(buch)
+    _video(buch, datei="")
+    _durchgang(buch)
+    assert gesetzt == []
+
+
+def test_ein_kaputtes_video_haelt_ein_reel_nicht_auf(buch):
+    _video(buch, datei="")
+    reel = buch.neu()
+    _durchgang(buch)
+    assert buch.auftraege[reel]["stand"] == "wartet_freigabe"
+
+
+def test_reel_zweige_unveraendert_neben_einem_video(buch):
+    reel, video = buch.neu(), _video(buch)
+    zaehler = _durchgang(buch)
+    assert zaehler["entwuerfe"] == 2 and len(_entwuerfe()) == 2
+    assert all(str(e["auftrag"]) == reel for e in _entwuerfe())
+    assert buch.auftraege[video]["stand"] == "wartet_freigabe" and len(_eintraege()) == 1
+    assert _eintraege("sales") == [] and _eintraege("marketing") == []

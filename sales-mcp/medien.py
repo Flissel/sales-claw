@@ -307,10 +307,39 @@ def ki_reelbild(basis: str) -> bool:
     return bool(KI_REEL_MUSTER.match(basis or ""))
 
 
+# Clips und fertiges Video der Video-Werkbank (11.11.2026): wb-<Auftrag 8 hex>-s<Szene>-f<Fassung>.mp4 und
+# wb-<Auftrag 8 hex>-video-f<Fassung>.mp4 (api/werkbank.py). Sie gehoeren zur Werkbank-Seite
+# (ui_werkbank, Route mit Range), nicht in /medien und nicht in den Picker.
+WERKBANK_MUSTER = re.compile(r"^wb-[0-9a-f]{8}-(?:s[0-9]{2,3}|video)-f[0-9]{1,3}\.mp4$")
+
+
+def werkbankdatei(basis: str) -> bool:
+    return bool(WERKBANK_MUSTER.match(basis or ""))
+
+
+_WERKBANK_LOCKER = re.compile(WERKBANK_MUSTER.pattern, re.IGNORECASE)
+
+
+def werkbankname_verdaechtig(name: str) -> bool:
+    """Sieht der Name nach einer Werkbank-Datei aus, auch nach dem, was `pruefe` abstreift oder faltet
+    (Leerraum, Gross-/Kleinschreibung) und nach weiterem Prozent-Entschluesseln? Fuer die alte Medienroute:
+    dort entscheidet nicht der rohe Wert, sondern jede Lesart, die zu einer Datei fuehren koennte."""
+    import urllib.parse
+    wert = name or ""
+    for _ in range(4):
+        if _WERKBANK_LOCKER.match(wert.strip()):
+            return True
+        entschluesselt = urllib.parse.unquote(wert)
+        if entschluesselt == wert:
+            break
+        wert = entschluesselt
+    return False
+
+
 def verborgen(basis: str) -> bool:
-    """Entwurfsbild, Bildstueck oder Reel-Datei: kein Medium (Listen, Picker, Namenswahl; als Anhang
-    sperrt `pruefe_anhang` alle ausser dem Reel-MP4)."""
-    return entwurfsbild(basis) or mailstueck(basis) or reeldatei(basis)
+    """Entwurfsbild, Bildstueck, Reel- oder Werkbank-Datei: kein Medium (Listen, Picker, Namenswahl; als
+    Anhang sperrt `pruefe_anhang` alle ausser dem Reel-MP4)."""
+    return entwurfsbild(basis) or mailstueck(basis) or reeldatei(basis) or werkbankdatei(basis) or bool(_WERKBANK_LOCKER.match(basis or ""))
 
 
 def intern(basis: str) -> bool:
@@ -336,6 +365,9 @@ def pruefe_anhang(name: str):
                       f"es geht nicht als Anhang.")
     if reel_vorschaubild(basis):
         return None, (f"'{basis}' ist das Vorschaubild eines Reels und kein Medium - "
+                      f"es geht nicht als Anhang.")
+    if werkbankdatei(basis):
+        return None, (f"'{basis}' ist ein Clip oder Video der Video-Werkbank und kein Medium - "
                       f"es geht nicht als Anhang.")
     if intern(basis):
         return None, (f"'{basis}' ist eine interne Unterlage (Terminkarte oder "

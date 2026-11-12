@@ -40,6 +40,19 @@ create table if not exists :"schema".freigabe_eintraege (
   geschlossen_von text
 );
 
+-- Video-Werkbank (11.11.2026): neue Herkunft marketing-video, neue Art marketing_video. Auf einer
+-- bestehenden Tabelle greift das `create table if not exists` oben nicht; darum werden die beiden
+-- Spalten-CHECKs (Postgres-Standardnamen <tabelle>_<spalte>_check) hier ersetzt. Ein zweiter Lauf
+-- ersetzt sie durch dieselben - ohne Wirkung. Je ein Statement, also atomar.
+alter table :"schema".freigabe_eintraege
+  drop constraint if exists freigabe_eintraege_herkunft_check,
+  add constraint freigabe_eintraege_herkunft_check check (herkunft in
+    ('debugger-claw','selbstbild','werkstatt','sales','marketing','marketing-video'));
+alter table :"schema".freigabe_eintraege
+  drop constraint if exists freigabe_eintraege_art_check,
+  add constraint freigabe_eintraege_art_check check (art in
+    ('debugger_pr','selbstbild_rueckfrage','kursfreigabe','entwurf','marketing_video'));
+
 create unique index if not exists freigabe_eintraege_offen_je_quelle
   on :"schema".freigabe_eintraege (herkunft, quelle_ref) where status = 'offen';
 create index if not exists freigabe_eintraege_status_erstellt

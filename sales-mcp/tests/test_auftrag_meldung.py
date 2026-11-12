@@ -250,3 +250,295 @@ def test_ungewisser_versand_wird_nicht_als_nichts_raus_gemeldet(monkeypatch):
     Speicher(monkeypatch, auftrag("abgebrochen", ergebnis={"kanal_fehler": {"discord": sat},
                                                             "kanal_fehler_gemeldet": ["discord"]}))
     assert "nichts ging raus" not in melden()[0]
+
+
+# --- Video (Video-Werkbank): Zwischenstaende, Erinnerung, Hinweise, Freigabe, Download ---------------------
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+JETZT = datetime(2026, 11, 11, 12, 0, tzinfo=timezone.utc)
+BASIS = "https://laden.example"
+KOPF = f"Video ‚{THEMA}‘ (Nr. {AID[:8]})"
+GEHEIM = "GEHEIMWORT-aus-der-Beschreibung des Betreibers"
+
+
+class Buch(Speicher):
+    """Wie Speicher, aber ergebnis_mischen gilt auch im Stand werkbank (Migration 098); `ausfall` laesst das
+    Markieren bestimmter Zeilen scheitern, `schreibt` haelt jede geschriebene Markierung fest."""
+
+    def __init__(self, monkeypatch, *zeilen):
+        super().__init__(monkeypatch, *zeilen)
+        self.schreibt = []
+        self.ausfall = None            # Funktion(teil) -> True = dieses Markieren wirft
+
+    def mischen(self, q, aid, teil):
+        z = self._zeile(aid)
+        if z["stand"] not in ("in_arbeit", "erzeugt", "wartet_freigabe", "werkbank"):
+            return False
+        if self.ausfall and self.ausfall(teil):
+            raise RuntimeError("Datenbank weg")
+        self.schreibt.append(json.loads(json.dumps(teil)))
+        z["ergebnis"] = {**z.get("ergebnis", {}), **json.loads(json.dumps(teil))}
+        return True
+
+    def setze_werkbank(self, **felder):
+        z = self.zeilen[0]
+        z["ergebnis"]["werkbank"] = {**z["ergebnis"].get("werkbank", {}), **felder}
+
+    def marke(self):
+        return self.zeilen[0]["ergebnis"].get("werkbank_gemeldet")
+
+
+@pytest.fixture(autouse=True)
+def basis(monkeypatch):
+    monkeypatch.setenv("UI_BASIS_URL", BASIS + "/")
+
+
+def video(stand, **rest):
+    rest.setdefault("eingabe", {"thema": THEMA, "beschreibung": GEHEIM, "minuten": 4,
+                                "zielgruppe": "Entscheider 34+, die eine Schulung suchen"})
+    return auftrag(stand, art="video", **rest)
+
+
+def melden_um(jetzt=JETZT):
+    return auftrag_meldung.melden(None, "sales", jetzt)
+
+
+def test_zwischenstand_einmal_je_runde(monkeypatch):
+    b = Buch(monkeypatch, video("werkbank", ergebnis={"werkbank": {"wartet": 8, "wartet_tor": "text", "runde": 2}}))
+    assert melden_um() == [f"{KOPF}: 8 Szenentexte warten in Rowboat auf dich."]
+    assert melden_um() == []
+    assert b.marke() == {"runde": 2}
+    b.setze_werkbank(runde=3, wartet=4)
+    assert melden_um() == [f"{KOPF}: 4 Szenentexte warten in Rowboat auf dich."]
+    assert melden_um() == []
+    assert b.marke() == {"runde": 3}
+
+
+@pytest.mark.parametrize("tor, n, satz", [
+    ("gliederung", 1, "1 Gliederung wartet in Rowboat auf dich."),
+    ("text", 1, "1 Szenentext wartet in Rowboat auf dich."),
+    ("text", 8, "8 Szenentexte warten in Rowboat auf dich."),
+    ("clip", 3, "3 Clips warten in Rowboat auf dich."),
+    ("clip", 1, "1 Clip wartet in Rowboat auf dich."),
+    (None, 2, "2 Einträge warten in Rowboat auf dich."),
+    ("etwas-neues", 1, "1 Eintrag wartet in Rowboat auf dich.")])
+def test_zwischenstand_nennt_das_tor(monkeypatch, tor, n, satz):
+    Buch(monkeypatch, video("werkbank", ergebnis={"werkbank": {"wartet": n, "wartet_tor": tor, "runde": 1}}))
+    assert melden_um() == [f"{KOPF}: {satz}"]
+
+
+def test_nichts_wartet_nichts_gemeldet(monkeypatch):
+    b = Buch(monkeypatch, video("werkbank", ergebnis={"werkbank": {"wartet": 0, "wartet_tor": None, "runde": 4,
+                                                                   "wartet_seit": None, "hinweise": []}}))
+    assert melden_um() == [] and b.schreibt == []
+
+
+def test_erinnerung_nach_48h_einmal_je_wartezeit(monkeypatch):
+    seit = (JETZT - timedelta(hours=47)).isoformat()
+    b = Buch(monkeypatch, video("werkbank", ergebnis={"werkbank": {"wartet": 2, "wartet_tor": "clip", "runde": 1,
+                                                                   "wartet_seit": seit}}))
+    assert melden_um() == [f"{KOPF}: 2 Clips warten in Rowboat auf dich."]       # noch keine 48 h
+    spaeter = JETZT + timedelta(hours=2)
+    assert melden_um(spaeter) == [f"{KOPF} wartet seit 2 Tagen auf deine Abnahme in Rowboat."]
+    assert melden_um(spaeter) == [] and melden_um(spaeter + timedelta(hours=30)) == []
+    assert b.marke() == {"runde": 1, "erinnert": seit}
+    neu = (JETZT + timedelta(hours=5)).isoformat()                                 # neue Wartezeit, wieder alt genug
+    b.setze_werkbank(wartet_seit=neu, runde=2)
+    assert melden_um(JETZT + timedelta(hours=60)) == [f"{KOPF}: 2 Clips warten in Rowboat auf dich.",
+                                                      f"{KOPF} wartet seit 2 Tagen auf deine Abnahme in Rowboat."]
+    assert melden_um(JETZT + timedelta(hours=61)) == []
+
+
+def test_erinnerung_mit_unlesbarer_zeit_gibt_nur_den_zwischenstand(monkeypatch):
+    Buch(monkeypatch, video("werkbank", ergebnis={"werkbank": {"wartet": 1, "wartet_tor": "text", "runde": 1,
+                                                               "wartet_seit": "kaputt"}}))
+    assert len(melden_um()) == 1
+
+
+def test_hinweis_budget_genau_einmal(monkeypatch):
+    satz = "Das Tagesbudget ist heute aufgebraucht. Es geht morgen weiter."
+    b = Buch(monkeypatch, video("werkbank", ergebnis={"werkbank": {
+        "wartet": 0, "runde": 1, "hinweise": [{"key": "budget_2026_11_11", "satz": satz}]}}))
+    assert melden_um() == [f"{KOPF}: {satz}"]
+    assert melden_um() == [] and b.marke() == {"hinweise": ["budget_2026_11_11"]}
+    b.setze_werkbank(hinweise=[{"key": "budget_2026_11_11", "satz": satz},
+                               {"key": "budget_2026_11_12", "satz": "Das Budget ist wieder knapp."}])
+    assert melden_um() == [f"{KOPF}: Das Budget ist wieder knapp."]
+    assert b.marke() == {"hinweise": ["budget_2026_11_11", "budget_2026_11_12"]}
+
+
+def test_hinweis_wird_gesaeubert_und_doppelter_key_nur_einmal(monkeypatch):
+    Buch(monkeypatch, video("werkbank", ergebnis={"werkbank": {"wartet": 0, "runde": 1, "hinweise": [
+        {"key": "a_1", "satz": "Rueckruf an anna@example.com"}, {"key": "a_1", "satz": "noch mal"},
+        {"key": "", "satz": "ohne Schluessel"}, {"key": "b_2", "satz": ""}, "kaputt"]}}))
+    assert melden_um() == [f"{KOPF}: Rueckruf an [Adresse]"]
+
+
+def test_szenenfehler_blockiert_keine_andere_zeile(monkeypatch):
+    b = Buch(monkeypatch, video("werkbank", ergebnis={"werkbank": {
+        "wartet": 3, "wartet_tor": "text", "runde": 2, "hinweise": [
+            {"key": "quelle_s3_f1", "satz": "Szene 3: die Quelle liess sich nicht lesen."},
+            {"key": "budget_2026_11_11", "satz": "Das Tagesbudget ist aufgebraucht."}]}}))
+    b.ausfall = lambda teil: "quelle_s3_f1" in teil["werkbank_gemeldet"].get("hinweise", [])
+    erste = melden_um()
+    assert erste == [f"{KOPF}: 3 Szenentexte warten in Rowboat auf dich.",
+                     f"{KOPF}: Das Tagesbudget ist aufgebraucht."]
+    # die gescheiterte Zeile ist NICHT mitmarkiert worden und kommt beim naechsten Aufruf
+    assert b.marke() == {"runde": 2, "hinweise": ["budget_2026_11_11"]}
+    b.ausfall = None
+    assert melden_um() == [f"{KOPF}: Szene 3: die Quelle liess sich nicht lesen."]
+    assert melden_um() == []
+
+
+def test_zwischenstand_scheitert_hinweis_kommt_trotzdem_und_der_zwischenstand_spaeter(monkeypatch):
+    b = Buch(monkeypatch, video("werkbank", ergebnis={"werkbank": {
+        "wartet": 3, "wartet_tor": "clip", "runde": 2,
+        "hinweise": [{"key": "budget_2026_11_11", "satz": "Das Tagesbudget ist aufgebraucht."}]}}))
+    b.ausfall = lambda teil: "runde" in teil["werkbank_gemeldet"]
+    assert melden_um() == [f"{KOPF}: Das Tagesbudget ist aufgebraucht."]
+    assert b.marke() == {"hinweise": ["budget_2026_11_11"]}
+    b.ausfall = None
+    assert melden_um() == [f"{KOPF}: 3 Clips warten in Rowboat auf dich."]
+    assert b.marke() == {"hinweise": ["budget_2026_11_11"], "runde": 2}
+
+
+def test_markieren_liefert_false_dann_keine_zeile_und_kein_verlust(monkeypatch):
+    b = Buch(monkeypatch, video("werkbank", ergebnis={"werkbank": {"wartet": 1, "wartet_tor": "gliederung",
+                                                                   "runde": 1}}))
+    monkeypatch.setattr(auftrag_buch, "ergebnis_mischen", lambda q, aid, teil: False)
+    assert melden_um() == []
+    monkeypatch.setattr(auftrag_buch, "ergebnis_mischen", b.mischen)
+    assert melden_um() == [f"{KOPF}: 1 Gliederung wartet in Rowboat auf dich."]
+
+
+def test_bereit_zur_freigabe_mit_link(monkeypatch):
+    b = Buch(monkeypatch, video("wartet_freigabe", ergebnis={"freigabe": "fg-abcdefghij", "fassung": 1,
+                                                             "werkbank": {"wartet": 0, "runde": 5}}))
+    assert melden_um() == [f"{KOPF} ist fertig und wartet in /freigaben: {BASIS}/freigaben#fg-abcdefghij"]
+    assert melden_um() == [] and b.marke() == {"freigabe_fassung": 1}
+    b.zeilen[0]["ergebnis"].update({"freigabe": "fg-klmnopqrst", "fassung": 2})      # neue Fassung gebaut
+    assert melden_um() == [f"{KOPF} ist fertig und wartet in /freigaben: {BASIS}/freigaben#fg-klmnopqrst"]
+    assert melden_um() == [] and b.marke() == {"freigabe_fassung": 2}
+
+
+def test_bereit_ohne_basisadresse_ohne_link(monkeypatch):
+    monkeypatch.delenv("UI_BASIS_URL")
+    Buch(monkeypatch, video("wartet_freigabe", ergebnis={"freigabe": "fg-abcdefghij", "fassung": 1}))
+    assert melden_um() == [f"{KOPF} ist fertig und wartet in /freigaben."]
+
+
+def test_wartet_freigabe_ohne_kennung_schweigt(monkeypatch):
+    Buch(monkeypatch, video("wartet_freigabe", ergebnis={"fassung": 1}))
+    assert melden_um() == []
+
+
+def test_video_wartet_seit_2_tagen_auf_freigabe_wie_beim_reel(monkeypatch):
+    Buch(monkeypatch, video("wartet_freigabe", erinnert_am="2026-11-10T10:00:00+00:00",
+                            ergebnis={"freigabe": "fg-abcdefghij", "fassung": 1}))
+    texte = melden_um()
+    assert f"{KOPF} wartet seit 2 Tagen auf deine Freigabe." in texte
+    assert melden_um() == []
+
+
+def test_endstaende_des_videos(monkeypatch):
+    Buch(monkeypatch, video("fertig", ergebnis={"freigabe": "fg-abcdefghij", "fassung": 1}))
+    assert melden_um() == [f"{KOPF} ist freigegeben. Download: {BASIS}/marketing/werkbank/{AID}/video"]
+    assert melden_um() == []
+    Buch(monkeypatch, video("abgebrochen"))
+    assert melden_um() == [f"{KOPF} wurde verworfen."]
+    Buch(monkeypatch, video("fehler", fehler="Die Gliederung liess sich nicht schreiben."))
+    assert melden_um() == [f"{KOPF} ist gescheitert: Die Gliederung liess sich nicht schreiben."]
+    Buch(monkeypatch, video("abgelaufen"))
+    assert melden_um() == [f"{KOPF} ist nicht rechtzeitig fertig geworden (PC aus?)."]
+
+
+def test_fertig_ohne_basisadresse_ohne_link(monkeypatch):
+    monkeypatch.delenv("UI_BASIS_URL")
+    Buch(monkeypatch, video("fertig"))
+    assert melden_um() == [f"{KOPF} ist freigegeben."]
+
+
+def test_kopf_sagt_video(monkeypatch):
+    Buch(monkeypatch, video("abgebrochen"))
+    assert melden_um()[0].startswith("Video ‚")
+    Buch(monkeypatch, auftrag("abgebrochen"))                       # ohne art: wie bisher ein Reel
+    assert melden_um()[0].startswith("Reel ‚")
+    Buch(monkeypatch, auftrag("abgebrochen", art="reel"))
+    assert melden_um()[0].startswith("Reel ‚")
+
+
+def test_thema_im_kopf_wird_gesaeubert(monkeypatch):
+    Buch(monkeypatch, video("abgebrochen", eingabe={"thema": "Rueckruf +49 170 1234567 oder anna@example.com",
+                                                    "beschreibung": GEHEIM}))
+    text = melden_um()[0]
+    assert "1234567" not in text and "anna@example.com" not in text and "Rueckruf" in text
+
+
+def test_beschreibung_erscheint_nie_in_der_meldung(monkeypatch):
+    zeilen = [video("werkbank", ergebnis={"werkbank": {"wartet": 2, "wartet_tor": "text", "runde": 1, "hinweise": [
+                  {"key": "budget_2026_11_11", "satz": "Das Tagesbudget ist aufgebraucht."}]}}),
+              video("wartet_freigabe", ergebnis={"freigabe": "fg-abcdefghij", "fassung": 1}),
+              video("fertig"), video("abgebrochen"), video("fehler", fehler="kaputt"), video("abgelaufen")]
+    for z in zeilen:
+        Buch(monkeypatch, z)
+        texte = melden_um() + melden_um(JETZT + timedelta(days=5))
+        assert texte, z["stand"]
+        assert not any(GEHEIM in t or "Beschreibung" in t for t in texte), z["stand"]
+    Buch(monkeypatch, *zeilen)
+    assert GEHEIM not in " ".join(t for _, _, t in auftrag_meldung.faellige(None, "sales", JETZT))
+
+
+def test_offene_video_staende_melden_nichts(monkeypatch):
+    Buch(monkeypatch, video("offen"), video("in_arbeit"), video("erzeugt"))
+    assert melden_um() == []
+
+
+def test_hinweis_eines_videos_in_arbeit_kommt_einmal(monkeypatch):
+    """M1: die Gliederung entsteht, solange der Auftrag in_arbeit steht; ihre Hinweise kommen trotzdem."""
+    satz = "Die Gliederung ließ sich nicht schreiben – bitte Wunsch ergänzen."
+    b = Buch(monkeypatch, video("in_arbeit", ergebnis={"werkbank": {
+        "wartet": 0, "hinweise": [{"key": "gliederung_f1", "satz": satz}]}}))
+    assert melden_um() == [f"{KOPF}: {satz}"]
+    assert melden_um() == [] and b.marke() == {"hinweise": ["gliederung_f1"]}
+
+
+def test_video_kann_nicht_in_die_freigabe_wird_einmal_gemeldet(monkeypatch):
+    """I2: der Auftrag-Bote laesst das Video in `erzeugt` und setzt ergebnis.freigabe_problem; die Meldung kommt
+    einmal je Problemart, mit Marke in werkbank_gemeldet."""
+    b = Buch(monkeypatch, video("erzeugt", ergebnis={"freigabe_problem": "adresse"}))
+    satz = f"{KOPF} ist fertig, kann aber nicht in die Freigabe gestellt werden – bitte Einstellung prüfen."
+    assert melden_um() == [satz]
+    assert melden_um() == [] and b.marke() == {"freigabe_problem": "adresse"}
+    b.zeilen[0]["ergebnis"]["freigabe_problem"] = "datei"            # anderes Problem: eine neue Zeile
+    assert melden_um() == [satz] and melden_um() == []
+    b.zeilen[0]["ergebnis"]["freigabe_problem"] = None
+    assert melden_um() == []
+
+
+def test_reel_in_arbeit_oder_erzeugt_meldet_weiter_nichts(monkeypatch):
+    Buch(monkeypatch, auftrag("in_arbeit", ergebnis={"kanal_fehler": {"mastodon": "kaputt"},
+                                                     "werkbank": {"hinweise": [{"key": "a", "satz": "b"}]}}),
+         auftrag("erzeugt", ergebnis={"kanal_fehler": {"discord": "kaputt"}, "freigabe_problem": "adresse"}))
+    assert melden_um() == []
+
+
+def test_reel_in_der_werkbank_bekommt_keine_videozeilen(monkeypatch):
+    Buch(monkeypatch, auftrag("werkbank", ergebnis={"werkbank": {"wartet": 2, "wartet_tor": "text", "runde": 1}}))
+    assert melden_um() == []
+
+
+def test_video_werkzeug_geht_ueber_die_sperre_und_meldet_jede_zeile_einmal(monkeypatch):
+    Buch(monkeypatch, video("werkbank", ergebnis={"werkbank": {"wartet": 8, "wartet_tor": "text", "runde": 2}}))
+    r = json.loads(server.auftraege_melden())
+    assert r == {"meldungen": [f"{KOPF}: 8 Szenentexte warten in Rowboat auf dich."]}
+    assert json.loads(server.auftraege_melden()) == {"meldungen": []}
+
+
+def test_cron_postfach_check_nennt_reels_und_videos():
+    from pathlib import Path
+    cron = Path(__file__).resolve().parents[2] / "deploy" / "cron" / "postfach-check.json"
+    if not cron.exists():  # im Container-Image liegt deploy/ nicht
+        pytest.skip("deploy/cron nicht im Image")
+    text = json.loads(cron.read_text(encoding="utf-8"))["payload"]["message"]
+    assert "REEL- UND VIDEO-AUFTRAEGE: Rufe auftraege_melden() auf." in text

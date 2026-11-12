@@ -141,3 +141,93 @@ def test_fremdes_schema_kein_auftrag_und_kein_db_zugriff(buch, monkeypatch):
     monkeypatch.setattr(server, "SCHEMA", "sales_ivan")
     r = json.loads(server.auftrag_geben("reel", "Ein Thema"))
     assert r == {"fehler": "Aufträge gibt es in diesem Laden noch nicht."} and buch.aufrufe == []
+
+# --- Video (Video-Werkbank) --------------------------------------------------------------------------------
+
+VORGABE = "Entscheider 34+, die eine Schulung suchen"
+TEXT = "  Zeile eins mit Umlauten: äöü ß –\r\n\nZeile drei, soll Zeichen fuer Zeichen ankommen.  \n" + "x" * 3000
+
+
+def test_video_legt_auftrag_mit_beschreibung_im_wortlaut_an(buch):
+    r = json.loads(server.auftrag_geben("video", "KI im Vertrieb", beschreibung=TEXT, minuten=4))
+    assert r == {"auftrag": AID[:8],
+                 "hinweis": "Marketing schreibt die Gliederung. Sie erscheint in Rowboat zum Absegnen."}
+    sql, params = buch.aufrufe[0]
+    assert params[:3] == ("ivan", "fin2gether", "video")
+    assert json.loads(params[3]) == {"thema": "KI im Vertrieb", "beschreibung": TEXT, "minuten": 4,
+                                     "zielgruppe": VORGABE}
+
+
+def test_video_braucht_keinen_kanal(buch):
+    buch.verbunden = ()
+    r = json.loads(server.auftrag_geben("video", "KI im Vertrieb"))
+    assert "auftrag" in r and "kanaele" not in r and "fehler" not in r
+    assert json.loads(buch.aufrufe[0][1][3])["beschreibung"] == ""
+
+
+def test_video_eigene_zielgruppe_und_vorgaben(buch):
+    server.auftrag_geben("video", "KI im Vertrieb", minuten=5, zielgruppe="  Einkäufer  ")
+    eingabe = json.loads(buch.aufrufe[0][1][3])
+    assert eingabe["zielgruppe"] == "Einkäufer" and eingabe["minuten"] == 5
+    server.auftrag_geben("video", "KI im Vertrieb")
+    assert json.loads(buch.aufrufe[1][1][3])["minuten"] == 4
+
+
+@pytest.mark.parametrize("minuten", [2, 6, 30, 0, -1, True])
+def test_video_minuten_ausserhalb_abgelehnt(buch, minuten):
+    assert "fehler" in json.loads(server.auftrag_geben("video", "X y z", minuten=minuten))
+    assert buch.aufrufe == []
+
+
+def test_video_beschreibung_grenze_4000(buch):
+    assert "auftrag" in json.loads(server.auftrag_geben("video", "X y z", beschreibung="a" * 4000))
+    assert "fehler" in json.loads(server.auftrag_geben("video", "X y z", beschreibung="a" * 4001))
+    assert len(buch.aufrufe) == 1
+
+
+@pytest.mark.parametrize("thema", ["ab", "x" * 301, "   "])
+def test_video_thema_laenge(buch, thema):
+    assert "fehler" in json.loads(server.auftrag_geben("video", thema))
+    assert buch.aufrufe == []
+
+
+def test_video_ohne_mandant_kein_auftrag(buch, monkeypatch):
+    monkeypatch.setenv("MARKETING_MANDANT", "")
+    assert "fehler" in json.loads(server.auftrag_geben("video", "Ein Thema"))
+    assert buch.aufrufe == []
+
+
+def test_video_tagesgrenze_als_satz(buch):
+    buch.fehler = RuntimeError("Tagesgrenze erreicht: hoechstens 2 Video-Auftraege je Laden pro Tag")
+    r = json.loads(server.auftrag_geben("video", "Ein Thema"))
+    assert r == {"fehler": "Heute sind schon zwei Videos bestellt – morgen wieder."}
+
+
+def test_video_allgemeine_tagesgrenze_bleibt_der_alte_satz(buch):
+    buch.fehler = RuntimeError("Tagesgrenze erreicht: hoechstens 5 Auftraege je Absender und Laden pro Tag")
+    assert "Tagesgrenze" in json.loads(server.auftrag_geben("video", "Ein Thema"))["fehler"]
+
+
+def test_reel_unveraendert_ignoriert_videoparameter(buch):
+    r = json.loads(server.auftrag_geben("reel", "Ein Thema", beschreibung="lang", minuten=5, zielgruppe="x"))
+    assert r["kanaele"] == ["mastodon", "discord"]
+    assert json.loads(buch.aufrufe[0][1][3]) == {"thema": "Ein Thema", "kanaele": ["mastodon", "discord"]}
+
+
+def test_video_fremdes_schema_kein_auftrag(buch, monkeypatch):
+    monkeypatch.setattr(server, "SCHEMA", "sales_ivan")
+    r = json.loads(server.auftrag_geben("video", "Ein Thema"))
+    assert r == {"fehler": "Aufträge gibt es in diesem Laden noch nicht."} and buch.aufrufe == []
+
+
+def test_docstring_sagt_woertlich():
+    assert "WOERTLICH" in server.auftrag_geben.__doc__ and "fasse nichts zusammen" in server.auftrag_geben.__doc__
+
+
+def test_agents_md_regel_video():
+    from pathlib import Path
+    datei = Path(__file__).resolve().parents[2] / "config/workspace/AGENTS.md"
+    if not datei.exists():  # im Container-Image liegt AGENTS.md nicht
+        pytest.skip("AGENTS.md nicht im Image")
+    text = datei.read_text(encoding="utf-8")
+    assert 'auftrag_geben(art="video"' in text and "WÖRTLICH" in text and "Fasse nichts zusammen" in text

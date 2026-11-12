@@ -233,6 +233,7 @@ import post_struktur
 import post_tresor
 import ui_post
 import ui_reels
+import ui_werkbank
 import struktur
 import ui_kanaele
 import ui_struktur
@@ -2166,6 +2167,7 @@ _DETAIL_ZU_LISTE = {
     "/marketing/layout-bild": "/marketing/layouts",
     "/marketing/editor": "/marketing/entwuerfe",
     "/marketing/vorlage-bild": "/marketing/vorlagen",
+    "/marketing/werkbank": "/marketing/reels",
 }
 
 
@@ -3263,6 +3265,10 @@ async def medien_datei(request):
     """
     roh = request.path_params["name"]
     basis, fehler = server.medien.pruefe(roh)
+    # Clips und Video der Werkbank nur ueber /marketing/werkbank/datei (Firmenpruefung, Range, gestreamt). Entschieden
+    # wird auf dem Namen, der geoeffnet wird (`basis`), und auf jeder Lesart des rohen Werts.
+    if server.medien.werkbankname_verdaechtig(roh) or (basis and server.medien.werkbankname_verdaechtig(basis)):
+        return _fehlerseite(404, "Nicht gefunden", "Diese Datei gibt es hier nicht.")
     if fehler:
         return _fehlerseite(404, "Nicht gefunden", _e(fehler))
     _endpunkt, mimetyp = server.medien.endpunkt_und_typ(basis)
@@ -10388,6 +10394,7 @@ app = Starlette(routes=[
     *ui_post.routen(sys.modules[__name__]),
     *ui_kanaele.routen(sys.modules[__name__]),
     *ui_reels.routen(sys.modules[__name__]),
+    *ui_werkbank.routen(sys.modules[__name__]),
     *ui_podcast.routen(sys.modules[__name__]),
     *ui_freigabe_newsletter.routen(sys.modules[__name__]),
     *ui_portal_fenster.routen(sys.modules[__name__]),
