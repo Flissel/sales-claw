@@ -56,7 +56,9 @@ def test_update_kennt_das_netz_nur_ueber_das_skript():
     assert "docker network" not in u                       # nicht mehr inline
     assert 'LADEN_DATEIEN=("-f docker-compose.yml -f docker-compose.fenster.yml")' in u
     assert u.count('LADEN_DATEIEN+=("")') == 1             # zweite Laeden: leer
-    ups = re.findall(r"^\s*docker compose .*$", u, re.M)
+    # Seit 12.11.2026 laeuft jedes `up` ueber bauen_und_starten (ein Build je Kontext,
+    # tests/test_update_ein_bau.py) - die Aufrufstellen tragen die Compose-Argumente.
+    ups = re.findall(r"^\s*bauen_und_starten .*$", u, re.M)
     mit_override = [z for z in ups if "compose_dateien" in z]
     openwa = [z for z in ups if "docker-compose.openwa.yml" in z]
     assert len(mit_override) == 2 and len(openwa) == 1 and len(ups) == 3
