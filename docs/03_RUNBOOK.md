@@ -3888,6 +3888,12 @@ die `.env` neu liest:
 
 Ein echter Probe-Bot (Termin mit Jitsi-Link auf `meet.ffmuc.net`) gehört zu den Abnahmetests (Spec §10).
 
+**Bot geht nicht von selbst (Jitsi, Abnahme 12.11.2026).** Auf Jitsi merkt Vexa nicht, dass alle gegangen sind: der Bot
+bleibt allein im Raum, das Meeting `active`, Mitschrift und Auswertung kommen nicht. Darum stoppt `sales-termine` den
+Bot, sobald das Terminende vorbei ist und seit `VEXA_STILLE_NACH_ENDE_MIN` Minuten (Vorgabe 10) niemand mehr gesprochen
+hat (Log: `Bot nach Terminende und Stille gestoppt`). Wer überzieht, verliert nichts, solange gesprochen wird. Endet ein
+Gespräch früh, kommt die Auswertung also spätestens 10 Minuten nach dem geplanten Ende.
+
 **Rückbau** (trifft nur das Projekt `vexa`):
 
     VEXA_C="docker compose -f $HOME/sales-claw/deploy/vexa/docker-compose.yml -p vexa"
@@ -3920,6 +3926,7 @@ Dauer. Datenschutz: siehe `docs/06_DSGVO.md` (Abschnitt Mitschriften, „Überga
     CLAUDE_CODE_OAUTH_TOKEN=…        # am PC: `claude setup-token`, Betreiber klickt „Authorize“
     OLLAMA_URL=http://sales-ki:11434
     OLLAMA_BRIEFING_TIMEOUT_S=120
+    OLLAMA_MODELL=claude-sonnet      # nur Beschriftung in der Akte; gerechnet wird mit KI_MODELL
     # optional: KI_MODELL (Vorgabe sonnet), KI_TIMEOUT_S (Vorgabe 280)
 
     cd ~/sales-claw
@@ -3933,6 +3940,7 @@ prüft Absturzschleife und `/api/tags` (kein echter Claude-Aufruf).
 
     docker exec sales-termine python -c "import ollama;print(ollama.chat('Antworte knapp.','Sag nur: ok'))"
 
-**Zurück zum lokalen Modell:** `OLLAMA_URL` auf den eigenen Ollama-Server, `OLLAMA_BRIEFING_TIMEOUT_S` wieder leer,
+**Zurück zum lokalen Modell:** `OLLAMA_URL` auf den eigenen Ollama-Server, `OLLAMA_MODELL` auf das lokale Modell
+(oder leer), `OLLAMA_BRIEFING_TIMEOUT_S` wieder leer,
 `sales-termine` neu erzeugen, `docker compose stop sales-ki`, in `sales-mcp/server.py` den Satz „Die Mitschrift bleibt
 auf unseren eigenen Servern.“ wieder in `EINLADUNG_MITSCHRIFT_HINWEIS` aufnehmen.
