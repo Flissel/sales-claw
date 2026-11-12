@@ -50,8 +50,9 @@ _MIT_BELEG = ("entscheidungen", "zusagen_felix", "zusagen_kunde")
 # Beim Zusammenfuehren mehrerer Stuecke nur angehaengt, nicht entdoppelt.
 _ANHAENGEN = ("verlauf", "entscheidungen", "ideen")
 ARTEN = ("kundentermin", "intern")
-# Bei internen Gespraechen leer: es gibt keinen Kunden, der einwendet oder zusagt.
-_NUR_KUNDENTERMIN = ("einwaende", "zusagen_kunde")
+# Bei internen Gespraechen leer: es gibt keinen Kunden, der einwendet, zusagt oder
+# Probleme hat; Pannen beim eigenen Ausprobieren sind keine Painpoints.
+_NUR_KUNDENTERMIN = ("painpoints", "einwaende", "zusagen_kunde")
 _ZEITZONE = ZoneInfo("Europe/Berlin")
 _DATUM = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -67,7 +68,9 @@ zusammenhaengend, erschliesse den Sinn aus dem Zusammenhang, korrigiere offensic
 Erkennungsfehler stillschweigend, aber erfinde nichts, was nicht gesagt wurde.
 
 Format der Mitschrift: "[Nummer] Sprecher: Text". Antworte NUR als JSON nach diesem Schema,
-ohne Erklaerung, auf Deutsch:
+ohne Erklaerung, auf Deutsch. Schreibe in deiner Antwort echte Umlaute (ä, ö, ü) und ß
+nach heutiger Rechtschreibung, nie ae, oe oder ue als Ersatz (auch wenn diese Anleitung
+sie verwendet):
 {
   "art": "kundentermin oder intern",
   "kurzfassung": "6 bis 12 Saetze: Anlass, Teilnehmer, Hauptthemen, wichtigste Aussagen, Ergebnis",
@@ -90,12 +93,21 @@ ohne Erklaerung, auf Deutsch:
 Regeln:
 - "art": Zuerst bestimmen. "kundentermin", wenn Felix mit einem (moeglichen) Kunden spricht;
   "intern", wenn es ein Arbeits-, Team- oder Ideengespraech ohne Kunden ist. Bei "intern"
-  bleiben "einwaende" und "zusagen_kunde" leer, Painpoints nur bei echten Problemen; fuelle
-  stattdessen "ideen" mit den Ideen und dem Feedback.
+  bleiben "painpoints", "einwaende" und "zusagen_kunde" leer; fuelle stattdessen "ideen"
+  mit den Ideen und dem Feedback.
 - "verlauf": chronologisch, ein Eintrag je inhaltlichem Thema; "von"/"bis" sind die
   Segmentnummern, in denen das Thema besprochen wurde; Bereiche ueberlappen nicht.
+  Lueckenlos: jeder inhaltliche Abschnitt des Gespraechs gehoert zu einem Thema, auch
+  Nebenthemen und spaete Teile. Luecken zwischen den Bereichen nur fuer Smalltalk und
+  technische Einrichtung.
 - Kein Smalltalk und nichts Organisatorisches (Begruessung, Verabschiedung, Privates,
-  Technikprobleme, eigene Folgetermine) in "verlauf" oder "naechste_schritte".
+  eigene Folgetermine) in "verlauf" oder "naechste_schritte".
+- Technische Einrichtung des Gespraechs gehoert weder in "verlauf" noch in "painpoints":
+  Bildschirm teilen, Ton und Mikrofon, Kamera, Einwahl, Verbindung, wer ist da, wer hoert
+  mich. Beispiel: "Siehst du meinen Bildschirm? - Nein, warte, jetzt." ist kein Thema und
+  kein Painpoint. Ein Thema ist es nur, wenn ueber ein Produkt oder Werkzeug inhaltlich
+  gesprochen wird (z. B. "Unser Videotool bricht bei Kunden staendig ab, das kostet uns
+  Auftraege").
 - Zusagen und Entscheidungen nur, wenn sie ausdruecklich ausgesprochen wurden, nicht
   vermutet; "segment" ist die Nummer des Segments, das sie belegt.
 - Painpoints nur fuer echte Probleme, Kosten oder Frust der Gespraechspartner, moeglichst
@@ -108,7 +120,8 @@ Regeln:
 
 SYSTEM_ZUSAMMENFUEHREN = """Du bekommst Kurzfassungen aufeinanderfolgender Teile eines Gespraechs.
 Fasse sie zu einer einzigen Kurzfassung in 6 bis 12 Saetzen zusammen: Anlass, Teilnehmer,
-Hauptthemen, wichtigste Aussagen, Ergebnis. Erfinde nichts dazu.
+Hauptthemen, wichtigste Aussagen, Ergebnis. Erfinde nichts dazu. Schreibe echte Umlaute
+(ä, ö, ü) und ß.
 Antworte NUR als JSON auf Deutsch: {"kurzfassung": "..."}"""
 
 

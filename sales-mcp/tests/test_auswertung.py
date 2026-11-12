@@ -382,7 +382,10 @@ def test_prompt_kennt_neue_regeln():
     p = auswertung.SYSTEM_PROMPT
     for teil in ('"art"', '"kundentermin"', '"intern"', '"verlauf"', '"entscheidungen"',
                  '"ideen"', '"bedeutung"', "6 bis 12 Saetze", "Smalltalk",
-                 "ausdruecklich", "Spracherkennung"):
+                 "ausdruecklich", "Spracherkennung",
+                 # Nachbesserung: Umlaute, technische Einrichtung, lueckenloser Verlauf
+                 "echte Umlaute (ä, ö, ü) und ß", "Bildschirm teilen", "Einwahl",
+                 "wer ist da", "jeder inhaltliche Abschnitt"):
         assert teil in p, teil
     assert "6 bis 12 Saetze" in auswertung.SYSTEM_ZUSAMMENFUEHREN
 
@@ -456,6 +459,7 @@ def test_art_intern_leert_verkaufsrubriken(stub):
     a = auswertung.auswerten(_fixture())
     assert a["art"] == "intern"
     assert a["einwaende"] == [] and a["zusagen_kunde"] == []
+    assert a["painpoints"] == []     # intern: nie Painpoints, auch wenn das Modell welche liefert
     assert a["ideen"] == ["Neues Modul"]
     # Inhalt, Entscheidungen und Felix' Zusagen bleiben
     assert a["verlauf"] and a["entscheidungen"] and a["zusagen_felix"]
@@ -510,7 +514,9 @@ def test_vereinen_haengt_verlauf_entscheidungen_ideen_an():
 def test_vereinen_art_intern_nur_wenn_alle_stuecke_intern():
     a, b = auswertung._leer(), auswertung._leer()
     a["art"], b["art"] = "intern", "intern"
+    b["painpoints"] = [{"zitat": "kaputt", "zeit": "", "sprecher": "A", "bedeutung": ""}]
     assert auswertung._vereinen([a, b])["art"] == "intern"
+    assert auswertung._vereinen([a, b])["painpoints"] == []
     b["art"] = "kundentermin"
     b["einwaende"] = ["Preis"]
     v = auswertung._vereinen([a, b])
