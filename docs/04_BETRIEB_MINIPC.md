@@ -88,7 +88,7 @@ für ~20–60 Sekunden still und verbindet sich selbst wieder. Ein
 cd ~/sales-claw
 git reset --hard vor-update
 docker compose up -d --build sales-mcp sales-inbox sales-dispatch sales-mail sales-claw
-docker compose build sales-mcp && bash deploy/sales-ui-neu.sh
+docker compose build sales-ui && bash deploy/sales-ui-neu.sh
 docker restart sales-claw
 bash deploy/smoke.sh
 ```

@@ -56,11 +56,7 @@ def test_update_kennt_das_netz_nur_ueber_das_skript():
     assert "docker network" not in u                       # nicht mehr inline
     assert 'LADEN_DATEIEN=("-f docker-compose.yml -f docker-compose.fenster.yml")' in u
     assert u.count('LADEN_DATEIEN+=("")') == 1             # zweite Laeden: leer
-    aufrufe = re.findall(r"^\s*docker compose .*$", u, re.M)
-    # 12.11.2026: dazu kommt genau ein Build-Aufruf (images_bauen, ohne Override, kein `up`).
-    bauen = [z for z in aufrufe if " up " not in z]
-    assert [z.strip() for z in bauen] == ['docker compose build "$z"']
-    ups = [z for z in aufrufe if " up " in z]
+    ups = re.findall(r"^\s*docker compose .*$", u, re.M)
     mit_override = [z for z in ups if "compose_dateien" in z]
     openwa = [z for z in ups if "docker-compose.openwa.yml" in z]
     assert len(mit_override) == 2 and len(openwa) == 1 and len(ups) == 3
@@ -211,8 +207,7 @@ def test_hinweis_und_doku_verweisen_auf_das_skript():
     assert "bash deploy/sales-ui-neu.sh" in b
     assert "docker compose up -d sales-ui'" not in b                     # Zeile ~336: ohne Skript-Weg
     karte = b[b.index("## Rückfahrkarte"):b.index("## Sicherung")]
-    # 12.11.2026: sales-ui baut nicht mehr selbst, das Image baut nur noch der Dienst sales-mcp.
-    assert "docker compose build sales-mcp && bash deploy/sales-ui-neu.sh" in karte
+    assert "docker compose build sales-ui && bash deploy/sales-ui-neu.sh" in karte
     flach = " ".join(karte.split())
     assert "ohne `docker-compose.fenster.yml` und ohne dieses Skript" in flach and "alte schlichte Befehl" in flach
     r = _lesen("docs/03_RUNBOOK.md")

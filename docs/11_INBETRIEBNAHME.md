@@ -271,7 +271,7 @@ selbsttätig zurück. Von Hand:
 ```bash
 git reset --hard vor-update
 docker compose up -d --build sales-mcp sales-inbox sales-dispatch sales-mail sales-claw
-docker compose build sales-mcp && bash deploy/sales-ui-neu.sh
+docker compose build sales-ui && bash deploy/sales-ui-neu.sh
 docker restart sales-claw && sleep 30
 bash deploy/smoke.sh
 ```

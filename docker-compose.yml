@@ -218,13 +218,6 @@ services:
     # Expliziter Tag statt des impliziten "sales-claw-sales-mcp": sales-dispatch
     # unten faehrt DASSELBE Image (siehe dort). Damit genuegt weiterhin ein
     # `docker compose build sales-mcp`, um beide Dienste aktuell zu halten.
-    # NUR dieser Dienst baut ./sales-mcp (12.11.2026). Alle anderen Dienste mit
-    # diesem Image tragen nur `image:`: vorher hatten 14 Dienste dasselbe
-    # `build:`, ein `up -d --build <mehrere>` startete per Bake ein Dutzend
-    # gleicher Builds parallel, und am 11.11.2026 stuerzte dabei der
-    # Docker-Daemon der VM ab (BuildKit-Race) und nahm alle Container mit.
-    # Erst `docker compose build sales-mcp`, dann die Dienste ohne --build
-    # (deploy/update.sh; Test: scripts/tests/test_proxmox_compose.py).
     image: sales-claw-sales-mcp:local
     container_name: ${LADEN_PRAEFIX:-sales}-mcp
     # Wie sales-claw im Demo-Betrieb: laeuft nur nach ausdruecklichem Start.
@@ -333,6 +326,7 @@ services:
   # Das Freigabe-Gate ist die Datenbank, nicht das Verhalten eines Modells
   # (Grundsatzentscheidung 1); LinkedIn fasst er nie an (Nr. 3).
   sales-dispatch:
+    build: ./sales-mcp
     image: sales-claw-sales-mcp:local
     container_name: ${LADEN_PRAEFIX:-sales}-dispatch
     command: python dispatch.py
@@ -389,6 +383,7 @@ services:
   #   * Er versendet nichts und aendert keine `drafts`. Das Freigabe-Gate
   #     (Grundsatzentscheidung 1) bleibt unberuehrt.
   sales-inbox:
+    build: ./sales-mcp
     image: sales-claw-sales-mcp:local
     container_name: ${LADEN_PRAEFIX:-sales}-inbox
     command: python inbox.py
@@ -460,6 +455,7 @@ services:
   # Ohne SMTP-Zugangsdaten in der .env beendet er sich beim Start mit einer
   # klaren Logzeile und Exit 0 — der Kanal ist dann gebaut, aber inert.
   sales-mail:
+    build: ./sales-mcp
     image: sales-claw-sales-mcp:local
     container_name: ${LADEN_PRAEFIX:-sales}-mail
     command: python mail_dispatch.py
@@ -554,6 +550,7 @@ services:
   # eingerichteter Kanal ist ein gueltiger Zustand, kein Ausfall (dieselbe
   # Ueberlegung wie bei sales-mail).
   sales-telegram:
+    build: ./sales-mcp
     image: sales-claw-sales-mcp:local
     container_name: ${LADEN_PRAEFIX:-sales}-telegram
     command: python telegram_dispatch.py
@@ -615,6 +612,7 @@ services:
   # Mensch GENAU diesen Beitrag gemeint:
   #   LINKEDIN_DRAFT_ID=<uuid> docker compose run --rm sales-linkedin
   sales-linkedin:
+    build: ./sales-mcp
     image: sales-claw-sales-mcp:local
     container_name: ${LADEN_PRAEFIX:-sales}-linkedin
     command: python linkedin_dispatch.py
@@ -670,6 +668,7 @@ services:
   # deploy/kanal-zugang-eintragen.sh <kanal> ein (verdeckt, erzeugt nur
   # diesen Dienst neu).
   sales-kanaele:
+    build: ./sales-mcp
     image: sales-claw-sales-mcp:local
     container_name: ${LADEN_PRAEFIX:-sales}-kanaele
     command: python kanal_dispatch.py
@@ -724,6 +723,7 @@ services:
   # er sich mit klarer Meldung, statt still nichts zu tun. EINE Instanz
   # genuegt; gegen versehentliche zweite sichert der Advisory-Lock je Lead.
   sales-auto:
+    build: ./sales-mcp
     image: sales-claw-sales-mcp:local
     container_name: ${LADEN_PRAEFIX:-sales}-auto
     command: python auto.py
@@ -762,6 +762,7 @@ services:
   # Besitzer, steckt im Anker). deploy/update.sh baut ihn nur neu, wenn er
   # vorher schon lief.
   sales-kalender:
+    build: ./sales-mcp
     image: sales-claw-sales-mcp:local
     container_name: ${LADEN_PRAEFIX:-sales}-kalender
     command: python kalender_abgleich.py
@@ -785,6 +786,7 @@ services:
   # VEXA_API_KEY schickt er keinen Bot; deploy/update.sh baut ihn nur neu, wenn
   # er vorher schon lief.
   sales-termine:
+    build: ./sales-mcp
     image: sales-claw-sales-mcp:local
     container_name: ${LADEN_PRAEFIX:-sales}-termine
     command: python termin_takt.py
@@ -832,6 +834,7 @@ services:
   # Startet erst, wenn POST_BESITZER gesetzt ist (leer = Abbruch mit Fehler);
   # deploy/update.sh baut ihn nur neu, wenn er vorher schon lief.
   sales-post:
+    build: ./sales-mcp
     image: sales-claw-sales-mcp:local
     container_name: ${LADEN_PRAEFIX:-sales}-post
     command: python post_abholen.py
@@ -939,6 +942,7 @@ services:
         max-file: "3"
 
   sales-ui:
+    build: ./sales-mcp
     image: sales-claw-sales-mcp:local
     container_name: ${LADEN_PRAEFIX:-sales}-ui
     command: python ui.py
@@ -1145,6 +1149,7 @@ services:
   # Server-Schluessel kommt als Datei, nie als Umgebungsvariable. Der Bote
   # fuehrt nichts aus (Stufe 1) und ruft kein Sprachmodell.
   freigabe-bote:
+    build: ./sales-mcp
     image: sales-claw-sales-mcp:local
     container_name: ${LADEN_PRAEFIX:-sales}-freigabe-bote
     command: python -m freigabe_bote
@@ -1177,6 +1182,7 @@ services:
   # wie sales-ui), ob die Datei ein fertiges Reel der Firma ist. LINKEDIN_POST_LEAD_ID ist der
   # Sammelkontakt der Beitragsentwuerfe. Versendet nichts, ruft kein Sprachmodell.
   auftrag-bote:
+    build: ./sales-mcp
     image: sales-claw-sales-mcp:local
     container_name: ${LADEN_PRAEFIX:-sales}-auftrag-bote
     command: python -m auftrag_bote

@@ -317,33 +317,6 @@ compose_dateien() { # laden-index
   return 0
 }
 
-# Images bauen, GENAU EINMAL je Update-Lauf und vor jedem `up` (12.11.2026). In docker-compose.yml
-# baut nur noch der Dienst sales-mcp den Kontext ./sales-mcp; alle anderen Dienste dieses Images
-# (sales-claw-sales-mcp:local) tragen nur `image:`. Vorher fuehrte `up -d --build <mehrere Dienste>`
-# per Bake ein Dutzend gleicher Builds parallel aus, und am 11.11.2026 stuerzte dabei der
-# Docker-Daemon der VM ab (BuildKit-Race) und nahm alle Container mit. Der Tag ist fuer alle Laeden
-# derselbe, darum wird hier einmal fuer alle Laeden gebaut, nicht je Laden; die `up`-Aufrufe danach
-# laufen OHNE --build (Compose erzeugt Container neu, deren Image sich geaendert hat). Die Dienste
-# werden nacheinander gebaut, nie mehrere in einem Aufruf. sales-stt und sales-ki haben eigene
-# Images, sales-claw ein fertiges (ghcr) ohne Build.
-images_bauen() { # dienste (Vereinigung ueber alle Laeden)
-  local d z ziele=""
-  for d in $1; do
-    case "$d" in
-      sales-stt|sales-ki) z="$d" ;;
-      sales-claw) continue ;;
-      *) z="sales-mcp" ;;
-    esac
-    case " $ziele " in
-      *" $z "*) ;;
-      *) ziele="$ziele $z" ;;
-    esac
-  done
-  for z in $ziele; do
-    docker compose build "$z"
-  done
-}
-
 gateway_neustarten() {
   # Nur anfassen, was laeuft — KERN_BASIS enthaelt sales-claw nur dann.
   # Bewusst nur der Basis-Laden, siehe Kommentar bei KERN_BASIS oben.
@@ -361,16 +334,13 @@ rueckbau() {
   # vollen Neun-Dienste-Stand hochgezogen. Jetzt je Laden der eigene
   # Schnappschuss aus LADEN_KERN; ein Laden ohne zuvor laufende Dienste
   # bleibt unangetastet (nichts wiederherzustellen).
-  # Der alte Stand wird EINMAL fuer alle Laeden gebaut (images_bauen), die `up` je Laden laufen
-  # ohne --build (12.11.2026, s. images_bauen).
-  images_bauen "${LADEN_KERN[*]}"
   for i in "${!LADEN_PRAEFIXE[@]}"; do
     k="${LADEN_KERN[$i]}"
     [ -n "$k" ] || continue
     chat_eingang_sichern "${LADEN_ENVARGS[$i]}"
     fenster_netz_sichern "$i"
     # shellcheck disable=SC2046,SC2086
-    docker compose ${LADEN_ENVARGS[$i]} $(compose_dateien "$i") up -d $k
+    docker compose ${LADEN_ENVARGS[$i]} $(compose_dateien "$i") up -d --build $k
   done
   gateway_neustarten
   sleep 30
@@ -392,17 +362,12 @@ rueckbau() {
 # LADEN_KERN) wird komplett uebersprungen — es gibt fuer ihn nichts
 # anzufassen (Tor/Vorgabe aus Korrekturrunde 1), statt ihn von hier aus
 # hochzuziehen.
-# Zwei Durchgaenge (12.11.2026): erst die Liste je Laden (LADEN_BAUEN), dann EIN Build fuer alle
-# Laeden (images_bauen), dann die `up` je Laden ohne --build.
-LADEN_BAUEN=()
 for i in "${!LADEN_PRAEFIXE[@]}"; do
   P="${LADEN_PRAEFIXE[$i]}"
   K="${LADEN_KERN[$i]}"
+  [ -n "$K" ] || continue
+
   BAUEN=""
-  if [ -z "$K" ]; then
-    LADEN_BAUEN+=("")
-    continue
-  fi
   if $BAUEN_BEI_MCP || $BAUEN_BEI_COMPOSE; then
     BAUEN="$K"
   fi
@@ -433,18 +398,12 @@ for i in "${!LADEN_PRAEFIXE[@]}"; do
       fi
     done
   fi
-  LADEN_BAUEN+=("$BAUEN")
-done
 
-images_bauen "${LADEN_BAUEN[*]}"
-
-for i in "${!LADEN_PRAEFIXE[@]}"; do
-  BAUEN="${LADEN_BAUEN[$i]}"
   if [ -n "$BAUEN" ]; then
     chat_eingang_sichern "${LADEN_ENVARGS[$i]}"
     fenster_netz_sichern "$i"
     # shellcheck disable=SC2046,SC2086
-    docker compose ${LADEN_ENVARGS[$i]} $(compose_dateien "$i") up -d $BAUEN
+    docker compose ${LADEN_ENVARGS[$i]} $(compose_dateien "$i") up -d --build $BAUEN
   fi
 done
 
