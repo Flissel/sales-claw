@@ -203,7 +203,10 @@ if [ "$ART" = "laden_anlegen" ]; then
   # Vorher der Chat-Eingang (14.10.2026): sales-mcp haengt media/inbound des
   # Gateway-Volumes per subpath ein und startet ohne den Ordner nicht.
   bash deploy/chat-eingang-anlegen.sh --env-file "$ENVDATEI" >/dev/null
-  docker compose --env-file "$ENVDATEI" up -d --build sales-mcp sales-ui sales-mail \
+  # Ohne --build (12.11.2026): das gemeinsame Image sales-claw-sales-mcp:local steht auf dem Wirt,
+  # der laufende Basis-Laden faehrt es. So baut dieser Timer-Lauf nie parallel zu deploy/update.sh.
+  # Fehlt es doch, baut Compose es einmal ueber den Dienst sales-mcp (einziger mit build:).
+  docker compose --env-file "$ENVDATEI" up -d sales-mcp sales-ui sales-mail \
     >/dev/null
   ERLEDIGT+=("container")
 

@@ -31,9 +31,13 @@ def _committed_file(relative_path: str) -> str:
     return completed.stdout
 
 
-def rendered_config(tmp_path: Path, extra_env: dict[str, str] | None = None) -> dict[str, object]:
+def rendered_config(tmp_path: Path, extra_env: dict[str, str] | None = None,
+                    weitere_dateien: tuple[str, ...] = ()) -> dict[str, object]:
     compose_root = tmp_path / "committed-compose"
     compose_root.mkdir()
+    # Weitere committete Compose-Dateien (z. B. docker-compose.fenster.yml), hinten angehaengt.
+    for name in weitere_dateien:
+        (compose_root / name).write_text(_committed_file(name), encoding="utf-8")
     (compose_root / "docker-compose.yml").write_text(
         _committed_file("docker-compose.yml"), encoding="utf-8"
     )
@@ -66,6 +70,8 @@ def rendered_config(tmp_path: Path, extra_env: dict[str, str] | None = None) -> 
     command = ["docker", "compose", "--env-file", str(compose_root / ".env.example")]
     for compose_file in COMPOSE_FILES:
         command.extend(("-f", str(compose_root / compose_file.name)))
+    for name in weitere_dateien:
+        command.extend(("-f", str(compose_root / name)))
     command.extend(("config", "--format", "json"))
     completed = subprocess.run(
         command,
@@ -785,39 +791,115 @@ def test_ein_laden_mit_eigenem_ordner_teilt_KEINE_einzige_einhaengestelle(tmp_pa
 # Dutzend gleicher sales-mcp-Builds parallel startete: 14 Dienste trugen `build: ./sales-mcp` mit
 # demselben Tag. Jetzt baut nur der Dienst sales-mcp, alle anderen tragen nur `image:`.
 
+MCP_IMAGE = "sales-claw-sales-mcp:local"
+
+
 def _bauende_je_kontext(dienste: dict) -> dict[str, list[str]]:
+    """Bauende Dienste je Kontext. Schluessel ist Ordnername + Dockerfile, also faellt
+    `context: .` + `dockerfile: sales-mcp/Dockerfile` NICHT mit `./sales-mcp` zusammen. Darum
+    prueft der Test zusaetzlich je Image-Tag (_bauende_je_tag)."""
     je_kontext: dict[str, list[str]] = {}
     for name, dienst in dienste.items():
         bau = dienst.get("build")
         if bau:
             kontext = Path(str(bau["context"] if isinstance(bau, dict) else bau)).name
-            je_kontext.setdefault(kontext, []).append(name)
+            datei = str(bau.get("dockerfile", "Dockerfile")) if isinstance(bau, dict) else "Dockerfile"
+            je_kontext.setdefault(f"{kontext}:{datei}", []).append(name)
     return je_kontext
 
 
+def _bauende_je_tag(dienste: dict) -> dict[str, list[str]]:
+    je_tag: dict[str, list[str]] = {}
+    for name, dienst in dienste.items():
+        if dienst.get("build") and dienst.get("image"):
+            je_tag.setdefault(str(dienst["image"]), []).append(name)
+    return je_tag
+
+
+def _alle_dienste(tmp_path: Path) -> dict:
+    # Alle Profile (sales-stt steht hinter stt-lokal) und docker-compose.fenster.yml, die der
+    # Basis-Laden wirklich mitnimmt, damit kein Dienst durchrutscht.
+    return rendered_config(tmp_path, {"COMPOSE_PROFILES": "*"},
+                           weitere_dateien=("docker-compose.fenster.yml",))["services"]
+
+
 def test_nur_ein_dienst_baut_den_kontext_sales_mcp(tmp_path: Path) -> None:
-    # Alle Profile (sales-stt steht hinter stt-lokal), damit kein Dienst durchrutscht.
-    dienste = rendered_config(tmp_path, {"COMPOSE_PROFILES": "*"})["services"]
+    dienste = _alle_dienste(tmp_path)
     je_kontext = _bauende_je_kontext(dienste)
-    assert je_kontext.get("sales-mcp") == ["sales-mcp"], je_kontext
+    assert je_kontext.get("sales-mcp:Dockerfile") == ["sales-mcp"], je_kontext
     mehrfach = {k: v for k, v in je_kontext.items() if len(v) > 1}
     assert mehrfach == {}, f"mehrere Dienste bauen denselben Kontext: {mehrfach}"
+    # Anders geschriebene Kontexte (".", "sales-mcp/", eigenes dockerfile) mit demselben Tag faengt
+    # der Tag-Vergleich: hoechstens ein bauender Dienst je Image-Tag.
+    je_tag = _bauende_je_tag(dienste)
+    assert je_tag.get(MCP_IMAGE) == ["sales-mcp"], je_tag
+    assert {k: v for k, v in je_tag.items() if len(v) > 1} == {}, je_tag
     # Die uebrigen Dienste dieses Images gibt es weiter, nur ohne eigenen Build.
     nur_image = sorted(n for n, d in dienste.items()
-                       if d.get("image") == "sales-claw-sales-mcp:local" and not d.get("build"))
+                       if d.get("image") == MCP_IMAGE and not d.get("build"))
     assert len(nur_image) >= 13 and "sales-ui" in nur_image and "auftrag-bote" in nur_image
+
+
+def test_dienste_ohne_build_ziehen_den_lokalen_tag_nie(tmp_path: Path) -> None:
+    """Den Tag gibt es nur lokal: ein Pull waere nur eine Registry-Anfrage mit irrefuehrendem
+    "pull access denied". Mit pull_policy never meldet Compose "No such image"."""
+    dienste = _alle_dienste(tmp_path)
+    nur_image = {n: d for n, d in dienste.items() if d.get("image") == MCP_IMAGE and not d.get("build")}
+    assert nur_image and {n: d.get("pull_policy") for n, d in nur_image.items()} == {
+        n: "never" for n in nur_image}
+    assert dienste["sales-mcp"].get("pull_policy") in (None, "missing")
+
+
+def test_ohne_alle_profile_und_override_bleibt_es_ein_bauer(tmp_path: Path) -> None:
+    """Gegenprobe mit openwa + proxmox wie im Betrieb ohne Profile: openwa baut seinen eigenen
+    Kontext, sales-mcp den seinen, sonst niemand."""
+    je_tag = _bauende_je_tag(rendered_config(tmp_path)["services"])
+    assert je_tag.get(MCP_IMAGE) == ["sales-mcp"]
+    assert all(len(v) == 1 for v in je_tag.values()), je_tag
 
 
 def _update_text() -> str:
     return (ROOT / "deploy" / "update.sh").read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
+def _code_zeilen(text: str) -> list[str]:
+    """Logische Code-Zeilen: Fortsetzungen (Backslash am Ende) zusammengezogen, Kommentare weg."""
+    zeilen, puffer = [], ""
+    for z in text.replace("\r\n", "\n").splitlines():
+        if not puffer and z.lstrip().startswith("#"):
+            continue
+        puffer = f"{puffer} {z.strip()}" if puffer else z.strip()
+        if puffer.endswith("\\"):
+            puffer = puffer[:-1].rstrip()
+            continue
+        zeilen.append(puffer)
+        puffer = ""
+    if puffer:
+        zeilen.append(puffer)
+    return zeilen
+
+
+# Was mit --build hochgezogen werden darf: Dienste mit eigenem Kontext, je Aufruf genau einer.
+_EIGENER_KONTEXT = {"openwa", "sales-ki", "sales-stt"}
+
+
+def _build_ziele(zeile: str) -> list[str] | None:
+    """Dienste eines `--build`-Aufrufs (alles nach --build, ohne Optionen), sonst None."""
+    m = re.search(r"--build\b(.*)", zeile)
+    if not m:
+        return None
+    rest = re.split(r"[;|&)\"'`>]", m.group(1))[0]
+    return [w for w in rest.split() if not w.startswith("-") and not w.startswith("$")]
+
+
 def test_update_startet_dienste_ohne_build_ausser_openwa() -> None:
-    code = [z.strip() for z in _update_text().splitlines()
-            if z.strip().startswith("docker compose")]
-    mit_build = [z for z in code if "--build" in z]
+    code = _code_zeilen(_update_text())
+    # Auch `$(docker compose ...)`, `cd ... && docker compose ...` und Fortsetzungszeilen zaehlen.
+    compose = [z for z in code if "docker compose" in z]
+    mit_build = [z for z in compose if "--build" in z]
     assert mit_build == ['docker compose ${LADEN_ENVARGS[$i]} -f docker-compose.openwa.yml up -d --build openwa']
-    assert code.count('docker compose build "$z"') == 1
+    assert [z for z in compose if re.search(r"docker compose\b.*\bbuild\b", z) and "--build" not in z] == [
+        'docker compose build "$z" || return 1']
     # Bau vor den `up`: im Update und im Rueckbau je ein Aufruf von images_bauen VOR der Laden-Schleife.
     u = _update_text()
     for marke in ('images_bauen "${LADEN_BAUEN[*]}"', 'images_bauen "${LADEN_KERN[*]}"'):
@@ -842,13 +924,124 @@ def _bash() -> str:
     return gefunden
 
 
+def test_kein_deploy_skript_baut_mehrere_dienste_auf_einmal() -> None:
+    """Jedes `--build` in deploy/ (Skripte, Python, ausgegebene Befehle) zieht genau einen Dienst
+    mit eigenem Kontext hoch; Dienste des gemeinsamen Images starten ohne --build."""
+    funde = []
+    for datei in sorted((ROOT / "deploy").glob("*.sh")) + sorted((ROOT / "deploy").glob("*.py")):
+        text = datei.read_text(encoding="utf-8")
+        if datei.suffix == ".py":
+            # welt.compose(..., "up", "-d", "--build", "openwa") -> Argumente als Woerter
+            text = re.sub(r'"\s*,\s*"', " ", text)
+        for zeile in _code_zeilen(text):
+            if not zeile.lstrip().startswith("echo") and "docker compose" not in zeile and "compose(" not in zeile:
+                continue
+            ziele = _build_ziele(zeile)
+            if ziele is not None and (len(ziele) != 1 or ziele[0] not in _EIGENER_KONTEXT):
+                funde.append(f"{datei.name}: {zeile}")
+    assert funde == []
+
+
+def _images_bauen_skript() -> str:
+    u = _update_text()
+    liste = re.search(r'^MCP_IMAGE_DIENSTE="[^"]*"$', u, re.M)
+    funktion = re.search(r"^images_bauen\(\) \{.*?^\}$", u, re.M | re.S)
+    assert liste and funktion
+    return liste.group(0) + "\n" + funktion.group(0) + "\n"
+
+
 def test_images_bauen_baut_jedes_image_einmal_und_nacheinander() -> None:
-    funktion = re.search(r"^images_bauen\(\) \{.*?^\}$", _update_text(), re.M | re.S)
-    assert funktion
     # Zwei Laeden mit ueberlappenden Listen; sales-claw hat ein fertiges Image.
     laeden = "sales-mcp sales-ui sales-claw sales-ki sales-linkedin  sales-mcp sales-inbox sales-ki"
-    skript = ('docker() { echo "$*"; }\n' + funktion.group(0)
-              + f'\nimages_bauen "{laeden}"\nimages_bauen "sales-claw"\nimages_bauen ""\n')
+    skript = ('docker() { echo "$*"; }\n' + _images_bauen_skript()
+              + f'images_bauen "{laeden}"\nimages_bauen "sales-claw"\nimages_bauen ""\n')
     r = subprocess.run([_bash(), "-c", skript], capture_output=True, text=True, timeout=30)
     assert r.returncode == 0, r.stderr
     assert r.stdout.splitlines() == ["compose build sales-mcp", "compose build sales-ki"]
+
+
+def test_images_bauen_kennt_jeden_dienst_aus_den_kernlisten() -> None:
+    u = _update_text()
+    kern = re.search(r'^KERN_ALLE="([^"]*)"', u, re.M).group(1).split()
+    optional = re.search(r'^KERN_OPTIONAL="([^"]*)"', u, re.M).group(1).split()
+    skript = 'docker() { echo "$*"; }\n' + _images_bauen_skript() + f'images_bauen "{" ".join(kern + optional)}"\n'
+    r = subprocess.run([_bash(), "-c", skript], capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.splitlines() == ["compose build sales-mcp", "compose build sales-ki"]
+
+
+@pytest.mark.parametrize("liste,erwartet_stdout", [
+    ("sales-mcp sales-neu", []),                              # unbekannt: gar nichts bauen
+    ("sales-mcp sales-ki", ["compose build sales-mcp"]),      # erster Build scheitert: Schluss
+])
+def test_images_bauen_meldet_fehler_statt_still_weiterzubauen(liste, erwartet_stdout) -> None:
+    # set -e wie in update.sh; der Aufruf steht in `if !`, dort gilt set -e in der Funktion nicht.
+    skript = ('set -euo pipefail\ndocker() { echo "$*"; return 1; }\n' + _images_bauen_skript()
+              + f'if ! images_bauen "{liste}"; then echo RC1 >&2; exit 7; fi\necho WEITER\n')
+    r = subprocess.run([_bash(), "-c", skript], capture_output=True, text=True, timeout=30)
+    assert r.returncode == 7, (r.stdout, r.stderr)
+    assert r.stdout.splitlines() == erwartet_stdout
+    if "sales-neu" in liste:
+        assert "FEHLER: Dienst 'sales-neu' ist images_bauen unbekannt" in r.stderr
+
+
+_FALSCHES_DOCKER = """#!/usr/bin/env bash
+echo "docker $*" >> "$FAKE_LOG"
+case "$1" in
+  inspect) echo running; exit 0 ;;
+  compose) case " $* " in *" build "*) exit "${FAKE_BUILD_RC:-0}" ;; esac; exit 0 ;;
+esac
+exit 0
+"""
+
+
+def _git(cwd: Path, *args: str) -> str:
+    r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True)
+    return r.stdout.strip()
+
+
+def test_gescheiterter_build_setzt_zurueck_und_startet_nichts(tmp_path: Path) -> None:
+    """I2 (Review 12.11.2026): scheitert der eine Build, steht der Checkout danach wieder auf dem
+    alten Commit, kein `up` lief, der Status sagt `fehler`, es gibt eine deutsche Zeile und Exit 1.
+    Echtes update.sh in einem Wegwerf-Repo, falsches `docker` vorn im PATH."""
+    ursprung, arbeit = tmp_path / "ursprung.git", tmp_path / "arbeit"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "haupt", str(ursprung)], check=True)
+    subprocess.run(["git", "clone", "-q", str(ursprung), str(arbeit)], check=True, capture_output=True)
+    for k, v in (("user.email", "t@t"), ("user.name", "t"), ("core.autocrlf", "false")):
+        _git(arbeit, "config", k, v)
+    _git(arbeit, "checkout", "-q", "-b", "haupt")       # update.sh holt origin/<aktueller Zweig>
+    (arbeit / "deploy").mkdir()
+    (arbeit / "deploy" / "update.sh").write_text(_update_text(), encoding="utf-8", newline="\n")
+    (arbeit / "sales-mcp").mkdir()
+    (arbeit / "sales-mcp" / "x.py").write_text("a = 1\n", encoding="utf-8")
+    _git(arbeit, "add", "-A")
+    _git(arbeit, "commit", "-q", "-m", "alt")
+    _git(arbeit, "push", "-q", "origin", "HEAD:haupt")
+    alt = _git(arbeit, "rev-parse", "HEAD")
+    # Neuer Stand auf origin: eine Aenderung unter sales-mcp/ -> Build noetig.
+    (arbeit / "sales-mcp" / "x.py").write_text("a = 2\n", encoding="utf-8")
+    _git(arbeit, "commit", "-q", "-am", "neu")
+    _git(arbeit, "push", "-q", "origin", "HEAD:haupt")
+    _git(arbeit, "reset", "-q", "--hard", alt)
+
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    (bin_ / "docker").write_text(_FALSCHES_DOCKER, encoding="utf-8", newline="\n")
+    (bin_ / "docker").chmod(0o755)
+    log = tmp_path / "docker.log"
+    log.write_text("", encoding="utf-8")
+    betrieb = tmp_path / "betrieb"
+    env = {**os.environ, "PATH": f"{bin_}{os.pathsep}{os.environ['PATH']}", "FAKE_LOG": str(log),
+           "FAKE_BUILD_RC": "1", "SALES_BETRIEB": str(betrieb)}
+    r = subprocess.run([_bash(), "deploy/update.sh"], cwd=arbeit, env=env, capture_output=True,
+                       text=True, timeout=120)
+
+    assert r.returncode == 1, (r.stdout, r.stderr)
+    assert _git(arbeit, "rev-parse", "HEAD") == alt
+    assert _git(arbeit, "status", "--porcelain", "--untracked-files=no") == ""
+    aufrufe = log.read_text(encoding="utf-8").splitlines()
+    assert [z for z in aufrufe if " build " in z] == ["docker compose build sales-mcp"]
+    assert not [z for z in aufrufe if " up " in z or "restart" in z], aufrufe
+    status = json.loads((betrieb / "update-status.json").read_text(encoding="utf-8"))
+    assert status["ergebnis"] == "fehler" and status["von"] == alt and "Build fehlgeschlagen" in status["hinweis"]
+    assert "ABBRUCH: Build fehlgeschlagen. Nichts neu gestartet" in r.stderr

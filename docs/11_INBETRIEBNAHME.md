@@ -270,11 +270,15 @@ selbsttätig zurück. Von Hand:
 
 ```bash
 git reset --hard vor-update
-docker compose up -d --build sales-mcp sales-inbox sales-dispatch sales-mail sales-claw
-docker compose build sales-mcp && bash deploy/sales-ui-neu.sh
+docker compose build sales-mcp
+docker compose up -d sales-mcp sales-inbox sales-dispatch sales-mail sales-claw
+bash deploy/sales-ui-neu.sh
 docker restart sales-claw && sleep 30
 bash deploy/smoke.sh
 ```
+
+Nach dem Reset genau ein `docker compose build sales-mcp` und `up -d` ohne `--build` (12.11.2026): ein älteres
+`vor-update` baut sonst ein Dutzend gleicher Images parallel, siehe `docs/03_RUNBOOK.md` Abschnitt 4a.
 
 Meldet auch der Rückbau rot, schreibt das Skript `notfall` nach
 `~/sales-betrieb/update-status.json` und hält an. Dann nicht weiterprobieren.

@@ -2287,7 +2287,7 @@ dieser Änderung deshalb einmal ausrollen:
 docker compose build sales-mcp; bash deploy/sales-ui-neu.sh
 ```
 
-`--build` ist nötig, weil `ui.py` im Image liegt; es baut das gemeinsame Image
+Der Build ist nötig, weil `ui.py` im Image liegt; er baut das gemeinsame Image
 `sales-claw-sales-mcp:local` neu, **erzeugt aber nur `sales-ui` neu** — die
 laufenden Container von `sales-mcp`/`sales-inbox`/`sales-dispatch`/`sales-mail`
 bleiben unberührt und ziehen den neuen Stand erst bei ihrem nächsten regulären
@@ -2627,15 +2627,17 @@ vorliegen.
 # sales-mail seit Schlussfix-Welle 24.09.2026 ebenfalls nicht: es sendet
 # Konto-Mails ueber SYSTEM_SMTP_*, das deploy/laden-anlegen.sh beim Anlegen
 # bereits aus der Basis-.env in deploy/laeden/ivan.env kopiert hat (Spec
-# §2.3) — kein manueller Schritt noetig, bevor dieser Dienst laeuft:
-docker compose --env-file deploy/laeden/ivan.env up -d --build \
+# §2.3) — kein manueller Schritt noetig, bevor dieser Dienst laeuft.
+# Erst genau ein Build des gemeinsamen Images, dann ohne --build (Abschnitt 4a):
+docker compose --env-file deploy/laeden/ivan.env build sales-mcp
+docker compose --env-file deploy/laeden/ivan.env up -d \
   sales-mcp sales-ui sales-mail
 
 # Später, sobald Postfach/Telegram-Token/LinkedIn vorliegen — alle acht
 # Dienste des Hauptstacks (weiterhin OHNE ivan-auto; sales-mail steht hier
 # erneut, das ist unschaedlich — Compose erzeugt einen unveraenderten
-# Container nicht neu):
-docker compose --env-file deploy/laeden/ivan.env up -d --build \
+# Container nicht neu; das Image steht schon, darum ohne --build):
+docker compose --env-file deploy/laeden/ivan.env up -d \
   sales-mcp sales-ui sales-inbox sales-dispatch sales-mail \
   sales-claw sales-telegram sales-linkedin
 
@@ -2650,14 +2652,17 @@ docker compose --env-file deploy/laeden/ivan.env \
 In `docker-compose.yml` baut nur noch der Dienst `sales-mcp` den Kontext `./sales-mcp`. Alle anderen
 Dienste mit dem Image `sales-claw-sales-mcp:local` (sales-ui, sales-inbox, sales-dispatch, sales-mail,
 sales-telegram, sales-linkedin, sales-kanaele, sales-auto, sales-kalender, sales-termine, sales-post,
-freigabe-bote, auftrag-bote) tragen nur `image:`. Grund: am 11.11.2026 startete `up -d --build <mehrere
-Dienste>` per Bake rund zwölf gleiche Builds parallel, der Docker-Daemon der VM stürzte dabei ab
-(BuildKit-Race) und nahm alle Container mit. `deploy/update.sh` baut deshalb je Lauf jedes Image genau
+freigabe-bote, auftrag-bote) tragen nur `image:` und `pull_policy: never`. Grund: am 11.11.2026 startete
+`up -d --build <mehrere Dienste>` per Bake rund zwölf gleiche Builds parallel, der Docker-Daemon der VM stürzte
+dabei ab (BuildKit-Race) und nahm alle Container mit. `deploy/update.sh` baut deshalb je Lauf jedes Image genau
 einmal (`docker compose build sales-mcp`, bei Bedarf `sales-ki`/`sales-stt`), für alle Läden zusammen, weil
 der Tag derselbe ist, und startet die Dienste je Laden danach ohne `--build`. Der Rückbau macht es genauso.
-Die Befehle oben bleiben richtig, weil `sales-mcp` darin steht. Wer einen einzelnen Dienst von Hand startet
-(`docker compose up -d auftrag-bote`), braucht das Image schon; auf einem frischen Wirt zuerst
-`docker compose build sales-mcp` (`deploy/bootstrap.sh` tut das). Stürzt der Daemon trotzdem wieder ab,
+Scheitert der Build, setzt update.sh den Checkout auf den alten Stand zurück, startet nichts und schreibt
+`fehler` in den Status; der nächste Lauf versucht es erneut. Von Hand gilt dieselbe Regel: erst genau ein
+`docker compose build sales-mcp`, dann `up -d` ohne `--build`, vor allem nach `git reset --hard vor-update`
+(ein älterer Stand hat noch 14 bauende Dienste). Wer einen einzelnen Dienst von Hand startet
+(`docker compose up -d auftrag-bote`), braucht das Image schon, sonst meldet Compose „No such image"; auf
+einem frischen Wirt zuerst `docker compose build sales-mcp` (`deploy/bootstrap.sh` tut das). Stürzt der Daemon trotzdem wieder ab,
 blieben am 11.11.2026 die Container trotz `restart: unless-stopped` aus: mit `bash deploy/smoke.sh`
 nachsehen, was fehlt, und weiter nach `docs/05_DISASTER_RECOVERY.md` („Wenn keiner der vier Fälle passt").
 

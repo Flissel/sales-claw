@@ -59,7 +59,7 @@ def test_update_kennt_das_netz_nur_ueber_das_skript():
     aufrufe = re.findall(r"^\s*docker compose .*$", u, re.M)
     # 12.11.2026: dazu kommt genau ein Build-Aufruf (images_bauen, ohne Override, kein `up`).
     bauen = [z for z in aufrufe if " up " not in z]
-    assert [z.strip() for z in bauen] == ['docker compose build "$z"']
+    assert [z.strip() for z in bauen] == ['docker compose build "$z" || return 1']
     ups = [z for z in aufrufe if " up " in z]
     mit_override = [z for z in ups if "compose_dateien" in z]
     openwa = [z for z in ups if "docker-compose.openwa.yml" in z]
@@ -211,8 +211,11 @@ def test_hinweis_und_doku_verweisen_auf_das_skript():
     assert "bash deploy/sales-ui-neu.sh" in b
     assert "docker compose up -d sales-ui'" not in b                     # Zeile ~336: ohne Skript-Weg
     karte = b[b.index("## Rückfahrkarte"):b.index("## Sicherung")]
-    # 12.11.2026: sales-ui baut nicht mehr selbst, das Image baut nur noch der Dienst sales-mcp.
-    assert "docker compose build sales-mcp && bash deploy/sales-ui-neu.sh" in karte
+    # 12.11.2026: sales-ui baut nicht mehr selbst, das Image baut nur noch der Dienst sales-mcp; nach dem Reset
+    # genau ein Build, dann ohne --build (ein aelteres vor-update hat noch 14 bauende Dienste).
+    befehle = karte[karte.index("```bash"):karte.index("```", karte.index("```bash") + 3)]
+    assert "git reset --hard vor-update\ndocker compose build sales-mcp\n" in befehle.replace("\r\n", "\n")
+    assert "--build" not in befehle and "bash deploy/sales-ui-neu.sh" in befehle
     flach = " ".join(karte.split())
     assert "ohne `docker-compose.fenster.yml` und ohne dieses Skript" in flach and "alte schlichte Befehl" in flach
     r = _lesen("docs/03_RUNBOOK.md")
@@ -229,7 +232,8 @@ _PLAIN_UI_ERLAUBT = {
     ("docs/04_BETRIEB_MINIPC.md",
      "schlichtes `docker compose up -d sales-ui` verlöre es. Liegt `vor-update` vor dem Portal-Fenster, also ohne"),
     ("docs/04_BETRIEB_MINIPC.md",
-     "`docker compose up -d --build sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw`."),
+     "`docker compose build sales-mcp && docker compose up -d sales-mcp sales-ui sales-inbox sales-dispatch "
+     "sales-mail sales-claw`."),
 }
 
 
