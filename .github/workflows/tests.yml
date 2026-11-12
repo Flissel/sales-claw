@@ -100,4 +100,5 @@ jobs:
         run: >-
           python -m pytest scripts/tests/test_proxmox_compose.py
           scripts/tests/test_proxmox_preflight.py
-          scripts/tests/test_smoke_ui_session_secret.py -q --tb=short
+          scripts/tests/test_smoke_ui_session_secret.py
+          sales-ki/tests -q --tb=short
