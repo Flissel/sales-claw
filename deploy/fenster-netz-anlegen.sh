@@ -24,5 +24,9 @@ if docker network inspect bewerbung-fenster >/dev/null 2>&1; then
     exit 1
   fi
 else
-  docker network create --internal bewerbung-fenster >/dev/null
+  # Festes Subnetz: Auf offload-vm sind die Docker-Standardpools erschoepft ("all predefined
+  # address pools have been fully subnetted", 12.11.2026) - ohne --subnet scheitert das Anlegen,
+  # und es gaebe still kein Fenster. 10.231.43.0/24 ist dort frei und gleich dem Netz, das
+  # cc-portal-abgabe am 12.11. angelegt hat; 10.231.42.0/24 gehoert dem Portal-Ausgang (bewerbung).
+  docker network create --internal --subnet 10.231.43.0/24 bewerbung-fenster >/dev/null
 fi
