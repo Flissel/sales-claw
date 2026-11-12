@@ -31,6 +31,9 @@ case "$1" in
     [ "$1" = sh ] && [ "$2" = -c ] || { echo "unerwartet: $*" >&2; exit 2; }
     ADMIN_API_TOKEN="$(sed -n 's/^ADMIN_TOKEN=//p' "$VEXA_ENV_DATEI")"
     export ADMIN_API_TOKEN
+    # Umgebung des admin-api-Prozesses (NUL-getrennt wie /proc/<pid>/environ)
+    printf 'PATH=/x\0INTERNAL_API_SECRET=%s\0' "$INTERN_GEHEIM" > "$STATE/environ"
+    ADMIN_ENVIRON_DATEI="$STATE/environ"; export ADMIN_ENVIRON_DATEI
     PATH="$BIN:$PATH" exec sh -c "$3"
     ;;
   *) echo "unerwartet: $*" >&2; exit 2 ;;
@@ -53,13 +56,14 @@ while [ $# -gt 0 ]; do
     *) url="$1"; shift ;;
   esac
 done
-adm=""; usr=""
+adm=""; usr=""; intern=""
 if [ "$konf" = 1 ]; then
   while IFS= read -r z; do
     z="${z#header = \"}"; z="${z%\"}"
     case "$z" in
       X-Admin-API-Key:*) adm="${z#X-Admin-API-Key: }" ;;
       X-API-Key:*) usr="${z#X-API-Key: }" ;;
+      X-Internal-Secret:*) intern="${z#X-Internal-Secret: }" ;;
     esac
   done
 fi
@@ -82,6 +86,10 @@ case "$methode $pfad" in
       echo "$tok" >> "$STATE/tokens"; echo x >> "$STATE/mint-count"
       code=201; body="{\"id\":1,\"token\":\"$tok\",\"user_id\":7,\"scopes\":[\"bot\",\"tx\"]}"
     fi ;;
+  "PUT /internal/settings/diagnostics")
+    if [ -n "$intern" ] && [ "$intern" = "$INTERN_GEHEIM" ] && [ "${DIAG_KAPUTT:-}" != 1 ]; then
+      echo x >> "$STATE/diag-count"; code=200; body='{"key":"diagnostics","value":{"capture_signal":"false"}}'
+    else code=403; body='{"detail":"bad internal secret"}'; fi ;;
   "PUT /user/transcription")
     if [ -n "$usr" ] && grep -qxF "$usr" "$STATE/tokens" 2>/dev/null; then
       echo x >> "$STATE/put-count"; code=200; body='{"url":null,"token_set":true,"token":null}'
@@ -103,7 +111,7 @@ fall() { # name [keine-sales-env]
 }
 lauf() { # setzt RC
   set +e
-  STATE="$F/state" BIN="$T/bin" VEXA_ENV_DATEI="$F/vexa/.env" SALES_ENV_DATEI="$F/.env" \
+  INTERN_GEHEIM="intern-$(printf 'e%.0s' {1..24})" STATE="$F/state" BIN="$T/bin" VEXA_ENV_DATEI="$F/vexa/.env" SALES_ENV_DATEI="$F/.env" \
     DOCKER="$T/bin/docker" bash "$SKRIPT" >"$F/out" 2>"$F/err"
   RC=$?
   set -e
@@ -161,6 +169,8 @@ fi
 [ -e "$F/state/user" ] || fehler "Nutzer sales nicht angelegt"
 ohne_geheimnisse "2. Aufruf"
 grep -q 'Vexa angebunden' "$F/out" || fehler "keine Erfolgsmeldung"
+[ "$(zaehle diag-count)" = 1 ] || fehler "Mitschnitt-Not-Aus nicht gesetzt (diag-count $(zaehle diag-count))"
+! grep -qF "intern-eeee" "$F/out" "$F/err" "$F/state/docker-argv.log" "$F/state/curl-argv.log"   || fehler "internes Geheimnis in Ausgabe oder Argumentliste"
 
 # === 3. Zweiter Lauf mit gueltigem Schluessel: nichts neu, nichts geschrieben ===
 cp "$F/.env" "$F/.env.stand"
@@ -171,6 +181,7 @@ cmp -s "$F/.env" "$F/.env.stand" || fehler "sales-.env im 3. Aufruf veraendert (
 [ "$(zaehle mint-count)" = 1 ] || fehler "3. Aufruf holte einen neuen Token"
 [ "$(zaehle put-count)" = 2 ] || fehler "3. Aufruf: PUT-Pruefung fehlt (put-count $(zaehle put-count))"
 grep -q 'schon' "$F/out" || fehler "3. Aufruf meldet nicht 'steht schon'"
+[ "$(zaehle diag-count)" = 2 ] || fehler "3. Aufruf: Not-Aus nicht erneut gesetzt"
 ohne_geheimnisse "3. Aufruf"
 
 # === 4. Ungueltiger Schluessel in der sales-.env: neuer Token ===
@@ -217,5 +228,21 @@ lauf
 [ "$RC" = 1 ] || fehler "ohne sales-.env: Exit $RC statt 1"
 [ ! -e "$F/.env" ] || fehler "ohne sales-.env: Datei angelegt"
 [ "$(zaehle mint-count)" = 0 ] || fehler "ohne sales-.env: trotzdem Token geholt"
+
+# === 9. Not-Aus scheitert: Abbruch, kein Token, sales-.env unveraendert ===
+fall f
+printf 'ADMIN_TOKEN=%s
+VEXA_DB_PASSWORD=%s
+VEXA_S3_ACCESS_KEY=%s
+VEXA_S3_SECRET_KEY=%s
+'   "$(printf 'a%.0s' {1..32})" "$(printf 'b%.0s' {1..32})" "$(printf 'c%.0s' {1..20})" "$(printf 'd%.0s' {1..32})" > "$F/vexa/.env"
+: > "$F/state/up"
+DIAG_KAPUTT=1; export DIAG_KAPUTT
+lauf
+unset DIAG_KAPUTT
+[ "$RC" = 1 ] || fehler "Not-Aus kaputt: Exit $RC statt 1"
+grep -q 'capture_signal' "$F/err" || fehler "Not-Aus kaputt: keine Meldung"
+[ "$(cat "$F/.env")" = "ANDERES=1" ] || fehler "Not-Aus kaputt: sales-.env veraendert"
+[ "$(zaehle mint-count)" = 0 ] || fehler "Not-Aus kaputt: trotzdem Token geholt"
 
 echo "OK: vexa-anbinden"

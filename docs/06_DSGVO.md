@@ -102,6 +102,13 @@ Checkliste für Transkripte:
       Datenschutzerklärung. Der Satz „Die Mitschrift bleibt auf unseren eigenen Servern“
       ist deshalb aus der Einladung gestrichen. Zurück: `OLLAMA_URL` auf ein eigenes
       Modell, `sales-ki` stoppen, Satz wieder aufnehmen.
+- [ ] **Kein Rohmitschnitt bei Vexa (Abnahme 12.11.2026):** Vexa legt ab Werk von jedem
+      Meeting einen „captured-signal“-Mitschnitt (Signal, Spracherkennung, Mitschrift) als
+      Testmaterial im eigenen Speicher ab (Bucket `vexa`, Präfix `signal/`, Budget 50 GB) und
+      löscht ihn beim Löschen des Meetings **nicht**. `deploy/vexa-anbinden.sh` setzt deshalb
+      bei jedem Lauf den Not-Aus `diagnostics.capture_signal=false`. Die vier Mitschnitte der
+      Abnahme-Termine vom 12.11.2026 (nur Betreiber-Testgespräche) sind gelöscht. Prüfen nach
+      jedem Vexa-Update: Speicher unter `signal/` bleibt leer (Runbook, Vexa-Betrieb).
 - [ ] **Löschweg:** `loeschantrag_vermerken` räumt zuerst ab (scheitert das, kommt ein
       Fehler, der Kontakt wird nicht vermerkt, der Aufruf ist wiederholbar), dann der
       Vermerk. Es beendet einen anstehenden oder laufenden Bot (Status
