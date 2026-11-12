@@ -1179,3 +1179,73 @@ def test_bot_nur_einmal_stoppen_wenn_loeschen_haengt(fake):
     termin_takt._nachloeschen(JETZT + timedelta(seconds=60))
     assert fake.anzahl("stoppen") == 1 and fake.anzahl("loeschen") == 3
     assert _ids() == (None, None, None)
+
+
+# ---------- Abnahme 12.11.2026: Bot nach Terminende und Stille stoppen ----------
+# Auf Jitsi merkte Vexa nicht, dass alle gegangen waren: der Bot sass allein im
+# Raum, das Meeting blieb `active`, Mitschrift und Auswertung kamen nicht.
+
+JITSI_IDS = {"vexa_meeting_id": 11, "vexa_plattform": "jitsi",
+             "vexa_native_id": "RaumXYZ"}
+
+
+def _laufend_nach_ende(fake, ende_vor_min=30, letztes_vor_min=None):
+    beginn = JETZT - timedelta(minutes=ende_vor_min + 60)
+    _akte("u1", beginn=beginn, status="laeuft", **JITSI_IDS)
+    fake.meeting = {"status": "active", "grund": "", "ende_grund": ""}
+    if letztes_vor_min is None:
+        fake.segmente = []
+    else:
+        zeit = JETZT - timedelta(minutes=letztes_vor_min)
+        fake.segmente = [{"sprecher": "Karla", "beginn": zeit.isoformat().replace("+00:00", "Z"),
+                          "text": SEGMENT_TEXT, "sprache": "de"}]
+
+
+def test_bot_nach_ende_und_stille_wird_einmal_gestoppt(fake):
+    _laufend_nach_ende(fake, ende_vor_min=30, letztes_vor_min=25)
+    termin_takt._verfolgen(JETZT)
+    assert [a for a in fake.aufrufe if a[0] == "stoppen"] == [("stoppen", "jitsi", "RaumXYZ")]
+    assert _zeile("u1")["status"] == "laeuft"          # fertig erst, wenn Vexa abschliesst
+    termin_takt._verfolgen(JETZT + timedelta(seconds=30))
+    assert fake.anzahl("stoppen") == 1
+
+
+def test_bot_nach_ende_ohne_segmente_wird_gestoppt(fake):
+    _laufend_nach_ende(fake, ende_vor_min=15, letztes_vor_min=None)
+    termin_takt._verfolgen(JETZT)
+    assert fake.anzahl("stoppen") == 1
+
+
+def test_bot_nach_ende_bleibt_solange_noch_gesprochen_wird(fake):
+    _laufend_nach_ende(fake, ende_vor_min=30, letztes_vor_min=2)
+    termin_takt._verfolgen(JETZT)
+    assert fake.anzahl("stoppen") == 0
+
+
+def test_bot_vor_ende_plus_stille_bleibt_und_holt_nichts(fake):
+    _laufend_nach_ende(fake, ende_vor_min=5, letztes_vor_min=None)
+    termin_takt._verfolgen(JETZT)
+    assert fake.anzahl("stoppen") == 0 and fake.anzahl("holen") == 0
+
+
+def test_stille_aus_umgebung(fake, monkeypatch):
+    monkeypatch.setenv("VEXA_STILLE_NACH_ENDE_MIN", "40")
+    _laufend_nach_ende(fake, ende_vor_min=30, letztes_vor_min=None)
+    termin_takt._verfolgen(JETZT)
+    assert fake.anzahl("stoppen") == 0
+
+
+def test_bot_stoppen_nach_ende_scheitert_naechste_runde_wieder(fake, monkeypatch):
+    _laufend_nach_ende(fake, ende_vor_min=30, letztes_vor_min=None)
+    folge = [vexa.VexaFehler("500")]
+
+    def stoppen(p, n):
+        fake.aufrufe.append(("stoppen", p, n))
+        if folge:
+            raise folge.pop(0)
+
+    monkeypatch.setattr(vexa, "bot_stoppen", stoppen)
+    termin_takt._verfolgen(JETZT)
+    termin_takt._verfolgen(JETZT + timedelta(seconds=30))
+    termin_takt._verfolgen(JETZT + timedelta(seconds=60))
+    assert fake.anzahl("stoppen") == 2
