@@ -3944,3 +3944,65 @@ prüft Absturzschleife und `/api/tags` (kein echter Claude-Aufruf).
 (oder leer), `OLLAMA_BRIEFING_TIMEOUT_S` wieder leer,
 `sales-termine` neu erzeugen, `docker compose stop sales-ki`, in `sales-mcp/server.py` den Satz „Die Mitschrift bleibt
 auf unseren eigenen Servern.“ wieder in `EINLADUNG_MITSCHRIFT_HINWEIS` aufnehmen.
+
+## Video-Werkbank: Betrieb (seit 12.11.2026)
+
+Lange Erklärvideos (3 bis 5 Minuten) für den Laden. Der Betreiber bestellt im Chat ("Video zu Thema X"),
+Marketing baut Szene für Szene, der Betreiber segnet jedes Stück ab. Das fertige Video liegt in `/freigaben`.
+
+**Wer macht was**
+
+| Teil | Wo | Aufgabe |
+|---|---|---|
+| `auftrag_geben(art="video")` | `sales-mcp` | legt den Auftrag ins Auftragsbuch (höchstens zwei Videos je Laden und Tag) |
+| Werkbank-Arbeiter :8155 | PC | schreibt Gliederung und Texte, spricht, rendert Folien, fügt zusammen |
+| `marketing-werkbank-bote` | VM, systemd | stellt jedes Tor als Vorschlag in Rowboat ein und liest die Antwort |
+| Seiten `/marketing/werkbank` | `sales-ui` | Übersicht, Szenenseite mit "Passt" / "Nochmal" und Wunschfeld, Videoseite |
+| `sales-auftrag-bote` | VM, Container | legt das fertige Video in den Freigabe-Eingang (Herkunft `marketing-video`) |
+| Cron `postfach-check` | Gateway | meldet den Stand im Chat (9, 12, 15, 18, 21 Uhr) |
+
+**Ablauf und Stände.** `offen → in_arbeit → werkbank → erzeugt → wartet_freigabe → fertig`. `werkbank` läuft nie ab.
+Aus `erzeugt` und `wartet_freigabe` geht es zurück nach `werkbank`, wenn der Betreiber eine fertige Szene wieder
+öffnet; der Freigabe-Eintrag wird dann zurückgezogen und nach dem neuen Zusammenfügen neu angelegt.
+
+**Absegnen.** In Rowboat steht immer nur ein Block: erst wenn kein Vorschlag mehr offen ist, kommt der nächste.
+Der Ersatz für eine zurückgegebene Szene kommt sofort. Auf der Sales-Seite ist alles sofort sichtbar. Ein
+Änderungswunsch geht nur über die Sales-Seite (Rowboat-Vorschläge haben kein Textfeld).
+
+**Prüfen**
+
+```bash
+systemctl is-active marketing-werkbank-bote
+journalctl -u marketing-werkbank-bote --since "-10 min" --no-pager | tail -5   # "Durchgang: {...}" je Minute
+docker logs --since 10m sales-auftrag-bote | tail -5
+curl -s http://127.0.0.1:8155/healthz        # am PC: letzter_lauf, letztes_ergebnis
+```
+
+`letztes_ergebnis` am Arbeiter: `leer` (nichts zu tun), `wartet` (der Betreiber ist dran), `gliederung`, `text`,
+`clip`, `video`.
+
+**Störungen**
+
+- *Nichts passiert nach der Bestellung:* Läuft der Arbeiter am PC (`/healthz`)? Er startet über die geplante
+  Aufgabe `VibeMind-Marketing-Dienste`. Ist das Tagesbudget `marketing-werkbank` verbraucht, pausiert er bis zum
+  nächsten Tag.
+- *Kein Vorschlag in Rowboat:* Bote-Log ansehen. Fehlt `WERKBANK_UI_BASIS_URL` in `~/marketing-api.env`, fasst
+  der Bote nichts an. 403 heißt: dem engen Rowboat-Schlüssel (`~/marketing-werkbank/rowboat-key`) fehlt ein Kanal.
+- *"Das Video ließ sich nicht zusammenfügen":* steht auf der Videoseite. Ursache beheben (meist fehlt ein Clip
+  in `~/sales-claw/media-erzeugt/`), dann "Video neu zusammenfügen" drücken.
+- *Eine Szene ist "aufgegeben":* Der Arbeiter hat den Text nach mehreren Versuchen nicht durch die Belegprüfung
+  bekommen (jede Zahl braucht eine Quelle). Auf der Szenenseite einen neuen Wunsch schreiben.
+
+**Not-Aus.** `sudo systemctl stop marketing-werkbank-bote` (keine Vorschläge mehr) und am PC den Prozess auf
+Port 8155 beenden. Laufende Aufträge bleiben in `werkbank` liegen und gehen nach dem Start weiter.
+
+**Dateien.** Clips `wb-<auftrag8>-s<nr>-f<variante>.mp4`, Video `wb-<auftrag8>-video-f<n>.mp4` in
+`~/sales-claw/media-erzeugt/`. Alte Fassungen räumt der Arbeiter weg.
+
+**Datenschutz.** Ins Modell gehen nur der Auftragstext, `Marke.md`, `Markenhandbuch.md`, `Newsletter/` und
+`Video-Material/` aus dem Markenwissen. Rowboat-Wissensquellen nur, wenn sie in `WERKBANK_ROWBOAT_QUELLEN`
+stehen (am PC im Startskript der Marketing-Dienste; leer = nichts). Details: vibemind-os
+`spaces/marketing/README.md`, Abschnitt "Video-Werkbank".
+
+**Erster Lauf (12.11.2026).** Testauftrag `a86339b9`: 8 Szenen, 2:10 min, 6 Modellaufrufe. Gliederung etwa
+2 min, alle Szenentexte zusammen etwa 5 min, je Clip etwa 1,5 min, Zusammenfügen etwa 20 s.
