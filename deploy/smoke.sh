@@ -306,7 +306,7 @@ erwartete_container = {
     "sales-mail", "sales-telegram", "sales-linkedin", "sales-kanaele",
     "sales-auto", "sales-ui", "sales-post",
     "sales-freigabe-bote", "sales-kalender",
-    "sales-auftrag-bote", "sales-termine"}  # sales-stt seit 20.10.2026 am PC, hier nur per Profil stt-lokal
+    "sales-auftrag-bote", "sales-termine", "sales-ki"}  # sales-stt seit 20.10.2026 am PC, hier nur per Profil stt-lokal
 ist = {d["container_name"] for d in erst["services"].values()}
 assert ist == erwartete_container, ist
 istv = {v["name"] for v in erst["volumes"].values()}
@@ -871,6 +871,24 @@ except Exception:
     gut "vexa gesundheit"
   else
     fehl "vexa gesundheit" "Vexa antwortet nicht (VEXA_URL/VEXA_API_KEY? docker logs sales-termine)"
+  fi
+fi
+
+# 24) KI-Tor (sales-ki, 12.11.2026): Claude Code hinter der Ollama-Schnittstelle.
+# Nur wenn er laeuft (Uebergang, bis lokale Server da sind). Geprueft wird nur,
+# dass er nicht in einer Absturzschleife haengt und /api/tags antwortet - ein
+# echter Claude-Aufruf kostet Abo-Kontingent und gehoert nicht in jede Abnahme.
+ki_zustand="$(docker inspect -f '{{.State.Status}}' sales-ki 2>/dev/null | tr -d '[:space:]' || true)"
+if [ "$ki_zustand" != "running" ]; then
+  melde "sales-ki" "uebersprungen (Container laeuft nicht)"
+else
+  read -r ki_restarting ki_zaehler < <(docker inspect -f '{{.State.Restarting}} {{.RestartCount}}' sales-ki 2>/dev/null || true)
+  if [ "${ki_restarting:-}" = "true" ] || ! [[ "${ki_zaehler:-x}" =~ ^[0-9]+$ ]] || [ "$ki_zaehler" -ge 3 ]; then
+    fehl "sales-ki laeuft" "Absturzschleife? (Restarting=${ki_restarting:-?} RestartCount=${ki_zaehler:-?}) — docker logs sales-ki"
+  elif docker exec sales-ki python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:11434/api/tags',timeout=5)" >/dev/null 2>&1; then
+    gut "sales-ki laeuft"
+  else
+    fehl "sales-ki laeuft" "/api/tags antwortet nicht — docker logs sales-ki"
   fi
 fi
 

@@ -3905,3 +3905,34 @@ externe Netz `sales-claw_default` gehört dem Basis-Stack und bleibt unberührt.
 alle `ports:` auf `127.0.0.1`, Projektname `vexa`, Volumes mit Präfix `vexa-`, nur `vexa-tor` auf `sales-claw_default`;
 `docker compose config` läuft mit, wenn Docker am Ort vorhanden ist. `bash deploy/tests/test_vexa_anbinden.sh` prüft das
 Anbinde-Skript gegen Attrappen für `docker` und `curl`.
+
+## Meeting-Mittelpunkt: KI-Tor `sales-ki` (Übergang seit 12.11.2026)
+
+Betreiber-Entscheid 12.11.2026: Bis eigene Server mit lokalem Modell da sind, beantwortet **Claude Code** (Abo des
+Betreibers, kein API-Budget) Briefing-Kurztext und Mitschrift-Auswertung. Der Dienst `sales-ki` (`sales-ki/ki_tor.py`)
+spricht dieselbe Schnittstelle wie Ollama (`GET /api/tags`, `POST /api/chat`), deshalb bleibt `sales-mcp/ollama.py`
+unverändert; nur `OLLAMA_URL` zeigt auf ihn. Je Anfrage läuft `claude -p` ohne Werkzeuge, ohne MCP, ohne
+Einstellungsdateien und ohne Sitzungsspeicher; der Kundentext geht über stdin. Geloggt werden nur Pfad, Status,
+Dauer. Datenschutz: siehe `docs/06_DSGVO.md` (Abschnitt Mitschriften, „Übergang“).
+
+**Einrichten** (VM, `~/sales-claw/.env`, nie ausgeben):
+
+    CLAUDE_CODE_OAUTH_TOKEN=…        # am PC: `claude setup-token`, Betreiber klickt „Authorize“
+    OLLAMA_URL=http://sales-ki:11434
+    OLLAMA_BRIEFING_TIMEOUT_S=120
+    # optional: KI_MODELL (Vorgabe sonnet), KI_TIMEOUT_S (Vorgabe 280)
+
+    cd ~/sales-claw
+    docker compose up -d --build --no-deps sales-ki
+    docker compose up -d --no-deps --force-recreate sales-termine
+
+`deploy/update.sh` baut `sales-ki` danach nur neu, wenn er läuft (`KERN_OPTIONAL`); `deploy/smoke.sh` Abschnitt 24
+prüft Absturzschleife und `/api/tags` (kein echter Claude-Aufruf).
+
+**Probe** (ein echter Aufruf, kostet Abo-Kontingent):
+
+    docker exec sales-termine python -c "import ollama;print(ollama.chat('Antworte knapp.','Sag nur: ok'))"
+
+**Zurück zum lokalen Modell:** `OLLAMA_URL` auf den eigenen Ollama-Server, `OLLAMA_BRIEFING_TIMEOUT_S` wieder leer,
+`sales-termine` neu erzeugen, `docker compose stop sales-ki`, in `sales-mcp/server.py` den Satz „Die Mitschrift bleibt
+auf unseren eigenen Servern.“ wieder in `EINLADUNG_MITSCHRIFT_HINWEIS` aufnehmen.

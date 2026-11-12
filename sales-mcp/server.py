@@ -2121,11 +2121,13 @@ def termin_bestaetigen(lead_id: str, datum: str, uhrzeit: str,
 
 
 # Wortlaut: Vorschlag, Freigabe durch Felix vor dem Merge (Spec §5.4).
+# 12.11.2026: Satz "Die Mitschrift bleibt auf unseren eigenen Servern."
+# gestrichen - im Uebergang wertet Claude Code (sales-ki) aus. Wieder
+# aufnehmen, sobald OLLAMA_URL auf ein eigenes Modell zeigt.
 EINLADUNG_MITSCHRIFT_HINWEIS = (
     "Hinweis: VibeMind schreibt das Gespräch mit, damit nichts verloren "
-    "geht. Die Mitschrift bleibt auf unseren eigenen Servern. Möchten Sie "
-    "das nicht, sagen Sie es einfach zu Beginn – dann läuft das Gespräch "
-    "ohne Mitschrift.")
+    "geht. Möchten Sie das nicht, sagen Sie es einfach zu Beginn – dann "
+    "läuft das Gespräch ohne Mitschrift.")
 
 
 def _termin_einladen(lead_id: str, datum: str, uhrzeit: str,
