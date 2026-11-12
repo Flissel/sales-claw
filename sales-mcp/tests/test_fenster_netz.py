@@ -47,7 +47,7 @@ def test_netz_skript_ist_idempotent_und_intern():
     s = _lesen("deploy/fenster-netz-anlegen.sh")
     assert "set -euo pipefail" in s
     assert "docker network inspect bewerbung-fenster >/dev/null 2>&1" in s
-    assert "docker network create --internal bewerbung-fenster >/dev/null" in s
+    assert "docker network create --internal --subnet 10.231.43.0/24 bewerbung-fenster >/dev/null" in s
     assert "||" in s
 
 
@@ -148,7 +148,7 @@ def test_netz_skript_verlangt_ein_internes_netz(tmp_path, netz, intern, ok):
                        cwd=tmp_path, env=env)
     aufrufe = log.read_text(encoding="utf-8")
     assert (r.returncode == 0) is ok, (r.stdout, r.stderr)
-    assert ("network create --internal bewerbung-fenster" in aufrufe) is (netz == "fehlt")
+    assert ("network create --internal --subnet 10.231.43.0/24 bewerbung-fenster" in aufrufe) is (netz == "fehlt")
     if not ok:
         assert "NICHT intern" in r.stderr and "bewerbung-fenster" in r.stderr
         assert "network create" not in aufrufe
