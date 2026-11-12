@@ -3921,12 +3921,20 @@ unverändert; nur `OLLAMA_URL` zeigt auf ihn. Je Anfrage läuft `claude -p` ohne
 Einstellungsdateien und ohne Sitzungsspeicher; der Kundentext geht über stdin. Geloggt werden nur Pfad, Status,
 Dauer. Datenschutz: siehe `docs/06_DSGVO.md` (Abschnitt Mitschriften, „Übergang“).
 
+**Auswertung am Stück:** `sales-mcp/auswertung.py` teilt die Mitschrift in Stücke von `AUSWERTUNG_STUECK_ZEICHEN`
+Zeichen (Vorgabe 12000, passend zu `OLLAMA_NUM_CTX=8192` eines kleinen lokalen Modells). Mit dem KI-Tor auf der VM
+`AUSWERTUNG_STUECK_ZEICHEN=80000` setzen: ein Gespräch von gut einer Stunde (Abnahme 12.11.2026: 269 Segmente,
+11 835 Zeichen) geht dann in einem Aufruf an Claude, Gesprächsverlauf und Kurzfassung entstehen aus dem ganzen
+Gespräch statt aus Teilen. Bricht die Auswertung langer Gespräche mit Zeitüberschreitung ab (Log
+`sales-termine`), `KI_TIMEOUT_S` und `OLLAMA_TIMEOUT_S` gemeinsam anheben (KI_TIMEOUT_S kleiner lassen).
+
 **Einrichten** (VM, `~/sales-claw/.env`, nie ausgeben):
 
     CLAUDE_CODE_OAUTH_TOKEN=…        # am PC: `claude setup-token`, Betreiber klickt „Authorize“
     OLLAMA_URL=http://sales-ki:11434
     OLLAMA_BRIEFING_TIMEOUT_S=120
     OLLAMA_MODELL=claude-sonnet      # nur Beschriftung in der Akte; gerechnet wird mit KI_MODELL
+    AUSWERTUNG_STUECK_ZEICHEN=80000  # Mitschrift am Stueck statt in 12000er-Stuecken (Vorgabe fuer kleine lokale Modelle)
     # optional: KI_MODELL (Vorgabe sonnet), KI_TIMEOUT_S (Vorgabe 280)
 
     cd ~/sales-claw
@@ -3941,6 +3949,6 @@ prüft Absturzschleife und `/api/tags` (kein echter Claude-Aufruf).
     docker exec sales-termine python -c "import ollama;print(ollama.chat('Antworte knapp.','Sag nur: ok'))"
 
 **Zurück zum lokalen Modell:** `OLLAMA_URL` auf den eigenen Ollama-Server, `OLLAMA_MODELL` auf das lokale Modell
-(oder leer), `OLLAMA_BRIEFING_TIMEOUT_S` wieder leer,
+(oder leer), `OLLAMA_BRIEFING_TIMEOUT_S` und `AUSWERTUNG_STUECK_ZEICHEN` wieder leer,
 `sales-termine` neu erzeugen, `docker compose stop sales-ki`, in `sales-mcp/server.py` den Satz „Die Mitschrift bleibt
 auf unseren eigenen Servern.“ wieder in `EINLADUNG_MITSCHRIFT_HINWEIS` aufnehmen.
