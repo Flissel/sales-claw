@@ -3982,6 +3982,21 @@ HTTP-Teil (`GET /gesund`, `POST /suche`, Port `AUGE_PORT`, Vorgabe 8790) ist nur
 Umgebung ist bewusst schmal (DB, KI-Tor, Jitsi-Hosts), ohne den Anker `x-sales-mcp-umgebung`: keine Kanal-Schlüssel,
 Passwörter oder Token. `deploy/update.sh` baut ihn nur neu, wenn er schon lief (`KERN_OPTIONAL`).
 
+**Härtung.** `cap_drop: [ALL]` (keine Linux-Capabilities) und `security_opt: no-new-privileges:true`; Chromium läuft
+ohne eigene Sandbox (Playwright-Vorgabe) als uid 10001. `/tmp` ist ein `tmpfs` mit 256m: Chromium legt sein Shared
+Memory wegen `--disable-dev-shm-usage` dorthin, also in den RAM statt auf die Overlay-Platte; es zählt zum `mem_limit`.
+`memswap_limit` 2048m: kein Auslagern, die Speichergrenze ist hart. Der Start von Chromium mit genau diesen Optionen
+ist auf der VM geprüft (13.11.2026).
+
+**Offen vor Kundenterminen** (Stufe 1 läuft nur in internen Terminen):
+
+- eigene Datenbank-Rolle für `sales-auge` (heute dieselbe `SALES_DB_URL` wie `sales-mcp`; nötig wären nur
+  `termin_akten` lesen und `termin_bilder` schreiben),
+- Hinweis in der Einladung („bitte keine persönlichen Daten zeigen, sonst wird die Aufzeichnung gelöscht“) und der
+  Schalter auch dort,
+- Auskunft: `kontakt_auskunft` enthält keine Standbilder und Beschreibungen, sie gehen bisher nur von Hand mit
+  (siehe `docs/06_DSGVO.md`).
+
 **Ausrollen** (VM, `~/sales-claw`; vorher Claim in `00_Meta/002_Koordination_Live.md`):
 
     # 1. Schema: db/provision.sql gegen "sales" einspielen, Weg und DSN-Regel siehe
@@ -4019,7 +4034,7 @@ Einzelne Bilder löscht der Betreiber in der Akte (Knopf „Löschen“, Aktion 
 |---|---------|----------|
 | 1 | Interner Termin, Bildschirm geteilt, Fenster wechseln: Bilder live in der Akte, Beschreibungen folgen, stehendes Bild erzeugt keine weiteren | |
 | 2 | Zweiter Teilnehmer teilt: auch dessen Bildschirm erscheint | |
-| 3 | Kameras an: kein Kamerabild irgendwo (Speicher, Akte, KI-Tor-Aufrufe) | |
+| 3 | Kameras an: kein Kamerabild irgendwo (Speicher, Akte, KI-Tor-Aufrufe). Prüfweg: im Browser des Beobachters die Eingangsbytes je Art messen, wie in der Probe vom 13.11. (`window.__lauraInfo()` zählt die entfernten Spuren je Art, `getStats()` liefert je `inbound-rtp` die Bytes; Kamera muss 0 Byte haben), dazu alle gespeicherten Bilder in der Akte (Reiter Bildschirm) einzeln sichten | |
 | 4 | Tonmitschrift vollständig wie ohne Beobachter | |
 | 5 | Nach dem Termin: Verlauf benennt Gezeigtes und verweist auf Bilder; Textsuche findet Bilder | |
 | 6 | Schalter aus: kein Beobachter; Schalter während des Termins aus: Beobachter geht binnen einer Runde | |
