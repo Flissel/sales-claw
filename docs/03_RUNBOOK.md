@@ -3988,10 +3988,10 @@ Passwörter oder Token. `deploy/update.sh` baut ihn nur neu, wenn er schon lief 
     #    Abschnitt "Kollegen-Kalender ... db/provision.sql zuerst" (DSN nie in die Kommandozeile)
     cd ~/sales-claw
     docker compose build sales-ki sales-termine sales-auge
-    docker compose up -d --no-deps sales-ki sales-termine sales-mcp sales-ui sales-auge
+    docker compose up -d --no-deps sales-ki sales-termine sales-mcp sales-auge && bash deploy/sales-ui-neu.sh
     bash deploy/smoke.sh        # Abschnitt 25 muss gruen sein; Ende: ALLE PRUEFUNGEN GRUEN
 
-Nie ein blankes `docker compose up -d`, nie `--remove-orphans`.
+sales-ui geht über `deploy/sales-ui-neu.sh` (behält das Netz bewerbung-fenster; ein schlichtes `up` von sales-ui verlöre es). Nie ein blankes `docker compose up -d`, nie `--remove-orphans`.
 
 **Not-Aus:** `docker stop sales-auge`. Der Beobachter verlässt die Termine, bereits abgelegte Bilder bleiben bis zur
 Löschung der Mitschrift. Wieder an: `docker compose up -d --no-deps sales-auge`.
