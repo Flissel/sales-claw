@@ -857,6 +857,19 @@ services:
     restart: unless-stopped
     cpus: "1.5"
     mem_limit: 2048m
+    # Kein Auslagern: die Grenze ist hart (M2).
+    memswap_limit: 2048m
+    # Haertung (Ruling R17): keine Linux-Capabilities, keine neuen Rechte per
+    # setuid. Chromium laeuft ohnehin ohne eigene Sandbox (Playwright-Vorgabe)
+    # als uid 10001; geprueft auf der VM mit genau diesen Optionen.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Chromium legt sein Shared Memory wegen --disable-dev-shm-usage nach /tmp:
+    # im RAM statt auf der Overlay-Platte, begrenzt und im mem_limit enthalten (M1).
+    tmpfs:
+      - /tmp:size=256m
     environment:
       SALES_DB_URL: ${SALES_DB_URL}
       SALES_DB_SCHEMA: ${SALES_DB_SCHEMA:-sales}

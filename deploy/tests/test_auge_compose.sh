@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Prueft den Compose-Dienst sales-auge (Beobachter "Laura (Bildschirm)",
-# Bildauswertung live, Task 6) statisch: Dienst vorhanden, harte Grenzen,
+# Bildauswertung live, Task 6) statisch: Dienst vorhanden, harte Grenzen, Haertung,
 # kein Port nach aussen, AUGE_URL an sales-ui und sales-mcp, Dockerfile.auge
 # mit fest gepinnten Paketen. `docker compose config` laeuft zusaetzlich,
 # wenn `docker compose` am Ort vorhanden ist (mit .env.example, nie mit einer
@@ -44,6 +44,15 @@ hat '^    command:[[:space:]]*python auge\.py[[:space:]]*$'          "command: p
 hat '^    restart:[[:space:]]*unless-stopped[[:space:]]*$'           "restart: unless-stopped fehlt"
 hat '^    cpus:[[:space:]]*"1\.5"[[:space:]]*$'                      'cpus: "1.5" fehlt'
 hat '^    mem_limit:[[:space:]]*2048m[[:space:]]*$'                  "mem_limit: 2048m fehlt (R7)"
+hat '^    memswap_limit:[[:space:]]*2048m[[:space:]]*$'              "memswap_limit: 2048m fehlt (M2, kein Auslagern)"
+# Haertung (R17): keine Capabilities, keine neuen Rechte, /tmp im RAM begrenzt (M1).
+hat '^    cap_drop:[[:space:]]*$'                                   "cap_drop: fehlt (R17)"
+hat '^      - ALL[[:space:]]*$'                                     "cap_drop: [ALL] fehlt (R17)"
+hat '^    security_opt:[[:space:]]*$'                               "security_opt: fehlt (R17)"
+hat '^      - no-new-privileges:true[[:space:]]*$'                  "security_opt no-new-privileges:true fehlt (R17)"
+hat '^    tmpfs:[[:space:]]*$'                                      "tmpfs: fehlt (M1)"
+hat '^      - /tmp:size=256m[[:space:]]*$'                          "tmpfs /tmp:size=256m fehlt (M1)"
+if echo "$AUGE" | grep -qE '^    cap_add:'; then fehler "sales-auge: cap_add: gesetzt (R17)"; fi
 if echo "$AUGE" | grep -qE '<<:'; then fehler "sales-auge: kein Anker-Merge (<<:) erlaubt (R8)"; fi
 hat '^      SALES_DB_URL:[[:space:]]*\$\{SALES_DB_URL\}[[:space:]]*$'   "SALES_DB_URL fehlt"
 hat '^      SALES_DB_SCHEMA:[[:space:]]*\$\{SALES_DB_SCHEMA:-sales\}[[:space:]]*$' "SALES_DB_SCHEMA fehlt"
@@ -130,6 +139,11 @@ assert a["container_name"] == "sales-auge", a["container_name"]
 assert not a.get("ports"), "sales-auge veroeffentlicht Ports"
 assert float(a["cpus"]) == 1.5, a.get("cpus")
 assert int(a["mem_limit"]) == 2048 * 1024 * 1024, a.get("mem_limit")
+assert int(a["memswap_limit"]) == 2048 * 1024 * 1024, a.get("memswap_limit")
+assert a["cap_drop"] == ["ALL"], a.get("cap_drop")
+assert not a.get("cap_add"), a.get("cap_add")
+assert a["security_opt"] == ["no-new-privileges:true"], a.get("security_opt")
+assert a["tmpfs"] == ["/tmp:size=256m"], a.get("tmpfs")
 assert a["build"]["dockerfile"] == "Dockerfile.auge"
 assert a["build"]["context"].replace("\\", "/").endswith("/sales-mcp")
 e = a["environment"]
