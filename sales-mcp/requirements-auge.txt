@@ -1,0 +1,27 @@
+# Zusatzpakete des Beobachters sales-auge (Dockerfile.auge), zusaetzlich zu
+# requirements.txt. Alle fest gepinnt, auch die mitgezogenen Abhaengigkeiten;
+# jede Version war beim Festlegen (13.11.2026) mindestens zwei Wochen alt
+# (PyPI-Hochladedatum geprueft). Neue Version = Datum erneut pruefen.
+playwright==1.64.1
+fastembed==0.9.1
+onnxruntime==1.31.1
+# mitgezogen (Stand pip freeze im Abbild)
+certifi==2026.10.23
+filelock==4.2.4
+flatbuffers==25.12.19
+fsspec==2026.9.0
+greenlet==3.5.6
+hf-xet==1.7.1
+httpcore==1.0.9
+httpx==0.28.1
+huggingface_hub==1.33.0
+loguru==0.7.3
+mmh3==5.3.1
+numpy==2.5.4
+protobuf==7.36.2
+py_rust_stemmers==0.1.8
+pyee==14.0.0
+requests==2.34.2
+tokenizers==0.23.3
+tqdm==4.70.1
+urllib3==2.8.0

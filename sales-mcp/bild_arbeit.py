@@ -56,9 +56,17 @@ def _beanspruchen() -> dict | None:
 
 def naechste_beschreiben(einbetter: Einbetter) -> bool:
     """Bearbeitet das aelteste offene Bild; True, wenn eines bearbeitet wurde."""
+    return naechste_beschreiben_status(einbetter) is not None
+
+
+def naechste_beschreiben_status(einbetter: Einbetter) -> str | None:
+    """Wie `naechste_beschreiben`, liefert aber das Ergebnis: None (nichts offen),
+    'fehler' (KI oder Einbettung gescheitert) oder 'fertig'. Der Beobachter
+    pausiert nach 'fehler', damit ein kurzer KI-Ausfall nicht alle Versuche
+    verbrennt (Ruling R6)."""
     z = _beanspruchen()
     if z is None:
-        return False
+        return None
     bild_id, uid, jpeg = z["id"], z["uid"], bytes(z["bild"])
     try:
         text = ollama.chat(BILD_PROMPT, "Beschreibe dieses Bild.",
@@ -71,14 +79,14 @@ def naechste_beschreiben(einbetter: Einbetter) -> bool:
         server._q("update termin_bilder set beschreibung_status = 'fehler' "
                   "where id = %s returning id", (bild_id,))
         log.warning("Bild beschreiben fehlgeschlagen uid=%s (%s)", _h(uid), type(e).__name__)
-        return True
+        return "fehler"
     gespeichert = server._q(
         "update termin_bilder set beschreibung = %s, beschreibung_status = 'fertig', "
         "vektor_bild = %s::public.vector, vektor_text = %s::public.vector "
         "where id = %s returning id", (text, v_bild, v_text, bild_id))
     if gespeichert:
         log.info("Bild beschrieben uid=%s", _h(uid))
-    return True
+    return "fertig"
 
 
 def suchen(einbetter: Einbetter, text: str, uid: str | None = None,

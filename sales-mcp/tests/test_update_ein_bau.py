@@ -63,6 +63,7 @@ while [ "$#" -gt 0 ]; do
           sales-claw) b='"image":"openclaw"' ;;
           sales-stt) b='"build":{"context":"/r/sales-stt","dockerfile":"Dockerfile"},"image":"sales-claw-sales-stt:local"' ;;
           sales-ki) b='"build":{"context":"/r/sales-ki","dockerfile":"Dockerfile"},"image":"sales-claw-sales-ki:local"' ;;
+          sales-auge) b='"build":{"context":"/r/sales-mcp","dockerfile":"Dockerfile.auge"},"image":"sales-claw-sales-auge:local"' ;;
           openwa) b='"build":{"context":"/r/openwa/upstream","dockerfile":"Dockerfile"}' ;;
           *) b='"build":{"context":"/r/sales-mcp","dockerfile":"Dockerfile"},"image":"sales-claw-sales-mcp:local"' ;;
         esac
@@ -195,7 +196,8 @@ def _pruefe_ein_bau_je_kontext(aufrufe: list[str]) -> None:
     for z in builds:
         args = z.split(" build ")[0]
         dienst = _dienste_nach(z, "build")[0]
-        kontext = {"sales-ki": "ki", "sales-stt": "stt", "openwa": "openwa"}.get(dienst, "mcp")
+        kontext = {"sales-ki": "ki", "sales-stt": "stt", "openwa": "openwa",
+                   "sales-auge": "auge"}.get(dienst, "mcp")
         assert (args, kontext) not in gesehen, (z, builds)
         gesehen.add((args, kontext))
     # Nacheinander: jeder Build endet, bevor der naechste anfaengt.
@@ -214,11 +216,12 @@ def test_mcp_aenderung_baut_je_kontext_einmal_und_startet_ohne_build(tmp_path):
     _pruefe_ein_bau_je_kontext(aufrufe)
     builds = _compose(aufrufe, "build")
     ups = _compose(aufrufe, "up")
-    # Basis-Laden: sales-mcp-Familie einmal, sales-ki einmal; zweiter Laden ebenso, mit --env-file.
+    # Basis-Laden: sales-mcp-Familie einmal, sales-ki und sales-auge (eigenes Image) je einmal;
+    # zweiter Laden ebenso, mit --env-file.
     basis = [z for z in builds if "--env-file" not in z]
     zwei = [z for z in builds if "--env-file" in z]
-    assert [_dienste_nach(z, "build") for z in basis] == [["sales-mcp"], ["sales-ki"]], builds
-    assert [_dienste_nach(z, "build") for z in zwei] == [["sales-mcp"], ["sales-ki"]], builds
+    assert [_dienste_nach(z, "build") for z in basis] == [["sales-mcp"], ["sales-ki"], ["sales-auge"]], builds
+    assert [_dienste_nach(z, "build") for z in zwei] == [["sales-mcp"], ["sales-ki"], ["sales-auge"]], builds
     assert len(ups) == 2
     # config, build und up eines Ladens tragen dieselben Argumente (nie ohne die Laden-Umgebung).
     for satz in (basis, zwei):

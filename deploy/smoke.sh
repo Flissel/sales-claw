@@ -306,7 +306,7 @@ erwartete_container = {
     "sales-mail", "sales-telegram", "sales-linkedin", "sales-kanaele",
     "sales-auto", "sales-ui", "sales-post",
     "sales-freigabe-bote", "sales-kalender",
-    "sales-auftrag-bote", "sales-termine", "sales-ki"}  # sales-stt seit 20.10.2026 am PC, hier nur per Profil stt-lokal
+    "sales-auftrag-bote", "sales-termine", "sales-ki", "sales-auge"}  # sales-stt seit 20.10.2026 am PC, hier nur per Profil stt-lokal
 ist = {d["container_name"] for d in erst["services"].values()}
 assert ist == erwartete_container, ist
 istv = {v["name"] for v in erst["volumes"].values()}
