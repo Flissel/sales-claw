@@ -766,6 +766,19 @@ def test_reiter_bildschirm_zeigt_bilder():
     assert "script-src 'self'" in a.headers["content-security-policy"]
 
 
+def test_reiter_bildschirm_vermerkt_obergrenze(monkeypatch):
+    import bildschirm
+    monkeypatch.setattr(bildschirm, "OBERGRENZE", 2)
+    _jitsi(bildschirm_auswerten=True)
+    _bild(minuten=0)
+    t = _get(_pfad("j1") + "?reiter=bildschirm").text
+    assert "Obergrenze" not in t
+    _bild(minuten=1)
+    t = _get(_pfad("j1") + "?reiter=bildschirm").text
+    assert ("Obergrenze von 2 Standbildern erreicht – weitere werden nicht aufgenommen."
+            in t)
+
+
 def test_reiter_bildschirm_ohne_bilder_hinweis():
     _jitsi(bildschirm_auswerten=True)
     assert "Noch keine Bilder" in _get(_pfad("j1") + "?reiter=bildschirm").text
