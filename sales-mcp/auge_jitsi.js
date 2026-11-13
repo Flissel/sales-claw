@@ -2,8 +2,8 @@
 //
 // window.__lauraBild() -> Promise<{teilt, von, jpeg}>
 //   Sucht im Jitsi-Store (APP.store, 'features/base/tracks') den ENTFERNTEN
-//   Video-Track mit videoType === 'desktop' (mediaType 'video' in aelteren,
-//   'screenshare' in neueren Jitsi-Versionen), spielt NUR dessen Videospur in
+//   Bildschirm-Track (mediaType 'screenshare' UND videoType === 'desktop'; nur
+//   Multistream-Jitsi, siehe istDesktop), spielt NUR dessen Videospur in
 //   einem losgeloesten <video> ab, zeichnet ein Standbild in ein Canvas
 //   (hoechstens 1600 px breit) und liefert es als JPEG (Qualitaet 0.8, Base64)
 //   plus Anzeigenamen des Teilenden.
@@ -50,10 +50,14 @@
     return (c && c.conference) || null;
   };
 
-  // NUR entfernte Bildschirm-Tracks.
+  // NUR entfernte Bildschirm-Tracks, und NUR im Multistream-Modell (mediaType
+  // 'screenshare', eigener Track je Bildschirm). Der alte Weg (mediaType 'video'
+  // mit videoType 'desktop') ist bewusst ausgeschlossen: dort teilen sich Kamera
+  // und Bildschirm EINEN Track, und beim Umschalten koennte ein Kamerabild
+  // durchrutschen. Ein Jitsi ohne Multistream liefert damit keine Bilder.
   const istDesktop = (t) => {
     if (!t || t.local || !t.jitsiTrack) return false;
-    if (t.mediaType !== 'video' && t.mediaType !== 'screenshare') return false;
+    if (t.mediaType !== 'screenshare') return false;
     if (t.videoType !== DESKTOP) return false;
     const jt = t.jitsiTrack;
     if (typeof jt.isLocal === 'function' && jt.isLocal()) return false;

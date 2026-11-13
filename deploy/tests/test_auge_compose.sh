@@ -43,8 +43,10 @@ hat '^    container_name:[[:space:]]*\$\{LADEN_PRAEFIX:-sales\}-auge[[:space:]]*
 hat '^    command:[[:space:]]*python auge\.py[[:space:]]*$'          "command: python auge.py fehlt"
 hat '^    restart:[[:space:]]*unless-stopped[[:space:]]*$'           "restart: unless-stopped fehlt"
 hat '^    cpus:[[:space:]]*"1\.5"[[:space:]]*$'                      'cpus: "1.5" fehlt'
-hat '^    mem_limit:[[:space:]]*1536m[[:space:]]*$'                  "mem_limit: 1536m fehlt"
-hat '^      <<:[[:space:]]*\*sales_mcp_umgebung[[:space:]]*$'        "Anker sales_mcp_umgebung fehlt"
+hat '^    mem_limit:[[:space:]]*2048m[[:space:]]*$'                  "mem_limit: 2048m fehlt (R7)"
+if echo "$AUGE" | grep -qE '<<:'; then fehler "sales-auge: kein Anker-Merge (<<:) erlaubt (R8)"; fi
+hat '^      SALES_DB_URL:[[:space:]]*\$\{SALES_DB_URL\}[[:space:]]*$'   "SALES_DB_URL fehlt"
+hat '^      SALES_DB_SCHEMA:[[:space:]]*\$\{SALES_DB_SCHEMA:-sales\}[[:space:]]*$' "SALES_DB_SCHEMA fehlt"
 hat '^      OLLAMA_URL:[[:space:]]*\$\{OLLAMA_URL:-\}[[:space:]]*$'  "OLLAMA_URL fehlt"
 hat '^      AUGE_PORT:[[:space:]]*\$\{AUGE_PORT:-8790\}[[:space:]]*$' "AUGE_PORT (Vorgabe 8790) fehlt"
 hat '^      AUGE_RUNDE_S:[[:space:]]*\$\{AUGE_RUNDE_S:-2\}[[:space:]]*$' "AUGE_RUNDE_S (Vorgabe 2) fehlt"
@@ -53,7 +55,8 @@ hat '^      JITSI_BASIS:'                                             "JITSI_BAS
 hat '^      JITSI_HOSTS:'                                             "JITSI_HOSTS fehlt (Link-Pruefung)"
 hat '^    logging:'                                                 "logging-Begrenzung fehlt"
 for verboten in '^    ports:' '^    expose:' '^    network_mode:' '^    profiles:' '^    privileged:' \
-                'docker\.sock' 'VEXA_API_KEY' 'CLAUDE_CODE_OAUTH_TOKEN' 'TELEGRAM_BOT_TOKEN'; do
+                'docker\.sock' 'VEXA_API_KEY' 'CLAUDE_CODE_OAUTH_TOKEN' 'TELEGRAM_BOT_TOKEN' \
+                'ANTHROPIC_API_KEY' 'SMTP_' 'PASSWORT' 'TOKEN' 'SECRET' 'env_file'; do
   if echo "$AUGE" | grep -qE "$verboten"; then fehler "sales-auge: verboten gefunden: $verboten"; fi
 done
 # Keine Einhaengungen: Bilder gehen nur in die DB, nie auf Platte.
@@ -86,6 +89,10 @@ echo "$DF" | grep -qE 'playwright install --with-deps chromium'            || fe
 echo "$DF" | grep -qE 'FASTEMBED_CACHE_PATH'                               || fehler "Dockerfile.auge: Modell-Cache im Abbild fehlt"
 echo "$DF" | grep -qE 'HF_HUB_OFFLINE=1'                                   || fehler "Dockerfile.auge: HF_HUB_OFFLINE=1 fehlt (kein Nachladen zur Laufzeit)"
 if echo "$DF" | grep -qE '^EXPOSE'; then fehler "Dockerfile.auge: EXPOSE nicht noetig"; fi
+# R8: Prozess laeuft ohne Root (letzte USER-Zeile, nicht root/0).
+letzter_user="$(echo "$DF" | sed -n 's/^USER[[:space:]]\{1,\}\([^[:space:]]*\).*/\1/p' | tail -1)"
+[ -n "$letzter_user" ] && [ "$letzter_user" != root ] && [ "$letzter_user" != 0 ] \
+  || fehler "Dockerfile.auge: kein USER ausser root"
 REQ="$WURZEL/sales-mcp/requirements-auge.txt"
 [ -f "$REQ" ] || fehler "sales-mcp/requirements-auge.txt fehlt"
 for paket in playwright fastembed onnxruntime; do
@@ -122,12 +129,19 @@ a = c["sales-auge"]
 assert a["container_name"] == "sales-auge", a["container_name"]
 assert not a.get("ports"), "sales-auge veroeffentlicht Ports"
 assert float(a["cpus"]) == 1.5, a.get("cpus")
-assert int(a["mem_limit"]) == 1536 * 1024 * 1024, a.get("mem_limit")
+assert int(a["mem_limit"]) == 2048 * 1024 * 1024, a.get("mem_limit")
 assert a["build"]["dockerfile"] == "Dockerfile.auge"
 assert a["build"]["context"].replace("\\", "/").endswith("/sales-mcp")
 e = a["environment"]
 assert e["AUGE_PORT"] == "8790" and e["AUGE_RUNDE_S"] == "2" and e["KI_BILD_TIMEOUT_S"] == "60"
 assert e["SALES_DB_SCHEMA"] == "sales"
+# R8: genau diese Schluessel, nichts aus dem Anker, keine Geheimnisse.
+erlaubt = {"SALES_DB_URL", "SALES_DB_SCHEMA", "TZ", "OLLAMA_URL", "OLLAMA_MODELL",
+           "AUGE_PORT", "AUGE_RUNDE_S", "KI_BILD_TIMEOUT_S", "JITSI_BASIS", "JITSI_HOSTS"}
+assert set(e) == erlaubt, sorted(set(e) ^ erlaubt)
+for k in e:
+    for muster in ("PASSWORT", "PASSWORD", "TOKEN", "SECRET", "API_KEY", "SMTP_", "SCHLUESSEL"):
+        assert muster not in k, k
 for d in ("sales-ui", "sales-mcp"):
     assert c[d]["environment"]["AUGE_URL"] == "http://sales-auge:8790", d
 ' || fehler "gerenderte Compose-Konfiguration passt nicht"

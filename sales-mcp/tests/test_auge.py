@@ -28,7 +28,7 @@ T0 = datetime(2099, 1, 10, 10, 0, tzinfo=timezone.utc)
 GEHEIM = "Geheimer Raum 4711"
 LINK = "https://meet.ffmuc.net/GeheimerRaum4711"
 FRAGMENT = ("#config.startWithAudioMuted=true&config.startWithVideoMuted=true"
-            "&config.prejoinConfig.enabled=false"
+            "&config.prejoinConfig.enabled=false&config.startSilent=true"
             "&userInfo.displayName=%22Laura%20(Bildschirm)%22")
 
 
@@ -240,14 +240,57 @@ def test_runde_freigabe_ende():
     assert liste[1]["geteilt_von"] == "Ben" and liste[1]["bis"] is None
 
 
-def test_runde_wechsel_des_teilenden_nimmt_sofort_auf():
+def test_runde_wechsel_des_teilenden_nimmt_naechstes_erlaubtes_bild():
+    """Wechsel des Teilenden: gleiches Bild zaehlt als neu, aber erst nach MIN_ABSTAND."""
     _akte("a1")
-    sitzungen = _sitzung("a1", [_teilt("links", "Anna"), _teilt("links", "Ben")])
-    auge.runde(sitzungen, T0)
-    auge.runde(sitzungen, T0 + timedelta(seconds=1))
+    sitzungen = _sitzung("a1", [_teilt("links", "Anna"), _teilt("links", "Ben"),
+                                _teilt("links", "Ben")])
+    for sek in (0, 1, 5):
+        auge.runde(sitzungen, T0 + timedelta(seconds=sek))
     liste = bildschirm.bilder("a1")
     assert [x["geteilt_von"] for x in liste] == ["Anna", "Ben"]
-    assert liste[0]["bis"] == T0 + timedelta(seconds=1)
+    assert liste[1]["aufgenommen_am"] == T0 + timedelta(seconds=5)
+    assert liste[0]["bis"] == T0 + timedelta(seconds=5)
+
+
+def test_runde_drossel_gilt_auch_nach_freigabe_ende():
+    """Ende und sofort neue Freigabe innerhalb von 5 s: kein Bild vor MIN_ABSTAND."""
+    _akte("a1")
+    sitzungen = _sitzung("a1", [_teilt("links"), AUS, _teilt("diagonal"),
+                                _teilt("diagonal")])
+    for sek in (0, 2, 3, 5):
+        auge.runde(sitzungen, T0 + timedelta(seconds=sek))
+    liste = bildschirm.bilder("a1")
+    assert [x["aufgenommen_am"] for x in liste] == [T0, T0 + timedelta(seconds=5)]
+    assert liste[0]["bis"] == T0 + timedelta(seconds=2)
+
+
+def test_runde_ab_obergrenze_nur_starke_aenderung_auch_nach_wechsel():
+    _akte("a1")
+    sitzungen = _sitzung("a1", [_teilt("links", "Anna"), AUS, _teilt("links", "Ben"),
+                                _teilt("links", "Ben")])
+    s = sitzungen["a1"]
+    s.anzahl = bildschirm.OBERGRENZE
+    s.letzter_hash = bildschirm.dhash(_jpeg("links"))
+    s.letzte_zeit = T0 - timedelta(minutes=1)
+    for sek in (0, 10, 20, 30):
+        auge.runde(sitzungen, T0 + timedelta(seconds=sek))
+    assert bildschirm.bilder("a1") == []          # gleiches Bild, Wechsel hilft nicht
+    assert s.letzter_hash == bildschirm.dhash(_jpeg("links"))
+
+
+def test_sitzung_ab_obergrenze_startet_mit_letztem_hash_aus_der_db():
+    _akte("a1")
+    for i in range(bildschirm.OBERGRENZE):
+        server._q("insert into termin_bilder (uid, aufgenommen_am, bild, breite, hoehe, dhash) "
+                  "values ('a1', %s, %s, 1, 1, %s) returning id",
+                  (T0 - timedelta(minutes=200 - i), b"x", i))
+    sitzungen = {}
+    auge.abgleichen(sitzungen, Oeffner(), T0)
+    s = sitzungen["a1"]
+    assert s.anzahl == bildschirm.OBERGRENZE
+    assert s.letzter_hash == bildschirm.OBERGRENZE - 1
+    assert s.letzte_zeit == T0 - timedelta(minutes=200 - bildschirm.OBERGRENZE + 1)
 
 
 def test_runde_seitenfehler_stoppt_andere_nicht_und_loggt_nichts(caplog):
@@ -419,9 +462,54 @@ def test_seitenskript_liest_nur_desktop_tracks():
     js = (auge.SKRIPT_PFAD).read_text(encoding="utf-8")
     assert "window.__lauraBild" in js
     assert "features/base/tracks" in js and "'desktop'" in js
-    assert "'screenshare'" in js and "'video'" in js
+    # R11: nur Multistream-Bildschirmtracks, kein alter 'video'+'desktop'-Weg
+    assert "t.mediaType !== 'screenshare'" in js
+    assert "t.mediaType !== 'video'" not in js and "t.mediaType === 'video'" not in js
     assert "image/jpeg" in js and "0.8" in js and "1600" in js
     assert "setReceiverConstraints" in js
     # keine Netz-Zugriffe, kein Ablegen im Browser
     for verboten in ("fetch(", "XMLHttpRequest", "localStorage", "WebSocket(", "MediaRecorder"):
         assert verboten not in js, verboten
+
+
+# ---------- Browser weg ----------
+
+class Browser:
+    def __init__(self, lebt=True):
+        self.lebt = lebt
+
+    def is_connected(self):
+        if isinstance(self.lebt, Exception):
+            raise self.lebt
+        return self.lebt
+
+
+def test_takt_schritt_meldet_toten_browser():
+    _akte("a1")
+    oeffner = Oeffner()
+    sitzungen, zustand = {}, {}
+    assert auge.takt_schritt(sitzungen, oeffner, Browser(True), zustand, T0) is True
+    assert zustand["browser"] is True and set(sitzungen) == {"a1"}
+    for tot in (Browser(False), Browser(RuntimeError("weg"))):
+        assert auge.takt_schritt(sitzungen, oeffner, tot, zustand, T0) is False
+        assert zustand["browser"] is False
+    assert len(oeffner.urls) == 1                  # kein Beitrittsversuch mehr
+
+
+def test_gesund_meldet_toten_browser_mit_503():
+    zustand = {"browser": True}
+    srv = auge.http_dienst(Attrappe(), "127.0.0.1", 0,
+                           lambda: {"ok": zustand["browser"], "browser": zustand["browser"]})
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{srv.server_address[1]}/gesund"
+    try:
+        with urllib.request.urlopen(url, timeout=10) as r:
+            assert r.status == 200 and json.loads(r.read())["browser"] is True
+        zustand["browser"] = False
+        with pytest.raises(urllib.error.HTTPError) as e:
+            urllib.request.urlopen(url, timeout=10)
+        assert e.value.code == 503
+        assert json.loads(e.value.read()) == {"ok": False, "browser": False}
+    finally:
+        srv.shutdown()
+        srv.server_close()

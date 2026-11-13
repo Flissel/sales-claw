@@ -841,8 +841,12 @@ services:
   # beschreibt sie ueber das KI-Tor (OLLAMA_URL, Bild-Spur); Embeddings lokal
   # (fastembed, Modelle im Abbild). HTTP (/gesund, /suche) nur im Compose-Netz,
   # kein Port nach aussen, keine Einhaengung (Bilder nur in der DB). Harte
-  # Grenzen, damit Vexa nicht leidet. Not-Aus: `docker stop sales-auge`.
+  # Grenzen, damit Vexa nicht leidet (gemessen 13.11.: Modelle ~1,15 GB plus
+  # Chromium mit einem Termin ~0,5 GB, darum 2048m). Not-Aus: `docker stop sales-auge`.
   # deploy/update.sh baut ihn nur neu, wenn er vorher schon lief.
+  # BEWUSST OHNE den Anker x-sales-mcp-umgebung: der Dienst fuehrt einen Browser
+  # auf fremden Seiten aus und bekommt deshalb NUR, was er braucht (DB, KI-Tor,
+  # Jitsi-Hosts) - keine Kanal-Schluessel, Passwoerter oder Token.
   sales-auge:
     build:
       context: ./sales-mcp
@@ -852,10 +856,13 @@ services:
     command: python auge.py
     restart: unless-stopped
     cpus: "1.5"
-    mem_limit: 1536m
+    mem_limit: 2048m
     environment:
-      <<: *sales_mcp_umgebung
+      SALES_DB_URL: ${SALES_DB_URL}
+      SALES_DB_SCHEMA: ${SALES_DB_SCHEMA:-sales}
+      TZ: ${TZ:-Europe/Berlin}
       OLLAMA_URL: ${OLLAMA_URL:-}
+      OLLAMA_MODELL: ${OLLAMA_MODELL:-}
       AUGE_PORT: ${AUGE_PORT:-8790}
       AUGE_RUNDE_S: ${AUGE_RUNDE_S:-2}
       KI_BILD_TIMEOUT_S: ${KI_BILD_TIMEOUT_S:-60}

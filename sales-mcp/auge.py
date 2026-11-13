@@ -51,8 +51,9 @@ import termin_link
 LOG = logging.getLogger("sales-auge")
 
 ANZEIGENAME = "Laura (Bildschirm)"
+# startSilent: Laura empfaengt keinen Ton (Spec: nur der Bildschirm-Track).
 FRAGMENT = ("config.startWithAudioMuted=true&config.startWithVideoMuted=true"
-            "&config.prejoinConfig.enabled=false"
+            "&config.prejoinConfig.enabled=false&config.startSilent=true"
             "&userInfo.displayName=%22Laura%20(Bildschirm)%22")
 SKRIPT_PFAD = Path(__file__).resolve().parent / "auge_jitsi.js"
 AUFRUF = "() => window.__lauraBild ? window.__lauraBild() : null"
@@ -132,9 +133,17 @@ def _link_ok(link: str | None) -> bool:
     return any(host == h or host.endswith("." + h) for h in termin_link.jitsi_hosts())
 
 
-def _anzahl(uid: str) -> int:
-    z = server._q("select count(*) as n from termin_bilder where uid = %s", (uid,))
-    return int(z[0]["n"]) if z else 0
+def _bestand(uid: str) -> tuple[int, int | None, datetime | None]:
+    """(Anzahl Bilder, dHash und Zeit des letzten abgelegten Bildes) aus der DB:
+    Obergrenze und Drossel gelten auch ueber einen Neustart des Dienstes hinweg."""
+    z = server._q(
+        "select (select count(*) from termin_bilder where uid = %s) as n, l.dhash, "
+        "l.aufgenommen_am from (select 1) x left join lateral (select dhash, aufgenommen_am "
+        "from termin_bilder where uid = %s order by aufgenommen_am desc, erstellt_am desc "
+        "limit 1) l on true", (uid, uid))
+    if not z:
+        return 0, None, None
+    return int(z[0]["n"]), z[0]["dhash"], z[0]["aufgenommen_am"]
 
 
 def _schliessen(seite: Any, uid: str) -> None:
@@ -181,11 +190,15 @@ def abgleichen(sitzungen: dict[str, Sitzung], oeffnen: Callable[[str], Any],
             continue
         _gesperrt_bis.pop(uid, None)
         try:
-            anzahl = _anzahl(uid)
+            anzahl, letzter, zeit = _bestand(uid)
         except Exception as e:  # noqa: BLE001
             LOG.warning("Bilder zaehlen uid=%s fehlgeschlagen (%s)", _h(uid), _typ(e))
-            anzahl = bildschirm.OBERGRENZE
-        sitzungen[uid] = Sitzung(uid=uid, seite=seite, anzahl=anzahl, gestartet=jetzt)
+            anzahl, letzter, zeit = bildschirm.OBERGRENZE, None, jetzt
+        # Ab der Obergrenze den letzten Hash mitnehmen (sonst waere das erste Bild
+        # nach einem Neustart "neu"); darunter beginnt die Sitzung frisch.
+        sitzungen[uid] = Sitzung(uid=uid, seite=seite, anzahl=anzahl, gestartet=jetzt,
+                                 letzter_hash=letzter if anzahl >= bildschirm.OBERGRENZE else None,
+                                 letzte_zeit=zeit)
         LOG.info("Termin betreten uid=%s (Bilder bisher %d)", _h(uid), anzahl)
     for uid in list(_gesperrt_bis):
         if uid not in soll:
@@ -213,6 +226,14 @@ def _frame(antwort: Any) -> tuple[bool, str | None, bytes | None]:
     return True, von, base64.b64decode(roh, validate=True)
 
 
+def _neu_beginnen(s: Sitzung) -> None:
+    """Neue Freigabe oder neuer Teilender: unter der Obergrenze zaehlt das naechste
+    Bild als neu (Hash vergessen). Ab der Obergrenze bleibt der Hash, dann darf nur
+    eine starke Aenderung ein Bild erzeugen. `letzte_zeit` bleibt immer (Drossel)."""
+    if s.anzahl < bildschirm.OBERGRENZE:
+        s.letzter_hash = None
+
+
 def _eine(s: Sitzung, jetzt: datetime) -> None:
     antwort = s.seite.evaluate(AUFRUF)
     s.fehler = 0
@@ -225,13 +246,17 @@ def _eine(s: Sitzung, jetzt: datetime) -> None:
         if s.teilt:
             bildschirm.freigabe_ende(s.uid, jetzt)
             LOG.info("Freigabe beendet uid=%s", _h(s.uid))
-        s.teilt, s.von, s.letzter_hash, s.letzte_zeit = False, None, None, None
+            _neu_beginnen(s)
+        s.teilt, s.von = False, None
         return
     if s.teilt and von != s.von:
-        s.letzter_hash = None        # anderer Teilender: sofort aufnehmen
+        _neu_beginnen(s)             # anderer Teilender: naechstes erlaubtes Bild nehmen
     s.teilt, s.von = True, von
     if jpeg is None:
         return                       # Freigabe laeuft, noch kein Bild
+    # Drossel gilt immer, auch nach Ende der Freigabe oder Wechsel des Teilenden.
+    if s.letzte_zeit is not None and jetzt - s.letzte_zeit < bildschirm.MIN_ABSTAND:
+        return
     try:
         neu = bildschirm.dhash(jpeg)
     except Exception as e:  # noqa: BLE001 - kaputte Bytes von der Seite
@@ -358,8 +383,9 @@ def http_dienst(einbetter: bild_arbeit.Einbetter, host: str, port: int,
             try:
                 info = dict(stand())
             except Exception:  # noqa: BLE001
-                info = {}
-            self._antwort(200, {"ok": True, **info})
+                info = {"ok": False}
+            ok = info.pop("ok", True) is not False
+            self._antwort(200 if ok else 503, {"ok": ok, **info})
 
         def do_POST(self) -> None:  # noqa: N802
             if self.path.split("?", 1)[0] != "/suche":
@@ -429,6 +455,30 @@ def _oeffner(browser: Any) -> Callable[[str], _Seite]:
 
 # ---------- Dienst ----------
 
+def takt_schritt(sitzungen: dict[str, Sitzung], oeffnen: Callable[[str], Any],
+                 browser: Any, zustand: dict, jetzt: datetime) -> bool:
+    """Eine Runde: Abgleich und Standbilder. False, wenn der Browser nicht mehr
+    verbunden ist: dann scheitert jeder Beitritt fuer immer, also soll der Prozess
+    enden (Exit != 0, Docker startet neu); /gesund meldet es bis dahin."""
+    try:
+        lebt = bool(browser.is_connected())
+    except Exception:  # noqa: BLE001
+        lebt = False
+    zustand["browser"] = lebt
+    if not lebt:
+        LOG.error("Browser getrennt - Dienst endet fuer einen Neustart")
+        return False
+    try:
+        abgleichen(sitzungen, oeffnen, jetzt)
+    except Exception as e:  # noqa: BLE001 - die Schleife darf nie sterben
+        LOG.warning("Abgleich fehlgeschlagen (%s)", _typ(e))
+    try:
+        runde(sitzungen, datetime.now(timezone.utc))
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("Runde fehlgeschlagen (%s)", _typ(e))
+    return True
+
+
 def _zahl(name: str, vorgabe: float) -> float:
     try:
         wert = float(os.environ.get(name, "") or vorgabe)
@@ -481,7 +531,10 @@ def main() -> int:
     LOG.info("Modelle geladen")
 
     sitzungen: dict[str, Sitzung] = {}
-    srv = http_dienst(einbetter, "0.0.0.0", _port(), lambda: {"sitzungen": len(sitzungen)})
+    zustand = {"browser": True}
+    srv = http_dienst(einbetter, "0.0.0.0", _port(),
+                      lambda: {"ok": zustand["browser"], "browser": zustand["browser"],
+                               "sitzungen": len(sitzungen)})
     threading.Thread(target=srv.serve_forever, name="http", daemon=True).start()
     arbeit = threading.Thread(target=beschreib_schleife, args=(einbetter, _STOPP),
                               name="beschreiben", daemon=True)
@@ -491,17 +544,13 @@ def main() -> int:
     pw = sync_playwright().start()
     browser = pw.chromium.launch(headless=True, args=list(CHROMIUM_ARGS))
     oeffnen = _oeffner(browser)
+    rc = 0
     try:
         while not _STOPP.is_set():
-            jetzt = datetime.now(timezone.utc)
-            try:
-                abgleichen(sitzungen, oeffnen, jetzt)
-            except Exception as e:  # noqa: BLE001 - die Schleife darf nie sterben
-                LOG.warning("Abgleich fehlgeschlagen (%s)", _typ(e))
-            try:
-                runde(sitzungen, datetime.now(timezone.utc))
-            except Exception as e:  # noqa: BLE001
-                LOG.warning("Runde fehlgeschlagen (%s)", _typ(e))
+            if not takt_schritt(sitzungen, oeffnen, browser, zustand,
+                                datetime.now(timezone.utc)):
+                rc = 1          # Browser weg: Prozess endet, Docker startet ihn neu
+                break
             _STOPP.wait(takt)
     finally:
         alle_beenden(sitzungen, datetime.now(timezone.utc))
@@ -511,8 +560,8 @@ def main() -> int:
             except Exception as e:  # noqa: BLE001
                 LOG.warning("Aufraeumen fehlgeschlagen (%s)", _typ(e))
         arbeit.join(timeout=5)
-        LOG.info("sales-auge beendet")
-    return 0
+        LOG.info("sales-auge beendet (rc=%d)", rc)
+    return rc
 
 
 if __name__ == "__main__":
