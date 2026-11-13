@@ -3868,7 +3868,11 @@ Termin keine Mitschrift oder eine sehr späte:
 
     bash deploy/vexa-anbinden.sh            # 2. Aufruf
 
-legt in Vexa den Nutzer `sales` an, holt einen Token mit den Rechten `bot,tx`, setzt `PUT /user/transcription` mit
+setzt zuerst den **Mitschnitt-Not-Aus** (`PUT /internal/settings/diagnostics {"capture_signal":"false"}`; Vexa legt
+sonst ab Werk von jedem Meeting einen Rohmitschnitt samt Mitschrift im eigenen Speicher ab und löscht ihn nie, gefunden
+bei der Abnahme 12.11.2026; das interne Geheimnis erzeugt `entrypoint.sh` bei jedem Start, das Skript liest es aus der
+Umgebung des admin-api-Prozesses und gibt es nie aus), dann
+legt es in Vexa den Nutzer `sales` an, holt einen Token mit den Rechten `bot,tx`, setzt `PUT /user/transcription` mit
 Platzhalter-Token (ohne das scheitert laut Spike die Spracherkennung) und trägt `VEXA_API_KEY=` in `~/sales-claw/.env`
 ein (Sicherung `.env.vor-vexa-<Zeit>`, Rechte 600). Ein weiterer Aufruf prüft den vorhandenen Schlüssel mit demselben
 `PUT`: ist er gültig, wird weder ein Token geholt noch die `.env` angefasst. Danach `sales-termine` neu erzeugen, damit er
@@ -3885,6 +3889,8 @@ die `.env` neu liest:
     docker network inspect sales-claw_default --format '{{range .Containers}}{{.Name}} {{end}}' | tr ' ' '\n' | grep -cx vexa-lite   # muss 0 sein
     docker exec sales-termine python -c "import urllib.request;print(urllib.request.urlopen('http://vexa-lite:8056/health',timeout=5).status)"
     docker logs --since 5m sales-termine | tail -5
+    # Kein Rohmitschnitt (muss 0 sein; signal/ fehlt oder ist leer):
+    docker exec vexa-lite-storage sh -c 'ls /srv/vexa-storage/data/vexa/signal 2>/dev/null | wc -l'
 
 Ein echter Probe-Bot (Termin mit Jitsi-Link auf `meet.ffmuc.net`) gehört zu den Abnahmetests (Spec §10).
 

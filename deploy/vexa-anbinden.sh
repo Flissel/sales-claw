@@ -134,6 +134,29 @@ while [ "$i" -lt 24 ] && [ -z "$ADMIN" ]; do
 done
 [ -n "$ADMIN" ] || { echo "Admin-API im Container nicht erreichbar (8001/8057)" >&2; exit 11; }
 
+# Kein Rohmitschnitt bei Vexa (Abnahme 12.11.2026): Vexa legt von JEDEM Meeting
+# einen "captured-signal"-Mitschnitt (Signal, Spracherkennung, Mitschrift) als
+# Testmaterial im eigenen Speicher ab (Bucket-Praefix signal/), Vorgabe AN, und
+# loescht ihn beim Loeschen des Meetings NICHT. Der Not-Aus ist die
+# Plattform-Einstellung diagnostics.capture_signal=false (liegt in der
+# Vexa-Datenbank, uebersteht Neustarts). Die interne Schnittstelle prueft
+# X-Internal-Secret gegen das Geheimnis, das entrypoint.sh beim Start des
+# Containers erzeugt - darum aus der Umgebung des admin-api-Prozesses, nie
+# ausgegeben, Kopfzeile per Pipe an curl.
+# (ADMIN_ENVIRON_DATEI nur fuer den Test mit Attrappen.)
+umgebung="${ADMIN_ENVIRON_DATEI:-}"
+if [ -z "$umgebung" ]; then
+  apid="$(pgrep -f admin_api | head -n 1 || true)"
+  [ -n "$apid" ] || { echo "admin-api-Prozess nicht gefunden" >&2; exit 15; }
+  umgebung="/proc/$apid/environ"
+fi
+code="$(tr '\0' '\n' < "$umgebung" | sed -n 's/^INTERNAL_API_SECRET=//p' | {
+  read -r geheim || true
+  hdr X-Internal-Secret "$geheim" | curl -s -K - -o /dev/null -w '%{http_code}' -X PUT \
+    "$ADMIN/internal/settings/diagnostics" -H 'Content-Type: application/json' \
+    -d '{"capture_signal":"false"}' || true; })"
+case "$code" in 2*) ;; *) echo "Mitschnitt-Not-Aus (diagnostics.capture_signal) antwortete HTTP $code" >&2; exit 15 ;; esac
+
 # Vorhandener Token: gueltig, wenn das idempotente PUT 2xx liefert.
 if [ -n "${ALTER_KEY:-}" ]; then
   case "$(put_tx "$ALTER_KEY")" in 2*) printf '%s\n' "$ALTER_KEY"; exit 0 ;; esac
