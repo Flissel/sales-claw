@@ -132,3 +132,30 @@ def test_ablegen_verweigert_wenn_nicht_mehr_soll():
     server._q("update termin_akten set abgesagt_am = %s where uid = 'a2' returning uid", (T0,))
     assert bildschirm.bild_ablegen("a2", _jpeg("oben"), T0 + timedelta(seconds=9), None) is None
     assert len(bildschirm.bilder("a2")) == 1
+
+
+def test_bilder_zeilen_nur_fertige():
+    _akte()
+    a = bildschirm.bild_ablegen("a1", _jpeg("links"), T0, "A")
+    b = bildschirm.bild_ablegen("a1", _jpeg("oben"), T0 + timedelta(minutes=1), "A")
+    bildschirm.bild_ablegen("a1", _jpeg("diagonal"), T0 + timedelta(minutes=2), "A")
+    server._q("update termin_bilder set beschreibung = 'Folie A', "
+              "beschreibung_status = 'fertig' where id = %s returning id", (a,))
+    server._q("update termin_bilder set beschreibung = 'kaputt', "
+              "beschreibung_status = 'fehler' where id = %s returning id", (b,))
+    assert bildschirm.bilder_zeilen("a1") == [(T0, "Folie A")]
+    assert bildschirm.bilder_zeilen("nix") == []
+
+
+def test_bilder_zu_abschnitt():
+    seg = [{"beginn": (T0 + timedelta(minutes=m)).isoformat()} for m in (0, 2, 4, 6)]
+    liste = [{"id": "x", "aufgenommen_am": T0 + timedelta(minutes=1)},
+             {"id": "y", "aufgenommen_am": T0 + timedelta(minutes=3)},
+             {"id": "z", "aufgenommen_am": T0 + timedelta(minutes=7)},
+             {"id": "v", "aufgenommen_am": T0 - timedelta(minutes=1)}]
+    f = bildschirm.bilder_zu_abschnitt
+    assert f(seg, 1, 1, liste) == ["y"]          # 2..4 Min
+    assert f(seg, 0, 1, liste) == ["x", "y"]
+    assert f(seg, 3, 3, liste) == ["z"]          # letztes Segment: offenes Ende
+    assert f(seg, 2, 9, liste) == ["z"]          # bis ausserhalb: begrenzt
+    assert f([{"beginn": ""}], 0, 0, liste) == []

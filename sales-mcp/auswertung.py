@@ -14,7 +14,7 @@ import json
 import logging
 import os
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import ollama
@@ -67,7 +67,7 @@ zerhackt, einzelne Woerter koennen falsch erkannt sein, Sprecher "?" ist unbekan
 zusammenhaengend, erschliesse den Sinn aus dem Zusammenhang, korrigiere offensichtliche
 Erkennungsfehler stillschweigend, aber erfinde nichts, was nicht gesagt wurde.
 
-Format der Mitschrift: "[Nummer] Sprecher: Text". Antworte NUR als JSON nach diesem Schema,
+Format der Mitschrift: "[Nummer] Sprecher: Text". Zeilen der Form [Bild HH:MM] beschreiben, was zu diesem Zeitpunkt auf einem geteilten Bildschirm zu sehen war. Beziehe sie in Verlauf und Kurzfassung ein, wenn auf Gezeigtes Bezug genommen wird. Antworte NUR als JSON nach diesem Schema,
 ohne Erklaerung, auf Deutsch. Schreibe in deiner Antwort echte Umlaute (ä, ö, ü) und ß
 nach heutiger Rechtschreibung, nie ae, oe oder ue als Ersatz (auch wenn diese Anleitung
 sie verwendet):
@@ -374,11 +374,32 @@ def _json_aufruf(system: str, nutzer: str) -> dict:
 
 # ---------- Stueckelung und Zusammenfuehren ----------
 
-def _zeilen(segmente: list[dict]) -> list[str]:
-    """Nummerierte Zeilen; die Nummer ist der globale Index ueber alle Stuecke."""
+def _utc(t: datetime) -> datetime:
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+
+def _zeilen(segmente: list[dict],
+            bilder: list[tuple[datetime, str]] | None = None) -> list[str]:
+    """Nummerierte Zeilen; die Nummer ist der globale Index ueber alle Stuecke.
+
+    Bildzeilen `[Bild HH:MM] Beschreibung` (Europe/Berlin) haben keine Nummer und stehen
+    vor dem ersten Segment mit beginn >= Aufnahmezeit; Segmente ohne lesbaren Beginn
+    behalten ihren Platz, spaetere Bilder landen am Ende."""
     grenze = _stueck_zeichen()
+    offen = sorted(((_utc(t), b) for t, b in (bilder or []) if b and str(b).strip()),
+                   key=lambda x: x[0])
+    beginne = _beginne(segmente)
     zeilen = []
+
+    def bildzeile(t: datetime, beschr: str) -> str:
+        text = " ".join(str(beschr).split())
+        return f"[Bild {t.astimezone(_ZEITZONE):%H:%M}] {text}"[:grenze - 1]
+
     for i, s in enumerate(segmente):
+        if beginne[i] is not None:
+            b = _utc(beginne[i])
+            while offen and offen[0][0] <= b:
+                zeilen.append(bildzeile(*offen.pop(0)))
         text = " ".join(str(s.get("text") or "").split())
         if not text:
             continue
@@ -386,6 +407,7 @@ def _zeilen(segmente: list[dict]) -> list[str]:
         # Ein einzelnes Segment wird nie geteilt, aber hart gekappt, damit
         # kein Stueck die Grenze sprengt.
         zeilen.append(zeile[:grenze - 1])
+    zeilen.extend(bildzeile(*b) for b in offen)
     return zeilen
 
 
@@ -442,13 +464,14 @@ def _vereinen(teile: list[dict]) -> dict:
     return _nach_art(a)
 
 
-def auswerten(segmente: list[dict]) -> dict:
+def auswerten(segmente: list[dict],
+              bilder: list[tuple[datetime, str]] | None = None) -> dict:
     """Mitschrift -> Auswertung (Schluessel aus ABSCHNITTE plus `ergebnis`, `felder`, `art`).
 
     Wirft `ollama.OllamaFehler`, wenn Ollama fehlt oder zweimal kein JSON liefert.
     """
     beginne = _beginne(segmente)
-    stuecke = _stuecke(_zeilen(segmente))
+    stuecke = _stuecke(_zeilen(segmente, bilder))
     LOG.info("Auswertung: %d Segmente in %d Stuecken", len(segmente), len(stuecke))
     if not stuecke:
         return _leer()

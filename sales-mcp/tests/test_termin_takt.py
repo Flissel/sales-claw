@@ -439,7 +439,7 @@ def test_ollama_aus_auswertung_wartet(fake, monkeypatch, caplog):
     _akte("u1", status="fertig")
     _mitschrift("u1")
 
-    def nie(segmente):
+    def nie(segmente, bilder=None):
         raise AssertionError("auswerten darf ohne Ollama nicht laufen")
 
     monkeypatch.setattr(auswertung, "auswerten", nie)
@@ -451,7 +451,7 @@ def test_ollama_aus_auswertung_wartet(fake, monkeypatch, caplog):
     assert len(zeilen) <= 1
     # Wechsel zurueck loggt wieder genau einmal
     monkeypatch.setattr(ollama, "erreichbar", lambda: True)
-    monkeypatch.setattr(auswertung, "auswerten", lambda s: _ergebnis())
+    monkeypatch.setattr(auswertung, "auswerten", lambda s, bilder=None: _ergebnis())
     termin_takt.runde(JETZT + timedelta(minutes=5))
     assert _mit()["auswertung_status"] == "fertig"
     zurueck = [r for r in caplog.records if r.name == "sales-termine"
@@ -467,7 +467,7 @@ def test_auswertung_speichert_ergebnis_und_vorschlaege(fake, monkeypatch):
     _akte("u2", status="fertig")
     _mitschrift("u2")
     monkeypatch.setattr(ollama, "erreichbar", lambda: True)
-    monkeypatch.setattr(auswertung, "auswerten", lambda s: _ergebnis(
+    monkeypatch.setattr(auswertung, "auswerten", lambda s, bilder=None: _ergebnis(
         zusagen_felix=[{"text": "Angebot schicken", "datum": "2099-02-01"}]))
     termin_takt.runde(JETZT)
     m = _mit("u1")                       # aelteste zuerst, nur eine je Runde
@@ -487,7 +487,7 @@ def test_auswertung_fehler_neuversuch_hoechstens_dreimal(fake, monkeypatch):
     _mitschrift("u1")
     versuche = []
 
-    def kaputt(segmente):
+    def kaputt(segmente, bilder=None):
         versuche.append(1)
         raise ollama.OllamaFehler("kein JSON")
 
@@ -508,14 +508,14 @@ def test_auswertung_fehler_neuversuch_hoechstens_dreimal(fake, monkeypatch):
     assert _mit()["auswertung_status"] == "fehler"
     # Erfolg beim Neuversuch
     server._q("update termin_mitschriften set auswertung_versuche = 1 returning id")
-    monkeypatch.setattr(auswertung, "auswerten", lambda s: _ergebnis())
+    monkeypatch.setattr(auswertung, "auswerten", lambda s, bilder=None: _ergebnis())
     termin_takt.runde(JETZT + timedelta(hours=10))
     assert _mit()["auswertung_status"] == "fertig"
 
 
 def test_zusammenfassung_nur_mit_schalter(fake, monkeypatch):
     monkeypatch.setattr(ollama, "erreichbar", lambda: True)
-    monkeypatch.setattr(auswertung, "auswerten", lambda s: _ergebnis(
+    monkeypatch.setattr(auswertung, "auswerten", lambda s, bilder=None: _ergebnis(
         naechste_schritte=["Angebot senden"]))
     lead = _lead()
     _akte("u1", beginn=JETZT - timedelta(days=1), status="fertig")
@@ -541,7 +541,7 @@ def test_zusammenfassung_nur_mit_schalter(fake, monkeypatch):
 
 def test_zusammenfassung_ohne_verknuepften_kontakt_kein_draft(fake, monkeypatch):
     monkeypatch.setattr(ollama, "erreichbar", lambda: True)
-    monkeypatch.setattr(auswertung, "auswerten", lambda s: _ergebnis())
+    monkeypatch.setattr(auswertung, "auswerten", lambda s, bilder=None: _ergebnis())
     _akte("u1", status="fertig", will_zusammenfassung=True)
     _mitschrift("u1")
     termin_takt.runde(JETZT)
@@ -554,7 +554,7 @@ def test_internes_gespraech_kein_entwurf_aber_vorschlaege(fake, monkeypatch):
     # art "intern": keine Zusammenfassung an einen Kunden, auch mit Schalter;
     # Ergebnis und Wiedervorlagen fuer Felix entstehen trotzdem.
     monkeypatch.setattr(ollama, "erreichbar", lambda: True)
-    monkeypatch.setattr(auswertung, "auswerten", lambda s: _ergebnis(
+    monkeypatch.setattr(auswertung, "auswerten", lambda s, bilder=None: _ergebnis(
         art="intern", zusagen_felix=[{"text": "Board zeigen", "datum": "2099-02-01",
                                       "segment": 3}]))
     lead = _lead()
@@ -604,7 +604,7 @@ def test_fehler_einer_akte_stoppt_die_naechste_nicht(fake, monkeypatch):
 def test_log_ohne_kundendaten(fake, monkeypatch, caplog):
     caplog.set_level(logging.INFO)
     monkeypatch.setattr(ollama, "erreichbar", lambda: True)
-    monkeypatch.setattr(auswertung, "auswerten", lambda s: _ergebnis(
+    monkeypatch.setattr(auswertung, "auswerten", lambda s, bilder=None: _ergebnis(
         kurzfassung=SEGMENT_TEXT, naechste_schritte=[SEGMENT_TEXT]))
     lead = _lead()
     link = f"{MEET}?pwd={PASSCODE}"
@@ -803,7 +803,7 @@ def test_ablegen_nur_aus_laeuft_oder_wartet(fake):
 
 def test_vorschlaege_scheitern_einmal_fehler_kein_doppelter_entwurf(fake, monkeypatch):
     monkeypatch.setattr(ollama, "erreichbar", lambda: True)
-    monkeypatch.setattr(auswertung, "auswerten", lambda s: _ergebnis())
+    monkeypatch.setattr(auswertung, "auswerten", lambda s, bilder=None: _ergebnis())
     lead = _lead()
     _akte("u1", status="fertig", will_zusammenfassung=True)
     _teilnehmer("u1", lead)
@@ -835,7 +835,7 @@ def test_vorschlaege_scheitern_einmal_fehler_kein_doppelter_entwurf(fake, monkey
 def test_entwurf_scheitert_keine_neue_auswertung(fake, monkeypatch):
     monkeypatch.setattr(ollama, "erreichbar", lambda: True)
     zaehler = []
-    monkeypatch.setattr(auswertung, "auswerten", lambda s: zaehler.append(1) or _ergebnis())
+    monkeypatch.setattr(auswertung, "auswerten", lambda s, bilder=None: zaehler.append(1) or _ergebnis())
 
     def kaputt(*a, **k):
         raise RuntimeError("Entwurf kaputt")
@@ -1079,7 +1079,7 @@ def test_i3_alte_bot_ids_erst_stoppen_dann_neuer_bot(fake):
 def test_i7a_auswerten_pausiert_vor_einem_termin(fake, monkeypatch):
     monkeypatch.setattr(ollama, "erreichbar", lambda: True)
     aufrufe = []
-    monkeypatch.setattr(auswertung, "auswerten", lambda s: aufrufe.append(1) or _ergebnis())
+    monkeypatch.setattr(auswertung, "auswerten", lambda s, bilder=None: aufrufe.append(1) or _ergebnis())
     _akte("alt", beginn=JETZT - timedelta(days=1), status="fertig")
     _mitschrift("alt")
     _akte("bald", beginn=JETZT + timedelta(minutes=14))
@@ -1092,7 +1092,7 @@ def test_i7a_auswerten_pausiert_vor_einem_termin(fake, monkeypatch):
 def test_i7a_auswerten_pausiert_im_bot_fenster(fake, monkeypatch):
     monkeypatch.setattr(ollama, "erreichbar", lambda: True)
     aufrufe = []
-    monkeypatch.setattr(auswertung, "auswerten", lambda s: aufrufe.append(1) or _ergebnis())
+    monkeypatch.setattr(auswertung, "auswerten", lambda s, bilder=None: aufrufe.append(1) or _ergebnis())
     _akte("alt", beginn=JETZT - timedelta(days=1), status="fertig")
     _mitschrift("alt")
     _akte("lauf", beginn=JETZT - timedelta(minutes=10), status="laeuft", vexa_meeting_id=7)
@@ -1269,3 +1269,18 @@ def test_bot_stoppen_nach_ende_scheitert_naechste_runde_wieder(fake, monkeypatch
     termin_takt._verfolgen(JETZT + timedelta(seconds=30))
     termin_takt._verfolgen(JETZT + timedelta(seconds=60))
     assert fake.anzahl("stoppen") == 2
+
+
+def test_auswerten_eine_reicht_bilder_durch(fake, monkeypatch):
+    import bildschirm
+    _akte("u1", status="fertig")
+    _mitschrift("u1")
+    monkeypatch.setattr(ollama, "erreichbar", lambda: True)
+    monkeypatch.setattr(bildschirm, "bilder_zeilen",
+                        lambda uid: [(JETZT, f"Folie fuer {uid}")])
+    erhalten = []
+    monkeypatch.setattr(auswertung, "auswerten",
+                        lambda s, bilder=None: erhalten.append(bilder) or _ergebnis())
+    termin_takt.runde(JETZT)
+    assert erhalten == [[(JETZT, "Folie fuer u1")]]
+    assert _mit("u1")["auswertung_status"] == "fertig"

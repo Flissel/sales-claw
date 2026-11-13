@@ -7,7 +7,7 @@ genug?) und die Tabelle `termin_bilder`. Logs: nie Inhalte, nie Namen.
 from __future__ import annotations
 
 import io
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from PIL import Image
 
@@ -120,3 +120,38 @@ def bild_daten(uid: str, bild_id: str) -> bytes | None:
 def bild_loeschen(uid: str, bild_id: str) -> bool:
     return bool(server._q("delete from termin_bilder where uid = %s and id = %s "
                           "returning id", (uid, bild_id)))
+
+
+def bilder_zeilen(uid: str) -> list[tuple[datetime, str]]:
+    """(Aufnahmezeit, Beschreibung) der fertig beschriebenen Bilder, fuer die Auswertung."""
+    z = server._q("select aufgenommen_am, beschreibung from termin_bilder "
+                  "where uid = %s and beschreibung_status = 'fertig' "
+                  "and coalesce(beschreibung, '') <> '' "
+                  "order by aufgenommen_am, erstellt_am", (uid,))
+    return [(r["aufgenommen_am"], r["beschreibung"]) for r in z]
+
+
+def _beginn(segment: dict) -> datetime | None:
+    try:
+        t = datetime.fromisoformat(str(segment.get("beginn") or "").strip()
+                                   .replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+
+def bilder_zu_abschnitt(segmente: list[dict], von: int, bis: int,
+                        bilder: list[dict]) -> list[str]:
+    """Ids der Bilder, die ab Beginn von Segment `von` bis Ende von Segment `bis` entstanden.
+
+    Das Ende ist der Beginn des naechsten Segments mit lesbarer Zeit (offen beim letzten).
+    Ohne lesbaren Beginn ab `von` ist kein Zeitraum bestimmbar: leere Liste."""
+    if not segmente or von > bis:
+        return []
+    von = max(von, 0)
+    anfang = next((b for b in map(_beginn, segmente[von:bis + 1]) if b), None)
+    if anfang is None:
+        return []
+    ende = next((b for b in map(_beginn, segmente[bis + 1:]) if b), None)
+    return [str(b["id"]) for b in bilder
+            if b["aufgenommen_am"] >= anfang and (ende is None or b["aufgenommen_am"] < ende)]
