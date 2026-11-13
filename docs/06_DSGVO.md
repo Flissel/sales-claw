@@ -256,6 +256,39 @@ auf `/team/kalender` einstuft.
   Vorher mit `select count(*)` zählen. Dafür braucht es die Owner-Rolle
   (`supabase_admin`), die Dienst-Rolle löscht nur Quellen über die Oberfläche.
 
+## Wartelisten-Kontakte (vibemind.space, seit 13.11.2026)
+
+Der Wartelisten-Abgleich (`docs/03_RUNBOOK.md`) legt Menschen als Kontakte an,
+die sich auf der Website auf die Warteliste gesetzt haben.
+
+- **Was übernommen wird:** E-Mail-Adresse, Zeitpunkt der Anmeldung, Zeitpunkt
+  der Bestätigung (falls vorhanden) und die Herkunft der Zeile. Sonst nichts;
+  die Warteliste kennt keinen Namen, als Name steht der Teil vor dem @.
+- **Wer übernommen wird:** die Einträge aus der Zeit vor dem Double-Opt-in
+  und alle, die ihre Adresse seither bestätigt haben. Unbestätigte neue
+  Anmeldungen kommen nicht an; die Website liefert sie nicht aus.
+- **Keine Werbe-Einwilligung:** eine Wartelisten-Anmeldung ist keine
+  Einwilligung in Werbung. Der Abgleich bucht deshalb NICHTS — der Kontakt
+  bleibt auf `consent_status = 'unknown'`, das Tor oben verweigert die
+  Erstansprache. Die Betreiber-Vorgabe vom 30.10.2026 gilt für
+  `kontakt_anlegen`; der Abgleich geht bewusst nicht über dieses Werkzeug.
+  Wer Wartelisten-Kontakte anschreiben will, entscheidet das als Betreiber
+  je Kontakt oder per Sammelbestätigung und trägt die Grundlage selbst.
+- **Verbotsliste:** vor dem Anlegen wird `compliance.sperrliste` gefragt.
+  Wer sich abgemeldet, widerrufen oder Löschung verlangt hat, wird über die
+  Warteliste nicht erneut erfasst.
+- **Löschbegehren:** der Ablauf oben gilt unverändert. Zusätzlich muss die
+  Zeile in der Warteliste der Website gelöscht werden — das ist ein eigener
+  Bestand mit eigenem Schritt, den der Abgleich nicht anfasst (er schreibt
+  nie zurück). Bleibt sie dort stehen, verhindert nur die Verbotsliste das
+  Wiederanlegen.
+- **Austragung:** wer die Warteliste verlässt, bleibt als Kontakt stehen
+  (`enrichment.waitinglist.auf_liste = false`). Eine Löschfrist für
+  Wartelisten-Kontakte, die nie Kunde wurden, ist noch nicht festgelegt —
+  Entscheidung des Betreibers.
+- **Zugang:** der Abholschlüssel darf bei der Website nur die Warteliste
+  lesen. Er liegt in der `.env` des Wirts, nicht im Container.
+
 ## Grenze
 
 Dieses Dokument ist Betriebsanleitung, keine Rechtsberatung. Bei

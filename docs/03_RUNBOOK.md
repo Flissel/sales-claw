@@ -4020,3 +4020,81 @@ stehen (am PC im Startskript der Marketing-Dienste; leer = nichts). Details: vib
 
 **Erster Lauf (12.11.2026).** Testauftrag `a86339b9`: 8 Szenen, 2:10 min, 6 Modellaufrufe. Gliederung etwa
 2 min, alle Szenentexte zusammen etwa 5 min, je Clip etwa 1,5 min, Zusammenfügen etwa 20 s.
+
+## Wartelisten-Abgleich: vibemind.space → Kontakte (seit 13.11.2026)
+
+Wer sich auf vibemind.space auf die Warteliste setzt, soll als Kontakt mit dem Kennzeichen „Waitinglist“ hier
+stehen. Die Warteliste liegt in der Datenbank der Website, nicht in unserer. Einmal in der Nacht holt
+`deploy/warteliste-abgleich.sh` sie ab und reicht sie an `sales-mcp` (`warteliste_abgleich.py`); ohne
+Sprachmodell, nur Basis-Laden, eine Richtung (nichts geht an die Website zurück).
+
+**Was der Abgleich tut.**
+
+| Fall | Wirkung |
+|---|---|
+| Adresse noch nicht bekannt | neuer Kontakt: Quelle `waitinglist`, Notiz beginnt mit „Waitinglist“, Name = Teil vor dem @, `consent_status` bleibt `unknown` |
+| Adresse schon bekannt | Kontakt bleibt unverändert und bekommt nur `enrichment.waitinglist` |
+| später bestätigt (Double-Opt-in) | `enrichment.waitinglist.bestaetigt_am` wird nachgetragen |
+| nicht mehr auf der Liste | Kontakt bleibt, `enrichment.waitinglist.auf_liste` wird `false`; gelöscht wird nie |
+| Adresse auf der Verbotsliste | wird nicht angelegt |
+
+Ein neuer Kontakt trägt als Anlagedatum den Tag seiner Anmeldung, damit der erste Lauf die Liste „zuletzt
+geändert“ nicht mit Wartelisten-Adressen füllt. Filtern: `source = 'waitinglist'` (vom Abgleich angelegt) oder
+`enrichment -> 'waitinglist' ->> 'auf_liste' = 'true'` (alle, die auf der Liste stehen, auch ältere Kontakte).
+
+**Zugang.** Der Wirt bekommt einen Abholschlüssel, der in der Website-Datenbank genau eine Funktion aufrufen
+darf (`waitlist_export`, nur lesend). Der Schlüssel entsteht auf dieser Maschine; in die Website-Datenbank
+kommt nur sein SHA-256. Der Container `sales-mcp` sieht den Schlüssel nie, nur das abgeholte Dokument.
+
+```bash
+bash ~/sales-claw/deploy/warteliste-anbinden.sh https://<projekt>.supabase.co <oeffentlicher-schluessel>
+```
+
+Das Skript trägt `WARTELISTE_URL`, `WARTELISTE_API_SCHLUESSEL` und `WARTELISTE_ABHOL_SCHLUESSEL` in die `.env`
+ein (Sicherung daneben) und gibt die eine SQL-Zeile aus, die in der Website-Datenbank auszuführen ist. Der
+Abholschlüssel selbst erscheint nirgends.
+
+**Erster Lauf in Stufen.** Erst rechnen lassen, dann wenige anlegen und ansehen, dann alles:
+
+```bash
+bash ~/sales-claw/deploy/warteliste-abgleich.sh --trocken           # nur Zahlen, schreibt nichts
+bash ~/sales-claw/deploy/warteliste-abgleich.sh --hoechstens 20     # legt höchstens 20 neue Kontakte an
+bash ~/sales-claw/deploy/warteliste-abgleich.sh                     # der Rest
+```
+
+Die Ausgabe ist eine Zeile JSON: `auf_der_liste`, `angelegt`, `gekennzeichnet`, `aktualisiert`,
+`unveraendert`, `gesperrt`, `zurueckgestellt`, `ausgetragen`, `austragen_gestoppt`, `unbrauchbar`. Adressen
+stehen weder in der Ausgabe noch im Journal.
+
+**Einschalten.**
+
+```bash
+sudo cp ~/sales-claw/deploy/systemd/sales-warteliste-abgleich.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now sales-warteliste-abgleich.timer
+systemctl list-timers sales-warteliste-abgleich.timer
+```
+
+Läuft täglich um 03:40 (bis zu fünf Minuten Streuung), holt einen verpassten Lauf nach dem Hochfahren nach.
+
+**Wenn etwas nicht stimmt.**
+
+| Zeichen | Bedeutung | Was tun |
+|---|---|---|
+| Exit 2, „kein Dokument auf der Standardeingabe“ | Abholen gescheitert (Netz, Schlüssel entzogen oder nicht eingetragen) | nichts wurde geändert; Zugang prüfen, `--trocken` wiederholen |
+| Exit 2, „unvollstaendig“ oder „kein JSON“ | Dokument abgeschnitten oder fremd | nichts wurde geändert; nächster Lauf versucht es erneut |
+| Exit 4, „Schwund-Sperre“ | mindestens 20 und mehr als ein Fünftel der gekennzeichneten Kontakte fehlen im Dokument | Neue wurden angelegt, niemand ausgetragen; bei der Website klären, ob die Liste wirklich geschrumpft ist |
+| `unbrauchbar` > 0 | einzelne Zeilen der Website passen nicht (Adresse, Datum, Herkunft) | Zeilen bei der Website ansehen |
+
+**Not-Aus.** `sudo systemctl disable --now sales-warteliste-abgleich.timer`. Der Zugang lässt sich zusätzlich
+bei der Website entziehen (`UPDATE private.waitlist_export_keys SET revoked_at = now() WHERE label = '…'`);
+danach scheitert jedes Abholen mit Exit 2.
+
+**Schlüssel wechseln.** Zeile `WARTELISTE_ABHOL_SCHLUESSEL=` aus der `.env` löschen, `warteliste-anbinden.sh`
+erneut starten, neuen Hash bei der Website eintragen, alten dort entziehen.
+
+**Prüfung der Dateien** (ohne Docker, ohne Netz): `bash deploy/tests/test_warteliste_abgleich.sh` und
+`bash deploy/tests/test_warteliste_anbinden.sh` (braucht openssl). Verträge der Logik:
+`sales-mcp/tests/test_warteliste_abgleich_plan.py` (ohne Datenbank) und `test_warteliste_abgleich.py`.
+
+**Datenschutz.** Siehe `docs/06_DSGVO.md`, Abschnitt „Wartelisten-Kontakte“.
