@@ -70,8 +70,15 @@ def _bild(uid="a1", minute=0):
 
 def _zeile(bid):
     return server._q("select beschreibung, beschreibung_status, beschreibung_versuche, "
+                     "versucht_am, "
                      "vektor_bild is not null as vb, vektor_text is not null as vt "
                      "from termin_bilder where id = %s", (bid,))[0]
+
+
+def _zurueckdatieren(bid, sekunden):
+    """Den letzten Versuch in die Vergangenheit legen (statt zu warten)."""
+    server._q("update termin_bilder set versucht_am = versucht_am - make_interval(secs => %s) "
+              "where id = %s returning id", (sekunden, bid))
 
 
 def test_beschreiben_schreibt_text_und_vektoren(monkeypatch):
@@ -106,8 +113,85 @@ def test_beschreiben_fehler_zaehlt_versuche_bis_drei(monkeypatch):
         assert bild_arbeit.naechste_beschreiben(Attrappe()) is True
         z = _zeile(bid)
         assert z["beschreibung_status"] == "fehler" and z["beschreibung_versuche"] == n
+        _zurueckdatieren(bid, 3600)
     assert bild_arbeit.naechste_beschreiben(Attrappe()) is False
     assert _zeile(bid)["beschreibung_versuche"] == 3
+
+
+def test_neuversuch_wartet_wachsende_pause(monkeypatch):
+    """R16: nach Versuch 1 30 s, nach Versuch 2 5 min, gemessen ab dem letzten Versuch."""
+    _akte("a1")
+    bid = _bild()
+
+    def chat(*a, **kw):
+        raise ollama.OllamaFehler("aus")
+
+    monkeypatch.setattr(ollama, "chat", chat)
+    assert bild_arbeit.naechste_beschreiben(Attrappe()) is True
+    assert _zeile(bid)["versucht_am"] is not None
+    assert bild_arbeit.naechste_beschreiben(Attrappe()) is False      # Pause laeuft
+    _zurueckdatieren(bid, 20)
+    assert bild_arbeit.naechste_beschreiben(Attrappe()) is False      # 20 s < 30 s
+    _zurueckdatieren(bid, 11)
+    assert bild_arbeit.naechste_beschreiben(Attrappe()) is True       # Versuch 2
+    assert _zeile(bid)["beschreibung_versuche"] == 2
+    _zurueckdatieren(bid, 31)
+    assert bild_arbeit.naechste_beschreiben(Attrappe()) is False      # jetzt 5 min
+    _zurueckdatieren(bid, 240)
+    assert bild_arbeit.naechste_beschreiben(Attrappe()) is False      # 271 s < 300 s
+    _zurueckdatieren(bid, 30)
+    monkeypatch.setattr(ollama, "chat", lambda *a, **kw: "Folie")
+    assert bild_arbeit.naechste_beschreiben(Attrappe()) is True       # Versuch 3
+    z = _zeile(bid)
+    assert z["beschreibung_versuche"] == 3 and z["beschreibung_status"] == "fertig"
+
+
+def test_pause_haelt_andere_bilder_nicht_auf(monkeypatch):
+    _akte("a1")
+    b1 = _bild("a1", 0)
+    b2 = _bild("a1", 1)
+    monkeypatch.setattr(ollama, "chat", lambda *a, **kw: (_ for _ in ()).throw(
+        ollama.OllamaFehler("aus")))
+    assert bild_arbeit.naechste_beschreiben(Attrappe()) is True       # b1 scheitert
+    monkeypatch.setattr(ollama, "chat", lambda *a, **kw: "Text")
+    assert bild_arbeit.naechste_beschreiben(Attrappe()) is True       # b2 trotz Pause von b1
+    assert _zeile(b2)["beschreibung_status"] == "fertig"
+    assert _zeile(b1)["beschreibung_status"] == "fehler"
+
+
+def test_vektor_bild_steht_nach_ki_fehler_und_ist_suchbar(monkeypatch):
+    """R16: der Bild-Vektor haengt nicht an der KI; das Bild ist ohne Beschreibung findbar."""
+    _akte("a1")
+    bid = _bild()
+
+    def chat(*a, **kw):
+        z = _zeile(bid)
+        assert z["vb"] and not z["vt"]           # schon vor dem KI-Aufruf geschrieben
+        raise ollama.OllamaFehler("aus")
+
+    monkeypatch.setattr(ollama, "chat", chat)
+    assert bild_arbeit.naechste_beschreiben(Attrappe()) is True
+    z = _zeile(bid)
+    assert z["beschreibung_status"] == "fehler" and z["vb"] and not z["vt"]
+    assert z["beschreibung"] is None
+    r = bild_arbeit.suchen(Attrappe(), "bild")
+    assert [x["id"] for x in r] == [bid] and r[0]["score"] == pytest.approx(1.0)
+    assert r[0]["beschreibung"] is None
+    # Neuversuch berechnet den Bild-Vektor nicht noch einmal
+    _zurueckdatieren(bid, 3600)
+
+    class Zaehler(Attrappe):
+        n = 0
+
+        def bild(self, jpeg):
+            Zaehler.n += 1
+            return super().bild(jpeg)
+
+    monkeypatch.setattr(ollama, "chat", lambda *a, **kw: "Folie text")
+    assert bild_arbeit.naechste_beschreiben(Zaehler()) is True
+    assert Zaehler.n == 0
+    z = _zeile(bid)
+    assert z["beschreibung_status"] == "fertig" and z["vb"] and z["vt"]
 
 
 def test_einbettungsfehler_ist_fehler_nie_fertig(monkeypatch):
@@ -154,7 +238,7 @@ def _fertig(monkeypatch, uid, minute, text="x"):
 def test_suchen_findet_per_text_und_bild_vektor(monkeypatch):
     _akte("a1")
     bid = _fertig(monkeypatch, "a1", 0, "Folie text")
-    _bild("a1", 3)  # offen: darf nie auftauchen
+    _bild("a1", 3)  # offen, noch ohne Vektor: darf nie auftauchen
     # Bild-Vektor (Achse 0) passt zu "bild"; Text-Vektor (Achse 3) zu "text"
     r = bild_arbeit.suchen(Attrappe(), "bild")
     assert [x["id"] for x in r] == [bid] and r[0]["score"] == pytest.approx(1.0)

@@ -29,7 +29,8 @@ SPALTEN = {
     "termin_bilder": {
         "id", "uid", "aufgenommen_am", "bis", "geteilt_von", "bild", "breite",
         "hoehe", "dhash", "beschreibung", "beschreibung_status",
-        "beschreibung_versuche", "vektor_bild", "vektor_text", "erstellt_am"},
+        "beschreibung_versuche", "vektor_bild", "vektor_text", "erstellt_am",
+        "versucht_am"},
 }
 
 
@@ -119,9 +120,10 @@ def test_termin_bilder_spalten_exakt_und_schalter():
 def test_termin_bilder_standardwerte():
     _akte()
     _bild()
-    z = server._q("select beschreibung_status, beschreibung_versuche, bis, "
+    z = server._q("select beschreibung_status, beschreibung_versuche, bis, versucht_am, "
                   "vektor_bild, vektor_text from termin_bilder")[0]
     assert (z["beschreibung_status"], z["beschreibung_versuche"]) == ("offen", 0)
+    assert z["versucht_am"] is None
     assert z["bis"] is None and z["vektor_bild"] is None and z["vektor_text"] is None
     with pytest.raises(psycopg.errors.CheckViolation):
         server._q("update termin_bilder set beschreibung_status = 'x' returning id")

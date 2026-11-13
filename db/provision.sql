@@ -400,6 +400,9 @@ begin
         vektor_text public.vector(384) null,
         erstellt_am timestamptz not null default now())$ddl$, s, s);
     execute format('create index if not exists termin_bilder_uid_idx on %I.termin_bilder (uid, aufgenommen_am)', s);
+    -- Ruling R16: Zeitpunkt des letzten Beschreib-Versuchs; der naechste wartet
+    -- 30 s (nach Versuch 1) bzw. 5 min (nach Versuch 2), sales-mcp/bild_arbeit.py.
+    execute format('alter table %I.termin_bilder add column if not exists versucht_am timestamptz null', s);
     -- Rechte: sales_test bekommt select/insert/update/delete/truncate ueber den
     -- Sammel-Grant nach der Schleife (er laeuft nach dieser Zeile).
     if s = 'sales' then
